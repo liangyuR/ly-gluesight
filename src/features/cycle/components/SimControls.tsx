@@ -7,7 +7,7 @@ import type { Scenario } from "../types";
 const scenarios: [Scenario, string][] = [
   ["normal", "正常件"],
   ["excursion", "局部超差（允许）"],
-  ["gap", "跨帧断胶"],
+  ["gap", "断胶（超过允许长度）"],
   ["lostFrame", "传输丢帧"],
   ["locateFail", "定位失败"],
   ["countMismatch", "拍照点数不一致"],

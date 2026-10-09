@@ -14,11 +14,14 @@ export function cycleMeasurement(sn = 1): Measured {
 }
 export function cycleResult(sn = 1): ResultView {
   return { sn, recipeId: "A", ts: 1, drainMs: 24, verdict: "NG_POSITION", plcCode: 2, faultCode: 0,
-    reason: "测试样本偏移超差", gaps: [], segments: [{ verdict: "NG_POSITION", min: 3, max: 4.5, excursionLen: 1, wMin: null, wMax: null, wExcursionLen: 0 }] };
+    reason: "测试样本偏移超差", gaps: [], segments: [
+      { verdict: "NG_POSITION", min: 3, max: 4.5, excursionLen: 1, wMin: null, wMax: null, wExcursionLen: 0 },
+      { verdict: "OK", min: 3, max: 3, excursionLen: 0, wMin: null, wMax: null, wExcursionLen: 0 },
+    ] };
 }
 /** 带胶宽限值的布局（胶宽曲线用）。 */
 export function widthLayout(): Recipe {
   const layout = workspaceView().layout;
-  layout.segments[0].width = { nominal: 2, tolUpper: .5, tolLower: .5, absMin: 1, absMax: 4, maxExcursionLen: 1 };
+  for (const g of layout.segments) g.width = { nominal: 2, tolUpper: .5, tolLower: .5, absMin: 1, absMax: 4, maxExcursionLen: 1 };
   return layout;
 }

@@ -23,15 +23,17 @@ describe("图像查看与加载", () => {
     expect(screen.getByText("原图不可用")).toBeVisible(); expect(screen.getByText("文件已清理")).toBeVisible();
   });
 
-  it("缩放有边界，切换图像恢复 100%，叠加可切换", async () => {
-    const page = render(<GrayViewer image={image} label="k1" params={workspaceView().workspace.frames[0].params} />);
+  it("缩放有边界，切换图像恢复 100%，中线叠加可切换", async () => {
+    const page = render(<GrayViewer image={image} label="k1" overlay={{ path: [[10, 10], [40, 20]] }} />);
     await userEvent.click(screen.getByRole("button", { name: "放大原图" })); expect(screen.getByText("125%")).toBeVisible();
     for (let i = 0; i < 5; i++) await userEvent.click(screen.getByRole("button", { name: "缩小原图" }));
     expect(screen.getByText("50%")).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "测量叠加" }));
-    expect(screen.getByRole("button", { name: "测量叠加" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByLabelText("中线叠加")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "中线叠加" }));
+    expect(screen.getByRole("button", { name: "中线叠加" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByLabelText("中线叠加")).toBeNull();
     page.rerender(<GrayViewer image={{ ...image, url: "data:,new" }} label="k2" />);
-    expect(screen.getByText("100%")).toBeVisible();
+    expect(screen.getByText("100%")).toBeVisible(); expect(screen.queryByRole("button", { name: "中线叠加" })).toBeNull();
   });
 
   it("图像切换后旧读取不会覆盖当前图像", async () => {
@@ -44,18 +46,20 @@ describe("图像查看与加载", () => {
     expect(result.current.image?.url).toBe("data:,latest"); expect(result.current.loading).toBe(false);
   });
 
-  it.each([
-    ["dx", NaN], ["dy", Infinity], ["deg", NaN], ["mmPerPx", NaN], ["mmPerPx", Infinity], ["mmPerPx", 0],
-  ] as const)("参数 %s=%s 未填完时保留原图和模板，不生成无效坐标，填写后恢复叠加", (key, value) => {
-    const view = workspaceView(), params = view.workspace.frames[0].params;
-    const page = render(<GrayViewer image={image} label="示教原图" params={params} layout={view.layout} />);
-    expect(page.container.querySelector("polyline")).not.toBeNull();
-    page.rerender(<GrayViewer image={image} label="示教原图" params={{ ...params, [key]: value }} layout={view.layout} />);
-    expect(screen.getByRole("img", { name: "示教原图" })).toBeVisible();
-    expect(page.container.querySelector("polyline")).toBeNull(); expect(page.container.querySelector("rect")).not.toBeNull();
+  it("叠加直接按图像像素画中线与各站，不做对齐变换；只读时没有可拖的中线点", () => {
+    const view = workspaceView();
+    const page = render(<GrayViewer image={image} label="示教原图" overlay={{ path: [[10, 10], [20, 10]], stations: [[10, 10], [20, 10]], stationColors: ["var(--ok)", "var(--ng)"] }} />);
+    expect(page.container.querySelector("polyline")).toHaveAttribute("points", "10,10 20,10");
+    const dots = page.container.querySelectorAll("circle");
+    expect(Array.from(dots).map(c => [c.getAttribute("cx"), c.getAttribute("cy"), c.getAttribute("fill")])).toEqual([["10", "10", "var(--ok)"], ["20", "10", "var(--ng)"]]);
+    expect(screen.queryByLabelText("中线点 1")).toBeNull();
+    // 中线改了还没保存：各站淡显；只有一个点时不画折线
+    page.rerender(<GrayViewer image={image} label="示教原图" overlay={{ path: [[5, 5]], stations: [[10, 10]], stale: true }} onEdit={{ add: vi.fn(), move: vi.fn(), select: vi.fn() }} />);
+    expect(page.container.querySelector("polyline")).toBeNull();
+    expect(page.container.querySelector("circle")).toHaveAttribute("opacity", "0.35");
+    expect(screen.getByLabelText("中线点 1")).toHaveAttribute("cx", "5");
     expect(page.container.querySelector("svg")!.outerHTML).not.toMatch(/NaN|Infinity/);
-    page.rerender(<GrayViewer image={image} label="示教原图" params={params} layout={view.layout} />);
-    expect(page.container.querySelector("polyline")).not.toBeNull();
+    expect(view.layout.points.x).toEqual([10, 20, 30, 40]);
   });
 
   it("读取失败展示原因，重新选择后清除错误", async () => {
@@ -73,7 +77,7 @@ describe("图像查看与加载", () => {
     expect(workspaceApi.recordImage).toHaveBeenCalledWith(12, 1);
   });
 
-  it("拖模板过程中提示条改变图像位置，仍使用按下时的原图坐标", () => {
+  it("点空白处在末尾加点并可接着拖动，按中线点只拖动不加点；整次拖动使用按下时的原图坐标", () => {
     let offset = 20;
     const previous = globalThis.DOMPoint;
     class TestPoint {
@@ -81,20 +85,35 @@ describe("图像查看与加载", () => {
       matrixTransform(matrix: { offset: number }) { return new TestPoint(this.x, this.y - matrix.offset); }
     }
     Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: TestPoint });
-    const onRect = vi.fn();
+    const edit = { add: vi.fn(), move: vi.fn(), select: vi.fn() };
     try {
-      render(<GrayViewer image={image} label="模板图像" onRect={onRect} />);
-      const svg = screen.getByRole("img", { name: "模板图像" });
+      render(<GrayViewer image={image} label="示教图像" overlay={{ path: [[50, 30]] }} onEdit={edit} />);
+      const svg = screen.getByRole("img", { name: "示教图像" });
       const group = svg.querySelector("g")!;
       Object.defineProperty(group, "getScreenCTM", { value: () => ({ inverse: () => ({ offset }) }) });
       Object.defineProperty(svg, "setPointerCapture", { value: vi.fn() });
-      fireEvent.pointerDown(svg, { clientX: 10, clientY: 30, pointerId: 1 });
+      fireEvent.pointerDown(svg, { clientX: 10.04, clientY: 30, pointerId: 1 });
+      expect(edit.add).toHaveBeenLastCalledWith([10, 10]); expect(edit.select).toHaveBeenLastCalledWith(1);
       offset = 60;
       fireEvent.pointerMove(svg, { clientX: 50, clientY: 65, pointerId: 1 });
-      expect(onRect).toHaveBeenLastCalledWith([10, 10, 40, 35]);
-      fireEvent.pointerCancel(svg, { pointerId: 1 });
+      // 坐标截在图内，取 0.1 px
+      expect(edit.move).toHaveBeenLastCalledWith(1, [50, 45]);
+      fireEvent.pointerMove(svg, { clientX: 500, clientY: -20, pointerId: 1 });
+      expect(edit.move).toHaveBeenLastCalledWith(1, [100, 0]);
+      fireEvent.pointerUp(svg, { pointerId: 1 });
       fireEvent.pointerMove(svg, { clientX: 80, clientY: 75, pointerId: 1 });
-      expect(onRect).toHaveBeenCalledTimes(1);
+      expect(edit.move).toHaveBeenCalledTimes(2);
+      fireEvent.pointerDown(screen.getByLabelText("中线点 1"), { clientX: 12, clientY: 80, pointerId: 2 });
+      expect(edit.add).toHaveBeenCalledTimes(1); expect(edit.select).toHaveBeenLastCalledWith(0);
+      fireEvent.pointerMove(svg, { clientX: 14, clientY: 82, pointerId: 2 });
+      expect(edit.move).toHaveBeenLastCalledWith(0, [14, 22]);
+      fireEvent.pointerCancel(svg, { pointerId: 2 });
+      fireEvent.pointerMove(svg, { clientX: 1, clientY: 61, pointerId: 2 });
+      expect(edit.move).toHaveBeenCalledTimes(3);
+      // 关掉叠加时不能编辑
+      fireEvent.click(screen.getByRole("button", { name: "中线叠加" }));
+      fireEvent.pointerDown(svg, { clientX: 30, clientY: 70, pointerId: 3 });
+      expect(edit.add).toHaveBeenCalledTimes(1);
     } finally {
       Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: previous });
     }

@@ -228,7 +228,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
           <span>飞拍配方</span>
           <select id="measure-fly" className="input" value={settings.vision ? "lyFlow" : "sim"} onChange={(e) => update({ ...settings, vision: e.target.value === "lyFlow" })}>
             <option value="sim">模拟测量（不看图像）</option>
-            <option value="lyFlow">lyFlow 流程（模板定位 + 逐点卡尺）</option>
+            <option value="lyFlow">lyFlow 流程（沿示教中线量胶）</option>
           </select>
         </label>
         {settings.vision && (
@@ -289,7 +289,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
       </dl>
       {engineError && <div className="notice error" role="alert">引擎状态读取失败：{engineError} <button className="btn" onClick={refresh}>重试引擎状态</button></div>}
       <p className="muted hint">
-        lyFlow 流程用于飞拍配方（模板定位 + 逐点卡尺），需要带图像域的 lyFlow 版本。帧录制把整帧图像写到数据目录的 records 下，可在图像源页选作回放目录。
+        lyFlow 流程沿各拍照点的示教中线量胶，需要带图像域的 lyFlow 版本；这个流程接入前，图像测量会报“尚未接入”，不用模拟值顶替。帧录制把整帧图像写到数据目录的 records 下，可在图像源页选作回放目录。
       </p>
       {notice && <div className={`notice ${notice.ok ? "ok" : "error"}`} role={notice.ok ? "status" : "alert"}>{notice.text}</div>}
     </div>

@@ -8,9 +8,9 @@ import { workspaceApi } from "../src/features/workspace/api";
 import { recipeApi } from "../src/features/cycle/api";
 import { cameraApi, defaultCameraConfig } from "../src/features/camera/api";
 import { desktopAvailable } from "../src/lib/desktop";
-import type { Recipe, RecipeDoc } from "../src/features/cycle/types";
+import type { Recipe, RecipeDoc, ShotSpec } from "../src/features/cycle/types";
 import type { WorkspaceView } from "../src/features/workspace/types";
-import { deferred, shotList, summary, workspaceState, workspaceView } from "./fixtures";
+import { deferred, shotList, summary, twoLines, workspaceState, workspaceView } from "./fixtures";
 
 // 编辑和保存用真实 provider；仅对 provider 正常不会产生的空预览状态使用受控上下文。
 let controlled: ReturnType<typeof useWorkspace> | null = null;
@@ -44,7 +44,7 @@ function Probe() {
 function show() {
   return render(<MemoryRouter initialEntries={["/recipe/geometry"]}><WorkspaceProvider><GeometryPage /><Probe /></WorkspaceProvider></MemoryRouter>);
 }
-const editor = () => within(screen.getByRole("heading", { name: "候选胶路与检测规则" }).closest("section")!);
+const editor = () => within(screen.getByRole("heading", { name: "候选拍照点与检测规则" }).closest("section")!);
 const draft = () => JSON.parse(screen.getByLabelText("当前候选草稿").textContent!) as RecipeDoc;
 async function open() { const page = show(); await screen.findByRole("textbox", { name: "名称" }); return page; }
 async function readySave() {
@@ -69,14 +69,16 @@ beforeEach(() => {
   ]);
 });
 
-describe("胶路页面与真实候选编辑器的接线", () => {
+describe("拍照点规划页面与真实候选编辑器的接线", () => {
   it("真实字段修改传入工作台草稿，编辑器保存使用当前修订与完整候选", async () => {
     await open();
     fireEvent.change(editor().getByRole("textbox", { name: "名称" }), { target: { value: "新候选胶路" } });
     fireEvent.change(editor().getByRole("spinbutton", { name: "产品代码（PLC 下发）" }), { target: { value: "9" } });
-    fireEvent.change(editor().getByRole("spinbutton", { name: "宽（mm）" }), { target: { value: "150" } });
-    fireEvent.change(editor().getByRole("spinbutton", { name: "直线段 · 位置 · 上公差" }), { target: { value: "1.5" } });
-    expect(draft()).toMatchObject({ id: "A", name: "新候选胶路", productCode: 9, path: { width: 150 }, line: { position: { tolUpper: 1.5 } } });
+    fireEvent.change(editor().getByRole("spinbutton", { name: "站距（mm）" }), { target: { value: "1.5" } });
+    fireEvent.change(editor().getByRole("spinbutton", { name: "位置 · 上公差" }), { target: { value: "1.5" } });
+    fireEvent.change(editor().getByRole("textbox", { name: "拍照点 2 · 胶条" }), { target: { value: "J2" } });
+    expect(draft()).toMatchObject({ id: "A", name: "新候选胶路", productCode: 9, spacing: 1.5, limits: { position: { tolUpper: 1.5 } } });
+    expect(draft().shots[1]).toMatchObject({ bead: "J2", path: twoLines[1] });
     expect(screen.getByText("候选配置尚未保存")).toBeVisible(); expect(workspaceApi.saveDoc).not.toHaveBeenCalled();
     const candidate = draft(); await userEvent.click(await readySave());
     expect(workspaceApi.saveDoc).toHaveBeenCalledWith("A", 7, candidate);
@@ -91,8 +93,8 @@ describe("胶路页面与真实候选编辑器的接线", () => {
     const candidate = draft(), request = deferred<WorkspaceView>(); vi.mocked(workspaceApi.saveDoc).mockReturnValueOnce(request.promise);
     const save = await readySave(); fireEvent.click(save); fireEvent.click(save);
     expect(workspaceApi.saveDoc).toHaveBeenCalledTimes(1); expect(editor().getByRole("button", { name: "保存中…" })).toBeDisabled();
-    expect(editor().getByRole("textbox", { name: "名称" })).toBeDisabled(); expect(editor().getByRole("spinbutton", { name: "宽（mm）" })).toBeDisabled();
-    expect(editor().getByRole("spinbutton", { name: "拍照点 1 · 中心 X（mm）" })).toBeDisabled();
+    expect(editor().getByRole("textbox", { name: "名称" })).toBeDisabled(); expect(editor().getByRole("spinbutton", { name: "站距（mm）" })).toBeDisabled();
+    expect(editor().getByRole("textbox", { name: "拍照点 1 · 胶条" })).toBeDisabled(); expect(editor().getByRole("checkbox", { name: "拍照点 1 · 不检" })).toBeDisabled();
     expect(editor().getByRole("button", { name: "添加拍照点" })).toBeDisabled();
     expect(screen.getByRole("combobox", { name: "当前配方" })).toBeDisabled();
     expect(screen.getByLabelText("工作台状态")).toHaveTextContent('"busy":true');
@@ -128,20 +130,20 @@ describe("胶路页面与真实候选编辑器的接线", () => {
 
   it("预览失败同时反馈工作台与真实编辑器，修正后重新预览才能保存", async () => {
     await open(); vi.mocked(recipeApi.preview).mockImplementation(async doc => {
-      if (doc.fov[0] <= 0) throw new Error("视野必须大于零"); return previewFor(doc);
+      if (!(doc.spacing >= .1)) throw new Error("站距需在 0.1–10 mm 之间"); return previewFor(doc);
     });
-    fireEvent.change(editor().getByRole("spinbutton", { name: "视野宽（mm）" }), { target: { value: "0" } });
-    await waitFor(() => expect(screen.getAllByText("Error: 视野必须大于零")).toHaveLength(2));
+    fireEvent.change(editor().getByRole("spinbutton", { name: "站距（mm）" }), { target: { value: "0" } });
+    await waitFor(() => expect(screen.getAllByText("Error: 站距需在 0.1–10 mm 之间")).toHaveLength(2));
     expect(screen.getByText("候选参数无效")).toBeVisible();
     for (const button of screen.getAllByRole("button", { name: "保存候选配置" })) expect(button).toBeDisabled();
     expect(workspaceApi.saveDoc).not.toHaveBeenCalled();
-    fireEvent.change(editor().getByRole("spinbutton", { name: "视野宽（mm）" }), { target: { value: "100" } });
+    fireEvent.change(editor().getByRole("spinbutton", { name: "站距（mm）" }), { target: { value: "2" } });
     await readySave(); expect(screen.queryByText("候选参数无效")).toBeNull();
-    await userEvent.click(await readySave()); expect(workspaceApi.saveDoc).toHaveBeenCalledWith("A", 7, expect.objectContaining({ fov: [100, 80] }));
+    await userEvent.click(await readySave()); expect(workspaceApi.saveDoc).toHaveBeenCalledWith("A", 7, expect.objectContaining({ spacing: 2 }));
   });
 
   it("切换候选后编辑器重建，旧草稿不带到新候选，保存按当前候选", async () => {
-    const next = workspaceView("B"); next.workspace.doc.shots = shotList([[25, 30], [75, 30]], "CAM-2");
+    const next = workspaceView("B"); next.workspace.doc.shots = shotList(twoLines, "CAM-2");
     next.layout = { ...next.layout, ...structuredClone(next.workspace.doc) }; views.B = next;
     await open(); expect(screen.getByRole("link", { name: "进入单帧示教" })).toHaveAttribute("href", "/recipe/teach");
     expect(screen.getByRole("heading", { name: "飞拍可行性" })).toBeVisible();
@@ -149,10 +151,10 @@ describe("胶路页面与真实候选编辑器的接线", () => {
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "当前配方" }), "B");
     await waitFor(() => expect(editor().getByRole("textbox", { name: "名称" })).toHaveValue("工件 B"));
     expect(editor().getByRole("combobox", { name: "拍照点 1 · 相机" })).toHaveValue("CAM-2"); expect(screen.getByRole("heading", { name: "飞拍可行性" })).toBeVisible();
-    fireEvent.change(editor().getByRole("spinbutton", { name: "视野宽（mm）" }), { target: { value: "110" } });
-    expect(draft()).toMatchObject({ id: "B", name: "工件 B", shots: shotList([[25, 30], [75, 30]], "CAM-2"), fov: [110, 80] });
+    fireEvent.change(editor().getByRole("spinbutton", { name: "站距（mm）" }), { target: { value: "2" } });
+    expect(draft()).toMatchObject({ id: "B", name: "工件 B", shots: shotList(twoLines, "CAM-2"), spacing: 2 });
     await userEvent.click(await readySave());
-    expect(workspaceApi.saveDoc).toHaveBeenCalledWith("B", 7, expect.objectContaining({ name: "工件 B", shots: shotList([[25, 30], [75, 30]], "CAM-2"), fov: [110, 80] }));
+    expect(workspaceApi.saveDoc).toHaveBeenCalledWith("B", 7, expect.objectContaining({ name: "工件 B", shots: shotList(twoLines, "CAM-2"), spacing: 2 }));
     await userEvent.click(screen.getByRole("link", { name: "进入单帧示教" })); expect(screen.getByLabelText("当前路径")).toHaveTextContent("/recipe/teach");
   });
 
@@ -170,7 +172,7 @@ describe("胶路页面与真实候选编辑器的接线", () => {
   });
 
   it("配方引用相机已移除时保留引用，可行性使用默认曝光", async () => {
-    views.A.workspace.doc.shots = shotList([[25, 30], [75, 30]], "CAM-OLD"); views.A.layout.shots = shotList([[25, 30], [75, 30]], "CAM-OLD");
+    views.A.workspace.doc.shots = shotList(twoLines, "CAM-OLD"); views.A.layout.shots = shotList(twoLines, "CAM-OLD");
     await open(); expect(editor().getByRole("combobox", { name: "拍照点 1 · 相机" })).toHaveValue("CAM-OLD");
     expect(screen.getAllByRole("option", { name: "CAM-OLD（不在相机组里）" })).toHaveLength(2);
     expect(screen.getByRole("spinbutton", { name: "曝光（µs）" })).toHaveValue(60);
@@ -186,56 +188,41 @@ describe("胶路页面与真实候选编辑器的接线", () => {
   });
 });
 
-describe("胶路页面的搜索余量覆盖提示", () => {
+describe("拍照点规划页面的胶路示教比例", () => {
+  const untaught = (id: string): ShotSpec => ({ id, poseId: id, camera: "CAM-1", bead: "J1", skip: false, path: [] });
   it.each([
-    { name: "零余量包含视野边界", points: [[-10, 0], [0, 0], [10, 0]], fov: [20, 20], shots: [[0, 0]], margins: [0], percent: "100.00", tone: "ok" },
-    { name: "增加搜索余量后边界点不算覆盖", points: [[-10, 0], [0, 0], [10, 0]], fov: [20, 20], shots: [[0, 0]], margins: [4], percent: "33.33", tone: "warn" },
-    { name: "每个拍照点使用自己的搜索余量", points: [[0, 0], [4, 0], [10, 0], [14, 0]], fov: [12, 10], shots: [[0, 0], [10, 0]], margins: [0, 4], percent: "75.00", tone: "warn" },
-    { name: "缺少帧参数使用默认四毫米余量", points: [[2, 0], [4, 0]], fov: [12, 12], shots: [[0, 0]], margins: [], percent: "50.00", tone: "warn" },
-    { name: "纵向也必须完整包含搜索窗口", points: [[0, 0], [0, 7], [0, -7]], fov: [30, 20], shots: [[0, 0]], margins: [4], percent: "33.33", tone: "warn" },
-    { name: "没有测量点时不显示虚假满覆盖", points: [], fov: [20, 20], shots: [[0, 0]], margins: [4], percent: "0.00", tone: "warn" },
-  ])("$name", async ({ points, fov, shots, margins, percent, tone }) => {
-    const view = views.A;
-    view.workspace.doc.fov = fov as [number, number]; view.workspace.doc.shots = shotList(shots as [number, number][]);
-    view.layout.fov = fov as [number, number]; view.layout.shots = shotList(shots as [number, number][]);
-    view.layout.points = { x: points.map(p => p[0]), y: points.map(p => p[1]), k: points.map(() => 0), seg: points.map(() => 0) };
-    const template = view.workspace.frames[0]; view.workspace.frames = margins.map((searchMm, k) => ({ ...structuredClone(template), k, params: { ...template.params, searchMm } }));
-    await open(); const badge = screen.getByText(`搜索窗口覆盖 ${percent}%`);
-    expect(badge).toHaveClass(tone); expect(view.coverage).toBe(100);
+    { name: "要检的拍照点都已示教", shots: () => shotList(twoLines), percent: "100", tone: "ok", note: /沿示教中线量胶/ },
+    { name: "有未示教的拍照点：可以保存但不能开工", shots: () => [...shotList(twoLines), untaught("P3"), untaught("P4")], percent: "50", tone: "warn", note: /未示教：P3、P4，可以保存，但不能开工/ },
+    { name: "不检的拍照点不算在内", shots: () => [...shotList(twoLines), { ...untaught("P3"), skip: true }], percent: "100", tone: "ok", note: /沿示教中线量胶/ },
+    { name: "只有像素当量或只有中线都不算示教", shots: () => [{ ...untaught("P1"), mmPerPx: .1 }, { ...untaught("P2"), path: [[1, 1], [9, 9]] as [number, number][] }], percent: "0", tone: "warn", note: /未示教：P1、P2/ },
+  ])("$name", async ({ shots, percent, tone, note }) => {
+    views.A.workspace.doc.shots = shots(); views.A.layout.shots = shots();
+    await open(); expect(screen.getByText(`胶路示教 ${percent}%`)).toHaveClass(tone);
+    expect(screen.getByText(note)).toBeVisible();
   });
 
-  it("拍照点单独设的视野参与覆盖计算，没设的用配方视野", async () => {
-    const view = views.A; view.workspace.doc.fov = view.layout.fov = [20, 20];
-    view.workspace.doc.shots = view.layout.shots = [{ ...shotList([[0, 0]])[0], fov: [40, 20] }, { ...shotList([[0, 0], [100, 0]])[1] }];
-    view.layout.points = { x: [-15, 0, 15, 92, 100], y: [0, 0, 0, 0, 0], k: [0, 0, 0, 1, 1], seg: [0, 0, 0, 0, 0] };
-    view.workspace.frames = view.workspace.frames.map(f => ({ ...f, params: { ...f.params, searchMm: 0 } }));
-    // P1 的 40 mm 宽视野覆盖 ±15，P2 用配方的 20 mm 视野只覆盖 90–110
-    await open(); expect(screen.getByText("搜索窗口覆盖 100.00%")).toHaveClass("ok");
-  });
-
-  it("真实编辑器修改视野后工作台覆盖提示随新的 API 预览更新", async () => {
-    const view = views.A; view.workspace.doc.shots = shotList([[0, 0]]); view.workspace.doc.fov = [30, 30];
-    view.layout.shots = shotList([[0, 0]]); view.layout.fov = [30, 30]; view.layout.points = { x: [-10, 0, 10], y: [0, 0, 0], k: [0, 0, 0], seg: [0, 0, 0] };
-    view.workspace.frames = [view.workspace.frames[0]];
-    await open(); expect(screen.getByText("搜索窗口覆盖 100.00%")).toHaveClass("ok");
-    fireEvent.change(editor().getByRole("spinbutton", { name: "视野宽（mm）" }), { target: { value: "20" } });
-    expect(await screen.findByText("搜索窗口覆盖 33.33%")).toHaveClass("warn");
-    expect(recipeApi.preview).toHaveBeenCalledWith(expect.objectContaining({ fov: [20, 30] }));
+  it("在表里把未示教的拍照点设为不检，示教比例随新的 API 预览更新", async () => {
+    views.A.workspace.doc.shots = [...shotList(twoLines), untaught("P3")]; views.A.layout.shots = [...shotList(twoLines), untaught("P3")];
+    await open(); expect(screen.getByText("胶路示教 67%")).toHaveClass("warn");
+    expect(within(editor().getByRole("textbox", { name: "拍照点 3 · 编号" }).closest("tr")!).getByText("未示教")).toBeVisible();
+    await userEvent.click(editor().getByRole("checkbox", { name: "拍照点 3 · 不检" }));
+    expect(await screen.findByText("胶路示教 100%")).toHaveClass("ok");
+    expect(recipeApi.preview).toHaveBeenCalledWith(expect.objectContaining({ shots: expect.arrayContaining([expect.objectContaining({ id: "P3", skip: true })]) }));
     expect(workspaceApi.saveDoc).not.toHaveBeenCalled();
   });
 
-  it("预览暂缺时显示工作台已有覆盖率，真实编辑器仍保留", () => {
+  it("预览暂缺时显示工作台已有示教比例，真实编辑器仍保留", () => {
     const view = workspaceView(); view.coverage = 42.5; controlled = { ...workspaceState(view), preview: null };
-    show(); expect(screen.getByText("搜索窗口覆盖 42.50%")).toHaveClass("warn");
+    show(); expect(screen.getByText("胶路示教 43%")).toHaveClass("warn");
     expect(screen.getByRole("textbox", { name: "名称" })).toHaveValue("工件 A");
   });
 });
 
-describe("胶路页面的空状态", () => {
+describe("拍照点规划页面的空状态", () => {
   it("浏览器模式显示桌面数据说明与查看入口", () => {
     vi.mocked(desktopAvailable).mockReturnValue(false); show();
     expect(screen.getByText("当前为浏览器查看模式")).toBeVisible(); expect(screen.getByRole("link", { name: "查看交互原型" })).toHaveAttribute("href", "/workflow/guide");
-    expect(screen.queryByRole("heading", { name: "候选胶路与检测规则" })).toBeNull(); expect(workspaceApi.get).not.toHaveBeenCalled();
+    expect(screen.queryByRole("heading", { name: "候选拍照点与检测规则" })).toBeNull(); expect(workspaceApi.get).not.toHaveBeenCalled();
   });
 
   it("有工作台但没有候选文档时显示选择入口，不装载编辑器", () => {

@@ -16,21 +16,41 @@ export interface JudgeParams {
   maxExcursionLen: number;
 }
 
+/** 一段：一个已示教、要检的拍照点。测量点 first..first+count 属于它，段内弧长 (j - first) × spacing。 */
 export interface Segment {
+  /** 如 "P2 · J1" */
   name: string;
-  kind: "line" | "corner";
-  s0: number;
-  s1: number;
-  params: JudgeParams;
+  /** 拍照点下标 */
+  shot: number;
+  first: number;
+  count: number;
+  /** 胶条中线相对示教中线的横向偏移（mm）；null 时不判位置 */
+  position: JudgeParams | null;
+  /** 胶宽（mm）；null 时不判胶宽 */
   width: JudgeParams | null;
+  /** 允许的连续缺胶长度（mm） */
+  maxGapLen: number;
 }
 
-export type PathSpec =
-  | { kind: "roundedRect"; width: number; height: number; radius: number }
-  /** bulges[i] 不为 0 时第 i 条边是圆弧：tan(圆心角/4)，正值逆时针 */
-  | { kind: "polyline"; points: [number, number][]; closed: boolean; radius: number; bulges?: number[] };
+export type Polarity = "dark" | "light";
 
-/** 一个拍照点：机器人走到 Pose 时 PLC 触发这台相机拍一帧。 */
+/** 沿示教中线找胶的参数（mm）。 */
+export interface DetectParams {
+  /** 沿法向的搜索半宽 */
+  searchMm: number;
+  polarity: Polarity;
+  /** 胶宽的搜索范围 [下限, 上限] */
+  widthRange: [number, number];
+}
+
+/** 一个拍照点的判定限值。 */
+export interface ShotLimits {
+  position: JudgeParams | null;
+  width: JudgeParams | null;
+  maxGapLen: number;
+}
+
+/** 一个拍照点：机器人走到 Pose 时 PLC 触发这台相机拍一帧，在这帧里沿示教中线量胶。可选字段不设时不发送（不发 null）。 */
 export interface ShotSpec {
   /** 配方内唯一，如 P1 */
   id: string;
@@ -38,12 +58,20 @@ export interface ShotSpec {
   poseId: string;
   /** 相机编号 */
   camera: string;
-  /** 视野中心在工件坐标里的位置（mm） */
-  center: [number, number];
-  /** 视野宽高；不给时用配方的 fov */
-  fov?: [number, number];
   /** 标定引用；不给时用这台相机的工位标定 */
   calib?: string;
+  /** 胶条名：同一条胶上的拍照点同名 */
+  bead: string;
+  /** 不检：要求这一帧到达，但不量不判 */
+  skip: boolean;
+  /** 示教的胶路中线（图像像素，从胶嘴一侧往外）；[] 表示尚未示教 */
+  path: [number, number][];
+  /** 示教时的像素当量（mm/px） */
+  mmPerPx?: number;
+  /** 单独设的检测参数；不给时用配方的 */
+  detect?: DetectParams;
+  /** 单独设的限值；不给时用配方的 */
+  limits?: ShotLimits;
 }
 
 export interface Recipe {
@@ -54,24 +82,17 @@ export interface Recipe {
   teachingHash?: string | null;
   productCode: number;
   triggerMode: TriggerMode;
-  /** 配方文件格式版本，当前为 2 */
+  /** 配方文件格式版本，当前为 3 */
   schemaVersion: number;
-  part: [number, number, number];
-  path: PathSpec | null;
-  closed: boolean;
-  /** 拍照点没单独给视野时用的视野宽高 */
-  fov: [number, number];
-  shots: ShotSpec[];
+  /** 站距（mm） */
   spacing: number;
   filterWindow: number;
-  maxGapLen: number;
+  detect: DetectParams;
+  limits: ShotLimits;
+  shots: ShotSpec[];
   segments: Segment[];
+  /** 各站：所在拍照点图像里的像素位置、所属段与拍照点 */
   points: { x: number[]; y: number[]; seg: number[]; k: number[] };
-}
-
-export interface SegmentLimits {
-  position: JudgeParams;
-  width: JudgeParams | null;
 }
 
 /** 配方文件内容，配方页编辑它。 */
@@ -82,16 +103,14 @@ export interface RecipeDoc {
   teachingHash?: string | null;
   productCode: number;
   triggerMode: TriggerMode;
-  /** 配方文件格式版本，当前为 2；不符的文件后端拒绝 */
+  /** 配方文件格式版本，当前为 3；不符的文件后端拒绝 */
   schemaVersion: number;
-  path: PathSpec;
+  /** 站距（mm） */
   spacing: number;
   filterWindow: number;
-  maxGapLen: number;
-  line: SegmentLimits;
-  corner: SegmentLimits;
-  segmentOverrides: Record<string, SegmentLimits>;
-  fov: [number, number];
+  /** 拍照点没单独设时用的检测参数与限值 */
+  detect: DetectParams;
+  limits: ShotLimits;
   shots: ShotSpec[];
 }
 
@@ -148,6 +167,7 @@ export interface SegmentResult {
   wExcursionLen: number;
 }
 
+/** 超过允许长度的连续缺胶：s0、s1 是所在拍照点中线上的段内弧长（mm）。 */
 export interface GapRun {
   segment: number;
   s0: number;
@@ -202,8 +222,9 @@ export interface Measured {
   ms: number;
   error: string | null;
   idx: number[];
+  /** 胶条中线相对示教中线的横向偏移（mm） */
   d: number[];
-  /** 胶宽；没测为 null */
+  /** 胶宽（mm）；没测为 null */
   w: (number | null)[];
   st: number[];
   /** 图像测量时各点在原图里的像素位置 */
@@ -235,14 +256,6 @@ export interface SimStatus {
   continuous: boolean;
   parts: number;
   message: string;
-}
-
-/** 从 CSV / DXF 导入的胶路 */
-export interface ImportedPath {
-  points: [number, number][];
-  bulges: number[];
-  closed: boolean;
-  note: string | null;
 }
 
 /** 测量点显示状态 */

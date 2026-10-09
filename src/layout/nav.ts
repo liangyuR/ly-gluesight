@@ -41,7 +41,7 @@ export const navEntries: NavEntry[] = [
   ] },
   { label:"配方工作台",icon:SlidersHorizontal,children:[
     { path:"/recipe",label:"配方库",icon:SlidersHorizontal,element:LibraryPage },
-    { path:"/recipe/geometry",label:"胶路与拍照规划",icon:SlidersHorizontal,element:GeometryPage },
+    { path:"/recipe/geometry",label:"拍照点规划",icon:SlidersHorizontal,element:GeometryPage },
     { path:"/recipe/teach",label:"单帧示教",icon:ScanEye,element:TeachingPage },
     { path:"/recipe/overview",label:"工件总览",icon:ScanEye,element:OverviewPage },
     { path:"/recipe/validation",label:"验证与发布",icon:SlidersHorizontal,element:ValidationPage },

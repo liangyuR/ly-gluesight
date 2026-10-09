@@ -12,8 +12,8 @@ import {
   shotCameras,
   ShotStrip,
   SignalLamps,
+  ShotTiles,
   SimControls,
-  TrajectoryMap,
   UnrolledCurve,
   useCycle,
   useLayout,
@@ -94,7 +94,6 @@ export default function InspectPage() {
     const k = layout.points.k[j];
     if (k >= 0 && k <= lastShot) setFrameSelection({ scope: selectionScope, k });
   };
-  const focus = view === "frame" ? selected : null;
   const trigger = snapshot?.triggerMode ?? layout?.triggerMode;
   const cams = layout ? shotCameras(layout.shots) : [];
   const canSwitch = (phase === "IDLE" || phase === "FAULT") && snapshot?.productSource === "manual";
@@ -211,13 +210,13 @@ export default function InspectPage() {
                 <span className="spacer" />
                 <div className="segmented">
                   <button className={view === "part" ? "active" : ""} aria-pressed={view === "part"} onClick={() => setView("part")}>整件</button>
-                  <button className={view === "frame" ? "active" : ""} aria-pressed={view === "frame"} onClick={() => setView("frame")}>选中帧</button>
+                  <button className={view === "frame" ? "active" : ""} aria-pressed={view === "frame"} onClick={() => setView("frame")}>逐拍照点</button>
                 </div>
               </div>
-              {layout ? view==="frame" ? <TrajectoryMap layout={layout} vis={vis} current={cur} focus={focus} selectedPoint={selectedPoint} className="traj" /> : <WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={selectFrame} vis={vis}/> : <div className="empty">等待配方</div>}
+              {layout ? view==="frame" ? <ShotTiles layout={layout} vis={vis} current={cur} selected={selected} onSelect={selectFrame} selectedPoint={selectedPoint} /> : <WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={selectFrame} vis={vis}/> : <div className="empty">等待配方</div>}
             </div>
             <div className={`cam-tiles n${cams.length}`}>
-              <RuntimeFrame part={ownLayout ? part : null} layout={layout} k={selected} measured={shown}/>
+              <RuntimeFrame part={ownLayout ? part : null} layout={layout} k={selected} measured={shown} vis={vis}/>
             </div>
           </div>
 
@@ -237,7 +236,7 @@ export default function InspectPage() {
             <div className="panel-head">
               <h3 className="panel-title">展开曲线</h3>
               <span className="muted">
-                距内边距离 d（mm），横轴弧长；绿色带为公差，红虚线为绝对限，底部色条为各帧负责区间
+                横向偏移 d（mm，相对示教中线），横轴按拍照点分段、段内为沿中线的弧长；绿色带为公差，红虚线为绝对限，段与段之间不连
               </span>
             </div>
             {layout && <UnrolledCurve key={`${selectionScope}:d`} layout={layout} measured={shown} vis={vis} selected={selectedPoint} onSelect={selectPoint} />}
@@ -331,6 +330,7 @@ function SegmentPanel({ layout, measured, result }: { layout: Recipe | null; mea
       m.idx.forEach((j, i) => {
         if (m.st[i] !== 0) return;
         const g = r[layout.points.seg[j]];
+        if (!g) return;
         g.min = Math.min(g.min, m.d[i]);
         g.max = Math.max(g.max, m.d[i]);
         const w = m.w?.[i];
@@ -348,9 +348,9 @@ function SegmentPanel({ layout, measured, result }: { layout: Recipe | null; mea
   return (
     <div className="panel">
       <div className="panel-head">
-        <h3 className="panel-title">分段结果</h3>
+        <h3 className="panel-title">逐拍照点结果</h3>
         <span className="spacer" />
-        <span className="muted" style={{ fontSize: 11 }}>{width ? "d · 胶宽" : "d 最小–最大"}</span>
+        <span className="muted" style={{ fontSize: 11 }}>{width ? "偏移 d · 胶宽" : "偏移 d 最小–最大"}</span>
       </div>
       <div className="seg-list">
         {layout?.segments.map((g, i) => {

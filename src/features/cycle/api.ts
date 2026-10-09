@@ -1,7 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useState } from "react";
 import { subscribe } from "../plc";
-import type { CycleSettings, ImportedPath, LogLine, Measured, Recipe, RecipeDoc, RecipeSummary, Scenario, SimStatus, Snapshot } from "./types";
+import type { CycleSettings, LogLine, Measured, Recipe, RecipeDoc, RecipeSummary, Scenario, SimStatus, Snapshot } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
   if (!isTauri() && ["cycle_save_settings","cycle_select_recipe","cycle_reset","sim_start","sim_stop","recipe_save","recipe_delete"].includes(cmd))
@@ -54,8 +54,6 @@ export const recipeApi = {
       layoutCache.clear();
       notifyRecipes();
     }),
-  parsePath: (text: string, fileName: string) =>
-    call<ImportedPath>("recipe_parse_path", { text, fileName }, () => ({ points: [], bulges: [], closed: false, note: null })),
 };
 
 const layoutCache = new Map<string, Promise<Recipe | null>>();

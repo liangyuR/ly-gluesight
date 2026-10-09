@@ -59,13 +59,15 @@ export interface KindOverride {
   maxExcursionLen?: number;
 }
 
+/** 重判的试算参数：只用于这次重判，不改配方。 */
 export interface Overrides {
+  /** 允许断胶长度（作用于每个拍照点） */
   maxGapLen?: number;
   filterWindow?: number;
-  line: KindOverride;
-  corner: KindOverride;
-  /** 胶宽限值（只作用于配置了胶宽的段） */
-  width?: KindOverride;
+  /** 位置限值（只作用于判位置的拍照点） */
+  position: KindOverride;
+  /** 胶宽限值（只作用于判胶宽的拍照点） */
+  width: KindOverride;
 }
 
 export interface RejudgeRequest {

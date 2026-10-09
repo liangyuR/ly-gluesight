@@ -39,6 +39,20 @@ function changeCandidate(page:ReturnType<typeof show>,change:"recipe"|"revision"
 }
 
 describe("验证与发布页面", () => {
+  it("尚未验证时列出发布前检查：胶路示教按要检拍照点算，不检的拍照点不用保存示教", () => {
+    ws.data!.workspace.validation = null; ws.data!.coverage = 50;
+    ws.data!.workspace.doc.shots[1].skip = true; ws.data!.workspace.frames[0].saved = true;
+    show();
+    const rows = Array.from(document.querySelectorAll(".wp-check-row")).map(r => [r.querySelector("strong")!.textContent, r.querySelector("p")!.textContent, r.classList.contains("passed")]);
+    expect(rows).toEqual([
+      ["设备与采集", "验证时读取实际相机状态与采集方式", false],
+      ["胶路示教", "要检的拍照点里已示教中线 50%", false],
+      ["示教与标定", "已保存 1/1 帧（不检的拍照点不用示教）", true],
+      ["代表性样本", "至少选择一件合格样本和一件缺陷样本", false],
+    ]);
+    expect(screen.queryByText("物理覆盖")).toBeNull();
+  });
+
   it.each(["dirty", "frame-dirty", "busy", "failed", "stale", "pending"])("%s 禁止发布", condition => {
     if (condition === "dirty") ws.dirty = true;
     if (condition === "frame-dirty") ws.frameDirty = true;

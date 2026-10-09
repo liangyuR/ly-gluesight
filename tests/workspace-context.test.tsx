@@ -112,7 +112,7 @@ describe("候选工作台状态与并发", () => {
     expect(workspaceApi.get).toHaveBeenCalledTimes(count);
     expect(result.current.dirty).toBe(true); expect(result.current.doc?.name).toBe("尚未保存");
     act(() => result.current.setDoc(result.current.data!.workspace.doc));
-    act(() => result.current.setFrameParams(0, { ...result.current.data!.workspace.frames[0].params, dx: 4 }));
+    act(() => result.current.setFrameDraft(0, { path: [[10, 10], [24, 10]], mmPerPx: .1 }));
     await act(async () => changed("A"));
     expect(result.current.frameDirty).toBe(true); expect(workspaceApi.get).toHaveBeenCalledTimes(count);
   });
@@ -225,14 +225,31 @@ describe("候选工作台状态与并发", () => {
     expect(result.current.data?.workspace.revision).toBe(8);
   });
 
-  it("同一几何更新保留未提交帧草稿，几何改变清空草稿", async () => {
+  it("拍照点不变时保留未保存的中线草稿，拍照点增删或调序时清空", async () => {
     const { result } = await open();
-    act(() => result.current.setFrameParams(0, { ...result.current.data!.workspace.frames[0].params, dx: 4 }));
-    await act(() => result.current.act(async () => workspaceView()));
-    expect(result.current.frameDrafts[0].dx).toBe(4);
-    const next = workspaceView(); next.layout.fov = [200, 80];
+    act(() => result.current.setFrameDraft(0, { path: [[10, 10], [24, 10]], mmPerPx: .1 }));
+    expect(result.current.frameDirty).toBe(true);
+    const other = workspaceView(); other.workspace.doc.shots[1].path = [[30, 10], [50, 10]];
+    await act(() => result.current.act(async () => other));
+    expect(result.current.frameDrafts[0].path).toEqual([[10, 10], [24, 10]]);
+    const reordered = workspaceView(); reordered.workspace.doc.shots.reverse();
+    await act(() => result.current.act(async () => reordered));
+    expect(result.current.frameDrafts).toEqual({}); expect(result.current.frameDirty).toBe(false);
+  });
+
+  it("草稿与保存结果在 f32 精度内一致就不算修改，后端补上的像素当量并入草稿", async () => {
+    const { result } = await open();
+    act(() => result.current.setFrameDraft(0, { path: [[10, 10], [20, 10]], mmPerPx: .1 }));
+    expect(result.current.frameDirty).toBe(false);
+    act(() => result.current.setFrameDraft(1, { path: [[30, 10], [40, 10], [50.3, 10]], mmPerPx: NaN }));
+    expect(result.current.frameDirty).toBe(true);
+    // 后端以 f32 存：50.3 取回为 50.29999923706055，0.112 补进像素当量
+    const next = workspaceView(); next.workspace.doc.shots[1].mmPerPx = Math.fround(.112);
     await act(() => result.current.act(async () => next));
-    expect(result.current.frameDrafts).toEqual({});
+    expect(result.current.frameDrafts[1]).toEqual({ path: [[30, 10], [40, 10], [50.3, 10]], mmPerPx: Math.fround(.112) });
+    const stored = workspaceView(); stored.workspace.doc.shots[1] = { ...stored.workspace.doc.shots[1], path: [[30, 10], [40, 10], [Math.fround(50.3), 10]], mmPerPx: Math.fround(.112) };
+    await act(() => result.current.act(async () => stored));
+    expect(result.current.frameDrafts).toEqual({}); expect(result.current.frameDirty).toBe(false);
   });
 
   it("修改预览有防抖，旧预览晚到不覆盖新草稿", async () => {

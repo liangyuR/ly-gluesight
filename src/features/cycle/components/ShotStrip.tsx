@@ -1,6 +1,6 @@
 import type { FrameView, PartView, PointVis, Recipe } from "../types";
-import { shotLabel } from "../vis";
-import TrajectoryMap from "./TrajectoryMap";
+import { shotLabel, shotSegment } from "../vis";
+import { ShotLine } from "./ShotTiles";
 
 const labels: Record<FrameView["status"], [string, string]> = {
   waiting: ["等待", "c-mut"],
@@ -42,7 +42,11 @@ export default function ShotStrip({ layout, part, vis, selected, onSelect }: { l
               <b className="mono" title={`k${k + 1} · Pose ${shot.poseId}`}>{shotLabel(shot, k)}</b>
               <span className={f?.gapPoints ? "c-ng" : tone}>{f?.gapPoints ? `缺胶 ${f.gapPoints}` : label}</span>
             </div>
-            <TrajectoryMap layout={layout} vis={vis} focus={k} compact className="shot-img" />
+            {shot.skip || !shotSegment(layout, k) ? (
+              <div className="shot-img shot-img-empty">{shot.skip ? "不检" : "未示教"}</div>
+            ) : (
+              <ShotLine layout={layout} k={k} vis={vis} compact className="shot-img" />
+            )}
             <div className={`shot-foot mono${bad ? " c-err" : ""}`}>{f ? footer(f) : "—"}</div>
           </button>
         );

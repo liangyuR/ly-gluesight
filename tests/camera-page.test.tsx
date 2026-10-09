@@ -8,7 +8,7 @@ import { recipeApi } from "../src/features/cycle";
 import { workspaceApi } from "../src/features/workspace/api";
 import type { CameraConfig, CameraStatus, DeviceSummary } from "../src/features/camera/types";
 import type { Snapshot } from "../src/features/cycle/types";
-import { deferred, shotList, snapshot, summary, workspaceView } from "./fixtures";
+import { deferred, shotList, snapshot, summary, workspaceView, twoLines } from "./fixtures";
 
 const hooks=vi.hoisted(()=>({phase:"IDLE",statuses:[] as CameraStatus[],desktop:true}));
 vi.mock("../src/lib/desktop",()=>({desktopAvailable:()=>hooks.desktop}));
@@ -127,7 +127,7 @@ describe("设备与采集页基础操作",()=>{
     else if(kind==="candidate")vi.mocked(workspaceApi.list).mockResolvedValue([draft]);
     // 只有第二个拍照点用当前相机，也算引用
     else if(kind==="mixed")vi.mocked(workspaceApi.list).mockResolvedValue([{...draft,doc:{...draft.doc,shots:[{...draft.doc.shots[0],camera:"CAM-2"},draft.doc.shots[1]]}}]);
-    else vi.mocked(workspaceApi.list).mockResolvedValue([{...draft,doc:{...draft.doc,shots:shotList([[25,30],[75,30]],"CAM-2")},pending:{doc:draft.doc,baseHash:null,revision:7,frames:draft.frames,overview:draft.overview,validation:draft.validation!}}]);
+    else vi.mocked(workspaceApi.list).mockResolvedValue([{...draft,doc:{...draft.doc,shots:shotList(twoLines,"CAM-2")},pending:{doc:draft.doc,baseHash:null,revision:7,frames:draft.frames,overview:draft.overview,validation:draft.validation!}}]);
     show();await loaded();expect(screen.getByText("当前相机被配方引用")).toBeVisible();
     expect(screen.getByRole("button",{name:"移除当前"})).toBeDisabled();
     await userEvent.click(screen.getByRole("button",{name:"移除当前"}));expect(window.confirm).not.toHaveBeenCalled();expect(cameraApi.remove).not.toHaveBeenCalled();

@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { Copy, Plus, Trash2 } from "lucide-react";
 import { cameraApi } from "../features/camera";
-import { recipeApi, useLayout, type RecipeDoc, type RecipeSummary } from "../features/cycle";
+import { recipeApi, type RecipeDoc, type RecipeSummary } from "../features/cycle";
 import { triggerModeLabel } from "../features/history";
-import { FlyshotTeach, RecipeEditor } from "../features/recipe";
+import { RecipeEditor } from "../features/recipe";
 
 export default function RecipePage() {
   const [list, setList] = useState<RecipeSummary[]>([]);
@@ -66,8 +66,6 @@ export default function RecipePage() {
     }
   };
 
-  const saved = useLayout(editing?.originalId, list.find((r) => r.id === editing?.originalId)?.hash, true);
-
   return (
     <div className="rcp-page">
       <div className="panel rcp-list">
@@ -105,7 +103,7 @@ export default function RecipePage() {
           </div>
         ))}
         {error && <div className="notice error">{error}</div>}
-        <p className="muted hint">配方存在数据目录的 recipes 下，每个一个 JSON 文件。内容变了保存时版本号自动 +1，检测记录按内容哈希存快照。</p>
+        <p className="muted hint">配方存在数据目录的 recipes 下，每个一个 JSON 文件，示教的中线也在里面。内容变了保存时版本号自动 +1，检测记录按内容哈希存快照。中线在配方工作台的单帧示教里点出。</p>
       </div>
       <div className="rcp-main">
         {editing && (
@@ -113,7 +111,6 @@ export default function RecipePage() {
             <RecipeEditor key={editing.key} initial={editing.doc} originalId={editing.originalId} cameras={cameras} onSaved={(id) => reload(id)} />
           </div>
         )}
-        {saved && <FlyshotTeach recipe={saved} />}
       </div>
     </div>
   );

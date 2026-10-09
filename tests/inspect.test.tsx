@@ -5,7 +5,7 @@ import InspectPage from "../src/pages/InspectPage";
 import { cycleApi, useCycle, useLayout } from "../src/features/cycle/api";
 import { workspaceApi } from "../src/features/workspace/api";
 import { plcApi } from "../src/features/plc/api";
-import { deferred, shotList, snapshot, summary, workspaceView } from "./fixtures";
+import { deferred, shotList, snapshot, summary, twoLines, workspaceView } from "./fixtures";
 import { cycleMeasurement, cyclePart, cycleResult } from "./cycle-visual-fixtures";
 import { plcConfig, plcPoint } from "./plc-fixtures";
 import type { LogLine, Measured, Recipe, RecipeSummary, Snapshot } from "../src/features/cycle/types";
@@ -175,9 +175,15 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     expect(screen.getByRole("button", { name: "查看帧 k1" })).toHaveAttribute("aria-pressed", "true");
     await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith(1, "hash-A", 0));
     expect(screen.getByText("判定结果 · SN 1")).toBeVisible(); expect(screen.getByText("测试样本偏移超差")).toBeVisible();
-    await userEvent.click(mainPanel().getByRole("button", { name: "选中帧" }));
-    expect(mainPanel().getByLabelText("检测轨迹")).toHaveAttribute("viewBox", "-35 -10 120 80");
-    expect(mainPanel().getByRole("button", { name: "选中帧" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(mainPanel().getByRole("button", { name: "逐拍照点" }));
+    expect(mainPanel().getByLabelText("逐拍照点视图")).toBeVisible();
+    expect(mainPanel().getByRole("button", { name: "逐拍照点" })).toHaveAttribute("aria-pressed", "true");
+    expect(mainPanel().getByRole("button", { name: "拍照点 P1" })).toHaveAttribute("aria-pressed", "true");
+    // 拍照点按段内测量点着色：P1 超差且整件判 NG，P2 合格
+    expect(within(mainPanel().getByRole("button", { name: "拍照点 P1" })).getByText("NG")).toHaveClass("c-ng");
+    expect(within(mainPanel().getByRole("button", { name: "拍照点 P2" })).getByText("合格")).toHaveClass("c-ok");
+    await userEvent.click(mainPanel().getByRole("button", { name: "拍照点 P2" }));
+    expect(screen.getByRole("heading", { name: "选中帧 k2" })).toBeVisible(); expect(screen.getByText("测试样本偏移超差")).toBeVisible();
     await userEvent.click(mainPanel().getByRole("button", { name: "整件" }));
     expect(mainPanel().getByLabelText("工件总览，选择帧查看原图")).toBeVisible();
   });
@@ -187,9 +193,9 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     fireEvent.keyDown(screen.getByRole("button", { name: "总览选择帧 k1" }), { key: "Enter" });
     expect(screen.getByRole("button", { name: "查看帧 k1" })).toHaveAttribute("aria-pressed", "true");
     fireEvent.change(screen.getByRole("slider", { name: "位置曲线选点" }), { target: { value: "2" } });
-    expect(screen.getByText("点 3 · s=2.00 mm · d=3.00 mm · 合格")).toBeVisible();
+    expect(screen.getByText("点 3 · P2 · J1 · s=0.00 mm · d=3.00 mm · 合格")).toBeVisible();
     expect(screen.getByRole("button", { name: "查看帧 k2" })).toHaveAttribute("aria-pressed", "true");
-    await userEvent.click(mainPanel().getByRole("button", { name: "选中帧" }));
+    await userEvent.click(mainPanel().getByRole("button", { name: "逐拍照点" }));
     expect(mainPanel().getByLabelText("选中测量点 3")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "清除位置曲线选点" }));
     expect(mainPanel().queryByLabelText("选中测量点 3")).not.toBeInTheDocument();
@@ -199,24 +205,26 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     state = { ...state, phase: "REPORT", part: cyclePart(), result: cycleResult() }; measured = [cycleMeasurement()];
     const page = render(<InspectPage />);
     fireEvent.change(screen.getByRole("slider", { name: "位置曲线选点" }), { target: { value: "1" } });
-    expect(screen.getByText(/点 2 · s=1.00/)).toBeVisible();
+    expect(screen.getByText(/点 2 · P1 · J1 · s=1.00/)).toBeVisible();
     state = { ...state, phase: "FAULT", fault: "新件相机错误", part: { ...cyclePart(2), frames: [cyclePart().frames[0], { ...cyclePart().frames[1], status: "waiting" }] } };
     page.rerender(<InspectPage />);
     expect(screen.getByText("等待工件")).toBeVisible();
     expect(screen.queryByText("测试样本偏移超差")).not.toBeInTheDocument();
-    expect(screen.queryByText(/点 2 · s=1.00/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/点 2 · P1 · J1 · s=1.00/)).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "选中帧 k1" })).toBeVisible();
     expect(screen.queryByText("3.00–4.50")).not.toBeInTheDocument();
   });
 
-  it("空闲切到拍照点较少的配方时单帧视图仍有效", async () => {
+  it("空闲切到拍照点较少的配方时逐拍照点视图仍有效", async () => {
     const page = render(<InspectPage />);
     await userEvent.click(screen.getByRole("button", { name: "查看帧 k2" }));
-    await userEvent.click(mainPanel().getByRole("button", { name: "选中帧" }));
-    layout = workspaceView("B").layout; layout.shots = shotList([[25, 30]]);
+    await userEvent.click(mainPanel().getByRole("button", { name: "逐拍照点" }));
+    layout = workspaceView("B").layout; layout.shots = shotList(twoLines.slice(0, 1)); layout.segments = layout.segments.slice(0, 1);
+    layout.points = { x: [10, 20], y: [10, 10], seg: [0, 0], k: [0, 0] };
     state = { ...state, activeRecipeId: "B" }; page.rerender(<InspectPage />);
     expect(screen.getByRole("heading", { name: "选中帧 k1" })).toBeVisible();
-    expect(mainPanel().getByLabelText("检测轨迹")).toHaveAttribute("viewBox", "-35 -10 120 80");
+    expect(within(mainPanel().getByLabelText("逐拍照点视图")).getAllByRole("button")).toHaveLength(1);
+    expect(mainPanel().getByRole("button", { name: "拍照点 P1" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("布局快照尚未匹配本件时不显示旧测量、旧帧或本件原图", async () => {
@@ -253,7 +261,8 @@ describe("在线检测选帧、曲线与快照绑定", () => {
   it("工件错误给出 PLC 错误码，分段结果按实际结论显示", () => {
     state = { ...state, phase: "REPORT", part: cyclePart(), result: { ...cycleResult(), verdict: "ERR_INSPECT", faultCode: 95, reason: "型号不匹配", segments: [] } };
     render(<InspectPage />);
-    expect(screen.getByText("PLC 2 / 95")).toBeVisible(); expect(screen.getByText("不可判")).toBeVisible();
+    expect(screen.getByText("PLC 2 / 95")).toBeVisible(); expect(screen.getAllByText("不可判")).toHaveLength(2);
+    expect(screen.getByRole("heading", { name: "逐拍照点结果" })).toBeVisible();
   });
 });
 
