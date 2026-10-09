@@ -24,6 +24,23 @@ beforeEach(() => {
 const show = () => render(<CameraConfigPanel cam={0} initial={config} status={null} />);
 
 describe("相机配置表单", () => {
+  it("默认单视角，三目回放保留设备编号并保存一次采集三个视角",async()=>{
+    config={...config,source:"replay",replayDir:"D:/tricam"};show();
+    expect(screen.getByRole("combobox",{name:"设备视角"})).toHaveValue("1");
+    await userEvent.selectOptions(screen.getByRole("combobox",{name:"设备视角"}),"3");
+    fireEvent.change(screen.getByRole("spinbutton",{name:"回放设备编号（0=首设备）"}),{target:{value:"2"}});
+    expect(screen.getByText(/Frame\{序号\}_1\/2\/3 自动读取同次采集的三个视角/)).toBeVisible();
+    await userEvent.click(screen.getByRole("button",{name:"保存并应用"}));
+    expect(cameraApi.saveConfig).toHaveBeenCalledExactlyOnceWith(0,expect.objectContaining({viewCount:3,replayChannel:2}));
+  });
+  it("海康三目明确显示现场交付格式待确认，保留后端拒绝原因",async()=>{
+    show();await userEvent.selectOptions(screen.getByRole("combobox",{name:"设备视角"}),"3");
+    expect(screen.getByText(/海康三目交付格式待现场确认/)).toBeVisible();
+    vi.mocked(cameraApi.saveConfig).mockRejectedValueOnce(new Error("三目取图尚未接入"));
+    await userEvent.click(screen.getByRole("button",{name:"保存并应用"}));
+    expect(await screen.findByText("Error: 三目取图尚未接入")).toBeVisible();
+    expect(screen.getByRole("combobox",{name:"设备视角"})).toHaveValue("3");
+  });
   it("选择回放目录后填入路径，保存时应用所选目录", async () => {
     config = { ...config, source: "replay", replayDir: "D:/原目录" };
     vi.mocked(cameraApi.pickReplayDir).mockResolvedValue("D:/现场图/Glue1");

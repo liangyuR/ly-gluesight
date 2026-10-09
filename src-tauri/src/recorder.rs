@@ -1,4 +1,4 @@
-//! 帧录制：一件工件的整帧图像按相机编号写成 `{编号}_{序号}.pgm`（编号 cam2 的相机回放时选通道 2），
+//! 帧录制：整组视角写成 `{编号}_{序号}_v{视角}.pgm`，相机编号与拍照点、视角一并写入元数据。
 //! 外加 `part.json`（配方快照、逐帧元数据、结果），目录可以直接给回放相机用。
 //! 写盘在后台线程，队列满了丢帧计数，不拖慢检测节拍。
 
@@ -20,9 +20,48 @@ use crate::settings::RecordMode;
 /// 排队等写盘的帧最多这么多，再多就丢帧计数（收尾消息不受限，不能丢）。
 const QUEUE: usize = 48;
 
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+    use crate::frame::CounterSource;
+
+    #[test]
+    fn triplets_are_queued_together_and_recorded_under_the_same_shot() {
+        let (tx, rx) = channel();
+        let recorder = Recorder { root: PathBuf::new(), tx, queued: Arc::new(AtomicUsize::new(0)) };
+        let recipe = Arc::new(crate::recipe::samples().remove(1).build().unwrap());
+        let mut recording = recorder.begin(RecordMode::All, 12, recipe).unwrap();
+        for k in 0..4 {
+            let frame = Frame { cam: 0, session: 1, counter: CounterSource::Synthetic,
+                frame_counter: k as u64 + 10, trigger_counter: k as u64 + 10,
+                lost_packets: 0, ts: k as i64, manual: false,
+                images: (1..=3).map(|v| Arc::new(FrameImage::new(1, 1, vec![v]))).collect() };
+            recorder.frame(&mut recording, &frame, "cam1", k);
+        }
+        assert_eq!(recording.seq, [4]);
+        assert_eq!(recording.frames.len(), 12);
+        for (k, group) in recording.frames.chunks_exact(3).enumerate() {
+            assert!(group.iter().all(|m| m.k == k && m.seq == k as u32 + 1 && m.trigger_counter == k as u64 + 10));
+            assert_eq!(group.iter().map(|m| m.view).collect::<Vec<_>>(), [1, 2, 3]);
+        }
+        assert_eq!(recorder.queued.load(Ordering::Relaxed), 4);
+        for _ in 0..4 {
+            let Msg::Frames { images } = rx.try_recv().unwrap() else { panic!("expected frame group") };
+            assert_eq!(images.len(), 3);
+            for (i, (path, image)) in images.iter().enumerate() {
+                assert!(path.file_name().unwrap().to_str().unwrap().ends_with(&format!("_v{}.pgm", i + 1)));
+                assert_eq!(image.pixels, vec![i as u8 + 1]);
+            }
+        }
+        assert!(rx.try_recv().is_err());
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FrameMeta {
+    k: usize,
+    view: u8,
     cam: u8,
     /// 相机编号
     camera: String,
@@ -34,7 +73,7 @@ struct FrameMeta {
 }
 
 enum Msg {
-    Frame { path: PathBuf, image: Arc<FrameImage> },
+    Frames { images: Vec<(PathBuf, Arc<FrameImage>)> },
     Finish { pending: PathBuf, target: Option<PathBuf>, meta: serde_json::Value, keep: u32, max_bytes: u64, in_use: Vec<PathBuf> },
 }
 
@@ -89,25 +128,31 @@ impl Recorder {
     }
 
     /// camera：拍这一帧的相机编号。
-    pub fn frame(&self, rec: &mut Recording, f: &Frame, camera: &str) {
-        let Some(image) = f.image.clone() else { return };
+    pub fn frame(&self, rec: &mut Recording, f: &Frame, camera: &str, k: usize) {
+        if f.images.is_empty() { return; }
         let cam = f.cam as usize;
         if rec.seq.len() <= cam {
             rec.seq.resize(cam + 1, 0);
         }
         rec.seq[cam] += 1;
-        let file = format!("{camera}_{:06}.pgm", rec.seq[cam]);
         if self.queued.load(Ordering::Relaxed) >= QUEUE {
             rec.dropped += 1;
             return;
         }
         self.queued.fetch_add(1, Ordering::Relaxed);
-        if self.tx.send(Msg::Frame { path: rec.dir.join(&file), image }).is_err() {
+        let metadata: Vec<_> = f.images.iter().enumerate().map(|(i, _)| {
+            let view = i as u8 + 1;
+            FrameMeta { k, view, cam: f.cam, camera: camera.to_string(), seq: rec.seq[cam],
+                file: format!("{camera}_{:06}_v{view}.pgm", rec.seq[cam]), ts: f.ts,
+                frame_counter: f.frame_counter, trigger_counter: f.trigger_counter }
+        }).collect();
+        let images = metadata.iter().zip(&f.images).map(|(m, image)| (rec.dir.join(&m.file), image.clone())).collect();
+        if self.tx.send(Msg::Frames { images }).is_err() {
             self.queued.fetch_sub(1, Ordering::Relaxed);
             rec.dropped += 1;
             return;
         }
-        rec.frames.push(FrameMeta { cam: f.cam, camera: camera.to_string(), seq: rec.seq[cam], file, ts: f.ts, frame_counter: f.frame_counter, trigger_counter: f.trigger_counter });
+        rec.frames.extend(metadata);
     }
 
     /// in_use：回放相机正在用的目录，滚动删除时跳过。
@@ -135,12 +180,13 @@ fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>) {
     let _ = std::fs::remove_dir_all(root.join("_pending"));
     while let Ok(msg) = rx.recv() {
         match msg {
-            Msg::Frame { path, image } => {
-                if let Some(dir) = path.parent() {
-                    let _ = std::fs::create_dir_all(dir);
+            Msg::Frames { images } => {
+                for (path, image) in images {
+                    if let Some(dir) = path.parent() {
+                        let _ = std::fs::create_dir_all(dir);
+                    }
+                    let _ = replay::save_pgm(&path, &image);
                 }
-                let _ = replay::save_pgm(&path, &image);
-                drop(image);
                 queued.fetch_sub(1, Ordering::Relaxed);
             }
             Msg::Finish { pending, target, meta, keep, max_bytes, in_use } => {

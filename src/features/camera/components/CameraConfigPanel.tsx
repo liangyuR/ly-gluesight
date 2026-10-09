@@ -78,7 +78,7 @@ export default function CameraConfigPanel({ cam, initial, status, onSaved, onSav
       if (mounted.current) setChoosingDirectory(false);
     }
   };
-  const numberLabels={triggerDelayUs:"触发延时（µs）",debouncerUs:"输入滤波（µs）",exposureUs:"曝光时间（µs）",gainDb:"增益（dB）",fps:"帧率（fps）",replayChannel:"通道"};
+  const numberLabels={triggerDelayUs:"触发延时（µs）",debouncerUs:"输入滤波（µs）",exposureUs:"曝光时间（µs）",gainDb:"增益（dB）",fps:"帧率（fps）",replayChannel:config.viewCount === 3 ? "回放设备编号（0=首设备）" : "通道"};
   const num = (key: "triggerDelayUs" | "debouncerUs" | "exposureUs" | "gainDb" | "fps" | "replayChannel", step = 1) => (
     <input id={`cam-${key}`} aria-label={numberLabels[key]} className="input mono" type="number" step={step} value={Number.isFinite(config[key])?config[key]:""} onChange={(e) => set(key, e.target.value===""?NaN:Number(e.target.value))} />
   );
@@ -86,6 +86,7 @@ export default function CameraConfigPanel({ cam, initial, status, onSaved, onSav
   const replay = config.source === "replay";
   const triggered = config.acquisition === "triggered";
   const invalid=!config.name.trim()?"相机名称不能为空":
+    ![1,3].includes(config.viewCount)?"设备视角数只能为 1 或 3":
     !(config.exposureUs>=1&&config.exposureUs<=1_000_000)?"曝光时间需在 1–1000000 µs 之间":
     !Number.isFinite(config.gainDb)?"增益需为有限数":
     ![config.triggerDelayUs,config.debouncerUs].every(v=>Number.isFinite(v)&&v>=0)?"触发延时与输入滤波需为非负有限数":
@@ -132,6 +133,12 @@ export default function CameraConfigPanel({ cam, initial, status, onSaved, onSav
             </button>
           ))}
         </div>
+        <span>设备视角</span>
+        <select aria-label="设备视角" className="input" value={config.viewCount} onChange={e => set("viewCount", Number(e.target.value))}>
+          <option value={1}>单视角</option>
+          <option value={3}>三目（一次触发三幅图）</option>
+        </select>
+        {config.viewCount === 3 && <span className="hint-cell">每个拍照点在示教时选择其中一个视角。{mvs ? "海康三目交付格式待现场确认，当前不能采集三目图像。" : "三个视角共用一次设备触发。"}</span>}
         <span>采集方式</span>
         <div className="segmented">
           <button className={triggered ? "active" : ""} onClick={() => set("acquisition", "triggered")}>触发（飞拍）</button>
@@ -166,9 +173,9 @@ export default function CameraConfigPanel({ cam, initial, status, onSaved, onSav
                 </select>
               </>
             )}
-            <span>通道</span>
+            <span>{numberLabels.replayChannel}</span>
             {num("replayChannel")}
-            <span className="hint-cell">认 cam{"{通道}"}_{"{序号}"}.pgm（帧录制）与 Frame{"{序号}"}_{"{通道}"}.jpg（海康演示图）；0 取目录里的第一个通道</span>
+            <span className="hint-cell">{config.viewCount === 3 ? <>Frame{"{序号}"}_1/2/3 自动读取同次采集的三个视角；新录制格式按设备编号读取 cam{"{设备}"}_{"{序号}"}_v1/2/3，三个视角需齐全。</> : <>认 cam{"{通道}"}_{"{序号}"}.pgm（帧录制）与 Frame{"{序号}"}_{"{通道}"}.jpg（海康演示图）；0 取目录里的第一个通道</>}</span>
           </>
         )}
         {mvs && (

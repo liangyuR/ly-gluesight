@@ -2,14 +2,14 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import FramePreview from "../src/features/camera/components/FramePreview";
-import { cameraApi, defaultCameraConfig } from "../src/features/camera/api";
+import { cameraApi, defaultCameraConfig, usePreviewCanvas } from "../src/features/camera/api";
 import type { CameraConfig, CameraStatus, Frame, PreviewImage } from "../src/features/camera/types";
 import { deferred } from "./fixtures";
 
 const preview=vi.hoisted(()=>({img:null as PreviewImage|null,canvas:{current:null}}));
 vi.mock("../src/features/camera/api",async importOriginal=>{
   const actual=await importOriginal<typeof import("../src/features/camera/api")>();
-  return {...actual,cameraApi:{...actual.cameraApi,softTrigger:vi.fn()},usePreviewCanvas:()=>preview};
+  return {...actual,cameraApi:{...actual.cameraApi,softTrigger:vi.fn()},usePreviewCanvas:vi.fn(()=>preview)};
 });
 let config:CameraConfig,status:CameraStatus;
 beforeEach(()=>{
@@ -20,6 +20,18 @@ beforeEach(()=>{
 const frame:Frame={cam:0,frameCounter:8,triggerCounter:7,lostPackets:3,ts:1};
 const show=()=>render(<FramePreview cam={0} config={config} status={status} lastFrame={frame}/>);
 describe("最新相机帧与触发",()=>{
+  it("三目预览按所选视角读图，切换设备或恢复单视角时回到视角 1",async()=>{
+    config={...config,viewCount:3};const page=show();
+    expect(screen.getByRole("combobox",{name:"预览视角"})).toHaveValue("1");
+    await userEvent.selectOptions(screen.getByRole("combobox",{name:"预览视角"}),"3");
+    expect(usePreviewCanvas).toHaveBeenLastCalledWith(0,8,250,expect.any(String),3);
+    page.rerender(<FramePreview cam={1} config={{...config,id:"CAM-2"}} status={{...status,cam:1}} lastFrame={frame}/>);
+    expect(screen.getByRole("combobox",{name:"预览视角"})).toHaveValue("1");
+    expect(usePreviewCanvas).toHaveBeenLastCalledWith(1,8,250,expect.any(String),1);
+    page.rerender(<FramePreview cam={1} config={{...config,id:"CAM-2",viewCount:1}} status={{...status,cam:1}} lastFrame={frame}/>);
+    expect(screen.queryByRole("combobox",{name:"预览视角"})).toBeNull();
+    expect(usePreviewCanvas).toHaveBeenLastCalledWith(1,8,250,expect.any(String),1);
+  });
   it("回放下一张绑定工位，请求中禁止重复取图，完成解锁",async()=>{
     const request=deferred<void>();vi.mocked(cameraApi.softTrigger).mockReturnValue(request.promise);
     show();await userEvent.click(screen.getByRole("button",{name:"下一张"}));

@@ -58,6 +58,7 @@ export interface ShotSpec {
   poseId: string;
   /** 相机编号 */
   camera: string;
+  view: number;
   /** 标定引用；不给时用这台相机的工位标定 */
   calib?: string;
   /** 胶条名：同一条胶上的拍照点同名 */
@@ -82,7 +83,7 @@ export interface Recipe {
   teachingHash?: string | null;
   productCode: number;
   triggerMode: TriggerMode;
-  /** 配方文件格式版本，当前为 3 */
+  /** 配方文件格式版本，当前为 4 */
   schemaVersion: number;
   /** 站距（mm） */
   spacing: number;
@@ -103,7 +104,7 @@ export interface RecipeDoc {
   teachingHash?: string | null;
   productCode: number;
   triggerMode: TriggerMode;
-  /** 配方文件格式版本，当前为 3；不符的文件后端拒绝 */
+  /** 配方文件格式版本，当前为 4；不符的文件后端拒绝 */
   schemaVersion: number;
   /** 站距（mm） */
   spacing: number;

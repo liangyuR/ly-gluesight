@@ -6,6 +6,26 @@
 
 项目使用 Vitest、React Testing Library、user-event 和 jsdom。测试操作真实的 React 页面与表单；需要桌面数据的页面使用受控接口返回值，避免连接现场相机、PLC 或改写生产配置。工作台状态测试使用真实 WorkspaceProvider，异步竞态通过可手动完成的 Promise 验证。
 
+## 2026-10-10 · P0 步 T 软件基础
+
+范围与剩余验收见 [P0 计划的步 T](../architecture/p0-plan.md#步-t--三目设备接入d-11)。模拟与回放支持单台设备一次触发交付三个视角，配方格式为 4。
+
+| 验证 | 本轮结果 |
+| --- | --- |
+| Rust 默认回归 | 108 项通过，18 项默认忽略（17 项 S7 外部进程用例、1 项真实 DLL 标定用例） |
+| S7 会话专项 | 18 项通过，0 失败，耗时 133.60 秒；其中 1 项也包含在默认回归中，不重复累计 |
+| 前端全量 | 41 个文件、898 项通过 |
+| 应用及测试类型检查、生产构建 | 通过 |
+| 前端覆盖率 | 语句 91.39%、分支 89.83%、函数 88.72%、行 93.83%，门槛全部通过 |
+
+新增验证包括：视角越界和缺失拒绝、单设备四拍照点 `1→2→3→1` 的计数与计划、同次冻结图像与局部示教失效、前次触发不能满足本次取样、严格回放分组与元数据核对、三幅录制按拍照点还原所选视角，以及前端旧请求/旧草稿隔离。工位标定仍使用视角 1，其他视角不能自动继承该当量。
+
+Rust 在 `src-tauri` 下运行 `cargo test --offline --locked --lib` 与 `cargo test --offline --locked --lib plc_session -- --include-ignored --test-threads=1`，日志分别保存在本机 `src-tauri/target/p0-step-t-rust.log`、`src-tauri/target/p0-step-t-s7.log`。S7 专项使用本机回环测试服务，不连接生产 PLC。
+
+前端在本机直接运行已有依赖：`node node_modules/vitest/vitest.mjs run --coverage --pool=threads --maxWorkers=2`；源码与测试分别运行 `node node_modules/typescript/bin/tsc -b`、`node node_modules/typescript/bin/tsc --noEmit -p tsconfig.test.json`，构建运行 `node node_modules/vite/bin/vite.js build`。默认 fork 测试进程在本机受限环境出现停滞，本轮使用宿主 Node 的线程池执行相同测试集，未修改项目的测试配置。
+
+本轮未执行真实 DLL 或真机验收。逐拍照点图像算法仍明确报告尚未接入，三目海康取图等待 SDK 交付形式确认；没有把模拟值作为示教试测、发布或现场检测准确率的证据。以下 2026-10-09 的记录保留为历史基线。
+
 ## S7 一期握手
 
 协议、点表、PLC 参考程序和现场步骤见 [S7 一期交付说明](../integration/plc-s7-phase1.md)。线协议测试服务见 [S7 测试 PLC](../../scripts/s7-handshake/README.md)，使用真实 TPKT/COTP/S7 报文，仅监听本机回环地址。

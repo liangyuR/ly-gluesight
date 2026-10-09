@@ -8,7 +8,7 @@ import TeachingPage from "../src/features/workspace/TeachingPage";
 import { workspaceApi } from "../src/features/workspace/api";
 import { useWorkspace } from "../src/features/workspace/context";
 import { useCycle } from "../src/features/cycle/api";
-import { deferred, snapshot, workspaceState, workspaceView } from "./fixtures";
+import { deferred, snapshot, tricamWorkspaceView, workspaceState, workspaceView } from "./fixtures";
 
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { stationCapture: vi.fn(), stationImport: vi.fn(), stationImage: vi.fn(), importImage: vi.fn(), image: vi.fn(), capture: vi.fn() } }));
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
@@ -141,13 +141,16 @@ describe("标定与示教的原图绑定", () => {
     expect(workspaceApi.importImage).toHaveBeenCalledTimes(1);
   });
   it("示教读取本帧文件期间锁定帧、中线参数和取样，导入后恢复",async()=>{
+    ws=workspaceState(tricamWorkspaceView());
     const bytes=deferred<ArrayBuffer>(),value=file();vi.mocked(value.arrayBuffer).mockReturnValue(bytes.promise);
     render(<MemoryRouter><TeachingPage/></MemoryRouter>);upload(value);
     const next=screen.getByRole("button",{name:"选择帧 k2"});expect(next).toBeDisabled();
     expect(screen.getByRole("button",{name:"取新样本"})).toBeDisabled();expect(screen.getByRole("spinbutton",{name:"像素当量"})).toBeDisabled();expect(screen.getByRole("button",{name:"清空中线"})).toBeDisabled();
+    expect(screen.getByRole("button",{name:"选择视角 2"})).toBeDisabled();expect(screen.getByRole("button",{name:"选择视角 3"})).toBeDisabled();
     await userEvent.click(next);expect(screen.getByRole("button",{name:"选择帧 k1"})).toHaveAttribute("aria-pressed","true");
     await act(async()=>bytes.resolve(Uint8Array.from([7]).buffer));expect(workspaceApi.importImage).toHaveBeenCalledExactlyOnceWith("A",7,0,[7]);
     await waitFor(()=>expect(next).toBeEnabled());
+    expect(screen.getByRole("button",{name:"选择视角 2"})).toBeEnabled();
   });
   it("示教候选切换解除旧读取，新候选的文件读取不会被旧完成打断",async()=>{
     const old=deferred<ArrayBuffer>(),next=deferred<ArrayBuffer>(),first=file(),second=file("new.png");

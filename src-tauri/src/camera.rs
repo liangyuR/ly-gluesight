@@ -61,6 +61,7 @@ pub struct CameraConfig {
     pub id: String,
     pub name: String,
     pub source: CameraSource,
+    pub view_count: u8,
     pub serial: String,
     pub acquisition: Acquisition,
     pub fps: f32,
@@ -83,6 +84,7 @@ impl Default for CameraConfig {
             id: String::new(),
             name: "相机".into(),
             source: CameraSource::Sim,
+            view_count: 1,
             serial: String::new(),
             acquisition: Acquisition::Triggered,
             fps: 20.0,
@@ -102,6 +104,12 @@ impl Default for CameraConfig {
 
 impl CameraConfig {
     fn validate(&self) -> Result<(), String> {
+        if !matches!(self.view_count, 1 | 3) {
+            return Err("视角数量只能是 1 或 3".into());
+        }
+        if self.source == CameraSource::Mvs && self.view_count == 3 {
+            return Err("海康三目设备的 SDK 图像交付形式待现场确认，目前不能启用三视角取图".into());
+        }
         if !(1.0..=1_000_000.0).contains(&self.exposure_us) {
             return Err("曝光时间需在 1–1000000 µs 之间".into());
         }
@@ -187,10 +195,31 @@ struct Reorder {
 }
 
 struct ReplayState {
-    files: Vec<PathBuf>,
+    files: Vec<Vec<PathBuf>>,
     next: usize,
     /// 帧录制目录：各帧相对工件开始的时刻（ms）。有它时每件从第一张放
     times: Option<Vec<i64>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CaptureTicket {
+    session: u64,
+    frame_counter: u64,
+}
+
+struct CapturedFrame {
+    ticket: CaptureTicket,
+    images: Vec<Arc<FrameImage>>,
+}
+
+impl CapturedFrame {
+    fn from_frame(frame: &Frame) -> Self {
+        Self { ticket: CaptureTicket { session: frame.session, frame_counter: frame.frame_counter }, images: frame.images.clone() }
+    }
+
+    fn images_for(&self, ticket: CaptureTicket) -> Option<Vec<Arc<FrameImage>>> {
+        (self.ticket == ticket).then(|| self.images.clone())
+    }
 }
 
 /// 相机组共用的部分。
@@ -212,9 +241,9 @@ struct Shared {
     lost_packets: AtomicU64,
     dropped: AtomicU64,
     recent: Mutex<VecDeque<Instant>>,
-    preview: Mutex<Option<Preview>>,
+    preview: Mutex<Vec<Preview>>,
     preview_at: Mutex<Option<Instant>>,
-    last_full: Mutex<Option<Arc<FrameImage>>>,
+    last_full: Mutex<Option<CapturedFrame>>,
     /// last_full 每换一次 +1
     full_seq: AtomicU64,
     /// 下一帧不管要不要整帧都留一份（标定试测、软触发取图）
@@ -259,9 +288,12 @@ impl Shared {
         true
     }
 
-    fn set_preview(&self, img: &FrameImage) {
+    fn set_previews(&self, session: u64, images: &[Arc<FrameImage>]) {
+        if session != self.session.load(Ordering::SeqCst) {
+            return;
+        }
         if self.preview_due() {
-            *self.preview.lock().unwrap() = Some(make_preview(&img.pixels, img.width as usize, img.height as usize));
+            *self.preview.lock().unwrap() = images.iter().map(|img| make_preview(&img.pixels, img.width as usize, img.height as usize)).collect();
         }
     }
 
@@ -280,7 +312,7 @@ impl Shared {
             }
         };
         if due {
-            *self.preview.lock().unwrap() = Some(make_preview(gray.pixels(), w as usize, h as usize));
+            *self.preview.lock().unwrap() = vec![make_preview(gray.pixels(), w as usize, h as usize)];
         }
         keep.then(|| Arc::new(gray.into_image(&self.rig.pool, w, h)))
     }
@@ -322,14 +354,22 @@ impl Shared {
     }
 
     fn deliver(&self, mut frame: Frame) {
-        if let Some(img) = &frame.image {
-            *self.last_full.lock().unwrap() = Some(img.clone());
+        let current_session = frame.session == self.session.load(Ordering::SeqCst);
+        if !frame.images.is_empty() && current_session {
+            if frame.counter == CounterSource::Synthetic {
+                self.set_previews(frame.session, &frame.images);
+            }
+            *self.last_full.lock().unwrap() = Some(CapturedFrame::from_frame(&frame));
             self.full_seq.fetch_add(1, Ordering::SeqCst);
         }
-        if now_ms() > self.manual_until.load(Ordering::SeqCst) {
-            self.manual.store(0, Ordering::SeqCst);
+        if current_session && frame.counter != CounterSource::Synthetic {
+            if now_ms() > self.manual_until.load(Ordering::SeqCst) {
+                self.manual.store(0, Ordering::SeqCst);
+            }
+            frame.manual = self.manual.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok();
+        } else if frame.counter != CounterSource::Synthetic {
+            frame.manual = false;
         }
-        frame.manual = self.manual.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok();
         self.frames.fetch_add(1, Ordering::Relaxed);
         self.lost_packets.fetch_add(frame.lost_packets as u64, Ordering::Relaxed);
         let now = Instant::now();
@@ -463,8 +503,8 @@ fn mvs_counters(frame_num: u32, chunk_frame: u32, trigger_index: u32, chunks: Ch
 }
 
 /// 模拟 / 回放的一帧：帧计数与触发计数都是本会话的帧号。
-fn synthetic_frame(cam: u8, session: u64, n: u64, image: Option<Arc<FrameImage>>) -> Frame {
-    Frame { cam, session, counter: CounterSource::Synthetic, frame_counter: n, trigger_counter: n, lost_packets: 0, ts: now_ms(), manual: false, image }
+fn synthetic_frame(cam: u8, session: u64, n: u64, images: Vec<Arc<FrameImage>>, manual: bool) -> Frame {
+    Frame { cam, session, counter: CounterSource::Synthetic, frame_counter: n, trigger_counter: n, lost_packets: 0, ts: now_ms(), manual, images }
 }
 
 extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_void) {
@@ -488,7 +528,7 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
             Ok(_) if data.is_null() => None,
             Ok(_) => shared.gray_image(info.pixel_type, w, h, unsafe { std::slice::from_raw_parts(data, (w * h) as usize) }),
         };
-        shared.deliver(Frame { cam: shared.cam, session, counter, frame_counter, trigger_counter, lost_packets: info.lost_packet, ts: now_ms(), manual: false, image });
+        shared.deliver(Frame { cam: shared.cam, session, counter, frame_counter, trigger_counter, lost_packets: info.lost_packet, ts: now_ms(), manual: false, images: image.into_iter().collect() });
     }));
 }
 
@@ -535,7 +575,7 @@ impl CameraSlot {
                 lost_packets: AtomicU64::new(0),
                 dropped: AtomicU64::new(0),
                 recent: Mutex::new(VecDeque::new()),
-                preview: Mutex::new(None),
+                preview: Mutex::new(Vec::new()),
                 preview_at: Mutex::new(None),
                 last_full: Mutex::new(None),
                 full_seq: AtomicU64::new(0),
@@ -556,6 +596,10 @@ impl CameraSlot {
             seq: Mutex::new(0),
             replay: Mutex::new(None),
         };
+        if let Err(e) = slot.config().validate() {
+            slot.state.lock().unwrap().message = e;
+            return slot;
+        }
         match slot.config().source {
             CameraSource::Sim => slot.new_session(),
             CameraSource::Replay => {
@@ -586,9 +630,9 @@ impl CameraSlot {
         };
         let device = self.device.lock().unwrap().as_ref().map(|d| d.summary.clone());
         let replay = self.replay.lock().unwrap().as_ref().map(|r| (r.files.len(), r.next));
-        let message = match (config.source, replay) {
+        let message = if let Err(e) = config.validate() { e } else { match (config.source, replay) {
             (CameraSource::Sim, _) => match config.acquisition {
-                Acquisition::Triggered => "模拟相机：收到触发后约 180 ms 交付一帧".to_string(),
+                Acquisition::Triggered => format!("模拟相机：每次触发交付一帧 · {} 个视角", config.view_count),
                 Acquisition::FreeRun => "模拟相机：连续采集不合成画面，飞拍要用触发采集".to_string(),
             },
             (CameraSource::Replay, Some((n, next))) => format!("回放 {n} 帧 · 下一帧第 {} 张", next + 1),
@@ -597,7 +641,7 @@ impl CameraSlot {
                 None => state_message,
             },
             _ => state_message,
-        };
+        }};
         CameraStatus {
             cam: self.shared.cam,
             id: config.id,
@@ -617,29 +661,58 @@ impl CameraSlot {
         }
     }
 
-    pub fn last_full(&self) -> Option<Arc<FrameImage>> {
-        self.shared.last_full.lock().unwrap().clone()
+    pub fn last_views(&self) -> Vec<Arc<FrameImage>> {
+        self.shared.last_full.lock().unwrap().as_ref().map(|frame| frame.images.clone()).unwrap_or_default()
     }
 
-    /// 等下一帧留一张整帧：海康相机空闲时不一定拷整帧，示教、标定取样要现取。
-    pub fn grab_full(&self, timeout: Duration) -> Option<Arc<FrameImage>> {
+    pub fn last_view(&self, view: u8) -> Option<Arc<FrameImage>> {
+        let index = view.checked_sub(1)? as usize;
+        self.shared.last_full.lock().unwrap().as_ref()?.images.get(index).cloned()
+    }
+
+    pub fn grab_views(&self, timeout: Duration) -> Option<Vec<Arc<FrameImage>>> {
         let before = self.shared.full_seq.load(Ordering::SeqCst);
         self.shared.grab.store(true, Ordering::SeqCst);
+        let result = self.wait_views(before, timeout);
+        self.shared.grab.store(false, Ordering::SeqCst);
+        result
+    }
+
+    fn wait_views(&self, before: u64, timeout: Duration) -> Option<Vec<Arc<FrameImage>>> {
         let until = Instant::now() + timeout;
         while Instant::now() < until {
             if self.shared.full_seq.load(Ordering::SeqCst) != before {
-                return self.last_full();
+                let images = self.last_views();
+                if !images.is_empty() {
+                    return Some(images);
+                }
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        self.shared.grab.store(false, Ordering::SeqCst);
         None
+    }
+
+    fn wait_capture(&self, ticket: CaptureTicket, timeout: Duration) -> Result<Option<Vec<Arc<FrameImage>>>, String> {
+        let until = Instant::now() + timeout;
+        while Instant::now() < until {
+            if self.shared.session.load(Ordering::SeqCst) != ticket.session {
+                return Err("取样期间相机会话已变化，本次取样已取消".into());
+            }
+            if let Some(images) = self.shared.last_full.lock().unwrap().as_ref().and_then(|frame| frame.images_for(ticket)) {
+                return Ok(Some(images));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(None)
     }
 
     /// 只看就绪与否，不拼状态文字（节拍每 20 ms 查一次）。
     pub fn is_ready(&self) -> bool {
-        let source = self.config.lock().unwrap().source;
-        match source {
+        let config = self.config.lock().unwrap();
+        if config.validate().is_err() {
+            return false;
+        }
+        match config.source {
             CameraSource::Sim => true,
             CameraSource::Mvs => self.device.lock().unwrap().is_some() && !self.shared.disconnected.load(Ordering::SeqCst),
             CameraSource::Replay => self.replay.lock().unwrap().is_some(),
@@ -654,6 +727,11 @@ impl CameraSlot {
         *seq = 0;
         *self.shared.order.lock().unwrap() = Reorder { session, ..Reorder::default() };
         self.shared.session.store(session, Ordering::SeqCst);
+        self.shared.manual.store(0, Ordering::SeqCst);
+        self.shared.manual_until.store(0, Ordering::SeqCst);
+        self.shared.grab.store(false, Ordering::SeqCst);
+        self.shared.preview.lock().unwrap().clear();
+        self.shared.last_full.lock().unwrap().take();
     }
 
     /// 模拟 / 回放的下一帧：(会话号, 帧号)，帧号即触发计数，本会话从 1 起。
@@ -664,7 +742,7 @@ impl CameraSlot {
     }
 
     /// 下一张回放图，到末尾后从头再来。
-    fn next_replay(&self) -> Option<PathBuf> {
+    fn next_replay(&self) -> Option<Vec<PathBuf>> {
         let mut guard = self.replay.lock().unwrap();
         let r = guard.as_mut()?;
         let p = r.files[r.next % r.files.len()].clone();
@@ -678,10 +756,12 @@ impl CameraSlot {
         let config = self.config();
         let dir = config.replay_dir.trim().to_string();
         let path = std::path::Path::new(&dir);
-        let scanned = replay::scan(path, config.replay_channel).and_then(|files| {
+        let scanned = replay::scan_views(path, config.view_count, config.replay_channel).and_then(|files| {
             // 先读一张的文件头：格式解不开（或文件坏了）就不报就绪
-            replay::probe(&files[0])?;
-            let times = replay::timeline(path, &files);
+            for file in &files[0] {
+                replay::probe(file)?;
+            }
+            let times = replay::timeline_views(path, &files)?;
             Ok((files, times))
         });
         match scanned {
@@ -708,48 +788,65 @@ impl CameraSlot {
     /// 按触发出一帧。模拟相机合成（render 为空时只有元数据），回放读下一张，海康发软触发。
     /// `lose_in_transfer` 仅模拟相机使用：相机已曝光但帧在传输中丢失，主机侧表现为帧计数跳号。
     pub fn trigger(&self, lose_in_transfer: bool, render: Option<SimRender>) -> bool {
+        self.trigger_frame(lose_in_transfer, render, false).is_ok()
+    }
+
+    fn trigger_frame(&self, lose_in_transfer: bool, render: Option<SimRender>, manual: bool) -> Result<Option<CaptureTicket>, String> {
         let config = self.config();
+        if let Err(e) = config.validate() {
+            self.state.lock().unwrap().message = e.clone();
+            return Err(e);
+        }
         let cam = self.shared.cam;
         match config.source {
             CameraSource::Sim => {
                 let (session, n) = self.next_counters();
+                let ticket = CaptureTicket { session, frame_counter: n };
                 let shared = self.shared.clone();
                 if lose_in_transfer {
                     shared.deliver_in_order(session, n, None);
-                    return true;
+                    return Ok(Some(ticket));
                 }
                 tauri::async_runtime::spawn(async move {
                     let started = Instant::now();
-                    let image = match render {
-                        Some(r) => tauri::async_runtime::spawn_blocking(move || simimage::render(&r.recipe, r.k, r.scenario, r.pose, r.seed)).await.ok(),
-                        None => None,
-                    };
+                    let images = tauri::async_runtime::spawn_blocking(move || match render {
+                        Some(r) => simimage::render_views(&r.recipe, r.k, r.scenario, r.pose, r.seed, config.view_count),
+                        None if config.view_count == 3 => simimage::background_views(config.view_count, n),
+                        None => Ok(Vec::new()),
+                    }).await.map_err(|e| e.to_string()).and_then(|r| r);
                     let transfer = Duration::from_millis(180);
                     if started.elapsed() < transfer {
                         tokio::time::sleep(transfer - started.elapsed()).await;
                     }
-                    let image = image.map(|img| {
-                        shared.set_preview(&img);
-                        Arc::new(img)
-                    });
-                    shared.deliver_in_order(session, n, Some(synthetic_frame(cam, session, n, image)));
+                    match images {
+                        Ok(images) => {
+                            shared.deliver_in_order(session, n, Some(synthetic_frame(cam, session, n, images, manual)));
+                        }
+                        Err(e) => {
+                            cycle::log(&shared.rig.app, "err", "模拟取图", e);
+                            shared.deliver_in_order(session, n, None);
+                        }
+                    }
                 });
-                true
+                Ok(Some(ticket))
             }
             CameraSource::Mvs => {
-                config.trigger_source == "Software" && self.device.lock().unwrap().as_ref().is_some_and(|d| d.command("TriggerSoftware").is_ok())
+                if config.trigger_source != "Software" {
+                    return Err("触发源不是 Software，不能发送软触发".into());
+                }
+                self.device.lock().unwrap().as_ref().ok_or("相机未连接")?.command("TriggerSoftware")?;
+                Ok(None)
             }
             CameraSource::Replay => {
-                let Some(path) = self.next_replay() else { return false };
+                let paths = self.next_replay().ok_or("回放相机未加载图像")?;
                 let (session, n) = self.next_counters();
+                let ticket = CaptureTicket { session, frame_counter: n };
                 let shared = self.shared.clone();
                 tauri::async_runtime::spawn(async move {
-                    let loaded = tauri::async_runtime::spawn_blocking(move || replay::load(&path)).await.map_err(|e| e.to_string());
+                    let loaded = tauri::async_runtime::spawn_blocking(move || replay::load_views(&paths)).await.map_err(|e| e.to_string());
                     match loaded.and_then(|r| r) {
-                        Ok(img) => {
-                            shared.set_preview(&img);
-                            let image = Some(Arc::new(img));
-                            shared.deliver_in_order(session, n, Some(synthetic_frame(cam, session, n, image)));
+                        Ok(images) => {
+                            shared.deliver_in_order(session, n, Some(synthetic_frame(cam, session, n, images, manual)));
                         }
                         Err(e) => {
                             cycle::log(&shared.rig.app, "err", "回放", e);
@@ -757,7 +854,28 @@ impl CameraSlot {
                         }
                     }
                 });
-                true
+                Ok(Some(ticket))
+            }
+        }
+    }
+
+    fn soft_trigger(&self, render: Option<SimRender>) -> Result<Option<CaptureTicket>, String> {
+        let config = self.config();
+        config.validate()?;
+        if config.source == CameraSource::Mvs && config.trigger_source != "Software" {
+            return Err("触发源为 Line0，软触发前先把触发源改为 Software".into());
+        }
+        if config.source == CameraSource::Mvs {
+            self.shared.manual.fetch_add(1, Ordering::SeqCst);
+        }
+        self.shared.grab.store(config.source == CameraSource::Mvs, Ordering::SeqCst);
+        self.shared.manual_until.store(now_ms() + 10_000, Ordering::SeqCst);
+        match self.trigger_frame(false, render, true) {
+            Ok(ticket) => Ok(ticket),
+            Err(e) => {
+                self.shared.grab.store(false, Ordering::SeqCst);
+                let _ = self.shared.manual.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
+                Err(e)
             }
         }
     }
@@ -779,6 +897,7 @@ impl CameraSlot {
 
     fn try_open(&self) -> Result<String, String> {
         let config = self.config();
+        config.validate()?;
         let device = mvs::Device::open(&config.serial, &self.claimed_serials())?;
         let (warnings, max_fps, format, chunks) = apply(&device, &config)?;
         self.shared.chunk_trigger.store(chunks.trigger, Ordering::Relaxed);
@@ -1083,7 +1202,51 @@ impl CameraRig {
     }
 
     pub fn last_full(&self, cam: u8) -> Option<Arc<FrameImage>> {
-        self.slot(cam as usize).and_then(|s| s.last_full())
+        self.last_view(cam, 1)
+    }
+
+    pub fn last_view(&self, cam: u8, view: u8) -> Option<Arc<FrameImage>> {
+        self.slot(cam as usize).and_then(|s| s.last_view(view))
+    }
+
+    pub fn capture_views(&self, cam: u8, render: Option<SimRender>) -> Result<Vec<Arc<FrameImage>>, String> {
+        let cycle = self.rig.app.state::<CycleHost>();
+        let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试取图")?;
+        check_idle(&cycle)?;
+        let slot = self.slot(cam as usize).ok_or("相机不存在")?;
+        let config = slot.config();
+        config.validate()?;
+        if !slot.is_ready() {
+            return Err(format!("相机未就绪：{}", slot.status().message));
+        }
+        let images = if config.source == CameraSource::Sim && render.is_none() {
+            let images = slot.last_views();
+            if images.is_empty() {
+                return Err("模拟相机尚未出图，请先运行一个模拟工件".into());
+            }
+            images
+        } else if config.source != CameraSource::Mvs || (config.acquisition == Acquisition::Triggered && config.trigger_source == "Software") {
+            let before = slot.shared.full_seq.load(Ordering::SeqCst);
+            let captured = match slot.soft_trigger(render)? {
+                Some(ticket) => slot.wait_capture(ticket, Duration::from_secs(2))?,
+                None => slot.wait_views(before, Duration::from_secs(2)),
+            };
+            captured.ok_or("2 秒内没有收到本次触发的完整图像；检查触发和回放目录")?
+        } else {
+            slot.grab_views(Duration::from_secs(2)).ok_or("请在所选位置触发相机；2 秒内未收到完整图像")?
+        };
+        if images.len() != config.view_count as usize {
+            return Err(format!("相机需要 {} 个视角，这一帧只有 {} 幅图像", config.view_count, images.len()));
+        }
+        Ok(images)
+    }
+
+    pub fn capture_view(&self, cam: u8, view: u8, render: Option<SimRender>) -> Result<Arc<FrameImage>, String> {
+        let slot = self.slot(cam as usize).ok_or("相机不存在")?;
+        if view == 0 || view > slot.config().view_count {
+            return Err(format!("相机没有视角 {view}"));
+        }
+        self.capture_views(cam, render)?.get(view as usize - 1).cloned().ok_or_else(|| format!("这一帧缺少视角 {view}"))
     }
 
     fn rebuild(&self, app: &AppHandle, configs: Vec<CameraConfig>) {
@@ -1316,10 +1479,11 @@ pub async fn camera_pick_replay_dir(window: tauri::WebviewWindow, directory: Str
 
 /// 最近一帧的缩略图：前 16 字节为缩略图宽、高与原图宽、高（u32 小端），其后为 8 位灰度像素。
 #[tauri::command]
-pub fn camera_preview(cycle: State<'_, CycleHost>, cam: usize) -> tauri::ipc::Response {
+pub fn camera_preview(cycle: State<'_, CycleHost>, cam: usize, view: Option<u8>) -> tauri::ipc::Response {
     let mut out = Vec::new();
     if let Some(slot) = cycle.camera.slot(cam) {
-        if let Some(p) = slot.shared.preview.lock().unwrap().as_ref() {
+        let previews = slot.shared.preview.lock().unwrap();
+        if let Some(p) = view.unwrap_or(1).checked_sub(1).and_then(|i| previews.get(i as usize)) {
             for v in [p.width, p.height, p.full_width, p.full_height] {
                 out.extend_from_slice(&v.to_le_bytes());
             }
@@ -1334,19 +1498,64 @@ pub fn camera_soft_trigger(cycle: State<'_, CycleHost>, cam: usize) -> Result<()
     let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试相机操作")?;
     check_idle(&cycle)?;
     let slot = cycle.camera.slot(cam).ok_or("相机不存在")?;
-    let config = slot.config();
-    if config.source == CameraSource::Mvs && config.trigger_source != "Software" {
-        return Err("触发源为 Line0，软触发前先把触发源改为 Software".into());
+    slot.soft_trigger(None).map(|_| ())
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+
+    #[test]
+    fn old_camera_configs_keep_one_view_and_only_one_or_three_are_allowed() {
+        let mut config: CameraConfig = serde_json::from_str(r#"{"name":"原单目相机"}"#).unwrap();
+        assert_eq!(config.view_count, 1);
+        assert!(config.validate().is_ok());
+        for view_count in [0, 2, 4, u8::MAX] {
+            config.view_count = view_count;
+            assert!(config.validate().unwrap_err().contains("只能是 1 或 3"));
+        }
+        config.view_count = 3;
+        assert!(config.validate().is_ok());
+        assert_eq!(serde_json::to_value(&config).unwrap()["viewCount"], 3);
     }
-    slot.shared.grab.store(config.source == CameraSource::Mvs, Ordering::SeqCst);
-    slot.shared.manual_until.store(now_ms() + 10_000, Ordering::SeqCst);
-    slot.shared.manual.fetch_add(1, Ordering::SeqCst);
-    if slot.trigger(false, None) {
-        Ok(())
-    } else {
-        slot.shared.grab.store(false, Ordering::SeqCst);
-        let _ = slot.shared.manual.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
-        Err("相机未连接".into())
+
+    #[test]
+    fn mvs_three_views_are_rejected_until_sdk_delivery_is_confirmed() {
+        let mut config = CameraConfig { source: CameraSource::Mvs, view_count: 3, ..CameraConfig::default() };
+        assert!(config.validate().unwrap_err().contains("SDK 图像交付形式待现场确认"));
+        config.view_count = 1;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn three_images_share_one_device_frame_and_trigger_counter() {
+        let images: Vec<_> = [1, 2, 3].into_iter().map(|value| Arc::new(FrameImage::new(1, 1, vec![value]))).collect();
+        let frame = synthetic_frame(0, 72, 19, images, true);
+        assert!(frame.manual);
+        assert_eq!((frame.cam, frame.session, frame.frame_counter, frame.trigger_counter), (0, 72, 19, 19));
+        assert_eq!(frame.counter, CounterSource::Synthetic);
+        assert_eq!(frame.images.len(), 3);
+        for view in 1..=3 {
+            assert_eq!(frame.image(view).unwrap().pixels, [view]);
+        }
+        assert!(frame.image(0).is_none());
+        assert!(frame.image(4).is_none());
+    }
+
+    #[test]
+    fn prior_trigger_completion_cannot_satisfy_the_current_capture() {
+        let frame = |session, counter, value: u8| synthetic_frame(0, session, counter, (1u8..=3).map(|view| Arc::new(FrameImage::new(1, 1, vec![value + view]))).collect(), true);
+        let requested = CaptureTicket { session: 12, frame_counter: 8 };
+        let mut cached = CapturedFrame::from_frame(&frame(12, 7, 10));
+        assert!(cached.images_for(requested).is_none());
+        cached = CapturedFrame::from_frame(&frame(11, 8, 20));
+        assert!(cached.images_for(requested).is_none());
+        cached = CapturedFrame::from_frame(&frame(12, 8, 30));
+        let images = cached.images_for(requested).unwrap();
+        assert_eq!(images.len(), 3);
+        assert_eq!(images.iter().map(|image| image.pixels[0]).collect::<Vec<_>>(), [31, 32, 33]);
+        cached = CapturedFrame::from_frame(&frame(12, 9, 40));
+        assert!(cached.images_for(requested).is_none());
     }
 }
 

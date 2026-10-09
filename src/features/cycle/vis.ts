@@ -19,7 +19,7 @@ export function shotCameras(shots: Pick<ShotSpec, "camera">[]): string[] {
 }
 
 /** 拍照点的简短名称：编号 · 相机。 */
-export const shotLabel = (shot: Pick<ShotSpec, "id" | "camera"> | undefined, k: number) => (shot ? `${shot.id} · ${shot.camera}` : `k${k + 1}`);
+export const shotLabel = (shot: Pick<ShotSpec, "id" | "camera" | "view"> | undefined, k: number) => (shot ? `${shot.id} · ${shot.camera} · 视角 ${shot.view}` : `k${k + 1}`);
 
 /** 折线长度（px）。 */
 export function pathLength(path: [number, number][]) {

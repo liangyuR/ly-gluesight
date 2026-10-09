@@ -159,7 +159,8 @@ async fn run_part(app: &AppHandle, recipe: &Arc<Recipe>, scenario: Scenario, vis
         let pose = PoseError { dx: 4.0 * r(1), dy: 4.0 * r(2), deg: 0.3 * r(3) };
         for k in 0..n {
             sleep(Duration::from_millis(interval)).await;
-            let render = vision.then(|| SimRender {
+            let tricam = cycle.camera.slot(cams[k] as usize).is_some_and(|s| s.config().view_count == 3);
+            let render = (vision || tricam).then(|| SimRender {
                 recipe: recipe.clone(),
                 k,
                 scenario,

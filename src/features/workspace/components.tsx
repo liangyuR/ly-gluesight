@@ -45,19 +45,17 @@ export function Steps() {
 }
 
 export function useGrayImage(id: string | null, imageId: string | null, historyId?: number | null, k = 0) {
-  const [image, setImage] = useState<GrayImage | null>(null);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
+  const key=JSON.stringify([id,imageId,historyId,k]);
+  const [state, setState] = useState<{key:string;image:GrayImage|null;error:string;loading:boolean}>({key,image:null,error:"",loading:false});
   useEffect(() => {
     let alive = true;
-    setImage(null); setError(""); setLoading(false);
+    setState({key,image:null,error:"",loading:!!imageId||!!historyId});
     if (!imageId && !historyId) return;
-    setLoading(true);
     const request = historyId ? workspaceApi.recordImage(historyId, k) : workspaceApi.image(id!, imageId!);
-    request.then(image => alive && setImage(image)).catch(e => alive && setError(String(e))).finally(() => alive && setLoading(false));
+    request.then(image => alive && setState({key,image,error:"",loading:false})).catch(e => alive && setState({key,image:null,error:String(e),loading:false}));
     return () => { alive = false; };
   }, [id, imageId, historyId, k]);
-  return { image, error, loading };
+  return state.key===key?state:{image:null,error:"",loading:!!imageId||!!historyId};
 }
 
 /** 叠加在原图上的内容，全部是这张图的像素坐标（示教中线就在这张图里点出，不做对齐变换）。 */
@@ -154,7 +152,7 @@ export function FrameRail({ id, frames, selected, onSelect, disabled }: { id: st
     const dirty = !!frameDrafts[frame.k] && !!shot && !sameTeach(frameDrafts[frame.k], shotTeach(shot));
     const status = shot?.skip ? "不检" : dirty ? "中线待保存" : frame.saved ? "已保存" : frame.trial ? frame.trial.passed ? "试测通过" : "试测未通过" : shot && shot.path.length < 2 ? frame.image ? "待点中线" : "待取样" : frame.image ? "待试测" : "待取样";
     return <button key={frame.k} className={"wp-frame-item " + (selected === frame.k ? "selected" : "")} aria-label={"选择帧 k" + (frame.k + 1)} aria-pressed={selected === frame.k} onClick={() => onSelect(frame.k)} disabled={disabled}>
-      <FrameThumbnail id={id} frame={frame} /><strong>k{frame.k + 1}{shot ? " · " + shot.id : ""}<small>{shot?.camera ?? frame.image?.camera ?? "未取样"}</small></strong><span>{status}</span>
+      <FrameThumbnail id={id} frame={frame} /><strong>k{frame.k + 1}{shot ? " · " + shot.id : ""}<small>{shot ? `${shot.camera} · 视角 ${shot.view}` : frame.image?.camera ?? "未取样"}</small></strong><span>{status}</span>
     </button>;
   })}</div>;
 }

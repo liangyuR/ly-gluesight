@@ -156,7 +156,7 @@ fn valid_label(s: &str) -> bool {
 }
 
 /// 配方文件格式版本。不一致的文件列为加载错误，不迁移。
-pub const RECIPE_SCHEMA: u32 = 3;
+pub const RECIPE_SCHEMA: u32 = 4;
 
 /// 一个拍照点：机器人走到 Pose 时 PLC 触发这台相机拍一帧，在这帧里沿示教中线量胶。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -168,6 +168,7 @@ pub struct ShotSpec {
     pub pose_id: String,
     /// 相机编号
     pub camera: String,
+    pub view: u8,
     /// 标定引用；为空时用这台相机的工位标定
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calib: Option<String>,
@@ -238,6 +239,9 @@ impl ShotSpec {
         }
         if !valid_camera_id(&self.camera) {
             return Err(format!("拍照点 {id} 的相机编号只能用字母、数字、- 和 _"));
+        }
+        if !(1..=3).contains(&self.view) {
+            return Err(format!("拍照点 {id} 的视角必须在 1–3 之间"));
         }
         if self.calib.as_deref().is_some_and(|c| !valid_camera_id(c)) {
             return Err(format!("拍照点 {id} 的标定引用只能用字母、数字、- 和 _"));
@@ -322,7 +326,7 @@ impl Recipe {
 
     /// 示教相关内容的哈希：拍照点的相机、标定引用、中线、像素当量、检测参数与站距。改判定限值、胶条名不用重新示教。
     pub fn geometry_hash(&self) -> String {
-        let shots: Vec<_> = self.shots.iter().map(|s| serde_json::json!([s.id, s.camera, s.calib_ref(), s.skip, s.path, s.mm_per_px, s.detect])).collect();
+        let shots: Vec<_> = self.shots.iter().map(|s| serde_json::json!([s.id, s.camera, s.view, s.calib_ref(), s.skip, s.path, s.mm_per_px, s.detect])).collect();
         fnv_hex(&serde_json::to_vec(&serde_json::json!([self.spacing, self.detect, shots])).unwrap_or_default())
     }
 
@@ -488,6 +492,7 @@ pub fn shot_list(camera: &str, paths: Vec<Vec<[f32; 2]>>) -> Vec<ShotSpec> {
             id: format!("P{}", k + 1),
             pose_id: format!("P{}", k + 1),
             camera: camera.into(),
+            view: 1,
             calib: None,
             bead: "J1".into(),
             skip: false,
@@ -746,6 +751,30 @@ mod tests {
         let mut calib = base.clone();
         calib.shots[0].calib = Some("cam1-low".into());
         assert_ne!(hash(&calib), h);
+        let mut view = base.clone();
+        view.shots[0].view = 2;
+        assert_ne!(hash(&view), h);
+    }
+
+    #[test]
+    fn tricam_recipe_requires_an_explicit_valid_view_and_keeps_one_device() {
+        let mut doc = samples().remove(1);
+        for (shot, view) in doc.shots.iter_mut().zip([1, 2, 3, 1]) { shot.view = view; }
+        let encoded = serde_json::to_string(&doc).unwrap();
+        let decoded: RecipeDoc = serde_json::from_str(&encoded).unwrap();
+        let recipe = decoded.build().unwrap();
+        assert_eq!(recipe.cameras(), ["cam1"]);
+        assert_eq!(recipe.shots.iter().map(|s| s.view).collect::<Vec<_>>(), [1, 2, 3, 1]);
+        for invalid in [0, 4, 255] {
+            let mut bad = doc.clone();
+            bad.shots[0].view = invalid;
+            assert!(bad.build().unwrap_err().contains("视角"));
+        }
+        let mut missing = serde_json::to_value(&doc).unwrap();
+        missing["shots"][0].as_object_mut().unwrap().remove("view");
+        assert!(serde_json::from_value::<RecipeDoc>(missing).is_err());
+        doc.schema_version = 3;
+        assert!(doc.build().unwrap_err().contains("格式版本"));
     }
 
     #[test]

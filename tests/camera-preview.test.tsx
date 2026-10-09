@@ -42,7 +42,7 @@ describe("相机预览的图像源与限速",()=>{
   });
   it("切换相机立即隐藏旧图，不等前一台的刷新间隔",async()=>{
     const page=renderHook(({cam})=>usePreview(cam,1),{initialProps:{cam:0}});await tick();expect(page.result.current?.width).toBe(100);
-    vi.mocked(cameraApi.preview).mockResolvedValue(image(500));page.rerender({cam:1});expect(page.result.current).toBeNull();await tick();expect(cameraApi.preview).toHaveBeenLastCalledWith(1);expect(page.result.current?.width).toBe(500);
+    vi.mocked(cameraApi.preview).mockResolvedValue(image(500));page.rerender({cam:1});expect(page.result.current).toBeNull();await tick();expect(cameraApi.preview).toHaveBeenLastCalledWith(1,1);expect(page.result.current?.width).toBe(500);
   });
   it("预览读取失败不生成虚假图像，下一帧可重新请求；空返回清掉旧图",async()=>{
     vi.mocked(cameraApi.preview).mockRejectedValueOnce(new Error("图像丢失"));
@@ -53,5 +53,14 @@ describe("相机预览的图像源与限速",()=>{
   it("卸载后迟到取图结果不继续更新或请求",async()=>{
     const request=deferred<PreviewImage|null>();vi.mocked(cameraApi.preview).mockReturnValue(request.promise);
     const page=renderHook(()=>usePreview(0,1));await tick();page.unmount();await act(async()=>request.resolve(image(900)));await tick(1000);expect(cameraApi.preview).toHaveBeenCalledTimes(1);
+  });
+  it.each(["resolve", "reject"])("视角 1→2→1 后忽略上一轮视角 1 的迟到 %s",async result=>{
+    const old=deferred<PreviewImage|null>();vi.mocked(cameraApi.preview).mockReturnValueOnce(old.promise).mockResolvedValueOnce(image(200)).mockResolvedValueOnce(image(300));
+    const page=renderHook(({view})=>usePreview(0,1,250,"tricam",view),{initialProps:{view:1}});await tick();
+    expect(cameraApi.preview).toHaveBeenLastCalledWith(0,1);page.rerender({view:2});expect(page.result.current).toBeNull();await tick();
+    expect(cameraApi.preview).toHaveBeenLastCalledWith(0,2);expect(page.result.current?.width).toBe(200);
+    page.rerender({view:1});expect(page.result.current).toBeNull();await tick();expect(page.result.current?.width).toBe(300);
+    await act(async()=>{if(result==="resolve")old.resolve(image(100));else old.reject(new Error("旧视角读取失败"));});
+    expect(page.result.current?.width).toBe(300);expect(cameraApi.preview).toHaveBeenCalledTimes(3);
   });
 });

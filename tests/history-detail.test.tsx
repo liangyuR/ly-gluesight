@@ -16,7 +16,7 @@ vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
 } }));
 let ws: ReturnType<typeof workspaceState>;
 let detail: ReturnType<typeof partDetail>;
-const raw: RecordImages = { historyId: 1, complete: true, message: "原图完整", frames: [0, 1].map(k => ({ k, camera: "CAM-1", file: `${k}.png`, ts: 1, available: true })) };
+const raw: RecordImages = { historyId: 1, complete: true, message: "原图完整", frames: [0, 1].map(k => ({ k, camera: "CAM-1", view: 1, file: `${k}.png`, ts: 1, available: true })) };
 function element(){return <MemoryRouter initialEntries={["/history/1"]}><Link to="/history/2">打开另一件工件</Link><Routes><Route path="/history/:id" element={<HistoryDetailPage />} /><Route path="/recipe/teach" element={<p>进入示教页</p>} /><Route path="/history" element={<p>历史列表</p>}/></Routes></MemoryRouter>;}
 function show() { return render(element()); }
 function comparison():Comparison{return {id:"compare-1",historyId:1,source:"rules",candidateId:"A",candidateRevision:7,candidateRecipe:ws.data!.layout,

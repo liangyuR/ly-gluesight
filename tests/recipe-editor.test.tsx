@@ -21,6 +21,18 @@ const last = (onDraftChange: ReturnType<typeof vi.fn>) => onDraftChange.mock.las
 const number = (name: string, value: string) => fireEvent.change(screen.getByRole("spinbutton", { name }), { target: { value } });
 
 describe("配方的拍照点表", () => {
+  it("视角只在 1–3 中选择，改变后清空该拍照点中线与像素当量，其他拍照点保持",async()=>{
+    const {onDraftChange}=show();const input=screen.getByRole("combobox",{name:"拍照点 1 · 视角"});
+    expect(within(input).getAllByRole("option").map(option=>(option as HTMLOptionElement).value)).toEqual(["1","2","3"]);
+    await userEvent.selectOptions(input,"3");const next=last(onDraftChange);
+    expect(next.schemaVersion).toBe(4);expect(next.shots[0]).toEqual({...workspaceView().workspace.doc.shots[0],view:3,path:[],mmPerPx:undefined});
+    expect(Object.hasOwn(next.shots[0],"mmPerPx")).toBe(false);expect(next.shots[1]).toEqual(workspaceView().workspace.doc.shots[1]);
+    expect(screen.getByRole("textbox",{name:"拍照点 1 · 编号"}).closest("tr")).toHaveTextContent("未示教");
+  });
+  it("新拍照点沿用上一行视角，空配方默认视角 1",()=>{
+    const shots=shotList(twoLines);shots[1].view=3;
+    expect(newShot(shots,[]).view).toBe(3);expect(newShot([],[]).view).toBe(1);
+  });
   it("保存候选锁定编号，编辑不会直接保存生产配方", async () => {
     const saveCandidate = vi.fn().mockResolvedValue(true), { onDraftChange, onSaved } = show(saveCandidate);
     expect(screen.getByRole("textbox", { name: "配方编号" })).toBeDisabled();
@@ -40,7 +52,7 @@ describe("配方的拍照点表", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "拍照点 2 · 胶条" }), { target: { value: "J2" } });
     await userEvent.click(screen.getByRole("checkbox", { name: "拍照点 2 · 不检" }));
     const shots = last(onDraftChange).shots;
-    expect(shots[0]).toEqual({ id: "A1", poseId: "POSE 7", camera: "CAM-1", bead: "J1", skip: false, path: twoLines[0], mmPerPx: .1 });
+    expect(shots[0]).toEqual({ id: "A1", poseId: "POSE 7", camera: "CAM-1", view: 1, bead: "J1", skip: false, path: twoLines[0], mmPerPx: .1 });
     expect(shots[1]).toMatchObject({ bead: "J2", skip: true, path: twoLines[1] });
     const row = screen.getByRole("textbox", { name: "拍照点 2 · 编号" }).closest("tr")!;
     expect(within(row).getByText("不检")).toBeVisible();
@@ -50,7 +62,7 @@ describe("配方的拍照点表", () => {
 
   it("示教状态只读：已示教的点数与中线长度、未示教、不检", () => {
     const doc = workspaceView().workspace.doc;
-    doc.shots.push({ id: "P3", poseId: "P3", camera: "CAM-1", bead: "J1", skip: false, path: [] }, { ...doc.shots[0], id: "P4", poseId: "P4", skip: true });
+    doc.shots.push({ id: "P3", poseId: "P3", camera: "CAM-1", view: 1, bead: "J1", skip: false, path: [] }, { ...doc.shots[0], id: "P4", poseId: "P4", skip: true });
     show(undefined, doc);
     const status = (k: number) => screen.getByRole("textbox", { name: `拍照点 ${k} · 编号` }).closest("tr")!.querySelector(".rcp-teach")!;
     expect(status(1)).toHaveTextContent("已示教 2 点 · 1.0 mm"); expect(status(1)).toHaveClass("c-ok");
@@ -68,14 +80,14 @@ describe("配方的拍照点表", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "拍照点 2 · 胶条" }), { target: { value: "J3" } });
     await userEvent.click(screen.getByRole("button", { name: "添加拍照点" }));
     let shots = last(onDraftChange).shots;
-    expect(shots[2]).toEqual({ id: "P3", poseId: "P3", camera: "CAM-2", bead: "J3", skip: false, path: [] });
+    expect(shots[2]).toEqual({ id: "P3", poseId: "P3", camera: "CAM-2", view: 1, bead: "J3", skip: false, path: [] });
     expect(screen.getByRole("textbox", { name: "拍照点 3 · 编号" })).toHaveValue("P3");
     await userEvent.click(screen.getByRole("button", { name: "删除拍照点 1" }));
     expect(last(onDraftChange).shots.map((s: ShotSpec) => s.id)).toEqual(["P2", "P3"]);
     await userEvent.click(screen.getByRole("button", { name: "添加拍照点" }));
     shots = last(onDraftChange).shots;
     expect(shots.map((s: ShotSpec) => s.id)).toEqual(["P2", "P3", "P1"]);
-    expect(shots[2]).toEqual({ id: "P1", poseId: "P1", camera: "CAM-2", bead: "J3", skip: false, path: [] });
+    expect(shots[2]).toEqual({ id: "P1", poseId: "P1", camera: "CAM-2", view: 1, bead: "J3", skip: false, path: [] });
   });
 
   it("上移、下移交换相邻拍照点（连同中线），首行不能上移、末行不能下移", async () => {
@@ -131,7 +143,7 @@ describe("配方的拍照点表", () => {
     await userEvent.click(toggle); expect(screen.queryByRole("group", { name: "拍照点 1 · 单独设置" })).toBeNull();
     await userEvent.click(await readySave());
     const saved = vi.mocked(recipeApi.save).mock.lastCall![0];
-    expect(saved.shots.map(s => Object.keys(s))).toEqual([["id", "poseId", "camera", "bead", "skip", "path", "mmPerPx"], ["id", "poseId", "camera", "bead", "skip", "path", "mmPerPx"]]);
+    expect(saved.shots.map(s => Object.keys(s))).toEqual([["id", "poseId", "camera", "view", "bead", "skip", "path", "mmPerPx"], ["id", "poseId", "camera", "view", "bead", "skip", "path", "mmPerPx"]]);
     expect(JSON.stringify(saved.shots)).not.toMatch(/null/);
   });
 
@@ -154,7 +166,7 @@ describe("配方的拍照点表", () => {
     const empty = { ...workspaceView().workspace.doc, shots: [] };
     const { onDraftChange } = show(undefined, empty, [{ id: "CAM-9", name: "相机 9" }]);
     await userEvent.click(screen.getByRole("button", { name: "添加拍照点" }));
-    expect(last(onDraftChange).shots).toEqual([{ id: "P1", poseId: "P1", camera: "CAM-9", bead: "J1", skip: false, path: [] }]);
+    expect(last(onDraftChange).shots).toEqual([{ id: "P1", poseId: "P1", camera: "CAM-9", view: 1, bead: "J1", skip: false, path: [] }]);
     await userEvent.click(screen.getByRole("button", { name: "删除拍照点 1" }));
     expect(last(onDraftChange).shots).toEqual([]);
   });
@@ -162,10 +174,10 @@ describe("配方的拍照点表", () => {
   it("新拍照点的编号与默认值", () => {
     expect(nextShotId([])).toBe("P1");
     expect(nextShotId(shotList([[], [], []]).filter(s => s.id !== "P2"))).toBe("P2");
-    expect(newShot([], [])).toEqual({ id: "P1", poseId: "P1", camera: "", bead: "J1", skip: false, path: [] });
+    expect(newShot([], [])).toEqual({ id: "P1", poseId: "P1", camera: "", view: 1, bead: "J1", skip: false, path: [] });
     const first = shotList(twoLines.slice(0, 1), "cam2"); first[0].bead = "J5"; first[0].skip = true;
     const next = newShot(first, [{ id: "cam1" }]);
-    expect(next).toEqual({ id: "P2", poseId: "P2", camera: "cam2", bead: "J5", skip: false, path: [] });
+    expect(next).toEqual({ id: "P2", poseId: "P2", camera: "cam2", view: 1, bead: "J5", skip: false, path: [] });
     next.path.push([1, 1]); expect(first[0].path).toEqual(twoLines[0]);
   });
 
@@ -212,7 +224,7 @@ describe("配方的站距、默认检测参数与默认限值", () => {
   });
 
   it("预览按拍照点显示示教中线与汇总", async () => {
-    const layout = workspaceView().layout; layout.shots.push({ id: "P3", poseId: "P3", camera: "CAM-1", bead: "J1", skip: false, path: [] });
+    const layout = workspaceView().layout; layout.shots.push({ id: "P3", poseId: "P3", camera: "CAM-1", view: 1, bead: "J1", skip: false, path: [] });
     vi.mocked(recipeApi.preview).mockResolvedValue(layout); show();
     expect(await screen.findByText("3 个拍照点 · 已示教 2/3 · 中线共 2.0 mm · 4 个测量点")).toBeVisible();
     expect(screen.getByRole("group", { name: "拍照点 P1" })).toBeVisible(); expect(screen.getByText("未示教中线，不能开工")).toBeVisible();

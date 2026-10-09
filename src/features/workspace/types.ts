@@ -9,7 +9,7 @@ export interface ShotTeach {
 }
 export interface FrozenImage {
   id: string; source: string; capturedAt: number; size: [number, number];
-  camera: string; cameraTag: string; calibTag: string; geometryTag: string;
+  camera: string; view: number; cameraTag: string; calibTag: string; geometryTag: string;
   exposureUs: number | null; gainDb: number | null; historyId: number | null;
 }
 export interface Trial {
@@ -20,7 +20,7 @@ export interface Trial {
 }
 /** 示教帧：冻结原图、试测与“已保存”；中线、像素当量与检测参数在候选配方的拍照点里。 */
 export interface Teaching {
-  k: number; image: FrozenImage | null; trial: Trial | null; saved: boolean; backup: Teaching | null;
+  k: number; image: FrozenImage | null; views: FrozenImage[]; trial: Trial | null; saved: boolean; backup: Teaching | null;
 }
 export interface Overview { background: string | null; positions: [number, number][]; saved: boolean }
 export interface Sample { historyId: number | null; sampleId?: string | null; expected: Verdict }
@@ -41,7 +41,7 @@ export interface Workspace {
 }
 /** coverage：要检的拍照点里已示教中线的比例（%）。 */
 export interface WorkspaceView { workspace: Workspace; layout: Recipe; productionVersion: number | null; coverage: number }
-export interface RawFrame { k: number; camera: string; file: string; ts: number; available: boolean; cam?: number | null; frameCounter?: number | null; triggerCounter?: number | null }
+export interface RawFrame { k: number; camera: string; view: number; file: string; ts: number; available: boolean; cam?: number | null; frameCounter?: number | null; triggerCounter?: number | null }
 export interface RecordImages { historyId: number; frames: RawFrame[]; complete: boolean; message: string }
 export interface Comparison {
   id: string; historyId: number; source: "rules" | "raw"; candidateId: string; candidateRevision: number;

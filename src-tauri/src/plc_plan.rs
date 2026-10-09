@@ -61,6 +61,16 @@ impl PlcPlan {
 mod tests {
     use super::*;
 
+    #[test]
+    fn three_views_still_use_one_device_and_four_triggers() {
+        let mut doc = crate::recipe::samples().remove(1);
+        for (shot, view) in doc.shots.iter_mut().zip([1, 2, 3, 1]) { shot.view = view; }
+        let recipe = doc.build().unwrap();
+        let plan = PlcPlan::from_recipe(&recipe, ["cam1".into(), String::new(), String::new()]).unwrap();
+        assert_eq!(plan.camera_shots, [4, 0, 0]);
+        assert_eq!(plan.shot_count, 4);
+    }
+
     fn shots() -> Vec<PlanShot> {
         ["cam1", "cam2", "cam3", "cam1"].into_iter().enumerate().map(|(index, camera)| PlanShot {
             shot_id: format!("P{}", index + 1), pose_id: format!("A{}", index + 1), camera_id: camera.into(),

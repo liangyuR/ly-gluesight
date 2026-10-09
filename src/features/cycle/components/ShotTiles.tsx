@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { PointVis, Recipe } from "../types";
-import { runs, segmentLength, shotGaps, shotSegment, shotState, shotStateLabel, visColor, type ShotState } from "../vis";
+import { runs, segmentLength, shotGaps, shotLabel, shotSegment, shotState, shotStateLabel, visColor, type ShotState } from "../vis";
 
 export const shotTone: Record<ShotState, string> = {
   skip: "c-mut",
@@ -106,7 +106,7 @@ export default function ShotTiles({ layout, vis, selected = null, current = -1, 
         const body = (
           <>
             <div className="shot-tile-head">
-              <b className="mono" title={`k${k + 1} · Pose ${shot.poseId}`}>{shot.id} · {shot.camera} · {shot.bead}</b>
+              <b className="mono" title={`k${k + 1} · Pose ${shot.poseId}`}>{shotLabel(shot,k)} · {shot.bead}</b>
               <span className={shotTone[state]}>{state === "none" && idleLabel ? idleLabel : shotStateLabel[state]}</span>
             </div>
             {state === "skip" ? (
