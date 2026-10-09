@@ -7,7 +7,7 @@
     "dev": "tauri dev",
     "dev:web": "vite",
     "build": "tsc -b && vite build",
-    "package": "tauri build --bundles nsis",
+    "package": "pwsh -NoProfile -File scripts/Package-Windows.ps1",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
