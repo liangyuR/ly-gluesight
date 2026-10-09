@@ -204,7 +204,7 @@ export default function HistoryPage() {
                   <td className="nowrap"><span className={`vt ${verdictClass(p.verdict)}`}>{verdictLabel[p.verdict]}</span></td>
                   <td className="mono">{p.plcCode}{p.faultCode ? ` / ${p.faultCode}` : ""}</td>
                   <td className="reason">{displayReason(p.reason)}</td>
-                  <td className="mono nowrap">{p.triggerMode === "follow" ? `收 ${p.framesReceived}` : p.framesExpected ? `${p.framesReceived}/${p.framesExpected}` : "—"}</td>
+                  <td className="mono nowrap">{p.framesExpected ? `${p.framesReceived}/${p.framesExpected}` : "—"}</td>
                   <td className="mono nowrap">{p.drainMs != null ? `${p.drainMs} ms` : "—"}</td>
                 </tr>
               ))}

@@ -10,7 +10,7 @@ vi.mock("../src/features/plc/api", () => ({ plcApi: { recipeChoices: vi.fn(), ge
 const plan = (recipeId = "A"): PlcRecipePlan => ({
   protocolVersion: 1, recipeId, planVersion: 3, planHash: 12345, shotCount: 4,
   cameraSlots: ["cam1", "cam2", "cam3"], cameraShots: [0, 4, 0],
-  shots: Array.from({ length: 4 }, (_, index) => ({ shotId: `shot-${index + 1}`, cameraId: "cam2", center: [index, 0] })),
+  shots: Array.from({ length: 4 }, (_, index) => ({ shotId: `shot-${index + 1}`, poseId: `pose-${index + 1}`, cameraId: "cam2" })),
 });
 const writeText = vi.fn();
 beforeEach(() => {
@@ -35,6 +35,20 @@ describe("只读配方握手计划", () => {
     await userEvent.click(screen.getByRole("button", { name: "复制计划 JSON" }));
     expect(writeText).toHaveBeenCalledWith(JSON.stringify(plan(), null, 2));
     expect(await screen.findByRole("button", { name: "已复制 JSON" })).toBeVisible();
+  });
+
+  it("拍照点表在编号旁列出 Pose，同一 Pose 触发两台相机时都列出，不再有工件坐标中心", async () => {
+    vi.mocked(plcApi.recipePlan).mockResolvedValueOnce({ ...plan(), cameraShots: [2, 1, 1], shots: [
+      { shotId: "P1", poseId: "A1", cameraId: "cam1" }, { shotId: "P2", poseId: "A1", cameraId: "cam2" },
+      { shotId: "P3", poseId: "A3", cameraId: "cam3" }, { shotId: "P4", poseId: "A4", cameraId: "cam1" },
+    ] });
+    render(<S7RecipePlanPanel />); await userEvent.click(screen.getByRole("button", { name: "读取配方计划" }));
+    const table = await screen.findByRole("table", { name: "拍照点计划" });
+    const headers = within(table).getAllByRole("columnheader").map(h => h.textContent);
+    expect(headers).toEqual(["拍照点", "Pose", "相机编号"]);
+    const rows = within(table).getAllByRole("row").slice(1).map(r => within(r).getAllByRole("cell").map(c => c.textContent));
+    expect(rows).toEqual([["P1", "A1", "cam1"], ["P2", "A1", "cam2"], ["P3", "A3", "cam3"], ["P4", "A4", "cam1"]]);
+    expect(screen.queryByText(/中心/)).not.toBeInTheDocument();
   });
 
   it("切换配方后忽略旧请求，不能把 A 的计划显示成 B", async () => {

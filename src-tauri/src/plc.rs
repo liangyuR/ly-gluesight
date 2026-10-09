@@ -31,13 +31,6 @@ impl PlcHost {
                 let _ = handle.emit("plc://status", s);
             }
             PlcEvent::Values(v) => {
-                // 随动按进度定位要每一次变化，节拍处理帧慢了也不漏
-                if let (Some(cycle), Some(plc)) = (handle.try_state::<CycleHost>(), handle.try_state::<PlcHost>()) {
-                    let progress = inspection::point_id(plc.engine(), inspection::tag::PATH_PROGRESS).and_then(|id| v.get(&id)).and_then(inspection::value_f32_ts);
-                    if let Some((raw, ts)) = progress {
-                        cycle.push_progress(raw, ts);
-                    }
-                }
                 let _ = handle.emit("plc://values", v);
             }
             PlcEvent::Logs(l) => {

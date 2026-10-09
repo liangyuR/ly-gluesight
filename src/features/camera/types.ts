@@ -1,16 +1,6 @@
 export type CameraSource = "sim" | "mvs" | "replay";
 export type Acquisition = "triggered" | "freeRun";
 
-/** 随动相机相对胶嘴的标定 */
-export interface FollowCalib {
-  nozzle: [number, number];
-  angleDeg: number;
-  mirror: boolean;
-  mmPerPx: number;
-  maskPx: number;
-  imageSize: [number, number];
-}
-
 export interface CameraConfig {
   /** 相机编号：配方用它引用相机，建相机时分配、之后不变 */
   id: string;
@@ -29,7 +19,6 @@ export interface CameraConfig {
   chunk: boolean;
   replayDir: string;
   replayChannel: number;
-  follow: FollowCalib | null;
 }
 
 export interface DeviceSummary {

@@ -49,7 +49,7 @@ const beadPaths = [
   "M 34 238 L 686 238",
   "M 86 36 L 86 286 Q 86 352 155 352 L 684 352",
 ];
-export function FrameCanvas({ id, imageId, overlay = false, failed = false, defect = false, missing = false, label = "冻结样本", nozzle = false }: { id: number; imageId: number | null; overlay?: boolean; failed?: boolean; defect?: boolean; missing?: boolean; label?: string; nozzle?: boolean }) {
+export function FrameCanvas({ id, imageId, overlay = false, failed = false, defect = false, missing = false, label = "冻结样本" }: { id: number; imageId: number | null; overlay?: boolean; failed?: boolean; defect?: boolean; missing?: boolean; label?: string }) {
   const uid = useId().replace(/:/g, "");
   const [zoom, setZoom] = useState(1);
   const [showOverlay, setShowOverlay] = useState(true);
@@ -70,7 +70,6 @@ export function FrameCanvas({ id, imageId, overlay = false, failed = false, defe
           <path d={path} fill="none" stroke={failed ? "#858585" : "#e3e3e3"} strokeWidth="3" />
           {defect && id === 3 && <rect x="440" y="70" width="38" height="29" fill="#101010" />}
           {overlay && showOverlay && <><rect x="24" y="38" width="672" height="354" rx="4" fill="none" stroke={failed ? "var(--warn)" : "var(--accent-text)"} strokeDasharray="7 5" /><path d={path} fill="none" stroke={failed ? "var(--warn)" : "var(--accent-text)"} strokeWidth="2" strokeDasharray={failed ? "8 8" : undefined} /><path d={path} transform="translate(0 10)" fill="none" stroke="var(--accent)" strokeWidth="1" />{defect && id === 3 && <><rect x="426" y="48" width="66" height="69" fill="var(--ng-soft)" fillOpacity=".45" stroke="var(--ng)" strokeWidth="2" /><text x="421" y="139" fill="var(--ng)" fontSize="15">断胶 6.2 mm</text></>}</>}
-          {nozzle && <><path d="M280 20H338L330 125H288Z" fill="#5c5c5c" stroke="#969696" /><circle cx="308" cy="128" r="9" fill="var(--accent)" /><path d="M308 145V276M292 215H324" stroke="var(--accent-text)" strokeDasharray="5 4" /><text x="340" y="123" fill="var(--accent-text)" fontSize="14">胶嘴基准</text></>}
         </g></g>
         <rect x="552" y="396" width="154" height="24" rx="3" fill="#0a0a0a" /><text x="562" y="413" fill="#a3a3a3" fontSize="12">示意图 · 样本 {String(imageId).padStart(6, "0")}</text>
       </svg>}
@@ -124,7 +123,7 @@ export function OverviewMap({ editable = false, physical = false, defect = false
     <text x="400" y="410" textAnchor="middle" fill="var(--text-muted)" fontSize="12">{physical ? "物理视野 · 包含本帧搜索余量" : editable ? "拖动或用方向键调整显示框 · 测量坐标保持独立" : "点击任意帧框，查看该帧原图"}</text>
   </svg>;
 }
-export function Curve({ defect = false, invalid = false, follow = false, recipe }: { defect?: boolean; invalid?: boolean; follow?: boolean; recipe?: RecipeConfiguration }) {
+export function Curve({ defect = false, invalid = false, recipe }: { defect?: boolean; invalid?: boolean; recipe?: RecipeConfiguration }) {
   const { state } = useWorkflow();
   const g = recipe ?? state.recipe;
   const uid = useId().replace(/:/g, "");
@@ -134,7 +133,7 @@ export function Curve({ defect = false, invalid = false, follow = false, recipe 
   const points = Array.from({ length: 65 }, (_, i) => (28 + i * 11.3) + "," + y(3.3 + Math.sin(i * .6) * .12 + Math.sin(i * .17) * .15)).join(" ");
   const gapStart = invalid ? length / 3 : 352.4, gapEnd = invalid ? length / 2 : 358.6;
   const gapX = 28 + gapStart / length * 725, gapWidth = Math.max(3, (gapEnd - gapStart) / length * 725);
-  return <div className="wf-curve"><div className="wf-row"><strong>{follow ? "横向偏移" : "距内边距离 d"} <span className="wf-caption">/ mm</span></strong><span className="wf-caption">沿胶路弧长 / mm</span></div><svg viewBox="0 0 790 138" role="img" aria-label={invalid ? "测量无效的曲线" : defect ? "含断胶区间的距离曲线" : "距离测量曲线"}>
+  return <div className="wf-curve"><div className="wf-row"><strong>距内边距离 d <span className="wf-caption">/ mm</span></strong><span className="wf-caption">沿胶路弧长 / mm</span></div><svg viewBox="0 0 790 138" role="img" aria-label={invalid ? "测量无效的曲线" : defect ? "含断胶区间的距离曲线" : "距离测量曲线"}>
     <defs><clipPath id={"curve" + uid}><rect x="28" y="15" width="725" height="92" /></clipPath></defs>
     <rect x="28" y={y(g.target + g.tolerance)} width="725" height={y(g.target - g.tolerance) - y(g.target + g.tolerance)} fill="var(--accent-soft)" />
     {[2, 3, 4].map(v => <g key={v}><path d={"M28 " + y(v) + "H753"} stroke="#2a2a2a" strokeDasharray="4 4" /><text x="7" y={y(v) + 4} fill="var(--text-muted)" fontSize="11">{v}</text></g>)}

@@ -5,16 +5,18 @@ import type { Recipe, RecipeDoc, RecipeSummary } from "../cycle/types";
 import { subscribe } from "../plc";
 import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
-import type { FrameParams, Workspace, WorkspaceView } from "./types";
+import type { ShotTeach, Workspace, WorkspaceView } from "./types";
+import { sameTeach, shotTeach } from "./teach";
 import "./workspace.css";
 
 interface WorkspaceContextValue {
   list: RecipeSummary[]; drafts: Workspace[]; cameras: CameraConfig[];
   selectedId: string | null; data: WorkspaceView | null; doc: RecipeDoc | null; preview: Recipe | null;
   previewError: string; error: string; busy: boolean; dirty: boolean; frameDirty: boolean;
-  frameDrafts: Record<number, FrameParams>;
+  /** 单帧示教里尚未保存的中线草稿，按拍照点下标 */
+  frameDrafts: Record<number, ShotTeach>;
   select: (id: string) => Promise<WorkspaceView | null>; clearSelection:()=>void; reloadList: () => Promise<void>;
-  setDoc: (doc: RecipeDoc) => void; setFrameParams: (k: number, params: FrameParams) => void;
+  setDoc: (doc: RecipeDoc) => void; setFrameDraft: (k: number, teach: ShotTeach) => void;
   act: (request: () => Promise<WorkspaceView>, message?: string) => Promise<WorkspaceView | null>;
   saveDoc: (doc?: RecipeDoc) => Promise<WorkspaceView | null>;
   notice: string; setError: (message: string) => void;
@@ -31,7 +33,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [doc, setDoc] = useState<RecipeDoc | null>(null);
   const [preview, setPreview] = useState<Recipe | null>(null);
   const [previewError, setPreviewError] = useState("");
-  const [frameDrafts, setFrameDrafts] = useState<Record<number, FrameParams>>({});
+  const [frameDrafts, setFrameDrafts] = useState<Record<number, ShotTeach>>({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -39,19 +41,34 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const acting = useRef(false);
   const selected = useRef<string | null>(null);
   const dirtyRef = useRef(false);
-  const geometry=useRef("");
+  const shotList=useRef("");
   const dirty = !!doc && !!data && !equal(doc, data.workspace.doc);
-  dirtyRef.current = dirty || Object.keys(frameDrafts).some(k => !equal(frameDrafts[Number(k)], data?.workspace.frames[Number(k)]?.params));
-  const frameDirty = Object.keys(frameDrafts).some(k => !equal(frameDrafts[Number(k)], data?.workspace.frames[Number(k)]?.params));
+  // 草稿与候选里已保存的中线比较（按 f32），不同才算未保存
+  const savedTeach = (k: number) => { const shot = data?.workspace.doc.shots[k]; return shot ? shotTeach(shot) : undefined; };
+  const frameDirty = Object.keys(frameDrafts).some(k => !sameTeach(frameDrafts[Number(k)], savedTeach(Number(k))));
+  dirtyRef.current = dirty || frameDirty;
 
   const accept = useCallback((next: WorkspaceView) => {
-    const key=JSON.stringify([next.layout.id,next.layout.mode,next.layout.camera,next.layout.path,next.layout.part,next.layout.shots,next.layout.fov,next.layout.spacing]);
-    const changed=key!==geometry.current;geometry.current=key;
+    // 草稿按拍照点下标存：拍照点增删、调序或换了配方时清空，免得中线落到别的拍照点上
+    const key=JSON.stringify([next.workspace.doc.id,next.workspace.doc.shots.map(s=>s.id)]);
+    const changed=key!==shotList.current;shotList.current=key;
     setData(next);
     setDoc(next.workspace.doc);
     setPreview(next.layout);
     setPreviewError("");
-    setFrameDrafts(previous => changed?{}:Object.fromEntries(Object.entries(previous).filter(([k, p]) => !!next.workspace.frames[Number(k)]&&!equal(p, next.workspace.frames[Number(k)].params))));
+    setFrameDrafts(previous => {
+      if (changed) return {};
+      const kept: Record<number, ShotTeach> = {};
+      for (const [key, draft] of Object.entries(previous)) {
+        const shot = next.workspace.doc.shots[Number(key)];
+        if (!shot) continue;
+        const saved = shotTeach(shot);
+        // 取样后后端补上了像素当量：草稿还没有时跟着用
+        const merged = !Number.isFinite(draft.mmPerPx) && Number.isFinite(saved.mmPerPx) ? { ...draft, mmPerPx: saved.mmPerPx } : draft;
+        if (!sameTeach(merged, saved)) kept[Number(key)] = merged;
+      }
+      return kept;
+    });
   }, []);
 
   const reloadList = useCallback(async () => {
@@ -138,7 +155,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   return <Context.Provider value={{ list, drafts, cameras, selectedId, data, doc, preview, previewError, error, busy, dirty, frameDirty,
     clearSelection:()=>{requestSerial.current++;selected.current=null;setSelectedId(null);setData(null);setDoc(null);setPreview(null);setFrameDrafts({});setError("");setNotice("");},
-    frameDrafts, select, reloadList, setDoc, setFrameParams:(k, params) => setFrameDrafts(previous => ({ ...previous, [k]:params })),
+    frameDrafts, select, reloadList, setDoc, setFrameDraft:(k, teach) => setFrameDrafts(previous => ({ ...previous, [k]:teach })),
     act, saveDoc, notice, setError }}>{children}</Context.Provider>;
 }
 

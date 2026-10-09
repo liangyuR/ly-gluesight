@@ -36,12 +36,6 @@
 .cam-tabs .tab.active { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
 .cam-tabs .tab i { width: 8px; height: 8px; border-radius: 50%; background: var(--ng); }
 .cam-tabs .tab i.ok { background: var(--ok); }
-.calib-view { position: relative; min-height: 240px; aspect-ratio: 5 / 4; max-height: 520px; border-radius: 6px; background: var(--bg); display: grid; place-items: center; overflow: hidden; }
-.calib-view canvas, .calib-view svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-.calib-view canvas { object-fit: contain; }
-.calib-view svg { cursor: crosshair; }
-.calib-view .muted { padding: 0 20px; text-align: center; font-size: 12.5px; }
-.calib-row.four { grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: end; }
 .sub-title { margin: 0; font-size: 13px; font-weight: 600; }
 .cam-page .panel-head .btn, .cam-tabs .btn { white-space: nowrap; flex-shrink: 0; }
 .cam-action-area { display:flex; flex-direction:column; gap:16px; padding:0; margin:0; border:0; min-width:0; }

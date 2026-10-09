@@ -1,5 +1,5 @@
 //! 相机组：N 台相机各自配置、状态与重连，共用一条有界帧通道交给检测节拍。
-//! 飞拍用 1 台按触发取图；三目随动用 3 台连续采集，只在工件布防期间把帧送进节拍。
+//! 飞拍按触发取图；连续采集的相机只更新缩略图，不送节拍。
 
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{c_uint, c_void};
@@ -14,8 +14,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc::Sender;
 
 use crate::cycle::{self, CycleHost, Phase};
-use crate::follow::FollowCalib;
-use crate::frame::{Frame, FrameImage, FramePool};
+use crate::frame::{CounterSource, Frame, FrameImage, FramePool};
 use crate::mvs::{self, DeviceSummary, FrameInfo};
 use crate::recipe::{legacy_camera_id, valid_camera_id, Recipe};
 use crate::replay;
@@ -25,6 +24,9 @@ use crate::simimage::{self, PoseError};
 /// 帧通道容量：检测节拍处理不过来时丢新帧并计数，不在内存里无限堆积。
 pub const FRAME_QUEUE: usize = 64;
 
+/// 下一个设备会话号：进程内只增不减，各相机共用，所以会话号不会重复（0 表示还没打开过）。
+static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+
 /// 模拟相机合成飞拍帧所需的信息：哪个配方的第几个拍照点、什么场景、机器人偏差。
 pub struct SimRender {
     pub recipe: Arc<Recipe>,
@@ -33,9 +35,6 @@ pub struct SimRender {
     pub pose: PoseError,
     pub seed: u64,
 }
-
-/// 连续采集的模拟相机取图：给相机序号与时间戳，返回这一刻的画面。模拟随动节拍运行时设置。
-pub type SimSource = Arc<dyn Fn(u8, i64) -> Option<FrameImage> + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,7 +50,7 @@ pub enum CameraSource {
 pub enum Acquisition {
     /// 每个触发出一帧（飞拍）
     Triggered,
-    /// 按固定帧率连续采集，工件布防期间的帧进入节拍（随动）
+    /// 按固定帧率连续采集，只更新缩略图，不进入节拍
     FreeRun,
 }
 
@@ -76,8 +75,6 @@ pub struct CameraConfig {
     pub replay_dir: String,
     /// 回放通道（从 1 开始），0 表示取目录里的第一个通道
     pub replay_channel: u32,
-    /// 随动：胶嘴在图像里的位置、图像方位与像素当量（示教得到）
-    pub follow: Option<FollowCalib>,
 }
 
 impl Default for CameraConfig {
@@ -99,7 +96,6 @@ impl Default for CameraConfig {
             chunk: true,
             replay_dir: String::new(),
             replay_channel: 0,
-            follow: None,
         }
     }
 }
@@ -117,9 +113,6 @@ impl CameraConfig {
         }
         if self.source == CameraSource::Replay && self.replay_dir.trim().is_empty() {
             return Err("回放相机需要填写图片目录".into());
-        }
-        if let Some(f) = &self.follow {
-            f.validate()?;
         }
         Ok(())
     }
@@ -185,8 +178,10 @@ fn make_preview(src: &[u8], w: usize, h: usize) -> Preview {
 }
 
 /// 模拟帧并行合成、按帧计数顺序交付：节拍按帧计数的先后推 k，乱序会让后面的帧落错拍照点。
+/// 只排本会话的帧；重新加载前触发、还在合成的帧到了直接交付（会话号旧，不会算进新会话）。
 #[derive(Default)]
 struct Reorder {
+    session: u64,
     next: u64,
     pending: BTreeMap<u64, Option<Frame>>,
 }
@@ -194,15 +189,8 @@ struct Reorder {
 struct ReplayState {
     files: Vec<PathBuf>,
     next: usize,
-    /// 帧录制目录：各帧相对工件开始的时刻（ms）。有它时连续采集按原来的时刻出帧，放完为止
+    /// 帧录制目录：各帧相对工件开始的时刻（ms）。有它时每件从第一张放
     times: Option<Vec<i64>>,
-}
-
-/// 连续采集的回放相机下一帧什么时候出。
-enum Due {
-    Now,
-    Wait(Duration),
-    Done,
 }
 
 /// 相机组共用的部分。
@@ -210,13 +198,9 @@ struct RigShared {
     app: AppHandle,
     tx: Sender<Frame>,
     pool: FramePool,
-    /// 需要整帧图像：触发采集的相机（飞拍）与连续采集的相机（随动）分开，飞拍用模拟测量时不必拷整帧
-    capture_triggered: AtomicBool,
-    capture_free_run: AtomicBool,
-    streaming: AtomicBool,
+    /// 需要整帧图像（图像测量或帧录制）；模拟测量时不必拷整帧
+    capture: AtomicBool,
     dry_run: Mutex<Option<(Instant, Vec<DryFrame>)>>,
-    sim_source: Mutex<Option<SimSource>>,
-    stream_started: Mutex<Option<Instant>>,
 }
 
 /// 单台相机的交付通道，取图回调与模拟 / 回放共用。
@@ -241,16 +225,24 @@ struct Shared {
     last_emit: Mutex<Option<Instant>>,
     disconnected: AtomicBool,
     order: Mutex<Reorder>,
+    /// 像素格式不支持、没能出灰度图的帧数与最近一次的原因（重新打开时清零）
+    unusable: AtomicU64,
+    unusable_msg: Mutex<String>,
+    /// 当前设备会话号（见 Frame::session）
+    session: AtomicU64,
+    /// 海康相机本次打开开上了的 Chunk：触发计数、帧计数
+    chunk_trigger: AtomicBool,
+    chunk_frame: AtomicBool,
 }
 
 impl Shared {
     fn capture(&self) -> bool {
-        if self.free_run.load(Ordering::Relaxed) { &self.rig.capture_free_run } else { &self.rig.capture_triggered }.load(Ordering::Relaxed)
+        self.rig.capture.load(Ordering::Relaxed)
     }
 
-    /// 连续采集且不在布防期间的帧只更新缩略图，不送节拍。
+    /// 连续采集的帧只更新缩略图，不送节拍。
     fn wanted(&self) -> bool {
-        !self.free_run.load(Ordering::Relaxed) || self.rig.streaming.load(Ordering::Relaxed)
+        !self.free_run.load(Ordering::Relaxed)
     }
 
     /// 连续采集时缩略图最多每 100 ms 做一张（前端 250 ms 才取一次）；触发采集的帧少，每帧都做，示教裁模板用的就是显示的那帧。
@@ -273,13 +265,45 @@ impl Shared {
         }
     }
 
-    fn deliver_in_order(&self, seq: u64, frame: Option<Frame>) {
+    /// 海康相机的一帧（像素格式已认过）：缩略图到时或要留整帧时才转灰度，缩略图与整帧用同一张灰度。
+    fn gray_image(&self, pixel_type: u32, w: u32, h: u32, data: &[u8]) -> Option<Arc<FrameImage>> {
+        let due = self.preview_due();
+        let keep = (self.capture() && self.wanted()) | self.grab.swap(false, Ordering::SeqCst);
+        if !due && !keep {
+            return None;
+        }
+        let gray = match to_gray(&self.rig.pool, pixel_type, w, h, data) {
+            Ok(g) => g,
+            Err(e) => {
+                self.unusable(e);
+                return None;
+            }
+        };
+        if due {
+            *self.preview.lock().unwrap() = Some(make_preview(gray.pixels(), w as usize, h as usize));
+        }
+        keep.then(|| Arc::new(gray.into_image(&self.rig.pool, w, h)))
+    }
+
+    /// 不支持的像素格式不静默丢弃：计数并记下原因，显示在相机状态里。
+    fn unusable(&self, e: String) {
+        self.unusable.fetch_add(1, Ordering::Relaxed);
+        *self.unusable_msg.lock().unwrap() = e;
+    }
+
+    /// 有帧没能出灰度图时给状态栏的说明。
+    fn unusable_note(&self) -> Option<String> {
+        let n = self.unusable.load(Ordering::Relaxed);
+        (n > 0).then(|| format!("{}：{n} 帧没有图像", self.unusable_msg.lock().unwrap()))
+    }
+
+    fn deliver_in_order(&self, session: u64, seq: u64, frame: Option<Frame>) {
         let mut order = self.order.lock().unwrap();
         // 每台相机的帧序号从 1 开始；不能拿先到的那帧当起点，否则先合成完的第 2 帧会把第 1 帧挤到后面
         if order.next == 0 {
             order.next = 1;
         }
-        if seq < order.next {
+        if session != order.session || seq < order.next {
             drop(order);
             if let Some(f) = frame {
                 self.deliver(f);
@@ -353,6 +377,96 @@ impl Shared {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PixelKind {
+    Mono8,
+    Bayer8,
+}
+
+/// SDK 报的像素格式：Mono8 原样用，8 位 Bayer 转灰度（D-9），其他不支持。
+fn pixel_kind(pixel_type: u32) -> Result<PixelKind, String> {
+    match pixel_type {
+        mvs::PIXEL_MONO8 => Ok(PixelKind::Mono8),
+        mvs::PIXEL_BAYER_GR8 | mvs::PIXEL_BAYER_RG8 | mvs::PIXEL_BAYER_GB8 | mvs::PIXEL_BAYER_BG8 => Ok(PixelKind::Bayer8),
+        t => Err(format!("像素格式 0x{t:08X} 不支持（需要 Mono8 或 8 位 Bayer）")),
+    }
+}
+
+/// 一帧灰度：Mono8 直接借 SDK 的缓冲（留整帧时才拷），Bayer 转换后的已在缓冲池里。
+enum Gray<'a> {
+    Raw(&'a [u8]),
+    Pooled(FrameImage),
+}
+
+impl Gray<'_> {
+    fn pixels(&self) -> &[u8] {
+        match self {
+            Gray::Raw(p) => p,
+            Gray::Pooled(img) => &img.pixels,
+        }
+    }
+
+    fn into_image(self, pool: &FramePool, w: u32, h: u32) -> FrameImage {
+        match self {
+            Gray::Raw(p) => pool.copy(w, h, p),
+            Gray::Pooled(img) => img,
+        }
+    }
+}
+
+/// 取图回调收到的像素转成 8 位灰度。
+fn to_gray<'a>(pool: &FramePool, pixel_type: u32, w: u32, h: u32, data: &'a [u8]) -> Result<Gray<'a>, String> {
+    match pixel_kind(pixel_type)? {
+        PixelKind::Mono8 => Ok(Gray::Raw(data)),
+        PixelKind::Bayer8 => pool.bayer8_to_gray(w, h, data).map(Gray::Pooled),
+    }
+}
+
+/// 海康相机本次打开开上了哪些计数 Chunk（ChunkModeActive 与对应项的 ChunkEnable 都设上了）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Chunks {
+    trigger: bool,
+    frame: bool,
+}
+
+/// Chunk 选项按名字归类（各型号命名不一，按关键字认；W0 台架核对现场相机的 ChunkSelector）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChunkItem {
+    Trigger,
+    Frame,
+    Timestamp,
+}
+
+fn chunk_item(entry: &str) -> Option<ChunkItem> {
+    let l = entry.to_lowercase();
+    if l.contains("trigger") {
+        Some(ChunkItem::Trigger)
+    } else if l.contains("frame") && l.contains("count") {
+        Some(ChunkItem::Frame)
+    } else if l.contains("timestamp") {
+        Some(ChunkItem::Timestamp)
+    } else {
+        None
+    }
+}
+
+/// 海康一帧的 (帧计数, 触发计数, 来源)。帧计数取 Chunk 帧计数，没有时取 SDK 帧号（同以前）。
+/// 开了触发计数 Chunk 就用 Chunk 触发计数，0 也照收（开流后第一个触发记 0 还是 1 待台架确认）；
+/// 没开但 SDK 报了非零触发计数也认。都没有时数值仍填帧计数给界面和日志，来源如实标出，不能拿来认拍照点。
+fn mvs_counters(frame_num: u32, chunk_frame: u32, trigger_index: u32, chunks: Chunks) -> (u64, u64, CounterSource) {
+    let frame_counter = if chunk_frame != 0 { chunk_frame } else { frame_num } as u64;
+    if chunks.trigger || trigger_index != 0 {
+        return (frame_counter, trigger_index as u64, CounterSource::ChunkTrigger);
+    }
+    let source = if chunks.frame || chunk_frame != 0 { CounterSource::ChunkFrame } else { CounterSource::SdkFrame };
+    (frame_counter, frame_counter, source)
+}
+
+/// 模拟 / 回放的一帧：帧计数与触发计数都是本会话的帧号。
+fn synthetic_frame(cam: u8, session: u64, n: u64, image: Option<Arc<FrameImage>>) -> Frame {
+    Frame { cam, session, counter: CounterSource::Synthetic, frame_counter: n, trigger_counter: n, lost_packets: 0, ts: now_ms(), manual: false, image }
+}
+
 extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_void) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if info.is_null() || user.is_null() {
@@ -360,18 +474,21 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
         }
         let shared = unsafe { &*(user as *const Shared) };
         let info = unsafe { &*info };
-        let frame_counter = if info.frame_counter != 0 { info.frame_counter } else { info.frame_num } as u64;
-        let trigger_counter = if info.trigger_index != 0 { info.trigger_index as u64 } else { frame_counter };
-        let mono = info.pixel_type == mvs::PIXEL_MONO8 && !data.is_null();
+        let chunks = Chunks { trigger: shared.chunk_trigger.load(Ordering::Relaxed), frame: shared.chunk_frame.load(Ordering::Relaxed) };
+        let (frame_counter, trigger_counter, counter) = mvs_counters(info.frame_num, info.frame_counter, info.trigger_index, chunks);
+        let session = shared.session.load(Ordering::SeqCst);
         let w = if info.extend_width != 0 { info.extend_width } else { info.width as u32 };
         let h = if info.extend_height != 0 { info.extend_height } else { info.height as u32 };
-        let src = mono.then(|| unsafe { std::slice::from_raw_parts(data, (w * h) as usize) });
-        if let Some(src) = src.filter(|_| shared.preview_due()) {
-            *shared.preview.lock().unwrap() = Some(make_preview(src, w as usize, h as usize));
-        }
-        let keep = src.is_some() && ((shared.capture() && shared.wanted()) | shared.grab.swap(false, Ordering::SeqCst));
-        let image = src.filter(|_| keep).map(|src| Arc::new(shared.rig.pool.copy(w, h, src)));
-        shared.deliver(Frame { cam: shared.cam, frame_counter, trigger_counter, lost_packets: info.lost_packet, ts: now_ms(), manual: false, image });
+        // 先认像素格式，再按每像素 1 字节取缓冲（Mono8 与 8 位 Bayer 都是）
+        let image = match pixel_kind(info.pixel_type) {
+            Err(e) => {
+                shared.unusable(e);
+                None
+            }
+            Ok(_) if data.is_null() => None,
+            Ok(_) => shared.gray_image(info.pixel_type, w, h, unsafe { std::slice::from_raw_parts(data, (w * h) as usize) }),
+        };
+        shared.deliver(Frame { cam: shared.cam, session, counter, frame_counter, trigger_counter, lost_packets: info.lost_packet, ts: now_ms(), manual: false, image });
     }));
 }
 
@@ -394,8 +511,8 @@ pub struct CameraSlot {
     shared: Arc<Shared>,
     config: Mutex<CameraConfig>,
     state: Mutex<DeviceState>,
-    frame_seq: AtomicU64,
-    trigger_seq: AtomicU64,
+    /// 模拟 / 回放本会话已出的触发数（帧计数与触发计数相同）
+    seq: Mutex<u64>,
     replay: Mutex<Option<ReplayState>>,
 }
 
@@ -428,15 +545,24 @@ impl CameraSlot {
                 last_emit: Mutex::new(None),
                 disconnected: AtomicBool::new(false),
                 order: Mutex::new(Reorder::default()),
+                unusable: AtomicU64::new(0),
+                unusable_msg: Mutex::new(String::new()),
+                session: AtomicU64::new(0),
+                chunk_trigger: AtomicBool::new(false),
+                chunk_frame: AtomicBool::new(false),
             }),
             config: Mutex::new(config),
             state: Mutex::new(DeviceState::default()),
-            frame_seq: AtomicU64::new(0),
-            trigger_seq: AtomicU64::new(0),
+            seq: Mutex::new(0),
             replay: Mutex::new(None),
         };
-        if slot.config().source == CameraSource::Replay {
-            let _ = slot.load_replay();
+        match slot.config().source {
+            CameraSource::Sim => slot.new_session(),
+            CameraSource::Replay => {
+                let _ = slot.load_replay();
+            }
+            // 海康相机打开时才有会话
+            CameraSource::Mvs => {}
         }
         slot
     }
@@ -463,9 +589,13 @@ impl CameraSlot {
         let message = match (config.source, replay) {
             (CameraSource::Sim, _) => match config.acquisition {
                 Acquisition::Triggered => "模拟相机：收到触发后约 180 ms 交付一帧".to_string(),
-                Acquisition::FreeRun => format!("模拟相机：布防期间按 {} fps 合成随动画面", config.fps),
+                Acquisition::FreeRun => "模拟相机：连续采集不合成画面，飞拍要用触发采集".to_string(),
             },
             (CameraSource::Replay, Some((n, next))) => format!("回放 {n} 帧 · 下一帧第 {} 张", next + 1),
+            (CameraSource::Mvs, _) => match self.shared.unusable_note() {
+                Some(note) => format!("{note} · {state_message}"),
+                None => state_message,
+            },
             _ => state_message,
         };
         CameraStatus {
@@ -491,7 +621,7 @@ impl CameraSlot {
         self.shared.last_full.lock().unwrap().clone()
     }
 
-    /// 等下一帧留一张整帧：海康相机连续采集时空闲不拷整帧，标定试测要现取。
+    /// 等下一帧留一张整帧：海康相机空闲时不一定拷整帧，示教、标定取样要现取。
     pub fn grab_full(&self, timeout: Duration) -> Option<Arc<FrameImage>> {
         let before = self.shared.full_seq.load(Ordering::SeqCst);
         self.shared.grab.store(true, Ordering::SeqCst);
@@ -516,43 +646,35 @@ impl CameraSlot {
         }
     }
 
-    pub fn is_free_run(&self) -> bool {
-        self.shared.free_run.load(Ordering::Relaxed)
+    /// 开一个新会话：海康每次打开，模拟 / 回放每次（重新）加载。模拟 / 回放的计数从 0 重来，
+    /// 与真机重新开流后计数可能清零一样，靠会话号区分前后两段。
+    fn new_session(&self) {
+        let mut seq = self.seq.lock().unwrap();
+        let session = NEXT_SESSION.fetch_add(1, Ordering::SeqCst);
+        *seq = 0;
+        *self.shared.order.lock().unwrap() = Reorder { session, ..Reorder::default() };
+        self.shared.session.store(session, Ordering::SeqCst);
     }
 
+    /// 模拟 / 回放的下一帧：(会话号, 帧号)，帧号即触发计数，本会话从 1 起。
     fn next_counters(&self) -> (u64, u64) {
-        (self.frame_seq.fetch_add(1, Ordering::SeqCst) + 1, self.trigger_seq.fetch_add(1, Ordering::SeqCst) + 1)
+        let mut seq = self.seq.lock().unwrap();
+        *seq += 1;
+        (self.shared.session.load(Ordering::SeqCst), *seq)
     }
 
-    /// 下一张回放图。布防中连续采集按录制时刻回放时放完为止；手动一张张看、触发采集时到末尾后从头再来。
+    /// 下一张回放图，到末尾后从头再来。
     fn next_replay(&self) -> Option<PathBuf> {
-        let free_run = self.config().acquisition == Acquisition::FreeRun;
-        let streaming = self.shared.rig.streaming.load(Ordering::SeqCst);
         let mut guard = self.replay.lock().unwrap();
         let r = guard.as_mut()?;
-        let once = free_run && streaming && r.times.is_some();
-        if once && r.next >= r.files.len() {
-            return None;
-        }
         let p = r.files[r.next % r.files.len()].clone();
-        r.next = if once { r.next + 1 } else { (r.next + 1) % r.files.len() };
+        r.next = (r.next + 1) % r.files.len();
         Some(p)
     }
 
-    /// 按录制时刻回放时，下一帧离现在还有多久；没有时间线返回 None（按帧率出帧）。
-    fn replay_due(&self) -> Option<Due> {
-        let guard = self.replay.lock().unwrap();
-        let r = guard.as_ref()?;
-        let times = r.times.as_ref()?;
-        let Some(&t) = times.get(r.next) else { return Some(Due::Done) };
-        let started = (*self.shared.rig.stream_started.lock().unwrap())?;
-        let due = Duration::from_millis(t.max(0) as u64);
-        let elapsed = started.elapsed();
-        Some(if elapsed >= due { Due::Now } else { Due::Wait(due - elapsed) })
-    }
-
-    /// 扫描回放目录。扫描（网络盘上可能很慢）时不持有任何锁。
+    /// 扫描回放目录，开一个新会话。扫描（网络盘上可能很慢）时不持有任何锁。
     fn load_replay(&self) -> Result<String, String> {
+        self.new_session();
         let config = self.config();
         let dir = config.replay_dir.trim().to_string();
         let path = std::path::Path::new(&dir);
@@ -564,7 +686,7 @@ impl CameraSlot {
         });
         match scanned {
             Ok((files, times)) => {
-                let msg = format!("回放目录 {dir}：{} 帧{}", files.len(), if times.is_some() { "（按录制时刻）" } else { "" });
+                let msg = format!("回放目录 {dir}：{} 帧{}", files.len(), if times.is_some() { "（帧录制）" } else { "" });
                 *self.replay.lock().unwrap() = Some(ReplayState { files, next: 0, times });
                 Ok(msg)
             }
@@ -573,12 +695,6 @@ impl CameraSlot {
                 self.state.lock().unwrap().message = e.clone();
                 Err(e)
             }
-        }
-    }
-
-    fn rewind_replay(&self) {
-        if let Some(r) = self.replay.lock().unwrap().as_mut() {
-            r.next = 0;
         }
     }
 
@@ -596,10 +712,10 @@ impl CameraSlot {
         let cam = self.shared.cam;
         match config.source {
             CameraSource::Sim => {
-                let (frame_counter, trigger_counter) = self.next_counters();
+                let (session, n) = self.next_counters();
                 let shared = self.shared.clone();
                 if lose_in_transfer {
-                    shared.deliver_in_order(frame_counter, None);
+                    shared.deliver_in_order(session, n, None);
                     return true;
                 }
                 tauri::async_runtime::spawn(async move {
@@ -616,8 +732,7 @@ impl CameraSlot {
                         shared.set_preview(&img);
                         Arc::new(img)
                     });
-                    let frame = Frame { cam, frame_counter, trigger_counter, lost_packets: 0, ts: now_ms(), manual: false, image };
-                    shared.deliver_in_order(frame_counter, Some(frame));
+                    shared.deliver_in_order(session, n, Some(synthetic_frame(cam, session, n, image)));
                 });
                 true
             }
@@ -626,7 +741,7 @@ impl CameraSlot {
             }
             CameraSource::Replay => {
                 let Some(path) = self.next_replay() else { return false };
-                let (frame_counter, trigger_counter) = self.next_counters();
+                let (session, n) = self.next_counters();
                 let shared = self.shared.clone();
                 tauri::async_runtime::spawn(async move {
                     let loaded = tauri::async_runtime::spawn_blocking(move || replay::load(&path)).await.map_err(|e| e.to_string());
@@ -634,11 +749,11 @@ impl CameraSlot {
                         Ok(img) => {
                             shared.set_preview(&img);
                             let image = Some(Arc::new(img));
-                            shared.deliver_in_order(frame_counter, Some(Frame { cam, frame_counter, trigger_counter, lost_packets: 0, ts: now_ms(), manual: false, image }));
+                            shared.deliver_in_order(session, n, Some(synthetic_frame(cam, session, n, image)));
                         }
                         Err(e) => {
                             cycle::log(&shared.rig.app, "err", "回放", e);
-                            shared.deliver_in_order(frame_counter, None);
+                            shared.deliver_in_order(session, n, None);
                         }
                     }
                 });
@@ -647,34 +762,10 @@ impl CameraSlot {
         }
     }
 
-    /// 连续采集的一帧（模拟 / 回放）。阻塞执行，由采集循环调用。
-    fn produce_free_run(&self) -> Option<Frame> {
-        let config = self.config();
-        let ts = now_ms();
-        let img = match config.source {
-            CameraSource::Sim => {
-                let source = self.shared.rig.sim_source.lock().unwrap().clone()?;
-                source(self.shared.cam, ts)?
-            }
-            CameraSource::Replay => match replay::load(&self.next_replay()?) {
-                Ok(img) => img,
-                Err(e) => {
-                    cycle::log(&self.shared.rig.app, "err", "回放", e);
-                    return None;
-                }
-            },
-            CameraSource::Mvs => return None,
-        };
-        self.shared.set_preview(&img);
-        let (frame_counter, trigger_counter) = self.next_counters();
-        self.shared.order.lock().unwrap().next = frame_counter + 1;
-        let image = self.shared.capture().then(|| Arc::new(img));
-        Some(Frame { cam: self.shared.cam, frame_counter, trigger_counter, lost_packets: 0, ts, manual: false, image })
-    }
-
     fn close(&self) {
         self.device.lock().unwrap().take();
         self.shared.disconnected.store(false, Ordering::SeqCst);
+        self.shared.unusable.store(0, Ordering::Relaxed);
     }
 
     fn open(&self) -> Result<String, String> {
@@ -689,12 +780,17 @@ impl CameraSlot {
     fn try_open(&self) -> Result<String, String> {
         let config = self.config();
         let device = mvs::Device::open(&config.serial, &self.claimed_serials())?;
-        let (warnings, max_fps) = apply(&device, &config);
+        let (warnings, max_fps, format, chunks) = apply(&device, &config)?;
+        self.shared.chunk_trigger.store(chunks.trigger, Ordering::Relaxed);
+        self.shared.chunk_frame.store(chunks.frame, Ordering::Relaxed);
+        // 开流前换会话：之后来的帧都算这次打开的
+        self.new_session();
         device.start(on_image, on_exception, Arc::as_ptr(&self.shared) as *mut c_void)?;
-        let mut msg = format!("已连接 {} · {}", device.summary.model, device.summary.serial);
+        let format = if format == "Mono8" { format.to_string() } else { format!("{format} → 灰度") };
+        let mut msg = format!("已连接 {} · {} · {format}", device.summary.model, device.summary.serial);
         let serial = device.summary.serial.clone();
         *self.device.lock().unwrap() = Some(device);
-        // 序列号留空的相机开到哪台就固定成哪台：重启、增删相机后还是这台，胶嘴标定跟着它。打开期间用户另选了序列号就不动
+        // 序列号留空的相机开到哪台就固定成哪台：重启、增删相机后还是这台，标定跟着它。打开期间用户另选了序列号就不动
         let pinned = config.serial.is_empty() && {
             let mut c = self.config.lock().unwrap();
             let empty = c.serial.is_empty();
@@ -737,6 +833,7 @@ impl CameraSlot {
         match self.config().source {
             CameraSource::Sim => {
                 self.close();
+                self.new_session();
                 Ok(Vec::new())
             }
             CameraSource::Replay => {
@@ -752,16 +849,41 @@ impl CameraSlot {
     }
 }
 
-/// 写入相机参数。个别型号不支持的节点记为警告，不阻止取流。
-fn apply(d: &mvs::Device, c: &CameraConfig) -> (Vec<String>, Option<f32>) {
+/// 8 位 Bayer 的取用顺序（现场相机是 BG）。
+const BAYER8: [&str; 4] = ["BayerBG8", "BayerRG8", "BayerGB8", "BayerGR8"];
+
+/// 相机可选项里的 8 位 Bayer，按 BAYER8 的顺序。
+fn bayer8_choices(entries: &[String]) -> Vec<&'static str> {
+    BAYER8.into_iter().filter(|f| entries.iter().any(|e| e == f)).collect()
+}
+
+/// 先设 Mono8；彩色相机没有 Mono8 时取 8 位 Bayer，取图回调里转灰度（D-9）。都设不上时不能取流。
+fn set_pixel_format(d: &mvs::Device) -> Result<&'static str, String> {
+    let Err(mut last) = d.set_enum("PixelFormat", "Mono8") else { return Ok("Mono8") };
+    let entries = d.enum_entries("PixelFormat").map_err(|e| format!("像素格式设不了 Mono8（{last}），也读不出相机支持的格式：{e}"))?;
+    for f in bayer8_choices(&entries) {
+        match d.set_enum("PixelFormat", f) {
+            Ok(()) => return Ok(f),
+            Err(e) => last = e,
+        }
+    }
+    let list = if entries.is_empty() { "无".to_string() } else { entries.join("、") };
+    Err(format!("像素格式需要 Mono8 或 8 位 Bayer，相机可选：{list}（{last}）"))
+}
+
+/// 写入相机参数。像素格式设不上时返回错误（相机不就绪）；其余个别型号不支持的节点记为警告，不阻止取流。
+/// 返回警告、最高帧率、选用的像素格式与开上了的计数 Chunk。
+fn apply(d: &mvs::Device, c: &CameraConfig) -> Result<(Vec<String>, Option<f32>, &'static str, Chunks), String> {
     let mut warnings = Vec::new();
-    let mut must = |r: Result<(), String>| {
-        if let Err(e) = r {
+    let mut must = |r: Result<(), String>| match r {
+        Ok(()) => true,
+        Err(e) => {
             warnings.push(e);
+            false
         }
     };
     must(d.set_enum("AcquisitionMode", "Continuous"));
-    must(d.set_enum("PixelFormat", "Mono8"));
+    let format = set_pixel_format(d)?;
     match c.acquisition {
         Acquisition::Triggered => {
             let _ = d.set_enum("TriggerSelector", "FrameBurstStart");
@@ -793,26 +915,27 @@ fn apply(d: &mvs::Device, c: &CameraConfig) -> (Vec<String>, Option<f32>) {
             let _ = d.set_bool("StrobeEnable", false);
         }
     }
+    let mut chunks = Chunks::default();
     if c.chunk {
-        must(d.set_bool("ChunkModeActive", true));
+        let active = must(d.set_bool("ChunkModeActive", true));
         match d.enum_entries("ChunkSelector") {
             Ok(entries) => {
-                let wanted: Vec<_> = entries
-                    .iter()
-                    .filter(|e| {
-                        let l = e.to_lowercase();
-                        (l.contains("frame") && l.contains("count")) || l.contains("trigger") || l.contains("timestamp")
-                    })
-                    .collect();
+                let wanted: Vec<_> = entries.iter().filter_map(|e| chunk_item(e).map(|item| (e, item))).collect();
                 if wanted.is_empty() {
                     must(Err(format!("相机不支持帧计数 / 触发计数 Chunk（可选项：{}）", entries.join("、"))));
                 }
-                for e in wanted {
-                    must(d.set_enum("ChunkSelector", e));
-                    must(d.set_bool("ChunkEnable", true));
+                for (e, item) in wanted {
+                    let on = must(d.set_enum("ChunkSelector", e)) & must(d.set_bool("ChunkEnable", true));
+                    match item {
+                        ChunkItem::Trigger => chunks.trigger |= active && on,
+                        ChunkItem::Frame => chunks.frame |= active && on,
+                        ChunkItem::Timestamp => {}
+                    }
                 }
             }
-            Err(e) => must(Err(e)),
+            Err(e) => {
+                must(Err(e));
+            }
         }
     } else {
         let _ = d.set_bool("ChunkModeActive", false);
@@ -823,7 +946,7 @@ fn apply(d: &mvs::Device, c: &CameraConfig) -> (Vec<String>, Option<f32>) {
         }
     }
     let max_fps = d.get_float("ResultingFrameRate").ok();
-    (warnings, max_fps)
+    Ok((warnings, max_fps, format, chunks))
 }
 
 pub struct CameraRig {
@@ -861,12 +984,8 @@ impl CameraRig {
             app: app.clone(),
             tx,
             pool: FramePool::new(48),
-            capture_triggered: AtomicBool::new(false),
-            capture_free_run: AtomicBool::new(false),
-            streaming: AtomicBool::new(false),
+            capture: AtomicBool::new(false),
             dry_run: Mutex::new(None),
-            sim_source: Mutex::new(None),
-            stream_started: Mutex::new(None),
         });
         let slots = file.cameras.into_iter().enumerate().map(|(i, c)| Arc::new(CameraSlot::new(&rig, i as u8, c))).collect();
         let mut this = Self { rig, slots: RwLock::new(slots), path, next_id: Mutex::new(file.next_id), save_lock: Mutex::new(()), generation: AtomicU64::new(0), notes };
@@ -954,27 +1073,9 @@ impl CameraRig {
         }
     }
 
-    /// 取图回调是否拷贝整帧：触发采集（飞拍）与连续采集（随动）的相机分别设置。
-    pub fn set_capture(&self, triggered: bool, free_run: bool) {
-        self.rig.capture_triggered.store(triggered, Ordering::Relaxed);
-        self.rig.capture_free_run.store(free_run, Ordering::Relaxed);
-    }
-
-    /// 布防期间打开：连续采集的相机开始把帧送进节拍。打开时回放从第一张开始。
-    pub fn set_streaming(&self, on: bool) {
-        if on && !self.rig.streaming.load(Ordering::SeqCst) {
-            for s in self.slots() {
-                if s.config().acquisition == Acquisition::FreeRun {
-                    s.rewind_replay();
-                }
-            }
-            *self.rig.stream_started.lock().unwrap() = Some(Instant::now());
-        }
-        self.rig.streaming.store(on, Ordering::SeqCst);
-    }
-
-    pub fn set_sim_source(&self, source: Option<SimSource>) {
-        *self.rig.sim_source.lock().unwrap() = source;
+    /// 取图回调是否拷贝整帧。
+    pub fn set_capture(&self, on: bool) {
+        self.rig.capture.store(on, Ordering::Relaxed);
     }
 
     pub fn trigger(&self, cam: u8, lose_in_transfer: bool, render: Option<SimRender>) -> bool {
@@ -1003,8 +1104,7 @@ impl CameraRig {
     }
 }
 
-/// 每台相机一个后台循环：海康相机掉线或未打开时每 2 s 重连；模拟 / 回放相机连续采集时按帧率出帧。
-/// 相机被移出相机组后循环自己结束。
+/// 每台相机一个后台循环：海康相机掉线或未打开时每 2 s 重连。相机被移出相机组后循环自己结束。
 fn supervise(app: &AppHandle, slot: Weak<CameraSlot>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -1013,7 +1113,6 @@ fn supervise(app: &AppHandle, slot: Weak<CameraSlot>) {
         loop {
             let Some(s) = slot.upgrade() else { break };
             let config = s.config();
-            let streaming = s.shared.rig.streaming.load(Ordering::SeqCst);
             if config.source == CameraSource::Mvs && Instant::now() >= next_retry {
                 next_retry = Instant::now() + Duration::from_secs(2);
                 let lost = s.shared.disconnected.load(Ordering::SeqCst);
@@ -1037,36 +1136,8 @@ fn supervise(app: &AppHandle, slot: Weak<CameraSlot>) {
                     }
                 }
             }
-            let generate = streaming && config.acquisition == Acquisition::FreeRun && config.source != CameraSource::Mvs;
-            if !generate {
-                drop(s);
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                continue;
-            }
-            let timeline = if config.source == CameraSource::Replay { s.replay_due() } else { None };
-            match timeline {
-                Some(Due::Done) => {
-                    drop(s);
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                    continue;
-                }
-                Some(Due::Wait(d)) => {
-                    drop(s);
-                    tokio::time::sleep(d.min(Duration::from_millis(20))).await;
-                    continue;
-                }
-                _ => {}
-            }
-            let started = Instant::now();
-            let s2 = s.clone();
-            if let Ok(Some(frame)) = tauri::async_runtime::spawn_blocking(move || s2.produce_free_run()).await {
-                s.shared.deliver(frame);
-            }
             drop(s);
-            if timeline.is_none() {
-                let period = Duration::from_secs_f32(1.0 / config.fps.max(1.0));
-                tokio::time::sleep(period.saturating_sub(started.elapsed()).max(Duration::from_millis(1))).await;
-            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     });
 }
@@ -1298,4 +1369,81 @@ pub fn camera_dry_run_get(cycle: State<'_, CycleHost>) -> Option<Vec<DryFrame>> 
 #[tauri::command]
 pub fn camera_dry_run_stop(cycle: State<'_, CycleHost>) -> Vec<DryFrame> {
     cycle.camera.rig.dry_run.lock().unwrap().take().map(|(_, f)| f).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod gray_tests {
+    use super::*;
+
+    #[test]
+    fn mono8_passes_through_unchanged() {
+        let pool = FramePool::new(2);
+        let data: Vec<u8> = (0..12).map(|i| i * 20).collect();
+        let gray = to_gray(&pool, mvs::PIXEL_MONO8, 4, 3, &data).unwrap();
+        assert!(matches!(gray, Gray::Raw(_)));
+        assert_eq!(gray.pixels(), &data[..]);
+        let img = gray.into_image(&pool, 4, 3);
+        assert_eq!((img.width, img.height), (4, 3));
+        assert_eq!(img.pixels, data);
+    }
+
+    #[test]
+    fn bayer8_is_converted() {
+        let pool = FramePool::new(2);
+        // BG 相位、R = 200、G = 100、B = 40 的纯色块
+        let (w, h) = (6, 4);
+        let data: Vec<u8> = (0..w * h).map(|i| match (i / w % 2, i % w % 2) {
+            (0, 0) => 40,
+            (1, 1) => 200,
+            _ => 100,
+        }).collect();
+        let gray = to_gray(&pool, mvs::PIXEL_BAYER_BG8, w as u32, h as u32, &data).unwrap();
+        assert!(gray.pixels().iter().all(|&v| v == 110));
+        let img = gray.into_image(&pool, w as u32, h as u32);
+        assert_eq!((img.width, img.height, img.pixels.len()), (6, 4, 24));
+        for t in [mvs::PIXEL_BAYER_GR8, mvs::PIXEL_BAYER_RG8, mvs::PIXEL_BAYER_GB8, mvs::PIXEL_BAYER_BG8] {
+            assert_eq!(pixel_kind(t), Ok(PixelKind::Bayer8));
+        }
+        assert!(to_gray(&pool, mvs::PIXEL_BAYER_BG8, 1, 24, &data).is_err());
+    }
+
+    #[test]
+    fn unsupported_format_is_an_error() {
+        let pool = FramePool::new(2);
+        let err = to_gray(&pool, 0x0110_0003, 2, 2, &[0; 8]).err().unwrap();
+        assert_eq!(err, "像素格式 0x01100003 不支持（需要 Mono8 或 8 位 Bayer）");
+        assert!(pixel_kind(0x0108_000C).is_err());
+    }
+
+    #[test]
+    fn trigger_counter_source_is_reported_honestly() {
+        let none = Chunks::default();
+        let both = Chunks { trigger: true, frame: true };
+        // 开了触发计数 Chunk：用触发计数，0 也照收
+        assert_eq!(mvs_counters(9, 5, 3, both), (5, 3, CounterSource::ChunkTrigger));
+        assert_eq!(mvs_counters(9, 5, 0, both), (5, 0, CounterSource::ChunkTrigger));
+        // 没开但 SDK 报了非零触发计数（同以前的取值）
+        assert_eq!(mvs_counters(9, 5, 3, none), (5, 3, CounterSource::ChunkTrigger));
+        // 没有触发计数：数值仍是帧计数（界面、日志照旧），来源不再冒充触发计数
+        assert_eq!(mvs_counters(9, 5, 0, Chunks { trigger: false, frame: true }), (5, 5, CounterSource::ChunkFrame));
+        assert_eq!(mvs_counters(9, 5, 0, none), (5, 5, CounterSource::ChunkFrame));
+        assert_eq!(mvs_counters(9, 0, 0, none), (9, 9, CounterSource::SdkFrame));
+    }
+
+    #[test]
+    fn chunk_entries_are_classified_by_name() {
+        assert_eq!(chunk_item("TriggerID"), Some(ChunkItem::Trigger));
+        assert_eq!(chunk_item("Triggercounter"), Some(ChunkItem::Trigger));
+        assert_eq!(chunk_item("FrameCounter"), Some(ChunkItem::Frame));
+        assert_eq!(chunk_item("Timestamp"), Some(ChunkItem::Timestamp));
+        assert_eq!(chunk_item("Exposure"), None);
+        assert_eq!(chunk_item("Width"), None);
+    }
+
+    #[test]
+    fn picks_8bit_bayer_in_preferred_order() {
+        let entries = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(bayer8_choices(&entries(&["BayerGR8", "BayerBG10", "BayerBG8"])), ["BayerBG8", "BayerGR8"]);
+        assert!(bayer8_choices(&entries(&["BayerBG10", "BayerBG12Packed", "Mono10"])).is_empty());
+    }
 }

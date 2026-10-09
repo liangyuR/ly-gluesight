@@ -7,9 +7,9 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::camera::Acquisition;
 use crate::cycle::{CycleHost, Input, RecipeSummary};
-use crate::recipe::{self, default_follow_spec, ImportedPath, InspectMode, Recipe, RecipeDoc};
+use crate::recipe::{self, Recipe, RecipeDoc};
 use crate::settings::CycleSettings;
-use crate::vision::{self, VisionHost};
+
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,24 +35,21 @@ pub fn recipe_preview(doc: RecipeDoc) -> Result<Recipe, String> {
     doc.build()
 }
 
-/// 新建配方的起点：复制现有配方，或按工况给一份默认值。
+/// 新建配方的起点：一份飞拍默认值。
 #[tauri::command]
-pub fn recipe_template(cycle: State<'_, CycleHost>, mode: InspectMode) -> RecipeDoc {
-    let samples = recipe::samples();
-    let mut doc = samples.into_iter().find(|d| d.mode == mode).expect("样例覆盖两种工况");
+pub fn recipe_template(cycle: State<'_, CycleHost>) -> RecipeDoc {
+    let mut doc = recipe::samples().remove(0);
     let used: Vec<u16> = cycle.recipes.list().iter().map(|r| r.product_code).collect();
     doc.product_code = (1..u16::MAX).find(|c| !used.contains(c)).unwrap_or(0);
     doc.id = format!("NEW-{}", doc.product_code);
     doc.name = "新配方".into();
     doc.version = 1;
-    // 默认挑采集方式对得上的相机：随动用连续采集的，飞拍用触发采集的
+    // 默认挑触发采集的相机
     let configs = cycle.camera.configs();
-    let fit: Vec<_> = configs.iter().filter(|c| (c.acquisition == Acquisition::FreeRun) == (mode == InspectMode::Follow)).collect();
-    let pick = if fit.is_empty() { configs.iter().collect() } else { fit };
-    if mode == InspectMode::Follow {
-        doc.follow = Some(default_follow_spec(pick.iter().take(3).map(|c| c.id.clone()).collect(), 80.0));
-    } else if let Some(c) = pick.first() {
-        doc.camera = c.id.clone();
+    if let Some(c) = configs.iter().find(|c| c.acquisition == Acquisition::Triggered).or(configs.first()) {
+        for shot in &mut doc.shots {
+            shot.camera = c.id.clone();
+        }
     }
     doc
 }
@@ -68,17 +65,7 @@ pub fn recipe_save(app: AppHandle, cycle: State<'_, CycleHost>, doc: RecipeDoc, 
     }
     let saved: Arc<Recipe> = cycle.recipes.save(doc, original_id.as_deref())?;
     if let Some(old) = original_id.filter(|o| *o != saved.id) {
-        // 示教资料按配方编号存，跟着改名
-        if let (Ok(from), Ok(to)) = (vision::taught_dir(&app, &old), vision::taught_dir(&app, &saved.id)) {
-            if from.exists() {
-                if !old.eq_ignore_ascii_case(&saved.id) {
-                    let _ = std::fs::remove_dir_all(&to);
-                }
-                let _ = std::fs::rename(&from, &to);
-            }
-        }
-        app.state::<VisionHost>().forget(&old);
-        // 改了编号的配方正被人工选中时，跟着改过去
+        // 示教的中线在配方里，跟着配方走；改了编号的配方正被人工选中时，跟着改过去
         let mut settings = cycle.settings();
         if settings.manual_recipe_id.as_deref() == Some(old.as_str()) {
             settings.manual_recipe_id = Some(saved.id.clone());
@@ -100,21 +87,10 @@ pub fn recipe_delete(app: AppHandle, cycle: State<'_, CycleHost>, id: String) ->
     }
     let settings = cycle.settings();
     cycle.recipes.delete(&id)?;
-    if let Ok(dir) = vision::taught_dir(&app, &id) {
-        let _ = std::fs::remove_dir_all(dir);
-    }
-    app.state::<VisionHost>().forget(&id);
     // 删掉的正是人工选中的配方：清掉选择，下一件报"未选择配方"而不是拿着一个不存在的编号
     if settings.manual_recipe_id.as_deref() == Some(id.as_str()) {
         cycle.save_settings_locked(CycleSettings { manual_recipe_id: None, ..settings }, &gate)?;
     }
     let _ = cycle.tx.send(Input::Refresh);
     Ok(())
-}
-
-/// 解析胶路文件的内容（前端读文件后把文本传过来）。
-#[tauri::command]
-pub fn recipe_parse_path(text: String, file_name: String) -> Result<ImportedPath, String> {
-    let ext = std::path::Path::new(&file_name).extension().and_then(|e| e.to_str()).unwrap_or("csv");
-    recipe::parse_path(&text, ext)
 }

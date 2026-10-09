@@ -5,7 +5,7 @@ import { WorkflowContext, useWorkflow } from "../features/workflow/context";
 import { initialState, reducer, restorePreview, sceneState, type View, type WorkflowState } from "../features/workflow/model";
 import { journeys, routeTo, scenes, screens } from "../features/workflow/catalog";
 import { Badge, Dialog, Notice, OverviewMap, Panel } from "../features/workflow/components";
-import { CalibrationView, DeviceView, FollowView, PlcView, SettingsView } from "../features/workflow/SetupViews";
+import { CalibrationView, DeviceView, PlcView, SettingsView } from "../features/workflow/SetupViews";
 import { GeometryView, OverviewView, RecipesView, TeachView, ValidationView } from "../features/workflow/RecipeViews";
 import { HistoryView, LiveView, RecordView } from "../features/workflow/ProductionViews";
 import "../features/workflow/workflow.css";
@@ -31,13 +31,12 @@ function GuideView() {
       state.frames = state.frames.map(f => ({ ...f, imageId: null, trial: null, saved: false }));
       state.selectedFrame = 1;
     }
-    if (index === 4) state.recipe.mode = "follow";
     dispatch({ type: "load", state });
     go(journeys[index].views[0]);
   };
   return <>
     <div className="wf-guide-hero"><div><Badge>本地交互原型</Badge><h2>看清整件，<br />把每一帧教准确。</h2><p>从设备准备到单帧示教、验证发布与历史复盘。<br />纯黑工作区，蓝色标记当前选择和主要操作。</p><div className="wf-actions"><button className="btn primary" onClick={() => go("teach")}><ScanLine size={16} />进入单帧示教</button><button className="btn" onClick={() => go("live")}>查看在线检测<ArrowRight size={16} /></button></div></div><div className="wf-guide-map"><OverviewMap /><div className="wf-guide-map-meta"><span>工件 A · 飞拍 · 6 帧</span><Badge>候选 v{s.recipe.candidate}</Badge></div></div></div>
-    <div className="wf-guide-stats"><div><strong>13</strong><span>操作页面</span></div><div><strong>32</strong><span>关键情景</span></div><div><strong>5</strong><span>完整操作路径</span></div><div><strong>0</strong><span>新增付费依赖</span></div></div>
+    <div className="wf-guide-stats"><div><strong>12</strong><span>操作页面</span></div><div><strong>31</strong><span>关键情景</span></div><div><strong>4</strong><span>完整操作路径</span></div><div><strong>0</strong><span>新增付费依赖</span></div></div>
     <Panel title="按任务开始" detail="路径中的步骤均可点击；开始路径会载入对应示例状态"><div className="wf-journeys">{journeys.map((j, i) => <article key={j.title}><div className="wf-journey-title"><span>{String(i + 1).padStart(2, "0")}</span><div><h3>{j.title}</h3><p className="wf-caption">{j.detail}</p></div><button className="btn" onClick={() => begin(i)}>开始此路径<ArrowRight size={14} /></button></div><div className="wf-journey-steps">{j.views.map((view, n) => <span key={n}><button onClick={() => go(view)}>{screens.find(s => s.id === view)?.label}</button>{n < j.views.length - 1 && <ChevronRight size={12} />}</span>)}</div></article>)}</div></Panel>
     <div className="wf-reference-grid"><Panel title="总览 → 帧 → 原图" detail="参考手册第 39、73–78 页"><p className="wf-caption">总览保留工件轮廓和帧位置。点击帧框，原图同步切换。显示布置与物理测量坐标独立。</p></Panel><Panel title="冻结 → 试匹配 → 保存" detail="参考手册第 79、104 页"><p className="wf-caption">每帧绑定冻结图像与参数。试匹配通过后保存；采集或参数变更会使相关验证失效。</p></Panel><Panel title="历史样本 → 验证 → 发布" detail="参考手册第 111–115、120 页"><p className="wf-caption">历史样本可进入示教并保留原图备份。代表性样本验证通过后，在工件边界更新生产版本。</p></Panel></div>
     <Notice title="当前为操作流程预览">图像、设备状态和测量结果使用示例数据。可体验操作与限制，真实检测继续通过现有软件和算法接口完成。</Notice>
@@ -82,7 +81,6 @@ export default function WorkflowPreviewPage() {
       case "device": return <DeviceView />;
       case "plc": return <PlcView />;
       case "calibration": return <CalibrationView />;
-      case "follow": return <FollowView />;
       case "recipes": return <RecipesView />;
       case "geometry": return <GeometryView />;
       case "teach": return <TeachView />;

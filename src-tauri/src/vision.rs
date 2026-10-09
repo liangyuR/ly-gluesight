@@ -1,7 +1,6 @@
 //! lyFlow 视觉引擎：加载 core DLL，逐帧注入图像跑飞拍检测图（定位 + 逐点卡尺），读回 glue.Pose2D 与 glue.StationMeasure。
 //! 图只量不判，判定在 judge 模块（设计稿 §9）。
 
-use std::collections::HashMap;
 use std::ffi::{c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -14,12 +13,11 @@ use tauri::{AppHandle, Manager};
 use crate::camera::CameraSource;
 use crate::cycle::CycleHost;
 pub use crate::frame::FrameImage;
-use crate::measure::{Job, JobKind, Measured, Measurer, ST_GAP, ST_INVALID, ST_OK};
+use crate::measure::{Job, Measured, Measurer};
 use crate::recipe::Recipe;
-use crate::simimage;
 
-/// 与 LyFlow packs/glue/graphs/flyshot.lyflow.json 同一份；本程序固定用它。
-pub const FLYSHOT_GRAPH: &str = include_str!("../resources/flyshot.lyflow.json");
+/// 沿示教中线量胶的 lyFlow 流程接入前（P0 步 L），图像测量与示教试测都报这一句，不用模拟值顶替实物。
+pub const TAUGHT_PATH_PENDING: &str = "沿示教中线量胶的 lyFlow 流程尚未接入（P0 步 L），图像测量暂不可用";
 
 
 unsafe extern "C" fn ignore_event(_: *const c_char, _: *mut c_void) {}
@@ -82,34 +80,20 @@ pub struct RunResult {
     pub outputs: Value,
 }
 
-/// lyFlow 飞拍流程（定位 + 逐点卡尺）作为测量后端。
+/// lyFlow 作为测量后端：沿拍照点的示教中线量胶。
 pub struct LyFlowMeasurer {
     pub app: AppHandle,
 }
 
 impl Measurer for LyFlowMeasurer {
-    fn measure(&self, job: &Job, image: &FrameImage) -> Result<Measured, String> {
-        let JobKind::Shot { k } = job.kind else {
-            return Err("lyFlow 流程目前只有飞拍版本；随动配方请在系统设置里改用本程序卡尺".into());
-        };
-        let app = &self.app;
-        let settings = app.state::<CycleHost>().settings();
-        let engine = app.state::<VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("lyFlow 核心库未加载")?;
-        let assets = assets_for(app, &job.recipe)?;
-        if !assets.calib.exists() {
-            return Err("工位未标定：先在图像源页用标定板标定".into());
+    fn measure(&self, job: &Job, _image: &FrameImage) -> Result<Measured, String> {
+        let settings = self.app.state::<CycleHost>().settings();
+        self.app.state::<VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("lyFlow 核心库未加载")?;
+        let shot = job.recipe.shots.get(job.k).ok_or("拍照点不存在")?;
+        if !shot.taught() {
+            return Err(format!("拍照点 {} 尚未示教胶路", shot.id));
         }
-        let params = assets.params(k).ok_or_else(|| format!("拍照点 k={k} 没有示教资料"))?;
-        let base = assets.calib.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-        let run_id = format!("{}-k{k}-{}", job.sn, ly_plc::now_ms());
-        let graph = assets.shots.get(k).map(|s| crate::workspace::station_graph(&s.stations)).unwrap_or_else(|| FLYSHOT_GRAPH.to_string());
-        let r = engine.run(&graph, &run_id, &base, image, &params)?;
-        if r.status() == "failed" {
-            return Err(r.failure());
-        }
-        let pose: Pose = r.record("pose").and_then(|v| serde_json::from_value(v.clone()).ok()).ok_or("图没有输出 pose")?;
-        let sm: StationMeasure = r.record("measure").and_then(|v| serde_json::from_value(v.clone()).ok()).ok_or("图没有输出 measure")?;
-        sm.into_measured(job, pose)
+        Err(TAUGHT_PATH_PENDING.into())
     }
 }
 
@@ -144,122 +128,6 @@ impl RunResult {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
-pub struct Pose {
-    pub ok: bool,
-    #[serde(default)]
-    pub score: f64,
-}
-
-/// glue.StationMeasure 里本程序用到的字段。
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StationMeasure {
-    pub unit: String,
-    pub ids: Vec<Value>,
-    pub status: Vec<String>,
-    pub inner_center: Vec<Option<f64>>,
-    pub width: Vec<Option<f64>>,
-    pub point: Vec<[f64; 2]>,
-}
-
-impl StationMeasure {
-    fn into_measured(self, job: &Job, pose: Pose) -> Result<Measured, String> {
-        if self.unit != "mm" { return Err(format!("测量单位是 {}，标定文件不是毫米", self.unit)); }
-        let n = self.ids.len();
-        if n == 0 || [self.status.len(), self.inner_center.len(), self.width.len(), self.point.len()].iter().any(|&len| len != n) {
-            return Err("算法点表为空或各列长度不一致".into());
-        }
-        if n != job.recipe.owned_points(job.k).count() { return Err("算法点表未包含本帧的全部测量点".into()); }
-        let mut seen = std::collections::HashSet::new();
-        let mut m = Measured { located: pose.ok, score: pose.score as f32, ..Measured::empty(job) };
-        for (i, id) in self.ids.iter().enumerate() {
-            let j = id.as_u64().and_then(|j| usize::try_from(j).ok())
-                .filter(|&j| j < job.recipe.point_count() && job.recipe.points.k[j] as usize == job.k)
-                .ok_or("算法输出了不属于本帧的测量点")?;
-            if !seen.insert(j) { return Err("算法输出了重复测量点".into()); }
-            let valid = |v: f64| v.is_finite() && (v as f32).is_finite();
-            if self.point[i].iter().any(|&v| !valid(v)) { return Err("算法输出了无效的图像坐标".into()); }
-            let (d, w, st) = match (self.status[i].as_str(), self.inner_center[i], self.width[i]) {
-                ("ok", Some(d), Some(w)) if pose.ok && valid(d) && valid(w) && w > 0.0 => (d as f32, w as f32, ST_OK),
-                ("no_bead", _, _) if pose.ok => (0.0, f32::NAN, ST_GAP),
-                _ => (0.0, f32::NAN, ST_INVALID),
-            };
-            m.idx.push(j as u32);
-            m.d.push(d);
-            m.w.push(w);
-            m.st.push(st);
-            m.px.push(self.point[i].map(|v| v as f32));
-        }
-        Ok(m)
-    }
-}
-
-/// 一个拍照点的视觉资料（示教产物）：模板、模板锚点、测量点文件。
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ShotAssets {
-    pub template: PathBuf,
-    pub anchor: [f64; 2],
-    pub stations: PathBuf,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VisionAssets {
-    pub recipe_id: String,
-    pub recipe_hash: String,
-    /// 模拟相机的像素当量；真实相机为 None（用工位标定）
-    pub sim_mm_per_px: Option<f64>,
-    pub calib: PathBuf,
-    pub shots: Vec<ShotAssets>,
-    /// 示教时的飞拍相机编号（旧文件没有，不核对）
-    #[serde(default)]
-    pub camera: String,
-}
-
-impl VisionAssets {
-    pub fn params(&self, k: usize) -> Option<Value> {
-        let s = self.shots.get(k).filter(|s| !s.template.as_os_str().is_empty())?;
-        let p = |p: &Path| p.to_string_lossy().replace('\\', "/");
-        Some(json!({
-            "template": p(&s.template),
-            "anchor": s.anchor,
-            "stations": p(&s.stations),
-            "calib": p(&self.calib),
-        }))
-    }
-
-    /// 模板与测量点文件按清单所在目录找：配方改名时整个目录跟着搬。
-    pub fn load(path: &Path) -> Option<Self> {
-        let mut a: Self = crate::fsio::read_text(path).ok().and_then(|s| serde_json::from_str(&s).ok())?;
-        let dir = path.parent()?;
-        for s in &mut a.shots {
-            for p in [&mut s.template, &mut s.stations] {
-                if let Some(name) = p.file_name() {
-                    *p = dir.join(name);
-                }
-            }
-        }
-        Some(a)
-    }
-
-    pub fn save(&self, path: &Path) -> Result<(), String> {
-        crate::fsio::write_atomic(path, &serde_json::to_string_pretty(self).map_err(|e| e.to_string())?)
-    }
-
-    /// 真实相机的示教资料是否还对得上配方：胶路几何、拍照点没改，飞拍相机没换。
-    pub fn fits(&self, recipe: &Recipe) -> Result<(), String> {
-        if self.recipe_hash != recipe.geometry_hash() {
-            return Err(format!("配方 {} 的胶路或拍照点改过，需要重新示教", recipe.id));
-        }
-        if !self.camera.is_empty() && self.camera != recipe.camera {
-            return Err(format!("配方 {} 换了飞拍相机（示教时是 {}），需要重新示教", recipe.id, self.camera));
-        }
-        Ok(())
-    }
-}
-
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineStatus {
@@ -282,13 +150,11 @@ fn resolve_core_path(path: Option<&str>, executable: impl FnOnce() -> std::io::R
     }
 }
 
-/// 引擎与各配方视觉资料的缓存。优先按设置路径加载，否则使用安装目录内的核心库。
+/// lyFlow 引擎。优先按设置路径加载，否则使用安装目录内的核心库。
 #[derive(Default)]
 pub struct VisionHost {
     engine: Mutex<Option<Arc<Engine>>>,
     error: Mutex<Option<String>>,
-    assets: Mutex<HashMap<String, Arc<VisionAssets>>>,
-    generating: Mutex<()>,
 }
 
 impl VisionHost {
@@ -347,18 +213,6 @@ impl VisionHost {
         }
     }
 
-    pub fn assets(&self, key: &str) -> Option<Arc<VisionAssets>> {
-        self.assets.lock().unwrap().get(key).cloned()
-    }
-
-    pub fn set_assets(&self, key: String, assets: Arc<VisionAssets>) {
-        self.assets.lock().unwrap().insert(key, assets);
-    }
-
-    /// 重新示教后丢掉该配方的缓存。
-    pub fn forget(&self, recipe_id: &str) {
-        self.assets.lock().unwrap().retain(|k, _| !k.contains(&format!(":{recipe_id}:")));
-    }
 }
 
 /// 工位标定文件（标定属于相机工位，换型不重标）。按相机编号存，增删别的相机也跟着这台相机走；cam1 沿用单相机时代的文件名。
@@ -367,78 +221,31 @@ pub fn station_calib_path(app: &AppHandle, cam_id: &str) -> Result<PathBuf, Stri
     Ok(app.path().app_config_dir().map_err(|e| e.to_string())?.join("calib").join(name))
 }
 
+/// 拍照点 k 的标定文件：按它的标定引用（缺省为相机编号）找工位标定。
+pub fn shot_calib_path(app: &AppHandle, recipe: &Recipe, k: usize) -> Result<PathBuf, String> {
+    station_calib_path(app, recipe.shots.get(k).ok_or("拍照点不存在")?.calib_ref())
+}
+
+/// 配方各相机的来源：要么全是模拟，要么全是真实 / 回放（示教资料与标定的来路不同）。
+pub fn recipe_source(app: &AppHandle, recipe: &Recipe) -> Result<CameraSource, String> {
+    let rig = &app.state::<CycleHost>().camera;
+    let mut found: Option<(CameraSource, String)> = None;
+    for id in recipe.cameras() {
+        let source = rig.slot(rig.require(&id)? as usize).ok_or("相机不存在")?.config().source;
+        match &found {
+            Some((first, first_id)) if (*first == CameraSource::Sim) != (source == CameraSource::Sim) => {
+                return Err(format!("配方 {} 的相机来源不一致：{first_id} 是 {first:?}，{id} 是 {source:?}；要么全用模拟相机，要么全用真实 / 回放相机", recipe.id));
+            }
+            Some(_) => {}
+            None => found = Some((source, id)),
+        }
+    }
+    found.map(|(s, _)| s).ok_or_else(|| format!("配方 {} 没有拍照点", recipe.id))
+}
+
 fn camera_id(app: &AppHandle, cam: u8) -> Result<String, String> {
     Ok(app.state::<CycleHost>().camera.slot(cam as usize).ok_or("相机不存在")?.config().id)
 }
-
-/// 示教资料的清单文件名（在 taught_dir 里）。
-pub const ASSETS_FILE: &str = "vision.json";
-
-/// 真实相机的飞拍示教资料目录：按配方编号，示教向导写、测量时读。
-pub fn taught_dir(app: &AppHandle, recipe_id: &str) -> Result<PathBuf, String> {
-    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("vision").join("taught").join(recipe_id))
-}
-
-/// 拍照点 k 的测量点文件（lyFlow 飞拍图的 stations 输入）。
-pub fn save_stations(dir: &Path, k: usize, points: Vec<Value>, normals: Vec<Value>, ids: Vec<usize>) -> Result<PathBuf, String> {
-    let path = dir.join(format!("k{k}.stations.json"));
-    std::fs::write(&path, json!({"points": points, "normals": normals, "ids": ids}).to_string()).map_err(|e| format!("写测量点文件失败：{e}"))?;
-    Ok(path)
-}
-
-/// 配方在当前相机下的视觉资料。模拟相机按名义几何自动生成（按配方哈希缓存）；
-/// 真实相机用示教向导的产物，标定取工位标定文件。
-pub fn assets_for(app: &AppHandle, recipe: &Recipe) -> Result<Arc<VisionAssets>, String> {
-    let rig = &app.state::<CycleHost>().camera;
-    let slot = rig.slot(rig.require(&recipe.camera)? as usize).ok_or("相机不存在")?;
-    let source = slot.config().source;
-    let host = app.state::<VisionHost>();
-    let key = format!("{source:?}:{}:{}", recipe.id, recipe.hash);
-    if let Some(a) = host.assets(&key) {
-        return Ok(a);
-    }
-    let _generating = host.generating.lock().unwrap();
-    if let Some(a) = host.assets(&key) {
-        return Ok(a);
-    }
-    let root = app.path().app_data_dir().map_err(|e| e.to_string())?.join("vision");
-    let name = format!("{}-{}", recipe.id, &recipe.hash[..8.min(recipe.hash.len())]);
-    let assets = match source {
-        CameraSource::Sim => {
-            if recipe.teaching_hash.is_some() {
-                if let Some(a) = VisionAssets::load(&taught_dir(app, &recipe.id)?.join(ASSETS_FILE))
-                    .filter(|a| a.fits(recipe).is_ok() && a.calib.exists() && a.shots.iter().all(|s| s.template.exists() && s.stations.exists())) {
-                    let assets = Arc::new(a);
-                    host.set_assets(key, assets.clone());
-                    return Ok(assets);
-                }
-            }
-            if !matches!(recipe.path, Some(crate::recipe::PathSpec::RoundedRect { .. })) {
-                return Err("模拟相机只会合成圆角矩形胶路的飞拍图像".into());
-            }
-            let dir = root.join("sim").join(name);
-            let file = dir.join(ASSETS_FILE);
-            match VisionAssets::load(&file).filter(|a| a.recipe_hash == recipe.hash && a.shots.iter().all(|s| s.template.exists())) {
-                Some(a) => a,
-                None => {
-                    let a = simimage::teach(recipe, &dir)?;
-                    a.save(&file)?;
-                    a
-                }
-            }
-        }
-        CameraSource::Mvs | CameraSource::Replay => {
-            let mut a = VisionAssets::load(&taught_dir(app, &recipe.id)?.join(ASSETS_FILE)).ok_or_else(|| format!("配方 {} 尚未示教", recipe.id))?;
-            a.fits(recipe)?;
-            a.calib = station_calib_path(app, &recipe.camera)?;
-            a
-        }
-    };
-    let assets = Arc::new(assets);
-    host.set_assets(key, assets.clone());
-    Ok(assets)
-}
-
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

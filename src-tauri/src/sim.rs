@@ -8,13 +8,11 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::time::{sleep, Instant};
 
-use crate::camera::{CameraSource, SimRender, SimSource};
+use crate::camera::{CameraSource, SimRender};
 use crate::cycle::CycleHost;
 use crate::inspection::{read_tag_u32, tag, tag_is_on, write_tag};
-use crate::measure::Engine;
 use crate::plc::PlcHost;
-use crate::recipe::{FollowTiming, InspectMode, PathSpec, Recipe, SegmentKind, TriggerMode};
-use crate::simfollow;
+use crate::recipe::{Recipe, TriggerMode};
 use crate::simimage::PoseError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,8 +21,6 @@ pub enum Scenario {
     Normal,
     Excursion,
     Gap,
-    /// 随动：一段胶宽不足
-    Narrow,
     LostFrame,
     LocateFail,
     CountMismatch,
@@ -40,13 +36,12 @@ impl Scenario {
         (self == Scenario::LocateFail).then(|| 4.min(n - 1))
     }
 
-    /// 在 k1 / k2 归属分界处两侧各放一个缺胶点：单帧看都不超限，按弧长合并后超限。
+    /// 断胶场景：第二段（只有一段时第一段）中部缺一段，比这段允许的断口长 2 mm。
     pub fn gap_points(self, recipe: &Recipe) -> Vec<usize> {
-        if self != Scenario::Gap {
-            return Vec::new();
-        }
-        let k = &recipe.points.k;
-        (0..k.len() - 1).find(|&j| k[j] == 1 && k[j + 1] == 2).map(|j| vec![j, j + 1]).unwrap_or_default()
+        let Some(g) = recipe.segments.get(1).or(recipe.segments.first()).filter(|_| self == Scenario::Gap) else { return Vec::new() };
+        let n = (((g.max_gap_len + 2.0) / recipe.spacing).ceil() as usize).min(g.count);
+        let from = g.first + (g.count - n) / 2;
+        (from..from + n).collect()
     }
 
     fn resolve(self, seed: u32) -> Scenario {
@@ -142,9 +137,6 @@ async fn run_part(app: &AppHandle, recipe: &Arc<Recipe>, scenario: Scenario, vis
     let sn = cycle.sim.next_sn.fetch_add(1, Ordering::SeqCst);
     *cycle.sim.part_scenario.lock().unwrap() = Some(scenario);
 
-    if recipe.mode == InspectMode::Follow {
-        return run_follow_part(app, recipe, scenario, sn).await;
-    }
     let shot_count = if scenario == Scenario::CountMismatch { n - 1 } else { n };
     put(app, tag::PART_SN, json!(sn)).await?;
     put(app, tag::PRODUCT_CODE, json!(recipe.product_code)).await?;
@@ -159,23 +151,23 @@ async fn run_part(app: &AppHandle, recipe: &Arc<Recipe>, scenario: Scenario, vis
             TriggerMode::Fly => 450,
             TriggerMode::Stop => 1100,
         };
-        let cam = cycle.camera.require(&recipe.camera)?;
+        let cams = recipe.shots.iter().map(|s| cycle.camera.require(&s.camera)).collect::<Result<Vec<_>, _>>()?;
         let lost = scenario.lost_frame(n);
         let locate_fail = scenario.locate_fail_frame(n);
-        // 机器人每件的定位偏差：±0.4 mm、±0.15°（模板定位要吸收它）
-        let r = |i: u32| ((sn.wrapping_mul(2_654_435_761).wrapping_add(i * 40_503) >> 8) % 1000) as f64 / 500.0 - 1.0;
-        let pose = PoseError { dx: 0.4 * r(1), dy: 0.4 * r(2), deg: 0.15 * r(3) };
+        // 机器人每件的偏差：胶条在图里平移 ±4 px（约 ±0.45 mm）、转 ±0.3°（沿中线搜索要吸收它）
+        let r = |i: u32| ((sn.wrapping_mul(2_654_435_761).wrapping_add(i * 40_503) >> 8) % 1000) as f32 / 500.0 - 1.0;
+        let pose = PoseError { dx: 4.0 * r(1), dy: 4.0 * r(2), deg: 0.3 * r(3) };
         for k in 0..n {
             sleep(Duration::from_millis(interval)).await;
             let render = vision.then(|| SimRender {
                 recipe: recipe.clone(),
                 k,
                 scenario,
-                // 定位失败场景：这一帧斜着偏开 15 mm，超出模板搜索范围，也没有哪条直边还能对上
-                pose: if locate_fail == Some(k) { PoseError { dx: pose.dx + 15.0, dy: pose.dy + 15.0, ..pose } } else { pose },
+                // 找不到胶的场景：这一帧胶条偏开约 20 mm，出了沿中线的搜索范围
+                pose: if locate_fail == Some(k) { PoseError { dx: pose.dx + 130.0, dy: pose.dy + 130.0, ..pose } } else { pose },
                 seed: sn as u64 * 16 + k as u64,
             });
-            let _ = cycle.camera.trigger(cam, lost == Some(k), render);
+            let _ = cycle.camera.trigger(cams[k], lost == Some(k), render);
         }
         sleep(Duration::from_millis(300)).await;
         put(app, tag::PART_END, json!(true)).await?;
@@ -199,112 +191,18 @@ async fn finish_part(app: &AppHandle, sn: u32) -> Result<String, String> {
     Ok(format!("SN {sn} 完成，resultCode = {code}"))
 }
 
-/// 随动：布防后机器人按名义速度沿胶路走完（含超行程）再给 partEnd。
-/// 模拟相机按胶嘴此刻的位置合成画面；回放相机照常出图，只模拟 PLC 握手与节拍时长。
-async fn run_follow_part(app: &AppHandle, recipe: &Arc<Recipe>, scenario: Scenario, sn: u32) -> Result<String, String> {
-    let cycle = app.state::<CycleHost>();
-    let spec = recipe.follow.clone().ok_or("配方没有随动参数")?;
-    put(app, tag::PART_SN, json!(sn)).await?;
-    put(app, tag::PRODUCT_CODE, json!(recipe.product_code)).await?;
-    put(app, tag::SHOT_COUNT, json!(0)).await?;
-    // 进度寄存器在 partStart 前清零（与真实 PLC 的约定一致）
-    let _ = put(app, tag::PATH_PROGRESS, json!(0)).await;
-    put(app, tag::PART_START, json!(true)).await?;
-    if !wait_for(app, Duration::from_secs(3), |a| on(a, tag::ARMED) || on(a, tag::DONE)).await {
-        return Err("3 s 内未收到 armed 或 done".into());
-    }
-    if on(app, tag::ARMED) {
-        // 模拟机器人：经 PLC 轮询看到 armed（比视觉晚几十毫秒），等起步延时后出发；
-        // 速度比名义值偏 ±1%，拐角里再慢 10%。视觉只知道名义速度，靠起点同步与拐角同步追上真实位置。
-        let armed = now_ms();
-        let (speed, delay) = match spec.timing {
-            FollowTiming::Timed { speed_mm_s, delay_ms } => (speed_mm_s, delay_ms),
-            FollowTiming::Plc { .. } => (60.0, 300.0),
-        };
-        let jitter = 1.0 + 0.01 * (((sn % 7) as f32) - 3.0) / 3.0;
-        let end = recipe.length() + spec.overrun_mm;
-        let corner = |s: f32| {
-            let s = if recipe.closed { s.rem_euclid(recipe.length()) } else { s };
-            recipe.segments.iter().any(|g| g.kind == SegmentKind::Corner && s >= g.s0 && s < g.s1)
-        };
-        const DT: f32 = 0.005;
-        let mut table = vec![0.0f32];
-        while *table.last().unwrap() < end {
-            let s = *table.last().unwrap();
-            let v = speed * jitter * if corner(s) { 0.9 } else { 1.0 };
-            table.push((s + v * DT).min(end));
-        }
-        let table = Arc::new(table);
-        let t = table.clone();
-        let s_at = move |ts: i64| {
-            let dt = ((ts - armed) as f32 - delay) / 1000.0;
-            if dt <= 0.0 { 0.0 } else { t[((dt / DT) as usize).min(t.len() - 1)] }
-        };
-        let cams: Vec<(u8, crate::follow::FollowCalib)> = cycle
-            .camera
-            .resolve(&recipe.cameras())?
-            .into_iter()
-            .filter_map(|c| cycle.camera.slot(c as usize).and_then(|s| s.config().follow).map(|f| (c, f)))
-            .collect();
-        let (r, lost, s_src) = (recipe.clone(), scenario == Scenario::LostFrame, s_at.clone());
-        let source: SimSource = Arc::new(move |cam, ts| {
-            let calib = &cams.iter().find(|(c, _)| *c == cam)?.1;
-            let s = s_src(ts).clamp(0.0, end);
-            // 丢帧场景：大约每 9 帧丢 1 帧
-            if lost && (ts / 50) % 9 == 4 {
-                return None;
-            }
-            Some(simfollow::render(&r, calib, s, scenario, sn as u64 * 131 + ts as u64 % 977))
-        });
-        cycle.camera.set_sim_source(Some(source));
-        let plc_scale = match spec.timing {
-            FollowTiming::Plc { scale } => Some(scale),
-            FollowTiming::Timed { .. } => None,
-        };
-        let total = Duration::from_millis((delay + table.len() as f32 * DT * 1000.0) as u64);
-        let deadline = Instant::now() + total;
-        while Instant::now() < deadline {
-            if let Some(scale) = plc_scale {
-                let s = s_at(now_ms()).clamp(0.0, end);
-                let _ = put(app, tag::PATH_PROGRESS, json!((s / scale).round() as u32)).await;
-            }
-            if cycle.sim.stop.load(Ordering::SeqCst) && !on(app, tag::ARMED) {
-                break;
-            }
-            // 真实 PLC 每个扫描周期（约 10 ms）都刷新进度寄存器；写慢了读到的值会比实际旧几十毫秒、还忽新忽旧
-            sleep(Duration::from_millis(if plc_scale.is_some() { 10 } else { 40 })).await;
-        }
-        put(app, tag::PART_END, json!(true)).await?;
-    }
-    let r = finish_part(app, sn).await;
-    cycle.camera.set_sim_source(None);
-    r
-}
-
 pub async fn run(app: AppHandle, recipe: Arc<Recipe>, scenario: Scenario, continuous: bool) {
     let sim = &app.state::<CycleHost>().sim;
     let mut seed = (now_ms() % 997) as u32;
     while !sim.stop.load(Ordering::SeqCst) {
         seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
         let s = scenario.resolve(seed >> 8);
-        // 模拟相机只在真要看图（lyFlow 测量或帧录制）时才合成飞拍图像，一帧 5 MP 很费 CPU
-        let lyflow = crate::measure::engine(&app, recipe.mode) == Some(Engine::LyFlow);
-        let recording = app.state::<CycleHost>().settings().record != crate::settings::RecordMode::Off;
-        let vision = (lyflow || recording) && recipe.mode == InspectMode::FlyShot && matches!(recipe.path, Some(PathSpec::RoundedRect { .. }));
-        if vision && lyflow {
-            sim.set_message(&app, format!("准备 {} 的模拟示教资料…", recipe.id));
-            let (a, r) = (app.clone(), recipe.clone());
-            let prepared = tauri::async_runtime::spawn_blocking(move || crate::vision::assets_for(&a, &r).map(|_| ())).await;
-            if let Ok(Err(e)) | Err(e) = prepared.map_err(|e| e.to_string()) {
-                sim.set_message(&app, format!("已中止：{e}"));
-                break;
-            }
-        }
-        let how = match crate::measure::engine(&app, recipe.mode) {
-            Some(Engine::LyFlow) => "（lyFlow 测量）",
-            Some(Engine::Native) => "（本程序卡尺）",
-            None => "（模拟测量）",
-        };
+        // 模拟相机只在真要看图（图像测量或帧录制）时才合成画面，省 CPU
+        let settings = app.state::<CycleHost>().settings();
+        let lyflow = settings.vision;
+        let recording = settings.record != crate::settings::RecordMode::Off;
+        let vision = lyflow || recording;
+        let how = if lyflow { "（lyFlow 测量）" } else { "（模拟测量）" };
         sim.set_message(&app, format!("运行中：{}{how}", recipe.id));
         let result = run_part(&app, &recipe, s, vision).await;
         *sim.part_scenario.lock().unwrap() = None;
@@ -355,10 +253,10 @@ pub fn sim_start(
         return Err("PLC 模拟器未连接".into());
     }
     let recipe = cycle.recipe(&recipe_id).ok_or("配方不存在")?;
-    // 采集方式、随动标定、图像测量与开工时同一套检查；模拟节拍还要能发出触发
-    for c in crate::cycle::usable_cams(&app, &recipe, false)? {
+    // 采集方式、图像测量与开工时同一套检查；模拟节拍还要能发出触发
+    for c in crate::cycle::runnable_cams(&app, &recipe, false)? {
         let cam = cycle.camera.slot(c as usize).ok_or("相机不存在")?.config();
-        if recipe.mode == InspectMode::FlyShot && cam.source == CameraSource::Mvs && cam.trigger_source != "Software" {
+        if cam.source == CameraSource::Mvs && cam.trigger_source != "Software" {
             return Err("相机触发源为 Line0，模拟节拍发不出硬触发；改为 Software 或切换到模拟相机".into());
         }
     }
@@ -406,11 +304,11 @@ pub fn sim_robot_trigger(
         return Err("Robot 只能在已布防的采集阶段触发".into());
     }
     let part = snapshot.part.ok_or("没有正在检测的工件")?;
-    if part.sn != sn || part.mode != InspectMode::FlyShot || k >= part.n {
-        return Err("Robot 工件 SN、工况或拍照序号与当前工件不符".into());
+    if part.sn != sn || k >= part.n {
+        return Err("Robot 工件 SN 或拍照序号与当前工件不符".into());
     }
     let recipe = crate::cycle::cycle_layout(cycle.clone(), part.recipe_id, Some(part.recipe_hash))?;
-    let cam = cycle.camera.require(&recipe.camera)?;
+    let cam = cycle.camera.require(&recipe.shots.get(k).ok_or("拍照序号超出配方")?.camera)?;
     if cycle.camera.slot(cam as usize).ok_or("相机不存在")?.config().source != CameraSource::Sim {
         return Err("外部演示触发只允许模拟相机".into());
     }
@@ -423,11 +321,7 @@ pub fn sim_robot_trigger(
         return Err(format!("Robot 触发重复或乱序：应为 k{next}，收到 k{k}"));
     }
     let scenario = scenario.resolve(sn);
-    let pose = if scenario.locate_fail_frame(part.n) == Some(k) {
-        PoseError { dx: 15.0, dy: 15.0, deg: 0.0 }
-    } else {
-        PoseError { dx: 0.0, dy: 0.0, deg: 0.0 }
-    };
+    let pose = if scenario.locate_fail_frame(part.n) == Some(k) { PoseError { dx: 130.0, dy: 130.0, deg: 0.0 } } else { PoseError::default() };
     let render = SimRender { recipe, k, scenario, pose, seed: sn as u64 * 16 + k as u64 };
     if !cycle.camera.trigger(cam, scenario.lost_frame(part.n) == Some(k), Some(render)) {
         return Err("模拟相机未接受触发".into());

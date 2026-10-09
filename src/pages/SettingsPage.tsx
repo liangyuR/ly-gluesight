@@ -200,8 +200,8 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
     setSaving(true);
     setNotice(null);
     try {
-      const { lyflowCore, vision, followVision, record, recordKeep, recordMaxGb } = settings;
-      const saved = await savePart({ lyflowCore, vision, followVision, record, recordKeep, recordMaxGb });
+      const { lyflowCore, vision, record, recordKeep, recordMaxGb } = settings;
+      const saved = await savePart({ lyflowCore, vision, record, recordKeep, recordMaxGb });
       if (saved && mounted.current) {
         setNotice({ ok: true, text: "已保存" });
         refresh();
@@ -228,14 +228,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
           <span>飞拍配方</span>
           <select id="measure-fly" className="input" value={settings.vision ? "lyFlow" : "sim"} onChange={(e) => update({ ...settings, vision: e.target.value === "lyFlow" })}>
             <option value="sim">模拟测量（不看图像）</option>
-            <option value="lyFlow">lyFlow 流程（模板定位 + 逐点卡尺）</option>
-          </select>
-        </label>
-        <label className="field">
-          <span>随动配方</span>
-          <select id="measure-follow" className="input" value={settings.followVision ? "native" : "sim"} onChange={(e) => update({ ...settings, followVision: e.target.value === "native" })}>
-            <option value="native">本程序卡尺</option>
-            <option value="sim">模拟测量（不看图像）</option>
+            <option value="lyFlow">lyFlow 流程（沿示教中线量胶）</option>
           </select>
         </label>
         {settings.vision && (
@@ -270,7 +263,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
             onChange={(e) => update({ ...settings, recordKeep: numberValue(e.target.value) })}
           />
         </label>
-        <label className="field" title="随动一件三路约 0.5 GB">
+        <label className="field">
           <span>录制总大小上限（GB）</span>
           <input
             id="record-max-gb"
@@ -296,8 +289,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
       </dl>
       {engineError && <div className="notice error" role="alert">引擎状态读取失败：{engineError} <button className="btn" onClick={refresh}>重试引擎状态</button></div>}
       <p className="muted hint">
-        本程序卡尺用于随动配方：按随动标定把胶路投到图像上，沿法向找胶条两侧边缘，得出偏移与胶宽。lyFlow 流程用于飞拍配方（模板定位 +
-        逐点卡尺），需要带图像域的 lyFlow 版本。帧录制把整帧图像写到数据目录的 records 下，可在图像源页选作回放目录。
+        lyFlow 流程沿各拍照点的示教中线量胶，需要带图像域的 lyFlow 版本；这个流程接入前，图像测量会报“尚未接入”，不用模拟值顶替。帧录制把整帧图像写到数据目录的 records 下，可在图像源页选作回放目录。
       </p>
       {notice && <div className={`notice ${notice.ok ? "ok" : "error"}`} role={notice.ok ? "status" : "alert"}>{notice.text}</div>}
     </div>

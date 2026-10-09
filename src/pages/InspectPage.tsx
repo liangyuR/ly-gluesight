@@ -3,18 +3,17 @@ import { RotateCcw } from "lucide-react";
 import RuntimeFrame, { usePublishedOverview } from "../features/workspace/RuntimeFrame";
 import { WorkpieceOverview } from "../features/workspace/OverviewPage";
 import Modal from "../features/plc/components/Modal";
-import { cameraApi, useRigStatus, type CameraConfig } from "../features/camera";
 import { displayReason, triggerModeLabel, verdictLabel } from "../features/history";
 import {
-  CameraTile,
   computeVis,
   currentFrame,
   cycleApi,
   CycleStepper,
+  shotCameras,
   ShotStrip,
   SignalLamps,
+  ShotTiles,
   SimControls,
-  TrajectoryMap,
   UnrolledCurve,
   useCycle,
   useLayout,
@@ -39,8 +38,6 @@ function clock(ts: number) {
 export default function InspectPage() {
   const { snapshot, logs, measured } = useCycle();
   const recipes = useRecipes();
-  const { statuses, lastFrame } = useRigStatus();
-  const [configs, setConfigs] = useState<CameraConfig[]>([]);
   const [view, setView] = useState<"part" | "frame">("part");
   const [frameSelection, setFrameSelection] = useState<{ scope: string; k: number } | null>(null);
   const [pointSelection, setPointSelection] = useState<{ scope: string; j: number } | null>(null);
@@ -48,9 +45,6 @@ export default function InspectPage() {
   const [switchError, setSwitchError] = useState("");
   const [action, setAction] = useState<"switch" | "reset" | null>(null);
   const [resetError, setResetError] = useState("");
-  const [configError, setConfigError] = useState("");
-  const [configLoading, setConfigLoading] = useState(false);
-  const [configRetry, setConfigRetry] = useState(0);
   const activeAction = useRef<"switch" | "reset" | null>(null);
   const mounted = useRef(false);
   const switchRequest = useRef(0);
@@ -64,12 +58,10 @@ export default function InspectPage() {
   const candidateResult = settled ? (snapshot?.result ?? null) : null;
   const result = candidateResult && (!part || (candidateResult.sn === part.sn && (!candidateResult.recipeId || candidateResult.recipeId === part.recipeId))) ? candidateResult : null;
   const partResult = result && part && result.sn === part.sn ? result : null;
-  const follow = layout?.mode === "follow";
   const ownLayout = !!layout && !!part && layout.id === part.recipeId && layout.hash === part.recipeHash;
   const shown = useMemo(() => (ownLayout ? measured.filter(m => m.sn === part?.sn) : []), [ownLayout, measured, part?.sn]);
   const overview=usePublishedOverview(layout);
   const selectionScope = `${part?.sn ?? "idle"}:${part?.recipeHash ?? layout?.hash}:${layout?.id}:${layout?.shots.length}`;
-  const cameraIds = statuses.map(status => status.id).join("\0");
   const operationScope = `${part?.sn ?? "idle"}:${snapshot?.since}:${snapshot?.fault ?? ""}`;
   const currentOperation = useRef({ phase, scope: operationScope });
   currentOperation.current = { phase, scope: operationScope };
@@ -80,24 +72,13 @@ export default function InspectPage() {
   }, []);
   useEffect(() => setResetError(""), [phase, operationScope]);
 
-  useEffect(() => {
-    let alive = true;
-    setConfigError(""); setConfigLoading(true);
-    cameraApi.rigConfig().then(value => { if (alive) setConfigs(value); })
-      .catch(error => { if (alive) { setConfigs([]); setConfigError(String(error)); } })
-      .finally(() => { if (alive) setConfigLoading(false); });
-    return () => { alive = false; };
-  }, [cameraIds, configRetry]);
-
-  // 随动时快照每秒 20 次、每次都是新对象：主视图只在测量结果或结论变了时重算
-  const partKey = follow ? `${part?.sn}:${part?.recipeHash}` : part;
   const resultKey = partResult ? `${partResult.sn}:${partResult.ts}` : null;
   const vis = useMemo(
     () => (layout ? computeVis(layout, ownLayout ? part : null, shown, ownLayout ? partResult : null) : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [layout, ownLayout, partKey, shown, resultKey],
+    [layout, ownLayout, part, shown, resultKey],
   );
-  const cur = !follow && (phase === "ACQUIRE" || phase === "DRAIN") ? currentFrame(part) : -1;
+  const cur = phase === "ACQUIRE" || phase === "DRAIN" ? currentFrame(part) : -1;
   const lastShot = Math.max(0, (layout?.shots.length ?? 1) - 1);
   const selected = frameSelection?.scope === selectionScope ? Math.min(lastShot, Math.max(0, frameSelection.k)) : Math.min(lastShot, Math.max(0, currentFrame(ownLayout ? part : null)));
   const selectedPoint = pointSelection?.scope === selectionScope && pointSelection.j < (layout?.points.k.length ?? 0) ? pointSelection.j : null;
@@ -111,17 +92,10 @@ export default function InspectPage() {
     if (!layout || !Number.isInteger(j) || j < 0 || j >= layout.points.k.length) return;
     setPointSelection({ scope: selectionScope, j });
     const k = layout.points.k[j];
-    if (!follow && k >= 0 && k <= lastShot) setFrameSelection({ scope: selectionScope, k });
+    if (k >= 0 && k <= lastShot) setFrameSelection({ scope: selectionScope, k });
   };
-  const focus = !follow && view === "frame" ? selected : null;
   const trigger = snapshot?.triggerMode ?? layout?.triggerMode;
-  const cams = layout ? (follow ? (layout.follow?.cameras ?? []) : [layout.camera]) : [];
-  const lastByCam = useMemo(() => {
-    const out: Record<number, Measured> = {};
-    shown.forEach((m) => (out[m.cam ?? 0] = m));
-    return out;
-  }, [shown]);
-  const nozzle = follow && ownLayout && part?.nozzleS != null ? { s: part.nozzleS, cam: part.activeCam } : null;
+  const cams = layout ? shotCameras(layout.shots) : [];
   const canSwitch = (phase === "IDLE" || phase === "FAULT") && snapshot?.productSource === "manual";
   const switchProblem = !canSwitch ? "当前工件已开始或型号由 PLC 下发，暂时不能切换配方" : pendingRecipe && !recipes.some(recipe => recipe.id === pendingRecipe) ? "该配方已不在配方库中，请重新选择" : "";
 
@@ -168,7 +142,7 @@ export default function InspectPage() {
   return (
     <div className="fly">
       <div className="fly-bar">
-        <span className="fly-chip">{follow ? "三目随动" : triggerModeLabel(trigger)}</span>
+        <span className="fly-chip">{triggerModeLabel(trigger)}</span>
         {snapshot?.productSource === "manual" ? (
           <span className="fly-chip">
             配方
@@ -213,7 +187,6 @@ export default function InspectPage() {
         )}
       </div>
       {resetError && <div className="notice error" role="alert">{resetError}</div>}
-      {configError && <div className="notice error" role="alert">相机配置读取失败：{configError} <button className="btn" disabled={configLoading} onClick={() => setConfigRetry(value => value + 1)}>重试相机配置</button></div>}
 
       {snapshot?.alarms.map((a) => (
         <div key={a} className="alarm-bar">
@@ -222,7 +195,7 @@ export default function InspectPage() {
       ))}
 
       <div className="fly-body">
-        <div className={`fly-main${follow ? " follow" : ""}`}>
+        <div className="fly-main">
           <div className={`insp-top${cams.length > 1 ? " grid" : ""}`}>
             <div className="panel">
               <div className="panel-head">
@@ -235,81 +208,44 @@ export default function InspectPage() {
                   <span><i style={{ background: "var(--text-disabled)" }} />待测</span>
                 </div>
                 <span className="spacer" />
-                {follow ? (
-                  <span className="muted mono">
-                    胶嘴 s={part?.nozzleS != null ? part.nozzleS.toFixed(1) : "—"} / {part?.endS != null ? part.endS.toFixed(0) : layout?.segments.at(-1)?.s1.toFixed(0) ?? "—"} mm
-                  </span>
-                ) : (
-                  <div className="segmented">
-                    <button className={view === "part" ? "active" : ""} aria-pressed={view === "part"} onClick={() => setView("part")}>整件</button>
-                    <button className={view === "frame" ? "active" : ""} aria-pressed={view === "frame"} onClick={() => setView("frame")}>选中帧</button>
-                  </div>
-                )}
+                <div className="segmented">
+                  <button className={view === "part" ? "active" : ""} aria-pressed={view === "part"} onClick={() => setView("part")}>整件</button>
+                  <button className={view === "frame" ? "active" : ""} aria-pressed={view === "frame"} onClick={() => setView("frame")}>逐拍照点</button>
+                </div>
               </div>
-              {layout ? follow || view==="frame" ? <TrajectoryMap layout={layout} vis={vis} current={cur} focus={focus} nozzle={nozzle} selectedPoint={selectedPoint} className="traj" /> : <WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={selectFrame} vis={vis}/> : <div className="empty">等待配方</div>}
+              {layout ? view==="frame" ? <ShotTiles layout={layout} vis={vis} current={cur} selected={selected} onSelect={selectFrame} selectedPoint={selectedPoint} /> : <WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={selectFrame} vis={vis}/> : <div className="empty">等待配方</div>}
             </div>
             <div className={`cam-tiles n${cams.length}`}>
-              {!follow ? <RuntimeFrame part={ownLayout ? part : null} layout={layout} k={selected} measured={shown}/> : cams.map((id) => {
-                // 配方按编号引用相机，帧与测量结果按相机组序号记
-                const st = statuses.find((s) => s.id === id);
-                return st ? (
-                  <CameraTile
-                    key={id}
-                    status={st}
-                    calib={configs.find(config => config.id === st.id)?.follow ?? null}
-                    last={lastByCam[st.cam] ?? null}
-                    active={follow ? part?.activeCam === st.cam && phase === "ACQUIRE" : cur >= 0}
-                    frame={lastFrame[st.cam]}
-                  />
-                ) : (
-                  <div key={id} className="cam-tile down">
-                    <div className="cam-tile-head">
-                      <b>{id}</b>
-                    </div>
-                    <div className="empty small">相机组里没有这个编号的相机</div>
-                  </div>
-                );
-              })}
+              <RuntimeFrame part={ownLayout ? part : null} layout={layout} k={selected} measured={shown} vis={vis}/>
             </div>
           </div>
 
-          {!follow && (
-            <div className="panel">
-              <div className="panel-head">
-                <h3 className="panel-title">拍照点</h3>
-                <span className="muted">k 来源：{trigger === "stop" ? "停稳点触发计数" : "位置触发计数"}</span>
-                <span className="spacer" />
-                <span className="muted mono">
-                  Chunk 触发 {part?.triggers ?? 0} · 收到 {part?.received ?? 0}
-                </span>
-              </div>
-              {layout && <ShotStrip layout={layout} part={part} vis={vis} selected={selected} onSelect={selectFrame}/>}
+          <div className="panel">
+            <div className="panel-head">
+              <h3 className="panel-title">拍照点</h3>
+              <span className="muted">k 来源：{trigger === "stop" ? "停稳点触发计数" : "位置触发计数"}</span>
+              <span className="spacer" />
+              <span className="muted mono">
+                Chunk 触发 {part?.triggers ?? 0} · 收到 {part?.received ?? 0}
+              </span>
             </div>
-          )}
+            {layout && <ShotStrip layout={layout} part={part} vis={vis} selected={selected} onSelect={selectFrame}/>}
+          </div>
 
           <div className="panel">
             <div className="panel-head">
               <h3 className="panel-title">展开曲线</h3>
               <span className="muted">
-                {follow ? "胶条横向偏移（mm）" : "距内边距离 d（mm）"}，横轴弧长；绿色带为公差，红虚线为绝对限，底部色条为{follow ? "测到该点的相机" : "各帧负责区间"}
+                横向偏移 d（mm，相对示教中线），横轴按拍照点分段、段内为沿中线的弧长；绿色带为公差，红虚线为绝对限，段与段之间不连
               </span>
             </div>
             {layout && <UnrolledCurve key={`${selectionScope}:d`} layout={layout} measured={shown} vis={vis} selected={selectedPoint} onSelect={selectPoint} />}
           </div>
-          {follow && (
-            <div className="panel">
-              <div className="panel-head">
-                <h3 className="panel-title">胶宽</h3>
-                <span className="muted">mm，按段的胶宽限值判定</span>
-              </div>
-              {layout && <UnrolledCurve key={`${selectionScope}:w`} layout={layout} measured={shown} vis={vis} quantity="w" selected={selectedPoint} onSelect={selectPoint} />}
-            </div>
-          )}
         </div>
 
         <div className="fly-side">
           <VerdictCard phase={phase} result={result} sn={part?.sn} />
-          <Progress snapshot={snapshot} result={partResult} follow={follow} />
+          <Progress snapshot={snapshot} result={partResult} />
           <SegmentPanel layout={layout} measured={shown} result={partResult} />
           <div className="panel">
             <h3 className="panel-title" style={{ marginBottom: 0 }}>事件</h3>
@@ -362,28 +298,15 @@ function VerdictCard({ phase, result, sn }: { phase: string; result: ResultView 
   );
 }
 
-function Progress({ snapshot, result, follow }: { snapshot: Snapshot | null; result: ResultView | null; follow: boolean }) {
+function Progress({ snapshot, result }: { snapshot: Snapshot | null; result: ResultView | null }) {
   const part = snapshot?.part;
   const pct = part && part.total ? (part.filled / part.total) * 100 : 0;
-  const travel = follow && part?.nozzleS != null && part.endS ? Math.min(100, Math.max(0, (part.nozzleS / part.endS) * 100)) : null;
   return (
     <div className="panel">
       <h3 className="panel-title" style={{ marginBottom: 0 }}>本件进度</h3>
       <div className="kv2">
-        {follow ? (
-          <>
-            <span>胶嘴行程</span>
-            <b>{travel != null ? `${travel.toFixed(0)}%` : "—"}</b>
-            <div className="bar"><i style={{ width: `${travel ?? 0}%` }} /></div>
-            <span>收到帧 / 测量帧</span>
-            <b>{part ? `${part.received} / ${part.measuredFrames}` : "—"}</b>
-          </>
-        ) : (
-          <>
-            <span>帧</span>
-            <b>{part ? `${part.received} / ${part.n}` : "—"}</b>
-          </>
-        )}
+        <span>帧</span>
+        <b>{part ? `${part.received} / ${part.n}` : "—"}</b>
         <span>测量点</span>
         <b>{part ? `${part.filled} / ${part.total}` : "—"}</b>
         <div className="bar"><i style={{ width: `${pct}%` }} /></div>
@@ -407,6 +330,7 @@ function SegmentPanel({ layout, measured, result }: { layout: Recipe | null; mea
       m.idx.forEach((j, i) => {
         if (m.st[i] !== 0) return;
         const g = r[layout.points.seg[j]];
+        if (!g) return;
         g.min = Math.min(g.min, m.d[i]);
         g.max = Math.max(g.max, m.d[i]);
         const w = m.w?.[i];
@@ -424,9 +348,9 @@ function SegmentPanel({ layout, measured, result }: { layout: Recipe | null; mea
   return (
     <div className="panel">
       <div className="panel-head">
-        <h3 className="panel-title">分段结果</h3>
+        <h3 className="panel-title">逐拍照点结果</h3>
         <span className="spacer" />
-        <span className="muted" style={{ fontSize: 11 }}>{width ? "偏移 · 胶宽" : "d 最小–最大"}</span>
+        <span className="muted" style={{ fontSize: 11 }}>{width ? "偏移 d · 胶宽" : "偏移 d 最小–最大"}</span>
       </div>
       <div className="seg-list">
         {layout?.segments.map((g, i) => {

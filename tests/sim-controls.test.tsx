@@ -20,7 +20,7 @@ vi.mock("../src/features/plc/api", () => ({
   },
 }));
 beforeEach(() => {
-  recipes = [summary(), { ...summary(), id: "FOLLOW", mode: "follow" }]; connected = true; connectedSince = 1; plcEvents.clear();
+  recipes = [summary(), { ...summary(), id: "B" }]; connected = true; connectedSince = 1; plcEvents.clear();
   status = { running: false, continuous: false, parts: 0, message: "就绪" };
   vi.mocked(plcApi.getConfig).mockReset().mockResolvedValue(plcConfig()); vi.mocked(cycleApi.simStart).mockReset().mockResolvedValue(undefined); vi.mocked(cycleApi.simStop).mockReset().mockResolvedValue(undefined);
 });
@@ -31,12 +31,11 @@ describe("离线模拟节拍控制", () => {
     await userEvent.click(screen.getByRole("button", { name: "运行一件" })); expect(cycleApi.simStart).toHaveBeenCalledWith("A", "gap", false);
     await userEvent.click(screen.getByRole("button", { name: "连续运行" })); expect(cycleApi.simStart).toHaveBeenLastCalledWith("A", "gap", true);
   });
-  it("切到随动配方后重置不支持的工况，提供胶宽不足", async () => {
-    await show(); await userEvent.selectOptions(screen.getByRole("combobox", { name: "模拟工况" }), "countMismatch");
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "模拟配方" }), "FOLLOW");
-    expect(screen.getByRole("combobox", { name: "模拟工况" })).toHaveValue("normal");
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "模拟工况" }), "narrow");
-    await userEvent.click(screen.getByRole("button", { name: "运行一件" })); expect(cycleApi.simStart).toHaveBeenCalledWith("FOLLOW", "narrow", false);
+  it("切换配方后按所选配方运行，工况只列飞拍场景", async () => {
+    await show(); await userEvent.selectOptions(screen.getByRole("combobox", { name: "模拟配方" }), "B");
+    expect(screen.queryByRole("option", { name: "胶宽不足" })).toBeNull();
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "模拟工况" }), "countMismatch");
+    await userEvent.click(screen.getByRole("button", { name: "运行一件" })); expect(cycleApi.simStart).toHaveBeenCalledWith("B", "countMismatch", false);
   });
   it("未连接模拟 PLC 时禁用启动，显示连接前置条件", async () => {
     connected = false; await show(); expect(screen.getByRole("button", { name: "运行一件" })).toBeDisabled(); expect(screen.getByText("请先连接模拟 PLC")).toBeVisible();
@@ -56,7 +55,7 @@ describe("离线模拟节拍控制", () => {
   });
   it("删除当前配方后选择仍存在的配方，列表为空禁用启动", async () => {
     const page = await show(); recipes = recipes.slice(1); page.rerender(<SimControls/>);
-    await waitFor(() => expect(screen.getByRole("combobox", { name: "模拟配方" })).toHaveValue("FOLLOW"));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "模拟配方" })).toHaveValue("B"));
     recipes = []; page.rerender(<SimControls/>); expect(screen.getByRole("button", { name: "运行一件" })).toBeDisabled();
   });
   it("实际 PLC 协议不给模拟入口，配置读取失败显示原因", async () => {

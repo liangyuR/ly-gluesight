@@ -4,6 +4,7 @@
 
 - [软件架构、一期可行性与实施路线](architecture/gluesight-software-architecture.html)：目标架构、当前缺口、单负责人与多 Agent 的分工、W0–W7 工作包及 S7 实施进展。
 - [三相机硬件连接架构](architecture/gluesight-hardware-architecture.html)：PLC 硬件触发、三台相机、交换机、工控机与 Robot 的连接关系，可按链路高亮。
+- [一期 P0 实施计划](architecture/p0-plan.md)：已定决策、步 0–7 的顺序、范围与完成标准，以及现场并行事项。
 - [历史规划与实施记录](architecture/roadmap.md)：早期飞拍与随动规划，当前一期范围以软件架构图为准。
 
 ## 现场接入（[integration/](integration)）

@@ -53,21 +53,6 @@ export function CalibrationView() {
   </>;
 }
 
-export function FollowView() {
-  const { state: s, dispatch, go, notify } = useWorkflow();
-  const task = useTask();
-  const f = s.follow;
-  const locked = s.live.phase > 0 && s.live.phase < 4;
-  const p = f.params[f.camera - 1];
-  const edit = (patch: Partial<typeof p>) => dispatch({ type: "follow", patch: { params: f.params.map((v, i) => i === f.camera - 1 ? { ...v, ...patch } : v), saved: f.saved.map((v, i) => i === f.camera - 1 ? false : v), trial: false } });
-  const valid = p.nozzle >= 0 && p.nozzle <= 10000 && p.scale >= 0.001 && p.scale <= 1 && p.near >= 0 && p.near < p.far && p.far <= 10000;
-  return <>
-    {task.error && <Notice title="预览操作失败" tone="warn">{task.error}</Notice>}
-    {locked && <Notice title="当前工件完成后再标定" tone="warn">本件仍使用开始时的标定与采集条件。</Notice>}
-    <div className="wf-page-actions"><div className="wf-tabs" aria-label="随动相机选择">{[1, 2, 3].map(i => <button key={i} className={f.camera === i ? "active" : ""} disabled={task.busy || locked} onClick={() => dispatch({ type: "follow", patch: { camera: i, frozen: false, trial: false } })}>相机 {i}{f.saved[i - 1] && <Check size={14} />}</button>)}</div><div className="wf-row"><Badge tone={f.saved.every(Boolean) ? "ok" : "neutral"}>{f.saved.filter(Boolean).length} / 3 台已保存</Badge><button className="btn primary" onClick={() => { dispatch({ type: "recipe", patch: { mode: "follow" } }); go("recipes"); }}>进入随动配方<ChevronRight size={15} /></button></div></div>
-    <div className="wf-two-col wf-wide-left"><Panel title={"相机 " + f.camera + " · 胶嘴与测量窗口"} detail="每台相机分别取样、验证并保存" actions={<button className="btn" onClick={() => dispatch({ type: "follow", patch: { frozen: true, trial: false } })} disabled={task.busy || locked || !s.device.connected || !s.device.applied}><Camera size={15} />冻结当前帧</button>}><FrameCanvas id={f.camera + 1} imageId={f.frozen ? 100 + f.camera : null} overlay={f.trial} nozzle label="随动标定样本" /><div className="wf-stat-grid"><div><span>近端窗口</span><strong>{p.near} mm</strong></div><div><span>远端窗口</span><strong>{p.far} mm</strong></div><div><span>运动方向</span><strong>{p.direction}</strong></div></div></Panel><div className="stack"><Panel title="相机参数"><div className="wf-form-grid"><NumberField label="胶嘴基准位置" value={p.nozzle} unit="px" onChange={v => edit({ nozzle: v })} disabled={task.busy || locked} /><NumberField label="像素比例" value={p.scale} unit="mm/px" min={0.001} max={1} step={0.001} onChange={v => edit({ scale: v })} disabled={task.busy || locked} /><SelectField label="运动方向" value={p.direction} options={["向右", "向左", "向上", "向下"]} onChange={v => edit({ direction: v })} disabled={task.busy || locked} /><NumberField label="近端距离" value={p.near} unit="mm" onChange={v => edit({ near: v })} disabled={task.busy || locked} /><NumberField label="远端距离" value={p.far} unit="mm" onChange={v => edit({ far: v })} disabled={task.busy || locked} /></div></Panel><Panel title="试测与保存">{!valid ? <Notice title="测量窗口无效" tone="warn">远端距离必须大于近端距离，像素比例必须大于零。</Notice> : f.trial ? <Notice title="当前相机试测通过" tone="ok">胶嘴与胶路基准清晰，窗口位于有效视野内。</Notice> : <Notice title="保存前先验证">冻结当前相机图像，再检查胶嘴和测量窗口。</Notice>}<div className="wf-actions"><button className="btn" disabled={!f.frozen || !valid || task.busy || locked} onClick={() => task.run(() => dispatch({ type: "follow", patch: { trial: true } }))}><BusyLabel busy={task.busy}>试测当前相机</BusyLabel></button><button className="btn primary" disabled={!f.frozen || !f.trial || !valid || task.busy || locked || f.saved[f.camera - 1]} onClick={() => { dispatch({ type: "follow", patch: { saved: f.saved.map((v, i) => i === f.camera - 1 ? true : v) } }); notify("相机 " + f.camera + " 标定已保存。"); }}><Save size={15} />保存本相机</button></div></Panel></div></div>
-  </>;
-}
 
 export function SettingsView() {
   const { state: s, dispatch, notify } = useWorkflow();

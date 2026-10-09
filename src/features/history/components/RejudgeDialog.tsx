@@ -26,7 +26,7 @@ function numOrUndef(s: string) {
 export default function RejudgeDialog({ query, total, onClose }: { query: HistoryQuery; total: number; onClose: () => void }) {
   const navigate = useNavigate();
   const [useCurrent, setUseCurrent] = useState(false);
-  const [overrides, setOverrides] = useState<Overrides>({ line: {}, corner: {}, width: {} });
+  const [overrides, setOverrides] = useState<Overrides>({ position: {}, width: {} });
   const [result, setResult] = useState<RejudgeResult | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
@@ -37,7 +37,7 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
   useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;};},[]);
   useEffect(()=>{setResult(null);setError("");},[scope]);
   const invalid=Object.values(overrides).some(value=>typeof value==="number"&&!Number.isFinite(value))||
-    [overrides.line,overrides.corner,overrides.width].some(value=>value&&(
+    [overrides.position,overrides.width].some(value=>value&&(
       Object.values(value).some(v=>v!==undefined&&!Number.isFinite(v))||
       [value.tolUpper,value.tolLower,value.maxExcursionLen].some(v=>v!==undefined&&v<0)||
       (value.absMin!==undefined&&value.absMax!==undefined&&value.absMin>value.absMax)))||
@@ -61,14 +61,14 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
     }
   };
 
-  const kind = (k: "line" | "corner" | "width", f: keyof KindOverride) => (
+  const kind = (k: "position" | "width", f: keyof KindOverride) => (
     <input
       id={`rj-${k}-${f}`}
       className="input mono"
       type="number"
       step={0.05}
       placeholder="不变"
-      aria-label={`${k==="line"?"直边":k==="corner"?"R 角":"胶宽"}${kindFields.find(([key])=>key===f)?.[1]}`}
+      aria-label={`${k==="position"?"位置":"胶宽"}${kindFields.find(([key])=>key===f)?.[1]}`}
       disabled={running}
       value={overrides[k]?.[f] ?? ""}
       onChange={(e) => edit({ ...overrides, [k]: { ...overrides[k], [f]: numOrUndef(e.target.value) } })}
@@ -102,17 +102,15 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
           {kindFields.map(([, label]) => (
             <span key={label} className="muted">{label}（mm）</span>
           ))}
-          <span>直边</span>
-          {kindFields.map(([f]) => <div key={f}>{kind("line", f)}</div>)}
-          <span>R 角</span>
-          {kindFields.map(([f]) => <div key={f}>{kind("corner", f)}</div>)}
-          <span title="只作用于配置了胶宽判定的段">胶宽</span>
+          <span title="只作用于判位置的拍照点：胶条中线相对示教中线的横向偏移">位置</span>
+          {kindFields.map(([f]) => <div key={f}>{kind("position", f)}</div>)}
+          <span title="只作用于判胶宽的拍照点">胶宽</span>
           {kindFields.map(([f]) => <div key={f}>{kind("width", f)}</div>)}
         </div>
         <div className="row">
           <label className="field">
-            <span>断胶允许长度（mm）</span>
-            <input id="rj-gap" className="input mono" aria-label="断胶允许长度（mm）" disabled={running} type="number" min={0} step={0.1} placeholder="不变" value={overrides.maxGapLen ?? ""} onChange={(e) => edit({ ...overrides, maxGapLen: numOrUndef(e.target.value) })} />
+            <span>允许断胶长度（mm，每个拍照点）</span>
+            <input id="rj-gap" className="input mono" aria-label="允许断胶长度（mm）" disabled={running} type="number" min={0} step={0.1} placeholder="不变" value={overrides.maxGapLen ?? ""} onChange={(e) => edit({ ...overrides, maxGapLen: numOrUndef(e.target.value) })} />
           </label>
           <label className="field">
             <span>滤波窗口（奇数）</span>

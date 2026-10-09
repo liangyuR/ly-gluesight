@@ -117,12 +117,6 @@ describe("预览在线操作", () => {
     if (blocker === "published") s.recipe.production = 0;
     showWorkflow("live", s); expect(screen.getByRole("button", { name: "启动检测" })).toBeDisabled(); expect(screen.getByText("启动条件未满足")).toBeVisible();
   });
-
-  it("随动工况使用本件生产快照与偏移曲线，选帧不改变整件工况", () => {
-    const s = sceneState("live-ng"); s.productionConfig.recipe.mode = "follow"; s.live.inFlightConfig = s.productionConfig;
-    showWorkflow("live", s); expect(screen.getByText("横向偏移")).toBeVisible(); click("选择帧 k5");
-    expect(screen.getByText("横向偏移")).toBeVisible(); expect(stored().live.result).toBe("NG");
-  });
 });
 
 describe("预览历史筛选与对照", () => {

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cycle::FrameView;
 use crate::judge::{Judgement, PointState, Verdict};
-use crate::recipe::{InspectMode, Recipe};
+use crate::recipe::Recipe;
 
 /// 一件工件的完整结果，入库一行；测量点按弧长顺序压成一个 BLOB，格式见 POINTS_FORMAT。
 pub struct PartRecord<'a> {
@@ -272,10 +272,7 @@ impl Store {
                 r.recipe.map(|x| x.id.clone()),
                 r.recipe.map(|x| x.version),
                 r.recipe.map(|x| x.hash.clone()),
-                r.recipe.map(|x| match x.mode {
-                    InspectMode::Follow => Some("follow".to_string()),
-                    InspectMode::FlyShot => serde_json::to_value(x.trigger_mode).ok().and_then(|v| v.as_str().map(String::from)),
-                }),
+                r.recipe.and_then(|x| serde_json::to_value(x.trigger_mode).ok().and_then(|v| v.as_str().map(String::from))),
                 verdict_str(j.verdict),
                 j.plc_code,
                 j.fault_code,

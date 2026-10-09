@@ -3,11 +3,11 @@ import { computeVis, currentFrame, runs } from "../src/features/cycle/vis";
 import type { Measured, PartView, FrameView, Judgement } from "../src/features/cycle/types";
 import { workspaceView } from "./fixtures";
 
-const frame = (status: FrameView["status"]): FrameView => ({ status, cam: 0, s: null, arrivedMs: null, frameCounter: null,
+const frame = (status: FrameView["status"]): FrameView => ({ status, cam: 0, arrivedMs: null, frameCounter: null,
   triggerCounter: null, counterJump: false, score: null, points: 0, gapPoints: 0, ms: null });
-const part = (): PartView => ({ sn: 1, recipeId: "A", recipeHash: "hash-A", mode: "flyShot", n: 2, received: 2,
-  triggers: 2, queue: 0, filled: 4, total: 4, frames: [frame("done"), frame("done")], measuredFrames: 2, nozzleS: null, endS: null, activeCam: null });
-const measured = (st = [0, 0, 0, 0]): Measured => ({ sn: 1, k: 0, cam: 0, s: null, located: true, score: .9, ms: 1,
+const part = (): PartView => ({ sn: 1, recipeId: "A", recipeHash: "hash-A", n: 2, received: 2,
+  triggers: 2, queue: 0, filled: 4, total: 4, frames: [frame("done"), frame("done")], measuredFrames: 2 });
+const measured = (st = [0, 0, 0, 0]): Measured => ({ sn: 1, k: 0, cam: 0, located: true, score: .9, ms: 1,
   error: null, idx: [0, 1, 2, 3], d: [3, 4.5, 3, 3], w: [null, null, null, null], st, px: [] });
 
 describe("测量结果的 UI 状态", () => {
@@ -20,9 +20,8 @@ describe("测量结果的 UI 状态", () => {
     expect(computeVis(workspaceView().layout, part(), [measured([0, 0, 1, 2])], null)).toEqual(["ok", "exc", "gap", "inv"]);
   });
 
-  it("随动重复测量失败不会覆盖已测成的点", () => {
-    const r = workspaceView().layout; r.mode = "follow";
-    expect(computeVis(r, part(), [measured(), measured([2, 2, 2, 2])], null)).toEqual(["ok", "exc", "ok", "ok"]);
+  it("重复测量失败不会覆盖已测成的点", () => {
+    expect(computeVis(workspaceView().layout, part(), [measured(), measured([2, 2, 2, 2])], null)).toEqual(["ok", "exc", "ok", "ok"]);
   });
 
   it("缺帧只标记尚未测量的归属点", () => {

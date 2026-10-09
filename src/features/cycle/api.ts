@@ -1,7 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useState } from "react";
 import { subscribe } from "../plc";
-import type { CycleSettings, ImportedPath, InspectMode, LogLine, Measured, Recipe, RecipeDoc, RecipeSummary, Scenario, SimStatus, Snapshot } from "./types";
+import type { CycleSettings, LogLine, Measured, Recipe, RecipeDoc, RecipeSummary, Scenario, SimStatus, Snapshot } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
   if (!isTauri() && ["cycle_save_settings","cycle_select_recipe","cycle_reset","sim_start","sim_stop","recipe_save","recipe_delete"].includes(cmd))
@@ -17,7 +17,6 @@ const defaultSettings: CycleSettings = {
   historyDays: 180,
   lyflowCore: null,
   vision: false,
-  followVision: true,
   record: "off",
   recordKeep: 100,
   recordMaxGb: 20,
@@ -43,7 +42,7 @@ export const recipeApi = {
   list: () => call<{ recipes: RecipeSummary[]; errors: string[] }>("recipe_list", undefined, () => ({ recipes: [], errors: [] })),
   doc: (id: string) => call<RecipeDoc>("recipe_doc", { id }, () => Promise.reject("非桌面环境") as never),
   preview: (doc: RecipeDoc) => call<Recipe>("recipe_preview", { doc }, () => Promise.reject("非桌面环境") as never),
-  template: (mode: InspectMode) => call<RecipeDoc>("recipe_template", { mode }, () => Promise.reject("非桌面环境") as never),
+  template: () => call<RecipeDoc>("recipe_template", undefined, () => Promise.reject("非桌面环境") as never),
   save: (doc: RecipeDoc, originalId: string | null) =>
     call<RecipeSummary>("recipe_save", { doc, originalId }, () => Promise.reject("非桌面环境") as never).then((r) => {
       layoutCache.clear();
@@ -55,8 +54,6 @@ export const recipeApi = {
       layoutCache.clear();
       notifyRecipes();
     }),
-  parsePath: (text: string, fileName: string) =>
-    call<ImportedPath>("recipe_parse_path", { text, fileName }, () => ({ points: [], bulges: [], closed: false, note: null })),
 };
 
 const layoutCache = new Map<string, Promise<Recipe | null>>();

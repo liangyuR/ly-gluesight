@@ -92,34 +92,11 @@ describe("预览建站操作", () => {
     navigate("设备与采集"); await finishTask(); expect(stored().calibration.result).toBe("idle");
   });
 
-  it("逐台修改随动参数、冻结试测和保存，切换相机不混用试测", async () => {
-    showWorkflow("follow");
-    expect(screen.getByRole("button", { name: "试测当前相机" })).toBeDisabled();
-    for (let camera = 1; camera <= 3; camera++) {
-      click("相机 " + camera);
-      expect(screen.getByRole("button", { name: "保存本相机" })).toBeDisabled();
-      number("胶嘴基准位置", 130 + camera); number("像素比例", .05); select("运动方向", ["向右", "向左", "向上"][camera - 1]);
-      number("近端距离", 30); number("远端距离", 20); click("冻结当前帧");
-      expect(screen.getByText("测量窗口无效")).toBeVisible();
-      expect(screen.getByRole("button", { name: "试测当前相机" })).toBeDisabled();
-      number("远端距离", 110); click("试测当前相机");
-      expect(screen.getByRole("button", { name: "相机 2" })).toBeDisabled();
-      expect(screen.getByRole("spinbutton", { name: "像素比例" })).toBeDisabled();
-      await finishTask(); click("保存本相机");
-      expect(screen.getByRole("button", { name: "保存本相机" })).toBeDisabled();
-    }
-    expect(screen.getByText("3 / 3 台已保存")).toBeVisible();
-    click("相机 1"); number("胶嘴基准位置", 140);
-    expect(stored().follow.saved).toEqual([false, true, true]);
-    expect(stored().follow.params[1]).toMatchObject({ nozzle: 132, direction: "向左" });
-    click("进入随动配方"); expect(stored().recipe.mode).toBe("follow");
-  });
-
-  it.each(["device", "plc", "calibration", "follow"])("本件运行中锁定 %s 建站操作", view => {
+  it.each(["device", "plc", "calibration"])("本件运行中锁定 %s 建站操作", view => {
     showWorkflow(view, sceneState("live-running"));
     for (const input of screen.queryAllByRole("spinbutton")) expect(input).toBeDisabled();
     for (const input of screen.queryAllByRole("combobox")) expect(input).toBeDisabled();
-    const actions: Record<string, string[]> = { device: ["断开", "取一帧", "保存并应用参数"], plc: ["断开连接", "应用点位", "检查业务握手"], calibration: ["取标定帧", "计算标定", "保存标定"], follow: ["冻结当前帧", "试测当前相机", "保存本相机"] };
+    const actions: Record<string, string[]> = { device: ["断开", "取一帧", "保存并应用参数"], plc: ["断开连接", "应用点位", "检查业务握手"], calibration: ["取标定帧", "计算标定", "保存标定"] };
     actions[view].forEach(name => expect(screen.getByRole("button", { name })).toBeDisabled());
   });
 });
@@ -148,7 +125,7 @@ describe("预览设置与情景操作", () => {
     expect(screen.getByText("没有匹配的情景")).toBeVisible(); click("清空筛选");
     expect(screen.getByRole("textbox", { name: "查找情景" })).toHaveValue("");
     expect(screen.getByRole("combobox", { name: "情景分类" })).toHaveValue("全部");
-    expect(within(dialog).getAllByRole("button")).toHaveLength(34);
+    expect(within(dialog).getAllByRole("button")).toHaveLength(33);
     click("关闭弹窗"); expect(stored()).toEqual(before);
   });
 });

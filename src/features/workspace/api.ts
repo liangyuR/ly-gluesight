@@ -1,6 +1,6 @@
 import { desktopCall } from "../../lib/desktop";
 import type { RecipeDoc } from "../cycle/types";
-import type { Comparison, FrameParams, FrozenImage, GrayImage, Overview, RecordImages, Sample, Workspace, WorkspaceView } from "./types";
+import type { Comparison, FrozenImage, GrayImage, Overview, RecordImages, Sample, ShotTeach, Workspace, WorkspaceView } from "./types";
 
 export async function decodeGray(input: ArrayBuffer | number[]): Promise<GrayImage> {
   const buf=input instanceof ArrayBuffer?input:Uint8Array.from(input).buffer;
@@ -29,12 +29,14 @@ export const workspaceApi = {
   capture: (id: string, revision: number, k: number) => desktopCall<WorkspaceView>("workspace_capture", { id, revision, k }),
   importImage: (id: string, revision: number, k: number, bytes: number[]) => desktopCall<WorkspaceView>("workspace_import_image", { id, revision, k, bytes }),
   image: (id: string, imageId: string) => desktopCall<ArrayBuffer>("workspace_image", { id, imageId }).then(decodeGray),
-  trial: (id: string, revision: number, k: number, imageId: string, params: FrameParams) =>
-    desktopCall<WorkspaceView>("workspace_trial", { id, revision, k, imageId, params }),
-  saveParams: (id: string, revision: number, k: number, params: FrameParams) =>
+  /** 按候选里已保存的中线试测冻结原图。 */
+  trial: (id: string, revision: number, k: number, imageId: string) =>
+    desktopCall<WorkspaceView>("workspace_trial", { id, revision, k, imageId }),
+  /** 把中线、像素当量与检测参数写进候选配方的拍照点 k，这一帧的试测随之作废。 */
+  saveParams: (id: string, revision: number, k: number, params: ShotTeach) =>
     desktopCall<WorkspaceView>("workspace_save_params", { id, revision, k, params }),
-  saveTeach: (id: string, revision: number, k: number, imageId: string, params: FrameParams) =>
-    desktopCall<WorkspaceView>("workspace_save_teach", { id, revision, k, imageId, params }),
+  saveTeach: (id: string, revision: number, k: number, imageId: string) =>
+    desktopCall<WorkspaceView>("workspace_save_teach", { id, revision, k, imageId }),
   restoreTeach: (id: string, revision: number, k: number) => desktopCall<WorkspaceView>("workspace_restore_teach", { id, revision, k }),
   saveOverview: (id: string, revision: number, overview: Overview) => desktopCall<WorkspaceView>("workspace_save_overview", { id, revision, overview }),
   validate: (id: string, revision: number, samples: Sample[]) => desktopCall<WorkspaceView>("workspace_validate", { id, revision, samples }),

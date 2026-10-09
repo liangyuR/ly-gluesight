@@ -1,13 +1,14 @@
 use serde::{Deserialize, Serialize};
 
-use crate::recipe::{InspectMode, Recipe};
+use crate::recipe::Recipe;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanShot {
     pub shot_id: String,
+    /// 现场机器人 / PLC 程序里的 Pose 标识，计入 planHash
+    pub pose_id: String,
     pub camera_id: String,
-    pub center: [f32; 2],
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -35,8 +36,8 @@ impl PlcPlan {
         }
         let mut counts = [0u16; 3];
         for shot in &shots {
-            if shot.shot_id.is_empty() || !ids.insert(&shot.shot_id) || !shot.center.iter().all(|v| v.is_finite()) {
-                return Err("拍照点 ID 必须非空且唯一，坐标必须有效".into());
+            if shot.shot_id.is_empty() || !ids.insert(&shot.shot_id) || shot.pose_id.trim().is_empty() {
+                return Err("拍照点 ID 必须非空且唯一，Pose 标识不能为空".into());
             }
             let slot = camera_slots.iter().position(|id| !id.is_empty() && id == &shot.camera_id)
                 .ok_or_else(|| format!("拍照点 {} 的相机 {} 不在 PLC 三个相机槽中", shot.shot_id, shot.camera_id))?;
@@ -49,11 +50,8 @@ impl PlcPlan {
     }
 
     pub fn from_recipe(recipe: &Recipe, camera_slots: [String; 3]) -> Result<Self, String> {
-        if recipe.mode != InspectMode::FlyShot {
-            return Err("一期 S7 握手仅支持飞拍配方".into());
-        }
-        let shots = recipe.shots.iter().enumerate().map(|(index, center)| PlanShot {
-            shot_id: format!("P{}", index + 1), camera_id: recipe.camera.clone(), center: *center,
+        let shots = recipe.shots.iter().map(|s| PlanShot {
+            shot_id: s.id.clone(), pose_id: s.pose_id.clone(), camera_id: s.camera.clone(),
         }).collect();
         Self::compile(recipe.id.clone(), recipe.version, camera_slots, shots)
     }
@@ -65,7 +63,7 @@ mod tests {
 
     fn shots() -> Vec<PlanShot> {
         ["cam1", "cam2", "cam3", "cam1"].into_iter().enumerate().map(|(index, camera)| PlanShot {
-            shot_id: format!("P{}", index + 1), camera_id: camera.into(), center: [index as f32, 10.0],
+            shot_id: format!("P{}", index + 1), pose_id: format!("A{}", index + 1), camera_id: camera.into(),
         }).collect()
     }
 
@@ -78,7 +76,10 @@ mod tests {
         let mut reordered = shots();
         reordered.swap(0, 1);
         assert_ne!(plan.plan_hash, PlcPlan::compile("part".into(), 1, slots.clone(), reordered).unwrap().plan_hash);
-        assert_ne!(plan.plan_hash, PlcPlan::compile("part".into(), 2, slots, shots()).unwrap().plan_hash);
+        assert_ne!(plan.plan_hash, PlcPlan::compile("part".into(), 2, slots.clone(), shots()).unwrap().plan_hash);
+        let mut pose = shots();
+        pose[2].pose_id = "B3".into();
+        assert_ne!(plan.plan_hash, PlcPlan::compile("part".into(), 1, slots, pose).unwrap().plan_hash);
     }
 
     #[test]
@@ -89,20 +90,32 @@ mod tests {
         assert!(PlcPlan::compile("p".into(), 1, slots.clone(), duplicate).is_err());
         let mut unknown = shots();
         unknown[0].camera_id = "cam4".into();
-        assert!(PlcPlan::compile("p".into(), 1, slots, unknown).is_err());
+        assert!(PlcPlan::compile("p".into(), 1, slots.clone(), unknown).is_err());
+        let mut no_pose = shots();
+        no_pose[0].pose_id = " ".into();
+        assert!(PlcPlan::compile("p".into(), 1, slots, no_pose).is_err());
     }
 
     #[test]
-    fn production_recipe_export_preserves_its_real_camera_and_shot_order() {
-        let recipe = crate::recipe::builtin().into_iter().find(|r| r.mode == InspectMode::FlyShot).unwrap();
-        let mut recipe = (*recipe).clone();
-        recipe.camera = "cam2".into();
+    fn production_recipe_export_preserves_each_shot_camera_and_order() {
+        let mut doc = crate::recipe::samples().remove(1);
+        for (shot, camera) in doc.shots.iter_mut().zip(["cam1", "cam2", "cam3", "cam1"]) {
+            shot.camera = camera.into();
+        }
+        doc.shots[1].pose_id = "P1".into();
+        let recipe = doc.build().unwrap();
         let plan = PlcPlan::from_recipe(&recipe, ["cam1".into(), "cam2".into(), "cam3".into()]).unwrap();
-        assert_eq!(plan.camera_shots, [0, recipe.shots.len() as u16, 0]);
-        assert_eq!(plan.shots.iter().map(|s| s.center).collect::<Vec<_>>(), recipe.shots);
-        assert!(plan.shots.iter().all(|s| s.camera_id == "cam2"));
-        assert!(PlcPlan::from_recipe(&recipe, ["cam1".into(), String::new(), String::new()]).is_err());
-        recipe.mode = InspectMode::Follow;
-        assert!(PlcPlan::from_recipe(&recipe, ["cam1".into(), "cam2".into(), "cam3".into()]).is_err());
+        assert_eq!(plan.camera_shots, [2, 1, 1]);
+        assert_eq!(plan.shots.iter().map(|s| (s.shot_id.as_str(), s.pose_id.as_str(), s.camera_id.as_str())).collect::<Vec<_>>(),
+            [("P1", "P1", "cam1"), ("P2", "P1", "cam2"), ("P3", "P3", "cam3"), ("P4", "P4", "cam1")]);
+        assert!(PlcPlan::from_recipe(&recipe, ["cam1".into(), "cam2".into(), String::new()]).is_err());
+    }
+
+    /// docs/integration/plc-s7-phase1.md 第 6 节的示例：改 hash 输入时同步改文档。
+    #[test]
+    fn documented_example_hash() {
+        let shots = (1..=2).map(|i| PlanShot { shot_id: format!("P{i}"), pose_id: format!("P{i}"), camera_id: "cam1".into() }).collect();
+        let plan = PlcPlan::compile("DEMO".into(), 1, ["cam1".into(), String::new(), String::new()], shots).unwrap();
+        assert_eq!((plan.plan_hash, plan.camera_shots), (581977774, [2, 0, 0]));
     }
 }

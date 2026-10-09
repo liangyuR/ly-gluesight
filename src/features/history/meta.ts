@@ -10,9 +10,9 @@ export const verdictLabel: Record<Verdict, string> = {
   ERR_INSPECT: "ERR · 未测成",
 };
 
-/** 检测记录里的触发方式（随动件记 follow）。 */
+/** 检测记录里的触发方式。 */
 export function triggerModeLabel(mode: string | null | undefined) {
-  return mode === "stop" ? "停稳拍" : mode === "follow" ? "随动" : "飞拍";
+  return mode === "stop" ? "停稳拍" : "飞拍";
 }
 
 export function verdictClass(v: Verdict) {

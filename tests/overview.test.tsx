@@ -1,12 +1,12 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import OverviewPage, { defaultPositions } from "../src/features/workspace/OverviewPage";
+import OverviewPage, { defaultPositions, WorkpieceOverview } from "../src/features/workspace/OverviewPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
 import type { WorkspaceView } from "../src/features/workspace/types";
-import { deferred, workspaceState, workspaceView } from "./fixtures";
+import { deferred, shotList, workspaceState, workspaceView } from "./fixtures";
 
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn(), saveOverview: vi.fn() } }));
@@ -26,10 +26,17 @@ beforeEach(() => {
 const show = () => render(<MemoryRouter><OverviewPage/></MemoryRouter>);
 const save = async () => userEvent.click(screen.getByRole("button", { name: "保存总览" }));
 describe("工件总览操作", () => {
-  it("选中帧显示对应原图和物理中心，键盘选帧可用", async () => {
+  it("选中帧显示对应原图（叠加示教中线）与相机、胶条、示教状态，键盘选帧可用", async () => {
+    ws.data!.layout.shots[1] = { ...ws.data!.layout.shots[1], camera: "CAM-2", bead: "J2", poseId: "A7" };
     show(); await userEvent.click(screen.getByRole("button", { name: "总览选择帧 k2" }));
     expect(screen.getByRole("button", { name: "总览选择帧 k2" })).toHaveAttribute("aria-pressed", "true");
-    expect(await screen.findByText("75.0, 30.0 mm")).toBeVisible(); expect(workspaceApi.image).toHaveBeenCalledWith("A", "A-image-1");
+    expect(within(screen.getByRole("button", { name: "总览选择帧 k2" })).getByText("P2 · CAM-2")).toBeInTheDocument();
+    expect(screen.getByText("P2 · CAM-2", { selector: ".wp-kv strong" })).toBeVisible();
+    for (const text of ["J2", "A7", "已示教 2 点 · 1.0 mm", "100%"]) expect(screen.getByText(text, { selector: ".wp-kv strong" })).toBeVisible();
+    expect(screen.queryByText(/物理中心|视野/)).toBeNull();
+    expect(workspaceApi.image).toHaveBeenCalledWith("A", "A-image-1");
+    const image = await screen.findByRole("img", { name: "A-image-1" });
+    expect(image.querySelector("polyline")).toHaveAttribute("points", "30,10 40,10");
     fireEvent.keyDown(screen.getByRole("button", { name: "总览选择帧 k1" }), { key: "Enter" });
     expect(screen.getByRole("button", { name: "总览选择帧 k1" })).toHaveAttribute("aria-pressed", "true");
   });
@@ -70,8 +77,8 @@ describe("工件总览操作", () => {
     fireEvent.change(screen.getByLabelText("导入总览图"), { target: { files: [new File(["png"], "bg.png", { type: "image/png" })] } });
     act(() => reader!.dispatchEvent(new Event("error"))); await waitFor(() => expect(ws.setError).toHaveBeenCalledWith("总览图读取失败"));
   });
-  it.each(["busy", "dirty", "follow"])("%s 状态禁止保存错误总览", condition => {
-    if (condition === "busy") ws.busy = true; if (condition === "dirty") ws.dirty = true; if (condition === "follow") ws.doc!.mode = "follow";
+  it.each(["busy", "dirty"])("%s 状态禁止保存错误总览", condition => {
+    if (condition === "busy") ws.busy = true; if (condition === "dirty") ws.dirty = true;
     show(); expect(screen.getByRole("button", { name: "保存总览" })).toBeDisabled();
     expect(screen.getByLabelText("导入总览图")).toBeDisabled();expect(screen.getByRole("button",{name:"自动布置"})).toBeDisabled();
   });
@@ -151,5 +158,27 @@ describe("工件总览操作", () => {
     fireEvent.keyDown(target,{key:" "});expect(target).toHaveAttribute("aria-pressed","true");
     fireEvent.keyDown(target,{key:"ArrowLeft"});fireEvent.keyDown(target,{key:"ArrowDown"});await save();
     expect(workspaceApi.saveOverview).toHaveBeenCalledWith("A",7,expect.objectContaining({positions:[[.25,.5],[.74,.51]]}));
+  });
+  it("默认显示位置按计划顺序排成均匀网格，不依赖工件坐标", () => {
+    const layout = workspaceView().layout;
+    expect(defaultPositions(layout)).toEqual([[.25, .5], [.75, .5]]);
+    expect(defaultPositions({ shots: shotList([[]]) })).toEqual([[.5, .5]]);
+    const five = defaultPositions({ shots: shotList([[], [], [], [], []]) });
+    expect(five).toEqual([[.125, .25], [.375, .25], [.625, .25], [.875, .25], [.125, .75]]);
+    expect(defaultPositions({ shots: [] })).toEqual([]);
+    const many = defaultPositions({ shots: shotList(Array.from({ length: 64 }, () => [])) });
+    expect(many.every(([x, y]) => x > 0 && x < 1 && y > 0 && y < 1)).toBe(true); expect(new Set(many.map(p => p.join())).size).toBe(64);
+  });
+  it("有测量状态时各帧框按拍照点结论着色，不检与未示教虚线", () => {
+    const layout = workspaceView().layout;
+    layout.shots.push({ ...layout.shots[0], id: "P3", poseId: "P3", skip: true }, { id: "P4", poseId: "P4", camera: "CAM-1", bead: "J1", skip: false, path: [] });
+    render(<svg><WorkpieceOverview layout={layout} overview={null} vis={["ok", "ok", "gap", "ok"]} /></svg>);
+    const frame = (k: number) => screen.getByRole("button", { name: `总览选择帧 k${k}` });
+    expect(frame(2)).toHaveAttribute("data-state", "gap"); expect(frame(2).querySelector("rect")).toHaveAttribute("stroke", "var(--ng)");
+    expect(within(frame(2)).getByText("断胶")).toBeInTheDocument();
+    expect(frame(3).querySelector("rect")).toHaveAttribute("stroke-dasharray", "5 4"); expect(within(frame(3)).getByText("不检")).toBeInTheDocument();
+    expect(frame(4).querySelector("rect")).toHaveAttribute("stroke-dasharray", "5 4"); expect(within(frame(4)).getByText("未示教")).toBeInTheDocument();
+    expect(frame(1).querySelector("rect")).toHaveAttribute("stroke", "var(--accent)");
+    expect(screen.queryByText(/NaN/)).toBeNull();
   });
 });

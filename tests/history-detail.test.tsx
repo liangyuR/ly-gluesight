@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -168,18 +168,28 @@ describe("历史工件复测", () => {
     expect(ws.select).toHaveBeenCalledWith("A");expect(screen.getByRole("button",{name:"按候选规则重判"})).toBeDisabled();
   });
 
-  it("随动原图按保存位置可复测，按相机/绝对帧计数选图而非列表顺序",async()=>{
-    ws.data!.workspace.doc.mode="follow";ws.data!.layout.mode="follow";ws.data!.layout.shots=[];ws.data!.workspace.frames=[];
-    detail.frames=[{status:"done",cam:0,camera:"CAM-1",s:50,arrivedMs:1,frameCounter:100,triggerCounter:110,counterJump:false,score:1,points:4,gapPoints:0,ms:1}];
-    vi.mocked(workspaceApi.recordImages).mockResolvedValue({historyId:1,complete:true,message:"原图完整",frames:[
-      {k:0,camera:"CAM-1",file:"099.pgm",ts:1,available:true,cam:0,frameCounter:99,triggerCounter:109},
-      {k:2,camera:"CAM-1",file:"100.pgm",ts:2,available:true,cam:0,frameCounter:100,triggerCounter:110},
-    ]});
+  it("逐拍照点显示原始结论：缺胶的拍照点标断胶，断口按段内弧长与该拍照点的允许长度说明；可切到整件总览",async()=>{
+    detail.points={d:[3,3,3,3],w:[null,null,null,null],st:[0,0,1,1]};
+    detail.judgement={...detail.judgement,reason:"P2 · J1 断胶 2.0 mm > 0.5 mm · s=0.0–2.0",
+      segments:[{verdict:"OK",min:3,max:3,excursionLen:0,wMin:null,wMax:null,wExcursionLen:0},{verdict:"NG_GAP",min:null,max:null,excursionLen:0,wMin:null,wMax:null,wExcursionLen:0}],
+      gaps:[{segment:1,s0:0,s1:2,len:2,frames:[1]}]};
+    detail.frames=[0,1].map(()=>({status:"done",cam:0,camera:"CAM-1",arrivedMs:1,frameCounter:1,triggerCounter:1,counterJump:false,score:.9,points:2,gapPoints:0,ms:5}));
     show();await screen.findByText(/原图完整/);
-    expect(screen.getByText(/按已记录的沿程位置重测图像/)).toBeVisible();expect(screen.queryByRole("button",{name:"将此帧用于示教"})).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button",{name:"k1"}));
-    await waitFor(()=>expect(workspaceApi.recordImage).toHaveBeenLastCalledWith(1,2));
-    expect(screen.getByRole("combobox",{name:"历史帧选择"})).toHaveValue("2");
-    await userEvent.click(screen.getByRole("button",{name:"从原图复测整件"}));expect(workspaceApi.compare).toHaveBeenCalledWith("A",7,1,true);
+    const tiles=within(screen.getByLabelText("逐拍照点视图"));
+    expect(within(tiles.getByRole("button",{name:"拍照点 P1"})).getByText("合格")).toBeVisible();
+    expect(within(tiles.getByRole("button",{name:"拍照点 P2"})).getByText("断胶")).toBeVisible();
+    expect(tiles.getByText("断胶 s=0.0–2.0 mm")).toBeVisible();
+    expect(screen.getByText("段内 s 0.0 – 2.0 mm · 长度 2.0 mm（允许 ≤ 0.5 mm）")).toBeVisible();
+    expect(screen.queryByText("跨帧合并")).toBeNull();
+    await userEvent.click(screen.getByRole("button",{name:"k2 · P2"}));
+    expect(screen.getByRole("combobox",{name:"历史帧选择"})).toHaveValue("1");
+    expect(tiles.getByRole("button",{name:"拍照点 P2"})).toHaveAttribute("aria-pressed","true");
+    // 原图上叠加这个拍照点的示教中线
+    const image=await screen.findByRole("img",{name:"原始 SN 101 · k2"});
+    expect(image.querySelector("polyline")).toHaveAttribute("points","30,10 40,10");
+    await userEvent.click(tiles.getByRole("button",{name:"拍照点 P1"}));expect(screen.getByRole("combobox",{name:"历史帧选择"})).toHaveValue("0");
+    await userEvent.click(screen.getByRole("button",{name:"整件"}));
+    expect(screen.getByLabelText("工件总览，选择帧查看原图")).toBeVisible();expect(screen.queryByLabelText("逐拍照点视图")).toBeNull();
+    expect(screen.getByRole("button",{name:"总览选择帧 k2"})).toHaveAttribute("data-state","gap");
   });
 });

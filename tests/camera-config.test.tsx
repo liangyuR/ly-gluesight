@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import CameraConfigPanel from "../src/features/camera/components/CameraConfigPanel";
 import { cameraApi, defaultCameraConfig } from "../src/features/camera/api";
-import type { CameraConfig, DeviceSummary, FollowCalib } from "../src/features/camera/types";
+import type { CameraConfig, DeviceSummary } from "../src/features/camera/types";
 import { deferred } from "./fixtures";
 
 vi.mock("../src/features/camera/api", async importOriginal => {
@@ -21,7 +21,7 @@ beforeEach(() => {
   vi.mocked(cameraApi.saveConfig).mockResolvedValue([]);
   vi.mocked(cameraApi.pickReplayDir).mockResolvedValue(null);
 });
-const show = () => render(<CameraConfigPanel cam={0} initial={config} follow={null} status={null} />);
+const show = () => render(<CameraConfigPanel cam={0} initial={config} status={null} />);
 
 describe("相机配置表单", () => {
   it("选择回放目录后填入路径，保存时应用所选目录", async () => {
@@ -65,32 +65,31 @@ describe("相机配置表单", () => {
   it("切换连续采集显示帧率并隐藏触发参数，Software 禁用触发沿", async () => {
     show(); await userEvent.selectOptions(document.getElementById("cam-trigger")!, "Software");
     expect(document.getElementById("cam-activation")).toBeDisabled();
-    await userEvent.click(screen.getByRole("button", { name: "连续（随动）" }));
+    await userEvent.click(screen.getByRole("button", { name: "连续（仅预览）" }));
     expect(document.getElementById("cam-fps")).toBeVisible(); expect(document.getElementById("cam-trigger")).toBeNull();
   });
 
   it("后台固定序列号同步到未编辑的表单", async () => {
     const page = show(); await screen.findByRole("option", { name: /相机 1/ });
-    page.rerender(<CameraConfigPanel cam={0} initial={{ ...config, serial: "AUTO" }} follow={null} status={null} />);
+    page.rerender(<CameraConfigPanel cam={0} initial={{ ...config, serial: "AUTO" }} status={null} />);
     expect(document.getElementById("cam-serial")).toHaveValue("AUTO");
   });
 
   it("后台更新不覆盖用户尚未保存的序列号", async () => {
     const page = show(); await screen.findByRole("option", { name: /相机 2/ });
     await userEvent.selectOptions(document.getElementById("cam-serial")!, "MANUAL");
-    page.rerender(<CameraConfigPanel cam={0} initial={{ ...config, serial: "AUTO" }} follow={null} status={null} />);
+    page.rerender(<CameraConfigPanel cam={0} initial={{ ...config, serial: "AUTO" }} status={null} />);
     expect(document.getElementById("cam-serial")).toHaveValue("MANUAL");
   });
 
-  it("保存包含最新随动标定与编辑值，显示相机拒绝参数的警告", async () => {
-    const follow: FollowCalib = { nozzle: [120, 90], angleDeg: 5, mirror: false, mmPerPx: .04, maskPx: 20, imageSize: [640, 480] };
+  it("保存包含编辑值，显示相机拒绝参数的警告", async () => {
     const onSaved = vi.fn(); vi.mocked(cameraApi.saveConfig).mockResolvedValue(["曝光拒绝"]);
-    render(<CameraConfigPanel cam={2} initial={config} follow={follow} status={null} onSaved={onSaved} />);
+    render(<CameraConfigPanel cam={2} initial={config} status={null} onSaved={onSaved} />);
     fireEvent.change(document.getElementById("cam-exposureUs")!, { target: { value: "80" } });
     await userEvent.click(screen.getByRole("button", { name: "保存并应用" }));
-    expect(cameraApi.saveConfig).toHaveBeenCalledWith(2, expect.objectContaining({ exposureUs: 80, follow }));
+    expect(cameraApi.saveConfig).toHaveBeenCalledWith(2, expect.objectContaining({ exposureUs: 80 }));
     expect(await screen.findByText("已应用，1 项参数相机未接受")).toBeVisible();
-    expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ exposureUs: 80, follow }));
+    expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ exposureUs: 80 }));
   });
 
   it("保存中禁用按钮，失败解锁并保留输入", async () => {
@@ -112,7 +111,7 @@ describe("相机配置表单", () => {
     await screen.findByRole("option",{name:"工件一 · 8 帧"});
     await userEvent.selectOptions(screen.getByRole("combobox",{name:"帧录制"}),"D:/records/part-1");
     fireEvent.change(screen.getByRole("spinbutton",{name:"通道"}),{target:{value:"2"}});
-    await userEvent.click(screen.getByRole("button",{name:"连续（随动）"}));
+    await userEvent.click(screen.getByRole("button",{name:"连续（仅预览）"}));
     fireEvent.change(screen.getByRole("spinbutton",{name:"帧率（fps）"}),{target:{value:"24"}});
     await userEvent.click(screen.getByRole("button",{name:"保存并应用"}));
     expect(cameraApi.saveConfig).toHaveBeenCalledWith(0,expect.objectContaining({source:"replay",replayDir:"D:/records/part-1",replayChannel:2,acquisition:"freeRun",fps:24,exposureUs:60}));

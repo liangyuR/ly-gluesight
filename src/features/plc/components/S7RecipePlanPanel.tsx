@@ -74,7 +74,10 @@ export default function S7RecipePlanPanel() {
       <div className="table-wrap"><table className="table"><thead><tr><th>PLC 相机槽位</th><th>相机编号</th><th>计划点数</th></tr></thead><tbody>
         {plan.cameraSlots.map((camera, index) => <tr key={index}><td>相机 {index + 1}</td><td>{camera || "未配置"}</td><td>{plan.cameraShots[index]}</td></tr>)}
       </tbody></table></div>
-      <p className="muted hint">这里只展示当前配方的真实绑定；单相机计划不代表三相机飞拍已完成。</p>
+      <div className="table-wrap"><table className="table" aria-label="拍照点计划"><thead><tr><th>拍照点</th><th>Pose</th><th>相机编号</th></tr></thead><tbody>
+        {plan.shots.map(shot => <tr key={shot.shotId}><td className="mono">{shot.shotId}</td><td className="mono">{shot.poseId}</td><td className="mono">{shot.cameraId}</td></tr>)}
+      </tbody></table></div>
+      <p className="muted hint">这里只展示当前配方的真实绑定；同一 Pose 可以触发几台相机。多相机配方可以导出计划，帧归属接入前不能布防；三个槽位不代表三相机飞拍已完成。</p>
       <details><summary>查看完整计划 JSON</summary><pre className="mono" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{JSON.stringify(plan, null, 2)}</pre></details>
     </>}
   </div>;

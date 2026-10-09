@@ -16,6 +16,10 @@ pub const MV_USB_DEVICE: c_uint = 0x4;
 pub const MV_ACCESS_EXCLUSIVE: c_uint = 1;
 pub const MV_EXCEPTION_DEV_DISCONNECT: c_uint = 0x8001;
 pub const PIXEL_MONO8: u32 = 0x0108_0001;
+pub const PIXEL_BAYER_GR8: u32 = 0x0108_0008;
+pub const PIXEL_BAYER_RG8: u32 = 0x0108_0009;
+pub const PIXEL_BAYER_GB8: u32 = 0x0108_000A;
+pub const PIXEL_BAYER_BG8: u32 = 0x0108_000B;
 
 #[repr(C)]
 struct DeviceInfoHead {

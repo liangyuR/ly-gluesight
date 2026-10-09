@@ -4,7 +4,7 @@ async (page) => {
   await page.getByRole("button", { name: "触发（飞拍）", exact: true }).click();
   await page.getByPlaceholder("D:\\现场图\\Glue1").fill("D:/project/ly-gluesight/output/offline/hikvision-three-camera/replay/Glue1");
   await page.getByRole("spinbutton").fill("1");
-  await page.getByRole("button", { name: "连续（随动）", exact: true }).click();
+  await page.getByRole("button", { name: "连续（仅预览）", exact: true }).click();
   await page.getByRole("button", { name: "保存并应用", exact: true }).click();
   await page.getByText("已保存并应用", { exact: true }).waitFor();
   await page.getByRole("button", { name: "下一张", exact: true }).click();
