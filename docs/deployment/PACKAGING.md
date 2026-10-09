@@ -19,7 +19,7 @@ pnpm run package
 
 ## 引擎来源
 
-默认从相邻仓库 `../LyFlow/build/core/bin` 收集全部 DLL，通过 Visual Studio 的 `vswhere` 自动找到最新 x64 CRT。构建机需要先准备与当前客户端兼容、启用 glue 算子的 lyFlow 产物（Image ABI v15）；发包时自动部署这些产物，不重新编译 C++ 引擎。实际引擎验证见 [测试说明](TESTING.md)。
+默认从相邻仓库 `../LyFlow/build/core/bin` 收集全部 DLL，通过 Visual Studio 的 `vswhere` 自动找到最新 x64 CRT。构建机需要先准备与当前客户端兼容、启用 glue 算子的 lyFlow 产物（Image ABI v15）；发包时自动部署这些产物，不重新编译 C++ 引擎。实际引擎验证见 [测试说明](../testing/TESTING.md)。
 
 自定义来源可使用环境变量或命令参数：
 

@@ -1,8 +1,8 @@
 # GlueSight · 胶路智检 历史规划：flyshot 收尾 + 三目随动检测
 
-> 当前一期目标、可行性、剩余工作与分步验收见 [软件架构与实施路线](gluesight-software-architecture.html)；S7 点表和接入步骤见 [一期握手契约](plc-s7-phase1.md)。
+> 当前一期目标、可行性、剩余工作与分步验收见 [软件架构与实施路线](gluesight-software-architecture.html)；S7 点表和接入步骤见 [一期握手契约](../integration/plc-s7-phase1.md)。
 
-> 本文保留早期立项计划和 M0–M5 实施记录，其中的状态、数量、性能与现场限制对应当时的验证环境，不是当前版本的待办清单。当前使用方式见 [图文教程](user-guide/index.html)，测试与真实图像验证方式见 [测试说明](TESTING.md)，操作验收范围见 [UI 操作说明](UI_OPERATIONS.md)。
+> 本文保留早期立项计划和 M0–M5 实施记录，其中的状态、数量、性能与现场限制对应当时的验证环境，不是当前版本的待办清单。当前使用方式见 [图文教程](../user-guide/index.html)，测试与真实图像验证方式见 [测试说明](../testing/TESTING.md)，操作验收范围见 [UI 操作说明](../testing/UI_OPERATIONS.md)。
 >
 > 2026-10-09 状态更新：已使用 lyFlow 客户端 `5b796c3` 和 Image ABI v15 注入完整灰度原图，飞拍标定、示教、验证、发布、在线检测与原图复测已接通。下文关于等待图像域合入的内容仅说明历史背景。
 >
@@ -129,7 +129,7 @@ PLC 握手时序、faultCode 表（91–99）、`judge` 的断胶合并与局部
 ### M5 视觉算法接入（约 5 天 + 依赖 D1 / D2）
 
 - [ ] `Measurer` trait，现有模拟和 lyFlow 分别实现。
-- [x] 后续已接通 lyFlow Image ABI v15 灰度注入与真实飞拍测量；早期 P3 场景保留为回归背景，当前执行方式与覆盖范围见 [测试说明](TESTING.md)。
+- [x] 后续已接通 lyFlow Image ABI v15 灰度注入与真实飞拍测量；早期 P3 场景保留为回归背景，当前执行方式与覆盖范围见 [测试说明](../testing/TESTING.md)。
 - [ ] 随动检测图：胶嘴定位 → 沿胶条法向卡尺，量宽度和中心 → 输出和飞拍同构的 `StationMeasure`（多一个宽度字段）。
 - [ ] 用 Replay 跑 Glue1 / Glue2 的全部帧做回归，胶宽曲线要和目视一致。
 
@@ -217,4 +217,4 @@ PLC 握手时序、faultCode 表（91–99）、`judge` 的断胶合并与局部
 - 名义速度模式靠图像同步兜底。推荐 PLC 给进度（Q1），`pathProgress` 刷新得越勤越好：外推误差到拐角会变成横向误差（模拟 PLC 从每 40 ms 改成每 10 ms 写一次后才稳定）。
 - 可测窗口实际比配置的短：胶嘴遮挡半径加搜索余量那一段测不了。帧率 × 步长要保证相邻两帧间胶嘴走的距离小于实际窗口长度。
 - 模拟节拍三路同时合成很吃 CPU：每幅渲染限到 1/3 的核；帧录制"全部"约 50 MB/s 写盘，一件随动约 0.5 GB。
-- 飞拍图像测量恢复事项已完成：当前使用 Image ABI v15 注入原图，持续回归见 [测试说明](TESTING.md)；桌面操作见 [图文教程](user-guide/index.html)。
+- 飞拍图像测量恢复事项已完成：当前使用 Image ABI v15 注入原图，持续回归见 [测试说明](../testing/TESTING.md)；桌面操作见 [图文教程](../user-guide/index.html)。

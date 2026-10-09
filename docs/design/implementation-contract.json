@@ -3,8 +3,8 @@
   "updatedAt": "2026-10-09",
   "documentation": {
     "userGuide": "docs/user-guide/index.html",
-    "testing": "docs/TESTING.md",
-    "operations": "docs/UI_OPERATIONS.md",
+    "testing": "docs/testing/TESTING.md",
+    "operations": "docs/testing/UI_OPERATIONS.md",
     "verificationScope": "接口规格与验收方式保存在仓库中；历史本机运行状态、原图、日志和生成报告不随仓库分发。"
   },
   "dependencies": {
@@ -61,7 +61,7 @@
     },
     "publicationAssets": "template、stations（含 workspaceParams）、calib 与示教 manifest；teachingHash 参与配方内容哈希",
     "sharedUse": "单帧试测、导入原图样本验证、历史原图复测与在线飞拍使用同一图和已保存工位参数",
-    "runtimeCompatibility": "客户端固定到 lyFlow 5b796c3，通过 Image ABI v15 注入完整灰度帧；运行时需加载与该 ABI 兼容、包含图像与 glue 算子的 core DLL。验证命令和证据范围见 docs/TESTING.md。"
+    "runtimeCompatibility": "客户端固定到 lyFlow 5b796c3，通过 Image ABI v15 注入完整灰度帧；运行时需加载与该 ABI 兼容、包含图像与 glue 算子的 core DLL。验证命令和证据范围见 docs/testing/TESTING.md。"
   },
   "limits": [
     "随动原图复测要求完整相机和绝对帧计数、有限沿程位置及匹配图像尺寸的当前标定；复测不重新推算历史沿程位置",

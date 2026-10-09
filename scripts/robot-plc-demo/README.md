@@ -27,7 +27,7 @@ Robot 向 PLC 写入型号、SN、计划拍照数，等待 GlueSight 布防，�
 
 `sim:build` 可以从没有演示数据的环境启动。随后在专用 GlueSight 窗口完成以下配置；后续升级会复用配置。
 
-1. 系统设置选择产品来源“PLC 下发产品代码”、飞拍测量“lyFlow”、帧录制“全部”。填写本机 `lyflow_core.dll` 路径并确认引擎就绪。DLL 的构建与 ABI 要求见 [项目测试说明](../../docs/TESTING.md)。
+1. 系统设置选择产品来源“PLC 下发产品代码”、飞拍测量“lyFlow”、帧录制“全部”。填写本机 `lyflow_core.dll` 路径并确认引擎就绪。DLL 的构建与 ABI 要求见 [项目测试说明](../../docs/testing/TESTING.md)。
 2. 设备与采集新建或配置 `cam1`，来源“模拟相机”、触发采集。演示配方只使用此相机。
 3. 运行 `python scripts/robot-plc-demo/make-board.py`，在工位标定中导入输出的 `calibration-board.pgm`。内角点 `9×6`，格长 `3.2 mm`；理想合成板的比例约为 `0.08 mm/px`。
 4. 根据 [配方夹具](fixtures/ROBOT-DEMO.json) 创建飞拍候选：`ROBOT-DEMO`、产品代码 `101`、相机 `cam1`；圆角矩形 `380×200 mm`、半径 `24 mm`、视野 `216×145 mm`、测量间距 `0.5 mm`。四点依次 `(95,50)`、`(285,50)`、`(285,150)`、`(95,150)`。位置公差、滤波和断胶限值参照 JSON。
