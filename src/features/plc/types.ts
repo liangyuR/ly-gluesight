@@ -133,3 +133,30 @@ export interface TagPreset {
   value: string;
   label: string;
 }
+
+export interface PlcOperationState {
+  phase: string;
+  plcLocked?: boolean;
+  plcHandshake?: PlcHandshakeState | null;
+  activeRecipeId?: string | null;
+}
+
+export interface PlcHandshakeState {
+  phase: "resetRequired" | "idle" | "validating" | "acquiring" | "draining" | "awaitAck" | "releasing" | "fault";
+  requestSeq: number | null;
+  resultSeq: number | null;
+  message: string | null;
+}
+
+export interface PlcRecipeChoice { id: string; name: string; version: number }
+
+export interface PlcRecipePlan {
+  protocolVersion: number;
+  recipeId: string;
+  planVersion: number;
+  planHash: number;
+  shotCount: number;
+  cameraSlots: [string, string, string];
+  cameraShots: [number, number, number];
+  shots: { shotId: string; cameraId: string; center: [number, number] }[];
+}

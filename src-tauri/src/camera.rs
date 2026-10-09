@@ -1088,6 +1088,8 @@ pub fn camera_rig_config(cycle: State<'_, CycleHost>) -> Vec<CameraConfig> {
 /// 保存并应用一台相机的配置。返回相机未接受的参数。
 #[tauri::command]
 pub async fn camera_save_config(app: AppHandle, cam: usize, config: CameraConfig) -> Result<Vec<String>, String> {
+    let cycle = app.state::<CycleHost>();
+    let _gate = cycle.plc_gate.lock().await;
     config.validate()?;
     // 海康相机要重新打开，检测中改会打断这一件
     check_idle(&app.state::<CycleHost>())?;
@@ -1180,6 +1182,7 @@ fn check_idle(cycle: &CycleHost) -> Result<(), String> {
 pub fn camera_add(app: AppHandle, mut config: CameraConfig) -> Result<usize, String> {
     config.validate()?;
     let cycle = app.state::<CycleHost>();
+    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试相机操作")?;
     check_idle(&cycle)?;
     let mut configs = cycle.camera.configs();
     if configs.len() >= 8 {
@@ -1199,6 +1202,7 @@ pub fn camera_add(app: AppHandle, mut config: CameraConfig) -> Result<usize, Str
 #[tauri::command]
 pub fn camera_remove(app: AppHandle, cam: usize) -> Result<(), String> {
     let cycle = app.state::<CycleHost>();
+    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试相机操作")?;
     check_idle(&cycle)?;
     let mut configs = cycle.camera.configs();
     if cam >= configs.len() {
@@ -1244,6 +1248,7 @@ pub fn camera_preview(cycle: State<'_, CycleHost>, cam: usize) -> tauri::ipc::Re
 
 #[tauri::command]
 pub fn camera_soft_trigger(cycle: State<'_, CycleHost>, cam: usize) -> Result<(), String> {
+    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试相机操作")?;
     check_idle(&cycle)?;
     let slot = cycle.camera.slot(cam).ok_or("相机不存在")?;
     let config = slot.config();
@@ -1265,7 +1270,8 @@ pub fn camera_soft_trigger(cycle: State<'_, CycleHost>, cam: usize) -> Result<()
 /// 空跑测试：机器人不带工件走一遍路径，期间的帧只计数不进入检测节拍。
 #[tauri::command]
 pub fn camera_dry_run_start(cycle: State<'_, CycleHost>) -> Result<(), String> {
-    if cycle.phase() != Phase::Idle {
+    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试空跑")?;
+    if cycle.busy() || cycle.phase() != Phase::Idle {
         return Err("检测节拍不在空闲状态，不能开始空跑".into());
     }
     *cycle.camera.rig.dry_run.lock().unwrap() = Some((Instant::now(), Vec::new()));

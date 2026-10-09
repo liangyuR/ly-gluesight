@@ -4,6 +4,33 @@
 
 项目使用 Vitest、React Testing Library、user-event 和 jsdom。测试操作真实的 React 页面与表单；需要桌面数据的页面使用受控接口返回值，避免连接现场相机、PLC 或改写生产配置。工作台状态测试使用真实 WorkspaceProvider，异步竞态通过可手动完成的 Promise 验证。
 
+## S7 一期握手
+
+协议、点表、PLC 参考程序和现场步骤见 [S7 一期交付说明](plc-s7-phase1.md)。线协议测试服务见 [S7 测试 PLC](../scripts/s7-handshake/README.md)，使用真实 TPKT/COTP/S7 报文，仅监听本机回环地址。
+
+- Python 报文与故障注入：`python -m unittest discover -s scripts/s7-handshake/tests -v`。
+- Rust 契约和计划：在 `src-tauri` 下运行 `cargo test --offline --lib handshake` 与 `cargo test --offline --lib plc_plan`。
+- Rust 会话与生产 S7 驱动联调：在 `src-tauri` 下运行 `cargo test --offline --lib plc_session -- --include-ignored --test-threads=1 --nocapture`，需要 Python 3 和本机 TCP 权限；不会连接生产 PLC。这些外部进程测试默认忽略，普通 `cargo test` 不代表已完成此项验证；可用 `S7_TEST_PYTHON` 指定 Python 可执行文件。
+- 前端：`pnpm exec vitest run tests/plc-page.test.tsx tests/plc-editors.test.tsx tests/plc-dialogs.test.tsx tests/connection-form.test.tsx tests/plc-operation-lock.test.tsx tests/plc-s7-template.test.tsx tests/plc-recipe-plan.test.tsx`。
+
+2026-10-09，S7 一期改动后的验证结果：
+
+| 验证范围 | 结果 | 边界与证据 |
+| --- | --- | --- |
+| Rust 默认回归 | 59 项通过，0 失败，20 项默认忽略 | 忽略项中 17 项 S7 线协议已另外执行；3 项实际 DLL 测试本轮未执行 |
+| Rust S7 会话专项 | 18 项通过，0 失败，耗时 103.46 秒 | 17 项真实 `ly_plc::PlcEngine` 与回环 S7 服务联调，另 1 项事务文件恢复；后者也包含在默认 59 项中，不重复累计 |
+| Python S7 报文及故障注入 | 21 项通过 | 主机环境运行 TCP 测试，不使用生产 PLC |
+| 前端 PLC 回归 | 7 个文件、127 项通过 | 模板、计划导出、操作锁、重连、页面和表单 |
+| 前端类型与构建 | 应用及测试类型检查、生产构建通过 | 未执行本轮完整 UI 套件，也未重新生成覆盖率 |
+
+会话专项日志在 `src-tauri/target/s7-session-tests/verification.log`，同目录各案例保存 `final-status.json`、`final-wire.json`、事务/审计文件与 DB 快照；这些本机产物不随源码提交。覆盖同 SN 不同序号、计划拒收、早/迟 ACK、写拒绝、执行后断线、释放失败、重启和腐坏日志、慢落盘、停止心跳及校验后重连。
+
+`git diff --check` 通过。`cargo fmt --all -- --check` 未通过：全库存在大量与默认 rustfmt 不一致的排版，包括本轮未修改的 `caliper.rs` 等文件；本轮未执行全库自动重排。此项为格式差异，不能记作格式检查通过。
+
+提交 PR 前，使用仅包含本次提交内容的独立快照，重新通过 `cargo test --offline --locked --lib`（59 项）、应用和测试类型检查及生产前端构建。固定到 `docs` 的架构图通过 5 个视图切换、8 个工作包展开、S7 状态、无外部资源和相对链接检查；这些结构与脚本检查不代表真实浏览器布局验收。
+
+上述软件验证不替代 TIA Portal 编译、实际 CPU 通讯、三相机触发身份及现场长稳验收。下面的 942/37 项为本次 S7 改动之前的历史记录。
+
 ## 运行
 
 首次安装依赖：`pnpm install --frozen-lockfile`。

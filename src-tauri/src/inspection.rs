@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use ly_plc::{Access, ConnectionConfig, DataType, EdgeMode, HeartbeatConfig, PlcConfig, PlcEngine, PlcPoint, PlcValue, PointValue};
+use ly_plc::{Access, ConnectionConfig, DataType, EdgeMode, HeartbeatConfig, PlcConfig, PlcEngine, PlcPoint, PlcValue, PointValue, ProtocolKind};
 use serde_json::Value;
 
 pub mod tag {
@@ -19,6 +19,20 @@ pub mod tag {
     pub const RESULT_CODE: &str = "resultCode";
     pub const FAULT_CODE: &str = "faultCode";
     pub const RESULT_SN: &str = "resultSn";
+    pub const PROTOCOL_VERSION: &str = "protocolVersion";
+    pub const REQUEST_SEQ: &str = "requestSeq";
+    pub const PLAN_VERSION: &str = "planVersion";
+    pub const PLAN_HASH: &str = "planHash";
+    pub const CAMERA_SHOTS: [&str; 3] = ["camera1Shots", "camera2Shots", "camera3Shots"];
+    pub const CAMERA_TRIGGERS: [&str; 3] = ["camera1Triggers", "camera2Triggers", "camera3Triggers"];
+    pub const ACK_SEQ: &str = "ackSeq";
+    pub const PLC_HEARTBEAT: &str = "plcHeartbeat";
+    pub const PC_HEARTBEAT: &str = "pcHeartbeat";
+    pub const PC_PROTOCOL_VERSION: &str = "pcProtocolVersion";
+    pub const ACCEPTED_SEQ: &str = "acceptedSeq";
+    pub const ACCEPTED_PLAN_HASH: &str = "acceptedPlanHash";
+    pub const RESULT_SEQ: &str = "resultSeq";
+    pub const VISION_FAULT: &str = "visionFault";
     /// 随动：机器人已走过的胶路弧长（按配方里的换算系数转成 mm）
     pub const PATH_PROGRESS: &str = "pathProgress";
 }
@@ -83,8 +97,80 @@ pub async fn write_tag(engine: &PlcEngine, tag: &str, value: Value) -> Result<()
     engine.write_point(&id, &value).await
 }
 
-/// PLC→PC 信号默认放在线圈和保持寄存器上，模拟器协议下软件可以代替 PLC 写入它们来跑模拟节拍。
 pub fn default_plc_config() -> PlcConfig {
+    s7_phase1_config(100).expect("DB100 is a valid S7 data block")
+}
+
+pub fn s7_phase1_config(db_number: u16) -> Result<PlcConfig, String> {
+    if db_number == 0 {
+        return Err("S7 DB 号必须在 1–65535 之间".into());
+    }
+    use DataType::{Bool, U16, U32};
+    use EdgeMode::{None as NoEdge, Rising};
+    let input = Access::Read;
+    let output = Access::ReadWrite;
+    let definitions = [
+        (tag::PART_START, "工件开始", "DBX0.0", Bool, input, Rising),
+        (tag::PART_END, "触发计划完成", "DBX0.1", Bool, input, Rising),
+        (tag::RESULT_ACK, "结果确认", "DBX0.2", Bool, input, Rising),
+        (tag::FAULT_RESET, "故障复位", "DBX0.3", Bool, input, Rising),
+        (tag::PLC_HEARTBEAT, "PLC 心跳", "DBX0.4", Bool, input, NoEdge),
+        (tag::PROTOCOL_VERSION, "握手协议版本", "DBW2", U16, input, NoEdge),
+        (tag::REQUEST_SEQ, "请求事务序号", "DBD4", U32, input, NoEdge),
+        (tag::PART_SN, "工件 SN", "DBD8", U32, input, NoEdge),
+        (tag::PRODUCT_CODE, "产品代码", "DBW12", U16, input, NoEdge),
+        (tag::SHOT_COUNT, "计划拍照总数", "DBW14", U16, input, NoEdge),
+        (tag::PLAN_VERSION, "拍照计划版本", "DBD16", U32, input, NoEdge),
+        (tag::PLAN_HASH, "拍照计划摘要", "DBD20", U32, input, NoEdge),
+        (tag::CAMERA_SHOTS[0], "相机槽 1 计划数", "DBW24", U16, input, NoEdge),
+        (tag::CAMERA_SHOTS[1], "相机槽 2 计划数", "DBW26", U16, input, NoEdge),
+        (tag::CAMERA_SHOTS[2], "相机槽 3 计划数", "DBW28", U16, input, NoEdge),
+        (tag::ACK_SEQ, "确认事务序号", "DBD32", U32, input, NoEdge),
+        (tag::CAMERA_TRIGGERS[0], "相机槽 1 已发触发数", "DBW36", U16, input, NoEdge),
+        (tag::CAMERA_TRIGGERS[1], "相机槽 2 已发触发数", "DBW38", U16, input, NoEdge),
+        (tag::CAMERA_TRIGGERS[2], "相机槽 3 已发触发数", "DBW40", U16, input, NoEdge),
+        (tag::VISION_READY, "视觉就绪", "DBX64.0", Bool, output, NoEdge),
+        (tag::ARMED, "已布防", "DBX64.1", Bool, output, NoEdge),
+        (tag::BUSY, "检测中", "DBX64.2", Bool, output, NoEdge),
+        (tag::DONE, "结果有效", "DBX64.3", Bool, output, NoEdge),
+        (tag::VISION_FAULT, "视觉故障", "DBX64.4", Bool, output, NoEdge),
+        (tag::PC_HEARTBEAT, "上位机心跳", "DBX64.5", Bool, output, NoEdge),
+        (tag::PC_PROTOCOL_VERSION, "上位机协议版本", "DBW66", U16, output, NoEdge),
+        (tag::RESULT_SEQ, "结果事务序号", "DBD68", U32, output, NoEdge),
+        (tag::RESULT_SN, "结果 SN", "DBD72", U32, output, NoEdge),
+        (tag::RESULT_CODE, "结果码", "DBW76", U16, output, NoEdge),
+        (tag::FAULT_CODE, "异常码", "DBW78", U16, output, NoEdge),
+        (tag::ACCEPTED_SEQ, "布防事务序号", "DBD80", U32, output, NoEdge),
+        (tag::ACCEPTED_PLAN_HASH, "布防计划摘要", "DBD84", U32, output, NoEdge),
+    ];
+    let points = definitions.into_iter().map(|(tag, name, address, data_type, access, edge)| PlcPoint {
+        id: format!("p_{tag}"), name: name.into(), address: format!("DB{db_number}.{address}"),
+        data_type, access, edge, tags: vec![tag.into()],
+        log_changes: !matches!(tag, tag::PLC_HEARTBEAT | tag::PC_HEARTBEAT),
+        description: if access == input { "一期 S7 · PLC 写入，上位机只读" } else { "一期 S7 · 上位机握手专用，禁止手动写入" }.into(),
+        ..PlcPoint::default()
+    }).collect();
+    let config = PlcConfig {
+        connection: ConnectionConfig { protocol: ProtocolKind::S7, port: 102, poll_interval_ms: 50, ..ConnectionConfig::default() },
+        points,
+        heartbeat: HeartbeatConfig { point_id: Some(format!("p_{}", tag::PC_HEARTBEAT)), interval_ms: 500 },
+        auto_connect: false,
+        ..PlcConfig::default()
+    };
+    config.validate()?;
+    Ok(config)
+}
+
+pub fn reserved_s7_point(config: &PlcConfig, id: &str) -> bool {
+    if config.connection.protocol != ProtocolKind::S7 { return false; }
+    if config.heartbeat.point_id.as_deref() == Some(id) { return true; }
+    let Some(point) = config.points.iter().find(|p| p.id == id) else { return false; };
+    s7_phase1_config(100).is_ok_and(|template| template.points.iter().any(|preset|
+        preset.tags.iter().any(|tag| point.tags.contains(tag))))
+}
+
+#[cfg(test)]
+pub fn legacy_simulator_config() -> PlcConfig {
     let point = |id: &str, name: &str, address: &str, data_type, edge, tag: &str| PlcPoint {
         id: id.into(),
         name: name.into(),

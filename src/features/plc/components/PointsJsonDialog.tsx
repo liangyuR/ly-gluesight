@@ -5,11 +5,12 @@ import type { PlcPoint } from "../types";
 
 interface PointsJsonDialogProps {
   points: PlcPoint[];
+  blockedReason?: string;
   onApply: (points: PlcPoint[]) => void;
   onClose: () => void;
 }
 
-export default function PointsJsonDialog({ points, onApply, onClose }: PointsJsonDialogProps) {
+export default function PointsJsonDialog({ points, blockedReason = "", onApply, onClose }: PointsJsonDialogProps) {
   const [text, setText] = useState(() => JSON.stringify(points, null, 2));
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
@@ -20,6 +21,7 @@ export default function PointsJsonDialog({ points, onApply, onClose }: PointsJso
   useEffect(() => { alive.current = true; return () => { alive.current = false; clearTimeout(copyTimer.current); }; }, []);
 
   const apply = () => {
+    if (blockedReason) return setError(blockedReason);
     try {
       const parsed = JSON.parse(text);
       if (!Array.isArray(parsed)) throw new Error("需要点位数组");
@@ -80,14 +82,15 @@ export default function PointsJsonDialog({ points, onApply, onClose }: PointsJso
           <button className="btn" onClick={onClose}>
             取消
           </button>
-          <button className="btn primary" onClick={apply}>
+          <button className="btn primary" disabled={!!blockedReason} onClick={apply}>
             应用到地址表
           </button>
         </>
       }
     >
+      {blockedReason && <p className="notice error" role="status">{blockedReason}</p>}
       <p className="muted hint">复制下方 JSON 可备份或在设备间共享；粘贴 JSON 后点击应用将替换当前地址表（需再保存配置）。</p>
-      <textarea className="input code" aria-label="地址表 JSON" spellCheck={false} value={text} onChange={(e) => { setText(e.target.value); setError(""); setCopied(false); }} />
+      <textarea className="input code" aria-label="地址表 JSON" readOnly={!!blockedReason} spellCheck={false} value={text} onChange={(e) => { setText(e.target.value); setError(""); setCopied(false); }} />
     </Modal>
   );
 }
