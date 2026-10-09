@@ -220,6 +220,9 @@ struct Shared {
     last_emit: Mutex<Option<Instant>>,
     disconnected: AtomicBool,
     order: Mutex<Reorder>,
+    /// 像素格式不支持、没能出灰度图的帧数与最近一次的原因（重新打开时清零）
+    unusable: AtomicU64,
+    unusable_msg: Mutex<String>,
 }
 
 impl Shared {
@@ -250,6 +253,38 @@ impl Shared {
         if self.preview_due() {
             *self.preview.lock().unwrap() = Some(make_preview(&img.pixels, img.width as usize, img.height as usize));
         }
+    }
+
+    /// 海康相机的一帧（像素格式已认过）：缩略图到时或要留整帧时才转灰度，缩略图与整帧用同一张灰度。
+    fn gray_image(&self, pixel_type: u32, w: u32, h: u32, data: &[u8]) -> Option<Arc<FrameImage>> {
+        let due = self.preview_due();
+        let keep = (self.capture() && self.wanted()) | self.grab.swap(false, Ordering::SeqCst);
+        if !due && !keep {
+            return None;
+        }
+        let gray = match to_gray(&self.rig.pool, pixel_type, w, h, data) {
+            Ok(g) => g,
+            Err(e) => {
+                self.unusable(e);
+                return None;
+            }
+        };
+        if due {
+            *self.preview.lock().unwrap() = Some(make_preview(gray.pixels(), w as usize, h as usize));
+        }
+        keep.then(|| Arc::new(gray.into_image(&self.rig.pool, w, h)))
+    }
+
+    /// 不支持的像素格式不静默丢弃：计数并记下原因，显示在相机状态里。
+    fn unusable(&self, e: String) {
+        self.unusable.fetch_add(1, Ordering::Relaxed);
+        *self.unusable_msg.lock().unwrap() = e;
+    }
+
+    /// 有帧没能出灰度图时给状态栏的说明。
+    fn unusable_note(&self) -> Option<String> {
+        let n = self.unusable.load(Ordering::Relaxed);
+        (n > 0).then(|| format!("{}：{n} 帧没有图像", self.unusable_msg.lock().unwrap()))
     }
 
     fn deliver_in_order(&self, seq: u64, frame: Option<Frame>) {
@@ -332,6 +367,51 @@ impl Shared {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PixelKind {
+    Mono8,
+    Bayer8,
+}
+
+/// SDK 报的像素格式：Mono8 原样用，8 位 Bayer 转灰度（D-9），其他不支持。
+fn pixel_kind(pixel_type: u32) -> Result<PixelKind, String> {
+    match pixel_type {
+        mvs::PIXEL_MONO8 => Ok(PixelKind::Mono8),
+        mvs::PIXEL_BAYER_GR8 | mvs::PIXEL_BAYER_RG8 | mvs::PIXEL_BAYER_GB8 | mvs::PIXEL_BAYER_BG8 => Ok(PixelKind::Bayer8),
+        t => Err(format!("像素格式 0x{t:08X} 不支持（需要 Mono8 或 8 位 Bayer）")),
+    }
+}
+
+/// 一帧灰度：Mono8 直接借 SDK 的缓冲（留整帧时才拷），Bayer 转换后的已在缓冲池里。
+enum Gray<'a> {
+    Raw(&'a [u8]),
+    Pooled(FrameImage),
+}
+
+impl Gray<'_> {
+    fn pixels(&self) -> &[u8] {
+        match self {
+            Gray::Raw(p) => p,
+            Gray::Pooled(img) => &img.pixels,
+        }
+    }
+
+    fn into_image(self, pool: &FramePool, w: u32, h: u32) -> FrameImage {
+        match self {
+            Gray::Raw(p) => pool.copy(w, h, p),
+            Gray::Pooled(img) => img,
+        }
+    }
+}
+
+/// 取图回调收到的像素转成 8 位灰度。
+fn to_gray<'a>(pool: &FramePool, pixel_type: u32, w: u32, h: u32, data: &'a [u8]) -> Result<Gray<'a>, String> {
+    match pixel_kind(pixel_type)? {
+        PixelKind::Mono8 => Ok(Gray::Raw(data)),
+        PixelKind::Bayer8 => pool.bayer8_to_gray(w, h, data).map(Gray::Pooled),
+    }
+}
+
 extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_void) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if info.is_null() || user.is_null() {
@@ -341,15 +421,17 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
         let info = unsafe { &*info };
         let frame_counter = if info.frame_counter != 0 { info.frame_counter } else { info.frame_num } as u64;
         let trigger_counter = if info.trigger_index != 0 { info.trigger_index as u64 } else { frame_counter };
-        let mono = info.pixel_type == mvs::PIXEL_MONO8 && !data.is_null();
         let w = if info.extend_width != 0 { info.extend_width } else { info.width as u32 };
         let h = if info.extend_height != 0 { info.extend_height } else { info.height as u32 };
-        let src = mono.then(|| unsafe { std::slice::from_raw_parts(data, (w * h) as usize) });
-        if let Some(src) = src.filter(|_| shared.preview_due()) {
-            *shared.preview.lock().unwrap() = Some(make_preview(src, w as usize, h as usize));
-        }
-        let keep = src.is_some() && ((shared.capture() && shared.wanted()) | shared.grab.swap(false, Ordering::SeqCst));
-        let image = src.filter(|_| keep).map(|src| Arc::new(shared.rig.pool.copy(w, h, src)));
+        // 先认像素格式，再按每像素 1 字节取缓冲（Mono8 与 8 位 Bayer 都是）
+        let image = match pixel_kind(info.pixel_type) {
+            Err(e) => {
+                shared.unusable(e);
+                None
+            }
+            Ok(_) if data.is_null() => None,
+            Ok(_) => shared.gray_image(info.pixel_type, w, h, unsafe { std::slice::from_raw_parts(data, (w * h) as usize) }),
+        };
         shared.deliver(Frame { cam: shared.cam, frame_counter, trigger_counter, lost_packets: info.lost_packet, ts: now_ms(), manual: false, image });
     }));
 }
@@ -407,6 +489,8 @@ impl CameraSlot {
                 last_emit: Mutex::new(None),
                 disconnected: AtomicBool::new(false),
                 order: Mutex::new(Reorder::default()),
+                unusable: AtomicU64::new(0),
+                unusable_msg: Mutex::new(String::new()),
             }),
             config: Mutex::new(config),
             state: Mutex::new(DeviceState::default()),
@@ -445,6 +529,10 @@ impl CameraSlot {
                 Acquisition::FreeRun => "模拟相机：连续采集不合成画面，飞拍要用触发采集".to_string(),
             },
             (CameraSource::Replay, Some((n, next))) => format!("回放 {n} 帧 · 下一帧第 {} 张", next + 1),
+            (CameraSource::Mvs, _) => match self.shared.unusable_note() {
+                Some(note) => format!("{note} · {state_message}"),
+                None => state_message,
+            },
             _ => state_message,
         };
         CameraStatus {
@@ -601,6 +689,7 @@ impl CameraSlot {
     fn close(&self) {
         self.device.lock().unwrap().take();
         self.shared.disconnected.store(false, Ordering::SeqCst);
+        self.shared.unusable.store(0, Ordering::Relaxed);
     }
 
     fn open(&self) -> Result<String, String> {
@@ -615,9 +704,10 @@ impl CameraSlot {
     fn try_open(&self) -> Result<String, String> {
         let config = self.config();
         let device = mvs::Device::open(&config.serial, &self.claimed_serials())?;
-        let (warnings, max_fps) = apply(&device, &config);
+        let (warnings, max_fps, format) = apply(&device, &config)?;
         device.start(on_image, on_exception, Arc::as_ptr(&self.shared) as *mut c_void)?;
-        let mut msg = format!("已连接 {} · {}", device.summary.model, device.summary.serial);
+        let format = if format == "Mono8" { format.to_string() } else { format!("{format} → 灰度") };
+        let mut msg = format!("已连接 {} · {} · {format}", device.summary.model, device.summary.serial);
         let serial = device.summary.serial.clone();
         *self.device.lock().unwrap() = Some(device);
         // 序列号留空的相机开到哪台就固定成哪台：重启、增删相机后还是这台，标定跟着它。打开期间用户另选了序列号就不动
@@ -678,8 +768,31 @@ impl CameraSlot {
     }
 }
 
-/// 写入相机参数。个别型号不支持的节点记为警告，不阻止取流。
-fn apply(d: &mvs::Device, c: &CameraConfig) -> (Vec<String>, Option<f32>) {
+/// 8 位 Bayer 的取用顺序（现场相机是 BG）。
+const BAYER8: [&str; 4] = ["BayerBG8", "BayerRG8", "BayerGB8", "BayerGR8"];
+
+/// 相机可选项里的 8 位 Bayer，按 BAYER8 的顺序。
+fn bayer8_choices(entries: &[String]) -> Vec<&'static str> {
+    BAYER8.into_iter().filter(|f| entries.iter().any(|e| e == f)).collect()
+}
+
+/// 先设 Mono8；彩色相机没有 Mono8 时取 8 位 Bayer，取图回调里转灰度（D-9）。都设不上时不能取流。
+fn set_pixel_format(d: &mvs::Device) -> Result<&'static str, String> {
+    let Err(mut last) = d.set_enum("PixelFormat", "Mono8") else { return Ok("Mono8") };
+    let entries = d.enum_entries("PixelFormat").map_err(|e| format!("像素格式设不了 Mono8（{last}），也读不出相机支持的格式：{e}"))?;
+    for f in bayer8_choices(&entries) {
+        match d.set_enum("PixelFormat", f) {
+            Ok(()) => return Ok(f),
+            Err(e) => last = e,
+        }
+    }
+    let list = if entries.is_empty() { "无".to_string() } else { entries.join("、") };
+    Err(format!("像素格式需要 Mono8 或 8 位 Bayer，相机可选：{list}（{last}）"))
+}
+
+/// 写入相机参数。像素格式设不上时返回错误（相机不就绪）；其余个别型号不支持的节点记为警告，不阻止取流。
+/// 返回警告、最高帧率与选用的像素格式。
+fn apply(d: &mvs::Device, c: &CameraConfig) -> Result<(Vec<String>, Option<f32>, &'static str), String> {
     let mut warnings = Vec::new();
     let mut must = |r: Result<(), String>| {
         if let Err(e) = r {
@@ -687,7 +800,7 @@ fn apply(d: &mvs::Device, c: &CameraConfig) -> (Vec<String>, Option<f32>) {
         }
     };
     must(d.set_enum("AcquisitionMode", "Continuous"));
-    must(d.set_enum("PixelFormat", "Mono8"));
+    let format = set_pixel_format(d)?;
     match c.acquisition {
         Acquisition::Triggered => {
             let _ = d.set_enum("TriggerSelector", "FrameBurstStart");
@@ -749,7 +862,7 @@ fn apply(d: &mvs::Device, c: &CameraConfig) -> (Vec<String>, Option<f32>) {
         }
     }
     let max_fps = d.get_float("ResultingFrameRate").ok();
-    (warnings, max_fps)
+    Ok((warnings, max_fps, format))
 }
 
 pub struct CameraRig {
@@ -1172,4 +1285,56 @@ pub fn camera_dry_run_get(cycle: State<'_, CycleHost>) -> Option<Vec<DryFrame>> 
 #[tauri::command]
 pub fn camera_dry_run_stop(cycle: State<'_, CycleHost>) -> Vec<DryFrame> {
     cycle.camera.rig.dry_run.lock().unwrap().take().map(|(_, f)| f).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod gray_tests {
+    use super::*;
+
+    #[test]
+    fn mono8_passes_through_unchanged() {
+        let pool = FramePool::new(2);
+        let data: Vec<u8> = (0..12).map(|i| i * 20).collect();
+        let gray = to_gray(&pool, mvs::PIXEL_MONO8, 4, 3, &data).unwrap();
+        assert!(matches!(gray, Gray::Raw(_)));
+        assert_eq!(gray.pixels(), &data[..]);
+        let img = gray.into_image(&pool, 4, 3);
+        assert_eq!((img.width, img.height), (4, 3));
+        assert_eq!(img.pixels, data);
+    }
+
+    #[test]
+    fn bayer8_is_converted() {
+        let pool = FramePool::new(2);
+        // BG 相位、R = 200、G = 100、B = 40 的纯色块
+        let (w, h) = (6, 4);
+        let data: Vec<u8> = (0..w * h).map(|i| match (i / w % 2, i % w % 2) {
+            (0, 0) => 40,
+            (1, 1) => 200,
+            _ => 100,
+        }).collect();
+        let gray = to_gray(&pool, mvs::PIXEL_BAYER_BG8, w as u32, h as u32, &data).unwrap();
+        assert!(gray.pixels().iter().all(|&v| v == 110));
+        let img = gray.into_image(&pool, w as u32, h as u32);
+        assert_eq!((img.width, img.height, img.pixels.len()), (6, 4, 24));
+        for t in [mvs::PIXEL_BAYER_GR8, mvs::PIXEL_BAYER_RG8, mvs::PIXEL_BAYER_GB8, mvs::PIXEL_BAYER_BG8] {
+            assert_eq!(pixel_kind(t), Ok(PixelKind::Bayer8));
+        }
+        assert!(to_gray(&pool, mvs::PIXEL_BAYER_BG8, 1, 24, &data).is_err());
+    }
+
+    #[test]
+    fn unsupported_format_is_an_error() {
+        let pool = FramePool::new(2);
+        let err = to_gray(&pool, 0x0110_0003, 2, 2, &[0; 8]).err().unwrap();
+        assert_eq!(err, "像素格式 0x01100003 不支持（需要 Mono8 或 8 位 Bayer）");
+        assert!(pixel_kind(0x0108_000C).is_err());
+    }
+
+    #[test]
+    fn picks_8bit_bayer_in_preferred_order() {
+        let entries = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(bayer8_choices(&entries(&["BayerGR8", "BayerBG10", "BayerBG8"])), ["BayerBG8", "BayerGR8"]);
+        assert!(bayer8_choices(&entries(&["BayerBG10", "BayerBG12Packed", "Mono10"])).is_empty());
+    }
 }
