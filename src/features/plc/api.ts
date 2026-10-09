@@ -8,6 +8,10 @@ import type {
   LogPage,
   LogQuery,
   PlcConfig,
+  PlcHandshakeState,
+  PlcOperationState,
+  PlcRecipeChoice,
+  PlcRecipePlan,
   PlcStatus,
   PointValue,
 } from "./types";
@@ -60,16 +64,49 @@ export const plcApi = {
     call<HistorySample[]>("plc_point_history", { pointId, start, end }, () => []),
   checkAddress: (connection: ConnectionConfig, address: string, dataType: DataType) =>
     call<string>("plc_check_address", { connection, address, dataType }, () => "预览模式不校验"),
+  s7Phase1Template: (dbNumber: number) =>
+    call<PlcConfig>("plc_s7_phase1_template", { dbNumber }, () => { throw new Error("一期 S7 点表需要桌面后端生成"); }),
+  getOperationState: () => call<PlcOperationState | null>("cycle_snapshot", undefined, () => null),
+  recipeChoices: () => call<PlcRecipeChoice[]>("cycle_recipes", undefined, () => []),
+  recipePlan: (recipeId: string) => call<PlcRecipePlan>("plc_recipe_plan", { recipeId }, () => { throw new Error("配方握手计划需要桌面后端读取"); }),
 };
 
-export function subscribe<T>(event: string, cb: (payload: T) => void): () => void {
+export function usePlcOperationState() {
+  const [operation, setOperation] = useState<{ blockedReason: string; handshake: PlcHandshakeState | null }>({
+    blockedReason: "正在核对生产状态，暂不能更改 PLC 配置或手动写入",
+    handshake: null,
+  });
+  useEffect(() => {
+    let alive = true;
+    let receivedEvent = false;
+    const update = (state: PlcOperationState | null) => {
+      if (!alive) return;
+      setOperation({
+        blockedReason: !state ? "生产状态不可用，已锁定 PLC 配置和手动写入"
+          : (state.plcLocked ?? !["IDLE", "FAULT"].includes(state.phase))
+            ? "生产或结果交付尚未结束，PLC 配置和手动写入已锁定" : "",
+        handshake: state?.plcHandshake ?? null,
+      });
+    };
+    const off = subscribe<PlcOperationState>("cycle://snapshot", state => {
+      receivedEvent = true;
+      update(state);
+    }, () => { receivedEvent = true; update(null); });
+    plcApi.getOperationState().then(state => { if (!receivedEvent) update(state); })
+      .catch(() => { if (!receivedEvent) update(null); });
+    return () => { alive = false; off(); };
+  }, []);
+  return operation;
+}
+
+export function subscribe<T>(event: string, cb: (payload: T) => void, onError?: (error: unknown) => void): () => void {
   if (!isTauri()) return () => {};
   let unlisten: UnlistenFn | undefined;
   let disposed = false;
   listen<T>(event, (e) => cb(e.payload)).then((fn) => {
     if (disposed) fn();
     else unlisten = fn;
-  });
+  }).catch(error => { if (!disposed) onError?.(error); });
   return () => {
     disposed = true;
     unlisten?.();

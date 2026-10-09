@@ -3,22 +3,141 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import PlcPage from "../src/features/plc/pages/PlcPage";
 import { plcApi } from "../src/features/plc/api";
-import type { PlcStatus, PointValue, ProtocolKind } from "../src/features/plc/types";
+import type { PlcHandshakeState, PlcStatus, PointValue, ProtocolKind } from "../src/features/plc/types";
 import { deferred } from "./fixtures";
 import { plcConfig } from "./plc-fixtures";
 
 let status: PlcStatus;
 let values: Record<string, PointValue>;
+let operationLock: string;
+let handshake: PlcHandshakeState | null;
 vi.mock("../src/features/plc/api", () => ({
-  plcApi: { getConfig: vi.fn(), saveConfig: vi.fn(), connect: vi.fn(), disconnect: vi.fn(), writePoint: vi.fn(), checkAddress: vi.fn() },
+  plcApi: { getConfig: vi.fn(), saveConfig: vi.fn(), connect: vi.fn(), disconnect: vi.fn(), writePoint: vi.fn(), checkAddress: vi.fn(), s7Phase1Template: vi.fn() },
   usePlcStatus: () => status, usePlcValues: () => values,
+  usePlcOperationState: () => ({ blockedReason: operationLock, handshake }),
 }));
 beforeEach(() => {
+  operationLock = "";
+  handshake = null;
   status = { state: "disconnected", message: "模拟器", since: 1, lastPoll: null, cycleMs: null, pollCount: 0, errorCount: 0 };
   values = { speed: { value: 123, error: null, ts: 1 } };
   vi.mocked(plcApi.getConfig).mockResolvedValue(plcConfig());
   for (const fn of [plcApi.saveConfig, plcApi.connect, plcApi.disconnect, plcApi.writePoint]) vi.mocked(fn).mockResolvedValue(undefined);
   vi.mocked(plcApi.checkAddress).mockResolvedValue("地址有效");
+});
+
+describe("一期 S7 点表与生产操作保护", () => {
+  it("载入预设只改草稿，保留未保存连接参数并显式确认替换点表", async () => {
+    const template = plcConfig();
+    template.connection.protocol = "s7"; template.connection.port = 102;
+    template.points = [{ ...template.points[0], id: "phase1", name: "一期握手", address: "DB25.DBW12", dataType: "u16", tags: ["protocolVersion"] }];
+    template.heartbeat.pointId = null;
+    vi.mocked(plcApi.s7Phase1Template).mockResolvedValue(template);
+    await show(); editRetention(7);
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "协议" }), "s7");
+    fireEvent.change(screen.getByRole("textbox", { name: "IP / 主机名" }), { target: { value: "192.168.6.55" } });
+    await userEvent.click(screen.getByRole("button", { name: "载入一期 S7 点表" }));
+    const dialog = within(screen.getByRole("dialog"));
+    fireEvent.change(dialog.getByRole("spinbutton", { name: "DB 号" }), { target: { value: "25" } });
+    await userEvent.selectOptions(dialog.getByRole("combobox", { name: "一期 CPU 预设" }), "s71500");
+    expect(await dialog.findByText("DB25.DBW12")).toBeVisible();
+    expect(dialog.getByRole("button", { name: "应用到草稿" })).toBeDisabled();
+    await userEvent.click(dialog.getByRole("checkbox"));
+    await userEvent.click(dialog.getByRole("button", { name: "应用到草稿" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("combobox", { name: "CPU 型号" })).toHaveValue("s71500");
+    expect(screen.getByText("一期握手")).toBeVisible(); expect(screen.queryByText("速度")).toBeNull();
+    expect(screen.getByRole("textbox", { name: "IP / 主机名" })).toHaveValue("192.168.6.55");
+    expect(screen.getByRole("spinbutton", { name: "日志保留天数（0 为永久）" })).toHaveValue(7);
+    expect(plcApi.saveConfig).not.toHaveBeenCalled(); expect(plcApi.connect).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "保存配置" }));
+    expect(plcApi.saveConfig).toHaveBeenCalledWith(expect.objectContaining({
+      connection: expect.objectContaining({ protocol: "s7", host: "192.168.6.55", port: 102 }),
+      points: template.points, heartbeat: template.heartbeat, logRetentionDays: 7,
+    }));
+  });
+
+  it("生产锁定配置、断开和普通点手写，已打开点位编辑可取消但不能提交", async () => {
+    status.state = "connected"; const page = await show();
+    await userEvent.click(row().getByTitle("编辑"));
+    operationLock = "生产事务未结束"; page.rerender(<PlcPage />);
+    expect(screen.getByRole("button", { name: "断开" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "载入一期 S7 点表" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "新增点位" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "确定" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "名称" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(row().getByTitle("写入")).toBeDisabled();
+    expect(plcApi.saveConfig).not.toHaveBeenCalled(); expect(plcApi.disconnect).not.toHaveBeenCalled();
+  });
+
+  it.each(["disconnected", "error", "connecting"] as const)("未结事务且 %s 时使用已有配置重连，不应用无效草稿", async state => {
+    const request = deferred<void>(); vi.mocked(plcApi.connect).mockReturnValueOnce(request.promise);
+    const page = await show();
+    fireEvent.change(screen.getByRole("spinbutton", { name: "日志保留天数（0 为永久）" }), { target: { value: "" } });
+    status = { ...status, state }; operationLock = "生产事务未结束"; page.rerender(<PlcPage />);
+    const reconnect = screen.getByRole("button", { name: "使用已保存配置重连" });
+    expect(reconnect).toBeEnabled(); expect(screen.getByText(/当前草稿不会保存或应用/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "保存配置" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "还原" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "IP / 主机名" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "载入一期 S7 点表" })).toBeDisabled();
+    fireEvent.click(reconnect); fireEvent.click(reconnect);
+    expect(plcApi.connect).toHaveBeenCalledTimes(1); expect(reconnect).toBeDisabled();
+    expect(plcApi.saveConfig).not.toHaveBeenCalled(); expect(plcApi.disconnect).not.toHaveBeenCalled();
+    await act(async () => request.resolve());
+    expect(screen.getByText("未保存")).toBeVisible();
+    status = { ...status, state: "connected" }; page.rerender(<PlcPage />);
+    expect(screen.getByRole("button", { name: "断开" })).toBeDisabled();
+  });
+
+  it("只读显示握手阶段、请求和结果序号，复位状态更新不发出控制命令", async () => {
+    handshake = { phase: "awaitAck", requestSeq: 42, resultSeq: 0, message: "等待 PLC 确认结果" };
+    const page = await show(); const panel = within(screen.getByRole("region", { name: "S7 握手状态" }));
+    expect(panel.getByText("(awaitAck)")).toBeVisible();
+    expect(panel.getByText("42")).toBeVisible(); expect(panel.getByText("0")).toBeVisible();
+    expect(panel.getByText("等待 PLC 确认结果")).toBeVisible(); expect(panel.queryByRole("button")).toBeNull();
+    handshake = { phase: "resetRequired", requestSeq: null, resultSeq: null, message: "PLC 复位后才可接受新事务" };
+    page.rerender(<PlcPage />);
+    expect(panel.getByText("(resetRequired)")).toBeVisible(); expect(panel.getAllByText("—")).toHaveLength(2);
+    expect(panel.getByText("PLC 复位后才可接受新事务")).toBeVisible(); expect(panel.queryByText("42")).toBeNull();
+    expect(plcApi.connect).not.toHaveBeenCalled(); expect(plcApi.writePoint).not.toHaveBeenCalled();
+  });
+
+  it("手写弹窗打开后开始生产，不发送保留的写请求", async () => {
+    status.state = "connected"; const page = await show();
+    await userEvent.click(row().getByTitle("写入"));
+    operationLock = "生产事务未结束"; page.rerender(<PlcPage />);
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByRole("button", { name: "写入" })).toBeDisabled();
+    fireEvent.keyDown(dialog.getByRole("textbox"), { key: "Enter" });
+    expect(plcApi.writePoint).not.toHaveBeenCalled();
+    await userEvent.click(dialog.getByRole("button", { name: "取消" }));
+  });
+
+  it("S7 握手和心跳始终禁止手写，普通点在空闲可写", async () => {
+    const config = plcConfig(); config.connection.protocol = "s7"; config.connection.port = 102;
+    config.points = [
+      { ...config.points[0], id: "done", name: "结果有效", address: "DB1.DBX0.0", tags: ["done"], dataType: "bool" },
+      { ...config.points[0], id: "beat", name: "通讯心跳", address: "DB1.DBX0.1", dataType: "bool" },
+      { ...config.points[0], address: "DB1.DBD4" },
+    ];
+    config.heartbeat.pointId = "beat"; status.state = "connected";
+    vi.mocked(plcApi.getConfig).mockResolvedValueOnce(config); await show();
+    for (const name of ["结果有效", "通讯心跳"]) {
+      expect(within(screen.getByText(name).closest("tr")!).getByRole("button", { name: "写入" })).toBeDisabled();
+    }
+    expect(row().getByTitle("写入")).toBeEnabled();
+  });
+
+  it("保存等待时生产开始，即使保存返回也不继续连接", async () => {
+    const request = deferred<void>(); vi.mocked(plcApi.saveConfig).mockReturnValueOnce(request.promise);
+    const page = await show(); editRetention(7);
+    fireEvent.click(screen.getByRole("button", { name: "连接" }));
+    operationLock = "生产事务未结束"; page.rerender(<PlcPage />);
+    await act(async () => request.resolve());
+    expect(plcApi.connect).not.toHaveBeenCalled();
+  });
 });
 async function show() { const page = render(<PlcPage />); await screen.findByRole("button", { name: "保存配置" }); return page; }
 const editRetention = (value: number) => fireEvent.change(screen.getByRole("spinbutton", { name: "日志保留天数（0 为永久）" }), { target: { value: String(value) } });

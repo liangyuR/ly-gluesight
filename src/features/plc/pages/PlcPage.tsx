@@ -5,10 +5,13 @@ import PlcStatusBadge from "../components/PlcStatusBadge";
 import PointEditor from "../components/PointEditor";
 import PointsJsonDialog from "../components/PointsJsonDialog";
 import WriteDialog from "../components/WriteDialog";
-import { plcApi, usePlcStatus, usePlcValues } from "../api";
+import S7Phase1Dialog from "../components/S7Phase1Dialog";
+import S7RecipePlanPanel from "../components/S7RecipePlanPanel";
+import { plcApi, usePlcOperationState, usePlcStatus, usePlcValues } from "../api";
+import { inspectionHandshakeTags } from "../../../business/plcTags";
 import { dataTypeLabels, edgeLabels, effectiveOrder, formatValue, isMultiWord, newPoint, protocols } from "../meta";
 import { formatClock } from "../time";
-import type { PlcConfig, PlcPoint, TagPreset } from "../types";
+import type { PlcConfig, PlcHandshakeState, PlcPoint, TagPreset } from "../types";
 
 type Editing = { point: PlcPoint; isNew: boolean } | null;
 
@@ -18,15 +21,27 @@ interface PlcPageProps {
 
 const configText = (config: PlcConfig | null) => JSON.stringify(config, (_key, value) =>
   typeof value === "number" && !Number.isFinite(value) ? String(value) : value);
+const fieldsetStyle = { border: 0, padding: 0, margin: 0, minWidth: 0 };
+const handshakePhaseLabels: Record<PlcHandshakeState["phase"], string> = {
+  resetRequired: "等待 PLC 复位", idle: "空闲", validating: "校验请求", acquiring: "采集中",
+  draining: "等待帧处理结束", awaitAck: "等待结果确认", releasing: "等待握手释放", fault: "故障",
+};
 
 export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
   const status = usePlcStatus();
   const values = usePlcValues();
+  const { blockedReason, handshake } = usePlcOperationState();
+  const operationLock = useRef(blockedReason);
+  operationLock.current = blockedReason;
+  const linkState = useRef(status?.state);
+  linkState.current = status?.state;
   const [saved, setSaved] = useState<PlcConfig | null>(null);
   const [draft, setDraft] = useState<PlcConfig | null>(null);
   const [editing, setEditing] = useState<Editing>(null);
   const [writing, setWriting] = useState<PlcPoint | null>(null);
   const [jsonOpen, setJsonOpen] = useState(false);
+  const [s7Open, setS7Open] = useState(false);
+  const [cpuPreset, setCpuPreset] = useState({ revision: 0, key: "" });
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -56,13 +71,18 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
   }, [notice]);
 
   const dirty = useMemo(() => configText(saved) !== configText(draft), [saved, draft]);
-  const running = status?.state === "connected" || status?.state === "connecting" || status?.state === "error";
+  const connected = status?.state === "connected";
+  const reconnectSaved = !!blockedReason && !!status && !connected;
   const tagLabel = useMemo(() => new Map(tagPresets.map((t) => [t.value, t.label])), [tagPresets]);
 
   if (!draft) return <div className="panel"><p role={loadError ? "alert" : "status"}>{loadError || "正在加载 PLC 配置…"}</p>{loadError && <button className="btn" onClick={loadConfig}>重新加载</button>}</div>;
 
-  const perform = async (action: () => Promise<unknown>) => {
+  const canReconnect = () => !!linkState.current && linkState.current !== "connected";
+  const perform = async (action: () => Promise<unknown>, allowReconnect = false) => {
     if (acting.current) return;
+    if (operationLock.current && !(allowReconnect && canReconnect())) {
+      setNotice({ kind: "error", text: operationLock.current }); return;
+    }
     acting.current = true; setBusy(true); setNotice(null);
     try { await action(); }
     catch (e) { if (alive.current) setNotice({ kind: "error", text: String(e) }); }
@@ -74,6 +94,7 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
     || (!Number.isInteger(draft.logRetentionDays) || draft.logRetentionDays < 0 || draft.logRetentionDays > 0xffffffff ? "日志保留天数需为 0–4294967295 的整数" : "");
 
   const save = async () => {
+    if (operationLock.current) { setNotice({ kind: "error", text: operationLock.current }); return false; }
     if (invalid) { setNotice({ kind: "error", text: invalid }); return false; }
     try {
       await plcApi.saveConfig(draft);
@@ -89,12 +110,15 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
 
   const toggleConnection = async () => {
     await perform(async () => {
-      if (running) await plcApi.disconnect();
-      else if (!invalid && (!dirty || (await save())) && alive.current) await plcApi.connect();
-    });
+      if (operationLock.current) {
+        if (canReconnect()) await plcApi.connect();
+      } else if (linkState.current === "connected") await plcApi.disconnect();
+      else if (!invalid && (!dirty || (await save())) && alive.current && !operationLock.current && canReconnect()) await plcApi.connect();
+    }, true);
   };
 
   const upsertPoint = (point: PlcPoint) => {
+    if (operationLock.current) { setNotice({ kind: "error", text: operationLock.current }); return; }
     const points = editing?.isNew
       ? [...draft.points, point]
       : draft.points.map((p) => (p.id === editing?.point.id ? point : p));
@@ -116,10 +140,23 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
   const savedPoints = new Map(saved?.points.map((p) => [p.id, JSON.stringify(p)]));
   const meta = protocols[draft.connection.protocol];
   const writablePoints = draft.points.filter((p) => p.access === "readWrite");
+  const protectedWrite = (point: PlcPoint) => saved?.connection.protocol === "s7"
+    && (point.id === saved.heartbeat.pointId || point.tags.some(tag => inspectionHandshakeTags.has(tag)))
+    ? "S7 握手和心跳由检测流程管理，不能手动写入" : "";
 
   return (
     <div className="stack plc">
-      <fieldset disabled={busy} className="stack" style={{border:0,padding:0,margin:0,minWidth:0}}>
+      {blockedReason && <p className="notice error" role="status">{blockedReason}</p>}
+      {handshake && <section className="panel" aria-label="S7 握手状态">
+        <h3 className="panel-title">S7 握手状态</h3>
+        <div className="row">
+          <span>当前阶段：<b>{handshakePhaseLabels[handshake.phase]} <span className="mono">({handshake.phase})</span></b></span>
+          <span>请求序号：<b className="mono">{handshake.requestSeq ?? "—"}</b></span>
+          <span>结果序号：<b className="mono">{handshake.resultSeq ?? "—"}</b></span>
+        </div>
+        {handshake.message && <p className="muted hint">{handshake.message}</p>}
+      </section>}
+      <fieldset disabled={busy} className="stack" style={fieldsetStyle}>
       <div className="panel">
         <div className="panel-toolbar">
           <div className="row">
@@ -131,22 +168,24 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
           </div>
           <div className="row">
             {dirty && <span className="badge warn">未保存</span>}
-            <button className="btn" disabled={!dirty} onClick={() => saved && setDraft(structuredClone(saved))}>
+            <button className="btn" disabled={!dirty || !!blockedReason} onClick={() => saved && setDraft(structuredClone(saved))}>
               <Undo2 size={16} />
               还原
             </button>
-            <button className="btn" disabled={!dirty || !!invalid} onClick={() => void perform(save)}>
+            <button className="btn" disabled={!dirty || !!invalid || !!blockedReason} onClick={() => void perform(save)}>
               <Save size={16} />
               保存配置
             </button>
-            <button className={`btn ${running ? "danger" : "primary"}`} disabled={!running && !!invalid} onClick={toggleConnection}>
-              {running ? <PlugZap size={16} /> : <Plug size={16} />}
-              {running ? "断开" : "连接"}
+            <button className={`btn ${connected ? "danger" : "primary"}`} disabled={!status || (connected ? !!blockedReason : !reconnectSaved && !!invalid)} onClick={toggleConnection}>
+              {connected ? <PlugZap size={16} /> : <Plug size={16} />}
+              {connected ? "断开" : reconnectSaved ? "使用已保存配置重连" : status?.state === "error" || status?.state === "connecting" ? "重连" : "连接"}
             </button>
           </div>
         </div>
 
-        <ConnectionForm value={draft.connection} onChange={(connection) => setDraft({ ...draft, connection })} />
+        {reconnectSaved && <p className="muted hint">重连使用后端已保存的配置，当前草稿不会保存或应用。</p>}
+        <fieldset disabled={!!blockedReason} style={fieldsetStyle}>
+        <ConnectionForm key={cpuPreset.revision} initialCpuPreset={cpuPreset.key} value={draft.connection} onChange={(connection) => setDraft({ ...draft, connection })} />
 
         <div className="form-grid section">
           <label className="field">
@@ -201,10 +240,12 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
             <span>最近 <b className="mono">{status?.lastPoll ? formatClock(status.lastPoll) : "--"}</b></span>
           </div>
         </div>
+        </fieldset>
         {notice && <div className={`notice ${notice.kind}`}>{notice.text}</div>}
         {invalid && !connectionError(draft.connection) && <p role="alert" className="c-ng">{invalid}</p>}
       </div>
 
+      <fieldset disabled={!!blockedReason} style={fieldsetStyle}>
       <div className="panel">
         <div className="panel-toolbar">
           <div className="row">
@@ -212,6 +253,7 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
             <span className="muted">{draft.points.length} 个点位</span>
           </div>
           <div className="row">
+            <button className="btn" onClick={() => setS7Open(true)}>载入一期 S7 点表</button>
             <button className="btn" onClick={() => setJsonOpen(true)}>
               <FileJson size={16} />
               导入/导出
@@ -284,8 +326,9 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
                     <td className="right nowrap">
                       <button
                         className="icon-btn"
-                        title="写入"
-                        disabled={p.access !== "readWrite" || status?.state !== "connected" || !live}
+                        title={protectedWrite(p) || "写入"}
+                        aria-label="写入"
+                        disabled={p.access !== "readWrite" || status?.state !== "connected" || !live || !!protectedWrite(p)}
                         onClick={() => setWriting(p)}
                       >
                         <PenLine size={16} />
@@ -304,6 +347,9 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
           </table>
         </div>
       </div>
+      </fieldset>
+      </fieldset>
+      {draft.connection.protocol === "s7" && <S7RecipePlanPanel />}
 
       {editing && (
         <PointEditor
@@ -312,6 +358,7 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
           existingIds={draft.points.map((p) => p.id)}
           connection={draft.connection}
           tagPresets={tagPresets}
+          blockedReason={blockedReason}
           onSave={upsertPoint}
           onClose={() => setEditing(null)}
         />
@@ -320,7 +367,10 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
         <WriteDialog
           point={writing}
           current={values[writing.id]}
+          blockedReason={blockedReason || protectedWrite(writing)}
           onWrite={(value) => {
+            const reason = operationLock.current || protectedWrite(writing);
+            if (reason) return Promise.reject(new Error(reason));
             if (status?.state !== "connected" || dirty || savedPoints.get(writing.id) !== JSON.stringify(writing))
               return Promise.reject(new Error("连接状态或地址表已变化，请关闭后重新写入"));
             return plcApi.writePoint(writing.id, value);
@@ -329,11 +379,19 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
         />
       )}
       {jsonOpen && (
-        <PointsJsonDialog points={draft.points} onApply={(points) => setDraft({ ...draft, points,
+        <PointsJsonDialog points={draft.points} blockedReason={blockedReason} onApply={(points) => {
+          if (operationLock.current) return;
+          setDraft({ ...draft, points,
           heartbeat: { ...draft.heartbeat, pointId: points.some(p => p.id === draft.heartbeat.pointId && p.access === "readWrite") ? draft.heartbeat.pointId : null },
-        })} onClose={() => setJsonOpen(false)} />
+        }); }} onClose={() => setJsonOpen(false)} />
       )}
-      </fieldset>
+      {s7Open && <S7Phase1Dialog config={draft} dirty={dirty} blockedReason={blockedReason} onClose={() => setS7Open(false)} onApply={(config, cpu) => {
+        if (operationLock.current) return;
+        setDraft(config);
+        setCpuPreset(previous => ({ revision: previous.revision + 1, key: cpu }));
+        setS7Open(false);
+        setNotice({ kind: "ok", text: "一期 S7 点表已载入草稿，请核对地址后保存配置" });
+      }} />}
     </div>
   );
 }

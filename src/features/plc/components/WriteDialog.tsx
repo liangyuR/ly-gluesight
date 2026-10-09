@@ -6,11 +6,12 @@ import type { PlcPoint, PointValue } from "../types";
 interface WriteDialogProps {
   point: PlcPoint;
   current: PointValue | undefined;
+  blockedReason?: string;
   onWrite: (value: unknown) => Promise<void>;
   onClose: () => void;
 }
 
-export default function WriteDialog({ point, current, onWrite, onClose }: WriteDialogProps) {
+export default function WriteDialog({ point, current, blockedReason = "", onWrite, onClose }: WriteDialogProps) {
   const [text, setText] = useState(current?.value !== null && current?.value !== undefined ? String(Number(current.value)) : "");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -21,6 +22,7 @@ export default function WriteDialog({ point, current, onWrite, onClose }: WriteD
 
   const write = async (value: unknown) => {
     if (writing.current) return;
+    if (blockedReason) return setError(blockedReason);
     writing.current = true;
     setBusy(true);
     setError("");
@@ -54,13 +56,14 @@ export default function WriteDialog({ point, current, onWrite, onClose }: WriteD
             取消
           </button>
           {!isBool && (
-            <button className="btn primary" disabled={busy} onClick={submitNumber}>
+            <button className="btn primary" disabled={busy || !!blockedReason} onClick={submitNumber}>
               写入
             </button>
           )}
         </>
       }
     >
+      {blockedReason && <p className="notice error" role="status">{blockedReason}</p>}
       <dl className="kv">
         <dt>地址</dt>
         <dd className="mono">{point.address}</dd>
@@ -72,10 +75,10 @@ export default function WriteDialog({ point, current, onWrite, onClose }: WriteD
       <div className="write-input">
         {isBool ? (
           <div className="row">
-            <button className="btn primary" disabled={busy} onClick={() => write(true)}>
+            <button className="btn primary" disabled={busy || !!blockedReason} onClick={() => write(true)}>
               置 1 (ON)
             </button>
-            <button className="btn" disabled={busy} onClick={() => write(false)}>
+            <button className="btn" disabled={busy || !!blockedReason} onClick={() => write(false)}>
               置 0 (OFF)
             </button>
           </div>
@@ -83,7 +86,7 @@ export default function WriteDialog({ point, current, onWrite, onClose }: WriteD
           <input
             className="input mono"
             autoFocus
-            disabled={busy}
+            disabled={busy || !!blockedReason}
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && submitNumber()}

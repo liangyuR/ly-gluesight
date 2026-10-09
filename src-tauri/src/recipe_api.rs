@@ -59,6 +59,10 @@ pub fn recipe_template(cycle: State<'_, CycleHost>, mode: InspectMode) -> Recipe
 
 #[tauri::command]
 pub fn recipe_save(app: AppHandle, cycle: State<'_, CycleHost>, doc: RecipeDoc, original_id: Option<String>) -> Result<RecipeSummary, String> {
+    let gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试生产配方操作")?;
+    if cycle.busy() && app.state::<crate::plc::PlcHost>().engine().config().connection.protocol == ly_plc::ProtocolKind::S7 {
+        return Err("S7 在途事务结束或故障复位后才能修改生产配方".into());
+    }
     if original_id.as_deref().is_some_and(|o| o != doc.id && cycle.recipe_in_use(o)) {
         return Err("该配方正在检测中，工件结束后再改编号".into());
     }
@@ -78,7 +82,7 @@ pub fn recipe_save(app: AppHandle, cycle: State<'_, CycleHost>, doc: RecipeDoc, 
         let mut settings = cycle.settings();
         if settings.manual_recipe_id.as_deref() == Some(old.as_str()) {
             settings.manual_recipe_id = Some(saved.id.clone());
-            cycle.save_settings(settings)?;
+            cycle.save_settings_locked(settings, &gate)?;
         }
     }
     let _ = cycle.tx.send(Input::Refresh);
@@ -87,6 +91,10 @@ pub fn recipe_save(app: AppHandle, cycle: State<'_, CycleHost>, doc: RecipeDoc, 
 
 #[tauri::command]
 pub fn recipe_delete(app: AppHandle, cycle: State<'_, CycleHost>, id: String) -> Result<(), String> {
+    let gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试生产配方操作")?;
+    if cycle.busy() && app.state::<crate::plc::PlcHost>().engine().config().connection.protocol == ly_plc::ProtocolKind::S7 {
+        return Err("S7 在途事务结束或故障复位后才能删除生产配方".into());
+    }
     if cycle.recipe_in_use(&id) {
         return Err("该配方正在检测中，工件结束后再删".into());
     }
@@ -98,7 +106,7 @@ pub fn recipe_delete(app: AppHandle, cycle: State<'_, CycleHost>, id: String) ->
     app.state::<VisionHost>().forget(&id);
     // 删掉的正是人工选中的配方：清掉选择，下一件报"未选择配方"而不是拿着一个不存在的编号
     if settings.manual_recipe_id.as_deref() == Some(id.as_str()) {
-        cycle.save_settings(CycleSettings { manual_recipe_id: None, ..settings })?;
+        cycle.save_settings_locked(CycleSettings { manual_recipe_id: None, ..settings }, &gate)?;
     }
     let _ = cycle.tx.send(Input::Refresh);
     Ok(())

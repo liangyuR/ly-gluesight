@@ -39,6 +39,7 @@ pub mod fault {
     pub const MOTION_TIMEOUT: u16 = 97;
     pub const DEVICE_LOST: u16 = 98;
     pub const PROCESS_TIMEOUT: u16 = 99;
+    pub const PLAN_MISMATCH: u16 = 100;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

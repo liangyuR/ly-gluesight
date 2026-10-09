@@ -1,0 +1,441 @@
+// 审查参考，尚未在 TIA Portal 编译。将 GlueSightHandshake 指定为标准非优化 DB100 并核对偏移。
+DATA_BLOCK "GlueSightHandshake"
+{ S7_Optimized_Access := 'FALSE' }
+VERSION : 0.1
+   VAR
+      partStart : Bool;
+      partEnd : Bool;
+      resultAck : Bool;
+      faultReset : Bool;
+      plcHeartbeat : Bool;
+      reserved0_5 : Bool;
+      reserved0_6 : Bool;
+      reserved0_7 : Bool;
+      reserved1 : Byte;
+      protocolVersion : UInt;
+      requestSeq : UDInt;
+      partSn : UDInt;
+      productCode : UInt;
+      shotCount : UInt;
+      planVersion : UDInt;
+      planHash : UDInt;
+      camera1Shots : UInt;
+      camera2Shots : UInt;
+      camera3Shots : UInt;
+      reserved30 : UInt;
+      ackSeq : UDInt;
+      camera1Triggers : UInt;
+      camera2Triggers : UInt;
+      camera3Triggers : UInt;
+      reserved42 : Array[42..63] of Byte;
+      visionReady : Bool;
+      armed : Bool;
+      busy : Bool;
+      done : Bool;
+      visionFault : Bool;
+      pcHeartbeat : Bool;
+      reserved64_6 : Bool;
+      reserved64_7 : Bool;
+      reserved65 : Byte;
+      pcProtocolVersion : UInt;
+      resultSeq : UDInt;
+      resultSn : UDInt;
+      resultCode : UInt;
+      faultCode : UInt;
+      acceptedSeq : UDInt;
+      acceptedPlanHash : UDInt;
+   END_VAR
+BEGIN
+   protocolVersion := UINT#1;
+END_DATA_BLOCK
+
+FUNCTION_BLOCK "GlueSightPhase1"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT
+      Startup : Bool;
+      NewPart : Bool;
+      ResetRequest : Bool;
+      ReconcileConfirmed : Bool;
+      PartSn : UDInt;
+      ProductCode : UInt;
+      PlanVersion : UDInt;
+      PlanHash : UDInt;
+      PlanCameraShots : Array[1..3] of UInt;
+      IssuedPulseCount : Array[1..3] of UDInt;
+      MotionComplete : Bool;
+      ExternalFault : Bool;
+      ArmTimeout : Time := T#10s;
+      MotionTimeout : Time := T#30s;
+      ResultTimeout : Time := T#10s;
+      ReleaseTimeout : Time := T#10s;
+      ResetTimeout : Time := T#10s;
+   END_VAR
+   VAR_OUTPUT
+      State : UInt := UINT#90;
+      ReadyForPart : Bool;
+      TriggerPermit : Bool;
+      StopNewTriggers : Bool;
+      PcAlive : Bool;
+      Pending : Bool;
+      ResetRequired : Bool;
+      CycleComplete : Bool;
+      ResetComplete : Bool;
+      ResultLatched : Bool;
+      CapturedResultSeq : UDInt;
+      CapturedResultSn : UDInt;
+      CapturedResultCode : UInt;
+      CapturedFaultCode : UInt;
+      LocalDiagnostic : UInt;
+   END_VAR
+   VAR
+      Initialized : Bool;
+      PreviousNewPart : Bool;
+      PreviousReset : Bool;
+      ResetLowSeen : Bool;
+      PcHeartbeatPrevious : Bool;
+      PcHeartbeatSeen : Bool;
+      ResetReadyLowSeen : Bool;
+      TimerState : UInt;
+      FrozenSeq : UDInt;
+      FrozenSn : UDInt;
+      FrozenProductCode : UInt;
+      FrozenPlanVersion : UDInt;
+      FrozenPlanHash : UDInt;
+      FrozenShotCount : UInt;
+      FrozenCameraShots : Array[1..3] of UInt;
+      CounterBase : Array[1..3] of UDInt;
+      EndValidated : Bool;
+      HeartbeatTimer : IEC_TIMER;
+      PcWatchdog : IEC_TIMER;
+      PhaseTimer : IEC_TIMER;
+      NeutralTimer : IEC_TIMER;
+      ResetHoldTimer : IEC_TIMER;
+   END_VAR
+   VAR_TEMP
+      NewPartEdge : Bool;
+      ResetEdge : Bool;
+      PcHeartbeatChanged : Bool;
+      PhaseTimed : Bool;
+      PhaseLimit : Time;
+      TripCode : UInt;
+      TotalShots : UDInt;
+      Delta : UDInt;
+      Index : Int;
+      CurrentTriggers : Array[1..3] of UInt;
+      PayloadMatches : Bool;
+      AcceptedMatches : Bool;
+      ResultValid : Bool;
+   END_VAR
+BEGIN
+   #CycleComplete := FALSE;
+   #ResetComplete := FALSE;
+   #TriggerPermit := FALSE;
+   #ReadyForPart := FALSE;
+   #TripCode := UINT#0;
+   "GlueSightHandshake".protocolVersion := UINT#1;
+
+   IF #Startup OR NOT #Initialized THEN
+      #Initialized := TRUE;
+      #State := UINT#90;
+      #ResetLowSeen := FALSE;
+      #PreviousReset := #ResetRequest;
+      #PreviousNewPart := #NewPart;
+      #PcHeartbeatPrevious := "GlueSightHandshake".pcHeartbeat;
+      #PcHeartbeatSeen := FALSE;
+      #ResetReadyLowSeen := FALSE;
+      #Pending := #Pending OR "GlueSightHandshake".partStart
+         OR "GlueSightHandshake".partEnd OR "GlueSightHandshake".resultAck
+         OR "GlueSightHandshake".armed OR "GlueSightHandshake".busy
+         OR "GlueSightHandshake".done;
+      #LocalDiagnostic := UINT#7000;
+      "GlueSightHandshake".faultReset := FALSE;
+   END_IF;
+
+   #HeartbeatTimer.TON(IN := NOT #HeartbeatTimer.Q, PT := T#500ms);
+   IF #HeartbeatTimer.Q THEN
+      "GlueSightHandshake".plcHeartbeat := NOT "GlueSightHandshake".plcHeartbeat;
+   END_IF;
+
+   #PcHeartbeatChanged := "GlueSightHandshake".pcHeartbeat <> #PcHeartbeatPrevious;
+   IF #PcHeartbeatChanged THEN
+      #PcHeartbeatSeen := TRUE;
+   END_IF;
+   #PcHeartbeatPrevious := "GlueSightHandshake".pcHeartbeat;
+   #PcWatchdog.TON(IN := NOT #PcHeartbeatChanged AND NOT #Startup, PT := T#3s);
+   #PcAlive := #PcHeartbeatSeen AND NOT #PcWatchdog.Q;
+
+   IF NOT #ResetRequest THEN
+      #ResetLowSeen := TRUE;
+   END_IF;
+   #ResetEdge := #ResetRequest AND NOT #PreviousReset AND #ResetLowSeen;
+   #NewPartEdge := #NewPart AND NOT #PreviousNewPart;
+   #PreviousReset := #ResetRequest;
+   #PreviousNewPart := #NewPart;
+
+   #PhaseLimit := #ReleaseTimeout;
+   CASE #State OF
+      20: #PhaseLimit := #ArmTimeout;
+      30: #PhaseLimit := #MotionTimeout;
+      40: #PhaseLimit := #ResultTimeout;
+      91, 92: #PhaseLimit := #ResetTimeout;
+   END_CASE;
+   #PhaseTimed := (#State = UINT#20) OR (#State = UINT#30)
+      OR (#State = UINT#40) OR (#State = UINT#50)
+      OR (#State = UINT#60) OR (#State = UINT#91) OR (#State = UINT#92);
+   #PhaseTimer.TON(IN := #PhaseTimed AND (#TimerState = #State), PT := #PhaseLimit);
+   #TimerState := #State;
+   #NeutralTimer.TON(IN := (#State = UINT#91) AND #PcAlive
+      AND NOT "GlueSightHandshake".partStart AND NOT "GlueSightHandshake".partEnd
+      AND NOT "GlueSightHandshake".resultAck AND NOT "GlueSightHandshake".faultReset,
+      PT := T#1s);
+   #ResetHoldTimer.TON(IN := (#State = UINT#92), PT := T#500ms);
+
+   #PayloadMatches := ("GlueSightHandshake".requestSeq = #FrozenSeq)
+      AND ("GlueSightHandshake".partSn = #FrozenSn)
+      AND ("GlueSightHandshake".productCode = #FrozenProductCode)
+      AND ("GlueSightHandshake".planVersion = #FrozenPlanVersion)
+      AND ("GlueSightHandshake".planHash = #FrozenPlanHash)
+      AND ("GlueSightHandshake".shotCount = #FrozenShotCount)
+      AND ("GlueSightHandshake".camera1Shots = #FrozenCameraShots[1])
+      AND ("GlueSightHandshake".camera2Shots = #FrozenCameraShots[2])
+      AND ("GlueSightHandshake".camera3Shots = #FrozenCameraShots[3]);
+   #AcceptedMatches := ("GlueSightHandshake".acceptedSeq = #FrozenSeq)
+      AND ("GlueSightHandshake".acceptedPlanHash = #FrozenPlanHash);
+
+   IF #State <> UINT#90 THEN
+      IF #PcWatchdog.Q THEN
+         #TripCode := UINT#7001;
+      ELSIF #ExternalFault THEN
+         #TripCode := UINT#7009;
+      ELSIF #PhaseTimer.Q THEN
+         #TripCode := UINT#7003;
+      ELSIF (#State < UINT#90) AND "GlueSightHandshake".visionFault THEN
+         #TripCode := UINT#7002;
+      ELSIF (#State >= UINT#20) AND (#State <= UINT#50)
+         AND (NOT #PayloadMatches OR NOT "GlueSightHandshake".partStart) THEN
+         #TripCode := UINT#7008;
+      END_IF;
+   END_IF;
+
+   IF #TripCode = UINT#0 THEN
+      CASE #State OF
+         10:
+            IF #ResetEdge AND #ReconcileConfirmed AND #PcAlive THEN
+               "GlueSightHandshake".partStart := FALSE;
+               "GlueSightHandshake".partEnd := FALSE;
+               "GlueSightHandshake".resultAck := FALSE;
+               "GlueSightHandshake".faultReset := FALSE;
+               #State := UINT#91;
+            ELSIF #NewPartEdge AND #PcAlive AND "GlueSightHandshake".visionReady
+               AND NOT "GlueSightHandshake".armed AND NOT "GlueSightHandshake".busy
+               AND NOT "GlueSightHandshake".done AND NOT "GlueSightHandshake".visionFault
+               AND NOT "GlueSightHandshake".partStart AND NOT "GlueSightHandshake".partEnd
+               AND NOT "GlueSightHandshake".resultAck THEN
+               #TotalShots := UINT_TO_UDINT(#PlanCameraShots[1])
+                  + UINT_TO_UDINT(#PlanCameraShots[2]) + UINT_TO_UDINT(#PlanCameraShots[3]);
+               IF (#TotalShots = UDINT#0) OR (#TotalShots > UDINT#65535)
+                  OR #MotionComplete OR ("GlueSightHandshake".pcProtocolVersion <> UINT#1) THEN
+                  #TripCode := UINT#7004;
+               ELSIF "GlueSightHandshake".requestSeq = UDINT#4294967295 THEN
+                  #TripCode := UINT#7007;
+               ELSE
+                  #FrozenSeq := "GlueSightHandshake".requestSeq + UDINT#1;
+                  #FrozenSn := #PartSn;
+                  #FrozenProductCode := #ProductCode;
+                  #FrozenPlanVersion := #PlanVersion;
+                  #FrozenPlanHash := #PlanHash;
+                  #FrozenShotCount := UDINT_TO_UINT(#TotalShots);
+                  FOR #Index := 1 TO 3 DO
+                     #FrozenCameraShots[#Index] := #PlanCameraShots[#Index];
+                  END_FOR;
+                  "GlueSightHandshake".requestSeq := #FrozenSeq;
+                  "GlueSightHandshake".partSn := #FrozenSn;
+                  "GlueSightHandshake".productCode := #FrozenProductCode;
+                  "GlueSightHandshake".shotCount := #FrozenShotCount;
+                  "GlueSightHandshake".planVersion := #FrozenPlanVersion;
+                  "GlueSightHandshake".planHash := #FrozenPlanHash;
+                  "GlueSightHandshake".camera1Shots := #FrozenCameraShots[1];
+                  "GlueSightHandshake".camera2Shots := #FrozenCameraShots[2];
+                  "GlueSightHandshake".camera3Shots := #FrozenCameraShots[3];
+                  "GlueSightHandshake".camera1Triggers := UINT#0;
+                  "GlueSightHandshake".camera2Triggers := UINT#0;
+                  "GlueSightHandshake".camera3Triggers := UINT#0;
+                  "GlueSightHandshake".ackSeq := UDINT#0;
+                  "GlueSightHandshake".partEnd := FALSE;
+                  "GlueSightHandshake".resultAck := FALSE;
+                  "GlueSightHandshake".faultReset := FALSE;
+                   #Pending := TRUE;
+                   #ResultLatched := FALSE;
+                   #EndValidated := FALSE;
+                   "GlueSightHandshake".partStart := TRUE;
+                  #State := UINT#20;
+               END_IF;
+            END_IF;
+         20:
+             IF "GlueSightHandshake".done THEN
+                IF "GlueSightHandshake".resultCode = UINT#90 THEN
+                   #State := UINT#40;
+                ELSE
+                   #TripCode := UINT#7005;
+                END_IF;
+            ELSIF "GlueSightHandshake".armed THEN
+               IF NOT #AcceptedMatches OR NOT "GlueSightHandshake".busy
+                  OR "GlueSightHandshake".visionReady THEN
+                  #TripCode := UINT#7005;
+               ELSE
+                  FOR #Index := 1 TO 3 DO
+                     #CounterBase[#Index] := #IssuedPulseCount[#Index];
+                  END_FOR;
+                  #State := UINT#30;
+               END_IF;
+            END_IF;
+         30:
+             IF NOT "GlueSightHandshake".busy OR NOT #AcceptedMatches THEN
+                #TripCode := UINT#7005;
+             ELSIF NOT "GlueSightHandshake".armed THEN
+                #State := UINT#40;
+             ELSIF "GlueSightHandshake".done THEN
+                #TripCode := UINT#7005;
+            ELSE
+               FOR #Index := 1 TO 3 DO
+                  IF #IssuedPulseCount[#Index] < #CounterBase[#Index] THEN
+                     #TripCode := UINT#7006;
+                  ELSE
+                     #Delta := #IssuedPulseCount[#Index] - #CounterBase[#Index];
+                     IF #Delta > UINT_TO_UDINT(#FrozenCameraShots[#Index]) THEN
+                        #TripCode := UINT#7006;
+                     ELSE
+                        #CurrentTriggers[#Index] := UDINT_TO_UINT(#Delta);
+                     END_IF;
+                  END_IF;
+               END_FOR;
+               IF #TripCode = UINT#0 THEN
+                  "GlueSightHandshake".camera1Triggers := #CurrentTriggers[1];
+                  "GlueSightHandshake".camera2Triggers := #CurrentTriggers[2];
+                  "GlueSightHandshake".camera3Triggers := #CurrentTriggers[3];
+                  IF #MotionComplete THEN
+                     IF (#CurrentTriggers[1] <> #FrozenCameraShots[1])
+                        OR (#CurrentTriggers[2] <> #FrozenCameraShots[2])
+                        OR (#CurrentTriggers[3] <> #FrozenCameraShots[3]) THEN
+                        #TripCode := UINT#7006;
+                      ELSE
+                         #EndValidated := TRUE;
+                         "GlueSightHandshake".partEnd := TRUE;
+                        #State := UINT#40;
+                     END_IF;
+                  END_IF;
+               END_IF;
+            END_IF;
+         40:
+            IF "GlueSightHandshake".done THEN
+                #ResultValid := ("GlueSightHandshake".resultSeq = #FrozenSeq)
+                   AND ("GlueSightHandshake".resultSn = #FrozenSn)
+                   AND NOT "GlueSightHandshake".armed
+                   AND "GlueSightHandshake".busy AND NOT "GlueSightHandshake".visionReady
+                  AND (("GlueSightHandshake".resultCode = UINT#1)
+                  OR ("GlueSightHandshake".resultCode = UINT#2)
+                  OR ("GlueSightHandshake".resultCode = UINT#11)
+                  OR ("GlueSightHandshake".resultCode = UINT#12)
+                  OR ("GlueSightHandshake".resultCode = UINT#13)
+                  OR ("GlueSightHandshake".resultCode = UINT#14)
+                  OR ("GlueSightHandshake".resultCode = UINT#90))
+                  AND ((("GlueSightHandshake".resultCode = UINT#90)
+                  AND ("GlueSightHandshake".faultCode >= UINT#91)
+                   AND ("GlueSightHandshake".faultCode <= UINT#100))
+                   OR (("GlueSightHandshake".resultCode <> UINT#90)
+                   AND ("GlueSightHandshake".faultCode = UINT#0)
+                   AND #EndValidated AND "GlueSightHandshake".partEnd));
+               IF NOT #ResultValid THEN
+                  #TripCode := UINT#7005;
+               ELSE
+                  #CapturedResultSeq := "GlueSightHandshake".resultSeq;
+                  #CapturedResultSn := "GlueSightHandshake".resultSn;
+                  #CapturedResultCode := "GlueSightHandshake".resultCode;
+                  #CapturedFaultCode := "GlueSightHandshake".faultCode;
+                  #ResultLatched := TRUE;
+                  "GlueSightHandshake".ackSeq := #CapturedResultSeq;
+                  "GlueSightHandshake".resultAck := TRUE;
+                  #State := UINT#50;
+               END_IF;
+            END_IF;
+         50:
+            IF "GlueSightHandshake".done AND
+               (("GlueSightHandshake".resultSeq <> #CapturedResultSeq)
+               OR ("GlueSightHandshake".resultSn <> #CapturedResultSn)
+               OR ("GlueSightHandshake".resultCode <> #CapturedResultCode)
+               OR ("GlueSightHandshake".faultCode <> #CapturedFaultCode)) THEN
+               #TripCode := UINT#7005;
+            ELSIF NOT "GlueSightHandshake".busy AND NOT "GlueSightHandshake".done THEN
+               "GlueSightHandshake".partStart := FALSE;
+               "GlueSightHandshake".partEnd := FALSE;
+               "GlueSightHandshake".resultAck := FALSE;
+               #State := UINT#60;
+            END_IF;
+         60:
+            IF "GlueSightHandshake".visionReady AND NOT "GlueSightHandshake".armed
+               AND NOT "GlueSightHandshake".busy AND NOT "GlueSightHandshake".done THEN
+               #Pending := FALSE;
+               #CycleComplete := TRUE;
+               #LocalDiagnostic := UINT#0;
+               #State := UINT#10;
+            END_IF;
+         90:
+            IF #ResetEdge AND #ReconcileConfirmed AND #PcAlive AND NOT #ExternalFault THEN
+               "GlueSightHandshake".partStart := FALSE;
+               "GlueSightHandshake".partEnd := FALSE;
+               "GlueSightHandshake".resultAck := FALSE;
+               "GlueSightHandshake".faultReset := FALSE;
+               #ResetReadyLowSeen := FALSE;
+               #State := UINT#91;
+            END_IF;
+         91:
+            IF #NeutralTimer.Q THEN
+               #ResetReadyLowSeen := NOT "GlueSightHandshake".visionReady;
+               "GlueSightHandshake".faultReset := TRUE;
+               #State := UINT#92;
+            END_IF;
+         92:
+            IF NOT "GlueSightHandshake".visionReady THEN
+               #ResetReadyLowSeen := TRUE;
+            END_IF;
+            IF #ResetReadyLowSeen AND #ResetHoldTimer.Q AND #PcAlive
+               AND "GlueSightHandshake".visionReady
+               AND ("GlueSightHandshake".pcProtocolVersion = UINT#1)
+               AND NOT "GlueSightHandshake".armed AND NOT "GlueSightHandshake".busy
+               AND NOT "GlueSightHandshake".done AND NOT "GlueSightHandshake".visionFault THEN
+               "GlueSightHandshake".faultReset := FALSE;
+               #Pending := FALSE;
+               #LocalDiagnostic := UINT#0;
+               #ResetComplete := TRUE;
+               #State := UINT#10;
+            END_IF;
+         ELSE
+            #TripCode := UINT#7000;
+      END_CASE;
+   END_IF;
+
+   IF #TripCode <> UINT#0 THEN
+      #LocalDiagnostic := #TripCode;
+      #State := UINT#90;
+      #ResetLowSeen := FALSE;
+      #PreviousReset := #ResetRequest;
+      #PcHeartbeatSeen := FALSE;
+      #ResetReadyLowSeen := FALSE;
+      "GlueSightHandshake".faultReset := FALSE;
+   END_IF;
+
+   #ReadyForPart := (#State = UINT#10) AND #PcAlive
+      AND "GlueSightHandshake".visionReady AND NOT "GlueSightHandshake".visionFault
+      AND ("GlueSightHandshake".pcProtocolVersion = UINT#1)
+      AND NOT "GlueSightHandshake".armed AND NOT "GlueSightHandshake".busy
+      AND NOT "GlueSightHandshake".done AND NOT "GlueSightHandshake".partStart
+      AND NOT "GlueSightHandshake".partEnd AND NOT "GlueSightHandshake".resultAck
+      AND NOT #Pending AND NOT #ExternalFault;
+   #TriggerPermit := (#State = UINT#30) AND #PcAlive AND NOT #ExternalFault
+      AND "GlueSightHandshake".armed AND "GlueSightHandshake".busy
+      AND #AcceptedMatches AND NOT "GlueSightHandshake".visionFault
+      AND NOT "GlueSightHandshake".partEnd;
+   #StopNewTriggers := NOT #TriggerPermit;
+   #ResetRequired := #State >= UINT#90;
+END_FUNCTION_BLOCK

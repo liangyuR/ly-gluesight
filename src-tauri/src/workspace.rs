@@ -1749,6 +1749,7 @@ fn measure_follow_record(
             .into_iter().filter(|&j| table[j] == PointState::Pending).map(|j| j as u32).collect();
         if points.is_empty() { continue; }
         let job = crate::measure::Job {
+            run_id: 0,
             sn, k, cam: *cam, recipe: image_recipe.clone(), scenario: crate::sim::Scenario::Normal,
             image: None, kind: crate::measure::JobKind::Follow { s, points, calib: calib.clone(), start_probe: false },
         };

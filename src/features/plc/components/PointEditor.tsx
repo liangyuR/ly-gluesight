@@ -10,11 +10,12 @@ interface PointEditorProps {
   existingIds: string[];
   connection: ConnectionConfig;
   tagPresets: TagPreset[];
+  blockedReason?: string;
   onSave: (point: PlcPoint) => void;
   onClose: () => void;
 }
 
-export default function PointEditor({ initial, isNew, existingIds, connection, tagPresets, onSave, onClose }: PointEditorProps) {
+export default function PointEditor({ initial, isNew, existingIds, connection, tagPresets, blockedReason = "", onSave, onClose }: PointEditorProps) {
   const [p, setP] = useState<PlcPoint>(initial);
   const [error, setError] = useState("");
   const [check, setCheck] = useState<{ ok: boolean; text: string } | null>(null);
@@ -22,6 +23,8 @@ export default function PointEditor({ initial, isNew, existingIds, connection, t
   const [saving, setSaving] = useState(false);
   const pending = useRef(false);
   const mounted = useRef(true);
+  const blocked = useRef(blockedReason);
+  blocked.current = blockedReason;
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const update = (patch: Partial<PlcPoint>) => {
     setError("");
@@ -57,6 +60,7 @@ export default function PointEditor({ initial, isNew, existingIds, connection, t
 
   const submit = async () => {
     if (pending.current) return;
+    if (blocked.current) return setError(blocked.current);
     const id = p.id.trim();
     if (!id) return setError("ID 不能为空");
     if (!p.name.trim()) return setError("名称不能为空");
@@ -65,7 +69,10 @@ export default function PointEditor({ initial, isNew, existingIds, connection, t
     pending.current = true; setSaving(true); setError("");
     try {
       await plcApi.checkAddress(connection, p.address.trim(), p.dataType);
-      if (mounted.current) onSave({ ...p, id, name: p.name.trim(), address: p.address.trim() });
+      if (mounted.current) {
+        if (blocked.current) setError(blocked.current);
+        else onSave({ ...p, id, name: p.name.trim(), address: p.address.trim() });
+      }
     } catch (e) { if (mounted.current) setError(String(e)); }
     finally { pending.current = false; if (mounted.current) setSaving(false); }
   };
@@ -85,13 +92,14 @@ export default function PointEditor({ initial, isNew, existingIds, connection, t
           <button className="btn" disabled={saving} onClick={onClose}>
             取消
           </button>
-          <button className="btn primary" disabled={saving} onClick={() => void submit()}>
+          <button className="btn primary" disabled={saving || !!blockedReason} onClick={() => void submit()}>
             确定
           </button>
         </>
       }
     >
-      <fieldset className="form-grid two" disabled={saving} style={{ border: 0, padding: 0, margin: 0 }}>
+      {blockedReason && <p className="notice error" role="status">{blockedReason}</p>}
+      <fieldset className="form-grid two" disabled={saving || !!blockedReason} style={{ border: 0, padding: 0, margin: 0 }}>
         <label className="field">
           <span>名称</span>
           <input className="input" value={p.name} autoFocus onChange={(e) => update({ name: e.target.value })} />

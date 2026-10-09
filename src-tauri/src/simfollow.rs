@@ -157,7 +157,7 @@ mod tests {
             if points.is_empty() {
                 continue;
             }
-            let job = Job { sn: 1, k: 0, cam: 0, recipe: recipe.clone(), scenario, image: None, kind: JobKind::Follow { s, points: points.clone(), calib: calib.clone(), start_probe: false } };
+            let job = Job { run_id: 0, sn: 1, k: 0, cam: 0, recipe: recipe.clone(), scenario, image: None, kind: JobKind::Follow { s, points: points.clone(), calib: calib.clone(), start_probe: false } };
             let mut m = Measured::empty(&job);
             caliper::measure_follow(&recipe, &spec, &calib, s, &points, &img, &mut m);
             checked += 1;
@@ -179,7 +179,7 @@ mod tests {
             .unwrap();
         let img = render(&recipe, &calib, s, Scenario::Gap, 3);
         let j = ((a + 1.5) / recipe.spacing) as u32;
-        let job = Job { sn: 1, k: 0, cam: 0, recipe: recipe.clone(), scenario: Scenario::Gap, image: None, kind: JobKind::Follow { s, points: vec![j], calib: calib.clone(), start_probe: false } };
+        let job = Job { run_id: 0, sn: 1, k: 0, cam: 0, recipe: recipe.clone(), scenario: Scenario::Gap, image: None, kind: JobKind::Follow { s, points: vec![j], calib: calib.clone(), start_probe: false } };
         let mut m = Measured::empty(&job);
         caliper::measure_follow(&recipe, &spec, &calib, s, &[j], &img, &mut m);
         assert_eq!(m.st, vec![ST_GAP]);

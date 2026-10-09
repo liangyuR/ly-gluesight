@@ -4,6 +4,7 @@ import type { ConnectionConfig, McOptions, ModbusOptions, ProtocolKind, S7Connec
 
 interface ConnectionFormProps {
   value: ConnectionConfig;
+  initialCpuPreset?: string;
   onChange: (value: ConnectionConfig) => void;
 }
 
@@ -60,8 +61,8 @@ export function connectionError(c: ConnectionConfig) {
   return "";
 }
 
-export default function ConnectionForm({ value: c, onChange }: ConnectionFormProps) {
-  const [cpuChoice, setCpuChoice] = useState<string | null>(null);
+export default function ConnectionForm({ value: c, initialCpuPreset, onChange }: ConnectionFormProps) {
+  const [cpuChoice, setCpuChoice] = useState<string | null>(initialCpuPreset ?? null);
   const set = (patch: Partial<ConnectionConfig>) => onChange({ ...c, ...patch });
   const setModbus = (patch: Partial<ModbusOptions>) => set({ modbus: { ...c.modbus, ...patch } });
   const setS7 = (patch: Partial<S7Options>) => set({ s7: { ...c.s7, ...patch } });

@@ -120,6 +120,18 @@ describe("PLC 点位编辑", () => {
     await act(async () => pending.resolve("有效"));
     expect(onSave).not.toHaveBeenCalled();
   });
+
+  it("地址检查等待时进入生产，旧校验成功不能提交点位", async () => {
+    const pending = deferred<string>(); vi.mocked(plcApi.checkAddress).mockReturnValue(pending.promise);
+    const onSave = vi.fn(), onClose = vi.fn();
+    const view = render(<PointEditor initial={point} isNew existingIds={[]} connection={connection} tagPresets={[]} onSave={onSave} onClose={onClose} />);
+    fireEvent.click(screen.getByRole("button", { name: "确定" }));
+    view.rerender(<PointEditor initial={point} isNew existingIds={[]} connection={connection} tagPresets={[]} blockedReason="生产事务未结束" onSave={onSave} onClose={onClose} />);
+    await act(async () => pending.resolve("有效"));
+    expect(onSave).not.toHaveBeenCalled(); expect(screen.getByRole("button", { name: "确定" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "名称" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "取消" })); expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("地址表导入", () => {

@@ -6,11 +6,14 @@ mod follow;
 mod frame;
 mod fsio;
 mod history;
+mod handshake;
 mod inspection;
 mod judge;
 mod measure;
 mod mvs;
 mod plc;
+mod plc_plan;
+mod plc_session;
 mod recipe;
 mod recipe_api;
 mod recorder;
@@ -59,6 +62,8 @@ pub fn run() {
             plc::plc_query_logs,
             plc::plc_point_history,
             plc::plc_check_address,
+            plc::plc_s7_phase1_template,
+            plc::plc_recipe_plan,
             cycle::cycle_snapshot,
             cycle::cycle_logs,
             cycle::cycle_part_data,

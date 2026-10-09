@@ -4,13 +4,16 @@ use std::sync::Arc;
 
 use ly_plc::{
     describe_address, ConnectionConfig, DataType, EventSink, HistorySample, LogPage, LogQuery, Logbook, PlcConfig,
-    PlcEngine, PlcEvent, PlcStatus, PointValue,
+    PlcEngine, PlcEvent, PlcStatus, PointValue, ProtocolKind,
 };
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::cycle::{CycleHost, Input};
 use crate::inspection;
+use crate::handshake::Contract;
+use crate::plc_plan::PlcPlan;
+use crate::recipe::Recipe;
 
 pub struct PlcHost {
     engine: PlcEngine,
@@ -60,6 +63,10 @@ impl PlcHost {
         tauri::async_runtime::spawn(async move {
             let host = app.state::<PlcHost>();
             if host.engine.config().auto_connect {
+                if let Err(error) = validate_config(&host.engine.config()) {
+                    crate::cycle::log(&app, "err", "PLC 配置", error);
+                    return;
+                }
                 host.engine.connect().await;
             }
         });
@@ -73,7 +80,9 @@ pub fn plc_get_config(plc: State<'_, PlcHost>) -> PlcConfig {
 
 #[tauri::command]
 pub async fn plc_save_config(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>, config: PlcConfig) -> Result<(), String> {
-    config.validate()?;
+    let _gate = cycle.plc_gate.lock().await;
+    require_idle(&cycle)?;
+    validate_config(&config)?;
     config.save(&plc.config_path)?;
     let r = plc.engine.apply_config(config).await;
     inspection::invalidate_tags();
@@ -87,13 +96,18 @@ pub async fn plc_save_config(app: AppHandle, plc: State<'_, PlcHost>, cycle: Sta
 }
 
 #[tauri::command]
-pub async fn plc_connect(plc: State<'_, PlcHost>) -> Result<(), String> {
+pub async fn plc_connect(plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>) -> Result<(), String> {
+    let _gate = cycle.plc_gate.lock().await;
+    if plc.engine.status().state == ly_plc::LinkState::Connected { return Ok(()); }
+    validate_config(&plc.engine.config())?;
     plc.engine.connect().await;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn plc_disconnect(plc: State<'_, PlcHost>) -> Result<(), String> {
+pub async fn plc_disconnect(plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>) -> Result<(), String> {
+    let _gate = cycle.plc_gate.lock().await;
+    require_idle(&cycle)?;
     plc.engine.disconnect().await;
     Ok(())
 }
@@ -109,8 +123,42 @@ pub fn plc_get_values(plc: State<'_, PlcHost>) -> HashMap<String, PointValue> {
 }
 
 #[tauri::command]
-pub async fn plc_write_point(plc: State<'_, PlcHost>, id: String, value: Value) -> Result<(), String> {
+pub async fn plc_write_point(plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>, id: String, value: Value) -> Result<(), String> {
+    let _gate = cycle.plc_gate.lock().await;
+    require_idle(&cycle)?;
+    if inspection::reserved_s7_point(&plc.engine.config(), &id) {
+        return Err("S7 握手点由生产状态机管理，禁止手动写入".into());
+    }
     plc.engine.write_point(&id, &value).await
+}
+
+fn require_idle(cycle: &CycleHost) -> Result<(), String> {
+    if cycle.busy() { Err("PLC 仍有在途事务，请完成握手或处理故障并复位后再修改".into()) } else { Ok(()) }
+}
+
+fn validate_config(config: &PlcConfig) -> Result<(), String> {
+    config.validate()?;
+    if config.connection.protocol == ProtocolKind::S7 { Contract::validate(config)?; }
+    Ok(())
+}
+
+pub fn recipe_plan(cycle: &CycleHost, recipe: &Recipe) -> Result<PlcPlan, String> {
+    let configs = cycle.camera.configs();
+    let slots = std::array::from_fn(|index| configs.get(index).map(|c| c.id.clone()).unwrap_or_default());
+    PlcPlan::from_recipe(recipe, slots)
+}
+
+#[tauri::command]
+pub fn plc_s7_phase1_template(db_number: u16) -> Result<PlcConfig, String> {
+    let config = inspection::s7_phase1_config(db_number)?;
+    validate_config(&config)?;
+    Ok(config)
+}
+
+#[tauri::command]
+pub fn plc_recipe_plan(cycle: State<'_, CycleHost>, recipe_id: String) -> Result<PlcPlan, String> {
+    let recipe = cycle.recipe(&recipe_id).ok_or("生产配方不存在")?;
+    recipe_plan(&cycle, &recipe)
 }
 
 #[tauri::command]

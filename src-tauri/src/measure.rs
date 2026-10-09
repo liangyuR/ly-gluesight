@@ -32,6 +32,7 @@ pub enum JobKind {
 }
 
 pub struct Job {
+    pub run_id: u64,
     pub sn: u32,
     /// 帧在本件里的序号：飞拍是拍照点 k，随动是第几个被测的帧
     pub k: usize,
@@ -50,6 +51,8 @@ pub const ST_INVALID: u8 = 2;
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Measured {
+    #[serde(skip)]
+    pub run_id: u64,
     pub sn: u32,
     pub k: usize,
     pub cam: u8,
@@ -88,6 +91,7 @@ impl Measured {
             JobKind::Shot { .. } => None,
         };
         Self {
+            run_id: job.run_id,
             sn: job.sn,
             k: job.k,
             cam: job.cam,
