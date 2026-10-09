@@ -343,7 +343,7 @@ impl LiveFrames {
 impl WorkspaceHost {
     /// 候选与已提交的发布快照都保留相机引用，删除相机前核对。
     pub fn camera_users(&self, camera: &str) -> Vec<String> {
-        let uses = |doc: &RecipeDoc| doc.camera == camera;
+        let uses = |doc: &RecipeDoc| doc.shots.iter().any(|s| s.camera == camera);
         self.items.lock().unwrap().values()
             .filter(|w| uses(&w.doc) || w.pending.as_ref().is_some_and(|p| uses(&p.doc)))
             .map(|w| w.doc.id.clone()).collect()
@@ -405,12 +405,13 @@ fn coverage(recipe: &Recipe, frames: &[Teaching]) -> f32 {
     let found = (0..n)
         .filter(|&j| {
             let k = recipe.points.k[j] as usize;
-            let Some(c) = recipe.shots.get(k) else {
+            let Some(c) = recipe.shots.get(k).map(|s| s.center) else {
                 return false;
             };
+            let fov = recipe.shot_fov(k);
             let margin = frames.get(k).map_or(4.0, |f| f.params.search_mm);
-            (recipe.points.x[j] - c[0]).abs() + margin <= recipe.fov[0] / 2.0
-                && (recipe.points.y[j] - c[1]).abs() + margin <= recipe.fov[1] / 2.0
+            (recipe.points.x[j] - c[0]).abs() + margin <= fov[0] / 2.0
+                && (recipe.points.y[j] - c[1]).abs() + margin <= fov[1] / 2.0
         })
         .count();
     100.0 * found as f32 / n as f32
@@ -441,23 +442,27 @@ fn environment(app: &AppHandle, recipe: &Recipe) -> Result<String, String> {
             .slot(cam as usize)
             .ok_or("相机不存在")?
             .config();
-        let calib = vision::station_calib_path(app, &id)?;
-        values.push(json!([config, crate::fsio::read_text(&calib).ok()]));
+        values.push(json!(config));
+    }
+    for k in 0..recipe.shot_count() {
+        values.push(json!(crate::fsio::read_text(&vision::shot_calib_path(app, recipe, k)?).ok()));
     }
     let settings = cycle.settings();
     values.push(json!([settings.vision, settings.lyflow_core]));
     Ok(fingerprint(&values))
 }
 
-fn tags(app: &AppHandle, recipe: &Recipe) -> Result<(String, String), String> {
+/// 拍照点 k 的相机参数与标定指纹：冻结图像时记下，之后变了就要重新取样。
+fn tags(app: &AppHandle, recipe: &Recipe, k: usize) -> Result<(String, String), String> {
     let cycle = app.state::<CycleHost>();
-    let cam = cycle.camera.require(&recipe.camera)?;
+    let shot = recipe.shots.get(k).ok_or("拍照点不存在")?;
+    let cam = cycle.camera.require(&shot.camera)?;
     let config = cycle
         .camera
         .slot(cam as usize)
         .ok_or("相机不存在")?
         .config();
-    let calib = vision::station_calib_path(app, &recipe.camera)?;
+    let calib = vision::shot_calib_path(app, recipe, k)?;
     Ok((
         fingerprint(&config),
         fingerprint(&crate::fsio::read_text(&calib).ok()),
@@ -548,7 +553,7 @@ pub fn workspace_save_doc(
     w.expect(revision)?;
     if w.doc != doc {
         let old = w.doc.build()?;
-        if old.geometry_hash() != recipe.geometry_hash() || old.camera != recipe.camera {
+        if old.geometry_hash() != recipe.geometry_hash() {
             w.frames = (0..recipe.shot_count()).map(Teaching::empty).collect();
             w.overview.saved = false;
         }
@@ -584,13 +589,14 @@ fn keep_image(
     let w = items.get_mut(id).ok_or("候选配置不存在")?;
     w.expect(revision)?;
     let r = w.doc.build()?;
-    let (camera_tag, calib_tag) = tags(app, &r)?;
+    let (camera_tag, calib_tag) = tags(app, &r, k)?;
+    let camera = r.shots[k].camera.clone();
     let config = app
         .state::<CycleHost>()
         .camera
         .configs()
         .into_iter()
-        .find(|c| c.id == r.camera)
+        .find(|c| c.id == camera)
         .ok_or("相机不存在")?;
     let frame = w.frames.get_mut(k).ok_or("拍照点不存在")?;
     let imported = source == "import";
@@ -608,7 +614,7 @@ fn keep_image(
         source,
         captured_at: ly_plc::now_ms(),
         size: [image.width, image.height],
-        camera: r.camera.clone(),
+        camera,
         camera_tag,
         calib_tag,
         geometry_tag: r.geometry_hash(),
@@ -618,7 +624,7 @@ fn keep_image(
     });
     if config.source == CameraSource::Sim && !imported {
         frame.params.mm_per_px = crate::simimage::SIM_MM_PER_PX as f32;
-    } else if let Some(info) = vision::calib_info(&vision::station_calib_path(app, &r.camera)?) {
+    } else if let Some(info) = vision::calib_info(&vision::shot_calib_path(app, &r, k)?) {
         if let Some(mm) = info.mm_per_px {
             frame.params.mm_per_px = mm as f32;
         }
@@ -688,7 +694,7 @@ pub async fn workspace_capture(
         if k >= r.shot_count() {
             return Err("请选择飞拍配方中的拍照点".into());
         }
-        let cam = cycle.camera.require(&r.camera)?;
+        let cam = cycle.camera.require(&r.shots[k].camera)?;
         let slot = cycle.camera.slot(cam as usize).ok_or("相机不存在")?;
         let config = slot.config();
         let image = if config.source == CameraSource::Sim {
@@ -821,7 +827,7 @@ fn assets(
         px.extend_from_slice(&img.pixels[first..first + width as usize]);
     }
     crate::replay::save_pgm(&template, &FrameImage::new(width, height, px))?;
-    let [cx, cy] = r.shots[frame.k];
+    let [cx, cy] = r.shots.get(frame.k).ok_or("拍照点不存在")?.center;
     let (sin, cos) = frame.params.deg.to_radians().sin_cos();
     let sign = r.outward_sign();
     let mut points = Vec::new();
@@ -846,9 +852,9 @@ fn assets(
     )?;
     let calib = if frozen.source == "Sim" {
         let sim = vision::assets_for(app, &r)?;
-        sim.calib.clone()
+        sim.shots.get(frame.k).map(|s| s.calib.clone()).ok_or("模拟示教资料缺少这个拍照点")?
     } else {
-        vision::station_calib_path(app, &r.camera)?
+        vision::shot_calib_path(app, &r, frame.k)?
     };
     if !calib.exists() {
         return Err("工位尚未标定，请先完成飞拍工位标定".into());
@@ -960,7 +966,7 @@ pub async fn workspace_trial(
             .as_ref()
             .filter(|i| i.id == image_id)
             .ok_or("冻结图像已更新，请重新试测")?;
-        let (camera_tag, calib_tag) = tags(&app, &r)?;
+        let (camera_tag, calib_tag) = tags(&app, &r, k)?;
         if frozen.camera_tag != camera_tag
             || frozen.calib_tag != calib_tag
             || frozen.geometry_tag != r.geometry_hash()
@@ -1064,7 +1070,7 @@ pub fn workspace_save_teach(
         return Err("图像或参数已变更，请重新试测".into());
     }
     frame.checked(&r.geometry_hash())?;
-    let (camera_tag, calib_tag) = tags(&app, &r)?;
+    let (camera_tag, calib_tag) = tags(&app, &r, k)?;
     let frozen = frame.image.as_ref().unwrap();
     if frozen.camera_tag != camera_tag || frozen.calib_tag != calib_tag {
         return Err("相机或标定已变更，请重新取样".into());
@@ -1155,14 +1161,15 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
         passed: covered >= 99.995,
         detail: format!("含搜索余量的测量点覆盖 {:.2}%", covered),
     });
-    let (ct, cal) = tags(app, &r)?;
     let teaching = w.frames.len() == r.shot_count()
         && w.frames.iter().all(|f| {
+            let current = tags(app, &r, f.k);
             f.saved
                 && f.checked(&r.geometry_hash()).is_ok()
                 && f.image
                     .as_ref()
-                    .is_some_and(|i| i.camera_tag == ct && i.calib_tag == cal)
+                    .zip(current.as_ref().ok())
+                    .is_some_and(|(i, (ct, cal))| &i.camera_tag == ct && &i.calib_tag == cal)
         });
     checks.push(Check {
         name: "示教与标定".into(),
@@ -1433,7 +1440,6 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
         updated_at: ly_plc::now_ms(),
     };
     let mut shots = Vec::new();
-    let mut calibration = vision::station_calib_path(app, &recipe.camera)?;
     for frame in &release.frames {
         frame.checked(&recipe.geometry_hash())?;
         let frozen = frame.image.as_ref().unwrap();
@@ -1442,7 +1448,7 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
             .join("release")
             .join(format!("{}-k{}", release.revision, frame.k));
         let (params, _) = assets(app, &snapshot, frame, &work)?;
-        calibration = PathBuf::from(params["calib"].as_str().ok_or("标定路径缺失")?);
+        let calib = PathBuf::from(params["calib"].as_str().ok_or("标定路径缺失")?);
         let template = dir.join(format!(
             "{}-{}-k{}.template.pgm",
             frozen.id, release.revision, frame.k
@@ -1465,21 +1471,14 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
             template,
             stations,
             anchor: [frame.params.rect[0] as f64, frame.params.rect[1] as f64],
+            calib,
         });
     }
-    let source = cycle
-        .camera
-        .configs()
-        .into_iter()
-        .find(|c| c.id == recipe.camera)
-        .ok_or("相机不存在")?
-        .source;
+    let source = vision::recipe_source(app, &recipe)?;
     VisionAssets {
         recipe_id: recipe.id.clone(),
         recipe_hash: recipe.geometry_hash(),
-        camera: recipe.camera.clone(),
         sim_mm_per_px: (source == CameraSource::Sim).then_some(crate::simimage::SIM_MM_PER_PX),
-        calib: calibration,
         shots,
     }
     .save(&manifest)?;
@@ -1717,7 +1716,7 @@ pub fn workspace_history_capture(
         w.expect(revision)?;
         w.doc.build()?
     };
-    if doc.geometry_hash() != original.geometry_hash() || doc.camera != original.camera {
+    if doc.geometry_hash() != original.geometry_hash() {
         return Err("历史帧的胶路、相机或拍照点与当前候选不同，不能直接用于示教".into());
     }
     let (dir, frames) = recorded(&app, history_id)?;
@@ -2065,7 +2064,6 @@ fn measure_paths(
     if paths.len() != recipe.shot_count() {
         return Err("样本组的原图数量与拍照点不一致".into());
     }
-    let (ct, cal) = tags(app, &recipe)?;
     let mut table = vec![PointState::Pending; recipe.point_count()];
     let mut measurements = Vec::new();
     for (k, path) in paths.iter().enumerate() {
@@ -2076,6 +2074,7 @@ fn measure_paths(
             .ok_or("候选存在尚未保存的示教帧")?;
         frame.checked(&recipe.geometry_hash())?;
         let frozen = frame.image.as_ref().unwrap();
+        let (ct, cal) = tags(app, &recipe, k)?;
         if frozen.camera_tag != ct || frozen.calib_tag != cal {
             return Err("相机或标定变化，需要重新示教".into());
         }

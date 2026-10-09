@@ -16,8 +16,8 @@ pub struct TeachStatus {
     /// 各拍照点是否已示教（且与当前胶路几何一致）
     pub taught: Vec<bool>,
     pub stale: bool,
-    /// 工位标定给出的像素当量
-    pub mm_per_px: Option<f64>,
+    /// 各拍照点所用工位标定给出的像素当量
+    pub mm_per_px: Vec<Option<f64>>,
 }
 
 #[tauri::command]
@@ -29,7 +29,9 @@ pub fn teach_flyshot_status(app: AppHandle, cycle: State<'_, CycleHost>, recipe_
     let taught = (0..recipe.shot_count())
         .map(|k| !stale && assets.as_ref().and_then(|a| a.shots.get(k)).is_some_and(|s| !s.template.as_os_str().is_empty() && s.template.exists()))
         .collect();
-    let mm_per_px = vision::calib_info(&vision::station_calib_path(&app, &recipe.camera)?).and_then(|c| c.mm_per_px);
+    let mm_per_px = (0..recipe.shot_count())
+        .map(|k| Ok(vision::calib_info(&vision::shot_calib_path(&app, &recipe, k)?).and_then(|c| c.mm_per_px)))
+        .collect::<Result<_, String>>()?;
     Ok(TeachStatus { dir: dir.display().to_string(), taught, stale, mm_per_px })
 }
 
@@ -57,8 +59,9 @@ pub fn teach_flyshot_save(app: AppHandle, cycle: State<'_, CycleHost>, teach: Sh
     if !(teach.mm_per_px > 0.0) {
         return Err("像素当量需为正".into());
     }
-    let cam = cycle.camera.require(&recipe.camera)?;
-    let img = cycle.camera.last_full(cam).ok_or("还没有整帧图像：先取一帧")?;
+    let shot = &recipe.shots[teach.k];
+    let cam = cycle.camera.require(&shot.camera)?;
+    let img = cycle.camera.last_full(cam).ok_or_else(|| format!("相机 {} 还没有整帧图像：先取一帧", shot.camera))?;
     let [x, y, w, h] = teach.rect;
     if w < 16 || h < 16 || x + w > img.width || y + h > img.height {
         return Err("模板矩形太小或超出图像".into());
@@ -73,7 +76,7 @@ pub fn teach_flyshot_save(app: AppHandle, cycle: State<'_, CycleHost>, teach: Sh
     }
     crate::replay::save_pgm(&template, &crate::frame::FrameImage::new(w, h, crop))?;
 
-    let [cx, cy] = recipe.shots[teach.k];
+    let [cx, cy] = shot.center;
     let (s, c) = teach.deg.to_radians().sin_cos();
     let (icx, icy) = (img.width as f32 / 2.0 + teach.dx, img.height as f32 / 2.0 + teach.dy);
     // 卡尺从内边往外找胶条：法向要朝胶路外侧，折线胶路的绕向不一定和圆角矩形一样
@@ -93,14 +96,12 @@ pub fn teach_flyshot_save(app: AppHandle, cycle: State<'_, CycleHost>, teach: Sh
         recipe_id: recipe.id.clone(),
         recipe_hash: recipe.geometry_hash(),
         sim_mm_per_px: None,
-        calib: vision::station_calib_path(&app, &recipe.camera)?,
         shots: Vec::new(),
-        camera: String::new(),
     });
-    assets.camera = recipe.camera.clone();
-    let empty = ShotAssets { template: PathBuf::new(), anchor: [0.0, 0.0], stations: PathBuf::new() };
+    let empty = ShotAssets { template: PathBuf::new(), anchor: [0.0, 0.0], stations: PathBuf::new(), calib: PathBuf::new() };
     assets.shots.resize(recipe.shot_count(), empty);
-    assets.shots[teach.k] = ShotAssets { template, anchor: [x as f64, y as f64], stations };
+    let calib = vision::shot_calib_path(&app, &recipe, teach.k)?;
+    assets.shots[teach.k] = ShotAssets { template, anchor: [x as f64, y as f64], stations, calib };
     assets.save(&file)?;
     app.state::<vision::VisionHost>().forget(&recipe.id);
     teach_flyshot_status(app.clone(), cycle, recipe.id.clone())

@@ -226,7 +226,7 @@ fn native_simulated_gap_survives_caliper_averaging_and_merges_across_frames() {
             crate::simimage::PoseError { dx: 0.25, dy: -0.3, deg: 0.12 }, 42 + k as u64);
         let shot = &assets.shots[k];
         let result = engine.run(FLYSHOT_GRAPH, &format!("simulated-gap-{k}"), "", &image,
-            &json!({"template":shot.template, "anchor":shot.anchor, "stations":shot.stations, "calib":assets.calib})).unwrap();
+            &json!({"template":shot.template, "anchor":shot.anchor, "stations":shot.stations, "calib":shot.calib})).unwrap();
         assert_eq!(result.status(), "ok", "{}", result.failure());
         let measured = serde_json::from_value::<StationMeasure>(result.record("measure").unwrap().clone()).unwrap()
             .into_measured(&Job { run_id: 0, sn: 1, k, cam: 0, recipe: recipe.clone(), scenario: Scenario::Gap,

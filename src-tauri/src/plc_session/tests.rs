@@ -103,7 +103,7 @@ impl Rig {
         let session = PlcSession::open(plc.directory.join("session.json"));
         let plan = PlcPlan::compile("part-A".into(), 7, ["cam1".into(), "cam2".into(), "cam3".into()],
             ["cam1", "cam2", "cam3", "cam1"].into_iter().enumerate().map(|(i, camera)| PlanShot {
-                shot_id: format!("P{}", i + 1), camera_id: camera.into(), center: [i as f32, 10.0],
+                shot_id: format!("P{}", i + 1), pose_id: format!("P{}", i + 1), camera_id: camera.into(), center: [i as f32, 10.0],
             }).collect()).unwrap();
         let mut rig = Self { plc, engine, session, plan };
         rig.engine.connect().await;

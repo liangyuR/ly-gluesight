@@ -9,7 +9,7 @@
 ## 1. 支持边界与责任
 
 - PLC/机器人维护运动路径、拍照位置、输出脉冲、脉冲宽度及相机槽映射；GlueSight 的 UI、S7 网络轮询和 Windows 线程均不生成位置同步的硬触发。
-- 本次握手提供三个相机槽的计划计数和实际触发计数。当前生产 `Recipe.camera` 仍是单相机引用，计划导出会把各拍照点绑定到这台真实相机；**三个协议槽不表示三相机飞拍归属、分点资源和现场联调已完成**。
+- 本次握手提供三个相机槽的计划计数和实际触发计数。配方的每个拍照点各自绑定相机与 Pose，计划导出按拍照点的相机统计各槽计划数；软件按帧归属到拍照点（P0 步 3）完成前，多相机配方可以导出计划但不能布防。**三个协议槽不表示三相机飞拍归属、分点资源和现场联调已完成**。
 - `TriggerPermit` 只允许现场触发程序开始/继续发新脉冲；SCL 不直接写物理输出。`IssuedPulseCount[1..3]` 由现场可靠计数源提供，每个实际输出脉冲加一，不能使用普通扫描对高速脉冲的布尔采样代替。PLC 发出脉冲不等于相机成功曝光，后者仍需相机帧/触发计数和完整性验证。
 - PLC 单独拥有 DB 字节 0–63；PC 单独拥有字节 64–87。PLC 代码只读 PC 区，PC 点表将 PLC 区设为只读。两个写入方不得共用同一字节，也不得用整 DB 的初始化/块复制覆盖对方区域。
 - 一件只有一个在途事务。普通质量 NG 可以按有效结果确认；通讯、身份或状态不确定进入故障，保留 pending，停止新触发及下一件。现场运动的停机策略由 PLC/机器人程序负责。
@@ -122,20 +122,20 @@ SCL `LocalDiagnostic` 是 PLC FB 本地诊断，**不写 DBW78**，也不是 PC 
   "protocolVersion": 1,
   "recipeId": "DEMO",
   "planVersion": 1,
-  "planHash": 1023668360,
+  "planHash": 3896719843,
   "shotCount": 2,
   "cameraSlots": ["cam1", "", ""],
   "cameraShots": [2, 0, 0],
   "shots": [
-    {"shotId": "P1", "cameraId": "cam1", "center": [95.0, 50.0]},
-    {"shotId": "P2", "cameraId": "cam1", "center": [285.0, 50.0]}
+    {"shotId": "P1", "poseId": "P1", "cameraId": "cam1", "center": [95.0, 50.0]},
+    {"shotId": "P2", "poseId": "P2", "cameraId": "cam1", "center": [285.0, 50.0]}
   ]
 }
 ```
 
-当前 `plc_plan.rs` 对 UTF-8 紧凑 JSON 元组 `[1,recipeId,planVersion,cameraSlots,shots]` 做 32 位 FNV-1a：初始 `2166136261`，每字节执行 `h = ((h XOR byte) × 16777619) mod 2^32`。顺序、相机绑定、版本和坐标均影响 hash；序列化采用 Rust `serde_json`、`PlanShot` 字段顺序及 f32 数值规则。**PLC 应复制应用导出的数值，不在 PLC 中重新拼 JSON 算 hash**；美化后的 JSON 不是原始 hash 输入。该 32 位值用于版本一致性核对，不是无碰撞证明或认证机制。
+当前 `plc_plan.rs` 对 UTF-8 紧凑 JSON 元组 `[1,recipeId,planVersion,cameraSlots,shots]` 做 32 位 FNV-1a：初始 `2166136261`，每字节执行 `h = ((h XOR byte) × 16777619) mod 2^32`。顺序、Pose、相机绑定、版本和坐标均影响 hash；序列化采用 Rust `serde_json`、`PlanShot` 字段顺序（`shotId`、`poseId`、`cameraId`、`center`）及 f32 数值规则。示例的 hash 由 `plc_plan.rs` 的单元测试 `documented_example_hash` 固定，改 hash 输入时两边同步修改。**PLC 应复制应用导出的数值，不在 PLC 中重新拼 JSON 算 hash**；美化后的 JSON 不是原始 hash 输入。该 32 位值用于版本一致性核对，不是无碰撞证明或认证机制。
 
-`productCode` 在当前计划 JSON 中不提供，需从生产配方另外核对并写 DBW12。`center` 是当前配方的拍照点几何坐标，不是机器人六轴位姿；`poseId`、机器人程序和物理输出映射不在当前 JSON 内，需保存在现场的对应表。修改产品代码、拍照计划或槽映射后重新导出、评审和验证，不能只保留旧 hash。
+`productCode` 在当前计划 JSON 中不提供，需从生产配方另外核对并写 DBW12。`center` 是当前配方的拍照点几何坐标，不是机器人六轴位姿。`poseId` 是现场机器人 / PLC 程序里的 Pose 标识，同一 Pose 可同时触发几台相机，因此不要求唯一；机器人程序与物理输出映射不在 JSON 内，需保存在现场的对应表。修改产品代码、拍照计划或槽映射后重新导出、评审和验证，不能只保留旧 hash。
 
 ## 7. SCL 接入与调试
 

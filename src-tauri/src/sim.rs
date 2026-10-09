@@ -152,7 +152,7 @@ async fn run_part(app: &AppHandle, recipe: &Arc<Recipe>, scenario: Scenario, vis
             TriggerMode::Fly => 450,
             TriggerMode::Stop => 1100,
         };
-        let cam = cycle.camera.require(&recipe.camera)?;
+        let cams = recipe.shots.iter().map(|s| cycle.camera.require(&s.camera)).collect::<Result<Vec<_>, _>>()?;
         let lost = scenario.lost_frame(n);
         let locate_fail = scenario.locate_fail_frame(n);
         // 机器人每件的定位偏差：±0.4 mm、±0.15°（模板定位要吸收它）
@@ -168,7 +168,7 @@ async fn run_part(app: &AppHandle, recipe: &Arc<Recipe>, scenario: Scenario, vis
                 pose: if locate_fail == Some(k) { PoseError { dx: pose.dx + 15.0, dy: pose.dy + 15.0, ..pose } } else { pose },
                 seed: sn as u64 * 16 + k as u64,
             });
-            let _ = cycle.camera.trigger(cam, lost == Some(k), render);
+            let _ = cycle.camera.trigger(cams[k], lost == Some(k), render);
         }
         sleep(Duration::from_millis(300)).await;
         put(app, tag::PART_END, json!(true)).await?;
@@ -264,7 +264,7 @@ pub fn sim_start(
     }
     let recipe = cycle.recipe(&recipe_id).ok_or("配方不存在")?;
     // 采集方式、图像测量与开工时同一套检查；模拟节拍还要能发出触发
-    for c in crate::cycle::usable_cams(&app, &recipe, false)? {
+    for c in crate::cycle::runnable_cams(&app, &recipe, false)? {
         let cam = cycle.camera.slot(c as usize).ok_or("相机不存在")?.config();
         if cam.source == CameraSource::Mvs && cam.trigger_source != "Software" {
             return Err("相机触发源为 Line0，模拟节拍发不出硬触发；改为 Software 或切换到模拟相机".into());
@@ -318,7 +318,7 @@ pub fn sim_robot_trigger(
         return Err("Robot 工件 SN 或拍照序号与当前工件不符".into());
     }
     let recipe = crate::cycle::cycle_layout(cycle.clone(), part.recipe_id, Some(part.recipe_hash))?;
-    let cam = cycle.camera.require(&recipe.camera)?;
+    let cam = cycle.camera.require(&recipe.shots.get(k).ok_or("拍照序号超出配方")?.camera)?;
     if cycle.camera.slot(cam as usize).ok_or("相机不存在")?.config().source != CameraSource::Sim {
         return Err("外部演示触发只允许模拟相机".into());
     }

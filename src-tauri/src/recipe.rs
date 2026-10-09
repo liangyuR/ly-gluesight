@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -97,33 +97,63 @@ pub fn legacy_camera_id(k: u8) -> String {
     format!("cam{}", k as u32 + 1)
 }
 
-fn default_camera() -> String {
-    legacy_camera_id(0)
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum CameraRef {
-    Index(u8),
-    Id(String),
-}
-
-impl CameraRef {
-    fn id(self) -> String {
-        match self {
-            CameraRef::Index(k) => legacy_camera_id(k),
-            CameraRef::Id(s) => s,
-        }
-    }
-}
-
-fn camera_ref<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
-    Ok(CameraRef::deserialize(d)?.id())
-}
-
 /// 相机、配方编号：字母、数字、- 和 _，最长 32 个字符。
 pub fn valid_camera_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 32 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// 配方文件格式版本。不一致的文件列为加载错误，不迁移。
+pub const RECIPE_SCHEMA: u32 = 2;
+
+/// 一个拍照点：机器人走到 Pose 时 PLC 触发这台相机拍一帧。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShotSpec {
+    /// 配方内唯一，如 P1
+    pub id: String,
+    /// 现场机器人 / PLC 程序里的 Pose 标识；同一 Pose 可同时触发几台相机，不要求唯一
+    pub pose_id: String,
+    /// 相机编号
+    pub camera: String,
+    /// 视野中心在工件坐标里的位置（mm）
+    pub center: [f32; 2],
+    /// 视野宽高；为空时用配方的 fov
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fov: Option<[f32; 2]>,
+    /// 标定引用；为空时用这台相机的工位标定
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calib: Option<String>,
+}
+
+impl ShotSpec {
+    /// 标定文件的键：标定引用，缺省为相机编号。
+    pub fn calib_ref(&self) -> &str {
+        self.calib.as_deref().unwrap_or(&self.camera)
+    }
+
+    fn validate(&self, default_fov: [f32; 2]) -> Result<(), String> {
+        let id = &self.id;
+        if !valid_camera_id(id) {
+            return Err(format!("拍照点编号 {id:?} 只能用字母、数字、- 和 _，最长 32 个字符"));
+        }
+        if self.pose_id.trim().is_empty() || self.pose_id.chars().count() > 32 || self.pose_id.chars().any(char::is_control) {
+            return Err(format!("拍照点 {id} 的 Pose 标识不能为空，最长 32 个字符"));
+        }
+        if !valid_camera_id(&self.camera) {
+            return Err(format!("拍照点 {id} 的相机编号只能用字母、数字、- 和 _"));
+        }
+        if self.calib.as_deref().is_some_and(|c| !valid_camera_id(c)) {
+            return Err(format!("拍照点 {id} 的标定引用只能用字母、数字、- 和 _"));
+        }
+        let [w, h] = self.fov.unwrap_or(default_fov);
+        if !(w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
+            return Err(format!("拍照点 {id} 的视野宽高需为正"));
+        }
+        if !self.center.iter().all(|v| v.is_finite()) {
+            return Err(format!("拍照点 {id} 的坐标必须是有限数"));
+        }
+        Ok(())
+    }
 }
 
 fn yes() -> bool {
@@ -141,17 +171,16 @@ pub struct Recipe {
     pub teaching_hash: Option<String>,
     pub product_code: u16,
     pub trigger_mode: TriggerMode,
+    pub schema_version: u32,
     /// 工件外形：宽、高、圆角半径（mm）；折线胶路为包围盒宽高、半径 0
     pub part: [f32; 3],
     #[serde(default)]
     pub path: Option<PathSpec>,
     #[serde(default = "yes")]
     pub closed: bool,
+    /// 拍照点没单独给视野时用的视野宽高
     pub fov: [f32; 2],
-    pub shots: Vec<[f32; 2]>,
-    /// 飞拍用的相机（相机编号）
-    #[serde(default = "default_camera", deserialize_with = "camera_ref")]
-    pub camera: String,
+    pub shots: Vec<ShotSpec>,
     pub spacing: f32,
     pub filter_window: usize,
     pub max_gap_len: f32,
@@ -163,6 +192,12 @@ impl Recipe {
     pub fn shot_count(&self) -> usize {
         self.shots.len()
     }
+
+    /// 拍照点 k 的视野宽高。
+    pub fn shot_fov(&self, k: usize) -> [f32; 2] {
+        self.shots[k].fov.unwrap_or(self.fov)
+    }
+
 
     pub fn point_count(&self) -> usize {
         self.points.k.len()
@@ -184,9 +219,15 @@ impl Recipe {
         fnv_hex(&serde_json::to_vec(&key).unwrap_or_default())
     }
 
-    /// 本配方要用到的相机（编号）。
+    /// 本配方要用到的相机（编号），按第一次出现的拍照点排序。
     pub fn cameras(&self) -> Vec<String> {
-        vec![self.camera.clone()]
+        let mut out: Vec<String> = Vec::new();
+        for s in &self.shots {
+            if !out.contains(&s.camera) {
+                out.push(s.camera.clone());
+            }
+        }
+        out
     }
 
     /// 弧长 s 处的名义位置。闭合胶路按周长取模；开放胶路超出两端时沿端点切向外推。
@@ -258,8 +299,9 @@ pub struct RecipeDoc {
     pub teaching_hash: Option<String>,
     pub product_code: u16,
     pub trigger_mode: TriggerMode,
-    #[serde(default = "default_camera", deserialize_with = "camera_ref")]
-    pub camera: String,
+    /// 缺省为 0，校验时报格式版本不符
+    #[serde(default)]
+    pub schema_version: u32,
     pub path: PathSpec,
     pub spacing: f32,
     pub filter_window: usize,
@@ -272,7 +314,7 @@ pub struct RecipeDoc {
     #[serde(default)]
     pub fov: [f32; 2],
     #[serde(default)]
-    pub shots: Vec<[f32; 2]>,
+    pub shots: Vec<ShotSpec>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -409,8 +451,8 @@ impl RecipeDoc {
         if !(self.max_gap_len >= 0.0) {
             return Err("允许断胶长度不能为负".into());
         }
-        if !valid_camera_id(&self.camera) {
-            return Err("飞拍相机编号只能用字母、数字、- 和 _".into());
+        if self.schema_version != RECIPE_SCHEMA {
+            return Err(format!("配方文件格式版本 {}，当前为 {RECIPE_SCHEMA}，需要按新格式重建", self.schema_version));
         }
         for (what, l) in [("直线段", &self.line), ("拐角", &self.corner)].into_iter().chain(self.segment_overrides.iter().map(|(k, v)| (k.as_str(), v))) {
             l.position.validate(&format!("{what} 位置"))?;
@@ -439,7 +481,28 @@ impl RecipeDoc {
         if !(self.fov[0] > 0.0 && self.fov[1] > 0.0) {
             return Err("视野宽高需为正".into());
         }
+        let mut ids = std::collections::HashSet::new();
+        for shot in &self.shots {
+            shot.validate(self.fov)?;
+            if !ids.insert(shot.id.as_str()) {
+                return Err(format!("拍照点编号 {} 重复", shot.id));
+            }
+        }
         Ok(())
+    }
+
+    /// 视野包含 (x, y) 的拍照点里中心最近的一个。
+    fn owner(&self, x: f32, y: f32) -> Option<usize> {
+        let d2 = |c: [f32; 2]| (x - c[0]).powi(2) + (y - c[1]).powi(2);
+        self.shots
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                let [w, h] = s.fov.unwrap_or(self.fov);
+                (x - s.center[0]).abs() <= w / 2.0 + 1e-3 && (y - s.center[1]).abs() <= h / 2.0 + 1e-3
+            })
+            .min_by(|(_, a), (_, b)| d2(a.center).total_cmp(&d2(b.center)))
+            .map(|(k, _)| k)
     }
 
     pub fn build(&self) -> Result<Recipe, String> {
@@ -485,12 +548,7 @@ impl RecipeDoc {
             }
             let gi = segments.iter().position(|g| s < g.s1).unwrap_or(segments.len() - 1);
             let [x, y] = pieces[gi].2.at((s - segments[gi].s0).min(pieces[gi].2.len()));
-            let owner = self
-                .shots
-                .iter()
-                .enumerate()
-                .min_by(|(_, a), (_, b)| ((x - a[0]).powi(2) + (y - a[1]).powi(2)).total_cmp(&((x - b[0]).powi(2) + (y - b[1]).powi(2))))
-                .map_or(0, |(k, _)| k);
+            let owner = self.owner(x, y).ok_or_else(|| format!("测点 s={s:.1} mm（{x:.1}, {y:.1}）不在任何拍照点的视野内"))?;
             points.x.push(x);
             points.y.push(y);
             points.seg.push(gi as u16);
@@ -508,12 +566,12 @@ impl RecipeDoc {
             teaching_hash: self.teaching_hash.clone(),
             product_code: self.product_code,
             trigger_mode: self.trigger_mode,
+            schema_version: self.schema_version,
             part,
             path: Some(self.path.clone()),
             closed,
             fov: self.fov,
             shots: self.shots.clone(),
-            camera: self.camera.clone(),
             spacing: self.spacing,
             filter_window: self.filter_window,
             max_gap_len: self.max_gap_len,
@@ -551,16 +609,25 @@ fn corner_limits() -> SegmentLimits {
     }
 }
 
+/// 一台相机按顺序拍这些位置：编号 P1、P2…，Pose 标识同编号。
+pub fn shot_list(camera: &str, centers: &[[f32; 2]]) -> Vec<ShotSpec> {
+    centers
+        .iter()
+        .enumerate()
+        .map(|(k, &center)| ShotSpec { id: format!("P{}", k + 1), pose_id: format!("P{}", k + 1), camera: camera.into(), center, fov: None, calib: None })
+        .collect()
+}
+
 /// 首次启动写入的样例配方。
 pub fn samples() -> Vec<RecipeDoc> {
-    let fly = |id: &str, name: &str, code: u16, w: f32, h: f32, r: f32, shots: Vec<[f32; 2]>, trigger_mode| RecipeDoc {
+    let fly = |id: &str, name: &str, code: u16, w: f32, h: f32, r: f32, centers: &[[f32; 2]], trigger_mode| RecipeDoc {
         id: id.into(),
         name: name.into(),
         version: 1,
         teaching_hash: None,
         product_code: code,
         trigger_mode,
-        camera: default_camera(),
+        schema_version: RECIPE_SCHEMA,
         path: PathSpec::RoundedRect { width: w, height: h, radius: r },
         spacing: 0.5,
         filter_window: 5,
@@ -569,7 +636,7 @@ pub fn samples() -> Vec<RecipeDoc> {
         corner: corner_limits(),
         segment_overrides: BTreeMap::new(),
         fov: [216.0, 145.0],
-        shots,
+        shots: shot_list(&legacy_camera_id(0), centers),
     };
     vec![
         fly(
@@ -579,10 +646,10 @@ pub fn samples() -> Vec<RecipeDoc> {
             520.0,
             230.0,
             28.0,
-            vec![[95.0, 57.5], [260.0, 57.5], [425.0, 57.5], [425.0, 172.5], [260.0, 172.5], [95.0, 172.5]],
+            &[[95.0, 57.5], [260.0, 57.5], [425.0, 57.5], [425.0, 172.5], [260.0, 172.5], [95.0, 172.5]],
             TriggerMode::Fly,
         ),
-        fly("MTR-HSG-B", "电机壳体 B", 13, 380.0, 200.0, 24.0, vec![[95.0, 50.0], [285.0, 50.0], [285.0, 150.0], [95.0, 150.0]], TriggerMode::Stop),
+        fly("MTR-HSG-B", "电机壳体 B", 13, 380.0, 200.0, 24.0, &[[95.0, 50.0], [285.0, 50.0], [285.0, 150.0], [95.0, 150.0]], TriggerMode::Stop),
     ]
 }
 
@@ -1077,5 +1144,78 @@ mod tests {
         assert_eq!(r.segments.len(), 3);
         let total = r.segments[2].s1;
         assert!((total - (90.0 + 40.0 + PI * 5.0)).abs() < 1e-2);
+    }
+
+    /// 电机壳体 B 的四个拍照点改成 cam1 → cam2 → cam3 → cam1。
+    fn three_cameras() -> RecipeDoc {
+        let mut doc = samples().remove(1);
+        for (shot, camera) in doc.shots.iter_mut().zip(["cam1", "cam2", "cam3", "cam1"]) {
+            shot.camera = camera.into();
+        }
+        doc
+    }
+
+    #[test]
+    fn three_camera_recipe_saves_and_reloads() {
+        let dir = std::env::temp_dir().join(format!("gluesight-recipe-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        let saved = store.save(three_cameras(), None).unwrap();
+        assert_eq!(saved.cameras(), ["cam1", "cam2", "cam3"]);
+        store.reload();
+        assert!(store.errors().is_empty(), "{:?}", store.errors());
+        let loaded = store.get(&saved.id).unwrap();
+        assert_eq!(loaded.hash, saved.hash);
+        assert_eq!(loaded.shots.iter().map(|s| s.camera.as_str()).collect::<Vec<_>>(), ["cam1", "cam2", "cam3", "cam1"]);
+        // 每个拍照点都负责了测点，测点都在负责它的拍照点视野里
+        for k in 0..loaded.shot_count() {
+            assert!(loaded.owned_points(k).count() > 0);
+            let ([cx, cy], [w, h]) = (loaded.shots[k].center, loaded.shot_fov(k));
+            assert!(loaded.owned_points(k).all(|j| (loaded.points.x[j] - cx).abs() <= w / 2.0 + 1e-3 && (loaded.points.y[j] - cy).abs() <= h / 2.0 + 1e-3));
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn camera_change_changes_geometry_hash() {
+        let one = samples().remove(1).build().unwrap();
+        let three = three_cameras().build().unwrap();
+        assert_ne!(one.geometry_hash(), three.geometry_hash());
+        assert_eq!(one.points.k, three.points.k);
+    }
+
+    #[test]
+    fn invalid_shot_plans_are_rejected() {
+        let reject = |f: &dyn Fn(&mut RecipeDoc), what: &str| {
+            let mut doc = three_cameras();
+            f(&mut doc);
+            let e = doc.build().unwrap_err();
+            assert!(e.contains(what), "{e}");
+        };
+        reject(&|d| d.shots[1].id = "P1".into(), "重复");
+        reject(&|d| d.shots[2].camera = "cam 3".into(), "相机编号");
+        reject(&|d| d.shots[0].pose_id = " ".into(), "Pose");
+        reject(&|d| d.shots[3].calib = Some("a/b".into()), "标定引用");
+        reject(&|d| d.shots[0].fov = Some([0.0, 10.0]), "视野");
+        reject(&|d| d.schema_version = 1, "格式版本");
+        reject(&|d| d.shots.clear(), "1–64");
+        // 视野缩到盖不住拐角：报出没人负责的测点
+        reject(&|d| d.fov = [150.0, 100.0], "不在任何拍照点的视野内");
+    }
+
+    #[test]
+    fn point_goes_to_a_shot_that_sees_it() {
+        let mut doc = three_cameras();
+        // P2（285, 50）视野缩到 x 255–315；上边 x≈250 的测点离 P2 中心最近，却在它视野外，要归给看得到的 P3
+        doc.shots[1].fov = Some([60.0, 110.0]);
+        doc.shots[0].fov = Some([300.0, 145.0]);
+        doc.shots[2].fov = Some([216.0, 320.0]);
+        let r = doc.build().unwrap();
+        let [cx, cy] = r.shots[1].center;
+        assert!(r.owned_points(1).count() > 0);
+        assert!(r.owned_points(1).all(|j| (r.points.x[j] - cx).abs() <= 30.0 + 1e-3 && (r.points.y[j] - cy).abs() <= 55.0 + 1e-3));
+        let j = (0..r.point_count()).min_by(|&a, &b| ((r.points.x[a] - 250.0).hypot(r.points.y[a])).total_cmp(&(r.points.x[b] - 250.0).hypot(r.points.y[b]))).unwrap();
+        assert_eq!(r.points.k[j], 2);
+        let pose_shared = { let mut d = three_cameras(); d.shots[1].pose_id = "P1".into(); d };
+        assert!(pose_shared.build().is_ok(), "同一 Pose 可以触发两台相机");
     }
 }

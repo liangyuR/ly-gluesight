@@ -47,7 +47,9 @@ pub fn recipe_template(cycle: State<'_, CycleHost>) -> RecipeDoc {
     // 默认挑触发采集的相机
     let configs = cycle.camera.configs();
     if let Some(c) = configs.iter().find(|c| c.acquisition == Acquisition::Triggered).or(configs.first()) {
-        doc.camera = c.id.clone();
+        for shot in &mut doc.shots {
+            shot.camera = c.id.clone();
+        }
     }
     doc
 }

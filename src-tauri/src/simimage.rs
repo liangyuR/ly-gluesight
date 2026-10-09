@@ -145,8 +145,8 @@ fn outward(recipe: &Recipe, j: usize) -> (f64, f64) {
 
 /// 拍照点 k 的视野左上角（工件坐标，mm）与图像尺寸。
 fn view(recipe: &Recipe, k: usize) -> (f64, f64, u32, u32) {
-    let [cx, cy] = recipe.shots[k].map(|v| v as f64);
-    let [fw, fh] = recipe.fov.map(|v| v as f64);
+    let [cx, cy] = recipe.shots[k].center.map(|v| v as f64);
+    let [fw, fh] = recipe.shot_fov(k).map(|v| v as f64);
     (cx - fw / 2.0, cy - fh / 2.0, (fw / SIM_MM_PER_PX).round() as u32, (fh / SIM_MM_PER_PX).round() as u32)
 }
 
@@ -163,9 +163,9 @@ pub fn noise(i: u64, seed: u64) -> f64 {
 pub fn render(recipe: &Recipe, k: usize, scenario: Scenario, pose: PoseError, seed: u64) -> FrameImage {
     let mut scene = Scene::new(recipe, scenario);
     let (x0, y0, w, h) = view(recipe, k);
-    let [fw, fh] = recipe.fov.map(|v| v as f64);
+    let [fw, fh] = recipe.shot_fov(k).map(|v| v as f64);
     scene.holes.retain(|&(hx, hy)| hx > x0 - 6.0 && hx < x0 + fw + 6.0 && hy > y0 - 6.0 && hy < y0 + fh + 6.0);
-    let [pcx, pcy] = recipe.shots[k].map(|v| v as f64);
+    let [pcx, pcy] = recipe.shots[k].center.map(|v| v as f64);
     let (s, c) = (-pose.deg * PI / 180.0).sin_cos();
     let mut pixels = vec![0u8; (w * h) as usize];
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(8);
@@ -218,7 +218,7 @@ pub fn teach(recipe: &Recipe, dir: &Path) -> Result<VisionAssets, String> {
     for k in 0..recipe.shot_count() {
         let (x0, y0, w, h) = view(recipe, k);
         let img = render(recipe, k, Scenario::Normal, PoseError::default(), 1);
-        let [cx, cy] = recipe.shots[k].map(|v| v as f64);
+        let [cx, cy] = recipe.shots[k].center.map(|v| v as f64);
         let &(hx, hy) = scene
             .holes
             .iter()
@@ -249,14 +249,12 @@ pub fn teach(recipe: &Recipe, dir: &Path) -> Result<VisionAssets, String> {
             ids.push(j);
         }
         let stations = crate::vision::save_stations(dir, k, points, normals, ids)?;
-        shots.push(ShotAssets { template, anchor: [ax as f64, ay as f64], stations });
+        shots.push(ShotAssets { template, anchor: [ax as f64, ay as f64], stations, calib: calib.clone() });
     }
     Ok(VisionAssets {
         recipe_id: recipe.id.clone(),
         recipe_hash: recipe.hash.clone(),
         sim_mm_per_px: Some(px),
-        calib,
         shots,
-        camera: recipe.camera.clone(),
     })
 }

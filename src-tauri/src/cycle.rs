@@ -425,6 +425,7 @@ pub fn real_parts(app: &AppHandle) -> bool {
 pub fn usable_cams(app: &AppHandle, recipe: &Recipe, real_parts: bool) -> Result<Vec<u8>, String> {
     let host = host(app);
     let cams = host.camera.resolve(&recipe.cameras())?;
+    crate::vision::recipe_source(app, recipe)?;
     let image = host.settings().vision;
     for &c in &cams {
         let cfg = host.camera.slot(c as usize).ok_or("相机组改过了")?.config();
@@ -437,6 +438,16 @@ pub fn usable_cams(app: &AppHandle, recipe: &Recipe, real_parts: bool) -> Result
         }
     }
     Ok(cams)
+}
+
+/// 开工用的相机：在 usable_cams 之上，帧归属接入前（P0 步 3）只接单相机配方。
+/// 现在按到达顺序推拍照点，多台相机的帧交错到达会归错。
+pub fn runnable_cams(app: &AppHandle, recipe: &Recipe, real_parts: bool) -> Result<Vec<u8>, String> {
+    let cameras = recipe.cameras();
+    if cameras.len() > 1 {
+        return Err(format!("配方 {} 用到 {} 台相机（{}），多相机帧归属尚未接入，暂不能开工", recipe.id, cameras.len(), cameras.join("、")));
+    }
+    usable_cams(app, recipe, real_parts)
 }
 
 /// 空闲时对相机的要求：配方、设置变了（Refresh）或相机组增删过才重算。
@@ -556,7 +567,7 @@ impl Machine {
         match settings.product_source {
             ProductSource::Manual => {
                 let cams = match (self.current_recipe(), settings.manual_recipe_id.as_deref()) {
-                    (Some(r), _) => usable_cams(&self.app, &r, real),
+                    (Some(r), _) => runnable_cams(&self.app, &r, real),
                     (None, Some(id)) => Err(missing_recipe(id)),
                     (None, None) => Ok(Vec::new()),
                 };
@@ -565,7 +576,7 @@ impl Machine {
             ProductSource::Plc => {
                 let (mut watch, mut warnings) = (Vec::new(), Vec::new());
                 for r in host.recipes.list() {
-                    match usable_cams(&self.app, &r, real) {
+                    match runnable_cams(&self.app, &r, real) {
                         Ok(c) => watch.push((r.id.clone(), c)),
                         Err(e) => warnings.push(format!("配方 {} 开不了工：{e}", r.id)),
                     }
@@ -737,7 +748,7 @@ impl Machine {
             return self.refuse(sn, id, fault::SHOT_COUNT_MISMATCH, format!("PLC 下发拍照点数 {count}，配方 {} 为 {n}", recipe.id)).await;
         }
         let rig_gen = host.camera.generation();
-        let cams = match usable_cams(&app, &recipe, real_parts(&app)) {
+        let cams = match runnable_cams(&app, &recipe, real_parts(&app)) {
             Ok(c) => c,
             Err(reason) => return self.refuse(sn, id, fault::NO_RECIPE, reason).await,
         };

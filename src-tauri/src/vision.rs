@@ -94,11 +94,13 @@ impl Measurer for LyFlowMeasurer {
         let settings = app.state::<CycleHost>().settings();
         let engine = app.state::<VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("lyFlow 核心库未加载")?;
         let assets = assets_for(app, &job.recipe)?;
-        if !assets.calib.exists() {
-            return Err("工位未标定：先在图像源页用标定板标定".into());
+        let shot = &job.recipe.shots[k];
+        let calib = assets.shots.get(k).map(|s| s.calib.clone()).unwrap_or_default();
+        if !calib.exists() {
+            return Err(format!("拍照点 {} 的标定 {} 不存在：先在图像源页用标定板标定", shot.id, shot.calib_ref()));
         }
-        let params = assets.params(k).ok_or_else(|| format!("拍照点 k={k} 没有示教资料"))?;
-        let base = assets.calib.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        let params = assets.params(k).ok_or_else(|| format!("拍照点 {} 没有示教资料", shot.id))?;
+        let base = calib.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         let run_id = format!("{}-k{k}-{}", job.sn, ly_plc::now_ms());
         let graph = assets.shots.get(k).map(|s| crate::workspace::station_graph(&s.stations)).unwrap_or_else(|| FLYSHOT_GRAPH.to_string());
         let r = engine.run(&graph, &run_id, &base, image, &params)?;
@@ -200,6 +202,8 @@ pub struct ShotAssets {
     pub template: PathBuf,
     pub anchor: [f64; 2],
     pub stations: PathBuf,
+    /// 这个拍照点用的标定文件
+    pub calib: PathBuf,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -209,11 +213,7 @@ pub struct VisionAssets {
     pub recipe_hash: String,
     /// 模拟相机的像素当量；真实相机为 None（用工位标定）
     pub sim_mm_per_px: Option<f64>,
-    pub calib: PathBuf,
     pub shots: Vec<ShotAssets>,
-    /// 示教时的飞拍相机编号（旧文件没有，不核对）
-    #[serde(default)]
-    pub camera: String,
 }
 
 impl VisionAssets {
@@ -224,7 +224,7 @@ impl VisionAssets {
             "template": p(&s.template),
             "anchor": s.anchor,
             "stations": p(&s.stations),
-            "calib": p(&self.calib),
+            "calib": p(&s.calib),
         }))
     }
 
@@ -246,15 +246,16 @@ impl VisionAssets {
         crate::fsio::write_atomic(path, &serde_json::to_string_pretty(self).map_err(|e| e.to_string())?)
     }
 
-    /// 真实相机的示教资料是否还对得上配方：胶路几何、拍照点没改，飞拍相机没换。
+    /// 真实相机的示教资料是否还对得上配方：胶路几何与拍照点（含相机、视野、标定引用）没改。
     pub fn fits(&self, recipe: &Recipe) -> Result<(), String> {
-        if self.recipe_hash != recipe.geometry_hash() {
+        if self.recipe_hash != recipe.geometry_hash() || self.shots.len() != recipe.shot_count() {
             return Err(format!("配方 {} 的胶路或拍照点改过，需要重新示教", recipe.id));
         }
-        if !self.camera.is_empty() && self.camera != recipe.camera {
-            return Err(format!("配方 {} 换了飞拍相机（示教时是 {}），需要重新示教", recipe.id, self.camera));
-        }
         Ok(())
+    }
+
+    fn complete(&self) -> bool {
+        self.shots.iter().all(|s| s.template.exists() && s.stations.exists() && s.calib.exists())
     }
 }
 
@@ -365,6 +366,28 @@ pub fn station_calib_path(app: &AppHandle, cam_id: &str) -> Result<PathBuf, Stri
     Ok(app.path().app_config_dir().map_err(|e| e.to_string())?.join("calib").join(name))
 }
 
+/// 拍照点 k 的标定文件：按它的标定引用（缺省为相机编号）找工位标定。
+pub fn shot_calib_path(app: &AppHandle, recipe: &Recipe, k: usize) -> Result<PathBuf, String> {
+    station_calib_path(app, recipe.shots.get(k).ok_or("拍照点不存在")?.calib_ref())
+}
+
+/// 配方各相机的来源：要么全是模拟，要么全是真实 / 回放（示教资料与标定的来路不同）。
+pub fn recipe_source(app: &AppHandle, recipe: &Recipe) -> Result<CameraSource, String> {
+    let rig = &app.state::<CycleHost>().camera;
+    let mut found: Option<(CameraSource, String)> = None;
+    for id in recipe.cameras() {
+        let source = rig.slot(rig.require(&id)? as usize).ok_or("相机不存在")?.config().source;
+        match &found {
+            Some((first, first_id)) if (*first == CameraSource::Sim) != (source == CameraSource::Sim) => {
+                return Err(format!("配方 {} 的相机来源不一致：{first_id} 是 {first:?}，{id} 是 {source:?}；要么全用模拟相机，要么全用真实 / 回放相机", recipe.id));
+            }
+            Some(_) => {}
+            None => found = Some((source, id)),
+        }
+    }
+    found.map(|(s, _)| s).ok_or_else(|| format!("配方 {} 没有拍照点", recipe.id))
+}
+
 fn camera_id(app: &AppHandle, cam: u8) -> Result<String, String> {
     Ok(app.state::<CycleHost>().camera.slot(cam as usize).ok_or("相机不存在")?.config().id)
 }
@@ -385,11 +408,9 @@ pub fn save_stations(dir: &Path, k: usize, points: Vec<Value>, normals: Vec<Valu
 }
 
 /// 配方在当前相机下的视觉资料。模拟相机按名义几何自动生成（按配方哈希缓存）；
-/// 真实相机用示教向导的产物，标定取工位标定文件。
+/// 真实相机用示教向导的产物，各拍照点的标定取它引用的工位标定文件。
 pub fn assets_for(app: &AppHandle, recipe: &Recipe) -> Result<Arc<VisionAssets>, String> {
-    let rig = &app.state::<CycleHost>().camera;
-    let slot = rig.slot(rig.require(&recipe.camera)? as usize).ok_or("相机不存在")?;
-    let source = slot.config().source;
+    let source = recipe_source(app, recipe)?;
     let host = app.state::<VisionHost>();
     let key = format!("{source:?}:{}:{}", recipe.id, recipe.hash);
     if let Some(a) = host.assets(&key) {
@@ -405,7 +426,7 @@ pub fn assets_for(app: &AppHandle, recipe: &Recipe) -> Result<Arc<VisionAssets>,
         CameraSource::Sim => {
             if recipe.teaching_hash.is_some() {
                 if let Some(a) = VisionAssets::load(&taught_dir(app, &recipe.id)?.join(ASSETS_FILE))
-                    .filter(|a| a.fits(recipe).is_ok() && a.calib.exists() && a.shots.iter().all(|s| s.template.exists() && s.stations.exists())) {
+                    .filter(|a| a.fits(recipe).is_ok() && a.complete()) {
                     let assets = Arc::new(a);
                     host.set_assets(key, assets.clone());
                     return Ok(assets);
@@ -428,7 +449,9 @@ pub fn assets_for(app: &AppHandle, recipe: &Recipe) -> Result<Arc<VisionAssets>,
         CameraSource::Mvs | CameraSource::Replay => {
             let mut a = VisionAssets::load(&taught_dir(app, &recipe.id)?.join(ASSETS_FILE)).ok_or_else(|| format!("配方 {} 尚未示教", recipe.id))?;
             a.fits(recipe)?;
-            a.calib = station_calib_path(app, &recipe.camera)?;
+            for (k, s) in a.shots.iter_mut().enumerate() {
+                s.calib = shot_calib_path(app, recipe, k)?;
+            }
             a
         }
     };
