@@ -18,6 +18,8 @@ use crate::vision::{self, ShotAssets, VisionAssets};
 #[serde(rename_all = "camelCase")]
 pub struct ProbeRequest {
     pub cam: u8,
+    #[serde(default)]
+    pub image_id: Option<String>,
     /// 页面上正在编辑、还没保存的标定
     pub calib: FollowCalib,
     /// 胶条离开胶嘴的方向在图像里的角度（度，x 轴起顺时针）；为空时自动找
@@ -79,13 +81,17 @@ fn direction_score(points: &[ProbePoint]) -> f32 {
 pub async fn teach_follow_probe(app: AppHandle, request: ProbeRequest) -> Result<ProbeResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let r = request;
+        if app.state::<CycleHost>().busy() { return Err("工件正在检测，结束后再试测标定样本".into()); }
         r.calib.validate()?;
+        if ![r.bead_width,r.search_mm,r.near_mm,r.far_mm].iter().all(|v|v.is_finite())||r.bead_width<=0.0||r.search_mm<=0.0||r.near_mm<0.0||r.far_mm<=r.near_mm||r.direction_deg.is_some_and(|d|!d.is_finite()) {
+            return Err("胶宽、搜索范围或试测方向无效".into());
+        }
         let slot = app.state::<CycleHost>().camera.slot(r.cam as usize).ok_or("相机不存在")?;
         // 海康相机空闲时不拷整帧，现取一张（就是画面上正在看的）；回放相机用"下一张"取到的那张
-        let img = match slot.config().source {
+        let img = if let Some(id)=r.image_id.as_deref() { crate::workspace::station_image_ref(&app,r.cam,id)? } else { match slot.config().source {
             CameraSource::Mvs => slot.grab_full(Duration::from_millis(1500)).ok_or("1.5 s 内没收到这台相机的新帧：检查相机是否在出图")?,
             _ => slot.last_full().ok_or("这台相机还没有整帧图像：回放相机先按“下一张”取一帧")?,
-        };
+        }};
         if img.width != r.calib.image_size[0] || img.height != r.calib.image_size[1] {
             return Err(format!("图像是 {}×{}，标定里写的是 {}×{}", img.width, img.height, r.calib.image_size[0], r.calib.image_size[1]));
         }
@@ -101,6 +107,7 @@ pub async fn teach_follow_probe(app: AppHandle, request: ProbeRequest) -> Result
             }
         };
         let points = probe_line(&img, &r, direction_deg);
+        if let Some(id)=r.image_id.as_deref() { crate::workspace::station_image_ref(&app,r.cam,id)?; }
         Ok(ProbeResult { image_size: [img.width, img.height], direction_deg, points })
     })
     .await

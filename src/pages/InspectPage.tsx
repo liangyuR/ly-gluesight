@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { RotateCcw } from "lucide-react";
+import RuntimeFrame, { usePublishedOverview } from "../features/workspace/RuntimeFrame";
+import { WorkpieceOverview } from "../features/workspace/OverviewPage";
 import Modal from "../features/plc/components/Modal";
 import { cameraApi, useRigStatus, type CameraConfig } from "../features/camera";
-import { triggerModeLabel, verdictLabel } from "../features/history";
+import { displayReason, triggerModeLabel, verdictLabel } from "../features/history";
 import {
   CameraTile,
   computeVis,
@@ -40,8 +42,18 @@ export default function InspectPage() {
   const { statuses, lastFrame } = useRigStatus();
   const [configs, setConfigs] = useState<CameraConfig[]>([]);
   const [view, setView] = useState<"part" | "frame">("part");
+  const [frameSelection, setFrameSelection] = useState<{ scope: string; k: number } | null>(null);
+  const [pointSelection, setPointSelection] = useState<{ scope: string; j: number } | null>(null);
   const [pendingRecipe, setPendingRecipe] = useState<string | null>(null);
   const [switchError, setSwitchError] = useState("");
+  const [action, setAction] = useState<"switch" | "reset" | null>(null);
+  const [resetError, setResetError] = useState("");
+  const [configError, setConfigError] = useState("");
+  const [configLoading, setConfigLoading] = useState(false);
+  const [configRetry, setConfigRetry] = useState(0);
+  const activeAction = useRef<"switch" | "reset" | null>(null);
+  const mounted = useRef(false);
+  const switchRequest = useRef(0);
 
   const part = snapshot?.part ?? null;
   const layoutId = part?.recipeId ?? snapshot?.activeRecipeId ?? recipes[0]?.id;
@@ -49,15 +61,33 @@ export default function InspectPage() {
   const layout = useLayout(layoutId, part ? part.recipeHash : summary?.hash);
   const phase = snapshot?.phase ?? "IDLE";
   const settled = phase === "REPORT" || phase === "RELEASE" || phase === "IDLE" || phase === "FAULT";
-  const result = settled ? (snapshot?.result ?? null) : null;
+  const candidateResult = settled ? (snapshot?.result ?? null) : null;
+  const result = candidateResult && (!part || (candidateResult.sn === part.sn && (!candidateResult.recipeId || candidateResult.recipeId === part.recipeId))) ? candidateResult : null;
   const partResult = result && part && result.sn === part.sn ? result : null;
   const follow = layout?.mode === "follow";
   const ownLayout = !!layout && !!part && layout.id === part.recipeId && layout.hash === part.recipeHash;
-  const shown = useMemo(() => (ownLayout ? measured : []), [ownLayout, measured]);
+  const shown = useMemo(() => (ownLayout ? measured.filter(m => m.sn === part?.sn) : []), [ownLayout, measured, part?.sn]);
+  const overview=usePublishedOverview(layout);
+  const selectionScope = `${part?.sn ?? "idle"}:${part?.recipeHash ?? layout?.hash}:${layout?.id}:${layout?.shots.length}`;
+  const cameraIds = statuses.map(status => status.id).join("\0");
+  const operationScope = `${part?.sn ?? "idle"}:${snapshot?.since}:${snapshot?.fault ?? ""}`;
+  const currentOperation = useRef({ phase, scope: operationScope });
+  currentOperation.current = { phase, scope: operationScope };
 
   useEffect(() => {
-    cameraApi.rigConfig().then(setConfigs).catch(() => setConfigs([]));
-  }, [statuses.length]);
+    mounted.current = true;
+    return () => { mounted.current = false; switchRequest.current++; };
+  }, []);
+  useEffect(() => setResetError(""), [phase, operationScope]);
+
+  useEffect(() => {
+    let alive = true;
+    setConfigError(""); setConfigLoading(true);
+    cameraApi.rigConfig().then(value => { if (alive) setConfigs(value); })
+      .catch(error => { if (alive) { setConfigs([]); setConfigError(String(error)); } })
+      .finally(() => { if (alive) setConfigLoading(false); });
+    return () => { alive = false; };
+  }, [cameraIds, configRetry]);
 
   // 随动时快照每秒 20 次、每次都是新对象：主视图只在测量结果或结论变了时重算
   const partKey = follow ? `${part?.sn}:${part?.recipeHash}` : part;
@@ -68,7 +98,22 @@ export default function InspectPage() {
     [layout, ownLayout, partKey, shown, resultKey],
   );
   const cur = !follow && (phase === "ACQUIRE" || phase === "DRAIN") ? currentFrame(part) : -1;
-  const focus = !follow && view === "frame" ? currentFrame(part) : null;
+  const lastShot = Math.max(0, (layout?.shots.length ?? 1) - 1);
+  const selected = frameSelection?.scope === selectionScope ? Math.min(lastShot, Math.max(0, frameSelection.k)) : Math.min(lastShot, Math.max(0, currentFrame(ownLayout ? part : null)));
+  const selectedPoint = pointSelection?.scope === selectionScope && pointSelection.j < (layout?.points.k.length ?? 0) ? pointSelection.j : null;
+  const selectFrame = (k: number) => {
+    if (!Number.isInteger(k) || k < 0 || k > lastShot) return;
+    setFrameSelection({ scope: selectionScope, k });
+    setPointSelection(null);
+  };
+  const selectPoint = (j: number | null) => {
+    if (j === null) { setPointSelection(null); return; }
+    if (!layout || !Number.isInteger(j) || j < 0 || j >= layout.points.k.length) return;
+    setPointSelection({ scope: selectionScope, j });
+    const k = layout.points.k[j];
+    if (!follow && k >= 0 && k <= lastShot) setFrameSelection({ scope: selectionScope, k });
+  };
+  const focus = !follow && view === "frame" ? selected : null;
   const trigger = snapshot?.triggerMode ?? layout?.triggerMode;
   const cams = layout ? (follow ? (layout.follow?.cameras ?? []) : [layout.camera]) : [];
   const lastByCam = useMemo(() => {
@@ -76,16 +121,47 @@ export default function InspectPage() {
     shown.forEach((m) => (out[m.cam ?? 0] = m));
     return out;
   }, [shown]);
-  const nozzle = follow && part?.nozzleS != null && part.recipeId === layout?.id ? { s: part.nozzleS, cam: part.activeCam } : null;
+  const nozzle = follow && ownLayout && part?.nozzleS != null ? { s: part.nozzleS, cam: part.activeCam } : null;
+  const canSwitch = (phase === "IDLE" || phase === "FAULT") && snapshot?.productSource === "manual";
+  const switchProblem = !canSwitch ? "当前工件已开始或型号由 PLC 下发，暂时不能切换配方" : pendingRecipe && !recipes.some(recipe => recipe.id === pendingRecipe) ? "该配方已不在配方库中，请重新选择" : "";
+
+  const closeSwitch = () => {
+    if (activeAction.current === "switch") return;
+    switchRequest.current++;
+    setPendingRecipe(null); setSwitchError("");
+  };
+  const requestSwitch = (id: string) => {
+    if (activeAction.current || !canSwitch || !id || id === snapshot?.activeRecipeId) return;
+    switchRequest.current++;
+    setPendingRecipe(id); setSwitchError("");
+  };
 
   const confirmSwitch = async () => {
-    if (!pendingRecipe) return;
+    if (!pendingRecipe || activeAction.current || switchProblem) return;
+    const request = ++switchRequest.current;
+    activeAction.current = "switch"; setAction("switch"); setSwitchError("");
     try {
       await cycleApi.selectRecipe(pendingRecipe);
-      setPendingRecipe(null);
-      setSwitchError("");
+      if (mounted.current && request === switchRequest.current) {
+        setPendingRecipe(null); setSwitchError("");
+      }
     } catch (e) {
-      setSwitchError(String(e));
+      if (mounted.current && request === switchRequest.current) setSwitchError(String(e));
+    } finally {
+      activeAction.current = null;
+      if (mounted.current) setAction(null);
+    }
+  };
+  const resetFault = async () => {
+    if (activeAction.current || phase !== "FAULT") return;
+    const scope = operationScope;
+    activeAction.current = "reset"; setAction("reset"); setResetError("");
+    try { await cycleApi.reset(); }
+    catch (error) {
+      if (mounted.current && currentOperation.current.phase === "FAULT" && currentOperation.current.scope === scope) setResetError(String(error));
+    } finally {
+      activeAction.current = null;
+      if (mounted.current) setAction(null);
     }
   };
 
@@ -98,10 +174,11 @@ export default function InspectPage() {
             配方
             <select
               id="manual-recipe"
+              aria-label="当前检测配方"
               className="input"
               value={snapshot.activeRecipeId ?? ""}
-              onChange={(e) => setPendingRecipe(e.target.value)}
-              disabled={!(phase === "IDLE" || phase === "FAULT")}
+              onChange={(e) => requestSwitch(e.target.value)}
+              disabled={!canSwitch || action !== null}
             >
               {!snapshot.activeRecipeId && <option value="">请选择</option>}
               {recipes.map((r) => (
@@ -129,12 +206,14 @@ export default function InspectPage() {
         <span className="spacer" />
         <SimControls compact />
         {phase === "FAULT" && (
-          <button className="btn" onClick={() => cycleApi.reset()}>
+          <button className="btn" onClick={resetFault} disabled={action !== null} aria-busy={action === "reset"}>
             <RotateCcw size={15} />
-            复位故障
+            {action === "reset" ? "复位中…" : "复位故障"}
           </button>
         )}
       </div>
+      {resetError && <div className="notice error" role="alert">{resetError}</div>}
+      {configError && <div className="notice error" role="alert">相机配置读取失败：{configError} <button className="btn" disabled={configLoading} onClick={() => setConfigRetry(value => value + 1)}>重试相机配置</button></div>}
 
       {snapshot?.alarms.map((a) => (
         <div key={a} className="alarm-bar">
@@ -149,11 +228,11 @@ export default function InspectPage() {
               <div className="panel-head">
                 <h3 className="panel-title">主视图</h3>
                 <div className="legend">
-                  <span><i style={{ background: "#22c55e" }} />合格</span>
-                  <span><i style={{ background: "#f59e0b" }} />超公差（允许内）</span>
-                  <span><i style={{ background: "#ef4444" }} />NG / 断胶</span>
-                  <span><i style={{ background: "#a78bfa" }} />未测成</span>
-                  <span><i style={{ background: "#3b4a66" }} />待测</span>
+                  <span><i style={{ background: "var(--ok)" }} />合格</span>
+                  <span><i style={{ background: "var(--warn)" }} />超公差（允许内）</span>
+                  <span><i style={{ background: "var(--ng)" }} />NG / 断胶</span>
+                  <span><i style={{ background: "var(--err)" }} />未测成</span>
+                  <span><i style={{ background: "var(--text-disabled)" }} />待测</span>
                 </div>
                 <span className="spacer" />
                 {follow ? (
@@ -162,22 +241,22 @@ export default function InspectPage() {
                   </span>
                 ) : (
                   <div className="segmented">
-                    <button className={view === "part" ? "active" : ""} onClick={() => setView("part")}>整件</button>
-                    <button className={view === "frame" ? "active" : ""} onClick={() => setView("frame")}>当前帧</button>
+                    <button className={view === "part" ? "active" : ""} aria-pressed={view === "part"} onClick={() => setView("part")}>整件</button>
+                    <button className={view === "frame" ? "active" : ""} aria-pressed={view === "frame"} onClick={() => setView("frame")}>选中帧</button>
                   </div>
                 )}
               </div>
-              {layout ? <TrajectoryMap layout={layout} vis={vis} current={cur} focus={focus} nozzle={nozzle} className="traj" /> : <div className="empty">等待配方</div>}
+              {layout ? follow || view==="frame" ? <TrajectoryMap layout={layout} vis={vis} current={cur} focus={focus} nozzle={nozzle} selectedPoint={selectedPoint} className="traj" /> : <WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={selectFrame} vis={vis}/> : <div className="empty">等待配方</div>}
             </div>
             <div className={`cam-tiles n${cams.length}`}>
-              {cams.map((id) => {
+              {!follow ? <RuntimeFrame part={ownLayout ? part : null} layout={layout} k={selected} measured={shown}/> : cams.map((id) => {
                 // 配方按编号引用相机，帧与测量结果按相机组序号记
                 const st = statuses.find((s) => s.id === id);
                 return st ? (
                   <CameraTile
                     key={id}
                     status={st}
-                    calib={follow ? (configs[st.cam]?.follow ?? null) : null}
+                    calib={configs.find(config => config.id === st.id)?.follow ?? null}
                     last={lastByCam[st.cam] ?? null}
                     active={follow ? part?.activeCam === st.cam && phase === "ACQUIRE" : cur >= 0}
                     frame={lastFrame[st.cam]}
@@ -204,7 +283,7 @@ export default function InspectPage() {
                   Chunk 触发 {part?.triggers ?? 0} · 收到 {part?.received ?? 0}
                 </span>
               </div>
-              {layout && <ShotStrip layout={layout} part={part} vis={vis} />}
+              {layout && <ShotStrip layout={layout} part={part} vis={vis} selected={selected} onSelect={selectFrame}/>}
             </div>
           )}
 
@@ -215,7 +294,7 @@ export default function InspectPage() {
                 {follow ? "胶条横向偏移（mm）" : "距内边距离 d（mm）"}，横轴弧长；绿色带为公差，红虚线为绝对限，底部色条为{follow ? "测到该点的相机" : "各帧负责区间"}
               </span>
             </div>
-            {layout && <UnrolledCurve layout={layout} measured={shown} vis={vis} />}
+            {layout && <UnrolledCurve key={`${selectionScope}:d`} layout={layout} measured={shown} vis={vis} selected={selectedPoint} onSelect={selectPoint} />}
           </div>
           {follow && (
             <div className="panel">
@@ -223,7 +302,7 @@ export default function InspectPage() {
                 <h3 className="panel-title">胶宽</h3>
                 <span className="muted">mm，按段的胶宽限值判定</span>
               </div>
-              {layout && <UnrolledCurve layout={layout} measured={shown} vis={vis} quantity="w" />}
+              {layout && <UnrolledCurve key={`${selectionScope}:w`} layout={layout} measured={shown} vis={vis} quantity="w" selected={selectedPoint} onSelect={selectPoint} />}
             </div>
           )}
         </div>
@@ -242,12 +321,12 @@ export default function InspectPage() {
       {pendingRecipe && (
         <Modal
           title="切换配方"
-          onClose={() => setPendingRecipe(null)}
+          onClose={closeSwitch}
           footer={
             <>
-              {switchError && <span className="form-error">{switchError}</span>}
-              <button className="btn" onClick={() => setPendingRecipe(null)}>取消</button>
-              <button className="btn primary" onClick={confirmSwitch}>确认切换</button>
+              {(switchError || switchProblem) && <span className="form-error" role="alert">{switchError || switchProblem}</span>}
+              <button className="btn" disabled={action === "switch"} onClick={closeSwitch}>取消</button>
+              <button className="btn primary" disabled={action !== null || !!switchProblem} aria-busy={action === "switch"} onClick={confirmSwitch}>{action === "switch" ? "切换中…" : "确认切换"}</button>
             </>
           }
         >
@@ -278,7 +357,7 @@ function VerdictCard({ phase, result, sn }: { phase: string; result: ResultView 
         <span className="mono">PLC {result.plcCode}{result.faultCode ? ` / ${result.faultCode}` : ""}</span>
       </div>
       <strong>{verdictLabel[result.verdict]}</strong>
-      <div className="vr">{result.reason}</div>
+      <div className="vr">{displayReason(result.reason)}</div>
     </div>
   );
 }

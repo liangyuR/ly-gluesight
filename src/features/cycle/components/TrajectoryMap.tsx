@@ -12,16 +12,17 @@ interface Props {
   nozzle?: { s: number; cam: number | null } | null;
   className?: string;
   compact?: boolean;
+  selectedPoint?: number | null;
 }
 
-export default function TrajectoryMap({ layout, vis, current = -1, focus = null, nozzle = null, className, compact = false }: Props) {
+export default function TrajectoryMap({ layout, vis, current = -1, focus = null, nozzle = null, className, compact = false, selectedPoint = null }: Props) {
   const [w, h, r] = layout.part;
   const [fw, fh] = layout.fov;
   const rect = !layout.path || layout.path.kind === "roundedRect";
   const fly = layout.mode === "flyShot";
 
   const viewBox = useMemo(() => {
-    if (fly && focus !== null && focus >= 0) {
+    if (fly && focus !== null && Number.isInteger(focus) && focus >= 0 && focus < layout.shots.length) {
       const [cx, cy] = layout.shots[focus];
       return `${cx - fw / 2} ${cy - fh / 2} ${fw} ${fh}`;
     }
@@ -59,21 +60,21 @@ export default function TrajectoryMap({ layout, vis, current = -1, focus = null,
   const sw = compact ? 1.6 : 2.6;
 
   return (
-    <svg className={className} viewBox={viewBox} preserveAspectRatio="xMidYMid meet">
+    <svg className={className} viewBox={viewBox} preserveAspectRatio="xMidYMid meet" aria-label="检测轨迹">
       {rect ? (
         <>
-          {!compact && <rect x={-28} y={-28} width={w + 56} height={h + 56} rx={r + 8} fill="#18233a" stroke="#2a3a5a" vectorEffect="non-scaling-stroke" />}
-          <rect x={4} y={4} width={w - 8} height={h - 8} rx={Math.max(r - 4, 2)} fill="#0b1120" stroke="#475569" vectorEffect="non-scaling-stroke" />
+          {!compact && <rect x={-28} y={-28} width={w + 56} height={h + 56} rx={r + 8} fill="var(--bg-hover)" stroke="var(--border-strong)" vectorEffect="non-scaling-stroke" />}
+          <rect x={4} y={4} width={w - 8} height={h - 8} rx={Math.max(r - 4, 2)} fill="var(--bg)" stroke="var(--text-disabled)" vectorEffect="non-scaling-stroke" />
           {!compact &&
             [
               [-12, -12],
               [w + 12, -12],
               [w + 12, h + 12],
               [-12, h + 12],
-            ].map(([cx, cy]) => <circle key={`${cx},${cy}`} cx={cx} cy={cy} r={5} fill="#0b1120" stroke="#64748b" vectorEffect="non-scaling-stroke" />)}
+            ].map(([cx, cy]) => <circle key={`${cx},${cy}`} cx={cx} cy={cy} r={5} fill="var(--bg)" stroke="var(--text-muted)" vectorEffect="non-scaling-stroke" />)}
         </>
       ) : (
-        <polyline points={outline} fill="none" stroke="#2a3a5a" strokeWidth={10} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+        <polyline points={outline} fill="none" stroke="var(--border-strong)" strokeWidth={10} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
       )}
       {fly &&
         !compact &&
@@ -86,14 +87,14 @@ export default function TrajectoryMap({ layout, vis, current = -1, focus = null,
                 y={cy - fh / 2}
                 width={fw}
                 height={fh}
-                fill={on ? "rgba(56,189,248,0.06)" : "none"}
-                stroke={on ? "#38bdf8" : "#3a4a68"}
+                fill={on ? "var(--accent-overlay)" : "none"}
+                stroke={on ? "var(--accent-text)" : "var(--border-strong)"}
                 strokeWidth={on ? 1.6 : 1}
                 strokeDasharray={on ? undefined : "5 4"}
                 vectorEffect="non-scaling-stroke"
               />
-              <text x={cx - fw / 2 + 5} y={cy - fh / 2 + 13} fontSize={11} fill={on ? "#38bdf8" : "#64748b"} className="mono">
-                k{k}
+              <text x={cx - fw / 2 + 5} y={cy - fh / 2 + 13} fontSize={11} fill={on ? "var(--accent-text)" : "var(--text-muted)"} className="mono">
+                k{k + 1}
               </text>
             </g>
           );
@@ -102,7 +103,7 @@ export default function TrajectoryMap({ layout, vis, current = -1, focus = null,
         <polyline
           points={wake.pts}
           fill="none"
-          stroke={nozzle?.cam != null ? CAM_COLORS[nozzle.cam % CAM_COLORS.length] : "#38bdf8"}
+          stroke={nozzle?.cam != null ? CAM_COLORS[nozzle.cam % CAM_COLORS.length] : "var(--accent-text)"}
           strokeOpacity={0.35}
           strokeWidth={12}
           strokeLinecap="round"
@@ -131,8 +132,8 @@ export default function TrajectoryMap({ layout, vis, current = -1, focus = null,
             y = layout.points.y[j];
           return (
             <g key={`gap${g.from}`}>
-              <circle cx={x} cy={y} r={9} fill="none" stroke="#ef4444" strokeWidth={1.8} vectorEffect="non-scaling-stroke" />
-              <text x={x + 12} y={y + 22} fontSize={11} fill="#fca5a5">
+              <circle cx={x} cy={y} r={9} fill="none" stroke="var(--ng)" strokeWidth={1.8} vectorEffect="non-scaling-stroke" />
+              <text x={x + 12} y={y + 22} fontSize={11} fill="var(--ng)">
                 断胶 {((g.to - g.from + 1) * layout.spacing).toFixed(1)} mm
               </text>
             </g>
@@ -140,8 +141,14 @@ export default function TrajectoryMap({ layout, vis, current = -1, focus = null,
         })}
       {wake && (
         <g>
-          <circle cx={wake.at[0]} cy={wake.at[1]} r={6} fill="#0b1120" stroke="#e2e8f0" strokeWidth={2} vectorEffect="non-scaling-stroke" />
-          <circle cx={wake.at[0]} cy={wake.at[1]} r={2} fill="#e2e8f0" />
+          <circle cx={wake.at[0]} cy={wake.at[1]} r={6} fill="var(--bg)" stroke="var(--text)" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+          <circle cx={wake.at[0]} cy={wake.at[1]} r={2} fill="var(--text)" />
+        </g>
+      )}
+      {selectedPoint !== null && Number.isInteger(selectedPoint) && selectedPoint >= 0 && selectedPoint < layout.points.x.length && (
+        <g aria-label={`选中测量点 ${selectedPoint + 1}`}>
+          <circle cx={layout.points.x[selectedPoint]} cy={layout.points.y[selectedPoint]} r={5} fill="none" stroke="var(--text)" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+          <text x={layout.points.x[selectedPoint] + 8} y={layout.points.y[selectedPoint] - 8} fontSize={11} fill="var(--text)">点 {selectedPoint + 1}</text>
         </g>
       )}
     </svg>

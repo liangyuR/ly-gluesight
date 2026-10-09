@@ -6,7 +6,7 @@ use std::ffi::{c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use lyflow_client::{Core, RunHandle, RunSpec};
+use lyflow_client::{Core, RunHandle, RunImageInput, RunSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
@@ -22,9 +22,6 @@ use crate::simimage;
 pub const FLYSHOT_GRAPH: &str = include_str!("../resources/flyshot.lyflow.json");
 
 
-/// lyFlow main 的 C ABI 只能注入点云；glue 分支的 RunImageInput 合入后删掉这个开关，恢复逐帧注图。
-const IMAGE_INPUT_UNSUPPORTED: bool = true;
-
 unsafe extern "C" fn ignore_event(_: *const c_char, _: *mut c_void) {}
 
 pub struct Engine {
@@ -37,29 +34,47 @@ impl Engine {
     pub fn load(path: &Path) -> Result<Self, String> {
         let core = Core::load_from(path).map_err(|e| e.to_string())?;
         core.self_check()?;
+        check_operators(&serde_json::from_str(&core.manifest_json().map_err(|e| e.to_string())?)
+            .map_err(|e| format!("核心库算子清单无效：{e}"))?)?;
         let version = core.version();
         Ok(Self { core: Arc::new(core), path: path.to_path_buf(), version })
     }
 
     /// 跑一次图，返回 run summary 与图级命名输出（都已解析成 JSON）。
-    pub fn run(&self, graph: &str, run_id: &str, base_dir: &str, _image: &FrameImage, params: &Value) -> Result<RunResult, String> {
-        if IMAGE_INPUT_UNSUPPORTED {
-            return Err("当前 lyFlow（main）不支持注入图像，无法运行飞拍检测图".into());
-        }
+    pub fn run(&self, graph: &str, run_id: &str, base_dir: &str, image: &FrameImage, params: &Value) -> Result<RunResult, String> {
+        let images = [image_input(image)?];
         let params_json = params.to_string();
-        let spec = RunSpec::new(graph, run_id, base_dir, &[]).with_params_json(&params_json);
+        let mut spec = RunSpec::new(graph, run_id, base_dir, &[]).with_params_json(&params_json);
+        // 正式测量只注入原始全分辨率像素。core 在 start 内拷贝，images 活到 start 返回。
+        spec.image_inputs = &images;
         let handle = unsafe { RunHandle::start(self.core.clone(), spec, ignore_event, Box::new(())) }.map_err(|e| e.to_string())?;
         handle.join();
-        let summary: Value = self
+        let summary_json = self
             .core
             .run_summary(run_id)
             .map_err(|e| e.to_string())?
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or(Value::Null);
-        let outputs: Value = serde_json::from_str(&self.core.run_outputs(run_id).map_err(|e| e.to_string())?).unwrap_or(Value::Null);
+            .ok_or("算法没有返回运行摘要")?;
+        let summary: Value = serde_json::from_str(&summary_json).map_err(|e| format!("算法运行摘要无效：{e}"))?;
+        let outputs: Value = serde_json::from_str(&self.core.run_outputs(run_id).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("算法输出无效：{e}"))?;
         drop(handle);
         Ok(RunResult { summary, outputs })
     }
+}
+
+fn check_operators(manifest: &Value) -> Result<(), String> {
+    let required = ["io.load_image", "image.board_calib", "image.load_calib", "glue.locate", "glue.station_calipers"];
+    let ops = manifest["operators"].as_array().ok_or("核心库没有算子清单")?;
+    let missing: Vec<_> = required.into_iter().filter(|id| !ops.iter().any(|op| op["id"].as_str() == Some(id))).collect();
+    if missing.is_empty() { Ok(()) } else { Err(format!("核心库缺少飞拍/标定算子：{}。请选择包含胶路检测功能的核心库。", missing.join("、"))) }
+}
+
+fn image_input(image: &FrameImage) -> Result<RunImageInput, String> {
+    let count = (image.width as usize).checked_mul(image.height as usize).filter(|&n| n > 0)
+        .ok_or("图像尺寸无效")?;
+    if image.pixels.len() != count { return Err("图像像素缓冲与尺寸不一致".into()); }
+    Ok(RunImageInput { node_id: "n_load".into(), port: "image".into(), width: image.width, height: image.height,
+        channels: 1, depth: 1, pixels: image.pixels.clone() })
 }
 
 pub struct RunResult {
@@ -87,32 +102,14 @@ impl Measurer for LyFlowMeasurer {
         let params = assets.params(k).ok_or_else(|| format!("拍照点 k={k} 没有示教资料"))?;
         let base = assets.calib.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         let run_id = format!("{}-k{k}-{}", job.sn, ly_plc::now_ms());
-        let r = engine.run(FLYSHOT_GRAPH, &run_id, &base, image, &params)?;
+        let graph = assets.shots.get(k).map(|s| crate::workspace::station_graph(&s.stations)).unwrap_or_else(|| FLYSHOT_GRAPH.to_string());
+        let r = engine.run(&graph, &run_id, &base, image, &params)?;
         if r.status() == "failed" {
             return Err(r.failure());
         }
         let pose: Pose = r.record("pose").and_then(|v| serde_json::from_value(v.clone()).ok()).ok_or("图没有输出 pose")?;
         let sm: StationMeasure = r.record("measure").and_then(|v| serde_json::from_value(v.clone()).ok()).ok_or("图没有输出 measure")?;
-        if sm.unit != "mm" {
-            return Err(format!("测量单位是 {}，标定文件不是毫米", sm.unit));
-        }
-        let mut m = Measured { located: pose.ok, score: pose.score as f32, ..Measured::empty(job) };
-        for (i, id) in sm.ids.iter().enumerate() {
-            let Some(j) = id.as_u64() else { continue };
-            let (d, st) = match sm.status[i].as_str() {
-                "ok" => match sm.inner_center[i] {
-                    Some(d) => (d as f32, ST_OK),
-                    None => (0.0, ST_INVALID),
-                },
-                "no_bead" => (0.0, ST_GAP),
-                _ => (0.0, ST_INVALID),
-            };
-            m.idx.push(j as u32);
-            m.d.push(d);
-            m.w.push(f32::NAN);
-            m.st.push(st);
-        }
-        Ok(m)
+        sm.into_measured(job, pose)
     }
 }
 
@@ -162,6 +159,40 @@ pub struct StationMeasure {
     pub ids: Vec<Value>,
     pub status: Vec<String>,
     pub inner_center: Vec<Option<f64>>,
+    pub width: Vec<Option<f64>>,
+    pub point: Vec<[f64; 2]>,
+}
+
+impl StationMeasure {
+    fn into_measured(self, job: &Job, pose: Pose) -> Result<Measured, String> {
+        if self.unit != "mm" { return Err(format!("测量单位是 {}，标定文件不是毫米", self.unit)); }
+        let n = self.ids.len();
+        if n == 0 || [self.status.len(), self.inner_center.len(), self.width.len(), self.point.len()].iter().any(|&len| len != n) {
+            return Err("算法点表为空或各列长度不一致".into());
+        }
+        if n != job.recipe.owned_points(job.k).count() { return Err("算法点表未包含本帧的全部测量点".into()); }
+        let mut seen = std::collections::HashSet::new();
+        let mut m = Measured { located: pose.ok, score: pose.score as f32, ..Measured::empty(job) };
+        for (i, id) in self.ids.iter().enumerate() {
+            let j = id.as_u64().and_then(|j| usize::try_from(j).ok())
+                .filter(|&j| j < job.recipe.point_count() && job.recipe.points.k[j] as usize == job.k)
+                .ok_or("算法输出了不属于本帧的测量点")?;
+            if !seen.insert(j) { return Err("算法输出了重复测量点".into()); }
+            let valid = |v: f64| v.is_finite() && (v as f32).is_finite();
+            if self.point[i].iter().any(|&v| !valid(v)) { return Err("算法输出了无效的图像坐标".into()); }
+            let (d, w, st) = match (self.status[i].as_str(), self.inner_center[i], self.width[i]) {
+                ("ok", Some(d), Some(w)) if pose.ok && valid(d) && valid(w) && w > 0.0 => (d as f32, w as f32, ST_OK),
+                ("no_bead", _, _) if pose.ok => (0.0, f32::NAN, ST_GAP),
+                _ => (0.0, f32::NAN, ST_INVALID),
+            };
+            m.idx.push(j as u32);
+            m.d.push(d);
+            m.w.push(w);
+            m.st.push(st);
+            m.px.push(self.point[i].map(|v| v as f32));
+        }
+        Ok(m)
+    }
 }
 
 /// 一个拍照点的视觉资料（示教产物）：模板、模板锚点、测量点文件。
@@ -343,6 +374,14 @@ pub fn assets_for(app: &AppHandle, recipe: &Recipe) -> Result<Arc<VisionAssets>,
     let name = format!("{}-{}", recipe.id, &recipe.hash[..8.min(recipe.hash.len())]);
     let assets = match source {
         CameraSource::Sim => {
+            if recipe.teaching_hash.is_some() {
+                if let Some(a) = VisionAssets::load(&taught_dir(app, &recipe.id)?.join(ASSETS_FILE))
+                    .filter(|a| a.fits(recipe).is_ok() && a.calib.exists() && a.shots.iter().all(|s| s.template.exists() && s.stations.exists())) {
+                    let assets = Arc::new(a);
+                    host.set_assets(key, assets.clone());
+                    return Ok(assets);
+                }
+            }
             if !matches!(recipe.path, Some(crate::recipe::PathSpec::RoundedRect { .. })) {
                 return Err("模拟相机只会合成圆角矩形胶路的飞拍图像".into());
             }
@@ -404,15 +443,17 @@ pub fn vision_calib_info(app: AppHandle, cam: Option<u8>) -> Result<Option<Calib
 
 /// 工位标定：用飞拍相机最近一帧整图跑 image.board_calib，结果存成工位标定文件。
 #[tauri::command]
-pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, cam: Option<u8>) -> Result<CalibInfo, String> {
+pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, cam: Option<u8>, image_id: Option<String>) -> Result<CalibInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        if app.state::<CycleHost>().busy() { return Err("工件正在检测，结束后再标定".into()); }
+        if pattern.iter().any(|n|!n.is_finite()||*n<2.0||*n>100.0||n.fract()!=0.0)||!square.is_finite()||square<=0.0 { return Err("棋盘格内角点与格长无效".into()); }
         let settings = app.state::<CycleHost>().settings();
         let engine = app.state::<VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("lyFlow 核心库未加载")?;
-        let image = app
+        let image = if let Some(id)=image_id.as_deref() { crate::workspace::station_image_ref(&app,cam.unwrap_or(0),id)? } else { app
             .state::<CycleHost>()
             .camera
             .last_full(cam.unwrap_or(0))
-            .ok_or("还没有整帧图像：打开图像测量后软触发一帧（标定板放在内边所在高度）")?;
+            .ok_or("还没有整帧图像：打开图像测量后软触发一帧（标定板放在内边所在高度）")? };
         let graph = json!({
             "schemaVersion": 1,
             "id": "01TUJIAOBOARDCALIB00000000",
@@ -438,10 +479,14 @@ pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, ca
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        let doc = json!({"kind": "Record", "type": "image.PlaneCalib", "data": data, "ts": ly_plc::now_ms()});
+        if let Some(id)=image_id.as_deref() { crate::workspace::station_image_ref(&app,cam.unwrap_or(0),id)?; }
+        let doc = json!({"kind": "Record", "type": "image.PlaneCalib", "data": data, "ts": ly_plc::now_ms(), "sampleId":image_id});
         std::fs::write(&path, serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         calib_info(&path).ok_or_else(|| "标定文件写入后读不回来".into())
     })
     .await
     .map_err(|e| e.to_string())?
 }
+
+#[cfg(test)]
+mod tests;

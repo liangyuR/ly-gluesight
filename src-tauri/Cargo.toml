@@ -1,11 +1,16 @@
 [package]
-name = "tujiao-vision"
+name = "gluesight"
 version = "0.1.0"
-description = "涂胶检测上位机"
+description = "GlueSight · 胶路智检"
 edition = "2021"
+default-run = "GlueSight"
+
+[[bin]]
+name = "GlueSight"
+path = "src/main.rs"
 
 [lib]
-name = "tujiao_vision_lib"
+name = "gluesight_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -19,13 +24,13 @@ tokio = { version = "1", features = ["sync", "time", "macros"] }
 libloading = "0.8"
 rusqlite = { version = "0.40", features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-# lyFlow main 暂无图像注入与 glue 积木，vision::Engine::run 先直接报错；glue 合入后恢复
-lyflow-client = { git = "ssh://git@github.com/liangyuR/lyFlow.git", rev = "b2e7b2cb7623170c9e2f7a91bb2d46deaa236420" }
+# lyFlow main：Image ABI v15 与 glue 飞拍/标定算子已合入；固定提交以便复现。
+lyflow-client = { git = "ssh://git@github.com/liangyuR/lyFlow.git", rev = "5b796c35d6cafd441a24bc09e620aaae399ca5ac" }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "pnm", "bmp", "tiff"] }
 ly-plc = { git = "ssh://git@github.com/liangyuR/ly-plc.git", branch = "main" }
 
 # 模拟相机逐像素合成图像，未优化时一帧要一两秒，赶不上节拍
-[profile.dev.package.tujiao-vision]
+[profile.dev.package.gluesight]
 opt-level = 2
 
 # 回放相机解码 JPEG：未优化时一帧几百毫秒

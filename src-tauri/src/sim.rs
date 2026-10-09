@@ -81,6 +81,8 @@ pub struct SimCtl {
     parts: AtomicU32,
     next_sn: AtomicU32,
     part_scenario: Mutex<Option<Scenario>>,
+    /// 外部演示 Robot 每件已经接受的触发序号，防止重试产生重复帧。
+    external_shots: Mutex<Option<(u32, usize)>>,
     message: Mutex<String>,
 }
 
@@ -101,6 +103,15 @@ impl SimCtl {
     fn set_message(&self, app: &AppHandle, message: impl Into<String>) {
         *self.message.lock().unwrap() = message.into();
         let _ = app.emit("sim://status", self.status());
+    }
+
+    async fn continue_after_pause(&self, continuous: bool, pause: Duration) -> bool {
+        if !continuous || self.stop.load(Ordering::SeqCst) {
+            return false;
+        }
+        sleep(pause).await;
+        // “本件后停止”也可能在两件之间按下；休息结束后再次确认，不能多开一件。
+        !self.stop.load(Ordering::SeqCst)
     }
 }
 
@@ -272,9 +283,8 @@ async fn run_follow_part(app: &AppHandle, recipe: &Arc<Recipe>, scenario: Scenar
 
 pub async fn run(app: AppHandle, recipe: Arc<Recipe>, scenario: Scenario, continuous: bool) {
     let sim = &app.state::<CycleHost>().sim;
-    sim.continuous.store(continuous, Ordering::SeqCst);
     let mut seed = (now_ms() % 997) as u32;
-    loop {
+    while !sim.stop.load(Ordering::SeqCst) {
         seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
         let s = scenario.resolve(seed >> 8);
         // 模拟相机只在真要看图（lyFlow 测量或帧录制）时才合成飞拍图像，一帧 5 MP 很费 CPU
@@ -309,10 +319,16 @@ pub async fn run(app: AppHandle, recipe: Arc<Recipe>, scenario: Scenario, contin
                 break;
             }
         }
-        if !continuous || sim.stop.load(Ordering::SeqCst) {
+        if !sim.continue_after_pause(continuous, Duration::from_millis(800)).await {
             break;
         }
-        sleep(Duration::from_millis(800)).await;
+    }
+    sim.continuous.store(false, Ordering::SeqCst);
+    {
+        let mut message = sim.message.lock().unwrap();
+        if *message == "已请求停止，等待本件完成…" {
+            *message = "模拟节拍已停止".into();
+        }
     }
     sim.running.store(false, Ordering::SeqCst);
     let _ = app.emit("sim://status", sim.status());
@@ -350,12 +366,98 @@ pub fn sim_start(
         return Err("模拟节拍已在运行".into());
     }
     cycle.sim.stop.store(false, Ordering::SeqCst);
+    cycle.sim.continuous.store(continuous, Ordering::SeqCst);
     tauri::async_runtime::spawn(run(app, recipe, scenario, continuous));
     Ok(())
 }
 
 #[tauri::command]
-pub fn sim_stop(cycle: State<'_, CycleHost>) {
+pub fn sim_stop(app: AppHandle, cycle: State<'_, CycleHost>) {
     cycle.sim.stop.store(true, Ordering::SeqCst);
     cycle.sim.continuous.store(false, Ordering::SeqCst);
+    if cycle.sim.running.load(Ordering::SeqCst) {
+        cycle.sim.set_message(&app, "已请求停止，等待本件完成…");
+    }
+}
+
+/// 演示 Robot 的虚拟相机触发线；PLC 握手仍通过独立 Modbus TCP 服务。
+/// 仅独立调试演示实例开放，不接受实体相机，也不写 PLC 点位或伪造测量结果。
+#[tauri::command]
+pub fn sim_robot_trigger(
+    app: AppHandle,
+    plc: State<'_, PlcHost>,
+    cycle: State<'_, CycleHost>,
+    sn: u32,
+    k: usize,
+    scenario: Scenario,
+) -> Result<(), String> {
+    if !cfg!(debug_assertions) || app.config().identifier != "com.xyzrobotics.gluesight.robot-plc-demo" {
+        return Err("外部模拟触发仅供 Robot PLC 独立调试演示实例使用".into());
+    }
+    let connection = plc.engine().config().connection;
+    if connection.protocol != ProtocolKind::ModbusTcp || connection.host != "127.0.0.1" {
+        return Err("演示触发要求连接 127.0.0.1 的 Modbus TCP 模拟 PLC".into());
+    }
+    if plc.engine().status().state != ly_plc::LinkState::Connected || cycle.sim.running.load(Ordering::SeqCst) {
+        return Err("模拟 PLC 未连接或内置模拟节拍正在运行".into());
+    }
+    let snapshot = crate::cycle::cycle_snapshot(cycle.clone()).ok_or("检测状态未就绪")?;
+    if snapshot.phase != crate::cycle::Phase::Acquire {
+        return Err("Robot 只能在已布防的采集阶段触发".into());
+    }
+    let part = snapshot.part.ok_or("没有正在检测的工件")?;
+    if part.sn != sn || part.mode != InspectMode::FlyShot || k >= part.n {
+        return Err("Robot 工件 SN、工况或拍照序号与当前工件不符".into());
+    }
+    let recipe = crate::cycle::cycle_layout(cycle.clone(), part.recipe_id, Some(part.recipe_hash))?;
+    let cam = cycle.camera.require(&recipe.camera)?;
+    if cycle.camera.slot(cam as usize).ok_or("相机不存在")?.config().source != CameraSource::Sim {
+        return Err("外部演示触发只允许模拟相机".into());
+    }
+    if !cycle.settings().vision {
+        return Err("演示联调需要启用 lyFlow 图像测量".into());
+    }
+    let mut sequence = cycle.sim.external_shots.lock().unwrap();
+    let next = sequence.filter(|(active_sn, _)| *active_sn == sn).map_or(0, |(_, next)| next);
+    if k != next {
+        return Err(format!("Robot 触发重复或乱序：应为 k{next}，收到 k{k}"));
+    }
+    let scenario = scenario.resolve(sn);
+    let pose = if scenario.locate_fail_frame(part.n) == Some(k) {
+        PoseError { dx: 15.0, dy: 15.0, deg: 0.0 }
+    } else {
+        PoseError { dx: 0.0, dy: 0.0, deg: 0.0 }
+    };
+    let render = SimRender { recipe, k, scenario, pose, seed: sn as u64 * 16 + k as u64 };
+    if !cycle.camera.trigger(cam, scenario.lost_frame(part.n) == Some(k), Some(render)) {
+        return Err("模拟相机未接受触发".into());
+    }
+    *sequence = Some((sn, k + 1));
+    crate::cycle::log(&app, "info", "外部 Robot", format!("SN {sn} · k{k} · {scenario:?}"));
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stop_during_inter_part_pause_does_not_start_another_part() {
+        let sim = SimCtl::default();
+        let (start_next, ()) = tokio::join!(
+            biased;
+            sim.continue_after_pause(true, Duration::from_millis(20)),
+            async { sim.stop.store(true, Ordering::SeqCst); },
+        );
+        assert!(!start_next, "stop accepted between parts must prevent the next part");
+    }
+
+    #[tokio::test]
+    async fn only_unstopped_continuous_runs_start_another_part() {
+        let sim = SimCtl::default();
+        assert!(!sim.continue_after_pause(false, Duration::ZERO).await);
+        assert!(sim.continue_after_pause(true, Duration::ZERO).await);
+        sim.stop.store(true, Ordering::SeqCst);
+        assert!(!sim.continue_after_pause(true, Duration::ZERO).await);
+    }
 }

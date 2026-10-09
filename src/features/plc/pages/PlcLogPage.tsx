@@ -24,7 +24,7 @@ function toggle<T>(list: T[], v: T) {
 
 function csvCell(v: string | null | undefined) {
   const s = v ?? "";
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 export default function PlcLogPage() {
@@ -40,19 +40,46 @@ export default function PlcLogPage() {
   const [page, setPage] = useState(0);
   const [live, setLive] = useState(true);
   const [data, setData] = useState<LogPage>({ total: 0, items: [] });
+  const [dataScope, setDataScope] = useState(-1);
+  const [dataPage, setDataPage] = useState(-1);
   const [history, setHistory] = useState<{ samples: HistorySample[]; start: number; end: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [configError, setConfigError] = useState("");
+  const [exportError, setExportError] = useState("");
+  const [exporting, setExporting] = useState(false);
+  const exportPending = useRef<object | null>(null);
+  const requestSerial = useRef(0);
+  const configSerial = useRef(0);
+  const alive = useRef(true);
+  const filterKey = JSON.stringify([rangeKey, customStart, customEnd, levels, categories, pointId, keyword]);
+  const scope = useRef({ key: filterKey, generation: 0 });
+  if (scope.current.key !== filterKey) scope.current = { key: filterKey, generation: scope.current.generation + 1 };
+  const generation = scope.current.generation;
+  const currentData = dataScope === generation && dataPage === page ? data : { total: 0, items: [] };
+
+  const loadPoints = useCallback(() => {
+    const serial = ++configSerial.current;
+    setConfigError("");
+    plcApi.getConfig().then(c => { if (alive.current && serial === configSerial.current) setPoints(c.points); })
+      .catch(e => { if (alive.current && serial === configSerial.current) setConfigError(String(e)); });
+  }, []);
 
   useEffect(() => {
-    plcApi.getConfig().then((c) => setPoints(c.points));
-  }, []);
+    alive.current = true; loadPoints();
+    return () => { alive.current = false; configSerial.current++; };
+  }, [loadPoints]);
+
+  useEffect(() => {
+    exportPending.current = null; setExporting(false); setExportError("");
+  }, [generation]);
 
   const buildQuery = useCallback((): { query: LogQuery; start: number; end: number } => {
     const now = Date.now();
     if (rangeKey === "custom") {
-      const start = fromLocalInput(customStart) ?? now - 3_600_000;
-      const end = fromLocalInput(customEnd) ?? now;
+      const start = fromLocalInput(customStart);
+      const end = fromLocalInput(customEnd);
+      if (start === null || end === null || start > end) throw new Error("请选择有效时间段，开始时间不得晚于结束时间");
       return { query: { start, end, levels, categories, pointId: pointId || null, keyword: keyword || null }, start, end };
     }
     const start = now - ranges.find((r) => r.key === rangeKey)!.ms;
@@ -60,28 +87,35 @@ export default function PlcLogPage() {
   }, [rangeKey, customStart, customEnd, levels, categories, pointId, keyword]);
 
   const run = useCallback(async () => {
-    const { query, start, end } = buildQuery();
+    const serial = ++requestSerial.current;
     setLoading(true);
     setError("");
+    setHistory(null);
     try {
-      const [result, samples] = await Promise.all([
+      const { query, start, end } = buildQuery();
+      const [result, samples] = await Promise.allSettled([
         plcApi.queryLogs({ ...query, limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
         pointId ? plcApi.pointHistory(pointId, start, end) : Promise.resolve(null),
       ]);
-      setData(result);
-      setHistory(samples ? { samples, start, end } : null);
+      if (serial !== requestSerial.current) return;
+      if (result.status === "rejected") throw result.reason;
+      setData(result.value);
+      setDataScope(generation); setDataPage(page);
+      if (samples.status === "rejected") setError(`点位趋势：${String(samples.reason)}`);
+      else setHistory(samples.value ? { samples: samples.value, start, end } : null);
     } catch (e) {
-      setError(String(e));
+      if (serial === requestSerial.current) setError(String(e));
     } finally {
-      setLoading(false);
+      if (serial === requestSerial.current) setLoading(false);
     }
-  }, [buildQuery, page, pointId]);
+  }, [buildQuery, page, pointId, generation]);
 
   const runRef = useRef(run);
   runRef.current = run;
 
   useEffect(() => {
-    run();
+    void run();
+    return () => { requestSerial.current++; };
   }, [run]);
 
   const following = live && rangeKey !== "custom" && page === 0;
@@ -105,10 +139,22 @@ export default function PlcLogPage() {
   const resetPage = () => setPage(0);
 
   const exportCsv = async () => {
-    const { query } = buildQuery();
+    if (exportPending.current) return;
+    const request = {};
+    const exportScope = generation;
+    const current = () => alive.current && scope.current.generation === exportScope && exportPending.current === request;
+    exportPending.current = request; setExporting(true); setExportError("");
+    try {
+    const { query, end } = buildQuery();
+    query.end = end;
     const rows: string[] = ["时间,级别,类别,点位,内容,旧值,新值"];
-    for (let offset = 0; offset < 50_000; offset += 1000) {
+    let offset = 0;
+    let total: number | null = null;
+    while (true) {
       const batch = await plcApi.queryLogs({ ...query, limit: 1000, offset });
+      if (!current()) return;
+      total ??= batch.total;
+      if (!Number.isSafeInteger(total) || total < 0) throw new Error("日志数量无效，请刷新后重试");
       for (const e of batch.items) {
         rows.push(
           [formatTs(e.ts), levelLabels[e.level], categoryLabels[e.category], e.pointName, e.message, e.oldValue, e.newValue]
@@ -116,17 +162,26 @@ export default function PlcLogPage() {
             .join(","),
         );
       }
-      if (batch.items.length < 1000) break;
+      offset += batch.items.length;
+      if (offset >= total) break;
+      if (batch.items.length === 0) throw new Error("日志在导出期间已变化，未下载不完整文件，请刷新后重试");
     }
+    if (!current()) return;
     const blob = new Blob(["﻿" + rows.join("\n")], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `plc-log-${toLocalInput(Date.now()).replace(/[:T]/g, "")}.csv`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    try { a.click(); } finally { URL.revokeObjectURL(a.href); }
+    } catch (e) { if (current()) setExportError(String(e)); }
+    finally {
+      if (exportPending.current === request) {
+        exportPending.current = null;
+        if (alive.current) setExporting(false);
+      }
+    }
   };
 
-  const pageCount = Math.max(1, Math.ceil(data.total / PAGE_SIZE));
+  const pageCount = Math.max(1, Math.ceil(currentData.total / PAGE_SIZE));
   const selectedPoint = points.find((p) => p.id === pointId);
 
   return (
@@ -137,6 +192,7 @@ export default function PlcLogPage() {
             {ranges.map((r) => (
               <button
                 key={r.key}
+                aria-pressed={rangeKey === r.key}
                 className={rangeKey === r.key ? "active" : ""}
                 onClick={() => {
                   setRangeKey(r.key);
@@ -149,9 +205,9 @@ export default function PlcLogPage() {
           </div>
           {rangeKey === "custom" && (
             <div className="row">
-              <input className="input mono" type="datetime-local" step={1} value={customStart} onChange={(e) => { setCustomStart(e.target.value); resetPage(); }} />
+              <input className="input mono" aria-label="开始时间" type="datetime-local" step={1} value={customStart} onChange={(e) => { setCustomStart(e.target.value); resetPage(); }} />
               <span className="muted">至</span>
-              <input className="input mono" type="datetime-local" step={1} value={customEnd} onChange={(e) => { setCustomEnd(e.target.value); resetPage(); }} />
+              <input className="input mono" aria-label="结束时间" type="datetime-local" step={1} value={customEnd} onChange={(e) => { setCustomEnd(e.target.value); resetPage(); }} />
             </div>
           )}
           <div className="spacer" />
@@ -171,22 +227,27 @@ export default function PlcLogPage() {
             <RefreshCw size={16} className={loading ? "spin" : ""} />
             刷新
           </button>
-          <button className="btn" onClick={exportCsv}>
+          <button className="btn" disabled={exporting} onClick={() => void exportCsv()}>
             <Download size={16} />
-            导出 CSV
+            {exporting ? "导出中…" : "导出 CSV"}
           </button>
+          <button className="btn" onClick={() => {
+            const now = Date.now();
+            setRangeKey("1h"); setCustomStart(toLocalInput(now - 3_600_000)); setCustomEnd(toLocalInput(now));
+            setLevels([]); setCategories([]); setPointId(""); setKeywordInput(""); setKeyword(""); setPage(0); setLive(true);
+          }}>清空筛选</button>
         </div>
 
         <div className="filter-row">
           <span className="filter-label">级别</span>
           {(Object.keys(levelLabels) as LogLevel[]).map((l) => (
-            <button key={l} className={`chip level-${l} ${levels.includes(l) ? "on" : ""}`} onClick={() => { setLevels(toggle(levels, l)); resetPage(); }}>
+            <button key={l} aria-pressed={levels.includes(l)} className={`chip level-${l} ${levels.includes(l) ? "on" : ""}`} onClick={() => { setLevels(toggle(levels, l)); resetPage(); }}>
               {levelLabels[l]}
             </button>
           ))}
           <span className="filter-label">类别</span>
           {(Object.keys(categoryLabels) as LogCategory[]).map((c) => (
-            <button key={c} className={`chip ${categories.includes(c) ? "on" : ""}`} onClick={() => { setCategories(toggle(categories, c)); resetPage(); }}>
+            <button key={c} aria-pressed={categories.includes(c)} className={`chip ${categories.includes(c) ? "on" : ""}`} onClick={() => { setCategories(toggle(categories, c)); resetPage(); }}>
               {categoryLabels[c]}
             </button>
           ))}
@@ -194,8 +255,9 @@ export default function PlcLogPage() {
 
         <div className="filter-row">
           <span className="filter-label">点位</span>
-          <select className="input" value={pointId} onChange={(e) => { setPointId(e.target.value); resetPage(); }}>
+          <select className="input" aria-label="日志点位" value={pointId} onChange={(e) => { setPointId(e.target.value); resetPage(); }}>
             <option value="">全部点位</option>
+            {pointId && !points.some(p => p.id === pointId) && <option value={pointId}>{pointId}（已移除）</option>}
             {points.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
@@ -217,7 +279,7 @@ export default function PlcLogPage() {
               }}
             />
             {keywordInput && (
-              <button className="icon-btn" onClick={() => { setKeywordInput(""); setKeyword(""); resetPage(); }}>
+              <button className="icon-btn" aria-label="清空搜索" onClick={() => { setKeywordInput(""); setKeyword(""); resetPage(); }}>
                 <X size={14} />
               </button>
             )}
@@ -225,7 +287,10 @@ export default function PlcLogPage() {
         </div>
       </div>
 
-      {history && (
+      {configError && <div className="notice error" role="alert">点位配置：{configError} <button className="btn" onClick={loadPoints}>重新加载点位</button></div>}
+      {exportError && <div className="notice error" role="alert">{exportError}</div>}
+
+      {history && dataScope === generation && dataPage === page && (
         <div className="panel">
           <div className="panel-toolbar">
             <h3 className="panel-title">点位趋势 · {selectedPoint?.name ?? pointId}</h3>
@@ -239,17 +304,17 @@ export default function PlcLogPage() {
         <div className="panel-toolbar">
           <div className="row">
             <h3 className="panel-title">日志</h3>
-            <span className="muted">共 {data.total} 条</span>
+            <span className="muted">共 {currentData.total} 条</span>
             {error && <span className="ng">{error}</span>}
           </div>
           <div className="row">
-            <button className="icon-btn" disabled={page === 0} onClick={() => setPage(page - 1)}>
+            <button className="icon-btn" aria-label="上一页" disabled={loading || page === 0} onClick={() => setPage(page - 1)}>
               <ChevronLeft size={18} />
             </button>
             <span className="mono muted">
               {page + 1} / {pageCount}
             </span>
-            <button className="icon-btn" disabled={page + 1 >= pageCount} onClick={() => setPage(page + 1)}>
+            <button className="icon-btn" aria-label="下一页" disabled={loading || page + 1 >= pageCount} onClick={() => setPage(page + 1)}>
               <ChevronRight size={18} />
             </button>
           </div>
@@ -266,14 +331,14 @@ export default function PlcLogPage() {
               </tr>
             </thead>
             <tbody>
-              {data.items.length === 0 && (
+              {currentData.items.length === 0 && (
                 <tr>
                   <td colSpan={5} className="muted center">
                     {loading ? "加载中…" : "所选条件下暂无日志"}
                   </td>
                 </tr>
               )}
-              {data.items.map((e) => (
+              {currentData.items.map((e) => (
                 <tr key={e.id}>
                   <td className="mono nowrap">{formatTs(e.ts)}</td>
                   <td>

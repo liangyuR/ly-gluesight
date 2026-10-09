@@ -1,0 +1,16 @@
+GlueSight Robot + PLC 模拟服务
+
+完整使用说明、首次配置步骤、地址表和升级流程见本目录 README.md。
+
+在仓库根目录运行：
+  pnpm sim:test      独立自动回归，无需桌面或 DLL
+  pnpm sim:services  只启动 Robot / PLC / 联调台
+  pnpm sim:build     首次构建或升级后构建，并启动桌面联调
+  pnpm sim:start     复用已有构建和配置启动
+  pnpm sim:verify    对运行中的桌面联调执行五工况检查
+  pnpm sim:stop      本件完成后停止，保留配置与记录
+
+默认联调台：http://127.0.0.1:8766/
+服务配置：demo.config.json
+双击“启动联调.cmd”可启动已有桌面联调并打开控制台。
+日志、图像、报告和程序放在仓库 output/playwright/robot-plc-demo，已从 Git 排除。

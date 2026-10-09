@@ -128,6 +128,11 @@ pub trait Measurer: Send + Sync {
 
 struct NativeMeasurer;
 
+/// 使用实际图像运行内置随动卡尺；离线复测与在线测量共享同一入口。
+pub fn measure_native(job: &Job, image: &FrameImage) -> Result<Measured, String> {
+    NativeMeasurer.measure(job, image)
+}
+
 impl Measurer for NativeMeasurer {
     fn measure(&self, job: &Job, image: &FrameImage) -> Result<Measured, String> {
         let JobKind::Follow { s, points, calib, start_probe } = &job.kind else {
@@ -168,7 +173,7 @@ pub fn apply_settings(app: &AppHandle) {
 
 fn run_image(app: &AppHandle, engine: Engine, job: &Job, image: &FrameImage) -> Measured {
     let r = match engine {
-        Engine::Native => NativeMeasurer.measure(job, image),
+        Engine::Native => measure_native(job, image),
         Engine::LyFlow => vision::LyFlowMeasurer { app: app.clone() }.measure(job, image),
     };
     r.unwrap_or_else(|e| Measured::failed(job, e))

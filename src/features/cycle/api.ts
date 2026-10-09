@@ -4,6 +4,8 @@ import { subscribe } from "../plc";
 import type { CycleSettings, ImportedPath, InspectMode, LogLine, Measured, Recipe, RecipeDoc, RecipeSummary, Scenario, SimStatus, Snapshot } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
+  if (!isTauri() && ["cycle_save_settings","cycle_select_recipe","cycle_reset","sim_start","sim_stop","recipe_save","recipe_delete"].includes(cmd))
+    return Promise.reject(new Error("生产配置与检测操作需要 GlueSight · 胶路智检 桌面后端"));
   if (!isTauri()) return Promise.resolve(fallback());
   return invoke<T>(cmd, args);
 }

@@ -1,0 +1,74 @@
+{
+  "scope": "本地 Tauri + React 黑蓝界面与配置工作流实现",
+  "updatedAt": "2026-10-09",
+  "documentation": {
+    "userGuide": "docs/user-guide/index.html",
+    "testing": "docs/TESTING.md",
+    "operations": "docs/UI_OPERATIONS.md",
+    "verificationScope": "接口规格与验收方式保存在仓库中；历史本机运行状态、原图、日志和生成报告不随仓库分发。"
+  },
+  "dependencies": {
+    "newPaidDependencies": [],
+    "newPackages": [],
+    "ui": ["现有 React、React Router、lucide-react", "原生 SVG 与 Canvas"],
+    "storage": "Tauri app_data_dir 下的 workspaces、配方、vision 资料和已有历史数据库"
+  },
+  "ownership": {
+    "uiAndWorkflow": "工作区命令、界面、冻结样本、版本与验证约束、历史独立对照",
+    "algorithms": "lyFlow 图像输入、定位、卡尺与测量输出；随动由本程序卡尺测量",
+    "integrationChanges": [
+      "vision.rs 使用已保存工位参数构建图，并允许标定选择冻结图像",
+      "teach.rs 的随动试探可选择冻结图像，并检查输入与样本是否有效",
+      "cycle.rs 在工件边界提交发布内容，并保留当前工件各帧的原图预览",
+      "lyflow-client 固定到 5b796c35d6cafd441a24bc09e620aaae399ca5ac，RunSpec.image_inputs 注入 Image ABI v15 的完整 u8 灰度像素",
+      "随动历史原图按相机编号和绝对帧计数匹配，在保存的沿程位置调用本机卡尺重测"
+    ]
+  },
+  "workflow": {
+    "candidate": "保存候选只更新工作区；原生产配方不变，新配方在验证发布前不进入生产列表",
+    "frozenTeaching": "冻结图像绑定图像 ID、相机配置、标定、胶路与帧参数；试测通过后才能保存本帧",
+    "invalidation": "更换原图、修改参数、胶路、相机配置或标定后，旧试测与保存资格失效",
+    "overview": "总览显示位置为画布内的归一化坐标；保存总览不会改写物理拍照坐标",
+    "validation": "检查设备、每帧负责测量点的物理覆盖及搜索余量、示教标定、总览、OK 与 NG 样本、生产基础版本",
+    "publication": "提交不可变的发布快照；在 IDLE/FAULT 工件边界生效，在制件使用原配方；待生效期间继续编辑不改变已提交内容",
+    "history": "原始历史记录与配方快照保留；规则重判和原图复测单独保存候选快照及对照结果",
+    "browser": "无 Tauri 后端时只查看界面与交互原型，设备与生产写入明确不可执行",
+    "frameNumbering": "命令和存储的 k 从 0 开始；界面统一从 k1 开始，包括旧历史说明中的帧编号"
+  },
+  "algorithmInterface": {
+    "entry": "src-tauri/src/vision.rs Engine::run(graph, run_id, base_dir, image, params)",
+    "input": {
+      "image": "FrameImage 的完整灰度原图，宽高与像素对应；预览缩略图不作为算法输入",
+      "params": ["template: 冻结原图裁剪后的 PGM", "anchor: 模板在原图中的 [x,y]", "stations: 本帧负责的点、法线、点编号", "calib: 工位标定文件"],
+      "frameParams": {
+        "rect": "定位模板矩形，原图像素 [x,y,width,height]；最小 16×16，必须位于原图内",
+        "dx_dy_deg_mmPerPx": "生成测量工位像素坐标和法线",
+        "minScore": "n_locate.params.minScore 与试测最低分数",
+        "minContrast": "n_calipers.params.contrastMin",
+        "searchMm": "n_calipers.params.searchHalf = searchMm / mmPerPx"
+      }
+    },
+    "outputs": {
+      "pose": "命名输出 pose，必须可反序列化为 vision::Pose；ok 和 score 用于定位门槛",
+      "measure": {
+        "unit": "必须为 mm",
+        "ids": "本帧负责的全局测量点编号，不得重复，不得属于其他帧",
+        "status": "每点状态；ok 为成功测量，no_bead 为真实缺胶；未量成不得当作合格或缺胶",
+        "innerCenter": "ok 点必须提供数值距离",
+        "width": "提供胶宽时与点编号对应"
+      },
+      "trialPass": "定位通过、分数满足最低值、有效测量覆盖至少 99.5%；no_bead 可证明测量完成，整件缺胶由 judge 判定"
+    },
+    "publicationAssets": "template、stations（含 workspaceParams）、calib 与示教 manifest；teachingHash 参与配方内容哈希",
+    "sharedUse": "单帧试测、导入原图样本验证、历史原图复测与在线飞拍使用同一图和已保存工位参数",
+    "runtimeCompatibility": "客户端固定到 lyFlow 5b796c3，通过 Image ABI v15 注入完整灰度帧；运行时需加载与该 ABI 兼容、包含图像与 glue 算子的 core DLL。验证命令和证据范围见 docs/TESTING.md。"
+  },
+  "limits": [
+    "随动原图复测要求完整相机和绝对帧计数、有限沿程位置及匹配图像尺寸的当前标定；复测不重新推算历史沿程位置",
+    "飞拍完整图像链路需通过隔离桌面 UI 验收；合成图像验收不作为现场缺陷准确率证据",
+    "隔离 Tauri 模拟器用于原图与节拍回归；真实工业相机、现场 PLC 和节拍需要现场验收",
+    "当前工件原图预览缓存上限 128 MiB；历史原图按录制与保留策略决定是否可用",
+    "原图组每个拍照点一张图，单图最多 15 MB、整组最多 80 MB、单图最多 4000 万像素",
+    "不将规则重判描述为图像重新测量"
+  ]
+}

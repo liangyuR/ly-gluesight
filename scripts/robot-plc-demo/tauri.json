@@ -1,0 +1,8 @@
+{
+  "productName": "GlueSight Robot PLC Demo",
+  "identifier": "com.xyzrobotics.gluesight.robot-plc-demo",
+  "app": {
+    "windows": [{ "label": "main", "title": "GlueSight · Robot + PLC 联调演示", "visible": true, "width": 1440, "height": 900, "minWidth": 1100, "minHeight": 700 }]
+  },
+  "bundle": { "active": false }
+}

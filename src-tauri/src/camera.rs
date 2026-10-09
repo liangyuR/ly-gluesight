@@ -1087,13 +1087,13 @@ pub fn camera_rig_config(cycle: State<'_, CycleHost>) -> Vec<CameraConfig> {
 
 /// 保存并应用一台相机的配置。返回相机未接受的参数。
 #[tauri::command]
-pub async fn camera_save_config(app: AppHandle, cam: usize, mut config: CameraConfig) -> Result<Vec<String>, String> {
+pub async fn camera_save_config(app: AppHandle, cam: usize, config: CameraConfig) -> Result<Vec<String>, String> {
     config.validate()?;
     // 海康相机要重新打开，检测中改会打断这一件
     check_idle(&app.state::<CycleHost>())?;
     let slot = rig(&app).slot(cam).ok_or("相机不存在")?;
-    // 编号是配方引用相机的依据，不能改
-    config.id = slot.config().id;
+    // 编号是配方引用相机的依据；陈旧索引不能覆盖另一台相机。
+    check_camera_target(&slot.config().id, &config.id)?;
     check_serial(&rig(&app).configs(), cam, &config)?;
     slot.set_config(config);
     let saved = rig(&app).save();
@@ -1101,6 +1101,23 @@ pub async fn camera_save_config(app: AppHandle, cam: usize, mut config: CameraCo
     let warnings = tauri::async_runtime::spawn_blocking(move || slot.apply_config()).await.map_err(|e| e.to_string())??;
     saved.map_err(|e| format!("已生效，但没能写回 cameras.json：{e}"))?;
     Ok(warnings)
+}
+
+fn check_camera_target(current_id: &str, requested_id: &str) -> Result<(), String> {
+    if current_id != requested_id {
+        return Err("相机组已变化，请刷新配置后重试保存".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod save_target_tests {
+    #[test]
+    fn stale_camera_index_cannot_overwrite_another_camera() {
+        assert!(super::check_camera_target("cam2", "cam1").is_err());
+        assert!(super::check_camera_target("cam1", "").is_err());
+        assert!(super::check_camera_target("cam1", "cam1").is_ok());
+    }
 }
 
 /// 同一个序列号不能给两台海康相机（留空表示"第一台空闲的"）。
@@ -1189,6 +1206,14 @@ pub fn camera_remove(app: AppHandle, cam: usize) -> Result<(), String> {
     }
     if configs.len() == 1 {
         return Err("相机组至少保留 1 台".into());
+    }
+    let id = &configs[cam].id;
+    let mut users: Vec<String> = cycle.recipes.list().iter()
+        .filter(|r| r.cameras().iter().any(|camera| camera == id)).map(|r| r.id.clone()).collect();
+    users.extend(app.state::<crate::workspace::WorkspaceHost>().camera_users(id));
+    users.sort(); users.dedup();
+    if !users.is_empty() {
+        return Err(format!("相机 {id} 正被配方 {} 引用，请先调整配方的相机", users.join("、")));
     }
     configs.remove(cam);
     cycle.camera.rebuild(&app, configs);

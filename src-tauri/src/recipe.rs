@@ -226,6 +226,8 @@ pub struct Recipe {
     pub name: String,
     pub version: u32,
     pub hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teaching_hash: Option<String>,
     pub product_code: u16,
     #[serde(default)]
     pub mode: InspectMode,
@@ -348,6 +350,8 @@ pub struct RecipeDoc {
     pub name: String,
     #[serde(default)]
     pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teaching_hash: Option<String>,
     pub product_code: u16,
     #[serde(default)]
     pub mode: InspectMode,
@@ -610,6 +614,7 @@ impl RecipeDoc {
             name: self.name.trim().to_string(),
             version: 0,
             hash: String::new(),
+            teaching_hash: self.teaching_hash.clone(),
             product_code: self.product_code,
             mode: self.mode,
             trigger_mode: self.trigger_mode,
@@ -695,6 +700,7 @@ pub fn samples() -> Vec<RecipeDoc> {
         id: id.into(),
         name: name.into(),
         version: 1,
+        teaching_hash: None,
         product_code: code,
         mode: InspectMode::FlyShot,
         trigger_mode,
@@ -714,6 +720,7 @@ pub fn samples() -> Vec<RecipeDoc> {
         id: "FLW-RECT".into(),
         name: "随动演示 · 圆角矩形".into(),
         version: 1,
+        teaching_hash: None,
         product_code: 21,
         mode: InspectMode::Follow,
         trigger_mode: TriggerMode::Fly,

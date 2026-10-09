@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Save, Upload } from "lucide-react";
 import { recipeApi } from "../../cycle/api";
 import TrajectoryMap from "../../cycle/components/TrajectoryMap";
@@ -10,6 +10,8 @@ interface Props {
   /** 相机组里的相机：配方按编号引用 */
   cameras: { id: string; name: string }[];
   onSaved: (id: string) => void;
+  onDraftChange?: (doc: RecipeDoc) => void;
+  saveCandidate?: (doc: RecipeDoc) => Promise<boolean>;
 }
 
 const paramFields: [keyof JudgeParams, string][] = [
@@ -77,7 +79,7 @@ function Num({ label, value, onChange, step = 0.1, hint }: { label: string; valu
   return (
     <label className="field" title={hint}>
       <span>{label}</span>
-      <input className="input mono" type="number" step={step} value={Number.isFinite(value) ? value : ""} onChange={(e) => onChange(Number(e.target.value))} />
+      <input className="input mono" type="number" step={step} value={Number.isFinite(value) ? value : ""} onChange={(e) => onChange(e.target.value===""?NaN:Number(e.target.value))} />
     </label>
   );
 }
@@ -96,12 +98,12 @@ function Section({ title, children, extra }: { title: string; children: ReactNod
 }
 
 function LimitsTable({ label, value, onChange, widthDefault }: { label: string; value: SegmentLimits; onChange: (v: SegmentLimits) => void; widthDefault: JudgeParams }) {
-  const row = (name: string, p: JudgeParams, set: (p: JudgeParams) => void) => (
+  const row = (name: string, p: JudgeParams, set: (p: JudgeParams) => void, extra?:ReactNode) => (
     <tr>
-      <td>{name}</td>
-      {paramFields.map(([k]) => (
+      <td>{name}{extra}</td>
+      {paramFields.map(([k,field]) => (
         <td key={k}>
-          <input className="input mono" type="number" step={0.05} value={p[k]} onChange={(e) => set({ ...p, [k]: Number(e.target.value) })} />
+          <input aria-label={`${name} · ${field}`} className="input mono" type="number" step={0.05} value={Number.isFinite(p[k])?p[k]:""} onChange={(e) => set({ ...p, [k]: e.target.value===""?NaN:Number(e.target.value) })} />
         </td>
       ))}
     </tr>
@@ -110,7 +112,7 @@ function LimitsTable({ label, value, onChange, widthDefault }: { label: string; 
     <>
       {row(`${label} · 位置`, value.position, (position) => onChange({ ...value, position }))}
       {value.width ? (
-        row(`${label} · 胶宽`, value.width, (width) => onChange({ ...value, width }))
+        row(`${label} · 胶宽`, value.width, (width) => onChange({ ...value, width }),<button className="btn small" onClick={()=>onChange({...value,width:null})}>停用胶宽判定</button>)
       ) : (
         <tr>
           <td>{label} · 胶宽</td>
@@ -125,29 +127,38 @@ function LimitsTable({ label, value, onChange, widthDefault }: { label: string; 
   );
 }
 
-export default function RecipeEditor({ initial, originalId, cameras, onSaved }: Props) {
+export default function RecipeEditor({ initial, originalId, cameras, onSaved, onDraftChange, saveCandidate }: Props) {
   const [doc, setDoc] = useState<RecipeDoc>(initial);
   const [preview, setPreview] = useState<Recipe | null>(null);
+  const [previewDoc,setPreviewDoc]=useState<RecipeDoc|null>(null);
   const [previewError, setPreviewError] = useState("");
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
   const [polyText, setPolyText] = useState(initial.path.kind === "polyline" ? pathText(initial.path.points, initial.path.bulges) : "");
   const [shotsText, setShotsText] = useState(pointsText(initial.shots));
+  const [importing,setImporting]=useState(false),[saving,setSaving]=useState(false);
+  const mounted=useRef(true),importSerial=useRef(0),pendingSave=useRef(false);
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;importSerial.current++;};},[]);
+  useEffect(() => { onDraftChange?.(doc); }, [doc, onDraftChange]);
 
   useEffect(() => {
+    let alive = true;
+    setPreviewError("");
     const t = setTimeout(() => {
       recipeApi
         .preview(doc)
         .then((r) => {
+          if (!alive) return;
           setPreview(r);
+          setPreviewDoc(doc);
           setPreviewError("");
         })
-        .catch((e) => setPreviewError(String(e)));
+        .catch((e) => { if (alive) {setPreview(null);setPreviewDoc(null);setPreviewError(String(e));} });
     }, 350);
-    return () => clearTimeout(t);
+    return () => { alive = false; clearTimeout(t); };
   }, [doc]);
 
-  const set = <K extends keyof RecipeDoc>(k: K, v: RecipeDoc[K]) => setDoc({ ...doc, [k]: v });
-  const setPath = (p: PathSpec) => set("path", p);
+  const set = <K extends keyof RecipeDoc>(k: K, v: RecipeDoc[K]) => {setNotice(null);setDoc(previous=>({ ...previous, [k]: v }));};
+  const setPath = (p: PathSpec) => {importSerial.current++;setImporting(false);set("path", p);};
   const follow = doc.mode === "follow";
   const f = doc.follow;
   const setFollow = (patch: Partial<FollowSpec>) => f && set("follow", { ...f, ...patch });
@@ -155,35 +166,54 @@ export default function RecipeEditor({ initial, originalId, cameras, onSaved }: 
   const widthDefault: JudgeParams = { nominal: bead, tolUpper: 0.35 * bead, tolLower: 0.3 * bead, absMin: 0.4 * bead, absMax: 1.9 * bead, maxExcursionLen: 3 };
 
   const importFile = async (file: File) => {
+    const serial=++importSerial.current;
+    setImporting(true);setNotice(null);
     try {
-      const r = await recipeApi.parsePath(await file.text(), file.name);
+      if(!/\.(csv|txt|dxf)$/i.test(file.name))throw new Error("胶路导入支持 CSV、TXT 或 DXF 文件");
+      if(!file.size)throw new Error("导入文件为空");
+      if(file.size>5*1024*1024)throw new Error("胶路文件不能超过 5 MB");
+      const text=await file.text();
+      if(!mounted.current||serial!==importSerial.current)return;
+      const r = await recipeApi.parsePath(text, file.name);
+      if(!mounted.current||serial!==importSerial.current)return;
       setPolyText(pathText(r.points, r.bulges));
-      setPath({ kind: "polyline", points: r.points, bulges: r.bulges, closed: r.closed, radius: doc.path.kind === "polyline" ? doc.path.radius : 0 });
+      setDoc(previous=>({...previous,path:{ kind: "polyline", points: r.points, bulges: r.bulges, closed: r.closed, radius: previous.path.kind === "polyline" ? previous.path.radius : 0 }}));
       const arcs = r.bulges.filter((b) => b !== 0).length;
       setNotice({
         ok: true,
         text: `从 ${file.name} 读到 ${r.points.length} 个点${arcs ? `、${arcs} 段圆弧` : ""}${r.closed ? "，闭合" : ""}${r.note ? `。${r.note}` : ""}`,
       });
     } catch (e) {
-      setNotice({ ok: false, text: String(e) });
+      if(mounted.current&&serial===importSerial.current)setNotice({ ok: false, text: String(e) });
     }
+    finally{if(mounted.current&&serial===importSerial.current)setImporting(false);}
   };
 
   const save = async () => {
+    if(pendingSave.current||importing||previewDoc!==doc||previewError)return;
+    pendingSave.current=true;setSaving(true);setNotice(null);
     try {
+      if (saveCandidate) {
+        const saved=await saveCandidate(doc);
+        if(mounted.current)setNotice(saved?{ok:true,text:"候选配置已保存，生产版本保持不变"}:{ok:false,text:"候选配置未保存，请修正错误后重试"});
+        return;
+      }
       const r = await recipeApi.save(doc, originalId);
+      if(!mounted.current)return;
       setNotice({ ok: true, text: `已保存 ${r.id} v${r.version}` });
       onSaved(r.id);
     } catch (e) {
-      setNotice({ ok: false, text: String(e) });
+      if(mounted.current)setNotice({ ok: false, text: String(e) });
     }
+    finally{pendingSave.current=false;if(mounted.current)setSaving(false);}
   };
 
   const summary = useMemo(() => {
-    if (!preview) return "";
+    if (!preview||previewDoc!==doc) return "";
     const len = preview.segments.at(-1)?.s1 ?? 0;
     return `${preview.segments.length} 段 · 全长 ${len.toFixed(1)} mm · ${preview.points.x.length} 个测量点 · ${preview.closed ? "闭合" : "开放"}`;
-  }, [preview]);
+  }, [preview,previewDoc,doc]);
+  const currentPreview=previewDoc===doc?preview:null;
 
   return (
     <div className="rcp-editor">
@@ -193,18 +223,18 @@ export default function RecipeEditor({ initial, originalId, cameras, onSaved }: 
             {originalId ? `编辑 ${originalId}` : "新配方"} · {follow ? "随动" : "飞拍"}
             {originalId && <span className="muted mono"> v{doc.version}</span>}
           </h3>
-          <button className="btn primary" onClick={save} disabled={!!previewError}>
+          <button className="btn primary" onClick={()=>void save()} disabled={saving||importing||!!previewError||previewDoc!==doc}>
             <Save size={15} />
-            保存
+            {saving?"保存中…":saveCandidate ? "保存候选配置" : "保存"}
           </button>
         </div>
         {notice && <div className={`notice ${notice.ok ? "ok" : "error"}`}>{notice.text}</div>}
-
+        <fieldset disabled={saving} style={{border:0,padding:0,margin:0,minWidth:0,display:"flex",flexDirection:"column",gap:14}}>
         <Section title="基本">
           <div className="form-grid">
             <label className="field">
               <span>配方编号</span>
-              <input className="input mono" value={doc.id} onChange={(e) => set("id", e.target.value.trim())} />
+              <input className="input mono" value={doc.id} disabled={!!saveCandidate} onChange={(e) => set("id", e.target.value.trim())} />
             </label>
             <label className="field">
               <span>名称</span>
@@ -247,6 +277,7 @@ export default function RecipeEditor({ initial, originalId, cameras, onSaved }: 
               <textarea
                 className="input mono"
                 rows={7}
+                aria-label="胶路点坐标"
                 value={polyText}
                 placeholder={"每行一个点：x, y（mm），可选第 3 列 bulge"}
                 onChange={(e) => {
@@ -257,8 +288,8 @@ export default function RecipeEditor({ initial, originalId, cameras, onSaved }: 
               <div className="rcp-poly-side">
                 <label className="btn">
                   <Upload size={15} />
-                  导入 CSV / DXF
-                  <input type="file" accept=".csv,.txt,.dxf" hidden onChange={(e) => e.target.files?.[0] && importFile(e.target.files[0])} />
+                  {importing?"导入中…":"导入 CSV / DXF"}
+                  <input aria-label="导入胶路文件" type="file" accept=".csv,.txt,.dxf" hidden onChange={(e) => {const file=e.target.files?.[0];e.target.value="";if(file)void importFile(file);}} />
                 </label>
                 <label className="check">
                   <input type="checkbox" checked={doc.path.closed} onChange={(e) => doc.path.kind === "polyline" && setPath({ ...doc.path, closed: e.target.checked })} />
@@ -347,7 +378,7 @@ export default function RecipeEditor({ initial, originalId, cameras, onSaved }: 
                       setFollow({
                         // 按相机组里的顺序排，与图像源页一致
                         cameras: e.target.checked
-                          ? cameras.map((x) => x.id).filter((id) => id === c.id || f.cameras.includes(id))
+                          ? [...cameras.map((x) => x.id),...f.cameras.filter(id=>!cameras.some(x=>x.id===id))].filter((id) => id === c.id || f.cameras.includes(id))
                           : f.cameras.filter((id) => id !== c.id),
                       })
                     }
@@ -399,18 +430,19 @@ export default function RecipeEditor({ initial, originalId, cameras, onSaved }: 
             </div>
           </Section>
         )}
+        </fieldset>
       </div>
 
       <div className="rcp-preview">
         <div className="panel-head">
           <h4 className="sub-title">预览</h4>
-          <span className="muted">{previewError ? "" : summary}</span>
+          <span className="muted">{previewError ? "" : currentPreview?summary:"正在更新预览…"}</span>
         </div>
         {previewError && <div className="notice error">{previewError}</div>}
-        {preview && <TrajectoryMap layout={preview} vis={new Array(preview.points.x.length).fill("none")} className="traj rcp-traj" />}
-        {preview && (
+        {currentPreview && <TrajectoryMap layout={currentPreview} vis={new Array(currentPreview.points.x.length).fill("none")} className="traj rcp-traj" />}
+        {currentPreview && (
           <div className="rcp-segs">
-            {preview.segments.map((g) => (
+            {currentPreview.segments.map((g) => (
               <span key={g.name} className={g.kind === "corner" ? "corner" : ""}>
                 {g.name} <b className="mono">{(g.s1 - g.s0).toFixed(1)}</b>
               </span>

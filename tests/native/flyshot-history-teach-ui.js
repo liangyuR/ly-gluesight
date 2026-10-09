@@ -1,0 +1,51 @@
+async (page) => {
+  const readWorkspace = () => page.evaluate(() => window.__TAURI_INTERNALS__.invoke("workspace_get",{id:"UI-FLYSHOT"}));
+  const before = await readWorkspace();
+  const original = before.workspace.frames[0];
+  const production = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("recipe_doc",{id:"UI-FLYSHOT"}));
+  await page.getByRole("combobox",{name:"历史帧选择",exact:true}).selectOption("0");
+  await page.getByRole("button",{name:"将此帧用于示教",exact:true}).click();
+  await page.getByRole("heading",{name:"k1 · 单帧图像",exact:true}).waitFor();
+  const bound = (await readWorkspace()).workspace.frames[0];
+  if (!bound.image?.historyId || !bound.backup || bound.saved || bound.trial) throw new Error("History frame did not invalidate and back up teaching");
+  const svg = page.locator("svg.wp-gray-image.editable");
+  await svg.waitFor(); await svg.scrollIntoViewIfNeeded();
+  // Do not pre-edit a parameter: the first pointer move must insert the draft notice during this gesture.
+  const [x,y,w,h] = original.params.rect;
+  const pointer = await svg.locator("g").first().evaluate((element,rect) => {
+    const [x,y,w,h] = rect, matrix = element.getScreenCTM();
+    return [[x,y],[x+w,y+h]].map(([x,y]) => {const p=new DOMPoint(x,y).matrixTransform(matrix);return {x:p.x,y:p.y};});
+  }, original.params.rect);
+  await page.mouse.move(pointer[0].x,pointer[0].y); await page.mouse.down();
+  await page.mouse.move(pointer[1].x,pointer[1].y,{steps:12}); await page.mouse.up();
+  await page.getByRole("button",{name:"试测当前帧",exact:true}).click();
+  await page.getByText("当前冻结图像的试测已完成",{exact:true}).waitFor();
+  const dragged = (await readWorkspace()).workspace.frames[0];
+  if (!dragged.trial?.passed || dragged.params.rect.some((value,index) => Math.abs(value-[x,y,w,h][index])>8)) throw new Error(JSON.stringify({expected:[x,y,w,h],params:dragged.params,trial:dragged.trial}));
+  await page.getByRole("button",{name:"保存本帧示教",exact:true}).click();
+  await page.getByText("本帧示教已保存，发布前仍需整体验证",{exact:true}).waitFor();
+  await page.getByRole("spinbutton",{name:"平移 X",exact:true}).fill(String(original.params.dx+3));
+  await page.getByText("本帧参数有未保存的修改",{exact:true}).waitFor();
+  await page.getByRole("button",{name:"恢复原始示教",exact:true}).click();
+  await page.getByText("原始图像与参数已恢复，请重新试测",{exact:true}).waitFor();
+  const restored = (await readWorkspace()).workspace.frames[0];
+  if (restored.image.id!==original.image.id || JSON.stringify(restored.params)!==JSON.stringify(original.params) || restored.saved || restored.trial) throw new Error("Original teaching backup was not restored exactly");
+  await page.waitForFunction(value => document.querySelector('input[aria-label="平移 X"]').value===String(value), original.params.dx);
+  await page.getByRole("button",{name:"试测当前帧",exact:true}).click();
+  await page.getByText("当前冻结图像的试测已完成",{exact:true}).waitFor();
+  await page.getByRole("button",{name:"保存本帧示教",exact:true}).click();
+  await page.getByText("本帧示教已保存，发布前仍需整体验证",{exact:true}).waitFor();
+  await page.getByRole("navigation",{name:"操作导航"}).getByRole("link",{name:"验证与发布",exact:true}).click();
+  await page.getByRole("button",{name:"运行规则与图像验证",exact:true}).click();
+  await page.getByText("当前候选的验证已完成",{exact:true}).waitFor();
+  const validated = await readWorkspace();
+  if (!validated.workspace.validation?.passed || !validated.workspace.frames.every(frame => frame.saved)) throw new Error(JSON.stringify(validated.workspace.validation));
+  await page.getByRole("button",{name:"发布生产配方",exact:true}).click();
+  await page.getByRole("dialog",{name:"发布生产配方",exact:true}).getByRole("button",{name:"取消",exact:true}).click();
+  const after = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("recipe_doc",{id:"UI-FLYSHOT"}));
+  if (JSON.stringify(after)!==JSON.stringify(production)) throw new Error("Candidate teaching or cancelled publication modified production");
+  const result={operation:"历史原图回流示教、首拖动布局变化的坐标回归、试测保存、原始资料精确恢复、重新验证和取消发布",passed:true,historyId:bound.image.historyId,expectedRect:[x,y,w,h],actualRect:dragged.params.rect,restoredImageId:restored.image.id,validation:validated.workspace.validation};
+  await page.evaluate(result => window.__uiOperations.checks.push(result),result);
+  await page.screenshot({path:"D:\\project\\ly-gluesight\\output\\playwright\\ui-regression\\flyshot-history-teach.png",fullPage:true});
+  return result;
+}

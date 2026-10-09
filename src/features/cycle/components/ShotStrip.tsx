@@ -15,11 +15,11 @@ function footer(f: FrameView) {
     case "waiting":
       return "—";
     case "measuring":
-      return `到达 ${f.arrivedMs} ms · 测量中`;
+      return `到达 ${f.arrivedMs ?? "—"} ms · 测量中`;
     case "done":
-      return `${f.score?.toFixed(2)} · ${f.points} 点 · ${f.ms} ms`;
+      return `${f.score?.toFixed(2) ?? "—"} · ${f.points} 点 · ${f.ms ?? "—"} ms`;
     case "locateFailed":
-      return `分数 ${f.score?.toFixed(2)} < 0.60`;
+      return `定位分数 ${f.score?.toFixed(2) ?? "—"}`;
     case "error":
       return "见事件日志";
     case "missing":
@@ -27,8 +27,8 @@ function footer(f: FrameView) {
   }
 }
 
-export default function ShotStrip({ layout, part, vis }: { layout: Recipe; part: PartView | null; vis: PointVis[] }) {
-  const frames = part && part.recipeId === layout.id ? part.frames : null;
+export default function ShotStrip({ layout, part, vis, selected, onSelect }: { layout: Recipe; part: PartView | null; vis: PointVis[]; selected?:number; onSelect?:(k:number)=>void }) {
+  const frames = part && part.recipeId === layout.id && part.recipeHash === layout.hash ? part.frames : null;
   return (
     <div className="shot-strip" style={{ gridTemplateColumns: `repeat(${layout.shots.length}, minmax(0, 1fr))` }}>
       {layout.shots.map((_, k) => {
@@ -36,14 +36,14 @@ export default function ShotStrip({ layout, part, vis }: { layout: Recipe; part:
         const [label, tone] = labels[f?.status ?? "waiting"];
         const bad = f && (f.status === "locateFailed" || f.status === "error" || f.status === "missing");
         return (
-          <div key={k} className={`shot s-${f?.status ?? "waiting"}${f?.gapPoints ? " has-gap" : ""}`}>
+          <button key={k} type="button" className={`shot s-${f?.status ?? "waiting"}${f?.gapPoints ? " has-gap" : ""}${selected===k ? " selected" : ""}`} aria-label={`查看帧 k${k+1}`} aria-pressed={selected===k} onClick={()=>onSelect?.(k)}>
             <div className="shot-head">
-              <b className="mono">k={k}</b>
+              <b className="mono">k{k+1}</b>
               <span className={f?.gapPoints ? "c-ng" : tone}>{f?.gapPoints ? `缺胶 ${f.gapPoints}` : label}</span>
             </div>
             <TrajectoryMap layout={layout} vis={vis} focus={k} compact className="shot-img" />
             <div className={`shot-foot mono${bad ? " c-err" : ""}`}>{f ? footer(f) : "—"}</div>
-          </div>
+          </button>
         );
       })}
     </div>

@@ -1,0 +1,883 @@
+{
+  "schemaVersion": 1,
+  "product": "GlueSight · 胶路智检",
+  "title": "涂胶检测操作流程 · Black / Blue",
+  "status": "workflow-design-specification",
+  "scope": "使用本地免费组件完成整套可交互操作流程，并将现有软件 UI 更换为纯黑加蓝色关键色。",
+  "documentation": {
+    "purpose": "保留界面与工作流设计规格。当前操作、实现约束和验证方式以以下仓库文档为准。",
+    "userGuide": "docs/user-guide/index.html",
+    "implementationContract": "docs/design/implementation-contract.json",
+    "testing": "docs/TESTING.md",
+    "operations": "docs/UI_OPERATIONS.md"
+  },
+  "source": {
+    "externalReferencePolicy": "早期设计参考的外部保密资料不随仓库分发，本文不包含其原文或附件；阅读、构建和使用本项目不依赖这些资料。",
+    "code": [
+      "src/layout/nav.ts",
+      "src/pages/CameraPage.tsx",
+      "src/pages/RecipePage.tsx",
+      "src/features/recipe/components/FlyshotTeach.tsx",
+      "src/pages/InspectPage.tsx",
+      "src/pages/HistoryPage.tsx",
+      "src/pages/HistoryDetailPage.tsx",
+      "src/pages/SettingsPage.tsx"
+    ],
+    "algorithmWork": "界面工作流与图像测量通过明确接口集成；输入、输出和发布约束见 implementation-contract.json。"
+  },
+  "visualSystem": {
+    "viewport": {
+      "width": 1440,
+      "height": 900,
+      "minimumWidth": 1100,
+      "minimumHeight": 700
+    },
+    "layout": {
+      "sidebarWidth": 204,
+      "collapsedSidebarWidth": 64,
+      "headerHeight": 60,
+      "pagePadding": 20,
+      "panelGap": 16,
+      "radius": 6,
+      "controlHeight": 36
+    },
+    "colors": {
+      "background": "#000000",
+      "surface": "#0A0A0A",
+      "surfaceRaised": "#141414",
+      "border": "#262626",
+      "borderStrong": "#3D3D3D",
+      "text": "#F5F5F5",
+      "textSecondary": "#A3A3A3",
+      "textDisabled": "#737373",
+      "accent": "#2563EB",
+      "accentHover": "#2866F0",
+      "accentText": "#8BB0FF",
+      "accentSoft": "#101C38",
+      "success": "#4ADE80",
+      "warning": "#FBBF24",
+      "danger": "#F87171",
+      "measurementInvalid": "#FBBF24"
+    },
+    "colorRules": [
+      "主背景为纯黑，面板使用中性灰，不使用大面积藏蓝底。",
+      "蓝色用于主要按钮、焦点、选中、当前步骤和运行进度。",
+      "红黄绿只承担检测结果与告警语义，不作为普通装饰色。",
+      "测量无效使用独立图标、文字和中性色，与真实缺陷区分。",
+      "每个状态都有文字或图标，不能只靠颜色。"
+    ],
+    "typography": {
+      "uiFamily": [
+        "Inter",
+        "Microsoft YaHei UI",
+        "PingFang SC",
+        "system-ui"
+      ],
+      "numberFamily": [
+        "Cascadia Mono",
+        "Consolas",
+        "monospace"
+      ],
+      "pageTitle": 20,
+      "panelTitle": 14,
+      "body": 14,
+      "label": 12,
+      "keyResult": 32,
+      "uiFont": [
+        "Noto Sans SC",
+        "Microsoft YaHei UI",
+        "PingFang SC",
+        "system-ui"
+      ]
+    },
+    "components": [
+      "AppShell",
+      "SideNavigation",
+      "PageHeader",
+      "WorkflowStepper",
+      "PrimaryButton",
+      "SecondaryButton",
+      "DangerButton",
+      "IconButton",
+      "Field",
+      "NumericField",
+      "Select",
+      "Switch",
+      "Tabs",
+      "StateBadge",
+      "Notice",
+      "Panel",
+      "DataTable",
+      "FrameItem",
+      "ImageViewport",
+      "OverviewMap",
+      "ResultCard",
+      "ValidationCheck",
+      "ConfirmDialog"
+    ],
+    "componentStates": {
+      "buttons": [
+        "default",
+        "hover",
+        "focus",
+        "disabled",
+        "loading"
+      ],
+      "fields": [
+        "default",
+        "focus",
+        "invalid",
+        "disabled",
+        "dirty"
+      ],
+      "frameItem": [
+        "untaught",
+        "saved",
+        "validated",
+        "stale",
+        "selected",
+        "measuring",
+        "defect",
+        "missing",
+        "invalid"
+      ]
+    }
+  },
+  "navigation": [
+    {
+      "id": "inspect",
+      "label": "在线检测",
+      "route": "/inspect"
+    },
+    {
+      "id": "recipe",
+      "label": "配方工作台",
+      "route": "/recipe"
+    },
+    {
+      "id": "history",
+      "label": "历史与复测",
+      "route": "/history"
+    },
+    {
+      "id": "devices",
+      "label": "设备与标定",
+      "route": "/camera"
+    },
+    {
+      "id": "plc",
+      "label": "PLC 通讯",
+      "route": "/plc"
+    },
+    {
+      "id": "settings",
+      "label": "系统设置",
+      "route": "/settings"
+    }
+  ],
+  "journeys": [
+    {
+      "id": "first-setup",
+      "label": "首次建站",
+      "screens": [
+        "device-setup",
+        "plc-setup",
+        "calibration",
+        "recipe-library",
+        "recipe-geometry",
+        "flyshot-teaching",
+        "overview-setup",
+        "validation-release",
+        "live-inspection"
+      ]
+    },
+    {
+      "id": "follow-setup",
+      "label": "随动工况准备",
+      "screens": [
+        "device-setup",
+        "plc-setup",
+        "follow-calibration",
+        "recipe-library",
+        "recipe-geometry",
+        "validation-release",
+        "live-inspection"
+      ]
+    },
+    {
+      "id": "daily-production",
+      "label": "日常生产",
+      "screens": [
+        "live-inspection",
+        "history-list",
+        "history-detail"
+      ]
+    },
+    {
+      "id": "defect-investigation",
+      "label": "缺陷排查与参数验证",
+      "screens": [
+        "live-inspection",
+        "history-detail",
+        "flyshot-teaching",
+        "validation-release",
+        "live-inspection"
+      ]
+    },
+    {
+      "id": "configuration-change",
+      "label": "配置变更",
+      "screens": [
+        "recipe-library",
+        "recipe-geometry",
+        "flyshot-teaching",
+        "validation-release",
+        "live-inspection"
+      ]
+    }
+  ],
+  "screens": [
+    {
+      "id": "device-setup",
+      "name": "01 设备与采集准备",
+      "section": "02 设备准备",
+      "sourceRoute": "/camera",
+      "intent": "明确当前使用哪台实物相机、采集方式以及参数是否实际生效。",
+      "layout": "左侧设备列表，中间参数表单，右侧图像预览与采集质量。",
+      "regions": [
+        "相机名称、固定编号与序列号",
+        "真实相机 / 模拟 / 回放来源",
+        "触发 / 连续采集",
+        "曝光、增益、频闪、触发沿与滤波",
+        "配置值与设备接受情况",
+        "原图、帧计数、丢包、最近取图时间"
+      ],
+      "primaryAction": "保存并应用",
+      "secondaryActions": [
+        "枚举设备",
+        "取一帧",
+        "进入标定"
+      ],
+      "states": [
+        "没有设备",
+        "连接中",
+        "已连接待取图",
+        "采集正常",
+        "部分参数未接受",
+        "断开",
+        "检测中锁定编辑"
+      ],
+      "transitions": [
+        {
+          "action": "进入标定",
+          "target": "calibration"
+        },
+        {
+          "action": "PLC 通讯",
+          "target": "plc-setup"
+        }
+      ],
+      "guard": "检测中禁止应用会打断采集的配置；失败显示具体参数或设备原因。"
+    },
+    {
+      "id": "plc-setup",
+      "name": "02 PLC 通讯与握手",
+      "section": "02 设备准备",
+      "sourceRoute": "/plc",
+      "intent": "核对通讯连接和工件开始、布防、结果确认等业务信号。",
+      "layout": "上方连接配置，下方业务信号与地址表，右侧最近交互事件。",
+      "regions": [
+        "协议、连接地址与轮询周期",
+        "连接状态与心跳",
+        "业务信号映射",
+        "工件 SN、产品代码、拍照数量",
+        "开始 → 布防 → 拍照 → 结束 → 结果 → 确认",
+        "诊断写值独立入口"
+      ],
+      "primaryAction": "连接",
+      "secondaryActions": [
+        "保存配置",
+        "还原修改",
+        "查看日志"
+      ],
+      "states": [
+        "未连接",
+        "连接中",
+        "已连接",
+        "连接失败",
+        "业务信号缺失",
+        "未保存",
+        "结果等待确认"
+      ],
+      "transitions": [
+        {
+          "action": "设备准备完成",
+          "target": "recipe-library"
+        }
+      ],
+      "guard": "通讯已连接与检测可开工分别表达；诊断写值显示明确的点位和数值。"
+    },
+    {
+      "id": "calibration",
+      "name": "03 飞拍工位标定",
+      "section": "02 设备准备",
+      "sourceRoute": "/camera",
+      "intent": "确认图像坐标到毫米的换算，并显示标定质量。",
+      "layout": "中央大图与标定点，右侧标定板参数、质量、版本和操作。",
+      "regions": [
+        "当前相机与冻结图像",
+        "棋盘格内角点和方格尺寸",
+        "检测到的标定点",
+        "像素当量、RMS、最大误差",
+        "当前有效标定与待保存结果",
+        "受影响配方提示"
+      ],
+      "primaryAction": "执行标定",
+      "secondaryActions": [
+        "取一帧",
+        "保存标定",
+        "返回设备"
+      ],
+      "states": [
+        "没有原图",
+        "未找到标定板",
+        "标定中",
+        "质量不合格",
+        "结果待保存",
+        "有效标定",
+        "标定变化需重新验证"
+      ],
+      "transitions": [
+        {
+          "action": "返回设备",
+          "target": "device-setup"
+        },
+        {
+          "action": "建立配方",
+          "target": "recipe-library"
+        }
+      ],
+      "guard": "没有图像测量能力时说明不可执行原因；保存成功后提示需要验证的示教资料。"
+    },
+    {
+      "id": "follow-calibration",
+      "name": "04 随动相机标定",
+      "section": "02 设备准备",
+      "sourceRoute": "/camera",
+      "intent": "为每台随动相机确认胶嘴、方向、比例和可测窗口。",
+      "layout": "顶部相机切换，中央图像交互，右侧标定和试测结果。",
+      "regions": [
+        "参与相机及各自标定状态",
+        "胶嘴位置",
+        "运动方向与遮挡区域",
+        "两点比例测量",
+        "近端 / 远端窗口",
+        "试测边缘与胶宽结果"
+      ],
+      "primaryAction": "试测",
+      "secondaryActions": [
+        "冻结当前帧",
+        "保存标定",
+        "切换相机"
+      ],
+      "states": [
+        "未标定",
+        "已标定待验证",
+        "试测成功",
+        "没有有效边缘",
+        "窗口超出视野",
+        "相机变更"
+      ],
+      "transitions": [
+        {
+          "action": "建立随动配方",
+          "target": "recipe-library"
+        }
+      ],
+      "guard": "每台参与相机都需有有效标定，试测结果只反映当前样本。"
+    },
+    {
+      "id": "recipe-library",
+      "name": "05 配方库",
+      "section": "03 配方工作台",
+      "sourceRoute": "/recipe",
+      "intent": "按工况与产品代码找到配方，并看清当前是否可投入检测。",
+      "layout": "顶部搜索和新建，下方配方表格，右侧选中配方摘要。",
+      "regions": [
+        "名称、编号、产品代码、工况",
+        "相机与拍照数量",
+        "配方版本",
+        "示教完成度",
+        "验证状态",
+        "在用 / 草稿 / 需验证状态"
+      ],
+      "primaryAction": "新建配方",
+      "secondaryActions": [
+        "打开",
+        "复制",
+        "导入",
+        "删除"
+      ],
+      "states": [
+        "空配方库",
+        "文件加载失败",
+        "配方可用",
+        "示教不完整",
+        "示教失效",
+        "检测中使用该版本"
+      ],
+      "transitions": [
+        {
+          "action": "打开或新建",
+          "target": "recipe-geometry"
+        },
+        {
+          "action": "在线检测",
+          "target": "live-inspection"
+        }
+      ],
+      "guard": "在用配方的删除和身份修改受限；草稿与检测实际版本不能混淆。"
+    },
+    {
+      "id": "recipe-geometry",
+      "name": "06 胶路与拍照规划",
+      "section": "03 配方工作台",
+      "sourceRoute": "/recipe",
+      "intent": "配置胶路、相机、拍照点和判定标准，并发现覆盖问题。",
+      "layout": "顶部工作台步骤，左侧胶路与拍照点，中央几何预览，右侧参数。",
+      "regions": [
+        "基础信息与工况",
+        "胶路导入 / 圆角矩形 / 折线",
+        "拍照顺序与视野",
+        "点归属、重叠和未覆盖区域",
+        "直线 / 拐角 / 局部限值",
+        "曝光模糊与触发间隔核算"
+      ],
+      "primaryAction": "保存并进入示教",
+      "secondaryActions": [
+        "导入胶路",
+        "添加拍照点",
+        "检查覆盖"
+      ],
+      "states": [
+        "新建",
+        "未保存",
+        "有效几何",
+        "覆盖不足",
+        "输入不合法",
+        "几何变化使示教失效"
+      ],
+      "transitions": [
+        {
+          "action": "进入飞拍示教",
+          "target": "flyshot-teaching"
+        },
+        {
+          "action": "随动标定",
+          "target": "follow-calibration"
+        }
+      ],
+      "guard": "覆盖校验检查完整测量搜索窗；配置的质量量必须有测量输出支持。"
+    },
+    {
+      "id": "flyshot-teaching",
+      "name": "07 单帧示教工作台",
+      "section": "03 配方工作台",
+      "sourceRoute": "/recipe",
+      "intent": "每个拍照点都可以独立取样、调参、试算和保存。",
+      "layout": "左侧帧列表，中间大图与视图工具，右侧示教参数和结果，底部关键测量值。",
+      "regions": [
+        "k、示教状态与原图缩略图",
+        "冻结原图及相机、时间、来源",
+        "定位模板、测量点、法向和搜索范围",
+        "基本参数 / 算法参数 / 判定标准",
+        "定位分数、覆盖率、边缘与失败原因",
+        "上一帧 / 下一帧与历史样本"
+      ],
+      "primaryAction": "尝试匹配",
+      "secondaryActions": [
+        "取一帧",
+        "冻结",
+        "保存匹配",
+        "还原本帧",
+        "批量修改"
+      ],
+      "states": [
+        "未取图",
+        "未示教",
+        "参数已修改",
+        "试算中",
+        "定位失败",
+        "测量失败",
+        "试算通过",
+        "已保存未验证",
+        "已验证",
+        "已失效"
+      ],
+      "transitions": [
+        {
+          "action": "布置总览",
+          "target": "overview-setup"
+        },
+        {
+          "action": "验证配方",
+          "target": "validation-release"
+        },
+        {
+          "action": "选择历史样本",
+          "target": "history-detail"
+        }
+      ],
+      "guard": "保存绑定所显示的冻结原图；试算不改变生产版本；保存状态与验证状态分别显示。"
+    },
+    {
+      "id": "overview-setup",
+      "name": "08 工件总览布置",
+      "section": "03 配方工作台",
+      "sourceRoute": "/recipe",
+      "intent": "把逐帧图像与工件位置建立可理解的显示关联。",
+      "layout": "中央工件底图和帧框，左侧胶路 / 帧列表，右侧显示映射参数。",
+      "regions": [
+        "底图导入和缩放",
+        "几何胶路叠加",
+        "逐帧位置框与编号",
+        "选中帧原图",
+        "显示坐标与测量坐标的独立说明",
+        "无底图时使用几何总览"
+      ],
+      "primaryAction": "保存总览",
+      "secondaryActions": [
+        "导入底图",
+        "自动布置",
+        "重置视图",
+        "返回示教"
+      ],
+      "states": [
+        "没有底图",
+        "自动几何总览",
+        "底图已导入",
+        "手工调整位置",
+        "未保存",
+        "选中帧联动"
+      ],
+      "transitions": [
+        {
+          "action": "返回示教",
+          "target": "flyshot-teaching"
+        },
+        {
+          "action": "进入验证",
+          "target": "validation-release"
+        }
+      ],
+      "guard": "拖动显示框不能修改真实测量坐标和拍照点归属；该总览不要求图像拼接。"
+    },
+    {
+      "id": "validation-release",
+      "name": "09 验证与发布",
+      "section": "03 配方工作台",
+      "sourceRoute": "/recipe",
+      "intent": "用代表性样本验证整套配置，并清楚展示即将投入检测的版本。",
+      "layout": "左侧检查清单，中间样本结果矩阵，右侧版本摘要与发布操作。",
+      "regions": [
+        "设备、标定、覆盖与示教完整性",
+        "历史样本选择与实际缺陷标签",
+        "逐帧试测成功率和质量",
+        "旧版本 / 候选版本对比",
+        "未测成、误报、漏检样本定位",
+        "候选版本和生效时机"
+      ],
+      "primaryAction": "运行验证",
+      "secondaryActions": [
+        "查看失败样本",
+        "发布配方",
+        "返回修正"
+      ],
+      "states": [
+        "待验证",
+        "前置条件未满足",
+        "验证中",
+        "部分样本失败",
+        "验证通过待发布",
+        "发布中",
+        "已发布",
+        "检测中等待安全生效"
+      ],
+      "transitions": [
+        {
+          "action": "修正失败帧",
+          "target": "flyshot-teaching"
+        },
+        {
+          "action": "进入在线检测",
+          "target": "live-inspection"
+        }
+      ],
+      "guard": "发布只使用已验证的配置集合；必须说明当前生产版本与候选版本的差异。"
+    },
+    {
+      "id": "live-inspection",
+      "name": "10 在线检测",
+      "section": "04 在线检测",
+      "sourceRoute": "/inspect",
+      "intent": "立即知道当前工件状态，并从缺陷位置进入具体帧证据。",
+      "layout": "上方工件与设备状态，中央总览和原图，右侧结果与进度，下方帧条和曲线。",
+      "regions": [
+        "产品、SN、工况、实际配方版本",
+        "PLC、相机和检测就绪状态",
+        "整件总览与缺陷位置",
+        "选中帧原图及测量叠画",
+        "帧数量、触发计数与测量进度",
+        "结果、缺陷原因、弧长区间和相关帧",
+        "分段曲线与事件"
+      ],
+      "primaryAction": "启动检测",
+      "secondaryActions": [
+        "停止",
+        "复位故障",
+        "查看本件记录",
+        "跳转异常帧"
+      ],
+      "states": [
+        "未就绪",
+        "等待工件",
+        "已布防",
+        "采集中",
+        "测量收尾",
+        "OK",
+        "NG",
+        "测量异常",
+        "结果等待 PLC 确认",
+        "设备掉线"
+      ],
+      "transitions": [
+        {
+          "action": "本件记录",
+          "target": "history-detail"
+        },
+        {
+          "action": "修正配方",
+          "target": "recipe-library"
+        }
+      ],
+      "guard": "检查失败时展示原因和修复入口；缺陷 NG 与采集或测量异常分开；调试模拟功能放在独立诊断入口。"
+    },
+    {
+      "id": "history-list",
+      "name": "11 历史记录",
+      "section": "05 历史与维护",
+      "sourceRoute": "/history",
+      "intent": "通过型号、时间、SN 和结果找到需要复核的工件。",
+      "layout": "上方筛选与统计，下方记录表格，选中记录显示总览摘要。",
+      "regions": [
+        "时间、配方、工况、SN、结果筛选",
+        "合格 / 缺陷 / 异常统计",
+        "配方版本和检测时间",
+        "原图是否可用",
+        "记录导出",
+        "选中记录与相关复检"
+      ],
+      "primaryAction": "查看记录",
+      "secondaryActions": [
+        "筛选",
+        "导出",
+        "批量重判"
+      ],
+      "states": [
+        "加载中",
+        "没有记录",
+        "筛选无结果",
+        "有原图",
+        "仅测量数据",
+        "读取失败"
+      ],
+      "transitions": [
+        {
+          "action": "查看记录",
+          "target": "history-detail"
+        }
+      ],
+      "guard": "显示导出的筛选范围；重判与图像复测使用不同名称。"
+    },
+    {
+      "id": "history-detail",
+      "name": "12 历史回放与复测",
+      "section": "05 历史与维护",
+      "sourceRoute": "/history/:id",
+      "intent": "查看原始判定证据，并验证当前示教对同一图片的效果。",
+      "layout": "左侧逐帧列表，中央总览和原图，右侧原始 / 候选结果，下方回放与曲线。",
+      "regions": [
+        "原始检测版本与原始结果",
+        "逐帧图像及采集状态",
+        "总览选帧与异常区间",
+        "上一帧 / 下一帧 / 自动回放",
+        "重判测量数据",
+        "用候选参数重新测图",
+        "选为示教样本及原图备份"
+      ],
+      "primaryAction": "复测当前图片",
+      "secondaryActions": [
+        "重判测量数据",
+        "用作示教样本",
+        "导出证据",
+        "返回记录"
+      ],
+      "states": [
+        "原始结果",
+        "缺少原图",
+        "复测中",
+        "复测结果不同",
+        "当前参数不兼容",
+        "选为候选样本",
+        "原始记录保留"
+      ],
+      "transitions": [
+        {
+          "action": "用作示教样本",
+          "target": "flyshot-teaching"
+        },
+        {
+          "action": "返回记录",
+          "target": "history-list"
+        }
+      ],
+      "guard": "复测不覆盖历史原始判定；没有原图时禁用图像复测并显示原因。"
+    },
+    {
+      "id": "system-settings",
+      "name": "13 系统设置与诊断",
+      "section": "05 历史与维护",
+      "sourceRoute": "/settings",
+      "intent": "维护检测时序、数据留存和系统诊断配置。",
+      "layout": "左侧分类导航，右侧当前设置分区，底部保存反馈。",
+      "regions": [
+        "检测节拍与各阶段超时",
+        "工况测量能力",
+        "图像录制策略",
+        "记录天数、数量和存储容量",
+        "通讯日志与运行事件",
+        "软件与算法版本",
+        "模拟诊断独立面板"
+      ],
+      "primaryAction": "保存设置",
+      "secondaryActions": [
+        "还原",
+        "查看诊断",
+        "打开存储目录"
+      ],
+      "states": [
+        "已保存",
+        "未保存",
+        "输入错误",
+        "存储告警",
+        "算法能力不可用",
+        "检测中锁定相关配置"
+      ],
+      "transitions": [
+        {
+          "action": "在线检测",
+          "target": "live-inspection"
+        }
+      ],
+      "guard": "只显示当前支持的检测能力；无法实现的选项禁用并说明。"
+    }
+  ],
+  "crossScreenRules": [
+    "切换拍照点必须同时切换该帧冻结图像、模板、参数与试测结果。",
+    "保存、验证、发布是不同状态；生产检测绑定不可变版本。",
+    "改变胶路、拍照点、相机或标定时，提示受影响范围和后续操作。",
+    "候选参数在试算时不修改当前生产参数。",
+    "覆盖、原图缺失、算法不可用和通信失败都有明确原因及修复入口。",
+    "检测中不允许应用会中断在途工件的设备或测量配置。",
+    "所有检测颜色均配有文字、图标或图例。",
+    "状态提示不能把文件已保存表达成测量已经验证成功。",
+    "普通生产界面不展示 DLL 路径、内部格式或开发模拟控制。"
+  ],
+  "backendDependencies": [
+    {
+      "feature": "飞拍真实图像测量与标定",
+      "owner": "glue 算法与测量接入"
+    },
+    {
+      "feature": "飞拍胶宽结果输出",
+      "owner": "glue 算法与测量接入"
+    },
+    {
+      "feature": "冻结帧标识、单帧试测和叠画结果",
+      "owner": "示教接口"
+    },
+    {
+      "feature": "测量搜索窗覆盖校验",
+      "owner": "配方与标定接口"
+    },
+    {
+      "feature": "总览底图和显示框映射",
+      "owner": "配方显示资料"
+    },
+    {
+      "feature": "候选版本、完整验证集合和发布状态",
+      "owner": "配方生命周期"
+    },
+    {
+      "feature": "基于原图的历史复测",
+      "owner": "历史与示教接口"
+    },
+    {
+      "feature": "已有测量值重判",
+      "owner": "历史接口"
+    },
+    {
+      "feature": "相机配置、逐帧状态、几何轨迹、跨帧断胶合并",
+      "owner": "现有应用"
+    }
+  ],
+  "completionChecks": [
+    "13 个操作页面与 32 个关键情景均可在本地交互预览中访问。",
+    "使用原生 React、HTML 控件和 SVG 图像区域，设计可以在源码中继续编辑。",
+    "在 1440×900 和 1100×700 下检查布局、按钮、图像和必要滚动。",
+    "维持纯黑背景、中性灰面板、蓝色关键色及 OK、NG、ERR 的语义颜色。",
+    "验证冻结图像、试匹配、保存、参数失效、总览选帧和显示坐标独立。",
+    "验证候选、生产和在制件配置快照独立，版本在工件边界切换。",
+    "验证历史原始结果保留，无图时限制原图复测与示教。",
+    "检查正式软件与本地原型的前端构建和实际页面渲染。",
+    "示例测量与硬件状态明确标注，后端依赖不被误报为真实功能。"
+  ],
+  "application": {
+    "style": "pure-black-blue",
+    "sourceTokens": "src/styles.css",
+    "entryRoute": "#/camera",
+    "routes": [
+      "#/inspect",
+      "#/camera",
+      "#/plc",
+      "#/plc-logs",
+      "#/recipe",
+      "#/history",
+      "#/settings"
+    ],
+    "scope": "正式桌面页面采用黑蓝视觉样式，并接入设备、候选工作台、实际图像测量与生产发布；操作流程预览独立使用示例数据。"
+  },
+  "localPrototype": {
+    "status": "sample-data-prototype",
+    "entryRoute": "#/workflow/guide",
+    "entry": "现有软件右上角：操作流程预览",
+    "sources": [
+      "src/pages/WorkflowPreviewPage.tsx",
+      "src/features/workflow/model.ts",
+      "src/features/workflow/catalog.ts",
+      "src/features/workflow/context.ts",
+      "src/features/workflow/components.tsx",
+      "src/features/workflow/SetupViews.tsx",
+      "src/features/workflow/RecipeViews.tsx",
+      "src/features/workflow/ProductionViews.tsx",
+      "src/features/workflow/workflow.css"
+    ],
+    "operationalPages": 13,
+    "guidePages": 1,
+    "keyScenes": 32,
+    "journeys": 5,
+    "nativeComponents": "React / HTML / SVG / Lucide",
+    "paidDependenciesAdded": 0,
+    "sampleDataOnly": true
+  }
+}

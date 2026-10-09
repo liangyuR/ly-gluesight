@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "runtimeDir": "../../output/playwright/robot-plc-demo",
+  "plc": { "port": 1502, "unitId": 1 },
+  "robot": {
+    "port": 8766,
+    "recipe": "fixtures/ROBOT-DEMO.json",
+    "motionSeconds": 0.5,
+    "settleSeconds": 0.45,
+    "releaseSeconds": 0.2,
+    "intervalSeconds": 1.0,
+    "timeouts": { "ready": 10, "armed": 8, "trigger": 8, "result": 15, "release": 5 }
+  },
+  "bridge": { "debugPort": 9340 }
+}

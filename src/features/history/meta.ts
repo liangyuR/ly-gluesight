@@ -31,3 +31,7 @@ export function formatTime(ts: number) {
   const p = (n: number, w = 2) => String(n).padStart(w, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
+// 旧判定文本的“帧 N”使用从 0 开始的编号，界面统一显示 k1。
+export function displayReason(reason: string) {
+  return reason.replace(/帧 (\d+)/g, (_, k: string) => "k" + (Number(k) + 1));
+}

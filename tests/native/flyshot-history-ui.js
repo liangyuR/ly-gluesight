@@ -1,0 +1,38 @@
+async (page) => {
+  const invokeRead = (command, args) => page.evaluate(({command,args}) => window.__TAURI_INTERNALS__.invoke(command,args), {command,args});
+  const recent = await invokeRead("history_query", {query:{recipeId:"UI-FLYSHOT",limit:20}});
+  const part = recent.items.find(item => item.verdict === "NG_GAP");
+  if (!part) throw new Error("Run the updated cross-frame gap UI case before history acceptance");
+  await page.getByRole("button",{name:"全部",exact:true}).click();
+  await page.getByRole("combobox",{name:"历史配方",exact:true}).selectOption("UI-FLYSHOT");
+  await page.getByRole("button",{name:"导出 CSV",exact:true}).click();
+  await page.getByText(/已导出：/).waitFor();
+  const exported = await page.getByText(/已导出：/).textContent();
+  await page.getByRole("row",{name:`查看 SN ${part.sn} 的记录`,exact:true}).click();
+  await page.getByRole("button",{name:"使用该配方候选",exact:true}).click();
+  await page.getByRole("button",{name:"从原图复测整件",exact:true}).waitFor();
+  const original = await invokeRead("history_detail", {id:part.id});
+  const before = await invokeRead("workspace_comparisons", {id:"UI-FLYSHOT",historyId:part.id});
+  await page.getByRole("button",{name:"按候选规则重判",exact:true}).click();
+  await page.getByRole("heading",{name:"规则重判结果",exact:true}).waitFor();
+  await page.getByRole("button",{name:"从原图复测整件",exact:true}).click();
+  await page.getByRole("heading",{name:"原图复测结果",exact:true}).waitFor();
+  const comparisons = await invokeRead("workspace_comparisons", {id:"UI-FLYSHOT",historyId:part.id});
+  const added = comparisons.filter(result => !before.some(old => old.id === result.id));
+  if (added.length !== 2 || added.some(result => result.judgement.verdict !== "NG_GAP")) throw new Error(JSON.stringify(added));
+  const raw = added.find(result => result.source === "raw");
+  if (!raw || raw.measurements.length !== 4 || !raw.judgement.gaps.some(gap => gap.frames.includes(1) && gap.frames.includes(2))) throw new Error("Raw remeasurement did not preserve the cross-frame defect");
+  await page.getByRole("combobox",{name:"已保存对照结果",exact:true}).selectOption(added.find(result => result.source === "rules").id);
+  await page.getByRole("heading",{name:"规则重判结果",exact:true}).waitFor();
+  await page.getByRole("combobox",{name:"已保存对照结果",exact:true}).selectOption(raw.id);
+  await page.getByRole("combobox",{name:"历史帧选择",exact:true}).selectOption("1");
+  await page.getByRole("img",{name:`原始 SN ${part.sn} · k2`,exact:true}).waitFor();
+  await page.getByRole("button",{name:"放大原图",exact:true}).click();
+  await page.getByRole("button",{name:"适应窗口",exact:true}).click();
+  const after = await invokeRead("history_detail", {id:part.id});
+  if (JSON.stringify(original) !== JSON.stringify(after)) throw new Error("Candidate comparisons modified the original production record");
+  const result = {operation:"历史筛选与 CSV 导出、规则重判、四帧原图复测、已保存对照切换、帧选择与缩放、原始记录保留",passed:true,historyId:part.id,sn:part.sn,exported,comparisons:added.map(item => ({id:item.id,source:item.source,verdict:item.judgement.verdict,gaps:item.judgement.gaps}))};
+  await page.evaluate(result => window.__uiOperations.checks.push(result), result);
+  await page.screenshot({path:"D:\\project\\ly-gluesight\\output\\playwright\\ui-regression\\flyshot-history.png",fullPage:true});
+  return result;
+}
