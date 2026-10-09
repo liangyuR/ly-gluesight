@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { FolderOpen, RefreshCw } from "lucide-react";
 import { cameraApi } from "../api";
 import type { CameraConfig, CameraSource, CameraStatus, DeviceSummary, FollowCalib, RecordEntry } from "../types";
 
@@ -27,6 +27,9 @@ export default function CameraConfigPanel({ cam, initial, follow, status, onSave
   const [recordError, setRecordError] = useState("");
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [choosingDirectory, setChoosingDirectory] = useState(false);
+  const [directoryError, setDirectoryError] = useState("");
+  const directoryPending = useRef(false);
   const mounted=useRef(true),deviceSerial=useRef(0),recordSerial=useRef(0),pending=useRef(false);
   const current=useRef({cam,source:config.source});current.current={cam,source:config.source};
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;deviceSerial.current++;recordSerial.current++;};},[]);
@@ -62,6 +65,21 @@ export default function CameraConfigPanel({ cam, initial, follow, status, onSave
   }, [initial]);
 
   const set = <K extends keyof CameraConfig>(key: K, value: CameraConfig[K]) => {setNotice(null);setConfig(c=>({ ...c, [key]: value }));};
+  const chooseDirectory = async () => {
+    if (directoryPending.current || pending.current) return;
+    directoryPending.current = true;
+    setChoosingDirectory(true);
+    setDirectoryError("");
+    try {
+      const directory = await cameraApi.pickReplayDir(config.replayDir);
+      if (mounted.current && current.current.cam === cam && current.current.source === "replay" && directory !== null) set("replayDir", directory);
+    } catch (e) {
+      if (mounted.current && current.current.cam === cam && current.current.source === "replay") setDirectoryError(String(e));
+    } finally {
+      directoryPending.current = false;
+      if (mounted.current) setChoosingDirectory(false);
+    }
+  };
   const numberLabels={triggerDelayUs:"触发延时（µs）",debouncerUs:"输入滤波（µs）",exposureUs:"曝光时间（µs）",gainDb:"增益（dB）",fps:"帧率（fps）",replayChannel:"通道"};
   const num = (key: "triggerDelayUs" | "debouncerUs" | "exposureUs" | "gainDb" | "fps" | "replayChannel", step = 1) => (
     <input id={`cam-${key}`} aria-label={numberLabels[key]} className="input mono" type="number" step={step} value={Number.isFinite(config[key])?config[key]:""} onChange={(e) => set(key, e.target.value===""?NaN:Number(e.target.value))} />
@@ -78,7 +96,7 @@ export default function CameraConfigPanel({ cam, initial, follow, status, onSave
     replay&&(!Number.isInteger(config.replayChannel)||config.replayChannel<0)?"回放通道需为非负整数":"";
 
   const save = async () => {
-    if(pending.current||invalid)return;
+    if(pending.current||directoryPending.current||invalid)return;
     pending.current=true;
     setSaving(true);
     onSavingChange?.(true);
@@ -101,11 +119,11 @@ export default function CameraConfigPanel({ cam, initial, follow, status, onSave
     <div className="panel cam-config">
       <div className="panel-toolbar">
         <h3 className="panel-title">相机参数</h3>
-        <button className="btn primary" onClick={save} disabled={saving||!!invalid}>
+        <button className="btn primary" onClick={save} disabled={saving||choosingDirectory||!!invalid}>
           {saving ? "写入中…" : "保存并应用"}
         </button>
       </div>
-      <fieldset disabled={saving} style={{border:0,padding:0,margin:0,minWidth:0}}><div className="cfg-grid">
+      <fieldset disabled={saving||choosingDirectory} style={{border:0,padding:0,margin:0,minWidth:0}}><div className="cfg-grid">
         <span>名称</span>
         <input id="cam-name" aria-label="名称" className="input" value={config.name} onChange={(e) => set("name", e.target.value)} />
         <span>图像源</span>
@@ -131,7 +149,11 @@ export default function CameraConfigPanel({ cam, initial, follow, status, onSave
         {replay && (
           <>
             <span>图片目录</span>
-            <input id="cam-replayDir" aria-label="图片目录" className="input mono" value={config.replayDir} placeholder="D:\现场图\Glue1" onChange={(e) => set("replayDir", e.target.value)} />
+            <div className="row">
+              <input id="cam-replayDir" aria-label="图片目录" className="input mono grow" value={config.replayDir} placeholder="D:\现场图\Glue1" onChange={(e) => set("replayDir", e.target.value)} />
+              <button className="btn cam-directory-btn" onClick={chooseDirectory}><FolderOpen size={16} />{choosingDirectory ? "选择中…" : "选择目录"}</button>
+            </div>
+            {directoryError && <span className="hint-cell c-ng" role="alert">{directoryError}</span>}
             {recordError&&<span className="hint-cell c-ng">{recordError} <button className="btn small" onClick={refreshRecords}>重新读取录制</button></span>}
             {records.length > 0 && (
               <>

@@ -1,10 +1,10 @@
 # 一期 S7 飞拍握手契约与 PLC 参考程序
 
-一期架构、剩余工作包和验收路线见 [软件架构图](gluesight-software-architecture.html)，文档入口见 [docs 索引](README.md)。
+一期架构、剩余工作包和验收路线见 [软件架构图](../architecture/gluesight-software-architecture.html)，文档入口见 [docs 索引](../README.md)。
 
 本协议由 GlueSight 项目定义，通过现有 `ly-plc` 的 S7 ISO-on-TCP 客户端读写 PLC DB。**CPU 型号、固件、IP、机架/插槽、TSAP、TIA Portal 版本及实际触发输出尚未确定。** DB100 是建议的默认共享区；现场可选择其他 DB，但双方配置必须一致。
 
-[PLC SCL 参考源文件](../scripts/s7-handshake/phase1_plc.scl)提供可审查的 DB 布局与 PLC 侧流程，**尚未导入 TIA Portal、尚未编译、尚未在真实 Siemens CPU 或机台运行**。Python peer 的线协议测试不等于 SCL 编译或现场验收。
+[PLC SCL 参考源文件](../../scripts/s7-handshake/phase1_plc.scl)提供可审查的 DB 布局与 PLC 侧流程，**尚未导入 TIA Portal、尚未编译、尚未在真实 Siemens CPU 或机台运行**。Python peer 的线协议测试不等于 SCL 编译或现场验收。
 
 ## 1. 支持边界与责任
 
@@ -152,7 +152,7 @@ FB 状态：10 等新件；20 等布防；30 允许运动触发；40 等结果�
 
 ## 8. 可复现的软件证据与未完成项
 
-[Python S7 测试 peer](../scripts/s7-handshake/README.md) 使用真正的回环 TCP、TPKT/COTP/S7 ReadVar/WriteVar，支持默认点表、非默认 DB、故障注入和 PLC 请求/ACK 控制。运行：
+[Python S7 测试 peer](../../scripts/s7-handshake/README.md) 使用真正的回环 TCP、TPKT/COTP/S7 ReadVar/WriteVar，支持默认点表、非默认 DB、故障注入和 PLC 请求/ACK 控制。运行：
 
 ```powershell
 python -m unittest discover -s scripts/s7-handshake/tests -v
@@ -168,6 +168,6 @@ cargo test --offline --lib
 cargo test --offline --lib plc_session -- --include-ignored --test-threads=1 --nocapture
 ```
 
-专项日志在 `src-tauri/target/s7-session-tests/verification.log`；各案例目录保留线报文、最终状态、事务及复位审计和 DB 快照。前端 PLC 的 7 个文件、127 项回归通过，应用/测试类型检查和生产构建通过。命令与分层验证边界见 [测试记录](TESTING.md#s7-一期握手)。
+专项日志在 `src-tauri/target/s7-session-tests/verification.log`；各案例目录保留线报文、最终状态、事务及复位审计和 DB 快照。前端 PLC 的 7 个文件、127 项回归通过，应用/测试类型检查和生产构建通过。命令与分层验证边界见 [测试记录](../testing/TESTING.md#s7-一期握手)。
 
 SCL 当前只完成源码审查和字段/写入方向静态核对，**没有 TIA 编译、PLCSIM、真实 CPU、实际 I/O、三相机硬件、现场长稳或实物准确率验收证据**。Python 服务也不模拟 CPU 扫描、优化块权限或真实触发电气特性。

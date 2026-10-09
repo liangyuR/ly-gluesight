@@ -8,8 +8,8 @@
     "purpose": "保留界面与工作流设计规格。当前操作、实现约束和验证方式以以下仓库文档为准。",
     "userGuide": "docs/user-guide/index.html",
     "implementationContract": "docs/design/implementation-contract.json",
-    "testing": "docs/TESTING.md",
-    "operations": "docs/UI_OPERATIONS.md"
+    "testing": "docs/testing/TESTING.md",
+    "operations": "docs/testing/UI_OPERATIONS.md"
   },
   "source": {
     "externalReferencePolicy": "早期设计参考的外部保密资料不随仓库分发，本文不包含其原文或附件；阅读、构建和使用本项目不依赖这些资料。",

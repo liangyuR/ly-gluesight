@@ -8,7 +8,7 @@ import { deferred } from "./fixtures";
 
 vi.mock("../src/features/camera/api", async importOriginal => {
   const actual = await importOriginal<typeof import("../src/features/camera/api")>();
-  return { ...actual, cameraApi: { ...actual.cameraApi, listDevices: vi.fn(), records: vi.fn(), saveConfig: vi.fn() } };
+  return { ...actual, cameraApi: { ...actual.cameraApi, listDevices: vi.fn(), records: vi.fn(), saveConfig: vi.fn(), pickReplayDir: vi.fn() } };
 });
 let config: CameraConfig;
 beforeEach(() => {
@@ -19,10 +19,49 @@ beforeEach(() => {
   ]);
   vi.mocked(cameraApi.records).mockResolvedValue({ root: "D:/records", items: [] });
   vi.mocked(cameraApi.saveConfig).mockResolvedValue([]);
+  vi.mocked(cameraApi.pickReplayDir).mockResolvedValue(null);
 });
 const show = () => render(<CameraConfigPanel cam={0} initial={config} follow={null} status={null} />);
 
 describe("相机配置表单", () => {
+  it("选择回放目录后填入路径，保存时应用所选目录", async () => {
+    config = { ...config, source: "replay", replayDir: "D:/原目录" };
+    vi.mocked(cameraApi.pickReplayDir).mockResolvedValue("D:/现场图/Glue1");
+    show();
+    await userEvent.click(screen.getByRole("button", { name: "选择目录" }));
+    expect(cameraApi.pickReplayDir).toHaveBeenCalledWith("D:/原目录");
+    expect(screen.getByRole("textbox", { name: "图片目录" })).toHaveValue("D:/现场图/Glue1");
+    expect(cameraApi.saveConfig).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "保存并应用" }));
+    expect(cameraApi.saveConfig).toHaveBeenCalledWith(0, expect.objectContaining({ replayDir: "D:/现场图/Glue1" }));
+  });
+
+  it("目录窗口打开时禁止重复选择和保存，取消后保留路径并可手动输入", async () => {
+    config = { ...config, source: "replay", replayDir: "D:/原目录" };
+    const request = deferred<string | null>();
+    vi.mocked(cameraApi.pickReplayDir).mockReturnValue(request.promise);
+    show();
+    await userEvent.click(screen.getByRole("button", { name: "选择目录" }));
+    expect(screen.getByRole("button", { name: "选择中…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "保存并应用" })).toBeDisabled();
+    await act(async () => request.resolve(null));
+    expect(screen.getByRole("textbox", { name: "图片目录" })).toHaveValue("D:/原目录");
+    fireEvent.change(screen.getByRole("textbox", { name: "图片目录" }), { target: { value: "D:/手工目录" } });
+    expect(screen.getByRole("textbox", { name: "图片目录" })).toHaveValue("D:/手工目录");
+    expect(screen.getByRole("button", { name: "保存并应用" })).toBeEnabled();
+  });
+
+  it("目录选择失败保留原路径并允许重试", async () => {
+    config = { ...config, source: "replay", replayDir: "D:/原目录" };
+    vi.mocked(cameraApi.pickReplayDir).mockRejectedValueOnce(new Error("无法打开目录窗口"));
+    show();
+    await userEvent.click(screen.getByRole("button", { name: "选择目录" }));
+    expect(await screen.findByText(/无法打开目录窗口/)).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "图片目录" })).toHaveValue("D:/原目录");
+    await userEvent.click(screen.getByRole("button", { name: "选择目录" }));
+    expect(screen.queryByText(/无法打开目录窗口/)).not.toBeInTheDocument();
+  });
+
   it("切换连续采集显示帧率并隐藏触发参数，Software 禁用触发沿", async () => {
     show(); await userEvent.selectOptions(document.getElementById("cam-trigger")!, "Software");
     expect(document.getElementById("cam-activation")).toBeDisabled();

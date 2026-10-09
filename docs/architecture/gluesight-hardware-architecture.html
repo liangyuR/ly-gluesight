@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<title>GlueSight 三相机硬件连接架构</title>
+<style>
+:root{color-scheme:light dark;
+  --background:light-dark(#fff,#181818);
+  --foreground:light-dark(#1a1c1f,#fff);
+  --secondary:light-dark(#f4f6fa,#363636);
+  --border:light-dark(#d5dae3,#4a4a4a);
+  --muted-foreground:light-dark(#6b7280,#9ca3af);
+  --viz-series-1:light-dark(#2464df,#6b9bff);
+  --viz-series-2:light-dark(#f3883b,#f59a56);
+  --viz-series-3:light-dark(#5dc977,#74d58b)}
+html,body{margin:0;background:var(--background)}
+body{max-width:1100px;margin:0 auto;padding:24px 20px;font:15px/1.6 "Segoe UI","Microsoft YaHei",sans-serif;color:var(--foreground)}
+h2{margin:0;font-weight:600}
+.cursor-interaction{cursor:pointer}
+.text-small{font-size:13px;color:var(--muted-foreground)}
+</style>
+</head>
+<body>
+<div id="plc-camera-architecture">
+  <style>
+    #plc-camera-architecture { color: var(--foreground); container-type: inline-size; }
+    #plc-camera-architecture .intro { margin: 4px 0 18px; }
+    #plc-camera-architecture .legend { display: flex; flex-wrap: wrap; gap: 12px 20px; margin: 14px 0; }
+    #plc-camera-architecture .legend button { display: inline-flex; align-items: center; gap: 7px; border: 0; background: transparent; color: var(--foreground); font: inherit; padding: 4px 0; }
+    #plc-camera-architecture .swatch { width: 22px; height: 2px; background: var(--wire-color); }
+    #plc-camera-architecture [data-layer="trigger"] { --wire-color: var(--viz-series-2); }
+    #plc-camera-architecture [data-layer="image"] { --wire-color: var(--viz-series-1); }
+    #plc-camera-architecture [data-layer="control"] { --wire-color: var(--viz-series-3); }
+    #plc-camera-architecture [data-layer="physical"] { --wire-color: var(--muted-foreground); }
+    #plc-camera-architecture [data-layer] { transition: opacity 160ms ease; }
+    #plc-camera-architecture .dim { opacity: .2; }
+    #plc-camera-architecture .diagram { width: 100%; display: block; overflow: visible; }
+    #plc-camera-architecture .wire { fill: none; stroke: var(--wire-color); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    #plc-camera-architecture .wire-label { fill: var(--foreground); text-anchor: middle; }
+    #plc-camera-architecture .label-bg { fill: var(--background); }
+    #plc-camera-architecture .hardware { fill: var(--secondary); stroke: var(--border); stroke-width: 1; }
+    #plc-camera-architecture .node-title { fill: var(--foreground); font-weight: 500; text-anchor: middle; }
+    #plc-camera-architecture .node-sub { fill: var(--foreground); text-anchor: middle; }
+    #plc-camera-architecture .junction { fill: var(--wire-color); }
+    #plc-camera-architecture .detail { min-height: 3em; margin: 0; }
+    #plc-camera-architecture .notes { margin: 8px 0 0; }
+    #plc-camera-architecture .mobile { display: none; }
+    #plc-camera-architecture .mobile-route { padding: 18px 0; border-bottom: 1px solid var(--border); display: grid; gap: 10px; }
+    #plc-camera-architecture .mobile-route strong { font-weight: 500; }
+    #plc-camera-architecture .mobile-arrow { color: var(--wire-color); }
+    @container (max-width: 639px) {
+      #plc-camera-architecture .desktop { display: none; }
+      #plc-camera-architecture .mobile { display: block; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #plc-camera-architecture [data-layer] { transition: none; }
+    }
+    @media (pointer: coarse) {
+      #plc-camera-architecture .legend button { min-height: 44px; }
+    }
+  </style>
+  <h2>三相机硬件连接架构</h2>
+  <div class="intro">PLC 硬件触发拍照 · 工控机运行 GlueSight</div>
+  <div class="legend" role="group" aria-label="查看连接链路">
+    <button type="button" class="cursor-interaction" data-layer="trigger" aria-pressed="false"><span class="swatch" aria-hidden="true"></span>硬件触发线</button>
+    <button type="button" class="cursor-interaction" data-layer="image" aria-pressed="false"><span class="swatch" aria-hidden="true"></span>图像网线</button>
+    <button type="button" class="cursor-interaction" data-layer="control" aria-pressed="false"><span class="swatch" aria-hidden="true"></span>控制与握手</button>
+    <button type="button" class="cursor-interaction" data-layer="physical" aria-pressed="false"><span class="swatch" aria-hidden="true"></span>运动与光学关系</button>
+  </div>
+  <div class="desktop">
+    <svg class="diagram" role="img" aria-labelledby="hardware-title hardware-desc">
+      <title id="hardware-title">PLC 硬件触发三台相机的连接图</title>
+      <desc id="hardware-desc">PLC 的硬件触发输出通过触发线分别连接三台相机的触发输入。三台相机的图像经 GigE 网线和交换机上传到运行 GlueSight 的工控机。PLC 与软件经以太网交换工件信息和检测结果。PLC 与机器人控制柜交换控制信号；机器人本体和胶枪对工件进行涂胶，相机光学观察工件胶路。</desc>
+    </svg>
+  </div>
+  <div class="mobile" aria-label="硬件连接图，窄屏排列">
+    <div class="mobile-route" data-layer="trigger"><strong>PLC 硬件触发输出</strong><span class="mobile-arrow">↓ 触发线 → 相机触发输入</span><strong>相机 1　相机 2　相机 3</strong><span>曝光时刻由 PLC 硬件信号控制</span></div>
+    <div class="mobile-route" data-layer="image"><strong>三台相机</strong><span class="mobile-arrow">↓ GigE 网线</span><strong>相机交换机</strong><span class="mobile-arrow">↓ 图像上传 ／ 参数下发</span><strong>视觉工控机 · GlueSight</strong><span>采集图像、胶路检测、显示与记录</span></div>
+    <div class="mobile-route" data-layer="control"><strong>PLC ↔ GlueSight</strong><span class="mobile-arrow">以太网 · Modbus TCP／S7／MC 三选一</span><span>开始、型号、SN、结束 ↔ 就绪、已布防、检测结果</span><strong>PLC ↔ Robot 控制柜</strong><span class="mobile-arrow">I/O 或现场总线，接口待确认</span><span>启动、允许、完成、故障</span></div>
+    <div class="mobile-route" data-layer="physical"><strong>Robot 控制柜 → Robot 本体＋胶枪</strong><span>机器人专用动力／编码器电缆</span><span class="mobile-arrow">↓ 机械运动、涂胶</span><strong>工件／夹具</strong><span>三台相机光学观察胶嘴附近的胶路</span></div>
+  </div>
+  <p class="detail" aria-live="polite">PLC 硬件输出控制拍照时刻；图像通过网线送入工控机，检测结果回传 PLC。</p>
+  <p class="notes text-small">网口相机与交换机按 GigE 方案示意；PLC—Robot 接口、触发电气规格、供电和光源接线按现场确认。</p>
+  <script>
+    (() => {
+      const root = document.getElementById('plc-camera-architecture');
+      const svg = root.querySelector('svg.diagram');
+      const detail = root.querySelector('.detail');
+      const namespace = 'http://www.w3.org/2000/svg';
+      const descriptions = {
+        trigger: 'PLC → 三台相机触发输入：通过硬件触发线控制拍照时刻；图中不限定单路分配或三路独立输出。',
+        image: '三台相机 ↔ 交换机 ↔ 工控机：GigE 网线上传图像、下发参数；图像进入 GlueSight 检测。',
+        control: 'PLC ↔ 软件经以太网通信，Modbus TCP／S7／MC 按配置选用；PLC ↔ Robot 交换运行握手，接口按现场确认。',
+        physical: 'Robot 控制柜通过专用电缆驱动本体与胶枪；胶枪对工件涂胶，三台相机光学观察胶路。'
+      };
+      let selected = null;
+      function element(tag, attributes, parent = svg, content) {
+        const node = document.createElementNS(namespace, tag);
+        Object.entries(attributes || {}).forEach(([key, value]) => node.setAttribute(key, value));
+        if (content !== undefined) node.textContent = content;
+        parent.append(node);
+        return node;
+      }
+      function node(x, y, title, lines, width = 150) {
+        const group = element('g', {});
+        element('rect', { x: x - width / 2, y: y - 50, width, height: 100, rx: 9, class: 'hardware' }, group);
+        element('text', { x, y: y - 20, class: 'node-title' }, group, title);
+        lines.forEach((line, index) => element('text', { x, y: y + 6 + index * 21, class: 'node-sub' }, group, line));
+      }
+      function path(group, d, end = true, start = false, dashed = false) {
+        const attributes = { d, class: 'wire' };
+        if (end) attributes['marker-end'] = `url(#hw-${group.dataset.layer})`;
+        if (start) attributes['marker-start'] = `url(#hw-${group.dataset.layer})`;
+        if (dashed) attributes['stroke-dasharray'] = '5 6';
+        return element('path', attributes, group);
+      }
+      function label(group, x, y, lines) {
+        const box = element('g', {}, group);
+        const texts = lines.map((line, index) => element('text', { x, y: y + index * 20, class: 'wire-label' }, box, line));
+        const bounds = box.getBBox();
+        const backing = element('rect', { x: bounds.x - 5, y: bounds.y - 3, width: bounds.width + 10, height: bounds.height + 6, class: 'label-bg' }, box);
+        box.insertBefore(backing, texts[0]);
+      }
+      function applySelection() {
+        root.querySelectorAll('[data-layer]').forEach(item => {
+          const active = selected === item.dataset.layer;
+          if (item.tagName === 'BUTTON') item.setAttribute('aria-pressed', String(active));
+          else item.classList.toggle('dim', selected !== null && !active);
+        });
+        detail.textContent = selected ? descriptions[selected] : 'PLC 硬件输出控制拍照时刻；图像通过网线送入工控机，检测结果回传 PLC。';
+      }
+      function draw() {
+        const width = Math.round(root.getBoundingClientRect().width);
+        if (width < 640) return;
+        svg.querySelectorAll(':scope > :not(title):not(desc)').forEach(item => item.remove());
+        svg.setAttribute('viewBox', `0 0 ${width} 680`);
+        svg.style.height = '680px';
+        const middle = width / 2, left = 110, right = width - 110;
+        const cameras = [width * .22, middle, width * .78];
+        const defs = element('defs', {});
+        Object.keys(descriptions).forEach(key => {
+          const marker = element('marker', { id: `hw-${key}`, viewBox: '0 0 8 8', refX: 7, refY: 4, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, defs);
+          element('path', { d: 'M 0 0 L 8 4 L 0 8 Z', fill: key === 'physical' ? 'var(--muted-foreground)' : `var(--viz-series-${{ trigger: 2, image: 1, control: 3 }[key]})` }, marker);
+        });
+        const groups = {};
+        Object.keys(descriptions).forEach(key => { groups[key] = element('g', { 'data-layer': key }); });
+        path(groups.physical, `M ${middle} 160 V 185 H 18 V 600 H ${left - 75}`);
+        label(groups.physical, 70, 505, ['专用动力／', '编码器电缆']);
+        cameras.forEach(x => path(groups.physical, `M ${x} 370 L ${middle} 550`, true, false, true));
+        label(groups.physical, middle, 510, ['光学观察', '非电气接线']);
+        path(groups.physical, `M ${left + 75} 600 H ${middle - 75}`);
+        label(groups.physical, (left + middle) / 2, 674, ['机械运动／涂胶']);
+        path(groups.control, `M ${left} 60 V 28 H ${right} V 60`, true, true);
+        label(groups.control, middle, 20, ['以太网：工件信息 ↔ 检测结果']);
+        path(groups.control, `M ${left + 75} 110 H ${middle - 75}`, true, true);
+        label(groups.control, (left + middle) / 2, 82, ['控制握手', '接口待定']);
+        path(groups.trigger, `M ${left} 160 V 230 H ${cameras[2]}`, false);
+        cameras.forEach(x => {
+          path(groups.trigger, `M ${x} 230 V 270`);
+          element('circle', { cx: x, cy: 230, r: 3, class: 'junction' }, groups.trigger);
+        });
+        label(groups.trigger, middle, 215, ['PLC 硬件输出 → 三台相机触发输入']);
+        cameras.forEach(x => path(groups.image, `M ${x} 370 V 410 H ${right}`, false));
+        path(groups.image, `M ${right} 410 V 420`, true, false);
+        path(groups.image, `M ${right + 75} 470 H ${width - 15} V 110 H ${right + 75}`, true, true);
+        label(groups.image, (cameras[0] + middle) / 2, 439, ['GigE 网线', '图像上传／参数下发']);
+        node(left, 110, 'PLC', ['节拍与硬件触发', '接收检测结果']);
+        node(middle, 110, 'Robot 控制柜', ['机器人程序', '运动控制']);
+        node(right, 110, '视觉工控机', ['GlueSight 软件', '检测／显示／记录']);
+        cameras.forEach((x, index) => node(x, 320, `相机 ${index + 1}`, ['硬件触发输入', '图像网口']));
+        node(right, 470, '相机交换机', ['汇聚三路图像', '连接工控机']);
+        node(left, 600, 'Robot 本体', ['胶枪／胶嘴', '执行涂胶']);
+        node(middle, 600, '工件／夹具', ['被涂胶', '被三相机观察']);
+        applySelection();
+      }
+      root.querySelectorAll('.legend button').forEach(button => button.addEventListener('click', () => {
+        selected = selected === button.dataset.layer ? null : button.dataset.layer;
+        applySelection();
+      }));
+      new ResizeObserver(draw).observe(root);
+      draw();
+      applySelection();
+    })();
+  </script>
+</div>
+</body>
+</html>

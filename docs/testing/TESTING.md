@@ -1,12 +1,12 @@
 # 前端 UI 逻辑测试
 
-独立 Robot / PLC 模拟服务的配置、启动和升级回归见 [模拟服务说明](../scripts/robot-plc-demo/README.md)。`pnpm sim:test` 运行隔离的协议测试；`pnpm sim:verify` 对运行中的专用桌面实例执行五工况联调。
+独立 Robot / PLC 模拟服务的配置、启动和升级回归见 [模拟服务说明](../../scripts/robot-plc-demo/README.md)。`pnpm sim:test` 运行隔离的协议测试；`pnpm sim:verify` 对运行中的专用桌面实例执行五工况联调。
 
 项目使用 Vitest、React Testing Library、user-event 和 jsdom。测试操作真实的 React 页面与表单；需要桌面数据的页面使用受控接口返回值，避免连接现场相机、PLC 或改写生产配置。工作台状态测试使用真实 WorkspaceProvider，异步竞态通过可手动完成的 Promise 验证。
 
 ## S7 一期握手
 
-协议、点表、PLC 参考程序和现场步骤见 [S7 一期交付说明](plc-s7-phase1.md)。线协议测试服务见 [S7 测试 PLC](../scripts/s7-handshake/README.md)，使用真实 TPKT/COTP/S7 报文，仅监听本机回环地址。
+协议、点表、PLC 参考程序和现场步骤见 [S7 一期交付说明](../integration/plc-s7-phase1.md)。线协议测试服务见 [S7 测试 PLC](../../scripts/s7-handshake/README.md)，使用真实 TPKT/COTP/S7 报文，仅监听本机回环地址。
 
 - Python 报文与故障注入：`python -m unittest discover -s scripts/s7-handshake/tests -v`。
 - Rust 契约和计划：在 `src-tauri` 下运行 `cargo test --offline --lib handshake` 与 `cargo test --offline --lib plc_plan`。
@@ -143,7 +143,7 @@ Windows Codex 受限环境若遇到原生 realpath 的 EPERM，按项目的 Wind
 
 jsdom 没有真实布局、灰度图解码与设备连接能力。测试环境为 ResizeObserver、scrollTo 和原生 dialog 提供最小替代实现；这些测试不会证明窗口布局、SVG 拖动坐标、原生弹窗行为、WebView 像素输出或硬件通讯正确。
 
-基本操作、分层证据和边界逐项记录在 `docs/UI_OPERATIONS.md`。界面测试覆盖用户动作和接口参数，原生测试覆盖像素与持久化，隔离桌面脚本覆盖完整示教/验证/发布/检测/复盘及真实拖动。已有离线检测脚本继续承担样本验证；实际设备通讯、现场节拍和实物缺陷准确率需要设备与现场验收。
+基本操作、分层证据和边界逐项记录在 `docs/testing/UI_OPERATIONS.md`。界面测试覆盖用户动作和接口参数，原生测试覆盖像素与持久化，隔离桌面脚本覆盖完整示教/验证/发布/检测/复盘及真实拖动。已有离线检测脚本继续承担样本验证；实际设备通讯、现场节拍和实物缺陷准确率需要设备与现场验收。
 
 新增业务测试应同时检查用户可见结果和关键接口参数，包含前置条件不满足、请求失败、重复操作或旧请求晚返回的路径。避免仅检查静态文本或给截图数量作为逻辑覆盖率。
 

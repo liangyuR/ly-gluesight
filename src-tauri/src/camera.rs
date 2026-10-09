@@ -1231,6 +1231,18 @@ pub async fn camera_list_devices() -> Result<Vec<DeviceSummary>, String> {
     tauri::async_runtime::spawn_blocking(mvs::enumerate).await.map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+pub async fn camera_pick_replay_dir(window: tauri::WebviewWindow, directory: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut dialog = rfd::FileDialog::new().set_parent(&window).set_title("选择回放图片目录");
+        let directory = PathBuf::from(directory);
+        if directory.is_dir() {
+            dialog = dialog.set_directory(directory);
+        }
+        dialog.pick_folder().map(|path| path.to_string_lossy().into_owned())
+    }).await.map_err(|e| e.to_string())
+}
+
 /// 最近一帧的缩略图：前 16 字节为缩略图宽、高与原图宽、高（u32 小端），其后为 8 位灰度像素。
 #[tauri::command]
 pub fn camera_preview(cycle: State<'_, CycleHost>, cam: usize) -> tauri::ipc::Response {

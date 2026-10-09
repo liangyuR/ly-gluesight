@@ -79,6 +79,7 @@ pub fn run() {
             camera::camera_add,
             camera::camera_remove,
             camera::camera_list_devices,
+            camera::camera_pick_replay_dir,
             camera::camera_preview,
             camera::camera_soft_trigger,
             camera::camera_dry_run_start,
