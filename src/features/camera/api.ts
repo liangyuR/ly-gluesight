@@ -4,7 +4,7 @@ import { subscribe } from "../plc";
 import type { CameraConfig, CameraStatus, DeviceSummary, DryFrame, Frame, PreviewImage, RecordEntry } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
-  if (!isTauri() && ["camera_save_config","camera_add","camera_remove","camera_soft_trigger","camera_dry_run_start","camera_dry_run_stop"].includes(cmd))
+  if (!isTauri() && ["camera_save_config","camera_add","camera_remove","camera_soft_trigger","camera_dry_run_start","camera_dry_run_stop","camera_pick_replay_dir"].includes(cmd))
     return Promise.reject(new Error("设备操作需要 GlueSight · 胶路智检 桌面后端"));
   if (!isTauri()) return Promise.resolve(fallback());
   return invoke<T>(cmd, args);
@@ -52,6 +52,7 @@ export const cameraApi = {
   add: (config: CameraConfig) => call<number>("camera_add", { config }, () => 0),
   remove: (cam: number) => call<void>("camera_remove", { cam }, () => undefined),
   listDevices: () => call<DeviceSummary[]>("camera_list_devices", undefined, () => []),
+  pickReplayDir: (directory: string) => call<string | null>("camera_pick_replay_dir", { directory }, () => null),
   preview: (cam: number) => call<ArrayBuffer>("camera_preview", { cam }, () => new ArrayBuffer(0)).then(decodePreview),
   softTrigger: (cam: number) => call<void>("camera_soft_trigger", { cam }, () => undefined),
   dryRunStart: () => call<void>("camera_dry_run_start", undefined, () => undefined),
