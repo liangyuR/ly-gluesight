@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "id": "01JGLUE00000000000FLYSHOT01",
-  "name": "涂胶飞拍 · 定位 + 逐点卡尺（ly-TuJiaoVision）",
+  "name": "涂胶飞拍 · 定位 + 逐点卡尺（ly-gluesight）",
   "meta": {
     "app": "lyflow/0.1.0",
-    "note": "固定相机飞拍后检（glue-plan §5）的产线图。宿主逐帧注入 n_load.image，并经顶层参数给这一帧（拍照点 k）的模板、模板锚点、测量点文件与工位标定文件；图只量不判，判定与断胶的跨帧合并在宿主。拿文件跑：lyflow run <图> --input n_load.image=<帧> --param template='\"k0.png\"' --param anchor='[590,250]' --param stations='\"k0.stations.json\"' --param calib='\"plane_calib.json\"'。"
+    "note": "固定相机飞拍后检（glue-plan §5）的产线图。宿主用 Image ABI v15 逐帧注入 n_load.image，并经顶层参数给拍照点 k 的模板、模板锚点、测量点文件与工位标定文件；图只量不判，判定与断胶的跨帧合并在宿主。CLI 读图片使用 --set n_load.source=\"file\" 与 --set n_load.path=\"k0.png\"；--input 仍用于点云。"
   },
   "nodes": [
     {

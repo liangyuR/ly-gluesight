@@ -15,7 +15,7 @@ export interface EngineStatus {
 }
 
 export async function getAppInfo(): Promise<AppInfo> {
-  if (!isTauri()) return { name: "TuJiao Vision (web)", version: "dev" };
+  if (!isTauri()) return { name: "GlueSight · 胶路智检", version: "dev" };
   return invoke<AppInfo>("app_info");
 }
 

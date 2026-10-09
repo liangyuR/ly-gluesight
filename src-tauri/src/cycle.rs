@@ -576,6 +576,8 @@ struct Machine {
     dirty: bool,
     published: Instant,
     dropped_seen: u64,
+    /// 通讯可能在两个 tick 之间完成断开/重连，仍需向新连接同步输出信号。
+    plc_connected_since: Option<i64>,
 }
 
 impl Machine {
@@ -606,6 +608,7 @@ impl Machine {
             dirty: true,
             published: Instant::now(),
             dropped_seen: 0,
+            plc_connected_since: None,
         }
     }
 
@@ -776,9 +779,11 @@ impl Machine {
     }
 
     async fn start_part(&mut self) {
+        if crate::workspace::apply_pending(&self.app) { self.required = None; }
         self.set_phase(Phase::Validate);
         self.part = None;
         self.result = None;
+        crate::workspace::clear_live(&self.app);
         self.alarms.clear();
         host(&self.app).shared.lock().unwrap().measured.clear();
         let t0 = Instant::now();
@@ -960,6 +965,7 @@ impl Machine {
         };
         part.measuring_since[k] = Some(Instant::now());
         part.queue += 1;
+        crate::workspace::retain_live(&self.app, part.sn, &part.recipe.hash, k, &f.image);
         let job = Job { sn: part.sn, k, cam: f.cam, recipe: part.recipe.clone(), scenario: part.scenario, image: f.image.clone(), kind: JobKind::Shot { k } };
         let lost = if f.lost_packets > 0 { format!(" · 丢包 {}", f.lost_packets) } else { String::new() };
         let msg = format!(
@@ -1105,7 +1111,17 @@ impl Machine {
     }
 
     async fn on_tick(&mut self) {
-        let connected = plc(&self.app).status().state == LinkState::Connected;
+        if matches!(self.phase, Phase::Idle | Phase::Fault) && crate::workspace::apply_pending(&self.app) {
+            self.required = None;
+            self.dirty = true;
+        }
+        let plc_status = plc(&self.app).status();
+        let connected = plc_status.state == LinkState::Connected;
+        let new_connection = connected && self.plc_connected_since != Some(plc_status.since);
+        self.plc_connected_since = connected.then_some(plc_status.since);
+        if new_connection && self.phase != Phase::Fault {
+            self.enter_fault("PLC 连接已更新，重新同步握手信号".into());
+        }
         let cameras = match self.phase {
             // 在途的件只看它自己用的相机；等 PLC 确认结果时相机掉线不打断握手，回到空闲再查
             Phase::Acquire | Phase::Drain => match self.part.as_ref() {

@@ -1,5 +1,5 @@
 {
-  "name": "tujiao-vision",
+  "name": "gluesight",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -7,6 +7,20 @@
     "dev": "tauri dev",
     "dev:web": "vite",
     "build": "tsc -b && vite build",
+    "package": "tauri build --bundles nsis",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "sim:start": "pwsh -NoProfile -File scripts/robot-plc-demo/Start-Demo.ps1",
+    "sim:build": "pwsh -NoProfile -File scripts/robot-plc-demo/Start-Demo.ps1 -Build",
+    "sim:services": "pwsh -NoProfile -File scripts/robot-plc-demo/Start-Demo.ps1 -ServicesOnly",
+    "sim:stop": "pwsh -NoProfile -File scripts/robot-plc-demo/Stop-Demo.ps1",
+    "sim:test": "python -m unittest discover -s scripts/robot-plc-demo/tests -v && node --test scripts/robot-plc-demo/tests/test-console.mjs",
+    "sim:verify": "python -X utf8 scripts/robot-plc-demo/run-regression.py",
+    "guide:build": "node scripts/user-guide/build-guide.mjs",
+    "guide:serve": "python -m http.server 8772 --bind 127.0.0.1 --directory docs/user-guide",
+    "guide:pdf": "pwsh -NoProfile -File scripts/user-guide/Export-Guide.ps1",
+    "typecheck": "tsc -b && tsc --noEmit -p tsconfig.test.json",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -19,11 +33,17 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.5",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
     "@types/node": "^26.6.2",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
+    "@vitest/coverage-v8": "^5.0.3",
+    "jsdom": "^30.1.2",
     "typescript": "^7.0.2",
-    "vite": "^8.3.0"
+    "vite": "^8.3.0",
+    "vitest": "^5.0.3"
   }
 }

@@ -13,3 +13,30 @@ vite.config.d.ts
 
 # 海康 MVS SDK 运行日志
 MvSDKLog/
+
+# 前端测试报告与本地工具缓存
+/coverage/
+/work/
+/.playwright-cli/
+__pycache__/
+*.py[cod]
+
+# 本机运行产物仅保留教程 PDF 交付件
+/output/*
+!/output/pdf/
+/output/pdf/*
+!/output/pdf/GlueSight-图文使用教程.pdf
+/outputs/
+
+# 教程渲染与导出中间文件
+/tmp/pdfs/
+
+# 外部保密参考手册仅在本机保留
+/docs/在线涂胶检测V4.3软件操作指导书.pdf
+
+# 历史设计工具和本机验证产物
+/docs/design/figma-*
+/docs/design/design-state.json
+/docs/design/implementation-state.json
+/docs/design/local-workflow-verification.json
+/docs/design/theme-verification.json

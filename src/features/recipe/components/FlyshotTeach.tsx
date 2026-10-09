@@ -119,8 +119,8 @@ export default function FlyshotTeach({ recipe }: { recipe: Recipe }) {
         <canvas ref={canvas} style={{ display: img ? "block" : "none" }} />
         {!img && <span className="muted">机器人停在拍照点 k={k}，点“取一帧”</span>}
         <svg ref={svg} viewBox={`0 0 ${fw} ${fh}`} onMouseDown={down} onMouseMove={move} onMouseUp={() => setDrag(null)}>
-          <polyline points={overlay} fill="none" stroke="#facc15" strokeWidth={2} vectorEffect="non-scaling-stroke" />
-          {rect && <rect x={rect[0]} y={rect[1]} width={rect[2]} height={rect[3]} fill="rgba(56,189,248,0.12)" stroke="#38bdf8" vectorEffect="non-scaling-stroke" />}
+          <polyline points={overlay} fill="none" stroke="var(--accent-text)" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+          {rect && <rect x={rect[0]} y={rect[1]} width={rect[2]} height={rect[3]} fill="var(--accent-overlay)" stroke="var(--accent-text)" vectorEffect="non-scaling-stroke" />}
         </svg>
       </div>
       <div className="calib-row four">

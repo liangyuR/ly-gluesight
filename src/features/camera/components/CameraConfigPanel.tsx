@@ -10,6 +10,7 @@ interface Props {
   follow: FollowCalib | null;
   status: CameraStatus | null;
   onSaved?: (c: CameraConfig) => void;
+  onSavingChange?: (saving:boolean) => void;
 }
 
 const sources: [CameraSource, string][] = [
@@ -18,25 +19,38 @@ const sources: [CameraSource, string][] = [
   ["replay", "回放目录"],
 ];
 
-export default function CameraConfigPanel({ cam, initial, follow, status, onSaved }: Props) {
+export default function CameraConfigPanel({ cam, initial, follow, status, onSaved, onSavingChange }: Props) {
   const [config, setConfig] = useState<CameraConfig>(initial);
   const [devices, setDevices] = useState<DeviceSummary[]>([]);
   const [records, setRecords] = useState<RecordEntry[]>([]);
   const [deviceError, setDeviceError] = useState("");
+  const [recordError, setRecordError] = useState("");
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
+  const mounted=useRef(true),deviceSerial=useRef(0),recordSerial=useRef(0),pending=useRef(false);
+  const current=useRef({cam,source:config.source});current.current={cam,source:config.source};
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;deviceSerial.current++;recordSerial.current++;};},[]);
+  useEffect(()=>()=>onSavingChange?.(false),[onSavingChange]);
 
   const refreshDevices = () => {
+    const serial=++deviceSerial.current;
     setDeviceError("");
     cameraApi
       .listDevices()
-      .then(setDevices)
-      .catch((e) => setDeviceError(String(e)));
+      .then(r=>{if(mounted.current&&serial===deviceSerial.current&&current.current.source==="mvs")setDevices(r);})
+      .catch(e=>{if(mounted.current&&serial===deviceSerial.current&&current.current.source==="mvs")setDeviceError(String(e));});
+  };
+  const refreshRecords=()=>{
+    const serial=++recordSerial.current;
+    setRecordError("");
+    cameraApi.records().then(r=>{if(mounted.current&&serial===recordSerial.current&&current.current.source==="replay")setRecords(r.items);})
+      .catch(e=>{if(mounted.current&&serial===recordSerial.current&&current.current.source==="replay")setRecordError(String(e));});
   };
 
   useEffect(() => {
     if (config.source === "mvs") refreshDevices();
-    if (config.source === "replay") cameraApi.records().then((r) => setRecords(r.items));
+    if (config.source === "replay") refreshRecords();
+    return()=>{deviceSerial.current++;recordSerial.current++;};
   }, [config.source]);
 
   // 序列号留空的相机连上后后台会固定序列号：页面每次重新取配置都跟上；用户在表单里改过还没保存就不动
@@ -47,26 +61,39 @@ export default function CameraConfigPanel({ cam, initial, follow, status, onSave
     setConfig((c) => (c.serial === prev ? { ...c, serial: initial.serial } : c));
   }, [initial]);
 
-  const set = <K extends keyof CameraConfig>(key: K, value: CameraConfig[K]) => setConfig({ ...config, [key]: value });
+  const set = <K extends keyof CameraConfig>(key: K, value: CameraConfig[K]) => {setNotice(null);setConfig(c=>({ ...c, [key]: value }));};
+  const numberLabels={triggerDelayUs:"触发延时（µs）",debouncerUs:"输入滤波（µs）",exposureUs:"曝光时间（µs）",gainDb:"增益（dB）",fps:"帧率（fps）",replayChannel:"通道"};
   const num = (key: "triggerDelayUs" | "debouncerUs" | "exposureUs" | "gainDb" | "fps" | "replayChannel", step = 1) => (
-    <input id={`cam-${key}`} className="input mono" type="number" step={step} value={config[key]} onChange={(e) => set(key, Number(e.target.value))} />
+    <input id={`cam-${key}`} aria-label={numberLabels[key]} className="input mono" type="number" step={step} value={Number.isFinite(config[key])?config[key]:""} onChange={(e) => set(key, e.target.value===""?NaN:Number(e.target.value))} />
   );
   const mvs = config.source === "mvs";
   const replay = config.source === "replay";
   const triggered = config.acquisition === "triggered";
+  const invalid=!config.name.trim()?"相机名称不能为空":
+    !(config.exposureUs>=1&&config.exposureUs<=1_000_000)?"曝光时间需在 1–1000000 µs 之间":
+    !Number.isFinite(config.gainDb)?"增益需为有限数":
+    ![config.triggerDelayUs,config.debouncerUs].every(v=>Number.isFinite(v)&&v>=0)?"触发延时与输入滤波需为非负有限数":
+    !triggered&&!(config.fps>=1&&config.fps<=500)?"连续采集帧率需在 1–500 fps 之间":
+    replay&&!config.replayDir.trim()?"回放相机需要填写图片目录":
+    replay&&(!Number.isInteger(config.replayChannel)||config.replayChannel<0)?"回放通道需为非负整数":"";
 
   const save = async () => {
+    if(pending.current||invalid)return;
+    pending.current=true;
     setSaving(true);
+    onSavingChange?.(true);
+    setNotice(null);
     try {
       const next = { ...config, follow };
       const warnings = await cameraApi.saveConfig(cam, next);
+      if(!mounted.current||current.current.cam!==cam)return;
       setNotice({ ok: warnings.length === 0, text: warnings.length ? `已应用，${warnings.length} 项参数相机未接受` : "已保存并应用" });
       shownSerial.current = next.serial;
       onSaved?.(next);
     } catch (e) {
-      setNotice({ ok: false, text: String(e) });
+      if(mounted.current&&current.current.cam===cam)setNotice({ ok: false, text: String(e) });
     } finally {
-      setSaving(false);
+      pending.current=false;if(mounted.current&&current.current.cam===cam){setSaving(false);onSavingChange?.(false);}
     }
   };
 
@@ -74,13 +101,13 @@ export default function CameraConfigPanel({ cam, initial, follow, status, onSave
     <div className="panel cam-config">
       <div className="panel-toolbar">
         <h3 className="panel-title">相机参数</h3>
-        <button className="btn primary" onClick={save} disabled={saving}>
+        <button className="btn primary" onClick={save} disabled={saving||!!invalid}>
           {saving ? "写入中…" : "保存并应用"}
         </button>
       </div>
-      <div className="cfg-grid">
+      <fieldset disabled={saving} style={{border:0,padding:0,margin:0,minWidth:0}}><div className="cfg-grid">
         <span>名称</span>
-        <input id="cam-name" className="input" value={config.name} onChange={(e) => set("name", e.target.value)} />
+        <input id="cam-name" aria-label="名称" className="input" value={config.name} onChange={(e) => set("name", e.target.value)} />
         <span>图像源</span>
         <div className="segmented">
           {sources.map(([v, label]) => (
@@ -104,11 +131,12 @@ export default function CameraConfigPanel({ cam, initial, follow, status, onSave
         {replay && (
           <>
             <span>图片目录</span>
-            <input id="cam-replayDir" className="input mono" value={config.replayDir} placeholder="D:\现场图\Glue1" onChange={(e) => set("replayDir", e.target.value)} />
+            <input id="cam-replayDir" aria-label="图片目录" className="input mono" value={config.replayDir} placeholder="D:\现场图\Glue1" onChange={(e) => set("replayDir", e.target.value)} />
+            {recordError&&<span className="hint-cell c-ng">{recordError} <button className="btn small" onClick={refreshRecords}>重新读取录制</button></span>}
             {records.length > 0 && (
               <>
                 <span>帧录制</span>
-                <select className="input" value="" onChange={(e) => e.target.value && set("replayDir", e.target.value)}>
+                <select aria-label="帧录制" className="input" value="" onChange={(e) => e.target.value && set("replayDir", e.target.value)}>
                   <option value="">从录制目录里选…</option>
                   {records.map((r) => (
                     <option key={r.path} value={r.path}>
@@ -127,7 +155,7 @@ export default function CameraConfigPanel({ cam, initial, follow, status, onSave
           <>
             <span>相机</span>
             <div className="row">
-              <select id="cam-serial" className="input grow" value={config.serial} onChange={(e) => set("serial", e.target.value)}>
+              <select id="cam-serial" aria-label="相机设备" className="input grow" value={config.serial} onChange={(e) => set("serial", e.target.value)}>
                 <option value="">第一台可用相机</option>
                 {config.serial && !devices.some((d) => d.serial === config.serial) && <option value={config.serial}>{config.serial}（未发现）</option>}
                 {devices.map((d) => (
@@ -144,13 +172,14 @@ export default function CameraConfigPanel({ cam, initial, follow, status, onSave
             {triggered && (
               <>
                 <span>触发源</span>
-                <select id="cam-trigger" className="input" value={config.triggerSource} onChange={(e) => set("triggerSource", e.target.value as CameraConfig["triggerSource"])}>
+                <select id="cam-trigger" aria-label="触发源" className="input" value={config.triggerSource} onChange={(e) => set("triggerSource", e.target.value as CameraConfig["triggerSource"])}>
                   <option value="Line0">Line0（机器人位置比较输出）</option>
                   <option value="Software">Software（台架调试、模拟节拍）</option>
                 </select>
                 <span>触发沿</span>
                 <select
                   id="cam-activation"
+                  aria-label="触发沿"
                   className="input"
                   value={config.triggerActivation}
                   onChange={(e) => set("triggerActivation", e.target.value as CameraConfig["triggerActivation"])}
@@ -183,7 +212,8 @@ export default function CameraConfigPanel({ cam, initial, follow, status, onSave
             </label>
           </>
         )}
-      </div>
+      </div></fieldset>
+      {invalid&&<div className="notice error" role="alert">{invalid}</div>}
       {mvs && (
         <p className="muted hint">
           固定写入：ExposureAuto/GainAuto=Off、PixelFormat=Mono8；{triggered ? "TriggerMode=On" : "TriggerMode=Off + AcquisitionFrameRate"}；GigE 相机自动设置最佳包长。

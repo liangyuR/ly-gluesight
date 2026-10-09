@@ -1,0 +1,8 @@
+{
+  "productName": "GlueSight · 胶路智检 UI Tests",
+  "identifier": "com.xyzrobotics.tujiaovision.ui-tests",
+  "app": {
+    "windows": [{ "label": "main", "title": "GlueSight · 胶路智检 UI Tests", "visible": false, "width": 1440, "height": 900, "minWidth": 1100, "minHeight": 700 }]
+  },
+  "bundle": { "active": false }
+}

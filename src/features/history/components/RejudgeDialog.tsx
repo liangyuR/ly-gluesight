@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Modal from "../../plc/components/Modal";
 import type { Verdict } from "../../cycle/types";
@@ -30,16 +30,34 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
   const [result, setResult] = useState<RejudgeResult | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
+  const pending = useRef(false);
+  const scope=JSON.stringify(query);
+  const current=useRef({scope,alive:true});
+  current.current.scope=scope;
+  useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;};},[]);
+  useEffect(()=>{setResult(null);setError("");},[scope]);
+  const invalid=Object.values(overrides).some(value=>typeof value==="number"&&!Number.isFinite(value))||
+    [overrides.line,overrides.corner,overrides.width].some(value=>value&&(
+      Object.values(value).some(v=>v!==undefined&&!Number.isFinite(v))||
+      [value.tolUpper,value.tolLower,value.maxExcursionLen].some(v=>v!==undefined&&v<0)||
+      (value.absMin!==undefined&&value.absMax!==undefined&&value.absMin>value.absMax)))||
+    (overrides.maxGapLen!==undefined&&overrides.maxGapLen<0)||
+    (overrides.filterWindow!==undefined&&(!Number.isInteger(overrides.filterWindow)||overrides.filterWindow<1||overrides.filterWindow>31||overrides.filterWindow%2===0));
+  const edit=(next:Overrides)=>{setOverrides(next);setResult(null);setError("");};
 
   const run = async () => {
+    if(pending.current||invalid||total<=0)return;
+    pending.current=true;
     setRunning(true);
     setError("");
+    const valid=()=>current.current.alive&&current.current.scope===scope;
     try {
-      setResult(await historyApi.rejudge({ query, ids: [], useCurrentRecipe: useCurrent, overrides }));
+      const next=await historyApi.rejudge({ query, ids: [], useCurrentRecipe: useCurrent, overrides });
+      if(valid())setResult(next);
     } catch (e) {
-      setError(String(e));
+      if(valid())setError(String(e));
     } finally {
-      setRunning(false);
+      pending.current=false;if(current.current.alive)setRunning(false);
     }
   };
 
@@ -50,8 +68,10 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
       type="number"
       step={0.05}
       placeholder="不变"
+      aria-label={`${k==="line"?"直边":k==="corner"?"R 角":"胶宽"}${kindFields.find(([key])=>key===f)?.[1]}`}
+      disabled={running}
       value={overrides[k]?.[f] ?? ""}
-      onChange={(e) => setOverrides({ ...overrides, [k]: { ...overrides[k], [f]: numOrUndef(e.target.value) } })}
+      onChange={(e) => edit({ ...overrides, [k]: { ...overrides[k], [f]: numOrUndef(e.target.value) } })}
     />
   );
 
@@ -67,15 +87,15 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
         <>
           {error && <span className="form-error">{error}</span>}
           <button className="btn" onClick={onClose}>关闭</button>
-          <button className="btn primary" onClick={run} disabled={running}>{running ? "重判中…" : `重判当前筛选（${total} 件）`}</button>
+          <button className="btn primary" onClick={run} disabled={running||invalid||total<=0}>{running ? "重判中…" : `重判当前筛选（${total} 件）`}</button>
         </>
       }
     >
       <div className="rj">
         <p className="muted">用已存储的测量表重新判定，不需要重新拍照；ERR 件和缺少测量数据的记录会跳过。试算参数只用于本次重判，不会保存到配方。</p>
         <div className="segmented">
-          <button className={!useCurrent ? "active" : ""} onClick={() => setUseCurrent(false)}>记录当时的配方版本</button>
-          <button className={useCurrent ? "active" : ""} onClick={() => setUseCurrent(true)}>当前配方</button>
+          <button className={!useCurrent ? "active" : ""} disabled={running} onClick={() => {setUseCurrent(false);setResult(null);}}>记录当时的配方版本</button>
+          <button className={useCurrent ? "active" : ""} disabled={running} onClick={() => {setUseCurrent(true);setResult(null);}}>当前配方</button>
         </div>
         <div className="rj-params">
           <span />
@@ -92,13 +112,15 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
         <div className="row">
           <label className="field">
             <span>断胶允许长度（mm）</span>
-            <input id="rj-gap" className="input mono" type="number" step={0.1} placeholder="不变" value={overrides.maxGapLen ?? ""} onChange={(e) => setOverrides({ ...overrides, maxGapLen: numOrUndef(e.target.value) })} />
+            <input id="rj-gap" className="input mono" aria-label="断胶允许长度（mm）" disabled={running} type="number" min={0} step={0.1} placeholder="不变" value={overrides.maxGapLen ?? ""} onChange={(e) => edit({ ...overrides, maxGapLen: numOrUndef(e.target.value) })} />
           </label>
           <label className="field">
             <span>滤波窗口（奇数）</span>
-            <input id="rj-filter" className="input mono" type="number" step={2} min={1} placeholder="不变" value={overrides.filterWindow ?? ""} onChange={(e) => setOverrides({ ...overrides, filterWindow: numOrUndef(e.target.value) })} />
+            <input id="rj-filter" className="input mono" aria-label="滤波窗口（奇数）" disabled={running} type="number" step={2} min={1} max={31} placeholder="不变" value={overrides.filterWindow ?? ""} onChange={(e) => edit({ ...overrides, filterWindow: numOrUndef(e.target.value) })} />
           </label>
         </div>
+
+        {invalid&&<p className="form-error" role="alert">试算参数需为有限数，公差与允许长度不能为负，绝对限下需不大于上限；滤波窗口需为 1–31 的奇数。</p>}
 
         {result && (
           <>

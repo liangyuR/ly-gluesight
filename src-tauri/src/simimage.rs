@@ -43,7 +43,13 @@ impl<'a> Scene<'a> {
             holes.push((pts.x[j] as f64 + 5.0 * nx, pts.y[j] as f64 + 5.0 * ny));
             j += 110;
         }
-        let gap = scenario.gap_points(recipe).first().map(|&j| (j as f64 * recipe.spacing as f64 - 0.25, (j + 2) as f64 * recipe.spacing as f64 - 0.25));
+        let gap = scenario.gap_points(recipe).first().map(|&j| {
+            let center = (j as f64 + 0.5) * recipe.spacing as f64;
+            // 图像卡尺会沿切向平均，定位也有亚像素误差；两个边界点宽的缺口不稳定。
+            // 缺口仍跨归属边界，并留出足够余量超过当前规则的允许断胶长度。
+            let width = (recipe.max_gap_len as f64 + 2.0 * recipe.spacing as f64 + 1.0).max(3.0);
+            (center - width / 2.0, center + width / 2.0)
+        });
         let bump_at = (scenario == Scenario::Excursion).then(|| {
             let seg = &recipe.segments[4.min(recipe.segments.len() - 1)];
             (seg.s0 + (seg.s1 - seg.s0) * 0.3) as f64

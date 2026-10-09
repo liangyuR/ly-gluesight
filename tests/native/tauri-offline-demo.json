@@ -1,0 +1,8 @@
+{
+  "productName": "GlueSight 海康离线演示",
+  "identifier": "com.xyzrobotics.gluesight.offline-demo-20261009",
+  "app": {
+    "windows": [{ "label": "main", "title": "GlueSight · 海康离线演示（像素尺度）", "visible": true, "width": 1440, "height": 960, "minWidth": 1100, "minHeight": 700 }]
+  },
+  "bundle": { "active": false }
+}

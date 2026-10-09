@@ -57,6 +57,7 @@ export interface Recipe {
   name: string;
   version: number;
   hash: string;
+  teachingHash?: string | null;
   productCode: number;
   mode: InspectMode;
   triggerMode: TriggerMode;
@@ -84,6 +85,7 @@ export interface RecipeDoc {
   id: string;
   name: string;
   version: number;
+  teachingHash?: string | null;
   productCode: number;
   mode: InspectMode;
   triggerMode: TriggerMode;

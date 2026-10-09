@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Modal from "./Modal";
 import { dataTypeLabels, formatValue } from "../meta";
 import type { PlcPoint, PointValue } from "../types";
@@ -14,24 +14,30 @@ export default function WriteDialog({ point, current, onWrite, onClose }: WriteD
   const [text, setText] = useState(current?.value !== null && current?.value !== undefined ? String(Number(current.value)) : "");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const writing = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const isBool = point.dataType === "bool";
 
   const write = async (value: unknown) => {
+    if (writing.current) return;
+    writing.current = true;
     setBusy(true);
     setError("");
     try {
       await onWrite(value);
-      onClose();
+      if (mounted.current) onClose();
     } catch (e) {
-      setError(String(e));
+      if (mounted.current) setError(String(e));
     } finally {
-      setBusy(false);
+      writing.current = false;
+      if (mounted.current) setBusy(false);
     }
   };
 
   const submitNumber = () => {
     const n = Number(text);
-    if (text.trim() === "" || Number.isNaN(n)) return setError("请输入有效数值");
+    if (text.trim() === "" || !Number.isFinite(n)) return setError("请输入有效数值");
     write(n);
   };
 
@@ -39,11 +45,12 @@ export default function WriteDialog({ point, current, onWrite, onClose }: WriteD
     <Modal
       title={`写入 · ${point.name}`}
       onClose={onClose}
+      closeDisabled={busy}
       width={420}
       footer={
         <>
           {error && <span className="form-error">{error}</span>}
-          <button className="btn" onClick={onClose}>
+          <button className="btn" disabled={busy} onClick={onClose}>
             取消
           </button>
           {!isBool && (
@@ -76,6 +83,7 @@ export default function WriteDialog({ point, current, onWrite, onClose }: WriteD
           <input
             className="input mono"
             autoFocus
+            disabled={busy}
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && submitNumber()}

@@ -4,6 +4,8 @@ import { subscribe } from "../plc";
 import type { CameraConfig, CameraStatus, DeviceSummary, DryFrame, Frame, PreviewImage, RecordEntry } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
+  if (!isTauri() && ["camera_save_config","camera_add","camera_remove","camera_soft_trigger","camera_dry_run_start","camera_dry_run_stop"].includes(cmd))
+    return Promise.reject(new Error("设备操作需要 GlueSight · 胶路智检 桌面后端"));
   if (!isTauri()) return Promise.resolve(fallback());
   return invoke<T>(cmd, args);
 }
@@ -45,7 +47,7 @@ function decodePreview(buf: ArrayBuffer): PreviewImage | null {
 
 export const cameraApi = {
   rigStatus: () => call<CameraStatus[]>("camera_rig_status", undefined, () => []),
-  rigConfig: () => call<CameraConfig[]>("camera_rig_config", undefined, () => [structuredClone(defaultCameraConfig)]),
+  rigConfig: () => call<CameraConfig[]>("camera_rig_config", undefined, () => []),
   saveConfig: (cam: number, config: CameraConfig) => call<string[]>("camera_save_config", { cam, config }, () => []),
   add: (config: CameraConfig) => call<number>("camera_add", { config }, () => 0),
   remove: (cam: number) => call<void>("camera_remove", { cam }, () => undefined),
@@ -99,45 +101,46 @@ export function useRigStatus() {
  * 某台相机的最近一帧缩略图：有新帧（frameKey 变了）才取，两次之间至少隔 intervalMs。
  * 已经发出去的请求不因为又来了新帧而作废，否则帧来得比取图快时画面永远不更新。
  */
-export function usePreview(cam: number, frameKey: unknown, intervalMs = 250) {
-  const [img, setImg] = useState<PreviewImage | null>(null);
-  const lastAt = useRef(0);
-  /** 正在取哪台相机的缩略图 */
-  const pending = useRef<number | null>(null);
-  const current = useRef({ cam, mounted: true });
-  current.current.cam = cam;
+export function usePreview(cam: number, frameKey: unknown, intervalMs = 250, scopeKey = "") {
+  const key=`${cam}:${scopeKey}`;
+  const current=useRef({key,generation:0,mounted:true});
+  if(current.current.key!==key){current.current.key=key;current.current.generation++;}
+  const generation=current.current.generation;
+  const [state,setState]=useState<{generation:number;img:PreviewImage|null}|null>(null);
+  const lastAt=useRef({generation:-1,at:0});
+  const pending=useRef<{generation:number}|null>(null);
   useEffect(() => {
     current.current.mounted = true;
     return () => {
       current.current.mounted = false;
     };
   }, []);
-  // 换了相机：先清掉上一台的画面，别的相机的请求也不拦着这一台
-  useEffect(() => setImg(null), [cam]);
+  // 换相机或图像源后立即隐藏旧图；持续到达的帧只触发限速读取，不使同一源的请求作废。
   useEffect(() => {
-    if (pending.current === cam) return;
+    if (pending.current?.generation === generation) return;
     const t = setTimeout(
       () => {
-        pending.current = cam;
-        lastAt.current = Date.now();
+        const request={generation};
+        pending.current = request;
+        lastAt.current = {generation,at:Date.now()};
         cameraApi
           .preview(cam)
-          .then((p) => p && current.current.mounted && current.current.cam === cam && setImg(p))
+          .then(p=>{if(current.current.mounted&&current.current.generation===generation)setState({generation,img:p});})
           .catch(() => undefined)
           .finally(() => {
-            if (pending.current === cam) pending.current = null;
+            if (pending.current === request) pending.current = null;
           });
       },
-      Math.max(0, intervalMs - (Date.now() - lastAt.current)),
+      lastAt.current.generation===generation?Math.max(0,intervalMs-(Date.now()-lastAt.current.at)):0,
     );
     return () => clearTimeout(t);
-  }, [cam, frameKey, intervalMs]);
-  return img;
+  }, [cam, frameKey, intervalMs, scopeKey, generation]);
+  return state?.generation===generation?state.img:null;
 }
 
 /** 缩略图画到 canvas 上：返回图像（含原图尺寸）与要挂到 canvas 上的 ref。 */
-export function usePreviewCanvas(cam: number, frameKey: unknown, intervalMs = 250) {
-  const img = usePreview(cam, frameKey, intervalMs);
+export function usePreviewCanvas(cam: number, frameKey: unknown, intervalMs = 250, scopeKey = "") {
+  const img = usePreview(cam, frameKey, intervalMs, scopeKey);
   const canvas = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const el = canvas.current;

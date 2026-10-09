@@ -1,135 +1,112 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { Plus, Trash2 } from "lucide-react";
-import {
-  CalibPanel,
-  cameraApi,
-  CameraConfigPanel,
-  defaultCameraConfig,
-  DryRunPanel,
-  FeasibilityCalc,
-  FollowCalibPanel,
-  FramePreview,
-  useRigStatus,
-  type CameraConfig,
-} from "../features/camera";
-import { SimControls } from "../features/cycle";
+import { CalibPanel, cameraApi, CameraConfigPanel, defaultCameraConfig, DryRunPanel, FeasibilityCalc, FollowCalibPanel, FramePreview, useRigStatus, type CameraConfig } from "../features/camera";
+import { recipeApi, SimControls, useCycle } from "../features/cycle";
+import { desktopAvailable } from "../lib/desktop";
+import { Badge, Notice, Panel } from "../features/workspace/components";
+import StationCapture, { type StationView } from "../features/workspace/StationCapture";
+import { workspaceApi } from "../features/workspace/api";
 
-const sourceText = { mvs: "海康 MVS", sim: "模拟相机", replay: "回放目录" } as const;
-
-export default function CameraPage() {
-  const { statuses, lastFrame } = useRigStatus();
-  const [configs, setConfigs] = useState<CameraConfig[]>([]);
-  const [cam, setCam] = useState(0);
-  const [error, setError] = useState("");
-
-  const reload = () => cameraApi.rigConfig().then(setConfigs);
-  useEffect(() => {
-    reload();
-  }, []);
-
-  // 序列号留空的相机连上后后台固定了序列号：重新取，别拿旧的空值保存回去
-  const unpinned = statuses.some((s) => s.device && configs[s.cam]?.source === "mvs" && !configs[s.cam]?.serial);
-  useEffect(() => {
-    if (unpinned) reload();
-  }, [unpinned]);
-
-  const config = configs[cam] ?? null;
-  const status = statuses.find((s) => s.cam === cam) ?? null;
-  const frameMs = status?.maxFps ? 1000 / status.maxFps : null;
-  // 保存后按后台为准重新取：序列号留空的相机这时已固定了序列号
-  const saved = () => void reload();
-
-  const add = async () => {
+type CameraView = "device" | "calibration" | "follow";
+const sourceText = { mvs:"海康 MVS",sim:"模拟相机",replay:"回放目录" } as const;
+export default function CameraPage({view="device"}:{view?:CameraView}) {
+  const {statuses,lastFrame}=useRigStatus();
+  const {snapshot}=useCycle();
+  const [configs,setConfigs]=useState<CameraConfig[]>([]);
+  const [cam,setCam]=useState(0);
+  const [error,setError]=useState("");
+  const [sample,setSample]=useState<StationView|null>(null);
+  const [loading,setLoading]=useState(false);
+  const [action,setAction]=useState("");
+  const [configSaving,setConfigSaving]=useState(false);
+  const [references,setReferences]=useState<Record<string,string[]>>({});
+  const [referencesReady,setReferencesReady]=useState(false);
+  const mounted=useRef(true),loadSerial=useRef(0),pending=useRef(false);
+  const current=useRef({cam,configs});current.current={cam,configs};
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;loadSerial.current++;};},[]);
+  useEffect(()=>setSample(null),[cam,configs[cam],view]);
+  const reload=useCallback(async()=>{
+    const serial=++loadSerial.current;
+    setLoading(true);setReferencesReady(false);
+    const referenceRequest=view==="device"&&desktopAvailable()?Promise.all([recipeApi.list(),workspaceApi.list()]).then(([production,drafts])=>{
+      if(production.errors.length)throw new Error(production.errors.join("；"));
+      const found:Record<string,string[]>={};
+      const remember=(ids:string[],name:string)=>ids.forEach(id=>{const values=found[id]??=[];if(!values.includes(name))values.push(name);});
+      production.recipes.forEach(r=>remember(r.cameras,`生产配方 ${r.name}（${r.id}）`));
+      drafts.forEach(w=>{
+        for(const [doc,label] of [[w.doc,"候选配方"],[w.pending?.doc,"待发布配方"]] as const){
+          if(doc)remember(doc.mode==="follow"?doc.follow?.cameras??[]:[doc.camera],`${label} ${doc.name}（${doc.id}）`);
+        }
+      });
+      return {found,error:""};
+    }).catch(e=>({found:{},error:`相机引用读取失败：${String(e)}。刷新后再移除相机。`})):Promise.resolve({found:{},error:""});
+    try{
+      const [next,refs]=await Promise.all([cameraApi.rigConfig(),referenceRequest]);
+      if(!mounted.current||serial!==loadSerial.current)return null;
+      const selected=current.current.configs[current.current.cam]?.id;
+      setConfigs(next);
+      if(selected)setCam(Math.max(0,next.findIndex(c=>c.id===selected)));
+      setReferences(refs.found);setReferencesReady(!refs.error);setError(refs.error);
+      return next;
+    }catch(e){if(mounted.current&&serial===loadSerial.current)setError(String(e));return null;}
+    finally{if(mounted.current&&serial===loadSerial.current)setLoading(false);}
+  },[view]);
+  // 切换相机只切换已加载的配置；刷新与标定页面切换才重新读配置。
+  const reloadRef=useRef(reload);reloadRef.current=reload;
+  useEffect(()=>{void reloadRef.current();},[view]);
+  const unpinned=statuses.some(s=>s.device&&configs[s.cam]?.source==="mvs"&&!configs[s.cam]?.serial);
+  useEffect(()=>{if(unpinned)void reloadRef.current();},[unpinned]);
+  useEffect(()=>{
+    if(view==="device"||!configs.length)return;
+    const eligible=configs.findIndex(c=>view==="follow"?c.acquisition==="freeRun":c.acquisition==="triggered");
+    if(eligible>=0&&(view==="follow"?configs[cam]?.acquisition!=="freeRun":configs[cam]?.acquisition!=="triggered"))setCam(eligible);
+  },[configs,view,cam]);
+  const eligible=configs.map((c,i)=>({c,i})).filter(({c})=>view==="device"||(view==="follow"?c.acquisition==="freeRun":c.acquisition==="triggered"));
+  const config=eligible.some(e=>e.i===cam)?configs[cam]:null;
+  const status=statuses.find(s=>s.cam===cam)??null;
+  const busy=!!snapshot&&!["IDLE","FAULT"].includes(snapshot.phase);
+  const referencedBy=config?references[config.id]??[]:[];
+  const saved=()=>void reload();
+  const add=async()=>{
+    if(pending.current||loading||configSaving||busy||configs.length>=8||!desktopAvailable())return;
+    pending.current=true;setAction("add");
     setError("");
     try {
-      const base = configs[configs.length - 1] ?? defaultCameraConfig;
-      let n = configs.length + 1;
-      while (configs.some((c) => c.name === `相机 ${n}`)) n++;
-      const i = await cameraApi.add({ ...base, name: `相机 ${n}`, serial: "", follow: null });
-      await reload();
-      setCam(i);
-    } catch (e) {
-      setError(String(e));
-    }
+      const base=configs.at(-1)??defaultCameraConfig;
+      let n=configs.length+1;while(configs.some(c=>c.name==="相机 "+n))n++;
+      const i=await cameraApi.add({...base,name:"相机 "+n,serial:"",follow:null});
+      if(!mounted.current)return;
+      const next=await reload();if(next&&mounted.current)setCam(Math.min(i,next.length-1));
+    }catch(e){if(mounted.current)setError(String(e));}
+    finally{pending.current=false;if(mounted.current)setAction("");}
   };
-  const remove = async () => {
-    if (!config || !window.confirm(`从相机组里移除「${config.name}」（${config.id}）？用到它的配方要改用别的相机才能开工，这个编号以后也不会再分给别的相机。`)) return;
-    setError("");
-    try {
-      await cameraApi.remove(cam);
-      await reload();
-      setCam(Math.max(0, cam - 1));
-    } catch (e) {
-      setError(String(e));
-    }
+  const remove=async()=>{
+    if(!config||pending.current||loading||configSaving||busy||!desktopAvailable()||!referencesReady||referencedBy.length||configs.length<=1)return;
+    if(!window.confirm("从相机组移除「"+config.name+"」？"))return;
+    pending.current=true;setAction("remove");setError("");
+    try{await cameraApi.remove(cam);if(!mounted.current)return;const next=await reload();if(next&&mounted.current)setCam(Math.min(Math.max(0,cam-1),next.length-1));}
+    catch(e){if(mounted.current)setError(String(e));}
+    finally{pending.current=false;if(mounted.current)setAction("");}
   };
-
-  return (
-    <div className="cam-page">
-      <div className="cam-tabs">
-        {configs.map((c, i) => {
-          const st = statuses.find((s) => s.cam === i);
-          return (
-            <button key={c.id} className={`tab${i === cam ? " active" : ""}`} onClick={() => setCam(i)}>
-              <i className={st?.ready ? "ok" : ""} />
-              {c.name || `相机 ${i + 1}`}
-              <span className="muted mono">{c.id}</span>
-            </button>
-          );
-        })}
-        <button className="btn" onClick={add} title="相机组最多 8 台">
-          <Plus size={15} />
-          添加相机
-        </button>
-        {configs.length > 1 && (
-          <button className="btn" onClick={remove}>
-            <Trash2 size={15} />
-            移除当前
-          </button>
-        )}
-        {error && <span className="c-ng" style={{ fontSize: 12.5 }}>{error}</span>}
-      </div>
-      <div className="dev-bar">
-        <span className={`badge ${status?.ready ? "link-connected" : "link-error"}`}>{status?.ready ? "就绪" : "未就绪"}</span>
-        {status && <span className="chip-static">{sourceText[status.source]}</span>}
-        {status && <span className="chip-static">{status.acquisition === "freeRun" ? "连续采集" : "触发采集"}</span>}
-        {status?.device && (
-          <>
-            <span className="chip-static">{status.device.model}</span>
-            <span className="chip-static mono">{status.device.serial}</span>
-            {status.device.ip && <span className="chip-static mono">{status.device.ip}</span>}
-          </>
-        )}
-        <span className="chip-static">
-          帧 {status?.frames ?? 0} · {status?.fps ? `${status.fps.toFixed(1)} fps` : "—"}
-          {status?.maxFps ? ` · 相机上限 ${status.maxFps.toFixed(1)} fps` : ""}
-        </span>
-        {status?.source === "mvs" && <span className={`chip-static${status.lostPackets ? " c-warn" : ""}`}>丢包 {status.lostPackets}</span>}
-        {status?.droppedFrames ? <span className="chip-static c-warn">节拍丢帧 {status.droppedFrames}</span> : null}
-        <span className="muted" style={{ fontSize: 12.5 }}>{status?.message}</span>
-      </div>
-      {/* 面板按相机编号挂载：移除前面的相机后序号会变，按序号挂载会留着被移除相机的设置 */}
-      <div className="col">
-        {config && <CameraConfigPanel key={config.id} cam={cam} initial={config} follow={config.follow} status={status} onSaved={saved} />}
-      </div>
-      <div className="col">
-        <FramePreview key={config?.id} cam={cam} status={status} lastFrame={lastFrame[cam]} config={config} />
-        {config?.acquisition === "freeRun" && <FollowCalibPanel key={`f${config.id}`} cam={cam} config={config} frame={lastFrame[cam]} onSaved={saved} />}
-        {config?.acquisition === "triggered" && (
-          <>
-            <FeasibilityCalc exposure={config.exposureUs} fps={status?.maxFps} />
-            <DryRunPanel cam={cam} frameMs={frameMs} />
-            <CalibPanel key={config.id} cam={cam} isSim={config.source === "sim"} />
-          </>
-        )}
-        <div className="panel">
-          <h3 className="panel-title" style={{ marginBottom: 0 }}>模拟节拍</h3>
-          <p className="muted">
-            软件代替 PLC 与机器人跑完整节拍。模拟相机直接产生帧；回放相机按节拍出图；海康相机触发采集时需把触发源设为 Software。
-          </p>
-          <SimControls />
-        </div>
-      </div>
+  return <div className="cam-page">
+    <div className="cam-tabs">{eligible.map(({c,i})=><button key={c.id} aria-label={`${c.name} ${c.id}`} className={"tab"+(i===cam?" active":"")} disabled={!!action||configSaving} onClick={()=>setCam(i)}><i className={statuses.find(s=>s.cam===i)?.ready?"ok":""}/>{c.name}<span className="muted mono">{c.id}</span></button>)}
+      {view==="device"&&<><button className="btn" onClick={()=>void reload()} disabled={loading||!!action||configSaving}>刷新配置</button><button className="btn" onClick={()=>void add()} disabled={busy||loading||!!action||configSaving||!desktopAvailable()||configs.length>=8}><Plus size={15}/>{action==="add"?"添加中…":"添加相机"}</button>{configs.length>1&&<button className="btn" onClick={()=>void remove()} disabled={busy||loading||!!action||configSaving||!desktopAvailable()||!referencesReady||!!referencedBy.length}><Trash2 size={15}/>{action==="remove"?"移除中…":"移除当前"}</button>}</>}
+      {view!=="device"&&<Link className="btn" to="/camera">设备与采集</Link>}
     </div>
-  );
+    <div className="dev-bar"><Badge tone={status?.ready?"ok":"warn"}>{status?.ready?"已连接":"未就绪"}</Badge>{status&&<Badge tone="neutral">{sourceText[status.source]} · {status.acquisition==="freeRun"?"连续采集":"触发采集"}</Badge>}{status?.device&&<span className="chip-static">{status.device.model} · {status.device.serial}</span>}<span className="chip-static">帧 {status?.frames??0} · {status?.fps?status.fps.toFixed(1)+" fps":"—"}</span>{!!status?.lostPackets&&<Badge tone="warn">丢包 {status.lostPackets}</Badge>}<span className="muted">{status?.message}</span></div>
+    {error&&<div style={{gridColumn:"1/-1"}}><Notice title="操作未完成" tone="warn">{error}</Notice></div>}
+    {view==="device"&&referencedBy.length>0&&<div style={{gridColumn:"1/-1"}}><Notice title="当前相机被配方引用">先在 {referencedBy.join("、")} 中改选相机并保存，再移除此相机。</Notice></div>}
+    {busy&&<div style={{gridColumn:"1/-1"}}><Notice title="当前工件正在检测">相机配置、取样与标定在工件结束后可操作。</Notice></div>}
+    {config?<><div className="col"><fieldset disabled={busy||!!action||!desktopAvailable()} className="cam-action-area">
+      {view==="device"?<CameraConfigPanel key={config.id} cam={cam} initial={config} follow={config.follow} status={status} onSaved={saved} onSavingChange={setConfigSaving}/>:<StationCapture key={config.id} cam={cam} sample={sample} onSample={setSample}/>}
+    </fieldset>{view==="device"&&<Panel title="实际参数状态"><Badge tone={status?.warnings.length?"warn":status?.ready?"ok":"neutral"}>{status?.warnings.length?"存在未接受参数":status?.ready?"参数已应用":"等待相机连接"}</Badge>{status?.warnings.map(w=><p key={w} className="c-warn">{w}</p>)}<p className="muted">连接状态和参数接受状态分别确认。保存后以相机实际返回结果为准。</p></Panel>}</div>
+    <div className="col"><fieldset disabled={busy||!!action||configSaving||!desktopAvailable()} className="cam-action-area">
+      {view==="device"&&<FramePreview key={config.id} cam={cam} status={status} lastFrame={lastFrame[cam]} config={config}/>}
+      {view==="calibration"&&<><CalibPanel key={config.id} cam={cam} isSim={config.source==="sim"&&sample?.metadata.source!=="import"} imageId={sample?.metadata.id}/><FeasibilityCalc key={config.id} exposure={config.exposureUs} fps={status?.maxFps}/><DryRunPanel key={config.id} cam={cam} frameMs={status?.maxFps?1000/status.maxFps:null}/></>}
+      {view==="follow"&&<FollowCalibPanel key={config.id} cam={cam} config={config} frame={lastFrame[cam]} sample={sample} onSaved={saved}/>}
+    </fieldset>{view==="device"&&<Panel title="继续建站"><p className="muted">保存采集参数后，按检测工况完成对应标定。</p><div className="wp-actions"><Link className="btn" to="/camera/calibration">飞拍工位标定</Link><Link className="btn" to="/camera/follow">随动相机标定</Link></div></Panel>}{view==="device"&&<details className="panel"><summary>模拟节拍调试</summary><p className="muted">用于台架和回放验证，检测参数以当前生产配方为准。</p><SimControls/></details>}</div></>:<div style={{gridColumn:"1/-1"}}><Notice title={view==="device"?"尚未加载采集设备":view==="follow"?"没有连续采集相机":"没有触发采集相机"} tone="warn">{view==="device"?"在桌面软件中添加或连接相机。":"在设备与采集页添加相机，选择与工况一致的采集方式。"}</Notice></div>}
+  </div>;
 }
+export function FlyshotCalibrationPage(){return <CameraPage view="calibration"/>;}
+export function FollowCalibrationPage(){return <CameraPage view="follow"/>;}

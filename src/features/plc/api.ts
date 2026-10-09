@@ -41,6 +41,8 @@ const previewStatus: PlcStatus = {
 };
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
+  if (!isTauri() && ["plc_save_config","plc_connect","plc_disconnect","plc_write_point"].includes(cmd))
+    return Promise.reject(new Error("PLC 操作需要 GlueSight · 胶路智检 桌面后端"));
   if (!isTauri()) return Promise.resolve(fallback());
   return invoke<T>(cmd, args);
 }

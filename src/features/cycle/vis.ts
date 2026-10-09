@@ -1,17 +1,17 @@
 import type { JudgeParams, Judgement, Measured, PartView, PointVis, Recipe } from "./types";
 
 export const visColor: Record<PointVis, string> = {
-  none: "#3b4a66",
-  ok: "#22c55e",
-  exc: "#f59e0b",
-  ng: "#ef4444",
-  gap: "#ef4444",
-  inv: "#a78bfa",
-  miss: "#a78bfa",
+  none: "var(--text-disabled)",
+  ok: "var(--ok)",
+  exc: "var(--warn)",
+  ng: "var(--ng)",
+  gap: "var(--ng)",
+  inv: "var(--err)",
+  miss: "var(--err)",
 };
 
 /** 相机在各处的代表色（相机窗、主视图上的测量归属）。 */
-export const CAM_COLORS = ["#38bdf8", "#f472b6", "#facc15", "#34d399", "#fb923c", "#818cf8", "#2dd4bf", "#e879f9"];
+export const CAM_COLORS = Array.from({ length: 8 }, (_, i) => `var(--camera-${i + 1})`);
 
 const outside = (v: number, p: JudgeParams) => v < p.nominal - p.tolLower || v > p.nominal + p.tolUpper;
 

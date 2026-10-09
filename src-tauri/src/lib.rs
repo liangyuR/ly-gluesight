@@ -22,6 +22,7 @@ mod simimage;
 mod store;
 mod teach;
 mod vision;
+mod workspace;
 
 use tauri::Manager;
 
@@ -35,6 +36,7 @@ pub fn run() {
             app.manage(open_store(app)?);
             app.manage(vision::VisionHost::default());
             app.manage(cycle::CycleHost::init(app.handle())?);
+            app.manage(workspace::WorkspaceHost::init(app.handle())?);
             app.manage(plc::PlcHost::init(app.handle())?);
             plc::PlcHost::start_if_configured(app.handle());
             cycle::CycleHost::start(app.handle());
@@ -99,6 +101,33 @@ pub fn run() {
             sim::sim_status,
             sim::sim_start,
             sim::sim_stop,
+            sim::sim_robot_trigger,
+            workspace::workspace_list,
+            workspace::workspace_get,
+            workspace::workspace_create,
+            workspace::workspace_delete,
+            workspace::workspace_save_doc,
+            workspace::workspace_capture,
+            workspace::workspace_import_image,
+            workspace::workspace_image,
+            workspace::workspace_trial,
+            workspace::workspace_save_params,
+            workspace::workspace_save_teach,
+            workspace::workspace_restore_teach,
+            workspace::workspace_save_overview,
+            workspace::workspace_validate,
+            workspace::workspace_import_sample,
+            workspace::workspace_publish,
+            workspace::workspace_record_images,
+            workspace::workspace_record_image,
+            workspace::workspace_history_capture,
+            workspace::workspace_compare,
+            workspace::workspace_comparisons,
+            workspace::workspace_runtime_overview,
+            workspace::workspace_live_image,
+            workspace::workspace_station_capture,
+            workspace::workspace_station_import,
+            workspace::workspace_station_image,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

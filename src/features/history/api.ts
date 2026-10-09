@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { Recipe } from "../cycle/types";
 import type { HistoryPage, HistoryQuery, PartDetail, RejudgeRequest, RejudgeResult } from "./types";
+import { desktopCall } from "../../lib/desktop";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
   if (!isTauri()) return Promise.resolve(fallback());
@@ -19,7 +20,7 @@ export const historyApi = {
     return recipeCache.get(key)!;
   },
   rejudge: (request: RejudgeRequest) =>
-    call<RejudgeResult>("history_rejudge", { request }, () => ({ total: 0, skipped: 0, limitHit: false, matrix: [], changes: [] })),
-  exportCsv: (query: HistoryQuery) => call<string>("history_export", { query }, () => ""),
-  reveal: (path: string) => call<void>("reveal_path", { path }, () => undefined),
+    desktopCall<RejudgeResult>("history_rejudge", { request }),
+  exportCsv: (query: HistoryQuery) => desktopCall<string>("history_export", { query }),
+  reveal: (path: string) => desktopCall<void>("reveal_path", { path }),
 };

@@ -72,13 +72,17 @@ pub fn plc_get_config(plc: State<'_, PlcHost>) -> PlcConfig {
 }
 
 #[tauri::command]
-pub async fn plc_save_config(plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>, config: PlcConfig) -> Result<(), String> {
+pub async fn plc_save_config(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>, config: PlcConfig) -> Result<(), String> {
     config.validate()?;
     config.save(&plc.config_path)?;
     let r = plc.engine.apply_config(config).await;
     inspection::invalidate_tags();
     // 开工检查看 PLC 是不是模拟器
     let _ = cycle.tx.send(Input::Refresh);
+    // 配置保存不一定改变连接状态，配置使用方不能只等 disconnected/connected。
+    if r.is_ok() {
+        let _ = app.emit("plc://config", ());
+    }
     r
 }
 
