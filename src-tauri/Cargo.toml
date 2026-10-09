@@ -1,11 +1,16 @@
 [package]
-name = "tujiao-vision"
+name = "gluesight"
 version = "0.1.0"
-description = "涂胶检测上位机"
+description = "GlueSight · 胶路智检"
 edition = "2021"
+default-run = "GlueSight"
+
+[[bin]]
+name = "GlueSight"
+path = "src/main.rs"
 
 [lib]
-name = "tujiao_vision_lib"
+name = "gluesight_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -25,7 +30,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 ly-plc = { git = "ssh://git@github.com/liangyuR/ly-plc.git", branch = "main" }
 
 # 模拟相机逐像素合成图像，未优化时一帧要一两秒，赶不上节拍
-[profile.dev.package.tujiao-vision]
+[profile.dev.package.gluesight]
 opt-level = 2
 
 # 回放相机解码 JPEG：未优化时一帧几百毫秒

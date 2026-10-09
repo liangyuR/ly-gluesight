@@ -21,8 +21,8 @@ export default function Sidebar() {
         <img src="/app-icon.png" alt="" className="brand-logo" />
         {!collapsed && (
           <div className="brand-text">
-            <strong>TuJiao Vision</strong>
-            <span>涂胶检测</span>
+            <strong>GlueSight</strong>
+            <span>胶路智检</span>
           </div>
         )}
       </div>
