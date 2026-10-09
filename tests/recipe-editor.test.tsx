@@ -1,10 +1,10 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import RecipeEditor from "../src/features/recipe/components/RecipeEditor";
+import RecipeEditor, { newShot, nextShotId } from "../src/features/recipe/components/RecipeEditor";
 import { recipeApi } from "../src/features/cycle/api";
-import type { Recipe, RecipeDoc } from "../src/features/cycle/types";
-import { deferred, summary, workspaceView } from "./fixtures";
+import type { Recipe, RecipeDoc, ShotSpec } from "../src/features/cycle/types";
+import { deferred, shotList, summary, workspaceView } from "./fixtures";
 
 vi.mock("../src/features/cycle/api", () => ({ recipeApi: { preview: vi.fn(), save: vi.fn(), parsePath: vi.fn() } }));
 beforeEach(() => {
@@ -37,12 +37,111 @@ describe("配方几何与规则编辑", () => {
     expect(recipeApi.save).not.toHaveBeenCalled(); expect(onSaved).not.toHaveBeenCalled();
   });
 
-  it("拍照点文本支持分隔符、备注和额外列，过滤非有限坐标", () => {
+  it("逐拍照点编辑编号、Pose 与中心，清空坐标留给预览报错", () => {
     const { onDraftChange } = show();
-    fireEvent.change(screen.getByRole("textbox", { name: "拍照点中心（每行 x, y，按拍照顺序）" }), {
-      target: { value: "x,y,z\n10,20,100\n30;40;备注\nNaN,50\n60,Infinity\n70\n80\t90" },
-    });
-    expect(onDraftChange).toHaveBeenLastCalledWith(expect.objectContaining({ shots: [[10, 20], [30, 40], [80, 90]] }));
+    fireEvent.change(screen.getByRole("textbox", { name: "拍照点 1 · 编号" }), { target: { value: " A1 " } });
+    fireEvent.change(screen.getByRole("textbox", { name: "拍照点 1 · Pose" }), { target: { value: "POSE 7" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "拍照点 2 · 中心 X（mm）" }), { target: { value: "40" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "拍照点 2 · 中心 Y（mm）" }), { target: { value: "" } });
+    const shots = onDraftChange.mock.lastCall![0].shots;
+    expect(shots[0]).toEqual({ id: "A1", poseId: "POSE 7", camera: "CAM-1", center: [25, 30] });
+    expect(shots[1].center[0]).toBe(40); expect(shots[1].center[1]).toBeNaN();
+    expect(screen.getByRole("spinbutton", { name: "拍照点 2 · 中心 Y（mm）" })).toHaveValue(null);
+  });
+
+  it("添加拍照点取第一个没用过的编号，沿用上一行相机与中心，视野与标定留空", async () => {
+    const { onDraftChange } = show(undefined, workspaceView().workspace.doc, [{ id: "CAM-1", name: "相机 1" }, { id: "CAM-2", name: "相机 2" }]);
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "拍照点 2 · 相机" }), "CAM-2");
+    await userEvent.click(screen.getByRole("button", { name: "添加拍照点" }));
+    let shots = onDraftChange.mock.lastCall![0].shots;
+    expect(shots[2]).toEqual({ id: "P3", poseId: "P3", camera: "CAM-2", center: [75, 30] });
+    expect(screen.getByRole("textbox", { name: "拍照点 3 · 编号" })).toHaveValue("P3");
+    await userEvent.click(screen.getByRole("button", { name: "删除拍照点 1" }));
+    expect(onDraftChange.mock.lastCall![0].shots.map((s: ShotSpec) => s.id)).toEqual(["P2", "P3"]);
+    await userEvent.click(screen.getByRole("button", { name: "添加拍照点" }));
+    shots = onDraftChange.mock.lastCall![0].shots;
+    expect(shots.map((s: ShotSpec) => s.id)).toEqual(["P2", "P3", "P1"]);
+    expect(shots[2]).toEqual({ id: "P1", poseId: "P1", camera: "CAM-2", center: [75, 30] });
+  });
+
+  it("上移、下移交换相邻拍照点，首行不能上移、末行不能下移", async () => {
+    const { onDraftChange } = show();
+    expect(screen.getByRole("button", { name: "上移拍照点 1" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "下移拍照点 2" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "下移拍照点 1" }));
+    expect(onDraftChange.mock.lastCall![0].shots.map((s: ShotSpec) => s.id)).toEqual(["P2", "P1"]);
+    expect(screen.getByRole("textbox", { name: "拍照点 1 · 编号" })).toHaveValue("P2");
+    await userEvent.click(screen.getByRole("button", { name: "上移拍照点 2" }));
+    expect(onDraftChange.mock.lastCall![0].shots).toEqual(workspaceView().workspace.doc.shots);
+  });
+
+  it("每个拍照点单独选相机", async () => {
+    const cameras = [{ id: "cam1", name: "相机 1" }, { id: "cam2", name: "相机 2" }, { id: "cam3", name: "相机 3" }];
+    const initial = { ...workspaceView().workspace.doc, shots: shotList([[25, 30], [75, 30]], "cam1") };
+    const { onDraftChange } = show(undefined, initial, cameras);
+    await userEvent.click(screen.getByRole("button", { name: "添加拍照点" }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "拍照点 2 · 相机" }), "cam2");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "拍照点 3 · 相机" }), "cam3");
+    expect(onDraftChange.mock.lastCall![0].shots.map((s: ShotSpec) => s.camera)).toEqual(["cam1", "cam2", "cam3"]);
+    expect(screen.getByRole("combobox", { name: "拍照点 1 · 相机" })).toHaveValue("cam1");
+    expect(screen.getByRole("textbox", { name: "拍照点 3 · 标定引用" })).toHaveAttribute("placeholder", "cam3");
+  });
+
+  it("视野与标定留空不发送；只设一边时另一边取默认视野", async () => {
+    const { onDraftChange } = show();
+    const last = () => onDraftChange.mock.lastCall![0].shots[0];
+    const width = screen.getByRole("spinbutton", { name: "拍照点 1 · 视野宽（mm）" }), height = screen.getByRole("spinbutton", { name: "拍照点 1 · 视野高（mm）" });
+    expect(width).toHaveValue(null); expect(width).toHaveAttribute("placeholder", "120"); expect(height).toHaveAttribute("placeholder", "80");
+    fireEvent.change(width, { target: { value: "150" } }); expect(last().fov).toEqual([150, 80]);
+    fireEvent.change(width, { target: { value: "" } }); expect(last()).not.toHaveProperty("fov");
+    fireEvent.change(height, { target: { value: "90" } }); expect(last().fov).toEqual([120, 90]);
+    fireEvent.change(width, { target: { value: "140" } }); expect(last().fov).toEqual([140, 90]);
+    fireEvent.change(width, { target: { value: "" } }); expect(last().fov).toEqual([120, 90]);
+    fireEvent.change(height, { target: { value: "" } }); expect(last()).not.toHaveProperty("fov");
+    const calib = screen.getByRole("textbox", { name: "拍照点 1 · 标定引用" });
+    expect(calib).toHaveAttribute("placeholder", "CAM-1");
+    fireEvent.change(calib, { target: { value: " STATION-A " } }); expect(last().calib).toBe("STATION-A");
+    fireEvent.change(calib, { target: { value: "  " } }); expect(last()).not.toHaveProperty("calib");
+    await userEvent.click(await readySave());
+    const saved = vi.mocked(recipeApi.save).mock.lastCall![0];
+    expect(saved.shots.map(s => Object.keys(s))).toEqual([["id", "poseId", "camera", "center"], ["id", "poseId", "camera", "center"]]);
+    expect(JSON.stringify(saved.shots)).not.toMatch(/null/);
+  });
+
+  it("载入时单独设的视野与标定原样显示并保存", async () => {
+    const doc = workspaceView().workspace.doc; doc.shots[1] = { ...doc.shots[1], fov: [60, 50], calib: "CAM-1-B" };
+    show(undefined, doc);
+    expect(screen.getByRole("spinbutton", { name: "拍照点 2 · 视野宽（mm）" })).toHaveValue(60);
+    expect(screen.getByRole("spinbutton", { name: "拍照点 2 · 视野高（mm）" })).toHaveValue(50);
+    expect(screen.getByRole("textbox", { name: "拍照点 2 · 标定引用" })).toHaveValue("CAM-1-B");
+    await userEvent.click(await readySave());
+    expect(recipeApi.save).toHaveBeenCalledWith(expect.objectContaining({ shots: doc.shots }), "A");
+  });
+
+  it("没有拍照点时新增第一个在胶路中心，用相机组第一台；删空后由预览报错", async () => {
+    const empty = { ...workspaceView().workspace.doc, shots: [] };
+    const { onDraftChange } = show(undefined, empty, [{ id: "CAM-9", name: "相机 9" }]);
+    await userEvent.click(screen.getByRole("button", { name: "添加拍照点" }));
+    expect(onDraftChange.mock.lastCall![0].shots).toEqual([{ id: "P1", poseId: "P1", camera: "CAM-9", center: [50, 30] }]);
+    await userEvent.click(screen.getByRole("button", { name: "删除拍照点 1" }));
+    expect(onDraftChange.mock.lastCall![0].shots).toEqual([]);
+  });
+
+  it("新拍照点的编号与默认位置", () => {
+    const poly = { kind: "polyline" as const, points: [[10, 0], [110, 0], [110, 80]] as [number, number][], closed: false, radius: 0 };
+    expect(nextShotId([])).toBe("P1");
+    expect(nextShotId(shotList([[0, 0], [0, 0], [0, 0]]).filter(s => s.id !== "P2"))).toBe("P2");
+    expect(newShot([], [], poly)).toEqual({ id: "P1", poseId: "P1", camera: "", center: [60, 40] });
+    expect(newShot([], [], { ...poly, points: [[NaN, 0]] }).center).toEqual([0, 0]);
+    const first = shotList([[5, 6]], "cam2");
+    const next = newShot(first, [{ id: "cam1" }], poly);
+    expect(next).toEqual({ id: "P2", poseId: "P2", camera: "cam2", center: [5, 6] });
+    next.center[0] = 99; expect(first[0].center).toEqual([5, 6]);
+  });
+
+  it("拍照点达到 64 个后不能再添加", () => {
+    show(undefined, { ...workspaceView().workspace.doc, shots: shotList(Array.from({ length: 64 }, (_, k) => [k, 0] as [number, number])) });
+    expect(screen.getByRole("button", { name: "添加拍照点" })).toBeDisabled();
   });
 
   it("折线 bulge 表头保留圆弧，未命名第三列不当作圆弧", async () => {
@@ -211,11 +310,11 @@ describe("配方几何与规则编辑", () => {
 
   it("飞拍工位、停稳触发、视野与规则修改一起进入保存参数",async()=>{
     const {onDraftChange}=show(undefined,workspaceView().workspace.doc,[{id:"CAM-1",name:"相机 1"},{id:"CAM-2",name:"相机 2"}]);
-    await userEvent.selectOptions(screen.getByRole("combobox",{name:"相机"}),"CAM-2");await userEvent.selectOptions(screen.getByRole("combobox",{name:"触发方式"}),"stop");
+    await userEvent.selectOptions(screen.getByRole("combobox",{name:"拍照点 1 · 相机"}),"CAM-2");await userEvent.selectOptions(screen.getByRole("combobox",{name:"触发方式"}),"stop");
     fireEvent.change(screen.getByRole("spinbutton",{name:"视野高（mm）"}),{target:{value:"160"}});
     fireEvent.change(screen.getByRole("spinbutton",{name:"中值滤波窗口（点，奇数）"}),{target:{value:"5"}});
     fireEvent.change(screen.getByRole("spinbutton",{name:"直线段 · 位置 · 上公差"}),{target:{value:"1.5"}});
-    await userEvent.click(await readySave());expect(recipeApi.save).toHaveBeenCalledWith(expect.objectContaining({camera:"CAM-2",triggerMode:"stop",fov:[120,160],filterWindow:5,line:expect.objectContaining({position:expect.objectContaining({tolUpper:1.5})})}),"A");
+    await userEvent.click(await readySave());expect(recipeApi.save).toHaveBeenCalledWith(expect.objectContaining({shots:[{...workspaceView().workspace.doc.shots[0],camera:"CAM-2"},workspaceView().workspace.doc.shots[1]],triggerMode:"stop",fov:[120,160],filterWindow:5,line:expect.objectContaining({position:expect.objectContaining({tolUpper:1.5})})}),"A");
     expect(onDraftChange.mock.lastCall![0].corner.position.tolUpper).toBe(1);
   });
   it("配方重命名与共用测量参数保存仍带原编号，不漏掉编辑值",async()=>{
@@ -226,9 +325,12 @@ describe("配方几何与规则编辑", () => {
   });
 
   it("已有相机不存在时保留引用并标明，可改选有效工位",async()=>{
-    const {onDraftChange}=show(undefined,{...workspaceView().workspace.doc,camera:"MISSING"});
+    const doc=workspaceView().workspace.doc;doc.shots[1].camera="MISSING";
+    const {onDraftChange}=show(undefined,doc);
     expect(screen.getByRole("option",{name:"MISSING（不在相机组里）"})).toBeVisible();
-    await userEvent.selectOptions(screen.getByRole("combobox",{name:"相机"}),"CAM-1");expect(onDraftChange.mock.lastCall![0].camera).toBe("CAM-1");
+    expect(screen.getByRole("combobox",{name:"拍照点 1 · 相机"})).toHaveValue("CAM-1");expect(screen.getByRole("combobox",{name:"拍照点 2 · 相机"})).toHaveValue("MISSING");
+    await userEvent.selectOptions(screen.getByRole("combobox",{name:"拍照点 2 · 相机"}),"CAM-1");expect(onDraftChange.mock.lastCall![0].shots[1].camera).toBe("CAM-1");
+    expect(screen.queryByRole("option",{name:"MISSING（不在相机组里）"})).toBeNull();
   });
 
   it("新增胶宽规则按名义胶宽 2 mm 给出默认限值并随配方保存",async()=>{

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Plus, Trash2 } from "lucide-react";
 import { CalibPanel, cameraApi, CameraConfigPanel, defaultCameraConfig, DryRunPanel, FeasibilityCalc, FramePreview, useRigStatus, type CameraConfig } from "../features/camera";
 import { recipeApi, SimControls, useCycle } from "../features/cycle";
+import { shotCameras } from "../features/cycle/vis";
 import { desktopAvailable } from "../lib/desktop";
 import { Badge, Notice, Panel } from "../features/workspace/components";
 import StationCapture, { type StationView } from "../features/workspace/StationCapture";
@@ -36,7 +37,7 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
       production.recipes.forEach(r=>remember(r.cameras,`生产配方 ${r.name}（${r.id}）`));
       drafts.forEach(w=>{
         for(const [doc,label] of [[w.doc,"候选配方"],[w.pending?.doc,"待发布配方"]] as const){
-          if(doc)remember([doc.camera],`${label} ${doc.name}（${doc.id}）`);
+          if(doc)remember(shotCameras(doc.shots),`${label} ${doc.name}（${doc.id}）`);
         }
       });
       return {found,error:""};

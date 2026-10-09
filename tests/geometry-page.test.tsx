@@ -10,7 +10,7 @@ import { cameraApi, defaultCameraConfig } from "../src/features/camera/api";
 import { desktopAvailable } from "../src/lib/desktop";
 import type { Recipe, RecipeDoc } from "../src/features/cycle/types";
 import type { WorkspaceView } from "../src/features/workspace/types";
-import { deferred, summary, workspaceState, workspaceView } from "./fixtures";
+import { deferred, shotList, summary, workspaceState, workspaceView } from "./fixtures";
 
 // 编辑和保存用真实 provider；仅对 provider 正常不会产生的空预览状态使用受控上下文。
 let controlled: ReturnType<typeof useWorkspace> | null = null;
@@ -92,7 +92,8 @@ describe("胶路页面与真实候选编辑器的接线", () => {
     const save = await readySave(); fireEvent.click(save); fireEvent.click(save);
     expect(workspaceApi.saveDoc).toHaveBeenCalledTimes(1); expect(editor().getByRole("button", { name: "保存中…" })).toBeDisabled();
     expect(editor().getByRole("textbox", { name: "名称" })).toBeDisabled(); expect(editor().getByRole("spinbutton", { name: "宽（mm）" })).toBeDisabled();
-    expect(editor().getByRole("textbox", { name: "拍照点中心（每行 x, y，按拍照顺序）" })).toBeDisabled();
+    expect(editor().getByRole("spinbutton", { name: "拍照点 1 · 中心 X（mm）" })).toBeDisabled();
+    expect(editor().getByRole("button", { name: "添加拍照点" })).toBeDisabled();
     expect(screen.getByRole("combobox", { name: "当前配方" })).toBeDisabled();
     expect(screen.getByLabelText("工作台状态")).toHaveTextContent('"busy":true');
     const response = savedView(candidate, 7); views.A = response; await act(async () => request.resolve(response));
@@ -120,7 +121,7 @@ describe("胶路页面与真实候选编辑器的接线", () => {
     expect(workspaceApi.saveDoc).toHaveBeenCalledWith("A", 7, candidate);
     expect(editor().queryByRole("button", { name: "保存中…" })).toBeNull();
     expect(editor().getByRole("button", { name: "保存候选配置" })).toBeDisabled();
-    expect(editor().getByRole("textbox", { name: "名称" })).toBeDisabled(); expect(editor().getByRole("combobox", { name: "相机" })).toBeDisabled();
+    expect(editor().getByRole("textbox", { name: "名称" })).toBeDisabled(); expect(editor().getByRole("combobox", { name: "拍照点 1 · 相机" })).toBeDisabled();
     const response = savedView(candidate, 7); views.A = response; await act(async () => request.resolve(response));
     expect(editor().getByRole("textbox", { name: "名称" })).toBeEnabled(); expect(screen.queryByText("候选配置尚未保存")).toBeNull();
   });
@@ -140,35 +141,38 @@ describe("胶路页面与真实候选编辑器的接线", () => {
   });
 
   it("切换候选后编辑器重建，旧草稿不带到新候选，保存按当前候选", async () => {
-    const next = workspaceView("B"); next.workspace.doc.camera = "CAM-2";
+    const next = workspaceView("B"); next.workspace.doc.shots = shotList([[25, 30], [75, 30]], "CAM-2");
     next.layout = { ...next.layout, ...structuredClone(next.workspace.doc) }; views.B = next;
     await open(); expect(screen.getByRole("link", { name: "进入单帧示教" })).toHaveAttribute("href", "/recipe/teach");
     expect(screen.getByRole("heading", { name: "飞拍可行性" })).toBeVisible();
     fireEvent.change(editor().getByRole("textbox", { name: "名称" }), { target: { value: "旧候选草稿" } });
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "当前配方" }), "B");
     await waitFor(() => expect(editor().getByRole("textbox", { name: "名称" })).toHaveValue("工件 B"));
-    expect(editor().getByRole("combobox", { name: "相机" })).toHaveValue("CAM-2"); expect(screen.getByRole("heading", { name: "飞拍可行性" })).toBeVisible();
+    expect(editor().getByRole("combobox", { name: "拍照点 1 · 相机" })).toHaveValue("CAM-2"); expect(screen.getByRole("heading", { name: "飞拍可行性" })).toBeVisible();
     fireEvent.change(editor().getByRole("spinbutton", { name: "视野宽（mm）" }), { target: { value: "110" } });
-    expect(draft()).toMatchObject({ id: "B", name: "工件 B", camera: "CAM-2", fov: [110, 80] });
+    expect(draft()).toMatchObject({ id: "B", name: "工件 B", shots: shotList([[25, 30], [75, 30]], "CAM-2"), fov: [110, 80] });
     await userEvent.click(await readySave());
-    expect(workspaceApi.saveDoc).toHaveBeenCalledWith("B", 7, expect.objectContaining({ name: "工件 B", camera: "CAM-2", fov: [110, 80] }));
+    expect(workspaceApi.saveDoc).toHaveBeenCalledWith("B", 7, expect.objectContaining({ name: "工件 B", shots: shotList([[25, 30], [75, 30]], "CAM-2"), fov: [110, 80] }));
     await userEvent.click(screen.getByRole("link", { name: "进入单帧示教" })); expect(screen.getByLabelText("当前路径")).toHaveTextContent("/recipe/teach");
   });
 
-  it("飞拍可行性接收当前所选相机的曝光，切换相机和进入示教均使用真实控件", async () => {
+  it("飞拍可行性接收首个拍照点相机的曝光，切换相机和进入示教均使用真实控件", async () => {
     await open();
     // 可行性表单通过 effect 同步相机曝光；名称字段出现时同步可能尚未提交。
     await waitFor(() => expect(screen.getByRole("spinbutton", { name: "曝光（µs）" })).toHaveValue(80));
-    await userEvent.selectOptions(editor().getByRole("combobox", { name: "相机" }), "CAM-2");
-    expect(draft().camera).toBe("CAM-2");
+    await userEvent.selectOptions(editor().getByRole("combobox", { name: "拍照点 2 · 相机" }), "CAM-2");
+    expect(draft().shots.map(s => s.camera)).toEqual(["CAM-1", "CAM-2"]);
+    expect(screen.getByRole("spinbutton", { name: "曝光（µs）" })).toHaveValue(80);
+    await userEvent.selectOptions(editor().getByRole("combobox", { name: "拍照点 1 · 相机" }), "CAM-2");
+    expect(draft().shots[0].camera).toBe("CAM-2");
     await waitFor(() => expect(screen.getByRole("spinbutton", { name: "曝光（µs）" })).toHaveValue(125));
     await userEvent.click(screen.getByRole("link", { name: "进入单帧示教" })); expect(screen.getByLabelText("当前路径")).toHaveTextContent("/recipe/teach");
   });
 
   it("配方引用相机已移除时保留引用，可行性使用默认曝光", async () => {
-    views.A.workspace.doc.camera = "CAM-OLD"; views.A.layout.camera = "CAM-OLD";
-    await open(); expect(editor().getByRole("combobox", { name: "相机" })).toHaveValue("CAM-OLD");
-    expect(screen.getByRole("option", { name: "CAM-OLD（不在相机组里）" })).toBeInTheDocument();
+    views.A.workspace.doc.shots = shotList([[25, 30], [75, 30]], "CAM-OLD"); views.A.layout.shots = shotList([[25, 30], [75, 30]], "CAM-OLD");
+    await open(); expect(editor().getByRole("combobox", { name: "拍照点 1 · 相机" })).toHaveValue("CAM-OLD");
+    expect(screen.getAllByRole("option", { name: "CAM-OLD（不在相机组里）" })).toHaveLength(2);
     expect(screen.getByRole("spinbutton", { name: "曝光（µs）" })).toHaveValue(60);
   });
 
@@ -192,17 +196,26 @@ describe("胶路页面的搜索余量覆盖提示", () => {
     { name: "没有测量点时不显示虚假满覆盖", points: [], fov: [20, 20], shots: [[0, 0]], margins: [4], percent: "0.00", tone: "warn" },
   ])("$name", async ({ points, fov, shots, margins, percent, tone }) => {
     const view = views.A;
-    view.workspace.doc.fov = fov as [number, number]; view.workspace.doc.shots = shots as [number, number][];
-    view.layout.fov = fov as [number, number]; view.layout.shots = shots as [number, number][];
+    view.workspace.doc.fov = fov as [number, number]; view.workspace.doc.shots = shotList(shots as [number, number][]);
+    view.layout.fov = fov as [number, number]; view.layout.shots = shotList(shots as [number, number][]);
     view.layout.points = { x: points.map(p => p[0]), y: points.map(p => p[1]), k: points.map(() => 0), seg: points.map(() => 0) };
     const template = view.workspace.frames[0]; view.workspace.frames = margins.map((searchMm, k) => ({ ...structuredClone(template), k, params: { ...template.params, searchMm } }));
     await open(); const badge = screen.getByText(`搜索窗口覆盖 ${percent}%`);
     expect(badge).toHaveClass(tone); expect(view.coverage).toBe(100);
   });
 
+  it("拍照点单独设的视野参与覆盖计算，没设的用配方视野", async () => {
+    const view = views.A; view.workspace.doc.fov = view.layout.fov = [20, 20];
+    view.workspace.doc.shots = view.layout.shots = [{ ...shotList([[0, 0]])[0], fov: [40, 20] }, { ...shotList([[0, 0], [100, 0]])[1] }];
+    view.layout.points = { x: [-15, 0, 15, 92, 100], y: [0, 0, 0, 0, 0], k: [0, 0, 0, 1, 1], seg: [0, 0, 0, 0, 0] };
+    view.workspace.frames = view.workspace.frames.map(f => ({ ...f, params: { ...f.params, searchMm: 0 } }));
+    // P1 的 40 mm 宽视野覆盖 ±15，P2 用配方的 20 mm 视野只覆盖 90–110
+    await open(); expect(screen.getByText("搜索窗口覆盖 100.00%")).toHaveClass("ok");
+  });
+
   it("真实编辑器修改视野后工作台覆盖提示随新的 API 预览更新", async () => {
-    const view = views.A; view.workspace.doc.shots = [[0, 0]]; view.workspace.doc.fov = [30, 30];
-    view.layout.shots = [[0, 0]]; view.layout.fov = [30, 30]; view.layout.points = { x: [-10, 0, 10], y: [0, 0, 0], k: [0, 0, 0], seg: [0, 0, 0] };
+    const view = views.A; view.workspace.doc.shots = shotList([[0, 0]]); view.workspace.doc.fov = [30, 30];
+    view.layout.shots = shotList([[0, 0]]); view.layout.fov = [30, 30]; view.layout.points = { x: [-10, 0, 10], y: [0, 0, 0], k: [0, 0, 0], seg: [0, 0, 0] };
     view.workspace.frames = [view.workspace.frames[0]];
     await open(); expect(screen.getByText("搜索窗口覆盖 100.00%")).toHaveClass("ok");
     fireEvent.change(editor().getByRole("spinbutton", { name: "视野宽（mm）" }), { target: { value: "20" } });

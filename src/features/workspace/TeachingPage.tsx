@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Save, WandSparkles } from "lucide-react";
 import { useCycle } from "../cycle/api";
+import { shotLabel } from "../cycle/vis";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, FrameRail, GrayViewer, KV, Notice, NumberField, Panel, Steps, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
@@ -66,7 +67,7 @@ export default function TeachingPage() {
   return <div className="wp-page"><WorkspaceBar /><Steps />
     <div className="wp-actions"><Badge tone={frame.saved&&trialCurrent?"ok":trialCurrent?"info":"neutral"}>{editingParams ? "参数待试测" : staleTrial?"试测已过期":frame.saved ? "本帧已保存" : frame.trial ? frame.trial.passed ? "试测通过" : "试测未通过" : frame.image ? "待试测" : "待取样"}</Badge><span className="muted">已保存 {data.workspace.frames.filter(f => f.saved).length} / {data.workspace.frames.length} 帧</span><span className="spacer" /><Link className="btn" to="/recipe/overview">布置总览</Link></div>
     <div className="wp-teach">
-      <Panel title={doc.camera} detail="每帧独立绑定图像与参数"><FrameRail id={doc.id} frames={data.workspace.frames} selected={k} onSelect={setK} disabled={busy||working||reading} /></Panel>
+      <Panel title={shotLabel(data.layout.shots[k],k)} detail="每帧独立绑定图像与参数"><FrameRail id={doc.id} frames={data.workspace.frames} selected={k} onSelect={setK} disabled={busy||working||reading} /></Panel>
       <div className="wp-stack"><Panel title={"k" + (k+1) + " · 单帧图像"} detail="冻结样本 → 试测 → 保存本帧" actions={<div className="wp-actions"><ImageImportButton scope={doc.id+":"+data.workspace.revision+":"+k} disabled={!unlocked||productionBusy}
         onReadingChange={setReading} onImport={bytes=>perform(()=>workspaceApi.importImage(doc.id,data.workspace.revision,k,bytes),"离线原图已绑定本帧，请重新试测")} onError={setError}/><button className="btn" disabled={!unlocked || productionBusy} onClick={() => void perform(() => workspaceApi.capture(doc.id,data.workspace.revision,k), "已冻结新的完整图像")}><Save size={15} />{busy||working ? "处理中…" : "取新样本"}</button></div>}>
         <GrayViewer image={image} loading={loading} error={error} label={frame.image ? "冻结图像 · " + frame.image.id : "等待取样"} params={p} layout={data.layout} k={k} onRect={unlocked ? rect => setFrameParams(k,{...p,rect}) : undefined} />

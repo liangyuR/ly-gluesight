@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Save, Upload } from "lucide-react";
+import { ArrowDown, ArrowUp, Plus, Save, Trash2, Upload } from "lucide-react";
 import { recipeApi } from "../../cycle/api";
 import TrajectoryMap from "../../cycle/components/TrajectoryMap";
-import type { JudgeParams, PathSpec, Recipe, RecipeDoc, SegmentLimits } from "../../cycle/types";
+import type { JudgeParams, PathSpec, Recipe, RecipeDoc, SegmentLimits, ShotSpec } from "../../cycle/types";
 
 interface Props {
   initial: RecipeDoc;
@@ -22,8 +22,6 @@ const paramFields: [keyof JudgeParams, string][] = [
   ["absMax", "绝对上限"],
   ["maxExcursionLen", "允许超差长度"],
 ];
-
-const pointsText = (pts: [number, number][]) => pts.map(([x, y]) => `${x}, ${y}`).join("\n");
 
 const cells = (line: string) =>
   line
@@ -52,10 +50,6 @@ function parseRows(text: string): number[][] {
       return out;
     })
     .filter((v) => v.length >= 2 && Number.isFinite(v[0]) && Number.isFinite(v[1]));
-}
-
-function parseText(text: string): [number, number][] {
-  return parseRows(text).map((v) => [v[0], v[1]] as [number, number]);
 }
 
 /** 有圆弧时首行写表头 "x, y, bulge"。 */
@@ -127,6 +121,153 @@ function LimitsTable({ label, value, onChange, widthDefault }: { label: string; 
   );
 }
 
+/** 新拍照点的编号：P1、P2… 里第一个没用过的。 */
+export function nextShotId(shots: ShotSpec[]) {
+  const used = new Set(shots.map((s) => s.id));
+  let n = 1;
+  while (used.has(`P${n}`)) n++;
+  return `P${n}`;
+}
+
+/** 胶路包围盒中心，第一个拍照点的默认位置。 */
+function pathCenter(path: PathSpec): [number, number] {
+  if (path.kind === "roundedRect") return [path.width / 2, path.height / 2];
+  const pts = path.points.filter((p) => p.every(Number.isFinite));
+  if (!pts.length) return [0, 0];
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  return [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
+}
+
+/** 新加的拍照点：相机与中心沿用上一行，Pose 同编号；视野、标定留空用缺省。 */
+export function newShot(shots: ShotSpec[], cameras: { id: string }[], path: PathSpec): ShotSpec {
+  const id = nextShotId(shots), last = shots.at(-1);
+  return { id, poseId: id, camera: last?.camera ?? cameras[0]?.id ?? "", center: last ? [...last.center] : pathCenter(path) };
+}
+
+/** 改拍照点视野的一边：留空表示用配方视野；另一边也没单独设时整项去掉。 */
+function shotFovWith(shot: ShotSpec, fov: [number, number], i: 0 | 1, v: number): [number, number] | undefined {
+  const other = 1 - i;
+  if (Number.isNaN(v)) {
+    if (!shot.fov || shot.fov[other] === fov[other]) return undefined;
+    v = fov[i];
+  }
+  const next: [number, number] = shot.fov ? [...shot.fov] : [...fov];
+  next[i] = v;
+  return next;
+}
+
+function ShotTable({ shots, fov, cameras, path, onChange }: { shots: ShotSpec[]; fov: [number, number]; cameras: { id: string; name: string }[]; path: PathSpec; onChange: (shots: ShotSpec[]) => void }) {
+  const edit = (k: number, patch: Partial<ShotSpec>) =>
+    onChange(
+      shots.map((s, i) => {
+        if (i !== k) return s;
+        const next = { ...s, ...patch };
+        // 后端不认 null：没单独设的视野、标定不发送
+        if (next.fov === undefined) delete next.fov;
+        if (!next.calib) delete next.calib;
+        return next;
+      }),
+    );
+  const move = (k: number, to: number) => {
+    const next = [...shots];
+    [next[k], next[to]] = [next[to], next[k]];
+    onChange(next);
+  };
+  const coord = (v: number) => (Number.isFinite(v) ? v : "");
+  const number = (value: string) => (value === "" ? NaN : Number(value));
+  return (
+    <>
+      <div className="table-wrap">
+        <table className="table rcp-shots">
+          <thead>
+            <tr>
+              <th>序号</th>
+              <th>编号</th>
+              <th>Pose</th>
+              <th>相机</th>
+              <th>中心 X / Y（mm）</th>
+              <th>视野 宽 × 高（mm）</th>
+              <th>标定引用</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {shots.map((s, k) => {
+              const row = `拍照点 ${k + 1}`;
+              return (
+                <tr key={k}>
+                  <td className="mono muted">{k + 1}</td>
+                  <td>
+                    <input aria-label={`${row} · 编号`} className="input mono rcp-shot-id" value={s.id} onChange={(e) => edit(k, { id: e.target.value.trim() })} />
+                  </td>
+                  <td>
+                    <input aria-label={`${row} · Pose`} className="input mono rcp-shot-id" value={s.poseId} onChange={(e) => edit(k, { poseId: e.target.value })} />
+                  </td>
+                  <td>
+                    <select aria-label={`${row} · 相机`} className="input" value={s.camera} onChange={(e) => edit(k, { camera: e.target.value })}>
+                      {!cameras.some((c) => c.id === s.camera) && <option value={s.camera}>{s.camera}（不在相机组里）</option>}
+                      {cameras.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} · {c.id}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td>
+                    <span className="rcp-pair">
+                      <input aria-label={`${row} · 中心 X（mm）`} className="input mono" type="number" step={1} value={coord(s.center[0])} onChange={(e) => edit(k, { center: [number(e.target.value), s.center[1]] })} />
+                      <input aria-label={`${row} · 中心 Y（mm）`} className="input mono" type="number" step={1} value={coord(s.center[1])} onChange={(e) => edit(k, { center: [s.center[0], number(e.target.value)] })} />
+                    </span>
+                  </td>
+                  <td>
+                    <span className="rcp-pair">
+                      {([0, 1] as const).map((i) => (
+                        <input
+                          key={i}
+                          aria-label={`${row} · 视野${i ? "高" : "宽"}（mm）`}
+                          className="input mono"
+                          type="number"
+                          step={1}
+                          placeholder={String(fov[i])}
+                          value={s.fov && Number.isFinite(s.fov[i]) ? s.fov[i] : ""}
+                          onChange={(e) => edit(k, { fov: shotFovWith(s, fov, i, number(e.target.value)) })}
+                        />
+                      ))}
+                    </span>
+                  </td>
+                  <td>
+                    <input aria-label={`${row} · 标定引用`} className="input mono rcp-shot-id" placeholder={s.camera} value={s.calib ?? ""} onChange={(e) => edit(k, { calib: e.target.value.trim() || undefined })} />
+                  </td>
+                  <td>
+                    <span className="rcp-row-actions">
+                      <button type="button" className="icon-btn" aria-label={`上移${row}`} disabled={k === 0} onClick={() => move(k, k - 1)}>
+                        <ArrowUp size={14} />
+                      </button>
+                      <button type="button" className="icon-btn" aria-label={`下移${row}`} disabled={k === shots.length - 1} onClick={() => move(k, k + 1)}>
+                        <ArrowDown size={14} />
+                      </button>
+                      <button type="button" className="icon-btn" aria-label={`删除${row}`} onClick={() => onChange(shots.filter((_, i) => i !== k))}>
+                        <Trash2 size={14} />
+                      </button>
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div className="rcp-actions">
+        <button type="button" className="btn small" disabled={shots.length >= 64} onClick={() => onChange([...shots, newShot(shots, cameras, path)])}>
+          <Plus size={14} />
+          添加拍照点
+        </button>
+        <span className="muted hint">按拍照顺序排列。视野留空用上面的默认视野，标定引用留空用该相机的工位标定；同一 Pose 可以触发两台相机。</span>
+      </div>
+    </>
+  );
+}
+
 export default function RecipeEditor({ initial, originalId, cameras, onSaved, onDraftChange, saveCandidate }: Props) {
   const [doc, setDoc] = useState<RecipeDoc>(initial);
   const [preview, setPreview] = useState<Recipe | null>(null);
@@ -134,7 +275,6 @@ export default function RecipeEditor({ initial, originalId, cameras, onSaved, on
   const [previewError, setPreviewError] = useState("");
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
   const [polyText, setPolyText] = useState(initial.path.kind === "polyline" ? pathText(initial.path.points, initial.path.bulges) : "");
-  const [shotsText, setShotsText] = useState(pointsText(initial.shots));
   const [importing,setImporting]=useState(false),[saving,setSaving]=useState(false);
   const mounted=useRef(true),importSerial=useRef(0),pendingSave=useRef(false);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;importSerial.current++;};},[]);
@@ -333,32 +473,10 @@ export default function RecipeEditor({ initial, originalId, cameras, onSaved, on
                 <option value="stop">停稳拍</option>
               </select>
             </label>
-            <label className="field">
-              <span>相机</span>
-              <select className="input" value={doc.camera} onChange={(e) => set("camera", e.target.value)}>
-                {!cameras.some((c) => c.id === doc.camera) && <option value={doc.camera}>{doc.camera}（不在相机组里）</option>}
-                {cameras.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} · {c.id}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <Num label="视野宽（mm）" value={doc.fov[0]} step={1} onChange={(v) => set("fov", [v, doc.fov[1]])} />
-            <Num label="视野高（mm）" value={doc.fov[1]} step={1} onChange={(v) => set("fov", [doc.fov[0], v])} />
+            <Num label="视野宽（mm）" value={doc.fov[0]} step={1} hint="拍照点没单独设视野时用" onChange={(v) => set("fov", [v, doc.fov[1]])} />
+            <Num label="视野高（mm）" value={doc.fov[1]} step={1} hint="拍照点没单独设视野时用" onChange={(v) => set("fov", [doc.fov[0], v])} />
           </div>
-          <label className="field">
-            <span>拍照点中心（每行 x, y，按拍照顺序）</span>
-            <textarea
-              className="input mono"
-              rows={5}
-              value={shotsText}
-              onChange={(e) => {
-                setShotsText(e.target.value);
-                set("shots", parseText(e.target.value));
-              }}
-            />
-          </label>
+          <ShotTable shots={doc.shots} fov={doc.fov} cameras={cameras} path={doc.path} onChange={(shots) => set("shots", shots)} />
         </Section>
         </fieldset>
       </div>

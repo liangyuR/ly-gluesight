@@ -70,7 +70,7 @@ export function GrayViewer({ image, loading = false, error = "", label, params, 
   const points = useMemo(() => {
     if (!layout || !params || !image || !layout.shots[k]) return [];
     if (![params.dx, params.dy, params.deg, params.mmPerPx].every(Number.isFinite) || params.mmPerPx <= 0) return [];
-    const [cx,cy] = layout.shots[k];
+    const [cx,cy] = layout.shots[k].center;
     const sin = Math.sin(params.deg * Math.PI / 180), cos = Math.cos(params.deg * Math.PI / 180);
     const groups:string[][]=[];let group:string[]|null=null;
     layout.points.k.forEach((owner,j)=>{

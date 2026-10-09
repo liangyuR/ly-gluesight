@@ -158,5 +158,6 @@ export interface PlcRecipePlan {
   shotCount: number;
   cameraSlots: [string, string, string];
   cameraShots: [number, number, number];
-  shots: { shotId: string; cameraId: string; center: [number, number] }[];
+  /** poseId：现场机器人 / PLC 程序里的 Pose 标识，同一 Pose 可触发几台相机 */
+  shots: { shotId: string; poseId: string; cameraId: string; center: [number, number] }[];
 }

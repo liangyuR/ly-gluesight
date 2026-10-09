@@ -28,7 +28,7 @@ async (page) => {
   await page.getByRole("button", { name:"保存总览", exact:true }).click();
   await page.getByText("总览布置已保存，物理拍照坐标保持不变", { exact:true }).waitFor();
   const state = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("workspace_get", {id:"UI-FLYSHOT"}));
-  if (!state.workspace.overview.saved || Math.abs(state.workspace.overview.positions[0][0]-.32)>.01 || JSON.stringify(state.layout.shots)!==JSON.stringify([[95,50],[285,50],[285,150],[95,150]])) throw new Error(JSON.stringify(state.workspace.overview));
+  if (!state.workspace.overview.saved || Math.abs(state.workspace.overview.positions[0][0]-.32)>.01 || JSON.stringify(state.layout.shots.map(s=>s.center))!==JSON.stringify([[95,50],[285,50],[285,150],[95,150]])) throw new Error(JSON.stringify(state.workspace.overview));
   const result={ operation:"完整离线原图导入、试测保存、原始示教恢复、总览真实拖动与方向键、独立保存",passed:true, imported:imported.image, positions:state.workspace.overview.positions, physicalShots:state.layout.shots };
   await page.evaluate(result=>window.__uiOperations.checks.push(result),result);
   await page.getByRole("link", { name:"验证与发布",exact:true }).last().click();

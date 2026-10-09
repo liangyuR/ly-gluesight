@@ -1,4 +1,5 @@
 import type { FrameView, PartView, PointVis, Recipe } from "../types";
+import { shotLabel } from "../vis";
 import TrajectoryMap from "./TrajectoryMap";
 
 const labels: Record<FrameView["status"], [string, string]> = {
@@ -31,14 +32,14 @@ export default function ShotStrip({ layout, part, vis, selected, onSelect }: { l
   const frames = part && part.recipeId === layout.id && part.recipeHash === layout.hash ? part.frames : null;
   return (
     <div className="shot-strip" style={{ gridTemplateColumns: `repeat(${layout.shots.length}, minmax(0, 1fr))` }}>
-      {layout.shots.map((_, k) => {
+      {layout.shots.map((shot, k) => {
         const f = frames?.[k];
         const [label, tone] = labels[f?.status ?? "waiting"];
         const bad = f && (f.status === "locateFailed" || f.status === "error" || f.status === "missing");
         return (
           <button key={k} type="button" className={`shot s-${f?.status ?? "waiting"}${f?.gapPoints ? " has-gap" : ""}${selected===k ? " selected" : ""}`} aria-label={`查看帧 k${k+1}`} aria-pressed={selected===k} onClick={()=>onSelect?.(k)}>
             <div className="shot-head">
-              <b className="mono">k{k+1}</b>
+              <b className="mono" title={`k${k + 1} · Pose ${shot.poseId}`}>{shotLabel(shot, k)}</b>
               <span className={f?.gapPoints ? "c-ng" : tone}>{f?.gapPoints ? `缺胶 ${f.gapPoints}` : label}</span>
             </div>
             <TrajectoryMap layout={layout} vis={vis} focus={k} compact className="shot-img" />

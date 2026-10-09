@@ -15,14 +15,14 @@ async (page) => {
     await svg.waitFor();
     await page.getByRole("spinbutton", { name: "最低定位分数", exact: true }).fill("0.61");
     await page.getByText("本帧参数有未保存的修改", { exact: true }).waitFor();
-    const [cx,cy] = r.shots[k];
+    const [cx,cy] = r.shots[k].center, fov = r.shots[k].fov ?? r.fov;
     const [hx,hy] = [...holes].sort((a,b) => Math.hypot(a[0]-cx,a[1]-cy)-Math.hypot(b[0]-cx,b[1]-cy))[0];
     let nearest = 0;
     for (let j = 1; j < points.x.length; j++) if (Math.hypot(points.x[j]-hx,points.y[j]-hy) < Math.hypot(points.x[nearest]-hx,points.y[nearest]-hy)) nearest = j;
     const tx = (points.x[nearest]+hx)/2, ty = (points.y[nearest]+hy)/2;
-    const w = Math.round(r.fov[0]/.08), h = Math.round(r.fov[1]/.08), size = 350;
-    const x = Math.max(40,Math.min(w-size-40,Math.trunc((tx-cx+r.fov[0]/2)/.08)-175));
-    const y = Math.max(40,Math.min(h-size-40,Math.trunc((ty-cy+r.fov[1]/2)/.08)-175));
+    const w = Math.round(fov[0]/.08), h = Math.round(fov[1]/.08), size = 350;
+    const x = Math.max(40,Math.min(w-size-40,Math.trunc((tx-cx+fov[0]/2)/.08)-175));
+    const y = Math.max(40,Math.min(h-size-40,Math.trunc((ty-cy+fov[1]/2)/.08)-175));
     await svg.scrollIntoViewIfNeeded();
     const pointer = await svg.locator("g").first().evaluate((el, [x,y,size]) => {
       const matrix = el.getScreenCTM();

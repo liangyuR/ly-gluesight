@@ -8,7 +8,8 @@ interface TeachStatus {
   dir: string;
   taught: boolean[];
   stale: boolean;
-  mmPerPx: number | null;
+  /** 各拍照点所用工位标定给出的像素当量；没标定为 null */
+  mmPerPx: (number | null)[];
 }
 
 /**
@@ -17,12 +18,13 @@ interface TeachStatus {
  */
 export default function FlyshotTeach({ recipe }: { recipe: Recipe }) {
   const { statuses, lastFrame } = useRigStatus();
-  // 配方按编号引用相机，取图、触发按它此刻在相机组里的序号
-  const cam = statuses.find((s) => s.id === recipe.camera)?.cam ?? 0;
+  const [k, setK] = useState(0);
+  const shot = recipe.shots[k];
+  // 拍照点按编号引用相机，取图、触发按它此刻在相机组里的序号
+  const cam = statuses.find((s) => s.id === shot?.camera)?.cam ?? 0;
   const { img, canvas } = usePreviewCanvas(cam, lastFrame[cam]?.frameCounter);
   const svg = useRef<SVGSVGElement>(null);
   const [status, setStatus] = useState<TeachStatus | null>(null);
-  const [k, setK] = useState(0);
   const [align, setAlign] = useState({ dx: 0, dy: 0, deg: 0, mmPerPx: 0.04 });
   const [rect, setRect] = useState<[number, number, number, number] | null>(null);
   const [drag, setDrag] = useState<[number, number] | null>(null);
@@ -31,18 +33,20 @@ export default function FlyshotTeach({ recipe }: { recipe: Recipe }) {
   const refresh = () => {
     if (!isTauri()) return;
     invoke<TeachStatus>("teach_flyshot_status", { recipeId: recipe.id })
-      .then((s) => {
-        setStatus(s);
-        if (s.mmPerPx) setAlign((a) => ({ ...a, mmPerPx: Number(s.mmPerPx!.toFixed(5)) }));
-      })
+      .then(setStatus)
       .catch((e) => setNotice({ ok: false, text: String(e) }));
   };
   useEffect(refresh, [recipe.id, recipe.hash]);
+  // 每个拍照点用自己的工位标定：换拍照点或标定刷新后取它的像素当量
+  const calibMm = status?.mmPerPx[k];
+  useEffect(() => {
+    if (calibMm) setAlign((a) => ({ ...a, mmPerPx: Number(calibMm.toFixed(5)) }));
+  }, [calibMm]);
 
   const [fw, fh] = img ? [img.fullWidth, img.fullHeight] : [2448, 2048];
   // 名义测量点 → 像素：以图像中心为拍照点中心，按像素当量缩放，再平移旋转
   const overlay = useMemo(() => {
-    const [cx, cy] = recipe.shots[k] ?? [0, 0];
+    const [cx, cy] = recipe.shots[k]?.center ?? [0, 0];
     const [s, c] = [Math.sin((align.deg * Math.PI) / 180), Math.cos((align.deg * Math.PI) / 180)];
     const [icx, icy] = [fw / 2 + align.dx, fh / 2 + align.dy];
     const pts: string[] = [];
@@ -80,7 +84,7 @@ export default function FlyshotTeach({ recipe }: { recipe: Recipe }) {
     try {
       const s = await invoke<TeachStatus>("teach_flyshot_save", { teach: { recipeId: recipe.id, k, rect, ...align } });
       setStatus(s);
-      setNotice({ ok: true, text: `拍照点 k=${k} 已示教` });
+      setNotice({ ok: true, text: `拍照点 ${shot?.id ?? `k=${k}`} 已示教` });
     } catch (e) {
       setNotice({ ok: false, text: String(e) });
     }
@@ -101,23 +105,23 @@ export default function FlyshotTeach({ recipe }: { recipe: Recipe }) {
         <span className="spacer" />
         <button className="btn" onClick={trigger}>
           <Zap size={15} />
-          取一帧（{recipe.camera}）
+          取一帧（{shot?.camera ?? "—"}）
         </button>
         <button className="btn primary" onClick={save} disabled={!img}>
           <Save size={15} />
-          保存 k={k}
+          保存 {shot?.id ?? `k=${k}`}
         </button>
       </div>
       <div className="teach-shots">
-        {recipe.shots.map((_, i) => (
-          <button key={i} className={`chip${i === k ? " active" : ""}${status?.taught[i] ? " done" : ""}`} onClick={() => setK(i)}>
-            k={i} {status?.taught[i] ? "✓" : ""}
+        {recipe.shots.map((s, i) => (
+          <button key={i} className={`chip${i === k ? " active" : ""}${status?.taught[i] ? " done" : ""}`} title={`k=${i} · Pose ${s.poseId}`} onClick={() => setK(i)}>
+            {s.id} · {s.camera} {status?.taught[i] ? "✓" : ""}
           </button>
         ))}
       </div>
       <div className="calib-view">
         <canvas ref={canvas} style={{ display: img ? "block" : "none" }} />
-        {!img && <span className="muted">机器人停在拍照点 k={k}，点“取一帧”</span>}
+        {!img && <span className="muted">机器人停在拍照点 {shot?.id ?? `k=${k}`}（Pose {shot?.poseId ?? "—"}），点“取一帧”</span>}
         <svg ref={svg} viewBox={`0 0 ${fw} ${fh}`} onMouseDown={down} onMouseMove={move} onMouseUp={() => setDrag(null)}>
           <polyline points={overlay} fill="none" stroke="var(--accent-text)" strokeWidth={2} vectorEffect="non-scaling-stroke" />
           {rect && <rect x={rect[0]} y={rect[1]} width={rect[2]} height={rect[3]} fill="var(--accent-overlay)" stroke="var(--accent-text)" vectorEffect="non-scaling-stroke" />}

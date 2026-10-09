@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Camera, Scale, ScanEye } from "lucide-react";
-import { computeVis, UnrolledCurve, type Measured, type PartView, type Recipe } from "../features/cycle";
+import { computeVis, shotLabel, UnrolledCurve, type Measured, type PartView, type Recipe } from "../features/cycle";
 import { displayReason, formatTime, historyApi, triggerModeLabel, verdictClass, verdictLabel, type PartDetail } from "../features/history";
 import { workspaceApi } from "../features/workspace/api";
 import { useWorkspace } from "../features/workspace/context";
@@ -92,7 +92,7 @@ export default function HistoryDetailPage() {
     <div className="detail-grid">
       <Panel title="工件总览与原图" detail="帧选择只改变查看范围，原始整件判定保留">
         {layout&&view?<WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={setSelected} vis={view.vis}/>:<p className="muted">配方快照缺失，无法绘制。</p>}
-        {layout&&<div className="wp-stack"><div className="wp-actions"><Badge>{"选中 k"+(selected+1)}</Badge><select className="input" aria-label="历史帧选择" disabled={working} style={{width:220}} value={selected} onChange={e=>setSelected(Number(e.target.value))}>{layout.shots.map((_,k)=><option key={k} value={k}>k{k+1} · {raw?.frames.some(f=>f.k===k&&f.available)?"原图可用":"无原图"}</option>)}</select><span className="spacer"/><button className="btn" disabled={disabled||!available} onClick={()=>void useForTeach()}><Camera size={15}/>将此帧用于示教</button></div><GrayViewer image={image.image} loading={image.loading} error={image.error||(!available?"本帧原图未保存或已按保留策略清理；完整测量数据仍可用于规则重判":"")} label={imageLabel}/></div>}
+        {layout&&<div className="wp-stack"><div className="wp-actions"><Badge>{"选中 k"+(selected+1)}</Badge><select className="input" aria-label="历史帧选择" disabled={working} style={{width:260}} value={selected} onChange={e=>setSelected(Number(e.target.value))}>{layout.shots.map((shot,k)=><option key={k} value={k}>k{k+1} · {shotLabel(shot,k)} · {raw?.frames.some(f=>f.k===k&&f.available)?"原图可用":"无原图"}</option>)}</select><span className="spacer"/><button className="btn" disabled={disabled||!available} onClick={()=>void useForTeach()}><Camera size={15}/>将此帧用于示教</button></div><GrayViewer image={image.image} loading={image.loading} error={image.error||(!available?"本帧原图未保存或已按保留策略清理；完整测量数据仍可用于规则重判":"")} label={imageLabel}/></div>}
       </Panel>
       <Panel title="原始整件判定" className="side"><p className="reason-box">{displayReason(j.reason)}</p>
         {j.gaps.map((g,i)=><div key={i} className="ng-item"><div className="ng-title c-ng">断胶 · {layout?.segments[g.segment]?.name??"段 "+g.segment}</div><p>s {g.s0.toFixed(1)} – {g.s1.toFixed(1)} mm · 长度 {g.len.toFixed(1)} mm（允许 ≤ {layout?.maxGapLen??"—"}）</p><div className="wp-actions">{g.frames.map(k=><button className="btn small" key={k} onClick={()=>setSelected(k)}>k{k+1}</button>)}{g.frames.length>1&&<span className="muted">跨帧合并</span>}</div></div>)}

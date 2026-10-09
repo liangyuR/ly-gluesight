@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { RecipeDoc, RecipeSummary, Snapshot } from "../src/features/cycle/types";
+import type { RecipeDoc, RecipeSummary, ShotSpec, Snapshot } from "../src/features/cycle/types";
 import type { PartDetail, PartSummary } from "../src/features/history/types";
 import type { WorkspaceView } from "../src/features/workspace/types";
 import type { useWorkspace } from "../src/features/workspace/context";
@@ -11,14 +11,19 @@ export function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+/** 一台相机按顺序拍这些位置：编号 P1、P2…，Pose 同编号（与 recipe.rs 的 shot_list 一致）。 */
+export function shotList(centers: [number, number][], camera = "CAM-1"): ShotSpec[] {
+  return centers.map((center, k) => ({ id: `P${k + 1}`, poseId: `P${k + 1}`, camera, center }));
+}
+
 export function workspaceView(id = "A"): WorkspaceView {
   const position = { nominal: 3, tolUpper: 1, tolLower: 1, absMin: 1, absMax: 6, maxExcursionLen: 2 };
   const limits = { position, width: null };
   const doc: RecipeDoc = {
-    id, name: `工件 ${id}`, version: 2, productCode: 1, triggerMode: "fly", camera: "CAM-1",
+    id, name: `工件 ${id}`, version: 2, productCode: 1, triggerMode: "fly", schemaVersion: 2,
     path: { kind: "roundedRect", width: 100, height: 60, radius: 5 },
     spacing: 1, filterWindow: 3, maxGapLen: .5, line: limits, corner: structuredClone(limits),
-    segmentOverrides: {}, fov: [120, 80], shots: [[25, 30], [75, 30]],
+    segmentOverrides: {}, fov: [120, 80], shots: shotList([[25, 30], [75, 30]]),
   };
   const layout = {
     ...structuredClone(doc), hash: `hash-${id}`, part: [100, 60, 5] as [number, number, number], closed: true,
@@ -51,7 +56,7 @@ export function workspaceView(id = "A"): WorkspaceView {
 export function summary(view = workspaceView()): RecipeSummary {
   const { layout: r } = view;
   return { id: r.id, name: r.name, version: 1, hash: r.hash, productCode: r.productCode,
-    shotCount: r.shots.length, triggerMode: r.triggerMode, cameras: [r.camera], length: 4 };
+    shotCount: r.shots.length, triggerMode: r.triggerMode, cameras: [...new Set(r.shots.map(s => s.camera))], length: 4 };
 }
 
 export function workspaceState(view = workspaceView()): ReturnType<typeof useWorkspace> {

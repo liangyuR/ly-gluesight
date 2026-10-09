@@ -1,6 +1,9 @@
 import { useMemo } from "react";
 import type { PointVis, Recipe } from "../types";
-import { bounds, polyline, runs, visColor } from "../vis";
+import { bounds, CAM_COLORS, polyline, runs, shotCameras, shotFov, visColor } from "../vis";
+
+/** 各相机的视野框线型：颜色相近时也能分清是哪台相机。 */
+const CAM_DASH = ["5 4", "10 3 2 3", "2 3", "12 4"];
 
 interface Props {
   layout: Recipe;
@@ -15,21 +18,22 @@ interface Props {
 
 export default function TrajectoryMap({ layout, vis, current = -1, focus = null, className, compact = false, selectedPoint = null }: Props) {
   const [w, h, r] = layout.part;
-  const [fw, fh] = layout.fov;
   const rect = !layout.path || layout.path.kind === "roundedRect";
+  const cameras = useMemo(() => shotCameras(layout.shots), [layout.shots]);
 
   const viewBox = useMemo(() => {
     if (focus !== null && Number.isInteger(focus) && focus >= 0 && focus < layout.shots.length) {
-      const [cx, cy] = layout.shots[focus];
+      const [cx, cy] = layout.shots[focus].center;
+      const [fw, fh] = shotFov(layout, focus);
       return `${cx - fw / 2} ${cy - fh / 2} ${fw} ${fh}`;
     }
     const [bx0, by0, bx1, by1] = bounds(layout);
-    const xs = [bx0 - 30, bx1 + 30].concat(layout.shots.flatMap(([x]) => [x - fw / 2, x + fw / 2]));
-    const ys = [by0 - 30, by1 + 30].concat(layout.shots.flatMap(([, y]) => [y - fh / 2, y + fh / 2]));
+    const xs = [bx0 - 30, bx1 + 30].concat(layout.shots.flatMap((s, k) => [s.center[0] - shotFov(layout, k)[0] / 2, s.center[0] + shotFov(layout, k)[0] / 2]));
+    const ys = [by0 - 30, by1 + 30].concat(layout.shots.flatMap((s, k) => [s.center[1] - shotFov(layout, k)[1] / 2, s.center[1] + shotFov(layout, k)[1] / 2]));
     const x0 = Math.min(...xs) - 8,
       y0 = Math.min(...ys) - 8;
     return `${x0} ${y0} ${Math.max(...xs) + 8 - x0} ${Math.max(...ys) + 8 - y0}`;
-  }, [layout, focus, fw, fh]);
+  }, [layout, focus]);
 
   const segs = useMemo(() => {
     const rs = runs(vis);
@@ -62,23 +66,28 @@ export default function TrajectoryMap({ layout, vis, current = -1, focus = null,
         <polyline points={outline} fill="none" stroke="var(--border-strong)" strokeWidth={10} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
       )}
       {!compact &&
-        layout.shots.map(([cx, cy], k) => {
+        layout.shots.map((shot, k) => {
           const on = k === current;
+          const [cx, cy] = shot.center;
+          const [fw, fh] = shotFov(layout, k);
+          const c = cameras.indexOf(shot.camera);
+          const color = CAM_COLORS[c % CAM_COLORS.length];
           return (
-            <g key={k}>
+            <g key={k} data-camera={shot.camera} aria-label={`拍照点 ${shot.id} · ${shot.camera} 视野`}>
               <rect
                 x={cx - fw / 2}
                 y={cy - fh / 2}
                 width={fw}
                 height={fh}
                 fill={on ? "var(--accent-overlay)" : "none"}
-                stroke={on ? "var(--accent-text)" : "var(--border-strong)"}
+                stroke={on ? "var(--accent-text)" : color}
+                strokeOpacity={on ? 1 : 0.75}
                 strokeWidth={on ? 1.6 : 1}
-                strokeDasharray={on ? undefined : "5 4"}
+                strokeDasharray={on ? undefined : CAM_DASH[c % CAM_DASH.length]}
                 vectorEffect="non-scaling-stroke"
               />
-              <text x={cx - fw / 2 + 5} y={cy - fh / 2 + 13} fontSize={11} fill={on ? "var(--accent-text)" : "var(--text-muted)"} className="mono">
-                k{k + 1}
+              <text x={cx - fw / 2 + 5} y={cy - fh / 2 + 13} fontSize={11} fill={on ? "var(--accent-text)" : color} className="mono">
+                {`${shot.id} · ${shot.camera}`}
               </text>
             </g>
           );

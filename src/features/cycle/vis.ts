@@ -1,4 +1,4 @@
-import type { JudgeParams, Judgement, Measured, PartView, PointVis, Recipe } from "./types";
+import type { JudgeParams, Judgement, Measured, PartView, PointVis, Recipe, ShotSpec } from "./types";
 
 export const visColor: Record<PointVis, string> = {
   none: "var(--text-disabled)",
@@ -12,6 +12,19 @@ export const visColor: Record<PointVis, string> = {
 
 /** 相机在各处的代表色（曲线底部的测量归属）。 */
 export const CAM_COLORS = Array.from({ length: 8 }, (_, i) => `var(--camera-${i + 1})`);
+
+/** 拍照点 k 的视野宽高：拍照点自己的，缺省用配方的。 */
+export function shotFov(layout: Pick<Recipe, "fov" | "shots">, k: number): [number, number] {
+  return layout.shots[k]?.fov ?? layout.fov;
+}
+
+/** 拍照点用到的相机编号，按第一次出现的顺序（与 Recipe.cameras() 一致）。 */
+export function shotCameras(shots: Pick<ShotSpec, "camera">[]): string[] {
+  return [...new Set(shots.map((s) => s.camera))];
+}
+
+/** 拍照点的简短名称：编号 · 相机。 */
+export const shotLabel = (shot: Pick<ShotSpec, "id" | "camera"> | undefined, k: number) => (shot ? `${shot.id} · ${shot.camera}` : `k${k + 1}`);
 
 const outside = (v: number, p: JudgeParams) => v < p.nominal - p.tolLower || v > p.nominal + p.tolUpper;
 

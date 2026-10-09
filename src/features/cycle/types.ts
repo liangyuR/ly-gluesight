@@ -30,6 +30,22 @@ export type PathSpec =
   /** bulges[i] 不为 0 时第 i 条边是圆弧：tan(圆心角/4)，正值逆时针 */
   | { kind: "polyline"; points: [number, number][]; closed: boolean; radius: number; bulges?: number[] };
 
+/** 一个拍照点：机器人走到 Pose 时 PLC 触发这台相机拍一帧。 */
+export interface ShotSpec {
+  /** 配方内唯一，如 P1 */
+  id: string;
+  /** 现场机器人 / PLC 程序里的 Pose 标识；不要求唯一 */
+  poseId: string;
+  /** 相机编号 */
+  camera: string;
+  /** 视野中心在工件坐标里的位置（mm） */
+  center: [number, number];
+  /** 视野宽高；不给时用配方的 fov */
+  fov?: [number, number];
+  /** 标定引用；不给时用这台相机的工位标定 */
+  calib?: string;
+}
+
 export interface Recipe {
   id: string;
   name: string;
@@ -38,12 +54,14 @@ export interface Recipe {
   teachingHash?: string | null;
   productCode: number;
   triggerMode: TriggerMode;
+  /** 配方文件格式版本，当前为 2 */
+  schemaVersion: number;
   part: [number, number, number];
   path: PathSpec | null;
   closed: boolean;
+  /** 拍照点没单独给视野时用的视野宽高 */
   fov: [number, number];
-  shots: [number, number][];
-  camera: string;
+  shots: ShotSpec[];
   spacing: number;
   filterWindow: number;
   maxGapLen: number;
@@ -64,7 +82,8 @@ export interface RecipeDoc {
   teachingHash?: string | null;
   productCode: number;
   triggerMode: TriggerMode;
-  camera: string;
+  /** 配方文件格式版本，当前为 2；不符的文件后端拒绝 */
+  schemaVersion: number;
   path: PathSpec;
   spacing: number;
   filterWindow: number;
@@ -73,7 +92,7 @@ export interface RecipeDoc {
   corner: SegmentLimits;
   segmentOverrides: Record<string, SegmentLimits>;
   fov: [number, number];
-  shots: [number, number][];
+  shots: ShotSpec[];
 }
 
 export interface RecipeSummary {

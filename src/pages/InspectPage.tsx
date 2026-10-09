@@ -9,6 +9,7 @@ import {
   currentFrame,
   cycleApi,
   CycleStepper,
+  shotCameras,
   ShotStrip,
   SignalLamps,
   SimControls,
@@ -95,7 +96,7 @@ export default function InspectPage() {
   };
   const focus = view === "frame" ? selected : null;
   const trigger = snapshot?.triggerMode ?? layout?.triggerMode;
-  const cams = layout ? [layout.camera] : [];
+  const cams = layout ? shotCameras(layout.shots) : [];
   const canSwitch = (phase === "IDLE" || phase === "FAULT") && snapshot?.productSource === "manual";
   const switchProblem = !canSwitch ? "当前工件已开始或型号由 PLC 下发，暂时不能切换配方" : pendingRecipe && !recipes.some(recipe => recipe.id === pendingRecipe) ? "该配方已不在配方库中，请重新选择" : "";
 

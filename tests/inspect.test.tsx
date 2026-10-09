@@ -5,7 +5,7 @@ import InspectPage from "../src/pages/InspectPage";
 import { cycleApi, useCycle, useLayout } from "../src/features/cycle/api";
 import { workspaceApi } from "../src/features/workspace/api";
 import { plcApi } from "../src/features/plc/api";
-import { deferred, snapshot, summary, workspaceView } from "./fixtures";
+import { deferred, shotList, snapshot, summary, workspaceView } from "./fixtures";
 import { cycleMeasurement, cyclePart, cycleResult } from "./cycle-visual-fixtures";
 import { plcConfig, plcPoint } from "./plc-fixtures";
 import type { LogLine, Measured, Recipe, RecipeSummary, Snapshot } from "../src/features/cycle/types";
@@ -213,7 +213,7 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     const page = render(<InspectPage />);
     await userEvent.click(screen.getByRole("button", { name: "查看帧 k2" }));
     await userEvent.click(mainPanel().getByRole("button", { name: "选中帧" }));
-    layout = workspaceView("B").layout; layout.shots = [[25, 30]];
+    layout = workspaceView("B").layout; layout.shots = shotList([[25, 30]]);
     state = { ...state, activeRecipeId: "B" }; page.rerender(<InspectPage />);
     expect(screen.getByRole("heading", { name: "选中帧 k1" })).toBeVisible();
     expect(mainPanel().getByLabelText("检测轨迹")).toHaveAttribute("viewBox", "-35 -10 120 80");

@@ -5,12 +5,20 @@ import ShotStrip from "../src/features/cycle/components/ShotStrip";
 import TrajectoryMap from "../src/features/cycle/components/TrajectoryMap";
 import UnrolledCurve from "../src/features/cycle/components/UnrolledCurve";
 import type { FrameView, PointVis } from "../src/features/cycle/types";
-import { workspaceView } from "./fixtures";
+import { shotList, workspaceView } from "./fixtures";
 import { cycleFrame, cycleMeasurement, cyclePart, widthLayout } from "./cycle-visual-fixtures";
 
 const vis: PointVis[] = ["ok", "exc", "gap", "inv"];
 
 describe("拍照点选择与真实状态显示", () => {
+  it("拍照点条按拍照点编号与相机标注", () => {
+    const layout = workspaceView().layout; layout.shots[1] = { ...layout.shots[1], id: "B7", poseId: "P1", camera: "CAM-2" };
+    render(<ShotStrip layout={layout} part={null} vis={vis} />);
+    expect(within(screen.getByRole("button", { name: "查看帧 k1" })).getByText("P1 · CAM-1")).toBeVisible();
+    const second = within(screen.getByRole("button", { name: "查看帧 k2" })).getByText("B7 · CAM-2");
+    expect(second).toHaveAttribute("title", "k2 · Pose P1");
+  });
+
   it("鼠标和键盘可选帧，受控选中状态与一基帧号一致", async () => {
     const select = vi.fn(); const layout = workspaceView().layout;
     const page = render(<ShotStrip layout={layout} part={cyclePart()} vis={vis} selected={0} onSelect={select} />);
@@ -53,9 +61,31 @@ describe("轨迹显示范围与测量叠加", () => {
   it("选择帧使用该拍照点视野，图上的 k 与拍照点条一致", () => {
     const page = render(<TrajectoryMap layout={workspaceView().layout} vis={vis} focus={0} current={0} />);
     expect(screen.getByLabelText("检测轨迹")).toHaveAttribute("viewBox", "-35 -10 120 80");
-    expect(screen.getByText("k1")).toBeVisible(); expect(screen.getByText("k2")).toBeVisible(); expect(screen.queryByText("k0")).not.toBeInTheDocument();
+    expect(screen.getByText("P1 · CAM-1")).toBeVisible(); expect(screen.getByText("P2 · CAM-1")).toBeVisible(); expect(screen.queryByText(/^k\d/)).not.toBeInTheDocument();
     page.rerender(<TrajectoryMap layout={workspaceView().layout} vis={vis} focus={1} />);
     expect(screen.getByLabelText("检测轨迹")).toHaveAttribute("viewBox", "15 -10 120 80");
+  });
+
+  it("三台相机的拍照点各画自己的视野，按相机区分颜色与线型", () => {
+    const layout = workspaceView().layout;
+    layout.shots = shotList([[25, 30], [75, 30], [50, 10], [50, 50]]).map((s, k) => ({ ...s, camera: ["cam1", "cam2", "cam3", "cam1"][k] }));
+    layout.shots[1].fov = [60, 40]; layout.shots[2].fov = [200, 30];
+    const page = render(<TrajectoryMap layout={layout} vis={vis} />);
+    const frame = (id: string, camera: string) => screen.getByLabelText(`拍照点 ${id} · ${camera} 视野`).querySelector("rect")!;
+    const style = (r: Element) => [r.getAttribute("stroke"), r.getAttribute("stroke-dasharray")].join("|");
+    const [p1, p2, p3, p4] = [frame("P1", "cam1"), frame("P2", "cam2"), frame("P3", "cam3"), frame("P4", "cam1")];
+    // 默认视野 120 × 80；P2、P3 用自己的
+    expect([p1, p2, p3].map(r => ["x", "y", "width", "height"].map(a => Number(r.getAttribute(a))))).toEqual([[-35, -10, 120, 80], [45, 10, 60, 40], [-50, -5, 200, 30]]);
+    expect(new Set([p1, p2, p3].map(style)).size).toBe(3);
+    expect(style(p4)).toBe(style(p1));
+    expect(p1.getAttribute("stroke")).toBe("var(--camera-1)"); expect(p3.getAttribute("stroke")).toBe("var(--camera-3)");
+    for (const label of ["P1 · cam1", "P2 · cam2", "P3 · cam3", "P4 · cam1"]) expect(screen.getByText(label)).toBeVisible();
+    // 整件范围包含最宽的 P3 视野
+    const [x0, , w] = screen.getByLabelText("检测轨迹").getAttribute("viewBox")!.split(" ").map(Number);
+    expect(x0).toBeLessThanOrEqual(-58); expect(x0 + w).toBeGreaterThanOrEqual(158);
+    page.rerender(<TrajectoryMap layout={layout} vis={vis} focus={2} current={2} />);
+    expect(screen.getByLabelText("检测轨迹")).toHaveAttribute("viewBox", "-50 -5 200 30");
+    expect(frame("P3", "cam3")).toHaveAttribute("stroke", "var(--accent-text)");
   });
 
   it.each([-1, 2, 99, 1.5])("无效焦点 %s 恢复整件范围，不崩溃", focus => {
