@@ -102,12 +102,44 @@ pub fn bayer8_gray_into(w: usize, h: usize, src: &[u8], out: &mut Vec<u8>) -> Re
     Ok(())
 }
 
-/// 一帧图像的元数据。计数器取自相机 Chunk（帧计数、Line0 触发计数），未开启 Chunk 时退化为 SDK 帧号。
+/// 帧的触发计数从哪来。只有触发计数能把帧认到拍照点上：帧计数、SDK 帧号只数相机发出或主机收到的帧，
+/// 丢帧、过触发时与 PLC 发的触发对不上。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CounterSource {
+    /// 海康 Chunk 触发计数（`nTriggerIndex`）
+    ChunkTrigger,
+    /// 海康只有 Chunk 帧计数，没有触发计数
+    ChunkFrame,
+    /// 没有 Chunk，只有 SDK 帧号
+    SdkFrame,
+    /// 模拟、回放相机自己编的号：每次触发加一，（重新）加载时从 0 重来
+    Synthetic,
+}
+
+impl CounterSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            CounterSource::ChunkTrigger => "Chunk 触发计数",
+            CounterSource::ChunkFrame => "Chunk 帧计数",
+            CounterSource::SdkFrame => "SDK 帧号",
+            CounterSource::Synthetic => "模拟计数",
+        }
+    }
+}
+
+/// 一帧图像的元数据。帧计数取自 Chunk 帧计数，没有时为 SDK 帧号；触发计数只在来源（`counter`）是
+/// Chunk 触发计数或模拟时是真的触发计数，其他来源时数值照填帧计数，只给界面和日志看。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Frame {
     /// 相机组里的序号（从 0 开始）
     pub cam: u8,
+    /// 设备会话号：海康每打开一次、模拟 / 回放每（重新）加载一次换一个新号，进程内不重复。
+    /// 会话变了，触发计数可能从头数起
+    pub session: u64,
+    /// 触发计数的来源
+    pub counter: CounterSource,
     pub frame_counter: u64,
     pub trigger_counter: u64,
     pub lost_packets: u32,
@@ -115,7 +147,7 @@ pub struct Frame {
     /// 软触发（示教取图、回放"下一张"）出来的帧
     #[serde(skip)]
     pub manual: bool,
-    /// 整帧 Mono8 像素。图像测量、帧录制或手动取图时才带上。
+    /// 整帧 8 位灰度（Mono8 原样，8 位 Bayer 已转灰度）。图像测量、帧录制或手动取图时才带上。
     #[serde(skip)]
     pub image: Option<Arc<FrameImage>>,
 }

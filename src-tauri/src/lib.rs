@@ -17,6 +17,7 @@ mod recipe_api;
 mod recorder;
 mod replay;
 mod settings;
+mod shot_router;
 mod sim;
 mod simimage;
 mod store;
