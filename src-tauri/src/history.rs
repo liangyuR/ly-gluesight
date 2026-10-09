@@ -8,7 +8,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::cycle::CycleHost;
 use crate::judge::{self, Verdict};
-use crate::recipe::{JudgeParams, Recipe, SegmentKind};
+use crate::recipe::{JudgeParams, Recipe};
 use crate::store::{HistoryPage, HistoryQuery, PartDetail, Store};
 
 pub fn local_midnight_ms() -> i64 {
@@ -67,23 +67,23 @@ impl KindOverride {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Overrides {
+    /// 允许断胶长度（作用于每个拍照点）
     pub max_gap_len: Option<f32>,
     pub filter_window: Option<usize>,
-    pub line: KindOverride,
-    pub corner: KindOverride,
-    /// 胶宽限值（只作用于配置了胶宽的段）
+    /// 位置限值（只作用于判位置的拍照点）
+    pub position: KindOverride,
+    /// 胶宽限值（只作用于判胶宽的拍照点）
     pub width: KindOverride,
 }
 
 impl Overrides {
     fn apply(&self, recipe: &Recipe) -> Recipe {
         let mut r = recipe.clone();
-        r.max_gap_len = self.max_gap_len.unwrap_or(r.max_gap_len);
         r.filter_window = self.filter_window.unwrap_or(r.filter_window);
         for seg in &mut r.segments {
-            match seg.kind {
-                SegmentKind::Line => self.line.apply(&mut seg.params),
-                SegmentKind::Corner => self.corner.apply(&mut seg.params),
+            seg.max_gap_len = self.max_gap_len.unwrap_or(seg.max_gap_len);
+            if let Some(p) = seg.position.as_mut() {
+                self.position.apply(p);
             }
             if let Some(w) = seg.width.as_mut() {
                 self.width.apply(w);

@@ -122,20 +122,20 @@ SCL `LocalDiagnostic` 是 PLC FB 本地诊断，**不写 DBW78**，也不是 PC 
   "protocolVersion": 1,
   "recipeId": "DEMO",
   "planVersion": 1,
-  "planHash": 3896719843,
+  "planHash": 581977774,
   "shotCount": 2,
   "cameraSlots": ["cam1", "", ""],
   "cameraShots": [2, 0, 0],
   "shots": [
-    {"shotId": "P1", "poseId": "P1", "cameraId": "cam1", "center": [95.0, 50.0]},
-    {"shotId": "P2", "poseId": "P2", "cameraId": "cam1", "center": [285.0, 50.0]}
+    {"shotId": "P1", "poseId": "P1", "cameraId": "cam1"},
+    {"shotId": "P2", "poseId": "P2", "cameraId": "cam1"}
   ]
 }
 ```
 
-当前 `plc_plan.rs` 对 UTF-8 紧凑 JSON 元组 `[1,recipeId,planVersion,cameraSlots,shots]` 做 32 位 FNV-1a：初始 `2166136261`，每字节执行 `h = ((h XOR byte) × 16777619) mod 2^32`。顺序、Pose、相机绑定、版本和坐标均影响 hash；序列化采用 Rust `serde_json`、`PlanShot` 字段顺序（`shotId`、`poseId`、`cameraId`、`center`）及 f32 数值规则。示例的 hash 由 `plc_plan.rs` 的单元测试 `documented_example_hash` 固定，改 hash 输入时两边同步修改。**PLC 应复制应用导出的数值，不在 PLC 中重新拼 JSON 算 hash**；美化后的 JSON 不是原始 hash 输入。该 32 位值用于版本一致性核对，不是无碰撞证明或认证机制。
+当前 `plc_plan.rs` 对 UTF-8 紧凑 JSON 元组 `[1,recipeId,planVersion,cameraSlots,shots]` 做 32 位 FNV-1a：初始 `2166136261`，每字节执行 `h = ((h XOR byte) × 16777619) mod 2^32`。顺序、Pose、相机绑定和版本均影响 hash；序列化采用 Rust `serde_json` 与 `PlanShot` 字段顺序（`shotId`、`poseId`、`cameraId`）。示例的 hash 由 `plc_plan.rs` 的单元测试 `documented_example_hash` 固定，改 hash 输入时两边同步修改。**PLC 应复制应用导出的数值，不在 PLC 中重新拼 JSON 算 hash**；美化后的 JSON 不是原始 hash 输入。该 32 位值用于版本一致性核对，不是无碰撞证明或认证机制。
 
-`productCode` 在当前计划 JSON 中不提供，需从生产配方另外核对并写 DBW12。`center` 是当前配方的拍照点几何坐标，不是机器人六轴位姿。`poseId` 是现场机器人 / PLC 程序里的 Pose 标识，同一 Pose 可同时触发几台相机，因此不要求唯一；机器人程序与物理输出映射不在 JSON 内，需保存在现场的对应表。修改产品代码、拍照计划或槽映射后重新导出、评审和验证，不能只保留旧 hash。
+`productCode` 在当前计划 JSON 中不提供，需从生产配方另外核对并写 DBW12。一期按拍照点在图像里检测，计划不含工件坐标。`poseId` 是现场机器人 / PLC 程序里的 Pose 标识，同一 Pose 可同时触发几台相机，因此不要求唯一；机器人程序与物理输出映射不在 JSON 内，需保存在现场的对应表。修改产品代码、拍照计划或槽映射后重新导出、评审和验证，不能只保留旧 hash。
 
 ## 7. SCL 接入与调试
 

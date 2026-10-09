@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::recipe::{JudgeParams, Recipe};
+use crate::recipe::{JudgeParams, Recipe, Segment};
 
 /// 声明顺序即严重程度，整件结果取各段最严重的一个。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -45,19 +45,12 @@ pub mod fault {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PointState {
     Pending,
-    /// d：位置量；w：胶宽（没测胶宽时为 NaN）
+    /// d：胶条中线相对示教中线的横向偏移；w：胶宽（没测时为 NaN）
     Measured { d: f32, w: f32 },
-    /// 找到内边但未找到胶条
+    /// 沿示教中线找了、没有胶
     Gap,
-    /// 该点测不了（内边未找到、被遮挡、出了图像）
+    /// 该点测不了（被遮挡、出了图像、胶边被截断）
     Invalid,
-}
-
-impl PointState {
-    #[cfg(test)]
-    pub fn measured(d: f32) -> Self {
-        PointState::Measured { d, w: f32::NAN }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -119,225 +112,173 @@ struct Stat {
     max: Option<f32>,
     absolute: bool,
     excursion_len: f32,
-    /// 记在这一段的最长那次超差的弧长起止
+    /// 最长那次超差的段内弧长起止
     excursion_at: Option<(f32, f32)>,
 }
 
-/// 沿整条胶路（闭合时首尾相接）按连续测到的点做中值滤波：滤波与连续超差都不在分段边界处断开，
-/// 否则折线导入的胶路每条边一段，几毫米长的超差会被切成好几截、短段上的单点噪声也滤不掉。
-fn filtered(table: &[PointState], closed: bool, window: usize, value: impl Fn(&PointState) -> Option<f32>) -> Vec<Option<f32>> {
-    let mut out = vec![None; table.len()];
-    for run in runs_where(table, closed, |_, p| value(p).is_some()) {
-        let v: Vec<f32> = run.iter().map(|&j| value(&table[j]).unwrap()).collect();
-        for (&j, f) in run.iter().zip(median_filter(&v, window)) {
-            out[j] = Some(f);
-        }
-    }
-    out
-}
-
-/// 各段的统计。超差按整条胶路上的连续区间算（各点按所在段的公差判），一次超差只判一次：
-/// 全长记在点最多的那一段、按它的允许长度判；碰到的其余段只记落在本段里的那一截。
-fn stats(recipe: &Recipe, table: &[PointState], values: &[Option<f32>], limits: impl Fn(usize) -> Option<JudgeParams>) -> Vec<Stat> {
-    let seg = |j: usize| recipe.points.seg[j] as usize;
-    let mut st: Vec<Stat> = recipe.segments.iter().map(|_| Stat::default()).collect();
-    let params: Vec<Option<JudgeParams>> = (0..recipe.segments.len()).map(&limits).collect();
-    for (j, v) in values.iter().enumerate() {
-        let (Some(v), Some(p)) = (*v, &params[seg(j)]) else { continue };
-        let s = &mut st[seg(j)];
-        s.min = Some(s.min.map_or(v, |m| m.min(v)));
-        s.max = Some(s.max.map_or(v, |m| m.max(v)));
-        s.absolute |= v < p.abs_min || v > p.abs_max;
-    }
-    let out = |j: usize| values[j].zip(params[seg(j)].as_ref()).is_some_and(|(v, p)| v < p.lower() || v > p.upper());
-    let sp = recipe.spacing;
-    for run in runs_where(table, recipe.closed, |j, _| out(j)) {
-        // 各段在这次超差里的那一截（run 里的下标范围）
-        struct Share {
-            seg: usize,
-            from: usize,
-            to: usize,
-        }
-        let mut shares: Vec<Share> = Vec::new();
-        for (i, &j) in run.iter().enumerate() {
-            match shares.last_mut() {
-                Some(sh) if sh.seg == seg(j) => sh.to = i,
-                _ => shares.push(Share { seg: seg(j), from: i, to: i }),
-            }
-        }
-        let owner = shares.iter().max_by_key(|sh| (sh.to - sh.from, std::cmp::Reverse(sh.from))).unwrap().seg;
-        for sh in &shares {
-            let (from, to) = if sh.seg == owner { (0, run.len() - 1) } else { (sh.from, sh.to) };
-            let len = (to - from + 1) as f32 * sp;
-            let s = &mut st[sh.seg];
-            if len > s.excursion_len {
-                s.excursion_len = len;
-                s.excursion_at = Some((run[from] as f32 * sp, (run[to] + 1) as f32 * sp));
-            }
-        }
-    }
-    st
-}
-
-pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
-    let sp = recipe.spacing;
-    let n = table.len();
-    let closed = recipe.closed;
-
-    if let Some(j) = table.iter().position(|p| *p == PointState::Pending) {
-        return Judgement::error(fault::INVALID_POINTS, format!("测量点 j={j} 未填写"));
-    }
-    for run in runs_where(table, closed, |_, p| *p == PointState::Invalid) {
-        let len = run.len() as f32 * sp;
-        if len > MAX_INVALID_LEN {
-            let seg = &recipe.segments[recipe.points.seg[run[0]] as usize];
-            return Judgement::error(fault::INVALID_POINTS, format!("{} 内边连续 {len:.1} mm 没测到 · s={:.1}", seg.name, run[0] as f32 * sp));
-        }
-    }
-
-    let d = filtered(table, closed, recipe.filter_window, |p| match p {
-        PointState::Measured { d, .. } => Some(*d),
-        _ => None,
-    });
-    let w = filtered(table, closed, recipe.filter_window, |p| match p {
-        PointState::Measured { w, .. } if w.is_finite() => Some(*w),
-        _ => None,
-    });
-    let pos_stats = stats(recipe, table, &d, |gi| Some(recipe.segments[gi].params.clone()));
-    let width_stats = stats(recipe, table, &w, |gi| recipe.segments[gi].width.clone());
-    let pos_at: Vec<_> = pos_stats.iter().map(|s| s.excursion_at).collect();
-    let width_at: Vec<_> = width_stats.iter().map(|s| s.excursion_at).collect();
-    let at = |r: Option<(f32, f32)>| r.map(|(a, b)| format!(" · s={a:.1}–{b:.1}")).unwrap_or_default();
-    let mut segments: Vec<SegmentResult> = recipe
-        .segments
-        .iter()
-        .zip(pos_stats.into_iter().zip(width_stats))
-        .map(|(seg, (pos, width))| {
-            let width = seg.width.as_ref().map(|_| width);
-            let mut verdict = if pos.absolute {
-                Verdict::NgAbsolute
-            } else if pos.excursion_len > seg.params.max_excursion_len {
-                Verdict::NgPosition
-            } else if pos.excursion_len > 0.0 {
-                Verdict::OkWithExcursion
-            } else {
-                Verdict::Ok
-            };
-            if let (Some(w), Some(p)) = (&width, &seg.width) {
-                let wv = if w.absolute || w.excursion_len > p.max_excursion_len {
-                    Verdict::NgWidth
-                } else if w.excursion_len > 0.0 {
-                    Verdict::OkWithExcursion
-                } else {
-                    Verdict::Ok
-                };
-                verdict = verdict.max(wv);
-            }
-            SegmentResult {
-                verdict,
-                min: pos.min,
-                max: pos.max,
-                excursion_len: pos.excursion_len,
-                w_min: width.as_ref().and_then(|w| w.min),
-                w_max: width.as_ref().and_then(|w| w.max),
-                w_excursion_len: width.as_ref().map_or(0.0, |w| w.excursion_len),
-            }
-        })
-        .collect();
-
-    let mut gaps = Vec::new();
-    for run in runs_where(table, closed, |_, p| *p == PointState::Gap) {
-        let len = run.len() as f32 * sp;
-        if len <= recipe.max_gap_len {
-            continue;
-        }
-        let segment = recipe.points.seg[run[0]] as usize;
-        let mut frames: Vec<u8> = run.iter().map(|&j| recipe.points.k[j]).collect();
-        frames.dedup();
-        segments[segment].verdict = segments[segment].verdict.max(Verdict::NgGap);
-        gaps.push(GapRun { segment, s0: run[0] as f32 * sp, s1: (run[run.len() - 1] + 1) as f32 * sp, len, frames });
-    }
-
-    let verdict = segments.iter().map(|s| s.verdict).max().unwrap_or(Verdict::Ok);
-    let reason = match verdict {
-        Verdict::NgGap => {
-            let g = &gaps[0];
-            let frames = if g.frames.is_empty() {
-                String::new()
-            } else {
-                let f = g.frames.iter().map(|k| format!("帧 {k}")).collect::<Vec<_>>().join(" + ");
-                format!(" · {f}{}", if g.frames.len() > 1 { "，跨帧合并" } else { "" })
-            };
-            format!("{} 断胶 {:.1} mm > {:.1} mm · s={:.1}–{:.1}{frames}", recipe.segments[g.segment].name, g.len, recipe.max_gap_len, g.s0, g.s1)
-        }
-        Verdict::Ok => format!("{} 段全部合格 · {n} 点", segments.len()),
-        _ => {
-            let (gi, s) = segments.iter().enumerate().find(|(_, s)| s.verdict == verdict).unwrap();
-            let seg = &recipe.segments[gi];
-            match verdict {
-                Verdict::NgAbsolute => format!(
-                    "{} 超出绝对限 [{:.2}, {:.2}] · 实测 {:.2}–{:.2}",
-                    seg.name,
-                    seg.params.abs_min,
-                    seg.params.abs_max,
-                    s.min.unwrap_or(0.0),
-                    s.max.unwrap_or(0.0)
-                ),
-                Verdict::NgPosition => format!("{} 连续超差 {:.1} mm > 允许 {:.1} mm{}", seg.name, s.excursion_len, seg.params.max_excursion_len, at(pos_at[gi])),
-                Verdict::NgWidth => {
-                    let p = seg.width.as_ref().unwrap();
-                    format!(
-                        "{} 胶宽 {:.2}–{:.2} mm 超出 [{:.2}, {:.2}] · 连续 {:.1} mm{}",
-                        seg.name,
-                        s.w_min.unwrap_or(0.0),
-                        s.w_max.unwrap_or(0.0),
-                        p.lower(),
-                        p.upper(),
-                        s.w_excursion_len,
-                        at(width_at[gi])
-                    )
-                }
-                _ => {
-                    let len = s.excursion_len.max(s.w_excursion_len);
-                    format!("{} 局部超差 {len:.1} mm ≤ 允许 {:.1} mm", seg.name, seg.params.max_excursion_len)
-                }
-            }
-        }
-    };
-
-    Judgement { verdict, plc_code: verdict.plc_code(), fault_code: 0, reason, segments, gaps }
-}
-
-/// 满足条件的连续区间。闭合胶路首尾相接处合并为一段。
-fn runs_where(table: &[PointState], closed: bool, pred: impl Fn(usize, &PointState) -> bool) -> Vec<Vec<usize>> {
-    let n = table.len();
+/// 段内满足条件的连续区间。每个拍照点自成一段，段与段之间不连（D-10）。
+fn runs_in(seg: &Segment, pred: impl Fn(usize) -> bool) -> Vec<Vec<usize>> {
     let mut runs = Vec::new();
     let mut cur = Vec::new();
-    if !closed {
-        for (j, p) in table.iter().enumerate() {
-            if pred(j, p) {
-                cur.push(j);
-            } else if !cur.is_empty() {
-                runs.push(std::mem::take(&mut cur));
-            }
-        }
-        if !cur.is_empty() {
-            runs.push(cur);
-        }
-        return runs;
-    }
-    let Some(start) = (0..n).find(|&j| !pred(j, &table[j])) else {
-        return if n > 0 { vec![(0..n).collect()] } else { Vec::new() };
-    };
-    for i in 1..=n {
-        let j = (start + i) % n;
-        if pred(j, &table[j]) {
+    for j in seg.first..seg.first + seg.count {
+        if pred(j) {
             cur.push(j);
         } else if !cur.is_empty() {
             runs.push(std::mem::take(&mut cur));
         }
     }
+    if !cur.is_empty() {
+        runs.push(cur);
+    }
     runs
+}
+
+/// 段内按连续测到的点做中值滤波。
+fn filtered(recipe: &Recipe, table: &[PointState], value: impl Fn(&PointState) -> Option<f32>) -> Vec<Option<f32>> {
+    let mut out = vec![None; table.len()];
+    for g in &recipe.segments {
+        for run in runs_in(g, |j| value(&table[j]).is_some()) {
+            let v: Vec<f32> = run.iter().map(|&j| value(&table[j]).unwrap()).collect();
+            for (&j, f) in run.iter().zip(median_filter(&v, recipe.filter_window)) {
+                out[j] = Some(f);
+            }
+        }
+    }
+    out
+}
+
+fn stat(recipe: &Recipe, g: &Segment, values: &[Option<f32>], p: &JudgeParams) -> Stat {
+    let sp = recipe.spacing;
+    let mut s = Stat::default();
+    for v in values[g.first..g.first + g.count].iter().flatten() {
+        s.min = Some(s.min.map_or(*v, |m| m.min(*v)));
+        s.max = Some(s.max.map_or(*v, |m| m.max(*v)));
+        s.absolute |= *v < p.abs_min || *v > p.abs_max;
+    }
+    for run in runs_in(g, |j| values[j].is_some_and(|v| v < p.lower() || v > p.upper())) {
+        let len = run.len() as f32 * sp;
+        if len > s.excursion_len {
+            s.excursion_len = len;
+            s.excursion_at = Some((g.s(run[0], sp), g.s(run[run.len() - 1], sp) + sp));
+        }
+    }
+    s
+}
+
+fn grade(s: &Stat, p: &JudgeParams, ng: Verdict) -> Verdict {
+    if s.excursion_len > p.max_excursion_len {
+        ng
+    } else if s.excursion_len > 0.0 {
+        Verdict::OkWithExcursion
+    } else {
+        Verdict::Ok
+    }
+}
+
+pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
+    let sp = recipe.spacing;
+    let n = table.len();
+
+    if let Some(j) = table.iter().position(|p| *p == PointState::Pending) {
+        return Judgement::error(fault::INVALID_POINTS, format!("测量点 j={j} 未填写"));
+    }
+    for g in &recipe.segments {
+        for run in runs_in(g, |j| table[j] == PointState::Invalid) {
+            let len = run.len() as f32 * sp;
+            if len > MAX_INVALID_LEN {
+                return Judgement::error(fault::INVALID_POINTS, format!("{} 胶路连续 {len:.1} mm 测不了 · s={:.1}", g.name, g.s(run[0], sp)));
+            }
+        }
+    }
+
+    let d = filtered(recipe, table, |p| match p {
+        PointState::Measured { d, .. } if d.is_finite() => Some(*d),
+        _ => None,
+    });
+    let w = filtered(recipe, table, |p| match p {
+        PointState::Measured { w, .. } if w.is_finite() => Some(*w),
+        _ => None,
+    });
+    let pos: Vec<Option<Stat>> = recipe.segments.iter().map(|g| g.position.as_ref().map(|p| stat(recipe, g, &d, p))).collect();
+    let width: Vec<Option<Stat>> = recipe.segments.iter().map(|g| g.width.as_ref().map(|p| stat(recipe, g, &w, p))).collect();
+    let mut segments: Vec<SegmentResult> = recipe
+        .segments
+        .iter()
+        .enumerate()
+        .map(|(gi, g)| {
+            let mut verdict = Verdict::Ok;
+            if let (Some(s), Some(p)) = (&pos[gi], &g.position) {
+                verdict = verdict.max(if s.absolute { Verdict::NgAbsolute } else { grade(s, p, Verdict::NgPosition) });
+            }
+            if let (Some(s), Some(p)) = (&width[gi], &g.width) {
+                verdict = verdict.max(if s.absolute { Verdict::NgWidth } else { grade(s, p, Verdict::NgWidth) });
+            }
+            let p = pos[gi].as_ref();
+            let wd = width[gi].as_ref();
+            SegmentResult {
+                verdict,
+                min: p.and_then(|s| s.min),
+                max: p.and_then(|s| s.max),
+                excursion_len: p.map_or(0.0, |s| s.excursion_len),
+                w_min: wd.and_then(|s| s.min),
+                w_max: wd.and_then(|s| s.max),
+                w_excursion_len: wd.map_or(0.0, |s| s.excursion_len),
+            }
+        })
+        .collect();
+
+    let mut gaps = Vec::new();
+    for (gi, g) in recipe.segments.iter().enumerate() {
+        for run in runs_in(g, |j| table[j] == PointState::Gap) {
+            let len = run.len() as f32 * sp;
+            if len <= g.max_gap_len {
+                continue;
+            }
+            segments[gi].verdict = segments[gi].verdict.max(Verdict::NgGap);
+            gaps.push(GapRun { segment: gi, s0: g.s(run[0], sp), s1: g.s(run[run.len() - 1], sp) + sp, len, frames: vec![g.shot as u8] });
+        }
+    }
+
+    let verdict = segments.iter().map(|s| s.verdict).max().unwrap_or(Verdict::Ok);
+    let at = |r: Option<(f32, f32)>| r.map(|(a, b)| format!(" · s={a:.1}–{b:.1}")).unwrap_or_default();
+    let reason = match verdict {
+        Verdict::NgGap => {
+            let g = &gaps[0];
+            let seg = &recipe.segments[g.segment];
+            format!("{} 断胶 {:.1} mm > {:.1} mm · s={:.1}–{:.1}", seg.name, g.len, seg.max_gap_len, g.s0, g.s1)
+        }
+        Verdict::Ok => format!("{} 个拍照点全部合格 · {n} 点", segments.len()),
+        _ => {
+            let gi = segments.iter().position(|s| s.verdict == verdict).unwrap();
+            let (g, s) = (&recipe.segments[gi], &segments[gi]);
+            match verdict {
+                Verdict::NgAbsolute => {
+                    let p = g.position.as_ref().unwrap();
+                    format!("{} 位置超出绝对限 [{:.2}, {:.2}] · 实测 {:.2}–{:.2}", g.name, p.abs_min, p.abs_max, s.min.unwrap_or(0.0), s.max.unwrap_or(0.0))
+                }
+                Verdict::NgPosition => {
+                    let p = g.position.as_ref().unwrap();
+                    format!("{} 位置连续超差 {:.1} mm > 允许 {:.1} mm{}", g.name, s.excursion_len, p.max_excursion_len, at(pos[gi].as_ref().and_then(|s| s.excursion_at)))
+                }
+                Verdict::NgWidth => {
+                    let p = g.width.as_ref().unwrap();
+                    format!(
+                        "{} 胶宽 {:.2}–{:.2} mm 超出 [{:.2}, {:.2}] · 连续 {:.1} mm{}",
+                        g.name,
+                        s.w_min.unwrap_or(0.0),
+                        s.w_max.unwrap_or(0.0),
+                        p.lower(),
+                        p.upper(),
+                        s.w_excursion_len,
+                        at(width[gi].as_ref().and_then(|s| s.excursion_at))
+                    )
+                }
+                _ => format!("{} 局部超差 {:.1} mm，在允许范围内", g.name, s.excursion_len.max(s.w_excursion_len)),
+            }
+        }
+    };
+
+    Judgement { verdict, plc_code: verdict.plc_code(), fault_code: 0, reason, segments, gaps }
 }
 
 fn median_filter(values: &[f32], window: usize) -> Vec<f32> {
@@ -362,52 +303,75 @@ mod tests {
     use crate::recipe::builtin;
 
     fn base(recipe: &Recipe) -> Vec<PointState> {
-        vec![PointState::measured(0.75); recipe.point_count()]
+        vec![PointState::Measured { d: 0.0, w: 4.0 }; recipe.point_count()]
     }
 
     #[test]
-    fn gap_split_across_frames_is_merged() {
-        let recipe = builtin().remove(0);
+    fn long_gap_in_one_shot_is_ng() {
+        let recipe = builtin().remove(1);
         let mut table = base(&recipe);
-        let j = (0..recipe.point_count() - 1).find(|&j| recipe.points.k[j] == 1 && recipe.points.k[j + 1] == 2).unwrap();
-        table[j] = PointState::Gap;
-        table[j + 1] = PointState::Gap;
+        let g = &recipe.segments[1];
+        (g.first + 10..g.first + 18).for_each(|j| table[j] = PointState::Gap);
         let r = judge(&recipe, &table);
         assert_eq!(r.verdict, Verdict::NgGap);
-        assert_eq!(r.gaps[0].frames, vec![1, 2]);
+        assert_eq!((r.gaps[0].segment, r.gaps[0].frames.as_slice(), r.gaps[0].s0, r.gaps[0].len), (1, &[1u8][..], 10.0, 8.0));
+        assert!(r.reason.starts_with("P2 · J1 断胶 8.0 mm > 6.0 mm"), "{}", r.reason);
     }
 
     #[test]
-    fn gap_wrapping_path_start_is_one_run() {
-        let recipe = builtin().remove(0);
+    fn gaps_do_not_join_across_shots() {
+        let recipe = builtin().remove(1);
         let mut table = base(&recipe);
-        let n = table.len();
-        table[0] = PointState::Gap;
-        table[n - 1] = PointState::Gap;
+        let (a, b) = (&recipe.segments[0], &recipe.segments[1]);
+        // 第一个拍照点末尾 4 mm、第二个拍照点开头 4 mm：各自都不超 6 mm，不跨拍照点相连
+        (a.first + a.count - 4..a.first + a.count).for_each(|j| table[j] = PointState::Gap);
+        (b.first..b.first + 4).for_each(|j| table[j] = PointState::Gap);
         let r = judge(&recipe, &table);
-        assert_eq!(r.gaps.len(), 1);
-        assert_eq!(r.gaps[0].len, 1.0);
+        assert_eq!(r.verdict, Verdict::Ok, "{}", r.reason);
+        assert!(r.gaps.is_empty());
     }
 
     #[test]
     fn short_excursion_is_allowed_long_one_is_ng() {
         let recipe = builtin().remove(0);
         let mut table = base(&recipe);
-        (100..104).for_each(|j| table[j] = PointState::measured(1.6));
+        let f = recipe.segments[2].first;
+        (f + 20..f + 24).for_each(|j| table[j] = PointState::Measured { d: 3.0, w: 4.0 });
         assert_eq!(judge(&recipe, &table).verdict, Verdict::OkWithExcursion);
-        (100..110).for_each(|j| table[j] = PointState::measured(1.6));
-        assert_eq!(judge(&recipe, &table).verdict, Verdict::NgPosition);
+        (f + 20..f + 30).for_each(|j| table[j] = PointState::Measured { d: 3.0, w: 4.0 });
+        let r = judge(&recipe, &table);
+        assert_eq!(r.verdict, Verdict::NgPosition);
+        assert!(r.reason.contains("s=20.0–30.0"), "{}", r.reason);
     }
 
     #[test]
     fn narrow_bead_is_ng_width() {
-        let mut doc = crate::recipe::samples().remove(0);
-        let width = JudgeParams { nominal: 2.0, tol_upper: 0.7, tol_lower: 0.6, abs_min: 0.8, abs_max: 3.8, max_excursion_len: 3.0 };
-        doc.line.width = Some(width.clone());
-        doc.corner.width = Some(width);
+        let recipe = builtin().remove(0);
+        let mut table = base(&recipe);
+        let f = recipe.segments[0].first;
+        (f + 5..f + 15).for_each(|j| table[j] = PointState::Measured { d: 0.0, w: 1.8 });
+        let r = judge(&recipe, &table);
+        assert_eq!(r.verdict, Verdict::NgWidth, "{}", r.reason);
+        assert_eq!(r.segments[0].w_min, Some(1.8));
+    }
+
+    #[test]
+    fn position_is_not_judged_without_limits() {
+        let mut doc = crate::recipe::samples().remove(1);
+        doc.limits.position = None;
         let recipe = doc.build().unwrap();
-        let mut table = vec![PointState::Measured { d: 0.75, w: 2.0 }; recipe.point_count()];
-        (200..220).for_each(|j| table[j] = PointState::Measured { d: 0.75, w: 1.1 });
-        assert_eq!(judge(&recipe, &table).verdict, Verdict::NgWidth);
+        let table = vec![PointState::Measured { d: 9.0, w: 4.0 }; recipe.point_count()];
+        assert_eq!(judge(&recipe, &table).verdict, Verdict::Ok);
+    }
+
+    #[test]
+    fn long_unmeasurable_run_is_err() {
+        let recipe = builtin().remove(1);
+        let mut table = base(&recipe);
+        let f = recipe.segments[3].first;
+        (f..f + 3).for_each(|j| table[j] = PointState::Invalid);
+        let r = judge(&recipe, &table);
+        assert_eq!((r.verdict, r.fault_code), (Verdict::ErrInspect, fault::INVALID_POINTS));
+        assert!(r.reason.contains("P4 · J1 胶路连续 3.0 mm 测不了"), "{}", r.reason);
     }
 }

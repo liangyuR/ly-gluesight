@@ -12,7 +12,7 @@ use crate::camera::{CameraSource, SimRender};
 use crate::cycle::CycleHost;
 use crate::inspection::{read_tag_u32, tag, tag_is_on, write_tag};
 use crate::plc::PlcHost;
-use crate::recipe::{PathSpec, Recipe, TriggerMode};
+use crate::recipe::{Recipe, TriggerMode};
 use crate::simimage::PoseError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,13 +36,12 @@ impl Scenario {
         (self == Scenario::LocateFail).then(|| 4.min(n - 1))
     }
 
-    /// 在 k1 / k2 归属分界处两侧各放一个缺胶点：单帧看都不超限，按弧长合并后超限。
+    /// 断胶场景：第二段（只有一段时第一段）中部缺一段，比这段允许的断口长 2 mm。
     pub fn gap_points(self, recipe: &Recipe) -> Vec<usize> {
-        if self != Scenario::Gap {
-            return Vec::new();
-        }
-        let k = &recipe.points.k;
-        (0..k.len() - 1).find(|&j| k[j] == 1 && k[j + 1] == 2).map(|j| vec![j, j + 1]).unwrap_or_default()
+        let Some(g) = recipe.segments.get(1).or(recipe.segments.first()).filter(|_| self == Scenario::Gap) else { return Vec::new() };
+        let n = (((g.max_gap_len + 2.0) / recipe.spacing).ceil() as usize).min(g.count);
+        let from = g.first + (g.count - n) / 2;
+        (from..from + n).collect()
     }
 
     fn resolve(self, seed: u32) -> Scenario {
@@ -155,17 +154,17 @@ async fn run_part(app: &AppHandle, recipe: &Arc<Recipe>, scenario: Scenario, vis
         let cams = recipe.shots.iter().map(|s| cycle.camera.require(&s.camera)).collect::<Result<Vec<_>, _>>()?;
         let lost = scenario.lost_frame(n);
         let locate_fail = scenario.locate_fail_frame(n);
-        // 机器人每件的定位偏差：±0.4 mm、±0.15°（模板定位要吸收它）
-        let r = |i: u32| ((sn.wrapping_mul(2_654_435_761).wrapping_add(i * 40_503) >> 8) % 1000) as f64 / 500.0 - 1.0;
-        let pose = PoseError { dx: 0.4 * r(1), dy: 0.4 * r(2), deg: 0.15 * r(3) };
+        // 机器人每件的偏差：胶条在图里平移 ±4 px（约 ±0.45 mm）、转 ±0.3°（沿中线搜索要吸收它）
+        let r = |i: u32| ((sn.wrapping_mul(2_654_435_761).wrapping_add(i * 40_503) >> 8) % 1000) as f32 / 500.0 - 1.0;
+        let pose = PoseError { dx: 4.0 * r(1), dy: 4.0 * r(2), deg: 0.3 * r(3) };
         for k in 0..n {
             sleep(Duration::from_millis(interval)).await;
             let render = vision.then(|| SimRender {
                 recipe: recipe.clone(),
                 k,
                 scenario,
-                // 定位失败场景：这一帧斜着偏开 15 mm，超出模板搜索范围，也没有哪条直边还能对上
-                pose: if locate_fail == Some(k) { PoseError { dx: pose.dx + 15.0, dy: pose.dy + 15.0, ..pose } } else { pose },
+                // 找不到胶的场景：这一帧胶条偏开约 20 mm，出了沿中线的搜索范围
+                pose: if locate_fail == Some(k) { PoseError { dx: pose.dx + 130.0, dy: pose.dy + 130.0, ..pose } } else { pose },
                 seed: sn as u64 * 16 + k as u64,
             });
             let _ = cycle.camera.trigger(cams[k], lost == Some(k), render);
@@ -198,20 +197,11 @@ pub async fn run(app: AppHandle, recipe: Arc<Recipe>, scenario: Scenario, contin
     while !sim.stop.load(Ordering::SeqCst) {
         seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
         let s = scenario.resolve(seed >> 8);
-        // 模拟相机只在真要看图（lyFlow 测量或帧录制）时才合成飞拍图像，一帧 5 MP 很费 CPU
+        // 模拟相机只在真要看图（图像测量或帧录制）时才合成画面，省 CPU
         let settings = app.state::<CycleHost>().settings();
         let lyflow = settings.vision;
         let recording = settings.record != crate::settings::RecordMode::Off;
-        let vision = (lyflow || recording) && matches!(recipe.path, Some(PathSpec::RoundedRect { .. }));
-        if vision && lyflow {
-            sim.set_message(&app, format!("准备 {} 的模拟示教资料…", recipe.id));
-            let (a, r) = (app.clone(), recipe.clone());
-            let prepared = tauri::async_runtime::spawn_blocking(move || crate::vision::assets_for(&a, &r).map(|_| ())).await;
-            if let Ok(Err(e)) | Err(e) = prepared.map_err(|e| e.to_string()) {
-                sim.set_message(&app, format!("已中止：{e}"));
-                break;
-            }
-        }
+        let vision = lyflow || recording;
         let how = if lyflow { "（lyFlow 测量）" } else { "（模拟测量）" };
         sim.set_message(&app, format!("运行中：{}{how}", recipe.id));
         let result = run_part(&app, &recipe, s, vision).await;
@@ -331,11 +321,7 @@ pub fn sim_robot_trigger(
         return Err(format!("Robot 触发重复或乱序：应为 k{next}，收到 k{k}"));
     }
     let scenario = scenario.resolve(sn);
-    let pose = if scenario.locate_fail_frame(part.n) == Some(k) {
-        PoseError { dx: 15.0, dy: 15.0, deg: 0.0 }
-    } else {
-        PoseError { dx: 0.0, dy: 0.0, deg: 0.0 }
-    };
+    let pose = if scenario.locate_fail_frame(part.n) == Some(k) { PoseError { dx: 130.0, dy: 130.0, deg: 0.0 } } else { PoseError::default() };
     let render = SimRender { recipe, k, scenario, pose, seed: sn as u64 * 16 + k as u64 };
     if !cycle.camera.trigger(cam, scenario.lost_frame(part.n) == Some(k), Some(render)) {
         return Err("模拟相机未接受触发".into());

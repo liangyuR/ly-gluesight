@@ -7,9 +7,9 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::camera::Acquisition;
 use crate::cycle::{CycleHost, Input, RecipeSummary};
-use crate::recipe::{self, ImportedPath, Recipe, RecipeDoc};
+use crate::recipe::{self, Recipe, RecipeDoc};
 use crate::settings::CycleSettings;
-use crate::vision::{self, VisionHost};
+
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,17 +65,7 @@ pub fn recipe_save(app: AppHandle, cycle: State<'_, CycleHost>, doc: RecipeDoc, 
     }
     let saved: Arc<Recipe> = cycle.recipes.save(doc, original_id.as_deref())?;
     if let Some(old) = original_id.filter(|o| *o != saved.id) {
-        // 示教资料按配方编号存，跟着改名
-        if let (Ok(from), Ok(to)) = (vision::taught_dir(&app, &old), vision::taught_dir(&app, &saved.id)) {
-            if from.exists() {
-                if !old.eq_ignore_ascii_case(&saved.id) {
-                    let _ = std::fs::remove_dir_all(&to);
-                }
-                let _ = std::fs::rename(&from, &to);
-            }
-        }
-        app.state::<VisionHost>().forget(&old);
-        // 改了编号的配方正被人工选中时，跟着改过去
+        // 示教的中线在配方里，跟着配方走；改了编号的配方正被人工选中时，跟着改过去
         let mut settings = cycle.settings();
         if settings.manual_recipe_id.as_deref() == Some(old.as_str()) {
             settings.manual_recipe_id = Some(saved.id.clone());
@@ -97,21 +87,10 @@ pub fn recipe_delete(app: AppHandle, cycle: State<'_, CycleHost>, id: String) ->
     }
     let settings = cycle.settings();
     cycle.recipes.delete(&id)?;
-    if let Ok(dir) = vision::taught_dir(&app, &id) {
-        let _ = std::fs::remove_dir_all(dir);
-    }
-    app.state::<VisionHost>().forget(&id);
     // 删掉的正是人工选中的配方：清掉选择，下一件报"未选择配方"而不是拿着一个不存在的编号
     if settings.manual_recipe_id.as_deref() == Some(id.as_str()) {
         cycle.save_settings_locked(CycleSettings { manual_recipe_id: None, ..settings }, &gate)?;
     }
     let _ = cycle.tx.send(Input::Refresh);
     Ok(())
-}
-
-/// 解析胶路文件的内容（前端读文件后把文本传过来）。
-#[tauri::command]
-pub fn recipe_parse_path(text: String, file_name: String) -> Result<ImportedPath, String> {
-    let ext = std::path::Path::new(&file_name).extension().and_then(|e| e.to_str()).unwrap_or("csv");
-    recipe::parse_path(&text, ext)
 }

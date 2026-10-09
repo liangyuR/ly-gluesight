@@ -1,18 +1,12 @@
 //! 配方：磁盘上存可编辑的 `RecipeDoc`，加载时生成运行用的 `Recipe`（分段、测量点、哈希）。
-//! `Recipe` 同时是检测记录里的配方快照，新增字段都要带默认值，旧快照才能读回来。
+//! 一期按拍照点在图像里检测（P0 D-10）：每个拍照点示教一条胶路中线（图像像素），沿线每隔 spacing 一站；
+//! 每个拍照点自成一段，判定在段内做，段与段之间不连。`Recipe` 同时是检测记录里的配方快照。
 
-use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum SegmentKind {
-    Line,
-    Corner,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,44 +46,99 @@ impl JudgeParams {
     }
 }
 
+/// 一个拍照点的判定限值。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShotLimits {
+    /// 胶条中线相对示教中线的横向偏移（mm）；为空时不判位置
+    #[serde(default)]
+    pub position: Option<JudgeParams>,
+    /// 胶宽（mm）；为空时不判胶宽
+    #[serde(default)]
+    pub width: Option<JudgeParams>,
+    /// 允许的连续缺胶长度（mm）
+    pub max_gap_len: f32,
+}
+
+impl ShotLimits {
+    fn validate(&self, what: &str) -> Result<(), String> {
+        if let Some(p) = &self.position {
+            p.validate(&format!("{what} 位置"))?;
+        }
+        if let Some(w) = &self.width {
+            w.validate(&format!("{what} 胶宽"))?;
+        }
+        if !(self.max_gap_len.is_finite() && self.max_gap_len >= 0.0) {
+            return Err(format!("{what}：允许断胶长度不能为负"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Polarity {
+    /// 胶条比背景暗
+    Dark,
+    Light,
+}
+
+/// 沿示教中线找胶的参数。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectParams {
+    /// 卡尺沿法向的搜索半宽（mm）：要盖住机器人与工件带来的偏差
+    pub search_mm: f32,
+    pub polarity: Polarity,
+    /// 胶宽的搜索范围（mm）：比它窄或宽的不当作胶
+    pub width_range: [f32; 2],
+}
+
+impl DetectParams {
+    fn validate(&self, what: &str) -> Result<(), String> {
+        let [lo, hi] = self.width_range;
+        if !(self.search_mm.is_finite() && self.search_mm > 0.0 && lo.is_finite() && hi.is_finite() && lo > 0.0 && lo < hi) {
+            return Err(format!("{what}：搜索半宽需为正，胶宽范围需满足 0 < 下限 < 上限"));
+        }
+        if hi >= 2.0 * self.search_mm {
+            return Err(format!("{what}：胶宽上限 {hi:.1} mm 要小于搜索宽度 {:.1} mm", 2.0 * self.search_mm));
+        }
+        Ok(())
+    }
+}
+
+/// 一段：一个已示教、要检的拍照点。点 `first..first + count` 属于它，段内弧长 `(j - first) * spacing`。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Segment {
     pub name: String,
-    pub kind: SegmentKind,
-    pub s0: f32,
-    pub s1: f32,
-    /// 位置：内边→胶中线距离
-    pub params: JudgeParams,
-    /// 胶宽；为空时不判胶宽
-    #[serde(default)]
+    /// 拍照点（shots 下标）
+    pub shot: usize,
+    pub first: usize,
+    pub count: usize,
+    pub position: Option<JudgeParams>,
     pub width: Option<JudgeParams>,
+    pub max_gap_len: f32,
 }
 
-/// 名义胶路上的测量点，按弧长等间距排列，第 j 个点的弧长为 j * spacing。
+impl Segment {
+    /// 段内弧长（mm）。
+    pub fn s(&self, j: usize, spacing: f32) -> f32 {
+        (j - self.first) as f32 * spacing
+    }
+
+    pub fn length(&self, spacing: f32) -> f32 {
+        self.count.saturating_sub(1) as f32 * spacing
+    }
+}
+
+/// 各站：所在拍照点图像里的像素位置、所属段与拍照点。
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PathPoints {
     pub x: Vec<f32>,
     pub y: Vec<f32>,
     pub seg: Vec<u16>,
-    /// 负责该点的拍照点
     pub k: Vec<u8>,
-}
-
-/// 名义胶路的几何。
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
-pub enum PathSpec {
-    RoundedRect { width: f32, height: f32, radius: f32 },
-    /// 折线，两条直边之间的拐角按 radius 倒圆（0 为尖角）。
-    /// bulges[i] 不为 0 时第 i 条边（点 i → 点 i+1）是圆弧，取 DXF 的约定：tan(圆心角/4)，正值逆时针。
-    Polyline {
-        points: Vec<[f32; 2]>,
-        closed: bool,
-        radius: f32,
-        #[serde(default)]
-        bulges: Vec<f32>,
-    },
 }
 
 /// 旧文件里相机写的是相机组序号 k，读进来当作编号 "cam{k+1}"（相机组迁移时就是按位置这样编的号）。
@@ -102,10 +151,14 @@ pub fn valid_camera_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 32 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// 配方文件格式版本。不一致的文件列为加载错误，不迁移。
-pub const RECIPE_SCHEMA: u32 = 2;
+fn valid_label(s: &str) -> bool {
+    !s.trim().is_empty() && s.chars().count() <= 32 && !s.chars().any(char::is_control)
+}
 
-/// 一个拍照点：机器人走到 Pose 时 PLC 触发这台相机拍一帧。
+/// 配方文件格式版本。不一致的文件列为加载错误，不迁移。
+pub const RECIPE_SCHEMA: u32 = 3;
+
+/// 一个拍照点：机器人走到 Pose 时 PLC 触发这台相机拍一帧，在这帧里沿示教中线量胶。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShotSpec {
@@ -115,14 +168,26 @@ pub struct ShotSpec {
     pub pose_id: String,
     /// 相机编号
     pub camera: String,
-    /// 视野中心在工件坐标里的位置（mm）
-    pub center: [f32; 2],
-    /// 视野宽高；为空时用配方的 fov
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fov: Option<[f32; 2]>,
     /// 标定引用；为空时用这台相机的工位标定
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calib: Option<String>,
+    /// 胶条名：同一条胶上的拍照点同名，结果按胶条汇总
+    pub bead: String,
+    /// 不检：要求这一帧到达，但不量不判（盘圈、大胶堆等示教不出的点）
+    #[serde(default)]
+    pub skip: bool,
+    /// 示教的胶路中线（图像像素，从胶嘴一侧往外）；为空表示尚未示教
+    #[serde(default)]
+    pub path: Vec<[f32; 2]>,
+    /// 示教时的像素当量（mm/px），把站距、搜索宽换成像素
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mm_per_px: Option<f32>,
+    /// 为空时用配方的检测参数
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detect: Option<DetectParams>,
+    /// 为空时用配方的限值
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<ShotLimits>,
 }
 
 impl ShotSpec {
@@ -131,13 +196,45 @@ impl ShotSpec {
         self.calib.as_deref().unwrap_or(&self.camera)
     }
 
-    fn validate(&self, default_fov: [f32; 2]) -> Result<(), String> {
+    /// 要量要判：不是"不检"。
+    pub fn measured(&self) -> bool {
+        !self.skip
+    }
+
+    /// 已示教：有中线和像素当量。
+    pub fn taught(&self) -> bool {
+        self.path.len() >= 2 && self.mm_per_px.is_some()
+    }
+
+    /// 中线总长（px）。
+    pub fn path_len_px(&self) -> f32 {
+        self.path.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum()
+    }
+
+    /// 中线上弧长 t（px）处的点。
+    pub fn path_at(&self, t: f32) -> [f32; 2] {
+        let mut left = t.max(0.0);
+        for w in self.path.windows(2) {
+            let l = (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]);
+            if left <= l && l > 0.0 {
+                let f = left / l;
+                return [w[0][0] + (w[1][0] - w[0][0]) * f, w[0][1] + (w[1][1] - w[0][1]) * f];
+            }
+            left -= l;
+        }
+        self.path.last().copied().unwrap_or([0.0, 0.0])
+    }
+
+    fn validate(&self) -> Result<(), String> {
         let id = &self.id;
         if !valid_camera_id(id) {
             return Err(format!("拍照点编号 {id:?} 只能用字母、数字、- 和 _，最长 32 个字符"));
         }
-        if self.pose_id.trim().is_empty() || self.pose_id.chars().count() > 32 || self.pose_id.chars().any(char::is_control) {
+        if !valid_label(&self.pose_id) {
             return Err(format!("拍照点 {id} 的 Pose 标识不能为空，最长 32 个字符"));
+        }
+        if !valid_label(&self.bead) {
+            return Err(format!("拍照点 {id} 的胶条名不能为空，最长 32 个字符"));
         }
         if !valid_camera_id(&self.camera) {
             return Err(format!("拍照点 {id} 的相机编号只能用字母、数字、- 和 _"));
@@ -145,19 +242,26 @@ impl ShotSpec {
         if self.calib.as_deref().is_some_and(|c| !valid_camera_id(c)) {
             return Err(format!("拍照点 {id} 的标定引用只能用字母、数字、- 和 _"));
         }
-        let [w, h] = self.fov.unwrap_or(default_fov);
-        if !(w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
-            return Err(format!("拍照点 {id} 的视野宽高需为正"));
+        if self.path.iter().flatten().any(|v| !v.is_finite()) {
+            return Err(format!("拍照点 {id} 的中线坐标必须是有限数"));
         }
-        if !self.center.iter().all(|v| v.is_finite()) {
-            return Err(format!("拍照点 {id} 的坐标必须是有限数"));
+        if self.path.len() == 1 || (self.path.len() >= 2 && self.path_len_px() < 1.0) {
+            return Err(format!("拍照点 {id} 的中线至少两个点、长度不能为零"));
+        }
+        if let Some(m) = self.mm_per_px.filter(|m| !(m.is_finite() && *m > 0.0 && *m <= 10.0)) {
+            return Err(format!("拍照点 {id} 的像素当量 {m} 需在 0–10 mm/px 之间"));
+        }
+        if !self.path.is_empty() && self.mm_per_px.is_none() {
+            return Err(format!("拍照点 {id} 有中线却没有像素当量"));
+        }
+        if let Some(d) = &self.detect {
+            d.validate(&format!("拍照点 {id} 检测参数"))?;
+        }
+        if let Some(l) = &self.limits {
+            l.validate(&format!("拍照点 {id}"))?;
         }
         Ok(())
     }
-}
-
-fn yes() -> bool {
-    true
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -172,18 +276,13 @@ pub struct Recipe {
     pub product_code: u16,
     pub trigger_mode: TriggerMode,
     pub schema_version: u32,
-    /// 工件外形：宽、高、圆角半径（mm）；折线胶路为包围盒宽高、半径 0
-    pub part: [f32; 3],
-    #[serde(default)]
-    pub path: Option<PathSpec>,
-    #[serde(default = "yes")]
-    pub closed: bool,
-    /// 拍照点没单独给视野时用的视野宽高
-    pub fov: [f32; 2],
-    pub shots: Vec<ShotSpec>,
+    /// 站距（mm）
     pub spacing: f32,
     pub filter_window: usize,
-    pub max_gap_len: f32,
+    /// 拍照点没单独设时用的检测参数与限值
+    pub detect: DetectParams,
+    pub limits: ShotLimits,
+    pub shots: Vec<ShotSpec>,
     pub segments: Vec<Segment>,
     pub points: PathPoints,
 }
@@ -193,12 +292,6 @@ impl Recipe {
         self.shots.len()
     }
 
-    /// 拍照点 k 的视野宽高。
-    pub fn shot_fov(&self, k: usize) -> [f32; 2] {
-        self.shots[k].fov.unwrap_or(self.fov)
-    }
-
-
     pub fn point_count(&self) -> usize {
         self.points.k.len()
     }
@@ -207,16 +300,30 @@ impl Recipe {
         self.points.k.iter().enumerate().filter(move |(_, &o)| o as usize == k).map(|(j, _)| j)
     }
 
-    /// 胶路全长。闭合胶路的最后一个点到第一个点还有一个间距。
-    pub fn length(&self) -> f32 {
-        let n = self.point_count() as f32;
-        if self.closed { n * self.spacing } else { (n - 1.0).max(0.0) * self.spacing }
+    /// 拍照点 k 的检测参数。
+    pub fn shot_detect(&self, k: usize) -> &DetectParams {
+        self.shots[k].detect.as_ref().unwrap_or(&self.detect)
     }
 
-    /// 只看胶路几何与拍照点的哈希：示教资料跟它走，改判定限值不用重新示教。
+    /// 拍照点 k 的段（不检、未示教的拍照点没有）。
+    pub fn shot_segment(&self, k: usize) -> Option<&Segment> {
+        self.segments.iter().find(|g| g.shot == k)
+    }
+
+    /// 能不能开工：要检的拍照点都示教过。
+    pub fn ready(&self) -> Result<(), String> {
+        let untaught: Vec<&str> = self.shots.iter().filter(|s| s.measured() && !s.taught()).map(|s| s.id.as_str()).collect();
+        if untaught.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("配方 {} 的拍照点 {} 尚未示教胶路", self.id, untaught.join("、")))
+        }
+    }
+
+    /// 示教相关内容的哈希：拍照点的相机、标定引用、中线、像素当量、检测参数与站距。改判定限值、胶条名不用重新示教。
     pub fn geometry_hash(&self) -> String {
-        let key = serde_json::json!([self.path, self.part, self.spacing, self.shots, self.fov, self.closed]);
-        fnv_hex(&serde_json::to_vec(&key).unwrap_or_default())
+        let shots: Vec<_> = self.shots.iter().map(|s| serde_json::json!([s.id, s.camera, s.calib_ref(), s.skip, s.path, s.mm_per_px, s.detect])).collect();
+        fnv_hex(&serde_json::to_vec(&serde_json::json!([self.spacing, self.detect, shots])).unwrap_or_default())
     }
 
     /// 本配方要用到的相机（编号），按第一次出现的拍照点排序。
@@ -229,62 +336,6 @@ impl Recipe {
         }
         out
     }
-
-    /// 弧长 s 处的名义位置。闭合胶路按周长取模；开放胶路超出两端时沿端点切向外推。
-    pub fn pos(&self, s: f32) -> [f32; 2] {
-        let n = self.point_count();
-        if n == 0 {
-            return [0.0, 0.0];
-        }
-        if n == 1 {
-            return [self.points.x[0], self.points.y[0]];
-        }
-        let sp = self.spacing;
-        let p = |j: usize| [self.points.x[j], self.points.y[j]];
-        if self.closed {
-            let s = s.rem_euclid(self.length());
-            let j = ((s / sp) as usize).min(n - 1);
-            let t = s / sp - j as f32;
-            let (a, b) = (p(j), p((j + 1) % n));
-            return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-        }
-        let j = ((s / sp).floor().max(0.0) as usize).min(n - 2);
-        let t = s / sp - j as f32;
-        let (a, b) = (p(j), p(j + 1));
-        [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
-    }
-
-    /// 弧长 s 处的单位切向（沿涂胶方向）。
-    pub fn tangent(&self, s: f32) -> [f32; 2] {
-        let h = self.spacing * 0.5;
-        let (a, b) = (self.pos(s - h), self.pos(s + h));
-        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-        let l = (dx * dx + dy * dy).sqrt().max(1e-6);
-        [dx / l, dy / l]
-    }
-
-    /// 横向偏移的正方向：切向顺时针转 90°（y 向下的坐标里是涂胶方向的左手侧）。
-    pub fn normal(&self, s: f32) -> [f32; 2] {
-        let [tx, ty] = self.tangent(s);
-        [ty, -tx]
-    }
-
-    /// normal 乘上它得到指向闭合胶路外侧的法向：绕向与圆角矩形相同（有向面积为正）时 normal 本来就朝外。
-    /// 开放胶路没有内外，取 1。
-    pub fn outward_sign(&self) -> f32 {
-        let (x, y) = (&self.points.x, &self.points.y);
-        let n = x.len();
-        let area: f32 = (0..n).map(|i| x[i] * y[(i + 1) % n] - x[(i + 1) % n] * y[i]).sum();
-        if self.closed && area < 0.0 { -1.0 } else { 1.0 }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SegmentLimits {
-    pub position: JudgeParams,
-    #[serde(default)]
-    pub width: Option<JudgeParams>,
 }
 
 /// 配方文件的内容，也是配方页编辑的对象。
@@ -302,188 +353,39 @@ pub struct RecipeDoc {
     /// 缺省为 0，校验时报格式版本不符
     #[serde(default)]
     pub schema_version: u32,
-    pub path: PathSpec,
     pub spacing: f32,
     pub filter_window: usize,
-    pub max_gap_len: f32,
-    pub line: SegmentLimits,
-    pub corner: SegmentLimits,
-    /// 按段名覆盖的限值
-    #[serde(default)]
-    pub segment_overrides: BTreeMap<String, SegmentLimits>,
-    #[serde(default)]
-    pub fov: [f32; 2],
+    pub detect: DetectParams,
+    pub limits: ShotLimits,
     #[serde(default)]
     pub shots: Vec<ShotSpec>,
 }
 
-#[derive(Clone, Copy, Debug)]
-enum Piece {
-    Line { a: [f32; 2], b: [f32; 2] },
-    Arc { c: [f32; 2], r: f32, a0: f32, sweep: f32 },
-}
-
-impl Piece {
-    fn len(&self) -> f32 {
-        match *self {
-            Piece::Line { a, b } => ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt(),
-            Piece::Arc { r, sweep, .. } => r * sweep.abs(),
-        }
-    }
-
-    fn at(&self, t: f32) -> [f32; 2] {
-        match *self {
-            Piece::Line { a, b } => {
-                let l = self.len().max(1e-9);
-                [a[0] + (b[0] - a[0]) * t / l, a[1] + (b[1] - a[1]) * t / l]
-            }
-            Piece::Arc { c, r, a0, sweep } => {
-                let a = a0 + sweep.signum() * t / r;
-                [c[0] + r * a.cos(), c[1] + r * a.sin()]
-            }
-        }
-    }
-}
-
-fn sub(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
-    [a[0] - b[0], a[1] - b[1]]
-}
-
-fn unit(v: [f32; 2]) -> [f32; 2] {
-    let l = (v[0] * v[0] + v[1] * v[1]).sqrt().max(1e-9);
-    [v[0] / l, v[1] / l]
-}
-
-/// 两点之间的圆弧边。bulge = tan(圆心角/4)，正值时从 a 到 b 逆时针（角度增大的方向）。
-fn bulge_arc(a: [f32; 2], b: [f32; 2], bulge: f32) -> Piece {
-    let chord = sub(b, a);
-    let l = (chord[0] * chord[0] + chord[1] * chord[1]).sqrt();
-    let theta = 4.0 * bulge.atan();
-    let r = l / (2.0 * (theta / 2.0).sin().abs());
-    // 圆心在弦中点沿弦的左法向偏 d（带符号：逆时针圆弧圆心在左）
-    let d = l / (2.0 * (theta / 2.0).tan());
-    let c = [(a[0] + b[0]) / 2.0 - chord[1] / l * d, (a[1] + b[1]) / 2.0 + chord[0] / l * d];
-    Piece::Arc { c, r, a0: (a[1] - c[1]).atan2(a[0] - c[0]), sweep: theta }
-}
-
-/// 折线按半径倒圆（带 bulge 的边画成圆弧），得到依次首尾相接的直线段与圆弧。
-fn fillet(points: &[[f32; 2]], closed: bool, radius: f32, bulges: &[f32], names: Option<&[&str]>) -> Result<Vec<(String, SegmentKind, Piece)>, String> {
-    let n = points.len();
-    if n < 2 || (closed && n < 3) {
-        return Err("胶路至少要有 2 个点（闭合至少 3 个）".into());
-    }
-    let edges = if closed { n } else { n - 1 };
-    let bulge = |e: usize| bulges.get(e).copied().filter(|b| b.abs() > 1e-6);
-    let dir: Vec<[f32; 2]> = (0..edges).map(|i| unit(sub(points[(i + 1) % n], points[i]))).collect();
-    let elen: Vec<f32> = (0..edges).map(|i| Piece::Line { a: points[i], b: points[(i + 1) % n] }.len()).collect();
-    if elen.iter().any(|&l| l < 1e-3) {
-        return Err("胶路有重合的相邻点".into());
-    }
-    // 每个顶点：进、出切点与圆弧（没有拐角或半径为 0 时切点就是顶点）
-    let corner = |i: usize| -> ([f32; 2], [f32; 2], Option<Piece>) {
-        let v = points[i];
-        let interior = closed || (i > 0 && i < n - 1);
-        // 圆弧边两端不倒角：CAD 里圆弧与直边本来就相切
-        if !interior || radius <= 0.0 || bulge((i + edges - 1) % edges).is_some() || bulge(i % edges).is_some() {
-            return (v, v, None);
-        }
-        let (din, dout) = (dir[(i + edges - 1) % edges], dir[i % edges]);
-        let phi = (din[0] * dout[1] - din[1] * dout[0]).atan2(din[0] * dout[0] + din[1] * dout[1]);
-        if phi.abs() < 1e-4 {
-            return (v, v, None);
-        }
-        let half = (phi.abs() / 2.0).tan();
-        let t = (radius * half).min(elen[(i + edges - 1) % edges] / 2.0).min(elen[i % edges] / 2.0);
-        let r = t / half;
-        let t1 = [v[0] - din[0] * t, v[1] - din[1] * t];
-        let t2 = [v[0] + dout[0] * t, v[1] + dout[1] * t];
-        let s = phi.signum();
-        let c = [t1[0] - din[1] * r * s, t1[1] + din[0] * r * s];
-        let a0 = (t1[1] - c[1]).atan2(t1[0] - c[0]);
-        (t1, t2, Some(Piece::Arc { c, r, a0, sweep: phi }))
-    };
-    let corners: Vec<_> = (0..n).map(corner).collect();
-    let mut pieces = Vec::new();
-    // 第 e 条边与它末端的拐角；给了名字表时按"边、拐角、边、拐角…"的顺序取
-    let name = |kind: SegmentKind, e: usize| -> String {
-        let i = if kind == SegmentKind::Line { e * 2 } else { e * 2 + 1 };
-        match (names.and_then(|n| n.get(i)), kind) {
-            (Some(nm), _) => nm.to_string(),
-            (None, SegmentKind::Line) => format!("边 {}", e + 1),
-            (None, SegmentKind::Corner) => format!("拐角 {}", e + 1),
-        }
-    };
-    for e in 0..edges {
-        if let Some(b) = bulge(e) {
-            pieces.push((format!("圆弧 {}", e + 1), SegmentKind::Corner, bulge_arc(points[e], points[(e + 1) % n], b)));
-            continue;
-        }
-        let (a, b) = (corners[e].1, corners[(e + 1) % n].0);
-        let line = Piece::Line { a, b };
-        if line.len() > 1e-4 {
-            pieces.push((name(SegmentKind::Line, e), SegmentKind::Line, line));
-        }
-        if let Some(arc) = corners[(e + 1) % n].2 {
-            if closed || e + 1 < n - 1 {
-                pieces.push((name(SegmentKind::Corner, e), SegmentKind::Corner, arc));
-            }
-        }
-    }
-    Ok(pieces)
-}
-
-const RECT_NAMES: [&str; 8] = ["长边 A", "R 角 1", "短边 B", "R 角 2", "长边 C", "R 角 3", "短边 D", "R 角 4"];
-
 impl RecipeDoc {
     pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != RECIPE_SCHEMA {
+            return Err(format!("配方文件格式版本 {}，当前为 {RECIPE_SCHEMA}，需要按新格式重建", self.schema_version));
+        }
         if !valid_camera_id(&self.id) {
             return Err("配方编号只能用字母、数字、- 和 _，最长 32 个字符".into());
         }
         if self.name.trim().is_empty() {
             return Err("配方名称不能为空".into());
         }
-        if !(0.1..=5.0).contains(&self.spacing) {
-            return Err("测量点间距需在 0.1–5 mm 之间".into());
+        if !(0.1..=10.0).contains(&self.spacing) {
+            return Err("站距需在 0.1–10 mm 之间".into());
         }
         if self.filter_window == 0 || self.filter_window > 31 || self.filter_window % 2 == 0 {
             return Err("中值滤波窗口需为 1–31 的奇数".into());
         }
-        if !(self.max_gap_len >= 0.0) {
-            return Err("允许断胶长度不能为负".into());
-        }
-        if self.schema_version != RECIPE_SCHEMA {
-            return Err(format!("配方文件格式版本 {}，当前为 {RECIPE_SCHEMA}，需要按新格式重建", self.schema_version));
-        }
-        for (what, l) in [("直线段", &self.line), ("拐角", &self.corner)].into_iter().chain(self.segment_overrides.iter().map(|(k, v)| (k.as_str(), v))) {
-            l.position.validate(&format!("{what} 位置"))?;
-            if let Some(w) = &l.width {
-                w.validate(&format!("{what} 胶宽"))?;
-            }
-        }
-        match self.path {
-            PathSpec::RoundedRect { width, height, radius } => {
-                if !(width > 0.0 && height > 0.0 && radius >= 0.0 && 2.0 * radius <= width.min(height)) {
-                    return Err("圆角矩形的宽高需为正，圆角半径不超过短边一半".into());
-                }
-            }
-            PathSpec::Polyline { ref points, radius, ref bulges, .. } => {
-                if points.iter().flatten().any(|v| !v.is_finite()) || radius < 0.0 || bulges.iter().any(|b| !b.is_finite()) {
-                    return Err("胶路点坐标与圆弧参数必须是有限数，倒圆半径不能为负".into());
-                }
-                if bulges.len() > points.len() {
-                    return Err("圆弧参数比胶路边数还多".into());
-                }
-            }
-        }
+        self.detect.validate("检测参数")?;
+        self.limits.validate("限值")?;
         if self.shots.is_empty() || self.shots.len() > 64 {
-            return Err("飞拍配方需要 1–64 个拍照点".into());
+            return Err("配方需要 1–64 个拍照点".into());
         }
-        if !(self.fov[0] > 0.0 && self.fov[1] > 0.0) {
-            return Err("视野宽高需为正".into());
-        }
-        let mut ids = std::collections::HashSet::new();
+        let mut ids = HashSet::new();
         for shot in &self.shots {
-            shot.validate(self.fov)?;
+            shot.validate()?;
             if !ids.insert(shot.id.as_str()) {
                 return Err(format!("拍照点编号 {} 重复", shot.id));
             }
@@ -491,72 +393,41 @@ impl RecipeDoc {
         Ok(())
     }
 
-    /// 视野包含 (x, y) 的拍照点里中心最近的一个。
-    fn owner(&self, x: f32, y: f32) -> Option<usize> {
-        let d2 = |c: [f32; 2]| (x - c[0]).powi(2) + (y - c[1]).powi(2);
-        self.shots
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| {
-                let [w, h] = s.fov.unwrap_or(self.fov);
-                (x - s.center[0]).abs() <= w / 2.0 + 1e-3 && (y - s.center[1]).abs() <= h / 2.0 + 1e-3
-            })
-            .min_by(|(_, a), (_, b)| d2(a.center).total_cmp(&d2(b.center)))
-            .map(|(k, _)| k)
-    }
-
     pub fn build(&self) -> Result<Recipe, String> {
         self.validate()?;
-        let (pieces, closed, part) = match self.path {
-            PathSpec::RoundedRect { width: w, height: h, radius: r } => {
-                let pts = [[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]];
-                (fillet(&pts, true, r, &[], Some(&RECT_NAMES))?, true, [w, h, r])
-            }
-            PathSpec::Polyline { ref points, closed, radius, ref bulges } => {
-                let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-                for p in points {
-                    (x0, y0, x1, y1) = (x0.min(p[0]), y0.min(p[1]), x1.max(p[0]), y1.max(p[1]));
-                }
-                let (pts, bs) = tidy(points, bulges, closed);
-                (fillet(&pts, closed, radius, &bs, None)?, closed, [x1 - x0, y1 - y0, 0.0])
-            }
-        };
-        let limits = |name: &str, kind: SegmentKind| {
-            self.segment_overrides.get(name).cloned().unwrap_or_else(|| if kind == SegmentKind::Line { self.line.clone() } else { self.corner.clone() })
-        };
-        let mut segments = Vec::new();
-        let mut s = 0.0;
-        for (name, kind, piece) in &pieces {
-            let l = limits(name, *kind);
-            let len = piece.len();
-            segments.push(Segment { name: name.clone(), kind: *kind, s0: s, s1: s + len, params: l.position, width: l.width });
-            s += len;
-        }
-        let total = s;
-        if total < 2.0 * self.spacing {
-            return Err("胶路太短".into());
-        }
-        if total / self.spacing > 200_000.0 {
-            return Err("测量点超过 20 万个，加大间距".into());
-        }
         let mut points = PathPoints::default();
-        let mut j = 0usize;
-        loop {
-            let s = j as f32 * self.spacing;
-            if s >= total - if closed { 1e-4 } else { -1e-4 } {
-                break;
+        let mut segments = Vec::new();
+        for (k, shot) in self.shots.iter().enumerate() {
+            if !shot.measured() || !shot.taught() {
+                continue;
             }
-            let gi = segments.iter().position(|g| s < g.s1).unwrap_or(segments.len() - 1);
-            let [x, y] = pieces[gi].2.at((s - segments[gi].s0).min(pieces[gi].2.len()));
-            let owner = self.owner(x, y).ok_or_else(|| format!("测点 s={s:.1} mm（{x:.1}, {y:.1}）不在任何拍照点的视野内"))?;
-            points.x.push(x);
-            points.y.push(y);
-            points.seg.push(gi as u16);
-            points.k.push(owner as u8);
-            j += 1;
-        }
-        if segments.len() > u16::MAX as usize {
-            return Err("胶路分段太多".into());
+            let step = self.spacing / shot.mm_per_px.unwrap();
+            let len = shot.path_len_px();
+            let count = (len / step + 1e-3).floor() as usize + 1;
+            if count < 3 {
+                return Err(format!("拍照点 {} 的中线只有 {:.1} mm，至少要 {:.1} mm", shot.id, len * shot.mm_per_px.unwrap(), 2.0 * self.spacing));
+            }
+            if points.k.len() + count > 200_000 {
+                return Err("测量点超过 20 万个，加大站距".into());
+            }
+            let first = points.k.len();
+            for i in 0..count {
+                let [x, y] = shot.path_at(i as f32 * step);
+                points.x.push(x);
+                points.y.push(y);
+                points.seg.push(segments.len() as u16);
+                points.k.push(k as u8);
+            }
+            let limits = shot.limits.as_ref().unwrap_or(&self.limits);
+            segments.push(Segment {
+                name: format!("{} · {}", shot.id, shot.bead),
+                shot: k,
+                first,
+                count,
+                position: limits.position.clone(),
+                width: limits.width.clone(),
+                max_gap_len: limits.max_gap_len,
+            });
         }
         let mut recipe = Recipe {
             id: self.id.clone(),
@@ -567,14 +438,11 @@ impl RecipeDoc {
             product_code: self.product_code,
             trigger_mode: self.trigger_mode,
             schema_version: self.schema_version,
-            part,
-            path: Some(self.path.clone()),
-            closed,
-            fov: self.fov,
-            shots: self.shots.clone(),
             spacing: self.spacing,
             filter_window: self.filter_window,
-            max_gap_len: self.max_gap_len,
+            detect: self.detect.clone(),
+            limits: self.limits.clone(),
+            shots: self.shots.clone(),
             segments,
             points,
         };
@@ -595,32 +463,54 @@ fn fnv_hex(bytes: &[u8]) -> String {
     format!("{:016x}", h)
 }
 
-fn line_limits() -> SegmentLimits {
-    SegmentLimits {
-        position: JudgeParams { nominal: 0.75, tol_upper: 0.75, tol_lower: 0.75, abs_min: 0.0, abs_max: 2.0, max_excursion_len: 2.0 },
-        width: None,
+/// 胶宽、位置、断胶的默认限值：名义胶宽 4 mm；断口阈值取自 MX11 现场图（正常帧最长无胶 5.4 mm，断胶帧 10–22 mm）。
+pub fn default_limits() -> ShotLimits {
+    ShotLimits {
+        position: Some(JudgeParams { nominal: 0.0, tol_upper: 2.0, tol_lower: 2.0, abs_min: -5.0, abs_max: 5.0, max_excursion_len: 5.0 }),
+        width: Some(JudgeParams { nominal: 4.0, tol_upper: 1.5, tol_lower: 1.5, abs_min: 1.0, abs_max: 8.0, max_excursion_len: 5.0 }),
+        max_gap_len: 6.0,
     }
 }
 
-fn corner_limits() -> SegmentLimits {
-    SegmentLimits {
-        position: JudgeParams { nominal: 0.75, tol_upper: 1.0, tol_lower: 1.0, abs_min: 0.0, abs_max: 2.2, max_excursion_len: 3.0 },
-        width: None,
-    }
+pub fn default_detect() -> DetectParams {
+    DetectParams { search_mm: 15.0, polarity: Polarity::Dark, width_range: [1.0, 10.0] }
 }
 
-/// 一台相机按顺序拍这些位置：编号 P1、P2…，Pose 标识同编号。
-pub fn shot_list(camera: &str, centers: &[[f32; 2]]) -> Vec<ShotSpec> {
-    centers
-        .iter()
+/// 模拟相机的像素当量（与模拟出图一致）。
+pub const SIM_MM_PER_PX: f32 = 0.112;
+
+/// 一台相机按顺序拍几个拍照点：编号 P1、P2…，Pose 同编号，胶条 J1；中线由调用方给（空为未示教）。
+pub fn shot_list(camera: &str, paths: Vec<Vec<[f32; 2]>>) -> Vec<ShotSpec> {
+    paths
+        .into_iter()
         .enumerate()
-        .map(|(k, &center)| ShotSpec { id: format!("P{}", k + 1), pose_id: format!("P{}", k + 1), camera: camera.into(), center, fov: None, calib: None })
+        .map(|(k, path)| ShotSpec {
+            id: format!("P{}", k + 1),
+            pose_id: format!("P{}", k + 1),
+            camera: camera.into(),
+            calib: None,
+            bead: "J1".into(),
+            skip: false,
+            mm_per_px: (!path.is_empty()).then_some(SIM_MM_PER_PX),
+            path,
+            detect: None,
+            limits: None,
+        })
         .collect()
 }
 
-/// 首次启动写入的样例配方。
+/// 模拟相机画面里的示例中线：胶嘴在右侧，胶条往左拖出（直、缓弯、斜向交替）。
+fn sample_path(k: usize) -> Vec<[f32; 2]> {
+    match k % 3 {
+        0 => vec![[980.0, 480.0], [300.0, 460.0]],
+        1 => vec![[980.0, 480.0], [700.0, 420.0], [320.0, 330.0]],
+        _ => vec![[980.0, 480.0], [640.0, 560.0], [330.0, 690.0]],
+    }
+}
+
+/// 首次启动写入的样例配方：模拟相机按示例中线就能跑；换真实相机要重新示教。
 pub fn samples() -> Vec<RecipeDoc> {
-    let fly = |id: &str, name: &str, code: u16, w: f32, h: f32, r: f32, centers: &[[f32; 2]], trigger_mode| RecipeDoc {
+    let doc = |id: &str, name: &str, code: u16, n: usize, trigger_mode| RecipeDoc {
         id: id.into(),
         name: name.into(),
         version: 1,
@@ -628,366 +518,19 @@ pub fn samples() -> Vec<RecipeDoc> {
         product_code: code,
         trigger_mode,
         schema_version: RECIPE_SCHEMA,
-        path: PathSpec::RoundedRect { width: w, height: h, radius: r },
-        spacing: 0.5,
+        spacing: 1.0,
         filter_window: 5,
-        max_gap_len: 0.5,
-        line: line_limits(),
-        corner: corner_limits(),
-        segment_overrides: BTreeMap::new(),
-        fov: [216.0, 145.0],
-        shots: shot_list(&legacy_camera_id(0), centers),
+        detect: default_detect(),
+        limits: default_limits(),
+        shots: shot_list(&legacy_camera_id(0), (0..n).map(sample_path).collect()),
     };
-    vec![
-        fly(
-            "MTR-HSG-A",
-            "电机壳体 A",
-            12,
-            520.0,
-            230.0,
-            28.0,
-            &[[95.0, 57.5], [260.0, 57.5], [425.0, 57.5], [425.0, 172.5], [260.0, 172.5], [95.0, 172.5]],
-            TriggerMode::Fly,
-        ),
-        fly("MTR-HSG-B", "电机壳体 B", 13, 380.0, 200.0, 24.0, &[[95.0, 50.0], [285.0, 50.0], [285.0, 150.0], [95.0, 150.0]], TriggerMode::Stop),
-    ]
+    vec![doc("MTR-HSG-A", "电机壳体 A", 12, 6, TriggerMode::Fly), doc("MTR-HSG-B", "电机壳体 B", 13, 4, TriggerMode::Stop)]
 }
 
 /// 测试与重判里需要一份现成配方时用。
 #[cfg(test)]
 pub fn builtin() -> Vec<Arc<Recipe>> {
     samples().iter().map(|d| Arc::new(d.build().unwrap())).collect()
-}
-
-fn same_point(a: [f32; 2], b: [f32; 2]) -> bool {
-    (a[0] - b[0]).abs() <= 1e-3 && (a[1] - b[1]).abs() <= 1e-3
-}
-
-/// 折线整理：去掉相邻重合点（它后面那条边的 bulge 归到保留下来的点上）；闭合时去掉与起点重合的末点
-/// （CAD / CSV 导出的闭合轮廓常把起点再写一遍）；闭合却只剩两个点（整圆、两段半圆）时把圆弧边从中点剖开。
-fn tidy(points: &[[f32; 2]], bulges: &[f32], closed: bool) -> (Vec<[f32; 2]>, Vec<f32>) {
-    let (mut pts, mut bs): (Vec<[f32; 2]>, Vec<f32>) = (Vec::new(), Vec::new());
-    for (i, &p) in points.iter().enumerate() {
-        let b = bulges.get(i).copied().unwrap_or(0.0);
-        if pts.last().is_some_and(|&q| same_point(q, p)) {
-            if let Some(last) = bs.last_mut() {
-                *last = b;
-            }
-            continue;
-        }
-        pts.push(p);
-        bs.push(b);
-    }
-    if closed && pts.len() > 2 && same_point(pts[0], pts[pts.len() - 1]) {
-        pts.pop();
-        bs.pop();
-    }
-    if !(closed && pts.len() == 2 && bs.iter().any(|b| b.abs() > 1e-6)) {
-        return (pts, bs);
-    }
-    let (mut out, mut out_bs) = (Vec::new(), Vec::new());
-    for e in 0..2 {
-        let (a, b, bulge) = (pts[e], pts[1 - e], bs[e]);
-        out.push(a);
-        if bulge.abs() <= 1e-6 {
-            out_bs.push(0.0);
-            continue;
-        }
-        // 圆弧中点在弦中点的右侧（正 bulge 逆时针，圆心在左），离弦 bulge·弦长/2；两半各转一半的角
-        let half = (bulge.atan() / 2.0).tan();
-        let c = sub(b, a);
-        out.push([(a[0] + b[0]) / 2.0 + c[1] * bulge / 2.0, (a[1] + b[1]) / 2.0 - c[0] * bulge / 2.0]);
-        out_bs.extend([half, half]);
-    }
-    (out, out_bs)
-}
-
-/// 从文件导入的胶路：折线点、各边的 bulge（直边为 0）、是否闭合。
-#[derive(Clone, Debug, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportedPath {
-    pub points: Vec<[f32; 2]>,
-    pub bulges: Vec<f32>,
-    pub closed: bool,
-    /// 给操作员看的说明（例如文件里有几条路径、取了哪条）
-    pub note: Option<String>,
-}
-
-impl ImportedPath {
-    /// 首尾重合视为闭合；再按 tidy 整理。
-    fn normalized(mut self) -> Result<Self, String> {
-        let n = self.points.len();
-        self.closed |= n > 2 && same_point(self.points[0], self.points[n - 1]);
-        let (pts, mut bs) = tidy(&self.points, &self.bulges, self.closed);
-        if pts.len() < 2 {
-            return Err("文件里没读到至少 2 个点".into());
-        }
-        if !self.closed {
-            bs.truncate(pts.len() - 1);
-        }
-        if bs.iter().all(|b| b.abs() < 1e-9) {
-            bs.clear();
-        }
-        self.points = pts;
-        self.bulges = bs;
-        Ok(self)
-    }
-
-    /// 长度（圆弧按弧长）。
-    fn length(&self) -> f32 {
-        let n = self.points.len();
-        let edges = if self.closed { n } else { n.saturating_sub(1) };
-        (0..edges)
-            .map(|e| {
-                let (a, b) = (self.points[e], self.points[(e + 1) % n]);
-                match self.bulges.get(e).copied().filter(|b| b.abs() > 1e-6) {
-                    Some(bulge) => bulge_arc(a, b, bulge).len(),
-                    None => Piece::Line { a, b }.len(),
-                }
-            })
-            .sum()
-    }
-}
-
-/// 从 CSV（每行 x, y，可有表头）或 DXF 的文本读出胶路。
-/// DXF 读 ENTITIES 段里的 LWPOLYLINE / POLYLINE（含圆弧与闭合标记）、CIRCLE，以及首尾相连的 LINE / ARC；
-/// 有多条路径时取最长的一条。
-pub fn parse_path(text: &str, ext: &str) -> Result<ImportedPath, String> {
-    if ext.eq_ignore_ascii_case("dxf") {
-        dxf_path(text)
-    } else {
-        csv_path(text).normalized()
-    }
-}
-
-fn csv_cells(line: &str) -> Vec<&str> {
-    line.split([',', ';', '\t', ' ']).map(str::trim).filter(|s| !s.is_empty()).collect()
-}
-
-/// 第 3 列起的数默认不认（常见的是高度 z、序号）；表头里写明 bulge 的那一列才当圆弧参数（tan(圆心角/4)，正值逆时针）。
-fn csv_path(text: &str) -> ImportedPath {
-    let head = text.lines().map(csv_cells).find(|c| !c.is_empty()).filter(|c| c.iter().any(|s| s.parse::<f32>().is_err()));
-    let bulge_col = head.and_then(|c| c.iter().position(|s| s.eq_ignore_ascii_case("bulge")));
-    let mut path = ImportedPath::default();
-    for l in text.lines() {
-        let v: Vec<f32> = csv_cells(l).into_iter().map_while(|s| s.parse::<f32>().ok()).collect();
-        if v.len() >= 2 && v[0].is_finite() && v[1].is_finite() {
-            path.points.push([v[0], v[1]]);
-            path.bulges.push(bulge_col.and_then(|c| v.get(c).copied()).filter(|b| b.is_finite()).unwrap_or(0.0));
-        }
-    }
-    path
-}
-
-/// DXF 实体：组码 → 值（同一组码可能出现多次，按出现顺序）。
-struct Entity<'a> {
-    kind: &'a str,
-    pairs: Vec<(i32, &'a str)>,
-}
-
-impl Entity<'_> {
-    fn f(&self, code: i32) -> Option<f32> {
-        self.pairs.iter().find(|(c, _)| *c == code).and_then(|(_, v)| v.parse().ok())
-    }
-}
-
-fn dxf_entities(text: &str) -> Vec<Entity<'_>> {
-    let lines: Vec<&str> = text.lines().map(str::trim).collect();
-    let mut out: Vec<Entity> = Vec::new();
-    let mut section = "";
-    let mut in_section_header = false;
-    let mut i = 0;
-    while i + 1 < lines.len() {
-        let (Ok(code), value) = (lines[i].parse::<i32>(), lines[i + 1]) else {
-            i += 1;
-            continue;
-        };
-        i += 2;
-        if code == 0 {
-            match value {
-                "SECTION" => in_section_header = true,
-                "ENDSEC" => section = "",
-                _ if section == "ENTITIES" => out.push(Entity { kind: value, pairs: Vec::new() }),
-                _ => {}
-            }
-            continue;
-        }
-        if in_section_header && code == 2 {
-            section = value;
-            in_section_header = false;
-            continue;
-        }
-        if section == "ENTITIES" {
-            if let Some(e) = out.last_mut() {
-                e.pairs.push((code, value));
-            }
-        }
-    }
-    out
-}
-
-/// 一条直边或圆弧边（ARC 实体转成两端点 + bulge）。
-struct Edge {
-    a: [f32; 2],
-    b: [f32; 2],
-    bulge: f32,
-}
-
-fn chain(mut edges: Vec<Edge>) -> Vec<ImportedPath> {
-    let mut paths = Vec::new();
-    while let Some(first) = edges.pop() {
-        let mut pts = vec![first.a, first.b];
-        let mut bs = vec![first.bulge];
-        loop {
-            let end = *pts.last().unwrap();
-            let Some(i) = edges.iter().position(|e| same_point(e.a, end) || same_point(e.b, end)) else { break };
-            let e = edges.swap_remove(i);
-            if same_point(e.a, end) {
-                pts.push(e.b);
-                bs.push(e.bulge);
-            } else {
-                pts.push(e.a);
-                bs.push(-e.bulge);
-            }
-        }
-        loop {
-            let start = pts[0];
-            let Some(i) = edges.iter().position(|e| same_point(e.a, start) || same_point(e.b, start)) else { break };
-            let e = edges.swap_remove(i);
-            if same_point(e.b, start) {
-                pts.insert(0, e.a);
-                bs.insert(0, e.bulge);
-            } else {
-                pts.insert(0, e.b);
-                bs.insert(0, -e.bulge);
-            }
-        }
-        bs.push(0.0);
-        paths.push(ImportedPath { points: pts, bulges: bs, closed: false, note: None });
-    }
-    paths
-}
-
-fn dxf_path(text: &str) -> Result<ImportedPath, String> {
-    let entities = dxf_entities(text);
-    let mut paths: Vec<ImportedPath> = Vec::new();
-    let mut edges: Vec<Edge> = Vec::new();
-    let mut i = 0;
-    while i < entities.len() {
-        let e = &entities[i];
-        match e.kind {
-            "LWPOLYLINE" => {
-                let mut p = ImportedPath { closed: e.f(70).is_some_and(|f| (f as i32) & 1 == 1), ..Default::default() };
-                let mut x = None;
-                for &(code, v) in &e.pairs {
-                    match code {
-                        10 => x = v.parse::<f32>().ok(),
-                        20 => {
-                            if let (Some(px), Ok(py)) = (x.take(), v.parse::<f32>()) {
-                                p.points.push([px, py]);
-                                p.bulges.push(0.0);
-                            }
-                        }
-                        // bulge 跟在它所属的顶点之后，作用于从这个顶点出发的那条边
-                        42 => {
-                            if let (Some(b), Ok(v)) = (p.bulges.last_mut(), v.parse::<f32>()) {
-                                *b = v;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                paths.push(p);
-            }
-            "POLYLINE" => {
-                let mut p = ImportedPath { closed: e.f(70).is_some_and(|f| (f as i32) & 1 == 1), ..Default::default() };
-                while i + 1 < entities.len() && entities[i + 1].kind == "VERTEX" {
-                    i += 1;
-                    let v = &entities[i];
-                    if let (Some(x), Some(y)) = (v.f(10), v.f(20)) {
-                        p.points.push([x, y]);
-                        p.bulges.push(v.f(42).unwrap_or(0.0));
-                    }
-                }
-                paths.push(p);
-            }
-            "LINE" => {
-                if let (Some(x0), Some(y0), Some(x1), Some(y1)) = (e.f(10), e.f(20), e.f(11), e.f(21)) {
-                    edges.push(Edge { a: [x0, y0], b: [x1, y1], bulge: 0.0 });
-                }
-            }
-            "ARC" => {
-                if let (Some(cx), Some(cy), Some(r), Some(a0), Some(a1)) = (e.f(10), e.f(20), e.f(40), e.f(50), e.f(51)) {
-                    let mut sweep = (a1 - a0).rem_euclid(360.0);
-                    if sweep < 1e-6 {
-                        sweep = 360.0;
-                    }
-                    let at = |deg: f32| [cx + r * deg.to_radians().cos(), cy + r * deg.to_radians().sin()];
-                    edges.push(Edge { a: at(a0), b: at(a1), bulge: (sweep.to_radians() / 4.0).tan() });
-                }
-            }
-            "CIRCLE" => {
-                if let (Some(cx), Some(cy), Some(r)) = (e.f(10), e.f(20), e.f(40)) {
-                    paths.push(ImportedPath { points: vec![[cx + r, cy], [cx - r, cy]], bulges: vec![1.0, 1.0], closed: true, note: None });
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    paths.extend(chain(edges));
-    let mut paths: Vec<ImportedPath> = paths.into_iter().filter_map(|p| p.normalized().ok()).collect();
-    if paths.is_empty() {
-        return Err("DXF 的 ENTITIES 段里没找到 LWPOLYLINE / POLYLINE / LINE / ARC / CIRCLE 组成的路径".into());
-    }
-    paths.sort_by(|a, b| b.length().total_cmp(&a.length()));
-    let n = paths.len();
-    let mut best = paths.swap_remove(0);
-    if n > 1 {
-        best.note = Some(format!("文件里有 {n} 条路径，取了最长的一条（约 {:.1} mm）", best.length()));
-    }
-    Ok(best)
-}
-
-#[cfg(test)]
-mod import_tests {
-    use super::*;
-
-    #[test]
-    fn closed_csv_repeating_first_point() {
-        let p = parse_path("x,y,z\n0,0,5\n100,0,5\n100,50,5\n0,50,5\n0,0,5\n", "csv").unwrap();
-        assert!(p.closed);
-        assert_eq!(p.points.len(), 4);
-        assert!(p.bulges.is_empty(), "z 列不能当 bulge：{:?}", p.bulges);
-    }
-
-    #[test]
-    fn dxf_circle_builds_full_circle() {
-        let p = parse_path("0\nSECTION\n2\nENTITIES\n0\nCIRCLE\n10\n50\n20\n50\n40\n20\n0\nENDSEC\n0\nEOF\n", "dxf").unwrap();
-        let doc = RecipeDoc { path: PathSpec::Polyline { points: p.points, closed: p.closed, radius: 0.0, bulges: p.bulges }, ..samples()[0].clone() };
-        let r = doc.build().unwrap();
-        let total = r.segments.last().unwrap().s1;
-        assert!((total - 2.0 * std::f32::consts::PI * 20.0).abs() < 0.05, "周长 {total}");
-        assert!((r.pos(total / 4.0)[1] - 50.0).abs() > 15.0, "四分之一处应在圆的上下两端");
-    }
-
-    #[test]
-    fn dxf_lines_and_arc_chain_into_rounded_path() {
-        // 两条直线 + 一段 90° 圆弧（半径 10），故意打乱顺序、反向书写
-        let dxf = "0\nSECTION\n2\nENTITIES\n\
-                   0\nLINE\n10\n110\n20\n10\n11\n110\n21\n60\n\
-                   0\nARC\n10\n100\n20\n10\n40\n10\n50\n270\n51\n0\n\
-                   0\nLINE\n10\n0\n20\n0\n11\n100\n21\n0\n\
-                   0\nENDSEC\n0\nEOF\n";
-        let p = parse_path(dxf, "dxf").unwrap();
-        assert!(!p.closed);
-        assert_eq!(p.points.len(), 4);
-        let doc = RecipeDoc { path: PathSpec::Polyline { points: p.points.clone(), closed: false, radius: 0.0, bulges: p.bulges.clone() }, ..samples()[0].clone() };
-        let r = doc.build().unwrap();
-        let total = r.segments.last().unwrap().s1;
-        assert!((total - (100.0 + 50.0 + std::f32::consts::PI * 5.0)).abs() < 0.05, "全长 {total}");
-        assert!(r.segments.iter().any(|g| g.kind == SegmentKind::Corner));
-    }
 }
 
 /// 磁盘上的配方库：每个配方一个 `<id>.json`。
@@ -1120,31 +663,6 @@ impl RecipeStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::f32::consts::PI;
-
-    #[test]
-    fn rounded_rect_matches_perimeter() {
-        let r = samples()[0].build().unwrap();
-        let [w, h, rad] = r.part;
-        let perimeter = 2.0 * (w + h - 4.0 * rad) + 2.0 * PI * rad;
-        assert!((r.segments.last().unwrap().s1 - perimeter).abs() < 1e-2);
-        assert_eq!(r.segments[1].name, "R 角 1");
-        let p = r.pos(r.segments[1].s1);
-        assert!((p[0] - w).abs() < 1e-2 && (p[1] - rad).abs() < 1e-2);
-    }
-
-    #[test]
-    fn open_polyline_fillet() {
-        let doc = RecipeDoc {
-            path: PathSpec::Polyline { points: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0]], closed: false, radius: 10.0, bulges: Vec::new() },
-            ..samples()[0].clone()
-        };
-        let r = doc.build().unwrap();
-        assert!(!r.closed);
-        assert_eq!(r.segments.len(), 3);
-        let total = r.segments[2].s1;
-        assert!((total - (90.0 + 40.0 + PI * 5.0)).abs() < 1e-2);
-    }
 
     /// 电机壳体 B 的四个拍照点改成 cam1 → cam2 → cam3 → cam1。
     fn three_cameras() -> RecipeDoc {
@@ -1153,6 +671,48 @@ mod tests {
             shot.camera = camera.into();
         }
         doc
+    }
+
+    #[test]
+    fn stations_follow_each_taught_line() {
+        let r = samples().remove(1).build().unwrap();
+        assert_eq!(r.segments.len(), 4);
+        for (k, g) in r.segments.iter().enumerate() {
+            let shot = &r.shots[k];
+            assert_eq!((g.shot, g.name.as_str()), (k, format!("{} · J1", shot.id).as_str()));
+            // 首站在中线起点，站与站沿线相隔 spacing（换成像素）
+            assert_eq!([r.points.x[g.first], r.points.y[g.first]], shot.path[0]);
+            let step = r.spacing / shot.mm_per_px.unwrap();
+            let expect = (shot.path_len_px() / step + 1e-3).floor() as usize + 1;
+            assert_eq!(g.count, expect);
+            assert!((g.length(r.spacing) - (expect - 1) as f32 * r.spacing).abs() < 1e-4);
+            assert!(r.owned_points(k).all(|j| r.points.seg[j] as usize == k));
+        }
+        assert_eq!(r.segments.last().map(|g| g.first + g.count), Some(r.point_count()));
+    }
+
+    #[test]
+    fn skipped_and_untaught_shots_have_no_points() {
+        let mut doc = samples().remove(1);
+        doc.shots[1].skip = true;
+        doc.shots[2].path.clear();
+        doc.shots[2].mm_per_px = None;
+        let r = doc.build().unwrap();
+        assert_eq!(r.segments.iter().map(|g| g.shot).collect::<Vec<_>>(), [0, 3]);
+        assert_eq!(r.owned_points(1).count() + r.owned_points(2).count(), 0);
+        assert_eq!(r.ready().unwrap_err(), "配方 MTR-HSG-B 的拍照点 P3 尚未示教胶路");
+        doc.shots[2].skip = true;
+        assert!(doc.build().unwrap().ready().is_ok());
+    }
+
+    #[test]
+    fn shot_limits_override_recipe_limits() {
+        let mut doc = samples().remove(1);
+        doc.shots[3].limits = Some(ShotLimits { position: None, width: None, max_gap_len: 9.0 });
+        let r = doc.build().unwrap();
+        assert_eq!(r.segments[0].max_gap_len, 6.0);
+        assert!(r.segments[0].width.is_some());
+        assert_eq!((r.segments[3].max_gap_len, r.segments[3].width.is_none()), (9.0, true));
     }
 
     #[test]
@@ -1165,26 +725,31 @@ mod tests {
         assert!(store.errors().is_empty(), "{:?}", store.errors());
         let loaded = store.get(&saved.id).unwrap();
         assert_eq!(loaded.hash, saved.hash);
-        assert_eq!(loaded.shots.iter().map(|s| s.camera.as_str()).collect::<Vec<_>>(), ["cam1", "cam2", "cam3", "cam1"]);
-        // 每个拍照点都负责了测点，测点都在负责它的拍照点视野里
-        for k in 0..loaded.shot_count() {
-            assert!(loaded.owned_points(k).count() > 0);
-            let ([cx, cy], [w, h]) = (loaded.shots[k].center, loaded.shot_fov(k));
-            assert!(loaded.owned_points(k).all(|j| (loaded.points.x[j] - cx).abs() <= w / 2.0 + 1e-3 && (loaded.points.y[j] - cy).abs() <= h / 2.0 + 1e-3));
-        }
+        assert_eq!(loaded.shots, saved.shots);
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn camera_change_changes_geometry_hash() {
-        let one = samples().remove(1).build().unwrap();
-        let three = three_cameras().build().unwrap();
-        assert_ne!(one.geometry_hash(), three.geometry_hash());
-        assert_eq!(one.points.k, three.points.k);
+    fn geometry_hash_tracks_teaching_not_limits() {
+        let base = samples().remove(1);
+        let hash = |d: &RecipeDoc| d.build().unwrap().geometry_hash();
+        let h = hash(&base);
+        let mut limits = base.clone();
+        limits.limits.max_gap_len = 3.0;
+        limits.shots[0].bead = "J2".into();
+        limits.shots[0].pose_id = "A1".into();
+        assert_eq!(hash(&limits), h);
+        assert_ne!(hash(&three_cameras()), h);
+        let mut moved = base.clone();
+        moved.shots[2].path[1][0] += 5.0;
+        assert_ne!(hash(&moved), h);
+        let mut calib = base.clone();
+        calib.shots[0].calib = Some("cam1-low".into());
+        assert_ne!(hash(&calib), h);
     }
 
     #[test]
-    fn invalid_shot_plans_are_rejected() {
+    fn invalid_recipes_are_rejected() {
         let reject = |f: &dyn Fn(&mut RecipeDoc), what: &str| {
             let mut doc = three_cameras();
             f(&mut doc);
@@ -1194,28 +759,21 @@ mod tests {
         reject(&|d| d.shots[1].id = "P1".into(), "重复");
         reject(&|d| d.shots[2].camera = "cam 3".into(), "相机编号");
         reject(&|d| d.shots[0].pose_id = " ".into(), "Pose");
+        reject(&|d| d.shots[0].bead = String::new(), "胶条名");
         reject(&|d| d.shots[3].calib = Some("a/b".into()), "标定引用");
-        reject(&|d| d.shots[0].fov = Some([0.0, 10.0]), "视野");
-        reject(&|d| d.schema_version = 1, "格式版本");
+        reject(&|d| d.shots[0].path.truncate(1), "至少两个点");
+        reject(&|d| d.shots[0].mm_per_px = None, "像素当量");
+        reject(&|d| d.shots[0].mm_per_px = Some(0.0), "像素当量");
+        reject(&|d| d.shots[0].path[1] = [975.0, 480.0], "至少要");
+        reject(&|d| d.shots[1].detect = Some(DetectParams { search_mm: 3.0, polarity: Polarity::Dark, width_range: [1.0, 8.0] }), "搜索宽度");
+        reject(&|d| d.limits.max_gap_len = -1.0, "断胶长度");
+        reject(&|d| d.schema_version = 2, "格式版本");
         reject(&|d| d.shots.clear(), "1–64");
-        // 视野缩到盖不住拐角：报出没人负责的测点
-        reject(&|d| d.fov = [150.0, 100.0], "不在任何拍照点的视野内");
-    }
-
-    #[test]
-    fn point_goes_to_a_shot_that_sees_it() {
-        let mut doc = three_cameras();
-        // P2（285, 50）视野缩到 x 255–315；上边 x≈250 的测点离 P2 中心最近，却在它视野外，要归给看得到的 P3
-        doc.shots[1].fov = Some([60.0, 110.0]);
-        doc.shots[0].fov = Some([300.0, 145.0]);
-        doc.shots[2].fov = Some([216.0, 320.0]);
-        let r = doc.build().unwrap();
-        let [cx, cy] = r.shots[1].center;
-        assert!(r.owned_points(1).count() > 0);
-        assert!(r.owned_points(1).all(|j| (r.points.x[j] - cx).abs() <= 30.0 + 1e-3 && (r.points.y[j] - cy).abs() <= 55.0 + 1e-3));
-        let j = (0..r.point_count()).min_by(|&a, &b| ((r.points.x[a] - 250.0).hypot(r.points.y[a])).total_cmp(&(r.points.x[b] - 250.0).hypot(r.points.y[b]))).unwrap();
-        assert_eq!(r.points.k[j], 2);
-        let pose_shared = { let mut d = three_cameras(); d.shots[1].pose_id = "P1".into(); d };
+        let pose_shared = {
+            let mut d = three_cameras();
+            d.shots[1].pose_id = "P1".into();
+            d
+        };
         assert!(pose_shared.build().is_ok(), "同一 Pose 可以触发两台相机");
     }
 }

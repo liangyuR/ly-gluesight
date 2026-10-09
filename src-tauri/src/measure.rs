@@ -11,7 +11,7 @@ use tokio::sync::Semaphore;
 use crate::cycle::{CycleHost, Input};
 use crate::frame::FrameImage;
 use crate::judge::PointState;
-use crate::recipe::{Recipe, SegmentKind};
+use crate::recipe::Recipe;
 use crate::settings::RecordMode;
 use crate::sim::Scenario;
 use crate::vision;
@@ -148,21 +148,18 @@ fn simulate(job: &Job) -> Measured {
     let mut m = Measured::empty(job);
     let located = job.scenario.locate_fail_frame(r.shot_count()) != Some(job.k);
     let gap = job.scenario.gap_points(r);
-    let bump_at = (job.scenario == Scenario::Excursion).then(|| {
-        let seg = &r.segments[4.min(r.segments.len() - 1)];
-        seg.s0 + (seg.s1 - seg.s0) * 0.3
-    });
+    // 超差场景：最后一段 30% 处横向偏出约 3 mm、宽约 3 mm（局部超差，在允许长度内）
+    let bump = (job.scenario == Scenario::Excursion).then(|| r.segments.last()).flatten().map(|g| (g.shot, g.length(r.spacing) * 0.3));
     m.located = located;
     m.score = if located { 0.91 + ((job.k * 7) % 5) as f32 / 100.0 } else { 0.38 };
     for j in r.owned_points(job.k) {
-        let s = j as f32 * r.spacing;
         let seg = &r.segments[r.points.seg[j] as usize];
-        let mut d = 0.74 + 0.09 * (s / 43.0).sin() + 0.035 * (s / 5.7 + 1.3).sin() + 0.03 * noise(s);
-        if seg.kind == SegmentKind::Corner {
-            d += 0.12 * ((s - seg.s0) / (seg.s1 - seg.s0) * std::f32::consts::PI).sin();
-        }
-        if let Some(c) = bump_at {
-            d += (-((s - c) / 1.5).powi(2)).exp();
+        let s = seg.s(j, r.spacing);
+        let t = j as f32 * r.spacing;
+        let mut d = 0.3 * (s / 23.0).sin() + 0.1 * (s / 4.7 + 1.3).sin() + 0.05 * noise(t);
+        let w = 4.0 + 0.25 * (s / 17.0 + 0.6).sin() + 0.06 * noise(t + 7.0);
+        if let Some((_, c)) = bump.filter(|(k, _)| *k == job.k) {
+            d += 3.0 * (-((s - c) / 1.5).powi(2)).exp();
         }
         let st = if !located {
             ST_INVALID
@@ -173,7 +170,7 @@ fn simulate(job: &Job) -> Measured {
         };
         m.idx.push(j as u32);
         m.d.push(d);
-        m.w.push(f32::NAN);
+        m.w.push(w);
         m.st.push(st);
     }
     m

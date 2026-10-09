@@ -9,7 +9,6 @@ pub struct PlanShot {
     /// 现场机器人 / PLC 程序里的 Pose 标识，计入 planHash
     pub pose_id: String,
     pub camera_id: String,
-    pub center: [f32; 2],
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -37,8 +36,8 @@ impl PlcPlan {
         }
         let mut counts = [0u16; 3];
         for shot in &shots {
-            if shot.shot_id.is_empty() || !ids.insert(&shot.shot_id) || shot.pose_id.trim().is_empty() || !shot.center.iter().all(|v| v.is_finite()) {
-                return Err("拍照点 ID 必须非空且唯一，Pose 标识不能为空，坐标必须有效".into());
+            if shot.shot_id.is_empty() || !ids.insert(&shot.shot_id) || shot.pose_id.trim().is_empty() {
+                return Err("拍照点 ID 必须非空且唯一，Pose 标识不能为空".into());
             }
             let slot = camera_slots.iter().position(|id| !id.is_empty() && id == &shot.camera_id)
                 .ok_or_else(|| format!("拍照点 {} 的相机 {} 不在 PLC 三个相机槽中", shot.shot_id, shot.camera_id))?;
@@ -52,7 +51,7 @@ impl PlcPlan {
 
     pub fn from_recipe(recipe: &Recipe, camera_slots: [String; 3]) -> Result<Self, String> {
         let shots = recipe.shots.iter().map(|s| PlanShot {
-            shot_id: s.id.clone(), pose_id: s.pose_id.clone(), camera_id: s.camera.clone(), center: s.center,
+            shot_id: s.id.clone(), pose_id: s.pose_id.clone(), camera_id: s.camera.clone(),
         }).collect();
         Self::compile(recipe.id.clone(), recipe.version, camera_slots, shots)
     }
@@ -64,7 +63,7 @@ mod tests {
 
     fn shots() -> Vec<PlanShot> {
         ["cam1", "cam2", "cam3", "cam1"].into_iter().enumerate().map(|(index, camera)| PlanShot {
-            shot_id: format!("P{}", index + 1), pose_id: format!("A{}", index + 1), camera_id: camera.into(), center: [index as f32, 10.0],
+            shot_id: format!("P{}", index + 1), pose_id: format!("A{}", index + 1), camera_id: camera.into(),
         }).collect()
     }
 
@@ -109,17 +108,14 @@ mod tests {
         assert_eq!(plan.camera_shots, [2, 1, 1]);
         assert_eq!(plan.shots.iter().map(|s| (s.shot_id.as_str(), s.pose_id.as_str(), s.camera_id.as_str())).collect::<Vec<_>>(),
             [("P1", "P1", "cam1"), ("P2", "P1", "cam2"), ("P3", "P3", "cam3"), ("P4", "P4", "cam1")]);
-        assert_eq!(plan.shots.iter().map(|s| s.center).collect::<Vec<_>>(), recipe.shots.iter().map(|s| s.center).collect::<Vec<_>>());
         assert!(PlcPlan::from_recipe(&recipe, ["cam1".into(), "cam2".into(), String::new()]).is_err());
     }
 
     /// docs/integration/plc-s7-phase1.md 第 6 节的示例：改 hash 输入时同步改文档。
     #[test]
     fn documented_example_hash() {
-        let shots = [[95.0, 50.0], [285.0, 50.0]].into_iter().enumerate().map(|(i, center)| PlanShot {
-            shot_id: format!("P{}", i + 1), pose_id: format!("P{}", i + 1), camera_id: "cam1".into(), center,
-        }).collect();
+        let shots = (1..=2).map(|i| PlanShot { shot_id: format!("P{i}"), pose_id: format!("P{i}"), camera_id: "cam1".into() }).collect();
         let plan = PlcPlan::compile("DEMO".into(), 1, ["cam1".into(), String::new(), String::new()], shots).unwrap();
-        assert_eq!((plan.plan_hash, plan.camera_shots), (3896719843, [2, 0, 0]));
+        assert_eq!((plan.plan_hash, plan.camera_shots), (581977774, [2, 0, 0]));
     }
 }

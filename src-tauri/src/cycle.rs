@@ -192,7 +192,7 @@ impl From<&Recipe> for RecipeSummary {
             shot_count: r.shot_count(),
             trigger_mode: r.trigger_mode,
             cameras: r.cameras(),
-            length: r.length(),
+            length: r.segments.iter().map(|g| g.length(r.spacing)).sum(),
         }
     }
 }
@@ -443,6 +443,7 @@ pub fn usable_cams(app: &AppHandle, recipe: &Recipe, real_parts: bool) -> Result
 /// 开工用的相机：在 usable_cams 之上，帧归属接入前（P0 步 3）只接单相机配方。
 /// 现在按到达顺序推拍照点，多台相机的帧交错到达会归错。
 pub fn runnable_cams(app: &AppHandle, recipe: &Recipe, real_parts: bool) -> Result<Vec<u8>, String> {
+    recipe.ready()?;
     let cameras = recipe.cameras();
     if cameras.len() > 1 {
         return Err(format!("配方 {} 用到 {} 台相机（{}），多相机帧归属尚未接入，暂不能开工", recipe.id, cameras.len(), cameras.join("、")));
