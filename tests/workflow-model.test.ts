@@ -103,50 +103,40 @@ describe("操作流程预览的状态规则", () => {
     expect(next.comparisons[s.record].verdict).toBe("OK"); expect(historyRecords).toEqual(original);
   });
 
-  it("随动模式需要全部相机标定和有效测量窗口", () => {
-    const s = initialState(); s.recipe.mode = "follow";
-    expect(validationChecks(s).every(c => c.pass)).toBe(false);
-    s.follow.saved = [true, true, true]; expect(validationChecks(s).every(c => c.pass)).toBe(true);
-    s.follow.params[1].near = s.follow.params[1].far;
-    expect(validationChecks(s).every(c => c.pass)).toBe(false);
-  });
-
   it("工作台独立保存几何、图像与验证，复制参数不复制保存证明，新配方从 v1 开始", () => {
     let s = sceneState("validation-pass");
     const original = structuredClone(s.frames);
     s = reducer(s, { type: "recipe", patch: { target: 3.1 } });
     s = reducer(s, { type: "validate" });
-    s = reducer(s, { type: "recipe-create", name: " A 副本 ", mode: "fly", copy: true });
+    s = reducer(s, { type: "recipe-create", name: " A 副本 ", copy: true });
     expect(s.recipe).toMatchObject({ name: "A 副本", candidate: 1, production: 0, target: 3.1 });
     expect(s.frames.every(f => f.imageId === null && !f.saved && !f.trial && !f.backup)).toBe(true);
     s = reducer(s, { type: "frame-param", key: "contrast", value: 70 });
     s = reducer(s, { type: "recipe-open", name: "工件 A · 壳体" });
     expect(s.recipe.target).toBe(3.1); expect(s.frames).toEqual(original); expect(canPublish(s)).toBe(true);
     s = reducer(s, { type: "recipe-open", name: "A 副本" }); expect(s.frames[0].params.contrast).toBe(70);
-    s = reducer(s, { type: "recipe-create", name: "新配方", mode: "follow", copy: false });
+    s = reducer(s, { type: "recipe-create", name: "新配方", copy: false });
     expect(s.recipe).toMatchObject({ candidate: 1, production: 0, target: 3 });
-    expect(s.frames[0].params.contrast).toBe(32); expect(s.recipeLibrary).toHaveLength(5);
+    expect(s.frames[0].params.contrast).toBe(32); expect(s.recipeLibrary).toHaveLength(4);
   });
 
   it("无效或重复名字不能创建，未知配方不能打开，最后一项不能删除", () => {
     const s = initialState();
-    for (const name of [" ", "工件 B · 底板", "工件 A · 壳体"]) expect(reducer(s, { type: "recipe-create", name, mode: "fly", copy: false })).toBe(s);
+    for (const name of [" ", "工件 B · 底板", "工件 A · 壳体"]) expect(reducer(s, { type: "recipe-create", name, copy: false })).toBe(s);
     expect(reducer(s, { type: "recipe-open", name: "missing" })).toBe(s);
     expect(reducer(s, { type: "recipe-delete", name: "missing" })).toBe(s);
     let next = reducer(s, { type: "recipe-delete", name: "工件 A · 壳体" });
     expect(next.recipe.name).toBe("工件 B · 底板"); expect(next.recipe.production).toBe(8);
-    next = reducer(next, { type: "recipe-delete", name: "工件 C · 随动" });
     expect(reducer(next, { type: "recipe-delete", name: "工件 B · 底板" })).toBe(next);
   });
 
   it("运行中的配方和工位操作不会切换、删除或重标定本件", () => {
     const s = sceneState("live-running");
-    expect(reducer(s, { type: "recipe-create", name: "new", mode: "fly", copy: false })).toBe(s);
+    expect(reducer(s, { type: "recipe-create", name: "new", copy: false })).toBe(s);
     expect(reducer(s, { type: "recipe-open", name: "工件 B · 底板" })).toBe(s);
     expect(reducer(s, { type: "recipe-delete", name: s.recipe.name })).toBe(s);
     expect(reducer(s, { type: "plc", patch: { ready: false } })).toBe(s);
     expect(reducer(s, { type: "calibration", patch: { saved: true } })).toBe(s);
-    expect(reducer(s, { type: "follow", patch: { camera: 2 } })).toBe(s);
     expect(reducer(s, { type: "live-option", patch: { scenario: "OK" } }).live.scenario).toBe("NG");
   });
 
@@ -192,15 +182,14 @@ describe("操作流程预览的状态规则", () => {
     delete s.recipeLibrary; delete (s.plc as Partial<WorkflowState["plc"]>).points; delete (s.plc as Partial<WorkflowState["plc"]>).pointsApplied; delete (s.live as Partial<WorkflowState["live"]>).continuous;
     const restored = restorePreview(s);
     expect(restored.validation.status).toBe("passed"); expect(canPublish(restored)).toBe(true);
-    expect(restored.plc.points).toHaveLength(6); expect(restored.recipeLibrary).toHaveLength(3); expect(restored.live.continuous).toBe(false);
+    expect(restored.plc.points).toHaveLength(6); expect(restored.recipeLibrary).toHaveLength(2); expect(restored.live.continuous).toBe(false);
   });
 
-  it.each(["device", "frame", "trial", "follow", "runtime", "phase", "comparison", "library"])("嵌套存储损坏 %s 恢复初始状态", kind => {
+  it.each(["device", "frame", "trial", "runtime", "phase", "comparison", "library"])("嵌套存储损坏 %s 恢复初始状态", kind => {
     const s = structuredClone(sceneState("validation-pass"));
     if (kind === "device") s.device = null as unknown as WorkflowState["device"];
     if (kind === "frame") s.frames[2].params = null as unknown as WorkflowState["frames"][number]["params"];
     if (kind === "trial") s.frames[2].trial!.score = NaN;
-    if (kind === "follow") s.follow.camera = 4;
     if (kind === "runtime") s.productionConfig.frameParams = [];
     if (kind === "phase") s.live.phase = 6;
     if (kind === "comparison") s.comparisons["TJ-000184"] = null as unknown as WorkflowState["comparisons"][string];

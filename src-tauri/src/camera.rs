@@ -1,5 +1,5 @@
 //! 相机组：N 台相机各自配置、状态与重连，共用一条有界帧通道交给检测节拍。
-//! 飞拍用 1 台按触发取图；三目随动用 3 台连续采集，只在工件布防期间把帧送进节拍。
+//! 飞拍按触发取图；连续采集的相机只更新缩略图，不送节拍。
 
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{c_uint, c_void};
@@ -14,7 +14,6 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc::Sender;
 
 use crate::cycle::{self, CycleHost, Phase};
-use crate::follow::FollowCalib;
 use crate::frame::{Frame, FrameImage, FramePool};
 use crate::mvs::{self, DeviceSummary, FrameInfo};
 use crate::recipe::{legacy_camera_id, valid_camera_id, Recipe};
@@ -34,9 +33,6 @@ pub struct SimRender {
     pub seed: u64,
 }
 
-/// 连续采集的模拟相机取图：给相机序号与时间戳，返回这一刻的画面。模拟随动节拍运行时设置。
-pub type SimSource = Arc<dyn Fn(u8, i64) -> Option<FrameImage> + Send + Sync>;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum CameraSource {
@@ -51,7 +47,7 @@ pub enum CameraSource {
 pub enum Acquisition {
     /// 每个触发出一帧（飞拍）
     Triggered,
-    /// 按固定帧率连续采集，工件布防期间的帧进入节拍（随动）
+    /// 按固定帧率连续采集，只更新缩略图，不进入节拍
     FreeRun,
 }
 
@@ -76,8 +72,6 @@ pub struct CameraConfig {
     pub replay_dir: String,
     /// 回放通道（从 1 开始），0 表示取目录里的第一个通道
     pub replay_channel: u32,
-    /// 随动：胶嘴在图像里的位置、图像方位与像素当量（示教得到）
-    pub follow: Option<FollowCalib>,
 }
 
 impl Default for CameraConfig {
@@ -99,7 +93,6 @@ impl Default for CameraConfig {
             chunk: true,
             replay_dir: String::new(),
             replay_channel: 0,
-            follow: None,
         }
     }
 }
@@ -117,9 +110,6 @@ impl CameraConfig {
         }
         if self.source == CameraSource::Replay && self.replay_dir.trim().is_empty() {
             return Err("回放相机需要填写图片目录".into());
-        }
-        if let Some(f) = &self.follow {
-            f.validate()?;
         }
         Ok(())
     }
@@ -194,15 +184,8 @@ struct Reorder {
 struct ReplayState {
     files: Vec<PathBuf>,
     next: usize,
-    /// 帧录制目录：各帧相对工件开始的时刻（ms）。有它时连续采集按原来的时刻出帧，放完为止
+    /// 帧录制目录：各帧相对工件开始的时刻（ms）。有它时每件从第一张放
     times: Option<Vec<i64>>,
-}
-
-/// 连续采集的回放相机下一帧什么时候出。
-enum Due {
-    Now,
-    Wait(Duration),
-    Done,
 }
 
 /// 相机组共用的部分。
@@ -210,13 +193,9 @@ struct RigShared {
     app: AppHandle,
     tx: Sender<Frame>,
     pool: FramePool,
-    /// 需要整帧图像：触发采集的相机（飞拍）与连续采集的相机（随动）分开，飞拍用模拟测量时不必拷整帧
-    capture_triggered: AtomicBool,
-    capture_free_run: AtomicBool,
-    streaming: AtomicBool,
+    /// 需要整帧图像（图像测量或帧录制）；模拟测量时不必拷整帧
+    capture: AtomicBool,
     dry_run: Mutex<Option<(Instant, Vec<DryFrame>)>>,
-    sim_source: Mutex<Option<SimSource>>,
-    stream_started: Mutex<Option<Instant>>,
 }
 
 /// 单台相机的交付通道，取图回调与模拟 / 回放共用。
@@ -245,12 +224,12 @@ struct Shared {
 
 impl Shared {
     fn capture(&self) -> bool {
-        if self.free_run.load(Ordering::Relaxed) { &self.rig.capture_free_run } else { &self.rig.capture_triggered }.load(Ordering::Relaxed)
+        self.rig.capture.load(Ordering::Relaxed)
     }
 
-    /// 连续采集且不在布防期间的帧只更新缩略图，不送节拍。
+    /// 连续采集的帧只更新缩略图，不送节拍。
     fn wanted(&self) -> bool {
-        !self.free_run.load(Ordering::Relaxed) || self.rig.streaming.load(Ordering::Relaxed)
+        !self.free_run.load(Ordering::Relaxed)
     }
 
     /// 连续采集时缩略图最多每 100 ms 做一张（前端 250 ms 才取一次）；触发采集的帧少，每帧都做，示教裁模板用的就是显示的那帧。
@@ -463,7 +442,7 @@ impl CameraSlot {
         let message = match (config.source, replay) {
             (CameraSource::Sim, _) => match config.acquisition {
                 Acquisition::Triggered => "模拟相机：收到触发后约 180 ms 交付一帧".to_string(),
-                Acquisition::FreeRun => format!("模拟相机：布防期间按 {} fps 合成随动画面", config.fps),
+                Acquisition::FreeRun => "模拟相机：连续采集不合成画面，飞拍要用触发采集".to_string(),
             },
             (CameraSource::Replay, Some((n, next))) => format!("回放 {n} 帧 · 下一帧第 {} 张", next + 1),
             _ => state_message,
@@ -491,7 +470,7 @@ impl CameraSlot {
         self.shared.last_full.lock().unwrap().clone()
     }
 
-    /// 等下一帧留一张整帧：海康相机连续采集时空闲不拷整帧，标定试测要现取。
+    /// 等下一帧留一张整帧：海康相机空闲时不一定拷整帧，示教、标定取样要现取。
     pub fn grab_full(&self, timeout: Duration) -> Option<Arc<FrameImage>> {
         let before = self.shared.full_seq.load(Ordering::SeqCst);
         self.shared.grab.store(true, Ordering::SeqCst);
@@ -516,39 +495,17 @@ impl CameraSlot {
         }
     }
 
-    pub fn is_free_run(&self) -> bool {
-        self.shared.free_run.load(Ordering::Relaxed)
-    }
-
     fn next_counters(&self) -> (u64, u64) {
         (self.frame_seq.fetch_add(1, Ordering::SeqCst) + 1, self.trigger_seq.fetch_add(1, Ordering::SeqCst) + 1)
     }
 
-    /// 下一张回放图。布防中连续采集按录制时刻回放时放完为止；手动一张张看、触发采集时到末尾后从头再来。
+    /// 下一张回放图，到末尾后从头再来。
     fn next_replay(&self) -> Option<PathBuf> {
-        let free_run = self.config().acquisition == Acquisition::FreeRun;
-        let streaming = self.shared.rig.streaming.load(Ordering::SeqCst);
         let mut guard = self.replay.lock().unwrap();
         let r = guard.as_mut()?;
-        let once = free_run && streaming && r.times.is_some();
-        if once && r.next >= r.files.len() {
-            return None;
-        }
         let p = r.files[r.next % r.files.len()].clone();
-        r.next = if once { r.next + 1 } else { (r.next + 1) % r.files.len() };
+        r.next = (r.next + 1) % r.files.len();
         Some(p)
-    }
-
-    /// 按录制时刻回放时，下一帧离现在还有多久；没有时间线返回 None（按帧率出帧）。
-    fn replay_due(&self) -> Option<Due> {
-        let guard = self.replay.lock().unwrap();
-        let r = guard.as_ref()?;
-        let times = r.times.as_ref()?;
-        let Some(&t) = times.get(r.next) else { return Some(Due::Done) };
-        let started = (*self.shared.rig.stream_started.lock().unwrap())?;
-        let due = Duration::from_millis(t.max(0) as u64);
-        let elapsed = started.elapsed();
-        Some(if elapsed >= due { Due::Now } else { Due::Wait(due - elapsed) })
     }
 
     /// 扫描回放目录。扫描（网络盘上可能很慢）时不持有任何锁。
@@ -564,7 +521,7 @@ impl CameraSlot {
         });
         match scanned {
             Ok((files, times)) => {
-                let msg = format!("回放目录 {dir}：{} 帧{}", files.len(), if times.is_some() { "（按录制时刻）" } else { "" });
+                let msg = format!("回放目录 {dir}：{} 帧{}", files.len(), if times.is_some() { "（帧录制）" } else { "" });
                 *self.replay.lock().unwrap() = Some(ReplayState { files, next: 0, times });
                 Ok(msg)
             }
@@ -573,12 +530,6 @@ impl CameraSlot {
                 self.state.lock().unwrap().message = e.clone();
                 Err(e)
             }
-        }
-    }
-
-    fn rewind_replay(&self) {
-        if let Some(r) = self.replay.lock().unwrap().as_mut() {
-            r.next = 0;
         }
     }
 
@@ -647,31 +598,6 @@ impl CameraSlot {
         }
     }
 
-    /// 连续采集的一帧（模拟 / 回放）。阻塞执行，由采集循环调用。
-    fn produce_free_run(&self) -> Option<Frame> {
-        let config = self.config();
-        let ts = now_ms();
-        let img = match config.source {
-            CameraSource::Sim => {
-                let source = self.shared.rig.sim_source.lock().unwrap().clone()?;
-                source(self.shared.cam, ts)?
-            }
-            CameraSource::Replay => match replay::load(&self.next_replay()?) {
-                Ok(img) => img,
-                Err(e) => {
-                    cycle::log(&self.shared.rig.app, "err", "回放", e);
-                    return None;
-                }
-            },
-            CameraSource::Mvs => return None,
-        };
-        self.shared.set_preview(&img);
-        let (frame_counter, trigger_counter) = self.next_counters();
-        self.shared.order.lock().unwrap().next = frame_counter + 1;
-        let image = self.shared.capture().then(|| Arc::new(img));
-        Some(Frame { cam: self.shared.cam, frame_counter, trigger_counter, lost_packets: 0, ts, manual: false, image })
-    }
-
     fn close(&self) {
         self.device.lock().unwrap().take();
         self.shared.disconnected.store(false, Ordering::SeqCst);
@@ -694,7 +620,7 @@ impl CameraSlot {
         let mut msg = format!("已连接 {} · {}", device.summary.model, device.summary.serial);
         let serial = device.summary.serial.clone();
         *self.device.lock().unwrap() = Some(device);
-        // 序列号留空的相机开到哪台就固定成哪台：重启、增删相机后还是这台，胶嘴标定跟着它。打开期间用户另选了序列号就不动
+        // 序列号留空的相机开到哪台就固定成哪台：重启、增删相机后还是这台，标定跟着它。打开期间用户另选了序列号就不动
         let pinned = config.serial.is_empty() && {
             let mut c = self.config.lock().unwrap();
             let empty = c.serial.is_empty();
@@ -861,12 +787,8 @@ impl CameraRig {
             app: app.clone(),
             tx,
             pool: FramePool::new(48),
-            capture_triggered: AtomicBool::new(false),
-            capture_free_run: AtomicBool::new(false),
-            streaming: AtomicBool::new(false),
+            capture: AtomicBool::new(false),
             dry_run: Mutex::new(None),
-            sim_source: Mutex::new(None),
-            stream_started: Mutex::new(None),
         });
         let slots = file.cameras.into_iter().enumerate().map(|(i, c)| Arc::new(CameraSlot::new(&rig, i as u8, c))).collect();
         let mut this = Self { rig, slots: RwLock::new(slots), path, next_id: Mutex::new(file.next_id), save_lock: Mutex::new(()), generation: AtomicU64::new(0), notes };
@@ -954,27 +876,9 @@ impl CameraRig {
         }
     }
 
-    /// 取图回调是否拷贝整帧：触发采集（飞拍）与连续采集（随动）的相机分别设置。
-    pub fn set_capture(&self, triggered: bool, free_run: bool) {
-        self.rig.capture_triggered.store(triggered, Ordering::Relaxed);
-        self.rig.capture_free_run.store(free_run, Ordering::Relaxed);
-    }
-
-    /// 布防期间打开：连续采集的相机开始把帧送进节拍。打开时回放从第一张开始。
-    pub fn set_streaming(&self, on: bool) {
-        if on && !self.rig.streaming.load(Ordering::SeqCst) {
-            for s in self.slots() {
-                if s.config().acquisition == Acquisition::FreeRun {
-                    s.rewind_replay();
-                }
-            }
-            *self.rig.stream_started.lock().unwrap() = Some(Instant::now());
-        }
-        self.rig.streaming.store(on, Ordering::SeqCst);
-    }
-
-    pub fn set_sim_source(&self, source: Option<SimSource>) {
-        *self.rig.sim_source.lock().unwrap() = source;
+    /// 取图回调是否拷贝整帧。
+    pub fn set_capture(&self, on: bool) {
+        self.rig.capture.store(on, Ordering::Relaxed);
     }
 
     pub fn trigger(&self, cam: u8, lose_in_transfer: bool, render: Option<SimRender>) -> bool {
@@ -1003,8 +907,7 @@ impl CameraRig {
     }
 }
 
-/// 每台相机一个后台循环：海康相机掉线或未打开时每 2 s 重连；模拟 / 回放相机连续采集时按帧率出帧。
-/// 相机被移出相机组后循环自己结束。
+/// 每台相机一个后台循环：海康相机掉线或未打开时每 2 s 重连。相机被移出相机组后循环自己结束。
 fn supervise(app: &AppHandle, slot: Weak<CameraSlot>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -1013,7 +916,6 @@ fn supervise(app: &AppHandle, slot: Weak<CameraSlot>) {
         loop {
             let Some(s) = slot.upgrade() else { break };
             let config = s.config();
-            let streaming = s.shared.rig.streaming.load(Ordering::SeqCst);
             if config.source == CameraSource::Mvs && Instant::now() >= next_retry {
                 next_retry = Instant::now() + Duration::from_secs(2);
                 let lost = s.shared.disconnected.load(Ordering::SeqCst);
@@ -1037,36 +939,8 @@ fn supervise(app: &AppHandle, slot: Weak<CameraSlot>) {
                     }
                 }
             }
-            let generate = streaming && config.acquisition == Acquisition::FreeRun && config.source != CameraSource::Mvs;
-            if !generate {
-                drop(s);
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                continue;
-            }
-            let timeline = if config.source == CameraSource::Replay { s.replay_due() } else { None };
-            match timeline {
-                Some(Due::Done) => {
-                    drop(s);
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                    continue;
-                }
-                Some(Due::Wait(d)) => {
-                    drop(s);
-                    tokio::time::sleep(d.min(Duration::from_millis(20))).await;
-                    continue;
-                }
-                _ => {}
-            }
-            let started = Instant::now();
-            let s2 = s.clone();
-            if let Ok(Some(frame)) = tauri::async_runtime::spawn_blocking(move || s2.produce_free_run()).await {
-                s.shared.deliver(frame);
-            }
             drop(s);
-            if timeline.is_none() {
-                let period = Duration::from_secs_f32(1.0 / config.fps.max(1.0));
-                tokio::time::sleep(period.saturating_sub(started.elapsed()).max(Duration::from_millis(1))).await;
-            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     });
 }

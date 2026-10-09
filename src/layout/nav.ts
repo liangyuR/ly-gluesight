@@ -1,7 +1,7 @@
 import type { ComponentType } from "react";
 import { Cable, Camera, History, ScanEye, ScrollText, Settings, SlidersHorizontal, type LucideIcon } from "lucide-react";
 import InspectPage from "../pages/InspectPage";
-import CameraPage, { FlyshotCalibrationPage, FollowCalibrationPage } from "../pages/CameraPage";
+import CameraPage, { FlyshotCalibrationPage } from "../pages/CameraPage";
 import { PlcLogsPage, PlcSettingsPage } from "../pages/PlcPages";
 import HistoryPage from "../pages/HistoryPage";
 import SettingsPage from "../pages/SettingsPage";
@@ -53,7 +53,6 @@ export const navEntries: NavEntry[] = [
       { path:"/camera",label:"设备与采集",icon:Camera,element:CameraPage },
       { path: "/plc", label: "PLC 通讯", icon: Cable, element: PlcSettingsPage },
       { path:"/camera/calibration",label:"飞拍工位标定",icon:Camera,element:FlyshotCalibrationPage },
-      { path:"/camera/follow",label:"随动相机标定",icon:Camera,element:FollowCalibrationPage },
       { path: "/plc-logs", label: "通讯日志", icon: ScrollText, element: PlcLogsPage },
       { path: "/settings", label: "系统设置", icon: Settings, element:SettingsPage },
     ],

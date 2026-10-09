@@ -83,7 +83,7 @@ node scripts/robot-plc-demo/camera-bridge.mjs --config scripts/robot-plc-demo/de
 | C10 / C11 / C12 / C13 | 工件开始 / 运动结束 / 结果确认 / 故障复位 | Robot |
 | C20 / C21 / C22 / C23 | 视觉就绪 / 已布防 / 检测中 / 结果有效 | GlueSight |
 | HR100..101 / HR102 / HR103 | 工件 SN / 产品代码 / 拍照数 | Robot |
-| HR104..105 | 随动进度，飞拍模型保持 0 | Robot |
+| HR104..105 | 保留，不使用 | — |
 | HR110 / HR111 / HR112..113 | 结果码 / 异常码 / 结果 SN | GlueSight |
 
 | 工况 | 结果码 / 异常码 | 默认四点配方收到帧数 |

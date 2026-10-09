@@ -18,7 +18,6 @@ const journeys:[string,[string,string][]][]=[
   ["日常生产",[["在线检测","/inspect"],["历史记录","/history"]]],
   ["缺陷排查",[["历史记录","/history"],["历史复测","/history/retest"],["单帧示教","/recipe/teach"]]],
   ["配置变更",[["拍照规划","/recipe/geometry"],["单帧示教","/recipe/teach"],["工件总览","/recipe/overview"],["验证与发布","/recipe/validation"]]],
-  ["随动准备",[["设备与采集","/camera"],["随动标定","/camera/follow"],["配方库","/recipe"],["系统设置","/settings"]]],
 ];
 beforeEach(()=>{
   vi.mocked(useWorkspace).mockReturnValue(workspaceState());

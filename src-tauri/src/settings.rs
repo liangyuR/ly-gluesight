@@ -66,11 +66,8 @@ pub struct CycleSettings {
     pub lyflow_core: Option<String>,
     /// 飞拍配方用 lyFlow 流程测量图像；关闭时用模拟测量
     pub vision: bool,
-    /// 随动配方用本程序卡尺测量图像；关闭时用模拟测量
-    #[serde(default = "yes")]
-    pub follow_vision: bool,
     pub record: RecordMode,
-    /// 帧录制最多保留多少件、总共多少 GB，超出删最旧的（随动一件三路约 0.5 GB）
+    /// 帧录制最多保留多少件、总共多少 GB，超出删最旧的
     pub record_keep: u32,
     pub record_max_gb: f32,
 }
@@ -84,16 +81,11 @@ impl Default for CycleSettings {
             history_days: 180,
             lyflow_core: std::env::var("LYFLOW_CORE_DLL").ok(),
             vision: false,
-            follow_vision: true,
             record: RecordMode::Off,
             record_keep: 100,
             record_max_gb: 20.0,
         }
     }
-}
-
-fn yes() -> bool {
-    true
 }
 
 impl CycleSettings {

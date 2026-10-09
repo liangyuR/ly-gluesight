@@ -11,7 +11,7 @@ vi.mock("../src/lib/api", () => ({ getAppInfo: vi.fn(), getEngineStatus: vi.fn()
 vi.mock("../src/features/cycle/api", () => ({ cycleApi: { getSettings: vi.fn(), saveSettings: vi.fn() }, useRecipes: () => [summary()] }));
 const settings: CycleSettings = { productSource: "plc", manualRecipeId: null, historyDays: 180,
   timeouts: { armMs: 200, motionMs: 30000, drainMs: 1000, procMs: 3000, ackMs: 5000 },
-  lyflowCore: null, vision: false, followVision: true, record: "off", recordKeep: 100, recordMaxGb: 20 };
+  lyflowCore: null, vision: false, record: "off", recordKeep: 100, recordMaxGb: 20 };
 let current: CycleSettings;
 beforeEach(() => {
   current = structuredClone(settings);
@@ -99,21 +99,19 @@ describe("系统设置读取与基本操作", () => {
     expect(within(measure.getByRole("combobox", { name: "飞拍配方" })).getByRole("option", { selected: true })).toHaveTextContent("模拟测量（不看图像）");
     await userEvent.selectOptions(measure.getByRole("combobox", { name: "飞拍配方" }), "lyFlow");
     await userEvent.type(measure.getByRole("textbox", { name: "核心库路径（lyflow_core.dll）" }), "D:\\core\\lyflow_core.dll");
-    await userEvent.selectOptions(measure.getByRole("combobox", { name: "随动配方" }), "sim");
     await userEvent.selectOptions(measure.getByRole("combobox", { name: "帧录制" }), "all");
     changeNumber(measure, "录制最多保留（件）", "125");
     changeNumber(measure, "录制总大小上限（GB）", "20.25");
     await userEvent.click(measure.getByRole("button", { name: "保存" }));
     expect(await measure.findByText("已保存")).toBeVisible();
-    expect(current).toMatchObject({ vision: true, lyflowCore: "D:\\core\\lyflow_core.dll", followVision: false, record: "all", recordKeep: 125, recordMaxGb: 20.25 });
+    expect(current).toMatchObject({ vision: true, lyflowCore: "D:\\core\\lyflow_core.dll", record: "all", recordKeep: 125, recordMaxGb: 20.25 });
     await waitFor(() => expect(getEngineStatus).toHaveBeenCalledTimes(2));
     await userEvent.clear(measure.getByRole("textbox", { name: "核心库路径（lyflow_core.dll）" }));
     await userEvent.selectOptions(measure.getByRole("combobox", { name: "飞拍配方" }), "sim");
-    await userEvent.selectOptions(measure.getByRole("combobox", { name: "随动配方" }), "native");
     await userEvent.selectOptions(measure.getByRole("combobox", { name: "帧录制" }), "failed");
     await userEvent.click(measure.getByRole("button", { name: "保存" }));
     await measure.findByText("已保存");
-    expect(current).toMatchObject({ vision: false, lyflowCore: null, followVision: true, record: "failed" });
+    expect(current).toMatchObject({ vision: false, lyflowCore: null, record: "failed" });
     await userEvent.selectOptions(measure.getByRole("combobox", { name: "帧录制" }), "off");
     await userEvent.click(measure.getByRole("button", { name: "保存" }));
     await measure.findByText("已保存");

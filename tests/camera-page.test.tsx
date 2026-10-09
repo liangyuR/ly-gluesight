@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import CameraPage, { FlyshotCalibrationPage, FollowCalibrationPage } from "../src/pages/CameraPage";
+import CameraPage, { FlyshotCalibrationPage } from "../src/pages/CameraPage";
 import { cameraApi, defaultCameraConfig } from "../src/features/camera/api";
 import { recipeApi } from "../src/features/cycle";
 import { workspaceApi } from "../src/features/workspace/api";
@@ -20,7 +20,7 @@ vi.mock("../src/features/camera/api",async importOriginal=>{
 vi.mock("../src/features/camera",async importOriginal=>{
   const actual=await importOriginal<typeof import("../src/features/camera")>();
   return {...actual,useRigStatus:()=>({statuses:hooks.statuses,lastFrame:{}}),
-    CalibPanel:({cam}:{cam:number})=><div>飞拍标定工位 {cam}</div>,FollowCalibPanel:({cam}:{cam:number})=><div>随动标定工位 {cam}</div>,FeasibilityCalc:()=>null,DryRunPanel:()=>null};
+    CalibPanel:({cam}:{cam:number})=><div>飞拍标定工位 {cam}</div>,FeasibilityCalc:()=>null,DryRunPanel:()=>null};
 });
 vi.mock("../src/features/cycle",()=>({recipeApi:{list:vi.fn()},useCycle:()=>({snapshot:snapshot(hooks.phase as Snapshot["phase"])}),SimControls:()=>null}));
 vi.mock("../src/features/workspace/api",()=>({workspaceApi:{list:vi.fn()}}));
@@ -63,7 +63,7 @@ describe("设备与采集页基础操作",()=>{
     await act(async()=>request.resolve([]));
     vi.mocked(cameraApi.add).mockImplementationOnce(async()=>{configs=[{...defaultCameraConfig,id:"CAM-1",name:"相机 1"}];return 0;});
     await userEvent.click(screen.getByRole("button",{name:"添加相机"}));
-    expect(cameraApi.add).toHaveBeenCalledWith({...defaultCameraConfig,name:"相机 1",serial:"",follow:null});expect(await loaded()).toBeVisible();
+    expect(cameraApi.add).toHaveBeenCalledWith({...defaultCameraConfig,name:"相机 1",serial:""});expect(await loaded()).toBeVisible();
   });
   it("刷新后相机顺序变化仍按固定编号保持选择，保存绑定新索引",async()=>{
     show();await loaded();await userEvent.click(screen.getByRole("button",{name:"相机 2 CAM-2"}));
@@ -80,14 +80,14 @@ describe("设备与采集页基础操作",()=>{
     await act(async()=>request.reject(new Error("参数保存失败")));
     expect(screen.getByText("Error: 参数保存失败")).toBeVisible();for(const name of ["添加相机","移除当前","刷新配置","相机 2 CAM-2"])expect(screen.getByRole("button",{name})).toBeEnabled();
   });
-  it("添加继承采集配置但清空序列号和标定，等待时防止重复并选中新相机",async()=>{
-    configs[1]={...configs[1],serial:"OLD",follow:{nozzle:[5,5],angleDeg:0,mirror:false,mmPerPx:.1,maskPx:2,imageSize:[10,10]}};
+  it("添加继承采集配置但清空序列号，等待时防止重复并选中新相机",async()=>{
+    configs[1]={...configs[1],serial:"OLD"};
     const request=deferred<number>();vi.mocked(cameraApi.add).mockReturnValue(request.promise);
     show();await loaded();await userEvent.click(screen.getByRole("button",{name:"添加相机"}));
-    expect(cameraApi.add).toHaveBeenCalledWith(expect.objectContaining({name:"相机 3",source:"replay",serial:"",follow:null,replayDir:"D:/images"}));
+    expect(cameraApi.add).toHaveBeenCalledWith(expect.objectContaining({name:"相机 3",source:"replay",serial:"",replayDir:"D:/images"}));
     expect(screen.getByRole("button",{name:"添加中…"})).toBeDisabled();expect(screen.getByRole("button",{name:"相机 2 CAM-2"})).toBeDisabled();
     fireEvent.click(screen.getByRole("button",{name:"添加中…"}));expect(cameraApi.add).toHaveBeenCalledTimes(1);
-    configs=[...configs,{...configs[1],id:"CAM-3",name:"相机 3",serial:"",follow:null}];
+    configs=[...configs,{...configs[1],id:"CAM-3",name:"相机 3",serial:""}];
     await act(async()=>request.resolve(2));
     await waitFor(()=>expect(screen.getByRole("textbox",{name:"名称"})).toHaveValue("相机 3"));
   });
@@ -155,14 +155,12 @@ describe("设备与采集页基础操作",()=>{
     hooks.desktop=false;page.rerender(<MemoryRouter><CameraPage/></MemoryRouter>);
     expect(screen.getByRole("button",{name:"添加相机"})).toBeDisabled();expect(screen.getByRole("button",{name:"移除当前"})).toBeDisabled();expect(screen.getByRole("button",{name:"模拟相机"})).toBeDisabled();
   });
-  it("标定页面按采集方式筛选工位，没有适合工位时提供设备入口",async()=>{
+  it("标定页面只列触发采集工位，没有适合工位时提供设备入口",async()=>{
     configs[1]={...configs[1],acquisition:"freeRun"};
-    const page=render(<MemoryRouter><FollowCalibrationPage/></MemoryRouter>);
-    expect(await screen.findByText("随动标定工位 1")).toBeVisible();expect(screen.queryByRole("button",{name:"相机 1 CAM-1"})).not.toBeInTheDocument();
-    page.rerender(<MemoryRouter><FlyshotCalibrationPage/></MemoryRouter>);
-    expect(await screen.findByText("飞拍标定工位 0")).toBeVisible();
-    configs=[];page.rerender(<MemoryRouter><FollowCalibrationPage/></MemoryRouter>);
-    expect(await screen.findByText("没有连续采集相机")).toBeVisible();expect(screen.getByRole("link",{name:"设备与采集"})).toHaveAttribute("href","/camera");
+    const page=render(<MemoryRouter><FlyshotCalibrationPage/></MemoryRouter>);
+    expect(await screen.findByText("飞拍标定工位 0")).toBeVisible();expect(screen.queryByRole("button",{name:"相机 2 CAM-2"})).not.toBeInTheDocument();
+    configs=[];page.unmount();render(<MemoryRouter><FlyshotCalibrationPage/></MemoryRouter>);
+    expect(await screen.findByText("没有触发采集相机")).toBeVisible();expect(screen.getByRole("link",{name:"设备与采集"})).toHaveAttribute("href","/camera");
   });
   it("自动固定序列号触发新读取，迟到旧配置不会改回相机参数",async()=>{
     configs[0]={...configs[0],source:"mvs",serial:""};const page=show();await loaded();

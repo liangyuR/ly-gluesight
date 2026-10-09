@@ -7,7 +7,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::camera::Acquisition;
 use crate::cycle::{CycleHost, Input, RecipeSummary};
-use crate::recipe::{self, default_follow_spec, ImportedPath, InspectMode, Recipe, RecipeDoc};
+use crate::recipe::{self, ImportedPath, Recipe, RecipeDoc};
 use crate::settings::CycleSettings;
 use crate::vision::{self, VisionHost};
 
@@ -35,23 +35,18 @@ pub fn recipe_preview(doc: RecipeDoc) -> Result<Recipe, String> {
     doc.build()
 }
 
-/// 新建配方的起点：复制现有配方，或按工况给一份默认值。
+/// 新建配方的起点：一份飞拍默认值。
 #[tauri::command]
-pub fn recipe_template(cycle: State<'_, CycleHost>, mode: InspectMode) -> RecipeDoc {
-    let samples = recipe::samples();
-    let mut doc = samples.into_iter().find(|d| d.mode == mode).expect("样例覆盖两种工况");
+pub fn recipe_template(cycle: State<'_, CycleHost>) -> RecipeDoc {
+    let mut doc = recipe::samples().remove(0);
     let used: Vec<u16> = cycle.recipes.list().iter().map(|r| r.product_code).collect();
     doc.product_code = (1..u16::MAX).find(|c| !used.contains(c)).unwrap_or(0);
     doc.id = format!("NEW-{}", doc.product_code);
     doc.name = "新配方".into();
     doc.version = 1;
-    // 默认挑采集方式对得上的相机：随动用连续采集的，飞拍用触发采集的
+    // 默认挑触发采集的相机
     let configs = cycle.camera.configs();
-    let fit: Vec<_> = configs.iter().filter(|c| (c.acquisition == Acquisition::FreeRun) == (mode == InspectMode::Follow)).collect();
-    let pick = if fit.is_empty() { configs.iter().collect() } else { fit };
-    if mode == InspectMode::Follow {
-        doc.follow = Some(default_follow_spec(pick.iter().take(3).map(|c| c.id.clone()).collect(), 80.0));
-    } else if let Some(c) = pick.first() {
+    if let Some(c) = configs.iter().find(|c| c.acquisition == Acquisition::Triggered).or(configs.first()) {
         doc.camera = c.id.clone();
     }
     doc

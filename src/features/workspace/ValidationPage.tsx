@@ -80,10 +80,10 @@ export default function ValidationPage() {
     <div className="wp-checklist">{(validation?.checks??[
       {name:"设备与采集",passed:false,detail:"验证时读取实际相机状态与采集方式"},
       {name:"物理覆盖",passed:data.coverage>=99.995,detail:"当前搜索窗口覆盖 "+data.coverage.toFixed(2)+"%"},
-      {name:"示教与标定",passed:doc.mode==="flyShot"&&data.workspace.frames.every(f=>f.saved),detail:doc.mode==="flyShot"?"已保存 "+data.workspace.frames.filter(f=>f.saved).length+"/"+data.workspace.frames.length+" 帧":"检查各随动相机的标定"},
+      {name:"示教与标定",passed:data.workspace.frames.every(f=>f.saved),detail:"已保存 "+data.workspace.frames.filter(f=>f.saved).length+"/"+data.workspace.frames.length+" 帧"},
       {name:"代表性样本",passed:false,detail:"至少选择一件合格样本和一件缺陷样本"},
     ]).map(c=><div key={c.name} className={"wp-check-row "+(c.passed?"passed":"")}>{c.passed?<CheckCircle2 size={20}/>:<AlertTriangle size={20}/>}<div><strong>{c.name}</strong><p>{c.detail}</p></div></div>)}</div>
-    </Panel><Panel title="代表性验证样本" detail="历史样本按存储的测量数据验证规则；导入原图样本组重新运行图像测量" actions={doc.mode==="flyShot"&&<button className="btn" disabled={!ready} onClick={()=>{setFiles({});setImporting(true);}}><Upload size={15}/>导入原图样本组</button>}>
+    </Panel><Panel title="代表性验证样本" detail="历史样本按存储的测量数据验证规则；导入原图样本组重新运行图像测量" actions={<button className="btn" disabled={!ready} onClick={()=>{setFiles({});setImporting(true);}}><Upload size={15}/>导入原图样本组</button>}>
       <label className="field"><span>历史样本来源</span><select className="input" aria-label="历史样本来源" value={historyScope} disabled={locked} onChange={e=>setHistoryScope(e.target.value as "current"|"all")}><option value="current">当前配方</option><option value="all">全部配方</option></select></label>
       <p className="muted hint">仅胶路与当前候选一致的完整历史测量可用于规则验证；选择其他配方的样本时，验证会再次检查兼容性。</p>
       <div className="table-wrap"><table className="table"><thead><tr><th>选用</th><th>样本</th><th>来源</th><th>人工期望</th></tr></thead><tbody>

@@ -27,16 +27,17 @@ beforeEach(() => {
 });
 
 describe("配方库操作", () => {
-  it("合并生产与候选且去重，候选名称用于搜索，工况过滤", async () => {
+  it("合并生产与候选且去重，候选名称用于搜索", async () => {
     ws.drafts[0].doc.name = "候选名称";
-    const b = workspaceView("B"); b.workspace.doc.mode = "follow"; ws.list.push(summary(b)); ws.drafts.push(b.workspace);
+    const b = workspaceView("B"); ws.list.push(summary(b)); ws.drafts.push(b.workspace);
     show(); expect(screen.getAllByRole("button", { name: "配置候选" })).toHaveLength(2);
     await userEvent.type(screen.getByRole("textbox", { name: "搜索配方" }), "候选名称");
     expect(screen.getAllByRole("button", { name: "配置候选" })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "复制配方 A" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "复制配方 B" })).not.toBeInTheDocument();
     await userEvent.clear(screen.getByRole("textbox", { name: "搜索配方" }));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "配方工况筛选" }), "follow");
-    expect(screen.queryByRole("button", { name: "复制配方 A" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "复制配方 B" })).toBeVisible();
+    expect(screen.queryByRole("combobox", { name: "配方工况筛选" })).not.toBeInTheDocument();
   });
 
   it("复制产生独立候选，避开已有编号与产品代码", async () => {
@@ -84,7 +85,6 @@ describe("配方库操作", () => {
   it("浏览器查看模式禁止新建配方", () => {
     vi.mocked(desktopAvailable).mockReturnValue(false); show();
     expect(screen.getByRole("button", { name: "新建飞拍" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "新建随动" })).toBeDisabled();
     expect(screen.getByRole("button",{name:"复制配方 A"})).toBeDisabled();expect(screen.getByRole("button",{name:"删除配方 A"})).toBeDisabled();
     expect(screen.getByRole("button",{name:"配置候选"})).toBeDisabled();
   });
@@ -96,9 +96,8 @@ describe("配方库操作", () => {
     fireEvent.change(screen.getByRole("textbox",{name:"搜索配方"}),{target:{value:"不存在"}});expect(screen.getByRole("heading",{name:"没有匹配的配方"})).toBeVisible();
   });
 
-  it("空库说明加载状态，全部/飞拍/随动均可切换",async()=>{
+  it("空库说明加载状态",async()=>{
     ws.list=[];ws.drafts=[];show();expect(screen.getByRole("heading",{name:"尚未加载配方"})).toBeVisible();
-    for(const mode of ["flyShot","follow","all"])await userEvent.selectOptions(screen.getByRole("combobox",{name:"配方工况筛选"}),mode);
     expect(screen.queryByRole("button",{name:"配置候选"})).not.toBeInTheDocument();
   });
 
@@ -117,11 +116,11 @@ describe("配方库操作", () => {
     await userEvent.click(screen.getByRole("button",{name:"配置候选"}));page.unmount();await act(async()=>abandoned.resolve(workspaceView()));
   });
 
-  it("新建随动使用随动模板；取消不创建且准备失败可重试",async()=>{
-    vi.mocked(recipeApi.template).mockRejectedValueOnce(new Error("模板读取失败")).mockResolvedValueOnce({...workspaceView("NEW").workspace.doc,mode:"follow"});
-    show();await userEvent.click(screen.getByRole("button",{name:"新建随动"}));
+  it("新建使用飞拍模板；取消不创建且准备失败可重试",async()=>{
+    vi.mocked(recipeApi.template).mockRejectedValueOnce(new Error("模板读取失败")).mockResolvedValueOnce(workspaceView("NEW").workspace.doc);
+    show();await userEvent.click(screen.getByRole("button",{name:"新建飞拍"}));
     await waitFor(()=>expect(ws.setError).toHaveBeenCalledWith("Error: 模板读取失败"));expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button",{name:"新建随动"}));expect(recipeApi.template).toHaveBeenLastCalledWith("follow");
+    await userEvent.click(screen.getByRole("button",{name:"新建飞拍"}));expect(recipeApi.template).toHaveBeenLastCalledWith();
     await screen.findByRole("dialog");await userEvent.click(screen.getByRole("button",{name:"取消"}));expect(workspaceApi.create).not.toHaveBeenCalled();
   });
 

@@ -74,5 +74,5 @@ def snapshot(client):
     regs = client.registers(100, 14)
     return {**{name:coils[i] for i, name in COILS.items()},
             "partSn": (regs[0] << 16) | regs[1], "productCode":regs[2], "shotCount":regs[3],
-            "pathProgress":(regs[4] << 16) | regs[5], "resultCode":regs[10],
+            "resultCode":regs[10],
             "faultCode":regs[11], "resultSn":(regs[12] << 16) | regs[13]}

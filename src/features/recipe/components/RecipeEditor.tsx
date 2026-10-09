@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Save, Upload } from "lucide-react";
 import { recipeApi } from "../../cycle/api";
 import TrajectoryMap from "../../cycle/components/TrajectoryMap";
-import type { FollowSpec, JudgeParams, PathSpec, Recipe, RecipeDoc, SegmentLimits } from "../../cycle/types";
+import type { JudgeParams, PathSpec, Recipe, RecipeDoc, SegmentLimits } from "../../cycle/types";
 
 interface Props {
   initial: RecipeDoc;
@@ -159,10 +159,8 @@ export default function RecipeEditor({ initial, originalId, cameras, onSaved, on
 
   const set = <K extends keyof RecipeDoc>(k: K, v: RecipeDoc[K]) => {setNotice(null);setDoc(previous=>({ ...previous, [k]: v }));};
   const setPath = (p: PathSpec) => {importSerial.current++;setImporting(false);set("path", p);};
-  const follow = doc.mode === "follow";
-  const f = doc.follow;
-  const setFollow = (patch: Partial<FollowSpec>) => f && set("follow", { ...f, ...patch });
-  const bead = f?.beadWidth ?? 2;
+  // 新加胶宽限值时的默认值，按名义胶宽 2 mm
+  const bead = 2;
   const widthDefault: JudgeParams = { nominal: bead, tolUpper: 0.35 * bead, tolLower: 0.3 * bead, absMin: 0.4 * bead, absMax: 1.9 * bead, maxExcursionLen: 3 };
 
   const importFile = async (file: File) => {
@@ -220,7 +218,7 @@ export default function RecipeEditor({ initial, originalId, cameras, onSaved, on
       <div className="rcp-form">
         <div className="panel-toolbar">
           <h3 className="panel-title">
-            {originalId ? `编辑 ${originalId}` : "新配方"} · {follow ? "随动" : "飞拍"}
+            {originalId ? `编辑 ${originalId}` : "新配方"} · 飞拍
             {originalId && <span className="muted mono"> v{doc.version}</span>}
           </h3>
           <button className="btn primary" onClick={()=>void save()} disabled={saving||importing||!!previewError||previewDoc!==doc}>
@@ -322,114 +320,46 @@ export default function RecipeEditor({ initial, originalId, cameras, onSaved, on
             </table>
           </div>
           <p className="muted hint">
-            位置：{follow ? "胶条中线相对名义胶路的横向偏移（名义通常为 0）" : "内边到胶中线的距离"}。连续超出公差带超过"允许超差长度"判 NG，超出绝对限直接 NG。
+            位置：内边到胶中线的距离。连续超出公差带超过"允许超差长度"判 NG，超出绝对限直接 NG。
           </p>
         </Section>
 
-        {!follow && (
-          <Section title="飞拍拍照点">
-            <div className="form-grid">
-              <label className="field">
-                <span>触发方式</span>
-                <select className="input" value={doc.triggerMode} onChange={(e) => set("triggerMode", e.target.value as RecipeDoc["triggerMode"])}>
-                  <option value="fly">飞拍（位置比较触发）</option>
-                  <option value="stop">停稳拍</option>
-                </select>
-              </label>
-              <label className="field">
-                <span>相机</span>
-                <select className="input" value={doc.camera} onChange={(e) => set("camera", e.target.value)}>
-                  {!cameras.some((c) => c.id === doc.camera) && <option value={doc.camera}>{doc.camera}（不在相机组里）</option>}
-                  {cameras.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name} · {c.id}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <Num label="视野宽（mm）" value={doc.fov[0]} step={1} onChange={(v) => set("fov", [v, doc.fov[1]])} />
-              <Num label="视野高（mm）" value={doc.fov[1]} step={1} onChange={(v) => set("fov", [doc.fov[0], v])} />
-            </div>
+        <Section title="飞拍拍照点">
+          <div className="form-grid">
             <label className="field">
-              <span>拍照点中心（每行 x, y，按拍照顺序）</span>
-              <textarea
-                className="input mono"
-                rows={5}
-                value={shotsText}
-                onChange={(e) => {
-                  setShotsText(e.target.value);
-                  set("shots", parseText(e.target.value));
-                }}
-              />
+              <span>触发方式</span>
+              <select className="input" value={doc.triggerMode} onChange={(e) => set("triggerMode", e.target.value as RecipeDoc["triggerMode"])}>
+                <option value="fly">飞拍（位置比较触发）</option>
+                <option value="stop">停稳拍</option>
+              </select>
             </label>
-          </Section>
-        )}
-
-        {follow && f && (
-          <Section title="随动参数">
-            <div className="rcp-cams">
-              <span>参与相机</span>
-              {[...cameras, ...f.cameras.filter((id) => !cameras.some((c) => c.id === id)).map((id) => ({ id, name: "不在相机组里" }))].map((c) => (
-                <label key={c.id} className="check">
-                  <input
-                    type="checkbox"
-                    checked={f.cameras.includes(c.id)}
-                    onChange={(e) =>
-                      setFollow({
-                        // 按相机组里的顺序排，与图像源页一致
-                        cameras: e.target.checked
-                          ? [...cameras.map((x) => x.id),...f.cameras.filter(id=>!cameras.some(x=>x.id===id))].filter((id) => id === c.id || f.cameras.includes(id))
-                          : f.cameras.filter((id) => id !== c.id),
-                      })
-                    }
-                  />
-                  {c.name} · {c.id}
-                </label>
-              ))}
-            </div>
-            <div className="form-grid">
-              <label className="field">
-                <span>胶嘴定位</span>
-                <select
-                  className="input"
-                  value={f.timing.kind}
-                  onChange={(e) => setFollow({ timing: e.target.value === "plc" ? { kind: "plc", scale: 0.1 } : { kind: "timed", speedMmS: 80, delayMs: 300 } })}
-                >
-                  <option value="timed">按名义速度推算</option>
-                  <option value="plc">PLC 进度寄存器 pathProgress</option>
-                </select>
-              </label>
-              {f.timing.kind === "timed" ? (
-                <>
-                  <Num label="名义速度（mm/s）" value={f.timing.speedMmS} step={5} onChange={(v) => f.timing.kind === "timed" && setFollow({ timing: { ...f.timing, speedMmS: v } })} />
-                  <Num label="布防后起步延时（ms）" value={f.timing.delayMs} step={50} onChange={(v) => f.timing.kind === "timed" && setFollow({ timing: { ...f.timing, delayMs: v } })} />
-                </>
-              ) : (
-                <Num label="进度换算（mm / 单位）" value={f.timing.scale} step={0.01} onChange={(v) => f.timing.kind === "plc" && setFollow({ timing: { kind: "plc", scale: v } })} />
-              )}
-              <Num label="可测窗口 近端（mm）" value={f.nearMm} step={0.5} onChange={(v) => setFollow({ nearMm: v })} hint="离胶嘴这么近的胶条还被胶嘴挡着或未成型" />
-              <Num label="可测窗口 远端（mm）" value={f.farMm} step={0.5} onChange={(v) => setFollow({ farMm: v })} />
-              <Num label="测量步长（mm）" value={f.stepMm} step={0.5} onChange={(v) => setFollow({ stepMm: v })} hint="新进入窗口的胶条攒够这么长才测一帧" />
-              <Num label="超行程（mm）" value={f.overrunMm} step={1} onChange={(v) => setFollow({ overrunMm: v })} hint="走完胶路后关胶再走的距离，让最后一段也进窗口" />
-              <Num label="搜索半宽（mm）" value={f.searchMm} step={0.5} onChange={(v) => setFollow({ searchMm: v })} />
-              <Num label="名义胶宽（mm）" value={f.beadWidth} step={0.1} onChange={(v) => setFollow({ beadWidth: v })} />
-              <label className="field">
-                <span>胶条极性</span>
-                <select className="input" value={f.polarity} onChange={(e) => setFollow({ polarity: e.target.value as FollowSpec["polarity"] })}>
-                  <option value="dark">比背景暗</option>
-                  <option value="light">比背景亮</option>
-                  <option value="any">不限</option>
-                </select>
-              </label>
-              <Num label="最小边缘灰度差" value={f.minContrast} step={1} onChange={(v) => setFollow({ minContrast: v })} hint="低于它记为缺胶" />
-              <Num label="起点区（mm）" value={f.startZoneMm} step={0.5} onChange={(v) => setFollow({ startZoneMm: v })} hint="起胶处（开放胶路还有收胶处）这么长内不判断胶" />
-              <label className="check" title="起点处找胶条起点、拐角处用横向偏移反推沿程误差，校正按时间推算的胶嘴位置">
-                <input type="checkbox" checked={f.autoSync} onChange={(e) => setFollow({ autoSync: e.target.checked })} />
-                从图像同步胶嘴位置
-              </label>
-            </div>
-          </Section>
-        )}
+            <label className="field">
+              <span>相机</span>
+              <select className="input" value={doc.camera} onChange={(e) => set("camera", e.target.value)}>
+                {!cameras.some((c) => c.id === doc.camera) && <option value={doc.camera}>{doc.camera}（不在相机组里）</option>}
+                {cameras.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} · {c.id}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <Num label="视野宽（mm）" value={doc.fov[0]} step={1} onChange={(v) => set("fov", [v, doc.fov[1]])} />
+            <Num label="视野高（mm）" value={doc.fov[1]} step={1} onChange={(v) => set("fov", [doc.fov[0], v])} />
+          </div>
+          <label className="field">
+            <span>拍照点中心（每行 x, y，按拍照顺序）</span>
+            <textarea
+              className="input mono"
+              rows={5}
+              value={shotsText}
+              onChange={(e) => {
+                setShotsText(e.target.value);
+                set("shots", parseText(e.target.value));
+              }}
+            />
+          </label>
+        </Section>
         </fieldset>
       </div>
 

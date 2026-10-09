@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { PointVis, Recipe } from "../types";
-import { bounds, CAM_COLORS, polyline, posAt, runs, visColor } from "../vis";
+import { bounds, polyline, runs, visColor } from "../vis";
 
 interface Props {
   layout: Recipe;
@@ -8,31 +8,28 @@ interface Props {
   current?: number;
   /** 放大到某个拍照点的视野 */
   focus?: number | null;
-  /** 随动：胶嘴所在弧长与此刻负责测量的相机 */
-  nozzle?: { s: number; cam: number | null } | null;
   className?: string;
   compact?: boolean;
   selectedPoint?: number | null;
 }
 
-export default function TrajectoryMap({ layout, vis, current = -1, focus = null, nozzle = null, className, compact = false, selectedPoint = null }: Props) {
+export default function TrajectoryMap({ layout, vis, current = -1, focus = null, className, compact = false, selectedPoint = null }: Props) {
   const [w, h, r] = layout.part;
   const [fw, fh] = layout.fov;
   const rect = !layout.path || layout.path.kind === "roundedRect";
-  const fly = layout.mode === "flyShot";
 
   const viewBox = useMemo(() => {
-    if (fly && focus !== null && Number.isInteger(focus) && focus >= 0 && focus < layout.shots.length) {
+    if (focus !== null && Number.isInteger(focus) && focus >= 0 && focus < layout.shots.length) {
       const [cx, cy] = layout.shots[focus];
       return `${cx - fw / 2} ${cy - fh / 2} ${fw} ${fh}`;
     }
     const [bx0, by0, bx1, by1] = bounds(layout);
-    const xs = [bx0 - 30, bx1 + 30].concat(fly ? layout.shots.flatMap(([x]) => [x - fw / 2, x + fw / 2]) : []);
-    const ys = [by0 - 30, by1 + 30].concat(fly ? layout.shots.flatMap(([, y]) => [y - fh / 2, y + fh / 2]) : []);
+    const xs = [bx0 - 30, bx1 + 30].concat(layout.shots.flatMap(([x]) => [x - fw / 2, x + fw / 2]));
+    const ys = [by0 - 30, by1 + 30].concat(layout.shots.flatMap(([, y]) => [y - fh / 2, y + fh / 2]));
     const x0 = Math.min(...xs) - 8,
       y0 = Math.min(...ys) - 8;
     return `${x0} ${y0} ${Math.max(...xs) + 8 - x0} ${Math.max(...ys) + 8 - y0}`;
-  }, [layout, focus, fly, fw, fh]);
+  }, [layout, focus, fw, fh]);
 
   const segs = useMemo(() => {
     const rs = runs(vis);
@@ -43,18 +40,6 @@ export default function TrajectoryMap({ layout, vis, current = -1, focus = null,
   }, [layout, vis]);
 
   const outline = useMemo(() => polyline(layout, 0, layout.points.x.length - 1, false, layout.closed), [layout]);
-
-  const wake = useMemo(() => {
-    if (!nozzle || !layout.follow) return null;
-    const { nearMm, farMm } = layout.follow;
-    const pts: string[] = [];
-    for (let s = nozzle.s - farMm; s <= nozzle.s - nearMm; s += layout.spacing) {
-      if (!layout.closed && s < 0) continue;
-      const [x, y] = posAt(layout, s);
-      pts.push(`${x.toFixed(1)},${y.toFixed(1)}`);
-    }
-    return { pts: pts.join(" "), at: posAt(layout, nozzle.s) };
-  }, [layout, nozzle]);
 
   const gaps = segs.filter((s) => s.state === "gap");
   const sw = compact ? 1.6 : 2.6;
@@ -76,8 +61,7 @@ export default function TrajectoryMap({ layout, vis, current = -1, focus = null,
       ) : (
         <polyline points={outline} fill="none" stroke="var(--border-strong)" strokeWidth={10} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
       )}
-      {fly &&
-        !compact &&
+      {!compact &&
         layout.shots.map(([cx, cy], k) => {
           const on = k === current;
           return (
@@ -99,17 +83,6 @@ export default function TrajectoryMap({ layout, vis, current = -1, focus = null,
             </g>
           );
         })}
-      {wake && wake.pts && (
-        <polyline
-          points={wake.pts}
-          fill="none"
-          stroke={nozzle?.cam != null ? CAM_COLORS[nozzle.cam % CAM_COLORS.length] : "var(--accent-text)"}
-          strokeOpacity={0.35}
-          strokeWidth={12}
-          strokeLinecap="round"
-          vectorEffect="non-scaling-stroke"
-        />
-      )}
       {segs.map(
         (s) =>
           s.state !== "gap" && (
@@ -139,12 +112,6 @@ export default function TrajectoryMap({ layout, vis, current = -1, focus = null,
             </g>
           );
         })}
-      {wake && (
-        <g>
-          <circle cx={wake.at[0]} cy={wake.at[1]} r={6} fill="var(--bg)" stroke="var(--text)" strokeWidth={2} vectorEffect="non-scaling-stroke" />
-          <circle cx={wake.at[0]} cy={wake.at[1]} r={2} fill="var(--text)" />
-        </g>
-      )}
       {selectedPoint !== null && Number.isInteger(selectedPoint) && selectedPoint >= 0 && selectedPoint < layout.points.x.length && (
         <g aria-label={`选中测量点 ${selectedPoint + 1}`}>
           <circle cx={layout.points.x[selectedPoint]} cy={layout.points.y[selectedPoint]} r={5} fill="none" stroke="var(--text)" strokeWidth={2} vectorEffect="non-scaling-stroke" />

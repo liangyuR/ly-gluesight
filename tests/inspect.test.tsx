@@ -3,14 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import InspectPage from "../src/pages/InspectPage";
 import { cycleApi, useCycle, useLayout } from "../src/features/cycle/api";
-import { cameraApi } from "../src/features/camera/api";
 import { workspaceApi } from "../src/features/workspace/api";
 import { plcApi } from "../src/features/plc/api";
 import { deferred, snapshot, summary, workspaceView } from "./fixtures";
-import { cycleCameraConfig, cycleCameraStatus, cycleMeasurement, cyclePart, cycleResult, followCalib, followLayout } from "./cycle-visual-fixtures";
+import { cycleMeasurement, cyclePart, cycleResult } from "./cycle-visual-fixtures";
 import { plcConfig, plcPoint } from "./plc-fixtures";
 import type { LogLine, Measured, Recipe, RecipeSummary, Snapshot } from "../src/features/cycle/types";
-import type { CameraConfig, CameraStatus, Frame } from "../src/features/camera/types";
 import type { GrayImage } from "../src/features/workspace/types";
 import type { PointValue } from "../src/features/plc/types";
 
@@ -18,17 +16,15 @@ vi.mock("../src/features/cycle/api", () => ({
   useCycle: vi.fn(), useRecipes: () => recipeList, useLayout: vi.fn(),
   useSimStatus: () => null, cycleApi: { selectRecipe: vi.fn(), reset: vi.fn(), simStart: vi.fn(), simStop: vi.fn() },
 }));
-vi.mock("../src/features/camera/api", () => ({ cameraApi: { rigConfig: vi.fn() },
-  useRigStatus: () => ({ statuses, lastFrame }), usePreviewCanvas: () => ({ img: null, canvas: { current: null } }) }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { runtimeOverview: vi.fn(), liveImage: vi.fn() } }));
 vi.mock("../src/features/plc/api", () => ({ plcApi: { getConfig: vi.fn() }, usePlcValues: () => values,
   usePlcStatus: () => ({ state: "connected", since: 1 }), subscribe: () => () => {} }));
 
 let state: Snapshot, layout: Recipe | null, logs: LogLine[], measured: Measured[];
 let recipeList: RecipeSummary[];
-let statuses: CameraStatus[], lastFrame: Record<number, Frame>, values: Record<string, PointValue>;
+let values: Record<string, PointValue>;
 beforeEach(() => {
-  state = snapshot(); layout = workspaceView().layout; logs = []; measured = []; statuses = []; lastFrame = {}; values = {};
+  state = snapshot(); layout = workspaceView().layout; logs = []; measured = []; values = {};
   recipeList = [summary(), summary(workspaceView("B"))];
   vi.mocked(useCycle).mockImplementation(() => ({ snapshot: state, logs, measured }));
   vi.mocked(useLayout).mockImplementation(() => layout);
@@ -36,7 +32,6 @@ beforeEach(() => {
   vi.mocked(cycleApi.reset).mockReset().mockResolvedValue(undefined);
   vi.mocked(cycleApi.simStart).mockReset().mockResolvedValue(undefined);
   vi.mocked(cycleApi.simStop).mockReset().mockResolvedValue(undefined);
-  vi.mocked(cameraApi.rigConfig).mockReset().mockResolvedValue([]);
   vi.mocked(workspaceApi.runtimeOverview).mockReset().mockResolvedValue(null);
   vi.mocked(workspaceApi.liveImage).mockReset().mockResolvedValue({ url: "data:,", width: 100, height: 60 });
   vi.mocked(plcApi.getConfig).mockReset().mockResolvedValue(plcConfig());
@@ -262,47 +257,7 @@ describe("在线检测选帧、曲线与快照绑定", () => {
   });
 });
 
-describe("在线检测相机、信号和事件", () => {
-  it("随动按相机编号绑定标定与测量，两条曲线同步选点", async () => {
-    layout = followLayout(); state = { ...state, phase: "ACQUIRE", part: { ...cyclePart(), mode: "follow", nozzleS: 3, endS: 4, activeCam: 0 } };
-    measured = [cycleMeasurement()]; statuses = [cycleCameraStatus("CAM-1", 0), cycleCameraStatus("CAM-2", 1)];
-    vi.mocked(cameraApi.rigConfig).mockResolvedValue([ { ...cycleCameraConfig("CAM-2"), follow: followCalib([20, 20]) }, { ...cycleCameraConfig("CAM-1"), follow: followCalib([60, 30]) } ]);
-    render(<InspectPage />);
-    await waitFor(() => expect(screen.getByLabelText("CAM-1测量图层").querySelector('circle[stroke-dasharray]')).toHaveAttribute("cx", "60"));
-    expect(screen.getByText("胶嘴 s=3.0 / 4 mm")).toBeVisible(); expect(screen.getByRole("heading", { name: "胶宽" })).toBeVisible();
-    expect(screen.queryByRole("heading", { name: "拍照点" })).not.toBeInTheDocument();
-    fireEvent.change(screen.getByRole("slider", { name: "胶宽曲线选点" }), { target: { value: "1" } });
-    expect(screen.getByText("点 2 · s=1.00 mm · 胶宽=2.50 mm · 超公差")).toBeVisible();
-    expect(screen.getByText("点 2 · s=1.00 mm · d=4.50 mm · 超公差")).toBeVisible();
-    expect(mainPanel().getByLabelText("选中测量点 2")).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "CAM-1测量叠加" }));
-    expect(screen.getByLabelText("CAM-1测量图层").querySelectorAll("circle")).toHaveLength(0);
-    expect(screen.getByRole("button", { name: "CAM-2测量叠加" })).toHaveAttribute("aria-pressed", "true");
-  });
-
-  it("配方引用缺失相机明确提示，相机配置读取失败可重试", async () => {
-    layout = followLayout(); statuses = [cycleCameraStatus()];
-    vi.mocked(cameraApi.rigConfig).mockRejectedValueOnce(new Error("配置不可读")).mockResolvedValueOnce([cycleCameraConfig()]);
-    render(<InspectPage />);
-    expect(screen.getByText("相机组里没有这个编号的相机")).toBeVisible();
-    expect(await screen.findByRole("alert")).toHaveTextContent("相机配置读取失败：Error: 配置不可读");
-    await userEvent.click(screen.getByRole("button", { name: "重试相机配置" }));
-    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
-    expect(screen.getByRole("button", { name: "CAM-1测量叠加" })).toBeEnabled();
-  });
-
-  it.each(["success", "error"])("同数量换相机编号会重读，旧请求 %s 不覆盖新配置", async response => {
-    layout = followLayout(); statuses = [cycleCameraStatus()];
-    const old = deferred<CameraConfig[]>(); vi.mocked(cameraApi.rigConfig).mockReturnValueOnce(old.promise)
-      .mockResolvedValueOnce([{ ...cycleCameraConfig("CAM-2"), follow: followCalib([80, 30]) }]);
-    const page = render(<InspectPage />);
-    statuses = [cycleCameraStatus("CAM-2", 0)]; page.rerender(<InspectPage />);
-    await waitFor(() => expect(screen.getByLabelText("CAM-2测量图层").querySelector('circle[stroke-dasharray]')).toHaveAttribute("cx", "80"));
-    await act(async () => { if (response === "success") old.resolve([cycleCameraConfig()]); else old.reject(new Error("旧配置读取失败")); });
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("CAM-2测量图层").querySelector('circle[stroke-dasharray]')).toHaveAttribute("cx", "80");
-  });
-
+describe("在线检测信号和事件", () => {
   it("PLC 灯按标签显示方向、真假值和未绑定状态", async () => {
     const config = plcConfig(); config.connection.protocol = "modbusTcp";
     config.points = [ { ...plcPoint, id: "start", tags: ["partStart"] }, { ...plcPoint, id: "ready", tags: ["visionReady"] }, { ...plcPoint, id: "end", tags: ["partEnd"] } ];

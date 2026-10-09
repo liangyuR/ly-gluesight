@@ -8,7 +8,7 @@ interface Props {
   layout: Recipe;
   measured: Measured[];
   vis: PointVis[];
-  /** d：位置（飞拍为距内边距离，随动为横向偏移）；w：胶宽 */
+  /** d：位置（距内边距离）；w：胶宽 */
   quantity?: "d" | "w";
   selected?: number | null;
   onSelect?: (index: number | null) => void;
@@ -51,19 +51,17 @@ export default function UnrolledCurve({ layout, measured, vis, quantity = "d", s
   const curveName = quantity === "w" ? "胶宽" : "位置";
   const limitOf = (g: Recipe["segments"][number]): JudgeParams | null => (quantity === "w" ? g.width : g.params);
 
-  const { values, cams } = useMemo(() => {
+  const values = useMemo(() => {
     const values = new Float32Array(n).fill(NaN);
-    const cams = new Int8Array(n).fill(-1);
     measured.forEach((m) =>
       m.idx.forEach((j, i) => {
         if (m.st[i] !== 0) return;
         const v = quantity === "w" ? m.w?.[i] : m.d[i];
         if (v == null || !Number.isFinite(v) || j < 0 || j >= n) return;
         values[j] = v;
-        cams[j] = m.cam ?? 0;
       }),
     );
-    return { values, cams };
+    return values;
   }, [measured, n, quantity]);
 
   const [lo, hi] = useMemo(() => {
@@ -106,18 +104,17 @@ export default function UnrolledCurve({ layout, measured, vis, quantity = "d", s
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [values, w, h, n, total, lo, hi, layout.spacing]);
 
-  // 底部色条：飞拍为各拍照点负责区间，随动为实际测到该点的相机
+  // 底部色条：各拍照点负责区间
   const owners = useMemo(() => {
     const out: { k: number; s0: number; s1: number }[] = [];
-    const key = (j: number) => (layout.mode === "flyShot" ? layout.points.k[j] : cams[j]);
     for (let j = 0; j < n; j++) {
-      const k = key(j);
+      const k = layout.points.k[j];
       const last = out[out.length - 1];
       if (last && last.k === k) last.s1 = Math.min(total, (j + 1) * layout.spacing);
       else out.push({ k, s0: j * layout.spacing, s1: Math.min(total, (j + 1) * layout.spacing) });
     }
     return out.filter((o) => o.k >= 0 && o.s1 > o.s0);
-  }, [layout, cams, n, total]);
+  }, [layout, n, total]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, minWidth: 0 }}>

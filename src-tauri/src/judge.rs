@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::recipe::{InspectMode, JudgeParams, Recipe};
+use crate::recipe::{JudgeParams, Recipe};
 
 /// 声明顺序即严重程度，整件结果取各段最严重的一个。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -82,7 +82,7 @@ pub struct GapRun {
     pub s0: f32,
     pub s1: f32,
     pub len: f32,
-    /// 飞拍：缺胶点所在的拍照点；随动为空
+    /// 缺胶点所在的拍照点
     pub frames: Vec<u8>,
 }
 
@@ -183,23 +183,15 @@ pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
     let sp = recipe.spacing;
     let n = table.len();
     let closed = recipe.closed;
-    // 随动的起点区（开放胶路还有终点区）不判断胶与测不成
-    let zone = recipe.follow.as_ref().map_or(0.0, |f| f.start_zone_mm);
-    let length = recipe.length();
-    let exempt = |j: usize| {
-        let s = j as f32 * sp;
-        s < zone || (!closed && s > length - zone)
-    };
 
     if let Some(j) = table.iter().position(|p| *p == PointState::Pending) {
         return Judgement::error(fault::INVALID_POINTS, format!("测量点 j={j} 未填写"));
     }
-    for run in runs_where(table, closed, |j, p| *p == PointState::Invalid && !exempt(j)) {
+    for run in runs_where(table, closed, |_, p| *p == PointState::Invalid) {
         let len = run.len() as f32 * sp;
         if len > MAX_INVALID_LEN {
             let seg = &recipe.segments[recipe.points.seg[run[0]] as usize];
-            let what = if recipe.mode == InspectMode::Follow { "胶条" } else { "内边" };
-            return Judgement::error(fault::INVALID_POINTS, format!("{} {what}连续 {len:.1} mm 没测到 · s={:.1}", seg.name, run[0] as f32 * sp));
+            return Judgement::error(fault::INVALID_POINTS, format!("{} 内边连续 {len:.1} mm 没测到 · s={:.1}", seg.name, run[0] as f32 * sp));
         }
     }
 
@@ -254,13 +246,13 @@ pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
         .collect();
 
     let mut gaps = Vec::new();
-    for run in runs_where(table, closed, |j, p| *p == PointState::Gap && !exempt(j)) {
+    for run in runs_where(table, closed, |_, p| *p == PointState::Gap) {
         let len = run.len() as f32 * sp;
         if len <= recipe.max_gap_len {
             continue;
         }
         let segment = recipe.points.seg[run[0]] as usize;
-        let mut frames: Vec<u8> = if recipe.mode == InspectMode::FlyShot { run.iter().map(|&j| recipe.points.k[j]).collect() } else { Vec::new() };
+        let mut frames: Vec<u8> = run.iter().map(|&j| recipe.points.k[j]).collect();
         frames.dedup();
         segments[segment].verdict = segments[segment].verdict.max(Verdict::NgGap);
         gaps.push(GapRun { segment, s0: run[0] as f32 * sp, s1: (run[run.len() - 1] + 1) as f32 * sp, len, frames });
@@ -409,9 +401,13 @@ mod tests {
 
     #[test]
     fn narrow_bead_is_ng_width() {
-        let recipe = builtin().into_iter().find(|r| r.follow.is_some()).unwrap();
-        let mut table = vec![PointState::Measured { d: 0.0, w: 2.0 }; recipe.point_count()];
-        (200..220).for_each(|j| table[j] = PointState::Measured { d: 0.0, w: 1.1 });
+        let mut doc = crate::recipe::samples().remove(0);
+        let width = JudgeParams { nominal: 2.0, tol_upper: 0.7, tol_lower: 0.6, abs_min: 0.8, abs_max: 3.8, max_excursion_len: 3.0 };
+        doc.line.width = Some(width.clone());
+        doc.corner.width = Some(width);
+        let recipe = doc.build().unwrap();
+        let mut table = vec![PointState::Measured { d: 0.75, w: 2.0 }; recipe.point_count()];
+        (200..220).for_each(|j| table[j] = PointState::Measured { d: 0.75, w: 1.1 });
         assert_eq!(judge(&recipe, &table).verdict, Verdict::NgWidth);
     }
 }

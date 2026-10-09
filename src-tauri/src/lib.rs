@@ -1,8 +1,6 @@
-mod caliper;
 mod camera;
 mod commands;
 mod cycle;
-mod follow;
 mod frame;
 mod fsio;
 mod history;
@@ -20,7 +18,6 @@ mod recorder;
 mod replay;
 mod settings;
 mod sim;
-mod simfollow;
 mod simimage;
 mod store;
 mod teach;
@@ -92,7 +89,6 @@ pub fn run() {
             recipe_api::recipe_save,
             recipe_api::recipe_delete,
             recipe_api::recipe_parse_path,
-            teach::teach_follow_probe,
             teach::teach_flyshot_status,
             teach::teach_flyshot_save,
             teach::records_list,

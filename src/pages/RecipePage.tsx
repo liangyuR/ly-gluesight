@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Copy, Plus, Trash2 } from "lucide-react";
 import { cameraApi } from "../features/camera";
-import { recipeApi, useLayout, type InspectMode, type RecipeDoc, type RecipeSummary } from "../features/cycle";
+import { recipeApi, useLayout, type RecipeDoc, type RecipeSummary } from "../features/cycle";
 import { triggerModeLabel } from "../features/history";
 import { FlyshotTeach, RecipeEditor } from "../features/recipe";
 
@@ -39,9 +39,9 @@ export default function RecipePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const create = async (mode: InspectMode) => {
+  const create = async () => {
     try {
-      const doc = await recipeApi.template(mode);
+      const doc = await recipeApi.template();
       setSelected(null);
       setEditing({ doc, originalId: null, key: Date.now() });
     } catch (e) {
@@ -80,19 +80,15 @@ export default function RecipePage() {
               <b className="mono">{r.id}</b>
               <span>{r.name}</span>
               <span className="muted mono">
-                代码 {r.productCode} · v{r.version} · {r.mode === "follow" ? `随动 ${r.cameras.length} 相机` : `${triggerModeLabel(r.triggerMode)} N=${r.shotCount}`}
+                代码 {r.productCode} · v{r.version} · {triggerModeLabel(r.triggerMode)} N={r.shotCount}
               </span>
             </button>
           ))}
         </div>
         <div className="rcp-actions">
-          <button className="btn" onClick={() => create("flyShot")}>
+          <button className="btn" onClick={() => create()}>
             <Plus size={15} />
             新建飞拍
-          </button>
-          <button className="btn" onClick={() => create("follow")}>
-            <Plus size={15} />
-            新建随动
           </button>
           <button className="btn" onClick={copy} disabled={!editing}>
             <Copy size={15} />
@@ -117,7 +113,7 @@ export default function RecipePage() {
             <RecipeEditor key={editing.key} initial={editing.doc} originalId={editing.originalId} cameras={cameras} onSaved={(id) => reload(id)} />
           </div>
         )}
-        {saved && saved.mode === "flyShot" && <FlyshotTeach recipe={saved} />}
+        {saved && <FlyshotTeach recipe={saved} />}
       </div>
     </div>
   );

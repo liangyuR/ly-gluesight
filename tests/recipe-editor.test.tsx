@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import RecipeEditor from "../src/features/recipe/components/RecipeEditor";
 import { recipeApi } from "../src/features/cycle/api";
-import type { FollowSpec, Recipe, RecipeDoc } from "../src/features/cycle/types";
+import type { Recipe, RecipeDoc } from "../src/features/cycle/types";
 import { deferred, summary, workspaceView } from "./fixtures";
 
 vi.mock("../src/features/cycle/api", () => ({ recipeApi: { preview: vi.fn(), save: vi.fn(), parsePath: vi.fn() } }));
@@ -23,7 +23,6 @@ function file(name="path.csv",text="x,y\n0,0\n10,0"){
 }
 const polyline=async()=>userEvent.click(screen.getByRole("button",{name:"折线 / 导入"}));
 const upload=async(f:File)=>userEvent.setup({applyAccept:false}).upload(screen.getByLabelText("导入胶路文件"),f);
-const follow:FollowSpec={cameras:["CAM-1"],timing:{kind:"timed",speedMmS:80,delayMs:300},nearMm:10,farMm:40,stepMm:1,overrunMm:20,searchMm:4,beadWidth:2,polarity:"dark",minContrast:20,autoSync:true,startZoneMm:4};
 
 describe("配方几何与规则编辑", () => {
   it("保存候选锁定编号，编辑不会直接保存生产配方", async () => {
@@ -232,24 +231,10 @@ describe("配方几何与规则编辑", () => {
     await userEvent.selectOptions(screen.getByRole("combobox",{name:"相机"}),"CAM-1");expect(onDraftChange.mock.lastCall![0].camera).toBe("CAM-1");
   });
 
-  it("随动选择相机保留未知引用，定位模式和检测参数可分别编辑",async()=>{
-    const initial={...workspaceView().workspace.doc,mode:"follow" as const,follow:{...follow,cameras:["CAM-1","MISSING"]}};
-    const {onDraftChange}=show(undefined,initial,[{id:"CAM-1",name:"相机 1"},{id:"CAM-2",name:"相机 2"}]);
-    expect(screen.queryByRole("textbox",{name:"拍照点中心（每行 x, y，按拍照顺序）"})).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("checkbox",{name:"相机 2 · CAM-2"}));expect(onDraftChange.mock.lastCall![0].follow.cameras).toEqual(["CAM-1","CAM-2","MISSING"]);
-    await userEvent.click(screen.getByRole("checkbox",{name:"不在相机组里 · MISSING"}));expect(onDraftChange.mock.lastCall![0].follow.cameras).toEqual(["CAM-1","CAM-2"]);
-    await userEvent.selectOptions(screen.getByRole("combobox",{name:"胶嘴定位"}),"plc");fireEvent.change(screen.getByRole("spinbutton",{name:"进度换算（mm / 单位）"}),{target:{value:"0.2"}});
-    expect(onDraftChange.mock.lastCall![0].follow.timing).toEqual({kind:"plc",scale:.2});
-    await userEvent.selectOptions(screen.getByRole("combobox",{name:"胶嘴定位"}),"timed");fireEvent.change(screen.getByRole("spinbutton",{name:"名义速度（mm/s）"}),{target:{value:"120"}});
-    await userEvent.selectOptions(screen.getByRole("combobox",{name:"胶条极性"}),"light");await userEvent.click(screen.getByRole("checkbox",{name:"从图像同步胶嘴位置"}));
-    expect(onDraftChange.mock.lastCall![0].follow).toMatchObject({timing:{kind:"timed",speedMmS:120,delayMs:300},polarity:"light",autoSync:false});
-  });
-  it("随动窗口、搜索与进度参数保存使用新值，新增胶宽规则跟随名义胶宽",async()=>{
-    show(undefined,{...workspaceView().workspace.doc,mode:"follow",follow});
-    const edits=[["可测窗口 近端（mm）","20"],["可测窗口 远端（mm）","80"],["测量步长（mm）","2"],["超行程（mm）","25"],["搜索半宽（mm）","8"],["名义胶宽（mm）","4"],["最小边缘灰度差","32"],["起点区（mm）","6"],["布防后起步延时（ms）","400"]];
-    for(const [label,value] of edits)fireEvent.change(screen.getByRole("spinbutton",{name:label}),{target:{value}});
+  it("新增胶宽规则按名义胶宽 2 mm 给出默认限值并随配方保存",async()=>{
+    show();
     await userEvent.click(screen.getAllByRole("button",{name:"启用胶宽判定"})[1]);await userEvent.click(await readySave());
-    expect(recipeApi.save).toHaveBeenCalledWith(expect.objectContaining({follow:expect.objectContaining({nearMm:20,farMm:80,stepMm:2,overrunMm:25,searchMm:8,beadWidth:4,minContrast:32,startZoneMm:6,timing:{kind:"timed",speedMmS:80,delayMs:400}}),corner:expect.objectContaining({width:expect.objectContaining({nominal:4,tolUpper:1.4,tolLower:1.2,absMin:1.6,absMax:7.6})})}),"A");
+    expect(recipeApi.save).toHaveBeenCalledWith(expect.objectContaining({corner:expect.objectContaining({width:expect.objectContaining({nominal:2,tolUpper:.7,tolLower:.6,absMin:.8,absMax:3.8})})}),"A");
   });
 
   it("启用、修改、停用胶宽判定只影响选中段",async()=>{

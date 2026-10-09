@@ -67,7 +67,6 @@ describe("流程预览路由与交互", () => {
       expect(state.device.connected).toBe(false); expect(state.plc.ready).toBe(false); expect(state.calibration.captured).toBe(false);
       expect(state.frames.every((f: { imageId: number | null }) => f.imageId === null)).toBe(true);
     }
-    if (index === 4) expect(state.recipe.mode).toBe("follow");
     fireEvent.click(screen.getByRole("link", { name: "操作流程" }));
     const steps = screen.getByRole("heading", { level: 3, name: title }).closest("article")!;
     fireEvent.click(within(steps).getByRole("button", { name: screens.find(s => s.id === views[1])!.label }));

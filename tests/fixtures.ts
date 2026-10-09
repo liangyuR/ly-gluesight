@@ -15,10 +15,10 @@ export function workspaceView(id = "A"): WorkspaceView {
   const position = { nominal: 3, tolUpper: 1, tolLower: 1, absMin: 1, absMax: 6, maxExcursionLen: 2 };
   const limits = { position, width: null };
   const doc: RecipeDoc = {
-    id, name: `工件 ${id}`, version: 2, productCode: 1, mode: "flyShot", triggerMode: "fly", camera: "CAM-1",
+    id, name: `工件 ${id}`, version: 2, productCode: 1, triggerMode: "fly", camera: "CAM-1",
     path: { kind: "roundedRect", width: 100, height: 60, radius: 5 },
     spacing: 1, filterWindow: 3, maxGapLen: .5, line: limits, corner: structuredClone(limits),
-    segmentOverrides: {}, fov: [120, 80], shots: [[25, 30], [75, 30]], follow: null,
+    segmentOverrides: {}, fov: [120, 80], shots: [[25, 30], [75, 30]],
   };
   const layout = {
     ...structuredClone(doc), hash: `hash-${id}`, part: [100, 60, 5] as [number, number, number], closed: true,
@@ -50,7 +50,7 @@ export function workspaceView(id = "A"): WorkspaceView {
 
 export function summary(view = workspaceView()): RecipeSummary {
   const { layout: r } = view;
-  return { id: r.id, name: r.name, version: 1, hash: r.hash, productCode: r.productCode, mode: r.mode,
+  return { id: r.id, name: r.name, version: 1, hash: r.hash, productCode: r.productCode,
     shotCount: r.shots.length, triggerMode: r.triggerMode, cameras: [r.camera], length: 4 };
 }
 
@@ -67,7 +67,7 @@ export function workspaceState(view = workspaceView()): ReturnType<typeof useWor
 
 export function snapshot(phase: Snapshot["phase"] = "IDLE"): Snapshot {
   return {
-    phase, since: 1, fault: null, productSource: "manual", activeRecipeId: "A", triggerMode: "fly", mode: "flyShot",
+    phase, since: 1, fault: null, productSource: "manual", activeRecipeId: "A", triggerMode: "fly",
     part: null, result: null, stats: { total: 0, ok: 0, ng: 0, err: 0 }, strayFrames: 0, alarms: [],
   };
 }

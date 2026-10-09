@@ -47,7 +47,7 @@ fn missing_bundled_core_reports_installation_repair() {
 
 fn job() -> Job {
     Job { run_id: 0, sn: 1, k: 0, cam: 0, recipe: crate::recipe::builtin()[0].clone(),
-        scenario: Scenario::Normal, image: None, kind: JobKind::Shot { k: 0 } }
+        scenario: Scenario::Normal, image: None }
 }
 
 fn table(job: &Job) -> StationMeasure {
@@ -230,7 +230,7 @@ fn native_simulated_gap_survives_caliper_averaging_and_merges_across_frames() {
         assert_eq!(result.status(), "ok", "{}", result.failure());
         let measured = serde_json::from_value::<StationMeasure>(result.record("measure").unwrap().clone()).unwrap()
             .into_measured(&Job { run_id: 0, sn: 1, k, cam: 0, recipe: recipe.clone(), scenario: Scenario::Gap,
-                image: None, kind: JobKind::Shot { k } },
+                image: None },
                 serde_json::from_value(result.record("pose").unwrap().clone()).unwrap()).unwrap();
         if measured.st.contains(&ST_GAP) { frames_with_gap.push(k as u8); }
         for (i, &j) in measured.idx.iter().enumerate() {

@@ -12,7 +12,7 @@ use crate::camera::CameraSource;
 use crate::cycle::{self, CycleHost};
 use crate::frame::FrameImage;
 use crate::judge::{self, PointState, Verdict};
-use crate::recipe::{InspectMode, Recipe, RecipeDoc};
+use crate::recipe::{Recipe, RecipeDoc};
 use crate::store::Store;
 use crate::vision::{self, ShotAssets, VisionAssets, VisionHost};
 
@@ -256,11 +256,7 @@ impl Workspace {
         if base_hash.is_some() {
             doc.version += 1;
         }
-        let count = if doc.mode == InspectMode::FlyShot {
-            doc.shots.len()
-        } else {
-            0
-        };
+        let count = doc.shots.len();
         Self {
             doc,
             base_hash,
@@ -347,10 +343,7 @@ impl LiveFrames {
 impl WorkspaceHost {
     /// 候选与已提交的发布快照都保留相机引用，删除相机前核对。
     pub fn camera_users(&self, camera: &str) -> Vec<String> {
-        let uses = |doc: &RecipeDoc| match doc.mode {
-            InspectMode::FlyShot => doc.camera == camera,
-            InspectMode::Follow => doc.follow.as_ref().is_some_and(|f| f.cameras.iter().any(|id| id == camera)),
-        };
+        let uses = |doc: &RecipeDoc| doc.camera == camera;
         self.items.lock().unwrap().values()
             .filter(|w| uses(&w.doc) || w.pending.as_ref().is_some_and(|p| uses(&p.doc)))
             .map(|w| w.doc.id.clone()).collect()
@@ -405,9 +398,6 @@ impl WorkspaceHost {
 }
 
 fn coverage(recipe: &Recipe, frames: &[Teaching]) -> f32 {
-    if recipe.mode == InspectMode::Follow {
-        return 100.0;
-    }
     let n = recipe.point_count();
     if n == 0 {
         return 0.0;
@@ -455,11 +445,7 @@ fn environment(app: &AppHandle, recipe: &Recipe) -> Result<String, String> {
         values.push(json!([config, crate::fsio::read_text(&calib).ok()]));
     }
     let settings = cycle.settings();
-    values.push(json!([
-        settings.vision,
-        settings.follow_vision,
-        settings.lyflow_core
-    ]));
+    values.push(json!([settings.vision, settings.lyflow_core]));
     Ok(fingerprint(&values))
 }
 
@@ -562,10 +548,7 @@ pub fn workspace_save_doc(
     w.expect(revision)?;
     if w.doc != doc {
         let old = w.doc.build()?;
-        if old.geometry_hash() != recipe.geometry_hash()
-            || old.camera != recipe.camera
-            || old.mode != recipe.mode
-        {
+        if old.geometry_hash() != recipe.geometry_hash() || old.camera != recipe.camera {
             w.frames = (0..recipe.shot_count()).map(Teaching::empty).collect();
             w.overview.saved = false;
         }
@@ -673,7 +656,7 @@ pub async fn workspace_import_image(app: AppHandle, id: String, revision: u64, k
             let items = host.items.lock().unwrap();
             let w = items.get(&id).ok_or("候选配置不存在")?;
             w.expect(revision)?;
-            if w.doc.build()?.mode != InspectMode::FlyShot || k >= w.frames.len() {
+            if k >= w.frames.len() {
                 return Err("请选择有效的飞拍拍照点".into());
             }
         }
@@ -702,7 +685,7 @@ pub async fn workspace_capture(
             w.expect(revision)?;
             w.doc.build()?
         };
-        if r.mode != InspectMode::FlyShot || k >= r.shot_count() {
+        if k >= r.shot_count() {
             return Err("请选择飞拍配方中的拍照点".into());
         }
         let cam = cycle.camera.require(&r.camera)?;
@@ -1172,26 +1155,15 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
         passed: covered >= 99.995,
         detail: format!("含搜索余量的测量点覆盖 {:.2}%", covered),
     });
-    let teaching = if r.mode == InspectMode::FlyShot {
-        let (ct, cal) = tags(app, &r)?;
-        w.frames.len() == r.shot_count()
-            && w.frames.iter().all(|f| {
-                f.saved
-                    && f.checked(&r.geometry_hash()).is_ok()
-                    && f.image
-                        .as_ref()
-                        .is_some_and(|i| i.camera_tag == ct && i.calib_tag == cal)
-            })
-    } else {
-        r.cameras().iter().all(|id| {
-            cycle
-                .camera
-                .configs()
-                .iter()
-                .find(|c| &c.id == id)
-                .is_some_and(|c| c.follow.is_some())
-        })
-    };
+    let (ct, cal) = tags(app, &r)?;
+    let teaching = w.frames.len() == r.shot_count()
+        && w.frames.iter().all(|f| {
+            f.saved
+                && f.checked(&r.geometry_hash()).is_ok()
+                && f.image
+                    .as_ref()
+                    .is_some_and(|i| i.camera_tag == ct && i.calib_tag == cal)
+        });
     checks.push(Check {
         name: "示教与标定".into(),
         passed: teaching,
@@ -1203,7 +1175,7 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
     });
     checks.push(Check {
         name: "总览布置".into(),
-        passed: r.mode == InspectMode::Follow || w.overview.saved,
+        passed: w.overview.saved,
         detail: if w.overview.saved {
             "总览显示布置已保存".into()
         } else {
@@ -1255,7 +1227,7 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
                 .transpose()?
                 .flatten()
                 .ok_or("原始配方快照缺失")?;
-            if original.geometry_hash() != r.geometry_hash() || original.mode != r.mode {
+            if original.geometry_hash() != r.geometry_hash() {
                 return Err("样本胶路与候选不一致，不能用旧测量数据验证".into());
             }
             let points = detail.points.ok_or("样本没有测量数据，不能用于规则验证")?;
@@ -1446,73 +1418,71 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
     )?;
     let manifest = dir.join(vision::ASSETS_FILE);
     let previous = std::fs::read(&manifest).ok();
-    if recipe.mode == InspectMode::FlyShot {
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let snapshot = Workspace {
-            doc: release.doc.clone(),
-            base_hash: release.base_hash.clone(),
-            revision: release.revision,
-            frames: release.frames.clone(),
-            overview: release.overview.clone(),
-            samples: Vec::new(),
-            sample_bank: Vec::new(),
-            validation: None,
-            pending: None,
-            publish_error: None,
-            updated_at: ly_plc::now_ms(),
-        };
-        let mut shots = Vec::new();
-        let mut calibration = vision::station_calib_path(app, &recipe.camera)?;
-        for frame in &release.frames {
-            frame.checked(&recipe.geometry_hash())?;
-            let frozen = frame.image.as_ref().unwrap();
-            let work = host
-                .dir(&recipe.id)
-                .join("release")
-                .join(format!("{}-k{}", release.revision, frame.k));
-            let (params, _) = assets(app, &snapshot, frame, &work)?;
-            calibration = PathBuf::from(params["calib"].as_str().ok_or("标定路径缺失")?);
-            let template = dir.join(format!(
-                "{}-{}-k{}.template.pgm",
-                frozen.id, release.revision, frame.k
-            ));
-            let stations = dir.join(format!(
-                "{}-{}-k{}.stations.json",
-                frozen.id, release.revision, frame.k
-            ));
-            std::fs::copy(
-                params["template"].as_str().ok_or("模板路径缺失")?,
-                &template,
-            )
-            .map_err(|e| e.to_string())?;
-            std::fs::copy(
-                params["stations"].as_str().ok_or("测量点路径缺失")?,
-                &stations,
-            )
-            .map_err(|e| e.to_string())?;
-            shots.push(ShotAssets {
-                template,
-                stations,
-                anchor: [frame.params.rect[0] as f64, frame.params.rect[1] as f64],
-            });
-        }
-        let source = cycle
-            .camera
-            .configs()
-            .into_iter()
-            .find(|c| c.id == recipe.camera)
-            .ok_or("相机不存在")?
-            .source;
-        VisionAssets {
-            recipe_id: recipe.id.clone(),
-            recipe_hash: recipe.geometry_hash(),
-            camera: recipe.camera.clone(),
-            sim_mm_per_px: (source == CameraSource::Sim).then_some(crate::simimage::SIM_MM_PER_PX),
-            calib: calibration,
-            shots,
-        }
-        .save(&manifest)?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let snapshot = Workspace {
+        doc: release.doc.clone(),
+        base_hash: release.base_hash.clone(),
+        revision: release.revision,
+        frames: release.frames.clone(),
+        overview: release.overview.clone(),
+        samples: Vec::new(),
+        sample_bank: Vec::new(),
+        validation: None,
+        pending: None,
+        publish_error: None,
+        updated_at: ly_plc::now_ms(),
+    };
+    let mut shots = Vec::new();
+    let mut calibration = vision::station_calib_path(app, &recipe.camera)?;
+    for frame in &release.frames {
+        frame.checked(&recipe.geometry_hash())?;
+        let frozen = frame.image.as_ref().unwrap();
+        let work = host
+            .dir(&recipe.id)
+            .join("release")
+            .join(format!("{}-k{}", release.revision, frame.k));
+        let (params, _) = assets(app, &snapshot, frame, &work)?;
+        calibration = PathBuf::from(params["calib"].as_str().ok_or("标定路径缺失")?);
+        let template = dir.join(format!(
+            "{}-{}-k{}.template.pgm",
+            frozen.id, release.revision, frame.k
+        ));
+        let stations = dir.join(format!(
+            "{}-{}-k{}.stations.json",
+            frozen.id, release.revision, frame.k
+        ));
+        std::fs::copy(
+            params["template"].as_str().ok_or("模板路径缺失")?,
+            &template,
+        )
+        .map_err(|e| e.to_string())?;
+        std::fs::copy(
+            params["stations"].as_str().ok_or("测量点路径缺失")?,
+            &stations,
+        )
+        .map_err(|e| e.to_string())?;
+        shots.push(ShotAssets {
+            template,
+            stations,
+            anchor: [frame.params.rect[0] as f64, frame.params.rect[1] as f64],
+        });
     }
+    let source = cycle
+        .camera
+        .configs()
+        .into_iter()
+        .find(|c| c.id == recipe.camera)
+        .ok_or("相机不存在")?
+        .source;
+    VisionAssets {
+        recipe_id: recipe.id.clone(),
+        recipe_hash: recipe.geometry_hash(),
+        camera: recipe.camera.clone(),
+        sim_mm_per_px: (source == CameraSource::Sim).then_some(crate::simimage::SIM_MM_PER_PX),
+        calib: calibration,
+        shots,
+    }
+    .save(&manifest)?;
     match cycle.recipes.save(
         release.doc.clone(),
         release.base_hash.as_ref().map(|_| release.doc.id.as_str()),
@@ -1524,7 +1494,7 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
         Err(e) => {
             if let Some(bytes) = previous {
                 let _ = std::fs::write(&manifest, bytes);
-            } else if recipe.mode == InspectMode::FlyShot {
+            } else {
                 let _ = std::fs::remove_file(&manifest);
             }
             Err(e)
@@ -1682,102 +1652,14 @@ fn recorded(app: &AppHandle, history_id: i64) -> Result<(PathBuf, Vec<RawFrame>)
     Ok((dir, frames))
 }
 
-fn match_follow_frames<'a>(
-    measured: &[crate::cycle::FrameView],
-    raw: &'a [RawFrame],
-) -> Result<Vec<&'a RawFrame>, String> {
-    if measured.is_empty() || raw.is_empty() {
-        return Err("随动原图复测需要已记录沿程位置的完整帧组".into());
-    }
-    let mut originals = std::collections::HashMap::new();
-    for frame in raw {
-        let counter = frame.frame_counter.ok_or("原图缺少绝对帧计数，不能匹配历史测量")?;
-        if frame.camera.is_empty() || frame.cam.is_none() || !frame.available {
-            return Err("随动原图缺帧或相机元数据不完整".into());
-        }
-        if originals.insert((frame.camera.as_str(), counter), frame).is_some() {
-            return Err("随动原图清单包含重复相机帧计数".into());
-        }
-    }
-    let mut used = std::collections::HashSet::new();
-    measured.iter().map(|frame| {
-        if frame.s.is_none_or(|s| !s.is_finite()) || frame.camera.is_empty() {
-            return Err("历史帧缺少有限的沿程位置或相机编号".into());
-        }
-        let counter = frame.frame_counter.ok_or("历史帧缺少绝对帧计数")?;
-        let key = (frame.camera.as_str(), counter);
-        if !used.insert(key) {
-            return Err("历史测量包含重复相机帧计数".into());
-        }
-        let original = originals.get(&key).ok_or("历史测量对应的原图缺失，不能复测整件")?;
-        if original.cam != Some(frame.cam) || frame.trigger_counter.is_some_and(|n| original.trigger_counter != Some(n)) {
-            return Err("历史测量与原图的相机或触发计数不匹配".into());
-        }
-        Ok(*original)
-    }).collect()
-}
-
-fn measure_follow_record(
-    recipe: &Recipe,
-    calibs: &[(String, u8, crate::follow::FollowCalib)],
-    measured: &[crate::cycle::FrameView],
-    raw: &[RawFrame],
-    sn: u32,
-    mut load: impl FnMut(&RawFrame) -> Result<FrameImage, String>,
-) -> Result<(Vec<PointState>, Vec<Value>), String> {
-    let matched = match_follow_frames(measured, raw)?;
-    let mut image_recipe = recipe.clone();
-    let spec = image_recipe.follow.as_mut().ok_or("候选没有随动参数")?;
-    if raw.iter().any(|f| !spec.cameras.contains(&f.camera)) {
-        return Err("原图相机不属于当前候选随动相机组".into());
-    }
-    // 历史 s 已由现场时序/同步得到，本次仅重测该位置对应的图像。
-    spec.auto_sync = false;
-    let image_recipe = Arc::new(image_recipe);
-    let mut table = vec![PointState::Pending; recipe.point_count()];
-    let mut measurements = Vec::new();
-    for (k, (history, original)) in measured.iter().zip(matched).enumerate() {
-        let (_, cam, calib) = calibs.iter().find(|(id, _, _)| id == &history.camera)
-            .ok_or_else(|| format!("相机 {} 缺少当前工位随动标定", history.camera))?;
-        calib.validate()?;
-        let image = load(original)?;
-        if [image.width, image.height] != calib.image_size {
-            return Err(format!("相机 {} 原图尺寸与当前工位标定不一致", history.camera));
-        }
-        let s = history.s.ok_or("历史帧缺少沿程位置")?;
-        let points: Vec<u32> = crate::follow::visible(&image_recipe, image_recipe.follow.as_ref().unwrap(), calib, s)
-            .into_iter().filter(|&j| table[j] == PointState::Pending).map(|j| j as u32).collect();
-        if points.is_empty() { continue; }
-        let job = crate::measure::Job {
-            run_id: 0,
-            sn, k, cam: *cam, recipe: image_recipe.clone(), scenario: crate::sim::Scenario::Normal,
-            image: None, kind: crate::measure::JobKind::Follow { s, points, calib: calib.clone(), start_probe: false },
-        };
-        let start = Instant::now();
-        let mut result = crate::measure::measure_native(&job, &image)?;
-        if let Some(error) = result.error.as_ref() { return Err(format!("相机 {}：{error}", history.camera)); }
-        result.ms = start.elapsed().as_millis() as u32;
-        for (i, &j) in result.idx.iter().enumerate() { table[j as usize] = result.point_state(i); }
-        measurements.push(serde_json::to_value(&result).map_err(|e| e.to_string())?);
-    }
-    if measurements.is_empty() { return Err("当前候选与标定在历史沿程位置没有可测点".into()); }
-    Ok((table, measurements))
-}
-
 #[tauri::command]
 pub fn workspace_record_images(app: AppHandle, history_id: i64) -> Result<RecordImages, String> {
     let store = app.state::<Store>();
     let detail = store.detail(history_id)?;
-    let mode = detail.summary.recipe_hash.as_deref()
-        .map(|hash| store.recipe_snapshot(hash)).transpose()?.flatten().map(|recipe| recipe.mode);
     match recorded(&app, history_id) {
         Ok((_, frames)) => {
-            let complete = if mode == Some(InspectMode::Follow) || detail.frames.iter().any(|f| f.s.is_some()) {
-                match_follow_frames(&detail.frames, &frames).is_ok()
-            } else {
-                detail.summary.frames_expected > 0 && (0..detail.summary.frames_expected)
-                    .all(|k| frames.iter().any(|f| f.k == k && f.available))
-            };
+            let complete = detail.summary.frames_expected > 0 && (0..detail.summary.frames_expected)
+                .all(|k| frames.iter().any(|f| f.k == k && f.available));
             let count = frames.iter().filter(|f| f.available).count();
             Ok(RecordImages {
                 history_id,
@@ -1835,10 +1717,7 @@ pub fn workspace_history_capture(
         w.expect(revision)?;
         w.doc.build()?
     };
-    if original.mode != InspectMode::FlyShot
-        || doc.geometry_hash() != original.geometry_hash()
-        || doc.camera != original.camera
-    {
+    if doc.geometry_hash() != original.geometry_hash() || doc.camera != original.camera {
         return Err("历史帧的胶路、相机或拍照点与当前候选不同，不能直接用于示教".into());
     }
     let (dir, frames) = recorded(&app, history_id)?;
@@ -1899,22 +1778,12 @@ pub async fn workspace_compare(
             .transpose()?
             .flatten()
             .ok_or("历史配方快照缺失")?;
-        if original.geometry_hash() != recipe.geometry_hash() || original.mode != recipe.mode {
+        if original.geometry_hash() != recipe.geometry_hash() {
             return Err("原始记录与候选的几何不同；请重新采集代表性样本".into());
         }
         let mut measurements = Vec::new();
         let table = if raw {
             let (dir, frames) = recorded(&app, history_id)?;
-            if recipe.mode == InspectMode::Follow {
-                let calibs: Vec<_> = app.state::<CycleHost>().camera.slots().iter().enumerate().filter_map(|(cam, slot)| {
-                    let config = slot.config();
-                    Some((config.id, u8::try_from(cam).ok()?, config.follow?))
-                }).collect();
-                let (table, measured) = measure_follow_record(&recipe, &calibs, &detail.frames, &frames, detail.summary.sn,
-                    |frame| crate::replay::load(&dir.join(&frame.file)))?;
-                measurements = measured;
-                table
-            } else {
             let paths = (0..recipe.shot_count())
                 .map(|k| {
                     frames
@@ -1927,7 +1796,6 @@ pub async fn workspace_compare(
             let (table, measured) = measure_paths(&app, &w, &paths, detail.summary.sn)?;
             measurements = measured;
             table
-            }
         } else {
             let points = detail
                 .points
@@ -2194,9 +2062,6 @@ fn measure_paths(
     sn: u32,
 ) -> Result<(Vec<PointState>, Vec<Value>), String> {
     let recipe = w.doc.build()?;
-    if recipe.mode != InspectMode::FlyShot {
-        return Err("随动原图应使用回放相机跑完整节拍".into());
-    }
     if paths.len() != recipe.shot_count() {
         return Err("样本组的原图数量与拍照点不一致".into());
     }
@@ -2337,83 +2202,6 @@ mod tests {
         assert!(check_new_identity(&doc, std::iter::empty()).is_err());
     }
     use super::*;
-
-    fn follow_history(camera: &str, cam: u8, counter: u64, s: f32) -> crate::cycle::FrameView {
-        crate::cycle::FrameView {
-            status: crate::cycle::FrameStatus::Done, cam, camera: camera.into(), s: Some(s), arrived_ms: Some(1),
-            frame_counter: Some(counter), trigger_counter: Some(counter + 10), counter_jump: false,
-            score: Some(1.0), points: 5, gap_points: 0, ms: Some(1),
-        }
-    }
-
-    fn follow_raw(camera: &str, cam: u8, counter: u64, k: usize) -> RawFrame {
-        RawFrame { k, camera: camera.into(), file: format!("{camera}_{counter}.pgm"), ts: 1, available: true,
-            cam: Some(cam), frame_counter: Some(counter), trigger_counter: Some(counter + 10) }
-    }
-
-    #[test]
-    fn follow_retest_matches_camera_and_absolute_counter_instead_of_list_position() {
-        let history = [follow_history("cam1", 0, 1024, 30.0), follow_history("cam2", 1, 2077, 36.0)];
-        let raw = [follow_raw("cam2", 1, 2077, 0), follow_raw("cam1", 0, 1023, 1), follow_raw("cam1", 0, 1024, 2)];
-        let matched = match_follow_frames(&history, &raw).unwrap();
-        assert_eq!(matched.iter().map(|f| f.k).collect::<Vec<_>>(), [2, 0]);
-    }
-
-    #[test]
-    fn follow_retest_rejects_missing_duplicate_or_incompatible_frame_metadata() {
-        let history = [follow_history("cam1", 0, 100, 30.0)];
-        let raw = [follow_raw("cam1", 0, 100, 0)];
-        assert!(match_follow_frames(&[], &raw).is_err());
-        assert!(match_follow_frames(&history, &[]).is_err());
-        for change in 0..7 {
-            let mut bad = raw.clone();
-            match change {
-                0 => bad[0].available = false,
-                1 => bad[0].frame_counter = Some(101),
-                2 => bad[0].camera = "other-camera".into(),
-                3 => bad[0].cam = Some(1),
-                4 => bad[0].trigger_counter = Some(99),
-                5 => bad[0].frame_counter = None,
-                _ => bad[0].cam = None,
-            }
-            assert!(match_follow_frames(&history, &bad).is_err(), "bad metadata {change}");
-        }
-        assert!(match_follow_frames(&history, &[raw[0].clone(), raw[0].clone()]).is_err());
-        assert!(match_follow_frames(&[history[0].clone(), history[0].clone()], &raw).is_err());
-        for s in [None, Some(f32::NAN), Some(f32::INFINITY)] {
-            let mut bad = history.clone(); bad[0].s = s;
-            assert!(match_follow_frames(&bad, &raw).is_err());
-        }
-    }
-
-    #[test]
-    fn follow_retest_measures_real_pixels_and_rejects_wrong_camera_or_dimensions() {
-        let recipe = crate::recipe::samples().into_iter().find(|r| r.mode == InspectMode::Follow).unwrap().build().unwrap();
-        let camera = recipe.cameras()[0].clone();
-        let history = [follow_history(&camera, 0, 100, 50.0)];
-        let raw = [follow_raw(&camera, 0, 100, 0)];
-        let calib = crate::follow::FollowCalib { nozzle: [270.0, 120.0], angle_deg: 0.0, mirror: false,
-            mm_per_px: 0.1, mask_px: 0.0, image_size: [320, 240] };
-        let calibs = [(camera.clone(), 2, calib)];
-        let blank = |_: &RawFrame| Ok(FrameImage::new(320, 240, vec![200; 320 * 240]));
-        let (gap, gap_measurements) = measure_follow_record(&recipe, &calibs, &history, &raw, 42, blank).unwrap();
-        assert!(gap.iter().any(|p| *p == PointState::Gap));
-        assert_eq!(gap_measurements[0]["cam"], 2);
-        assert_eq!(gap_measurements[0]["s"], 50.0);
-        assert!(gap_measurements[0]["startSync"].is_null());
-        let stripe = |_: &RawFrame| {
-            let mut pixels = vec![200; 320 * 240];
-            for y in 110..130 { pixels[y * 320..(y + 1) * 320].fill(20); }
-            Ok(FrameImage::new(320, 240, pixels))
-        };
-        let (bead, _) = measure_follow_record(&recipe, &calibs, &history, &raw, 42, stripe).unwrap();
-        assert!(bead.iter().any(|p| matches!(p, PointState::Measured { d, w } if d.abs() < 0.2 && *w > 1.8 && *w < 2.2)));
-        assert!(measure_follow_record(&recipe, &calibs, &history, &raw, 42,
-            |_| Ok(FrameImage::new(64, 64, vec![200; 4096]))).is_err());
-        assert!(measure_follow_record(&recipe, &[], &history, &raw, 42, blank).is_err());
-        let mut other_recipe = recipe.clone();other_recipe.follow.as_mut().unwrap().cameras = vec!["other".into()];
-        assert!(measure_follow_record(&other_recipe, &calibs, &history, &raw, 42, blank).is_err());
-    }
 
     struct ImportTestDir(PathBuf);
     impl ImportTestDir {
@@ -2641,9 +2429,6 @@ pub async fn workspace_import_sample(
             w.clone()
         };
         let r = w.doc.build()?;
-        if r.mode != InspectMode::FlyShot {
-            return Err("随动样本使用历史完整测量数据验证".into());
-        }
         let mut unique = std::collections::HashSet::new();
         if images.len() != r.shot_count()
             || images

@@ -4,7 +4,7 @@ import { plcApi, subscribe, usePlcStatus } from "../../plc";
 import { cycleApi, useRecipes, useSimStatus } from "../api";
 import type { Scenario } from "../types";
 
-const flyScenarios: [Scenario, string][] = [
+const scenarios: [Scenario, string][] = [
   ["normal", "正常件"],
   ["excursion", "局部超差（允许）"],
   ["gap", "跨帧断胶"],
@@ -12,14 +12,6 @@ const flyScenarios: [Scenario, string][] = [
   ["locateFail", "定位失败"],
   ["countMismatch", "拍照点数不一致"],
   ["random", "随机（连续运行用）"],
-];
-
-const followScenarios: [Scenario, string][] = [
-  ["normal", "正常件"],
-  ["excursion", "胶条偏位"],
-  ["gap", "断胶 5 mm（胶头圆角后约 3 mm）"],
-  ["narrow", "胶宽不足"],
-  ["lostFrame", "间歇丢帧"],
 ];
 
 export default function SimControls({ compact = false }: { compact?: boolean }) {
@@ -66,12 +58,6 @@ export default function SimControls({ compact = false }: { compact?: boolean }) 
     if (!recipes.some(r => r.id === recipeId)) setRecipeId(recipes[0]?.id ?? "");
   }, [recipes, recipeId]);
 
-  const follow = recipes.find((r) => r.id === recipeId)?.mode === "follow";
-  const scenarios = follow ? followScenarios : flyScenarios;
-  useEffect(() => {
-    if (!scenarios.some(([v]) => v === scenario)) setScenario("normal");
-  }, [scenarios, scenario]);
-
   if (!isSim) {
     if (configPending) return compact ? null : <p role="status" className="muted">正在确认模拟 PLC 配置…</p>;
     return compact && !configError ? null : <div><p className={configError ? "c-ng" : "muted"}>{configError || "模拟节拍需要把 PLC 协议设为“模拟器”并连接。"}</p>{configError && <button className="btn" onClick={() => setConfigVersion(v => v + 1)}>重新加载模拟配置</button>}</div>;
@@ -92,7 +78,7 @@ export default function SimControls({ compact = false }: { compact?: boolean }) 
       <select id="sim-recipe" aria-label="模拟配方" className="input" value={recipeId} onChange={(e) => setRecipeId(e.target.value)} disabled={running || busy || configPending}>
         {recipes.map((r) => (
           <option key={r.id} value={r.id}>
-            {r.id} · 代码 {r.productCode} · {r.mode === "follow" ? `随动 ${r.cameras.length} 相机` : `N=${r.shotCount}`}
+            {r.id} · 代码 {r.productCode} · N={r.shotCount}
           </option>
         ))}
       </select>

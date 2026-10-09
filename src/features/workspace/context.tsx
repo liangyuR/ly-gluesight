@@ -45,7 +45,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const frameDirty = Object.keys(frameDrafts).some(k => !equal(frameDrafts[Number(k)], data?.workspace.frames[Number(k)]?.params));
 
   const accept = useCallback((next: WorkspaceView) => {
-    const key=JSON.stringify([next.layout.id,next.layout.mode,next.layout.camera,next.layout.path,next.layout.part,next.layout.shots,next.layout.fov,next.layout.spacing]);
+    const key=JSON.stringify([next.layout.id,next.layout.camera,next.layout.path,next.layout.part,next.layout.shots,next.layout.fov,next.layout.spacing]);
     const changed=key!==geometry.current;geometry.current=key;
     setData(next);
     setDoc(next.workspace.doc);

@@ -1,4 +1,4 @@
-import { Camera, Cable, Crosshair, MoveRight, Layers3, Route, ScanLine, LayoutTemplate, ShieldCheck, ScanEye, History, FileSearch, Settings, ListChecks, type LucideIcon } from "lucide-react";
+import { Camera, Cable, Crosshair, Layers3, Route, ScanLine, LayoutTemplate, ShieldCheck, ScanEye, History, FileSearch, Settings, ListChecks, type LucideIcon } from "lucide-react";
 import type { View } from "./model";
 export const screens: { id: View; label: string; description: string; icon: LucideIcon; group: string }[] = [
   { id: "guide", label: "操作流程", description: "从建站到复盘，一条完整的操作路径", icon: ListChecks, group: "guide" },
@@ -13,14 +13,12 @@ export const screens: { id: View; label: string; description: string; icon: Luci
   { id: "device", label: "设备与采集", description: "核对相机身份与采集参数", icon: Camera, group: "setup" },
   { id: "plc", label: "PLC 通讯", description: "确认连接、点位和业务握手", icon: Cable, group: "setup" },
   { id: "calibration", label: "飞拍工位标定", description: "检查标定质量，保存毫米换算版本", icon: Crosshair, group: "setup" },
-  { id: "follow", label: "随动相机标定", description: "逐台确认胶嘴、方向、比例和窗口", icon: MoveRight, group: "setup" },
   { id: "settings", label: "系统设置", description: "管理时序、图像留存与运行诊断", icon: Settings, group: "setup" },
 ];
 export const scenes: { id: string; label: string; view: View; group: string }[] = [
   ["device-setup", "设备与采集", "device", "建站"],
   ["plc-setup", "PLC 握手", "plc", "建站"],
   ["calibration", "标定成功", "calibration", "建站"],
-  ["follow-calibration", "随动标定", "follow", "建站"],
   ["recipe-library", "配方库", "recipes", "配方"],
   ["recipe-geometry", "覆盖完整", "geometry", "配方"],
   ["teach-raw", "冻结图像", "teach", "示教"],
@@ -55,6 +53,5 @@ export const journeys: { title: string; detail: string; views: View[] }[] = [
   { title: "日常生产", detail: "启动检测，定位异常，回放原始记录。", views: ["live", "history", "record"] },
   { title: "缺陷排查", detail: "从缺陷帧取历史样本，试匹配后重新验证。", views: ["live", "record", "teach", "validation", "live"] },
   { title: "配置变更", detail: "修改候选配置，验证后更新生产版本。", views: ["recipes", "geometry", "teach", "overview", "validation", "live"] },
-  { title: "随动准备", detail: "三台相机分别标定，检查窗口后验证配方。", views: ["device", "plc", "follow", "recipes", "geometry", "validation", "live"] },
 ];
 export const routeTo = (view: View) => "/workflow/" + view;

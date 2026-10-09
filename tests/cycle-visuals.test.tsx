@@ -1,19 +1,14 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import ShotStrip from "../src/features/cycle/components/ShotStrip";
 import TrajectoryMap from "../src/features/cycle/components/TrajectoryMap";
 import UnrolledCurve from "../src/features/cycle/components/UnrolledCurve";
-import CameraTile from "../src/features/cycle/components/CameraTile";
-import { usePreviewCanvas } from "../src/features/camera/api";
-import type { PreviewImage } from "../src/features/camera/types";
 import type { FrameView, PointVis } from "../src/features/cycle/types";
 import { workspaceView } from "./fixtures";
-import { cycleCameraStatus, cycleFrame, cycleMeasurement, cyclePart, followCalib, followLayout } from "./cycle-visual-fixtures";
+import { cycleFrame, cycleMeasurement, cyclePart, widthLayout } from "./cycle-visual-fixtures";
 
-vi.mock("../src/features/camera/api", () => ({ usePreviewCanvas: vi.fn() }));
 const vis: PointVis[] = ["ok", "exc", "gap", "inv"];
-beforeEach(() => vi.mocked(usePreviewCanvas).mockReset().mockReturnValue({ img: null, canvas: { current: null } }));
 
 describe("拍照点选择与真实状态显示", () => {
   it("鼠标和键盘可选帧，受控选中状态与一基帧号一致", async () => {
@@ -77,13 +72,12 @@ describe("轨迹显示范围与测量叠加", () => {
     expect(screen.queryByText(/断胶/)).not.toBeInTheDocument(); expect(screen.queryByLabelText(/选中测量点/)).not.toBeInTheDocument();
   });
 
-  it("任意胶路显示实际轮廓，随动显示胶嘴和后方测量窗口", () => {
-    const layout = followLayout(); layout.closed = false; layout.path = { kind: "polyline", points: [[0, 0], [75, 0]], closed: false, radius: 0 };
-    render(<TrajectoryMap layout={layout} vis={vis} nozzle={{ s: 3, cam: 1 }} />);
+  it("任意胶路显示实际轮廓", () => {
+    const layout = workspaceView().layout; layout.closed = false; layout.path = { kind: "polyline", points: [[0, 0], [75, 0]], closed: false, radius: 0 };
+    render(<TrajectoryMap layout={layout} vis={vis} />);
     const svg = screen.getByLabelText("检测轨迹");
-    expect(svg.querySelector('polyline[stroke-opacity="0.35"]')).toHaveAttribute("stroke", "var(--camera-2)");
-    expect(svg.querySelector('circle[fill="var(--text)"]')).toHaveAttribute("cx", "75");
-    expect(screen.queryByText("k1")).not.toBeInTheDocument();
+    expect(svg.querySelector('polyline[stroke-width="10"]')).toHaveAttribute("points", "0.0,0.0 25.0,0.0 50.0,0.0 75.0,0.0");
+    expect(svg.querySelector("rect[rx]")).not.toBeInTheDocument();
   });
 });
 
@@ -124,22 +118,22 @@ describe("展开曲线选点与数据呈现", () => {
 
   it("同件后续测不成保留已测值，换件和换量清除旧选点", () => {
     const m = cycleMeasurement(); const failed = { ...m, st: [2, 2, 2, 2] };
-    const page = render(<UnrolledCurve layout={followLayout()} measured={[m, failed]} vis={vis} />);
+    const page = render(<UnrolledCurve layout={widthLayout()} measured={[m, failed]} vis={vis} />);
     fireEvent.change(screen.getByRole("slider"), { target: { value: "1" } });
     expect(screen.getByRole("status")).toHaveTextContent("d=4.50 mm");
-    page.rerender(<UnrolledCurve layout={followLayout()} measured={[cycleMeasurement(2)]} vis={vis} />);
+    page.rerender(<UnrolledCurve layout={widthLayout()} measured={[cycleMeasurement(2)]} vis={vis} />);
     expect(screen.getByRole("status")).toHaveTextContent("点击曲线");
     fireEvent.change(screen.getByRole("slider"), { target: { value: "1" } });
-    page.rerender(<UnrolledCurve layout={followLayout()} measured={[cycleMeasurement(2)]} vis={vis} quantity="w" />);
+    page.rerender(<UnrolledCurve layout={widthLayout()} measured={[cycleMeasurement(2)]} vis={vis} quantity="w" />);
     expect(screen.getByRole("status")).toHaveTextContent("点击曲线");
     fireEvent.change(screen.getByRole("slider"), { target: { value: "1" } });
     expect(screen.getByRole("status")).toHaveTextContent("胶宽=2.50 mm");
   });
 
-  it("胶宽空值显示未测，随动归属按实际相机着色", () => {
-    const m = cycleMeasurement(); m.cam = 2;
-    render(<UnrolledCurve layout={followLayout()} measured={[m]} vis={vis} quantity="w" />);
-    expect(screen.getByLabelText("胶宽测量曲线").querySelector('rect[height="4"]')).toHaveAttribute("fill", "var(--camera-3)");
+  it("胶宽空值显示未测，归属条按拍照点着色", () => {
+    render(<UnrolledCurve layout={widthLayout()} measured={[cycleMeasurement()]} vis={vis} quantity="w" />);
+    const bars = screen.getByLabelText("胶宽测量曲线").querySelectorAll('rect[height="4"]');
+    expect(Array.from(bars).map(bar => bar.getAttribute("fill"))).toEqual(["var(--camera-1)", "var(--camera-2)"]);
     fireEvent.change(screen.getByRole("slider"), { target: { value: "2" } });
     expect(screen.getByRole("status")).toHaveTextContent("胶宽=— mm");
   });
@@ -166,36 +160,5 @@ describe("展开曲线选点与数据呈现", () => {
       expect(screen.getByLabelText("胶宽测量曲线")).toHaveAttribute("width", "400");
       page.unmount(); expect(observe).toHaveBeenCalledTimes(1); expect(disconnect).toHaveBeenCalledTimes(1);
     } finally { vi.stubGlobal("ResizeObserver", original); }
-  });
-});
-
-describe("随动相机窗的有效叠加操作", () => {
-  it("叠加开关隐藏/恢复真实胶嘴圈和测量点，保留统计", async () => {
-    const status = { ...cycleCameraStatus(), droppedFrames: 2 };
-    const last = cycleMeasurement(); last.st = [0, 1, 2, 0];
-    render(<CameraTile status={status} calib={followCalib()} last={last} active frame={undefined} />);
-    const layer = screen.getByLabelText("CAM-1测量图层");
-    expect(layer.querySelectorAll("circle")).toHaveLength(5);
-    expect(screen.getByText("测量中")).toBeVisible(); expect(screen.getByText("丢 2")).toBeVisible(); expect(screen.getByText(/胶宽 2.50/)).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "CAM-1测量叠加" }));
-    expect(layer.querySelectorAll("circle")).toHaveLength(0); expect(screen.getByRole("button", { name: "CAM-1测量叠加" })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByText(/胶宽 2.50/)).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "CAM-1测量叠加" })); expect(layer.querySelectorAll("circle")).toHaveLength(5);
-  });
-
-  it("没有叠加内容时不提供无效开关，未就绪不显示过期 fps", () => {
-    render(<CameraTile status={{ ...cycleCameraStatus(), ready: false, message: "设备断开" }} calib={null} last={null} active={false} frame={undefined} />);
-    expect(screen.queryByRole("button", { name: "CAM-1测量叠加" })).not.toBeInTheDocument();
-    expect(screen.getByText("未就绪")).toBeVisible(); expect(screen.queryByText("25.0 fps")).not.toBeInTheDocument();
-    expect(screen.getAllByText("设备断开")).toHaveLength(2);
-  });
-
-  it("预览尺寸来自实际全图，失败测量显示错误，帧计数传给读取钩子", () => {
-    const preview = { width: 10, height: 6, fullWidth: 200, fullHeight: 120, data: {} as ImageData } satisfies PreviewImage;
-    vi.mocked(usePreviewCanvas).mockReturnValue({ img: preview, canvas: { current: null } });
-    const page = render(<CameraTile status={cycleCameraStatus()} calib={followCalib()} last={{ ...cycleMeasurement(), error: "卡尺试测失败" }} active={false}
-      frame={{ cam: 0, frameCounter: 7, triggerCounter: 2, lostPackets: 0, ts: 1 }} />);
-    expect(usePreviewCanvas).toHaveBeenCalledWith(0, 7); expect(screen.getByLabelText("CAM-1测量图层")).toHaveAttribute("viewBox", "0 0 200 120");
-    expect(screen.getByText("卡尺试测失败")).toHaveClass("c-err"); expect(page.container.querySelector("canvas")).toHaveStyle({ display: "block" });
   });
 });

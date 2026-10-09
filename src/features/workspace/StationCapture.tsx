@@ -31,7 +31,7 @@ export default function StationCapture({cam,sample,onSample}:{cam:number;sample:
     finally{if(valid()){pending.current=false;setBusy(false);}}
   };
   return <Panel title="冻结标定样本" detail="取样或导入本工位的离线原图，再在同一张图像上标定和试测" actions={<div className="wp-actions"><ImageImportButton scope={"station:"+cam} disabled={busy} onImport={importImage} onError={setError} onReadingChange={value=>{readingRef.current=value;setReading(value);}}/><button className="btn primary" disabled={busy||reading} onClick={()=>void capture()}><Camera size={15}/>{busy?"取样中…":"取新样本"}</button></div>}>
-    <GrayViewer image={sample?.image??null} loading={busy||reading} error={error} label={sample?.metadata.id??"等待标定板或直胶条样本"}/>
+    <GrayViewer image={sample?.image??null} loading={busy||reading} error={error} label={sample?.metadata.id??"等待标定板样本"}/>
     {sample&&<p className="muted mono">{sample.metadata.camera} · {sample.metadata.source==="import"?"离线原图":new Date(sample.metadata.capturedAt).toLocaleString("zh-CN")}{sample.metadata.exposureUs!=null&&" · 曝光 "+sample.metadata.exposureUs+" μs"}</p>}
     {error&&<Notice title="未能取样" tone="warn">{error}</Notice>}
   </Panel>;

@@ -167,19 +167,4 @@ describe("历史工件复测", () => {
     show();await screen.findByText(/原图完整/);await userEvent.click(screen.getByRole("button",{name:"使用该配方候选"}));
     expect(ws.select).toHaveBeenCalledWith("A");expect(screen.getByRole("button",{name:"按候选规则重判"})).toBeDisabled();
   });
-
-  it("随动原图按保存位置可复测，按相机/绝对帧计数选图而非列表顺序",async()=>{
-    ws.data!.workspace.doc.mode="follow";ws.data!.layout.mode="follow";ws.data!.layout.shots=[];ws.data!.workspace.frames=[];
-    detail.frames=[{status:"done",cam:0,camera:"CAM-1",s:50,arrivedMs:1,frameCounter:100,triggerCounter:110,counterJump:false,score:1,points:4,gapPoints:0,ms:1}];
-    vi.mocked(workspaceApi.recordImages).mockResolvedValue({historyId:1,complete:true,message:"原图完整",frames:[
-      {k:0,camera:"CAM-1",file:"099.pgm",ts:1,available:true,cam:0,frameCounter:99,triggerCounter:109},
-      {k:2,camera:"CAM-1",file:"100.pgm",ts:2,available:true,cam:0,frameCounter:100,triggerCounter:110},
-    ]});
-    show();await screen.findByText(/原图完整/);
-    expect(screen.getByText(/按已记录的沿程位置重测图像/)).toBeVisible();expect(screen.queryByRole("button",{name:"将此帧用于示教"})).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button",{name:"k1"}));
-    await waitFor(()=>expect(workspaceApi.recordImage).toHaveBeenLastCalledWith(1,2));
-    expect(screen.getByRole("combobox",{name:"历史帧选择"})).toHaveValue("2");
-    await userEvent.click(screen.getByRole("button",{name:"从原图复测整件"}));expect(workspaceApi.compare).toHaveBeenCalledWith("A",7,1,true);
-  });
 });

@@ -104,11 +104,6 @@ describe("真实单帧示教页面", () => {
     expect(screen.getByRole("button", { name: "选择帧 k1" })).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("随动配方引导到相机标定，无法执行飞拍示教", () => {
-    ws.doc!.mode = "follow"; show();
-    expect(screen.getByRole("link", { name: "打开随动相机标定" })).toHaveAttribute("href", "/camera/follow");
-    expect(screen.queryByRole("button", { name: "保存本帧示教" })).not.toBeInTheDocument();
-  });
   it.each([["not-a-frame",1],["-1",1],["0.5",1],["Infinity",1],["99",2]])("路由帧 %s 回到有效帧 k%s",(query,expected)=>{
     show("/recipe/teach?frame="+query);expect(screen.getByRole("button",{name:"选择帧 k"+expected})).toHaveAttribute("aria-pressed","true");
     expect(screen.queryByText("当前胶路没有拍照点")).toBeNull();

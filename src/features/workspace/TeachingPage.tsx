@@ -39,7 +39,6 @@ export default function TeachingPage() {
   const params = frame ? (frameDrafts[k] ?? frame.params) : null;
   const {image,error,loading} = useGrayImage(doc?.id ?? null,frame?.image?.id ?? null);
   if (!data || !doc) return <WorkspaceEmpty />;
-  if (doc.mode === "follow") return <div className="wp-page"><WorkspaceBar /><Steps /><Notice title="随动配方按相机标定">请在随动相机标定页保存各相机的胶嘴位置、方向和像素当量，再验证候选。</Notice><Link className="btn primary" to="/camera/follow">打开随动相机标定</Link></div>;
   if (!frame || !params) return <div className="wp-page"><WorkspaceBar /><Steps /><Notice title="当前胶路没有拍照点" tone="warn">请先完成拍照规划并保存候选。</Notice><Link className="btn" to="/recipe/geometry">胶路与拍照规划</Link></div>;
   const p = params;
   const editingParams = JSON.stringify(p) !== JSON.stringify(frame.params);

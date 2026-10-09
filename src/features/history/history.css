@@ -22,7 +22,6 @@
 .detail-grid .side { grid-row: 1 / 3; grid-column: 2; overflow: auto; }
 .detail-grid .curve-panel { grid-column: 1; grid-row: 2; }
 .detail-grid .frames-panel { grid-column: 1 / -1; }
-.detail-traj { flex: 1; min-height: 0; width: 100%; }
 .reason-box { margin: 0; padding: 8px 10px; border-radius: 6px; background: var(--bg-elev); font-size: 13px; }
 .ng-item { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); }
 .ng-title { font-size: 13px; font-weight: 600; }
@@ -44,4 +43,3 @@
 .rj-changes { display: flex; flex-direction: column; max-height: 220px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
 .rj-change { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border: none; border-bottom: 1px solid var(--border); background: transparent; color: var(--text); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
 .rj-change:hover { background: var(--bg-hover); }
-.detail-grid.follow { grid-template-rows: 380px 360px auto; }

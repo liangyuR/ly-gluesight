@@ -27,7 +27,6 @@ export const defaultCameraConfig: CameraConfig = {
   chunk: true,
   replayDir: "",
   replayChannel: 0,
-  follow: null,
 };
 
 /** 解析 camera_preview 的二进制：16 字节头（缩略图宽高、原图宽高）+ 灰度像素。 */

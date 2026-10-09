@@ -70,8 +70,8 @@ describe("工件总览操作", () => {
     fireEvent.change(screen.getByLabelText("导入总览图"), { target: { files: [new File(["png"], "bg.png", { type: "image/png" })] } });
     act(() => reader!.dispatchEvent(new Event("error"))); await waitFor(() => expect(ws.setError).toHaveBeenCalledWith("总览图读取失败"));
   });
-  it.each(["busy", "dirty", "follow"])("%s 状态禁止保存错误总览", condition => {
-    if (condition === "busy") ws.busy = true; if (condition === "dirty") ws.dirty = true; if (condition === "follow") ws.doc!.mode = "follow";
+  it.each(["busy", "dirty"])("%s 状态禁止保存错误总览", condition => {
+    if (condition === "busy") ws.busy = true; if (condition === "dirty") ws.dirty = true;
     show(); expect(screen.getByRole("button", { name: "保存总览" })).toBeDisabled();
     expect(screen.getByLabelText("导入总览图")).toBeDisabled();expect(screen.getByRole("button",{name:"自动布置"})).toBeDisabled();
   });

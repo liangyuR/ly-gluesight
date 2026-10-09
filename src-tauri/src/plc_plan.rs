@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::recipe::{InspectMode, Recipe};
+use crate::recipe::Recipe;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -49,9 +49,6 @@ impl PlcPlan {
     }
 
     pub fn from_recipe(recipe: &Recipe, camera_slots: [String; 3]) -> Result<Self, String> {
-        if recipe.mode != InspectMode::FlyShot {
-            return Err("一期 S7 握手仅支持飞拍配方".into());
-        }
         let shots = recipe.shots.iter().enumerate().map(|(index, center)| PlanShot {
             shot_id: format!("P{}", index + 1), camera_id: recipe.camera.clone(), center: *center,
         }).collect();
@@ -94,15 +91,12 @@ mod tests {
 
     #[test]
     fn production_recipe_export_preserves_its_real_camera_and_shot_order() {
-        let recipe = crate::recipe::builtin().into_iter().find(|r| r.mode == InspectMode::FlyShot).unwrap();
-        let mut recipe = (*recipe).clone();
+        let mut recipe = (*crate::recipe::builtin().remove(0)).clone();
         recipe.camera = "cam2".into();
         let plan = PlcPlan::from_recipe(&recipe, ["cam1".into(), "cam2".into(), "cam3".into()]).unwrap();
         assert_eq!(plan.camera_shots, [0, recipe.shots.len() as u16, 0]);
         assert_eq!(plan.shots.iter().map(|s| s.center).collect::<Vec<_>>(), recipe.shots);
         assert!(plan.shots.iter().all(|s| s.camera_id == "cam2"));
         assert!(PlcPlan::from_recipe(&recipe, ["cam1".into(), String::new(), String::new()]).is_err());
-        recipe.mode = InspectMode::Follow;
-        assert!(PlcPlan::from_recipe(&recipe, ["cam1".into(), "cam2".into(), "cam3".into()]).is_err());
     }
 }

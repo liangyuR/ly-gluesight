@@ -71,7 +71,6 @@
 .alarm-bar.warn { background: var(--warn-soft); color: var(--warn); }
 .fly-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 12px; }
 .fly-main { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(260px, 1fr) 150px 190px; gap: 12px; min-height: 0; }
-.fly-main.follow { grid-template-rows: minmax(480px, 1.7fr) 160px 140px; }
 .fly-side { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto minmax(120px, 1fr); gap: 12px; min-height: 0; }
 .fly-side > .panel:not(:last-child) { min-height: auto; }
 .fly .panel { display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; padding: 12px 14px; }
@@ -131,28 +130,6 @@
 .insp-top.grid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: minmax(0, 1fr); }
 .insp-top.grid .cam-tiles { display: contents; }
 .insp-top.grid > .panel { min-height: 0; }
-.cam-tile {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-panel);
-  overflow: hidden;
-  transition: border-color 0.15s, box-shadow 0.15s;
-}
-.cam-tile.active { border-color: var(--cam); box-shadow: 0 0 0 1px var(--cam) inset; }
-.cam-tile.down { opacity: 0.6; }
-.cam-tile-head { display: flex; align-items: center; gap: 8px; padding: 5px 9px; font-size: 12px; }
-.cam-tile-head i { width: 8px; height: 8px; border-radius: 50%; background: var(--cam, var(--text-disabled)); }
-.cam-tile-head b { font-weight: 600; }
-.cam-tile-head .mono { color: var(--text-muted); margin-left: auto; }
-.cam-tile-head .tag { padding: 1px 6px; border-radius: 4px; background: var(--cam); color: var(--bg); font-size: 11px; font-weight: 600; }
-.cam-tile-img { position: relative; flex: 1; min-height: 60px; background: var(--bg); display: grid; place-items: center; }
-.cam-tile-img canvas, .cam-tile-img svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-.cam-tile-img canvas { object-fit: contain; }
-.cam-tile-img .muted { font-size: 12px; padding: 0 12px; text-align: center; }
-.cam-tile-foot { padding: 3px 9px 5px; font-size: 11px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .shot { cursor: pointer; font: inherit; color: inherit; text-align: left; min-width: 110px; }
 .shot.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
 .shot-strip { overflow-x: auto; padding: 2px; }

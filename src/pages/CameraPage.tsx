@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Plus, Trash2 } from "lucide-react";
-import { CalibPanel, cameraApi, CameraConfigPanel, defaultCameraConfig, DryRunPanel, FeasibilityCalc, FollowCalibPanel, FramePreview, useRigStatus, type CameraConfig } from "../features/camera";
+import { CalibPanel, cameraApi, CameraConfigPanel, defaultCameraConfig, DryRunPanel, FeasibilityCalc, FramePreview, useRigStatus, type CameraConfig } from "../features/camera";
 import { recipeApi, SimControls, useCycle } from "../features/cycle";
 import { desktopAvailable } from "../lib/desktop";
 import { Badge, Notice, Panel } from "../features/workspace/components";
 import StationCapture, { type StationView } from "../features/workspace/StationCapture";
 import { workspaceApi } from "../features/workspace/api";
 
-type CameraView = "device" | "calibration" | "follow";
+type CameraView = "device" | "calibration";
 const sourceText = { mvs:"海康 MVS",sim:"模拟相机",replay:"回放目录" } as const;
 export default function CameraPage({view="device"}:{view?:CameraView}) {
   const {statuses,lastFrame}=useRigStatus();
@@ -36,7 +36,7 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
       production.recipes.forEach(r=>remember(r.cameras,`生产配方 ${r.name}（${r.id}）`));
       drafts.forEach(w=>{
         for(const [doc,label] of [[w.doc,"候选配方"],[w.pending?.doc,"待发布配方"]] as const){
-          if(doc)remember(doc.mode==="follow"?doc.follow?.cameras??[]:[doc.camera],`${label} ${doc.name}（${doc.id}）`);
+          if(doc)remember([doc.camera],`${label} ${doc.name}（${doc.id}）`);
         }
       });
       return {found,error:""};
@@ -59,10 +59,10 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
   useEffect(()=>{if(unpinned)void reloadRef.current();},[unpinned]);
   useEffect(()=>{
     if(view==="device"||!configs.length)return;
-    const eligible=configs.findIndex(c=>view==="follow"?c.acquisition==="freeRun":c.acquisition==="triggered");
-    if(eligible>=0&&(view==="follow"?configs[cam]?.acquisition!=="freeRun":configs[cam]?.acquisition!=="triggered"))setCam(eligible);
+    const eligible=configs.findIndex(c=>c.acquisition==="triggered");
+    if(eligible>=0&&configs[cam]?.acquisition!=="triggered")setCam(eligible);
   },[configs,view,cam]);
-  const eligible=configs.map((c,i)=>({c,i})).filter(({c})=>view==="device"||(view==="follow"?c.acquisition==="freeRun":c.acquisition==="triggered"));
+  const eligible=configs.map((c,i)=>({c,i})).filter(({c})=>view==="device"||c.acquisition==="triggered");
   const config=eligible.some(e=>e.i===cam)?configs[cam]:null;
   const status=statuses.find(s=>s.cam===cam)??null;
   const busy=!!snapshot&&!["IDLE","FAULT"].includes(snapshot.phase);
@@ -75,7 +75,7 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
     try {
       const base=configs.at(-1)??defaultCameraConfig;
       let n=configs.length+1;while(configs.some(c=>c.name==="相机 "+n))n++;
-      const i=await cameraApi.add({...base,name:"相机 "+n,serial:"",follow:null});
+      const i=await cameraApi.add({...base,name:"相机 "+n,serial:""});
       if(!mounted.current)return;
       const next=await reload();if(next&&mounted.current)setCam(Math.min(i,next.length-1));
     }catch(e){if(mounted.current)setError(String(e));}
@@ -99,14 +99,12 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
     {view==="device"&&referencedBy.length>0&&<div style={{gridColumn:"1/-1"}}><Notice title="当前相机被配方引用">先在 {referencedBy.join("、")} 中改选相机并保存，再移除此相机。</Notice></div>}
     {busy&&<div style={{gridColumn:"1/-1"}}><Notice title="当前工件正在检测">相机配置、取样与标定在工件结束后可操作。</Notice></div>}
     {config?<><div className="col"><fieldset disabled={busy||!!action||!desktopAvailable()} className="cam-action-area">
-      {view==="device"?<CameraConfigPanel key={config.id} cam={cam} initial={config} follow={config.follow} status={status} onSaved={saved} onSavingChange={setConfigSaving}/>:<StationCapture key={config.id} cam={cam} sample={sample} onSample={setSample}/>}
+      {view==="device"?<CameraConfigPanel key={config.id} cam={cam} initial={config} status={status} onSaved={saved} onSavingChange={setConfigSaving}/>:<StationCapture key={config.id} cam={cam} sample={sample} onSample={setSample}/>}
     </fieldset>{view==="device"&&<Panel title="实际参数状态"><Badge tone={status?.warnings.length?"warn":status?.ready?"ok":"neutral"}>{status?.warnings.length?"存在未接受参数":status?.ready?"参数已应用":"等待相机连接"}</Badge>{status?.warnings.map(w=><p key={w} className="c-warn">{w}</p>)}<p className="muted">连接状态和参数接受状态分别确认。保存后以相机实际返回结果为准。</p></Panel>}</div>
     <div className="col"><fieldset disabled={busy||!!action||configSaving||!desktopAvailable()} className="cam-action-area">
       {view==="device"&&<FramePreview key={config.id} cam={cam} status={status} lastFrame={lastFrame[cam]} config={config}/>}
       {view==="calibration"&&<><CalibPanel key={config.id} cam={cam} isSim={config.source==="sim"&&sample?.metadata.source!=="import"} imageId={sample?.metadata.id}/><FeasibilityCalc key={config.id} exposure={config.exposureUs} fps={status?.maxFps}/><DryRunPanel key={config.id} cam={cam} frameMs={status?.maxFps?1000/status.maxFps:null}/></>}
-      {view==="follow"&&<FollowCalibPanel key={config.id} cam={cam} config={config} frame={lastFrame[cam]} sample={sample} onSaved={saved}/>}
-    </fieldset>{view==="device"&&<Panel title="继续建站"><p className="muted">保存采集参数后，按检测工况完成对应标定。</p><div className="wp-actions"><Link className="btn" to="/camera/calibration">飞拍工位标定</Link><Link className="btn" to="/camera/follow">随动相机标定</Link></div></Panel>}{view==="device"&&<details className="panel"><summary>模拟节拍调试</summary><p className="muted">用于台架和回放验证，检测参数以当前生产配方为准。</p><SimControls/></details>}</div></>:<div style={{gridColumn:"1/-1"}}><Notice title={view==="device"?"尚未加载采集设备":view==="follow"?"没有连续采集相机":"没有触发采集相机"} tone="warn">{view==="device"?"在桌面软件中添加或连接相机。":"在设备与采集页添加相机，选择与工况一致的采集方式。"}</Notice></div>}
+    </fieldset>{view==="device"&&<Panel title="继续建站"><p className="muted">保存采集参数后，完成飞拍工位标定。</p><div className="wp-actions"><Link className="btn" to="/camera/calibration">飞拍工位标定</Link></div></Panel>}{view==="device"&&<details className="panel"><summary>模拟节拍调试</summary><p className="muted">用于台架和回放验证，检测参数以当前生产配方为准。</p><SimControls/></details>}</div></>:<div style={{gridColumn:"1/-1"}}><Notice title={view==="device"?"尚未加载采集设备":"没有触发采集相机"} tone="warn">{view==="device"?"在桌面软件中添加或连接相机。":"在设备与采集页添加相机，采集方式选择触发采集。"}</Notice></div>}
   </div>;
 }
 export function FlyshotCalibrationPage(){return <CameraPage view="calibration"/>;}
-export function FollowCalibrationPage(){return <CameraPage view="follow"/>;}

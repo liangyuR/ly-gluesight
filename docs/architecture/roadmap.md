@@ -1,6 +1,8 @@
 # GlueSight · 胶路智检 历史规划：flyshot 收尾 + 三目随动检测
 
 > 当前一期目标、可行性、剩余工作与分步验收见 [软件架构与实施路线](gluesight-software-architecture.html)；S7 点表和接入步骤见 [一期握手契约](../integration/plc-s7-phase1.md)。
+>
+> 2026-10-09：随动工况（`follow.rs`、`simfollow.rs`、`caliper.rs`、随动标定与随动配方）已从软件中移除，见 [一期 P0 实施计划](p0-plan.md) 决策 D-1。下文涉及随动的内容只作历史记录。
 
 > 本文保留早期立项计划和 M0–M5 实施记录，其中的状态、数量、性能与现场限制对应当时的验证环境，不是当前版本的待办清单。当前使用方式见 [图文教程](../user-guide/index.html)，测试与真实图像验证方式见 [测试说明](../testing/TESTING.md)，操作验收范围见 [UI 操作说明](../testing/UI_OPERATIONS.md)。
 >

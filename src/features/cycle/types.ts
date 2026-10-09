@@ -3,10 +3,8 @@ export type Phase = "IDLE" | "VALIDATE" | "ACQUIRE" | "DRAIN" | "JUDGE" | "REPOR
 export type FrameStatus = "waiting" | "measuring" | "done" | "locateFailed" | "error" | "missing";
 export type Verdict = "OK" | "OK_WITH_EXCURSION" | "NG_POSITION" | "NG_WIDTH" | "NG_ABSOLUTE" | "NG_GAP" | "ERR_INSPECT";
 export type TriggerMode = "fly" | "stop";
-export type InspectMode = "flyShot" | "follow";
 export type ProductSource = "plc" | "manual";
-export type Scenario = "normal" | "excursion" | "gap" | "narrow" | "lostFrame" | "locateFail" | "countMismatch" | "random";
-export type Polarity = "dark" | "light" | "any";
+export type Scenario = "normal" | "excursion" | "gap" | "lostFrame" | "locateFail" | "countMismatch" | "random";
 export type RecordMode = "off" | "failed" | "all";
 
 export interface JudgeParams {
@@ -32,26 +30,6 @@ export type PathSpec =
   /** bulges[i] 不为 0 时第 i 条边是圆弧：tan(圆心角/4)，正值逆时针 */
   | { kind: "polyline"; points: [number, number][]; closed: boolean; radius: number; bulges?: number[] };
 
-export type FollowTiming = { kind: "timed"; speedMmS: number; delayMs: number } | { kind: "plc"; scale: number };
-
-export interface FollowSpec {
-  /** 相机编号 */
-  cameras: string[];
-  timing: FollowTiming;
-  nearMm: number;
-  farMm: number;
-  stepMm: number;
-  overrunMm: number;
-  searchMm: number;
-  beadWidth: number;
-  polarity: Polarity;
-  minContrast: number;
-  /** 从图像同步胶嘴位置（起点 + 拐角） */
-  autoSync: boolean;
-  /** 起点区内不判断胶与测不成 */
-  startZoneMm: number;
-}
-
 export interface Recipe {
   id: string;
   name: string;
@@ -59,7 +37,6 @@ export interface Recipe {
   hash: string;
   teachingHash?: string | null;
   productCode: number;
-  mode: InspectMode;
   triggerMode: TriggerMode;
   part: [number, number, number];
   path: PathSpec | null;
@@ -72,7 +49,6 @@ export interface Recipe {
   maxGapLen: number;
   segments: Segment[];
   points: { x: number[]; y: number[]; seg: number[]; k: number[] };
-  follow: FollowSpec | null;
 }
 
 export interface SegmentLimits {
@@ -87,7 +63,6 @@ export interface RecipeDoc {
   version: number;
   teachingHash?: string | null;
   productCode: number;
-  mode: InspectMode;
   triggerMode: TriggerMode;
   camera: string;
   path: PathSpec;
@@ -99,7 +74,6 @@ export interface RecipeDoc {
   segmentOverrides: Record<string, SegmentLimits>;
   fov: [number, number];
   shots: [number, number][];
-  follow: FollowSpec | null;
 }
 
 export interface RecipeSummary {
@@ -108,7 +82,6 @@ export interface RecipeSummary {
   version: number;
   hash: string;
   productCode: number;
-  mode: InspectMode;
   shotCount: number;
   triggerMode: TriggerMode;
   cameras: string[];
@@ -120,7 +93,6 @@ export interface FrameView {
   cam: number;
   /** 相机编号（旧记录里没有） */
   camera?: string;
-  s: number | null;
   arrivedMs: number | null;
   frameCounter: number | null;
   triggerCounter: number | null;
@@ -136,19 +108,15 @@ export interface PartView {
   recipeId: string;
   /** 本件配方快照的哈希 */
   recipeHash: string;
-  mode: InspectMode;
   n: number;
   received: number;
   triggers: number;
   queue: number;
   filled: number;
   total: number;
-  /** 飞拍各拍照点的帧；随动为空，只给测量帧数 */
+  /** 各拍照点的帧 */
   frames: FrameView[];
   measuredFrames: number;
-  nozzleS: number | null;
-  endS: number | null;
-  activeCam: number | null;
 }
 
 export interface SegmentResult {
@@ -192,7 +160,6 @@ export interface Snapshot {
   productSource: ProductSource;
   activeRecipeId: string | null;
   triggerMode: TriggerMode | null;
-  mode: InspectMode | null;
   part: PartView | null;
   result: ResultView | null;
   stats: { total: number; ok: number; ng: number; err: number };
@@ -211,7 +178,6 @@ export interface Measured {
   sn: number;
   k: number;
   cam: number;
-  s: number | null;
   located: boolean;
   score: number;
   ms: number;
@@ -240,7 +206,6 @@ export interface CycleSettings {
   historyDays: number;
   lyflowCore: string | null;
   vision: boolean;
-  followVision: boolean;
   record: RecordMode;
   recordKeep: number;
   recordMaxGb: number;

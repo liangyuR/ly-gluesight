@@ -14,7 +14,7 @@ use tauri::{AppHandle, Manager};
 use crate::camera::CameraSource;
 use crate::cycle::CycleHost;
 pub use crate::frame::FrameImage;
-use crate::measure::{Job, JobKind, Measured, Measurer, ST_GAP, ST_INVALID, ST_OK};
+use crate::measure::{Job, Measured, Measurer, ST_GAP, ST_INVALID, ST_OK};
 use crate::recipe::Recipe;
 use crate::simimage;
 
@@ -89,9 +89,7 @@ pub struct LyFlowMeasurer {
 
 impl Measurer for LyFlowMeasurer {
     fn measure(&self, job: &Job, image: &FrameImage) -> Result<Measured, String> {
-        let JobKind::Shot { k } = job.kind else {
-            return Err("lyFlow 流程目前只有飞拍版本；随动配方请在系统设置里改用本程序卡尺".into());
-        };
+        let k = job.k;
         let app = &self.app;
         let settings = app.state::<CycleHost>().settings();
         let engine = app.state::<VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("lyFlow 核心库未加载")?;

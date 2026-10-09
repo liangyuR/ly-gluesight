@@ -8,7 +8,7 @@ import { workspaceApi } from "../src/features/workspace/api";
 import { recipeApi } from "../src/features/cycle/api";
 import { cameraApi, defaultCameraConfig } from "../src/features/camera/api";
 import { desktopAvailable } from "../src/lib/desktop";
-import type { FollowSpec, Recipe, RecipeDoc } from "../src/features/cycle/types";
+import type { Recipe, RecipeDoc } from "../src/features/cycle/types";
 import type { WorkspaceView } from "../src/features/workspace/types";
 import { deferred, summary, workspaceState, workspaceView } from "./fixtures";
 
@@ -28,8 +28,6 @@ vi.mock("../src/features/camera/api", async importOriginal => {
 vi.mock("../src/features/plc/api", () => ({ subscribe: () => () => {} }));
 
 let views: Record<string, WorkspaceView>;
-const follow: FollowSpec = { cameras: ["CAM-1"], timing: { kind: "timed", speedMmS: 80, delayMs: 300 },
-  nearMm: 10, farMm: 40, stepMm: 1, overrunMm: 20, searchMm: 4, beadWidth: 2, polarity: "dark", minContrast: 20, autoSync: true, startZoneMm: 4 };
 // 这里只提供已知测量点的 API 响应，不在测试中实现或模拟图像检测、胶路采样算法。
 const previewFor = (doc: RecipeDoc): Recipe => ({ ...structuredClone(views[doc.id].layout), ...structuredClone(doc) });
 function savedView(doc: RecipeDoc, revision: number) {
@@ -141,22 +139,20 @@ describe("胶路页面与真实候选编辑器的接线", () => {
     await userEvent.click(await readySave()); expect(workspaceApi.saveDoc).toHaveBeenCalledWith("A", 7, expect.objectContaining({ fov: [100, 80] }));
   });
 
-  it("切换飞拍与随动候选后编辑器重建，后续入口和参数保存按当前模式分流", async () => {
-    const next = workspaceView("FOLLOW"); next.workspace.doc.mode = "follow"; next.workspace.doc.follow = structuredClone(follow);
-    next.layout = { ...next.layout, ...structuredClone(next.workspace.doc) }; views.FOLLOW = next;
+  it("切换候选后编辑器重建，旧草稿不带到新候选，保存按当前候选", async () => {
+    const next = workspaceView("B"); next.workspace.doc.camera = "CAM-2";
+    next.layout = { ...next.layout, ...structuredClone(next.workspace.doc) }; views.B = next;
     await open(); expect(screen.getByRole("link", { name: "进入单帧示教" })).toHaveAttribute("href", "/recipe/teach");
     expect(screen.getByRole("heading", { name: "飞拍可行性" })).toBeVisible();
-    fireEvent.change(editor().getByRole("textbox", { name: "名称" }), { target: { value: "旧飞拍草稿" } });
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "当前配方" }), "FOLLOW");
-    expect(await screen.findByRole("link", { name: "相机标定" })).toHaveAttribute("href", "/camera/follow");
-    expect(screen.getByText("随动胶路")).toHaveClass("ok"); expect(screen.queryByRole("heading", { name: "飞拍可行性" })).toBeNull();
-    expect(editor().getByRole("textbox", { name: "名称" })).toHaveValue("工件 FOLLOW"); expect(editor().queryByRole("combobox", { name: "相机" })).toBeNull();
-    fireEvent.change(editor().getByRole("spinbutton", { name: "可测窗口 近端（mm）" }), { target: { value: "12" } });
-    await userEvent.click(editor().getByRole("checkbox", { name: "相机 2 · CAM-2" }));
-    expect(draft()).toMatchObject({ id: "FOLLOW", mode: "follow", follow: { nearMm: 12, cameras: ["CAM-1", "CAM-2"] } });
+    fireEvent.change(editor().getByRole("textbox", { name: "名称" }), { target: { value: "旧候选草稿" } });
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "当前配方" }), "B");
+    await waitFor(() => expect(editor().getByRole("textbox", { name: "名称" })).toHaveValue("工件 B"));
+    expect(editor().getByRole("combobox", { name: "相机" })).toHaveValue("CAM-2"); expect(screen.getByRole("heading", { name: "飞拍可行性" })).toBeVisible();
+    fireEvent.change(editor().getByRole("spinbutton", { name: "视野宽（mm）" }), { target: { value: "110" } });
+    expect(draft()).toMatchObject({ id: "B", name: "工件 B", camera: "CAM-2", fov: [110, 80] });
     await userEvent.click(await readySave());
-    expect(workspaceApi.saveDoc).toHaveBeenCalledWith("FOLLOW", 7, expect.objectContaining({ mode: "follow", follow: expect.objectContaining({ nearMm: 12, cameras: ["CAM-1", "CAM-2"] }) }));
-    await userEvent.click(screen.getByRole("link", { name: "相机标定" })); expect(screen.getByLabelText("当前路径")).toHaveTextContent("/camera/follow");
+    expect(workspaceApi.saveDoc).toHaveBeenCalledWith("B", 7, expect.objectContaining({ name: "工件 B", camera: "CAM-2", fov: [110, 80] }));
+    await userEvent.click(screen.getByRole("link", { name: "进入单帧示教" })); expect(screen.getByLabelText("当前路径")).toHaveTextContent("/recipe/teach");
   });
 
   it("飞拍可行性接收当前所选相机的曝光，切换相机和进入示教均使用真实控件", async () => {

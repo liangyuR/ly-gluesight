@@ -47,8 +47,8 @@ def load_recipe(path):
         raise ValueError("Robot model requires 2..64 shot positions")
     if any(not isinstance(p, list) or len(p) != 2 or any(type(v) not in (int, float) or not math.isfinite(v) for v in p) for p in shots):
         raise ValueError("Shot positions must be finite [x, y] pairs")
-    if recipe.get("mode") != "flyShot" or recipe.get("triggerMode") != "fly":
-        raise ValueError("Robot model supports flyShot / fly recipes")
+    if recipe.get("triggerMode") != "fly":
+        raise ValueError("Robot model supports fly-trigger recipes")
     return recipe
 
 

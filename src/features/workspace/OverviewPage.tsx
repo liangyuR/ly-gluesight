@@ -69,7 +69,7 @@ export default function OverviewPage() {
   const {image,error,loading} = useGrayImage(doc?.id ?? null,frame?.image?.id ?? null);
   if(!data||!doc)return <WorkspaceEmpty />;
   const displayDirty = JSON.stringify(overview) !== JSON.stringify({...data.workspace.overview,positions:data.workspace.overview.positions.length===data.layout.shots.length ? data.workspace.overview.positions : defaultPositions(data.layout)});
-  const unlocked=!busy&&!dirty&&!reading&&!saving&&doc.mode!=="follow";
+  const unlocked=!busy&&!dirty&&!reading&&!saving;
   const importFile = (file:File) => {
     if(!unlocked||readingRef.current||savingRef.current)return;
     if(!file.size || file.size>1_000_000 || !["image/png","image/jpeg","image/webp"].includes(file.type))return setError("请导入非空且 1 MB 以内的 PNG、JPEG、WebP 总览背景");
@@ -102,6 +102,5 @@ export default function OverviewPage() {
   return <div className="wp-page"><WorkspaceBar /><Steps /><div className="wp-actions"><Badge tone={data.workspace.overview.saved&&!displayDirty?"ok":"warn"}>{data.workspace.overview.saved&&!displayDirty?"总览已保存":"总览待保存"}</Badge><span className="spacer" /><Link className="btn" to="/recipe/validation">验证与发布</Link></div><div className="wp-columns"><Panel title="工件总览" detail="在背景图上布置各拍照点的显示框；点击帧框查看绑定原图" actions={<button className="btn primary" disabled={!unlocked} onClick={()=>void save()}><Save size={15}/>保存总览</button>}>
       <WorkpieceOverview layout={data.layout} overview={overview} selected={selected} onSelect={setSelected} onMove={unlocked ? (k,p)=>setOverview(v=>({...v,saved:false,positions:v.positions.map((previous,i)=>i===k?p:previous)})) : undefined}/>
       <div className="wp-actions" style={{marginTop:14}}><label className="btn"><Upload size={15}/>{reading?"正在读取总览图…":"导入总览图"}<input type="file" aria-label="导入总览图" hidden accept="image/png,image/jpeg,image/webp" disabled={!unlocked} onChange={e=>{if(e.target.files?.[0])void importFile(e.target.files[0]);e.target.value="";}}/></label><button className="btn" disabled={!unlocked} onClick={()=>setOverview(v=>({...v,saved:false,positions:defaultPositions(data.layout)}))}>自动布置</button>{overview.background&&<button className="btn" disabled={!unlocked} onClick={()=>setOverview(v=>({...v,background:null,saved:false}))}>移除背景</button>}</div>
-      {doc.mode==="follow"&&<Notice title="随动配方使用胶路总览">随动测量由胶嘴位置和各相机窗口覆盖，不需要布置飞拍帧框。</Notice>}
     </Panel><div className="wp-stack"><Panel title={"选中 k"+(selected+1)+" · 原图"}><GrayViewer image={image} loading={loading} error={error} label={frame?.image?.id??"尚未取样"}/></Panel><Panel title="物理规划"><KV label="搜索窗口覆盖">{data.coverage.toFixed(2)}%</KV><KV label="拍照点">{data.layout.shots.length} 个</KV><KV label="物理中心">{data.layout.shots[selected]?.map(v=>v.toFixed(1)).join(", ")??"—"} mm</KV><KV label="视野">{data.layout.fov.join(" × ")} mm</KV></Panel><Notice title="显示布置独立保存">拖动帧框不会修改机器人触发位置或胶路覆盖。</Notice></div></div></div>;
 }

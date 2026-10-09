@@ -15,16 +15,16 @@ describe("预览配方维护与几何操作", () => {
     click("新建配方"); expect(screen.getByRole("button", { name: "建立配方" })).toBeDisabled();
     nameRecipe(" 工件 B · 底板 "); expect(screen.getByText("配方名称已存在")).toBeVisible();
     expect(screen.getByRole("button", { name: "建立配方" })).toBeDisabled(); click("取消");
-    expect(stored().recipeLibrary).toHaveLength(3);
-    click("复制当前配方"); nameRecipe("工件 A 副本"); select("检测工况", "随动"); click("建立配方");
-    expect(stored().recipe).toMatchObject({ name: "工件 A 副本", width: 600, mode: "follow", candidate: 1, production: 0 });
+    expect(stored().recipeLibrary).toHaveLength(2);
+    click("复制当前配方"); nameRecipe("工件 A 副本"); click("建立配方");
+    expect(stored().recipe).toMatchObject({ name: "工件 A 副本", width: 600, candidate: 1, production: 0 });
     expect(stored().frames.every(f => f.imageId === null && f.trial === null && !f.saved && f.backup === null)).toBe(true);
-    expect(stored().recipeLibrary).toHaveLength(4);
+    expect(stored().recipeLibrary).toHaveLength(3);
     navigate("配方库"); expect(within(panel("当前生产配置")).getByText("未发布")).toBeVisible();
     openRecipe("工件 A · 壳体"); expect(stored().recipe).toMatchObject({ width: 600, production: 13 });
     navigate("配方库"); click("新建配方"); nameRecipe("全新壳体"); click("建立配方");
     expect(stored().recipe).toMatchObject({ name: "全新壳体", width: defaultRecipe.width, candidate: 1, production: 0 });
-    navigate("配方库"); openRecipe("工件 A 副本"); expect(stored().recipe).toMatchObject({ width: 600, mode: "follow" });
+    navigate("配方库"); openRecipe("工件 A 副本"); expect(stored().recipe).toMatchObject({ width: 600 });
     navigate("配方库"); fireEvent.change(screen.getByRole("textbox", { name: "搜索配方" }), { target: { value: "不存在" } });
     expect(screen.getByText("没有匹配的配方")).toBeVisible();
     fireEvent.change(screen.getByRole("textbox", { name: "搜索配方" }), { target: { value: "副本" } });
@@ -34,10 +34,9 @@ describe("预览配方维护与几何操作", () => {
 
   it("删除先确认，取消保留，删除当前配方后打开剩余配方，至少保留一个", () => {
     showWorkflow("recipes"); click("删除配方 工件 B · 底板"); click("取消"); expect(row("工件 B · 底板")).toBeVisible();
-    click("删除配方 工件 B · 底板"); click("确认删除"); expect(screen.queryByText("工件 B · 底板", { selector: "td strong" })).not.toBeInTheDocument();
-    click("删除配方 工件 A · 壳体"); click("确认删除");
-    expect(stored().recipe.name).toBe("工件 C · 随动"); expect(stored().recipe.production).toBe(7);
-    expect(screen.getByRole("button", { name: "删除配方 工件 C · 随动" })).toBeDisabled();
+    click("删除配方 工件 A · 壳体"); click("确认删除"); expect(screen.queryByText("工件 A · 壳体", { selector: "td strong" })).not.toBeInTheDocument();
+    expect(stored().recipe.name).toBe("工件 B · 底板"); expect(stored().recipe.production).toBe(8);
+    expect(screen.getByRole("button", { name: "删除配方 工件 B · 底板" })).toBeDisabled();
     expect(stored().recipeLibrary).toHaveLength(1);
   });
 
@@ -58,15 +57,13 @@ describe("预览配方维护与几何操作", () => {
     expect(stored().validation.status).toBe("idle"); expect(stored().productionConfig).toEqual(previous.productionConfig);
   });
 
-  it("速度、基准、容差、断胶规则编辑更新候选且保留图像；物理覆盖提示和工况下一步正确", () => {
+  it("速度、基准、容差、断胶规则编辑更新候选且保留图像；物理覆盖提示和下一步正确", () => {
     showWorkflow("geometry", sceneState("validation-pass")); const images = stored().frames.map(f => f.imageId);
     number("运动速度", 350); number("距内边基准 d", 3.2); number("距离容差", .8); number("允许断胶长度", .6);
     expect(stored().recipe).toMatchObject({ speed: 350, target: 3.2, tolerance: .8, maxGap: .6 });
     expect(stored().frames.map(f => f.imageId)).toEqual(images); expect(stored().validation.status).toBe("idle");
     number("物理视野宽", 170); expect(screen.getByText(/胶路搜索窗口覆盖不足/)).toBeVisible();
     click("下一步 · 单帧示教"); expect(screen.getByRole("heading", { level: 1, name: "单帧示教" })).toBeVisible();
-    navigate("随动相机标定"); click("进入随动配方"); click("继续配置"); click("检查随动标定");
-    expect(screen.getByRole("heading", { level: 1, name: "随动相机标定" })).toBeVisible();
   });
 
   it("当前生产参数运行中显示锁定；创建新候选后可编辑", () => {

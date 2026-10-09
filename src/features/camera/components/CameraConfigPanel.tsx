@@ -1,13 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { FolderOpen, RefreshCw } from "lucide-react";
 import { cameraApi } from "../api";
-import type { CameraConfig, CameraSource, CameraStatus, DeviceSummary, FollowCalib, RecordEntry } from "../types";
+import type { CameraConfig, CameraSource, CameraStatus, DeviceSummary, RecordEntry } from "../types";
 
 interface Props {
   cam: number;
   initial: CameraConfig;
-  /** 随动标定由标定面板维护，这里保存时带上它的最新值 */
-  follow: FollowCalib | null;
   status: CameraStatus | null;
   onSaved?: (c: CameraConfig) => void;
   onSavingChange?: (saving:boolean) => void;
@@ -19,7 +17,7 @@ const sources: [CameraSource, string][] = [
   ["replay", "回放目录"],
 ];
 
-export default function CameraConfigPanel({ cam, initial, follow, status, onSaved, onSavingChange }: Props) {
+export default function CameraConfigPanel({ cam, initial, status, onSaved, onSavingChange }: Props) {
   const [config, setConfig] = useState<CameraConfig>(initial);
   const [devices, setDevices] = useState<DeviceSummary[]>([]);
   const [records, setRecords] = useState<RecordEntry[]>([]);
@@ -102,7 +100,7 @@ export default function CameraConfigPanel({ cam, initial, follow, status, onSave
     onSavingChange?.(true);
     setNotice(null);
     try {
-      const next = { ...config, follow };
+      const next = { ...config };
       const warnings = await cameraApi.saveConfig(cam, next);
       if(!mounted.current||current.current.cam!==cam)return;
       setNotice({ ok: warnings.length === 0, text: warnings.length ? `已应用，${warnings.length} 项参数相机未接受` : "已保存并应用" });
@@ -137,13 +135,13 @@ export default function CameraConfigPanel({ cam, initial, follow, status, onSave
         <span>采集方式</span>
         <div className="segmented">
           <button className={triggered ? "active" : ""} onClick={() => set("acquisition", "triggered")}>触发（飞拍）</button>
-          <button className={!triggered ? "active" : ""} onClick={() => set("acquisition", "freeRun")}>连续（随动）</button>
+          <button className={!triggered ? "active" : ""} onClick={() => set("acquisition", "freeRun")}>连续（仅预览）</button>
         </div>
         {!triggered && (
           <>
             <span>帧率（fps）</span>
             {num("fps")}
-            <span className="hint-cell">布防期间按此帧率出帧；胶嘴速度 ÷ 帧率 就是相邻两帧间胶嘴走过的距离</span>
+            <span className="hint-cell">按此帧率出帧，只更新缩略图，不进入检测节拍</span>
           </>
         )}
         {replay && (
@@ -244,7 +242,7 @@ export default function CameraConfigPanel({ cam, initial, follow, status, onSave
       )}
       {config.source === "sim" && (
         <p className="muted hint">
-          {triggered ? "模拟相机收到触发后约 180 ms 交付一帧，用于没有硬件时跑通节拍。" : "模拟随动相机按胶嘴此刻的位置合成画面，需要先做随动标定（可用下方的默认三目标定）。"}
+          {triggered ? "模拟相机收到触发后约 180 ms 交付一帧，用于没有硬件时跑通节拍。" : "模拟相机连续采集不合成画面；检测要用触发采集。"}
         </p>
       )}
       {notice && <div className={`notice ${notice.ok ? "ok" : "error"}`}>{notice.text}</div>}

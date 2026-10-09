@@ -21,15 +21,6 @@ pub enum TriggerMode {
     Stop,
 }
 
-/// 检测工况：飞拍（涂完后机器人带相机逐点拍）或随动（相机装在胶枪上边涂边测）。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum InspectMode {
-    #[default]
-    FlyShot,
-    Follow,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JudgeParams {
@@ -68,7 +59,7 @@ pub struct Segment {
     pub kind: SegmentKind,
     pub s0: f32,
     pub s1: f32,
-    /// 位置：飞拍是内边→胶中线距离，随动是胶中线相对名义胶路的横向偏移
+    /// 位置：内边→胶中线距离
     pub params: JudgeParams,
     /// 胶宽；为空时不判胶宽
     #[serde(default)]
@@ -81,7 +72,7 @@ pub struct PathPoints {
     pub x: Vec<f32>,
     pub y: Vec<f32>,
     pub seg: Vec<u16>,
-    /// 飞拍：负责该点的拍照点；随动恒为 0（运行时按帧分配）
+    /// 负责该点的拍照点
     pub k: Vec<u8>,
 }
 
@@ -130,89 +121,9 @@ fn camera_ref<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     Ok(CameraRef::deserialize(d)?.id())
 }
 
-fn camera_refs<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
-    Ok(Vec::<CameraRef>::deserialize(d)?.into_iter().map(CameraRef::id).collect())
-}
-
 /// 相机、配方编号：字母、数字、- 和 _，最长 32 个字符。
 pub fn valid_camera_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 32 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Polarity {
-    /// 胶条比背景暗
-    Dark,
-    Light,
-    Any,
-}
-
-/// 随动时胶嘴沿胶路走到哪里。
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
-pub enum FollowTiming {
-    /// 布防后等 delay_ms 开始，按名义速度匀速走
-    Timed { speed_mm_s: f32, delay_ms: f32 },
-    /// PLC 寄存器 pathProgress 给出已走弧长，值 × scale = mm
-    Plc { scale: f32 },
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FollowSpec {
-    /// 参与检测的相机（相机编号）
-    #[serde(deserialize_with = "camera_refs")]
-    pub cameras: Vec<String>,
-    pub timing: FollowTiming,
-    /// 胶嘴后方可测窗口：离胶嘴 near..far mm 的胶条
-    pub near_mm: f32,
-    pub far_mm: f32,
-    /// 新进入窗口的胶条累计到这么长才测一帧
-    pub step_mm: f32,
-    /// 走完胶路后多走的距离（关胶后），让最后一段也进窗口
-    pub overrun_mm: f32,
-    /// 卡尺沿法向的搜索半宽
-    pub search_mm: f32,
-    pub bead_width: f32,
-    pub polarity: Polarity,
-    /// 胶条边缘的最小灰度差，低于它记为缺胶
-    pub min_contrast: f32,
-    /// 从图像同步胶嘴位置：起点处找胶条起点、拐角处用横向偏移反推沿程误差
-    #[serde(default = "yes")]
-    pub auto_sync: bool,
-    /// 起点区（开放胶路还有终点区）内不判断胶与测不成：起胶、收胶处胶条本来就不规整
-    #[serde(default = "default_zone")]
-    pub start_zone_mm: f32,
-}
-
-fn default_zone() -> f32 {
-    4.0
-}
-
-impl FollowSpec {
-    fn validate(&self) -> Result<(), String> {
-        if self.cameras.is_empty() {
-            return Err("随动配方至少要有 1 台相机".into());
-        }
-        if !self.cameras.iter().all(|c| valid_camera_id(c)) {
-            return Err("随动相机编号只能用字母、数字、- 和 _".into());
-        }
-        if !(self.near_mm >= 0.0 && self.far_mm > self.near_mm + 1.0) {
-            return Err("可测窗口需满足 0 ≤ 近端 < 远端 − 1 mm".into());
-        }
-        if !(self.step_mm > 0.0 && self.step_mm <= self.far_mm - self.near_mm) {
-            return Err("测量步长需在 0 到窗口长度之间".into());
-        }
-        if !(self.search_mm > 0.0 && self.bead_width > 0.0 && self.overrun_mm >= 0.0 && self.min_contrast >= 0.0 && self.start_zone_mm >= 0.0) {
-            return Err("搜索半宽、名义胶宽需为正，超行程、最小灰度差与起点区不能为负".into());
-        }
-        match self.timing {
-            FollowTiming::Timed { speed_mm_s, delay_ms } if !(speed_mm_s > 0.0 && delay_ms >= 0.0) => Err("名义速度需为正、起步延时不能为负".into()),
-            FollowTiming::Plc { scale } if !(scale > 0.0) => Err("进度换算系数需为正".into()),
-            _ => Ok(()),
-        }
-    }
 }
 
 fn yes() -> bool {
@@ -229,8 +140,6 @@ pub struct Recipe {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teaching_hash: Option<String>,
     pub product_code: u16,
-    #[serde(default)]
-    pub mode: InspectMode,
     pub trigger_mode: TriggerMode,
     /// 工件外形：宽、高、圆角半径（mm）；折线胶路为包围盒宽高、半径 0
     pub part: [f32; 3],
@@ -248,8 +157,6 @@ pub struct Recipe {
     pub max_gap_len: f32,
     pub segments: Vec<Segment>,
     pub points: PathPoints,
-    #[serde(default)]
-    pub follow: Option<FollowSpec>,
 }
 
 impl Recipe {
@@ -279,10 +186,7 @@ impl Recipe {
 
     /// 本配方要用到的相机（编号）。
     pub fn cameras(&self) -> Vec<String> {
-        match (&self.mode, &self.follow) {
-            (InspectMode::Follow, Some(f)) => f.cameras.clone(),
-            _ => vec![self.camera.clone()],
-        }
+        vec![self.camera.clone()]
     }
 
     /// 弧长 s 处的名义位置。闭合胶路按周长取模；开放胶路超出两端时沿端点切向外推。
@@ -353,8 +257,6 @@ pub struct RecipeDoc {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teaching_hash: Option<String>,
     pub product_code: u16,
-    #[serde(default)]
-    pub mode: InspectMode,
     pub trigger_mode: TriggerMode,
     #[serde(default = "default_camera", deserialize_with = "camera_ref")]
     pub camera: String,
@@ -371,8 +273,6 @@ pub struct RecipeDoc {
     pub fov: [f32; 2],
     #[serde(default)]
     pub shots: Vec<[f32; 2]>,
-    #[serde(default)]
-    pub follow: Option<FollowSpec>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -533,16 +433,11 @@ impl RecipeDoc {
                 }
             }
         }
-        match self.mode {
-            InspectMode::FlyShot => {
-                if self.shots.is_empty() || self.shots.len() > 64 {
-                    return Err("飞拍配方需要 1–64 个拍照点".into());
-                }
-                if !(self.fov[0] > 0.0 && self.fov[1] > 0.0) {
-                    return Err("视野宽高需为正".into());
-                }
-            }
-            InspectMode::Follow => self.follow.as_ref().ok_or("随动配方缺少随动参数")?.validate()?,
+        if self.shots.is_empty() || self.shots.len() > 64 {
+            return Err("飞拍配方需要 1–64 个拍照点".into());
+        }
+        if !(self.fov[0] > 0.0 && self.fov[1] > 0.0) {
+            return Err("视野宽高需为正".into());
         }
         Ok(())
     }
@@ -581,7 +476,6 @@ impl RecipeDoc {
         if total / self.spacing > 200_000.0 {
             return Err("测量点超过 20 万个，加大间距".into());
         }
-        let follow = self.mode == InspectMode::Follow;
         let mut points = PathPoints::default();
         let mut j = 0usize;
         loop {
@@ -591,15 +485,12 @@ impl RecipeDoc {
             }
             let gi = segments.iter().position(|g| s < g.s1).unwrap_or(segments.len() - 1);
             let [x, y] = pieces[gi].2.at((s - segments[gi].s0).min(pieces[gi].2.len()));
-            let owner = if follow {
-                0
-            } else {
-                self.shots
-                    .iter()
-                    .enumerate()
-                    .min_by(|(_, a), (_, b)| ((x - a[0]).powi(2) + (y - a[1]).powi(2)).total_cmp(&((x - b[0]).powi(2) + (y - b[1]).powi(2))))
-                    .map_or(0, |(k, _)| k)
-            };
+            let owner = self
+                .shots
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| ((x - a[0]).powi(2) + (y - a[1]).powi(2)).total_cmp(&((x - b[0]).powi(2) + (y - b[1]).powi(2))))
+                .map_or(0, |(k, _)| k);
             points.x.push(x);
             points.y.push(y);
             points.seg.push(gi as u16);
@@ -616,20 +507,18 @@ impl RecipeDoc {
             hash: String::new(),
             teaching_hash: self.teaching_hash.clone(),
             product_code: self.product_code,
-            mode: self.mode,
             trigger_mode: self.trigger_mode,
             part,
             path: Some(self.path.clone()),
             closed,
             fov: self.fov,
-            shots: if follow { Vec::new() } else { self.shots.clone() },
+            shots: self.shots.clone(),
             camera: self.camera.clone(),
             spacing: self.spacing,
             filter_window: self.filter_window,
             max_gap_len: self.max_gap_len,
             segments,
             points,
-            follow: if follow { self.follow.clone() } else { None },
         };
         recipe.hash = content_hash(&recipe);
         recipe.version = self.version.max(1);
@@ -662,38 +551,6 @@ fn corner_limits() -> SegmentLimits {
     }
 }
 
-fn follow_limits(bead: f32, corner: bool) -> SegmentLimits {
-    let k = if corner { 1.3 } else { 1.0 };
-    SegmentLimits {
-        position: JudgeParams { nominal: 0.0, tol_upper: 0.8 * k, tol_lower: 0.8 * k, abs_min: -2.0 * k, abs_max: 2.0 * k, max_excursion_len: 3.0 },
-        width: Some(JudgeParams {
-            nominal: bead,
-            tol_upper: 0.35 * bead,
-            tol_lower: 0.3 * bead,
-            abs_min: 0.4 * bead,
-            abs_max: 1.9 * bead,
-            max_excursion_len: 3.0,
-        }),
-    }
-}
-
-pub fn default_follow_spec(cameras: Vec<String>, speed: f32) -> FollowSpec {
-    FollowSpec {
-        cameras,
-        timing: FollowTiming::Timed { speed_mm_s: speed, delay_ms: 300.0 },
-        near_mm: 3.0,
-        far_mm: 18.0,
-        step_mm: 6.0,
-        overrun_mm: 20.0,
-        search_mm: 4.0,
-        bead_width: 2.0,
-        polarity: Polarity::Dark,
-        min_contrast: 18.0,
-        auto_sync: true,
-        start_zone_mm: 4.0,
-    }
-}
-
 /// 首次启动写入的样例配方。
 pub fn samples() -> Vec<RecipeDoc> {
     let fly = |id: &str, name: &str, code: u16, w: f32, h: f32, r: f32, shots: Vec<[f32; 2]>, trigger_mode| RecipeDoc {
@@ -702,7 +559,6 @@ pub fn samples() -> Vec<RecipeDoc> {
         version: 1,
         teaching_hash: None,
         product_code: code,
-        mode: InspectMode::FlyShot,
         trigger_mode,
         camera: default_camera(),
         path: PathSpec::RoundedRect { width: w, height: h, radius: r },
@@ -714,27 +570,6 @@ pub fn samples() -> Vec<RecipeDoc> {
         segment_overrides: BTreeMap::new(),
         fov: [216.0, 145.0],
         shots,
-        follow: None,
-    };
-    let follow = RecipeDoc {
-        id: "FLW-RECT".into(),
-        name: "随动演示 · 圆角矩形".into(),
-        version: 1,
-        teaching_hash: None,
-        product_code: 21,
-        mode: InspectMode::Follow,
-        trigger_mode: TriggerMode::Fly,
-        camera: default_camera(),
-        path: PathSpec::RoundedRect { width: 240.0, height: 140.0, radius: 20.0 },
-        spacing: 0.5,
-        filter_window: 5,
-        max_gap_len: 1.0,
-        line: follow_limits(2.0, false),
-        corner: follow_limits(2.0, true),
-        segment_overrides: BTreeMap::new(),
-        fov: [0.0, 0.0],
-        shots: Vec::new(),
-        follow: Some(default_follow_spec((0..3).map(legacy_camera_id).collect(), 80.0)),
     };
     vec![
         fly(
@@ -748,7 +583,6 @@ pub fn samples() -> Vec<RecipeDoc> {
             TriggerMode::Fly,
         ),
         fly("MTR-HSG-B", "电机壳体 B", 13, 380.0, 200.0, 24.0, vec![[95.0, 50.0], [285.0, 50.0], [285.0, 150.0], [95.0, 150.0]], TriggerMode::Stop),
-        follow,
     ]
 }
 
@@ -1063,7 +897,7 @@ mod import_tests {
     #[test]
     fn dxf_circle_builds_full_circle() {
         let p = parse_path("0\nSECTION\n2\nENTITIES\n0\nCIRCLE\n10\n50\n20\n50\n40\n20\n0\nENDSEC\n0\nEOF\n", "dxf").unwrap();
-        let doc = RecipeDoc { path: PathSpec::Polyline { points: p.points, closed: p.closed, radius: 0.0, bulges: p.bulges }, ..samples()[2].clone() };
+        let doc = RecipeDoc { path: PathSpec::Polyline { points: p.points, closed: p.closed, radius: 0.0, bulges: p.bulges }, ..samples()[0].clone() };
         let r = doc.build().unwrap();
         let total = r.segments.last().unwrap().s1;
         assert!((total - 2.0 * std::f32::consts::PI * 20.0).abs() < 0.05, "周长 {total}");
@@ -1081,7 +915,7 @@ mod import_tests {
         let p = parse_path(dxf, "dxf").unwrap();
         assert!(!p.closed);
         assert_eq!(p.points.len(), 4);
-        let doc = RecipeDoc { path: PathSpec::Polyline { points: p.points.clone(), closed: false, radius: 0.0, bulges: p.bulges.clone() }, ..samples()[2].clone() };
+        let doc = RecipeDoc { path: PathSpec::Polyline { points: p.points.clone(), closed: false, radius: 0.0, bulges: p.bulges.clone() }, ..samples()[0].clone() };
         let r = doc.build().unwrap();
         let total = r.segments.last().unwrap().s1;
         assert!((total - (100.0 + 50.0 + std::f32::consts::PI * 5.0)).abs() < 0.05, "全长 {total}");
@@ -1236,7 +1070,7 @@ mod tests {
     fn open_polyline_fillet() {
         let doc = RecipeDoc {
             path: PathSpec::Polyline { points: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 50.0]], closed: false, radius: 10.0, bulges: Vec::new() },
-            ..samples()[2].clone()
+            ..samples()[0].clone()
         };
         let r = doc.build().unwrap();
         assert!(!r.closed);

@@ -1,8 +1,8 @@
-export type View = "guide" | "device" | "plc" | "calibration" | "follow" | "recipes" | "geometry" | "teach" | "overview" | "validation" | "live" | "history" | "record" | "settings";
+export type View = "guide" | "device" | "plc" | "calibration" | "recipes" | "geometry" | "teach" | "overview" | "validation" | "live" | "history" | "record" | "settings";
 export type Verdict = "OK" | "NG" | "ERR";
 export type Trial = { imageId: number; revision: number; pass: boolean; score: number };
 export interface RecipeConfiguration {
-  name: string; mode: "fly" | "follow"; candidate: number; production: number; revision: number;
+  name: string; candidate: number; production: number; revision: number;
   width: number; height: number; radius: number; fovWidth: number; fovHeight: number; speed: number;
   target: number; tolerance: number; maxGap: number;
 }
@@ -32,7 +32,6 @@ export interface WorkflowState {
   device: { connected: boolean; applied: boolean; exposure: number; gain: number; trigger: string };
   plc: { connected: boolean; ready: boolean; address: string; protocol: string; points: string[]; pointsApplied: boolean };
   calibration: { captured: boolean; result: "idle" | "pass" | "fail"; saved: boolean; sample: "good" | "bad"; version: number };
-  follow: { camera: number; frozen: boolean; trial: boolean; saved: boolean[]; params: { nozzle: number; scale: number; direction: string; near: number; far: number }[] };
   recipe: RecipeConfiguration;
   recipeLibrary: RecipeWorkspace[];
   productionConfig: RuntimeConfiguration;
@@ -49,7 +48,7 @@ export interface WorkflowState {
 export type RecipeWorkspace = Pick<WorkflowState, "recipe" | "productionConfig" | "frames" | "overview" | "validation">;
 export const plcPoints = (protocol: string) => protocol === "Modbus TCP" ? ["00001", "00002", "00003", "00004", "40001", "00005"] : ["DB20.DBX0.0", "DB20.DBX0.1", "DB20.DBX0.2", "DB20.DBX0.3", "DB20.DBW2", "DB20.DBX4.0"];
 export const initialPositions = [{ x: 0.18, y: 0.21 }, { x: 0.5, y: 0.21 }, { x: 0.82, y: 0.21 }, { x: 0.82, y: 0.79 }, { x: 0.5, y: 0.79 }, { x: 0.18, y: 0.79 }];
-export const defaultRecipe: RecipeConfiguration = { name: "工件 A · 壳体", mode: "fly", candidate: 14, production: 13, revision: 1, width: 520, height: 230, radius: 28, fovWidth: 216, fovHeight: 145, speed: 300, target: 3, tolerance: 1, maxGap: 0.5 };
+export const defaultRecipe: RecipeConfiguration = { name: "工件 A · 壳体", candidate: 14, production: 13, revision: 1, width: 520, height: 230, radius: 28, fovWidth: 216, fovHeight: 145, speed: 300, target: 3, tolerance: 1, maxGap: 0.5 };
 function runtimeConfig(recipe: RecipeConfiguration, frames: TeachFrame[], overview: WorkflowState["overview"], calibrationVersion: string, version: number): RuntimeConfiguration {
   return { version, recipe: { ...recipe }, frameParams: frames.map(f => ({ ...f.params })), calibrationVersion, overview: { ...overview, positions: overview.positions.map(p => ({ ...p })) } };
 }
@@ -59,8 +58,8 @@ export function initialState(): WorkflowState {
   const frames: TeachFrame[] = Array.from({ length: 6 }, (_, i) => ({ id: i + 1, imageId: 41 + i, source: "camera", sourceRecord: null, quality: "normal", captureSettings: { exposure: 60, calibrationVersion: "C07" }, revision: 1, trial: i === 2 ? null : { imageId: 41 + i, revision: 1, pass: true, score: 0.94 }, saved: i !== 2, backup: null, params: { search: 4, contrast: 32, minWidth: 2.5, maxWidth: 5 } }));
   const overview = { positions: initialPositions.map(p => ({ ...p })), background: null, saved: false };
   const workspace: RecipeWorkspace = { recipe, frames, productionConfig: runtimeConfig(recipe, frames, overview, "C07", 13), overview, validation: { status: "idle", revision: null } };
-  const other = (name: string, mode: RecipeConfiguration["mode"], production: number): RecipeWorkspace => {
-    const r = { ...recipe, name, mode, candidate: production + 1, production };
+  const other = (name: string, production: number): RecipeWorkspace => {
+    const r = { ...recipe, name, candidate: production + 1, production };
     const otherFrames = structuredClone(frames), otherOverview = structuredClone(overview);
     return { ...workspace, frames: otherFrames, overview: otherOverview, recipe: r, productionConfig: runtimeConfig(r, otherFrames, otherOverview, "C07", production) };
   };
@@ -69,8 +68,7 @@ export function initialState(): WorkflowState {
     device: { connected: true, applied: true, exposure: 60, gain: 6, trigger: "Line0 · 上升沿" },
     plc: { connected: true, ready: true, address: "192.168.1.10", protocol: "S7", points: plcPoints("S7"), pointsApplied: true },
     calibration: { captured: true, result: "pass", saved: true, sample: "good", version: 7 },
-    follow: { camera: 1, frozen: false, trial: false, saved: [false, false, false], params: Array.from({ length: 3 }, (_, i) => ({ nozzle: 120 + i * 4, scale: 0.04, direction: "向右", near: 20, far: 100 })) },
-    ...workspace, recipeLibrary: [workspace, other("工件 B · 底板", "fly", 8), other("工件 C · 随动", "follow", 7)],
+    ...workspace, recipeLibrary: [workspace, other("工件 B · 底板", 8)],
     selectedFrame: 3, imageSequence: 50,
     live: { accepting: false, phase: 0, auto: false, continuous: false, scenario: "NG", result: null, inFlightVersion: null, inFlightConfig: null, queued: null, queuedConfig: null, part: 184 },
     record: "TJ-000184", comparisons: {},
@@ -108,12 +106,11 @@ export function canSaveFrame(f: TeachFrame): boolean {
   return f.imageId !== null && f.trial?.pass === true && f.trial.imageId === f.imageId && f.trial.revision === f.revision;
 }
 export function validationChecks(s: WorkflowState): { label: string; pass: boolean; view: View; detail: string }[] {
-  const fly = s.recipe.mode === "fly";
   return [
     { label: "设备与握手就绪", pass: s.device.connected && s.device.applied && s.plc.connected && s.plc.ready, view: "device", detail: "相机接受参数，PLC 业务握手就绪" },
-    { label: fly ? "工位标定有效" : "随动相机全部标定", pass: fly ? s.calibration.saved : s.follow.saved.every(Boolean), view: fly ? "calibration" : "follow", detail: fly ? "标定 C" + String(s.calibration.version).padStart(2, "0") + (s.calibration.saved ? " 已保存" : " 待确认") : "三台相机分别保存" },
-    { label: fly ? "胶路与搜索窗口覆盖" : "随动测量窗口有效", pass: fly ? coverage(s) === 100 : s.follow.params.every(p => p.scale > 0 && p.nozzle >= 0 && p.near < p.far), view: fly ? "geometry" : "follow", detail: fly ? String(coverage(s)) + "% · 包含搜索余量" : "方向、比例、胶嘴位置" },
-    { label: fly ? "所有帧示教已保存" : "随动参数完整", pass: fly ? s.frames.every(f => f.saved && canSaveFrame(f)) : s.follow.saved.every(Boolean), view: fly ? "teach" : "follow", detail: fly ? s.frames.filter(f => f.saved && canSaveFrame(f)).length + " / 6 帧" : s.follow.saved.filter(Boolean).length + " / 3 台" },
+    { label: "工位标定有效", pass: s.calibration.saved, view: "calibration", detail: "标定 C" + String(s.calibration.version).padStart(2, "0") + (s.calibration.saved ? " 已保存" : " 待确认") },
+    { label: "胶路与搜索窗口覆盖", pass: coverage(s) === 100, view: "geometry", detail: String(coverage(s)) + "% · 包含搜索余量" },
+    { label: "所有帧示教已保存", pass: s.frames.every(f => f.saved && canSaveFrame(f)), view: "teach", detail: s.frames.filter(f => f.saved && canSaveFrame(f)).length + " / 6 帧" },
   ];
 }
 export function canPublish(s: WorkflowState): boolean {
@@ -142,15 +139,13 @@ export const historyRecords = [
 type DevicePatch = Partial<WorkflowState["device"]>;
 type PlcPatch = Partial<WorkflowState["plc"]>;
 type RecipePatch = Partial<WorkflowState["recipe"]>;
-type FollowPatch = Partial<WorkflowState["follow"]>;
 export type Action =
   | { type: "load"; state: WorkflowState }
   | { type: "device"; patch: DevicePatch }
   | { type: "plc"; patch: PlcPatch }
   | { type: "calibration"; patch: Partial<WorkflowState["calibration"]> }
-  | { type: "follow"; patch: FollowPatch }
   | { type: "recipe"; patch: RecipePatch; geometry?: boolean }
-  | { type: "recipe-create"; name: string; mode: RecipeConfiguration["mode"]; copy: boolean }
+  | { type: "recipe-create"; name: string; copy: boolean }
   | { type: "recipe-open"; name: string }
   | { type: "recipe-delete"; name: string }
   | { type: "select-frame"; id: number }
@@ -177,11 +172,10 @@ export function reducer(s: WorkflowState, a: Action): WorkflowState {
   if (next === s) return s;
   const workspace = workspaceOf(next);
   const recapture = a.type === "device" && ("exposure" in a.patch || "gain" in a.patch || "trigger" in a.patch) || a.type === "calibration" && a.patch.saved;
-  const followChanged = a.type === "follow" && ("params" in a.patch || "saved" in a.patch);
   return { ...next, recipeLibrary: next.recipeLibrary.map(entry => {
     if (entry.recipe.name === next.recipe.name) return workspace;
-    if (!recapture && !(followChanged && entry.recipe.mode === "follow")) return entry;
-    return { ...entry, recipe: { ...entry.recipe, revision: entry.recipe.revision + 1, candidate: Math.max(entry.recipe.candidate, entry.recipe.production + 1) }, validation: { status: "idle", revision: null }, frames: recapture ? entry.frames.map(f => ({ ...f, imageId: null, trial: null, saved: false, revision: f.revision + 1 })) : entry.frames };
+    if (!recapture) return entry;
+    return { ...entry, recipe: { ...entry.recipe, revision: entry.recipe.revision + 1, candidate: Math.max(entry.recipe.candidate, entry.recipe.production + 1) }, validation: { status: "idle", revision: null }, frames: entry.frames.map(f => ({ ...f, imageId: null, trial: null, saved: false, revision: f.revision + 1 })) };
   }) };
 }
 function reduce(s: WorkflowState, a: Action): WorkflowState {
@@ -199,11 +193,6 @@ function reduce(s: WorkflowState, a: Action): WorkflowState {
       const next = { ...s, calibration: { ...s.calibration, ...a.patch, version: a.patch.saved && !s.calibration.saved ? s.calibration.version + 1 : s.calibration.version } };
       return a.patch.saved ? changed({ ...next, frames: next.frames.map(f => ({ ...f, imageId: null, trial: null, saved: false, revision: f.revision + 1 })) }) : next;
     }
-    case "follow": {
-      if (working(s)) return s;
-      const next = { ...s, follow: { ...s.follow, ...a.patch } };
-      return "params" in a.patch || "saved" in a.patch ? changed(next) : next;
-    }
     case "recipe": {
       if (s.live.phase > 0 && s.live.phase < 4 && s.recipe.candidate === s.recipe.production && a.patch.candidate === undefined) return s;
       const next = changed({ ...s, recipe: { ...s.recipe, ...a.patch } });
@@ -213,7 +202,7 @@ function reduce(s: WorkflowState, a: Action): WorkflowState {
     case "recipe-create": {
       const name = a.name.trim();
       if (!name || working(s) || s.live.queued !== null || s.recipeLibrary.some(entry => entry.recipe.name === name)) return s;
-      const recipe = { ...(a.copy ? s.recipe : defaultRecipe), name, mode: a.mode, candidate: 1, production: 0, revision: 1 };
+      const recipe = { ...(a.copy ? s.recipe : defaultRecipe), name, candidate: 1, production: 0, revision: 1 };
       const frames = s.frames.map(f => ({ ...f, imageId: null, source: "camera" as const, sourceRecord: null, quality: "normal" as const, revision: 1, trial: null, saved: false, backup: null, params: { ...(a.copy ? f.params : { search: 4, contrast: 32, minWidth: 2.5, maxWidth: 5 }) } }));
       const overview = { positions: initialPositions.map(p => ({ ...p })), background: null, saved: false };
       const workspace: RecipeWorkspace = { recipe, frames, overview, validation: { status: "idle", revision: null }, productionConfig: runtimeConfig(recipe, frames, overview, "C" + String(s.calibration.version).padStart(2, "0"), 0) };
@@ -325,7 +314,7 @@ const booleans = (value: unknown, keys: string[]) => object(value) && keys.every
 const verdict = (value: unknown) => value === "OK" || value === "NG" || value === "ERR";
 const nullableNumber = (value: unknown) => value === null || typeof value === "number" && Number.isFinite(value);
 const validParams = (value: unknown) => numbers(value, ["search", "contrast", "minWidth", "maxWidth"]);
-const validRecipe = (value: unknown) => object(value) && typeof value.name === "string" && Boolean(value.name.trim()) && ["fly", "follow"].includes(String(value.mode)) && numbers(value, ["candidate", "production", "revision", "width", "height", "radius", "fovWidth", "fovHeight", "speed", "target", "tolerance", "maxGap"]);
+const validRecipe = (value: unknown) => object(value) && typeof value.name === "string" && Boolean(value.name.trim()) && numbers(value, ["candidate", "production", "revision", "width", "height", "radius", "fovWidth", "fovHeight", "speed", "target", "tolerance", "maxGap"]);
 function validOverview(value: unknown): boolean {
   return object(value) && typeof value.saved === "boolean" && (value.background === null || typeof value.background === "string") && Array.isArray(value.positions) && value.positions.length === 6 && value.positions.every(p => numbers(p, ["x", "y"]));
 }
@@ -353,7 +342,6 @@ export function restorePreview(value: unknown): WorkflowState {
   if (value.plc.points !== undefined && (!Array.isArray(value.plc.points) || value.plc.points.length !== 6 || !value.plc.points.every(p => typeof p === "string"))) return fallback;
   if (value.plc.pointsApplied !== undefined && typeof value.plc.pointsApplied !== "boolean") return fallback;
   if (!object(value.calibration) || !booleans(value.calibration, ["captured", "saved"]) || !numbers(value.calibration, ["version"]) || !["idle", "pass", "fail"].includes(String(value.calibration.result)) || !["good", "bad"].includes(String(value.calibration.sample))) return fallback;
-  if (!object(value.follow) || !booleans(value.follow, ["frozen", "trial"]) || ![1, 2, 3].includes(Number(value.follow.camera)) || !Array.isArray(value.follow.saved) || value.follow.saved.length !== 3 || !value.follow.saved.every(p => typeof p === "boolean") || !Array.isArray(value.follow.params) || value.follow.params.length !== 3 || !value.follow.params.every(p => object(p) && numbers(p, ["nozzle", "scale", "near", "far"]) && typeof p.direction === "string")) return fallback;
   if (!object(value.live) || !booleans(value.live, ["accepting", "auto"]) || !Number.isInteger(value.live.phase) || Number(value.live.phase) < 0 || Number(value.live.phase) > 4 || !numbers(value.live, ["part"]) || !verdict(value.live.scenario) || value.live.result !== null && !verdict(value.live.result) || !nullableNumber(value.live.inFlightVersion) || !nullableNumber(value.live.queued) || value.live.inFlightConfig !== null && !validRuntime(value.live.inFlightConfig) || value.live.queuedConfig !== null && !validRuntime(value.live.queuedConfig)) return fallback;
   if (value.live.continuous !== undefined && typeof value.live.continuous !== "boolean") return fallback;
   if (!numbers(value.settings, ["retention", "timeout"]) || !booleans(value.settings, ["saved"]) || !object(value.settings) || typeof value.settings.raw !== "string" || typeof value.record !== "string" || !object(value.comparisons) || !Object.values(value.comparisons).every(c => object(c) && ["remeasure", "rejudge"].includes(String(c.kind)) && verdict(c.verdict) && numbers(c, ["gap", "version"]))) return fallback;

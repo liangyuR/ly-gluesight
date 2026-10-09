@@ -35,19 +35,18 @@ pub struct EngineStatus {
 pub async fn engine_status(app: AppHandle) -> EngineStatus {
     tauri::async_runtime::spawn_blocking(move || {
         let settings = app.state::<CycleHost>().settings();
-        let follow = if settings.follow_vision { "随动：本程序卡尺" } else { "随动：模拟测量" };
         if !settings.vision {
             return EngineStatus {
-                backend: if settings.follow_vision { "内置卡尺" } else { "模拟测量" },
+                backend: "模拟测量",
                 ready: true,
-                message: format!("飞拍：模拟测量 · {follow}"),
+                message: "飞拍：模拟测量".into(),
                 version: None,
                 path: None,
-                measuring: settings.follow_vision,
+                measuring: false,
             };
         }
         let s = app.state::<VisionHost>().status(settings.lyflow_core.as_deref());
-        EngineStatus { backend: "LyFlow", ready: s.loaded, message: format!("飞拍：lyFlow {} · {follow}", s.message), version: s.version, path: s.path, measuring: s.loaded }
+        EngineStatus { backend: "LyFlow", ready: s.loaded, message: format!("飞拍：lyFlow {}", s.message), version: s.version, path: s.path, measuring: s.loaded }
     })
     .await
     .unwrap_or(EngineStatus { backend: "LyFlow", ready: false, message: "查询失败".into(), version: None, path: None, measuring: false })

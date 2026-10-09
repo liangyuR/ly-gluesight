@@ -22,7 +22,6 @@ export default defineConfig({
         lines: 85,
         "src/features/workspace/context.tsx": { lines: 90, branches: 70 },
         "src/features/workflow/model.ts": { lines: 80, branches: 70 },
-        "src/features/camera/components/FollowCalibPanel.tsx": { lines: 90, branches: 80 },
         "src/features/workspace/OverviewPage.tsx": { lines: 90, branches: 80 },
       },
     },

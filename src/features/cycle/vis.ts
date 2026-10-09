@@ -10,7 +10,7 @@ export const visColor: Record<PointVis, string> = {
   miss: "var(--err)",
 };
 
-/** 相机在各处的代表色（相机窗、主视图上的测量归属）。 */
+/** 相机在各处的代表色（曲线底部的测量归属）。 */
 export const CAM_COLORS = Array.from({ length: 8 }, (_, i) => `var(--camera-${i + 1})`);
 
 const outside = (v: number, p: JudgeParams) => v < p.nominal - p.tolLower || v > p.nominal + p.tolUpper;
@@ -24,7 +24,6 @@ export function computeVis(layout: Recipe, part: PartView | null, measured: Meas
       const st = m.st[i];
       if (st === 1) vis[j] = "gap";
       else if (st === 2) {
-        // 随动里测不成的点会重测，已经有值的不回退成"未测成"
         if (vis[j] === "none") vis[j] = "inv";
       } else {
         const seg = layout.segments[layout.points.seg[j]];
@@ -34,14 +33,12 @@ export function computeVis(layout: Recipe, part: PartView | null, measured: Meas
       }
     });
   }
-  if (layout.mode === "flyShot") {
-    part.frames.forEach((f, k) => {
-      if (f.status !== "missing") return;
-      layout.points.k.forEach((owner, j) => {
-        if (owner === k && vis[j] === "none") vis[j] = "miss";
-      });
+  part.frames.forEach((f, k) => {
+    if (f.status !== "missing") return;
+    layout.points.k.forEach((owner, j) => {
+      if (owner === k && vis[j] === "none") vis[j] = "miss";
     });
-  }
+  });
   result?.segments.forEach((s, gi) => {
     if (s.verdict !== "NG_POSITION" && s.verdict !== "NG_ABSOLUTE" && s.verdict !== "NG_WIDTH") return;
     layout.points.seg.forEach((seg, j) => {
@@ -83,26 +80,6 @@ export function currentFrame(part: PartView | null) {
     if (f.status !== "waiting" && f.status !== "missing") k = i;
   });
   return k;
-}
-
-/** 弧长 s 处的名义位置（与后端 Recipe::pos 一致）。 */
-export function posAt(layout: Recipe, s: number): [number, number] {
-  const { x, y } = layout.points;
-  const n = x.length;
-  if (!n) return [0, 0];
-  const sp = layout.spacing;
-  if (layout.closed) {
-    const L = n * sp;
-    const t = (((s % L) + L) % L) / sp;
-    const j = Math.min(Math.floor(t), n - 1);
-    const f = t - j;
-    const b = (j + 1) % n;
-    return [x[j] + (x[b] - x[j]) * f, y[j] + (y[b] - y[j]) * f];
-  }
-  const t = s / sp;
-  const j = Math.max(0, Math.min(Math.floor(t), n - 2));
-  const f = t - j;
-  return [x[j] + (x[j + 1] - x[j]) * f, y[j] + (y[j + 1] - y[j]) * f];
 }
 
 /** 胶路包围盒 [x0, y0, x1, y1]。 */

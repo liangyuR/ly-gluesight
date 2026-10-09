@@ -1,4 +1,4 @@
-//! 相机帧与整帧像素缓冲池。三路海康相机连续采集时每帧都新分配 1–5 MB 会让内存抖动，
+//! 相机帧与整帧像素缓冲池。海康相机每帧都新分配 1–5 MB 会让内存抖动，
 //! 取图回调拷出来的缓冲用完（最后一个 Arc 释放）就回到池里给下一帧用。
 
 use std::sync::{Arc, Mutex, Weak};
@@ -16,21 +16,6 @@ pub struct FrameImage {
 impl FrameImage {
     pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Self {
         Self { width, height, pixels, pool: None }
-    }
-
-    /// 双线性取值；超出图像返回 None。
-    pub fn sample(&self, x: f32, y: f32) -> Option<f32> {
-        let (w, h) = (self.width as usize, self.height as usize);
-        if !(x >= 0.0 && y >= 0.0 && x <= (w - 1) as f32 && y <= (h - 1) as f32) {
-            return None;
-        }
-        let (x0, y0) = (x.floor() as usize, y.floor() as usize);
-        let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
-        let (fx, fy) = (x - x0 as f32, y - y0 as f32);
-        let p = |x: usize, y: usize| self.pixels[y * w + x] as f32;
-        let top = p(x0, y0) * (1.0 - fx) + p(x1, y0) * fx;
-        let bottom = p(x0, y1) * (1.0 - fx) + p(x1, y1) * fx;
-        Some(top * (1.0 - fy) + bottom * fy)
     }
 }
 
