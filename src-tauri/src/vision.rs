@@ -269,7 +269,20 @@ pub struct EngineStatus {
     pub message: String,
 }
 
-/// 引擎与各配方视觉资料的缓存。引擎按设置里的 DLL 路径懒加载，路径变了重载。
+fn resolve_core_path(path: Option<&str>, executable: impl FnOnce() -> std::io::Result<PathBuf>) -> Result<Option<PathBuf>, String> {
+    if let Some(path) = path.map(str::trim).filter(|p| !p.is_empty()) {
+        return Ok(Some(PathBuf::from(if cfg!(windows) { path.replace('/', "\\") } else { path.to_string() })));
+    }
+    if cfg!(windows) {
+        let executable = executable().map_err(|e| format!("无法确定内置 lyFlow 核心库路径：{e}"))?;
+        let dir = executable.parent().ok_or("无法确定程序安装目录")?;
+        Ok(Some(dir.join("runtime").join("lyflow").join("lyflow_core.dll")))
+    } else {
+        Ok(None)
+    }
+}
+
+/// 引擎与各配方视觉资料的缓存。优先按设置路径加载，否则使用安装目录内的核心库。
 #[derive(Default)]
 pub struct VisionHost {
     engine: Mutex<Option<Arc<Engine>>>,
@@ -280,14 +293,27 @@ pub struct VisionHost {
 
 impl VisionHost {
     pub fn engine(&self, path: Option<&str>) -> Option<Arc<Engine>> {
-        let path = path.map(str::trim).filter(|p| !p.is_empty())?;
-        // LOAD_WITH_ALTERED_SEARCH_PATH 遇到正斜杠行为未定义（依赖 DLL 会找不到）
-        let path = PathBuf::from(if cfg!(windows) { path.replace('/', "\\") } else { path.to_string() });
+        match resolve_core_path(path, std::env::current_exe) {
+            Ok(Some(resolved)) => self.engine_at(&resolved, path.map(str::trim).filter(|p| !p.is_empty()).is_none()),
+            Ok(None) => None,
+            Err(message) => {
+                *self.error.lock().unwrap() = Some(message);
+                None
+            }
+        }
+    }
+
+    fn engine_at(&self, path: &Path, bundled: bool) -> Option<Arc<Engine>> {
         let mut guard = self.engine.lock().unwrap();
         if let Some(e) = guard.as_ref().filter(|e| e.path == path) {
             return Some(e.clone());
         }
-        match Engine::load(&path) {
+        let loaded = if bundled && !path.is_file() {
+            Err(format!("安装目录缺少内置 lyFlow 核心库：{}。请重新安装完整安装包，或在系统设置中指定核心库路径。", path.display()))
+        } else {
+            Engine::load(path)
+        };
+        match loaded {
             Ok(e) => {
                 let e = Arc::new(e);
                 *guard = Some(e.clone());
@@ -303,12 +329,17 @@ impl VisionHost {
     }
 
     pub fn status(&self, path: Option<&str>) -> EngineStatus {
-        let engine = self.engine(path);
+        let resolved = match resolve_core_path(path, std::env::current_exe) {
+            Ok(path) => path,
+            Err(message) => return EngineStatus { message, ..EngineStatus::default() },
+        };
+        let bundled = path.map(str::trim).filter(|p| !p.is_empty()).is_none();
+        let engine = resolved.as_deref().and_then(|path| self.engine_at(path, bundled));
         EngineStatus {
             loaded: engine.is_some(),
-            path: path.map(String::from),
+            path: resolved.as_ref().map(|path| path.display().to_string()),
             version: engine.as_ref().map(|e| e.version.clone()),
-            message: match (&engine, path.filter(|p| !p.trim().is_empty())) {
+            message: match (&engine, &resolved) {
                 (Some(_), _) => "已加载".into(),
                 (None, None) => "未配置核心库路径，飞拍件会判 ERR（不用 lyFlow 时在系统设置里把飞拍改为模拟测量）".into(),
                 (None, Some(_)) => self.error.lock().unwrap().clone().unwrap_or_else(|| "加载失败".into()),

@@ -244,7 +244,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
             <input
               id="lyflow-core"
               className="input mono"
-              placeholder="例如 D:\project\LyFlow\build\core\bin\lyflow_core.dll"
+              placeholder="留空自动使用安装包内置引擎；也可指定其他核心库路径"
               value={settings.lyflowCore ?? ""}
               onChange={(e) => update({ ...settings, lyflowCore: e.target.value || null })}
             />
