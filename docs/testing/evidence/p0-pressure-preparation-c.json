@@ -1,0 +1,185 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-10",
+  "scope": "Current native queue-pressure preparation failures and compact base64 sample transport correction; not pressure or performance acceptance",
+  "status": "fix-unit-validated-native-retest-pending",
+  "passed": false,
+  "physicalValidation": false,
+  "s7HardwareValidation": false,
+  "benchmark": false,
+  "attempts": [
+    {
+      "attempt": 2,
+      "sourceGate": "29a090c2277c73e121b180993d4e46f785af640a",
+      "report": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\attempt-2\\report.json",
+      "passed": false,
+      "pressureCasesExecuted": 0,
+      "setups": [
+        {
+          "report": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\attempt-2\\setup-4\\setup-report.json",
+          "id": "P0-PRESSURE-4",
+          "passed": false,
+          "captures": 0,
+          "trials": 0,
+          "trialsPassed": 0,
+          "explicitCaptureRetries": 0
+        }
+      ],
+      "failure": "UI capture refused: 正在处理 PLC 事务，请稍后重试取图"
+    },
+    {
+      "attempt": 3,
+      "sourceGate": "19e5de4d9c1cdb379decf3eba9a7d6c09755782e",
+      "report": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\attempt-3\\report.json",
+      "passed": false,
+      "pressureCasesExecuted": 0,
+      "setups": [
+        {
+          "report": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\attempt-3\\setup-4\\setup-report.json",
+          "id": "P0-PRESSURE-4",
+          "passed": false,
+          "captures": 1,
+          "trials": 1,
+          "trialsPassed": 1,
+          "explicitCaptureRetries": 0
+        }
+      ],
+      "failure": "UI capture refused: 正在处理 PLC 事务，请稍后重试取图"
+    },
+    {
+      "attempt": 4,
+      "sourceGate": "9c90f66d72c8c1e55b36e22dd2d3988c93634f7e",
+      "report": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\attempt-4\\report.json",
+      "passed": false,
+      "pressureCasesExecuted": 0,
+      "setups": [
+        {
+          "report": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\attempt-4\\setup-4\\setup-report.json",
+          "id": "P0-PRESSURE-4",
+          "passed": true,
+          "captures": 4,
+          "trials": 4,
+          "trialsPassed": 4,
+          "explicitCaptureRetries": 0
+        },
+        {
+          "report": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\attempt-4\\setup-40\\setup-report.json",
+          "id": "P0-PRESSURE-40",
+          "passed": false,
+          "captures": 40,
+          "trials": 40,
+          "trialsPassed": 40,
+          "explicitCaptureRetries": 17
+        }
+      ],
+      "failure": "page.evaluate: Target page, context or browser has been closed during 40-image sample preparation"
+    }
+  ],
+  "backendPersistenceAfterAttempt4": {
+    "runtimeSourceCommit": "9c90f66d72c8c1e55b36e22dd2d3988c93634f7e",
+    "confirmedBy": "Read-only inspection of preserved attempt-4 profile workspace.json and 40 PGM files",
+    "recipeId": "P0-PRESSURE-40",
+    "sampleId": "1791632654217-163-46",
+    "workspaceRevision": 164,
+    "pgmFiles": 40,
+    "width": 1280,
+    "height": 1024,
+    "sampleState": "normal sample persisted; UI response completion was not established",
+    "workspaceArtifact": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\failed-profile-attempt4\\workspaces\\P0-PRESSURE-40\\workspace.json",
+    "sampleDirectory": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\failed-profile-attempt4\\workspaces\\P0-PRESSURE-40\\samples\\1791632654217-163-46",
+    "pgmFileBytes": 52429480,
+    "checkedFileNames": "Exactly k0.pgm through k39.pgm",
+    "checkedPgmHeader": "P5\\n1280 1024\\n255\\n"
+  },
+  "causeBoundary": {
+    "observed": "The WebView/CDP page or context closed while preparing the 40-image sample. Backend files and sample registration had already persisted.",
+    "hypothesis": "Large number-array serialization and copies may have contributed to memory pressure.",
+    "confirmedCause": null,
+    "outOfMemoryProven": false
+  },
+  "corrections": [
+    "Prepare teaching while PLC is disconnected; do not weaken production PLC transaction exclusion.",
+    "Bounded capture retries only after the exact UI PLC try_lock refusal and explicit safe state checks; attempt 4 retained 17 retry events for 40-shot teaching.",
+    "Transport actual original encoded image bytes as standard base64 strings rather than JSON number arrays; backend still holds decoded Vec<u8>.",
+    "Reject empty/invalid base64 and encoded strings over 20,000,000 bytes before decode; decoded single-image limit remains 15,000,000 bytes and batch limit remains 80,000,000 bytes.",
+    "Full shot coverage, unique k, actual image decoding/dimensions and import transaction ownership/cleanup remain unchanged; no content hashes are used.",
+    "Record page crash/close, browser disconnect and owned child exit lifecycle events in subsequent pressure-run reports."
+  ],
+  "checks": [
+    {
+      "name": "Default full Rust after compact transport correction",
+      "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib",
+      "passed": true,
+      "tests": 353,
+      "failed": 0,
+      "ignored": 31,
+      "testSeconds": 6.12,
+      "buildSeconds": 64,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-final-base64-rust-c.log",
+      "runtimeSourceCommit": "a9a69b597c31dbcb1c9a2fffd31d8bb73fd7c29c"
+    },
+    {
+      "name": "Frontend full coverage",
+      "status": "passed",
+      "passed": true,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-final-base64-frontend-c.log",
+      "command": "node node_modules/vitest/vitest.mjs run --coverage",
+      "files": 42,
+      "tests": 968,
+      "failed": 0,
+      "testSeconds": 119.13,
+      "coverage": {
+        "statements": 91.34,
+        "branches": 89.8,
+        "functions": 88.58,
+        "lines": 93.96,
+        "globalAndSpecificThresholdsPassed": true
+      },
+      "maxWorkers": 2,
+      "defaultConfigurationChanged": false,
+      "runtimeSourceCommit": "a9a69b597c31dbcb1c9a2fffd31d8bb73fd7c29c"
+    },
+    {
+      "name": "Application TypeScript",
+      "command": "node node_modules/typescript/bin/tsc -b",
+      "passed": true,
+      "exitCode": 0,
+      "reportedBy": "root",
+      "stdout": "",
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-final-base64-types-app-c.log",
+      "runtimeSourceCommit": "a9a69b597c31dbcb1c9a2fffd31d8bb73fd7c29c",
+      "logScope": "Command, exit code and source record; command produced no stdout"
+    },
+    {
+      "name": "Test TypeScript",
+      "command": "node node_modules/typescript/bin/tsc --noEmit -p tsconfig.test.json",
+      "passed": true,
+      "exitCode": 0,
+      "reportedBy": "root",
+      "stdout": "",
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-final-base64-types-tests-c.log",
+      "runtimeSourceCommit": "a9a69b597c31dbcb1c9a2fffd31d8bb73fd7c29c",
+      "logScope": "Command, exit code and source record; command produced no stdout"
+    },
+    {
+      "name": "Current-source 40-image native preparation and pressure cases",
+      "status": "pending",
+      "passed": null
+    }
+  ],
+  "historicalCheck": {
+    "sourceCommit": "9c90f66d72c8c1e55b36e22dd2d3988c93634f7e",
+    "tests": 352,
+    "testSeconds": 4.09,
+    "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-final-feature-integration-c.log",
+    "scope": "Earlier feature integration, before compact transport; not final base64 validation"
+  },
+  "limits": [
+    "All three preserved attempts executed zero actual pressure cases.",
+    "Four-shot preparation succeeded in attempt 4 and all forty real teaching/trial operations passed; this is not completion of forty-shot representative-sample validation or publication.",
+    "Prepared, current-source 400-part performance and subsequent native pressure outcomes require separate evidence.",
+    "Independent clean replay does not resolve default noisy-metal normal P0-09; strict good OK and original limits remain unchanged."
+  ],
+  "fixRuntimeSourceCommit": "a9a69b597c31dbcb1c9a2fffd31d8bb73fd7c29c",
+  "typeScriptCombinedSeconds": 2.73
+}
