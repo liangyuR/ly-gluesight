@@ -251,6 +251,10 @@ C: 全量 Rust 275 项通过、0 失败、30 项默认忽略（3.31 秒）；前
 
 预热临界排队 P1 进一步修复于 `6a110a6`：许可与 blocking pool 排队合计最多 30 秒，实际 worker 开始后独立获得完整 30 秒；排队过期仍可重试，执行超时仍永久拒绝且持有许可至返回。新增真实单线程 blocking pool 测试覆盖排队 600 ms 后执行 300 ms、各自 800 ms 上限的成功场景。步骤 5 全量 175 项、8 项 Gate 通过；最终步骤 7 全量 276 项通过、30 项默认忽略（3.16 秒）。前端、验收脚本、Prepared 与发布核验对比 `39b5c34` 未变，继续使用上面的 960 项及构建证据。见回归 JSON 的 `warmupBudgetsFinal`；先前合并绝对截止合同及其 174 项日志保留为历史证据。
 
+PR #12 ACK 启动恢复范围补充：先由 SQLite 一次查询仍为 Pending/Submitted/Failed 且有 cycleId 的交付集合，查询失败记录错误并跳过恢复，不将错误视为空集合；已 Acknowledged、NotRequired 及已清理工件不进入恢复候选，也不逐件更新数据库。当前主握手日志仍从磁盘重新验证，匹配未决 cycle 的持久 ACK 仍可恢复；协议 pending 与 ResetRequired 的安全拒绝不变。只有未决目标进入候选缓存并检查精确请求/结果身份冲突，没有未决交付时完全跳过 audit 文件。部分索引 `parts_unresolved_delivery` 在原数据库版本内幂等创建，首次升级创建索引仍需一次 SQLite 历史扫描。
+
+没有压缩、截断或改写 append-only ACK 审计，也没有引入 checkpoint。非空未决集合时，仍需流式读取并解析整个 audit JSONL，残留耗时为 O(日志字节数)，内存为 O(未决 cycle 数 + 当前单条记录字节数)，SQLite 恢复调用最多为本次未决目标数；不能宣称已消除所有生命周期文件扫描。新增回归覆盖 10000 条无关旧收据不入候选缓存、目标冲突拒绝、空集合不读 audit 且主日志错误仍报告，以及真实 SQLite 重启后的 128 件已 ACK/128 件已清理历史、精确同 SN cycle 筛选、主日志 ACK 回退、部分索引查询计划、查询错误不伪装空集合和原审计字节保留。原生验收结束后在 C: 独立分支执行默认全量 Rust，266 项通过、0 失败、26 项默认忽略，编译 42.45 秒、测试 3.08 秒；S7 include-ignored 回环专项 22 项通过、0 失败，耗时 48.73 秒，其中持久 ACK 重启及 Reset 后恢复实际通过。真实 SQLite 样本中的 128 件已清理历史先实际入库，再由 `purge_before` 删除并核对不存在。首轮新增夹具一次分配 128 个 ID 超过既有每批 32 个契约，保留失败日志后仅改为四批分配，生产逻辑未因此改变。日志根目录为 C: 恢复目录；`p0-step6-ack-scope-rust-c.log` SHA256 `2EC57AB38EFC251CFE9A36EC712677B872A7D0D9BDDACCE753945886C47CF0DD`，`p0-step6-ack-scope-s7-c.log` SHA256 `A30721BBE4D9B609E8DE707159D3D008CF12E911F63BD72FBB0578F3BD97BC19`，首次失败为 `p0-step6-ack-scope-rust-first-c.log`。
+
 ## lyFlow 原始图像注入回归（较早记录）
 
 客户端固定到主线 `5b796c3`（Image ABI v15），使用 `RunSpec.image_inputs` 注入完整 u8 灰度帧。运行库必须包含 `io.load_image`、`image.board_calib`、`image.load_calib`、`glue.locate`、`glue.station_calipers`；在 lyFlow 仓库设置 `LYFLOW_PACKS=glue` 后构建 core，系统设置填 DLL 绝对路径。
@@ -293,3 +297,13 @@ PR #11 执行窗口修正：新增真实单线程 blocking 池 gate，先排队�
 耗时为 nearest-rank；frame 包含排队，尾延迟截止 PLC 提交，不是 ACK 或纯 DLL 时间。private 只含原生主进程，不含 WebView2，有限 100 件趋势不能证明长期无泄漏。开发 PLC 模拟器与确定性回放不能替代现场 W0/W7。完整指标、内存斜率与原报告 SHA 见 [400 件基线](evidence/p0-step7-cyclehost-c.json)。suite 的 `toolSourceCommit=7390825` 是初始工具标签，实际工具字节已另行封存并记录 SHA。
 
 400 件结束后集成审计重试修复 `e5af201`，完整 Rust **279 项通过、0 失败、30 项默认忽略**（2.94 秒）。前端 960 项及类型/构建继续适用：前端、Prepared、CycleHost、发布逐件核验相对上述基线未变。新审计程序的同 profile 重复启动、四组合各 1 件检查与五个 Robot/Modbus 演示另行执行；不将旧程序 400 件标为新审计程序的性能结果。瞬态锁恢复已经真实 SQLite 四次失败后仅靠周期 retry 验证；128 待写/512 缓存/30 分钟未收新事件的淘汰边界仍然存在。
+
+## 2026-10-10 · PR #12 比较结果磁盘保留
+
+原包重现、候选规则重判和候选原图复测的比较 JSON，按每条历史记录合计保留最新 100 份（所有候选及来源共享窗口，按 createdAt、id 降序）。列表先取该窗口再筛候选；窗口之外的比较文件实际删除，不再仅截断返回值。启动及每日历史清理同时修剪现有窗口并删除已无 SQLite 历史身份的比较目录。历史编号可复用，比较以 cycleId 再校验；新工件不会读取旧身份的比较。
+
+比较计算仍在锁外进行；保存、比较目录清理与历史 DELETE 使用同一进程内门。计算期间历史若已过期，落盘时拒绝保存，不能重建不可达目录。现有 AppData 实例锁约束同配置的协作进程。比较清理警告独立记录，不更改检测结论、PLC 交付状态或原图录制完整性。
+
+清理先完整读取并核对目录内 JSON 的历史编号及文件身份，再删除过期项；所有路径祖先、目录及文件拒绝符号链接和 Windows reparse point，不递归跟随未知目录。损坏 JSON、未知文件、数据库查询或文件删除失败时保留未确认的证据并报警，后续保存需先成功清理已有窗口，不能在故障状态持续追加。原子新写若保留清理失败会尝试回退新文件；回退也失败时残留最多本次新增一份，下一次写入前仍必须先清理。崩溃留下的暂存文件同样需要人工确认，不会自动当作无效证据删除。
+
+新增真实临时文件系统 / SQLite 回归覆盖磁盘最新 100 份、多候选共享窗口、已清理历史及既有孤儿、并发复测、过期在途结果、历史编号复用、损坏 JSON / 数据库错误、Windows 文件锁回退和三层 junction 拒绝。在 ACK helper 释放共享 target 后，独占运行 `cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib`，269 项通过、0 失败、26 项忽略；编译 1m19s，测试 3.12 秒，以上 7 项新回归均实际通过。日志为 `C:\Users\11601\AppData\Local\Temp\gluesight-p0-recovery-20261010\p0-step6-comparison-retention-c.log`。此 helper 不重复原生桌面或测量验收。
