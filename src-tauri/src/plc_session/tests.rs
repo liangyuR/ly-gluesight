@@ -172,9 +172,13 @@ impl Rig {
         assert_eq!(self.session.phase(), SessionPhase::Acquiring);
     }
 
-    async fn end(&mut self) {
+    async fn end(&mut self) -> Instant {
         self.plc.values(json!({"partEnd":true,"camera1Triggers":2,"camera2Triggers":1,"camera3Triggers":1}));
-        self.phase(SessionPhase::Draining).await;
+        self.fresh().await;
+        let event = self.session.poll(&self.engine, false, true).await;
+        let SessionEvent::End(ended_at) = event else { panic!("expected partEnd, got {event:?}") };
+        assert_eq!(self.session.phase(), SessionPhase::Draining);
+        ended_at
     }
 
     async fn report(&mut self) {
@@ -478,6 +482,48 @@ async fn s7_wire_slow_durable_io_keeps_observing_heartbeat() {
     assert_eq!(rig.session.phase(), SessionPhase::Idle);
     assert!(rig.session.heartbeat.lock().unwrap().is_live(now_ms()));
     rig.finish().await;
+}
+
+#[test]
+#[ignore = "requires Python and local loopback S7 fixture"]
+fn s7_wire_slow_end_journal_does_not_extend_frame_deadline() {
+    tokio::runtime::Builder::new_current_thread().enable_all().max_blocking_threads(1).build().unwrap().block_on(async {
+        let mut rig = Rig::new("slow-end-frame-deadline").await;
+        rig.request(1, 50).await;
+        rig.arm().await;
+        rig.plc.values(json!({"partEnd":true,"camera1Triggers":2,"camera2Triggers":1,"camera3Triggers":1}));
+        rig.fresh().await;
+
+        let (release, wait) = mpsc::channel();
+        let (started, started_wait) = tokio::sync::oneshot::channel();
+        let blocker = tokio::task::spawn_blocking(move || {
+            started.send(()).unwrap();
+            wait.recv_timeout(Duration::from_secs(8)).unwrap();
+        });
+        started_wait.await.unwrap();
+
+        let late_frame = async {
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            let frame = crate::frame::Frame {
+                cam: 0, session: 1, counter: crate::frame::CounterSource::Synthetic,
+                frame_counter: 9002, trigger_counter: 2, lost_packets: 0, ts: now_ms(), manual: false, images: Vec::new(),
+            };
+            release.send(()).unwrap();
+            frame
+        };
+        let judgement = crate::cycle::tests::judge_last_frame_during_end(
+            rig.session.poll(&rig.engine, false, true), late_frame,
+        ).await;
+        blocker.await.unwrap();
+        assert_eq!(judgement.verdict, crate::judge::Verdict::ErrInspect);
+        assert_eq!(judgement.fault_code, crate::judge::fault::MISSING_FRAME);
+        rig.session.report(&rig.engine, judgement.plc_code, judgement.fault_code).await.unwrap();
+        let fields = rig.plc.fields();
+        assert_eq!(fields["resultCode"], 90);
+        assert_eq!(fields["faultCode"], 91);
+        assert_eq!(fields["done"], true);
+        rig.finish().await;
+    });
 }
 
 #[tokio::test]

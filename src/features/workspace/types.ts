@@ -13,9 +13,8 @@ export interface FrozenImage {
   exposureUs: number | null; gainDb: number | null; historyId: number | null;
 }
 export interface Trial {
-  imageId: string; paramsTag: string; geometryTag: string; passed: boolean;
+  imageId: string; paramsTag: string; geometryTag: string; engineTag: string; passed: boolean;
   score: number; coverage: number; elapsedMs: number; reason: string;
-  /** 逐站结果；测量流程尚未接入时为 null */
   measurement: unknown;
 }
 /** 示教帧：冻结原图、试测与“已保存”；中线、像素当量与检测参数在候选配方的拍照点里。 */
@@ -31,7 +30,7 @@ export interface Validation {
   samples: { historyId: number | null; sampleId:string | null; name:string; sn: number; expected: Verdict; actual: Verdict | null; passed: boolean; reason: string }[];
 }
 export interface Release {
-  doc: RecipeDoc; baseHash: string | null; revision: number; frames: Teaching[]; overview: Overview; validation: Validation;
+  doc: RecipeDoc; bundleHash: string; baseHash: string | null; revision: number; frames: Teaching[]; overview: Overview; validation: Validation;
 }
 export interface Workspace {
   doc: RecipeDoc; baseHash: string | null; revision: number; frames: Teaching[];

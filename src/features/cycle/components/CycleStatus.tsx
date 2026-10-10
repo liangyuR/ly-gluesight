@@ -18,7 +18,7 @@ export function CycleStepper({ snapshot }: { snapshot: Snapshot | null }) {
     return <span className="step-fault">故障 · {snapshot?.fault}</span>;
   }
   const at = steps.findIndex(([p]) => p === phase);
-  const err = snapshot?.result?.verdict === "ERR_INSPECT";
+  const err = snapshot?.result?.verdict === "ERR_INSPECT" && (!snapshot.part || snapshot.result.cycleId === snapshot.part.cycleId);
   return (
     <div className="stepper">
       {steps.map(([p, label], i) => (

@@ -41,12 +41,12 @@ try {
     $problems = [PackagedRuntimeProbe]::Read($core, 'lyflow_manifest_problems')
     if ($problems.Trim()) { throw "lyFlow 自检失败：$problems" }
     $manifest = [PackagedRuntimeProbe]::Read($core, 'lyflow_manifest_json') | ConvertFrom-Json
-    foreach ($operator in @('io.load_image', 'image.board_calib', 'image.load_calib', 'glue.locate', 'glue.station_calipers')) {
+    foreach ($operator in @('io.load_image', 'image.board_calib', 'image.load_calib', 'glue.taught_path', 'glue.bead_width')) {
         if ($operator -notin $manifest.operators.id) { throw "lyFlow 缺少必需算子：$operator" }
     }
     foreach ($dll in Get-ChildItem -LiteralPath $RuntimeDir -Filter '*.dll' -File) {
         $handle = [PackagedRuntimeProbe]::Load($dll.FullName)
         [void][PackagedRuntimeProbe]::FreeLibrary($handle)
     }
-    Write-Host '运行库自检通过：DLL 依赖可加载，飞拍和标定算子齐全。'
+    Write-Host '运行库自检通过：DLL 依赖可加载，示教胶路测量和标定算子齐全。'
 } finally { [void][PackagedRuntimeProbe]::FreeLibrary($core) }

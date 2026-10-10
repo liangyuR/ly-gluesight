@@ -12,8 +12,10 @@ mod mvs;
 mod plc;
 mod plc_plan;
 mod plc_session;
+mod production;
 mod recipe;
 mod recipe_api;
+mod release;
 mod recorder;
 mod replay;
 mod settings;
@@ -36,6 +38,7 @@ pub fn run() {
         .setup(|app| {
             app.manage(open_store(app)?);
             app.manage(vision::VisionHost::default());
+            app.manage(production::ProductionHost::default());
             app.manage(cycle::CycleHost::init(app.handle())?);
             app.manage(workspace::WorkspaceHost::init(app.handle())?);
             app.manage(plc::PlcHost::init(app.handle())?);

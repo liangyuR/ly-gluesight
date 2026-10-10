@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{c_uint, c_void};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -26,6 +26,12 @@ pub const FRAME_QUEUE: usize = 64;
 
 /// 下一个设备会话号：进程内只增不减，各相机共用，所以会话号不会重复（0 表示还没打开过）。
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+
+fn manual_arm_ready(source: CameraSource, pending: u32) -> Result<(), String> {
+    if source == CameraSource::Mvs && pending > 0 {
+        Err(format!("仍有 {pending} 次手动触发未确认，等待回调或重开相机后才能布防"))
+    } else { Ok(()) }
+}
 
 /// 模拟相机合成飞拍帧所需的信息：哪个配方的第几个拍照点、什么场景、机器人偏差。
 pub struct SimRender {
@@ -73,6 +79,7 @@ pub struct CameraConfig {
     pub gain_db: f32,
     pub strobe: bool,
     pub chunk: bool,
+    pub counter_after_open: Option<u64>,
     pub replay_dir: String,
     /// 回放通道（从 1 开始），0 表示取目录里的第一个通道
     pub replay_channel: u32,
@@ -96,6 +103,7 @@ impl Default for CameraConfig {
             gain_db: 6.0,
             strobe: true,
             chunk: true,
+            counter_after_open: None,
             replay_dir: String::new(),
             replay_channel: 0,
         }
@@ -244,13 +252,13 @@ struct Shared {
     preview: Mutex<Vec<Preview>>,
     preview_at: Mutex<Option<Instant>>,
     last_full: Mutex<Option<CapturedFrame>>,
+    identity: Mutex<crate::shot_router::Ledgers>,
     /// last_full 每换一次 +1
     full_seq: AtomicU64,
     /// 下一帧不管要不要整帧都留一份（标定试测、软触发取图）
     grab: AtomicBool,
-    /// 还没到的软触发帧数：到了就标成手动取的帧。最后一次软触发 10 s 后还没到的不再等（manual_until，ms）
+    /// 未完成的手动触发在回调到达或重新开流前阻止布防。
     manual: AtomicU32,
-    manual_until: AtomicI64,
     last_emit: Mutex<Option<Instant>>,
     disconnected: AtomicBool,
     order: Mutex<Reorder>,
@@ -355,20 +363,21 @@ impl Shared {
 
     fn deliver(&self, mut frame: Frame) {
         let current_session = frame.session == self.session.load(Ordering::SeqCst);
+        if current_session {
+            let mut identity = self.identity.lock().unwrap();
+            let advanced = identity.observe(&crate::shot_router::FrameMeta::from(&frame));
+            if frame.counter != CounterSource::Synthetic {
+                frame.manual = advanced && self.manual.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok();
+            }
+        } else if frame.counter != CounterSource::Synthetic {
+            frame.manual = false;
+        }
         if !frame.images.is_empty() && current_session {
             if frame.counter == CounterSource::Synthetic {
                 self.set_previews(frame.session, &frame.images);
             }
             *self.last_full.lock().unwrap() = Some(CapturedFrame::from_frame(&frame));
             self.full_seq.fetch_add(1, Ordering::SeqCst);
-        }
-        if current_session && frame.counter != CounterSource::Synthetic {
-            if now_ms() > self.manual_until.load(Ordering::SeqCst) {
-                self.manual.store(0, Ordering::SeqCst);
-            }
-            frame.manual = self.manual.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok();
-        } else if frame.counter != CounterSource::Synthetic {
-            frame.manual = false;
         }
         self.frames.fetch_add(1, Ordering::Relaxed);
         self.lost_packets.fetch_add(frame.lost_packets as u64, Ordering::Relaxed);
@@ -578,10 +587,10 @@ impl CameraSlot {
                 preview: Mutex::new(Vec::new()),
                 preview_at: Mutex::new(None),
                 last_full: Mutex::new(None),
+                identity: Mutex::new(crate::shot_router::Ledgers::default()),
                 full_seq: AtomicU64::new(0),
                 grab: AtomicBool::new(false),
                 manual: AtomicU32::new(0),
-                manual_until: AtomicI64::new(0),
                 last_emit: Mutex::new(None),
                 disconnected: AtomicBool::new(false),
                 order: Mutex::new(Reorder::default()),
@@ -665,6 +674,22 @@ impl CameraSlot {
         self.shared.last_full.lock().unwrap().as_ref().map(|frame| frame.images.clone()).unwrap_or_default()
     }
 
+    pub fn routing_state(&self) -> Result<(crate::shot_router::ArmCam, Option<crate::shot_router::Ledger>), String> {
+        let config = self.config();
+        manual_arm_ready(config.source, self.shared.manual.load(Ordering::SeqCst))?;
+        let session = self.shared.session.load(Ordering::SeqCst);
+        let observed = if config.source == CameraSource::Mvs {
+            self.shared.identity.lock().unwrap().get(self.shared.cam).filter(|ledger| ledger.session == session).cloned()
+        } else {
+            Some(crate::shot_router::Ledger::snapshot(session, CounterSource::Synthetic, *self.seq.lock().unwrap()))
+        };
+        Ok((crate::shot_router::ArmCam {
+            cam: self.shared.cam, camera: config.id, session,
+            source: (config.source != CameraSource::Mvs).then_some(CounterSource::Synthetic),
+            counter_after_open: config.counter_after_open,
+        }, observed))
+    }
+
     pub fn last_view(&self, view: u8) -> Option<Arc<FrameImage>> {
         let index = view.checked_sub(1)? as usize;
         self.shared.last_full.lock().unwrap().as_ref()?.images.get(index).cloned()
@@ -728,10 +753,10 @@ impl CameraSlot {
         *self.shared.order.lock().unwrap() = Reorder { session, ..Reorder::default() };
         self.shared.session.store(session, Ordering::SeqCst);
         self.shared.manual.store(0, Ordering::SeqCst);
-        self.shared.manual_until.store(0, Ordering::SeqCst);
         self.shared.grab.store(false, Ordering::SeqCst);
         self.shared.preview.lock().unwrap().clear();
         self.shared.last_full.lock().unwrap().take();
+        *self.shared.identity.lock().unwrap() = crate::shot_router::Ledgers::default();
     }
 
     /// 模拟 / 回放的下一帧：(会话号, 帧号)，帧号即触发计数，本会话从 1 起。
@@ -869,13 +894,11 @@ impl CameraSlot {
             self.shared.manual.fetch_add(1, Ordering::SeqCst);
         }
         self.shared.grab.store(config.source == CameraSource::Mvs, Ordering::SeqCst);
-        self.shared.manual_until.store(now_ms() + 10_000, Ordering::SeqCst);
         match self.trigger_frame(false, render, true) {
             Ok(ticket) => Ok(ticket),
             Err(e) => {
                 self.shared.grab.store(false, Ordering::SeqCst);
-                let _ = self.shared.manual.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
-                Err(e)
+                Err(if config.source == CameraSource::Mvs { format!("{e}；软触发结果未确认，请重开相机后再布防") } else { e })
             }
         }
     }
@@ -1174,6 +1197,7 @@ impl CameraRig {
     pub fn check_ready_at(&self, cams: &[u8]) -> Result<(), String> {
         for &c in cams {
             let slot = self.slot(c as usize).ok_or("相机组改过了")?;
+            manual_arm_ready(slot.config().source, slot.shared.manual.load(Ordering::SeqCst))?;
             if !slot.is_ready() {
                 let st = slot.status();
                 return Err(format!("{}未就绪：{}", st.name, st.message));
@@ -1182,12 +1206,11 @@ impl CameraRig {
         Ok(())
     }
 
-    /// 开工前：回放帧录制的相机回到第一张；没等到的软触发帧不再算数。
+    /// 开工前让回放帧录制回到第一张。
     pub fn begin_part(&self, cams: &[u8]) {
         for &c in cams {
             if let Some(s) = self.slot(c as usize) {
                 s.rewind_recording();
-                s.shared.manual.store(0, Ordering::SeqCst);
             }
         }
     }
@@ -1503,6 +1526,14 @@ pub fn camera_soft_trigger(cycle: State<'_, CycleHost>, cam: usize) -> Result<()
 
 #[cfg(test)]
 mod view_tests {
+    #[test]
+    fn unresolved_manual_trigger_blocks_mvs_arming_until_resolved() {
+        assert!(super::manual_arm_ready(super::CameraSource::Mvs, 1).is_err());
+        assert!(super::manual_arm_ready(super::CameraSource::Mvs, 10).is_err());
+        assert!(super::manual_arm_ready(super::CameraSource::Mvs, 0).is_ok());
+        assert!(super::manual_arm_ready(super::CameraSource::Sim, 1).is_ok());
+    }
+
     use super::*;
 
     #[test]

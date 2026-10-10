@@ -12,6 +12,7 @@ const labels: Record<FrameView["status"], [string, string]> = {
 };
 
 function footer(f: FrameView) {
+  if (f.error) return f.error;
   switch (f.status) {
     case "waiting":
       return "—";
@@ -47,7 +48,7 @@ export default function ShotStrip({ layout, part, vis, selected, onSelect }: { l
             ) : (
               <ShotLine layout={layout} k={k} vis={vis} compact className="shot-img" />
             )}
-            <div className={`shot-foot mono${bad ? " c-err" : ""}`}>{f ? footer(f) : "—"}</div>
+            <div className={`shot-foot mono${bad ? " c-err" : ""}`} title={f?.error??undefined}>{f ? footer(f) : "—"}</div>
           </button>
         );
       })}

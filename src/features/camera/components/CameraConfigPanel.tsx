@@ -87,6 +87,7 @@ export default function CameraConfigPanel({ cam, initial, status, onSaved, onSav
   const triggered = config.acquisition === "triggered";
   const invalid=!config.name.trim()?"相机名称不能为空":
     ![1,3].includes(config.viewCount)?"设备视角数只能为 1 或 3":
+    mvs&&config.counterAfterOpen!=null&&(!Number.isSafeInteger(config.counterAfterOpen)||config.counterAfterOpen<0)?"开流前触发计数需为非负安全整数，未知时请留空":
     !(config.exposureUs>=1&&config.exposureUs<=1_000_000)?"曝光时间需在 1–1000000 µs 之间":
     !Number.isFinite(config.gainDb)?"增益需为有限数":
     ![config.triggerDelayUs,config.debouncerUs].every(v=>Number.isFinite(v)&&v>=0)?"触发延时与输入滤波需为非负有限数":
@@ -237,6 +238,9 @@ export default function CameraConfigPanel({ cam, initial, status, onSaved, onSav
               <input type="checkbox" checked={config.chunk} onChange={(e) => set("chunk", e.target.checked)} />
               帧计数、Line0 触发计数、时间戳
             </label>
+            <span>高级：开流前触发计数</span>
+            <input aria-label="开流前触发计数" className="input mono" type="number" min={0} max={Number.MAX_SAFE_INTEGER} step={1} placeholder="未知" value={config.counterAfterOpen??""} onChange={e=>set("counterAfterOpen",e.target.value===""?null:Number(e.target.value))}/>
+            <span className="hint-cell">仅填写台架确认的开流前触发计数；未知时留空，不能假定为 0。</span>
           </>
         )}
       </div></fieldset>

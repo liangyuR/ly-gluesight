@@ -30,7 +30,7 @@ export default function UnrolledCurve({ layout, measured, vis, quantity = "d", s
   const ref = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 800, h: 150 });
   const [localSelection, setLocalSelection] = useState<{ scope: string; index: number } | null>(null);
-  const selectionScope = `${layout.id}:${layout.hash}:${measured[0]?.sn ?? "empty"}:${quantity}`;
+  const selectionScope = `${layout.id}:${layout.hash}:${measured[0]?.cycleId ?? "empty"}:${measured[0]?.bundleHash ?? ""}:${quantity}`;
 
   useEffect(() => {
     const el = ref.current;

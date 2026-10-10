@@ -188,6 +188,14 @@ describe("展开曲线选点与数据呈现", () => {
     expect(screen.getByRole("status")).toHaveTextContent("胶宽=2.50 mm");
   });
 
+  it("同 SN 新周期也清除曲线内部选点", () => {
+    const page = render(<UnrolledCurve layout={widthLayout()} measured={[cycleMeasurement(1, "first")]} vis={vis} />);
+    fireEvent.change(screen.getByRole("slider"), { target: { value: "1" } });
+    expect(screen.getByRole("status")).toHaveTextContent("点 2");
+    page.rerender(<UnrolledCurve layout={widthLayout()} measured={[cycleMeasurement(1, "retest")]} vis={vis} />);
+    expect(screen.getByRole("status")).toHaveTextContent("点击曲线");
+  });
+
   it("胶宽空值显示未测，归属条按拍照点着色", () => {
     render(<UnrolledCurve layout={widthLayout()} measured={[cycleMeasurement()]} vis={vis} quantity="w" />);
     const bars = screen.getByLabelText("胶宽测量曲线").querySelectorAll('rect[height="4"]');

@@ -18,6 +18,7 @@ export interface CameraConfig {
   gainDb: number;
   strobe: boolean;
   chunk: boolean;
+  counterAfterOpen?: number | null;
   replayDir: string;
   replayChannel: number;
 }

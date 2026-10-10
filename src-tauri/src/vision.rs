@@ -1,4 +1,4 @@
-//! lyFlow 视觉引擎：加载 core DLL，逐帧注入图像跑飞拍检测图（定位 + 逐点卡尺），读回 glue.Pose2D 与 glue.StationMeasure。
+//! lyFlow 视觉引擎：加载 core DLL，逐帧注入完整图像，沿拍照点示教中线量胶。
 //! 图只量不判，判定在 judge 模块（设计稿 §9）。
 
 use std::ffi::{c_char, c_void};
@@ -16,9 +16,8 @@ pub use crate::frame::FrameImage;
 use crate::measure::{Job, Measured, Measurer};
 use crate::recipe::Recipe;
 
-/// 沿示教中线量胶的 lyFlow 流程接入前（P0 步 L），图像测量与示教试测都报这一句，不用模拟值顶替实物。
-pub const TAUGHT_PATH_PENDING: &str = "沿示教中线量胶的 lyFlow 流程尚未接入（P0 步 L），图像测量暂不可用";
-
+mod taught;
+pub use taught::{build_taught_graph, measure_shot, measure_shot_with_graph, ShotMeasurement};
 
 unsafe extern "C" fn ignore_event(_: *const c_char, _: *mut c_void) {}
 
@@ -26,6 +25,7 @@ pub struct Engine {
     core: Arc<Core>,
     pub path: PathBuf,
     pub version: String,
+    pub identity: String,
 }
 
 impl Engine {
@@ -35,7 +35,8 @@ impl Engine {
         check_operators(&serde_json::from_str(&core.manifest_json().map_err(|e| e.to_string())?)
             .map_err(|e| format!("核心库算子清单无效：{e}"))?)?;
         let version = core.version();
-        Ok(Self { core: Arc::new(core), path: path.to_path_buf(), version })
+        let identity = format!("{version}:{}", crate::release::fnv_hex(&std::fs::read(path).map_err(|e| e.to_string())?));
+        Ok(Self { core: Arc::new(core), path: path.to_path_buf(), version, identity })
     }
 
     /// 跑一次图，返回 run summary 与图级命名输出（都已解析成 JSON）。
@@ -61,10 +62,10 @@ impl Engine {
 }
 
 fn check_operators(manifest: &Value) -> Result<(), String> {
-    let required = ["io.load_image", "image.board_calib", "image.load_calib", "glue.locate", "glue.station_calipers"];
+    let required = ["io.load_image", "image.board_calib", "image.load_calib", "glue.taught_path", "glue.bead_width"];
     let ops = manifest["operators"].as_array().ok_or("核心库没有算子清单")?;
     let missing: Vec<_> = required.into_iter().filter(|id| !ops.iter().any(|op| op["id"].as_str() == Some(id))).collect();
-    if missing.is_empty() { Ok(()) } else { Err(format!("核心库缺少飞拍/标定算子：{}。请选择包含胶路检测功能的核心库。", missing.join("、"))) }
+    if missing.is_empty() { Ok(()) } else { Err(format!("核心库缺少示教胶路/标定算子：{}。请选择包含 glue.taught_path 的核心库，旧版飞拍核心库不能用于当前配方。", missing.join("、"))) }
 }
 
 fn image_input(image: &FrameImage) -> Result<RunImageInput, String> {
@@ -81,19 +82,16 @@ pub struct RunResult {
 }
 
 /// lyFlow 作为测量后端：沿拍照点的示教中线量胶。
-pub struct LyFlowMeasurer {
-    pub app: AppHandle,
-}
+pub struct LyFlowMeasurer;
 
 impl Measurer for LyFlowMeasurer {
-    fn measure(&self, job: &Job, _image: &FrameImage) -> Result<Measured, String> {
-        let settings = self.app.state::<CycleHost>().settings();
-        self.app.state::<VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("lyFlow 核心库未加载")?;
-        let shot = job.recipe.shots.get(job.k).ok_or("拍照点不存在")?;
-        if !shot.taught() {
-            return Err(format!("拍照点 {} 尚未示教胶路", shot.id));
+    fn measure(&self, job: &Job, image: &FrameImage) -> Result<Measured, String> {
+        let prepared = job.production.as_ref().ok_or("图像检测没有已核验并预热的发布包")?;
+        if job.bundle_hash.as_deref() != Some(prepared.bundle.hash.as_str()) || job.recipe.hash != prepared.recipe.hash {
+            return Err("测量任务与已冻结发布包不一致".into());
         }
-        Err(TAUGHT_PATH_PENDING.into())
+        let run_id = format!("shot-{}-{}", job.cycle_id, job.k);
+        Ok(prepared.measure(job.k, image, &run_id)?.into_measured(job))
     }
 }
 

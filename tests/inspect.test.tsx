@@ -173,7 +173,7 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     await userEvent.click(screen.getByRole("button", { name: "查看帧 k1" }));
     expect(screen.getByRole("heading", { name: "选中帧 k1" })).toBeVisible();
     expect(screen.getByRole("button", { name: "查看帧 k1" })).toHaveAttribute("aria-pressed", "true");
-    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith(1, "hash-A", 0));
+    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith("cycle-1", "hash-A", 0));
     expect(screen.getByText("判定结果 · SN 1")).toBeVisible(); expect(screen.getByText("测试样本偏移超差")).toBeVisible();
     await userEvent.click(mainPanel().getByRole("button", { name: "逐拍照点" }));
     expect(mainPanel().getByLabelText("逐拍照点视图")).toBeVisible();
@@ -201,18 +201,66 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     expect(mainPanel().queryByLabelText("选中测量点 3")).not.toBeInTheDocument();
   });
 
-  it("新件清除旧选帧、选点、测量值和结论", async () => {
+  it("同 SN 重检的新周期清除旧选帧、选点、测量值和结论", async () => {
     state = { ...state, phase: "REPORT", part: cyclePart(), result: cycleResult() }; measured = [cycleMeasurement()];
     const page = render(<InspectPage />);
     fireEvent.change(screen.getByRole("slider", { name: "位置曲线选点" }), { target: { value: "1" } });
     expect(screen.getByText(/点 2 · P1 · J1 · s=1.00/)).toBeVisible();
-    state = { ...state, phase: "FAULT", fault: "新件相机错误", part: { ...cyclePart(2), frames: [cyclePart().frames[0], { ...cyclePart().frames[1], status: "waiting" }] } };
+    state = { ...state, phase: "FAULT", fault: "新件相机错误", part: { ...cyclePart(1, "cycle-2"), frames: [cyclePart().frames[0], { ...cyclePart().frames[1], status: "waiting" }] } };
     page.rerender(<InspectPage />);
     expect(screen.getByText("等待工件")).toBeVisible();
     expect(screen.queryByText("测试样本偏移超差")).not.toBeInTheDocument();
     expect(screen.queryByText(/点 2 · P1 · J1 · s=1.00/)).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "选中帧 k1" })).toBeVisible();
     expect(screen.queryByText("3.00–4.50")).not.toBeInTheDocument();
+    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith("cycle-2", "hash-A", 0));
+  });
+
+  it.each(["resolve", "reject"] as const)("同 SN 重检后旧原图请求 %s 不覆盖当前周期", async outcome => {
+    const old = deferred<GrayImage>(), current = deferred<GrayImage>();
+    vi.mocked(workspaceApi.liveImage).mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
+    state.part = cyclePart();
+    const page = render(<InspectPage />);
+    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenCalledWith("cycle-1", "hash-A", 1));
+    state = { ...state, part: cyclePart(1, "cycle-2") };
+    page.rerender(<InspectPage />);
+    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith("cycle-2", "hash-A", 1));
+    await act(async () => current.resolve({ url: "data:,cycle-2", width: 100, height: 60 }));
+    if (outcome === "resolve") await act(async () => old.resolve({ url: "data:,cycle-1", width: 100, height: 60 }));
+    else await act(async () => old.reject(new Error("旧周期原图请求失败")));
+    expect(screen.getByRole("img", { name: "SN 1 · k2" }).querySelector("image")).toHaveAttribute("href", "data:,cycle-2");
+    expect(screen.queryByText(/旧周期原图请求失败/)).not.toBeInTheDocument();
+  });
+
+  it("切换到同 SN 新周期时立即清除已显示的原图", async () => {
+    state.part = cyclePart();
+    const page = render(<InspectPage />);
+    expect(await screen.findByRole("img", { name: "SN 1 · k2" })).toBeVisible();
+    vi.mocked(workspaceApi.liveImage).mockReturnValueOnce(deferred<GrayImage>().promise);
+    state = { ...state, part: cyclePart(1, "cycle-2") };
+    page.rerender(<InspectPage />);
+    expect(screen.queryByRole("img", { name: "SN 1 · k2" })).not.toBeInTheDocument();
+    expect(screen.getByText("正在读取原图…")).toBeVisible();
+  });
+
+  it.each(["shotId", "camera", "bundleHash"] as const)("页面拒绝 %s 不符的测量，不显示错误来源的曲线与范围", field => {
+    state.part = cyclePart(); measured = [{ ...cycleMeasurement(), [field]: "other" }];
+    render(<InspectPage />);
+    expect(screen.queryByText("3.00–4.50")).not.toBeInTheDocument();
+    expect(screen.getByText("点击曲线或用方向键选择测量点")).toBeVisible();
+  });
+
+  it("逐点错误直接显示，并分别展示本件顺序与设备原始计数", () => {
+    state.part = cyclePart();
+    state.part.frames[1] = { ...state.part.frames[1], status: "error", error: "单帧测量超时：P2 超过 T_proc 300 ms" };
+    render(<InspectPage />);
+    const shot = screen.getByRole("button", { name: "查看帧 k2" });
+    expect(within(shot).getByText(/P2 超过 T_proc/)).toHaveAttribute("title", "单帧测量超时：P2 超过 T_proc 300 ms");
+    const runtime = screen.getByRole("heading", { name: "选中帧 k2" }).closest(".panel")!;
+    expect(within(runtime as HTMLElement).getByText("本件设备内顺序").parentElement).toHaveTextContent("2");
+    expect(within(runtime as HTMLElement).getByText("设备帧计数").parentElement).toHaveTextContent("102");
+    expect(within(runtime as HTMLElement).getByText("设备触发计数").parentElement).toHaveTextContent("202");
+    expect(within(runtime as HTMLElement).getByText(/P2 超过 T_proc/)).toBeVisible();
   });
 
   it("空闲切到拍照点较少的配方时逐拍照点视图仍有效", async () => {
@@ -241,7 +289,7 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     const old = deferred<GrayImage>(); vi.mocked(workspaceApi.liveImage).mockReturnValueOnce(old.promise)
       .mockRejectedValueOnce(new Error("当前帧未录制")).mockResolvedValueOnce({ url: "data:,new", width: 100, height: 60 });
     render(<InspectPage />);
-    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenCalledWith(1, "hash-A", 1));
+    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenCalledWith("cycle-1", "hash-A", 1));
     await userEvent.click(screen.getByRole("button", { name: "查看帧 k1" }));
     expect(await screen.findByText(/当前帧未录制/)).toBeVisible();
     await act(async () => old.resolve({ url: "data:,old", width: 100, height: 60 }));
@@ -267,6 +315,28 @@ describe("在线检测选帧、曲线与快照绑定", () => {
 });
 
 describe("在线检测信号和事件", () => {
+  it("正常占满不报警，超时仍未返回时显示卡住数量，恢复后清除", () => {
+    state.measurementWorkers = { capacity: 2, running: 2, timedOut: 0, availableCapacity: 0 };
+    const page = render(<InspectPage />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    state = { ...state, measurementWorkers: { capacity: 2, running: 2, timedOut: 1, availableCapacity: 0 } };
+    page.rerender(<InspectPage />);
+    expect(screen.getByRole("alert")).toHaveTextContent("测量线程超时未返回：1 / 2，当前可用容量 0");
+    expect(screen.queryByText(/当前不可布防/)).not.toBeInTheDocument();
+    state = { ...state, measurementWorkers: { capacity: 2, running: 2, timedOut: 2, availableCapacity: 0 } };
+    page.rerender(<InspectPage />);
+    expect(screen.getByRole("alert")).toHaveTextContent("全部测量容量被占用，当前不可布防");
+    state = { ...state, measurementWorkers: { capacity: 2, running: 0, timedOut: 0, availableCapacity: 2 } };
+    page.rerender(<InspectPage />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("同 SN 重检进入判定时步骤条不继承旧周期错误", () => {
+    state = { ...state, phase: "JUDGE", part: cyclePart(1, "cycle-2"), result: { ...cycleResult(), verdict: "ERR_INSPECT" } };
+    render(<InspectPage />);
+    expect(screen.getByText("判定")).toHaveClass("act");
+    expect(screen.getByText("判定")).not.toHaveClass("err");
+  });
   it("PLC 灯按标签显示方向、真假值和未绑定状态", async () => {
     const config = plcConfig(); config.connection.protocol = "modbusTcp";
     config.points = [ { ...plcPoint, id: "start", tags: ["partStart"] }, { ...plcPoint, id: "ready", tags: ["visionReady"] }, { ...plcPoint, id: "end", tags: ["partEnd"] } ];
