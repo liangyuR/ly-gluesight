@@ -12,6 +12,8 @@
 
 2026-10-10 PR #15 第二项 Codex P1：`04c3839` 将尚未完成的录制收尾纳入审计就绪屏障，录制开始前登记 cycleId，终态事件耐久接受后才解除。真实 Recorder 延迟回调、SQLite ACK/空spool、有界写拒绝及同步 Off 回调的3项新回归通过，完整Rust341项通过，见[录制屏障证据](../testing/evidence/p0-audit-recording-barrier-c.json)。原生压力与性能继续使用后续包含全部审查修复的源码，旧报告来源不变。
 
+2026-10-10 PR #15 第三轮四项 P1（P0-21、P0-22）由 `bdfd76b` 修复：主记录前同步录制结果先暂存，旧孤立录制事件原文耐久归档；健康探针仅兼容精确单字节 `[0]`；S7 区分临时审计等待与设备故障；相机启动前重查审计健康。新增8项默认回归、2项真实 S7 回环回归，完整默认 Rust **358通过/0失败/33忽略**，完整 `s7_wire_` 专项 **25通过/0失败**。本轮未新增原生进程恢复、400件、Robot五工况或现场硬件结果，见[第三轮审查证据](../testing/evidence/p0-audit-review3-c.json)。
+
 > 范围与缺口依据 [软件架构图](gluesight-software-architecture.html) 的「可行性与缺口」「实施路线与验收」；S7 契约见 [plc-s7-phase1.md](../integration/plc-s7-phase1.md)。本文只排 P0 缺口的软件实施顺序与每步验收，现场门槛（W0 / W7）由负责人推进。
 >
 > 2026-10-09 制定。状态：步 0、0b、1、2、1b 完成（PR liangyuR/ly-gluesight#7）；步 A、步 L 完成：示教中线在约 30 个稳定点上与自由搜索一样准、快约 3 倍，但约四分之一的拍照点两件之间胶位置差 20–107 px，单靠固定示教线或单靠自由搜索都不够，算法路线待定（见步 L）。2026-10-10：现场“三相机”实为一台三目设备（D-11、1.2 节），新增步 T，原按三台独立相机设计的部分待复核。每步验证完成后提交到独立分支、推送并创建中文 PR，由 Codex 审查，负责人安排合并；后续 PR 以前一步分支为比较基线。
@@ -301,3 +303,5 @@
 | P0-15 | 旧版本审计仅有有界内存：长期数据库故障、128待写/512缓存或30分钟淘汰、进程终止可能丢失未入库证据 | 已补齐4096事件/64MiB持久待入库日志、DONE前耐久接受、恢复/布防闭锁及原图/历史清理保护。Rust335项、S7回环24项、真实DLL5项、实际S7+SQLite零主行中断后恢复原结果与ACK通过；旧失败证据保留。保证从最终记录/事件耐久接受开始，不覆盖Acquire阶段未生成的记录，不声明掉电零丢失，见[恢复证据](../testing/evidence/p0-audit-durability-c.json) |
 | P0-16 | PR #15审查发现spool失败释放锁后才发布故障，ready/历史清理可能观察无故障的空spool并放行 | `fc1e38a` 在spool同步边界内锁存失败，ready/清理统一取锁顺序；异步超时不等待磁盘锁。3项新增回归及完整Rust338项通过，见[并发证据](../testing/evidence/p0-audit-review-atomic-c.json) |
 | P0-17 | ACK后Insert/Submission/Delivery均已入库且spool为空，但上件录制终态回调尚未发生，可能过早放行下一件 | `04c3839` 在录制开始前登记，同spool锁内耐久写入终态后解除；布防与历史清理同时检查未决录制。真实Recorder/SQLite回归3项、完整Rust341项通过，见[录制屏障证据](../testing/evidence/p0-audit-recording-barrier-c.json) |
+| P0-21 | 默认 Off 或 Recorder 提前失败的同步终态曾在 Insert 前写 spool；Acquire 中断后仅 Recording、无主行的旧事件无法完成启动回放。健康探针写入后中断留下 `[0]` 也曾阻止启动 | `bdfd76b` 先暂存同步终态，Insert 与暂存终态在同 spool 锁内顺序耐久接受，失败保留主收据、录制屏障并锁存故障。旧事件仅在 SQLite 确认无主行、全部为一致合法 Recording 时归档至 `.interrupted-preinsert`，原文、路径及原图保留；混合 Submission/Delivery、冲突或查询错误仍拒绝恢复。仅探针精确 `[0]` 可截空并 sync，其他字节保留且拒绝。活跃 spool 与归档各自4096事件/64MiB，容量分别约束，原图参与清理保护；Acquire 未生成最终记录不伪造最终结论。见[第三轮证据](../testing/evidence/p0-audit-review3-c.json) |
+| P0-22 | S7 释放时正常的未决录制曾被当作设备故障，ACK 后需人工复位；Recorder.begin 同步回调已经锁存审计故障时仍可能启动相机 | `bdfd76b` 使用独立审计等待状态，等待时 Ready 保持低、ACK与未决事务保留，耐久收尾后自动释放并允许下一件；真实设备或审计健康故障仍拒绝。begin 后、camera.begin_part 前重查故障、writer存活与实际磁盘探针，不被本件正常屏障误拦。8项新增默认回归与2项新增真实S7回归通过；完整358/25通过，不声明新原生400件或硬件验收。见[第三轮证据](../testing/evidence/p0-audit-review3-c.json) |

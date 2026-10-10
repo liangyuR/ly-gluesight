@@ -353,3 +353,21 @@ Codex P1审查发现：spool写失败先释放锁、随后发布故障，布防�
 慢录制时ACK后可暂态拒绝下一件；原检测结论及已确认ACK保持，终态耐久接受并回放后自动恢复。该登记仅用于当前进程的就绪屏障，未新增Acquire持久记录；启动仍先回放spool，再恢复真正中断的数据库Pending录制，最后恢复PLC握手。本次未重跑原生中断、压力或400件性能，先前原生恢复继续归属8ffc091。
 
 2026-10-10 集成检查：合入 PR #14 第二轮修复后，提交 c2867da0db576357ca9e53a349292f58fb88cd83 的默认 Rust 350 项通过、31 项忽略，测试 6.21 秒。持久审计、录制回调屏障和精确历史来源迁移同时覆盖；此前原生进程恢复仍以原提交证据为准，本轮不冒称重跑。见[集成回归证据](evidence/p0-audit-review2-integration-c.json)。
+
+
+## 2026-10-10 · PR #15 第三轮：主记录前录制、探针重启及 S7 审计等待
+
+源码 `bdfd76b35951d389da5d7fca7e27d17571ef067b` 修复四项 Codex P1，跟踪为 P0-21 与 P0-22：
+
+- 默认 Off 或 Recorder 提前失败的同步回调，在本件 Insert 前仅暂存终态；Insert 与暂存 Recording 在同一 spool 锁内按顺序耐久接受。任一步写入失败都保留已有收据及录制屏障并锁存故障，不发布 DONE。真实 Off 回调后中断、尚无 Insert 的重启不会再遗留孤立收据。
+- 升级前已经存在的孤立事件，启动仅在 SQLite 确认无该 cycleId 主行、该件全部事件均为一致且结构合法的 Recording 时，将原始事件字节写入 `.interrupted-preinsert` 并 sync 后移除活跃收据。归档保留 cycleId、原始路径和事件内容，原图目录继续受清理保护，日志明确说明未生成最终记录；不伪造检测 OK、主行或最终记录。含 Submission/Delivery、录制冲突、结构不一致或数据库查询失败仍保留原 spool 并拒绝恢复。
+- `.health` 仅允许空内容或探针自身精确写入的单字节 `[0]`；后者通过截空并 sync 恢复。其他字节保持原样并拒绝启动，不清除真实审计事件。
+- S7 使用独立审计就绪状态，正常等待录制或入库时 Ready 为低，已确认 ACK 与未决事务保留，收尾后自动完成释放并允许下一件；设备硬故障及审计健康故障仍拒绝。Recorder.begin 后、相机启动前重查故障、writer存活和磁盘写探针；本件正常未决屏障不被当作健康故障。
+
+活跃 spool 原上限仍为 **4096事件/64MiB**；`.interrupted-preinsert` 中断归档有独立的 **4096事件/64MiB** 上限，两者不是共用64MiB。归档及其原图不自动删除；容量用尽、损坏、未知文件或路径重解析错误均保留证据并拒绝恢复。保证仍从最终记录或事件耐久接受开始；Acquire 中尚未生成的最终记录不在保证内，不声明掉电零丢失。
+
+新增8项默认测试覆盖真实 Recorder Off 回调中断、同步回调故障、暂存终态第二次 append 容量失败、真实 SQLite 旧孤立事件恢复、原文和原图保护、混合/冲突/查询错误拒绝、单字节探针重启兼容及 Windows 实际写拒绝。新增2项真实 S7 回环测试为 `s7_wire_recording_audit_wait_holds_release_then_recovers_without_reset` 与 `s7_wire_recording_audit_wait_does_not_mask_actual_device_fault`，分别证明 ACK 后等待、自动释放、同 SN 下一序号完整件，以及等待不掩盖实际设备故障。
+
+完整默认命令 `cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib`：**358通过/0失败/33默认忽略**，测试12.63秒、编译58.45秒。随后仅移除测试局部变量的 unused mut；完整 S7 命令 `cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib s7_wire_ -- --include-ignored --test-threads=1`：**25通过/0失败/0忽略**，测试54.17秒、编译12.51秒。共享 C 盘 target 与 `S7_TEST_PYTHON` 沿用既有回环环境，日志路径见[第三轮审查证据](evidence/p0-audit-review3-c.json)。独立静态复核未发现新增必须修复问题。
+
+本轮未运行新的原生中断恢复、当前源码400件、Robot五工况、真实 DLL专项或前端回归；此前报告保持其原始源码归属。S7 结果来自本机回环，不代表现场硬件 W0/W7。P0-09 默认带噪 normal 仍严格预期 OK，实际2不能替代或重标为通过。
