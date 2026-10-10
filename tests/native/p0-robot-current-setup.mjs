@@ -5,7 +5,7 @@ import { dirname, join, resolve, win32 } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
 import { recipeContract } from '../../scripts/robot-plc-demo/camera-bridge.mjs';
-import { captureTeachingSample } from './p0-clean-cyclehost-setup.mjs';
+import { captureTeachingSample, isQuiescentCycleSnapshot } from './p0-clean-cyclehost-setup.mjs';
 
 const execute = promisify(execFile);
 const commandEnvironment = { ...process.env, PATH: (process.env.PATH ?? '').split(';').filter(entry => !/^d:/i.test(entry)).join(';') };
@@ -39,7 +39,7 @@ export function assertStrictValidation(validation, names) {
 
 export function assertSite(site, profile, dll) {
   assert.equal(cPath(site.records.root).toLowerCase(), win32.join(cPath(profile), 'records').toLowerCase(), 'Wrong Demo profile');
-  assert(!site.cycle.part && ['IDLE', 'FAULT'].includes(site.cycle.phase) && !site.sim.running, 'A cycle or simulator is active');
+  assert(isQuiescentCycleSnapshot(site.cycle) && site.sim.running === false, 'A cycle or simulator is active');
   assert(site.cameras.length && site.cameras.every(camera => camera.source === 'sim' && camera.acquisition === 'triggered'), 'Only triggered Sim devices are allowed');
   const cam1 = site.cameras.filter(camera => camera.id === 'cam1');
   assert(cam1.length === 1 && cam1[0].viewCount === 3, 'Require cam1 with three simultaneous views');
@@ -98,11 +98,22 @@ async function selfTest() {
   });
   test('site guard rejects another profile, replay pixels, remote PLC and relaxed processing budgets', () => {
     const profile = 'C:\\profiles\\' + identifier, dll = 'C:\\native\\lyflow_core.dll';
-    const site = { records: { root: win32.join(profile, 'records') }, cycle: { phase: 'FAULT', part: null }, sim: { running: false },
+    const site = { records: { root: win32.join(profile, 'records') }, cycle: { phase: 'FAULT', part: null, plcLocked: false }, sim: { running: false },
       cameras: [{ id: 'cam1', source: 'sim', acquisition: 'triggered', viewCount: 3 }], plc: { connection: { protocol: 'modbusTcp', host: '127.0.0.1', port: 1502 } },
       settings: { productSource: 'plc', vision: true, record: 'all', timeouts: { armMs: 200, procMs: 3000 } },
       engine: { backend: 'LyFlow', ready: true, measuring: true, path: dll } };
     assertSite(site, profile, dll);
+    const retained = structuredClone(site);
+    retained.cycle.part = { cycleId: 'closed-cycle', recipeId: 'ROBOT-DEMO-TRICAM', sn: 42, queue: 0, filled: 404, total: 404 };
+    retained.cycle.result = { cycleId: 'closed-cycle', recipeId: 'ROBOT-DEMO-TRICAM', sn: 42 };
+    for (const phase of ['IDLE', 'FAULT']) { retained.cycle.phase = phase; assertSite(retained, profile, dll); }
+    for (const mutate of [value => { value.cycle.plcLocked = true; }, value => { delete value.cycle.plcLocked; },
+      value => { value.cycle.phase = 'ACQUIRE'; }, value => { value.cycle.part.queue = 1; },
+      value => { value.cycle.part.filled = 403; }, value => { value.cycle.result.sn = 43; },
+      value => { value.cycle.result.cycleId = 'different-cycle'; }, value => { value.cycle.result.recipeId = 'different-recipe'; },
+      value => { value.sim.running = true; }]) {
+      const invalid = structuredClone(retained); mutate(invalid); assert.throws(() => assertSite(invalid, profile, dll));
+    }
     for (const mutate of [value => { value.records.root = 'C:\\profiles\\production\\records'; }, value => { value.cameras[0].source = 'replay'; },
       value => { value.plc.connection.host = '192.168.1.1'; }, value => { value.settings.timeouts.procMs = 6000; }, value => { value.cycle.part = { sn: 42 }; }]) {
       const invalid = structuredClone(site); mutate(invalid); assert.throws(() => assertSite(invalid, profile, dll));
