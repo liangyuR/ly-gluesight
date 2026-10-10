@@ -84,6 +84,7 @@ pub struct PlcSession {
     contract: Option<Contract>,
     config_key: String,
     connection: Option<i64>,
+    audit_waiting: bool,
     reset_low_seen: bool,
     reset_level: bool,
     heartbeat: Mutex<HeartbeatWatch>,
@@ -112,7 +113,7 @@ impl PlcSession {
             load_error = Some("发现未提交的握手事务文件，保留现场信号并核对日志后重启".into());
         }
         Self { path, journal, load_error, phase: SessionPhase::ResetRequired, contract: None,
-            config_key: String::new(), connection: None, reset_low_seen: false,
+            config_key: String::new(), connection: None, audit_waiting: false, reset_low_seen: false,
             reset_level: false, heartbeat: Mutex::new(HeartbeatWatch::new(3000).expect("valid heartbeat timeout")),
             fault_written: false, fault_attempted: None, message: Some("S7 启动后需确认空闲输入并复位握手".into()) }
     }
@@ -284,7 +285,11 @@ impl PlcSession {
     }
 
     pub async fn poll(&mut self, engine: &PlcEngine, reset_requested: bool, devices_ready: bool) -> SessionEvent {
-        match self.poll_inner(engine, reset_requested, devices_ready).await {
+        self.poll_with_audit(engine, reset_requested, devices_ready, true).await
+    }
+
+    pub async fn poll_with_audit(&mut self, engine: &PlcEngine, reset_requested: bool, devices_ready: bool, audit_ready: bool) -> SessionEvent {
+        match self.poll_inner(engine, reset_requested, devices_ready, audit_ready).await {
             Ok(event) => event,
             Err(error) => {
                 let changed = self.phase != SessionPhase::Fault || self.message.as_ref() != Some(&error);
@@ -294,7 +299,7 @@ impl PlcSession {
         }
     }
 
-    async fn poll_inner(&mut self, engine: &PlcEngine, reset_requested: bool, devices_ready: bool) -> Result<SessionEvent, String> {
+    async fn poll_inner(&mut self, engine: &PlcEngine, reset_requested: bool, devices_ready: bool, audit_ready: bool) -> Result<SessionEvent, String> {
         let config = engine.config();
         let key = serde_json::to_string(&config).map_err(|e| e.to_string())?;
         if key != self.config_key {
@@ -309,6 +314,7 @@ impl PlcSession {
         }
         if self.connection != Some(status.since) {
             self.connection = Some(status.since);
+            self.audit_waiting = false;
             self.phase = SessionPhase::ResetRequired;
             self.reset_low_seen = false;
             self.reset_level = false;
@@ -344,6 +350,7 @@ impl PlcSession {
             if !(reset_requested || reset_edge) { return Ok(SessionEvent::None); }
             if !devices_ready { return Err("设备尚未就绪，不能复位并置视觉就绪".into()); }
             if !self.heartbeat.lock().unwrap().is_live(now) { return Err("尚未观察到 PLC 心跳翻转，不能复位".into()); }
+            if !audit_ready { return Ok(SessionEvent::None); }
             let baseline = handshake::ResetBaseline::capture(&snapshot)?;
             self.audit(engine, "resetRequested", "明确复位请求；尚未清除未结事务").await?;
             self.write(engine, handshake::reset_plan()).await?;
@@ -360,6 +367,7 @@ impl PlcSession {
             baseline.verify(&before_ready)?;
             self.write(engine, vec![WriteOp { tag: tag::VISION_READY, value: json!(true) }]).await?;
             self.phase = SessionPhase::Idle;
+            self.audit_waiting = false;
             self.message = None;
             self.fault_written = false;
             self.fault_attempted = None;
@@ -368,6 +376,22 @@ impl PlcSession {
         if !self.heartbeat.lock().unwrap().is_live(now) { return Err("PLC 心跳活性尚未确认".into()); }
         if !devices_ready && !matches!(self.phase, SessionPhase::AwaitAck | SessionPhase::Releasing) {
             return Err("检测设备未就绪".into());
+        }
+        if self.phase == SessionPhase::Idle && (!audit_ready || self.audit_waiting) {
+            if [tag::PART_START, tag::PART_END, tag::RESULT_ACK, tag::DONE, tag::BUSY, tag::ARMED, tag::VISION_FAULT]
+                .into_iter().any(|tag| snapshot.read_bool(tag) != Ok(false)) {
+                return Err("等待追溯落盘时空闲握手信号不一致，禁止下一件".into());
+            }
+            if !audit_ready {
+                if !self.audit_waiting || snapshot.read_bool(tag::VISION_READY)? {
+                    self.write(engine, vec![WriteOp { tag: tag::VISION_READY, value: json!(false) }]).await?;
+                }
+                self.audit_waiting = true;
+            } else {
+                self.write(engine, vec![WriteOp { tag: tag::VISION_READY, value: json!(true) }]).await?;
+                self.audit_waiting = false;
+            }
+            return Ok(SessionEvent::None);
         }
         match self.phase {
             SessionPhase::Idle if snapshot.read_bool(tag::PART_START)? => {
@@ -421,6 +445,7 @@ impl PlcSession {
                     if snapshot.read_bool(tag::DONE)? || snapshot.read_bool(tag::BUSY)? || snapshot.read_bool(tag::ARMED)? {
                         return Err("释放输出未保持清除状态，禁止开始下一件".into());
                     }
+                    if !audit_ready { return Ok(SessionEvent::None); }
                     self.audit(engine, "acknowledged", "结果身份已确认且双方握手已释放").await?;
                     let mut next = self.journal.clone();
                     next.pending = None;

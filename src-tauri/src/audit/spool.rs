@@ -16,6 +16,8 @@ struct Receipt {
 pub(super) struct Spool {
     root: PathBuf,
     receipts: BTreeMap<u64, Receipt>,
+    interrupted: BTreeMap<u64, Event>,
+    interrupted_bytes: u64,
     next: u64,
     bytes: u64,
     limit: usize,
@@ -46,13 +48,20 @@ fn ancestors(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn validate(event: &Event) -> Result<(), String> {
+pub(super) fn validate(event: &Event) -> Result<(), String> {
     let cycle = event.cycle_id();
     if cycle.is_empty() || cycle.len() > 128 { return Err("审计事件 cycleId 长度必须为 1–128".into()); }
     if let Event::Recording(outcome) = event {
         for file in &outcome.files { super::raw_file(file.clone())?; }
     }
     Ok(())
+}
+
+fn validate_probe(path: &Path) -> Result<(), String> {
+    let mut content = Vec::new();
+    std::fs::File::open(path).map_err(|error| error.to_string())?.take(2).read_to_end(&mut content).map_err(|error| error.to_string())?;
+    if content.is_empty() || content == [0] { Ok(()) }
+    else { Err("审计健康探针含未知数据，保留并拒绝就绪".into()) }
 }
 
 impl Spool {
@@ -66,12 +75,27 @@ impl Spool {
         std::fs::create_dir_all(&root).map_err(|error| format!("创建审计 spool 失败：{error}"))?;
         ancestors(&root)?;
         let root = root.canonicalize().map_err(|error| error.to_string())?;
-        let mut spool = Self { root, receipts: BTreeMap::new(), next: 1, bytes: 0, limit, byte_limit };
+        let mut spool = Self { root, receipts: BTreeMap::new(), interrupted: BTreeMap::new(), interrupted_bytes: 0, next: 1, bytes: 0, limit, byte_limit };
         for item in std::fs::read_dir(&spool.root).map_err(|error| error.to_string())? {
             let path = item.map_err(|error| error.to_string())?.path();
-            plain(&path, false)?;
             let name = path.file_name().and_then(|name| name.to_str()).ok_or("审计 spool 文件名无效")?;
-            if name == ".health" && path.metadata().map_err(|error| error.to_string())?.len() == 0 { continue; }
+            if name == ".interrupted-preinsert" {
+                plain(&path, true)?;
+                for item in std::fs::read_dir(&path).map_err(|error| error.to_string())? {
+                    let path = item.map_err(|error| error.to_string())?.path();
+                    let name = path.file_name().and_then(|name| name.to_str()).ok_or("中断录制归档文件名无效")?;
+                    let sequence = name.strip_suffix(".json").filter(|name| name.len() == 20 && name.bytes().all(|byte| byte.is_ascii_digit()))
+                        .ok_or("中断录制归档含未知文件，保留并拒绝就绪")?.parse::<u64>().map_err(|error| error.to_string())?;
+                    let event = spool.read_path(&path)?;
+                    if !matches!(&event, Event::Recording(_)) { return Err("中断录制归档含非录制事件".into()); }
+                    spool.interrupted_bytes = spool.interrupted_bytes.saturating_add(path.metadata().map_err(|error| error.to_string())?.len());
+                    if spool.interrupted.len() >= MAX_EVENTS || spool.interrupted_bytes > MAX_BYTES { return Err("中断录制归档超过容量，保留并拒绝就绪".into()); }
+                    spool.interrupted.insert(sequence, event);
+                }
+                continue;
+            }
+            plain(&path, false)?;
+            if name == ".health" { validate_probe(&path)?; continue; }
             let sequence = name.strip_suffix(".json").filter(|name| name.len() == 20 && name.bytes().all(|byte| byte.is_ascii_digit()))
                 .ok_or("审计 spool 含未知或未完成文件，保留证据并拒绝就绪")?.parse::<u64>().map_err(|error| error.to_string())?;
             let bytes = path.metadata().map_err(|error| error.to_string())?.len();
@@ -92,7 +116,7 @@ impl Spool {
         let path = self.root.join(".health");
         if path.try_exists().map_err(|error| error.to_string())? {
             plain(&path, false)?;
-            if path.metadata().map_err(|error| error.to_string())?.len() != 0 { return Err("审计健康探针含未知数据，保留并拒绝就绪".into()); }
+            validate_probe(&path)?;
         }
         let mut file = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(path).map_err(|error| format!("审计写入健康检查失败：{error}"))?;
         file.write_all(&[0]).and_then(|_| file.set_len(0)).and_then(|_| file.sync_all()).map_err(|error| format!("审计持久写入健康检查失败：{error}"))
@@ -102,8 +126,12 @@ impl Spool {
 
     fn read_file(&self, sequence: u64) -> Result<Event, String> {
         ancestors(&self.root)?;
-        let path = self.path(sequence);
-        plain(&path, false)?;
+        self.read_path(&self.path(sequence))
+    }
+
+    fn read_path(&self, path: &Path) -> Result<Event, String> {
+        ancestors(path.parent().ok_or("审计文件缺少父目录")?)?;
+        plain(path, false)?;
         let bytes = path.metadata().map_err(|error| error.to_string())?.len();
         if bytes > MAX_EVENT_BYTES { return Err("审计事件超过文件大小限制".into()); }
         let mut content = Vec::new();
@@ -138,6 +166,32 @@ impl Spool {
         Ok(())
     }
 
+    pub(super) fn archive_preinsert(&mut self, receipts: &[u64]) -> Result<(), String> {
+        let root = self.root.join(".interrupted-preinsert");
+        ancestors(&root)?;
+        std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+        ancestors(&root)?;
+        let mut next = self.interrupted.last_key_value().map_or(Ok(1), |(&id, _)| id.checked_add(1).ok_or("中断录制归档序号耗尽"))?;
+        for &receipt in receipts {
+            if !self.receipts.contains_key(&receipt) { return Err("中断录制收据不存在".into()); }
+            let event = self.read_file(receipt)?;
+            if !matches!(&event, Event::Recording(_)) { return Err("仅允许归档未生成主记录的录制事件".into()); }
+            let source = self.path(receipt);
+            let mut content = Vec::new();
+            std::fs::File::open(&source).map_err(|error| error.to_string())?.take(MAX_EVENT_BYTES + 1).read_to_end(&mut content).map_err(|error| error.to_string())?;
+            if content.len() as u64 > MAX_EVENT_BYTES || self.interrupted.len() >= MAX_EVENTS || self.interrupted_bytes.saturating_add(content.len() as u64) > MAX_BYTES { return Err("中断录制归档容量不足，保留原始 spool".into()); }
+            let target = root.join(format!("{next:020}.json"));
+            let mut file = std::fs::OpenOptions::new().create_new(true).write(true).open(target).map_err(|error| error.to_string())?;
+            file.write_all(&content).and_then(|_| file.sync_all()).map_err(|error| error.to_string())?;
+            drop(file);
+            self.interrupted.insert(next, event);
+            self.interrupted_bytes += content.len() as u64;
+            next = next.checked_add(1).ok_or("中断录制归档序号耗尽")?;
+            self.remove(&[receipt])?;
+        }
+        Ok(())
+    }
+
     pub(super) fn empty(&self) -> bool { self.receipts.is_empty() }
 
     pub(super) fn cycles(&self) -> BTreeSet<String> { self.receipts.values().map(|receipt| receipt.cycle.clone()).collect() }
@@ -164,11 +218,12 @@ impl Spool {
     }
 
     pub(super) fn protected_directories(&self, root: &Path) -> Result<Vec<PathBuf>, String> {
-        if self.empty() { return Ok(Vec::new()); }
+        if self.empty() && self.interrupted.is_empty() { return Ok(Vec::new()); }
         ancestors(root)?;
         let checked_root = root.canonicalize().map_err(|error| format!("录制根目录不可用，暂停清理：{error}"))?;
         let mut paths = BTreeSet::new();
-        let cycles = self.cycles();
+        let mut cycles = self.cycles();
+        cycles.extend(self.interrupted.values().map(|event| event.cycle_id().to_string()));
         let mut scanned = 0usize;
         for item in std::fs::read_dir(root).map_err(|error| error.to_string())? {
             scanned += 1;
@@ -190,8 +245,9 @@ impl Spool {
                 }
             }
         }
-        for cycle in cycles {
-            for (_, event) in self.events(&cycle)? {
+        let mut events = self.interrupted.values().cloned().collect::<Vec<_>>();
+        for cycle in self.cycles() { events.extend(self.events(&cycle)?.into_iter().map(|(_, event)| event)); }
+        for event in events {
                 if let Event::Recording(outcome) = event {
                     let mut candidates = Vec::new();
                     if let Some(directory) = outcome.directory { candidates.push(directory); }
@@ -206,7 +262,6 @@ impl Spool {
                         paths.insert(checked);
                     }
                 }
-            }
         }
         Ok(paths.into_iter().collect())
     }

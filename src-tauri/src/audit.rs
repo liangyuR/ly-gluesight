@@ -127,35 +127,91 @@ fn spool_io<T>(spool: &Mutex<spool::Spool>, failure: &Mutex<Option<String>>,
     result
 }
 
-fn with_ready_spool<T>(spool: &Mutex<spool::Spool>, failure: &Mutex<Option<String>>, running: &AtomicBool, pending_recordings: &Mutex<BTreeSet<String>>,
+#[derive(Default)]
+struct RecordingBarrier {
+    inserted: bool,
+    terminal: Option<RecordingOutcome>,
+}
+
+type RecordingBarriers = Mutex<BTreeMap<String, RecordingBarrier>>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AuditReadiness { Ready, WaitingRecording, WaitingStore }
+
+impl AuditReadiness {
+    fn require_ready(self) -> Result<(), String> {
+        match self {
+            Self::Ready => Ok(()),
+            Self::WaitingRecording => Err("原图录制尚未完成耐久接受，禁止下一件布防或历史清理".into()),
+            Self::WaitingStore => Err("持久追溯仍有待入库事件，禁止下一件布防或历史清理".into()),
+        }
+    }
+}
+
+fn check_health(failure: &Mutex<Option<String>>, running: &AtomicBool) -> Result<(), String> {
+    if !running.load(Ordering::SeqCst) { return Err("持久追溯线程已停止，禁止布防".into()); }
+    if let Some(error) = failure.lock().map_err(|_| "追溯状态锁损坏")?.as_ref() { return Err(error.clone()); }
+    Ok(())
+}
+
+fn readiness(spool: &spool::Spool, failure: &Mutex<Option<String>>, running: &AtomicBool, pending_recordings: &RecordingBarriers) -> Result<AuditReadiness, String> {
+    check_health(failure, running)?;
+    if !pending_recordings.lock().map_err(|_| "录制收尾状态锁损坏")?.is_empty() { return Ok(AuditReadiness::WaitingRecording); }
+    Ok(if spool.empty() { AuditReadiness::Ready } else { AuditReadiness::WaitingStore })
+}
+
+fn healthy_spool(spool: &Mutex<spool::Spool>, failure: &Mutex<Option<String>>, running: &AtomicBool) -> Result<(), String> {
+    spool_io(spool, failure, |spool| {
+        check_health(failure, running)?;
+        spool.probe()
+    })
+}
+
+fn with_ready_spool<T>(spool: &Mutex<spool::Spool>, failure: &Mutex<Option<String>>, running: &AtomicBool, pending_recordings: &RecordingBarriers,
     action: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
     let spool = spool.lock().map_err(|_| "追溯 spool 锁损坏")?;
-    if !running.load(Ordering::SeqCst) { return Err("持久追溯线程已停止，禁止布防".into()); }
-    if let Some(error) = failure.lock().map_err(|_| "追溯状态锁损坏")?.as_ref() { return Err(error.clone()); }
-    if !pending_recordings.lock().map_err(|_| "录制收尾状态锁损坏")?.is_empty() {
-        return Err("原图录制尚未完成耐久接受，禁止下一件布防或历史清理".into());
-    }
-    if !spool.empty() { return Err("持久追溯仍有待入库事件，禁止下一件布防或历史清理".into()); }
+    readiness(&spool, failure, running, pending_recordings)?.require_ready()?;
     let result = action();
     drop(spool);
     result
 }
 
-fn track_recording(spool: &Mutex<spool::Spool>, failure: &Mutex<Option<String>>, pending_recordings: &Mutex<BTreeSet<String>>, cycle_id: &str) -> Result<(), String> {
+fn track_recording(spool: &Mutex<spool::Spool>, failure: &Mutex<Option<String>>, pending_recordings: &RecordingBarriers, cycle_id: &str) -> Result<(), String> {
     spool_io(spool, failure, |_| {
-        if !pending_recordings.lock().map_err(|_| "录制收尾状态锁损坏")?.insert(cycle_id.into()) {
-            return Err(format!("cycleId={cycle_id} 的录制仍未完成，拒绝重复开始"));
-        }
+        let mut pending = pending_recordings.lock().map_err(|_| "录制收尾状态锁损坏")?;
+        if pending.contains_key(cycle_id) { return Err(format!("cycleId={cycle_id} 的录制仍未完成，拒绝重复开始")); }
+        pending.insert(cycle_id.into(), RecordingBarrier::default());
         Ok(())
     })
 }
 
-fn persist_event(spool: &Mutex<spool::Spool>, failure: &Mutex<Option<String>>, pending_recordings: &Mutex<BTreeSet<String>>, event: &Event) -> Result<(), String> {
+fn persist_event(spool: &Mutex<spool::Spool>, failure: &Mutex<Option<String>>, pending_recordings: &RecordingBarriers, event: &Event) -> Result<(), String> {
     spool_io(spool, failure, |spool| {
-        spool.append(event)?;
+        spool::validate(event)?;
+        let mut pending = pending_recordings.lock().map_err(|_| "录制收尾状态锁损坏")?;
         if let Event::Recording(outcome) = event {
-            pending_recordings.lock().map_err(|_| "录制收尾状态锁损坏")?.remove(&outcome.cycle_id);
+            if let Some(barrier) = pending.get_mut(&outcome.cycle_id).filter(|barrier| !barrier.inserted) {
+                if barrier.terminal.as_ref().is_some_and(|previous| previous != outcome) {
+                    return Err("主记录接受前出现冲突录制结果，保留屏障并拒绝生产".into());
+                }
+                barrier.terminal = Some(outcome.clone());
+                return Ok(());
+            }
+        }
+        spool.append(event)?;
+        match event {
+            Event::Insert(part) => {
+                if let Some(barrier) = pending.get_mut(&part.cycle_id) {
+                    barrier.inserted = true;
+                    if let Some(outcome) = &barrier.terminal {
+                        spool.append(&Event::Recording(outcome.clone()))?;
+                        pending.remove(&part.cycle_id);
+                    }
+                }
+            }
+            Event::Recording(outcome) => { pending.remove(&outcome.cycle_id); }
+            _ => ()
         }
         Ok(())
     })
@@ -168,7 +224,7 @@ pub struct Audit {
     spool: Arc<Mutex<spool::Spool>>,
     failure: Arc<Mutex<Option<String>>>,
     running: Arc<AtomicBool>,
-    pending_recordings: Arc<Mutex<BTreeSet<String>>>,
+    pending_recordings: Arc<RecordingBarriers>,
 }
 
 impl Audit {
@@ -176,16 +232,27 @@ impl Audit {
         let mut spool = spool::Spool::open(path)?;
         let mut sink = AppSink(app);
         for cycle in spool.cycles() {
-            let (complete, notices) = replay_cycle(&mut spool, &cycle, &mut sink, ly_plc::now_ms())?;
+            let (complete, notices) = recover_cycle(&mut spool, &cycle, &mut sink, ly_plc::now_ms())?;
             publish(app, notices);
             if !complete { return Err(format!("cycleId={cycle} 的持久追溯尚未恢复，保留 spool 并拒绝启动生产")); }
         }
         let (tx, rx) = sync_channel(1);
-        let audit = Self { tx, app: app.clone(), spool: Arc::new(Mutex::new(spool)), failure: Arc::new(Mutex::new(None)), running: Arc::new(AtomicBool::new(true)), pending_recordings: Arc::new(Mutex::new(BTreeSet::new())) };
+        let audit = Self { tx, app: app.clone(), spool: Arc::new(Mutex::new(spool)), failure: Arc::new(Mutex::new(None)), running: Arc::new(AtomicBool::new(true)), pending_recordings: Arc::new(Mutex::new(BTreeMap::new())) };
         let worker = audit.clone();
         std::thread::Builder::new().name("inspection-audit".into()).spawn(move || writer(worker, rx))
             .map_err(|error| format!("追溯线程启动失败：{error}"))?;
         Ok(audit)
+    }
+
+    pub(crate) fn readiness(&self) -> Result<AuditReadiness, String> {
+        let spool = self.spool.lock().map_err(|_| "追溯 spool 锁损坏")?;
+        readiness(&spool, &self.failure, &self.running, &self.pending_recordings)
+    }
+
+    pub(crate) fn health(&self) -> Result<(), String> {
+        let result = healthy_spool(&self.spool, &self.failure, &self.running);
+        if let Err(error) = &result { self.fail(error.clone()); }
+        result
     }
 
     pub fn ready(&self) -> Result<(), String> {
@@ -869,6 +936,28 @@ fn apply_spooled(events: Vec<(u64, Event)>, cycle: &str, sink: &mut impl Sink, n
         }
     }
     (complete, receipts, notices)
+}
+
+fn recover_cycle(spool: &mut spool::Spool, cycle: &str, sink: &mut impl Sink, now: i64) -> Result<(bool, Vec<Notice>), String> {
+    let events = spool.events(cycle)?;
+    if !events.is_empty() && events.iter().all(|(_, event)| matches!(event, Event::Recording(_))) && sink.find(cycle)?.is_none() {
+        let Event::Recording(first) = &events[0].1 else { unreachable!() };
+        if events.iter().any(|(_, event)| !matches!(event, Event::Recording(outcome) if outcome == first)) {
+            return Err(format!("cycleId={cycle} 的主记录前录制结果冲突，保留原始 spool"));
+        }
+        let mut files = BTreeSet::new();
+        if first.available != (first.state == RecorderState::Complete)
+            || (first.available && (first.directory.is_none() || first.files.is_empty() || !first.errors.is_empty()))
+            || (matches!(first.state, RecorderState::Off | RecorderState::NotRetained) && (first.directory.is_some() || !first.files.is_empty()))
+            || first.files.iter().any(|file| !files.insert((file.k, file.view))) {
+            return Err(format!("cycleId={cycle} 的主记录前录制结构不一致，保留原始 spool"));
+        }
+        spool.archive_preinsert(&events.iter().map(|(receipt, _)| *receipt).collect::<Vec<_>>())?;
+        let mut notices = Vec::new();
+        log(&mut notices, "warn", "中断工件未生成最终记录", cycle, "旧版主记录前录制事件已耐久保留至 .interrupted-preinsert；原图保留，未伪造检测结论");
+        return Ok((true, notices));
+    }
+    replay_cycle(spool, cycle, sink, now)
 }
 
 fn replay_cycle(spool: &mut spool::Spool, cycle: &str, sink: &mut impl Sink, now: i64) -> Result<(bool, Vec<Notice>), String> {
