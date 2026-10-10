@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { appendFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
-import { isAbsolute, join, resolve } from 'node:path';
+import { appendFile, mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { recipeContract } from '../../scripts/robot-plc-demo/camera-bridge.mjs';
@@ -83,7 +83,8 @@ export async function recordedArtifact(root, file) {
   const header = Buffer.from('P5\n1280 1024\n255\n', 'ascii');
   assert(bytes.subarray(0, header.length).equals(header) && bytes.length === header.length + 1280 * 1024,
     'Recorded image is not a full-resolution 1280x1024 Gray8 PGM');
-  return { path: resolve(path), bytes: bytes.length, sha256: digest(bytes), size: [1280, 1024] };
+  return { path: resolve(path), bytes: bytes.length, sha256: digest(bytes),
+    pixelsSha256: digest(bytes.subarray(header.length)), size: [1280, 1024] };
 }
 
 async function tree(directory) {
@@ -95,6 +96,100 @@ async function tree(directory) {
     else if (entry.isFile()) output.push(await artifact(path));
   }
   return output;
+}
+
+export function validateCameraSource(camera, source, mode, replayDirectory) {
+  assert(['sim', 'replay'].includes(source));
+  assert(camera.source === source && camera.acquisition === 'triggered' &&
+    camera.viewCount === (mode === 'tricam' ? 3 : 1), 'Camera source, acquisition or view count differs');
+  if (source === 'replay') {
+    assert(camera.id === 'cam1' && camera.replayChannel === 1, 'Replay control requires cam1/channel 1');
+    assert(typeof camera.replayDir === 'string' && /^c:[\\/]/i.test(camera.replayDir) &&
+      resolve(camera.replayDir).toLowerCase() === resolve(replayDirectory).toLowerCase(),
+      'Camera replay directory differs from the explicit input directory');
+  }
+}
+
+export async function scanReplayInputs(directory, mode) {
+  assert(isAbsolute(directory) && /^c:[\\/]/i.test(directory) && ['single', 'tricam'].includes(mode));
+  const root = await realpath(directory);
+  assert(/^c:[\\/]/i.test(root), 'Replay directory resolves outside the C drive');
+  const entries = await readdir(root, { withFileTypes: true });
+  assert(entries.every(entry => !entry.isSymbolicLink()), 'Replay input tree must not contain symlinks');
+  const files = [];
+  for (let k = 0; k < 4; k++) {
+    for (let view = 1; view <= (mode === 'tricam' ? 3 : 1); view++) {
+      const file = 'cam1_' + (k + 1) + '_v' + view + '.pgm';
+      files.push({ k, view, camera: 'cam1', file, ...await recordedArtifact(root, file) });
+    }
+  }
+  const names = files.map(file => file.file).sort();
+  const actual = entries
+    .filter(entry => /\.(pgm|jpg|jpeg|png|bmp|tif|tiff)$/i.test(entry.name)).map(entry => entry.name).sort();
+  assert.deepEqual(actual, names, 'Replay directory contains missing, extra or ambiguously named images');
+  const snapshot = { directory: root, channel: 1, mode, files, tree: await tree(root) };
+  validateReplayInputsSnapshot(snapshot, mode);
+  return snapshot;
+}
+
+export function validateReplayInputsSnapshot(inputs, mode) {
+  assert(inputs.mode === mode && inputs.channel === 1 && /^c:[\\/]/i.test(inputs.directory));
+  const expected = [];
+  for (let k = 0; k < 4; k++) {
+    for (let view = 1; view <= (mode === 'tricam' ? 3 : 1); view++) expected.push([k, view]);
+  }
+  assert.deepEqual(inputs.files.map(file => [file.k, file.view]), expected);
+  for (const file of inputs.files) {
+    assert(file.camera === 'cam1' && file.file === 'cam1_' + (file.k + 1) + '_v' + file.view + '.pgm');
+    assert(resolve(file.path) === resolve(join(inputs.directory, file.file)) &&
+      JSON.stringify(file.size) === '[1280,1024]' && /^[a-f0-9]{64}$/.test(file.sha256) &&
+      /^[a-f0-9]{64}$/.test(file.pixelsSha256));
+    const entries = inputs.tree.filter(entry => resolve(entry.path) === resolve(file.path));
+    assert(entries.length === 1 && entries[0].sha256 === file.sha256 && entries[0].bytes === file.bytes);
+  }
+  const imageNames = inputs.tree.filter(file => /\.(pgm|jpg|jpeg|png|bmp|tif|tiff)$/i.test(file.path))
+    .map(file => basename(file.path)).sort();
+  assert.deepEqual(imageNames, inputs.files.map(file => file.file).sort());
+}
+
+export function validateReplayOutputs(row, inputs, layout) {
+  assert(inputs.mode === 'single' || inputs.mode === 'tricam');
+  assert(row.recordedArtifacts.length === inputs.files.length);
+  const metadata = row.recordingMetadata.document, summary = row.detail.summary;
+  assert(metadata.available === true && metadata.cycleId === summary.cycleId && metadata.sn === summary.sn &&
+    metadata.bundleHash === summary.bundleHash && metadata.recipeHash === summary.recipeHash);
+  assert(metadata.errors.length === 0 && metadata.missingShots.length === 0 && metadata.droppedFrames === 0);
+  assert(metadata.frames.length === inputs.files.length);
+  const comparisons = [];
+  for (const input of inputs.files) {
+    const outputs = row.recordedArtifacts.filter(file => file.k === input.k && file.view === input.view);
+    assert(outputs.length === 1);
+    const output = outputs[0], shot = row.detail.shots[input.k], planned = layout.shots[input.k];
+    assert(output.sha256 === input.sha256 && output.pixelsSha256 === input.pixelsSha256,
+      'Recorded replay pixels differ from the explicitly hashed input group');
+    const frames = metadata.frames.filter(frame => frame.k === input.k && frame.view === input.view);
+    assert(frames.length === 1);
+    const frame = frames[0];
+    assert(frame.counter === 'synthetic' && frame.manual === false && frame.lostPackets === 0 &&
+      frame.width === 1280 && frame.height === 1024 && frame.available === true && !frame.error);
+    assert(frame.cycleId === summary.cycleId && frame.bundleHash === summary.bundleHash &&
+      frame.recipeHash === summary.recipeHash && frame.camera === input.camera &&
+      frame.shotId === planned.id && frame.selectedView === planned.view &&
+      frame.session === shot.session && frame.ordinal === shot.ordinal &&
+      frame.frameCounter === shot.frameCounter && frame.triggerCounter === shot.triggerCounter &&
+      frame.frameCounter === frame.triggerCounter && Number.isSafeInteger(frame.frameCounter) && frame.frameCounter > 0);
+    assert(basename(output.path) === frame.file);
+    comparisons.push({ k: input.k, view: input.view, inputPath: input.path, outputPath: output.path,
+      sha256: input.sha256, pixelsSha256: input.pixelsSha256, equal: true });
+  }
+  return comparisons;
+}
+
+async function recordingMetadata(root, frames) {
+  const directories = new Set(frames.map(frame => dirname(frame.file)));
+  assert(directories.size === 1, 'Recorded frames span multiple part directories');
+  const path = join(root, [...directories][0], 'part.json'), bytes = await readFile(path);
+  return { path: resolve(path), bytes: bytes.length, sha256: digest(bytes), document: JSON.parse(bytes.toString('utf8')) };
 }
 
 export async function sampleProcess(pid, executable, expectedStart) {
@@ -110,6 +205,10 @@ export async function sampleProcess(pid, executable, expectedStart) {
 export async function runCycleHostPerformance(page, options) {
   const { mode, scenario, fixture, releaseDir, executable, pid, output } = options;
   const parts = options.parts ?? 100, timeoutMs = options.timeoutMs ?? 30000;
+  const source = options.source ?? 'sim';
+  assert(['sim', 'replay'].includes(source), 'Only explicit simulator or replay controls are supported');
+  assert(source === 'replay' ? typeof options.replayDir === 'string' : options.replayDir === undefined,
+    '--replay-dir is required only for --source replay');
   assert(['single', 'tricam'].includes(mode) && ['normal', 'gap'].includes(scenario));
   assert(Number.isInteger(parts) && parts >= 100 && parts <= 1000);
   assert(Number.isInteger(timeoutMs) && timeoutMs >= 1000 && timeoutMs <= 120000);
@@ -119,8 +218,12 @@ export async function runCycleHostPerformance(page, options) {
   await mkdir(output, { recursive: true });
   const reportPath = join(output, 'cyclehost-report.json'), rowsPath = join(output, 'parts.jsonl');
   const report = { schemaVersion: 1, startedAt: new Date().toISOString(), passed: false, completed: false,
-    scope: 'Actual CycleHost, real LyFlow DLL, generated simulator pixels and development PLC simulator',
-    physicalValidation: false, s7HardwareValidation: false, mode, scenario, requestedParts: parts,
+    scope: source === 'replay'
+      ? 'Actual CycleHost, real LyFlow DLL, explicitly hashed replay control pixels, Synthetic counters and development PLC simulator'
+      : 'Actual CycleHost, real LyFlow DLL, generated simulator pixels and development PLC simulator',
+    physicalValidation: false, s7HardwareValidation: false, source, mode, scenario, requestedParts: parts,
+    replayScenarioSemantics: source === 'replay'
+      ? 'Scenario selects the expected judgement only; replay pixels come entirely from the explicit input directory. No random pose, loss or locate-failure injection is claimed.' : null,
     timingDefinitions: {
       partEndToPlcSubmissionMs: 'Persisted drainMs: CycleHost observes partEnd through awaited PLC result/done writes; excludes result ACK and recording completion',
       queueMs: 'Submission through blocking worker entry, including channel, permit and blocking executor wait',
@@ -155,8 +258,10 @@ export async function runCycleHostPerformance(page, options) {
     assert.deepEqual(layout.shots.map(s => s.view), mode === 'tricam' ? [1, 2, 3, 1] : [1, 1, 1, 1]);
     for (const cameraId of new Set(layout.shots.map(s => s.camera))) {
       const cameras = guard.cameras.filter(c => c.id === cameraId);
-      assert(cameras.length === 1 && cameras[0].source === 'sim' && cameras[0].acquisition === 'triggered' &&
-        cameras[0].viewCount === (mode === 'tricam' ? 3 : 1));
+      assert(cameras.length === 1);
+      validateCameraSource(cameras[0], source, mode, options.replayDir);
+      if (source === 'replay') assert((await realpath(cameras[0].replayDir)).toLowerCase() ===
+        (await realpath(options.replayDir)).toLowerCase());
     }
     const manifestBytes = await readFile(join(releaseDir, 'manifest.json'));
     const manifest = JSON.parse(manifestBytes.toString('utf8'));
@@ -167,6 +272,7 @@ export async function runCycleHostPerformance(page, options) {
     report.provenance = { manifest, bundleHash: fnv1a64(manifestBytes), fixture: await artifact(fixture), executable: await artifact(executable),
       dll: await artifact(guard.engine.path), release: await tree(releaseDir), layout };
     assert(report.provenance.release.length > 0);
+    if (source === 'replay') report.replayInputs = await scanReplayInputs(options.replayDir, mode);
     await page.getByRole('navigation', { name: '操作导航' }).getByRole('link', { name: '在线检测', exact: true }).click();
     await page.getByRole('combobox', { name: '模拟配方', exact: true }).selectOption(fixtureDoc.id);
     await page.getByRole('combobox', { name: '模拟工况', exact: true }).selectOption(scenario);
@@ -178,6 +284,8 @@ export async function runCycleHostPerformance(page, options) {
     const rows = [], seen = new Set();
     for (let part = 1; part <= parts; part++) {
       assert((await read('cycle_snapshot')).phase === 'IDLE' && !(await read('sim_status')).running);
+      if (source === 'replay') assert.deepEqual(await read('camera_rig_config'), guard.cameras,
+        'Camera configuration changed during replay control run');
       const previous = (await read('history_query', { query: { recipeId: fixtureDoc.id, limit: 1 } })).items[0]?.id ?? -1;
       const began = Date.now();
       await page.getByRole('button', { name: '运行一件', exact: true }).click();
@@ -212,6 +320,10 @@ export async function runCycleHostPerformance(page, options) {
         row.recordedArtifacts.push({ k: frame.k, view: frame.view,
           ...await recordedArtifact(guard.records.root, frame.file) });
       }
+      if (source === 'replay') {
+        row.recordingMetadata = await recordingMetadata(guard.records.root, row.originals.frames);
+        row.replayComparisons = validateReplayOutputs(row, report.replayInputs, layout);
+      }
       await appendFile(rowsPath, JSON.stringify(row) + '\n', 'utf8');
       rows.push(row);
       if (part % 10 === 0 || part === parts) {
@@ -232,6 +344,11 @@ export async function runCycleHostPerformance(page, options) {
     assert.deepEqual(await artifact(fixture), report.provenance.fixture, 'Fixture changed');
     assert.deepEqual(await artifact(executable), report.provenance.executable, 'Application executable changed');
     assert.deepEqual(await artifact(guard.engine.path), report.provenance.dll, 'Native DLL changed');
+    if (source === 'replay') {
+      report.replayInputsAfter = await scanReplayInputs(options.replayDir, mode);
+      assert.deepEqual(report.replayInputsAfter, report.replayInputs, 'Replay input tree changed during run');
+      assert.deepEqual(await read('camera_rig_config'), guard.cameras, 'Replay camera configuration changed');
+    }
     report.rowsSha256 = (await artifact(rowsPath)).sha256;
     report.completed = true;
     report.passed = report.accuracyFailures.length === 0;
@@ -267,12 +384,14 @@ export async function connectAndRun(modulePath, endpoint, options) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { values } = parseArgs({ options: {
     'playwright-module': { type: 'string' }, cdp: { type: 'string', default: 'http://127.0.0.1:9338' },
+    source: { type: 'string', default: 'sim' }, 'replay-dir': { type: 'string' },
     mode: { type: 'string' }, scenario: { type: 'string' }, fixture: { type: 'string' },
     release: { type: 'string' }, executable: { type: 'string' }, pid: { type: 'string' },
     output: { type: 'string' }, parts: { type: 'string', default: '100' } } });
   assert(values['playwright-module'], '--playwright-module must point to an installed Playwright index.mjs');
   const report = await connectAndRun(values['playwright-module'], values.cdp, {
     mode: values.mode, scenario: values.scenario, fixture: values.fixture,
+    source: values.source, replayDir: values['replay-dir'],
     releaseDir: values.release, executable: values.executable, pid: Number(values.pid),
     output: values.output, parts: Number(values.parts) });
   console.log(JSON.stringify({ completed: report.completed, passed: report.passed,

@@ -11,7 +11,7 @@ p0-cyclehost-performance.mjs 连接一个已经启动、配置完成的专用 P0
 运行前：
 
 - 使用步 7 构建，确保 cycle_part_data 返回 ms、queueMs、engineMs、coreMs；DLL 和全部目录在 C 盘。
-- 专用应用标识包含 com.xyzrobotics.tujiaovision.p0-tests；PLC 协议为 simulator、在线；全部参与设备为触发模拟相机；启用真实 LyFlow 测量及“全部”录制。
+- 专用应用标识包含 com.xyzrobotics.tujiaovision.p0-tests；PLC 协议为 simulator、在线；全部参与设备为触发模拟相机；启用真实 LyFlow 测量及“全部”录制。默认 --source sim 保留上述模拟相机守卫；显式回放控制见下节。
 - 保持 armMs=200。初始状态为 IDLE，模拟器未运行。脚本不会自动复位故障。
 - 录制保留数至少 100；建议专用验收实例设为 500 件或以上，以便四个组合结束后仍可复核所有原图。容量建议至少 8 GiB，并确认 C 盘实际可用空间。单个 tricam/100 件约产生 1.2 GiB 原图；single 约 0.4 GiB。
 - --fixture 传入该发布包的 recipe.json；--release 传入包含 manifest.json 的该包目录。脚本校验清单 FNV 等于每件运行的 bundleHash，并核对配方、拍照点、视角和 1280×1024 尺寸。
@@ -41,6 +41,31 @@ $taskPerfArgs = @(
 ~~~
 
 也可在已有 Playwright page 上调用导出的 runCycleHostPerformance(page, options)，使用同一组选项，不需要把 Playwright 加入项目依赖。单独 CLI 的 --playwright-module 指向已安装运行时；不会下载浏览器。CDP 只允许本机端点，自动选择唯一带 Tauri 内部接口的页面，不创建浏览器标签页。
+
+## 显式回放性能控制
+
+--source 默认为 sim，不会因相机配置而自动放宽。只有显式传 --source replay --replay-dir <绝对C盘目录> 才启用独立回放控制；其它参数、四组合各100件、armMs=200、真实DLL、PLC simulator 和严格 normal/gap 判定保持一致。
+
+回放控制必须使用 cam1、replayChannel=1、triggered 采集；viewCount 按 single=1、tricam=3。camera.replayDir 必须与 --replay-dir 解析为同一 C 盘目录，运行中相机配置不能变化。每个输入目录仅含四组明确命名的全分辨率 PGM：
+
+- single：cam1_1_v1.pgm、cam1_2_v1.pgm、cam1_3_v1.pgm、cam1_4_v1.pgm。
+- tricam：cam1_1_v1.pgm 至 cam1_4_v3.pgm，每组视角1、2、3都齐全。
+- provenance.json 等非图像文件允许存在，也纳入完整输入目录树的运行前后 SHA。额外图像、缺视角、符号链接、错误命名或尺寸都会拒绝。
+
+可将独立 CLEAN Prepared 像素夹具的 normal/partial_gap PGM 按字节复制到新的 normal/gap 输入目录；provenance.json 应保存每幅 source/target 路径、SHA 和夹具来源。Prepared 的 DLL通过报告只是像素来源证据，不是此处的桌面发布或运行证据。仍须在真实专用桌面上对新的独立候选按 k0→k3 依次取样、示教、真实试测、导入样本、验证和发布；--fixture/--release 指向桌面实际发布的包。
+
+回放是循环读四组文件，必须确保开始时指向第一组。需要时在UI重新加载回放目录，然后重新核对候选示教/发布状态。工具不会修改配置、跳过示教或偷偷调整回放游标；若取到错误组会通过逐点图像校验明确失败。
+
+在上节参数数组中加入：
+
+~~~powershell
+'--source', 'replay',
+'--replay-dir', $taskReplayInput
+~~~
+
+每件四次真实 CycleHost 触发后，全部录制原图的整文件SHA及纯像素SHA必须分别等于输入的相同 k/view。报告包含 replayInputs、replayInputsAfter、逐幅 replayComparisons，以及每件真实 part.json 的 SHA 与文档快照。录制元数据必须证明 counter=synthetic、manual=false、lostPackets=0，cycleId/SN/发布包/设备/拍照点/所选视角/会话/设备内序号/帧计数/触发计数一致；不能用硬件计数或示教手动采图冒充此次运行。独立校验器重新读输入树、输出原图和 part.json，重算哈希及身份。
+
+--scenario normal/gap 在回放控制中只指定期望标签。实际像素完全由 --replay-dir 决定，选择 gap 按钮不会把 normal 回放图变成断胶图。操作者必须切换到独立的 gap 输入目录并按真实配置流程应用。回放不会注入随机 Pose、丢帧或 locateFail，不能把此控制当作默认带噪模拟、Robot五场景、现场相机或算法准确率通过。原默认带噪 P0-09 normal实际2失败仍单独保留。报告显式写 source=replay 和范围说明，physicalValidation/s7HardwareValidation 保持 false。
 
 ## 指标和通过条件
 
@@ -87,5 +112,5 @@ node --check scripts/p0-cyclehost-report.mjs
 node --test tests/native/p0-cyclehost-performance.test.mjs
 ~~~
 
-自检只验证证据处理规则；所有测试数据均为显式构造，不会连接 CDP、启动应用或加载 DLL。
+自检覆盖默认模拟守卫、显式回放输入树、逐幅像素同源、Synthetic元数据和独立100件报告校验；所有测试数据均为显式构造，不会连接 CDP、启动应用或加载 DLL。
 

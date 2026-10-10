@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { distribution, fnv1a64, memoryTrend, validatePart } from '../tests/native/p0-cyclehost-performance.mjs';
+import { distribution, fnv1a64, memoryTrend, scanReplayInputs, validateCameraSource,
+  validatePart, validateReplayInputsSnapshot, validateReplayOutputs } from '../tests/native/p0-cyclehost-performance.mjs';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
@@ -14,9 +15,27 @@ export function validateCycleHostEvidence(report, rows) {
   assert(report.completedParts === report.requestedParts);
   assert(rows.length === report.requestedParts);
   assert(['single', 'tricam'].includes(report.mode) && ['normal', 'gap'].includes(report.scenario));
+  const source = report.source ?? 'sim';
+  assert(['sim', 'replay'].includes(source));
+  if (source === 'replay') {
+    validateReplayInputsSnapshot(report.replayInputs, report.mode);
+    assert.deepEqual(report.replayInputsAfter, report.replayInputs);
+    const cameras = report.guard.cameras.filter(camera => camera.id === 'cam1');
+    assert(cameras.length === 1);
+    validateCameraSource(cameras[0], 'replay', report.mode, report.replayInputs.directory);
+    assert(report.replayScenarioSemantics && report.scope.includes('replay control'));
+  }
   const layout = report.provenance.layout, ids = new Set(), failures = [];
+  if (report.guard.cameras) {
+    for (const id of new Set(layout.shots.map(shot => shot.camera))) {
+      const cameras = report.guard.cameras.filter(camera => camera.id === id);
+      assert(cameras.length === 1);
+      validateCameraSource(cameras[0], source, report.mode, report.replayInputs?.directory);
+    }
+  }
   const files = [report.provenance.fixture, report.provenance.executable,
     report.provenance.dll, ...report.provenance.release];
+  if (source === 'replay') files.push(...report.replayInputs.tree, ...report.replayInputs.files);
   for (const [index, row] of rows.entries()) {
     assert(row.part === index + 1 && row.scenario === report.scenario);
     assert(!ids.has(row.detail.summary.cycleId), 'Cycle identity repeated');
@@ -34,6 +53,12 @@ export function validateCycleHostEvidence(report, rows) {
       assert.deepEqual(image.size, [1280, 1024]);
       assert(image.bytes === 1280 * 1024 + Buffer.byteLength('P5\n1280 1024\n255\n'));
       files.push(image);
+    }
+    if (source === 'replay') {
+      assert.deepEqual(row.replayComparisons, validateReplayOutputs(row, report.replayInputs, layout));
+      assert(resolve(row.recordingMetadata.path) === resolve(join(
+        report.guard.records.root, row.originals.frames[0].file, '..', 'part.json')));
+      files.push(row.recordingMetadata);
     }
   }
   for (const key of ['ms', 'queueMs', 'engineMs', 'coreMs']) {
@@ -66,15 +91,35 @@ export async function verifyCycleHostReport(path) {
   const manifestBytes = await readFile(manifests[0].path);
   assert(fnv1a64(manifestBytes) === report.provenance.bundleHash);
   assert.deepEqual(JSON.parse(manifestBytes.toString('utf8')), report.provenance.manifest);
+  if ((report.source ?? 'sim') === 'replay') {
+    assert.deepEqual(await scanReplayInputs(report.replayInputs.directory, report.mode), report.replayInputs,
+      'Replay input tree no longer matches the run');
+  }
   const checked = new Map();
   for (const file of files) {
     assert(isAbsolute(file.path) && /^c:[\\/]/i.test(file.path));
     const key = resolve(file.path).toLowerCase();
     if (!checked.has(key)) {
       const bytes = await readFile(file.path);
-      checked.set(key, { bytes: bytes.length, sha256: digest(bytes) });
+      const checkedFile = { bytes: bytes.length, sha256: digest(bytes) };
+      if (file.pixelsSha256) {
+        const header = Buffer.from('P5\n1280 1024\n255\n');
+        assert(bytes.subarray(0, header.length).equals(header) && bytes.length === header.length + 1280 * 1024);
+        checkedFile.pixelsSha256 = digest(bytes.subarray(header.length));
+      }
+      checked.set(key, checkedFile);
     }
-    assert.deepEqual(checked.get(key), { bytes: file.bytes, sha256: file.sha256 }, 'Artifact changed: ' + file.path);
+    const actual = checked.get(key);
+    assert(actual.bytes === file.bytes && actual.sha256 === file.sha256, 'Artifact changed: ' + file.path);
+    if (file.pixelsSha256) {
+      if (!actual.pixelsSha256) {
+        const bytes = await readFile(file.path), header = Buffer.from('P5\n1280 1024\n255\n');
+        assert(bytes.subarray(0, header.length).equals(header) && bytes.length === header.length + 1280 * 1024);
+        actual.pixelsSha256 = digest(bytes.subarray(header.length));
+      }
+      assert(actual.pixelsSha256 === file.pixelsSha256, 'Pixel bytes changed: ' + file.path);
+    }
+    if (file.document) assert.deepEqual(JSON.parse(await readFile(file.path, 'utf8')), file.document);
   }
   return { valid: true, passed: report.passed, parts: rows.length, mode: report.mode,
     scenario: report.scenario, accuracyFailures: report.accuracyFailures.length, artifacts: checked.size };
