@@ -76,13 +76,106 @@
     },
     "cycleHostEvidenceSelfTests": {
       "passed": 30
-    }
+    },
+    "frontendQuiet": {
+      "passed": 947,
+      "failed": 0,
+      "files": 42,
+      "seconds": 114.57,
+      "command": "node node_modules/vitest/vitest.mjs run --coverage --maxWorkers 2",
+      "coverage": {
+        "statements": 91.31,
+        "branches": 89.82,
+        "functions": 88.54,
+        "lines": 93.93
+      },
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-frontend-quiet-c.log",
+        "sha256": "3f305e2a8c09c41682d5be23adb6a19300178c68b640df020ff6c6eda4290bf1",
+        "bytes": 7313
+      }
+    },
+    "preparedInitial": {
+      "passed": false,
+      "fixtureStyle": "simulated_metal",
+      "failure": "First normal part expected OK/1, actual OK_WITH_EXCURSION/2. Four shots coverage 0.8515..0.9109 and maximum measured width 6.04575 mm. P0-09 remains open; original pixel files and failed log preserved.",
+      "fixtureDirectory": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-c-1b61976",
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-prepared100-c.log",
+        "sha256": "e8a0d5ee93d5b1604391b39540ae1bb70de05bde2acbc88758f6dc55988020b7",
+        "bytes": 4660
+      }
+    },
+    "preparedCleanControl": {
+      "passed": true,
+      "fixtureStyle": "clean_step_edge",
+      "partsPerMode": 100,
+      "measurementsPerMode": 400,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-prepared100-clean-c.log",
+        "sha256": "d1173780f66322b75001be50e18cb506590a4fa101570b34b36ea26eb991492e",
+        "bytes": 2618
+      },
+      "verifiedReport": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\report.evidence.json",
+        "sha256": "913cb755a18a070ffb352cd0de8e9e2f86a03be49f0ca50ec0de71d0a80633ad",
+        "bytes": 801291
+      },
+      "summary": "p0-step7-prepared-c.json",
+      "scope": "Independent uniform background/straight bead control only; runtime algorithm, limits and default textured fixtures unchanged. Does not close P0-09 or measure actual CycleHost tail."
+    },
+    "realDllSpecials": [
+      {
+        "name": "native_bundle_warms_measures_frozen_resources_and_rejects_tampering",
+        "passed": 1,
+        "log": {
+          "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native_bundle_warms_measures_frozen_resources_and_rejects_tampering-step7-c.log",
+          "sha256": "1f79daab655882e15405fb61b8cc9a8d82733488f187c0c8257bf92893f6ff82",
+          "bytes": 2212
+        }
+      },
+      {
+        "name": "native_board_calibration_uses_full_pixels_and_new_frames_do_not_reuse_old_board",
+        "passed": 1,
+        "log": {
+          "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native_board_calibration_uses_full_pixels_and_new_frames_do_not_reuse_old_board-step7-c.log",
+          "sha256": "e95b8da8a240e7f960b53f258d1642d4742f51e75cc7de3119df87886c3906eb",
+          "bytes": 2143
+        }
+      },
+      {
+        "name": "native_taught_measurement_uses_pixels_for_width_offset_gaps_polarity_and_fresh_frames",
+        "passed": 1,
+        "log": {
+          "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native_taught_measurement_uses_pixels_for_width_offset_gaps_polarity_and_fresh_frames-step7-c.log",
+          "sha256": "b03bacb048eb53ea25558a7a340805051e62ca3546466d37f041fec757d4ce61",
+          "bytes": 2272
+        }
+      },
+      {
+        "name": "native_concurrent_identical_labels_keep_each_pixel_measurement",
+        "passed": 1,
+        "log": {
+          "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native_concurrent_identical_labels_keep_each_pixel_measurement-step7-c.log",
+          "sha256": "873e685ca1f0331134f5452fe79ed16a06f6d88b0db073512bc0b3a66c83fac4",
+          "bytes": 2139
+        }
+      },
+      {
+        "name": "native_original_reproduction_keeps_frozen_resources_and_reports_each_failed_shot",
+        "passed": 1,
+        "log": {
+          "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native_original_reproduction_keeps_frozen_resources_and_reports_each_failed_shot-step7-c.log",
+          "sha256": "c2eda571e9ee7673c1c0f0fe82323f214934eeae7e4fc8f6c95d32b2c98730cf",
+          "bytes": 2158
+        }
+      }
+    ]
   },
   "pending": [
-    "quiet full frontend coverage rerun",
-    "real DLL Prepared benchmark at least 100 parts per mode and report verification",
     "actual CycleHost queue/engine/core/tail/memory measurement",
-    "five actual desktop Robot/Modbus scenarios"
+    "five actual desktop Robot/Modbus scenarios",
+    "final integration checks after Codex environment refresh repair"
   ],
   "boundaries": [
     "Tests use local loopback and synthetic images; W0/W7 and physical three-view SDK remain independent.",

@@ -1,0 +1,1196 @@
+{
+  "date": "2026-10-10",
+  "passed": true,
+  "fixtureStyle": "clean_step_edge",
+  "software": {
+    "package": "gluesight",
+    "version": "0.1.0",
+    "graphVersion": "taught-path-1",
+    "gitCommit": "1b61976ad27aee71ce58d09abebdf1b34c9e46a6",
+    "gitStatus": "M src-tauri/src/production/regression.rs",
+    "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+    "testExecutable": {
+      "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\cargo-target\\debug\\deps\\gluesight_lib-40b6ffc3449a0ff2.exe",
+      "bytes": 14232576,
+      "fnv1a64": "1b2ed33bcbac2e1d",
+      "sha256": "2d44b82cb759f381d300237b8c4d3e6190efe5963fbfc667546ab39fee7aca22"
+    },
+    "testArguments": [
+      "production::regression::native_full_resolution_frozen_bundle_single_and_tricam_regression",
+      "--exact",
+      "--ignored",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "sourceFiles": [
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\Cargo.toml",
+        "bytes": 1450,
+        "fnv1a64": "9a42d638787bc673",
+        "sha256": "8ccb6d86555eb87750076736a0cc724ba79cc9aecf12ca078503f8722a402e5e"
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\Cargo.lock",
+        "bytes": 140451,
+        "fnv1a64": "cf06edcc6d031d66",
+        "sha256": "f5045c1a049c80af1aa893298f4bae5ac98a65e61d87b9b5cfc4808a2d7e1563"
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\production.rs",
+        "bytes": 8703,
+        "fnv1a64": "0f4e869e5c5eebac",
+        "sha256": "aa9bd41ea0b33d688cf5ad05d83b7b436491915b75bd62a7b4d5f688785d31e9"
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\production\\regression.rs",
+        "bytes": 27388,
+        "fnv1a64": "530db8b5f0a1909b",
+        "sha256": "a36aa8aec46ceff7371148f2d9ccfbe763b2a3ebdad26236d738c385e322d557"
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\vision.rs",
+        "bytes": 19952,
+        "fnv1a64": "89042bf0dc2e5318",
+        "sha256": "9e75c17741b659b0c0403a2bf720d64d5b8889ae1768bda3e964a91aa4e082a4"
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\vision\\taught.rs",
+        "bytes": 11521,
+        "fnv1a64": "82474a811a51e726",
+        "sha256": "6d4df4eef6057a8109d2755415f68d4ddcbe51672929614e52cd4324cc799b99"
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\recipe.rs",
+        "bytes": 33598,
+        "fnv1a64": "85720cc6698f3aa1",
+        "sha256": "c76bdd7c3d69f3ea336e40ccef8f662f70bf0363715cb53b59f62dc27c623c52"
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\simimage.rs",
+        "bytes": 9602,
+        "fnv1a64": "113c8676a315b65b",
+        "sha256": "1d0a95d60414e7a03dfa1f37bf3e12ee97bdbc142964c11e931b498cbb38c1be"
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\sim.rs",
+        "bytes": 15079,
+        "fnv1a64": "3338a4c4ce8983a5",
+        "sha256": "a6b5b61a8e7f142c5da489c4d2a33267c471c59c1e903c6a1c0c4b7baa7687a6"
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\judge.rs",
+        "bytes": 14159,
+        "fnv1a64": "31c09cbcb81fb06e",
+        "sha256": "6e6934bf7c8862802861056f62f5eade7bc300514a2e0ee541569ee06b694602"
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\release.rs",
+        "bytes": 42170,
+        "fnv1a64": "15e67b45b6e7b91b",
+        "sha256": "6bdff8de986519b119ce34e28e0254307cc1c061becf1a8a88bedf01cc74bfa4"
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\frame.rs",
+        "bytes": 11625,
+        "fnv1a64": "fde875534a5a9d04",
+        "sha256": "954d153092411409ed001eb768bfe19ea44575900723213f7d40b8c860a92164"
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\measure.rs",
+        "bytes": 34629,
+        "fnv1a64": "14dc3107cb278a20",
+        "sha256": "21665f6c61b1acd7dcccaa1b2e8d03592a9a8ffa79daa6aeb82701bef3e7b8dc"
+      }
+    ],
+    "reportVerifier": {
+      "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\scripts\\p0-regression-report.py",
+      "bytes": 29572,
+      "fnv1a64": "fe9021fb693124e0",
+      "sha256": "72b6436cc25455ec8db0c6a38c649fa135ccaa3abaed9872f12127806fd050ec"
+    }
+  },
+  "engine": {
+    "version": "1.1.0",
+    "identity": "1.1.0:014eb64e169b3cfc",
+    "dll": {
+      "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native\\lyflow_core.dll",
+      "bytes": 6050304,
+      "fnv1a64": "014eb64e169b3cfc",
+      "sha256": "b784205274b8a06611322e814e894ce654f174ef5f329ccbb5e7af54bffb3125"
+    },
+    "loadAndSelfCheckMs": 32.455600000000004
+  },
+  "rawReport": {
+    "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\report.json",
+    "sha256": "e0eb6dd0960726cf63c0671d3fd3c62822a52465ca190603a9ec63dbbfb24766",
+    "bytes": 790606
+  },
+  "verifiedReport": {
+    "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\report.evidence.json",
+    "sha256": "913cb755a18a070ffb352cd0de8e9e2f86a03be49f0ca50ec0de71d0a80633ad",
+    "bytes": 801291
+  },
+  "cases": [
+    {
+      "mode": "single_device_single_view",
+      "physicalDevices": 1,
+      "viewCount": 1,
+      "shotViews": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "shotsPerPart": 4,
+      "deviceFramesPerPart": 4,
+      "viewImagesPerPart": 4,
+      "selectedMeasurementsPerPart": 4,
+      "steadyParts": 100,
+      "steadyMeasurements": 400,
+      "warmupMeasurements": 4,
+      "scenarioProbeMeasurements": 8,
+      "imageSize": [
+        1280,
+        1024
+      ],
+      "recipeHash": "45a27348eb64ab74",
+      "bundleHash": "698d0d3c25bef01d",
+      "bundleRoot": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d",
+      "releaseManifest": {
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\manifest.json",
+        "bytes": 2418,
+        "fnv1a64": "698d0d3c25bef01d",
+        "sha256": "ae3e24988fe9eccd16e1d14eb65281ec9c3a8644bef0c34b57264bec98976128"
+      },
+      "releaseResources": [
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\graph.json",
+          "bytes": 3687,
+          "fnv1a64": "ee828d5cce0a72c7",
+          "sha256": "eaff35cbb05c857c70e5cd8c5fc0af9478130b03c00974b949edf5450b5b5870"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\recipe.json",
+          "bytes": 999,
+          "fnv1a64": "82c9b38c032c69a2",
+          "sha256": "b94d29e4fccc0ec02225159bc978b322ed444e4dbf5b3b1bb52142e9953f911b"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\00\\calibration.json",
+          "bytes": 112,
+          "fnv1a64": "786f3f330140ff77",
+          "sha256": "d6ff6773550801468a10a7300c26c7fa79d0b3afe0db0688d82ad727a2600384"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\00\\centerline.json",
+          "bytes": 145,
+          "fnv1a64": "37ffb07178eaa53e",
+          "sha256": "341db29f5e2189479ec2a491cddfe633bcf58ff805ce19f43569a643414f3430"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\00\\image.pgm",
+          "bytes": 1310737,
+          "fnv1a64": "26810ab6a2218fea",
+          "sha256": "4be458e8ee59e04648c5cc7db97a45eb4d3beed72b3c4d9280472cb82853bf7c"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\00\\points.json",
+          "bytes": 1828,
+          "fnv1a64": "87483bd261335a15",
+          "sha256": "cee98c1d9157335b519a8ce73e0fb68c6f7da5620ffec639310851f0ab4cc6c1"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\01\\calibration.json",
+          "bytes": 112,
+          "fnv1a64": "786f3f330140ff77",
+          "sha256": "d6ff6773550801468a10a7300c26c7fa79d0b3afe0db0688d82ad727a2600384"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\01\\centerline.json",
+          "bytes": 145,
+          "fnv1a64": "a78568b53741025b",
+          "sha256": "20026a91b0fe93745cf633a51873b517397a34eb0bb2c092edf3526084972d8d"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\01\\image.pgm",
+          "bytes": 1310737,
+          "fnv1a64": "b9a1826d88218fea",
+          "sha256": "c6b55681b085615734597e6826b079646685493962da33ec9c707f5dbefc1ec3"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\01\\points.json",
+          "bytes": 1938,
+          "fnv1a64": "015619a74953d56a",
+          "sha256": "de5b9f1da28757aa6d941035439163a6c3a7a010b23c43391e9c4d56560b7413"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\02\\calibration.json",
+          "bytes": 112,
+          "fnv1a64": "786f3f330140ff77",
+          "sha256": "d6ff6773550801468a10a7300c26c7fa79d0b3afe0db0688d82ad727a2600384"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\02\\centerline.json",
+          "bytes": 145,
+          "fnv1a64": "fac81f9bd6842f58",
+          "sha256": "ad551bbf1cf5bf6984aa0ca7086489628653530645747686c2c2476258ea16e1"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\02\\image.pgm",
+          "bytes": 1310737,
+          "fnv1a64": "d954fb246e218fea",
+          "sha256": "fdaeab81fc5f785ee10fd014e0593bce8777e63f2aa7f233752c6ff82c2198b4"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\02\\points.json",
+          "bytes": 1938,
+          "fnv1a64": "f76c5d8da92e94eb",
+          "sha256": "17176379548cd35561fb6ddafc10f1b3528b52abd9b8d498a0430fe37bc75e0e"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\03\\calibration.json",
+          "bytes": 112,
+          "fnv1a64": "786f3f330140ff77",
+          "sha256": "d6ff6773550801468a10a7300c26c7fa79d0b3afe0db0688d82ad727a2600384"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\03\\centerline.json",
+          "bytes": 145,
+          "fnv1a64": "80164f2c081d66ed",
+          "sha256": "85f1bf82e56e685c7d0ae3d791648dd9093d67b7727c63038b50597e38925ea0"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\03\\image.pgm",
+          "bytes": 1310737,
+          "fnv1a64": "631b74db54218fea",
+          "sha256": "b1f0cb3153de54b32bb076f0e6f97bd5693954aed7d4a9f145e105d2f379549e"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\03\\points.json",
+          "bytes": 1938,
+          "fnv1a64": "04d6c59a7d71325f",
+          "sha256": "1cea886b5f1b76246a5128fdab2696bc4d6e93c665dd65a45e4f96b8e4a3bcf3"
+        }
+      ],
+      "fixtures": {
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\fixtures.json",
+        "bytes": 10268,
+        "fnv1a64": "73d328ce9cd60866",
+        "sha256": "82ee9b43822a93590f032fd76509205fbbb041d36545a5918dda985387ebb9cd"
+      },
+      "fixtureRenderMs": 59.2489,
+      "publishMs": 315.7606,
+      "preparedLoadMs": 281.7545,
+      "warmupMs": 369.7299,
+      "enginePreviouslyUsedInProcess": false,
+      "warmupKind": "first_graph_use_for_loaded_engine",
+      "steadyTotalMs": 4031.0838000000003,
+      "preparedMeasureMs": {
+        "count": 400,
+        "p50": 9.772499999999999,
+        "p95": 11.2758,
+        "max": 31.301299999999998,
+        "min": 8.8926,
+        "mean": 10.030557749999998,
+        "unit": "ms",
+        "percentile": "nearest rank"
+      },
+      "engineRunIoParseMs": {
+        "count": 400,
+        "p50": 9.0,
+        "p95": 11.0,
+        "max": 31.0,
+        "min": 8.0,
+        "mean": 9.495,
+        "unit": "ms",
+        "percentile": "nearest rank"
+      },
+      "serialPartMeasureAndJudgeMs": {
+        "count": 100,
+        "p50": 39.231,
+        "p95": 42.6983,
+        "max": 74.2096,
+        "min": 37.6886,
+        "mean": 40.223835,
+        "unit": "ms",
+        "percentile": "nearest rank"
+      },
+      "lastSelectedFrameToJudgeMs": {
+        "count": 100,
+        "p50": 10.0809,
+        "p95": 11.2739,
+        "max": 13.7054,
+        "min": 8.9476,
+        "mean": 10.149690999999997,
+        "unit": "ms",
+        "percentile": "nearest rank"
+      },
+      "productionQueueWaitMs": null,
+      "productionPartEndToJudgeMs": null,
+      "steadyEvidence": {
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\steady-records.jsonl",
+        "bytes": 155614,
+        "fnv1a64": "93db43d311187f90",
+        "sha256": "8fa464f6f361113674de2b2b52ca7f51387b1b07d29bad48309b975c6e15323c"
+      },
+      "steadyLoopTiming": "Includes evidence serialization, buffered JSONL writes and memory sampling outside each per-part timer; final flush/fsync is also outside the per-part and steady-loop timers.",
+      "memory": {
+        "workingSet": {
+          "startBytes": 41156608,
+          "endBytes": 42160128,
+          "deltaBytes": 1003520,
+          "minBytes": 41156608,
+          "maxBytes": 42217472,
+          "linearSlopeBytesPerPart": 10906.530909090909
+        },
+        "private": {
+          "startBytes": 27967488,
+          "endBytes": 29069312,
+          "deltaBytes": 1101824,
+          "minBytes": 27967488,
+          "maxBytes": 29069312,
+          "linearSlopeBytesPerPart": 12898.676363636363
+        },
+        "samples": [
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 41156608,
+            "privateBytes": 27967488,
+            "peakWorkingSetBytes": 47726592,
+            "part": 0,
+            "elapsedMs": 0.037700000000000004
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 41381888,
+            "privateBytes": 28008448,
+            "peakWorkingSetBytes": 47726592,
+            "part": 10,
+            "elapsedMs": 391.7752
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 41365504,
+            "privateBytes": 28004352,
+            "peakWorkingSetBytes": 47726592,
+            "part": 20,
+            "elapsedMs": 885.2569
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 41750528,
+            "privateBytes": 28651520,
+            "peakWorkingSetBytes": 47726592,
+            "part": 30,
+            "elapsedMs": 1279.7174
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 41742336,
+            "privateBytes": 28651520,
+            "peakWorkingSetBytes": 47726592,
+            "part": 40,
+            "elapsedMs": 1673.576
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 42057728,
+            "privateBytes": 28856320,
+            "peakWorkingSetBytes": 47726592,
+            "part": 50,
+            "elapsedMs": 2064.875
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 42106880,
+            "privateBytes": 29069312,
+            "peakWorkingSetBytes": 47726592,
+            "part": 60,
+            "elapsedMs": 2455.3878
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 42176512,
+            "privateBytes": 29069312,
+            "peakWorkingSetBytes": 47726592,
+            "part": 70,
+            "elapsedMs": 2843.4532
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 42172416,
+            "privateBytes": 29065216,
+            "peakWorkingSetBytes": 47726592,
+            "part": 80,
+            "elapsedMs": 3233.0541999999996
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 42217472,
+            "privateBytes": 29069312,
+            "peakWorkingSetBytes": 47726592,
+            "part": 90,
+            "elapsedMs": 3631.7447
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 42160128,
+            "privateBytes": 29069312,
+            "peakWorkingSetBytes": 47726592,
+            "part": 100,
+            "elapsedMs": 4031.0826
+          }
+        ],
+        "interpretation": "In-process samples every 10 parts after fixture allocation and warmup. Per-part JSON evidence is streamed to disk and dropped before sampling. Timing vectors are preallocated; the bounded memory-sample log, writer buffer, allocator caches and DLL state are included. This finite run alone does not prove absence of a memory leak."
+      },
+      "scenarioProbes": {
+        "partialGap": {
+          "calls": [
+            {
+              "k": 0,
+              "shotId": "P1",
+              "camera": "cam1",
+              "view": 1,
+              "size": [
+                1280,
+                1024
+              ],
+              "preparedMeasureMs": 9.4581,
+              "engineRunIoParseMs": 9,
+              "coverage": 1.0,
+              "stations": 101,
+              "gapStations": 0,
+              "widthMinMm": 4.0,
+              "widthMaxMm": 4.0,
+              "error": null
+            },
+            {
+              "k": 1,
+              "shotId": "P2",
+              "camera": "cam1",
+              "view": 1,
+              "size": [
+                1280,
+                1024
+              ],
+              "preparedMeasureMs": 12.4959,
+              "engineRunIoParseMs": 12,
+              "coverage": 0.9306930899620056,
+              "stations": 101,
+              "gapStations": 7,
+              "widthMinMm": 4.0,
+              "widthMaxMm": 4.0,
+              "error": null
+            },
+            {
+              "k": 2,
+              "shotId": "P3",
+              "camera": "cam1",
+              "view": 1,
+              "size": [
+                1280,
+                1024
+              ],
+              "preparedMeasureMs": 10.577100000000002,
+              "engineRunIoParseMs": 10,
+              "coverage": 1.0,
+              "stations": 101,
+              "gapStations": 0,
+              "widthMinMm": 4.0,
+              "widthMaxMm": 4.0,
+              "error": null
+            },
+            {
+              "k": 3,
+              "shotId": "P4",
+              "camera": "cam1",
+              "view": 1,
+              "size": [
+                1280,
+                1024
+              ],
+              "preparedMeasureMs": 9.4629,
+              "engineRunIoParseMs": 9,
+              "coverage": 1.0,
+              "stations": 101,
+              "gapStations": 0,
+              "widthMinMm": 4.0,
+              "widthMaxMm": 4.0,
+              "error": null
+            }
+          ],
+          "judgement": {
+            "verdict": "NG_GAP",
+            "plcCode": 13,
+            "faultCode": 0,
+            "reason": "P2 · J1 断胶 7.0 mm > 6.0 mm · s=47.0–54.0",
+            "segments": [
+              {
+                "verdict": "OK",
+                "min": 0.0625,
+                "max": 0.0625,
+                "excursionLen": 0.0,
+                "wMin": 4.0,
+                "wMax": 4.0,
+                "wExcursionLen": 0.0
+              },
+              {
+                "verdict": "NG_GAP",
+                "min": 0.0625,
+                "max": 0.0625,
+                "excursionLen": 0.0,
+                "wMin": 4.0,
+                "wMax": 4.0,
+                "wExcursionLen": 0.0
+              },
+              {
+                "verdict": "OK",
+                "min": 0.0625,
+                "max": 0.0625,
+                "excursionLen": 0.0,
+                "wMin": 4.0,
+                "wMax": 4.0,
+                "wExcursionLen": 0.0
+              },
+              {
+                "verdict": "OK",
+                "min": 0.0625,
+                "max": 0.0625,
+                "excursionLen": 0.0,
+                "wMin": 4.0,
+                "wMax": 4.0,
+                "wExcursionLen": 0.0
+              }
+            ],
+            "gaps": [
+              {
+                "segment": 1,
+                "s0": 47.0,
+                "s1": 54.0,
+                "len": 7.0,
+                "frames": [
+                  1
+                ]
+              }
+            ]
+          },
+          "serialPartMeasureAndJudgeMs": 42.1321,
+          "lastSelectedFrameToJudgeMs": 9.5628,
+          "measurementErrors": 0,
+          "decisionSource": "crate::judge::judge"
+        },
+        "wholeEmpty": {
+          "calls": [
+            {
+              "k": 0,
+              "shotId": "P1",
+              "camera": "cam1",
+              "view": 1,
+              "size": [
+                1280,
+                1024
+              ],
+              "preparedMeasureMs": 11.3617,
+              "engineRunIoParseMs": null,
+              "error": "拍照点 P1 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段"
+            },
+            {
+              "k": 1,
+              "shotId": "P2",
+              "camera": "cam1",
+              "view": 1,
+              "size": [
+                1280,
+                1024
+              ],
+              "preparedMeasureMs": 12.4201,
+              "engineRunIoParseMs": null,
+              "error": "拍照点 P2 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段"
+            },
+            {
+              "k": 2,
+              "shotId": "P3",
+              "camera": "cam1",
+              "view": 1,
+              "size": [
+                1280,
+                1024
+              ],
+              "preparedMeasureMs": 11.4061,
+              "engineRunIoParseMs": null,
+              "error": "拍照点 P3 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段"
+            },
+            {
+              "k": 3,
+              "shotId": "P4",
+              "camera": "cam1",
+              "view": 1,
+              "size": [
+                1280,
+                1024
+              ],
+              "preparedMeasureMs": 10.3759,
+              "engineRunIoParseMs": null,
+              "error": "拍照点 P4 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段"
+            }
+          ],
+          "judgement": {
+            "verdict": "ERR_INSPECT",
+            "plcCode": 90,
+            "faultCode": 99,
+            "reason": "拍照点 P1 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段; 拍照点 P2 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段; 拍照点 P3 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段; 拍照点 P4 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段",
+            "segments": [],
+            "gaps": []
+          },
+          "serialPartMeasureAndJudgeMs": 45.606500000000004,
+          "lastSelectedFrameToJudgeMs": 10.395299999999999,
+          "measurementErrors": 4,
+          "decisionSource": "Judgement::error(99), matching cycle::Part::apply_result native-error precedence"
+        }
+      },
+      "passed": true
+    },
+    {
+      "mode": "single_device_three_views",
+      "physicalDevices": 1,
+      "viewCount": 3,
+      "shotViews": [
+        1,
+        2,
+        3,
+        1
+      ],
+      "shotsPerPart": 4,
+      "deviceFramesPerPart": 4,
+      "viewImagesPerPart": 12,
+      "selectedMeasurementsPerPart": 4,
+      "steadyParts": 100,
+      "steadyMeasurements": 400,
+      "warmupMeasurements": 4,
+      "scenarioProbeMeasurements": 8,
+      "imageSize": [
+        1280,
+        1024
+      ],
+      "recipeHash": "140da66c6c02f5a3",
+      "bundleHash": "e132beced3fc4e6f",
+      "bundleRoot": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f",
+      "releaseManifest": {
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\manifest.json",
+        "bytes": 2418,
+        "fnv1a64": "e132beced3fc4e6f",
+        "sha256": "f01fbb4f5f13c7936208d01709821abb78ea22bea009463416e6424f23b6a3bf"
+      },
+      "releaseResources": [
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\graph.json",
+          "bytes": 3687,
+          "fnv1a64": "8ac21e3a56407178",
+          "sha256": "2c0d7cd211e2e6f756a56be6ee7cb7ffc44de91b30001fa0592c37e32259f1c5"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\recipe.json",
+          "bytes": 999,
+          "fnv1a64": "bb9489e60ec1ebe1",
+          "sha256": "08f887d14fa83f8ef616aa5deb90ce211aa513a0599b8e18aad9d4febea969cc"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\00\\calibration.json",
+          "bytes": 112,
+          "fnv1a64": "786f3f330140ff77",
+          "sha256": "d6ff6773550801468a10a7300c26c7fa79d0b3afe0db0688d82ad727a2600384"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\00\\centerline.json",
+          "bytes": 145,
+          "fnv1a64": "37ffb07178eaa53e",
+          "sha256": "341db29f5e2189479ec2a491cddfe633bcf58ff805ce19f43569a643414f3430"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\00\\image.pgm",
+          "bytes": 1310737,
+          "fnv1a64": "26810ab6a2218fea",
+          "sha256": "4be458e8ee59e04648c5cc7db97a45eb4d3beed72b3c4d9280472cb82853bf7c"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\00\\points.json",
+          "bytes": 1828,
+          "fnv1a64": "87483bd261335a15",
+          "sha256": "cee98c1d9157335b519a8ce73e0fb68c6f7da5620ffec639310851f0ab4cc6c1"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\01\\calibration.json",
+          "bytes": 112,
+          "fnv1a64": "2b3b9466599280ba",
+          "sha256": "32f111c82a261616208a4451c241f98e836cfd6eff494058f50d16ee0d1ed750"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\01\\centerline.json",
+          "bytes": 145,
+          "fnv1a64": "dd4168b71256bd3e",
+          "sha256": "057f1af7a8149b4192b046d50e8418dcb389b765f77e76beb56d4010e40f7c56"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\01\\image.pgm",
+          "bytes": 1310737,
+          "fnv1a64": "b9a1826d88218fea",
+          "sha256": "c6b55681b085615734597e6826b079646685493962da33ec9c707f5dbefc1ec3"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\01\\points.json",
+          "bytes": 1938,
+          "fnv1a64": "105ea089db36aca9",
+          "sha256": "07ecf5fb3d0750447f41647c9ebc7049e7bf574e863bd2afb2435cd15ca62403"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\02\\calibration.json",
+          "bytes": 112,
+          "fnv1a64": "ea7c0043dc220655",
+          "sha256": "bf06a001b697c3ed98cd9574b84c3e75a78344cfab3cba891a14664b729ef0f0"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\02\\centerline.json",
+          "bytes": 145,
+          "fnv1a64": "3b7cc8e42c0d3a2a",
+          "sha256": "7f791f4ce0ace37c01d40fa4efeea67a94441bdb89cc2663d706f71fbae4566c"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\02\\image.pgm",
+          "bytes": 1310737,
+          "fnv1a64": "d954fb246e218fea",
+          "sha256": "fdaeab81fc5f785ee10fd014e0593bce8777e63f2aa7f233752c6ff82c2198b4"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\02\\points.json",
+          "bytes": 1938,
+          "fnv1a64": "a7f0551f1b86a479",
+          "sha256": "a541f36c98b441d57d954763d830fd107d530aa49471268f58aaf55f0342d0e3"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\03\\calibration.json",
+          "bytes": 112,
+          "fnv1a64": "786f3f330140ff77",
+          "sha256": "d6ff6773550801468a10a7300c26c7fa79d0b3afe0db0688d82ad727a2600384"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\03\\centerline.json",
+          "bytes": 145,
+          "fnv1a64": "80164f2c081d66ed",
+          "sha256": "85f1bf82e56e685c7d0ae3d791648dd9093d67b7727c63038b50597e38925ea0"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\03\\image.pgm",
+          "bytes": 1310737,
+          "fnv1a64": "631b74db54218fea",
+          "sha256": "b1f0cb3153de54b32bb076f0e6f97bd5693954aed7d4a9f145e105d2f379549e"
+        },
+        {
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\03\\points.json",
+          "bytes": 1938,
+          "fnv1a64": "04d6c59a7d71325f",
+          "sha256": "1cea886b5f1b76246a5128fdab2696bc4d6e93c665dd65a45e4f96b8e4a3bcf3"
+        }
+      ],
+      "fixtures": {
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\fixtures.json",
+        "bytes": 23332,
+        "fnv1a64": "9662efa61b53725d",
+        "sha256": "e20099dc47ce096523d95dfeb616aa310de5619f652c043e4211ad23bf485579"
+      },
+      "fixtureRenderMs": 186.1361,
+      "publishMs": 262.32660000000004,
+      "preparedLoadMs": 283.90680000000003,
+      "warmupMs": 389.6447,
+      "enginePreviouslyUsedInProcess": true,
+      "warmupKind": "already_used_engine",
+      "steadyTotalMs": 3938.178,
+      "preparedMeasureMs": {
+        "count": 400,
+        "p50": 9.6941,
+        "p95": 10.7393,
+        "max": 14.4328,
+        "min": 8.923399999999999,
+        "mean": 9.800515749999994,
+        "unit": "ms",
+        "percentile": "nearest rank"
+      },
+      "engineRunIoParseMs": {
+        "count": 400,
+        "p50": 9.0,
+        "p95": 10.0,
+        "max": 14.0,
+        "min": 8.0,
+        "mean": 9.2525,
+        "unit": "ms",
+        "percentile": "nearest rank"
+      },
+      "serialPartMeasureAndJudgeMs": {
+        "count": 100,
+        "p50": 38.8872,
+        "p95": 41.9723,
+        "max": 44.0502,
+        "min": 37.5815,
+        "mean": 39.30182799999999,
+        "unit": "ms",
+        "percentile": "nearest rank"
+      },
+      "lastSelectedFrameToJudgeMs": {
+        "count": 100,
+        "p50": 9.7679,
+        "p95": 10.7842,
+        "max": 12.992999999999999,
+        "min": 9.013300000000001,
+        "mean": 9.843414000000003,
+        "unit": "ms",
+        "percentile": "nearest rank"
+      },
+      "productionQueueWaitMs": null,
+      "productionPartEndToJudgeMs": null,
+      "steadyEvidence": {
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\steady-records.jsonl",
+        "bytes": 155454,
+        "fnv1a64": "38272fc5c29163ba",
+        "sha256": "4c68877c0f309e969a57ad6fda5345a63f4478f294926d429174978018f7472b"
+      },
+      "steadyLoopTiming": "Includes evidence serialization, buffered JSONL writes and memory sampling outside each per-part timer; final flush/fsync is also outside the per-part and steady-loop timers.",
+      "memory": {
+        "workingSet": {
+          "startBytes": 80306176,
+          "endBytes": 80297984,
+          "deltaBytes": -8192,
+          "minBytes": 79958016,
+          "maxBytes": 80306176,
+          "linearSlopeBytesPerPart": 1448.4945454545455
+        },
+        "private": {
+          "startBytes": 67039232,
+          "endBytes": 66830336,
+          "deltaBytes": -208896,
+          "minBytes": 66678784,
+          "maxBytes": 67039232,
+          "linearSlopeBytesPerPart": -901.12
+        },
+        "samples": [
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 80306176,
+            "privateBytes": 67039232,
+            "peakWorkingSetBytes": 91455488,
+            "part": 0,
+            "elapsedMs": 0.0249
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 79958016,
+            "privateBytes": 66678784,
+            "peakWorkingSetBytes": 91455488,
+            "part": 10,
+            "elapsedMs": 388.5286
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 80097280,
+            "privateBytes": 66940928,
+            "peakWorkingSetBytes": 91455488,
+            "part": 20,
+            "elapsedMs": 778.3387
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 80257024,
+            "privateBytes": 66940928,
+            "peakWorkingSetBytes": 91455488,
+            "part": 30,
+            "elapsedMs": 1176.4864
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 80199680,
+            "privateBytes": 66940928,
+            "peakWorkingSetBytes": 91455488,
+            "part": 40,
+            "elapsedMs": 1576.3763
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 80035840,
+            "privateBytes": 66678784,
+            "peakWorkingSetBytes": 91455488,
+            "part": 50,
+            "elapsedMs": 1974.6562999999999
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 80220160,
+            "privateBytes": 66940928,
+            "peakWorkingSetBytes": 91455488,
+            "part": 60,
+            "elapsedMs": 2378.8747
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 80252928,
+            "privateBytes": 66830336,
+            "peakWorkingSetBytes": 91455488,
+            "part": 70,
+            "elapsedMs": 2770.0337
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 80195584,
+            "privateBytes": 66830336,
+            "peakWorkingSetBytes": 91455488,
+            "part": 80,
+            "elapsedMs": 3160.6706
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 80289792,
+            "privateBytes": 66830336,
+            "peakWorkingSetBytes": 91455488,
+            "part": 90,
+            "elapsedMs": 3550.8541999999998
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 80297984,
+            "privateBytes": 66830336,
+            "peakWorkingSetBytes": 91455488,
+            "part": 100,
+            "elapsedMs": 3938.177
+          }
+        ],
+        "interpretation": "In-process samples every 10 parts after fixture allocation and warmup. Per-part JSON evidence is streamed to disk and dropped before sampling. Timing vectors are preallocated; the bounded memory-sample log, writer buffer, allocator caches and DLL state are included. This finite run alone does not prove absence of a memory leak."
+      },
+      "scenarioProbes": {
+        "partialGap": {
+          "calls": [
+            {
+              "k": 0,
+              "shotId": "P1",
+              "camera": "cam1",
+              "view": 1,
+              "size": [
+                1280,
+                1024
+              ],
+              "preparedMeasureMs": 9.5403,
+              "engineRunIoParseMs": 9,
+              "coverage": 1.0,
+              "stations": 101,
+              "gapStations": 0,
+              "widthMinMm": 4.0,
+              "widthMaxMm": 4.0,
+              "error": null
+            },
+            {
+              "k": 1,
+              "shotId": "P2",
+              "camera": "cam1",
+              "view": 2,
+              "size": [
+                1280,
+                1024
+              ],
+              "preparedMeasureMs": 9.1038,
+              "engineRunIoParseMs": 9,
+              "coverage": 0.9306930899620056,
+              "stations": 101,
+              "gapStations": 7,
+              "widthMinMm": 4.0,
+              "widthMaxMm": 4.0,
+              "error": null
+            },
+            {
+              "k": 2,
+              "shotId": "P3",
+              "camera": "cam1",
+              "view": 3,
+              "size": [
+                1280,
+                1024
+              ],
+              "preparedMeasureMs": 9.1514,
+              "engineRunIoParseMs": 9,
+              "coverage": 1.0,
+              "stations": 101,
+              "gapStations": 0,
+              "widthMinMm": 4.0,
+              "widthMaxMm": 4.0,
+              "error": null
+            },
+            {
+              "k": 3,
+              "shotId": "P4",
+              "camera": "cam1",
+              "view": 1,
+              "size": [
+                1280,
+                1024
+              ],
+              "preparedMeasureMs": 10.5291,
+              "engineRunIoParseMs": 10,
+              "coverage": 1.0,
+              "stations": 101,
+              "gapStations": 0,
+              "widthMinMm": 4.0,
+              "widthMaxMm": 4.0,
+              "error": null
+            }
+          ],
+          "judgement": {
+            "verdict": "NG_GAP",
+            "plcCode": 13,
+            "faultCode": 0,
+            "reason": "P2 · J1 断胶 7.0 mm > 6.0 mm · s=47.0–54.0",
+            "segments": [
+              {
+                "verdict": "OK",
+                "min": 0.0625,
+                "max": 0.0625,
+                "excursionLen": 0.0,
+                "wMin": 4.0,
+                "wMax": 4.0,
+                "wExcursionLen": 0.0
+              },
+              {
+                "verdict": "NG_GAP",
+                "min": 0.0625,
+                "max": 0.0625,
+                "excursionLen": 0.0,
+                "wMin": 4.0,
+                "wMax": 4.0,
+                "wExcursionLen": 0.0
+              },
+              {
+                "verdict": "OK",
+                "min": 0.0625,
+                "max": 0.0625,
+                "excursionLen": 0.0,
+                "wMin": 4.0,
+                "wMax": 4.0,
+                "wExcursionLen": 0.0
+              },
+              {
+                "verdict": "OK",
+                "min": 0.0625,
+                "max": 0.0625,
+                "excursionLen": 0.0,
+                "wMin": 4.0,
+                "wMax": 4.0,
+                "wExcursionLen": 0.0
+              }
+            ],
+            "gaps": [
+              {
+                "segment": 1,
+                "s0": 47.0,
+                "s1": 54.0,
+                "len": 7.0,
+                "frames": [
+                  1
+                ]
+              }
+            ]
+          },
+          "serialPartMeasureAndJudgeMs": 38.4728,
+          "lastSelectedFrameToJudgeMs": 10.6508,
+          "measurementErrors": 0,
+          "decisionSource": "crate::judge::judge"
+        },
+        "wholeEmpty": {
+          "calls": [
+            {
+              "k": 0,
+              "shotId": "P1",
+              "camera": "cam1",
+              "view": 1,
+              "size": [
+                1280,
+                1024
+              ],
+              "preparedMeasureMs": 9.4067,
+              "engineRunIoParseMs": null,
+              "error": "拍照点 P1 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段"
+            },
+            {
+              "k": 1,
+              "shotId": "P2",
+              "camera": "cam1",
+              "view": 2,
+              "size": [
+                1280,
+                1024
+              ],
+              "preparedMeasureMs": 8.6845,
+              "engineRunIoParseMs": null,
+              "error": "拍照点 P2 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段"
+            },
+            {
+              "k": 2,
+              "shotId": "P3",
+              "camera": "cam1",
+              "view": 3,
+              "size": [
+                1280,
+                1024
+              ],
+              "preparedMeasureMs": 9.1266,
+              "engineRunIoParseMs": null,
+              "error": "拍照点 P3 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段"
+            },
+            {
+              "k": 3,
+              "shotId": "P4",
+              "camera": "cam1",
+              "view": 1,
+              "size": [
+                1280,
+                1024
+              ],
+              "preparedMeasureMs": 9.234,
+              "engineRunIoParseMs": null,
+              "error": "拍照点 P4 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段"
+            }
+          ],
+          "judgement": {
+            "verdict": "ERR_INSPECT",
+            "plcCode": 90,
+            "faultCode": 99,
+            "reason": "拍照点 P1 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段; 拍照点 P2 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段; 拍照点 P3 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段; 拍照点 P4 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段",
+            "segments": [],
+            "gaps": []
+          },
+          "serialPartMeasureAndJudgeMs": 36.4799,
+          "lastSelectedFrameToJudgeMs": 9.2417,
+          "measurementErrors": 4,
+          "decisionSource": "Judgement::error(99), matching cycle::Part::apply_result native-error precedence"
+        }
+      },
+      "passed": true
+    }
+  ],
+  "scope": {
+    "execution": "Serial direct production::Prepared calls using a verified immutable release bundle and real DLL, followed by the local judge.",
+    "engineTiming": "engineRunIoParseMs is ShotMeasurement.ms: native run, injected image I/O and output parsing, integer milliseconds. preparedMeasureMs includes graph contract validation with high-resolution wall time.",
+    "tailTiming": "lastSelectedFrameToJudgeMs starts immediately before submitting the fourth already-rendered selected image and ends after local judgement. serialPartMeasureAndJudgeMs spans all four serial measurements, wrapper assertions/telemetry and judgement. Both use the same captured judgement completion time. Neither is a production partEnd/queue tail measurement.",
+    "warmupTiming": "loadAndSelfCheckMs measures DLL load; warmupMs includes four full-size frozen-image measures and bundle verification. Only the first case is the first graph use of this benchmark's freshly loaded Engine. Run this exact ignored test alone with --test-threads=1 to isolate process-cold native initialization; other test activity and OS/DLL file caches are not controlled here.",
+    "unknownMetrics": [
+      "productionQueueWaitMs",
+      "productionPartEndToJudgeMs",
+      "physical three-view SDK synchronization",
+      "field accuracy",
+      "absence of memory leaks beyond this finite run"
+    ],
+    "excluded": [
+      "production dispatcher queue",
+      "PLC handshake and acknowledgement",
+      "camera acquisition and transport",
+      "physical tricam SDK unpacking/trigger wiring",
+      "Recorder write latency",
+      "end-to-end production scheduling proof"
+    ],
+    "hashes": "Rust records FNV-1a for every persisted artifact. Run scripts/p0-regression-report.py report.json to verify the artifacts and add SHA256."
+  },
+  "accuracyBoundary": "Default textured simimage first normal part failed strict OK. This independent constant-background performance control does not replace that failure or fix P0-09."
+}

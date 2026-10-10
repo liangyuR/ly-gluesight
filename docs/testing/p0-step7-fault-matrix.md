@@ -1,6 +1,6 @@
 # P0 步骤 7：验收中的软件故障矩阵
 
-状态：迁移到 C: 后恢复验收，Rust 默认 258 项通过、29 项默认忽略；S7 回环专项 24 项通过。新回调队列、测量队列和预热截止测试均已运行。前端首轮在并行原生构建时有两项 5 秒超时及五项级联失败，等待安静窗口完整重跑；性能和桌面演示仍待运行。真实结果及日志哈希见 [C 盘回归记录](evidence/p0-step7-regression-c.json)。
+状态：迁移到 C: 后恢复验收，Rust 默认 258 项通过、29 项默认忽略；S7 回环专项 24 项通过。新回调队列、测量队列和预热截止测试均已运行。前端首轮在并行原生构建时有两项 5 秒超时及五项级联失败；相同命令、相同默认超时在安静窗口重跑 947 项全部通过（114.57 秒）。真实 DLL 另五项专项通过。默认金属纹理性能夹具首件预期 OK、实际 2 的失败保留；独立洁净像素控制已完成单目/三目各 100 件、400 次串行测量及报告核验，实际 CycleHost 和桌面演示继续执行。真实结果及日志哈希见 [C 盘回归记录](evidence/p0-step7-regression-c.json)。
 
 | 场景 | 已准备的测试或路径 | 待完成 |
 | --- | --- | --- |
@@ -14,7 +14,7 @@
 | DLL 卡住、预热排队超时 | blocking Gate、许可耗尽、迟到结果、预热绝对截止（包含许可及 blocking pool 等待） | 四项预热 Gate 测试和测量超时许可回归通过；不声明注入了真实 DLL 永久卡死 |
 | PLC 写拒绝、断线、ACK 错件 | S7 wire report/release 拒绝、done 后断线、匹配序号和持久 ACK 恢复 | 24 项 S7 回环通过；实际桌面重启到 SQLite 历史链路随步 6 验收 |
 | 录制磁盘错误 | Recorder 真实文件系统错误；Audit 注入 outcome；Pending 录制 SQLite reopen 与事务回滚 | 不声明真实磁盘满、断电或当前故障磁盘上完成了业务验收 |
-| 单目及三目真实像素 | `production::regression::native_full_resolution_frozen_bundle_single_and_tricam_regression`：每模式至少 100 件、每件四次真实测量、1280×1024、冻结发布包；normal、gap、whole_empty | 尚未执行；输出版本、DLL/夹具哈希、逐帧 JSONL、分位数与进程内存 |
+| 单目及三目真实像素 | `production::regression::native_full_resolution_frozen_bundle_single_and_tricam_regression`：每模式至少 100 件、每件四次真实测量、1280×1024、冻结发布包；normal、gap、whole_empty | 默认金属纹理夹具首件严格 OK 失败；独立 clean_step_edge 夹具各 100 件通过，版本、DLL/夹具哈希、逐帧 JSONL、分位数与进程内存见 p0-step7-prepared-c.json；不声明修复 P0-09 |
 
 `measure` 的 `ms` 保留从提交到报告的总耗时；`queueMs` 是提交到 blocking executor 实际进入，包含通道、许可与执行器等待；`engineMs` 是执行器进入到 runner 正常返回的墙钟时间；`coreMs` 是成功图像 runner 原有的测量耗时。未知值序列化为显式 null，0 是有效值。超时或 panic 不补造引擎耗时，迟到结果不回填已报告结果。历史合成测量没有这些观测，填 null。
 
@@ -23,3 +23,5 @@
 恢复存储后的顺序：步骤 5 最终四帧×两尺寸显示 → 步骤 6 全量回归及十二视角历史/原包桌面重现 → 步骤 7 补齐上述缺口、全量回归、单目/三目原生基准、实际 CycleHost 与五个演示故障场景。每次通过后记录真实结果并更新草稿 PR；现场 W0/W7 准确率及真实三目 SDK 交付形式继续独立验收。
 
 演示依然使用开发 Modbus，不代表 S7 生产验收。`make-samples.py` 从桌面已冻结的 workspace 生成可核查夹具，不能从全新检出凭空生成已示教配方；使用参数和准备步骤见 `scripts/robot-plc-demo/README.md`。暂存目录、原始图像、大型二进制和本机客户数据不提交。
+
+独立洁净性能控制通过 `GLUESIGHT_P0_FIXTURE_STYLE=clean_step_edge` 显式选择：1280×1024、灰度 210 背景、灰度 38 的 32 px 直胶带，0.125 mm/px，独立 `-CLEAN` 配方身份。默认 `simulated_metal` 保留纹理、噪声及首次失败。单目 / 三目各 100 件、400 次测量，Prepared P95 11.276 / 10.739 ms；只读报告工具重新核验全部原图与冻结资源 SHA256，详见 [性能控制证据](evidence/p0-step7-prepared-c.json)。串行四次测量 P95 42.698 / 41.972 ms；此值不能当作实际 PLC 收尾延迟。

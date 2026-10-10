@@ -35,9 +35,9 @@ fn write_json(path: &Path, value: &Value) {
     std::fs::write(path, serde_json::to_vec_pretty(value).unwrap()).unwrap();
 }
 
-fn recipe(view_count: u8) -> RecipeDoc {
+fn recipe(view_count: u8, clean: bool) -> RecipeDoc {
     let mut doc = crate::recipe::samples().remove(1);
-    doc.id = format!("P0-REGRESSION-{view_count}V");
+    doc.id = format!("P0-REGRESSION-{view_count}V{}", if clean { "-CLEAN" } else { "" });
     doc.name = format!("P0 1280x1024 {view_count} 视角回归");
     doc.spacing = 1.0;
     doc.detect = DetectParams {
@@ -58,7 +58,31 @@ fn recipe(view_count: u8) -> RecipeDoc {
     doc
 }
 
-fn fixtures(root: &Path, recipe: &Recipe, view_count: u8) -> Fixtures {
+fn clean_views(recipe: &Recipe, k: usize, scenario: Option<Scenario>, view_count: u8) -> Vec<Arc<FrameImage>> {
+    let shot = &recipe.shots[k];
+    let gap = scenario.map(|s| s.gap_points(recipe)).unwrap_or_default();
+    let segment = recipe.shot_segment(k).unwrap();
+    let step = recipe.spacing / shot.mm_per_px.unwrap();
+    let gap_range = gap.first().zip(gap.last()).filter(|(first, _)| **first >= segment.first && **first < segment.first + segment.count)
+        .map(|(first, last)| (((first - segment.first) as f32 * step), ((last - segment.first + 1) as f32 * step)));
+    (1..=view_count).map(|view| {
+        let mut pixels = vec![210; 1280 * 1024];
+        if view == shot.view && scenario.is_some() {
+            let center_y = shot.path[0][1] as usize;
+            for y in center_y - 16..center_y + 16 {
+                for x in 220..1061 {
+                    let distance = shot.path[0][0] - x as f32;
+                    if !gap_range.is_some_and(|(a, b)| distance >= a && distance < b) {
+                        pixels[y * 1280 + x] = 38;
+                    }
+                }
+            }
+        }
+        Arc::new(FrameImage::new(1280, 1024, pixels))
+    }).collect()
+}
+
+fn fixtures(root: &Path, recipe: &Recipe, view_count: u8, clean: bool) -> Fixtures {
     std::fs::create_dir_all(root).unwrap();
     let mut scenarios = Vec::new();
     let mut sets = Vec::new();
@@ -71,7 +95,7 @@ fn fixtures(root: &Path, recipe: &Recipe, view_count: u8) -> Fixtures {
         let mut images = Vec::new();
         for (k, shot) in recipe.shots.iter().enumerate() {
             let seed = SEED + k as u64;
-            let views = match scenario {
+            let views = if clean { clean_views(recipe, k, scenario, view_count) } else { match scenario {
                 Some(scenario) => simimage::render_views(
                     recipe,
                     k,
@@ -82,7 +106,7 @@ fn fixtures(root: &Path, recipe: &Recipe, view_count: u8) -> Fixtures {
                 )
                 .unwrap(),
                 None => simimage::background_views(view_count, seed).unwrap(),
-            };
+            }};
             assert_eq!(views.len(), view_count as usize);
             let mut records = Vec::new();
             for (v, image) in views.iter().enumerate() {
@@ -110,7 +134,9 @@ fn fixtures(root: &Path, recipe: &Recipe, view_count: u8) -> Fixtures {
         scenarios.push(json!({"name": name, "shots": shots}));
         sets.push(images);
     }
-    let manifest = json!({"schemaVersion": 1, "source": "crate::simimage::render_views/background_views",
+    let manifest = json!({"schemaVersion": 1, "source": if clean { "production::regression::clean_views: independent uniform 210 Gray8 background, 38 Gray8 straight bead, exact 32-pixel width; no texture, noise, nozzle or pose shift" } else { "crate::simimage::render_views/background_views" },
+        "fixtureStyle": if clean { "clean_step_edge" } else { "simulated_metal" },
+        "accuracyBoundary": "A clean synthetic fixture is a performance/control case only. It does not repair or supersede P0-09 failures on textured metal backgrounds.",
         "imageSize": SIM_SIZE, "format": "8-bit row-major grayscale, P5 PGM, no resizing",
         "nominalWidthMm": 4.0, "mmPerPx": 0.125, "pathLengthPx": 800, "stationsPerShot": 101,
         "partialGap": {"shot": 1, "removedStations": Scenario::Gap.gap_points(recipe), "maxGapLenMm": 6.0},
@@ -314,15 +340,16 @@ fn run_case(
     view_count: u8,
     parts: usize,
     engine_already_used: bool,
+    clean: bool,
 ) -> Value {
     let root = root.join(format!("{view_count}-view"));
     std::fs::create_dir_all(&root).unwrap();
-    let doc = recipe(view_count);
+    let doc = recipe(view_count, clean);
     let recipe = doc.build().unwrap();
     assert_eq!(recipe.shot_count(), 4);
     assert_eq!(recipe.cameras(), ["cam1".to_string()]);
     let rendering = Instant::now();
-    let fixtures = fixtures(&root.join("fixtures"), &recipe, view_count);
+    let fixtures = fixtures(&root.join("fixtures"), &recipe, view_count, clean);
     let fixture_render_ms = milliseconds(rendering);
     let fixture_manifest = root.join("fixtures.json");
     write_json(&fixture_manifest, &fixtures.manifest);
@@ -476,6 +503,9 @@ fn native_full_resolution_frozen_bundle_single_and_tricam_regression() {
             .expect("Set LYFLOW_CORE_DLL to the real taught-path DLL"),
     );
     let source = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let fixture_style = std::env::var("GLUESIGHT_P0_FIXTURE_STYLE").unwrap_or_else(|_| "simulated_metal".into());
+    assert!(matches!(fixture_style.as_str(), "simulated_metal" | "clean_step_edge"), "Unknown fixture style");
+    let clean = fixture_style == "clean_step_edge";
     let initial_memory = memory();
     let dll_at = Instant::now();
     let engine = Arc::new(Engine::load(&dll).unwrap());
@@ -484,10 +514,10 @@ fn native_full_resolution_frozen_bundle_single_and_tricam_regression() {
     let run_at = Instant::now();
     let started_at = ly_plc::now_ms();
     let cases = vec![
-        run_case(&root, engine.clone(), 1, parts, false),
-        run_case(&root, engine.clone(), 3, parts, true),
+        run_case(&root, engine.clone(), 1, parts, false, clean),
+        run_case(&root, engine.clone(), 3, parts, true, clean),
     ];
-    let report = json!({"schemaVersion": 1, "passed": true, "startedAtUnixMs": started_at,
+    let report = json!({"schemaVersion": 1, "passed": true, "fixtureStyle": fixture_style, "startedAtUnixMs": started_at,
         "elapsedMs": milliseconds(run_at), "pid": std::process::id(), "os": std::env::consts::OS, "arch": std::env::consts::ARCH,
         "software": {"package": env!("CARGO_PKG_NAME"), "version": env!("CARGO_PKG_VERSION"),
             "graphVersion": GRAPH_VERSION, "gitCommit": command_output("git", &["-C", source.to_str().unwrap(), "rev-parse", "HEAD"]),
