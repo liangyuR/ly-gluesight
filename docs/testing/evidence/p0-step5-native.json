@@ -447,5 +447,14 @@
     "script": "tests/native/p0-frame-visibility-ui.js",
     "blockedEvidence": "p0-storage-blocked.json",
     "finalExecutableVerified": false
+  },
+  "finalRecovery": {
+    "status": "passed",
+    "evidence": "p0-step5-recovery.json",
+    "date": "2026-10-10",
+    "executableSha256": "FB6DEBC2F7589513B46FFE62E8CAF94638C722CADDE841AF08D54519AC415DBC",
+    "previousBlockedAttemptPreserved": true,
+    "noInjectedStyles": true,
+    "framesAndWindowSizesVerified": 8
   }
 }
