@@ -46,7 +46,7 @@ pub struct SessionView {
 }
 
 #[derive(Debug)]
-pub enum SessionEvent { None, Ready, Start(Request), End, Released, Fault(String) }
+pub enum SessionEvent { None, Ready, Start(Request), End(Instant), Released, Fault(String) }
 
 pub struct PlcSession {
     path: PathBuf,
@@ -365,8 +365,9 @@ impl PlcSession {
                 }
                 if self.phase == SessionPhase::Acquiring && snapshot.read_bool(tag::PART_END)? {
                     handshake::verify_part_end(&snapshot, request)?;
+                    let ended_at = Instant::now();
                     self.set_pending_phase(engine, SessionPhase::Draining).await?;
-                    return Ok(SessionEvent::End);
+                    return Ok(SessionEvent::End(ended_at));
                 }
                 if self.phase == SessionPhase::AwaitAck {
                     let result = self.result().ok_or("S7 结果尚未生成")?;

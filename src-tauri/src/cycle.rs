@@ -1156,9 +1156,9 @@ impl Machine {
                     log(&app, "ok", "S7 复位完成", "输入基线已核验，视觉就绪");
                 }
                 SessionEvent::Start(request) => self.start_part(Some(request)).await,
-                SessionEvent::End => {
+                SessionEvent::End(ended_at) => {
                     if let Some(part) = self.part.as_mut() {
-                        part.end_at = Some(Instant::now());
+                        part.end_at = Some(ended_at);
                         part.issued_verified = true;
                     }
                     self.set_phase(Phase::Drain);
@@ -1510,4 +1510,4 @@ pub fn cycle_reset(cycle: State<'_, CycleHost>) {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
