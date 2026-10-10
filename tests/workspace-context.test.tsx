@@ -16,6 +16,7 @@ vi.mock("../src/features/camera/api", () => ({ cameraApi: { rigConfig: vi.fn() }
 vi.mock("../src/features/plc/api", () => ({ subscribe: vi.fn() }));
 let changed: (id: string) => void;
 let camerasChanged: () => void;
+let calibrationChanged: () => void;
 let off = vi.fn<() => void>();
 beforeEach(() => {
   const a = workspaceView(), b = workspaceView("B");
@@ -30,6 +31,7 @@ beforeEach(() => {
   vi.mocked(subscribe).mockImplementation((event, callback) => {
     if (event === "workspace://changed") changed = callback as (id: string) => void;
     if (event === "camera://changed") camerasChanged = callback as () => void;
+    if (event === "calibration://changed") calibrationChanged = callback as () => void;
     return off;
   });
 });
@@ -61,6 +63,98 @@ describe("候选工作台状态与并发", () => {
     expect(result.current.dirty).toBe(true);
   });
 
+  it("工位标定保存事件重新读取候选并显示局部示教失效", async () => {
+    const { result } = await open();
+    const next = workspaceView(); next.workspace.revision++;
+    next.workspace.frames[0].saved = false; next.workspace.frames[0].trial = null;
+    vi.mocked(workspaceApi.get).mockResolvedValue(next);
+    await act(async () => calibrationChanged());
+    await waitFor(() => expect(result.current.data?.workspace.revision).toBe(next.workspace.revision));
+    expect(result.current.data?.workspace.frames[0].saved).toBe(false);
+    expect(result.current.data?.workspace.frames[0].trial).toBeNull();
+  });
+
+  it("配置草稿期间合并环境事件，保存后补读失效状态并保留已保存编辑", async () => {
+    const { result } = await open();
+    const draft = { ...result.current.doc!, name: "保留用户编辑" };
+    act(() => result.current.setDoc(draft));
+    const calls = vi.mocked(workspaceApi.get).mock.calls.length;
+    await act(async () => { camerasChanged(); calibrationChanged(); camerasChanged(); });
+    expect(workspaceApi.get).toHaveBeenCalledTimes(calls);
+    expect(result.current.doc?.name).toBe(draft.name);
+    const saved = workspaceView(); saved.workspace.doc = draft; saved.workspace.revision++;
+    const refreshed = structuredClone(saved); refreshed.workspace.revision++;
+    refreshed.workspace.frames[0].saved = false; refreshed.workspace.frames[0].trial = null;
+    vi.mocked(workspaceApi.saveDoc).mockResolvedValue(saved);
+    vi.mocked(workspaceApi.get).mockResolvedValue(refreshed);
+    await act(() => result.current.saveDoc());
+    await waitFor(() => expect(result.current.data?.workspace.revision).toBe(refreshed.workspace.revision));
+    expect(workspaceApi.get).toHaveBeenCalledTimes(calls + 1);
+    expect(result.current.doc?.name).toBe(draft.name);
+    expect(result.current.dirty).toBe(false);
+    expect(result.current.data?.workspace.frames[0].saved).toBe(false);
+  });
+
+  it("帧中线草稿期间标定变更不会覆盖草稿，撤销草稿后补刷新", async () => {
+    const { result } = await open();
+    const saved = result.current.doc!.shots[0];
+    const draft = { path: [[10, 10], [24, 10]] as [number, number][], mmPerPx: .2 };
+    act(() => result.current.setFrameDraft(0, draft));
+    const calls = vi.mocked(workspaceApi.get).mock.calls.length;
+    const refreshed = workspaceView(); refreshed.workspace.revision++;
+    refreshed.workspace.frames[0].saved = false; refreshed.workspace.frames[0].trial = null;
+    vi.mocked(workspaceApi.get).mockResolvedValue(refreshed);
+    await act(async () => calibrationChanged());
+    expect(workspaceApi.get).toHaveBeenCalledTimes(calls);
+    expect(result.current.frameDrafts[0]).toEqual(draft);
+    act(() => result.current.setFrameDraft(0, { path: saved.path, mmPerPx: saved.mmPerPx! }));
+    await waitFor(() => expect(result.current.data?.workspace.revision).toBe(refreshed.workspace.revision));
+    expect(result.current.frameDirty).toBe(false);
+    expect(result.current.data?.workspace.frames[0].saved).toBe(false);
+  });
+
+  it.each(["resolve", "reject"])("操作期间环境变更在操作 %s 解锁后补刷新", async outcome => {
+    const { result } = await open(), operation = deferred<WorkspaceView>();
+    act(() => { void result.current.act(() => operation.promise); });
+    const calls = vi.mocked(workspaceApi.get).mock.calls.length;
+    const refreshed = workspaceView(); refreshed.workspace.revision = 10;
+    refreshed.workspace.frames[0].saved = false; refreshed.workspace.frames[0].trial = null;
+    vi.mocked(workspaceApi.get).mockResolvedValue(refreshed);
+    await act(async () => calibrationChanged());
+    expect(workspaceApi.get).toHaveBeenCalledTimes(calls);
+    await act(async () => {
+      if (outcome === "resolve") operation.resolve(workspaceView());
+      else operation.reject(new Error("操作失败"));
+    });
+    await waitFor(() => expect(result.current.data?.workspace.revision).toBe(10));
+    expect(result.current.busy).toBe(false);
+    expect(result.current.data?.workspace.frames[0].saved).toBe(false);
+    if (outcome === "reject") expect(result.current.error).toContain("操作失败");
+  });
+
+  it("环境刷新途中出现编辑时保留待刷新标记，撤销编辑后读取最新环境", async () => {
+    const { result } = await open(), stale = deferred<WorkspaceView>();
+    const latest = workspaceView(); latest.workspace.revision = 10;
+    vi.mocked(workspaceApi.get).mockReturnValueOnce(stale.promise).mockResolvedValueOnce(latest);
+    act(() => camerasChanged());
+    act(() => result.current.setDoc({ ...result.current.doc!, name: "刷新期间编辑" }));
+    await act(async () => stale.resolve(workspaceView()));
+    expect(result.current.doc?.name).toBe("刷新期间编辑");
+    act(() => result.current.setDoc(result.current.data!.workspace.doc));
+    await waitFor(() => expect(result.current.data?.workspace.revision).toBe(10));
+  });
+
+  it("延迟环境刷新不跟随旧配方覆盖新选择", async () => {
+    const { result } = await open();
+    act(() => result.current.setDoc({ ...result.current.doc!, name: "A 草稿" }));
+    await act(async () => camerasChanged());
+    vi.mocked(workspaceApi.get).mockClear();
+    await act(() => result.current.select("B"));
+    expect(workspaceApi.get).toHaveBeenCalledTimes(1);
+    expect(workspaceApi.get).toHaveBeenCalledWith("B");
+    expect(result.current.doc?.id).toBe("B");
+  });
+
   it("浏览器模式不读取桌面配置", () => {
     vi.mocked(desktopAvailable).mockReturnValue(false);
     const { result } = renderHook(() => useWorkspace(), { wrapper: WorkspaceProvider });
@@ -72,7 +166,7 @@ describe("候选工作台状态与并发", () => {
     localStorage.setItem("tujiao-last-workspace", "B");
     const { result, unmount } = renderHook(() => useWorkspace(), { wrapper: WorkspaceProvider });
     await waitFor(() => expect(result.current.doc?.id).toBe("B"));
-    unmount(); expect(off).toHaveBeenCalledTimes(2);
+    unmount(); expect(off).toHaveBeenCalledTimes(3);
   });
 
   it("已删除的上次配方回退到第一项", async () => {
@@ -137,8 +231,10 @@ describe("候选工作台状态与并发", () => {
     await act(async () => changed("A"));
     expect(workspaceApi.get).toHaveBeenCalledTimes(count);
     expect(result.current.dirty).toBe(true); expect(result.current.doc?.name).toBe("尚未保存");
-    act(() => result.current.setDoc(result.current.data!.workspace.doc));
-    act(() => result.current.setFrameDraft(0, { path: [[10, 10], [24, 10]], mmPerPx: .1 }));
+    act(() => {
+      result.current.setDoc(result.current.data!.workspace.doc);
+      result.current.setFrameDraft(0, { path: [[10, 10], [24, 10]], mmPerPx: .1 });
+    });
     await act(async () => changed("A"));
     expect(result.current.frameDirty).toBe(true); expect(workspaceApi.get).toHaveBeenCalledTimes(count);
   });
