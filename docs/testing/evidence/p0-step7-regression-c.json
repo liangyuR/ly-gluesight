@@ -345,6 +345,25 @@
         }
       },
       "scope": "Successful cycle_save_settings emits cycle://settings-changed; workspace reuses guarded deferred environment refresh. Dirty documents, teaching drafts, active operations and stale responses remain protected."
+    },
+    "warmupBudgetsFinal": {
+      "source": "6a110a6",
+      "passed": 276,
+      "failed": 0,
+      "ignored": 30,
+      "seconds": 3.16,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-warmup-budgets-final-c.log",
+        "bytes": 31762,
+        "sha256": "974586a20bec240365e4b69ddf4f804b185be71f6666b16ed83126b0fc3a3314"
+      },
+      "gateTests": 8,
+      "contract": "Queue wait (permit and blocking executor) is capped at 30s; actual worker execution gets its own 30s. Queue expiry is retryable, actual failure/timeout stays permanent and holds the worker permit until return.",
+      "unchangedFrom39b5c34": [
+        "frontend src and tests tree",
+        "Prepared load/measure/verify",
+        "release.rs full-byte package verification"
+      ]
     }
   },
   "pending": [

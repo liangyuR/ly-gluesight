@@ -245,6 +245,8 @@ PR #12 孤立 `_pending` 清理补充（已执行新增及全量回归，结果�
 
 C: 全量 Rust 275 项通过、0 失败、30 项默认忽略（3.31 秒）；前端 42 文件、960 项通过（175.62 秒），覆盖率语句 91.37%、分支 89.78%、函数 88.63%、行 93.96%，全部门槛通过。两套 TypeScript 检查和生产构建通过，最终前端资源 `index-BvtVge_I.js`。日志及 SHA256 见 [最终回归记录](evidence/p0-step7-regression-c.json) 的 `settingsRefreshFinal`。本段不把尚未结束的最终 400 件与五演示计为通过。
 
+预热临界排队 P1 进一步修复于 `6a110a6`：许可与 blocking pool 排队合计最多 30 秒，实际 worker 开始后独立获得完整 30 秒；排队过期仍可重试，执行超时仍永久拒绝且持有许可至返回。新增真实单线程 blocking pool 测试覆盖排队 600 ms 后执行 300 ms、各自 800 ms 上限的成功场景。步骤 5 全量 175 项、8 项 Gate 通过；最终步骤 7 全量 276 项通过、30 项默认忽略（3.16 秒）。前端、验收脚本、Prepared 与发布核验对比 `39b5c34` 未变，继续使用上面的 960 项及构建证据。见回归 JSON 的 `warmupBudgetsFinal`；先前合并绝对截止合同及其 174 项日志保留为历史证据。
+
 ## lyFlow 原始图像注入回归（较早记录）
 
 客户端固定到主线 `5b796c3`（Image ABI v15），使用 `RunSpec.image_inputs` 注入完整 u8 灰度帧。运行库必须包含 `io.load_image`、`image.board_calib`、`image.load_calib`、`glue.locate`、`glue.station_calipers`；在 lyFlow 仓库设置 `LYFLOW_PACKS=glue` 后构建 core，系统设置填 DLL 绝对路径。
