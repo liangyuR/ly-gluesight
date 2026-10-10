@@ -1,6 +1,6 @@
 import {render,screen,waitFor} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import {MemoryRouter} from "react-router-dom";
+import {Link,MemoryRouter,Route,Routes,useLocation} from "react-router-dom";
 import {beforeEach,expect,it,vi} from "vitest";
 import CapturePage from "../src/features/workspace/CapturePage";
 import {workspaceApi} from "../src/features/workspace/api";
@@ -74,4 +74,30 @@ it.each(["/recipe/capture","/recipe/capture?purpose=validation"])("%s 工件进�
  const button=await screen.findByRole("button",{name:url.includes("validation")?"保存为独立正常验证样本":"采用本轮图像"});
  if(url.includes("validation"))await userEvent.click(screen.getByRole("checkbox",{name:"已确认本轮样本与示教轨迹、触发顺序及拍摄条件一致"}));
  expect(button).toBeDisabled();await userEvent.click(button);expect(workspaceApi.adoptCapture).not.toHaveBeenCalled();expect(workspaceApi.captureSample).not.toHaveBeenCalled();
+});
+
+it.each(["/recipe/capture","/recipe/capture?purpose=validation"])("%s 配置设备返回后保留采集参数和历史轮次",async url=>{
+ ws.cameras.push({...ws.cameras[0],id:"CAM-2",name:"第二设备"});
+ const historical={...round("failed"),roundId:"history-1"};
+ vi.mocked(workspaceApi.captureList).mockResolvedValue([historical]);
+ function DevicePage(){const location=useLocation();return <Link to={url} state={location.state}>返回采集</Link>;}
+ render(<MemoryRouter initialEntries={[url]}><Routes><Route path="/recipe/capture" element={<CapturePage/>}/><Route path="/camera" element={<DevicePage/>}/></Routes></MemoryRouter>);
+ await screen.findByRole("option",{name:/采集异常/});
+ await userEvent.selectOptions(screen.getByRole("combobox",{name:"采集 device"}),"CAM-2");
+ const planned=screen.getByRole("spinbutton",{name:"PLC 计划触发次数"}),drain=screen.getByRole("spinbutton",{name:"在途图像等待时间"});
+ await userEvent.clear(planned);await userEvent.type(planned,"32");await userEvent.clear(drain);await userEvent.type(drain,"2600");
+ await userEvent.selectOptions(screen.getByRole("combobox",{name:"采集历史"}),"history-1");
+ await userEvent.click(screen.getByRole("link",{name:"配置设备"}));await userEvent.click(screen.getByRole("link",{name:"返回采集"}));
+ expect(screen.getByRole("combobox",{name:"采集 device"})).toHaveValue("CAM-2");
+ expect(screen.getByRole("spinbutton",{name:"PLC 计划触发次数"})).toHaveValue(32);expect(screen.getByRole("spinbutton",{name:"在途图像等待时间"})).toHaveValue(2600);
+ expect(screen.getByRole("combobox",{name:"采集历史"})).toHaveValue("history-1");expect(ws.doc!.id).toBe("A");
+ expect(screen.getByRole("heading",{name:url.includes("validation")?"实拍独立验证样本":"设备准备与整圈采集"})).toBeVisible();
+ expect(workspaceApi.captureStart).not.toHaveBeenCalled();
+});
+
+it("返回时原设备已移除则选用仍存在的设备",async()=>{
+ render(<MemoryRouter initialEntries={[{pathname:"/recipe/capture",state:{captureReturn:{recipeId:"A",search:"",cameraId:"removed",planned:32,drain:2600,previewK:0}}}]}><CapturePage/></MemoryRouter>);
+ expect(screen.getByRole("combobox",{name:"采集 device"})).toHaveValue("CAM-1");
+ const start=screen.getByRole("button",{name:"开始接收 / 整圈重采"});await waitFor(()=>expect(start).toBeEnabled());await userEvent.click(start);
+ expect(workspaceApi.captureStart).toHaveBeenCalledWith("A","CAM-1",32,2600);
 });
