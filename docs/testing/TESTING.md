@@ -277,3 +277,19 @@ C: 独立分支 `codex/p0-step5-settings-refresh` 定向 `workspace-context.test
 
 
 PR #11 执行窗口修正：新增真实单线程 blocking 池 gate，先排队约 600 ms，再执行约 300 ms，排队和执行预算各 800 ms；跨越原申请起点的 800 ms 后仍保持 Preparing，释放执行 gate 后成功。该用例同时防止错误地从取得许可而非工作线程真正开始计执行时间。实际执行超时仍永久 Failed，许可直至线程返回才释放，迟到成功不追认；未开始的排队超时仍可冷却重试。本轮在 C: 共享 target 执行默认完整 Rust 回归，175 项通过、0 失败、21 项忽略，测试耗时 0.93 秒；8 项预热 gate 均通过。日志 `p0-step5-warmup-budgets-c.log` 与源码 SHA256 见同一预热审查修复证据的 `executionWindowCorrection`，旧 174 项结果及合并窗口合同完整保留为 `historicalAttempt`，不再作为最终合同。前端未修改，本轮未重复前端覆盖率或原生 UI。
+
+
+## 2026-10-10 · 四组实际 CycleHost 400 件基线与审计最终回归
+
+封存构建源码 `d41d19e`、运行时代码 `6a110a6`，可执行文件 SHA256 `E304148D45DFF745B6B8C61159FFF5B58C6D5CC9695220B49FCD0FB56835F171`。单目/三目 × normal/gap 每组 100 件全部完成；正常件全部严格 OK/1、断胶件全部 NG/13，1600 次测量及 3200 张 1280×1024 原图逐幅匹配输入，四组独立验证器通过。布防限制保持 200 ms，最大 112 ms；仅隔离 profile 的 recordKeep 从 500 调至 1000 以保留全部证据，算法、ROI、阈值未变。
+
+| 组合 | 件数 | arm P50/P95/最大 ms | frame P95 ms | partEnd→PLC提交 P95 ms | private增量 B |
+|---|---:|---|---:|---:|---:|
+| tricam/normal | 100 | 51/66/69 | 27 | 31 | 17510400 |
+| tricam/gap | 100 | 51/75/110 | 26 | 31 | 8597504 |
+| single/normal | 100 | 56/76/112 | 26 | 31 | 1933312 |
+| single/gap | 100 | 58/75/90 | 25 | 31 | 1134592 |
+
+耗时为 nearest-rank；frame 包含排队，尾延迟截止 PLC 提交，不是 ACK 或纯 DLL 时间。private 只含原生主进程，不含 WebView2，有限 100 件趋势不能证明长期无泄漏。开发 PLC 模拟器与确定性回放不能替代现场 W0/W7。完整指标、内存斜率与原报告 SHA 见 [400 件基线](evidence/p0-step7-cyclehost-c.json)。suite 的 `toolSourceCommit=7390825` 是初始工具标签，实际工具字节已另行封存并记录 SHA。
+
+400 件结束后集成审计重试修复 `e5af201`，完整 Rust **279 项通过、0 失败、30 项默认忽略**（2.94 秒）。前端 960 项及类型/构建继续适用：前端、Prepared、CycleHost、发布逐件核验相对上述基线未变。新审计程序的同 profile 重复启动、四组合各 1 件检查与五个 Robot/Modbus 演示另行执行；不将旧程序 400 件标为新审计程序的性能结果。瞬态锁恢复已经真实 SQLite 四次失败后仅靠周期 retry 验证；128 待写/512 缓存/30 分钟未收新事件的淘汰边界仍然存在。

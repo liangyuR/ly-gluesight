@@ -258,12 +258,12 @@
     },
     "armVerificationFix": {
       "evidence": "p0-arm-verify-c.json",
-      "nativeRetryPending": true,
+      "nativeRetryPending": false,
       "nativeRecoveryControl": {
         "passed": 100,
         "source": "d03fade",
         "evidence": "p0-arm-verify-c.json",
-        "finalSuitePending": true
+        "finalSuitePending": false
       }
     },
     "rustReviewFinal": {
@@ -364,10 +364,39 @@
         "Prepared load/measure/verify",
         "release.rs full-byte package verification"
       ]
+    },
+    "auditRetryFinal": {
+      "source": "e5af201",
+      "helperSource": "e3c527a",
+      "passed": 279,
+      "failed": 0,
+      "ignored": 30,
+      "seconds": 2.94,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-audit-retry-final-c.log",
+        "bytes": 32089,
+        "sha256": "391bcb384acfdda14fcef49ba8c95df1aadd879cdbdb21a70e65def3b9e3fb6d"
+      },
+      "contract": "Transient audit writes continue with 1/2/4/8/16/30s capped backoff. Existing 128 pending / 512 cached / 30min last-event TTL limits remain; no durable spool or production interlock."
+    },
+    "cycleHost400Baseline": {
+      "passed": true,
+      "evidence": "p0-step7-cyclehost-c.json",
+      "source": "d41d19e",
+      "runtime": "6a110a6",
+      "parts": 400,
+      "measurements": 1600,
+      "rawPGMs": 3200,
+      "latestAuditFixCovered": false,
+      "summary": {
+        "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-cyclehost-final-retry3\\performance-summary.json",
+        "bytes": 17156,
+        "sha256": "515c6c226e14e7b56a2aa00e0acfb90195b5abe5bded3effec98f002a792fbb5"
+      }
     }
   },
   "pending": [
-    "actual CycleHost queue/engine/core/tail/memory measurement",
+    "latest audit runtime duplicate-instance and four-combination one-part smoke",
     "five actual desktop Robot/Modbus scenarios"
   ],
   "boundaries": [

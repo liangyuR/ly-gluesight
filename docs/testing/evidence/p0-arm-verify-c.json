@@ -1,5 +1,5 @@
 {
-  "status": "native_recovery_control_passed_final_suite_pending",
+  "status": "native_recovery_control_and_400_baseline_passed",
   "issue": "P0-14",
   "armLimitMs": 200,
   "failedActualCycleHost": {
@@ -480,5 +480,110 @@
       }
     },
     "boundary": "Actual CycleHost recovery control. Final software with warmup/pending/profile-lease reviews requires a separate final400 suite."
+  },
+  "final400Baseline": {
+    "passed": true,
+    "source": "d41d19e",
+    "runtime": "6a110a6",
+    "latestAuditFixCovered": false,
+    "evidence": "p0-step7-cyclehost-c.json",
+    "runs": [
+      {
+        "mode": "tricam",
+        "scenario": "normal",
+        "parts": 100,
+        "armMs": {
+          "count": 100,
+          "unit": "ms",
+          "percentile": "nearest rank",
+          "min": 36,
+          "p50": 51,
+          "p95": 66,
+          "max": 69,
+          "mean": 52.14
+        },
+        "validator": {
+          "valid": true,
+          "passed": true,
+          "parts": 100,
+          "mode": "tricam",
+          "scenario": "normal",
+          "accuracyFailures": 0,
+          "artifacts": 1333
+        }
+      },
+      {
+        "mode": "tricam",
+        "scenario": "gap",
+        "parts": 100,
+        "armMs": {
+          "count": 100,
+          "unit": "ms",
+          "percentile": "nearest rank",
+          "min": 36,
+          "p50": 51,
+          "p95": 75,
+          "max": 110,
+          "mean": 52.5
+        },
+        "validator": {
+          "valid": true,
+          "passed": true,
+          "parts": 100,
+          "mode": "tricam",
+          "scenario": "gap",
+          "accuracyFailures": 0,
+          "artifacts": 1333
+        }
+      },
+      {
+        "mode": "single",
+        "scenario": "normal",
+        "parts": 100,
+        "armMs": {
+          "count": 100,
+          "unit": "ms",
+          "percentile": "nearest rank",
+          "min": 40,
+          "p50": 56,
+          "p95": 76,
+          "max": 112,
+          "mean": 57.88
+        },
+        "validator": {
+          "valid": true,
+          "passed": true,
+          "parts": 100,
+          "mode": "single",
+          "scenario": "normal",
+          "accuracyFailures": 0,
+          "artifacts": 525
+        }
+      },
+      {
+        "mode": "single",
+        "scenario": "gap",
+        "parts": 100,
+        "armMs": {
+          "count": 100,
+          "unit": "ms",
+          "percentile": "nearest rank",
+          "min": 36,
+          "p50": 58,
+          "p95": 75,
+          "max": 90,
+          "mean": 57.99
+        },
+        "validator": {
+          "valid": true,
+          "passed": true,
+          "parts": 100,
+          "mode": "single",
+          "scenario": "gap",
+          "accuracyFailures": 0,
+          "artifacts": 525
+        }
+      }
+    ]
   }
 }
