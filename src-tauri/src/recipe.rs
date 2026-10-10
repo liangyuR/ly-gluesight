@@ -124,6 +124,7 @@ pub struct Segment {
     pub name: String,
     /// 拍照点（shots 下标）
     pub shot: usize,
+    pub view: u8,
     pub first: usize,
     pub count: usize,
     pub position: Option<JudgeParams>,
@@ -168,7 +169,20 @@ fn valid_label(s: &str) -> bool {
 }
 
 /// 配方文件格式版本。不一致的文件列为加载错误，不迁移。
-pub const RECIPE_SCHEMA: u32 = 4;
+pub const RECIPE_SCHEMA: u32 = 5;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ShotViewSpec {
+    pub view: u8,
+    pub enabled: bool,
+    #[serde(default)]
+    pub path: Vec<[f32; 2]>,
+    pub mm_per_px: Option<f32>,
+    pub detect: Option<DetectParams>,
+    pub limits: Option<ShotLimits>,
+    pub calib: Option<String>,
+}
 
 /// 一个拍照点：机器人走到 Pose 时 PLC 触发这台相机拍一帧，在这帧里沿示教中线量胶。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -181,6 +195,8 @@ pub struct ShotSpec {
     /// 相机编号
     pub camera: String,
     pub view: u8,
+    #[serde(default)]
+    pub views: Vec<ShotViewSpec>,
     /// 标定引用；为空时用这台相机的工位标定
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calib: Option<String>,
@@ -204,9 +220,30 @@ pub struct ShotSpec {
 }
 
 impl ShotSpec {
+    pub fn enabled_views(&self) -> Vec<u8> {
+        if self.skip { return Vec::new(); }
+        if self.views.is_empty() { return vec![self.view]; }
+        self.views.iter().filter(|v| v.enabled).map(|v| v.view).collect()
+    }
+
+    pub fn for_view(&self, view: u8) -> Result<Self, String> {
+        let mut shot = self.clone();
+        if let Some(v) = self.views.iter().find(|v| v.view == view) {
+            shot.view = v.view;
+            shot.path = v.path.clone();
+            shot.mm_per_px = v.mm_per_px;
+            shot.detect = v.detect.clone();
+            shot.limits = v.limits.clone();
+            shot.calib = v.calib.clone();
+        } else if !self.views.is_empty() || view != self.view {
+            return Err(format!("拍照点 {} 没有图 {view}", self.id));
+        }
+        shot.views.clear();
+        Ok(shot)
+    }
     /// 标定文件的键：标定引用，缺省为相机编号。
-    pub fn calib_ref(&self) -> &str {
-        self.calib.as_deref().unwrap_or(&self.camera)
+    pub fn calib_ref(&self) -> String {
+        self.calib.clone().unwrap_or_else(|| format!("{}-v{}", self.camera, self.view))
     }
 
     /// 要量要判：不是"不检"。
@@ -216,7 +253,9 @@ impl ShotSpec {
 
     /// 已示教：有中线和像素当量。
     pub fn taught(&self) -> bool {
-        self.path.len() >= 2 && self.mm_per_px.is_some()
+        if self.views.is_empty() { return self.path.len() >= 2 && self.path_len_px() >= 1.0 && self.mm_per_px.is_some(); }
+        let views = self.enabled_views();
+        !views.is_empty() && views.into_iter().all(|v| self.for_view(v).is_ok_and(|s| s.taught()))
     }
 
     /// 中线总长（px）。
@@ -239,6 +278,13 @@ impl ShotSpec {
     }
 
     fn validate(&self) -> Result<(), String> {
+        let mut selected = HashSet::new();
+        for v in &self.views {
+            if !(1..=3).contains(&v.view) || !selected.insert(v.view) {
+                return Err(format!("拍照点 {} 的图编号必须在 1–3 内且不能重复", self.id));
+            }
+            self.for_view(v.view)?.validate()?;
+        }
         let id = &self.id;
         if !valid_camera_id(id) {
             return Err(format!("拍照点编号 {id:?} 只能用字母、数字、- 和 _，最长 32 个字符"));
@@ -261,14 +307,8 @@ impl ShotSpec {
         if self.path.iter().flatten().any(|v| !v.is_finite()) {
             return Err(format!("拍照点 {id} 的中线坐标必须是有限数"));
         }
-        if self.path.len() == 1 || (self.path.len() >= 2 && self.path_len_px() < 1.0) {
-            return Err(format!("拍照点 {id} 的中线至少两个点、长度不能为零"));
-        }
         if let Some(m) = self.mm_per_px.filter(|m| !(m.is_finite() && *m > 0.0 && *m <= 10.0)) {
             return Err(format!("拍照点 {id} 的像素当量 {m} 需在 0–10 mm/px 之间"));
-        }
-        if !self.path.is_empty() && self.mm_per_px.is_none() {
-            return Err(format!("拍照点 {id} 有中线却没有像素当量"));
         }
         if let Some(d) = &self.detect {
             d.validate(&format!("拍照点 {id} 检测参数"))?;
@@ -318,6 +358,20 @@ impl Recipe {
         self.points.k.iter().enumerate().filter(move |(_, &o)| o as usize == k).map(|(j, _)| j)
     }
 
+    pub fn for_view(&self, k: usize, view: u8) -> Result<Self, String> {
+        let selected = self.shots.get(k).ok_or("拍照点不存在")?.for_view(view)?;
+        let mut recipe = self.clone();
+        for (index, shot) in recipe.shots.iter_mut().enumerate() { if index != k { shot.skip = true; } }
+        recipe.shots[k] = selected;
+        recipe.segments.retain(|s| s.shot == k && s.view == view);
+        Ok(recipe)
+    }
+
+    pub fn view_points(&self, k: usize, view: u8) -> impl Iterator<Item = usize> + '_ {
+        self.segments.iter().filter(move |s| s.shot == k && s.view == view)
+            .flat_map(|s| s.first..s.first + s.count)
+    }
+
     /// 拍照点 k 的检测参数。
     pub fn shot_detect(&self, k: usize) -> &DetectParams {
         self.shots[k].detect.as_ref().unwrap_or(&self.detect)
@@ -330,7 +384,10 @@ impl Recipe {
 
     /// 能不能开工：要检的拍照点都示教过。
     pub fn ready(&self) -> Result<(), String> {
-        let untaught: Vec<&str> = self.shots.iter().filter(|s| s.measured() && !s.taught()).map(|s| s.id.as_str()).collect();
+        if !self.shots.iter().any(|s| s.measured() && !s.enabled_views().is_empty()) {
+            return Err("至少需要一个参与检测的拍照点".into());
+        }
+        let untaught: Vec<&str> = self.shots.iter().enumerate().filter(|(k, s)| s.measured() && (!s.taught() || s.enabled_views().into_iter().any(|v| self.view_points(*k, v).count() < 3))).map(|(_, s)| s.id.as_str()).collect();
         if untaught.is_empty() {
             Ok(())
         } else {
@@ -403,8 +460,8 @@ impl RecipeDoc {
         }
         self.detect.validate("检测参数")?;
         self.limits.validate("限值")?;
-        if self.shots.is_empty() || self.shots.len() > 64 {
-            return Err("配方需要 1–64 个拍照点".into());
+        if self.shots.len() > 64 {
+            return Err("配方最多允许 64 个拍照点".into());
         }
         let mut ids = HashSet::new();
         for shot in &self.shots {
@@ -412,10 +469,6 @@ impl RecipeDoc {
             if !ids.insert(shot.id.as_str()) {
                 return Err(format!("拍照点编号 {} 重复", shot.id));
             }
-        }
-        // 全部不检的配方任何工件都判合格，等于没检
-        if self.shots.iter().all(|s| s.skip) {
-            return Err("至少要有一个拍照点要检，全部设为不检时任何工件都会判合格".into());
         }
         Ok(())
     }
@@ -425,15 +478,13 @@ impl RecipeDoc {
         let mut points = PathPoints::default();
         let mut segments = Vec::new();
         for (k, shot) in self.shots.iter().enumerate() {
-            if !shot.measured() || !shot.taught() {
-                continue;
-            }
+            for view in shot.enabled_views() {
+            let shot = shot.for_view(view)?;
+            if !shot.taught() { continue; }
             let step = self.spacing / shot.mm_per_px.unwrap();
             let len = shot.path_len_px();
             let count = (len / step + 1e-3).floor() as usize + 1;
-            if count < 3 {
-                return Err(format!("拍照点 {} 的中线只有 {:.1} mm，至少要 {:.1} mm", shot.id, len * shot.mm_per_px.unwrap(), 2.0 * self.spacing));
-            }
+            if count < 3 { continue; }
             if points.k.len() + count > 200_000 {
                 return Err("测量点超过 20 万个，加大站距".into());
             }
@@ -447,8 +498,9 @@ impl RecipeDoc {
             }
             let limits = shot.limits.as_ref().unwrap_or(&self.limits);
             segments.push(Segment {
-                name: format!("{} · {}", shot.id, shot.bead),
+                name: if self.shots[k].views.is_empty() { format!("{} · {}", shot.id, shot.bead) } else { format!("{} · {} · 图 {view}", shot.id, shot.bead) },
                 shot: k,
+                view,
                 first,
                 count,
                 position: limits.position.clone(),
@@ -456,6 +508,7 @@ impl RecipeDoc {
                 max_gap_len: limits.max_gap_len,
                 min_present: limits.min_present,
             });
+            }
         }
         let recipe = Recipe {
             id: self.id.clone(),
@@ -511,6 +564,7 @@ pub fn shot_list(camera: &str, paths: Vec<Vec<[f32; 2]>>) -> Vec<ShotSpec> {
             pose_id: format!("P{}", k + 1),
             camera: camera.into(),
             view: 1,
+            views: Vec::new(),
             calib: None,
             bead: "J1".into(),
             skip: false,
@@ -927,6 +981,36 @@ mod tests {
     }
 
     #[test]
+    fn multiview_keeps_one_shot_and_distinct_segments() {
+        let mut doc = samples().remove(0);
+        doc.shots.truncate(1);
+        let shot = &mut doc.shots[0];
+        shot.views = [1, 2, 3].into_iter().map(|view| ShotViewSpec { view, enabled: view != 2,
+            path: shot.path.clone(), mm_per_px: shot.mm_per_px, detect: None, limits: None, calib: None }).collect();
+        let recipe = doc.build().unwrap();
+        assert_eq!(recipe.shot_count(), 1);
+        assert_eq!(recipe.segments.iter().map(|s| (s.shot, s.view)).collect::<Vec<_>>(), [(0, 1), (0, 3)]);
+        assert!(recipe.ready().is_ok());
+        let view = recipe.for_view(0, 3).unwrap();
+        assert_eq!(view.shots[0].view, 3);
+        assert_eq!(view.shots[0].calib_ref(), "cam1-v3");
+        assert_eq!(view.segments.len(), 1);
+        assert!(view.segments[0].first > 0);
+    }
+
+    #[test]
+    fn incomplete_drafts_save_but_cannot_run() {
+        let mut doc = samples().remove(0);
+        doc.shots.clear();
+        assert!(doc.build().unwrap().ready().is_err());
+        doc.shots = shot_list("cam1", vec![vec![[1.0, 2.0]]]);
+        doc.shots[0].mm_per_px = None;
+        assert!(doc.build().unwrap().ready().is_err());
+        doc.schema_version = 4;
+        assert!(doc.build().is_err());
+    }
+
+    #[test]
     fn stations_follow_each_taught_line() {
         let r = samples().remove(1).build().unwrap();
         assert_eq!(r.segments.len(), 4);
@@ -973,7 +1057,7 @@ mod tests {
     fn all_skipped_recipe_is_rejected() {
         let mut doc = samples().remove(1);
         doc.shots.iter_mut().for_each(|s| s.skip = true);
-        assert!(doc.build().unwrap_err().contains("至少要有一个拍照点要检"));
+        assert!(doc.build().unwrap().ready().unwrap_err().contains("至少需要一个参与检测"));
         doc.shots[2].skip = false;
         assert!(doc.build().is_ok());
     }
@@ -1363,14 +1447,10 @@ mod tests {
         reject(&|d| d.shots[0].pose_id = " ".into(), "Pose");
         reject(&|d| d.shots[0].bead = String::new(), "胶条名");
         reject(&|d| d.shots[3].calib = Some("a/b".into()), "标定引用");
-        reject(&|d| d.shots[0].path.truncate(1), "至少两个点");
-        reject(&|d| d.shots[0].mm_per_px = None, "像素当量");
         reject(&|d| d.shots[0].mm_per_px = Some(0.0), "像素当量");
-        reject(&|d| d.shots[0].path[1] = [975.0, 480.0], "至少要");
         reject(&|d| d.shots[1].detect = Some(DetectParams { search_mm: 3.0, polarity: Polarity::Dark, width_range: [1.0, 8.0] }), "搜索宽度");
         reject(&|d| d.limits.max_gap_len = -1.0, "断胶长度");
         reject(&|d| d.schema_version = 2, "格式版本");
-        reject(&|d| d.shots.clear(), "1–64");
         let pose_shared = {
             let mut d = three_cameras();
             d.shots[1].pose_id = "P1".into();

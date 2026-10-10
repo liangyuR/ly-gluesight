@@ -322,8 +322,11 @@ fn delivery_row(row: &rusqlite::Row, first: usize) -> rusqlite::Result<PlcDelive
 
 fn measurement_layout(recipe: &Recipe) -> serde_json::Value {
     let shots: Vec<_> =
-        recipe.shots.iter().map(|s| serde_json::json!([s.id, s.pose_id, s.camera, s.view, s.skip, s.path, s.mm_per_px, s.calib_ref(), s.detect])).collect();
-    let segments: Vec<_> = recipe.segments.iter().map(|s| (s.shot, s.first, s.count)).collect();
+        recipe.shots.iter().map(|s| {
+            let views: Vec<_> = s.views.iter().map(|v| serde_json::json!([v.view, v.enabled, v.path, v.mm_per_px, v.calib, v.detect])).collect();
+            serde_json::json!([s.id, s.pose_id, s.camera, s.view, s.skip, s.path, s.mm_per_px, s.calib_ref(), s.detect, views])
+        }).collect();
+    let segments: Vec<_> = recipe.segments.iter().map(|s| (s.shot, s.view, s.first, s.count)).collect();
     serde_json::json!({"unit":"mm", "schema":recipe.schema_version, "spacing":recipe.spacing,
         "shots":shots, "segments":segments, "points":recipe.points, "detect":recipe.detect})
 }

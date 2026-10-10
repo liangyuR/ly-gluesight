@@ -55,7 +55,12 @@ export interface ShotLimits {
 }
 
 /** 一个拍照点：机器人走到 Pose 时 PLC 触发这台相机拍一帧，在这帧里沿示教中线量胶。可选字段不设时不发送（不发 null）。 */
+export interface ShotViewSpec {
+  view: number; enabled: boolean; path: [number, number][]; mmPerPx?: number; detect?: DetectParams; limits?: ShotLimits; calib?: string;
+}
+
 export interface ShotSpec {
+  views?: ShotViewSpec[];
   /** 配方内唯一，如 P1 */
   id: string;
   /** 现场机器人 / PLC 程序里的 Pose 标识；不要求唯一 */
@@ -134,6 +139,7 @@ export interface RecipeSummary {
 }
 
 export interface FrameView {
+  viewResults?: {view:number;verdict:Verdict;error:string|null;score:number|null;ms:number|null}[];
   status: FrameStatus;
   cam: number;
   camera: string;

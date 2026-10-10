@@ -38,6 +38,7 @@ pub struct Job {
     pub recipe: Arc<Recipe>,
     pub scenario: Scenario,
     pub image: Option<Arc<FrameImage>>,
+    pub images: Vec<(u8, Arc<FrameImage>)>,
 }
 
 pub const ST_OK: u8 = 0;
@@ -72,6 +73,7 @@ pub struct Measured {
     pub st: Vec<u8>,
     /// 图像测量时各点在原图里的像素位置（叠加显示用）
     pub px: Vec<[f32; 2]>,
+    pub views: Vec<vision::ViewMeasurement>,
 }
 
 impl Measured {
@@ -105,6 +107,7 @@ impl Measured {
             w: Vec::new(),
             st: Vec::new(),
             px: Vec::new(),
+            views: Vec::new(),
         }
     }
 
@@ -408,6 +411,7 @@ mod tests {
 
     fn job(k: usize, timeout: Duration) -> Job {
         Job {
+            images: Vec::new(),
             run_id: 7,
             cycle_id: "cycle-7".into(),
             shot_id: format!("P{}", k + 1),

@@ -15,10 +15,12 @@ interface WorkspaceContextValue {
   previewError: string; error: string; busy: boolean; dirty: boolean; frameDirty: boolean;
   /** 单帧示教里尚未保存的中线草稿，按拍照点下标 */
   frameDrafts: Record<number, ShotTeach>;
+  rememberPosition: (k: number, view: number) => void;
   select: (id: string) => Promise<WorkspaceView | null>; clearSelection:()=>void; reloadList: () => Promise<void>;
   setDoc: (doc: RecipeDoc) => void; setFrameDraft: (k: number, teach: ShotTeach) => void;
   act: (request: () => Promise<WorkspaceView>, message?: string) => Promise<WorkspaceView | null>;
   saveDoc: (doc?: RecipeDoc) => Promise<WorkspaceView | null>;
+  saveState: "saved" | "saving" | "failed" | "pending"; retrySave: () => void;
   notice: string; setError: (message: string) => void;
 }
 const Context = createContext<WorkspaceContextValue | null>(null);
@@ -37,6 +39,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [saveState, setSaveState] = useState<"saved" | "saving" | "failed" | "pending">("saved");
+  const [saveRetry, setSaveRetry] = useState(0);
+  const failedSave = useRef("");
   const requestSerial = useRef(0);
   const acting = useRef(false);
   const selected = useRef<string | null>(null);
@@ -86,6 +91,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const select = useCallback(async (id: string) => {
+    if (dirtyRef.current && selected.current !== id) { setError("当前草稿尚未保存，请等待保存完成或重试后再切换配方"); return null; }
     pendingRefresh.current = null;
     const serial = ++requestSerial.current;
     selected.current = id;
@@ -173,16 +179,41 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     finally { acting.current = false; setBusy(false); }
   }, [accept, reloadList]);
 
+  const rememberPosition = useCallback((k: number, view: number) => {
+    const id = selected.current;
+    if (!id) return;
+    void workspaceApi.progress(id,k,view).then(next => {
+      if (selected.current !== id) return;
+      setData(previous => previous?.workspace.doc.id === id ? {...previous,workspace:{...previous.workspace,lastPosition:next.workspace.lastPosition}} : previous);
+    }).catch(e => { if (selected.current === id) setError(String(e)); });
+  }, []);
+
   const saveDoc = useCallback((draft?: RecipeDoc) => {
     const current = draft ?? doc;
     if (!current || !data) return Promise.resolve(null);
     return act(() => workspaceApi.saveDoc(current.id, data.workspace.revision, current), "候选配置已保存，生产版本保持不变");
   }, [doc, data, act]);
 
+  useEffect(() => {
+    if (!data || !doc || busy || !desktopAvailable()) return;
+    const entry = Object.entries(frameDrafts).find(([k, draft]) => !sameTeach(draft, savedTeach(Number(k))));
+    if (!dirty && !entry) { setSaveState("saved"); return; }
+    const signature = JSON.stringify([doc, entry, saveRetry]);
+    if (failedSave.current === signature) return;
+    setSaveState("pending");
+    const timer = setTimeout(async () => {
+      setSaveState("saving");
+      const result = dirty ? await saveDoc() : await act(() => workspaceApi.saveDraft(doc.id, data.workspace.revision, Number(entry![0]), entry![1]));
+      if (!result) { failedSave.current = signature; setSaveState("failed"); }
+      else { failedSave.current = ""; setSaveState("saved"); }
+    }, 900);
+    return () => clearTimeout(timer);
+  }, [doc, data, frameDrafts, dirty, busy, saveRetry, saveDoc, act]);
+
   return <Context.Provider value={{ list, drafts, cameras, selectedId, data, doc, preview, previewError, error, busy, dirty, frameDirty,
     clearSelection:()=>{pendingRefresh.current=null;requestSerial.current++;selected.current=null;setSelectedId(null);setData(null);setDoc(null);setPreview(null);setFrameDrafts({});setError("");setNotice("");},
-    frameDrafts, select, reloadList, setDoc, setFrameDraft:(k, teach) => setFrameDrafts(previous => ({ ...previous, [k]:teach })),
-    act, saveDoc, notice, setError }}>{children}</Context.Provider>;
+    frameDrafts, rememberPosition, select, reloadList, setDoc, setFrameDraft:(k, teach) => setFrameDrafts(previous => ({ ...previous, [k]:teach })),
+    act, saveDoc, saveState, retrySave: () => setSaveRetry(v => v + 1), notice, setError }}>{children}</Context.Provider>;
 }
 
 export function useWorkspace() {

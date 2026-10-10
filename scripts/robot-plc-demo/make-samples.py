@@ -1,4 +1,4 @@
-"""Export selected schema 4 teaching frames and an image-space gap fixture.
+"""Export selected schema 5 teaching frames and an image-space gap fixture.
 
 Only frozen simulator images are accepted. These samples do not prove field accuracy.
 """

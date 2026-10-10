@@ -44,8 +44,9 @@ const loaded=()=>screen.findByRole("button",{name:"相机 1 CAM-1"});
 describe("设备与采集页基础操作",()=>{
   it("三目设备标定明确绑定视角 1，其他视角提示独立标定或手动像素当量",async()=>{
     configs[0].viewCount=3;render(<MemoryRouter><FlyshotCalibrationPage/></MemoryRouter>);
-    expect(await screen.findByText("工位标定使用视角 1")).toBeVisible();
-    expect(screen.getByText("工位标定当前使用视角 1；其他视角需独立标定引用或手动像素当量。")).toBeVisible();
+    expect(await screen.findByRole("combobox",{name:"标定图像"})).toHaveValue("1");
+    await userEvent.selectOptions(screen.getByRole("combobox",{name:"标定图像"}),"3");
+    expect(screen.getByRole("combobox",{name:"标定图像"})).toHaveValue("3");
     expect(screen.getByText("取样工位 0")).toBeVisible();expect(screen.getByText("飞拍标定工位 0")).toBeVisible();
   });
   it("初始加载失败保留重试入口，成功后显示相机与操作",async()=>{

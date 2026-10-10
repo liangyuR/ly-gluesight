@@ -27,6 +27,8 @@ struct Pending {
     #[serde(default)]
     cycle_id: Option<String>,
     #[serde(default)]
+    capture_id: Option<String>,
+    #[serde(default)]
     acknowledged: bool,
     #[serde(default)]
     started_at: i64,
@@ -47,6 +49,7 @@ fn valid_cycle_id(id: &str) -> bool {
 
 fn validate_pending(pending: &Pending, last_request_seq: u32) -> Result<(), String> {
     pending.request.validate()?;
+    if pending.capture_id.is_some() && pending.cycle_id.is_some() { return Err("S7事务不能同时绑定生产与示教采集身份".into()); }
     if pending.cycle_id.as_deref().is_some_and(|id| !valid_cycle_id(id)) {
         return Err("S7 握手 cycleId 必须是 32 位十六进制持久身份".into());
     }
@@ -150,12 +153,24 @@ impl PlcSession {
         if !valid_cycle_id(id) { return Err("S7 握手 cycleId 必须是 32 位十六进制持久身份".into()); }
         if let Some(error) = &self.load_error { return Err(error.clone()); }
         let pending = self.journal.pending.as_mut().ok_or("缺少可关联的 S7 请求事务")?;
+        if pending.capture_id.is_some() { return Err("S7事务已绑定示教采集，不能用于生产".into()); }
         match pending.cycle_id.as_deref() {
             Some(bound) if bound != id => Err("S7 事务已绑定其他 cycleId，禁止更换工件身份".into()),
             Some(_) => Ok(()),
             None => { pending.cycle_id = Some(id.into()); Ok(()) }
         }
     }
+
+    pub fn bind_capture_id(&mut self, id: &str) -> Result<(), String> {
+        let pending = self.journal.pending.as_mut().ok_or("缺少采集 S7 请求事务")?;
+        if pending.cycle_id.is_some() || pending.capture_id.as_deref().is_some_and(|bound| bound != id) {
+            return Err("S7 事务已绑定其他生产或采集身份".into());
+        }
+        pending.capture_id = Some(id.to_owned());
+        Ok(())
+    }
+
+    pub fn capture_id(&self) -> Option<&str> { self.journal.pending.as_ref().and_then(|p| p.capture_id.as_deref()) }
 
     pub fn cycle_id(&self) -> Option<&str> { self.journal.pending.as_ref().and_then(|pending| pending.cycle_id.as_deref()) }
 
@@ -428,7 +443,7 @@ impl PlcSession {
                 if request.request_seq == 0 || request.request_seq <= self.journal.last_request_seq {
                     return Err("请求事务序号必须非零且递增；PLC 清零或回绕需先执行空闲复位".into());
                 }
-                self.journal.pending = Some(Pending { request: request.clone(), result: None, phase: SessionPhase::Validating,
+                self.journal.pending = Some(Pending { capture_id: None, request: request.clone(), result: None, phase: SessionPhase::Validating,
                     cycle_id: None, acknowledged: false, started_at: now_ms() });
                 self.journal.last_request_seq = request.request_seq;
                 self.persist(engine).await?;

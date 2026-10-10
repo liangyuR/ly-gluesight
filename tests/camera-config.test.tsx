@@ -54,7 +54,8 @@ describe("相机配置表单", () => {
   });
   it("海康三目明确显示现场交付格式待确认，保留后端拒绝原因",async()=>{
     show();await userEvent.selectOptions(screen.getByRole("combobox",{name:"设备视角"}),"3");
-    expect(screen.getByText(/海康三目交付格式待现场确认/)).toBeVisible();
+    expect(screen.getByRole("combobox",{name:"SDK 拼接布局"})).toHaveValue("");
+    await userEvent.selectOptions(screen.getByRole("combobox",{name:"SDK 拼接布局"}),"horizontal");
     vi.mocked(cameraApi.saveConfig).mockRejectedValueOnce(new Error("三目取图尚未接入"));
     await userEvent.click(screen.getByRole("button",{name:"保存并应用"}));
     expect(await screen.findByText("Error: 三目取图尚未接入")).toBeVisible();

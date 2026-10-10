@@ -25,7 +25,7 @@ describe("配方的拍照点表", () => {
     const {onDraftChange}=show();const input=screen.getByRole("combobox",{name:"拍照点 1 · 视角"});
     expect(within(input).getAllByRole("option").map(option=>(option as HTMLOptionElement).value)).toEqual(["1","2","3"]);
     await userEvent.selectOptions(input,"3");const next=last(onDraftChange);
-    expect(next.schemaVersion).toBe(4);expect(next.shots[0]).toEqual({...workspaceView().workspace.doc.shots[0],view:3,path:[],mmPerPx:undefined});
+    expect(next.schemaVersion).toBe(5);expect(next.shots[0]).toEqual({...workspaceView().workspace.doc.shots[0],view:3,path:[],mmPerPx:undefined});
     expect(Object.hasOwn(next.shots[0],"mmPerPx")).toBe(false);expect(next.shots[1]).toEqual(workspaceView().workspace.doc.shots[1]);
     expect(screen.getByRole("textbox",{name:"拍照点 1 · 编号"}).closest("tr")).toHaveTextContent("未示教");
   });

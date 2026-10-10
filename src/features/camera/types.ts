@@ -7,6 +7,7 @@ export interface CameraConfig {
   name: string;
   source: CameraSource;
   viewCount: number;
+  compositeLayout?: {kind:"horizontal" | "vertical"} | {kind:"rects";rects:{x:number;y:number;width:number;height:number}[]} | null;
   serial: string;
   acquisition: Acquisition;
   fps: number;

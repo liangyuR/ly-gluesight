@@ -4,7 +4,7 @@
   "version": 1,
   "productCode": 102,
   "triggerMode": "fly",
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "spacing": 1,
   "filterWindow": 5,
   "detect": {"searchMm":15,"polarity":"dark","widthRange":[1,10]},

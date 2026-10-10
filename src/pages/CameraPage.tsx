@@ -17,6 +17,7 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
   const [configs,setConfigs]=useState<CameraConfig[]>([]);
   const [cam,setCam]=useState(0);
   const [error,setError]=useState("");
+  const [calibView,setCalibView]=useState(1);
   const [sample,setSample]=useState<StationView|null>(null);
   const [loading,setLoading]=useState(false);
   const [action,setAction]=useState("");
@@ -26,7 +27,8 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
   const mounted=useRef(true),loadSerial=useRef(0),pending=useRef(false);
   const current=useRef({cam,configs});current.current={cam,configs};
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;loadSerial.current++;};},[]);
-  useEffect(()=>setSample(null),[cam,configs[cam],view]);
+  useEffect(()=>setSample(null),[cam,configs[cam],view,calibView]);
+  useEffect(()=>setCalibView(1),[cam]);
   const reload=useCallback(async()=>{
     const serial=++loadSerial.current;
     setLoading(true);setReferencesReady(false);
@@ -100,11 +102,11 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
     {view==="device"&&referencedBy.length>0&&<div style={{gridColumn:"1/-1"}}><Notice title="当前相机被配方引用">先在 {referencedBy.join("、")} 中改选相机并保存，再移除此相机。</Notice></div>}
     {busy&&<div style={{gridColumn:"1/-1"}}><Notice title="当前工件正在检测">相机配置、取样与标定在工件结束后可操作。</Notice></div>}
     {config?<><div className="col"><fieldset disabled={busy||!!action||!desktopAvailable()} className="cam-action-area">
-      {view==="device"?<CameraConfigPanel key={config.id} cam={cam} initial={config} status={status} onSaved={saved} onSavingChange={setConfigSaving}/>:<StationCapture key={config.id} cam={cam} sample={sample} onSample={setSample}/>}
+      {view==="device"?<CameraConfigPanel key={config.id} cam={cam} initial={config} status={status} onSaved={saved} onSavingChange={setConfigSaving}/>:<StationCapture key={config.id+":"+calibView} cam={cam} view={calibView} sample={sample} onSample={setSample}/>}
     </fieldset>{view==="device"&&<Panel title="实际参数状态"><Badge tone={status?.warnings.length?"warn":status?.ready?"ok":"neutral"}>{status?.warnings.length?"存在未接受参数":status?.ready?"参数已应用":"等待相机连接"}</Badge>{status?.warnings.map(w=><p key={w} className="c-warn">{w}</p>)}<p className="muted">连接状态和参数接受状态分别确认。保存后以相机实际返回结果为准。</p></Panel>}</div>
     <div className="col"><fieldset disabled={busy||!!action||configSaving||!desktopAvailable()} className="cam-action-area">
       {view==="device"&&<FramePreview key={config.id} cam={cam} status={status} lastFrame={lastFrame[cam]} config={config}/>}
-      {view==="calibration"&&<>{config.viewCount===3&&<Notice title="工位标定使用视角 1">工位标定当前使用视角 1；其他视角需独立标定引用或手动像素当量。</Notice>}<CalibPanel key={config.id} cam={cam} isSim={config.source==="sim"&&sample?.metadata.source!=="import"} imageId={sample?.metadata.id}/><FeasibilityCalc key={config.id} exposure={config.exposureUs} fps={status?.maxFps}/><DryRunPanel key={config.id} cam={cam} frameMs={status?.maxFps?1000/status.maxFps:null}/></>}
+      {view==="calibration"&&<>{config.viewCount===3&&<label className="field"><span>标定图像</span><select className="input" aria-label="标定图像" value={calibView} onChange={e=>{setSample(null);setCalibView(Number(e.target.value));}}>{[1,2,3].map(v=><option key={v} value={v}>图 {v}</option>)}</select></label>}<CalibPanel key={config.id+":"+calibView} cam={cam} view={calibView} isSim={config.source==="sim"&&sample?.metadata.source!=="import"} imageId={sample?.metadata.id}/><FeasibilityCalc key={config.id} exposure={config.exposureUs} fps={status?.maxFps}/><DryRunPanel key={config.id} cam={cam} frameMs={status?.maxFps?1000/status.maxFps:null}/></>}
     </fieldset>{view==="device"&&<Panel title="继续建站"><p className="muted">保存采集参数后，完成飞拍工位标定。</p><div className="wp-actions"><Link className="btn" to="/camera/calibration">飞拍工位标定</Link></div></Panel>}{view==="device"&&<details className="panel"><summary>模拟节拍调试</summary><p className="muted">用于台架和回放验证，检测参数以当前生产配方为准。</p><SimControls/></details>}</div></>:<div style={{gridColumn:"1/-1"}}><Notice title={view==="device"?"尚未加载采集设备":"没有触发采集相机"} tone="warn">{view==="device"?"在桌面软件中添加或连接相机。":"在设备与采集页添加相机，采集方式选择触发采集。"}</Notice></div>}
   </div>;
 }

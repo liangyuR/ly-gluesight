@@ -10,15 +10,17 @@ import { historyApi } from "../src/features/history/api";
 import { deferred, partSummary, workspaceState, workspaceView } from "./fixtures";
 
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { validate: vi.fn(), publish: vi.fn(), importSample: vi.fn() } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { validate: vi.fn(), publish: vi.fn(), retryPublish: vi.fn(), importSample: vi.fn() } }));
 vi.mock("../src/features/history/api", () => ({ historyApi: { query: vi.fn() } }));
 let ws: ReturnType<typeof workspaceState>;
-const show = () => render(<MemoryRouter><ValidationPage /></MemoryRouter>);
+const acknowledge = () => { const box=screen.getByRole("checkbox",{name:"已确认所选样本的拍摄条件、轨迹和触发顺序适用于当前候选"}); if(!(box as HTMLInputElement).checked) fireEvent.click(box); };
+const show = () => { const page=render(<MemoryRouter><ValidationPage /></MemoryRouter>); acknowledge(); return page; };
 beforeEach(() => {
   ws = workspaceState(); vi.mocked(useWorkspace).mockImplementation(() => ws);
   vi.mocked(historyApi.query).mockResolvedValue({ items: [], total: 0, counts: { ok: 0, ng: 0, err: 0, excursion: 0 } });
   vi.mocked(workspaceApi.validate).mockResolvedValue(ws.data!);
   vi.mocked(workspaceApi.publish).mockResolvedValue(ws.data!);
+  vi.mocked(workspaceApi.retryPublish).mockResolvedValue(ws.data!);
   vi.mocked(workspaceApi.importSample).mockResolvedValue(ws.data!);
 });
 
@@ -28,6 +30,16 @@ function imageFile(name="sample.pgm",bytes=[80,53,10,0,255]) {
   return file;
 }
 async function openImport(){await userEvent.click(screen.getByRole("button",{name:"导入原图样本组"}));}
+it.each(["capture","views"])("%s 候选禁止旧单图导入并保留独立实拍入口",async mode=>{
+  if(mode==="capture") ws.data!.workspace.captureId="teaching-round";
+  else ws.data!.workspace.doc.shots[0].views=[{view:1,enabled:true,path:[]}];
+  show();
+  const button=screen.getByRole("button",{name:"导入原图样本组"});
+  expect(button).toBeDisabled();
+  await userEvent.click(button);
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.getByRole("link",{name:"重新实拍样本"})).toHaveAttribute("href","/recipe/capture?purpose=validation");
+});
 function selectFile(k:number,file=imageFile()){fireEvent.change(screen.getByLabelText(`k${k} 原图`),{target:{files:[file]}});}
 function changeCandidate(page:ReturnType<typeof show>,change:"recipe"|"revision"|"return"){
   if(change==="revision")ws.data!.workspace.revision++;
@@ -40,6 +52,19 @@ function changeCandidate(page:ReturnType<typeof show>,change:"recipe"|"revision"
 }
 
 describe("验证与发布页面", () => {
+  it("发布失败后冻结样本配置并重试同一待生效版本", async () => {
+    ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, baseRevision: "old", frames: [], overview: ws.data!.workspace.overview, validation: ws.data!.workspace.validation! };
+    ws.data!.workspace.publishError = "生效状态保存失败";
+    show();
+    expect(screen.getByRole("checkbox", { name: "选用样本 良品组" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "良品组期望结论" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "已确认所选样本的拍摄条件、轨迹和触发顺序适用于当前候选" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "运行整套图像验证" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "重试发布 / 切换" }));
+    expect(workspaceApi.retryPublish).toHaveBeenCalledWith("A", 7);
+    expect(workspaceApi.publish).not.toHaveBeenCalled();
+  });
   it("尚未验证时列出发布前检查：胶路示教按要检拍照点算，不检的拍照点不用保存示教", () => {
     ws.data!.workspace.validation = null; ws.data!.coverage = 50;
     ws.data!.workspace.doc.shots[1].skip = true; ws.data!.workspace.frames[0].saved = true;
@@ -48,8 +73,8 @@ describe("验证与发布页面", () => {
     expect(rows).toEqual([
       ["设备与采集", "验证时读取实际相机状态与采集方式", false],
       ["胶路示教", "要检的拍照点里已示教中线 50%", false],
-      ["示教与标定", "已保存 1/1 帧（不检的拍照点不用示教）", true],
-      ["代表性样本", "至少选择一件合格样本和一件缺陷样本", false],
+      ["示教与标定", "已完成 1/1 幅示教，标定需满足 ±0.1 mm", true],
+      ["代表性样本", "至少一套独立正常整圈样本；缺陷样本可选", false],
     ]);
     expect(screen.queryByText("物理覆盖")).toBeNull();
   });
@@ -98,14 +123,14 @@ describe("验证与发布页面", () => {
     show(); await userEvent.selectOptions(screen.getByRole("combobox", { name: "良品组期望结论" }), "NG_WIDTH");
     expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
     expect(screen.getByText("样本选用或期望已改变")).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "运行规则与图像验证" }));
-    expect(workspaceApi.validate).toHaveBeenCalledWith("A", 7, expect.arrayContaining([{ historyId: null, sampleId: "good", expected: "NG_WIDTH" }]));
+    acknowledge(); await userEvent.click(screen.getByRole("button", { name: "运行整套图像验证" }));
+    expect(workspaceApi.validate).toHaveBeenCalledWith("A", 7, expect.arrayContaining([{ historyId: null, sampleId: "good", expected: "NG_WIDTH" }]), true);
   });
 
   it("取消所有样本后不能运行验证，未选样本不能编辑期望", async () => {
     show(); await userEvent.click(screen.getByRole("checkbox", { name: "选用样本 良品组" }));
     await userEvent.click(screen.getByRole("checkbox", { name: "选用样本 断胶组" }));
-    expect(screen.getByRole("button", { name: "运行规则与图像验证" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "运行整套图像验证" })).toBeDisabled();
     expect(screen.getByRole("combobox", { name: "良品组期望结论" })).toBeDisabled();
   });
 
@@ -142,8 +167,8 @@ describe("验证与发布页面", () => {
       ws.data.workspace.validation = { ...ws.data.workspace.validation!, revision, passed: true };
       return ws.data;
     });
-    await userEvent.click(screen.getByRole("button", { name: "运行规则与图像验证" }));
-    expect(workspaceApi.validate).toHaveBeenCalledWith("A", 8, selected);
+    acknowledge(); await userEvent.click(screen.getByRole("button", { name: "运行整套图像验证" }));
+    expect(workspaceApi.validate).toHaveBeenCalledWith("A", 8, selected, true);
     page.rerender(<MemoryRouter><ValidationPage /></MemoryRouter>);
     expect(screen.getByRole("button", { name: "发布生产配方" })).toBeEnabled();
   });
@@ -164,8 +189,8 @@ describe("验证与发布页面", () => {
     ws.data = structuredClone(ws.data!);
     ws.data.workspace.sampleBank = ws.data.workspace.sampleBank.filter(sample => sample.id !== removed.id);
     page.rerender(<MemoryRouter><ValidationPage /></MemoryRouter>);
-    await userEvent.click(screen.getByRole("button", { name: "运行规则与图像验证" }));
-    expect(workspaceApi.validate).toHaveBeenCalledWith("A", 7, [{ historyId: null, sampleId: "bad", expected: "NG_GAP" }]);
+    acknowledge(); await userEvent.click(screen.getByRole("button", { name: "运行整套图像验证" }));
+    expect(workspaceApi.validate).toHaveBeenCalledWith("A", 7, [{ historyId: null, sampleId: "bad", expected: "NG_GAP" }], true);
     ws.data = structuredClone(ws.data!); ws.data.workspace.sampleBank.push(removed);
     page.rerender(<MemoryRouter><ValidationPage /></MemoryRouter>);
     expect(screen.getByRole("checkbox", { name: "选用样本 良品组" })).not.toBeChecked();
@@ -184,7 +209,7 @@ describe("验证与发布页面", () => {
     page.rerender(<MemoryRouter><ValidationPage /></MemoryRouter>);
     expect(screen.getByRole("checkbox", { name: "选用样本 良品组" })).not.toBeChecked();
     expect(screen.getByRole("combobox", { name: "良品组期望结论" })).toHaveValue("OK");
-    expect(screen.getByRole("button", { name: "运行规则与图像验证" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "运行整套图像验证" })).toBeDisabled();
   });
 
   it("历史来源切换改变查询范围", async () => {
@@ -333,7 +358,7 @@ describe("验证与发布页面", () => {
     changeCandidate(page,change);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByRole("button",{name:"导入原图样本组"})).toBeEnabled();
-    expect(screen.getByRole("button",{name:"运行规则与图像验证"})).toBeEnabled();
+    acknowledge();expect(screen.getByRole("button",{name:"运行整套图像验证"})).toBeEnabled();
     expect(screen.getByRole("combobox",{name:"历史样本来源"})).toBeEnabled();
     expect(screen.getByRole("checkbox",{name:"选用样本 良品组"})).toBeEnabled();
     await openImport();selectFile(1,imageFile("new-1.pgm",[7,8]));selectFile(2,imageFile("new-2.pgm",[9]));
@@ -375,14 +400,14 @@ describe("验证与发布页面", () => {
   it.each(["success","error"])("旧验证 %s 不复位新候选的操作等待",async outcome=>{
     const oldView=ws.data!,oldValidation=deferred<typeof oldView>(),newValidation=deferred<typeof oldView>(),oldError=ws.setError;
     vi.mocked(workspaceApi.validate).mockReturnValueOnce(oldValidation.promise).mockReturnValueOnce(newValidation.promise);
-    const page=show();await userEvent.click(screen.getByRole("button",{name:"运行规则与图像验证"}));
-    changeCandidate(page,"recipe");expect(screen.getByRole("button",{name:"运行规则与图像验证"})).toBeEnabled();
-    await userEvent.click(screen.getByRole("button",{name:"运行规则与图像验证"}));
+    const page=show();acknowledge(); await userEvent.click(screen.getByRole("button",{name:"运行整套图像验证"}));
+    changeCandidate(page,"recipe");acknowledge();expect(screen.getByRole("button",{name:"运行整套图像验证"})).toBeEnabled();
+    acknowledge(); await userEvent.click(screen.getByRole("button",{name:"运行整套图像验证"}));
     await act(async()=>{if(outcome==="success")oldValidation.resolve(oldView);else oldValidation.reject(new Error("旧验证失败"));});
     expect(screen.getByRole("button",{name:"验证中…"})).toBeDisabled();expect(screen.getByRole("button",{name:"发布生产配方"})).toBeDisabled();
     expect(screen.getByRole("checkbox",{name:"选用样本 良品组"})).toBeDisabled();expect(oldError).not.toHaveBeenCalled();expect(ws.setError).not.toHaveBeenCalled();
     expect(workspaceApi.validate).toHaveBeenCalledTimes(2);await act(async()=>newValidation.resolve(ws.data!));
-    expect(screen.getByRole("button",{name:"运行规则与图像验证"})).toBeEnabled();
+    expect(screen.getByRole("button",{name:"运行整套图像验证"})).toBeEnabled();
   });
 
   it.each(["success","error"])("回到同一候选后，旧发布 %s 不关闭或解锁新确认",async outcome=>{
@@ -420,9 +445,9 @@ describe("验证与发布页面", () => {
     const pending=deferred<NonNullable<typeof ws.data>>();vi.mocked(workspaceApi.validate).mockReturnValueOnce(pending.promise);
     show();await screen.findByRole("checkbox",{name:"选用历史 SN 101"});
     await userEvent.click(screen.getByRole("checkbox",{name:"选用历史 SN 101"}));await userEvent.selectOptions(screen.getByRole("combobox",{name:"SN 101期望结论"}),"OK");
-    fireEvent.click(screen.getByRole("button",{name:"运行规则与图像验证"}));
+    acknowledge(); fireEvent.click(screen.getByRole("button",{name:"运行整套图像验证"}));
     fireEvent.click(screen.getByRole("button",{name:"验证中…"}));
-    expect(workspaceApi.validate).toHaveBeenCalledTimes(1);expect(workspaceApi.validate).toHaveBeenCalledWith("A",7,expect.arrayContaining([{historyId:1,sampleId:null,expected:"OK"}]));
+    expect(workspaceApi.validate).toHaveBeenCalledTimes(1);expect(workspaceApi.validate).toHaveBeenCalledWith("A",7,expect.arrayContaining([{historyId:1,sampleId:null,expected:"OK"}]),true);
     expect(screen.getByRole("checkbox",{name:"选用历史 SN 101"})).toBeDisabled();expect(screen.getByRole("combobox",{name:"历史样本来源"})).toBeDisabled();
     expect(screen.getByRole("button",{name:"发布生产配方"})).toBeDisabled();await act(async()=>pending.resolve(ws.data!));
   });

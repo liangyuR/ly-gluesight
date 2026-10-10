@@ -63,7 +63,7 @@ fn frame(cam: u8, counter: u64) -> Frame {
 fn measured(part: &Part, k: usize) -> Measured {
     let shot = &part.recipe.shots[k];
     let indices: Vec<_> = part.recipe.owned_points(k).map(|j| j as u32).collect();
-    Measured { run_id: part.run_id, cycle_id: part.cycle_id.clone(), shot_id: shot.id.clone(),
+    Measured { views: Vec::new(), run_id: part.run_id, cycle_id: part.cycle_id.clone(), shot_id: shot.id.clone(),
         camera: shot.camera.clone(), bundle_id: part.bundle_id.clone(), sn: part.sn,
         k, cam: part.frames[k].cam, located: true, score: 0.95, ms: 15,
         queue_ms: None, engine_ms: None, core_ms: None, error: None,

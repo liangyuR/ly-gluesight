@@ -44,7 +44,7 @@ function Probe() {
 function show() {
   return render(<MemoryRouter initialEntries={["/recipe/geometry"]}><WorkspaceProvider><GeometryPage /><Probe /></WorkspaceProvider></MemoryRouter>);
 }
-const editor = () => within(screen.getByRole("heading", { name: "候选拍照点与检测规则" }).closest("section")!);
+const editor = () => within(screen.getByRole("heading", { name: "配方默认检测与判定参数" }).closest("section")!);
 const draft = () => JSON.parse(screen.getByLabelText("当前候选草稿").textContent!) as RecipeDoc;
 async function open() { const page = show(); await screen.findByRole("textbox", { name: "名称" }); return page; }
 async function readySave() {
@@ -76,9 +76,8 @@ describe("拍照点规划页面与真实候选编辑器的接线", () => {
     fireEvent.change(editor().getByRole("spinbutton", { name: "产品代码（PLC 下发）" }), { target: { value: "9" } });
     fireEvent.change(editor().getByRole("spinbutton", { name: "站距（mm）" }), { target: { value: "1.5" } });
     fireEvent.change(editor().getByRole("spinbutton", { name: "位置 · 上公差" }), { target: { value: "1.5" } });
-    fireEvent.change(editor().getByRole("textbox", { name: "拍照点 2 · 胶条" }), { target: { value: "J2" } });
     expect(draft()).toMatchObject({ id: "A", name: "新候选胶路", productCode: 9, spacing: 1.5, limits: { position: { tolUpper: 1.5 } } });
-    expect(draft().shots[1]).toMatchObject({ bead: "J2", path: twoLines[1] });
+    expect(draft().shots[1]).toMatchObject({ bead: "J1", path: twoLines[1] });
     expect(screen.getByText("候选配置尚未保存")).toBeVisible(); expect(workspaceApi.saveDoc).not.toHaveBeenCalled();
     const candidate = draft(); await userEvent.click(await readySave());
     expect(workspaceApi.saveDoc).toHaveBeenCalledWith("A", 7, candidate);
@@ -94,8 +93,8 @@ describe("拍照点规划页面与真实候选编辑器的接线", () => {
     const save = await readySave(); fireEvent.click(save); fireEvent.click(save);
     expect(workspaceApi.saveDoc).toHaveBeenCalledTimes(1); expect(editor().getByRole("button", { name: "保存中…" })).toBeDisabled();
     expect(editor().getByRole("textbox", { name: "名称" })).toBeDisabled(); expect(editor().getByRole("spinbutton", { name: "站距（mm）" })).toBeDisabled();
-    expect(editor().getByRole("textbox", { name: "拍照点 1 · 胶条" })).toBeDisabled(); expect(editor().getByRole("checkbox", { name: "拍照点 1 · 不检" })).toBeDisabled();
-    expect(editor().getByRole("button", { name: "添加拍照点" })).toBeDisabled();
+    expect(editor().queryByRole("textbox", { name: "拍照点 1 · 胶条" })).toBeNull(); expect(editor().queryByRole("checkbox", { name: "拍照点 1 · 不检" })).toBeNull();
+    expect(editor().queryByRole("button", { name: "添加拍照点" })).toBeNull();
     expect(screen.getByRole("combobox", { name: "当前配方" })).toBeDisabled();
     expect(screen.getByLabelText("工作台状态")).toHaveTextContent('"busy":true');
     const response = savedView(candidate, 7); views.A = response; await act(async () => request.resolve(response));
@@ -123,7 +122,7 @@ describe("拍照点规划页面与真实候选编辑器的接线", () => {
     expect(workspaceApi.saveDoc).toHaveBeenCalledWith("A", 7, candidate);
     expect(editor().queryByRole("button", { name: "保存中…" })).toBeNull();
     expect(editor().getByRole("button", { name: "保存候选配置" })).toBeDisabled();
-    expect(editor().getByRole("textbox", { name: "名称" })).toBeDisabled(); expect(editor().getByRole("combobox", { name: "拍照点 1 · 相机" })).toBeDisabled();
+    expect(editor().getByRole("textbox", { name: "名称" })).toBeDisabled(); expect(editor().queryByRole("combobox", { name: "拍照点 1 · 相机" })).toBeNull();
     const response = savedView(candidate, 7); views.A = response; await act(async () => request.resolve(response));
     expect(editor().getByRole("textbox", { name: "名称" })).toBeEnabled(); expect(screen.queryByText("候选配置尚未保存")).toBeNull();
   });
@@ -148,9 +147,10 @@ describe("拍照点规划页面与真实候选编辑器的接线", () => {
     await open(); expect(screen.getByRole("link", { name: "进入单帧示教" })).toHaveAttribute("href", "/recipe/teach");
     expect(screen.getByRole("heading", { name: "飞拍可行性" })).toBeVisible();
     fireEvent.change(editor().getByRole("textbox", { name: "名称" }), { target: { value: "旧候选草稿" } });
+    await userEvent.click(await readySave());
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "当前配方" }), "B");
     await waitFor(() => expect(editor().getByRole("textbox", { name: "名称" })).toHaveValue("工件 B"));
-    expect(editor().getByRole("combobox", { name: "拍照点 1 · 相机" })).toHaveValue("CAM-2"); expect(screen.getByRole("heading", { name: "飞拍可行性" })).toBeVisible();
+    expect(draft().shots[0].camera).toBe("CAM-2"); expect(screen.getByRole("heading", { name: "飞拍可行性" })).toBeVisible();
     fireEvent.change(editor().getByRole("spinbutton", { name: "站距（mm）" }), { target: { value: "2" } });
     expect(draft()).toMatchObject({ id: "B", name: "工件 B", shots: shotList(twoLines, "CAM-2"), spacing: 2 });
     await userEvent.click(await readySave());
@@ -162,19 +162,14 @@ describe("拍照点规划页面与真实候选编辑器的接线", () => {
     await open();
     // 可行性表单通过 effect 同步相机曝光；名称字段出现时同步可能尚未提交。
     await waitFor(() => expect(screen.getByRole("spinbutton", { name: "曝光（µs）" })).toHaveValue(80));
-    await userEvent.selectOptions(editor().getByRole("combobox", { name: "拍照点 2 · 相机" }), "CAM-2");
-    expect(draft().shots.map(s => s.camera)).toEqual(["CAM-1", "CAM-2"]);
-    expect(screen.getByRole("spinbutton", { name: "曝光（µs）" })).toHaveValue(80);
-    await userEvent.selectOptions(editor().getByRole("combobox", { name: "拍照点 1 · 相机" }), "CAM-2");
-    expect(draft().shots[0].camera).toBe("CAM-2");
-    await waitFor(() => expect(screen.getByRole("spinbutton", { name: "曝光（µs）" })).toHaveValue(125));
+    expect(editor().queryByRole("combobox", {name:"拍照点 1 · 相机"})).toBeNull();
+    expect(draft().shots.map(s=>s.camera)).toEqual(["CAM-1","CAM-1"]);
     await userEvent.click(screen.getByRole("link", { name: "进入单帧示教" })); expect(screen.getByLabelText("当前路径")).toHaveTextContent("/recipe/teach");
   });
 
   it("配方引用相机已移除时保留引用，可行性使用默认曝光", async () => {
     views.A.workspace.doc.shots = shotList(twoLines, "CAM-OLD"); views.A.layout.shots = shotList(twoLines, "CAM-OLD");
-    await open(); expect(editor().getByRole("combobox", { name: "拍照点 1 · 相机" })).toHaveValue("CAM-OLD");
-    expect(screen.getAllByRole("option", { name: "CAM-OLD（不在相机组里）" })).toHaveLength(2);
+    await open(); expect(draft().shots[0].camera).toBe("CAM-OLD");
     expect(screen.getByRole("spinbutton", { name: "曝光（µs）" })).toHaveValue(60);
   });
 
@@ -204,11 +199,9 @@ describe("拍照点规划页面的胶路示教比例", () => {
   it("在表里把未示教的拍照点设为不检，示教比例随新的 API 预览更新", async () => {
     views.A.workspace.doc.shots = [...shotList(twoLines), untaught("P3")]; views.A.layout.shots = [...shotList(twoLines), untaught("P3")];
     await open(); expect(screen.getByText("胶路示教 67%")).toHaveClass("warn");
-    expect(within(editor().getByRole("textbox", { name: "拍照点 3 · 编号" }).closest("tr")!).getByText("未示教")).toBeVisible();
-    await userEvent.click(editor().getByRole("checkbox", { name: "拍照点 3 · 不检" }));
-    expect(await screen.findByText("胶路示教 100%")).toHaveClass("ok");
-    expect(recipeApi.preview).toHaveBeenCalledWith(expect.objectContaining({ shots: expect.arrayContaining([expect.objectContaining({ id: "P3", skip: true })]) }));
-    expect(workspaceApi.saveDoc).not.toHaveBeenCalled();
+    expect(editor().queryByRole("checkbox", {name:"拍照点 3 · 不检"})).toBeNull();
+    expect(screen.getByText(/3 个拍照点由整圈实际采集生成/)).toBeVisible();
+
   });
 
   it("预览暂缺时显示工作台已有示教比例，真实编辑器仍保留", () => {
@@ -222,7 +215,7 @@ describe("拍照点规划页面的空状态", () => {
   it("浏览器模式显示桌面数据说明与查看入口", () => {
     vi.mocked(desktopAvailable).mockReturnValue(false); show();
     expect(screen.getByText("当前为浏览器查看模式")).toBeVisible(); expect(screen.getByRole("link", { name: "查看交互原型" })).toHaveAttribute("href", "/workflow/guide");
-    expect(screen.queryByRole("heading", { name: "候选拍照点与检测规则" })).toBeNull(); expect(workspaceApi.get).not.toHaveBeenCalled();
+    expect(screen.queryByRole("heading", { name: "配方默认检测与判定参数" })).toBeNull(); expect(workspaceApi.get).not.toHaveBeenCalled();
   });
 
   it("有工作台但没有候选文档时显示选择入口，不装载编辑器", () => {

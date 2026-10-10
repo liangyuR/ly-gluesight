@@ -9,6 +9,7 @@ import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, KV, Notice, Panel, Steps, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { Sample } from "./types";
+import { teachingCounts } from "./teach";
 import { readImageBase64, validateImageFile } from "./ImageImportButton";
 
 export default function ValidationPage() {
@@ -24,6 +25,7 @@ export default function ValidationPage() {
   // Keep those edits within a candidate; discard missing images and old-candidate edits.
   if(selection.candidate!==candidate||samples.length!==selectedSamples.length)setSelection({candidate,samples});
   const [confirm,setConfirm] = useState(false);
+  const [sourceConfirmed,setSourceConfirmed] = useState(false);
   const [importing,setImporting] = useState(false);
   const [sampleName,setSampleName] = useState("代表性样本");
   const [expected,setExpected] = useState<Verdict>("OK");
@@ -37,6 +39,7 @@ export default function ValidationPage() {
   useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;};},[]);
   useEffect(()=>{pending.current=null;setReading(false);setOperating(false);setConfirm(false);setImporting(false);setFiles({});},[scope]);
   useEffect(()=>{
+    setSourceConfirmed(false);
     setHistoryScope(data?.workspace.baseRevision?"current":"all");
   },[data?.workspace.doc.id,data?.workspace.baseRevision]);
   useEffect(()=>{
@@ -47,13 +50,15 @@ export default function ValidationPage() {
   },[doc?.id,historyScope,setError]);
   if(!data||!doc)return <WorkspaceEmpty/>;
   const validation=data.workspace.validation;
-  const measuredFrames=data.workspace.frames.filter(f=>!data.workspace.doc.shots[f.k]?.skip);
+  const taught=teachingCounts(doc.shots,data.workspace.frames);
   const selectionDirty=JSON.stringify(samples)!==JSON.stringify(data.workspace.samples);
   const locked=busy||reading||operating;
+  const samplesLocked=locked||!!data.workspace.pending;
   const ready=!dirty&&!frameDirty&&!locked;
+  const canImportImages=!data.workspace.captureId&&!doc.shots.some(shot=>!!shot.views?.length);
   const validationCurrent=!!validation?.passed&&validation.revision===data.workspace.revision&&!selectionDirty;
   const canPublish=ready&&validationCurrent&&!data.workspace.pending;
-  const choose=(key:Sample,enabled:boolean)=>setSelection(previous=>({candidate,samples:enabled?[...previous.samples.filter(s=>!(s.historyId===key.historyId&&s.sampleId===key.sampleId)),key]:previous.samples.filter(s=>!(s.historyId===key.historyId&&s.sampleId===key.sampleId))}));
+  const choose=(key:Sample,enabled:boolean)=>{setSourceConfirmed(false);setSelection(previous=>({candidate,samples:enabled?[...previous.samples.filter(s=>!(s.historyId===key.historyId&&s.sampleId===key.sampleId)),key]:previous.samples.filter(s=>!(s.historyId===key.historyId&&s.sampleId===key.sampleId))}));};
   const action=async(request:()=>ReturnType<typeof workspaceApi.publish>,message:string)=>{
     if(pending.current||!ready)return null;
     const operation={scope,sequence:current.current.sequence};
@@ -83,32 +88,33 @@ export default function ValidationPage() {
       if(result&&valid()){setImporting(false);setFiles({});}
     }catch(e){if(valid())setError(String(e));}finally{if(valid()){pending.current=null;setReading(false);}}
   };
-  return <div className="wp-page"><WorkspaceBar/><Steps/><div className="wp-columns"><div className="wp-stack"><Panel title="发布前检查" detail="设备、胶路示教、单帧示教、总览和代表性样本都需满足">
+  return <div className="wp-page"><WorkspaceBar/><Steps/><div className="wp-columns"><div className="wp-stack"><Panel title="发布前检查" detail="设备、胶路示教、单帧示教和独立正常样本都需满足">
     <div className="wp-checklist">{(validation?.checks??[
       {name:"设备与采集",passed:false,detail:"验证时读取实际相机状态与采集方式"},
       {name:"胶路示教",passed:data.coverage>=99.995,detail:"要检的拍照点里已示教中线 "+data.coverage.toFixed(0)+"%"},
-      {name:"示教与标定",passed:measuredFrames.every(f=>f.saved),detail:"已保存 "+measuredFrames.filter(f=>f.saved).length+"/"+measuredFrames.length+" 帧（不检的拍照点不用示教）"},
-      {name:"代表性样本",passed:false,detail:"至少选择一件合格样本和一件缺陷样本"},
+      {name:"示教与标定",passed:taught.total>0&&taught.completed===taught.total,detail:"已完成 "+taught.completed+"/"+taught.total+" 幅示教，标定需满足 ±0.1 mm"},
+      {name:"代表性样本",passed:false,detail:"至少一套独立正常整圈样本；缺陷样本可选"},
     ]).map(c=><div key={c.name} className={"wp-check-row "+(c.passed?"passed":"")}>{c.passed?<CheckCircle2 size={20}/>:<AlertTriangle size={20}/>}<div><strong>{c.name}</strong><p>{c.detail}</p></div></div>)}</div>
-    </Panel><Panel title="代表性验证样本" detail="历史样本按存储的测量数据验证规则；导入原图样本组重新运行图像测量" actions={<button className="btn" disabled={!ready} onClick={()=>{setFiles({});setImporting(true);}}><Upload size={15}/>导入原图样本组</button>}>
-      <label className="field"><span>历史样本来源</span><select className="input" aria-label="历史样本来源" value={historyScope} disabled={locked} onChange={e=>setHistoryScope(e.target.value as "current"|"all")}><option value="current">当前配方</option><option value="all">全部配方</option></select></label>
-      <p className="muted hint">仅测点布局与当前候选一致的完整历史测量可用于规则验证；选择其他配方的样本时，验证会再次检查兼容性。</p>
+    </Panel><Panel title="代表性验证样本" detail="使用完整原图重新运行当前候选检测；正常样本必须独立于示教采集" actions={<div className="wp-actions"><Link className="btn" to="/recipe/capture?purpose=validation">重新实拍样本</Link><button className="btn" disabled={!ready || !!data.workspace.pending || !canImportImages} title={canImportImages?undefined:"整圈多图配方请重新实拍或选择完整历史原图"} onClick={()=>{setFiles({});setImporting(true);}}><Upload size={15}/>导入原图样本组</button></div>}>
+      <label className="field"><span>历史样本来源</span><select className="input" aria-label="历史样本来源" value={historyScope} disabled={samplesLocked} onChange={e=>setHistoryScope(e.target.value as "current"|"all")}><option value="current">当前配方</option><option value="all">全部配方</option></select></label>
+      <p className="muted hint">历史样本必须保留完整整圈原图，轨迹顺序与成像条件适用；验证时重新运行当前候选。</p>
       <div className="table-wrap"><table className="table"><thead><tr><th>选用</th><th>样本</th><th>来源</th><th>人工期望</th></tr></thead><tbody>
       {data.workspace.sampleBank.map(b=>{
         const selected=samples.find(s=>s.sampleId===b.id);
-        return <tr key={b.id}><td><input type="checkbox" aria-label={"选用样本 "+b.name} checked={!!selected} disabled={locked} onChange={e=>choose({historyId:null,sampleId:b.id,expected:b.expected},e.target.checked)}/></td><td>{b.name}</td><td>整组原图</td><td><select className="input" aria-label={b.name+"期望结论"} value={selected?.expected??b.expected} disabled={!selected||locked} onChange={e=>choose({historyId:null,sampleId:b.id,expected:e.target.value as Verdict},true)}>{Object.entries(verdictLabel).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></td></tr>;
+        return <tr key={b.id}><td><input type="checkbox" aria-label={"选用样本 "+b.name} checked={!!selected} disabled={samplesLocked} onChange={e=>choose({historyId:null,sampleId:b.id,expected:b.expected},e.target.checked)}/></td><td>{b.name}</td><td>整组原图</td><td><select className="input" aria-label={b.name+"期望结论"} value={selected?.expected??b.expected} disabled={!selected||samplesLocked} onChange={e=>choose({historyId:null,sampleId:b.id,expected:e.target.value as Verdict},true)}>{Object.entries(verdictLabel).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></td></tr>;
       })}
       {records.map(r=>{
         const selected=samples.find(s=>s.historyId===r.id);
-        return <tr key={r.id}><td><input type="checkbox" aria-label={"选用历史 SN "+r.sn} checked={!!selected} disabled={locked} onChange={e=>choose({historyId:r.id,sampleId:null,expected:r.verdict},e.target.checked)}/></td><td><Link to={"/history/"+r.id}>SN {r.sn}</Link></td><td>历史测量 · {r.recipeId} · v{r.recipeVersion}</td><td><select className="input" aria-label={"SN "+r.sn+"期望结论"} value={selected?.expected??r.verdict} disabled={!selected||locked} onChange={e=>choose({historyId:r.id,sampleId:null,expected:e.target.value as Verdict},true)}>{Object.entries(verdictLabel).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></td></tr>;
+        return <tr key={r.id}><td><input type="checkbox" aria-label={"选用历史 SN "+r.sn} checked={!!selected} disabled={samplesLocked} onChange={e=>choose({historyId:r.id,sampleId:null,expected:r.verdict},e.target.checked)}/></td><td><Link to={"/history/"+r.id}>SN {r.sn}</Link></td><td>历史整圈 · {r.recipeId} · v{r.recipeVersion}</td><td><select className="input" aria-label={"SN "+r.sn+"期望结论"} value={selected?.expected??r.verdict} disabled={!selected||samplesLocked} onChange={e=>choose({historyId:r.id,sampleId:null,expected:e.target.value as Verdict},true)}>{Object.entries(verdictLabel).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></td></tr>;
       })}
-      {!records.length&&!data.workspace.sampleBank.length&&<tr><td colSpan={4} className="muted center">尚无代表性样本；可导入各拍照点的原图建立完整样本组。</td></tr>}
+      {!records.length&&!data.workspace.sampleBank.length&&<tr><td colSpan={4} className="muted center">尚无代表性样本；请重新实拍独立整圈，或选择完整历史原图。</td></tr>}
       </tbody></table></div><p className="muted hint">建议覆盖良品、断胶、偏位、胶宽异常和无法测量等现场情况。修改人工期望后，需要重新验证。</p>
-      <button className="btn primary" disabled={!ready||!samples.length} onClick={()=>void action(()=>workspaceApi.validate(doc.id,data.workspace.revision,samples),"当前候选的验证已完成")}>{operating||busy?"验证中…":"运行规则与图像验证"}</button>
+      <label className="check"><input type="checkbox" checked={sourceConfirmed} disabled={samplesLocked} onChange={e=>setSourceConfirmed(e.target.checked)}/>已确认所选样本的拍摄条件、轨迹和触发顺序适用于当前候选</label>
+      <button className="btn primary" disabled={!ready||!!data.workspace.pending||!samples.length||!sourceConfirmed} onClick={()=>void action(()=>workspaceApi.validate(doc.id,data.workspace.revision,samples,sourceConfirmed),"当前候选的验证已完成")}>{operating||busy?"验证中…":"运行整套图像验证"}</button>
     </Panel>{validation&&<Panel title="验证结果" actions={<Badge tone={validationCurrent?"ok":"warn"}>{validationCurrent?"通过":"未通过或待重验"}</Badge>}><div className="table-wrap"><table className="table"><thead><tr><th>样本</th><th>人工期望</th><th>候选结论</th><th>结果</th></tr></thead><tbody>{validation.samples.map((s,i)=><tr key={i} title={displayReason(s.reason)}><td>{s.name}</td><td>{verdictLabel[s.expected]}</td><td>{s.actual?verdictLabel[s.actual]:"未量成"}</td><td className={s.passed?"c-ok":"c-warn"}>{s.passed?"一致":displayReason(s.reason)}</td></tr>)}</tbody></table></div>{selectionDirty&&<Notice title="样本选用或期望已改变" tone="warn">请重新运行验证；现有结果不用于发布。</Notice>}</Panel>}</div>
-    <div className="wp-stack"><Panel title="生产版本"><KV label="当前生产">{data.productionVersion?"v"+data.productionVersion:"未发布"}</KV><KV label="待发布候选">v{doc.version}</KV><KV label="候选修订">{data.workspace.revision}</KV><KV label="PLC 计划版本">{data.workspace.pending?.doc.planVersion?data.workspace.pending.doc.planVersion+"（待生效）":!data.planChanged&&data.productionPlanVersion?data.productionPlanVersion+"（不变）":"发布时分配新号"}</KV><KV label="发布状态">{data.workspace.pending?"等待工件边界":canPublish?"可发布":"待验证"}</KV><button className="btn primary" style={{marginTop:16,width:"100%"}} disabled={!canPublish} onClick={()=>setConfirm(true)}>发布生产配方</button></Panel><Notice title="在工件边界生效">已开始检测的工件继续使用原配方快照。候选发布后，等待当前工件完成，再供新工件使用。</Notice><Link className="btn" to="/inspect">查看在线检测</Link></div>
+    <div className="wp-stack"><Panel title="生产版本"><KV label="当前生产">{data.productionVersion?"v"+data.productionVersion:"未发布"}</KV><KV label="待发布候选">v{doc.version}</KV><KV label="候选修订">{data.workspace.revision}</KV><KV label="PLC 计划版本">{data.workspace.pending?.doc.planVersion?data.workspace.pending.doc.planVersion+"（待生效）":!data.planChanged&&data.productionPlanVersion?data.productionPlanVersion+"（不变）":"发布时分配新号"}</KV><KV label="发布状态">{data.workspace.publishError ? "发布失败" : data.workspace.pending?"等待工件边界":canPublish?"可发布":"待验证"}</KV><button className="btn primary" style={{marginTop:16,width:"100%"}} disabled={!canPublish} onClick={()=>setConfirm(true)}>发布生产配方</button></Panel><Notice title="在工件边界生效">已开始检测的工件继续使用原配方快照。候选发布后，等待当前工件完成，再供新工件使用。</Notice>{data.workspace.publishError && <button className="btn" disabled={!ready} onClick={() => void action(() => workspaceApi.retryPublish(doc.id,data.workspace.revision), "已重试发布 / 切换")}>重试发布 / 切换</button>}<Link className="btn" to="/inspect">查看在线检测</Link></div>
   </div>
-  {confirm&&<Modal title="发布生产配方" onClose={()=>!locked&&setConfirm(false)} footer={<><button className="btn" disabled={locked} onClick={()=>setConfirm(false)}>取消</button><button className="btn primary" disabled={!canPublish} onClick={async()=>{const r=await action(()=>workspaceApi.publish(doc.id,data.workspace.revision),"已提交发布，将在工件边界生效");if(r&&current.current.alive&&current.current.scope===scope)setConfirm(false);}}>确认发布 v{doc.version}</button></>}><p>将发布 <b>{doc.id} · v{doc.version}</b>，替换当前生产版本。</p><p className="muted">发布内容包含当前已验证的拍照点、示教中线、判定规则、各帧示教和总览布置。等待期间修改候选，不会改变已提交的发布快照。</p>{data.planChanged?<Notice tone="warn" title="拍照计划已变，PLC 要同步">产品代码或拍照点的顺序、Pose、相机与生产不同，发布时分配新的计划版本。生效后 PLC 侧要同步 planVersion 与各相机拍照点数，否则拒绝布防（故障 100）。</Notice>:<p className="muted">拍照计划未变，沿用计划版本 {data.productionPlanVersion}，PLC 不用改。</p>}</Modal>}
+  {confirm&&<Modal title="发布生产配方" onClose={()=>!locked&&setConfirm(false)} footer={<><button className="btn" disabled={locked} onClick={()=>setConfirm(false)}>取消</button><button className="btn primary" disabled={!canPublish} onClick={async()=>{const r=await action(()=>workspaceApi.publish(doc.id,data.workspace.revision),"已提交发布，将在工件边界生效");if(r&&current.current.alive&&current.current.scope===scope)setConfirm(false);}}>确认发布 v{doc.version}</button></>}><p>将发布 <b>{doc.id} · v{doc.version}</b>，替换当前生产版本。</p><p className="muted">发布内容包含当前已验证的拍照点、示教中线、判定规则、各帧示教和总览布置。等待期间候选已冻结，生效或完成失败处理后再继续编辑。</p>{data.planChanged?<Notice tone="warn" title="拍照计划已变，PLC 要同步">产品代码或拍照点的顺序、Pose、相机与生产不同，发布时分配新的计划版本。生效后 PLC 侧要同步 planVersion 与各相机拍照点数，否则拒绝布防（故障 100）。</Notice>:<p className="muted">拍照计划未变，沿用计划版本 {data.productionPlanVersion}，PLC 不用改。</p>}</Modal>}
   {importing&&<Modal title="导入代表性原图样本组" width={650} onClose={()=>!locked&&setImporting(false)} footer={<><button className="btn" disabled={locked} onClick={()=>setImporting(false)}>取消</button><button className="btn primary" disabled={!ready||!sampleName.trim()||!data.workspace.frames.length||data.workspace.frames.some(f=>!files[f.k])} onClick={()=>void importSample()}>{reading?"正在导入…":"保存样本组"}</button></>}><div className="wp-stack"><div className="wp-form-grid"><label className="field"><span>样本名称</span><input className="input" aria-label="样本名称" disabled={locked} value={sampleName} onChange={e=>setSampleName(e.target.value)}/></label><label className="field"><span>人工确认的期望结论</span><select className="input" aria-label="人工确认的期望结论" disabled={locked} value={expected} onChange={e=>setExpected(e.target.value as Verdict)}>{Object.entries(verdictLabel).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label></div>{data.workspace.frames.map(f=><label className="field" key={f.k}><span>k{f.k+1} · {files[f.k]?.name??"选择该拍照点的原始图像"}</span><input className="input" aria-label={"k"+(f.k+1)+" 原图"} type="file" accept=".png,.jpg,.jpeg,.pgm,.bmp,.tif,.tiff" disabled={locked} onChange={e=>{const file=e.target.files?.[0];e.target.value="";if(file){try{validateImageFile(file);setFiles(previous=>({...previous,[f.k]:file}));}catch(error){setFiles(previous=>{const next={...previous};delete next[f.k];return next;});setError(String(error));}}}}/></label>)}<Notice title="整组图像需对应同一件工件">每个拍照点一张原图，图像尺寸和工位应与当前示教一致；单图不超过 15 MB，整组不超过 80 MB。期望结论由现场人员标注。</Notice></div></Modal>}
   </div>;
 }

@@ -10,7 +10,7 @@ import type { WorkspaceView } from "../src/features/workspace/types";
 import { deferred, summary, workspaceView } from "./fixtures";
 
 vi.mock("../src/lib/desktop", () => ({ desktopAvailable: vi.fn() }));
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(), get: vi.fn(), saveDoc: vi.fn() } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(), get: vi.fn(), saveDraft: vi.fn(), saveDoc: vi.fn() } }));
 vi.mock("../src/features/cycle/api", () => ({ recipeApi: { list: vi.fn(), preview: vi.fn() } }));
 vi.mock("../src/features/camera/api", () => ({ cameraApi: { rigConfig: vi.fn() } }));
 vi.mock("../src/features/plc/api", () => ({ subscribe: vi.fn() }));
@@ -156,6 +156,11 @@ describe("候选工作台状态与并发", () => {
     const { result } = await open();
     act(() => result.current.setDoc({ ...result.current.doc!, name: "A 草稿" }));
     await act(async () => environmentChanged(source));
+    vi.mocked(workspaceApi.get).mockClear();
+    await act(() => result.current.select("B"));
+    expect(workspaceApi.get).not.toHaveBeenCalled();
+    act(() => result.current.setDoc(result.current.data!.workspace.doc));
+    await waitFor(() => expect(result.current.dirty).toBe(false));
     vi.mocked(workspaceApi.get).mockClear();
     await act(() => result.current.select("B"));
     expect(workspaceApi.get).toHaveBeenCalledTimes(1);
@@ -405,5 +410,30 @@ describe("候选工作台状态与并发", () => {
       await act(async () => first.resolve({ ...workspaceView().layout, name: "旧预览" }));
       expect(result.current.preview?.name).toBe("最新");
     } finally { vi.useRealTimers(); }
+  });
+});
+
+describe("草稿自动保存", () => {
+  it("不完整中线和空比例也自动保存，不自动完成示教",async()=>{
+    const {result}=await open();
+    const next=workspaceView();next.workspace.revision=8;next.workspace.doc.shots[0].path=[[10,10]];delete next.workspace.doc.shots[0].mmPerPx;next.workspace.frames[0].trial=null;
+    vi.mocked(workspaceApi.saveDraft).mockResolvedValue(next);
+    act(()=>result.current.setFrameDraft(0,{path:[[10,10]],mmPerPx:null}));
+    await waitFor(()=>expect(workspaceApi.saveDraft).toHaveBeenCalledWith("A",7,0,{path:[[10,10]],mmPerPx:null}),{timeout:2500});
+    await waitFor(()=>expect(result.current.saveState).toBe("saved"));
+    expect(result.current.frameDirty).toBe(false);expect(result.current.data!.workspace.frames[0].saved).toBe(false);
+  });
+  it("保存失败保留编辑内容，重试成功后才显示已保存",async()=>{
+    const {result}=await open();
+    const draft={path:[[10,10],[20,10]] as [number,number][],mmPerPx:.2};
+    vi.mocked(workspaceApi.saveDraft).mockRejectedValueOnce(new Error("磁盘不可写"));
+    act(()=>result.current.setFrameDraft(0,draft));
+    await waitFor(()=>expect(result.current.saveState).toBe("failed"),{timeout:2500});
+    expect(result.current.frameDrafts[0]).toEqual(draft);
+    const next=workspaceView();next.workspace.revision=8;next.workspace.doc.shots[0].mmPerPx=.2;
+    vi.mocked(workspaceApi.saveDraft).mockResolvedValue(next);
+    act(()=>result.current.retrySave());
+    await waitFor(()=>expect(result.current.saveState).toBe("saved"),{timeout:2500});
+    expect(result.current.frameDirty).toBe(false);
   });
 });

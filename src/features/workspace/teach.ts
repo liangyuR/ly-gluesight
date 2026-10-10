@@ -3,8 +3,8 @@ import { pathLength } from "../cycle/vis";
 import type { ShotTeach } from "./types";
 
 /** 候选配方里拍照点已保存的示教；没有像素当量时为 NaN（输入框显示为空）。 */
-export function shotTeach(shot: Pick<ShotSpec, "path" | "mmPerPx" | "detect">): ShotTeach {
-  return { path: shot.path.map(([x, y]) => [x, y] as [number, number]), mmPerPx: shot.mmPerPx ?? NaN, ...(shot.detect ? { detect: structuredClone(shot.detect) } : {}) };
+export function shotTeach(shot: Pick<ShotSpec, "path" | "mmPerPx" | "detect" | "limits">): ShotTeach {
+  return { path: shot.path.map(([x, y]) => [x, y] as [number, number]), mmPerPx: shot.mmPerPx ?? null, ...(shot.detect ? { detect: structuredClone(shot.detect) } : {}), ...(shot.limits ? { limits: structuredClone(shot.limits) } : {}) };
 }
 
 /** 按 f32 比较：后端以 f32 存中线与参数，取回的值与草稿在 f32 精度内相同就算没改。 */
@@ -15,7 +15,7 @@ export function sameTeach(a: ShotTeach | undefined, b: ShotTeach | undefined) {
 
 /** 草稿能否保存：至少两点、点在图内为有限数、长度不为零，像素当量为正。返回错误说明，空串表示可以保存。 */
 export function teachError(t: ShotTeach) {
-  if (!(Number.isFinite(t.mmPerPx) && t.mmPerPx > 0 && t.mmPerPx <= 10)) return "像素当量需在 0–10 mm/px 之间";
+  if (!(t.mmPerPx != null && Number.isFinite(t.mmPerPx) && t.mmPerPx > 0 && t.mmPerPx <= 10)) return "像素当量需在 0–10 mm/px 之间";
   if (t.path.some((p) => !p.every(Number.isFinite))) return "中线坐标必须是有限数";
   if (t.path.length === 1 || (t.path.length >= 2 && pathLength(t.path) < 1)) return "中线至少两个点、长度不能为零";
   if (t.detect) {
@@ -33,4 +33,20 @@ export function sameJsonValue(a: unknown, b: unknown): boolean {
   const left = a as Record<string, unknown>, right = b as Record<string, unknown>;
   const keys = Object.keys(left);
   return keys.length === Object.keys(right).length && keys.every(key => Object.hasOwn(right, key) && sameJsonValue(left[key], right[key]));
+}
+
+export function selectedViews(shot: ShotSpec): number[] {
+  return shot.views?.filter(v => v.enabled).map(v => v.view) ?? (shot.skip ? [] : [shot.view]);
+}
+export function teachingCounts(shots: ShotSpec[], frames: import("./types").Teaching[]) {
+  let total = 0, completed = 0;
+  for (const shot of shots) {
+    const k = shots.indexOf(shot), frame = frames[k];
+    if (shot.skip) continue;
+    for (const view of selectedViews(shot)) {
+      total++;
+      if (frame?.viewStates?.find(v => v.view === view)?.saved ?? (shot.view === view && frame?.saved)) completed++;
+    }
+  }
+  return { total, completed };
 }

@@ -1,4 +1,5 @@
 use std::time::Instant;
+use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -40,6 +41,77 @@ impl ShotMeasurement {
     }
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewMeasurement {
+    pub view: u8,
+    pub reading: Option<ShotMeasurement>,
+    pub error: Option<String>,
+}
+
+pub struct MultiViewMeasurement {
+    pub reading: ShotMeasurement,
+    pub views: Vec<ViewMeasurement>,
+}
+
+impl MultiViewMeasurement {
+    pub fn into_measured(self, job: &Job) -> Measured {
+        let mut measured = self.reading.into_measured(job);
+        measured.views = self.views;
+        measured
+    }
+}
+
+pub fn measure_views_with(
+    recipe: &Recipe, k: usize, images: &[(u8, Arc<FrameImage>)],
+    mut measure: impl FnMut(u8, &FrameImage) -> Result<ShotMeasurement, String>,
+) -> Result<MultiViewMeasurement, String> {
+    let shot = recipe.shots.get(k).ok_or("拍照点不存在")?;
+    let selected = shot.enabled_views();
+    for view in &selected {
+        if images.iter().filter(|(v, _)| v == view).count() != 1 {
+            return Err(format!("拍照点 {} 图 {view} 缺失或重复", shot.id));
+        }
+    }
+    let mut out = ShotMeasurement { idx: Vec::new(), d: Vec::new(), w: Vec::new(), st: Vec::new(), px: Vec::new(), coverage: 0.0, ms: 0 };
+    let mut views = Vec::new();
+    for view in selected {
+        let image = &images.iter().find(|(v, _)| *v == view).unwrap().1;
+        let expected: Vec<_> = recipe.view_points(k, view).collect();
+        match measure(view, image) {
+            Ok(reading) if reading.idx.iter().copied().map(|v| v as usize).eq(expected.iter().copied())
+                && reading.st.len() == expected.len() && reading.d.len() == expected.len()
+                && reading.w.len() == expected.len() && reading.px.len() == expected.len()
+                && reading.coverage.is_finite() && (0.0..=1.0).contains(&reading.coverage)
+                && reading.px.iter().flatten().all(|v| v.is_finite())
+                && reading.st.iter().enumerate().all(|(i, &state)| state <= crate::measure::ST_INVALID
+                    && (state != ST_OK || (reading.d[i].is_finite() && reading.w[i].is_finite()))) => {
+                out.idx.extend(&reading.idx); out.d.extend(&reading.d); out.w.extend(&reading.w);
+                out.st.extend(&reading.st); out.px.extend(&reading.px);
+                out.ms = out.ms.saturating_add(reading.ms);
+                views.push(ViewMeasurement { view, reading: Some(reading), error: None });
+            }
+            result => {
+                let error = result.err().unwrap_or_else(|| "单图测量结果结构与测点表不一致".into());
+                for j in expected {
+                    out.idx.push(j as u32); out.d.push(f32::NAN); out.w.push(f32::NAN);
+                    out.st.push(crate::measure::ST_INVALID); out.px.push([recipe.points.x[j], recipe.points.y[j]]);
+                }
+                views.push(ViewMeasurement { view, reading: None, error: Some(error) });
+            }
+        }
+    }
+    out.coverage = out.st.iter().filter(|&&s| s == ST_OK).count() as f32 / out.st.len().max(1) as f32;
+    Ok(MultiViewMeasurement { reading: out, views })
+}
+
+pub fn measure_views(engine: &Engine, recipe: &Recipe, k: usize, images: &[(u8, Arc<FrameImage>)], run_id: &str, base_dir: &str) -> Result<MultiViewMeasurement, String> {
+    measure_views_with(recipe, k, images, |view, image| {
+        let projected = recipe.for_view(k, view)?;
+        measure_shot(engine, &projected, k, image, &format!("{run_id}-v{view}"), base_dir)
+    })
+}
+
 struct ShotPlan {
     graph: Value,
     idx: Vec<usize>,
@@ -73,7 +145,7 @@ fn plan(recipe: &Recipe, k: usize) -> Result<ShotPlan, String> {
     if !(4.0..=400.0).contains(&hi) { return Err(fail("lyFlow 胶宽搜索上限需在 4–400 px 之间")); }
     let tolerance = half - 0.5 * hi;
     if !(0.0..=400.0).contains(&tolerance) { return Err(fail("lyFlow 中心偏移容差（搜索半宽减去胶宽上限的一半）需在 0–400 px 之间")); }
-    let idx: Vec<_> = recipe.owned_points(k).collect();
+    let idx: Vec<_> = recipe.view_points(k, shot.view).collect();
     if idx.len() < 3 || idx.len() > 200_000 || idx.iter().any(|&j| j >= recipe.points.x.len() || j >= recipe.points.y.len()) {
         return Err(fail("配方测点表无效或不足三站"));
     }

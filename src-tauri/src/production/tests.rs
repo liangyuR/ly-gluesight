@@ -22,11 +22,11 @@ fn graphs_preserve_each_shot_and_only_skip_explicitly_skipped_shots() {
     doc.shots[2].camera = "cam3".into();
     doc.shots[2].view = 3;
     let graph = graphs(&doc.build().unwrap()).unwrap();
-    assert_eq!(graph["shots"].as_array().unwrap().len(), 4);
-    assert!(graph["shots"][1]["graph"].is_null());
+    assert_eq!(graph["shots"].as_array().unwrap().len(), 3);
+    assert_eq!(graph["shots"][1]["k"], 2);
     assert!(graph["shots"][0]["graph"].is_object());
-    assert_eq!(graph["shots"][2]["camera"], "cam3");
-    assert_eq!(graph["shots"][2]["view"], 3);
+    assert_eq!(graph["shots"][1]["camera"], "cam3");
+    assert_eq!(graph["shots"][1]["view"], 3);
     doc.shots[0].path.clear();
     assert!(graphs(&doc.build().unwrap()).unwrap_err().contains("尚未示教"));
 }
@@ -80,7 +80,7 @@ fn native_bundle_warms_measures_copied_resources_and_validates_dimensions() {
     let input = PublishInput { recipe: doc.clone(),
         versions: Versions { engine: engine.version.clone(), graph: GRAPH_VERSION.into() },
         graph: ResourceSource::Bytes(serde_json::to_vec(&graphs(&recipe).unwrap()).unwrap()),
-        shots: sizes.iter().enumerate().map(|(k, size)| ShotInput { k,
+        shots: sizes.iter().enumerate().map(|(k, size)| ShotInput { k, view: recipe.shots[k].view,
             image: Some(ResourceSource::Bytes(pgm(&image(size[0], size[1])))),
             calibration: Some(ResourceSource::File(external.clone())) }).collect() };
     let bundle = release::publish(&root.join("releases"), input).unwrap();

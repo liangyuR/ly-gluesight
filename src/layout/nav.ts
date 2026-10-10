@@ -8,6 +8,8 @@ import SettingsPage from "../pages/SettingsPage";
 import OperationGuidePage from "../pages/OperationGuidePage";
 import HistoryRetestPage from "../pages/HistoryRetestPage";
 import LibraryPage from "../features/workspace/LibraryPage";
+import ProgressPage from "../features/workspace/ProgressPage";
+import CapturePage from "../features/workspace/CapturePage";
 import GeometryPage from "../features/workspace/GeometryPage";
 import TeachingPage from "../features/workspace/TeachingPage";
 import OverviewPage from "../features/workspace/OverviewPage";
@@ -41,7 +43,9 @@ export const navEntries: NavEntry[] = [
   ] },
   { label:"配方工作台",icon:SlidersHorizontal,children:[
     { path:"/recipe",label:"配方库",icon:SlidersHorizontal,element:LibraryPage },
-    { path:"/recipe/geometry",label:"拍照点规划",icon:SlidersHorizontal,element:GeometryPage },
+    { path:"/recipe/progress",label:"进度总览",icon:SlidersHorizontal,element:ProgressPage },
+    { path:"/recipe/capture",label:"整圈采集",icon:Camera,element:CapturePage },
+    { path:"/recipe/geometry",label:"配方默认参数",icon:SlidersHorizontal,element:GeometryPage },
     { path:"/recipe/teach",label:"单帧示教",icon:ScanEye,element:TeachingPage },
     { path:"/recipe/overview",label:"工件总览",icon:ScanEye,element:OverviewPage },
     { path:"/recipe/validation",label:"验证与发布",icon:SlidersHorizontal,element:ValidationPage },

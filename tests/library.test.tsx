@@ -30,9 +30,9 @@ describe("配方库操作", () => {
   it("合并生产与候选且去重，候选名称用于搜索", async () => {
     ws.drafts[0].doc.name = "候选名称";
     const b = workspaceView("B"); ws.list.push(summary(b)); ws.drafts.push(b.workspace);
-    show(); expect(screen.getAllByRole("button", { name: "配置候选" })).toHaveLength(2);
+    show(); expect(screen.getAllByRole("button", { name: "继续配置" })).toHaveLength(2);
     await userEvent.type(screen.getByRole("textbox", { name: "搜索配方" }), "候选名称");
-    expect(screen.getAllByRole("button", { name: "配置候选" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "继续配置" })).toHaveLength(1);
     expect(screen.getByRole("button", { name: "复制配方 A" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "复制配方 B" })).not.toBeInTheDocument();
     await userEvent.clear(screen.getByRole("textbox", { name: "搜索配方" }));
@@ -50,12 +50,12 @@ describe("配方库操作", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "创建候选" }));
     expect(workspaceApi.create).toHaveBeenCalledWith(expect.objectContaining({ id: "A-COPY-2", version: 1, teachingId: null, productCode: 3 }));
     expect(ws.drafts[0].doc.id).toBe("A");
-    await waitFor(() => expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe/geometry"));
+    await waitFor(() => expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe/progress"));
   });
 
   it("创建失败显示错误并保留表单，空编号不能提交", async () => {
     vi.mocked(workspaceApi.create).mockRejectedValueOnce(new Error("编号已存在")); show();
-    await userEvent.click(screen.getByRole("button", { name: "新建飞拍" }));
+    await userEvent.click(screen.getByRole("button", { name: "新建配方" }));
     const dialog = await screen.findByRole("dialog");
     await userEvent.click(within(dialog).getByRole("button", { name: "创建候选" }));
     expect(await screen.findByText("Error: 编号已存在")).toBeVisible();
@@ -84,9 +84,9 @@ describe("配方库操作", () => {
 
   it("浏览器查看模式禁止新建配方", () => {
     vi.mocked(desktopAvailable).mockReturnValue(false); show();
-    expect(screen.getByRole("button", { name: "新建飞拍" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "新建配方" })).toBeDisabled();
     expect(screen.getByRole("button",{name:"复制配方 A"})).toBeDisabled();expect(screen.getByRole("button",{name:"删除配方 A"})).toBeDisabled();
-    expect(screen.getByRole("button",{name:"配置候选"})).toBeDisabled();
+    expect(screen.getByRole("button",{name:"继续配置"})).toBeDisabled();
   });
 
   it("搜索编号忽略大小写及外围空白，产品代码可搜索并有空结果提示",async()=>{
@@ -98,29 +98,29 @@ describe("配方库操作", () => {
 
   it("空库说明加载状态",async()=>{
     ws.list=[];ws.drafts=[];show();expect(screen.getByRole("heading",{name:"尚未加载配方"})).toBeVisible();
-    expect(screen.queryByRole("button",{name:"配置候选"})).not.toBeInTheDocument();
+    expect(screen.queryByRole("button",{name:"继续配置"})).not.toBeInTheDocument();
   });
 
   it("选择失败留在库中，重试只有确实选择成功才跳转",async()=>{
-    vi.mocked(ws.select).mockResolvedValueOnce(null);show();await userEvent.click(screen.getByRole("button",{name:"配置候选"}));
+    vi.mocked(ws.select).mockResolvedValueOnce(null);show();await userEvent.click(screen.getByRole("button",{name:"继续配置"}));
     expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe");
-    await userEvent.click(screen.getByRole("button",{name:"配置候选"}));await waitFor(()=>expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe/geometry"));
+    await userEvent.click(screen.getByRole("button",{name:"继续配置"}));await waitFor(()=>expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe/progress"));
   });
 
   it("选择未完成不能重复提交，选择被更新或页面已离开时不跳转",async()=>{
     const pending=deferred<ReturnType<typeof workspaceView>|null>();vi.mocked(ws.select).mockReturnValueOnce(pending.promise);
-    const page=show();fireEvent.click(screen.getByRole("button",{name:"配置候选"}));fireEvent.click(screen.getByRole("button",{name:"配置候选"}));
+    const page=show();fireEvent.click(screen.getByRole("button",{name:"继续配置"}));fireEvent.click(screen.getByRole("button",{name:"继续配置"}));
     expect(ws.select).toHaveBeenCalledTimes(1);expect(screen.getByRole("button",{name:"复制配方 A"})).toBeDisabled();
     await act(async()=>pending.resolve(null));expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe");
     const abandoned=deferred<ReturnType<typeof workspaceView>|null>();vi.mocked(ws.select).mockReturnValueOnce(abandoned.promise);
-    await userEvent.click(screen.getByRole("button",{name:"配置候选"}));page.unmount();await act(async()=>abandoned.resolve(workspaceView()));
+    await userEvent.click(screen.getByRole("button",{name:"继续配置"}));page.unmount();await act(async()=>abandoned.resolve(workspaceView()));
   });
 
   it("新建使用飞拍模板；取消不创建且准备失败可重试",async()=>{
     vi.mocked(recipeApi.template).mockRejectedValueOnce(new Error("模板读取失败")).mockResolvedValueOnce(workspaceView("NEW").workspace.doc);
-    show();await userEvent.click(screen.getByRole("button",{name:"新建飞拍"}));
+    show();await userEvent.click(screen.getByRole("button",{name:"新建配方"}));
     await waitFor(()=>expect(ws.setError).toHaveBeenCalledWith("Error: 模板读取失败"));expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button",{name:"新建飞拍"}));expect(recipeApi.template).toHaveBeenLastCalledWith();
+    await userEvent.click(screen.getByRole("button",{name:"新建配方"}));expect(recipeApi.template).toHaveBeenLastCalledWith();
     await screen.findByRole("dialog");await userEvent.click(screen.getByRole("button",{name:"取消"}));expect(workspaceApi.create).not.toHaveBeenCalled();
   });
 
@@ -132,19 +132,19 @@ describe("配方库操作", () => {
   });
 
   it.each(["","A","a","has space","../other","中文编号"])("新建拒绝无效或大小写重复编号 %j",async id=>{
-    show();await userEvent.click(screen.getByRole("button",{name:"新建飞拍"}));await screen.findByRole("dialog");
+    show();await userEvent.click(screen.getByRole("button",{name:"新建配方"}));await screen.findByRole("dialog");
     fireEvent.change(screen.getByRole("textbox",{name:"配方编号"}),{target:{value:id}});
     expect(screen.getByRole("button",{name:"创建候选"})).toBeDisabled();expect(screen.getByRole("alert")).toBeVisible();expect(workspaceApi.create).not.toHaveBeenCalled();
   });
 
   it.each(["0","-1","1","2.5","65536",""])("新建拒绝无效/重复产品代码 %j",async code=>{
-    show();await userEvent.click(screen.getByRole("button",{name:"新建飞拍"}));await screen.findByRole("dialog");
+    show();await userEvent.click(screen.getByRole("button",{name:"新建配方"}));await screen.findByRole("dialog");
     fireEvent.change(screen.getByRole("spinbutton",{name:"产品代码"}),{target:{value:code}});
     expect(screen.getByRole("button",{name:"创建候选"})).toBeDisabled();expect(screen.getByRole("alert")).toBeVisible();expect(workspaceApi.create).not.toHaveBeenCalled();
   });
 
   it("空白名称禁用提交，填写合法编号代码和名称后准确创建并去除外围空白",async()=>{
-    show();await userEvent.click(screen.getByRole("button",{name:"新建飞拍"}));await screen.findByRole("dialog");
+    show();await userEvent.click(screen.getByRole("button",{name:"新建配方"}));await screen.findByRole("dialog");
     fireEvent.change(screen.getByRole("textbox",{name:"配方名称"}),{target:{value:"   "}});expect(screen.getByRole("button",{name:"创建候选"})).toBeDisabled();
     fireEvent.change(screen.getByRole("textbox",{name:"配方名称"}),{target:{value:"  新工件  "}});
     fireEvent.change(screen.getByRole("textbox",{name:"配方编号"}),{target:{value:"PART-NEW_1"}});
@@ -162,7 +162,7 @@ describe("配方库操作", () => {
   it("模板读取和创建保存等待期间都不能重复提交，输入/取消/关闭受保护",async()=>{
     const preparing=deferred<ReturnType<typeof workspaceView>["workspace"]["doc"]>(),saving=deferred<ReturnType<typeof workspaceView>>();
     vi.mocked(recipeApi.template).mockReturnValueOnce(preparing.promise);vi.mocked(workspaceApi.create).mockReturnValueOnce(saving.promise);
-    show();fireEvent.click(screen.getByRole("button",{name:"新建飞拍"}));fireEvent.click(screen.getByRole("button",{name:"新建飞拍"}));expect(recipeApi.template).toHaveBeenCalledTimes(1);
+    show();fireEvent.click(screen.getByRole("button",{name:"新建配方"}));fireEvent.click(screen.getByRole("button",{name:"新建配方"}));expect(recipeApi.template).toHaveBeenCalledTimes(1);
     await act(async()=>preparing.resolve(workspaceView("NEW").workspace.doc));
     fireEvent.click(screen.getByRole("button",{name:"创建候选"}));fireEvent.click(screen.getByRole("button",{name:"创建中…"}));
     expect(workspaceApi.create).toHaveBeenCalledTimes(1);expect(screen.getByRole("textbox",{name:"配方编号"})).toBeDisabled();expect(screen.getByRole("spinbutton",{name:"产品代码"})).toBeDisabled();
@@ -171,15 +171,15 @@ describe("配方库操作", () => {
   });
 
   it("创建已成功但选用失败，重试仅打开已有候选，避免二次创建",async()=>{
-    vi.mocked(ws.select).mockResolvedValueOnce(null);show();await userEvent.click(screen.getByRole("button",{name:"新建飞拍"}));await screen.findByRole("dialog");
+    vi.mocked(ws.select).mockResolvedValueOnce(null);show();await userEvent.click(screen.getByRole("button",{name:"新建配方"}));await screen.findByRole("dialog");
     await userEvent.click(screen.getByRole("button",{name:"创建候选"}));expect(await screen.findByText(/候选已创建，选用未完成/)).toBeVisible();
     expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe");expect(screen.getByRole("textbox",{name:"配方编号"})).toBeDisabled();
     await userEvent.click(screen.getByRole("button",{name:"打开已创建候选"}));expect(workspaceApi.create).toHaveBeenCalledTimes(1);
-    await waitFor(()=>expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe/geometry"));
+    await waitFor(()=>expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe/progress"));
   });
 
   it("创建已成功但列表刷新失败，重试也不会重复创建",async()=>{
-    vi.mocked(ws.reloadList).mockRejectedValueOnce(new Error("列表读取失败"));show();await userEvent.click(screen.getByRole("button",{name:"新建飞拍"}));await screen.findByRole("dialog");
+    vi.mocked(ws.reloadList).mockRejectedValueOnce(new Error("列表读取失败"));show();await userEvent.click(screen.getByRole("button",{name:"新建配方"}));await screen.findByRole("dialog");
     await userEvent.click(screen.getByRole("button",{name:"创建候选"}));expect(await screen.findByText("Error: 列表读取失败")).toBeVisible();
     await userEvent.click(screen.getByRole("button",{name:"打开已创建候选"}));expect(workspaceApi.create).toHaveBeenCalledTimes(1);
   });
@@ -205,7 +205,7 @@ describe("配方库操作", () => {
     ws.drafts[0].pending={doc:ws.doc!,bundleId:"bundle-v1",revision:7,baseRevision:"old",frames:[],overview:ws.data!.workspace.overview,validation:ws.data!.workspace.validation!};
     const pending=deferred<ReturnType<typeof workspaceView>["workspace"]["doc"]>();vi.mocked(recipeApi.template).mockReturnValueOnce(pending.promise);
     const page=show();expect(screen.getByRole("button",{name:"删除配方 A"})).toBeDisabled();
-    await userEvent.click(screen.getByRole("button",{name:"新建飞拍"}));page.unmount();await act(async()=>pending.reject(new Error("离开后的模板错误")));
+    await userEvent.click(screen.getByRole("button",{name:"新建配方"}));page.unmount();await act(async()=>pending.reject(new Error("离开后的模板错误")));
     expect(ws.setError).not.toHaveBeenCalled();
   });
 });

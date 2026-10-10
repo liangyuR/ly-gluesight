@@ -25,7 +25,7 @@ describe("工位标定", () => {
     expect(screen.getByRole("spinbutton", { name: "内角点（行）" })).toHaveValue(6);
     fireEvent.change(screen.getByRole("spinbutton", { name: "格长（mm）" }), { target: { value: "5" } });
     await userEvent.click(screen.getByRole("button", { name: "用冻结样本标定" }));
-    expect(invoke).toHaveBeenCalledWith("vision_calibrate", { pattern: [9, 6], square: 5, cam: 2, imageId: "frozen-2" });
+    expect(invoke).toHaveBeenCalledWith("vision_calibrate", { pattern: [9, 6], square: 5, cam: 2, view: 1, imageId: "frozen-2" });
     expect(await screen.findByText("标定完成：残差 RMS 0.0123 mm，约 0.0400 mm/px")).toBeVisible();
   });
 
@@ -77,7 +77,7 @@ describe("工位标定", () => {
     const request=deferred<typeof info>();vi.mocked(invoke).mockResolvedValueOnce(null).mockReturnValueOnce(request.promise);
     render(<CalibPanel cam={1} isSim={false} imageId="frozen-board"/>);await ready();
     fireEvent.change(screen.getByRole("spinbutton",{name:"内角点（列）"}),{target:{value:"2"}});fireEvent.change(screen.getByRole("spinbutton",{name:"内角点（行）"}),{target:{value:"100"}});fireEvent.change(screen.getByRole("spinbutton",{name:"格长（mm）"}),{target:{value:"0.125"}});
-    await userEvent.click(screen.getByRole("button",{name:"用冻结样本标定"}));expect(invoke).toHaveBeenLastCalledWith("vision_calibrate",{cam:1,pattern:[2,100],square:.125,imageId:"frozen-board"});
+    await userEvent.click(screen.getByRole("button",{name:"用冻结样本标定"}));expect(invoke).toHaveBeenLastCalledWith("vision_calibrate",{cam:1,view:1,pattern:[2,100],square:.125,imageId:"frozen-board"});
     expect(screen.getByRole("button",{name:"标定中…"})).toBeDisabled();expect(screen.getByRole("spinbutton",{name:"格长（mm）"})).toBeDisabled();expect(screen.getByRole("button",{name:"刷新标定"})).toBeDisabled();
     fireEvent.click(screen.getByRole("button",{name:"标定中…"}));expect(invoke).toHaveBeenCalledTimes(2);
     await act(async()=>request.resolve(info));expect(screen.getByText("标定完成：残差 RMS 0.0123 mm，约 0.0400 mm/px")).toBeVisible();

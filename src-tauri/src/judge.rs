@@ -184,21 +184,25 @@ fn grade(s: &Stat, p: &JudgeParams, ng: Verdict) -> Verdict {
     }
 }
 
+pub fn aggregate_views(results: impl IntoIterator<Item = Verdict>) -> Verdict {
+    let results: Vec<_> = results.into_iter().collect();
+    results.iter().copied().filter(|v| *v <= Verdict::OkWithExcursion).min()
+        .unwrap_or_else(|| results.into_iter().max().unwrap_or(Verdict::ErrInspect))
+}
+
 pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
     let sp = recipe.spacing;
     let n = table.len();
 
-    if let Some(j) = table.iter().position(|p| *p == PointState::Pending) {
-        return Judgement::error(fault::INVALID_POINTS, format!("测量点 j={j} 未填写"));
+    if n != recipe.point_count() {
+        return Judgement::error(fault::INVALID_POINTS, "测量点数量与配方不一致");
     }
-    for g in &recipe.segments {
-        for run in runs_in(g, |j| table[j] == PointState::Invalid) {
-            let len = run.len() as f32 * sp;
-            if len > MAX_INVALID_LEN {
-                return Judgement::error(fault::INVALID_POINTS, format!("{} 胶路连续 {len:.1} mm 测不了 · s={:.1}", g.name, g.s(run[0], sp)));
-            }
-        }
-    }
+    let invalid: Vec<bool> = recipe.segments.iter().map(|g| {
+        (g.first..g.first + g.count).any(|j| table[j] == PointState::Pending)
+            || runs_in(g, |j| table[j] == PointState::Invalid).iter()
+                .any(|run| run.len() as f32 * sp > MAX_INVALID_LEN)
+            || (g.first..g.first + g.count).all(|j| table[j] == PointState::Invalid)
+    }).collect();
 
     let d = filtered(recipe, table, |p| match p {
         PointState::Measured { d, .. } if d.is_finite() => Some(*d),
@@ -215,7 +219,7 @@ pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
         .iter()
         .enumerate()
         .map(|(gi, g)| {
-            let mut verdict = Verdict::Ok;
+            let mut verdict = if invalid[gi] { Verdict::ErrInspect } else { Verdict::Ok };
             if let (Some(s), Some(p)) = (&pos[gi], &g.position) {
                 verdict = verdict.max(if s.absolute { Verdict::NgAbsolute } else { grade(s, p, Verdict::NgPosition) });
             }
@@ -266,11 +270,15 @@ pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
         }
     }
 
-    let verdict = segments.iter().map(|s| s.verdict).max().unwrap_or(Verdict::Ok);
+    let shot_verdicts: Vec<_> = recipe.shots.iter().enumerate().filter(|(_, shot)| shot.measured()).map(|(k, _)| {
+        (k, aggregate_views(recipe.segments.iter().zip(&segments).filter(|(g, _)| g.shot == k).map(|(_, s)| s.verdict)))
+    }).collect();
+    let verdict = shot_verdicts.iter().map(|(_, verdict)| *verdict).max().unwrap_or(Verdict::ErrInspect);
+    let contributes = |gi: usize| shot_verdicts.iter().any(|(k, value)| *k == recipe.segments[gi].shot && *value == verdict);
     let at = |r: Option<(f32, f32)>| r.map(|(a, b)| format!(" · s={a:.1}–{b:.1}")).unwrap_or_default();
     let reason = match verdict {
         Verdict::NgGap => {
-            let gi = segments.iter().position(|s| s.verdict == Verdict::NgGap).unwrap();
+            let gi = segments.iter().enumerate().position(|(gi, s)| s.verdict == Verdict::NgGap && contributes(gi)).unwrap();
             let seg = &recipe.segments[gi];
             match gaps.iter().zip(&gap_kind).filter(|(g, _)| g.segment == gi).max_by(|a, b| a.0.len.total_cmp(&b.0.len)) {
                 Some((g, GapKind::Whole)) => format!("{} 检测区内没找到胶（整段 {:.1} mm）", seg.name, g.len),
@@ -281,9 +289,19 @@ pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
                 None => format!("{} 胶条断续：有胶站只占 {:.0}% < {:.0}%", seg.name, sparse[gi].unwrap_or(0.0) * 100.0, seg.min_present * 100.0),
             }
         }
-        Verdict::Ok => format!("{} 个拍照点全部合格 · {n} 点", segments.len()),
+        Verdict::Ok => format!("{} 个拍照点全部合格 · {n} 点", recipe.shots.iter().filter(|s| s.measured()).count()),
+        Verdict::ErrInspect => {
+            match recipe.segments.iter().enumerate().find(|(gi, _)| invalid[*gi] && contributes(*gi)) {
+                Some((_, g)) => {
+                    if let Some(run) = runs_in(g, |j| table[j] == PointState::Invalid).into_iter().max_by_key(Vec::len) {
+                        format!("{} 胶路连续 {:.1} mm 测不了 · s={:.1}", g.name, run.len() as f32 * sp, g.s(run[0], sp))
+                    } else { format!("{} 存在未完成测量点", g.name) }
+                }
+                None => "没有完成示教的有效检测图像".into(),
+            }
+        },
         _ => {
-            let gi = segments.iter().position(|s| s.verdict == verdict).unwrap();
+            let gi = segments.iter().enumerate().position(|(gi, s)| s.verdict == verdict && contributes(gi)).unwrap();
             let (g, s) = (&recipe.segments[gi], &segments[gi]);
             match verdict {
                 Verdict::NgAbsolute => {
@@ -312,7 +330,7 @@ pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
         }
     };
 
-    Judgement { verdict, plc_code: verdict.plc_code(), fault_code: 0, reason, segments, gaps }
+    Judgement { verdict, plc_code: verdict.plc_code(), fault_code: if verdict == Verdict::ErrInspect { fault::INVALID_POINTS } else { 0 }, reason, segments, gaps }
 }
 
 fn median_filter(values: &[f32], window: usize) -> Vec<f32> {
@@ -338,6 +356,36 @@ mod tests {
 
     fn base(recipe: &Recipe) -> Vec<PointState> {
         vec![PointState::Measured { d: 0.0, w: 4.0 }; recipe.point_count()]
+    }
+
+    #[test]
+    fn selected_views_or_then_whole_part_error_priority() {
+        let mut doc = crate::recipe::samples().remove(0);
+        doc.shots.truncate(2);
+        let shot = &mut doc.shots[0];
+        shot.views = [1, 2].into_iter().map(|view| crate::recipe::ShotViewSpec { view, enabled: true,
+            path: shot.path.clone(), mm_per_px: shot.mm_per_px, detect: None, limits: None, calib: None }).collect();
+        let recipe = doc.build().unwrap();
+        let mut table = base(&recipe);
+        for j in recipe.view_points(0, 1) { table[j] = PointState::Invalid; }
+        let ok = judge(&recipe, &table);
+        assert_eq!(ok.verdict, Verdict::Ok);
+        assert_eq!(ok.segments[0].verdict, Verdict::ErrInspect);
+        for j in recipe.view_points(0, 2) { table[j] = PointState::Gap; }
+        assert_eq!(judge(&recipe, &table).verdict, Verdict::ErrInspect);
+        for j in recipe.view_points(0, 1) { table[j] = PointState::Gap; }
+        assert_eq!(judge(&recipe, &table).verdict, Verdict::NgGap);
+        for j in recipe.owned_points(1) { table[j] = PointState::Invalid; }
+        assert_eq!(judge(&recipe, &table).verdict, Verdict::ErrInspect);
+    }
+
+    #[test]
+    fn projected_trial_ignores_pending_points_from_other_shots() {
+        let recipe = builtin().remove(0);
+        let projected = recipe.for_view(2, 1).unwrap();
+        let mut table = vec![PointState::Pending; recipe.point_count()];
+        for j in projected.view_points(2, 1) { table[j] = PointState::Gap; }
+        assert_eq!(judge(&projected, &table).verdict, Verdict::NgGap);
     }
 
     #[test]

@@ -12,14 +12,18 @@ use crate::recipe::Recipe;
 use crate::release::ReleaseBundle;
 use crate::vision::{self, Engine, ShotMeasurement, VisionHost};
 
-pub const GRAPH_VERSION: &str = "taught-path-1";
+pub const GRAPH_VERSION: &str = "taught-path-2-multiview";
 
 pub fn graphs(recipe: &Recipe) -> Result<Value, String> {
-    let shots = recipe.shots.iter().enumerate().map(|(k, shot)| {
-        let graph = if shot.measured() { Some(vision::build_taught_graph(recipe, k)?) } else { None };
-        Ok(json!({"k":k,"shotId":shot.id,"camera":shot.camera,"view":shot.view,"graph":graph}))
-    }).collect::<Result<Vec<_>, String>>()?;
-    Ok(json!({"schemaVersion":1,"version":GRAPH_VERSION,"shots":shots}))
+    let mut shots = Vec::new();
+    for (k, shot) in recipe.shots.iter().enumerate() {
+        for view in shot.enabled_views() {
+            let projected = recipe.for_view(k, view)?;
+            shots.push(json!({"k": k, "shotId": shot.id, "camera": shot.camera, "view": view,
+                "graph": vision::build_taught_graph(&projected, k)?}));
+        }
+    }
+    Ok(json!({"schemaVersion": 2, "version": GRAPH_VERSION, "shots": shots}))
 }
 
 fn engine_version_matches(published: &str, loaded: &str) -> bool {
@@ -39,8 +43,8 @@ pub struct Prepared {
     /// 核心库文件与发布时不同的提示（见 engine_file_note）
     pub engine_note: Option<String>,
     engine: Arc<Engine>,
-    graphs: Vec<Option<Value>>,
-    sizes: Vec<Option<[u32; 2]>>,
+    graphs: HashMap<(usize, u8), Value>,
+    sizes: HashMap<(usize, u8), [u32; 2]>,
 }
 
 impl Prepared {
@@ -58,18 +62,19 @@ impl Prepared {
         let stored: Value = serde_json::from_str(&crate::fsio::read_text(&bundle.root.join(&bundle.manifest.graph)).map_err(|e| e.to_string())?)
             .map_err(|e| format!("发布包算法图无效：{e}"))?;
         if stored != graphs(&recipe)? { return Err("发布包算法图与配方测点不一致".into()); }
-        let mut values = Vec::new();
-        let mut sizes = Vec::new();
+        let mut values = HashMap::new();
+        let mut sizes = HashMap::new();
         for (k, shot) in recipe.shots.iter().enumerate() {
-            let resource = bundle.shot(k)?;
-            values.push(if shot.measured() { Some(stored["shots"][k]["graph"].clone()) } else { None });
-            sizes.push(resource.size);
-            if shot.measured() {
+            for view in shot.enabled_views() {
+                let resource = bundle.view(k, view)?;
+                let projected = recipe.for_view(k, view)?;
+                values.insert((k, view), vision::build_taught_graph(&projected, k)?);
+                sizes.insert((k, view), resource.size.ok_or("发布原图缺少尺寸")?);
                 let calibration: Value = serde_json::from_str(&crate::fsio::read_text(resource.calibration.as_ref().ok_or("发布包缺少标定")?).map_err(|e| e.to_string())?)
                     .map_err(|e| format!("发布包标定无效：{e}"))?;
                 let scale = calibration["mmPerPx"].as_f64().ok_or("发布包标定没有有效像素当量")?;
-                if !scale.is_finite() || (scale - shot.mm_per_px.unwrap_or_default() as f64).abs() > 1e-6 {
-                    return Err(format!("拍照点 {} 的发布标定与示教像素当量不一致", shot.id));
+                if !scale.is_finite() || (scale - projected.shots[k].mm_per_px.unwrap_or_default() as f64).abs() > 1e-6 {
+                    return Err(format!("拍照点 {} 图 {view} 的发布标定与示教像素当量不一致", shot.id));
                 }
             }
         }
@@ -83,22 +88,41 @@ impl Prepared {
     }
 
     pub fn measure(&self, k: usize, image: &FrameImage, run_id: &str) -> Result<ShotMeasurement, String> {
-        if self.sizes.get(k).copied().flatten() != Some([image.width, image.height]) {
-            return Err(format!("拍照点 {} 的原图尺寸与发布示教图不一致", k + 1));
+        let view = self.recipe.shots.get(k).ok_or("拍照点不存在")?.view;
+        self.measure_view(k, view, image, run_id)
+    }
+
+    pub fn measure_view(&self, k: usize, view: u8, image: &FrameImage, run_id: &str) -> Result<ShotMeasurement, String> {
+        if self.sizes.get(&(k, view)).copied() != Some([image.width, image.height]) {
+            return Err(format!("拍照点 {} 图 {view} 的原图尺寸与发布示教图不一致", k + 1));
         }
-        let graph = self.graphs.get(k).and_then(Option::as_ref).ok_or("拍照点没有已发布测量图")?;
-        vision::measure_shot_with_graph(&self.engine, &self.recipe, k, image, run_id, "", graph)
+        let graph = self.graphs.get(&(k, view)).ok_or("拍照点图像没有已发布测量图")?;
+        let projected = self.recipe.for_view(k, view)?;
+        vision::measure_shot_with_graph(&self.engine, &projected, k, image, run_id, "", graph)
+    }
+
+    pub fn measure_views(&self, k: usize, images: &[(u8, Arc<FrameImage>)], run_id: &str) -> Result<vision::MultiViewMeasurement, String> {
+        for (view, image) in images {
+            if self.recipe.shots[k].enabled_views().contains(view) && self.sizes.get(&(k, *view)).copied() != Some([image.width, image.height]) {
+                return Err(format!("拍照点 {} 图 {view} 的收图尺寸与发布资源不一致", k + 1));
+            }
+        }
+        vision::measure_views_with(&self.recipe, k, images, |view, image| {
+            self.measure_view(k, view, image, &format!("{run_id}-v{view}"))
+        })
     }
 
     fn warm(&self) -> Result<(), String> {
-        for (k, shot) in self.recipe.shots.iter().enumerate().filter(|(_, shot)| shot.measured()) {
-            let resource = self.bundle.shot(k)?;
-            let image = crate::replay::load(resource.image.as_ref().ok_or("发布包缺少示教原图")?)?;
-            let reading = self.measure(k, &image, &format!("warm-{}-{k}-{}", self.bundle.id, ly_plc::now_ms()))?;
-            if reading.coverage < 0.8 { return Err(format!("拍照点 {} 发布原图预热量成比例不足 80%", shot.id)); }
+        for (k, shot) in self.recipe.shots.iter().enumerate() {
+            for view in shot.enabled_views() {
+                let resource = self.bundle.view(k, view)?;
+                let image = crate::replay::load(resource.image.as_ref().ok_or("发布包缺少示教原图")?)?;
+                self.measure_view(k, view, &image, &format!("warm-{}-{k}-v{view}-{}", self.bundle.id, ly_plc::now_ms()))?;
+            }
         }
         self.verify()
     }
+
 }
 
 const WARMUP_RETRY_DELAY: Duration = Duration::from_secs(1);

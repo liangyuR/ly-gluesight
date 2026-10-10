@@ -7,7 +7,7 @@ import { useWorkspace } from "./context";
 import type { PointVis, Recipe } from "../cycle/types";
 import { shotSegment, visColor } from "../cycle/vis";
 import type { GrayImage, Teaching } from "./types";
-import { sameTeach, shotTeach } from "./teach";
+import { sameTeach, shotTeach, selectedViews } from "./teach";
 
 export function Badge({ children, tone = "info" }: { children: ReactNode; tone?: "info" | "ok" | "ng" | "warn" | "neutral" }) {
   return <span className={"wp-badge " + tone}>{children}</span>;
@@ -21,27 +21,28 @@ export function Notice({ title, children, tone = "info" }: { title: string; chil
 export function KV({ label, children }: { label: string; children: ReactNode }) {
   return <div className="wp-kv"><span>{label}</span><strong>{children}</strong></div>;
 }
-export function NumberField({ label, value, unit, onChange, min, max, step = 1, disabled }: { label: string; value: number; unit?: string; onChange: (value: number) => void; min?: number; max?: number; step?: number; disabled?: boolean }) {
-  return <label className="field wp-field"><span>{label}</span><div className="wp-input-unit"><input className="input mono" aria-label={label} type="number" value={Number.isFinite(value) ? value : ""} min={min} max={max} step={step} disabled={disabled} onChange={e => onChange(e.target.value===""?NaN:Number(e.target.value))} />{unit && <small>{unit}</small>}</div></label>;
+export function NumberField({ label, value, unit, onChange, min, max, step = 1, disabled }: { label: string; value: number | null; unit?: string; onChange: (value: number) => void; min?: number; max?: number; step?: number; disabled?: boolean }) {
+  return <label className="field wp-field"><span>{label}</span><div className="wp-input-unit"><input className="input mono" aria-label={label} type="number" value={value != null && Number.isFinite(value) ? value : ""} min={min} max={max} step={step} disabled={disabled} onChange={e => onChange(e.target.value===""?NaN:Number(e.target.value))} />{unit && <small>{unit}</small>}</div></label>;
 }
 export function WorkspaceEmpty() {
   const { error } = useWorkspace();
   return <div className="wp-page">{error && <Notice title="无法加载候选配置" tone="warn">{error}</Notice>}<div className="wp-empty"><Camera size={32} /><h2>{desktopAvailable() ? "尚未选择配方" : "当前为浏览器查看模式"}</h2><p>{desktopAvailable() ? "在配方库选择或新建配方，再开始规划拍照点与示教中线。" : "请在桌面软件中连接实际数据；交互设计可在“操作流程预览”中查看。"}</p><Link className="btn primary" to={desktopAvailable() ? "/recipe" : "/workflow/guide"}>{desktopAvailable() ? "打开配方库" : "查看交互原型"}</Link></div></div>;
 }
 export function WorkspaceBar() {
-  const { list, drafts, selectedId, select, data, doc, dirty, frameDirty, busy, previewError, error, notice, saveDoc } = useWorkspace();
+  const { list, drafts, selectedId, select, data, doc, dirty, frameDirty, busy, previewError, error, notice, saveDoc, saveState, retrySave } = useWorkspace();
   const choices = [...list.map(r => ({ id:r.id, name:r.name })), ...drafts.filter(w => !list.some(r => r.id === w.doc.id)).map(w => ({ id:w.doc.id, name:w.doc.name }))];
-  return <><div className="wp-workbench-bar"><label className="wp-recipe-picker">当前配方<select className="input" value={selectedId ?? ""} disabled={busy} onChange={e => void select(e.target.value)}><option value="" disabled>选择配方</option>{choices.map(r => <option key={r.id} value={r.id}>{r.id} · {r.name}</option>)}</select></label>{data && <><Badge>候选 v{doc?.version}</Badge><Badge tone="neutral">生产 {data.productionVersion ? "v" + data.productionVersion : "未发布"}</Badge><span className="muted">修订 {data.workspace.revision}</span>{data.workspace.pending && <Badge tone="warn">v{data.workspace.pending.doc.version} 待工件结束后生效</Badge>}</>}<span className="spacer" /><Link className="btn" to="/recipe">配方库</Link></div>
+  return <><div className="wp-workbench-bar"><label className="wp-recipe-picker">当前配方<select className="input" value={selectedId ?? ""} disabled={busy || dirty || frameDirty} onChange={e => void select(e.target.value)}><option value="" disabled>选择配方</option>{choices.map(r => <option key={r.id} value={r.id}>{r.id} · {r.name}</option>)}</select></label>{data && <><Badge>候选 v{doc?.version}</Badge><Badge tone="neutral">生产 {data.productionVersion ? "v" + data.productionVersion : "未发布"}</Badge><span className="muted">修订 {data.workspace.revision}</span>{data.workspace.pending && <Badge tone="warn">v{data.workspace.pending.doc.version} 待工件结束后生效</Badge>}</>}<Badge tone={saveState === "failed" ? "warn" : "neutral"}>{saveState === "saving" ? "保存中" : saveState === "failed" ? "保存失败" : saveState === "pending" ? "等待保存" : "草稿已保存"}</Badge>{saveState === "failed" && <button className="btn small" onClick={retrySave}>重试保存</button>}<span className="spacer" /><Link className="btn" to="/recipe">配方库</Link></div>
     {dirty && <Notice title="候选配置尚未保存" tone="warn"><span>保存后再执行示教、验证和发布。</span><button className="btn small primary" disabled={busy || !!previewError} onClick={() => void saveDoc()}>保存候选配置</button></Notice>}
-    {frameDirty && <Notice title="示教中线有未保存的修改" tone="warn">请在单帧示教中保存中线并重新试测，然后再验证候选。</Notice>}
+    {frameDirty && <Notice title="示教中线有未保存的修改" tone="warn">编辑进度正在自动保存；保存草稿不等于完成示教，修改后需要重新试测。</Notice>}
     {previewError && <Notice title="候选参数无效" tone="warn">{previewError}</Notice>}
     {error && <Notice title="操作未完成" tone="warn">{error}</Notice>}
     {notice && <Notice title={notice} tone="ok" />}
+    {data?.workspace.pending && <Notice title="发布处理中，候选已冻结">等待当前工件结束后切换；发布失败可在验证与发布页重试同一版本。</Notice>}
     {data?.workspace.publishError && <Notice title="待生效版本发布失败" tone="warn">{data.workspace.publishError}</Notice>}
   </>;
 }
 export function Steps() {
-  return <nav className="wp-steps" aria-label="配方配置步骤">{[["/recipe/geometry","拍照点规划"],["/recipe/teach","单帧示教"],["/recipe/overview","工件总览"],["/recipe/validation","验证与发布"]].map(([path,label],i) => <NavLink key={path} to={path} className={({isActive}) => isActive ? "active" : ""}><span>{i + 1}</span>{label}{i < 3 && <ChevronRight size={14} />}</NavLink>)}</nav>;
+  return <nav className="wp-steps" aria-label="配方配置步骤">{[["/recipe/progress","进度总览"],["/recipe/capture","整圈采集"],["/recipe/teach","单帧示教"],["/recipe/validation","验证与发布"]].map(([path,label],i) => <NavLink key={path} to={path} className={({isActive}) => isActive ? "active" : ""}><span>{i + 1}</span>{label}{i < 3 && <ChevronRight size={14} />}</NavLink>)}</nav>;
 }
 
 export function useGrayImage(id: string | null, imageId: string | null, historyId?: number | null, k = 0, view?: number) {
@@ -90,10 +91,11 @@ export interface PathEditing {
   select: (index: number | null) => void;
 }
 
-export function GrayViewer({ image, loading = false, error = "", label, overlay, onEdit }: {
-  image: GrayImage | null; loading?: boolean; error?: string; label: string; overlay?: ImageOverlay; onEdit?: PathEditing;
+export function GrayViewer({ image, loading = false, error = "", label, overlay, onEdit, region, onRegion }: {
+  image: GrayImage | null; loading?: boolean; error?: string; label: string; overlay?: ImageOverlay; onEdit?: PathEditing; region?: [number, number, number, number] | null; onRegion?: (region: [number, number, number, number]) => void;
 }) {
   const [zoom, setZoom] = useState(1);
+  const regionStart = useRef<[number, number] | null>(null);
   const [shown, setShown] = useState(true);
   const group = useRef<SVGGElement>(null);
   const drag = useRef<{ index: number; inverse: DOMMatrix } | null>(null);
@@ -113,6 +115,7 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
   return <div className="wp-viewport"><div className="wp-image-tools"><span>{label}</span><div><button className="icon-btn" aria-label="缩小原图" onClick={() => setZoom(z => Math.max(.5,z-.25))}><Minus size={15} /></button><span>{Math.round(zoom * 100)}%</span><button className="icon-btn" aria-label="放大原图" onClick={() => setZoom(z => Math.min(4,z+.25))}><Plus size={15} /></button><button className="icon-btn" aria-label="适应窗口" onClick={() => setZoom(1)}><RotateCcw size={15} /></button>{overlay && <button className={"btn small" + (shown ? " active" : "")} aria-pressed={shown} onClick={() => setShown(v => !v)}>中线叠加</button>}</div></div>
     {!image ? <div className="wp-image-empty"><Camera size={32} /><strong>{loading ? "正在读取原图…" : error ? "原图不可用" : "尚未冻结本帧图像"}</strong><span>{error || "取样后在这张图上点出胶路中线。机器人应停在当前拍照点。"}</span></div> :
       <svg role="img" className={"wp-gray-image" + (editing ? " editable" : "")} viewBox={"0 0 " + image.width + " " + image.height} aria-label={label} onPointerDown={e => {
+        if (onRegion) { const p = point(e); if (p) { regionStart.current = p; onRegion([p[0], p[1], 0, 0]); e.currentTarget.setPointerCapture?.(e.pointerId); } return; }
         if (!editing || !onEdit) return;
         const inverse = group.current?.getScreenCTM()?.inverse();
         const p = inverse ? point(e, inverse) : null;
@@ -125,19 +128,21 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
         drag.current = { index, inverse };
         e.currentTarget.setPointerCapture?.(e.pointerId);
       }} onPointerMove={e => {
+        if (onRegion && regionStart.current) { const p = point(e), a = regionStart.current; if (p) onRegion([Math.min(a[0],p[0]), Math.min(a[1],p[1]), Math.abs(p[0]-a[0]), Math.abs(p[1]-a[1])]); return; }
         const current = drag.current;
         if (!current || !onEdit) return;
         const p = point(e, current.inverse);
         if (p) onEdit.move(current.index, p);
-      }} onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}>
+      }} onPointerUp={() => { drag.current = null; regionStart.current = null; }} onPointerCancel={() => { drag.current = null; regionStart.current = null; }}>
         <g ref={group} transform={"translate(" + image.width/2 + " " + image.height/2 + ") scale(" + zoom + ") translate(" + -image.width/2 + " " + -image.height/2 + ")"}><image href={image.url} width={image.width} height={image.height} />
+          {region && <rect x={region[0]} y={region[1]} width={region[2]} height={region[3]} fill="var(--accent)" fillOpacity={.12} stroke="var(--accent-text)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
           {overlay && shown && <g aria-label="中线叠加">
             {overlay.stations?.map(([x, y], i) => <circle key={"s" + i} cx={x} cy={y} r={dot} fill={overlay.stationColors?.[i] ?? "var(--accent)"} opacity={overlay.stale ? .35 : .9} />)}
             {path.length >= 2 && <polyline points={path.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--accent-text)" strokeWidth={2} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
             {onEdit && path.map(([x, y], i) => <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--accent)" : "var(--bg)"} fillOpacity={.85} stroke={i === 0 ? "var(--ok)" : "var(--accent-text)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
           </g>}
         </g></svg>}
-    {image && <div className="wp-image-footer"><span>{image.width} × {image.height} px</span><span>{onEdit ? "点击图像依次加中线点（从胶嘴一侧往外，绿圈为起点），拖动点可调整" : "原始灰度图像"}</span></div>}
+    {image && <div className="wp-image-footer"><span>{image.width} × {image.height} px</span><span>{onRegion ? "拖动框选一段连续胶路区域" : onEdit ? "点击图像依次加中线点（从胶嘴一侧往外，绿圈为起点），拖动点可调整" : "原始灰度图像"}</span></div>}
   </div>;
 }
 
@@ -150,9 +155,11 @@ export function FrameRail({ id, frames, selected, onSelect, disabled }: { id: st
   return <div className="wp-frame-list" aria-label="示教帧选择">{frames.map(frame => {
     const shot = data?.workspace.doc.shots[frame.k];
     const dirty = !!frameDrafts[frame.k] && !!shot && !sameTeach(frameDrafts[frame.k], shotTeach(shot));
-    const status = shot?.skip ? "不检" : dirty ? "中线待保存" : frame.saved ? "已保存" : frame.trial ? frame.trial.passed ? "试测通过" : "试测未通过" : shot && shot.path.length < 2 ? frame.image ? "待点中线" : "待取样" : frame.image ? "待试测" : "待取样";
+    const enabled = shot ? selectedViews(shot) : [];
+    const complete = enabled.filter(view => frame.viewStates?.find(v => v.view === view)?.saved ?? (shot?.view === view && frame.saved)).length;
+    const status = shot?.skip ? "不检" : !enabled.length ? "未选图" : complete === enabled.length ? "已完成" : complete > 0 ? `部分完成 ${complete}/${enabled.length}` : dirty ? "草稿待保存" : frame.saved ? "已保存" : frame.trial ? frame.trial.passed ? "试测通过" : "试测未通过" : shot && shot.path.length < 2 ? frame.image ? "待点中线" : "待取样" : frame.image ? "待试测" : "待取样";
     return <button key={frame.k} className={"wp-frame-item " + (selected === frame.k ? "selected" : "")} aria-label={"选择帧 k" + (frame.k + 1)} aria-pressed={selected === frame.k} onClick={() => onSelect(frame.k)} disabled={disabled}>
-      <FrameThumbnail id={id} frame={frame} /><strong>k{frame.k + 1}{shot ? " · " + shot.id : ""}<small>{shot ? `${shot.camera} · 视角 ${shot.view}` : frame.image?.camera ?? "未取样"}</small></strong><span>{status}</span>
+      <FrameThumbnail id={id} frame={frame} /><strong>k{frame.k + 1}{shot ? " · " + shot.id : ""}<small>{shot ? `选中 ${enabled.length} 幅图` : frame.image?.camera ?? "未取样"}</small></strong><span>{status}</span>
     </button>;
   })}</div>;
 }

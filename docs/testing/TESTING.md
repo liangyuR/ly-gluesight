@@ -239,3 +239,33 @@ PR #16 以 PR #15 为 base，包含最新 main 与 #15 的持久审计及闭锁�
 本轮顺序整合 main `451be27` 与 PR #15 `373b1a0`，保留 #15 的目录健康探针、单次 ACK、审计等待与设备状态联动、DONE 前持久记录和 main 的 D-0 / planVersion / 实际触发数规则。`arming::tests` 验证同步与异步阶段共用截止、健康探针超时不会继续布防、PLC 串行副作用先收尾再拒绝迟到成功。前端包含 40 张 1280×1024 PGM 顺序读取 / base64 完整像素传输，后端含真实文件写入与失败原子清理回归。
 
 本机完整日志位于 `output/pr16-main-regression/`（不提交）。本轮没有运行实际桌面队列压力、400 件性能、Robot 五工况或现场硬件；以上 feature / 工具单测不能代替这些执行。算法和真实 DLL 回归按负责人明确要求不纳入本轮。
+
+## 配方创建软件交付（2026-10-11）
+
+基线为 main `0370742`，交付分支 `codex/recipe-capture-workflow`。本轮实现空草稿、整圈拼接采集、按点多图示教、独立整圈验证与冻结发布；详见 [业务设计](../architecture/recipe-creation-workflow.md) 和 [交付进度](../architecture/recipe-creation-progress.md)。按负责人要求，无需现场验收、忽略算法，本轮不执行算法质量或原生 DLL 专项。
+
+| 验证 | 最终结果与证据 |
+| --- | --- |
+| Rust `cargo test --offline --manifest-path src-tauri/Cargo.toml --lib` | **417 通过、0 失败、44 条件性忽略**；`tmp/recipe-backend-final-host.log` |
+| S7 线协议回环 `s7_wire_`（`--ignored --test-threads=1`） | **35 通过、0 失败、0 忽略**，73.63 s；含 20 次单设备教学采集身份、结果序号、ACK 与释放。`tmp/recipe-s7-wire-tests.log` |
+| `pnpm test -- --pool=threads --maxWorkers=2` | **43 文件、990 测试通过，0 失败/忽略**，119.55 s；`tmp/frontend-reports/recipe-delivery-final.json`、同名 `.log` |
+| `pnpm typecheck`、`pnpm build` | 通过；1977 modules；保留既有大 chunk 提示。`tmp/frontend-reports/recipe-delivery-{typecheck,build}.log` |
+| Robot 演示 Python / Node | **40 / 18 通过**；包含结构版本 5、逐图标定默认引用和多图契约。`tmp/recipe-demo-python-tests.log` |
+| 最终 Tauri 桌面构建 | 独立标识、默认 feature、隐藏窗口、debug 无安装包构建通过。`output/playwright/recipe-workflow/build-final.log` |
+| 桌面真实 IPC / 重启恢复 | **通过**；`output/playwright/recipe-workflow/{ipc-report,restart-report}.json` |
+
+Rust 最终新增边界包括嵌套标定比例、人工比例覆盖、标定复用追溯、多图独立状态、未改变图恢复完成状态、默认参数局部失效、无首帧基线/旧帧/跳号/重复、失败轮次全部来源的新会话要求、整圈候选禁止单帧替换、历史样本非零 PLC 计划版本一致，以及同一冻结包失败重试与不确定生效状态闭锁。S7 夹具改为按当前计划报告设备触发数，并执行全部线协议回归。
+
+桌面检查通过实际 WebView2→Tauri command→磁盘保存/恢复执行：新建空草稿；采用生成的 20 点完整采集记录，每点三幅实际 PNG；分别选用 1/2/3 幅，共 39 幅独立草稿；保存标定检查输入；拒绝示教轮次自证和单帧恢复；加入第二轮独立样本；验证未完成时拒绝发布；确认不生成生产工件记录或生产版本；应用重启后恢复轮次、逐图草稿、选择和编辑位置。
+
+这条桌面检查显式使用**已保存完整采集夹具**，没有从模拟夹具推定现场收图成功；使用 `--skip-engine` 跳过试测与成功发布，验证通过的算法样本、成功发布和工件在途切换没有新增桌面验收结论。采集异常与发布切换状态由 Rust/S7 软件测试分别覆盖，不将分层测试合称为硬件端到端验收。
+
+桌面工具为 `tests/native/recipe-workflow-ipc.mjs`，配置为 `tests/native/tauri-recipe-workflow.json`。复现步骤：
+
+1. 运行 `pnpm build` 和 `pnpm tauri build --debug --no-bundle --config tests/native/tauri-recipe-workflow.json`。
+2. 运行 `python tests/native/recipe-workflow-images.py output/playwright/recipe-workflow/images`（需要 Pillow）。
+3. 设置当前进程 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9351`，用 `Start-Process -WindowStyle Hidden` 启动该独立构建。数据标识必须为 `com.xyzrobotics.gluesight.recipe-workflow-20261011`，不能使用生产 profile。
+4. 运行 `node tests/native/recipe-workflow-ipc.mjs --playwright-module <本机playwright/index.mjs> --images output/playwright/recipe-workflow/images --output output/playwright/recipe-workflow --skip-engine`。
+5. 重启同一隔离实例，重复上条命令并加 `--restart`。首次执行拒绝覆盖已存在的同名测试候选；需要重跑时先关闭此实例并备份其独立 profile。
+
+Windows 沙箱临时目录权限及 realpath 限制会使测试启动失败；本轮以 C 盘项目、隔离 TEMP 及限定宿主执行取得最终证据。前端默认 fork 在此机器有既知停滞，最终使用线程池，没有改依赖或跳过 UI suite。临时失败日志与运行数据不进入交付提交。

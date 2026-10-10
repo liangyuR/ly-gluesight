@@ -135,3 +135,11 @@ fn rebuilt_core_file_changes_identity_without_hashing_it() {
     assert!(file_identity(&dir.join("missing.dll")).unwrap_err().contains("核心库文件信息"));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn calibration_keys_are_distinct_for_each_view_of_one_device() {
+    assert_eq!(station_view_key("device1", 1).unwrap(), "device1-v1");
+    assert_eq!(station_view_key("device1", 3).unwrap(), "device1-v3");
+    assert!(station_view_key("device1", 0).is_err());
+    assert!(station_view_key("device1", 4).is_err());
+}

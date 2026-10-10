@@ -8,9 +8,9 @@ import TeachingPage from "../src/features/workspace/TeachingPage";
 import { workspaceApi } from "../src/features/workspace/api";
 import { useWorkspace } from "../src/features/workspace/context";
 import { useCycle } from "../src/features/cycle/api";
-import { deferred, snapshot, tricamWorkspaceView, workspaceState, workspaceView } from "./fixtures";
+import { deferred, snapshot, workspaceState, workspaceView } from "./fixtures";
 
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { stationCapture: vi.fn(), stationImport: vi.fn(), stationImage: vi.fn(), importImage: vi.fn(), image: vi.fn(), capture: vi.fn() } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { progress: vi.fn(async()=>workspaceView()), stationCapture: vi.fn(), stationImport: vi.fn(), stationImage: vi.fn(), importImage: vi.fn(), image: vi.fn(), capture: vi.fn() } }));
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/cycle/api", () => ({ useCycle: vi.fn() }));
 const metadata = { ...workspaceView().workspace.frames[0].image!, source: "import", exposureUs: null, gainDb: null };
@@ -98,7 +98,7 @@ describe("标定与示教的原图绑定", () => {
   it("标定导入绑定所选工位，再按新样本 ID 读取真实预览", async () => {
     const onSample = vi.fn(); render(<StationCapture cam={2} sample={null} onSample={onSample}/>); upload();
     await waitFor(() => expect(onSample).toHaveBeenLastCalledWith({ metadata, image: gray }));
-    expect(workspaceApi.stationImport).toHaveBeenCalledWith(2, [80, 53, 10, 0, 255]); expect(workspaceApi.stationImage).toHaveBeenCalledWith(2, metadata.id);
+    expect(workspaceApi.stationImport).toHaveBeenCalledWith(2, [80, 53, 10, 0, 255], 1); expect(workspaceApi.stationImage).toHaveBeenCalledWith(2, metadata.id, 1);
   });
   it("取样失败显示原因，旧工位预览晚到不能替换新工位样本", async () => {
     const request = deferred<typeof gray>(); vi.mocked(workspaceApi.stationImage).mockReturnValueOnce(request.promise);
@@ -131,39 +131,14 @@ describe("标定与示教的原图绑定", () => {
     await act(async()=>old.resolve(metadata));expect(workspaceApi.stationImage).not.toHaveBeenCalled();
     expect(screen.getByRole("button",{name:"取样中…"})).toBeDisabled();fireEvent.click(screen.getByRole("button",{name:"取样中…"}));
     expect(workspaceApi.stationCapture).toHaveBeenCalledTimes(2);await act(async()=>next.resolve({...metadata,id:"new-station"}));
-    expect(workspaceApi.stationImage).toHaveBeenCalledExactlyOnceWith(2,"new-station");
+    expect(workspaceApi.stationImage).toHaveBeenCalledExactlyOnceWith(2,"new-station",1);
     expect(onSample).toHaveBeenLastCalledWith({metadata:{...metadata,id:"new-station"},image:gray});
   });
-  it("示教导入绑定候选修订与所选帧，文件错误不执行后端", async () => {
-    render(<MemoryRouter initialEntries={["/recipe/teach?frame=1"]}><TeachingPage/></MemoryRouter>); upload();
-    await waitFor(() => expect(workspaceApi.importImage).toHaveBeenCalledWith("A", 7, 1, [80, 53, 10, 0, 255]));
-    upload(file("invalid.txt")); await waitFor(() => expect(ws.setError).toHaveBeenCalledWith(expect.stringContaining("请选择")));
-    expect(workspaceApi.importImage).toHaveBeenCalledTimes(1);
-  });
-  it("示教读取本帧文件期间锁定帧、中线参数和取样，导入后恢复",async()=>{
-    ws=workspaceState(tricamWorkspaceView());
-    const bytes=deferred<ArrayBuffer>(),value=file();vi.mocked(value.arrayBuffer).mockReturnValue(bytes.promise);
-    render(<MemoryRouter><TeachingPage/></MemoryRouter>);upload(value);
-    const next=screen.getByRole("button",{name:"选择帧 k2"});expect(next).toBeDisabled();
-    expect(screen.getByRole("button",{name:"取新样本"})).toBeDisabled();expect(screen.getByRole("spinbutton",{name:"像素当量"})).toBeDisabled();expect(screen.getByRole("button",{name:"清空中线"})).toBeDisabled();
-    expect(screen.getByRole("button",{name:"选择视角 2"})).toBeDisabled();expect(screen.getByRole("button",{name:"选择视角 3"})).toBeDisabled();
-    await userEvent.click(next);expect(screen.getByRole("button",{name:"选择帧 k1"})).toHaveAttribute("aria-pressed","true");
-    await act(async()=>bytes.resolve(Uint8Array.from([7]).buffer));expect(workspaceApi.importImage).toHaveBeenCalledExactlyOnceWith("A",7,0,[7]);
-    await waitFor(()=>expect(next).toBeEnabled());
-    expect(screen.getByRole("button",{name:"选择视角 2"})).toBeEnabled();
-  });
-  it("示教候选切换解除旧读取，新候选的文件读取不会被旧完成打断",async()=>{
-    const old=deferred<ArrayBuffer>(),next=deferred<ArrayBuffer>(),first=file(),second=file("new.png");
-    vi.mocked(first.arrayBuffer).mockReturnValue(old.promise);vi.mocked(second.arrayBuffer).mockReturnValue(next.promise);
-    const page=render(<MemoryRouter><TeachingPage/></MemoryRouter>);upload(first);
-    ws=workspaceState(workspaceView("B"));page.rerender(<MemoryRouter><TeachingPage/></MemoryRouter>);upload(second);
-    await act(async()=>old.resolve(Uint8Array.from([1]).buffer));expect(workspaceApi.importImage).not.toHaveBeenCalled();
-    expect(screen.getByRole("button",{name:"选择帧 k2"})).toBeDisabled();await act(async()=>next.resolve(Uint8Array.from([2]).buffer));
-    expect(workspaceApi.importImage).toHaveBeenCalledExactlyOnceWith("B",7,0,[2]);
-  });
-  it.each(["busy", "dirty", "production"])("%s 状态禁用离线导入", condition => {
-    if (condition === "busy") ws.busy = true; if (condition === "dirty") ws.dirty = true;
-    if (condition === "production") vi.mocked(useCycle).mockReturnValue({ snapshot: snapshot("ACQUIRE"), logs: [], measured: [] });
-    render(<MemoryRouter><TeachingPage/></MemoryRouter>); expect(screen.getByRole("button", { name: "导入离线原图" })).toBeDisabled();
+  it("示教原图只能整圈替换，保留工位标定独立导入", () => {
+    render(<MemoryRouter><TeachingPage/></MemoryRouter>);
+    expect(screen.queryByRole("button", {name:"导入离线原图"})).toBeNull();
+    expect(screen.queryByRole("button", {name:"取新样本"})).toBeNull();
+    expect(screen.getByRole("link", {name:"整圈重新采集"})).toHaveAttribute("href","/recipe/capture");
+    expect(workspaceApi.importImage).not.toHaveBeenCalled();
   });
 });

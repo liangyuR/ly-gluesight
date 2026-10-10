@@ -21,9 +21,9 @@ export function recipeContract(recipe) {
     detect: recipe.detect, limits: recipe.limits,
     shots: recipe.shots.map(shot => ({
       id: shot.id, poseId: shot.poseId, camera: shot.camera, view: shot.view,
-      bead: shot.bead, calib: shot.calib ?? shot.camera, skip: shot.skip ?? false,
+      bead: shot.bead, calib: shot.calib ?? `${shot.camera}-v${shot.view}`, skip: shot.skip ?? false,
       path: shot.path ?? [], mmPerPx: shot.mmPerPx ?? null,
-      detect: shot.detect ?? recipe.detect, limits: shot.limits ?? recipe.limits,
+      detect: shot.detect ?? recipe.detect, limits: shot.limits ?? recipe.limits, views: shot.views ?? [],
     })),
   });
 }
@@ -40,12 +40,12 @@ export function validateTrigger(ticket, fixture, snapshot, layout, rig, settings
       typeof part.bundleId !== 'string' || !part.bundleId) {
     throw new Error('Ticket does not identify the armed cycle');
   }
-  if (fixture?.schemaVersion !== 4 || layout?.schemaVersion !== 4 ||
+  if (fixture?.schemaVersion !== 5 || layout?.schemaVersion !== 5 ||
       ticket.recipeId !== fixture.id || part.recipeId !== fixture.id || layout.id !== fixture.id ||
       layout.revisionId !== part.recipeRevision || ticket.productCode !== fixture.productCode ||
       ticket.shotCount !== fixture.shots?.length || part.n !== fixture.shots?.length ||
       JSON.stringify(recipeContract(layout)) !== JSON.stringify(recipeContract(fixture))) {
-    throw new Error('Armed recipe differs from the configured schema 4 fixture');
+    throw new Error('Armed recipe differs from the configured schema 5 fixture');
   }
   const shot = layout.shots[ticket.k];
   if (!shot || ticket.shotId !== shot.id || ticket.poseId !== shot.poseId ||
@@ -132,7 +132,7 @@ async function main() {
   }
   const recipePath = values.recipe ? resolve(values.recipe) : resolve(dirname(configPath), config.robot.recipe);
   const fixture = JSON.parse((await readFile(recipePath, 'utf8')).replace(/^\uFEFF/, ''));
-  if (fixture.schemaVersion !== 4 || !Array.isArray(fixture.shots)) throw new Error('Expected a schema 4 recipe fixture');
+  if (fixture.schemaVersion !== 5 || !Array.isArray(fixture.shots)) throw new Error('Expected a schema 5 recipe fixture');
   const robotUrl = 'http://127.0.0.1:' + config.robot.port;
   const debugUrl = 'http://127.0.0.1:' + config.bridge.debugPort;
   let socket, counter = 0, validated = false;

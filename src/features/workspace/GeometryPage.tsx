@@ -15,9 +15,9 @@ export default function GeometryPage() {
   // 曝光参考：当前草稿第一个拍照点的相机
   const camera = doc.shots[0]?.camera;
   return <div className="wp-page"><WorkspaceBar /><Steps /><div className="wp-actions"><Badge tone={taught >= 99.995 ? "ok" : "warn"}>{"胶路示教 " + taught.toFixed(0) + "%"}</Badge><span className="muted">{untaught.length ? "未示教：" + untaught.join("、") + "，可以保存，但不能开工。" : "每个拍照点在自己的图像里沿示教中线量胶；中线在单帧示教里点出。"}</span><span className="spacer" /><Link className="btn" to="/recipe/teach">进入单帧示教</Link></div>
-    <Panel title="候选拍照点与检测规则" detail="保存候选配置不会改变在线使用的生产配方">
-      <fieldset disabled={busy} style={{border:0,padding:0,margin:0,minWidth:0}}>
-      <RecipeEditor key={doc.id + ":" + data.workspace.revision} initial={doc} originalId={data.workspace.baseRevision ? doc.id : null} cameras={cameras} onSaved={() => {}} onDraftChange={setDoc} saveCandidate={async candidate => !!(await saveDoc(candidate))} />
+    <Panel title="配方默认检测与判定参数" detail="保存候选配置不会改变在线使用的生产配方">
+      <fieldset disabled={busy || !!data.workspace.pending} style={{border:0,padding:0,margin:0,minWidth:0}}>
+      <RecipeEditor collectedShots key={doc.id + ":" + data.workspace.revision} initial={doc} originalId={data.workspace.baseRevision ? doc.id : null} cameras={cameras} onSaved={() => {}} onDraftChange={setDoc} saveCandidate={async candidate => !!(await saveDoc(candidate))} />
       </fieldset>
     </Panel>
     <FeasibilityCalc exposure={cameras.find(c => c.id === camera)?.exposureUs ?? 60} fps={undefined} />

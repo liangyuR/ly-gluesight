@@ -45,13 +45,13 @@ export default function LibraryPage() {
       let code = 1; while (code<=65535&&usedCodes.has(code)) code++;
       if(code>65535)throw new Error("产品代码已用完，删除不再使用的配方后重试");
       setCreatedId(null);
-      setCreating({...template,id,name:copied ? copied.name + "（副本）" : "新配方",productCode:code,version:1,teachingId:null});
+      setCreating({...template,shots:copied ? template.shots : [],id,name:copied ? copied.name + "（副本）" : "新配方",productCode:code,version:1,teachingId:null});
     } catch(e) { if(current.current.alive)setError(String(e)); } finally { pending.current=false;if(current.current.alive)setWorking(false); }
   };
   const open=async(id:string)=>{
     if(pending.current||blocked)return;
     pending.current=true;setWorking(true);
-    try { const selected=await select(id);if(selected?.workspace.doc.id===id&&current.current.alive)navigate("/recipe/geometry"); }
+    try { const selected=await select(id);if(selected?.workspace.doc.id===id&&current.current.alive)navigate("/recipe/progress"); }
     catch(error){if(current.current.alive)setError(String(error));}
     finally{pending.current=false;if(current.current.alive)setWorking(false);}
   };
@@ -66,7 +66,7 @@ export default function LibraryPage() {
       await reloadList();if(!current.current.alive)return;
       const selected=await select(id);if(!current.current.alive)return;
       if(selected?.workspace.doc.id!==id){setDialogError("候选已创建，选用未完成。修正加载错误后重试打开候选。");return;}
-      setCreating(null);setCreatedId(null);navigate("/recipe/geometry");
+      setCreating(null);setCreatedId(null);navigate("/recipe/progress");
     } catch(e) { if(current.current.alive)setDialogError(String(e)); } finally { pending.current=false;if(current.current.alive)setWorking(false); }
   };
   const remove = async () => {
@@ -91,11 +91,11 @@ export default function LibraryPage() {
     const draft = drafts.find(w => w.doc.id === id);
     return {id,production,draft,name:draft?.doc.name ?? production?.name ?? id};
   }).filter(r => (r.id + r.name + (r.draft?.doc.productCode ?? r.production?.productCode)).toLowerCase().includes(search.trim().toLowerCase()));
-  return <div className="wp-page"><WorkspaceBar /><div className="wp-actions"><label className="wp-recipe-picker"><Search size={16} /><input className="input" aria-label="搜索配方" placeholder="编号、名称或产品代码" value={search} onChange={e => setSearch(e.target.value)} /></label><span className="spacer" /><button className="btn primary" disabled={!desktopAvailable() || busy || working} onClick={() => void prepare()}><Plus size={16} />新建飞拍</button></div>
+  return <div className="wp-page"><WorkspaceBar /><div className="wp-actions"><label className="wp-recipe-picker"><Search size={16} /><input className="input" aria-label="搜索配方" placeholder="编号、名称或产品代码" value={search} onChange={e => setSearch(e.target.value)} /></label><span className="spacer" /><button className="btn primary" disabled={!desktopAvailable() || busy || working} onClick={() => void prepare()}><Plus size={16} />新建配方</button></div>
     {!desktopAvailable() && <Notice title="配方操作需要桌面后端" tone="warn">本页不会在浏览器中创建、保存或发布生产配置。</Notice>}
     <div className="wp-library-grid">{visible.map(r => <Panel key={r.id} title={r.name} detail={r.id} className={"wp-recipe-card " + (r.id === selectedId ? "selected" : "")} actions={<Badge tone="neutral">飞拍</Badge>}>
       <div className="wp-actions"><Badge tone={r.production ? "ok" : "warn"}>{r.production ? "生产 v" + r.production.version : "未发布"}</Badge>{r.draft && <Badge>候选 v{r.draft.doc.version}</Badge>}{r.draft?.pending && <Badge tone="warn">待生效</Badge>}</div><p className="muted mono">代码 {r.draft?.doc.productCode ?? r.production?.productCode} · {(r.draft?.doc.shots.length ?? r.production?.shotCount) + " 个拍照点"}</p>
-      <div className="wp-actions"><button className="btn primary" disabled={blocked} onClick={()=>void open(r.id)}>配置候选</button><button className="icon-btn" title="复制配方" aria-label={"复制配方 " + r.id} disabled={blocked} onClick={() => void prepare(r.id)}><Copy size={16} /></button><button className="icon-btn" title="删除配方" aria-label={"删除配方 " + r.id} disabled={blocked || !!r.draft?.pending} onClick={() => {setDeleting(r.id);setRemovedId(null);setDialogError("");}}><Trash2 size={16} /></button></div>
+      <div className="wp-actions"><button className="btn primary" disabled={blocked} onClick={()=>void open(r.id)}>继续配置</button><button className="icon-btn" title="复制配方" aria-label={"复制配方 " + r.id} disabled={blocked} onClick={() => void prepare(r.id)}><Copy size={16} /></button><button className="icon-btn" title="删除配方" aria-label={"删除配方 " + r.id} disabled={blocked || !!r.draft?.pending} onClick={() => {setDeleting(r.id);setRemovedId(null);setDialogError("");}}><Trash2 size={16} /></button></div>
     </Panel>)}</div>{!visible.length && <div className="wp-empty"><Search size={30} /><h2>{ids.length ? "没有匹配的配方" : "尚未加载配方"}</h2><p>{ids.length ? "修改搜索条件后重试。" : "桌面软件会从本地配方库读取已有配置。"}</p></div>}
     {creating && <Modal title="建立候选配方" onClose={() => !working && setCreating(null)} footer={<><button className="btn" disabled={working} onClick={() => setCreating(null)}>取消</button><button className="btn primary" disabled={blocked || (!createdId&&!!invalid)} onClick={() => void create()}>{working ? "创建中…" : createdId?"打开已创建候选":"创建候选"}</button></>}><div className="wp-stack"><label className="field"><span>配方编号</span><input className="input mono" aria-label="配方编号" disabled={working||!!createdId} value={creating.id} maxLength={32} onChange={e => setCreating({...creating,id:e.target.value})} /></label><label className="field"><span>配方名称</span><input className="input" aria-label="配方名称" disabled={working||!!createdId} value={creating.name} onChange={e => setCreating({...creating,name:e.target.value})} /></label><label className="field"><span>产品代码</span><input className="input" aria-label="产品代码" disabled={working||!!createdId} type="number" min={1} max={65535} value={Number.isFinite(creating.productCode)?creating.productCode:""} onChange={e => setCreating({...creating,productCode:Number(e.target.value)})} /></label>{invalid&&!createdId&&<p className="form-error" role="alert">{invalid}</p>}<Notice title="先建立候选，验证后发布">新候选不会被 PLC 或在线检测自动使用。</Notice>{dialogError && <Notice title="无法创建" tone="warn">{dialogError}</Notice>}</div></Modal>}
     {deleting && <Modal title="删除配方" onClose={() => !working && setDeleting(null)} footer={<><button className="btn" disabled={working} onClick={() => setDeleting(null)}>取消</button><button className="btn danger" disabled={blocked} onClick={() => void remove()}>{removedId?"刷新配方库":"删除 "+deleting}</button></>}><p>将删除此配方的生产配置、候选及示教资料。已存储的历史结果和配方快照保留。</p>{dialogError && <Notice title="无法删除" tone="warn">{dialogError}</Notice>}</Modal>}

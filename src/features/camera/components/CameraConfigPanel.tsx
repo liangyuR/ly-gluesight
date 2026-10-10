@@ -139,7 +139,8 @@ export default function CameraConfigPanel({ cam, initial, status, onSaved, onSav
           <option value={1}>单视角</option>
           <option value={3}>三目（一次触发三幅图）</option>
         </select>
-        {config.viewCount === 3 && <span className="hint-cell">每个拍照点在示教时选择其中一个视角。{mvs ? "海康三目交付格式待现场确认，当前不能采集三目图像。" : "三个视角共用一次设备触发。"}</span>}
+        {config.viewCount === 3 && mvs && <label className="field"><span>SDK 拼接布局</span><select className="input" aria-label="SDK 拼接布局" value={config.compositeLayout?.kind ?? ""} onChange={e => set("compositeLayout", e.target.value ? {kind:e.target.value as "horizontal" | "vertical"} : null)}><option value="">请选择实际交付布局</option><option value="horizontal">横向三等分</option><option value="vertical">纵向三等分</option>{config.compositeLayout?.kind === "rects" && <option value="rects">已配置矩形区域</option>}</select></label>}
+        {config.viewCount === 3 && <span className="hint-cell">每个拍照点可多选图 1／2／3 分别示教，三幅图共用一次设备触发。</span>}
         <span>采集方式</span>
         <div className="segmented">
           <button className={triggered ? "active" : ""} onClick={() => set("acquisition", "triggered")}>触发（飞拍）</button>
