@@ -243,6 +243,10 @@ PR #12 审计瞬态数据库故障重试补充：审计待写项不再在第 3 �
 
 此机制仍是有界内存暂存：待写最多 128 个 cycle、总缓存最多 512 项，30 分钟未收到该 cycle 新事件的待写项仍会淘汰并报错。超过容量、超时淘汰或进程终止时，尚未入库的内容仍不能保证保存；本轮未新增持久 spool 或生产停机联锁。不可将持续重试表述为掉电持久追溯保证。原生 400 件性能验收及验证器结束后，在 C: 独立分支执行 `cargo test --offline --locked --lib --manifest-path src-tauri/Cargo.toml`，默认完整回归 262 项通过、0 失败、26 项忽略，编译 1m24s、测试 2.99 秒；上述真实 SQLite 锁恢复及新增回归均实际通过。日志 `C:\Users\11601\AppData\Local\Temp\gluesight-p0-recovery-20261010\p0-step6-audit-retry-c.log`，SHA256 `3F4402B4E2C679CBDBF2ACF0315361A27152CEDA5F6BC5D7D9DFE832A1C4D206`。
 
+PR #12 ACK 启动恢复范围补充：先由 SQLite 一次查询仍为 Pending/Submitted/Failed 且有 cycleId 的交付集合，查询失败记录错误并跳过恢复，不将错误视为空集合；已 Acknowledged、NotRequired 及已清理工件不进入恢复候选，也不逐件更新数据库。当前主握手日志仍从磁盘重新验证，匹配未决 cycle 的持久 ACK 仍可恢复；协议 pending 与 ResetRequired 的安全拒绝不变。只有未决目标进入候选缓存并检查精确请求/结果身份冲突，没有未决交付时完全跳过 audit 文件。部分索引 `parts_unresolved_delivery` 在原数据库版本内幂等创建，首次升级创建索引仍需一次 SQLite 历史扫描。
+
+没有压缩、截断或改写 append-only ACK 审计，也没有引入 checkpoint。非空未决集合时，仍需流式读取并解析整个 audit JSONL，残留耗时为 O(日志字节数)，内存为 O(未决 cycle 数 + 当前单条记录字节数)，SQLite 恢复调用最多为本次未决目标数；不能宣称已消除所有生命周期文件扫描。新增回归覆盖 10000 条无关旧收据不入候选缓存、目标冲突拒绝、空集合不读 audit 且主日志错误仍报告，以及真实 SQLite 重启后的 128 件已 ACK/128 件已清理历史、精确同 SN cycle 筛选、主日志 ACK 回退、部分索引查询计划、查询错误不伪装空集合和原审计字节保留。原生验收结束后在 C: 独立分支执行默认全量 Rust，266 项通过、0 失败、26 项默认忽略，编译 42.45 秒、测试 3.08 秒；S7 include-ignored 回环专项 22 项通过、0 失败，耗时 48.73 秒，其中持久 ACK 重启及 Reset 后恢复实际通过。真实 SQLite 样本中的 128 件已清理历史先实际入库，再由 `purge_before` 删除并核对不存在。首轮新增夹具一次分配 128 个 ID 超过既有每批 32 个契约，保留失败日志后仅改为四批分配，生产逻辑未因此改变。日志根目录为 C: 恢复目录；`p0-step6-ack-scope-rust-c.log` SHA256 `2EC57AB38EFC251CFE9A36EC712677B872A7D0D9BDDACCE753945886C47CF0DD`，`p0-step6-ack-scope-s7-c.log` SHA256 `A30721BBE4D9B609E8DE707159D3D008CF12E911F63BD72FBB0578F3BD97BC19`，首次失败为 `p0-step6-ack-scope-rust-first-c.log`。
+
 ## lyFlow 原始图像注入回归（较早记录）
 
 客户端固定到主线 `5b796c3`（Image ABI v15），使用 `RunSpec.image_inputs` 注入完整 u8 灰度帧。运行库必须包含 `io.load_image`、`image.board_calib`、`image.load_calib`、`glue.locate`、`glue.station_calipers`；在 lyFlow 仓库设置 `LYFLOW_PACKS=glue` 后构建 core，系统设置填 DLL 绝对路径。

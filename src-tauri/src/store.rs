@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -460,6 +461,8 @@ impl Store {
              CREATE INDEX IF NOT EXISTS parts_ts ON parts(ts);
              CREATE INDEX IF NOT EXISTS parts_sn ON parts(sn);
              CREATE UNIQUE INDEX IF NOT EXISTS parts_cycle ON parts(cycle_id) WHERE cycle_id IS NOT NULL;
+             CREATE INDEX IF NOT EXISTS parts_unresolved_delivery ON parts(cycle_id)
+                 WHERE cycle_id IS NOT NULL AND delivery_state IN ('pending','submitted','failed');
              CREATE TABLE IF NOT EXISTS part_points (
                  part_id INTEGER PRIMARY KEY REFERENCES parts(id) ON DELETE CASCADE,
                  format INTEGER NOT NULL,
@@ -666,6 +669,13 @@ impl Store {
         .map_err(db_err)?;
         tx.commit().map_err(db_err)?;
         Ok(true)
+    }
+
+    pub fn unresolved_delivery_cycles(&self) -> Result<BTreeSet<String>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut statement = conn.prepare("SELECT cycle_id FROM parts WHERE cycle_id IS NOT NULL AND delivery_state IN ('pending','submitted','failed')").map_err(db_err)?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0)).map_err(db_err)?;
+        rows.collect::<Result<BTreeSet<_>, _>>().map_err(db_err)
     }
 
     pub fn recover_acknowledgement(&self, cycle_id: &str, sn: u32, request_seq: u32, acknowledged_at: i64) -> Result<bool, String> {
