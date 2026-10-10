@@ -164,7 +164,8 @@ def trigger_plan(recipe):
 
 
 def recipe_contract(recipe):
-    contract = {key: recipe[key] for key in ("id", "version", "productCode", "schemaVersion", "triggerMode", "spacing", "filterWindow", "detect", "limits")}
+    contract = {key: recipe[key] for key in ("id", "productCode", "schemaVersion", "triggerMode", "spacing", "filterWindow", "detect", "limits")}
+    contract["version"] = recipe.get("version", 0)
     contract["shots"] = [{"id": shot["id"], "poseId": shot["poseId"], "camera": shot["camera"], "view": shot["view"],
                           "bead": shot["bead"], "calib": shot.get("calib") or shot["camera"], "skip": shot.get("skip", False),
                           "path": shot.get("path", []), "mmPerPx": shot.get("mmPerPx"),
