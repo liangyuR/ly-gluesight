@@ -21,6 +21,8 @@ use crate::replay;
 use crate::sim::Scenario;
 use crate::simimage::{self, PoseError};
 
+mod delivery;
+
 /// 帧通道容量：检测节拍处理不过来时丢新帧并计数，不在内存里无限堆积。
 pub const FRAME_QUEUE: usize = 64;
 
@@ -203,7 +205,7 @@ struct Reorder {
 }
 
 struct ReplayState {
-    files: Vec<Vec<PathBuf>>,
+    frames: Vec<replay::ReplayFrame>,
     next: usize,
     /// 帧录制目录：各帧相对工件开始的时刻（ms）。有它时每件从第一张放
     times: Option<Vec<i64>>,
@@ -363,15 +365,7 @@ impl Shared {
 
     fn deliver(&self, mut frame: Frame) {
         let current_session = frame.session == self.session.load(Ordering::SeqCst);
-        if current_session {
-            let mut identity = self.identity.lock().unwrap();
-            let advanced = identity.observe(&crate::shot_router::FrameMeta::from(&frame));
-            if frame.counter != CounterSource::Synthetic {
-                frame.manual = advanced && self.manual.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok();
-            }
-        } else if frame.counter != CounterSource::Synthetic {
-            frame.manual = false;
-        }
+        delivery::observe(&self.identity, &self.manual, &mut frame, current_session);
         if !frame.images.is_empty() && current_session {
             if frame.counter == CounterSource::Synthetic {
                 self.set_previews(frame.session, &frame.images);
@@ -410,9 +404,7 @@ impl Shared {
         if !self.wanted() {
             return;
         }
-        if self.rig.tx.try_send(frame).is_err() {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-        }
+        let _ = delivery::offer(&self.rig.tx, &self.dropped, frame);
     }
 
     fn fps(&self) -> f32 {
@@ -439,6 +431,24 @@ fn pixel_kind(pixel_type: u32) -> Result<PixelKind, String> {
         mvs::PIXEL_BAYER_GR8 | mvs::PIXEL_BAYER_RG8 | mvs::PIXEL_BAYER_GB8 | mvs::PIXEL_BAYER_BG8 => Ok(PixelKind::Bayer8),
         t => Err(format!("像素格式 0x{t:08X} 不支持（需要 Mono8 或 8 位 Bayer）")),
     }
+}
+
+impl PixelKind {
+    fn bytes_per_pixel(self) -> usize {
+        match self {
+            PixelKind::Mono8 | PixelKind::Bayer8 => 1,
+        }
+    }
+}
+
+/// SDK 报的帧长够不够 宽 × 高 × 每像素字节数：不够就不能按宽高建切片（越界读）。返回要取的字节数。
+fn frame_bytes(kind: PixelKind, w: u32, h: u32, frame_len: u32) -> Result<usize, String> {
+    let need = (w as usize).checked_mul(h as usize).and_then(|n| n.checked_mul(kind.bytes_per_pixel()))
+        .filter(|&n| n > 0).ok_or_else(|| format!("SDK 帧尺寸 {w}×{h} 无效，丢弃图像"))?;
+    if (frame_len as usize) < need {
+        return Err(format!("SDK 帧长 {frame_len} 字节不足 {w}×{h} 需要的 {need} 字节（帧不完整或宽高与像素格式不符），丢弃图像"));
+    }
+    Ok(need)
 }
 
 /// 一帧灰度：Mono8 直接借 SDK 的缓冲（留整帧时才拷），Bayer 转换后的已在缓冲池里。
@@ -528,14 +538,14 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
         let session = shared.session.load(Ordering::SeqCst);
         let w = if info.extend_width != 0 { info.extend_width } else { info.width as u32 };
         let h = if info.extend_height != 0 { info.extend_height } else { info.height as u32 };
-        // 先认像素格式，再按每像素 1 字节取缓冲（Mono8 与 8 位 Bayer 都是）
-        let image = match pixel_kind(info.pixel_type) {
+        // 先认像素格式、核对 SDK 帧长，再按宽 × 高取缓冲；图像不可用时帧照常交付（触发计数照记），只是不带图
+        let image = match pixel_kind(info.pixel_type).and_then(|kind| frame_bytes(kind, w, h, info.frame_len)) {
             Err(e) => {
                 shared.unusable(e);
                 None
             }
             Ok(_) if data.is_null() => None,
-            Ok(_) => shared.gray_image(info.pixel_type, w, h, unsafe { std::slice::from_raw_parts(data, (w * h) as usize) }),
+            Ok(len) => shared.gray_image(info.pixel_type, w, h, unsafe { std::slice::from_raw_parts(data, len) }),
         };
         shared.deliver(Frame { cam: shared.cam, session, counter, frame_counter, trigger_counter, lost_packets: info.lost_packet, ts: now_ms(), manual: false, images: image.into_iter().collect() });
     }));
@@ -638,7 +648,7 @@ impl CameraSlot {
             (s.message.clone(), s.warnings.clone(), s.max_fps)
         };
         let device = self.device.lock().unwrap().as_ref().map(|d| d.summary.clone());
-        let replay = self.replay.lock().unwrap().as_ref().map(|r| (r.files.len(), r.next));
+        let replay = self.replay.lock().unwrap().as_ref().map(|r| (r.frames.len(), r.next));
         let message = if let Err(e) = config.validate() { e } else { match (config.source, replay) {
             (CameraSource::Sim, _) => match config.acquisition {
                 Acquisition::Triggered => format!("模拟相机：每次触发交付一帧 · {} 个视角", config.view_count),
@@ -767,11 +777,11 @@ impl CameraSlot {
     }
 
     /// 下一张回放图，到末尾后从头再来。
-    fn next_replay(&self) -> Option<Vec<PathBuf>> {
+    fn next_replay(&self) -> Option<replay::ReplayFrame> {
         let mut guard = self.replay.lock().unwrap();
         let r = guard.as_mut()?;
-        let p = r.files[r.next % r.files.len()].clone();
-        r.next = (r.next + 1) % r.files.len();
+        let p = r.frames[r.next % r.frames.len()].clone();
+        r.next = (r.next + 1) % r.frames.len();
         Some(p)
     }
 
@@ -781,18 +791,17 @@ impl CameraSlot {
         let config = self.config();
         let dir = config.replay_dir.trim().to_string();
         let path = std::path::Path::new(&dir);
-        let scanned = replay::scan_views(path, config.view_count, config.replay_channel).and_then(|files| {
+        let scanned = replay::scan_frames(path, config.view_count, config.replay_channel).and_then(|frames| {
             // 先读一张的文件头：格式解不开（或文件坏了）就不报就绪
-            for file in &files[0] {
-                replay::probe(file)?;
-            }
+            replay::probe_entry(&frames[0])?;
+            let files: Vec<_> = frames.iter().map(replay::ReplayFrame::paths).collect();
             let times = replay::timeline_views(path, &files)?;
-            Ok((files, times))
+            Ok((frames, times))
         });
         match scanned {
-            Ok((files, times)) => {
-                let msg = format!("回放目录 {dir}：{} 帧{}", files.len(), if times.is_some() { "（帧录制）" } else { "" });
-                *self.replay.lock().unwrap() = Some(ReplayState { files, next: 0, times });
+            Ok((frames, times)) => {
+                let msg = format!("回放目录 {dir}：{} 帧{}", frames.len(), if times.is_some() { "（帧录制）" } else { "" });
+                *self.replay.lock().unwrap() = Some(ReplayState { frames, next: 0, times });
                 Ok(msg)
             }
             Err(e) => {
@@ -863,12 +872,12 @@ impl CameraSlot {
                 Ok(None)
             }
             CameraSource::Replay => {
-                let paths = self.next_replay().ok_or("回放相机未加载图像")?;
+                let frame = self.next_replay().ok_or("回放相机未加载图像")?;
                 let (session, n) = self.next_counters();
                 let ticket = CaptureTicket { session, frame_counter: n };
                 let shared = self.shared.clone();
                 tauri::async_runtime::spawn(async move {
-                    let loaded = tauri::async_runtime::spawn_blocking(move || replay::load_views(&paths)).await.map_err(|e| e.to_string());
+                    let loaded = tauri::async_runtime::spawn_blocking(move || replay::load_entry(&frame)).await.map_err(|e| e.to_string());
                     match loaded.and_then(|r| r) {
                         Ok(images) => {
                             shared.deliver_in_order(session, n, Some(synthetic_frame(cam, session, n, images, manual)));
@@ -1357,6 +1366,7 @@ pub async fn camera_save_config(app: AppHandle, cam: usize, config: CameraConfig
     slot.set_config(config);
     let saved = rig(&app).save();
     let _ = app.state::<CycleHost>().tx.send(cycle::Input::Refresh);
+    let _ = app.emit("camera://changed", ());
     let warnings = tauri::async_runtime::spawn_blocking(move || slot.apply_config()).await.map_err(|e| e.to_string())??;
     saved.map_err(|e| format!("已生效，但没能写回 cameras.json：{e}"))?;
     Ok(warnings)
@@ -1452,6 +1462,7 @@ pub fn camera_add(app: AppHandle, mut config: CameraConfig) -> Result<usize, Str
     cycle.camera.rebuild(&app, configs);
     let saved = cycle.camera.save();
     let _ = cycle.tx.send(cycle::Input::Refresh);
+    let _ = app.emit("camera://changed", ());
     saved?;
     Ok(n - 1)
 }
@@ -1480,6 +1491,7 @@ pub fn camera_remove(app: AppHandle, cam: usize) -> Result<(), String> {
     cycle.camera.rebuild(&app, configs);
     let saved = cycle.camera.save();
     let _ = cycle.tx.send(cycle::Input::Refresh);
+    let _ = app.emit("camera://changed", ());
     saved
 }
 
@@ -1645,6 +1657,23 @@ mod gray_tests {
             assert_eq!(pixel_kind(t), Ok(PixelKind::Bayer8));
         }
         assert!(to_gray(&pool, mvs::PIXEL_BAYER_BG8, 1, 24, &data).is_err());
+    }
+
+    #[test]
+    fn sdk_frame_length_must_cover_width_height_and_pixel_size() {
+        for kind in [PixelKind::Mono8, PixelKind::Bayer8] {
+            assert_eq!(frame_bytes(kind, 2448, 2048, 2448 * 2048), Ok(2448 * 2048));
+            // SDK 缓冲比宽高需要的长（行尾填充、附带 Chunk）：只取宽 × 高
+            assert_eq!(frame_bytes(kind, 4, 3, 64), Ok(12));
+            let error = frame_bytes(kind, 2448, 2048, 2448 * 2048 - 1).unwrap_err();
+            assert!(error.contains("5013503") && error.contains("5013504") && error.contains("2448×2048"), "{error}");
+            for (w, h) in [(0, 2048), (2448, 0)] {
+                assert!(frame_bytes(kind, w, h, u32::MAX).unwrap_err().contains("无效"));
+            }
+        }
+        // 宽高乘积超过 u32：以前 w * h 会溢出回绕成小切片，现在按实际需要比较
+        let error = frame_bytes(PixelKind::Mono8, 70000, 70000, u32::MAX).unwrap_err();
+        assert!(error.contains("4900000000"), "{error}");
     }
 
     #[test]

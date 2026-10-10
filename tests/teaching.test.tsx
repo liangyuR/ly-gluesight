@@ -19,7 +19,7 @@ vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
   get:vi.fn(),list:vi.fn(),image: vi.fn(), trial: vi.fn(), saveTeach: vi.fn(), capture: vi.fn(), selectView: vi.fn(), saveParams: vi.fn(), restoreTeach: vi.fn(),
 } }));
 
-const PENDING = "沿示教中线量胶的 lyFlow 流程尚未接入（P0 步 L），图像测量暂不可用";
+const PENDING = "核心库缺少示教胶路/标定算子：glue.taught_path，请选择兼容的核心库";
 let ws: ReturnType<typeof workspaceState>;
 function show(path = "/recipe/teach") {
   return render(<MemoryRouter initialEntries={[path]}><TeachingPage /></MemoryRouter>);
@@ -56,6 +56,34 @@ beforeEach(() => {
 });
 
 describe("单帧示教：试测与保存", () => {
+  it("重建后的结构化几何字段相同且对象键顺序不同时仍可保存本帧", async () => {
+    const frame = ws.data!.workspace.frames[0];
+    frame.image!.geometryTag = ["P1", { camera: "cam1", view: 1, pose: { id: "P1", axis: [1, 2] } }];
+    frame.trial!.geometryTag = ["P1", { pose: { axis: [1, 2], id: "P1" }, view: 1, camera: "cam1" }];
+    show();
+    expect(screen.queryByText("试测已过期")).toBeNull();
+    const save = screen.getByRole("button", { name: "保存本帧示教" });
+    expect(save).toBeEnabled();
+    await userEvent.click(save);
+    expect(workspaceApi.saveTeach).toHaveBeenCalledWith("A", 7, 0, "A-image-0");
+  });
+
+  it.each([
+    ["视角改变", ["P1", { camera: "cam1", view: 2, pose: { id: "P1", axis: [1, 2] } }]],
+    ["字段缺失", ["P1", { camera: "cam1", view: 1 }]],
+    ["数组顺序改变", ["P1", { camera: "cam1", view: 1, pose: { id: "P1", axis: [2, 1] } }]],
+  ])("结构化几何%s时阻止保存本帧", async (_name, changed) => {
+    const frame = ws.data!.workspace.frames[0];
+    frame.image!.geometryTag = ["P1", { camera: "cam1", view: 1, pose: { id: "P1", axis: [1, 2] } }];
+    frame.trial!.geometryTag = changed;
+    show();
+    expect(screen.getByText("试测已过期")).toBeVisible();
+    const save = screen.getByRole("button", { name: "保存本帧示教" });
+    expect(save).toBeDisabled();
+    await userEvent.click(save);
+    expect(workspaceApi.saveTeach).not.toHaveBeenCalled();
+  });
+
   it("链接指定帧；试测与保存本帧只带帧号、图像和修订号，不再带参数", async () => {
     show("/recipe/teach?frame=1");
     expect(screen.getByRole("button", { name: "选择帧 k2" })).toHaveAttribute("aria-pressed", "true");
@@ -69,17 +97,17 @@ describe("单帧示教：试测与保存", () => {
     expect(vi.mocked(workspaceApi.saveTeach).mock.lastCall).toHaveLength(4);
   });
 
-  it("试测没通过时如实显示原因：图像测量尚未接入，不当作通过、不能保存", () => {
+  it("核心库不兼容时如实显示失败原因，不能保存", () => {
     const trial = ws.data!.workspace.frames[0].trial!;
     Object.assign(trial, { passed: false, score: 0, coverage: 0, reason: PENDING, measurement: null });
     show();
-    expect(screen.getByText("图像测量暂不可用")).toBeVisible(); expect(screen.getByText(PENDING)).toBeVisible();
+    expect(screen.getByText(PENDING)).toBeVisible();
     expect(screen.getAllByText("试测未通过")[0]).toBeVisible(); expect(screen.getByText("未通过")).toBeVisible();
     expect(screen.queryByText("通过")).toBeNull();
     for (const name of ["保存本帧示教", "保存并示教下一帧"]) expect(screen.getByRole("button", { name })).toBeDisabled();
     // 没有逐站结果时不显示 0 分、0% 这类假数值
-    const stats = screen.getByText("得分").closest(".wp-rule-stat")!;
-    expect(within(stats as HTMLElement).getAllByText("—")).toHaveLength(2);
+    const stats = screen.getByText("量成比例").closest(".wp-rule-stat")!;
+    expect(within(stats as HTMLElement).getAllByText("—")).toHaveLength(1);
     expect(screen.getByRole("button", { name: "试测当前帧" })).toBeEnabled();
   });
 

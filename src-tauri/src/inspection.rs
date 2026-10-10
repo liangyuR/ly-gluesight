@@ -22,7 +22,7 @@ pub mod tag {
     pub const PROTOCOL_VERSION: &str = "protocolVersion";
     pub const REQUEST_SEQ: &str = "requestSeq";
     pub const PLAN_VERSION: &str = "planVersion";
-    pub const PLAN_HASH: &str = "planHash";
+    pub const PLAN_RESERVED: &str = "planReserved";
     pub const CAMERA_SHOTS: [&str; 3] = ["camera1Shots", "camera2Shots", "camera3Shots"];
     pub const CAMERA_TRIGGERS: [&str; 3] = ["camera1Triggers", "camera2Triggers", "camera3Triggers"];
     pub const ACK_SEQ: &str = "ackSeq";
@@ -30,7 +30,7 @@ pub mod tag {
     pub const PC_HEARTBEAT: &str = "pcHeartbeat";
     pub const PC_PROTOCOL_VERSION: &str = "pcProtocolVersion";
     pub const ACCEPTED_SEQ: &str = "acceptedSeq";
-    pub const ACCEPTED_PLAN_HASH: &str = "acceptedPlanHash";
+    pub const ACCEPTED_PLAN_RESERVED: &str = "acceptedPlanReserved";
     pub const RESULT_SEQ: &str = "resultSeq";
     pub const VISION_FAULT: &str = "visionFault";
 }
@@ -104,7 +104,7 @@ pub fn s7_phase1_config(db_number: u16) -> Result<PlcConfig, String> {
         (tag::PRODUCT_CODE, "产品代码", "DBW12", U16, input, NoEdge),
         (tag::SHOT_COUNT, "计划拍照总数", "DBW14", U16, input, NoEdge),
         (tag::PLAN_VERSION, "拍照计划版本", "DBD16", U32, input, NoEdge),
-        (tag::PLAN_HASH, "拍照计划摘要", "DBD20", U32, input, NoEdge),
+        (tag::PLAN_RESERVED, "拍照计划保留位", "DBD20", U32, input, NoEdge),
         (tag::CAMERA_SHOTS[0], "相机槽 1 计划数", "DBW24", U16, input, NoEdge),
         (tag::CAMERA_SHOTS[1], "相机槽 2 计划数", "DBW26", U16, input, NoEdge),
         (tag::CAMERA_SHOTS[2], "相机槽 3 计划数", "DBW28", U16, input, NoEdge),
@@ -124,7 +124,7 @@ pub fn s7_phase1_config(db_number: u16) -> Result<PlcConfig, String> {
         (tag::RESULT_CODE, "结果码", "DBW76", U16, output, NoEdge),
         (tag::FAULT_CODE, "异常码", "DBW78", U16, output, NoEdge),
         (tag::ACCEPTED_SEQ, "布防事务序号", "DBD80", U32, output, NoEdge),
-        (tag::ACCEPTED_PLAN_HASH, "布防计划摘要", "DBD84", U32, output, NoEdge),
+        (tag::ACCEPTED_PLAN_RESERVED, "布防计划保留位", "DBD84", U32, output, NoEdge),
     ];
     let points = definitions.into_iter().map(|(tag, name, address, data_type, access, edge)| PlcPoint {
         id: format!("p_{tag}"), name: name.into(), address: format!("DB{db_number}.{address}"),
@@ -150,44 +150,4 @@ pub fn reserved_s7_point(config: &PlcConfig, id: &str) -> bool {
     let Some(point) = config.points.iter().find(|p| p.id == id) else { return false; };
     s7_phase1_config(100).is_ok_and(|template| template.points.iter().any(|preset|
         preset.tags.iter().any(|tag| point.tags.contains(tag))))
-}
-
-#[cfg(test)]
-pub fn legacy_simulator_config() -> PlcConfig {
-    let point = |id: &str, name: &str, address: &str, data_type, edge, tag: &str| PlcPoint {
-        id: id.into(),
-        name: name.into(),
-        address: address.into(),
-        data_type,
-        access: Access::ReadWrite,
-        edge,
-        log_changes: true,
-        tags: if tag.is_empty() { Vec::new() } else { vec![tag.to_string()] },
-        ..PlcPoint::default()
-    };
-    use DataType::{Bool, U16, U32};
-    use EdgeMode::{None as NoEdge, Rising};
-    PlcConfig {
-        connection: ConnectionConfig { poll_interval_ms: 50, ..ConnectionConfig::default() },
-        points: vec![
-            point("p_part_start", "工件开始", "C10", Bool, Rising, tag::PART_START),
-            point("p_part_end", "运动结束", "C11", Bool, Rising, tag::PART_END),
-            point("p_result_ack", "结果确认", "C12", Bool, Rising, tag::RESULT_ACK),
-            point("p_fault_reset", "故障复位", "C13", Bool, Rising, tag::FAULT_RESET),
-            point("p_part_sn", "工件序列号", "HR100", U32, NoEdge, tag::PART_SN),
-            point("p_product_code", "产品代码", "HR102", U16, NoEdge, tag::PRODUCT_CODE),
-            point("p_shot_count", "计划拍照点数", "HR103", U16, NoEdge, tag::SHOT_COUNT),
-            point("p_vision_ready", "视觉就绪", "C20", Bool, NoEdge, tag::VISION_READY),
-            point("p_armed", "已布防", "C21", Bool, NoEdge, tag::ARMED),
-            point("p_busy", "检测中", "C22", Bool, NoEdge, tag::BUSY),
-            point("p_done", "结果有效", "C23", Bool, NoEdge, tag::DONE),
-            point("p_result_code", "结果码", "HR110", U16, NoEdge, tag::RESULT_CODE),
-            point("p_fault_code", "异常码", "HR111", U16, NoEdge, tag::FAULT_CODE),
-            point("p_result_sn", "结果 SN", "HR112", U32, NoEdge, tag::RESULT_SN),
-            PlcPoint { log_changes: false, ..point("p_heartbeat", "上位机心跳", "C0", Bool, NoEdge, "") },
-        ],
-        heartbeat: HeartbeatConfig { point_id: Some("p_heartbeat".into()), interval_ms: 1000 },
-        auto_connect: true,
-        ..PlcConfig::default()
-    }
 }

@@ -28,7 +28,7 @@ export const cycleApi = {
   logs: () => call<LogLine[]>("cycle_logs", undefined, () => []),
   partData: () => call<Measured[]>("cycle_part_data", undefined, () => []),
   recipes: () => call<RecipeSummary[]>("cycle_recipes", undefined, () => []),
-  layout: (recipeId: string, hash?: string) => call<Recipe | null>("cycle_layout", { recipeId, hash: hash ?? null }, () => null),
+  layout: (recipeId: string, revisionId?: string) => call<Recipe | null>("cycle_layout", { recipeId, revisionId: revisionId ?? null }, () => null),
   getSettings: () => call<CycleSettings>("cycle_get_settings", undefined, () => structuredClone(defaultSettings)),
   saveSettings: (settings: CycleSettings) => call<void>("cycle_save_settings", { settings }, () => undefined),
   selectRecipe: (recipeId: string) => call<void>("cycle_select_recipe", { recipeId }, () => undefined),
@@ -64,13 +64,13 @@ function notifyRecipes() {
 }
 
 /**
- * 配方的运行数据。给了 hash 就要那一版（工件用的配方刚改过，这一件仍按开工时的样子画）。
+ * 配方的运行数据。给了 revisionId 就要那一版（工件用的配方刚改过，这一件仍按开工时的样子画）。
  * 换了配方还没取回来时返回 null，不拿上一个配方的数据去对新工件的测量点；keepPrevious 时同一配方的新版取回来之前先给旧版。
  */
-export function useLayout(recipeId: string | null | undefined, hash?: string, keepPrevious = false) {
+export function useLayout(recipeId: string | null | undefined, revisionId?: string, keepPrevious = false) {
   const [state, setState] = useState<{ key: string; id: string; layout: Recipe | null } | null>(null);
   const [gen, setGen] = useState(0);
-  const key = recipeId ? `${recipeId}:${hash ?? ""}` : "";
+  const key = recipeId ? `${recipeId}:${revisionId ?? ""}` : "";
   useEffect(() => {
     const f = () => setGen((g) => g + 1);
     recipeListeners.add(f);
@@ -81,7 +81,7 @@ export function useLayout(recipeId: string | null | undefined, hash?: string, ke
     if (!layoutCache.has(key))
       layoutCache.set(
         key,
-        cycleApi.layout(recipeId, hash).catch(() => {
+        cycleApi.layout(recipeId, revisionId).catch(() => {
           layoutCache.delete(key);
           return null;
         }),
@@ -147,12 +147,12 @@ export function useCycle() {
     let alive = true;
     if (!part) return;
     void cycleApi.partData().then(values => {
-      if (alive && latest.current?.part?.cycleId === part.cycleId && latest.current.part.bundleHash === part.bundleHash)
+      if (alive && latest.current?.part?.cycleId === part.cycleId && latest.current.part.bundleId === part.bundleId)
         setMeasured(prev => mergeMeasurements(part, values, prev));
     }).catch(() => {});
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [part?.cycleId, part?.bundleHash]);
+  }, [part?.cycleId, part?.bundleId]);
   const current = useMemo(() => measured.filter(value => matchesPart(value, part)), [measured, part]);
   return { snapshot, logs, measured: current };
 }

@@ -53,16 +53,16 @@ export default function InspectPage() {
   const part = snapshot?.part ?? null;
   const layoutId = part?.recipeId ?? snapshot?.activeRecipeId ?? recipes[0]?.id;
   const summary = recipes.find((r) => r.id === layoutId);
-  const layout = useLayout(layoutId, part ? part.recipeHash : summary?.hash);
+  const layout = useLayout(layoutId, part ? part.recipeRevision : summary?.revisionId);
   const phase = snapshot?.phase ?? "IDLE";
   const settled = phase === "REPORT" || phase === "RELEASE" || phase === "IDLE" || phase === "FAULT";
   const candidateResult = settled ? (snapshot?.result ?? null) : null;
   const result = candidateResult && (!part || (candidateResult.cycleId === part.cycleId && candidateResult.recipeId === part.recipeId)) ? candidateResult : null;
   const partResult = result && part && result.cycleId === part.cycleId ? result : null;
-  const ownLayout = !!layout && !!part && layout.id === part.recipeId && layout.hash === part.recipeHash;
+  const ownLayout = !!layout && !!part && layout.id === part.recipeId && layout.revisionId === part.recipeRevision;
   const shown = useMemo(() => (ownLayout ? measured.filter(m => matchesPart(m, part)) : []), [ownLayout, measured, part]);
   const overview=usePublishedOverview(layout);
-  const selectionScope = `${part?.cycleId ?? "idle"}:${part?.bundleHash ?? ""}:${part?.recipeHash ?? layout?.hash}:${layout?.id}:${layout?.shots.length}`;
+  const selectionScope = `${part?.cycleId ?? "idle"}:${part?.bundleId ?? ""}:${part?.recipeRevision ?? layout?.revisionId}:${layout?.id}:${layout?.shots.length}`;
   const operationScope = `${part?.cycleId ?? "idle"}:${snapshot?.since}:${snapshot?.fault ?? ""}`;
   const currentOperation = useRef({ phase, scope: operationScope });
   currentOperation.current = { phase, scope: operationScope };
@@ -166,7 +166,7 @@ export default function InspectPage() {
         ) : (
           <span className="fly-chip" title="型号由 PLC 下发的产品代码匹配">
             {layout ? `${layout.id} · v${layout.version}` : "等待 PLC 下发型号"}
-            {layout && <span className="muted mono">#{layout.hash.slice(0, 6)}</span>}
+            {layout && <span className="muted mono">#{layout.revisionId.slice(0, 6)}</span>}
           </span>
         )}
         <span className="fly-chip">

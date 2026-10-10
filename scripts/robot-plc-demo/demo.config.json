@@ -4,7 +4,7 @@
   "plc": { "port": 1502, "unitId": 1 },
   "robot": {
     "port": 8766,
-    "recipe": "fixtures/ROBOT-DEMO.json",
+    "recipe": "fixtures/ROBOT-DEMO-TRICAM.json",
     "motionSeconds": 0.5,
     "settleSeconds": 0.45,
     "releaseSeconds": 0.2,

@@ -16,6 +16,24 @@ struct Entry {
     seq: u64,
     name: String,
     path: PathBuf,
+    size: Option<[u32; 2]>,
+}
+
+#[derive(Clone, Debug)]
+struct ReplayView {
+    path: PathBuf,
+    size: Option<[u32; 2]>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReplayFrame {
+    views: Vec<ReplayView>,
+}
+
+impl ReplayFrame {
+    pub fn paths(&self) -> Vec<PathBuf> {
+        self.views.iter().map(|view| view.path.clone()).collect()
+    }
 }
 
 fn digits(s: &str) -> Option<u64> {
@@ -37,19 +55,41 @@ fn parse(stem: &str) -> Option<(u32, u64)> {
 }
 
 /// 列出目录里属于某通道（从 1 开始；0 表示不分通道）的帧，按序号排好。
+pub(crate) fn checked_source_path(path: &Path) -> Result<(), String> {
+    let absolute = if path.is_absolute() { path.to_path_buf() } else {
+        std::env::current_dir().map_err(|e| e.to_string())?.join(path)
+    };
+    for component in absolute.ancestors() {
+        let metadata = std::fs::symlink_metadata(component)
+            .map_err(|e| format!("原图路径 {} 无法读取：{e}", component.display()))?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if metadata.file_attributes() & 0x400 != 0 {
+                return Err(format!("原图路径 {} 包含 reparse point，拒绝读取", component.display()));
+            }
+        }
+        if metadata.file_type().is_symlink() {
+            return Err(format!("原图路径 {} 包含符号链接，拒绝读取", component.display()));
+        }
+    }
+    Ok(())
+}
+
 fn entries(dir: &Path) -> Result<Vec<Entry>, String> {
+    checked_source_path(dir)?;
+    if let Some(entries) = recorded_entries(dir)? { return Ok(entries); }
     let rd = std::fs::read_dir(dir).map_err(|e| format!("读不了回放目录 {}：{e}", dir.display()))?;
     let mut entries = Vec::new();
     for e in rd {
         let e = e.map_err(|e| format!("读取回放目录项失败：{e}"))?;
         let path = e.path();
-        if !path.is_file() {
-            continue;
-        }
         let Some(ext) = path.extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase) else { continue };
         if !EXTS.contains(&ext.as_str()) {
             continue;
         }
+        checked_source_path(&path)?;
+        if !path.is_file() { continue; }
         let stem = path.file_stem().and_then(|x| x.to_str()).unwrap_or_default().to_string();
         let recorded = stem.rsplit_once("_v").and_then(|(prefix, v)| {
             let (camera, n) = prefix.rsplit_once('_')?;
@@ -62,9 +102,92 @@ fn entries(dir: &Path) -> Result<Vec<Entry>, String> {
                 None => (None, None, None, stem.bytes().filter(u8::is_ascii_digit).fold(0u64, |a, b| a.saturating_mul(10).saturating_add((b - b'0') as u64))),
             },
         };
-        entries.push(Entry { channel, camera, view, seq, name: stem, path });
+        entries.push(Entry { channel, camera, view, seq, name: stem, path, size: None });
     }
     Ok(entries)
+}
+
+fn recorded_entries(dir: &Path) -> Result<Option<Vec<Entry>>, String> {
+    let planned_files = std::fs::read_dir(dir).map_err(|error| format!("读取回放目录失败：{error}"))?
+        .try_fold(false, |found, entry| {
+            let entry = entry.map_err(|error| format!("读取回放目录项失败：{error}"))?;
+            let name = entry.file_name();
+            let stem = Path::new(&name).file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+            let planned = stem.strip_prefix('k').and_then(|s| s.split_once('_'))
+                .is_some_and(|(k, rest)| digits(k).is_some() && rest.rsplit_once("_v").is_some_and(|(_, view)| digits(view).is_some()));
+            Ok::<_, String>(found || planned)
+        })?;
+    let path = dir.join("part.json");
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => checked_source_path(&path)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+        Err(e) => return Err(format!("读取回放元数据失败：{e}")),
+    }
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && planned_files =>
+            return Err("逐拍照点录制缺少 part.json，禁止按普通图片回放".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("读取回放元数据失败：{error}")),
+    };
+    let meta: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("回放元数据损坏：{error}"))?;
+    let current_recording = planned_files || ["cycleId", "bundleId", "plannedShots"].iter().any(|key| meta.get(key).is_some());
+    let cycle_id = match meta["cycleId"].as_str() {
+        Some(cycle_id) => cycle_id,
+        None if current_recording => return Err("逐拍照点录制缺少有效 cycleId，禁止按普通图片回放".into()),
+        None => return Ok(None),
+    };
+    if cycle_id.is_empty() || meta["available"].as_bool() != Some(true) {
+        return Err("录制原图未完整落盘，不能作为完整回放源；请查看 part.json 的 errors".into());
+    }
+    let root = dir.canonicalize().map_err(|error| error.to_string())?;
+    let frames = meta["frames"].as_array().ok_or("回放元数据缺少逐拍照点原图")?;
+    let shots = meta["recipe"]["shots"].as_array().ok_or("回放元数据缺少配方拍照计划")?;
+    let revision = meta["recipe"]["id"].as_str().zip(meta["recipe"]["version"].as_u64())
+        .map(|(id, version)| format!("{id}-v{version}")).ok_or("回放配方缺少明确编号或版本")?;
+    if meta.get("recipeRevision").is_some_and(|value| value.as_str() != Some(revision.as_str())) {
+        return Err("录制原图的配方版本身份不一致".into());
+    }
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for frame in frames {
+        let k = frame["k"].as_u64().and_then(|k| usize::try_from(k).ok()).ok_or("回放拍照点编号无效")?;
+        let shot = shots.get(k).ok_or("回放原图不属于配方拍照点")?;
+        let file = frame["file"].as_str().ok_or("回放原图文件名缺失")?;
+        let relative = Path::new(file);
+        let view = frame["view"].as_u64().filter(|view| (1..=3).contains(view)).ok_or("回放原图视角无效")? as u32;
+        let camera = frame["camera"].as_str().filter(|camera| !camera.is_empty()).ok_or("回放原图设备编号缺失")?;
+        if frame["cycleId"].as_str() != Some(cycle_id)
+            || frame.get("recipeRevision").is_some_and(|value| value.as_str() != Some(revision.as_str()))
+            || frame.get("bundleId").is_some_and(|value| Some(value) != meta.get("bundleId"))
+            || frame["camera"] != shot["camera"]
+            || frame["shotId"] != shot["id"] || frame["selectedView"] != shot["view"] {
+            return Err("录制原图的工件、发布包或拍照点身份不一致".into());
+        }
+        if frame["available"].as_bool() != Some(true) || relative.components().count() != 1
+            || !matches!(relative.components().next(), Some(std::path::Component::Normal(_)))
+            || file.contains(':') || file.contains('\\') || !seen.insert((k, view)) {
+            return Err("回放原图未落盘、路径无效或拍照点视角重复".into());
+        }
+        let path = root.join(relative);
+        checked_source_path(&path)?;
+        let canonical = path.canonicalize().map_err(|_| format!("回放原图 {file} 已丢失"))?;
+        if !canonical.starts_with(&root) || !canonical.is_file() { return Err("回放原图路径越过录制目录".into()); }
+        let size = match (frame["width"].as_u64(), frame["height"].as_u64()) {
+            (Some(width), Some(height)) if width > 0 && height > 0 => Some([
+                u32::try_from(width).map_err(|_| "回放原图宽度无效")?,
+                u32::try_from(height).map_err(|_| "回放原图高度无效")?,
+            ]),
+            _ => return Err("回放原图尺寸无效".into()),
+        };
+        entries.push(Entry { channel: None, camera: Some(camera.into()), view: Some(view), seq: k as u64,
+            name: file.into(), path, size });
+    }
+    if entries.is_empty() || shots.iter().enumerate().any(|(k, shot)| !seen.contains(&(k, shot["view"].as_u64().unwrap_or(0) as u32))) {
+        return Err("回放原图没有覆盖原配方的完整拍照计划".into());
+    }
+    Ok(Some(entries))
 }
 
 fn recorded_camera(entries: &[Entry], channel: u32) -> Result<String, String> {
@@ -85,7 +208,7 @@ fn recorded_camera(entries: &[Entry], channel: u32) -> Result<String, String> {
     chosen.map(str::to_string).ok_or_else(|| format!("回放目录里没有设备 {channel}（可用设备：{}）", cameras.join("、")))
 }
 
-pub fn scan(dir: &Path, channel: u32) -> Result<Vec<PathBuf>, String> {
+fn single_entries(dir: &Path, channel: u32) -> Result<Vec<Entry>, String> {
     let mut entries = entries(dir)?;
     if entries.iter().any(|e| e.camera.is_some()) {
         let camera = recorded_camera(&entries, channel)?;
@@ -102,12 +225,16 @@ pub fn scan(dir: &Path, channel: u32) -> Result<Vec<PathBuf>, String> {
     if entries.is_empty() {
         return Err(if channel > 0 { format!("回放目录里没有通道 {channel} 的图片") } else { "回放目录里没有图片".into() });
     }
-    Ok(entries.into_iter().map(|e| e.path).collect())
+    Ok(entries)
 }
 
-pub fn scan_views(dir: &Path, view_count: u8, channel: u32) -> Result<Vec<Vec<PathBuf>>, String> {
+pub fn scan(dir: &Path, channel: u32) -> Result<Vec<PathBuf>, String> {
+    single_entries(dir, channel).map(|entries| entries.into_iter().map(|entry| entry.path).collect())
+}
+
+fn grouped_entries(dir: &Path, view_count: u8, channel: u32) -> Result<Vec<Vec<Entry>>, String> {
     if view_count == 1 {
-        return scan(dir, channel).map(|files| files.into_iter().map(|file| vec![file]).collect());
+        return single_entries(dir, channel).map(|entries| entries.into_iter().map(|entry| vec![entry]).collect());
     }
     if view_count != 3 {
         return Err("视角数量只能是 1 或 3".into());
@@ -127,7 +254,7 @@ pub fn scan_views(dir: &Path, view_count: u8, channel: u32) -> Result<Vec<Vec<Pa
         let camera = recorded_camera(&entries, channel)?;
         entries.retain(|e| e.camera.as_deref() == Some(camera.as_str()));
     }
-    let mut groups: BTreeMap<u64, [Option<PathBuf>; 3]> = BTreeMap::new();
+    let mut groups: BTreeMap<u64, [Option<Entry>; 3]> = BTreeMap::new();
     for entry in entries {
         let view = if recorded { entry.view } else { entry.channel };
         let Some(view @ 1..=3) = view else {
@@ -136,13 +263,24 @@ pub fn scan_views(dir: &Path, view_count: u8, channel: u32) -> Result<Vec<Vec<Pa
         let group = groups.entry(entry.seq).or_default();
         let slot = &mut group[view as usize - 1];
         if let Some(existing) = slot {
-            return Err(format!("回放帧 {} 的视角 {view} 重复：{}、{}", entry.seq, existing.display(), entry.path.display()));
+            return Err(format!("回放帧 {} 的视角 {view} 重复：{}、{}", entry.seq, existing.path.display(), entry.path.display()));
         }
-        *slot = Some(entry.path);
+        *slot = Some(entry);
     }
     groups.into_iter().map(|(seq, files)| {
         files.into_iter().enumerate().map(|(i, file)| file.ok_or_else(|| format!("回放帧 {seq} 缺少视角 {}，三目帧必须同时包含视角 1、2、3", i + 1))).collect()
     }).collect()
+}
+
+pub fn scan_views(dir: &Path, view_count: u8, channel: u32) -> Result<Vec<Vec<PathBuf>>, String> {
+    grouped_entries(dir, view_count, channel).map(|groups| groups.into_iter().map(|group|
+        group.into_iter().map(|entry| entry.path).collect()).collect())
+}
+
+pub fn scan_frames(dir: &Path, view_count: u8, channel: u32) -> Result<Vec<ReplayFrame>, String> {
+    grouped_entries(dir, view_count, channel).map(|groups| groups.into_iter().map(|group| {
+        ReplayFrame { views: group.into_iter().map(|entry| ReplayView { path: entry.path, size: entry.size }).collect() }
+    }).collect())
 }
 
 pub fn timeline_views(dir: &Path, files: &[Vec<PathBuf>]) -> Result<Option<Vec<i64>>, String> {
@@ -223,6 +361,7 @@ pub fn probe(path: &Path) -> Result<(), String> {
 
 /// 读成 8 位灰度。彩色 / 16 位图按亮度换算。
 pub fn load(path: &Path) -> Result<FrameImage, String> {
+    checked_source_path(path)?;
     let img = image::open(path).map_err(|e| format!("解码 {} 失败：{e}", path.display()))?.into_luma8();
     let (width, height) = img.dimensions();
     Ok(FrameImage::new(width, height, img.into_raw()))
@@ -230,6 +369,40 @@ pub fn load(path: &Path) -> Result<FrameImage, String> {
 
 pub fn load_views(files: &[PathBuf]) -> Result<Vec<Arc<FrameImage>>, String> {
     files.iter().map(|path| load(path).map(Arc::new)).collect()
+}
+
+fn original_bytes(view: &ReplayView) -> Result<Vec<u8>, String> {
+    checked_source_path(&view.path).map_err(|error| format!("读取回放原图 {} 失败：{error}", view.path.display()))?;
+    std::fs::read(&view.path).map_err(|error| format!("读取回放原图 {} 失败：{error}", view.path.display()))
+}
+
+fn check_dimensions(view: &ReplayView, width: u32, height: u32) -> Result<(), String> {
+    if view.size.is_some_and(|size| size != [width, height]) {
+        return Err(format!("回放原图 {} 的尺寸与录制元数据不符", view.path.display()));
+    }
+    Ok(())
+}
+
+pub fn probe_entry(frame: &ReplayFrame) -> Result<(), String> {
+    for view in &frame.views {
+        let bytes = original_bytes(view)?;
+        let fail = |error: &dyn std::fmt::Display| format!("解码 {} 失败：{error}", view.path.display());
+        let (width, height) = image::ImageReader::new(std::io::Cursor::new(bytes.as_slice()))
+            .with_guessed_format().map_err(|error| fail(&error))?
+            .into_dimensions().map_err(|error| fail(&error))?;
+        check_dimensions(view, width, height)?;
+    }
+    Ok(())
+}
+
+pub fn load_entry(frame: &ReplayFrame) -> Result<Vec<Arc<FrameImage>>, String> {
+    frame.views.iter().map(|view| {
+        let bytes = original_bytes(view)?;
+        let img = image::load_from_memory(&bytes).map_err(|error| format!("解码 {} 失败：{error}", view.path.display()))?.into_luma8();
+        let (width, height) = img.dimensions();
+        check_dimensions(view, width, height)?;
+        Ok(Arc::new(FrameImage::new(width, height, img.into_raw())))
+    }).collect()
 }
 
 /// 存成 PGM（P5）。帧录制用，不压缩、写得快。
@@ -271,6 +444,32 @@ mod tests {
 
     fn names_of(files: &[PathBuf]) -> Vec<String> {
         files.iter().map(|f| f.file_name().unwrap().to_str().unwrap().to_string()).collect()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn internal_cycle_junction_is_rejected_at_scan_and_each_read() {
+        let fixture = Directory::new(&[]);
+        let first = fixture.0.join("cycle-first");
+        let second = fixture.0.join("cycle-second");
+        let saved = fixture.0.join("saved-first");
+        for (path, pixel) in [(&first, 17), (&second, 91)] {
+            std::fs::create_dir(path).unwrap();
+            save_pgm(&path.join("image.pgm"), &FrameImage::new(1, 1, vec![pixel])).unwrap();
+        }
+        let frames = scan_frames(&first, 1, 0).unwrap();
+        assert_eq!(load_entry(&frames[0]).unwrap()[0].pixels, [17]);
+        std::fs::rename(&first, &saved).unwrap();
+        let status = std::process::Command::new("cmd").args(["/C", "mklink", "/J"])
+            .arg(&first).arg(&second).output().unwrap();
+        assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
+        assert!(scan_frames(&first, 1, 0).unwrap_err().contains("reparse"));
+        assert!(probe_entry(&frames[0]).unwrap_err().contains("reparse"));
+        assert!(load_entry(&frames[0]).unwrap_err().contains("reparse"));
+        assert!(load(&first.join("image.pgm")).unwrap_err().contains("reparse"));
+        assert_eq!(load(&second.join("image.pgm")).unwrap().pixels, [91]);
+        std::fs::remove_dir(&first).unwrap();
+        std::fs::rename(&saved, &first).unwrap();
     }
 
     #[test]
@@ -404,5 +603,193 @@ mod tests {
         std::fs::write(dir.0.join("Frame1_2.pgm"), b"broken").unwrap();
         let groups = scan_views(&dir.0, 3, 0).unwrap();
         assert!(load_views(&groups[0]).unwrap_err().contains("Frame1_2.pgm"));
+    }
+
+    fn cycle_recording(dir: &Path) -> serde_json::Value {
+        let mut frames = Vec::new();
+        let mut shots = Vec::new();
+        for k in 0..4 {
+            let camera = format!("cam{}", k % 2 + 1);
+            let shot_id = format!("P{}", k + 1);
+            let selected = [1, 2, 3, 1][k];
+            shots.push(serde_json::json!({"id":shot_id,"camera":camera,"view":selected}));
+            for view in 1..=3 {
+                let file = format!("k{k:03}_{shot_id}_{camera}_v{view}.pgm");
+                let bytes = b"P5\n1 1\n255\n\x80";
+                std::fs::write(dir.join(&file), bytes).unwrap();
+                frames.push(serde_json::json!({"k":k,"shotId":shot_id,"camera":camera,"view":view,
+                    "selectedView":selected,"cycleId":"cycle-first","bundleId":"frozen-pack",
+                    "recipeRevision":"recorded-v1","width":1,"height":1,"available":true,"file":file,"ts":1000+k*100,
+                    "session":7,"frameCounter":k+1,"triggerCounter":k+1}));
+            }
+        }
+        serde_json::json!({"cycleId":"cycle-first","bundleId":"frozen-pack","available":true,
+            "recipe":{"id":"recorded","version":1,"revisionId":"recorded-v1","shots":shots},"startedTs":1000,"frames":frames})
+    }
+
+    #[test]
+    fn cycle_recording_requires_dimensions_even_for_legacy_raw_references() {
+        let dir = Directory::new(&[]);
+        let original = cycle_recording(&dir.0);
+        for field in ["width", "height"] {
+            let mut metadata = original.clone();
+            metadata["frames"][0].as_object_mut().unwrap().remove(field);
+            std::fs::write(dir.0.join("part.json"), serde_json::to_vec(&metadata).unwrap()).unwrap();
+            assert!(scan_frames(&dir.0, 1, 1).unwrap_err().contains("尺寸"));
+        }
+    }
+
+    #[test]
+    fn cycle_recording_replays_each_device_using_shot_metadata_and_complete_views() {
+        let dir = Directory::new(&[]);
+        let meta = cycle_recording(&dir.0);
+        std::fs::write(dir.0.join("part.json"), serde_json::to_vec(&meta).unwrap()).unwrap();
+        let first = scan_views(&dir.0, 3, 1).unwrap();
+        let second = scan_views(&dir.0, 3, 2).unwrap();
+        assert_eq!(first.len(), 2);
+        assert_eq!(second.len(), 2);
+        assert_eq!(names_of(&first[1]), ["k002_P3_cam1_v1.pgm", "k002_P3_cam1_v2.pgm", "k002_P3_cam1_v3.pgm"]);
+        assert_eq!(timeline_views(&dir.0, &first).unwrap(), Some(vec![0, 200]));
+        assert_eq!(timeline_views(&dir.0, &second).unwrap(), Some(vec![100, 300]));
+        assert_eq!(scan(&dir.0, 1).unwrap().len(), 2);
+        assert_eq!(load_views(&first[1]).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn cycle_recording_refuses_wrong_identity_tampering_missing_or_duplicate_view() {
+        let dir = Directory::new(&[]);
+        let original = cycle_recording(&dir.0);
+        for field in ["cycleId", "bundleId", "recipeRevision", "shotId", "camera", "selectedView"] {
+            let mut changed = original.clone();
+            changed["frames"][0][field] = serde_json::json!("wrong");
+            std::fs::write(dir.0.join("part.json"), serde_json::to_vec(&changed).unwrap()).unwrap();
+            assert!(scan_views(&dir.0, 3, 1).unwrap_err().contains("身份"), "{field}");
+        }
+        let mut duplicate = original.clone();
+        duplicate["frames"].as_array_mut().unwrap().push(original["frames"][0].clone());
+        std::fs::write(dir.0.join("part.json"), serde_json::to_vec(&duplicate).unwrap()).unwrap();
+        assert!(scan_views(&dir.0, 3, 1).unwrap_err().contains("重复"));
+        let mut missing = original.clone();
+        missing["frames"].as_array_mut().unwrap().remove(2);
+        std::fs::write(dir.0.join("part.json"), serde_json::to_vec(&missing).unwrap()).unwrap();
+        assert!(scan_views(&dir.0, 3, 1).unwrap_err().contains("缺少视角 3"));
+        std::fs::write(dir.0.join("part.json"), serde_json::to_vec(&original).unwrap()).unwrap();
+        std::fs::write(dir.0.join(original["frames"][0]["file"].as_str().unwrap()), b"changed").unwrap();
+        let current = scan_frames(&dir.0, 3, 1).unwrap();
+        assert!(load_entry(&current[0]).unwrap_err().contains("解码"));
+    }
+
+    #[test]
+    fn recording_decodes_current_pixels_without_content_matching() {
+        let dir = Directory::new(&[]);
+        let meta = cycle_recording(&dir.0);
+        std::fs::write(dir.0.join("part.json"), serde_json::to_vec(&meta).unwrap()).unwrap();
+        let frames = scan_frames(&dir.0, 3, 1).unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(names_of(&frames[0].paths()), ["k000_P1_cam1_v1.pgm", "k000_P1_cam1_v2.pgm", "k000_P1_cam1_v3.pgm"]);
+        probe_entry(&frames[0]).unwrap();
+        let images = load_entry(&frames[0]).unwrap();
+        assert_eq!(images.len(), 3);
+        assert!(images.iter().all(|image| image.pixels[0] == 128));
+        let path = &frames[0].views[1].path;
+        let original = std::fs::read(path).unwrap();
+        let changed = b"P5\n1 1\n255\n\x07";
+        assert_eq!(original.len(), changed.len());
+        std::fs::write(path, changed).unwrap();
+        assert_eq!(load_entry(&frames[0]).unwrap()[1].pixels[0], 7);
+        probe_entry(&frames[0]).unwrap();
+        assert_eq!(load_entry(&scan_frames(&dir.0, 3, 1).unwrap()[0]).unwrap()[1].pixels[0], 7);
+        std::fs::write(path, &original).unwrap();
+        probe_entry(&frames[0]).unwrap();
+        let restored = load_entry(&frames[0]).unwrap();
+        assert_eq!(restored.len(), 3);
+        assert!(restored.iter().all(|image| image.pixels[0] == 128));
+    }
+
+    #[test]
+    fn recording_retains_dimension_and_decode_guards_without_pixel_matching() {
+        let dir = Directory::new(&[]); let meta = cycle_recording(&dir.0);
+        std::fs::write(dir.0.join("part.json"), serde_json::to_vec(&meta).unwrap()).unwrap();
+        let frames = scan_frames(&dir.0, 3, 1).unwrap();
+        std::fs::write(&frames[0].views[0].path, b"P5\n2 1\n255\n\x07\x08").unwrap();
+        assert!(probe_entry(&frames[0]).unwrap_err().contains("尺寸"));
+        assert!(load_entry(&frames[0]).unwrap_err().contains("尺寸"));
+        std::fs::write(&frames[0].views[0].path, b"not-an-image").unwrap();
+        assert!(load_entry(&frames[0]).unwrap_err().contains("解码"));
+    }
+
+    #[test]
+    fn frozen_frame_n_triplets_keep_sequence_and_decode_current_files() {
+        let dir = Directory::new(&["Frame10_3.pgm", "Frame2_2.pgm", "Frame10_1.pgm", "Frame2_3.pgm", "Frame10_2.pgm", "Frame2_1.pgm"]);
+        let frames = scan_frames(&dir.0, 3, 0).unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(names_of(&frames[0].paths()), ["Frame2_1.pgm", "Frame2_2.pgm", "Frame2_3.pgm"]);
+        assert_eq!(names_of(&frames[1].paths()), ["Frame10_1.pgm", "Frame10_2.pgm", "Frame10_3.pgm"]);
+        let path = &frames[1].views[2].path;
+        let original = std::fs::read(path).unwrap();
+        std::fs::write(path, b"P5\n1 1\n255\n\x99").unwrap();
+        assert_eq!(load_entry(&frames[1]).unwrap()[2].pixels[0], 0x99);
+        assert_eq!(load_entry(&frames[0]).unwrap().len(), 3);
+        std::fs::write(path, &original).unwrap();
+        let restored = load_entry(&frames[1]).unwrap();
+        assert_eq!(restored.len(), 3);
+        assert!(restored.iter().all(|image| image.pixels[0] == 128));
+    }
+
+    #[test]
+    fn frozen_single_views_keep_ordinary_order_and_legacy_channel_selection() {
+        for (names, channel, expected) in [
+            (vec!["image10.pgm", "image2.pgm"], 0, vec!["image2.pgm", "image10.pgm"]),
+            (vec!["cam1_000001.pgm", "cam2_000002.pgm", "cam2_000001.pgm"], 2, vec!["cam2_000001.pgm", "cam2_000002.pgm"]),
+        ] {
+            let dir = Directory::new(&names);
+            let frames = scan_frames(&dir.0, 1, channel).unwrap();
+            let paths: Vec<_> = frames.iter().flat_map(ReplayFrame::paths).collect();
+            assert_eq!(names_of(&paths), expected);
+            assert!(frames.iter().all(|frame| load_entry(frame).unwrap().len() == 1));
+            let path = &frames[0].views[0].path;
+            let original = std::fs::read(path).unwrap();
+            std::fs::write(path, b"P5\n1 1\n255\n\x07").unwrap();
+            assert_eq!(load_entry(&frames[0]).unwrap()[0].pixels[0], 7);
+            std::fs::write(path, &original).unwrap();
+            assert_eq!(load_entry(&frames[0]).unwrap()[0].pixels[0], 128);
+        }
+    }
+
+    #[test]
+    fn frozen_frame_reports_deleted_file_and_decode_failure() {
+        let dir = Directory::new(&["image.pgm"]);
+        let frames = scan_frames(&dir.0, 1, 0).unwrap();
+        let path = &frames[0].views[0].path;
+        let original = std::fs::read(path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let error = load_entry(&frames[0]).unwrap_err();
+        assert!(error.contains("image.pgm") && error.contains("读取回放原图"), "{error}");
+        std::fs::write(path, &original).unwrap();
+        assert_eq!(load_entry(&frames[0]).unwrap().len(), 1);
+        std::fs::write(path, b"invalid image").unwrap();
+        let invalid = scan_frames(&dir.0, 1, 0).unwrap();
+        assert!(probe_entry(&invalid[0]).unwrap_err().contains("解码"));
+        assert!(load_entry(&invalid[0]).unwrap_err().contains("解码"));
+    }
+
+    #[test]
+    fn planned_recording_never_falls_back_to_unverified_single_view_replay() {
+        let dir = Directory::new(&[]);
+        let original = cycle_recording(&dir.0);
+        for cycle in [None, Some(serde_json::json!(17)), Some(serde_json::Value::Null)] {
+            let mut meta = original.clone();
+            match cycle {
+                Some(value) => meta["cycleId"] = value,
+                None => { meta.as_object_mut().unwrap().remove("cycleId"); }
+            }
+            std::fs::write(dir.0.join("part.json"), serde_json::to_vec(&meta).unwrap()).unwrap();
+            for count in [1, 3] { assert!(scan_views(&dir.0, count, 1).unwrap_err().contains("cycleId")); }
+        }
+        std::fs::remove_file(dir.0.join("part.json")).unwrap();
+        assert!(scan_views(&dir.0, 1, 1).unwrap_err().contains("part.json"));
+        let minimal = serde_json::json!({"startedTs":1000,"frames":[]});
+        std::fs::write(dir.0.join("part.json"), serde_json::to_vec(&minimal).unwrap()).unwrap();
+        assert!(scan_views(&dir.0, 1, 1).unwrap_err().contains("cycleId"));
     }
 }

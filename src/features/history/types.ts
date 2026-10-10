@@ -1,5 +1,34 @@
 import type { FrameView, Judgement, Verdict } from "../cycle/types";
 
+export interface PlcDelivery {
+  state: "notRequired" | "pending" | "submitted" | "acknowledged" | "failed";
+  updatedAt: number;
+  message: string | null;
+}
+
+export interface RecordingEvidence {
+  state: "pending" | "off" | "notRetained" | "complete" | "incomplete" | "failed";
+  available: boolean;
+  directory: string | null;
+  errors: string[];
+}
+
+export interface PartShot {
+  k: number;
+  shotId: string;
+  camera: string;
+  view: number;
+  session: number | null;
+  ordinal: number | null;
+  frameCounter: number | null;
+  triggerCounter: number | null;
+  status: FrameView["status"];
+  error: string | null;
+  score: number | null;
+  ms: number | null;
+  rawFiles: { view: number; file: string }[];
+}
+
 export interface HistoryQuery {
   from?: number | null;
   to?: number | null;
@@ -16,7 +45,7 @@ export interface PartSummary {
   sn: number;
   recipeId: string | null;
   recipeVersion: number | null;
-  recipeHash: string | null;
+  recipeRevision: string | null;
   triggerMode: string | null;
   verdict: Verdict;
   plcCode: number;
@@ -26,6 +55,9 @@ export interface PartSummary {
   framesExpected: number;
   framesReceived: number;
   retestOf: number | null;
+  cycleId: string | null;
+  bundleId: string | null;
+  delivery: PlcDelivery;
 }
 
 export interface VerdictCounts {
@@ -49,6 +81,8 @@ export interface PartDetail {
   softwareVersion: string;
   points: { d: number[]; w?: (number | null)[]; st: number[] } | null;
   retests: number[];
+  shots: PartShot[];
+  recording: RecordingEvidence;
 }
 
 export interface KindOverride {
@@ -83,4 +117,5 @@ export interface RejudgeResult {
   limitHit: boolean;
   matrix: { from: Verdict; to: Verdict; count: number }[];
   changes: { id: number; sn: number; ts: number; from: Verdict; to: Verdict; reason: string }[];
+  skipReasons: { id: number; sn: number; ts: number; reason: string }[];
 }

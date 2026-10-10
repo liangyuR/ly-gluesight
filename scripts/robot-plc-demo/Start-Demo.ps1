@@ -13,29 +13,24 @@ $demoOutput = $cfg.runtimeDir
 $demoExe = Join-Path $demoOutput 'GlueSight-Robot-PLC.exe'
 $demoStatePath = Join-Path $demoOutput 'services.json'
 $demoRecipe = if ($Recipe) { (Resolve-Path -LiteralPath $Recipe).Path } else { $cfg.robot.recipe }
-$expectedProcesses = if ($ServicesOnly) { 2 } else { 4 }
-$configHash = (Get-FileHash -LiteralPath $cfg.configPath).Hash
-$sourceHash = Get-DemoSourceHash
-$recipeHash = (Get-FileHash -LiteralPath $demoRecipe).Hash
 New-Item -ItemType Directory -Path $demoOutput -Force | Out-Null
 if (Test-Path -LiteralPath $demoStatePath) {
     $previous = Get-Content -LiteralPath $demoStatePath -Raw | ConvertFrom-Json
     $alive = @($previous.processes | Where-Object { Get-DemoOwnedProcess $_ })
-    if ($alive.Count -eq $expectedProcesses -and !$Build -and $previous.configHash -eq $configHash -and
-        $previous.sourceHash -eq $sourceHash -and $previous.recipeHash -eq $recipeHash -and
-        [bool]$previous.servicesOnly -eq [bool]$ServicesOnly) {
-        Write-Output "模拟服务已运行：$($cfg.consoleUrl)"
-        if ($OpenConsole) { Start-Process -FilePath $cfg.consoleUrl }
-        return
-    }
-    if ($alive.Count) { throw '已有模拟进程正在运行或代码/配置已更新。先运行 sim:stop，再启动。' }
+    if ($alive.Count) { throw '已有模拟进程正在运行，不能复用。请先正常运行 Stop-Demo.ps1（pnpm sim:stop），再启动。' }
 }
 if ($Build) {
     Push-Location -LiteralPath $demoRoot
     try {
         & pnpm exec tauri build --debug --no-bundle --config (Join-Path $PSScriptRoot 'tauri.json')
         if ($LASTEXITCODE -ne 0) { throw '演示构建失败' }
-        Copy-Item -LiteralPath (Join-Path $demoRoot 'src-tauri\target\debug\GlueSight.exe') -Destination $demoExe -Force
+        $demoTargetRoot = if ($env:CARGO_TARGET_DIR) {
+            [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR, (Join-Path $demoRoot 'src-tauri'))
+        } else { Join-Path $demoRoot 'src-tauri\target' }
+        if ($env:CARGO_BUILD_TARGET) { $demoTargetRoot = Join-Path $demoTargetRoot $env:CARGO_BUILD_TARGET }
+        $demoBuildExe = Join-Path $demoTargetRoot 'debug\GlueSight.exe'
+        if (!(Test-Path -LiteralPath $demoBuildExe -PathType Leaf)) { throw "找不到本次演示构建产物：$demoBuildExe" }
+        Copy-Item -LiteralPath $demoBuildExe -Destination $demoExe -Force
     } finally { Pop-Location }
 }
 if (!$ServicesOnly -and !(Test-Path -LiteralPath $demoExe)) {
@@ -68,7 +63,7 @@ try {
             $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$($cfg.bridge.debugPort) --remote-debugging-address=127.0.0.1"
             Start-DemoProcess 'app' $demoExe ''
         } finally { $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $oldArgs }
-        Start-DemoProcess 'camera-bridge' $nodePath ('"' + (Join-Path $PSScriptRoot 'camera-bridge.mjs') + '"' + $configArgs)
+        Start-DemoProcess 'camera-bridge' $nodePath ('"' + (Join-Path $PSScriptRoot 'camera-bridge.mjs') + '"' + $configArgs + ' --recipe "' + $demoRecipe + '"')
     }
     $ready = $false
     for ($attempt=0; $attempt -lt 80; $attempt++) {
@@ -82,8 +77,7 @@ try {
     }
     if (!$ready) { throw '模拟服务未能就绪，请检查运行目录中的 stderr.log。' }
     $manifest = @{processes=@($started.ToArray()); console=$cfg.consoleUrl; recipe=$demoRecipe; servicesOnly=[bool]$ServicesOnly;
-        configPath=$cfg.configPath; configHash=$configHash; sourceHash=$sourceHash; recipeHash=$recipeHash}
-    if (!$ServicesOnly) { $manifest.appSha256 = (Get-FileHash -LiteralPath $demoExe).Hash }
+        configPath=$cfg.configPath}
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $demoStatePath -Encoding utf8
     Write-Output "Robot + PLC 模拟服务已启动：$($cfg.consoleUrl)"
     if ($OpenConsole) { Start-Process -FilePath $cfg.consoleUrl }

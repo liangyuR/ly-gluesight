@@ -9,7 +9,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::cycle::CycleHost;
 use crate::judge::{self, Verdict};
 use crate::recipe::{JudgeParams, Recipe};
-use crate::store::{HistoryPage, HistoryQuery, PartDetail, Store};
+use crate::store::{same_measurement_layout, HistoryPage, HistoryQuery, PartDetail, PartSummary, Store, StoredMeasurement};
 
 pub fn local_midnight_ms() -> i64 {
     let today = Local::now().date_naive().and_hms_opt(0, 0, 0).unwrap();
@@ -34,13 +34,16 @@ pub async fn history_detail(app: AppHandle, id: i64) -> Result<PartDetail, Strin
     tauri::async_runtime::spawn_blocking(move || app.state::<Store>().detail(id)).await.map_err(|e| e.to_string())?
 }
 
-/// 记录所用的配方快照；快照缺失时退回当前同名配方。
 #[tauri::command]
-pub fn history_recipe(store: State<'_, Store>, cycle: State<'_, CycleHost>, hash: Option<String>, recipe_id: Option<String>) -> Result<Option<Recipe>, String> {
-    if let Some(r) = hash.as_deref().map(|h| store.recipe_snapshot(h)).transpose()?.flatten() {
-        return Ok(Some(r));
+pub fn history_recipe(store: State<'_, Store>, cycle: State<'_, CycleHost>, revision_id: Option<String>, recipe_id: Option<String>) -> Result<Option<Recipe>, String> {
+    record_recipe(&store, revision_id.as_deref(), || recipe_id.as_deref().and_then(|id| cycle.recipe(id)))
+}
+
+fn record_recipe(store: &Store, revision_id: Option<&str>, _current: impl FnOnce() -> Option<Arc<Recipe>>) -> Result<Option<Recipe>, String> {
+    match revision_id {
+        Some(revision_id) => store.recipe_snapshot(revision_id),
+        None => Ok(None),
     }
-    Ok(recipe_id.as_deref().and_then(|id| cycle.recipe(id)).map(|r| (*r).clone()))
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -120,6 +123,14 @@ pub struct Change {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct RejudgeSkip {
+    pub id: i64,
+    pub sn: u32,
+    pub ts: i64,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RejudgeResult {
     pub total: u64,
@@ -127,6 +138,7 @@ pub struct RejudgeResult {
     pub limit_hit: bool,
     pub matrix: Vec<MatrixCell>,
     pub changes: Vec<Change>,
+    pub skip_reasons: Vec<RejudgeSkip>,
 }
 
 const REJUDGE_LIMIT: usize = 5000;
@@ -138,45 +150,120 @@ pub async fn history_rejudge(app: AppHandle, request: RejudgeRequest) -> Result<
         let store = app.state::<Store>();
         let cycle = app.state::<CycleHost>();
         let rows = store.measurements(&request.query, &request.ids, REJUDGE_LIMIT + 1)?;
-        let limit_hit = rows.len() > REJUDGE_LIMIT;
-        let mut recipes: HashMap<String, Option<Arc<Recipe>>> = HashMap::new();
-        let mut matrix: HashMap<(Verdict, Verdict), u64> = HashMap::new();
-        let mut changes = Vec::new();
-        let (mut total, mut skipped) = (0, 0);
-        for row in rows.into_iter().take(REJUDGE_LIMIT) {
-            let key = if request.use_current_recipe { row.recipe_id.clone() } else { row.recipe_hash.clone() }.unwrap_or_default();
-            let recipe = recipes
-                .entry(key.clone())
-                .or_insert_with(|| {
-                    let base = if request.use_current_recipe {
-                        row.recipe_id.as_deref().and_then(|id| cycle.recipe(id))
-                    } else {
-                        store.recipe_snapshot(&key).ok().flatten().map(Arc::new)
-                    };
-                    base.map(|r| Arc::new(request.overrides.apply(&r)))
-                })
-                .clone();
-            let Some(recipe) = recipe.filter(|r| r.point_count() == row.table.len()) else {
-                skipped += 1;
-                continue;
-            };
-            if row.verdict == Verdict::ErrInspect {
-                skipped += 1;
-                continue;
-            }
-            let j = judge::judge(&recipe, &row.table);
-            total += 1;
-            *matrix.entry((row.verdict, j.verdict)).or_default() += 1;
-            if j.verdict != row.verdict && changes.len() < 300 {
-                changes.push(Change { id: row.id, sn: row.sn, ts: row.ts, from: row.verdict, to: j.verdict, reason: j.reason });
-            }
-        }
-        let mut matrix: Vec<_> = matrix.into_iter().map(|((from, to), count)| MatrixCell { from, to, count }).collect();
-        matrix.sort_by_key(|c| (c.from, c.to));
-        Ok(RejudgeResult { total, skipped, limit_hit, matrix, changes })
+        rejudge_rows(rows, &request, |revision_id| store.recipe_snapshot(revision_id).map(|r| r.map(Arc::new)), |id| cycle.recipe(id))
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn cached_recipe(
+    cache: &mut HashMap<String, Option<Arc<Recipe>>>,
+    key: &str,
+    load: impl FnOnce() -> Result<Option<Arc<Recipe>>, String>,
+) -> Result<Option<Arc<Recipe>>, String> {
+    if let Some(value) = cache.get(key) {
+        return Ok(value.clone());
+    }
+    let value = load()?;
+    cache.insert(key.to_string(), value.clone());
+    Ok(value)
+}
+
+fn rejudge_rows(
+    rows: Vec<StoredMeasurement>,
+    request: &RejudgeRequest,
+    mut snapshot: impl FnMut(&str) -> Result<Option<Arc<Recipe>>, String>,
+    mut current: impl FnMut(&str) -> Option<Arc<Recipe>>,
+) -> Result<RejudgeResult, String> {
+    let limit_hit = rows.len() > REJUDGE_LIMIT;
+    let mut originals = HashMap::new();
+    let mut candidates = HashMap::new();
+    let mut matrix: HashMap<(Verdict, Verdict), u64> = HashMap::new();
+    let mut changes = Vec::new();
+    let mut skip_reasons = Vec::new();
+    let (mut total, mut skipped) = (0, 0);
+    for row in rows.into_iter().take(REJUDGE_LIMIT) {
+        let mut skip = |reason: &str| {
+            skipped += 1;
+            if skip_reasons.len() < 300 {
+                skip_reasons.push(RejudgeSkip { id: row.id, sn: row.sn, ts: row.ts, reason: reason.into() });
+            }
+        };
+        if row.verdict == Verdict::ErrInspect {
+            skip("原检测为 ERR，不能仅靠判定参数复原测量");
+            continue;
+        }
+        if row.table.is_empty() {
+            skip("原记录缺少测量点数据");
+            continue;
+        }
+        let Some(revision_id) = row.recipe_revision.as_deref() else {
+            skip("原记录缺少配方快照身份");
+            continue;
+        };
+        let Some(original) = cached_recipe(&mut originals, revision_id, || snapshot(revision_id))? else {
+            skip("原配方快照缺失，无法核对测点布局");
+            continue;
+        };
+        if row.table.len() != original.point_count() || row.recipe_id.as_deref() != Some(original.id.as_str()) || revision_id != original.revision_id {
+            skip("存储测量点与原配方布局不一致");
+            continue;
+        }
+        let recipe = if request.use_current_recipe {
+            let Some(id) = row.recipe_id.as_deref() else {
+                skip("原记录缺少配方编号");
+                continue;
+            };
+            let Some(candidate) = cached_recipe(&mut candidates, id, || Ok(current(id)))? else {
+                skip("当前候选配方不存在");
+                continue;
+            };
+            if !same_measurement_layout(&original, &candidate) {
+                skip("当前候选的拍照点、相机、视角、测点几何或单位已改变，需要使用原图复测");
+                continue;
+            }
+            candidate
+        } else {
+            original
+        };
+        let j = judge::judge(&request.overrides.apply(&recipe), &row.table);
+        total += 1;
+        *matrix.entry((row.verdict, j.verdict)).or_default() += 1;
+        if j.verdict != row.verdict && changes.len() < 300 {
+            changes.push(Change { id: row.id, sn: row.sn, ts: row.ts, from: row.verdict, to: j.verdict, reason: j.reason });
+        }
+    }
+    let mut matrix: Vec<_> = matrix.into_iter().map(|((from, to), count)| MatrixCell { from, to, count }).collect();
+    matrix.sort_by_key(|c| (c.from, c.to));
+    Ok(RejudgeResult { total, skipped, limit_hit, matrix, changes, skip_reasons })
+}
+
+fn csv_row(p: &PartSummary) -> String {
+    let esc = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+    let verdict = serde_json::to_value(p.verdict).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+    let delivery = serde_json::to_value(p.delivery.state).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+    let cells = [
+        format_ts(p.ts),
+        p.sn.to_string(),
+        esc(p.recipe_id.as_deref().unwrap_or("")),
+        p.recipe_version.map(|v| v.to_string()).unwrap_or_default(),
+        esc(p.recipe_revision.as_deref().unwrap_or("")),
+        match p.trigger_mode.as_deref() { Some("fly") => "飞拍", Some("stop") => "停稳拍", _ => "" }.into(),
+        verdict,
+        p.plc_code.to_string(),
+        p.fault_code.to_string(),
+        esc(&p.reason),
+        p.frames_received.to_string(),
+        p.frames_expected.to_string(),
+        p.drain_ms.map(|v| v.to_string()).unwrap_or_default(),
+        p.retest_of.map(|v| v.to_string()).unwrap_or_default(),
+        esc(p.cycle_id.as_deref().unwrap_or("")),
+        esc(p.bundle_id.as_deref().unwrap_or("")),
+        delivery,
+        format_ts(p.delivery.updated_at),
+        esc(p.delivery.message.as_deref().unwrap_or("")),
+    ];
+    format!("{}\r\n", cells.join(","))
 }
 
 /// 按筛选条件导出 CSV（带 BOM，Excel 可直接打开），返回文件路径。
@@ -187,37 +274,13 @@ pub async fn history_export(app: AppHandle, query: HistoryQuery) -> Result<Strin
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join(format!("检测记录_{}.csv", Local::now().format("%Y%m%d_%H%M%S")));
         let mut f = std::io::BufWriter::new(std::fs::File::create(&path).map_err(|e| e.to_string())?);
-        let esc = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
-        write!(f, "\u{feff}时间,SN,配方,版本,配置哈希,模式,结果,PLC 结果码,异常码,原因,收到帧,计划帧,收尾耗时(ms),复检自\r\n").map_err(|e| e.to_string())?;
+        write!(f, "\u{feff}时间,SN,配方,版本,配方修订号,模式,结果,PLC 结果码,异常码,原因,收到帧,计划帧,收尾耗时(ms),复检自,cycleId,发布包 ID,PLC 交付状态,PLC 交付更新时间,PLC 交付说明\r\n").map_err(|e| e.to_string())?;
         let store = app.state::<Store>();
         let mut q = HistoryQuery { limit: 500, offset: 0, ..query };
         loop {
             let page = store.query(&q)?;
             for p in &page.items {
-                let verdict = serde_json::to_value(p.verdict).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
-                write!(
-                    f,
-                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{}\r\n",
-                    format_ts(p.ts),
-                    p.sn,
-                    p.recipe_id.as_deref().unwrap_or(""),
-                    p.recipe_version.map(|v| v.to_string()).unwrap_or_default(),
-                    p.recipe_hash.as_deref().map(|h| &h[..h.len().min(12)]).unwrap_or(""),
-                    match p.trigger_mode.as_deref() {
-                        Some("fly") => "飞拍",
-                        Some("stop") => "停稳拍",
-                        _ => "",
-                    },
-                    verdict,
-                    p.plc_code,
-                    p.fault_code,
-                    esc(&p.reason),
-                    p.frames_received,
-                    p.frames_expected,
-                    p.drain_ms.map(|v| v.to_string()).unwrap_or_default(),
-                    p.retest_of.map(|v| v.to_string()).unwrap_or_default(),
-                )
-                .map_err(|e| e.to_string())?;
+                f.write_all(csv_row(p).as_bytes()).map_err(|e| e.to_string())?;
             }
             if page.items.len() < q.limit as usize {
                 break;
@@ -230,6 +293,10 @@ pub async fn history_export(app: AppHandle, query: HistoryQuery) -> Result<Strin
     .await
     .map_err(|e| e.to_string())?
 }
+
+#[cfg(test)]
+#[path = "history/tests.rs"]
+mod tests;
 
 #[tauri::command]
 pub fn reveal_path(path: String) -> Result<(), String> {

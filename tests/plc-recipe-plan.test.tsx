@@ -8,7 +8,7 @@ import { deferred } from "./fixtures";
 
 vi.mock("../src/features/plc/api", () => ({ plcApi: { recipeChoices: vi.fn(), getOperationState: vi.fn(), recipePlan: vi.fn() } }));
 const plan = (recipeId = "A"): PlcRecipePlan => ({
-  protocolVersion: 1, recipeId, planVersion: 3, planHash: 12345, shotCount: 4,
+  protocolVersion: 1, recipeId, planVersion: 3, shotCount: 4,
   cameraSlots: ["cam1", "cam2", "cam3"], cameraShots: [0, 4, 0],
   shots: Array.from({ length: 4 }, (_, index) => ({ shotId: `shot-${index + 1}`, poseId: `pose-${index + 1}`, cameraId: "cam2" })),
 });

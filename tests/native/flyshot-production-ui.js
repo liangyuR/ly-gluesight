@@ -22,7 +22,7 @@ async (page) => {
   await page.getByRole("heading", {name:"选中帧 k2",exact:true}).waitFor();
   const result={operation:"发布配方在线模拟工件触发、真实图像良品与断胶判定、整件/逐拍照点与选帧",passed:true,records};
   await page.evaluate(result=>window.__uiOperations.checks.push(result),result);
-  await page.screenshot({path:"D:\\project\\ly-gluesight\\output\\playwright\\ui-regression\\flyshot-production.png",fullPage:true});
+  await page.screenshot({path:"output/playwright\\ui-regression\\flyshot-production.png",fullPage:true});
   await page.getByRole("navigation",{name:"操作导航"}).getByRole("link",{name:"历史记录",exact:true}).click();
   return result;
 }

@@ -308,7 +308,7 @@ pub fn sim_robot_trigger(
     if part.sn != sn || k >= part.n {
         return Err("Robot 工件 SN 或拍照序号与当前工件不符".into());
     }
-    let recipe = crate::cycle::cycle_layout(cycle.clone(), part.recipe_id, Some(part.recipe_hash))?;
+    let recipe = crate::cycle::cycle_layout(cycle.clone(), part.recipe_id, Some(part.recipe_revision))?;
     let cam = cycle.camera.require(&recipe.shots.get(k).ok_or("拍照序号超出配方")?.camera)?;
     if cycle.camera.slot(cam as usize).ok_or("相机不存在")?.config().source != CameraSource::Sim {
         return Err("外部演示触发只允许模拟相机".into());

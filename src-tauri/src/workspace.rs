@@ -1,5 +1,4 @@
 use std::collections::{HashMap, VecDeque};
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -13,15 +12,29 @@ use crate::cycle::{self, CycleHost};
 use crate::frame::FrameImage;
 use crate::judge::{self, PointState, Verdict};
 use crate::recipe::{DetectParams, Recipe, RecipeDoc};
-use crate::store::Store;
+use crate::store::{self, Store};
 use crate::vision;
 
-fn fingerprint(value: &impl Serialize) -> String {
-    let mut h = DefaultHasher::new();
-    serde_json::to_string(value)
-        .unwrap_or_default()
-        .hash(&mut h);
-    format!("{:016x}", h.finish())
+mod comparisons;
+mod recorded;
+mod reproduce;
+
+fn state_value(value: &impl Serialize) -> Value {
+    serde_json::to_value(value).unwrap_or(Value::Null)
+}
+
+fn engine_state(engine: &vision::Engine) -> Value {
+    // 换了同版本号的另一份 DLL（大小或修改时间变了）也要重新试测
+    json!({"path": engine.path, "version": engine.version, "bytes": engine.bytes, "modifiedMs": engine.modified_ms})
+}
+
+fn calibration_state(path: &Path) -> Result<Value, String> {
+    let value = match crate::fsio::read_text(path) {
+        Ok(text) => serde_json::from_str::<Value>(&text).map_err(|e| format!("标定文件格式无效：{e}"))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Null,
+        Err(e) => return Err(format!("读取标定文件失败：{e}")),
+    };
+    Ok(json!({"path": path, "value": value}))
 }
 
 fn safe_id(id: &str) -> Result<(), String> {
@@ -55,9 +68,9 @@ pub struct FrozenImage {
     pub captured_at: i64,
     pub size: [u32; 2],
     pub camera: String,
-    pub camera_tag: String,
-    pub calib_tag: String,
-    pub geometry_tag: String,
+    pub camera_tag: Value,
+    pub calib_tag: Value,
+    pub geometry_tag: Value,
     pub exposure_us: Option<f32>,
     pub gain_db: Option<f32>,
     pub history_id: Option<i64>,
@@ -67,9 +80,9 @@ pub struct FrozenImage {
 #[serde(rename_all = "camelCase")]
 pub struct Trial {
     pub image_id: String,
-    pub engine_tag: String,
-    pub params_tag: String,
-    pub geometry_tag: String,
+    pub engine_tag: Value,
+    pub params_tag: Value,
+    pub geometry_tag: Value,
     pub passed: bool,
     pub score: f64,
     pub coverage: f64,
@@ -102,22 +115,22 @@ impl Teaching {
     }
 
     /// 原图要对上拍照点（image_tag），试测要对上当前的中线与检测参数（teach_tag），并且通过。
-    fn checked(&self, image_tag: &str, teach_tag: &str) -> Result<(), String> {
+    fn checked(&self, image_tag: &Value, teach_tag: &Value) -> Result<(), String> {
         let image = self.image.as_ref().ok_or("本帧尚未冻结原图")?;
         let trial = self.trial.as_ref().ok_or("本帧尚未试测")?;
-        if image.geometry_tag != image_tag
+        if &image.geometry_tag != image_tag
             || !trial.passed
             || trial.image_id != image.id
-            || trial.geometry_tag != image_tag
-            || trial.params_tag != teach_tag
+            || &trial.geometry_tag != image_tag
+            || &trial.params_tag != teach_tag
         {
             return Err("图像或参数已变更，需要重新试测".into());
         }
         Ok(())
     }
 
-    fn checked_engine(&self, engine_tag: &str) -> Result<(), String> {
-        if self.trial.as_ref().is_none_or(|trial| trial.engine_tag != engine_tag) {
+    fn checked_engine(&self, engine_tag: &Value) -> Result<(), String> {
+        if self.trial.as_ref().is_none_or(|trial| &trial.engine_tag != engine_tag) {
             return Err("图像引擎版本已变化，需要重新试测".into());
         }
         Ok(())
@@ -146,7 +159,7 @@ pub struct Sample {
 pub struct BankSample {
     pub id: String,
     pub name: String,
-    pub geometry_tag: String,
+    pub geometry_tag: Value,
     pub expected: Verdict,
     pub created_at: i64,
 }
@@ -180,15 +193,15 @@ pub struct Validation {
     pub checked_at: i64,
     pub checks: Vec<Check>,
     pub samples: Vec<SampleResult>,
-    pub environment_tag: String,
+    pub environment_tag: Value,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Release {
     pub doc: RecipeDoc,
-    pub bundle_hash: String,
-    pub base_hash: Option<String>,
+    pub bundle_id: String,
+    pub base_revision: Option<String>,
     pub revision: u64,
     pub frames: Vec<Teaching>,
     pub overview: Overview,
@@ -196,15 +209,14 @@ pub struct Release {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Workspace {
     pub doc: RecipeDoc,
-    pub base_hash: Option<String>,
+    pub base_revision: Option<String>,
     pub revision: u64,
     pub frames: Vec<Teaching>,
     pub overview: Overview,
     pub samples: Vec<Sample>,
-    #[serde(default)]
     pub sample_bank: Vec<BankSample>,
     pub validation: Option<Validation>,
     pub pending: Option<Box<Release>>,
@@ -213,14 +225,14 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    fn new(mut doc: RecipeDoc, base_hash: Option<String>) -> Self {
-        if base_hash.is_some() {
-            doc.version += 1;
+    fn new(mut doc: RecipeDoc, base_revision: Option<String>) -> Self {
+        if base_revision.is_some() {
+            doc.version = doc.version.saturating_add(1);
         }
         let count = doc.shots.len();
         Self {
             doc,
-            base_hash,
+            base_revision,
             revision: 1,
             frames: (0..count).map(Teaching::empty).collect(),
             overview: Overview::default(),
@@ -253,15 +265,21 @@ pub struct WorkspaceView {
     pub workspace: Workspace,
     pub layout: Recipe,
     pub production_version: Option<u32>,
+    /// 生产配方的 PLC 计划版本
+    pub production_plan_version: Option<u32>,
+    /// 候选的拍照计划与生产配方不同（或还没发布过）：生效后 PLC 侧要同步新的计划版本
+    pub plan_changed: bool,
     pub coverage: f32,
 }
 
 pub struct WorkspaceHost {
     root: PathBuf,
     items: Mutex<HashMap<String, Workspace>>,
+    pub notes: Vec<String>,
     live: Mutex<LiveFrames>,
     station: Mutex<HashMap<u8, (FrozenImage, Arc<FrameImage>)>>,
     capture_seq: std::sync::atomic::AtomicU64,
+    comparisons: comparisons::Comparisons,
 }
 
 #[derive(Default)]
@@ -272,14 +290,14 @@ struct LiveFrames {
 }
 
 impl LiveFrames {
-    fn insert(&mut self, cycle_id: &str, hash: &str, k: usize, image: Arc<FrameImage>) {
+    fn insert(&mut self, cycle_id: &str, revision_id: &str, k: usize, image: Arc<FrameImage>) {
         if self
             .key
             .as_ref()
-            .is_none_or(|key| key.0 != cycle_id || key.1 != hash)
+            .is_none_or(|key| key.0 != cycle_id || key.1 != revision_id)
         {
             *self = Self {
-                key: Some((cycle_id.into(), hash.into())),
+                key: Some((cycle_id.into(), revision_id.into())),
                 ..Self::default()
             };
         }
@@ -318,28 +336,34 @@ impl WorkspaceHost {
             .join("workspaces");
         std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         let mut items = HashMap::new();
+        let mut notes = Vec::new();
         for entry in std::fs::read_dir(&root)
             .map_err(|e| e.to_string())?
             .flatten()
         {
             let file = entry.path().join("workspace.json");
-            if let Ok(text) = crate::fsio::read_text(&file) {
-                if let Ok(w) = serde_json::from_str::<Workspace>(&text) {
-                    if safe_id(&w.doc.id).is_ok()
-                        && w.doc.id == entry.file_name().to_string_lossy()
-                        && w.doc.build().is_ok()
-                    {
-                        items.insert(w.doc.id.clone(), w);
-                    }
-                }
+            if !file.is_file() { continue; }
+            let loaded = crate::fsio::read_text(&file).map_err(|e| e.to_string())
+                .and_then(|text| serde_json::from_str::<Workspace>(&text).map_err(|e| e.to_string()))
+                .and_then(|w| {
+                    safe_id(&w.doc.id)?;
+                    if w.doc.id != entry.file_name().to_string_lossy() { return Err("候选编号与目录不一致".into()); }
+                    w.doc.build()?;
+                    Ok(w)
+                });
+            match loaded {
+                Ok(w) => { items.insert(w.doc.id.clone(), w); }
+                Err(error) => notes.push(format!("{} 未加载：{error}。文件已保留；旧格式不兼容，请重新建候选", file.display())),
             }
         }
         Ok(Self {
             root,
             items: Mutex::new(items),
+            notes,
             live: Mutex::new(LiveFrames::default()),
             station: Mutex::new(HashMap::new()),
             capture_seq: std::sync::atomic::AtomicU64::new(0),
+            comparisons: comparisons::Comparisons::default(),
         })
     }
 
@@ -367,18 +391,18 @@ fn coverage(recipe: &Recipe) -> f32 {
     100.0 * recipe.shots.iter().filter(|s| s.measured() && s.taught()).count() as f32 / measured as f32
 }
 
-/// 拍照点 k 的两个指纹：原图要对上编号、相机与标定引用；试测要对上中线、像素当量、检测参数与站距。
-fn shot_tags(r: &Recipe, k: usize) -> Result<(String, String), String> {
+/// 拍照点 k 的两组实际字段：原图要对上编号、相机与标定引用；试测要对上中线、像素当量、检测参数与站距。
+fn shot_tags(r: &Recipe, k: usize) -> Result<(Value, Value), String> {
     let shot = r.shots.get(k).ok_or("拍照点不存在")?;
     Ok((
-        fingerprint(&json!([shot.id, shot.camera, shot.view, shot.calib_ref()])),
-        fingerprint(&json!([shot.view, shot.path, shot.mm_per_px, r.shot_detect(k), r.spacing])),
+        state_value(&json!([shot.id, shot.pose_id, shot.camera, shot.view, shot.calib_ref()])),
+        state_value(&json!([shot.view, shot.path, shot.mm_per_px, r.shot_detect(k), r.spacing])),
     ))
 }
 
 /// 样本组的原图要对上每个拍照点的编号、相机与标定引用（改中线不影响样本）。
-fn images_tag(r: &Recipe) -> String {
-    fingerprint(&(0..r.shot_count()).map(|k| shot_tags(r, k).map(|t| t.0).unwrap_or_default()).collect::<Vec<_>>())
+fn images_tag(r: &Recipe) -> Value {
+    state_value(&(0..r.shot_count()).map(|k| shot_tags(r, k).map(|t| t.0).unwrap_or_default()).collect::<Vec<_>>())
 }
 
 fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
@@ -387,16 +411,20 @@ fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
         .state::<CycleHost>()
         .recipe(&w.doc.id)
         .map(|r| r.version);
+    let production = app.state::<CycleHost>().recipes.doc(&w.doc.id);
+    let plan_changed = production.as_ref().is_none_or(|p| p.plan_version == 0 || !p.same_plan(&w.doc));
     let coverage = coverage(&layout);
     Ok(WorkspaceView {
         workspace: w,
         layout,
         production_version,
+        production_plan_version: production.map(|p| p.plan_version),
+        plan_changed,
         coverage,
     })
 }
 
-fn environment(app: &AppHandle, recipe: &Recipe) -> Result<String, String> {
+fn environment(app: &AppHandle, recipe: &Recipe) -> Result<Value, String> {
     let cycle = app.state::<CycleHost>();
     let mut values = Vec::new();
     for id in recipe.cameras() {
@@ -409,16 +437,16 @@ fn environment(app: &AppHandle, recipe: &Recipe) -> Result<String, String> {
         values.push(json!(config));
     }
     for k in 0..recipe.shot_count() {
-        values.push(json!(crate::fsio::read_text(&vision::shot_calib_path(app, recipe, k)?).ok()));
+        values.push(calibration_state(&vision::shot_calib_path(app, recipe, k)?)?);
     }
     let settings = cycle.settings();
     values.push(json!([settings.vision, settings.lyflow_core]));
-    values.push(json!(app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).map(|engine| engine.identity.clone())));
-    Ok(fingerprint(&values))
+    values.push(json!(app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).map(|engine| engine_state(&engine))));
+    Ok(state_value(&values))
 }
 
-/// 拍照点 k 的相机参数与标定指纹：冻结图像时记下，之后变了就要重新取样。
-fn tags(app: &AppHandle, recipe: &Recipe, k: usize) -> Result<(String, String), String> {
+/// 拍照点 k 的相机参数与实际标定值：冻结图像时记下，之后变了就要重新取样。
+fn tags(app: &AppHandle, recipe: &Recipe, k: usize) -> Result<(Value, Value), String> {
     let cycle = app.state::<CycleHost>();
     let shot = recipe.shots.get(k).ok_or("拍照点不存在")?;
     let cam = cycle.camera.require(&shot.camera)?;
@@ -429,8 +457,8 @@ fn tags(app: &AppHandle, recipe: &Recipe, k: usize) -> Result<(String, String), 
         .config();
     let calib = vision::shot_calib_path(app, recipe, k)?;
     Ok((
-        fingerprint(&config),
-        fingerprint(&crate::fsio::read_text(&calib).ok()),
+        state_value(&config),
+        calibration_state(&calib)?,
     ))
 }
 
@@ -441,23 +469,61 @@ pub fn workspace_list(host: State<'_, WorkspaceHost>) -> Vec<Workspace> {
     out
 }
 
+fn ensure_workspace_can_be_created(path: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("无法确认旧候选是否存在，拒绝覆盖：{error}")),
+        Ok(_) => Err("磁盘已有未加载的候选（旧格式不兼容或文件损坏），文件已保留。请先移走该候选目录，再从当前生产版本重新建立候选".into()),
+    }
+}
+
 #[tauri::command]
 pub fn workspace_get(app: AppHandle, id: String) -> Result<WorkspaceView, String> {
     safe_id(&id)?;
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
     if !items.contains_key(&id) {
+        ensure_workspace_can_be_created(&host.dir(&id).join("workspace.json"))?;
         let cycle = app.state::<CycleHost>();
-        let doc = cycle.recipes.doc(&id).ok_or("配方不存在")?;
-        let w = Workspace::new(doc, cycle.recipe(&id).map(|r| r.hash.clone()));
+        let mut doc = cycle.recipes.doc(&id).ok_or("配方不存在")?;
+        let base = cycle.recipe(&id).map(|r| r.revision_id.clone());
+        doc.version = cycle.recipes.next_version(&id)?;
+        if base.is_some() { doc.version -= 1; }
+        let w = Workspace::new(doc, base);
         host.save(&w)?;
         items.insert(id.clone(), w);
     }
-    view(&app, items[&id].clone())
+    let mut w = items[&id].clone();
+    let recipe = w.doc.build()?;
+    let current_tags = (0..recipe.shot_count()).map(|k| tags(&app, &recipe, k).ok()).collect::<Vec<_>>();
+    let engine = app.state::<vision::VisionHost>().engine(app.state::<CycleHost>().settings().lyflow_core.as_deref());
+    if refresh_teaching(&mut w, &current_tags, engine.as_ref().map(|e| engine_state(e)).as_ref()) {
+        host.save(&w)?;
+        items.insert(id, w.clone());
+    }
+    view(&app, w)
+}
+
+fn refresh_teaching(w: &mut Workspace, tags: &[Option<(Value, Value)>], engine: Option<&Value>) -> bool {
+    let mut changed = false;
+    for (k, frame) in w.frames.iter_mut().enumerate() {
+        if w.doc.shots.get(k).is_none_or(|s| s.skip) { continue; }
+        let image_stale = frame.image.as_ref().is_some_and(|image| {
+            tags.get(k).and_then(Option::as_ref).is_none_or(|(camera, calib)| &image.camera_tag != camera || &image.calib_tag != calib)
+        });
+        let engine_stale = engine.is_some_and(|engine| frame.trial.as_ref().is_some_and(|trial| &trial.engine_tag != engine));
+        if (image_stale || engine_stale) && (frame.saved || frame.trial.is_some()) {
+            frame.saved = false;
+            frame.trial = None;
+            changed = true;
+        }
+    }
+    if changed { w.changed(); }
+    changed
 }
 
 #[tauri::command]
-pub fn workspace_create(app: AppHandle, doc: RecipeDoc) -> Result<WorkspaceView, String> {
+pub fn workspace_create(app: AppHandle, mut doc: RecipeDoc) -> Result<WorkspaceView, String> {
     safe_id(&doc.id)?;
     doc.build()?;
     let host = app.state::<WorkspaceHost>();
@@ -467,6 +533,7 @@ pub fn workspace_create(app: AppHandle, doc: RecipeDoc) -> Result<WorkspaceView,
         .chain(production.iter().map(|r| (r.id.as_str(), r.product_code))))?;
     // Windows 路径不区分大小写，未登记的旧目录也不能被新候选覆盖。
     if host.dir(&doc.id).exists() { return Err("配方目录已经存在，请换一个编号".into()); }
+    doc.version = app.state::<CycleHost>().recipes.next_version(&doc.id)?.max(doc.version.max(1));
     let w = Workspace::new(doc, None);
     host.save(&w)?;
     items.insert(w.doc.id.clone(), w.clone());
@@ -849,7 +916,7 @@ fn measure_image(app: &AppHandle, r: &Recipe, k: usize, image: &FrameImage) -> R
     }
     let settings = app.state::<CycleHost>().settings();
     let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("lyFlow 核心库未加载")?;
-    let run_id = format!("trial-{}-{k}-{}", r.hash, ly_plc::now_ms());
+    let run_id = format!("trial-{}-{k}-{}", r.revision_id, ly_plc::now_ms());
     let measured = vision::measure_shot(&engine, r, k, image, &run_id, "")?;
     let coverage = measured.coverage as f64;
     let passed = coverage >= 0.8;
@@ -889,7 +956,7 @@ pub async fn workspace_trial(
         let (image_tag, teach_tag) = shot_tags(&r, k)?;
         let image = crate::replay::load(&image_file(&app.state::<WorkspaceHost>(), &id, &image_id)?)?;
         let settings = app.state::<CycleHost>().settings();
-        let engine_tag = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).map(|engine| engine.identity.clone()).unwrap_or_default();
+        let engine_tag = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).map(|engine| engine_state(&engine)).unwrap_or_default();
         let started = Instant::now();
         let (measurement, score, coverage, passed, reason) =
             measure_image(&app, &r, k, &image).unwrap_or_else(|e| (Value::Null, 0.0, 0.0, false, e));
@@ -973,7 +1040,7 @@ pub fn workspace_save_teach(
     frame.checked(&image_tag, &teach_tag)?;
     let settings = app.state::<CycleHost>().settings();
     let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("lyFlow 核心库未加载")?;
-    frame.checked_engine(&engine.identity)?;
+    frame.checked_engine(&engine_state(&engine))?;
     let (camera_tag, calib_tag) = tags(&app, &r, k)?;
     let frozen = frame.image.as_ref().unwrap();
     if frozen.camera_tag != camera_tag || frozen.calib_tag != calib_tag {
@@ -1049,6 +1116,20 @@ pub fn workspace_save_overview(
     view(&app, w.clone())
 }
 
+fn history_sample_table(original: &Recipe, candidate: &Recipe, points: &store::PartPoints) -> Result<Vec<PointState>, String> {
+    if !store::same_measurement_layout(original, candidate) {
+        return Err("样本拍照点或测点布局与候选不一致，不能用旧测量数据验证".into());
+    }
+    if points.st.len() != candidate.point_count() || points.d.len() != points.st.len() || points.w.len() != points.st.len() {
+        return Err("样本的测量点数量不一致".into());
+    }
+    points.st.iter().enumerate().map(|(j, status)| match status {
+        0 => Ok(PointState::Measured { d: points.d[j], w: points.w[j].unwrap_or(f32::NAN) }),
+        1 => Ok(PointState::Gap),
+        _ => Err("样本存在未完成或无效的测量，不能用于规则验证".into()),
+    }).collect()
+}
+
 fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
     let r = w.doc.build()?;
     let cycle = app.state::<CycleHost>();
@@ -1074,7 +1155,7 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
             let shot = shot_tags(&r, f.k);
             f.saved
                 && shot.as_ref().is_ok_and(|(image, teach)| f.checked(image, teach).is_ok())
-                && app.state::<vision::VisionHost>().engine(cycle.settings().lyflow_core.as_deref()).is_some_and(|engine| f.checked_engine(&engine.identity).is_ok())
+                && app.state::<vision::VisionHost>().engine(cycle.settings().lyflow_core.as_deref()).is_some_and(|engine| f.checked_engine(&engine_state(&engine)).is_ok())
                 && f.image
                     .as_ref()
                     .zip(current.as_ref().ok())
@@ -1137,33 +1218,14 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
             let detail = store.detail(history_id)?;
             let original = detail
                 .summary
-                .recipe_hash
+                .recipe_revision
                 .as_deref()
                 .map(|h| store.recipe_snapshot(h))
                 .transpose()?
                 .flatten()
                 .ok_or("原始配方快照缺失")?;
-            if original.geometry_hash() != r.geometry_hash() {
-                return Err("样本胶路与候选不一致，不能用旧测量数据验证".into());
-            }
             let points = detail.points.ok_or("样本没有测量数据，不能用于规则验证")?;
-            let table: Vec<_> = points
-                .st
-                .iter()
-                .enumerate()
-                .map(|(j, s)| match s {
-                    0 => PointState::Measured {
-                        d: points.d[j],
-                        w: points.w.get(j).and_then(|w| *w).unwrap_or(f32::NAN),
-                    },
-                    1 => PointState::Gap,
-                    2 => PointState::Invalid,
-                    _ => PointState::Pending,
-                })
-                .collect();
-            if table.len() != r.point_count() {
-                return Err("样本的测量点数量不一致".into());
-            }
+            let table = history_sample_table(&original, &r, &points)?;
             let j = judge::judge(&r, &table);
             Ok(SampleResult {
                 history_id: sample.history_id,
@@ -1204,11 +1266,11 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
     });
     checks.push(Check { name:"代表性样本".into(), passed:have_ok && have_ng && !results.is_empty() && results.iter().all(|r| r.passed),
         detail:"规则验证需至少一件合格样本、一件缺陷样本，全部结论与人工标注一致；图像能力由逐帧试测校验".into() });
-    let base = cycle.recipe(&r.id).map(|r| r.hash.clone());
+    let base = cycle.recipe(&r.id).map(|r| r.revision_id.clone());
     checks.push(Check {
         name: "生产版本".into(),
-        passed: base == w.base_hash,
-        detail: if base == w.base_hash {
+        passed: base == w.base_revision,
+        detail: if base == w.base_revision {
             "候选基于当前生产版本".into()
         } else {
             "生产配方已被其他操作更新，请重新建立候选".into()
@@ -1281,28 +1343,22 @@ pub fn workspace_publish(
         .ok_or("请先通过当前候选的完整验证")?;
     let recipe = w.doc.build()?;
     let environment_tag = environment(&app, &recipe)?;
-    let current_base = app.state::<CycleHost>().recipe(&id).map(|r| r.hash.clone());
-    if current_base != w.base_hash || environment_tag != validated.environment_tag {
+    let current_base = app.state::<CycleHost>().recipe(&id).map(|r| r.revision_id.clone());
+    if current_base != w.base_revision || environment_tag != validated.environment_tag {
         return Err("验证后相机、标定或生产版本已变化，请重新验证".into());
     }
     let cams = cycle::usable_cams(&app, &recipe, cycle::real_parts(&app))?;
     app.state::<CycleHost>().camera.check_ready_at(&cams)?;
     let mut release_doc = w.doc.clone();
-    release_doc.teaching_hash = Some(fingerprint(&json!([
-        w.frames
-            .iter()
-            .map(|f| (&f.image, &f.trial))
-            .collect::<Vec<_>>(),
-        w.overview,
-        environment_tag
-    ])));
+    release_doc.teaching_id = Some(vision::unique_run_id(&format!("teaching-{}-v{}", release_doc.id, release_doc.version)));
+    release_doc.plan_version = app.state::<CycleHost>().recipes.plan_version_for(&release_doc)?;
     let bundle = freeze_bundle(&app, &host, &release_doc, &w.frames)?;
     let mut next = w.clone();
     next.doc = release_doc.clone();
     next.pending = Some(Box::new(Release {
         doc: release_doc,
-        bundle_hash: bundle.hash,
-        base_hash: w.base_hash.clone(),
+        bundle_id: bundle.id,
+        base_revision: w.base_revision.clone(),
         revision,
         frames: w.frames.clone(),
         overview: w.overview.clone(),
@@ -1319,38 +1375,59 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
     let cycle = app.state::<CycleHost>();
     let current = cycle.recipe(&release.doc.id);
     let recipe = release.doc.build()?;
-    let bundle = crate::release::load(&releases_root(app)?, &recipe.id, &release.bundle_hash)?;
+    let bundle = load_bundle(app, &recipe.id, &release.bundle_id)?;
     if bundle.recipe != release.doc { return Err("待生效配方与不可变发布包不一致".into()); }
-    if let Some(saved) = current
-        .as_ref()
-        .filter(|r| r.hash == recipe.hash && Some(&r.hash) != release.base_hash.as_ref())
-    {
-        return Ok(saved.clone());
+    if current.as_ref().is_some_and(|saved| saved.revision_id == recipe.revision_id) {
+        return cycle.recipes.save_published(release.doc.clone(), release.base_revision.as_deref());
     }
-    if current.as_ref().map(|r| r.hash.clone()) != release.base_hash {
+    if current.as_ref().map(|r| r.revision_id.clone()) != release.base_revision {
         return Err("待生效版本与当前生产配方冲突".into());
     }
     let archive = host.dir(&recipe.id).join("published");
     std::fs::create_dir_all(&archive).map_err(|e| e.to_string())?;
     crate::fsio::write_atomic(
-        &archive.join(format!("{}.json", recipe.hash)),
+        &archive.join(format!("{}.json", recipe.revision_id)),
         &serde_json::to_string(release).map_err(|e| e.to_string())?,
     )?;
-    cycle.recipes.save(release.doc.clone(), release.base_hash.as_ref().map(|_| release.doc.id.as_str()))
+    cycle.recipes.save_published(release.doc.clone(), release.base_revision.as_deref())
 }
 
 pub fn releases_root(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("vision").join("releases"))
 }
 
+fn read_release(path: &Path) -> Result<Release, String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    { use std::os::windows::fs::MetadataExt;
+      if metadata.file_attributes() & 0x400 != 0 { return Err("发布归档不能是 reparse point".into()); } }
+    if !metadata.is_file() || metadata.file_type().is_symlink() { return Err("发布归档不是普通文件".into()); }
+    serde_json::from_str(&crate::fsio::read_text(path).map_err(|e| e.to_string())?).map_err(|e| format!("发布归档格式不兼容：{e}"))
+}
+
+fn archived_release(dir: &Path, id: &str, version: u32) -> Result<Release, String> {
+    safe_id(id)?;
+    comparisons::checked_directory(dir, false)?;
+    let path = dir.join(format!("{id}-v{version}.json"));
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err("所选生产版本没有不可变发布包，请在工作台验证并发布".into()),
+        Err(e) => return Err(e.to_string()),
+    }
+    let release = read_release(&path)?;
+    if release.doc.id != id || release.doc.version != version { return Err("发布归档的配方或版本不一致".into()); }
+    Ok(release)
+}
+
+fn load_bundle(app: &AppHandle, recipe_id: &str, bundle_id: &str) -> Result<crate::release::ReleaseBundle, String> {
+    crate::release::load(&releases_root(app)?, recipe_id, bundle_id)
+}
+
 pub fn published_bundle(app: &AppHandle, recipe: &Recipe) -> Result<crate::release::ReleaseBundle, String> {
-    safe_id(&recipe.id)?;
-    let archive = app.state::<WorkspaceHost>().dir(&recipe.id).join("published").join(format!("{}.json", recipe.hash));
-    let published: Release = serde_json::from_str(&crate::fsio::read_text(&archive)
-        .map_err(|_| "所选生产版本没有不可变发布包，请在工作台验证并发布".to_string())?)
-        .map_err(|e| format!("发布快照格式无效，请重新发布：{e}"))?;
-    let bundle = crate::release::load(&releases_root(app)?, &recipe.id, &published.bundle_hash)?;
-    if bundle.recipe != published.doc || bundle.manifest.recipe_hash != recipe.hash {
+    let dir = app.state::<WorkspaceHost>().dir(&recipe.id).join("published");
+    let published = archived_release(&dir, &recipe.id, recipe.version)?;
+    let bundle = load_bundle(app, &recipe.id, &published.bundle_id)?;
+    if bundle.recipe != published.doc || bundle.manifest.recipe_revision != recipe.revision_id {
         return Err("生产快照、配方与发布包身份不一致".into());
     }
     Ok(bundle)
@@ -1367,7 +1444,7 @@ fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeDoc, teachin
         }
         let (image_tag, teach_tag) = shot_tags(&recipe, k)?;
         frame.checked(&image_tag, &teach_tag)?;
-        frame.checked_engine(&engine.identity)?;
+        frame.checked_engine(&engine_state(&engine))?;
         if !frame.saved { return Err(format!("拍照点 {} 尚未保存示教", shot.id)); }
         let image = frame.image.as_ref().ok_or("发布示教原图缺失")?;
         let external = vision::shot_calib_path(app, &recipe, k)?;
@@ -1399,22 +1476,30 @@ pub fn apply_pending(app: &AppHandle) -> bool {
     for id in ids {
         let w = items.get_mut(&id).unwrap();
         let release = *w.pending.take().unwrap();
+        let previous_plan = app.state::<CycleHost>().recipe(&id).map(|r| r.plan_version);
         match commit(app, &host, &release) {
             Ok(saved) => {
-                w.base_hash = Some(saved.hash.clone());
+                w.base_revision = Some(saved.revision_id.clone());
                 if w.revision == release.revision {
                     w.doc = app.state::<CycleHost>().recipes.doc(&id).unwrap();
                 }
-                w.doc.version = saved.version + 1;
+                let next_version = app.state::<CycleHost>().recipes.next_version(&saved.id);
+                w.doc.version = next_version.as_ref().copied().unwrap_or(saved.version);
                 w.validation = None;
-                w.publish_error = None;
+                w.publish_error = next_version.err();
                 w.revision += 1;
                 changed = true;
                 cycle::log(
                     app,
                     "info",
                     "发布配方",
-                    format!("{id} v{} 已生效", saved.version),
+                    match previous_plan {
+                        Some(previous) if previous != saved.plan_version => format!(
+                            "{id} v{} 已生效；拍照计划已变，PLC 计划版本 {previous} → {}，PLC 侧同步 planVersion 与拍照点数后才能布防",
+                            saved.version, saved.plan_version),
+                        None => format!("{id} v{} 已生效；PLC 计划版本 {}", saved.version, saved.plan_version),
+                        _ => format!("{id} v{} 已生效（拍照计划未变，PLC 不用改）", saved.version),
+                    },
                 );
             }
             Err(e) => {
@@ -1434,6 +1519,7 @@ pub fn apply_pending(app: &AppHandle) -> bool {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RawFrame {
+    pub error: Option<String>,
     pub k: usize,
     pub view: u8,
     pub camera: String,
@@ -1456,75 +1542,18 @@ pub struct RecordImages {
 
 fn recorded(app: &AppHandle, history_id: i64) -> Result<(PathBuf, Vec<RawFrame>), String> {
     let detail = app.state::<Store>().detail(history_id)?;
+    let cycle_id = detail.summary.cycle_id.as_deref().ok_or("历史记录没有 cycleId，不能确定对应原图")?;
     let root = app.state::<CycleHost>().recorder.root().to_path_buf();
-    let mut choices = Vec::new();
-    for day in std::fs::read_dir(&root)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_dir() && !p.ends_with("_pending"))
-    {
-        for dir in std::fs::read_dir(day)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-        {
-            let Some(meta) = crate::fsio::read_text(&dir.join("part.json"))
-                .ok()
-                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            else {
-                continue;
-            };
-            let started = meta["startedTs"].as_i64().unwrap_or(0);
-            if meta["sn"].as_u64() != Some(detail.summary.sn as u64)
-                || meta["recipe"]["hash"].as_str() != detail.summary.recipe_hash.as_deref()
-                || started > detail.summary.ts
-                || detail.summary.ts - started > 300_000
-            {
-                continue;
-            }
-            choices.push((detail.summary.ts - started, dir, meta));
-        }
-    }
-    choices.sort_by_key(|c| c.0);
-    let (_, dir, meta) = choices
-        .into_iter()
-        .next()
-        .ok_or("原图未保留或已清理；仍可使用完整测量数据进行规则重判")?;
-    let frames = recorded_frames(&dir, &meta)?;
-    Ok((dir, frames))
+    let frames = recorded::frames(&root, cycle_id, &detail.shots, detail.summary.ts)?;
+    Ok((root, frames))
 }
 
-fn recorded_frames(dir: &Path, meta: &Value) -> Result<Vec<RawFrame>, String> {
-    let raw = meta["frames"].as_array().ok_or("原图清单损坏")?;
-    let shots = meta["recipe"]["shots"].as_array().ok_or("录制配方缺少拍照点")?;
-    let mut frames = Vec::new();
-    let mut selected = std::collections::HashSet::new();
-    for f in raw {
-        let Some(k) = f["k"].as_u64().and_then(|k| usize::try_from(k).ok()) else { continue; };
-        let Some(shot) = shots.get(k) else { continue; };
-        let Some(view) = f["view"].as_u64().and_then(|v| u8::try_from(v).ok()).filter(|v| (1..=3).contains(v)) else { continue; };
-        if shot["view"].as_u64() != Some(view as u64) || f["camera"].as_str() != shot["camera"].as_str() { continue; }
-        if !selected.insert(k) { return Err(format!("拍照点 {k} 的视角 {view} 原图重复，无法确定对应图像")); }
-        let Some(file) = f["file"].as_str() else { continue; };
-        let path = Path::new(file);
-        if path.components().count() != 1 || !path.file_name().is_some_and(|n| n == file) { continue; }
-        frames.push(RawFrame {
-            k, view,
-            camera: f["camera"].as_str().unwrap_or("").into(),
-            file: file.into(),
-            ts: f["ts"].as_i64().unwrap_or_else(|| meta["startedTs"].as_i64().unwrap_or(0)),
-            available: dir.join(file).is_file(),
-            cam: f["cam"].as_u64().and_then(|v| u8::try_from(v).ok()),
-            frame_counter: f["frameCounter"].as_u64(),
-            trigger_counter: f["triggerCounter"].as_u64(),
-        });
-    }
-    frames.sort_by_key(|f| f.k);
-    Ok(frames)
+fn history_image(app: &AppHandle, detail: &store::PartDetail, k: usize, view: u8) -> Result<FrameImage, String> {
+    let cycle_id = detail.summary.cycle_id.as_deref().ok_or("历史记录没有 cycleId")?;
+    let shot = detail.shots.iter().find(|shot| shot.k == k).ok_or("历史拍照点不存在")?;
+    let raw = shot.raw_files.iter().find(|raw| raw.view == view)
+        .ok_or("所选拍照点视角的原图未保留")?;
+    recorded::load_verified(app.state::<CycleHost>().recorder.root(), cycle_id, shot, raw)
 }
 
 #[tauri::command]
@@ -1533,14 +1562,14 @@ pub fn workspace_record_images(app: AppHandle, history_id: i64) -> Result<Record
     let detail = store.detail(history_id)?;
     match recorded(&app, history_id) {
         Ok((_, frames)) => {
-            let complete = detail.summary.frames_expected > 0 && (0..detail.summary.frames_expected)
-                .all(|k| frames.iter().any(|f| f.k == k && f.available));
+            let complete = detail.recording.available && !detail.shots.is_empty()
+                && detail.shots.iter().all(|shot| frames.iter().any(|f| f.k == shot.k && f.view == shot.view && f.available));
             let count = frames.iter().filter(|f| f.available).count();
             Ok(RecordImages {
                 history_id,
                 frames,
                 complete,
-                message: format!("保留 {count} 张原图"),
+                message: format!("保留 {count} 幅原始图像{}", if detail.recording.errors.is_empty() { String::new() } else { format!("；{}", detail.recording.errors.join("；")) }),
             })
         }
         Err(e) => Ok(RecordImages {
@@ -1557,15 +1586,11 @@ pub fn workspace_record_image(
     app: AppHandle,
     history_id: i64,
     k: usize,
+    view: Option<u8>,
 ) -> Result<tauri::ipc::Response, String> {
-    let (dir, frames) = recorded(&app, history_id)?;
-    let raw = frames
-        .iter()
-        .find(|f| f.k == k && f.available)
-        .ok_or("所选帧原图未保留")?;
-    Ok(preview_response(&crate::replay::load(
-        &dir.join(&raw.file),
-    )?))
+    let detail = app.state::<Store>().detail(history_id)?;
+    let selected = view.or_else(|| detail.shots.iter().find(|shot| shot.k == k).map(|shot| shot.view)).ok_or("拍照点不存在")?;
+    Ok(preview_response(&history_image(&app, &detail, k, selected)?))
 }
 
 #[tauri::command]
@@ -1579,7 +1604,7 @@ pub fn workspace_history_capture(
     let detail = app.state::<Store>().detail(history_id)?;
     let original = detail
         .summary
-        .recipe_hash
+        .recipe_revision
         .as_deref()
         .map(|h| app.state::<Store>().recipe_snapshot(h))
         .transpose()?
@@ -1592,20 +1617,16 @@ pub fn workspace_history_capture(
         w.expect(revision)?;
         w.doc.build()?
     };
-    if doc.geometry_hash() != original.geometry_hash() {
-        return Err("历史帧的胶路、相机或拍照点与当前候选不同，不能直接用于示教".into());
+    if !same_frame_sources(&doc, &original) {
+        return Err("历史帧的 Pose、相机或视角与当前候选不同，不能直接用于示教".into());
     }
-    let (dir, frames) = recorded(&app, history_id)?;
-    let raw = frames
-        .iter()
-        .find(|f| f.k == k && f.available)
-        .ok_or("所选帧原图已清理")?;
+    let selected_view = doc.shots.get(k).ok_or("拍照点不存在")?.view;
     keep_image(
         &app,
         &id,
         revision,
         k,
-        crate::replay::load(&dir.join(&raw.file))?,
+        history_image(&app, &detail, k, selected_view)?,
         format!("历史 SN {}", detail.summary.sn),
         Some(history_id),
     )
@@ -1617,6 +1638,8 @@ pub struct Comparison {
     pub id: String,
     pub history_id: i64,
     pub source: String,
+    pub cycle_id: String,
+    pub bundle_id: Option<String>,
     pub candidate_id: String,
     pub candidate_revision: u64,
     pub candidate_recipe: Recipe,
@@ -1647,28 +1670,21 @@ pub async fn workspace_compare(
         let detail = store.detail(history_id)?;
         let original = detail
             .summary
-            .recipe_hash
+            .recipe_revision
             .as_deref()
             .map(|h| store.recipe_snapshot(h))
             .transpose()?
             .flatten()
             .ok_or("历史配方快照缺失")?;
-        if original.geometry_hash() != recipe.geometry_hash() {
-            return Err("原始记录与候选的几何不同；请重新采集代表性样本".into());
+        if (raw && !same_frame_sources(&original, &recipe)) || (!raw && !crate::store::same_measurement_layout(&original, &recipe)) {
+            return Err(if raw { "历史原图的 Pose、相机或视角与候选不同；请重新采集样本" }
+                else { "保存的测点布局与候选不同，不能复用旧测量值；请从原图复测" }.into());
         }
         let mut measurements = Vec::new();
         let table = if raw {
-            let (dir, frames) = recorded(&app, history_id)?;
-            let paths = (0..recipe.shot_count())
-                .map(|k| {
-                    frames
-                        .iter()
-                        .find(|f| f.k == k && f.available)
-                        .map(|f| dir.join(&f.file))
-                        .ok_or_else(|| "原图不完整，无法完成整件复测".to_string())
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let (table, measured) = measure_paths(&app, &w, &paths, detail.summary.sn)?;
+            if !detail.recording.available { return Err("原图未完整保留，无法完成整件复测".into()); }
+            let (table, measured) = measure_images(&app, &w, recipe.shot_count(), detail.summary.sn,
+                |k| history_image(&app, &detail, k, recipe.shots[k].view))?;
             measurements = measured;
             table
         } else {
@@ -1696,9 +1712,11 @@ pub async fn workspace_compare(
                 .collect()
         };
         let comparison = Comparison {
-            id: format!("{history_id}-{}", ly_plc::now_ms()),
+            id: comparison_id(&app, history_id),
             history_id,
             source: if raw { "raw".into() } else { "rules".into() },
+            cycle_id: detail.summary.cycle_id.clone().ok_or("历史记录没有工件身份")?,
+            bundle_id: detail.summary.bundle_id.clone(),
             candidate_id: id.clone(),
             candidate_revision: revision,
             candidate_recipe: recipe.clone(),
@@ -1707,59 +1725,84 @@ pub async fn workspace_compare(
             measurements,
             created_at: ly_plc::now_ms(),
         };
-        let host = app.state::<WorkspaceHost>();
-        let dir = host.dir(&id).join("comparisons");
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        crate::fsio::write_atomic(
-            &dir.join(format!("{}.json", comparison.id)),
-            &serde_json::to_string(&comparison).map_err(|e| e.to_string())?,
-        )?;
+        save_comparison(&app, &comparison)?;
         Ok(comparison)
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
+fn same_frame_sources(original: &Recipe, candidate: &Recipe) -> bool {
+    let sources = |recipe: &Recipe| json!([recipe.id, recipe.shots.iter().map(|shot|
+        json!([shot.id, shot.pose_id, shot.camera, shot.view])).collect::<Vec<_>>()]);
+    sources(original) == sources(candidate)
+}
+
+fn comparison_id(app: &AppHandle, history_id: i64) -> String {
+    let seq = app.state::<WorkspaceHost>().capture_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{history_id}-{}-{seq}", ly_plc::now_ms())
+}
+
+fn save_comparison(app: &AppHandle, comparison: &Comparison) -> Result<(), String> {
+    let host = app.state::<WorkspaceHost>();
+    host.comparisons.save(&host.root, &app.state::<Store>(), comparison)
+}
+
+pub(crate) fn purge_history(app: &AppHandle, before: i64) -> Result<(usize, Vec<String>), String> {
+    let host = app.state::<WorkspaceHost>();
+    host.comparisons.purge(&host.root, &app.state::<Store>(), before)
+}
+
+#[tauri::command]
+pub async fn workspace_compare_original(app: AppHandle, history_id: i64) -> Result<Comparison, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app.state::<Store>();
+        let detail = store.detail(history_id)?;
+        if !detail.recording.available { return Err("原图未完整保留，不能重现原发布测量；请查看录制状态".into()); }
+        let cycle_id = detail.summary.cycle_id.clone().ok_or("历史记录缺少 cycleId")?;
+        let bundle_id = detail.summary.bundle_id.as_deref().ok_or("本件没有不可变发布包，不能按原版本重现")?;
+        let recipe_revision = detail.summary.recipe_revision.as_deref().ok_or("历史记录缺少配方快照身份")?;
+        let original = store.recipe_snapshot(recipe_revision)?.ok_or("原始配方快照缺失；不能使用当前配方替代")?;
+        let bundle = load_bundle(&app, &original.id, bundle_id)?;
+        let settings = app.state::<CycleHost>().settings();
+        let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("原版本兼容引擎未加载")?;
+        let prepared = crate::production::Prepared::load(bundle, engine, &original)?;
+        prepared.verify()?;
+        let (judgement, measurements) = reproduce::measure(&prepared, original.shot_count(), detail.summary.sn, &cycle_id,
+            |k| history_image(&app, &detail, k, original.shots[k].view))?;
+        let comparison = Comparison { id: comparison_id(&app, history_id), history_id, source: "original".into(),
+            cycle_id, bundle_id: Some(bundle_id.into()), candidate_id: original.id.clone(),
+            candidate_revision: 0, candidate_recipe: original, original_verdict: detail.summary.verdict,
+            judgement, measurements, created_at: ly_plc::now_ms() };
+        save_comparison(&app, &comparison)?;
+        Ok(comparison)
+    }).await.map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 pub fn workspace_runtime_overview(
     host: State<'_, WorkspaceHost>,
     id: String,
-    hash: String,
+    revision_id: String,
 ) -> Result<Option<Overview>, String> {
     safe_id(&id)?;
-    if !hash.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err("配方哈希无效".into());
+    if revision_id.is_empty() || !revision_id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')) {
+        return Err("配方版本编号无效".into());
     }
-    let file = host.dir(&id).join("published").join(format!("{hash}.json"));
-    Ok(crate::fsio::read_text(&file)
-        .ok()
-        .and_then(|s| serde_json::from_str::<Release>(&s).ok())
-        .map(|r| r.overview))
+    let version = revision_id.strip_prefix(&format!("{id}-v")).and_then(|v| v.parse::<u32>().ok()).ok_or("配方版本编号与配方不一致")?;
+    archived_release(&host.dir(&id).join("published"), &id, version).map(|release| Some(release.overview))
+
 }
 
 #[tauri::command]
 pub fn workspace_comparisons(
     host: State<'_, WorkspaceHost>,
+    store: State<'_, Store>,
     id: String,
     history_id: i64,
 ) -> Result<Vec<Comparison>, String> {
     safe_id(&id)?;
-    let dir = host.dir(&id).join("comparisons");
-    let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            if let Ok(text) = crate::fsio::read_text(&entry.path()) {
-                if let Ok(saved) = serde_json::from_str::<Comparison>(&text) {
-                    if saved.history_id == history_id {
-                        out.push(saved);
-                    }
-                }
-            }
-        }
-    }
-    out.sort_by_key(|c| std::cmp::Reverse(c.created_at));
-    out.truncate(100);
-    Ok(out)
+    host.comparisons.list(&host.root, &store, &id, history_id)
 }
 
 pub fn clear_live(app: &AppHandle) {
@@ -1771,12 +1814,12 @@ pub fn clear_live(app: &AppHandle) {
 pub fn retain_live(
     app: &AppHandle,
     cycle_id: String,
-    hash: &str,
+    revision_id: &str,
     k: usize,
     image: &Option<Arc<FrameImage>>,
 ) {
     if let (Some(host), Some(image)) = (app.try_state::<WorkspaceHost>(), image) {
-        host.live.lock().unwrap().insert(&cycle_id, hash, k, image.clone());
+        host.live.lock().unwrap().insert(&cycle_id, revision_id, k, image.clone());
     }
 }
 
@@ -1784,7 +1827,7 @@ pub fn retain_live(
 pub fn workspace_live_image(
     host: State<'_, WorkspaceHost>,
     cycle_id: String,
-    hash: String,
+    revision_id: String,
     k: usize,
 ) -> Result<tauri::ipc::Response, String> {
     let image = {
@@ -1792,7 +1835,7 @@ pub fn workspace_live_image(
         if live
             .key
             .as_ref()
-            .is_none_or(|key| key.0 != cycle_id || key.1 != hash)
+            .is_none_or(|key| key.0 != cycle_id || key.1 != revision_id)
         {
             return Err("本件尚未收到整帧图像".into());
         }
@@ -1825,7 +1868,7 @@ pub fn station_image_ref(
         .get(&cam)
         .filter(|(meta, _)| meta.id == image_id)
         .ok_or("冻结样本已更新，请重新选择图像")?;
-    if meta.camera_tag != fingerprint(&config) {
+    if meta.camera_tag != state_value(&config) {
         return Err("相机参数变化，请重新冻结标定样本".into());
     }
     Ok(image.clone())
@@ -1851,7 +1894,7 @@ pub async fn workspace_station_capture(app: AppHandle, cam: u8) -> Result<Frozen
         let slot = cycle.camera.slot(cam as usize).ok_or("相机不存在")?;
         let config = slot.config();
         let image = cycle.camera.capture_view(cam, 1, None)?;
-        if cycle.busy() || fingerprint(&slot.config()) != fingerprint(&config) {
+        if cycle.busy() || state_value(&slot.config()) != state_value(&config) {
             return Err("取样期间设备或节拍状态变化，样本已丢弃".into());
         }
         let host = app.state::<WorkspaceHost>();
@@ -1865,9 +1908,9 @@ pub async fn workspace_station_capture(app: AppHandle, cam: u8) -> Result<Frozen
             captured_at: ly_plc::now_ms(),
             size: [image.width, image.height],
             camera: config.id,
-            camera_tag: fingerprint(&slot.config()),
-            calib_tag: String::new(),
-            geometry_tag: String::new(),
+            camera_tag: state_value(&slot.config()),
+            calib_tag: Value::Null,
+            geometry_tag: Value::Null,
             exposure_us: Some(config.exposure_us),
             gain_db: Some(config.gain_db),
             history_id: None,
@@ -1890,7 +1933,7 @@ pub async fn workspace_station_import(app: AppHandle, cam: u8, bytes: Vec<u8>) -
         let slot = cycle.camera.slot(cam as usize).ok_or("相机不存在")?;
         let config = slot.config();
         let image = Arc::new(decode_imported_image(bytes)?);
-        if cycle.busy() || fingerprint(&slot.config()) != fingerprint(&config) {
+        if cycle.busy() || state_value(&slot.config()) != state_value(&config) {
             return Err("导入期间设备或节拍状态变化，原图已丢弃".into());
         }
         let host = app.state::<WorkspaceHost>();
@@ -1899,7 +1942,7 @@ pub async fn workspace_station_import(app: AppHandle, cam: u8, bytes: Vec<u8>) -
             view: 1,
             id: format!("station-import-{cam}-{}-{seq}", ly_plc::now_ms()),
             source: "import".into(), captured_at: ly_plc::now_ms(), size: [image.width, image.height],
-            camera: config.id.clone(), camera_tag: fingerprint(&config), calib_tag: String::new(), geometry_tag: String::new(),
+            camera: config.id.clone(), camera_tag: state_value(&config), calib_tag: Value::Null, geometry_tag: Value::Null,
             exposure_us: None, gain_db: None, history_id: None,
         };
         host.station.lock().unwrap().insert(cam, (meta.clone(), image));
@@ -1913,28 +1956,38 @@ fn measure_paths(
     paths: &[PathBuf],
     sn: u32,
 ) -> Result<(Vec<PointState>, Vec<Value>), String> {
+    measure_images(app, w, paths.len(), sn, |k| crate::replay::load(&paths[k]))
+}
+
+fn measure_images(
+    app: &AppHandle,
+    w: &Workspace,
+    count: usize,
+    sn: u32,
+    mut load: impl FnMut(usize) -> Result<FrameImage, String>,
+) -> Result<(Vec<PointState>, Vec<Value>), String> {
     let recipe = w.doc.build()?;
-    if paths.len() != recipe.shot_count() {
+    if count != recipe.shot_count() {
         return Err("样本组的原图数量与拍照点不一致".into());
     }
     let settings = app.state::<CycleHost>().settings();
     let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("lyFlow 核心库未加载")?;
     let mut table = vec![PointState::Pending; recipe.point_count()];
     let mut measurements = Vec::new();
-    let run = format!("candidate-{}-{}", recipe.hash, ly_plc::now_ms());
-    for (k, path) in paths.iter().enumerate() {
+    let run = vision::unique_run_id(&format!("candidate-{}", recipe.revision_id));
+    for k in 0..count {
         let shot = &recipe.shots[k];
         if !shot.measured() { continue; }
         let frame = w.frames.get(k).filter(|f| f.saved).ok_or("候选存在尚未保存的示教帧")?;
         let (image_tag, teach_tag) = shot_tags(&recipe, k)?;
         frame.checked(&image_tag, &teach_tag)?;
-        frame.checked_engine(&engine.identity)?;
+        frame.checked_engine(&engine_state(&engine))?;
         let frozen = frame.image.as_ref().ok_or("示教原图缺失")?;
         let (ct, cal) = tags(app, &recipe, k)?;
         if frozen.camera_tag != ct || frozen.calib_tag != cal {
             return Err("相机或标定变化，需要重新示教".into());
         }
-        let image = crate::replay::load(path)?;
+        let image = load(k)?;
         if [image.width, image.height] != frozen.size {
             return Err(format!("拍照点 {} 样本尺寸与示教图像不同", shot.id));
         }
@@ -1945,7 +1998,7 @@ fn measure_paths(
             } else { PointState::Gap };
         }
         let cam = app.state::<CycleHost>().camera.require(&shot.camera)?;
-        measurements.push(json!({"cycleId":run,"bundleHash":null,"shotId":shot.id,"camera":shot.camera,
+        measurements.push(json!({"cycleId":run,"bundleId":null,"shotId":shot.id,"camera":shot.camera,
             "sn":sn,"k":k,"cam":cam,"located":true,"score":reading.coverage,"ms":reading.ms,
             "error":null,"idx":reading.idx,"d":reading.d,"w":reading.w,"st":reading.st,"px":reading.px}));
     }
@@ -2011,6 +2064,52 @@ impl Drop for SampleImportFiles {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn historical_sample_rejects_a_different_pose_even_with_the_same_measurement_geometry() {
+        let original = crate::recipe::samples().remove(1).build().unwrap();
+        let mut candidate = original.clone();
+        let points = store::PartPoints { d: vec![0.0; original.point_count()],
+            w: vec![Some(4.0); original.point_count()], st: vec![0; original.point_count()] };
+        assert!(history_sample_table(&original, &candidate, &points).is_ok());
+        candidate.shots[0].pose_id.push_str("-new");
+        assert_eq!(candidate.points.x, original.points.x);
+        assert_eq!(candidate.points.y, original.points.y);
+        assert_eq!(candidate.points.seg, original.points.seg);
+        assert_eq!(candidate.points.k, original.points.k);
+        assert_eq!(candidate.spacing, original.spacing);
+        for (changed, saved) in candidate.shots.iter().zip(&original.shots) {
+            assert_eq!(changed.path, saved.path);
+            assert_eq!(changed.mm_per_px, saved.mm_per_px);
+            assert_eq!(changed.detect, saved.detect);
+        }
+        assert!(!crate::store::same_measurement_layout(&candidate, &original));
+        assert!(history_sample_table(&original, &candidate, &points).unwrap_err().contains("布局"));
+        let mut incomplete = points.clone();
+        incomplete.st[0] = 3;
+        assert!(history_sample_table(&original, &original, &incomplete).unwrap_err().contains("未完成"));
+        incomplete.st[0] = 0;
+        incomplete.d.clear();
+        assert!(history_sample_table(&original, &original, &incomplete).unwrap_err().contains("数量"));
+    }
+
+    #[test]
+    fn original_images_allow_new_measurement_geometry_but_require_the_same_frame_source() {
+        let original = crate::recipe::samples().remove(1).build().unwrap();
+        let mut candidate = original.clone();
+        candidate.shots[0].path[0][0] += 3.0;
+        assert!(same_frame_sources(&original, &candidate));
+        assert!(!crate::store::same_measurement_layout(&original, &candidate));
+        for field in ["pose", "camera", "view", "id"] {
+            let mut changed = original.clone();
+            match field {
+                "pose" => changed.shots[0].pose_id.push_str("-new"),
+                "camera" => changed.shots[0].camera = "cam2".into(),
+                "view" => changed.shots[0].view = 2,
+                _ => changed.shots[0].id.push_str("-new"),
+            }
+            assert!(!same_frame_sources(&original, &changed));
+        }
+    }
+    #[test]
     fn new_candidate_cannot_alias_windows_directory_or_duplicate_product_selection() {
         let mut doc = crate::recipe::samples().remove(0);
         doc.id = "Case-Test".into();
@@ -2023,9 +2122,9 @@ mod tests {
     }
     use super::*;
 
-    struct ImportTestDir(PathBuf);
+    pub(super) struct ImportTestDir(pub(super) PathBuf);
     impl ImportTestDir {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
             let path = std::env::temp_dir().join(format!("tujiao-sample-import-{}-{nonce}", std::process::id()));
             std::fs::create_dir(&path).unwrap(); Self(path)
@@ -2153,10 +2252,27 @@ mod tests {
     }
 
     #[test]
+    fn environment_changes_invalidate_only_affected_teaching_and_require_a_fresh_trial() {
+        let mut w = tricam_workspace();
+        let before = w.clone();
+        let mut tags = vec![Some(("camera".into(), "calib".into())); 4];
+        tags[1] = Some(("camera".into(), "new-calib".into()));
+        assert!(refresh_teaching(&mut w, &tags, Some(&json!("test-engine"))));
+        assert_eq!(w.revision, before.revision + 1);
+        assert!(!w.frames[1].saved && w.frames[1].trial.is_none());
+        assert_eq!(serde_json::to_value(&w.frames[1].image).unwrap(), serde_json::to_value(&before.frames[1].image).unwrap());
+        for k in [0, 2, 3] { assert_eq!(serde_json::to_value(&w.frames[k]).unwrap(), serde_json::to_value(&before.frames[k]).unwrap()); }
+        assert!(!refresh_teaching(&mut w, &tags, Some(&json!("test-engine"))));
+        assert!(refresh_teaching(&mut w, &tags, Some(&json!("updated-engine"))));
+        assert!(w.frames.iter().all(|f| !f.saved && f.trial.is_none()));
+        assert!(!refresh_teaching(&mut w, &tags, Some(&json!("updated-engine"))));
+    }
+
+    #[test]
     fn changing_view_invalidates_only_that_shot_and_never_restores_old_trial() {
         let mut w = tricam_workspace();
         let before = w.doc.build().unwrap();
-        let other = fingerprint(&w.frames[1]);
+        let other = state_value(&w.frames[1]);
         assert!(w.frames[0].checked(&shot_tags(&before, 0).unwrap().0, &shot_tags(&before, 0).unwrap().1).is_ok());
         select_view(&mut w, 0, 2).unwrap();
         assert_eq!(w.doc.shots[0].view, 2);
@@ -2167,7 +2283,7 @@ mod tests {
         assert!(w.frames[0].views.iter().all(|i| i.captured_at == 1));
         assert!(!w.frames[0].saved);
         assert!(w.frames[0].trial.is_none());
-        assert_eq!(fingerprint(&w.frames[1]), other);
+        assert_eq!(state_value(&w.frames[1]), other);
         let after = w.doc.build().unwrap();
         assert_ne!(images_tag(&before), images_tag(&after));
         assert_ne!(shot_tags(&before, 0).unwrap(), shot_tags(&after, 0).unwrap());
@@ -2182,24 +2298,24 @@ mod tests {
     fn missing_invalid_or_stale_view_does_not_mutate_workspace() {
         let mut w = tricam_workspace();
         for selected in [0, 4] {
-            let before = fingerprint(&w);
+            let before = state_value(&w);
             assert!(select_view(&mut w, 0, selected).is_err());
-            assert_eq!(fingerprint(&w), before);
+            assert_eq!(state_value(&w), before);
         }
         w.frames[0].views.retain(|i| i.view != 2);
-        let before = fingerprint(&w);
+        let before = state_value(&w);
         assert!(select_view(&mut w, 0, 2).is_err());
-        assert_eq!(fingerprint(&w), before);
+        assert_eq!(state_value(&w), before);
         w.doc.shots[0].camera = "cam2".into();
-        let before = fingerprint(&w);
+        let before = state_value(&w);
         assert!(select_view(&mut w, 0, 3).is_err());
-        assert_eq!(fingerprint(&w), before);
+        assert_eq!(state_value(&w), before);
     }
 
     #[test]
     fn editing_recipe_view_cannot_reuse_old_line_or_other_view_pixels() {
         let mut w = tricam_workspace();
-        let other = fingerprint(&w.frames[1]);
+        let other = state_value(&w.frames[1]);
         let mut doc = w.doc.clone();
         doc.shots[0].view = 3;
         update_doc(&mut w, doc).unwrap();
@@ -2207,7 +2323,7 @@ mod tests {
         assert!(w.doc.shots[0].mm_per_px.is_none());
         assert_eq!(w.frames[0].image.as_ref().unwrap().view, 3);
         assert!(w.frames[0].trial.is_none());
-        assert_eq!(fingerprint(&w.frames[1]), other);
+        assert_eq!(state_value(&w.frames[1]), other);
         let mut doc = w.doc.clone();
         doc.shots[0].camera = "cam2".into();
         update_doc(&mut w, doc).unwrap();
@@ -2217,68 +2333,38 @@ mod tests {
     }
 
     #[test]
-    fn recorded_triplets_keep_four_shots_and_select_exact_recipe_view() {
-        let root = ImportTestDir::new();
-        let mut doc = crate::recipe::samples().remove(1);
-        for (shot, view) in doc.shots.iter_mut().zip([1, 2, 3, 1]) { shot.view = view; }
-        let mut entries = Vec::new();
-        for k in 0..4 {
-            for view in 1..=3 {
-                let file = format!("cam1_{:06}_v{view}.pgm", k + 1);
-                crate::replay::save_pgm(&root.0.join(&file), &FrameImage::new(1, 1, vec![(k * 10 + view) as u8])).unwrap();
-                entries.push(json!({"k": k, "view": view, "camera": "cam1", "file": file, "frameCounter": k + 1, "triggerCounter": k + 1, "ts": k * 100}));
-            }
-        }
-        entries.reverse();
-        let mut meta = json!({"recipe": doc, "frames": entries, "startedTs": 0});
-        let frames = recorded_frames(&root.0, &meta).unwrap();
-        assert_eq!(frames.iter().map(|f| (f.k, f.view)).collect::<Vec<_>>(), [(0, 1), (1, 2), (2, 3), (3, 1)]);
-        for frame in &frames {
-            assert!(frame.available);
-            assert_eq!(crate::replay::load(&root.0.join(&frame.file)).unwrap().pixels[0], (frame.k * 10 + frame.view as usize) as u8);
-        }
-        std::fs::remove_file(root.0.join(&frames[1].file)).unwrap();
-        let missing = recorded_frames(&root.0, &meta).unwrap();
-        assert!(!missing[1].available);
-        assert_eq!(missing[1].view, 2);
-        let duplicate = meta["frames"].as_array().unwrap().iter().find(|v| v["k"] == 2 && v["view"] == 3).unwrap().clone();
-        meta["frames"].as_array_mut().unwrap().push(duplicate);
-        assert!(recorded_frames(&root.0, &meta).unwrap_err().contains("重复"));
-    }
-
-    #[test]
     fn teach_rejects_replaced_image_parameters_geometry_and_failed_trial() {
         let original = taught();
-        assert!(original.checked("geometry", "teach").is_ok());
+        assert!(original.checked(&json!("geometry"), &json!("teach")).is_ok());
         let mut frame = original.clone();
         frame.image.as_mut().unwrap().id = "image-b".into();
-        assert!(frame.checked("geometry", "teach").is_err());
+        assert!(frame.checked(&json!("geometry"), &json!("teach")).is_err());
         // 中线或检测参数改了：试测作废
-        assert!(original.checked("geometry", "other-teach").is_err());
+        assert!(original.checked(&json!("geometry"), &json!("other-teach")).is_err());
         let mut frame = original.clone();
         frame.trial.as_mut().unwrap().passed = false;
-        assert!(frame.checked("geometry", "teach").is_err());
-        assert!(original.checked("other-geometry", "teach").is_err());
+        assert!(frame.checked(&json!("geometry"), &json!("teach")).is_err());
+        assert!(original.checked(&json!("other-geometry"), &json!("teach")).is_err());
     }
 
     #[test]
-    fn teaching_and_display_changes_version_hash_but_keep_geometry_compatible() {
+    fn teaching_and_display_changes_use_explicit_versions_but_keep_geometry_compatible() {
         let doc = crate::recipe::samples().remove(0);
-        let legacy = serde_json::to_value(&doc).unwrap();
-        assert!(legacy.get("teachingHash").is_none());
+        assert_eq!(doc.build().unwrap().revision_id, format!("{}-v{}", doc.id, doc.version));
         let old = doc.build().unwrap();
         let mut candidate = doc.clone();
+        candidate.name = "new display name".into();
+        assert_eq!(candidate.build().unwrap().revision_id, old.revision_id);
+        candidate.teaching_id = Some("saved-image-and-overview".into());
         candidate.version += 1;
-        assert_eq!(candidate.build().unwrap().hash, old.hash);
-        candidate.teaching_hash = Some("saved-image-and-overview".into());
         let new = candidate.build().unwrap();
-        assert_ne!(new.hash, old.hash);
-        assert_eq!(new.geometry_hash(), old.geometry_hash());
-        let mut w = Workspace::new(doc, Some(old.hash.clone()));
+        assert_ne!(new.revision_id, old.revision_id);
+        assert!(crate::store::same_measurement_layout(&new, &old));
+        let mut w = Workspace::new(doc, Some(old.revision_id.clone()));
         w.pending = Some(Box::new(Release {
             doc: w.doc.clone(),
-            bundle_hash: "frozen-test-bundle".into(),
-            base_hash: w.base_hash.clone(),
+            bundle_id: "frozen-test-bundle".into(),
+            base_revision: w.base_revision.clone(),
             revision: w.revision,
             frames: vec![taught()],
             overview: Overview::default(),
@@ -2299,7 +2385,59 @@ mod tests {
         assert_ne!(restored.doc.name, pending.doc.name);
         assert_eq!(pending.revision, 1);
         assert_eq!(pending.frames[0].image.as_ref().unwrap().id, "image-a");
-        assert_eq!(restored.base_hash, Some(old.hash));
+        assert_eq!(restored.base_revision, Some(old.revision_id));
+    }
+
+    fn archive_fixture(doc: RecipeDoc) -> Release {
+        Release { doc, bundle_id: "prior-directory".into(), base_revision: None, revision: 1,
+            frames: vec![taught()], overview: Overview::default(),
+            validation: Validation { revision: 1, passed: true, checked_at: 1, checks: vec![], samples: vec![], environment_tag: Value::Null } }
+    }
+
+    #[test]
+    fn old_format_candidate_pending_and_archive_are_rejected_without_migration() {
+        let root = ImportTestDir::new();
+        let workspace = tricam_workspace();
+        let decode = |value: &Value| serde_json::from_str::<Workspace>(&value.to_string());
+        let mut candidate = state_value(&workspace);
+        candidate.as_object_mut().unwrap().remove("baseRevision");
+        candidate["baseHash"] = Value::Null;
+        assert!(decode(&candidate).unwrap_err().to_string().contains("baseHash"));
+        let mut candidate = state_value(&workspace);
+        candidate.as_object_mut().unwrap().remove("sampleBank");
+        assert!(decode(&candidate).unwrap_err().to_string().contains("sampleBank"));
+        let mut release = state_value(&archive_fixture(workspace.doc.clone()));
+        let bundle = release.as_object_mut().unwrap().remove("bundleId").unwrap();
+        release["bundleHash"] = bundle;
+        let mut pending = state_value(&workspace);
+        pending["pending"] = release.clone();
+        assert!(decode(&pending).unwrap_err().to_string().contains("bundleHash"));
+        let mut current = archive_fixture(workspace.doc.clone()); current.doc.version = 3;
+        let archive = root.0.join(format!("{}-v3.json", current.doc.id));
+        let text = release.to_string();
+        std::fs::write(&archive, &text).unwrap();
+        assert!(archived_release(&root.0, &current.doc.id, 3).unwrap_err().contains("不兼容"));
+        assert_eq!(std::fs::read_to_string(&archive).unwrap(), text);
+        std::fs::remove_file(&archive).unwrap();
+        std::fs::write(root.0.join("previous-archive-name.json"), serde_json::to_vec(&current).unwrap()).unwrap();
+        assert!(archived_release(&root.0, &current.doc.id, 3).unwrap_err().contains("没有不可变发布包"));
+        std::fs::write(&archive, serde_json::to_vec(&current).unwrap()).unwrap();
+        assert_eq!(archived_release(&root.0, &current.doc.id, 3).unwrap().doc, current.doc);
+        let unloaded = root.0.join("workspace.json");
+        std::fs::write(&unloaded, candidate.to_string()).unwrap();
+        assert!(ensure_workspace_can_be_created(&unloaded).unwrap_err().contains("文件已保留"));
+        assert!(ensure_workspace_can_be_created(&root.0.join("fresh.json")).is_ok());
+    }
+
+    #[test]
+    fn calibration_state_compares_actual_json_fields_instead_of_file_formatting() {
+        let root = ImportTestDir::new(); let path = root.0.join("calibration.json");
+        std::fs::write(&path, r#"{"mmPerPx":0.25,"camera":"cam1"}"#).unwrap();
+        let first = calibration_state(&path).unwrap();
+        std::fs::write(&path, "{\n  \"camera\": \"cam1\", \"mmPerPx\": 0.25\n}").unwrap();
+        assert_eq!(calibration_state(&path).unwrap(), first);
+        std::fs::write(&path, r#"{"mmPerPx":0.5,"camera":"cam1"}"#).unwrap();
+        assert_ne!(calibration_state(&path).unwrap(), first);
     }
 
     #[test]
@@ -2329,6 +2467,10 @@ mod tests {
         let mut camera = doc.clone();
         camera.shots[1].camera = "cam2".into();
         assert_ne!(tag(&camera, 1).0, image);
+        let mut pose = doc.clone();
+        pose.shots[1].pose_id = "Robot-Pose-2".into();
+        assert_ne!(tag(&pose, 1).0, image);
+        assert_eq!(tag(&pose, 0), shot_tags(&base, 0).unwrap());
         assert_eq!(images_tag(&moved.build().unwrap()), images_tag(&base));
         assert_eq!(coverage(&base), 100.0);
         let mut untaught = doc;

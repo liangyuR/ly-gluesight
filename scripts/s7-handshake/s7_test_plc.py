@@ -55,7 +55,7 @@ def handshake_fields(db):
         for bit, name in enumerate(names):
             fields[name] = {"db": db, "byte": byte, "bit": bit, "type": "bool"}
     words = {"protocolVersion": 2, "productCode": 12, "shotCount": 14, "camera1Shots": 24, "camera2Shots": 26, "camera3Shots": 28, "camera1Triggers": 36, "camera2Triggers": 38, "camera3Triggers": 40, "pcProtocolVersion": 66, "resultCode": 76, "faultCode": 78}
-    dwords = {"requestSeq": 4, "partSn": 8, "planVersion": 16, "planHash": 20, "ackSeq": 32, "resultSeq": 68, "resultSn": 72, "acceptedSeq": 80, "acceptedPlanHash": 84}
+    dwords = {"requestSeq": 4, "partSn": 8, "planVersion": 16, "planReserved": 20, "ackSeq": 32, "resultSeq": 68, "resultSn": 72, "acceptedSeq": 80, "acceptedPlanReserved": 84}
     for kind, addresses in (("u16", words), ("u32", dwords)):
         for name, byte in addresses.items():
             fields[name] = {"db": db, "byte": byte, "type": kind}

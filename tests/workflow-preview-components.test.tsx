@@ -2,6 +2,7 @@ import { act, fireEvent, render, renderHook, screen } from "@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
 import { Dialog, FrameCanvas, NumberField, useTask } from "../src/features/workflow/components";
+import { initialState } from "../src/features/workflow/model";
 import { click, finishTask, navigate, showWorkflow, stored } from "./workflow-preview-fixtures";
 
 beforeEach(() => { sessionStorage.clear(); vi.useFakeTimers(); });
@@ -24,6 +25,17 @@ describe("预览图像与延迟操作", () => {
     view.rerender(<FrameCanvas id={4} imageId={80} missing overlay />); expect(screen.getByText("原图不可用", { selector: ".wf-image-footer span" })).toBeVisible();
     expect(screen.queryByRole("img")).not.toBeInTheDocument(); expect(screen.queryByRole("button", { name: "测量叠加" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "放大图像" })).toBeDisabled(); expect(screen.getByRole("button", { name: "缩小图像" })).toBeDisabled(); expect(screen.getByRole("button", { name: "适应窗口" })).toBeDisabled();
+  });
+
+  it("在完整图像坐标添加中线，留白不产生点，缩放后仍写原图像素", () => {
+    const point = vi.fn(), shot = initialState().frames[3];
+    render(<FrameCanvas id={4} imageId={44} shot={shot} overlay onPoint={point} />);
+    const svg = screen.getByRole("img", { name: "帧 k4 的冻结样本" });
+    vi.spyOn(svg, "getBoundingClientRect").mockReturnValue({ width: 1000, height: 430, top: 10, left: 20, right: 1020, bottom: 440, x: 20, y: 10, toJSON: () => ({}) });
+    fireEvent.click(svg, { clientX: 40, clientY: 225 }); expect(point).not.toHaveBeenCalled();
+    fireEvent.click(svg, { clientX: 520, clientY: 225 }); expect(point).toHaveBeenLastCalledWith([800, 600]);
+    click("放大图像"); fireEvent.click(svg, { clientX: 610, clientY: 225 });
+    expect(point).toHaveBeenLastCalledWith([960, 600]);
   });
 
   it("数值范围提示、离焦恢复和禁用状态", () => {
@@ -83,7 +95,7 @@ describe("总览背景导入", () => {
     expect(screen.getByRole("button", { name: "保存布局并进入验证" })).toBeDisabled(); expect(screen.getByText("正在读取工件图…")).toBeVisible();
     act(() => reader.succeed("data:" + type + ";base64,new"));
     expect(document.querySelector(".wf-overview-svg image")).toHaveAttribute("href", "data:" + type + ";base64,new");
-    click("保存布局"); expect(stored().overview.saved).toBe(true); click("恢复几何底图"); expect(stored().overview.background).toBeNull();
+    click("保存布局"); expect(stored().overview.saved).toBe(true); click("恢复示例底图"); expect(stored().overview.background).toBeNull();
     const retry = upload(selected); act(() => retry.succeed("data:" + type + ";base64,again")); expect(stored().overview.background).toContain("again");
   });
 
@@ -100,7 +112,7 @@ describe("总览背景导入", () => {
   it("移除底图会取消待替换文件，离开总览不再提交待导入图像", () => {
     showWorkflow("overview"); const file = new File(["x"], "image.png", { type: "image/png" });
     const first = upload(file); act(() => first.succeed("data:image/png;base64,original"));
-    const next = upload(file); const stale = next.onload!; click("恢复几何底图"); next.result = "data:image/png;base64,stale"; act(stale);
+    const next = upload(file); const stale = next.onload!; click("恢复示例底图"); next.result = "data:image/png;base64,stale"; act(stale);
     expect(stored().overview.background).toBeNull(); const last = upload(file); const left = last.onload!; navigate("配方库"); last.result = "data:image/png;base64,left"; act(left);
     expect(stored().overview.background).toBeNull(); expect(last.abort).toHaveBeenCalledOnce();
   });

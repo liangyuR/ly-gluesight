@@ -40,9 +40,8 @@ pub struct PublishInput {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FileDigest {
+pub struct FileEntry {
     pub path: String,
-    pub hash: String,
     pub bytes: u64,
 }
 
@@ -66,13 +65,14 @@ pub struct ShotManifest {
 pub struct ReleaseManifest {
     pub schema_version: u32,
     pub recipe_id: String,
-    pub recipe_hash: String,
+    pub recipe_revision: String,
+    pub bundle_id: String,
     pub recipe_version: u32,
     pub versions: Versions,
     pub recipe: String,
     pub graph: String,
     pub shots: Vec<ShotManifest>,
-    pub files: Vec<FileDigest>,
+    pub files: Vec<FileEntry>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -117,7 +117,7 @@ pub struct ShotResources {
 
 #[derive(Clone, Debug)]
 pub struct ReleaseBundle {
-    pub hash: String,
+    pub id: String,
     pub root: PathBuf,
     pub manifest: ReleaseManifest,
     pub recipe: RecipeDoc,
@@ -125,10 +125,27 @@ pub struct ReleaseBundle {
 
 impl ReleaseBundle {
     pub fn verify(&self) -> Result<(), String> {
-        let current = load_directory(&self.root, &self.manifest.recipe_id, &self.hash)?;
-        if current.manifest != self.manifest || current.recipe != self.recipe {
-            return Err("发布包与已加载快照不一致".into());
+        valid_bundle_id(&self.id)?;
+        let manifest = read_manifest(&self.root, &self.id)?;
+        if manifest != self.manifest || manifest.bundle_id != self.id {
+            return Err("发布清单的身份、版本或结构不一致".into());
         }
+        let recipe: RecipeDoc = read_json(&self.root.join(&manifest.recipe))?;
+        if recipe != self.recipe { return Err("发布配方的版本或实际布局不一致".into()); }
+        let mut checked = BTreeSet::new();
+        for entry in &manifest.files {
+            let path = self.root.join(&entry.path);
+            reject_links_once(&path, &mut checked)?;
+            let metadata = fs::metadata(&path).map_err(|e| format!("读取发布资源 {} 失败：{e}", entry.path))?;
+            if !metadata.is_file() || metadata.len() != entry.bytes {
+                return Err(format!("发布资源 {} 的文件类型或大小不符", entry.path));
+            }
+        }
+        let mut actual = BTreeSet::new();
+        inventory_once(&self.root, &self.root, &mut actual, &mut checked)?;
+        let mut expected: BTreeSet<_> = manifest.files.iter().map(|entry| entry.path.clone()).collect();
+        expected.insert("manifest.json".into());
+        if actual != expected { return Err("发布目录存在清单以外的文件或缺失文件".into()); }
         Ok(())
     }
 
@@ -201,21 +218,21 @@ pub fn publish(releases_root: &Path, input: PublishInput) -> Result<ReleaseBundl
         add_file(&mut files, points.clone(), json_bytes(&points_data(&recipe, k, size))?)?;
         shots.push(ShotManifest { k, shot_id: shot.id.clone(), camera: shot.camera.clone(), view: shot.view, skip: shot.skip, size, image, calibration, centerline, points });
     }
+    let bundle_id = new_bundle_id()?;
     let manifest = ReleaseManifest {
         schema_version: RELEASE_SCHEMA,
-        recipe_id: recipe.id.clone(), recipe_hash: recipe.hash.clone(), recipe_version: recipe.version,
+        recipe_id: recipe.id.clone(), recipe_revision: recipe.revision_id.clone(), recipe_version: recipe.version, bundle_id: bundle_id.clone(),
         versions: input.versions, recipe: "recipe.json".into(), graph: "graph.json".into(), shots,
-        files: files.iter().map(|(path, bytes)| FileDigest { path: path.clone(), hash: fnv_hex(bytes), bytes: bytes.len() as u64 }).collect(),
+        files: files.iter().map(|(path, bytes)| FileEntry { path: path.clone(), bytes: bytes.len() as u64 }).collect(),
     };
     let manifest_bytes = json_bytes(&manifest)?;
-    let hash = fnv_hex(&manifest_bytes);
     let root = absolute_path(releases_root)?;
     ensure_directory(&root)?;
     let recipe_root = root.join(&recipe.id);
     ensure_directory(&recipe_root)?;
-    let target = recipe_root.join(&hash);
+    let target = recipe_root.join(&bundle_id);
     if path_exists(&target)? {
-        return existing_bundle(&target, &recipe.id, &hash, &manifest_bytes, &files);
+        return Err("发布 ID 已存在，已有发布包不会被改写".into());
     }
     let stage = Staging::new(&recipe_root)?;
     for (name, bytes) in &files {
@@ -224,33 +241,29 @@ pub fn publish(releases_root: &Path, input: PublishInput) -> Result<ReleaseBundl
         write_new(&path, bytes)?;
     }
     write_new(&stage.path.join("manifest.json"), &manifest_bytes)?;
-    load_directory(&stage.path, &recipe.id, &hash)?;
+    load_directory(&stage.path, &recipe.id, &bundle_id)?;
     if path_exists(&target)? {
-        return existing_bundle(&target, &recipe.id, &hash, &manifest_bytes, &files);
+        return Err("发布 ID 已存在，已有发布包不会被改写".into());
     }
     match fs::rename(&stage.path, &target) {
-        Ok(()) => load(&root, &recipe.id, &hash),
-        Err(_) if path_exists(&target)? => existing_bundle(&target, &recipe.id, &hash, &manifest_bytes, &files),
+        Ok(()) => load(&root, &recipe.id, &bundle_id),
+        Err(_) if path_exists(&target)? => Err("发布 ID 已存在，已有发布包不会被改写".into()),
         Err(e) => Err(format!("原子发布目录 {} 失败：{e}", target.display())),
     }
 }
 
-pub fn load(releases_root: &Path, recipe_id: &str, bundle_hash: &str) -> Result<ReleaseBundle, String> {
+pub fn load(releases_root: &Path, recipe_id: &str, bundle_id: &str) -> Result<ReleaseBundle, String> {
     safe_id(recipe_id)?;
-    valid_hash(bundle_hash)?;
-    let root = absolute_path(releases_root)?.join(recipe_id).join(bundle_hash);
-    load_directory(&root, recipe_id, bundle_hash)
+    valid_bundle_id(bundle_id)?;
+    let root = absolute_path(releases_root)?.join(recipe_id).join(bundle_id);
+    load_directory(&root, recipe_id, bundle_id)
 }
 
-fn load_directory(root: &Path, recipe_id: &str, bundle_hash: &str) -> Result<ReleaseBundle, String> {
+fn load_directory(root: &Path, recipe_id: &str, bundle_id: &str) -> Result<ReleaseBundle, String> {
     safe_id(recipe_id)?;
-    valid_hash(bundle_hash)?;
+    valid_bundle_id(bundle_id)?;
     reject_links(root, false)?;
-    let manifest_bytes = read_file(&root.join("manifest.json"))?;
-    if fnv_hex(&manifest_bytes) != bundle_hash {
-        return Err("发布清单 hash 不符，发布包已被改动".into());
-    }
-    let manifest: ReleaseManifest = serde_json::from_slice(&manifest_bytes).map_err(|e| format!("发布清单无法解析：{e}"))?;
+    let manifest = read_manifest(root, bundle_id)?;
     if manifest.schema_version != RELEASE_SCHEMA {
         return Err(format!("发布包格式版本 {}，当前为 {RELEASE_SCHEMA}，需要重新发布", manifest.schema_version));
     }
@@ -258,25 +271,23 @@ fn load_directory(root: &Path, recipe_id: &str, bundle_hash: &str) -> Result<Rel
         return Err("发布清单的配方身份或资源引用无效".into());
     }
     validate_versions(&manifest.versions)?;
-    valid_hash(&manifest.recipe_hash)?;
     let mut files = BTreeMap::new();
     let mut names = BTreeSet::new();
     for entry in &manifest.files {
         validate_relative(&entry.path)?;
-        valid_hash(&entry.hash)?;
         if entry.path == "manifest.json" || !names.insert(entry.path.to_ascii_lowercase()) {
             return Err(format!("发布清单资源重复或自引用：{}", entry.path));
         }
         let bytes = read_file(&resource_path(root, &entry.path)?)?;
-        if bytes.len() as u64 != entry.bytes || fnv_hex(&bytes) != entry.hash {
-            return Err(format!("发布资源 {} 的 hash 或大小不符，文件已被改动", entry.path));
+        if bytes.len() as u64 != entry.bytes {
+            return Err(format!("发布资源 {} 的大小不符", entry.path));
         }
         files.insert(entry.path.as_str(), bytes);
     }
     let recipe: RecipeDoc = parse_resource(&files, &manifest.recipe)?;
     let built = recipe.build()?;
     built.ready()?;
-    if recipe.id != manifest.recipe_id || built.hash != manifest.recipe_hash || built.version != manifest.recipe_version || manifest.shots.len() != built.shot_count() {
+    if recipe.id != manifest.recipe_id || built.revision_id != manifest.recipe_revision || built.version != manifest.recipe_version || manifest.shots.len() != built.shot_count() {
         return Err("发布清单与配方快照的身份、版本或拍照点数量不一致".into());
     }
     json_object(file_bytes(&files, &manifest.graph)?, "发布测量图")?;
@@ -331,7 +342,7 @@ fn load_directory(root: &Path, recipe_id: &str, bundle_hash: &str) -> Result<Rel
     if actual != expected {
         return Err("发布目录存在清单以外的文件或缺失文件".into());
     }
-    Ok(ReleaseBundle { hash: bundle_hash.into(), root: root.to_path_buf(), manifest, recipe })
+    Ok(ReleaseBundle { id: bundle_id.into(), root: root.to_path_buf(), manifest, recipe })
 }
 
 fn centerline_data(recipe: &Recipe, k: usize, size: Option<[u32; 2]>) -> Centerline {
@@ -419,14 +430,23 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
     serde_json::from_slice(&read_file(path)?).map_err(|e| format!("发布资源 {} 无法解析：{e}", path.display()))
 }
 
-pub fn fnv_hex(bytes: &[u8]) -> String {
-    let hash = bytes.iter().fold(0xcbf29ce484222325u64, |hash, byte| (hash ^ *byte as u64).wrapping_mul(0x100000001b3));
-    format!("{hash:016x}")
+fn read_manifest(root: &Path, bundle_id: &str) -> Result<ReleaseManifest, String> {
+    let value: serde_json::Value = serde_json::from_slice(&read_file(&root.join("manifest.json"))?).map_err(|e| format!("发布清单无法解析：{e}"))?;
+    if value.get("bundleId").is_none() { return Err("发布清单缺少明确 bundleId，旧版发布包不再兼容，请重新发布".into()); }
+    let manifest: ReleaseManifest = serde_json::from_value(value).map_err(|e| format!("发布清单格式不兼容，请重新发布：{e}"))?;
+    if manifest.bundle_id != bundle_id { return Err("发布清单与包的显式 ID 身份不一致".into()); }
+    Ok(manifest)
 }
 
-fn valid_hash(hash: &str) -> Result<(), String> {
-    if hash.len() != 16 || !hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
-        return Err("发布资源 hash 必须是 16 位小写十六进制".into());
+fn new_bundle_id() -> Result<String, String> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_nanos();
+    Ok(format!("release-{time}-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)))
+}
+
+fn valid_bundle_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || id.len() > 96 || reserved_component(id) || !id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')) {
+        return Err("发布包 ID 不是安全的目录名".into());
     }
     Ok(())
 }
@@ -487,6 +507,35 @@ fn reject_links(path: &Path, allow_missing: bool) -> Result<(), String> {
     Ok(())
 }
 
+fn reject_links_once(path: &Path, checked: &mut BTreeSet<PathBuf>) -> Result<(), String> {
+    let absolute = absolute_path(path)?;
+    let mut cursor = PathBuf::new();
+    for component in absolute.components() {
+        cursor.push(component.as_os_str());
+        if matches!(component, Component::Prefix(_)) || checked.contains(&cursor) { continue; }
+        let metadata = fs::symlink_metadata(&cursor).map_err(|e| format!("发布资源不存在或无法读取 {}：{e}", cursor.display()))?;
+        if is_link(&metadata) { return Err(format!("发布资源不允许符号链接或目录重解析点：{}", cursor.display())); }
+        checked.insert(cursor.clone());
+    }
+    Ok(())
+}
+
+fn inventory_once(root: &Path, dir: &Path, files: &mut BTreeSet<String>, checked: &mut BTreeSet<PathBuf>) -> Result<(), String> {
+    reject_links_once(dir, checked)?;
+    for entry in fs::read_dir(dir).map_err(|e| format!("读取发布目录 {} 失败：{e}", dir.display()))? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if is_link(&metadata) { return Err(format!("发布目录包含符号链接或目录重解析点：{}", path.display())); }
+        if metadata.is_dir() { inventory_once(root, &path, files, checked)?; }
+        else if metadata.is_file() {
+            let relative = path.strip_prefix(root).map_err(|_| "发布资源逃逸目录")?.to_str().ok_or("发布文件名不是 UTF-8")?.replace('\\', "/");
+            validate_relative(&relative)?;
+            if !files.insert(relative) { return Err("发布目录包含重复资源".into()); }
+        } else { return Err(format!("发布目录包含非普通文件：{}", path.display())); }
+    }
+    Ok(())
+}
+
 fn resource_path(root: &Path, name: &str) -> Result<PathBuf, String> {
     validate_relative(name)?;
     let path = root.join(name);
@@ -538,19 +587,6 @@ fn inventory(root: &Path, dir: &Path, files: &mut BTreeSet<String>) -> Result<()
         } else { return Err(format!("发布目录包含非普通文件：{}", path.display())); }
     }
     Ok(())
-}
-
-fn existing_bundle(target: &Path, recipe_id: &str, hash: &str, manifest: &[u8], files: &BTreeMap<String, Vec<u8>>) -> Result<ReleaseBundle, String> {
-    let bundle = load_directory(target, recipe_id, hash)?;
-    if read_file(&target.join("manifest.json"))? != manifest {
-        return Err("发布清单 hash 冲突，已有发布包不会被改写".into());
-    }
-    for (name, bytes) in files {
-        if read_file(&resource_path(target, name)?)? != *bytes {
-            return Err(format!("发布资源 {name} hash 冲突，已有发布包不会被改写"));
-        }
-    }
-    Ok(bundle)
 }
 
 struct Staging {
@@ -621,7 +657,7 @@ mod tests {
         shots[1].view = 2;
         shots[1].calib = Some("cam2-view2".into());
         PublishInput {
-            recipe: RecipeDoc { id: "part-A".into(), name: "多分辨率配方".into(), version: 7, teaching_hash: Some("teaching-1".into()), product_code: 11, trigger_mode: TriggerMode::Fly, schema_version: RECIPE_SCHEMA, spacing: 1.0, filter_window: 3, detect: default_detect(), limits: default_limits(), shots },
+            recipe: RecipeDoc { id: "part-A".into(), name: "多分辨率配方".into(), version: 7, plan_version: 0, teaching_id: Some("teaching-1".into()), product_code: 11, trigger_mode: TriggerMode::Fly, schema_version: RECIPE_SCHEMA, spacing: 1.0, filter_window: 3, detect: default_detect(), limits: default_limits(), shots },
             versions: Versions { engine: "lyflow-test-1".into(), graph: "taught-path-v1".into() },
             graph: ResourceSource::Bytes(br#"{"schemaVersion":1,"nodes":[],"edges":[]}"#.to_vec()),
             shots: vec![
@@ -631,17 +667,17 @@ mod tests {
         }
     }
 
-    fn reseal(directory: &Directory, bundle: &ReleaseBundle, mut manifest: ReleaseManifest, replacement: Option<(&str, Vec<u8>)>) -> String {
+    fn copy_with_resources(directory: &Directory, bundle: &ReleaseBundle, mut manifest: ReleaseManifest, replacement: Option<(&str, Vec<u8>)>) -> String {
         let mut files: BTreeMap<String, Vec<u8>> = bundle.manifest.files.iter().map(|f| (f.path.clone(), fs::read(bundle.root.join(&f.path)).unwrap())).collect();
         if let Some((name, bytes)) = replacement {
             let entry = manifest.files.iter_mut().find(|f| f.path == name).unwrap();
-            entry.hash = fnv_hex(&bytes);
             entry.bytes = bytes.len() as u64;
             files.insert(name.into(), bytes);
         }
+        let id = new_bundle_id().unwrap();
+        manifest.bundle_id = id.clone();
         let bytes = json_bytes(&manifest).unwrap();
-        let hash = fnv_hex(&bytes);
-        let root = directory.releases().join(&bundle.recipe.id).join(&hash);
+        let root = directory.releases().join(&bundle.recipe.id).join(&id);
         fs::create_dir_all(&root).unwrap();
         for (name, bytes) in files {
             let path = root.join(name);
@@ -649,13 +685,89 @@ mod tests {
             fs::write(path, bytes).unwrap();
         }
         fs::write(root.join("manifest.json"), bytes).unwrap();
-        hash
+        id
     }
 
     #[test]
-    fn fnv_matches_the_recipe_hash_algorithm() {
-        assert_eq!(fnv_hex(b""), "cbf29ce484222325");
-        assert_eq!(fnv_hex(b"hello"), "a430d84680aabd0b");
+    fn old_format_release_is_rejected_instead_of_guessing_identity() {
+        let directory = Directory::new();
+        let bundle = publish(&directory.releases(), input()).unwrap();
+        let old_directory = "0123456789abcdef";
+        let root = directory.releases().join(&bundle.recipe.id).join(old_directory);
+        fs::rename(&bundle.root, &root).unwrap();
+        let mut manifest = serde_json::to_value(&bundle.manifest).unwrap();
+        manifest.as_object_mut().unwrap().remove("bundleId");
+        manifest.as_object_mut().unwrap().remove("recipeRevision");
+        manifest["recipeHash"] = serde_json::json!("old-value");
+        for entry in manifest["files"].as_array_mut().unwrap() { entry["hash"] = serde_json::json!("old-value"); }
+        fs::write(root.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(load(&directory.releases(), "part-A", old_directory).unwrap_err().contains("旧版发布包"));
+        manifest["bundleId"] = serde_json::json!(old_directory);
+        fs::write(root.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(load(&directory.releases(), "part-A", old_directory).unwrap_err().contains("不兼容"));
+        manifest["recipeRevision"] = serde_json::json!(bundle.manifest.recipe_revision);
+        fs::write(root.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(load(&directory.releases(), "part-A", old_directory).unwrap_err().contains("hash"));
+    }
+
+    #[test]
+    fn new_release_requires_explicit_id_on_load_and_after_bundle_has_been_loaded() {
+        let directory = Directory::new();
+        let bundle = publish(&directory.releases(), input()).unwrap();
+        let path = bundle.root.join("manifest.json");
+        let mut value = serde_json::to_value(&bundle.manifest).unwrap();
+        value.as_object_mut().unwrap().remove("bundleId");
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(load(&directory.releases(), "part-A", &bundle.id).unwrap_err().contains("bundleId"));
+        assert!(bundle.verify().unwrap_err().contains("bundleId"));
+        value["bundleId"] = serde_json::json!("another-explicit-id");
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(load(&directory.releases(), "part-A", &bundle.id).unwrap_err().contains("显式 ID"));
+        assert!(bundle.verify().unwrap_err().contains("显式 ID"));
+    }
+
+    #[test]
+    #[ignore = "requires LYFLOW_CORE_DLL; actual Prepared load and per-arm identity verification"]
+    fn native_prepared_rejects_missing_explicit_bundle_identity_on_later_verification() {
+        let dll = std::env::var_os("LYFLOW_CORE_DLL").expect("Set LYFLOW_CORE_DLL to a taught-path core");
+        let engine = std::sync::Arc::new(crate::vision::Engine::load(Path::new(&dll)).unwrap());
+        let directory = Directory::new();
+        let mut source = input();
+        let recipe = source.recipe.build().unwrap();
+        source.versions = Versions { engine: engine.identity.clone(), graph: crate::production::GRAPH_VERSION.into() };
+        source.graph = ResourceSource::Bytes(serde_json::to_vec(&crate::production::graphs(&recipe).unwrap()).unwrap());
+        let bundle = publish(&directory.releases(), source).unwrap();
+        let prepared = crate::production::Prepared::load(bundle.clone(), engine, &recipe).unwrap();
+        assert!(prepared.engine_note.is_none());
+        prepared.verify().unwrap();
+        let mut value = serde_json::to_value(&bundle.manifest).unwrap();
+        value.as_object_mut().unwrap().remove("bundleId");
+        fs::write(bundle.root.join("manifest.json"), serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(prepared.verify().unwrap_err().contains("bundleId"));
+    }
+
+    #[test]
+    fn recreated_recipe_freezes_and_publishes_the_same_unconsumed_next_version() {
+        let directory = Directory::new();
+        let recipes_dir = directory.0.join("recipes");
+        let recipes = crate::recipe::RecipeStore::open(recipes_dir.clone()).unwrap();
+        let mut first = input().recipe;
+        first.plan_version = recipes.plan_version_for(&first).unwrap();
+        let original = recipes.save_published(first, None).unwrap();
+        recipes.delete(&original.id).unwrap();
+        drop(recipes);
+        let recipes = crate::recipe::RecipeStore::open(recipes_dir).unwrap();
+        let mut candidate = input();
+        candidate.recipe.version = recipes.next_version(&original.id).unwrap();
+        candidate.recipe.plan_version = recipes.plan_version_for(&candidate.recipe).unwrap();
+        assert_eq!(candidate.recipe.version, 8);
+        // 删掉重建的配方拿新的计划版本，不复用删除前的号
+        assert!(candidate.recipe.plan_version > original.plan_version);
+        let frozen = publish(&directory.releases(), candidate).unwrap();
+        let saved = recipes.save_published(frozen.recipe.clone(), None).unwrap();
+        assert_eq!(saved.revision_id, frozen.manifest.recipe_revision);
+        assert_eq!(saved.version, frozen.manifest.recipe_version);
+        assert_eq!(recipes.save_published(frozen.recipe, None).unwrap().version, 8);
     }
 
     #[test]
@@ -664,10 +776,10 @@ mod tests {
         let input = input();
         let bundle = publish(&directory.releases(), input.clone()).unwrap();
         assert_eq!(bundle.recipe, input.recipe);
-        assert_eq!(bundle.manifest.recipe_hash, input.recipe.build().unwrap().hash);
+        assert_eq!(bundle.manifest.recipe_revision, input.recipe.build().unwrap().revision_id);
         assert_eq!(bundle.manifest.recipe_version, 7);
-        assert_eq!(bundle.hash, fnv_hex(&fs::read(bundle.root.join("manifest.json")).unwrap()));
-        assert_ne!(bundle.hash, bundle.manifest.recipe_hash);
+        assert_eq!(bundle.id, bundle.manifest.bundle_id);
+        assert_ne!(bundle.id, bundle.manifest.recipe_revision);
         let first = bundle.shot(0).unwrap();
         let second = bundle.shot(1).unwrap();
         assert_eq!((first.size, second.size), (Some([32, 24]), Some([64, 40])));
@@ -683,7 +795,7 @@ mod tests {
             assert!(path.is_file());
         }
         assert!(bundle.shot(2).is_err());
-        load(&directory.releases(), "part-A", &bundle.hash).unwrap().verify().unwrap();
+        load(&directory.releases(), "part-A", &bundle.id).unwrap().verify().unwrap();
     }
 
     #[test]
@@ -695,10 +807,80 @@ mod tests {
         let original = fs::read(&calibration).unwrap();
         fs::write(&calibration, br#"{"mmPerPx":9.0}"#).unwrap();
         assert!(bundle.verify().unwrap_err().contains("calibration.json"));
-        assert!(load(&directory.releases(), "part-A", &bundle.hash).is_err());
+        assert!(load(&directory.releases(), "part-A", &bundle.id).is_err());
         fs::write(&calibration, original).unwrap();
         fs::remove_file(resource.image.unwrap()).unwrap();
         assert!(bundle.verify().unwrap_err().contains("image.pgm"));
+    }
+
+    #[test]
+    fn loaded_bundle_rejects_public_identity_changes() {
+        let directory = Directory::new();
+        let bundle = publish(&directory.releases(), input()).unwrap();
+        let mut changed = bundle.clone();
+        changed.id = "0000000000000000".into();
+        assert!(changed.verify().unwrap_err().contains("身份"));
+        let mut changed = bundle.clone();
+        changed.manifest.files[0].bytes += 1;
+        assert!(changed.verify().is_err());
+        let mut changed = bundle.clone();
+        changed.recipe.shots[0].path[0][0] += 1.0;
+        assert!(changed.verify().is_err());
+        bundle.verify().unwrap();
+    }
+
+    #[test]
+    fn resource_validation_uses_paths_sizes_and_structure() {
+        let directory = Directory::new();
+        let bundle = publish(&directory.releases(), input()).unwrap();
+        let path = bundle.shot(0).unwrap().image.unwrap();
+        let mut bytes = fs::read(&path).unwrap();
+        *bytes.last_mut().unwrap() ^= 1;
+        fs::write(&path, &bytes).unwrap();
+        bundle.verify().unwrap();
+        load(&directory.releases(), "part-A", &bundle.id).unwrap();
+        bytes.push(0);
+        fs::write(&path, &bytes).unwrap();
+        assert!(bundle.verify().unwrap_err().contains("大小"));
+        bytes.pop();
+        fs::write(&path, &bytes).unwrap();
+        let extra = bundle.root.join("shots/00/extra.json");
+        fs::write(&extra, b"{}").unwrap();
+        assert!(bundle.verify().unwrap_err().contains("清单以外"));
+        fs::remove_file(extra).unwrap();
+        fs::create_dir(bundle.root.join("empty")).unwrap();
+        bundle.verify().unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn loaded_bundle_rejects_windows_resource_and_ancestor_junctions() {
+        fn junction(link: &Path, target: &Path) {
+            let result = std::process::Command::new("pwsh")
+                .args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:GLUESIGHT_TEST_LINK -Target $env:GLUESIGHT_TEST_TARGET -ErrorAction Stop | Out-Null"])
+                .env("GLUESIGHT_TEST_LINK", link).env("GLUESIGHT_TEST_TARGET", target)
+                .output().unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+            assert!(is_link(&fs::symlink_metadata(link).unwrap()));
+        }
+        let directory = Directory::new();
+        let bundle = publish(&directory.releases(), input()).unwrap();
+        let link = bundle.root.join("shots/00");
+        let target = directory.0.join("resource-original");
+        fs::rename(&link, &target).unwrap();
+        junction(&link, &target);
+        assert!(bundle.verify().unwrap_err().contains("重解析点"));
+        fs::remove_dir(&link).unwrap();
+        fs::rename(&target, &link).unwrap();
+        bundle.verify().unwrap();
+        let link = directory.0.join("vision");
+        let target = directory.0.join("vision-original");
+        fs::rename(&link, &target).unwrap();
+        junction(&link, &target);
+        assert!(bundle.verify().unwrap_err().contains("重解析点"));
+        fs::remove_dir(&link).unwrap();
+        fs::rename(&target, &link).unwrap();
+        bundle.verify().unwrap();
     }
 
     #[test]
@@ -716,8 +898,8 @@ mod tests {
         fs::write(&calib_source, br#"{"mmPerPx":0.7,"source":"station"}"#).unwrap();
         fs::write(&image_source, pgm(32, 24, 90)).unwrap();
         let new = publish(&directory.releases(), input).unwrap();
-        assert_ne!(new.hash, old.hash);
-        assert_eq!(new.manifest.recipe_hash, old.manifest.recipe_hash);
+        assert_ne!(new.id, old.id);
+        assert_eq!(new.manifest.recipe_revision, old.manifest.recipe_revision);
         fs::remove_file(&calib_source).unwrap();
         fs::remove_file(&image_source).unwrap();
         old.verify().unwrap();
@@ -728,21 +910,19 @@ mod tests {
     }
 
     #[test]
-    fn republishing_the_same_bytes_is_idempotent_and_never_repairs_a_corrupt_package() {
+    fn each_publication_has_an_explicit_id_without_overwriting_previous_packages() {
         let directory = Directory::new();
         let original = input();
         let first = publish(&directory.releases(), original.clone()).unwrap();
-        let manifest_path = first.root.join("manifest.json");
-        let modified = fs::metadata(&manifest_path).unwrap().modified().unwrap();
         let second = publish(&directory.releases(), original.clone()).unwrap();
-        assert_eq!(first.root, second.root);
-        assert_eq!(fs::metadata(&manifest_path).unwrap().modified().unwrap(), modified);
-        let entries: Vec<_> = fs::read_dir(first.root.parent().unwrap()).unwrap().collect();
-        assert_eq!(entries.len(), 1);
+        assert_ne!(first.id, second.id);
+        assert_ne!(first.root, second.root);
+        let manifest_path = first.root.join("manifest.json");
         fs::write(&manifest_path, b"corrupt").unwrap();
-        assert!(publish(&directory.releases(), original).unwrap_err().contains("清单 hash"));
+        let third = publish(&directory.releases(), original).unwrap();
+        third.verify().unwrap();
         assert_eq!(fs::read(&manifest_path).unwrap(), b"corrupt");
-        assert_eq!(fs::read_dir(first.root.parent().unwrap()).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(first.root.parent().unwrap()).unwrap().count(), 3);
     }
 
     #[test]
@@ -818,8 +998,8 @@ mod tests {
         let bundle = publish(&directory.releases(), input()).unwrap();
         let mut manifest = bundle.manifest.clone();
         manifest.files[0].path = "../outside.json".into();
-        let hash = reseal(&directory, &bundle, manifest, None);
-        assert!(load(&directory.releases(), "part-A", &hash).unwrap_err().contains("逃逸"));
+        let id = copy_with_resources(&directory, &bundle, manifest, None);
+        assert!(load(&directory.releases(), "part-A", &id).unwrap_err().contains("逃逸"));
     }
 
     #[test]
@@ -828,35 +1008,35 @@ mod tests {
         let bundle = publish(&directory.releases(), input()).unwrap();
         let mut manifest = bundle.manifest.clone();
         manifest.files.push(manifest.files[0].clone());
-        let hash = reseal(&directory, &bundle, manifest, None);
-        assert!(load(&directory.releases(), "part-A", &hash).unwrap_err().contains("重复"));
+        let id = copy_with_resources(&directory, &bundle, manifest, None);
+        assert!(load(&directory.releases(), "part-A", &id).unwrap_err().contains("重复"));
         let mut manifest = bundle.manifest.clone();
         manifest.recipe_id = "another-part".into();
-        let hash = reseal(&directory, &bundle, manifest, None);
-        assert!(load(&directory.releases(), "part-A", &hash).unwrap_err().contains("身份"));
+        let id = copy_with_resources(&directory, &bundle, manifest, None);
+        assert!(load(&directory.releases(), "part-A", &id).unwrap_err().contains("身份"));
         let mut manifest = bundle.manifest.clone();
         manifest.recipe_version += 1;
-        let hash = reseal(&directory, &bundle, manifest, None);
-        assert!(load(&directory.releases(), "part-A", &hash).unwrap_err().contains("版本"));
+        let id = copy_with_resources(&directory, &bundle, manifest, None);
+        assert!(load(&directory.releases(), "part-A", &id).unwrap_err().contains("版本"));
         let mut manifest = bundle.manifest.clone();
         manifest.shots[1].view = 1;
-        let hash = reseal(&directory, &bundle, manifest, None);
-        assert!(load(&directory.releases(), "part-A", &hash).unwrap_err().contains("身份"));
+        let id = copy_with_resources(&directory, &bundle, manifest, None);
+        assert!(load(&directory.releases(), "part-A", &id).unwrap_err().contains("身份"));
     }
 
     #[test]
-    fn rehashed_geometry_cannot_disagree_with_the_recipe_snapshot() {
+    fn geometry_resources_match_the_recipe_coordinates() {
         let directory = Directory::new();
         let bundle = publish(&directory.releases(), input()).unwrap();
         let name = bundle.manifest.shots[1].points.clone();
         let mut points = bundle.shot(1).unwrap().points_data;
         points.camera = "cam1".into();
-        let hash = reseal(&directory, &bundle, bundle.manifest.clone(), Some((&name, json_bytes(&points).unwrap())));
-        assert!(load(&directory.releases(), "part-A", &hash).unwrap_err().contains("测点与配方快照不一致"));
+        let id = copy_with_resources(&directory, &bundle, bundle.manifest.clone(), Some((&name, json_bytes(&points).unwrap())));
+        assert!(load(&directory.releases(), "part-A", &id).unwrap_err().contains("测点与配方快照不一致"));
         let mut manifest = bundle.manifest.clone();
         manifest.shots[1].size = Some([32, 24]);
-        let hash = reseal(&directory, &bundle, manifest, None);
-        assert!(load(&directory.releases(), "part-A", &hash).unwrap_err().contains("原图尺寸"));
+        let id = copy_with_resources(&directory, &bundle, manifest, None);
+        assert!(load(&directory.releases(), "part-A", &id).unwrap_err().contains("原图尺寸"));
     }
 
     #[test]
@@ -865,8 +1045,8 @@ mod tests {
         let bundle = publish(&directory.releases(), input()).unwrap();
         let mut manifest = bundle.manifest.clone();
         manifest.schema_version = 0;
-        let hash = reseal(&directory, &bundle, manifest, None);
-        assert!(load(&directory.releases(), "part-A", &hash).unwrap_err().contains("需要重新发布"));
+        let id = copy_with_resources(&directory, &bundle, manifest, None);
+        assert!(load(&directory.releases(), "part-A", &id).unwrap_err().contains("需要重新发布"));
         fs::write(bundle.root.join("untracked.txt"), b"extra").unwrap();
         assert!(bundle.verify().unwrap_err().contains("清单以外"));
     }

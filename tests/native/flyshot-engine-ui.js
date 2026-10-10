@@ -1,5 +1,5 @@
 async (page) => {
-  await page.getByRole("textbox", { name: "核心库路径（lyflow_core.dll）" }).fill("D:\\project\\LyFlow\\build\\core\\bin\\lyflow_core.dll");
+  await page.getByRole("textbox", { name: "核心库路径（lyflow_core.dll）" }).fill("C:/Users/11601/AppData/Local/Temp/gluesight-p0-recovery-20261010/native/lyflow_core.dll");
   await page.getByRole("combobox", { name: "帧录制", exact: true }).selectOption("all");
   await page.getByRole("heading", { name: "测量与帧录制", exact: true }).locator("..").getByRole("button", { name: "保存", exact: true }).click();
   await page.getByText("已保存", { exact: true }).waitFor();

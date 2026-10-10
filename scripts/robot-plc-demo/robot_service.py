@@ -9,7 +9,7 @@ import time
 import uuid
 
 from modbus_wire import Client, snapshot
-from simulator_config import DEFAULT_CONFIG, SCENARIOS, integer, load_config, load_recipe
+from simulator_config import DEFAULT_CONFIG, SCENARIOS, integer, load_config, load_recipe, trigger_plan, validate_recipe
 
 
 def utc_now():
@@ -43,7 +43,8 @@ def start_blocked_reason(state):
 
 class Robot:
     def __init__(self, config, recipe, output):
-        self.config, self.recipe = config, recipe
+        self.config, self.recipe = config, validate_recipe(recipe)
+        self.plan, self.planned_triggers = trigger_plan(recipe)
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
@@ -54,8 +55,10 @@ class Robot:
         self.session = uuid.uuid4().hex
         self.last_sn = 0
         self.state = {"running": False, "stopping": False, "phase": "idle", "scenario": "normal", "sn": None,
-                      "k": None, "position": None, "parts": 0, "message": "Robot 服务已就绪",
-                      "runId": None, "results": [], "events": []}
+                      "k": None, "shotId": None, "poseId": None, "camera": None, "view": None,
+                      "deviceTriggers": {}, "parts": 0, "message": "Robot 服务已就绪",
+                      "runId": None, "cycleId": None, "recipeRevision": None, "bundleId": None,
+                      "results": [], "events": []}
         results_file = self.output / "robot-results.jsonl"
         if results_file.exists():
             previous = []
@@ -96,7 +99,8 @@ class Robot:
     def snapshot(self):
         with self.lock:
             response = json.loads(json.dumps(self.state))
-            response.update(bridgeOnline=self.online(), recipe=self.recipe,
+            response.update(contractVersion=2, bridgeOnline=self.online(), recipe=self.recipe,
+                            plannedTriggers=self.planned_triggers,
                             plcEndpoint=f'127.0.0.1:{self.config["plc"]["port"]}',
                             unitId=self.config["plc"]["unitId"])
         try:
@@ -121,7 +125,7 @@ class Robot:
     def poll_trigger(self):
         with self.lock:
             self.bridge_seen = time.monotonic()
-            return ({key: self.pending[key] for key in ("id", "sn", "k", "scenario")}
+            return ({key: value for key, value in self.pending.items() if key not in ("done", "reply")}
                     if self.pending and not self.pending["done"].is_set() else None)
 
     def acknowledge_trigger(self, data):
@@ -130,13 +134,32 @@ class Robot:
         with self.lock:
             if not self.pending or self.pending["id"] != data.get("id"):
                 raise Conflict("No matching trigger")
-            if self.pending["done"].is_set() and self.pending["reply"] != data:
-                raise Conflict("Trigger has already been acknowledged")
+            if self.pending["done"].is_set():
+                if self.pending["reply"] != data:
+                    raise Conflict("Trigger has already been acknowledged")
+                return
+            if data["ok"]:
+                identity = data.get("identity")
+                if not isinstance(identity, dict):
+                    raise ValueError("Trigger acknowledgement requires the armed cycle identity")
+                for key in ("sn", "k", "recipeId", "productCode", "shotCount", "shotId", "poseId", "camera", "view", "ordinal"):
+                    if type(identity.get(key)) is not type(self.pending[key]) or identity[key] != self.pending[key]:
+                        raise ValueError(f"Trigger acknowledgement {key} differs from the ticket")
+                for key in ("cycleId", "recipeRevision"):
+                    if not isinstance(identity.get(key), str) or not identity[key]:
+                        raise ValueError(f"Trigger acknowledgement requires {key}")
+                if identity.get("bundleId") is not None and not isinstance(identity["bundleId"], str):
+                    raise ValueError("Trigger bundleId must be a string or null")
+                if self.pending["k"] > 0 and any(identity.get(key) != self.state[key] for key in ("cycleId", "recipeRevision", "bundleId")):
+                    raise Conflict("Cycle or frozen resources changed between triggers")
+                self.state.update({key: identity.get(key) for key in ("cycleId", "recipeRevision", "bundleId")})
             self.pending["reply"] = data
             self.pending["done"].set()
 
     def trigger(self, sn, k, scenario):
         ticket = {"id": f"{self.session}:{sn}:{k}", "sn": sn, "k": k, "scenario": scenario,
+                  "recipeId": self.recipe["id"], "productCode": self.recipe["productCode"],
+                  "shotCount": len(self.plan), **self.plan[k],
                   "reply": None, "done": threading.Event()}
         with self.lock:
             self.pending = ticket
@@ -145,6 +168,7 @@ class Robot:
                 raise TimeoutError("虚拟相机触发桥未响应")
             if not ticket["reply"]["ok"]:
                 raise RuntimeError(ticket["reply"].get("error", "相机未接受触发"))
+            return ticket["reply"]
         finally:
             with self.lock:
                 if self.pending is ticket:
@@ -207,7 +231,12 @@ class Robot:
                 self.last_sn = (max(self.last_sn + 1, int(time.time() * 10) % 0xFFFFFFFF) % 0x100000000) or 1
                 sn, n = self.last_sn, len(self.recipe["shots"])
                 with self.lock:
-                    self.state.update(sn=sn, k=None, position=None, scenario=scenario)
+                    self.state.update(sn=sn, k=None, shotId=None, poseId=None, camera=None, view=None,
+                                      deviceTriggers=dict.fromkeys(self.planned_triggers, 0), scenario=scenario,
+                                      cycleId=None, recipeRevision=None, bundleId=None)
+                started_at = time.monotonic()
+                trigger_ack_ms = []
+                trigger_acks = []
                 for address in (10, 11, 12, 13):
                     client.coil(address, False)
                 self.event("waiting_ready", "等待视觉就绪", sn=sn)
@@ -224,23 +253,34 @@ class Robot:
                     return flags if flags[0] or flags[2] else None
                 flags = self.wait_for(armed_or_done, "armed", "未收到 armed 或 done")
                 if flags[0] and not flags[2]:
-                    for k, position in enumerate(self.recipe["shots"]):
-                        self.event("moving", f"移动到拍照点 k{k + 1}", sn=sn, k=k, target=position)
+                    for point in self.plan:
+                        k = point["k"]
+                        self.event("moving", f"移动到 {point['shotId']} · Pose {point['poseId']}", sn=sn, **point)
                         time.sleep(timing["motionSeconds"])
                         with self.lock:
-                            self.state.update(k=k, position=position)
-                        self.trigger(sn, k, scenario)
-                        self.event("triggered", f"拍照点 k{k + 1} 触发已接受", sn=sn, k=k)
+                            self.state.update(**point)
+                        triggered_at = time.monotonic()
+                        trigger_acks.append(self.trigger(sn, k, scenario))
+                        trigger_ack_ms.append(round((time.monotonic() - triggered_at) * 1000, 2))
+                        with self.lock:
+                            self.state["deviceTriggers"][point["camera"]] += 1
+                        self.event("triggered", f"{point['shotId']} · {point['camera']} 第 {point['ordinal']} 次触发已接受 · 视角 {point['view']}", sn=sn, **point)
                     time.sleep(timing["settleSeconds"])
                     client.coil(11, True)
                     self.event("waiting_result", "运动结束，等待检测结果", sn=sn)
+                result_wait_at = time.monotonic()
                 self.wait_for(lambda: client.coils(23, 1)[0], "result", "未收到 done")
                 result_code, fault_code, high, low = client.registers(110, 4)
                 result_sn = (high << 16) | low
                 if result_sn != sn:
                     raise RuntimeError(f"结果 SN 不匹配：{result_sn} != {sn}")
                 result = {"sn": sn, "scenario": scenario, "resultCode": result_code, "faultCode": fault_code,
-                          "resultSn": result_sn, "ts": utc_now(), "runId": run_id}
+                          "resultSn": result_sn, "ts": utc_now(), "runId": run_id,
+                          "deviceTriggers": dict(self.state["deviceTriggers"]),
+                          "cycleId": self.state["cycleId"], "recipeRevision": self.state["recipeRevision"],
+                          "bundleId": self.state["bundleId"], "triggerAcks": trigger_acks,
+                          "triggerAckMs": trigger_ack_ms, "resultWaitMs": round((time.monotonic() - result_wait_at) * 1000, 2),
+                          "cycleMs": round((time.monotonic() - started_at) * 1000, 2)}
                 self.event("acknowledging", "结果已收到，发送确认", **result)
                 client.coil(12, True)
                 self.wait_for(lambda: not client.coils(23, 1)[0], "release", "结果确认后 done 未复位")

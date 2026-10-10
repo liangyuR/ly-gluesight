@@ -10,7 +10,7 @@ import { GeometryView, OverviewView, RecipesView, TeachView, ValidationView } fr
 import { HistoryView, LiveView, RecordView } from "../features/workflow/ProductionViews";
 import "../features/workflow/workflow.css";
 
-const storageKey = "tujiao-workflow-preview-v3";
+const storageKey = "tujiao-workflow-preview-v4";
 function loadPreview(): WorkflowState {
   try {
     const stored = sessionStorage.getItem(storageKey);
@@ -35,10 +35,10 @@ function GuideView() {
     go(journeys[index].views[0]);
   };
   return <>
-    <div className="wf-guide-hero"><div><Badge>本地交互原型</Badge><h2>看清整件，<br />把每一帧教准确。</h2><p>从设备准备到单帧示教、验证发布与历史复盘。<br />纯黑工作区，蓝色标记当前选择和主要操作。</p><div className="wf-actions"><button className="btn primary" onClick={() => go("teach")}><ScanLine size={16} />进入单帧示教</button><button className="btn" onClick={() => go("live")}>查看在线检测<ArrowRight size={16} /></button></div></div><div className="wf-guide-map"><OverviewMap /><div className="wf-guide-map-meta"><span>工件 A · 飞拍 · 6 帧</span><Badge>候选 v{s.recipe.candidate}</Badge></div></div></div>
-    <div className="wf-guide-stats"><div><strong>12</strong><span>操作页面</span></div><div><strong>31</strong><span>关键情景</span></div><div><strong>4</strong><span>完整操作路径</span></div><div><strong>0</strong><span>新增付费依赖</span></div></div>
+    <div className="wf-guide-hero"><div><Badge>本地交互原型</Badge><h2>看清每个拍照点，<br />在原图上教准中线。</h2><p>从 Pose、设备与视角规划，到像素中线、试测保存与发布复盘。<br />纯黑工作区，蓝色标记当前选择和主要操作。</p><div className="wf-actions"><button className="btn primary" onClick={() => go("teach")}><ScanLine size={16} />进入逐点示教</button><button className="btn" onClick={() => go("live")}>查看在线检测<ArrowRight size={16} /></button></div></div><div className="wf-guide-map"><OverviewMap /><div className="wf-guide-map-meta"><span>工件 A · 3 台设备 · 6 拍照点</span><Badge>候选 v{s.recipe.candidate}</Badge></div></div></div>
+    <div className="wf-guide-stats"><div><strong>{screens.length - 1}</strong><span>操作页面</span></div><div><strong>{scenes.length}</strong><span>关键情景</span></div><div><strong>4</strong><span>完整操作路径</span></div><div><strong>0</strong><span>新增付费依赖</span></div></div>
     <Panel title="按任务开始" detail="路径中的步骤均可点击；开始路径会载入对应示例状态"><div className="wf-journeys">{journeys.map((j, i) => <article key={j.title}><div className="wf-journey-title"><span>{String(i + 1).padStart(2, "0")}</span><div><h3>{j.title}</h3><p className="wf-caption">{j.detail}</p></div><button className="btn" onClick={() => begin(i)}>开始此路径<ArrowRight size={14} /></button></div><div className="wf-journey-steps">{j.views.map((view, n) => <span key={n}><button onClick={() => go(view)}>{screens.find(s => s.id === view)?.label}</button>{n < j.views.length - 1 && <ChevronRight size={12} />}</span>)}</div></article>)}</div></Panel>
-    <div className="wf-reference-grid"><Panel title="总览 → 帧 → 原图" detail="参考手册第 39、73–78 页"><p className="wf-caption">总览保留工件轮廓和帧位置。点击帧框，原图同步切换。显示布置与物理测量坐标独立。</p></Panel><Panel title="冻结 → 试匹配 → 保存" detail="参考手册第 79、104 页"><p className="wf-caption">每帧绑定冻结图像与参数。试匹配通过后保存；采集或参数变更会使相关验证失效。</p></Panel><Panel title="历史样本 → 验证 → 发布" detail="参考手册第 111–115、120 页"><p className="wf-caption">历史样本可进入示教并保留原图备份。代表性样本验证通过后，在工件边界更新生产版本。</p></Panel></div>
+    <div className="wf-reference-grid"><Panel title="拍照点 → 设备视角 → 原图" detail="逐点身份与完整像素坐标"><p className="wf-caption">每点保存 ID、Pose、camera 与 view。总览仅用于显示选点，检测中线按各点原图像素保存。</p></Panel><Panel title="中线与比例 → 试测 → 保存" detail="只让受影响拍照点失效"><p className="wf-caption">每点绑定原图、中线、mmPerPx、搜索半宽、极性与胶宽。试测通过后保存，再验证整套候选。</p></Panel><Panel title="不可变发布 → cycleId → 复测" detail="原包重现与候选复测分别说明"><p className="wf-caption">发布冻结逐点资源身份。本件保留开始时的发布包；历史可按原包重现，也可按当前候选复测。</p></Panel></div>
     <Notice title="当前为操作流程预览">图像、设备状态和测量结果使用示例数据。可体验操作与限制，真实检测继续通过现有软件和算法接口完成。</Notice>
   </>;
 }
@@ -47,7 +47,7 @@ function ScenePicker({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState("");
   const [group, setGroup] = useState("全部");
   const filtered = scenes.filter(s => (group === "全部" || s.group === group) && s.label.toLowerCase().includes(query.trim().toLowerCase()));
-  return <Dialog title="全部关键情景 · 32" onClose={onClose}><p className="wf-caption">选择情景会重置当前预览数据，便于检查成功、异常和未完成状态。</p><div className="wf-scene-filter"><input className="input" placeholder="查找情景" aria-label="查找情景" value={query} onChange={e => setQuery(e.target.value)} /><select className="input" aria-label="情景分类" value={group} onChange={e => setGroup(e.target.value)}>{["全部", "建站", "配方", "示教", "验证", "生产", "历史", "异常"].map(g => <option key={g}>{g}</option>)}</select><button className="btn" disabled={!query && group === "全部"} onClick={() => { setQuery(""); setGroup("全部"); }}>清空筛选</button></div>{!filtered.length && <Notice title="没有匹配的情景">调整查询文字或情景分类。</Notice>}<div className="wf-scene-grid">{filtered.map((s, i) => <button key={s.id} onClick={() => { navigate(routeTo(s.view) + "?scene=" + s.id); onClose(); }}><span>{s.group} · {String(i + 1).padStart(2, "0")}</span><strong>{s.label}</strong><small>{screens.find(x => x.id === s.view)?.label}<ArrowUpRight size={13} /></small></button>)}</div></Dialog>;
+  return <Dialog title={"全部关键情景 · " + scenes.length} onClose={onClose}><p className="wf-caption">选择情景会重置当前预览数据，便于检查成功、异常和未完成状态。</p><div className="wf-scene-filter"><input className="input" placeholder="查找情景" aria-label="查找情景" value={query} onChange={e => setQuery(e.target.value)} /><select className="input" aria-label="情景分类" value={group} onChange={e => setGroup(e.target.value)}>{["全部", "建站", "配方", "示教", "验证", "生产", "历史", "异常"].map(g => <option key={g}>{g}</option>)}</select><button className="btn" disabled={!query && group === "全部"} onClick={() => { setQuery(""); setGroup("全部"); }}>清空筛选</button></div>{!filtered.length && <Notice title="没有匹配的情景">调整查询文字或情景分类。</Notice>}<div className="wf-scene-grid">{filtered.map((s, i) => <button key={s.id} onClick={() => { navigate(routeTo(s.view) + "?scene=" + s.id); onClose(); }}><span>{s.group} · {String(i + 1).padStart(2, "0")}</span><strong>{s.label}</strong><small>{screens.find(x => x.id === s.view)?.label}<ArrowUpRight size={13} /></small></button>)}</div></Dialog>;
 }
 
 export default function WorkflowPreviewPage() {

@@ -30,6 +30,8 @@ export interface Segment {
   width: JudgeParams | null;
   /** 允许的连续缺胶长度（mm） */
   maxGapLen: number;
+  /** 有胶站的最低占比（0–1）：累计缺胶超过 maxGapLen 且占比低于它时判断胶 */
+  minPresent: number;
 }
 
 export type Polarity = "dark" | "light";
@@ -48,6 +50,8 @@ export interface ShotLimits {
   position: JudgeParams | null;
   width: JudgeParams | null;
   maxGapLen: number;
+  /** 有胶站的最低占比（0–1），防零散断胶 */
+  minPresent: number;
 }
 
 /** 一个拍照点：机器人走到 Pose 时 PLC 触发这台相机拍一帧，在这帧里沿示教中线量胶。可选字段不设时不发送（不发 null）。 */
@@ -79,8 +83,8 @@ export interface Recipe {
   id: string;
   name: string;
   version: number;
-  hash: string;
-  teachingHash?: string | null;
+  revisionId: string;
+  teachingId?: string | null;
   productCode: number;
   triggerMode: TriggerMode;
   /** 配方文件格式版本，当前为 4 */
@@ -101,7 +105,9 @@ export interface RecipeDoc {
   id: string;
   name: string;
   version: number;
-  teachingHash?: string | null;
+  /** PLC 拍照计划版本：配方库分配，只在产品代码或拍照点顺序 / Pose / 相机变化时换新号；0 或缺省为未分配 */
+  planVersion?: number;
+  teachingId?: string | null;
   productCode: number;
   triggerMode: TriggerMode;
   /** 配方文件格式版本，当前为 4；不符的文件后端拒绝 */
@@ -119,7 +125,7 @@ export interface RecipeSummary {
   id: string;
   name: string;
   version: number;
-  hash: string;
+  revisionId: string;
   productCode: number;
   shotCount: number;
   triggerMode: TriggerMode;
@@ -148,11 +154,11 @@ export interface FrameView {
 
 export interface PartView {
   cycleId: string;
-  bundleHash: string | null;
+  bundleId: string | null;
   sn: number;
   recipeId: string;
-  /** 本件配方快照的哈希 */
-  recipeHash: string;
+  /** 本件配方快照的修订 ID */
+  recipeRevision: string;
   n: number;
   received: number;
   triggers: number;
@@ -226,13 +232,16 @@ export interface Measured {
   cycleId: string;
   shotId: string;
   camera: string;
-  bundleHash: string | null;
+  bundleId: string | null;
   sn: number;
   k: number;
   cam: number;
   located: boolean;
   score: number;
   ms: number;
+  queueMs: number | null;
+  engineMs: number | null;
+  coreMs: number | null;
   error: string | null;
   idx: number[];
   /** 胶条中线相对示教中线的横向偏移（mm） */

@@ -1,0 +1,369 @@
+import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import test from 'node:test';
+import { distribution, memoryTrend, recordedArtifact, scanReplayInputs,
+  persistFailedAttempt, validateTestRecordsRoot, validateCameraSource, validatePart, validateReplayInputsSnapshot, validateReplayOutputs } from './p0-cyclehost-performance.mjs';
+
+function evidence(mode = 'tricam', verdict = 'OK', plcCode = 1) {
+  const layout = { id: 'fixture', revisionId: 'recipe', points: { k: [0, 1, 2, 3] },
+    shots: [1, 2, 3, 1].map((view, k) => ({ id: 'P' + (k + 1), camera: 'cam1', view: mode === 'single' ? 1 : view })) };
+  const row = { armMs: 10, detail: {
+    summary: { cycleId: 'cycle', bundleId: 'bundle', recipeRevision: 'recipe', framesExpected: 4,
+      framesReceived: 4, drainMs: 8, sn: 41, verdict, plcCode, faultCode: 0, delivery: { state: 'acknowledged' } },
+    triggers: 4, recording: { state: 'complete' },
+    shots: layout.shots.map((shot, k) => ({ k, shotId: shot.id, camera: shot.camera, view: shot.view,
+      ordinal: k + 1, status: 'done', error: null,
+      rawFiles: (mode === 'single' ? [1] : [1, 2, 3]).map(view => ({ view, file: 'k' + k + '_v' + view + '.pgm' })) })) },
+    originals: { complete: true, frames: layout.shots.flatMap((_, k) =>
+      (mode === 'single' ? [1] : [1, 2, 3]).map(view => ({ k, view, available: true, error: null }))) },
+    measurements: layout.shots.map((shot, k) => ({ k, cycleId: 'cycle', bundleId: 'bundle', sn: 41,
+      shotId: shot.id, camera: shot.camera, located: true, error: null, idx: [k],
+      ms: 12, queueMs: 1, engineMs: 11, coreMs: 9 })) };
+  return { layout, row };
+}
+
+test('nearest-rank latency uses raw samples and accepts measured zero', () => {
+  assert.deepEqual(distribution([8, 0, 4, 2]), { count: 4, unit: 'ms', percentile: 'nearest rank',
+    min: 0, p50: 2, p95: 8, max: 8, mean: 3.5 });
+  for (const values of [[], [null], [undefined], [NaN], [Infinity], [-1]]) assert.throws(() => distribution(values));
+});
+
+test('memory trend is fitted against part number, including unequal final interval', () => {
+  const samples = [0, 10, 15].map(part => ({ part, bytes: 1000 + part * 20 }));
+  const trend = memoryTrend(samples, 'bytes');
+  assert(Math.abs(trend.linearSlopeBytesPerPart - 20) < 1e-9);
+  delete trend.linearSlopeBytesPerPart;
+  assert.deepEqual(trend, { startBytes: 1000, endBytes: 1300,
+    deltaBytes: 300, minBytes: 1000, maxBytes: 1300 });
+  assert.throws(() => memoryTrend([{ part: 0, bytes: null }, { part: 10, bytes: null }], 'bytes'));
+});
+
+for (const mode of ['single', 'tricam']) {
+  test(mode + ' settled normal and gap retain actual image metrics', () => {
+    const { row, layout } = evidence(mode);
+    assert.deepEqual(validatePart(row, layout, mode, 'normal'), []);
+    row.detail.summary.verdict = 'NG_GAP';
+    row.detail.summary.plcCode = 13;
+    assert.deepEqual(validatePart(row, layout, mode, 'gap'), []);
+  });
+}
+
+test('normal excursion stays an explicit accuracy failure without changing measured data', () => {
+  const { row, layout } = evidence('tricam', 'OK_WITH_EXCURSION', 2);
+  const before = structuredClone(row);
+  assert.deepEqual(validatePart(row, layout, 'tricam', 'normal'),
+    [{ expected: ['OK', 1, 0], actual: ['OK_WITH_EXCURSION', 2, 0] }]);
+  assert.deepEqual(row, before);
+});
+
+const invalid = [
+  ['measurement from another cycle', row => row.measurements[1].cycleId = 'other'],
+  ['wrong SN', row => row.measurements[1].sn++],
+  ['wrong frozen bundle', row => row.measurements[1].bundleId = 'new'],
+  ['missing nullable metric', row => delete row.measurements[1].queueMs],
+  ['unknown core duration', row => row.measurements[1].coreMs = null],
+  ['incorrect point ownership', row => row.measurements[1].idx = [0]],
+  ['missing physical view', row => row.originals.frames.splice(5, 1)],
+  ['duplicated physical view', row => row.originals.frames[5].view = 2],
+  ['recording still pending', row => row.detail.recording.state = 'pending'],
+  ['PLC delivery unconfirmed', row => row.detail.summary.delivery.state = 'submitted'],
+  ['wrong device ordinal', row => row.detail.shots[1].ordinal = 1],
+  ['arm deadline exceeded', row => row.armMs = 201],
+  ['unknown tail duration', row => row.detail.summary.drainMs = null],
+];
+for (const [name, mutate] of invalid) {
+  test('rejects ' + name, () => {
+    const { row, layout } = evidence();
+    mutate(row);
+    assert.throws(() => validatePart(row, layout, 'tricam', 'normal'));
+  });
+}
+
+test('recorded pixels must be full-resolution raw Gray8; unsafe paths are refused', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'p0-cyclehost-selftest-'));
+  try {
+    const bytes = Buffer.concat([Buffer.from('P5\n1280 1024\n255\n'), Buffer.alloc(1280 * 1024, 255)]);
+    await writeFile(join(directory, 'frame.pgm'), bytes);
+    const full = await recordedArtifact(directory, 'frame.pgm');
+    assert.deepEqual(full.size, [1280, 1024]);
+    assert.equal(full.bytes, bytes.length);
+    await writeFile(join(directory, 'frame.pgm'), bytes.subarray(0, bytes.length - 1));
+    await assert.rejects(() => recordedArtifact(directory, 'frame.pgm'), /full-resolution/);
+    for (const path of ['../frame.pgm', 'x/../../frame.pgm', 'C:/frame.pgm', 'x\\frame.pgm']) {
+      await assert.rejects(() => recordedArtifact(directory, path));
+    }
+  } finally {
+    assert(dirname(resolve(directory)) === resolve(tmpdir()) &&
+      directory.startsWith(join(tmpdir(), 'p0-cyclehost-selftest-')));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+function reportEvidence() {
+  const { row, layout } = evidence('single');
+  const root = 'C:/p0-cyclehost-selftest';
+  const rows = Array.from({ length: 100 }, (_, index) => {
+    const value = structuredClone(row), cycleId = 'cycle' + (index + 1);
+    value.part = index + 1;
+    value.scenario = 'normal';
+    value.uiObservedCycleMs = 2500;
+    value.detail.summary.cycleId = cycleId;
+    for (const measured of value.measurements) measured.cycleId = cycleId;
+    value.originals.frames.forEach(frame => frame.file = 'day/part_cycle_' + cycleId + '/k' + frame.k + '.pgm');
+    value.recordedArtifacts = value.originals.frames.map(frame => ({ k: frame.k, view: frame.view,
+      path: join(root, frame.file), bytes: 1280 * 1024 + Buffer.byteLength('P5\n1280 1024\n255\n'),
+      size: [1280, 1024] }));
+    return value;
+  });
+  const samples = Array.from({ length: 11 }, (_, index) => ({ part: index * 10,
+    elapsedMs: index * 25000, workingSetBytes: 10000 + index * 100, privateBytes: 8000 + index * 200 }));
+  const artifact = { path: join(root, 'fixture.json'), bytes: 0 };
+  const report = { schemaVersion: 1, completed: true, passed: true, mode: 'single', scenario: 'normal',
+    physicalValidation: false, s7HardwareValidation: false, requestedParts: 100, completedParts: 100,
+    accuracyFailures: [], guard: { records: { root } }, samples,
+    provenance: { layout, bundleId: 'bundle', manifest: { bundleId: 'bundle', recipeId: 'fixture', recipeRevision: 'recipe' }, fixture: artifact, executable: artifact, dll: artifact, release: [artifact] },
+    metrics: Object.fromEntries(['ms', 'queueMs', 'engineMs', 'coreMs'].map(key =>
+      [key, distribution(rows.flatMap(value => value.measurements.map(m => m[key])))])),
+    memory: { workingSet: memoryTrend(samples, 'workingSetBytes'), private: memoryTrend(samples, 'privateBytes') } };
+  report.metrics.armMs = distribution(rows.map(value => value.armMs));
+  report.metrics.partEndToPlcSubmissionMs = distribution(rows.map(value => value.detail.summary.drainMs));
+  report.metrics.uiObservedCycleMs = distribution(rows.map(value => value.uiObservedCycleMs));
+  return { report, rows };
+}
+
+test('report validator recomputes all 100 parts, four frame metrics and settled memory', async () => {
+  const { validateCycleHostEvidence } = await import('../../scripts/p0-cyclehost-report.mjs');
+  const { report, rows } = reportEvidence();
+  assert.equal(validateCycleHostEvidence(report, rows).length, 404);
+});
+
+for (const [name, mutate] of [
+  ['fabricated percentile', report => report.metrics.queueMs.p95++],
+  ['fabricated memory slope', report => report.memory.private.linearSlopeBytesPerPart++],
+  ['missing tenth-part memory sample', report => report.samples.splice(4, 1)],
+  ['hidden accuracy failure', report => report.accuracyFailures.push({ part: 1 })],
+  ['wrong overall pass status', report => report.passed = false],
+  ['false hardware validation', report => report.s7HardwareValidation = true],
+  ['incomplete run relabelled complete', report => report.completedParts--],
+  ['borrowed image from another part', (_report, rows) => rows[2].recordedArtifacts[0].path = rows[1].recordedArtifacts[0].path],
+  ['duplicate cycle identity', (_report, rows) => rows[2].detail.summary.cycleId = rows[1].detail.summary.cycleId],
+]) {
+  test('report validator refuses ' + name, async () => {
+    const { validateCycleHostEvidence } = await import('../../scripts/p0-cyclehost-report.mjs');
+    const { report, rows } = reportEvidence();
+    mutate(report, rows);
+    assert.throws(() => validateCycleHostEvidence(report, rows));
+  });
+}
+
+
+
+function replayEvidence(mode = 'tricam') {
+  const { row, layout } = evidence(mode), directory = 'C:/p0-replay-selftest';
+  const files = [];
+  for (let k = 0; k < 4; k++) {
+    row.detail.shots[k].session = 7;
+    row.detail.shots[k].frameCounter = 11 + k;
+    row.detail.shots[k].triggerCounter = 11 + k;
+    for (let view = 1; view <= (mode === 'tricam' ? 3 : 1); view++) {
+      const file = 'cam1_' + (k + 1) + '_v' + view + '.pgm';
+      files.push({ k, view, camera: 'cam1', file, path: join(directory, file),
+        bytes: 1280 * 1024 + Buffer.byteLength('P5\n1280 1024\n255\n'), size: [1280, 1024] });
+    }
+  }
+  const inputs = { directory, mode, channel: 1, files,
+    tree: files.map(({ path, bytes }) => ({ path, bytes })) };
+  row.recordedArtifacts = files.map(file => ({ ...file,
+    path: join('C:/p0-recording-selftest/part_cycle_cycle', file.file) }));
+  row.recordingMetadata = { document: { available: true, cycleId: 'cycle', sn: 41,
+    bundleId: 'bundle', recipeRevision: 'recipe', errors: [], missingShots: [], droppedFrames: 0,
+    frames: files.map(file => ({ k: file.k, view: file.view, file: file.file,
+      counter: 'synthetic', manual: false, lostPackets: 0, width: 1280, height: 1024,
+      available: true, error: null, cycleId: 'cycle', bundleId: 'bundle', recipeRevision: 'recipe',
+      camera: 'cam1', shotId: layout.shots[file.k].id, selectedView: layout.shots[file.k].view,
+      session: 7, ordinal: file.k + 1, frameCounter: file.k + 11, triggerCounter: file.k + 11 })) } };
+  return { row, layout, inputs };
+}
+
+for (const mode of ['single', 'tricam']) {
+  test('explicit ' + mode + ' replay matches every output image and Synthetic trigger identity', () => {
+    const { row, layout, inputs } = replayEvidence(mode);
+    validateReplayInputsSnapshot(inputs, mode);
+    const matches = validateReplayOutputs(row, inputs, layout);
+    assert.equal(matches.length, mode === 'single' ? 4 : 12);
+    assert(matches.every(match => match.identityVerified && match.size[0] === 1280));
+  });
+}
+
+test('default sim guard stays strict; explicit replay requires the configured input directory', () => {
+  const sim = { id: 'cam1', source: 'sim', acquisition: 'triggered', viewCount: 3 };
+  validateCameraSource(sim, 'sim', 'tricam');
+  assert.throws(() => validateCameraSource({ ...sim, source: 'replay' }, 'sim', 'tricam'));
+  const replay = { ...sim, source: 'replay', replayDir: 'C:\\p0-replay-input', replayChannel: 1 };
+  validateCameraSource(replay, 'replay', 'tricam', 'C:/p0-replay-input');
+  assert.throws(() => validateCameraSource(replay, 'replay', 'tricam', 'C:/other-input'));
+  assert.throws(() => validateCameraSource({ ...replay, replayChannel: 0 }, 'replay', 'tricam', replay.replayDir));
+  assert.throws(() => validateCameraSource({ ...replay, source: 'mvs' }, 'replay', 'tricam', replay.replayDir));
+});
+
+for (const [name, mutate] of [
+  ['hardware counter relabelled as replay', row => row.recordingMetadata.document.frames[0].counter = 'chunkTrigger'],
+  ['manual teaching image substituted', row => row.recordingMetadata.document.frames[0].manual = true],
+  ['previous cycle metadata', row => row.recordingMetadata.document.cycleId = 'previous'],
+  ['wrong selected view', row => row.recordingMetadata.document.frames[4].selectedView = 1],
+  ['duplicate view metadata', row => row.recordingMetadata.document.frames[2].view = 2],
+  ['missing input view', (_row, inputs) => inputs.files.splice(3, 1)],
+]) {
+  test('replay control refuses ' + name, () => {
+    const { row, layout, inputs } = replayEvidence();
+    mutate(row, inputs);
+    assert.throws(() => {
+      validateReplayInputsSnapshot(inputs, 'tricam');
+      validateReplayOutputs(row, inputs, layout);
+    });
+  });
+}
+
+test('replay snapshot reads all input image dimensions and file paths; rejects extra images', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'p0-replay-selftest-'));
+  try {
+    const header = Buffer.from('P5\n1280 1024\n255\n');
+    for (let k = 1; k <= 4; k++) {
+      await writeFile(join(directory, 'cam1_' + k + '_v1.pgm'),
+        Buffer.concat([header, Buffer.alloc(1280 * 1024, k)]));
+    }
+    await writeFile(join(directory, 'provenance.json'), JSON.stringify({ source: 'explicit selftest pixels' }));
+    const before = await scanReplayInputs(directory, 'single');
+    assert.equal(before.tree.length, 5);
+    assert.equal(before.files.length, 4);
+    await writeFile(join(directory, 'provenance.json'), JSON.stringify({ source: 'changed selftest provenance' }));
+    const after = await scanReplayInputs(directory, 'single');
+    assert.notDeepEqual(after, before);
+    assert.deepEqual(after.files, before.files);
+    await writeFile(join(directory, 'unexpected.png'), Buffer.from('unexpected image'));
+    await assert.rejects(() => scanReplayInputs(directory, 'single'), /ambiguously named/);
+  } finally {
+    assert(dirname(resolve(directory)) === resolve(tmpdir()) && directory.startsWith(join(tmpdir(), 'p0-replay-selftest-')));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+function replayReportEvidence() {
+  const { report, rows } = reportEvidence(), replay = replayEvidence('single');
+  report.source = 'replay';
+  report.scope = 'Actual CycleHost replay control';
+  report.replayScenarioSemantics = 'Explicit replay input determines pixels, independent of scenario button';
+  report.replayInputs = replay.inputs;
+  report.replayInputsAfter = structuredClone(replay.inputs);
+  report.guard.cameras = [{ id: 'cam1', source: 'replay', acquisition: 'triggered',
+    viewCount: 1, replayChannel: 1, replayDir: replay.inputs.directory }];
+  for (const row of rows) {
+    for (let k = 0; k < 4; k++) {
+      row.detail.shots[k].session = 7;
+      row.detail.shots[k].frameCounter = 11 + k;
+      row.detail.shots[k].triggerCounter = 11 + k;
+    }
+    const document = structuredClone(replay.row.recordingMetadata.document);
+    document.cycleId = row.detail.summary.cycleId;
+    document.frames.forEach(frame => {
+      frame.cycleId = document.cycleId;
+      frame.file = 'k' + frame.k + '.pgm';
+    });
+    row.recordingMetadata = { path: join(dirname(row.recordedArtifacts[0].path), 'part.json'),
+      bytes: 1, document };
+    row.replayComparisons = validateReplayOutputs(row, replay.inputs, report.provenance.layout);
+  }
+  return { report, rows };
+}
+
+test('100-part replay report independently checks inputs, outputs and Synthetic recording metadata', async () => {
+  const { validateCycleHostEvidence } = await import('../../scripts/p0-cyclehost-report.mjs');
+  const { report, rows } = replayReportEvidence();
+  assert.equal(validateCycleHostEvidence(report, rows).length, 512);
+});
+
+for (const [name, mutate] of [
+  ['changed input snapshot after run', report => report.replayInputsAfter.files[0].size = [1,1]],
+  ['replay relabelled simulator', report => report.source = 'sim'],
+  ['forged identity verification flag', (_report, rows) => rows[0].replayComparisons[0].identityVerified = false],
+  ['borrowed recording metadata', (_report, rows) => rows[0].recordingMetadata.path = rows[1].recordingMetadata.path],
+]) {
+  test('replay report validator refuses ' + name, async () => {
+    const { validateCycleHostEvidence } = await import('../../scripts/p0-cyclehost-report.mjs');
+    const { report, rows } = replayReportEvidence();
+    mutate(report, rows);
+    assert.throws(() => validateCycleHostEvidence(report, rows));
+  });
+}
+
+test('failed observations are preserved independently and never overwrite an earlier attempt', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'p0-attempt-no-content-matching-'));
+  try {
+    const attempt = {part:2,stage:'pollResult',accepted:false,lastPoll:{snapshot:{phase:'FAULT'},measurements:[]}};
+    const result = await persistFailedAttempt(directory, attempt, new Error('Observed native fault'), 1);
+    const saved = JSON.parse(await readFile(result.artifact.path, 'utf8'));
+    assert.equal(saved.completedParts, 1);
+    assert.deepEqual(saved.attempt, attempt);
+    assert(saved.error.includes('Observed native fault'));
+    await assert.rejects(() => persistFailedAttempt(directory, {}, new Error('other'), 0), /EEXIST/);
+  } finally {
+    assert(dirname(resolve(directory)) === resolve(tmpdir()) && directory.startsWith(join(tmpdir(), 'p0-attempt-no-content-matching-')));
+    await rm(directory, {recursive:true,force:true});
+  }
+});
+
+for (const [name, mutate] of [
+  ['shot identity', value => value.frames[0].shotId = 'Q1'],
+  ['camera identity', value => value.frames[0].camera = 'cam2'],
+  ['view identity', value => value.frames[0].view = 2],
+  ['selected view', value => value.frames[0].selectedView = 2],
+  ['device session', value => value.frames[0].session = 8],
+  ['device ordinal', value => value.frames[0].ordinal = 2],
+  ['frame count', value => value.frames[0].frameCounter = 12],
+  ['trigger count', value => value.frames[0].triggerCounter = 12],
+  ['missing shots', value => value.missingShots = [0]],
+  ['dropped frame count', value => value.droppedFrames = 1],
+  ['frame availability', value => value.frames[0].available = false],
+]) {
+  test('actual same-size recording metadata change is refused: ' + name, async () => {
+    const { verifyRecordingMetadata } = await import('../../scripts/p0-cyclehost-report.mjs');
+    const directory = await mkdtemp(join(tmpdir(), 'p0-metadata-actual-fields-'));
+    try {
+      const document = replayEvidence().row.recordingMetadata.document;
+      const path = join(directory, 'part.json'), length = Buffer.byteLength(JSON.stringify(document)) + 100;
+      const encode = value => { const text = JSON.stringify(value); assert(Buffer.byteLength(text) <= length); return Buffer.from(text + ' '.repeat(length - Buffer.byteLength(text))); };
+      const file = { path, bytes: length, document };
+      await writeFile(path, encode(document));
+      assert.deepEqual(await verifyRecordingMetadata(file), document);
+      const reordered = Object.fromEntries(Object.entries(document).reverse());
+      await writeFile(path, encode(reordered));
+      assert.deepEqual(await verifyRecordingMetadata(file), document);
+      const changed = structuredClone(document); mutate(changed);
+      for (const key of ['cycleId', 'sn', 'recipeRevision', 'bundleId']) assert.equal(changed[key], document[key]);
+      await writeFile(path, encode(changed));
+      assert.equal((await readFile(path)).length, length);
+      await assert.rejects(() => verifyRecordingMetadata(file), /reported actual structure/);
+    } finally {
+      assert(dirname(resolve(directory)) === resolve(tmpdir()) && directory.startsWith(join(tmpdir(), 'p0-metadata-actual-fields-')));
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test('records guard uses the current Windows APPDATA and explicit isolated app identifier', () => {
+  const appdata = 'C:\\Users\\OtherUser\\AppData\\Roaming';
+  for (const identifier of ['com.xyzrobotics.tujiaovision.p0-tests.performance', 'com.xyzrobotics.tujiaovision.p0-tests.performance.nohash']) {
+    const actual = appdata + '\\' + identifier + '\\records';
+    assert.equal(validateTestRecordsRoot(actual, identifier, appdata), actual);
+    assert.equal(validateTestRecordsRoot(actual.replaceAll('\\', '/').toUpperCase(), identifier, appdata), actual);
+  }
+  assert.throws(() => validateTestRecordsRoot(appdata + '\\com.xyzrobotics.tujiaovision\\records', 'com.xyzrobotics.tujiaovision', appdata));
+  assert.throws(() => validateTestRecordsRoot(appdata + '\\com.xyzrobotics.tujiaovision.p0-tests.performance.nohash\\records', undefined, appdata));
+  assert.throws(() => validateTestRecordsRoot('C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.performance\\records', undefined, appdata));
+  assert.throws(() => validateTestRecordsRoot(appdata + '\\records', undefined, appdata));
+  assert.throws(() => validateTestRecordsRoot('Z:\\records', undefined, 'Z:\\AppData'));
+  assert.throws(() => validateTestRecordsRoot('C:\\records', undefined, 'relative'));
+});

@@ -9,7 +9,7 @@ import { useWorkspace } from "./context";
 import { Badge, FrameRail, GrayViewer, KV, Notice, NumberField, Panel, Steps, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { FrozenImage, ShotTeach, WorkspaceView } from "./types";
 import ImageImportButton from "./ImageImportButton";
-import { sameTeach, shotTeach, teachError } from "./teach";
+import { sameJsonValue, sameTeach, shotTeach, teachError } from "./teach";
 
 function FrozenViewOption({ id, metadata, selected, disabled, onSelect }: { id: string; metadata: FrozenImage; selected: boolean; disabled: boolean; onSelect: () => void }) {
   const { image, loading, error } = useGrayImage(id, metadata.id);
@@ -64,7 +64,7 @@ export default function TeachingPage() {
   const setPath = (path: [number, number][]) => update({ ...t, path });
   const setDetect = (detect: DetectParams | undefined) => { const next: ShotTeach = { path: t.path, mmPerPx: t.mmPerPx }; if (detect) next.detect = detect; update(next); };
   const trial = frame.trial;
-  const staleTrial = !!trial && !editing && (trial.imageId !== frame.image?.id || trial.geometryTag !== frame.image?.geometryTag);
+  const staleTrial = !!trial && !editing && (trial.imageId !== frame.image?.id || !sameJsonValue(trial.geometryTag, frame.image?.geometryTag));
   const trialCurrent = !editing && !staleTrial && !!trial?.passed;
   const measured = !!trial && trial.measurement != null;
   const own = shotSegment(data.layout, k)?.segment;
@@ -89,7 +89,6 @@ export default function TeachingPage() {
     if (result?.workspace.doc.id===doc.id && next && current.current.scope===scope && current.current.alive) setK(Math.min(k+1,Math.max(0,result.workspace.frames.length-1)));
   };
   const restore=()=>{if(unlocked&&frame.backup)void perform(()=>workspaceApi.restoreTeach(doc.id,data.workspace.revision,k),"原始图像已恢复，请重新试测");};
-  const pendingReason = !!trial && !trial.passed && /尚未接入/.test(trial.reason);
   const hint = shot.skip ? "这个拍照点设为不检：只要求这一帧到达，不量不判，不需要示教中线。"
     : editing ? "中线或参数已改，先保存中线再试测；现有试测不用于保存或发布。"
     : !taught ? "在原图上从胶嘴一侧往外依次点出胶路中线，填好像素当量后保存中线。"
@@ -121,8 +120,8 @@ export default function TeachingPage() {
       </Panel>
       <Panel title="本帧试测结果" actions={trial && <Badge tone={trialCurrent?"ok":"warn"}>{staleTrial?"已过期":trial.passed ? "通过" : "未通过"}</Badge>}>
         <div className="wp-actions"><button className="btn" disabled={!canTrial} onClick={() => void run()}><WandSparkles size={15} />试测当前帧</button><button className="btn primary" disabled={!unlocked || !trialCurrent || frame.saved} onClick={() => void save()}><Save size={15} />保存本帧示教</button><button className="btn" disabled={!unlocked || !trialCurrent} onClick={() => void save(true)}>保存并示教下一帧</button></div>
-        <div className="wp-rule-stat"><div><span>得分</span><strong>{measured ? trial!.score.toFixed(2) : "—"}</strong></div><div><span>量成比例</span><strong>{measured ? (trial!.coverage * 100).toFixed(1) + "%" : "—"}</strong></div><div><span>处理耗时</span><strong>{trial ? trial.elapsedMs + " ms" : "—"}</strong></div></div>
-        {trial && !trial.passed && !staleTrial && !editing && <Notice title={pendingReason ? "图像测量暂不可用" : "试测未通过"} tone="warn">{trial.reason}</Notice>}
+        <div className="wp-rule-stat"><div><span>量成比例</span><strong>{measured ? (trial!.coverage * 100).toFixed(1) + "%" : "—"}</strong></div><div><span>处理耗时</span><strong>{trial ? trial.elapsedMs + " ms" : "—"}</strong></div></div>
+        {trial && !trial.passed && !staleTrial && !editing && <Notice title="试测未通过" tone="warn">{trial.reason}</Notice>}
         <p className="muted">{hint}</p>
       </Panel></div>
       <div className="wp-stack"><Panel title="中线与像素当量" detail="保存中线后需要重新试测"><div className="wp-form-grid">

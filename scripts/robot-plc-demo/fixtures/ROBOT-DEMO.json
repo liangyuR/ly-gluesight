@@ -1,23 +1,62 @@
 {
   "id": "ROBOT-DEMO",
-  "name": "Robot + PLC 四点飞拍演示",
+  "name": "Robot + PLC 单设备四点演示",
   "version": 1,
   "productCode": 101,
   "triggerMode": "fly",
-  "camera": "cam1",
-  "path": { "kind": "roundedRect", "width": 380.0, "height": 200.0, "radius": 24.0 },
-  "spacing": 0.5,
+  "schemaVersion": 4,
+  "spacing": 1,
   "filterWindow": 5,
-  "maxGapLen": 0.5,
-  "line": {
-    "position": { "nominal": 0.75, "tolUpper": 0.75, "tolLower": 0.75, "absMin": 0.0, "absMax": 2.0, "maxExcursionLen": 2.0 },
-    "width": null
-  },
-  "corner": {
-    "position": { "nominal": 0.75, "tolUpper": 1.0, "tolLower": 1.0, "absMin": 0.0, "absMax": 2.2, "maxExcursionLen": 3.0 },
-    "width": null
-  },
-  "segmentOverrides": {},
-  "fov": [216.0, 145.0],
-  "shots": [[95.0, 50.0], [285.0, 50.0], [285.0, 150.0], [95.0, 150.0]]
+  "detect": {"searchMm":15,"polarity":"dark","widthRange":[1,10]},
+  "limits": {"position":{"nominal":0,"tolUpper":2,"tolLower":2,"absMin":-5,"absMax":5,"maxExcursionLen":5},"width":{"nominal":4,"tolUpper":1.5,"tolLower":1.5,"absMin":1,"absMax":8,"maxExcursionLen":5},"maxGapLen":6},
+  "shots": [
+    {
+      "id": "P1",
+      "poseId": "Pose-1",
+      "camera": "cam1",
+      "view": 1,
+      "bead": "J1",
+      "skip": false,
+      "path": [[980,480],[300,460]],
+      "mmPerPx": 0.112,
+      "detect": {"searchMm":15,"polarity":"dark","widthRange":[1,10]},
+      "limits": {"position":{"nominal":0,"tolUpper":2,"tolLower":2,"absMin":-5,"absMax":5,"maxExcursionLen":5},"width":{"nominal":4,"tolUpper":1.5,"tolLower":1.5,"absMin":1,"absMax":8,"maxExcursionLen":5},"maxGapLen":6}
+    },
+    {
+      "id": "P2",
+      "poseId": "Pose-2",
+      "camera": "cam1",
+      "view": 1,
+      "bead": "J1",
+      "skip": false,
+      "path": [[980,480],[700,420],[320,330]],
+      "mmPerPx": 0.112,
+      "detect": {"searchMm":15,"polarity":"dark","widthRange":[1,10]},
+      "limits": {"position":{"nominal":0,"tolUpper":2,"tolLower":2,"absMin":-5,"absMax":5,"maxExcursionLen":5},"width":{"nominal":4,"tolUpper":1.5,"tolLower":1.5,"absMin":1,"absMax":8,"maxExcursionLen":5},"maxGapLen":6}
+    },
+    {
+      "id": "P3",
+      "poseId": "Pose-3",
+      "camera": "cam1",
+      "view": 1,
+      "bead": "J1",
+      "skip": false,
+      "path": [[980,480],[640,560],[330,690]],
+      "mmPerPx": 0.112,
+      "detect": {"searchMm":15,"polarity":"dark","widthRange":[1,10]},
+      "limits": {"position":{"nominal":0,"tolUpper":2,"tolLower":2,"absMin":-5,"absMax":5,"maxExcursionLen":5},"width":{"nominal":4,"tolUpper":1.5,"tolLower":1.5,"absMin":1,"absMax":8,"maxExcursionLen":5},"maxGapLen":6}
+    },
+    {
+      "id": "P4",
+      "poseId": "Pose-4",
+      "camera": "cam1",
+      "view": 1,
+      "bead": "J1",
+      "skip": false,
+      "path": [[980,480],[300,460]],
+      "mmPerPx": 0.112,
+      "detect": {"searchMm":15,"polarity":"dark","widthRange":[1,10]},
+      "limits": {"position":{"nominal":0,"tolUpper":2,"tolLower":2,"absMin":-5,"absMax":5,"maxExcursionLen":5},"width":{"nominal":4,"tolUpper":1.5,"tolLower":1.5,"absMin":1,"absMax":8,"maxExcursionLen":5},"maxGapLen":6}
+    }
+  ]
 }

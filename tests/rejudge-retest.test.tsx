@@ -9,7 +9,7 @@ import type { HistoryQuery, RejudgeResult } from "../src/features/history/types"
 import { deferred } from "./fixtures";
 
 vi.mock("../src/features/history/api",()=>({historyApi:{rejudge:vi.fn()}}));
-const result:RejudgeResult={total:2,skipped:1,limitHit:false,matrix:[{from:"NG_GAP",to:"OK",count:1},{from:"OK",to:"NG_WIDTH",count:1}],
+const result:RejudgeResult={total:2,skipped:1,skipReasons:[{id:8,sn:108,ts:1,reason:"测点布局与原始版本不一致"}],limitHit:false,matrix:[{from:"NG_GAP",to:"OK",count:1},{from:"OK",to:"NG_WIDTH",count:1}],
   changes:[{id:7,sn:107,ts:1,from:"NG_GAP",to:"OK",reason:"候选规则合格"}]};
 const query:HistoryQuery={recipeId:"A",sn:"123",limit:50};
 function element(value:HistoryQuery=query,total=3,onClose=vi.fn()){

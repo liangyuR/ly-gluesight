@@ -45,14 +45,15 @@ export const workspaceApi = {
     desktopCall<WorkspaceView>("workspace_import_sample", {id,revision,name,expected,images}),
   publish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish", { id, revision }),
   recordImages: (historyId: number) => desktopCall<RecordImages>("workspace_record_images", { historyId }),
-  recordImage: (historyId: number, k: number) => desktopCall<ArrayBuffer>("workspace_record_image", { historyId, k }).then(decodeGray),
+  recordImage: (historyId: number, k: number, view?: number) => desktopCall<ArrayBuffer>("workspace_record_image", { historyId, k, view }).then(decodeGray),
   historyCapture: (id: string, revision: number, historyId: number, k: number) =>
     desktopCall<WorkspaceView>("workspace_history_capture", { id, revision, historyId, k }),
   compare: (id: string, revision: number, historyId: number, raw: boolean) =>
     desktopCall<Comparison>("workspace_compare", { id, revision, historyId, raw }),
+  compareOriginal: (historyId: number) => desktopCall<Comparison>("workspace_compare_original", { historyId }),
   comparisons: (id:string,historyId:number)=>desktopCall<Comparison[]>("workspace_comparisons",{id,historyId}),
-  runtimeOverview: (id: string, hash: string) => desktopCall<Overview | null>("workspace_runtime_overview", { id, hash }),
-  liveImage: (cycleId:string, hash:string, k:number) => desktopCall<ArrayBuffer>("workspace_live_image", {cycleId,hash,k}).then(decodeGray),
+  runtimeOverview: (id: string, revisionId: string) => desktopCall<Overview | null>("workspace_runtime_overview", { id, revisionId }),
+  liveImage: (cycleId:string, revisionId:string, k:number) => desktopCall<ArrayBuffer>("workspace_live_image", {cycleId,revisionId,k}).then(decodeGray),
   stationCapture: (cam:number)=>desktopCall<FrozenImage>("workspace_station_capture",{cam}),
   stationImport: (cam:number,bytes:number[])=>desktopCall<FrozenImage>("workspace_station_import",{cam,bytes}),
   stationImage: (cam:number,imageId:string)=>desktopCall<ArrayBuffer>("workspace_station_image",{cam,imageId}).then(decodeGray),

@@ -1,7 +1,7 @@
 import type { Measured, PartView } from "./types";
 
 export function matchesPart(measured: Measured, part: PartView | null | undefined): boolean {
-  if (!part || !part.cycleId || measured.cycleId !== part.cycleId || measured.bundleHash !== part.bundleHash || measured.sn !== part.sn) return false;
+  if (!part || !part.cycleId || measured.cycleId !== part.cycleId || measured.bundleId !== part.bundleId || measured.sn !== part.sn) return false;
   const frame = part.frames[measured.k];
   return !!frame && !!frame.shotId && frame.shotId === measured.shotId && !!frame.camera && frame.camera === measured.camera;
 }

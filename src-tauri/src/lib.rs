@@ -1,11 +1,14 @@
+mod audit;
 mod camera;
 mod commands;
 mod cycle;
+mod cycle_ids;
 mod frame;
 mod fsio;
 mod history;
 mod handshake;
 mod inspection;
+mod instance;
 mod judge;
 mod measure;
 mod mvs;
@@ -36,6 +39,7 @@ fn open_store(app: &tauri::App) -> Result<store::Store, String> {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            app.manage(instance::acquire(&app.path().app_data_dir().map_err(|error| error.to_string())?)?);
             app.manage(open_store(app)?);
             app.manage(vision::VisionHost::default());
             app.manage(production::ProductionHost::default());
@@ -126,6 +130,7 @@ pub fn run() {
             workspace::workspace_record_image,
             workspace::workspace_history_capture,
             workspace::workspace_compare,
+            workspace::workspace_compare_original,
             workspace::workspace_comparisons,
             workspace::workspace_runtime_overview,
             workspace::workspace_live_image,

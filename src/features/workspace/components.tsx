@@ -44,17 +44,17 @@ export function Steps() {
   return <nav className="wp-steps" aria-label="配方配置步骤">{[["/recipe/geometry","拍照点规划"],["/recipe/teach","单帧示教"],["/recipe/overview","工件总览"],["/recipe/validation","验证与发布"]].map(([path,label],i) => <NavLink key={path} to={path} className={({isActive}) => isActive ? "active" : ""}><span>{i + 1}</span>{label}{i < 3 && <ChevronRight size={14} />}</NavLink>)}</nav>;
 }
 
-export function useGrayImage(id: string | null, imageId: string | null, historyId?: number | null, k = 0) {
-  const key=JSON.stringify([id,imageId,historyId,k]);
+export function useGrayImage(id: string | null, imageId: string | null, historyId?: number | null, k = 0, view?: number) {
+  const key=JSON.stringify([id,imageId,historyId,k,view]);
   const [state, setState] = useState<{key:string;image:GrayImage|null;error:string;loading:boolean}>({key,image:null,error:"",loading:false});
   useEffect(() => {
     let alive = true;
     setState({key,image:null,error:"",loading:!!imageId||!!historyId});
     if (!imageId && !historyId) return;
-    const request = historyId ? workspaceApi.recordImage(historyId, k) : workspaceApi.image(id!, imageId!);
+    const request = historyId ? workspaceApi.recordImage(historyId, k, view) : workspaceApi.image(id!, imageId!);
     request.then(image => alive && setState({key,image,error:"",loading:false})).catch(e => alive && setState({key,image:null,error:String(e),loading:false}));
     return () => { alive = false; };
-  }, [id, imageId, historyId, k]);
+  }, [id, imageId, historyId, k, view]);
   return state.key===key?state:{image:null,error:"",loading:!!imageId||!!historyId};
 }
 

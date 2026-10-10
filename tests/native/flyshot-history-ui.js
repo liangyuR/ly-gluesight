@@ -33,6 +33,6 @@ async (page) => {
   if (JSON.stringify(original) !== JSON.stringify(after)) throw new Error("Candidate comparisons modified the original production record");
   const result = {operation:"历史筛选与 CSV 导出、规则重判、四帧原图复测、已保存对照切换、帧选择与缩放、原始记录保留",passed:true,historyId:part.id,sn:part.sn,exported,comparisons:added.map(item => ({id:item.id,source:item.source,verdict:item.judgement.verdict,gaps:item.judgement.gaps}))};
   await page.evaluate(result => window.__uiOperations.checks.push(result), result);
-  await page.screenshot({path:"D:\\project\\ly-gluesight\\output\\playwright\\ui-regression\\flyshot-history.png",fullPage:true});
+  await page.screenshot({path:"output/playwright\\ui-regression\\flyshot-history.png",fullPage:true});
   return result;
 }

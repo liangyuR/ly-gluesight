@@ -122,7 +122,8 @@ function LimitsEditor({ prefix, value, onChange }: { prefix: string; value: Shot
         </table>
       </div>
       <div className="form-grid">
-        <Num label="允许断胶长度（mm）" aria={`${prefix}允许断胶长度（mm）`} value={value.maxGapLen} hint="同一拍照点内连续缺胶超过这个长度判断胶" onChange={(maxGapLen) => onChange({ ...value, maxGapLen })} />
+        <Num label="允许断胶长度（mm）" aria={`${prefix}允许断胶长度（mm）`} value={value.maxGapLen} hint="同一拍照点内连续缺胶超过这个长度判断胶；整段一站胶都没有时总是判断胶" onChange={(maxGapLen) => onChange({ ...value, maxGapLen })} />
+        <Num label="最低有胶比例（%）" aria={`${prefix}最低有胶比例（%）`} step={1} value={Math.round(value.minPresent * 1000) / 10} hint="零散断胶：同一拍照点内累计缺胶超过允许断胶长度、且有胶站占比低于这个值时判断胶" onChange={(v) => onChange({ ...value, minPresent: v / 100 })} />
       </div>
     </>
   );

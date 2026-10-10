@@ -1,6 +1,34 @@
 use super::*;
 use crate::frame::CounterSource;
 
+#[test]
+fn interrupted_history_keeps_all_planned_shots_and_each_failure_reason() {
+    let mut part = part("cycle-audit", &Ledgers::default(), true);
+    part.frames[0].status = FrameStatus::Done;
+    part.frames[0].session = Some(18);
+    part.frames[0].frame_counter = Some(81);
+    part.frames[0].score = Some(0.92);
+    part.frames[2].status = FrameStatus::Measuring;
+    part.frames[3].status = FrameStatus::LocateFailed;
+    part.frames[3].error = Some("定位失败".into());
+    let shots = recorded_shots(Some(&part.recipe), &part.frames, "连接中断");
+    assert_eq!(shots.len(), 4);
+    assert_eq!(shots.iter().map(|shot| shot.view).collect::<Vec<_>>(), [1, 2, 3, 1]);
+    assert_eq!(shots[0].status, FrameStatus::Done);
+    assert_eq!(shots[0].session, Some(18));
+    assert_eq!(shots[0].frame_counter, Some(81));
+    assert_eq!(shots[1].status, FrameStatus::Missing);
+    assert!(shots[1].error.as_ref().unwrap().contains("连接中断"));
+    assert_eq!(shots[2].status, FrameStatus::Error);
+    assert!(shots[2].error.as_ref().unwrap().contains("测量未完成"));
+    assert_eq!(shots[3].status, FrameStatus::LocateFailed);
+    assert_eq!(shots[3].error.as_deref(), Some("定位失败"));
+    assert_eq!(part.frames[1].status, FrameStatus::Waiting);
+    let refused = recorded_shots(Some(&part.recipe), &[], "未布防");
+    assert_eq!(refused.len(), 4);
+    assert!(refused.iter().all(|shot| shot.status == FrameStatus::Missing));
+}
+
 fn part(cycle_id: &str, ledgers: &Ledgers, one_device: bool) -> Part {
     let mut doc = crate::recipe::samples().remove(1);
     for (k, shot) in doc.shots.iter_mut().enumerate() {
@@ -15,7 +43,7 @@ fn part(cycle_id: &str, ledgers: &Ledgers, one_device: bool) -> Part {
     }).collect();
     let router = ShotRouter::arm(&Plan::from_shots(&recipe.shots), ledgers, &Policy::development(None), &identities).unwrap();
     Part {
-        run_id: 1, cycle_id: cycle_id.into(), bundle_hash: Some("release-1".into()), production: None, sn: 88,
+        run_id: 1, cycle_id: cycle_id.into(), bundle_id: Some("release-1".into()), production: None, sn: 88,
         scenario: Scenario::Normal, frames: recipe.shots.iter().map(|shot| FrameView {
             shot_id: shot.id.clone(), camera: shot.camera.clone(), view: shot.view, ..FrameView::waiting()
         }).collect(), measuring_since: vec![None; recipe.shot_count()],
@@ -36,8 +64,9 @@ fn measured(part: &Part, k: usize) -> Measured {
     let shot = &part.recipe.shots[k];
     let indices: Vec<_> = part.recipe.owned_points(k).map(|j| j as u32).collect();
     Measured { run_id: part.run_id, cycle_id: part.cycle_id.clone(), shot_id: shot.id.clone(),
-        camera: shot.camera.clone(), bundle_hash: part.bundle_hash.clone(), sn: part.sn,
-        k, cam: part.frames[k].cam, located: true, score: 0.95, ms: 15, error: None,
+        camera: shot.camera.clone(), bundle_id: part.bundle_id.clone(), sn: part.sn,
+        k, cam: part.frames[k].cam, located: true, score: 0.95, ms: 15,
+        queue_ms: None, engine_ms: None, core_ms: None, error: None,
         d: vec![0.0; indices.len()], w: vec![4.0; indices.len()], st: vec![measure::ST_OK; indices.len()],
         idx: indices, px: Vec::new() }
 }
@@ -143,6 +172,35 @@ fn first_missing_frame_keeps_later_shots_and_expires_err91() {
 }
 
 #[test]
+fn counter_desync_ends_err91_with_expected_and_received_counters() {
+    // 上一件按触发数推的下限比相机实际计数高一格（相机漏收过一个脉冲）：本件第一帧被当成迟到帧，最后一个拍照点缺帧
+    let mut ledgers = Ledgers::default();
+    ledgers.observe(&FrameMeta::from(&frame(0, 1)));
+    ledgers.set_floor(&Floor { cam: 0, camera: "cam1".into(), session: 1, baseline: 2 });
+    let mut p = part("desync", &ledgers, true);
+    assert!(matches!(p.receive_frame(&frame(0, 2)).unwrap(), Route::Stale { counter: 2, baseline: Some(2) }));
+    for counter in 3..=5 {
+        let Route::Bound { shot, .. } = p.receive_frame(&frame(0, counter)).unwrap() else { panic!("counter {counter}") };
+        p.apply_result(measured(&p, shot)).unwrap();
+    }
+    let end = Instant::now();
+    p.end_at = Some(end);
+    p.expire(end + Duration::from_secs(3), Duration::from_secs(1), Duration::from_secs(2));
+    let judgement = p.judgement();
+    assert_eq!(judgement.verdict, Verdict::ErrInspect);
+    assert_eq!(judgement.fault_code, fault::MISSING_FRAME);
+    assert!(judgement.reason.starts_with("拍照点 P4（cam1）没有收到帧：相机 cam1 触发计数错位：本件应收 3–6，实际收到 2–5；2 不大于本件基线 2"),
+        "{}", judgement.reason);
+
+    // 多出的触发：第一个超计划帧就是结果原因，写明应收与实际计数
+    let mut p = part("extra", &Ledgers::default(), true);
+    for counter in 1..=5 { p.receive_frame(&frame(0, counter)).unwrap(); }
+    let judgement = p.judgement();
+    assert_eq!(judgement.fault_code, fault::EXTRA_FRAME);
+    assert!(judgement.reason.contains("相机 cam1 触发计数错位：本件应收 1–4，收到 5，超出计划 1 个"), "{}", judgement.reason);
+}
+
+#[test]
 fn timeout_is_terminal_before_end_and_late_measurement_is_ignored() {
     let mut p = part("timeout", &Ledgers::default(), true);
     p.receive_frame(&frame(0, 1)).unwrap();
@@ -170,7 +228,7 @@ fn same_sn_reinspection_rejects_old_cycle_and_every_other_identity_mismatch() {
     for variant in 0..4 {
         let mut wrong = measured(&next, 0);
         match variant { 0 => wrong.shot_id = "P2".into(), 1 => wrong.camera = "cam2".into(),
-            2 => wrong.bundle_hash = Some("old-release".into()), _ => wrong.cam = 2 }
+            2 => wrong.bundle_id = Some("old-release".into()), _ => wrong.cam = 2 }
         assert!(next.apply_result(wrong).is_none());
     }
     assert_eq!(next.queue, 1);
@@ -208,6 +266,33 @@ fn cycle_identity_is_persistent_and_independent_of_serial_number() {
         let conn = rusqlite::Connection::open(&path).unwrap();
         let count: i64 = conn.query_row("SELECT count(*) FROM cycle_ids", [], |row| row.get(0)).unwrap();
         assert_eq!(count, 2);
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn identity_batches_commit_together_and_failed_batches_expose_no_partial_ids() {
+    let path = std::env::temp_dir().join(format!("gluesight-cycle-batch-{}-{}.sqlite", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let ids;
+    {
+        let store = Store::open(&path).unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TRIGGER reject_third BEFORE INSERT ON cycle_ids
+            WHEN (SELECT count(*) FROM cycle_ids) = 2 BEGIN SELECT RAISE(ABORT, 'disk failure'); END;").unwrap();
+        assert!(store.reserve_cycle_ids(4).is_err());
+        assert_eq!(conn.query_row("SELECT count(*) FROM cycle_ids", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        conn.execute_batch("DROP TRIGGER reject_third;").unwrap();
+        assert!(store.reserve_cycle_ids(0).is_err());
+        assert!(store.reserve_cycle_ids(33).is_err());
+        ids = store.reserve_cycle_ids(32).unwrap();
+        assert_eq!(ids.iter().collect::<std::collections::HashSet<_>>().len(), 32);
+    }
+    {
+        let reopened = Store::open(&path).unwrap();
+        assert!(!ids.contains(&reopened.reserve_cycle_id().unwrap()));
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        assert_eq!(conn.query_row("SELECT count(*) FROM cycle_ids", [], |row| row.get::<_, i64>(0)).unwrap(), 33);
     }
     std::fs::remove_file(path).unwrap();
 }
@@ -282,4 +367,32 @@ fn failed_or_unlocated_outputs_never_emit_nonfinite_scores_or_foreign_points() {
     assert!(normalized.idx.is_empty());
     assert!(normalized.st.is_empty());
     assert_eq!(p.frames[0].status, FrameStatus::Error);
+}
+
+
+pub(crate) fn judge_callback_channel(
+    baseline: &Ledgers, received: Vec<Frame>, observed: &Ledgers,
+) -> (Judgement, Vec<FrameView>) {
+    let base = baseline.get(0).and_then(|ledger| ledger.last).unwrap_or(0);
+    let mut p = part(&format!("callback-full-{base}"), &Ledgers::default(), true);
+    let camera = ArmCam { cam: 0, camera: "cam1".into(), session: 11,
+        source: Some(CounterSource::ChunkTrigger), counter_after_open: Some(0) };
+    p.router = ShotRouter::arm(&Plan::from_shots(&p.recipe.shots), baseline,
+        &Policy::production(None), &[camera]).unwrap();
+    for received in received {
+        if let Some(Route::Bound { shot, ordinal }) = p.receive_frame(&received) {
+            assert_eq!(shot as u64 + 1, ordinal);
+            assert_eq!(received.trigger_counter, base + ordinal);
+            p.apply_result(measured(&p, shot)).unwrap();
+        }
+    }
+    if let Some(ledger) = observed.get(0) {
+        if let Err(error) = p.router.check_observed(0, ledger) {
+            p.fault.get_or_insert(error);
+        }
+    }
+    let end = Instant::now();
+    p.end_at = Some(end);
+    p.expire(end + Duration::from_secs(3), Duration::from_secs(1), Duration::from_secs(2));
+    (p.judgement(), p.frames)
 }

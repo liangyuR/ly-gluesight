@@ -14,11 +14,3 @@ function Get-DemoOwnedProcess($Item) {
         return $process
     }
 }
-
-function Get-DemoSourceHash {
-    $hashes = Get-ChildItem -LiteralPath $PSScriptRoot -File |
-        Where-Object Extension -In '.py', '.mjs', '.html', '.ps1' |
-        Sort-Object Name | ForEach-Object { (Get-FileHash -LiteralPath $_.FullName).Hash }
-    $bytes = [Text.Encoding]::UTF8.GetBytes(($hashes -join ''))
-    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))
-}

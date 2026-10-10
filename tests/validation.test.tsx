@@ -59,7 +59,7 @@ describe("验证与发布页面", () => {
     if (condition === "busy") ws.busy = true;
     if (condition === "failed") ws.data!.workspace.validation!.passed = false;
     if (condition === "stale") ws.data!.workspace.validation!.revision = 6;
-    if (condition === "pending") ws.data!.workspace.pending = { doc: ws.doc!, bundleHash: "bundle-v1", revision: 7, baseHash: "old", frames: [], overview: ws.data!.workspace.overview, validation: ws.data!.workspace.validation! };
+    if (condition === "pending") ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v1", revision: 7, baseRevision: "old", frames: [], overview: ws.data!.workspace.overview, validation: ws.data!.workspace.validation! };
     show(); expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
     expect(workspaceApi.publish).not.toHaveBeenCalled();
   });
@@ -74,6 +74,16 @@ describe("验证与发布页面", () => {
     await userEvent.click(screen.getByRole("button", { name: "确认发布 v2" }));
     expect(workspaceApi.publish).toHaveBeenCalledWith("A", 7);
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("发布确认说明 PLC 计划版本是否要同步", async () => {
+    const page = show(); await userEvent.click(screen.getByRole("button", { name: "发布生产配方" }));
+    expect(screen.getByText("拍照计划未变，沿用计划版本 1，PLC 不用改。")).toBeVisible();
+    expect(screen.queryByText("拍照计划已变，PLC 要同步")).not.toBeInTheDocument();
+    page.unmount(); ws.data!.planChanged = true; show();
+    expect(screen.getByText("发布时分配新号")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "发布生产配方" }));
+    expect(screen.getByText("拍照计划已变，PLC 要同步")).toBeVisible();
   });
 
   it("发布失败保留确认弹窗", async () => {

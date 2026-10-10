@@ -17,7 +17,7 @@ beforeEach(() => {
   vi.mocked(historyApi.query).mockResolvedValue(page);
   vi.mocked(historyApi.exportCsv).mockResolvedValue("D:/exports/result.csv");
   vi.mocked(historyApi.reveal).mockResolvedValue(undefined);
-  vi.mocked(historyApi.rejudge).mockResolvedValue({ total: 60, skipped: 0, limitHit: false, matrix: [], changes: [] });
+  vi.mocked(historyApi.rejudge).mockResolvedValue({ total: 60, skipped: 0, skipReasons: [], limitHit: false, matrix: [], changes: [] });
 });
 
 describe("历史筛选与分页", () => {

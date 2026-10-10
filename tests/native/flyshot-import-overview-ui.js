@@ -1,7 +1,7 @@
 async (page) => {
   const before = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("workspace_get", { id:"UI-FLYSHOT" }));
   await page.getByRole("button", { name: "选择帧 k4", exact: true }).click();
-  await page.locator('input[type="file"]').setInputFiles("D:\\project\\ly-gluesight\\output\\playwright\\ui-regression\\flyshot-samples\\k4.pgm");
+  await page.locator('input[type="file"]').setInputFiles("output/playwright\\ui-regression\\flyshot-samples\\k4.pgm");
   await page.getByText("离线原图已绑定本帧，请重新试测", { exact: true }).waitFor();
   const imported = await page.evaluate(async () => (await window.__TAURI_INTERNALS__.invoke("workspace_get", { id:"UI-FLYSHOT" })).workspace.frames[3]);
   if (imported.image.source !== "import" || imported.image.size.join("x") !== "1280x1024" || imported.saved || imported.trial || !imported.backup) throw new Error("Offline image was not bound and invalidated through UI");

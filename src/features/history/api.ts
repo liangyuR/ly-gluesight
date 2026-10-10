@@ -14,9 +14,9 @@ export const historyApi = {
   query: (query: HistoryQuery) =>
     call<HistoryPage>("history_query", { query }, () => ({ total: 0, counts: { ok: 0, excursion: 0, ng: 0, err: 0 }, items: [] })),
   detail: (id: number) => call<PartDetail>("history_detail", { id }, () => Promise.reject("浏览器预览模式") as never),
-  recipe: (hash: string | null, recipeId: string | null) => {
-    const key = `${hash}|${recipeId}`;
-    if (!recipeCache.has(key)) recipeCache.set(key, call<Recipe | null>("history_recipe", { hash, recipeId }, () => null));
+  recipe: (revisionId: string | null, recipeId: string | null) => {
+    const key = `${revisionId}|${recipeId}`;
+    if (!recipeCache.has(key)) recipeCache.set(key, call<Recipe | null>("history_recipe", { revisionId, recipeId }, () => null));
     return recipeCache.get(key)!;
   },
   rejudge: (request: RejudgeRequest) =>

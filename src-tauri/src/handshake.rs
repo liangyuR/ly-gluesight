@@ -29,7 +29,7 @@ const FIELDS: &[Field] = &[
     input("productCode", DataType::U16, false),
     input("shotCount", DataType::U16, false),
     input("planVersion", DataType::U32, false),
-    input("planHash", DataType::U32, false),
+    input("planReserved", DataType::U32, false),
     input("camera1Shots", DataType::U16, false),
     input("camera2Shots", DataType::U16, false),
     input("camera3Shots", DataType::U16, false),
@@ -50,12 +50,15 @@ const FIELDS: &[Field] = &[
     output("pcHeartbeat", DataType::Bool),
     output("pcProtocolVersion", DataType::U16),
     output("acceptedSeq", DataType::U32),
-    output("acceptedPlanHash", DataType::U32),
+    output("acceptedPlanReserved", DataType::U32),
     output("resultSeq", DataType::U32),
     output("resultSn", DataType::U32),
     output("resultCode", DataType::U16),
     output("faultCode", DataType::U16),
 ];
+
+/// 已改名的握手标签（D-0 不兼容旧配置）：旧点表直接拒绝，并说清新名字。
+const RETIRED_TAGS: &[(&str, &str)] = &[("planHash", "planReserved"), ("acceptedPlanHash", "acceptedPlanReserved")];
 
 const fn input(tag: &'static str, data_type: DataType, edge: bool) -> Field {
     Field { tag, data_type, direction: Direction::Input, edge }
@@ -77,6 +80,11 @@ impl Contract {
             return Err("一期严格握手仅适用于 S7 协议".into());
         }
         config.validate()?;
+        for point in &config.points {
+            if let Some((old, new)) = RETIRED_TAGS.iter().find(|(old, _)| point.tags.iter().any(|t| t == old)) {
+                return Err(format!("点位 {} 使用已停用的握手标签 {old}（现为 {new}），请按一期 S7 模板重新生成点表", point.name));
+            }
+        }
         let mut ids = HashMap::new();
         let mut locations = Vec::new();
         for field in FIELDS {
@@ -167,8 +175,9 @@ impl Contract {
         let field = FIELDS.iter().find(|f| f.tag == tag).ok_or_else(|| format!("未知握手标签：{tag}"))?;
         let valid = match (field.data_type, value) {
             (DataType::Bool, PlcValue::Bool(_)) => true,
-            (DataType::U16, PlcValue::Int(n)) => u16::try_from(*n).is_ok(),
-            (DataType::U32, PlcValue::Int(n)) => u32::try_from(*n).is_ok(),
+            (DataType::U16, PlcValue::Int(n)) if u16::try_from(*n).is_err() => return Err(out_of_range(tag, *n, "UInt")),
+            (DataType::U32, PlcValue::Int(n)) if u32::try_from(*n).is_err() => return Err(out_of_range(tag, *n, "UDInt")),
+            (DataType::U16 | DataType::U32, PlcValue::Int(_)) => true,
             _ => false,
         };
         if !valid {
@@ -199,6 +208,10 @@ impl Contract {
         }
         Ok(())
     }
+}
+
+fn out_of_range(tag: &str, value: impl std::fmt::Display, kind: &str) -> String {
+    format!("PLC 字段 {tag}={value} 超出 {kind} 范围，按协议不能截断使用；核对 PLC 程序与点表类型")
 }
 
 #[derive(Clone, Debug)]
@@ -260,28 +273,34 @@ impl Snapshot {
 
     pub(crate) fn read_u32(&self, tag: &str) -> Result<u32, String> {
         match self.values.get(tag) {
-            Some(PlcValue::Int(v)) => u32::try_from(*v).map_err(|_| format!("{tag} 超出 U32 范围")),
+            Some(PlcValue::Int(v)) => u32::try_from(*v).map_err(|_| out_of_range(tag, v, "UDInt")),
             _ => Err(format!("{tag} 不是有效无符号整数")),
         }
     }
 
+    /// UInt 字段：超出 0–65535 报错，不截断。
+    pub(crate) fn read_u16(&self, tag: &str) -> Result<u16, String> {
+        let value = self.read_u32(tag)?;
+        u16::try_from(value).map_err(|_| out_of_range(tag, value, "UInt"))
+    }
+
     pub(crate) fn request(&self) -> Result<Request, String> {
+        if self.read_u32("planReserved")? != 0 { return Err("PLC 计划保留位必须为零".into()); }
         let request = Request {
-            protocol_version: self.read_u32("protocolVersion")? as u16,
+            protocol_version: self.read_u16("protocolVersion")?,
             request_seq: self.read_u32("requestSeq")?,
             sn: self.read_u32("partSn")?,
-            product_code: self.read_u32("productCode")? as u16,
-            shot_count: self.read_u32("shotCount")? as u16,
+            product_code: self.read_u16("productCode")?,
+            shot_count: self.read_u16("shotCount")?,
             plan_version: self.read_u32("planVersion")?,
-            plan_hash: self.read_u32("planHash")?,
-            camera_shots: [self.read_u32("camera1Shots")? as u16, self.read_u32("camera2Shots")? as u16, self.read_u32("camera3Shots")? as u16],
+            camera_shots: [self.read_u16("camera1Shots")?, self.read_u16("camera2Shots")?, self.read_u16("camera3Shots")?],
         };
         request.validate()?;
         Ok(request)
     }
 
     pub(crate) fn trigger_counts(&self) -> Result<[u16; 3], String> {
-        Ok([self.read_u32("camera1Triggers")? as u16, self.read_u32("camera2Triggers")? as u16, self.read_u32("camera3Triggers")? as u16])
+        Ok([self.read_u16("camera1Triggers")?, self.read_u16("camera2Triggers")?, self.read_u16("camera3Triggers")?])
     }
 
     fn start_request(&self) -> Result<Request, String> {
@@ -301,6 +320,30 @@ impl Snapshot {
         }
         self.request()
     }
+
+    /// 空闲时仍为 1 的 PLC 所有握手位：partEnd / resultAck 应在 PLC 释放时与 partStart 一起清零。
+    pub(crate) fn idle_plc_held(&self) -> Result<Vec<&'static str>, String> {
+        let mut held = Vec::new();
+        for tag in ["partEnd", "resultAck"] {
+            if self.read_bool(tag)? { held.push(tag); }
+        }
+        Ok(held)
+    }
+
+    /// 偏离空闲状态（[`idle_plan`]）的视觉所有输出，形如 `visionReady=0`。
+    pub(crate) fn idle_drift(&self) -> Result<Vec<String>, String> {
+        let mut drifted = Vec::new();
+        for op in idle_plan() {
+            match op.value.as_bool() {
+                Some(expected) => if self.read_bool(op.tag)? != expected { drifted.push(format!("{}={}", op.tag, u8::from(!expected))); },
+                None => {
+                    let actual = self.read_u32(op.tag)?;
+                    if Some(actual as u64) != op.value.as_u64() { drifted.push(format!("{}={actual}", op.tag)); }
+                }
+            }
+        }
+        Ok(drifted)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -312,7 +355,6 @@ pub(crate) struct Request {
     pub(crate) product_code: u16,
     pub(crate) shot_count: u16,
     pub(crate) plan_version: u32,
-    pub(crate) plan_hash: u32,
     pub(crate) camera_shots: [u16; 3],
 }
 
@@ -450,7 +492,7 @@ pub(crate) fn arm_plan(request: &Request) -> Vec<WriteOp> {
     vec![
         WriteOp::new("visionReady", json!(false)),
         WriteOp::new("acceptedSeq", json!(request.request_seq)),
-        WriteOp::new("acceptedPlanHash", json!(request.plan_hash)),
+        WriteOp::new("acceptedPlanReserved", json!(0u32)),
         WriteOp::new("busy", json!(true)),
         WriteOp::new("armed", json!(true)),
     ]
@@ -475,6 +517,18 @@ pub(crate) fn release_plan() -> Vec<WriteOp> {
 
 pub(crate) fn fault_plan() -> Vec<WriteOp> {
     vec![WriteOp::new("visionReady", json!(false)), WriteOp::new("armed", json!(false)), WriteOp::new("visionFault", json!(true))]
+}
+
+/// 空闲（无在途事务）时视觉应保持的输出：其余握手位清零、协议版本 1，就绪位最后置位。
+pub(crate) fn idle_plan() -> Vec<WriteOp> {
+    vec![
+        WriteOp::new("armed", json!(false)),
+        WriteOp::new("done", json!(false)),
+        WriteOp::new("busy", json!(false)),
+        WriteOp::new("visionFault", json!(false)),
+        WriteOp::new("pcProtocolVersion", json!(PROTOCOL_VERSION)),
+        WriteOp::new("visionReady", json!(true)),
+    ]
 }
 
 pub(crate) fn reset_plan() -> Vec<WriteOp> {
@@ -667,7 +721,7 @@ mod tests {
         })).collect();
         for (tag, value) in [
             ("protocolVersion", 1), ("pcProtocolVersion", 1), ("requestSeq", 7), ("partSn", 42),
-            ("productCode", 3), ("shotCount", 4), ("planVersion", 2), ("planHash", 99),
+            ("productCode", 3), ("shotCount", 4), ("planVersion", 2), ("planReserved", 0),
             ("camera1Shots", 2), ("camera2Shots", 1), ("camera3Shots", 1),
         ] {
             values.get_mut(tag).unwrap().value = Some(PlcValue::Int(value));
@@ -759,6 +813,40 @@ mod tests {
     }
 
     #[test]
+    fn out_of_range_uint_fields_are_named_instead_of_truncated() {
+        let (contract, status, mut values) = data();
+        values.get_mut("productCode").unwrap().value = Some(PlcValue::Int(70000));
+        let error = Snapshot::from_values(&contract, &status, &values, 1010, 500).unwrap_err();
+        assert!(error.contains("productCode=70000") && error.contains("UInt"), "{error}");
+        values.get_mut("productCode").unwrap().value = Some(PlcValue::Int(3));
+        values.get_mut("requestSeq").unwrap().value = Some(PlcValue::Int(1 << 32));
+        let error = Snapshot::from_values(&contract, &status, &values, 1010, 500).unwrap_err();
+        assert!(error.contains("requestSeq=4294967296") && error.contains("UDInt"), "{error}");
+
+        // 快照之外拿到的值（如测试或后续改动绕过类型校验）也不能被 as u16 截断成 4464 之类
+        for tag in ["protocolVersion", "productCode", "shotCount", "camera1Shots", "camera2Shots", "camera3Shots"] {
+            let mut s = snapshot();
+            s.values.insert(tag, PlcValue::Int(70000));
+            let error = s.request().unwrap_err();
+            assert!(error.contains(&format!("PLC 字段 {tag}=70000 超出 UInt 范围")), "{tag}: {error}");
+        }
+        for tag in ["camera1Triggers", "camera2Triggers", "camera3Triggers"] {
+            let mut s = snapshot();
+            let request = s.request().unwrap();
+            s.values.insert(tag, PlcValue::Int(65536 + 2));
+            let error = s.trigger_counts().unwrap_err();
+            assert!(error.contains(&format!("PLC 字段 {tag}=65538 超出 UInt 范围")), "{tag}: {error}");
+            assert_eq!(s.start_request().unwrap_err(), error);
+            s.values.insert("partEnd", PlcValue::Bool(true));
+            assert_eq!(verify_part_end(&s, &request).unwrap_err(), error);
+        }
+        let mut s = snapshot();
+        s.values.insert("shotCount", PlcValue::Int(65535));
+        s.values.insert("camera1Shots", PlcValue::Int(65533));
+        assert_eq!(s.request().unwrap().shot_count, 65535);
+    }
+
+    #[test]
     fn start_requires_distinct_completed_polls_same_identity_and_connection() {
         let first = snapshot();
         let mut second = first.clone();
@@ -766,7 +854,7 @@ mod tests {
         assert!(confirm_start(&first, &second).is_err());
         second.poll_count += 1;
         assert_eq!(confirm_start(&first, &second).unwrap().camera_shots, [2, 1, 1]);
-        second.values.insert("planHash", PlcValue::Int(100));
+        second.values.insert("planReserved", PlcValue::Int(100));
         assert!(confirm_start(&first, &second).is_err());
         second = first.clone();
         second.poll_count += 2;
@@ -821,6 +909,47 @@ mod tests {
     }
 
     #[test]
+    fn part_end_rejects_extra_count_in_a_used_camera_slot() {
+        let mut s = snapshot();
+        let request = s.request().unwrap();
+        assert_eq!(request.camera_shots, [2, 1, 1]);
+        s.values.insert("partEnd", PlcValue::Bool(true));
+        for (tag, value) in [("camera1Triggers", 3), ("camera2Triggers", 1), ("camera3Triggers", 1)] {
+            s.values.insert(tag, PlcValue::Int(value));
+        }
+        let error = verify_part_end(&s, &request).unwrap_err();
+        assert!(error.contains("[3, 1, 1]") && error.contains("[2, 1, 1]"), "{error}");
+        assert_eq!(s.request().unwrap(), request);
+        s.values.insert("camera1Triggers", PlcValue::Int(2));
+        assert!(verify_part_end(&s, &request).is_ok());
+    }
+
+    #[test]
+    fn part_end_rejects_each_unused_slot_even_when_total_count_matches() {
+        let mut s = snapshot();
+        for (tag, value) in [("camera1Shots", 4), ("camera2Shots", 0), ("camera3Shots", 0)] {
+            s.values.insert(tag, PlcValue::Int(value));
+        }
+        let request = s.request().unwrap();
+        request.validate().unwrap();
+        assert_eq!(request.camera_shots, [4, 0, 0]);
+        s.values.insert("partEnd", PlcValue::Bool(true));
+        for counts in [[4, 1, 0], [4, 0, 1], [3, 1, 0], [3, 0, 1], [4, 0, 0]] {
+            for (tag, value) in ["camera1Triggers", "camera2Triggers", "camera3Triggers"].into_iter().zip(counts) {
+                s.values.insert(tag, PlcValue::Int(value));
+            }
+            let result = verify_part_end(&s, &request);
+            if counts == [4, 0, 0] {
+                assert!(result.is_ok());
+            } else {
+                let error = result.unwrap_err();
+                assert!(error.contains(&format!("{counts:?}")) && error.contains("[4, 0, 0]"), "{error}");
+            }
+            assert_eq!(s.request().unwrap(), request);
+        }
+    }
+
+    #[test]
     fn write_plans_commit_last_and_fault_preserves_unacknowledged_result() {
         let arm = arm_plan(&snapshot().request().unwrap());
         assert_eq!(arm.last().unwrap(), &WriteOp::new("armed", json!(true)));
@@ -829,6 +958,40 @@ mod tests {
         assert!(fault_plan().iter().all(|op| !["done", "busy", "resultSeq", "resultSn", "resultCode", "faultCode"].contains(&op.tag)));
         assert!(!reset_plan().contains(&WriteOp::new("visionReady", json!(true))));
         assert_eq!(release_plan(), vec![WriteOp::new("done", json!(false)), WriteOp::new("busy", json!(false))]);
+    }
+
+    fn idle_snapshot() -> Snapshot {
+        let mut s = snapshot();
+        s.values.insert("partStart", PlcValue::Bool(false));
+        s
+    }
+
+    #[test]
+    fn idle_checks_split_vision_outputs_from_plc_inputs() {
+        // 自动重写只碰 PC 区输出；等待清除的只有 PLC 区输入（协议文档第 2 节的所有者划分）
+        let direction = |tag: &str| FIELDS.iter().find(|f| f.tag == tag).unwrap().direction;
+        assert!(idle_plan().iter().all(|op| direction(op.tag) == Direction::Output));
+        assert_eq!(idle_plan().last().unwrap(), &WriteOp::new("visionReady", json!(true)));
+        let s = idle_snapshot();
+        assert!(s.idle_drift().unwrap().is_empty());
+        assert!(s.idle_plc_held().unwrap().is_empty());
+        assert!(s.idle_plc_held().unwrap().iter().all(|tag| direction(tag) == Direction::Input));
+
+        // PLC 重启 / DB 重新初始化：PC 区读回全 0
+        let mut s = idle_snapshot();
+        for op in idle_plan() {
+            s.values.insert(op.tag, if op.value.is_boolean() { PlcValue::Bool(false) } else { PlcValue::Int(0) });
+        }
+        assert_eq!(s.idle_drift().unwrap(), ["pcProtocolVersion=0", "visionReady=0"]);
+        let mut s = idle_snapshot();
+        for tag in ["armed", "busy", "done", "visionFault"] { s.values.insert(tag, PlcValue::Bool(true)); }
+        assert_eq!(s.idle_drift().unwrap(), ["armed=1", "done=1", "busy=1", "visionFault=1"]);
+
+        let mut s = idle_snapshot();
+        s.values.insert("partEnd", PlcValue::Bool(true));
+        s.values.insert("resultAck", PlcValue::Bool(true));
+        assert_eq!(s.idle_plc_held().unwrap(), ["partEnd", "resultAck"]);
+        assert!(s.idle_drift().unwrap().is_empty());
     }
 
     #[tokio::test]

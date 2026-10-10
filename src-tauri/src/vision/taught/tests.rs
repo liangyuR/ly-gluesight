@@ -109,7 +109,7 @@ fn taught_graph_does_not_fill_or_discard_a_rounding_mismatched_terminal_station(
 fn station_output_maps_global_ids_signed_offsets_and_gaps_without_judging() {
     let recipe = document().build().unwrap();
     let p = plan(&recipe, 1).unwrap();
-    let m = parse_result(&recipe, 1, &p, &result(&recipe, 1, &[5, 6])).unwrap();
+    let m = parse_result(&recipe, &p, &result(&recipe, 1, &[5, 6])).unwrap();
     assert_eq!(m.idx, (41..82).collect::<Vec<_>>());
     assert_eq!(m.d[0], 0.5);
     assert_eq!(m.w[0], 4.0);
@@ -150,21 +150,22 @@ fn station_output_rejects_incomplete_mismatched_and_malformed_results() {
         let mut raw = json!({"summary": good.summary, "outputs": good.outputs});
         *raw.pointer_mut(pointer).unwrap() = value;
         let bad = RunResult { summary: raw["summary"].clone(), outputs: raw["outputs"].clone() };
-        assert!(parse_result(&recipe, 0, &p, &bad).is_err(), "accepted {pointer}");
+        assert!(parse_result(&recipe, &p, &bad).is_err(), "accepted {pointer}");
     }
     let mut bad = result(&recipe, 0, &[1]);
     bad.outputs["stations"]["value"]["data"]["widthPx"][1] = json!(4);
-    assert!(parse_result(&recipe, 0, &p, &bad).unwrap_err().contains("无胶站"));
+    assert!(parse_result(&recipe, &p, &bad).unwrap_err().contains("无胶站"));
 }
 
 #[test]
-fn empty_bead_never_becomes_a_successful_measurement_even_if_all_gaps_are_allowed() {
-    let mut recipe = document().build().unwrap();
-    recipe.segments[0].max_gap_len = 1000.0;
+fn empty_bead_is_measured_as_all_gaps_for_the_judge() {
+    // 整段无胶是漏涂缺陷，交给判定判 NG_GAP（见 judge 的整段无胶用例），不当作测量失败
+    let recipe = document().build().unwrap();
     let p = plan(&recipe, 0).unwrap();
     let all: Vec<_> = (0..p.idx.len()).collect();
-    let error = parse_result(&recipe, 0, &p, &result(&recipe, 0, &all)).unwrap_err();
-    assert!(error.contains("没找到胶"));
+    let m = parse_result(&recipe, &p, &result(&recipe, 0, &all)).unwrap();
+    assert_eq!(m.coverage, 0.0);
+    assert!(m.st.iter().all(|&s| s == ST_GAP));
 }
 
 fn bead_image(bright: bool, gap: bool, blank: bool, center_y: i32) -> FrameImage {
@@ -179,10 +180,6 @@ fn bead_image(bright: bool, gap: bool, blank: bool, center_y: i32) -> FrameImage
         }
     }
     FrameImage::new(width as u32, height as u32, pixels)
-}
-
-fn hash(bytes: &[u8]) -> String {
-    format!("{:016x}", bytes.iter().fold(0xcbf29ce484222325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x100000001b3)))
 }
 
 #[test]
@@ -212,9 +209,11 @@ fn native_taught_measurement_uses_pixels_for_width_offset_gaps_polarity_and_fres
         std::fs::write(dir.join(format!("{name}.lyflow.json")), graph.to_string()).unwrap();
         let run = measure_shot_with_graph(&engine, &recipe, 0, &image, &format!("native-taught-{name}"), "", &graph);
         if blank {
-            let error = run.unwrap_err();
-            assert!(error.contains("没找到胶"), "{error}");
-            evidence.push(json!({"name":name,"fixtureFnv1a64":hash(&pgm),"graphFnv1a64":hash(graph.to_string().as_bytes()),"error":error}));
+            // 空白图照常返回测量：每站都是无胶，交给判定判断胶
+            let m = run.unwrap();
+            assert_eq!((m.idx.len(), m.coverage), (41, 0.0));
+            assert!(m.st.iter().all(|&s| s == ST_GAP));
+            evidence.push(json!({"name":name,"fixtureBytes":pgm.len(),"measurement":m}));
         } else {
             let m = run.unwrap();
             assert_eq!(m.idx.len(), 41);
@@ -227,7 +226,7 @@ fn native_taught_measurement_uses_pixels_for_width_offset_gaps_polarity_and_fres
                 let expected = (center_y as f32 - 80.5) * 0.25;
                 assert!((m.d[i] - expected).abs() < 0.3, "{name}: {} != {expected}", m.d[i]);
             }
-            evidence.push(json!({"name":name,"fixtureFnv1a64":hash(&pgm),"graphFnv1a64":hash(graph.to_string().as_bytes()),"measurement":m}));
+            evidence.push(json!({"name":name,"fixtureBytes":pgm.len(),"measurement":m}));
         }
     }
     let mut doc = document();
@@ -239,7 +238,7 @@ fn native_taught_measurement_uses_pixels_for_width_offset_gaps_polarity_and_fres
     altered["nodes"][2]["params"]["stationStep"] = json!(8);
     assert!(measure_shot_with_graph(&engine, &recipe, 0, &bead_image(false, false, false, 82), "native-taught-altered", "", &altered).unwrap_err().contains("发布包算法图"));
     let report = json!({"source":"synthetic full-resolution pixels; not field accuracy acceptance", "engine":engine.path,
-        "engineFnv1a64":hash(&std::fs::read(&dll).unwrap()), "version":engine.version, "cases":evidence});
+        "version":engine.version, "cases":evidence});
     std::fs::write(dir.join("report.json"), serde_json::to_string_pretty(&report).unwrap()).unwrap();
     println!("Native taught-path evidence: {}", dir.display());
 }

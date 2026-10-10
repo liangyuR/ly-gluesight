@@ -16,7 +16,7 @@
 
 ## 2. DB100 点表
 
-使用**关闭优化块访问的标准 DB**，至少 88 字节。多字节值为 S7 大端 ABCD；PC `u16/u32` 对应 PLC `UInt/UDInt`，不能用有符号 `Int/DInt` 接收大于其上限的 hash/序号。布尔按指定 bit 访问。
+使用**关闭优化块访问的标准 DB**，至少 88 字节。多字节值为 S7 大端 ABCD；PC `u16/u32` 对应 PLC `UInt/UDInt`，不能用有符号 `Int/DInt` 接收大于其上限的 序号。布尔按指定 bit 访问。
 
 | 所有者 | 地址 | 类型 | 标签及含义 |
 | --- | --- | --- | --- |
@@ -30,14 +30,14 @@
 | PLC | DB100.DBD8 | UDInt | `partSn`：工件 SN，不替代事务序号 |
 | PLC | DB100.DBW12 | UInt | `productCode`：选择已发布配方的产品代码 |
 | PLC | DB100.DBW14 | UInt | `shotCount`：本件总拍照数，1–65535 |
-| PLC | DB100.DBD16 | UDInt | `planVersion`：导出的配方计划版本 |
-| PLC | DB100.DBD20 | UDInt | `planHash`：导出的 32 位计划摘要 |
+| PLC | DB100.DBD16 | UDInt | `planVersion`：导出的拍照计划版本（配方库分配、全局唯一，不等于配方版本号） |
+| PLC | DB100.DBD20 | UDInt | `planReserved`：保留位，PLC 写零，不参与匹配 |
 | PLC | DB100.DBW24 / DBW26 / DBW28 | UInt ×3 | `camera1Shots / camera2Shots / camera3Shots`：各槽计划数，总和等于 shotCount |
 | PLC | DB100.DBD32 | UDInt | `ackSeq`：确认时回显本件 resultSeq |
 | PLC | DB100.DBW36 / DBW38 / DBW40 | UInt ×3 | `camera1Triggers / camera2Triggers / camera3Triggers`：本件已发脉冲数；布防前为 0，结束时等于计划数 |
 | PLC | DBB0 保留位、DBB1、DBW30、DBB42–63 | 保留 | 不另作跨方向写入字段 |
 | PC | DB100.DBX64.0 | Bool | `visionReady`：可以接收下一件；不能仅凭连接成功启动 |
-| PC | DB100.DBX64.1 | Bool | `armed`：本件布防完成；结合 acceptedSeq/hash 核对 |
+| PC | DB100.DBX64.1 | Bool | `armed`：本件布防完成；结合 acceptedSeq 核对 |
 | PC | DB100.DBX64.2 | Bool | `busy`：事务处理中，直到有效 ACK 后清除 |
 | PC | DB100.DBX64.3 | Bool | `done`：结果提交标志；结果 payload 写好后最后置位 |
 | PC | DB100.DBX64.4 | Bool | `visionFault`：协议/设备故障，需处置并复位 |
@@ -48,7 +48,7 @@
 | PC | DB100.DBW76 | UInt | `resultCode`：整件结果码 |
 | PC | DB100.DBW78 | UInt | `faultCode`：检测异常码；正常质量结果为 0 |
 | PC | DB100.DBD80 | UDInt | `acceptedSeq`：已接受并布防的 requestSeq |
-| PC | DB100.DBD84 | UDInt | `acceptedPlanHash`：已接受的 planHash |
+| PC | DB100.DBD84 | UDInt | `acceptedPlanReserved`：保留位，PC 写零，不参与匹配 |
 | PC | DBB64 保留位、DBB65 | 保留 | PLC 不写 |
 
 SCL 使用符号 DB 名 `GlueSightHandshake`。导入后在 TIA 的块属性中**明确指定编号 100**，关闭优化访问，查看每个字段的实际偏移；源文件的符号名称本身不会保证自动分配到 DB100。使用其他 DB 编号时，同步改 PC 模板和测试 peer 的 `--db`。
@@ -56,8 +56,8 @@ SCL 使用符号 DB 名 `GlueSightHandshake`。导入后在 TIA 的块属性中*
 ## 3. 正常一件时序
 
 1. **等就绪。** 已完成本连接的显式复位，观察到 PC 心跳变化；`visionReady=1` 且 `visionFault/armed/busy/done=0`，PLC `partStart/partEnd/resultAck=0`。不能将重连前残留的 ready 高电平直接当作新会话就绪。
-2. **先 payload，后 start。** PLC 在新工件上递增非零 `requestSeq`，写 SN、产品代码、计划版本/hash、总数、各槽计划数，清三个触发数和旧 ACK，再最后置 `partStart=1`。上述请求字段在整件期间冻结，包含等待结果和等待 ACK 释放阶段。
-3. **等布防承诺。** 必须同时满足 `armed=1`、`busy=1`、`visionReady=0`、`acceptedSeq=requestSeq`、`acceptedPlanHash=planHash`，才开启现场 `TriggerPermit`。不以任意单一高电平代替这组条件。
+2. **先 payload，后 start。** PLC 在新工件上递增非零 `requestSeq`，写 SN、产品代码、计划版本、总数、各槽计划数，清三个触发数和旧 ACK，再最后置 `partStart=1`。上述请求字段在整件期间冻结，包含等待结果和等待 ACK 释放阶段。
+3. **等布防承诺。** 必须同时满足 `armed=1`、`busy=1`、`visionReady=0`、`acceptedSeq=requestSeq`，才开启现场 `TriggerPermit`。不以任意单一高电平代替这组条件。
 4. **运动与硬触发。** 现场程序按已核对的拍照点次序向对应相机发脉冲。SCL 在布防确认时冻结三路累计脉冲计数基线，以增量形成本件触发数；计数回退、超计划、错误槽位均停止新触发。`IssuedPulseCount` 在一件内不得重置/回绕。
 5. **先最终计数，后结束。** 运动完成后，各槽实际触发数必须分别等于计划数，再置 `partEnd=1`；`partStart` 继续保持。PC 核对计数并等待图像及测量完成。
 6. **先验证并接收结果，后 ACK。** `done=1` 时核对 `resultSeq=requestSeq`、`resultSn=partSn`，检查结果码及异常码并在 PLC 侧锁存；随后写 `ackSeq=resultSeq`，最后置 `resultAck=1`。有效 NG/检测异常表示已收到了该件结论，ACK 不表示良品放行。
@@ -76,6 +76,15 @@ PC 启动、重新建立 S7 连接或发现配置变化后进入复位要求态�
 参考 FB 收到合格复位请求后释放 PLC 的 start/end/ACK，将 `faultReset` 保持低至少 1 s，再置高并保持至少 500 ms，直到看到 **ready 的低状态再到高状态**、`pcProtocolVersion=1`，且 armed/busy/done/visionFault 全低。这样可覆盖初始 Fault/ResetRequired，以及无在途时从 Idle 发起明确复位；不会把先前残留的 ready 高电平认作复位成功。若现场扫描错过 ready 低相或 PC 未处理请求，复位超时停在故障态，必须重做新低→高请求，不能直接放行。
 
 如果 PC 还有在途请求，应先让该请求进入明确故障并完成实物处置；不能在运转中清 PLC 输入来强行切下一件。中性基线期间保持 requestSeq、ackSeq 不变。两个方向的心跳都要求观察**变化**；恒定 1 与恒定 0 都不是活性证据。参考 PLC 在 PC 心跳 3 s 不变时停新触发并锁故障；PC 对 PLC 心跳同样使用 3 s 变化超时。
+
+**空闲时（没有在途事务）能恢复的不判故障，也不需要复位：**
+
+- PC 输出区（visionReady/armed/busy/done/visionFault/pcProtocolVersion）偏离空闲状态，典型是 PLC 重启或 DB 重新初始化后读回 0：PC 记审计 `idleOutputsRestored`，先清其他输出、最后置 visionReady，告警提示后继续。60 s 内第 3 次被改写才判故障（有写入方在持续覆盖 PC 区）。
+- PLC 侧握手位 partEnd / resultAck 在空闲时仍为 1：PC 不写、不判故障，只显示"等待 PLC 清除"；清除前 PLC 若发起新件，按开始校验判握手故障（分不清残留位属于哪一件）。
+- 检测设备（相机等）未就绪：PC 撤下 visionReady 暂停接件，设备恢复后自动重新置位。已经在 ready=1 时到来的 partStart 照常接下，该件按设备丢失判 ERR 98。
+- PLC 心跳中断、S7 重连仍进入复位要求态，按上面的恢复顺序处理。
+
+**触发计数错位：** 每件的 ERR 91（缺帧）/ 96（多帧）原因都写明相机、本件应收的计数范围和实际收到的计数，并区分跳号（相机计了数但帧在传输中丢了）、末尾未到、不大于本件基线（被当作上一件的迟到帧）。一件在 partEnd 前就判 ERR（运动超时等）时，PC 在 PLC 确认结果那一刻读各槽的已发触发数推下一件基线，不再按计划数假定。相机漏了一个脉冲时，按计数分不清"漏脉冲"和"上一件末帧迟到 / 相机晚一帧送出"，为了不把帧绑错拍照点，PC 不自动改基线：之后每件都以明确原因判 ERR 91，执行故障复位后重新对齐。PC 在空闲时发起复位会先置 visionFault=1，参考 FB 随之进入 7002，PLC 侧也要复位。
 
 SCL 的故障分支不清请求 payload、start/end/ACK、锁存结果或 pending；只有明确处置后的复位、或成功完成结果释放才结束 pending。配置 TIA 保持性时，明确保存 PLC 请求区、事务序号及 FB pending/结果信息；还要验证 CPU 冷启动、下载和断电造成数据丢失时仍停在复位态，由双方日志和实物决定处置，不能推断旧件成功。
 
@@ -105,15 +114,15 @@ SCL 的故障分支不清请求 payload、start/end/ACK、锁存结果或 pendin
 | 97 | 运动结束超时 |
 | 98 | 设备丢失 |
 | 99 | 测量超时或测量执行失败 |
-| 100 | 计划版本/hash、槽映射或计划内容与 PC 不一致 |
+| 100 | 计划版本、槽映射或计划内容与 PC 不一致 |
 
 协议身份不一致、回写失败和心跳失活可能只体现为 `visionFault` 与应用错误原因，不保证一定生成可提交的 `done/resultCode=90`；没有有效 done 时不得读取旧结果当新结论。未知结果/异常组合按异常处理，不作为 OK。
 
 SCL `LocalDiagnostic` 是 PLC FB 本地诊断，**不写 DBW78**，也不是 PC faultCode：7000 启动/未知状态需复位；7001 PC 心跳超时；7002 PC 协议故障；7003 阶段超时；7004 新件计划/前置条件错误；7005 布防或结果身份/状态不符；7006 触发计数不符；7007 序号耗尽；7008 在途 payload 被修改；7009 外部设备互锁故障。
 
-## 6. 计划 JSON、版本与 hash
+## 6. 计划 JSON、版本与实际字段
 
-在 PLC 通讯页使用“配方握手计划 · 只读”，选择已保存的生产配方，复制完整计划 JSON。候选草稿没有在此处发布；复制操作不写 PLC。将 `planVersion/planHash/shotCount/cameraShots` 与现场机器人/PLC 路径版本一起评审并配置。`cameraSlots` 的数组顺序定义协议槽，不能按相机连接顺序随意重排。
+在 PLC 通讯页使用“配方握手计划 · 只读”，选择已保存的生产配方，复制完整计划 JSON。候选草稿没有在此处发布；复制操作不写 PLC。将 `planVersion/shotCount/cameraShots` 与现场机器人/PLC 路径版本一起评审并配置。`cameraSlots` 的数组顺序定义协议槽，不能按相机连接顺序随意重排。
 
 以下是算法示例，不是现场配方。两点属于同一台相机，因此计划数为 `[2,0,0]`：
 
@@ -122,7 +131,6 @@ SCL `LocalDiagnostic` 是 PLC FB 本地诊断，**不写 DBW78**，也不是 PC 
   "protocolVersion": 1,
   "recipeId": "DEMO",
   "planVersion": 1,
-  "planHash": 581977774,
   "shotCount": 2,
   "cameraSlots": ["cam1", "", ""],
   "cameraShots": [2, 0, 0],
@@ -133,9 +141,11 @@ SCL `LocalDiagnostic` 是 PLC FB 本地诊断，**不写 DBW78**，也不是 PC 
 }
 ```
 
-当前 `plc_plan.rs` 对 UTF-8 紧凑 JSON 元组 `[1,recipeId,planVersion,cameraSlots,shots]` 做 32 位 FNV-1a：初始 `2166136261`，每字节执行 `h = ((h XOR byte) × 16777619) mod 2^32`。顺序、Pose、相机绑定和版本均影响 hash；序列化采用 Rust `serde_json` 与 `PlanShot` 字段顺序（`shotId`、`poseId`、`cameraId`）。示例的 hash 由 `plc_plan.rs` 的单元测试 `documented_example_hash` 固定，改 hash 输入时两边同步修改。**PLC 应复制应用导出的数值，不在 PLC 中重新拼 JSON 算 hash**；美化后的 JSON 不是原始 hash 输入。该 32 位值用于版本一致性核对，不是无碰撞证明或认证机制。
+旧点表里的 `planHash` / `acceptedPlanHash` 点名不再自动改名，校验时直接拒绝并提示新点名，需要用 S7 模板重新生成点表。
 
-`productCode` 在当前计划 JSON 中不提供，需从生产配方另外核对并写 DBW12。一期按拍照点在图像里检测，计划不含工件坐标。`poseId` 是现场机器人 / PLC 程序里的 Pose 标识，同一 Pose 可同时触发几台相机，因此不要求唯一；机器人程序与物理输出映射不在 JSON 内，需保存在现场的对应表。修改产品代码、拍照计划或槽映射后重新导出、评审和验证，不能只保留旧 hash。
+拍照计划不计算或比较内容哈希。`planVersion` 由配方库在保存/发布时逐字段比较后分配：产品代码或拍照点的顺序、编号、Pose、相机任一项变了才换新号，新号比所有用过的号都大（删掉重建、换产品代码也不复用旧号）；只改限值、检测参数、示教中线或"不检"时沿用原号，PLC 不用跟着改。发布页会提示本次发布是否改变拍照计划；改变时，生效后 PLC 侧须同步新的 `planVersion` 与各槽计数，否则拒绝布防（故障 100）。复制配方文件造成计划版本重复时，复制件不加载。导出的 shotId、poseId、cameraId 与槽映射直接供现场评审，PLC 使用计划版本、总数和各槽计数核对。DBD20/84 保持原地址/字宽作为零值保留位，非零值拒绝布防/在途处理，其他地址不移动。旧现场程序若仍要求摘要相等，需要同步更新后再联调。
+
+`productCode` 在当前计划 JSON 中不提供，需从生产配方另外核对并写 DBW12。一期按拍照点在图像里检测，计划不含工件坐标。`poseId` 是现场机器人 / PLC 程序里的 Pose 标识，同一 Pose 可同时触发几台相机，因此不要求唯一；机器人程序与物理输出映射不在 JSON 内，需保存在现场的对应表。修改产品代码、拍照计划或槽映射后重新导出、评审和验证，必须分配新版本并重新评审实际字段。
 
 ## 7. SCL 接入与调试
 
@@ -144,7 +154,7 @@ SCL `LocalDiagnostic` 是 PLC FB 本地诊断，**不写 DBW78**，也不是 PC 
 3. 建立 FB 实例并在循环程序中每扫描调用，按 CPU 启动机制给 `Startup` 首扫描脉冲。接入 NewPart、人工 ResetRequest/ReconcileConfirmed、现场计数与 MotionComplete、外部互锁及计划参数；先调用 FB，再由现场输出逻辑依据 TriggerPermit 放行。参考代码采用 IEC_TIMER 多重实例和 TON，具体 CPU/TIA 的声明及调用须通过编译确认，见 [Siemens IEC 定时器调用](https://docs.tia.siemens.cloud/r/en-us/v20/scl-s7-1200-s7-1500/timer-operations-s7-1200-s7-1500/calling-iec-timers-s7-1200-s7-1500)。
 4. 对 SCL 做 TIA 编译，修复版本相关语法/类型差异后再次核对 DB 偏移与跨方向写入。参考阶段超时是联调起点：布防 10 s、运动 30 s、结果 10 s、释放 10 s、复位 10 s；均应为正值，并按现场节拍与 PC 超时预算核准，不能视作现场 SLA。
 5. GlueSight 加载一期 S7 模板，确认实际连接参数和 DB，保持自动连接关闭，核对地址表、UInt/UDInt、ABCD 及 pcHeartbeat 绑定；应用保留握手点的写入所有权。准备兼容的 lyFlow DLL、设备驱动、已标定/示教/验证的生产配方，导出实际计划。
-6. 首先在无硬触发输出的条件下完成首次低基线和显式复位。分别看两个心跳变化，确认 ready、版本、armed/busy/done/fault 状态，运行一件握手检查 SN/seq/hash 对应及释放顺序。
+6. 首先在无硬触发输出的条件下完成首次低基线和显式复位。分别看两个心跳变化，确认 ready、版本、armed/busy/done/fault 状态，运行一件握手检查 SN/seq/版本 对应及释放顺序。
 7. 接通现场触发后验证每槽计数、第一/最后一帧缺失、错误相机、额外脉冲、乱序、触发间隔和结果截止。核对 NG、ERR 以及未知结果不会错误放行。
 8. 验证读写拒绝、写入已发生但响应丢失、心跳冻结、网线断开、PC/PLC 重启、错误 ACK、旧 reset 高电平和未结件恢复。确认不能切新件或丢弃 pending，并保存PLC观察表、应用日志、计划和原图证据。
 
@@ -161,7 +171,7 @@ python -u scripts/s7-handshake/s7_test_plc.py --port 0
 
 2026-10-09，该 Python 测试命令在主机环境 21 项通过，含固定黄金报文、bit 邻位保护、多 item 填充、分包/粘包、拒绝、延迟、执行前后断线与重连、心跳冻结和进程控制。Windows 沙箱若拒绝 localhost 连接（WinError 10013），需要在获准主机环境运行同一测试，不能跳过 TCP 后记为通过。
 
-Rust 默认回归 59 项通过、0 失败；默认忽略的 17 项 S7 线协议测试已单独运行，3 项实际 DLL 测试本轮未执行。会话专项在真实 `ly_plc::PlcEngine` 和回环 S7 服务之间运行，**17 项线协议场景和 1 项事务文件恢复全部通过**，耗时 103.46 秒；文件恢复项也包含在默认 59 项中，不重复累计。覆盖同 SN 不同序号、计划拒收、早/迟 ACK、写拒绝、执行后断线、释放失败、重启、腐坏日志、审计失败、慢落盘、停止心跳，以及校验后重连禁止布防。复现命令在 `src-tauri` 下运行：
+P0 集成分支上，Rust 默认回归 339 项通过、35 项默认忽略；会话专项（`plc_session` 过滤，含 29 项线协议场景）41 项全部通过（57.76 秒）。会话专项在真实 `ly_plc::PlcEngine` 和回环 S7 服务之间运行，覆盖同 SN 不同序号、计划拒收、早/迟 ACK、写拒绝、执行后断线、释放失败、重启、腐坏日志、审计失败、慢落盘、停止心跳、校验后重连禁止布防，以及空闲时 DB 重新初始化自动恢复、反复被改写判故障、PLC 残留握手位等待、设备未就绪撤下 ready。复现命令在 `src-tauri` 下运行：
 
 ```powershell
 cargo test --offline --lib

@@ -62,7 +62,7 @@ export default function S7RecipePlanPanel() {
       {plan && <button className="btn" disabled={copying} onClick={() => void copy()}>{copied ? "已复制 JSON" : "复制计划 JSON"}</button>}
       <button className="btn" disabled={loading} onClick={() => void load()}>{recipes ? "刷新配方计划" : "读取配方计划"}</button>
     </div></div>
-    <p className="muted hint top">读取已保存的生产配方，供 PLC 程序核对协议版本、计划摘要和各相机点数。读取和复制不会更改 PLC；候选草稿不在此处生效。</p>
+    <p className="muted hint top">读取已保存的生产配方，供 PLC 程序核对协议版本、计划版本和各相机点数。读取和复制不会更改 PLC；候选草稿不在此处生效。</p>
     {recipes && <label className="field"><span>生产配方</span><select className="input" value={selected} onChange={event => void readPlan(event.target.value)}>
       <option value="">请选择生产配方</option>{recipes.map(recipe => <option key={recipe.id} value={recipe.id}>{recipe.name} · {recipe.id} · v{recipe.version}</option>)}
     </select></label>}
@@ -70,7 +70,7 @@ export default function S7RecipePlanPanel() {
     {loading && <p role="status">正在读取配方计划…</p>}
     {error && <p role="alert" className="notice error">{error}</p>}
     {plan && <>
-      <p className="hint">协议 {plan.protocolVersion} · 计划版本 {plan.planVersion} · 摘要 <span className="mono">{plan.planHash}</span> · 共 {plan.shotCount} 个拍照点</p>
+      <p className="hint">协议 {plan.protocolVersion} · 计划版本 {plan.planVersion} · 共 {plan.shotCount} 个拍照点</p>
       <div className="table-wrap"><table className="table"><thead><tr><th>PLC 相机槽位</th><th>相机编号</th><th>计划点数</th></tr></thead><tbody>
         {plan.cameraSlots.map((camera, index) => <tr key={index}><td>相机 {index + 1}</td><td>{camera || "未配置"}</td><td>{plan.cameraShots[index]}</td></tr>)}
       </tbody></table></div>

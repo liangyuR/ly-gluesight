@@ -140,12 +140,12 @@ fn run_shot(engine: &Engine, recipe: &Recipe, k: usize, image: &FrameImage, run_
         return Err("示教中线超出当前完整图像，请确认视角和图像尺寸".into());
     }
     let result = engine.run(&p.graph.to_string(), run_id, base_dir, image, &json!({}))?;
-    let mut measured = parse_result(recipe, k, &p, &result)?;
+    let mut measured = parse_result(recipe, &p, &result)?;
     measured.ms = start.elapsed().as_millis().min(u32::MAX as u128) as u32;
     Ok(measured)
 }
 
-fn parse_result(recipe: &Recipe, k: usize, p: &ShotPlan, result: &RunResult) -> Result<ShotMeasurement, String> {
+fn parse_result(recipe: &Recipe, p: &ShotPlan, result: &RunResult) -> Result<ShotMeasurement, String> {
     if result.status() != "ok" { return Err(result.failure()); }
     let stations = result.record("stations").ok_or("算法缺少逐站结果")?;
     let info = result.record("beadInfo").ok_or("算法缺少逐站汇总")?;
@@ -202,10 +202,7 @@ fn parse_result(recipe: &Recipe, k: usize, p: &ShotPlan, result: &RunResult) -> 
             m.px.push([center[0] as f32, center[1] as f32]);
         }
     }
-    if present == 0 {
-        let reason = info["reason"].as_str().filter(|s| !s.is_empty()).unwrap_or("整条示教中线没有量到胶");
-        return Err(format!("拍照点 {} 检测区内没找到胶：{reason}", recipe.shots[k].id));
-    }
+    // 整条中线一站都没有胶：照常作为测量交给判定（整段断胶判 NG），不当作测量失败
     m.coverage = present as f32 / n as f32;
     if info["present"].as_u64() != Some(present as u64) || info["coverage"].as_f64().is_none_or(|x| !x.is_finite() || (x - m.coverage as f64).abs() > 0.00015) {
         return Err("算法逐站汇总与有胶状态不一致".into());

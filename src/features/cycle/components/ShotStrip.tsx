@@ -30,7 +30,7 @@ function footer(f: FrameView) {
 }
 
 export default function ShotStrip({ layout, part, vis, selected, onSelect }: { layout: Recipe; part: PartView | null; vis: PointVis[]; selected?:number; onSelect?:(k:number)=>void }) {
-  const frames = part && part.recipeId === layout.id && part.recipeHash === layout.hash ? part.frames : null;
+  const frames = part && part.recipeId === layout.id && part.recipeRevision === layout.revisionId ? part.frames : null;
   return (
     <div className="shot-strip" style={{ gridTemplateColumns: `repeat(${layout.shots.length}, minmax(0, 1fr))` }}>
       {layout.shots.map((shot, k) => {

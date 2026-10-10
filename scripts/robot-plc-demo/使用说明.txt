@@ -12,5 +12,8 @@ GlueSight Robot + PLC 模拟服务
 
 默认联调台：http://127.0.0.1:8766/
 服务配置：demo.config.json
+默认夹具：ROBOT-DEMO-TRICAM，单台三目 cam1，四点视角 1→2→3→1。
+单视角与三设备夹具保留在 fixtures；切换时同步配置配方和模拟设备视角数。
+sim:test 使用测试应答验证协议，不证明桌面真实 DLL 图像闭环。
 双击“启动联调.cmd”可启动已有桌面联调并打开控制台。
 日志、图像、报告和程序放在仓库 output/playwright/robot-plc-demo，已从 Git 排除。

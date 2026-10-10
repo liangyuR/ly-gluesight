@@ -41,6 +41,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const acting = useRef(false);
   const selected = useRef<string | null>(null);
   const dirtyRef = useRef(false);
+  const pendingRefresh = useRef<string | null>(null);
+  const [refreshRevision, setRefreshRevision] = useState(0);
   const shotList=useRef("");
   const shotSources=useRef<string[]>([]);
   const dirty = !!doc && !!data && !equal(doc, data.workspace.doc);
@@ -54,7 +56,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const key=JSON.stringify([next.workspace.doc.id,next.workspace.doc.shots.map(s=>s.id)]);
     const changed=key!==shotList.current;shotList.current=key;
     const previousSources=shotSources.current;
-    const sources=next.workspace.doc.shots.map(s=>JSON.stringify([s.id,s.camera,s.view]));
+    const sources=next.workspace.doc.shots.map(s=>JSON.stringify([s.id,s.poseId,s.camera,s.view,s.calib]));
     shotSources.current=sources;
     setData(next);
     setDoc(next.workspace.doc);
@@ -84,6 +86,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const select = useCallback(async (id: string) => {
+    pendingRefresh.current = null;
     const serial = ++requestSerial.current;
     selected.current = id;
     setSelectedId(id);
@@ -111,16 +114,34 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       const ids = [...records.recipes.map(r => r.id), ...drafts.map(w => w.doc.id)];
       if (alive && !selected.current && ids.length) await select(preferred && ids.includes(preferred) ? preferred : ids[0]);
     }).catch(e => setError(String(e)));
-    const off = subscribe<string>("workspace://changed", id => {
+    const refresh = (id: string) => {
       void reloadList().catch(e => setError(String(e)));
-      if (id === selected.current && !dirtyRef.current && !acting.current) {
-        const serial = ++requestSerial.current;
-        const current = () => alive && serial === requestSerial.current && id === selected.current && !dirtyRef.current && !acting.current;
-        void workspaceApi.get(id).then(next => { if (current()) accept(next); }).catch(e => { if (current()) setError(String(e)); });
+      if (id && id === selected.current) {
+        pendingRefresh.current = id;
+        setRefreshRevision(revision => revision + 1);
       }
-    });
-    return () => { alive = false; requestSerial.current++; off(); };
+    };
+    const off = subscribe<string>("workspace://changed", refresh);
+    const offCameras = subscribe<unknown>("camera://changed", () => refresh(selected.current ?? ""));
+    const offCalibration = subscribe<unknown>("calibration://changed", () => refresh(selected.current ?? ""));
+    const offSettings = subscribe<unknown>("cycle://settings-changed", () => refresh(selected.current ?? ""));
+    return () => { alive = false; requestSerial.current++; off(); offCameras(); offCalibration(); offSettings(); };
   }, [reloadList, select, accept]);
+
+  useEffect(() => {
+    const id = pendingRefresh.current;
+    if (!id || id !== selectedId || dirty || frameDirty || busy || !desktopAvailable()) return;
+    let alive = true;
+    const serial = ++requestSerial.current;
+    const current = () => alive && serial === requestSerial.current && id === selected.current && !dirtyRef.current && !acting.current;
+    void workspaceApi.get(id).then(next => {
+      if (!current()) return;
+      if (next.workspace.doc.id !== id) throw new Error("候选响应与所选配方不一致，请重试选择");
+      pendingRefresh.current = null;
+      accept(next);
+    }).catch(e => { if (current()) setError(String(e)); });
+    return () => { alive = false; };
+  }, [refreshRevision, selectedId, dirty, frameDirty, busy, accept]);
 
   useEffect(() => {
     if (!doc || !desktopAvailable() || equal(doc, data?.workspace.doc)) return;
@@ -159,7 +180,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, [doc, data, act]);
 
   return <Context.Provider value={{ list, drafts, cameras, selectedId, data, doc, preview, previewError, error, busy, dirty, frameDirty,
-    clearSelection:()=>{requestSerial.current++;selected.current=null;setSelectedId(null);setData(null);setDoc(null);setPreview(null);setFrameDrafts({});setError("");setNotice("");},
+    clearSelection:()=>{pendingRefresh.current=null;requestSerial.current++;selected.current=null;setSelectedId(null);setData(null);setDoc(null);setPreview(null);setFrameDrafts({});setError("");setNotice("");},
     frameDrafts, select, reloadList, setDoc, setFrameDraft:(k, teach) => setFrameDrafts(previous => ({ ...previous, [k]:teach })),
     act, saveDoc, notice, setError }}>{children}</Context.Provider>;
 }

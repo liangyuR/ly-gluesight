@@ -10,7 +10,7 @@ async (page) => {
   if (await page.getByRole("alert").count()) throw new Error(await page.getByRole("alert").allTextContents());
   await page.getByRole("button",{name:"清空筛选",exact:true}).click();
   const result={operation:"通讯日志点位筛选、真实趋势、关闭实时跟随、导出 CSV 与清空筛选",startedAt,completedAt:new Date().toISOString(),downloadPrefix:"plc-log-",fileVerificationRequired:true};
-  await page.screenshot({path:"D:\\project\\ly-gluesight\\output\\playwright\\ui-regression\\plc-log-export.png",fullPage:true});
+  await page.screenshot({path:"output/playwright\\ui-regression\\plc-log-export.png",fullPage:true});
   // WebView2 可能直接写入系统下载目录而不发送 CDP download 事件。
   // 运行后核实该时间范围内的新 CSV 文件，并将文件证据合并到最终报告。
   return result;

@@ -1,6 +1,9 @@
 {
   "productName": "GlueSight · 胶路智检 UI Tests",
   "identifier": "com.xyzrobotics.tujiaovision.ui-tests",
+  "build": {
+    "beforeBuildCommand": "node node_modules/typescript/bin/tsc -b && node node_modules/vite/bin/vite.js build"
+  },
   "app": {
     "windows": [{ "label": "main", "title": "GlueSight · 胶路智检 UI Tests", "visible": false, "width": 1440, "height": 900, "minWidth": 1100, "minHeight": 700 }]
   },

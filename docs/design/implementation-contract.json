@@ -59,7 +59,7 @@
       },
       "trialPass": "定位通过、分数满足最低值、有效测量覆盖至少 99.5%；no_bead 可证明测量完成，整件缺胶由 judge 判定"
     },
-    "publicationAssets": "template、stations（含 workspaceParams）、calib 与示教 manifest；teachingHash 参与配方内容哈希",
+    "publicationAssets": "template、stations（含 workspaceParams）、calib 与示教 manifest；teachingId 为明确修订 ID；配方使用 id/version，不计算内容哈希",
     "sharedUse": "单帧试测、导入原图样本验证、历史原图复测与在线飞拍使用同一图和已保存工位参数",
     "runtimeCompatibility": "客户端固定到 lyFlow 5b796c3，通过 Image ABI v15 注入完整灰度帧；运行时需加载与该 ABI 兼容、包含图像与 glue 算子的 core DLL。验证命令和证据范围见 docs/testing/TESTING.md。"
   },

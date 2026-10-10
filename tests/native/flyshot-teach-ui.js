@@ -41,6 +41,6 @@ async (page) => {
   }
   const result = { operation:"四帧真实取样、模板指针拖动、LyFlow 原图定位与测量、逐帧保存", passed:true, frames, fixture:"按名义圆角矩形渲染的合成灰度图；不代表现场精度" };
   await page.evaluate(result => window.__uiOperations.checks.push(result), result);
-  await page.screenshot({ path:"D:\\project\\ly-gluesight\\output\\playwright\\ui-regression\\flyshot-teaching.png", fullPage:true });
+  await page.screenshot({ path:"output/playwright\\ui-regression\\flyshot-teaching.png", fullPage:true });
   return result;
 }
