@@ -5,6 +5,7 @@ import { dirname, join, resolve, win32 } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
 import { recipeContract } from '../../scripts/robot-plc-demo/camera-bridge.mjs';
+import { captureTeachingSample } from './p0-clean-cyclehost-setup.mjs';
 
 const execute = promisify(execFile);
 const commandEnvironment = { ...process.env, PATH: (process.env.PATH ?? '').split(';').filter(entry => !/^d:/i.test(entry)).join(';') };
@@ -156,7 +157,7 @@ async function main() {
   const report = { schemaVersion: 1, startedAt: new Date().toISOString(), stage: values.stage, passed: false, published: false, strictValidationPassed: false, robotFiveScenariosPassed: false,
     scope: 'Actual default noisy Sim four-shot desktop teaching and strict image validation; no clean fixture or label relaxation',
     physicalValidation: false, s7HardwareValidation: false, benchmark: false, identifier, profile, sourceGate: values['source-gate'],
-    sourceAttestation: 'Build manifest source gate plus current source/PID/start-time/CDP ancestry guards; no executable content fingerprint', instance, process: identity, captures: [], trials: [] };
+    sourceAttestation: 'Build manifest source gate plus current source/PID/start-time/CDP ancestry guards; no executable content fingerprint', instance, process: identity, captures: [], captureRetries: [], trials: [] };
   let browser, page, read;
   try {
     const { chromium } = await import(pathToFileURL(cPath(values['playwright-module'])).href);
@@ -231,8 +232,8 @@ async function main() {
         assert(!(await workspace()).workspace.frames[k].image, 'Do not replace an earlier teaching frame');
         const capture = async () => {
           const previous = (await workspace()).workspace.frames[k].image?.id;
-          await page.getByRole('button', { name: '取新样本', exact: true }).click();
-          const state = await until(state => state.workspace.frames[k].image && state.workspace.frames[k].image.id !== previous && state.workspace.frames[k].views.length === 3, 'Sim capture did not complete');
+          const state = await captureTeachingSample(page, { readWorkspace: workspace, k, views: 3, previousId: previous, retryEvidence: report.captureRetries });
+          assert(state.workspace.frames[k].image && state.workspace.frames[k].image.id !== previous && state.workspace.frames[k].views.length === 3, 'Sim capture must return a new complete image');
           const frame = state.workspace.frames[k];
           assert(frame.views.every(image => image.source === 'Sim' && image.size[0] === 1280 && image.size[1] === 1024));
           report.captures.push({ k, image: frame.image, views: frame.views });

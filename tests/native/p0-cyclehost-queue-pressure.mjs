@@ -5,7 +5,7 @@ import { mkdir, readFile, writeFile, lstat, realpath, readdir } from 'node:fs/pr
 import { join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { configureReplay } from './p0-clean-cyclehost-setup.mjs';
+import { configureReplay, captureTeachingSample } from './p0-clean-cyclehost-setup.mjs';
 import { sampleProcess, recordedArtifact } from './p0-cyclehost-performance.mjs';
 
 const identifier = 'com.xyzrobotics.tujiaovision.p0-tests.pressure';
@@ -100,7 +100,7 @@ export async function teachPressureFixture(page, options) {
   assert(provenance.physicalValidation === false && provenance.files.length === count * 2);
   const source = { directory: resolve(inputs), physicalValidation: false, imageCount: provenance.files.length, size: [1280, 1024], source: 'Independent synthetic clean Gray8 PGM replay inputs; original source metadata is not used for content matching' };
   await mkdir(output, { recursive: false });
-  const report = { id, views, startedAt: new Date().toISOString(), passed: false, source, scope: 'Fresh pressure-test desktop candidate taught, trialled, validated and published from explicit independent clean replay pixels', physicalValidation: false, captures: [], trials: [] };
+  const report = { id, views, startedAt: new Date().toISOString(), passed: false, source, scope: 'Fresh pressure-test desktop candidate taught, trialled, validated and published from explicit independent clean replay pixels', physicalValidation: false, captures: [], captureRetries: [], trials: [] };
   try {
     report.camera = await configureReplay(page, { views, directory: join(inputs, 'normal'), recordsRoot, allowUnpublished, allowDisconnected });
     await page.getByRole('navigation', { name: '操作导航' }).getByRole('link', { name: '配方库', exact: true }).click();
@@ -129,8 +129,7 @@ export async function teachPressureFixture(page, options) {
     for (let k = 0; k < count; k++) {
       await page.getByRole('button', { name: `选择帧 k${k + 1}`, exact: true }).click();
       assert(!(await workspace()).workspace.frames[k].image, 'Do not overwrite an existing teaching frame');
-      await page.getByRole('button', { name: '取新样本', exact: true }).click();
-      const captured = await until(v => v.workspace.frames[k].views.length === views, 'Replay capture did not complete');
+      const captured = await captureTeachingSample(page, { readWorkspace: workspace, k, views, retryEvidence: report.captureRetries });
       report.captures.push({ k, image: captured.workspace.frames[k].image, views: captured.workspace.frames[k].views });
       const svg = page.locator('svg.wp-gray-image.editable');
       await svg.waitFor();

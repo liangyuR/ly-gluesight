@@ -25,8 +25,40 @@ export async function configureReplay(page, { views, directory, recordsRoot, all
   return (await read('camera_rig_config'))[0];
 }
 
+export async function captureTeachingSample(page, { readWorkspace, k, views, previousId, retryEvidence = [] }) {
+  assert(typeof readWorkspace === 'function' && Number.isInteger(k) && k >= 0 && [1, 3].includes(views));
+  const read = (command, args) => page.evaluate(({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
+  const button = page.getByRole('button', { name: '取新样本', exact: true });
+  const lockError = '正在处理 PLC 事务，请稍后重试取图';
+  const errors = page.locator('.wp-notice.warn').filter({ has: page.getByText('操作未完成', { exact: true }) }).locator('p');
+  const initial = await readWorkspace(), prior = previousId ?? initial.workspace.frames[k].image?.id;
+  const deadline = Date.now() + 30000; let clicks = 0, firstLockAt = null;
+  while (Date.now() < deadline) {
+    clicks += 1; await button.click({ timeout: Math.max(1, deadline - Date.now()) });
+    while (Date.now() < deadline) {
+      const state = await readWorkspace(), frame = state.workspace.frames[k];
+      if (frame.image?.id && frame.image.id !== prior && frame.views.length === views) return state;
+      const visibleErrors = [];
+      for (const error of await errors.all()) if (await error.isVisible()) visibleErrors.push((await error.innerText()).trim());
+      if (visibleErrors.some(error => error !== lockError)) throw new Error('Teaching capture failed: ' + visibleErrors.join('; '));
+      if (visibleErrors.length && await button.isEnabled()) {
+        const cycle = await read('cycle_snapshot'), sim = await read('sim_status');
+        const now = Date.now(); firstLockAt ??= now;
+        retryEvidence.push({ k, attempt: clicks, error: lockError, at: new Date(now).toISOString(), elapsedAfterFirstLockMs: now - firstLockAt, previousId: prior ?? null, cycle, sim });
+        assert(!cycle.part && cycle.plcLocked === false && ['IDLE', 'FAULT'].includes(cycle.phase) && !sim.running, 'Teaching retry requires no workpiece, unlocked PLC and stopped simulator');
+        assert(clicks < 10 && now - firstLockAt < 5000, 'Teaching PLC-lock retries exhausted (10 attempts / 5 seconds)');
+        await page.waitForTimeout(Math.min(100, Math.max(0, deadline - Date.now())));
+        assert(Date.now() - firstLockAt < 5000, 'Teaching PLC-lock retry window expired');
+        break;
+      }
+      await page.waitForTimeout(Math.min(100, Math.max(0, deadline - Date.now())));
+    }
+  }
+  throw new Error('Replay capture did not complete within original 30s deadline: ' + await page.locator('main').innerText());
+}
+
 export async function teachCleanFixture(page, options) {
-  const { views, inputs, output, recordsRoot, allowUnpublished = false } = options;
+  const { views, inputs, output, recordsRoot, allowUnpublished = false, allowDisconnected = false } = options;
   assert([1, 3].includes(views));
   const id = options.id ?? `P0-CYCLEHOST-${views}V-CLEAN`;
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
@@ -48,9 +80,9 @@ export async function teachCleanFixture(page, options) {
   assert(provenance.physicalValidation === false && provenance.files.length === 32);
   const source = { directory: resolve(inputs), physicalValidation: false, imageCount: provenance.files.length, size: [1280, 1024], source: 'Independent synthetic clean Gray8 PGM replay inputs; original source metadata is not used for content matching' };
   await mkdir(output, { recursive: false });
-  const report = { id, views, startedAt: new Date().toISOString(), passed: false, source, scope: 'Independent desktop candidate taught, trialled, validated and published from CLEAN Prepared pixels via replay camera', physicalValidation: false, captures: [], trials: [] };
+  const report = { id, views, startedAt: new Date().toISOString(), passed: false, source, scope: 'Independent desktop candidate taught, trialled, validated and published from CLEAN Prepared pixels via replay camera', physicalValidation: false, captures: [], captureRetries: [], trials: [] };
   try {
-    report.camera = await configureReplay(page, { views, directory: join(inputs, `${views}-view`, 'normal'), recordsRoot, allowUnpublished });
+    report.camera = await configureReplay(page, { views, directory: join(inputs, `${views}-view`, 'normal'), recordsRoot, allowUnpublished, allowDisconnected });
     await page.getByRole('navigation', { name: '操作导航' }).getByRole('link', { name: '配方库', exact: true }).click();
     await page.getByRole('button', { name: '复制配方 MTR-HSG-B', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '建立候选配方', exact: true });
@@ -76,8 +108,7 @@ export async function teachCleanFixture(page, options) {
     for (let k = 0; k < 4; k++) {
       await page.getByRole('button', { name: `选择帧 k${k + 1}`, exact: true }).click();
       assert(!(await workspace()).workspace.frames[k].image, 'Do not overwrite an existing teaching frame');
-      await page.getByRole('button', { name: '取新样本', exact: true }).click();
-      const captured = await until(v => v.workspace.frames[k].views.length === views, 'Replay capture did not complete');
+      const captured = await captureTeachingSample(page, { readWorkspace: workspace, k, views, retryEvidence: report.captureRetries });
       report.captures.push({ k, image: captured.workspace.frames[k].image, views: captured.workspace.frames[k].views });
       const svg = page.locator('svg.wp-gray-image.editable');
       await svg.waitFor();
