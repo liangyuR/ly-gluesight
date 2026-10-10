@@ -525,7 +525,7 @@ class RobotTests(unittest.TestCase):
 
 
 class RecipeContractVersionTests(unittest.TestCase):
-    def test_missing_version_matches_validated_explicit_zero(self):
+    def test_missing_and_zero_versions_match_actual_backend_version_one(self):
         recipe = load_recipe(load_config()["robot"]["recipe"])
         recipe.pop("version", None)
         validate_recipe(recipe)
@@ -533,11 +533,23 @@ class RecipeContractVersionTests(unittest.TestCase):
         recipe["version"] = 0
         validate_recipe(recipe)
         self.assertEqual(absent, recipe_contract(recipe))
-        self.assertEqual(absent["version"], 0)
+        self.assertEqual(absent["version"], 1)
+        recipe["version"] = 1
+        self.assertEqual(absent, recipe_contract(recipe))
         recipe["version"] = 7
         validate_recipe(recipe)
         self.assertEqual(recipe_contract(recipe)["version"], 7)
 
+
+    def test_invalid_versions_remain_rejected_by_validator_and_contract(self):
+        recipe = load_recipe(load_config()["robot"]["recipe"])
+        for version in [None, True, False, -1, 0.5, float("nan"), float("inf"), 0x100000000, "1"]:
+            with self.subTest(version=version):
+                recipe["version"] = version
+                with self.assertRaises(ValueError):
+                    validate_recipe(recipe)
+                with self.assertRaises(ValueError):
+                    recipe_contract(recipe)
 
 class ConfigurationTests(unittest.TestCase):
     def test_schema_four_fixtures_and_per_device_ordinals(self):

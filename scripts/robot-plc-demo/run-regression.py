@@ -50,6 +50,11 @@ def request(base, path, data=None):
         raise RuntimeError(f"{path}: {exc.code} {exc.read().decode('utf-8')}") from exc
 
 
+def validate_running_recipe(state, expected_recipe):
+    if state.get("contractVersion") != 2 or recipe_contract(state["recipe"]) != recipe_contract(expected_recipe):
+        raise RuntimeError("Running Robot recipe differs from the configured regression fixture")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
@@ -73,8 +78,7 @@ def main():
         if not initial.get("canStart"):
             raise RuntimeError("Requires an idle, ready demo with a connected camera bridge: " +
                                initial.get("startBlockedReason", "请重启模拟服务以更新就绪状态"))
-        if initial.get("contractVersion") != 2 or recipe_contract(initial["recipe"]) != recipe_contract(expected_recipe):
-            raise RuntimeError("Running Robot recipe differs from the configured regression fixture")
+        validate_running_recipe(initial, expected_recipe)
         report.update(recipe=initial["recipe"]["id"], previousParts=initial["parts"])
         for scenario in args.scenarios:
             active_run = request(base, "/start", {"scenario": scenario})["runId"]
