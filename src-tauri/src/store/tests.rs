@@ -391,7 +391,7 @@ fn version_one_database_is_backed_up_and_recreated_with_pending_recording_schema
     old.execute_batch("PRAGMA user_version=1; CREATE TABLE legacy(version TEXT); INSERT INTO legacy VALUES ('step6-before-recording-evidence');").unwrap();
     drop(old);
     let store = Store::open(&db.path()).unwrap();
-    assert_eq!(DB_VERSION, 2);
+    assert_eq!(DB_VERSION, 3);
     let backup = Connection::open(store.backup_path().unwrap()).unwrap();
     assert_eq!(backup.query_row("SELECT version FROM legacy", [], |row| row.get::<_, String>(0)).unwrap(), "step6-before-recording-evidence");
     let recipe = recipe();
@@ -616,8 +616,7 @@ fn unresolved_delivery_query_reports_database_failure_instead_of_empty_success()
     assert!(store.unresolved_delivery_cycles().unwrap_err().contains("parts"));
 }
 
-
-fn legacy_v2(db: &TestDb) -> Connection {
+fn pre_identity_v2(db: &TestDb) -> Connection {
     let conn = Connection::open(db.path()).unwrap();
     conn.execute_batch(r#"PRAGMA foreign_keys=ON;
              CREATE TABLE IF NOT EXISTS cycle_ids (
@@ -693,117 +692,59 @@ PRAGMA user_version=2;"#).unwrap();
     conn
 }
 
-fn legacy_snapshot(conn: &Connection, reference: &str, recipe: &Recipe) -> String {
-    let mut json = serde_json::to_value(recipe).unwrap();
-    json.as_object_mut().unwrap().remove("revisionId");
-    json["hash"] = reference.into();
-    let json = serde_json::to_string(&json).unwrap();
-    conn.execute("INSERT INTO recipe_snapshots(hash,recipe_id,version,json) VALUES(?1,?2,?3,?4)",
-        params![reference, recipe.id, recipe.version, json]).unwrap();
-    json
+fn columns(conn: &Connection, table: &str) -> BTreeSet<String> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})")).unwrap();
+    let rows = stmt.query_map([], |row| row.get(1)).unwrap();
+    rows.collect::<Result<_, _>>().unwrap()
 }
 
 #[test]
-fn legacy_v2_adds_revisions_without_erasing_snapshots_points_raw_or_acknowledgements() {
-    let db = TestDb::new();
-    let original = recipe();
-    let legacy = legacy_v2(&db);
-    let old_json = legacy_snapshot(&legacy, "legacy-reference", &original);
-    let measured = table(&original);
-    let blob = encode(&measured);
-    let raw = r#"[{"view":1,"file":"cycle/P1_v1.pgm","hash":"legacy-unverified-reference"}]"#;
-    let judgement = serde_json::to_string(&Judgement::error(1, "original conclusion")).unwrap();
-    for version in [original.version, original.version + 1] {
-        legacy.execute("INSERT INTO parts(ts,sn,recipe_id,recipe_version,recipe_hash,trigger_mode,verdict,plc_code,fault_code,reason,
-            frames_expected,frames_received,triggers,software_version,judgement,frames,cycle_id,bundle_hash,
-            delivery_state,delivery_updated_at,delivery_message,layout_hash,recording_state,recording_available,recording_directory)
-            VALUES(1234,42,?1,?2,'legacy-reference','fly','errInspect',90,1,'original conclusion',4,1,4,'legacy',?3,'[]',?4,
-            'legacy-bundle-directory','acknowledged',99,'PLC confirmed','unused-old-layout','complete',1,'records/cycle')",
-            params![original.id, version, judgement, format!("legacy-cycle-{version}")]).unwrap();
-        let part = legacy.last_insert_rowid();
-        legacy.execute("INSERT INTO part_points(part_id,format,data) VALUES(?1,2,?2)", params![part, blob]).unwrap();
-        legacy.execute("INSERT INTO part_shots(part_id,k,shot_id,camera,view,session,ordinal,frame_counter,trigger_counter,status,raw_files)
-            VALUES(?1,0,?2,?3,?4,?5,'1','2','3','done',?6)",
-            params![part, original.shots[0].id, original.shots[0].camera, original.shots[0].view, u64::MAX.to_string(), raw]).unwrap();
-    }
-    drop(legacy);
-    let store = Store::open(&db.path()).unwrap();
-    assert!(store.backup_path().is_none());
-    assert_eq!(store.interrupted_recordings, 0);
-    let columns = table_columns(&store.conn.lock().unwrap(), "parts").unwrap();
-    for name in ["recipe_hash", "bundle_hash", "layout_hash", "recipe_revision", "bundle_id"] { assert!(columns.contains(name)); }
-    assert_eq!(store.query(&HistoryQuery::default()).unwrap().total, 2);
-    for (index, version) in [original.version, original.version + 1].into_iter().enumerate() {
-        let detail = store.detail(index as i64 + 1).unwrap();
-        let revision = format!("{}-v{version}", original.id);
-        assert_eq!(detail.summary.recipe_revision.as_deref(), (version == original.version).then_some(revision.as_str()));
-        assert_eq!(detail.summary.recipe_version, Some(version));
-        let bundle = detail.summary.bundle_id.as_deref().unwrap();
-        assert!(bundle.starts_with("legacy-bundle-"));
-        assert_ne!(bundle, "legacy-bundle-directory");
-        assert_eq!(store.resolve_bundle(&original.id, bundle).unwrap(), (bundle.into(), Some("legacy-bundle-directory".into())));
-        assert_eq!(detail.summary.delivery, PlcDelivery { state: PlcDeliveryState::Acknowledged, updated_at: 99, message: Some("PLC confirmed".into()) });
-        assert_eq!(detail.shots[0].session, Some(u64::MAX));
-        assert_eq!(detail.shots[0].raw_files, [ShotRawFile { view: 1, file: "cycle/P1_v1.pgm".into() , width: None, height: None }]);
-        assert!(detail.recording.available);
-        let snapshot = store.recipe_snapshot(&revision).unwrap();
-        if version == original.version {
-            let snapshot = snapshot.unwrap();
-            assert_eq!((snapshot.id.as_str(), snapshot.version), (original.id.as_str(), version));
-            assert!(same_measurement_layout(&snapshot, &original));
-        } else { assert!(snapshot.is_none()); }
-    }
-    {
-        let conn = store.conn.lock().unwrap();
-        assert_eq!(conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 2);
-        assert_eq!(conn.query_row("SELECT json FROM recipe_snapshots WHERE hash='legacy-reference'", [], |r| r.get::<_, String>(0)).unwrap(), old_json);
-        assert_eq!(conn.query_row("SELECT raw_files FROM part_shots WHERE part_id=1", [], |r| r.get::<_, String>(0)).unwrap(), raw);
-        assert_eq!(conn.query_row("SELECT data FROM part_points WHERE part_id=1", [], |r| r.get::<_, Vec<u8>>(0)).unwrap(), blob);
-        assert_eq!(conn.query_row("SELECT layout_hash FROM parts WHERE id=1", [], |r| r.get::<_, String>(0)).unwrap(), "unused-old-layout");
-    }
-    let mut next = crate::recipe::samples().remove(1);
-    next.version = original.version + 2;
-    let next = next.build().unwrap();
-    save(&store, &next, "new-cycle", &shots(&next), &PlcDelivery::default(), None).unwrap();
-    let mapped_bundle = store.detail(1).unwrap().summary.bundle_id.unwrap();
-    drop(store);
-    let reopened = Store::open(&db.path()).unwrap();
-    assert_eq!(reopened.detail(1).unwrap().summary.bundle_id.as_deref(), Some(mapped_bundle.as_str()));
-    assert_eq!(reopened.query(&HistoryQuery::default()).unwrap().total, 3);
-    assert_eq!(reopened.recipe_snapshot(&next.revision_id).unwrap().unwrap().version, next.version);
-    assert!(reopened.detail(1).unwrap().recording.available);
-}
+fn old_schema_database_is_backed_up_and_replaced_without_migration() {
+    for migrated_once in [false, true] {
+        let db = TestDb::new();
+        let old = pre_identity_v2(&db);
+        if migrated_once {
+            old.execute_batch("ALTER TABLE parts ADD COLUMN recipe_revision TEXT; ALTER TABLE parts ADD COLUMN bundle_id TEXT;
+                ALTER TABLE recipe_snapshots ADD COLUMN revision_id TEXT;
+                CREATE TABLE identity_migrations(name TEXT PRIMARY KEY);
+                CREATE TABLE explicit_recipe_records(part_id INTEGER PRIMARY KEY, recipe_revision TEXT NOT NULL);
+                CREATE TABLE legacy_bundle_refs(recipe_id TEXT NOT NULL, bundle_id TEXT NOT NULL UNIQUE, legacy_directory TEXT NOT NULL);").unwrap();
+        }
+        let recipe = recipe();
+        old.execute("INSERT INTO recipe_snapshots(hash,recipe_id,version,json) VALUES('old-reference',?1,?2,?3)",
+            params![recipe.id, recipe.version, serde_json::to_string(&recipe).unwrap()]).unwrap();
+        old.execute("INSERT INTO parts(ts,sn,recipe_id,recipe_version,recipe_hash,verdict,plc_code,fault_code,reason,frames_expected,
+            frames_received,triggers,software_version,judgement,frames,bundle_hash,delivery_state,delivery_updated_at,recording_state)
+            VALUES(1,42,?1,?2,'old-reference','errInspect',90,1,'old',4,0,0,'old','{}','[]','old-directory','acknowledged',99,'off')",
+            params![recipe.id, recipe.version]).unwrap();
+        drop(old);
 
-#[test]
-fn ambiguous_legacy_revision_keeps_original_snapshots_and_readable_history_without_reproduction() {
-    let db = TestDb::new();
-    let legacy = legacy_v2(&db);
-    let original = recipe();
-    let first = legacy_snapshot(&legacy, "old-one", &original);
-    let mut conflicting = original.clone();
-    conflicting.shots[0].camera = "another-camera".into();
-    let second = legacy_snapshot(&legacy, "old-two", &conflicting);
-    let judgement = serde_json::to_string(&Judgement::error(1, "original")).unwrap();
-    for token in ["old-one", "old-two"] {
-        legacy.execute("INSERT INTO parts(ts,sn,recipe_id,recipe_version,recipe_hash,verdict,plc_code,fault_code,reason,frames_expected,
-            frames_received,triggers,software_version,judgement,frames,delivery_state,delivery_updated_at,recording_state,recording_available,recording_directory)
-            VALUES(1,42,?1,?2,?3,'errInspect',90,1,'original',4,0,0,'legacy',?4,'[]','acknowledged',99,'complete',1,'records/cycle')",
-            params![original.id, original.version, token, judgement]).unwrap();
+        let store = Store::open(&db.path()).unwrap();
+        let backup = store.backup_path().expect("旧库必须备份").to_path_buf();
+        let preserved = Connection::open(&backup).unwrap();
+        assert_eq!(preserved.query_row("SELECT recipe_hash FROM parts", [], |r| r.get::<_, String>(0)).unwrap(), "old-reference");
+        assert_eq!(preserved.query_row("SELECT COUNT(*) FROM recipe_snapshots WHERE hash='old-reference'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(store.query(&HistoryQuery::default()).unwrap().total, 0);
+        assert!(store.recipe_snapshot(&recipe.revision_id).unwrap().is_none());
+        {
+            let conn = store.conn.lock().unwrap();
+            assert_eq!(conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), DB_VERSION);
+            let parts = columns(&conn, "parts");
+            for name in ["recipe_hash", "bundle_hash", "layout_hash"] { assert!(!parts.contains(name)); }
+            for name in ["recipe_revision", "bundle_id"] { assert!(parts.contains(name)); }
+            for table in ["identity_migrations", "explicit_recipe_records", "legacy_bundle_refs"] {
+                let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)", [table], |r| r.get(0)).unwrap();
+                assert!(!exists, "{table}");
+            }
+        }
+        save(&store, &recipe, "new-cycle", &shots(&recipe), &PlcDelivery::default(), None).unwrap();
+        drop(store);
+        let reopened = Store::open(&db.path()).unwrap();
+        assert!(reopened.backup_path().is_none());
+        assert_eq!(reopened.query(&HistoryQuery::default()).unwrap().total, 1);
+        drop(preserved);
+        assert!(backup.is_file());
     }
-    drop(legacy);
-    let store = Store::open(&db.path()).unwrap();
-    assert_eq!(store.query(&HistoryQuery::default()).unwrap().total, 2);
-    for id in [1, 2] {
-        let detail = store.detail(id).unwrap();
-        assert!(detail.summary.recipe_revision.is_none());
-        assert_eq!(detail.summary.delivery.state, PlcDeliveryState::Acknowledged);
-        assert!(detail.recording.available);
-    }
-    assert!(store.recipe_snapshot(&original.revision_id).unwrap().is_none());
-    let conn = store.conn.lock().unwrap();
-    assert_eq!(conn.query_row("SELECT COUNT(*) FROM recipe_snapshots WHERE revision_id IS NULL", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
-    assert_eq!(conn.query_row("SELECT json FROM recipe_snapshots WHERE hash='old-one'", [], |r| r.get::<_, String>(0)).unwrap(), first);
-    assert_eq!(conn.query_row("SELECT json FROM recipe_snapshots WHERE hash='old-two'", [], |r| r.get::<_, String>(0)).unwrap(), second);
 }
 
 #[test]
@@ -811,9 +752,9 @@ fn fresh_schema_and_raw_references_have_no_content_digest_fields() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
     let conn = store.conn.lock().unwrap();
-    let columns = table_columns(&conn, "parts").unwrap();
-    for name in ["recipe_hash", "bundle_hash", "layout_hash"] { assert!(!columns.contains(name)); }
-    assert!(!table_columns(&conn, "recipe_snapshots").unwrap().contains("hash"));
+    let parts = columns(&conn, "parts");
+    for name in ["recipe_hash", "bundle_hash", "layout_hash"] { assert!(!parts.contains(name)); }
+    assert!(!columns(&conn, "recipe_snapshots").contains("hash"));
     let file: ShotRawFile = serde_json::from_value(serde_json::json!({"view":2,"file":"cycle/P1_v2.pgm","hash":"ignored", "revisionId":"ignored"})).unwrap();
     assert_eq!(serde_json::to_value(file).unwrap(), serde_json::json!({"view":2,"file":"cycle/P1_v2.pgm"}));
 }
@@ -831,52 +772,6 @@ fn snapshot_version_metadata_and_explicit_revision_must_agree() {
     assert!(store.recipe_snapshot(&original.revision_id).unwrap_err().contains("版本损坏"));
     assert!(save(&store, &original, "second", &shots(&original), &PlcDelivery::default(), None).unwrap_err().contains("版本损坏"));
     assert_eq!(store.query(&HistoryQuery::default()).unwrap().total, 1);
-}
-
-#[test]
-fn legacy_digest_token_is_ignored_when_actual_recipe_id_and_version_match() {
-    let db = TestDb::new();
-    let original = recipe();
-    let conn = legacy_v2(&db);
-    legacy_snapshot(&conn, "existing-reference", &original);
-    conn.execute("INSERT INTO parts(ts,sn,recipe_id,recipe_version,recipe_hash,verdict,plc_code,fault_code,reason,frames_expected,
-        frames_received,triggers,software_version,judgement,frames,delivery_state,delivery_updated_at,recording_state)
-        VALUES(1,42,?1,?2,'missing-reference','errInspect',90,1,'original',4,0,0,'legacy','{}','[]','notRequired',0,'off')",
-        params![original.id, original.version]).unwrap();
-    drop(conn);
-    let store = Store::open(&db.path()).unwrap();
-    assert_eq!(store.query(&HistoryQuery::default()).unwrap().items[0].recipe_revision.as_deref(), Some(original.revision_id.as_str()));
-    assert_eq!(store.recipe_snapshot(&original.revision_id).unwrap().unwrap().version, original.version);
-    let conn = store.conn.lock().unwrap();
-    assert_eq!(conn.query_row("SELECT recipe_hash FROM parts", [], |r| r.get::<_, String>(0)).unwrap(), "missing-reference");
-}
-
-#[test]
-fn missing_or_ambiguous_actual_snapshot_preserves_history_without_using_legacy_tokens() {
-    let db = TestDb::new();
-    let conn = legacy_v2(&db);
-    let original = recipe();
-    legacy_snapshot(&conn, "ignored-one", &original);
-    let mut second = original.clone(); second.version += 1; second.revision_id = format!("{}-v{}", second.id, second.version);
-    second.shots[0].camera = "different-camera".into();
-    legacy_snapshot(&conn, "ignored-two", &second);
-    for (id, version, token) in [(&original.id, original.version, Some("wrong-token")),
-        (&original.id, second.version, None), (&original.id, second.version + 1, Some("ignored-one")),
-        (&"unknown-recipe".to_string(), 1, Some("ignored-one"))] {
-        conn.execute("INSERT INTO parts(ts,sn,recipe_id,recipe_version,recipe_hash,verdict,plc_code,fault_code,reason,frames_expected,
-            frames_received,triggers,software_version,judgement,frames,delivery_state,delivery_updated_at,recording_state)
-            VALUES(1,42,?1,?2,?3,'errInspect',90,1,'original',4,0,0,'legacy','{}','[]','notRequired',0,'off')", params![id, version, token]).unwrap();
-    }
-    drop(conn);
-    let store = Store::open(&db.path()).unwrap();
-    let rows = store.query(&HistoryQuery::default()).unwrap().items;
-    assert_eq!(rows.len(), 4);
-    assert!(rows[0].recipe_revision.is_none());
-    assert!(rows[1].recipe_revision.is_none());
-    assert_eq!(rows[2].recipe_revision.as_deref(), Some(second.revision_id.as_str()));
-    assert_eq!(rows[3].recipe_revision.as_deref(), Some(original.revision_id.as_str()));
-    assert!(store.recipe_snapshot(&format!("{}-v{}", original.id, second.version + 1)).unwrap().is_none());
-    assert_eq!(store.conn.lock().unwrap().query_row("SELECT COUNT(*) FROM parts", [], |r| r.get::<_, i64>(0)).unwrap(), 4);
 }
 
 #[test]
@@ -906,23 +801,6 @@ fn historical_version_floor_prevents_deleted_recipe_revision_reuse_and_keeps_old
 }
 
 #[test]
-fn legacy_bundle_ids_are_distinct_stable_and_new_ids_without_mapping_stay_unresolved() {
-    let db = TestDb::new();
-    let store = Store::open(&db.path()).unwrap();
-    let first = store.register_legacy_bundle("A", "old-directory").unwrap();
-    assert_ne!(first, "old-directory");
-    assert_eq!(store.register_legacy_bundle("A", "old-directory").unwrap(), first);
-    let second = store.register_legacy_bundle("B", "old-directory").unwrap();
-    assert_ne!(first, second);
-    assert_eq!(store.resolve_bundle("A", &first).unwrap(), (first.clone(), Some("old-directory".into())));
-    assert_eq!(store.resolve_bundle("B", &first).unwrap(), (first.clone(), None));
-    drop(store);
-    let store = Store::open(&db.path()).unwrap();
-    assert_eq!(store.resolve_bundle("A", "old-directory").unwrap(), (first, Some("old-directory".into())));
-    assert_eq!(store.resolve_bundle("A", "legacy-bundle-missing").unwrap(), ("legacy-bundle-missing".into(), None));
-}
-
-#[test]
 fn raw_dimensions_enrich_legacy_refs_but_cannot_be_replaced_or_partially_specified() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
@@ -939,120 +817,7 @@ fn raw_dimensions_enrich_legacy_refs_but_cannot_be_replaced_or_partially_specifi
 }
 
 #[test]
-fn corrective_marker_never_uses_previous_synthetic_snapshot_to_guess_legacy_layout() {
-    let db = TestDb::new();
-    let conn = legacy_v2(&db);
-    conn.execute_batch("ALTER TABLE recipe_snapshots ADD COLUMN revision_id TEXT;
-        ALTER TABLE parts ADD COLUMN recipe_revision TEXT; ALTER TABLE parts ADD COLUMN bundle_id TEXT;").unwrap();
-    let first = recipe();
-    legacy_snapshot(&conn, "old-first", &first);
-    let mut second = first.clone(); second.version += 1; second.shots[0].camera = "another-camera".into();
-    legacy_snapshot(&conn, "old-second", &second);
-    let mut synthetic = first.clone(); synthetic.version += 2; synthetic.revision_id = format!("{}-v{}", synthetic.id, synthetic.version);
-    let synthetic_json = serde_json::to_string(&synthetic).unwrap();
-    conn.execute("INSERT INTO recipe_snapshots(revision_id,recipe_id,version,json) VALUES(?1,?2,?3,?4)",
-        params![synthetic.revision_id, synthetic.id, synthetic.version, synthetic_json]).unwrap();
-    let judgement = serde_json::to_string(&Judgement::error(1, "original")).unwrap();
-    for token in [Some("old-first"), None] {
-        conn.execute("INSERT INTO parts(ts,sn,recipe_id,recipe_version,recipe_hash,recipe_revision,verdict,plc_code,fault_code,reason,frames_expected,
-            frames_received,triggers,software_version,judgement,frames,delivery_state,delivery_updated_at,recording_state)
-            VALUES(1,42,?1,?2,?3,?4,'errInspect',90,1,'original',4,0,0,'legacy',?5,'[]','acknowledged',99,'off')",
-            params![synthetic.id, synthetic.version, token, synthetic.revision_id, judgement]).unwrap();
-    }
-    drop(conn);
-    let store = Store::open(&db.path()).unwrap();
-    assert!(store.detail(1).unwrap().summary.recipe_revision.is_none());
-    assert!(store.detail(2).unwrap().summary.recipe_revision.is_none());
-    assert_eq!(store.detail(1).unwrap().summary.delivery.state, PlcDeliveryState::Acknowledged);
-    assert!(store.recipe_snapshot(&synthetic.revision_id).unwrap().is_none());
-    assert_eq!(store.conn.lock().unwrap().query_row("SELECT json FROM recipe_snapshots WHERE hash IS NULL", [], |r| r.get::<_, String>(0)).unwrap(), synthetic_json);
-    let explicit = save(&store, &synthetic, "explicit-after-correction", &shots(&synthetic), &PlcDelivery::default(), None).unwrap();
-    store.conn.lock().unwrap().execute("DELETE FROM identity_migrations WHERE name='actual-recipe-versions-exact'", []).unwrap();
-    drop(store);
-    let reopened = Store::open(&db.path()).unwrap();
-    assert!(reopened.detail(1).unwrap().summary.recipe_revision.is_none());
-    assert!(reopened.detail(2).unwrap().summary.recipe_revision.is_none());
-    assert_eq!(reopened.detail(explicit).unwrap().summary.recipe_revision.as_deref(), Some(synthetic.revision_id.as_str()));
-    assert_eq!(reopened.recipe_snapshot(&synthetic.revision_id).unwrap().unwrap().shots[0].camera, first.shots[0].camera);
-    assert_eq!(reopened.purge_before(1235).unwrap(), 3);
-    assert_eq!(reopened.conn.lock().unwrap().query_row("SELECT COUNT(*) FROM explicit_recipe_records", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
-}
-
-#[test]
-fn missing_exact_legacy_version_is_not_synthesized_from_one_other_version_even_after_old_marker() {
-    for already_migrated in [false, true] {
-        let db = TestDb::new();
-        let conn = legacy_v2(&db);
-        let original = recipe();
-        let original_json = legacy_snapshot(&conn, "old-only", &original);
-        let missing_version = original.version + 1;
-        let missing_revision = format!("{}-v{missing_version}", original.id);
-        if already_migrated {
-            conn.execute_batch("ALTER TABLE parts ADD COLUMN recipe_revision TEXT; ALTER TABLE parts ADD COLUMN bundle_id TEXT;
-                ALTER TABLE recipe_snapshots ADD COLUMN revision_id TEXT;
-                CREATE TABLE identity_migrations(name TEXT PRIMARY KEY);
-                INSERT INTO identity_migrations(name) VALUES('actual-recipe-versions');").unwrap();
-        }
-        let judgement = serde_json::to_string(&Judgement::error(1, "original")).unwrap();
-        conn.execute("INSERT INTO parts(ts,sn,recipe_id,recipe_version,recipe_hash,verdict,plc_code,fault_code,reason,frames_expected,
-            frames_received,triggers,software_version,judgement,frames,delivery_state,delivery_updated_at,recording_state)
-            VALUES(1,42,?1,?2,'old-only','errInspect',90,1,'original',4,0,0,'legacy',?3,'[]','acknowledged',99,'off')",
-            params![original.id, missing_version, judgement]).unwrap();
-        if already_migrated {
-            conn.execute("UPDATE parts SET recipe_revision=?1", [&missing_revision]).unwrap();
-        }
-        drop(conn);
-        let store = Store::open(&db.path()).unwrap();
-        let detail = store.detail(1).unwrap();
-        assert_eq!(detail.summary.recipe_version, Some(missing_version));
-        assert!(detail.summary.recipe_revision.is_none());
-        assert_eq!(detail.summary.delivery.state, PlcDeliveryState::Acknowledged);
-        assert!(store.recipe_snapshot(&missing_revision).unwrap().is_none());
-        assert_eq!(store.recipe_snapshot(&original.revision_id).unwrap().unwrap().version, original.version);
-        assert_eq!(store.conn.lock().unwrap().query_row("SELECT json FROM recipe_snapshots", [], |r| r.get::<_, String>(0)).unwrap(), original_json);
-        drop(store);
-        let reopened = Store::open(&db.path()).unwrap();
-        assert!(reopened.detail(1).unwrap().summary.recipe_revision.is_none());
-        assert!(reopened.recipe_snapshot(&missing_revision).unwrap().is_none());
-    }
-}
-
-#[test]
-fn exact_marker_unlinks_null_digest_legacy_part_and_preserves_its_synthetic_json_and_ack() {
-    let db = TestDb::new();
-    let conn = legacy_v2(&db);
-    conn.execute_batch("ALTER TABLE recipe_snapshots ADD COLUMN revision_id TEXT;
-        ALTER TABLE parts ADD COLUMN recipe_revision TEXT; ALTER TABLE parts ADD COLUMN bundle_id TEXT;
-        CREATE TABLE identity_migrations(name TEXT PRIMARY KEY);
-        INSERT INTO identity_migrations(name) VALUES('actual-recipe-versions');").unwrap();
-    let original = recipe();
-    legacy_snapshot(&conn, "only-real-version", &original);
-    let mut synthetic = original.clone(); synthetic.version += 1; synthetic.revision_id = format!("{}-v{}", synthetic.id, synthetic.version);
-    let synthetic_json = serde_json::to_string(&synthetic).unwrap();
-    conn.execute("INSERT INTO recipe_snapshots(revision_id,recipe_id,version,json) VALUES(?1,?2,?3,?4)",
-        params![synthetic.revision_id, synthetic.id, synthetic.version, synthetic_json]).unwrap();
-    let judgement = serde_json::to_string(&Judgement::error(1, "original")).unwrap();
-    conn.execute("INSERT INTO parts(ts,sn,recipe_id,recipe_version,recipe_hash,recipe_revision,verdict,plc_code,fault_code,reason,
-        frames_expected,frames_received,triggers,software_version,judgement,frames,delivery_state,delivery_updated_at,recording_state)
-        VALUES(1,42,?1,?2,NULL,?3,'errInspect',90,1,'original',4,0,0,'legacy',?4,'[]','acknowledged',99,'off')",
-        params![synthetic.id, synthetic.version, synthetic.revision_id, judgement]).unwrap();
-    drop(conn);
-    let store = Store::open(&db.path()).unwrap();
-    let detail = store.detail(1).unwrap();
-    assert_eq!(detail.summary.recipe_version, Some(synthetic.version));
-    assert!(detail.summary.recipe_revision.is_none());
-    assert_eq!(detail.summary.delivery.state, PlcDeliveryState::Acknowledged);
-    assert!(store.recipe_snapshot(&synthetic.revision_id).unwrap().is_none());
-    assert_eq!(store.conn.lock().unwrap().query_row("SELECT json FROM recipe_snapshots WHERE hash IS NULL", [], |r| r.get::<_, String>(0)).unwrap(), synthetic_json);
-    assert!(store.recipe_snapshot(&original.revision_id).unwrap().is_some());
-    drop(store);
-    let reopened = Store::open(&db.path()).unwrap();
-    assert!(reopened.detail(1).unwrap().summary.recipe_revision.is_none());
-    assert!(reopened.recipe_snapshot(&synthetic.revision_id).unwrap().is_none());
-}
-
-#[test]
-fn explicit_recipe_record_provenance_rolls_back_with_the_part_and_snapshot() {
+fn failed_shot_persistence_rolls_back_the_part_and_snapshot() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
     let recipe = recipe();
@@ -1061,13 +826,12 @@ fn explicit_recipe_record_provenance_rolls_back_with_the_part_and_snapshot() {
     assert!(save(&store, &recipe, "failed-source", &shots(&recipe), &PlcDelivery::default(), None).unwrap_err().contains("forced shot"));
     {
         let conn = store.conn.lock().unwrap();
-        for table in ["parts", "recipe_snapshots", "explicit_recipe_records"] {
+        for table in ["parts", "recipe_snapshots"] {
             assert_eq!(conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get::<_, i64>(0)).unwrap(), 0);
         }
         conn.execute_batch("DROP TRIGGER reject_shot;").unwrap();
     }
     let id = save(&store, &recipe, "successful-source", &shots(&recipe), &PlcDelivery::default(), None).unwrap();
-    assert_eq!(store.conn.lock().unwrap().query_row("SELECT recipe_revision FROM explicit_recipe_records WHERE part_id=?1", [id], |row| row.get::<_, String>(0)).unwrap(), recipe.revision_id);
     drop(store);
     let reopened = Store::open(&db.path()).unwrap();
     assert_eq!(reopened.detail(id).unwrap().summary.recipe_revision.as_deref(), Some(recipe.revision_id.as_str()));

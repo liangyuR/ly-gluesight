@@ -1003,15 +1003,12 @@ mod tests {
         assert_eq!(second.revision_id, format!("{}-v{}", second.id, second.version));
         store.reload();
         assert_eq!(store.get(&second.id).unwrap().revision_id, second.revision_id);
-        let mut legacy = serde_json::to_value(&*second).unwrap();
-        legacy.as_object_mut().unwrap().remove("revisionId");
-        legacy["hash"] = serde_json::json!("old-content-value");
-        legacy["revisionId"] = serde_json::json!("untrusted-external-revision");
-        let restored: Recipe = serde_json::from_value(legacy).unwrap();
+        let mut forged = serde_json::to_value(&*second).unwrap();
+        forged["revisionId"] = serde_json::json!("untrusted-external-revision");
+        let restored: Recipe = serde_json::from_value(forged).unwrap();
         assert_eq!(restored.revision_id, second.revision_id);
         let _ = std::fs::remove_dir_all(dir);
     }
-
 
     #[test]
     fn deleted_and_renamed_ids_keep_monotonic_versions_across_restart() {
