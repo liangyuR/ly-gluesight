@@ -255,3 +255,10 @@ PR #12 孤立 `_pending` 清理补充（本段静态实现，尚未执行新增�
 预热仍共用一个许可，绝对 30 秒包含许可等待与 blocking 执行器排队。尚未开始的超时转为带 1 秒冷却的可重试状态；每次尝试只安排一个延迟 Refresh，按届时所选配方重新检查，重复 Refresh 不能并发启动同一项。已开始的失败、panic 或超时仍永久拒绝该缓存项，后台线程返回前不释放许可，超时后的迟到成功不能成为 Ready。
 
 `production::warmup_tests` 的 7 项 gate 回归覆盖累计排队后恢复、blocking 池排队过期不执行、实际执行挂起保留许可及迟到结果隔离、实际失败隔离、panic 释放许可和并发重试去重。原生 100 件恢复控制完成后，在空闲窗口实际执行 `cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib`，默认完整回归 174 项通过、0 失败、21 项忽略，耗时 0.88 秒；上述 7 项 gate 均通过。见[预热审查修复证据](evidence/p0-step5-warmup-review-c.json)。受控 Gate 不冒充真实 DLL 永久卡死注入。
+
+
+## 2026-10-10 · PR #11 系统设置环境刷新修复
+
+`cycle_save_settings` 成功持久化并应用设置后广播 `cycle://settings-changed`。工作台订阅该事件并复用现有延迟刷新：干净候选重新读取后端环境指纹并显示试测失效；未保存配置、中线草稿及操作期间合并待刷新标记，解除后补读，晚到响应和旧候选响应不能覆盖新编辑或新选择。无新增阈值或生产 Gate。
+
+C: 独立分支 `codex/p0-step5-settings-refresh` 定向 `workspace-context.test.tsx` 与 `settings.test.tsx` 共 85 项通过（17.16 秒），应用及测试 TypeScript 检查通过。日志位于恢复目录 `p0-step5-settings-refresh-focused-c.log`、`p0-step5-settings-refresh-types-app-c.log`、`p0-step5-settings-refresh-types-tests-c.log`。为保持原生验收窗口，此 helper 未运行 Cargo、全覆盖率或原生 UI；集成后统一验证。
