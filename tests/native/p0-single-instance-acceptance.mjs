@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
@@ -35,8 +35,10 @@ const databaseState = async () => {
 };
 const rawState = async () => {
   const files = [];
+  const records = join(profile, 'records');
+  const canonicalRoot = cPath(await realpath(records));
   const walk = async directory => {
-    assert.equal((await realpath(directory)).toLowerCase(), resolve(directory).toLowerCase());
+    assert.equal((await realpath(directory)).toLowerCase(), join(canonicalRoot, relative(records, directory)).toLowerCase());
     for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a,b) => a.name.localeCompare(b.name))) {
       const path = join(directory, entry.name);
       const info = await lstat(path);
@@ -91,5 +93,6 @@ try {
   await browser.close();
 }
 console.log(JSON.stringify({passed:report.passed, duplicate:report.duplicate?.code, originals:report.after?.originals.length, error:report.error}));
+
 
 
