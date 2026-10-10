@@ -1,5 +1,5 @@
 async (page) => {
-  const id = "P0-TRICAM-UI", bundleHash = "3b643e189e0f73e5", recipeHash = "c1574d7504b2a8d4";
+  const id = "P0-TRICAM-UI", bundleId = "3b643e189e0f73e5", recipeRevision = "c1574d7504b2a8d4";
   const evidence = "output/playwright/p0-frame-visibility";
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
   const before = { records: await read("records_list"), plc: await read("plc_get_config"), cameras: await read("camera_rig_config"), settings: await read("cycle_get_settings"), workspace: await read("workspace_get", { id }) };
@@ -15,7 +15,7 @@ async (page) => {
     await page.waitForTimeout(100);
   }
   const production = await read("cycle_layout", { recipeId: id });
-  if (snapshot.phase !== "IDLE" || snapshot.alarms.some(a => a.includes(id)) || production.hash !== recipeHash || production.teachingHash !== "3e55860501858d50") throw new Error(JSON.stringify({ snapshot, production }));
+  if (snapshot.phase !== "IDLE" || snapshot.alarms.some(a => a.includes(id)) || production.revisionId !== recipeRevision || production.teachingId !== "3e55860501858d50") throw new Error(JSON.stringify({ snapshot, production }));
   await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "在线检测", exact: true }).click();
   let addedPart = false, runStarted = 0, detail, recorded;
   if (!snapshot.part) {
@@ -44,7 +44,7 @@ async (page) => {
   const measured = await read("cycle_part_data"), allLogs = await read("cycle_logs"), logs = allLogs.filter(line => line.ts >= runStarted);
   const arming = logs.findLast(line => line.ev === "armed↑ busy↑");
   const armMs = Number(arming?.msg.match(/布防耗时 (\d+) ms/)?.[1]);
-  if (!detail || !recorded?.complete || recorded.frames.length !== 4 || recorded.frames.some(f => !f.available || f.error) || snapshot.phase !== "IDLE" || snapshot.part?.bundleHash !== bundleHash || detail.summary.recipeHash !== recipeHash || detail.summary.framesReceived !== 4 || detail.summary.faultCode !== 0 || !["OK", "OK_WITH_EXCURSION"].includes(detail.summary.verdict) || detail.frames.some(f => f.error) || detail.points.st.length !== 307 || measured.length !== 4 || measured.some(m => m.error || !m.located || m.bundleHash !== bundleHash) || !Number.isFinite(armMs) || armMs > 200) throw new Error(JSON.stringify({ detail, recorded, snapshot, measured, logs }));
+  if (!detail || !recorded?.complete || recorded.frames.length !== 4 || recorded.frames.some(f => !f.available || f.error) || snapshot.phase !== "IDLE" || snapshot.part?.bundleId !== bundleId || detail.summary.recipeRevision !== recipeRevision || detail.summary.framesReceived !== 4 || detail.summary.faultCode !== 0 || !["OK", "OK_WITH_EXCURSION"].includes(detail.summary.verdict) || detail.frames.some(f => f.error) || detail.points.st.length !== 307 || measured.length !== 4 || measured.some(m => m.error || !m.located || m.bundleId !== bundleId) || !Number.isFinite(armMs) || armMs > 200) throw new Error(JSON.stringify({ detail, recorded, snapshot, measured, logs }));
   const scrollState = () => page.locator(".main-body").evaluate(element => ({ scrollTop: element.scrollTop, clientHeight: element.clientHeight, scrollHeight: element.scrollHeight, overflowY: getComputedStyle(element).overflowY }));
   const inspect = async k => {
     await page.getByRole("button", { name: "查看帧 k" + (k + 1), exact: true }).click();
@@ -93,6 +93,6 @@ async (page) => {
   const restored = await inspect(1);
   const after = { settings: await read("cycle_get_settings"), workspace: await read("workspace_get", { id }), production: await read("cycle_layout", { recipeId: id }), cycle: await read("cycle_snapshot") };
   if (JSON.stringify(after.settings) !== JSON.stringify(before.settings) || JSON.stringify(after.workspace.workspace) !== JSON.stringify(before.workspace.workspace) || JSON.stringify(after.production) !== JSON.stringify(production) || after.cycle.part?.cycleId !== snapshot.part.cycleId) throw new Error("Preview verification changed settings, candidate teaching, production layout, or the completed part");
-  return { nativeExeOnly: true, noInjectedStyles: true, addedPart, completedPart: { summary: detail.summary, cycleId: snapshot.part.cycleId, bundleHash, frames: detail.frames, points: detail.points.st.length, measurements: measured.map(m => ({ k: m.k, ms: m.ms, points: m.idx.length, error: m.error })), arming: { configuredArmMs: 200, elapsedMs: armMs, log: arming }, recorded }, engine: await read("engine_status"), prewarm: allLogs.find(line => line.ev === "生产预热" && line.msg.includes(bundleHash)), matrices, scrollBefore, scrollAfter, curveBox, restored, settingsCandidateProductionUnchanged: true, accuracyQualified: false, logs };
+  return { nativeExeOnly: true, noInjectedStyles: true, addedPart, completedPart: { summary: detail.summary, cycleId: snapshot.part.cycleId, bundleId, frames: detail.frames, points: detail.points.st.length, measurements: measured.map(m => ({ k: m.k, ms: m.ms, points: m.idx.length, error: m.error })), arming: { configuredArmMs: 200, elapsedMs: armMs, log: arming }, recorded }, engine: await read("engine_status"), prewarm: allLogs.find(line => line.ev === "生产预热" && line.msg.includes(bundleId)), matrices, scrollBefore, scrollAfter, curveBox, restored, settingsCandidateProductionUnchanged: true, accuracyQualified: false, logs };
 }
 

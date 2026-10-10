@@ -37,7 +37,7 @@ describe("在线周期身份与迟到响应隔离", () => {
     expect(hook.result.current.measured[0]).toMatchObject({ cycleId: "cycle-2", score: .97, error: null });
   });
 
-  it.each(["shotId", "camera", "bundleHash"] as const)("拒绝同周期但 %s 不符的测量事件", async field => {
+  it.each(["shotId", "camera", "bundleId"] as const)("拒绝同周期但 %s 不符的测量事件", async field => {
     const hook = renderHook(useCycle);
     await waitFor(() => expect(hook.result.current.snapshot?.part).not.toBeNull());
     emit("cycle://frame", { ...cycleMeasurement(), [field]: "other" });

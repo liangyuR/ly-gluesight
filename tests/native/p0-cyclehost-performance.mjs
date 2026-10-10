@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { appendFile, mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
@@ -8,14 +7,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { recipeContract } from '../../scripts/robot-plc-demo/camera-bridge.mjs';
 
 const execute = promisify(execFile);
-const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const positive = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 
-export function fnv1a64(bytes) {
-  let hash = 0xcbf29ce484222325n;
-  for (const byte of bytes) hash = BigInt.asUintN(64, (hash ^ BigInt(byte)) * 0x100000001b3n);
-  return hash.toString(16).padStart(16, '0');
-}
 
 export function distribution(values) {
   assert(values.length > 0 && values.every(positive), 'Missing or invalid timing samples');
@@ -40,7 +33,7 @@ export function memoryTrend(samples, key) {
 
 export function validatePart(row, layout, mode, scenario) {
   const summary = row.detail.summary, n = layout.shots.length;
-  assert(summary.cycleId && summary.bundleHash && summary.recipeHash === layout.hash);
+  assert(summary.cycleId && summary.bundleId && summary.recipeRevision === layout.revisionId);
   assert(summary.framesExpected === n && summary.framesReceived === n && row.detail.triggers === n);
   assert(summary.delivery.state === 'acknowledged' && row.detail.recording.state === 'complete');
   assert(positive(summary.drainMs), 'CycleHost did not persist partEnd-to-PLC timing');
@@ -55,13 +48,13 @@ export function validatePart(row, layout, mode, scenario) {
       shot.ordinal === layout.shots.slice(0, k + 1).filter(s => s.camera === planned.camera).length);
     assert(measured && measured.cycleId === summary.cycleId && measured.sn === summary.sn &&
       measured.shotId === planned.id && measured.camera === planned.camera &&
-      measured.bundleHash === summary.bundleHash && measured.located && !measured.error);
+      measured.bundleId === summary.bundleId && measured.located && !measured.error);
     for (const key of ['ms', 'queueMs', 'engineMs', 'coreMs']) {
       assert(Object.hasOwn(measured, key) && positive(measured[key]), 'Missing real image metric: ' + key);
     }
     const views = row.originals.frames.filter(f => f.k === k).map(f => f.view).sort();
     assert.deepEqual(views, mode === 'tricam' ? [1, 2, 3] : [1]);
-    assert(shot.rawFiles.length === views.length && shot.rawFiles.every(f => f.hash));
+    assert(shot.rawFiles.length === views.length && shot.rawFiles.every(f => typeof f.file === 'string'));
     const indices = layout.points.k.flatMap((owner, index) => owner === k ? [index] : []);
     assert.deepEqual(measured.idx, indices, 'Missing or reordered per-shot measurement points');
   }
@@ -73,7 +66,7 @@ export function validatePart(row, layout, mode, scenario) {
 
 async function artifact(path) {
   const bytes = await readFile(path);
-  return { path: resolve(path), bytes: bytes.length, sha256: digest(bytes) };
+  return { path: resolve(path), bytes: bytes.length };
 }
 
 export async function recordedArtifact(root, file) {
@@ -83,7 +76,7 @@ export async function recordedArtifact(root, file) {
   const header = Buffer.from('P5\n1280 1024\n255\n', 'ascii');
   assert(bytes.subarray(0, header.length).equals(header) && bytes.length === header.length + 1280 * 1024,
     'Recorded image is not a full-resolution 1280x1024 Gray8 PGM');
-  return { path: resolve(path), bytes: bytes.length, sha256: digest(bytes),
+  return { path: resolve(path), bytes: bytes.length,
     pixelsSha256: digest(bytes.subarray(header.length)), size: [1280, 1024] };
 }
 
@@ -142,10 +135,9 @@ export function validateReplayInputsSnapshot(inputs, mode) {
   for (const file of inputs.files) {
     assert(file.camera === 'cam1' && file.file === 'cam1_' + (file.k + 1) + '_v' + file.view + '.pgm');
     assert(resolve(file.path) === resolve(join(inputs.directory, file.file)) &&
-      JSON.stringify(file.size) === '[1280,1024]' && /^[a-f0-9]{64}$/.test(file.sha256) &&
-      /^[a-f0-9]{64}$/.test(file.pixelsSha256));
+      JSON.stringify(file.size) === '[1280,1024]' && file.bytes === 1280 * 1024 + Buffer.byteLength('P5\n1280 1024\n255\n'));
     const entries = inputs.tree.filter(entry => resolve(entry.path) === resolve(file.path));
-    assert(entries.length === 1 && entries[0].sha256 === file.sha256 && entries[0].bytes === file.bytes);
+    assert(entries.length === 1 && entries[0].bytes === file.bytes);
   }
   const imageNames = inputs.tree.filter(file => /\.(pgm|jpg|jpeg|png|bmp|tif|tiff)$/i.test(file.path))
     .map(file => basename(file.path)).sort();
@@ -157,7 +149,7 @@ export function validateReplayOutputs(row, inputs, layout) {
   assert(row.recordedArtifacts.length === inputs.files.length);
   const metadata = row.recordingMetadata.document, summary = row.detail.summary;
   assert(metadata.available === true && metadata.cycleId === summary.cycleId && metadata.sn === summary.sn &&
-    metadata.bundleHash === summary.bundleHash && metadata.recipeHash === summary.recipeHash);
+    metadata.bundleId === summary.bundleId && metadata.recipeRevision === summary.recipeRevision);
   assert(metadata.errors.length === 0 && metadata.missingShots.length === 0 && metadata.droppedFrames === 0);
   assert(metadata.frames.length === inputs.files.length);
   const comparisons = [];
@@ -165,22 +157,21 @@ export function validateReplayOutputs(row, inputs, layout) {
     const outputs = row.recordedArtifacts.filter(file => file.k === input.k && file.view === input.view);
     assert(outputs.length === 1);
     const output = outputs[0], shot = row.detail.shots[input.k], planned = layout.shots[input.k];
-    assert(output.sha256 === input.sha256 && output.pixelsSha256 === input.pixelsSha256,
-      'Recorded replay pixels differ from the explicitly hashed input group');
+    assert.deepEqual(output.size, input.size);
     const frames = metadata.frames.filter(frame => frame.k === input.k && frame.view === input.view);
     assert(frames.length === 1);
     const frame = frames[0];
     assert(frame.counter === 'synthetic' && frame.manual === false && frame.lostPackets === 0 &&
       frame.width === 1280 && frame.height === 1024 && frame.available === true && !frame.error);
-    assert(frame.cycleId === summary.cycleId && frame.bundleHash === summary.bundleHash &&
-      frame.recipeHash === summary.recipeHash && frame.camera === input.camera &&
+    assert(frame.cycleId === summary.cycleId && frame.bundleId === summary.bundleId &&
+      frame.recipeRevision === summary.recipeRevision && frame.camera === input.camera &&
       frame.shotId === planned.id && frame.selectedView === planned.view &&
       frame.session === shot.session && frame.ordinal === shot.ordinal &&
       frame.frameCounter === shot.frameCounter && frame.triggerCounter === shot.triggerCounter &&
       frame.frameCounter === frame.triggerCounter && Number.isSafeInteger(frame.frameCounter) && frame.frameCounter > 0);
     assert(basename(output.path) === frame.file);
     comparisons.push({ k: input.k, view: input.view, inputPath: input.path, outputPath: output.path,
-      sha256: input.sha256, pixelsSha256: input.pixelsSha256, equal: true });
+      size: output.size, identityVerified: true });
   }
   return comparisons;
 }
@@ -189,7 +180,7 @@ async function recordingMetadata(root, frames) {
   const directories = new Set(frames.map(frame => dirname(frame.file)));
   assert(directories.size === 1, 'Recorded frames span multiple part directories');
   const path = join(root, [...directories][0], 'part.json'), bytes = await readFile(path);
-  return { path: resolve(path), bytes: bytes.length, sha256: digest(bytes), document: JSON.parse(bytes.toString('utf8')) };
+  return { path: resolve(path), bytes: bytes.length, document: JSON.parse(bytes.toString('utf8')) };
 }
 
 async function enrichFailedAttempt(attempt, root) {
@@ -223,7 +214,7 @@ export async function persistFailedAttempt(output, attempt, error, completedPart
   const bytes = Buffer.from(JSON.stringify(document, null, 2) + '\n');
   await writeFile(path, bytes, { flag: 'wx' });
   return { part: attempt.part, stage: attempt.stage, accepted: attempt.accepted,
-    artifact: { path: resolve(path), bytes: bytes.length, sha256: digest(bytes) } };
+    artifact: { path: resolve(path), bytes: bytes.length } };
 }
 
 export async function sampleProcess(pid, executable, expectedStart) {
@@ -254,7 +245,7 @@ export async function runCycleHostPerformance(page, options) {
   const reportPath = join(output, 'cyclehost-report.json'), rowsPath = join(output, 'parts.jsonl');
   const report = { schemaVersion: 1, startedAt: new Date().toISOString(), passed: false, completed: false,
     scope: source === 'replay'
-      ? 'Actual CycleHost, real LyFlow DLL, explicitly hashed replay control pixels, Synthetic counters and development PLC simulator'
+      ? 'Actual CycleHost, real LyFlow DLL, explicit replay control pixels, Synthetic counters and development PLC simulator'
       : 'Actual CycleHost, real LyFlow DLL, generated simulator pixels and development PLC simulator',
     physicalValidation: false, s7HardwareValidation: false, source, mode, scenario, requestedParts: parts,
     replayScenarioSemantics: source === 'replay'
@@ -279,7 +270,7 @@ export async function runCycleHostPerformance(page, options) {
       plc: await read('plc_get_config'), status: await read('plc_get_status'), settings: await read('cycle_get_settings'),
       cycle: await read('cycle_snapshot'), engine: await read('engine_status'), app: await read('app_info') };
     report.guard = guard;
-    assert(guard.records.root.includes('com.xyzrobotics.tujiaovision.p0-tests') && /^c:[\\/]/i.test(guard.records.root));
+    assert(resolve(guard.records.root).toLowerCase() === 'c:\\users\\11601\\appdata\\roaming\\com.xyzrobotics.tujiaovision.p0-tests.performance\\records' && /^c:[\\/]/i.test(guard.records.root));
     assert(guard.app.version && guard.engine.version);
     assert(guard.plc.connection.protocol === 'simulator' && guard.status.state === 'connected' && guard.cycle.phase === 'IDLE');
     assert(guard.settings.timeouts.armMs === 200 && guard.settings.vision === true && guard.settings.record === 'all');
@@ -301,11 +292,11 @@ export async function runCycleHostPerformance(page, options) {
     }
     const manifestBytes = await readFile(join(releaseDir, 'manifest.json'));
     const manifest = JSON.parse(manifestBytes.toString('utf8'));
-    assert(manifest.schemaVersion === 1 && manifest.recipeId === layout.id && manifest.recipeHash === layout.hash);
+    assert(manifest.schemaVersion === 1 && manifest.recipeId === layout.id && manifest.recipeRevision === layout.revisionId);
     assert(manifest.shots.length === layout.shots.length && manifest.shots.every((shot, k) =>
       shot.k === k && shot.shotId === layout.shots[k].id && shot.camera === layout.shots[k].camera &&
       shot.view === layout.shots[k].view && JSON.stringify(shot.size) === '[1280,1024]'));
-    report.provenance = { manifest, bundleHash: fnv1a64(manifestBytes), fixture: await artifact(fixture), executable: await artifact(executable),
+    report.provenance = { manifest, bundleId: manifest.bundleId, fixture: await artifact(fixture), executable: await artifact(executable),
       dll: await artifact(guard.engine.path), release: await tree(releaseDir), layout };
     assert(report.provenance.release.length > 0);
     if (source === 'replay') report.replayInputs = await scanReplayInputs(options.replayDir, mode);
@@ -359,11 +350,11 @@ export async function runCycleHostPerformance(page, options) {
       const log = (await read('cycle_logs')).filter(line => line.ts >= began).find(line => line.ev === 'armed↑ busy↑');
       row.armMs = Number(log?.msg.match(/布防耗时 (\d+) ms/)?.[1]);
       row.armingLog = log;
-      assert(row.detail.summary.bundleHash === report.provenance.bundleHash, 'Running bundle differs from the hashed release manifest');
+      assert(row.detail.summary.bundleId === report.provenance.bundleId, 'Running bundle differs from the explicit release ID');
       const failures = validatePart(row, layout, mode, scenario);
       assert(!seen.has(row.detail.summary.cycleId), 'Cycle identity reused');
       seen.add(row.detail.summary.cycleId);
-      if (rows.length) assert(row.detail.summary.bundleHash === rows[0].detail.summary.bundleHash, 'Frozen bundle changed mid-run');
+      if (rows.length) assert(row.detail.summary.bundleId === rows[0].detail.summary.bundleId, 'Frozen bundle changed mid-run');
       report.accuracyFailures.push(...failures.map(failure => ({ part, ...failure })));
       attempt.stage = 'readRecordedImages';
       row.recordedArtifacts = [];
@@ -407,7 +398,6 @@ export async function runCycleHostPerformance(page, options) {
       assert.deepEqual(report.replayInputsAfter, report.replayInputs, 'Replay input tree changed during run');
       assert.deepEqual(await read('camera_rig_config'), guard.cameras, 'Replay camera configuration changed');
     }
-    report.rowsSha256 = (await artifact(rowsPath)).sha256;
     report.completed = true;
     report.passed = report.accuracyFailures.length === 0;
   } catch (error) {

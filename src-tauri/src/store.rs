@@ -24,7 +24,7 @@ pub struct PartRecord<'a> {
     pub table: Option<&'a [PointState]>,
     pub software_version: &'a str,
     pub cycle_id: Option<&'a str>,
-    pub bundle_hash: Option<&'a str>,
+    pub bundle_id: Option<&'a str>,
     pub delivery: &'a PlcDelivery,
     pub shots: &'a [PartShot],
 }
@@ -74,7 +74,7 @@ pub struct RecordingEvidence {
 pub struct ShotRawFile {
     pub view: u8,
     pub file: String,
-    pub hash: Option<String>,
+    pub revision_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -159,7 +159,7 @@ pub struct PartSummary {
     pub sn: u32,
     pub recipe_id: Option<String>,
     pub recipe_version: Option<u32>,
-    pub recipe_hash: Option<String>,
+    pub recipe_revision: Option<String>,
     pub trigger_mode: Option<String>,
     pub verdict: Verdict,
     pub plc_code: u16,
@@ -170,7 +170,7 @@ pub struct PartSummary {
     pub frames_received: usize,
     pub retest_of: Option<i64>,
     pub cycle_id: Option<String>,
-    pub bundle_hash: Option<String>,
+    pub bundle_id: Option<String>,
     pub delivery: PlcDelivery,
 }
 
@@ -229,11 +229,11 @@ pub struct StoredMeasurement {
     pub ts: i64,
     pub sn: u32,
     pub recipe_id: Option<String>,
-    pub recipe_hash: Option<String>,
+    pub recipe_revision: Option<String>,
     pub verdict: Verdict,
     pub table: Vec<PointState>,
     pub cycle_id: Option<String>,
-    pub bundle_hash: Option<String>,
+    pub bundle_id: Option<String>,
     pub delivery: PlcDelivery,
     pub layout_hash: Option<String>,
 }
@@ -252,8 +252,8 @@ fn parse_verdict(s: &str) -> Verdict {
     serde_json::from_value(serde_json::Value::String(s.into())).unwrap_or(Verdict::ErrInspect)
 }
 
-const SUMMARY_COLS: &str = "id, ts, sn, recipe_id, recipe_version, recipe_hash, trigger_mode, verdict, plc_code, fault_code, \
-                            reason, drain_ms, frames_expected, frames_received, retest_of, cycle_id, bundle_hash, \
+const SUMMARY_COLS: &str = "id, ts, sn, recipe_id, recipe_version, recipe_revision, trigger_mode, verdict, plc_code, fault_code, \
+                            reason, drain_ms, frames_expected, frames_received, retest_of, cycle_id, bundle_id, \
                             delivery_state, delivery_updated_at, delivery_message";
 
 fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
@@ -263,7 +263,7 @@ fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
         sn: row.get(2)?,
         recipe_id: row.get(3)?,
         recipe_version: row.get(4)?,
-        recipe_hash: row.get(5)?,
+        recipe_revision: row.get(5)?,
         trigger_mode: row.get(6)?,
         verdict: parse_verdict(&row.get::<_, String>(7)?),
         plc_code: row.get(8)?,
@@ -274,7 +274,7 @@ fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
         frames_received: row.get::<_, i64>(13)? as usize,
         retest_of: row.get(14)?,
         cycle_id: row.get(15)?,
-        bundle_hash: row.get(16)?,
+        bundle_id: row.get(16)?,
         delivery: delivery_row(row, 17)?,
     })
 }
@@ -432,7 +432,7 @@ impl Store {
                  sn INTEGER NOT NULL,
                  recipe_id TEXT,
                  recipe_version INTEGER,
-                 recipe_hash TEXT,
+                 recipe_revision TEXT,
                  trigger_mode TEXT,
                  verdict TEXT NOT NULL,
                  plc_code INTEGER NOT NULL,
@@ -447,7 +447,7 @@ impl Store {
                  judgement TEXT NOT NULL,
                  frames TEXT NOT NULL,
                  cycle_id TEXT,
-                 bundle_hash TEXT,
+                 bundle_id TEXT,
                  delivery_state TEXT NOT NULL,
                  delivery_updated_at INTEGER NOT NULL,
                  delivery_message TEXT,
@@ -466,7 +466,7 @@ impl Store {
                  data BLOB NOT NULL
              );
              CREATE TABLE IF NOT EXISTS recipe_snapshots (
-                 hash TEXT PRIMARY KEY,
+                 revision_id TEXT PRIMARY KEY,
                  recipe_id TEXT NOT NULL,
                  version INTEGER NOT NULL,
                  json TEXT NOT NULL
@@ -518,7 +518,7 @@ impl Store {
     }
 
     pub fn insert(&self, r: &PartRecord) -> Result<i64, String> {
-        if r.cycle_id.is_some_and(|s| s.is_empty()) || r.bundle_hash.is_some_and(|s| s.is_empty()) {
+        if r.cycle_id.is_some_and(|s| s.is_empty()) || r.bundle_id.is_some_and(|s| s.is_empty()) {
             return Err("检测记录的 cycleId 或发布包哈希为空".into());
         }
         if let Some(recipe) = r.recipe {
@@ -549,7 +549,7 @@ impl Store {
         if let Some(recipe) = r.recipe {
             let json = serde_json::to_string(recipe).map_err(|e| e.to_string())?;
             let previous: Option<String> =
-                tx.query_row("SELECT json FROM recipe_snapshots WHERE hash = ?1", [&recipe.hash], |row| row.get(0)).optional().map_err(db_err)?;
+                tx.query_row("SELECT json FROM recipe_snapshots WHERE revision_id = ?1", [&recipe.revision_id], |row| row.get(0)).optional().map_err(db_err)?;
             if let Some(previous) = previous {
                 let mut previous: serde_json::Value = serde_json::from_str(&previous).map_err(|e| e.to_string())?;
                 let mut candidate: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
@@ -560,8 +560,8 @@ impl Store {
                 }
             }
             tx.execute(
-                "INSERT OR IGNORE INTO recipe_snapshots (hash, recipe_id, version, json) VALUES (?1, ?2, ?3, ?4)",
-                params![recipe.hash, recipe.id, recipe.version, json],
+                "INSERT OR IGNORE INTO recipe_snapshots (revision_id, recipe_id, version, json) VALUES (?1, ?2, ?3, ?4)",
+                params![recipe.revision_id, recipe.id, recipe.version, json],
             )
             .map_err(db_err)?;
         }
@@ -572,9 +572,9 @@ impl Store {
         };
         let j = r.judgement;
         tx.execute(
-            "INSERT INTO parts (ts, sn, recipe_id, recipe_version, recipe_hash, trigger_mode, verdict, plc_code, fault_code,
+            "INSERT INTO parts (ts, sn, recipe_id, recipe_version, recipe_revision, trigger_mode, verdict, plc_code, fault_code,
                  reason, drain_ms, frames_expected, frames_received, triggers, retest_of, software_version, judgement, frames,
-                 cycle_id, bundle_hash, delivery_state, delivery_updated_at, delivery_message, layout_hash)
+                 cycle_id, bundle_id, delivery_state, delivery_updated_at, delivery_message, layout_hash)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
                  ?19, ?20, ?21, ?22, ?23, ?24)",
             params![
@@ -582,7 +582,7 @@ impl Store {
                 r.sn,
                 r.recipe.map(|x| x.id.clone()),
                 r.recipe.map(|x| x.version),
-                r.recipe.map(|x| x.hash.clone()),
+                r.recipe.map(|x| x.revision_id.clone()),
                 r.recipe.and_then(|x| serde_json::to_value(x.trigger_mode).ok().and_then(|v| v.as_str().map(String::from))),
                 verdict_str(j.verdict),
                 j.plc_code,
@@ -597,7 +597,7 @@ impl Store {
                 serde_json::to_string(j).map_err(|e| e.to_string())?,
                 serde_json::to_string(r.frames).map_err(|e| e.to_string())?,
                 r.cycle_id,
-                r.bundle_hash,
+                r.bundle_id,
                 enum_name(r.delivery.state),
                 r.delivery.updated_at,
                 r.delivery.message,
@@ -702,7 +702,7 @@ impl Store {
             .optional()
             .map_err(db_err)?;
         let Some((id, previous)) = previous else { return Ok(false) };
-        if previous.iter().any(|old| !files.iter().any(|new| old.view == new.view && old.file == new.file && (old.hash.is_none() || old.hash == new.hash))) {
+        if previous.iter().any(|old| !files.iter().any(|new| old.view == new.view && old.file == new.file && (old.revision_id.is_none() || old.revision_id == new.revision_id))) {
             return Err("原图身份已保存，不能替换为另一组文件".into());
         }
         tx.execute(
@@ -737,7 +737,7 @@ impl Store {
             let refs = stmt.query_map([id], |row| json_column::<Vec<ShotRawFile>>(row, 0)).map_err(db_err)?;
             let mut has_file = false;
             for files in refs {
-                has_file |= files.map_err(db_err)?.iter().any(|file| file.hash.as_deref().is_some_and(|hash| !hash.is_empty()));
+                has_file |= files.map_err(db_err)?.iter().any(|file| file.revision_id.as_deref().is_some_and(|revision_id| !revision_id.is_empty()));
             }
             if !has_file {
                 return Err("没有成功保存的带哈希原图引用，不能标记录制可用".into());
@@ -909,12 +909,12 @@ impl Store {
         id.map(|id| self.detail(id)).transpose()
     }
 
-    pub fn recipe_snapshot(&self, hash: &str) -> Result<Option<Recipe>, String> {
+    pub fn recipe_snapshot(&self, revision_id: &str) -> Result<Option<Recipe>, String> {
         let conn = self.conn.lock().unwrap();
-        let json: Option<String> = conn.query_row("SELECT json FROM recipe_snapshots WHERE hash = ?1", [hash], |row| row.get(0)).optional().map_err(db_err)?;
+        let json: Option<String> = conn.query_row("SELECT json FROM recipe_snapshots WHERE revision_id = ?1", [revision_id], |row| row.get(0)).optional().map_err(db_err)?;
         json.map(|j| {
             let recipe: Recipe = serde_json::from_str(&j).map_err(|e| e.to_string())?;
-            if recipe.hash != hash {
+            if recipe.revision_id != revision_id {
                 return Err("原配方快照身份损坏".into());
             }
             Ok(recipe)
@@ -931,8 +931,8 @@ impl Store {
             (format!(" WHERE p.id IN ({})", vec!["?"; ids.len()].join(",")), ids.iter().map(|&i| SqlValue::Integer(i)).collect())
         };
         let sql = format!(
-            "SELECT p.id, p.ts, p.sn, p.recipe_id, p.recipe_hash, p.verdict, COALESCE(pp.format, {POINTS_FORMAT}), COALESCE(pp.data, x''),
-                 p.cycle_id, p.bundle_hash, p.delivery_state, p.delivery_updated_at, p.delivery_message, p.layout_hash FROM parts p
+            "SELECT p.id, p.ts, p.sn, p.recipe_id, p.recipe_revision, p.verdict, COALESCE(pp.format, {POINTS_FORMAT}), COALESCE(pp.data, x''),
+                 p.cycle_id, p.bundle_id, p.delivery_state, p.delivery_updated_at, p.delivery_message, p.layout_hash FROM parts p
              LEFT JOIN part_points pp ON pp.part_id = p.id{filter} ORDER BY p.id DESC LIMIT {limit}"
         );
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
@@ -943,11 +943,11 @@ impl Store {
                     ts: row.get(1)?,
                     sn: row.get(2)?,
                     recipe_id: row.get(3)?,
-                    recipe_hash: row.get(4)?,
+                    recipe_revision: row.get(4)?,
                     verdict: parse_verdict(&row.get::<_, String>(5)?),
                     table: decode(row.get(6)?, &row.get::<_, Vec<u8>>(7)?),
                     cycle_id: row.get(8)?,
-                    bundle_hash: row.get(9)?,
+                    bundle_id: row.get(9)?,
                     delivery: delivery_row(row, 10)?,
                     layout_hash: row.get(13)?,
                 })

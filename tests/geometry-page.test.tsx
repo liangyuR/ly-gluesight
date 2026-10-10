@@ -179,7 +179,7 @@ describe("拍照点规划页面与真实候选编辑器的接线", () => {
   });
 
   it("未发布候选以新配方编辑，仍按候选编号和修订保存", async () => {
-    views.A.workspace.baseHash = null; views.A.productionVersion = null;
+    views.A.workspace.baseRevision = null; views.A.productionVersion = null;
     await open(); expect(editor().getByRole("heading", { name: "新配方 · 飞拍" })).toBeVisible();
     expect(screen.getByText("生产 未发布")).toBeVisible(); expect(editor().getByRole("textbox", { name: "配方编号" })).toBeDisabled();
     fireEvent.change(editor().getByRole("textbox", { name: "名称" }), { target: { value: "首个候选" } });

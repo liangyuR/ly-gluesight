@@ -5,7 +5,7 @@ async (page) => {
   if (!records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || plc.connection.protocol !== "simulator" || cameras.some(c => c.source !== "sim")) throw new Error("Isolated native test guard rejected");
   const saved = await read("workspace_get", {id}), production = await read("cycle_layout", {recipeId:id});
   const recent = await read("history_query", {query:{recipeId:id,limit:20}});
-  const row = recent.items.find(r => r.cycleId && r.bundleHash === hash && r.verdict === "NG_GAP");
+  const row = recent.items.find(r => r.cycleId && r.bundleId === hash && r.verdict === "NG_GAP");
   if (!row) throw new Error("Create a schema-2 recorded NG_GAP part first");
   const original = await read("history_detail", {id:row.id});
   const nav = name => page.getByRole("navigation",{name:"操作导航"}).getByRole("link",{name,exact:true}).click();
@@ -29,10 +29,10 @@ async (page) => {
       if (await page.getByRole("heading",{name:"操作未完成",exact:true}).isVisible()) throw new Error(await page.locator("main").innerText());
       await page.waitForTimeout(100);
     }
-    if (!result || result.candidateRevision !== 0 || result.candidateRecipe.hash !== row.recipeHash || result.bundleHash !== hash || result.cycleId !== row.cycleId || result.judgement.verdict !== row.verdict || result.measurements.length !== 4 || result.measurements.some(m => m.error || !m.located || m.bundleHash !== hash || m.cycleId !== row.cycleId)) throw new Error(JSON.stringify(result));
+    if (!result || result.candidateRevision !== 0 || result.candidateRecipe.revisionId !== row.recipeRevision || result.bundleId !== hash || result.cycleId !== row.cycleId || result.judgement.verdict !== row.verdict || result.measurements.length !== 4 || result.measurements.some(m => m.error || !m.located || m.bundleId !== hash || m.cycleId !== row.cycleId)) throw new Error(JSON.stringify(result));
     await page.getByRole("heading",{name:"原发布包重现结果",exact:true}).waitFor();
     await page.screenshot({path:`output/playwright/p0-history/03-original-independent-${scope}.png`,fullPage:true});
-    return {scope,id:result.id,candidateRevision:result.candidateRevision,candidateHash:result.candidateRecipe.hash,bundleHash:result.bundleHash,cycleId:result.cycleId,verdict:result.judgement.verdict,measurements:result.measurements.map(m=>({k:m.k,ms:m.ms,points:m.idx.length,error:m.error}))};
+    return {scope,id:result.id,candidateRevision:result.candidateRevision,candidateHash:result.candidateRecipe.revisionId,bundleId:result.bundleId,cycleId:result.cycleId,verdict:result.judgement.verdict,measurements:result.measurements.map(m=>({k:m.k,ms:m.ms,points:m.idx.length,error:m.error}))};
   };
   await nav("拍照点规划");
   const picker = page.getByRole("combobox",{name:"当前配方",exact:true});
@@ -56,5 +56,5 @@ async (page) => {
   await page.getByText("候选配置尚未保存",{exact:true}).waitFor({state:"hidden"});
   const after = await read("history_detail",{id:row.id}), afterSaved = await read("workspace_get",{id}), afterProduction = await read("cycle_layout",{recipeId:id});
   if (JSON.stringify(after) !== JSON.stringify(original) || JSON.stringify(afterSaved.workspace) !== JSON.stringify(saved.workspace) || JSON.stringify(afterProduction) !== JSON.stringify(production)) throw new Error("Original replay changed production record, stored candidate, or production layout");
-  return {historyId:row.id,sn:row.sn,cycleId:row.cycleId,bundleHash:hash,otherCandidate,dirtyCandidate,unsavedCandidatePreserved:true,storedCandidateAndProductionUnchanged:true,originalRecordUnchanged:true,accuracyQualified:false};
+  return {historyId:row.id,sn:row.sn,cycleId:row.cycleId,bundleId:hash,otherCandidate,dirtyCandidate,unsavedCandidatePreserved:true,storedCandidateAndProductionUnchanged:true,originalRecordUnchanged:true,accuracyQualified:false};
 }

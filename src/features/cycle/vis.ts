@@ -60,7 +60,7 @@ const outside = (v: number, p: JudgeParams) => v < p.nominal - p.tolLower || v >
 export function computeVis(layout: Recipe, part: PartView | null, measured: Measured[], result: Judgement | null): PointVis[] {
   const n = layout.points.k.length;
   const vis: PointVis[] = new Array(n).fill("none");
-  if (!part || part.recipeId !== layout.id || part.recipeHash !== layout.hash) return vis;
+  if (!part || part.recipeId !== layout.id || part.recipeRevision !== layout.revisionId) return vis;
   for (const m of measured) {
     if (!matchesPart(m, part)) continue;
     m.idx.forEach((j, i) => {

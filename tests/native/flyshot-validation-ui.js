@@ -26,8 +26,8 @@ async (page) => {
   await page.getByRole("button", {name:"确认发布 v1",exact:true}).click();
   await page.getByText("已提交发布，将在工件边界生效", {exact:true}).waitFor();
   const published = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("recipe_doc", {id:"UI-FLYSHOT"}));
-  if (published.id!=="UI-FLYSHOT" || published.productCode!==93 || !published.teachingHash) throw new Error("Production snapshot incomplete");
-  const result = {operation:"良品/断胶整组原图导入、人工期望、真实图像验证、发布取消与确认",passed:true,validation,published:{id:published.id,version:published.version,teachingHash:published.teachingHash}};
+  if (published.id!=="UI-FLYSHOT" || published.productCode!==93 || !published.teachingId) throw new Error("Production snapshot incomplete");
+  const result = {operation:"良品/断胶整组原图导入、人工期望、真实图像验证、发布取消与确认",passed:true,validation,published:{id:published.id,version:published.version,teachingId:published.teachingId}};
   await page.evaluate(result=>window.__uiOperations.checks.push(result),result);
   await page.screenshot({path:"D:\\project\\ly-gluesight\\output\\playwright\\ui-regression\\flyshot-validation.png",fullPage:true});
   await page.getByRole("link", {name:"查看在线检测",exact:true}).click();

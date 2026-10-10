@@ -48,17 +48,17 @@ async (page) => {
       await page.waitForTimeout(100);
     }
     const recordingSettledMs = Date.now() - recordingWaitStarted;
-    if (detail.summary.recipeHash !== production.hash || detail.summary.framesExpected !== 4 || detail.summary.framesReceived !== 4 || detail.triggers !== 4 || detail.frames.some((f, k) => f.camera !== "cam1" || f.view !== [1, 2, 3, 1][k] || f.status !== "done" || f.ordinal !== k + 1) || detail.frames.length !== 4 || detail.points?.d.length !== production.points.k.length || detail.points?.w.length !== production.points.k.length || detail.points?.st.length !== production.points.k.length || !recorded.complete || recorded.frames.length !== 4 || recorded.frames.some((f, k) => f.k !== k || f.camera !== "cam1" || f.view !== [1, 2, 3, 1][k] || !f.available)) throw new Error(JSON.stringify({ detail, recorded }));
+    if (detail.summary.recipeRevision !== production.revisionId || detail.summary.framesExpected !== 4 || detail.summary.framesReceived !== 4 || detail.triggers !== 4 || detail.frames.some((f, k) => f.camera !== "cam1" || f.view !== [1, 2, 3, 1][k] || f.status !== "done" || f.ordinal !== k + 1) || detail.frames.length !== 4 || detail.points?.d.length !== production.points.k.length || detail.points?.w.length !== production.points.k.length || detail.points?.st.length !== production.points.k.length || !recorded.complete || recorded.frames.length !== 4 || recorded.frames.some((f, k) => f.k !== k || f.camera !== "cam1" || f.view !== [1, 2, 3, 1][k] || !f.available)) throw new Error(JSON.stringify({ detail, recorded }));
     if (scenario === "normal" ? !["OK", "OK_WITH_EXCURSION"].includes(summary.verdict) : summary.verdict !== "NG_GAP" || summary.plcCode !== 13) throw new Error(JSON.stringify(summary));
-    if (measured.length !== 4 || measured.some(m => m.error || !m.located || m.bundleHash !== snapshot.part?.bundleHash || m.idx.length < 70)) throw new Error(JSON.stringify(measured));
+    if (measured.length !== 4 || measured.some(m => m.error || !m.located || m.bundleId !== snapshot.part?.bundleId || m.idx.length < 70)) throw new Error(JSON.stringify(measured));
     for (let k = 0; k < 4; k++) {
       await page.getByRole("button", { name: `查看帧 k${k + 1}`, exact: true }).click();
       await page.locator("svg.wp-gray-image").waitFor();
       await page.screenshot({ path: `${evidence}/${imageName}-k${k + 1}.png`, fullPage: true });
     }
-    rows.push({ scenario, summary, arming: { configuredArmMs: guard.settings.timeouts.armMs, elapsedMs: armingMs, log: armingLog }, judgement: detail.judgement, frames: detail.frames, triggers: detail.triggers, softwareVersion: detail.softwareVersion, measurements: measured.map(m => ({ k: m.k, cycleId: m.cycleId, shotId: m.shotId, camera: m.camera, bundleHash: m.bundleHash, located: m.located, score: m.score, ms: m.ms, points: m.idx.length, error: m.error })), recorded, recordingSettledMs, observations, cycleLogs });
+    rows.push({ scenario, summary, arming: { configuredArmMs: guard.settings.timeouts.armMs, elapsedMs: armingMs, log: armingLog }, judgement: detail.judgement, frames: detail.frames, triggers: detail.triggers, softwareVersion: detail.softwareVersion, measurements: measured.map(m => ({ k: m.k, cycleId: m.cycleId, shotId: m.shotId, camera: m.camera, bundleId: m.bundleId, located: m.located, score: m.score, ms: m.ms, points: m.idx.length, error: m.error })), recorded, recordingSettledMs, observations, cycleLogs });
     for (let attempt = 0; attempt < 100 && (await invokeRead("sim_status")).running; attempt++) await page.waitForTimeout(100);
     if ((await invokeRead("sim_status")).running) throw new Error("The simulator did not finish the one-part handshake");
   }
-  return { engine: guard.engine, recipeHash: production.hash, teachingHash: production.teachingHash, rows, final: await invokeRead("cycle_snapshot") };
+  return { engine: guard.engine, recipeRevision: production.revisionId, teachingId: production.teachingId, rows, final: await invokeRead("cycle_snapshot") };
 }

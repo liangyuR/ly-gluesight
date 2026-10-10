@@ -17,11 +17,11 @@ fn row(recipe: &Recipe, id: i64) -> StoredMeasurement {
         ts: 1234,
         sn: 42,
         recipe_id: Some(recipe.id.clone()),
-        recipe_hash: Some(recipe.hash.clone()),
+        recipe_revision: Some(recipe.revision_id.clone()),
         verdict: judge::judge(recipe, &table).verdict,
         table,
         cycle_id: Some(format!("cycle-{id}")),
-        bundle_hash: Some("bundle-hash".into()),
+        bundle_id: Some("bundle-revision_id".into()),
         delivery: PlcDelivery::default(),
         layout_hash: Some(measurement_layout_hash(recipe)),
     }
@@ -33,7 +33,7 @@ fn a_named_missing_snapshot_never_falls_back_to_current_recipe() {
     let store = Store::open(&path).unwrap();
     let current = Arc::new(recipe());
     assert!(record_recipe(&store, Some("missing"), || panic!("不得读取当前配方")).unwrap().is_none());
-    assert_eq!(record_recipe(&store, None, || Some(current.clone())).unwrap().unwrap().hash, current.hash);
+    assert_eq!(record_recipe(&store, None, || Some(current.clone())).unwrap().unwrap().revision_id, current.revision_id);
     drop(store);
     let _ = std::fs::remove_file(&path);
 }
@@ -87,7 +87,7 @@ fn threshold_only_changes_are_rejudged_without_altering_original_result() {
     let original = Arc::new(recipe());
     let mut candidate = (*original).clone();
     candidate.version += 1;
-    candidate.hash = "current-candidate".into();
+    candidate.revision_id = "current-candidate".into();
     candidate.filter_window = 3;
     for segment in &mut candidate.segments { segment.width.as_mut().unwrap().tol_upper = 3.0; }
     let request = RejudgeRequest { use_current_recipe: true, ..Default::default() };
@@ -104,11 +104,11 @@ fn threshold_only_changes_are_rejudged_without_altering_original_result() {
 fn each_original_snapshot_is_checked_even_with_the_same_recipe_id() {
     let first = Arc::new(recipe());
     let mut second = (*first).clone();
-    second.hash = "second-snapshot".into();
+    second.revision_id = "second-snapshot".into();
     second.shots[0].view = 2;
     let second = Arc::new(second);
-    let result = rejudge_rows(vec![row(&first, 1), row(&second, 2)], &RejudgeRequest { use_current_recipe: true, ..Default::default() }, |hash| {
-        Ok(Some(if hash == first.hash { first.clone() } else { second.clone() }))
+    let result = rejudge_rows(vec![row(&first, 1), row(&second, 2)], &RejudgeRequest { use_current_recipe: true, ..Default::default() }, |revision_id| {
+        Ok(Some(if revision_id == first.revision_id { first.clone() } else { second.clone() }))
     }, |_| Some(first.clone())).unwrap();
     assert_eq!((result.total, result.skipped), (1, 1));
     assert_eq!(result.skip_reasons[0].id, 2);
@@ -122,7 +122,7 @@ fn unavailable_or_inconsistent_original_inputs_are_explicitly_skipped() {
     let mut err = row(&original, 2);
     err.verdict = Verdict::ErrInspect;
     let mut no_hash = row(&original, 3);
-    no_hash.recipe_hash = None;
+    no_hash.recipe_revision = None;
     let mut bad_layout = row(&original, 4);
     bad_layout.layout_hash = Some("tampered-layout".into());
     let result = rejudge_rows(vec![no_table, err, no_hash, bad_layout], &RejudgeRequest::default(), |_| Ok(Some(original.clone())), |_| None).unwrap();
@@ -140,7 +140,7 @@ fn csv_preserves_full_identity_and_delivery_with_escaped_text() {
         sn: 42,
         recipe_id: Some("recipe-id".into()),
         recipe_version: Some(7),
-        recipe_hash: Some("0123456789abcdef".into()),
+        recipe_revision: Some("0123456789abcdef".into()),
         trigger_mode: Some("fly".into()),
         verdict: Verdict::Ok,
         plc_code: 1,
@@ -151,12 +151,12 @@ fn csv_preserves_full_identity_and_delivery_with_escaped_text() {
         frames_received: 4,
         retest_of: None,
         cycle_id: Some("cycle-id".into()),
-        bundle_hash: Some("full-frozen-bundle-hash".into()),
+        bundle_id: Some("full-frozen-bundle-revision_id".into()),
         delivery: PlcDelivery { state: PlcDeliveryState::Acknowledged, updated_at: 2345, message: Some("PLC \"已确认\"".into()) },
     };
     let csv = csv_row(&summary);
     assert!(csv.contains("\"0123456789abcdef\""));
     assert!(csv.contains("\"包含,逗号与\"\"引号\"\"\n换行\""));
-    assert!(csv.contains(",\"cycle-id\",\"full-frozen-bundle-hash\",acknowledged,"));
+    assert!(csv.contains(",\"cycle-id\",\"full-frozen-bundle-revision_id\",acknowledged,"));
     assert!(csv.ends_with(",\"PLC \"\"已确认\"\"\"\r\n"));
 }

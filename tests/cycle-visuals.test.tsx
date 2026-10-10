@@ -50,8 +50,8 @@ describe("拍照点选择与真实状态显示", () => {
     expect(screen.getByText("— · 2 点 · — ms")).toBeVisible(); expect(screen.queryByText(/undefined|null|< 0.60/)).not.toBeInTheDocument();
   });
 
-  it.each(["id", "hash"])("%s 不匹配的工件快照不使用旧帧状态", mismatch => {
-    const part = cyclePart(); if (mismatch === "id") part.recipeId = "B"; else part.recipeHash = "old-hash";
+  it.each(["id", "revisionId"])("%s 不匹配的工件快照不使用旧帧状态", mismatch => {
+    const part = cyclePart(); if (mismatch === "id") part.recipeId = "B"; else part.recipeRevision = "old-revisionId";
     render(<ShotStrip layout={workspaceView().layout} part={part} vis={vis} />);
     expect(within(screen.getByRole("button", { name: "查看帧 k1" })).getByText("等待")).toBeVisible();
     expect(screen.queryByText("完成")).not.toBeInTheDocument();
@@ -135,7 +135,7 @@ describe("逐拍照点视图", () => {
     // 不判位置时偏移不参与；不是本件配方的测量不着色
     layout.segments[0].position = null; m.d = [99, 99]; m.w = [2, 2];
     expect(computeVis(layout, part, [m], null).slice(0, 2)).toEqual(["ok", "ok"]);
-    expect(computeVis(layout, { ...part, recipeHash: "old" }, [m], null)).toEqual(["none", "none", "none", "none"]);
+    expect(computeVis(layout, { ...part, recipeRevision: "old" }, [m], null)).toEqual(["none", "none", "none", "none"]);
   });
 });
 

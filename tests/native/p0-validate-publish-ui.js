@@ -37,5 +37,5 @@ async (page) => {
   const published = await until(v => v.productionVersion === validated.workspace.doc.version && !v.workspace.pending, "Validated release did not become active", 30000);
   await page.screenshot({ path: root + "/07-published.png", fullPage: true });
   await page.getByRole("link", { name: "查看在线检测", exact: true }).click();
-  return { id, validation: validated.workspace.validation, publication: { productionVersion: published.productionVersion, candidateVersion: published.workspace.doc.version, baseHash: published.workspace.baseHash, revision: published.workspace.revision, error: published.workspace.publishError } };
+  return { id, validation: validated.workspace.validation, publication: { productionVersion: published.productionVersion, candidateVersion: published.workspace.doc.version, baseRevision: published.workspace.baseRevision, revision: published.workspace.revision, error: published.workspace.publishError } };
 }

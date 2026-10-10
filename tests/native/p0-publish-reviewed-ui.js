@@ -27,7 +27,7 @@ async (page) => {
   if (published.productionVersion !== validated.workspace.doc.version || published.workspace.pending || published.workspace.publishError) throw new Error(JSON.stringify(published));
   await page.screenshot({ path: root + "/07-published.png", fullPage: true });
   const production = await page.evaluate(async id => window.__TAURI_INTERNALS__.invoke("cycle_layout", { recipeId: id }), id);
-  if (!production.teachingHash || production.shots.some((s, k) => s.view !== [1, 2, 3, 1][k])) throw new Error("The production recipe must contain the teaching identity and four planned views");
+  if (!production.teachingId || production.shots.some((s, k) => s.view !== [1, 2, 3, 1][k])) throw new Error("The production recipe must contain the teaching identity and four planned views");
   await page.getByRole("link", { name: "查看在线检测", exact: true }).click();
-  return { id, originalStrictOkMismatch: firstGood, reviewedValidation: validated.workspace.validation, publication: { productionVersion: published.productionVersion, candidateVersion: published.workspace.doc.version, baseHash: published.workspace.baseHash, revision: published.workspace.revision, recipeHash: production.hash, teachingHash: production.teachingHash } };
+  return { id, originalStrictOkMismatch: firstGood, reviewedValidation: validated.workspace.validation, publication: { productionVersion: published.productionVersion, candidateVersion: published.workspace.doc.version, baseRevision: published.workspace.baseRevision, revision: published.workspace.revision, recipeRevision: production.revisionId, teachingId: production.teachingId } };
 }

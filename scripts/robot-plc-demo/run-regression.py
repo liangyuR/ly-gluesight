@@ -28,7 +28,7 @@ def verify_evidence(result, recipe):
         if any(identity.get(key) != value for key, value in {"sn": result["sn"], "recipeId": recipe["id"],
                                                            "productCode": recipe["productCode"], "shotCount": len(plan)}.items()):
             raise RuntimeError("Trigger acknowledgement differs from the current part")
-        if any(not result.get(key) or identity.get(key) != result[key] for key in ("cycleId", "recipeHash", "bundleHash")):
+        if any(not result.get(key) or identity.get(key) != result[key] for key in ("cycleId", "recipeRevision", "bundleId")):
             raise RuntimeError("Live verification requires one cycle and immutable release bundle")
         engine, app = evidence.get("engine", {}), evidence.get("app", {})
         if evidence.get("scope") != "demo-app" or engine.get("backend") != "LyFlow" or engine.get("ready") is not True or engine.get("measuring") is not True or not app.get("version"):

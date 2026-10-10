@@ -14,15 +14,11 @@ $demoExe = Join-Path $demoOutput 'GlueSight-Robot-PLC.exe'
 $demoStatePath = Join-Path $demoOutput 'services.json'
 $demoRecipe = if ($Recipe) { (Resolve-Path -LiteralPath $Recipe).Path } else { $cfg.robot.recipe }
 $expectedProcesses = if ($ServicesOnly) { 2 } else { 4 }
-$configHash = (Get-FileHash -LiteralPath $cfg.configPath).Hash
-$sourceHash = Get-DemoSourceHash
-$recipeHash = (Get-FileHash -LiteralPath $demoRecipe).Hash
 New-Item -ItemType Directory -Path $demoOutput -Force | Out-Null
 if (Test-Path -LiteralPath $demoStatePath) {
     $previous = Get-Content -LiteralPath $demoStatePath -Raw | ConvertFrom-Json
     $alive = @($previous.processes | Where-Object { Get-DemoOwnedProcess $_ })
-    if ($alive.Count -eq $expectedProcesses -and !$Build -and $previous.configHash -eq $configHash -and
-        $previous.sourceHash -eq $sourceHash -and $previous.recipeHash -eq $recipeHash -and
+    if ($alive.Count -eq $expectedProcesses -and !$Build -and $previous.configPath -eq $cfg.configPath -and $previous.recipe -eq $demoRecipe -and
         [bool]$previous.servicesOnly -eq [bool]$ServicesOnly) {
         Write-Output "模拟服务已运行：$($cfg.consoleUrl)"
         if ($OpenConsole) { Start-Process -FilePath $cfg.consoleUrl }
@@ -88,8 +84,7 @@ try {
     }
     if (!$ready) { throw '模拟服务未能就绪，请检查运行目录中的 stderr.log。' }
     $manifest = @{processes=@($started.ToArray()); console=$cfg.consoleUrl; recipe=$demoRecipe; servicesOnly=[bool]$ServicesOnly;
-        configPath=$cfg.configPath; configHash=$configHash; sourceHash=$sourceHash; recipeHash=$recipeHash}
-    if (!$ServicesOnly) { $manifest.appSha256 = (Get-FileHash -LiteralPath $demoExe).Hash }
+        configPath=$cfg.configPath}
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $demoStatePath -Encoding utf8
     Write-Output "Robot + PLC 模拟服务已启动：$($cfg.consoleUrl)"
     if ($OpenConsole) { Start-Process -FilePath $cfg.consoleUrl }

@@ -25,7 +25,7 @@ async (page) => {
   const frame = invalidated.workspace.frames[2];
   if (invalidated.workspace.doc.shots[2].camera !== "cam2" || frame.saved || frame.trial || frame.image || frame.views.length) throw new Error("Camera binding retained old teaching");
   for (const k of [0, 1, 3]) if (JSON.stringify(initial.workspace.frames[k]) !== JSON.stringify(invalidated.workspace.frames[k]) || JSON.stringify(initial.workspace.doc.shots[k]) !== JSON.stringify(invalidated.workspace.doc.shots[k])) throw new Error(`Unrelated k${k + 1} changed`);
-  if (invalidated.productionVersion !== initial.productionVersion || invalidated.workspace.baseHash !== initial.workspace.baseHash) throw new Error("Published production identity changed");
+  if (invalidated.productionVersion !== initial.productionVersion || invalidated.workspace.baseRevision !== initial.workspace.baseRevision) throw new Error("Published production identity changed");
   await page.screenshot({ path: evidence + "/13-camera-invalidated.png", fullPage: true });
   await target.selectOption("cam1");
   await page.getByRole("button", { name: "保存候选配置", exact: true }).last().click();
@@ -60,7 +60,7 @@ async (page) => {
     await page.waitForTimeout(100);
   }
   const production = await read("cycle_layout", { recipeId: id });
-  if (restored.workspace.frames.some(f => !f.saved || !f.trial?.passed) || JSON.stringify(restored.workspace.doc) !== JSON.stringify(initial.workspace.doc) || production.hash !== guard.production.hash || production.teachingHash !== guard.production.teachingHash || production.version !== 1) throw new Error("Candidate or publication was not restored");
+  if (restored.workspace.frames.some(f => !f.saved || !f.trial?.passed) || JSON.stringify(restored.workspace.doc) !== JSON.stringify(initial.workspace.doc) || production.revisionId !== guard.production.revisionId || production.teachingId !== guard.production.teachingId || production.version !== 1) throw new Error("Candidate or publication was not restored");
   await page.screenshot({ path: evidence + "/14-teaching-restored.png", fullPage: true });
-  return { staleOptionsBeforeRefresh: beforeOptions, optionsAfterRefresh: afterOptions, invalidation: { k: 2, from: "cam1", to: "cam2", saved: invalidated.workspace.frames.map(f => f.saved), otherFramesAndShotsUnchanged: true, image: frame.image, trial: frame.trial }, final: { saved: restored.workspace.frames.map(f => f.saved), views: restored.workspace.doc.shots.map(s => s.view), revision: restored.workspace.revision, productionVersion: production.version, productionHash: production.hash, teachingHash: production.teachingHash, restoredTrial: { passed: restored.workspace.frames[2].trial.passed, engineTag: restored.workspace.frames[2].trial.engineTag, elapsedMs: restored.workspace.frames[2].trial.elapsedMs } }, cycle: await read("cycle_snapshot") };
+  return { staleOptionsBeforeRefresh: beforeOptions, optionsAfterRefresh: afterOptions, invalidation: { k: 2, from: "cam1", to: "cam2", saved: invalidated.workspace.frames.map(f => f.saved), otherFramesAndShotsUnchanged: true, image: frame.image, trial: frame.trial }, final: { saved: restored.workspace.frames.map(f => f.saved), views: restored.workspace.doc.shots.map(s => s.view), revision: restored.workspace.revision, productionVersion: production.version, productionRevision: production.revisionId, teachingId: production.teachingId, restoredTrial: { passed: restored.workspace.frames[2].trial.passed, engineTag: restored.workspace.frames[2].trial.engineTag, elapsedMs: restored.workspace.frames[2].trial.elapsedMs } }, cycle: await read("cycle_snapshot") };
 }

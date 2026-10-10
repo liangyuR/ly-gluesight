@@ -59,7 +59,7 @@ class Robot:
         self.state = {"running": False, "stopping": False, "phase": "idle", "scenario": "normal", "sn": None,
                       "k": None, "shotId": None, "poseId": None, "camera": None, "view": None,
                       "deviceTriggers": {}, "parts": 0, "message": "Robot 服务已就绪",
-                      "runId": None, "cycleId": None, "recipeHash": None, "bundleHash": None,
+                      "runId": None, "cycleId": None, "recipeRevision": None, "bundleId": None,
                       "results": [], "events": []}
         results_file = self.output / "robot-results.jsonl"
         if results_file.exists():
@@ -147,14 +147,14 @@ class Robot:
                 for key in ("sn", "k", "recipeId", "productCode", "shotCount", "shotId", "poseId", "camera", "view", "ordinal"):
                     if type(identity.get(key)) is not type(self.pending[key]) or identity[key] != self.pending[key]:
                         raise ValueError(f"Trigger acknowledgement {key} differs from the ticket")
-                for key in ("cycleId", "recipeHash"):
+                for key in ("cycleId", "recipeRevision"):
                     if not isinstance(identity.get(key), str) or not identity[key]:
                         raise ValueError(f"Trigger acknowledgement requires {key}")
-                if identity.get("bundleHash") is not None and not isinstance(identity["bundleHash"], str):
-                    raise ValueError("Trigger bundleHash must be a string or null")
-                if self.pending["k"] > 0 and any(identity.get(key) != self.state[key] for key in ("cycleId", "recipeHash", "bundleHash")):
+                if identity.get("bundleId") is not None and not isinstance(identity["bundleId"], str):
+                    raise ValueError("Trigger bundleId must be a string or null")
+                if self.pending["k"] > 0 and any(identity.get(key) != self.state[key] for key in ("cycleId", "recipeRevision", "bundleId")):
                     raise Conflict("Cycle or frozen resources changed between triggers")
-                self.state.update({key: identity.get(key) for key in ("cycleId", "recipeHash", "bundleHash")})
+                self.state.update({key: identity.get(key) for key in ("cycleId", "recipeRevision", "bundleId")})
             self.pending["reply"] = data
             self.pending["done"].set()
 
@@ -235,7 +235,7 @@ class Robot:
                 with self.lock:
                     self.state.update(sn=sn, k=None, shotId=None, poseId=None, camera=None, view=None,
                                       deviceTriggers=dict.fromkeys(self.planned_triggers, 0), scenario=scenario,
-                                      cycleId=None, recipeHash=None, bundleHash=None)
+                                      cycleId=None, recipeRevision=None, bundleId=None)
                 started_at = time.monotonic()
                 trigger_ack_ms = []
                 trigger_acks = []
@@ -279,8 +279,8 @@ class Robot:
                 result = {"sn": sn, "scenario": scenario, "resultCode": result_code, "faultCode": fault_code,
                           "resultSn": result_sn, "ts": utc_now(), "runId": run_id,
                           "recipeSha256": self.recipe_sha256, "deviceTriggers": dict(self.state["deviceTriggers"]),
-                          "cycleId": self.state["cycleId"], "recipeHash": self.state["recipeHash"],
-                          "bundleHash": self.state["bundleHash"], "triggerAcks": trigger_acks,
+                          "cycleId": self.state["cycleId"], "recipeRevision": self.state["recipeRevision"],
+                          "bundleId": self.state["bundleId"], "triggerAcks": trigger_acks,
                           "triggerAckMs": trigger_ack_ms, "resultWaitMs": round((time.monotonic() - result_wait_at) * 1000, 2),
                           "cycleMs": round((time.monotonic() - started_at) * 1000, 2)}
                 self.event("acknowledging", "结果已收到，发送确认", **result)

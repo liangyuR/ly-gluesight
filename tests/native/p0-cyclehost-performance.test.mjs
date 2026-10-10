@@ -8,18 +8,18 @@ import { distribution, fnv1a64, memoryTrend, recordedArtifact, scanReplayInputs,
   runCycleHostPerformance, validateCameraSource, validatePart, validateReplayInputsSnapshot, validateReplayOutputs } from './p0-cyclehost-performance.mjs';
 
 function evidence(mode = 'tricam', verdict = 'OK', plcCode = 1) {
-  const layout = { id: 'fixture', hash: 'recipe', points: { k: [0, 1, 2, 3] },
+  const layout = { id: 'fixture', revisionId: 'recipe', points: { k: [0, 1, 2, 3] },
     shots: [1, 2, 3, 1].map((view, k) => ({ id: 'P' + (k + 1), camera: 'cam1', view: mode === 'single' ? 1 : view })) };
   const row = { armMs: 10, detail: {
-    summary: { cycleId: 'cycle', bundleHash: 'bundle', recipeHash: 'recipe', framesExpected: 4,
+    summary: { cycleId: 'cycle', bundleId: 'bundle', recipeRevision: 'recipe', framesExpected: 4,
       framesReceived: 4, drainMs: 8, sn: 41, verdict, plcCode, faultCode: 0, delivery: { state: 'acknowledged' } },
     triggers: 4, recording: { state: 'complete' },
     shots: layout.shots.map((shot, k) => ({ k, shotId: shot.id, camera: shot.camera, view: shot.view,
       ordinal: k + 1, status: 'done', error: null,
-      rawFiles: (mode === 'single' ? [1] : [1, 2, 3]).map(view => ({ view, hash: 'hash' })) })) },
+      rawFiles: (mode === 'single' ? [1] : [1, 2, 3]).map(view => ({ view, revisionId: 'hash' })) })) },
     originals: { complete: true, frames: layout.shots.flatMap((_, k) =>
       (mode === 'single' ? [1] : [1, 2, 3]).map(view => ({ k, view, available: true, error: null }))) },
-    measurements: layout.shots.map((shot, k) => ({ k, cycleId: 'cycle', bundleHash: 'bundle', sn: 41,
+    measurements: layout.shots.map((shot, k) => ({ k, cycleId: 'cycle', bundleId: 'bundle', sn: 41,
       shotId: shot.id, camera: shot.camera, located: true, error: null, idx: [k],
       ms: 12, queueMs: 1, engineMs: 11, coreMs: 9 })) };
   return { layout, row };
@@ -62,7 +62,7 @@ test('normal excursion stays an explicit accuracy failure without changing measu
 const invalid = [
   ['measurement from another cycle', row => row.measurements[1].cycleId = 'other'],
   ['wrong SN', row => row.measurements[1].sn++],
-  ['wrong frozen bundle', row => row.measurements[1].bundleHash = 'new'],
+  ['wrong frozen bundle', row => row.measurements[1].bundleId = 'new'],
   ['missing nullable metric', row => delete row.measurements[1].queueMs],
   ['unknown core duration', row => row.measurements[1].coreMs = null],
   ['incorrect point ownership', row => row.measurements[1].idx = [0]],
@@ -125,7 +125,7 @@ function reportEvidence() {
   const report = { schemaVersion: 1, completed: true, passed: true, mode: 'single', scenario: 'normal',
     physicalValidation: false, s7HardwareValidation: false, requestedParts: 100, completedParts: 100,
     accuracyFailures: [], guard: { records: { root } }, samples,
-    provenance: { layout, bundleHash: 'bundle', manifest: { recipeId: 'fixture', recipeHash: 'recipe' }, fixture: artifact, executable: artifact, dll: artifact, release: [artifact] },
+    provenance: { layout, bundleId: 'bundle', manifest: { recipeId: 'fixture', recipeRevision: 'recipe' }, fixture: artifact, executable: artifact, dll: artifact, release: [artifact] },
     metrics: Object.fromEntries(['ms', 'queueMs', 'engineMs', 'coreMs'].map(key =>
       [key, distribution(rows.flatMap(value => value.measurements.map(m => m[key])))])),
     memory: { workingSet: memoryTrend(samples, 'workingSetBytes'), private: memoryTrend(samples, 'privateBytes') } };
@@ -184,10 +184,10 @@ function replayEvidence(mode = 'tricam') {
   row.recordedArtifacts = files.map(file => ({ ...file,
     path: join('C:/p0-recording-selftest/part_cycle_cycle', file.file) }));
   row.recordingMetadata = { document: { available: true, cycleId: 'cycle', sn: 41,
-    bundleHash: 'bundle', recipeHash: 'recipe', errors: [], missingShots: [], droppedFrames: 0,
+    bundleId: 'bundle', recipeRevision: 'recipe', errors: [], missingShots: [], droppedFrames: 0,
     frames: files.map(file => ({ k: file.k, view: file.view, file: file.file,
       counter: 'synthetic', manual: false, lostPackets: 0, width: 1280, height: 1024,
-      available: true, error: null, cycleId: 'cycle', bundleHash: 'bundle', recipeHash: 'recipe',
+      available: true, error: null, cycleId: 'cycle', bundleId: 'bundle', recipeRevision: 'recipe',
       camera: 'cam1', shotId: layout.shots[file.k].id, selectedView: layout.shots[file.k].view,
       session: 7, ordinal: file.k + 1, frameCounter: file.k + 11, triggerCounter: file.k + 11 })) } };
   return { row, layout, inputs };
@@ -315,9 +315,9 @@ async function mockPerformanceRun(parent, failure) {
   await mkdir(records, { recursive: true });
   await mkdir(release);
   const { layout } = evidence('single');
-  const manifest = { schemaVersion: 1, recipeId: layout.id, recipeHash: layout.hash,
+  const manifest = { schemaVersion: 1, recipeId: layout.id, recipeRevision: layout.revisionId,
     shots: layout.shots.map((shot, k) => ({ k, shotId: shot.id, camera: shot.camera, view: shot.view, size: [1280, 1024] })) };
-  const manifestBytes = Buffer.from(JSON.stringify(manifest)), bundleHash = fnv1a64(manifestBytes);
+  const manifestBytes = Buffer.from(JSON.stringify(manifest)), bundleId = fnv1a64(manifestBytes);
   await writeFile(join(release, 'manifest.json'), manifestBytes);
   await writeFile(join(release, 'recipe.json'), JSON.stringify(layout));
   const executable = join(parent, 'MockApplication.exe'), dll = join(parent, 'MockEngine.dll');
@@ -330,9 +330,9 @@ async function mockPerformanceRun(parent, failure) {
     const { row } = evidence('single');
     const cycleId = 'selftestcycle' + part, directory = join(records, 'day', 'part_cycle_' + cycleId);
     await mkdir(directory, { recursive: true });
-    Object.assign(row.detail.summary, { id: part, sn: part + 40, cycleId, bundleHash });
+    Object.assign(row.detail.summary, { id: part, sn: part + 40, cycleId, bundleId });
     row.originals.frames.forEach(frame => frame.file = 'day/part_cycle_' + cycleId + '/k' + frame.k + '.pgm');
-    row.measurements.forEach(measured => Object.assign(measured, { cycleId, bundleHash, sn: part + 40 }));
+    row.measurements.forEach(measured => Object.assign(measured, { cycleId, bundleId, sn: part + 40 }));
     for (let k = 0; k < 4; k++) {
       Object.assign(row.detail.shots[k], { session: 7, frameCounter: k + 11, triggerCounter: k + 11 });
       const header = Buffer.from('P5\n1280 1024\n255\n'), pixels = Buffer.alloc(1280 * 1024, k + 1);
@@ -347,8 +347,8 @@ async function mockPerformanceRun(parent, failure) {
       row.originals.complete = false;
     }
     const metadata = structuredClone(replayEvidence('single').row.recordingMetadata.document);
-    Object.assign(metadata, { cycleId, sn: part + 40, bundleHash });
-    metadata.frames.forEach(frame => Object.assign(frame, { cycleId, bundleHash, file: 'k' + frame.k + '.pgm' }));
+    Object.assign(metadata, { cycleId, sn: part + 40, bundleId });
+    metadata.frames.forEach(frame => Object.assign(frame, { cycleId, bundleId, file: 'k' + frame.k + '.pgm' }));
     await writeFile(join(directory, 'part.json'), JSON.stringify(metadata));
     rows.push(row);
   }

@@ -26,12 +26,12 @@ export interface TeachFrame {
 export type FrozenShot = Pick<TeachFrame, "id" | "shotId" | "poseId" | "camera" | "view" | "skip" | "path" | "mmPerPx" | "size" | "params" | "imageId" | "captureSettings">;
 export interface RuntimeConfiguration {
   version: number; recipe: RecipeConfiguration; shots: FrozenShot[];
-  bundleHash: string; recipeHash: string; graphVersion: string; engineVersion: string; calibrationVersion: string;
+  bundleId: string; recipeRevision: string; graphVersion: string; engineVersion: string; calibrationVersion: string;
   overview: { positions: { x: number; y: number }[]; background: string | null; saved: boolean };
 }
 export interface Comparison {
   kind: "remeasure" | "rejudge"; mode: "original" | "candidate"; verdict: Verdict; gap: number; version: number;
-  cycleId: string; bundleHash: string;
+  cycleId: string; bundleId: string;
 }
 export interface WorkflowState {
   schema: 4; scene: string; device: PreviewCamera; cameras: PreviewCamera[];
@@ -68,16 +68,11 @@ function exampleFrames(): TeachFrame[] {
     trial: i === 2 ? null : { imageId: 41 + i, revision: 1, pass: true, score: 0.94 }, saved: i !== 2, backup: null, params: { ...defaultParams },
   }));
 }
-function fingerprint(value: unknown): string {
-  let hash = 2166136261;
-  for (const char of JSON.stringify(value)) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
-  return (hash >>> 0).toString(16).padStart(8, "0");
-}
 export function runtimeConfig(recipe: RecipeConfiguration, frames: TeachFrame[], overview: WorkflowState["overview"], version: number): RuntimeConfiguration {
   const shots = frames.map(({ id, shotId, poseId, camera, view, skip, path, mmPerPx, size, params, imageId, captureSettings }) => structuredClone({ id, shotId, poseId, camera, view, skip, path, mmPerPx, size, params, imageId, captureSettings }));
-  const recipeHash = "demo-recipe-" + fingerprint([{ id: recipe.id, name: recipe.name, productCode: recipe.productCode, spacing: recipe.spacing, target: recipe.target, tolerance: recipe.tolerance, maxGap: recipe.maxGap }, shots.map(f => [f.shotId, f.poseId, f.camera, f.view, f.skip, f.path, f.mmPerPx, f.size, f.params])]);
+  const recipeRevision = `${recipe.id}-v${version}`;
   const graphVersion = "taught-path-1", engineVersion = "示例引擎 · 无 DLL";
-  return { version, recipe: { ...recipe }, shots, recipeHash, bundleHash: "demo-bundle-" + fingerprint([version, recipeHash, graphVersion, engineVersion, shots, overview]), graphVersion, engineVersion, calibrationVersion: [...new Set(shots.filter(f => !f.skip).map(f => f.camera + ":" + f.captureSettings.calibrationVersion))].join(" / "), overview: structuredClone(overview) };
+  return { version, recipe: { ...recipe }, shots, recipeRevision, bundleId: `${recipe.id}-release-v${version}`, graphVersion, engineVersion, calibrationVersion: [...new Set(shots.filter(f => !f.skip).map(f => f.camera + ":" + f.captureSettings.calibrationVersion))].join(" / "), overview: structuredClone(overview) };
 }
 export function initialState(): WorkflowState {
   const recipe = { ...defaultRecipe }, frames = exampleFrames();
@@ -142,10 +137,10 @@ export function sampleVerdict(s: WorkflowState, sample: typeof validationSamples
 }
 const originalConfig = runtimeConfig(defaultRecipe, exampleFrames(), { positions: initialPositions, background: null, saved: true }, 13);
 export const historyRecords = [
-  { id: "TJ-000184", cycleId: "demo-cycle-184", time: "2026-10-08 14:32:08", result: "NG" as Verdict, cause: "P3 断胶 · 6.2 mm", raw: true, frames: 6, version: 13, gap: 6.2, bundleHash: originalConfig.bundleHash, config: originalConfig },
-  { id: "TJ-000183", cycleId: "demo-cycle-183", time: "2026-10-08 14:31:52", result: "OK" as Verdict, cause: "胶路合格", raw: true, frames: 6, version: 13, gap: 0, bundleHash: originalConfig.bundleHash, config: originalConfig },
-  { id: "TJ-000182", cycleId: "demo-cycle-182", time: "2026-10-07 09:22:14", result: "OK" as Verdict, cause: "仅测量数据", raw: false, frames: 6, version: 13, gap: 0, bundleHash: originalConfig.bundleHash, config: originalConfig },
-  { id: "TJ-000181", cycleId: "demo-cycle-181", time: "2026-10-07 09:21:57", result: "ERR" as Verdict, cause: "P3 原图缺失", raw: true, frames: 5, version: 13, gap: 0, bundleHash: originalConfig.bundleHash, config: originalConfig },
+  { id: "TJ-000184", cycleId: "demo-cycle-184", time: "2026-10-08 14:32:08", result: "NG" as Verdict, cause: "P3 断胶 · 6.2 mm", raw: true, frames: 6, version: 13, gap: 6.2, bundleId: originalConfig.bundleId, config: originalConfig },
+  { id: "TJ-000183", cycleId: "demo-cycle-183", time: "2026-10-08 14:31:52", result: "OK" as Verdict, cause: "胶路合格", raw: true, frames: 6, version: 13, gap: 0, bundleId: originalConfig.bundleId, config: originalConfig },
+  { id: "TJ-000182", cycleId: "demo-cycle-182", time: "2026-10-07 09:22:14", result: "OK" as Verdict, cause: "仅测量数据", raw: false, frames: 6, version: 13, gap: 0, bundleId: originalConfig.bundleId, config: originalConfig },
+  { id: "TJ-000181", cycleId: "demo-cycle-181", time: "2026-10-07 09:21:57", result: "ERR" as Verdict, cause: "P3 原图缺失", raw: true, frames: 5, version: 13, gap: 0, bundleId: originalConfig.bundleId, config: originalConfig },
 ];
 export function layoutCompatible(s: WorkflowState, config: RuntimeConfiguration): boolean {
   const layout = (frames: (TeachFrame | FrozenShot)[]) => frames.map(f => [f.shotId, f.poseId, f.camera, f.view, f.skip, f.path, f.mmPerPx]);
@@ -292,7 +287,7 @@ function reduce(s: WorkflowState, a: Action): WorkflowState {
       const config = mode === "original" ? record.config : runtimeConfig(s.recipe, s.frames, s.overview, s.recipe.candidate);
       const invalid = mode === "candidate" && s.frames.some(f => shotProblem(s, f));
       const verdict: Verdict = record.result === "ERR" || invalid ? "ERR" : mode === "original" ? record.result : record.gap > (config.shots[2].params.gapLimit ?? config.recipe.maxGap) || Math.abs(0.3 - config.recipe.target) > config.recipe.tolerance || config.shots[2].params.minWidth > 3.94 || config.shots[2].params.maxWidth < 3.94 ? "NG" : "OK";
-      return { ...s, comparisons: { ...s.comparisons, [record.id]: { kind: a.kind, mode, verdict, gap: record.gap, version: config.version, cycleId: record.cycleId, bundleHash: mode === "original" ? record.bundleHash : config.bundleHash } } };
+      return { ...s, comparisons: { ...s.comparisons, [record.id]: { kind: a.kind, mode, verdict, gap: record.gap, version: config.version, cycleId: record.cycleId, bundleId: mode === "original" ? record.bundleId : config.bundleId } } };
     }
     case "settings": return { ...s, settings: { ...s.settings, ...a.patch } };
   }
@@ -322,7 +317,7 @@ export function sceneState(id: string): WorkflowState {
     if (id === "live-k4") s.selectedFrame = 4;
   }
   if (id === "history-no-raw") s.record = "TJ-000182";
-  if (id === "history-compare") s.comparisons["TJ-000184"] = { kind: "remeasure", mode: "original", verdict: "NG", gap: 6.2, version: 13, cycleId: "demo-cycle-184", bundleHash: originalConfig.bundleHash };
+  if (id === "history-compare") s.comparisons["TJ-000184"] = { kind: "remeasure", mode: "original", verdict: "NG", gap: 6.2, version: 13, cycleId: "demo-cycle-184", bundleId: originalConfig.bundleId };
   return { ...s, recipeLibrary: s.recipeLibrary.map(entry => entry.recipe.name === s.recipe.name ? workspaceOf(s) : entry) };
 }
 type StoredObject = Record<string, unknown>;
@@ -343,7 +338,7 @@ function validShot(value: unknown, index: number): boolean {
   return object(value) && value.id === index + 1 && ["shotId", "poseId", "camera"].every(k => typeof value[k] === "string") && numbers(value, ["view", "mmPerPx"]) && typeof value.skip === "boolean" && validPath(value.path) && Array.isArray(value.size) && value.size.length === 2 && value.size.every(n => Number.isInteger(n) && Number(n) > 0) && validParams(value.params) && nullableNumber(value.imageId) && numbers(value.captureSettings, ["exposure"]) && typeof (value.captureSettings as StoredObject).calibrationVersion === "string";
 }
 function validRuntime(value: unknown): boolean {
-  return object(value) && numbers(value, ["version"]) && validRecipe(value.recipe) && Array.isArray(value.shots) && value.shots.length === 6 && value.shots.every(validShot) && ["bundleHash", "recipeHash", "graphVersion", "engineVersion", "calibrationVersion"].every(k => typeof value[k] === "string") && validOverview(value.overview);
+  return object(value) && numbers(value, ["version"]) && validRecipe(value.recipe) && Array.isArray(value.shots) && value.shots.length === 6 && value.shots.every(validShot) && ["bundleId", "recipeRevision", "graphVersion", "engineVersion", "calibrationVersion"].every(k => typeof value[k] === "string") && validOverview(value.overview);
 }
 function validFrame(value: unknown, index: number): boolean {
   if (!validShot(value, index) || !object(value) || !numbers(value, ["revision"]) || typeof value.saved !== "boolean" || !["camera", "history"].includes(String(value.source)) || !["normal", "low"].includes(String(value.quality)) || value.sourceRecord !== null && typeof value.sourceRecord !== "string") return false;
@@ -360,7 +355,7 @@ export function restorePreview(value: unknown): WorkflowState {
   if (!validCamera(value.device) || !Array.isArray(value.cameras) || value.cameras.length !== 3 || !value.cameras.every(validCamera) || !validCalibration(value.calibration) || !object(value.calibrations) || !value.cameras.every(c => validCalibration((value.calibrations as StoredObject)[c.id]))) return fallback;
   if (!object(value.plc) || !booleans(value.plc, ["connected", "ready", "pointsApplied"]) || typeof value.plc.address !== "string" || !["S7", "Modbus TCP"].includes(String(value.plc.protocol)) || !Array.isArray(value.plc.points) || value.plc.points.length !== 6 || !value.plc.points.every(p => typeof p === "string")) return fallback;
   if (!object(value.live) || !booleans(value.live, ["accepting", "auto", "continuous"]) || !Number.isInteger(value.live.phase) || Number(value.live.phase) < 0 || Number(value.live.phase) > 4 || !numbers(value.live, ["part"]) || !verdict(value.live.scenario) || value.live.result !== null && !verdict(value.live.result) || !nullableNumber(value.live.inFlightVersion) || !nullableNumber(value.live.queued) || value.live.inFlightConfig !== null && !validRuntime(value.live.inFlightConfig) || value.live.queuedConfig !== null && !validRuntime(value.live.queuedConfig) || value.live.cycleId !== null && typeof value.live.cycleId !== "string") return fallback;
-  if (!numbers(value.settings, ["retention", "timeout"]) || !booleans(value.settings, ["saved"]) || typeof (value.settings as StoredObject).raw !== "string" || typeof value.record !== "string" || !object(value.comparisons) || !Object.values(value.comparisons).every(c => object(c) && ["remeasure", "rejudge"].includes(String(c.kind)) && ["original", "candidate"].includes(String(c.mode)) && verdict(c.verdict) && numbers(c, ["gap", "version"]) && typeof c.cycleId === "string" && typeof c.bundleHash === "string")) return fallback;
+  if (!numbers(value.settings, ["retention", "timeout"]) || !booleans(value.settings, ["saved"]) || typeof (value.settings as StoredObject).raw !== "string" || typeof value.record !== "string" || !object(value.comparisons) || !Object.values(value.comparisons).every(c => object(c) && ["remeasure", "rejudge"].includes(String(c.kind)) && ["original", "candidate"].includes(String(c.mode)) && verdict(c.verdict) && numbers(c, ["gap", "version"]) && typeof c.cycleId === "string" && typeof c.bundleId === "string")) return fallback;
   if (!Array.isArray(value.recipeLibrary) || !value.recipeLibrary.length || !value.recipeLibrary.every(validWorkspace)) return fallback;
   const state = value as unknown as WorkflowState;
   const names = state.recipeLibrary.map(entry => entry.recipe.name);

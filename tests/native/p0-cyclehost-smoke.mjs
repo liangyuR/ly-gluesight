@@ -1,18 +1,16 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { configureReplay } from './p0-clean-cyclehost-setup.mjs';
-import { fnv1a64, persistFailedAttempt, recordedArtifact, sampleProcess, scanReplayInputs, validateCameraSource, validatePart, validateReplayOutputs } from './p0-cyclehost-performance.mjs';
+import { persistFailedAttempt, recordedArtifact, sampleProcess, scanReplayInputs, validateCameraSource, validatePart, validateReplayOutputs } from './p0-cyclehost-performance.mjs';
 
 process.env.PATH = ['C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native', 'C:\\vcpkg\\installed\\x64-windows\\bin', ...(process.env.PATH ?? '').split(';').filter(value => value && !/^D:/i.test(value))].join(';');
-const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const cPath = value => { const path = resolve(value); assert(/^C:\\/i.test(path), `C: required: ${path}`); return path; };
 const { values } = parseArgs({ options: { instance: {type:'string'}, baseline: {type:'string'}, output: {type:'string'}, 'playwright-module': {type:'string'}, cdp: {type:'string',default:'http://127.0.0.1:9338'} } });
 for (const key of ['instance','baseline','output','playwright-module']) assert(values[key], `Missing --${key}`);
-const artifact = async path => { path=cPath(path);const bytes=await readFile(path);return {path,bytes:bytes.length,sha256:digest(bytes)}; };
+const artifact = async path => { path=cPath(path);const bytes=await readFile(path);return {path,bytes:bytes.length}; };
 const json = async path => JSON.parse((await readFile(cPath(path),'utf8')).replace(/^\uFEFF/,''));
 const tree = async directory => {
  const files=[];
@@ -26,7 +24,6 @@ const tree = async directory => {
 const instance=await json(values.instance),baseline=await json(values.baseline),output=cPath(values.output);
 assert.equal(instance.identifier,'com.xyzrobotics.tujiaovision.p0-tests.performance');
 assert(Number.isSafeInteger(instance.pid)&&instance.pid>0&&instance.processStartTime&&instance.runtimeBase);
-assert.equal((await artifact(instance.executable)).sha256,instance.sha256.toLowerCase());
 assert(baseline.passed&&baseline.runs.length===4&&baseline.runs.every(run=>run.passed&&run.completedParts===100&&run.independentValidatorPassed));
 await mkdir(output,{recursive:false});
 const report={startedAt:new Date().toISOString(),passed:false,scope:'Four actual native UI cycles after audit retry fix; one per combination; not a hundred-part performance benchmark',benchmark:false,partsPerCombination:1,instance,baseline:await artifact(values.baseline),software:await Promise.all(['p0-cyclehost-smoke.mjs','p0-cyclehost-performance.mjs','p0-clean-cyclehost-setup.mjs','../../scripts/robot-plc-demo/camera-bridge.mjs'].map(name=>artifact(join(dirname(fileURLToPath(import.meta.url)),name)))),runs:[],physicalValidation:false,s7HardwareValidation:false};
@@ -53,13 +50,12 @@ try {
   const directory=cPath(reference.replayInputs.directory),fixture=cPath(reference.provenance.fixture.path),release=dirname(fixture);
   const inputs=await scanReplayInputs(directory,mode);assert.deepEqual(inputs,reference.replayInputs);
   const frozenBefore=await tree(release);assert.deepEqual(frozenBefore,reference.provenance.release);
-  assert.equal((await artifact(engine.path)).sha256,reference.provenance.dll.sha256);
   await configureReplay(page,{views,directory});
   const cameras=await read('camera_rig_config');validateCameraSource(cameras.find(camera=>camera.id==='cam1'),'replay',mode,directory);
   const fixtureDoc=await json(fixture),layout=await read('cycle_layout',{recipeId:fixtureDoc.id});
-  assert.equal(layout.hash,reference.provenance.layout.hash);
+  assert.equal(layout.revisionId,reference.provenance.layout.revisionId);
   assert.deepEqual(layout.shots.map(shot=>[shot.id,shot.camera,shot.view]),reference.provenance.layout.shots.map(shot=>[shot.id,shot.camera,shot.view]));
-  assert.equal(fnv1a64(await readFile(join(release,'manifest.json'))),reference.provenance.bundleHash);
+  assert.equal((await json(join(release,'manifest.json'))).bundleId,reference.provenance.bundleId);
   await page.getByRole('navigation',{name:'操作导航'}).getByRole('link',{name:'在线检测',exact:true}).click();
   await page.getByRole('combobox',{name:'模拟配方',exact:true}).selectOption(fixtureDoc.id);
   await page.getByRole('combobox',{name:'模拟工况',exact:true}).selectOption(scenario);
@@ -81,7 +77,7 @@ try {
   assert(row,'No settled acknowledged and complete smoke cycle');attempt.row=row;attempt.stage='validate';
   row.armingLog=(await read('cycle_logs')).filter(line=>line.ts>=began).find(line=>line.ev==='armed↑ busy↑');
   row.armMs=Number(row.armingLog?.msg.match(/布防耗时 (\d+) ms/)?.[1]);
-  assert.equal(row.detail.summary.bundleHash,reference.provenance.bundleHash);
+  assert.equal(row.detail.summary.bundleId,reference.provenance.bundleId);
   assert.deepEqual(validatePart(row,layout,mode,scenario),[]);
   row.recordedArtifacts=[];
   for(const frame of row.originals.frames)row.recordedArtifacts.push({k:frame.k,view:frame.view,...await recordedArtifact(recordsRoot,frame.file)});

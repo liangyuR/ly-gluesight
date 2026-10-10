@@ -19,8 +19,8 @@ async (page) => {
   const prewarm = logs.find(l => l.ev === "生产预热" && l.msg.includes("3b643e189e0f73e5") && l.msg.includes("已就绪"));
   if (!prewarm || snapshot.alarms.some(a => a.includes("P0-TRICAM-UI"))) throw new Error(JSON.stringify({ snapshot, logs }));
   const production = await read("cycle_layout", { recipeId: "P0-TRICAM-UI" });
-  if (production.hash !== "c1574d7504b2a8d4" || production.teachingHash !== "3e55860501858d50") throw new Error("Original production identity changed");
+  if (production.revisionId !== "c1574d7504b2a8d4" || production.teachingId !== "3e55860501858d50") throw new Error("Original production identity changed");
   await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "在线检测", exact: true }).click();
   await page.screenshot({ path: "D:/project/ly-gluesight/tmp/p0-step7-regression/tmp/p0-step5-ui/16-original-bundle-prewarm.png", fullPage: true });
-  return { prewarm, plc: status, engine: await read("engine_status"), recipeHash: production.hash, teachingHash: production.teachingHash, originalBundleHash: "3b643e189e0f73e5", snapshot };
+  return { prewarm, plc: status, engine: await read("engine_status"), recipeRevision: production.revisionId, teachingId: production.teachingId, originalBundleHash: "3b643e189e0f73e5", snapshot };
 }

@@ -34,13 +34,13 @@ export function validateTrigger(ticket, fixture, snapshot, layout, rig, settings
   }
   const part = snapshot?.part;
   if (snapshot?.phase !== 'ACQUIRE' || !part || part.sn !== ticket.sn ||
-      typeof part.cycleId !== 'string' || !part.cycleId || typeof part.recipeHash !== 'string' || !part.recipeHash ||
-      typeof part.bundleHash !== 'string' || !part.bundleHash) {
+      typeof part.cycleId !== 'string' || !part.cycleId || typeof part.recipeRevision !== 'string' || !part.recipeRevision ||
+      typeof part.bundleId !== 'string' || !part.bundleId) {
     throw new Error('Ticket does not identify the armed cycle');
   }
   if (fixture?.schemaVersion !== 4 || layout?.schemaVersion !== 4 ||
       ticket.recipeId !== fixture.id || part.recipeId !== fixture.id || layout.id !== fixture.id ||
-      layout.hash !== part.recipeHash || ticket.productCode !== fixture.productCode ||
+      layout.hash !== part.recipeRevision || ticket.productCode !== fixture.productCode ||
       ticket.shotCount !== fixture.shots?.length || part.n !== fixture.shots?.length ||
       JSON.stringify(recipeContract(layout)) !== JSON.stringify(recipeContract(fixture))) {
     throw new Error('Armed recipe differs from the configured schema 4 fixture');
@@ -69,11 +69,11 @@ export function validateTrigger(ticket, fixture, snapshot, layout, rig, settings
     throw new Error('The demo requires enabled image measurement and a ready lyFlow DLL');
   }
   if (ticket.k > 0 && (!binding || binding.k + 1 !== ticket.k || binding.sn !== ticket.sn || binding.cycleId !== part.cycleId ||
-      binding.recipeHash !== part.recipeHash || binding.bundleHash !== (part.bundleHash ?? null))) {
+      binding.recipeRevision !== part.recipeRevision || binding.bundleId !== (part.bundleId ?? null))) {
     throw new Error('Cycle or frozen resources changed between triggers; restart the part');
   }
   return {
-    cycleId: part.cycleId, recipeHash: part.recipeHash, bundleHash: part.bundleHash ?? null,
+    cycleId: part.cycleId, recipeRevision: part.recipeRevision, bundleId: part.bundleId ?? null,
     recipeId: part.recipeId, productCode: layout.productCode, shotCount: part.n,
     sn: ticket.sn, k: ticket.k, shotId: shot.id, poseId: shot.poseId,
     camera: shot.camera, view: shot.view, ordinal: ticket.ordinal,
@@ -83,7 +83,7 @@ export function validateTrigger(ticket, fixture, snapshot, layout, rig, settings
 export async function executeTrigger(ticket, fixture, invoke, binding) {
   const snapshot = await invoke('cycle_snapshot');
   const [layout, rig, settings, engine, app] = await Promise.all([
-    invoke('cycle_layout', { recipeId: snapshot?.part?.recipeId, hash: snapshot?.part?.recipeHash }),
+    invoke('cycle_layout', { recipeId: snapshot?.part?.recipeId, hash: snapshot?.part?.recipeRevision }),
     invoke('camera_rig_config'), invoke('cycle_get_settings'), invoke('engine_status'), invoke('app_info'),
   ]);
   const identity = validateTrigger(ticket, fixture, snapshot, layout, rig, settings, engine, binding);

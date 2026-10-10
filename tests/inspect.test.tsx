@@ -173,7 +173,7 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     await userEvent.click(screen.getByRole("button", { name: "查看帧 k1" }));
     expect(screen.getByRole("heading", { name: "选中帧 k1" })).toBeVisible();
     expect(screen.getByRole("button", { name: "查看帧 k1" })).toHaveAttribute("aria-pressed", "true");
-    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith("cycle-1", "hash-A", 0));
+    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith("cycle-1", "revisionId-A", 0));
     expect(screen.getByText("判定结果 · SN 1")).toBeVisible(); expect(screen.getByText("测试样本偏移超差")).toBeVisible();
     await userEvent.click(mainPanel().getByRole("button", { name: "逐拍照点" }));
     expect(mainPanel().getByLabelText("逐拍照点视图")).toBeVisible();
@@ -213,7 +213,7 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     expect(screen.queryByText(/点 2 · P1 · J1 · s=1.00/)).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "选中帧 k1" })).toBeVisible();
     expect(screen.queryByText("3.00–4.50")).not.toBeInTheDocument();
-    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith("cycle-2", "hash-A", 0));
+    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith("cycle-2", "revisionId-A", 0));
   });
 
   it.each(["resolve", "reject"] as const)("同 SN 重检后旧原图请求 %s 不覆盖当前周期", async outcome => {
@@ -221,10 +221,10 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     vi.mocked(workspaceApi.liveImage).mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
     state.part = cyclePart();
     const page = render(<InspectPage />);
-    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenCalledWith("cycle-1", "hash-A", 1));
+    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenCalledWith("cycle-1", "revisionId-A", 1));
     state = { ...state, part: cyclePart(1, "cycle-2") };
     page.rerender(<InspectPage />);
-    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith("cycle-2", "hash-A", 1));
+    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith("cycle-2", "revisionId-A", 1));
     await act(async () => current.resolve({ url: "data:,cycle-2", width: 100, height: 60 }));
     if (outcome === "resolve") await act(async () => old.resolve({ url: "data:,cycle-1", width: 100, height: 60 }));
     else await act(async () => old.reject(new Error("旧周期原图请求失败")));
@@ -243,7 +243,7 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     expect(screen.getByText("正在读取原图…")).toBeVisible();
   });
 
-  it.each(["shotId", "camera", "bundleHash"] as const)("页面拒绝 %s 不符的测量，不显示错误来源的曲线与范围", field => {
+  it.each(["shotId", "camera", "bundleId"] as const)("页面拒绝 %s 不符的测量，不显示错误来源的曲线与范围", field => {
     state.part = cyclePart(); measured = [{ ...cycleMeasurement(), [field]: "other" }];
     render(<InspectPage />);
     expect(screen.queryByText("3.00–4.50")).not.toBeInTheDocument();
@@ -276,7 +276,7 @@ describe("在线检测选帧、曲线与快照绑定", () => {
   });
 
   it("布局快照尚未匹配本件时不显示旧测量、旧帧或本件原图", async () => {
-    state.part = cyclePart(); state.part.recipeHash = "new-hash"; measured = [cycleMeasurement()];
+    state.part = cyclePart(); state.part.recipeRevision = "new-revisionId"; measured = [cycleMeasurement()];
     render(<InspectPage />);
     expect(screen.queryByText("3.00–4.50")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "查看帧 k1" })).toHaveClass("s-waiting");
@@ -289,7 +289,7 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     const old = deferred<GrayImage>(); vi.mocked(workspaceApi.liveImage).mockReturnValueOnce(old.promise)
       .mockRejectedValueOnce(new Error("当前帧未录制")).mockResolvedValueOnce({ url: "data:,new", width: 100, height: 60 });
     render(<InspectPage />);
-    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenCalledWith("cycle-1", "hash-A", 1));
+    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenCalledWith("cycle-1", "revisionId-A", 1));
     await userEvent.click(screen.getByRole("button", { name: "查看帧 k1" }));
     expect(await screen.findByText(/当前帧未录制/)).toBeVisible();
     await act(async () => old.resolve({ url: "data:,old", width: 100, height: 60 }));

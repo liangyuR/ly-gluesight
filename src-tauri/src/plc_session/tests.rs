@@ -158,7 +158,7 @@ impl Rig {
     async fn request(&mut self, seq: u32, sn: u32) {
         self.plc.control(json!({"op":"plc_request", "values":{
             "protocolVersion":1,"requestSeq":seq,"partSn":sn,"productCode":1,
-            "shotCount":self.plan.shot_count,"planVersion":self.plan.plan_version,"planHash":self.plan.plan_hash,
+            "shotCount":self.plan.shot_count,"planVersion":self.plan.plan_version,"planReserved":self.plan.plan_hash,
             "camera1Shots":self.plan.camera_shots[0],"camera2Shots":self.plan.camera_shots[1],"camera3Shots":self.plan.camera_shots[2],
             "camera1Triggers":0,"camera2Triggers":0,"camera3Triggers":0,"partEnd":false,"resultAck":false
         }}));

@@ -45,7 +45,7 @@ export default function LibraryPage() {
       let code = 1; while (code<=65535&&usedCodes.has(code)) code++;
       if(code>65535)throw new Error("产品代码已用完，删除不再使用的配方后重试");
       setCreatedId(null);
-      setCreating({...template,id,name:copied ? copied.name + "（副本）" : "新配方",productCode:code,version:1,teachingHash:null});
+      setCreating({...template,id,name:copied ? copied.name + "（副本）" : "新配方",productCode:code,version:1,teachingId:null});
     } catch(e) { if(current.current.alive)setError(String(e)); } finally { pending.current=false;if(current.current.alive)setWorking(false); }
   };
   const open=async(id:string)=>{

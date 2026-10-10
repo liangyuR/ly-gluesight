@@ -19,7 +19,7 @@ export default function PartTrace({ detail, layout, raw, selected, selectedView,
   return <Panel title="逐拍照点追溯" className="frames-panel" detail="检测结论、PLC 交付和原图保留分别记录">
     <div className="kv2">
       <span>工件身份</span><b className="mono">{summary.cycleId ?? "未分配"}</b>
-      <span>发布包</span><b className="mono">{summary.bundleHash ?? "未使用图像发布包"}</b>
+      <span>发布包</span><b className="mono">{summary.bundleId ?? "未使用图像发布包"}</b>
       <span>PLC 交付</span><b>{deliveryLabel[summary.delivery.state]}{summary.delivery.message && ` · ${summary.delivery.message}`}</b>
       <span>原图保留</span><b>{recordingLabel[recording.state]}{recording.available ? " · 已核验落盘" : ""}</b>
     </div>

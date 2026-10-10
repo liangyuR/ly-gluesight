@@ -19,7 +19,7 @@ let detail: ReturnType<typeof partDetail>;
 const raw: RecordImages = { historyId: 1, complete: true, message: "原图完整", frames: [0, 1].map(k => ({ k, camera: "CAM-1", view: 1, file: `${k}.png`, ts: 1, available: true, error: null })) };
 function element(){return <MemoryRouter initialEntries={["/history/1"]}><Link to="/history/2">打开另一件工件</Link><Routes><Route path="/history/:id" element={<HistoryDetailPage />} /><Route path="/recipe/teach" element={<p>进入示教页</p>} /><Route path="/history" element={<p>历史列表</p>}/></Routes></MemoryRouter>;}
 function show() { return render(element()); }
-function comparison():Comparison{return {id:"compare-1",historyId:1,source:"rules",cycleId:"cycle-1",bundleHash:"bundle-A",candidateId:"A",candidateRevision:7,candidateRecipe:ws.data!.layout,
+function comparison():Comparison{return {id:"compare-1",historyId:1,source:"rules",cycleId:"cycle-1",bundleId:"bundle-A",candidateId:"A",candidateRevision:7,candidateRecipe:ws.data!.layout,
   originalVerdict:"NG_GAP",judgement:{...detail.judgement,verdict:"OK",reason:"候选合格"},measurements:[],createdAt:1};}
 beforeEach(() => {
   ws = workspaceState(); ws.data!.workspace.frames.forEach(f => f.saved = true);
@@ -50,14 +50,14 @@ describe("历史工件复测", () => {
   });
 
   it("缺少原图或发布身份时拒绝原包重现", async () => {
-    detail.summary.bundleHash = null;
+    detail.summary.bundleId = null;
     show(); await screen.findByText(/原图完整/);
     expect(screen.getByRole("button", {name: "按原发布包重现"})).toBeDisabled();
     expect(workspaceApi.compareOriginal).not.toHaveBeenCalled();
   });
 
   it("按实际保存视角查看三目原图，非检测视角不叠加中线或用于示教", async () => {
-    detail.shots[0].rawFiles = [1, 2, 3].map(view => ({view, file: `k000_P1_CAM-1_v${view}.pgm`, hash: "fnv1a64:verified"}));
+    detail.shots[0].rawFiles = [1, 2, 3].map(view => ({view, file: `k000_P1_CAM-1_v${view}.pgm`, revisionId: "fnv1a64:verified"}));
     vi.mocked(workspaceApi.recordImages).mockResolvedValue({...raw, frames: [1, 2, 3].map(view => ({...raw.frames[0], view, available: view !== 3, error: view === 3 ? "原图校验失败" : null}))});
     show(); await screen.findByText(/原图完整/);
     expect(screen.getByRole("button", {name: "查看 k1 视角 3"})).toBeDisabled();

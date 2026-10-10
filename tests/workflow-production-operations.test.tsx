@@ -159,7 +159,7 @@ describe("预览历史筛选与对照", () => {
     expect(within(panel("原始检测")).getByText("NG")).toBeVisible(); expect(within(panel("复测对照")).getByText("NG")).toBeVisible();
     click("总览帧 k4"); expect(screen.getByRole("img", { name: "帧 k4 的历史原图" })).toBeVisible();
     click("按原发布包重现"); await finishTask();
-    expect(stored().comparisons["TJ-000184"]).toMatchObject({ mode: "original", version: 13, cycleId: "demo-cycle-184", bundleHash: historyRecords[0].bundleHash });
+    expect(stored().comparisons["TJ-000184"]).toMatchObject({ mode: "original", version: 13, cycleId: "demo-cycle-184", bundleId: historyRecords[0].bundleId });
     expect(historyRecords).toEqual(original);
   });
 

@@ -110,12 +110,12 @@ describe("操作流程预览的状态规则", () => {
     s = reducer(s, { type: "live-start" }); expect(s.live.inFlightVersion).toBe(14);
   });
 
-  it("发布身份只绑定资源内容和版本，发布状态更新不会重新生成包身份", () => {
+  it("发布身份使用明确版本，资源内容变化不会生成指纹", () => {
     const published = reducer(sceneState("validation-pass"), { type: "publish" });
-    expect(runtimeConfig(published.recipe, published.frames, published.overview, published.recipe.production).bundleHash).toBe(published.productionConfig.bundleHash);
+    expect(runtimeConfig(published.recipe, published.frames, published.overview, published.recipe.production).bundleId).toBe(published.productionConfig.bundleId);
     const recaptured = reducer(published, { type: "capture" });
     const next = runtimeConfig(recaptured.recipe, recaptured.frames, recaptured.overview, published.recipe.production);
-    expect(next.recipeHash).toBe(published.productionConfig.recipeHash); expect(next.bundleHash).not.toBe(published.productionConfig.bundleHash);
+    expect(next.recipeRevision).toBe(published.productionConfig.recipeRevision); expect(next.bundleId).toBe(published.productionConfig.bundleId);
   });
 
   it("停止接收新件仍完成当前工件", () => {
@@ -225,12 +225,12 @@ describe("操作流程预览的状态规则", () => {
   it("原包重现保留身份，候选复测不自动修复断胶，规则重判限制测量布局", () => {
     const s = initialState(), original = structuredClone(historyRecords);
     const replay = reducer(s, { type: "compare", kind: "remeasure", mode: "original" });
-    expect(replay.comparisons[s.record]).toMatchObject({ mode: "original", verdict: "NG", gap: 6.2, version: 13, bundleHash: historyRecords[0].bundleHash, cycleId: historyRecords[0].cycleId });
+    expect(replay.comparisons[s.record]).toMatchObject({ mode: "original", verdict: "NG", gap: 6.2, version: 13, bundleId: historyRecords[0].bundleId, cycleId: historyRecords[0].cycleId });
     const changed = reducer(s, { type: "frame-path", path: [[150, 200], [800, 600]] });
     expect(reducer(changed, { type: "compare", kind: "rejudge" })).toBe(changed);
     const candidate = reducer(changed, { type: "compare", kind: "remeasure" });
     expect(candidate.comparisons[s.record]).toMatchObject({ mode: "candidate", verdict: "NG", gap: 6.2, version: 14 });
-    expect(candidate.comparisons[s.record].bundleHash).not.toBe(historyRecords[0].bundleHash);
+    expect(candidate.comparisons[s.record].bundleId).not.toBe(historyRecords[0].bundleId);
     const otherView = reducer(s, { type: "frame-plan", patch: { view: 2 } });
     expect(reducer(otherView, { type: "compare", kind: "remeasure" })).toBe(otherView);
     expect(reducer(otherView, { type: "capture", history: true })).toBe(otherView);

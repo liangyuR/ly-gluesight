@@ -26,7 +26,7 @@ export interface PartShot {
   error: string | null;
   score: number | null;
   ms: number | null;
-  rawFiles: { view: number; file: string; hash: string | null }[];
+  rawFiles: { view: number; file: string }[];
 }
 
 export interface HistoryQuery {
@@ -45,7 +45,7 @@ export interface PartSummary {
   sn: number;
   recipeId: string | null;
   recipeVersion: number | null;
-  recipeHash: string | null;
+  recipeRevision: string | null;
   triggerMode: string | null;
   verdict: Verdict;
   plcCode: number;
@@ -56,7 +56,7 @@ export interface PartSummary {
   framesReceived: number;
   retestOf: number | null;
   cycleId: string | null;
-  bundleHash: string | null;
+  bundleId: string | null;
   delivery: PlcDelivery;
 }
 

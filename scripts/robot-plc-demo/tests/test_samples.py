@@ -124,11 +124,11 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "evidence"):
             regression.verify_evidence(result, recipe)
         plan, _ = trigger_plan(recipe)
-        result.update(sn=123, cycleId="scripted-cycle", recipeHash="scripted-recipe", bundleHash="scripted-bundle")
+        result.update(sn=123, cycleId="scripted-cycle", recipeRevision="scripted-recipe", bundleId="scripted-bundle")
         result["triggerAcks"] = [{"ok": True, "identity": {**point, "sn": 123, "recipeId": recipe["id"],
                                                         "productCode": recipe["productCode"], "shotCount": 4,
-                                                        "cycleId": result["cycleId"], "recipeHash": result["recipeHash"],
-                                                        "bundleHash": result["bundleHash"]},
+                                                        "cycleId": result["cycleId"], "recipeRevision": result["recipeRevision"],
+                                                        "bundleId": result["bundleId"]},
                                   "evidence": {"scope": "scripted-test-peer"}} for point in plan]
         with self.assertRaisesRegex(RuntimeError, "actual demo app"):
             regression.verify_evidence(result, recipe)

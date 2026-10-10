@@ -19,7 +19,7 @@ async (page) => {
   const assertOnly = (before, after, k) => {
     if (after.workspace.frames[k].saved || after.workspace.frames[k].trial) throw new Error(`k${k + 1} did not become invalid`);
     for (let j = 0; j < 4; j++) if (j !== k && (JSON.stringify(before.workspace.frames[j]) !== JSON.stringify(after.workspace.frames[j]) || JSON.stringify(before.workspace.doc.shots[j]) !== JSON.stringify(after.workspace.doc.shots[j]))) throw new Error(`Unrelated k${j + 1} was changed by k${k + 1}`);
-    if (after.productionVersion !== before.productionVersion || after.workspace.baseHash !== before.workspace.baseHash) throw new Error("Candidate edits changed the published production identity");
+    if (after.productionVersion !== before.productionVersion || after.workspace.baseRevision !== before.workspace.baseRevision) throw new Error("Candidate edits changed the published production identity");
   };
   const draw = async path => {
     const svg = page.locator("svg.wp-gray-image.editable");
@@ -91,7 +91,7 @@ async (page) => {
     assertOnly(before, invalidated, k);
     if (invalidated.workspace.frames[k].image || invalidated.workspace.frames[k].views.length) throw new Error("The changed identity retained incompatible frozen images");
     await page.screenshot({ path: `${evidence}/12-${kind}-invalidated.png`, fullPage: true });
-    rows.push({ kind, k, from: original, to: changed, saved: invalidated.workspace.frames.map(f => f.saved), image: invalidated.workspace.frames[k].image, productionVersion: invalidated.productionVersion, baseHash: invalidated.workspace.baseHash });
+    rows.push({ kind, k, from: original, to: changed, saved: invalidated.workspace.frames.map(f => f.saved), image: invalidated.workspace.frames[k].image, productionVersion: invalidated.productionVersion, baseRevision: invalidated.workspace.baseRevision });
     await page.getByRole("textbox", { name: `拍照点 ${k + 1} · ${field}`, exact: true }).fill(original);
     await page.getByRole("button", { name: "保存候选配置", exact: true }).last().click();
     await until(v => v.workspace.revision > invalidated.workspace.revision, "Original identity was not restored");
@@ -120,13 +120,13 @@ async (page) => {
   assertOnly(beforeCamera, cameraChanged, 2);
   if (cameraChanged.workspace.frames[2].image || cameraChanged.workspace.frames[2].views.length) throw new Error("The changed camera retained incompatible frozen images");
   await page.screenshot({ path: evidence + "/13-camera-invalidated.png", fullPage: true });
-  rows.push({ kind: "cameraBinding", k: 2, from: "cam1", to: extra.id, saved: cameraChanged.workspace.frames.map(f => f.saved), image: cameraChanged.workspace.frames[2].image, productionVersion: cameraChanged.productionVersion, baseHash: cameraChanged.workspace.baseHash });
+  rows.push({ kind: "cameraBinding", k: 2, from: "cam1", to: extra.id, saved: cameraChanged.workspace.frames.map(f => f.saved), image: cameraChanged.workspace.frames[2].image, productionVersion: cameraChanged.productionVersion, baseRevision: cameraChanged.workspace.baseRevision });
   await page.getByRole("combobox", { name: "拍照点 3 · 相机", exact: true }).selectOption("cam1");
   await page.getByRole("button", { name: "保存候选配置", exact: true }).last().click();
   await until(v => v.workspace.doc.shots[2].camera === "cam1", "The original camera binding was not restored");
   const restored = await restoreCapture(2);
   const finalProduction = await page.evaluate(async id => window.__TAURI_INTERNALS__.invoke("cycle_layout", { recipeId: id }), id);
-  if (restored.workspace.frames.some(f => !f.saved || !f.trial?.passed) || finalProduction.hash !== guard.production.hash || finalProduction.teachingHash !== guard.production.teachingHash) throw new Error("The candidate did not recover or published identity changed");
+  if (restored.workspace.frames.some(f => !f.saved || !f.trial?.passed) || finalProduction.revisionId !== guard.production.revisionId || finalProduction.teachingId !== guard.production.teachingId) throw new Error("The candidate did not recover or published identity changed");
   await page.screenshot({ path: evidence + "/14-teaching-restored.png", fullPage: true });
-  return { rows, final: { saved: restored.workspace.frames.map(f => f.saved), views: restored.workspace.doc.shots.map(s => s.view), version: restored.workspace.doc.version, revision: restored.workspace.revision, productionVersion: restored.productionVersion, productionHash: finalProduction.hash, teachingHash: finalProduction.teachingHash }, extraSimulatorCamera: extra };
+  return { rows, final: { saved: restored.workspace.frames.map(f => f.saved), views: restored.workspace.doc.shots.map(s => s.view), version: restored.workspace.doc.version, revision: restored.workspace.revision, productionVersion: restored.productionVersion, productionRevision: finalProduction.revisionId, teachingId: finalProduction.teachingId }, extraSimulatorCamera: extra };
 }

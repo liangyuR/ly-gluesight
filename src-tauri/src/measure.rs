@@ -26,7 +26,7 @@ pub struct Job {
     pub cycle_id: String,
     pub shot_id: String,
     pub camera: String,
-    pub bundle_hash: Option<String>,
+    pub bundle_id: Option<String>,
     pub production: Option<Arc<crate::production::Prepared>>,
     pub submitted_at: Instant,
     pub timeout: Duration,
@@ -53,7 +53,7 @@ pub struct Measured {
     pub cycle_id: String,
     pub shot_id: String,
     pub camera: String,
-    pub bundle_hash: Option<String>,
+    pub bundle_id: Option<String>,
     pub sn: u32,
     pub k: usize,
     pub cam: u8,
@@ -89,7 +89,7 @@ impl Measured {
             cycle_id: job.cycle_id.clone(),
             shot_id: job.shot_id.clone(),
             camera: job.camera.clone(),
-            bundle_hash: job.bundle_hash.clone(),
+            bundle_id: job.bundle_id.clone(),
             sn: job.sn,
             k: job.k,
             cam: job.cam,
@@ -408,7 +408,7 @@ mod tests {
             cycle_id: "cycle-7".into(),
             shot_id: format!("P{}", k + 1),
             camera: "cam1".into(),
-            bundle_hash: Some("bundle-7".into()),
+            bundle_id: Some("bundle-7".into()),
             production: None,
             submitted_at: Instant::now(),
             timeout,
@@ -453,11 +453,11 @@ mod tests {
             assert_eq!(measured.cycle_id, "cycle-7");
             assert_eq!(measured.shot_id, "P1");
             assert_eq!(measured.camera, "cam1");
-            assert_eq!(measured.bundle_hash.as_deref(), Some("bundle-7"));
+            assert_eq!(measured.bundle_id.as_deref(), Some("bundle-7"));
             let json = serde_json::to_value(measured).unwrap();
             assert_eq!(json["cycleId"], "cycle-7");
             assert_eq!(json["shotId"], "P1");
-            assert_eq!(json["bundleHash"], "bundle-7");
+            assert_eq!(json["bundleId"], "bundle-7");
             assert!(json.get("runId").is_none());
             for key in ["queueMs", "engineMs", "coreMs"] {
                 assert_eq!(json.get(key), Some(&serde_json::Value::Null));
@@ -492,7 +492,7 @@ mod tests {
             assert_eq!(json["cycleId"], job.cycle_id);
             assert_eq!(json["shotId"], job.shot_id);
             assert_eq!(json["camera"], job.camera);
-            assert_eq!(json["bundleHash"], "bundle-7");
+            assert_eq!(json["bundleId"], "bundle-7");
         }
     }
 
@@ -634,7 +634,7 @@ mod tests {
         assert_eq!(failure.k, MEASURE_QUEUE + 2);
         assert_eq!(failure.cycle_id, "cycle-7");
         assert_eq!(failure.shot_id, format!("P{}", MEASURE_QUEUE + 3));
-        assert_eq!(failure.bundle_hash.as_deref(), Some("bundle-7"));
+        assert_eq!(failure.bundle_id.as_deref(), Some("bundle-7"));
         assert!(failure.queue_ms.is_none());
         assert!(failure.engine_ms.is_none());
         assert!(failure.core_ms.is_none());
@@ -816,7 +816,7 @@ mod tests {
         tx.send(job(0, Duration::from_secs(1))).await.unwrap();
         let failed = next_result(&mut results).await;
         assert_eq!(failed.error.as_deref(), Some("测量线程异常退出"));
-        assert_eq!(failed.bundle_hash.as_deref(), Some("bundle-7"));
+        assert_eq!(failed.bundle_id.as_deref(), Some("bundle-7"));
         assert!(failed.queue_ms.is_some());
         assert!(failed.engine_ms.is_none());
         assert!(failed.core_ms.is_none());

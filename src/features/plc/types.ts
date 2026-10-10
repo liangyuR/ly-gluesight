@@ -154,7 +154,6 @@ export interface PlcRecipePlan {
   protocolVersion: number;
   recipeId: string;
   planVersion: number;
-  planHash: number;
   shotCount: number;
   cameraSlots: [string, string, string];
   cameraShots: [number, number, number];

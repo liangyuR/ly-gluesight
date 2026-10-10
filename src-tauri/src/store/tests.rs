@@ -79,7 +79,7 @@ fn save(store: &Store, recipe: &Recipe, cycle: &str, shots: &[PartShot], deliver
         table,
         software_version: "test-p0",
         cycle_id: Some(cycle),
-        bundle_hash: Some("frozen-bundle-hash"),
+        bundle_id: Some("frozen-bundle-revision_id"),
         delivery,
         shots,
     })
@@ -91,7 +91,7 @@ fn identity_shots_and_measurements_round_trip() {
     let store = Store::open(&db.path()).unwrap();
     let recipe = recipe();
     let mut shots = shots(&recipe);
-    shots[0].raw_files = vec![ShotRawFile { view: 1, file: "cycle/P1_v1.pgm".into(), hash: Some("raw-hash".into()) }];
+    shots[0].raw_files = vec![ShotRawFile { view: 1, file: "cycle/P1_v1.pgm".into(), revision_id: Some("raw-revision_id".into()) }];
     let delivery = PlcDelivery { state: PlcDeliveryState::Pending, updated_at: 1235, message: Some("等待提交".into()) };
     let cycle = store.reserve_cycle_id().unwrap();
     let table = table(&recipe);
@@ -110,7 +110,7 @@ fn identity_shots_and_measurements_round_trip() {
     assert_eq!((page.total, page.counts.err, page.items.len()), (1, 1, 1));
     let summary = &page.items[0];
     assert_eq!(summary.cycle_id.as_deref(), Some(cycle.as_str()));
-    assert_eq!(summary.bundle_hash.as_deref(), Some("frozen-bundle-hash"));
+    assert_eq!(summary.bundle_id.as_deref(), Some("frozen-bundle-revision_id"));
     assert_eq!(summary.delivery, delivery);
     let detail = store.detail(id).unwrap();
     assert_eq!(store.detail_by_cycle(&cycle).unwrap().unwrap().summary.id, id);
@@ -128,7 +128,7 @@ fn identity_shots_and_measurements_round_trip() {
     let rows = store.measurements(&HistoryQuery::default(), &[id], 20).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].cycle_id, summary.cycle_id);
-    assert_eq!(rows[0].bundle_hash, summary.bundle_hash);
+    assert_eq!(rows[0].bundle_id, summary.bundle_id);
     assert_eq!(rows[0].delivery, delivery);
     assert_eq!(rows[0].layout_hash.as_deref(), Some(measurement_layout_hash(&recipe).as_str()));
     assert_eq!(rows[0].table, table);
@@ -221,11 +221,11 @@ fn raw_file_completion_enriches_hashes_without_replacing_identity() {
     let store = Store::open(&db.path()).unwrap();
     let recipe = recipe();
     let id = save(&store, &recipe, "cycle", &shots(&recipe), &PlcDelivery::default(), None).unwrap();
-    let mut files: Vec<_> = (1..=3).map(|view| ShotRawFile { view, file: format!("cycle/P1_v{view}.pgm"), hash: None }).collect();
+    let mut files: Vec<_> = (1..=3).map(|view| ShotRawFile { view, file: format!("cycle/P1_v{view}.pgm"), revision_id: None }).collect();
     assert!(store.update_shot_raw_files("cycle", 0, &files[..1]).unwrap());
     assert!(store.update_shot_raw_files("cycle", 0, &files).unwrap());
     for file in &mut files {
-        file.hash = Some(format!("hash{}", file.view));
+        file.revision_id = Some(format!("revision_id{}", file.view));
     }
     assert!(store.update_shot_raw_files("cycle", 0, &files).unwrap());
     assert!(store.update_shot_raw_files("cycle", 0, &files[..1]).is_err());
@@ -233,10 +233,10 @@ fn raw_file_completion_enriches_hashes_without_replacing_identity() {
     replacement[0].file = "cycle/P2_v1.pgm".into();
     assert!(store.update_shot_raw_files("cycle", 0, &replacement).is_err());
     replacement = files.clone();
-    replacement[0].hash = Some("another-image".into());
+    replacement[0].revision_id = Some("another-image".into());
     assert!(store.update_shot_raw_files("cycle", 0, &replacement).is_err());
     for file in ["../outside.pgm", "C:/outside.pgm", "/outside.pgm", "cycle\\P1.pgm"] {
-        assert!(store.update_shot_raw_files("cycle", 1, &[ShotRawFile { view: 1, file: file.into(), hash: None }]).is_err());
+        assert!(store.update_shot_raw_files("cycle", 1, &[ShotRawFile { view: 1, file: file.into(), revision_id: None }]).is_err());
     }
     assert!(store.update_shot_raw_files("cycle", 1, &[files[0].clone(), files[0].clone()]).is_err());
     assert!(!store.update_shot_raw_files("unknown", 0, &files).unwrap());
@@ -275,9 +275,9 @@ fn identical_content_with_new_version_is_allowed_but_snapshot_collision_is_rejec
     newer.version += 1;
     save(&store, &newer, "reverted-content", &shots(&newer), &PlcDelivery::default(), None).unwrap();
     newer.shots[0].camera = "changed-camera".into();
-    assert!(save(&store, &newer, "forged-hash", &shots(&newer), &PlcDelivery::default(), None).unwrap_err().contains("不同快照"));
+    assert!(save(&store, &newer, "forged-revision_id", &shots(&newer), &PlcDelivery::default(), None).unwrap_err().contains("不同快照"));
     assert_eq!(store.query(&HistoryQuery::default()).unwrap().total, 2);
-    assert_eq!(store.recipe_snapshot(&recipe.hash).unwrap().unwrap().shots[0].camera, recipe.shots[0].camera);
+    assert_eq!(store.recipe_snapshot(&recipe.revision_id).unwrap().unwrap().shots[0].camera, recipe.shots[0].camera);
 }
 
 #[test]
@@ -376,7 +376,7 @@ fn recording_available_requires_actual_hashed_refs_and_complete_error_free_evide
     let complete = RecordingEvidence { state: RecordingState::Complete, available: true, directory: Some("records/cycle".into()), errors: Vec::new() };
     assert!(store.update_recording("cycle", &complete).unwrap_err().contains("带哈希原图引用"));
     store
-        .update_shot_raw_files("cycle", 0, &[ShotRawFile { view: 1, file: "cycle/k000_P1_cam1_v1.pgm".into(), hash: Some("fnv1a64:1234567890abcdef".into()) }])
+        .update_shot_raw_files("cycle", 0, &[ShotRawFile { view: 1, file: "cycle/k000_P1_cam1_v1.pgm".into(), revision_id: Some("fnv1a64:1234567890abcdef".into()) }])
         .unwrap();
     for invalid in [
         RecordingEvidence { state: RecordingState::Failed, ..complete.clone() },
@@ -421,7 +421,7 @@ fn reopening_fails_pending_recordings_once_without_changing_original_evidence_or
     let partial = vec![ShotRawFile {
         view: 1,
         file: "records/cycle-interrupted/k000_P1_cam1_v1.pgm".into(),
-        hash: Some(format!("fnv1a64:{}", crate::release::fnv_hex(pixels))),
+        revision_id: Some(format!("fnv1a64:{}", crate::release::fnv_hex(pixels))),
     }];
     let mut partial_shots = shots(&recipe);
     partial_shots[0].raw_files = partial.clone();
@@ -446,7 +446,7 @@ fn reopening_fails_pending_recordings_once_without_changing_original_evidence_or
             store.update_shot_raw_files(cycle, 0, &[ShotRawFile {
                 view: 1,
                 file: "records/cycle-complete/k000_P1_cam1_v1.pgm".into(),
-                hash: Some("fnv1a64:1234567890abcdef".into()),
+                revision_id: Some("fnv1a64:1234567890abcdef".into()),
             }]).unwrap();
         }
         store.update_recording(cycle, &RecordingEvidence {
@@ -532,7 +532,7 @@ fn pending_history_protection_includes_partial_directory_and_raw_only_references
     let recipe = recipe();
     let mut shots = shots(&recipe);
     shots[0].raw_files = vec![ShotRawFile { view: 1,
-        file: "_pending/20261010_000000_000_cycle_raw-only/image.pgm".into(), hash: Some("fnv1a64:1234567890abcdef".into()) }];
+        file: "_pending/20261010_000000_000_cycle_raw-only/image.pgm".into(), revision_id: Some("fnv1a64:1234567890abcdef".into()) }];
     save(&store, &recipe, "pending-references", &shots, &PlcDelivery::default(), None).unwrap();
     store.update_recording("pending-references", &RecordingEvidence {
         state: RecordingState::Incomplete, available: false,

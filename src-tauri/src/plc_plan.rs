@@ -6,7 +6,7 @@ use crate::recipe::Recipe;
 #[serde(rename_all = "camelCase")]
 pub struct PlanShot {
     pub shot_id: String,
-    /// 现场机器人 / PLC 程序里的 Pose 标识，计入 planHash
+    /// 现场机器人 / PLC 程序里的 Pose 标识，计入 planReserved
     pub pose_id: String,
     pub camera_id: String,
 }

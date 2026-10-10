@@ -53,8 +53,8 @@ function context(recipe = fixture()) {
     id, source: 'sim', acquisition: 'triggered', viewCount: recipe.shots.some(s => s.camera === id && s.view > 1) ? 3 : 1,
   }));
   const snapshot = { phase: 'ACQUIRE', part: {
-    sn: 123, cycleId: 'scripted-cycle-1', recipeId: recipe.id, recipeHash: layout.hash,
-    bundleHash: 'scripted-bundle-hash', n: recipe.shots.length,
+    sn: 123, cycleId: 'scripted-cycle-1', recipeId: recipe.id, recipeRevision: layout.hash,
+    bundleId: 'scripted-bundle-hash', n: recipe.shots.length,
     frames: recipe.shots.map(s => ({ shotId: s.id, camera: s.camera, view: s.view, status: 'waiting' })),
   } };
   return { recipe, layout, rig, snapshot, settings: { vision: true },
@@ -102,7 +102,7 @@ test('shot plans count devices once per pulse and keep view 1→2→3→1 separa
 test('release-only metadata may differ while all effective pixel geometry and limits must match', () => {
   const ctx = context();
   ctx.layout.version = 19;
-  ctx.layout.teachingHash = 'published';
+  ctx.layout.teachingId = 'published';
   delete ctx.layout.shots[0].detect;
   delete ctx.layout.shots[0].limits;
   assert.deepEqual(recipeContract(ctx.layout), recipeContract(ctx.recipe));
@@ -115,7 +115,7 @@ test('preflight refuses wrong SN, shot, Pose, camera, view, ordinal, hash and ma
   const edits = [
     ctx => { ctx.snapshot.part.sn++; }, ctx => { ctx.layout.hash = 'other'; },
     ctx => { ctx.layout.schemaVersion = 3; }, ctx => { ctx.snapshot.part.cycleId = ''; },
-    ctx => { ctx.snapshot.part.bundleHash = null; },
+    ctx => { ctx.snapshot.part.bundleId = null; },
     ctx => { ctx.snapshot.part.n = 12; }, ctx => { ctx.snapshot.phase = 'DRAIN'; },
     ctx => { ctx.snapshot.part.frames[0].shotId = 'P4'; }, ctx => { ctx.snapshot.part.frames[0].status = 'done'; },
   ];
@@ -177,7 +177,7 @@ test('wrong device and view are rejected before any pulse, with negative acknowl
 
 test('same-SN cycle changes, bundle changes and a restarted bridge cannot resume at a later shot', async () => {
   for (const edit of [ctx => { ctx.snapshot.part.cycleId = 'scripted-cycle-2'; },
-    ctx => { ctx.snapshot.part.bundleHash = 'different-bundle'; }]) {
+    ctx => { ctx.snapshot.part.bundleId = 'different-bundle'; }]) {
     const ctx = context(), calls = [];
     const dispatch = triggerDispatcher(ctx.recipe, rpc(ctx, calls));
     assert.equal((await dispatch(ticket(ctx))).ok, true);

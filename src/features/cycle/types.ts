@@ -79,8 +79,8 @@ export interface Recipe {
   id: string;
   name: string;
   version: number;
-  hash: string;
-  teachingHash?: string | null;
+  revisionId: string;
+  teachingId?: string | null;
   productCode: number;
   triggerMode: TriggerMode;
   /** 配方文件格式版本，当前为 4 */
@@ -101,7 +101,7 @@ export interface RecipeDoc {
   id: string;
   name: string;
   version: number;
-  teachingHash?: string | null;
+  teachingId?: string | null;
   productCode: number;
   triggerMode: TriggerMode;
   /** 配方文件格式版本，当前为 4；不符的文件后端拒绝 */
@@ -119,7 +119,7 @@ export interface RecipeSummary {
   id: string;
   name: string;
   version: number;
-  hash: string;
+  revisionId: string;
   productCode: number;
   shotCount: number;
   triggerMode: TriggerMode;
@@ -148,11 +148,11 @@ export interface FrameView {
 
 export interface PartView {
   cycleId: string;
-  bundleHash: string | null;
+  bundleId: string | null;
   sn: number;
   recipeId: string;
-  /** 本件配方快照的哈希 */
-  recipeHash: string;
+  /** 本件配方快照的修订 ID */
+  recipeRevision: string;
   n: number;
   received: number;
   triggers: number;
@@ -226,7 +226,7 @@ export interface Measured {
   cycleId: string;
   shotId: string;
   camera: string;
-  bundleHash: string | null;
+  bundleId: string | null;
   sn: number;
   k: number;
   cam: number;

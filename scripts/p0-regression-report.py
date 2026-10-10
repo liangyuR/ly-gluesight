@@ -189,10 +189,10 @@ def validate_case(case):
     require(case["steadyMeasurements"] == case["steadyParts"] * 4, "Incorrect stable-measurement count")
     require(len(case["steadyRecords"]) == case["steadyParts"], "Missing per-part evidence")
     validate_jsonl(case["steadyEvidence"], case["steadyRecords"])
-    require(case["releaseManifest"]["fnv1a64"] == case["bundleHash"], "Bundle hash is not the frozen manifest hash")
+    require(case["releaseManifest"]["fnv1a64"] == case["bundleId"], "Bundle hash is not the frozen manifest hash")
     manifest_path = Path(case["releaseManifest"]["path"])
     manifest = json_document(manifest_path.read_text(encoding="utf-8"))
-    require(manifest["recipeHash"] == case["recipeHash"], "Frozen recipe identity differs")
+    require(manifest["recipeRevision"] == case["recipeRevision"], "Frozen recipe identity differs")
     require(len(manifest["shots"]) == 4 and [s["view"] for s in manifest["shots"]] == case["shotViews"], "Frozen shot plan differs")
     require([shot["k"] for shot in manifest["shots"]] == list(range(4)) and all(not shot["skip"] for shot in manifest["shots"]), "Frozen measurements must cover four ordered shots")
     require(all(s["camera"] == "cam1" and s["size"] == [1280, 1024] for s in manifest["shots"]), "Frozen camera or image size differs")
@@ -284,7 +284,7 @@ def summary(report):
         wall, engine, part, tail = (case[k] for k in ("preparedMeasureMs", "engineRunIoParseMs", "serialPartMeasureAndJudgeMs", "lastSelectedFrameToJudgeMs"))
         print(f'{case["mode"]}: {case["steadyParts"]} parts / {case["steadyMeasurements"]} measures; warmup {case["warmupMs"]:.3f} ms ({case["warmupKind"]})')
         print(f'  Prepared P50/P95/max {wall["p50"]:.3f}/{wall["p95"]:.3f}/{wall["max"]:.3f} ms; run/I/O/parse {engine["p50"]:.3f}/{engine["p95"]:.3f}/{engine["max"]:.3f} ms')
-        print(f'  Last selected preloaded frame to judge P50/P95/max {tail["p50"]:.3f}/{tail["p95"]:.3f}/{tail["max"]:.3f} ms; bundle {case["bundleHash"]}')
+        print(f'  Last selected preloaded frame to judge P50/P95/max {tail["p50"]:.3f}/{tail["p95"]:.3f}/{tail["max"]:.3f} ms; bundle {case["bundleId"]}')
         print(f'  Serial four-measurement part P50/P95/max {part["p50"]:.3f}/{part["p95"]:.3f}/{part["max"]:.3f} ms; fixture manifest SHA256 {case["fixtures"]["sha256"]}')
         private = case["memory"]["private"]
         if private:

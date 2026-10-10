@@ -31,7 +31,7 @@ pub struct RecordedPart {
     pub table: Option<Vec<PointState>>,
     pub software_version: String,
     pub cycle_id: String,
-    pub bundle_hash: Option<String>,
+    pub bundle_id: Option<String>,
     pub delivery: PlcDelivery,
     pub shots: Vec<PartShot>,
 }
@@ -51,7 +51,7 @@ impl RecordedPart {
             table: self.table.as_deref(),
             software_version: &self.software_version,
             cycle_id: Some(&self.cycle_id),
-            bundle_hash: self.bundle_hash.as_deref(),
+            bundle_id: self.bundle_id.as_deref(),
             delivery: &self.delivery,
             shots: &self.shots,
         }
@@ -354,7 +354,7 @@ fn raw_file(file: RecordedRawFile) -> Result<(usize, ShotRawFile), String> {
     if file.file.is_empty() || file.file.contains(['\\', ':', '\0']) || file.file.split('/').any(|part| matches!(part, "" | "." | "..")) {
         return Err("原图文件不是录制根目录内的相对路径".into());
     }
-    let tagged = file.hash.split_once(':').is_some_and(|(algorithm, digest)| {
+    let tagged = file.revision_id.split_once(':').is_some_and(|(algorithm, digest)| {
         !algorithm.is_empty()
             && algorithm.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
             && !digest.is_empty()
@@ -363,7 +363,7 @@ fn raw_file(file: RecordedRawFile) -> Result<(usize, ShotRawFile), String> {
     if !tagged {
         return Err(format!("原图 k={} view={} 缺少标明算法的哈希", file.k, file.view));
     }
-    Ok((file.k, ShotRawFile { view: file.view, file: file.file, hash: Some(file.hash) }))
+    Ok((file.k, ShotRawFile { view: file.view, file: file.file, revision_id: Some(file.revision_id) }))
 }
 
 fn merge_files(cycle: &str, entry: &mut CycleEntry, k: usize, incoming: ShotRawFile, notices: &mut Vec<Notice>) -> bool {
@@ -373,11 +373,11 @@ fn merge_files(cycle: &str, entry: &mut CycleEntry, k: usize, incoming: ShotRawF
     }
     let files = entry.raw_files.entry(k).or_default();
     if let Some(previous) = files.iter_mut().find(|file| file.view == incoming.view) {
-        if previous.file != incoming.file || (previous.hash.is_some() && previous.hash != incoming.hash) {
+        if previous.file != incoming.file || (previous.revision_id.is_some() && previous.revision_id != incoming.revision_id) {
             log(notices, "err", "原图身份冲突", cycle, format!("k={k} view={} 已有关联文件，保留首次原图证据", incoming.view));
             return false;
         }
-        if previous == &incoming || incoming.hash.is_none() {
+        if previous == &incoming || incoming.revision_id.is_none() {
             return false;
         }
         *previous = incoming;

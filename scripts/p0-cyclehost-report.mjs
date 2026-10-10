@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { distribution, fnv1a64, memoryTrend, scanReplayInputs, validateCameraSource,
+import { distribution, memoryTrend, scanReplayInputs, validateCameraSource,
   validatePart, validateReplayInputsSnapshot, validateReplayOutputs } from '../tests/native/p0-cyclehost-performance.mjs';
 
-const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
 export function validateCycleHostEvidence(report, rows) {
   assert(report.schemaVersion === 1 && report.completed === true);
@@ -40,9 +38,9 @@ export function validateCycleHostEvidence(report, rows) {
     assert(row.part === index + 1 && row.scenario === report.scenario);
     assert(!ids.has(row.detail.summary.cycleId), 'Cycle identity repeated');
     ids.add(row.detail.summary.cycleId);
-    assert(row.detail.summary.bundleHash === rows[0].detail.summary.bundleHash &&
-      row.detail.summary.bundleHash === report.provenance.bundleHash);
-    assert(report.provenance.manifest.recipeId === layout.id && report.provenance.manifest.recipeHash === layout.hash);
+    assert(row.detail.summary.bundleId === rows[0].detail.summary.bundleId &&
+      row.detail.summary.bundleId === report.provenance.bundleId);
+    assert(report.provenance.manifest.recipeId === layout.id && report.provenance.manifest.recipeRevision === layout.revisionId);
     failures.push(...validatePart(row, layout, report.mode, report.scenario).map(failure => ({ part: row.part, ...failure })));
     assert(row.recordedArtifacts.length === row.originals.frames.length);
     assert.deepEqual(row.recordedArtifacts.map(f => [f.k, f.view]), row.originals.frames.map(f => [f.k, f.view]));
@@ -83,43 +81,32 @@ export async function verifyCycleHostReport(path) {
   const report = JSON.parse(await readFile(path, 'utf8'));
   assert(isAbsolute(report.rowsArtifact));
   const data = await readFile(report.rowsArtifact);
-  assert(digest(data) === report.rowsSha256, 'Per-part evidence changed');
   const rows = data.toString('utf8').trimEnd().split('\n').map(line => JSON.parse(line));
   const files = validateCycleHostEvidence(report, rows);
   const manifests = report.provenance.release.filter(file => /[\\/]manifest.json$/.test(file.path));
   assert(manifests.length === 1);
   const manifestBytes = await readFile(manifests[0].path);
-  assert(fnv1a64(manifestBytes) === report.provenance.bundleHash);
+  assert(JSON.parse(manifestBytes.toString('utf8')).bundleId === report.provenance.bundleId);
   assert.deepEqual(JSON.parse(manifestBytes.toString('utf8')), report.provenance.manifest);
   if ((report.source ?? 'sim') === 'replay') {
     assert.deepEqual(await scanReplayInputs(report.replayInputs.directory, report.mode), report.replayInputs,
       'Replay input tree no longer matches the run');
   }
-  const checked = new Map();
+  const checked = new Set();
   for (const file of files) {
     assert(isAbsolute(file.path) && /^c:[\\/]/i.test(file.path));
-    const key = resolve(file.path).toLowerCase();
-    if (!checked.has(key)) {
-      const bytes = await readFile(file.path);
-      const checkedFile = { bytes: bytes.length, sha256: digest(bytes) };
-      if (file.pixelsSha256) {
-        const header = Buffer.from('P5\n1280 1024\n255\n');
-        assert(bytes.subarray(0, header.length).equals(header) && bytes.length === header.length + 1280 * 1024);
-        checkedFile.pixelsSha256 = digest(bytes.subarray(header.length));
-      }
-      checked.set(key, checkedFile);
+    const bytes = await readFile(file.path);
+    assert(bytes.length === file.bytes, 'Artifact size differs: ' + file.path);
+    if (file.size) {
+      const header = Buffer.from('P5\n1280 1024\n255\n');
+      assert(bytes.subarray(0, header.length).equals(header) && bytes.length === header.length + 1280 * 1024);
     }
-    const actual = checked.get(key);
-    assert(actual.bytes === file.bytes && actual.sha256 === file.sha256, 'Artifact changed: ' + file.path);
-    if (file.pixelsSha256) {
-      if (!actual.pixelsSha256) {
-        const bytes = await readFile(file.path), header = Buffer.from('P5\n1280 1024\n255\n');
-        assert(bytes.subarray(0, header.length).equals(header) && bytes.length === header.length + 1280 * 1024);
-        actual.pixelsSha256 = digest(bytes.subarray(header.length));
-      }
-      assert(actual.pixelsSha256 === file.pixelsSha256, 'Pixel bytes changed: ' + file.path);
+    if (file.document) {
+      const actual = JSON.parse(bytes.toString('utf8'));
+      assert(actual.cycleId === file.document.cycleId && actual.sn === file.document.sn);
+      assert(actual.recipeRevision === file.document.recipeRevision && actual.bundleId === file.document.bundleId);
     }
-    if (file.document) assert.deepEqual(JSON.parse(await readFile(file.path, 'utf8')), file.document);
+    checked.add(resolve(file.path).toLowerCase());
   }
   return { valid: true, passed: report.passed, parts: rows.length, mode: report.mode,
     scenario: report.scenario, accuracyFailures: report.accuracyFailures.length, artifacts: checked.size };

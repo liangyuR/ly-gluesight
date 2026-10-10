@@ -15,7 +15,7 @@ export default function ValidationPage() {
   const {data,doc,dirty,frameDirty,busy,act,setError} = useWorkspace();
   const [records,setRecords] = useState<PartSummary[]>([]);
   const [historyScope,setHistoryScope] = useState<"current"|"all">("current");
-  const candidate = data ? JSON.stringify([data.workspace.doc.id,data.workspace.doc.version,data.workspace.baseHash]) : null;
+  const candidate = data ? JSON.stringify([data.workspace.doc.id,data.workspace.doc.version,data.workspace.baseRevision]) : null;
   const [selection,setSelection] = useState<{candidate:string|null;samples:Sample[]}>(()=>({candidate,samples:data?.workspace.samples??[]}));
   const selectedSamples = selection.candidate===candidate?selection.samples:data?.workspace.samples??[];
   const availableSamples = new Set(data?.workspace.sampleBank.map(sample=>sample.id));
@@ -37,8 +37,8 @@ export default function ValidationPage() {
   useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;};},[]);
   useEffect(()=>{pending.current=null;setReading(false);setOperating(false);setConfirm(false);setImporting(false);setFiles({});},[scope]);
   useEffect(()=>{
-    setHistoryScope(data?.workspace.baseHash?"current":"all");
-  },[data?.workspace.doc.id,data?.workspace.baseHash]);
+    setHistoryScope(data?.workspace.baseRevision?"current":"all");
+  },[data?.workspace.doc.id,data?.workspace.baseRevision]);
   useEffect(()=>{
     setRecords([]);
     if(!doc)return;let alive=true;

@@ -9,23 +9,23 @@ export function usePublishedOverview(layout:Recipe|null) {
   const [overview,setOverview]=useState<Overview|null>(null);
   useEffect(()=>{
     let alive=true;setOverview(null);
-    if(layout)void workspaceApi.runtimeOverview(layout.id,layout.hash).then(v=>alive&&setOverview(v)).catch(()=>{});
+    if(layout)void workspaceApi.runtimeOverview(layout.id,layout.revisionId).then(v=>alive&&setOverview(v)).catch(()=>{});
     return()=>{alive=false;};
-  },[layout?.id,layout?.hash]);
+  },[layout?.id,layout?.revisionId]);
   return overview;
 }
 
 export default function RuntimeFrame({part,layout,k,measured,vis}:{part:PartView|null;layout:Recipe|null;k:number;measured:Measured[];vis?:PointVis[]}) {
   const frame=part?.frames[k];
-  const scope=JSON.stringify([part?.cycleId,part?.bundleHash,part?.recipeHash,layout?.id,layout?.hash,k,frame?.shotId,frame?.camera,frame?.view,frame?.session,frame?.ordinal,frame?.status]);
+  const scope=JSON.stringify([part?.cycleId,part?.bundleId,part?.recipeRevision,layout?.id,layout?.revisionId,k,frame?.shotId,frame?.camera,frame?.view,frame?.session,frame?.ordinal,frame?.status]);
   const current=useRef(scope);current.current=scope;
   const [preview,setPreview]=useState<{scope:string;image:GrayImage|null;error:string;loading:boolean}|null>(null);
   useEffect(()=>{
     let alive=true;
     const valid=()=>alive&&current.current===scope;
-    if(!part||!layout||part.recipeId!==layout.id||part.recipeHash!==layout.hash)return;
+    if(!part||!layout||part.recipeId!==layout.id||part.recipeRevision!==layout.revisionId)return;
     setPreview({scope,image:null,error:"",loading:true});
-    void workspaceApi.liveImage(part.cycleId,part.recipeHash,k)
+    void workspaceApi.liveImage(part.cycleId,part.recipeRevision,k)
       .then(image=>{if(valid())setPreview({scope,image,error:"",loading:false});})
       .catch(error=>{if(valid())setPreview({scope,image:null,error:String(error),loading:false});});
     return()=>{alive=false;};

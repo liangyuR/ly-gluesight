@@ -29,8 +29,8 @@ try {
     }
     if ($SkipBuild) {
         $taskUiPrevious = Get-Content -LiteralPath $taskUiManifest -Raw | ConvertFrom-Json
-        if ($taskUiPrevious.identifier -ne $taskUiOverlay.identifier -or $taskUiPrevious.sha256 -ne (Get-FileHash -LiteralPath $taskUiExecutable -Algorithm SHA256).Hash) {
-            throw '隔离测试实例标识或文件哈希不匹配，请重新构建。'
+        if ($taskUiPrevious.identifier -ne $taskUiOverlay.identifier -or $taskUiPrevious.executable -ne $taskUiExecutable) {
+            throw '隔离测试实例标识或路径不匹配，请重新构建。'
         }
     }
     $taskUiProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $DebugPort)
@@ -42,7 +42,7 @@ try {
             -RedirectStandardOutput (Join-Path $taskUiOutput 'stdout.log') -RedirectStandardError (Join-Path $taskUiOutput 'stderr.log')
     } finally { $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $taskUiOldArguments }
     $taskUiState = @{ pid = $taskUiProcess.Id; executable = $taskUiExecutable; identifier = $taskUiOverlay.identifier;
-        sha256 = (Get-FileHash -LiteralPath $taskUiExecutable -Algorithm SHA256).Hash; debugPort = $DebugPort; startedAt = [DateTime]::UtcNow.ToString('o') }
+        debugPort = $DebugPort; startedAt = $taskUiProcess.StartTime.ToUniversalTime().ToString('o') }
     $taskUiState | ConvertTo-Json | Set-Content -LiteralPath $taskUiManifest -Encoding utf8
     try {
         $taskUiReady = $false

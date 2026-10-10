@@ -51,7 +51,7 @@ foreach ($source in @($LyFlowRuntime, $VcRuntime)) {
 }
 & (Join-Path $PSScriptRoot 'Test-PackagedRuntime.ps1') -RuntimeDir $runtimeDir
 $files = @(Get-ChildItem -LiteralPath $runtimeDir -Filter '*.dll' -File | Sort-Object Name | ForEach-Object {
-    @{ name = $_.Name; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
+    @{ name = $_.Name; bytes = $_.Length }
 })
 @{ architecture = 'x64'; files = $files } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $runtimeDir 'manifest.json') -Encoding utf8NoBOM
 $configPath = Join-Path $stageRoot 'tauri.runtime.json'

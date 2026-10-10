@@ -43,7 +43,7 @@ fn part(cycle_id: &str, ledgers: &Ledgers, one_device: bool) -> Part {
     }).collect();
     let router = ShotRouter::arm(&Plan::from_shots(&recipe.shots), ledgers, &Policy::development(None), &identities).unwrap();
     Part {
-        run_id: 1, cycle_id: cycle_id.into(), bundle_hash: Some("release-1".into()), production: None, sn: 88,
+        run_id: 1, cycle_id: cycle_id.into(), bundle_id: Some("release-1".into()), production: None, sn: 88,
         scenario: Scenario::Normal, frames: recipe.shots.iter().map(|shot| FrameView {
             shot_id: shot.id.clone(), camera: shot.camera.clone(), view: shot.view, ..FrameView::waiting()
         }).collect(), measuring_since: vec![None; recipe.shot_count()],
@@ -64,7 +64,7 @@ fn measured(part: &Part, k: usize) -> Measured {
     let shot = &part.recipe.shots[k];
     let indices: Vec<_> = part.recipe.owned_points(k).map(|j| j as u32).collect();
     Measured { run_id: part.run_id, cycle_id: part.cycle_id.clone(), shot_id: shot.id.clone(),
-        camera: shot.camera.clone(), bundle_hash: part.bundle_hash.clone(), sn: part.sn,
+        camera: shot.camera.clone(), bundle_id: part.bundle_id.clone(), sn: part.sn,
         k, cam: part.frames[k].cam, located: true, score: 0.95, ms: 15,
         queue_ms: None, engine_ms: None, core_ms: None, error: None,
         d: vec![0.0; indices.len()], w: vec![4.0; indices.len()], st: vec![measure::ST_OK; indices.len()],
@@ -199,7 +199,7 @@ fn same_sn_reinspection_rejects_old_cycle_and_every_other_identity_mismatch() {
     for variant in 0..4 {
         let mut wrong = measured(&next, 0);
         match variant { 0 => wrong.shot_id = "P2".into(), 1 => wrong.camera = "cam2".into(),
-            2 => wrong.bundle_hash = Some("old-release".into()), _ => wrong.cam = 2 }
+            2 => wrong.bundle_id = Some("old-release".into()), _ => wrong.cam = 2 }
         assert!(next.apply_result(wrong).is_none());
     }
     assert_eq!(next.queue, 1);

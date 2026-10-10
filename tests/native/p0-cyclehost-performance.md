@@ -14,7 +14,7 @@ p0-cyclehost-performance.mjs 连接一个已经启动、配置完成的专用 P0
 - 专用应用标识包含 com.xyzrobotics.tujiaovision.p0-tests；PLC 协议为 simulator、在线；全部参与设备为触发模拟相机；启用真实 LyFlow 测量及“全部”录制。默认 --source sim 保留上述模拟相机守卫；显式回放控制见下节。
 - 保持 armMs=200。初始状态为 IDLE，模拟器未运行。脚本不会自动复位故障。
 - 录制保留数至少 100；建议专用验收实例设为 500 件或以上，以便四个组合结束后仍可复核所有原图。容量建议至少 8 GiB，并确认 C 盘实际可用空间。单个 tricam/100 件约产生 1.2 GiB 原图；single 约 0.4 GiB。
-- --fixture 传入该发布包的 recipe.json；--release 传入包含 manifest.json 的该包目录。脚本校验清单 FNV 等于每件运行的 bundleHash，并核对配方、拍照点、视角和 1280×1024 尺寸。
+- --fixture 传入该发布包的 recipe.json；--release 传入包含 manifest.json 的该包目录。脚本校验清单 FNV 等于每件运行的 bundleId，并核对配方、拍照点、视角和 1280×1024 尺寸。
 - --executable 和 --pid 必须来自当前原生实例。内存采样核对进程路径及启动时间，拒绝复用 PID 或应用中途重启。
 - 暂停 Cargo、前端 coverage、Prepared 基准及其它 CPU 密集任务；同一时间仅运行一个原生验收实例。
 
@@ -69,7 +69,7 @@ $taskPerfArgs = @(
 
 ## 指标和通过条件
 
-每件需完成 ACK、原图落盘及握手释放，核对 cycleId、SN、recipeHash、bundleHash、shotId、设备、视角、设备内序号、测量点归属及原图完整性。原图必须是 1280×1024 Gray8 PGM；记录逐幅 SHA256。软件 exe、DLL、夹具和整个冻结发布目录在运行前后核对 SHA256。
+每件需完成 ACK、原图落盘及握手释放，核对 cycleId、SN、recipeRevision、bundleId、shotId、设备、视角、设备内序号、测量点归属及原图完整性。原图必须是 1280×1024 Gray8 PGM；记录逐幅 SHA256。软件 exe、DLL、夹具和整个冻结发布目录在运行前后核对 SHA256。
 
 | 字段 | 实际含义 |
 | --- | --- |

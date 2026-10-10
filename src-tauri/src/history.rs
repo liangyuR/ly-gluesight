@@ -35,13 +35,13 @@ pub async fn history_detail(app: AppHandle, id: i64) -> Result<PartDetail, Strin
 }
 
 #[tauri::command]
-pub fn history_recipe(store: State<'_, Store>, cycle: State<'_, CycleHost>, hash: Option<String>, recipe_id: Option<String>) -> Result<Option<Recipe>, String> {
-    record_recipe(&store, hash.as_deref(), || recipe_id.as_deref().and_then(|id| cycle.recipe(id)))
+pub fn history_recipe(store: State<'_, Store>, cycle: State<'_, CycleHost>, revision_id: Option<String>, recipe_id: Option<String>) -> Result<Option<Recipe>, String> {
+    record_recipe(&store, revision_id.as_deref(), || recipe_id.as_deref().and_then(|id| cycle.recipe(id)))
 }
 
-fn record_recipe(store: &Store, hash: Option<&str>, current: impl FnOnce() -> Option<Arc<Recipe>>) -> Result<Option<Recipe>, String> {
-    match hash {
-        Some(hash) => store.recipe_snapshot(hash),
+fn record_recipe(store: &Store, revision_id: Option<&str>, current: impl FnOnce() -> Option<Arc<Recipe>>) -> Result<Option<Recipe>, String> {
+    match revision_id {
+        Some(revision_id) => store.recipe_snapshot(revision_id),
         None => Ok(current().map(|r| (*r).clone())),
     }
 }
@@ -150,7 +150,7 @@ pub async fn history_rejudge(app: AppHandle, request: RejudgeRequest) -> Result<
         let store = app.state::<Store>();
         let cycle = app.state::<CycleHost>();
         let rows = store.measurements(&request.query, &request.ids, REJUDGE_LIMIT + 1)?;
-        rejudge_rows(rows, &request, |hash| store.recipe_snapshot(hash).map(|r| r.map(Arc::new)), |id| cycle.recipe(id))
+        rejudge_rows(rows, &request, |revision_id| store.recipe_snapshot(revision_id).map(|r| r.map(Arc::new)), |id| cycle.recipe(id))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -197,11 +197,11 @@ fn rejudge_rows(
             skip("原记录缺少测量点数据");
             continue;
         }
-        let Some(hash) = row.recipe_hash.as_deref() else {
+        let Some(revision_id) = row.recipe_revision.as_deref() else {
             skip("原记录缺少配方快照身份");
             continue;
         };
-        let Some(original) = cached_recipe(&mut originals, hash, || snapshot(hash))? else {
+        let Some(original) = cached_recipe(&mut originals, revision_id, || snapshot(revision_id))? else {
             skip("原配方快照缺失，无法核对测点布局");
             continue;
         };
@@ -247,7 +247,7 @@ fn csv_row(p: &PartSummary) -> String {
         p.sn.to_string(),
         esc(p.recipe_id.as_deref().unwrap_or("")),
         p.recipe_version.map(|v| v.to_string()).unwrap_or_default(),
-        esc(p.recipe_hash.as_deref().unwrap_or("")),
+        esc(p.recipe_revision.as_deref().unwrap_or("")),
         match p.trigger_mode.as_deref() { Some("fly") => "飞拍", Some("stop") => "停稳拍", _ => "" }.into(),
         verdict,
         p.plc_code.to_string(),
@@ -258,7 +258,7 @@ fn csv_row(p: &PartSummary) -> String {
         p.drain_ms.map(|v| v.to_string()).unwrap_or_default(),
         p.retest_of.map(|v| v.to_string()).unwrap_or_default(),
         esc(p.cycle_id.as_deref().unwrap_or("")),
-        esc(p.bundle_hash.as_deref().unwrap_or("")),
+        esc(p.bundle_id.as_deref().unwrap_or("")),
         delivery,
         format_ts(p.delivery.updated_at),
         esc(p.delivery.message.as_deref().unwrap_or("")),

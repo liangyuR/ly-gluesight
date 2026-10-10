@@ -95,7 +95,7 @@ Start-Demo.ps1 的 -Recipe 覆盖同时传给 Robot 和桥。升级后先 sim:st
 
 这些是需要真实桌面/DLL 验证的契约期望。Python VisionPeer 只为协议测试写应答寄存器。locateFail 保留历史工况键名，在逐点示教模型里由图像偏移产生；当前真实示教 DLL 将整个检测区无胶作为测量错误 99，部分断口仍为 NG_GAP 13。本表依此语义更新，桌面五工况仍须实跑，不能用测试应答代替。
 
-GET /state 提供 contractVersion=2、recipe、plannedTriggers、deviceTriggers、cycleId、recipeHash、bundleHash、可操作状态及 PLC 快照。POST /start 接收 scenario、count（1..100）、continuous，返回 runId。POST /stop 在本件后停止，POST /reset 只允许空闲时执行。
+GET /state 提供 contractVersion=2、recipe、plannedTriggers、deviceTriggers、cycleId、recipeRevision、bundleId、可操作状态及 PLC 快照。POST /start 接收 scenario、count（1..100）、continuous，返回 runId。POST /stop 在本件后停止，POST /reset 只允许空闲时执行。
 
 GET /trigger 的 ticket 除 sn/k/scenario 外，还带 recipeId、productCode、shotCount、shotId、poseId、camera、view 和设备内 ordinal。桥先读取 cycle_snapshot、cycle_layout（当前 hash）、camera_rig_config、cycle_get_settings、engine_status 和 app_info，核对全部参与设备、逐点参数、cycleId 与发布资源身份，然后只调用已有 sim_robot_trigger(sn,k,scenario)。临发脉冲前再查工件，禁止中途换件或换包。成功 ACK 必须回传相同身份，Robot 把整件 ACK 绑定到同一 cycleId。已执行 ticket 缓存 ACK，丢失 HTTP 应答后的重试不会产生第二次脉冲；桥中途重启不能接续 k>0，需恢复后重跑。
 
@@ -127,7 +127,7 @@ pnpm sim:verify
 
 sim:verify 真实增加五件演示记录，按 runId 关联结果，逐件检查结果码、异常码、SN、握手释放和设备触发数。只运行指定工况可用 --scenarios normal gap。失败返回非零并覆盖旧的通过报告。
 
-图像工况的报告要求真实应用/引擎应答、非空 cycleId、recipeHash 与不可变 bundleHash，记录应用版本、引擎版本、DLL 文件 SHA256、夹具文件 SHA256、逐点 ACK 和设备计数。测试应答端不能作为真实图像回归证据。DLL SHA256 来自应用报告路径在验证时的文件。triggerAckMs 是桥命令的应答时间，resultWaitMs 是 partEnd 后等待结果的时间，cycleMs 是 Robot 整件时间；它们不等于引擎或排队耗时。报告的 unmeasured 明示这些未测量项及现场精度缺口。
+图像工况的报告要求真实应用/引擎应答、非空 cycleId、recipeRevision 与不可变 bundleId，记录应用版本、引擎版本、DLL 文件 SHA256、夹具文件 SHA256、逐点 ACK 和设备计数。测试应答端不能作为真实图像回归证据。DLL SHA256 来自应用报告路径在验证时的文件。triggerAckMs 是桥命令的应答时间，resultWaitMs 是 partEnd 后等待结果的时间，cycleMs 是 Robot 整件时间；它们不等于引擎或排队耗时。报告的 unmeasured 明示这些未测量项及现场精度缺口。
 
 默认输出在 output/playwright/robot-plc-demo/（已忽略）：
 

@@ -132,11 +132,11 @@ fn recorded_shots(recipe: Option<&Recipe>, frames: &[FrameView], reason: &str) -
 #[serde(rename_all = "camelCase")]
 pub struct PartView {
     pub cycle_id: String,
-    pub bundle_hash: Option<String>,
+    pub bundle_id: Option<String>,
     pub sn: u32,
     pub recipe_id: String,
     /// 本件配方快照的哈希：配方中途改了，界面仍按这一版画
-    pub recipe_hash: String,
+    pub recipe_revision: String,
     /// 计划帧数
     pub n: usize,
     pub received: usize,
@@ -210,7 +210,7 @@ pub struct RecipeSummary {
     pub id: String,
     pub name: String,
     pub version: u32,
-    pub hash: String,
+    pub revision_id: String,
     pub product_code: u16,
     pub shot_count: usize,
     pub trigger_mode: TriggerMode,
@@ -224,7 +224,7 @@ impl From<&Recipe> for RecipeSummary {
             id: r.id.clone(),
             name: r.name.clone(),
             version: r.version,
-            hash: r.hash.clone(),
+            revision_id: r.revision_id.clone(),
             product_code: r.product_code,
             shot_count: r.shot_count(),
             trigger_mode: r.trigger_mode,
@@ -427,7 +427,7 @@ async fn put(app: &AppHandle, t: &str, v: Value) -> Result<(), String> {
 struct Part {
     run_id: u64,
     cycle_id: String,
-    bundle_hash: Option<String>,
+    bundle_id: Option<String>,
     production: Option<Arc<crate::production::Prepared>>,
     sn: u32,
     recipe: Arc<Recipe>,
@@ -500,7 +500,7 @@ impl Part {
     }
 
     fn matches_result(&self, m: &Measured) -> bool {
-        self.cycle_id == m.cycle_id && self.sn == m.sn && self.bundle_hash == m.bundle_hash
+        self.cycle_id == m.cycle_id && self.sn == m.sn && self.bundle_id == m.bundle_id
             && self.recipe.shots.get(m.k).is_some_and(|s| s.id == m.shot_id && s.camera == m.camera)
             && self.frames.get(m.k).is_some_and(|f| f.status == FrameStatus::Measuring && f.cam == m.cam)
     }
@@ -593,10 +593,10 @@ impl Part {
     fn view(&self) -> PartView {
         PartView {
             cycle_id: self.cycle_id.clone(),
-            bundle_hash: self.bundle_hash.clone(),
+            bundle_id: self.bundle_id.clone(),
             sn: self.sn,
             recipe_id: self.recipe.id.clone(),
-            recipe_hash: self.recipe.hash.clone(),
+            recipe_revision: self.recipe.revision_id.clone(),
             n: self.n(),
             received: self.received,
             triggers: self.triggers(),
@@ -1032,14 +1032,14 @@ impl Machine {
         }
         let issued = plan.as_ref().map(|p| p.camera_slots.iter().zip(p.camera_shots).filter(|(id, _)| !id.is_empty())
             .map(|(id, count)| (id.clone(), count as u64)).collect());
-        let bundle_hash = production.as_ref().map(|prepared| prepared.bundle.hash.clone());
-        let recording = host.recorder.begin(settings.record, sn, recipe.clone(), &cycle_id, bundle_hash.as_deref());
+        let bundle_id = production.as_ref().map(|prepared| prepared.bundle.id.clone());
+        let recording = host.recorder.begin(settings.record, sn, recipe.clone(), &cycle_id, bundle_id.as_deref());
         host.camera.begin_part(&cams);
         self.run_id = self.run_id.wrapping_add(1);
         self.part = Some(Part {
             run_id: self.run_id,
             cycle_id,
-            bundle_hash,
+            bundle_id,
             production,
             sn,
             scenario: host.sim.part_scenario(),
@@ -1145,9 +1145,9 @@ impl Machine {
         let needs_image = expected_views > 1 || selected > 1 || !f.images.is_empty() || part.image_measurement;
         let selected_image = if needs_image { f.require_image(selected, expected_views).map(Some) } else { Ok(None) };
         let image = selected_image.as_ref().ok().cloned().flatten();
-        crate::workspace::retain_live(&self.app, part.cycle_id.clone(), &part.recipe.hash, k, &image);
+        crate::workspace::retain_live(&self.app, part.cycle_id.clone(), &part.recipe.revision_id, k, &image);
         let job = Job { run_id: part.run_id, cycle_id: part.cycle_id.clone(), shot_id: shot.id.clone(), camera,
-            bundle_hash: part.bundle_hash.clone(), sn: part.sn, k, cam: f.cam, recipe: part.recipe.clone(),
+            bundle_id: part.bundle_id.clone(), sn: part.sn, k, cam: f.cam, recipe: part.recipe.clone(),
             production: part.production.clone(),
             scenario: part.scenario, image, timeout: host(&self.app).settings().timeouts.proc(), submitted_at,
             image_measurement: part.image_measurement };
@@ -1444,7 +1444,7 @@ impl Machine {
         host(&self.app).audit.insert(RecordedPart { ts: now_ms(), sn, recipe, judgement: judgement.clone(),
             drain_ms, frames, frames_expected, frames_received: received, triggers, table,
             software_version: self.app.package_info().version.to_string(), cycle_id: cycle_id.clone(),
-            bundle_hash: part.and_then(|p| p.bundle_hash.clone()), delivery, shots });
+            bundle_id: part.and_then(|p| p.bundle_id.clone()), delivery, shots });
         if part.is_none() {
             let off = host(&self.app).settings().record == crate::settings::RecordMode::Off;
             host(&self.app).audit.recording(crate::recorder::RecordingOutcome { cycle_id, directory: None,
@@ -1555,15 +1555,15 @@ pub fn cycle_recipes(cycle: State<'_, CycleHost>) -> Vec<RecipeSummary> {
     cycle.recipes.list().iter().map(|r| RecipeSummary::from(&**r)).collect()
 }
 
-/// 配方的运行数据。给了 hash 时要的是那一版：工件用的配方刚改过，这一件仍按开工时的快照画。
+/// 配方的运行数据。给了 revision_id 时要的是那一版：工件用的配方刚改过，这一件仍按开工时的快照画。
 #[tauri::command]
-pub fn cycle_layout(cycle: State<'_, CycleHost>, recipe_id: String, hash: Option<String>) -> Result<Arc<Recipe>, String> {
-    if let Some(r) = cycle.shared.lock().unwrap().part_recipe.clone().filter(|r| hash.as_ref() == Some(&r.hash)) {
+pub fn cycle_layout(cycle: State<'_, CycleHost>, recipe_id: String, revision_id: Option<String>) -> Result<Arc<Recipe>, String> {
+    if let Some(r) = cycle.shared.lock().unwrap().part_recipe.clone().filter(|r| revision_id.as_ref() == Some(&r.revision_id)) {
         return Ok(r);
     }
     let r = cycle.recipe(&recipe_id).ok_or_else(|| format!("配方不存在：{recipe_id}"))?;
-    match hash {
-        Some(h) if h != r.hash => Err(format!("配方 {recipe_id} 已经改过，找不到这一版")),
+    match revision_id {
+        Some(h) if h != r.revision_id => Err(format!("配方 {recipe_id} 已经改过，找不到这一版")),
         _ => Ok(r),
     }
 }

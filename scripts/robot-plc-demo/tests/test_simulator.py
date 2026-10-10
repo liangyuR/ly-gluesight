@@ -39,7 +39,7 @@ def serve(server):
 
 def scripted_ack(ticket, **changes):
     identity = {key: ticket[key] for key in ("sn", "k", "recipeId", "productCode", "shotCount", "shotId", "poseId", "camera", "view", "ordinal")}
-    identity.update(cycleId=f"scripted-{ticket['sn']}", recipeHash="scripted-recipe", bundleHash=None)
+    identity.update(cycleId=f"scripted-{ticket['sn']}", recipeRevision="scripted-recipe", bundleId=None)
     identity.update(changes)
     return {"id": ticket["id"], "ok": True, "identity": identity, "evidence": {"scope": "scripted-test-peer"}}
 

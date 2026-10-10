@@ -22,7 +22,7 @@ pub mod tag {
     pub const PROTOCOL_VERSION: &str = "protocolVersion";
     pub const REQUEST_SEQ: &str = "requestSeq";
     pub const PLAN_VERSION: &str = "planVersion";
-    pub const PLAN_HASH: &str = "planHash";
+    pub const PLAN_RESERVED: &str = "planReserved";
     pub const CAMERA_SHOTS: [&str; 3] = ["camera1Shots", "camera2Shots", "camera3Shots"];
     pub const CAMERA_TRIGGERS: [&str; 3] = ["camera1Triggers", "camera2Triggers", "camera3Triggers"];
     pub const ACK_SEQ: &str = "ackSeq";
@@ -30,7 +30,7 @@ pub mod tag {
     pub const PC_HEARTBEAT: &str = "pcHeartbeat";
     pub const PC_PROTOCOL_VERSION: &str = "pcProtocolVersion";
     pub const ACCEPTED_SEQ: &str = "acceptedSeq";
-    pub const ACCEPTED_PLAN_HASH: &str = "acceptedPlanHash";
+    pub const ACCEPTED_PLAN_RESERVED: &str = "acceptedPlanReserved";
     pub const RESULT_SEQ: &str = "resultSeq";
     pub const VISION_FAULT: &str = "visionFault";
 }
@@ -104,7 +104,7 @@ pub fn s7_phase1_config(db_number: u16) -> Result<PlcConfig, String> {
         (tag::PRODUCT_CODE, "产品代码", "DBW12", U16, input, NoEdge),
         (tag::SHOT_COUNT, "计划拍照总数", "DBW14", U16, input, NoEdge),
         (tag::PLAN_VERSION, "拍照计划版本", "DBD16", U32, input, NoEdge),
-        (tag::PLAN_HASH, "拍照计划摘要", "DBD20", U32, input, NoEdge),
+        (tag::PLAN_RESERVED, "拍照计划摘要", "DBD20", U32, input, NoEdge),
         (tag::CAMERA_SHOTS[0], "相机槽 1 计划数", "DBW24", U16, input, NoEdge),
         (tag::CAMERA_SHOTS[1], "相机槽 2 计划数", "DBW26", U16, input, NoEdge),
         (tag::CAMERA_SHOTS[2], "相机槽 3 计划数", "DBW28", U16, input, NoEdge),
@@ -124,7 +124,7 @@ pub fn s7_phase1_config(db_number: u16) -> Result<PlcConfig, String> {
         (tag::RESULT_CODE, "结果码", "DBW76", U16, output, NoEdge),
         (tag::FAULT_CODE, "异常码", "DBW78", U16, output, NoEdge),
         (tag::ACCEPTED_SEQ, "布防事务序号", "DBD80", U32, output, NoEdge),
-        (tag::ACCEPTED_PLAN_HASH, "布防计划摘要", "DBD84", U32, output, NoEdge),
+        (tag::ACCEPTED_PLAN_RESERVED, "布防计划摘要", "DBD84", U32, output, NoEdge),
     ];
     let points = definitions.into_iter().map(|(tag, name, address, data_type, access, edge)| PlcPoint {
         id: format!("p_{tag}"), name: name.into(), address: format!("DB{db_number}.{address}"),

@@ -28,14 +28,14 @@ export function workspaceView(id = "A"): WorkspaceView {
     spacing: 1, filterWindow: 3, detect, limits, shots: shotList(twoLines),
   };
   const layout: Recipe = {
-    ...structuredClone(doc), hash: `hash-${id}`,
+    ...structuredClone(doc), revisionId: `revisionId-${id}`,
     segments: [0, 1].map(k => ({ name: `P${k + 1} · J1`, shot: k, first: 2 * k, count: 2, position: structuredClone(position), width: null, maxGapLen: .5 })),
     points: { x: [10, 20, 30, 40], y: [10, 10, 10, 10], seg: [0, 0, 1, 1], k: [0, 0, 1, 1] },
   };
   return {
     layout, productionVersion: 1, coverage: 100,
     workspace: {
-      doc, baseHash: `production-${id}`, revision: 7, updatedAt: 1, publishError: null, pending: null,
+      doc, baseRevision: `production-${id}`, revision: 7, updatedAt: 1, publishError: null, pending: null,
       frames: [0, 1].map(k => {
         const image: FrozenImage = { id: `${id}-image-${k}`, source: "camera", capturedAt: 1, size: [100, 60], camera: "CAM-1", view: 1,
           cameraTag: "cam-v1", calibTag: "calib-v1", geometryTag: "geom-v1", exposureUs: 60, gainDb: 6, historyId: null };
@@ -57,7 +57,7 @@ export function workspaceView(id = "A"): WorkspaceView {
 
 export function summary(view = workspaceView()): RecipeSummary {
   const { layout: r } = view;
-  return { id: r.id, name: r.name, version: 1, hash: r.hash, productCode: r.productCode,
+  return { id: r.id, name: r.name, version: 1, revisionId: r.revisionId, productCode: r.productCode,
     shotCount: r.shots.length, triggerMode: r.triggerMode, cameras: [...new Set(r.shots.map(s => s.camera))], length: 4 };
 }
 
@@ -90,8 +90,8 @@ export function snapshot(phase: Snapshot["phase"] = "IDLE"): Snapshot {
 }
 
 export function partSummary(id = 1): PartSummary {
-  return { id, sn: 100 + id, ts: 1, recipeId: "A", recipeVersion: 1, recipeHash: "hash-A", triggerMode: "fly",
-    verdict: "NG_GAP", plcCode: 2, faultCode: 0, reason: "断胶", drainMs: 20, framesExpected: 2, framesReceived: 2, retestOf: null, cycleId: `cycle-${id}`, bundleHash: "bundle-A", delivery: { state: "acknowledged", updatedAt: 1, message: null } };
+  return { id, sn: 100 + id, ts: 1, recipeId: "A", recipeVersion: 1, recipeRevision: "revisionId-A", triggerMode: "fly",
+    verdict: "NG_GAP", plcCode: 2, faultCode: 0, reason: "断胶", drainMs: 20, framesExpected: 2, framesReceived: 2, retestOf: null, cycleId: `cycle-${id}`, bundleId: "bundle-A", delivery: { state: "acknowledged", updatedAt: 1, message: null } };
 }
 
 export function partDetail(): PartDetail {

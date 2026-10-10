@@ -29,7 +29,7 @@ const FIELDS: &[Field] = &[
     input("productCode", DataType::U16, false),
     input("shotCount", DataType::U16, false),
     input("planVersion", DataType::U32, false),
-    input("planHash", DataType::U32, false),
+    input("planReserved", DataType::U32, false),
     input("camera1Shots", DataType::U16, false),
     input("camera2Shots", DataType::U16, false),
     input("camera3Shots", DataType::U16, false),
@@ -50,7 +50,7 @@ const FIELDS: &[Field] = &[
     output("pcHeartbeat", DataType::Bool),
     output("pcProtocolVersion", DataType::U16),
     output("acceptedSeq", DataType::U32),
-    output("acceptedPlanHash", DataType::U32),
+    output("acceptedPlanReserved", DataType::U32),
     output("resultSeq", DataType::U32),
     output("resultSn", DataType::U32),
     output("resultCode", DataType::U16),
@@ -273,7 +273,7 @@ impl Snapshot {
             product_code: self.read_u32("productCode")? as u16,
             shot_count: self.read_u32("shotCount")? as u16,
             plan_version: self.read_u32("planVersion")?,
-            plan_hash: self.read_u32("planHash")?,
+            plan_hash: self.read_u32("planReserved")?,
             camera_shots: [self.read_u32("camera1Shots")? as u16, self.read_u32("camera2Shots")? as u16, self.read_u32("camera3Shots")? as u16],
         };
         request.validate()?;
@@ -450,7 +450,7 @@ pub(crate) fn arm_plan(request: &Request) -> Vec<WriteOp> {
     vec![
         WriteOp::new("visionReady", json!(false)),
         WriteOp::new("acceptedSeq", json!(request.request_seq)),
-        WriteOp::new("acceptedPlanHash", json!(request.plan_hash)),
+        WriteOp::new("acceptedPlanReserved", json!(request.plan_hash)),
         WriteOp::new("busy", json!(true)),
         WriteOp::new("armed", json!(true)),
     ]
@@ -667,7 +667,7 @@ mod tests {
         })).collect();
         for (tag, value) in [
             ("protocolVersion", 1), ("pcProtocolVersion", 1), ("requestSeq", 7), ("partSn", 42),
-            ("productCode", 3), ("shotCount", 4), ("planVersion", 2), ("planHash", 99),
+            ("productCode", 3), ("shotCount", 4), ("planVersion", 2), ("planReserved", 99),
             ("camera1Shots", 2), ("camera2Shots", 1), ("camera3Shots", 1),
         ] {
             values.get_mut(tag).unwrap().value = Some(PlcValue::Int(value));
@@ -766,7 +766,7 @@ mod tests {
         assert!(confirm_start(&first, &second).is_err());
         second.poll_count += 1;
         assert_eq!(confirm_start(&first, &second).unwrap().camera_shots, [2, 1, 1]);
-        second.values.insert("planHash", PlcValue::Int(100));
+        second.values.insert("planReserved", PlcValue::Int(100));
         assert!(confirm_start(&first, &second).is_err());
         second = first.clone();
         second.poll_count += 2;
