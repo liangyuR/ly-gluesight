@@ -178,10 +178,10 @@ jsdom 没有真实布局、灰度图解码与设备连接能力。测试环境�
 
 | 验证 | 命令 | 结果 |
 | --- | --- | --- |
-| Rust 默认回归 | `cargo test --offline --locked --lib` | （待填） |
-| S7 回环专项 | `cargo test --offline --locked --lib plc_session -- --include-ignored --test-threads=1` | （待填） |
-| 前端全量 | `pnpm test` | （待填） |
-| 类型检查与构建 | `pnpm typecheck`、`pnpm build` | （待填） |
-| 真实 DLL 回归 | `cargo test --offline --locked --lib native_ -- --ignored --test-threads=1` | 未运行：唯一构建好的 DLL 在故障 D: 盘上。整帧无胶的期望已改为 NG_GAP，C: 上有 DLL 后必须重跑（`workspace/reproduce.rs`、`vision/taught/tests.rs` 的用例仍按旧行为期望报错，需先统一） |
+| Rust 默认回归 | `cargo test --offline --locked --lib` | 339 项通过、0 失败、35 项默认忽略（需真实 DLL 或回环夹具） |
+| S7 回环专项 | `cargo test --offline --locked --lib plc_session -- --include-ignored --test-threads=1` | 41 项通过（含 29 项线协议场景），57.76 秒 |
+| 前端全量 | `pnpm test` | 42 个文件、965 项通过 |
+| 类型检查与构建 | `pnpm typecheck`、`pnpm build` | 通过 |
+| 真实 DLL 回归 | `cargo test --offline --locked --lib native_ -- --ignored --test-threads=1` | 未运行：唯一构建好的 DLL 在故障 D: 盘上。整拍照点无胶的期望已在三处真实 DLL 用例里改为 NG_GAP，C: 上有 DLL 后必须重跑确认 |
 
-<!-- S7 运行时修复：待补 -->
+S7 运行时修复随本次集成一并验证：空闲时 PC 输出被清零（PLC 重启 / DB 重新初始化）自动重写、60 s 内反复被改写判故障、PLC 残留 partEnd / resultAck 只等待、设备未就绪撤下 visionReady；缺帧 / 多帧原因带相机与应收 / 实收计数；提前判 ERR 的件按 PLC 确认时的已发触发数推下一件基线；SDK 帧长度不足丢图不越界；PLC 字段超出 UInt 范围报错不截断；旧 `planHash` 点名直接拒绝。
