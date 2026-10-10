@@ -30,6 +30,8 @@ export interface Segment {
   width: JudgeParams | null;
   /** 允许的连续缺胶长度（mm） */
   maxGapLen: number;
+  /** 有胶站的最低占比（0–1）：累计缺胶超过 maxGapLen 且占比低于它时判断胶 */
+  minPresent: number;
 }
 
 export type Polarity = "dark" | "light";
@@ -48,6 +50,8 @@ export interface ShotLimits {
   position: JudgeParams | null;
   width: JudgeParams | null;
   maxGapLen: number;
+  /** 有胶站的最低占比（0–1），防零散断胶 */
+  minPresent: number;
 }
 
 /** 一个拍照点：机器人走到 Pose 时 PLC 触发这台相机拍一帧，在这帧里沿示教中线量胶。可选字段不设时不发送（不发 null）。 */

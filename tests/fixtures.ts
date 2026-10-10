@@ -21,7 +21,7 @@ export const twoLines: [number, number][][] = [[[10, 10], [20, 10]], [[30, 10], 
 
 export function workspaceView(id = "A"): WorkspaceView {
   const position = { nominal: 3, tolUpper: 1, tolLower: 1, absMin: 1, absMax: 6, maxExcursionLen: 2 };
-  const limits: ShotLimits = { position, width: null, maxGapLen: .5 };
+  const limits: ShotLimits = { position, width: null, maxGapLen: .5, minPresent: .8 };
   const detect: DetectParams = { searchMm: 4, polarity: "dark", widthRange: [1, 6] };
   const doc: RecipeDoc = {
     id, name: `工件 ${id}`, version: 2, productCode: 1, triggerMode: "fly", schemaVersion: 4,
@@ -29,7 +29,7 @@ export function workspaceView(id = "A"): WorkspaceView {
   };
   const layout: Recipe = {
     ...structuredClone(doc), revisionId: `revisionId-${id}`,
-    segments: [0, 1].map(k => ({ name: `P${k + 1} · J1`, shot: k, first: 2 * k, count: 2, position: structuredClone(position), width: null, maxGapLen: .5 })),
+    segments: [0, 1].map(k => ({ name: `P${k + 1} · J1`, shot: k, first: 2 * k, count: 2, position: structuredClone(position), width: null, maxGapLen: .5, minPresent: .8 })),
     points: { x: [10, 20, 30, 40], y: [10, 10, 10, 10], seg: [0, 0, 1, 1], k: [0, 0, 1, 1] },
   };
   return {

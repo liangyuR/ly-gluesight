@@ -2690,8 +2690,13 @@ mod bundle_identity_tests {
 
     fn published_fixture(root: &Path) -> crate::release::ReleaseBundle {
         let mut doc = crate::recipe::samples().remove(0);
-        for shot in &mut doc.shots { shot.skip = true; }
-        let shots = doc.shots.iter().enumerate().map(|(k, _)| crate::release::ShotInput { k, image: None, calibration: None }).collect();
+        // 只留第一个拍照点要检（配方不允许全部不检），其余不检的不需要冻结图像
+        for shot in doc.shots.iter_mut().skip(1) { shot.skip = true; }
+        let mut pgm = b"P5\n1280 1024\n255\n".to_vec();
+        pgm.resize(pgm.len() + 1280 * 1024, 80);
+        let shots = doc.shots.iter().enumerate().map(|(k, _)| crate::release::ShotInput { k,
+            image: (k == 0).then(|| crate::release::ResourceSource::Bytes(pgm.clone())),
+            calibration: (k == 0).then(|| crate::release::ResourceSource::Bytes(br#"{"mmPerPx":0.1,"source":"manual"}"#.to_vec())) }).collect();
         crate::release::publish(root, crate::release::PublishInput {
             recipe: doc, versions: crate::release::Versions { engine: "test-engine".into(), graph: "test-graph".into() },
             graph: crate::release::ResourceSource::Bytes(br#"{"schemaVersion":1,"nodes":[],"edges":[]}"#.to_vec()), shots,

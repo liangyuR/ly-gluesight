@@ -58,6 +58,13 @@ pub struct ShotLimits {
     pub width: Option<JudgeParams>,
     /// 允许的连续缺胶长度（mm）
     pub max_gap_len: f32,
+    /// 有胶站至少占这一段的比例（0–1）：短断口零散分布、每段都不超长时，靠它判断续胶
+    #[serde(default = "default_min_present")]
+    pub min_present: f32,
+}
+
+pub fn default_min_present() -> f32 {
+    0.8
 }
 
 impl ShotLimits {
@@ -70,6 +77,9 @@ impl ShotLimits {
         }
         if !(self.max_gap_len.is_finite() && self.max_gap_len >= 0.0) {
             return Err(format!("{what}：允许断胶长度不能为负"));
+        }
+        if !(0.0..=1.0).contains(&self.min_present) {
+            return Err(format!("{what}：最低有胶比例需在 0–100% 之间"));
         }
         Ok(())
     }
@@ -119,6 +129,8 @@ pub struct Segment {
     pub position: Option<JudgeParams>,
     pub width: Option<JudgeParams>,
     pub max_gap_len: f32,
+    #[serde(default = "default_min_present")]
+    pub min_present: f32,
 }
 
 impl Segment {
@@ -388,6 +400,10 @@ impl RecipeDoc {
                 return Err(format!("拍照点编号 {} 重复", shot.id));
             }
         }
+        // 全部不检的配方任何工件都判合格，等于没检
+        if self.shots.iter().all(|s| s.skip) {
+            return Err("至少要有一个拍照点要检，全部设为不检时任何工件都会判合格".into());
+        }
         Ok(())
     }
 
@@ -425,6 +441,7 @@ impl RecipeDoc {
                 position: limits.position.clone(),
                 width: limits.width.clone(),
                 max_gap_len: limits.max_gap_len,
+                min_present: limits.min_present,
             });
         }
         let recipe = Recipe {
@@ -459,6 +476,7 @@ pub fn default_limits() -> ShotLimits {
         position: Some(JudgeParams { nominal: 0.0, tol_upper: 2.0, tol_lower: 2.0, abs_min: -5.0, abs_max: 5.0, max_excursion_len: 5.0 }),
         width: Some(JudgeParams { nominal: 4.0, tol_upper: 1.5, tol_lower: 1.5, abs_min: 1.0, abs_max: 8.0, max_excursion_len: 5.0 }),
         max_gap_len: 6.0,
+        min_present: default_min_present(),
     }
 }
 
@@ -865,11 +883,21 @@ mod tests {
     #[test]
     fn shot_limits_override_recipe_limits() {
         let mut doc = samples().remove(1);
-        doc.shots[3].limits = Some(ShotLimits { position: None, width: None, max_gap_len: 9.0 });
+        doc.shots[3].limits = Some(ShotLimits { position: None, width: None, max_gap_len: 9.0, min_present: 0.5 });
         let r = doc.build().unwrap();
         assert_eq!(r.segments[0].max_gap_len, 6.0);
         assert!(r.segments[0].width.is_some());
-        assert_eq!((r.segments[3].max_gap_len, r.segments[3].width.is_none()), (9.0, true));
+        assert_eq!((r.segments[3].max_gap_len, r.segments[3].width.is_none(), r.segments[3].min_present), (9.0, true, 0.5));
+        assert_eq!(r.segments[0].min_present, 0.8);
+    }
+
+    #[test]
+    fn all_skipped_recipe_is_rejected() {
+        let mut doc = samples().remove(1);
+        doc.shots.iter_mut().for_each(|s| s.skip = true);
+        assert!(doc.build().unwrap_err().contains("至少要有一个拍照点要检"));
+        doc.shots[2].skip = false;
+        assert!(doc.build().is_ok());
     }
 
     #[test]

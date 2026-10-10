@@ -109,7 +109,7 @@ fn taught_graph_does_not_fill_or_discard_a_rounding_mismatched_terminal_station(
 fn station_output_maps_global_ids_signed_offsets_and_gaps_without_judging() {
     let recipe = document().build().unwrap();
     let p = plan(&recipe, 1).unwrap();
-    let m = parse_result(&recipe, 1, &p, &result(&recipe, 1, &[5, 6])).unwrap();
+    let m = parse_result(&recipe, &p, &result(&recipe, 1, &[5, 6])).unwrap();
     assert_eq!(m.idx, (41..82).collect::<Vec<_>>());
     assert_eq!(m.d[0], 0.5);
     assert_eq!(m.w[0], 4.0);
@@ -150,21 +150,22 @@ fn station_output_rejects_incomplete_mismatched_and_malformed_results() {
         let mut raw = json!({"summary": good.summary, "outputs": good.outputs});
         *raw.pointer_mut(pointer).unwrap() = value;
         let bad = RunResult { summary: raw["summary"].clone(), outputs: raw["outputs"].clone() };
-        assert!(parse_result(&recipe, 0, &p, &bad).is_err(), "accepted {pointer}");
+        assert!(parse_result(&recipe, &p, &bad).is_err(), "accepted {pointer}");
     }
     let mut bad = result(&recipe, 0, &[1]);
     bad.outputs["stations"]["value"]["data"]["widthPx"][1] = json!(4);
-    assert!(parse_result(&recipe, 0, &p, &bad).unwrap_err().contains("无胶站"));
+    assert!(parse_result(&recipe, &p, &bad).unwrap_err().contains("无胶站"));
 }
 
 #[test]
-fn empty_bead_never_becomes_a_successful_measurement_even_if_all_gaps_are_allowed() {
-    let mut recipe = document().build().unwrap();
-    recipe.segments[0].max_gap_len = 1000.0;
+fn empty_bead_is_measured_as_all_gaps_for_the_judge() {
+    // 整段无胶是漏涂缺陷，交给判定判 NG_GAP（见 judge 的整段无胶用例），不当作测量失败
+    let recipe = document().build().unwrap();
     let p = plan(&recipe, 0).unwrap();
     let all: Vec<_> = (0..p.idx.len()).collect();
-    let error = parse_result(&recipe, 0, &p, &result(&recipe, 0, &all)).unwrap_err();
-    assert!(error.contains("没找到胶"));
+    let m = parse_result(&recipe, &p, &result(&recipe, 0, &all)).unwrap();
+    assert_eq!(m.coverage, 0.0);
+    assert!(m.st.iter().all(|&s| s == ST_GAP));
 }
 
 fn bead_image(bright: bool, gap: bool, blank: bool, center_y: i32) -> FrameImage {
