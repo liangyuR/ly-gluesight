@@ -9,6 +9,7 @@
 
 ## 现场接入（[integration/](integration)）
 
+- [PLC 通讯协议](integration/plc-communication-protocol.md)：供电气与视觉对接的通讯参数、完整点表、单件握手、结果码、时间参数、复位及验收清单。
 - [一期 S7 握手契约与现场接入](integration/plc-s7-phase1.md)：DB 点表、事务与结果确认、故障恢复、计划导出和现场验证步骤。
 - [PLC SCL 参考程序](../scripts/s7-handshake/phase1_plc.scl)与 [S7 测试 PLC](../scripts/s7-handshake/README.md)：可审查的 PLC 侧实现及回环报文测试服务。
 
