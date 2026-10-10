@@ -212,6 +212,9 @@ jsdom 没有真实布局、灰度图解码与设备连接能力。测试环境�
 
 2026-10-10 迁移 C: 后恢复验收：以独立标识 `com.xyzrobotics.tujiaovision.p0-tests.recovery` 复制原隔离测试数据，只读 SQLite backup 校验通过；生产 AppData 未修改。由 C: 源码重建原生程序（1m49s），SHA256 `FB6DEBC2F7589513B46FFE62E8CAF94638C722CADDE841AF08D54519AC415DBC`，使用相同 SHA256 的真实 LyFlow DLL。正式脚本四帧 × 两尺寸共八项通过，无 CSS 注入；1440×900 / 1280×800 图像区域分别为 245.039×196.031 / 239.922×191.938 px，原图四角与中线完整可见，缩小后曲线可通过正常滚动访问，恢复窗口后图像仍完整。新 normal 工件 SN `791610945`、cycleId `2baa0f05943a3f37200013922ba024c8`，布防 127 ms，四帧 307 测点，实际 `OK_WITH_EXCURSION` / PLC 2，含排队逐帧总耗时 19/19/22/17 ms；原包 19 个文件与原隔离配置逐文件 SHA256 相同，候选和生产设置未变化。详见[恢复验收证据](evidence/p0-step5-recovery.json)。旧存储阻塞、临时诊断及严格良品失败保留为历史记录，本次验收不构成现场准确率或压测证明。
 
+
+2026-10-10 Codex PR #11 审查补充：标定文件保存后广播 `calibration://changed`；工作台与相机配置变化一样刷新候选环境。编辑文档、未保存示教或操作期间保留待刷新标记，恢复可接受状态后补取；跨候选和过期请求不能覆盖当前编辑。新增回归覆盖标定失效、编辑/示教/操作解除、读请求途中新编辑以及旧请求隔离。定向 2 文件 58 项测试和两套 TypeScript 检查通过，日志位于迁移恢复目录 `p0-step5-review-focused-c.log`、`p0-step5-review-types-app-c.log`、`p0-step5-review-types-tests-c.log`。
+
 ## lyFlow 原始图像注入回归（较早记录）
 
 客户端固定到主线 `5b796c3`（Image ABI v15），使用 `RunSpec.image_inputs` 注入完整 u8 灰度帧。运行库必须包含 `io.load_image`、`image.board_calib`、`image.load_calib`、`glue.locate`、`glue.station_calipers`；在 lyFlow 仓库设置 `LYFLOW_PACKS=glue` 后构建 core，系统设置填 DLL 绝对路径。
