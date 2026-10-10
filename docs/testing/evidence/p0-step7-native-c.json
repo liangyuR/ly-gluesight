@@ -1,0 +1,455 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-10-10T08:27:22.894136+00:00",
+  "status": "historical_acceptance_stopped_by_user_before_demo",
+  "scope": "Historical fba native checks under previous hash-matching contract. Retained evidence only; does not validate subsequent code that removes hash matching.",
+  "sourceCommit": "fba6d4a90b36467d89b1bc8bbf48653fead410b0",
+  "software": {
+    "performance": {
+      "executable": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-step7-native\\gluesight-p0-step7-performance-audit-final.exe",
+      "sha256": "795B4DE384DEFDBD6404A38C9B8DE878518D3178414EE57D589F8DF66C287819",
+      "pid": 40804,
+      "processStartTime": "2026-10-10T08:19:54.8504082Z",
+      "identifier": "com.xyzrobotics.tujiaovision.p0-tests.performance",
+      "runtimeBase": "fba6d4a90b36467d89b1bc8bbf48653fead410b0",
+      "buildStartedFrom": "fba6d4a90b36467d89b1bc8bbf48653fead410b0",
+      "core": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native\\lyflow_core.dll",
+      "createdAt": "2026-10-10T08:19:55.0757974Z"
+    },
+    "demo": {
+      "core": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native\\lyflow_core.dll",
+      "identifier": "com.xyzrobotics.gluesight.robot-plc-demo",
+      "executable": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-robot-demo-c\\GlueSight-Robot-PLC.exe",
+      "sourceCommit": "fba6d4a90b36467d89b1bc8bbf48653fead410b0",
+      "sha256": "14F5769AA346D52EAC89803E8C2D2A4D7B8531A32E3528944154AA6C1058E6ED",
+      "createdAt": "2026-10-10T08:24:44.0226639Z"
+    }
+  },
+  "hundredPartBaseline": {
+    "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\docs\\testing\\evidence\\p0-step7-cyclehost-c.json",
+    "suite": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-cyclehost-final-retry3\\suite.json",
+    "sourceCommit": "d41d19e",
+    "runtimeBase": "6a110a6",
+    "exeSha256": "E304148D45DFF745B6B8C61159FFF5B58C6D5CC9695220B49FCD0FB56835F171",
+    "parts": 400,
+    "combinations": 4,
+    "passed": true,
+    "rawPGMs": 3200,
+    "toolSourceCommitClarification": "suite.toolSourceCommit=7390825 is the initial harness baseline label. Executed immutable software[] byte SHA archives are authoritative; suite original remains unchanged.",
+    "separateRuntime": true
+  },
+  "singleInstance": {
+    "passed": true,
+    "report": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-single-instance-audit-final\\report.json",
+    "duplicateExitCode": 101,
+    "firstInstanceRemainedIdle": true,
+    "originalFilesUnchanged": 5186,
+    "databaseUnchanged": true
+  },
+  "fourCombinationSmoke": {
+    "passed": true,
+    "report": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-cyclehost-audit-smoke\\results\\report.json",
+    "benchmark": false,
+    "partsPerCombination": 1,
+    "runs": [
+      {
+        "mode": "tricam",
+        "scenario": "normal",
+        "passed": true,
+        "reference": {
+          "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-cyclehost-final-retry3\\tricam-normal\\cyclehost-report.json",
+          "bytes": 112221,
+          "sha256": "2a05e8df978a410e3d14e354da46c759ef40f5624eb41ca6016ab1bfe7492527"
+        },
+        "armMs": 60,
+        "uiObservedCycleMs": 2948,
+        "rawPGMs": 12,
+        "measurementCount": 4,
+        "summary": {
+          "id": 524,
+          "ts": 1791620560185,
+          "sn": 791620557,
+          "recipeId": "P0-CYCLEHOST-3V-CLEAN",
+          "recipeVersion": 1,
+          "recipeHash": "efeb8077fcb5f21b",
+          "triggerMode": "fly",
+          "verdict": "OK",
+          "plcCode": 1,
+          "faultCode": 0,
+          "reason": "4 个拍照点全部合格 · 404 点",
+          "drainMs": 15,
+          "framesExpected": 4,
+          "framesReceived": 4,
+          "retestOf": null,
+          "cycleId": "962c5e8aa64fa406a966af762bda0ee5",
+          "bundleHash": "5b6c94728317f8cb",
+          "delivery": {
+            "state": "acknowledged",
+            "updatedAt": 1791620560419,
+            "message": "PLC 已确认结果（开发协议）"
+          }
+        },
+        "measurementTimings": [
+          {
+            "shotId": "P1",
+            "ms": 18,
+            "queueMs": 0,
+            "engineMs": 18,
+            "coreMs": 18,
+            "error": null
+          },
+          {
+            "shotId": "P2",
+            "ms": 15,
+            "queueMs": 0,
+            "engineMs": 15,
+            "coreMs": 15,
+            "error": null
+          },
+          {
+            "shotId": "P3",
+            "ms": 37,
+            "queueMs": 0,
+            "engineMs": 37,
+            "coreMs": 37,
+            "error": null
+          },
+          {
+            "shotId": "P4",
+            "ms": 13,
+            "queueMs": 0,
+            "engineMs": 13,
+            "coreMs": 12,
+            "error": null
+          }
+        ]
+      },
+      {
+        "mode": "tricam",
+        "scenario": "gap",
+        "passed": true,
+        "reference": {
+          "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-cyclehost-final-retry3\\tricam-gap\\cyclehost-report.json",
+          "bytes": 140286,
+          "sha256": "ba6558fad497f6411cdf5615d74de3db3b613dcbf0bc02a34cff86ec0d2def0c"
+        },
+        "armMs": 50,
+        "uiObservedCycleMs": 2901,
+        "rawPGMs": 12,
+        "measurementCount": 4,
+        "summary": {
+          "id": 525,
+          "ts": 1791620565283,
+          "sn": 791620558,
+          "recipeId": "P0-CYCLEHOST-3V-CLEAN",
+          "recipeVersion": 1,
+          "recipeHash": "efeb8077fcb5f21b",
+          "triggerMode": "fly",
+          "verdict": "NG_GAP",
+          "plcCode": 13,
+          "faultCode": 0,
+          "reason": "P2 · J1 断胶 7.0 mm > 6.0 mm · s=47.0–54.0",
+          "drainMs": 15,
+          "framesExpected": 4,
+          "framesReceived": 4,
+          "retestOf": null,
+          "cycleId": "e7ddc2d9f97597477c5ff61cd159bcac",
+          "bundleHash": "5b6c94728317f8cb",
+          "delivery": {
+            "state": "acknowledged",
+            "updatedAt": 1791620565517,
+            "message": "PLC 已确认结果（开发协议）"
+          }
+        },
+        "measurementTimings": [
+          {
+            "shotId": "P1",
+            "ms": 33,
+            "queueMs": 0,
+            "engineMs": 32,
+            "coreMs": 32,
+            "error": null
+          },
+          {
+            "shotId": "P2",
+            "ms": 18,
+            "queueMs": 0,
+            "engineMs": 18,
+            "coreMs": 18,
+            "error": null
+          },
+          {
+            "shotId": "P3",
+            "ms": 18,
+            "queueMs": 0,
+            "engineMs": 17,
+            "coreMs": 17,
+            "error": null
+          },
+          {
+            "shotId": "P4",
+            "ms": 18,
+            "queueMs": 0,
+            "engineMs": 18,
+            "coreMs": 18,
+            "error": null
+          }
+        ]
+      },
+      {
+        "mode": "single",
+        "scenario": "normal",
+        "passed": true,
+        "reference": {
+          "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-cyclehost-final-retry3\\single-normal\\cyclehost-report.json",
+          "bytes": 128769,
+          "sha256": "26aa87c2ec0daf94353007c14aeb9c9c0213771ee8254b3b2f971b2821a36ab4"
+        },
+        "armMs": 74,
+        "uiObservedCycleMs": 2945,
+        "rawPGMs": 4,
+        "measurementCount": 4,
+        "summary": {
+          "id": 526,
+          "ts": 1791620570464,
+          "sn": 791620559,
+          "recipeId": "P0-CYCLEHOST-1V-CLEAN",
+          "recipeVersion": 1,
+          "recipeHash": "63ebc8d4f7db5e0b",
+          "triggerMode": "fly",
+          "verdict": "OK",
+          "plcCode": 1,
+          "faultCode": 0,
+          "reason": "4 个拍照点全部合格 · 404 点",
+          "drainMs": 15,
+          "framesExpected": 4,
+          "framesReceived": 4,
+          "retestOf": null,
+          "cycleId": "79bee6338c715f4b5bb1957fa74c697c",
+          "bundleHash": "b60d8aa8b313d4fd",
+          "delivery": {
+            "state": "acknowledged",
+            "updatedAt": 1791620570747,
+            "message": "PLC 已确认结果（开发协议）"
+          }
+        },
+        "measurementTimings": [
+          {
+            "shotId": "P1",
+            "ms": 14,
+            "queueMs": 0,
+            "engineMs": 14,
+            "coreMs": 13,
+            "error": null
+          },
+          {
+            "shotId": "P2",
+            "ms": 20,
+            "queueMs": 0,
+            "engineMs": 19,
+            "coreMs": 19,
+            "error": null
+          },
+          {
+            "shotId": "P3",
+            "ms": 25,
+            "queueMs": 0,
+            "engineMs": 25,
+            "coreMs": 24,
+            "error": null
+          },
+          {
+            "shotId": "P4",
+            "ms": 18,
+            "queueMs": 0,
+            "engineMs": 17,
+            "coreMs": 17,
+            "error": null
+          }
+        ]
+      },
+      {
+        "mode": "single",
+        "scenario": "gap",
+        "passed": true,
+        "reference": {
+          "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-cyclehost-final-retry3\\single-gap\\cyclehost-report.json",
+          "bytes": 128434,
+          "sha256": "09b01fa502e0c005b3e48f03bfb5a7237934b69157c8dabe2ff3f86d5e1e0135"
+        },
+        "armMs": 57,
+        "uiObservedCycleMs": 2976,
+        "rawPGMs": 4,
+        "measurementCount": 4,
+        "summary": {
+          "id": 527,
+          "ts": 1791620575312,
+          "sn": 791620560,
+          "recipeId": "P0-CYCLEHOST-1V-CLEAN",
+          "recipeVersion": 1,
+          "recipeHash": "63ebc8d4f7db5e0b",
+          "triggerMode": "fly",
+          "verdict": "NG_GAP",
+          "plcCode": 13,
+          "faultCode": 0,
+          "reason": "P2 · J1 断胶 7.0 mm > 6.0 mm · s=47.0–54.0",
+          "drainMs": 31,
+          "framesExpected": 4,
+          "framesReceived": 4,
+          "retestOf": null,
+          "cycleId": "7dbf7bbe332a4d498f6a7499312edcd5",
+          "bundleHash": "b60d8aa8b313d4fd",
+          "delivery": {
+            "state": "acknowledged",
+            "updatedAt": 1791620575531,
+            "message": "PLC 已确认结果（开发协议）"
+          }
+        },
+        "measurementTimings": [
+          {
+            "shotId": "P1",
+            "ms": 14,
+            "queueMs": 0,
+            "engineMs": 13,
+            "coreMs": 13,
+            "error": null
+          },
+          {
+            "shotId": "P2",
+            "ms": 15,
+            "queueMs": 0,
+            "engineMs": 15,
+            "coreMs": 15,
+            "error": null
+          },
+          {
+            "shotId": "P3",
+            "ms": 18,
+            "queueMs": 0,
+            "engineMs": 18,
+            "coreMs": 18,
+            "error": null
+          },
+          {
+            "shotId": "P4",
+            "ms": 20,
+            "queueMs": 0,
+            "engineMs": 19,
+            "coreMs": 19,
+            "error": null
+          }
+        ]
+      }
+    ],
+    "softwareManifest": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-cyclehost-audit-smoke\\software-manifest.json"
+  },
+  "differentProfiles": {
+    "passed": true,
+    "report": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-step7-native\\different-profile.json",
+    "profiles": [
+      {
+        "name": "performance",
+        "pid": 40804,
+        "root": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.performance\\records",
+        "canonicalRoot": "C:\\Users\\11601\\AppData\\Local\\Packages\\OpenAI.Codex_2p2nqsd0c76g0\\LocalCache\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.performance\\records",
+        "phase": "IDLE",
+        "fault": null,
+        "engine": {
+          "backend": "LyFlow",
+          "ready": true,
+          "message": "飞拍：lyFlow 已加载",
+          "version": "1.1.0",
+          "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native\\lyflow_core.dll",
+          "measuring": true
+        },
+        "plc": {
+          "state": "connected",
+          "message": "已连接 模拟器",
+          "since": 1791620396520,
+          "lastPoll": 1791620793365,
+          "cycleMs": 0,
+          "pollCount": 6319,
+          "errorCount": 0
+        }
+      },
+      {
+        "name": "demo",
+        "pid": 12608,
+        "root": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.gluesight.robot-plc-demo\\records",
+        "canonicalRoot": "C:\\Users\\11601\\AppData\\Local\\Packages\\OpenAI.Codex_2p2nqsd0c76g0\\LocalCache\\Roaming\\com.xyzrobotics.gluesight.robot-plc-demo\\records",
+        "phase": "IDLE",
+        "fault": null,
+        "engine": {
+          "backend": "LyFlow",
+          "ready": true,
+          "message": "飞拍：lyFlow 已加载",
+          "version": "1.1.0",
+          "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native\\lyflow_core.dll",
+          "measuring": true
+        },
+        "plc": {
+          "state": "connected",
+          "message": "已连接 Modbus TCP 127.0.0.1:1502 (站号 1)",
+          "since": 1791620690543,
+          "lastPoll": 1791620794409,
+          "cycleMs": 0,
+          "pollCount": 1673,
+          "errorCount": 0
+        }
+      }
+    ]
+  },
+  "demo": {
+    "built": true,
+    "started": true,
+    "engineReady": true,
+    "modbusConnected": true,
+    "fiveScenarioAcceptance": "NOT_RUN",
+    "partsRun": 0,
+    "reason": "User directed immediate stop and removal of all image/recipe hash matching before the first Demo scenario started.",
+    "runtime": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-robot-demo-c",
+    "profileProvenance": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-robot-demo-c\\profile-provenance.json"
+  },
+  "safeShutdown": {
+    "demoServicesStopped": true,
+    "stoppedAt": "2026-10-10T08:26:35.4113117Z",
+    "demoParts": 0,
+    "demoResults": [],
+    "performancePid": 40804,
+    "reason": "User requested removal of hash matching; all acceptance stopped at IDLE",
+    "performanceStart": "2026-10-10T08:19:54.8504082Z",
+    "demoWasRunning": false
+  },
+  "retentionTestOnlyChange": {
+    "profile": "com.xyzrobotics.tujiaovision.p0-tests.performance",
+    "changedFields": [
+      "recordKeep"
+    ],
+    "before": 500,
+    "after": 1000,
+    "reason": "Retain earlier failed/control/review-interrupted attempts plus final400 originals",
+    "productionSettingsChanged": false,
+    "armMs": 200,
+    "recordMaxGb": 20,
+    "beforeSha256": "7087040ADC96F73CC83DAB062782A888965FAD67169D7458EECE95ABDACAB41F",
+    "afterSha256": "1132253DDFB5D31FAEE01B887347692FB1D990C801026DBC77764C3E1BA9683A"
+  },
+  "historicalAttempts": {
+    "originalArmTimeoutFailure": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-cyclehost-final\\failed-attempt.json",
+    "d03RecoveryControl": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-cyclehost-control-d03fade\\control-summary.json",
+    "reviewInterruptedNotProductFailure": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-cyclehost-final-retry2\\review-interrupted.json",
+    "freshDemoRecordsPathGuard": "Fresh Demo had no records subdirectory before first recording. Independent-profile check resolved existing parent AppData plus records and passed. Initial helper is retained in recovery cache; no product failure.",
+    "stopGuard": "First stop attempt compared PowerShell auto-parsed DateTime to string and refused before stopping any process. Retry compared exact UTC ticks and stopped only owned process."
+  },
+  "limitations": [
+    "No physical camera/PLC/robot validation.",
+    "Default noisy Synthetic normal P0-09 algorithm deviation remains open; no Demo scenario result was produced.",
+    "Post-fba startup ACK filtering and comparison-file retention follow-ups are not covered.",
+    "Historical SHA-matching assertions are not acceptance of the newly requested no-hash contract."
+  ],
+  "testScripts": {
+    "committedSmoke": "tests/native/p0-cyclehost-smoke.mjs",
+    "unrunDemoOrchestrator": "tests/native/p0-robot-demo-acceptance.py",
+    "unrunDemoOrchestratorNote": "Prepared but never executed; includes previous SHA evidence logic and must not be used for new no-hash acceptance without revision."
+  }
+}
