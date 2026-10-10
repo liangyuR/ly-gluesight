@@ -626,6 +626,44 @@ impl RecipeStore {
         crate::fsio::write_atomic(&self.file(&doc.id), &serde_json::to_string_pretty(doc).map_err(|e| e.to_string())?)
     }
 
+    fn rollback_new_file(&self, doc: &RecipeDoc) -> Result<(), String> {
+        let path = self.file(&doc.id);
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(format!("新配方回滚无法检查文件，已保留：{error}")),
+        };
+        #[cfg(windows)]
+        { use std::os::windows::fs::MetadataExt;
+          if metadata.file_attributes() & 0x400 != 0 { return Err("新配方文件已变为 reparse point，回滚拒绝删除".into()); } }
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err("新配方文件类型已变化，回滚拒绝删除".into());
+        }
+        let actual = crate::fsio::read_text(&path).map_err(|error| format!("新配方回滚无法读取文件，已保留：{error}"))
+            .and_then(|text| serde_json::from_str::<RecipeDoc>(&text).map_err(|error| format!("新配方回滚无法确认实际内容，已保留：{error}")))?;
+        if &actual != doc { return Err("新配方实际内容已被外部修改，回滚拒绝删除".into()); }
+        std::fs::remove_file(&path).map_err(|error| format!("新配方回滚删除失败，文件已保留，请核查后重试：{error}"))
+    }
+
+    fn write_with_source(&self, doc: &RecipeDoc, new_file: bool) -> Result<(), String> {
+        if new_file {
+            match std::fs::symlink_metadata(self.file(&doc.id)) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(error) => return Err(format!("无法确认新配方文件是否存在，拒绝覆盖：{error}")),
+                Ok(_) => return Err("新配方目标已有文件，拒绝覆盖或删除".into()),
+            }
+        }
+        self.write(doc)?;
+        if let Err(error) = self.remember_source(doc) {
+            if new_file {
+                if let Err(rollback) = self.rollback_new_file(doc) { return Err(format!("{error}；{rollback}")); }
+                return Err(format!("{error}；本次新建配方文件已回滚，可直接重试"));
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// 重读目录。坏文件跳过并记下原因，不影响其他配方。
     pub fn reload(&self) {
         let mut inner = self.inner.write().unwrap();
@@ -728,8 +766,7 @@ impl RecipeStore {
             if let Some(version) = old { self.retire_version(&replacing, version)?; }
         }
         let recipe = Arc::new(doc.build()?);
-        self.write(&doc)?;
-        self.remember_source(&doc)?;
+        self.write_with_source(&doc, !ours)?;
         // 只改了大小写时新旧是同一个文件，不能删
         if !replacing.eq_ignore_ascii_case(&doc.id) {
             let _ = std::fs::remove_file(self.file(&replacing));
@@ -763,8 +800,7 @@ impl RecipeStore {
             return Err("配方目录已有未加载文件，不能覆盖".into());
         }
         let recipe = Arc::new(built);
-        self.write(&doc)?;
-        self.remember_source(&doc)?;
+        self.write_with_source(&doc, current.is_none())?;
         inner.retain(|(previous, _)| previous.id != doc.id);
         inner.push((doc, recipe.clone()));
         inner.sort_by(|a, b| a.0.id.cmp(&b.0.id));
@@ -1039,6 +1075,66 @@ mod tests {
         assert_eq!(store.save_published(published, Some(&format!("{}-v2", doc.id))).unwrap().version, 3);
         std::fs::write(dir.join(".revision-sources"), "invalid").unwrap();
         assert!(RecipeStore::open(dir.clone()).err().unwrap().contains("来源记录损坏"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn newly_created_recipe_source_failure_can_retry_both_save_paths_without_reload() {
+        for published in [false, true] {
+            let dir = std::env::temp_dir().join(format!("gluesight-new-source-retry-{published}-{}-{}", std::process::id(), ly_plc::now_ms()));
+            let store = RecipeStore::open(dir.clone()).unwrap();
+            let mut doc = three_cameras(); doc.id = "NEW-SOURCE-RETRY".into(); doc.product_code = 60006;
+            let blocking = dir.join(".revision-sources").with_extension("tmp"); std::fs::create_dir(&blocking).unwrap();
+            let failed = if published { store.save_published(doc.clone(), None) } else { store.save(doc.clone(), None) };
+            assert!(failed.unwrap_err().contains("本次新建配方文件已回滚"));
+            assert!(!store.file(&doc.id).exists()); assert!(store.get(&doc.id).is_none());
+            assert_eq!(store.next_version(&doc.id).unwrap(), 1);
+            std::fs::remove_dir(&blocking).unwrap();
+            let saved = if published { store.save_published(doc.clone(), None) } else { store.save(doc.clone(), None) }.unwrap();
+            assert_eq!(saved.version, 1); assert!(store.file(&doc.id).is_file());
+            assert_eq!(store.revision_sources().unwrap()[&doc.id.to_ascii_lowercase()], store.doc(&doc.id).unwrap());
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn failed_source_save_keeps_preexisting_recipe_files_and_new_targets_are_not_overwritten() {
+        let dir = std::env::temp_dir().join(format!("gluesight-existing-source-failure-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        let mut doc = store.doc("MTR-HSG-B").unwrap(); doc.name.push_str(" saved update");
+        let blocking = dir.join(".revision-sources").with_extension("tmp"); std::fs::create_dir(&blocking).unwrap();
+        assert!(store.save(doc.clone(), None).is_err());
+        assert!(store.file(&doc.id).is_file());
+        assert_eq!(store.get(&doc.id).unwrap().version, 1);
+        assert_eq!(serde_json::from_str::<RecipeDoc>(&crate::fsio::read_text(&store.file(&doc.id)).unwrap()).unwrap().version, 2);
+        doc.id = "EXTERNAL-TARGET".into(); doc.product_code = 60007;
+        let text = serde_json::to_string(&doc).unwrap(); std::fs::write(store.file(&doc.id), &text).unwrap();
+        assert!(store.write_with_source(&doc, true).unwrap_err().contains("拒绝覆盖"));
+        assert!(store.save(doc.clone(), None).is_err()); assert!(store.save_published(doc.clone(), None).is_err());
+        assert_eq!(crate::fsio::read_text(&store.file(&doc.id)).unwrap(), text);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn new_recipe_rollback_preserves_external_changes_and_reports_delete_failures() {
+        let dir = std::env::temp_dir().join(format!("gluesight-rollback-source-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        let mut doc = three_cameras(); doc.id = "ROLLBACK-NEW".into(); doc.product_code = 60008;
+        let mut changed = doc.clone(); changed.limits.max_gap_len += 1.0;
+        store.write(&changed).unwrap();
+        assert!(store.rollback_new_file(&doc).unwrap_err().contains("外部修改"));
+        assert_eq!(serde_json::from_str::<RecipeDoc>(&crate::fsio::read_text(&store.file(&doc.id)).unwrap()).unwrap(), changed);
+        std::fs::remove_file(store.file(&doc.id)).unwrap(); std::fs::create_dir(store.file(&doc.id)).unwrap();
+        assert!(store.rollback_new_file(&doc).unwrap_err().contains("类型已变化"));
+        std::fs::remove_dir(store.file(&doc.id)).unwrap(); store.write(&doc).unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let held = std::fs::OpenOptions::new().read(true).share_mode(1 | 2).open(store.file(&doc.id)).unwrap();
+            assert!(store.rollback_new_file(&doc).unwrap_err().contains("回滚删除失败"));
+            assert!(store.file(&doc.id).is_file()); drop(held);
+        }
+        store.rollback_new_file(&doc).unwrap(); assert!(!store.file(&doc.id).exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 
