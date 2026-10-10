@@ -134,7 +134,7 @@ impl PlcSession {
 
     pub fn cycle_id(&self) -> Option<&str> { self.journal.pending.as_ref().and_then(|pending| pending.cycle_id.as_deref()) }
 
-    pub fn recover_acknowledgements(&self) -> AckRecovery { recovery::read(self) }
+    pub fn recover_acknowledgements(&self, unresolved: &std::collections::BTreeSet<String>) -> AckRecovery { recovery::read(self, unresolved) }
 
     pub fn request(&self) -> Option<&Request> { self.journal.pending.as_ref().map(|p| &p.request) }
 

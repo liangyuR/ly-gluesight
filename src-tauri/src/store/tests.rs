@@ -544,3 +544,80 @@ fn pending_history_protection_includes_partial_directory_and_raw_only_references
     store.conn.lock().unwrap().execute("UPDATE part_shots SET raw_files='invalid-json'", []).unwrap();
     assert!(store.pending_recording_directories(&root).is_err());
 }
+
+#[test]
+fn restart_ack_recovery_only_visits_unresolved_database_cycles_and_preserves_audit() {
+    use crate::plc_session::PlcSession;
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = recipe();
+    let cycles = store.reserve_cycle_ids(4).unwrap();
+    for (cycle, state) in cycles.iter().zip([PlcDeliveryState::Pending, PlcDeliveryState::Submitted, PlcDeliveryState::Failed, PlcDeliveryState::NotRequired]) {
+        save(&store, &recipe, cycle, &shots(&recipe), &PlcDelivery { state, updated_at: 200, message: None }, Some(&table(&recipe))).unwrap();
+    }
+    let pending = |cycle: &str, seq: u32| serde_json::json!({
+        "request":{"protocolVersion":1,"requestSeq":seq,"sn":42,"productCode":1,"shotCount":4,"planVersion":7,"planHash":123,"cameraShots":[2,1,1]},
+        "result":{"requestSeq":seq,"sn":42,"resultCode":1,"faultCode":0},
+        "phase":"releasing","cycleId":cycle,"acknowledged":true,"startedAt":1000
+    });
+    let mut audit = Vec::new();
+    let mut append = |cycle: &str, seq: u32| {
+        audit.extend(serde_json::to_vec(&serde_json::json!({"version":1,"ts":3000,"action":"acknowledged","lastRequestSeq":seq,"pending":pending(cycle,seq)})).unwrap());
+        audit.push(b'\n');
+    };
+    let old_cycles = (0..4).flat_map(|_| store.reserve_cycle_ids(32).unwrap()).collect::<Vec<_>>();
+    for (index, cycle) in old_cycles.iter().enumerate() {
+        save(&store, &recipe, cycle, &shots(&recipe), &PlcDelivery { state: PlcDeliveryState::Acknowledged, updated_at: 200, message: Some("original ACK".into()) }, None).unwrap();
+        append(cycle, index as u32 + 100);
+    }
+    let purged_cycles = (0..4).flat_map(|_| store.reserve_cycle_ids(32).unwrap()).collect::<Vec<_>>();
+    for (index, cycle) in purged_cycles.iter().enumerate() {
+        save(&store, &recipe, cycle, &shots(&recipe), &PlcDelivery { state: PlcDeliveryState::Acknowledged, updated_at: 200, message: None }, None).unwrap();
+        store.conn.lock().unwrap().execute("UPDATE parts SET ts=0 WHERE cycle_id=?1", [cycle]).unwrap();
+        append(cycle, index as u32 + 1000);
+    }
+    assert_eq!(store.purge_before(1).unwrap(), 128);
+    assert!(purged_cycles.iter().all(|cycle| store.detail_by_cycle(cycle).unwrap().is_none()));
+    append(&cycles[1], 8);
+    append(&cycles[3], 9);
+    let journal_path = db.0.join("plc-handshake.json");
+    let audit_path = journal_path.with_extension("audit.jsonl");
+    std::fs::write(&audit_path, &audit).unwrap();
+    std::fs::write(&journal_path, serde_json::to_vec(&serde_json::json!({"version":1,"lastRequestSeq":7,"pending":pending(&cycles[0],7),"lastResolution":null})).unwrap()).unwrap();
+    drop(store);
+    let store = Store::open(&db.path()).unwrap();
+    let old_before = serde_json::to_value(store.detail_by_cycle(&old_cycles[0]).unwrap().unwrap()).unwrap();
+    let unresolved = store.unresolved_delivery_cycles().unwrap();
+    assert_eq!(unresolved, cycles[..3].iter().cloned().collect());
+    let query_plan: String = store.conn.lock().unwrap().query_row("EXPLAIN QUERY PLAN SELECT cycle_id FROM parts WHERE cycle_id IS NOT NULL AND delivery_state IN ('pending','submitted','failed')", [], |row| row.get(3)).unwrap();
+    assert!(query_plan.contains("parts_unresolved_delivery"), "{query_plan}");
+    let session = PlcSession::open(journal_path.clone());
+    assert!(session.pending() && session.acknowledged());
+    let recovered = session.recover_acknowledgements(&unresolved);
+    assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
+    assert_eq!(recovered.receipts.len(), 2);
+    for receipt in &recovered.receipts {
+        assert!(store.recover_acknowledgement(&receipt.cycle_id, receipt.sn, receipt.request_seq, receipt.ts).unwrap());
+    }
+    assert_eq!(store.detail_by_cycle(&cycles[0]).unwrap().unwrap().summary.delivery.updated_at, 1000);
+    assert_eq!(store.detail_by_cycle(&cycles[1]).unwrap().unwrap().summary.delivery.updated_at, 3000);
+    assert_eq!(store.unresolved_delivery_cycles().unwrap(), [cycles[2].clone()].into_iter().collect());
+    assert_eq!(serde_json::to_value(store.detail_by_cycle(&old_cycles[0]).unwrap().unwrap()).unwrap(), old_before);
+    assert_eq!(store.detail_by_cycle(&cycles[3]).unwrap().unwrap().summary.delivery.state, PlcDeliveryState::NotRequired);
+    assert!(session.recover_acknowledgements(&store.unresolved_delivery_cycles().unwrap()).receipts.is_empty());
+    store.conn.lock().unwrap().execute("DELETE FROM parts WHERE cycle_id=?1", [&cycles[2]]).unwrap();
+    let empty = store.unresolved_delivery_cycles().unwrap();
+    assert!(empty.is_empty());
+    std::fs::rename(&audit_path, audit_path.with_extension("preserved.jsonl")).unwrap();
+    std::fs::create_dir(&audit_path).unwrap();
+    assert!(session.recover_acknowledgements(&empty).errors.is_empty());
+    assert_eq!(std::fs::read(audit_path.with_extension("preserved.jsonl")).unwrap(), audit);
+}
+
+#[test]
+fn unresolved_delivery_query_reports_database_failure_instead_of_empty_success() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    store.conn.lock().unwrap().execute_batch("ALTER TABLE parts RENAME TO unavailable_parts").unwrap();
+    assert!(store.unresolved_delivery_cycles().unwrap_err().contains("parts"));
+}

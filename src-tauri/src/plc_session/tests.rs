@@ -542,14 +542,14 @@ async fn s7_wire_restart_after_persisted_ack_recovers_exact_cycle_before_and_aft
 
     rig.session = PlcSession::open(rig.session.path.clone());
     assert_eq!(rig.session.cycle_id(), Some(cycle_id));
-    let recovered = rig.session.recover_acknowledgements();
+    let recovered = rig.session.recover_acknowledgements(&[cycle_id.to_owned()].into_iter().collect());
     assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
     assert_eq!(recovered.receipts.len(), 1);
     assert_eq!(recovered.receipts[0].cycle_id, cycle_id);
     assert_eq!(recovered.receipts[0].sn, 50);
     assert_eq!(recovered.receipts[0].request_seq, 7);
     assert!(recovered.receipts[0].ts > 0);
-    assert_eq!(rig.session.recover_acknowledgements(), recovered);
+    assert_eq!(rig.session.recover_acknowledgements(&[cycle_id.to_owned()].into_iter().collect()), recovered);
     rig.live().await;
     assert_eq!(rig.session.phase(), SessionPhase::ResetRequired);
     rig.plc.values(json!({"partStart":false,"partEnd":false,"resultAck":false}));
@@ -558,14 +558,14 @@ async fn s7_wire_restart_after_persisted_ack_recovers_exact_cycle_before_and_aft
     assert!(!rig.session.pending());
     rig.session = PlcSession::open(rig.session.path.clone());
     assert_eq!(rig.session.cycle_id(), None);
-    let audit_recovered = rig.session.recover_acknowledgements();
+    let audit_recovered = rig.session.recover_acknowledgements(&[cycle_id.to_owned()].into_iter().collect());
     assert!(audit_recovered.errors.is_empty(), "{:?}", audit_recovered.errors);
     assert_eq!(audit_recovered.receipts.len(), 1);
     assert_eq!(audit_recovered.receipts[0].cycle_id, cycle_id);
     assert_eq!(audit_recovered.receipts[0].sn, 50);
     assert_eq!(audit_recovered.receipts[0].request_seq, 7);
     assert!(audit_recovered.receipts[0].ts >= recovered.receipts[0].ts);
-    assert_eq!(rig.session.recover_acknowledgements(), audit_recovered);
+    assert_eq!(rig.session.recover_acknowledgements(&[cycle_id.to_owned()].into_iter().collect()), audit_recovered);
     rig.finish().await;
 }
 

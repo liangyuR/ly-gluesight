@@ -1,4 +1,4 @@
-use std::collections::{btree_map::Entry, BTreeMap};
+use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader};
 
 use serde::Deserialize;
@@ -37,20 +37,25 @@ struct Candidate {
     result: ResultEnvelope,
 }
 
-#[derive(Default)]
-struct Recovery {
+struct Recovery<'a> {
+    unresolved: &'a BTreeSet<String>,
     receipts: BTreeMap<String, Option<Candidate>>,
     errors: Vec<String>,
     error_count: usize,
 }
 
-impl Recovery {
+impl<'a> Recovery<'a> {
+    fn new(unresolved: &'a BTreeSet<String>) -> Self {
+        Self { unresolved, receipts: BTreeMap::new(), errors: Vec::new(), error_count: 0 }
+    }
+
     fn error(&mut self, error: String) {
         self.error_count = self.error_count.saturating_add(1);
         if self.errors.len() < ERROR_LIMIT { self.errors.push(error); }
     }
 
     fn pending(&mut self, pending: &Pending, last_request_seq: u32, ts: i64, source: &str) {
+        if !pending.cycle_id.as_ref().is_some_and(|cycle| self.unresolved.contains(cycle)) { return; }
         if let Err(error) = validate_pending(pending, last_request_seq) {
             self.error(format!("{source}：{error}"));
             return;
@@ -87,8 +92,8 @@ impl Recovery {
     }
 }
 
-pub(super) fn read(session: &PlcSession) -> AckRecovery {
-    let mut recovery = Recovery::default();
+pub(super) fn read(session: &PlcSession, unresolved: &BTreeSet<String>) -> AckRecovery {
+    let mut recovery = Recovery::new(unresolved);
     if let Some(error) = &session.load_error {
         recovery.error(format!("当前握手日志不能恢复 ACK：{error}"));
     } else {
@@ -99,6 +104,7 @@ pub(super) fn read(session: &PlcSession) -> AckRecovery {
             recovery.pending(pending, durable.journal.last_request_seq, pending.started_at.max(0), "当前握手日志");
         }
     }
+    if unresolved.is_empty() { return recovery.finish(); }
     let path = session.path.with_extension("audit.jsonl");
     match std::fs::File::open(&path) {
         Ok(file) => {
@@ -218,6 +224,10 @@ mod tests {
         json!({"version":1,"ts":ts,"action":"acknowledged","lastRequestSeq":pending.request.request_seq,"pending":pending})
     }
 
+    fn targets() -> BTreeSet<String> {
+        [CYCLE_A, CYCLE_B].into_iter().map(str::to_owned).collect()
+    }
+
     fn receipt(cycle_id: &str, request_seq: u32, sn: u32, ts: i64) -> AckReceipt {
         AckReceipt { cycle_id: cycle_id.into(), request_seq, sn, ts }
     }
@@ -232,10 +242,10 @@ mod tests {
         assert!(session.acknowledged());
         drop(session);
         let reopened = files.open();
-        let recovered = reopened.recover_acknowledgements();
+        let recovered = reopened.recover_acknowledgements(&targets());
         assert_eq!(recovered.receipts, vec![receipt(CYCLE_A, 7, 50, 1000)]);
         assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
-        assert_eq!(reopened.recover_acknowledgements(), recovered);
+        assert_eq!(reopened.recover_acknowledgements(&targets()), recovered);
     }
 
     #[test]
@@ -276,10 +286,10 @@ mod tests {
         files.journal(None);
         let reopened = files.open();
         assert!(!reopened.pending());
-        let recovered = reopened.recover_acknowledgements();
+        let recovered = reopened.recover_acknowledgements(&targets());
         assert_eq!(recovered.receipts, vec![receipt(CYCLE_A, 7, 50, 3000)]);
         assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
-        assert_eq!(reopened.recover_acknowledgements(), recovered);
+        assert_eq!(reopened.recover_acknowledgements(&targets()), recovered);
     }
 
     #[test]
@@ -288,7 +298,7 @@ mod tests {
         let previous = pending(CYCLE_A, 7, 50);
         files.audit(record(&previous, 2000));
         files.journal(Some(pending(CYCLE_B, 7, 50)));
-        let recovered = files.open().recover_acknowledgements();
+        let recovered = files.open().recover_acknowledgements(&targets());
         assert_eq!(recovered.receipts, vec![receipt(CYCLE_A, 7, 50, 2000), receipt(CYCLE_B, 7, 50, 1000)]);
         assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
     }
@@ -302,17 +312,17 @@ mod tests {
         files.journal(Some(unacknowledged));
         let mut session = files.open();
         session.journal.pending.as_mut().unwrap().acknowledged = true;
-        assert!(session.recover_acknowledgements().receipts.is_empty());
+        assert!(session.recover_acknowledgements(&targets()).receipts.is_empty());
         files.audit(record(&pending(CYCLE_B, 8, 50), 2000));
         files.write(b"{\"version\":1,\"pending\":broken");
         let corrupt = files.open();
         assert!(corrupt.load_error.is_some());
         files.journal(Some(pending(CYCLE_A, 7, 50)));
-        let recovered = corrupt.recover_acknowledgements();
+        let recovered = corrupt.recover_acknowledgements(&targets());
         assert_eq!(recovered.receipts, vec![receipt(CYCLE_B, 8, 50, 2000)]);
         assert_eq!(recovered.errors.len(), 1);
         std::fs::write(files.path.with_extension("pending.tmp"), b"uncommitted").unwrap();
-        let unfinished = files.open().recover_acknowledgements();
+        let unfinished = files.open().recover_acknowledgements(&targets());
         assert_eq!(unfinished.receipts, recovered.receipts);
         assert_eq!(unfinished.errors.len(), 1);
     }
@@ -348,7 +358,9 @@ mod tests {
         wrong_protocol["pending"]["request"]["protocolVersion"] = json!(2);
         cases.push(wrong_protocol);
         for invalid in &cases { files.audit(invalid.clone()); }
-        let recovered = files.open().recover_acknowledgements();
+        let mut unresolved = targets();
+        unresolved.insert("gggggggggggggggggggggggggggggggg".into());
+        let recovered = files.open().recover_acknowledgements(&unresolved);
         assert!(recovered.receipts.is_empty());
         assert_eq!(recovered.errors.len(), cases.len(), "{:?}", recovered.errors);
         for (index, error) in recovered.errors.iter().enumerate() { assert!(error.contains(&format!("第 {} 行", index + 1)), "{error}"); }
@@ -364,7 +376,7 @@ mod tests {
         let mut missing = record(&old, 3000);
         missing["pending"].as_object_mut().unwrap().remove("cycleId");
         files.audit(missing);
-        let recovered = files.open().recover_acknowledgements();
+        let recovered = files.open().recover_acknowledgements(&targets());
         assert!(recovered.receipts.is_empty());
         assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
     }
@@ -378,7 +390,7 @@ mod tests {
         files.audit(record(&conflict, 2000));
         files.audit(record(&pending(CYCLE_A, 7, 50), 3000));
         files.audit(record(&pending(CYCLE_B, 8, 50), 4000));
-        let recovered = files.open().recover_acknowledgements();
+        let recovered = files.open().recover_acknowledgements(&targets());
         assert_eq!(recovered.receipts, vec![receipt(CYCLE_B, 8, 50, 4000)]);
         assert_eq!(recovered.errors.len(), 1);
         assert!(recovered.errors[0].contains("身份冲突"));
@@ -391,7 +403,7 @@ mod tests {
         files.audit_bytes(b"{broken}\n\xff\n");
         files.audit(record(&pending(CYCLE_A, 7, 50), 2000));
         files.audit_bytes(&serde_json::to_vec(&record(&pending(CYCLE_B, 8, 50), 3000)).unwrap());
-        let recovered = files.open().recover_acknowledgements();
+        let recovered = files.open().recover_acknowledgements(&targets());
         assert_eq!(recovered.receipts, vec![receipt(CYCLE_A, 7, 50, 2000)]);
         assert_eq!(recovered.errors.len(), 3);
         assert!(recovered.errors[2].contains("末尾半写"));
@@ -404,10 +416,55 @@ mod tests {
         let bytes = b"{broken}\n".repeat(100);
         files.audit_bytes(&bytes);
         files.audit(record(&pending(CYCLE_A, 7, 50), 2000));
-        let recovered = files.open().recover_acknowledgements();
+        let recovered = files.open().recover_acknowledgements(&targets());
         assert_eq!(recovered.receipts, vec![receipt(CYCLE_A, 7, 50, 2000)]);
         assert_eq!(recovered.errors.len(), ERROR_LIMIT + 1);
         assert!(recovered.errors[ERROR_LIMIT].contains("100 条诊断"));
         assert!(recovered.errors[ERROR_LIMIT].contains("36 条已省略"));
     }
+
+    #[test]
+    fn no_unresolved_delivery_skips_audit_io_without_hiding_journal_failure() {
+        let files = Files::new();
+        files.journal(Some(pending(CYCLE_A, 7, 50)));
+        std::fs::create_dir(files.path.with_extension("audit.jsonl")).unwrap();
+        let session = files.open();
+        let recovered = session.recover_acknowledgements(&BTreeSet::new());
+        assert!(recovered.receipts.is_empty() && recovered.errors.is_empty());
+        assert!(session.pending() && session.acknowledged());
+        assert_eq!(session.phase(), SessionPhase::ResetRequired);
+        files.write(b"{broken}");
+        let corrupt = files.open().recover_acknowledgements(&BTreeSet::new());
+        assert!(corrupt.receipts.is_empty());
+        assert_eq!(corrupt.errors.len(), 1);
+    }
+
+    #[test]
+    fn lifecycle_audit_only_retains_unresolved_candidates_and_their_identity_conflicts() {
+        let files = Files::new();
+        files.journal(None);
+        let unresolved = [CYCLE_A.to_owned(), CYCLE_B.to_owned()].into_iter().collect();
+        let mut recovery = Recovery::new(&unresolved);
+        let mut bytes = Vec::new();
+        for index in 100..10_100u32 {
+            let cycle = format!("{index:032x}");
+            let old = pending(&cycle, 7, 50);
+            recovery.pending(&old, 7, 2000, "old history");
+            bytes.extend(serde_json::to_vec(&record(&old, 2000)).unwrap());
+            bytes.push(b'\n');
+        }
+        assert!(recovery.receipts.is_empty());
+        files.audit_bytes(&bytes);
+        let selected = pending(CYCLE_A, 7, 50);
+        files.audit(record(&selected, 3000));
+        let mut conflict = selected.clone();
+        conflict.request.plan_hash += 1;
+        files.audit(record(&conflict, 4000));
+        files.audit(record(&pending(CYCLE_B, 8, 50), 5000));
+        let recovered = files.open().recover_acknowledgements(&unresolved);
+        assert_eq!(recovered.receipts, vec![receipt(CYCLE_B, 8, 50, 5000)]);
+        assert_eq!(recovered.errors.len(), 1);
+        assert!(recovered.errors[0].contains("身份冲突"));
+    }
+
 }
