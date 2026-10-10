@@ -4,7 +4,7 @@ import { lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/pr
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { configureReplay, teachCleanFixture, isQuiescentCycleSnapshot } from './p0-clean-cyclehost-setup.mjs';
+import { configureReplay, teachCleanFixture, isQuiescentCycleSnapshot, waitForPublishedRecipeReady } from './p0-clean-cyclehost-setup.mjs';
 import { runCycleHostPerformance, sampleProcess, scanReplayInputs } from './p0-cyclehost-performance.mjs';
 import { verifyCycleHostReport } from '../../scripts/p0-cyclehost-report.mjs';
 
@@ -127,6 +127,7 @@ try {
   const plc = structuredClone(suppliedPlc); plc.autoConnect = false;
   const sourceGate = manifest.sourceGate ?? manifest.runtimeSource;
   assert.equal(manifest.identifier, identifier); assert.equal(cPath(manifest.executable).toLowerCase(), paths.exe.toLowerCase());
+  assert(Array.isArray(manifest.features) && manifest.features.length === 0, 'Current400 requires a build with production default features only');
   assert(typeof sourceGate === 'string' && /^[a-f0-9]{40}$/i.test(sourceGate), 'Manifest requires a full current source commit ID');
   report.sourceBefore = sourceGuard(sourceGate); report.buildManifest = manifest;
   assert(await absent(profile), 'Require a fresh absent performance profile; do not reuse old history, recipes or releases');
@@ -183,7 +184,7 @@ try {
       await configureReplay(page, { views, directory: replayDir, recordsRoot, allowDisconnected: true });
       await waitDisconnected();
       const online = await plcTransition(true, tag + '-online-after-camera-config');
-      const ready = online.after;
+      const ready = await waitForPublishedRecipeReady(page, { layout: setup.layout, bundleId: release.manifest.bundleId });
       const identity = await sampleProcess(child.pid, paths.exe, app.identity.start);
       const run = await runCycleHostPerformance(page, { mode, scenario, source: 'replay', replayDir, fixture: release.fixture, releaseDir: release.releaseDir, executable: paths.exe, pid: child.pid, output, parts: 100 });
       const validation = await validateReport(join(output, 'cyclehost-report.json'), join(output, 'independent-validation.json'));

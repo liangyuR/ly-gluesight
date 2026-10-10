@@ -5,7 +5,7 @@ import { mkdir, readFile, writeFile, lstat, realpath, readdir } from 'node:fs/pr
 import { join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { configureReplay, captureTeachingSample, isQuiescentCycleSnapshot } from './p0-clean-cyclehost-setup.mjs';
+import { configureReplay, captureTeachingSample, isQuiescentCycleSnapshot, waitForPublishedRecipeReady } from './p0-clean-cyclehost-setup.mjs';
 import { sampleProcess, recordedArtifact } from './p0-cyclehost-performance.mjs';
 
 const identifier = 'com.xyzrobotics.tujiaovision.p0-tests.pressure';
@@ -295,6 +295,20 @@ async function uiPlcConnection(connected) {
   report.plcTransitions ??= []; report.plcTransitions.push({ connected, before, after, at: new Date().toISOString() });
   return after;
 }
+async function releaseFor(setup) {
+  const directory = join(profile, 'vision', 'releases', setup.id), found = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    assert(!entry.isSymbolicLink(), 'Release directory may not contain links');
+    if (!entry.isDirectory()) continue;
+    const releaseDir = join(directory, entry.name), manifest = await json(join(releaseDir, 'manifest.json'));
+    if (manifest.recipeId === setup.id && manifest.recipeRevision === setup.layout.revisionId) {
+      assert.equal(manifest.bundleId, entry.name); assert.equal(manifest.recipeVersion, setup.layout.version);
+      found.push({ releaseDir, manifest });
+    }
+  }
+  assert.equal(found.length, 1, 'Fresh published recipe must resolve to exactly one explicit release ID');
+  return found[0];
+}
 async function waitReady() {
   return until(async () => { const state = await wire.snapshot(), cycle = await read('cycle_snapshot'); return state.visionReady && !state.done && !state.busy && !state.armed && cycle.phase === 'IDLE' && isQuiescentCycleSnapshot(cycle) && { wire: state, cycle }; }, 'actual external PLC ready and native IDLE');
 }
@@ -444,7 +458,7 @@ try {
     }
     await writeFile(join(expanded, 'provenance.json'), JSON.stringify({ physicalValidation: false, source: 'Explicit clean synthetic PGM fixture copied as source pixels into new pressure input groups; no production assets or DB copied', files }), { flag: 'wx' });
     const setup = await teachPressureFixture(page, { views: 1, inputs: expanded, output: join(output, 'setup-' + count), recordsRoot, allowUnpublished: true, allowDisconnected: true, count, id: 'P0-PRESSURE-' + count });
-    assert(setup.passed && setup.layout.shots.length === count); prepared.push({ count, input: expanded, recipe: await read('recipe_doc', { id: setup.id }), setup }); report.setup.push({ count, id: setup.id, report: join(output, 'setup-' + count, 'setup-report.json') });
+    assert(setup.passed && setup.layout.shots.length === count); const release = await releaseFor(setup); prepared.push({ count, input: expanded, recipe: await read('recipe_doc', { id: setup.id }), setup, release }); report.setup.push({ count, id: setup.id, report: join(output, 'setup-' + count, 'setup-report.json') });
   }
   report.offlinePublicationComplete = await waitDisconnected();
   await uiPlcConnection(true); await ready();
@@ -454,7 +468,9 @@ try {
     progress(specification.tag); await ready(); await uiPlcConnection(false);
     await configureReplay(page, { views: 1, directory: join(selected.input, 'normal'), recordsRoot, allowDisconnected: true });
     await uiPlcConnection(true); await ready();
-    attempt = { ...specification, sn, stage: 'hold', before: { rig: await rig(), pressure: await pressure() } };
+    attempt = { ...specification, sn, stage: 'recipe-preparation', before: { rig: await rig(), pressure: await pressure() } };
+    attempt.recipeReady = await waitForPublishedRecipeReady(page, { layout: selected.setup.layout, bundleId: selected.release.manifest.bundleId });
+    attempt.readyWire = await waitReady(); attempt.stage = 'hold';
     if (specification.prefill) {
       attempt.gate = await configure(true, false); attempt.prefill = await emit(specification.prefill);
       assert.equal(attempt.prefill.droppedDelta, 0); assert.equal(attempt.prefill.pressure.callbackQueued, specification.prefill);

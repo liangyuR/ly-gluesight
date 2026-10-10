@@ -16,6 +16,53 @@ export function isQuiescentCycleSnapshot(cycle) {
     && part.queue === 0 && Number.isSafeInteger(part.total) && part.total > 0 && part.filled === part.total;
 }
 
+export function isPublishedRecipeReady(observation, { layout, bundleId }) {
+  assert(typeof layout?.id === 'string' && layout.id.length > 0 && Number.isSafeInteger(layout.version) && layout.version > 0 && typeof layout.revisionId === 'string' && layout.revisionId.length > 0, 'Require an explicit published recipe identity');
+  assert(typeof bundleId === 'string' && bundleId.length > 0, 'Require one explicit published bundle ID');
+  const actual = observation.layout;
+  assert(actual?.id === layout.id && actual.version === layout.version && actual.revisionId === layout.revisionId, 'Published recipe layout changed while waiting for warmup');
+  const prefixes = [`配方 ${layout.id} 开不了工：`, `配方 ${layout.id} 暂时开不了工：`];
+  const alarms = observation.cycle?.alarms;
+  if (!Array.isArray(alarms)) return false;
+  const targetAlarms = alarms.filter(alarm => typeof alarm === 'string' && prefixes.some(prefix => alarm.startsWith(prefix)));
+  const warming = '发布资源与图像引擎正在预热，完成前不能布防';
+  for (const alarm of targetAlarms) assert(prefixes.some(prefix => alarm === prefix + warming), 'Target recipe cannot run: ' + alarm);
+  const warmupLog = publishedRecipeWarmupLog(observation.logs, bundleId);
+  return targetAlarms.length === 0 && !!warmupLog
+    && observation.cycle.phase === 'IDLE' && observation.cycle.fault == null && isQuiescentCycleSnapshot(observation.cycle)
+    && observation.sim?.running === false && observation.engine?.backend === 'LyFlow'
+    && observation.engine.ready === true && observation.engine.measuring === true;
+}
+
+function publishedRecipeWarmupLog(logs, bundleId) {
+  const prefix = `发布包 ${bundleId} 已就绪，耗时 `;
+  return Array.isArray(logs) ? logs.findLast(log => log?.level === 'ok' && log.ev === '生产预热'
+    && typeof log.msg === 'string' && log.msg.startsWith(prefix) && /^\d+ ms$/.test(log.msg.slice(prefix.length))) : undefined;
+}
+
+export async function waitForPublishedRecipeReady(page, { layout, bundleId, timeoutMs = 90000 }) {
+  assert(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 90000, 'Published recipe warmup wait must be bounded by 90 seconds');
+  const started = Date.now(), deadline = started + timeoutMs;
+  let lastObservation = null, polls = 0;
+  const read = (command, args) => page.evaluate(({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
+  do {
+    let timer;
+    try {
+      lastObservation = await Promise.race([
+        Promise.all([read('cycle_layout', { recipeId: layout.id, revisionId: layout.revisionId }), read('cycle_snapshot'), read('cycle_logs'), read('engine_status'), read('sim_status')])
+          .then(([currentLayout, cycle, logs, engine, sim]) => ({ layout: currentLayout, cycle, logs, engine, sim })),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Published recipe warmup read exceeded its bounded deadline')), Math.max(1, deadline - Date.now())); }),
+      ]);
+    } finally { clearTimeout(timer); }
+    polls += 1;
+    if (isPublishedRecipeReady(lastObservation, { layout, bundleId })) return {
+      ...lastObservation, warmupLog: publishedRecipeWarmupLog(lastObservation.logs, bundleId),
+      observedAt: new Date().toISOString(), elapsedMs: Date.now() - started, polls,
+    };
+    if (Date.now() < deadline) await page.waitForTimeout(Math.min(100, deadline - Date.now()));
+  } while (Date.now() < deadline);
+  throw new Error('Published recipe warmup did not become ready within ' + timeoutMs + ' ms: ' + JSON.stringify({ layout, bundleId, polls, lastObservation }));
+}
 export async function configureReplay(page, { views, directory, recordsRoot, allowUnpublished = false, allowDisconnected = false }) {
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
   const records = await read('records_list'), cycle = await read('cycle_snapshot');
