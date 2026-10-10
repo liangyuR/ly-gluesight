@@ -26,6 +26,7 @@ export const defaultCameraConfig: CameraConfig = {
   gainDb: 6,
   strobe: true,
   chunk: true,
+  counterAfterOpen: null,
   replayDir: "",
   replayChannel: 0,
 };

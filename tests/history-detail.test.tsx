@@ -173,7 +173,7 @@ describe("历史工件复测", () => {
     detail.judgement={...detail.judgement,reason:"P2 · J1 断胶 2.0 mm > 0.5 mm · s=0.0–2.0",
       segments:[{verdict:"OK",min:3,max:3,excursionLen:0,wMin:null,wMax:null,wExcursionLen:0},{verdict:"NG_GAP",min:null,max:null,excursionLen:0,wMin:null,wMax:null,wExcursionLen:0}],
       gaps:[{segment:1,s0:0,s1:2,len:2,frames:[1]}]};
-    detail.frames=[0,1].map(()=>({status:"done",cam:0,camera:"CAM-1",arrivedMs:1,frameCounter:1,triggerCounter:1,counterJump:false,score:.9,points:2,gapPoints:0,ms:5}));
+    detail.frames=[0,1].map(k=>({status:"done",cam:0,camera:"CAM-1",shotId:`P${k+1}`,view:1,session:1,ordinal:k+1,error:null,arrivedMs:1,frameCounter:1,triggerCounter:1,counterJump:false,score:.9,points:2,gapPoints:0,ms:5}));
     show();await screen.findByText(/原图完整/);
     const tiles=within(screen.getByLabelText("逐拍照点视图"));
     expect(within(tiles.getByRole("button",{name:"拍照点 P1"})).getByText("合格")).toBeVisible();

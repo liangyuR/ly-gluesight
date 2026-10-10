@@ -130,8 +130,12 @@ export interface RecipeSummary {
 export interface FrameView {
   status: FrameStatus;
   cam: number;
-  /** 相机编号（旧记录里没有） */
-  camera?: string;
+  camera: string;
+  shotId: string;
+  view: number;
+  session: number | null;
+  ordinal: number | null;
+  error: string | null;
   arrivedMs: number | null;
   frameCounter: number | null;
   triggerCounter: number | null;
@@ -143,6 +147,8 @@ export interface FrameView {
 }
 
 export interface PartView {
+  cycleId: string;
+  bundleHash: string | null;
   sn: number;
   recipeId: string;
   /** 本件配方快照的哈希 */
@@ -187,6 +193,7 @@ export interface Judgement {
 }
 
 export interface ResultView extends Judgement {
+  cycleId: string | null;
   sn: number;
   recipeId: string | null;
   ts: number;
@@ -194,6 +201,7 @@ export interface ResultView extends Judgement {
 }
 
 export interface Snapshot {
+  measurementWorkers: { capacity: number; running: number; timedOut: number; availableCapacity: number };
   phase: Phase;
   since: number;
   fault: string | null;
@@ -215,6 +223,10 @@ export interface LogLine {
 }
 
 export interface Measured {
+  cycleId: string;
+  shotId: string;
+  camera: string;
+  bundleHash: string | null;
   sn: number;
   k: number;
   cam: number;

@@ -257,20 +257,20 @@ pub struct WorkspaceHost {
 
 #[derive(Default)]
 struct LiveFrames {
-    key: Option<(u32, String)>,
+    key: Option<(String, String)>,
     frames: VecDeque<(usize, Arc<FrameImage>)>,
     bytes: usize,
 }
 
 impl LiveFrames {
-    fn insert(&mut self, sn: u32, hash: &str, k: usize, image: Arc<FrameImage>) {
+    fn insert(&mut self, cycle_id: &str, hash: &str, k: usize, image: Arc<FrameImage>) {
         if self
             .key
             .as_ref()
-            .is_none_or(|key| key.0 != sn || key.1 != hash)
+            .is_none_or(|key| key.0 != cycle_id || key.1 != hash)
         {
             *self = Self {
-                key: Some((sn, hash.into())),
+                key: Some((cycle_id.into(), hash.into())),
                 ..Self::default()
             };
         }
@@ -1695,20 +1695,20 @@ pub fn clear_live(app: &AppHandle) {
 
 pub fn retain_live(
     app: &AppHandle,
-    sn: u32,
+    cycle_id: String,
     hash: &str,
     k: usize,
     image: &Option<Arc<FrameImage>>,
 ) {
     if let (Some(host), Some(image)) = (app.try_state::<WorkspaceHost>(), image) {
-        host.live.lock().unwrap().insert(sn, hash, k, image.clone());
+        host.live.lock().unwrap().insert(&cycle_id, hash, k, image.clone());
     }
 }
 
 #[tauri::command]
 pub fn workspace_live_image(
     host: State<'_, WorkspaceHost>,
-    sn: u32,
+    cycle_id: String,
     hash: String,
     k: usize,
 ) -> Result<tauri::ipc::Response, String> {
@@ -1717,7 +1717,7 @@ pub fn workspace_live_image(
         if live
             .key
             .as_ref()
-            .is_none_or(|key| key.0 != sn || key.1 != hash)
+            .is_none_or(|key| key.0 != cycle_id || key.1 != hash)
         {
             return Err("本件尚未收到整帧图像".into());
         }
@@ -2265,13 +2265,13 @@ mod tests {
     fn preview_cache_isolated_by_part_and_preserves_exact_frame() {
         let mut cache = LiveFrames::default();
         let first = Arc::new(FrameImage::new(1, 1, vec![7]));
-        cache.insert(12, "old", 0, first.clone());
-        cache.insert(12, "old", 1, Arc::new(FrameImage::new(1, 1, vec![9])));
+        cache.insert("cycle-12", "old", 0, first.clone());
+        cache.insert("cycle-12", "old", 1, Arc::new(FrameImage::new(1, 1, vec![9])));
         assert!(Arc::ptr_eq(&cache.frames[0].1, &first));
-        cache.insert(13, "new", 2, Arc::new(FrameImage::new(1, 1, vec![11])));
+        cache.insert("cycle-13", "old", 2, Arc::new(FrameImage::new(1, 1, vec![11])));
         assert_eq!(cache.frames.len(), 1);
         assert_eq!(cache.bytes, 1);
-        assert_eq!(cache.key, Some((13, "new".into())));
+        assert_eq!(cache.key, Some(("cycle-13".into(), "old".into())));
     }
 
     #[test]

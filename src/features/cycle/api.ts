@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { subscribe } from "../plc";
+import { matchesPart, mergeMeasurements } from "./identity";
 import type { CycleSettings, LogLine, Measured, Recipe, RecipeDoc, RecipeSummary, Scenario, SimStatus, Snapshot } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
@@ -113,23 +114,46 @@ export function useCycle() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [measured, setMeasured] = useState<Measured[]>([]);
+  const latest = useRef<Snapshot | null>(null);
 
   useEffect(() => {
-    cycleApi.snapshot().then((s) => s && setSnapshot(s));
-    cycleApi.logs().then(setLogs);
-    cycleApi.partData().then(setMeasured);
+    let alive = true, receivedSnapshot = false;
+    const retired = new Set<string>();
+    const update = (next: Snapshot) => {
+      if (!alive || next.since < (latest.current?.since ?? -Infinity) || (next.part && retired.has(next.part.cycleId))) return;
+      const previous = latest.current?.part?.cycleId;
+      if (previous && previous !== next.part?.cycleId) retired.add(previous);
+      if (retired.size > 128) retired.delete(retired.values().next().value!);
+      latest.current = next;
+      setSnapshot(next);
+      setMeasured(values => values.filter(value => matchesPart(value, next.part)));
+    };
     const offs = [
-      subscribe<Snapshot>("cycle://snapshot", setSnapshot),
-      subscribe<LogLine>("cycle://log", (line) => setLogs((prev) => [...prev.slice(-199), line])),
-      subscribe<Measured>("cycle://frame", (m) =>
-        setMeasured((prev) => (prev.length && prev[0].sn !== m.sn ? [m] : [...prev, m])),
-      ),
+      subscribe<Snapshot>("cycle://snapshot", value => { receivedSnapshot = true; update(value); }),
+      subscribe<LogLine>("cycle://log", line => { if (alive) setLogs(prev => [...prev.slice(-199), line]); }),
+      subscribe<Measured>("cycle://frame", value => {
+        if (!alive) return;
+        const part = latest.current?.part;
+        if (part && matchesPart(value, part)) setMeasured(prev => mergeMeasurements(part, prev, [value]));
+      }),
     ];
-    return () => offs.forEach((off) => off());
+    void cycleApi.snapshot().then(value => { if (value && !receivedSnapshot) update(value); }).catch(() => {});
+    void cycleApi.logs().then(values => { if (alive) setLogs(prev => [...values, ...prev].slice(-200)); }).catch(() => {});
+    return () => { alive = false; offs.forEach(off => off()); };
   }, []);
 
-  const sn = snapshot?.part?.sn;
-  const current = useMemo(() => (sn === undefined ? [] : measured.filter((m) => m.sn === sn)), [measured, sn]);
+  const part = snapshot?.part;
+  useEffect(() => {
+    let alive = true;
+    if (!part) return;
+    void cycleApi.partData().then(values => {
+      if (alive && latest.current?.part?.cycleId === part.cycleId && latest.current.part.bundleHash === part.bundleHash)
+        setMeasured(prev => mergeMeasurements(part, values, prev));
+    }).catch(() => {});
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [part?.cycleId, part?.bundleHash]);
+  const current = useMemo(() => measured.filter(value => matchesPart(value, part)), [measured, part]);
   return { snapshot, logs, measured: current };
 }
 

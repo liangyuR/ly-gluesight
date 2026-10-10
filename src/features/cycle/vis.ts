@@ -1,4 +1,5 @@
 import type { JudgeParams, Judgement, Measured, PartView, PointVis, Recipe, Segment, ShotSpec } from "./types";
+import { matchesPart } from "./identity";
 
 export const visColor: Record<PointVis, string> = {
   none: "var(--text-disabled)",
@@ -61,6 +62,7 @@ export function computeVis(layout: Recipe, part: PartView | null, measured: Meas
   const vis: PointVis[] = new Array(n).fill("none");
   if (!part || part.recipeId !== layout.id || part.recipeHash !== layout.hash) return vis;
   for (const m of measured) {
+    if (!matchesPart(m, part)) continue;
     m.idx.forEach((j, i) => {
       if (j < 0 || j >= n) return;
       const st = m.st[i];
@@ -76,9 +78,9 @@ export function computeVis(layout: Recipe, part: PartView | null, measured: Meas
     });
   }
   part.frames.forEach((f, k) => {
-    if (f.status !== "missing") return;
+    if (f.status !== "missing" && f.status !== "error" && f.status !== "locateFailed") return;
     layout.points.k.forEach((owner, j) => {
-      if (owner === k && vis[j] === "none") vis[j] = "miss";
+      if (owner === k && vis[j] === "none") vis[j] = f.status === "missing" ? "miss" : "inv";
     });
   });
   result?.segments.forEach((s, gi) => {

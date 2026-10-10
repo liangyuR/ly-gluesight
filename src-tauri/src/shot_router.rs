@@ -12,7 +12,6 @@
 //! 只靠计数分不出来的情况（都会让这件判 ERR，不会判 OK）：本件中途 Line0 上多一个干扰触发，后面的帧整体后移，
 //! 最后一帧成了超计划帧（96）；相机漏收一个触发脉冲，最后一个拍照点等不到帧（91）。没有 PLC 计数时，
 //! 上一件实际触发少于计划（中途停了），下一件的基线会偏高，直到故障复位清掉下限（[`Ledgers::clear_floors`]）。
-#![cfg_attr(not(test), allow(dead_code))] // 步 3 接进节拍前只有单测用到
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -97,18 +96,38 @@ pub struct Ledger {
     pub session: u64,
     /// 本会话最近一帧的计数来源；还没见过帧为空
     pub source: Option<CounterSource>,
+    pub sources: Vec<CounterSource>,
     /// 本会话见到的最大触发计数
     pub last: Option<u64>,
     pub frames: u64,
     /// 本会话里触发计数第一次回退：(之前的最大值, 回退到的值)
     pub backwards: Option<(u64, u64)>,
+    pub duplicate: Option<u64>,
     /// 上一件收尾推算的下一件基线下限
     pub floor: Option<u64>,
+    seen: u128,
 }
 
 impl Ledger {
     fn new(session: u64) -> Self {
-        Self { session, source: None, last: None, frames: 0, backwards: None, floor: None }
+        Self { session, source: None, sources: Vec::new(), last: None, frames: 0,
+            backwards: None, duplicate: None, floor: None, seen: 0 }
+    }
+
+    pub fn snapshot(session: u64, source: CounterSource, trigger: u64) -> Self {
+        Self { source: Some(source), sources: vec![source], last: Some(trigger), seen: 1, ..Self::new(session) }
+    }
+
+    fn note_backwards(&mut self, from: u64, to: u64) {
+        if self.backwards.is_none_or(|(old_from, old_to)| (to, from) > (old_to, old_from)) {
+            self.backwards = Some((from, to));
+        }
+    }
+
+    fn seen_at(&self, last: u64) -> u128 {
+        self.last.and_then(|old| last.checked_sub(old))
+            .and_then(|shift| u32::try_from(shift).ok())
+            .and_then(|shift| self.seen.checked_shl(shift)).unwrap_or(0)
     }
 }
 
@@ -120,26 +139,58 @@ pub struct Ledgers {
 
 impl Ledgers {
     /// 每一帧都记：检测中、空闲时、手动取的都算。旧会话迟到的帧不记。
-    pub fn observe(&mut self, f: &FrameMeta) {
+    pub fn observe(&mut self, f: &FrameMeta) -> bool {
         let l = self.cams.entry(f.cam).or_insert_with(|| Ledger::new(f.session));
         if f.session < l.session {
-            return;
+            return false;
         }
         if f.session > l.session {
             *l = Ledger::new(f.session);
         }
         l.frames += 1;
         l.source = Some(f.source);
+        if !l.sources.contains(&f.source) { l.sources.push(f.source); }
+        let advanced = l.last.is_none_or(|last| f.trigger > last);
         match l.last {
-            Some(last) if f.trigger < last => {
-                l.backwards.get_or_insert((last, f.trigger));
+            Some(last) if f.trigger <= last => {
+                if let Some(bit) = u32::try_from(last - f.trigger).ok().and_then(|shift| 1u128.checked_shl(shift)) {
+                    if l.seen & bit != 0 && l.floor.is_none_or(|floor| f.trigger > floor) {
+                        l.duplicate = l.duplicate.max(Some(f.trigger));
+                    }
+                    l.seen |= bit;
+                }
+                if f.trigger < last && l.floor.is_none_or(|floor| f.trigger > floor) {
+                    l.note_backwards(last, f.trigger);
+                }
             }
-            _ => l.last = Some(f.trigger),
+            _ => {
+                l.seen = l.seen_at(f.trigger) | 1;
+                l.last = Some(f.trigger);
+            }
         }
+        advanced
     }
 
     pub fn get(&self, cam: u8) -> Option<&Ledger> {
         self.cams.get(&cam)
+    }
+
+    pub fn merge(&mut self, cam: u8, observed: &Ledger) {
+        let current = self.cams.entry(cam).or_insert_with(|| Ledger::new(observed.session));
+        if observed.session < current.session { return; }
+        if observed.session > current.session { *current = Ledger::new(observed.session); }
+        let last = current.last.max(observed.last);
+        current.seen = last.map_or(0, |last| current.seen_at(last) | observed.seen_at(last));
+        current.last = last;
+        current.source = observed.source.or(current.source);
+        for source in observed.sources.iter().copied().chain(observed.source) {
+            if !current.sources.contains(&source) { current.sources.push(source); }
+        }
+        current.frames = current.frames.max(observed.frames);
+        if let Some((from, to)) = observed.backwards.filter(|(_, to)| current.floor.is_none_or(|floor| *to > floor)) {
+            current.note_backwards(from, to);
+        }
+        current.duplicate = current.duplicate.max(observed.duplicate.filter(|counter| current.floor.is_none_or(|floor| *counter > floor)));
     }
 
     /// 记下下一件的基线下限；账上已是更新的会话时不记（那次打开的下限没意义了）。
@@ -196,6 +247,7 @@ pub struct ArmCam {
     pub session: u64,
     /// 出第一帧之前就确定的计数来源：模拟、回放为 Synthetic；海康要看帧里的 Chunk，为空
     pub source: Option<CounterSource>,
+    pub counter_after_open: Option<u64>,
 }
 
 /// 拒绝布防的原因。
@@ -312,7 +364,9 @@ impl ShotRouter {
             // 账上的会话与相机此刻的不同：重新打开后还没见过帧，账上的数不算
             let ledger = ledgers.get(now.cam).filter(|l| l.session == now.session);
             let source = ledger.and_then(|l| l.source).or(now.source);
-            if let Some(source) = source.filter(|s| !policy.trusts(*s)) {
+            let untrusted = ledger.into_iter().flat_map(|l| l.sources.iter().copied())
+                .chain(source).find(|s| !policy.trusts(*s));
+            if let Some(source) = untrusted {
                 return Err(Refusal::Untrusted { camera, source });
             }
             if let Some((from, to)) = ledger.and_then(|l| l.backwards) {
@@ -321,7 +375,7 @@ impl ShotRouter {
             let baseline = match ledger.and_then(|l| l.last.max(l.floor)) {
                 Some(b) => b,
                 None if source == Some(CounterSource::Synthetic) => SYNTHETIC_START,
-                None => match policy.counter_after_open {
+                None => match now.counter_after_open.or(policy.counter_after_open) {
                     Some(b) => b,
                     None => return Err(Refusal::NoBaseline { camera }),
                 },
@@ -362,6 +416,39 @@ impl ShotRouter {
         self.cams.iter().find(|a| a.cam == cam).map(|a| a.baseline)
     }
 
+    pub fn check_sessions(&self, cameras: &[ArmCam]) -> Result<(), String> {
+        for armed in &self.cams {
+            let now = cameras.iter().find(|camera| camera.cam == armed.cam && camera.camera == armed.camera)
+                .ok_or_else(|| format!("相机 {} 已不在本件相机组中", armed.camera))?;
+            if now.session != armed.session {
+                return Err(format!("相机 {} 检测中已重连（会话 {} → {}）", armed.camera, armed.session, now.session));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn check_observed(&self, cam: u8, observed: &Ledger) -> Result<(), (u16, String)> {
+        let Some(armed) = self.cams.iter().find(|armed| armed.cam == cam) else { return Ok(()) };
+        let fail = |code, reason: String| Err((code, format!("相机 {} {reason}", armed.camera)));
+        if observed.session != armed.session {
+            return fail(fault::DEVICE_LOST, format!("检测中会话不一致（{} → {}）", armed.session, observed.session));
+        }
+        if let Some(source) = observed.sources.iter().copied().chain(observed.source).find(|source| !self.trusted.contains(source)) {
+            return fail(fault::DEVICE_LOST, format!("本会话曾出现不可信的{}，需要重新打开相机", source.label()));
+        }
+        if let Some(counter) = observed.duplicate.filter(|counter| *counter > armed.baseline) {
+            return fail(fault::EXTRA_FRAME, format!("本件触发计数 {counter} 重复，不能确认拍照计划完整"));
+        }
+        let limit = armed.baseline.saturating_add(armed.shots.len() as u64);
+        if let Some(last) = observed.last.filter(|last| *last > limit) {
+            return fail(fault::EXTRA_FRAME, format!("回调触发计数 {last} 超过本件计划截止计数 {limit}"));
+        }
+        if let Some((from, to)) = observed.backwards.filter(|(_, to)| *to > armed.baseline) {
+            return fail(fault::DEVICE_LOST, format!("本件触发计数回退（{from} → {to}），需要重新打开相机"));
+        }
+        Ok(())
+    }
+
     /// 拍照点绑定到的触发计数。
     pub fn bound(&self, shot: usize) -> Option<u64> {
         self.bound.get(shot).copied().flatten()
@@ -374,6 +461,10 @@ impl ShotRouter {
 
     pub fn complete(&self) -> bool {
         self.bound.iter().all(Option::is_some)
+    }
+
+    pub fn triggers(&self) -> u64 {
+        self.cams.iter().map(|a| a.high.saturating_sub(a.baseline)).sum()
     }
 
     fn camera_name(&self, cam: u8) -> String {
@@ -428,7 +519,7 @@ impl ShotRouter {
             .iter()
             .map(|a| {
                 let n = issued.and_then(|list| list.iter().find(|(c, _)| *c == a.camera)).map_or(a.shots.len() as u64, |(_, n)| *n);
-                Floor { cam: a.cam, camera: a.camera.clone(), session: a.session, baseline: (a.baseline + n).max(a.high) }
+                Floor { cam: a.cam, camera: a.camera.clone(), session: a.session, baseline: a.baseline.saturating_add(n).max(a.high) }
             })
             .collect();
         for floor in &floors {
@@ -451,7 +542,7 @@ mod tests {
     const SESSIONS: [u64; 3] = [11, 12, 13];
 
     fn arm_cams(source: Option<CounterSource>) -> Vec<ArmCam> {
-        (0..3u8).map(|i| ArmCam { cam: i, camera: format!("cam{}", i + 1), session: SESSIONS[i as usize], source }).collect()
+        (0..3u8).map(|i| ArmCam { cam: i, camera: format!("cam{}", i + 1), session: SESSIONS[i as usize], source, counter_after_open: None }).collect()
     }
 
     fn frame(cam: u8, trigger: u64) -> FrameMeta {
@@ -570,6 +661,141 @@ mod tests {
         assert_eq!(dup.fault(), Some(fault::EXTRA_FRAME));
         assert_eq!(router.bound(1), Some(8));
         assert!(router.describe(&frame(1, 8), &dup).contains("重复"));
+    }
+
+    #[test]
+    fn only_first_or_advancing_counters_complete_a_manual_trigger() {
+        let mut ledger = Ledgers::default();
+        assert!(ledger.observe(&frame(0, 10)));
+        assert!(!ledger.observe(&frame(0, 10)));
+        assert!(ledger.observe(&frame(0, 11)));
+        assert!(!ledger.observe(&frame(0, 9)));
+        assert!(ledger.observe(&FrameMeta { session: 99, trigger: 0, ..frame(0, 11) }));
+        assert!(!ledger.observe(&frame(0, 100)));
+        assert_eq!(ledger.get(0).unwrap().session, 99);
+        assert_eq!(ledger.get(0).unwrap().last, Some(0));
+    }
+
+    #[test]
+    fn callback_extra_is_rejected_before_the_actor_routes_it() {
+        let router = armed();
+        let mut callback = primed();
+        callback.observe(&frame(0, 41));
+        callback.observe(&frame(0, 42));
+        assert!(router.check_observed(0, callback.get(0).unwrap()).is_ok());
+        callback.observe(&frame(0, 43));
+        let (code, reason) = router.check_observed(0, callback.get(0).unwrap()).unwrap_err();
+        assert_eq!(code, fault::EXTRA_FRAME);
+        assert!(reason.contains("43") && reason.contains("42"));
+        assert_eq!(router.bound(0), None);
+    }
+
+    #[test]
+    fn callback_duplicate_is_rejected_even_when_not_consecutive() {
+        let router = armed();
+        let mut callback = primed();
+        for counter in [41, 42, 41] { callback.observe(&frame(0, counter)); }
+        let ledger = callback.get(0).unwrap();
+        assert_eq!(ledger.duplicate, Some(41));
+        let (code, reason) = router.check_observed(0, ledger).unwrap_err();
+        assert_eq!(code, fault::EXTRA_FRAME);
+        assert!(reason.contains("重复"));
+    }
+
+    #[test]
+    fn callback_duplicate_window_covers_the_maximum_shot_plan() {
+        let plan = Plan::new((0..64).map(|_| ("P", "cam1")));
+        let router = ShotRouter::arm(&plan, &primed(), &prod(), &arm_cams(None)).unwrap();
+        let mut callback = primed();
+        for counter in 41..=104 { callback.observe(&frame(0, counter)); }
+        callback.observe(&frame(0, 41));
+        assert_eq!(router.check_observed(0, callback.get(0).unwrap()).unwrap_err().0, fault::EXTRA_FRAME);
+    }
+
+    #[test]
+    fn callback_summary_keeps_the_latest_relevant_backwards_event() {
+        let router = armed();
+        let mut callback = primed();
+        callback.observe(&frame(0, 20));
+        assert!(router.check_observed(0, callback.get(0).unwrap()).is_ok());
+        for counter in [42, 41] { callback.observe(&frame(0, counter)); }
+        assert_eq!(callback.get(0).unwrap().backwards, Some((42, 41)));
+        assert_eq!(router.check_observed(0, callback.get(0).unwrap()).unwrap_err().0, fault::DEVICE_LOST);
+        let mut actor = primed();
+        actor.set_floor(&Floor { cam: 0, camera: "cam1".into(), session: SESSIONS[0], baseline: 40 });
+        actor.merge(0, callback.get(0).unwrap());
+        assert_eq!(actor.get(0).unwrap().backwards, Some((42, 41)));
+        assert!(matches!(ShotRouter::arm(&plan4(), &actor, &prod(), &arm_cams(None)), Err(Refusal::Backwards { .. })));
+    }
+
+    #[test]
+    fn callback_stale_duplicates_and_backwards_do_not_fault_a_new_part() {
+        let router = armed();
+        let mut callback = primed();
+        for counter in [40, 39, 39, 41, 40, 42] { callback.observe(&frame(0, counter)); }
+        assert_eq!(callback.get(0).unwrap().duplicate, Some(40));
+        assert!(router.check_observed(0, callback.get(0).unwrap()).is_ok());
+        let mut actor = primed();
+        actor.set_floor(&Floor { cam: 0, camera: "cam1".into(), session: SESSIONS[0], baseline: 42 });
+        actor.merge(0, callback.get(0).unwrap());
+        for counter in [40, 41, 42] { assert!(!actor.observe(&frame(0, counter))); }
+        assert_eq!(actor.get(0).unwrap().duplicate, None);
+        assert_eq!(actor.get(0).unwrap().backwards, None);
+        let next = ShotRouter::arm(&plan4(), &actor, &prod(), &arm_cams(None)).unwrap();
+        assert!(next.check_observed(0, callback.get(0).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn an_untrusted_callback_cannot_be_hidden_by_a_later_trusted_source() {
+        let router = armed();
+        let mut callback = primed();
+        callback.observe(&FrameMeta { source: SdkFrame, ..frame(0, 1) });
+        callback.observe(&frame(0, 42));
+        assert_eq!(callback.get(0).unwrap().source, Some(ChunkTrigger));
+        assert_eq!(router.check_observed(0, callback.get(0).unwrap()).unwrap_err().0, fault::DEVICE_LOST);
+        assert!(matches!(ShotRouter::arm(&plan4(), &callback, &prod(), &arm_cams(None)),
+            Err(Refusal::Untrusted { source: SdkFrame, .. })));
+        let mut actor = primed();
+        actor.set_floor(&Floor { cam: 0, camera: "cam1".into(), session: SESSIONS[0], baseline: 42 });
+        actor.merge(0, callback.get(0).unwrap());
+        assert!(matches!(ShotRouter::arm(&plan4(), &actor, &prod(), &arm_cams(None)),
+            Err(Refusal::Untrusted { source: SdkFrame, .. })));
+        callback.observe(&FrameMeta { session: 99, trigger: 0, ..frame(0, 42) });
+        let mut cameras = arm_cams(None);
+        cameras[0].session = 99;
+        assert!(ShotRouter::arm(&plan4(), &callback, &prod(), &cameras).is_ok());
+    }
+
+    #[test]
+    fn callback_session_and_policy_are_checked_independently_of_pending_frames() {
+        let router = armed();
+        for session in [SESSIONS[0] - 1, SESSIONS[0] + 1] {
+            let observed = Ledger::snapshot(session, ChunkTrigger, 40);
+            assert_eq!(router.check_observed(0, &observed).unwrap_err().0, fault::DEVICE_LOST);
+        }
+        let synthetic = Ledger::snapshot(SESSIONS[0], Synthetic, 41);
+        assert_eq!(router.check_observed(0, &synthetic).unwrap_err().0, fault::DEVICE_LOST);
+        let development = ShotRouter::arm(&plan4(), &primed(), &Policy::development(None), &arm_cams(None)).unwrap();
+        assert!(development.check_observed(0, &synthetic).is_ok());
+        assert!(router.check_observed(7, &synthetic).is_ok());
+    }
+
+    #[test]
+    fn merged_callback_windows_keep_seen_counts_without_inventing_duplicates() {
+        let mut actor = primed();
+        actor.observe(&frame(0, 41));
+        let mut callback = primed();
+        callback.observe(&frame(0, 42));
+        actor.merge(0, callback.get(0).unwrap());
+        assert_eq!(actor.get(0).unwrap().duplicate, None);
+        assert!(!actor.observe(&frame(0, 41)));
+        assert_eq!(actor.get(0).unwrap().duplicate, Some(41));
+        actor.observe(&frame(0, 400));
+        assert_eq!(actor.get(0).unwrap().seen, 1);
+        assert!(!actor.observe(&frame(0, 41)));
+        actor.observe(&frame(0, 399));
+        assert!(!actor.observe(&frame(0, 399)));
+        assert_eq!(actor.get(0).unwrap().duplicate, Some(399));
     }
 
     #[test]
@@ -840,7 +1066,7 @@ mod tests {
             let mut carry: [Vec<(FrameMeta, Option<(u32, usize)>)>; 3] = Default::default();
             let policy = Policy::production(Some(0));
             for part in 0..60u32 {
-                let cams: Vec<_> = (0..3u8).map(|i| ArmCam { cam: i, camera: format!("cam{}", i + 1), session: session[i as usize], source: None }).collect();
+                let cams: Vec<_> = (0..3u8).map(|i| ArmCam { cam: i, camera: format!("cam{}", i + 1), session: session[i as usize], source: None, counter_after_open: None }).collect();
                 let mut router = ShotRouter::arm(&plan, &ledgers, &policy, &cams).unwrap_or_else(|e| panic!("seed {seed} 件 {part}：{e}"));
                 // 上一件迟到的帧排在各相机队列最前
                 let mut queues = std::mem::take(&mut carry);

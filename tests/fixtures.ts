@@ -83,6 +83,7 @@ export function workspaceState(view = workspaceView()): ReturnType<typeof useWor
 
 export function snapshot(phase: Snapshot["phase"] = "IDLE"): Snapshot {
   return {
+    measurementWorkers: { capacity: 2, running: 0, timedOut: 0, availableCapacity: 2 },
     phase, since: 1, fault: null, productSource: "manual", activeRecipeId: "A", triggerMode: "fly",
     part: null, result: null, stats: { total: 0, ok: 0, ng: 0, err: 0 }, strayFrames: 0, alarms: [],
   };

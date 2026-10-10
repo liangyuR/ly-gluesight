@@ -24,6 +24,25 @@ beforeEach(() => {
 const show = () => render(<CameraConfigPanel cam={0} initial={config} status={null} />);
 
 describe("相机配置表单", () => {
+  it("开流前计数默认未知，填写与清空均明确保存，不推断为零",async()=>{
+    show();
+    const input=screen.getByRole("spinbutton",{name:"开流前触发计数"});
+    expect(input).toHaveValue(null);
+    expect(screen.getByText(/仅填写台架确认的开流前触发计数/)).toBeVisible();
+    await userEvent.click(screen.getByRole("button",{name:"保存并应用"}));
+    expect(cameraApi.saveConfig).toHaveBeenLastCalledWith(0,expect.objectContaining({counterAfterOpen:null}));
+    fireEvent.change(input,{target:{value:"1038"}});
+    await userEvent.click(screen.getByRole("button",{name:"保存并应用"}));
+    expect(cameraApi.saveConfig).toHaveBeenLastCalledWith(0,expect.objectContaining({counterAfterOpen:1038}));
+    fireEvent.change(input,{target:{value:""}});
+    await userEvent.click(screen.getByRole("button",{name:"保存并应用"}));
+    expect(cameraApi.saveConfig).toHaveBeenLastCalledWith(0,expect.objectContaining({counterAfterOpen:null}));
+  });
+  it.each(["-1","1.5","9007199254740992"])("开流前计数 %s 不可保存",value=>{
+    show();fireEvent.change(screen.getByRole("spinbutton",{name:"开流前触发计数"}),{target:{value}});
+    expect(screen.getByRole("alert")).toHaveTextContent("开流前触发计数需为非负安全整数");
+    expect(screen.getByRole("button",{name:"保存并应用"})).toBeDisabled();
+  });
   it("默认单视角，三目回放保留设备编号并保存一次采集三个视角",async()=>{
     config={...config,source:"replay",replayDir:"D:/tricam"};show();
     expect(screen.getByRole("combobox",{name:"设备视角"})).toHaveValue("1");

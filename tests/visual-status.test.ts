@@ -3,14 +3,21 @@ import { computeVis, currentFrame, runs } from "../src/features/cycle/vis";
 import type { Measured, PartView, FrameView, Judgement } from "../src/features/cycle/types";
 import { workspaceView } from "./fixtures";
 
-const frame = (status: FrameView["status"]): FrameView => ({ status, cam: 0, arrivedMs: null, frameCounter: null,
+const frame = (status: FrameView["status"]): FrameView => ({ status, cam: 0, camera: "CAM-1", shotId: "P1", view: 1, session: null, ordinal: null, error: null, arrivedMs: null, frameCounter: null,
   triggerCounter: null, counterJump: false, score: null, points: 0, gapPoints: 0, ms: null });
-const part = (): PartView => ({ sn: 1, recipeId: "A", recipeHash: "hash-A", n: 2, received: 2,
+const part = (): PartView => ({ cycleId: "cycle-1", bundleHash: null, sn: 1, recipeId: "A", recipeHash: "hash-A", n: 2, received: 2,
   triggers: 2, queue: 0, filled: 4, total: 4, frames: [frame("done"), frame("done")], measuredFrames: 2 });
-const measured = (st = [0, 0, 0, 0]): Measured => ({ sn: 1, k: 0, cam: 0, located: true, score: .9, ms: 1,
+const measured = (st = [0, 0, 0, 0]): Measured => ({ cycleId: "cycle-1", shotId: "P1", camera: "CAM-1", bundleHash: null, sn: 1, k: 0, cam: 0, located: true, score: .9, ms: 1,
   error: null, idx: [0, 1, 2, 3], d: [3, 4.5, 3, 3], w: [null, null, null, null], st, px: [] });
 
 describe("测量结果的 UI 状态", () => {
+  it.each(["cycleId","shotId","camera","bundleHash"] as const)("不显示 %s 不属于当前件的点",field=>{
+    expect(computeVis(workspaceView().layout,part(),[{...measured(),[field]:"other"}],null)).toEqual(["none","none","none","none"]);
+  });
+  it("超时出错但未收到测量事件的拍照点显示未测成",()=>{
+    const p=part();p.frames[0]={...p.frames[0],status:"error",error:"单帧测量超时"};
+    expect(computeVis(workspaceView().layout,p,[],null)).toEqual(["inv","inv","none","none"]);
+  });
   it.each(["wrong-id", "wrong-hash", "no-part"])("%s 不将测量套用到其他工件快照", mismatch => {
     const p = part(); if (mismatch === "wrong-id") p.recipeId = "B"; if (mismatch === "wrong-hash") p.recipeHash = "other-version";
     expect(computeVis(workspaceView().layout, mismatch === "no-part" ? null : p, [measured()], null)).toEqual(["none", "none", "none", "none"]);

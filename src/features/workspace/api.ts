@@ -52,7 +52,7 @@ export const workspaceApi = {
     desktopCall<Comparison>("workspace_compare", { id, revision, historyId, raw }),
   comparisons: (id:string,historyId:number)=>desktopCall<Comparison[]>("workspace_comparisons",{id,historyId}),
   runtimeOverview: (id: string, hash: string) => desktopCall<Overview | null>("workspace_runtime_overview", { id, hash }),
-  liveImage: (sn:number, hash:string, k:number) => desktopCall<ArrayBuffer>("workspace_live_image", {sn,hash,k}).then(decodeGray),
+  liveImage: (cycleId:string, hash:string, k:number) => desktopCall<ArrayBuffer>("workspace_live_image", {cycleId,hash,k}).then(decodeGray),
   stationCapture: (cam:number)=>desktopCall<FrozenImage>("workspace_station_capture",{cam}),
   stationImport: (cam:number,bytes:number[])=>desktopCall<FrozenImage>("workspace_station_import",{cam,bytes}),
   stationImage: (cam:number,imageId:string)=>desktopCall<ArrayBuffer>("workspace_station_image",{cam,imageId}).then(decodeGray),

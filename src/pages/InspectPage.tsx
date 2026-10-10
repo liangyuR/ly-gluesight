@@ -4,6 +4,7 @@ import RuntimeFrame, { usePublishedOverview } from "../features/workspace/Runtim
 import { WorkpieceOverview } from "../features/workspace/OverviewPage";
 import Modal from "../features/plc/components/Modal";
 import { displayReason, triggerModeLabel, verdictLabel } from "../features/history";
+import { matchesPart } from "../features/cycle/identity";
 import {
   computeVis,
   currentFrame,
@@ -56,13 +57,13 @@ export default function InspectPage() {
   const phase = snapshot?.phase ?? "IDLE";
   const settled = phase === "REPORT" || phase === "RELEASE" || phase === "IDLE" || phase === "FAULT";
   const candidateResult = settled ? (snapshot?.result ?? null) : null;
-  const result = candidateResult && (!part || (candidateResult.sn === part.sn && (!candidateResult.recipeId || candidateResult.recipeId === part.recipeId))) ? candidateResult : null;
-  const partResult = result && part && result.sn === part.sn ? result : null;
+  const result = candidateResult && (!part || (candidateResult.cycleId === part.cycleId && candidateResult.recipeId === part.recipeId)) ? candidateResult : null;
+  const partResult = result && part && result.cycleId === part.cycleId ? result : null;
   const ownLayout = !!layout && !!part && layout.id === part.recipeId && layout.hash === part.recipeHash;
-  const shown = useMemo(() => (ownLayout ? measured.filter(m => m.sn === part?.sn) : []), [ownLayout, measured, part?.sn]);
+  const shown = useMemo(() => (ownLayout ? measured.filter(m => matchesPart(m, part)) : []), [ownLayout, measured, part]);
   const overview=usePublishedOverview(layout);
-  const selectionScope = `${part?.sn ?? "idle"}:${part?.recipeHash ?? layout?.hash}:${layout?.id}:${layout?.shots.length}`;
-  const operationScope = `${part?.sn ?? "idle"}:${snapshot?.since}:${snapshot?.fault ?? ""}`;
+  const selectionScope = `${part?.cycleId ?? "idle"}:${part?.bundleHash ?? ""}:${part?.recipeHash ?? layout?.hash}:${layout?.id}:${layout?.shots.length}`;
+  const operationScope = `${part?.cycleId ?? "idle"}:${snapshot?.since}:${snapshot?.fault ?? ""}`;
   const currentOperation = useRef({ phase, scope: operationScope });
   currentOperation.current = { phase, scope: operationScope };
 
@@ -72,7 +73,7 @@ export default function InspectPage() {
   }, []);
   useEffect(() => setResetError(""), [phase, operationScope]);
 
-  const resultKey = partResult ? `${partResult.sn}:${partResult.ts}` : null;
+  const resultKey = partResult ? `${partResult.cycleId}:${partResult.ts}` : null;
   const vis = useMemo(
     () => (layout ? computeVis(layout, ownLayout ? part : null, shown, ownLayout ? partResult : null) : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -187,6 +188,10 @@ export default function InspectPage() {
         )}
       </div>
       {resetError && <div className="notice error" role="alert">{resetError}</div>}
+      {!!snapshot?.measurementWorkers.timedOut && <div className="notice error" role="alert">
+        测量线程超时未返回：{snapshot.measurementWorkers.timedOut} / {snapshot.measurementWorkers.capacity}，当前可用容量 {snapshot.measurementWorkers.availableCapacity}。
+        {snapshot.measurementWorkers.timedOut>=snapshot.measurementWorkers.capacity&&"全部测量容量被占用，当前不可布防。"}
+      </div>}
 
       {snapshot?.alarms.map((a) => (
         <div key={a} className="alarm-bar">
@@ -223,7 +228,7 @@ export default function InspectPage() {
           <div className="panel">
             <div className="panel-head">
               <h3 className="panel-title">拍照点</h3>
-              <span className="muted">k 来源：{trigger === "stop" ? "停稳点触发计数" : "位置触发计数"}</span>
+              <span className="muted">拍照点按本件设备内触发顺序匹配；设备原始计数单独显示</span>
               <span className="spacer" />
               <span className="muted mono">
                 Chunk 触发 {part?.triggers ?? 0} · 收到 {part?.received ?? 0}
@@ -312,6 +317,8 @@ function Progress({ snapshot, result }: { snapshot: Snapshot | null; result: Res
         <div className="bar"><i style={{ width: `${pct}%` }} /></div>
         <span>处理队列</span>
         <b>{part?.queue ?? 0}</b>
+        <span>测量线程</span>
+        <b>{snapshot ? `${snapshot.measurementWorkers.running} / ${snapshot.measurementWorkers.capacity}` : "—"}</b>
         <span>收尾耗时（partEnd→done）</span>
         <b>{result?.drainMs != null ? `${result.drainMs} ms` : "—"}</b>
         <span>游离帧</span>

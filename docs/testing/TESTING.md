@@ -167,6 +167,19 @@ jsdom 没有真实布局、灰度图解码与设备连接能力。测试环境�
 
 新增业务测试应同时检查用户可见结果和关键接口参数，包含前置条件不满足、请求失败、重复操作或旧请求晚返回的路径。避免仅检查静态文本或给截图数量作为逻辑覆盖率。
 
+## 2026-10-10 · P0 步 3
+
+分支 `codex/p0-step3-cycle`。本节验证设备计数路由、逐拍照点终态、持久 cycleId、同 SN 重检隔离、排队及实际 DLL 工作线程超时占用；尚不证明逐点图像算法的现场准确率。
+
+- Rust 默认回归 138 项通过、18 项默认忽略。命令为 `cargo test --offline --locked --lib`，日志为 `src-tauri/target/p0-step3-rust.log`。
+- 前端 42 个测试文件、925 项通过。应用与测试类型检查、生产构建通过；覆盖率为语句 91.43%、分支 90.03%、函数 88.73%、行 93.90%，全部门槛通过。
+- S7 回环专项 18 项通过，包括同 SN 不同请求序号、迟到 ACK、提前 End、写入失败、慢落盘、断连、重启恢复与心跳中断。使用本机受控 Python 夹具，未连接现场 PLC。
+- 新增回归覆盖三设备四拍照点交错到达及 OK/NG/ERR、三目视角 1→2→3→1、首帧缺失、重复帧、提前 End、截止后帧和结果、同 SN 旧 cycle 结果、错误拍照点/相机/发布包身份、无效测量输出、重连没有新帧、工作线程卡住和迟到返回。
+- 实时图像和前端异步数据统一按 cycleId 匹配；历史页临时显示身份 `history:<recordId>`，真实历史 cycleId 与发布包、PLC 交付状态将在步 6 入库。
+- 未确认的 MVS 手动触发不再按时间自动解除布防限制；重复或倒退计数不能确认新手动触发。无法确认完成时必须重开相机。真机计数来源和开流起点仍按 W0 台架结果配置。
+
+前端命令为 `node node_modules/vitest/vitest.mjs run --coverage --pool=threads --maxWorkers=2`、两套 `tsc` 检查和 `node node_modules/vite/bin/vite.js build`。S7 命令为 `cargo test --offline --locked --lib plc_session::tests -- --include-ignored --test-threads=1`。日志分别保存在本机忽略目录 `tmp/p0-step3-frontend.log` 和 `src-tauri/target/p0-step3-s7.log`。Windows 沙箱内依赖链接解析异常，以上验证在限定范围的宿主环境执行。
+
 ## lyFlow 原始图像注入回归
 
 客户端固定到主线 `5b796c3`（Image ABI v15），使用 `RunSpec.image_inputs` 注入完整 u8 灰度帧。运行库必须包含 `io.load_image`、`image.board_calib`、`image.load_calib`、`glue.locate`、`glue.station_calipers`；在 lyFlow 仓库设置 `LYFLOW_PACKS=glue` 后构建 core，系统设置填 DLL 绝对路径。

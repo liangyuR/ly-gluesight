@@ -204,6 +204,10 @@ impl Store {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
+             CREATE TABLE IF NOT EXISTS cycle_ids (
+                 id TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(16)))),
+                 created_at INTEGER NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS parts (
                  id INTEGER PRIMARY KEY,
                  ts INTEGER NOT NULL,
@@ -241,6 +245,13 @@ impl Store {
         )
         .map_err(db_err)?;
         Ok(Self { conn: Mutex::new(conn) })
+    }
+
+    pub fn reserve_cycle_id(&self) -> Result<String, String> {
+        self.conn.lock().unwrap().query_row(
+            "INSERT INTO cycle_ids (created_at) VALUES (?1) RETURNING id",
+            [ly_plc::now_ms()], |row| row.get(0),
+        ).map_err(db_err)
     }
 
     pub fn insert(&self, r: &PartRecord) -> Result<i64, String> {
