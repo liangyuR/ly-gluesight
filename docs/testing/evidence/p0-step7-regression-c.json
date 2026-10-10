@@ -75,7 +75,7 @@
       "passed": 13
     },
     "cycleHostEvidenceSelfTests": {
-      "passed": 30
+      "passed": 48
     },
     "frontendQuiet": {
       "passed": 947,
@@ -112,17 +112,18 @@
       "partsPerMode": 100,
       "measurementsPerMode": 400,
       "log": {
-        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-prepared100-clean-c.log",
-        "sha256": "d1173780f66322b75001be50e18cb506590a4fa101570b34b36ea26eb991492e",
-        "bytes": 2618
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-prepared100-clean-final-c.log",
+        "sha256": "9300e95077a99a9a9b2ef9edfcebcc19da3c89efa75d01c3ab229933dad88d63",
+        "bytes": 2624
       },
       "verifiedReport": {
-        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\report.evidence.json",
-        "sha256": "913cb755a18a070ffb352cd0de8e9e2f86a03be49f0ca50ec0de71d0a80633ad",
-        "bytes": 801291
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\report.evidence.json",
+        "sha256": "45f2fb46c6872b4984cc041deb78afc003d77298a3b2a737e8de574c9b9558a4",
+        "bytes": 802991
       },
       "summary": "p0-step7-prepared-c.json",
-      "scope": "Independent uniform background/straight bead control only; runtime algorithm, limits and default textured fixtures unchanged. Does not close P0-09 or measure actual CycleHost tail."
+      "scope": "Independent uniform background/straight bead control only; runtime algorithm, limits and default textured fixtures unchanged. Does not close P0-09 or measure actual CycleHost tail.",
+      "source": "f738e05, software artifacts archived under report/software"
     },
     "realDllSpecials": [
       {
@@ -228,9 +229,9 @@
     }
   },
   "pending": [
-    "final archived software snapshot Prepared benchmark",
     "actual CycleHost queue/engine/core/tail/memory measurement",
-    "five actual desktop Robot/Modbus scenarios"
+    "five actual desktop Robot/Modbus scenarios",
+    "PR12 retention failure separation and integration checks"
   ],
   "boundaries": [
     "Tests use local loopback and synthetic images; W0/W7 and physical three-view SDK remain independent.",

@@ -6,14 +6,17 @@
     "package": "gluesight",
     "version": "0.1.0",
     "graphVersion": "taught-path-1",
-    "gitCommit": "1b61976ad27aee71ce58d09abebdf1b34c9e46a6",
-    "gitStatus": "M src-tauri/src/production/regression.rs",
+    "gitCommit": "f738e05ed037d920d0c7b709e5b6dc7f58eb203c",
+    "gitStatus": "M scripts/p0-cyclehost-report.mjs\n M src-tauri/Cargo.toml\n M tests/native/p0-cyclehost-performance.md\n M tests/native/p0-cyclehost-performance.mjs\n M tests/native/p0-cyclehost-performance.test.mjs\n?? tests/native/p0-clean-cyclehost-setup.mjs",
     "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+    "originalSourceDirectory": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri",
+    "originalTestExecutable": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\cargo-target\\debug\\deps\\gluesight_lib-40b6ffc3449a0ff2.exe",
+    "snapshotPolicy": "Software source and test executable are byte-for-byte archived under this fresh report directory so later compilation cannot invalidate referenced evidence.",
     "testExecutable": {
-      "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\cargo-target\\debug\\deps\\gluesight_lib-40b6ffc3449a0ff2.exe",
-      "bytes": 14232576,
-      "fnv1a64": "1b2ed33bcbac2e1d",
-      "sha256": "2d44b82cb759f381d300237b8c4d3e6190efe5963fbfc667546ab39fee7aca22"
+      "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\software\\test-executable.exe",
+      "bytes": 14240256,
+      "fnv1a64": "92c2f45c6d2aaed0",
+      "sha256": "0e199afc147dab45dc4e3076f6bf0715fc886f0b513089c382c48ff05e67fd36"
     },
     "testArguments": [
       "production::regression::native_full_resolution_frozen_bundle_single_and_tricam_regression",
@@ -24,86 +27,86 @@
     ],
     "sourceFiles": [
       {
-        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\Cargo.toml",
-        "bytes": 1450,
-        "fnv1a64": "9a42d638787bc673",
-        "sha256": "8ccb6d86555eb87750076736a0cc724ba79cc9aecf12ca078503f8722a402e5e"
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\software\\src-tauri\\Cargo.toml",
+        "bytes": 1408,
+        "fnv1a64": "f58827f24f9846db",
+        "sha256": "82e409fa63d62058608aa1a09754e63df2e45fa421c474565abee5b7c5aba1f8"
       },
       {
-        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\Cargo.lock",
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\software\\src-tauri\\Cargo.lock",
         "bytes": 140451,
         "fnv1a64": "cf06edcc6d031d66",
         "sha256": "f5045c1a049c80af1aa893298f4bae5ac98a65e61d87b9b5cfc4808a2d7e1563"
       },
       {
-        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\production.rs",
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\software\\src-tauri\\src\\production.rs",
         "bytes": 8703,
         "fnv1a64": "0f4e869e5c5eebac",
         "sha256": "aa9bd41ea0b33d688cf5ad05d83b7b436491915b75bd62a7b4d5f688785d31e9"
       },
       {
-        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\production\\regression.rs",
-        "bytes": 27388,
-        "fnv1a64": "530db8b5f0a1909b",
-        "sha256": "a36aa8aec46ceff7371148f2d9ccfbe763b2a3ebdad26236d738c385e322d557"
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\software\\src-tauri\\src\\production\\regression.rs",
+        "bytes": 28731,
+        "fnv1a64": "cb12e45d43ad6e35",
+        "sha256": "5a20c7b970a6e07206d963db68ab14b1e681a441e996536009e536c219d6ba51"
       },
       {
-        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\vision.rs",
-        "bytes": 19952,
-        "fnv1a64": "89042bf0dc2e5318",
-        "sha256": "9e75c17741b659b0c0403a2bf720d64d5b8889ae1768bda3e964a91aa4e082a4"
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\software\\src-tauri\\src\\vision.rs",
+        "bytes": 20017,
+        "fnv1a64": "9c62f0878452e055",
+        "sha256": "e8d38e282ed19ab99a00ddc588b88b7c2865a3c227654875c035570e14a636fc"
       },
       {
-        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\vision\\taught.rs",
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\software\\src-tauri\\src\\vision\\taught.rs",
         "bytes": 11521,
         "fnv1a64": "82474a811a51e726",
         "sha256": "6d4df4eef6057a8109d2755415f68d4ddcbe51672929614e52cd4324cc799b99"
       },
       {
-        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\recipe.rs",
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\software\\src-tauri\\src\\recipe.rs",
         "bytes": 33598,
         "fnv1a64": "85720cc6698f3aa1",
         "sha256": "c76bdd7c3d69f3ea336e40ccef8f662f70bf0363715cb53b59f62dc27c623c52"
       },
       {
-        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\simimage.rs",
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\software\\src-tauri\\src\\simimage.rs",
         "bytes": 9602,
         "fnv1a64": "113c8676a315b65b",
         "sha256": "1d0a95d60414e7a03dfa1f37bf3e12ee97bdbc142964c11e931b498cbb38c1be"
       },
       {
-        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\sim.rs",
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\software\\src-tauri\\src\\sim.rs",
         "bytes": 15079,
         "fnv1a64": "3338a4c4ce8983a5",
         "sha256": "a6b5b61a8e7f142c5da489c4d2a33267c471c59c1e903c6a1c0c4b7baa7687a6"
       },
       {
-        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\judge.rs",
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\software\\src-tauri\\src\\judge.rs",
         "bytes": 14159,
         "fnv1a64": "31c09cbcb81fb06e",
         "sha256": "6e6934bf7c8862802861056f62f5eade7bc300514a2e0ee541569ee06b694602"
       },
       {
-        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\release.rs",
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\software\\src-tauri\\src\\release.rs",
         "bytes": 42170,
         "fnv1a64": "15e67b45b6e7b91b",
         "sha256": "6bdff8de986519b119ce34e28e0254307cc1c061becf1a8a88bedf01cc74bfa4"
       },
       {
-        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\frame.rs",
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\software\\src-tauri\\src\\frame.rs",
         "bytes": 11625,
         "fnv1a64": "fde875534a5a9d04",
         "sha256": "954d153092411409ed001eb768bfe19ea44575900723213f7d40b8c860a92164"
       },
       {
-        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\measure.rs",
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\software\\src-tauri\\src\\measure.rs",
         "bytes": 34629,
         "fnv1a64": "14dc3107cb278a20",
         "sha256": "21665f6c61b1acd7dcccaa1b2e8d03592a9a8ffa79daa6aeb82701bef3e7b8dc"
       }
     ],
     "reportVerifier": {
-      "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\scripts\\p0-regression-report.py",
+      "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\software\\scripts\\p0-regression-report.py",
       "bytes": 29572,
       "fnv1a64": "fe9021fb693124e0",
       "sha256": "72b6436cc25455ec8db0c6a38c649fa135ccaa3abaed9872f12127806fd050ec"
@@ -118,17 +121,17 @@
       "fnv1a64": "014eb64e169b3cfc",
       "sha256": "b784205274b8a06611322e814e894ce654f174ef5f329ccbb5e7af54bffb3125"
     },
-    "loadAndSelfCheckMs": 32.455600000000004
+    "loadAndSelfCheckMs": 32.0836
   },
   "rawReport": {
-    "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\report.json",
-    "sha256": "e0eb6dd0960726cf63c0671d3fd3c62822a52465ca190603a9ec63dbbfb24766",
-    "bytes": 790606
+    "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\report.json",
+    "sha256": "6e7f1d05bdb33dbc39fe6ffbf6c70276c7c4a1fb1c49840bd8e6ad7ec55207d3",
+    "bytes": 792306
   },
   "verifiedReport": {
-    "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\report.evidence.json",
-    "sha256": "913cb755a18a070ffb352cd0de8e9e2f86a03be49f0ca50ec0de71d0a80633ad",
-    "bytes": 801291
+    "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\report.evidence.json",
+    "sha256": "45f2fb46c6872b4984cc041deb78afc003d77298a3b2a737e8de574c9b9558a4",
+    "bytes": 802991
   },
   "cases": [
     {
@@ -155,143 +158,143 @@
       ],
       "recipeHash": "45a27348eb64ab74",
       "bundleHash": "698d0d3c25bef01d",
-      "bundleRoot": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d",
+      "bundleRoot": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d",
       "releaseManifest": {
-        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\manifest.json",
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\manifest.json",
         "bytes": 2418,
         "fnv1a64": "698d0d3c25bef01d",
         "sha256": "ae3e24988fe9eccd16e1d14eb65281ec9c3a8644bef0c34b57264bec98976128"
       },
       "releaseResources": [
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\graph.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\graph.json",
           "bytes": 3687,
           "fnv1a64": "ee828d5cce0a72c7",
           "sha256": "eaff35cbb05c857c70e5cd8c5fc0af9478130b03c00974b949edf5450b5b5870"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\recipe.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\recipe.json",
           "bytes": 999,
           "fnv1a64": "82c9b38c032c69a2",
           "sha256": "b94d29e4fccc0ec02225159bc978b322ed444e4dbf5b3b1bb52142e9953f911b"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\00\\calibration.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\00\\calibration.json",
           "bytes": 112,
           "fnv1a64": "786f3f330140ff77",
           "sha256": "d6ff6773550801468a10a7300c26c7fa79d0b3afe0db0688d82ad727a2600384"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\00\\centerline.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\00\\centerline.json",
           "bytes": 145,
           "fnv1a64": "37ffb07178eaa53e",
           "sha256": "341db29f5e2189479ec2a491cddfe633bcf58ff805ce19f43569a643414f3430"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\00\\image.pgm",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\00\\image.pgm",
           "bytes": 1310737,
           "fnv1a64": "26810ab6a2218fea",
           "sha256": "4be458e8ee59e04648c5cc7db97a45eb4d3beed72b3c4d9280472cb82853bf7c"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\00\\points.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\00\\points.json",
           "bytes": 1828,
           "fnv1a64": "87483bd261335a15",
           "sha256": "cee98c1d9157335b519a8ce73e0fb68c6f7da5620ffec639310851f0ab4cc6c1"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\01\\calibration.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\01\\calibration.json",
           "bytes": 112,
           "fnv1a64": "786f3f330140ff77",
           "sha256": "d6ff6773550801468a10a7300c26c7fa79d0b3afe0db0688d82ad727a2600384"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\01\\centerline.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\01\\centerline.json",
           "bytes": 145,
           "fnv1a64": "a78568b53741025b",
           "sha256": "20026a91b0fe93745cf633a51873b517397a34eb0bb2c092edf3526084972d8d"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\01\\image.pgm",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\01\\image.pgm",
           "bytes": 1310737,
           "fnv1a64": "b9a1826d88218fea",
           "sha256": "c6b55681b085615734597e6826b079646685493962da33ec9c707f5dbefc1ec3"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\01\\points.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\01\\points.json",
           "bytes": 1938,
           "fnv1a64": "015619a74953d56a",
           "sha256": "de5b9f1da28757aa6d941035439163a6c3a7a010b23c43391e9c4d56560b7413"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\02\\calibration.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\02\\calibration.json",
           "bytes": 112,
           "fnv1a64": "786f3f330140ff77",
           "sha256": "d6ff6773550801468a10a7300c26c7fa79d0b3afe0db0688d82ad727a2600384"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\02\\centerline.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\02\\centerline.json",
           "bytes": 145,
           "fnv1a64": "fac81f9bd6842f58",
           "sha256": "ad551bbf1cf5bf6984aa0ca7086489628653530645747686c2c2476258ea16e1"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\02\\image.pgm",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\02\\image.pgm",
           "bytes": 1310737,
           "fnv1a64": "d954fb246e218fea",
           "sha256": "fdaeab81fc5f785ee10fd014e0593bce8777e63f2aa7f233752c6ff82c2198b4"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\02\\points.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\02\\points.json",
           "bytes": 1938,
           "fnv1a64": "f76c5d8da92e94eb",
           "sha256": "17176379548cd35561fb6ddafc10f1b3528b52abd9b8d498a0430fe37bc75e0e"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\03\\calibration.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\03\\calibration.json",
           "bytes": 112,
           "fnv1a64": "786f3f330140ff77",
           "sha256": "d6ff6773550801468a10a7300c26c7fa79d0b3afe0db0688d82ad727a2600384"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\03\\centerline.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\03\\centerline.json",
           "bytes": 145,
           "fnv1a64": "80164f2c081d66ed",
           "sha256": "85f1bf82e56e685c7d0ae3d791648dd9093d67b7727c63038b50597e38925ea0"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\03\\image.pgm",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\03\\image.pgm",
           "bytes": 1310737,
           "fnv1a64": "631b74db54218fea",
           "sha256": "b1f0cb3153de54b32bb076f0e6f97bd5693954aed7d4a9f145e105d2f379549e"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\03\\points.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\698d0d3c25bef01d\\shots\\03\\points.json",
           "bytes": 1938,
           "fnv1a64": "04d6c59a7d71325f",
           "sha256": "1cea886b5f1b76246a5128fdab2696bc4d6e93c665dd65a45e4f96b8e4a3bcf3"
         }
       ],
       "fixtures": {
-        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\fixtures.json",
-        "bytes": 10268,
-        "fnv1a64": "73d328ce9cd60866",
-        "sha256": "82ee9b43822a93590f032fd76509205fbbb041d36545a5918dda985387ebb9cd"
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\fixtures.json",
+        "bytes": 10316,
+        "fnv1a64": "d87a6ccb733c10ca",
+        "sha256": "7d39c643cbf0863534e482c238caeb136683a796b3ae7d7191d58c43f1edca80"
       },
-      "fixtureRenderMs": 59.2489,
-      "publishMs": 315.7606,
-      "preparedLoadMs": 281.7545,
-      "warmupMs": 369.7299,
+      "fixtureRenderMs": 58.2043,
+      "publishMs": 274.1691,
+      "preparedLoadMs": 312.3614,
+      "warmupMs": 378.1232,
       "enginePreviouslyUsedInProcess": false,
       "warmupKind": "first_graph_use_for_loaded_engine",
-      "steadyTotalMs": 4031.0838000000003,
+      "steadyTotalMs": 4096.3114000000005,
       "preparedMeasureMs": {
         "count": 400,
-        "p50": 9.772499999999999,
-        "p95": 11.2758,
-        "max": 31.301299999999998,
-        "min": 8.8926,
-        "mean": 10.030557749999998,
+        "p50": 10.0861,
+        "p95": 11.602599999999999,
+        "max": 14.9698,
+        "min": 9.006699999999999,
+        "mean": 10.193152249999997,
         "unit": "ms",
         "percentile": "nearest rank"
       },
@@ -299,146 +302,146 @@
         "count": 400,
         "p50": 9.0,
         "p95": 11.0,
-        "max": 31.0,
+        "max": 14.0,
         "min": 8.0,
-        "mean": 9.495,
+        "mean": 9.605,
         "unit": "ms",
         "percentile": "nearest rank"
       },
       "serialPartMeasureAndJudgeMs": {
         "count": 100,
-        "p50": 39.231,
-        "p95": 42.6983,
-        "max": 74.2096,
-        "min": 37.6886,
-        "mean": 40.223835,
+        "p50": 40.6396,
+        "p95": 44.1953,
+        "max": 47.9896,
+        "min": 38.1245,
+        "mean": 40.88317999999999,
         "unit": "ms",
         "percentile": "nearest rank"
       },
       "lastSelectedFrameToJudgeMs": {
         "count": 100,
-        "p50": 10.0809,
-        "p95": 11.2739,
-        "max": 13.7054,
-        "min": 8.9476,
-        "mean": 10.149690999999997,
+        "p50": 10.0181,
+        "p95": 11.428600000000001,
+        "max": 12.031,
+        "min": 9.0618,
+        "mean": 10.164421000000003,
         "unit": "ms",
         "percentile": "nearest rank"
       },
       "productionQueueWaitMs": null,
       "productionPartEndToJudgeMs": null,
       "steadyEvidence": {
-        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\1-view\\steady-records.jsonl",
-        "bytes": 155614,
-        "fnv1a64": "93db43d311187f90",
-        "sha256": "8fa464f6f361113674de2b2b52ca7f51387b1b07d29bad48309b975c6e15323c"
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\1-view\\steady-records.jsonl",
+        "bytes": 155424,
+        "fnv1a64": "adeef52a4116f9d1",
+        "sha256": "55c04fe7c74fb3ba5bdfcf28d9ac910aea4216d8a5ffc90cb31841b8e55d3933"
       },
       "steadyLoopTiming": "Includes evidence serialization, buffered JSONL writes and memory sampling outside each per-part timer; final flush/fsync is also outside the per-part and steady-loop timers.",
       "memory": {
         "workingSet": {
-          "startBytes": 41156608,
-          "endBytes": 42160128,
-          "deltaBytes": 1003520,
-          "minBytes": 41156608,
-          "maxBytes": 42217472,
-          "linearSlopeBytesPerPart": 10906.530909090909
+          "startBytes": 40980480,
+          "endBytes": 42303488,
+          "deltaBytes": 1323008,
+          "minBytes": 40980480,
+          "maxBytes": 42303488,
+          "linearSlopeBytesPerPart": 11040.581818181818
         },
         "private": {
-          "startBytes": 27967488,
-          "endBytes": 29069312,
-          "deltaBytes": 1101824,
-          "minBytes": 27967488,
-          "maxBytes": 29069312,
-          "linearSlopeBytesPerPart": 12898.676363636363
+          "startBytes": 28119040,
+          "endBytes": 29155328,
+          "deltaBytes": 1036288,
+          "minBytes": 28037120,
+          "maxBytes": 29155328,
+          "linearSlopeBytesPerPart": 11539.549090909093
         },
         "samples": [
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 41156608,
-            "privateBytes": 27967488,
-            "peakWorkingSetBytes": 47726592,
+            "workingSetBytes": 40980480,
+            "privateBytes": 28119040,
+            "peakWorkingSetBytes": 47493120,
             "part": 0,
-            "elapsedMs": 0.037700000000000004
+            "elapsedMs": 0.0336
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 41381888,
-            "privateBytes": 28008448,
-            "peakWorkingSetBytes": 47726592,
+            "workingSetBytes": 41345024,
+            "privateBytes": 28037120,
+            "peakWorkingSetBytes": 47493120,
             "part": 10,
-            "elapsedMs": 391.7752
+            "elapsedMs": 402.6757
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 41365504,
-            "privateBytes": 28004352,
-            "peakWorkingSetBytes": 47726592,
+            "workingSetBytes": 41725952,
+            "privateBytes": 29143040,
+            "peakWorkingSetBytes": 47493120,
             "part": 20,
-            "elapsedMs": 885.2569
+            "elapsedMs": 800.7727
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 41750528,
-            "privateBytes": 28651520,
-            "peakWorkingSetBytes": 47726592,
+            "workingSetBytes": 41459712,
+            "privateBytes": 28151808,
+            "peakWorkingSetBytes": 47493120,
             "part": 30,
-            "elapsedMs": 1279.7174
+            "elapsedMs": 1192.8797
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 41742336,
-            "privateBytes": 28651520,
-            "peakWorkingSetBytes": 47726592,
+            "workingSetBytes": 41472000,
+            "privateBytes": 28160000,
+            "peakWorkingSetBytes": 47493120,
             "part": 40,
-            "elapsedMs": 1673.576
+            "elapsedMs": 1585.6482999999998
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 42057728,
-            "privateBytes": 28856320,
-            "peakWorkingSetBytes": 47726592,
+            "workingSetBytes": 41885696,
+            "privateBytes": 29151232,
+            "peakWorkingSetBytes": 47493120,
             "part": 50,
-            "elapsedMs": 2064.875
+            "elapsedMs": 1980.9249
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 42106880,
-            "privateBytes": 29069312,
-            "peakWorkingSetBytes": 47726592,
+            "workingSetBytes": 41979904,
+            "privateBytes": 29155328,
+            "peakWorkingSetBytes": 47493120,
             "part": 60,
-            "elapsedMs": 2455.3878
+            "elapsedMs": 2403.3769
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 42176512,
-            "privateBytes": 29069312,
-            "peakWorkingSetBytes": 47726592,
+            "workingSetBytes": 42045440,
+            "privateBytes": 29155328,
+            "peakWorkingSetBytes": 47493120,
             "part": 70,
-            "elapsedMs": 2843.4532
+            "elapsedMs": 2823.6932
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 42172416,
-            "privateBytes": 29065216,
-            "peakWorkingSetBytes": 47726592,
+            "workingSetBytes": 42070016,
+            "privateBytes": 29155328,
+            "peakWorkingSetBytes": 47493120,
             "part": 80,
-            "elapsedMs": 3233.0541999999996
+            "elapsedMs": 3242.1176
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 42217472,
-            "privateBytes": 29069312,
-            "peakWorkingSetBytes": 47726592,
+            "workingSetBytes": 42049536,
+            "privateBytes": 29155328,
+            "peakWorkingSetBytes": 47493120,
             "part": 90,
-            "elapsedMs": 3631.7447
+            "elapsedMs": 3670.1503
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 42160128,
-            "privateBytes": 29069312,
-            "peakWorkingSetBytes": 47726592,
+            "workingSetBytes": 42303488,
+            "privateBytes": 29155328,
+            "peakWorkingSetBytes": 47493120,
             "part": 100,
-            "elapsedMs": 4031.0826
+            "elapsedMs": 4096.3105000000005
           }
         ],
         "interpretation": "In-process samples every 10 parts after fixture allocation and warmup. Per-part JSON evidence is streamed to disk and dropped before sampling. Timing vectors are preallocated; the bounded memory-sample log, writer buffer, allocator caches and DLL state are included. This finite run alone does not prove absence of a memory leak."
@@ -455,7 +458,7 @@
                 1280,
                 1024
               ],
-              "preparedMeasureMs": 9.4581,
+              "preparedMeasureMs": 9.7478,
               "engineRunIoParseMs": 9,
               "coverage": 1.0,
               "stations": 101,
@@ -473,7 +476,7 @@
                 1280,
                 1024
               ],
-              "preparedMeasureMs": 12.4959,
+              "preparedMeasureMs": 12.7924,
               "engineRunIoParseMs": 12,
               "coverage": 0.9306930899620056,
               "stations": 101,
@@ -491,7 +494,7 @@
                 1280,
                 1024
               ],
-              "preparedMeasureMs": 10.577100000000002,
+              "preparedMeasureMs": 10.9812,
               "engineRunIoParseMs": 10,
               "coverage": 1.0,
               "stations": 101,
@@ -509,8 +512,8 @@
                 1280,
                 1024
               ],
-              "preparedMeasureMs": 9.4629,
-              "engineRunIoParseMs": 9,
+              "preparedMeasureMs": 10.3131,
+              "engineRunIoParseMs": 10,
               "coverage": 1.0,
               "stations": 101,
               "gapStations": 0,
@@ -574,8 +577,8 @@
               }
             ]
           },
-          "serialPartMeasureAndJudgeMs": 42.1321,
-          "lastSelectedFrameToJudgeMs": 9.5628,
+          "serialPartMeasureAndJudgeMs": 43.9683,
+          "lastSelectedFrameToJudgeMs": 10.4098,
           "measurementErrors": 0,
           "decisionSource": "crate::judge::judge"
         },
@@ -590,7 +593,7 @@
                 1280,
                 1024
               ],
-              "preparedMeasureMs": 11.3617,
+              "preparedMeasureMs": 11.2874,
               "engineRunIoParseMs": null,
               "error": "拍照点 P1 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段"
             },
@@ -603,7 +606,7 @@
                 1280,
                 1024
               ],
-              "preparedMeasureMs": 12.4201,
+              "preparedMeasureMs": 13.075399999999998,
               "engineRunIoParseMs": null,
               "error": "拍照点 P2 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段"
             },
@@ -616,7 +619,7 @@
                 1280,
                 1024
               ],
-              "preparedMeasureMs": 11.4061,
+              "preparedMeasureMs": 11.1135,
               "engineRunIoParseMs": null,
               "error": "拍照点 P3 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段"
             },
@@ -629,7 +632,7 @@
                 1280,
                 1024
               ],
-              "preparedMeasureMs": 10.3759,
+              "preparedMeasureMs": 10.7939,
               "engineRunIoParseMs": null,
               "error": "拍照点 P4 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段"
             }
@@ -642,8 +645,8 @@
             "segments": [],
             "gaps": []
           },
-          "serialPartMeasureAndJudgeMs": 45.606500000000004,
-          "lastSelectedFrameToJudgeMs": 10.395299999999999,
+          "serialPartMeasureAndJudgeMs": 46.3147,
+          "lastSelectedFrameToJudgeMs": 10.8174,
           "measurementErrors": 4,
           "decisionSource": "Judgement::error(99), matching cycle::Part::apply_result native-error precedence"
         }
@@ -674,290 +677,290 @@
       ],
       "recipeHash": "140da66c6c02f5a3",
       "bundleHash": "e132beced3fc4e6f",
-      "bundleRoot": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f",
+      "bundleRoot": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f",
       "releaseManifest": {
-        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\manifest.json",
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\manifest.json",
         "bytes": 2418,
         "fnv1a64": "e132beced3fc4e6f",
         "sha256": "f01fbb4f5f13c7936208d01709821abb78ea22bea009463416e6424f23b6a3bf"
       },
       "releaseResources": [
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\graph.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\graph.json",
           "bytes": 3687,
           "fnv1a64": "8ac21e3a56407178",
           "sha256": "2c0d7cd211e2e6f756a56be6ee7cb7ffc44de91b30001fa0592c37e32259f1c5"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\recipe.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\recipe.json",
           "bytes": 999,
           "fnv1a64": "bb9489e60ec1ebe1",
           "sha256": "08f887d14fa83f8ef616aa5deb90ce211aa513a0599b8e18aad9d4febea969cc"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\00\\calibration.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\00\\calibration.json",
           "bytes": 112,
           "fnv1a64": "786f3f330140ff77",
           "sha256": "d6ff6773550801468a10a7300c26c7fa79d0b3afe0db0688d82ad727a2600384"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\00\\centerline.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\00\\centerline.json",
           "bytes": 145,
           "fnv1a64": "37ffb07178eaa53e",
           "sha256": "341db29f5e2189479ec2a491cddfe633bcf58ff805ce19f43569a643414f3430"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\00\\image.pgm",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\00\\image.pgm",
           "bytes": 1310737,
           "fnv1a64": "26810ab6a2218fea",
           "sha256": "4be458e8ee59e04648c5cc7db97a45eb4d3beed72b3c4d9280472cb82853bf7c"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\00\\points.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\00\\points.json",
           "bytes": 1828,
           "fnv1a64": "87483bd261335a15",
           "sha256": "cee98c1d9157335b519a8ce73e0fb68c6f7da5620ffec639310851f0ab4cc6c1"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\01\\calibration.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\01\\calibration.json",
           "bytes": 112,
           "fnv1a64": "2b3b9466599280ba",
           "sha256": "32f111c82a261616208a4451c241f98e836cfd6eff494058f50d16ee0d1ed750"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\01\\centerline.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\01\\centerline.json",
           "bytes": 145,
           "fnv1a64": "dd4168b71256bd3e",
           "sha256": "057f1af7a8149b4192b046d50e8418dcb389b765f77e76beb56d4010e40f7c56"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\01\\image.pgm",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\01\\image.pgm",
           "bytes": 1310737,
           "fnv1a64": "b9a1826d88218fea",
           "sha256": "c6b55681b085615734597e6826b079646685493962da33ec9c707f5dbefc1ec3"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\01\\points.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\01\\points.json",
           "bytes": 1938,
           "fnv1a64": "105ea089db36aca9",
           "sha256": "07ecf5fb3d0750447f41647c9ebc7049e7bf574e863bd2afb2435cd15ca62403"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\02\\calibration.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\02\\calibration.json",
           "bytes": 112,
           "fnv1a64": "ea7c0043dc220655",
           "sha256": "bf06a001b697c3ed98cd9574b84c3e75a78344cfab3cba891a14664b729ef0f0"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\02\\centerline.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\02\\centerline.json",
           "bytes": 145,
           "fnv1a64": "3b7cc8e42c0d3a2a",
           "sha256": "7f791f4ce0ace37c01d40fa4efeea67a94441bdb89cc2663d706f71fbae4566c"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\02\\image.pgm",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\02\\image.pgm",
           "bytes": 1310737,
           "fnv1a64": "d954fb246e218fea",
           "sha256": "fdaeab81fc5f785ee10fd014e0593bce8777e63f2aa7f233752c6ff82c2198b4"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\02\\points.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\02\\points.json",
           "bytes": 1938,
           "fnv1a64": "a7f0551f1b86a479",
           "sha256": "a541f36c98b441d57d954763d830fd107d530aa49471268f58aaf55f0342d0e3"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\03\\calibration.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\03\\calibration.json",
           "bytes": 112,
           "fnv1a64": "786f3f330140ff77",
           "sha256": "d6ff6773550801468a10a7300c26c7fa79d0b3afe0db0688d82ad727a2600384"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\03\\centerline.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\03\\centerline.json",
           "bytes": 145,
           "fnv1a64": "80164f2c081d66ed",
           "sha256": "85f1bf82e56e685c7d0ae3d791648dd9093d67b7727c63038b50597e38925ea0"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\03\\image.pgm",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\03\\image.pgm",
           "bytes": 1310737,
           "fnv1a64": "631b74db54218fea",
           "sha256": "b1f0cb3153de54b32bb076f0e6f97bd5693954aed7d4a9f145e105d2f379549e"
         },
         {
-          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\03\\points.json",
+          "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\e132beced3fc4e6f\\shots\\03\\points.json",
           "bytes": 1938,
           "fnv1a64": "04d6c59a7d71325f",
           "sha256": "1cea886b5f1b76246a5128fdab2696bc4d6e93c665dd65a45e4f96b8e4a3bcf3"
         }
       ],
       "fixtures": {
-        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\fixtures.json",
-        "bytes": 23332,
-        "fnv1a64": "9662efa61b53725d",
-        "sha256": "e20099dc47ce096523d95dfeb616aa310de5619f652c043e4211ad23bf485579"
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\fixtures.json",
+        "bytes": 23476,
+        "fnv1a64": "6e8e1f0873734d33",
+        "sha256": "f3b5451da91e4cede6fc0b47313f4451e902be29387d5d4b082b849da76eedd3"
       },
-      "fixtureRenderMs": 186.1361,
-      "publishMs": 262.32660000000004,
-      "preparedLoadMs": 283.90680000000003,
-      "warmupMs": 389.6447,
+      "fixtureRenderMs": 190.2803,
+      "publishMs": 287.3768,
+      "preparedLoadMs": 344.13169999999997,
+      "warmupMs": 358.3351,
       "enginePreviouslyUsedInProcess": true,
       "warmupKind": "already_used_engine",
-      "steadyTotalMs": 3938.178,
+      "steadyTotalMs": 4167.2523,
       "preparedMeasureMs": {
         "count": 400,
-        "p50": 9.6941,
-        "p95": 10.7393,
-        "max": 14.4328,
-        "min": 8.923399999999999,
-        "mean": 9.800515749999994,
+        "p50": 10.171700000000001,
+        "p95": 11.8554,
+        "max": 15.2321,
+        "min": 9.016,
+        "mean": 10.372859999999996,
         "unit": "ms",
         "percentile": "nearest rank"
       },
       "engineRunIoParseMs": {
         "count": 400,
-        "p50": 9.0,
-        "p95": 10.0,
-        "max": 14.0,
+        "p50": 10.0,
+        "p95": 11.0,
+        "max": 15.0,
         "min": 8.0,
-        "mean": 9.2525,
+        "mean": 9.755,
         "unit": "ms",
         "percentile": "nearest rank"
       },
       "serialPartMeasureAndJudgeMs": {
         "count": 100,
-        "p50": 38.8872,
-        "p95": 41.9723,
-        "max": 44.0502,
-        "min": 37.5815,
-        "mean": 39.30182799999999,
+        "p50": 41.1646,
+        "p95": 44.2474,
+        "max": 51.2761,
+        "min": 38.4283,
+        "mean": 41.59409700000001,
         "unit": "ms",
         "percentile": "nearest rank"
       },
       "lastSelectedFrameToJudgeMs": {
         "count": 100,
-        "p50": 9.7679,
-        "p95": 10.7842,
-        "max": 12.992999999999999,
-        "min": 9.013300000000001,
-        "mean": 9.843414000000003,
+        "p50": 10.3721,
+        "p95": 11.7492,
+        "max": 14.242799999999999,
+        "min": 9.0789,
+        "mean": 10.536174999999998,
         "unit": "ms",
         "percentile": "nearest rank"
       },
       "productionQueueWaitMs": null,
       "productionPartEndToJudgeMs": null,
       "steadyEvidence": {
-        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\3-view\\steady-records.jsonl",
-        "bytes": 155454,
-        "fnv1a64": "38272fc5c29163ba",
-        "sha256": "4c68877c0f309e969a57ad6fda5345a63f4478f294926d429174978018f7472b"
+        "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-final\\3-view\\steady-records.jsonl",
+        "bytes": 155619,
+        "fnv1a64": "aa30142e0d03aa84",
+        "sha256": "b3c8d9ab654575e7f90b027cd3857cf5fec0de8a371389f20914e8553b1791b1"
       },
       "steadyLoopTiming": "Includes evidence serialization, buffered JSONL writes and memory sampling outside each per-part timer; final flush/fsync is also outside the per-part and steady-loop timers.",
       "memory": {
         "workingSet": {
-          "startBytes": 80306176,
-          "endBytes": 80297984,
-          "deltaBytes": -8192,
-          "minBytes": 79958016,
-          "maxBytes": 80306176,
-          "linearSlopeBytesPerPart": 1448.4945454545455
+          "startBytes": 80293888,
+          "endBytes": 80498688,
+          "deltaBytes": 204800,
+          "minBytes": 80269312,
+          "maxBytes": 80498688,
+          "linearSlopeBytesPerPart": 2312.378181818182
         },
         "private": {
-          "startBytes": 67039232,
-          "endBytes": 66830336,
-          "deltaBytes": -208896,
-          "minBytes": 66678784,
-          "maxBytes": 67039232,
-          "linearSlopeBytesPerPart": -901.12
+          "startBytes": 67289088,
+          "endBytes": 67289088,
+          "deltaBytes": 0,
+          "minBytes": 67014656,
+          "maxBytes": 67289088,
+          "linearSlopeBytesPerPart": -1478.2836363636363
         },
         "samples": [
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 80306176,
-            "privateBytes": 67039232,
-            "peakWorkingSetBytes": 91455488,
+            "workingSetBytes": 80293888,
+            "privateBytes": 67289088,
+            "peakWorkingSetBytes": 91578368,
             "part": 0,
-            "elapsedMs": 0.0249
+            "elapsedMs": 0.0251
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 79958016,
-            "privateBytes": 66678784,
-            "peakWorkingSetBytes": 91455488,
+            "workingSetBytes": 80269312,
+            "privateBytes": 67289088,
+            "peakWorkingSetBytes": 91578368,
             "part": 10,
-            "elapsedMs": 388.5286
+            "elapsedMs": 417.4727
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 80097280,
-            "privateBytes": 66940928,
-            "peakWorkingSetBytes": 91455488,
+            "workingSetBytes": 80269312,
+            "privateBytes": 67289088,
+            "peakWorkingSetBytes": 91578368,
             "part": 20,
-            "elapsedMs": 778.3387
+            "elapsedMs": 833.7227
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 80257024,
-            "privateBytes": 66940928,
-            "peakWorkingSetBytes": 91455488,
+            "workingSetBytes": 80453632,
+            "privateBytes": 67289088,
+            "peakWorkingSetBytes": 91578368,
             "part": 30,
-            "elapsedMs": 1176.4864
+            "elapsedMs": 1245.0832
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 80199680,
-            "privateBytes": 66940928,
-            "peakWorkingSetBytes": 91455488,
+            "workingSetBytes": 80453632,
+            "privateBytes": 67289088,
+            "peakWorkingSetBytes": 91578368,
             "part": 40,
-            "elapsedMs": 1576.3763
+            "elapsedMs": 1655.9862
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 80035840,
-            "privateBytes": 66678784,
-            "peakWorkingSetBytes": 91455488,
+            "workingSetBytes": 80400384,
+            "privateBytes": 67014656,
+            "peakWorkingSetBytes": 91578368,
             "part": 50,
-            "elapsedMs": 1974.6562999999999
+            "elapsedMs": 2077.8426
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 80220160,
-            "privateBytes": 66940928,
-            "peakWorkingSetBytes": 91455488,
+            "workingSetBytes": 80429056,
+            "privateBytes": 67014656,
+            "peakWorkingSetBytes": 91578368,
             "part": 60,
-            "elapsedMs": 2378.8747
+            "elapsedMs": 2495.7631
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 80252928,
-            "privateBytes": 66830336,
-            "peakWorkingSetBytes": 91455488,
+            "workingSetBytes": 80465920,
+            "privateBytes": 67018752,
+            "peakWorkingSetBytes": 91578368,
             "part": 70,
-            "elapsedMs": 2770.0337
+            "elapsedMs": 2912.0899
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 80195584,
-            "privateBytes": 66830336,
-            "peakWorkingSetBytes": 91455488,
+            "workingSetBytes": 80486400,
+            "privateBytes": 67018752,
+            "peakWorkingSetBytes": 91578368,
             "part": 80,
-            "elapsedMs": 3160.6706
+            "elapsedMs": 3325.1241999999997
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 80289792,
-            "privateBytes": 66830336,
-            "peakWorkingSetBytes": 91455488,
+            "workingSetBytes": 80486400,
+            "privateBytes": 67289088,
+            "peakWorkingSetBytes": 91578368,
             "part": 90,
-            "elapsedMs": 3550.8541999999998
+            "elapsedMs": 3747.6311
           },
           {
             "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
-            "workingSetBytes": 80297984,
-            "privateBytes": 66830336,
-            "peakWorkingSetBytes": 91455488,
+            "workingSetBytes": 80498688,
+            "privateBytes": 67289088,
+            "peakWorkingSetBytes": 91578368,
             "part": 100,
-            "elapsedMs": 3938.177
+            "elapsedMs": 4167.251
           }
         ],
         "interpretation": "In-process samples every 10 parts after fixture allocation and warmup. Per-part JSON evidence is streamed to disk and dropped before sampling. Timing vectors are preallocated; the bounded memory-sample log, writer buffer, allocator caches and DLL state are included. This finite run alone does not prove absence of a memory leak."
@@ -974,7 +977,7 @@
                 1280,
                 1024
               ],
-              "preparedMeasureMs": 9.5403,
+              "preparedMeasureMs": 10.0633,
               "engineRunIoParseMs": 9,
               "coverage": 1.0,
               "stations": 101,
@@ -992,8 +995,8 @@
                 1280,
                 1024
               ],
-              "preparedMeasureMs": 9.1038,
-              "engineRunIoParseMs": 9,
+              "preparedMeasureMs": 10.759599999999999,
+              "engineRunIoParseMs": 10,
               "coverage": 0.9306930899620056,
               "stations": 101,
               "gapStations": 7,
@@ -1010,7 +1013,7 @@
                 1280,
                 1024
               ],
-              "preparedMeasureMs": 9.1514,
+              "preparedMeasureMs": 9.943900000000001,
               "engineRunIoParseMs": 9,
               "coverage": 1.0,
               "stations": 101,
@@ -1028,8 +1031,8 @@
                 1280,
                 1024
               ],
-              "preparedMeasureMs": 10.5291,
-              "engineRunIoParseMs": 10,
+              "preparedMeasureMs": 9.6695,
+              "engineRunIoParseMs": 9,
               "coverage": 1.0,
               "stations": 101,
               "gapStations": 0,
@@ -1093,8 +1096,8 @@
               }
             ]
           },
-          "serialPartMeasureAndJudgeMs": 38.4728,
-          "lastSelectedFrameToJudgeMs": 10.6508,
+          "serialPartMeasureAndJudgeMs": 40.5661,
+          "lastSelectedFrameToJudgeMs": 9.7631,
           "measurementErrors": 0,
           "decisionSource": "crate::judge::judge"
         },
@@ -1109,7 +1112,7 @@
                 1280,
                 1024
               ],
-              "preparedMeasureMs": 9.4067,
+              "preparedMeasureMs": 10.115499999999999,
               "engineRunIoParseMs": null,
               "error": "拍照点 P1 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段"
             },
@@ -1122,7 +1125,7 @@
                 1280,
                 1024
               ],
-              "preparedMeasureMs": 8.6845,
+              "preparedMeasureMs": 10.0093,
               "engineRunIoParseMs": null,
               "error": "拍照点 P2 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段"
             },
@@ -1135,7 +1138,7 @@
                 1280,
                 1024
               ],
-              "preparedMeasureMs": 9.1266,
+              "preparedMeasureMs": 9.130799999999999,
               "engineRunIoParseMs": null,
               "error": "拍照点 P3 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段"
             },
@@ -1148,7 +1151,7 @@
                 1280,
                 1024
               ],
-              "preparedMeasureMs": 9.234,
+              "preparedMeasureMs": 9.083300000000001,
               "engineRunIoParseMs": null,
               "error": "拍照点 P4 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段"
             }
@@ -1161,8 +1164,8 @@
             "segments": [],
             "gaps": []
           },
-          "serialPartMeasureAndJudgeMs": 36.4799,
-          "lastSelectedFrameToJudgeMs": 9.2417,
+          "serialPartMeasureAndJudgeMs": 38.367,
+          "lastSelectedFrameToJudgeMs": 9.089500000000001,
           "measurementErrors": 4,
           "decisionSource": "Judgement::error(99), matching cycle::Part::apply_result native-error precedence"
         }
@@ -1192,5 +1195,11 @@
     ],
     "hashes": "Rust records FNV-1a for every persisted artifact. Run scripts/p0-regression-report.py report.json to verify the artifacts and add SHA256."
   },
-  "accuracyBoundary": "Default textured simimage first normal part failed strict OK. This independent constant-background performance control does not replace that failure or fix P0-09."
+  "accuracyBoundary": "Default textured simimage first normal part failed strict OK. This independent constant-background performance control does not replace that failure or fix P0-09.",
+  "previousControlReport": {
+    "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\prepared100-clean-c-1\\report.evidence.json",
+    "sha256": "913cb755a18a070ffb352cd0de8e9e2f86a03be49f0ca50ec0de71d0a80633ad",
+    "bytes": 801291
+  },
+  "previousControlBoundary": "Verified successfully before later builds. Its original software/source paths are mutable; final report uses immutable software snapshots instead."
 }
