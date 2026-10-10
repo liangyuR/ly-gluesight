@@ -149,5 +149,19 @@
     "sha256": "B784205274B8A06611322E814E894CE654F174EF5F329CCBB5E7AF54BFFB3125",
     "version": "1.1.0",
     "note": "Tests loaded and executed the actual DLL. ORT API 19/1.17.1 compatibility warning appeared; concurrent test still passed."
+  },
+  "codexRetentionReview": {
+    "sourceCommit": "732bc58",
+    "passed": 242,
+    "failed": 0,
+    "ignored": 26,
+    "seconds": 2.75,
+    "log": {
+      "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step6-retention-review-rust-c.log",
+      "sha256": "f700b6c4c22c671e047aee91976ecf14aed94c600416d383e9ae130e4e6c7613",
+      "bytes": 27630
+    },
+    "change": "Old-record retention warnings are separate from current-record integrity errors. Actual Windows DELETE sharing refusal does not invalidate the current complete three-view recording or Audit entry. Duplicate outcomes do not repeat warnings.",
+    "databasePolicy": "D-0 intentionally preserves backup/rebuild on every version mismatch; existing future73 WAL backup regression passed."
   }
 }
