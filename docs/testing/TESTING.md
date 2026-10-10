@@ -356,10 +356,40 @@ Codex P1审查发现：spool写失败先释放锁、随后发布故障，布防�
 
 ## 2026-10-10 · P0-18 当前源码压力准备与40图导入
 
-队列压力尚未进入实际故障场景：attempt2/3 被 UI 精确错误“正在处理 PLC 事务，请稍后重试取图”阻断，属于生产互斥保护；先离线示教，再连接 PLC。工具仅在按钮重新可用、无在途工件且 PLC 未锁、IDLE 或相机停止的明确安全 FAULT 下有界重试，保留每次拒绝，不吞其他错误。
+此前队列压力准备尚未进入实际故障场景：attempt2/3 被 UI 精确错误“正在处理 PLC 事务，请稍后重试取图”阻断，属于生产互斥保护；先离线示教，再连接 PLC。工具仅在按钮重新可用、无在途工件且 PLC 未锁、IDLE 或相机停止的明确安全 FAULT 下有界重试，保留每次拒绝，不吞其他错误。
 
 attempt4 的实际源码为 `9c90f66d72c8c1e55b36e22dd2d3988c93634f7e`：四点采图/试测4项全部通过且准备成功；40点采图/真实DLL试测40项全部通过，记录17次显式取图重试。随后样本导入的页面/上下文关闭。后端已持久保存normal样本 `1791632654217-163-46`，候选修订164，40张1280×1024 PGM共52,429,480字节；响应中断不能等同于保存失败。三次尝试的实际压力场景均为0，不声明压力、Prepared或400件通过。
 
-样本输入改为传输原图编码字节的base64字符串，后端仍逐图实际解码、保存原像素；空/非法base64与超过对应15MB的编码长度提前拒绝，解码后单图15MB、整组80MB、完整/唯一拍照点、实际尺寸及事务失败清理均保留，不新增内容哈希匹配。页面关闭与大数字数组传输的内存开销可能相关，但没有证据确认OOM。后续工具新增page crash/close、browser disconnected和受控子进程exit观测，仍需原生40图导入及压力重测。
+样本输入改为传输原图编码字节的base64字符串，后端仍逐图实际解码、保存原像素；空/非法base64与超过对应15MB的编码长度提前拒绝，解码后单图15MB、整组80MB、完整/唯一拍照点、实际尺寸及事务失败清理均保留，不新增内容哈希匹配。页面关闭与大数字数组传输的内存开销可能相关，但没有证据确认OOM。后续工具新增page crash/close、browser disconnected和受控子进程exit观测，该修复当时仍待原生40图导入及压力重测；attempt5的后续结果见下文。
 
 当前compact修复源码 `a9a69b597c31dbcb1c9a2fffd31d8bb73fd7c29c` 的默认Rust353项通过、0失败、31忽略，6.12秒；完整前端覆盖率42个文件/968项通过，119.13秒；statements/branches/functions/lines为91.34/89.80/88.58/93.96%，全部全局及专项门槛通过，默认maxWorkers=2未改。应用及测试两套TypeScript检查均exit0（合计2.73秒）。此前352项feature集成检查归属旧源码，不计作compact修复后通过。原始报告、已落盘边界和后续待测项见[压力准备证据](evidence/p0-pressure-preparation-c.json)。默认带噪良品P0-09及现场W0/W7保持独立缺口，后续实际压力、Prepared及400件结果另建证据。
+
+attempt5 使用源码 `3b736f144d53de9971afcb9d9e8aab00e8f1f640` 实际重测：40点采图及真实DLL试测全部通过，7次显式取图重试；normal/gap各40张原图通过UI导入，严格验证分别为OK/NG_GAP，发布生产版本1。候选验证修订165，发布后的候选版本2不能当作已发布版本。生命周期记录在清理前没有页面崩溃或上下文关闭，P0-18的40图准备重测已通过；此前attempt2/3/4失败报告保持原样。压力验收仍因下述P0-19中断。
+
+## 2026-10-10 · P0-19 压力工具误判保留的空闲快照
+
+attempt5 首个 `callback-missing-91` 场景实际将回调队列填满64项，再触发4次回调并观察掉帧4次、工件收到0帧；真实PLC DONE为90/91，历史精确cycleId/SN保存原ERR_INSPECT和acknowledged。ACK释放后机器已IDLE、plcLocked=false，回调/测量队列及运行worker均为0，归档audit-spool仅有零字节`.health`。Snapshot有意保留最后工件及结果：filled/total为404/404，四帧均missing。工具却要求`!cycle.part`，因此20秒后错误超时。
+
+这次报告整体passed=false，cases数组为空是因为工具在收尾和正常恢复完成后才登记case，不代表没有执行首个故障注入。正常恢复未执行，额外回调及测量队列压力两个场景未执行，不能记为三项压力验收通过。工具修复提交 `eacb039cb6353648193334ff7a554f3e449e2931` 按严格空闲判定核对原cycleId/SN、完整filled/result、零队列/worker、ACK及spool；25项工具回归通过、0失败，121.8407ms（`p0-quiescent-tools-c.log`）。生产实现和默认200/30000/1000/3000/5000ms超时不变，原生压力仍需重跑。原生PID43704及Modbus PID37112由工具核实路径/启动时间后仅停止自身进程，生命周期close/disconnect/exit均发生在cleanup阶段。见[空闲快照判定失败证据](evidence/p0-pressure-idle-snapshot-c.json)。洁净normal样本不能替代默认带噪良品P0-09；Prepared串行结果、CycleHost长时性能及W0/W7保持独立验收。
+
+## 2026-10-10 · P0-20 切换40点配方后的预热等待错误
+
+attempt6 源码 `eacb039cb6353648193334ff7a554f3e449e2931` 已原生复验P0-19工具修复：callback-missing-91及callback-extra-96分别实际返回90/91和90/96，原历史ACK与严格空闲收尾通过；各自后续四拍正常件返回1/0、历史ACK、完整录制及四项实际测量时序均通过。故障与恢复分别保持相机会话4、5，没有靠重启相机恢复。报告cases为4条，即两项故障加两项正常恢复，不能计成四项压力场景。
+
+第三项measure-full-99切换到40点配方后，在begin布防前实际被90/95拒绝，原因明确为“发布资源与图像引擎正在预热，完成前不能布防”；此时全局visionReady=true仅表示其他配方可就绪，不能证明所选40点配方已完成预热。尚未触发该项40次回调或实际测量队列溢出，不能把90/95当作预期90/99通过。整体报告passed=false。P0-20工具修复 `1e1162da5466424b626248ff550a9bc1fa4860f5` 新增只读`waitForPublishedRecipeReady`：需明确bundleId对应的预热成功日志、同ID/version/revision布局、无目标告警、引擎ready/measuring能力均为true及严格IDLE；其他目标错误立即失败，不发送试探工件。最多90秒仅用于工件前准备等待，原默认timeouts与生产拒绝/ACK规则不变。共享工具53项回归通过、0失败，148.2214ms（`p0-published-warmup-tools-c.log`）；400件runner还要求构建manifest.features必须为[]。当时包含第三项的attempt7原生重测待执行；其后正式通过结果见下节。原报告及实际两故障/两恢复身份、时序见[预热等待失败证据](evidence/p0-pressure-warmup-wait-c.json)，attempt5/P0-19原始证据不改。默认带噪P0-09、CycleHost400及现场W0/W7不因本次部分通过而关闭。
+
+## 2026-10-10 · 当前源码原生队列压力正式通过
+
+attempt7 源码 `1e1162da5466424b626248ff550a9bc1fa4860f5` 在独占运行窗口实际通过三项压力及三次同会话正常恢复。构建开启专用`p0-pressure-test`，实际经过普通Replay相机回调、64项回调队列/32项测量队列、真实LyFlow DLL1.1.0及外部回环Modbus TCP写回/ACK；不是默认features构建的400件性能验收。
+
+| 场景 | 实际故障结果 | 同会话下一件 | 关键实际观察 |
+| --- | --- | --- | --- |
+| callback-missing-91 | ERR_INSPECT，90/91 | OK，1/0，会话4 | 回调队列预填64，再4次触发掉4帧，received=0；四shot明确missing，录制failed无原图 |
+| callback-extra-96 | ERR_INSPECT，90/96 | OK，1/0，会话5 | 4项计划帧已收到，额外第5次回调被拒1次；超过本件计划截止计数，不吞掉异常 |
+| measure-full-99 | ERR_INSPECT，90/99 | OK，1/0，会话6 | 40次回调：消费者持有1项、队列32项、Full拒绝7项；33项done、7项明确error，40张原图完整保存 |
+
+六件原结果、精确cycleId/SN及历史acknowledged均核对通过，ACK后严格IDLE、plcLocked=false、运行worker/两队列为0、spool无待入库事件。恢复件不重启进程/相机、不发故障复位，分别4/4/40帧全部完成、完整录制及实际非负有限测量时序通过。测量队列持有上界86ms小于原proc3000ms，7项真实Full错误没有用超时替代。40点工件前只读等待4858ms/26次轮询，明确目标bundle预热成功日志耗时12407ms，随后按同ID/version/revision及就绪门槛布防；原默认200/30000/1000/3000/5000ms未改。
+
+本轮只读复核六份逐件结果、五份实际part.json及92张1280×1024 PGM的大小/头部（120,587,804字节），不计算内容哈希。首项没有收到帧，故没有part.json/原图，保留明确录制失败。其余五件的cycle/bundle/revision、shot/camera/view/session/ordinal/帧及触发计数与历史对应。最终统计6件=3OK+3ERR、机器IDLE，原生及Modbus子进程由自身身份守卫停止。正式证据见[当前队列压力验收](evidence/p0-queue-pressure-current-c.json)。P0-18准备与P0-19/P0-20工具修复均已在本轮原生复验，attempt2–6失败报告不改。
+
+后续400件工具预防修复 `09dbddb517a8644cc40f45e8864f3d1a50ab01f1`：每组先离线且严格空闲，通过正常Settings/检测节拍UI保存原值，完整settings读回相等后配置Replay；连接后要求目标bundle预热成功日志时间不早于本组saveStartedAt，避免300条日志窗口挤出旧成功日志。68项工具回归通过、0失败，155.3036ms（`p0-current-prewarm-tools-c.log`）；400件manifest.features必须为[]，本轮400原生实测仍待执行。该预防工具提交不能替换本次压力实测源1e1162d。洁净对照不关闭默认带噪良品P0-09，也不替代Robot五工况、现场W0/W7或硬件验收。

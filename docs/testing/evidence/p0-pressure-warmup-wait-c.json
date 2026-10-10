@@ -1,0 +1,1067 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-10",
+  "runtimeSourceCommit": "eacb039cb6353648193334ff7a554f3e449e2931",
+  "scope": "Native attempt6: two real callback faults and two same-session normal recoveries passed; selected-recipe warmup refused third scenario before pressure injection",
+  "status": "selected-recipe-warmup-wait-fix-retest-pending",
+  "passed": false,
+  "benchmark": false,
+  "physicalValidation": false,
+  "s7HardwareValidation": false,
+  "artifacts": {
+    "report": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\attempt-6\\report.json",
+    "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-queue-pressure-attempt6-c.log"
+  },
+  "sourceGuards": {
+    "initial": {
+      "repository": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation",
+      "head": "eacb039cb6353648193334ff7a554f3e449e2931",
+      "businessDirty": "",
+      "checkedAt": "2026-10-10T12:09:36.775Z"
+    },
+    "last": {
+      "repository": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation",
+      "head": "eacb039cb6353648193334ff7a554f3e449e2931",
+      "businessDirty": "",
+      "checkedAt": "2026-10-10T12:11:23.913Z"
+    }
+  },
+  "counts": {
+    "completedFaultScenarios": 2,
+    "completedNormalRecoveries": 2,
+    "originalCasesEntries": 4,
+    "measurementQueuePressureExecuted": false
+  },
+  "passedCases": [
+    {
+      "tag": "callback-missing-91",
+      "passed": true,
+      "expected": {
+        "resultCode": 90,
+        "faultCode": 91
+      },
+      "actualDoneWire": {
+        "heartbeat": false,
+        "partStart": true,
+        "partEnd": true,
+        "resultAck": false,
+        "faultReset": false,
+        "visionReady": true,
+        "armed": false,
+        "busy": true,
+        "done": true,
+        "partSn": 750000100,
+        "productCode": 724,
+        "shotCount": 4,
+        "resultCode": 90,
+        "faultCode": 91,
+        "resultSn": 750000100
+      },
+      "history": {
+        "id": 1,
+        "ts": 1791634279128,
+        "sn": 750000100,
+        "recipeId": "P0-PRESSURE-4",
+        "recipeVersion": 1,
+        "recipeRevision": "P0-PRESSURE-4-v1",
+        "triggerMode": "fly",
+        "verdict": "ERR_INSPECT",
+        "plcCode": 90,
+        "faultCode": 91,
+        "reason": "拍照点 P1（cam1）、P2（cam1）、P3（cam1）、P4（cam1）没有收到帧",
+        "drainMs": 1016,
+        "framesExpected": 4,
+        "framesReceived": 0,
+        "retestOf": null,
+        "cycleId": "0f04f3bb5c76f3e8df847dd84065ec4f",
+        "bundleId": "release-1791634185705696800-8836-0",
+        "delivery": {
+          "state": "acknowledged",
+          "updatedAt": 1791634279173,
+          "message": "PLC 已确认结果（开发协议）"
+        }
+      },
+      "recording": {
+        "state": "failed",
+        "available": false,
+        "directory": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.pressure\\records\\20261010\\20261010_201117_990_ERR_INSPECT_cycle_0f04f3bb5c76f3e8df847dd84065ec4f",
+        "errors": [
+          "4 个计划拍照点没有录制原图",
+          "本件没有已确认写入的原图"
+        ]
+      },
+      "quiescent": {
+        "phase": "IDLE",
+        "plcLocked": false,
+        "part": {
+          "cycleId": "0f04f3bb5c76f3e8df847dd84065ec4f",
+          "sn": 750000100,
+          "received": 0,
+          "queue": 0,
+          "filled": 404,
+          "total": 404,
+          "measuredFrames": 0
+        },
+        "result": {
+          "cycleId": "0f04f3bb5c76f3e8df847dd84065ec4f",
+          "sn": 750000100,
+          "verdict": "ERR_INSPECT",
+          "plcCode": 90,
+          "faultCode": 91,
+          "drainMs": 1016
+        },
+        "frameStatuses": [
+          "missing",
+          "missing",
+          "missing",
+          "missing"
+        ],
+        "measurementWorkers": {
+          "capacity": 4,
+          "running": 0,
+          "timedOut": 0,
+          "availableCapacity": 4
+        },
+        "pressure": {
+          "schemaVersion": 1,
+          "identifier": "com.xyzrobotics.tujiaovision.p0-tests.pressure",
+          "enabled": true,
+          "callbackCapacity": 64,
+          "measureCapacity": 32,
+          "callbackQueued": 0,
+          "measureQueued": 0,
+          "callbackHold": false,
+          "measureHold": false,
+          "callbackConsumerHeld": false,
+          "measureBlockedConsumer": false,
+          "holdRemainingMs": 0,
+          "heldJob": null,
+          "measureQueueFull": 0,
+          "cameras": [
+            {
+              "id": "cam1",
+              "session": 4,
+              "counterSource": "synthetic",
+              "lastTriggerCounter": 68
+            }
+          ]
+        },
+        "spoolEventReceipts": [],
+        "wire": {
+          "heartbeat": true,
+          "partStart": false,
+          "partEnd": false,
+          "resultAck": false,
+          "faultReset": false,
+          "visionReady": true,
+          "armed": false,
+          "busy": false,
+          "done": false,
+          "partSn": 750000100,
+          "productCode": 724,
+          "shotCount": 4,
+          "resultCode": 90,
+          "faultCode": 91,
+          "resultSn": 750000100
+        }
+      },
+      "measurements": [],
+      "faultInjection": {
+        "count": 4,
+        "emits": 4,
+        "drops": 4,
+        "stage": "actual-result-ack"
+      },
+      "sessionAfterFault": 4,
+      "recoverySession": null
+    },
+    {
+      "tag": "recovery-callback-missing-91",
+      "passed": true,
+      "expected": {
+        "resultCode": 1,
+        "faultCode": 0
+      },
+      "actualDoneWire": {
+        "heartbeat": true,
+        "partStart": true,
+        "partEnd": true,
+        "resultAck": false,
+        "faultReset": false,
+        "visionReady": true,
+        "armed": false,
+        "busy": true,
+        "done": true,
+        "partSn": 750000101,
+        "productCode": 724,
+        "shotCount": 4,
+        "resultCode": 1,
+        "faultCode": 0,
+        "resultSn": 750000101
+      },
+      "history": {
+        "id": 2,
+        "ts": 1791634279707,
+        "sn": 750000101,
+        "recipeId": "P0-PRESSURE-4",
+        "recipeVersion": 1,
+        "recipeRevision": "P0-PRESSURE-4-v1",
+        "triggerMode": "fly",
+        "verdict": "OK",
+        "plcCode": 1,
+        "faultCode": 0,
+        "reason": "4 个拍照点全部合格 · 404 点",
+        "drainMs": 43,
+        "framesExpected": 4,
+        "framesReceived": 4,
+        "retestOf": null,
+        "cycleId": "e4ff5a1047093026322f8c2a83e22fea",
+        "bundleId": "release-1791634185705696800-8836-0",
+        "delivery": {
+          "state": "acknowledged",
+          "updatedAt": 1791634279755,
+          "message": "PLC 已确认结果（开发协议）"
+        }
+      },
+      "recording": {
+        "state": "complete",
+        "available": true,
+        "directory": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.pressure\\records\\20261010\\20261010_201119_403_OK_cycle_e4ff5a1047093026322f8c2a83e22fea",
+        "errors": []
+      },
+      "quiescent": {
+        "phase": "IDLE",
+        "plcLocked": false,
+        "part": {
+          "cycleId": "e4ff5a1047093026322f8c2a83e22fea",
+          "sn": 750000101,
+          "received": 4,
+          "queue": 0,
+          "filled": 404,
+          "total": 404,
+          "measuredFrames": 4
+        },
+        "result": {
+          "cycleId": "e4ff5a1047093026322f8c2a83e22fea",
+          "sn": 750000101,
+          "verdict": "OK",
+          "plcCode": 1,
+          "faultCode": 0,
+          "drainMs": 43
+        },
+        "frameStatuses": [
+          "done",
+          "done",
+          "done",
+          "done"
+        ],
+        "measurementWorkers": {
+          "capacity": 4,
+          "running": 0,
+          "timedOut": 0,
+          "availableCapacity": 4
+        },
+        "pressure": {
+          "schemaVersion": 1,
+          "identifier": "com.xyzrobotics.tujiaovision.p0-tests.pressure",
+          "enabled": true,
+          "callbackCapacity": 64,
+          "measureCapacity": 32,
+          "callbackQueued": 0,
+          "measureQueued": 0,
+          "callbackHold": false,
+          "measureHold": false,
+          "callbackConsumerHeld": false,
+          "measureBlockedConsumer": false,
+          "holdRemainingMs": 0,
+          "heldJob": null,
+          "measureQueueFull": 0,
+          "cameras": [
+            {
+              "id": "cam1",
+              "session": 4,
+              "counterSource": "synthetic",
+              "lastTriggerCounter": 72
+            }
+          ]
+        },
+        "spoolEventReceipts": [],
+        "wire": {
+          "heartbeat": false,
+          "partStart": false,
+          "partEnd": false,
+          "resultAck": false,
+          "faultReset": false,
+          "visionReady": true,
+          "armed": false,
+          "busy": false,
+          "done": false,
+          "partSn": 750000101,
+          "productCode": 724,
+          "shotCount": 4,
+          "resultCode": 1,
+          "faultCode": 0,
+          "resultSn": 750000101
+        }
+      },
+      "measurements": [
+        {
+          "cycleId": "e4ff5a1047093026322f8c2a83e22fea",
+          "shotId": "P1",
+          "camera": "cam1",
+          "bundleId": "release-1791634185705696800-8836-0",
+          "sn": 750000101,
+          "k": 0,
+          "located": true,
+          "score": 1,
+          "ms": 10,
+          "queueMs": 0,
+          "engineMs": 10,
+          "coreMs": 10,
+          "error": null
+        },
+        {
+          "cycleId": "e4ff5a1047093026322f8c2a83e22fea",
+          "shotId": "P2",
+          "camera": "cam1",
+          "bundleId": "release-1791634185705696800-8836-0",
+          "sn": 750000101,
+          "k": 1,
+          "located": true,
+          "score": 1,
+          "ms": 10,
+          "queueMs": 0,
+          "engineMs": 10,
+          "coreMs": 10,
+          "error": null
+        },
+        {
+          "cycleId": "e4ff5a1047093026322f8c2a83e22fea",
+          "shotId": "P3",
+          "camera": "cam1",
+          "bundleId": "release-1791634185705696800-8836-0",
+          "sn": 750000101,
+          "k": 2,
+          "located": true,
+          "score": 1,
+          "ms": 10,
+          "queueMs": 0,
+          "engineMs": 10,
+          "coreMs": 10,
+          "error": null
+        },
+        {
+          "cycleId": "e4ff5a1047093026322f8c2a83e22fea",
+          "shotId": "P4",
+          "camera": "cam1",
+          "bundleId": "release-1791634185705696800-8836-0",
+          "sn": 750000101,
+          "k": 3,
+          "located": true,
+          "score": 1,
+          "ms": 10,
+          "queueMs": 0,
+          "engineMs": 10,
+          "coreMs": 10,
+          "error": null
+        }
+      ],
+      "faultInjection": {},
+      "sessionAfterFault": null,
+      "recoverySession": 4
+    },
+    {
+      "tag": "callback-extra-96",
+      "passed": true,
+      "expected": {
+        "resultCode": 90,
+        "faultCode": 96
+      },
+      "actualDoneWire": {
+        "heartbeat": false,
+        "partStart": true,
+        "partEnd": true,
+        "resultAck": false,
+        "faultReset": false,
+        "visionReady": true,
+        "armed": false,
+        "busy": true,
+        "done": true,
+        "partSn": 750000102,
+        "productCode": 724,
+        "shotCount": 4,
+        "resultCode": 90,
+        "faultCode": 96,
+        "resultSn": 750000102
+      },
+      "history": {
+        "id": 3,
+        "ts": 1791634281864,
+        "sn": 750000102,
+        "recipeId": "P0-PRESSURE-4",
+        "recipeVersion": 1,
+        "recipeRevision": "P0-PRESSURE-4-v1",
+        "triggerMode": "fly",
+        "verdict": "ERR_INSPECT",
+        "plcCode": 90,
+        "faultCode": 96,
+        "reason": "相机 cam1 回调触发计数 65 超过本件计划截止计数 64",
+        "drainMs": 27,
+        "framesExpected": 4,
+        "framesReceived": 4,
+        "retestOf": null,
+        "cycleId": "3aca441985d3cde7a6531993aa3a9c29",
+        "bundleId": "release-1791634185705696800-8836-0",
+        "delivery": {
+          "state": "acknowledged",
+          "updatedAt": 1791634281927,
+          "message": "PLC 已确认结果（开发协议）"
+        }
+      },
+      "recording": {
+        "state": "complete",
+        "available": true,
+        "directory": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.pressure\\records\\20261010\\20261010_201121_696_ERR_INSPECT_cycle_3aca441985d3cde7a6531993aa3a9c29",
+        "errors": []
+      },
+      "quiescent": {
+        "phase": "IDLE",
+        "plcLocked": false,
+        "part": {
+          "cycleId": "3aca441985d3cde7a6531993aa3a9c29",
+          "sn": 750000102,
+          "received": 4,
+          "queue": 0,
+          "filled": 404,
+          "total": 404,
+          "measuredFrames": 4
+        },
+        "result": {
+          "cycleId": "3aca441985d3cde7a6531993aa3a9c29",
+          "sn": 750000102,
+          "verdict": "ERR_INSPECT",
+          "plcCode": 90,
+          "faultCode": 96,
+          "drainMs": 27
+        },
+        "frameStatuses": [
+          "done",
+          "done",
+          "done",
+          "done"
+        ],
+        "measurementWorkers": {
+          "capacity": 4,
+          "running": 0,
+          "timedOut": 0,
+          "availableCapacity": 4
+        },
+        "pressure": {
+          "schemaVersion": 1,
+          "identifier": "com.xyzrobotics.tujiaovision.p0-tests.pressure",
+          "enabled": true,
+          "callbackCapacity": 64,
+          "measureCapacity": 32,
+          "callbackQueued": 0,
+          "measureQueued": 0,
+          "callbackHold": false,
+          "measureHold": false,
+          "callbackConsumerHeld": false,
+          "measureBlockedConsumer": false,
+          "holdRemainingMs": 0,
+          "heldJob": null,
+          "measureQueueFull": 0,
+          "cameras": [
+            {
+              "id": "cam1",
+              "session": 5,
+              "counterSource": "synthetic",
+              "lastTriggerCounter": 65
+            }
+          ]
+        },
+        "spoolEventReceipts": [],
+        "wire": {
+          "heartbeat": true,
+          "partStart": false,
+          "partEnd": false,
+          "resultAck": false,
+          "faultReset": false,
+          "visionReady": true,
+          "armed": false,
+          "busy": false,
+          "done": false,
+          "partSn": 750000102,
+          "productCode": 724,
+          "shotCount": 4,
+          "resultCode": 90,
+          "faultCode": 96,
+          "resultSn": 750000102
+        }
+      },
+      "measurements": [
+        {
+          "cycleId": "3aca441985d3cde7a6531993aa3a9c29",
+          "shotId": "P3",
+          "camera": "cam1",
+          "bundleId": "release-1791634185705696800-8836-0",
+          "sn": 750000102,
+          "k": 2,
+          "located": true,
+          "score": 1,
+          "ms": 17,
+          "queueMs": 0,
+          "engineMs": 16,
+          "coreMs": 16,
+          "error": null
+        },
+        {
+          "cycleId": "3aca441985d3cde7a6531993aa3a9c29",
+          "shotId": "P2",
+          "camera": "cam1",
+          "bundleId": "release-1791634185705696800-8836-0",
+          "sn": 750000102,
+          "k": 1,
+          "located": true,
+          "score": 1,
+          "ms": 20,
+          "queueMs": 0,
+          "engineMs": 20,
+          "coreMs": 20,
+          "error": null
+        },
+        {
+          "cycleId": "3aca441985d3cde7a6531993aa3a9c29",
+          "shotId": "P4",
+          "camera": "cam1",
+          "bundleId": "release-1791634185705696800-8836-0",
+          "sn": 750000102,
+          "k": 3,
+          "located": true,
+          "score": 1,
+          "ms": 21,
+          "queueMs": 0,
+          "engineMs": 21,
+          "coreMs": 20,
+          "error": null
+        },
+        {
+          "cycleId": "3aca441985d3cde7a6531993aa3a9c29",
+          "shotId": "P1",
+          "camera": "cam1",
+          "bundleId": "release-1791634185705696800-8836-0",
+          "sn": 750000102,
+          "k": 0,
+          "located": true,
+          "score": 1,
+          "ms": 21,
+          "queueMs": 0,
+          "engineMs": 21,
+          "coreMs": 20,
+          "error": null
+        }
+      ],
+      "faultInjection": {
+        "count": 4,
+        "emits": 5,
+        "drops": 1,
+        "stage": "actual-result-ack"
+      },
+      "sessionAfterFault": 5,
+      "recoverySession": null
+    },
+    {
+      "tag": "recovery-callback-extra-96",
+      "passed": true,
+      "expected": {
+        "resultCode": 1,
+        "faultCode": 0
+      },
+      "actualDoneWire": {
+        "heartbeat": true,
+        "partStart": true,
+        "partEnd": true,
+        "resultAck": false,
+        "faultReset": false,
+        "visionReady": true,
+        "armed": false,
+        "busy": true,
+        "done": true,
+        "partSn": 750000103,
+        "productCode": 724,
+        "shotCount": 4,
+        "resultCode": 1,
+        "faultCode": 0,
+        "resultSn": 750000103
+      },
+      "history": {
+        "id": 4,
+        "ts": 1791634282604,
+        "sn": 750000103,
+        "recipeId": "P0-PRESSURE-4",
+        "recipeVersion": 1,
+        "recipeRevision": "P0-PRESSURE-4-v1",
+        "triggerMode": "fly",
+        "verdict": "OK",
+        "plcCode": 1,
+        "faultCode": 0,
+        "reason": "4 个拍照点全部合格 · 404 点",
+        "drainMs": 28,
+        "framesExpected": 4,
+        "framesReceived": 4,
+        "retestOf": null,
+        "cycleId": "5f697992b749dde3e077c4b0c9adcfbf",
+        "bundleId": "release-1791634185705696800-8836-0",
+        "delivery": {
+          "state": "acknowledged",
+          "updatedAt": 1791634282635,
+          "message": "PLC 已确认结果（开发协议）"
+        }
+      },
+      "recording": {
+        "state": "complete",
+        "available": true,
+        "directory": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.pressure\\records\\20261010\\20261010_201122_261_OK_cycle_5f697992b749dde3e077c4b0c9adcfbf",
+        "errors": []
+      },
+      "quiescent": {
+        "phase": "IDLE",
+        "plcLocked": false,
+        "part": {
+          "cycleId": "5f697992b749dde3e077c4b0c9adcfbf",
+          "sn": 750000103,
+          "received": 4,
+          "queue": 0,
+          "filled": 404,
+          "total": 404,
+          "measuredFrames": 4
+        },
+        "result": {
+          "cycleId": "5f697992b749dde3e077c4b0c9adcfbf",
+          "sn": 750000103,
+          "verdict": "OK",
+          "plcCode": 1,
+          "faultCode": 0,
+          "drainMs": 28
+        },
+        "frameStatuses": [
+          "done",
+          "done",
+          "done",
+          "done"
+        ],
+        "measurementWorkers": {
+          "capacity": 4,
+          "running": 0,
+          "timedOut": 0,
+          "availableCapacity": 4
+        },
+        "pressure": {
+          "schemaVersion": 1,
+          "identifier": "com.xyzrobotics.tujiaovision.p0-tests.pressure",
+          "enabled": true,
+          "callbackCapacity": 64,
+          "measureCapacity": 32,
+          "callbackQueued": 0,
+          "measureQueued": 0,
+          "callbackHold": false,
+          "measureHold": false,
+          "callbackConsumerHeld": false,
+          "measureBlockedConsumer": false,
+          "holdRemainingMs": 0,
+          "heldJob": null,
+          "measureQueueFull": 0,
+          "cameras": [
+            {
+              "id": "cam1",
+              "session": 5,
+              "counterSource": "synthetic",
+              "lastTriggerCounter": 72
+            }
+          ]
+        },
+        "spoolEventReceipts": [],
+        "wire": {
+          "heartbeat": false,
+          "partStart": false,
+          "partEnd": false,
+          "resultAck": false,
+          "faultReset": false,
+          "visionReady": true,
+          "armed": false,
+          "busy": false,
+          "done": false,
+          "partSn": 750000103,
+          "productCode": 724,
+          "shotCount": 4,
+          "resultCode": 1,
+          "faultCode": 0,
+          "resultSn": 750000103
+        }
+      },
+      "measurements": [
+        {
+          "cycleId": "5f697992b749dde3e077c4b0c9adcfbf",
+          "shotId": "P1",
+          "camera": "cam1",
+          "bundleId": "release-1791634185705696800-8836-0",
+          "sn": 750000103,
+          "k": 0,
+          "located": true,
+          "score": 1,
+          "ms": 16,
+          "queueMs": 0,
+          "engineMs": 16,
+          "coreMs": 16,
+          "error": null
+        },
+        {
+          "cycleId": "5f697992b749dde3e077c4b0c9adcfbf",
+          "shotId": "P2",
+          "camera": "cam1",
+          "bundleId": "release-1791634185705696800-8836-0",
+          "sn": 750000103,
+          "k": 1,
+          "located": true,
+          "score": 1,
+          "ms": 17,
+          "queueMs": 0,
+          "engineMs": 16,
+          "coreMs": 16,
+          "error": null
+        },
+        {
+          "cycleId": "5f697992b749dde3e077c4b0c9adcfbf",
+          "shotId": "P3",
+          "camera": "cam1",
+          "bundleId": "release-1791634185705696800-8836-0",
+          "sn": 750000103,
+          "k": 2,
+          "located": true,
+          "score": 1,
+          "ms": 15,
+          "queueMs": 0,
+          "engineMs": 15,
+          "coreMs": 14,
+          "error": null
+        },
+        {
+          "cycleId": "5f697992b749dde3e077c4b0c9adcfbf",
+          "shotId": "P4",
+          "camera": "cam1",
+          "bundleId": "release-1791634185705696800-8836-0",
+          "sn": 750000103,
+          "k": 3,
+          "located": true,
+          "score": 1,
+          "ms": 17,
+          "queueMs": 0,
+          "engineMs": 17,
+          "coreMs": 16,
+          "error": null
+        }
+      ],
+      "faultInjection": {},
+      "sessionAfterFault": null,
+      "recoverySession": 5
+    }
+  ],
+  "warmupFailure": {
+    "issue": "P0-20",
+    "failedStage": "measure-full-99",
+    "error": "AssertionError [ERR_ASSERTION]: Unexpected pre-arm refusal: {\"state\":{\"heartbeat\":false,\"partStart\":true,\"partEnd\":false,\"resultAck\":false,\"faultReset\":false,\"visionReady\":true,\"armed\":false,\"busy\":false,\"done\":true,\"partSn\":750000104,\"productCode\":760,\"shotCount\":40,\"resultCode\":90,\"faultCode\":95,\"resultSn\":750000104},\"cycle\":{\"measurementWorkers\":{\"capacity\":4,\"running\":0,\"timedOut\":0,\"availableCapacity\":4},\"phase\":\"REPORT\",\"plcLocked\":true,\"plcHandshake\":null,\"since\":1791634284901,\"fault\":null,\"productSource\":\"plc\",\"activeRecipeId\":\"P0-PRESSURE-40\",\"triggerMode\":\"fly\",\"part\":null,\"result\":{\"cycleId\":\"9ef8bb4085f03378890a1b3993f2a35a\",\"sn\":750000104,\"recipeId\":\"P0-PRESSURE-40\",\"ts\":1791634284901,\"drainMs\":null,\"verdict\":\"ERR_INSPECT\",\"plcCode\":90,\"faultCode\":95,\"reason\":\"发布资源与图像引擎正在预热，完成前不能布防\",\"segments\":[],\"gaps\":[]},\"stats\":{\"total\":5,\"ok\":2,\"ng\":0,\"err\":3},\"strayFrames\":3,\"alarms\":[\"配方 MTR-HSG-A 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布\",\"配方 MTR-HSG-B 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布\",\"配方 P0-PRESSURE-40 开不了工：发布资源与图像引擎正在预热，完成前不能布防\"]}}\n    at file:///C:/Users/11601/project/ly-gluesight/tmp/p0-final-validation/tests/native/p0-cyclehost-queue-pressure.mjs:309:5\n    at async until (file:///C:/Users/11601/project/ly-gluesight/tmp/p0-final-validation/tests/native/p0-cyclehost-queue-pressure.mjs:18:23)\n    at async file:///C:/Users/11601/project/ly-gluesight/tmp/p0-final-validation/tests/native/p0-cyclehost-queue-pressure.mjs:467:70",
+    "requestedScenario": "measure-full-99",
+    "requestedExpectedCodes": [
+      90,
+      99
+    ],
+    "stageBeforeRefusal": "hold",
+    "requestedShots": 40,
+    "sn": 750000104,
+    "before": {
+      "rig": {
+        "cam": 0,
+        "id": "cam1",
+        "name": "相机 1",
+        "source": "replay",
+        "acquisition": "triggered",
+        "ready": true,
+        "message": "回放 40 帧 · 下一帧第 1 张",
+        "device": null,
+        "sdkVersion": "4.8.1.2",
+        "frames": 188,
+        "fps": 24.539757,
+        "maxFps": null,
+        "lostPackets": 0,
+        "droppedFrames": 5,
+        "warnings": []
+      },
+      "pressure": {
+        "schemaVersion": 1,
+        "identifier": "com.xyzrobotics.tujiaovision.p0-tests.pressure",
+        "enabled": true,
+        "callbackCapacity": 64,
+        "measureCapacity": 32,
+        "callbackQueued": 0,
+        "measureQueued": 0,
+        "callbackHold": false,
+        "measureHold": false,
+        "callbackConsumerHeld": false,
+        "measureBlockedConsumer": false,
+        "holdRemainingMs": 0,
+        "heldJob": null,
+        "measureQueueFull": 0,
+        "cameras": [
+          {
+            "id": "cam1",
+            "session": 6,
+            "counterSource": "synthetic",
+            "lastTriggerCounter": 0
+          }
+        ]
+      }
+    },
+    "heldGate": {
+      "schemaVersion": 1,
+      "identifier": "com.xyzrobotics.tujiaovision.p0-tests.pressure",
+      "enabled": true,
+      "callbackCapacity": 64,
+      "measureCapacity": 32,
+      "callbackQueued": 0,
+      "measureQueued": 0,
+      "callbackHold": false,
+      "measureHold": true,
+      "callbackConsumerHeld": false,
+      "measureBlockedConsumer": false,
+      "holdRemainingMs": 9993,
+      "heldJob": null,
+      "measureQueueFull": 0,
+      "cameras": [
+        {
+          "id": "cam1",
+          "session": 6,
+          "counterSource": "synthetic",
+          "lastTriggerCounter": 0
+        }
+      ]
+    },
+    "lastWire": {
+      "heartbeat": true,
+      "partStart": true,
+      "partEnd": false,
+      "resultAck": false,
+      "faultReset": false,
+      "visionReady": true,
+      "armed": false,
+      "busy": false,
+      "done": true,
+      "partSn": 750000104,
+      "productCode": 760,
+      "shotCount": 40,
+      "resultCode": 90,
+      "faultCode": 95,
+      "resultSn": 750000104
+    },
+    "lastCycle": {
+      "measurementWorkers": {
+        "capacity": 4,
+        "running": 0,
+        "timedOut": 0,
+        "availableCapacity": 4
+      },
+      "phase": "REPORT",
+      "plcLocked": true,
+      "plcHandshake": null,
+      "since": 1791634284901,
+      "fault": null,
+      "productSource": "plc",
+      "activeRecipeId": "P0-PRESSURE-40",
+      "triggerMode": "fly",
+      "part": null,
+      "result": {
+        "cycleId": "9ef8bb4085f03378890a1b3993f2a35a",
+        "sn": 750000104,
+        "recipeId": "P0-PRESSURE-40",
+        "ts": 1791634284901,
+        "drainMs": null,
+        "verdict": "ERR_INSPECT",
+        "plcCode": 90,
+        "faultCode": 95,
+        "reason": "发布资源与图像引擎正在预热，完成前不能布防",
+        "segments": [],
+        "gaps": []
+      },
+      "stats": {
+        "total": 5,
+        "ok": 2,
+        "ng": 0,
+        "err": 3
+      },
+      "strayFrames": 3,
+      "alarms": [
+        "配方 MTR-HSG-A 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布",
+        "配方 MTR-HSG-B 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布",
+        "配方 P0-PRESSURE-40 开不了工：发布资源与图像引擎正在预热，完成前不能布防"
+      ]
+    },
+    "actual40CallbacksEmitted": false,
+    "actualMeasurementQueueOverflowObserved": false,
+    "globalReadyIsNotSelectedRecipeReady": true,
+    "drainMs": null,
+    "fixSourceCommit": "1e1162da5466424b626248ff550a9bc1fa4860f5",
+    "toolCorrection": {
+      "helper": "waitForPublishedRecipeReady",
+      "positiveEvidence": [
+        "production warmup success log for exact explicit bundleId",
+        "selected layout exact id/version/revision",
+        "no target recipe alarm",
+        "LyFlow backend with ready=true and measuring=true capability",
+        "sim stopped and strict quiescent IDLE"
+      ],
+      "otherTargetError": "fail immediately",
+      "readOnly": true,
+      "probeWorkpieceSent": false,
+      "preWorkpiecePreparationTimeoutMs": 90000,
+      "productionTimeoutsChanged": false,
+      "current400BuildFeaturesRequired": [],
+      "nativeAttempt7Executed": false
+    },
+    "focusedRegression": {
+      "passed": 53,
+      "failed": 0,
+      "durationMs": 148.2214,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-published-warmup-tools-c.log"
+    }
+  },
+  "settings": {
+    "productSource": "plc",
+    "manualRecipeId": null,
+    "timeouts": {
+      "armMs": 200,
+      "motionMs": 30000,
+      "drainMs": 1000,
+      "procMs": 3000,
+      "ackMs": 5000
+    },
+    "historyDays": 180,
+    "lyflowCore": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native\\lyflow_core.dll",
+    "vision": true,
+    "record": "all",
+    "recordKeep": 1000,
+    "recordMaxGb": 20
+  },
+  "lifecycle": [
+    {
+      "event": "browser-connected",
+      "at": "2026-10-10T12:09:38.254Z",
+      "stage": "fresh-pressure-native",
+      "cleanup": false,
+      "debugPort": 9343,
+      "pid": 8836
+    },
+    {
+      "event": "native-page-selected",
+      "at": "2026-10-10T12:09:38.259Z",
+      "stage": "fresh-pressure-native",
+      "cleanup": false,
+      "url": "http://tauri.localhost/#/guide"
+    },
+    {
+      "event": "cleanup-start",
+      "at": "2026-10-10T12:11:25.050Z",
+      "stage": "measure-full-99",
+      "cleanup": true
+    },
+    {
+      "event": "page-close",
+      "at": "2026-10-10T12:11:25.059Z",
+      "stage": "measure-full-99",
+      "cleanup": true,
+      "url": "http://tauri.localhost/#/plc"
+    },
+    {
+      "event": "browser-disconnected",
+      "at": "2026-10-10T12:11:25.059Z",
+      "stage": "measure-full-99",
+      "cleanup": true
+    },
+    {
+      "event": "owned-child-exit",
+      "at": "2026-10-10T12:11:25.679Z",
+      "stage": "measure-full-99",
+      "cleanup": true,
+      "name": "native-pressure",
+      "pid": 8836,
+      "executable": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\gluesight-pressure-eacb039cb6353648193334ff7a554f3e449e2931.exe",
+      "code": null,
+      "signal": "SIGTERM"
+    },
+    {
+      "event": "owned-child-exit",
+      "at": "2026-10-10T12:11:26.303Z",
+      "stage": "measure-full-99",
+      "cleanup": true,
+      "name": "modbus-fixture",
+      "pid": 20572,
+      "executable": "C:\\Users\\11601\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+      "code": null,
+      "signal": "SIGTERM"
+    }
+  ],
+  "processCleanup": [
+    {
+      "name": "modbus-fixture",
+      "identity": {
+        "pid": 20572,
+        "path": "C:\\Users\\11601\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+        "start": "2026-10-10T12:09:36.8046802Z",
+        "workingSetBytes": 16420864,
+        "privateBytes": 10014720
+      },
+      "stopped": {
+        "at": "2026-10-10T12:11:26.303Z",
+        "verified": {
+          "pid": 20572,
+          "path": "C:\\Users\\11601\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+          "start": "2026-10-10T12:09:36.8046802Z",
+          "workingSetBytes": 16556032,
+          "privateBytes": 9932800
+        },
+        "exitCode": null,
+        "signal": "SIGTERM"
+      },
+      "error": null
+    },
+    {
+      "name": "native-pressure",
+      "identity": {
+        "pid": 8836,
+        "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\gluesight-pressure-eacb039cb6353648193334ff7a554f3e449e2931.exe",
+        "start": "2026-10-10T12:09:37.3153780Z",
+        "workingSetBytes": 24621056,
+        "privateBytes": 3731456
+      },
+      "stopped": {
+        "at": "2026-10-10T12:11:25.680Z",
+        "verified": {
+          "pid": 8836,
+          "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\gluesight-pressure-eacb039cb6353648193334ff7a554f3e449e2931.exe",
+          "start": "2026-10-10T12:09:37.3153780Z",
+          "workingSetBytes": 83206144,
+          "privateBytes": 59809792
+        },
+        "exitCode": null,
+        "signal": "SIGTERM"
+      },
+      "error": null
+    }
+  ],
+  "boundaries": [
+    "Original attempt5 and P0-19 evidence unchanged; attempt6 verifies its quiescent predicate on two fault/recovery pairs",
+    "Two fault scenarios plus two recovery entries are not four independent pressure scenarios",
+    "90/95 pre-arm warmup refusal does not satisfy expected90/99 measurement pressure",
+    "No claim of full pressure suite, CycleHost400, default noisy P0-09, or physical hardware acceptance",
+    "Null pre-arm timing remains null; normal measurement timings retain actual numeric observations",
+    "No business content hash matching introduced; default timeout configuration unchanged"
+  ]
+}
