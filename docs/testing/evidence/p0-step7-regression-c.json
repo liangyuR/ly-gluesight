@@ -238,6 +238,21 @@
         "sha256": "689ca0df55d953c033332485c96e082b849d7fe2ee15a7a75968d8a9e5298074",
         "bytes": 30070
       }
+    },
+    "rustArmVerificationFinal": {
+      "passed": 263,
+      "failed": 0,
+      "ignored": 30,
+      "seconds": 2.79,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-arm-rust-final-c.log",
+        "bytes": 30398,
+        "sha256": "383625f05017c6c74e5f5c5f0bdbb87868f4a67240cd8e85b415e7c26ab48845"
+      }
+    },
+    "armVerificationFix": {
+      "evidence": "p0-arm-verify-c.json",
+      "nativeRetryPending": true
     }
   },
   "pending": [

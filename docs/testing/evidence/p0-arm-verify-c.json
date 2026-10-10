@@ -1,0 +1,374 @@
+{
+  "status": "software_fix_passed_native_retry_pending",
+  "issue": "P0-14",
+  "armLimitMs": 200,
+  "failedActualCycleHost": {
+    "status": "failed",
+    "scope": "Actual quiet CycleHost CLEAN replay run; stopped at the first real arming verification failure",
+    "requestedParts": 100,
+    "completedParts": 2,
+    "acceptedPartsStrictOK": 2,
+    "failedAttemptPart": 3,
+    "verdict": "ERR_INSPECT",
+    "plcCode": 90,
+    "faultCode": 99,
+    "reason": "布防前发布资源核验超时或异常",
+    "configuredArmMs": 200,
+    "acceptedArmMs": [
+      158,
+      195
+    ],
+    "runtimeCommit": "735b86d",
+    "toolCommit": "7390825",
+    "executableSha256": "7D85BEE6E6BA8E5CA155C976F21E918E10DC08E2AF8E251244B5AD9FDB8650B4",
+    "artifacts": [
+      {
+        "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-cyclehost-final\\tricam-normal\\cyclehost-report.json",
+        "bytes": 61284,
+        "sha256": "c9f246e90ed3f9cb9e70afda130a3540011e5e9e43158eaf302ee9c15ced9d6e"
+      },
+      {
+        "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-cyclehost-final\\tricam-normal\\failed-attempt.json",
+        "bytes": 6550,
+        "sha256": "f4a58f7df8edb81e26570a896e205098f6c53b840d2b313cc28a9b95e860a4bc"
+      },
+      {
+        "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-cyclehost-final\\suite.json",
+        "bytes": 3087,
+        "sha256": "b709fc4811b06e2216c2d76cf01f89cdfb62420327d4c95f8a900f8149708e79"
+      },
+      {
+        "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\output\\playwright\\p0-cyclehost-final\\tricam-normal\\failure-cycle-logs.json",
+        "bytes": 9185,
+        "sha256": "f5970385a02db39f911308d2d7408988188454b4e04485c2cfcf5c5db4ec3f86"
+      }
+    ],
+    "failureNotWaived": true,
+    "physicalValidation": false
+  },
+  "fix": {
+    "baseline": "7390825",
+    "sourceFiles": [
+      {
+        "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\release.rs",
+        "bytes": 50274,
+        "sha256": "9b845e696deb875594da9ddd6b9a8cae25246a643b36a60448b142e5480a9d3f"
+      },
+      {
+        "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-audit\\src-tauri\\src\\production\\tests.rs",
+        "bytes": 5912,
+        "sha256": "e46a99be6bdc9c3997903cd1dfb7670a5c5bda19aa6832a9cfa8f4a256d67f8e"
+      }
+    ],
+    "contract": "Full semantic load remains mandatory. Each verification rereads every manifest/resource/DLL byte; size/FNV and immutable exact resource bytes must match. Directory inventory and link/reparse checks remain. Ancestor metadata reuse is local to one verification. No timeout increase or stat-only cache.",
+    "memory": "One shared immutable byte snapshot per loaded ReleaseBundle, approximately the frozen release resource size; clones share Arc. Temporary verification buffers are dropped each call.",
+    "filesystemBoundary": "Checks and reads are not an atomic filesystem snapshot; this existing concurrent-mutation boundary is unchanged."
+  },
+  "before": {
+    "log": {
+      "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-arm-verify-before-c.log",
+      "bytes": 3591,
+      "sha256": "b6e59c03c75958b2cb1d1af146453680f735b63be12f206ab4bf2c041f6a3854"
+    },
+    "observations": {
+      "release": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.performance\\vision\\releases\\P0-CYCLEHOST-3V-CLEAN\\5b6c94728317f8cb",
+      "bundleHash": "5b6c94728317f8cb",
+      "dllHash": "014eb64e169b3cfc",
+      "samples": [
+        {
+          "loadMs": 103.10679999999999,
+          "verifyMs": 103.87830000000001,
+          "dllMs": 8.2791
+        },
+        {
+          "loadMs": 102.94330000000001,
+          "verifyMs": 103.5635,
+          "dllMs": 7.8373
+        },
+        {
+          "loadMs": 111.30579999999999,
+          "verifyMs": 117.2793,
+          "dllMs": 7.4655
+        },
+        {
+          "loadMs": 108.038,
+          "verifyMs": 103.31750000000001,
+          "dllMs": 8.974400000000001
+        },
+        {
+          "loadMs": 102.3273,
+          "verifyMs": 101.2517,
+          "dllMs": 7.2811
+        },
+        {
+          "loadMs": 106.3612,
+          "verifyMs": 102.1876,
+          "dllMs": 7.6033
+        },
+        {
+          "loadMs": 97.96539999999999,
+          "verifyMs": 99.13619999999999,
+          "dllMs": 7.7444999999999995
+        },
+        {
+          "loadMs": 110.9327,
+          "verifyMs": 102.1588,
+          "dllMs": 7.5784
+        },
+        {
+          "loadMs": 101.71910000000001,
+          "verifyMs": 101.4641,
+          "dllMs": 7.4152000000000005
+        },
+        {
+          "loadMs": 99.36240000000001,
+          "verifyMs": 101.9417,
+          "dllMs": 7.5786
+        },
+        {
+          "loadMs": 98.9699,
+          "verifyMs": 95.70960000000001,
+          "dllMs": 7.7887
+        },
+        {
+          "loadMs": 95.6274,
+          "verifyMs": 102.76639999999999,
+          "dllMs": 8.6493
+        },
+        {
+          "loadMs": 106.619,
+          "verifyMs": 118.7504,
+          "dllMs": 8.574200000000001
+        },
+        {
+          "loadMs": 103.32860000000001,
+          "verifyMs": 88.31509999999999,
+          "dllMs": 7.5391
+        },
+        {
+          "loadMs": 80.39240000000001,
+          "verifyMs": 80.826,
+          "dllMs": 8.2191
+        },
+        {
+          "loadMs": 85.5169,
+          "verifyMs": 76.084,
+          "dllMs": 7.5626
+        },
+        {
+          "loadMs": 78.5793,
+          "verifyMs": 91.09530000000001,
+          "dllMs": 8.5086
+        },
+        {
+          "loadMs": 87.2989,
+          "verifyMs": 77.48140000000001,
+          "dllMs": 7.6529
+        },
+        {
+          "loadMs": 77.17739999999999,
+          "verifyMs": 75.9428,
+          "dllMs": 8.0173
+        },
+        {
+          "loadMs": 77.2281,
+          "verifyMs": 80.9179,
+          "dllMs": 7.6136
+        }
+      ]
+    },
+    "statistics": {
+      "loadMs": {
+        "min": 77.17739999999999,
+        "p50": 99.36240000000001,
+        "p95": 110.9327,
+        "max": 111.30579999999999
+      },
+      "verifyMs": {
+        "min": 75.9428,
+        "p50": 101.2517,
+        "p95": 117.2793,
+        "max": 118.7504
+      },
+      "dllMs": {
+        "min": 7.2811,
+        "p50": 7.6529,
+        "p95": 8.6493,
+        "max": 8.974400000000001
+      }
+    }
+  },
+  "after": {
+    "log": {
+      "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-arm-verify-after-c.log",
+      "bytes": 3495,
+      "sha256": "9d1bca725908d7ceee85bb9be40fdd4331034541f8a7f6bd9786214333cd0a3e"
+    },
+    "observations": {
+      "release": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.performance\\vision\\releases\\P0-CYCLEHOST-3V-CLEAN\\5b6c94728317f8cb",
+      "bundleHash": "5b6c94728317f8cb",
+      "dllHash": "014eb64e169b3cfc",
+      "samples": [
+        {
+          "loadMs": 177.8815,
+          "verifyMs": 54.3049,
+          "dllMs": 8.940999999999999
+        },
+        {
+          "loadMs": 177.0576,
+          "verifyMs": 42.0486,
+          "dllMs": 10.5236
+        },
+        {
+          "loadMs": 195.5273,
+          "verifyMs": 34.755300000000005,
+          "dllMs": 8.9511
+        },
+        {
+          "loadMs": 177.5176,
+          "verifyMs": 30.0238,
+          "dllMs": 12.6778
+        },
+        {
+          "loadMs": 117.2388,
+          "verifyMs": 25.563599999999997,
+          "dllMs": 7.285200000000001
+        },
+        {
+          "loadMs": 103.9689,
+          "verifyMs": 25.5325,
+          "dllMs": 7.5015
+        },
+        {
+          "loadMs": 99.3757,
+          "verifyMs": 24.6631,
+          "dllMs": 7.3467
+        },
+        {
+          "loadMs": 101.3404,
+          "verifyMs": 25.451999999999998,
+          "dllMs": 7.1575
+        },
+        {
+          "loadMs": 91.6197,
+          "verifyMs": 31.8591,
+          "dllMs": 9.0464
+        },
+        {
+          "loadMs": 126.0547,
+          "verifyMs": 22.7422,
+          "dllMs": 7.324
+        },
+        {
+          "loadMs": 94.73230000000001,
+          "verifyMs": 23.2849,
+          "dllMs": 7.085100000000001
+        },
+        {
+          "loadMs": 90.0623,
+          "verifyMs": 21.656000000000002,
+          "dllMs": 7.4418
+        },
+        {
+          "loadMs": 94.3737,
+          "verifyMs": 23.0484,
+          "dllMs": 7.3271999999999995
+        },
+        {
+          "loadMs": 92.2333,
+          "verifyMs": 23.361,
+          "dllMs": 7.0973
+        },
+        {
+          "loadMs": 91.7844,
+          "verifyMs": 22.3402,
+          "dllMs": 7.271599999999999
+        },
+        {
+          "loadMs": 93.293,
+          "verifyMs": 22.4878,
+          "dllMs": 7.2198
+        },
+        {
+          "loadMs": 94.57260000000001,
+          "verifyMs": 23.155700000000003,
+          "dllMs": 7.0761
+        },
+        {
+          "loadMs": 90.737,
+          "verifyMs": 23.2407,
+          "dllMs": 7.7842
+        },
+        {
+          "loadMs": 94.1508,
+          "verifyMs": 25.8456,
+          "dllMs": 7.6932
+        },
+        {
+          "loadMs": 87.0035,
+          "verifyMs": 18.9688,
+          "dllMs": 8.0624
+        }
+      ]
+    },
+    "statistics": {
+      "loadMs": {
+        "min": 87.0035,
+        "p50": 94.57260000000001,
+        "p95": 177.8815,
+        "max": 195.5273
+      },
+      "verifyMs": {
+        "min": 18.9688,
+        "p50": 23.361,
+        "p95": 42.0486,
+        "max": 54.3049
+      },
+      "dllMs": {
+        "min": 7.0761,
+        "p50": 7.3467,
+        "p95": 10.5236,
+        "max": 12.6778
+      }
+    }
+  },
+  "checks": {
+    "release": {
+      "passed": 15,
+      "failed": 0,
+      "ignored": 1,
+      "seconds": 1.45,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-arm-release-tests-c.log",
+        "bytes": 3540,
+        "sha256": "a1d3c187d6c608d023f5889b09fddeb271aca69ed0f8e53c69eb70bf3c7bb8fb"
+      }
+    },
+    "nativeBundleDllTamper": {
+      "passed": 1,
+      "failed": 0,
+      "seconds": 0.5,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-arm-native-tamper-c.log",
+        "bytes": 2211,
+        "sha256": "e85688572a08b978d0d8522443d79fc7d1a95cf5a0fe94801601378110789c8f"
+      }
+    },
+    "rust": {
+      "passed": 263,
+      "failed": 0,
+      "ignored": 30,
+      "seconds": 2.79,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-arm-rust-final-c.log",
+        "bytes": 30398,
+        "sha256": "383625f05017c6c74e5f5c5f0bdbb87868f4a67240cd8e85b415e7c26ab48845"
+      }
+    }
+  },
+  "boundaries": [
+    "Read-only 20-sample verification profiling is not actual CycleHost end-to-end acceptance.",
+    "Previous actual third-part failure remains failed and preserved. Fresh native suite required with the same 200ms limit.",
+    "No algorithm, detector limits, published resources or input pixels changed."
+  ]
+}

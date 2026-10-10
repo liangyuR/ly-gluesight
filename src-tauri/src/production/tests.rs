@@ -53,9 +53,14 @@ fn graphs_keep_exact_identity_after_json_round_trip_with_nonbinary_pixel_scale()
 #[ignore = "requires LYFLOW_CORE_DLL with glue.taught_path; immutable production bundle integration"]
 fn native_bundle_warms_measures_frozen_resources_and_rejects_tampering() {
     let dll = std::env::var_os("LYFLOW_CORE_DLL").expect("Set LYFLOW_CORE_DLL to a taught-path core");
-    let engine = Arc::new(Engine::load(std::path::Path::new(&dll)).unwrap());
+    let mut engine = Engine::load(std::path::Path::new(&dll)).unwrap();
     let root = std::env::temp_dir().join(format!("gluesight-production-{}-{}", std::process::id(), ly_plc::now_ms()));
     std::fs::create_dir_all(&root).unwrap();
+    let dll_bytes = std::fs::read(&dll).unwrap();
+    let dll_copy = root.join("core-verification-copy.dll");
+    std::fs::write(&dll_copy, &dll_bytes).unwrap();
+    engine.path = dll_copy.clone();
+    let engine = Arc::new(engine);
     let mut doc = crate::recipe::samples().remove(1);
     doc.spacing = 1.0;
     doc.detect = crate::recipe::DetectParams { search_mm: 8.0, polarity: crate::recipe::Polarity::Dark, width_range: [1.5, 6.5] };
@@ -80,6 +85,14 @@ fn native_bundle_warms_measures_frozen_resources_and_rejects_tampering() {
     let started = Instant::now();
     prepared.warm().unwrap();
     let warm_ms = started.elapsed().as_millis();
+    let mut changed_dll = dll_bytes.clone();
+    let changed_index = changed_dll.len() / 2;
+    changed_dll[changed_index] ^= 1;
+    std::fs::write(&dll_copy, &changed_dll).unwrap();
+    assert_eq!(std::fs::metadata(&dll_copy).unwrap().len(), dll_bytes.len() as u64);
+    assert!(prepared.verify().unwrap_err().contains("算法核心库文件已变化"));
+    std::fs::write(&dll_copy, &dll_bytes).unwrap();
+    prepared.verify().unwrap();
     let first = prepared.measure(0, &image(256, 160), "production-frozen-before").unwrap();
     assert_eq!(first.idx.len(), 41);
     assert!(first.w.iter().all(|width| (*width - 4.0).abs() < 0.4));

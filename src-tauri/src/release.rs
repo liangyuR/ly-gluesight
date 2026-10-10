@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
+use std::sync::Arc;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -121,14 +122,42 @@ pub struct ReleaseBundle {
     pub root: PathBuf,
     pub manifest: ReleaseManifest,
     pub recipe: RecipeDoc,
+    snapshot: Arc<ReleaseSnapshot>,
+}
+
+#[derive(Debug)]
+struct ReleaseSnapshot {
+    hash: String,
+    manifest: ReleaseManifest,
+    recipe: RecipeDoc,
+    manifest_bytes: Vec<u8>,
+    files: BTreeMap<String, Vec<u8>>,
 }
 
 impl ReleaseBundle {
     pub fn verify(&self) -> Result<(), String> {
-        let current = load_directory(&self.root, &self.manifest.recipe_id, &self.hash)?;
-        if current.manifest != self.manifest || current.recipe != self.recipe {
+        let snapshot = &self.snapshot;
+        if self.hash != snapshot.hash || self.manifest != snapshot.manifest || self.recipe != snapshot.recipe {
             return Err("发布包与已加载快照不一致".into());
         }
+        let mut checked = BTreeSet::new();
+        let manifest = read_file_once(&self.root.join("manifest.json"), &mut checked)?;
+        if manifest != snapshot.manifest_bytes || fnv_hex(&manifest) != self.hash {
+            return Err("发布清单 hash 不符，发布包已被改动".into());
+        }
+        for entry in &snapshot.manifest.files {
+            let bytes = read_file_once(&self.root.join(&entry.path), &mut checked)?;
+            if bytes.len() as u64 != entry.bytes || fnv_hex(&bytes) != entry.hash
+                || snapshot.files.get(&entry.path) != Some(&bytes)
+            {
+                return Err(format!("发布资源 {} 的 hash、大小或内容不符，文件已被改动", entry.path));
+            }
+        }
+        let mut actual = BTreeSet::new();
+        inventory_once(&self.root, &self.root, &mut actual, &mut checked)?;
+        let mut expected: BTreeSet<_> = snapshot.files.keys().cloned().collect();
+        expected.insert("manifest.json".into());
+        if actual != expected { return Err("发布目录存在清单以外的文件或缺失文件".into()); }
         Ok(())
     }
 
@@ -331,7 +360,11 @@ fn load_directory(root: &Path, recipe_id: &str, bundle_hash: &str) -> Result<Rel
     if actual != expected {
         return Err("发布目录存在清单以外的文件或缺失文件".into());
     }
-    Ok(ReleaseBundle { hash: bundle_hash.into(), root: root.to_path_buf(), manifest, recipe })
+    let snapshot = Arc::new(ReleaseSnapshot {
+        hash: bundle_hash.into(), manifest: manifest.clone(), recipe: recipe.clone(), manifest_bytes,
+        files: files.into_iter().map(|(name, bytes)| (name.to_owned(), bytes)).collect(),
+    });
+    Ok(ReleaseBundle { hash: bundle_hash.into(), root: root.to_path_buf(), manifest, recipe, snapshot })
 }
 
 fn centerline_data(recipe: &Recipe, k: usize, size: Option<[u32; 2]>) -> Centerline {
@@ -483,6 +516,45 @@ fn reject_links(path: &Path, allow_missing: bool) -> Result<(), String> {
             Err(e) if allow_missing && e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("发布资源不存在或无法读取 {}：{e}", cursor.display())),
         }
+    }
+    Ok(())
+}
+
+fn reject_links_once(path: &Path, checked: &mut BTreeSet<PathBuf>) -> Result<(), String> {
+    let absolute = absolute_path(path)?;
+    let mut cursor = PathBuf::new();
+    for component in absolute.components() {
+        cursor.push(component.as_os_str());
+        if matches!(component, Component::Prefix(_)) || checked.contains(&cursor) { continue; }
+        let metadata = fs::symlink_metadata(&cursor).map_err(|e| format!("发布资源不存在或无法读取 {}：{e}", cursor.display()))?;
+        if is_link(&metadata) { return Err(format!("发布资源不允许符号链接或目录重解析点：{}", cursor.display())); }
+        checked.insert(cursor.clone());
+    }
+    Ok(())
+}
+
+fn read_file_once(path: &Path, checked: &mut BTreeSet<PathBuf>) -> Result<Vec<u8>, String> {
+    reject_links_once(path, checked)?;
+    let mut file = fs::File::open(path).map_err(|e| format!("读取发布资源 {} 失败：{e}", path.display()))?;
+    let metadata = file.metadata().map_err(|e| e.to_string())?;
+    if !metadata.is_file() { return Err(format!("发布资源不是普通文件：{}", path.display())); }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|e| format!("读取发布资源 {} 失败：{e}", path.display()))?;
+    Ok(bytes)
+}
+
+fn inventory_once(root: &Path, dir: &Path, files: &mut BTreeSet<String>, checked: &mut BTreeSet<PathBuf>) -> Result<(), String> {
+    reject_links_once(dir, checked)?;
+    for entry in fs::read_dir(dir).map_err(|e| format!("读取发布目录 {} 失败：{e}", dir.display()))? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if is_link(&metadata) { return Err(format!("发布目录包含符号链接或目录重解析点：{}", path.display())); }
+        if metadata.is_dir() { inventory_once(root, &path, files, checked)?; }
+        else if metadata.is_file() {
+            let relative = path.strip_prefix(root).map_err(|_| "发布资源逃逸目录")?.to_str().ok_or("发布文件名不是 UTF-8")?.replace('\\', "/");
+            validate_relative(&relative)?;
+            if !files.insert(relative) { return Err("发布目录包含重复资源".into()); }
+        } else { return Err(format!("发布目录包含非普通文件：{}", path.display())); }
     }
     Ok(())
 }
@@ -653,6 +725,30 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires GLUESIGHT_VERIFY_RELEASE and LYFLOW_CORE_DLL; read-only verification profiling"]
+    fn published_bundle_verification_profile() {
+        let root = PathBuf::from(std::env::var_os("GLUESIGHT_VERIFY_RELEASE").expect("Set GLUESIGHT_VERIFY_RELEASE"));
+        let hash = root.file_name().unwrap().to_str().unwrap();
+        let id = root.parent().unwrap().file_name().unwrap().to_str().unwrap();
+        let bundle = load_directory(&root, id, hash).unwrap();
+        let dll = PathBuf::from(std::env::var_os("LYFLOW_CORE_DLL").expect("Set LYFLOW_CORE_DLL"));
+        let expected_dll = fnv_hex(&fs::read(&dll).unwrap());
+        let mut samples = Vec::new();
+        for _ in 0..20 {
+            let start = std::time::Instant::now();
+            load_directory(&root, id, hash).unwrap();
+            let load_ms = start.elapsed().as_secs_f64() * 1000.0;
+            let start = std::time::Instant::now();
+            bundle.verify().unwrap();
+            let verify_ms = start.elapsed().as_secs_f64() * 1000.0;
+            let start = std::time::Instant::now();
+            assert_eq!(fnv_hex(&fs::read(&dll).unwrap()), expected_dll);
+            samples.push(serde_json::json!({"loadMs":load_ms,"verifyMs":verify_ms,"dllMs":start.elapsed().as_secs_f64()*1000.0}));
+        }
+        println!("{}", serde_json::json!({"release":root,"bundleHash":hash,"dllHash":expected_dll,"samples":samples}));
+    }
+
+    #[test]
     fn fnv_matches_the_recipe_hash_algorithm() {
         assert_eq!(fnv_hex(b""), "cbf29ce484222325");
         assert_eq!(fnv_hex(b"hello"), "a430d84680aabd0b");
@@ -699,6 +795,82 @@ mod tests {
         fs::write(&calibration, original).unwrap();
         fs::remove_file(resource.image.unwrap()).unwrap();
         assert!(bundle.verify().unwrap_err().contains("image.pgm"));
+    }
+
+    #[test]
+    fn loaded_snapshot_rejects_public_identity_changes() {
+        let directory = Directory::new();
+        let bundle = publish(&directory.releases(), input()).unwrap();
+        let mut changed = bundle.clone();
+        changed.hash = "0000000000000000".into();
+        assert!(changed.verify().unwrap_err().contains("快照"));
+        let mut changed = bundle.clone();
+        changed.manifest.files[0].bytes += 1;
+        assert!(changed.verify().unwrap_err().contains("快照"));
+        let mut changed = bundle.clone();
+        changed.recipe.shots[0].path[0][0] += 1.0;
+        assert!(changed.verify().unwrap_err().contains("快照"));
+        bundle.verify().unwrap();
+    }
+
+    #[test]
+    fn every_verification_reads_all_resource_bytes_and_the_manifest_again() {
+        let directory = Directory::new();
+        let bundle = publish(&directory.releases(), input()).unwrap();
+        for entry in &bundle.manifest.files {
+            let path = bundle.root.join(&entry.path);
+            let original = fs::read(&path).unwrap();
+            let mut changed = original.clone();
+            *changed.last_mut().unwrap() ^= 1;
+            fs::write(&path, changed).unwrap();
+            assert!(bundle.verify().unwrap_err().contains(&entry.path));
+            fs::write(&path, original).unwrap();
+            bundle.verify().unwrap();
+        }
+        let path = bundle.root.join("manifest.json");
+        let original = fs::read(&path).unwrap();
+        let mut changed = original.clone();
+        changed.push(b' ');
+        fs::write(&path, changed).unwrap();
+        assert!(bundle.verify().unwrap_err().contains("发布清单"));
+        fs::write(&path, original).unwrap();
+        let extra = bundle.root.join("shots/00/extra.json");
+        fs::write(&extra, b"{}").unwrap();
+        assert!(bundle.verify().unwrap_err().contains("清单以外"));
+        fs::remove_file(extra).unwrap();
+        fs::create_dir(bundle.root.join("empty")).unwrap();
+        bundle.verify().unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn loaded_snapshot_rejects_windows_resource_and_ancestor_junctions() {
+        fn junction(link: &Path, target: &Path) {
+            let result = std::process::Command::new("pwsh")
+                .args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:GLUESIGHT_TEST_LINK -Target $env:GLUESIGHT_TEST_TARGET -ErrorAction Stop | Out-Null"])
+                .env("GLUESIGHT_TEST_LINK", link).env("GLUESIGHT_TEST_TARGET", target)
+                .output().unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+            assert!(is_link(&fs::symlink_metadata(link).unwrap()));
+        }
+        let directory = Directory::new();
+        let bundle = publish(&directory.releases(), input()).unwrap();
+        let link = bundle.root.join("shots/00");
+        let target = directory.0.join("resource-original");
+        fs::rename(&link, &target).unwrap();
+        junction(&link, &target);
+        assert!(bundle.verify().unwrap_err().contains("重解析点"));
+        fs::remove_dir(&link).unwrap();
+        fs::rename(&target, &link).unwrap();
+        bundle.verify().unwrap();
+        let link = directory.0.join("vision");
+        let target = directory.0.join("vision-original");
+        fs::rename(&link, &target).unwrap();
+        junction(&link, &target);
+        assert!(bundle.verify().unwrap_err().contains("重解析点"));
+        fs::remove_dir(&link).unwrap();
+        fs::rename(&target, &link).unwrap();
+        bundle.verify().unwrap();
     }
 
     #[test]
