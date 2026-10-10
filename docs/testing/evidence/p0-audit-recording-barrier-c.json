@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "sourceGate": "04c3839898b2e99c0bfb2593ae70909ed1b7a499",
+  "passed": true,
+  "review": {
+    "pullRequest": "https://github.com/liangyuR/ly-gluesight/pull/15",
+    "thread": "PRRT_kwDOUlfafc6rDan8",
+    "priority": "P1",
+    "problem": "The prior recording callback can still be pending after ACK and all Insert/Submission/Delivery receipts have been drained. Empty spool alone must not permit the next part."
+  },
+  "fix": {
+    "registration": "Register the explicit cycleId under the spool synchronization boundary before Recorder.begin, including synchronous Off/early failure callbacks.",
+    "completion": "Remove the pending cycle only after the actual Recording outcome has been durably appended under the same spool lock. Failed append retains both pending registration and the latched failure.",
+    "readiness": "Next arming and history cleanup require no pending recording, no failure, a running writer and an empty spool.",
+    "timeout": "Async failure publication remains independent of the disk I/O lock.",
+    "restart": "The in-memory recording barrier is not a new Acquire journal. Existing durable events replay before interrupted SQLite Pending recording recovery and PLC ACK recovery."
+  },
+  "tests": {
+    "focused": {
+      "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib durable_recording_barrier -- --test-threads=1",
+      "passed": 3,
+      "failed": 0,
+      "durationSeconds": 0.56
+    },
+    "full": {
+      "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib",
+      "passed": 341,
+      "failed": 0,
+      "ignored": 30,
+      "durationSeconds": 3.76
+    },
+    "cases": [
+      "Actual Recorder writes three raw views and finishes; real SQLite already has ACK and spool is empty, but a gated actual callback keeps readiness and cleanup blocked until Recording is durably accepted and replayed.",
+      "Terminal Recording append rejected by real spool capacity retains pending cycle and failure even with empty spool.",
+      "Actual Recorder Off synchronous callback before Insert clears pending only after durable append; the queued event still blocks readiness until inserted and replayed."
+    ],
+    "logs": [
+      {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-audit-recording-barrier-focused-c.log",
+        "bytes": 2651
+      },
+      {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-audit-recording-barrier-rust-c.log",
+        "bytes": 38778
+      }
+    ]
+  },
+  "nativePressureOrPerformanceRetested": false,
+  "nativeCrashRecoveryRetested": false,
+  "limits": [
+    "Original native crash recovery remains attributed to 8ffc091.",
+    "A slow recording outcome can temporarily hold readiness after ACK; original verdict and ACK are preserved, and normal readiness returns after durable acceptance and replay.",
+    "No claim of physical hardware acceptance, accuracy, power-loss zero loss or newly durable Acquire results."
+  ]
+}

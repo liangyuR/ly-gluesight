@@ -127,16 +127,38 @@ fn spool_io<T>(spool: &Mutex<spool::Spool>, failure: &Mutex<Option<String>>,
     result
 }
 
-fn with_ready_spool<T>(spool: &Mutex<spool::Spool>, failure: &Mutex<Option<String>>, running: &AtomicBool,
+fn with_ready_spool<T>(spool: &Mutex<spool::Spool>, failure: &Mutex<Option<String>>, running: &AtomicBool, pending_recordings: &Mutex<BTreeSet<String>>,
     action: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
     let spool = spool.lock().map_err(|_| "追溯 spool 锁损坏")?;
     if !running.load(Ordering::SeqCst) { return Err("持久追溯线程已停止，禁止布防".into()); }
     if let Some(error) = failure.lock().map_err(|_| "追溯状态锁损坏")?.as_ref() { return Err(error.clone()); }
+    if !pending_recordings.lock().map_err(|_| "录制收尾状态锁损坏")?.is_empty() {
+        return Err("原图录制尚未完成耐久接受，禁止下一件布防或历史清理".into());
+    }
     if !spool.empty() { return Err("持久追溯仍有待入库事件，禁止下一件布防或历史清理".into()); }
     let result = action();
     drop(spool);
     result
+}
+
+fn track_recording(spool: &Mutex<spool::Spool>, failure: &Mutex<Option<String>>, pending_recordings: &Mutex<BTreeSet<String>>, cycle_id: &str) -> Result<(), String> {
+    spool_io(spool, failure, |_| {
+        if !pending_recordings.lock().map_err(|_| "录制收尾状态锁损坏")?.insert(cycle_id.into()) {
+            return Err(format!("cycleId={cycle_id} 的录制仍未完成，拒绝重复开始"));
+        }
+        Ok(())
+    })
+}
+
+fn persist_event(spool: &Mutex<spool::Spool>, failure: &Mutex<Option<String>>, pending_recordings: &Mutex<BTreeSet<String>>, event: &Event) -> Result<(), String> {
+    spool_io(spool, failure, |spool| {
+        spool.append(event)?;
+        if let Event::Recording(outcome) = event {
+            pending_recordings.lock().map_err(|_| "录制收尾状态锁损坏")?.remove(&outcome.cycle_id);
+        }
+        Ok(())
+    })
 }
 
 #[derive(Clone)]
@@ -146,6 +168,7 @@ pub struct Audit {
     spool: Arc<Mutex<spool::Spool>>,
     failure: Arc<Mutex<Option<String>>>,
     running: Arc<AtomicBool>,
+    pending_recordings: Arc<Mutex<BTreeSet<String>>>,
 }
 
 impl Audit {
@@ -158,7 +181,7 @@ impl Audit {
             if !complete { return Err(format!("cycleId={cycle} 的持久追溯尚未恢复，保留 spool 并拒绝启动生产")); }
         }
         let (tx, rx) = sync_channel(1);
-        let audit = Self { tx, app: app.clone(), spool: Arc::new(Mutex::new(spool)), failure: Arc::new(Mutex::new(None)), running: Arc::new(AtomicBool::new(true)) };
+        let audit = Self { tx, app: app.clone(), spool: Arc::new(Mutex::new(spool)), failure: Arc::new(Mutex::new(None)), running: Arc::new(AtomicBool::new(true)), pending_recordings: Arc::new(Mutex::new(BTreeSet::new())) };
         let worker = audit.clone();
         std::thread::Builder::new().name("inspection-audit".into()).spawn(move || writer(worker, rx))
             .map_err(|error| format!("追溯线程启动失败：{error}"))?;
@@ -166,11 +189,17 @@ impl Audit {
     }
 
     pub fn ready(&self) -> Result<(), String> {
-        with_ready_spool(&self.spool, &self.failure, &self.running, || Ok(()))
+        with_ready_spool(&self.spool, &self.failure, &self.running, &self.pending_recordings, || Ok(()))
     }
 
     pub fn with_ready<T>(&self, action: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-        with_ready_spool(&self.spool, &self.failure, &self.running, action)
+        with_ready_spool(&self.spool, &self.failure, &self.running, &self.pending_recordings, action)
+    }
+
+    pub fn begin_recording(&self, cycle_id: &str) -> Result<(), String> {
+        let result = track_recording(&self.spool, &self.failure, &self.pending_recordings, cycle_id);
+        if let Err(error) = &result { self.fail(error.clone()); }
+        result
     }
 
     pub fn protected_recording_directories(&self, root: &Path) -> Result<Vec<PathBuf>, String> {
@@ -188,7 +217,7 @@ impl Audit {
 
     fn persist(&self, event: Event) -> Result<(), String> {
         let cycle = event.cycle_id().to_string();
-        let result = spool_io(&self.spool, &self.failure, |spool| spool.append(&event));
+        let result = persist_event(&self.spool, &self.failure, &self.pending_recordings, &event);
         if let Err(error) = result {
             let message = format!("cycleId={cycle}：{error}；原检测结论保留，禁止继续生产");
             self.fail(message.clone());

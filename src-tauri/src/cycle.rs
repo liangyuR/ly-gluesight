@@ -1060,6 +1060,9 @@ impl Machine {
         let issued = plan.as_ref().map(|p| p.camera_slots.iter().zip(p.camera_shots).filter(|(id, _)| !id.is_empty())
             .map(|(id, count)| (id.clone(), count as u64)).collect());
         let bundle_id = production.as_ref().map(|prepared| prepared.bundle.id.clone());
+        if let Err(reason) = host.audit.begin_recording(&cycle_id) {
+            return self.refuse(sn, id, fault::PROCESS_TIMEOUT, format!("录制追溯屏障建立失败：{reason}")).await;
+        }
         let recording = host.recorder.begin(settings.record, sn, recipe.clone(), &cycle_id, bundle_id.as_deref());
         host.camera.begin_part(&cams);
         self.run_id = self.run_id.wrapping_add(1);

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { distribution, memoryTrend, recordedArtifact, scanReplayInputs,
-  persistFailedAttempt, validateCameraSource, validatePart, validateReplayInputsSnapshot, validateReplayOutputs } from './p0-cyclehost-performance.mjs';
+  persistFailedAttempt, validateTestRecordsRoot, validateCameraSource, validatePart, validateReplayInputsSnapshot, validateReplayOutputs } from './p0-cyclehost-performance.mjs';
 
 function evidence(mode = 'tricam', verdict = 'OK', plcCode = 1) {
   const layout = { id: 'fixture', revisionId: 'recipe', points: { k: [0, 1, 2, 3] },
@@ -352,3 +352,18 @@ for (const [name, mutate] of [
     }
   });
 }
+
+test('records guard uses the current Windows APPDATA and explicit isolated app identifier', () => {
+  const appdata = 'C:\\Users\\OtherUser\\AppData\\Roaming';
+  for (const identifier of ['com.xyzrobotics.tujiaovision.p0-tests.performance', 'com.xyzrobotics.tujiaovision.p0-tests.performance.nohash']) {
+    const actual = appdata + '\\' + identifier + '\\records';
+    assert.equal(validateTestRecordsRoot(actual, identifier, appdata), actual);
+    assert.equal(validateTestRecordsRoot(actual.replaceAll('\\', '/').toUpperCase(), identifier, appdata), actual);
+  }
+  assert.throws(() => validateTestRecordsRoot(appdata + '\\com.xyzrobotics.tujiaovision\\records', 'com.xyzrobotics.tujiaovision', appdata));
+  assert.throws(() => validateTestRecordsRoot(appdata + '\\com.xyzrobotics.tujiaovision.p0-tests.performance.nohash\\records', undefined, appdata));
+  assert.throws(() => validateTestRecordsRoot('C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.performance\\records', undefined, appdata));
+  assert.throws(() => validateTestRecordsRoot(appdata + '\\records', undefined, appdata));
+  assert.throws(() => validateTestRecordsRoot('Z:\\records', undefined, 'Z:\\AppData'));
+  assert.throws(() => validateTestRecordsRoot('C:\\records', undefined, 'relative'));
+});

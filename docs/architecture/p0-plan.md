@@ -2,11 +2,15 @@
 
 > 2026-10-10 当前约束：禁止图像、配方、示教、标定、发布包、录制原图、引擎与拍照计划的内容哈希匹配，详见仓库 AGENTS.md。资源使用明确 ID、版本和实际结构；PLC 原 DBD20/84 保留地址，写零且不参与匹配。下文旧版本验收及 evidence 中的摘要仅为历史事实，不能作为当前实现要求或当前版本验收。
 
+2026-10-10 PR #14 第二轮审查已补齐精确历史版本关联、完整原图身份、录制实际解码、新包显式身份、Demo 旧进程拒绝复用及隔离性能目录守卫。默认 Rust 326 项、Node 工具 57 项、无进程操作的 PowerShell 守卫 3 项通过；真实 DLL 六项通过（1.70 秒），源码提交 `3632f0fe2ad10cf58873fff7d724905541d95e42`；本轮不重复计入旧 S7、桌面或 400 件结果。旧 schema 中无来源证明的 NULL digest 过渡记录无法可靠区分新旧来源，保守解除无法证明的复测关联并保留原 JSON/ACK；后续来源表由 Store.insert 同事务保障。首次 323 通过/3 失败及修正后的结果见[第二轮审查证据](../testing/evidence/p0-no-hash-review2-c.json)。PR #15 不在本分支运行范围；P0-09、现场硬件和新版长时性能仍保留原边界。
+
 2026-10-10 去哈希补充已完成代码及独立桌面回归：Rust 317 项、前端 964 项、S7 回环 24 项、真实 DLL 五项通过；全新三视角 profile 的示教/发布、normal/gap 各一件、历史复测、进程锁和重启通过。[PR #14](https://github.com/liangyuR/ly-gluesight/pull/14) 交由审查，不自动合并；[当前验收记录](../testing/evidence/p0-no-hash-native-c.json) 与下文旧版本证据分别保留。现场硬件、准确率及新版长时性能验收仍待执行。
 
 2026-10-10 P0-15 已补齐最终记录/事件的有界持久待入库日志：DONE前耐久接受、审计未就绪拒绝布防、启动回放先于中断录制与PLC ACK恢复、原图和历史清理保护。[PR #15](https://github.com/liangyuR/ly-gluesight/pull/15) 已提交并推送，交由审查且不自动合并。当前源码 `8ffc091` 的 Rust335项、S7回环24项、真实DLL5项及实际原生S7+SQLite锁定→终止→重启恢复通过，见[审计恢复证据](../testing/evidence/p0-audit-durability-c.json)。本专项为Synthetic生产安全拒绝90/98，不代表图像准确率、400件长时性能或五个Robot工况通过；这些仍继续推进。
 
 2026-10-10 PR #15 Codex P1审查的审计故障/就绪并发空窗已由 `fc1e38a` 修复，3项新增并发/Windows文件锁回归及完整Rust338项通过；[证据](../testing/evidence/p0-audit-review-atomic-c.json)保留原生恢复的旧源码归属。最终压力和性能将包含该修复。
+
+2026-10-10 PR #15 第二项 Codex P1：`04c3839` 将尚未完成的录制收尾纳入审计就绪屏障，录制开始前登记 cycleId，终态事件耐久接受后才解除。真实 Recorder 延迟回调、SQLite ACK/空spool、有界写拒绝及同步 Off 回调的3项新回归通过，完整Rust341项通过，见[录制屏障证据](../testing/evidence/p0-audit-recording-barrier-c.json)。原生压力与性能继续使用后续包含全部审查修复的源码，旧报告来源不变。
 
 > 范围与缺口依据 [软件架构图](gluesight-software-architecture.html) 的「可行性与缺口」「实施路线与验收」；S7 契约见 [plc-s7-phase1.md](../integration/plc-s7-phase1.md)。本文只排 P0 缺口的软件实施顺序与每步验收，现场门槛（W0 / W7）由负责人推进。
 >
@@ -296,3 +300,4 @@
 | P0-14 | 实际 CycleHost 三目洁净回放前两件严格 OK，布防 158 / 195 ms；第三件逐件发布核验超过原 200 ms，安全拒绝 ERR 99、零帧零测量，批次只完成 2 件 | 已优化首次完整语义加载后的逐件核验：保留全量字节/FNV、私有原始快照、目录及重解析点检查，移除重复原图解码和单次核验内重复祖先 metadata。15 项发布安全测试、真实 DLL 同大小篡改专项及全量 Rust 263 项通过；相同真实包只读核验从 76–119 ms 降至 19–54 ms。限制仍为 200 ms，d03fade 实际三目 100 件恢复控制通过，arm P95 / 最大 42 / 56 ms，1200 原图逐幅匹配；6a110a6/d41d19e 四组共400件复验通过，arm P95 66/75/76/75 ms、最大112 ms，3200原图逐幅匹配；后续审计修复另做单件检查，旧失败保留。见[核验修复证据](../testing/evidence/p0-arm-verify-c.json) |
 | P0-15 | 旧版本审计仅有有界内存：长期数据库故障、128待写/512缓存或30分钟淘汰、进程终止可能丢失未入库证据 | 已补齐4096事件/64MiB持久待入库日志、DONE前耐久接受、恢复/布防闭锁及原图/历史清理保护。Rust335项、S7回环24项、真实DLL5项、实际S7+SQLite零主行中断后恢复原结果与ACK通过；旧失败证据保留。保证从最终记录/事件耐久接受开始，不覆盖Acquire阶段未生成的记录，不声明掉电零丢失，见[恢复证据](../testing/evidence/p0-audit-durability-c.json) |
 | P0-16 | PR #15审查发现spool失败释放锁后才发布故障，ready/历史清理可能观察无故障的空spool并放行 | `fc1e38a` 在spool同步边界内锁存失败，ready/清理统一取锁顺序；异步超时不等待磁盘锁。3项新增回归及完整Rust338项通过，见[并发证据](../testing/evidence/p0-audit-review-atomic-c.json) |
+| P0-17 | ACK后Insert/Submission/Delivery均已入库且spool为空，但上件录制终态回调尚未发生，可能过早放行下一件 | `04c3839` 在录制开始前登记，同spool锁内耐久写入终态后解除；布防与历史清理同时检查未决录制。真实Recorder/SQLite回归3项、完整Rust341项通过，见[录制屏障证据](../testing/evidence/p0-audit-recording-barrier-c.json) |
