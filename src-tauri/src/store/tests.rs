@@ -736,7 +736,7 @@ fn legacy_v2_adds_revisions_without_erasing_snapshots_points_raw_or_acknowledgem
     for (index, version) in [original.version, original.version + 1].into_iter().enumerate() {
         let detail = store.detail(index as i64 + 1).unwrap();
         let revision = format!("{}-v{version}", original.id);
-        assert_eq!(detail.summary.recipe_revision.as_deref(), Some(revision.as_str()));
+        assert_eq!(detail.summary.recipe_revision.as_deref(), (version == original.version).then_some(revision.as_str()));
         assert_eq!(detail.summary.recipe_version, Some(version));
         let bundle = detail.summary.bundle_id.as_deref().unwrap();
         assert!(bundle.starts_with("legacy-bundle-"));
@@ -746,9 +746,12 @@ fn legacy_v2_adds_revisions_without_erasing_snapshots_points_raw_or_acknowledgem
         assert_eq!(detail.shots[0].session, Some(u64::MAX));
         assert_eq!(detail.shots[0].raw_files, [ShotRawFile { view: 1, file: "cycle/P1_v1.pgm".into() , width: None, height: None }]);
         assert!(detail.recording.available);
-        let snapshot = store.recipe_snapshot(&revision).unwrap().unwrap();
-        assert_eq!((snapshot.id.as_str(), snapshot.version), (original.id.as_str(), version));
-        assert!(same_measurement_layout(&snapshot, &original));
+        let snapshot = store.recipe_snapshot(&revision).unwrap();
+        if version == original.version {
+            let snapshot = snapshot.unwrap();
+            assert_eq!((snapshot.id.as_str(), snapshot.version), (original.id.as_str(), version));
+            assert!(same_measurement_layout(&snapshot, &original));
+        } else { assert!(snapshot.is_none()); }
     }
     {
         let conn = store.conn.lock().unwrap();
@@ -958,12 +961,113 @@ fn corrective_marker_never_uses_previous_synthetic_snapshot_to_guess_legacy_layo
     drop(conn);
     let store = Store::open(&db.path()).unwrap();
     assert!(store.detail(1).unwrap().summary.recipe_revision.is_none());
-    assert_eq!(store.detail(2).unwrap().summary.recipe_revision.as_deref(), Some(synthetic.revision_id.as_str()));
+    assert!(store.detail(2).unwrap().summary.recipe_revision.is_none());
     assert_eq!(store.detail(1).unwrap().summary.delivery.state, PlcDeliveryState::Acknowledged);
-    assert_eq!(store.recipe_snapshot(&synthetic.revision_id).unwrap().unwrap().shots[0].camera, first.shots[0].camera);
-    assert_eq!(store.conn.lock().unwrap().query_row("SELECT json FROM recipe_snapshots WHERE revision_id=?1", [&synthetic.revision_id], |r| r.get::<_, String>(0)).unwrap(), synthetic_json);
+    assert!(store.recipe_snapshot(&synthetic.revision_id).unwrap().is_none());
+    assert_eq!(store.conn.lock().unwrap().query_row("SELECT json FROM recipe_snapshots WHERE hash IS NULL", [], |r| r.get::<_, String>(0)).unwrap(), synthetic_json);
+    let explicit = save(&store, &synthetic, "explicit-after-correction", &shots(&synthetic), &PlcDelivery::default(), None).unwrap();
+    store.conn.lock().unwrap().execute("DELETE FROM identity_migrations WHERE name='actual-recipe-versions-exact'", []).unwrap();
     drop(store);
     let reopened = Store::open(&db.path()).unwrap();
     assert!(reopened.detail(1).unwrap().summary.recipe_revision.is_none());
-    assert_eq!(reopened.detail(2).unwrap().summary.recipe_revision.as_deref(), Some(synthetic.revision_id.as_str()));
+    assert!(reopened.detail(2).unwrap().summary.recipe_revision.is_none());
+    assert_eq!(reopened.detail(explicit).unwrap().summary.recipe_revision.as_deref(), Some(synthetic.revision_id.as_str()));
+    assert_eq!(reopened.recipe_snapshot(&synthetic.revision_id).unwrap().unwrap().shots[0].camera, first.shots[0].camera);
+    assert_eq!(reopened.purge_before(1235).unwrap(), 3);
+    assert_eq!(reopened.conn.lock().unwrap().query_row("SELECT COUNT(*) FROM explicit_recipe_records", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+}
+
+#[test]
+fn missing_exact_legacy_version_is_not_synthesized_from_one_other_version_even_after_old_marker() {
+    for already_migrated in [false, true] {
+        let db = TestDb::new();
+        let conn = legacy_v2(&db);
+        let original = recipe();
+        let original_json = legacy_snapshot(&conn, "old-only", &original);
+        let missing_version = original.version + 1;
+        let missing_revision = format!("{}-v{missing_version}", original.id);
+        if already_migrated {
+            conn.execute_batch("ALTER TABLE parts ADD COLUMN recipe_revision TEXT; ALTER TABLE parts ADD COLUMN bundle_id TEXT;
+                ALTER TABLE recipe_snapshots ADD COLUMN revision_id TEXT;
+                CREATE TABLE identity_migrations(name TEXT PRIMARY KEY);
+                INSERT INTO identity_migrations(name) VALUES('actual-recipe-versions');").unwrap();
+        }
+        let judgement = serde_json::to_string(&Judgement::error(1, "original")).unwrap();
+        conn.execute("INSERT INTO parts(ts,sn,recipe_id,recipe_version,recipe_hash,verdict,plc_code,fault_code,reason,frames_expected,
+            frames_received,triggers,software_version,judgement,frames,delivery_state,delivery_updated_at,recording_state)
+            VALUES(1,42,?1,?2,'old-only','errInspect',90,1,'original',4,0,0,'legacy',?3,'[]','acknowledged',99,'off')",
+            params![original.id, missing_version, judgement]).unwrap();
+        if already_migrated {
+            conn.execute("UPDATE parts SET recipe_revision=?1", [&missing_revision]).unwrap();
+        }
+        drop(conn);
+        let store = Store::open(&db.path()).unwrap();
+        let detail = store.detail(1).unwrap();
+        assert_eq!(detail.summary.recipe_version, Some(missing_version));
+        assert!(detail.summary.recipe_revision.is_none());
+        assert_eq!(detail.summary.delivery.state, PlcDeliveryState::Acknowledged);
+        assert!(store.recipe_snapshot(&missing_revision).unwrap().is_none());
+        assert_eq!(store.recipe_snapshot(&original.revision_id).unwrap().unwrap().version, original.version);
+        assert_eq!(store.conn.lock().unwrap().query_row("SELECT json FROM recipe_snapshots", [], |r| r.get::<_, String>(0)).unwrap(), original_json);
+        drop(store);
+        let reopened = Store::open(&db.path()).unwrap();
+        assert!(reopened.detail(1).unwrap().summary.recipe_revision.is_none());
+        assert!(reopened.recipe_snapshot(&missing_revision).unwrap().is_none());
+    }
+}
+
+#[test]
+fn exact_marker_unlinks_null_digest_legacy_part_and_preserves_its_synthetic_json_and_ack() {
+    let db = TestDb::new();
+    let conn = legacy_v2(&db);
+    conn.execute_batch("ALTER TABLE recipe_snapshots ADD COLUMN revision_id TEXT;
+        ALTER TABLE parts ADD COLUMN recipe_revision TEXT; ALTER TABLE parts ADD COLUMN bundle_id TEXT;
+        CREATE TABLE identity_migrations(name TEXT PRIMARY KEY);
+        INSERT INTO identity_migrations(name) VALUES('actual-recipe-versions');").unwrap();
+    let original = recipe();
+    legacy_snapshot(&conn, "only-real-version", &original);
+    let mut synthetic = original.clone(); synthetic.version += 1; synthetic.revision_id = format!("{}-v{}", synthetic.id, synthetic.version);
+    let synthetic_json = serde_json::to_string(&synthetic).unwrap();
+    conn.execute("INSERT INTO recipe_snapshots(revision_id,recipe_id,version,json) VALUES(?1,?2,?3,?4)",
+        params![synthetic.revision_id, synthetic.id, synthetic.version, synthetic_json]).unwrap();
+    let judgement = serde_json::to_string(&Judgement::error(1, "original")).unwrap();
+    conn.execute("INSERT INTO parts(ts,sn,recipe_id,recipe_version,recipe_hash,recipe_revision,verdict,plc_code,fault_code,reason,
+        frames_expected,frames_received,triggers,software_version,judgement,frames,delivery_state,delivery_updated_at,recording_state)
+        VALUES(1,42,?1,?2,NULL,?3,'errInspect',90,1,'original',4,0,0,'legacy',?4,'[]','acknowledged',99,'off')",
+        params![synthetic.id, synthetic.version, synthetic.revision_id, judgement]).unwrap();
+    drop(conn);
+    let store = Store::open(&db.path()).unwrap();
+    let detail = store.detail(1).unwrap();
+    assert_eq!(detail.summary.recipe_version, Some(synthetic.version));
+    assert!(detail.summary.recipe_revision.is_none());
+    assert_eq!(detail.summary.delivery.state, PlcDeliveryState::Acknowledged);
+    assert!(store.recipe_snapshot(&synthetic.revision_id).unwrap().is_none());
+    assert_eq!(store.conn.lock().unwrap().query_row("SELECT json FROM recipe_snapshots WHERE hash IS NULL", [], |r| r.get::<_, String>(0)).unwrap(), synthetic_json);
+    assert!(store.recipe_snapshot(&original.revision_id).unwrap().is_some());
+    drop(store);
+    let reopened = Store::open(&db.path()).unwrap();
+    assert!(reopened.detail(1).unwrap().summary.recipe_revision.is_none());
+    assert!(reopened.recipe_snapshot(&synthetic.revision_id).unwrap().is_none());
+}
+
+#[test]
+fn explicit_recipe_record_provenance_rolls_back_with_the_part_and_snapshot() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = recipe();
+    store.conn.lock().unwrap().execute_batch("CREATE TRIGGER reject_shot BEFORE INSERT ON part_shots
+        BEGIN SELECT RAISE(ABORT,'forced shot persistence failure'); END;").unwrap();
+    assert!(save(&store, &recipe, "failed-source", &shots(&recipe), &PlcDelivery::default(), None).unwrap_err().contains("forced shot"));
+    {
+        let conn = store.conn.lock().unwrap();
+        for table in ["parts", "recipe_snapshots", "explicit_recipe_records"] {
+            assert_eq!(conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        }
+        conn.execute_batch("DROP TRIGGER reject_shot;").unwrap();
+    }
+    let id = save(&store, &recipe, "successful-source", &shots(&recipe), &PlcDelivery::default(), None).unwrap();
+    assert_eq!(store.conn.lock().unwrap().query_row("SELECT recipe_revision FROM explicit_recipe_records WHERE part_id=?1", [id], |row| row.get::<_, String>(0)).unwrap(), recipe.revision_id);
+    drop(store);
+    let reopened = Store::open(&db.path()).unwrap();
+    assert_eq!(reopened.detail(id).unwrap().summary.recipe_revision.as_deref(), Some(recipe.revision_id.as_str()));
 }

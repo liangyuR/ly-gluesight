@@ -13,18 +13,11 @@ $demoOutput = $cfg.runtimeDir
 $demoExe = Join-Path $demoOutput 'GlueSight-Robot-PLC.exe'
 $demoStatePath = Join-Path $demoOutput 'services.json'
 $demoRecipe = if ($Recipe) { (Resolve-Path -LiteralPath $Recipe).Path } else { $cfg.robot.recipe }
-$expectedProcesses = if ($ServicesOnly) { 2 } else { 4 }
 New-Item -ItemType Directory -Path $demoOutput -Force | Out-Null
 if (Test-Path -LiteralPath $demoStatePath) {
     $previous = Get-Content -LiteralPath $demoStatePath -Raw | ConvertFrom-Json
     $alive = @($previous.processes | Where-Object { Get-DemoOwnedProcess $_ })
-    if ($alive.Count -eq $expectedProcesses -and !$Build -and $previous.configPath -eq $cfg.configPath -and $previous.recipe -eq $demoRecipe -and
-        [bool]$previous.servicesOnly -eq [bool]$ServicesOnly) {
-        Write-Output "模拟服务已运行：$($cfg.consoleUrl)"
-        if ($OpenConsole) { Start-Process -FilePath $cfg.consoleUrl }
-        return
-    }
-    if ($alive.Count) { throw '已有模拟进程正在运行或代码/配置已更新。先运行 sim:stop，再启动。' }
+    if ($alive.Count) { throw '已有模拟进程正在运行，不能复用。请先正常运行 Stop-Demo.ps1（pnpm sim:stop），再启动。' }
 }
 if ($Build) {
     Push-Location -LiteralPath $demoRoot

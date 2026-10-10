@@ -396,8 +396,11 @@ fn migrate_revision_references(conn: &mut Connection) -> Result<(), String> {
             tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT;")).map_err(db_err)?;
         }
     }
-    tx.execute_batch("CREATE TABLE IF NOT EXISTS identity_migrations(name TEXT PRIMARY KEY);").map_err(db_err)?;
-    let migrated: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM identity_migrations WHERE name='actual-recipe-versions')", [], |row| row.get(0)).map_err(db_err)?;
+    tx.execute_batch("CREATE TABLE IF NOT EXISTS identity_migrations(name TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS explicit_recipe_records (
+            part_id INTEGER PRIMARY KEY REFERENCES parts(id) ON DELETE CASCADE,
+            recipe_revision TEXT NOT NULL);").map_err(db_err)?;
+    let migrated: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM identity_migrations WHERE name='actual-recipe-versions-exact')", [], |row| row.get(0)).map_err(db_err)?;
     if snapshots.contains("hash") && !migrated {
         let originals = {
             let mut stmt = tx.prepare("SELECT rowid,recipe_id,version,json,hash IS NOT NULL,revision_id FROM recipe_snapshots ORDER BY rowid").map_err(db_err)?;
@@ -405,7 +408,7 @@ fn migrate_revision_references(conn: &mut Connection) -> Result<(), String> {
                 r.get::<_, bool>(4)?, r.get::<_, Option<String>>(5)?))).map_err(db_err)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(db_err)?
         };
-        let mut recipes = std::collections::BTreeMap::<String, (Recipe, Option<i64>)>::new();
+        let mut recipes = std::collections::BTreeMap::<String, (Recipe, i64)>::new();
         let mut ambiguous = BTreeSet::new();
         let mut explicit = std::collections::BTreeMap::<String, Recipe>::new();
         for (rowid, id, version, json, legacy_source, revision) in originals {
@@ -414,14 +417,19 @@ fn migrate_revision_references(conn: &mut Connection) -> Result<(), String> {
                 return Err("旧配方快照 ID 或版本不一致，保留原库".into());
             }
             if legacy_source {
-                register_migrated_snapshot(&mut recipes, &mut ambiguous, recipe, Some(rowid))?;
+                register_migrated_snapshot(&mut recipes, &mut ambiguous, recipe, rowid)?;
             } else if let Some(revision) = revision {
                 if revision != recipe.revision_id { return Err("已保存快照的明确修订号与版本不一致".into()); }
-                explicit.insert(revision, recipe);
+                let proven: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM explicit_recipe_records source
+                    JOIN parts part ON part.id=source.part_id WHERE source.recipe_revision=?1 AND part.recipe_revision=?1
+                    AND part.recipe_id=?2 AND part.recipe_version=?3)", params![revision, id, version], |row| row.get(0)).map_err(db_err)?;
+                if proven { explicit.insert(revision, recipe); }
+                else { tx.execute("UPDATE recipe_snapshots SET revision_id=NULL WHERE rowid=?1", [rowid]).map_err(db_err)?; }
             }
         }
         tx.execute("UPDATE recipe_snapshots SET revision_id=NULL WHERE hash IS NOT NULL", []).map_err(db_err)?;
-        let legacy_record = if parts.contains("recipe_hash") { "(recipe_hash IS NOT NULL OR recipe_revision IS NULL)" } else { "recipe_revision IS NULL" };
+        let legacy_record = "NOT EXISTS(SELECT 1 FROM explicit_recipe_records source
+            WHERE source.part_id=parts.id AND source.recipe_revision=parts.recipe_revision)";
         tx.execute(&format!("UPDATE parts SET recipe_revision=NULL WHERE {legacy_record}"), []).map_err(db_err)?;
         let records = {
             let mut stmt = tx.prepare(&format!("SELECT id,recipe_id,recipe_version FROM parts WHERE recipe_id IS NOT NULL AND recipe_version>0 AND {legacy_record}")).map_err(db_err)?;
@@ -431,33 +439,18 @@ fn migrate_revision_references(conn: &mut Connection) -> Result<(), String> {
         for (part, id, version) in records {
             let revision = format!("{id}-v{version}");
             if ambiguous.contains(&(id.clone(), version)) { continue; }
-            if !recipes.contains_key(&revision) {
-                if ambiguous.iter().any(|(ambiguous_id, _)| ambiguous_id == &id) { continue; }
-                let candidates = recipes.values().filter(|(recipe, _)| recipe.id == id).map(|(recipe, _)| {
-                    let mut doc: crate::recipe::RecipeDoc = serde_json::from_value(serde_json::to_value(recipe).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-                    doc.version = version;
-                    Ok(doc)
-                }).collect::<Result<Vec<_>, String>>()?;
-                let Some(first) = candidates.first() else { continue };
-                if candidates.iter().any(|candidate| candidate != first) { continue; }
-                register_migrated_snapshot(&mut recipes, &mut ambiguous, first.build()?, None)?;
-            }
+            if !recipes.contains_key(&revision) { continue; }
             if let Some(existing) = explicit.get(&revision) {
                 if serde_json::to_value(existing).map_err(|e| e.to_string())? != serde_json::to_value(&recipes[&revision].0).map_err(|e| e.to_string())? { continue; }
             }
             tx.execute("UPDATE parts SET recipe_revision=?2 WHERE id=?1", params![part, revision]).map_err(db_err)?;
         }
-        for (revision, (recipe, rowid)) in recipes {
+        for (revision, (_, rowid)) in recipes {
             if explicit.contains_key(&revision) { continue; }
-            if let Some(rowid) = rowid {
-                tx.execute("UPDATE recipe_snapshots SET revision_id=?2 WHERE rowid=?1", params![rowid, revision]).map_err(db_err)?;
-            } else {
-                tx.execute("INSERT INTO recipe_snapshots(revision_id,recipe_id,version,json) VALUES(?1,?2,?3,?4)",
-                    params![revision, recipe.id, recipe.version, serde_json::to_string(&recipe).map_err(|e| e.to_string())?]).map_err(db_err)?;
-            }
+            tx.execute("UPDATE recipe_snapshots SET revision_id=?2 WHERE rowid=?1", params![rowid, revision]).map_err(db_err)?;
         }
     }
-    tx.execute("INSERT OR IGNORE INTO identity_migrations(name) VALUES('actual-recipe-versions')", []).map_err(db_err)?;
+    tx.execute("INSERT OR IGNORE INTO identity_migrations(name) VALUES('actual-recipe-versions-exact')", []).map_err(db_err)?;
     let existing_bundle_map: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_bundle_refs')", [], |row| row.get(0)).map_err(db_err)?;
     tx.execute_batch("CREATE TABLE IF NOT EXISTS legacy_bundle_refs(recipe_id TEXT NOT NULL,bundle_id TEXT NOT NULL UNIQUE,
         legacy_directory TEXT NOT NULL,PRIMARY KEY(recipe_id,legacy_directory));").map_err(db_err)?;
@@ -475,8 +468,8 @@ fn migrate_revision_references(conn: &mut Connection) -> Result<(), String> {
 }
 
 fn register_migrated_snapshot(
-    recipes: &mut std::collections::BTreeMap<String, (Recipe, Option<i64>)>, ambiguous: &mut BTreeSet<(String, u32)>,
-    recipe: Recipe, rowid: Option<i64>,
+    recipes: &mut std::collections::BTreeMap<String, (Recipe, i64)>, ambiguous: &mut BTreeSet<(String, u32)>,
+    recipe: Recipe, rowid: i64,
 ) -> Result<(), String> {
     if ambiguous.contains(&(recipe.id.clone(), recipe.version)) { return Ok(()); }
     if let Some((previous, _)) = recipes.get(&recipe.revision_id) {
@@ -750,6 +743,9 @@ impl Store {
         )
         .map_err(db_err)?;
         let id = tx.last_insert_rowid();
+        if let Some(recipe) = r.recipe {
+            tx.execute("INSERT INTO explicit_recipe_records(part_id,recipe_revision) VALUES(?1,?2)", params![id, recipe.revision_id]).map_err(db_err)?;
+        }
         for shot in r.shots {
             tx.execute(
                 "INSERT INTO part_shots (part_id,k,shot_id,camera,view,session,ordinal,frame_counter,trigger_counter,status,error,score,ms,raw_files)

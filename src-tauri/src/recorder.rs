@@ -463,7 +463,13 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState) -> Recor
                         let expected = header.len() as u64 + u64::from(frame.width) * u64::from(frame.height);
                         if !meta.is_file() || meta.file_type().is_symlink() || meta.len() != expected {
                             Err("原图路径不是普通文件或文件长度与录制尺寸不符".into())
-                        } else { Ok(()) }
+                        } else {
+                            let image = image::open(&path).map_err(|error| format!("原图解码失败：{error}"))?;
+                            if image.width() != frame.width || image.height() != frame.height {
+                                return Err("原图解码尺寸与录制尺寸不符".into());
+                            }
+                            Ok(())
+                        }
                     })
             }
             Some(Err(error)) => Err(error),

@@ -255,7 +255,7 @@ fn metadata_write_failure_is_reported_even_when_images_were_written() {
 }
 
 #[test]
-fn finish_uses_successful_write_and_file_presence_without_content_matching() {
+fn finish_decodes_all_views_without_matching_pixel_contents() {
     let dir = TestDir::new();
     let (recorder, rx, _) = controlled(dir.root());
     let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "cycle-tampered", None).unwrap();
@@ -272,6 +272,37 @@ fn finish_uses_successful_write_and_file_presence_without_content_matching() {
     assert!(outcome.available, "{:?}", outcome.errors);
     assert_eq!(outcome.files.iter().map(|file| file.view).collect::<Vec<_>>(), [1, 2, 3]);
     assert_eq!(std::fs::read(recorder.root().join(&outcome.files[1].file)).unwrap(), b"P5\n1 1\n255\n\x99");
+}
+
+#[test]
+fn finish_rejects_same_length_corrupt_or_resized_raw_image() {
+    for replacement in [b"P9\n2 3\n255\nabcdef".as_slice(), b"P5\n3 2\n255\nabcdef".as_slice()] {
+        let dir = TestDir::new();
+        let (recorder, rx, _) = controlled(dir.root());
+        let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "cycle-invalid-image", None).unwrap();
+        let mut input = frame(10);
+        input.images = (0..3).map(|view| Arc::new(FrameImage::new(2, 3, vec![10 + view; 6]))).collect();
+        recorder.frame(&mut rec, &input, "cam1", 0, 1);
+        let Msg::Frames(group) = rx.try_recv().unwrap() else { panic!("需要原图消息") };
+        let mut state = WriteState::default();
+        for (meta, image) in group.images {
+            state.results.insert((meta.k, meta.view), save_raw(&group.pending.join(&meta.file), &image));
+        }
+        let replaced = group.pending.join("k000_P1_cam1_v2.pgm");
+        assert_eq!(std::fs::metadata(&replaced).unwrap().len(), replacement.len() as u64);
+        std::fs::write(&replaced, replacement).unwrap();
+        recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
+        let Msg::Finish(job) = rx.try_recv().unwrap() else { panic!("需要收尾消息") };
+        let outcome = finish_recording(recorder.root(), job, state);
+        assert!(!outcome.available);
+        assert_eq!(outcome.state, RecordingState::Incomplete, "损坏视角拒绝可用，保留其余完整原图");
+        assert_eq!(outcome.files.iter().map(|file| file.view).collect::<Vec<_>>(), [1, 3]);
+        assert!(outcome.errors.iter().any(|error| error.contains("解码")), "{:?}", outcome.errors);
+        let meta = metadata(&outcome);
+        assert_eq!(meta["verdict"], "OK");
+        assert_eq!(meta["reason"], "原始判定 OK");
+        assert_eq!(meta["frames"][1]["available"], false);
+    }
 }
 
 #[test]
