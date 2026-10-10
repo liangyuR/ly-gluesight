@@ -1211,6 +1211,9 @@ impl CameraRig {
         self.rig.capture.store(on, Ordering::Relaxed);
     }
 
+    #[cfg(feature = "p0-pressure-test")]
+    pub fn queued_frames(&self) -> usize { FRAME_QUEUE - self.rig.tx.capacity() }
+
     pub fn trigger(&self, cam: u8, lose_in_transfer: bool, render: Option<SimRender>) -> bool {
         self.slot(cam as usize).is_some_and(|s| s.trigger(lose_in_transfer, render))
     }
