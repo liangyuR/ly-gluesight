@@ -1146,27 +1146,37 @@ impl Machine {
         host.camera.begin_part(&self.part.as_ref().unwrap().cams);
         budget.mark("camera-begin");
         arm_remaining!("before-plc-arm");
-        let r = budget.run("plc-arm-confirmed", async {
+        let r = budget.run_serial("plc-arm-confirmed", async {
             if let Some(plan) = &plan { self.s7.arm(engine, plan).await } else {
                 put(&app, tag::BUSY, json!(true)).await?;
                 put(&app, tag::ARMED, json!(true)).await
             }
         }).await;
         if let Err(e) = r {
-            let reason = format!("布防写入失败或总预算超时：{e}");
+            let mut reason = format!("布防写入失败或总预算超时：{e}");
             log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "fault", "trace": budget.trace()}).to_string());
             if self.is_s7() { self.s7.fault(engine, reason.clone()).await; }
             else {
-                let _ = put(&app, tag::ARMED, json!(false)).await;
-                let _ = put(&app, tag::BUSY, json!(false)).await;
-                let _ = put(&app, tag::VISION_READY, json!(false)).await;
+                let mut cleanup_errors = Vec::new();
+                for output in [tag::ARMED, tag::BUSY, tag::VISION_READY] {
+                    if let Err(error) = put(&app, output, json!(false)).await {
+                        cleanup_errors.push(format!("{output}：{error}"));
+                    }
+                }
+                if !cleanup_errors.is_empty() {
+                    engine.disconnect().await;
+                    reason.push_str(&format!("；无法确认撤销输出，已断开通讯停止 PC 心跳：{}", cleanup_errors.join("；")));
+                }
             }
             return self.enter_fault(reason);
         }
+        let elapsed = budget.elapsed();
+        let mut trace = budget.trace();
+        trace["elapsedMs"] = json!(elapsed.as_secs_f64() * 1000.0);
         self.part.as_mut().unwrap().armed_at = Instant::now();
         self.set_phase(Phase::Acquire);
-        log(&app, "info", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "armed", "trace": budget.trace()}).to_string());
-        log(&app, "info", "armed↑ busy↑", format!("{} · N={n} · 布防耗时 {} ms", recipe.id, budget.elapsed().as_millis()));
+        log(&app, "info", "armed↑ busy↑", format!("{} · N={n} · 布防耗时 {} ms", recipe.id, elapsed.as_millis()));
+        log(&app, "info", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "armed", "trace": trace}).to_string());
     }
 
     /// 校验没过，不布防，直接回写 ERR。

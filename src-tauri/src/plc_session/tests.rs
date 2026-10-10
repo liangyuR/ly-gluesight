@@ -970,3 +970,69 @@ async fn s7_wire_released_does_not_create_second_ack_delivery_after_ready() {
     rig.ack_release().await;
     rig.finish().await;
 }
+
+#[test]
+#[ignore = "requires Python and local loopback S7 fixture"]
+fn s7_wire_arm_deadline_settles_original_journal_before_fault_without_late_overwrite() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    tokio::runtime::Builder::new_current_thread().enable_all().max_blocking_threads(1).build().unwrap().block_on(async {
+        let mut rig = Rig::new("arm-deadline-journal-settlement").await;
+        rig.request(1, 12345).await;
+        let cycle = "223456789abcdef0123456789abcdef0";
+        rig.session.bind_cycle_id(cycle).unwrap();
+        let path = rig.session.path.clone();
+        let temporary = path.with_extension("pending.tmp");
+        let (release, wait) = mpsc::channel();
+        let (started, started_wait) = tokio::sync::oneshot::channel();
+        let blocker = tokio::task::spawn_blocking(move || {
+            started.send(()).unwrap();
+            wait.recv_timeout(Duration::from_secs(8)).unwrap();
+        });
+        started_wait.await.unwrap();
+        let settled = AtomicBool::new(false);
+        let mut budget = crate::arming::ArmBudget::with_start(Instant::now(), Duration::from_millis(35));
+        let arm = async {
+            let result = budget.run_serial("s7-arm-journal", rig.session.arm(&rig.engine, &rig.plan)).await;
+            settled.store(true, Ordering::SeqCst);
+            result
+        };
+        let observe = async {
+            let until = Instant::now() + Duration::from_secs(3);
+            while rig.plc.fields()["armed"] != true {
+                assert!(Instant::now() < until, "S7 arm outputs never reached the real PLC");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            assert!(!settled.load(Ordering::SeqCst), "deadline must not detach the original journal task");
+            let waiting: Journal = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(waiting.pending.unwrap().phase, SessionPhase::Validating);
+            assert!(!temporary.exists(), "the queued journal must not race a fault writer");
+            release.send(()).unwrap();
+        };
+        let (result, ()) = tokio::join!(arm, observe);
+        blocker.await.unwrap();
+        assert!(result.unwrap_err().contains("s7-arm-journal"));
+        assert!(settled.load(Ordering::SeqCst));
+        assert_eq!(rig.session.phase(), SessionPhase::Acquiring);
+        let completed: Journal = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(completed.pending.unwrap().phase, SessionPhase::Acquiring);
+        assert!(!temporary.exists());
+        rig.session.fault(&rig.engine, "arm total deadline exceeded after serial settlement".into()).await;
+        assert_eq!(rig.session.phase(), SessionPhase::Fault);
+        assert_eq!(rig.plc.fields()["armed"], false);
+        assert_eq!(rig.plc.fields()["visionReady"], false);
+        assert_eq!(rig.plc.fields()["visionFault"], true);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let durable: Journal = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let pending = durable.pending.unwrap();
+        assert_eq!(pending.phase, SessionPhase::Fault);
+        assert_eq!(pending.cycle_id.as_deref(), Some(cycle));
+        assert_eq!(pending.request.request_seq, 1);
+        assert_eq!(pending.request.sn, 12345);
+        assert!(!temporary.exists());
+        let restarted = PlcSession::open(path);
+        assert!(restarted.load_error.is_none());
+        assert_eq!(restarted.journal.pending.unwrap().phase, SessionPhase::Fault);
+        rig.finish().await;
+    });
+}

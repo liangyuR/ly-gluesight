@@ -63,6 +63,18 @@ impl ArmBudget {
         }
     }
 
+    pub async fn run_serial<T>(
+        &mut self,
+        stage: &str,
+        work: impl Future<Output = Result<T, String>>,
+    ) -> Result<T, String> {
+        self.remaining(stage)?;
+        let result = work.await;
+        self.mark(stage);
+        self.remaining(stage)?;
+        result.map_err(|error| format!("布防阶段={stage}失败：{error}"))
+    }
+
     pub fn mark(&mut self, stage: &str) -> Duration {
         self.mark_at(stage, Instant::now())
     }
@@ -215,5 +227,22 @@ mod tests {
         assert!(error.contains("sync-probe") && error.contains("35.000"));
         assert!(budget.stages().last().unwrap().elapsed >= Duration::from_millis(100));
     }
+    #[tokio::test]
+    async fn serial_arm_waits_for_side_effect_settlement_before_cleanup_and_rejects_late_ok() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let settled = AtomicBool::new(false);
+        let cleanup_started = AtomicBool::new(false);
+        let mut budget = ArmBudget::with_start(Instant::now(), Duration::from_millis(35));
+        let result = budget.run_serial("plc-journal", async {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            assert!(!cleanup_started.load(Ordering::SeqCst));
+            settled.store(true, Ordering::SeqCst);
+            Ok("completed after deadline")
+        }).await;
+        assert!(settled.load(Ordering::SeqCst));
+        assert!(result.unwrap_err().contains("plc-journal"));
+        cleanup_started.store(true, Ordering::SeqCst);
+        assert!(cleanup_started.load(Ordering::SeqCst));
+        assert!(budget.stages().last().unwrap().elapsed >= Duration::from_millis(120));
+    }
 }
-
