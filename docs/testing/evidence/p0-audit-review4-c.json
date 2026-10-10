@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-10",
+  "runtimeSourceCommit": "bdad4b6f38ffc5ea9df99bbd81781cb231352125",
+  "integratedSourceCommit": "44a4fb520e9436345efae133515caf9ea73a20d0",
+  "integrationNote": "Latest PR14 merge after the successful Rust/S7 checks changed JavaScript/Python/docs only; no Rust source changed. No additional test run is claimed for that merge.",
+  "branch": "codex/p0-audit-durability",
+  "scope": "PR15 fourth review: directory mutation health probe and single durable S7 acknowledgement",
+  "passed": true,
+  "reviewFixes": [
+    {
+      "threadId": "PRRT_kwDOUlfafc6rEE8M",
+      "problem": "Writable existing .health file did not prove directory could create or rename a new receipt",
+      "fix": "Keep legacy .health write/sync checks and verify actual create_new, write one zero, sync, rename and cleanup through exact dedicated .health-create.tmp and .health-commit paths. Only those exact marker names with empty or [0] contents may recover after interruption; unknown contents and receipt/tmp files are preserved and fail closed."
+    },
+    {
+      "threadId": "PRRT_kwDOUlfafc6rEE8Q",
+      "problem": "Released emitted a second Acknowledged receipt after PLC Ready was already true",
+      "fix": "Retain only the first acknowledgement edge durable delivery and its original message/time. Released changes in-memory phase/log only and creates no second receipt after Ready."
+    }
+  ],
+  "checks": [
+    {
+      "name": "Real Windows ACL exact",
+      "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib audit::tests::durable_directory_probe_rejects_create_denied_when_existing_health_is_writable -- --exact --nocapture --test-threads=1",
+      "passed": true,
+      "tests": 1,
+      "failed": 0,
+      "ignored": 0,
+      "testSeconds": 1.18,
+      "buildSeconds": 34.82,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-audit-review4-acl-fixed-c.log"
+    },
+    {
+      "name": "Rust default full",
+      "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib -- --test-threads=2",
+      "passed": true,
+      "tests": 369,
+      "failed": 0,
+      "ignored": 34,
+      "testSeconds": 24.87,
+      "buildSeconds": 1.11,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-audit-review4-rust-fixed-c.log"
+    },
+    {
+      "name": "S7 loopback full wire suite",
+      "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib s7_wire_ -- --include-ignored --test-threads=1",
+      "passed": true,
+      "tests": 26,
+      "failed": 0,
+      "ignored": 0,
+      "testSeconds": 58.07,
+      "buildSeconds": 1.08,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-audit-review4-s7-c.log"
+    }
+  ],
+  "historicalFailedAttempts": [
+    {
+      "name": "Initial full default run",
+      "passed": false,
+      "exitCode": "0xc0000409",
+      "exitName": "STATUS_STACK_BUFFER_OVERRUN",
+      "buildSeconds": 39.93,
+      "printedPassedTests": 17,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-audit-review4-rust-c.log",
+      "cause": "Windows PowerShell 5 could not autoload Microsoft.PowerShell.Security; fixture set asserted, then Drop asserted again during unwind and aborted the test process. This was a test-fixture failure, not evidence of a production-path failure."
+    },
+    {
+      "name": "Original ACL exact reproduction",
+      "passed": false,
+      "exitCode": "0xc0000409",
+      "exitName": "STATUS_STACK_BUFFER_OVERRUN",
+      "buildSeconds": 1.09,
+      "printedPassedTests": 0,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-audit-review4-acl-first-c.log",
+      "cause": "Windows PowerShell 5 could not autoload Microsoft.PowerShell.Security; fixture set asserted, then Drop asserted again during unwind and aborted the test process. This was a test-fixture failure, not evidence of a production-path failure."
+    }
+  ],
+  "newTests": {
+    "default": [
+      "durable_directory_probe_restart_recovers_only_owned_names_and_exact_bytes",
+      "durable_directory_probe_cleanup_denial_latches_failure_and_preserves_receipts",
+      "durable_directory_probe_rejects_create_denied_when_existing_health_is_writable"
+    ],
+    "s7": [
+      "s7_wire_released_does_not_create_second_ack_delivery_after_ready"
+    ]
+  },
+  "fixtureCorrection": "Use PowerShell 7 with explicit Security module import, Result errors including status/stdout/stderr, non-panicking Drop, and explicit restore expectation. Actual ACL denial and writable existing .health assertions are retained; nothing is skipped.",
+  "performancePending": "New create/write/fsync/rename/cleanup adds synchronous I/O work. Actual phase trace is still needed to measure arm cost and spool-lock delay; these tests do not establish that the observed 863 ms arm timeout was caused by probe I/O.",
+  "limits": [
+    "No new current-source 400-part pass, native desktop/process recovery, frontend or field-hardware acceptance is claimed by this checkpoint.",
+    "Existing interrupted-preinsert archive, original event/image protection, legacy single-zero health recovery and active/archive capacity boundaries remain as recorded by review3.",
+    "S7 evidence is local loopback only. Prior native reports retain their original source/executable.",
+    "P0-09 noisy normal remains strict OK; actual result 2 is not relabeled and clean controls do not replace it.",
+    "No content hash calculation or matching."
+  ]
+}
