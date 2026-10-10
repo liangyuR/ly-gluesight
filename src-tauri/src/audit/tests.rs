@@ -1025,3 +1025,86 @@ fn durable_spool_rejects_windows_junction_roots_and_promoted_recording_children(
     assert_eq!(std::fs::read(&sentinel).unwrap(), b"preserve");
     std::fs::remove_dir(&promoted).unwrap();
 }
+
+
+#[test]
+fn durable_spool_failed_append_serializes_ready_and_cleanup_without_an_empty_window() {
+    let dir = TestDir::new();
+    let spool = Arc::new(Mutex::new(spool::Spool::with_limits(dir.0.join("spool"), 1, 1).unwrap()));
+    let failure = Arc::new(Mutex::new(None));
+    let running = Arc::new(AtomicBool::new(true));
+    let actions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let (writer_spool, writer_failure) = (spool.clone(), failure.clone());
+    let writer = std::thread::spawn(move || spool_io(&writer_spool, &writer_failure, |spool| {
+        entered_tx.send(()).unwrap();
+        release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        spool.append(&Event::Delivery("rejected".into(), delivery(PlcDeliveryState::Acknowledged, 1)))
+    }));
+    entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(spool.try_lock().is_err());
+    assert!(failure.lock().unwrap().is_none());
+    let (attempted_tx, attempted_rx) = std::sync::mpsc::channel();
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+    let readers = (0..2).map(|_| {
+        let (spool, failure, running, actions) = (spool.clone(), failure.clone(), running.clone(), actions.clone());
+        let (attempted_tx, finished_tx) = (attempted_tx.clone(), finished_tx.clone());
+        std::thread::spawn(move || {
+            attempted_tx.send(()).unwrap();
+            let result = with_ready_spool(&spool, &failure, &running, || {
+                actions.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            });
+            finished_tx.send(result).unwrap();
+        })
+    }).collect::<Vec<_>>();
+    for _ in 0..2 { attempted_rx.recv_timeout(Duration::from_secs(5)).unwrap(); }
+    assert!(finished_rx.try_recv().is_err());
+    release_tx.send(()).unwrap();
+    let error = writer.join().unwrap().unwrap_err();
+    assert!(error.contains("容量不足"));
+    for _ in 0..2 { assert_eq!(finished_rx.recv_timeout(Duration::from_secs(5)).unwrap(), Err(error.clone())); }
+    for reader in readers { reader.join().unwrap(); }
+    assert_eq!(actions.load(Ordering::SeqCst), 0);
+    assert!(spool.lock().unwrap().empty());
+    assert_eq!(*failure.lock().unwrap(), Some(error));
+}
+
+#[test]
+fn durable_spool_timeout_failure_does_not_wait_for_the_io_lock() {
+    let dir = TestDir::new();
+    let spool = Mutex::new(spool::Spool::open(dir.0.join("spool")).unwrap());
+    let failure = Arc::new(Mutex::new(None));
+    let io = spool.lock().unwrap();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let publisher_failure = failure.clone();
+    let publisher = std::thread::spawn(move || {
+        done_tx.send(set_failure(&publisher_failure, "deadline expired".into())).unwrap();
+    });
+    assert_eq!(done_rx.recv_timeout(Duration::from_secs(2)).unwrap(), Ok(()));
+    assert!(io.empty());
+    assert_eq!(*failure.lock().unwrap(), Some("deadline expired".into()));
+    drop(io);
+    publisher.join().unwrap();
+    assert_eq!(with_ready_spool(&spool, &failure, &AtomicBool::new(true), || Ok(())), Err("deadline expired".into()));
+}
+
+#[cfg(windows)]
+#[test]
+fn durable_spool_empty_probe_failure_prevents_ready_and_cleanup() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let dir = TestDir::new();
+    let path = dir.0.join("spool");
+    let spool = Mutex::new(spool::Spool::open(path.clone()).unwrap());
+    let failure = Mutex::new(None);
+    let running = AtomicBool::new(true);
+    let locked = std::fs::OpenOptions::new().read(true).share_mode(1).open(path.join(".health")).unwrap();
+    let error = spool_io(&spool, &failure, |spool| spool.probe()).unwrap_err();
+    assert!(spool.lock().unwrap().empty());
+    assert_eq!(with_ready_spool(&spool, &failure, &running, || Ok(())), Err(error.clone()));
+    let mut cleaned = false;
+    assert_eq!(with_ready_spool(&spool, &failure, &running, || { cleaned = true; Ok(()) }), Err(error));
+    assert!(!cleaned);
+    drop(locked);
+}
