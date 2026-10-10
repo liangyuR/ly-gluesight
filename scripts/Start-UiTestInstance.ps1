@@ -1,26 +1,27 @@
 param(
     [ValidateRange(1024, 65535)][int]$DebugPort = 9337,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [ValidateSet('ui', 'p0')][string]$Profile = 'ui'
 )
 
 $ErrorActionPreference = 'Stop'
 $taskUiRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$taskUiConfig = Join-Path $taskUiRoot 'tests\native\tauri-ui-test.json'
-$taskUiOutput = Join-Path $taskUiRoot 'output\playwright\ui-regression'
+$taskUiConfig = Join-Path $taskUiRoot $(if ($Profile -eq 'p0') { 'tests\native\tauri-p0-test.json' } else { 'tests\native\tauri-ui-test.json' })
+$taskUiOutput = Join-Path $taskUiRoot $(if ($Profile -eq 'p0') { 'output\playwright\p0-regression' } else { 'output\playwright\ui-regression' })
 $taskUiExecutable = Join-Path $taskUiOutput 'gluesight-ui-tests.exe'
 $taskUiBuild = Join-Path $taskUiRoot 'src-tauri\target\debug\GlueSight.exe'
 $taskUiManifest = Join-Path $taskUiOutput 'instance.json'
 $taskUiExisting = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $taskUiExecutable })
 if ($taskUiExisting.Count) { throw "隔离 UI 实例仍在运行：$($taskUiExisting.Id -join ', ')。请先完成或关闭该实例。" }
 $taskUiOverlay = Get-Content -LiteralPath $taskUiConfig -Raw | ConvertFrom-Json
-if ($taskUiOverlay.identifier -ne 'com.xyzrobotics.tujiaovision.ui-tests' -or $taskUiOverlay.app.windows[0].visible) {
+if ($taskUiOverlay.identifier -ne "com.xyzrobotics.tujiaovision.$Profile-tests" -or $taskUiOverlay.app.windows[0].visible) {
     throw 'UI test configuration must use the isolated application identifier and a hidden window.'
 }
 New-Item -ItemType Directory -Path $taskUiOutput -Force | Out-Null
 Push-Location -LiteralPath $taskUiRoot
 try {
     if (!$SkipBuild) {
-        & pnpm exec tauri build --debug --no-bundle --config $taskUiConfig
+        & node (Join-Path $taskUiRoot 'node_modules\@tauri-apps\cli\tauri.js') build --debug --no-bundle --config $taskUiConfig
         if ($LASTEXITCODE -ne 0) { throw '隔离 UI 构建失败' }
         Copy-Item -LiteralPath $taskUiBuild -Destination $taskUiExecutable -Force
     } elseif (!(Test-Path -LiteralPath $taskUiExecutable -PathType Leaf)) {

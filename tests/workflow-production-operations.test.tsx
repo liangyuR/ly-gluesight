@@ -11,12 +11,12 @@ describe("预览样本验证与发布", () => {
     showWorkflow("validation");
     expect(screen.getByRole("button", { name: "运行批量验证" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "发布候选配方" })).toBeDisabled();
-    click(/所有帧示教已保存/); expect(screen.getByRole("button", { name: "选择帧 k3" })).toHaveAttribute("aria-pressed", "true");
-    click("试匹配当前帧"); await finishTask(); click("保存本帧示教"); navigate("验证与发布");
+    click(/所有拍照点示教已保存/); expect(screen.getByRole("button", { name: "选择帧 k3" })).toHaveAttribute("aria-pressed", "true");
+    click("试测当前点"); await finishTask(); click("保存本点示教"); navigate("验证与发布");
     click("运行批量验证"); expect(screen.getByRole("button", { name: "运行批量验证" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "发布候选配方" })).toBeDisabled(); await finishTask();
     const table = screen.getByRole("table");
-    for (const sample of ["正常胶路", "断胶样本", "位置偏离", "胶宽超限", "定位失败"]) {
+    for (const sample of ["正常胶路", "断胶样本", "中线偏离", "胶宽超限", "测量失败"]) {
       expect(within(screen.getByText(sample, { selector: "td strong" }).closest("tr")!).getByText("一致")).toBeVisible();
     }
     expect(within(table).getAllByRole("row")).toHaveLength(6);
@@ -33,7 +33,7 @@ describe("预览样本验证与发布", () => {
     expect(screen.getByText("验证结果不符合样本预期")).toBeVisible();
     const defect = screen.getByText("断胶样本", { selector: "td strong" }).closest("tr")!;
     expect(within(defect).getByText("不一致")).toBeVisible(); expect(screen.getByRole("button", { name: "发布候选配方" })).toBeDisabled();
-    navigate("胶路与拍照规划"); number("允许断胶长度", .5); navigate("验证与发布");
+    navigate("拍照点规划"); number("允许断胶长度", .5); navigate("验证与发布");
     expect(within(panel("代表性样本验证")).getAllByText("待验证")).toHaveLength(5);
     click("运行批量验证"); await finishTask(); expect(screen.getByRole("button", { name: "发布候选配方" })).toBeEnabled();
   });
@@ -44,16 +44,16 @@ describe("预览样本验证与发布", () => {
     expect(screen.getByText("当前工件完成后生效")).toBeVisible(); click("确认发布");
     expect(screen.getByRole("heading", { level: 1, name: "在线检测" })).toBeVisible();
     expect(stored().recipe.production).toBe(13); expect(stored().live.queued).toBe(14);
-    navigate("胶路与拍照规划"); number("距内边基准 d", 3.5);
-    expect(stored().recipe.candidate).toBe(15); expect(stored().live.queuedConfig?.recipe.target).toBe(3);
+    navigate("拍照点规划"); number("中线偏移基准 d", .5);
+    expect(stored().recipe.candidate).toBe(15); expect(stored().live.queuedConfig?.recipe.target).toBe(0);
     navigate("在线检测"); click("推进一次预览事件"); click("推进一次预览事件");
-    expect(stored().recipe.production).toBe(14); expect(stored().productionConfig.recipe.target).toBe(3);
+    expect(stored().recipe.production).toBe(14); expect(stored().productionConfig.recipe.target).toBe(0);
     expect(stored().live.inFlightVersion).toBe(13); expect(stored().live.queued).toBeNull();
     click("开始下一件"); expect(stored().live.inFlightVersion).toBe(14); expect(stored().live.result).toBeNull();
   });
 
   it("离开待批量验证页面取消旧验证，发布弹窗可从关闭键、背景和取消事件退出", async () => {
-    showWorkflow("validation", sceneState("validation-pass")); click("运行批量验证"); navigate("单帧示教"); await finishTask();
+    showWorkflow("validation", sceneState("validation-pass")); click("运行批量验证"); navigate("逐点示教"); await finishTask();
     navigate("验证与发布");
     click("发布候选配方"); click("关闭弹窗"); expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     click("发布候选配方"); fireEvent.click(screen.getByRole("dialog")); expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -130,8 +130,8 @@ describe("预览历史筛选与对照", () => {
     expect(screen.getByText("开始日期不能晚于结束日期")).toBeVisible(); click("清空");
     select("检测结果", "ERR"); select("原图状态", "原图可用"); click("查看记录");
     expect(stored().record).toBe("TJ-000181"); expect(stored().selectedFrame).toBe(3);
-    expect(screen.getByRole("button", { name: "用作本帧示教样本" })).toBeDisabled();
-    click("选择帧 k4"); expect(screen.getByRole("button", { name: "用作本帧示教样本" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "用作本点示教样本" })).toBeDisabled();
+    click("选择帧 k4"); expect(screen.getByRole("button", { name: "用作本点示教样本" })).toBeEnabled();
     click("返回记录"); expect(screen.getByRole("heading", { level: 1, name: "历史记录" })).toBeVisible();
   });
 
@@ -152,18 +152,20 @@ describe("预览历史筛选与对照", () => {
 
   it("规则重判与原图复测生成独立对照，原始结果和原图保留", async () => {
     const original = structuredClone(historyRecords); showWorkflow("record");
-    click("按候选规则重判"); expect(screen.getByRole("button", { name: "用原图重新测量" })).toBeDisabled(); await finishTask();
+    click("按候选规则重判"); expect(screen.getByRole("button", { name: "按当前候选复测" })).toBeDisabled(); await finishTask();
     expect(stored().comparisons["TJ-000184"]).toMatchObject({ kind: "rejudge", verdict: "NG", gap: 6.2, version: 14 });
-    click("用原图重新测量"); await finishTask();
-    expect(stored().comparisons["TJ-000184"]).toMatchObject({ kind: "remeasure", verdict: "OK", gap: 0, version: 14 });
-    expect(within(panel("原始检测")).getByText("NG")).toBeVisible(); expect(within(panel("候选对照")).getByText("OK")).toBeVisible();
+    click("按当前候选复测"); await finishTask();
+    expect(stored().comparisons["TJ-000184"]).toMatchObject({ kind: "remeasure", mode: "candidate", verdict: "NG", gap: 6.2, version: 14 });
+    expect(within(panel("原始检测")).getByText("NG")).toBeVisible(); expect(within(panel("复测对照")).getByText("NG")).toBeVisible();
     click("总览帧 k4"); expect(screen.getByRole("img", { name: "帧 k4 的历史原图" })).toBeVisible();
+    click("按原发布包重现"); await finishTask();
+    expect(stored().comparisons["TJ-000184"]).toMatchObject({ mode: "original", version: 13, cycleId: "demo-cycle-184", bundleHash: historyRecords[0].bundleHash });
     expect(historyRecords).toEqual(original);
   });
 
   it("无原图仍可规则重判、不能复测和取样；离开页面取消待对照", async () => {
     showWorkflow("record?scene=history-no-raw"); expect(screen.getByText("原图已按留存策略清理")).toBeVisible();
-    expect(screen.getByRole("button", { name: "用原图重新测量" })).toBeDisabled(); expect(screen.getByRole("button", { name: "用作本帧示教样本" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "按当前候选复测" })).toBeDisabled(); expect(screen.getByRole("button", { name: "用作本点示教样本" })).toBeDisabled();
     click("按候选规则重判"); await finishTask(); expect(stored().comparisons["TJ-000182"].verdict).toBe("OK");
     click("按候选规则重判"); click("返回记录"); await finishTask(); expect(stored().comparisons["TJ-000182"].kind).toBe("rejudge");
   });

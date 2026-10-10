@@ -259,6 +259,7 @@ pub struct WorkspaceView {
 pub struct WorkspaceHost {
     root: PathBuf,
     items: Mutex<HashMap<String, Workspace>>,
+    pub notes: Vec<String>,
     live: Mutex<LiveFrames>,
     station: Mutex<HashMap<u8, (FrozenImage, Arc<FrameImage>)>>,
     capture_seq: std::sync::atomic::AtomicU64,
@@ -318,25 +319,30 @@ impl WorkspaceHost {
             .join("workspaces");
         std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         let mut items = HashMap::new();
+        let mut notes = Vec::new();
         for entry in std::fs::read_dir(&root)
             .map_err(|e| e.to_string())?
             .flatten()
         {
             let file = entry.path().join("workspace.json");
-            if let Ok(text) = crate::fsio::read_text(&file) {
-                if let Ok(w) = serde_json::from_str::<Workspace>(&text) {
-                    if safe_id(&w.doc.id).is_ok()
-                        && w.doc.id == entry.file_name().to_string_lossy()
-                        && w.doc.build().is_ok()
-                    {
-                        items.insert(w.doc.id.clone(), w);
-                    }
-                }
+            if !file.is_file() { continue; }
+            let loaded = crate::fsio::read_text(&file).map_err(|e| e.to_string())
+                .and_then(|text| serde_json::from_str::<Workspace>(&text).map_err(|e| e.to_string()))
+                .and_then(|w| {
+                    safe_id(&w.doc.id)?;
+                    if w.doc.id != entry.file_name().to_string_lossy() { return Err("候选编号与目录不一致".into()); }
+                    w.doc.build()?;
+                    Ok(w)
+                });
+            match loaded {
+                Ok(w) => { items.insert(w.doc.id.clone(), w); }
+                Err(error) => notes.push(format!("{} 未加载：{error}。文件已保留；旧格式不兼容，请重新建候选", file.display())),
             }
         }
         Ok(Self {
             root,
             items: Mutex::new(items),
+            notes,
             live: Mutex::new(LiveFrames::default()),
             station: Mutex::new(HashMap::new()),
             capture_seq: std::sync::atomic::AtomicU64::new(0),
@@ -371,7 +377,7 @@ fn coverage(recipe: &Recipe) -> f32 {
 fn shot_tags(r: &Recipe, k: usize) -> Result<(String, String), String> {
     let shot = r.shots.get(k).ok_or("拍照点不存在")?;
     Ok((
-        fingerprint(&json!([shot.id, shot.camera, shot.view, shot.calib_ref()])),
+        fingerprint(&json!([shot.id, shot.pose_id, shot.camera, shot.view, shot.calib_ref()])),
         fingerprint(&json!([shot.view, shot.path, shot.mm_per_px, r.shot_detect(k), r.spacing])),
     ))
 }
@@ -453,7 +459,33 @@ pub fn workspace_get(app: AppHandle, id: String) -> Result<WorkspaceView, String
         host.save(&w)?;
         items.insert(id.clone(), w);
     }
-    view(&app, items[&id].clone())
+    let mut w = items[&id].clone();
+    let recipe = w.doc.build()?;
+    let current_tags = (0..recipe.shot_count()).map(|k| tags(&app, &recipe, k).ok()).collect::<Vec<_>>();
+    let engine = app.state::<vision::VisionHost>().engine(app.state::<CycleHost>().settings().lyflow_core.as_deref());
+    if refresh_teaching(&mut w, &current_tags, engine.as_ref().map(|e| e.identity.as_str())) {
+        host.save(&w)?;
+        items.insert(id, w.clone());
+    }
+    view(&app, w)
+}
+
+fn refresh_teaching(w: &mut Workspace, tags: &[Option<(String, String)>], engine: Option<&str>) -> bool {
+    let mut changed = false;
+    for (k, frame) in w.frames.iter_mut().enumerate() {
+        if w.doc.shots.get(k).is_none_or(|s| s.skip) { continue; }
+        let image_stale = frame.image.as_ref().is_some_and(|image| {
+            tags.get(k).and_then(Option::as_ref).is_none_or(|(camera, calib)| &image.camera_tag != camera || &image.calib_tag != calib)
+        });
+        let engine_stale = engine.is_some_and(|engine| frame.trial.as_ref().is_some_and(|trial| trial.engine_tag != engine));
+        if (image_stale || engine_stale) && (frame.saved || frame.trial.is_some()) {
+            frame.saved = false;
+            frame.trial = None;
+            changed = true;
+        }
+    }
+    if changed { w.changed(); }
+    changed
 }
 
 #[tauri::command]
@@ -2153,6 +2185,23 @@ mod tests {
     }
 
     #[test]
+    fn environment_changes_invalidate_only_affected_teaching_and_require_a_fresh_trial() {
+        let mut w = tricam_workspace();
+        let before = w.clone();
+        let mut tags = vec![Some(("camera".into(), "calib".into())); 4];
+        tags[1] = Some(("camera".into(), "new-calib".into()));
+        assert!(refresh_teaching(&mut w, &tags, Some("test-engine")));
+        assert_eq!(w.revision, before.revision + 1);
+        assert!(!w.frames[1].saved && w.frames[1].trial.is_none());
+        assert_eq!(serde_json::to_value(&w.frames[1].image).unwrap(), serde_json::to_value(&before.frames[1].image).unwrap());
+        for k in [0, 2, 3] { assert_eq!(serde_json::to_value(&w.frames[k]).unwrap(), serde_json::to_value(&before.frames[k]).unwrap()); }
+        assert!(!refresh_teaching(&mut w, &tags, Some("test-engine")));
+        assert!(refresh_teaching(&mut w, &tags, Some("updated-engine")));
+        assert!(w.frames.iter().all(|f| !f.saved && f.trial.is_none()));
+        assert!(!refresh_teaching(&mut w, &tags, Some("updated-engine")));
+    }
+
+    #[test]
     fn changing_view_invalidates_only_that_shot_and_never_restores_old_trial() {
         let mut w = tricam_workspace();
         let before = w.doc.build().unwrap();
@@ -2329,6 +2378,10 @@ mod tests {
         let mut camera = doc.clone();
         camera.shots[1].camera = "cam2".into();
         assert_ne!(tag(&camera, 1).0, image);
+        let mut pose = doc.clone();
+        pose.shots[1].pose_id = "Robot-Pose-2".into();
+        assert_ne!(tag(&pose, 1).0, image);
+        assert_eq!(tag(&pose, 0), shot_tags(&base, 0).unwrap());
         assert_eq!(images_tag(&moved.build().unwrap()), images_tag(&base));
         assert_eq!(coverage(&base), 100.0);
         let mut untaught = doc;

@@ -1357,6 +1357,7 @@ pub async fn camera_save_config(app: AppHandle, cam: usize, config: CameraConfig
     slot.set_config(config);
     let saved = rig(&app).save();
     let _ = app.state::<CycleHost>().tx.send(cycle::Input::Refresh);
+    let _ = app.emit("camera://changed", ());
     let warnings = tauri::async_runtime::spawn_blocking(move || slot.apply_config()).await.map_err(|e| e.to_string())??;
     saved.map_err(|e| format!("已生效，但没能写回 cameras.json：{e}"))?;
     Ok(warnings)
@@ -1452,6 +1453,7 @@ pub fn camera_add(app: AppHandle, mut config: CameraConfig) -> Result<usize, Str
     cycle.camera.rebuild(&app, configs);
     let saved = cycle.camera.save();
     let _ = cycle.tx.send(cycle::Input::Refresh);
+    let _ = app.emit("camera://changed", ());
     saved?;
     Ok(n - 1)
 }
@@ -1480,6 +1482,7 @@ pub fn camera_remove(app: AppHandle, cam: usize) -> Result<(), String> {
     cycle.camera.rebuild(&app, configs);
     let saved = cycle.camera.save();
     let _ = cycle.tx.send(cycle::Input::Refresh);
+    let _ = app.emit("camera://changed", ());
     saved
 }
 

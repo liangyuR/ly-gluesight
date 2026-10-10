@@ -248,10 +248,19 @@ impl Store {
     }
 
     pub fn reserve_cycle_id(&self) -> Result<String, String> {
-        self.conn.lock().unwrap().query_row(
+        Ok(self.reserve_cycle_ids(1)?.remove(0))
+    }
+
+    pub fn reserve_cycle_ids(&self, count: usize) -> Result<Vec<String>, String> {
+        if !(1..=32).contains(&count) { return Err("工件身份批量分配数量必须为 1–32".into()); }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(db_err)?;
+        let ids = (0..count).map(|_| tx.query_row(
             "INSERT INTO cycle_ids (created_at) VALUES (?1) RETURNING id",
             [ly_plc::now_ms()], |row| row.get(0),
-        ).map_err(db_err)
+        ).map_err(db_err)).collect::<Result<Vec<String>, String>>()?;
+        tx.commit().map_err(db_err)?;
+        Ok(ids)
     }
 
     pub fn insert(&self, r: &PartRecord) -> Result<i64, String> {

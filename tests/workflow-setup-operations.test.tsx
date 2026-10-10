@@ -26,7 +26,7 @@ describe("预览建站操作", () => {
     expect(screen.getByRole("button", { name: "取一帧" })).toBeDisabled();
     await finishTask();
     expect(stored().device).toMatchObject({ connected: true, applied: true, exposure: 80, gain: 5.5, trigger: "软件触发" });
-    expect(stored().frames.every(f => f.imageId === null && !f.saved)).toBe(true);
+    expect(stored().frames.filter(f => f.camera === "cam1").every(f => f.imageId === null && !f.saved)).toBe(true);
     click("取一帧");
     expect(screen.getByRole("img", { name: "帧 k3 的采集预览" })).toBeVisible();
     number("曝光时间", 90);
@@ -34,6 +34,19 @@ describe("预览建站操作", () => {
     click("保存并应用参数"); await finishTask(); click("取一帧"); click("断开");
     expect(screen.queryByRole("img", { name: "帧 k3 的采集预览" })).not.toBeInTheDocument();
     click("下一步 · PLC 通讯"); expect(screen.getByRole("heading", { level: 1, name: "PLC 通讯" })).toBeVisible();
+  });
+
+  it("按设备分别维护三目视角和采集参数，仅相关拍照点失效", async () => {
+    showWorkflow("device"); const before = stored();
+    expect(screen.getByRole("combobox", { name: "设备视角数" })).toHaveValue("3 · 单设备三目");
+    select("当前设备", "cam2"); number("增益", 8);
+    expect(stored().frames[3]).toMatchObject({ camera: "cam2", imageId: null, trial: null, saved: false });
+    expect(stored().frames.filter(f => f.camera !== "cam2")).toEqual(before.frames.filter(f => f.camera !== "cam2"));
+    click("保存并应用参数"); await finishTask(); click("取一帧");
+    expect(screen.getByRole("img", { name: "帧 k4 的采集预览" })).toBeVisible();
+    select("当前设备", "cam1"); expect(stored().device).toMatchObject({ id: "cam1", gain: 6, viewCount: 3 });
+    expect(screen.queryByRole("img", { name: "帧 k4 的采集预览" })).not.toBeInTheDocument();
+    select("当前设备", "cam2"); expect(stored().device).toMatchObject({ id: "cam2", gain: 8, viewCount: 1, applied: true });
   });
 
   it("离开等待中的设备页面后不应用旧参数", async () => {
@@ -82,7 +95,7 @@ describe("预览建站操作", () => {
     expect(screen.getByRole("button", { name: "保存标定" })).toBeDisabled();
     select("预览样本", "完整棋盘格"); click("取标定帧"); click("计算标定"); await finishTask(); click("保存标定");
     expect(screen.getByText("有效标定 C08")).toBeVisible();
-    expect(stored().frames.every(f => f.imageId === null && !f.saved && !f.trial)).toBe(true);
+    expect(stored().frames.filter(f => f.camera === "cam1").every(f => f.imageId === null && !f.saved && !f.trial)).toBe(true);
     expect(screen.getByRole("button", { name: "保存标定" })).toBeDisabled();
     click("进入配方库"); expect(screen.getByRole("heading", { level: 1, name: "配方库" })).toBeVisible();
   });
@@ -119,13 +132,13 @@ describe("预览设置与情景操作", () => {
     showWorkflow("teach"); const before = stored(); click("全部情景");
     const dialog = screen.getByRole("dialog");
     select("情景分类", "异常");
-    expect(within(dialog).getByRole("button", { name: /搜索窗口覆盖不足/ })).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: /像素中线超出原图/ })).toBeVisible();
     expect(within(dialog).queryByRole("button", { name: /冻结图像/ })).not.toBeInTheDocument();
     fireEvent.change(screen.getByRole("textbox", { name: "查找情景" }), { target: { value: "没有这条情景" } });
     expect(screen.getByText("没有匹配的情景")).toBeVisible(); click("清空筛选");
     expect(screen.getByRole("textbox", { name: "查找情景" })).toHaveValue("");
     expect(screen.getByRole("combobox", { name: "情景分类" })).toHaveValue("全部");
-    expect(within(dialog).getAllByRole("button")).toHaveLength(33);
+    expect(within(dialog).getAllByRole("button")).toHaveLength(34);
     click("关闭弹窗"); expect(stored()).toEqual(before);
   });
 });

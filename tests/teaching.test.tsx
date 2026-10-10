@@ -19,7 +19,7 @@ vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
   get:vi.fn(),list:vi.fn(),image: vi.fn(), trial: vi.fn(), saveTeach: vi.fn(), capture: vi.fn(), selectView: vi.fn(), saveParams: vi.fn(), restoreTeach: vi.fn(),
 } }));
 
-const PENDING = "沿示教中线量胶的 lyFlow 流程尚未接入（P0 步 L），图像测量暂不可用";
+const PENDING = "核心库缺少示教胶路/标定算子：glue.taught_path，请选择兼容的核心库";
 let ws: ReturnType<typeof workspaceState>;
 function show(path = "/recipe/teach") {
   return render(<MemoryRouter initialEntries={[path]}><TeachingPage /></MemoryRouter>);
@@ -69,17 +69,17 @@ describe("单帧示教：试测与保存", () => {
     expect(vi.mocked(workspaceApi.saveTeach).mock.lastCall).toHaveLength(4);
   });
 
-  it("试测没通过时如实显示原因：图像测量尚未接入，不当作通过、不能保存", () => {
+  it("核心库不兼容时如实显示失败原因，不能保存", () => {
     const trial = ws.data!.workspace.frames[0].trial!;
     Object.assign(trial, { passed: false, score: 0, coverage: 0, reason: PENDING, measurement: null });
     show();
-    expect(screen.getByText("图像测量暂不可用")).toBeVisible(); expect(screen.getByText(PENDING)).toBeVisible();
+    expect(screen.getByText(PENDING)).toBeVisible();
     expect(screen.getAllByText("试测未通过")[0]).toBeVisible(); expect(screen.getByText("未通过")).toBeVisible();
     expect(screen.queryByText("通过")).toBeNull();
     for (const name of ["保存本帧示教", "保存并示教下一帧"]) expect(screen.getByRole("button", { name })).toBeDisabled();
     // 没有逐站结果时不显示 0 分、0% 这类假数值
-    const stats = screen.getByText("得分").closest(".wp-rule-stat")!;
-    expect(within(stats as HTMLElement).getAllByText("—")).toHaveLength(2);
+    const stats = screen.getByText("量成比例").closest(".wp-rule-stat")!;
+    expect(within(stats as HTMLElement).getAllByText("—")).toHaveLength(1);
     expect(screen.getByRole("button", { name: "试测当前帧" })).toBeEnabled();
   });
 

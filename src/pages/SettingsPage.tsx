@@ -289,7 +289,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
       </dl>
       {engineError && <div className="notice error" role="alert">引擎状态读取失败：{engineError} <button className="btn" onClick={refresh}>重试引擎状态</button></div>}
       <p className="muted hint">
-        lyFlow 流程沿各拍照点的示教中线量胶，需要带图像域的 lyFlow 版本；这个流程接入前，图像测量会报“尚未接入”，不用模拟值顶替。帧录制把整帧图像写到数据目录的 records 下，可在图像源页选作回放目录。
+        lyFlow 流程沿各拍照点的示教中线量胶，需要兼容的核心库和已验证发布的配方。发布资源预热完成后才能开工。帧录制保存同次触发的全部视角，可用于历史复测和回放。
       </p>
       {notice && <div className={`notice ${notice.ok ? "ok" : "error"}`} role={notice.ok ? "status" : "alert"}>{notice.text}</div>}
     </div>

@@ -121,21 +121,22 @@ impl ProductionHost {
         let app = app.clone();
         let slot = self.slot.clone();
         tauri::async_runtime::spawn(async move {
-            let permit = slot.acquire_owned().await;
             let run_app = app.clone();
             let started = Instant::now();
-            let task = tauri::async_runtime::spawn_blocking(move || {
-                let _permit = permit.map_err(|e| e.to_string())?;
-                let bundle = crate::workspace::published_bundle(&run_app, &recipe)?;
-                let engine = run_app.state::<VisionHost>().engine(core.as_deref()).ok_or("图像核心库未加载，检查系统设置")?;
-                let prepared = Prepared::load(bundle, engine, &recipe)?;
-                prepared.warm()?;
-                Ok::<_, String>(Arc::new(prepared))
-            });
+            let task = async move {
+                let permit = slot.acquire_owned().await.map_err(|e| e.to_string())?;
+                tauri::async_runtime::spawn_blocking(move || {
+                    let _permit = permit;
+                    let bundle = crate::workspace::published_bundle(&run_app, &recipe)?;
+                    let engine = run_app.state::<VisionHost>().engine(core.as_deref()).ok_or("图像核心库未加载，检查系统设置")?;
+                    let prepared = Prepared::load(bundle, engine, &recipe)?;
+                    prepared.warm()?;
+                    Ok::<_, String>(Arc::new(prepared))
+                }).await.map_err(|error| format!("图像引擎预热异常：{error}"))?
+            };
             let result = match tokio::time::timeout(Duration::from_secs(30), task).await {
-                Ok(Ok(result)) => result,
-                Ok(Err(error)) => Err(format!("图像引擎预热异常：{error}")),
-                Err(_) => Err("图像引擎预热超过 30 秒；尚未返回的引擎继续占用预热线程，请排查核心库或重启".into()),
+                Ok(result) => result,
+                Err(_) => Err("图像引擎排队或预热超过 30 秒；尚未返回的引擎继续占用预热线程，请排查核心库或重启".into()),
             };
             let state = match result {
                 Ok(prepared) => {

@@ -4,7 +4,7 @@ import { vi } from "vitest";
 import WorkflowPreviewPage from "../src/pages/WorkflowPreviewPage";
 import type { View, WorkflowState } from "../src/features/workflow/model";
 
-export const storageKey = "tujiao-workflow-preview-v3";
+export const storageKey = "tujiao-workflow-preview-v4";
 export function showWorkflow(view: View | string, state?: WorkflowState) {
   if (state) sessionStorage.setItem(storageKey, JSON.stringify(state));
   return render(<MemoryRouter initialEntries={["/workflow/" + view]}><Routes><Route path="/workflow/:view?" element={<WorkflowPreviewPage />} /></Routes></MemoryRouter>);

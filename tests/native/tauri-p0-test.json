@@ -1,0 +1,11 @@
+{
+  "productName": "GlueSight · 胶路智检 P0 Tests",
+  "identifier": "com.xyzrobotics.tujiaovision.p0-tests",
+  "build": {
+    "beforeBuildCommand": "node node_modules/typescript/bin/tsc -b && node node_modules/vite/bin/vite.js build"
+  },
+  "app": {
+    "windows": [{ "label": "main", "title": "GlueSight · 胶路智检 P0 Tests", "visible": false, "width": 1440, "height": 900, "minWidth": 1100, "minHeight": 700 }]
+  },
+  "bundle": { "active": false }
+}

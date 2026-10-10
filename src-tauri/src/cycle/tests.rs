@@ -213,6 +213,33 @@ fn cycle_identity_is_persistent_and_independent_of_serial_number() {
 }
 
 #[test]
+fn identity_batches_commit_together_and_failed_batches_expose_no_partial_ids() {
+    let path = std::env::temp_dir().join(format!("gluesight-cycle-batch-{}-{}.sqlite", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let ids;
+    {
+        let store = Store::open(&path).unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TRIGGER reject_third BEFORE INSERT ON cycle_ids
+            WHEN (SELECT count(*) FROM cycle_ids) = 2 BEGIN SELECT RAISE(ABORT, 'disk failure'); END;").unwrap();
+        assert!(store.reserve_cycle_ids(4).is_err());
+        assert_eq!(conn.query_row("SELECT count(*) FROM cycle_ids", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        conn.execute_batch("DROP TRIGGER reject_third;").unwrap();
+        assert!(store.reserve_cycle_ids(0).is_err());
+        assert!(store.reserve_cycle_ids(33).is_err());
+        ids = store.reserve_cycle_ids(32).unwrap();
+        assert_eq!(ids.iter().collect::<std::collections::HashSet<_>>().len(), 32);
+    }
+    {
+        let reopened = Store::open(&path).unwrap();
+        assert!(!ids.contains(&reopened.reserve_cycle_id().unwrap()));
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        assert_eq!(conn.query_row("SELECT count(*) FROM cycle_ids", [], |row| row.get::<_, i64>(0)).unwrap(), 33);
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn late_frame_and_result_cannot_beat_the_deadline_tick() {
     let mut p = part("late-frame", &Ledgers::default(), true);
     p.end_at = Some(Instant::now() - Duration::from_secs(3));

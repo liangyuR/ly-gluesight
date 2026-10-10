@@ -15,6 +15,7 @@ vi.mock("../src/features/cycle/api", () => ({ recipeApi: { list: vi.fn(), previe
 vi.mock("../src/features/camera/api", () => ({ cameraApi: { rigConfig: vi.fn() } }));
 vi.mock("../src/features/plc/api", () => ({ subscribe: vi.fn() }));
 let changed: (id: string) => void;
+let camerasChanged: () => void;
 let off = vi.fn<() => void>();
 beforeEach(() => {
   const a = workspaceView(), b = workspaceView("B");
@@ -26,7 +27,11 @@ beforeEach(() => {
   vi.mocked(recipeApi.preview).mockResolvedValue(a.layout);
   vi.mocked(cameraApi.rigConfig).mockResolvedValue([]);
   off = vi.fn();
-  vi.mocked(subscribe).mockImplementation((_event, callback) => { changed = callback as (id: string) => void; return off; });
+  vi.mocked(subscribe).mockImplementation((event, callback) => {
+    if (event === "workspace://changed") changed = callback as (id: string) => void;
+    if (event === "camera://changed") camerasChanged = callback as () => void;
+    return off;
+  });
 });
 async function open() {
   const hook = renderHook(() => useWorkspace(), { wrapper: WorkspaceProvider });
@@ -35,6 +40,27 @@ async function open() {
 }
 
 describe("候选工作台状态与并发", () => {
+  it("相机配置事件刷新设备列表和环境有效性，同时保留未保存的候选", async () => {
+    const {defaultCameraConfig} = await vi.importActual<typeof import("../src/features/camera/api")>("../src/features/camera/api");
+    const {result} = await open();
+    const configs = ["cam1", "cam2"].map(id => ({...defaultCameraConfig, id}));
+    vi.mocked(cameraApi.rigConfig).mockResolvedValue(configs);
+    const refreshed = workspaceView(); refreshed.workspace.revision++;
+    refreshed.workspace.frames[0].saved = false; refreshed.workspace.frames[0].trial = null;
+    vi.mocked(workspaceApi.get).mockResolvedValue(refreshed);
+    await act(async () => camerasChanged());
+    await waitFor(() => expect(result.current.cameras.map(camera => camera.id)).toEqual(["cam1", "cam2"]));
+    await waitFor(() => expect(result.current.data?.workspace.revision).toBe(refreshed.workspace.revision));
+    act(() => result.current.setDoc({...result.current.doc!, name: "未保存的候选"}));
+    const calls = vi.mocked(workspaceApi.get).mock.calls.length;
+    vi.mocked(cameraApi.rigConfig).mockResolvedValue([configs[0]]);
+    await act(async () => camerasChanged());
+    await waitFor(() => expect(result.current.cameras.map(camera => camera.id)).toEqual(["cam1"]));
+    expect(workspaceApi.get).toHaveBeenCalledTimes(calls);
+    expect(result.current.doc?.name).toBe("未保存的候选");
+    expect(result.current.dirty).toBe(true);
+  });
+
   it("浏览器模式不读取桌面配置", () => {
     vi.mocked(desktopAvailable).mockReturnValue(false);
     const { result } = renderHook(() => useWorkspace(), { wrapper: WorkspaceProvider });
@@ -46,7 +72,7 @@ describe("候选工作台状态与并发", () => {
     localStorage.setItem("tujiao-last-workspace", "B");
     const { result, unmount } = renderHook(() => useWorkspace(), { wrapper: WorkspaceProvider });
     await waitFor(() => expect(result.current.doc?.id).toBe("B"));
-    unmount(); expect(off).toHaveBeenCalledTimes(1);
+    unmount(); expect(off).toHaveBeenCalledTimes(2);
   });
 
   it("已删除的上次配方回退到第一项", async () => {

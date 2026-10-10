@@ -233,6 +233,7 @@ pub struct CycleHost {
     pub sim: SimCtl,
     pub recipes: RecipeStore,
     pub recorder: Recorder,
+    pub cycle_ids: crate::cycle_ids::CycleIds,
     settings_path: PathBuf,
     shared: Mutex<Shared>,
     rx: Mutex<Option<(UnboundedReceiver<Input>, Receiver<Frame>)>>,
@@ -255,6 +256,7 @@ impl CycleHost {
             sim: SimCtl::default(),
             recipes: RecipeStore::open(data.join("recipes"))?,
             recorder: Recorder::new(data.join("records")),
+            cycle_ids: crate::cycle_ids::CycleIds::default(),
             shared: Mutex::new(Shared {
                 snapshot: None,
                 logs: VecDeque::new(),
@@ -279,6 +281,9 @@ impl CycleHost {
         }
         for e in host.camera.notes.iter().chain(&host.settings_note) {
             log(app, "err", "配置", e.clone());
+        }
+        for e in &app.state::<crate::workspace::WorkspaceHost>().notes {
+            log(app, "err", "候选加载", e.clone());
         }
         tauri::async_runtime::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_millis(20));
@@ -741,6 +746,7 @@ impl Machine {
 
     /// 空闲、故障时的相机检查：没被配方用到的备用相机不拦着开工。
     fn check_idle_cams(&mut self) -> Result<(), String> {
+        host(&self.app).cycle_ids.ready(&self.app)?;
         if !self.workers.can_arm() {
             return Err("测量工作线程全部超时且尚未返回，拒绝布防；需排查图像引擎或重启检测服务".into());
         }
@@ -878,19 +884,14 @@ impl Machine {
 
         let host = host(&app);
         let settings = host.settings();
+        let cycle_id = match host.cycle_ids.take(&app) {
+            Ok(id) => id,
+            Err(reason) => return self.refuse(sn, None, fault::PROCESS_TIMEOUT, reason).await,
+        };
+        self.current_cycle_id = Some(cycle_id.clone());
         if !self.workers.can_arm() {
             return self.refuse(sn, None, fault::PROCESS_TIMEOUT, "测量工作线程全部超时且尚未返回，拒绝布防".into()).await;
         }
-        let reserve_app = app.clone();
-        let reserved = tokio::time::timeout(settings.timeouts.arm(), tauri::async_runtime::spawn_blocking(move || {
-            reserve_app.state::<Store>().reserve_cycle_id()
-        })).await;
-        let cycle_id = match reserved {
-            Ok(Ok(Ok(id))) => id,
-            Ok(Ok(Err(e))) => return self.refuse(sn, None, fault::PROCESS_TIMEOUT, format!("无法持久保存工件身份：{e}")).await,
-            _ => return self.refuse(sn, None, fault::PROCESS_TIMEOUT, "持久保存工件身份超时或异常，不布防".into()).await,
-        };
-        self.current_cycle_id = Some(cycle_id.clone());
         let recipe = match settings.product_source {
             ProductSource::Plc => host.recipes.list().into_iter().find(|r| r.product_code as u32 == code),
             ProductSource::Manual => settings.manual_recipe_id.as_deref().and_then(|id| host.recipe(id)),

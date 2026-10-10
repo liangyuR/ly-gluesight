@@ -300,3 +300,9 @@
   .wf-toast { left: 50%; max-width: calc(100vw - 40px); }
 }
 @media (prefers-reduced-motion: reduce) { .wf-spin { animation: none; } }
+
+.wf-resource-id { max-width: 220px; overflow-wrap: anywhere; font-family: var(--font-mono, monospace); font-size: 11px; }
+.wf-kv strong { overflow-wrap: anywhere; }
+.wf-draw-path { cursor: crosshair; }
+.wf-centerline-points { display: grid; gap: 8px; max-height: 260px; overflow: auto; margin-top: 12px; }
+.wf-centerline-points .wf-form-grid { grid-template-columns: 1fr 1fr; }

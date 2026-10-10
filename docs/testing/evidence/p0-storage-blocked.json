@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "observedDate": "2026-10-10",
+  "timezone": "Asia/Hong_Kong",
+  "workspaceDrive": "D:",
+  "driveMapping": {"diskIndex": 0, "partition": "Disk #0, Partition #0"},
+  "disk": {"model": "TOSHIBA HDWD120", "interfaceType": "IDE", "status": "Pred Fail", "sizeBytes": 2000396321280},
+  "events": [
+    {"time": "2026-10-10T11:18:25.6297876+08:00", "provider": "storahci", "id": 129, "device": "\\Device\\RaidPort1", "message": "发出了对设备的重置"},
+    {"time": "2026-10-10T11:20:39.6381434+08:00", "provider": "disk", "id": 153, "diskIndex": 0, "logicalBlockAddress": "0x7eb8d58a", "message": "重试 IO 操作"},
+    {"time": "2026-10-10T11:27:03.6323994+08:00", "provider": "storahci", "id": 129, "device": "\\Device\\RaidPort1", "message": "发出了对设备的重置"},
+    {"time": "2026-10-10T11:30:56.8192156+08:00", "provider": "storahci", "id": 129, "device": "\\Device\\RaidPort1", "message": "发出了对设备的重置"}
+  ],
+  "blockedNativeLaunch": {
+    "pid": 39744,
+    "parentPid": 40008,
+    "creationTime": "2026-10-10T11:30:26.871760+08:00",
+    "executable": "D:\\project\\ly-gluesight\\output\\playwright\\p0-regression\\gluesight-ui-tests.exe",
+    "sha256": "C8CD775817B5280786DEA7E8EEC3AAB2C44A5824E6367C85E701646C4451AC2F",
+    "kernelModeTime": 0,
+    "userModeTime": 0,
+    "readOperations": 1,
+    "writeOperations": 0,
+    "threadState": "Waiting",
+    "threadWaitReason": "Executive",
+    "cdpReady": false,
+    "applicationCodeExecutionObserved": false
+  },
+  "step5ChecksAlreadyPassed": {"rust": 167, "rustIgnored": 21, "s7Loopback": 19, "frontend": 942, "typecheck": true, "coverageGates": true, "finalBuild": true},
+  "pending": [
+    "Step 5: four frames at 1440x900 and 1280x800 on the final executable; temporary CSS diagnostics are not final proof",
+    "Step 6: latest full Rust/frontend/S7 regressions and native history, twelve-view recording and original-bundle reproduction",
+    "Step 7: module integration, fault matrix, real-DLL performance and actual CycleHost tail-latency regression"
+  ],
+  "actions": ["Stop builds and performance tests on the affected drive", "Preserve implemented sources with commits, remote branches and draft PRs", "Resume validation after workspace storage is healthy"],
+  "qualification": "Storage status and events are direct host observations. No disk repair, machine restart or final native pass is claimed."
+}

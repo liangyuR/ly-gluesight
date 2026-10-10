@@ -32,6 +32,24 @@ fn graphs_preserve_each_shot_and_only_skip_explicitly_skipped_shots() {
 }
 
 #[test]
+fn graphs_keep_exact_identity_after_json_round_trip_with_nonbinary_pixel_scale() {
+    let mut doc = crate::recipe::samples().remove(1);
+    doc.spacing = 1.0;
+    for shot in &mut doc.shots {
+        shot.path = vec![[980.0, 480.0], [300.0, 460.0]];
+        shot.mm_per_px = Some(0.112);
+    }
+    let graph = graphs(&doc.build().unwrap()).unwrap();
+    let stored: Value = serde_json::from_slice(&serde_json::to_vec(&graph).unwrap()).unwrap();
+    let restored: crate::recipe::RecipeDoc = serde_json::from_slice(&serde_json::to_vec(&doc).unwrap()).unwrap();
+    assert_eq!(stored, graphs(&restored.build().unwrap()).unwrap());
+    for k in 0..4 {
+        let restored_graph = &stored["shots"][k]["graph"];
+        assert_eq!(restored_graph, &vision::build_taught_graph(&restored.build().unwrap(), k).unwrap());
+    }
+}
+
+#[test]
 #[ignore = "requires LYFLOW_CORE_DLL with glue.taught_path; immutable production bundle integration"]
 fn native_bundle_warms_measures_frozen_resources_and_rejects_tampering() {
     let dll = std::env::var_os("LYFLOW_CORE_DLL").expect("Set LYFLOW_CORE_DLL to a taught-path core");

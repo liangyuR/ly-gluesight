@@ -6,7 +6,7 @@ import WorkflowPreviewPage from "../src/pages/WorkflowPreviewPage";
 import { journeys, screens } from "../src/features/workflow/catalog";
 import { initialState } from "../src/features/workflow/model";
 
-const storageKey = "tujiao-workflow-preview-v3";
+const storageKey = "tujiao-workflow-preview-v4";
 beforeEach(() => {
   sessionStorage.clear();
   // jsdom 无滚动布局，保留真实页面与导航，只替代浏览器方法。
@@ -27,7 +27,7 @@ describe("流程预览路由与交互", () => {
   it("存储损坏和未知路由回到可用的初始引导", () => {
     sessionStorage.setItem(storageKey, "invalid-json"); show("/workflow/unknown");
     expect(screen.getByRole("heading", { level: 1, name: "操作流程" })).toBeVisible();
-    expect(JSON.parse(sessionStorage.getItem(storageKey)!)).toMatchObject({ schema: 1, scene: "default" });
+    expect(JSON.parse(sessionStorage.getItem(storageKey)!)).toMatchObject({ schema: 4, scene: "default" });
   });
 
   it("情景筛选切换到具体异常页，重置清理异常情景", async () => {
@@ -44,15 +44,15 @@ describe("流程预览路由与交互", () => {
     expect(screen.getByRole("status")).toHaveTextContent("预览数据已恢复到初始状态。");
   });
 
-  it("已通过的试匹配在编辑参数后失效，重新试匹配后才可保存", async () => {
+  it("已通过的试测在编辑参数后失效，重新试测后才可保存", async () => {
     show("/workflow/teach?scene=teach-pass");
-    expect(screen.getByRole("button", { name: "保存本帧示教" })).toBeEnabled();
-    fireEvent.change(screen.getByRole("spinbutton", { name: "最低灰度对比" }), { target: { value: "40" } });
-    expect(screen.getByRole("button", { name: "保存本帧示教" })).toBeDisabled();
-    await userEvent.click(screen.getByRole("button", { name: "试匹配当前帧" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "保存本帧示教" })).toBeEnabled());
-    await userEvent.click(screen.getByRole("button", { name: "保存本帧示教" }));
-    expect(screen.getByRole("button", { name: "保存本帧示教" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "保存本点示教" })).toBeEnabled();
+    fireEvent.change(screen.getByRole("spinbutton", { name: "搜索半宽" }), { target: { value: "5" } });
+    expect(screen.getByRole("button", { name: "保存本点示教" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "试测当前点" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "保存本点示教" })).toBeEnabled());
+    await userEvent.click(screen.getByRole("button", { name: "保存本点示教" }));
+    expect(screen.getByRole("button", { name: "保存本点示教" })).toBeDisabled();
     const stored = JSON.parse(sessionStorage.getItem(storageKey)!);
     expect(stored.frames[2].saved).toBe(true); expect(stored.validation.status).toBe("idle");
   });
@@ -74,12 +74,12 @@ describe("流程预览路由与交互", () => {
   });
 
   it("有效工作会话重开保持参数，嵌套损坏会话恢复为可操作页面", () => {
-    const state = initialState(); state.frames[2].params.contrast = 40;
+    const state = initialState(); state.frames[2].params.search = 5;
     sessionStorage.setItem(storageKey, JSON.stringify(state)); const first = show("/workflow/teach");
-    expect(screen.getByRole("spinbutton", { name: "最低灰度对比" })).toHaveValue(40); first.unmount();
+    expect(screen.getByRole("spinbutton", { name: "搜索半宽" })).toHaveValue(5); first.unmount();
     const corrupted = JSON.parse(sessionStorage.getItem(storageKey)!); corrupted.frames[2].params = null;
     sessionStorage.setItem(storageKey, JSON.stringify(corrupted)); show("/workflow/teach");
-    expect(screen.getByRole("spinbutton", { name: "最低灰度对比" })).toHaveValue(32);
+    expect(screen.getByRole("spinbutton", { name: "搜索半宽" })).toHaveValue(4);
     expect(screen.getByRole("button", { name: "取新样本" })).toBeEnabled();
   });
 
