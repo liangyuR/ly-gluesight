@@ -16,6 +16,7 @@ use crate::recipe::{DetectParams, Recipe, RecipeDoc};
 use crate::store::{self, Store};
 use crate::vision;
 
+mod comparisons;
 mod recorded;
 mod reproduce;
 
@@ -266,6 +267,7 @@ pub struct WorkspaceHost {
     live: Mutex<LiveFrames>,
     station: Mutex<HashMap<u8, (FrozenImage, Arc<FrameImage>)>>,
     capture_seq: std::sync::atomic::AtomicU64,
+    comparisons: comparisons::Comparisons,
 }
 
 #[derive(Default)]
@@ -349,6 +351,7 @@ impl WorkspaceHost {
             live: Mutex::new(LiveFrames::default()),
             station: Mutex::new(HashMap::new()),
             capture_seq: std::sync::atomic::AtomicU64::new(0),
+            comparisons: comparisons::Comparisons::default(),
         })
     }
 
@@ -1689,10 +1692,13 @@ fn comparison_id(app: &AppHandle, history_id: i64) -> String {
 }
 
 fn save_comparison(app: &AppHandle, comparison: &Comparison) -> Result<(), String> {
-    let dir = app.state::<WorkspaceHost>().root.join("comparisons").join(comparison.history_id.to_string());
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    crate::fsio::write_atomic(&dir.join(format!("{}.json", comparison.id)),
-        &serde_json::to_string(comparison).map_err(|e| e.to_string())?)
+    let host = app.state::<WorkspaceHost>();
+    host.comparisons.save(&host.root, &app.state::<Store>(), comparison)
+}
+
+pub(crate) fn purge_history(app: &AppHandle, before: i64) -> Result<(usize, Vec<String>), String> {
+    let host = app.state::<WorkspaceHost>();
+    host.comparisons.purge(&host.root, &app.state::<Store>(), before)
 }
 
 #[tauri::command]
@@ -1741,26 +1747,12 @@ pub fn workspace_runtime_overview(
 #[tauri::command]
 pub fn workspace_comparisons(
     host: State<'_, WorkspaceHost>,
+    store: State<'_, Store>,
     id: String,
     history_id: i64,
 ) -> Result<Vec<Comparison>, String> {
     safe_id(&id)?;
-    let dir = host.root.join("comparisons").join(history_id.to_string());
-    let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            if let Ok(text) = crate::fsio::read_text(&entry.path()) {
-                if let Ok(saved) = serde_json::from_str::<Comparison>(&text) {
-                    if saved.history_id == history_id && (saved.source == "original" || saved.candidate_id == id) {
-                        out.push(saved);
-                    }
-                }
-            }
-        }
-    }
-    out.sort_by_key(|c| std::cmp::Reverse(c.created_at));
-    out.truncate(100);
-    Ok(out)
+    host.comparisons.list(&host.root, &store, &id, history_id)
 }
 
 pub fn clear_live(app: &AppHandle) {

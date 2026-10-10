@@ -393,10 +393,12 @@ impl CycleHost {
 /// 删除超过保留天数的检测记录。
 pub fn purge_history(app: &AppHandle) {
     let days = host(app).settings().history_days.max(1) as i64;
-    match app.state::<Store>().purge_before(now_ms() - days * 86_400_000) {
-        Ok(n) if n > 0 => log(app, "info", "记录清理", format!("删除 {days} 天前的 {n} 条检测记录")),
+    match crate::workspace::purge_history(app, now_ms() - days * 86_400_000) {
+        Ok((n, warnings)) => {
+            if n > 0 { log(app, "info", "记录清理", format!("删除 {days} 天前的 {n} 条检测记录")); }
+            for warning in warnings { log(app, "warn", "复测记录清理", warning); }
+        }
         Err(e) => log(app, "err", "记录清理", e),
-        _ => {}
     }
 }
 

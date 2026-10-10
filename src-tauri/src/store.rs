@@ -970,6 +970,12 @@ impl Store {
         self.query(&HistoryQuery { from: Some(since), limit: 1, ..Default::default() }).map(|p| p.counts)
     }
 
+    pub(crate) fn comparison_cycle(&self, id: i64) -> Result<Option<String>, String> {
+        self.conn.lock().unwrap().query_row(
+            "SELECT COALESCE(cycle_id, '') FROM parts WHERE id = ?1", [id], |row| row.get(0)
+        ).optional().map_err(db_err)
+    }
+
     pub fn purge_before(&self, ts: i64) -> Result<usize, String> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM parts WHERE ts < ?1", [ts]).map_err(db_err)
