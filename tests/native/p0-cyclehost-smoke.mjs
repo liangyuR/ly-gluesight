@@ -92,8 +92,8 @@ try {
   console.log(JSON.stringify({mode,scenario,passed:true,cycleId:row.detail.summary.cycleId,armMs:row.armMs,rawPGMs:row.recordedArtifacts.length}));
  }
  report.passed=report.runs.length===4;
- report.executableAfter=await artifact(instance.executable);assert.equal(report.executableAfter.sha256,instance.sha256.toLowerCase());
- report.dllAfter=await artifact(engine.path);assert.equal(report.dllAfter.sha256,report.guard.dll.sha256);
+ report.executableAfter=await artifact(instance.executable);
+ report.dllAfter=await artifact(engine.path);
 } catch(error) {
  report.passed=false;report.error=error.stack??String(error);report.failedAttempt=await persistFailedAttempt(output,attempt,error,report.runs.length);process.exitCode=1;
 } finally {

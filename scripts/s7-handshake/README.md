@@ -29,7 +29,7 @@ python -u scripts/s7-handshake/s7_test_plc.py --port 0
 | PLC → PC | DBW2 | protocolVersion |
 | PLC → PC | DBD4 / DBD8 | requestSeq / partSn |
 | PLC → PC | DBW12 / DBW14 | productCode / shotCount |
-| PLC → PC | DBD16 / DBD20 | planVersion / planHash |
+| PLC → PC | DBD16 / DBD20 | planVersion / 保留位（填 0） |
 | PLC → PC | DBW24 / DBW26 / DBW28 | camera1Shots / camera2Shots / camera3Shots |
 | PLC → PC | DBD32 | ackSeq |
 | PLC → PC | DBW36 / DBW38 / DBW40 | camera1Triggers / camera2Triggers / camera3Triggers |
@@ -37,7 +37,7 @@ python -u scripts/s7-handshake/s7_test_plc.py --port 0
 | PC → PLC | DBW66 | pcProtocolVersion |
 | PC → PLC | DBD68 / DBD72 | resultSeq / resultSn |
 | PC → PLC | DBW76 / DBW78 | resultCode / faultCode |
-| PC → PLC | DBD80 / DBD84 | acceptedSeq / acceptedPlanHash |
+| PC → PLC | DBD80 / DBD84 | acceptedSeq / 保留位（填 0） |
 
 ## 控制命令
 
@@ -55,13 +55,13 @@ python -u scripts/s7-handshake/s7_test_plc.py --port 0
 `plc_request` 原子写入全部 `values` 并默认置 `partStart=true`；`plc_ack` 默认将当前 `resultSeq` 回显到 `ackSeq`，然后置 `resultAck=true`。调用方负责在看到有效 `done` 及匹配结果后发 ACK。`plc_release` 在 PC `done`、`busy` 均为 false 时清除 `partStart/partEnd/resultAck`。服务不自动发新件或自动确认错误结果，测试可通过 `plc_values` 或原始 DB 写入刻意构造旧序号、错误 ACK 和协议违规场景。
 
 ```json
-{"id":10,"op":"plc_request","values":{"requestSeq":17,"partSn":12345,"productCode":7,"shotCount":4,"planVersion":1,"planHash":123,"camera1Shots":2,"camera2Shots":1,"camera3Shots":1}}
+{"id":10,"op":"plc_request","values":{"requestSeq":17,"partSn":12345,"productCode":7,"shotCount":4,"planVersion":1,"planReserved":0,"camera1Shots":2,"camera2Shots":1,"camera3Shots":1}}
 {"id":11,"op":"plc_values","values":{"partEnd":true,"camera1Triggers":2,"camera2Triggers":1,"camera3Triggers":1}}
 {"id":12,"op":"plc_ack"}
 {"id":13,"op":"plc_release"}
 ```
 
-请求序号、计划版本和计划 hash 的单调性/匹配由被测握手逻辑验收；控制 API 不替客户端过滤故障输入。要覆盖其他点表，可用 `configure_handshake` 完整替换字段映射。字段类型为 `bool/u8/u16/u32`，bool 必须有 `bit`：
+请求序号、工件SN、计划版本和相机计数的匹配由被测握手逻辑验收；控制 API 不替客户端过滤故障输入。要覆盖其他点表，可用 `configure_handshake` 完整替换字段映射。字段类型为 `bool/u8/u16/u32`，bool 必须有 `bit`：
 
 ```json
 {"id":20,"op":"configure_handshake","fields":{"partStart":{"db":200,"byte":0,"bit":0},"requestSeq":{"db":200,"byte":4,"type":"u32"},"resultAck":{"db":200,"byte":0,"bit":2}}}

@@ -75,7 +75,6 @@ pub struct RecordingEvidence {
 pub struct ShotRawFile {
     pub view: u8,
     pub file: String,
-    pub revision_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -236,7 +235,6 @@ pub struct StoredMeasurement {
     pub cycle_id: Option<String>,
     pub bundle_id: Option<String>,
     pub delivery: PlcDelivery,
-    pub layout_hash: Option<String>,
 }
 
 pub struct Store {
@@ -326,11 +324,6 @@ fn measurement_layout(recipe: &Recipe) -> serde_json::Value {
         "shots":shots, "segments":segments, "points":recipe.points, "detect":recipe.detect})
 }
 
-pub fn measurement_layout_hash(recipe: &Recipe) -> String {
-    let bytes = measurement_layout(recipe).to_string();
-    format!("{:016x}", bytes.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3)))
-}
-
 pub fn same_measurement_layout(original: &Recipe, candidate: &Recipe) -> bool {
     measurement_layout(original) == measurement_layout(candidate)
 }
@@ -378,6 +371,88 @@ fn backup_old_database(conn: Connection, path: &Path, version: i64) -> Result<Pa
     let backup = path.with_file_name(format!("{name}.v{version}.{}.{token}.bak", ly_plc::now_ms()));
     std::fs::rename(path, &backup).map_err(|e| format!("备份旧记录库失败，原库未重建：{e}"))?;
     Ok(backup)
+}
+
+fn table_columns(conn: &Connection, table: &str) -> Result<BTreeSet<String>, String> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})")).map_err(db_err)?;
+    let rows = stmt.query_map([], |row| row.get(1)).map_err(db_err)?;
+    rows.collect::<Result<BTreeSet<_>, _>>().map_err(db_err)
+}
+
+fn migrate_revision_references(conn: &mut Connection) -> Result<(), String> {
+    let parts = table_columns(conn, "parts")?;
+    let snapshots = table_columns(conn, "recipe_snapshots")?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_err)?;
+    for (table, columns, column) in [("parts", &parts, "recipe_revision"), ("parts", &parts, "bundle_id"),
+        ("recipe_snapshots", &snapshots, "revision_id")] {
+        if !columns.contains(column) {
+            tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT;")).map_err(db_err)?;
+        }
+    }
+    if snapshots.contains("hash") && !snapshots.contains("revision_id") {
+        let originals = {
+            let mut stmt = tx.prepare("SELECT rowid,hash,recipe_id,version,json FROM recipe_snapshots ORDER BY rowid").map_err(db_err)?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
+                r.get::<_, u32>(3)?, r.get::<_, String>(4)?))).map_err(db_err)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db_err)?
+        };
+        let mut recipes = std::collections::BTreeMap::<String, (Recipe, Option<i64>)>::new();
+        let mut references = std::collections::BTreeMap::new();
+        for (rowid, reference, id, version, json) in originals {
+            let recipe: Recipe = serde_json::from_str(&json).map_err(|e| format!("旧配方快照无法读取，保留原库：{e}"))?;
+            if recipe.id != id || recipe.version != version {
+                return Err("旧配方快照 ID 或版本不一致，保留原库".into());
+            }
+            references.insert(reference, recipe.clone());
+            register_migrated_snapshot(&mut recipes, recipe, Some(rowid))?;
+        }
+        if parts.contains("recipe_hash") {
+            let records = {
+                let mut stmt = tx.prepare("SELECT id,recipe_id,recipe_version,recipe_hash FROM parts WHERE recipe_hash IS NOT NULL").map_err(db_err)?;
+                let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<u32>>(2)?, r.get::<_, String>(3)?))).map_err(db_err)?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(db_err)?
+            };
+            for (part, id, version, reference) in records {
+                let (Some(id), Some(version)) = (id, version) else { return Err("旧记录的配方 ID 或版本缺失，保留原库".into()) };
+                if version == 0 { return Err("旧记录的配方版本无效，保留原库".into()); }
+                let original = references.get(&reference).ok_or("旧记录引用的配方快照缺失，保留原库")?;
+                if original.id != id { return Err("旧记录的配方引用与 ID 不一致，保留原库".into()); }
+                let mut doc: crate::recipe::RecipeDoc = serde_json::from_value(serde_json::to_value(original).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+                doc.version = version;
+                let recipe = doc.build()?;
+                let revision = recipe.revision_id.clone();
+                register_migrated_snapshot(&mut recipes, recipe, None)?;
+                tx.execute("UPDATE parts SET recipe_revision=?2 WHERE id=?1", params![part, revision]).map_err(db_err)?;
+            }
+        }
+        for (revision, (recipe, rowid)) in recipes {
+            if let Some(rowid) = rowid {
+                tx.execute("UPDATE recipe_snapshots SET revision_id=?2 WHERE rowid=?1", params![rowid, revision]).map_err(db_err)?;
+            } else {
+                tx.execute("INSERT INTO recipe_snapshots(revision_id,recipe_id,version,json) VALUES(?1,?2,?3,?4)",
+                    params![revision, recipe.id, recipe.version, serde_json::to_string(&recipe).map_err(|e| e.to_string())?]).map_err(db_err)?;
+            }
+        }
+    }
+    if parts.contains("bundle_hash") && !parts.contains("bundle_id") {
+        tx.execute("UPDATE parts SET bundle_id=bundle_hash", []).map_err(db_err)?;
+    }
+    tx.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS recipe_revision ON recipe_snapshots(revision_id) WHERE revision_id IS NOT NULL;").map_err(db_err)?;
+    tx.commit().map_err(db_err)
+}
+
+fn register_migrated_snapshot(
+    recipes: &mut std::collections::BTreeMap<String, (Recipe, Option<i64>)>, recipe: Recipe, rowid: Option<i64>,
+) -> Result<(), String> {
+    if let Some((previous, _)) = recipes.get(&recipe.revision_id) {
+        if serde_json::to_value(previous).map_err(|e| e.to_string())? != serde_json::to_value(&recipe).map_err(|e| e.to_string())? {
+            return Err("旧配方的相同 ID、版本对应不同快照，保留原库".into());
+        }
+    } else {
+        recipes.insert(recipe.revision_id.clone(), (recipe, rowid));
+    }
+    Ok(())
 }
 
 fn fail_interrupted_recordings(conn: &mut Connection) -> Result<usize, String> {
@@ -452,7 +527,6 @@ impl Store {
                  delivery_state TEXT NOT NULL,
                  delivery_updated_at INTEGER NOT NULL,
                  delivery_message TEXT,
-                 layout_hash TEXT,
                  recording_state TEXT NOT NULL DEFAULT 'pending',
                  recording_available INTEGER NOT NULL DEFAULT 0,
                  recording_directory TEXT,
@@ -496,6 +570,7 @@ impl Store {
              COMMIT;",
         )
         .map_err(db_err)?;
+        migrate_revision_references(&mut conn)?;
         let interrupted_recordings = fail_interrupted_recordings(&mut conn)?;
         Ok(Self { conn: Mutex::new(conn), backup_path, interrupted_recordings })
     }
@@ -522,9 +597,12 @@ impl Store {
 
     pub fn insert(&self, r: &PartRecord) -> Result<i64, String> {
         if r.cycle_id.is_some_and(|s| s.is_empty()) || r.bundle_id.is_some_and(|s| s.is_empty()) {
-            return Err("检测记录的 cycleId 或发布包哈希为空".into());
+            return Err("检测记录的 cycleId 或发布包 ID 为空".into());
         }
         if let Some(recipe) = r.recipe {
+            if recipe.revision_id != format!("{}-v{}", recipe.id, recipe.version) || recipe.version == 0 {
+                return Err("配方修订号与实际 ID、版本不一致".into());
+            }
             if r.shots.len() != recipe.shot_count() || r.frames_expected != recipe.shot_count() {
                 return Err("检测记录必须包含每个计划拍照点，包括缺帧拍照点".into());
             }
@@ -551,15 +629,17 @@ impl Store {
         let tx = conn.transaction().map_err(db_err)?;
         if let Some(recipe) = r.recipe {
             let json = serde_json::to_string(recipe).map_err(|e| e.to_string())?;
-            let previous: Option<String> =
-                tx.query_row("SELECT json FROM recipe_snapshots WHERE revision_id = ?1", [&recipe.revision_id], |row| row.get(0)).optional().map_err(db_err)?;
-            if let Some(previous) = previous {
-                let mut previous: serde_json::Value = serde_json::from_str(&previous).map_err(|e| e.to_string())?;
-                let mut candidate: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-                previous.as_object_mut().ok_or("原配方快照格式损坏")?.remove("version");
-                candidate.as_object_mut().ok_or("配方快照格式错误")?.remove("version");
-                if previous != candidate {
-                    return Err("相同配方哈希对应了不同快照，拒绝覆盖原记录".into());
+            let previous: Option<(String, u32, String)> = tx.query_row(
+                "SELECT recipe_id,version,json FROM recipe_snapshots WHERE revision_id = ?1", [&recipe.revision_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).optional().map_err(db_err)?;
+            if let Some((id, version, previous)) = previous {
+                if id != recipe.id || version != recipe.version {
+                    return Err("原配方快照 ID 或版本损坏，拒绝追加记录".into());
+                }
+                let previous: Recipe = serde_json::from_str(&previous).map_err(|e| e.to_string())?;
+                if serde_json::to_value(&previous).map_err(|e| e.to_string())? != serde_json::to_value(recipe).map_err(|e| e.to_string())? {
+                    return Err("相同配方修订号对应了不同快照，拒绝覆盖原记录".into());
                 }
             }
             tx.execute(
@@ -577,9 +657,9 @@ impl Store {
         tx.execute(
             "INSERT INTO parts (ts, sn, recipe_id, recipe_version, recipe_revision, trigger_mode, verdict, plc_code, fault_code,
                  reason, drain_ms, frames_expected, frames_received, triggers, retest_of, software_version, judgement, frames,
-                 cycle_id, bundle_id, delivery_state, delivery_updated_at, delivery_message, layout_hash)
+                 cycle_id, bundle_id, delivery_state, delivery_updated_at, delivery_message)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                 ?19, ?20, ?21, ?22, ?23, ?24)",
+                 ?19, ?20, ?21, ?22, ?23)",
             params![
                 r.ts,
                 r.sn,
@@ -604,7 +684,6 @@ impl Store {
                 enum_name(r.delivery.state),
                 r.delivery.updated_at,
                 r.delivery.message,
-                r.recipe.map(measurement_layout_hash),
             ],
         )
         .map_err(db_err)?;
@@ -712,7 +791,7 @@ impl Store {
             .optional()
             .map_err(db_err)?;
         let Some((id, previous)) = previous else { return Ok(false) };
-        if previous.iter().any(|old| !files.iter().any(|new| old.view == new.view && old.file == new.file && (old.revision_id.is_none() || old.revision_id == new.revision_id))) {
+        if previous.iter().any(|old| !files.iter().any(|new| old.view == new.view && old.file == new.file)) {
             return Err("原图身份已保存，不能替换为另一组文件".into());
         }
         tx.execute(
@@ -747,10 +826,12 @@ impl Store {
             let refs = stmt.query_map([id], |row| json_column::<Vec<ShotRawFile>>(row, 0)).map_err(db_err)?;
             let mut has_file = false;
             for files in refs {
-                has_file |= files.map_err(db_err)?.iter().any(|file| file.revision_id.as_deref().is_some_and(|revision_id| !revision_id.is_empty()));
+                let files = files.map_err(db_err)?;
+                validate_raw_files(&files)?;
+                has_file |= !files.is_empty();
             }
             if !has_file {
-                return Err("没有成功保存的带哈希原图引用，不能标记录制可用".into());
+                return Err("没有成功保存的原图引用，不能标记录制可用".into());
             }
         }
         tx.execute(
@@ -921,11 +1002,14 @@ impl Store {
 
     pub fn recipe_snapshot(&self, revision_id: &str) -> Result<Option<Recipe>, String> {
         let conn = self.conn.lock().unwrap();
-        let json: Option<String> = conn.query_row("SELECT json FROM recipe_snapshots WHERE revision_id = ?1", [revision_id], |row| row.get(0)).optional().map_err(db_err)?;
-        json.map(|j| {
-            let recipe: Recipe = serde_json::from_str(&j).map_err(|e| e.to_string())?;
-            if recipe.revision_id != revision_id {
-                return Err("原配方快照身份损坏".into());
+        let snapshot: Option<(String, u32, String)> = conn.query_row(
+            "SELECT recipe_id,version,json FROM recipe_snapshots WHERE revision_id = ?1", [revision_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).optional().map_err(db_err)?;
+        snapshot.map(|(id, version, json)| {
+            let recipe: Recipe = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+            if recipe.revision_id != revision_id || recipe.id != id || recipe.version != version {
+                return Err("原配方快照身份或版本损坏".into());
             }
             Ok(recipe)
         })
@@ -942,7 +1026,7 @@ impl Store {
         };
         let sql = format!(
             "SELECT p.id, p.ts, p.sn, p.recipe_id, p.recipe_revision, p.verdict, COALESCE(pp.format, {POINTS_FORMAT}), COALESCE(pp.data, x''),
-                 p.cycle_id, p.bundle_id, p.delivery_state, p.delivery_updated_at, p.delivery_message, p.layout_hash FROM parts p
+                 p.cycle_id, p.bundle_id, p.delivery_state, p.delivery_updated_at, p.delivery_message FROM parts p
              LEFT JOIN part_points pp ON pp.part_id = p.id{filter} ORDER BY p.id DESC LIMIT {limit}"
         );
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
@@ -959,7 +1043,6 @@ impl Store {
                     cycle_id: row.get(8)?,
                     bundle_id: row.get(9)?,
                     delivery: delivery_row(row, 10)?,
-                    layout_hash: row.get(13)?,
                 })
             })
             .map_err(db_err)?;

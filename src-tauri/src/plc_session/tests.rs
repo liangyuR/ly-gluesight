@@ -158,7 +158,7 @@ impl Rig {
     async fn request(&mut self, seq: u32, sn: u32) {
         self.plc.control(json!({"op":"plc_request", "values":{
             "protocolVersion":1,"requestSeq":seq,"partSn":sn,"productCode":1,
-            "shotCount":self.plan.shot_count,"planVersion":self.plan.plan_version,"planReserved":self.plan.plan_hash,
+            "shotCount":self.plan.shot_count,"planVersion":self.plan.plan_version,"planReserved":0,
             "camera1Shots":self.plan.camera_shots[0],"camera2Shots":self.plan.camera_shots[1],"camera3Shots":self.plan.camera_shots[2],
             "camera1Triggers":0,"camera2Triggers":0,"camera3Triggers":0,"partEnd":false,"resultAck":false
         }}));
@@ -344,7 +344,7 @@ async fn s7_wire_plan_mismatch_refusal_still_requires_ack() {
     let mut rig = Rig::new("plan-mismatch").await;
     rig.request(1, 50).await;
     let mut wrong = rig.plan.clone();
-    wrong.plan_hash ^= 1;
+    wrong.plan_version += 1;
     assert!(rig.session.validate_plan(&wrong).is_err());
     assert!(rig.session.arm(&rig.engine, &wrong).await.is_err());
     assert_eq!(rig.plc.fields()["armed"], false);

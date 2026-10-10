@@ -3,7 +3,6 @@ import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createHash } from 'node:crypto';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, i, all) => i % 2 ? pairs : [...pairs, [value.replace(/^--/, ''), all[i + 1]]], []));
 for (const required of ['executable','appdata','output','template','playwright-module','fixture','instance']) if (!args[required]) throw new Error(`Missing --${required}`);
@@ -12,19 +11,18 @@ if (!appdata.startsWith('C:\\') || !output.startsWith('C:\\') || !executable.sta
 const db = path.join(appdata,'inspection.db'), configPath = path.join(appdata,'plc.json'), journalPath = path.join(appdata,'plc-handshake.json');
 await mkdir(output,{recursive:false});
 const instance = JSON.parse(await readFile(args.instance,'utf8'));
-if (path.resolve(instance.executable) !== executable || instance.identifier !== 'com.xyzrobotics.tujiaovision.p0-tests.recovery' || createHash('sha256').update(await readFile(executable)).digest('hex').toUpperCase() !== instance.sha256.toUpperCase()) throw new Error('Verified isolated executable manifest mismatch');
+if (path.resolve(instance.executable) !== executable || instance.identifier !== 'com.xyzrobotics.tujiaovision.p0-tests.recovery') throw new Error('Verified isolated executable manifest mismatch');
 if (appdata !== path.resolve(process.env.APPDATA,instance.identifier)) throw new Error('AppData must match the verified recovery identifier');
 try { await readFile(journalPath); throw new Error('Existing S7 transaction must be preserved; use a fresh isolated profile'); } catch(error) { if(error.code !== 'ENOENT') throw error; }
 const originalConfig = await readFile(configPath), exported = JSON.parse(await readFile(args.template,'utf8'));
 const { chromium } = await import(pathToFileURL(path.resolve(args['playwright-module'])).href);
 const sleep = ms => new Promise(resolve => setTimeout(resolve,ms));
-const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const python = args.python || 'python', debugPort = Number(args['debug-port'] || 9338);
 try { const response=await fetch(`http://127.0.0.1:${debugPort}/json/version`); if(response.ok) throw new Error('Stop the previous owned native instance before this process-recovery test'); } catch(error) { if(error.message.includes('Stop the previous')) throw error; }
 let app, browser, lock, plc, lastId = 0;
 const pending = new Map(), report = {status:'failed',scope:'Actual S7 TCP -> durable ACK -> process termination before SQLite delivery update -> startup recovery',hardwareQualified:false};
 function queryDb(cycleId) {
- const code = `import sqlite3,json,sys,hashlib\nc=sqlite3.connect('file:'+sys.argv[1].replace('\\\\','/')+'?mode=ro',uri=True)\nc.row_factory=sqlite3.Row\nr=c.execute('select * from parts where cycle_id=?',(sys.argv[2],)).fetchone()\nshots=c.execute('select * from part_shots where part_id=? order by k',(r['id'],)).fetchall() if r else []\npoints=c.execute('select format,data from part_points where part_id=?',(r['id'],)).fetchone() if r else None\nprint(json.dumps({'part':dict(r) if r else None,'shots':[dict(s) for s in shots],'points':{'format':points[0],'sha256':hashlib.sha256(points[1]).hexdigest(),'bytes':len(points[1])} if points else None}))`;
+ const code = `import sqlite3,json,sys\nc=sqlite3.connect('file:'+sys.argv[1].replace('\\\\','/')+'?mode=ro',uri=True)\nc.row_factory=sqlite3.Row\nr=c.execute('select * from parts where cycle_id=?',(sys.argv[2],)).fetchone()\nshots=c.execute('select * from part_shots where part_id=? order by k',(r['id'],)).fetchall() if r else []\npoints=c.execute('select format,data from part_points where part_id=?',(r['id'],)).fetchone() if r else None\nprint(json.dumps({'part':dict(r) if r else None,'shots':[dict(s) for s in shots],'points':{'format':points[0],'values':list(points[1]),'bytes':len(points[1])} if points else None}))`;
  const result = spawnSync(python,['-c',code,db,cycleId],{encoding:'utf8',windowsHide:true});
  if (result.status !== 0) throw new Error(result.stderr);
  return JSON.parse(result.stdout);
@@ -80,7 +78,7 @@ try {
  await waitFor(async()=>{const status=await control({op:'status'});return status.fields.visionReady&&status},'actual S7 reset and ready');
  await control({op:'plc_values',values:{faultReset:false}});
  const plan=await read('plc_recipe_plan',{recipeId:'P0-TRICAM-UI'}), seq=101, sn=70100101;
- await control({op:'plc_request',values:{protocolVersion:1,requestSeq:seq,partSn:sn,productCode:701,shotCount:plan.shotCount,planVersion:plan.planVersion,planHash:plan.planHash,camera1Shots:plan.cameraShots[0],camera2Shots:plan.cameraShots[1],camera3Shots:plan.cameraShots[2]}});
+ await control({op:'plc_request',values:{protocolVersion:1,requestSeq:seq,partSn:sn,productCode:701,shotCount:plan.shotCount,planVersion:plan.planVersion,camera1Shots:plan.cameraShots[0],camera2Shots:plan.cameraShots[1],camera3Shots:plan.cameraShots[2]}});
  const fields=await waitFor(async()=>{const s=await control({op:'status'});return s.fields.done&&s.fields.resultSeq===seq&&s.fields.resultSn===sn&&s.fields},'actual safe ERR result');
  if(fields.resultCode!==90||fields.armed)throw new Error(JSON.stringify(fields));
  const durable=await waitFor(async()=>{try{const j=JSON.parse(await readFile(journalPath,'utf8'));return j.pending?.cycleId&&j.pending?.result&&j}catch{return false}},'durable submitted S7 identity');
@@ -109,8 +107,8 @@ try {
  if(!recovered.part.delivery_message?.includes('101'))throw new Error('Recovery did not identify actual request sequence');
  const history=await page.evaluate(async(id)=>window.__TAURI_INTERNALS__.invoke('history_detail',{id}),recovered.part.id);
  if(history.summary.delivery.state!=='acknowledged'||history.summary.cycleId!==cycleId||history.summary.sn!==sn)throw new Error('Native history API did not expose recovered ACK');
- report.after={record:recovered,history};report.originalDetectionEvidenceUnchanged=true;report.status='passed';report.executable={path:executable,sha256:hash(await readFile(executable))};
- report.templateAndPlan={templateSha256:hash(await readFile(args.template)),plan};
+ report.after={record:recovered,history};report.originalDetectionEvidenceUnchanged=true;report.status='passed';report.executable={path:executable,bytes:(await readFile(executable)).length};
+ report.templateAndPlan={templatePath:path.resolve(args.template),plan};
  await writeFile(path.join(output,'wire.json'),JSON.stringify(await control({op:'trace'}),null,2));
 } catch(error) {report.error=String(error.stack||error);process.exitCode=1;} finally {
  await stopApp().catch(error=>{report.cleanupError=String(error);process.exitCode=1});

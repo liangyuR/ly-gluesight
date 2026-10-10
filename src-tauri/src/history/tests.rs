@@ -21,9 +21,8 @@ fn row(recipe: &Recipe, id: i64) -> StoredMeasurement {
         verdict: judge::judge(recipe, &table).verdict,
         table,
         cycle_id: Some(format!("cycle-{id}")),
-        bundle_id: Some("bundle-revision_id".into()),
+        bundle_id: Some("bundle-id".into()),
         delivery: PlcDelivery::default(),
-        layout_hash: Some(measurement_layout_hash(recipe)),
     }
 }
 
@@ -87,7 +86,7 @@ fn threshold_only_changes_are_rejudged_without_altering_original_result() {
     let original = Arc::new(recipe());
     let mut candidate = (*original).clone();
     candidate.version += 1;
-    candidate.revision_id = "current-candidate".into();
+    candidate.revision_id = format!("{}-v{}", candidate.id, candidate.version);
     candidate.filter_window = 3;
     for segment in &mut candidate.segments { segment.width.as_mut().unwrap().tol_upper = 3.0; }
     let request = RejudgeRequest { use_current_recipe: true, ..Default::default() };
@@ -104,7 +103,8 @@ fn threshold_only_changes_are_rejudged_without_altering_original_result() {
 fn each_original_snapshot_is_checked_even_with_the_same_recipe_id() {
     let first = Arc::new(recipe());
     let mut second = (*first).clone();
-    second.revision_id = "second-snapshot".into();
+    second.version += 1;
+    second.revision_id = format!("{}-v{}", second.id, second.version);
     second.shots[0].view = 2;
     let second = Arc::new(second);
     let result = rejudge_rows(vec![row(&first, 1), row(&second, 2)], &RejudgeRequest { use_current_recipe: true, ..Default::default() }, |revision_id| {
@@ -121,11 +121,11 @@ fn unavailable_or_inconsistent_original_inputs_are_explicitly_skipped() {
     no_table.table.clear();
     let mut err = row(&original, 2);
     err.verdict = Verdict::ErrInspect;
-    let mut no_hash = row(&original, 3);
-    no_hash.recipe_revision = None;
+    let mut no_revision = row(&original, 3);
+    no_revision.recipe_revision = None;
     let mut bad_layout = row(&original, 4);
-    bad_layout.layout_hash = Some("tampered-layout".into());
-    let result = rejudge_rows(vec![no_table, err, no_hash, bad_layout], &RejudgeRequest::default(), |_| Ok(Some(original.clone())), |_| None).unwrap();
+    bad_layout.table.pop();
+    let result = rejudge_rows(vec![no_table, err, no_revision, bad_layout], &RejudgeRequest::default(), |_| Ok(Some(original.clone())), |_| None).unwrap();
     assert_eq!((result.total, result.skipped, result.skip_reasons.len()), (0, 4, 4));
     let result = rejudge_rows(vec![row(&original, 5)], &RejudgeRequest { use_current_recipe: true, ..Default::default() }, |_| Ok(None), |_| Some(original.clone())).unwrap();
     assert_eq!(result.skip_reasons[0].reason, "原配方快照缺失，无法核对测点布局");
@@ -140,7 +140,7 @@ fn csv_preserves_full_identity_and_delivery_with_escaped_text() {
         sn: 42,
         recipe_id: Some("recipe-id".into()),
         recipe_version: Some(7),
-        recipe_revision: Some("0123456789abcdef".into()),
+        recipe_revision: Some("recipe-id-v7".into()),
         trigger_mode: Some("fly".into()),
         verdict: Verdict::Ok,
         plc_code: 1,
@@ -151,12 +151,12 @@ fn csv_preserves_full_identity_and_delivery_with_escaped_text() {
         frames_received: 4,
         retest_of: None,
         cycle_id: Some("cycle-id".into()),
-        bundle_id: Some("full-frozen-bundle-revision_id".into()),
+        bundle_id: Some("full-frozen-bundle-id".into()),
         delivery: PlcDelivery { state: PlcDeliveryState::Acknowledged, updated_at: 2345, message: Some("PLC \"已确认\"".into()) },
     };
     let csv = csv_row(&summary);
-    assert!(csv.contains("\"0123456789abcdef\""));
+    assert!(csv.contains("\"recipe-id-v7\""));
     assert!(csv.contains("\"包含,逗号与\"\"引号\"\"\n换行\""));
-    assert!(csv.contains(",\"cycle-id\",\"full-frozen-bundle-revision_id\",acknowledged,"));
+    assert!(csv.contains(",\"cycle-id\",\"full-frozen-bundle-id\",acknowledged,"));
     assert!(csv.ends_with(",\"PLC \"\"已确认\"\"\"\r\n"));
 }

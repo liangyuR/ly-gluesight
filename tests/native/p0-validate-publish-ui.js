@@ -1,6 +1,6 @@
 async (page) => {
   const id = "P0-TRICAM-UI";
-  const root = "D:/project/ly-gluesight/tmp/p0-step7-regression/tmp/p0-step5-ui";
+  const root = "output/playwright/p0-step5-ui";
   const read = () => page.evaluate(async id => window.__TAURI_INTERNALS__.invoke("workspace_get", { id }), id);
   const until = async (predicate, description, timeout = 10000) => {
     const started = Date.now();

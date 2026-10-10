@@ -103,7 +103,7 @@ export default function RecipePage() {
           </div>
         ))}
         {error && <div className="notice error">{error}</div>}
-        <p className="muted hint">配方存在数据目录的 recipes 下，每个一个 JSON 文件，示教的中线也在里面。内容变了保存时版本号自动 +1，检测记录按内容哈希存快照。中线在配方工作台的单帧示教里点出。</p>
+        <p className="muted hint">配方存在数据目录的 recipes 下，每个一个 JSON 文件，示教的中线也在里面。内容变了保存时版本号自动 +1，检测记录按配方 ID 和版本保存快照。中线在配方工作台的单帧示教里点出。</p>
       </div>
       <div className="rcp-main">
         {editing && (

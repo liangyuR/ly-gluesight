@@ -113,7 +113,7 @@ fn plain(metadata: &Metadata) -> Result<(), String> {
     Ok(())
 }
 
-fn checked_directory(path: &Path, create: bool) -> Result<(), String> {
+pub(super) fn checked_directory(path: &Path, create: bool) -> Result<(), String> {
     if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir | Component::CurDir)) {
         return Err("复测目录必须是绝对路径且不能跳转".into());
     }

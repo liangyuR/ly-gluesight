@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
@@ -8,7 +7,6 @@ import { pathToFileURL } from 'node:url';
 
 process.env.PATH = ['C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native', 'C:\\vcpkg\\installed\\x64-windows\\bin', ...(process.env.PATH ?? '').split(';').filter(value => value && !/^D:/i.test(value))].join(';');
 const execute = promisify(execFile);
-const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const { values } = parseArgs({ options: {
   instance: { type: 'string' }, output: { type: 'string' },
   'playwright-module': { type: 'string' }, cdp: { type: 'string', default: 'http://127.0.0.1:9338' },
@@ -17,10 +15,10 @@ for (const key of ['instance', 'output', 'playwright-module']) assert(values[key
 const cPath = value => { const path = resolve(value); assert(/^C:\\/i.test(path), `C: required: ${path}`); return path; };
 const output = cPath(values.output);
 const instance = JSON.parse((await readFile(cPath(values.instance), 'utf8')).replace(/^\uFEFF/, ''));
-const profile = 'C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.performance';
+assert(['com.xyzrobotics.tujiaovision.p0-tests.performance', 'com.xyzrobotics.tujiaovision.p0-tests.performance.nohash'].includes(instance.identifier));
+const profile = join('C:\\Users\\11601\\AppData\\Roaming', instance.identifier);
 const executable = cPath(instance.executable);
-assert.equal(instance.identifier, 'com.xyzrobotics.tujiaovision.p0-tests.performance');
-assert.equal(digest(await readFile(executable)), instance.sha256.toLowerCase());
+
 assert(Number.isInteger(instance.pid) && instance.pid > 0);
 await mkdir(output, { recursive: false });
 const { chromium } = await import(pathToFileURL(cPath(values['playwright-module'])).href);
@@ -30,7 +28,7 @@ const processState = async () => JSON.parse((await execute('pwsh', ['-NoProfile'
   `$taskProc=Get-Process -Id ${instance.pid} -ErrorAction Stop; @{pid=$taskProc.Id;path=$taskProc.Path;start=$taskProc.StartTime.ToUniversalTime().ToString('o')} | ConvertTo-Json -Compress`],
   { windowsHide: true, encoding: 'utf8' })).stdout);
 const databaseState = async () => {
-  const code = `import sqlite3,json,pathlib,hashlib,sys\np=pathlib.Path(sys.argv[1]);c=sqlite3.connect(p.as_uri()+'?mode=ro',uri=True);r={}\nfor (n,) in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):\n q='SELECT * FROM "'+n.replace('"','""')+'" ORDER BY rowid';rows=c.execute(q).fetchall();r[n]={'rows':len(rows),'sha256':hashlib.sha256(json.dumps(rows,ensure_ascii=False,default=lambda b:b.hex(),separators=(',',':')).encode()).hexdigest()}\nprint(json.dumps(r));c.close()`;
+  const code = `import sqlite3,json,pathlib,sys\np=pathlib.Path(sys.argv[1]);c=sqlite3.connect(p.as_uri()+'?mode=ro',uri=True);r={}\nfor (n,) in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):\n q='SELECT * FROM "'+n.replace('"','""')+'" ORDER BY rowid';rows=c.execute(q).fetchall();r[n]={'rows':len(rows),'values':rows}\nprint(json.dumps(r,default=lambda b:list(b)));c.close()`;
   return JSON.parse((await execute('python', ['-c', code, join(profile, 'inspection.db')], { windowsHide: true, encoding: 'utf8' })).stdout);
 };
 const rawState = async () => {
@@ -44,7 +42,7 @@ const rawState = async () => {
       const info = await lstat(path);
       assert(!info.isSymbolicLink(), `Linked evidence: ${path}`);
       if (info.isDirectory()) await walk(path);
-      else if (/\.pgm$/i.test(entry.name) || entry.name === 'part.json') files.push({path, bytes: info.size, sha256: digest(await readFile(path))});
+      else if (/\.pgm$/i.test(entry.name) || entry.name === 'part.json') files.push({path, bytes: info.size});
     }
   };
   await walk(join(profile, 'records'));

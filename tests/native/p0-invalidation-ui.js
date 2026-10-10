@@ -1,6 +1,6 @@
 async (page) => {
   const id = "P0-TRICAM-UI";
-  const evidence = "D:/project/ly-gluesight/tmp/p0-step7-regression/tmp/p0-step5-ui";
+  const evidence = "output/playwright/p0-step5-ui";
   const read = () => page.evaluate(async id => window.__TAURI_INTERNALS__.invoke("workspace_get", { id }), id);
   const nav = name => page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name, exact: true }).click();
   const until = async (predicate, message, timeout = 10000) => {

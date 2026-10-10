@@ -201,7 +201,7 @@ class S7HeartbeatTests(unittest.TestCase):
         try:
             self.assertEqual(state.field_values()["protocolVersion"], 1)
             self.assertEqual(state.fields["requestSeq"], {"db": 321, "byte": 4, "type": "u32"})
-            self.assertEqual(state.fields["acceptedPlanHash"]["byte"], 84)
+            self.assertEqual(state.fields["acceptedPlanReserved"]["byte"], 84)
             deadline = time.monotonic() + 1
             while not state.field_values()["plcHeartbeat"] and time.monotonic() < deadline:
                 time.sleep(0.005)
@@ -285,7 +285,7 @@ class S7ProcessApiTests(unittest.TestCase):
         self.assertTrue(self.fixture.command("status")["ok"])
 
     def test_request_ack_release_observe_pc_s7_writes(self):
-        response = self.fixture.command("plc_request", values={"requestSeq": 17, "partSn": 12345, "productCode": 7, "shotCount": 4, "camera1Shots": 2, "camera2Shots": 1, "camera3Shots": 1, "planVersion": 1, "planHash": 123})
+        response = self.fixture.command("plc_request", values={"requestSeq": 17, "partSn": 12345, "productCode": 7, "shotCount": 4, "camera1Shots": 2, "camera2Shots": 1, "camera3Shots": 1, "planVersion": 1, "planReserved": 0})
         self.assertTrue(response["ok"])
         self.assertTrue(response["result"]["partStart"])
         self.assertEqual(response["result"]["requestSeq"], 17)

@@ -14,7 +14,7 @@ p0-cyclehost-performance.mjs 连接一个已经启动、配置完成的专用 P0
 - 专用应用标识包含 com.xyzrobotics.tujiaovision.p0-tests；PLC 协议为 simulator、在线；全部参与设备为触发模拟相机；启用真实 LyFlow 测量及“全部”录制。默认 --source sim 保留上述模拟相机守卫；显式回放控制见下节。
 - 保持 armMs=200。初始状态为 IDLE，模拟器未运行。脚本不会自动复位故障。
 - 录制保留数至少 100；建议专用验收实例设为 500 件或以上，以便四个组合结束后仍可复核所有原图。容量建议至少 8 GiB，并确认 C 盘实际可用空间。单个 tricam/100 件约产生 1.2 GiB 原图；single 约 0.4 GiB。
-- --fixture 传入该发布包的 recipe.json；--release 传入包含 manifest.json 的该包目录。脚本校验清单 FNV 等于每件运行的 bundleId，并核对配方、拍照点、视角和 1280×1024 尺寸。
+- --fixture 传入该发布包的 recipe.json；--release 传入包含 manifest.json 的该包目录。脚本核对清单中的显式 bundleId 与本件发布包 ID，并核对配方、拍照点、视角和 1280×1024 尺寸。
 - --executable 和 --pid 必须来自当前原生实例。内存采样核对进程路径及启动时间，拒绝复用 PID 或应用中途重启。
 - 暂停 Cargo、前端 coverage、Prepared 基准及其它 CPU 密集任务；同一时间仅运行一个原生验收实例。
 
@@ -50,9 +50,9 @@ $taskPerfArgs = @(
 
 - single：cam1_1_v1.pgm、cam1_2_v1.pgm、cam1_3_v1.pgm、cam1_4_v1.pgm。
 - tricam：cam1_1_v1.pgm 至 cam1_4_v3.pgm，每组视角1、2、3都齐全。
-- provenance.json 等非图像文件允许存在，也纳入完整输入目录树的运行前后 SHA。额外图像、缺视角、符号链接、错误命名或尺寸都会拒绝。
+- provenance.json 等非图像文件允许存在，也记录完整输入目录树的路径和尺寸。额外图像、缺视角、符号链接、错误命名或尺寸都会拒绝。
 
-可将独立 CLEAN Prepared 像素夹具的 normal/partial_gap PGM 按字节复制到新的 normal/gap 输入目录；provenance.json 应保存每幅 source/target 路径、SHA 和夹具来源。Prepared 的 DLL通过报告只是像素来源证据，不是此处的桌面发布或运行证据。仍须在真实专用桌面上对新的独立候选按 k0→k3 依次取样、示教、真实试测、导入样本、验证和发布；--fixture/--release 指向桌面实际发布的包。
+可将独立 CLEAN Prepared 像素夹具的 normal/partial_gap PGM 按字节复制到新的 normal/gap 输入目录；provenance.json 应保存每幅 source/target 路径、尺寸和夹具来源。Prepared 的 DLL通过报告只是像素来源证据，不是此处的桌面发布或运行证据。仍须在真实专用桌面上对新的独立候选按 k0→k3 依次取样、示教、真实试测、导入样本、验证和发布；--fixture/--release 指向桌面实际发布的包。
 
 回放是循环读四组文件，必须确保开始时指向第一组。需要时在UI重新加载回放目录，然后重新核对候选示教/发布状态。工具不会修改配置、跳过示教或偷偷调整回放游标；若取到错误组会通过逐点图像校验明确失败。
 
@@ -63,13 +63,13 @@ $taskPerfArgs = @(
 '--replay-dir', $taskReplayInput
 ~~~
 
-每件四次真实 CycleHost 触发后，全部录制原图的整文件SHA及纯像素SHA必须分别等于输入的相同 k/view。报告包含 replayInputs、replayInputsAfter、逐幅 replayComparisons，以及每件真实 part.json 的 SHA 与文档快照。录制元数据必须证明 counter=synthetic、manual=false、lostPackets=0，cycleId/SN/发布包/设备/拍照点/所选视角/会话/设备内序号/帧计数/触发计数一致；不能用硬件计数或示教手动采图冒充此次运行。独立校验器重新读输入树、输出原图和 part.json，重算哈希及身份。
+每件四次真实 CycleHost 触发后，工具实际读取全部录制原图并检查完整 Gray8 PGM 尺寸，按 k/view 核对设备计数与业务身份；不比较图像内容或计算指纹。报告包含输入目录、逐幅结构检查，以及真实 part.json 文档。录制元数据必须证明 counter=synthetic、manual=false、lostPackets=0，cycleId/SN/发布包 ID/设备/拍照点/所选视角/会话/设备内序号/帧计数/触发计数一致。独立校验器重读原图与 part.json，复算业务结果和指标。
 
 --scenario normal/gap 在回放控制中只指定期望标签。实际像素完全由 --replay-dir 决定，选择 gap 按钮不会把 normal 回放图变成断胶图。操作者必须切换到独立的 gap 输入目录并按真实配置流程应用。回放不会注入随机 Pose、丢帧或 locateFail，不能把此控制当作默认带噪模拟、Robot五场景、现场相机或算法准确率通过。原默认带噪 P0-09 normal实际2失败仍单独保留。报告显式写 source=replay 和范围说明，physicalValidation/s7HardwareValidation 保持 false。
 
 ## 指标和通过条件
 
-每件需完成 ACK、原图落盘及握手释放，核对 cycleId、SN、recipeRevision、bundleId、shotId、设备、视角、设备内序号、测量点归属及原图完整性。原图必须是 1280×1024 Gray8 PGM；记录逐幅 SHA256。软件 exe、DLL、夹具和整个冻结发布目录在运行前后核对 SHA256。
+每件需完成 ACK、原图落盘及握手释放，核对 cycleId、SN、recipeRevision、bundleId、shotId、设备、视角、设备内序号、测量点归属及原图完整性。原图必须是 1280×1024 Gray8 PGM；记录逐幅路径、尺寸和字节数。软件实例以 PID、可执行路径、启动时间与隔离应用 ID 确认；DLL记录实际路径和版本，不计算或匹配内容摘要。
 
 | 字段 | 实际含义 |
 | --- | --- |
@@ -83,11 +83,11 @@ $taskPerfArgs = @(
 
 输出 nearest-rank p50/p95/max、最小值和均值；内存输出每次原始采样、首尾变化及 bytes/part 最小二乘趋势。没有凭空设定内存斜率通过线，不能由一次有限时长运行宣称永不增长。第一件也计入；不声明进程、DLL、图或操作系统缓存为冷态。本机模拟器的固定运动/等待节拍不证明最大现场吞吐。
 
-normal 严格期望 OK/PLC 1/fault 0，gap 严格期望 NG_GAP/PLC 13/fault 0。既有 P0-09 正常夹具实际返回 OK_WITH_EXCURSION/2 时仍采完 100 件、保存 accuracyFailures，completed=true、passed=false 并返回非零。不得放宽限值、把结果 2 重标为 1，或删除既有失败事实。若要新建直线合成夹具，应保留独立配方身份、原图来源及哈希，并完成真实桌面验证发布。
+normal 严格期望 OK/PLC 1/fault 0，gap 严格期望 NG_GAP/PLC 13/fault 0。既有 P0-09 正常夹具实际返回 OK_WITH_EXCURSION/2 时仍采完 100 件、保存 accuracyFailures，completed=true、passed=false 并返回非零。不得放宽限值、把结果 2 重标为 1，或删除既有失败事实。若要新建直线合成夹具，应保留独立配方身份、原图来源及尺寸，并完成真实桌面验证发布。
 
 cyclehost-report.json 和 parts.jsonl 记录完整证据。中途失败保留原有JSONL及 error，completed=false；只有工件通过结构/身份校验并成功追加JSONL后才推进 completedParts。失败工件不计入该件数，严格判定不符仍按前述 accuracyFailures 单独报告。
 
-失败时另存 failed-attempt.json，报告 failedAttempt.artifact 引用文件路径、字节数和 SHA256。该文件保留 attempt 的件序号、阶段、accepted 状态、已观测工件数据，以及最后成功读取的轮询状态、detail、measurements、原图列表；异常时尽力补读已观测原图的 SHA 和 part.json 并完整保留，无法读取的项记入 evidenceReadErrors，不掩盖原始异常。超时保留最后轮询状态；若故障发生在该件已追加JSONL后的内存采样或最终检查阶段，accepted=true，已有 completedParts 不回退，但整个报告仍为未完成。写失败快照本身失败时保留 failedAttemptPersistenceError，不覆盖最初异常。独立报告工具重算全部指标、逐件检查身份并重新校验文件哈希；任何伪造分位值、缺采样、错 cycleId 原图、丢视角、未知指标或篡改文件均不能通过。保存原图目录及所有引用文件后再做最终复核，避免保留策略删去较早组合原图。
+失败时另存 failed-attempt.json，报告 failedAttempt.artifact 引用文件路径、字节数。该文件保留 attempt 的件序号、阶段、accepted 状态、已观测工件数据，以及最后成功读取的轮询状态、detail、measurements、原图列表；异常时尽力补读已观测原图结构和 part.json 并完整保留，无法读取的项记入 evidenceReadErrors，不掩盖原始异常。超时保留最后轮询状态；若故障发生在该件已追加JSONL后的内存采样或最终检查阶段，accepted=true，已有 completedParts 不回退，但整个报告仍为未完成。写失败快照本身失败时保留 failedAttemptPersistenceError，不覆盖最初异常。独立报告工具重算全部指标、逐件检查身份并检查实际文件结构与业务身份；任何伪造分位值、缺采样、错 cycleId 原图、丢视角、未知指标或错误尺寸文件均不能通过。保存原图目录及所有引用文件后再做最终复核，避免保留策略删去较早组合原图。
 
 这些结果属于真实软件运行层、真实 DLL 和合成像素；physicalValidation=false、s7HardwareValidation=false。PLC simulator 的完成不能替代 S7 实机、实体三目 SDK、线路、带宽或现场准确率验收。
 

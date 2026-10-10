@@ -24,6 +24,6 @@ async (page) => {
   const options = await target.locator("option").evaluateAll(options => options.map(option => option.value));
   const after = await read("workspace_get", { id });
   if (JSON.stringify(after.workspace.doc) !== JSON.stringify(guard.workspace.workspace.doc) || JSON.stringify(after.workspace.frames) !== JSON.stringify(guard.workspace.workspace.frames) || after.productionVersion !== 1 || after.workspace.baseRevision !== guard.workspace.workspace.baseRevision) throw new Error("Adding an unrelated camera changed existing candidate teaching or production");
-  await page.screenshot({ path: "D:/project/ly-gluesight/tmp/p0-step7-regression/tmp/p0-step5-ui/22-camera-refresh-fixed.png", fullPage: true });
+  await page.screenshot({ path: "output/playwright/p0-step5-ui/22-camera-refresh-fixed.png", fullPage: true });
   return { addedCamera: added, options, appearedWithoutPageRefresh: true, existingCandidateAndProductionUnchanged: true, revision: after.workspace.revision };
 }

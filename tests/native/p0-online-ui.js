@@ -1,6 +1,6 @@
 async (page) => {
   const id = "P0-TRICAM-UI";
-  const evidence = "D:/project/ly-gluesight/tmp/p0-step7-regression/tmp/p0-step5-ui";
+  const evidence = "output/playwright/p0-step5-ui";
   const invokeRead = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
   const guard = { records: await invokeRead("records_list"), cameras: await invokeRead("camera_rig_config"), config: await invokeRead("plc_get_config"), status: await invokeRead("plc_get_status"), settings: await invokeRead("cycle_get_settings"), engine: await invokeRead("engine_status") };
   if (!guard.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || guard.cameras.some(c => c.source !== "sim") || guard.config.connection.protocol !== "simulator" || guard.status.state !== "connected" || guard.settings.timeouts.armMs !== 200 || !guard.settings.vision || guard.settings.record !== "all" || !guard.engine.ready || !guard.engine.measuring) throw new Error(JSON.stringify(guard));

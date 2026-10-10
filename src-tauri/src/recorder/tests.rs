@@ -69,7 +69,7 @@ fn tricam_views_form_one_queue_item_with_original_identity() {
     let dir = TestDir::new();
     let (recorder, rx, _) = controlled(dir.root());
     let recipe = recipe();
-    let mut rec = recorder.begin(RecordMode::All, 42, recipe.clone(), "cycle_one", Some("bundle-hash")).unwrap();
+    let mut rec = recorder.begin(RecordMode::All, 42, recipe.clone(), "cycle_one", Some("bundle-id")).unwrap();
     recorder.frame(&mut rec, &frame(21), "cam1", 0, 11);
     assert_eq!(recorder.queued.load(Ordering::Relaxed), 1);
     assert_eq!(rec.frames.len(), 3);
@@ -79,8 +79,8 @@ fn tricam_views_form_one_queue_item_with_original_identity() {
     for (i, (meta, image)) in group.images.iter().enumerate() {
         assert_eq!(meta.file, format!("k000_P1_cam1_v{}.pgm", i + 1));
         assert_eq!(meta.cycle_id, "cycle_one");
-        assert_eq!(meta.bundle_hash.as_deref(), Some("bundle-hash"));
-        assert_eq!(meta.recipe_hash, recipe.hash);
+        assert_eq!(meta.bundle_id.as_deref(), Some("bundle-id"));
+        assert_eq!(meta.recipe_revision, recipe.revision_id);
         assert_eq!((meta.k, meta.shot_id.as_str(), meta.selected_view, meta.session, meta.ordinal), (0, "P1", 2, u64::MAX, 11));
         assert_eq!(image.pixels, [21 + i as u8]);
     }
@@ -88,7 +88,7 @@ fn tricam_views_form_one_queue_item_with_original_identity() {
 }
 
 #[test]
-fn successful_finish_reports_only_existing_hashed_files_and_complete_metadata() {
+fn successful_finish_reports_only_existing_files_and_complete_metadata() {
     let dir = TestDir::new();
     let (callback, outcomes) = callback();
     let recorder = Recorder::new(dir.root(), Some(callback));
@@ -106,14 +106,12 @@ fn successful_finish_reports_only_existing_hashed_files_and_complete_metadata() 
         assert!(!file.file.contains('\\'));
         assert!(!file.file.contains(".."));
         let actual = recorder.root().join(&file.file);
-        assert_eq!(file_hash(&actual).unwrap(), file.hash);
-        assert!(file.hash.starts_with("fnv1a64:"));
         assert_eq!(std::fs::read(actual).unwrap(), [b"P5\n1 1\n255\n".as_slice(), &[20 + file.view]].concat());
     }
     let meta = metadata(&outcome);
     assert_eq!(meta["cycleId"], "cycle-complete");
-    assert_eq!(meta["bundleHash"], "frozen-bundle");
-    assert_eq!(meta["recipeHash"], recipe.hash);
+    assert_eq!(meta["bundleId"], "frozen-bundle");
+    assert_eq!(meta["recipeRevision"], recipe.revision_id);
     assert_eq!(meta["verdict"], "NG_WIDTH");
     assert_eq!(meta["reason"], "原始胶宽不合格");
     assert_eq!(meta["available"], true);
@@ -130,7 +128,6 @@ fn successful_finish_reports_only_existing_hashed_files_and_complete_metadata() 
         assert_eq!(meta["triggerCounter"].as_u64(), Some(u64::MAX - 2));
         assert_eq!(meta["lostPackets"], 7);
         assert_eq!(meta["available"], true);
-        assert!(meta["hash"].as_str().is_some());
     }
 }
 
@@ -239,7 +236,6 @@ fn partial_view_write_reports_successes_but_marks_recording_incomplete() {
     assert_eq!(meta["verdict"], "OK");
     assert_eq!(meta["available"], false);
     assert_eq!(meta["frames"][1]["available"], false);
-    assert!(meta["frames"][1]["hash"].is_null());
 }
 
 #[test]
@@ -258,7 +254,7 @@ fn metadata_write_failure_is_reported_even_when_images_were_written() {
 }
 
 #[test]
-fn final_hash_check_rejects_a_file_changed_after_its_write() {
+fn finish_uses_successful_write_and_file_presence_without_content_matching() {
     let dir = TestDir::new();
     let (recorder, rx, _) = controlled(dir.root());
     let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "cycle-tampered", None).unwrap();
@@ -268,13 +264,13 @@ fn final_hash_check_rejects_a_file_changed_after_its_write() {
     for (meta, image) in group.images {
         state.results.insert((meta.k, meta.view), save_raw(&group.pending.join(&meta.file), &image));
     }
-    std::fs::write(group.pending.join("k000_P1_cam1_v2.pgm"), "tampered").unwrap();
+    std::fs::write(group.pending.join("k000_P1_cam1_v2.pgm"), b"P5\n1 1\n255\n\x99").unwrap();
     recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
     let Msg::Finish(job) = rx.try_recv().unwrap() else { panic!("需要收尾消息") };
     let outcome = finish_recording(recorder.root(), job, state);
-    assert!(!outcome.available);
-    assert_eq!(outcome.files.iter().map(|file| file.view).collect::<Vec<_>>(), [1, 3]);
-    assert!(outcome.errors.iter().any(|error| error.contains("哈希不一致")));
+    assert!(outcome.available, "{:?}", outcome.errors);
+    assert_eq!(outcome.files.iter().map(|file| file.view).collect::<Vec<_>>(), [1, 2, 3]);
+    assert_eq!(std::fs::read(recorder.root().join(&outcome.files[1].file)).unwrap(), b"P5\n1 1\n255\n\x99");
 }
 
 #[test]
@@ -365,9 +361,7 @@ fn locked_old_recording_does_not_make_complete_current_recording_unavailable() {
     assert_eq!(meta["available"], true);
     assert_eq!(meta["errors"], json!([]));
     assert_eq!(meta["retentionErrors"], json!(outcome.retention_errors));
-    for file in &outcome.files {
-        assert_eq!(file_hash(&dir.root().join(&file.file)).unwrap(), file.hash);
-    }
+    assert!(outcome.files.iter().all(|file| recorder.root().join(&file.file).is_file()));
     let frames = crate::replay::scan_frames(outcome.directory.as_ref().unwrap(), 3, 0).unwrap();
     assert_eq!(frames.len(), 1);
     let images = crate::replay::load_entry(&frames[0]).unwrap();
@@ -550,6 +544,7 @@ fn unpromoted_finish_remains_protected_before_async_audit_persists_references() 
     let partial = wait(&outcomes);
     assert_eq!(partial.state, RecordingState::Incomplete);
     assert_eq!(partial.directory.as_ref(), Some(&pending));
+    assert!(partial.files.iter().all(|file| recorder.root().join(&file.file).is_file()));
     assert!(recorder.active.lock().unwrap().contains(&pending));
     let mut next = recorder.begin(RecordMode::All, 42, recipe(), "next-complete", None).unwrap();
     recorder.frame(&mut next, &frame(21), "cam1", 0, 1);
@@ -557,7 +552,6 @@ fn unpromoted_finish_remains_protected_before_async_audit_persists_references() 
     let complete = wait(&outcomes);
     assert!(complete.available);
     assert!(pending.exists());
-    for raw in partial.files { assert_eq!(file_hash(&root.join(raw.file)).unwrap(), raw.hash); }
 }
 
 #[test]

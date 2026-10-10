@@ -77,7 +77,7 @@ export async function recordedArtifact(root, file) {
   assert(bytes.subarray(0, header.length).equals(header) && bytes.length === header.length + 1280 * 1024,
     'Recorded image is not a full-resolution 1280x1024 Gray8 PGM');
   return { path: resolve(path), bytes: bytes.length,
-    pixelsSha256: digest(bytes.subarray(header.length)), size: [1280, 1024] };
+    size: [1280, 1024] };
 }
 
 async function tree(directory) {

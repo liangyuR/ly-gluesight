@@ -1,6 +1,6 @@
 async (page) => {
   const id = "P0-TRICAM-UI";
-  const evidence = "D:/project/ly-gluesight/tmp/p0-step7-regression/tmp/p0-step5-ui";
+  const evidence = "output/playwright/p0-step5-ui";
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
   const workspace = () => read("workspace_get", { id });
   const guard = { records: await read("records_list"), cameras: await read("camera_rig_config"), plc: await read("plc_get_config"), cycle: await read("cycle_snapshot"), production: await read("cycle_layout", { recipeId: id }) };

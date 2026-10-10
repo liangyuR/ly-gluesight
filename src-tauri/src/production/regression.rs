@@ -27,8 +27,8 @@ fn pgm(image: &FrameImage) -> Vec<u8> {
 
 fn artifact(path: &Path) -> Value {
     let path = path.canonicalize().unwrap();
-    let bytes = std::fs::read(&path).unwrap();
-    json!({"path": path, "bytes": bytes.len(), "fnv1a64": release::fnv_hex(&bytes)})
+    let bytes = std::fs::metadata(&path).unwrap().len();
+    json!({"path": path, "bytes": bytes})
 }
 
 fn software_snapshot(source: &Path, destination: &Path) -> Value {
@@ -131,7 +131,7 @@ fn fixtures(root: &Path, recipe: &Recipe, view_count: u8, clean: bool) -> Fixtur
                 std::fs::write(&path, pgm(image)).unwrap();
                 records.push(
                     json!({"view": v + 1, "selected": selected, "image": artifact(&path),
-                    "pixelsFnv1a64": release::fnv_hex(&image.pixels), "probePx": [mid[0] as u32, mid[1] as u32], "probePixel": pixel}),
+                    "probePx": [mid[0] as u32, mid[1] as u32], "probePixel": pixel}),
                 );
             }
             shots.push(json!({"k": k, "shotId": shot.id, "poseId": shot.pose_id,
@@ -363,7 +363,7 @@ fn run_case(
     let published_at = Instant::now();
     let bundle = release::publish(&root.join("releases"), PublishInput {
         recipe: doc,
-        versions: Versions { engine: engine.identity.clone(), graph: GRAPH_VERSION.into() },
+        versions: Versions { engine: engine.version.clone(), graph: GRAPH_VERSION.into() },
         graph: ResourceSource::Bytes(serde_json::to_vec(&graphs(&recipe).unwrap()).unwrap()),
         shots: recipe.shots.iter().enumerate().map(|(k, shot)| ShotInput { k,
             image: Some(ResourceSource::Bytes(pgm(&fixtures.normal[k][shot.view as usize - 1]))),
@@ -450,7 +450,7 @@ fn run_case(
         "shotsPerPart": 4, "deviceFramesPerPart": 4, "viewImagesPerPart": 4 * view_count as usize,
         "selectedMeasurementsPerPart": 4, "steadyParts": parts, "steadyMeasurements": wall.len(),
         "warmupMeasurements": 4, "scenarioProbeMeasurements": 8, "imageSize": SIM_SIZE,
-        "recipeHash": recipe.hash, "bundleHash": bundle.hash, "bundleRoot": bundle.root,
+        "recipeRevision": recipe.revision_id, "bundleId": bundle.id, "bundleRoot": bundle.root,
         "releaseManifest": artifact(&bundle.root.join("manifest.json")), "releaseResources": resources,
         "fixtures": artifact(&fixture_manifest), "fixtureManifest": fixtures.manifest,
         "fixtureRenderMs": fixture_render_ms, "publishMs": publish_ms, "preparedLoadMs": prepared_load_ms,
@@ -465,7 +465,7 @@ fn run_case(
         "scenarioProbes": {"partialGap": gap, "wholeEmpty": empty}, "passed": true});
     println!("P0 {view_count}V: {parts} parts / {} measurements; Prepared p50/p95/max {:.3}/{:.3}/{:.3} ms; warmup {:.3} ms; bundle {}",
         wall.len(), result["preparedMeasureMs"]["p50"].as_f64().unwrap(), result["preparedMeasureMs"]["p95"].as_f64().unwrap(),
-        result["preparedMeasureMs"]["max"].as_f64().unwrap(), warm_ms, bundle.hash);
+        result["preparedMeasureMs"]["max"].as_f64().unwrap(), warm_ms, bundle.id);
     result
 }
 
@@ -545,7 +545,7 @@ fn native_full_resolution_frozen_bundle_single_and_tricam_regression() {
             "warmupTiming": "loadAndSelfCheckMs measures DLL load; warmupMs includes four full-size frozen-image measures and bundle verification. Only the first case is the first graph use of this benchmark's freshly loaded Engine. Run this exact ignored test alone with --test-threads=1 to isolate process-cold native initialization; other test activity and OS/DLL file caches are not controlled here.",
             "unknownMetrics": ["productionQueueWaitMs", "productionPartEndToJudgeMs", "physical three-view SDK synchronization", "field accuracy", "absence of memory leaks beyond this finite run"],
             "excluded": ["production dispatcher queue", "PLC handshake and acknowledgement", "camera acquisition and transport", "physical tricam SDK unpacking/trigger wiring", "Recorder write latency", "end-to-end production scheduling proof"],
-            "hashes": "Rust records FNV-1a for every persisted artifact. Run scripts/p0-regression-report.py report.json to verify the artifacts and add SHA256."}});
+            "artifacts": "Artifacts are identified by explicit report paths and byte counts; recipe revisions and bundle IDs are explicit business references."}});
     write_json(&root.join("report.json"), &report);
     println!(
         "P0 regression evidence: {}",

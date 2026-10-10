@@ -20,7 +20,7 @@ pub(super) fn measure(prepared: &Prepared, count: usize, sn: u32, cycle_id: &str
                         PointState::Measured { d: reading.d[i], w: reading.w[i] }
                     } else { PointState::Gap };
                 }
-                measurements.push(json!({"cycleId":cycle_id,"bundleHash":prepared.bundle.hash,
+                measurements.push(json!({"cycleId":cycle_id,"bundleId":prepared.bundle.id,
                     "shotId":shot.id,"camera":shot.camera,"sn":sn,"k":k,"cam":0,"located":true,
                     "score":reading.coverage,"ms":reading.ms,"error":null,"idx":reading.idx,
                     "d":reading.d,"w":reading.w,"st":reading.st,"px":reading.px}));
@@ -28,7 +28,7 @@ pub(super) fn measure(prepared: &Prepared, count: usize, sn: u32, cycle_id: &str
             Err(error) => {
                 failures.push(format!("拍照点 {}：{error}", shot.id));
                 for j in recipe.owned_points(k) { table[j] = PointState::Invalid; }
-                measurements.push(json!({"cycleId":cycle_id,"bundleHash":prepared.bundle.hash,
+                measurements.push(json!({"cycleId":cycle_id,"bundleId":prepared.bundle.id,
                     "shotId":shot.id,"camera":shot.camera,"sn":sn,"k":k,"cam":0,"located":false,
                     "score":0,"ms":0,"error":error,"idx":[],"d":[],"w":[],"st":[],"px":[]}));
             }
@@ -78,7 +78,7 @@ mod tests {
         let original = doc.build().unwrap();
         let external = root.0.join("station.json");
         std::fs::write(&external, r#"{"mmPerPx":0.25}"#).unwrap();
-        let input = PublishInput { recipe: doc, versions: Versions { engine: engine.identity.clone(), graph: crate::production::GRAPH_VERSION.into() },
+        let input = PublishInput { recipe: doc, versions: Versions { engine: engine.version.clone(), graph: crate::production::GRAPH_VERSION.into() },
             graph: ResourceSource::Bytes(serde_json::to_vec(&crate::production::graphs(&original).unwrap()).unwrap()),
             shots: (0..4).map(|k| ShotInput { k, image: Some(ResourceSource::Bytes(pgm(&image()))),
                 calibration: Some(ResourceSource::File(external.clone())) }).collect() };
@@ -93,7 +93,7 @@ mod tests {
         for k in 0..4 {
             for field in ["idx", "d", "w", "st", "px"] { assert_eq!(again_measurements[k][field], first_measurements[k][field]); }
             assert_eq!(again_measurements[k]["cycleId"], "same-sn-second");
-            assert_eq!(again_measurements[k]["bundleHash"], prepared.bundle.hash);
+            assert_eq!(again_measurements[k]["bundleId"], prepared.bundle.id);
             assert_eq!(again_measurements[k]["camera"], original.shots[k].camera);
         }
         let (gap, gap_measurements) = measure(&prepared, 4, 101, "gap-piece", |k| {
@@ -126,9 +126,9 @@ mod tests {
         assert_eq!(failed_measurements[2]["located"], false);
         assert!(failed_measurements[2]["error"].as_str().unwrap().contains("尺寸"));
         assert!(measure(&prepared, 3, 101, "missing-piece", |_| Ok(image())).unwrap_err().contains("数量"));
-        assert!(measure(&prepared, 4, 101, "tampered-raw", |_| Err("原图校验失败".into())).unwrap_err().contains("校验"));
+        assert!(measure(&prepared, 4, 101, "missing-raw", |_| Err("原图不可读取".into())).unwrap_err().contains("不可读取"));
         let frozen = prepared.bundle.shot(0).unwrap().calibration.unwrap();
-        std::fs::write(frozen, r#"{"mmPerPx":9.0}"#).unwrap();
-        assert!(measure(&prepared, 4, 101, "tampered-pack", |_| Ok(image())).is_err());
+        std::fs::write(frozen, b"invalid calibration JSON").unwrap();
+        assert!(measure(&prepared, 4, 101, "invalid-calibration", |_| Ok(image())).is_err());
     }
 }

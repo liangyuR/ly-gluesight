@@ -24,7 +24,8 @@ impl PlcHost {
     pub fn init(app: &AppHandle) -> Result<Self, String> {
         let config_path = app.path().app_config_dir().map_err(|e| e.to_string())?.join("plc.json");
         let log_path = app.path().app_data_dir().map_err(|e| e.to_string())?.join("logs").join("plc.db");
-        let config = PlcConfig::load(&config_path).unwrap_or_else(inspection::default_plc_config);
+        let mut config = PlcConfig::load(&config_path).unwrap_or_else(inspection::default_plc_config);
+        normalize_legacy_plan_tags(&mut config);
         let handle = app.clone();
         let sink: EventSink = Arc::new(move |event| match event {
             PlcEvent::Status(s) => {
@@ -72,7 +73,8 @@ pub fn plc_get_config(plc: State<'_, PlcHost>) -> PlcConfig {
 }
 
 #[tauri::command]
-pub async fn plc_save_config(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>, config: PlcConfig) -> Result<(), String> {
+pub async fn plc_save_config(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>, mut config: PlcConfig) -> Result<(), String> {
+    normalize_legacy_plan_tags(&mut config);
     let _gate = cycle.plc_gate.lock().await;
     require_idle(&cycle)?;
     validate_config(&config)?;
@@ -172,4 +174,39 @@ pub async fn plc_point_history(
 #[tauri::command]
 pub fn plc_check_address(connection: ConnectionConfig, address: String, data_type: DataType) -> Result<String, String> {
     describe_address(&connection, &address, data_type)
+}
+
+fn normalize_legacy_plan_tags(config: &mut PlcConfig) {
+    for point in &mut config.points {
+        for tag in &mut point.tags {
+            match tag.as_str() {
+                "planHash" => *tag = inspection::tag::PLAN_RESERVED.into(),
+                "acceptedPlanHash" => *tag = inspection::tag::ACCEPTED_PLAN_RESERVED.into(),
+                _ => (),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_plan_tags_keep_addresses_and_point_identity() {
+        let mut config = inspection::s7_phase1_config(100).unwrap();
+        let original = config.clone();
+        for point in &mut config.points {
+            for tag in &mut point.tags {
+                if tag == "planReserved" { *tag = "planHash".into(); }
+                else if tag == "acceptedPlanReserved" { *tag = "acceptedPlanHash".into(); }
+            }
+        }
+        normalize_legacy_plan_tags(&mut config);
+        assert_eq!(config, original);
+        Contract::validate(&config).unwrap();
+        for (tag, address) in [("planReserved", "DB100.DBD20"), ("acceptedPlanReserved", "DB100.DBD84")] {
+            assert_eq!(config.points.iter().find(|point| point.tags.iter().any(|value| value == tag)).unwrap().address, address);
+        }
+    }
 }

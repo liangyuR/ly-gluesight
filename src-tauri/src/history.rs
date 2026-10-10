@@ -9,7 +9,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::cycle::CycleHost;
 use crate::judge::{self, Verdict};
 use crate::recipe::{JudgeParams, Recipe};
-use crate::store::{measurement_layout_hash, same_measurement_layout, HistoryPage, HistoryQuery, PartDetail, PartSummary, Store, StoredMeasurement};
+use crate::store::{same_measurement_layout, HistoryPage, HistoryQuery, PartDetail, PartSummary, Store, StoredMeasurement};
 
 pub fn local_midnight_ms() -> i64 {
     let today = Local::now().date_naive().and_hms_opt(0, 0, 0).unwrap();
@@ -205,7 +205,7 @@ fn rejudge_rows(
             skip("原配方快照缺失，无法核对测点布局");
             continue;
         };
-        if row.table.len() != original.point_count() || row.layout_hash.as_deref() != Some(measurement_layout_hash(&original).as_str()) {
+        if row.table.len() != original.point_count() || row.recipe_id.as_deref() != Some(original.id.as_str()) || revision_id != original.revision_id {
             skip("存储测量点与原配方布局不一致");
             continue;
         }
@@ -274,7 +274,7 @@ pub async fn history_export(app: AppHandle, query: HistoryQuery) -> Result<Strin
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join(format!("检测记录_{}.csv", Local::now().format("%Y%m%d_%H%M%S")));
         let mut f = std::io::BufWriter::new(std::fs::File::create(&path).map_err(|e| e.to_string())?);
-        write!(f, "\u{feff}时间,SN,配方,版本,配置哈希,模式,结果,PLC 结果码,异常码,原因,收到帧,计划帧,收尾耗时(ms),复检自,cycleId,发布包哈希,PLC 交付状态,PLC 交付更新时间,PLC 交付说明\r\n").map_err(|e| e.to_string())?;
+        write!(f, "\u{feff}时间,SN,配方,版本,配方修订号,模式,结果,PLC 结果码,异常码,原因,收到帧,计划帧,收尾耗时(ms),复检自,cycleId,发布包 ID,PLC 交付状态,PLC 交付更新时间,PLC 交付说明\r\n").map_err(|e| e.to_string())?;
         let store = app.state::<Store>();
         let mut q = HistoryQuery { limit: 500, offset: 0, ..query };
         loop {

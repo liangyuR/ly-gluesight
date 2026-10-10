@@ -74,7 +74,7 @@ async (page) => {
     if (!frame.trial.passed || frame.trial.coverage < 0.8 || !frame.trial.measurement) throw new Error(JSON.stringify({ k, trial: frame.trial, shot: tested.workspace.doc.shots[k] }));
     await page.getByRole("button", { name: "保存本帧示教", exact: true }).click();
     await until(v => v.workspace.frames[k].saved, `k${k + 1} teaching was not saved`);
-    await page.screenshot({ path: `D:/project/ly-gluesight/tmp/p0-step7-regression/tmp/p0-step5-ui/03-teaching-k${k + 1}.png`, fullPage: true });
+    await page.screenshot({ path: `output/playwright/p0-step5-ui/03-teaching-k${k + 1}.png`, fullPage: true });
     results.push({ k, recapturedForSimulationPath, shot: tested.workspace.doc.shots[k], image: frame.image, views: frame.views, trial: { ...frame.trial, measurement: { stations: frame.trial.measurement?.width?.length, runId: frame.trial.measurement?.runId } } });
   }
   const final = await read();

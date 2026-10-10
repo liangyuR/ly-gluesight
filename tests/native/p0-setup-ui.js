@@ -11,7 +11,7 @@ async (page) => {
   await page.waitForFunction(async () => (await window.__TAURI_INTERNALS__.invoke("camera_rig_config"))[0].viewCount === 3);
   await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "系统设置", exact: true }).click();
   await page.getByRole("combobox", { name: "飞拍配方", exact: true }).selectOption("lyFlow");
-  await page.getByRole("textbox", { name: "核心库路径（lyflow_core.dll）", exact: true }).fill("D:\\project\\LyFlow\\.claude\\worktrees\\glue-taught-path\\build\\core\\bin\\lyflow_core.dll");
+  await page.getByRole("textbox", { name: "核心库路径（lyflow_core.dll）", exact: true }).fill("C:/Users/11601/AppData/Local/Temp/gluesight-p0-recovery-20261010/native/lyflow_core.dll");
   await page.getByRole("combobox", { name: "帧录制", exact: true }).selectOption("all");
   await page.getByRole("heading", { name: "测量与帧录制", exact: true }).locator("..").getByRole("button", { name: "保存", exact: true }).click();
   await page.waitForFunction(async () => {

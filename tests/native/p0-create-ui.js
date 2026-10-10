@@ -26,7 +26,7 @@ async (page) => {
     await page.waitForTimeout(100);
   }
   if (result.workspace.doc.triggerMode !== "fly" || result.workspace.doc.shots.length !== 4 || result.workspace.doc.shots.some((s, k) => s.camera !== "cam1" || s.view !== [1, 2, 3, 1][k]) || result.workspace.doc.detect.searchMm !== 8) throw new Error(JSON.stringify(result.workspace.doc));
-  await page.screenshot({ path: "D:/project/ly-gluesight/tmp/p0-step7-regression/tmp/p0-step5-ui/02-four-shot-geometry.png", fullPage: true });
+  await page.screenshot({ path: "output/playwright/p0-step5-ui/02-four-shot-geometry.png", fullPage: true });
   await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "单帧示教", exact: true }).click();
   return { id: result.workspace.doc.id, productCode: result.workspace.doc.productCode, shots: result.workspace.doc.shots, frames: result.workspace.frames };
 }

@@ -1,7 +1,6 @@
 """Point-to-point Robot model with virtual camera pulses and real Modbus handshakes."""
 import argparse
 import datetime
-import hashlib
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -46,7 +45,6 @@ class Robot:
     def __init__(self, config, recipe, output):
         self.config, self.recipe = config, validate_recipe(recipe)
         self.plan, self.planned_triggers = trigger_plan(recipe)
-        self.recipe_sha256 = hashlib.sha256(json.dumps(recipe, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
@@ -102,7 +100,7 @@ class Robot:
         with self.lock:
             response = json.loads(json.dumps(self.state))
             response.update(contractVersion=2, bridgeOnline=self.online(), recipe=self.recipe,
-                            plannedTriggers=self.planned_triggers, recipeSha256=self.recipe_sha256,
+                            plannedTriggers=self.planned_triggers,
                             plcEndpoint=f'127.0.0.1:{self.config["plc"]["port"]}',
                             unitId=self.config["plc"]["unitId"])
         try:
@@ -278,7 +276,7 @@ class Robot:
                     raise RuntimeError(f"结果 SN 不匹配：{result_sn} != {sn}")
                 result = {"sn": sn, "scenario": scenario, "resultCode": result_code, "faultCode": fault_code,
                           "resultSn": result_sn, "ts": utc_now(), "runId": run_id,
-                          "recipeSha256": self.recipe_sha256, "deviceTriggers": dict(self.state["deviceTriggers"]),
+                          "deviceTriggers": dict(self.state["deviceTriggers"]),
                           "cycleId": self.state["cycleId"], "recipeRevision": self.state["recipeRevision"],
                           "bundleId": self.state["bundleId"], "triggerAcks": trigger_acks,
                           "triggerAckMs": trigger_ack_ms, "resultWaitMs": round((time.monotonic() - result_wait_at) * 1000, 2),

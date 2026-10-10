@@ -164,7 +164,7 @@ fn outcome(cycle: &str, files: &[(usize, u8)], state: RecorderState) -> Recordin
                 k: *k,
                 view: *view,
                 file: format!("cycle_{cycle}/k{k:03}_P{}_cam1_v{view}.pgm", k + 1),
-                revision_id: format!("fnv1a64:{:016x}", k * 3 + *view as usize),
+
             })
             .collect(),
         errors: if matches!(state, RecorderState::Failed | RecorderState::Incomplete) {
@@ -196,7 +196,7 @@ fn original(detail: &PartDetail) -> serde_json::Value {
 }
 
 #[test]
-fn recording_before_insert_keeps_all_views_hashes_and_original_measurement() {
+fn recording_before_insert_keeps_all_views_and_original_measurement() {
     let dir = TestDir::new();
     let mut sink = dir.sink();
     let mut coordinator = Coordinator::new(8, 16);
@@ -209,7 +209,7 @@ fn recording_before_insert_keeps_all_views_hashes_and_original_measurement() {
     assert!(notices.contains(&Notice::Updated("one".into())));
     let detail = sink.detail("one");
     assert_eq!(detail.shots[0].raw_files.iter().map(|file| file.view).collect::<Vec<_>>(), [1, 2, 3]);
-    assert_eq!(detail.shots[0].raw_files[1].revision_id.as_deref(), Some("fnv1a64:0000000000000002"));
+    assert_eq!(detail.shots[0].raw_files[1].file, "cycle_one/k000_P1_cam1_v2.pgm");
     assert_eq!(detail.shots[0].session, Some(u64::MAX));
     assert_eq!(detail.shots[1].error.as_deref(), Some("原始缺帧原因"));
     assert_eq!(serde_json::to_value(detail.judgement).unwrap(), expected);
@@ -236,7 +236,7 @@ fn retention_warning_preserves_complete_recording_and_is_logged_once() {
     assert!(detail.recording.available);
     assert!(detail.recording.errors.is_empty());
     assert_eq!(detail.shots[0].raw_files.len(), 3);
-    assert!(detail.shots[0].raw_files.iter().all(|file| file.revision_id.is_some()));
+    assert!(detail.shots[0].raw_files.iter().all(|file| !file.file.is_empty()));
     assert_eq!(original(&detail), before);
     let calls = sink.counts();
     assert!(coordinator.handle(Event::Recording(recording), &mut sink, 3).is_empty());
@@ -490,18 +490,15 @@ fn partial_raw_events_union_views_and_conflicting_evidence_is_not_replaced() {
 }
 
 #[test]
-fn invalid_file_hash_or_empty_success_never_becomes_available() {
+fn invalid_file_path_or_empty_success_never_becomes_available() {
     let dir = TestDir::new();
     let mut sink = dir.sink();
     let mut coordinator = Coordinator::new(8, 16);
-    for (index, invalid) in ["../escape.pgm", "cycle/file.pgm"].into_iter().enumerate() {
+    for (index, invalid) in ["../escape.pgm", "/escape.pgm"].into_iter().enumerate() {
         let cycle = format!("invalid-{index}");
         coordinator.handle(Event::Insert(Box::new(part(&cycle, 42))), &mut sink, 1);
         let mut recording = outcome(&cycle, &[(0, 1)], RecorderState::Complete);
         recording.files[0].file = invalid.into();
-        if index == 1 {
-            recording.files[0].revision_id = "unmarked-revision_id".into();
-        }
         let notices = coordinator.handle(Event::Recording(recording), &mut sink, 2);
         assert!(has_message(&notices, "原图") && has_message(&notices, "原检测结论不变"));
         let detail = sink.detail(&cycle);
@@ -665,7 +662,7 @@ fn real_sqlite_lock_past_three_failures_recovers_original_part_ack_and_recording
     assert_eq!(after.recording.directory, recording.directory.map(|path| path.to_string_lossy().into_owned()));
     for shot in &after.shots {
         assert_eq!(shot.raw_files.iter().map(|raw| raw.view).collect::<Vec<_>>(), [1, 2, 3]);
-        assert!(shot.raw_files.iter().all(|raw| raw.revision_id.is_some()));
+        assert!(shot.raw_files.iter().all(|raw| !raw.file.is_empty()));
     }
     assert_eq!(sink.detail("baseline").summary.delivery.state, PlcDeliveryState::Pending);
     assert!(!coordinator.entries["locked-cycle"].pending());

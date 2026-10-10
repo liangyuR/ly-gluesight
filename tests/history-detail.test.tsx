@@ -57,7 +57,7 @@ describe("历史工件复测", () => {
   });
 
   it("按实际保存视角查看三目原图，非检测视角不叠加中线或用于示教", async () => {
-    detail.shots[0].rawFiles = [1, 2, 3].map(view => ({view, file: `k000_P1_CAM-1_v${view}.pgm`, revisionId: "fnv1a64:verified"}));
+    detail.shots[0].rawFiles = [1, 2, 3].map(view => ({view, file: `k000_P1_CAM-1_v${view}.pgm`}));
     vi.mocked(workspaceApi.recordImages).mockResolvedValue({...raw, frames: [1, 2, 3].map(view => ({...raw.frames[0], view, available: view !== 3, error: view === 3 ? "原图校验失败" : null}))});
     show(); await screen.findByText(/原图完整/);
     expect(screen.getByRole("button", {name: "查看 k1 视角 3"})).toBeDisabled();

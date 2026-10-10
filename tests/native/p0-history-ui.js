@@ -1,10 +1,11 @@
 async (page) => {
-  const id = "P0-TRICAM-UI", bundleId = "3b643e189e0f73e5";
+  const id = "P0-TRICAM-UI";
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
   const guard = { records: await read("records_list"), plc: await read("plc_get_config"), cameras: await read("camera_rig_config"), cycle: await read("cycle_snapshot"), workspace: await read("workspace_get", { id }) };
   if (!guard.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || guard.plc.connection.protocol !== "simulator" || guard.cameras.some(c => c.source !== "sim") || guard.cycle.phase !== "IDLE" || guard.workspace.workspace.frames.some(f => !f.saved || !f.trial?.passed)) throw new Error(JSON.stringify(guard));
   const recent = await read("history_query", { query: { recipeId: id, limit: 20 } });
   const selected = [recent.items.find(item => item.verdict.startsWith("OK")), recent.items.find(item => item.verdict === "NG_GAP")];
+  const bundleId = selected[0]?.bundleId;
   if (selected.some(item => !item?.cycleId || item.bundleId !== bundleId)) throw new Error("Create new schema-2 normal/gap records first");
   await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "历史记录", exact: true }).click();
   await page.getByRole("button", { name: "全部", exact: true }).click();
@@ -73,7 +74,7 @@ async (page) => {
     await page.getByRole("button", { name: "适应窗口", exact: true }).click();
     const after = await read("history_detail", { id: row.id });
     if (JSON.stringify(after) !== JSON.stringify(original)) throw new Error("Comparisons modified the original production record");
-    results.push({ historyId: row.id, sn: row.sn, cycleId: row.cycleId, bundleId, verdict: row.verdict, views, comparisons: added.map(c => ({ id: c.id, source: c.source, candidateRevision: c.candidateRevision, candidateVersion: c.candidateRecipe.version, candidateHash: c.candidateRecipe.revisionId, bundleId: c.bundleId, originalVerdict: c.originalVerdict, judgement: c.judgement, measurements: c.measurements.map(m => ({ k: m.k, cycleId: m.cycleId, bundleId: m.bundleId, error: m.error, ms: m.ms, points: m.idx.length })) })), originalRecordUnchanged: true });
+    results.push({ historyId: row.id, sn: row.sn, cycleId: row.cycleId, bundleId, verdict: row.verdict, views, comparisons: added.map(c => ({ id: c.id, source: c.source, candidateRevision: c.candidateRevision, candidateVersion: c.candidateRecipe.version, candidateRecipeRevision: c.candidateRecipe.revisionId, bundleId: c.bundleId, originalVerdict: c.originalVerdict, judgement: c.judgement, measurements: c.measurements.map(m => ({ k: m.k, cycleId: m.cycleId, bundleId: m.bundleId, error: m.error, ms: m.ms, points: m.idx.length })) })), originalRecordUnchanged: true });
   }
   const afterWorkspace = await read("workspace_get", { id });
   if (JSON.stringify(afterWorkspace.workspace) !== JSON.stringify(guard.workspace.workspace)) throw new Error("Read-only history viewing or comparisons changed candidate teaching");

@@ -14,7 +14,7 @@ function canonical(value) {
 
 export function recipeContract(recipe) {
   return canonical({
-    id: recipe.id, productCode: recipe.productCode, schemaVersion: recipe.schemaVersion,
+    id: recipe.id, version: recipe.version, productCode: recipe.productCode, schemaVersion: recipe.schemaVersion,
     triggerMode: recipe.triggerMode, spacing: recipe.spacing, filterWindow: recipe.filterWindow,
     detect: recipe.detect, limits: recipe.limits,
     shots: recipe.shots.map(shot => ({
@@ -40,7 +40,7 @@ export function validateTrigger(ticket, fixture, snapshot, layout, rig, settings
   }
   if (fixture?.schemaVersion !== 4 || layout?.schemaVersion !== 4 ||
       ticket.recipeId !== fixture.id || part.recipeId !== fixture.id || layout.id !== fixture.id ||
-      layout.hash !== part.recipeRevision || ticket.productCode !== fixture.productCode ||
+      layout.revisionId !== part.recipeRevision || ticket.productCode !== fixture.productCode ||
       ticket.shotCount !== fixture.shots?.length || part.n !== fixture.shots?.length ||
       JSON.stringify(recipeContract(layout)) !== JSON.stringify(recipeContract(fixture))) {
     throw new Error('Armed recipe differs from the configured schema 4 fixture');
@@ -83,7 +83,7 @@ export function validateTrigger(ticket, fixture, snapshot, layout, rig, settings
 export async function executeTrigger(ticket, fixture, invoke, binding) {
   const snapshot = await invoke('cycle_snapshot');
   const [layout, rig, settings, engine, app] = await Promise.all([
-    invoke('cycle_layout', { recipeId: snapshot?.part?.recipeId, hash: snapshot?.part?.recipeRevision }),
+    invoke('cycle_layout', { recipeId: snapshot?.part?.recipeId, revisionId: snapshot?.part?.recipeRevision }),
     invoke('camera_rig_config'), invoke('cycle_get_settings'), invoke('engine_status'), invoke('app_info'),
   ]);
   const identity = validateTrigger(ticket, fixture, snapshot, layout, rig, settings, engine, binding);

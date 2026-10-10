@@ -1,6 +1,5 @@
 """Image-space sample export and provenance tests; no DLL or desktop app is used."""
 import copy
-import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -50,7 +49,7 @@ class SampleTests(unittest.TestCase):
     def save(self):
         (self.workspace / "workspace.json").write_text(json.dumps(self.state), encoding="utf-8")
 
-    def test_tricam_exports_four_selected_images_and_twelve_views_with_device_counts_and_hashes(self):
+    def test_tricam_exports_four_selected_images_and_twelve_views_with_device_counts_and_dimensions(self):
         output = self.root / "samples"
         report = samples.export_samples(self.workspace, output, self.recipe)
         self.assertEqual(len(list((output / "good").glob("*.pgm"))), 4)
@@ -60,8 +59,10 @@ class SampleTests(unittest.TestCase):
         self.assertEqual([f["view"] for f in report["frames"] if f["selected"]], [1, 2, 3, 1])
         self.assertFalse(report["physicalValidation"])
         self.assertFalse(report["imageEngineValidated"])
-        for name, digest in report["files"].items():
-            self.assertEqual(hashlib.sha256((output / name).read_bytes()).hexdigest(), digest)
+        for name, metadata in report["files"].items():
+            width, height, pixels = samples.read_pgm((output / name).read_bytes())
+            self.assertEqual((width, height, len(pixels)), (1280, 1024, 1280 * 1024))
+            self.assertEqual((output / name).stat().st_size, metadata["bytes"])
         self.assertEqual(report, json.loads((output / "provenance.json").read_text(encoding="utf-8")))
 
     def test_gap_is_cut_in_the_selected_pixel_path_and_keeps_other_shots_unchanged(self):

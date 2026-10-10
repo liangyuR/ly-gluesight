@@ -33,7 +33,7 @@ async (page) => {
   await page.getByRole("button", { name: "断开", exact: true }).waitFor();
   const result = await page.evaluate(async () => ({ config: await window.__TAURI_INTERNALS__.invoke("plc_get_config"), status: await window.__TAURI_INTERNALS__.invoke("plc_get_status") }));
   if (result.config.connection.protocol !== "simulator" || result.config.points.length !== 15 || result.config.points.some(p => !/^(C|HR)\d+$/.test(p.address)) || result.status.state !== "connected") throw new Error(JSON.stringify(result));
-  await page.screenshot({ path: "D:/project/ly-gluesight/tmp/p0-step7-regression/tmp/p0-step5-ui/01-plc-simulator.png", fullPage: true });
+  await page.screenshot({ path: "output/playwright/p0-step5-ui/01-plc-simulator.png", fullPage: true });
   await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "设备与采集", exact: true }).click();
   return { operation: "UI replaces legacy S7 point table with 15 simulator C/HR points, saves and connects", protocol: result.config.connection.protocol, points: result.config.points.length, state: result.status.state, dataRoot: initial.records.root };
 }

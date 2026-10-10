@@ -6,7 +6,6 @@ use crate::recipe::Recipe;
 #[serde(rename_all = "camelCase")]
 pub struct PlanShot {
     pub shot_id: String,
-    /// 现场机器人 / PLC 程序里的 Pose 标识，计入 planReserved
     pub pose_id: String,
     pub camera_id: String,
 }
@@ -17,7 +16,6 @@ pub struct PlcPlan {
     pub protocol_version: u16,
     pub recipe_id: String,
     pub plan_version: u32,
-    pub plan_hash: u32,
     pub shot_count: u16,
     pub camera_slots: [String; 3],
     pub camera_shots: [u16; 3],
@@ -43,9 +41,7 @@ impl PlcPlan {
                 .ok_or_else(|| format!("拍照点 {} 的相机 {} 不在 PLC 三个相机槽中", shot.shot_id, shot.camera_id))?;
             counts[slot] += 1;
         }
-        let bytes = serde_json::to_vec(&(1u16, &recipe_id, version, &camera_slots, &shots)).map_err(|e| e.to_string())?;
-        let hash = bytes.into_iter().fold(2166136261u32, |hash, byte| (hash ^ byte as u32).wrapping_mul(16777619));
-        Ok(Self { protocol_version: 1, recipe_id, plan_version: version, plan_hash: hash,
+        Ok(Self { protocol_version: 1, recipe_id, plan_version: version,
             shot_count: shots.len() as u16, camera_slots, camera_shots: counts, shots })
     }
 
@@ -85,11 +81,11 @@ mod tests {
         assert_eq!(plan.shot_count, 4);
         let mut reordered = shots();
         reordered.swap(0, 1);
-        assert_ne!(plan.plan_hash, PlcPlan::compile("part".into(), 1, slots.clone(), reordered).unwrap().plan_hash);
-        assert_ne!(plan.plan_hash, PlcPlan::compile("part".into(), 2, slots.clone(), shots()).unwrap().plan_hash);
+        assert_ne!(plan.shots, PlcPlan::compile("part".into(), 1, slots.clone(), reordered).unwrap().shots);
+        assert_ne!(plan.plan_version, PlcPlan::compile("part".into(), 2, slots.clone(), shots()).unwrap().plan_version);
         let mut pose = shots();
         pose[2].pose_id = "B3".into();
-        assert_ne!(plan.plan_hash, PlcPlan::compile("part".into(), 1, slots, pose).unwrap().plan_hash);
+        assert_ne!(plan.shots, PlcPlan::compile("part".into(), 1, slots, pose).unwrap().shots);
     }
 
     #[test]
@@ -121,11 +117,10 @@ mod tests {
         assert!(PlcPlan::from_recipe(&recipe, ["cam1".into(), "cam2".into(), String::new()]).is_err());
     }
 
-    /// docs/integration/plc-s7-phase1.md 第 6 节的示例：改 hash 输入时同步改文档。
     #[test]
-    fn documented_example_hash() {
+    fn documented_example_counts() {
         let shots = (1..=2).map(|i| PlanShot { shot_id: format!("P{i}"), pose_id: format!("P{i}"), camera_id: "cam1".into() }).collect();
         let plan = PlcPlan::compile("DEMO".into(), 1, ["cam1".into(), String::new(), String::new()], shots).unwrap();
-        assert_eq!((plan.plan_hash, plan.camera_shots), (581977774, [2, 0, 0]));
+        assert_eq!((plan.plan_version, plan.camera_shots), (1, [2, 0, 0]));
     }
 }

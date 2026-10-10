@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-10",
+  "branch": "codex/remove-hash-matching",
+  "scope": "Resource content hash removal; explicit IDs/versions, actual structure and frame identity remain",
+  "passed": true,
+  "checks": [
+    {
+      "name": "Rust default",
+      "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib",
+      "passed": true,
+      "tests": 305,
+      "ignored": 29,
+      "testSeconds": 5.84,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-no-hash-rust-final-r2-c.log"
+    },
+    {
+      "name": "S7 loopback actual wire",
+      "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib plc_session::tests:: -- --include-ignored --test-threads=1",
+      "passed": true,
+      "tests": 24,
+      "testSeconds": 54.47,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-no-hash-s7-c.log"
+    },
+    {
+      "name": "Real LyFlow DLL integration",
+      "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib native_ -- --ignored --skip native_full_resolution --test-threads=1",
+      "passed": true,
+      "tests": 5,
+      "testSeconds": 2.32,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-no-hash-native-dll-c.log",
+      "dll": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native\\lyflow_core.dll",
+      "version": "1.1.0"
+    }
+  ],
+  "compatibility": [
+    "Existing v2 SQLite uses one immediate transaction to add revision_id/recipe_revision/bundle_id. Original columns, snapshot JSON, point BLOB, raw JSON and ACK values retained.",
+    "Old snapshot references only locate legacy records; actual recipe ID/version and reconstructed fields determine new revision IDs. Missing references or conflicting actual revisions roll back additions.",
+    "Old publication directory IDs remain readable. Old trial labels require new validation; frozen images are retained.",
+    "PLC DBD20/84 and all other offsets remain fixed; reserved words must be zero. No plan content digest is computed or compared.",
+    "Real temporary Windows junctions between cycles and linked roots are rejected before canonicalization and on later reads.",
+    "Missing/zero legacy recipe versions normalize to one; next save creates version two."
+  ],
+  "preservedFailures": [
+    {
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-no-hash-rust-c.log",
+      "result": "Compile error: Value reference compared with owned Value; corrected."
+    },
+    {
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-no-hash-rust-r2-c.log",
+      "result": "303 passed, 2 failed: obsolete pose/layout assertion and Windows mklink slash fixture; corrected without weakening production checks."
+    },
+    {
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-no-hash-rust-final-c.log",
+      "result": "Compile saw intermediate test comparing PathPoints without PartialEq; replaced with actual x/y/seg/k array assertions."
+    }
+  ],
+  "frontendEvidence": "docs/testing/evidence/p0-no-hash-frontend-c.json",
+  "nativeDesktop": "Pending fresh isolated profile acceptance; old 400-part reports are historical only.",
+  "limits": [
+    "No content digest gate remains; same-size image or engine byte changes are not detected through content hashes.",
+    "No physical camera/S7 hardware acceptance or new 400-part benchmark claimed."
+  ]
+}

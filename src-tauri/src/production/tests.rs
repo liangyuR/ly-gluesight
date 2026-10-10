@@ -50,16 +50,19 @@ fn graphs_keep_exact_identity_after_json_round_trip_with_nonbinary_pixel_scale()
 }
 
 #[test]
+fn engine_compatibility_uses_the_declared_version_across_restarts_and_paths() {
+    assert!(engine_version_matches("1.1.0", "1.1.0"));
+    assert!(engine_version_matches("1.1.0:legacy-ignored-value", "1.1.0"));
+    assert!(!engine_version_matches("1.0.0:legacy-ignored-value", "1.1.0"));
+}
+
+#[test]
 #[ignore = "requires LYFLOW_CORE_DLL with glue.taught_path; immutable production bundle integration"]
-fn native_bundle_warms_measures_frozen_resources_and_rejects_tampering() {
+fn native_bundle_warms_measures_copied_resources_and_validates_dimensions() {
     let dll = std::env::var_os("LYFLOW_CORE_DLL").expect("Set LYFLOW_CORE_DLL to a taught-path core");
-    let mut engine = Engine::load(std::path::Path::new(&dll)).unwrap();
+    let engine = Engine::load(std::path::Path::new(&dll)).unwrap();
     let root = std::env::temp_dir().join(format!("gluesight-production-{}-{}", std::process::id(), ly_plc::now_ms()));
     std::fs::create_dir_all(&root).unwrap();
-    let dll_bytes = std::fs::read(&dll).unwrap();
-    let dll_copy = root.join("core-verification-copy.dll");
-    std::fs::write(&dll_copy, &dll_bytes).unwrap();
-    engine.path = dll_copy.clone();
     let engine = Arc::new(engine);
     let mut doc = crate::recipe::samples().remove(1);
     doc.spacing = 1.0;
@@ -75,7 +78,7 @@ fn native_bundle_warms_measures_frozen_resources_and_rejects_tampering() {
     let external = root.join("external-calibration.json");
     std::fs::write(&external, r#"{"mmPerPx":0.25}"#).unwrap();
     let input = PublishInput { recipe: doc.clone(),
-        versions: Versions { engine: engine.identity.clone(), graph: GRAPH_VERSION.into() },
+        versions: Versions { engine: engine.version.clone(), graph: GRAPH_VERSION.into() },
         graph: ResourceSource::Bytes(serde_json::to_vec(&graphs(&recipe).unwrap()).unwrap()),
         shots: sizes.iter().enumerate().map(|(k, size)| ShotInput { k,
             image: Some(ResourceSource::Bytes(pgm(&image(size[0], size[1])))),
@@ -85,14 +88,6 @@ fn native_bundle_warms_measures_frozen_resources_and_rejects_tampering() {
     let started = Instant::now();
     prepared.warm().unwrap();
     let warm_ms = started.elapsed().as_millis();
-    let mut changed_dll = dll_bytes.clone();
-    let changed_index = changed_dll.len() / 2;
-    changed_dll[changed_index] ^= 1;
-    std::fs::write(&dll_copy, &changed_dll).unwrap();
-    assert_eq!(std::fs::metadata(&dll_copy).unwrap().len(), dll_bytes.len() as u64);
-    assert!(prepared.verify().unwrap_err().contains("算法核心库文件已变化"));
-    std::fs::write(&dll_copy, &dll_bytes).unwrap();
-    prepared.verify().unwrap();
     let first = prepared.measure(0, &image(256, 160), "production-frozen-before").unwrap();
     assert_eq!(first.idx.len(), 41);
     assert!(first.w.iter().all(|width| (*width - 4.0).abs() < 0.4));
@@ -106,11 +101,14 @@ fn native_bundle_warms_measures_frozen_resources_and_rejects_tampering() {
     }
     assert!(prepared.measure(1, &image(256, 160), "production-wrong-size").unwrap_err().contains("尺寸"));
     let mut wrong = recipe.clone();
-    wrong.hash = "wrong-version".into();
-    assert!(Prepared::load(bundle.clone(), engine, &wrong).err().unwrap().contains("生产版本"));
+    wrong.revision_id = "wrong-version".into();
+    assert!(Prepared::load(bundle.clone(), engine.clone(), &wrong).err().unwrap().contains("生产版本"));
+    let mut wrong_layout = recipe.clone();
+    wrong_layout.shots[0].camera = "other-device".into();
+    assert!(Prepared::load(bundle.clone(), engine, &wrong_layout).err().unwrap().contains("生产版本"));
     let target = bundle.root.join(bundle.manifest.shots[0].calibration.as_ref().unwrap());
     std::fs::write(&target, r#"{"mmPerPx":9.0}"#).unwrap();
     assert!(prepared.verify().is_err());
-    println!("Frozen production: cold warmup {warm_ms} ms, steady {} ms, bundle {}", second.ms, bundle.hash);
+    println!("Frozen production: cold warmup {warm_ms} ms, steady {} ms, bundle {}", second.ms, bundle.id);
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -215,7 +215,7 @@ mod tests {
 
     fn pending(cycle_id: &str, request_seq: u32, sn: u32) -> Pending {
         Pending { request: Request { protocol_version: 1, request_seq, sn, product_code: 1,
-            shot_count: 4, plan_version: 7, plan_hash: 123, camera_shots: [2, 1, 1] },
+            shot_count: 4, plan_version: 7, camera_shots: [2, 1, 1] },
             result: Some(ResultEnvelope { request_seq, sn, result_code: 1, fault_code: 0 }),
             phase: SessionPhase::Releasing, cycle_id: Some(cycle_id.into()), acknowledged: true, started_at: 1000 }
     }
@@ -386,7 +386,7 @@ mod tests {
         let files = Files::new();
         files.journal(Some(pending(CYCLE_A, 7, 50)));
         let mut conflict = pending(CYCLE_A, 7, 50);
-        conflict.request.plan_hash = 456;
+        conflict.request.plan_version = 456;
         files.audit(record(&conflict, 2000));
         files.audit(record(&pending(CYCLE_A, 7, 50), 3000));
         files.audit(record(&pending(CYCLE_B, 8, 50), 4000));
@@ -458,7 +458,7 @@ mod tests {
         let selected = pending(CYCLE_A, 7, 50);
         files.audit(record(&selected, 3000));
         let mut conflict = selected.clone();
-        conflict.request.plan_hash += 1;
+        conflict.request.plan_version += 1;
         files.audit(record(&conflict, 4000));
         files.audit(record(&pending(CYCLE_B, 8, 50), 5000));
         let recovered = files.open().recover_acknowledgements(&unresolved);

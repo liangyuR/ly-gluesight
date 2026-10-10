@@ -135,7 +135,7 @@ pub struct PartView {
     pub bundle_id: Option<String>,
     pub sn: u32,
     pub recipe_id: String,
-    /// 本件配方快照的哈希：配方中途改了，界面仍按这一版画
+    /// 本件配方修订：配方中途改了，界面仍按这一版画
     pub recipe_revision: String,
     /// 计划帧数
     pub n: usize,

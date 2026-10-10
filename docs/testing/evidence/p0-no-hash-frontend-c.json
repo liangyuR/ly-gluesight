@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-10",
+  "workingDirectory": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash",
+  "scope": "Frontend and non-Rust tooling after removal of resource content hash matching; fresh native runtime acceptance pending",
+  "passed": true,
+  "checks": [
+    {
+      "name": "frontend focused",
+      "command": "node node_modules/vitest/vitest.mjs run tests/workflow-model.test.ts tests/cycle-isolation.test.tsx tests/cycle-visuals.test.tsx tests/visual-status.test.ts tests/plc-recipe-plan.test.tsx tests/history-detail.test.tsx tests/inspect.test.tsx tests/validation.test.tsx tests/workflow-production-operations.test.tsx",
+      "passed": true,
+      "tests": 247,
+      "files": 9,
+      "durationSeconds": 31.32,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\no-hash-frontend-focused.log"
+    },
+    {
+      "name": "frontend coverage",
+      "command": "node node_modules/vitest/vitest.mjs run --coverage",
+      "passed": true,
+      "tests": 960,
+      "files": 42,
+      "durationSeconds": 187.26,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\no-hash-frontend-coverage.log"
+    },
+    {
+      "name": "native tools and Demo bridge",
+      "command": "node --test tests/native/p0-cyclehost-performance.test.mjs scripts/robot-plc-demo/tests/test-console.mjs",
+      "passed": true,
+      "tests": 58,
+      "files": null,
+      "durationSeconds": 0.5,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\no-hash-node-tools-final.log"
+    },
+    {
+      "name": "Demo Python",
+      "command": "python -m unittest discover -s scripts/robot-plc-demo/tests -v",
+      "passed": true,
+      "tests": 35,
+      "files": null,
+      "durationSeconds": 14.175,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\no-hash-demo-python.log"
+    },
+    {
+      "name": "S7 fixture after explicit authorization",
+      "command": "python -m unittest discover -s scripts/s7-handshake/tests -v",
+      "passed": true,
+      "tests": 21,
+      "files": null,
+      "durationSeconds": 3.005,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\no-hash-s7-fixture.log"
+    },
+    {
+      "name": "Prepared validator self checks",
+      "command": "python scripts/p0-regression-report.py --self-test",
+      "passed": true,
+      "tests": 10,
+      "files": null,
+      "durationSeconds": 0.026,
+      "log": null
+    }
+  ],
+  "coverage": {
+    "statements": 91.36,
+    "branches": 89.79,
+    "functions": 88.62,
+    "lines": 93.95
+  },
+  "buildChecks": [
+    {
+      "command": "node node_modules/typescript/bin/tsc -b --pretty false",
+      "passed": true
+    },
+    {
+      "command": "node node_modules/typescript/bin/tsc --noEmit -p tsconfig.test.json --pretty false",
+      "passed": true
+    },
+    {
+      "command": "node node_modules/vite/bin/vite.js build",
+      "passed": true,
+      "durationSeconds": 1.97,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\no-hash-frontend-build.log",
+      "entry": "dist/assets/index-Cpk7GTJ2.js"
+    }
+  ],
+  "syntaxChecks": {
+    "nodeCheck": "All scripts/tests native JS and MJS passed before full coverage",
+    "pythonCompile": "Changed non-Rust Python tools passed",
+    "powerShellParse": "Scripts passed Parser.ParseFile"
+  },
+  "preservedFailure": {
+    "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\no-hash-node-tools.log",
+    "result": "57/58; obsolete test expected runtime recipe v19 to match fixture v1. Actual recipe version is now checked; test corrected to require rejection."
+  },
+  "exemptions": [
+    "URL HashRouter",
+    "OBS password protocol authentication",
+    "Git commit identifiers"
+  ],
+  "pending": [
+    "Final backend tests and unified commit owned by root agent",
+    "Fresh isolated native 3-view capture, teaching, validation, publish, normal/gap actual cycles and history comparison",
+    "Fresh isolated process lock and restart acceptance"
+  ],
+  "historicalEvidence": "Prior native hash-matching reports remain historical and are not acceptance evidence for this implementation"
+}

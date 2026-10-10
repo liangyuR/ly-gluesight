@@ -354,16 +354,7 @@ fn raw_file(file: RecordedRawFile) -> Result<(usize, ShotRawFile), String> {
     if file.file.is_empty() || file.file.contains(['\\', ':', '\0']) || file.file.split('/').any(|part| matches!(part, "" | "." | "..")) {
         return Err("原图文件不是录制根目录内的相对路径".into());
     }
-    let tagged = file.revision_id.split_once(':').is_some_and(|(algorithm, digest)| {
-        !algorithm.is_empty()
-            && algorithm.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
-            && !digest.is_empty()
-            && digest.bytes().all(|c| c.is_ascii_hexdigit())
-    });
-    if !tagged {
-        return Err(format!("原图 k={} view={} 缺少标明算法的哈希", file.k, file.view));
-    }
-    Ok((file.k, ShotRawFile { view: file.view, file: file.file, revision_id: Some(file.revision_id) }))
+    Ok((file.k, ShotRawFile { view: file.view, file: file.file }))
 }
 
 fn merge_files(cycle: &str, entry: &mut CycleEntry, k: usize, incoming: ShotRawFile, notices: &mut Vec<Notice>) -> bool {
@@ -372,15 +363,12 @@ fn merge_files(cycle: &str, entry: &mut CycleEntry, k: usize, incoming: ShotRawF
         return false;
     }
     let files = entry.raw_files.entry(k).or_default();
-    if let Some(previous) = files.iter_mut().find(|file| file.view == incoming.view) {
-        if previous.file != incoming.file || (previous.revision_id.is_some() && previous.revision_id != incoming.revision_id) {
+    if let Some(previous) = files.iter().find(|file| file.view == incoming.view) {
+        if previous.file != incoming.file {
             log(notices, "err", "原图身份冲突", cycle, format!("k={k} view={} 已有关联文件，保留首次原图证据", incoming.view));
             return false;
         }
-        if previous == &incoming || incoming.revision_id.is_none() {
-            return false;
-        }
-        *previous = incoming;
+        return false;
     } else {
         files.push(incoming);
         files.sort_by_key(|file| file.view);

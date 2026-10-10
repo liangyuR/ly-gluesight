@@ -48,13 +48,13 @@ function fixture(name = 'ROBOT-DEMO-TRICAM') {
 }
 
 function context(recipe = fixture()) {
-  const layout = { ...structuredClone(recipe), hash: 'scripted-recipe-hash' };
+  const layout = { ...structuredClone(recipe), revisionId: 'ROBOT-DEMO-v1' };
   const rig = [...new Set(recipe.shots.map(shot => shot.camera))].map(id => ({
     id, source: 'sim', acquisition: 'triggered', viewCount: recipe.shots.some(s => s.camera === id && s.view > 1) ? 3 : 1,
   }));
   const snapshot = { phase: 'ACQUIRE', part: {
-    sn: 123, cycleId: 'scripted-cycle-1', recipeId: recipe.id, recipeRevision: layout.hash,
-    bundleId: 'scripted-bundle-hash', n: recipe.shots.length,
+    sn: 123, cycleId: 'scripted-cycle-1', recipeId: recipe.id, recipeRevision: layout.revisionId,
+    bundleId: 'release-1', n: recipe.shots.length,
     frames: recipe.shots.map(s => ({ shotId: s.id, camera: s.camera, view: s.view, status: 'waiting' })),
   } };
   return { recipe, layout, rig, snapshot, settings: { vision: true },
@@ -78,7 +78,7 @@ function rpc(ctx, calls, snapshots = []) {
     switch (command) {
       case 'cycle_snapshot': return structuredClone(snapshots.shift() ?? ctx.snapshot);
       case 'cycle_layout':
-        assert.deepEqual(args, { recipeId: ctx.recipe.id, hash: ctx.layout.hash });
+        assert.deepEqual(args, { recipeId: ctx.recipe.id, revisionId: ctx.layout.revisionId });
         return ctx.layout;
       case 'camera_rig_config': return ctx.rig;
       case 'cycle_get_settings': return ctx.settings;
@@ -99,21 +99,23 @@ test('shot plans count devices once per pulse and keep view 1→2→3→1 separa
   assert.deepEqual(devices.map(p => p.ordinal), [1, 1, 1, 2]);
 });
 
-test('release-only metadata may differ while all effective pixel geometry and limits must match', () => {
+test('release metadata may differ but explicit version, geometry and limits must match', () => {
   const ctx = context();
-  ctx.layout.version = 19;
   ctx.layout.teachingId = 'published';
   delete ctx.layout.shots[0].detect;
   delete ctx.layout.shots[0].limits;
   assert.deepEqual(recipeContract(ctx.layout), recipeContract(ctx.recipe));
   assert.equal(check(ctx).view, 1);
+  ctx.layout.version = 19;
+  assert.throws(() => check(ctx), /differs/);
+  ctx.layout.version = ctx.recipe.version;
   ctx.layout.shots[0].mmPerPx = 0.08;
   assert.throws(() => check(ctx), /differs/);
 });
 
-test('preflight refuses wrong SN, shot, Pose, camera, view, ordinal, hash and malformed schema', () => {
+test('preflight refuses wrong SN, shot, Pose, camera, view, ordinal, revision and malformed schema', () => {
   const edits = [
-    ctx => { ctx.snapshot.part.sn++; }, ctx => { ctx.layout.hash = 'other'; },
+    ctx => { ctx.snapshot.part.sn++; }, ctx => { ctx.layout.revisionId = 'other'; },
     ctx => { ctx.layout.schemaVersion = 3; }, ctx => { ctx.snapshot.part.cycleId = ''; },
     ctx => { ctx.snapshot.part.bundleId = null; },
     ctx => { ctx.snapshot.part.n = 12; }, ctx => { ctx.snapshot.phase = 'DRAIN'; },

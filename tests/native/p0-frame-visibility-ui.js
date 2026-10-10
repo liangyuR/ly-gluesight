@@ -1,5 +1,5 @@
 async (page) => {
-  const id = "P0-TRICAM-UI", bundleId = "3b643e189e0f73e5", recipeRevision = "c1574d7504b2a8d4";
+  const id = "P0-TRICAM-UI", recipeRevision = `${id}-v1`;
   const evidence = "output/playwright/p0-frame-visibility";
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
   const before = { records: await read("records_list"), plc: await read("plc_get_config"), cameras: await read("camera_rig_config"), settings: await read("cycle_get_settings"), workspace: await read("workspace_get", { id }) };
@@ -15,7 +15,7 @@ async (page) => {
     await page.waitForTimeout(100);
   }
   const production = await read("cycle_layout", { recipeId: id });
-  if (snapshot.phase !== "IDLE" || snapshot.alarms.some(a => a.includes(id)) || production.revisionId !== recipeRevision || production.teachingId !== "3e55860501858d50") throw new Error(JSON.stringify({ snapshot, production }));
+  if (snapshot.phase !== "IDLE" || snapshot.alarms.some(a => a.includes(id)) || production.revisionId !== recipeRevision || !production.teachingId) throw new Error(JSON.stringify({ snapshot, production }));
   await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "在线检测", exact: true }).click();
   let addedPart = false, runStarted = 0, detail, recorded;
   if (!snapshot.part) {
@@ -41,6 +41,7 @@ async (page) => {
     detail = await read("history_detail", { id: recent.items[0].id });
     recorded = await read("workspace_record_images", { historyId: detail.summary.id });
   }
+  const bundleId = snapshot.part?.bundleId;
   const measured = await read("cycle_part_data"), allLogs = await read("cycle_logs"), logs = allLogs.filter(line => line.ts >= runStarted);
   const arming = logs.findLast(line => line.ev === "armed↑ busy↑");
   const armMs = Number(arming?.msg.match(/布防耗时 (\d+) ms/)?.[1]);

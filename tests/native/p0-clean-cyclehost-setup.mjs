@@ -4,10 +4,11 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
-export async function configureReplay(page, { views, directory }) {
+export async function configureReplay(page, { views, directory, recordsRoot }) {
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
   const records = await read('records_list'), cycle = await read('cycle_snapshot');
-  assert(records.root.includes('com.xyzrobotics.tujiaovision.p0-tests.performance') && /^[cC]:[\\/]/.test(directory));
+  assert(recordsRoot ? resolve(records.root).toLowerCase() === resolve(recordsRoot).toLowerCase() : records.root.includes('com.xyzrobotics.tujiaovision.p0-tests.performance'));
+  assert(/^[cC]:[\\/]/.test(directory));
   assert(cycle.phase === 'IDLE' && !(await read('sim_status')).running);
   await page.getByRole('navigation', { name: '操作导航' }).getByRole('link', { name: '设备与采集', exact: true }).click();
   await page.getByRole('button', { name: '回放目录', exact: true }).click();
@@ -24,9 +25,9 @@ export async function configureReplay(page, { views, directory }) {
 }
 
 export async function teachCleanFixture(page, options) {
-  const { views, inputs, output } = options;
+  const { views, inputs, output, recordsRoot } = options;
   assert([1, 3].includes(views));
-  const id = `P0-CYCLEHOST-${views}V-CLEAN`;
+  const id = options.id ?? `P0-CYCLEHOST-${views}V-CLEAN`;
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
   const workspace = () => read('workspace_get', { id });
   const until = async (predicate, message, timeoutMs = 30000) => {
@@ -39,15 +40,16 @@ export async function teachCleanFixture(page, options) {
     throw new Error(message + ': ' + await page.locator('main').innerText());
   };
   const records = await read('records_list');
-  assert(records.root.includes('com.xyzrobotics.tujiaovision.p0-tests.performance'));
+  assert(recordsRoot ? resolve(records.root).toLowerCase() === resolve(recordsRoot).toLowerCase() : records.root.includes('com.xyzrobotics.tujiaovision.p0-tests.performance'));
   const settings = await read('cycle_get_settings'), engine = await read('engine_status');
   assert(settings.vision && settings.timeouts.armMs === 200 && settings.recordKeep >= 500 && engine.backend === 'LyFlow' && engine.ready && engine.measuring);
-  const source = JSON.parse(await readFile(join(inputs, 'provenance.json'), 'utf8'));
-  assert(source.physicalValidation === false && source.files.length === 32);
+  const provenance = JSON.parse(await readFile(join(inputs, 'provenance.json'), 'utf8'));
+  assert(provenance.physicalValidation === false && provenance.files.length === 32);
+  const source = { directory: resolve(inputs), physicalValidation: false, imageCount: provenance.files.length, size: [1280, 1024], source: 'Independent synthetic clean Gray8 PGM replay inputs; original source metadata is not used for content matching' };
   await mkdir(output, { recursive: false });
   const report = { id, views, startedAt: new Date().toISOString(), passed: false, source, scope: 'Independent desktop candidate taught, trialled, validated and published from CLEAN Prepared pixels via replay camera', physicalValidation: false, captures: [], trials: [] };
   try {
-    report.camera = await configureReplay(page, { views, directory: join(inputs, `${views}-view`, 'normal') });
+    report.camera = await configureReplay(page, { views, directory: join(inputs, `${views}-view`, 'normal'), recordsRoot });
     await page.getByRole('navigation', { name: '操作导航' }).getByRole('link', { name: '配方库', exact: true }).click();
     await page.getByRole('button', { name: '复制配方 MTR-HSG-B', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '建立候选配方', exact: true });

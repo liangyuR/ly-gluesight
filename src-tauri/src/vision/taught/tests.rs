@@ -181,10 +181,6 @@ fn bead_image(bright: bool, gap: bool, blank: bool, center_y: i32) -> FrameImage
     FrameImage::new(width as u32, height as u32, pixels)
 }
 
-fn hash(bytes: &[u8]) -> String {
-    format!("{:016x}", bytes.iter().fold(0xcbf29ce484222325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x100000001b3)))
-}
-
 #[test]
 #[ignore = "requires LYFLOW_CORE_DLL with glue.taught_path; writes synthetic evidence to GLUESIGHT_VISION_TEST_DIR or system temp"]
 fn native_taught_measurement_uses_pixels_for_width_offset_gaps_polarity_and_fresh_frames() {
@@ -214,7 +210,7 @@ fn native_taught_measurement_uses_pixels_for_width_offset_gaps_polarity_and_fres
         if blank {
             let error = run.unwrap_err();
             assert!(error.contains("没找到胶"), "{error}");
-            evidence.push(json!({"name":name,"fixtureFnv1a64":hash(&pgm),"graphFnv1a64":hash(graph.to_string().as_bytes()),"error":error}));
+            evidence.push(json!({"name":name,"fixtureBytes":pgm.len(),"error":error}));
         } else {
             let m = run.unwrap();
             assert_eq!(m.idx.len(), 41);
@@ -227,7 +223,7 @@ fn native_taught_measurement_uses_pixels_for_width_offset_gaps_polarity_and_fres
                 let expected = (center_y as f32 - 80.5) * 0.25;
                 assert!((m.d[i] - expected).abs() < 0.3, "{name}: {} != {expected}", m.d[i]);
             }
-            evidence.push(json!({"name":name,"fixtureFnv1a64":hash(&pgm),"graphFnv1a64":hash(graph.to_string().as_bytes()),"measurement":m}));
+            evidence.push(json!({"name":name,"fixtureBytes":pgm.len(),"measurement":m}));
         }
     }
     let mut doc = document();
@@ -239,7 +235,7 @@ fn native_taught_measurement_uses_pixels_for_width_offset_gaps_polarity_and_fres
     altered["nodes"][2]["params"]["stationStep"] = json!(8);
     assert!(measure_shot_with_graph(&engine, &recipe, 0, &bead_image(false, false, false, 82), "native-taught-altered", "", &altered).unwrap_err().contains("发布包算法图"));
     let report = json!({"source":"synthetic full-resolution pixels; not field accuracy acceptance", "engine":engine.path,
-        "engineFnv1a64":hash(&std::fs::read(&dll).unwrap()), "version":engine.version, "cases":evidence});
+        "version":engine.version, "cases":evidence});
     std::fs::write(dir.join("report.json"), serde_json::to_string_pretty(&report).unwrap()).unwrap();
     println!("Native taught-path evidence: {}", dir.display());
 }

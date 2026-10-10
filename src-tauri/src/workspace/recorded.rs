@@ -19,24 +19,26 @@ fn relative_path<'a>(cycle_id: &str, raw: &'a ShotRawFile) -> Result<&'a Path, S
     Ok(relative)
 }
 
-fn verified_bytes(root: &Path, relative: &Path, raw: &ShotRawFile) -> Result<Vec<u8>, String> {
-    let path = root.join(relative).canonicalize().map_err(|_| "原图未保留或已按保留策略清理".to_string())?;
+fn original_bytes(root: &Path, relative: &Path) -> Result<Vec<u8>, String> {
+    let source = root.join(relative);
+    crate::replay::checked_source_path(&source)?;
+    let path = source.canonicalize().map_err(|_| "原图未保留或已按保留策略清理".to_string())?;
     if !path.starts_with(root) || !path.is_file() { return Err("原图路径越过录制目录或不是文件".into()); }
-    let hash = raw.hash.as_deref().ok_or("历史原图没有落盘校验值")?;
     let bytes = std::fs::read(path).map_err(|error| format!("原图读取失败：{error}"))?;
-    if hash != format!("fnv1a64:{}", crate::release::fnv_hex(&bytes)) { return Err("原图校验值不一致，文件已改变".into()); }
     Ok(bytes)
 }
 
 pub(super) fn load_verified(root: &Path, cycle_id: &str, raw: &ShotRawFile) -> Result<FrameImage, String> {
+    crate::replay::checked_source_path(root)?;
     let root = root.canonicalize().map_err(|_| "原图目录不存在或已清理".to_string())?;
-    let bytes = verified_bytes(&root, relative_path(cycle_id, raw)?, raw)?;
+    let bytes = original_bytes(&root, relative_path(cycle_id, raw)?)?;
     let image = image::load_from_memory(&bytes).map_err(|error| format!("原图 {} 解码失败：{error}", raw.file))?.into_luma8();
     let (width, height) = image.dimensions();
     Ok(FrameImage::new(width, height, image.into_raw()))
 }
 
 pub(super) fn frames(root: &Path, cycle_id: &str, shots: &[PartShot], ts: i64) -> Result<Vec<RawFrame>, String> {
+    crate::replay::checked_source_path(root)?;
     let root = root.canonicalize().map_err(|_| "原图目录不存在或已清理".to_string())?;
     let mut result = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -45,7 +47,7 @@ pub(super) fn frames(root: &Path, cycle_id: &str, shots: &[PartShot], ts: i64) -
             if !(1..=3).contains(&raw.view) || !seen.insert((shot.k, raw.view)) {
                 return Err("历史原图的拍照点或视角重复，不能确定对应图像".into());
             }
-            let checked = verified_bytes(&root, relative_path(cycle_id, raw)?, raw).map(|_| ());
+            let checked = original_bytes(&root, relative_path(cycle_id, raw)?).map(|_| ());
             result.push(RawFrame { k: shot.k, view: raw.view, camera: shot.camera.clone(), file: raw.file.clone(), ts,
                 available: checked.is_ok(), error: checked.err(), cam: None, frame_counter: shot.frame_counter,
                 trigger_counter: shot.trigger_counter });
@@ -60,8 +62,37 @@ mod tests {
     use super::*;
     use crate::cycle::FrameStatus;
 
+    #[cfg(windows)]
     #[test]
-    fn original_files_require_exact_cycle_and_hash_and_keep_all_views() {
+    fn internal_cycle_junction_and_linked_root_are_rejected() {
+        let fixture = super::super::tests::ImportTestDir::new();
+        let root = fixture.0.join("records");
+        let target = root.join("20261010").join("part_cycle_second");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("k0_v1.pgm"), b"P5\n1 1\n255\n\x80").unwrap();
+        let link = root.join("20261010").join("part_cycle_first");
+        let linked_root = fixture.0.join("linked-records");
+        for (alias, actual) in [(&link, &target), (&linked_root, &root)] {
+            let status = std::process::Command::new("cmd").args(["/C", "mklink", "/J"])
+                .arg(alias).arg(actual).output().unwrap();
+            assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
+        }
+        let raw = ShotRawFile { view: 1, file: "20261010/part_cycle_first/k0_v1.pgm".into() };
+        assert!(load_verified(&root, "first", &raw).unwrap_err().contains("reparse"));
+        let shot = PartShot { k: 0, shot_id: "P0".into(), camera: "cam1".into(), view: 1,
+            session: None, ordinal: None, frame_counter: None, trigger_counter: None,
+            status: FrameStatus::Done, error: None, score: None, ms: None, raw_files: vec![raw] };
+        let listed = frames(&root, "first", &[shot], 1).unwrap();
+        assert!(!listed[0].available && listed[0].error.as_ref().unwrap().contains("reparse"));
+        let direct = ShotRawFile { view: 1, file: "20261010/part_cycle_second/k0_v1.pgm".into() };
+        assert!(load_verified(&linked_root, "second", &direct).unwrap_err().contains("reparse"));
+        assert_eq!(load_verified(&root, "second", &direct).unwrap().pixels, [128]);
+        std::fs::remove_dir(&linked_root).unwrap();
+        std::fs::remove_dir(&link).unwrap();
+    }
+
+    #[test]
+    fn original_files_require_exact_cycle_and_keep_all_views() {
         let root = super::super::tests::ImportTestDir::new();
         let directory = root.0.join("20261010/part_cycle_first");
         std::fs::create_dir_all(&directory).unwrap();
@@ -72,7 +103,7 @@ mod tests {
                 let file = format!("20261010/part_cycle_first/k{k}_v{view}.pgm");
                 let bytes = format!("raw-{k}-{view}").into_bytes();
                 std::fs::write(root.0.join(&file), &bytes).unwrap();
-                raw_files.push(ShotRawFile { view, file, hash: Some(format!("fnv1a64:{}", crate::release::fnv_hex(&bytes))) });
+                raw_files.push(ShotRawFile { view, file });
             }
             shots.push(PartShot { k, shot_id: format!("P{k}"), camera: "cam1".into(), view: [1,2,3,1][k],
                 session: Some(7), ordinal: Some(k as u64 + 1), frame_counter: Some(k as u64 + 1),
@@ -85,8 +116,8 @@ mod tests {
         assert!(frames(&root.0, "same-sn-second", &shots, 1).unwrap_err().contains("cycleId"));
         std::fs::write(root.0.join(&shots[1].raw_files[1].file), b"changed").unwrap();
         let changed = frames(&root.0, "first", &shots, 1).unwrap();
-        assert!(!changed[4].available);
-        assert!(changed[4].error.as_ref().unwrap().contains("校验"));
+        assert!(changed[4].available);
+        assert!(load_verified(&root.0, "first", &shots[1].raw_files[1]).unwrap_err().contains("解码"));
         std::fs::remove_file(root.0.join(&shots[2].raw_files[2].file)).unwrap();
         assert!(!frames(&root.0, "first", &shots, 1).unwrap()[8].available);
         shots[0].raw_files[0].file = "../part_cycle_first/external.pgm".into();
@@ -126,7 +157,7 @@ mod tests {
         let shots = vec![PartShot { k: 0, shot_id: recipe.shots[0].id.clone(), camera: recipe.shots[0].camera.clone(),
             view: 2, session: Some(frame.session), ordinal: Some(9), frame_counter: Some(frame.frame_counter),
             trigger_counter: Some(frame.trigger_counter), status: FrameStatus::Done, error: None, score: Some(1.0), ms: Some(2),
-            raw_files: outcome.files.iter().map(|raw| ShotRawFile { view: raw.view, file: raw.file.clone(), hash: Some(raw.hash.clone()) }).collect() }];
+            raw_files: outcome.files.iter().map(|raw| ShotRawFile { view: raw.view, file: raw.file.clone() }).collect() }];
         let files = frames(recorder.root(), cycle_id, &shots, frame.ts).unwrap();
         assert_eq!(files.len(), 3);
         assert!(files.iter().all(|file| file.available));
@@ -138,13 +169,10 @@ mod tests {
             assert!(load_verified(recorder.root(), "history-roundtrip", raw).unwrap_err().contains("cycleId"));
         }
         let selected = &shots[0].raw_files[1];
-        let mut no_hash = selected.clone();
-        no_hash.hash = None;
-        assert!(load_verified(recorder.root(), cycle_id, &no_hash).unwrap_err().contains("校验值"));
         std::fs::write(recorder.root().join(&selected.file), [b"P5\n2 1\n255\n".as_slice(), &[91, 92]].concat()).unwrap();
-        assert!(load_verified(recorder.root(), cycle_id, selected).unwrap_err().contains("校验值不一致"));
+        assert_eq!(load_verified(recorder.root(), cycle_id, selected).unwrap().pixels, [91, 92]);
         let changed = frames(recorder.root(), cycle_id, &shots, frame.ts).unwrap();
-        assert!(!changed[1].available);
+        assert!(changed[1].available);
         assert!(changed[0].available && changed[2].available);
     }
 }

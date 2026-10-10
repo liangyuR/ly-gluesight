@@ -3,7 +3,6 @@
 Only frozen simulator images are accepted. These samples do not prove field accuracy.
 """
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -164,12 +163,11 @@ def export_samples(workspace, output, expected_recipe=None):
             pixels = frozen_data(workspace, image, shot)
             files[f"replay/{shot['camera']}_{plan[k]['ordinal']}_v{image['view']}.pgm"] = pixels
             manifest.append({**plan[k], "view": image["view"], "selected": image["view"] == shot["view"],
-                             "sourceImageId": image["id"], "sha256": hashlib.sha256(pixels).hexdigest()})
+                             "sourceImageId": image["id"], "size": image["size"]})
     report = {"source": "Frozen GlueSight simulator pixels; gap removal in the selected image-space path",
               "physicalValidation": False, "imageEngineValidated": False, "recipe": recipe,
-              "recipeSha256": hashlib.sha256(json.dumps(recipe, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest(),
               "plannedDeviceTriggers": counts, "gap": gap_info, "frames": manifest,
-              "files": {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}}
+              "files": {name: {"bytes": len(data)} for name, data in files.items()}}
     output.mkdir(parents=True, exist_ok=False)
     for name, data in files.items():
         path = output / name

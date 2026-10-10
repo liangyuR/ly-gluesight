@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -39,7 +39,6 @@ pub struct RecordedRawFile {
     pub k: usize,
     pub view: u8,
     pub file: String,
-    pub hash: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -58,8 +57,8 @@ pub struct RecordingOutcome {
 #[serde(rename_all = "camelCase")]
 struct FrameMeta {
     cycle_id: String,
-    bundle_hash: Option<String>,
-    recipe_hash: String,
+    bundle_id: Option<String>,
+    recipe_revision: String,
     session: u64,
     ordinal: u64,
     k: usize,
@@ -80,7 +79,6 @@ struct FrameMeta {
     height: u32,
     queued: bool,
     available: bool,
-    hash: Option<String>,
     error: Option<String>,
 }
 
@@ -110,7 +108,7 @@ pub struct Recording {
     dir: PathBuf,
     name: String,
     cycle_id: String,
-    bundle_hash: Option<String>,
+    bundle_id: Option<String>,
     sn: u32,
     recipe: Arc<Recipe>,
     mode: RecordMode,
@@ -155,7 +153,7 @@ impl Recorder {
         &self.root
     }
 
-    pub fn begin(&self, mode: RecordMode, sn: u32, recipe: Arc<Recipe>, cycle_id: &str, bundle_hash: Option<&str>) -> Option<Recording> {
+    pub fn begin(&self, mode: RecordMode, sn: u32, recipe: Arc<Recipe>, cycle_id: &str, bundle_id: Option<&str>) -> Option<Recording> {
         if mode == RecordMode::Off {
             notify(
                 &self.callback,
@@ -206,7 +204,7 @@ impl Recorder {
             dir,
             name,
             cycle_id: cycle_id.into(),
-            bundle_hash: bundle_hash.map(str::to_string),
+            bundle_id: bundle_id.map(str::to_string),
             sn,
             recipe,
             mode,
@@ -242,8 +240,8 @@ impl Recorder {
                 let view = i as u8 + 1;
                 FrameMeta {
                     cycle_id: rec.cycle_id.clone(),
-                    bundle_hash: rec.bundle_hash.clone(),
-                    recipe_hash: rec.recipe.hash.clone(),
+                    bundle_id: rec.bundle_id.clone(),
+                    recipe_revision: rec.recipe.revision_id.clone(),
                     session: frame.session,
                     ordinal,
                     k,
@@ -264,7 +262,6 @@ impl Recorder {
                     height: image.height,
                     queued: true,
                     available: false,
-                    hash: None,
                     error: None,
                 }
             })
@@ -325,7 +322,7 @@ fn notify(callback: &Option<RecordingCallback>, outcome: RecordingOutcome) {
 
 #[derive(Default)]
 struct WriteState {
-    results: HashMap<(usize, u8), Result<String, String>>,
+    results: HashMap<(usize, u8), Result<(), String>>,
     errors: Vec<String>,
     retention_errors: Vec<String>,
 }
@@ -365,7 +362,7 @@ fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: 
     }
 }
 
-fn save_raw(path: &Path, image: &FrameImage) -> Result<String, String> {
+fn save_raw(path: &Path, image: &FrameImage) -> Result<(), String> {
     let expected = (image.width as usize).checked_mul(image.height as usize).filter(|n| *n > 0).ok_or("图像尺寸无效")?;
     if image.pixels.len() != expected {
         return Err("原图像素缓冲长度与尺寸不一致".into());
@@ -376,36 +373,7 @@ fn save_raw(path: &Path, image: &FrameImage) -> Result<String, String> {
     let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| format!("创建原图失败：{e}"))?;
     let header = format!("P5\n{} {}\n255\n", image.width, image.height);
     file.write_all(header.as_bytes()).and_then(|_| file.write_all(&image.pixels)).and_then(|_| file.sync_all()).map_err(|e| format!("写入原图失败：{e}"))?;
-    let expected_hash = hash_bytes(header.bytes().chain(image.pixels.iter().copied()));
-    let actual = file_hash(path)?;
-    if actual != expected_hash {
-        return Err("原图落盘校验失败".into());
-    }
-    Ok(actual)
-}
-
-fn hash_bytes(bytes: impl Iterator<Item = u8>) -> String {
-    let hash = bytes.fold(0xcbf29ce484222325u64, |hash, byte| (hash ^ byte as u64).wrapping_mul(0x100000001b3));
-    format!("fnv1a64:{hash:016x}")
-}
-
-fn file_hash(path: &Path) -> Result<String, String> {
-    let mut file = std::fs::File::open(path).map_err(|e| format!("读取已写原图失败：{e}"))?;
-    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
-        return Err("原图路径不是普通文件".into());
-    }
-    let mut hash = 0xcbf29ce484222325u64;
-    let mut buffer = [0u8; 65536];
-    loop {
-        let n = file.read(&mut buffer).map_err(|e| format!("校验原图失败：{e}"))?;
-        if n == 0 {
-            break;
-        }
-        for byte in &buffer[..n] {
-            hash = (hash ^ *byte as u64).wrapping_mul(0x100000001b3);
-        }
-    }
-    Ok(format!("fnv1a64:{hash:016x}"))
+    Ok(())
 }
 
 fn write_metadata(path: &Path, meta: &serde_json::Value) -> Result<(), String> {
@@ -450,7 +418,7 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState) -> Recor
         rec.errors.push(format!("{} 个计划拍照点没有录制原图", missing.len()));
     }
     let mut meta = json!({
-        "cycleId": rec.cycle_id, "bundleHash": rec.bundle_hash, "recipeHash": rec.recipe.hash,
+        "cycleId": rec.cycle_id, "bundleId": rec.bundle_id, "recipeRevision": rec.recipe.revision_id,
         "startedTs": rec.started, "sn": rec.sn, "mode": rec.mode, "verdict": verdict, "reason": reason,
         "recipe": &*rec.recipe, "plannedShots": planned, "missingShots": missing,
         "frames": rec.frames, "droppedFrames": rec.dropped, "available": false, "errors": rec.errors,
@@ -482,21 +450,31 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState) -> Recor
     let mut files = Vec::new();
     for frame in &mut rec.frames {
         let result = match state.results.remove(&(frame.k, frame.view)) {
-            Some(Ok(expected)) => {
-                file_hash(&actual_dir.join(&frame.file)).and_then(|actual| if actual == expected { Ok(actual) } else { Err("收尾时原图哈希不一致".into()) })
+            Some(Ok(())) => {
+                let path = actual_dir.join(&frame.file);
+                std::fs::symlink_metadata(&path).map_err(|e| format!("已写入原图不可用：{e}"))
+                    .and_then(|meta| {
+                        #[cfg(windows)]
+                        { use std::os::windows::fs::MetadataExt;
+                          if meta.file_attributes() & 0x400 != 0 { return Err("原图路径不能是 reparse point".into()); } }
+                        let header = format!("P5\n{} {}\n255\n", frame.width, frame.height);
+                        let expected = header.len() as u64 + u64::from(frame.width) * u64::from(frame.height);
+                        if !meta.is_file() || meta.file_type().is_symlink() || meta.len() != expected {
+                            Err("原图路径不是普通文件或文件长度与录制尺寸不符".into())
+                        } else { Ok(()) }
+                    })
             }
             Some(Err(error)) => Err(error),
             None => Err(frame.error.clone().unwrap_or_else(|| "原图未取得写入成功确认".into())),
         };
         match result {
-            Ok(hash) => {
+            Ok(()) => {
                 let path = actual_dir.join(&frame.file);
                 let relative = path.strip_prefix(root).map(|p| p.to_string_lossy().replace('\\', "/"));
                 match relative {
                     Ok(file) => {
                         frame.available = true;
-                        frame.hash = Some(hash.clone());
-                        files.push(RecordedRawFile { k: frame.k, view: frame.view, file, hash });
+                        files.push(RecordedRawFile { k: frame.k, view: frame.view, file });
                     }
                     Err(error) => {
                         frame.error = Some(format!("原图路径不在录制根目录：{error}"));
@@ -515,7 +493,7 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState) -> Recor
         }
     }
     if files.is_empty() {
-        rec.errors.push("本件没有已校验的落盘原图".into());
+        rec.errors.push("本件没有已确认写入的原图".into());
     }
     let mut protected = in_use;
     protected.push(actual_dir.clone());

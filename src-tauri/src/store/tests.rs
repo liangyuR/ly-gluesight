@@ -79,7 +79,7 @@ fn save(store: &Store, recipe: &Recipe, cycle: &str, shots: &[PartShot], deliver
         table,
         software_version: "test-p0",
         cycle_id: Some(cycle),
-        bundle_id: Some("frozen-bundle-revision_id"),
+        bundle_id: Some("frozen-bundle-id"),
         delivery,
         shots,
     })
@@ -91,7 +91,7 @@ fn identity_shots_and_measurements_round_trip() {
     let store = Store::open(&db.path()).unwrap();
     let recipe = recipe();
     let mut shots = shots(&recipe);
-    shots[0].raw_files = vec![ShotRawFile { view: 1, file: "cycle/P1_v1.pgm".into(), revision_id: Some("raw-revision_id".into()) }];
+    shots[0].raw_files = vec![ShotRawFile { view: 1, file: "cycle/P1_v1.pgm".into() }];
     let delivery = PlcDelivery { state: PlcDeliveryState::Pending, updated_at: 1235, message: Some("等待提交".into()) };
     let cycle = store.reserve_cycle_id().unwrap();
     let table = table(&recipe);
@@ -110,7 +110,7 @@ fn identity_shots_and_measurements_round_trip() {
     assert_eq!((page.total, page.counts.err, page.items.len()), (1, 1, 1));
     let summary = &page.items[0];
     assert_eq!(summary.cycle_id.as_deref(), Some(cycle.as_str()));
-    assert_eq!(summary.bundle_id.as_deref(), Some("frozen-bundle-revision_id"));
+    assert_eq!(summary.bundle_id.as_deref(), Some("frozen-bundle-id"));
     assert_eq!(summary.delivery, delivery);
     let detail = store.detail(id).unwrap();
     assert_eq!(store.detail_by_cycle(&cycle).unwrap().unwrap().summary.id, id);
@@ -130,7 +130,6 @@ fn identity_shots_and_measurements_round_trip() {
     assert_eq!(rows[0].cycle_id, summary.cycle_id);
     assert_eq!(rows[0].bundle_id, summary.bundle_id);
     assert_eq!(rows[0].delivery, delivery);
-    assert_eq!(rows[0].layout_hash.as_deref(), Some(measurement_layout_hash(&recipe).as_str()));
     assert_eq!(rows[0].table, table);
     assert!(store.measurements(&HistoryQuery { recipe_id: Some("other".into()), ..Default::default() }, &[], 20).unwrap().is_empty());
 }
@@ -216,27 +215,21 @@ fn durable_ack_recovery_write_failure_does_not_change_record() {
 }
 
 #[test]
-fn raw_file_completion_enriches_hashes_without_replacing_identity() {
+fn raw_file_completion_adds_views_without_replacing_identity() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
     let recipe = recipe();
     let id = save(&store, &recipe, "cycle", &shots(&recipe), &PlcDelivery::default(), None).unwrap();
-    let mut files: Vec<_> = (1..=3).map(|view| ShotRawFile { view, file: format!("cycle/P1_v{view}.pgm"), revision_id: None }).collect();
+    let files: Vec<_> = (1..=3).map(|view| ShotRawFile { view, file: format!("cycle/P1_v{view}.pgm") }).collect();
     assert!(store.update_shot_raw_files("cycle", 0, &files[..1]).unwrap());
     assert!(store.update_shot_raw_files("cycle", 0, &files).unwrap());
-    for file in &mut files {
-        file.revision_id = Some(format!("revision_id{}", file.view));
-    }
     assert!(store.update_shot_raw_files("cycle", 0, &files).unwrap());
     assert!(store.update_shot_raw_files("cycle", 0, &files[..1]).is_err());
     let mut replacement = files.clone();
     replacement[0].file = "cycle/P2_v1.pgm".into();
     assert!(store.update_shot_raw_files("cycle", 0, &replacement).is_err());
-    replacement = files.clone();
-    replacement[0].revision_id = Some("another-image".into());
-    assert!(store.update_shot_raw_files("cycle", 0, &replacement).is_err());
     for file in ["../outside.pgm", "C:/outside.pgm", "/outside.pgm", "cycle\\P1.pgm"] {
-        assert!(store.update_shot_raw_files("cycle", 1, &[ShotRawFile { view: 1, file: file.into(), revision_id: None }]).is_err());
+        assert!(store.update_shot_raw_files("cycle", 1, &[ShotRawFile { view: 1, file: file.into() }]).is_err());
     }
     assert!(store.update_shot_raw_files("cycle", 1, &[files[0].clone(), files[0].clone()]).is_err());
     assert!(!store.update_shot_raw_files("unknown", 0, &files).unwrap());
@@ -273,6 +266,7 @@ fn identical_content_with_new_version_is_allowed_but_snapshot_collision_is_rejec
     save(&store, &recipe, "first", &shots(&recipe), &PlcDelivery::default(), None).unwrap();
     let mut newer = recipe.clone();
     newer.version += 1;
+    newer.revision_id = format!("{}-v{}", newer.id, newer.version);
     save(&store, &newer, "reverted-content", &shots(&newer), &PlcDelivery::default(), None).unwrap();
     newer.shots[0].camera = "changed-camera".into();
     assert!(save(&store, &newer, "forged-revision_id", &shots(&newer), &PlcDelivery::default(), None).unwrap_err().contains("不同快照"));
@@ -368,15 +362,15 @@ fn recording_evidence_defaults_pending_and_does_not_change_measurement_or_judgem
 }
 
 #[test]
-fn recording_available_requires_actual_hashed_refs_and_complete_error_free_evidence() {
+fn recording_available_requires_actual_refs_and_complete_error_free_evidence() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
     let recipe = recipe();
     let id = save(&store, &recipe, "cycle", &shots(&recipe), &PlcDelivery::default(), None).unwrap();
     let complete = RecordingEvidence { state: RecordingState::Complete, available: true, directory: Some("records/cycle".into()), errors: Vec::new() };
-    assert!(store.update_recording("cycle", &complete).unwrap_err().contains("带哈希原图引用"));
+    assert!(store.update_recording("cycle", &complete).unwrap_err().contains("原图引用"));
     store
-        .update_shot_raw_files("cycle", 0, &[ShotRawFile { view: 1, file: "cycle/k000_P1_cam1_v1.pgm".into(), revision_id: Some("fnv1a64:1234567890abcdef".into()) }])
+        .update_shot_raw_files("cycle", 0, &[ShotRawFile { view: 1, file: "cycle/k000_P1_cam1_v1.pgm".into() }])
         .unwrap();
     for invalid in [
         RecordingEvidence { state: RecordingState::Failed, ..complete.clone() },
@@ -421,7 +415,7 @@ fn reopening_fails_pending_recordings_once_without_changing_original_evidence_or
     let partial = vec![ShotRawFile {
         view: 1,
         file: "records/cycle-interrupted/k000_P1_cam1_v1.pgm".into(),
-        revision_id: Some(format!("fnv1a64:{}", crate::release::fnv_hex(pixels))),
+
     }];
     let mut partial_shots = shots(&recipe);
     partial_shots[0].raw_files = partial.clone();
@@ -446,7 +440,7 @@ fn reopening_fails_pending_recordings_once_without_changing_original_evidence_or
             store.update_shot_raw_files(cycle, 0, &[ShotRawFile {
                 view: 1,
                 file: "records/cycle-complete/k000_P1_cam1_v1.pgm".into(),
-                revision_id: Some("fnv1a64:1234567890abcdef".into()),
+
             }]).unwrap();
         }
         store.update_recording(cycle, &RecordingEvidence {
@@ -532,7 +526,7 @@ fn pending_history_protection_includes_partial_directory_and_raw_only_references
     let recipe = recipe();
     let mut shots = shots(&recipe);
     shots[0].raw_files = vec![ShotRawFile { view: 1,
-        file: "_pending/20261010_000000_000_cycle_raw-only/image.pgm".into(), revision_id: Some("fnv1a64:1234567890abcdef".into()) }];
+        file: "_pending/20261010_000000_000_cycle_raw-only/image.pgm".into() }];
     save(&store, &recipe, "pending-references", &shots, &PlcDelivery::default(), None).unwrap();
     store.update_recording("pending-references", &RecordingEvidence {
         state: RecordingState::Incomplete, available: false,
@@ -556,7 +550,7 @@ fn restart_ack_recovery_only_visits_unresolved_database_cycles_and_preserves_aud
         save(&store, &recipe, cycle, &shots(&recipe), &PlcDelivery { state, updated_at: 200, message: None }, Some(&table(&recipe))).unwrap();
     }
     let pending = |cycle: &str, seq: u32| serde_json::json!({
-        "request":{"protocolVersion":1,"requestSeq":seq,"sn":42,"productCode":1,"shotCount":4,"planVersion":7,"planHash":123,"cameraShots":[2,1,1]},
+        "request":{"protocolVersion":1,"requestSeq":seq,"sn":42,"productCode":1,"shotCount":4,"planVersion":7,"planReserved":0,"cameraShots":[2,1,1]},
         "result":{"requestSeq":seq,"sn":42,"resultCode":1,"faultCode":0},
         "phase":"releasing","cycleId":cycle,"acknowledged":true,"startedAt":1000
     });
@@ -620,4 +614,217 @@ fn unresolved_delivery_query_reports_database_failure_instead_of_empty_success()
     let store = Store::open(&db.path()).unwrap();
     store.conn.lock().unwrap().execute_batch("ALTER TABLE parts RENAME TO unavailable_parts").unwrap();
     assert!(store.unresolved_delivery_cycles().unwrap_err().contains("parts"));
+}
+
+
+fn legacy_v2(db: &TestDb) -> Connection {
+    let conn = Connection::open(db.path()).unwrap();
+    conn.execute_batch(r#"PRAGMA foreign_keys=ON;
+             CREATE TABLE IF NOT EXISTS cycle_ids (
+                 id TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(16)))),
+                 created_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS parts (
+                 id INTEGER PRIMARY KEY,
+                 ts INTEGER NOT NULL,
+                 sn INTEGER NOT NULL,
+                 recipe_id TEXT,
+                 recipe_version INTEGER,
+                 recipe_hash TEXT,
+                 trigger_mode TEXT,
+                 verdict TEXT NOT NULL,
+                 plc_code INTEGER NOT NULL,
+                 fault_code INTEGER NOT NULL,
+                 reason TEXT NOT NULL,
+                 drain_ms INTEGER,
+                 frames_expected INTEGER NOT NULL,
+                 frames_received INTEGER NOT NULL,
+                 triggers INTEGER NOT NULL,
+                 retest_of INTEGER,
+                 software_version TEXT NOT NULL,
+                 judgement TEXT NOT NULL,
+                 frames TEXT NOT NULL,
+                 cycle_id TEXT,
+                 bundle_hash TEXT,
+                 delivery_state TEXT NOT NULL,
+                 delivery_updated_at INTEGER NOT NULL,
+                 delivery_message TEXT,
+                 layout_hash TEXT,
+                 recording_state TEXT NOT NULL DEFAULT 'pending',
+                 recording_available INTEGER NOT NULL DEFAULT 0,
+                 recording_directory TEXT,
+                 recording_errors TEXT NOT NULL DEFAULT '[]'
+             );
+             CREATE INDEX IF NOT EXISTS parts_ts ON parts(ts);
+             CREATE INDEX IF NOT EXISTS parts_sn ON parts(sn);
+             CREATE UNIQUE INDEX IF NOT EXISTS parts_cycle ON parts(cycle_id) WHERE cycle_id IS NOT NULL;
+             CREATE INDEX IF NOT EXISTS parts_unresolved_delivery ON parts(cycle_id)
+                 WHERE cycle_id IS NOT NULL AND delivery_state IN ('pending','submitted','failed');
+             CREATE TABLE IF NOT EXISTS part_points (
+                 part_id INTEGER PRIMARY KEY REFERENCES parts(id) ON DELETE CASCADE,
+                 format INTEGER NOT NULL,
+                 data BLOB NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS recipe_snapshots (
+                 hash TEXT PRIMARY KEY,
+                 recipe_id TEXT NOT NULL,
+                 version INTEGER NOT NULL,
+                 json TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS part_shots (
+                 part_id INTEGER NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
+                 k INTEGER NOT NULL,
+                 shot_id TEXT NOT NULL,
+                 camera TEXT NOT NULL,
+                 view INTEGER NOT NULL CHECK(view BETWEEN 1 AND 3),
+                 session TEXT,
+                 ordinal TEXT,
+                 frame_counter TEXT,
+                 trigger_counter TEXT,
+                 status TEXT NOT NULL,
+                 error TEXT,
+                 score REAL,
+                 ms INTEGER,
+                 raw_files TEXT NOT NULL,
+                 PRIMARY KEY (part_id, k),
+                 UNIQUE (part_id, shot_id)
+             );
+PRAGMA user_version=2;"#).unwrap();
+    conn
+}
+
+fn legacy_snapshot(conn: &Connection, reference: &str, recipe: &Recipe) -> String {
+    let mut json = serde_json::to_value(recipe).unwrap();
+    json.as_object_mut().unwrap().remove("revisionId");
+    json["hash"] = reference.into();
+    let json = serde_json::to_string(&json).unwrap();
+    conn.execute("INSERT INTO recipe_snapshots(hash,recipe_id,version,json) VALUES(?1,?2,?3,?4)",
+        params![reference, recipe.id, recipe.version, json]).unwrap();
+    json
+}
+
+#[test]
+fn legacy_v2_adds_revisions_without_erasing_snapshots_points_raw_or_acknowledgements() {
+    let db = TestDb::new();
+    let original = recipe();
+    let legacy = legacy_v2(&db);
+    let old_json = legacy_snapshot(&legacy, "legacy-reference", &original);
+    let measured = table(&original);
+    let blob = encode(&measured);
+    let raw = r#"[{"view":1,"file":"cycle/P1_v1.pgm","hash":"legacy-unverified-reference"}]"#;
+    let judgement = serde_json::to_string(&Judgement::error(1, "original conclusion")).unwrap();
+    for version in [original.version, original.version + 1] {
+        legacy.execute("INSERT INTO parts(ts,sn,recipe_id,recipe_version,recipe_hash,trigger_mode,verdict,plc_code,fault_code,reason,
+            frames_expected,frames_received,triggers,software_version,judgement,frames,cycle_id,bundle_hash,
+            delivery_state,delivery_updated_at,delivery_message,layout_hash,recording_state,recording_available,recording_directory)
+            VALUES(1234,42,?1,?2,'legacy-reference','fly','errInspect',90,1,'original conclusion',4,1,4,'legacy',?3,'[]',?4,
+            'legacy-bundle-directory','acknowledged',99,'PLC confirmed','unused-old-layout','complete',1,'records/cycle')",
+            params![original.id, version, judgement, format!("legacy-cycle-{version}")]).unwrap();
+        let part = legacy.last_insert_rowid();
+        legacy.execute("INSERT INTO part_points(part_id,format,data) VALUES(?1,2,?2)", params![part, blob]).unwrap();
+        legacy.execute("INSERT INTO part_shots(part_id,k,shot_id,camera,view,session,ordinal,frame_counter,trigger_counter,status,raw_files)
+            VALUES(?1,0,?2,?3,?4,?5,'1','2','3','done',?6)",
+            params![part, original.shots[0].id, original.shots[0].camera, original.shots[0].view, u64::MAX.to_string(), raw]).unwrap();
+    }
+    drop(legacy);
+    let store = Store::open(&db.path()).unwrap();
+    assert!(store.backup_path().is_none());
+    assert_eq!(store.interrupted_recordings, 0);
+    let columns = table_columns(&store.conn.lock().unwrap(), "parts").unwrap();
+    for name in ["recipe_hash", "bundle_hash", "layout_hash", "recipe_revision", "bundle_id"] { assert!(columns.contains(name)); }
+    assert_eq!(store.query(&HistoryQuery::default()).unwrap().total, 2);
+    for (index, version) in [original.version, original.version + 1].into_iter().enumerate() {
+        let detail = store.detail(index as i64 + 1).unwrap();
+        let revision = format!("{}-v{version}", original.id);
+        assert_eq!(detail.summary.recipe_revision.as_deref(), Some(revision.as_str()));
+        assert_eq!(detail.summary.recipe_version, Some(version));
+        assert_eq!(detail.summary.bundle_id.as_deref(), Some("legacy-bundle-directory"));
+        assert_eq!(detail.summary.delivery, PlcDelivery { state: PlcDeliveryState::Acknowledged, updated_at: 99, message: Some("PLC confirmed".into()) });
+        assert_eq!(detail.shots[0].session, Some(u64::MAX));
+        assert_eq!(detail.shots[0].raw_files, [ShotRawFile { view: 1, file: "cycle/P1_v1.pgm".into() }]);
+        assert!(detail.recording.available);
+        let snapshot = store.recipe_snapshot(&revision).unwrap().unwrap();
+        assert_eq!((snapshot.id.as_str(), snapshot.version), (original.id.as_str(), version));
+        assert!(same_measurement_layout(&snapshot, &original));
+    }
+    {
+        let conn = store.conn.lock().unwrap();
+        assert_eq!(conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(conn.query_row("SELECT json FROM recipe_snapshots WHERE hash='legacy-reference'", [], |r| r.get::<_, String>(0)).unwrap(), old_json);
+        assert_eq!(conn.query_row("SELECT raw_files FROM part_shots WHERE part_id=1", [], |r| r.get::<_, String>(0)).unwrap(), raw);
+        assert_eq!(conn.query_row("SELECT data FROM part_points WHERE part_id=1", [], |r| r.get::<_, Vec<u8>>(0)).unwrap(), blob);
+        assert_eq!(conn.query_row("SELECT layout_hash FROM parts WHERE id=1", [], |r| r.get::<_, String>(0)).unwrap(), "unused-old-layout");
+    }
+    let mut next = crate::recipe::samples().remove(1);
+    next.version = original.version + 2;
+    let next = next.build().unwrap();
+    save(&store, &next, "new-cycle", &shots(&next), &PlcDelivery::default(), None).unwrap();
+    drop(store);
+    let reopened = Store::open(&db.path()).unwrap();
+    assert_eq!(reopened.query(&HistoryQuery::default()).unwrap().total, 3);
+    assert_eq!(reopened.recipe_snapshot(&next.revision_id).unwrap().unwrap().version, next.version);
+    assert!(reopened.detail(1).unwrap().recording.available);
+}
+
+#[test]
+fn conflicting_legacy_revision_rolls_back_additions_and_preserves_original_rows() {
+    let db = TestDb::new();
+    let legacy = legacy_v2(&db);
+    let original = recipe();
+    let first = legacy_snapshot(&legacy, "old-one", &original);
+    let mut conflicting = original.clone();
+    conflicting.shots[0].camera = "another-camera".into();
+    let second = legacy_snapshot(&legacy, "old-two", &conflicting);
+    drop(legacy);
+    assert!(Store::open(&db.path()).err().unwrap().contains("相同 ID、版本对应不同快照"));
+    let conn = Connection::open(db.path()).unwrap();
+    assert!(!table_columns(&conn, "parts").unwrap().contains("recipe_revision"));
+    assert!(!table_columns(&conn, "recipe_snapshots").unwrap().contains("revision_id"));
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM recipe_snapshots", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+    assert_eq!(conn.query_row("SELECT json FROM recipe_snapshots WHERE hash='old-one'", [], |r| r.get::<_, String>(0)).unwrap(), first);
+    assert_eq!(conn.query_row("SELECT json FROM recipe_snapshots WHERE hash='old-two'", [], |r| r.get::<_, String>(0)).unwrap(), second);
+}
+
+#[test]
+fn fresh_schema_and_raw_references_have_no_content_digest_fields() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let conn = store.conn.lock().unwrap();
+    let columns = table_columns(&conn, "parts").unwrap();
+    for name in ["recipe_hash", "bundle_hash", "layout_hash"] { assert!(!columns.contains(name)); }
+    assert!(!table_columns(&conn, "recipe_snapshots").unwrap().contains("hash"));
+    let file: ShotRawFile = serde_json::from_value(serde_json::json!({"view":2,"file":"cycle/P1_v2.pgm","hash":"ignored", "revisionId":"ignored"})).unwrap();
+    assert_eq!(serde_json::to_value(file).unwrap(), serde_json::json!({"view":2,"file":"cycle/P1_v2.pgm"}));
+}
+
+#[test]
+fn snapshot_version_metadata_and_explicit_revision_must_agree() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let original = recipe();
+    save(&store, &original, "first", &shots(&original), &PlcDelivery::default(), None).unwrap();
+    let mut forged = original.clone();
+    forged.revision_id = "external-revision".into();
+    assert!(save(&store, &forged, "forged", &shots(&forged), &PlcDelivery::default(), None).unwrap_err().contains("修订号与实际"));
+    store.conn.lock().unwrap().execute("UPDATE recipe_snapshots SET version=version+1", []).unwrap();
+    assert!(store.recipe_snapshot(&original.revision_id).unwrap_err().contains("版本损坏"));
+    assert!(save(&store, &original, "second", &shots(&original), &PlcDelivery::default(), None).unwrap_err().contains("版本损坏"));
+    assert_eq!(store.query(&HistoryQuery::default()).unwrap().total, 1);
+}
+
+#[test]
+fn legacy_missing_reference_cannot_attach_an_unrelated_same_revision_snapshot() {
+    let db = TestDb::new();
+    let original = recipe();
+    let conn = legacy_v2(&db);
+    legacy_snapshot(&conn, "existing-reference", &original);
+    conn.execute("INSERT INTO parts(ts,sn,recipe_id,recipe_version,recipe_hash,verdict,plc_code,fault_code,reason,frames_expected,
+        frames_received,triggers,software_version,judgement,frames,delivery_state,delivery_updated_at,recording_state)
+        VALUES(1,42,?1,?2,'missing-reference','errInspect',90,1,'original',4,0,0,'legacy','{}','[]','notRequired',0,'off')",
+        params![original.id, original.version]).unwrap();
+    drop(conn);
+    assert!(Store::open(&db.path()).err().unwrap().contains("配方快照缺失"));
+    let conn = Connection::open(db.path()).unwrap();
+    assert!(!table_columns(&conn, "parts").unwrap().contains("recipe_revision"));
+    assert_eq!(conn.query_row("SELECT recipe_hash FROM parts", [], |r| r.get::<_, String>(0)).unwrap(), "missing-reference");
 }

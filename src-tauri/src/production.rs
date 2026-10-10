@@ -22,6 +22,10 @@ pub fn graphs(recipe: &Recipe) -> Result<Value, String> {
     Ok(json!({"schemaVersion":1,"version":GRAPH_VERSION,"shots":shots}))
 }
 
+fn engine_version_matches(published: &str, loaded: &str) -> bool {
+    published.split(':').next() == Some(loaded)
+}
+
 pub struct Prepared {
     pub bundle: ReleaseBundle,
     pub recipe: Arc<Recipe>,
@@ -34,8 +38,11 @@ impl Prepared {
     pub fn load(bundle: ReleaseBundle, engine: Arc<Engine>, expected: &Recipe) -> Result<Self, String> {
         bundle.verify()?;
         let recipe = Arc::new(bundle.recipe.build()?);
-        if recipe.hash != expected.hash { return Err("发布包配方与所选生产版本不一致，请重新发布".into()); }
-        if bundle.manifest.versions.graph != GRAPH_VERSION || bundle.manifest.versions.engine != engine.identity {
+        if recipe.revision_id != expected.revision_id || recipe.id != expected.id || recipe.version != expected.version
+            || recipe.product_code != expected.product_code || recipe.trigger_mode != expected.trigger_mode || recipe.schema_version != expected.schema_version
+            || recipe.shots != expected.shots || recipe.spacing != expected.spacing || recipe.detect != expected.detect
+            || recipe.limits != expected.limits || recipe.filter_window != expected.filter_window || recipe.teaching_id != expected.teaching_id { return Err("发布包配方与所选生产版本不一致，请重新发布".into()); }
+        if bundle.manifest.versions.graph != GRAPH_VERSION || !engine_version_matches(&bundle.manifest.versions.engine, &engine.version) {
             return Err("发布包的算法图或引擎版本与当前引擎不一致，请重新验证并发布".into());
         }
         let stored: Value = serde_json::from_str(&crate::fsio::read_text(&bundle.root.join(&bundle.manifest.graph)).map_err(|e| e.to_string())?)
@@ -61,10 +68,6 @@ impl Prepared {
 
     pub fn verify(&self) -> Result<(), String> {
         self.bundle.verify()?;
-        let bytes = std::fs::read(&self.engine.path).map_err(|e| format!("无法核验算法核心库：{e}"))?;
-        if self.engine.identity != format!("{}:{}", self.engine.version, crate::release::fnv_hex(&bytes)) {
-            return Err("算法核心库文件已变化，需要重新启动并验证发布版本".into());
-        }
         Ok(())
     }
 
@@ -80,7 +83,7 @@ impl Prepared {
         for (k, shot) in self.recipe.shots.iter().enumerate().filter(|(_, shot)| shot.measured()) {
             let resource = self.bundle.shot(k)?;
             let image = crate::replay::load(resource.image.as_ref().ok_or("发布包缺少示教原图")?)?;
-            let reading = self.measure(k, &image, &format!("warm-{}-{k}-{}", self.bundle.hash, ly_plc::now_ms()))?;
+            let reading = self.measure(k, &image, &format!("warm-{}-{k}-{}", self.bundle.id, ly_plc::now_ms()))?;
             if reading.coverage < 0.8 { return Err(format!("拍照点 {} 发布原图预热量成比例不足 80%", shot.id)); }
         }
         self.verify()
@@ -197,7 +200,7 @@ impl ProductionHost {
     }
 
     fn ensure(&self, app: &AppHandle, recipe: Arc<Recipe>, core: Option<String>) -> Result<Arc<Prepared>, String> {
-        let key = format!("{}:{}:{}", recipe.id, recipe.hash, core.as_deref().unwrap_or_default());
+        let key = format!("{}:{}:{}", recipe.id, recipe.revision_id, core.as_deref().unwrap_or_default());
         if let Some(prepared) = self.begin(&key, Instant::now())? { return Ok(prepared); }
         let app = app.clone();
         let slot = self.slot.clone();
@@ -213,7 +216,7 @@ impl ProductionHost {
             }).await;
             let state = match result {
                 Ok(prepared) => {
-                    crate::cycle::log(&app, "ok", "生产预热", format!("发布包 {} 已就绪，耗时 {} ms", prepared.bundle.hash, started.elapsed().as_millis()));
+                    crate::cycle::log(&app, "ok", "生产预热", format!("发布包 {} 已就绪，耗时 {} ms", prepared.bundle.id, started.elapsed().as_millis()));
                     Entry::Ready(prepared)
                 }
                 Err(error) => {

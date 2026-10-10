@@ -46,6 +46,6 @@ async (page) => {
   if (JSON.stringify(after)!==JSON.stringify(production)) throw new Error("Candidate teaching or cancelled publication modified production");
   const result={operation:"历史原图回流示教、首拖动布局变化的坐标回归、试测保存、原始资料精确恢复、重新验证和取消发布",passed:true,historyId:bound.image.historyId,expectedRect:[x,y,w,h],actualRect:dragged.params.rect,restoredImageId:restored.image.id,validation:validated.workspace.validation};
   await page.evaluate(result => window.__uiOperations.checks.push(result),result);
-  await page.screenshot({path:"D:\\project\\ly-gluesight\\output\\playwright\\ui-regression\\flyshot-history-teach.png",fullPage:true});
+  await page.screenshot({path:"output/playwright\\ui-regression\\flyshot-history-teach.png",fullPage:true});
   return result;
 }

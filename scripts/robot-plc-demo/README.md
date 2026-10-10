@@ -47,7 +47,7 @@ node --test scripts/robot-plc-demo/tests/test-console.mjs
 7. PLC 使用 Modbus TCP、127.0.0.1:1502、站号 1、轮询 50 ms、超时 1000 ms、自动连接，采用下表的演示地址。若已有示例配方引用不存在的设备，在专用演示实例中修正这些引用。
 8. 联调台显示视觉、桥和握手就绪后运行一件，再执行 pnpm sim:verify。桥会拒绝配方、视角或引擎与夹具不一致的触发。
 
-夹具不包含示教哈希、标定结果或发布记录。make-samples.py 只导出冻结的模拟原图并在图像中移除一段胶，不自动试测、判定或发布。provenance.json 明确记录 imageEngineValidated=false、physicalValidation=false、逐幅 SHA256、选中视角及设备触发数。默认三目还导出 replay/cam1_1_v1..v3.pgm 等十二幅图，可按设备帧分组回放；单视角导出四幅。导出的每组目录使用独立名称，避免混入上次样本。
+夹具不包含标定结果或发布记录。make-samples.py 只导出冻结的模拟原图并在图像中移除一段胶，不自动试测、判定或发布。provenance.json 明确记录 imageEngineValidated=false、physicalValidation=false、逐幅尺寸和路径、选中视角及设备触发数。默认三目还导出 replay/cam1_1_v1..v3.pgm 等十二幅图，可按设备帧分组回放；单视角导出四幅。导出的每组目录使用独立名称，避免混入上次样本。
 
 自定义候选可以用 --workspace 指定 workspace.json 所在目录，用 --output 指定新的输出目录。工位标定用的 make-board.py 仍可独立使用，其合成板比例为 0.08 mm/px，与本夹具的人工当量不同。
 
@@ -68,7 +68,7 @@ pnpm sim:stop -Config scripts/robot-plc-demo/demo.local.json
 - HTTP 断开时禁用操作、将 PLC 值显示为未知；恢复后重新读取状态。PLC 单独离线时不能启动或复位，桥离线时不能启动。
 - releaseSeconds 默认 0.2 秒，保持 C10/C11/C12 为低，至少应覆盖两次 PLC 轮询。motionSeconds 是每点运动时间，settleSeconds 是最后触发后等待，intervalSeconds 是件间隔。
 
-Start-Demo.ps1 的 -Recipe 覆盖同时传给 Robot 和桥。升级后先 sim:stop，再重新构建、启动。源码或配置哈希变化时启动脚本拒绝复用旧进程。
+Start-Demo.ps1 的 -Recipe 覆盖同时传给 Robot 和桥。升级后先 sim:stop，再重新构建、启动。启动和停止使用实际 PID、可执行路径与启动时间确认进程身份；升级源码或配置后应先停止再重启。
 
 ## PLC 契约与工况
 
@@ -83,7 +83,7 @@ Start-Demo.ps1 的 -Recipe 覆盖同时传给 Robot 和桥。升级后先 sim:st
 | HR104..105 | 保留 | — |
 | HR110 / HR111 / HR112..113 | 结果码 / 异常码 / 结果 SN | GlueSight |
 
-设备计数作为 HTTP 状态和结果证据记录，没有新增 Modbus 地址。生产 S7 的设备槽、序号 ACK 和 planHash 仍按 [S7 契约](../../docs/integration/plc-s7-phase1.md)；单台三目四点在 S7 只占一个设备槽，cameraShots=[4,0,0]。
+设备计数作为 HTTP 状态和结果证据记录，没有新增 Modbus 地址。生产 S7 的设备槽、序号 ACK 和 planReserved 仍按 [S7 契约](../../docs/integration/plc-s7-phase1.md)；单台三目四点在 S7 只占一个设备槽，cameraShots=[4,0,0]。
 
 | 工况 | 保留的结果码 / 异常码期望 | 设备触发数 / 预期到帧数 |
 | --- | --- | --- |
@@ -97,7 +97,7 @@ Start-Demo.ps1 的 -Recipe 覆盖同时传给 Robot 和桥。升级后先 sim:st
 
 GET /state 提供 contractVersion=2、recipe、plannedTriggers、deviceTriggers、cycleId、recipeRevision、bundleId、可操作状态及 PLC 快照。POST /start 接收 scenario、count（1..100）、continuous，返回 runId。POST /stop 在本件后停止，POST /reset 只允许空闲时执行。
 
-GET /trigger 的 ticket 除 sn/k/scenario 外，还带 recipeId、productCode、shotCount、shotId、poseId、camera、view 和设备内 ordinal。桥先读取 cycle_snapshot、cycle_layout（当前 hash）、camera_rig_config、cycle_get_settings、engine_status 和 app_info，核对全部参与设备、逐点参数、cycleId 与发布资源身份，然后只调用已有 sim_robot_trigger(sn,k,scenario)。临发脉冲前再查工件，禁止中途换件或换包。成功 ACK 必须回传相同身份，Robot 把整件 ACK 绑定到同一 cycleId。已执行 ticket 缓存 ACK，丢失 HTTP 应答后的重试不会产生第二次脉冲；桥中途重启不能接续 k>0，需恢复后重跑。
+GET /trigger 的 ticket 除 sn/k/scenario 外，还带 recipeId、productCode、shotCount、shotId、poseId、camera、view 和设备内 ordinal。桥先读取 cycle_snapshot、cycle_layout（当前修订 ID）、camera_rig_config、cycle_get_settings、engine_status 和 app_info，核对全部参与设备、逐点参数、cycleId 与发布资源身份，然后只调用已有 sim_robot_trigger(sn,k,scenario)。临发脉冲前再查工件，禁止中途换件或换包。成功 ACK 必须回传相同身份，Robot 把整件 ACK 绑定到同一 cycleId。已执行 ticket 缓存 ACK，丢失 HTTP 应答后的重试不会产生第二次脉冲；桥中途重启不能接续 k>0，需恢复后重跑。
 
 真实三目 SDK 的交付格式、同步计数和线路仍待现场确认。桥只允许模拟设备，不配置 SDK 拆包或实体触发线路。
 
@@ -127,11 +127,11 @@ pnpm sim:verify
 
 sim:verify 真实增加五件演示记录，按 runId 关联结果，逐件检查结果码、异常码、SN、握手释放和设备触发数。只运行指定工况可用 --scenarios normal gap。失败返回非零并覆盖旧的通过报告。
 
-图像工况的报告要求真实应用/引擎应答、非空 cycleId、recipeRevision 与不可变 bundleId，记录应用版本、引擎版本、DLL 文件 SHA256、夹具文件 SHA256、逐点 ACK 和设备计数。测试应答端不能作为真实图像回归证据。DLL SHA256 来自应用报告路径在验证时的文件。triggerAckMs 是桥命令的应答时间，resultWaitMs 是 partEnd 后等待结果的时间，cycleMs 是 Robot 整件时间；它们不等于引擎或排队耗时。报告的 unmeasured 明示这些未测量项及现场精度缺口。
+图像工况的报告要求真实应用/引擎应答、非空 cycleId、recipeRevision 与不可变 bundleId，记录应用版本、引擎版本、DLL 实际路径和版本、夹具尺寸和明确配方版本、逐点 ACK 和设备计数。测试应答端不能作为真实图像回归证据。不计算或比较图像、配方、发布包和引擎文件的内容摘要。triggerAckMs 是桥命令的应答时间，resultWaitMs 是 partEnd 后等待结果的时间，cycleMs 是 Robot 整件时间；它们不等于引擎或排队耗时。报告的 unmeasured 明示这些未测量项及现场精度缺口。
 
 默认输出在 output/playwright/robot-plc-demo/（已忽略）：
 
-- services.json：进程身份、源码/配置/夹具哈希及构建程序哈希；停止脚本只关闭登记身份匹配的进程。
+- services.json：进程身份、配置路径与配方路径；停止脚本只关闭登记身份匹配的进程。
 - plc-wire.jsonl、robot-events.jsonl、robot-results.jsonl：实际协议值变化、事件和结果；重启恢复，末行写入中断时保留备份。
 - regression-latest.json：最近一次真实联调报告，包含失败原因。
 - samples/：按次生成的选中视角样本、全部冻结视角回放图及 provenance.json。

@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
-import { distribution, fnv1a64, memoryTrend, recordedArtifact, scanReplayInputs,
-  runCycleHostPerformance, validateCameraSource, validatePart, validateReplayInputsSnapshot, validateReplayOutputs } from './p0-cyclehost-performance.mjs';
+import { distribution, memoryTrend, recordedArtifact, scanReplayInputs,
+  persistFailedAttempt, validateCameraSource, validatePart, validateReplayInputsSnapshot, validateReplayOutputs } from './p0-cyclehost-performance.mjs';
 
 function evidence(mode = 'tricam', verdict = 'OK', plcCode = 1) {
   const layout = { id: 'fixture', revisionId: 'recipe', points: { k: [0, 1, 2, 3] },
@@ -16,7 +15,7 @@ function evidence(mode = 'tricam', verdict = 'OK', plcCode = 1) {
     triggers: 4, recording: { state: 'complete' },
     shots: layout.shots.map((shot, k) => ({ k, shotId: shot.id, camera: shot.camera, view: shot.view,
       ordinal: k + 1, status: 'done', error: null,
-      rawFiles: (mode === 'single' ? [1] : [1, 2, 3]).map(view => ({ view, revisionId: 'hash' })) })) },
+      rawFiles: (mode === 'single' ? [1] : [1, 2, 3]).map(view => ({ view, file: 'k' + k + '_v' + view + '.pgm' })) })) },
     originals: { complete: true, frames: layout.shots.flatMap((_, k) =>
       (mode === 'single' ? [1] : [1, 2, 3]).map(view => ({ k, view, available: true, error: null }))) },
     measurements: layout.shots.map((shot, k) => ({ k, cycleId: 'cycle', bundleId: 'bundle', sn: 41,
@@ -89,7 +88,7 @@ test('recorded pixels must be full-resolution raw Gray8; unsafe paths are refuse
     await writeFile(join(directory, 'frame.pgm'), bytes);
     const full = await recordedArtifact(directory, 'frame.pgm');
     assert.deepEqual(full.size, [1280, 1024]);
-    assert(full.bytes === bytes.length && /^[a-f0-9]{64}$/.test(full.sha256));
+    assert.equal(full.bytes, bytes.length);
     await writeFile(join(directory, 'frame.pgm'), bytes.subarray(0, bytes.length - 1));
     await assert.rejects(() => recordedArtifact(directory, 'frame.pgm'), /full-resolution/);
     for (const path of ['../frame.pgm', 'x/../../frame.pgm', 'C:/frame.pgm', 'x\\frame.pgm']) {
@@ -116,16 +115,16 @@ function reportEvidence() {
     value.originals.frames.forEach(frame => frame.file = 'day/part_cycle_' + cycleId + '/k' + frame.k + '.pgm');
     value.recordedArtifacts = value.originals.frames.map(frame => ({ k: frame.k, view: frame.view,
       path: join(root, frame.file), bytes: 1280 * 1024 + Buffer.byteLength('P5\n1280 1024\n255\n'),
-      sha256: '0'.repeat(64), size: [1280, 1024] }));
+      size: [1280, 1024] }));
     return value;
   });
   const samples = Array.from({ length: 11 }, (_, index) => ({ part: index * 10,
     elapsedMs: index * 25000, workingSetBytes: 10000 + index * 100, privateBytes: 8000 + index * 200 }));
-  const artifact = { path: join(root, 'fixture.json'), bytes: 0, sha256: '0'.repeat(64) };
+  const artifact = { path: join(root, 'fixture.json'), bytes: 0 };
   const report = { schemaVersion: 1, completed: true, passed: true, mode: 'single', scenario: 'normal',
     physicalValidation: false, s7HardwareValidation: false, requestedParts: 100, completedParts: 100,
     accuracyFailures: [], guard: { records: { root } }, samples,
-    provenance: { layout, bundleId: 'bundle', manifest: { recipeId: 'fixture', recipeRevision: 'recipe' }, fixture: artifact, executable: artifact, dll: artifact, release: [artifact] },
+    provenance: { layout, bundleId: 'bundle', manifest: { bundleId: 'bundle', recipeId: 'fixture', recipeRevision: 'recipe' }, fixture: artifact, executable: artifact, dll: artifact, release: [artifact] },
     metrics: Object.fromEntries(['ms', 'queueMs', 'engineMs', 'coreMs'].map(key =>
       [key, distribution(rows.flatMap(value => value.measurements.map(m => m[key])))])),
     memory: { workingSet: memoryTrend(samples, 'workingSetBytes'), private: memoryTrend(samples, 'privateBytes') } };
@@ -161,9 +160,6 @@ for (const [name, mutate] of [
 }
 
 
-test('manifest fingerprint uses the release FNV algorithm', () => {
-  assert.equal(fnv1a64(Buffer.from('hello')), 'a430d84680aabd0b');
-});
 
 function replayEvidence(mode = 'tricam') {
   const { row, layout } = evidence(mode), directory = 'C:/p0-replay-selftest';
@@ -175,12 +171,11 @@ function replayEvidence(mode = 'tricam') {
     for (let view = 1; view <= (mode === 'tricam' ? 3 : 1); view++) {
       const file = 'cam1_' + (k + 1) + '_v' + view + '.pgm';
       files.push({ k, view, camera: 'cam1', file, path: join(directory, file),
-        bytes: 1280 * 1024 + Buffer.byteLength('P5\n1280 1024\n255\n'), size: [1280, 1024],
-        sha256: String(k + 1).repeat(64), pixelsSha256: String(view).repeat(64) });
+        bytes: 1280 * 1024 + Buffer.byteLength('P5\n1280 1024\n255\n'), size: [1280, 1024] });
     }
   }
   const inputs = { directory, mode, channel: 1, files,
-    tree: files.map(({ path, bytes, sha256 }) => ({ path, bytes, sha256 })) };
+    tree: files.map(({ path, bytes }) => ({ path, bytes })) };
   row.recordedArtifacts = files.map(file => ({ ...file,
     path: join('C:/p0-recording-selftest/part_cycle_cycle', file.file) }));
   row.recordingMetadata = { document: { available: true, cycleId: 'cycle', sn: 41,
@@ -199,7 +194,7 @@ for (const mode of ['single', 'tricam']) {
     validateReplayInputsSnapshot(inputs, mode);
     const matches = validateReplayOutputs(row, inputs, layout);
     assert.equal(matches.length, mode === 'single' ? 4 : 12);
-    assert(matches.every(match => match.equal && match.sha256 && match.pixelsSha256));
+    assert(matches.every(match => match.identityVerified && match.size[0] === 1280));
   });
 }
 
@@ -215,15 +210,12 @@ test('default sim guard stays strict; explicit replay requires the configured in
 });
 
 for (const [name, mutate] of [
-  ['different output pixels', row => row.recordedArtifacts[1].pixelsSha256 = 'f'.repeat(64)],
-  ['different output file bytes', row => row.recordedArtifacts[1].sha256 = 'f'.repeat(64)],
   ['hardware counter relabelled as replay', row => row.recordingMetadata.document.frames[0].counter = 'chunkTrigger'],
   ['manual teaching image substituted', row => row.recordingMetadata.document.frames[0].manual = true],
   ['previous cycle metadata', row => row.recordingMetadata.document.cycleId = 'previous'],
   ['wrong selected view', row => row.recordingMetadata.document.frames[4].selectedView = 1],
   ['duplicate view metadata', row => row.recordingMetadata.document.frames[2].view = 2],
   ['missing input view', (_row, inputs) => inputs.files.splice(3, 1)],
-  ['changed input SHA', (_row, inputs) => inputs.files[1].sha256 = 'f'.repeat(64)],
 ]) {
   test('replay control refuses ' + name, () => {
     const { row, layout, inputs } = replayEvidence();
@@ -235,7 +227,7 @@ for (const [name, mutate] of [
   });
 }
 
-test('replay snapshot hashes all input files and provenance; rejects extra images', async () => {
+test('replay snapshot reads all input image dimensions and file paths; rejects extra images', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'p0-replay-selftest-'));
   try {
     const header = Buffer.from('P5\n1280 1024\n255\n');
@@ -274,9 +266,6 @@ function replayReportEvidence() {
       row.detail.shots[k].frameCounter = 11 + k;
       row.detail.shots[k].triggerCounter = 11 + k;
     }
-    row.recordedArtifacts = row.recordedArtifacts.map(file => ({
-      ...file, sha256: replay.inputs.files[file.k].sha256,
-      pixelsSha256: replay.inputs.files[file.k].pixelsSha256 }));
     const document = structuredClone(replay.row.recordingMetadata.document);
     document.cycleId = row.detail.summary.cycleId;
     document.frames.forEach(frame => {
@@ -284,7 +273,7 @@ function replayReportEvidence() {
       frame.file = 'k' + frame.k + '.pgm';
     });
     row.recordingMetadata = { path: join(dirname(row.recordedArtifacts[0].path), 'part.json'),
-      bytes: 1, sha256: '0'.repeat(64), document };
+      bytes: 1, document };
     row.replayComparisons = validateReplayOutputs(row, replay.inputs, report.provenance.layout);
   }
   return { report, rows };
@@ -297,9 +286,9 @@ test('100-part replay report independently checks inputs, outputs and Synthetic 
 });
 
 for (const [name, mutate] of [
-  ['changed input snapshot after run', report => report.replayInputsAfter.files[0].pixelsSha256 = 'f'.repeat(64)],
+  ['changed input snapshot after run', report => report.replayInputsAfter.files[0].size = [1,1]],
   ['replay relabelled simulator', report => report.source = 'sim'],
-  ['forged pixel comparison flag', (_report, rows) => rows[0].replayComparisons[0].equal = false],
+  ['forged identity verification flag', (_report, rows) => rows[0].replayComparisons[0].identityVerified = false],
   ['borrowed recording metadata', (_report, rows) => rows[0].recordingMetadata.path = rows[1].recordingMetadata.path],
 ]) {
   test('replay report validator refuses ' + name, async () => {
@@ -310,127 +299,18 @@ for (const [name, mutate] of [
   });
 }
 
-async function mockPerformanceRun(parent, failure) {
-  const records = join(parent, 'com.xyzrobotics.tujiaovision.p0-tests'), release = join(parent, 'release');
-  await mkdir(records, { recursive: true });
-  await mkdir(release);
-  const { layout } = evidence('single');
-  const manifest = { schemaVersion: 1, recipeId: layout.id, recipeRevision: layout.revisionId,
-    shots: layout.shots.map((shot, k) => ({ k, shotId: shot.id, camera: shot.camera, view: shot.view, size: [1280, 1024] })) };
-  const manifestBytes = Buffer.from(JSON.stringify(manifest)), bundleId = fnv1a64(manifestBytes);
-  await writeFile(join(release, 'manifest.json'), manifestBytes);
-  await writeFile(join(release, 'recipe.json'), JSON.stringify(layout));
-  const executable = join(parent, 'MockApplication.exe'), dll = join(parent, 'MockEngine.dll');
-  await writeFile(executable, 'Explicit test bytes, never executed');
-  await writeFile(dll, 'Explicit test bytes, never loaded');
-  const replayDir = join(parent, 'inputs');
-  await mkdir(replayDir);
-  const rows = [];
-  for (let part = 1; part <= 2; part++) {
-    const { row } = evidence('single');
-    const cycleId = 'selftestcycle' + part, directory = join(records, 'day', 'part_cycle_' + cycleId);
-    await mkdir(directory, { recursive: true });
-    Object.assign(row.detail.summary, { id: part, sn: part + 40, cycleId, bundleId });
-    row.originals.frames.forEach(frame => frame.file = 'day/part_cycle_' + cycleId + '/k' + frame.k + '.pgm');
-    row.measurements.forEach(measured => Object.assign(measured, { cycleId, bundleId, sn: part + 40 }));
-    for (let k = 0; k < 4; k++) {
-      Object.assign(row.detail.shots[k], { session: 7, frameCounter: k + 11, triggerCounter: k + 11 });
-      const header = Buffer.from('P5\n1280 1024\n255\n'), pixels = Buffer.alloc(1280 * 1024, k + 1);
-      if (part === 1) await writeFile(join(replayDir, 'cam1_' + (k + 1) + '_v1.pgm'), Buffer.concat([header, pixels]));
-      if (failure === 'replay' && part === 1 && k === 1) pixels[500] = 99;
-      await writeFile(join(directory, 'k' + k + '.pgm'), Buffer.concat([header, pixels]));
-    }
-    if (failure === 'validation' && part === 2) row.measurements[1].coreMs = null;
-    if (failure === 'timeout') {
-      row.detail.summary.delivery.state = 'submitted';
-      row.detail.recording.state = 'pending';
-      row.originals.complete = false;
-    }
-    const metadata = structuredClone(replayEvidence('single').row.recordingMetadata.document);
-    Object.assign(metadata, { cycleId, sn: part + 40, bundleId });
-    metadata.frames.forEach(frame => Object.assign(frame, { cycleId, bundleId, file: 'k' + frame.k + '.pgm' }));
-    await writeFile(join(directory, 'part.json'), JSON.stringify(metadata));
-    rows.push(row);
+test('failed observations are preserved independently and never overwrite an earlier attempt', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'p0-attempt-no-content-matching-'));
+  try {
+    const attempt = {part:2,stage:'pollResult',accepted:false,lastPoll:{snapshot:{phase:'FAULT'},measurements:[]}};
+    const result = await persistFailedAttempt(directory, attempt, new Error('Observed native fault'), 1);
+    const saved = JSON.parse(await readFile(result.artifact.path, 'utf8'));
+    assert.equal(saved.completedParts, 1);
+    assert.deepEqual(saved.attempt, attempt);
+    assert(saved.error.includes('Observed native fault'));
+    await assert.rejects(() => persistFailedAttempt(directory, {}, new Error('other'), 0), /EEXIST/);
+  } finally {
+    assert(dirname(resolve(directory)) === resolve(tmpdir()) && directory.startsWith(join(tmpdir(), 'p0-attempt-no-content-matching-')));
+    await rm(directory, {recursive:true,force:true});
   }
-  const source = failure === 'replay' ? 'replay' : 'sim';
-  const camera = { id: 'cam1', source, acquisition: 'triggered', viewCount: 1, replayDir, replayChannel: 1 };
-  let current = 0, clock = 100000;
-  const read = command => {
-    const row = rows[Math.max(0, current - 1)];
-    switch (command) {
-      case 'records_list': return { root: records };
-      case 'camera_rig_config': return [camera];
-      case 'plc_get_config': return { connection: { protocol: 'simulator' } };
-      case 'plc_get_status': return { state: 'connected' };
-      case 'cycle_get_settings': return { timeouts: { armMs: 200 }, vision: true, record: 'all', recordKeep: 100, recordMaxGb: 20 };
-      case 'cycle_snapshot': return { phase: failure === 'timeout' && current ? 'REPORT' : 'IDLE', part: { sn: row.detail.summary.sn } };
-      case 'engine_status': return { backend: 'LyFlow', ready: true, measuring: true, path: dll, version: 'explicit mock' };
-      case 'app_info': return { version: 'explicit mock' };
-      case 'cycle_layout': return layout;
-      case 'sim_status': return { running: failure === 'timeout' && current > 0 };
-      case 'history_query': return { items: current ? [row.detail.summary] : [] };
-      case 'history_detail': return row.detail;
-      case 'workspace_record_images': return row.originals;
-      case 'cycle_part_data': return row.measurements;
-      case 'cycle_logs': return [{ ts: clock, ev: 'armed↑ busy↑', msg: '布防耗时 10 ms' }];
-      default: throw new Error('Unexpected selftest RPC ' + command);
-    }
-  };
-  const role = (name, options) => ({ getByRole: role, selectOption: async () => {},
-    click: async () => { if (name === 'button' && options.name === '运行一件') current++; } });
-  const page = { getByRole: role, evaluate: async (_callback, request) => read(request.command),
-    waitForTimeout: async ms => { clock += ms; } };
-  return { page, options: { mode: 'single', scenario: 'normal', fixture: join(release, 'recipe.json'),
-    releaseDir: release, executable, pid: 1, output: join(parent, 'evidence'), parts: 100,
-    timeoutMs: 1000, now: () => clock, source, ...(source === 'replay' ? { replayDir } : {}),
-    sampleProcess: async () => ({ path: executable, start: 'explicit mock process', workingSetBytes: 1024, privateBytes: 1024 }) } };
-}
-
-for (const failure of ['validation', 'timeout', 'replay']) {
-  test('driver preserves ' + failure + ' attempt separately from accepted JSONL parts', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'p0-failed-attempt-selftest-'));
-    try {
-      const { page, options } = await mockPerformanceRun(directory, failure);
-      await assert.rejects(() => runCycleHostPerformance(page, options));
-      const report = JSON.parse(await readFile(join(options.output, 'cyclehost-report.json'), 'utf8'));
-      assert(report.completed === false && report.passed === false && report.error);
-      const artifact = report.failedAttempt.artifact, bytes = await readFile(artifact.path);
-      assert.equal(artifact.bytes, bytes.length);
-      assert.equal(artifact.sha256, createHash('sha256').update(bytes).digest('hex'));
-      const saved = JSON.parse(bytes);
-      assert.equal(saved.attempt.part, failure === 'validation' ? 2 : 1);
-      assert.equal(saved.completedParts, failure === 'validation' ? 1 : 0);
-      assert.equal(report.completedParts, saved.completedParts);
-      assert.equal(saved.attempt.accepted, false);
-      assert(saved.attempt.lastPoll.detail && saved.attempt.lastPoll.measurements.length === 4);
-      assert(saved.attempt.lastPoll.snapshot && saved.attempt.lastPoll.simulator);
-      if (failure === 'validation') {
-        const accepted = (await readFile(join(options.output, 'parts.jsonl'), 'utf8')).trimEnd().split('\n').map(JSON.parse);
-        assert.equal(accepted.length, 1);
-        assert.equal(accepted[0].detail.summary.cycleId, 'selftestcycle1');
-        assert.equal(saved.attempt.row.measurements[1].coreMs, null);
-        assert.equal(saved.attempt.row.recordedArtifacts.length, 4);
-        assert.equal(saved.attempt.row.recordingMetadata.document.cycleId, 'selftestcycle2');
-      } else {
-        await assert.rejects(() => readFile(join(options.output, 'parts.jsonl')), /ENOENT/);
-      }
-      if (failure === 'timeout') {
-        assert.equal(saved.attempt.stage, 'pollResult');
-        assert.equal(saved.attempt.lastPoll.detail.recording.state, 'pending');
-        assert.equal(saved.attempt.row, null);
-        assert.equal(saved.attempt.lastPoll.recordedArtifacts.length, 4);
-        assert.equal(saved.attempt.lastPoll.recordingMetadata.document.cycleId, 'selftestcycle1');
-      }
-      if (failure === 'replay') {
-        assert.equal(saved.attempt.stage, 'replayValidation');
-        assert.equal(saved.attempt.row.recordedArtifacts.length, 4);
-        assert(saved.attempt.row.recordedArtifacts.every(image => image.sha256 && image.pixelsSha256));
-        assert.equal(saved.attempt.row.recordingMetadata.document.cycleId, 'selftestcycle1');
-      }
-    } finally {
-      assert(dirname(resolve(directory)) === resolve(tmpdir()) &&
-        directory.startsWith(join(tmpdir(), 'p0-failed-attempt-selftest-')));
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
-}
+});

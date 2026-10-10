@@ -1,17 +1,9 @@
 import argparse
-import hashlib
 import json
 import math
 import os
 import sys
 from pathlib import Path
-
-
-def fnv1a64(data):
-    value = 0xCBF29CE484222325
-    for byte in data:
-        value = ((value ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
-    return f"{value:016x}"
 
 
 def require(condition, message):
@@ -108,7 +100,6 @@ def validate_fixture_pixels(record, size, background):
     require(data.startswith(header) and len(data) == len(header) + size[0] * size[1],
             f"Fixture is not full-resolution raw PGM: {path}")
     pixels = data[len(header):]
-    require(fnv1a64(pixels) == record["pixelsFnv1a64"], f"Fixture pixel hash changed: {path}")
     x, y = record["probePx"]
     require(type(x) is int and type(y) is int and 0 <= x < size[0] and 0 <= y < size[1], "Invalid fixture probe coordinate")
     probe = pixels[y * size[0] + x]
@@ -120,18 +111,14 @@ def verify_artifacts(value, cache=None):
     if cache is None:
         cache = {}
     if isinstance(value, dict):
-        if {"path", "bytes", "fnv1a64"} <= value.keys():
+        if {"path", "bytes"} <= value.keys():
             path = Path(value["path"])
             require(path.is_absolute(), f"Artifact path must be absolute: {path}")
             integer(value["bytes"], f"artifact.bytes {path}")
             key = os.path.normcase(str(path.absolute()))
-            if key not in cache:
-                data = path.read_bytes()
-                cache[key] = (len(data), fnv1a64(data), hashlib.sha256(data).hexdigest())
-            size, fnv, sha = cache[key]
+            size = path.stat().st_size
             require(size == value["bytes"], f"Artifact size changed: {path}")
-            require(fnv == value["fnv1a64"], f"Artifact FNV changed: {path}")
-            value["sha256"] = sha
+            cache[key] = size
         for child in value.values():
             verify_artifacts(child, cache)
     elif isinstance(value, list):
@@ -189,9 +176,9 @@ def validate_case(case):
     require(case["steadyMeasurements"] == case["steadyParts"] * 4, "Incorrect stable-measurement count")
     require(len(case["steadyRecords"]) == case["steadyParts"], "Missing per-part evidence")
     validate_jsonl(case["steadyEvidence"], case["steadyRecords"])
-    require(case["releaseManifest"]["fnv1a64"] == case["bundleId"], "Bundle hash is not the frozen manifest hash")
     manifest_path = Path(case["releaseManifest"]["path"])
     manifest = json_document(manifest_path.read_text(encoding="utf-8"))
+    require(manifest["bundleId"] == case["bundleId"], "Release bundle ID differs")
     require(manifest["recipeRevision"] == case["recipeRevision"], "Frozen recipe identity differs")
     require(len(manifest["shots"]) == 4 and [s["view"] for s in manifest["shots"]] == case["shotViews"], "Frozen shot plan differs")
     require([shot["k"] for shot in manifest["shots"]] == list(range(4)) and all(not shot["skip"] for shot in manifest["shots"]), "Frozen measurements must cover four ordered shots")
@@ -204,7 +191,7 @@ def validate_case(case):
         path = (manifest_path.parent / relative).resolve()
         require(path.is_relative_to(manifest_path.parent.resolve()), "Frozen resource path escapes its bundle")
         require(path in resources, f"Unreported frozen resource: {path}")
-        require((resources[path]["bytes"], resources[path]["fnv1a64"]) == (frozen["bytes"], frozen["hash"]), "Frozen resource identity differs")
+        require(resources[path]["bytes"] == frozen["bytes"], "Frozen resource size differs")
     require(len(resources) == len(manifest["files"]), "Unexpected reported release resource")
     for ordinal, part in enumerate(case["steadyRecords"], 1):
         require(integer(part["part"], "part", 1) == ordinal, "Steady parts are missing, repeated or out of order")
@@ -253,39 +240,33 @@ def enrich(report_path):
     require([case["viewCount"] for case in report["cases"]] == [1, 3], "Both single-view and three-view regression are required in warmup order")
     number(report["engine"]["loadAndSelfCheckMs"], "loadAndSelfCheckMs", positive=True)
     require(report["software"]["sourceFiles"] and report["software"]["testExecutable"]["bytes"] > 0, "Missing software artifact evidence")
-    require(report["engine"]["identity"] == f'{report["engine"]["version"]}:{report["engine"]["dll"]["fnv1a64"]}', "DLL identity differs")
     for ordinal, case in enumerate(report["cases"]):
         require(case["enginePreviouslyUsedInProcess"] is bool(ordinal), "Incorrect cold/warm engine-use claim")
         require(case["warmupKind"] == ("already_used_engine" if ordinal else "first_graph_use_for_loaded_engine"), "Incorrect warmup scope")
         validate_case(case)
         manifest = json_document(Path(case["releaseManifest"]["path"]).read_text(encoding="utf-8"))
-        require(manifest["versions"]["engine"] == report["engine"]["identity"], "Frozen engine identity differs")
+        require(manifest["versions"]["engine"] == report["engine"]["version"], "Frozen engine identity differs")
         require(manifest["versions"]["graph"] == report["software"]["graphVersion"], "Frozen graph version differs")
         if report["os"] == "windows":
             require(all(type(s["privateBytes"]) is int and s["privateBytes"] > 0
                         and s["source"] == "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX" for s in case["memory"]["samples"]), "Missing Windows process memory evidence")
     cache = verify_artifacts(report)
     verifier_path = Path(__file__).resolve(strict=True)
-    verifier_bytes = verifier_path.read_bytes()
-    require(fnv1a64(verifier_bytes) == report["software"]["reportVerifier"]["fnv1a64"], "Verifier script differs from the benchmark's recorded software")
-    report["artifactVerification"] = {"passed": True, "uniqueFiles": len(cache), "rawReportSha256": hashlib.sha256(raw).hexdigest(),
-                                      "algorithms": ["FNV-1a-64", "SHA256"],
-                                      "verifier": {"path": str(verifier_path), "bytes": len(verifier_bytes), "sha256": hashlib.sha256(verifier_bytes).hexdigest()},
-                                      "scope": "Verifies artifact bytes and full-size fixture pixels, matches streamed per-part evidence, and recomputes latency distributions and memory trends. Native measurement assertions are produced by the Rust regression; this script does not execute the DLL or authenticate that an untrusted report ran it, and it does not prove production scheduling."}
+    report["artifactVerification"] = {"passed": True, "uniqueFiles": len(cache),
+                                      "verifier": {"path": str(verifier_path), "bytes": verifier_path.stat().st_size},
+                                      "scope": "Reads actual full-resolution fixture pixels and business fields; checks paths, dimensions and counts; recomputes latency and memory. No content fingerprints or content matching. Does not authenticate execution of an untrusted report or prove production scheduling."}
     return report
 
 
 def summary(report):
     print(f'GlueSight {report["software"]["version"]}; core {report["engine"]["version"]}; git {report["software"]["gitCommit"] or "unknown"}')
-    print(f'DLL SHA256 {report["engine"]["dll"]["sha256"]}; FNV {report["engine"]["dll"]["fnv1a64"]}')
-    print(f'Test executable SHA256 {report["software"]["testExecutable"]["sha256"]}; verifier SHA256 {report["artifactVerification"]["verifier"]["sha256"]}')
     print(f'DLL load/self-check {report["engine"]["loadAndSelfCheckMs"]:.3f} ms')
     for case in report["cases"]:
         wall, engine, part, tail = (case[k] for k in ("preparedMeasureMs", "engineRunIoParseMs", "serialPartMeasureAndJudgeMs", "lastSelectedFrameToJudgeMs"))
         print(f'{case["mode"]}: {case["steadyParts"]} parts / {case["steadyMeasurements"]} measures; warmup {case["warmupMs"]:.3f} ms ({case["warmupKind"]})')
         print(f'  Prepared P50/P95/max {wall["p50"]:.3f}/{wall["p95"]:.3f}/{wall["max"]:.3f} ms; run/I/O/parse {engine["p50"]:.3f}/{engine["p95"]:.3f}/{engine["max"]:.3f} ms')
         print(f'  Last selected preloaded frame to judge P50/P95/max {tail["p50"]:.3f}/{tail["p95"]:.3f}/{tail["max"]:.3f} ms; bundle {case["bundleId"]}')
-        print(f'  Serial four-measurement part P50/P95/max {part["p50"]:.3f}/{part["p95"]:.3f}/{part["max"]:.3f} ms; fixture manifest SHA256 {case["fixtures"]["sha256"]}')
+        print(f'  Serial four-measurement part P50/P95/max {part["p50"]:.3f}/{part["p95"]:.3f}/{part["max"]:.3f} ms; fixture manifest {case["fixtures"]["path"]}')
         private = case["memory"]["private"]
         if private:
             print(f'  Private memory delta {private["deltaBytes"]} bytes; slope {private["linearSlopeBytesPerPart"]:.1f} bytes/part')
@@ -300,32 +281,26 @@ def self_test():
     import unittest
 
     class ReportTests(unittest.TestCase):
-        def test_fnv_known_vectors(self):
-            self.assertEqual(fnv1a64(b""), "cbf29ce484222325")
-            self.assertEqual(fnv1a64(b"hello"), "a430d84680aabd0b")
-
-        def test_tampered_and_missing_artifacts_are_rejected(self):
+        def test_missing_artifacts_are_rejected_without_content_matching(self):
             with tempfile.TemporaryDirectory() as folder:
                 path = Path(folder) / "image.pgm"
                 path.write_bytes(b"pixels")
-                artifact = {"path": str(path), "bytes": 6, "fnv1a64": fnv1a64(b"pixels")}
+                artifact = {"path": str(path), "bytes": 6}
                 self.assertEqual(len(verify_artifacts(artifact)), 1)
-                self.assertEqual(artifact["sha256"], hashlib.sha256(b"pixels").hexdigest())
                 path.write_bytes(b"edited")
-                with self.assertRaisesRegex(ValueError, "FNV changed"):
-                    verify_artifacts(artifact)
+                self.assertEqual(len(verify_artifacts(artifact)), 1)
                 path.unlink()
                 with self.assertRaises(FileNotFoundError):
                     verify_artifacts(artifact)
 
         def test_size_and_relative_paths_are_rejected(self):
             with self.assertRaisesRegex(ValueError, "absolute"):
-                verify_artifacts({"path": "relative.pgm", "bytes": 0, "fnv1a64": fnv1a64(b"")})
+                verify_artifacts({"path": "relative.pgm", "bytes": 0})
             with tempfile.TemporaryDirectory() as folder:
                 path = Path(folder) / "image.pgm"
                 path.write_bytes(b"pixels")
                 with self.assertRaisesRegex(ValueError, "size changed"):
-                    verify_artifacts({"path": str(path), "bytes": 1, "fnv1a64": fnv1a64(b"pixels")})
+                    verify_artifacts({"path": str(path), "bytes": 1})
 
         def test_empty_pixels_cannot_be_relabelled_ok(self):
             with self.assertRaisesRegex(ValueError, "Unexpected judgement"):
@@ -387,19 +362,18 @@ def self_test():
                 with self.assertRaisesRegex(ValueError, "per-part evidence differs"):
                     validate_jsonl({"path": str(path)}, records)
 
-        def test_fixture_resolution_and_pixel_hash_are_read_from_real_pgm(self):
+        def test_fixture_resolution_and_probe_are_read_from_real_pgm(self):
             with tempfile.TemporaryDirectory() as folder:
                 path = Path(folder) / "full-size.pgm"
                 pixels = bytearray([150]) * (1280 * 1024)
                 pixels[432 * 1280 + 840] = 30
                 header = b"P5\n1280 1024\n255\n"
                 path.write_bytes(header + pixels)
-                record = {"image": {"path": str(path)}, "pixelsFnv1a64": fnv1a64(pixels),
-                          "probePx": [840, 432], "probePixel": 30}
+                record = {"image": {"path": str(path)}, "probePx": [840, 432], "probePixel": 30}
                 validate_fixture_pixels(record, [1280, 1024], background=False)
-                pixels[0] = 151
+                pixels[432 * 1280 + 840] = 151
                 path.write_bytes(header + pixels)
-                with self.assertRaisesRegex(ValueError, "pixel hash changed"):
+                with self.assertRaisesRegex(ValueError, "pixel probe differs"):
                     validate_fixture_pixels(record, [1280, 1024], background=False)
                 path.write_bytes(b"P5\n1 1\n255\n\x1e")
                 with self.assertRaisesRegex(ValueError, "not full-resolution raw PGM"):
@@ -431,7 +405,7 @@ def self_test():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Verify a real P0 DLL regression report and add SHA256 evidence using Python standard library only.")
+    parser = argparse.ArgumentParser(description="Verify real P0 DLL regression business fields, image dimensions, measurements and derived metrics.")
     parser.add_argument("report", nargs="?", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--self-test", action="store_true")

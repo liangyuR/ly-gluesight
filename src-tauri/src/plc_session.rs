@@ -12,7 +12,7 @@ use crate::inspection::tag;
 use crate::plc_plan::PlcPlan;
 
 mod recovery;
-pub use recovery::{AckReceipt, AckRecovery};
+pub use recovery::AckRecovery;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -396,7 +396,7 @@ impl PlcSession {
                 if matches!(self.phase, SessionPhase::Acquiring | SessionPhase::Draining)
                     && (!snapshot.read_bool(tag::BUSY)? || !snapshot.read_bool(tag::ARMED)?
                         || snapshot.read_u32(tag::ACCEPTED_SEQ)? != request.request_seq
-                        || snapshot.read_u32(tag::ACCEPTED_PLAN_RESERVED)? != request.plan_hash) {
+                        || snapshot.read_u32(tag::ACCEPTED_PLAN_RESERVED)? != 0) {
                     return Err("已布防事务的 busy、armed 或接受的计划身份被修改".into());
                 }
                 if self.phase == SessionPhase::Acquiring && snapshot.read_bool(tag::PART_END)? {
@@ -452,12 +452,12 @@ impl PlcSession {
     pub fn validate_plan(&self, plan: &PlcPlan) -> Result<(), String> {
         if self.phase != SessionPhase::Validating { return Err("当前 S7 事务不能布防".into()); }
         let rebuilt = PlcPlan::compile(plan.recipe_id.clone(), plan.plan_version, plan.camera_slots.clone(), plan.shots.clone())?;
-        if &rebuilt != plan { return Err("软件拍照计划内容、计数与摘要不一致".into()); }
+        if &rebuilt != plan { return Err("软件拍照计划内容与计数不一致".into()); }
         let request = self.request().ok_or("缺少 S7 请求")?;
-        if request.protocol_version != plan.protocol_version || request.plan_version != plan.plan_version || request.plan_hash != plan.plan_hash
+        if request.protocol_version != plan.protocol_version || request.plan_version != plan.plan_version
             || request.shot_count != plan.shot_count || request.camera_shots != plan.camera_shots {
-            return Err(format!("拍照计划不一致：需 version={} revision_id={} shots={} cameraShots={:?}",
-                plan.plan_version, plan.plan_hash, plan.shot_count, plan.camera_shots));
+            return Err(format!("拍照计划不一致：需 version={} shots={} cameraShots={:?}",
+                plan.plan_version, plan.shot_count, plan.camera_shots));
         }
         Ok(())
     }

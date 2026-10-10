@@ -13,7 +13,7 @@ export interface FrozenImage {
   exposureUs: number | null; gainDb: number | null; historyId: number | null;
 }
 export interface Trial {
-  imageId: string; paramsTag: unknown; geometryTag: unknown; engineTag: string; passed: boolean;
+  imageId: string; paramsTag: unknown; geometryTag: unknown; engineTag: unknown; passed: boolean;
   score: number; coverage: number; elapsedMs: number; reason: string;
   measurement: unknown;
 }
@@ -23,7 +23,7 @@ export interface Teaching {
 }
 export interface Overview { background: string | null; positions: [number, number][]; saved: boolean }
 export interface Sample { historyId: number | null; sampleId?: string | null; expected: Verdict }
-export interface BankSample { id:string; name:string; geometryTag:string; expected:Verdict; createdAt:number }
+export interface BankSample { id:string; name:string; geometryTag: unknown; expected:Verdict; createdAt:number }
 export interface Validation {
   revision: number; passed: boolean; checkedAt: number; environmentTag: unknown;
   checks: { name: string; passed: boolean; detail: string }[];

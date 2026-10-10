@@ -21,14 +21,14 @@ fn history(store: &Store, cycle: &str, ts: i64) -> i64 {
     store.insert(&PartRecord {
         ts, sn: 42, recipe: None, judgement: &Judgement::error(1, "original"), drain_ms: None,
         frames: &[], frames_expected: 0, frames_received: 0, triggers: 0, table: None,
-        software_version: "comparison-retention-test", cycle_id: Some(cycle), bundle_hash: None,
+        software_version: "comparison-retention-test", cycle_id: Some(cycle), bundle_id: None,
         delivery: &PlcDelivery::default(), shots: &[],
     }).unwrap()
 }
 fn comparison(id: i64, cycle: &str, sequence: i64) -> Comparison {
     Comparison {
         id: format!("{id}-{sequence}-0"), history_id: id, cycle_id: cycle.into(),
-        source: if sequence % 3 == 0 { "original" } else { "rules" }.into(), bundle_hash: None,
+        source: if sequence % 3 == 0 { "original" } else { "rules" }.into(), bundle_id: None,
         candidate_id: if sequence % 2 == 0 { "A" } else { "B" }.into(), candidate_revision: 1,
         candidate_recipe: crate::recipe::samples().remove(0).build().unwrap(),
         original_verdict: Verdict::ErrInspect, judgement: Judgement::error(1, "comparison"),

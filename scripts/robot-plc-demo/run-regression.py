@@ -1,7 +1,6 @@
 """Run selected scenarios against the running Robot/PLC and verify returned results."""
 import argparse
 import datetime
-import hashlib
 import json
 from pathlib import Path
 import time
@@ -35,9 +34,9 @@ def verify_evidence(result, recipe):
             raise RuntimeError("Live verification requires actual demo app and image-engine evidence")
         path = Path(engine.get("path", ""))
         if not path.is_file():
-            raise RuntimeError(f"Cannot hash the DLL reported by the demo app: {path}")
+            raise RuntimeError(f"Cannot read the DLL reported by the demo app: {path}")
         if str(path) not in dlls:
-            dlls[str(path)] = {"sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "version": engine.get("version"), "app": app}
+            dlls[str(path)] = {"bytes": path.stat().st_size, "version": engine.get("version"), "app": app}
     return dlls
 
 
@@ -70,8 +69,7 @@ def main():
     try:
         initial = request(base, "/state")
         expected_recipe = load_recipe(cfg["robot"]["recipe"])
-        report.update(fixture=str(Path(cfg["robot"]["recipe"])),
-                      fixtureSha256=hashlib.sha256(Path(cfg["robot"]["recipe"]).read_bytes()).hexdigest())
+        report.update(fixture=str(Path(cfg["robot"]["recipe"])))
         if not initial.get("canStart"):
             raise RuntimeError("Requires an idle, ready demo with a connected camera bridge: " +
                                initial.get("startBlockedReason", "请重启模拟服务以更新就绪状态"))

@@ -1,4 +1,4 @@
-//! 配方：磁盘上存可编辑的 `RecipeDoc`，加载时生成运行用的 `Recipe`（分段、测量点、哈希）。
+//! 配方：磁盘上存可编辑的 `RecipeDoc`，加载时生成运行用的 `Recipe`（分段、测量点、修订标识）。
 //! 一期按拍照点在图像里检测（P0 D-10）：每个拍照点示教一条胶路中线（图像像素），沿线每隔 spacing 一站；
 //! 每个拍照点自成一段，判定在段内做，段与段之间不连。`Recipe` 同时是检测记录里的配方快照。
 
@@ -269,14 +269,14 @@ impl ShotSpec {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "RecipeDoc")]
 pub struct Recipe {
     pub id: String,
     pub name: String,
     pub version: u32,
-    pub hash: String,
+    pub revision_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub teaching_hash: Option<String>,
+    pub teaching_id: Option<String>,
     pub product_code: u16,
     pub trigger_mode: TriggerMode,
     pub schema_version: u32,
@@ -324,12 +324,6 @@ impl Recipe {
         }
     }
 
-    /// 示教相关内容的哈希：拍照点的相机、标定引用、中线、像素当量、检测参数与站距。改判定限值、胶条名不用重新示教。
-    pub fn geometry_hash(&self) -> String {
-        let shots: Vec<_> = self.shots.iter().map(|s| serde_json::json!([s.id, s.camera, s.view, s.calib_ref(), s.skip, s.path, s.mm_per_px, s.detect])).collect();
-        fnv_hex(&serde_json::to_vec(&serde_json::json!([self.spacing, self.detect, shots])).unwrap_or_default())
-    }
-
     /// 本配方要用到的相机（编号），按第一次出现的拍照点排序。
     pub fn cameras(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
@@ -351,7 +345,7 @@ pub struct RecipeDoc {
     #[serde(default)]
     pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub teaching_hash: Option<String>,
+    pub teaching_id: Option<String>,
     pub product_code: u16,
     pub trigger_mode: TriggerMode,
     /// 缺省为 0，校验时报格式版本不符
@@ -433,12 +427,12 @@ impl RecipeDoc {
                 max_gap_len: limits.max_gap_len,
             });
         }
-        let mut recipe = Recipe {
+        let recipe = Recipe {
             id: self.id.clone(),
             name: self.name.trim().to_string(),
-            version: 0,
-            hash: String::new(),
-            teaching_hash: self.teaching_hash.clone(),
+            version: self.version.max(1),
+            revision_id: format!("{}-v{}", self.id, self.version.max(1)),
+            teaching_id: self.teaching_id.clone(),
             product_code: self.product_code,
             trigger_mode: self.trigger_mode,
             schema_version: self.schema_version,
@@ -450,21 +444,13 @@ impl RecipeDoc {
             segments,
             points,
         };
-        recipe.hash = content_hash(&recipe);
-        recipe.version = self.version.max(1);
         Ok(recipe)
     }
 }
 
-/// 只看内容的哈希（不含版本号），检测记录按它存配方快照。
-fn content_hash(recipe: &Recipe) -> String {
-    fnv_hex(&serde_json::to_vec(recipe).unwrap_or_default())
-}
-
-/// FNV-1a 64 位，十六进制。
-fn fnv_hex(bytes: &[u8]) -> String {
-    let h = bytes.iter().fold(0xcbf29ce484222325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x100000001b3));
-    format!("{:016x}", h)
+impl TryFrom<RecipeDoc> for Recipe {
+    type Error = String;
+    fn try_from(doc: RecipeDoc) -> Result<Self, Self::Error> { doc.build() }
 }
 
 /// 胶宽、位置、断胶的默认限值：名义胶宽 4 mm；断口阈值取自 MX11 现场图（正常帧最长无胶 5.4 mm，断胶帧 10–22 mm）。
@@ -519,7 +505,7 @@ pub fn samples() -> Vec<RecipeDoc> {
         id: id.into(),
         name: name.into(),
         version: 1,
-        teaching_hash: None,
+        teaching_id: None,
         product_code: code,
         trigger_mode,
         schema_version: RECIPE_SCHEMA,
@@ -580,7 +566,11 @@ impl RecipeStore {
                 let parsed = crate::fsio::read_text(&p)
                     .map_err(|e| e.to_string())
                     .and_then(|s| serde_json::from_str::<RecipeDoc>(&s).map_err(|e| e.to_string()))
-                    .and_then(|d| d.build().map(|r| (d, Arc::new(r))));
+                    .and_then(|mut d| {
+                        let r = d.build()?;
+                        d.version = r.version;
+                        Ok((d, Arc::new(r)))
+                    });
                 // 手工复制、改过的文件也要守住保存时的规矩：删除按编号找文件，PLC 按产品代码找配方
                 let checked = parsed.and_then(|(d, r)| {
                     if !d.id.eq_ignore_ascii_case(&stem) {
@@ -618,10 +608,10 @@ impl RecipeStore {
         self.inner.read().unwrap().iter().find(|(d, _)| d.id == id).map(|(d, _)| d.clone())
     }
 
-    /// 保存配方。内容变了版本号 +1；编号（不分大小写：Windows 上文件名不分）与产品代码都不能和别的配方重复。
+    /// 保存配方时版本号 +1；编号（不分大小写：Windows 上文件名不分）与产品代码都不能和别的配方重复。
     pub fn save(&self, mut doc: RecipeDoc, original_id: Option<&str>) -> Result<Arc<Recipe>, String> {
         doc.name = doc.name.trim().to_string();
-        let built = doc.build()?;
+        doc.build()?;
         let mut inner = self.inner.write().unwrap();
         let replacing = original_id.unwrap_or(&doc.id).to_string();
         if let Some((d, _)) = inner.iter().find(|(d, _)| d.id != replacing && (d.id.eq_ignore_ascii_case(&doc.id) || d.product_code == doc.product_code)) {
@@ -636,19 +626,50 @@ impl RecipeStore {
         if !ours && self.file(&doc.id).exists() {
             return Err(format!("配方目录里已有 {}.json 但没有加载（见配方页的提示）：移走它，或修好后重启程序", doc.id));
         }
-        let old = inner.iter().find(|(d, _)| d.id == replacing).map(|(d, r)| (d.version, r.hash.clone()));
+        let old = inner.iter().find(|(d, _)| d.id == replacing).map(|(d, _)| d.version);
         doc.version = match old {
-            Some((v, h)) if h == built.hash => v,
-            Some((v, _)) => v + 1,
+            Some(version) => version.checked_add(1).ok_or("配方版本已达上限")?,
             None => doc.version.max(1),
         };
-        let recipe = Arc::new(Recipe { version: doc.version, ..built });
+        let recipe = Arc::new(doc.build()?);
         self.write(&doc)?;
         // 只改了大小写时新旧是同一个文件，不能删
         if !replacing.eq_ignore_ascii_case(&doc.id) {
             let _ = std::fs::remove_file(self.file(&replacing));
         }
         inner.retain(|(d, _)| d.id != replacing && d.id != doc.id);
+        inner.push((doc, recipe.clone()));
+        inner.sort_by(|a, b| a.0.id.cmp(&b.0.id));
+        Ok(recipe)
+    }
+
+    pub fn save_published(&self, mut doc: RecipeDoc, expected_base: Option<&str>) -> Result<Arc<Recipe>, String> {
+        doc.name = doc.name.trim().to_string();
+        let built = doc.build()?;
+        let mut inner = self.inner.write().unwrap();
+        let current = inner.iter().find(|(previous, _)| previous.id == doc.id);
+        if let Some((previous, recipe)) = current.filter(|(_, recipe)| recipe.revision_id == built.revision_id) {
+            if previous == &doc { return Ok(recipe.clone()); }
+            return Err("同一发布修订的实际配方不同，不能覆盖".into());
+        }
+        if current.map(|(_, recipe)| recipe.revision_id.as_str()) != expected_base {
+            return Err("待发布版本与当前生产配方冲突".into());
+        }
+        let expected_version = match current {
+            Some((previous, _)) => previous.version.checked_add(1).ok_or("配方版本已达上限")?,
+            None => doc.version.max(1),
+        };
+        if doc.version != expected_version { return Err("发布版本必须是明确分配的下一版本".into()); }
+        if inner.iter().any(|(previous, _)| previous.id != doc.id &&
+            (previous.id.eq_ignore_ascii_case(&doc.id) || previous.product_code == doc.product_code)) {
+            return Err("配方编号或产品代码已被其他配方使用".into());
+        }
+        if current.is_none() && self.file(&doc.id).exists() {
+            return Err("配方目录已有未加载文件，不能覆盖".into());
+        }
+        let recipe = Arc::new(built);
+        self.write(&doc)?;
+        inner.retain(|(previous, _)| previous.id != doc.id);
         inner.push((doc, recipe.clone()));
         inner.sort_by(|a, b| a.0.id.cmp(&b.0.id));
         Ok(recipe)
@@ -729,31 +750,78 @@ mod tests {
         store.reload();
         assert!(store.errors().is_empty(), "{:?}", store.errors());
         let loaded = store.get(&saved.id).unwrap();
-        assert_eq!(loaded.hash, saved.hash);
+        assert_eq!(loaded.revision_id, saved.revision_id);
         assert_eq!(loaded.shots, saved.shots);
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn geometry_hash_tracks_teaching_not_limits() {
-        let base = samples().remove(1);
-        let hash = |d: &RecipeDoc| d.build().unwrap().geometry_hash();
-        let h = hash(&base);
-        let mut limits = base.clone();
-        limits.limits.max_gap_len = 3.0;
-        limits.shots[0].bead = "J2".into();
-        limits.shots[0].pose_id = "A1".into();
-        assert_eq!(hash(&limits), h);
-        assert_ne!(hash(&three_cameras()), h);
-        let mut moved = base.clone();
-        moved.shots[2].path[1][0] += 5.0;
-        assert_ne!(hash(&moved), h);
-        let mut calib = base.clone();
-        calib.shots[0].calib = Some("cam1-low".into());
-        assert_ne!(hash(&calib), h);
-        let mut view = base.clone();
-        view.shots[0].view = 2;
-        assert_ne!(hash(&view), h);
+    fn every_save_advances_the_explicit_recipe_revision() {
+        let dir = std::env::temp_dir().join(format!("gluesight-revision-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        let doc = three_cameras();
+        let first = store.save(doc.clone(), None).unwrap();
+        let second = store.save(doc, Some(&first.id)).unwrap();
+        assert_eq!(second.version, first.version + 1);
+        assert_eq!(second.revision_id, format!("{}-v{}", second.id, second.version));
+        store.reload();
+        assert_eq!(store.get(&second.id).unwrap().revision_id, second.revision_id);
+        let mut legacy = serde_json::to_value(&*second).unwrap();
+        legacy.as_object_mut().unwrap().remove("revisionId");
+        legacy["hash"] = serde_json::json!("old-content-value");
+        legacy["revisionId"] = serde_json::json!("untrusted-external-revision");
+        let restored: Recipe = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.revision_id, second.revision_id);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_missing_or_zero_version_reloads_as_one_and_next_save_is_two() {
+        for missing in [false, true] {
+            let dir = std::env::temp_dir().join(format!("gluesight-legacy-version-{}-{}-{missing}", std::process::id(), ly_plc::now_ms()));
+            let store = RecipeStore::open(dir.clone()).unwrap();
+            let mut doc = three_cameras();
+            doc.id = "LEGACY-VERSION".into();
+            doc.product_code = 60001;
+            doc.version = 0;
+            let mut value = serde_json::to_value(&doc).unwrap();
+            if missing { value.as_object_mut().unwrap().remove("version"); }
+            std::fs::write(store.file(&doc.id), serde_json::to_vec(&value).unwrap()).unwrap();
+            store.reload();
+            assert!(store.errors().is_empty(), "{:?}", store.errors());
+            assert_eq!(store.get(&doc.id).unwrap().revision_id, "LEGACY-VERSION-v1");
+            let loaded = store.doc(&doc.id).unwrap();
+            assert_eq!(loaded.version, 1);
+            assert_eq!(store.save(loaded, Some(&doc.id)).unwrap().revision_id, "LEGACY-VERSION-v2");
+            store.reload();
+            assert_eq!(store.doc(&doc.id).unwrap().version, 2);
+            assert_eq!(store.get(&doc.id).unwrap().version, 2);
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn published_versions_are_assigned_once_and_crash_retries_cannot_overwrite_a_revision() {
+        let dir = std::env::temp_dir().join(format!("gluesight-published-version-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        let mut doc = three_cameras();
+        doc.id = "EXPLICIT-PUBLISHED".into();
+        doc.product_code = 60000;
+        doc.version = 7;
+        let first = store.save_published(doc.clone(), None).unwrap();
+        assert_eq!(first.revision_id, "EXPLICIT-PUBLISHED-v7");
+        assert_eq!(store.save_published(doc.clone(), None).unwrap().version, 7);
+        let mut different = doc.clone();
+        different.shots[0].view = 2;
+        assert!(store.save_published(different, None).is_err());
+        doc.version = 8;
+        let second = store.save_published(doc.clone(), Some(&first.revision_id)).unwrap();
+        assert_eq!(second.revision_id, "EXPLICIT-PUBLISHED-v8");
+        doc.version = 9;
+        assert!(store.save_published(doc.clone(), Some(&first.revision_id)).is_err());
+        assert_eq!(store.get(&doc.id).unwrap().version, 8);
+        assert_eq!(store.save(doc, None).unwrap().version, 9);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

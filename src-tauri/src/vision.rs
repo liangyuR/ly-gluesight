@@ -41,7 +41,7 @@ impl Engine {
         check_operators(&serde_json::from_str(&core.manifest_json().map_err(|e| e.to_string())?)
             .map_err(|e| format!("核心库算子清单无效：{e}"))?)?;
         let version = core.version();
-        let identity = format!("{version}:{}", crate::release::fnv_hex(&std::fs::read(path).map_err(|e| e.to_string())?));
+        let identity = format!("{version}:{}", path.display());
         Ok(Self { core: Arc::new(core), path: path.to_path_buf(), version, identity })
     }
 
@@ -94,7 +94,7 @@ pub struct LyFlowMeasurer;
 impl Measurer for LyFlowMeasurer {
     fn measure(&self, job: &Job, image: &FrameImage) -> Result<Measured, String> {
         let prepared = job.production.as_ref().ok_or("图像检测没有已核验并预热的发布包")?;
-        if job.bundle_hash.as_deref() != Some(prepared.bundle.hash.as_str()) || job.recipe.hash != prepared.recipe.hash {
+        if job.bundle_id.as_deref() != Some(prepared.bundle.id.as_str()) || job.recipe.revision_id != prepared.recipe.revision_id {
             return Err("测量任务与已冻结发布包不一致".into());
         }
         let run_id = format!("shot-{}-{}", job.cycle_id, job.k);

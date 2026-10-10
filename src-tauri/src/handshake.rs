@@ -266,6 +266,7 @@ impl Snapshot {
     }
 
     pub(crate) fn request(&self) -> Result<Request, String> {
+        if self.read_u32("planReserved")? != 0 { return Err("PLC 计划保留位必须为零".into()); }
         let request = Request {
             protocol_version: self.read_u32("protocolVersion")? as u16,
             request_seq: self.read_u32("requestSeq")?,
@@ -273,7 +274,6 @@ impl Snapshot {
             product_code: self.read_u32("productCode")? as u16,
             shot_count: self.read_u32("shotCount")? as u16,
             plan_version: self.read_u32("planVersion")?,
-            plan_hash: self.read_u32("planReserved")?,
             camera_shots: [self.read_u32("camera1Shots")? as u16, self.read_u32("camera2Shots")? as u16, self.read_u32("camera3Shots")? as u16],
         };
         request.validate()?;
@@ -312,7 +312,6 @@ pub(crate) struct Request {
     pub(crate) product_code: u16,
     pub(crate) shot_count: u16,
     pub(crate) plan_version: u32,
-    pub(crate) plan_hash: u32,
     pub(crate) camera_shots: [u16; 3],
 }
 
@@ -450,7 +449,7 @@ pub(crate) fn arm_plan(request: &Request) -> Vec<WriteOp> {
     vec![
         WriteOp::new("visionReady", json!(false)),
         WriteOp::new("acceptedSeq", json!(request.request_seq)),
-        WriteOp::new("acceptedPlanReserved", json!(request.plan_hash)),
+        WriteOp::new("acceptedPlanReserved", json!(0u32)),
         WriteOp::new("busy", json!(true)),
         WriteOp::new("armed", json!(true)),
     ]
@@ -667,7 +666,7 @@ mod tests {
         })).collect();
         for (tag, value) in [
             ("protocolVersion", 1), ("pcProtocolVersion", 1), ("requestSeq", 7), ("partSn", 42),
-            ("productCode", 3), ("shotCount", 4), ("planVersion", 2), ("planReserved", 99),
+            ("productCode", 3), ("shotCount", 4), ("planVersion", 2), ("planReserved", 0),
             ("camera1Shots", 2), ("camera2Shots", 1), ("camera3Shots", 1),
         ] {
             values.get_mut(tag).unwrap().value = Some(PlcValue::Int(value));
