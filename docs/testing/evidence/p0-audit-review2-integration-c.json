@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-10",
+  "runtimeSourceCommit": "c2867da0db576357ca9e53a349292f58fb88cd83",
+  "branch": "codex/p0-audit-durability",
+  "scope": "Integrate PR14 second review with PR15 durable spool and asynchronous recording barrier",
+  "passed": true,
+  "checks": [
+    {
+      "name": "Rust default",
+      "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib",
+      "passed": true,
+      "tests": 350,
+      "failed": 0,
+      "ignored": 31,
+      "testSeconds": 6.21,
+      "buildSeconds": 91,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-audit-review2-integration-c.log"
+    }
+  ],
+  "limits": [
+    "Earlier native audit process recovery remains tied to its original executable/source; this integration checkpoint does not claim a rerun.",
+    "Prepared 200 parts, current CycleHost 400 parts, pressure queues and Robot scenarios remain separate acceptance work.",
+    "Old provenance-free transition records may lose reproduction association while retaining JSON and ACK as documented by PR14."
+  ]
+}
