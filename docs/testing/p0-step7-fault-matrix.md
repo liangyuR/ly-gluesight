@@ -49,3 +49,6 @@ P0-15 已通过当前源码 `8ffc091` 的18项新增默认回归和实际原生�
 该保证从最终Record或事件被耐久接受开始，不覆盖Acquire中尚未生成的记录，不声明断电零丢失。下一轮继续当前程序的单目/三目长时性能、实际Machine队列压力及五个Robot工况；W0/W7硬件和准确率门槛独立保留。
 
 2026-10-10 PR #15审查补充：`fc1e38a` 修复spool失败发布与ready/历史清理检查的并发空窗。append/probe/read/remove在同一spool同步边界锁存故障，超时发布独立于磁盘锁；3项新增回归及完整Rust338项通过。原生恢复报告仍归属 `8ffc091`，见[并发修复证据](evidence/p0-audit-review-atomic-c.json)。
+
+
+2026-10-10 PR #15第二项P1补充：`04c3839` 覆盖ACK后录制终态回调仍未发生的窗口。Recorder开始前登记，Recording事件真正耐久接受后同spool锁解除；下一件布防及历史清理同时检查未决录制。真实Recorder延迟回调/SQLite ACK与空spool、终态容量拒写及Off同步回调3项回归、完整Rust341项通过。慢录制时暂态不就绪，原判定和ACK保持，收尾入库后恢复。见[录制屏障证据](evidence/p0-audit-recording-barrier-c.json)；原生压力与性能待包含全部最新审查修复的源码执行。
