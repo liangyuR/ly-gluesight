@@ -426,15 +426,11 @@ fn run_case(
         &fixtures.empty,
         &format!("p0-{}v-{}-empty", view_count, std::process::id()),
     );
-    assert_judgement(&empty, Verdict::ErrInspect, judge::fault::PROCESS_TIMEOUT);
-    assert_eq!(empty["measurementErrors"], 4);
-    assert!(empty["calls"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|call| call["error"]
-            .as_str()
-            .is_some_and(|e| e.contains("检测区内没找到胶"))));
+    // 整帧无胶是真实缺陷（漏涂），照常测量并判断胶，不当作检测执行失败
+    assert_judgement(&empty, Verdict::NgGap, 0);
+    assert_eq!(empty["measurementErrors"], 0);
+    assert!(empty["calls"].as_array().unwrap().iter().all(|call| call["coverage"] == 0.0));
+    assert!(empty["judgement"]["reason"].as_str().unwrap().contains("检测区内没找到胶"));
     prepared.verify().unwrap();
     let records: Vec<Value> = std::fs::read_to_string(&steady_evidence_path).unwrap().lines()
         .map(|line| serde_json::from_str(line).unwrap()).collect();

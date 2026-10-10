@@ -46,10 +46,13 @@ impl PlcPlan {
     }
 
     pub fn from_recipe(recipe: &Recipe, camera_slots: [String; 3]) -> Result<Self, String> {
+        if recipe.plan_version == 0 {
+            return Err(format!("配方 {} 还没有分配 PLC 计划版本：请保存或发布一次后再布防", recipe.id));
+        }
         let shots = recipe.shots.iter().map(|s| PlanShot {
             shot_id: s.id.clone(), pose_id: s.pose_id.clone(), camera_id: s.camera.clone(),
         }).collect();
-        Self::compile(recipe.id.clone(), recipe.version, camera_slots, shots)
+        Self::compile(recipe.id.clone(), recipe.plan_version, camera_slots, shots)
     }
 }
 
@@ -65,6 +68,17 @@ mod tests {
         let plan = PlcPlan::from_recipe(&recipe, ["cam1".into(), String::new(), String::new()]).unwrap();
         assert_eq!(plan.camera_shots, [4, 0, 0]);
         assert_eq!(plan.shot_count, 4);
+    }
+
+    #[test]
+    fn plan_version_is_the_assigned_plan_version_not_the_recipe_revision() {
+        let mut doc = crate::recipe::samples().remove(1);
+        doc.version = 9;
+        doc.plan_version = 41;
+        let plan = PlcPlan::from_recipe(&doc.build().unwrap(), ["cam1".into(), String::new(), String::new()]).unwrap();
+        assert_eq!(plan.plan_version, 41);
+        doc.plan_version = 0;
+        assert!(PlcPlan::from_recipe(&doc.build().unwrap(), ["cam1".into(), String::new(), String::new()]).unwrap_err().contains("计划版本"));
     }
 
     fn shots() -> Vec<PlanShot> {

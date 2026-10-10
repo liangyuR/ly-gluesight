@@ -73,8 +73,20 @@ pub struct SessionView {
     pub message: Option<String>,
 }
 
+/// 空闲提示（等待 PLC 释放输入、设备未就绪）的前缀：不是故障，不需要复位，现状恢复后自动消失。
+pub const NOTICE: &str = "S7 空闲：";
+/// 空闲时视觉输出被外部改写，60 s 内自动重写超过 2 次就判故障（有写入方在持续覆盖 PC 区）。
+const RESTORE_WINDOW: Duration = Duration::from_secs(60);
+const RESTORE_LIMIT: usize = 2;
+
 #[derive(Debug)]
-pub enum SessionEvent { None, Ready, Start(Request), End(Instant), Released, Fault(String) }
+pub enum SessionEvent {
+    None, Ready, Start(Request), End(Instant), Fault(String),
+    /// 结果已确认、双方已释放；附 PLC 确认结果时各槽的已发触发数（提前判 ERR 的件据此推下一件基线）
+    Released(Option<[u16; 3]>),
+    /// 空闲时视觉输出被改写，已重写空闲输出并继续（附原因）
+    Restored(String),
+}
 
 pub struct PlcSession {
     path: PathBuf,
@@ -91,6 +103,12 @@ pub struct PlcSession {
     fault_written: bool,
     fault_attempted: Option<Instant>,
     message: Option<String>,
+    /// 设备未就绪时本侧撤销了 visionReady（不是外部改写）
+    withdrawn: bool,
+    /// 空闲时外部改写视觉输出后自动重写的时刻
+    restores: Vec<Instant>,
+    /// PLC 确认本件结果时读到的各槽已发触发数
+    ack_triggers: Option<[u16; 3]>,
 }
 
 impl PlcSession {
@@ -115,7 +133,13 @@ impl PlcSession {
         Self { path, journal, load_error, phase: SessionPhase::ResetRequired, contract: None,
             config_key: String::new(), connection: None, audit_waiting: false, reset_low_seen: false,
             reset_level: false, heartbeat: Mutex::new(HeartbeatWatch::new(3000).expect("valid heartbeat timeout")),
-            fault_written: false, fault_attempted: None, message: Some("S7 启动后需确认空闲输入并复位握手".into()) }
+            fault_written: false, fault_attempted: None, message: Some("S7 启动后需确认空闲输入并复位握手".into()),
+            withdrawn: false, restores: Vec::new(), ack_triggers: None }
+    }
+
+    /// 空闲时的等待提示（以 [`NOTICE`] 开头）；不是故障。
+    pub fn notice(&self) -> Option<&str> {
+        self.message.as_deref().filter(|message| self.phase == SessionPhase::Idle && message.starts_with(NOTICE))
     }
 
     pub fn pending(&self) -> bool { self.journal.pending.is_some() || self.load_error.is_some() }
@@ -371,10 +395,14 @@ impl PlcSession {
             self.message = None;
             self.fault_written = false;
             self.fault_attempted = None;
+            self.withdrawn = false;
+            self.restores.clear();
+            self.ack_triggers = None;
             return Ok(SessionEvent::Ready);
         }
         if !self.heartbeat.lock().unwrap().is_live(now) { return Err("PLC 心跳活性尚未确认".into()); }
-        if !devices_ready && !matches!(self.phase, SessionPhase::AwaitAck | SessionPhase::Releasing) {
+        // 空闲时设备未就绪只撤销 visionReady（见 idle）；已来的 partStart 照常接下，由节拍按设备丢失判 ERR
+        if !devices_ready && !matches!(self.phase, SessionPhase::Idle | SessionPhase::AwaitAck | SessionPhase::Releasing) {
             return Err("检测设备未就绪".into());
         }
         if self.phase == SessionPhase::Idle && (!audit_ready || self.audit_waiting) {
@@ -388,8 +416,9 @@ impl PlcSession {
                 }
                 self.audit_waiting = true;
             } else {
-                self.write(engine, vec![WriteOp { tag: tag::VISION_READY, value: json!(true) }]).await?;
                 self.audit_waiting = false;
+                self.withdrawn = true;
+                return self.idle(engine, &snapshot, devices_ready).await;
             }
             return Ok(SessionEvent::None);
         }
@@ -404,6 +433,7 @@ impl PlcSession {
                 self.journal.last_request_seq = request.request_seq;
                 self.persist(engine).await?;
                 self.phase = SessionPhase::Validating;
+                self.ack_triggers = None;
                 return Ok(SessionEvent::Start(request));
             }
             SessionPhase::Validating | SessionPhase::Acquiring | SessionPhase::Draining | SessionPhase::AwaitAck => {
@@ -432,6 +462,8 @@ impl PlcSession {
                 if self.phase == SessionPhase::AwaitAck {
                     let result = self.result().ok_or("S7 结果尚未生成")?;
                     if handshake::matching_ack(&snapshot, result)? {
+                        // PLC 已停发触发：此刻的计数就是本件实际发出的脉冲数
+                        self.ack_triggers = Some(snapshot.trigger_counts()?);
                         self.journal.pending.as_mut().unwrap().acknowledged = true;
                         self.persist(engine).await?;
                         self.write(engine, handshake::release_plan()).await?;
@@ -441,7 +473,6 @@ impl PlcSession {
             }
             SessionPhase::Releasing => {
                 if [tag::PART_START, tag::PART_END, tag::RESULT_ACK].into_iter().all(|tag| snapshot.read_bool(tag) == Ok(false)) {
-                    if !devices_ready { return Err("结果已确认，但设备未就绪，不能释放下一件".into()); }
                     if snapshot.read_bool(tag::DONE)? || snapshot.read_bool(tag::BUSY)? || snapshot.read_bool(tag::ARMED)? {
                         return Err("释放输出未保持清除状态，禁止开始下一件".into());
                     }
@@ -457,21 +488,74 @@ impl PlcSession {
                         .into_iter().any(|tag| before_ready.read_bool(tag) != Ok(false)) {
                         return Err("释放落盘期间握手信号已改变，禁止提前发出下一件就绪".into());
                     }
-                    self.write(engine, vec![WriteOp { tag: tag::VISION_READY, value: json!(true) }]).await?;
+                    // 事务已结束；设备没就绪就先不置就绪，由空闲检查在设备恢复后补上
+                    if devices_ready {
+                        self.write(engine, vec![WriteOp { tag: tag::VISION_READY, value: json!(true) }]).await?;
+                    } else {
+                        self.withdrawn = true;
+                        self.message = Some(Self::withdrawn_notice());
+                    }
                     self.phase = SessionPhase::Idle;
-                    return Ok(SessionEvent::Released);
+                    return Ok(SessionEvent::Released(self.ack_triggers.take()));
                 }
             }
-            SessionPhase::Idle => {
-                if snapshot.read_bool(tag::DONE)? || snapshot.read_bool(tag::BUSY)? || snapshot.read_bool(tag::ARMED)?
-                    || snapshot.read_bool(tag::VISION_FAULT)? || !snapshot.read_bool(tag::VISION_READY)?
-                    || snapshot.read_bool(tag::PART_END)? || snapshot.read_bool(tag::RESULT_ACK)? {
-                    return Err("空闲握手信号不一致，需明确复位".into());
-                }
-            }
+            SessionPhase::Idle => return self.idle(engine, &snapshot, devices_ready).await,
             _ => {}
         }
         Ok(SessionEvent::None)
+    }
+
+    fn withdrawn_notice() -> String {
+        format!("{NOTICE}检测设备未就绪，已撤销 visionReady 暂停接件；设备恢复后自动就绪，无需复位")
+    }
+
+    /// 空闲（无在途事务）时核对握手信号，能恢复的不判故障：
+    /// - PLC 所有的 partEnd / resultAck 未清：只等待，不写输出；此时 PLC 再发 partStart 走开始校验并判故障（请求边界不清）；
+    /// - 设备未就绪：撤销 visionReady 暂停接件，设备恢复后重新置位；
+    /// - 视觉所有的输出偏离空闲状态（PLC 重启或 DB 重新初始化读回 0、调试表误写）：记审计后重写空闲输出，
+    ///   60 s 内反复被改写才判故障。
+    async fn idle(&mut self, engine: &PlcEngine, snapshot: &Snapshot, devices_ready: bool) -> Result<SessionEvent, String> {
+        if self.journal.pending.is_some() {
+            return Err("空闲阶段仍留有未结 S7 事务，状态矛盾，需明确复位".into());
+        }
+        let held = snapshot.idle_plc_held()?;
+        if !held.is_empty() {
+            self.message = Some(format!("{NOTICE}PLC 的 {} 仍为 1（PLC 侧握手位，释放后应清零），等待 PLC 清除；清除前 PLC 发起新件会判握手故障",
+                held.join("、")));
+            return Ok(SessionEvent::None);
+        }
+        if !devices_ready {
+            if !self.withdrawn || snapshot.read_bool(tag::VISION_READY)? {
+                self.write(engine, vec![WriteOp { tag: tag::VISION_READY, value: json!(false) }]).await?;
+                self.withdrawn = true;
+            }
+            self.message = Some(Self::withdrawn_notice());
+            return Ok(SessionEvent::None);
+        }
+        let drifted = snapshot.idle_drift()?;
+        if drifted.is_empty() {
+            self.withdrawn = false;
+            if self.notice().is_some() { self.message = None; }
+            return Ok(SessionEvent::None);
+        }
+        let own = self.withdrawn && drifted == ["visionReady=0"];
+        let reason = if own { String::new() } else {
+            let now = Instant::now();
+            self.restores.retain(|at| now.saturating_duration_since(*at) < RESTORE_WINDOW);
+            if self.restores.len() >= RESTORE_LIMIT {
+                return Err(format!("空闲时视觉输出 {} s 内第 {} 次被改写（{}），疑似 PLC 程序或其他写入方覆盖 PC 区，排查后明确复位",
+                    RESTORE_WINDOW.as_secs(), self.restores.len() + 1, drifted.join("、")));
+            }
+            self.restores.push(now);
+            let reason = format!("空闲时视觉输出 {} 与就绪状态不符（PLC 重启、DB 重新初始化或被其他写入方改写），已重写空闲输出，无需复位",
+                drifted.join("、"));
+            self.audit(engine, "idleOutputsRestored", &reason).await?;
+            reason
+        };
+        self.write(engine, handshake::idle_plan()).await?;
+        self.withdrawn = false;
+        if self.notice().is_some() { self.message = None; }
+        Ok(if own { SessionEvent::None } else { SessionEvent::Restored(reason) })
     }
 
     pub fn validate_plan(&self, plan: &PlcPlan) -> Result<(), String> {

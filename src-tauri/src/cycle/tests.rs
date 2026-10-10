@@ -172,6 +172,35 @@ fn first_missing_frame_keeps_later_shots_and_expires_err91() {
 }
 
 #[test]
+fn counter_desync_ends_err91_with_expected_and_received_counters() {
+    // 上一件按触发数推的下限比相机实际计数高一格（相机漏收过一个脉冲）：本件第一帧被当成迟到帧，最后一个拍照点缺帧
+    let mut ledgers = Ledgers::default();
+    ledgers.observe(&FrameMeta::from(&frame(0, 1)));
+    ledgers.set_floor(&Floor { cam: 0, camera: "cam1".into(), session: 1, baseline: 2 });
+    let mut p = part("desync", &ledgers, true);
+    assert!(matches!(p.receive_frame(&frame(0, 2)).unwrap(), Route::Stale { counter: 2, baseline: Some(2) }));
+    for counter in 3..=5 {
+        let Route::Bound { shot, .. } = p.receive_frame(&frame(0, counter)).unwrap() else { panic!("counter {counter}") };
+        p.apply_result(measured(&p, shot)).unwrap();
+    }
+    let end = Instant::now();
+    p.end_at = Some(end);
+    p.expire(end + Duration::from_secs(3), Duration::from_secs(1), Duration::from_secs(2));
+    let judgement = p.judgement();
+    assert_eq!(judgement.verdict, Verdict::ErrInspect);
+    assert_eq!(judgement.fault_code, fault::MISSING_FRAME);
+    assert!(judgement.reason.starts_with("拍照点 P4（cam1）没有收到帧：相机 cam1 触发计数错位：本件应收 3–6，实际收到 2–5；2 不大于本件基线 2"),
+        "{}", judgement.reason);
+
+    // 多出的触发：第一个超计划帧就是结果原因，写明应收与实际计数
+    let mut p = part("extra", &Ledgers::default(), true);
+    for counter in 1..=5 { p.receive_frame(&frame(0, counter)).unwrap(); }
+    let judgement = p.judgement();
+    assert_eq!(judgement.fault_code, fault::EXTRA_FRAME);
+    assert!(judgement.reason.contains("相机 cam1 触发计数错位：本件应收 1–4，收到 5，超出计划 1 个"), "{}", judgement.reason);
+}
+
+#[test]
 fn timeout_is_terminal_before_end_and_late_measurement_is_ignored() {
     let mut p = part("timeout", &Ledgers::default(), true);
     p.receive_frame(&frame(0, 1)).unwrap();
