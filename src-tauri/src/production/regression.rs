@@ -31,6 +31,13 @@ fn artifact(path: &Path) -> Value {
     json!({"path": path, "bytes": bytes.len(), "fnv1a64": release::fnv_hex(&bytes)})
 }
 
+fn software_snapshot(source: &Path, destination: &Path) -> Value {
+    std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+    assert!(!destination.exists(), "Software evidence must not overwrite an existing snapshot");
+    std::fs::copy(source, destination).unwrap();
+    artifact(destination)
+}
+
 fn write_json(path: &Path, value: &Value) {
     std::fs::write(path, serde_json::to_vec_pretty(value).unwrap()).unwrap();
 }
@@ -522,11 +529,14 @@ fn native_full_resolution_frozen_bundle_single_and_tricam_regression() {
         "software": {"package": env!("CARGO_PKG_NAME"), "version": env!("CARGO_PKG_VERSION"),
             "graphVersion": GRAPH_VERSION, "gitCommit": command_output("git", &["-C", source.to_str().unwrap(), "rev-parse", "HEAD"]),
             "gitStatus": command_output("git", &["-C", source.to_str().unwrap(), "status", "--porcelain"]),
-            "rustc": command_output("rustc", &["--version"]), "testExecutable": artifact(&std::env::current_exe().unwrap()),
+            "rustc": command_output("rustc", &["--version"]),
+            "originalSourceDirectory": source, "originalTestExecutable": std::env::current_exe().unwrap(),
+            "snapshotPolicy": "Software source and test executable are byte-for-byte archived under this fresh report directory so later compilation cannot invalidate referenced evidence.",
+            "testExecutable": software_snapshot(&std::env::current_exe().unwrap(), &root.join("software/test-executable.exe")),
             "testArguments": std::env::args().skip(1).collect::<Vec<_>>(),
             "sourceFiles": (["Cargo.toml", "Cargo.lock", "src/production.rs", "src/production/regression.rs", "src/vision.rs", "src/vision/taught.rs", "src/recipe.rs", "src/simimage.rs", "src/sim.rs", "src/judge.rs", "src/release.rs", "src/frame.rs", "src/measure.rs"]
-                .iter().map(|p| artifact(&source.join(p))).collect::<Vec<_>>()),
-            "reportVerifier": artifact(&source.parent().unwrap().join("scripts/p0-regression-report.py"))},
+                .iter().map(|p| software_snapshot(&source.join(p), &root.join("software/src-tauri").join(p))).collect::<Vec<_>>()),
+            "reportVerifier": software_snapshot(&source.parent().unwrap().join("scripts/p0-regression-report.py"), &root.join("software/scripts/p0-regression-report.py"))},
         "engine": {"version": engine.version, "identity": engine.identity, "dll": dll_artifact, "loadAndSelfCheckMs": dll_load_ms},
         "initialMemory": initial_memory, "finalMemory": memory(), "cases": cases,
         "scope": {"execution": "Serial direct production::Prepared calls using a verified immutable release bundle and real DLL, followed by the local judge.",

@@ -170,12 +170,67 @@
           "bytes": 2158
         }
       }
-    ]
+    ],
+    "rustFinal": {
+      "passed": 258,
+      "failed": 0,
+      "ignored": 29,
+      "seconds": 2.81,
+      "command": "cargo test --offline --locked --lib",
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-rust-final-c.log",
+        "sha256": "6ead13b428ca0fd476ef537fb131499486cdc07d95ad1c10c1a9d2fa654cd429",
+        "bytes": 29873
+      }
+    },
+    "frontendFinal": {
+      "passed": 954,
+      "failed": 0,
+      "files": 42,
+      "seconds": 114.56,
+      "coverage": {
+        "statements": 91.33,
+        "branches": 89.79,
+        "functions": 88.57,
+        "lines": 93.92
+      },
+      "command": "node node_modules/vitest/vitest.mjs run --coverage --maxWorkers 2",
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-frontend-final-c.log",
+        "sha256": "2c8545335781b0464d3fe0183a312c39e1db521e99532b42557e102621faecc9",
+        "bytes": 7313
+      },
+      "source": "d0ff99e includes Codex calibration event and deferred refresh fixes"
+    },
+    "applicationTypesFinal": {
+      "passed": true,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-types-app-final-c.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      }
+    },
+    "testTypesFinal": {
+      "passed": true,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-types-tests-final-c.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      }
+    },
+    "productionBuildFinal": {
+      "passed": true,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-vite-final-c.log",
+        "sha256": "d2592b4ffcd75de3e0c7278712520fb4eb61b04ac5416a3c9513f2abc731233c",
+        "bytes": 924
+      }
+    }
   },
   "pending": [
+    "final archived software snapshot Prepared benchmark",
     "actual CycleHost queue/engine/core/tail/memory measurement",
-    "five actual desktop Robot/Modbus scenarios",
-    "final integration checks after Codex environment refresh repair"
+    "five actual desktop Robot/Modbus scenarios"
   ],
   "boundaries": [
     "Tests use local loopback and synthetic images; W0/W7 and physical three-view SDK remain independent.",
