@@ -21,6 +21,7 @@ p0-pressure-test = []
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+base64 = "=0.22.1"
 tauri = { version = "2", features = [] }
 rfd = "0.16"
 serde = { version = "1", features = ["derive"] }

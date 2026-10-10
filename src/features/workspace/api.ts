@@ -41,7 +41,7 @@ export const workspaceApi = {
   restoreTeach: (id: string, revision: number, k: number) => desktopCall<WorkspaceView>("workspace_restore_teach", { id, revision, k }),
   saveOverview: (id: string, revision: number, overview: Overview) => desktopCall<WorkspaceView>("workspace_save_overview", { id, revision, overview }),
   validate: (id: string, revision: number, samples: Sample[]) => desktopCall<WorkspaceView>("workspace_validate", { id, revision, samples }),
-  importSample: (id:string, revision:number, name:string, expected:import("../cycle/types").Verdict, images:{k:number;bytes:number[]}[]) =>
+  importSample: (id:string, revision:number, name:string, expected:import("../cycle/types").Verdict, images:{k:number;bytes:string}[]) =>
     desktopCall<WorkspaceView>("workspace_import_sample", {id,revision,name,expected,images}),
   publish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish", { id, revision }),
   recordImages: (historyId: number) => desktopCall<RecordImages>("workspace_record_images", { historyId }),

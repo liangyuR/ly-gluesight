@@ -1464,6 +1464,7 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 name = "gluesight"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "image",
  "libloading 0.8.9",

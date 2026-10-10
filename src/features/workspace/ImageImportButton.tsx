@@ -11,6 +11,20 @@ export async function readImageFile(file: File): Promise<number[]> {
   return Array.from(new Uint8Array(await file.arrayBuffer()));
 }
 
+export async function readImageBase64(file: File): Promise<string> {
+  validateImageFile(file);
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const chunks: string[] = [];
+  const chunkSize = 3 * 8192;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    let binary = "";
+    const end = Math.min(offset + chunkSize, bytes.length);
+    for (let index = offset; index < end; index++) binary += String.fromCharCode(bytes[index]);
+    chunks.push(btoa(binary));
+  }
+  return chunks.join("");
+}
+
 export default function ImageImportButton({ scope, disabled, onImport, onError, onReadingChange, label = "导入离线原图" }: {
   scope: string; disabled?: boolean; onImport: (bytes: number[]) => Promise<unknown>; onError: (error: string) => void; onReadingChange?: (reading:boolean)=>void; label?: string;
 }) {

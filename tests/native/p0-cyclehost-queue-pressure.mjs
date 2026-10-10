@@ -213,12 +213,13 @@ assert(await absent(output), 'Never overwrite an existing attempt'); await mkdir
 const report = { schemaVersion: 1, sourceGate: values['source-gate'], identifier, startedAt: new Date().toISOString(), passed: false,
   scope: 'Actual Replay CameraRig callbacks, bounded64/32 CycleHost queues, real DLL and external loopback Modbus TCP outputs/ACK/recovery',
   physicalValidation: false, s7HardwareValidation: false, benchmark: false, counterSource: 'synthetic',
-  algorithmScope: 'Independent clean replay control only; does not resolve default noisy-metal normal P0-09', profile, stages: [], setup: [], cases: [] };
+  algorithmScope: 'Independent clean replay control only; does not resolve default noisy-metal normal P0-09', profile, stages: [], lifecycle: [], setup: [], cases: [] };
 const save = (name, value) => writeFile(join(output, name), JSON.stringify(value, null, 2) + '\n', { flag: 'wx' });
 const env = { ...process.env, PATH: (process.env.PATH ?? '').split(';').filter(entry => entry && !/^D:/i.test(entry)).join(';') };
-const owned = []; let app, plc, browser, page, wire, stage = 'guard', attempt = null;
+const owned = []; let app, plc, browser, page, wire, stage = 'guard', attempt = null, cleanup = false;
 const read = (command, args) => page.evaluate(({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
 function progress(next) { stage = next; report.stages.push({ stage, at: new Date().toISOString() }); console.log(JSON.stringify({ stage, output })); }
+function lifecycle(event, details = {}) { report.lifecycle.push({ event, at: new Date().toISOString(), stage, cleanup, ...details }); }
 function sourceGuard() {
   const repository = cPath(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'));
   const execute = args => {
@@ -235,6 +236,7 @@ async function start(name, executable, args, customEnv = env) {
   const child = spawn(executable, args, { cwd: dirname(paths.executable), env: customEnv, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   const state = { name, child, executable, stdout: [], stderr: [], identity: null, error: null, stopped: null }; owned.push(state);
   child.on('error', error => { state.error = String(error); }); child.stdout.on('data', data => state.stdout.push(data)); child.stderr.on('data', data => state.stderr.push(data));
+  child.on('exit', (code, signal) => lifecycle('owned-child-exit', { name, pid: child.pid ?? null, executable, code, signal }));
   state.identity = await sampleProcess(child.pid, executable); return state;
 }
 async function stop(state) {
@@ -411,8 +413,14 @@ try {
   app = await start('native-pressure', paths.executable, [], { ...env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort} --remote-debugging-address=127.0.0.1` });
   await until(async () => { if (app.error || app.child.exitCode !== null) throw new Error(app.error ?? 'Native app exited'); try { return (await fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal: AbortSignal.timeout(500) })).ok; } catch { return false; } }, 'owned native CDP');
   const { chromium } = await import(pathToFileURL(paths['playwright-module']).href); browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
+  browser.on('disconnected', () => lifecycle('browser-disconnected'));
+  report.cdpConnectedAt = new Date().toISOString(); lifecycle('browser-connected', { debugPort, pid: app.child.pid });
   const native = await until(async () => { const candidates = []; for (const candidate of browser.contexts().flatMap(context => context.pages())) if (await candidate.evaluate(() => !!window.__TAURI_INTERNALS__?.invoke).catch(() => false)) candidates.push(candidate); return candidates.length && candidates; }, 'native invoke page');
-  assert.equal(native.length, 1); page = native[0]; await page.waitForURL('http://tauri.localhost/**'); await page.getByRole('navigation', { name: '操作导航' }).waitFor();
+  assert.equal(native.length, 1); page = native[0];
+  page.on('crash', () => lifecycle('page-crash', { url: page.url() }));
+  page.on('close', () => lifecycle('page-close', { url: page.url() }));
+  lifecycle('native-page-selected', { url: page.url() });
+  await page.waitForURL('http://tauri.localhost/**'); await page.getByRole('navigation', { name: '操作导航' }).waitFor();
   assert.equal(cPath((await read('records_list')).root).toLowerCase(), recordsRoot.toLowerCase()); await sampleProcess(app.child.pid, paths.executable, app.identity.start);
   assert.equal((await read('history_query', { query: { limit: 1 } })).total, 0);
   assert.deepEqual(await read('cycle_get_settings'), settings); report.initialPressure = await pressure();
@@ -495,6 +503,7 @@ try {
   }
   if (wire) try { report.lastWire = await wire.snapshot(); } catch (failure) { report.wireReadError = String(failure); }
 } finally {
+  cleanup = true; lifecycle('cleanup-start');
   const cleanupErrors = [];
   if (page) try { await read('pressure_test_configure', { callbackHold: false, measureHold: false, timeoutMs: 100 }); } catch (error) { cleanupErrors.push('release gates: ' + error); }
   if (browser) await browser.close().catch(error => { cleanupErrors.push('CDP: ' + error); });
