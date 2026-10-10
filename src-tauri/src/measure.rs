@@ -27,6 +27,7 @@ pub struct Job {
     pub shot_id: String,
     pub camera: String,
     pub bundle_hash: Option<String>,
+    pub production: Option<Arc<crate::production::Prepared>>,
     pub submitted_at: Instant,
     pub timeout: Duration,
     pub image_measurement: bool,
@@ -113,13 +114,14 @@ pub trait Measurer: Send + Sync {
 
 /// 需要整帧图像的场合：图像测量或帧录制。设置变了之后调一次。
 pub fn apply_settings(app: &AppHandle) {
+    app.state::<crate::production::ProductionHost>().clear();
     let settings = app.state::<CycleHost>().settings();
     let record = settings.record != RecordMode::Off;
     app.state::<CycleHost>().camera.set_capture(settings.vision || record);
 }
 
-fn run_image(app: &AppHandle, job: &Job, image: &FrameImage) -> Measured {
-    vision::LyFlowMeasurer { app: app.clone() }.measure(job, image).unwrap_or_else(|e| Measured::failed(job, e))
+fn run_image(_app: &AppHandle, job: &Job, image: &FrameImage) -> Measured {
+    vision::LyFlowMeasurer.measure(job, image).unwrap_or_else(|e| Measured::failed(job, e))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -381,6 +383,7 @@ mod tests {
             shot_id: format!("P{}", k + 1),
             camera: "cam1".into(),
             bundle_hash: Some("bundle-7".into()),
+            production: None,
             submitted_at: Instant::now(),
             timeout,
             image_measurement: false,

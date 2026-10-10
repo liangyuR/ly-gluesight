@@ -202,7 +202,7 @@ describe("配方库操作", () => {
   });
 
   it("待生效版本禁止删除；准备结果晚到或失败不会打开已离开的窗口",async()=>{
-    ws.drafts[0].pending={doc:ws.doc!,revision:7,baseHash:"old",frames:[],overview:ws.data!.workspace.overview,validation:ws.data!.workspace.validation!};
+    ws.drafts[0].pending={doc:ws.doc!,bundleHash:"bundle-v1",revision:7,baseHash:"old",frames:[],overview:ws.data!.workspace.overview,validation:ws.data!.workspace.validation!};
     const pending=deferred<ReturnType<typeof workspaceView>["workspace"]["doc"]>();vi.mocked(recipeApi.template).mockReturnValueOnce(pending.promise);
     const page=show();expect(screen.getByRole("button",{name:"删除配方 A"})).toBeDisabled();
     await userEvent.click(screen.getByRole("button",{name:"新建飞拍"}));page.unmount();await act(async()=>pending.reject(new Error("离开后的模板错误")));

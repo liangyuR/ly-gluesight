@@ -15,7 +15,7 @@ fn part(cycle_id: &str, ledgers: &Ledgers, one_device: bool) -> Part {
     }).collect();
     let router = ShotRouter::arm(&Plan::from_shots(&recipe.shots), ledgers, &Policy::development(None), &identities).unwrap();
     Part {
-        run_id: 1, cycle_id: cycle_id.into(), bundle_hash: Some("release-1".into()), sn: 88,
+        run_id: 1, cycle_id: cycle_id.into(), bundle_hash: Some("release-1".into()), production: None, sn: 88,
         scenario: Scenario::Normal, frames: recipe.shots.iter().map(|shot| FrameView {
             shot_id: shot.id.clone(), camera: shot.camera.clone(), view: shot.view, ..FrameView::waiting()
         }).collect(), measuring_since: vec![None; recipe.shot_count()],
@@ -49,6 +49,25 @@ fn complete_four(part: &mut Part, width: f32) {
         result.w.fill(width);
         assert!(part.apply_result(result).is_some());
     }
+}
+
+pub(crate) async fn judge_last_frame_during_end(
+    end: impl std::future::Future<Output = SessionEvent>,
+    last_frame: impl std::future::Future<Output = Frame>,
+) -> Judgement {
+    let mut p = part("slow-end-journal", &Ledgers::default(), false);
+    p.drain_timeout = Duration::from_millis(200);
+    for (cam, counter, k) in [(0, 1, 0), (1, 1, 1), (2, 1, 2)] {
+        p.receive_frame(&frame(cam, counter)).unwrap();
+        p.apply_result(measured(&p, k)).unwrap();
+    }
+    let (event, frame) = tokio::join!(end, last_frame);
+    let SessionEvent::End(ended_at) = event else { panic!("expected partEnd, got {event:?}") };
+    p.end_at = Some(ended_at);
+    if let Some(Route::Bound { shot, .. }) = p.receive_frame(&frame) {
+        p.apply_result(measured(&p, shot));
+    }
+    p.judgement()
 }
 
 #[test]

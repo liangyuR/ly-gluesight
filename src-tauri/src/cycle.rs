@@ -376,6 +376,7 @@ struct Part {
     run_id: u64,
     cycle_id: String,
     bundle_hash: Option<String>,
+    production: Option<Arc<crate::production::Prepared>>,
     sn: u32,
     recipe: Arc<Recipe>,
     scenario: Scenario,
@@ -592,6 +593,7 @@ pub fn usable_cams(app: &AppHandle, recipe: &Recipe, real_parts: bool) -> Result
 
 pub fn runnable_cams(app: &AppHandle, recipe: &Recipe, real_parts: bool) -> Result<Vec<u8>, String> {
     recipe.ready()?;
+    crate::production::ready(app, recipe)?;
     usable_cams(app, recipe, real_parts)
 }
 
@@ -916,6 +918,18 @@ impl Machine {
         if count != n {
             return self.refuse(sn, id, fault::SHOT_COUNT_MISMATCH, format!("PLC 下发拍照点数 {count}，配方 {} 为 {n}", recipe.id)).await;
         }
+        let production = match crate::production::ready(&app, &recipe) {
+            Ok(prepared) => prepared,
+            Err(reason) => return self.refuse(sn, id, fault::NO_RECIPE, reason).await,
+        };
+        if let Some(prepared) = production.clone() {
+            let checked = tokio::time::timeout(settings.timeouts.arm(), tauri::async_runtime::spawn_blocking(move || prepared.verify())).await;
+            match checked {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(reason))) => return self.refuse(sn, id, fault::NO_RECIPE, format!("发布包核验失败：{reason}")).await,
+                _ => return self.refuse(sn, id, fault::PROCESS_TIMEOUT, "布防前发布资源核验超时或异常".into()).await,
+            }
+        }
         let rig_gen = host.camera.generation();
         let cams = match runnable_cams(&app, &recipe, real_parts(&app)) {
             Ok(c) => c,
@@ -954,7 +968,8 @@ impl Machine {
         self.part = Some(Part {
             run_id: self.run_id,
             cycle_id,
-            bundle_hash: None,
+            bundle_hash: production.as_ref().map(|prepared| prepared.bundle.hash.clone()),
+            production,
             sn,
             scenario: host.sim.part_scenario(),
             frames: recipe.shots.iter().map(|shot| FrameView {
@@ -1062,6 +1077,7 @@ impl Machine {
         crate::workspace::retain_live(&self.app, part.cycle_id.clone(), &part.recipe.hash, k, &image);
         let job = Job { run_id: part.run_id, cycle_id: part.cycle_id.clone(), shot_id: shot.id.clone(), camera,
             bundle_hash: part.bundle_hash.clone(), sn: part.sn, k, cam: f.cam, recipe: part.recipe.clone(),
+            production: part.production.clone(),
             scenario: part.scenario, image, timeout: host(&self.app).settings().timeouts.proc(), submitted_at,
             image_measurement: part.image_measurement };
         if let Err(error) = selected_image {
@@ -1156,9 +1172,9 @@ impl Machine {
                     log(&app, "ok", "S7 复位完成", "输入基线已核验，视觉就绪");
                 }
                 SessionEvent::Start(request) => self.start_part(Some(request)).await,
-                SessionEvent::End => {
+                SessionEvent::End(ended_at) => {
                     if let Some(part) = self.part.as_mut() {
-                        part.end_at = Some(Instant::now());
+                        part.end_at = Some(ended_at);
                         part.issued_verified = true;
                     }
                     self.set_phase(Phase::Drain);
@@ -1510,4 +1526,4 @@ pub fn cycle_reset(cycle: State<'_, CycleHost>) {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

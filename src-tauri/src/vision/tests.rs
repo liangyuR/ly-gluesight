@@ -47,12 +47,17 @@ fn missing_bundled_core_reports_installation_repair() {
 #[test]
 fn missing_pack_is_reported_before_running() {
     let error = check_operators(&json!({"operators": [{"id": "io.load_image"}]})).unwrap_err();
-    assert!(error.contains("glue.locate"));
+    assert!(error.contains("glue.taught_path"));
     assert!(error.contains("image.board_calib"));
     assert!(check_operators(&json!({"operators": [
         {"id": "io.load_image"}, {"id": "image.board_calib"}, {"id": "image.load_calib"},
-        {"id": "glue.locate"}, {"id": "glue.station_calipers"}
+        {"id": "glue.taught_path"}, {"id": "glue.bead_width"}
     ]})).is_ok());
+    let old = json!({"operators": [
+        {"id": "io.load_image"}, {"id": "image.board_calib"}, {"id": "image.load_calib"},
+        {"id": "glue.locate"}, {"id": "glue.station_calipers"}, {"id": "glue.bead_width"}
+    ]});
+    assert!(check_operators(&old).unwrap_err().contains("旧版飞拍核心库"));
 }
 
 #[test]

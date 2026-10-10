@@ -67,6 +67,7 @@ pub struct FrozenImage {
 #[serde(rename_all = "camelCase")]
 pub struct Trial {
     pub image_id: String,
+    pub engine_tag: String,
     pub params_tag: String,
     pub geometry_tag: String,
     pub passed: bool,
@@ -111,6 +112,13 @@ impl Teaching {
             || trial.params_tag != teach_tag
         {
             return Err("图像或参数已变更，需要重新试测".into());
+        }
+        Ok(())
+    }
+
+    fn checked_engine(&self, engine_tag: &str) -> Result<(), String> {
+        if self.trial.as_ref().is_none_or(|trial| trial.engine_tag != engine_tag) {
+            return Err("图像引擎版本已变化，需要重新试测".into());
         }
         Ok(())
     }
@@ -179,6 +187,7 @@ pub struct Validation {
 #[serde(rename_all = "camelCase")]
 pub struct Release {
     pub doc: RecipeDoc,
+    pub bundle_hash: String,
     pub base_hash: Option<String>,
     pub revision: u64,
     pub frames: Vec<Teaching>,
@@ -404,6 +413,7 @@ fn environment(app: &AppHandle, recipe: &Recipe) -> Result<String, String> {
     }
     let settings = cycle.settings();
     values.push(json!([settings.vision, settings.lyflow_core]));
+    values.push(json!(app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).map(|engine| engine.identity.clone())));
     Ok(fingerprint(&values))
 }
 
@@ -829,7 +839,7 @@ pub fn workspace_image(
 }
 
 /// 示教帧试测：沿拍照点 k 的示教中线量胶。返回逐站结果、得分、量成比例、是否通过与原因。
-fn measure_image(_app: &AppHandle, r: &Recipe, k: usize, _image: &FrameImage) -> Result<(Value, f64, f64, bool, String), String> {
+fn measure_image(app: &AppHandle, r: &Recipe, k: usize, image: &FrameImage) -> Result<(Value, f64, f64, bool, String), String> {
     let shot = r.shots.get(k).ok_or("拍照点不存在")?;
     if !shot.measured() {
         return Err("这个拍照点设为不检，不需要试测".into());
@@ -837,7 +847,14 @@ fn measure_image(_app: &AppHandle, r: &Recipe, k: usize, _image: &FrameImage) ->
     if !shot.taught() {
         return Err("还没有胶路中线：先在原图上点出中线并保存".into());
     }
-    Err(vision::TAUGHT_PATH_PENDING.into())
+    let settings = app.state::<CycleHost>().settings();
+    let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("lyFlow 核心库未加载")?;
+    let run_id = format!("trial-{}-{k}-{}", r.hash, ly_plc::now_ms());
+    let measured = vision::measure_shot(&engine, r, k, image, &run_id, "")?;
+    let coverage = measured.coverage as f64;
+    let passed = coverage >= 0.8;
+    let reason = if passed { "沿示教中线完成逐站测量".into() } else { format!("量成比例 {:.1}% 低于 80%，检查中线、极性及搜索范围", coverage * 100.0) };
+    Ok((measured.record(), coverage, coverage, passed, reason))
 }
 
 #[tauri::command]
@@ -871,11 +888,14 @@ pub async fn workspace_trial(
         };
         let (image_tag, teach_tag) = shot_tags(&r, k)?;
         let image = crate::replay::load(&image_file(&app.state::<WorkspaceHost>(), &id, &image_id)?)?;
+        let settings = app.state::<CycleHost>().settings();
+        let engine_tag = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).map(|engine| engine.identity.clone()).unwrap_or_default();
         let started = Instant::now();
         let (measurement, score, coverage, passed, reason) =
             measure_image(&app, &r, k, &image).unwrap_or_else(|e| (Value::Null, 0.0, 0.0, false, e));
         let trial = Trial {
             image_id,
+            engine_tag,
             params_tag: teach_tag,
             geometry_tag: image_tag,
             passed,
@@ -951,6 +971,9 @@ pub fn workspace_save_teach(
         return Err("图像已变更，请重新试测".into());
     }
     frame.checked(&image_tag, &teach_tag)?;
+    let settings = app.state::<CycleHost>().settings();
+    let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("lyFlow 核心库未加载")?;
+    frame.checked_engine(&engine.identity)?;
     let (camera_tag, calib_tag) = tags(&app, &r, k)?;
     let frozen = frame.image.as_ref().unwrap();
     if frozen.camera_tag != camera_tag || frozen.calib_tag != calib_tag {
@@ -1051,6 +1074,7 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
             let shot = shot_tags(&r, f.k);
             f.saved
                 && shot.as_ref().is_ok_and(|(image, teach)| f.checked(image, teach).is_ok())
+                && app.state::<vision::VisionHost>().engine(cycle.settings().lyflow_core.as_deref()).is_some_and(|engine| f.checked_engine(&engine.identity).is_ok())
                 && f.image
                     .as_ref()
                     .zip(current.as_ref().ok())
@@ -1263,7 +1287,8 @@ pub fn workspace_publish(
     }
     let cams = cycle::usable_cams(&app, &recipe, cycle::real_parts(&app))?;
     app.state::<CycleHost>().camera.check_ready_at(&cams)?;
-    w.doc.teaching_hash = Some(fingerprint(&json!([
+    let mut release_doc = w.doc.clone();
+    release_doc.teaching_hash = Some(fingerprint(&json!([
         w.frames
             .iter()
             .map(|f| (&f.image, &f.trial))
@@ -1271,16 +1296,21 @@ pub fn workspace_publish(
         w.overview,
         environment_tag
     ])));
-    w.pending = Some(Box::new(Release {
-        doc: w.doc.clone(),
+    let bundle = freeze_bundle(&app, &host, &release_doc, &w.frames)?;
+    let mut next = w.clone();
+    next.doc = release_doc.clone();
+    next.pending = Some(Box::new(Release {
+        doc: release_doc,
+        bundle_hash: bundle.hash,
         base_hash: w.base_hash.clone(),
         revision,
         frames: w.frames.clone(),
         overview: w.overview.clone(),
         validation: validated.clone(),
     }));
-    w.publish_error = None;
-    host.save(w)?;
+    next.publish_error = None;
+    host.save(&next)?;
+    *w = next;
     let _ = app.state::<CycleHost>().tx.send(cycle::Input::Refresh);
     view(&app, w.clone())
 }
@@ -1289,6 +1319,8 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
     let cycle = app.state::<CycleHost>();
     let current = cycle.recipe(&release.doc.id);
     let recipe = release.doc.build()?;
+    let bundle = crate::release::load(&releases_root(app)?, &recipe.id, &release.bundle_hash)?;
+    if bundle.recipe != release.doc { return Err("待生效配方与不可变发布包不一致".into()); }
     if let Some(saved) = current
         .as_ref()
         .filter(|r| r.hash == recipe.hash && Some(&r.hash) != release.base_hash.as_ref())
@@ -1298,9 +1330,6 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
     if current.as_ref().map(|r| r.hash.clone()) != release.base_hash {
         return Err("待生效版本与当前生产配方冲突".into());
     }
-    if environment(app, &recipe)? != release.validation.environment_tag {
-        return Err("等待期间设备或标定已变化，请重新验证".into());
-    }
     let archive = host.dir(&recipe.id).join("published");
     std::fs::create_dir_all(&archive).map_err(|e| e.to_string())?;
     crate::fsio::write_atomic(
@@ -1308,6 +1337,52 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
         &serde_json::to_string(release).map_err(|e| e.to_string())?,
     )?;
     cycle.recipes.save(release.doc.clone(), release.base_hash.as_ref().map(|_| release.doc.id.as_str()))
+}
+
+pub fn releases_root(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("vision").join("releases"))
+}
+
+pub fn published_bundle(app: &AppHandle, recipe: &Recipe) -> Result<crate::release::ReleaseBundle, String> {
+    safe_id(&recipe.id)?;
+    let archive = app.state::<WorkspaceHost>().dir(&recipe.id).join("published").join(format!("{}.json", recipe.hash));
+    let published: Release = serde_json::from_str(&crate::fsio::read_text(&archive)
+        .map_err(|_| "所选生产版本没有不可变发布包，请在工作台验证并发布".to_string())?)
+        .map_err(|e| format!("发布快照格式无效，请重新发布：{e}"))?;
+    let bundle = crate::release::load(&releases_root(app)?, &recipe.id, &published.bundle_hash)?;
+    if bundle.recipe != published.doc || bundle.manifest.recipe_hash != recipe.hash {
+        return Err("生产快照、配方与发布包身份不一致".into());
+    }
+    Ok(bundle)
+}
+
+fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeDoc, teaching: &[Teaching]) -> Result<crate::release::ReleaseBundle, String> {
+    let recipe = doc.build()?;
+    let settings = app.state::<CycleHost>().settings();
+    let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("发布前必须加载兼容的图像核心库")?;
+    let shots = recipe.shots.iter().enumerate().map(|(k, shot)| {
+        let frame = teaching.get(k).ok_or("发布示教帧数量不足")?;
+        if !shot.measured() {
+            return Ok(crate::release::ShotInput { k, image: None, calibration: None });
+        }
+        let (image_tag, teach_tag) = shot_tags(&recipe, k)?;
+        frame.checked(&image_tag, &teach_tag)?;
+        frame.checked_engine(&engine.identity)?;
+        if !frame.saved { return Err(format!("拍照点 {} 尚未保存示教", shot.id)); }
+        let image = frame.image.as_ref().ok_or("发布示教原图缺失")?;
+        let external = vision::shot_calib_path(app, &recipe, k)?;
+        let source = if external.exists() {
+            Some(serde_json::from_str::<Value>(&crate::fsio::read_text(&external).map_err(|e| e.to_string())?).map_err(|e| format!("拍照点 {} 工位标定无效：{e}", shot.id))?)
+        } else { None };
+        let calibration = json!({"schemaVersion":1,"camera":shot.camera,"view":shot.view,
+            "reference":shot.calib_ref(),"mmPerPx":shot.mm_per_px,"source":source});
+        Ok(crate::release::ShotInput { k,
+            image: Some(crate::release::ResourceSource::File(image_file(host, &recipe.id, &image.id)?)),
+            calibration: Some(crate::release::ResourceSource::Bytes(serde_json::to_vec(&calibration).map_err(|e| e.to_string())?)) })
+    }).collect::<Result<Vec<_>, String>>()?;
+    crate::release::publish(&releases_root(app)?, crate::release::PublishInput { recipe: doc.clone(),
+        versions: crate::release::Versions { engine: engine.identity.clone(), graph: crate::production::GRAPH_VERSION.into() },
+        graph: crate::release::ResourceSource::Bytes(serde_json::to_vec(&crate::production::graphs(&recipe)?).map_err(|e| e.to_string())?), shots })
 }
 
 pub fn apply_pending(app: &AppHandle) -> bool {
@@ -1842,73 +1917,37 @@ fn measure_paths(
     if paths.len() != recipe.shot_count() {
         return Err("样本组的原图数量与拍照点不一致".into());
     }
+    let settings = app.state::<CycleHost>().settings();
+    let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("lyFlow 核心库未加载")?;
     let mut table = vec![PointState::Pending; recipe.point_count()];
     let mut measurements = Vec::new();
+    let run = format!("candidate-{}-{}", recipe.hash, ly_plc::now_ms());
     for (k, path) in paths.iter().enumerate() {
-        if !recipe.shots[k].measured() {
-            continue;
-        }
-        let frame = w
-            .frames
-            .get(k)
-            .filter(|f| f.saved)
-            .ok_or("候选存在尚未保存的示教帧")?;
+        let shot = &recipe.shots[k];
+        if !shot.measured() { continue; }
+        let frame = w.frames.get(k).filter(|f| f.saved).ok_or("候选存在尚未保存的示教帧")?;
         let (image_tag, teach_tag) = shot_tags(&recipe, k)?;
         frame.checked(&image_tag, &teach_tag)?;
-        let frozen = frame.image.as_ref().unwrap();
+        frame.checked_engine(&engine.identity)?;
+        let frozen = frame.image.as_ref().ok_or("示教原图缺失")?;
         let (ct, cal) = tags(app, &recipe, k)?;
         if frozen.camera_tag != ct || frozen.calib_tag != cal {
             return Err("相机或标定变化，需要重新示教".into());
         }
         let image = crate::replay::load(path)?;
         if [image.width, image.height] != frozen.size {
-            return Err(format!("k{} 样本尺寸与示教图像不同", k + 1));
+            return Err(format!("拍照点 {} 样本尺寸与示教图像不同", shot.id));
         }
-        let (m, score, _, passed, reason) = measure_image(app, &recipe, k, &image)?;
-        if !passed {
-            return Err(format!("k{}：{reason}", k + 1));
+        let reading = vision::measure_shot(&engine, &recipe, k, &image, &format!("{run}-{k}"), "")?;
+        for (i, &j) in reading.idx.iter().enumerate() {
+            table[j as usize] = if reading.st[i] == crate::measure::ST_OK {
+                PointState::Measured { d: reading.d[i], w: reading.w[i] }
+            } else { PointState::Gap };
         }
-        if m["unit"].as_str() != Some("mm") {
-            return Err("算法输出单位不是 mm，请检查工位标定".into());
-        }
-        let ids = m["ids"].as_array().ok_or("测量结果缺少点编号")?;
-        let statuses = m["status"].as_array().ok_or("测量结果缺少状态")?;
-        let mut idx = Vec::new();
-        let mut d = Vec::new();
-        let mut width = Vec::new();
-        let mut st = Vec::new();
-        for (i, v) in ids.iter().enumerate() {
-            let Some(j) = v
-                .as_u64()
-                .map(|j| j as usize)
-                .filter(|&j| j < table.len() && recipe.points.k[j] as usize == k)
-            else {
-                continue;
-            };
-            let reading = m["innerCenter"]
-                .get(i)
-                .and_then(|v| v.as_f64())
-                .map(|v| v as f32);
-            let bead_width = m["width"].get(i).and_then(|v| v.as_f64()).map(|v| v as f32);
-            table[j] = match (statuses.get(i).and_then(|v| v.as_str()), reading) {
-                (Some("ok"), Some(d)) => PointState::Measured {
-                    d,
-                    w: bead_width.unwrap_or(f32::NAN),
-                },
-                (Some("no_bead"), _) => PointState::Gap,
-                _ => PointState::Invalid,
-            };
-            idx.push(j);
-            d.push(reading.unwrap_or(0.0));
-            width.push(bead_width);
-            st.push(match table[j] {
-                PointState::Measured { .. } => 0,
-                PointState::Gap => 1,
-                _ => 2,
-            });
-        }
-        measurements.push(json!({ "sn":sn, "k":k, "cam":0, "s":null, "located":passed, "score":score,
-            "ms":0, "error":null, "idx":idx, "d":d, "w":width, "st":st, "px":[] }));
+        let cam = app.state::<CycleHost>().camera.require(&shot.camera)?;
+        measurements.push(json!({"cycleId":run,"bundleHash":null,"shotId":shot.id,"camera":shot.camera,
+            "sn":sn,"k":k,"cam":cam,"located":true,"score":reading.coverage,"ms":reading.ms,
+            "error":null,"idx":reading.idx,"d":reading.d,"w":reading.w,"st":reading.st,"px":reading.px}));
     }
     Ok((table, measurements))
 }
@@ -2067,6 +2106,7 @@ mod tests {
         };
         let trial = Trial {
             image_id: image.id.clone(),
+            engine_tag: "test-engine".into(),
             params_tag: "teach".into(),
             geometry_tag: "geometry".into(),
             passed: true,
@@ -2237,6 +2277,7 @@ mod tests {
         let mut w = Workspace::new(doc, Some(old.hash.clone()));
         w.pending = Some(Box::new(Release {
             doc: w.doc.clone(),
+            bundle_hash: "frozen-test-bundle".into(),
             base_hash: w.base_hash.clone(),
             revision: w.revision,
             frames: vec![taught()],

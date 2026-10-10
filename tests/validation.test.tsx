@@ -59,7 +59,7 @@ describe("验证与发布页面", () => {
     if (condition === "busy") ws.busy = true;
     if (condition === "failed") ws.data!.workspace.validation!.passed = false;
     if (condition === "stale") ws.data!.workspace.validation!.revision = 6;
-    if (condition === "pending") ws.data!.workspace.pending = { doc: ws.doc!, revision: 7, baseHash: "old", frames: [], overview: ws.data!.workspace.overview, validation: ws.data!.workspace.validation! };
+    if (condition === "pending") ws.data!.workspace.pending = { doc: ws.doc!, bundleHash: "bundle-v1", revision: 7, baseHash: "old", frames: [], overview: ws.data!.workspace.overview, validation: ws.data!.workspace.validation! };
     show(); expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
     expect(workspaceApi.publish).not.toHaveBeenCalled();
   });

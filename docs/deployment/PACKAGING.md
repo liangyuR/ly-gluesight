@@ -7,7 +7,7 @@ pnpm install --frozen-lockfile
 pnpm run package
 ```
 
-命令自动收集 lyFlow 及其依赖 DLL、Visual C++ 运行库，校验 DLL 加载和飞拍/标定算子，再构建生产前端、编译 Rust Release 程序，生成 NSIS `.exe` 安装包。任一步失败都会停止，不会生成缺少引擎的安装包。
+命令自动收集 lyFlow 及其依赖 DLL、Visual C++ 运行库，校验 DLL 加载和示教胶路/标定算子，再构建生产前端、编译 Rust Release 程序，生成 NSIS `.exe` 安装包。任一步失败都会停止，不会生成缺少引擎的安装包。
 
 默认产物位于 `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/`，文件名包含产品名、版本号、架构和 `setup.exe`。如设置了 `CARGO_TARGET_DIR`，以命令最后输出的安装包路径为准。`pnpm build` 仍然只构建前端。发包请使用 `pnpm run package`，直接运行 `tauri build` 不会收集引擎。
 
@@ -19,7 +19,7 @@ pnpm run package
 
 ## 引擎来源
 
-默认从相邻仓库 `../LyFlow/build/core/bin` 收集全部 DLL，通过 Visual Studio 的 `vswhere` 自动找到最新 x64 CRT。构建机需要先准备与当前客户端兼容、启用 glue 算子的 lyFlow 产物（Image ABI v15）；发包时自动部署这些产物，不重新编译 C++ 引擎。实际引擎验证见 [测试说明](../testing/TESTING.md)。
+默认从相邻仓库 `../LyFlow/build/core/bin` 收集全部 DLL，通过 Visual Studio 的 `vswhere` 自动找到最新 x64 CRT。构建机需要先准备与当前客户端兼容、启用 glue 算子的 lyFlow 产物（Image ABI v15），必须包含 `io.load_image`、`image.board_calib`、`image.load_calib`、`glue.taught_path`、`glue.bead_width`；发包时自动部署这些产物，不重新编译 C++ 引擎。当前已验证的开发产物位于 `LyFlow/.claude/worktrees/glue-taught-path/build/core/bin`，可通过下列来源参数选择；旧版仅有定位/卡尺算子的 DLL 不满足当前配方。实际引擎验证见 [测试说明](../testing/TESTING.md)。
 
 自定义来源可使用环境变量或命令参数：
 

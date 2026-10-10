@@ -40,7 +40,7 @@ export function workspaceView(id = "A"): WorkspaceView {
         const image: FrozenImage = { id: `${id}-image-${k}`, source: "camera", capturedAt: 1, size: [100, 60], camera: "CAM-1", view: 1,
           cameraTag: "cam-v1", calibTag: "calib-v1", geometryTag: "geom-v1", exposureUs: 60, gainDb: 6, historyId: null };
         return { k, saved: false, backup: null, image, views: [image],
-        trial: { imageId: `${id}-image-${k}`, paramsTag: "params-v1", geometryTag: "geom-v1", passed: true,
+        trial: { imageId: `${id}-image-${k}`, paramsTag: "params-v1", geometryTag: "geom-v1", engineTag: "engine-v1", passed: true,
           score: .94, coverage: 1, elapsedMs: 8, reason: "试测通过", measurement: { ids: [2 * k, 2 * k + 1] } },
         };
       }),

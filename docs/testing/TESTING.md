@@ -180,7 +180,21 @@ jsdom 没有真实布局、灰度图解码与设备连接能力。测试环境�
 
 前端命令为 `node node_modules/vitest/vitest.mjs run --coverage --pool=threads --maxWorkers=2`、两套 `tsc` 检查和 `node node_modules/vite/bin/vite.js build`。S7 命令为 `cargo test --offline --locked --lib plc_session::tests -- --include-ignored --test-threads=1`。日志分别保存在本机忽略目录 `tmp/p0-step3-frontend.log` 和 `src-tauri/target/p0-step3-s7.log`。Windows 沙箱内依赖链接解析异常，以上验证在限定范围的宿主环境执行。
 
-## lyFlow 原始图像注入回归
+## 2026-10-10 · P0 步 4
+
+分支 `codex/p0-step4-release-runtime`。默认 Rust 回归 157 项通过、21 项默认忽略；S7 回环专项 19 项通过；实际 DLL 专项 3 项通过。前端 42 个文件、925 项通过，应用和测试类型检查、生产构建通过；覆盖率仍为语句 91.43%、分支 90.03%、函数 88.73%、行 93.90%。日志为 `src-tauri/target/p0-step4-{rust,s7,native}.log` 和 `tmp/p0-step4-frontend.log`。
+
+默认和 S7 命令沿用步 3。DLL 专项需设置 `LYFLOW_CORE_DLL`，运行 `cargo test --offline --locked --lib native_ -- --ignored --test-threads=1 --nocapture`；可设置 `GLUESIGHT_VISION_TEST_DIR` 保存夹具、测量图及逐站结果。本次证据在 `tmp/p0-step4-native/report.json`，记录每张夹具和测量图 FNV-1a 64；DLL 版本 `1.1.0`、FNV-1a 64 `014eb64e169b3cfc`、SHA256 `B784205274B8A06611322E814E894CE654F174EF5F329CCBB5E7AF54BFFB3125`。
+
+- 棋盘标定使用完整原图像素，新帧不沿用旧棋盘结果。
+- 示教胶路的暗胶、亮胶、缺口、空白后新帧、偏移、反向中线、毫米换算及冻结图核对均使用真实 DLL；空白整区明确报测量失败，不能成为 OK。
+- 冻结发布包覆盖三设备四拍照点、视角 1→2→3→1、不同原图尺寸；外部原图和标定修改不改变包内资源及读数，缺失/篡改资源拒绝。实际预热 215 ms、稳定单帧 1 ms，仅为本机小型合成图测量，不代表现场分辨率或整件尾延迟。
+- 真实 S7 回环新增慢 End 落盘：End 接收时冻结截止起点，落盘排队后的最后帧不能延长截止，输出 ERR 91。补丁已独立推送至步 3 分支 `94765c7`。
+- `scripts/Test-PackagedRuntime.ps1` 已使用实际 DLL 验证，部署自检与运行时采用相同的示教胶路/标定算子清单。
+
+本节证明资源冻结和真实测量接入。完整 UI 建配方到在线检测、历史原包复测及现场准确率仍由后续步骤验收。
+
+## lyFlow 原始图像注入回归（较早记录）
 
 客户端固定到主线 `5b796c3`（Image ABI v15），使用 `RunSpec.image_inputs` 注入完整 u8 灰度帧。运行库必须包含 `io.load_image`、`image.board_calib`、`image.load_calib`、`glue.locate`、`glue.station_calipers`；在 lyFlow 仓库设置 `LYFLOW_PACKS=glue` 后构建 core，系统设置填 DLL 绝对路径。
 
