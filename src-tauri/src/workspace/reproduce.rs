@@ -96,10 +96,28 @@ mod tests {
             assert_eq!(again_measurements[k]["bundleHash"], prepared.bundle.hash);
             assert_eq!(again_measurements[k]["camera"], original.shots[k].camera);
         }
-        let (gap, gap_measurements) = measure(&prepared, 4, 101, "gap-piece", |k|
-            Ok(if k == 1 { FrameImage::new(256, 160, vec![210; 256 * 160]) } else { image() })).unwrap();
+        let (gap, gap_measurements) = measure(&prepared, 4, 101, "gap-piece", |k| {
+            let mut raw = image();
+            if k == 1 {
+                for y in 74..90 { for x in 100..140 { raw.pixels[y * 256 + x] = 210; } }
+            }
+            Ok(raw)
+        }).unwrap();
         assert_eq!(gap.verdict, Verdict::NgGap);
-        assert!(gap_measurements[1]["st"].as_array().unwrap().iter().all(|status| status == crate::measure::ST_GAP));
+        assert_eq!(gap.plc_code, 13);
+        let states = gap_measurements[1]["st"].as_array().unwrap();
+        assert!(states.iter().any(|status| status == crate::measure::ST_GAP));
+        assert!(states.iter().any(|status| status == crate::measure::ST_OK));
+        assert!(gap.gaps.iter().any(|gap| gap.frames == [1] && gap.len > 6.0));
+        for k in [0, 2, 3] { assert_eq!(gap_measurements[k]["st"], first_measurements[k]["st"]); }
+        let (empty, empty_measurements) = measure(&prepared, 4, 101, "empty-shot", |k|
+            Ok(if k == 1 { FrameImage::new(256, 160, vec![210; 256 * 160]) } else { image() })).unwrap();
+        assert_eq!(empty.verdict, Verdict::ErrInspect);
+        assert_eq!(empty.fault_code, judge::fault::PROCESS_TIMEOUT);
+        assert_eq!(empty_measurements.len(), 4);
+        assert_eq!(empty_measurements[1]["located"], false);
+        assert!(empty_measurements[1]["error"].as_str().unwrap().contains("没找到胶"));
+        assert!(empty_measurements[1]["idx"].as_array().unwrap().is_empty());
         let (failed, failed_measurements) = measure(&prepared, 4, 101, "failed-piece", |k|
             Ok(if k == 2 { FrameImage::new(200, 100, vec![210; 200 * 100]) } else { image() })).unwrap();
         assert_eq!(failed.verdict, Verdict::ErrInspect);
