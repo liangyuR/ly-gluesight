@@ -393,10 +393,12 @@ impl CycleHost {
 /// 删除超过保留天数的检测记录。
 pub fn purge_history(app: &AppHandle) {
     let days = host(app).settings().history_days.max(1) as i64;
-    match app.state::<Store>().purge_before(now_ms() - days * 86_400_000) {
-        Ok(n) if n > 0 => log(app, "info", "记录清理", format!("删除 {days} 天前的 {n} 条检测记录")),
+    match crate::workspace::purge_history(app, now_ms() - days * 86_400_000) {
+        Ok((n, warnings)) => {
+            if n > 0 { log(app, "info", "记录清理", format!("删除 {days} 天前的 {n} 条检测记录")); }
+            for warning in warnings { log(app, "warn", "复测记录清理", warning); }
+        }
         Err(e) => log(app, "err", "记录清理", e),
-        _ => {}
     }
 }
 
@@ -701,7 +703,10 @@ impl Machine {
     fn new(app: AppHandle, measure_tx: Sender<Job>, workers: Arc<WorkerHealth>) -> Self {
         let stats = app.state::<Store>().counts_since(history::local_midnight_ms()).map(Stats::from).unwrap_or_default();
         let s7 = PlcSession::open(app.path().app_data_dir().expect("app data directory").join("plc-handshake.json"));
-        let recovery = s7.recover_acknowledgements();
+        let recovery = match app.state::<Store>().unresolved_delivery_cycles() {
+            Ok(unresolved) => s7.recover_acknowledgements(&unresolved),
+            Err(error) => crate::plc_session::AckRecovery { receipts: Vec::new(), errors: vec![format!("读取未决 PLC 交付失败，跳过 ACK 恢复：{error}")] },
+        };
         for error in recovery.errors { log(&app, "err", "PLC 确认恢复", error); }
         let mut recovered = 0;
         let mut failed = 0;
