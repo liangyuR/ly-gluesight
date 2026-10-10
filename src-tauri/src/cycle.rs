@@ -829,8 +829,12 @@ impl Machine {
 
     /// 空闲、故障时的相机检查：没被配方用到的备用相机不拦着开工。
     fn check_idle_cams(&mut self) -> Result<(), String> {
-        host(&self.app).cycle_ids.ready(&self.app)?;
         host(&self.app).audit.ready()?;
+        self.check_idle_devices()
+    }
+
+    fn check_idle_devices(&mut self) -> Result<(), String> {
+        host(&self.app).cycle_ids.ready(&self.app)?;
         if !self.workers.can_arm() {
             return Err("测量工作线程全部超时且尚未返回，拒绝布防；需排查图像引擎或重启检测服务".into());
         }
@@ -1064,6 +1068,12 @@ impl Machine {
             return self.refuse(sn, id, fault::PROCESS_TIMEOUT, format!("录制追溯屏障建立失败：{reason}")).await;
         }
         let recording = host.recorder.begin(settings.record, sn, recipe.clone(), &cycle_id, bundle_id.as_deref());
+        if let Err(reason) = host.audit.health() {
+            if let Some(recording) = recording {
+                host.recorder.finish(recording, Verdict::ErrInspect, "布防前追溯健康检查失败", settings.record_keep, (settings.record_max_gb as f64 * 1e9) as u64, Vec::new());
+            }
+            return self.refuse(sn, id, fault::PROCESS_TIMEOUT, format!("录制开始后追溯健康检查失败，未启动相机：{reason}")).await;
+        }
         host.camera.begin_part(&cams);
         self.run_id = self.run_id.wrapping_add(1);
         self.part = Some(Part {
@@ -1244,6 +1254,7 @@ impl Machine {
         if new_connection && !self.is_s7() && self.phase != Phase::Fault {
             self.enter_fault("PLC 连接已更新，重新同步握手信号".into());
         }
+        let s7 = self.is_s7();
         let cameras = match self.phase {
             // 在途的件只看它自己用的相机；等 PLC 确认结果时相机掉线不打断握手，回到空闲再查
             Phase::Acquire | Phase::Drain => match self.part.as_ref() {
@@ -1252,6 +1263,7 @@ impl Machine {
                 None => Ok(()),
             },
             Phase::Report | Phase::Release => Ok(()),
+            _ if s7 => self.check_idle_devices(),
             _ => self.check_idle_cams(),
         };
         let dropped = host(&self.app).camera.dropped_total();
@@ -1259,15 +1271,22 @@ impl Machine {
             log(&self.app, "warn", "丢帧", format!("帧通道满，累计丢弃 {dropped} 帧：检测节拍处理不过来"));
             self.dropped_seen = dropped;
         }
-        let s7 = self.is_s7();
         if s7 {
+            let audit_ready = match host(&self.app).audit.readiness() {
+                Ok(crate::audit::AuditReadiness::Ready) => true,
+                Ok(crate::audit::AuditReadiness::WaitingRecording | crate::audit::AuditReadiness::WaitingStore) => false,
+                Err(error) => {
+                    self.s7.fault(plc(&app), format!("持久追溯故障：{error}")).await;
+                    return self.enter_fault(format!("持久追溯故障：{error}"));
+                }
+            };
             let devices_ready = if matches!(self.phase, Phase::Report | Phase::Release) {
-                self.check_idle_cams().is_ok()
+                self.check_idle_devices().is_ok()
             } else { cameras.is_ok() };
             let reset = std::mem::take(&mut self.s7_reset_requested);
             let previous = self.s7.phase();
             let had_ack = self.s7.acknowledged();
-            let event = self.s7.poll(plc(&app), reset, devices_ready).await;
+            let event = self.s7.poll_with_audit(plc(&app), reset, devices_ready, audit_ready).await;
             if !had_ack && self.s7.acknowledged() {
                 if let Err(error) = self.deliver_durable(PlcDeliveryState::Acknowledged, Some("PLC 结果序号已匹配确认".into())).await {
                     self.s7.fault(plc(&app), format!("PLC 确认审计持久化失败：{error}")).await;

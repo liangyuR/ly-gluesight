@@ -462,12 +462,21 @@ pub fn workspace_list(host: State<'_, WorkspaceHost>) -> Vec<Workspace> {
     out
 }
 
+fn ensure_workspace_can_be_created(path: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("无法确认旧候选是否存在，拒绝覆盖：{error}")),
+        Ok(_) => Err("磁盘已有未加载的候选，旧基线无法证明或格式无效；文件已保留。请先备份旧候选目录，再从当前生产版本重新建立候选、重新示教并验证，不能覆盖旧数据".into()),
+    }
+}
+
 #[tauri::command]
 pub fn workspace_get(app: AppHandle, id: String) -> Result<WorkspaceView, String> {
     safe_id(&id)?;
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
     if !items.contains_key(&id) {
+        ensure_workspace_can_be_created(&host.dir(&id).join("workspace.json"))?;
         let cycle = app.state::<CycleHost>();
         let mut doc = cycle.recipes.doc(&id).ok_or("配方不存在")?;
         let base = cycle.recipe(&id).map(|r| r.revision_id.clone());
@@ -1379,26 +1388,29 @@ pub fn releases_root(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("vision").join("releases"))
 }
 
-fn migrate_base(value: &mut Value) {
-    if value.get("baseRevision").is_none() && value.get("baseHash").is_some_and(|v| !v.is_null()) {
-        if let Some((id, version)) = value["doc"]["id"].as_str().zip(value["doc"]["version"].as_u64()) {
-            let revision = format!("{id}-v{}", version.saturating_sub(1).max(1));
-            value["baseRevision"] = json!(revision);
+fn migrate_base(value: &mut Value) -> Result<(), String> {
+    if value.get("baseHash").is_some_and(|v| !v.is_null()) {
+        let explicit = value.get("baseRevision").and_then(Value::as_str).zip(value["doc"]["id"].as_str())
+            .is_some_and(|(revision, id)| revision.strip_prefix(&format!("{id}-v"))
+                .and_then(|version| version.parse::<u32>().ok()).is_some_and(|version| version > 0));
+        if !explicit {
+            return Err("旧候选或发布归档仅有旧基线引用，无法证明明确的生产来源；文件已保留，请先备份旧数据，再基于当前生产版本重建候选、重新示教并验证".into());
         }
     }
     if let Some(object) = value.as_object_mut() { object.remove("baseHash"); }
+    Ok(())
 }
 
 fn decode_workspace(text: &str) -> Result<Workspace, String> {
     let mut value: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
-    migrate_base(&mut value);
-    if let Some(pending) = value.get_mut("pending").filter(|v| !v.is_null()) { migrate_base(pending); }
+    migrate_base(&mut value)?;
+    if let Some(pending) = value.get_mut("pending").filter(|v| !v.is_null()) { migrate_base(pending)?; }
     serde_json::from_value(value).map_err(|e| e.to_string())
 }
 
 fn decode_release(text: &str) -> Result<Release, String> {
     let mut value: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
-    migrate_base(&mut value);
+    migrate_base(&mut value)?;
     serde_json::from_value(value).map_err(|e| e.to_string())
 }
 
@@ -2535,12 +2547,12 @@ mod tests {
         let mut value = state_value(&archive_fixture(doc.clone()));
         let object = value.as_object_mut().unwrap();
         let bundle = object.remove("bundleId").unwrap(); object.insert("bundleHash".into(), bundle);
-        object.remove("baseRevision"); object.insert("baseHash".into(), json!("previous-opaque-reference"));
+        object.remove("baseRevision"); object.insert("baseHash".into(), Value::Null);
         let path = root.0.join("previous-archive-name.json");
         std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
         let selected = archived_release(&root.0, &doc.id, 3).unwrap();
         assert_eq!(selected.bundle_id, "prior-directory");
-        assert_eq!(selected.base_revision.as_deref(), Some(format!("{}-v2", doc.id).as_str()));
+        assert_eq!(selected.base_revision, None);
         assert_eq!(selected.doc, doc); assert!(path.is_file());
         let mut different = archive_fixture(doc.clone()); different.doc.name = "different actual recipe".into();
         std::fs::write(root.0.join("another-archive.json"), serde_json::to_vec(&different).unwrap()).unwrap();
@@ -2552,14 +2564,75 @@ mod tests {
         let mut workspace = tricam_workspace(); workspace.doc.version = 3;
         let mut value = state_value(&workspace);
         value.as_object_mut().unwrap().remove("baseRevision");
-        value["baseHash"] = json!("prior-opaque-base");
+        value["baseHash"] = Value::Null;
         let mut restored = decode_workspace(&serde_json::to_string(&value).unwrap()).unwrap();
-        assert_eq!(restored.base_revision, Some(format!("{}-v2", workspace.doc.id)));
+        assert_eq!(restored.base_revision, None);
         let image = state_value(&restored.frames[0].image);
         let tags = vec![Some((json!({"camera":"cam1"}), json!({"mmPerPx":0.25}))); restored.frames.len()];
         assert!(refresh_teaching(&mut restored, &tags, Some(&json!({"path":"core.dll","version":"1"}))));
         assert!(restored.frames.iter().all(|frame| frame.trial.is_none() && !frame.saved));
         assert_eq!(state_value(&restored.frames[0].image), image);
+    }
+
+    #[test]
+    fn unproven_legacy_candidate_pending_and_archive_are_rejected_and_preserved() {
+        let root = ImportTestDir::new();
+        let mut workspace = tricam_workspace(); workspace.doc.version = 3;
+        let mut legacy = state_value(&workspace);
+        legacy.as_object_mut().unwrap().remove("baseRevision");
+        legacy["baseHash"] = json!("unproven-previous-reference");
+        for null_revision in [false, true] {
+            let mut value = legacy.clone();
+            if null_revision { value["baseRevision"] = Value::Null; }
+            assert!(decode_workspace(&value.to_string()).unwrap_err().contains("无法证明"));
+        }
+        let path = root.0.join("workspace.json");
+        let original = legacy.to_string(); std::fs::write(&path, &original).unwrap();
+        assert!(ensure_workspace_can_be_created(&path).unwrap_err().contains("备份"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        assert!(ensure_workspace_can_be_created(&root.0.join("fresh.json")).is_ok());
+        let mut release = state_value(&archive_fixture(workspace.doc.clone()));
+        release.as_object_mut().unwrap().remove("baseRevision"); release["baseHash"] = json!("unproven-previous-reference");
+        let archive = root.0.join("legacy-release.json"); let archive_text = release.to_string();
+        std::fs::write(&archive, &archive_text).unwrap();
+        assert!(read_release(&archive).unwrap_err().contains("无法证明"));
+        assert_eq!(std::fs::read_to_string(&archive).unwrap(), archive_text);
+        let mut current = state_value(&workspace); current["pending"] = release;
+        assert!(decode_workspace(&current.to_string()).unwrap_err().contains("无法证明"));
+        legacy["baseRevision"] = json!(format!("{}-v2", workspace.doc.id));
+        assert_eq!(decode_workspace(&legacy.to_string()).unwrap().base_revision, Some(format!("{}-v2", workspace.doc.id)));
+    }
+
+    #[test]
+    fn legacy_base_requires_an_explicit_recipe_revision_for_all_document_kinds() {
+        let workspace = tricam_workspace();
+        for reference in [json!("old-reference"), json!(""), json!(9), json!(false), json!([]), json!({"old": "reference"})] {
+            for base in [Value::Null, json!(""), json!("other-v2"), json!(format!("{}-v0", workspace.doc.id))] {
+                let mut candidate = state_value(&workspace);
+                candidate["baseRevision"] = base.clone(); candidate["baseHash"] = reference.clone();
+                assert!(decode_workspace(&candidate.to_string()).unwrap_err().contains("无法证明"));
+                let mut release = state_value(&archive_fixture(workspace.doc.clone()));
+                release["baseRevision"] = base; release["baseHash"] = reference.clone();
+                assert!(decode_release(&release.to_string()).unwrap_err().contains("无法证明"));
+                let mut pending = state_value(&workspace); pending["pending"] = release;
+                assert!(decode_workspace(&pending.to_string()).unwrap_err().contains("无法证明"));
+            }
+            let mut candidate = state_value(&workspace);
+            candidate["baseRevision"] = json!(format!("{}-v2", workspace.doc.id)); candidate["baseHash"] = reference.clone();
+            assert!(decode_workspace(&candidate.to_string()).is_ok());
+        }
+        for legacy_null in [false, true] {
+            let mut candidate = state_value(&workspace); candidate["baseRevision"] = Value::Null;
+            if legacy_null { candidate["baseHash"] = Value::Null; }
+            assert_eq!(decode_workspace(&candidate.to_string()).unwrap().base_revision, None);
+        }
+        let root = ImportTestDir::new();
+        let mut current = archive_fixture(workspace.doc.clone()); current.doc.version = 3;
+        std::fs::write(root.0.join(format!("{}-v3.json", current.doc.id)), serde_json::to_vec(&current).unwrap()).unwrap();
+        let mut legacy = state_value(&archive_fixture(workspace.doc.clone())); legacy["baseHash"] = json!("unproven");
+        legacy["baseRevision"] = Value::Null;
+        std::fs::write(root.0.join("unrelated-old-v1.json"), legacy.to_string()).unwrap();
+        assert_eq!(archived_release(&root.0, &current.doc.id, 3).unwrap().doc, current.doc);
     }
 
     #[test]

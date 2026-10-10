@@ -858,3 +858,62 @@ async fn s7_wire_reconnect_between_validation_and_arm_cannot_commit() {
     assert_eq!(rig.plc.fields()["acceptedSeq"], 0);
     rig.finish().await;
 }
+
+
+#[tokio::test]
+#[ignore = "requires Python and local loopback S7 fixture"]
+async fn s7_wire_recording_audit_wait_holds_release_then_recovers_without_reset() {
+    let mut rig = Rig::new("recording-audit-wait").await;
+    rig.request(1, 12345).await;
+    rig.arm().await;
+    rig.end().await;
+    rig.report().await;
+    rig.plc.control(json!({"op":"plc_ack"}));
+    rig.phase(SessionPhase::Releasing).await;
+    rig.plc.control(json!({"op":"plc_release"}));
+    rig.fresh().await;
+    for _ in 0..4 {
+        assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, false).await, SessionEvent::None));
+        assert_eq!(rig.session.phase(), SessionPhase::Releasing);
+        assert!(rig.session.pending() && rig.session.acknowledged());
+        let fields = rig.plc.fields();
+        assert_eq!(fields["visionReady"], false);
+        assert_eq!(fields["visionFault"], false);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    let durable = PlcSession::open(rig.session.path.clone());
+    assert!(durable.pending() && durable.acknowledged());
+    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, true).await, SessionEvent::Released));
+    assert_eq!(rig.session.phase(), SessionPhase::Idle);
+    assert!(!rig.session.pending());
+    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, false).await, SessionEvent::None));
+    assert_eq!(rig.plc.fields()["visionReady"], false);
+    rig.fresh().await;
+    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, true).await, SessionEvent::None));
+    assert_eq!(rig.plc.fields()["visionReady"], true);
+    rig.request(2, 12345).await;
+    rig.arm().await;
+    rig.end().await;
+    rig.report().await;
+    rig.ack_release().await;
+    rig.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Python and local loopback S7 fixture"]
+async fn s7_wire_recording_audit_wait_does_not_mask_actual_device_fault() {
+    let mut rig = Rig::new("recording-audit-device-fault").await;
+    rig.request(1, 12345).await;
+    rig.arm().await;
+    rig.end().await;
+    rig.report().await;
+    rig.plc.control(json!({"op":"plc_ack"}));
+    rig.phase(SessionPhase::Releasing).await;
+    rig.plc.control(json!({"op":"plc_release"}));
+    rig.fresh().await;
+    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, false, false).await, SessionEvent::Fault(_)));
+    assert_eq!(rig.session.phase(), SessionPhase::Fault);
+    assert!(rig.session.pending());
+    assert_eq!(rig.plc.fields()["visionReady"], false);
+    rig.finish().await;
+}

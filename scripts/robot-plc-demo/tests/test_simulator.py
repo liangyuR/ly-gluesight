@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from modbus_wire import Client, receive
 from plc_service import PlcServer
 from robot_service import Robot, RobotServer
-from simulator_config import load_config, load_recipe, trigger_plan, validate_recipe
+from simulator_config import load_config, load_recipe, trigger_plan, validate_recipe, recipe_contract
 
 
 def until(predicate, timeout=5):
@@ -522,6 +522,21 @@ class RobotTests(unittest.TestCase):
         self.assertEqual(restored.state["parts"], 1)
         self.assertEqual(json.loads(path.read_text())["sn"], 123)
         self.assertEqual(len(list(path.parent.glob("robot-results.interrupted-*.jsonl"))), 1)
+
+
+class RecipeContractVersionTests(unittest.TestCase):
+    def test_missing_version_matches_validated_explicit_zero(self):
+        recipe = load_recipe(load_config()["robot"]["recipe"])
+        recipe.pop("version", None)
+        validate_recipe(recipe)
+        absent = recipe_contract(recipe)
+        recipe["version"] = 0
+        validate_recipe(recipe)
+        self.assertEqual(absent, recipe_contract(recipe))
+        self.assertEqual(absent["version"], 0)
+        recipe["version"] = 7
+        validate_recipe(recipe)
+        self.assertEqual(recipe_contract(recipe)["version"], 7)
 
 
 class ConfigurationTests(unittest.TestCase):
