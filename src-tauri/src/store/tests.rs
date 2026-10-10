@@ -521,3 +521,26 @@ fn interrupted_recording_recovery_rolls_back_the_whole_batch_if_one_update_fails
         assert_eq!(reopened.detail(id).unwrap().recording.errors, ["检测服务在录制完成前退出，原图完整性未确认"]);
     }
 }
+
+#[test]
+fn pending_history_protection_includes_partial_directory_and_raw_only_references() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let root = db.0.join("records");
+    let directory = root.join("_pending").join("20261010_000000_000_cycle_partial");
+    let raw_directory = root.join("_pending").join("20261010_000000_000_cycle_raw-only");
+    let recipe = recipe();
+    let mut shots = shots(&recipe);
+    shots[0].raw_files = vec![ShotRawFile { view: 1,
+        file: "_pending/20261010_000000_000_cycle_raw-only/image.pgm".into(), hash: Some("fnv1a64:1234567890abcdef".into()) }];
+    save(&store, &recipe, "pending-references", &shots, &PlcDelivery::default(), None).unwrap();
+    store.update_recording("pending-references", &RecordingEvidence {
+        state: RecordingState::Incomplete, available: false,
+        directory: Some(directory.to_string_lossy().into_owned()), errors: vec!["原图未完整落盘".into()],
+    }).unwrap();
+    let mut expected = vec![directory, raw_directory];
+    expected.sort();
+    assert_eq!(store.pending_recording_directories(&root).unwrap(), expected);
+    store.conn.lock().unwrap().execute("UPDATE part_shots SET raw_files='invalid-json'", []).unwrap();
+    assert!(store.pending_recording_directories(&root).is_err());
+}
