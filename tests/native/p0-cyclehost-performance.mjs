@@ -192,6 +192,40 @@ async function recordingMetadata(root, frames) {
   return { path: resolve(path), bytes: bytes.length, sha256: digest(bytes), document: JSON.parse(bytes.toString('utf8')) };
 }
 
+async function enrichFailedAttempt(attempt, root) {
+  const observed = attempt.row ?? attempt.lastPoll;
+  const frames = observed?.originals?.frames;
+  if (typeof root !== 'string' || !/^c:[\\/]/i.test(root) || !Array.isArray(frames) || !frames.length) return;
+  observed.recordedArtifacts ??= [];
+  const errors = [];
+  for (const frame of frames) {
+    if (observed.recordedArtifacts.some(image => image.k === frame.k && image.view === frame.view)) continue;
+    try {
+      observed.recordedArtifacts.push({ k: frame.k, view: frame.view, ...await recordedArtifact(root, frame.file) });
+    } catch (error) {
+      errors.push({ k: frame.k, view: frame.view, error: String(error) });
+    }
+  }
+  if (!observed.recordingMetadata) {
+    try {
+      observed.recordingMetadata = await recordingMetadata(root, frames);
+    } catch (error) {
+      errors.push({ metadata: true, error: String(error) });
+    }
+  }
+  if (errors.length) attempt.evidenceReadErrors = errors;
+}
+
+export async function persistFailedAttempt(output, attempt, error, completedParts) {
+  const path = join(output, 'failed-attempt.json');
+  const document = { schemaVersion: 1, failedAt: new Date().toISOString(), completedParts,
+    attempt, error: error.stack ?? String(error) };
+  const bytes = Buffer.from(JSON.stringify(document, null, 2) + '\n');
+  await writeFile(path, bytes, { flag: 'wx' });
+  return { part: attempt.part, stage: attempt.stage, accepted: attempt.accepted,
+    artifact: { path: resolve(path), bytes: bytes.length, sha256: digest(bytes) } };
+}
+
 export async function sampleProcess(pid, executable, expectedStart) {
   assert(Number.isSafeInteger(pid) && pid > 0 && isAbsolute(executable));
   const ps = "$p = Get-Process -Id " + pid + " -ErrorAction Stop; [pscustomobject]@{pid=$p.Id;path=$p.Path;start=$p.StartTime.ToUniversalTime().ToString('o');workingSetBytes=$p.WorkingSet64;privateBytes=$p.PrivateMemorySize64} | ConvertTo-Json -Compress";
@@ -206,6 +240,7 @@ export async function runCycleHostPerformance(page, options) {
   const { mode, scenario, fixture, releaseDir, executable, pid, output } = options;
   const parts = options.parts ?? 100, timeoutMs = options.timeoutMs ?? 30000;
   const source = options.source ?? 'sim';
+  const now = options.now ?? Date.now;
   assert(['sim', 'replay'].includes(source), 'Only explicit simulator or replay controls are supported');
   assert(source === 'replay' ? typeof options.replayDir === 'string' : options.replayDir === undefined,
     '--replay-dir is required only for --source replay');
@@ -233,11 +268,12 @@ export async function runCycleHostPerformance(page, options) {
       uiObservedCycleMs: 'UI click through persisted ACK, complete recording and simulator IDLE observation; polling and UI overhead included' },
     memoryScope: 'Native application main process only, after recording and handshake settle; WebView2 child processes excluded',
     coldScope: 'First part in this script is measured; no claim of cold process, DLL, graph or OS cache',
-    accuracyFailures: [], samples: [], rowsArtifact: rowsPath };
+    accuracyFailures: [], samples: [], completedParts: 0, rowsArtifact: rowsPath };
   const read = (command, args) => page.evaluate(async ({ command, args }) =>
     window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
   const processInfo = options.sampleProcess ?? sampleProcess;
   let layout;
+  let attempt = { part: null, stage: 'initialGuard', accepted: false, lastPoll: null, row: null };
   try {
     const guard = { records: await read('records_list'), cameras: await read('camera_rig_config'),
       plc: await read('plc_get_config'), status: await read('plc_get_status'), settings: await read('cycle_get_settings'),
@@ -283,29 +319,43 @@ export async function runCycleHostPerformance(page, options) {
       workingSetBytes: firstProcess.workingSetBytes, privateBytes: firstProcess.privateBytes });
     const rows = [], seen = new Set();
     for (let part = 1; part <= parts; part++) {
+      attempt = { part, stage: 'partPreflight', accepted: false, lastPoll: null, row: null };
       assert((await read('cycle_snapshot')).phase === 'IDLE' && !(await read('sim_status')).running);
       if (source === 'replay') assert.deepEqual(await read('camera_rig_config'), guard.cameras,
         'Camera configuration changed during replay control run');
       const previous = (await read('history_query', { query: { recipeId: fixtureDoc.id, limit: 1 } })).items[0]?.id ?? -1;
-      const began = Date.now();
+      const began = now();
+      Object.assign(attempt, { startedAt: began, previousHistoryId: previous, stage: 'clickRun' });
       await page.getByRole('button', { name: '运行一件', exact: true }).click();
-      const deadline = Date.now() + timeoutMs;
+      const deadline = now() + timeoutMs;
+      attempt.stage = 'pollResult';
       let row;
-      while (Date.now() < deadline) {
+      while (now() < deadline) {
+        attempt.lastPoll = { ...attempt.lastPoll, pollStartedAt: now() };
+        attempt.lastPoll.snapshot = await read('cycle_snapshot');
+        attempt.lastPoll.snapshotObservedAt = now();
+        attempt.lastPoll.simulator = await read('sim_status');
+        attempt.lastPoll.simulatorObservedAt = now();
         const summary = (await read('history_query', { query: { recipeId: fixtureDoc.id, limit: 1 } })).items[0];
+        attempt.lastPoll.summary = summary ?? null;
         if (summary?.id > previous) {
           const detail = await read('history_detail', { id: summary.id });
+          attempt.lastPoll.detail = detail;
           const originals = await read('workspace_record_images', { historyId: summary.id });
+          attempt.lastPoll.originals = originals;
+          const measurements = await read('cycle_part_data');
+          attempt.lastPoll.measurements = measurements;
           if (detail.summary.delivery.state === 'acknowledged' && detail.recording.state === 'complete' &&
-            originals.complete && !(await read('sim_status')).running && (await read('cycle_snapshot')).phase === 'IDLE') {
-            row = { part, scenario, uiObservedCycleMs: Date.now() - began, detail, originals,
-              measurements: await read('cycle_part_data') };
+            originals.complete && !attempt.lastPoll.simulator.running && attempt.lastPoll.snapshot.phase === 'IDLE') {
+            row = { part, scenario, uiObservedCycleMs: now() - began, detail, originals, measurements };
+            attempt.row = row;
             break;
           }
         }
         await page.waitForTimeout(50);
       }
       assert(row, 'No settled, recorded, acknowledged new part within timeout');
+      attempt.stage = 'partValidation';
       const log = (await read('cycle_logs')).filter(line => line.ts >= began).find(line => line.ev === 'armed↑ busy↑');
       row.armMs = Number(log?.msg.match(/布防耗时 (\d+) ms/)?.[1]);
       row.armingLog = log;
@@ -315,25 +365,33 @@ export async function runCycleHostPerformance(page, options) {
       seen.add(row.detail.summary.cycleId);
       if (rows.length) assert(row.detail.summary.bundleHash === rows[0].detail.summary.bundleHash, 'Frozen bundle changed mid-run');
       report.accuracyFailures.push(...failures.map(failure => ({ part, ...failure })));
+      attempt.stage = 'readRecordedImages';
       row.recordedArtifacts = [];
       for (const frame of row.originals.frames) {
         row.recordedArtifacts.push({ k: frame.k, view: frame.view,
           ...await recordedArtifact(guard.records.root, frame.file) });
       }
       if (source === 'replay') {
+        attempt.stage = 'readRecordingMetadata';
         row.recordingMetadata = await recordingMetadata(guard.records.root, row.originals.frames);
+        attempt.stage = 'replayValidation';
         row.replayComparisons = validateReplayOutputs(row, report.replayInputs, layout);
       }
+      attempt.stage = 'persistAcceptedPart';
       await appendFile(rowsPath, JSON.stringify(row) + '\n', 'utf8');
       rows.push(row);
+      attempt.accepted = true;
+      report.completedParts = rows.length;
       if (part % 10 === 0 || part === parts) {
+        attempt.stage = 'sampleMemory';
         const sample = await processInfo(pid, executable, firstProcess.start);
         report.samples.push({ part, elapsedMs: performance.now() - started,
           workingSetBytes: sample.workingSetBytes, privateBytes: sample.privateBytes });
       }
-      report.completedParts = rows.length;
+      attempt.stage = 'reportCheckpoint';
       await writeFile(reportPath, JSON.stringify(report, null, 2) + '\n', 'utf8');
     }
+    attempt.stage = 'finalVerification';
     report.metrics = Object.fromEntries(['ms', 'queueMs', 'engineMs', 'coreMs'].map(key =>
       [key, distribution(rows.flatMap(row => row.measurements.map(m => m[key])))]));
     report.metrics.partEndToPlcSubmissionMs = distribution(rows.map(row => row.detail.summary.drainMs));
@@ -354,6 +412,12 @@ export async function runCycleHostPerformance(page, options) {
     report.passed = report.accuracyFailures.length === 0;
   } catch (error) {
     report.error = error.stack ?? String(error);
+    try {
+      await enrichFailedAttempt(attempt, report.guard?.records?.root);
+      report.failedAttempt = await persistFailedAttempt(output, attempt, error, report.completedParts);
+    } catch (persistenceError) {
+      report.failedAttemptPersistenceError = persistenceError.stack ?? String(persistenceError);
+    }
     throw error;
   } finally {
     report.finishedAt = new Date().toISOString();

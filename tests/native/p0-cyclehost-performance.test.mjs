@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { distribution, fnv1a64, memoryTrend, recordedArtifact, scanReplayInputs,
-  validateCameraSource, validatePart, validateReplayInputsSnapshot, validateReplayOutputs } from './p0-cyclehost-performance.mjs';
+  runCycleHostPerformance, validateCameraSource, validatePart, validateReplayInputsSnapshot, validateReplayOutputs } from './p0-cyclehost-performance.mjs';
 
 function evidence(mode = 'tricam', verdict = 'OK', plcCode = 1) {
   const layout = { id: 'fixture', hash: 'recipe', points: { k: [0, 1, 2, 3] },
@@ -306,5 +307,130 @@ for (const [name, mutate] of [
     const { report, rows } = replayReportEvidence();
     mutate(report, rows);
     assert.throws(() => validateCycleHostEvidence(report, rows));
+  });
+}
+
+async function mockPerformanceRun(parent, failure) {
+  const records = join(parent, 'com.xyzrobotics.tujiaovision.p0-tests'), release = join(parent, 'release');
+  await mkdir(records, { recursive: true });
+  await mkdir(release);
+  const { layout } = evidence('single');
+  const manifest = { schemaVersion: 1, recipeId: layout.id, recipeHash: layout.hash,
+    shots: layout.shots.map((shot, k) => ({ k, shotId: shot.id, camera: shot.camera, view: shot.view, size: [1280, 1024] })) };
+  const manifestBytes = Buffer.from(JSON.stringify(manifest)), bundleHash = fnv1a64(manifestBytes);
+  await writeFile(join(release, 'manifest.json'), manifestBytes);
+  await writeFile(join(release, 'recipe.json'), JSON.stringify(layout));
+  const executable = join(parent, 'MockApplication.exe'), dll = join(parent, 'MockEngine.dll');
+  await writeFile(executable, 'Explicit test bytes, never executed');
+  await writeFile(dll, 'Explicit test bytes, never loaded');
+  const replayDir = join(parent, 'inputs');
+  await mkdir(replayDir);
+  const rows = [];
+  for (let part = 1; part <= 2; part++) {
+    const { row } = evidence('single');
+    const cycleId = 'selftestcycle' + part, directory = join(records, 'day', 'part_cycle_' + cycleId);
+    await mkdir(directory, { recursive: true });
+    Object.assign(row.detail.summary, { id: part, sn: part + 40, cycleId, bundleHash });
+    row.originals.frames.forEach(frame => frame.file = 'day/part_cycle_' + cycleId + '/k' + frame.k + '.pgm');
+    row.measurements.forEach(measured => Object.assign(measured, { cycleId, bundleHash, sn: part + 40 }));
+    for (let k = 0; k < 4; k++) {
+      Object.assign(row.detail.shots[k], { session: 7, frameCounter: k + 11, triggerCounter: k + 11 });
+      const header = Buffer.from('P5\n1280 1024\n255\n'), pixels = Buffer.alloc(1280 * 1024, k + 1);
+      if (part === 1) await writeFile(join(replayDir, 'cam1_' + (k + 1) + '_v1.pgm'), Buffer.concat([header, pixels]));
+      if (failure === 'replay' && part === 1 && k === 1) pixels[500] = 99;
+      await writeFile(join(directory, 'k' + k + '.pgm'), Buffer.concat([header, pixels]));
+    }
+    if (failure === 'validation' && part === 2) row.measurements[1].coreMs = null;
+    if (failure === 'timeout') {
+      row.detail.summary.delivery.state = 'submitted';
+      row.detail.recording.state = 'pending';
+      row.originals.complete = false;
+    }
+    const metadata = structuredClone(replayEvidence('single').row.recordingMetadata.document);
+    Object.assign(metadata, { cycleId, sn: part + 40, bundleHash });
+    metadata.frames.forEach(frame => Object.assign(frame, { cycleId, bundleHash, file: 'k' + frame.k + '.pgm' }));
+    await writeFile(join(directory, 'part.json'), JSON.stringify(metadata));
+    rows.push(row);
+  }
+  const source = failure === 'replay' ? 'replay' : 'sim';
+  const camera = { id: 'cam1', source, acquisition: 'triggered', viewCount: 1, replayDir, replayChannel: 1 };
+  let current = 0, clock = 100000;
+  const read = command => {
+    const row = rows[Math.max(0, current - 1)];
+    switch (command) {
+      case 'records_list': return { root: records };
+      case 'camera_rig_config': return [camera];
+      case 'plc_get_config': return { connection: { protocol: 'simulator' } };
+      case 'plc_get_status': return { state: 'connected' };
+      case 'cycle_get_settings': return { timeouts: { armMs: 200 }, vision: true, record: 'all', recordKeep: 100, recordMaxGb: 20 };
+      case 'cycle_snapshot': return { phase: failure === 'timeout' && current ? 'REPORT' : 'IDLE', part: { sn: row.detail.summary.sn } };
+      case 'engine_status': return { backend: 'LyFlow', ready: true, measuring: true, path: dll, version: 'explicit mock' };
+      case 'app_info': return { version: 'explicit mock' };
+      case 'cycle_layout': return layout;
+      case 'sim_status': return { running: failure === 'timeout' && current > 0 };
+      case 'history_query': return { items: current ? [row.detail.summary] : [] };
+      case 'history_detail': return row.detail;
+      case 'workspace_record_images': return row.originals;
+      case 'cycle_part_data': return row.measurements;
+      case 'cycle_logs': return [{ ts: clock, ev: 'armed↑ busy↑', msg: '布防耗时 10 ms' }];
+      default: throw new Error('Unexpected selftest RPC ' + command);
+    }
+  };
+  const role = (name, options) => ({ getByRole: role, selectOption: async () => {},
+    click: async () => { if (name === 'button' && options.name === '运行一件') current++; } });
+  const page = { getByRole: role, evaluate: async (_callback, request) => read(request.command),
+    waitForTimeout: async ms => { clock += ms; } };
+  return { page, options: { mode: 'single', scenario: 'normal', fixture: join(release, 'recipe.json'),
+    releaseDir: release, executable, pid: 1, output: join(parent, 'evidence'), parts: 100,
+    timeoutMs: 1000, now: () => clock, source, ...(source === 'replay' ? { replayDir } : {}),
+    sampleProcess: async () => ({ path: executable, start: 'explicit mock process', workingSetBytes: 1024, privateBytes: 1024 }) } };
+}
+
+for (const failure of ['validation', 'timeout', 'replay']) {
+  test('driver preserves ' + failure + ' attempt separately from accepted JSONL parts', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'p0-failed-attempt-selftest-'));
+    try {
+      const { page, options } = await mockPerformanceRun(directory, failure);
+      await assert.rejects(() => runCycleHostPerformance(page, options));
+      const report = JSON.parse(await readFile(join(options.output, 'cyclehost-report.json'), 'utf8'));
+      assert(report.completed === false && report.passed === false && report.error);
+      const artifact = report.failedAttempt.artifact, bytes = await readFile(artifact.path);
+      assert.equal(artifact.bytes, bytes.length);
+      assert.equal(artifact.sha256, createHash('sha256').update(bytes).digest('hex'));
+      const saved = JSON.parse(bytes);
+      assert.equal(saved.attempt.part, failure === 'validation' ? 2 : 1);
+      assert.equal(saved.completedParts, failure === 'validation' ? 1 : 0);
+      assert.equal(report.completedParts, saved.completedParts);
+      assert.equal(saved.attempt.accepted, false);
+      assert(saved.attempt.lastPoll.detail && saved.attempt.lastPoll.measurements.length === 4);
+      assert(saved.attempt.lastPoll.snapshot && saved.attempt.lastPoll.simulator);
+      if (failure === 'validation') {
+        const accepted = (await readFile(join(options.output, 'parts.jsonl'), 'utf8')).trimEnd().split('\n').map(JSON.parse);
+        assert.equal(accepted.length, 1);
+        assert.equal(accepted[0].detail.summary.cycleId, 'selftestcycle1');
+        assert.equal(saved.attempt.row.measurements[1].coreMs, null);
+        assert.equal(saved.attempt.row.recordedArtifacts.length, 4);
+        assert.equal(saved.attempt.row.recordingMetadata.document.cycleId, 'selftestcycle2');
+      } else {
+        await assert.rejects(() => readFile(join(options.output, 'parts.jsonl')), /ENOENT/);
+      }
+      if (failure === 'timeout') {
+        assert.equal(saved.attempt.stage, 'pollResult');
+        assert.equal(saved.attempt.lastPoll.detail.recording.state, 'pending');
+        assert.equal(saved.attempt.row, null);
+        assert.equal(saved.attempt.lastPoll.recordedArtifacts.length, 4);
+        assert.equal(saved.attempt.lastPoll.recordingMetadata.document.cycleId, 'selftestcycle1');
+      }
+      if (failure === 'replay') {
+        assert.equal(saved.attempt.stage, 'replayValidation');
+        assert.equal(saved.attempt.row.recordedArtifacts.length, 4);
+        assert(saved.attempt.row.recordedArtifacts.every(image => image.sha256 && image.pixelsSha256));
+        assert.equal(saved.attempt.row.recordingMetadata.document.cycleId, 'selftestcycle1');
+      }
+    } finally {
+      assert(dirname(resolve(directory)) === resolve(tmpdir()) &&
+        directory.startsWith(join(tmpdir(), 'p0-failed-attempt-selftest-')));
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 }

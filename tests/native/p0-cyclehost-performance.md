@@ -85,7 +85,9 @@ $taskPerfArgs = @(
 
 normal 严格期望 OK/PLC 1/fault 0，gap 严格期望 NG_GAP/PLC 13/fault 0。既有 P0-09 正常夹具实际返回 OK_WITH_EXCURSION/2 时仍采完 100 件、保存 accuracyFailures，completed=true、passed=false 并返回非零。不得放宽限值、把结果 2 重标为 1，或删除既有失败事实。若要新建直线合成夹具，应保留独立配方身份、原图来源及哈希，并完成真实桌面验证发布。
 
-cyclehost-report.json 和 parts.jsonl 记录完整证据；中途失败保留已完成件及 error，completed=false。独立报告工具重算全部指标、逐件检查身份并重新校验文件哈希；任何伪造分位值、缺采样、错 cycleId 原图、丢视角、未知指标或篡改文件均不能通过。保存原图目录及所有引用文件后再做最终复核，避免保留策略删去较早组合原图。
+cyclehost-report.json 和 parts.jsonl 记录完整证据。中途失败保留原有JSONL及 error，completed=false；只有工件通过结构/身份校验并成功追加JSONL后才推进 completedParts。失败工件不计入该件数，严格判定不符仍按前述 accuracyFailures 单独报告。
+
+失败时另存 failed-attempt.json，报告 failedAttempt.artifact 引用文件路径、字节数和 SHA256。该文件保留 attempt 的件序号、阶段、accepted 状态、已观测工件数据，以及最后成功读取的轮询状态、detail、measurements、原图列表；异常时尽力补读已观测原图的 SHA 和 part.json 并完整保留，无法读取的项记入 evidenceReadErrors，不掩盖原始异常。超时保留最后轮询状态；若故障发生在该件已追加JSONL后的内存采样或最终检查阶段，accepted=true，已有 completedParts 不回退，但整个报告仍为未完成。写失败快照本身失败时保留 failedAttemptPersistenceError，不覆盖最初异常。独立报告工具重算全部指标、逐件检查身份并重新校验文件哈希；任何伪造分位值、缺采样、错 cycleId 原图、丢视角、未知指标或篡改文件均不能通过。保存原图目录及所有引用文件后再做最终复核，避免保留策略删去较早组合原图。
 
 这些结果属于真实软件运行层、真实 DLL 和合成像素；physicalValidation=false、s7HardwareValidation=false。PLC simulator 的完成不能替代 S7 实机、实体三目 SDK、线路、带宽或现场准确率验收。
 
