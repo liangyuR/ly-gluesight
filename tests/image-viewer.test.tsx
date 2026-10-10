@@ -74,7 +74,20 @@ describe("图像查看与加载", () => {
     const { result, rerender } = renderHook(({ history }) => useGrayImage(null, null, history, 1), { initialProps: { history: null as number | null } });
     expect(workspaceApi.image).not.toHaveBeenCalled(); expect(workspaceApi.recordImage).not.toHaveBeenCalled();
     rerender({ history: 12 }); await waitFor(() => expect(result.current.image).toEqual(image));
-    expect(workspaceApi.recordImage).toHaveBeenCalledWith(12, 1);
+    expect(workspaceApi.recordImage).toHaveBeenCalledWith(12, 1, undefined);
+  });
+
+  it("历史视角切换后迟到的旧视角不能覆盖当前图像", async () => {
+    const old = deferred<GrayImage>();
+    vi.mocked(workspaceApi.recordImage).mockReturnValueOnce(old.promise);
+    const current = {...image, url: "data:image/png;base64,current"};
+    vi.mocked(workspaceApi.recordImage).mockResolvedValueOnce(current);
+    const {result, rerender} = renderHook(({view}) => useGrayImage(null, null, 12, 1, view), {initialProps: {view: 2}});
+    rerender({view: 3});
+    await waitFor(() => expect(result.current.image).toEqual(current));
+    await act(async () => old.resolve(image));
+    expect(result.current.image).toEqual(current);
+    expect(workspaceApi.recordImage).toHaveBeenLastCalledWith(12, 1, 3);
   });
 
   it("点空白处在末尾加点并可接着拖动，按中线点只拖动不加点；整次拖动使用按下时的原图坐标", () => {

@@ -12,14 +12,14 @@ import type { Comparison, RecordImages } from "../src/features/workspace/types";
 vi.mock("../src/features/history/api", () => ({ historyApi: { detail: vi.fn(), recipe: vi.fn() } }));
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
-  recordImages: vi.fn(), recordImage: vi.fn(), comparisons: vi.fn(), compare: vi.fn(), historyCapture: vi.fn(), runtimeOverview: vi.fn(),
+  recordImages: vi.fn(), recordImage: vi.fn(), comparisons: vi.fn(), compare: vi.fn(), compareOriginal: vi.fn(), historyCapture: vi.fn(), runtimeOverview: vi.fn(),
 } }));
 let ws: ReturnType<typeof workspaceState>;
 let detail: ReturnType<typeof partDetail>;
-const raw: RecordImages = { historyId: 1, complete: true, message: "原图完整", frames: [0, 1].map(k => ({ k, camera: "CAM-1", view: 1, file: `${k}.png`, ts: 1, available: true })) };
+const raw: RecordImages = { historyId: 1, complete: true, message: "原图完整", frames: [0, 1].map(k => ({ k, camera: "CAM-1", view: 1, file: `${k}.png`, ts: 1, available: true, error: null })) };
 function element(){return <MemoryRouter initialEntries={["/history/1"]}><Link to="/history/2">打开另一件工件</Link><Routes><Route path="/history/:id" element={<HistoryDetailPage />} /><Route path="/recipe/teach" element={<p>进入示教页</p>} /><Route path="/history" element={<p>历史列表</p>}/></Routes></MemoryRouter>;}
 function show() { return render(element()); }
-function comparison():Comparison{return {id:"compare-1",historyId:1,source:"rules",candidateId:"A",candidateRevision:7,candidateRecipe:ws.data!.layout,
+function comparison():Comparison{return {id:"compare-1",historyId:1,source:"rules",cycleId:"cycle-1",bundleHash:"bundle-A",candidateId:"A",candidateRevision:7,candidateRecipe:ws.data!.layout,
   originalVerdict:"NG_GAP",judgement:{...detail.judgement,verdict:"OK",reason:"候选合格"},measurements:[],createdAt:1};}
 beforeEach(() => {
   ws = workspaceState(); ws.data!.workspace.frames.forEach(f => f.saved = true);
@@ -30,9 +30,60 @@ beforeEach(() => {
   vi.mocked(workspaceApi.runtimeOverview).mockResolvedValue(null); vi.mocked(workspaceApi.comparisons).mockResolvedValue([]);
   vi.mocked(workspaceApi.historyCapture).mockResolvedValue(ws.data!);
   vi.mocked(workspaceApi.compare).mockResolvedValue(comparison());
+  vi.mocked(workspaceApi.compareOriginal).mockResolvedValue({...comparison(),source:"original"});
 });
 
 describe("历史工件复测", () => {
+  it("原发布包重现不依赖当前候选且保留原始生产判定", async () => {
+    const original = structuredClone(detail);
+    ws.data!.workspace.doc.id = "B"; ws.dirty = true; ws.frameDirty = true;
+    const reproduced = {...comparison(), source: "original" as const, judgement: {...detail.judgement, reason: "原包重现断胶"}};
+    vi.mocked(workspaceApi.compareOriginal).mockResolvedValue(reproduced);
+    show(); await screen.findByText(/原图完整/);
+    expect(screen.getByRole("button", {name: "按候选规则重判"})).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", {name: "按原发布包重现"}));
+    expect(workspaceApi.compareOriginal).toHaveBeenCalledExactlyOnceWith(1);
+    expect(workspaceApi.compare).not.toHaveBeenCalled();
+    expect(await screen.findByRole("heading", {name: "原发布包重现结果"})).toBeVisible();
+    expect(screen.getByText("原包重现断胶")).toBeVisible();
+    expect(detail).toEqual(original);
+  });
+
+  it("缺少原图或发布身份时拒绝原包重现", async () => {
+    detail.summary.bundleHash = null;
+    show(); await screen.findByText(/原图完整/);
+    expect(screen.getByRole("button", {name: "按原发布包重现"})).toBeDisabled();
+    expect(workspaceApi.compareOriginal).not.toHaveBeenCalled();
+  });
+
+  it("按实际保存视角查看三目原图，非检测视角不叠加中线或用于示教", async () => {
+    detail.shots[0].rawFiles = [1, 2, 3].map(view => ({view, file: `k000_P1_CAM-1_v${view}.pgm`, hash: "fnv1a64:verified"}));
+    vi.mocked(workspaceApi.recordImages).mockResolvedValue({...raw, frames: [1, 2, 3].map(view => ({...raw.frames[0], view, available: view !== 3, error: view === 3 ? "原图校验失败" : null}))});
+    show(); await screen.findByText(/原图完整/);
+    expect(screen.getByRole("button", {name: "查看 k1 视角 3"})).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", {name: "查看 k1 视角 2"}));
+    await waitFor(() => expect(workspaceApi.recordImage).toHaveBeenLastCalledWith(1, 0, 2));
+    const image = await screen.findByRole("img", {name: "原始 SN 101 · k1 · 视角 2"});
+    expect(image.querySelector("polyline")).toBeNull();
+    expect(screen.getByRole("button", {name: "将此帧用于示教"})).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", {name: "追溯拍照点 P1"}));
+    await waitFor(() => expect(workspaceApi.recordImage).toHaveBeenLastCalledWith(1, 0, 1));
+    expect(screen.getByRole("button", {name: "将此帧用于示教"})).toBeEnabled();
+  });
+
+  it("测量出错、缺帧、PLC 确认和录制失败分别展示", async () => {
+    detail.shots[0].status = "error"; detail.shots[0].error = "测量引擎超时";
+    detail.shots[1].status = "missing"; detail.shots[1].error = "End 前未收到帧";
+    detail.recording = {state: "failed", available: false, directory: null, errors: ["磁盘写入失败"]};
+    show(); await screen.findByRole("heading", {name: "逐拍照点追溯"});
+    expect(screen.getByText("测量引擎超时")).toBeVisible();
+    expect(screen.getByText("End 前未收到帧")).toBeVisible();
+    expect(screen.getByText("PLC 已确认")).toBeVisible();
+    expect(screen.getByText("录制失败")).toBeVisible();
+    expect(screen.getByText("磁盘写入失败")).toBeVisible();
+    expect(screen.getByText("cycle-1")).toBeVisible();
+  });
+
   it("无原图仍可规则重判，不能原图复测或取历史图示教", async () => {
     vi.mocked(workspaceApi.recordImages).mockResolvedValue({ ...raw, complete: false, frames: [], message: "原图已清理" });
     show(); await screen.findByText(/原图已清理/);
@@ -46,7 +97,7 @@ describe("历史工件复测", () => {
     if (condition === "frame-dirty") ws.frameDirty = true;
     if (condition === "wrong-recipe") ws.data!.workspace.doc.id = "B";
     if (condition === "incomplete-measurements") detail.points!.st[0] = 2;
-    show(); await screen.findByRole("heading", { name: "候选对照" });
+    show(); await screen.findByRole("heading", { name: "复测与候选对照" });
     await waitFor(() => expect(screen.getByRole("button", { name: "按候选规则重判" })).toBeDisabled());
   });
 
@@ -185,7 +236,7 @@ describe("历史工件复测", () => {
     expect(screen.getByRole("combobox",{name:"历史帧选择"})).toHaveValue("1");
     expect(tiles.getByRole("button",{name:"拍照点 P2"})).toHaveAttribute("aria-pressed","true");
     // 原图上叠加这个拍照点的示教中线
-    const image=await screen.findByRole("img",{name:"原始 SN 101 · k2"});
+    const image=await screen.findByRole("img",{name:"原始 SN 101 · k2 · 视角 1"});
     expect(image.querySelector("polyline")).toHaveAttribute("points","30,10 40,10");
     await userEvent.click(tiles.getByRole("button",{name:"拍照点 P1"}));expect(screen.getByRole("combobox",{name:"历史帧选择"})).toHaveValue("0");
     await userEvent.click(screen.getByRole("button",{name:"整件"}));

@@ -91,12 +91,14 @@ export function snapshot(phase: Snapshot["phase"] = "IDLE"): Snapshot {
 
 export function partSummary(id = 1): PartSummary {
   return { id, sn: 100 + id, ts: 1, recipeId: "A", recipeVersion: 1, recipeHash: "hash-A", triggerMode: "fly",
-    verdict: "NG_GAP", plcCode: 2, faultCode: 0, reason: "断胶", drainMs: 20, framesExpected: 2, framesReceived: 2, retestOf: null };
+    verdict: "NG_GAP", plcCode: 2, faultCode: 0, reason: "断胶", drainMs: 20, framesExpected: 2, framesReceived: 2, retestOf: null, cycleId: `cycle-${id}`, bundleHash: "bundle-A", delivery: { state: "acknowledged", updatedAt: 1, message: null } };
 }
 
 export function partDetail(): PartDetail {
   return {
     summary: partSummary(), judgement: { verdict: "NG_GAP", plcCode: 2, faultCode: 0, reason: "断胶", segments: [], gaps: [] },
+    shots: [0,1].map(k=>({k,shotId:`P${k+1}`,camera:"CAM-1",view:1,session:1,ordinal:k+1,frameCounter:k+1,triggerCounter:k+1,status:"done",error:null,score:.9,ms:5,rawFiles:[]})),
+    recording: {state:"complete",available:true,directory:"recorded",errors:[]},
     frames: [], triggers: 2, softwareVersion: "test", points: { d: [3, 3, 3, 3], st: [0, 0, 0, 0], w: [null, null, null, null] }, retests: [],
   };
 }

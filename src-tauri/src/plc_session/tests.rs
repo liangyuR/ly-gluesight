@@ -388,6 +388,100 @@ async fn s7_wire_release_write_failure_does_not_finish_transaction() {
 
 #[tokio::test]
 #[ignore = "requires Python and local loopback S7 fixture"]
+async fn s7_wire_ack_journal_write_failure_preserves_acknowledgement() {
+    let mut rig = Rig::new("ack-journal-write-failure").await;
+    rig.request(1, 50).await;
+    rig.arm().await;
+    rig.end().await;
+    rig.report().await;
+    let temporary = rig.session.path.with_extension("pending.tmp");
+    std::fs::create_dir(&temporary).unwrap();
+    assert!(!rig.session.acknowledged());
+    rig.plc.control(json!({"op":"plc_ack"}));
+    rig.fresh().await;
+
+    let event = rig.session.poll(&rig.engine, false, true).await;
+    assert!(matches!(event, SessionEvent::Fault(ref error) if error.contains("无法保存握手事务")), "{event:?}");
+    assert_eq!(rig.session.phase(), SessionPhase::Fault);
+    assert!(rig.session.acknowledged());
+    assert!(rig.session.pending());
+    assert_eq!(rig.session.result().unwrap().request_seq, 1);
+    assert_eq!(rig.session.journal.pending.as_ref().unwrap().phase, SessionPhase::Fault);
+    let durable: Journal = serde_json::from_slice(&std::fs::read(&rig.session.path).unwrap()).unwrap();
+    assert!(!durable.pending.unwrap().acknowledged);
+    let fields = rig.plc.fields();
+    assert_eq!(fields["done"], true);
+    assert_eq!(fields["busy"], true);
+    assert_eq!(fields["visionFault"], true);
+    assert_eq!(fields["visionReady"], false);
+
+    std::fs::remove_dir(&temporary).unwrap();
+    rig.plc.values(json!({"partStart":false,"partEnd":false,"resultAck":false}));
+    rig.fresh().await;
+    rig.session.poll(&rig.engine, false, true).await;
+    assert_eq!(rig.session.phase(), SessionPhase::Fault);
+    assert!(rig.session.acknowledged());
+    assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready));
+    assert!(rig.audit().iter().any(|record| record["action"] == "resetCompleted"
+        && record["pending"]["acknowledged"] == true && record["pending"]["result"]["requestSeq"] == 1));
+    rig.finish().await;
+}
+
+#[test]
+#[ignore = "requires Python and local loopback S7 fixture"]
+fn s7_wire_ack_journal_monitor_failure_preserves_acknowledgement() {
+    tokio::runtime::Builder::new_current_thread().enable_all().max_blocking_threads(1).build().unwrap().block_on(async {
+        let mut rig = Rig::new("ack-journal-monitor-failure").await;
+        rig.request(1, 50).await;
+        rig.arm().await;
+        rig.end().await;
+        rig.report().await;
+        assert!(!rig.session.acknowledged());
+        rig.plc.control(json!({"op":"plc_ack"}));
+        rig.plc.control(json!({"op":"heartbeat","enabled":false}));
+        rig.fresh().await;
+        let (release, wait) = mpsc::channel();
+        let (started, started_wait) = tokio::sync::oneshot::channel();
+        let blocker = tokio::task::spawn_blocking(move || {
+            started.send(()).unwrap();
+            wait.recv_timeout(Duration::from_secs(8)).unwrap();
+        });
+        started_wait.await.unwrap();
+
+        let observe = async {
+            tokio::time::sleep(Duration::from_millis(3600)).await;
+            let fields = rig.plc.fields();
+            assert_eq!(fields["visionFault"], true, "monitor must fault before the ACK journal write completes");
+            assert_eq!(fields["done"], true);
+            assert_eq!(fields["busy"], true);
+            release.send(()).unwrap();
+        };
+        let (event, ()) = tokio::join!(rig.session.poll(&rig.engine, false, true), observe);
+        blocker.await.unwrap();
+        assert!(matches!(event, SessionEvent::Fault(ref error) if error.contains("心跳")), "{event:?}");
+        assert_eq!(rig.session.phase(), SessionPhase::Fault);
+        assert!(rig.session.acknowledged());
+        assert!(rig.session.pending());
+        assert_eq!(rig.session.result().unwrap().request_seq, 1);
+        let durable: Journal = serde_json::from_slice(&std::fs::read(&rig.session.path).unwrap()).unwrap();
+        let pending = durable.pending.unwrap();
+        assert!(pending.acknowledged);
+        assert_eq!(pending.phase, SessionPhase::Fault);
+
+        rig.plc.control(json!({"op":"heartbeat","enabled":true}));
+        rig.plc.values(json!({"partStart":false,"partEnd":false,"resultAck":false}));
+        rig.live().await;
+        assert_eq!(rig.session.phase(), SessionPhase::Fault);
+        assert!(rig.session.acknowledged());
+        assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready));
+        assert!(rig.audit().iter().any(|record| record["action"] == "resetCompleted"
+            && record["pending"]["acknowledged"] == true && record["pending"]["result"]["requestSeq"] == 1));
+        rig.finish().await;
+    });
+}
+
+#[tokio::test]
+#[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_heartbeat_stop_faults_without_clearing_pending() {
     let mut rig = Rig::new("heartbeat-stop").await;
     rig.request(1, 50).await;
@@ -429,6 +523,49 @@ async fn s7_wire_restart_pending_requires_neutral_explicit_reset_and_audit() {
     assert!(!rig.session.pending());
     assert!(rig.audit().iter().any(|r| r["action"] == "resetCompleted" && r["pending"]["result"]["resultCode"] == 1));
     assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready), "Idle permits an explicit neutral reset: {:?}", rig.session.view());
+    rig.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Python and local loopback S7 fixture"]
+async fn s7_wire_restart_after_persisted_ack_recovers_exact_cycle_before_and_after_reset() {
+    let mut rig = Rig::new("restart-ack-cycle").await;
+    let cycle_id = "0123456789abcdef0123456789abcdef";
+    rig.request(7, 50).await;
+    rig.session.bind_cycle_id(cycle_id).unwrap();
+    rig.arm().await;
+    rig.end().await;
+    rig.report().await;
+    rig.plc.control(json!({"op":"plc_ack"}));
+    rig.phase(SessionPhase::Releasing).await;
+    assert!(rig.session.acknowledged());
+
+    rig.session = PlcSession::open(rig.session.path.clone());
+    assert_eq!(rig.session.cycle_id(), Some(cycle_id));
+    let recovered = rig.session.recover_acknowledgements();
+    assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
+    assert_eq!(recovered.receipts.len(), 1);
+    assert_eq!(recovered.receipts[0].cycle_id, cycle_id);
+    assert_eq!(recovered.receipts[0].sn, 50);
+    assert_eq!(recovered.receipts[0].request_seq, 7);
+    assert!(recovered.receipts[0].ts > 0);
+    assert_eq!(rig.session.recover_acknowledgements(), recovered);
+    rig.live().await;
+    assert_eq!(rig.session.phase(), SessionPhase::ResetRequired);
+    rig.plc.values(json!({"partStart":false,"partEnd":false,"resultAck":false}));
+    rig.fresh().await;
+    assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready));
+    assert!(!rig.session.pending());
+    rig.session = PlcSession::open(rig.session.path.clone());
+    assert_eq!(rig.session.cycle_id(), None);
+    let audit_recovered = rig.session.recover_acknowledgements();
+    assert!(audit_recovered.errors.is_empty(), "{:?}", audit_recovered.errors);
+    assert_eq!(audit_recovered.receipts.len(), 1);
+    assert_eq!(audit_recovered.receipts[0].cycle_id, cycle_id);
+    assert_eq!(audit_recovered.receipts[0].sn, 50);
+    assert_eq!(audit_recovered.receipts[0].request_seq, 7);
+    assert!(audit_recovered.receipts[0].ts >= recovered.receipts[0].ts);
+    assert_eq!(rig.session.recover_acknowledgements(), audit_recovered);
     rig.finish().await;
 }
 

@@ -11,6 +11,9 @@ use crate::handshake::{self, Contract, HeartbeatWatch, Request, ResultEnvelope, 
 use crate::inspection::tag;
 use crate::plc_plan::PlcPlan;
 
+mod recovery;
+pub use recovery::{AckReceipt, AckRecovery};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SessionPhase { ResetRequired, Idle, Validating, Acquiring, Draining, AwaitAck, Releasing, Fault }
@@ -21,6 +24,8 @@ struct Pending {
     request: Request,
     result: Option<ResultEnvelope>,
     phase: SessionPhase,
+    #[serde(default)]
+    cycle_id: Option<String>,
     #[serde(default)]
     acknowledged: bool,
     #[serde(default)]
@@ -34,6 +39,29 @@ struct Journal {
     last_request_seq: u32,
     pending: Option<Pending>,
     last_resolution: Option<String>,
+}
+
+fn valid_cycle_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn validate_pending(pending: &Pending, last_request_seq: u32) -> Result<(), String> {
+    pending.request.validate()?;
+    if pending.cycle_id.as_deref().is_some_and(|id| !valid_cycle_id(id)) {
+        return Err("S7 握手 cycleId 必须是 32 位十六进制持久身份".into());
+    }
+    if pending.request.request_seq != last_request_seq
+        || matches!(pending.phase, SessionPhase::Idle | SessionPhase::ResetRequired)
+        || (matches!(pending.phase, SessionPhase::AwaitAck | SessionPhase::Releasing) && pending.result.is_none())
+        || (pending.acknowledged && (pending.result.is_none()
+            || !matches!(pending.phase, SessionPhase::AwaitAck | SessionPhase::Releasing | SessionPhase::Fault)))
+        || pending.result.as_ref().is_some_and(|result|
+            result.request_seq != pending.request.request_seq || result.sn != pending.request.sn
+            || !matches!(result.result_code, 1 | 2 | 11 | 12 | 13 | 14 | 90)
+            || (result.result_code != 90 && result.fault_code != 0)) {
+        return Err("握手事务日志的身份或阶段不一致，禁止自动恢复".into());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -74,16 +102,7 @@ impl PlcSession {
         };
         let (journal, mut load_error) = match loaded {
             Ok(journal) if journal.version == 1 => {
-                let error = journal.pending.as_ref().and_then(|pending| {
-                    pending.request.validate().err().or_else(|| {
-                        (pending.request.request_seq != journal.last_request_seq
-                            || matches!(pending.phase, SessionPhase::Idle | SessionPhase::ResetRequired)
-                            || (matches!(pending.phase, SessionPhase::AwaitAck | SessionPhase::Releasing) && pending.result.is_none())
-                            || pending.result.as_ref().is_some_and(|result|
-                                result.request_seq != pending.request.request_seq || result.sn != pending.request.sn))
-                            .then(|| "握手事务日志的身份或阶段不一致，禁止自动恢复".into())
-                    })
-                });
+                let error = journal.pending.as_ref().and_then(|pending| validate_pending(pending, journal.last_request_seq).err());
                 (journal, error)
             }
             Ok(journal) => (journal, Some("不支持的 S7 握手日志版本".into())),
@@ -99,6 +118,23 @@ impl PlcSession {
     }
 
     pub fn pending(&self) -> bool { self.journal.pending.is_some() || self.load_error.is_some() }
+
+    pub fn acknowledged(&self) -> bool { self.journal.pending.as_ref().is_some_and(|pending| pending.acknowledged) }
+
+    pub fn bind_cycle_id(&mut self, id: &str) -> Result<(), String> {
+        if !valid_cycle_id(id) { return Err("S7 握手 cycleId 必须是 32 位十六进制持久身份".into()); }
+        if let Some(error) = &self.load_error { return Err(error.clone()); }
+        let pending = self.journal.pending.as_mut().ok_or("缺少可关联的 S7 请求事务")?;
+        match pending.cycle_id.as_deref() {
+            Some(bound) if bound != id => Err("S7 事务已绑定其他 cycleId，禁止更换工件身份".into()),
+            Some(_) => Ok(()),
+            None => { pending.cycle_id = Some(id.into()); Ok(()) }
+        }
+    }
+
+    pub fn cycle_id(&self) -> Option<&str> { self.journal.pending.as_ref().and_then(|pending| pending.cycle_id.as_deref()) }
+
+    pub fn recover_acknowledgements(&self) -> AckRecovery { recovery::read(self) }
 
     pub fn request(&self) -> Option<&Request> { self.journal.pending.as_ref().map(|p| &p.request) }
 
@@ -340,7 +376,7 @@ impl PlcSession {
                     return Err("请求事务序号必须非零且递增；PLC 清零或回绕需先执行空闲复位".into());
                 }
                 self.journal.pending = Some(Pending { request: request.clone(), result: None, phase: SessionPhase::Validating,
-                    acknowledged: false, started_at: now_ms() });
+                    cycle_id: None, acknowledged: false, started_at: now_ms() });
                 self.journal.last_request_seq = request.request_seq;
                 self.persist(engine).await?;
                 self.phase = SessionPhase::Validating;
@@ -372,10 +408,8 @@ impl PlcSession {
                 if self.phase == SessionPhase::AwaitAck {
                     let result = self.result().ok_or("S7 结果尚未生成")?;
                     if handshake::matching_ack(&snapshot, result)? {
-                        let mut next = self.journal.clone();
-                        next.pending.as_mut().unwrap().acknowledged = true;
-                        self.persist_journal(engine, &next).await?;
-                        self.journal = next;
+                        self.journal.pending.as_mut().unwrap().acknowledged = true;
+                        self.persist(engine).await?;
                         self.write(engine, handshake::release_plan()).await?;
                         self.set_pending_phase(engine, SessionPhase::Releasing).await?;
                     }

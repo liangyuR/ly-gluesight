@@ -1,6 +1,34 @@
 use super::*;
 use crate::frame::CounterSource;
 
+#[test]
+fn interrupted_history_keeps_all_planned_shots_and_each_failure_reason() {
+    let mut part = part("cycle-audit", &Ledgers::default(), true);
+    part.frames[0].status = FrameStatus::Done;
+    part.frames[0].session = Some(18);
+    part.frames[0].frame_counter = Some(81);
+    part.frames[0].score = Some(0.92);
+    part.frames[2].status = FrameStatus::Measuring;
+    part.frames[3].status = FrameStatus::LocateFailed;
+    part.frames[3].error = Some("定位失败".into());
+    let shots = recorded_shots(Some(&part.recipe), &part.frames, "连接中断");
+    assert_eq!(shots.len(), 4);
+    assert_eq!(shots.iter().map(|shot| shot.view).collect::<Vec<_>>(), [1, 2, 3, 1]);
+    assert_eq!(shots[0].status, FrameStatus::Done);
+    assert_eq!(shots[0].session, Some(18));
+    assert_eq!(shots[0].frame_counter, Some(81));
+    assert_eq!(shots[1].status, FrameStatus::Missing);
+    assert!(shots[1].error.as_ref().unwrap().contains("连接中断"));
+    assert_eq!(shots[2].status, FrameStatus::Error);
+    assert!(shots[2].error.as_ref().unwrap().contains("测量未完成"));
+    assert_eq!(shots[3].status, FrameStatus::LocateFailed);
+    assert_eq!(shots[3].error.as_deref(), Some("定位失败"));
+    assert_eq!(part.frames[1].status, FrameStatus::Waiting);
+    let refused = recorded_shots(Some(&part.recipe), &[], "未布防");
+    assert_eq!(refused.len(), 4);
+    assert!(refused.iter().all(|shot| shot.status == FrameStatus::Missing));
+}
+
 fn part(cycle_id: &str, ledgers: &Ledgers, one_device: bool) -> Part {
     let mut doc = crate::recipe::samples().remove(1);
     for (k, shot) in doc.shots.iter_mut().enumerate() {

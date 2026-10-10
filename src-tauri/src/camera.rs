@@ -203,7 +203,7 @@ struct Reorder {
 }
 
 struct ReplayState {
-    files: Vec<Vec<PathBuf>>,
+    frames: Vec<replay::ReplayFrame>,
     next: usize,
     /// 帧录制目录：各帧相对工件开始的时刻（ms）。有它时每件从第一张放
     times: Option<Vec<i64>>,
@@ -638,7 +638,7 @@ impl CameraSlot {
             (s.message.clone(), s.warnings.clone(), s.max_fps)
         };
         let device = self.device.lock().unwrap().as_ref().map(|d| d.summary.clone());
-        let replay = self.replay.lock().unwrap().as_ref().map(|r| (r.files.len(), r.next));
+        let replay = self.replay.lock().unwrap().as_ref().map(|r| (r.frames.len(), r.next));
         let message = if let Err(e) = config.validate() { e } else { match (config.source, replay) {
             (CameraSource::Sim, _) => match config.acquisition {
                 Acquisition::Triggered => format!("模拟相机：每次触发交付一帧 · {} 个视角", config.view_count),
@@ -767,11 +767,11 @@ impl CameraSlot {
     }
 
     /// 下一张回放图，到末尾后从头再来。
-    fn next_replay(&self) -> Option<Vec<PathBuf>> {
+    fn next_replay(&self) -> Option<replay::ReplayFrame> {
         let mut guard = self.replay.lock().unwrap();
         let r = guard.as_mut()?;
-        let p = r.files[r.next % r.files.len()].clone();
-        r.next = (r.next + 1) % r.files.len();
+        let p = r.frames[r.next % r.frames.len()].clone();
+        r.next = (r.next + 1) % r.frames.len();
         Some(p)
     }
 
@@ -781,18 +781,17 @@ impl CameraSlot {
         let config = self.config();
         let dir = config.replay_dir.trim().to_string();
         let path = std::path::Path::new(&dir);
-        let scanned = replay::scan_views(path, config.view_count, config.replay_channel).and_then(|files| {
+        let scanned = replay::scan_frames(path, config.view_count, config.replay_channel).and_then(|frames| {
             // 先读一张的文件头：格式解不开（或文件坏了）就不报就绪
-            for file in &files[0] {
-                replay::probe(file)?;
-            }
+            replay::probe_entry(&frames[0])?;
+            let files: Vec<_> = frames.iter().map(replay::ReplayFrame::paths).collect();
             let times = replay::timeline_views(path, &files)?;
-            Ok((files, times))
+            Ok((frames, times))
         });
         match scanned {
-            Ok((files, times)) => {
-                let msg = format!("回放目录 {dir}：{} 帧{}", files.len(), if times.is_some() { "（帧录制）" } else { "" });
-                *self.replay.lock().unwrap() = Some(ReplayState { files, next: 0, times });
+            Ok((frames, times)) => {
+                let msg = format!("回放目录 {dir}：{} 帧{}", frames.len(), if times.is_some() { "（帧录制）" } else { "" });
+                *self.replay.lock().unwrap() = Some(ReplayState { frames, next: 0, times });
                 Ok(msg)
             }
             Err(e) => {
@@ -863,12 +862,12 @@ impl CameraSlot {
                 Ok(None)
             }
             CameraSource::Replay => {
-                let paths = self.next_replay().ok_or("回放相机未加载图像")?;
+                let frame = self.next_replay().ok_or("回放相机未加载图像")?;
                 let (session, n) = self.next_counters();
                 let ticket = CaptureTicket { session, frame_counter: n };
                 let shared = self.shared.clone();
                 tauri::async_runtime::spawn(async move {
-                    let loaded = tauri::async_runtime::spawn_blocking(move || replay::load_views(&paths)).await.map_err(|e| e.to_string());
+                    let loaded = tauri::async_runtime::spawn_blocking(move || replay::load_entry(&frame)).await.map_err(|e| e.to_string());
                     match loaded.and_then(|r| r) {
                         Ok(images) => {
                             shared.deliver_in_order(session, n, Some(synthetic_frame(cam, session, n, images, manual)));

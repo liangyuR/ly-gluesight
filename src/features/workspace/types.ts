@@ -40,10 +40,10 @@ export interface Workspace {
 }
 /** coverage：要检的拍照点里已示教中线的比例（%）。 */
 export interface WorkspaceView { workspace: Workspace; layout: Recipe; productionVersion: number | null; coverage: number }
-export interface RawFrame { k: number; camera: string; view: number; file: string; ts: number; available: boolean; cam?: number | null; frameCounter?: number | null; triggerCounter?: number | null }
+export interface RawFrame { k: number; camera: string; view: number; file: string; ts: number; available: boolean; error: string | null; cam?: number | null; frameCounter?: number | null; triggerCounter?: number | null }
 export interface RecordImages { historyId: number; frames: RawFrame[]; complete: boolean; message: string }
 export interface Comparison {
-  id: string; historyId: number; source: "rules" | "raw"; candidateId: string; candidateRevision: number;
+  id: string; historyId: number; source: "rules" | "raw" | "original"; cycleId: string; bundleHash: string | null; candidateId: string; candidateRevision: number;
   candidateRecipe: Recipe;
   originalVerdict: Verdict; judgement: Judgement; measurements: Measured[]; createdAt: number;
 }

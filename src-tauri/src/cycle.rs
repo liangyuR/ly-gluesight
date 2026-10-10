@@ -25,7 +25,8 @@ use crate::recorder::{Recorder, Recording};
 use crate::settings::{CycleSettings, ProductSource};
 use crate::shot_router::{ArmCam, Floor, FrameMeta, Ledgers, Plan, Policy, Route, ShotRouter};
 use crate::sim::{Scenario, SimCtl};
-use crate::store::{PartRecord, Store, VerdictCounts};
+use crate::audit::{Audit, RecordedPart};
+use crate::store::{PartShot, PlcDelivery, PlcDeliveryState, Store, VerdictCounts};
 
 pub enum Input {
     Edge(EdgeEvent),
@@ -109,6 +110,22 @@ impl FrameView {
             ms: None,
         }
     }
+}
+
+fn recorded_shots(recipe: Option<&Recipe>, frames: &[FrameView], reason: &str) -> Vec<PartShot> {
+    let Some(recipe) = recipe else { return Vec::new() };
+    recipe.shots.iter().enumerate().map(|(k, shot)| {
+        let frame = frames.get(k).cloned().unwrap_or_else(FrameView::waiting);
+        let (status, error) = match frame.status {
+            FrameStatus::Waiting => (FrameStatus::Missing, Some(format!("未收到计划帧：{reason}"))),
+            FrameStatus::Measuring => (FrameStatus::Error, Some(format!("测量未完成：{reason}"))),
+            status => (status, frame.error),
+        };
+        PartShot { k, shot_id: shot.id.clone(), camera: shot.camera.clone(), view: shot.view,
+            session: frame.session, ordinal: frame.ordinal, frame_counter: frame.frame_counter,
+            trigger_counter: frame.trigger_counter, status, error, score: frame.score, ms: frame.ms,
+            raw_files: Vec::new() }
+    }).collect()
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -234,6 +251,7 @@ pub struct CycleHost {
     pub recipes: RecipeStore,
     pub recorder: Recorder,
     pub cycle_ids: crate::cycle_ids::CycleIds,
+    pub audit: Audit,
     settings_path: PathBuf,
     shared: Mutex<Shared>,
     rx: Mutex<Option<(UnboundedReceiver<Input>, Receiver<Frame>)>>,
@@ -249,14 +267,17 @@ impl CycleHost {
         let (tx, rx) = unbounded_channel();
         let (frame_tx, frame_rx) = channel(FRAME_QUEUE);
         let (settings, settings_note) = CycleSettings::load(&settings_path);
+        let audit = Audit::new(app);
+        let record_audit = audit.clone();
         Ok(Self {
             camera: CameraRig::new(app, frame_tx)?,
             tx,
             plc_gate: tokio::sync::Mutex::new(()),
             sim: SimCtl::default(),
             recipes: RecipeStore::open(data.join("recipes"))?,
-            recorder: Recorder::new(data.join("records")),
+            recorder: Recorder::new(data.join("records"), Some(Arc::new(move |outcome| record_audit.recording(outcome)))),
             cycle_ids: crate::cycle_ids::CycleIds::default(),
+            audit,
             shared: Mutex::new(Shared {
                 snapshot: None,
                 logs: VecDeque::new(),
@@ -284,6 +305,13 @@ impl CycleHost {
         }
         for e in &app.state::<crate::workspace::WorkspaceHost>().notes {
             log(app, "err", "候选加载", e.clone());
+        }
+        let store = app.state::<Store>();
+        if let Some(path) = store.backup_path() {
+            log(app, "warn", "记录库重建", format!("旧版数据库已备份至 {}，当前使用新版空库", path.display()));
+        }
+        if store.interrupted_recordings > 0 {
+            log(app, "err", "录制恢复", format!("上次服务退出时有 {} 件原图尚未确认完整，已标记录制失败；原检测结论保留", store.interrupted_recordings));
         }
         tauri::async_runtime::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_millis(20));
@@ -654,6 +682,22 @@ impl Machine {
     fn new(app: AppHandle, measure_tx: Sender<Job>, workers: Arc<WorkerHealth>) -> Self {
         let stats = app.state::<Store>().counts_since(history::local_midnight_ms()).map(Stats::from).unwrap_or_default();
         let s7 = PlcSession::open(app.path().app_data_dir().expect("app data directory").join("plc-handshake.json"));
+        let recovery = s7.recover_acknowledgements();
+        for error in recovery.errors { log(&app, "err", "PLC 确认恢复", error); }
+        let mut recovered = 0;
+        let mut failed = 0;
+        for receipt in recovery.receipts {
+            match app.state::<Store>().recover_acknowledgement(&receipt.cycle_id, receipt.sn, receipt.request_seq, receipt.ts) {
+                Ok(true) => recovered += 1,
+                Ok(false) => {}
+                Err(error) => {
+                    if failed < 10 { log(&app, "err", "PLC 确认恢复", format!("cycleId={}：{error}", receipt.cycle_id)); }
+                    failed += 1;
+                }
+            }
+        }
+        if recovered > 0 { log(&app, "ok", "PLC 确认恢复", format!("已从持久握手记录恢复 {recovered} 件 PLC 确认，原检测结论保留")); }
+        if failed > 10 { log(&app, "err", "PLC 确认恢复", format!("另有 {} 条收据未能关联或保存，请核对握手审计与检测记录", failed - 10)); }
         host(&app).busy.store(s7.pending(), Ordering::SeqCst);
         Self {
             app,
@@ -847,6 +891,7 @@ impl Machine {
             }
         } else if has(tag::RESULT_ACK) {
             if self.phase == Phase::Report {
+                self.delivery(PlcDeliveryState::Acknowledged, Some("PLC 已确认结果（开发协议）".into()));
                 let a = self.app.clone();
                 let r = async {
                     put(&a, tag::DONE, json!(false)).await?;
@@ -889,6 +934,11 @@ impl Machine {
             Err(reason) => return self.refuse(sn, None, fault::PROCESS_TIMEOUT, reason).await,
         };
         self.current_cycle_id = Some(cycle_id.clone());
+        if request.is_some() {
+            if let Err(error) = self.s7.bind_cycle_id(&cycle_id) {
+                return self.refuse(sn, None, fault::PROCESS_TIMEOUT, format!("S7 事务无法绑定工件身份：{error}")).await;
+            }
+        }
         if !self.workers.can_arm() {
             return self.refuse(sn, None, fault::PROCESS_TIMEOUT, "测量工作线程全部超时且尚未返回，拒绝布防".into()).await;
         }
@@ -963,13 +1013,14 @@ impl Machine {
         }
         let issued = plan.as_ref().map(|p| p.camera_slots.iter().zip(p.camera_shots).filter(|(id, _)| !id.is_empty())
             .map(|(id, count)| (id.clone(), count as u64)).collect());
-        let recording = host.recorder.begin(settings.record, sn, recipe.clone());
+        let bundle_hash = production.as_ref().map(|prepared| prepared.bundle.hash.clone());
+        let recording = host.recorder.begin(settings.record, sn, recipe.clone(), &cycle_id, bundle_hash.as_deref());
         host.camera.begin_part(&cams);
         self.run_id = self.run_id.wrapping_add(1);
         self.part = Some(Part {
             run_id: self.run_id,
             cycle_id,
-            bundle_hash: production.as_ref().map(|prepared| prepared.bundle.hash.clone()),
+            bundle_hash,
             production,
             sn,
             scenario: host.sim.part_scenario(),
@@ -1065,7 +1116,7 @@ impl Machine {
         };
         let camera = part.camera_id(f.cam);
         if let Some(rec) = part.recording.as_mut() {
-            host(&self.app).recorder.frame(rec, &f, &camera, k);
+            host(&self.app).recorder.frame(rec, &f, &camera, k, ordinal);
         }
         let shot = &part.recipe.shots[k];
         let submitted_at = part.measuring_since[k].unwrap();
@@ -1163,7 +1214,12 @@ impl Machine {
             } else { cameras.is_ok() };
             let reset = std::mem::take(&mut self.s7_reset_requested);
             let previous = self.s7.phase();
-            match self.s7.poll(plc(&app), reset, devices_ready).await {
+            let had_ack = self.s7.acknowledged();
+            let event = self.s7.poll(plc(&app), reset, devices_ready).await;
+            if !had_ack && self.s7.acknowledged() {
+                self.delivery(PlcDeliveryState::Acknowledged, Some("PLC 结果序号已匹配确认".into()));
+            }
+            match event {
                 SessionEvent::Ready => {
                     self.ledgers.clear_floors();
                     self.fault = None;
@@ -1182,6 +1238,7 @@ impl Machine {
                     log(&app, "info", "partEnd↑", "三路触发数量已核对，等待剩余帧");
                 }
                 SessionEvent::Released => {
+                    self.delivery(PlcDeliveryState::Acknowledged, Some("PLC 结果序号已确认，双方握手已释放".into()));
                     self.alarms.retain(|m| !m.starts_with("PLC 未确认"));
                     self.set_phase(Phase::Idle);
                     log(&app, "info", "S7 事务结束", "结果序号已确认，PLC 输入已释放");
@@ -1298,8 +1355,10 @@ impl Machine {
         let delivery = if r.is_ok() { "done 已提交" } else { "结果未确认送达" };
         log(&app, level, "检测结果", format!("resultCode={}{fault} resultSn={sn} · {delivery} · {}", judgement.plc_code, judgement.reason));
         let drain_ms = self.part.as_ref().and_then(|p| p.end_at).map(|t| t.elapsed().as_millis() as u64);
+        let delivery = PlcDelivery { state: if r.is_ok() { PlcDeliveryState::Submitted } else { PlcDeliveryState::Failed },
+            updated_at: now_ms(), message: r.as_ref().err().map(|error| format!("回写 PLC 失败：{error}")) };
+        self.record(sn, recipe_id.as_deref(), &judgement, drain_ms, delivery);
         self.finish_recording(sn, &judgement);
-        self.record(sn, recipe_id.as_deref(), &judgement, drain_ms);
         self.result = Some(ResultView { cycle_id: self.current_cycle_id.clone(), sn, recipe_id, ts: now_ms(), drain_ms, judgement });
         match r {
             Ok(()) => self.set_phase(Phase::Report),
@@ -1351,37 +1410,35 @@ impl Machine {
         host.recorder.finish(rec, judgement.verdict, &judgement.reason, settings.record_keep, (settings.record_max_gb as f64 * 1e9) as u64, in_use);
     }
 
-    fn record(&self, sn: u32, recipe_id: Option<&str>, judgement: &Judgement, drain_ms: Option<u64>) {
+    fn record(&self, sn: u32, recipe_id: Option<&str>, judgement: &Judgement, drain_ms: Option<u64>, delivery: PlcDelivery) {
+        let Some(cycle_id) = self.current_cycle_id.clone() else {
+            log(&self.app, "err", "记录失败", "工件身份尚未持久分配，不能关联历史与原图");
+            return;
+        };
         let part = self.part.as_ref().filter(|p| p.sn == sn);
         let recipe = part.map(|p| p.recipe.clone()).or_else(|| recipe_id.and_then(|id| host(&self.app).recipe(id)));
         let frames = part.map(|p| p.frames.clone()).unwrap_or_default();
         let frames_expected = recipe.as_ref().map_or(0, |r| r.shot_count());
         let table = part.map(|p| p.table.clone()).filter(|t| t.iter().any(|x| *x != PointState::Pending));
         let (received, triggers) = part.map_or((0, 0), |p| (p.received, p.triggers()));
-        let judgement = judgement.clone();
-        let app = self.app.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let version = app.package_info().version.to_string();
-            let record = PartRecord {
-                ts: now_ms(),
-                sn,
-                recipe: recipe.as_deref(),
-                judgement: &judgement,
-                drain_ms,
-                frames: &frames,
-                frames_expected,
-                frames_received: received,
-                triggers,
-                table: table.as_deref(),
-                software_version: &version,
-            };
-            match app.state::<Store>().insert(&record) {
-                Ok(id) => {
-                    let _ = app.emit("history://inserted", id);
-                }
-                Err(e) => log(&app, "err", "记录失败", e),
-            }
-        });
+        let shots = recorded_shots(recipe.as_deref(), &frames, &judgement.reason);
+        host(&self.app).audit.insert(RecordedPart { ts: now_ms(), sn, recipe, judgement: judgement.clone(),
+            drain_ms, frames, frames_expected, frames_received: received, triggers, table,
+            software_version: self.app.package_info().version.to_string(), cycle_id: cycle_id.clone(),
+            bundle_hash: part.and_then(|p| p.bundle_hash.clone()), delivery, shots });
+        if part.is_none() {
+            let off = host(&self.app).settings().record == crate::settings::RecordMode::Off;
+            host(&self.app).audit.recording(crate::recorder::RecordingOutcome { cycle_id, directory: None,
+                files: Vec::new(), available: false,
+                state: if off { crate::recorder::RecordingState::Off } else { crate::recorder::RecordingState::Failed },
+                errors: if off { Vec::new() } else { vec![format!("布防校验未通过，未开始录制：{}", judgement.reason)] } });
+        }
+    }
+
+    fn delivery(&self, state: PlcDeliveryState, message: Option<String>) {
+        if let Some(cycle_id) = &self.current_cycle_id {
+            host(&self.app).audit.delivery(cycle_id, PlcDelivery { state, updated_at: now_ms(), message });
+        }
     }
 
     fn count(&mut self, v: Verdict) {
@@ -1407,10 +1464,14 @@ impl Machine {
             let sn = self.part.as_ref().map(|p| p.sn).or_else(|| self.s7.request().map(|r| r.sn)).unwrap_or(0);
             let judgement = Judgement::error(fault::DEVICE_LOST, format!("{reason}，结果未回写"));
             self.count(judgement.verdict);
+            self.record(sn, self.part.as_ref().map(|p| p.recipe.id.clone()).as_deref(), &judgement, None,
+                PlcDelivery { state: PlcDeliveryState::Failed, updated_at: now_ms(), message: Some(reason.clone()) });
             self.finish_recording(sn, &judgement);
-            self.record(sn, self.part.as_ref().map(|p| p.recipe.id.clone()).as_deref(), &judgement, None);
             log(&self.app, "err", "在途件中断", format!("SN {sn} 记 ERR 98，需人工处理该件"));
             self.result = Some(ResultView { cycle_id: self.current_cycle_id.clone(), sn, recipe_id: self.part.as_ref().map(|p| p.recipe.id.clone()), ts: now_ms(), drain_ms: None, judgement });
+        }
+        if !in_flight && self.result.is_some() {
+            self.delivery(PlcDeliveryState::Failed, Some(reason.clone()));
         }
         self.fault_needs_reset = in_flight || self.is_s7();
         log(&self.app, "err", "故障", reason.clone());

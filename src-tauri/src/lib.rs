@@ -1,3 +1,4 @@
+mod audit;
 mod camera;
 mod commands;
 mod cycle;
@@ -127,6 +128,7 @@ pub fn run() {
             workspace::workspace_record_image,
             workspace::workspace_history_capture,
             workspace::workspace_compare,
+            workspace::workspace_compare_original,
             workspace::workspace_comparisons,
             workspace::workspace_runtime_overview,
             workspace::workspace_live_image,

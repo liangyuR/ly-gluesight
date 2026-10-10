@@ -3,6 +3,7 @@
 
 use std::ffi::{c_char, c_void};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use lyflow_client::{Core, RunHandle, RunImageInput, RunSpec};
@@ -20,6 +21,11 @@ mod taught;
 pub use taught::{build_taught_graph, measure_shot, measure_shot_with_graph, ShotMeasurement};
 
 unsafe extern "C" fn ignore_event(_: *const c_char, _: *mut c_void) {}
+
+pub(crate) fn unique_run_id(label: &str) -> String {
+    static NEXT_RUN: AtomicU64 = AtomicU64::new(0);
+    format!("{label}-{}-{}", std::process::id(), NEXT_RUN.fetch_add(1, Ordering::Relaxed))
+}
 
 pub struct Engine {
     core: Arc<Core>,
@@ -43,18 +49,19 @@ impl Engine {
     pub fn run(&self, graph: &str, run_id: &str, base_dir: &str, image: &FrameImage, params: &Value) -> Result<RunResult, String> {
         let images = [image_input(image)?];
         let params_json = params.to_string();
-        let mut spec = RunSpec::new(graph, run_id, base_dir, &[]).with_params_json(&params_json);
+        let run_id = unique_run_id(run_id);
+        let mut spec = RunSpec::new(graph, &run_id, base_dir, &[]).with_params_json(&params_json);
         // 正式测量只注入原始全分辨率像素。core 在 start 内拷贝，images 活到 start 返回。
         spec.image_inputs = &images;
         let handle = unsafe { RunHandle::start(self.core.clone(), spec, ignore_event, Box::new(())) }.map_err(|e| e.to_string())?;
         handle.join();
         let summary_json = self
             .core
-            .run_summary(run_id)
+            .run_summary(&run_id)
             .map_err(|e| e.to_string())?
             .ok_or("算法没有返回运行摘要")?;
         let summary: Value = serde_json::from_str(&summary_json).map_err(|e| format!("算法运行摘要无效：{e}"))?;
-        let outputs: Value = serde_json::from_str(&self.core.run_outputs(run_id).map_err(|e| e.to_string())?)
+        let outputs: Value = serde_json::from_str(&self.core.run_outputs(&run_id).map_err(|e| e.to_string())?)
             .map_err(|e| format!("算法输出无效：{e}"))?;
         drop(handle);
         Ok(RunResult { summary, outputs })
@@ -326,3 +333,88 @@ pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, ca
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod run_identity_tests {
+    use super::*;
+    use std::collections::HashSet;
+    use std::sync::Barrier;
+
+    #[test]
+    fn concurrent_identical_labels_get_unique_run_ids() {
+        let barrier = Barrier::new(8);
+        let ids = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8).map(|_| {
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    (0..1024).map(|_| unique_run_id("same-label")).collect::<Vec<_>>()
+                })
+            }).collect();
+            workers.into_iter().flat_map(|worker| worker.join().unwrap()).collect::<Vec<_>>()
+        });
+        assert_eq!(ids.len(), 8192);
+        assert!(ids.iter().all(|id| id.starts_with("same-label-")));
+        assert_eq!(ids.iter().collect::<HashSet<_>>().len(), ids.len());
+    }
+
+    #[test]
+    #[ignore = "requires LYFLOW_CORE_DLL with glue.taught_path; concurrent same-label pixel isolation"]
+    fn native_concurrent_identical_labels_keep_each_pixel_measurement() {
+        let dll = std::env::var_os("LYFLOW_CORE_DLL").expect("Set LYFLOW_CORE_DLL");
+        let engine = Engine::load(Path::new(&dll)).unwrap();
+        let mut doc = crate::recipe::samples().remove(0);
+        doc.shots.truncate(1);
+        doc.shots[0].path = vec![[40.0, 80.0], [200.0, 80.0]];
+        doc.shots[0].mm_per_px = Some(0.25);
+        doc.spacing = 1.0;
+        doc.detect = crate::recipe::DetectParams {
+            search_mm: 8.0,
+            polarity: crate::recipe::Polarity::Dark,
+            width_range: [2.0, 6.0],
+        };
+        let graph = build_taught_graph(&doc.build().unwrap(), 0).unwrap().to_string();
+        let cases = [(74, 10), (78, 14), (84, 18), (90, 22)];
+        let barrier = Barrier::new(cases.len());
+        let readings = std::thread::scope(|scope| {
+            let workers: Vec<_> = cases.into_iter().map(|(center, width)| {
+                let (engine, graph, barrier) = (&engine, &graph, &barrier);
+                scope.spawn(move || {
+                    let mut pixels = vec![220; 256 * 160];
+                    for y in center - width / 2..center + width / 2 {
+                        for x in 16..240 { pixels[y * 256 + x] = 28; }
+                    }
+                    let image = FrameImage::new(256, 160, pixels);
+                    let runs = (0..12).map(|_| {
+                        barrier.wait();
+                        engine.run(graph, "same-run-label", "", &image, &json!({}))
+                    }).collect::<Vec<_>>();
+                    (center, width, runs)
+                })
+            }).collect();
+            workers.into_iter().map(|worker| worker.join().unwrap()).collect::<Vec<_>>()
+        });
+        let mut run_ids = HashSet::new();
+        for (center, width, runs) in readings {
+            for result in runs {
+                let result = result.unwrap();
+                assert_eq!(result.status(), "ok", "{}", result.failure());
+                let run_id = result.summary["runId"].as_str().unwrap();
+                assert!(run_ids.insert(run_id.to_string()), "duplicate native run: {run_id}");
+                let stations = result.record("stations").unwrap();
+                assert_eq!(stations["count"], 41);
+                for i in 0..41 {
+                    assert_eq!(stations["present"][i], true);
+                    let actual_width = stations["widthPx"][i].as_f64().unwrap();
+                    assert!((actual_width - width as f64).abs() < 1.6, "width {actual_width} != {width}");
+                    let lo = stations["lo"][i].as_f64().unwrap();
+                    let hi = stations["hi"][i].as_f64().unwrap();
+                    let offset = (lo + hi) * 0.5;
+                    let expected = center as f64 - 80.5;
+                    assert!((offset - expected).abs() < 1.2, "offset {offset} != {expected}");
+                }
+            }
+        }
+        assert_eq!(run_ids.len(), 48);
+    }
+}

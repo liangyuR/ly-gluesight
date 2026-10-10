@@ -13,8 +13,11 @@ use crate::cycle::{self, CycleHost};
 use crate::frame::FrameImage;
 use crate::judge::{self, PointState, Verdict};
 use crate::recipe::{DetectParams, Recipe, RecipeDoc};
-use crate::store::Store;
+use crate::store::{self, Store};
 use crate::vision;
+
+mod recorded;
+mod reproduce;
 
 fn fingerprint(value: &impl Serialize) -> String {
     let mut h = DefaultHasher::new();
@@ -1081,6 +1084,20 @@ pub fn workspace_save_overview(
     view(&app, w.clone())
 }
 
+fn history_sample_table(original: &Recipe, candidate: &Recipe, points: &store::PartPoints) -> Result<Vec<PointState>, String> {
+    if !store::same_measurement_layout(original, candidate) {
+        return Err("样本拍照点或测点布局与候选不一致，不能用旧测量数据验证".into());
+    }
+    if points.st.len() != candidate.point_count() || points.d.len() != points.st.len() || points.w.len() != points.st.len() {
+        return Err("样本的测量点数量不一致".into());
+    }
+    points.st.iter().enumerate().map(|(j, status)| match status {
+        0 => Ok(PointState::Measured { d: points.d[j], w: points.w[j].unwrap_or(f32::NAN) }),
+        1 => Ok(PointState::Gap),
+        _ => Err("样本存在未完成或无效的测量，不能用于规则验证".into()),
+    }).collect()
+}
+
 fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
     let r = w.doc.build()?;
     let cycle = app.state::<CycleHost>();
@@ -1175,27 +1192,8 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
                 .transpose()?
                 .flatten()
                 .ok_or("原始配方快照缺失")?;
-            if original.geometry_hash() != r.geometry_hash() {
-                return Err("样本胶路与候选不一致，不能用旧测量数据验证".into());
-            }
             let points = detail.points.ok_or("样本没有测量数据，不能用于规则验证")?;
-            let table: Vec<_> = points
-                .st
-                .iter()
-                .enumerate()
-                .map(|(j, s)| match s {
-                    0 => PointState::Measured {
-                        d: points.d[j],
-                        w: points.w.get(j).and_then(|w| *w).unwrap_or(f32::NAN),
-                    },
-                    1 => PointState::Gap,
-                    2 => PointState::Invalid,
-                    _ => PointState::Pending,
-                })
-                .collect();
-            if table.len() != r.point_count() {
-                return Err("样本的测量点数量不一致".into());
-            }
+            let table = history_sample_table(&original, &r, &points)?;
             let j = judge::judge(&r, &table);
             Ok(SampleResult {
                 history_id: sample.history_id,
@@ -1466,6 +1464,7 @@ pub fn apply_pending(app: &AppHandle) -> bool {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RawFrame {
+    pub error: Option<String>,
     pub k: usize,
     pub view: u8,
     pub camera: String,
@@ -1488,75 +1487,18 @@ pub struct RecordImages {
 
 fn recorded(app: &AppHandle, history_id: i64) -> Result<(PathBuf, Vec<RawFrame>), String> {
     let detail = app.state::<Store>().detail(history_id)?;
+    let cycle_id = detail.summary.cycle_id.as_deref().ok_or("历史记录没有 cycleId，不能确定对应原图")?;
     let root = app.state::<CycleHost>().recorder.root().to_path_buf();
-    let mut choices = Vec::new();
-    for day in std::fs::read_dir(&root)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_dir() && !p.ends_with("_pending"))
-    {
-        for dir in std::fs::read_dir(day)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-        {
-            let Some(meta) = crate::fsio::read_text(&dir.join("part.json"))
-                .ok()
-                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            else {
-                continue;
-            };
-            let started = meta["startedTs"].as_i64().unwrap_or(0);
-            if meta["sn"].as_u64() != Some(detail.summary.sn as u64)
-                || meta["recipe"]["hash"].as_str() != detail.summary.recipe_hash.as_deref()
-                || started > detail.summary.ts
-                || detail.summary.ts - started > 300_000
-            {
-                continue;
-            }
-            choices.push((detail.summary.ts - started, dir, meta));
-        }
-    }
-    choices.sort_by_key(|c| c.0);
-    let (_, dir, meta) = choices
-        .into_iter()
-        .next()
-        .ok_or("原图未保留或已清理；仍可使用完整测量数据进行规则重判")?;
-    let frames = recorded_frames(&dir, &meta)?;
-    Ok((dir, frames))
+    let frames = recorded::frames(&root, cycle_id, &detail.shots, detail.summary.ts)?;
+    Ok((root, frames))
 }
 
-fn recorded_frames(dir: &Path, meta: &Value) -> Result<Vec<RawFrame>, String> {
-    let raw = meta["frames"].as_array().ok_or("原图清单损坏")?;
-    let shots = meta["recipe"]["shots"].as_array().ok_or("录制配方缺少拍照点")?;
-    let mut frames = Vec::new();
-    let mut selected = std::collections::HashSet::new();
-    for f in raw {
-        let Some(k) = f["k"].as_u64().and_then(|k| usize::try_from(k).ok()) else { continue; };
-        let Some(shot) = shots.get(k) else { continue; };
-        let Some(view) = f["view"].as_u64().and_then(|v| u8::try_from(v).ok()).filter(|v| (1..=3).contains(v)) else { continue; };
-        if shot["view"].as_u64() != Some(view as u64) || f["camera"].as_str() != shot["camera"].as_str() { continue; }
-        if !selected.insert(k) { return Err(format!("拍照点 {k} 的视角 {view} 原图重复，无法确定对应图像")); }
-        let Some(file) = f["file"].as_str() else { continue; };
-        let path = Path::new(file);
-        if path.components().count() != 1 || !path.file_name().is_some_and(|n| n == file) { continue; }
-        frames.push(RawFrame {
-            k, view,
-            camera: f["camera"].as_str().unwrap_or("").into(),
-            file: file.into(),
-            ts: f["ts"].as_i64().unwrap_or_else(|| meta["startedTs"].as_i64().unwrap_or(0)),
-            available: dir.join(file).is_file(),
-            cam: f["cam"].as_u64().and_then(|v| u8::try_from(v).ok()),
-            frame_counter: f["frameCounter"].as_u64(),
-            trigger_counter: f["triggerCounter"].as_u64(),
-        });
-    }
-    frames.sort_by_key(|f| f.k);
-    Ok(frames)
+fn history_image(app: &AppHandle, detail: &store::PartDetail, k: usize, view: u8) -> Result<FrameImage, String> {
+    let cycle_id = detail.summary.cycle_id.as_deref().ok_or("历史记录没有 cycleId")?;
+    let raw = detail.shots.iter().find(|shot| shot.k == k)
+        .and_then(|shot| shot.raw_files.iter().find(|raw| raw.view == view))
+        .ok_or("所选拍照点视角的原图未保留")?;
+    recorded::load_verified(app.state::<CycleHost>().recorder.root(), cycle_id, raw)
 }
 
 #[tauri::command]
@@ -1565,14 +1507,14 @@ pub fn workspace_record_images(app: AppHandle, history_id: i64) -> Result<Record
     let detail = store.detail(history_id)?;
     match recorded(&app, history_id) {
         Ok((_, frames)) => {
-            let complete = detail.summary.frames_expected > 0 && (0..detail.summary.frames_expected)
-                .all(|k| frames.iter().any(|f| f.k == k && f.available));
+            let complete = detail.recording.available && !detail.shots.is_empty()
+                && detail.shots.iter().all(|shot| frames.iter().any(|f| f.k == shot.k && f.view == shot.view && f.available));
             let count = frames.iter().filter(|f| f.available).count();
             Ok(RecordImages {
                 history_id,
                 frames,
                 complete,
-                message: format!("保留 {count} 张原图"),
+                message: format!("保留 {count} 幅已校验原图{}", if detail.recording.errors.is_empty() { String::new() } else { format!("；{}", detail.recording.errors.join("；")) }),
             })
         }
         Err(e) => Ok(RecordImages {
@@ -1589,15 +1531,11 @@ pub fn workspace_record_image(
     app: AppHandle,
     history_id: i64,
     k: usize,
+    view: Option<u8>,
 ) -> Result<tauri::ipc::Response, String> {
-    let (dir, frames) = recorded(&app, history_id)?;
-    let raw = frames
-        .iter()
-        .find(|f| f.k == k && f.available)
-        .ok_or("所选帧原图未保留")?;
-    Ok(preview_response(&crate::replay::load(
-        &dir.join(&raw.file),
-    )?))
+    let detail = app.state::<Store>().detail(history_id)?;
+    let selected = view.or_else(|| detail.shots.iter().find(|shot| shot.k == k).map(|shot| shot.view)).ok_or("拍照点不存在")?;
+    Ok(preview_response(&history_image(&app, &detail, k, selected)?))
 }
 
 #[tauri::command]
@@ -1624,20 +1562,16 @@ pub fn workspace_history_capture(
         w.expect(revision)?;
         w.doc.build()?
     };
-    if doc.geometry_hash() != original.geometry_hash() {
-        return Err("历史帧的胶路、相机或拍照点与当前候选不同，不能直接用于示教".into());
+    if !same_frame_sources(&doc, &original) {
+        return Err("历史帧的 Pose、相机或视角与当前候选不同，不能直接用于示教".into());
     }
-    let (dir, frames) = recorded(&app, history_id)?;
-    let raw = frames
-        .iter()
-        .find(|f| f.k == k && f.available)
-        .ok_or("所选帧原图已清理")?;
+    let selected_view = doc.shots.get(k).ok_or("拍照点不存在")?.view;
     keep_image(
         &app,
         &id,
         revision,
         k,
-        crate::replay::load(&dir.join(&raw.file))?,
+        history_image(&app, &detail, k, selected_view)?,
         format!("历史 SN {}", detail.summary.sn),
         Some(history_id),
     )
@@ -1649,6 +1583,8 @@ pub struct Comparison {
     pub id: String,
     pub history_id: i64,
     pub source: String,
+    pub cycle_id: String,
+    pub bundle_hash: Option<String>,
     pub candidate_id: String,
     pub candidate_revision: u64,
     pub candidate_recipe: Recipe,
@@ -1685,22 +1621,15 @@ pub async fn workspace_compare(
             .transpose()?
             .flatten()
             .ok_or("历史配方快照缺失")?;
-        if original.geometry_hash() != recipe.geometry_hash() {
-            return Err("原始记录与候选的几何不同；请重新采集代表性样本".into());
+        if (raw && !same_frame_sources(&original, &recipe)) || (!raw && !crate::store::same_measurement_layout(&original, &recipe)) {
+            return Err(if raw { "历史原图的 Pose、相机或视角与候选不同；请重新采集样本" }
+                else { "保存的测点布局与候选不同，不能复用旧测量值；请从原图复测" }.into());
         }
         let mut measurements = Vec::new();
         let table = if raw {
-            let (dir, frames) = recorded(&app, history_id)?;
-            let paths = (0..recipe.shot_count())
-                .map(|k| {
-                    frames
-                        .iter()
-                        .find(|f| f.k == k && f.available)
-                        .map(|f| dir.join(&f.file))
-                        .ok_or_else(|| "原图不完整，无法完成整件复测".to_string())
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let (table, measured) = measure_paths(&app, &w, &paths, detail.summary.sn)?;
+            if !detail.recording.available { return Err("原图未完整保留，无法完成整件复测".into()); }
+            let (table, measured) = measure_images(&app, &w, recipe.shot_count(), detail.summary.sn,
+                |k| history_image(&app, &detail, k, recipe.shots[k].view))?;
             measurements = measured;
             table
         } else {
@@ -1728,9 +1657,11 @@ pub async fn workspace_compare(
                 .collect()
         };
         let comparison = Comparison {
-            id: format!("{history_id}-{}", ly_plc::now_ms()),
+            id: comparison_id(&app, history_id),
             history_id,
             source: if raw { "raw".into() } else { "rules".into() },
+            cycle_id: detail.summary.cycle_id.clone().ok_or("历史记录没有工件身份")?,
+            bundle_hash: detail.summary.bundle_hash.clone(),
             candidate_id: id.clone(),
             candidate_revision: revision,
             candidate_recipe: recipe.clone(),
@@ -1739,17 +1670,55 @@ pub async fn workspace_compare(
             measurements,
             created_at: ly_plc::now_ms(),
         };
-        let host = app.state::<WorkspaceHost>();
-        let dir = host.dir(&id).join("comparisons");
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        crate::fsio::write_atomic(
-            &dir.join(format!("{}.json", comparison.id)),
-            &serde_json::to_string(&comparison).map_err(|e| e.to_string())?,
-        )?;
+        save_comparison(&app, &comparison)?;
         Ok(comparison)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn same_frame_sources(original: &Recipe, candidate: &Recipe) -> bool {
+    let sources = |recipe: &Recipe| json!([recipe.id, recipe.shots.iter().map(|shot|
+        json!([shot.id, shot.pose_id, shot.camera, shot.view])).collect::<Vec<_>>()]);
+    sources(original) == sources(candidate)
+}
+
+fn comparison_id(app: &AppHandle, history_id: i64) -> String {
+    let seq = app.state::<WorkspaceHost>().capture_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{history_id}-{}-{seq}", ly_plc::now_ms())
+}
+
+fn save_comparison(app: &AppHandle, comparison: &Comparison) -> Result<(), String> {
+    let dir = app.state::<WorkspaceHost>().root.join("comparisons").join(comparison.history_id.to_string());
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    crate::fsio::write_atomic(&dir.join(format!("{}.json", comparison.id)),
+        &serde_json::to_string(comparison).map_err(|e| e.to_string())?)
+}
+
+#[tauri::command]
+pub async fn workspace_compare_original(app: AppHandle, history_id: i64) -> Result<Comparison, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app.state::<Store>();
+        let detail = store.detail(history_id)?;
+        if !detail.recording.available { return Err("原图未完整保留，不能重现原发布测量；请查看录制状态".into()); }
+        let cycle_id = detail.summary.cycle_id.clone().ok_or("历史记录缺少 cycleId")?;
+        let bundle_hash = detail.summary.bundle_hash.as_deref().ok_or("本件没有不可变发布包，不能按原版本重现")?;
+        let recipe_hash = detail.summary.recipe_hash.as_deref().ok_or("历史记录缺少配方快照身份")?;
+        let original = store.recipe_snapshot(recipe_hash)?.ok_or("原始配方快照缺失；不能使用当前配方替代")?;
+        let bundle = crate::release::load(&releases_root(&app)?, &original.id, bundle_hash)?;
+        let settings = app.state::<CycleHost>().settings();
+        let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("原版本兼容引擎未加载")?;
+        let prepared = crate::production::Prepared::load(bundle, engine, &original)?;
+        prepared.verify()?;
+        let (judgement, measurements) = reproduce::measure(&prepared, original.shot_count(), detail.summary.sn, &cycle_id,
+            |k| history_image(&app, &detail, k, original.shots[k].view))?;
+        let comparison = Comparison { id: comparison_id(&app, history_id), history_id, source: "original".into(),
+            cycle_id, bundle_hash: Some(bundle_hash.into()), candidate_id: original.id.clone(),
+            candidate_revision: 0, candidate_recipe: original, original_verdict: detail.summary.verdict,
+            judgement, measurements, created_at: ly_plc::now_ms() };
+        save_comparison(&app, &comparison)?;
+        Ok(comparison)
+    }).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1776,13 +1745,13 @@ pub fn workspace_comparisons(
     history_id: i64,
 ) -> Result<Vec<Comparison>, String> {
     safe_id(&id)?;
-    let dir = host.dir(&id).join("comparisons");
+    let dir = host.root.join("comparisons").join(history_id.to_string());
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             if let Ok(text) = crate::fsio::read_text(&entry.path()) {
                 if let Ok(saved) = serde_json::from_str::<Comparison>(&text) {
-                    if saved.history_id == history_id {
+                    if saved.history_id == history_id && (saved.source == "original" || saved.candidate_id == id) {
                         out.push(saved);
                     }
                 }
@@ -1945,16 +1914,26 @@ fn measure_paths(
     paths: &[PathBuf],
     sn: u32,
 ) -> Result<(Vec<PointState>, Vec<Value>), String> {
+    measure_images(app, w, paths.len(), sn, |k| crate::replay::load(&paths[k]))
+}
+
+fn measure_images(
+    app: &AppHandle,
+    w: &Workspace,
+    count: usize,
+    sn: u32,
+    mut load: impl FnMut(usize) -> Result<FrameImage, String>,
+) -> Result<(Vec<PointState>, Vec<Value>), String> {
     let recipe = w.doc.build()?;
-    if paths.len() != recipe.shot_count() {
+    if count != recipe.shot_count() {
         return Err("样本组的原图数量与拍照点不一致".into());
     }
     let settings = app.state::<CycleHost>().settings();
     let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("lyFlow 核心库未加载")?;
     let mut table = vec![PointState::Pending; recipe.point_count()];
     let mut measurements = Vec::new();
-    let run = format!("candidate-{}-{}", recipe.hash, ly_plc::now_ms());
-    for (k, path) in paths.iter().enumerate() {
+    let run = vision::unique_run_id(&format!("candidate-{}", recipe.hash));
+    for k in 0..count {
         let shot = &recipe.shots[k];
         if !shot.measured() { continue; }
         let frame = w.frames.get(k).filter(|f| f.saved).ok_or("候选存在尚未保存的示教帧")?;
@@ -1966,7 +1945,7 @@ fn measure_paths(
         if frozen.camera_tag != ct || frozen.calib_tag != cal {
             return Err("相机或标定变化，需要重新示教".into());
         }
-        let image = crate::replay::load(path)?;
+        let image = load(k)?;
         if [image.width, image.height] != frozen.size {
             return Err(format!("拍照点 {} 样本尺寸与示教图像不同", shot.id));
         }
@@ -2043,6 +2022,42 @@ impl Drop for SampleImportFiles {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn historical_sample_rejects_a_different_pose_even_with_the_same_geometry_hash() {
+        let original = crate::recipe::samples().remove(1).build().unwrap();
+        let mut candidate = original.clone();
+        let points = store::PartPoints { d: vec![0.0; original.point_count()],
+            w: vec![Some(4.0); original.point_count()], st: vec![0; original.point_count()] };
+        assert!(history_sample_table(&original, &candidate, &points).is_ok());
+        candidate.shots[0].pose_id.push_str("-new");
+        assert_eq!(candidate.geometry_hash(), original.geometry_hash());
+        assert!(history_sample_table(&original, &candidate, &points).unwrap_err().contains("布局"));
+        let mut incomplete = points.clone();
+        incomplete.st[0] = 3;
+        assert!(history_sample_table(&original, &original, &incomplete).unwrap_err().contains("未完成"));
+        incomplete.st[0] = 0;
+        incomplete.d.clear();
+        assert!(history_sample_table(&original, &original, &incomplete).unwrap_err().contains("数量"));
+    }
+
+    #[test]
+    fn original_images_allow_new_measurement_geometry_but_require_the_same_frame_source() {
+        let original = crate::recipe::samples().remove(1).build().unwrap();
+        let mut candidate = original.clone();
+        candidate.shots[0].path[0][0] += 3.0;
+        assert!(same_frame_sources(&original, &candidate));
+        assert!(!crate::store::same_measurement_layout(&original, &candidate));
+        for field in ["pose", "camera", "view", "id"] {
+            let mut changed = original.clone();
+            match field {
+                "pose" => changed.shots[0].pose_id.push_str("-new"),
+                "camera" => changed.shots[0].camera = "cam2".into(),
+                "view" => changed.shots[0].view = 2,
+                _ => changed.shots[0].id.push_str("-new"),
+            }
+            assert!(!same_frame_sources(&original, &changed));
+        }
+    }
+    #[test]
     fn new_candidate_cannot_alias_windows_directory_or_duplicate_product_selection() {
         let mut doc = crate::recipe::samples().remove(0);
         doc.id = "Case-Test".into();
@@ -2055,9 +2070,9 @@ mod tests {
     }
     use super::*;
 
-    struct ImportTestDir(PathBuf);
+    pub(super) struct ImportTestDir(pub(super) PathBuf);
     impl ImportTestDir {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
             let path = std::env::temp_dir().join(format!("tujiao-sample-import-{}-{nonce}", std::process::id()));
             std::fs::create_dir(&path).unwrap(); Self(path)
@@ -2263,36 +2278,6 @@ mod tests {
         assert!(w.frames[0].image.is_none());
         assert!(w.frames[0].views.is_empty());
         assert!(select_view(&mut w, 0, 2).is_err());
-    }
-
-    #[test]
-    fn recorded_triplets_keep_four_shots_and_select_exact_recipe_view() {
-        let root = ImportTestDir::new();
-        let mut doc = crate::recipe::samples().remove(1);
-        for (shot, view) in doc.shots.iter_mut().zip([1, 2, 3, 1]) { shot.view = view; }
-        let mut entries = Vec::new();
-        for k in 0..4 {
-            for view in 1..=3 {
-                let file = format!("cam1_{:06}_v{view}.pgm", k + 1);
-                crate::replay::save_pgm(&root.0.join(&file), &FrameImage::new(1, 1, vec![(k * 10 + view) as u8])).unwrap();
-                entries.push(json!({"k": k, "view": view, "camera": "cam1", "file": file, "frameCounter": k + 1, "triggerCounter": k + 1, "ts": k * 100}));
-            }
-        }
-        entries.reverse();
-        let mut meta = json!({"recipe": doc, "frames": entries, "startedTs": 0});
-        let frames = recorded_frames(&root.0, &meta).unwrap();
-        assert_eq!(frames.iter().map(|f| (f.k, f.view)).collect::<Vec<_>>(), [(0, 1), (1, 2), (2, 3), (3, 1)]);
-        for frame in &frames {
-            assert!(frame.available);
-            assert_eq!(crate::replay::load(&root.0.join(&frame.file)).unwrap().pixels[0], (frame.k * 10 + frame.view as usize) as u8);
-        }
-        std::fs::remove_file(root.0.join(&frames[1].file)).unwrap();
-        let missing = recorded_frames(&root.0, &meta).unwrap();
-        assert!(!missing[1].available);
-        assert_eq!(missing[1].view, 2);
-        let duplicate = meta["frames"].as_array().unwrap().iter().find(|v| v["k"] == 2 && v["view"] == 3).unwrap().clone();
-        meta["frames"].as_array_mut().unwrap().push(duplicate);
-        assert!(recorded_frames(&root.0, &meta).unwrap_err().contains("重复"));
     }
 
     #[test]

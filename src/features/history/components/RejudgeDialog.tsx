@@ -126,6 +126,11 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
               重判 <b>{result.total}</b> 件，跳过 <b>{result.skipped}</b> 件{result.limitHit && "（超过 5000 件，只取最近 5000 件）"}
               {released > 0 && <span className="rj-alert">NG→OK {released} 件：放宽后可能放过真实缺陷，请逐件复核</span>}
             </div>
+            {!!result.skipReasons.length && <div className="rj-changes" aria-label="跳过原因">
+              {result.skipReasons.map(item => <button key={item.id} className="rj-change" onClick={() => navigate(`/history/${item.id}`)}>
+                <span className="mono">SN {item.sn}</span><span>{item.reason}</span>
+              </button>)}
+            </div>}
             <div className="table-wrap">
               <table className="table rj-matrix">
                 <thead>
