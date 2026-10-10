@@ -155,13 +155,17 @@ impl Rig {
         }
     }
 
-    async fn request(&mut self, seq: u32, sn: u32) {
+    fn request_values(&mut self, seq: u32, sn: u32) {
         self.plc.control(json!({"op":"plc_request", "values":{
             "protocolVersion":1,"requestSeq":seq,"partSn":sn,"productCode":1,
             "shotCount":self.plan.shot_count,"planVersion":self.plan.plan_version,"planReserved":0,
             "camera1Shots":self.plan.camera_shots[0],"camera2Shots":self.plan.camera_shots[1],"camera3Shots":self.plan.camera_shots[2],
             "camera1Triggers":0,"camera2Triggers":0,"camera3Triggers":0,"partEnd":false,"resultAck":false
         }}));
+    }
+
+    async fn request(&mut self, seq: u32, sn: u32) {
+        self.request_values(seq, sn);
         self.phase(SessionPhase::Validating).await;
         assert_eq!(self.session.request().unwrap().request_seq, seq);
     }
@@ -828,6 +832,171 @@ async fn s7_wire_audit_failure_blocks_destructive_reset() {
     rig.finish().await;
 }
 
+fn assert_idle_outputs(fields: &Value, ready: bool) {
+    assert_eq!(fields["visionReady"], ready);
+    assert_eq!(fields["pcProtocolVersion"], 1);
+    for tag in ["armed", "busy", "done", "visionFault"] { assert_eq!(fields[tag], false, "{tag}"); }
+}
+
+#[tokio::test]
+#[ignore = "requires Python and local loopback S7 fixture"]
+async fn s7_wire_idle_db_reinit_restores_outputs_without_reset() {
+    let mut rig = Rig::new("idle-db-reinit").await;
+    // PLC 重启或 DB 重新初始化：PC 区（DBB64–87）读回全 0，visionReady=0
+    rig.plc.control(json!({"op":"write_db", "db":100, "byte":64, "data":vec![0u8; 24]}));
+    rig.fresh().await;
+    let event = rig.session.poll(&rig.engine, false, true).await;
+    assert!(matches!(event, SessionEvent::Restored(ref reason)
+        if reason.contains("pcProtocolVersion=0") && reason.contains("visionReady=0") && reason.contains("无需复位")), "{event:?}");
+    assert_eq!(rig.session.phase(), SessionPhase::Idle);
+    assert!(rig.session.notice().is_none());
+    assert_idle_outputs(&rig.plc.fields(), true);
+    assert!(rig.audit().iter().any(|record| record["action"] == "idleOutputsRestored" && record["pending"].is_null()));
+    assert!(matches!(rig.session.poll(&rig.engine, false, true).await, SessionEvent::None));
+    rig.request(1, 50).await;
+    rig.arm().await;
+    rig.end().await;
+    rig.report().await;
+    rig.ack_release().await;
+    rig.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Python and local loopback S7 fixture"]
+async fn s7_wire_idle_repeated_output_overwrite_faults_on_third_restore() {
+    let mut rig = Rig::new("idle-overwrite").await;
+    for _ in 0..2 {
+        rig.plc.values(json!({"busy":true, "visionFault":true}));
+        rig.fresh().await;
+        let event = rig.session.poll(&rig.engine, false, true).await;
+        assert!(matches!(event, SessionEvent::Restored(ref reason) if reason.contains("busy=1") && reason.contains("visionFault=1")), "{event:?}");
+        assert_idle_outputs(&rig.plc.fields(), true);
+    }
+    rig.plc.values(json!({"done":true}));
+    rig.fresh().await;
+    let event = rig.session.poll(&rig.engine, false, true).await;
+    assert!(matches!(event, SessionEvent::Fault(ref reason) if reason.contains("第 3 次") && reason.contains("done=1")), "{event:?}");
+    assert_eq!(rig.session.phase(), SessionPhase::Fault);
+    assert_eq!(rig.plc.fields()["visionFault"], true);
+    assert!(!rig.session.pending());
+    assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready));
+    assert_idle_outputs(&rig.plc.fields(), true);
+    rig.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Python and local loopback S7 fixture"]
+async fn s7_wire_idle_plc_leftovers_wait_without_fault_until_released() {
+    let mut rig = Rig::new("idle-plc-leftovers").await;
+    rig.plc.values(json!({"partEnd":true}));
+    rig.fresh().await;
+    for _ in 0..3 {
+        assert!(matches!(rig.session.poll(&rig.engine, false, true).await, SessionEvent::None));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(rig.session.phase(), SessionPhase::Idle);
+    assert!(rig.session.notice().is_some_and(|notice| notice.starts_with(NOTICE) && notice.contains("partEnd")), "{:?}", rig.session.view());
+    assert_idle_outputs(&rig.plc.fields(), true);
+    rig.plc.values(json!({"partEnd":false}));
+    rig.fresh().await;
+    assert!(matches!(rig.session.poll(&rig.engine, false, true).await, SessionEvent::None));
+    assert!(rig.session.notice().is_none() && rig.session.view().message.is_none());
+    rig.request(1, 50).await;
+    rig.arm().await;
+    rig.end().await;
+    rig.report().await;
+    rig.ack_release().await;
+
+    // 带着未清的 resultAck 再发 partStart：分不清确认属于哪一件，判握手故障
+    rig.plc.values(json!({"resultAck":true}));
+    rig.fresh().await;
+    assert!(matches!(rig.session.poll(&rig.engine, false, true).await, SessionEvent::None));
+    assert!(rig.session.notice().unwrap().contains("resultAck"));
+    rig.plc.values(json!({"partStart":true}));
+    rig.fresh().await;
+    let event = rig.session.poll(&rig.engine, false, true).await;
+    assert!(matches!(event, SessionEvent::Fault(ref reason) if reason.contains("resultAck")), "{event:?}");
+    assert!(!rig.session.pending());
+    rig.plc.control(json!({"op":"plc_release"}));
+    rig.fresh().await;
+    assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready));
+    rig.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Python and local loopback S7 fixture"]
+async fn s7_wire_devices_not_ready_while_idle_withdraws_ready_and_recovers() {
+    let mut rig = Rig::new("idle-devices").await;
+    for _ in 0..3 {
+        assert!(matches!(rig.session.poll(&rig.engine, false, false).await, SessionEvent::None));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(rig.session.phase(), SessionPhase::Idle);
+    assert!(rig.session.notice().unwrap().contains("设备未就绪"));
+    assert_idle_outputs(&rig.plc.fields(), false);
+    assert!(matches!(rig.session.poll(&rig.engine, false, true).await, SessionEvent::None));
+    assert!(rig.session.notice().is_none());
+    assert_idle_outputs(&rig.plc.fields(), true);
+    assert!(!rig.audit().iter().any(|record| record["action"] == "idleOutputsRestored"));
+
+    // 结果已确认后设备掉线：事务照常结束，不置就绪；设备恢复后补上
+    rig.request(1, 50).await;
+    rig.arm().await;
+    rig.end().await;
+    rig.report().await;
+    rig.plc.control(json!({"op":"plc_ack"}));
+    rig.phase(SessionPhase::Releasing).await;
+    rig.plc.control(json!({"op":"plc_release"}));
+    rig.fresh().await;
+    assert!(matches!(rig.session.poll(&rig.engine, false, false).await, SessionEvent::Released(Some([2, 1, 1]))));
+    assert_eq!(rig.session.phase(), SessionPhase::Idle);
+    assert!(!rig.session.pending());
+    assert_idle_outputs(&rig.plc.fields(), false);
+    assert!(rig.session.notice().is_some());
+    assert!(matches!(rig.session.poll(&rig.engine, false, true).await, SessionEvent::None));
+    assert_idle_outputs(&rig.plc.fields(), true);
+
+    // 就绪撤销前 PLC 已经发来新件：照常接下事务，由节拍拒收判 ERR，不判握手故障
+    rig.request_values(2, 51);
+    rig.fresh().await;
+    let event = rig.session.poll(&rig.engine, false, false).await;
+    assert!(matches!(event, SessionEvent::Start(ref request) if request.request_seq == 2), "{event:?}");
+    rig.session.report(&rig.engine, 90, crate::judge::fault::DEVICE_LOST).await.unwrap();
+    rig.ack_release().await;
+    rig.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Python and local loopback S7 fixture"]
+async fn s7_wire_early_err_release_reports_plc_issued_triggers() {
+    let mut rig = Rig::new("early-err-triggers").await;
+    rig.request(1, 50).await;
+    rig.arm().await;
+    // 运动中途停了：槽 1 只发了 1 个触发，没有 partEnd；PC 运动超时提前判 ERR 97
+    rig.plc.values(json!({"camera1Triggers":1}));
+    rig.fresh().await;
+    assert!(matches!(rig.session.poll(&rig.engine, false, true).await, SessionEvent::None));
+    rig.session.report(&rig.engine, 90, crate::judge::fault::MOTION_TIMEOUT).await.unwrap();
+    rig.plc.control(json!({"op":"plc_ack"}));
+    rig.phase(SessionPhase::Releasing).await;
+    rig.plc.control(json!({"op":"plc_release"}));
+    rig.fresh().await;
+    let event = rig.session.poll(&rig.engine, false, true).await;
+    assert!(matches!(event, SessionEvent::Released(Some([1, 0, 0]))), "{event:?}");
+    // 下一件的请求清零了触发数，正常完成时报计划数
+    rig.request(2, 51).await;
+    rig.arm().await;
+    rig.end().await;
+    rig.report().await;
+    rig.plc.control(json!({"op":"plc_ack"}));
+    rig.phase(SessionPhase::Releasing).await;
+    rig.plc.control(json!({"op":"plc_release"}));
+    rig.fresh().await;
+    let event = rig.session.poll(&rig.engine, false, true).await;
+    assert!(matches!(event, SessionEvent::Released(Some([2, 1, 1]))), "{event:?}");
+    rig.finish().await;
+}
+
 #[test]
 fn unfinished_temporary_journal_blocks_recovery_even_when_main_file_exists() {
     let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/s7-session-tests")
@@ -883,7 +1052,7 @@ async fn s7_wire_recording_audit_wait_holds_release_then_recovers_without_reset(
     }
     let durable = PlcSession::open(rig.session.path.clone());
     assert!(durable.pending() && durable.acknowledged());
-    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, true).await, SessionEvent::Released));
+    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, true).await, SessionEvent::Released(Some([2, 1, 1]))));
     assert_eq!(rig.session.phase(), SessionPhase::Idle);
     assert!(!rig.session.pending());
     assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, false).await, SessionEvent::None));
@@ -901,8 +1070,8 @@ async fn s7_wire_recording_audit_wait_holds_release_then_recovers_without_reset(
 
 #[tokio::test]
 #[ignore = "requires Python and local loopback S7 fixture"]
-async fn s7_wire_recording_audit_wait_does_not_mask_actual_device_fault() {
-    let mut rig = Rig::new("recording-audit-device-fault").await;
+async fn s7_wire_recording_audit_wait_releases_offline_then_restores_ready() {
+    let mut rig = Rig::new("recording-audit-offline-release").await;
     rig.request(1, 12345).await;
     rig.arm().await;
     rig.end().await;
@@ -911,10 +1080,75 @@ async fn s7_wire_recording_audit_wait_does_not_mask_actual_device_fault() {
     rig.phase(SessionPhase::Releasing).await;
     rig.plc.control(json!({"op":"plc_release"}));
     rig.fresh().await;
-    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, false, false).await, SessionEvent::Fault(_)));
-    assert_eq!(rig.session.phase(), SessionPhase::Fault);
-    assert!(rig.session.pending());
+    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, false, false).await, SessionEvent::None));
+    assert_eq!(rig.session.phase(), SessionPhase::Releasing);
+    assert!(rig.session.pending() && rig.session.acknowledged());
     assert_eq!(rig.plc.fields()["visionReady"], false);
+    rig.fresh().await;
+    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, false, true).await, SessionEvent::Released(Some([2, 1, 1]))));
+    assert_eq!(rig.session.phase(), SessionPhase::Idle);
+    assert!(!rig.session.pending());
+    let fields = rig.plc.fields();
+    for tag in ["visionReady", "visionFault", "done", "busy", "armed"] { assert_eq!(fields[tag], false); }
+    rig.fresh().await;
+    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, false, true).await, SessionEvent::None));
+    assert_eq!(rig.plc.fields()["visionReady"], false);
+    rig.fresh().await;
+    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, true).await, SessionEvent::None));
+    assert_eq!(rig.plc.fields()["visionReady"], true);
+    rig.request(2, 12345).await;
+    rig.arm().await;
+    rig.end().await;
+    rig.report().await;
+    rig.ack_release().await;
+    rig.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Python and local loopback S7 fixture"]
+async fn s7_wire_acquire_and_drain_audit_wait_does_not_mask_device_fault() {
+    for draining in [false, true] {
+        let mut rig = Rig::new(if draining { "drain-audit-device-fault" } else { "acquire-audit-device-fault" }).await;
+        rig.request(1, 12345).await;
+        rig.arm().await;
+        if draining { rig.end().await; }
+        let event = rig.session.poll_with_audit(&rig.engine, false, false, false).await;
+        assert!(matches!(event, SessionEvent::Fault(ref error) if error.contains("检测设备未就绪")), "{event:?}");
+        assert_eq!(rig.session.phase(), SessionPhase::Fault);
+        assert!(rig.session.pending());
+        assert_eq!(rig.plc.fields()["visionReady"], false);
+        rig.finish().await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires Python and local loopback S7 fixture"]
+async fn s7_wire_idle_audit_recovery_keeps_ready_low_until_devices_recover() {
+    let mut rig = Rig::new("idle-audit-device-recovery").await;
+    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, false).await, SessionEvent::None));
+    assert_eq!(rig.plc.fields()["visionReady"], false);
+    rig.fresh().await;
+    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, false, false).await, SessionEvent::None));
+    assert_eq!(rig.plc.fields()["visionReady"], false);
+    rig.fresh().await;
+    for _ in 0..3 {
+        assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, false, true).await, SessionEvent::None));
+        assert_eq!(rig.session.phase(), SessionPhase::Idle);
+        let fields = rig.plc.fields();
+        for tag in ["visionReady", "visionFault", "done", "busy", "armed"] {
+            assert_eq!(fields[tag], false, "{tag}: {fields}");
+        }
+        assert!(rig.session.notice().is_some());
+        rig.fresh().await;
+    }
+    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, true).await, SessionEvent::None));
+    assert_eq!(rig.plc.fields()["visionReady"], true);
+    assert!(rig.session.notice().is_none());
+    rig.request(1, 12345).await;
+    rig.arm().await;
+    rig.end().await;
+    rig.report().await;
+    rig.ack_release().await;
     rig.finish().await;
 }
 
@@ -958,7 +1192,7 @@ async fn s7_wire_released_does_not_create_second_ack_delivery_after_ready() {
     rig.plc.control(json!({"op":"plc_release"}));
     rig.fresh().await;
     let had_ack = rig.session.acknowledged();
-    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, true).await, SessionEvent::Released));
+    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, true).await, SessionEvent::Released(Some([2, 1, 1]))));
     assert_eq!(rig.plc.fields()["visionReady"], true);
     assert!(crate::cycle::s7_ack_delivery(had_ack, &rig.session).is_none());
     assert_eq!(store.detail_by_cycle(cycle).unwrap().unwrap().summary.delivery, accepted);

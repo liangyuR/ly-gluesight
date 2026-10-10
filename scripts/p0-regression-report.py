@@ -150,8 +150,11 @@ def validate_calls(record, case, shots):
             require(integer(call["stations"], "stations") == 101, "Measurement station count differs")
             coverage = number(call["coverage"], "coverage")
             require(coverage <= 1 and integer(call["gapStations"], "gapStations") <= 101, "Invalid native coverage/gap count")
-            lo, hi = (number(call[key], key, positive=True) for key in ("widthMinMm", "widthMaxMm"))
-            require(lo <= hi, "Invalid native width bounds")
+            if coverage > 0:
+                lo, hi = (number(call[key], key, positive=True) for key in ("widthMinMm", "widthMaxMm"))
+                require(lo <= hi, "Invalid native width bounds")
+            else:
+                require(call["widthMinMm"] is None and call["widthMaxMm"] is None, "Empty measurement reports widths")
         else:
             require(isinstance(call["error"], str) and call["error"], "Native error must be explicit")
             require(call["engineRunIoParseMs"] is None, "Failed native call has no completed run timing")
@@ -203,9 +206,10 @@ def validate_case(case):
     check_judgement(probes["partialGap"], "NG_GAP", 13, 0, 0)
     validate_calls(probes["partialGap"], case, manifest["shots"])
     require(probes["partialGap"]["calls"][1]["gapStations"] > 6, "Partial gap was not measured from pixels")
-    check_judgement(probes["wholeEmpty"], "ERR_INSPECT", 90, 99, 4)
+    check_judgement(probes["wholeEmpty"], "NG_GAP", 13, 0, 0)
     validate_calls(probes["wholeEmpty"], case, manifest["shots"])
-    require(all("检测区内没找到胶" in c["error"] for c in probes["wholeEmpty"]["calls"]), "Whole-empty result is not an explicit native no-bead error")
+    require(all(c["coverage"] == 0 for c in probes["wholeEmpty"]["calls"]), "Whole-empty frames still measured bead")
+    require("检测区内没找到胶" in probes["wholeEmpty"]["judgement"]["reason"], "Whole-empty NG reason is not explicit")
     validate_unknown_metrics(case)
     for key in ("preparedMeasureMs", "engineRunIoParseMs"):
         validate_distribution(case[key], [call[key] for part in case["steadyRecords"] for call in part["calls"]], key)

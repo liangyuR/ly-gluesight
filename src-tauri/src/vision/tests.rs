@@ -115,3 +115,23 @@ fn native_board_calibration_uses_full_pixels_and_new_frames_do_not_reuse_old_boa
     assert!(result.failure().contains("no_board"), "{}", result.failure());
     assert!(result.record("calib").is_none());
 }
+
+#[test]
+fn rebuilt_core_file_changes_identity_without_hashing_it() {
+    let dir = std::env::temp_dir().join(format!("gluesight-core-identity-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("lyflow_core.dll");
+    std::fs::write(&path, [1u8; 16]).unwrap();
+    let first = file_identity(&path).unwrap();
+    assert_eq!(first.0, 16);
+    // 同名同版本重新编译：大小或修改时间至少一项会变
+    std::fs::write(&path, [2u8; 24]).unwrap();
+    let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(first.1 + 5000)).unwrap();
+    drop(file);
+    let second = file_identity(&path).unwrap();
+    assert_ne!(first, second);
+    assert_eq!(second, (24, first.1 + 5000));
+    assert!(file_identity(&dir.join("missing.dll")).unwrap_err().contains("核心库文件信息"));
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -433,6 +433,24 @@ fn pixel_kind(pixel_type: u32) -> Result<PixelKind, String> {
     }
 }
 
+impl PixelKind {
+    fn bytes_per_pixel(self) -> usize {
+        match self {
+            PixelKind::Mono8 | PixelKind::Bayer8 => 1,
+        }
+    }
+}
+
+/// SDK 报的帧长够不够 宽 × 高 × 每像素字节数：不够就不能按宽高建切片（越界读）。返回要取的字节数。
+fn frame_bytes(kind: PixelKind, w: u32, h: u32, frame_len: u32) -> Result<usize, String> {
+    let need = (w as usize).checked_mul(h as usize).and_then(|n| n.checked_mul(kind.bytes_per_pixel()))
+        .filter(|&n| n > 0).ok_or_else(|| format!("SDK 帧尺寸 {w}×{h} 无效，丢弃图像"))?;
+    if (frame_len as usize) < need {
+        return Err(format!("SDK 帧长 {frame_len} 字节不足 {w}×{h} 需要的 {need} 字节（帧不完整或宽高与像素格式不符），丢弃图像"));
+    }
+    Ok(need)
+}
+
 /// 一帧灰度：Mono8 直接借 SDK 的缓冲（留整帧时才拷），Bayer 转换后的已在缓冲池里。
 enum Gray<'a> {
     Raw(&'a [u8]),
@@ -520,14 +538,14 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
         let session = shared.session.load(Ordering::SeqCst);
         let w = if info.extend_width != 0 { info.extend_width } else { info.width as u32 };
         let h = if info.extend_height != 0 { info.extend_height } else { info.height as u32 };
-        // 先认像素格式，再按每像素 1 字节取缓冲（Mono8 与 8 位 Bayer 都是）
-        let image = match pixel_kind(info.pixel_type) {
+        // 先认像素格式、核对 SDK 帧长，再按宽 × 高取缓冲；图像不可用时帧照常交付（触发计数照记），只是不带图
+        let image = match pixel_kind(info.pixel_type).and_then(|kind| frame_bytes(kind, w, h, info.frame_len)) {
             Err(e) => {
                 shared.unusable(e);
                 None
             }
             Ok(_) if data.is_null() => None,
-            Ok(_) => shared.gray_image(info.pixel_type, w, h, unsafe { std::slice::from_raw_parts(data, (w * h) as usize) }),
+            Ok(len) => shared.gray_image(info.pixel_type, w, h, unsafe { std::slice::from_raw_parts(data, len) }),
         };
         shared.deliver(Frame { cam: shared.cam, session, counter, frame_counter, trigger_counter, lost_packets: info.lost_packet, ts: now_ms(), manual: false, images: image.into_iter().collect() });
     }));
@@ -1642,6 +1660,23 @@ mod gray_tests {
             assert_eq!(pixel_kind(t), Ok(PixelKind::Bayer8));
         }
         assert!(to_gray(&pool, mvs::PIXEL_BAYER_BG8, 1, 24, &data).is_err());
+    }
+
+    #[test]
+    fn sdk_frame_length_must_cover_width_height_and_pixel_size() {
+        for kind in [PixelKind::Mono8, PixelKind::Bayer8] {
+            assert_eq!(frame_bytes(kind, 2448, 2048, 2448 * 2048), Ok(2448 * 2048));
+            // SDK 缓冲比宽高需要的长（行尾填充、附带 Chunk）：只取宽 × 高
+            assert_eq!(frame_bytes(kind, 4, 3, 64), Ok(12));
+            let error = frame_bytes(kind, 2448, 2048, 2448 * 2048 - 1).unwrap_err();
+            assert!(error.contains("5013503") && error.contains("5013504") && error.contains("2448×2048"), "{error}");
+            for (w, h) in [(0, 2048), (2448, 0)] {
+                assert!(frame_bytes(kind, w, h, u32::MAX).unwrap_err().contains("无效"));
+            }
+        }
+        // 宽高乘积超过 u32：以前 w * h 会溢出回绕成小切片，现在按实际需要比较
+        let error = frame_bytes(PixelKind::Mono8, 70000, 70000, u32::MAX).unwrap_err();
+        assert!(error.contains("4900000000"), "{error}");
     }
 
     #[test]

@@ -133,7 +133,8 @@ describe("配方的拍照点表", () => {
     await userEvent.click(panel.getByRole("button", { name: "停用P1 · 位置判定" }));
     await userEvent.click(panel.getByRole("button", { name: "启用P1 · 胶宽判定" }));
     fireEvent.change(panel.getByRole("spinbutton", { name: "P1 · 允许断胶长度（mm）" }), { target: { value: "3" } });
-    expect(last(onDraftChange).shots[0].limits).toEqual({ position: null, width: defaultWidth, maxGapLen: 3 });
+    fireEvent.change(panel.getByRole("spinbutton", { name: "P1 · 最低有胶比例（%）" }), { target: { value: "60" } });
+    expect(last(onDraftChange).shots[0].limits).toEqual({ position: null, width: defaultWidth, maxGapLen: 3, minPresent: .6 });
     expect(toggle).toHaveTextContent("已单独设");
     // 配方默认值不受影响
     expect(last(onDraftChange).detect).toEqual(workspaceView().workspace.doc.detect);
@@ -149,7 +150,7 @@ describe("配方的拍照点表", () => {
 
   it("载入时单独设的检测参数、限值与标定原样显示并保存", async () => {
     const doc = workspaceView().workspace.doc;
-    doc.shots[1] = { ...doc.shots[1], calib: "CAM-1-B", detect: { searchMm: 6, polarity: "light", widthRange: [2, 5] }, limits: { position: null, width: { ...defaultWidth }, maxGapLen: 2 } };
+    doc.shots[1] = { ...doc.shots[1], calib: "CAM-1-B", detect: { searchMm: 6, polarity: "light", widthRange: [2, 5] }, limits: { position: null, width: { ...defaultWidth }, maxGapLen: 2, minPresent: .8 } };
     show(undefined, doc);
     expect(screen.getByRole("textbox", { name: "拍照点 2 · 标定引用" })).toHaveValue("CAM-1-B");
     const toggle = screen.getByRole("button", { name: "拍照点 2 · 单独设置" }); expect(toggle).toHaveTextContent("已单独设");
@@ -197,7 +198,7 @@ describe("配方的站距、默认检测参数与默认限值", () => {
     number("胶宽下限（mm）", "2"); number("胶宽上限（mm）", "8");
     number("位置 · 上公差", "1.5"); number("允许断胶长度（mm）", "6");
     expect(last(onDraftChange)).toMatchObject({ spacing: .5, filterWindow: 5, triggerMode: "stop",
-      detect: { searchMm: 12, polarity: "light", widthRange: [2, 8] }, limits: { position: { tolUpper: 1.5 }, width: null, maxGapLen: 6 } });
+      detect: { searchMm: 12, polarity: "light", widthRange: [2, 8] }, limits: { position: { tolUpper: 1.5 }, width: null, maxGapLen: 6, minPresent: .8 } });
     await userEvent.click(await readySave());
     expect(recipeApi.save).toHaveBeenCalledWith(expect.objectContaining({ shots: [{ ...workspaceView().workspace.doc.shots[0], camera: "CAM-2" }, workspaceView().workspace.doc.shots[1]], spacing: .5 }), "A");
     for (const removed of ["path", "line", "corner", "segmentOverrides", "fov", "maxGapLen"]) expect(vi.mocked(recipeApi.save).mock.lastCall![0]).not.toHaveProperty(removed);

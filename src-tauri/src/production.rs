@@ -26,9 +26,18 @@ fn engine_version_matches(published: &str, loaded: &str) -> bool {
     published.split(':').next() == Some(loaded)
 }
 
+/// 版本号相同但核心库文件（大小或修改时间）与发布时不同：照常生产，但要让人知道结果不是验证时那份文件量的。
+fn engine_file_note(published: &str, engine: &Engine) -> Option<String> {
+    (published != engine.identity).then(|| format!(
+        "当前核心库 {} 与发布时的文件不同（发布时 {published}，现在 {}）：同版本号但文件大小或修改时间变了，建议重新验证并发布",
+        engine.path.display(), engine.identity))
+}
+
 pub struct Prepared {
     pub bundle: ReleaseBundle,
     pub recipe: Arc<Recipe>,
+    /// 核心库文件与发布时不同的提示（见 engine_file_note）
+    pub engine_note: Option<String>,
     engine: Arc<Engine>,
     graphs: Vec<Option<Value>>,
     sizes: Vec<Option<[u32; 2]>>,
@@ -41,7 +50,8 @@ impl Prepared {
         if recipe.revision_id != expected.revision_id || recipe.id != expected.id || recipe.version != expected.version
             || recipe.product_code != expected.product_code || recipe.trigger_mode != expected.trigger_mode || recipe.schema_version != expected.schema_version
             || recipe.shots != expected.shots || recipe.spacing != expected.spacing || recipe.detect != expected.detect
-            || recipe.limits != expected.limits || recipe.filter_window != expected.filter_window || recipe.teaching_id != expected.teaching_id { return Err("发布包配方与所选生产版本不一致，请重新发布".into()); }
+            || recipe.limits != expected.limits || recipe.filter_window != expected.filter_window || recipe.teaching_id != expected.teaching_id
+            || recipe.plan_version != expected.plan_version { return Err("发布包配方与所选生产版本不一致，请重新发布".into()); }
         if bundle.manifest.versions.graph != GRAPH_VERSION || !engine_version_matches(&bundle.manifest.versions.engine, &engine.version) {
             return Err("发布包的算法图或引擎版本与当前引擎不一致，请重新验证并发布".into());
         }
@@ -63,7 +73,8 @@ impl Prepared {
                 }
             }
         }
-        Ok(Self { bundle, recipe, engine, graphs: values, sizes })
+        let engine_note = engine_file_note(&bundle.manifest.versions.engine, &engine);
+        Ok(Self { bundle, recipe, engine_note, engine, graphs: values, sizes })
     }
 
     pub fn verify(&self) -> Result<(), String> {
@@ -217,6 +228,7 @@ impl ProductionHost {
             let state = match result {
                 Ok(prepared) => {
                     crate::cycle::log(&app, "ok", "生产预热", format!("发布包 {} 已就绪，耗时 {} ms", prepared.bundle.id, started.elapsed().as_millis()));
+                    if let Some(note) = &prepared.engine_note { crate::cycle::log(&app, "warn", "生产预热", note.clone()); }
                     Entry::Ready(prepared)
                 }
                 Err(error) => {

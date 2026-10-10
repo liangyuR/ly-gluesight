@@ -105,6 +105,15 @@ impl Judgement {
 
 const MAX_INVALID_LEN: f32 = 2.0;
 
+#[derive(Clone, Copy, PartialEq)]
+enum GapKind {
+    /// 整段一站胶都没有
+    Whole,
+    /// 断胶区间里夹着超差站或测不了的站
+    Mixed,
+    Plain,
+}
+
 /// 一段里某个量（位置或胶宽）的统计：极值、有没有超绝对限、最长连续超差。
 #[derive(Default)]
 struct Stat {
@@ -227,15 +236,33 @@ pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
         })
         .collect();
 
+    // 断胶区间：断胶站连同紧挨着的超差站、测不了的站一起算长度，免得"断—细—断"交替把一处大缺口
+    // 拆成几段都不超限的短断口；区间里至少要有一站断胶。纯断胶区间与原规则一致。
     let mut gaps = Vec::new();
+    let mut gap_kind = Vec::new();
+    let mut sparse = vec![None; segments.len()];
     for (gi, g) in recipe.segments.iter().enumerate() {
-        for run in runs_in(g, |j| table[j] == PointState::Gap) {
+        let gap_count = (g.first..g.first + g.count).filter(|&j| table[j] == PointState::Gap).count();
+        let present = (g.first..g.first + g.count).filter(|&j| matches!(table[j], PointState::Measured { .. })).count();
+        let out = |p: &Option<JudgeParams>, v: &[Option<f32>], j: usize| p.as_ref().is_some_and(|p| v[j].is_some_and(|v| v < p.lower() || v > p.upper()));
+        let defect = |j: usize| matches!(table[j], PointState::Gap | PointState::Invalid) || out(&g.position, &d, j) || out(&g.width, &w, j);
+        for run in runs_in(g, defect) {
+            let gap_stations = run.iter().filter(|&&j| table[j] == PointState::Gap).count();
             let len = run.len() as f32 * sp;
-            if len <= g.max_gap_len {
+            // 整段一站胶都没有时，允许断胶长度设得再大也判断胶
+            if gap_stations == 0 || (len <= g.max_gap_len && present > 0) {
                 continue;
             }
             segments[gi].verdict = segments[gi].verdict.max(Verdict::NgGap);
             gaps.push(GapRun { segment: gi, s0: g.s(run[0], sp), s1: g.s(run[run.len() - 1], sp) + sp, len, frames: vec![g.shot as u8] });
+            gap_kind.push(if present == 0 { GapKind::Whole } else if gap_stations < run.len() { GapKind::Mixed } else { GapKind::Plain });
+        }
+        // 零散断胶：每处都不超长但加起来缺得多。只在累计断胶超过单处允许长度时才看比例，
+        // 这样一处允许范围内的断口在短段上不会被比例误判。
+        let ratio = present as f32 / (present + gap_count).max(1) as f32;
+        if gap_count as f32 * sp > g.max_gap_len && ratio < g.min_present {
+            segments[gi].verdict = segments[gi].verdict.max(Verdict::NgGap);
+            sparse[gi] = Some(ratio);
         }
     }
 
@@ -243,9 +270,16 @@ pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
     let at = |r: Option<(f32, f32)>| r.map(|(a, b)| format!(" · s={a:.1}–{b:.1}")).unwrap_or_default();
     let reason = match verdict {
         Verdict::NgGap => {
-            let g = &gaps[0];
-            let seg = &recipe.segments[g.segment];
-            format!("{} 断胶 {:.1} mm > {:.1} mm · s={:.1}–{:.1}", seg.name, g.len, seg.max_gap_len, g.s0, g.s1)
+            let gi = segments.iter().position(|s| s.verdict == Verdict::NgGap).unwrap();
+            let seg = &recipe.segments[gi];
+            match gaps.iter().zip(&gap_kind).filter(|(g, _)| g.segment == gi).max_by(|a, b| a.0.len.total_cmp(&b.0.len)) {
+                Some((g, GapKind::Whole)) => format!("{} 检测区内没找到胶（整段 {:.1} mm）", seg.name, g.len),
+                Some((g, kind)) => {
+                    let mixed = if *kind == GapKind::Mixed { "（含相连的超差或测不了的站）" } else { "" };
+                    format!("{} 断胶 {:.1} mm{mixed} > {:.1} mm · s={:.1}–{:.1}", seg.name, g.len, seg.max_gap_len, g.s0, g.s1)
+                }
+                None => format!("{} 胶条断续：有胶站只占 {:.0}% < {:.0}%", seg.name, sparse[gi].unwrap_or(0.0) * 100.0, seg.min_present * 100.0),
+            }
         }
         Verdict::Ok => format!("{} 个拍照点全部合格 · {n} 点", segments.len()),
         _ => {
@@ -361,6 +395,85 @@ mod tests {
         doc.limits.position = None;
         let recipe = doc.build().unwrap();
         let table = vec![PointState::Measured { d: 9.0, w: 4.0 }; recipe.point_count()];
+        assert_eq!(judge(&recipe, &table).verdict, Verdict::Ok);
+    }
+
+    #[test]
+    fn gap_bridged_by_thin_bead_is_one_gap() {
+        let recipe = builtin().remove(1);
+        let mut table = base(&recipe);
+        let f = recipe.segments[1].first;
+        // 断 4 mm、细 4 mm、断 4 mm：每段单看都不超限，连起来 12 mm 是一处断胶
+        (f + 10..f + 14).for_each(|j| table[j] = PointState::Gap);
+        (f + 14..f + 18).for_each(|j| table[j] = PointState::Measured { d: 0.0, w: 2.0 });
+        (f + 18..f + 22).for_each(|j| table[j] = PointState::Gap);
+        let r = judge(&recipe, &table);
+        assert_eq!(r.verdict, Verdict::NgGap, "{}", r.reason);
+        assert_eq!((r.gaps.len(), r.gaps[0].s0, r.gaps[0].len), (1, 10.0, 12.0));
+        assert!(r.reason.starts_with("P2 · J1 断胶 12.0 mm（含相连的超差或测不了的站） > 6.0 mm"), "{}", r.reason);
+    }
+
+    #[test]
+    fn short_gap_with_tapered_edges_stays_ok() {
+        let recipe = builtin().remove(1);
+        let mut table = base(&recipe);
+        let f = recipe.segments[1].first;
+        // 2 mm 断口两侧各 2 mm 收细：连起来 6 mm 不超断胶限，收细部分按胶宽规则至多算局部超差
+        (f + 8..f + 10).for_each(|j| table[j] = PointState::Measured { d: 0.0, w: 2.0 });
+        (f + 10..f + 12).for_each(|j| table[j] = PointState::Gap);
+        (f + 12..f + 14).for_each(|j| table[j] = PointState::Measured { d: 0.0, w: 2.0 });
+        let r = judge(&recipe, &table);
+        assert!(r.verdict <= Verdict::OkWithExcursion, "{}", r.reason);
+        assert!(r.gaps.is_empty());
+    }
+
+    #[test]
+    fn scattered_short_gaps_are_ng() {
+        let recipe = builtin().remove(1);
+        let mut table = base(&recipe);
+        let g = &recipe.segments[2];
+        // 每隔一站缺一站：每处断口 1 mm，有胶站只占一半
+        (g.first..g.first + g.count).step_by(2).for_each(|j| table[j] = PointState::Gap);
+        let r = judge(&recipe, &table);
+        assert_eq!(r.verdict, Verdict::NgGap, "{}", r.reason);
+        assert!(r.gaps.is_empty());
+        assert!(r.reason.starts_with("P3 · J1 胶条断续：有胶站只占") && r.reason.ends_with("< 80%"), "{}", r.reason);
+    }
+
+    #[test]
+    fn whole_shot_without_bead_is_ng_gap() {
+        let recipe = builtin().remove(1);
+        let mut table = base(&recipe);
+        let g = &recipe.segments[0];
+        (g.first..g.first + g.count).for_each(|j| table[j] = PointState::Gap);
+        let r = judge(&recipe, &table);
+        assert_eq!((r.verdict, r.fault_code), (Verdict::NgGap, 0));
+        assert!(r.reason.starts_with("P1 · J1 检测区内没找到胶（整段"), "{}", r.reason);
+    }
+
+    #[test]
+    fn whole_shot_without_bead_is_ng_even_if_all_gaps_are_allowed() {
+        let mut doc = crate::recipe::samples().remove(1);
+        doc.limits.max_gap_len = 1000.0;
+        let recipe = doc.build().unwrap();
+        let mut table = base(&recipe);
+        let g = &recipe.segments[0];
+        (g.first..g.first + g.count).for_each(|j| table[j] = PointState::Gap);
+        table[g.first + 3] = PointState::Invalid;
+        let r = judge(&recipe, &table);
+        assert_eq!(r.verdict, Verdict::NgGap, "{}", r.reason);
+        assert!(r.reason.contains("检测区内没找到胶"), "{}", r.reason);
+    }
+
+    #[test]
+    fn allowed_gap_in_short_shot_is_not_sparse() {
+        let mut doc = crate::recipe::samples().remove(1);
+        doc.limits.min_present = 0.95;
+        let recipe = doc.build().unwrap();
+        let mut table = base(&recipe);
+        let f = recipe.segments[0].first;
+        // 一处 6 mm 断口在允许范围内：比例再低也不按断续判
+        (f + 2..f + 8).for_each(|j| table[j] = PointState::Gap);
         assert_eq!(judge(&recipe, &table).verdict, Verdict::Ok);
     }
 

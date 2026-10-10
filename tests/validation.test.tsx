@@ -77,6 +77,16 @@ describe("验证与发布页面", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
+  it("发布确认说明 PLC 计划版本是否要同步", async () => {
+    const page = show(); await userEvent.click(screen.getByRole("button", { name: "发布生产配方" }));
+    expect(screen.getByText("拍照计划未变，沿用计划版本 1，PLC 不用改。")).toBeVisible();
+    expect(screen.queryByText("拍照计划已变，PLC 要同步")).not.toBeInTheDocument();
+    page.unmount(); ws.data!.planChanged = true; show();
+    expect(screen.getByText("发布时分配新号")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "发布生产配方" }));
+    expect(screen.getByText("拍照计划已变，PLC 要同步")).toBeVisible();
+  });
+
   it("发布失败保留确认弹窗", async () => {
     vi.mocked(ws.act).mockResolvedValueOnce(null); show();
     await userEvent.click(screen.getByRole("button", { name: "发布生产配方" }));

@@ -39,7 +39,7 @@ pub struct PublishInput {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FileEntry {
     pub path: String,
     pub bytes: u64,
@@ -61,13 +61,11 @@ pub struct ShotManifest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReleaseManifest {
     pub schema_version: u32,
     pub recipe_id: String,
-    #[serde(default)]
     pub recipe_revision: String,
-    #[serde(default)]
     pub bundle_id: String,
     pub recipe_version: u32,
     pub versions: Versions,
@@ -261,23 +259,6 @@ pub fn load(releases_root: &Path, recipe_id: &str, bundle_id: &str) -> Result<Re
     load_directory(&root, recipe_id, bundle_id)
 }
 
-pub fn is_legacy_directory(releases_root: &Path, recipe_id: &str, directory: &str) -> Result<bool, String> {
-    safe_id(recipe_id)?;
-    valid_bundle_id(directory)?;
-    let root = absolute_path(releases_root)?.join(recipe_id).join(directory);
-    reject_links(&root, false)?;
-    let manifest: serde_json::Value = read_json(&root.join("manifest.json"))?;
-    Ok(legacy_manifest(&manifest, directory))
-}
-
-pub fn load_legacy(releases_root: &Path, recipe_id: &str, bundle_id: &str, directory: &str) -> Result<ReleaseBundle, String> {
-    safe_id(recipe_id)?;
-    valid_bundle_id(bundle_id)?;
-    valid_bundle_id(directory)?;
-    let root = absolute_path(releases_root)?.join(recipe_id).join(directory);
-    load_directory(&root, recipe_id, bundle_id)
-}
-
 fn load_directory(root: &Path, recipe_id: &str, bundle_id: &str) -> Result<ReleaseBundle, String> {
     safe_id(recipe_id)?;
     valid_bundle_id(bundle_id)?;
@@ -449,25 +430,11 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
     serde_json::from_slice(&read_file(path)?).map_err(|e| format!("发布资源 {} 无法解析：{e}", path.display()))
 }
 
-fn legacy_manifest(value: &serde_json::Value, directory: &str) -> bool {
-    directory.len() == 16 && directory.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        && value.get("bundleId").is_none() && value.get("recipeRevision").is_none()
-        && value.get("recipeHash").is_some_and(serde_json::Value::is_string)
-        && value.get("files").and_then(serde_json::Value::as_array).is_some_and(|files| !files.is_empty()
-            && files.iter().all(|entry| entry.get("hash").is_some_and(serde_json::Value::is_string)))
-}
-
 fn read_manifest(root: &Path, bundle_id: &str) -> Result<ReleaseManifest, String> {
     let value: serde_json::Value = serde_json::from_slice(&read_file(&root.join("manifest.json"))?).map_err(|e| format!("发布清单无法解析：{e}"))?;
-    let mut manifest: ReleaseManifest = serde_json::from_value(value.clone()).map_err(|e| format!("发布清单无法解析：{e}"))?;
-    if let Some(id) = value.get("bundleId") {
-        if id.as_str() != Some(bundle_id) { return Err("发布清单与包的显式 ID 身份不一致".into()); }
-    } else {
-        let directory = root.file_name().and_then(|name| name.to_str()).ok_or("发布包目录没有有效名称")?;
-        if !legacy_manifest(&value, directory) { return Err("新发布包缺少明确 bundleId，拒绝按旧包猜测身份".into()); }
-        manifest.bundle_id = bundle_id.into();
-    }
-    if manifest.recipe_revision.is_empty() { manifest.recipe_revision = format!("{}-v{}", manifest.recipe_id, manifest.recipe_version); }
+    if value.get("bundleId").is_none() { return Err("发布清单缺少明确 bundleId，旧版发布包不再兼容，请重新发布".into()); }
+    let manifest: ReleaseManifest = serde_json::from_value(value).map_err(|e| format!("发布清单格式不兼容，请重新发布：{e}"))?;
+    if manifest.bundle_id != bundle_id { return Err("发布清单与包的显式 ID 身份不一致".into()); }
     Ok(manifest)
 }
 
@@ -690,7 +657,7 @@ mod tests {
         shots[1].view = 2;
         shots[1].calib = Some("cam2-view2".into());
         PublishInput {
-            recipe: RecipeDoc { id: "part-A".into(), name: "多分辨率配方".into(), version: 7, teaching_id: Some("teaching-1".into()), product_code: 11, trigger_mode: TriggerMode::Fly, schema_version: RECIPE_SCHEMA, spacing: 1.0, filter_window: 3, detect: default_detect(), limits: default_limits(), shots },
+            recipe: RecipeDoc { id: "part-A".into(), name: "多分辨率配方".into(), version: 7, plan_version: 0, teaching_id: Some("teaching-1".into()), product_code: 11, trigger_mode: TriggerMode::Fly, schema_version: RECIPE_SCHEMA, spacing: 1.0, filter_window: 3, detect: default_detect(), limits: default_limits(), shots },
             versions: Versions { engine: "lyflow-test-1".into(), graph: "taught-path-v1".into() },
             graph: ResourceSource::Bytes(br#"{"schemaVersion":1,"nodes":[],"edges":[]}"#.to_vec()),
             shots: vec![
@@ -721,54 +688,26 @@ mod tests {
         id
     }
 
-    fn legacy_fixture(directory: &Directory) -> (ReleaseBundle, String) {
+    #[test]
+    fn old_format_release_is_rejected_instead_of_guessing_identity() {
+        let directory = Directory::new();
         let bundle = publish(&directory.releases(), input()).unwrap();
-        let legacy_directory = "0123456789abcdef".to_string();
-        let root = directory.releases().join(&bundle.recipe.id).join(&legacy_directory);
+        let old_directory = "0123456789abcdef";
+        let root = directory.releases().join(&bundle.recipe.id).join(old_directory);
         fs::rename(&bundle.root, &root).unwrap();
         let mut manifest = serde_json::to_value(&bundle.manifest).unwrap();
         manifest.as_object_mut().unwrap().remove("bundleId");
         manifest.as_object_mut().unwrap().remove("recipeRevision");
-        manifest["recipeHash"] = serde_json::json!("ignored-legacy-value");
-        for entry in manifest["files"].as_array_mut().unwrap() { entry["hash"] = serde_json::json!("different-ignored-value"); }
+        manifest["recipeHash"] = serde_json::json!("old-value");
+        for entry in manifest["files"].as_array_mut().unwrap() { entry["hash"] = serde_json::json!("old-value"); }
         fs::write(root.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
-        (bundle, legacy_directory)
-    }
-
-    #[test]
-    fn legacy_content_fields_are_ignored_and_explicit_recipe_version_is_rebuilt() {
-        let directory = Directory::new();
-        let (_, locator) = legacy_fixture(&directory);
-        let legacy = load(&directory.releases(), "part-A", &locator).unwrap();
-        assert_eq!(legacy.id, locator);
-        assert_eq!(legacy.manifest.recipe_revision, "part-A-v7");
-        legacy.verify().unwrap();
-        let serialized = serde_json::to_value(&legacy.manifest).unwrap();
-        assert!(serialized.get("recipeHash").is_none());
-        assert!(serialized["files"].as_array().unwrap().iter().all(|entry| entry.get("hash").is_none()));
-    }
-
-    #[test]
-    fn legacy_directory_is_only_a_locator_for_a_persisted_explicit_bundle_id() {
-        let directory = Directory::new();
-        let (_, locator) = legacy_fixture(&directory);
-        let root = directory.releases().join("part-A").join(&locator);
-        let manifest_path = root.join("manifest.json");
-        let unchanged = fs::read(&manifest_path).unwrap();
-        let database = directory.0.join("history.sqlite");
-        let store = crate::store::Store::open(&database).unwrap();
-        assert!(is_legacy_directory(&directory.releases(), "part-A", &locator).unwrap());
-        let id = store.register_legacy_bundle("part-A", &locator).unwrap();
-        let loaded = load_legacy(&directory.releases(), "part-A", &id, &locator).unwrap();
-        assert_eq!(loaded.id, id);
-        assert_eq!(loaded.root, root);
-        loaded.verify().unwrap();
-        drop(store);
-        let store = crate::store::Store::open(&database).unwrap();
-        assert_eq!(store.register_legacy_bundle("part-A", &locator).unwrap(), id);
-        assert_eq!(fs::read(manifest_path).unwrap(), unchanged);
-        assert!(load_legacy(&directory.releases(), "part-A", &id, "../outside").is_err());
-        assert!(load(&directory.releases(), "part-A", "legacy-bundle-missing").is_err());
+        assert!(load(&directory.releases(), "part-A", old_directory).unwrap_err().contains("旧版发布包"));
+        manifest["bundleId"] = serde_json::json!(old_directory);
+        fs::write(root.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(load(&directory.releases(), "part-A", old_directory).unwrap_err().contains("不兼容"));
+        manifest["recipeRevision"] = serde_json::json!(bundle.manifest.recipe_revision);
+        fs::write(root.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(load(&directory.releases(), "part-A", old_directory).unwrap_err().contains("hash"));
     }
 
     #[test]
@@ -779,9 +718,7 @@ mod tests {
         let mut value = serde_json::to_value(&bundle.manifest).unwrap();
         value.as_object_mut().unwrap().remove("bundleId");
         fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-        assert!(!is_legacy_directory(&directory.releases(), "part-A", &bundle.id).unwrap());
         assert!(load(&directory.releases(), "part-A", &bundle.id).unwrap_err().contains("bundleId"));
-        assert!(load_legacy(&directory.releases(), "part-A", "legacy-bundle-forged", &bundle.id).unwrap_err().contains("bundleId"));
         assert!(bundle.verify().unwrap_err().contains("bundleId"));
         value["bundleId"] = serde_json::json!("another-explicit-id");
         fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
@@ -797,10 +734,11 @@ mod tests {
         let directory = Directory::new();
         let mut source = input();
         let recipe = source.recipe.build().unwrap();
-        source.versions = Versions { engine: engine.version.clone(), graph: crate::production::GRAPH_VERSION.into() };
+        source.versions = Versions { engine: engine.identity.clone(), graph: crate::production::GRAPH_VERSION.into() };
         source.graph = ResourceSource::Bytes(serde_json::to_vec(&crate::production::graphs(&recipe).unwrap()).unwrap());
         let bundle = publish(&directory.releases(), source).unwrap();
         let prepared = crate::production::Prepared::load(bundle.clone(), engine, &recipe).unwrap();
+        assert!(prepared.engine_note.is_none());
         prepared.verify().unwrap();
         let mut value = serde_json::to_value(&bundle.manifest).unwrap();
         value.as_object_mut().unwrap().remove("bundleId");
@@ -813,13 +751,18 @@ mod tests {
         let directory = Directory::new();
         let recipes_dir = directory.0.join("recipes");
         let recipes = crate::recipe::RecipeStore::open(recipes_dir.clone()).unwrap();
-        let original = recipes.save_published(input().recipe, None).unwrap();
+        let mut first = input().recipe;
+        first.plan_version = recipes.plan_version_for(&first).unwrap();
+        let original = recipes.save_published(first, None).unwrap();
         recipes.delete(&original.id).unwrap();
         drop(recipes);
         let recipes = crate::recipe::RecipeStore::open(recipes_dir).unwrap();
         let mut candidate = input();
         candidate.recipe.version = recipes.next_version(&original.id).unwrap();
+        candidate.recipe.plan_version = recipes.plan_version_for(&candidate.recipe).unwrap();
         assert_eq!(candidate.recipe.version, 8);
+        // 删掉重建的配方拿新的计划版本，不复用删除前的号
+        assert!(candidate.recipe.plan_version > original.plan_version);
         let frozen = publish(&directory.releases(), candidate).unwrap();
         let saved = recipes.save_published(frozen.recipe.clone(), None).unwrap();
         assert_eq!(saved.revision_id, frozen.manifest.recipe_revision);

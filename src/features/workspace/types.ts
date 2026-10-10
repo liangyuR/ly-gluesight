@@ -39,7 +39,14 @@ export interface Workspace {
   publishError: string | null; updatedAt: number;
 }
 /** coverage：要检的拍照点里已示教中线的比例（%）。 */
-export interface WorkspaceView { workspace: Workspace; layout: Recipe; productionVersion: number | null; coverage: number }
+export interface WorkspaceView {
+  workspace: Workspace; layout: Recipe; productionVersion: number | null;
+  /** 生产配方的 PLC 计划版本 */
+  productionPlanVersion: number | null;
+  /** 候选的拍照计划（产品代码、拍照点顺序 / Pose / 相机）与生产不同：生效后 PLC 要同步新的计划版本 */
+  planChanged: boolean;
+  coverage: number;
+}
 export interface RawFrame { k: number; camera: string; view: number; file: string; ts: number; available: boolean; error: string | null; cam?: number | null; frameCounter?: number | null; triggerCounter?: number | null }
 export interface RecordImages { historyId: number; frames: RawFrame[]; complete: boolean; message: string }
 export interface Comparison {
