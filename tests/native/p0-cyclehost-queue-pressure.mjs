@@ -78,7 +78,7 @@ class Modbus {
 }
 
 export async function teachPressureFixture(page, options) {
-  const { views, inputs, output, recordsRoot, count, allowUnpublished = false } = options;
+  const { views, inputs, output, recordsRoot, count, allowUnpublished = false, allowDisconnected = false } = options;
   assert([1, 3].includes(views));
   const id = options.id ?? `P0-CYCLEHOST-${views}V-CLEAN`;
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
@@ -102,7 +102,7 @@ export async function teachPressureFixture(page, options) {
   await mkdir(output, { recursive: false });
   const report = { id, views, startedAt: new Date().toISOString(), passed: false, source, scope: 'Fresh pressure-test desktop candidate taught, trialled, validated and published from explicit independent clean replay pixels', physicalValidation: false, captures: [], trials: [] };
   try {
-    report.camera = await configureReplay(page, { views, directory: join(inputs, 'normal'), recordsRoot, allowUnpublished });
+    report.camera = await configureReplay(page, { views, directory: join(inputs, 'normal'), recordsRoot, allowUnpublished, allowDisconnected });
     await page.getByRole('navigation', { name: '操作导航' }).getByRole('link', { name: '配方库', exact: true }).click();
     await page.getByRole('button', { name: '复制配方 MTR-HSG-B', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '建立候选配方', exact: true });
@@ -275,6 +275,24 @@ async function released() {
     return !state.partStart && !state.partEnd && !state.resultAck && !state.done && !state.busy && !state.armed && cycle.phase === 'IDLE' && !cycle.part && !gates.callbackQueued && !gates.measureQueued && !gates.callbackHold && !gates.measureHold && spool.length === 0 && { wire: state, cycle, pressure: gates, spool };
   }, 'ACK released, queues empty, audit durable and Machine IDLE', 20000);
 }
+async function waitDisconnected() {
+  return until(async () => {
+    const plc = await read('plc_get_status'), cycle = await read('cycle_snapshot');
+    return plc.state === 'disconnected' && cycle.phase === 'FAULT' && cycle.fault === 'PLC 未连接' && !cycle.part && cycle.plcLocked === false && !(await read('sim_status')).running && { plc, cycle };
+  }, 'disconnected PLC, no workpiece and unlocked native PLC 未连接 FAULT');
+}
+async function uiPlcConnection(connected) {
+  await page.getByRole('navigation', { name: '操作导航' }).getByRole('link', { name: 'PLC 通讯', exact: true }).click();
+  const before = await read('plc_get_status');
+  if ((before.state === 'connected') !== connected) {
+    await page.getByRole('button', { name: connected ? /^(连接|使用已保存配置重连|重连)$/ : '断开', exact: true }).click();
+  }
+  const after = connected
+    ? await until(async () => { const plc = await read('plc_get_status'); return plc.state === 'connected' && plc; }, 'normal UI PLC connection established')
+    : await waitDisconnected();
+  report.plcTransitions ??= []; report.plcTransitions.push({ connected, before, after, at: new Date().toISOString() });
+  return after;
+}
 async function waitReady() {
   return until(async () => { const state = await wire.snapshot(), cycle = await read('cycle_snapshot'); return state.visionReady && !state.done && !state.busy && !state.armed && cycle.phase === 'IDLE' && { wire: state, cycle }; }, 'actual external PLC ready and native IDLE');
 }
@@ -399,8 +417,7 @@ try {
   assert.equal(cPath((await read('records_list')).root).toLowerCase(), recordsRoot.toLowerCase()); await sampleProcess(app.child.pid, paths.executable, app.identity.start);
   assert.equal((await read('history_query', { query: { limit: 1 } })).total, 0);
   assert.deepEqual(await read('cycle_get_settings'), settings); report.initialPressure = await pressure();
-  await page.getByRole('navigation', { name: '操作导航' }).getByRole('link', { name: 'PLC 通讯', exact: true }).click(); await page.getByRole('button', { name: '连接', exact: true }).click();
-  await page.waitForFunction(async () => (await window.__TAURI_INTERNALS__.invoke('plc_get_status')).state === 'connected');
+  report.offlinePreparation = await waitDisconnected();
   report.engine = await until(async () => { const engine = await read('engine_status'); return engine.ready && engine.measuring && engine.backend === 'LyFlow' && engine; }, 'real DLL ready');
   assert(/^C:\\/i.test(report.engine.path));
   const prepared = [];
@@ -417,13 +434,17 @@ try {
       }
     }
     await writeFile(join(expanded, 'provenance.json'), JSON.stringify({ physicalValidation: false, source: 'Explicit clean synthetic PGM fixture copied as source pixels into new pressure input groups; no production assets or DB copied', files }), { flag: 'wx' });
-    const setup = await teachPressureFixture(page, { views: 1, inputs: expanded, output: join(output, 'setup-' + count), recordsRoot, allowUnpublished: true, count, id: 'P0-PRESSURE-' + count });
+    const setup = await teachPressureFixture(page, { views: 1, inputs: expanded, output: join(output, 'setup-' + count), recordsRoot, allowUnpublished: true, allowDisconnected: true, count, id: 'P0-PRESSURE-' + count });
     assert(setup.passed && setup.layout.shots.length === count); prepared.push({ count, input: expanded, recipe: await read('recipe_doc', { id: setup.id }), setup }); report.setup.push({ count, id: setup.id, report: join(output, 'setup-' + count, 'setup-report.json') });
   }
+  report.offlinePublicationComplete = await waitDisconnected();
+  await uiPlcConnection(true); await ready();
   for (const specification of [{ tag: 'callback-missing-91', count: 4, prefill: 64, emits: 4, drops: 4, expected: [90, 91] }, { tag: 'callback-extra-96', count: 4, prefill: 60, emits: 5, drops: 1, expected: [90, 96] }, { tag: 'measure-full-99', count: 40, expected: [90, 99] }]) {
     const selected = prepared.find(item => item.count === specification.count), recipe = selected.recipe, sn = 750000100 + report.cases.length;
     report.lastSourceGuard = sourceGuard();
-    progress(specification.tag); await ready(); await configureReplay(page, { views: 1, directory: join(selected.input, 'normal'), recordsRoot }); await ready();
+    progress(specification.tag); await ready(); await uiPlcConnection(false);
+    await configureReplay(page, { views: 1, directory: join(selected.input, 'normal'), recordsRoot, allowDisconnected: true });
+    await uiPlcConnection(true); await ready();
     attempt = { ...specification, sn, stage: 'hold', before: { rig: await rig(), pressure: await pressure() } };
     if (specification.prefill) {
       attempt.gate = await configure(true, false); attempt.prefill = await emit(specification.prefill);

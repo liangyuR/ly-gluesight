@@ -4,12 +4,13 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
-export async function configureReplay(page, { views, directory, recordsRoot, allowUnpublished = false }) {
+export async function configureReplay(page, { views, directory, recordsRoot, allowUnpublished = false, allowDisconnected = false }) {
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
   const records = await read('records_list'), cycle = await read('cycle_snapshot');
   assert(recordsRoot ? resolve(records.root).toLowerCase() === resolve(recordsRoot).toLowerCase() : records.root.includes('com.xyzrobotics.tujiaovision.p0-tests.performance'));
   assert(/^[cC]:[\\/]/.test(directory));
-  assert((cycle.phase === 'IDLE' || allowUnpublished && cycle.phase === 'FAULT' && !cycle.part && cycle.fault?.includes('没有一个配方开得了工')) && !(await read('sim_status')).running);
+  const disconnected = allowDisconnected && cycle.phase === 'FAULT' && cycle.fault === 'PLC 未连接' && !cycle.part && cycle.plcLocked === false && (await read('plc_get_status')).state === 'disconnected';
+  assert((cycle.phase === 'IDLE' || disconnected || allowUnpublished && cycle.phase === 'FAULT' && !cycle.part && cycle.fault?.includes('没有一个配方开得了工')) && !(await read('sim_status')).running);
   await page.getByRole('navigation', { name: '操作导航' }).getByRole('link', { name: '设备与采集', exact: true }).click();
   await page.getByRole('button', { name: '回放目录', exact: true }).click();
   await page.getByRole('combobox', { name: '设备视角', exact: true }).selectOption(String(views));
