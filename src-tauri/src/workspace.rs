@@ -266,6 +266,10 @@ pub struct WorkspaceView {
     pub workspace: Workspace,
     pub layout: Recipe,
     pub production_version: Option<u32>,
+    /// 生产配方的 PLC 计划版本
+    pub production_plan_version: Option<u32>,
+    /// 候选的拍照计划与生产配方不同（或还没发布过）：生效后 PLC 侧要同步新的计划版本
+    pub plan_changed: bool,
     pub coverage: f32,
 }
 
@@ -408,11 +412,15 @@ fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
         .state::<CycleHost>()
         .recipe(&w.doc.id)
         .map(|r| r.version);
+    let production = app.state::<CycleHost>().recipes.doc(&w.doc.id);
+    let plan_changed = production.as_ref().is_none_or(|p| p.plan_version == 0 || !p.same_plan(&w.doc));
     let coverage = coverage(&layout);
     Ok(WorkspaceView {
         workspace: w,
         layout,
         production_version,
+        production_plan_version: production.map(|p| p.plan_version),
+        plan_changed,
         coverage,
     })
 }
@@ -1344,6 +1352,7 @@ pub fn workspace_publish(
     app.state::<CycleHost>().camera.check_ready_at(&cams)?;
     let mut release_doc = w.doc.clone();
     release_doc.teaching_id = Some(vision::unique_run_id(&format!("teaching-{}-v{}", release_doc.id, release_doc.version)));
+    release_doc.plan_version = app.state::<CycleHost>().recipes.plan_version_for(&release_doc)?;
     let bundle = freeze_bundle(&app, &host, &release_doc, &w.frames)?;
     let mut next = w.clone();
     next.doc = release_doc.clone();
@@ -1553,6 +1562,7 @@ pub fn apply_pending(app: &AppHandle) -> bool {
     for id in ids {
         let w = items.get_mut(&id).unwrap();
         let release = *w.pending.take().unwrap();
+        let previous_plan = app.state::<CycleHost>().recipe(&id).map(|r| r.plan_version);
         match commit(app, &host, &release) {
             Ok(saved) => {
                 w.base_revision = Some(saved.revision_id.clone());
@@ -1569,7 +1579,13 @@ pub fn apply_pending(app: &AppHandle) -> bool {
                     app,
                     "info",
                     "发布配方",
-                    format!("{id} v{} 已生效", saved.version),
+                    match previous_plan {
+                        Some(previous) if previous != saved.plan_version => format!(
+                            "{id} v{} 已生效；拍照计划已变，PLC 计划版本 {previous} → {}，PLC 侧同步 planVersion 与拍照点数后才能布防",
+                            saved.version, saved.plan_version),
+                        None => format!("{id} v{} 已生效；PLC 计划版本 {}", saved.version, saved.plan_version),
+                        _ => format!("{id} v{} 已生效（拍照计划未变，PLC 不用改）", saved.version),
+                    },
                 );
             }
             Err(e) => {

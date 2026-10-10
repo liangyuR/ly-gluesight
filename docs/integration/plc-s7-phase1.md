@@ -30,7 +30,7 @@
 | PLC | DB100.DBD8 | UDInt | `partSn`：工件 SN，不替代事务序号 |
 | PLC | DB100.DBW12 | UInt | `productCode`：选择已发布配方的产品代码 |
 | PLC | DB100.DBW14 | UInt | `shotCount`：本件总拍照数，1–65535 |
-| PLC | DB100.DBD16 | UDInt | `planVersion`：导出的配方计划版本 |
+| PLC | DB100.DBD16 | UDInt | `planVersion`：导出的拍照计划版本（配方库分配、全局唯一，不等于配方版本号） |
 | PLC | DB100.DBD20 | UDInt | `planReserved`：保留位，PLC 写零，不参与匹配 |
 | PLC | DB100.DBW24 / DBW26 / DBW28 | UInt ×3 | `camera1Shots / camera2Shots / camera3Shots`：各槽计划数，总和等于 shotCount |
 | PLC | DB100.DBD32 | UDInt | `ackSeq`：确认时回显本件 resultSeq |
@@ -132,7 +132,7 @@ SCL `LocalDiagnostic` 是 PLC FB 本地诊断，**不写 DBW78**，也不是 PC 
 }
 ```
 
-拍照计划不计算或比较内容哈希。配方保存/发布分配明确版本；导出的 shotId、poseId、cameraId 与槽映射直接供现场评审，PLC 使用计划版本、总数和各槽计数核对。DBD20/84 保持原地址/字宽作为零值保留位，非零值拒绝布防/在途处理，其他地址不移动。旧现场程序若仍要求摘要相等，需要同步更新后再联调。
+拍照计划不计算或比较内容哈希。`planVersion` 由配方库在保存/发布时逐字段比较后分配：产品代码或拍照点的顺序、编号、Pose、相机任一项变了才换新号，新号比所有用过的号都大（删掉重建、换产品代码也不复用旧号）；只改限值、检测参数、示教中线或"不检"时沿用原号，PLC 不用跟着改。发布页会提示本次发布是否改变拍照计划；改变时，生效后 PLC 侧须同步新的 `planVersion` 与各槽计数，否则拒绝布防（故障 100）。复制配方文件造成计划版本重复时，复制件不加载。导出的 shotId、poseId、cameraId 与槽映射直接供现场评审，PLC 使用计划版本、总数和各槽计数核对。DBD20/84 保持原地址/字宽作为零值保留位，非零值拒绝布防/在途处理，其他地址不移动。旧现场程序若仍要求摘要相等，需要同步更新后再联调。
 
 `productCode` 在当前计划 JSON 中不提供，需从生产配方另外核对并写 DBW12。一期按拍照点在图像里检测，计划不含工件坐标。`poseId` 是现场机器人 / PLC 程序里的 Pose 标识，同一 Pose 可同时触发几台相机，因此不要求唯一；机器人程序与物理输出映射不在 JSON 内，需保存在现场的对应表。修改产品代码、拍照计划或槽映射后重新导出、评审和验证，必须分配新版本并重新评审实际字段。
 

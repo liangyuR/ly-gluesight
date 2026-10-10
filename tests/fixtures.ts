@@ -33,7 +33,7 @@ export function workspaceView(id = "A"): WorkspaceView {
     points: { x: [10, 20, 30, 40], y: [10, 10, 10, 10], seg: [0, 0, 1, 1], k: [0, 0, 1, 1] },
   };
   return {
-    layout, productionVersion: 1, coverage: 100,
+    layout, productionVersion: 1, productionPlanVersion: 1, planChanged: false, coverage: 100,
     workspace: {
       doc, baseRevision: `production-${id}`, revision: 7, updatedAt: 1, publishError: null, pending: null,
       frames: [0, 1].map(k => {

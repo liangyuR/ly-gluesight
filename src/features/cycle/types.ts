@@ -105,6 +105,8 @@ export interface RecipeDoc {
   id: string;
   name: string;
   version: number;
+  /** PLC 拍照计划版本：配方库分配，只在产品代码或拍照点顺序 / Pose / 相机变化时换新号；0 或缺省为未分配 */
+  planVersion?: number;
   teachingId?: string | null;
   productCode: number;
   triggerMode: TriggerMode;

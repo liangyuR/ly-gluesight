@@ -894,6 +894,7 @@ fn historical_version_floor_prevents_deleted_recipe_revision_reuse_and_keeps_old
     recipes.seed_version_floor(&history.recipe_version_floors().unwrap()).unwrap();
     doc.version = recipes.next_version(&doc.id).unwrap();
     doc.shots[0].camera = "new-camera".into();
+    doc.plan_version = recipes.plan_version_for(&doc).unwrap();
     assert_eq!(doc.version, 8);
     let rebuilt = recipes.save_published(doc.clone(), None).unwrap();
     save(&history, &rebuilt, "new-cycle", &shots(&rebuilt), &PlcDelivery::default(), Some(&table(&rebuilt))).unwrap();

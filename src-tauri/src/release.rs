@@ -690,7 +690,7 @@ mod tests {
         shots[1].view = 2;
         shots[1].calib = Some("cam2-view2".into());
         PublishInput {
-            recipe: RecipeDoc { id: "part-A".into(), name: "多分辨率配方".into(), version: 7, teaching_id: Some("teaching-1".into()), product_code: 11, trigger_mode: TriggerMode::Fly, schema_version: RECIPE_SCHEMA, spacing: 1.0, filter_window: 3, detect: default_detect(), limits: default_limits(), shots },
+            recipe: RecipeDoc { id: "part-A".into(), name: "多分辨率配方".into(), version: 7, plan_version: 0, teaching_id: Some("teaching-1".into()), product_code: 11, trigger_mode: TriggerMode::Fly, schema_version: RECIPE_SCHEMA, spacing: 1.0, filter_window: 3, detect: default_detect(), limits: default_limits(), shots },
             versions: Versions { engine: "lyflow-test-1".into(), graph: "taught-path-v1".into() },
             graph: ResourceSource::Bytes(br#"{"schemaVersion":1,"nodes":[],"edges":[]}"#.to_vec()),
             shots: vec![
@@ -813,13 +813,18 @@ mod tests {
         let directory = Directory::new();
         let recipes_dir = directory.0.join("recipes");
         let recipes = crate::recipe::RecipeStore::open(recipes_dir.clone()).unwrap();
-        let original = recipes.save_published(input().recipe, None).unwrap();
+        let mut first = input().recipe;
+        first.plan_version = recipes.plan_version_for(&first).unwrap();
+        let original = recipes.save_published(first, None).unwrap();
         recipes.delete(&original.id).unwrap();
         drop(recipes);
         let recipes = crate::recipe::RecipeStore::open(recipes_dir).unwrap();
         let mut candidate = input();
         candidate.recipe.version = recipes.next_version(&original.id).unwrap();
+        candidate.recipe.plan_version = recipes.plan_version_for(&candidate.recipe).unwrap();
         assert_eq!(candidate.recipe.version, 8);
+        // 删掉重建的配方拿新的计划版本，不复用删除前的号
+        assert!(candidate.recipe.plan_version > original.plan_version);
         let frozen = publish(&directory.releases(), candidate).unwrap();
         let saved = recipes.save_published(frozen.recipe.clone(), None).unwrap();
         assert_eq!(saved.revision_id, frozen.manifest.recipe_revision);
