@@ -287,6 +287,64 @@
         "bytes": 2211,
         "sha256": "7e3910ec826f08961785937a757e7d7cc1a59d9f1964930d50959bff72b155b6"
       }
+    },
+    "settingsRefreshFinal": {
+      "runtimeSource": "c94606a",
+      "rust": {
+        "passed": 275,
+        "failed": 0,
+        "ignored": 30,
+        "seconds": 3.31,
+        "log": {
+          "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-settings-final-rust-c.log",
+          "bytes": 31658,
+          "sha256": "991f77489967da624b3b604f2de51dce9e4f0db8b287d2ec794d42240c3f7ac7"
+        }
+      },
+      "frontend": {
+        "files": 42,
+        "passed": 960,
+        "failed": 0,
+        "seconds": 175.62,
+        "coverage": {
+          "statements": 91.37,
+          "branches": 89.78,
+          "functions": 88.63,
+          "lines": 93.96
+        },
+        "log": {
+          "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-settings-final-front-c.log",
+          "bytes": 7313,
+          "sha256": "85da36a96a1df0eae411cb38bda02dcd35b77f3f11b52d222a0e9cac916e0b3f"
+        }
+      },
+      "applicationTypes": {
+        "passed": true,
+        "log": {
+          "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-settings-final-types-app-c.log",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "testTypes": {
+        "passed": true,
+        "log": {
+          "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-settings-final-types-tests-c.log",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "productionBuild": {
+        "passed": true,
+        "seconds": 0.926,
+        "asset": "index-BvtVge_I.js",
+        "log": {
+          "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-settings-final-vite-c.log",
+          "bytes": 924,
+          "sha256": "03e653504c6c2786e3877670c50365b1efafc2f67a362b77f342189b9af970fa"
+        }
+      },
+      "scope": "Successful cycle_save_settings emits cycle://settings-changed; workspace reuses guarded deferred environment refresh. Dirty documents, teaching drafts, active operations and stale responses remain protected."
     }
   },
   "pending": [

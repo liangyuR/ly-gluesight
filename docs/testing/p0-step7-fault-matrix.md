@@ -1,6 +1,6 @@
 # P0 步骤 7：验收中的软件故障矩阵
 
-状态：迁移到 C: 后恢复验收，最终审查集成版 Rust 默认 275 项通过、30 项默认忽略；S7 回环专项 24 项通过。新回调队列、测量队列和预热截止测试均已运行。前端首轮在并行原生构建时有两项 5 秒超时及五项级联失败；相同命令、相同默认超时在安静窗口重跑 947 项全部通过（114.57 秒）；合入 Codex 标定/延后刷新修复后最终 954 项及覆盖率、类型检查、构建通过（114.56 秒）。真实 DLL 另五项专项通过。默认金属纹理性能夹具首件预期 OK、实际 2 的失败保留；独立洁净像素控制已完成单目/三目各 100 件、400 次串行测量及报告核验，实际 CycleHost 和桌面演示继续执行。真实结果及日志哈希见 [C 盘回归记录](evidence/p0-step7-regression-c.json)。
+状态：迁移到 C: 后恢复验收，最终审查集成版 Rust 默认 275 项通过、30 项默认忽略；S7 回环专项 24 项通过。新回调队列、测量队列和预热截止测试均已运行。前端首轮在并行原生构建时有两项 5 秒超时及五项级联失败；相同命令、相同默认超时在安静窗口重跑 947 项全部通过（114.57 秒）；合入 Codex 标定/延后刷新修复后 954 项通过（114.56 秒），再补检测设置保存通知后最终 960 项及覆盖率、类型检查、构建通过（175.62 秒）。真实 DLL 另五项专项通过。默认金属纹理性能夹具首件预期 OK、实际 2 的失败保留；独立洁净像素控制已完成单目/三目各 100 件、400 次串行测量及报告核验，实际 CycleHost 和桌面演示继续执行。真实结果及日志哈希见 [C 盘回归记录](evidence/p0-step7-regression-c.json)。
 
 | 场景 | 已准备的测试或路径 | 待完成 |
 | --- | --- | --- |
@@ -11,7 +11,7 @@
 | 帧队列满（64） | `camera/delivery.rs` 使用真实 bounded channel，核对回调计数、拒绝整组三视角、Closed、排空后恢复及缺帧位置 | 八项通道测试通过，含 Part 最终错误判定和下一件恢复 OK；Machine 桌面压力另测 |
 | 测量队列满（32） | `measure::tests::full_measure_queue_rejects_one_job_then_recovers_without_leaks_or_duplicate_results` | 默认回归通过；实际 CycleHost 压力另测 |
 | 录制队列满（48） | Recorder `queue_full_rejects_all_views_and_finish_bypasses_the_frame_limit` | 默认回归通过；不能替代帧队列测试 |
-| DLL 卡住、预热排队超时 | blocking Gate、许可耗尽、迟到结果、预热绝对截止（包含许可及 blocking pool 等待） | 四项预热 Gate 测试和测量超时许可回归通过；不声明注入了真实 DLL 永久卡死 |
+| DLL 卡住、预热排队超时 | blocking Gate、许可耗尽、迟到结果、预热绝对截止（包含许可及 blocking pool 等待） | 七项预热 Gate 测试和测量超时许可回归通过；不声明注入了真实 DLL 永久卡死 |
 | PLC 写拒绝、断线、ACK 错件 | S7 wire report/release 拒绝、done 后断线、匹配序号和持久 ACK 恢复 | 24 项 S7 回环通过；实际桌面重启到 SQLite 历史链路随步 6 验收 |
 | 录制磁盘错误 | Recorder 真实文件系统错误；Audit 注入 outcome；Pending 录制 SQLite reopen 与事务回滚 | Windows 真实旧文件禁止 DELETE 共享使保留清理失败，当前完整录制仍可用且可哈希回放、Audit 告警独立且去重；全量 260 项通过。不声明真实磁盘满、断电或故障 D: 业务验收 |
 | 单目及三目真实像素 | `production::regression::native_full_resolution_frozen_bundle_single_and_tricam_regression`：每模式至少 100 件、每件四次真实测量、1280×1024、冻结发布包；normal、gap、whole_empty | 默认金属纹理夹具首件严格 OK 失败；独立 clean_step_edge 夹具各 100 件通过，版本、DLL/夹具哈希、逐帧 JSONL、分位数与进程内存见 p0-step7-prepared-c.json；不声明修复 P0-09 |
