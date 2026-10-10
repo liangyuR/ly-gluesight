@@ -55,7 +55,7 @@ async fn queued_warmup_deadline_includes_the_permit_wait() {
         Ok(42)
     }).await.unwrap_err();
     assert!(matches!(&error, WarmupFailure::QueueTimeout(_)));
-    assert!(error.message().contains("排队或预热超过 30 ms"));
+    assert!(error.message().contains("预热排队超过 30 ms"));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     assert_eq!(slot.available_permits(), 0);
     assert!(!incumbent.is_finished());
@@ -89,7 +89,7 @@ async fn timed_out_warmup_keeps_the_permit_and_late_success_cannot_replace_failu
     tokio::time::timeout(Duration::from_secs(2), worker).await.unwrap().unwrap();
     let failure = outcomes.lock().unwrap()[0].as_ref().unwrap_err().clone();
     assert!(matches!(&failure, WarmupFailure::Failed(_)));
-    assert!(failure.message().contains("排队或预热超过 200 ms"));
+    assert!(failure.message().contains("预热执行超过 200 ms"));
     let failed_at = Instant::now();
     host.entries.lock().unwrap().insert("timed-out".into(), failure.clone().into_entry(failed_at));
     assert!(host.begin("timed-out", failed_at + Duration::from_secs(3600)).is_err());
@@ -134,7 +134,7 @@ fn warmup_expired_in_the_real_blocking_pool_never_runs_the_operation() {
         wait_permits(&slot, 0).await;
         let error = tokio::time::timeout(Duration::from_secs(2), worker).await.unwrap().unwrap().unwrap_err();
         assert!(matches!(&error, WarmupFailure::QueueTimeout(_)));
-        assert!(error.message().contains("排队或预热超过 200 ms"));
+        assert!(error.message().contains("预热排队超过 200 ms"));
         assert_eq!(slot.available_permits(), 0);
         release.0.release();
         occupied.await.unwrap();
@@ -219,4 +219,47 @@ fn concurrent_refreshes_cannot_start_duplicate_retries() {
     });
     assert_eq!(started.load(Ordering::SeqCst), 1);
     assert!(matches!(host.entries.lock().unwrap().get("recipe"), Some(Entry::Preparing)));
+}
+
+#[test]
+fn late_blocking_worker_gets_a_full_execution_window_after_queueing() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_time().max_blocking_threads(1).build().unwrap();
+    let queue_gate = Arc::new(Gate::default());
+    let release_queue = ReleaseOnDrop(queue_gate.clone());
+    let engine_gate = Arc::new(Gate::default());
+    let release_engine = ReleaseOnDrop(engine_gate.clone());
+    runtime.block_on(async move {
+        let host = ProductionHost::default();
+        let slot = host.slot.clone();
+        let (occupied, pool_started) = oneshot::channel();
+        let blocker = tokio::task::spawn_blocking(move || {
+            let _ = occupied.send(());
+            queue_gate.wait();
+        });
+        tokio::time::timeout(Duration::from_secs(2), pool_started).await.unwrap().unwrap();
+        let (entered, engine_started) = oneshot::channel();
+        let requested = Instant::now();
+        let budget = Duration::from_millis(800);
+        assert!(host.begin("late-valid", requested).unwrap().is_none());
+        let worker = tokio::spawn(run_warmup(slot.clone(), budget, move || {
+            let _ = entered.send(Instant::now());
+            engine_gate.wait();
+            Ok(42)
+        }));
+        wait_permits(&slot, 0).await;
+        tokio::time::sleep_until(tokio::time::Instant::from_std(requested + Duration::from_millis(600))).await;
+        assert!(!worker.is_finished());
+        release_queue.0.release();
+        blocker.await.unwrap();
+        let actual_start = tokio::time::timeout(Duration::from_secs(2), engine_started).await.unwrap().unwrap();
+        assert!(actual_start >= requested + Duration::from_millis(600));
+        tokio::time::sleep_until(tokio::time::Instant::from_std(actual_start + Duration::from_millis(300))).await;
+        assert!(Instant::now() > requested + budget);
+        assert!(matches!(host.entries.lock().unwrap().get("late-valid"), Some(Entry::Preparing)));
+        assert!(!worker.is_finished(), "执行预算不能从申请或取得许可时开始");
+        assert_eq!(slot.available_permits(), 0);
+        release_engine.0.release();
+        assert_eq!(tokio::time::timeout(Duration::from_secs(2), worker).await.unwrap().unwrap().unwrap(), 42);
+        wait_permits(&slot, 1).await;
+    });
 }
