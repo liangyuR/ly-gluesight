@@ -54,7 +54,8 @@ async fn queued_warmup_deadline_includes_the_permit_wait() {
         entered.fetch_add(1, Ordering::SeqCst);
         Ok(42)
     }).await.unwrap_err();
-    assert!(error.contains("排队或预热超过 30 ms"));
+    assert!(matches!(&error, WarmupFailure::QueueTimeout(_)));
+    assert!(error.message().contains("排队或预热超过 30 ms"));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     assert_eq!(slot.available_permits(), 0);
     assert!(!incumbent.is_finished());
@@ -65,7 +66,8 @@ async fn queued_warmup_deadline_includes_the_permit_wait() {
 
 #[tokio::test]
 async fn timed_out_warmup_keeps_the_permit_and_late_success_cannot_replace_failure() {
-    let slot = Arc::new(Semaphore::new(1));
+    let host = ProductionHost::default();
+    let slot = host.slot.clone();
     let gate = Arc::new(Gate::default());
     let release = ReleaseOnDrop(gate.clone());
     let outcomes = Arc::new(Mutex::new(Vec::new()));
@@ -86,7 +88,11 @@ async fn timed_out_warmup_keeps_the_permit_and_late_success_cannot_replace_failu
     tokio::time::timeout(Duration::from_secs(2), started).await.unwrap().unwrap();
     tokio::time::timeout(Duration::from_secs(2), worker).await.unwrap().unwrap();
     let failure = outcomes.lock().unwrap()[0].as_ref().unwrap_err().clone();
-    assert!(failure.contains("排队或预热超过 200 ms"));
+    assert!(matches!(&failure, WarmupFailure::Failed(_)));
+    assert!(failure.message().contains("排队或预热超过 200 ms"));
+    let failed_at = Instant::now();
+    host.entries.lock().unwrap().insert("timed-out".into(), failure.clone().into_entry(failed_at));
+    assert!(host.begin("timed-out", failed_at + Duration::from_secs(3600)).is_err());
     assert_eq!(slot.available_permits(), 0);
     assert!(!completed.load(Ordering::SeqCst));
     let calls = Arc::new(AtomicUsize::new(0));
@@ -100,6 +106,8 @@ async fn timed_out_warmup_keeps_the_permit_and_late_success_cannot_replace_failu
     wait_permits(&slot, 1).await;
     assert!(completed.load(Ordering::SeqCst));
     assert_eq!(*outcomes.lock().unwrap(), vec![Err(failure)]);
+    assert!(host.begin("timed-out", failed_at + Duration::from_secs(3600)).is_err());
+    assert!(matches!(host.entries.lock().unwrap().get("timed-out"), Some(Entry::Failed(_))));
     assert_eq!(run_warmup(slot.clone(), Duration::from_secs(1), || Ok(44)).await.unwrap(), 44);
     wait_permits(&slot, 1).await;
 }
@@ -125,7 +133,8 @@ fn warmup_expired_in_the_real_blocking_pool_never_runs_the_operation() {
         }));
         wait_permits(&slot, 0).await;
         let error = tokio::time::timeout(Duration::from_secs(2), worker).await.unwrap().unwrap().unwrap_err();
-        assert!(error.contains("排队或预热超过 200 ms"));
+        assert!(matches!(&error, WarmupFailure::QueueTimeout(_)));
+        assert!(error.message().contains("排队或预热超过 200 ms"));
         assert_eq!(slot.available_permits(), 0);
         release.0.release();
         occupied.await.unwrap();
@@ -139,8 +148,75 @@ fn warmup_expired_in_the_real_blocking_pool_never_runs_the_operation() {
 async fn panicking_warmup_releases_the_permit_for_a_new_operation() {
     let slot = Arc::new(Semaphore::new(1));
     let error = run_warmup::<(), _>(slot.clone(), Duration::from_secs(1), || panic!("controlled warmup panic")).await.unwrap_err();
-    assert!(error.contains("图像引擎预热异常"));
+    assert!(error.message().contains("图像引擎预热异常"));
     wait_permits(&slot, 1).await;
     assert_eq!(run_warmup(slot.clone(), Duration::from_secs(1), || Ok(42)).await.unwrap(), 42);
     wait_permits(&slot, 1).await;
+}
+
+#[tokio::test]
+async fn queued_recipe_can_retry_after_cumulative_wait_expires_and_the_slot_recovers() {
+    let host = ProductionHost::default();
+    let held = host.slot.clone().acquire_owned().await.unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut retries = Vec::new();
+    for key in ["recipe-b", "recipe-c"] {
+        assert!(host.begin(key, Instant::now()).unwrap().is_none());
+        let counted = calls.clone();
+        let failure = run_warmup(host.slot.clone(), Duration::from_millis(20), move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }).await.unwrap_err();
+        assert!(matches!(&failure, WarmupFailure::QueueTimeout(_)));
+        let failed_at = Instant::now();
+        host.entries.lock().unwrap().insert(key.into(), failure.into_entry(failed_at));
+        for _ in 0..10 { assert!(host.begin(key, failed_at).is_err()); }
+        assert!(matches!(host.entries.lock().unwrap().get(key), Some(Entry::Retryable { .. })));
+        retries.push((key, failed_at));
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    drop(held);
+    for (key, failed_at) in retries {
+        assert!(host.begin(key, failed_at + WARMUP_RETRY_DELAY).unwrap().is_none());
+        assert!(host.begin(key, failed_at + WARMUP_RETRY_DELAY).is_err());
+        let counted = calls.clone();
+        assert_eq!(run_warmup(host.slot.clone(), Duration::from_secs(1), move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Ok(42)
+        }).await.unwrap(), 42);
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    wait_permits(&host.slot, 1).await;
+}
+
+#[tokio::test]
+async fn actual_engine_failure_remains_permanent() {
+    let host = ProductionHost::default();
+    assert!(host.begin("failed", Instant::now()).unwrap().is_none());
+    let failed = run_warmup::<(), _>(host.slot.clone(), Duration::from_secs(1), || Err("controlled engine error".into())).await.unwrap_err();
+    assert!(matches!(&failed, WarmupFailure::Failed(_)));
+    let now = Instant::now();
+    host.entries.lock().unwrap().insert("failed".into(), failed.into_entry(now));
+    assert!(host.begin("failed", now + Duration::from_secs(3600)).is_err());
+    assert!(matches!(host.entries.lock().unwrap().get("failed"), Some(Entry::Failed(_))));
+    wait_permits(&host.slot, 1).await;
+}
+
+#[test]
+fn concurrent_refreshes_cannot_start_duplicate_retries() {
+    let host = Arc::new(ProductionHost::default());
+    let now = Instant::now();
+    host.entries.lock().unwrap().insert("recipe".into(), WarmupFailure::QueueTimeout("queued".into()).into_entry(now));
+    let started = Arc::new(AtomicUsize::new(0));
+    std::thread::scope(|scope| {
+        for _ in 0..12 {
+            let host = host.clone();
+            let started = started.clone();
+            scope.spawn(move || {
+                if host.begin("recipe", now + WARMUP_RETRY_DELAY).is_ok() { started.fetch_add(1, Ordering::SeqCst); }
+            });
+        }
+    });
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+    assert!(matches!(host.entries.lock().unwrap().get("recipe"), Some(Entry::Preparing)));
 }

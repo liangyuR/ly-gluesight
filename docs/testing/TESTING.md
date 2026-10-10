@@ -235,6 +235,10 @@ C: 隔离原生程序已完成正式验收（构建 1m22s，SHA256 `85F926EC6358
 
 旧录制保留清理与本件录制完整性独立：清理错误保存在 `RecordingOutcome.retention_errors` 与 `part.json.retentionErrors`，审计单独记录 warn；本件原图、元数据或哈希失败仍进入完整性 `errors` 并禁止可用状态。新增 Windows 真实文件占用回归触发旧件删除失败，检查本件仍 Complete、三视角可按冻结哈希回放，释放占用后旧件可删除；另检查审计入库完整状态、原始判定与三视角引用不受清理告警影响，同一回调不重复告警。本次在 C: 独立工作树执行 `cargo test --offline --lib --manifest-path src-tauri/Cargo.toml`，默认全量 242 项通过、0 失败、26 项忽略，测试耗时 2.75 秒；上述新增两项及未来版本 WAL 用例均实际通过。日志 `C:\Users\11601\AppData\Local\Temp\gluesight-p0-recovery-20261010\p0-step6-retention-review-rust-c.log`，SHA256 `F700B6C4C22C671E047AEE91976ECF14AED94C600416D383E9AE130E4E6C7613`。
 
+PR #12 孤立 `_pending` 清理补充（本段静态实现，尚未执行新增回归）：生产录制线程在启动及 Finish 前分批回收未引用的 pending 目录，每轮最多检查 64 项并保留扫描游标；仅在找到非活跃候选时读取一次当前 profile 的历史保护集合。`parts.recording_directory` 与 `part_shots.raw_files` 中的 pending 引用、回放在用路径及本进程活跃录制均保留；未成功搬离 pending 的收尾继续受本进程保护，避免异步审计尚未入库时丢失部分证据。引用查询或解析失败时保留目录，错误只记独立 retention 告警。清理占用通过短锁登记，磁盘检查与删除不持有活跃录制互斥锁；同名录制不能覆盖正在清理的目录。只删除当前 records 根下、命名符合录制规则且没有链接的普通 pending 目录；Windows reparse、子目录、超过 256 个文件均保守保留并报告。路径和子树检查与删除之间仍存在外部进程同时替换目录的非原子边界。
+
+新增 8 项回归覆盖短锁互斥清理占用、孤立目录回收、历史部分证据及当前活跃录制保护、64 项分批续扫、引用查询失败时完整性不降级、Windows junction 不跟随、仅活跃目录不查询历史、异步审计窗口内失败收尾保护，以及 SQLite 的目录/原图引用及损坏 JSON 防护。实际集成步骤 5 预热恢复后，全量 Rust 257 项通过；随后补 AppData 进程独占锁，在数据库恢复及录制清理前取得，退出或崩溃后由操作系统释放，避免同 profile 第二实例触碰活跃录制。真实 Windows 文件锁测试与完整回归最终 258 项通过、0 失败、26 项默认忽略，耗时 2.79 秒；先前测试在持锁时用另一句柄写标记的 OS 33 失败日志保留，测试改为锁前写入、释放后核验，生产锁逻辑不变。最终原生重复启动及400件在步骤7执行。见[临时录制恢复证据](evidence/p0-step6-pending-review-c.json)。
+
 ## lyFlow 原始图像注入回归（较早记录）
 
 客户端固定到主线 `5b796c3`（Image ABI v15），使用 `RunSpec.image_inputs` 注入完整 u8 灰度帧。运行库必须包含 `io.load_image`、`image.board_calib`、`image.load_calib`、`glue.locate`、`glue.station_calipers`；在 lyFlow 仓库设置 `LYFLOW_PACKS=glue` 后构建 core，系统设置填 DLL 绝对路径。
@@ -244,3 +248,10 @@ C: 隔离原生程序已完成正式验收（构建 1m22s，SHA256 `85F926EC6358
 较早验证记录（2026-10-09、当时的测试集）：35 项普通测试加 3 项实际 DLL 集成测试，共 38 项通过，实际 DLL 测试均已执行。本轮修复后的默认测试集已增加，当前记录为 37 项通过、3 项 ignored；本轮没有重新运行这 3 项实际 DLL 集成测试，不能把较早的 38 项结果作为当前完整测试集已全部通过的证明。
 
 测试验证完整像素的棋盘标定（已知 0.125 mm/px）、飞拍毫米距离/胶宽、有工件→空白→有工件的缓存隔离、模拟缺胶在实际卡尺平均后跨帧合并。还验证点表列长、编号与坐标；缺失胶宽或定位失败不能变为有效测量。样本组导入失败验证清理暂存文件，候选新建验证 Windows 大小写与产品代码冲突。生成的合成测试图在 `output/engine-tests`，不作为客户缺陷准确率的证据。
+
+
+## 2026-10-10 · PR #11 预热排队超时修复
+
+预热仍共用一个许可，绝对 30 秒包含许可等待与 blocking 执行器排队。尚未开始的超时转为带 1 秒冷却的可重试状态；每次尝试只安排一个延迟 Refresh，按届时所选配方重新检查，重复 Refresh 不能并发启动同一项。已开始的失败、panic 或超时仍永久拒绝该缓存项，后台线程返回前不释放许可，超时后的迟到成功不能成为 Ready。
+
+`production::warmup_tests` 的 7 项 gate 回归覆盖累计排队后恢复、blocking 池排队过期不执行、实际执行挂起保留许可及迟到结果隔离、实际失败隔离、panic 释放许可和并发重试去重。原生 100 件恢复控制完成后，在空闲窗口实际执行 `cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib`，默认完整回归 174 项通过、0 失败、21 项忽略，耗时 0.88 秒；上述 7 项 gate 均通过。见[预热审查修复证据](evidence/p0-step5-warmup-review-c.json)。受控 Gate 不冒充真实 DLL 永久卡死注入。

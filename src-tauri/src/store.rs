@@ -779,6 +779,46 @@ impl Store {
         (sql, args)
     }
 
+    pub fn pending_recording_directories(&self, root: &Path) -> Result<Vec<PathBuf>, String> {
+        let root_text = root.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_string();
+        let prefix = format!("{root_text}/");
+        let mut paths = Vec::new();
+        let mut protect = |value: &str| -> Result<(), String> {
+            let normalized = value.replace('\\', "/");
+            let relative = if normalized.get(..prefix.len()).is_some_and(|start| start.eq_ignore_ascii_case(&prefix)) {
+                &normalized[prefix.len()..]
+            } else if !Path::new(value).is_absolute() && !normalized.contains(':') {
+                normalized.as_str()
+            } else {
+                if normalized.to_ascii_lowercase().contains("/_pending/") {
+                    return Err("历史 pending 引用不在当前 records 根目录，暂停清理".into());
+                }
+                return Ok(());
+            };
+            let components: Vec<_> = relative.split('/').collect();
+            if !components.first().is_some_and(|p| p.eq_ignore_ascii_case("_pending")) { return Ok(()); }
+            if components.len() < 2 || components.iter().any(|p| p.is_empty() || *p == "." || *p == ".." || p.contains(':')) {
+                return Err("历史 pending 录制引用路径无效，暂停清理".into());
+            }
+            paths.push(root.join("_pending").join(components[1]));
+            Ok(())
+        };
+        let conn = self.conn.lock().map_err(|_| "数据库锁异常，暂停孤立录制清理".to_string())?;
+        let mut stmt = conn.prepare("SELECT recording_directory FROM parts WHERE instr(lower(recording_directory),'_pending')>0").map_err(db_err)?;
+        for row in stmt.query_map([], |row| row.get::<_, String>(0)).map_err(db_err)? {
+            protect(&row.map_err(db_err)?)?;
+        }
+        let mut stmt = conn.prepare("SELECT raw_files FROM part_shots WHERE NOT json_valid(raw_files) OR instr(lower(raw_files),'_pending')>0").map_err(db_err)?;
+        for row in stmt.query_map([], |row| row.get::<_, String>(0)).map_err(db_err)? {
+            let files: Vec<ShotRawFile> = serde_json::from_str(&row.map_err(db_err)?).map_err(|e| format!("历史原图引用损坏，暂停清理：{e}"))?;
+            validate_raw_files(&files)?;
+            for file in files { protect(&file.file)?; }
+        }
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+
     pub fn query(&self, q: &HistoryQuery) -> Result<HistoryPage, String> {
         let conn = self.conn.lock().unwrap();
         let (filter, args) = Self::filter(q, "");

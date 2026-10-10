@@ -53,7 +53,7 @@ fn callback() -> (RecordingCallback, Receiver<RecordingOutcome>) {
 fn controlled(root: PathBuf) -> (Recorder, Receiver<Msg>, Receiver<RecordingOutcome>) {
     let (tx, rx) = channel();
     let (callback, outcomes) = callback();
-    (Recorder { root, tx, queued: Arc::new(AtomicUsize::new(0)), callback: Some(callback), startup_error: None }, rx, outcomes)
+    (Recorder { root, tx, queued: Arc::new(AtomicUsize::new(0)), callback: Some(callback), startup_error: None, active: Arc::new(Mutex::new(HashSet::new())) }, rx, outcomes)
 }
 
 fn wait(outcomes: &Receiver<RecordingOutcome>) -> RecordingOutcome {
@@ -427,4 +427,146 @@ fn concurrent_producers_never_exceed_the_group_queue_limit() {
     let groups: Vec<_> = rx.try_iter().collect();
     assert_eq!(groups.len(), QUEUE);
     assert!(groups.iter().all(|message| matches!(message, Msg::Frames(group) if group.images.len() == 3)));
+}
+
+fn pending(root: &Path, cycle: &str) -> PathBuf {
+    let path = root.join("_pending").join(format!("20261010_000000_000_cycle_{cycle}"));
+    std::fs::create_dir_all(&path).unwrap();
+    std::fs::write(path.join("image.pgm"), "unfinished-raw").unwrap();
+    path
+}
+
+#[test]
+fn pending_sweep_removes_orphans_but_preserves_history_and_active_recordings() {
+    let dir = TestDir::new();
+    let root = dir.root();
+    let orphan = pending(&root, "orphan");
+    let referenced = pending(&root, "referenced-partial");
+    let (recorder, _, _) = controlled(root.clone());
+    let current = recorder.begin(RecordMode::All, 42, recipe(), "active-current", None).unwrap();
+    std::fs::create_dir_all(&current.dir).unwrap();
+    std::fs::write(current.dir.join("image.pgm"), "active-raw").unwrap();
+    let reference = referenced.clone();
+    let protection: PendingProtection = Arc::new(move || Ok(vec![reference.clone()]));
+    let errors = PendingCleaner::default().sweep(&root, &recorder.active, &protection, &[]);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(!orphan.exists());
+    assert_eq!(std::fs::read_to_string(referenced.join("image.pgm")).unwrap(), "unfinished-raw");
+    assert_eq!(std::fs::read_to_string(current.dir.join("image.pgm")).unwrap(), "active-raw");
+}
+
+#[test]
+fn pending_sweep_is_bounded_and_continues_past_its_first_batch() {
+    let dir = TestDir::new();
+    let root = dir.root();
+    for i in 0..PENDING_SWEEP_LIMIT + 3 { pending(&root, &format!("orphan-{i}")); }
+    let protection: PendingProtection = Arc::new(|| Ok(Vec::new()));
+    let active = Mutex::new(HashSet::new());
+    let mut cleaner = PendingCleaner::default();
+    assert!(cleaner.sweep(&root, &active, &protection, &[]).is_empty());
+    assert_eq!(std::fs::read_dir(root.join("_pending")).unwrap().count(), 3);
+    assert!(cleaner.sweep(&root, &active, &protection, &[]).is_empty());
+    assert_eq!(std::fs::read_dir(root.join("_pending")).unwrap().count(), 0);
+}
+
+#[test]
+fn failed_history_guard_retains_pending_and_only_reports_retention_warnings() {
+    let dir = TestDir::new();
+    let root = dir.root();
+    let orphan = pending(&root, "unproven-orphan");
+    let (callback, outcomes) = callback();
+    let (warn_tx, warnings) = channel();
+    let recorder = Recorder::guarded(root, Some(callback), Arc::new(|| Err("历史引用读取失败".into())),
+        Arc::new(move |errors| warn_tx.send(errors.to_vec()).unwrap()));
+    let startup = warnings.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(startup.iter().any(|error| error.contains("历史引用读取失败")));
+    let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "guard-error-complete", None).unwrap();
+    recorder.frame(&mut rec, &frame(21), "cam1", 0, 1);
+    recorder.finish(rec, Verdict::Ok, "本件完整", 10, u64::MAX, Vec::new());
+    let outcome = wait(&outcomes);
+    assert!(outcome.available && outcome.state == RecordingState::Complete);
+    assert!(outcome.errors.is_empty());
+    assert!(outcome.retention_errors.iter().any(|error| error.contains("历史引用读取失败")));
+    assert_eq!(metadata(&outcome)["retentionErrors"], json!(outcome.retention_errors));
+    assert!(orphan.exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn pending_sweep_never_follows_directory_or_subtree_junctions() {
+    fn junction(link: &Path, target: &Path) {
+        let output = std::process::Command::new("cmd.exe").args(["/D", "/C", "mklink", "/J"]).arg(link).arg(target).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    }
+    let dir = TestDir::new();
+    let root = dir.root();
+    let nested = pending(&root, "nested-link");
+    let outside = dir.0.join("outside-records");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("sentinel"), "preserve-outside").unwrap();
+    let link = root.join("_pending").join("20261010_000000_000_cycle_linked-part");
+    junction(&link, &outside);
+    let nested_link = nested.join("linked-child");
+    junction(&nested_link, &outside);
+    let protection: PendingProtection = Arc::new(|| Ok(Vec::new()));
+    let active = Mutex::new(HashSet::new());
+    let errors = PendingCleaner::default().sweep(&root, &active, &protection, &[]);
+    assert!(errors.iter().any(|error| error.contains("包含链接")));
+    assert!(nested.exists() && link.exists());
+    assert_eq!(std::fs::read_to_string(outside.join("sentinel")).unwrap(), "preserve-outside");
+    std::fs::remove_dir(&nested_link).unwrap();
+    std::fs::remove_dir(&link).unwrap();
+    std::fs::remove_dir_all(root.join("_pending")).unwrap();
+    junction(&root.join("_pending"), &outside);
+    let errors = PendingCleaner::default().sweep(&root, &active, &protection, &[]);
+    assert!(errors.iter().any(|error| error.contains("包含链接")));
+    assert_eq!(std::fs::read_to_string(outside.join("sentinel")).unwrap(), "preserve-outside");
+    std::fs::remove_dir(root.join("_pending")).unwrap();
+}
+
+#[test]
+fn pending_sweep_does_not_query_history_when_only_active_recordings_exist() {
+    let dir = TestDir::new();
+    let root = dir.root();
+    let current = pending(&root, "active-only");
+    let active = Mutex::new(HashSet::from([current.clone()]));
+    let protection: PendingProtection = Arc::new(|| panic!("仅有活跃录制时不能查询全量历史"));
+    assert!(PendingCleaner::default().sweep(&root, &active, &protection, &[]).is_empty());
+    assert!(current.exists());
+}
+
+#[test]
+fn unpromoted_finish_remains_protected_before_async_audit_persists_references() {
+    let dir = TestDir::new();
+    let root = dir.root();
+    let (callback, outcomes) = callback();
+    let recorder = Recorder::guarded(root.clone(), Some(callback), Arc::new(|| Ok(Vec::new())), Arc::new(|_| {}));
+    let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "partial-before-audit", None).unwrap();
+    let pending = rec.dir.clone();
+    let target = root.join(&rec.name[..8]).join(format!("{}_OK_cycle_{}", rec.name, rec.cycle_id));
+    std::fs::create_dir_all(&target).unwrap();
+    recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
+    recorder.finish(rec, Verdict::Ok, "保留部分证据", 10, u64::MAX, Vec::new());
+    let partial = wait(&outcomes);
+    assert_eq!(partial.state, RecordingState::Incomplete);
+    assert_eq!(partial.directory.as_ref(), Some(&pending));
+    assert!(recorder.active.lock().unwrap().contains(&pending));
+    let mut next = recorder.begin(RecordMode::All, 42, recipe(), "next-complete", None).unwrap();
+    recorder.frame(&mut next, &frame(21), "cam1", 0, 1);
+    recorder.finish(next, Verdict::Ok, "下一件完整", 10, u64::MAX, Vec::new());
+    let complete = wait(&outcomes);
+    assert!(complete.available);
+    assert!(pending.exists());
+    for raw in partial.files { assert_eq!(file_hash(&root.join(raw.file)).unwrap(), raw.hash); }
+}
+
+#[test]
+fn pending_cleanup_claim_is_exclusive_and_releases_the_registry_lock() {
+    let path = PathBuf::from("pending-claim");
+    let active = Mutex::new(HashSet::new());
+    let claim = PendingClaim::acquire(&active, &path).unwrap();
+    assert!(active.try_lock().unwrap().contains(&path));
+    assert!(PendingClaim::acquire(&active, &path).is_none());
+    drop(claim);
+    assert!(!active.lock().unwrap().contains(&path));
 }

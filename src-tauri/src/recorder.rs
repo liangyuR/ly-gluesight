@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use chrono::Local;
 use serde::Serialize;
@@ -15,6 +15,11 @@ use crate::recipe::{valid_camera_id, Recipe};
 use crate::settings::RecordMode;
 
 const QUEUE: usize = 48;
+const PENDING_SWEEP_LIMIT: usize = 64;
+const PENDING_FILE_LIMIT: usize = 256;
+
+pub type PendingProtection = Arc<dyn Fn() -> Result<Vec<PathBuf>, String> + Send + Sync>;
+pub type RetentionWarning = Arc<dyn Fn(&[String]) + Send + Sync>;
 
 pub type RecordingCallback = Arc<dyn Fn(RecordingOutcome) + Send + Sync>;
 
@@ -121,19 +126,29 @@ pub struct Recorder {
     queued: Arc<AtomicUsize>,
     callback: Option<RecordingCallback>,
     startup_error: Option<String>,
+    active: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
 impl Recorder {
     pub fn new(root: PathBuf, callback: Option<RecordingCallback>) -> Self {
+        Self::start(root, callback, None)
+    }
+
+    pub fn guarded(root: PathBuf, callback: Option<RecordingCallback>, protection: PendingProtection, warning: RetentionWarning) -> Self {
+        Self::start(root, callback, Some((protection, warning)))
+    }
+
+    fn start(root: PathBuf, callback: Option<RecordingCallback>, cleanup: Option<(PendingProtection, RetentionWarning)>) -> Self {
         let (tx, rx) = channel();
         let queued = Arc::new(AtomicUsize::new(0));
-        let (writer_root, writer_queue, writer_callback) = (root.clone(), queued.clone(), callback.clone());
+        let active = Arc::new(Mutex::new(HashSet::new()));
+        let (writer_root, writer_queue, writer_callback, writer_active) = (root.clone(), queued.clone(), callback.clone(), active.clone());
         let startup_error = std::thread::Builder::new()
             .name("frame-recorder".into())
-            .spawn(move || writer(writer_root, rx, writer_queue, writer_callback))
+            .spawn(move || writer(writer_root, rx, writer_queue, writer_callback, writer_active, cleanup))
             .err()
             .map(|e| format!("录制线程启动失败：{e}"));
-        Self { root, tx, queued, callback, startup_error }
+        Self { root, tx, queued, callback, startup_error, active }
     }
 
     pub fn root(&self) -> &Path {
@@ -177,9 +192,18 @@ impl Recorder {
             return None;
         }
         let name = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
+        let dir = self.root.join("_pending").join(format!("{name}_cycle_{cycle_id}"));
+        if !self.active.lock().unwrap().insert(dir.clone()) {
+            notify(&self.callback, RecordingOutcome {
+                cycle_id: cycle_id.into(), directory: None, files: Vec::new(),
+                errors: vec!["录制目录仍在使用或清理，拒绝覆盖".into()], retention_errors: Vec::new(),
+                available: false, state: RecordingState::Failed,
+            });
+            return None;
+        }
         Some(Recording {
             started: ly_plc::now_ms(),
-            dir: self.root.join("_pending").join(format!("{name}_cycle_{cycle_id}")),
+            dir,
             name,
             cycle_id: cycle_id.into(),
             bundle_hash: bundle_hash.map(str::to_string),
@@ -276,7 +300,10 @@ impl Recorder {
         if let Err(error) = self.tx.send(Msg::Finish(job)) {
             if let Msg::Finish(mut job) = error.0 {
                 job.recording.errors.push("录制写入线程已停止，收尾改为同步保存并报告".into());
-                notify(&self.callback, finish_recording(&self.root, job, WriteState::default()));
+                let pending = job.recording.dir.clone();
+                let outcome = finish_recording(&self.root, job, WriteState::default());
+                if !pending.exists() { self.active.lock().unwrap().remove(&pending); }
+                notify(&self.callback, outcome);
             }
         }
     }
@@ -300,9 +327,16 @@ fn notify(callback: &Option<RecordingCallback>, outcome: RecordingOutcome) {
 struct WriteState {
     results: HashMap<(usize, u8), Result<String, String>>,
     errors: Vec<String>,
+    retention_errors: Vec<String>,
 }
 
-fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: Option<RecordingCallback>) {
+fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: Option<RecordingCallback>,
+    active: Arc<Mutex<HashSet<PathBuf>>>, cleanup: Option<(PendingProtection, RetentionWarning)>) {
+    let mut cleaner = PendingCleaner::default();
+    if let Some((protection, warning)) = &cleanup {
+        let errors = cleaner.sweep(&root, &active, protection, &[]);
+        if !errors.is_empty() { warning(&errors); }
+    }
     let mut cycles: HashMap<String, WriteState> = HashMap::new();
     while let Ok(msg) = rx.recv() {
         match msg {
@@ -318,8 +352,14 @@ fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: 
                 queued.fetch_sub(1, Ordering::AcqRel);
             }
             Msg::Finish(job) => {
-                let state = cycles.remove(&job.recording.cycle_id).unwrap_or_default();
-                notify(&callback, finish_recording(&root, job, state));
+                let mut state = cycles.remove(&job.recording.cycle_id).unwrap_or_default();
+                if let Some((protection, _)) = &cleanup {
+                    state.retention_errors = cleaner.sweep(&root, &active, protection, &job.in_use);
+                }
+                let pending = job.recording.dir.clone();
+                let outcome = finish_recording(&root, job, state);
+                if !pending.exists() { active.lock().unwrap().remove(&pending); }
+                notify(&callback, outcome);
             }
         }
     }
@@ -391,7 +431,7 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState) -> Recor
             directory: rec.dir.exists().then_some(rec.dir),
             files: Vec::new(),
             errors: rec.errors,
-            retention_errors: Vec::new(),
+            retention_errors: state.retention_errors,
             available: false,
             state: RecordingState::NotRetained,
         };
@@ -479,7 +519,8 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState) -> Recor
     }
     let mut protected = in_use;
     protected.push(actual_dir.clone());
-    let retention_errors = prune(root, keep as usize, max_bytes, &protected);
+    let mut retention_errors = state.retention_errors;
+    retention_errors.extend(prune(root, keep as usize, max_bytes, &protected));
     let mut available = promoted && directory.is_some() && !files.is_empty() && rec.errors.is_empty();
     meta["frames"] = serde_json::to_value(&rec.frames).unwrap();
     meta["available"] = json!(available);
@@ -499,6 +540,116 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState) -> Recor
         RecordingState::Incomplete
     };
     RecordingOutcome { cycle_id: rec.cycle_id, directory, files, errors: rec.errors, retention_errors, available, state: outcome_state }
+}
+
+struct PendingClaim<'a> {
+    active: &'a Mutex<HashSet<PathBuf>>,
+    path: PathBuf,
+}
+
+impl<'a> PendingClaim<'a> {
+    fn acquire(active: &'a Mutex<HashSet<PathBuf>>, path: &Path) -> Option<Self> {
+        active.lock().unwrap().insert(path.to_path_buf()).then(|| Self { active, path: path.to_path_buf() })
+    }
+}
+
+impl Drop for PendingClaim<'_> {
+    fn drop(&mut self) { self.active.lock().unwrap().remove(&self.path); }
+}
+
+#[derive(Default)]
+struct PendingCleaner {
+    entries: Option<std::fs::ReadDir>,
+}
+
+fn pending_name(name: &str) -> bool {
+    let Some((stamp, cycle)) = name.split_once("_cycle_") else { return false };
+    stamp.len() == 19 && stamp.bytes().enumerate().all(|(i, b)| if i == 8 || i == 15 { b == b'_' } else { b.is_ascii_digit() })
+        && safe_cycle_id(cycle)
+}
+
+fn pending_files_safe(path: &Path) -> Result<bool, String> {
+    let entries = std::fs::read_dir(path).map_err(|e| format!("读取孤立录制失败 {}：{e}", path.display()))?;
+    for (i, entry) in entries.enumerate() {
+        if i == PENDING_FILE_LIMIT { return Ok(false); }
+        let entry = entry.map_err(|e| e.to_string())?;
+        let meta = entry.path().symlink_metadata().map_err(|e| e.to_string())?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if meta.file_attributes() & 0x400 != 0 { return Ok(false); }
+        }
+        if !meta.is_file() || meta.file_type().is_symlink() { return Ok(false); }
+    }
+    Ok(true)
+}
+
+impl PendingCleaner {
+    fn sweep(&mut self, root: &Path, active: &Mutex<HashSet<PathBuf>>, protection: &PendingProtection, in_use: &[PathBuf]) -> Vec<String> {
+        let pending = root.join("_pending");
+        if !pending.exists() { self.entries = None; return Vec::new(); }
+        if !plain_directory(root) || !plain_directory(&pending) {
+            self.entries = None;
+            return vec!["孤立录制清理拒绝包含链接的 records/_pending 目录".into()];
+        }
+        let checked_root = match root.canonicalize() {
+            Ok(path) => path,
+            Err(error) => return vec![format!("录制根目录无法解析：{error}")],
+        };
+        let checked_pending = match pending.canonicalize() {
+            Ok(path) if path.parent() == Some(checked_root.as_path()) => path,
+            _ => return vec!["孤立录制清理路径越过 records 根目录".into()],
+        };
+        if self.entries.is_none() {
+            match std::fs::read_dir(&pending) {
+                Ok(entries) => self.entries = Some(entries),
+                Err(error) => return vec![format!("扫描孤立录制失败：{error}")],
+            }
+        }
+        let mut errors = Vec::new();
+        let mut candidates = Vec::new();
+        for _ in 0..PENDING_SWEEP_LIMIT {
+            let Some(entry) = self.entries.as_mut().unwrap().next() else { self.entries = None; break };
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(error) => { errors.push(format!("扫描孤立录制目录项失败：{error}")); continue; },
+            };
+            if !path.file_name().and_then(|n| n.to_str()).is_some_and(pending_name) || !plain_directory(&path) { continue; }
+            if !active.lock().unwrap().contains(&path) { candidates.push(path); }
+        }
+        if candidates.is_empty() { return errors; }
+        let mut protected = match protection() {
+            Ok(paths) => paths,
+            Err(error) => { self.entries = None; errors.push(format!("读取录制历史引用失败，暂停孤立录制清理：{error}")); return errors; },
+        };
+        protected.extend_from_slice(in_use);
+        let mut canonical_protected = Vec::new();
+        for path in protected {
+            match path.canonicalize() {
+                Ok(path) => canonical_protected.push(path),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(error) => return vec![format!("录制引用路径无法解析，暂停孤立录制清理 {}：{error}", path.display())],
+            }
+        }
+        for path in candidates {
+            let Some(_claim) = PendingClaim::acquire(active, &path) else { continue };
+            let checked = match path.canonicalize() {
+                Ok(checked) if checked.parent() == Some(checked_pending.as_path()) => checked,
+                _ => { errors.push(format!("孤立录制路径无效，保留 {}", path.display())); continue; },
+            };
+            if canonical_protected.iter().any(|p| p.starts_with(&checked) || checked.starts_with(p)) { continue; }
+            match pending_files_safe(&path) {
+                Ok(true) => {
+                    if let Err(error) = std::fs::remove_dir_all(&path) {
+                        errors.push(format!("清理孤立录制失败 {}：{error}", path.display()));
+                    }
+                },
+                Ok(false) => errors.push(format!("孤立录制包含链接、子目录或过多文件，保留 {}", path.display())),
+                Err(error) => errors.push(error),
+            }
+        }
+        errors
+    }
 }
 
 fn dir_bytes(dir: &Path) -> Result<u64, String> {

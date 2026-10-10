@@ -87,32 +87,78 @@ impl Prepared {
     }
 }
 
+const WARMUP_RETRY_DELAY: Duration = Duration::from_secs(1);
+
 enum Entry {
     Preparing,
     Ready(Arc<Prepared>),
+    Retryable { error: String, retry_at: Instant },
     Failed(String),
 }
 
-async fn run_warmup<T, F>(slot: Arc<Semaphore>, timeout: Duration, operation: F) -> Result<T, String>
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum WarmupFailure {
+    QueueTimeout(String),
+    Failed(String),
+}
+
+impl WarmupFailure {
+    fn message(&self) -> &str {
+        match self { Self::QueueTimeout(error) | Self::Failed(error) => error }
+    }
+
+    fn into_entry(self, now: Instant) -> Entry {
+        match self {
+            Self::QueueTimeout(error) => Entry::Retryable { error, retry_at: now + WARMUP_RETRY_DELAY },
+            Self::Failed(error) => Entry::Failed(error),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum WarmupPhase { Waiting, Started, Expired }
+
+async fn run_warmup<T, F>(slot: Arc<Semaphore>, timeout: Duration, operation: F) -> Result<T, WarmupFailure>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, String> + Send + 'static,
 {
-    let deadline = Instant::now().checked_add(timeout).ok_or("图像引擎预热截止时间溢出")?;
-    let timeout_error = format!("图像引擎排队或预热超过 {} ms；尚未返回的引擎继续占用预热线程，请排查核心库或重启", timeout.as_millis());
-    let expired_error = timeout_error.clone();
+    let deadline = Instant::now().checked_add(timeout).ok_or_else(|| WarmupFailure::Failed("图像引擎预热截止时间溢出".into()))?;
+    let prefix = format!("图像引擎排队或预热超过 {} ms", timeout.as_millis());
+    let queued = format!("{prefix}；引擎尚未开始，稍后重试");
+    let running = format!("{prefix}；尚未返回的引擎继续占用预热线程，请排查核心库或重启");
+    let phase = Arc::new(Mutex::new(WarmupPhase::Waiting));
+    let worker_phase = phase.clone();
+    let queued_error = queued.clone();
+    let running_error = running.clone();
     let task = async move {
-        let permit = slot.acquire_owned().await.map_err(|error| format!("图像引擎预热线程已关闭：{error}"))?;
+        let permit = slot.acquire_owned().await.map_err(|error| WarmupFailure::Failed(format!("图像引擎预热线程已关闭：{error}")))?;
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            if Instant::now() >= deadline { return Err(expired_error); }
-            let result = operation();
-            if Instant::now() > deadline { Err(expired_error) } else { result }
-        }).await.map_err(|error| format!("图像引擎预热异常：{error}"))?
+            {
+                let mut phase = worker_phase.lock().unwrap();
+                if !matches!(*phase, WarmupPhase::Waiting) || Instant::now() >= deadline {
+                    *phase = WarmupPhase::Expired;
+                    return Err(WarmupFailure::QueueTimeout(queued_error));
+                }
+                *phase = WarmupPhase::Started;
+            }
+            let result = operation().map_err(WarmupFailure::Failed);
+            if Instant::now() > deadline { Err(WarmupFailure::Failed(running_error)) } else { result }
+        }).await.map_err(|error| WarmupFailure::Failed(format!("图像引擎预热异常：{error}")))?
     };
     match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), task).await {
         Ok(result) => result,
-        Err(_) => Err(timeout_error),
+        Err(_) => {
+            let mut phase = phase.lock().unwrap();
+            match *phase {
+                WarmupPhase::Started => Err(WarmupFailure::Failed(running)),
+                WarmupPhase::Waiting | WarmupPhase::Expired => {
+                    *phase = WarmupPhase::Expired;
+                    Err(WarmupFailure::QueueTimeout(queued))
+                }
+            }
+        }
     }
 }
 
@@ -130,17 +176,22 @@ impl ProductionHost {
         self.entries.lock().unwrap().retain(|_, entry| matches!(entry, Entry::Preparing));
     }
 
+    fn begin(&self, key: &str, now: Instant) -> Result<Option<Arc<Prepared>>, String> {
+        let mut entries = self.entries.lock().unwrap();
+        match entries.get(key) {
+            Some(Entry::Ready(prepared)) => return Ok(Some(prepared.clone())),
+            Some(Entry::Failed(error)) => return Err(error.clone()),
+            Some(Entry::Retryable { error, retry_at }) if now < *retry_at => return Err(error.clone()),
+            Some(Entry::Preparing) => return Err("发布资源与图像引擎正在预热，完成前不能布防".into()),
+            _ => {}
+        }
+        entries.insert(key.to_owned(), Entry::Preparing);
+        Ok(None)
+    }
+
     fn ensure(&self, app: &AppHandle, recipe: Arc<Recipe>, core: Option<String>) -> Result<Arc<Prepared>, String> {
         let key = format!("{}:{}:{}", recipe.id, recipe.hash, core.as_deref().unwrap_or_default());
-        let mut entries = self.entries.lock().unwrap();
-        match entries.get(&key) {
-            Some(Entry::Ready(prepared)) => return Ok(prepared.clone()),
-            Some(Entry::Failed(error)) => return Err(error.clone()),
-            Some(Entry::Preparing) => return Err("发布资源与图像引擎正在预热，完成前不能布防".into()),
-            None => {}
-        }
-        entries.insert(key.clone(), Entry::Preparing);
-        drop(entries);
+        if let Some(prepared) = self.begin(&key, Instant::now())? { return Ok(prepared); }
         let app = app.clone();
         let slot = self.slot.clone();
         tauri::async_runtime::spawn(async move {
@@ -159,11 +210,14 @@ impl ProductionHost {
                     Entry::Ready(prepared)
                 }
                 Err(error) => {
-                    crate::cycle::log(&app, "err", "生产预热", error.clone());
-                    Entry::Failed(error)
+                    let level = if matches!(&error, WarmupFailure::QueueTimeout(_)) { "warn" } else { "err" };
+                    crate::cycle::log(&app, level, "生产预热", error.message().to_owned());
+                    error.into_entry(Instant::now())
                 }
             };
+            let retry_at = match &state { Entry::Retryable { retry_at, .. } => Some(*retry_at), _ => None };
             app.state::<ProductionHost>().entries.lock().unwrap().insert(key, state);
+            if let Some(retry_at) = retry_at { tokio::time::sleep_until(tokio::time::Instant::from_std(retry_at)).await; }
             let _ = app.state::<CycleHost>().tx.send(Input::Refresh);
         });
         Err("发布资源与图像引擎正在预热，完成前不能布防".into())

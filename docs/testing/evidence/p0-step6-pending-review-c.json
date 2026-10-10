@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-10",
+  "branch": "codex/p0-step6-history",
+  "implementation": "6905f8f",
+  "integration": "4997c53",
+  "status": "passed",
+  "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib",
+  "rust": {
+    "passed": 258,
+    "failed": 0,
+    "ignored": 26,
+    "seconds": 2.79
+  },
+  "pendingRecoveryTests": {
+    "passed": 8
+  },
+  "instanceLeaseTest": {
+    "passed": 1
+  },
+  "log": {
+    "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step6-pending-lease-final-c.log",
+    "bytes": 29189,
+    "sha256": "188c4299ce523b9d01d9e675d411fd467ca4bee2eb1df5ffd8eddc500e281304"
+  },
+  "earlierPendingPass": {
+    "passed": 257,
+    "ignored": 26,
+    "seconds": 2.86,
+    "log": {
+      "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step6-pending-review-c.log",
+      "bytes": 29106,
+      "sha256": "094856a53c84f85c57455e8fed52346b9ca2f00be2f21eb5c1d1e9511659dfe9"
+    }
+  },
+  "initialLeaseTest": {
+    "passed": 257,
+    "failed": 1,
+    "ignored": 26,
+    "log": {
+      "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step6-pending-lease-initial-c.log",
+      "bytes": 29720,
+      "sha256": "ac9adbdee9ef176fa84d471bb1754466396e49a997e7cca72be48e3008b31d5c"
+    },
+    "reason": "Test attempted a separate-handle write while the Windows byte-range lock was held (OS error33). Marker setup moved before acquire and verification after release; production lock code unchanged."
+  },
+  "contract": [
+    "At most64 pending entries per startup/Finish sweep; cursor continues on later sweeps.",
+    "Only nonactive candidates trigger one historical-reference query per sweep.",
+    "Store recording_directory and raw_files references, active jobs, replay inputs and failed pending awaiting asynchronous audit are protected.",
+    "Invalid history, filesystem errors, junctions/links/subdirectories or >256files preserve evidence; cleanup errors remain independent retention warnings.",
+    "An OS file lease is acquired at setup before Store recovery and Recorder initialization; another process cannot use the same AppData until release. Distinct profiles are independent."
+  ],
+  "sourceFiles": [
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\src-tauri\\src\\instance.rs",
+      "bytes": 1697,
+      "sha256": "aed80d86d007c98e0efca7abf987210cdb3d5a3e2ebe4475f3029733711da214"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\src-tauri\\src\\lib.rs",
+      "bytes": 4877,
+      "sha256": "7118c39bd556380a9552aa2eb6783ef7489755e008d7281802119f2698c534f6"
+    }
+  ],
+  "boundaries": [
+    "Default tests include actual Windows junction, locks and SQLite fixtures; no simulated power loss or physical disk failure claimed.",
+    "Actual native duplicate-launch and final400-cycle suite are pending under final step7 build.",
+    "P0 D-0 future database versions still backup-and-rebuild by explicit project decision."
+  ]
+}

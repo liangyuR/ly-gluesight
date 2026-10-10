@@ -163,5 +163,16 @@
     },
     "change": "Old-record retention warnings are separate from current-record integrity errors. Actual Windows DELETE sharing refusal does not invalidate the current complete three-view recording or Audit entry. Duplicate outcomes do not repeat warnings.",
     "databasePolicy": "D-0 intentionally preserves backup/rebuild on every version mismatch; existing future73 WAL backup regression passed."
+  },
+  "pendingAndInstanceReview": {
+    "evidence": "p0-step6-pending-review-c.json",
+    "passed": 258,
+    "failed": 0,
+    "ignored": 26,
+    "log": {
+      "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step6-pending-lease-final-c.log",
+      "bytes": 29189,
+      "sha256": "188c4299ce523b9d01d9e675d411fd467ca4bee2eb1df5ffd8eddc500e281304"
+    }
   }
 }
