@@ -220,7 +220,13 @@ jsdom 没有真实布局、灰度图解码与设备连接能力。测试环境�
 
 [迁移后回归记录](evidence/p0-step6-regression-c.json)保存命令、日志路径及 SHA256；本机日志根目录为 `C:\Users\11601\AppData\Local\Temp\gluesight-p0-recovery-20261010`。S7 include-ignored 回环专项随后通过 22 项（45.98 秒）；真实 DLL 同标签并发测试通过，48 次并发运行的身份与像素归属均被检查。真实 DLL 原包重现测试首次失败：第二拍使用整幅空白图却预期 `NG_GAP`，实际返回 `ERR_INSPECT`，失败断言位于原 `workspace/reproduce.rs:101`。随后仅修正测试夹具：抹去 x100..140 的 10 mm 局部胶段，保留原 6 mm 限值，检查局部断胶为 `NG_GAP` / PLC 13、其他三拍读数不变；另独立检查整幅空白为 `ERR_INSPECT` 且不生成测点索引。使用同一真实 DLL 重跑通过 1 项（1.05 秒），证据同时保留首次失败和修复后日志 SHA256。默认忽略项不能全部计为已通过，此前中间版本的 Rust 207 项、S7 21 项只作历史基线。
 
-`tests/native/p0-history-produce-ui.js` 和 `p0-history-ui.js` 已保存，但尚未执行。恢复存储后先跑全量回归与真实 DLL 测试，再构建隔离 P0 桌面，检查旧数据库备份、新 normal/gap 记录的十二视角、录制结束刷新、原包重现不受候选选择及未保存编辑影响、原结论和发布资源不变。实际进程中断后的 ACK→SQLite 链路也仍需桌面验证，不能只用握手和 Store 独立测试代替。
+C: 隔离原生程序已完成正式验收（构建 1m22s，SHA256 `85F926EC6358E5D710FB4668CDA0C3DBEE6307F4E3F716D86927120DD84BB484`）。旧数据库实测 `user_version=0`，自动生成完整性校验通过且保留 6 条记录的 `.bak`，新库版本为 2。normal / gap 分别在 112 / 143 ms 布防，四帧 307 测点，每件十二张原图完整落盘并保留逐文件哈希；结论分别为实际 `OK_WITH_EXCURSION` / PLC 2、`NG_GAP` / PLC 13（8 mm > 6 mm）。normal 实际观察到录制 Pending（0 原图）→ Complete（12 原图）、PLC Submitted→Acknowledged。
+
+`p0-history-ui.js` 在原生历史页逐一显示两件全部 24 个原始视角（1280×1024，SVG 高 324 px，居中滚动后全部位于可见窗口），检测所选视角才显示中线并允许用于示教；CSV 导出及原包重现、候选规则重判、候选原图复测均通过，原始检测记录未改。`p0-history-independent-ui.js` 验证选择其他配方候选以及本配方 Pose 尚未保存时，仍可按原发布包重现，候选比较按钮保持禁用；未保存 Pose 保留后恢复原值，保存候选、生产配置和 19 个冻结文件哈希未改。
+
+`p0-ack-process-recovery.mjs` 使用真实 TCP S7 测试服务发送匹配计划请求 101 / SN `70100101`。生产策略安全拒绝 Synthetic 相机，真实上报 `ERR_INSPECT` / PLC 90 / fault 98；在历史已 Submitted 后，用外部 SQLite `BEGIN IMMEDIATE` 锁阻止更新，测试服务发出匹配 ACK。握手主日志已持久化 `acknowledged=true`、数据库仍 Submitted 时终止仅本次创建的隔离进程；释放锁并重启后，实际 `Machine.new` 将精确 cycleId `46224c90d1642f9e411ead533e4abef9` / SN 记录恢复为 Acknowledged。除交付字段外，原错误结论、四条缺帧记录和空测点载荷不变；没有伪造收据或绕过生产相机政策。中断发生在 ACK 审计行写入前，仅主日志恢复的时间取请求开始时间并与原交付时间取最大值，不能将该值解释为精确 ACK 时刻。首次脚本 WebView 导航竞态失败及历史截图的固定页眉滚动边界均保留；脚本等待真实加载、居中滚动后复验通过。[桌面与进程恢复证据](evidence/p0-step6-native-c.json)保存原报告、截图、CSV、原图及冻结包 SHA256。
+
+复用前先创建 `output/playwright/p0-history`，启动已核验标识的隔离原生程序并连接模拟 PLC，再运行三个 `async(page)` 脚本。ACK 进程专项要求先关闭现存隔离实例，传入 `--executable`、`--instance`（包含精确隔离标识及 SHA256）、`--appdata`、新的 `--output` 目录、后端导出的 `--template`、`--playwright-module`、`--fixture scripts/s7-handshake/s7_test_plc.py`；脚本仅接受 C: 的 `.p0-tests.recovery` 实例，结束后还原 PLC 配置并归档本轮握手证据。软件验收通过不替代现场硬件、准确率或步 7 的故障和性能验收。
 
 ## lyFlow 原始图像注入回归（较早记录）
 
