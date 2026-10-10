@@ -49,6 +49,21 @@ class SampleTests(unittest.TestCase):
     def save(self):
         (self.workspace / "workspace.json").write_text(json.dumps(self.state), encoding="utf-8")
 
+    def test_sample_export_matches_missing_or_zero_fixture_to_backend_version_one(self):
+        self.state["doc"]["version"] = 1
+        self.save()
+        for name, version in [("missing", None), ("zero", 0)]:
+            with self.subTest(version=name):
+                fixture = copy.deepcopy(self.recipe)
+                if version is None:
+                    fixture.pop("version", None)
+                else:
+                    fixture["version"] = version
+                output = self.root / ("version-" + name)
+                report = samples.export_samples(self.workspace, output, fixture)
+                self.assertEqual(len(report["frames"]), 12)
+                self.assertEqual(len(list((output / "good").glob("*.pgm"))), 4)
+                self.assertEqual(len(list((output / "replay").glob("*.pgm"))), 12)
     def test_tricam_exports_four_selected_images_and_twelve_views_with_device_counts_and_dimensions(self):
         output = self.root / "samples"
         report = samples.export_samples(self.workspace, output, self.recipe)
@@ -141,6 +156,26 @@ class EvidenceTests(unittest.TestCase):
         result["deviceTriggers"]["cam1"] = 12
         with self.assertRaisesRegex(RuntimeError, "counts"):
             regression.verify_evidence(result, recipe)
+
+class RegressionRecipeVersionTests(unittest.TestCase):
+    def test_live_regression_preflight_matches_missing_or_zero_fixture_to_backend_version_one(self):
+        backend = load_recipe(load_config()["robot"]["recipe"])
+        backend["version"] = 1
+        state = {"contractVersion": 2, "recipe": backend}
+        for version in [None, 0, 1]:
+            fixture = copy.deepcopy(backend)
+            if version is None:
+                fixture.pop("version", None)
+            else:
+                fixture["version"] = version
+            regression.validate_running_recipe(state, fixture)
+        fixture = copy.deepcopy(backend)
+        fixture["version"] = 7
+        with self.assertRaisesRegex(RuntimeError, "differs"):
+            regression.validate_running_recipe(state, fixture)
+        fixture["version"] = None
+        with self.assertRaises(ValueError):
+            regression.validate_running_recipe(state, fixture)
 
 
 if __name__ == "__main__":

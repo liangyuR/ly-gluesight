@@ -13,8 +13,10 @@ function canonical(value) {
 }
 
 export function recipeContract(recipe) {
+  const version = recipe.version === undefined ? 0 : recipe.version;
+  if (!Number.isInteger(version) || version < 0 || version > 0xffffffff) throw new Error('recipe.version must be an integer in 0..4294967295');
   return canonical({
-    id: recipe.id, version: recipe.version, productCode: recipe.productCode, schemaVersion: recipe.schemaVersion,
+    id: recipe.id, version: Math.max(1, version), productCode: recipe.productCode, schemaVersion: recipe.schemaVersion,
     triggerMode: recipe.triggerMode, spacing: recipe.spacing, filterWindow: recipe.filterWindow,
     detect: recipe.detect, limits: recipe.limits,
     shots: recipe.shots.map(shot => ({

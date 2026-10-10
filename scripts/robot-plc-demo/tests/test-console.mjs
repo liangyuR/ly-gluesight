@@ -99,6 +99,42 @@ test('shot plans count devices once per pulse and keep view 1→2→3→1 separa
   assert.deepEqual(devices.map(p => p.ordinal), [1, 1, 1, 2]);
 });
 
+for (const version of [undefined, 0]) test('missing/zero fixture version uses backend version1 and permits actual bridge dispatch: ' + String(version), async () => {
+  const recipe = fixture();
+  if (version === undefined) delete recipe.version; else recipe.version = version;
+  const ctx = context(recipe), calls = [];
+  ctx.layout.version = 1; ctx.layout.revisionId = `${ctx.recipe.id}-v1`;
+  ctx.snapshot.part.recipeRevision = ctx.layout.revisionId;
+  assert.deepEqual(recipeContract(ctx.recipe), recipeContract(ctx.layout));
+  const dispatch = triggerDispatcher(ctx.recipe, rpc(ctx, calls));
+  for (let k = 0; k < ctx.recipe.shots.length; k++) {
+    const ack = await dispatch(ticket(ctx, k));
+    assert.equal(ack.ok, true, ack.error);
+  }
+  assert.deepEqual(calls.filter(call => call.command === 'sim_robot_trigger').map(call => call.args),
+    [0, 1, 2, 3].map(k => ({ sn: 123, k, scenario: 'normal' })));
+});
+
+test('explicit positive fixture versions are preserved and cannot match another backend version', () => {
+  for (const version of [1, 7, 0xffffffff]) {
+    const ctx = context(); ctx.recipe.version = version; ctx.layout.version = version;
+    assert.equal(recipeContract(ctx.recipe).version, version); assert.equal(check(ctx).sn, 123);
+    ctx.layout.version = version === 1 ? 2 : 1;
+    assert.throws(() => check(ctx), /differs/);
+  }
+});
+
+test('invalid fixture/backend versions are rejected before any bridge pulse', async () => {
+  for (const version of [null, true, false, -1, 0.5, NaN, Infinity, 0x100000000, '1']) {
+    for (const target of ['recipe', 'layout']) {
+      const ctx = context(), calls = []; ctx[target].version = version;
+      assert.throws(() => recipeContract(ctx[target]), /recipe.version/);
+      const ack = await triggerDispatcher(ctx.recipe, rpc(ctx, calls))(ticket(ctx));
+      assert.equal(ack.ok, false); assert.match(ack.error, /recipe.version/);
+      assert.equal(calls.filter(call => call.command === 'sim_robot_trigger').length, 0);
+    }
+  }
+});
 test('release metadata may differ but explicit version, geometry and limits must match', () => {
   const ctx = context();
   ctx.layout.teachingId = 'published';

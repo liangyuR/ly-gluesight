@@ -7,6 +7,8 @@ use super::Event;
 const MAX_EVENTS: usize = 4096;
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_EVENT_BYTES: u64 = 4 * 1024 * 1024;
+const PROBE_TEMPORARY: &str = ".health-create.tmp";
+const PROBE_COMMITTED: &str = ".health-commit";
 
 struct Receipt {
     cycle: String,
@@ -95,7 +97,7 @@ impl Spool {
                 continue;
             }
             plain(&path, false)?;
-            if name == ".health" { validate_probe(&path)?; continue; }
+            if matches!(name, ".health" | PROBE_TEMPORARY | PROBE_COMMITTED) { validate_probe(&path)?; continue; }
             let sequence = name.strip_suffix(".json").filter(|name| name.len() == 20 && name.bytes().all(|byte| byte.is_ascii_digit()))
                 .ok_or("审计 spool 含未知或未完成文件，保留证据并拒绝就绪")?.parse::<u64>().map_err(|error| error.to_string())?;
             let bytes = path.metadata().map_err(|error| error.to_string())?.len();
@@ -119,7 +121,28 @@ impl Spool {
             validate_probe(&path)?;
         }
         let mut file = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(path).map_err(|error| format!("审计写入健康检查失败：{error}"))?;
-        file.write_all(&[0]).and_then(|_| file.set_len(0)).and_then(|_| file.sync_all()).map_err(|error| format!("审计持久写入健康检查失败：{error}"))
+        file.write_all(&[0]).and_then(|_| file.set_len(0)).and_then(|_| file.sync_all()).map_err(|error| format!("审计持久写入健康检查失败：{error}"))?;
+        drop(file);
+        for name in [PROBE_TEMPORARY, PROBE_COMMITTED] {
+            let marker = self.root.join(name);
+            match std::fs::symlink_metadata(&marker) {
+                Ok(_) => {
+                    plain(&marker, false)?;
+                    validate_probe(&marker)?;
+                    std::fs::remove_file(&marker).map_err(|error| format!("恢复中断审计探针失败，保留探针：{error}"))?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return Err(format!("审计探针路径不可用：{error}")),
+            }
+        }
+        let temporary = self.root.join(PROBE_TEMPORARY);
+        let committed = self.root.join(PROBE_COMMITTED);
+        let mut file = std::fs::OpenOptions::new().create_new(true).write(true).open(&temporary)
+            .map_err(|error| format!("审计探针新建失败：{error}"))?;
+        file.write_all(&[0]).and_then(|_| file.sync_all()).map_err(|error| format!("审计探针持久写入失败，保留探针：{error}"))?;
+        drop(file);
+        std::fs::rename(&temporary, &committed).map_err(|error| format!("审计探针重命名失败，保留探针：{error}"))?;
+        std::fs::remove_file(&committed).map_err(|error| format!("审计探针清理失败，保留探针：{error}"))
     }
 
     fn path(&self, sequence: u64) -> PathBuf { self.root.join(format!("{sequence:020}.json")) }
