@@ -541,7 +541,8 @@ impl RecipeStore {
         let store = Self { dir, inner: RwLock::new(Vec::new()), errors: RwLock::new(Vec::new()) };
         store.seed_version_floor(floors)?;
         let retired = store.retired_versions()?;
-        let empty = retired.is_empty() && std::fs::read_dir(&store.dir).map_err(|e| e.to_string())?.flatten().all(|e| e.path().extension().is_none_or(|x| x != "json"));
+        let sources = store.revision_sources()?;
+        let empty = retired.is_empty() && sources.is_empty() && std::fs::read_dir(&store.dir).map_err(|e| e.to_string())?.flatten().all(|e| e.path().extension().is_none_or(|x| x != "json"));
         if empty {
             for doc in samples() {
                 store.write(&doc)?;
@@ -563,6 +564,32 @@ impl RecipeStore {
         }
     }
 
+    fn revision_sources(&self) -> Result<BTreeMap<String, RecipeDoc>, String> {
+        let sources: BTreeMap<String, RecipeDoc> = match crate::fsio::read_text(&self.dir.join(".revision-sources")) {
+            Ok(text) => serde_json::from_str(&text).map_err(|e| format!("配方修订来源记录损坏，拒绝复用修订号：{e}"))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(e) => return Err(format!("读取配方修订来源记录失败：{e}")),
+        };
+        for (id, doc) in &sources {
+            if id != &doc.id.to_ascii_lowercase() || doc.version == 0 {
+                return Err("配方修订来源记录身份不一致，拒绝复用修订号".into());
+            }
+            doc.build().map_err(|e| format!("配方修订来源记录无效：{e}"))?;
+        }
+        Ok(sources)
+    }
+
+    fn remember_source(&self, doc: &RecipeDoc) -> Result<(), String> {
+        let mut sources = self.revision_sources()?;
+        let id = doc.id.to_ascii_lowercase();
+        if let Some(previous) = sources.get(&id) {
+            if previous == doc { return Ok(()); }
+            if previous.version >= doc.version { return Err("同一修订号不能记录不同的实际配方来源".into()); }
+        }
+        sources.insert(id, doc.clone());
+        crate::fsio::write_atomic(&self.dir.join(".revision-sources"), &serde_json::to_string(&sources).map_err(|e| e.to_string())?)
+    }
+
     fn retire_version(&self, id: &str, version: u32) -> Result<(), String> {
         let mut versions = self.retired_versions()?;
         let recorded = versions.entry(id.to_ascii_lowercase()).or_default();
@@ -572,7 +599,8 @@ impl RecipeStore {
 
     fn version_after(&self, id: &str, active: Option<u32>) -> Result<u32, String> {
         let retired = self.retired_versions()?.get(&id.to_ascii_lowercase()).copied().unwrap_or(0);
-        retired.max(active.unwrap_or(0)).checked_add(1).ok_or_else(|| "配方版本已达上限".into())
+        let source = self.revision_sources()?.get(&id.to_ascii_lowercase()).map_or(0, |doc| doc.version);
+        retired.max(source).max(active.unwrap_or(0)).checked_add(1).ok_or_else(|| "配方版本已达上限".into())
     }
 
     pub fn seed_version_floor(&self, floors: &BTreeMap<String, u32>) -> Result<(), String> {
@@ -600,6 +628,12 @@ impl RecipeStore {
 
     /// 重读目录。坏文件跳过并记下原因，不影响其他配方。
     pub fn reload(&self) {
+        let mut inner = self.inner.write().unwrap();
+        let provenance = self.retired_versions().and_then(|versions| self.revision_sources().map(|sources| (versions, sources)));
+        let (versions, sources) = match provenance {
+            Ok(provenance) => provenance,
+            Err(error) => { *self.errors.write().unwrap() = vec![error]; return; }
+        };
         let mut list = Vec::new();
         let mut errors = Vec::new();
         if let Ok(rd) = std::fs::read_dir(&self.dir) {
@@ -628,12 +662,29 @@ impl RecipeStore {
                     }
                 });
                 match checked {
-                    Ok(pair) => list.push(pair),
+                    Ok((mut doc, mut recipe)) => {
+                        let id = doc.id.to_ascii_lowercase();
+                        let source = sources.get(&id);
+                        let floor = versions.get(&id).copied().unwrap_or(0).max(source.map_or(0, |previous| previous.version));
+                        let proven = source.is_some_and(|previous| previous == &doc);
+                        let accepted = (|| -> Result<(), String> {
+                            if doc.version < floor || doc.version == floor && !proven {
+                                doc.version = floor.checked_add(1).ok_or("配方版本已达上限")?;
+                                recipe = Arc::new(doc.build()?);
+                                self.write(&doc)?;
+                            }
+                            self.remember_source(&doc)
+                        })();
+                        match accepted {
+                            Ok(()) => list.push((doc, recipe)),
+                            Err(error) => errors.push(format!("{name}：修订来源未能持久保存，没有加载：{error}")),
+                        }
+                    },
                     Err(e) => errors.push(format!("{name}：{e}")),
                 }
             }
         }
-        *self.inner.write().unwrap() = list;
+        *inner = list;
         *self.errors.write().unwrap() = errors;
     }
 
@@ -678,6 +729,7 @@ impl RecipeStore {
         }
         let recipe = Arc::new(doc.build()?);
         self.write(&doc)?;
+        self.remember_source(&doc)?;
         // 只改了大小写时新旧是同一个文件，不能删
         if !replacing.eq_ignore_ascii_case(&doc.id) {
             let _ = std::fs::remove_file(self.file(&replacing));
@@ -712,6 +764,7 @@ impl RecipeStore {
         }
         let recipe = Arc::new(built);
         self.write(&doc)?;
+        self.remember_source(&doc)?;
         inner.retain(|(previous, _)| previous.id != doc.id);
         inner.push((doc, recipe.clone()));
         inner.sort_by(|a, b| a.0.id.cmp(&b.0.id));
@@ -913,6 +966,79 @@ mod tests {
         assert_eq!(store.get(&doc.id).unwrap().revision_id, original.revision_id);
         drop(store);
         assert!(RecipeStore::open(dir.clone()).err().unwrap().contains("版本记录损坏"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn external_recipe_edits_receive_persistent_new_versions_without_content_fingerprints() {
+        let dir = std::env::temp_dir().join(format!("gluesight-external-revision-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        let mut doc = store.doc("MTR-HSG-B").unwrap();
+        let original = store.get(&doc.id).unwrap();
+        doc.limits.max_gap_len += 1.0;
+        std::fs::write(store.file(&doc.id), serde_json::to_vec(&doc).unwrap()).unwrap();
+        store.reload();
+        assert!(store.errors().is_empty(), "{:?}", store.errors());
+        let edited = store.get(&doc.id).unwrap();
+        assert_eq!(edited.version, original.version + 1);
+        assert_ne!(edited.revision_id, original.revision_id);
+        assert_eq!(original.version, 1);
+        assert_eq!(store.doc(&doc.id).unwrap().limits.max_gap_len, doc.limits.max_gap_len);
+        drop(store);
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        assert_eq!(store.get(&doc.id).unwrap().version, edited.version);
+        let formatted = serde_json::to_value(store.doc(&doc.id).unwrap()).unwrap();
+        std::fs::write(store.file(&doc.id), format!("\n{}\n", serde_json::to_string_pretty(&formatted).unwrap())).unwrap();
+        store.reload();
+        assert_eq!(store.get(&doc.id).unwrap().version, edited.version);
+        store.delete(&doc.id).unwrap();
+        std::fs::write(store.file(&doc.id), serde_json::to_vec(&doc).unwrap()).unwrap();
+        drop(store);
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        assert_eq!(store.get(&doc.id).unwrap().version, edited.version + 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn history_without_proven_source_and_rolled_back_files_never_reuse_versions() {
+        let dir = std::env::temp_dir().join(format!("gluesight-unproven-revision-{}-{}", std::process::id(), ly_plc::now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = three_cameras();
+        std::fs::write(dir.join(format!("{}.json", doc.id)), serde_json::to_vec(&doc).unwrap()).unwrap();
+        let store = RecipeStore::open_with_floors(dir.clone(), &BTreeMap::from([(doc.id.clone(), 7)])).unwrap();
+        assert_eq!(store.get(&doc.id).unwrap().version, 8);
+        std::fs::write(store.file(&doc.id), serde_json::to_vec(&doc).unwrap()).unwrap();
+        store.reload();
+        assert_eq!(store.get(&doc.id).unwrap().version, 9);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_source_write_does_not_admit_an_external_revision_and_can_be_recovered() {
+        let dir = std::env::temp_dir().join(format!("gluesight-source-write-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        let mut doc = store.doc("MTR-HSG-B").unwrap(); doc.name.push_str(" externally edited");
+        std::fs::write(store.file(&doc.id), serde_json::to_vec(&doc).unwrap()).unwrap();
+        let blocking = dir.join(".revision-sources").with_extension("tmp");
+        std::fs::create_dir(&blocking).unwrap();
+        store.reload();
+        assert!(store.get(&doc.id).is_none());
+        assert!(store.errors().iter().any(|error| error.contains("来源未能持久保存")));
+        assert_eq!(store.revision_sources().unwrap()[&doc.id.to_ascii_lowercase()].version, 1);
+        std::fs::remove_dir(&blocking).unwrap();
+        store.reload();
+        assert_eq!(store.get(&doc.id).unwrap().version, 2);
+        drop(store);
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        assert_eq!(store.get(&doc.id).unwrap().version, 2);
+        let mut published = store.doc(&doc.id).unwrap(); published.version = 3; published.name.push_str(" published");
+        std::fs::create_dir(&blocking).unwrap();
+        assert!(store.save_published(published.clone(), Some(&format!("{}-v2", doc.id))).is_err());
+        assert_eq!(store.get(&doc.id).unwrap().version, 2);
+        std::fs::remove_dir(&blocking).unwrap();
+        assert_eq!(store.save_published(published, Some(&format!("{}-v2", doc.id))).unwrap().version, 3);
+        std::fs::write(dir.join(".revision-sources"), "invalid").unwrap();
+        assert!(RecipeStore::open(dir.clone()).err().unwrap().contains("来源记录损坏"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
