@@ -1035,7 +1035,8 @@ impl Machine {
             self.ledgers.set_floor(&Floor { cam: camera.cam, camera: camera.camera.clone(), session: camera.session,
                 baseline: router.baseline(camera.cam).unwrap_or(0) });
         }
-        let issued = plan.as_ref().map(|p| p.camera_slots.iter().zip(p.camera_shots).filter(|(id, _)| !id.is_empty())
+        // 按协议槽顺序保留三槽（空槽编号为空），PLC 确认时报的各槽触发数按位置对上
+        let issued = plan.as_ref().map(|p| p.camera_slots.iter().zip(p.camera_shots)
             .map(|(id, count)| (id.clone(), count as u64)).collect());
         let bundle_id = production.as_ref().map(|prepared| prepared.bundle.id.clone());
         let recording = host.recorder.begin(settings.record, sn, recipe.clone(), &cycle_id, bundle_id.as_deref());
@@ -1261,14 +1262,31 @@ impl Machine {
                     self.set_phase(Phase::Drain);
                     log(&app, "info", "partEnd↑", "三路触发数量已核对，等待剩余帧");
                 }
-                SessionEvent::Released => {
+                SessionEvent::Released(triggers) => {
+                    self.close_routing(triggers);
                     self.delivery(PlcDeliveryState::Acknowledged, Some("PLC 结果序号已确认，双方握手已释放".into()));
                     self.alarms.retain(|m| !m.starts_with("PLC 未确认"));
                     self.set_phase(Phase::Idle);
                     log(&app, "info", "S7 事务结束", "结果序号已确认，PLC 输入已释放");
                 }
                 SessionEvent::Fault(reason) => self.enter_fault(reason),
+                SessionEvent::Restored(reason) => {
+                    log(&app, "warn", "S7 空闲恢复", reason.clone());
+                    if !self.alarms.contains(&reason) { self.alarms.push(reason); }
+                    self.dirty = true;
+                }
                 SessionEvent::None => {}
+            }
+            // 空闲等待提示（PLC 输入未释放、设备未就绪）跟着会话现状走，不进故障
+            let notice = self.s7.notice().map(str::to_owned);
+            let shown: Vec<String> = self.alarms.iter().filter(|m| m.starts_with(crate::plc_session::NOTICE)).cloned().collect();
+            if shown.as_slice() != notice.as_slice() {
+                self.alarms.retain(|m| !m.starts_with(crate::plc_session::NOTICE));
+                if let Some(notice) = notice {
+                    log(&app, "warn", "S7 握手", notice.clone());
+                    self.alarms.push(notice);
+                }
+                self.dirty = true;
             }
             if self.s7.phase() == SessionPhase::Releasing && self.phase == Phase::Report {
                 self.set_phase(Phase::Release);
@@ -1354,7 +1372,9 @@ impl Machine {
     }
 
     async fn report(&mut self, sn: u32, recipe_id: Option<String>, judgement: Judgement) {
-        self.close_routing();
+        // S7 未经 partEnd 核对触发数就判了 ERR（运动超时等）：等 PLC 确认结果时报的实际已发触发数再推下一件基线，
+        // 按计划数假定会让下一件基线偏高、每件都缺帧
+        if !self.part.as_ref().is_some_and(|p| p.issued.is_some() && !p.issued_verified) { self.close_routing(None); }
         let app = self.app.clone();
         let r = if self.is_s7() {
             self.s7.report(plc(&app), judgement.plc_code, judgement.fault_code).await
@@ -1397,10 +1417,13 @@ impl Machine {
         }
     }
 
-    fn close_routing(&mut self) {
+    /// `plc_triggers`：PLC 确认结果时各槽的已发触发数；没有时用 partEnd 核对过的计划数，都没有按计划数假定。
+    fn close_routing(&mut self, plc_triggers: Option<[u16; 3]>) {
         let Some(part) = self.part.as_mut().filter(|part| !part.routing_closed) else { return };
-        let issued = part.issued.as_ref().filter(|_| part.issued_verified)
-            .map(|counts| counts.iter().map(|(id, n)| (id.as_str(), *n)).collect::<Vec<_>>());
+        let issued = part.issued.as_ref().filter(|_| part.issued_verified || plc_triggers.is_some())
+            .map(|slots| slots.iter().enumerate().filter(|(_, (id, _))| !id.is_empty())
+                .map(|(slot, (id, planned))| (id.as_str(), plc_triggers.map_or(*planned, |counts| u64::from(counts[slot]))))
+                .collect::<Vec<_>>());
         part.router.close(&mut self.ledgers, issued.as_deref());
         part.routing_closed = true;
     }
@@ -1482,7 +1505,7 @@ impl Machine {
     }
 
     fn enter_fault(&mut self, reason: String) {
-        self.close_routing();
+        self.close_routing(None);
         let in_flight = matches!(self.phase, Phase::Validate | Phase::Acquire | Phase::Drain | Phase::Judge);
         if in_flight {
             let sn = self.part.as_ref().map(|p| p.sn).or_else(|| self.s7.request().map(|r| r.sn)).unwrap_or(0);
