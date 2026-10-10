@@ -432,6 +432,11 @@ pub fn usable_cams(app: &AppHandle, recipe: &Recipe, real_parts: bool) -> Result
         if cfg.acquisition == Acquisition::FreeRun {
             return Err(format!("{}（{}）是连续采集，飞拍配方要用触发采集", cfg.name, cfg.id));
         }
+        for shot in recipe.shots.iter().filter(|s| s.camera == cfg.id) {
+            if shot.view > cfg.view_count {
+                return Err(format!("拍照点 {} 选择视角 {}，设备 {} 只配置了 {} 个视角", shot.id, shot.view, cfg.id, cfg.view_count));
+            }
+        }
         // 模拟测量不看图，真实工件按模拟结果回写就是把实物判了 OK
         if real_parts && !image && cfg.source == CameraSource::Mvs {
             return Err(format!("{}（{}）是海康相机，飞拍的图像测量却没打开（系统设置）", cfg.name, cfg.id));
@@ -813,7 +818,7 @@ impl Machine {
         let accepting = matches!(self.phase, Phase::Acquire | Phase::Drain);
         let slot = host(&self.app).camera.slot(f.cam as usize);
         // 软触发（示教取图、回放下一张）是人点的，不算游离帧
-        if (!accepting || self.part.is_none()) && f.manual {
+        if f.manual {
             return;
         }
         if !accepting || self.part.is_none() {
@@ -838,10 +843,6 @@ impl Machine {
                 log(&self.app, "warn", "丢弃旧帧", format!("SN={} 的布防前或手动图像不进入本件：相机 {} 帧 {}", part.sn, f.cam, f.frame_counter));
                 return;
             }
-            let camera = part.camera_id(f.cam);
-            if let Some(rec) = part.recording.as_mut() {
-                host(&self.app).recorder.frame(rec, &f, &camera);
-            }
         }
         self.dirty = true;
         let part = self.part.as_mut().unwrap();
@@ -860,6 +861,10 @@ impl Machine {
             log(&self.app, "err", "多帧", format!("第 {} 帧超出计划 N={}", f.frame_counter - first, part.n()));
             return;
         }
+        let camera = part.camera_id(f.cam);
+        if let Some(rec) = part.recording.as_mut() {
+            host(&self.app).recorder.frame(rec, &f, &camera, k);
+        }
         part.frames[k] = FrameView {
             status: FrameStatus::Measuring,
             cam: f.cam,
@@ -872,8 +877,16 @@ impl Machine {
         };
         part.measuring_since[k] = Some(Instant::now());
         part.queue += 1;
-        crate::workspace::retain_live(&self.app, part.sn, &part.recipe.hash, k, &f.image);
-        let job = Job { run_id: part.run_id, sn: part.sn, k, cam: f.cam, recipe: part.recipe.clone(), scenario: part.scenario, image: f.image.clone() };
+        let selected = part.recipe.shots[k].view;
+        let expected_views = slot.as_ref().map_or(1, |s| s.config().view_count);
+        let needs_image = expected_views > 1 || selected > 1 || !f.images.is_empty() || host(&self.app).settings().vision;
+        let selected_image = if needs_image { f.require_image(selected, expected_views).map(Some) } else { Ok(None) };
+        let image = selected_image.as_ref().ok().cloned().flatten();
+        crate::workspace::retain_live(&self.app, part.sn, &part.recipe.hash, k, &image);
+        let job = Job { run_id: part.run_id, sn: part.sn, k, cam: f.cam, recipe: part.recipe.clone(), scenario: part.scenario, image };
+        if let Err(error) = selected_image {
+            return self.on_measured(Measured::failed(&job, format!("拍照点 {}：{error}", job.recipe.shots[k].id)));
+        }
         let lost = if f.lost_packets > 0 { format!(" · 丢包 {}", f.lost_packets) } else { String::new() };
         let msg = format!(
             "k={k} · Chunk 帧 {} 触发 {}{}{lost}",

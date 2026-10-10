@@ -4,6 +4,7 @@
 use crate::frame::FrameImage;
 use crate::recipe::{Recipe, ShotSpec, SIM_MM_PER_PX};
 use crate::sim::Scenario;
+use std::sync::Arc;
 
 /// 模拟画面尺寸，与现场相机（MV-CU013-80GC）一致。
 pub const SIM_SIZE: [u32; 2] = [1280, 1024];
@@ -54,7 +55,38 @@ fn nearest(path: &[[f32; 2]], p: [f32; 2]) -> (f32, f32, f32) {
 
 /// 拍照点 k 的一帧。seed 决定噪声；不检、未示教的拍照点照常出图（缺省中线）。
 pub fn render(recipe: &Recipe, k: usize, scenario: Scenario, pose: PoseError, seed: u64) -> FrameImage {
+    render_view(recipe, k, scenario, pose, seed, 1)
+}
+
+pub fn render_views(recipe: &Recipe, k: usize, scenario: Scenario, pose: PoseError, seed: u64, view_count: u8) -> Result<Vec<Arc<FrameImage>>, String> {
+    if !matches!(view_count, 1 | 3) {
+        return Err("视角数量只能是 1 或 3".into());
+    }
+    Ok((1..=view_count).map(|view| Arc::new(render_view(recipe, k, scenario, pose, seed, view))).collect())
+}
+
+pub fn background_views(view_count: u8, seed: u64) -> Result<Vec<Arc<FrameImage>>, String> {
+    if !matches!(view_count, 1 | 3) {
+        return Err("视角数量只能是 1 或 3".into());
+    }
+    let [w, h] = SIM_SIZE;
+    Ok((0..view_count).map(|view| {
+        let pixels = (0..w * h).map(|i| {
+            let x = i % w;
+            let y = i / w;
+            (background(x, y, w, h) + 5.0 * noise(i as u64, seed.wrapping_add(view as u64)) as f32).clamp(0.0, 255.0) as u8
+        }).collect();
+        Arc::new(FrameImage::new(w, h, pixels))
+    }).collect())
+}
+
+fn background(x: u32, y: u32, w: u32, h: u32) -> f32 {
+    150.0 + 60.0 * (x as f32 / w as f32) + 25.0 * (y as f32 / h as f32) + 6.0 * (x as f32 * 0.05 + y as f32 * 0.31).sin()
+}
+
+fn render_view(recipe: &Recipe, k: usize, scenario: Scenario, pose: PoseError, seed: u64, view: u8) -> FrameImage {
     let shot: Option<&ShotSpec> = recipe.shots.get(k);
+    let selected = shot.map_or(1, |s| s.view) == view;
     let path = shot.filter(|s| s.path.len() >= 2).map_or_else(default_path, |s| s.path.clone());
     let mm = shot.and_then(|s| s.mm_per_px).unwrap_or(SIM_MM_PER_PX);
     // 位姿偏差：中线绕起点转、再平移
@@ -91,22 +123,24 @@ pub fn render(recipe: &Recipe, k: usize, scenario: Scenario, pose: PoseError, se
         for x in 0..w {
             let p = [x as f32, y as f32];
             // 金属面：左暗右亮的渐变加细纹
-            let mut v = 150.0 + 60.0 * (x as f32 / w as f32) + 25.0 * (y as f32 / h as f32) + 6.0 * (x as f32 * 0.05 + y as f32 * 0.31).sin();
-            let (d, s, side) = nearest(&path, p);
-            let d = match bump {
-                Some(c) => (side - 3.0 / mm * (-((s - c) * mm / 1.5).powi(2)).exp()).abs(),
-                None => d,
-            };
-            let missing = gap.is_some_and(|(a, b)| s >= a && s < b);
-            if !missing && s > 0.0 {
-                // 胶条：中间最暗，边缘 2 px 过渡
-                let edge = ((half - d) / 2.0).clamp(0.0, 1.0);
-                v = v * (1.0 - edge) + 38.0 * edge;
-            }
-            // 胶嘴：亮的金属圆
-            let dn = (p[0] - nozzle[0]).hypot(p[1] - nozzle[1]);
-            if dn < 45.0 {
-                v = 235.0 - dn;
+            let mut v = background(x, y, w, h);
+            if selected {
+                let (d, s, side) = nearest(&path, p);
+                let d = match bump {
+                    Some(c) => (side - 3.0 / mm * (-((s - c) * mm / 1.5).powi(2)).exp()).abs(),
+                    None => d,
+                };
+                let missing = gap.is_some_and(|(a, b)| s >= a && s < b);
+                if !missing && s > 0.0 {
+                    // 胶条：中间最暗，边缘 2 px 过渡
+                    let edge = ((half - d) / 2.0).clamp(0.0, 1.0);
+                    v = v * (1.0 - edge) + 38.0 * edge;
+                }
+                // 胶嘴：亮的金属圆
+                let dn = (p[0] - nozzle[0]).hypot(p[1] - nozzle[1]);
+                if dn < 45.0 {
+                    v = 235.0 - dn;
+                }
             }
             v += 5.0 * noise((y * w + x) as u64, seed) as f32;
             pixels.push(v.clamp(0.0, 255.0) as u8);
@@ -147,5 +181,38 @@ mod tests {
         assert!(at(&img, [r.points.x[mid], r.points.y[mid]]) > 120, "缺口处应是背景");
         let outside = g.first + 2;
         assert!(at(&img, [r.points.x[outside], r.points.y[outside]]) < 70);
+    }
+
+    #[test]
+    fn three_views_draw_glue_only_in_the_selected_view() {
+        let mut recipe = (*builtin().remove(1)).clone();
+        for view in [1, 2, 3, 1] {
+            recipe.shots[0].view = view;
+            let images = render_views(&recipe, 0, Scenario::Normal, PoseError::default(), 7, 3).unwrap();
+            assert_eq!(images.len(), 3);
+            let shot = &recipe.shots[0];
+            let mid = shot.path_at(shot.path_len_px() / 2.0);
+            for (index, image) in images.iter().enumerate() {
+                assert_eq!([image.width, image.height], SIM_SIZE);
+                if index + 1 == view as usize {
+                    assert!(at(image, mid) < 70, "视角 {view} 应有胶条");
+                } else {
+                    assert!(image.pixels.iter().all(|&v| v > 120), "未选中的视角只能有背景");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn single_view_keeps_legacy_pixels_and_never_substitutes_another_view() {
+        let mut recipe = (*builtin().remove(1)).clone();
+        let image = render(&recipe, 0, Scenario::Normal, PoseError::default(), 3);
+        let images = render_views(&recipe, 0, Scenario::Normal, PoseError::default(), 3, 1).unwrap();
+        assert_eq!(images.len(), 1);
+        assert_eq!(image.pixels, images[0].pixels);
+        recipe.shots[0].view = 2;
+        let images = render_views(&recipe, 0, Scenario::Normal, PoseError::default(), 3, 1).unwrap();
+        assert!(images[0].pixels.iter().all(|&v| v > 120));
+        assert!(render_views(&recipe, 0, Scenario::Normal, PoseError::default(), 3, 2).is_err());
     }
 }

@@ -27,6 +27,7 @@ export const workspaceApi = {
   remove: (id: string) => desktopCall<void>("workspace_delete", { id }),
   saveDoc: (id: string, revision: number, doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_save_doc", { id, revision, doc }),
   capture: (id: string, revision: number, k: number) => desktopCall<WorkspaceView>("workspace_capture", { id, revision, k }),
+  selectView: (id: string, revision: number, k: number, view: number) => desktopCall<WorkspaceView>("workspace_select_view", { id, revision, k, view }),
   importImage: (id: string, revision: number, k: number, bytes: number[]) => desktopCall<WorkspaceView>("workspace_import_image", { id, revision, k, bytes }),
   image: (id: string, imageId: string) => desktopCall<ArrayBuffer>("workspace_image", { id, imageId }).then(decodeGray),
   /** 按候选里已保存的中线试测冻结原图。 */

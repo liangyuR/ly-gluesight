@@ -6,6 +6,7 @@ export interface CameraConfig {
   id: string;
   name: string;
   source: CameraSource;
+  viewCount: number;
   serial: string;
   acquisition: Acquisition;
   fps: number;

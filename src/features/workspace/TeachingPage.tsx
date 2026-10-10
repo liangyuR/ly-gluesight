@@ -7,12 +7,20 @@ import type { DetectParams, Polarity } from "../cycle/types";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, FrameRail, GrayViewer, KV, Notice, NumberField, Panel, Steps, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
-import type { ShotTeach, WorkspaceView } from "./types";
+import type { FrozenImage, ShotTeach, WorkspaceView } from "./types";
 import ImageImportButton from "./ImageImportButton";
 import { sameTeach, shotTeach, teachError } from "./teach";
 
+function FrozenViewOption({ id, metadata, selected, disabled, onSelect }: { id: string; metadata: FrozenImage; selected: boolean; disabled: boolean; onSelect: () => void }) {
+  const { image, loading, error } = useGrayImage(id, metadata.id);
+  return <button className={"wp-view-option" + (selected ? " selected" : "")} aria-label={"选择视角 " + metadata.view} aria-pressed={selected} disabled={disabled} onClick={onSelect}>
+    <span className="wp-view-thumbnail">{image ? <img src={image.url} alt={"冻结视角 " + metadata.view} /> : <span>{loading ? "读取中…" : error ? "图像不可用" : "等待图像"}</span>}</span>
+    <strong>视角 {metadata.view}{selected ? " · 已选" : ""}</strong><small>{metadata.size[0]} × {metadata.size[1]}</small>
+  </button>;
+}
+
 export default function TeachingPage() {
-  const { data, doc, dirty, busy, frameDrafts, setFrameDraft, act, setError } = useWorkspace();
+  const { data, doc, dirty, busy, frameDirty, frameDrafts, setFrameDraft, act, setError } = useWorkspace();
   const {snapshot} = useCycle();
   const [search] = useSearchParams();
   const requested=Number(search.get("frame"));
@@ -25,7 +33,7 @@ export default function TeachingPage() {
   const [working,setWorking]=useState(false),[reading,setReading]=useState(false);
   const [vertex,setVertex]=useState<number|null>(null);
   const pending=useRef(false),serial=useRef(0);
-  const scope=(doc?.id??"")+":"+k;
+  const scope=JSON.stringify([doc?.id,k,data?.workspace.doc.shots[k]?.view,data?.workspace.frames[k]?.image?.id]);
   const current=useRef({scope,alive:true,revision:data?.workspace.revision});current.current.scope=scope;current.current.revision=data?.workspace.revision;
   useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;serial.current++;};},[]);
   useEffect(()=>{serial.current++;pending.current=false;setWorking(false);setVertex(null);},[scope]);
@@ -36,7 +44,7 @@ export default function TeachingPage() {
     const valid=()=>current.current.alive&&current.current.scope===scope&&action===serial.current;
     const revision=data?.workspace.revision;
     try{const result=await act(request,message);return valid()&&result&&(current.current.revision===revision||current.current.revision===result.workspace.revision)?result:null;}
-    catch(e){if(valid())setError(String(e));return null;}
+    catch(e){if(valid()&&current.current.revision===revision)setError(String(e));return null;}
     finally{if(valid()){pending.current=false;setWorking(false);}}
   };
   const frame = data?.workspace.frames[k];
@@ -64,6 +72,10 @@ export default function TeachingPage() {
   const lengthPx = pathLength(t.path);
   const canTrial = unlocked && !!frame.image && !editing && taught && !shot.skip;
   const run = () => canTrial && frame.image && perform(() => workspaceApi.trial(doc.id,data.workspace.revision,k,frame.image!.id), "");
+  const selectView = (view: number) => {
+    if (!unlocked || editing || frameDirty || pending.current || view === shot.view || !frame.views.some(image => image.view === view)) return;
+    void perform(() => workspaceApi.selectView(doc.id,data.workspace.revision,k,view), "已切换视角，请在当前图像上重新点中线并试测");
+  };
   const saveLine = () => {
     if (!unlocked || !editing || invalid) return;
     const params: ShotTeach = { path: t.path, mmPerPx: t.mmPerPx };
@@ -93,6 +105,8 @@ export default function TeachingPage() {
       <Panel title={shotLabel(shot,k)} detail={"胶条 " + shot.bead + " · Pose " + shot.poseId}><FrameRail id={doc.id} frames={data.workspace.frames} selected={k} onSelect={setK} disabled={busy||working||reading} /></Panel>
       <div className="wp-stack"><Panel title={"k" + (k+1) + " · 单帧图像"} detail="冻结原图 → 点出中线并保存 → 试测 → 保存本帧" actions={<div className="wp-actions"><ImageImportButton scope={doc.id+":"+data.workspace.revision+":"+k} disabled={!unlocked||productionBusy}
         onReadingChange={setReading} onImport={bytes=>perform(()=>workspaceApi.importImage(doc.id,data.workspace.revision,k,bytes),"离线原图已绑定本帧，请重新试测")} onError={setError}/><button className="btn" disabled={!unlocked || productionBusy} onClick={() => void perform(() => workspaceApi.capture(doc.id,data.workspace.revision,k), "已冻结新的完整图像")}><Save size={15} />{busy||working ? "处理中…" : "取新样本"}</button></div>}>
+        {frame.views.length > 0 && <><div className="wp-view-list" aria-label="冻结视角选择">{frame.views.map(view => <FrozenViewOption key={view.id} id={doc.id} metadata={view} selected={shot.view === view.view} disabled={!unlocked || editing || frameDirty || shot.view === view.view} onSelect={() => selectView(view.view)} />)}</div>
+          <p className="muted hint">{frame.views.length > 1 ? "同次采集的冻结图像。切换视角会清空本拍照点的中线与像素当量，试测需要重做。" : "本样本只有当前视角的图像。"}{(editing || frameDirty) && "请先保存中线修改，再切换视角。"}</p></>}
         <GrayViewer image={image} loading={loading} error={error} label={frame.image ? "冻结图像 · " + frame.image.id : "等待取样"}
           overlay={{ path: t.path, stations, stale: editing, selected: vertex }}
           onEdit={unlocked && !shot.skip ? { add: p => setPath([...t.path, p]), move: (i, p) => setPath(t.path.map((q, j) => j === i ? p : q)), select: setVertex } : undefined} />
@@ -123,7 +137,7 @@ export default function TeachingPage() {
         </div> : <p className="muted hint">用配方的检测参数：搜索半宽 {defaults.searchMm} mm · {polarity[defaults.polarity]} · 胶宽 {defaults.widthRange[0]}–{defaults.widthRange[1]} mm</p>}
         {editing && invalid && <Notice title="本帧中线无效" tone="warn">{invalid}</Notice>}
         <button className="btn primary" style={{marginTop:14}} disabled={!unlocked || !editing || !!invalid} onClick={saveLine}><Save size={15} />保存中线</button></Panel>
-      <Panel title="样本绑定"><KV label="工作帧">k{k+1}</KV><KV label="图像">{frame.image?.id ?? "未冻结"}</KV><KV label="曝光">{frame.image?.exposureUs != null ? frame.image.exposureUs + " μs" : "未记录"}</KV><KV label="增益">{frame.image?.gainDb != null ? frame.image.gainDb + " dB" : "未记录"}</KV><KV label="原始示教备份">{frame.backup ? "可恢复" : "无"}</KV>{frame.backup && <button className="btn" style={{marginTop:14}} disabled={!unlocked} onClick={restore}>恢复原始示教</button>}</Panel>
+      <Panel title="样本绑定"><KV label="工作帧">k{k+1}</KV><KV label="检测视角">视角 {shot.view}</KV><KV label="图像">{frame.image?.id ?? "未冻结"}</KV><KV label="曝光">{frame.image?.exposureUs != null ? frame.image.exposureUs + " μs" : "未记录"}</KV><KV label="增益">{frame.image?.gainDb != null ? frame.image.gainDb + " dB" : "未记录"}</KV><KV label="原始示教备份">{frame.backup ? "可恢复" : "无"}</KV>{frame.backup && <button className="btn" style={{marginTop:14}} disabled={!unlocked} onClick={restore}>恢复原始示教</button>}</Panel>
       <Notice title="保存与发布分开">中线保存进候选配方，生产配方不变；保存本帧后，先验证代表性样本，再发布生产版本。</Notice></div>
     </div></div>;
 }

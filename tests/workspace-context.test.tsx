@@ -251,6 +251,16 @@ describe("候选工作台状态与并发", () => {
     await act(() => result.current.act(async () => stored));
     expect(result.current.frameDrafts).toEqual({}); expect(result.current.frameDirty).toBe(false);
   });
+  it.each(["view","camera"] as const)("拍照点 %s 变化只清除该点的旧中线草稿",async field=>{
+    const {result}=await open();
+    act(()=>{result.current.setFrameDraft(0,{path:[[10,10],[24,10]],mmPerPx:.2});result.current.setFrameDraft(1,{path:[[30,10],[54,10]],mmPerPx:.3});});
+    const next=workspaceView();
+    if(field==="view")next.workspace.doc.shots[0].view=3;else next.workspace.doc.shots[0].camera="CAM-2";
+    next.workspace.doc.shots[0].path=[];delete next.workspace.doc.shots[0].mmPerPx;
+    await act(()=>result.current.act(async()=>next));
+    expect(result.current.frameDrafts[0]).toBeUndefined();expect(result.current.frameDrafts[1]).toEqual({path:[[30,10],[54,10]],mmPerPx:.3});
+    expect(result.current.frameDirty).toBe(true);
+  });
 
   it("修改预览有防抖，旧预览晚到不覆盖新草稿", async () => {
     const { result } = await open(); vi.useFakeTimers();

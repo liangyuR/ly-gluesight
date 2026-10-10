@@ -42,6 +42,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const selected = useRef<string | null>(null);
   const dirtyRef = useRef(false);
   const shotList=useRef("");
+  const shotSources=useRef<string[]>([]);
   const dirty = !!doc && !!data && !equal(doc, data.workspace.doc);
   // 草稿与候选里已保存的中线比较（按 f32），不同才算未保存
   const savedTeach = (k: number) => { const shot = data?.workspace.doc.shots[k]; return shot ? shotTeach(shot) : undefined; };
@@ -52,6 +53,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     // 草稿按拍照点下标存：拍照点增删、调序或换了配方时清空，免得中线落到别的拍照点上
     const key=JSON.stringify([next.workspace.doc.id,next.workspace.doc.shots.map(s=>s.id)]);
     const changed=key!==shotList.current;shotList.current=key;
+    const previousSources=shotSources.current;
+    const sources=next.workspace.doc.shots.map(s=>JSON.stringify([s.id,s.camera,s.view]));
+    shotSources.current=sources;
     setData(next);
     setDoc(next.workspace.doc);
     setPreview(next.layout);
@@ -60,6 +64,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       if (changed) return {};
       const kept: Record<number, ShotTeach> = {};
       for (const [key, draft] of Object.entries(previous)) {
+        if(previousSources[Number(key)]!==sources[Number(key)])continue;
         const shot = next.workspace.doc.shots[Number(key)];
         if (!shot) continue;
         const saved = shotTeach(shot);

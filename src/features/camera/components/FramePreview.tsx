@@ -4,8 +4,10 @@ import { cameraApi, usePreviewCanvas } from "../api";
 import type { CameraConfig, CameraStatus, Frame } from "../types";
 
 export default function FramePreview({ cam, status, lastFrame, config }: { cam: number; status: CameraStatus | null; lastFrame: Frame | undefined; config: CameraConfig | null }) {
-  const scope=JSON.stringify([cam,config?.id,config?.source,config?.acquisition,config?.serial,config?.replayDir,config?.replayChannel,config?.triggerSource]);
-  const { img, canvas } = usePreviewCanvas(cam, lastFrame?.frameCounter,250,scope);
+  const scope=JSON.stringify([cam,config?.id,config?.source,config?.acquisition,config?.serial,config?.replayDir,config?.replayChannel,config?.triggerSource,config?.viewCount]);
+  const [selectedView, setSelectedView] = useState({scope, view: 1});
+  const view = selectedView.scope === scope && selectedView.view <= (config?.viewCount ?? 1) ? selectedView.view : 1;
+  const { img, canvas } = usePreviewCanvas(cam, lastFrame?.frameCounter,250,scope,view);
   const [error, setError] = useState("");
   const [busy,setBusy]=useState(false);
   const pending=useRef(false),serial=useRef(0),mounted=useRef(true);
@@ -36,6 +38,9 @@ export default function FramePreview({ cam, status, lastFrame, config }: { cam: 
           </span>
         )}
         <span className="spacer" />
+        {config?.viewCount === 3 && <label className="field"><select aria-label="预览视角" className="input" value={view} onChange={e => setSelectedView({scope, view: Number(e.target.value)})}>
+          {[1, 2, 3].map(value => <option key={value} value={value}>视角 {value}</option>)}
+        </select></label>}
         <button className="btn" onClick={()=>void soft()} disabled={busy||!canTrigger} title="回放相机，或触发源为 Software 的触发采集海康相机">
           <Zap size={15} />
           {busy?"取图中…":config?.source === "replay" ? "下一张" : "软触发一次"}

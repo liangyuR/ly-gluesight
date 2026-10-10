@@ -27,11 +27,11 @@ const show = () => render(<MemoryRouter><OverviewPage/></MemoryRouter>);
 const save = async () => userEvent.click(screen.getByRole("button", { name: "保存总览" }));
 describe("工件总览操作", () => {
   it("选中帧显示对应原图（叠加示教中线）与相机、胶条、示教状态，键盘选帧可用", async () => {
-    ws.data!.layout.shots[1] = { ...ws.data!.layout.shots[1], camera: "CAM-2", bead: "J2", poseId: "A7" };
+    ws.data!.layout.shots[1] = { ...ws.data!.layout.shots[1], camera: "CAM-2", view: 1, bead: "J2", poseId: "A7" };
     show(); await userEvent.click(screen.getByRole("button", { name: "总览选择帧 k2" }));
     expect(screen.getByRole("button", { name: "总览选择帧 k2" })).toHaveAttribute("aria-pressed", "true");
-    expect(within(screen.getByRole("button", { name: "总览选择帧 k2" })).getByText("P2 · CAM-2")).toBeInTheDocument();
-    expect(screen.getByText("P2 · CAM-2", { selector: ".wp-kv strong" })).toBeVisible();
+    expect(within(screen.getByRole("button", { name: "总览选择帧 k2" })).getByText("P2 · CAM-2 · 视角 1")).toBeInTheDocument();
+    expect(screen.getByText("P2 · CAM-2 · 视角 1", { selector: ".wp-kv strong" })).toBeVisible();
     for (const text of ["J2", "A7", "已示教 2 点 · 1.0 mm", "100%"]) expect(screen.getByText(text, { selector: ".wp-kv strong" })).toBeVisible();
     expect(screen.queryByText(/物理中心|视野/)).toBeNull();
     expect(workspaceApi.image).toHaveBeenCalledWith("A", "A-image-1");
@@ -171,7 +171,7 @@ describe("工件总览操作", () => {
   });
   it("有测量状态时各帧框按拍照点结论着色，不检与未示教虚线", () => {
     const layout = workspaceView().layout;
-    layout.shots.push({ ...layout.shots[0], id: "P3", poseId: "P3", skip: true }, { id: "P4", poseId: "P4", camera: "CAM-1", bead: "J1", skip: false, path: [] });
+    layout.shots.push({ ...layout.shots[0], id: "P3", poseId: "P3", skip: true }, { id: "P4", poseId: "P4", camera: "CAM-1", view: 1, bead: "J1", skip: false, path: [] });
     render(<svg><WorkpieceOverview layout={layout} overview={null} vis={["ok", "ok", "gap", "ok"]} /></svg>);
     const frame = (k: number) => screen.getByRole("button", { name: `总览选择帧 k${k}` });
     expect(frame(2)).toHaveAttribute("data-state", "gap"); expect(frame(2).querySelector("rect")).toHaveAttribute("stroke", "var(--ng)");

@@ -15,8 +15,8 @@ describe("拍照点选择与真实状态显示", () => {
   it("拍照点条按拍照点编号与相机标注", () => {
     const layout = workspaceView().layout; layout.shots[1] = { ...layout.shots[1], id: "B7", poseId: "P1", camera: "CAM-2" };
     render(<ShotStrip layout={layout} part={null} vis={vis} />);
-    expect(within(screen.getByRole("button", { name: "查看帧 k1" })).getByText("P1 · CAM-1")).toBeVisible();
-    const second = within(screen.getByRole("button", { name: "查看帧 k2" })).getByText("B7 · CAM-2");
+    expect(within(screen.getByRole("button", { name: "查看帧 k1" })).getByText("P1 · CAM-1 · 视角 1")).toBeVisible();
+    const second = within(screen.getByRole("button", { name: "查看帧 k2" })).getByText("B7 · CAM-2 · 视角 1");
     expect(second).toHaveAttribute("title", "k2 · Pose P1");
   });
 
@@ -62,7 +62,7 @@ describe("逐拍照点视图", () => {
   /** 四个拍照点：P1、P2 已示教，P3 不检，P4 未示教。 */
   function fourShots() {
     const layout = workspaceView().layout;
-    layout.shots = [...layout.shots, { ...layout.shots[0], id: "P3", poseId: "P3", camera: "CAM-2", bead: "J2", skip: true }, { id: "P4", poseId: "P4", camera: "CAM-2", bead: "J2", skip: false, path: [] }];
+    layout.shots = [...layout.shots, { ...layout.shots[0], id: "P3", poseId: "P3", camera: "CAM-2", view: 1, bead: "J2", skip: true }, { id: "P4", poseId: "P4", camera: "CAM-2", view: 1, bead: "J2", skip: false, path: [] }];
     return layout;
   }
 
@@ -70,7 +70,7 @@ describe("逐拍照点视图", () => {
     render(<ShotTiles layout={fourShots()} vis={["ok", "ok", "ok", "gap"]} />);
     const tile = (id: string) => within(screen.getByRole("group", { name: `拍照点 ${id}` }));
     expect(screen.getAllByRole("group").map(g => g.getAttribute("aria-label"))).toEqual(["拍照点 P1", "拍照点 P2", "拍照点 P3", "拍照点 P4"]);
-    expect(tile("P1").getByText("P1 · CAM-1 · J1")).toHaveAttribute("title", "k1 · Pose P1");
+    expect(tile("P1").getByText("P1 · CAM-1 · 视角 1 · J1")).toHaveAttribute("title", "k1 · Pose P1");
     expect(tile("P1").getByText("合格")).toHaveClass("c-ok"); expect(tile("P1").getByText("1.0 mm · 2 站")).toBeVisible();
     expect(tile("P2").getByText("断胶")).toHaveClass("c-ng"); expect(tile("P2").getByText("断胶 s=1.0–2.0 mm")).toBeVisible();
     expect(tile("P3").getByText("不检 · 只要求这一帧到达")).toBeVisible(); expect(tile("P3").queryByLabelText(/示教中线/)).toBeNull();

@@ -108,6 +108,7 @@ pub fn run() {
             workspace::workspace_delete,
             workspace::workspace_save_doc,
             workspace::workspace_capture,
+            workspace::workspace_select_view,
             workspace::workspace_import_image,
             workspace::workspace_image,
             workspace::workspace_trial,

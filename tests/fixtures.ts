@@ -1,7 +1,7 @@
 import { vi } from "vitest";
 import type { DetectParams, Recipe, RecipeDoc, RecipeSummary, ShotLimits, ShotSpec, Snapshot } from "../src/features/cycle/types";
 import type { PartDetail, PartSummary } from "../src/features/history/types";
-import type { WorkspaceView } from "../src/features/workspace/types";
+import type { FrozenImage, WorkspaceView } from "../src/features/workspace/types";
 import type { useWorkspace } from "../src/features/workspace/context";
 
 export function deferred<T>() {
@@ -13,7 +13,7 @@ export function deferred<T>() {
 
 /** 一台相机按顺序拍这些拍照点：编号 P1、P2…，Pose 同编号，胶条 J1；给了中线时像素当量 0.1 mm/px（与 recipe.rs 的 shot_list 一致）。 */
 export function shotList(paths: [number, number][][], camera = "CAM-1"): ShotSpec[] {
-  return paths.map((path, k) => ({ id: `P${k + 1}`, poseId: `P${k + 1}`, camera, bead: "J1", skip: false, path, ...(path.length ? { mmPerPx: .1 } : {}) }));
+  return paths.map((path, k) => ({ id: `P${k + 1}`, poseId: `P${k + 1}`, camera, view: 1, bead: "J1", skip: false, path, ...(path.length ? { mmPerPx: .1 } : {}) }));
 }
 
 /** 两个拍照点各一条 10 px（1 mm）的中线，站距 1 mm：每个拍照点两站，自成一段。 */
@@ -24,7 +24,7 @@ export function workspaceView(id = "A"): WorkspaceView {
   const limits: ShotLimits = { position, width: null, maxGapLen: .5 };
   const detect: DetectParams = { searchMm: 4, polarity: "dark", widthRange: [1, 6] };
   const doc: RecipeDoc = {
-    id, name: `工件 ${id}`, version: 2, productCode: 1, triggerMode: "fly", schemaVersion: 3,
+    id, name: `工件 ${id}`, version: 2, productCode: 1, triggerMode: "fly", schemaVersion: 4,
     spacing: 1, filterWindow: 3, detect, limits, shots: shotList(twoLines),
   };
   const layout: Recipe = {
@@ -36,13 +36,14 @@ export function workspaceView(id = "A"): WorkspaceView {
     layout, productionVersion: 1, coverage: 100,
     workspace: {
       doc, baseHash: `production-${id}`, revision: 7, updatedAt: 1, publishError: null, pending: null,
-      frames: [0, 1].map(k => ({
-        k, saved: false, backup: null,
-        image: { id: `${id}-image-${k}`, source: "camera", capturedAt: 1, size: [100, 60], camera: "CAM-1",
-          cameraTag: "cam-v1", calibTag: "calib-v1", geometryTag: "geom-v1", exposureUs: 60, gainDb: 6, historyId: null },
+      frames: [0, 1].map(k => {
+        const image: FrozenImage = { id: `${id}-image-${k}`, source: "camera", capturedAt: 1, size: [100, 60], camera: "CAM-1", view: 1,
+          cameraTag: "cam-v1", calibTag: "calib-v1", geometryTag: "geom-v1", exposureUs: 60, gainDb: 6, historyId: null };
+        return { k, saved: false, backup: null, image, views: [image],
         trial: { imageId: `${id}-image-${k}`, paramsTag: "params-v1", geometryTag: "geom-v1", passed: true,
           score: .94, coverage: 1, elapsedMs: 8, reason: "试测通过", measurement: { ids: [2 * k, 2 * k + 1] } },
-      })),
+        };
+      }),
       overview: { background: null, positions: [[.25, .5], [.75, .5]], saved: true },
       samples: [{ historyId: null, sampleId: "good", expected: "OK" }, { historyId: null, sampleId: "bad", expected: "NG_GAP" }],
       sampleBank: [
@@ -58,6 +59,15 @@ export function summary(view = workspaceView()): RecipeSummary {
   const { layout: r } = view;
   return { id: r.id, name: r.name, version: 1, hash: r.hash, productCode: r.productCode,
     shotCount: r.shots.length, triggerMode: r.triggerMode, cameras: [...new Set(r.shots.map(s => s.camera))], length: 4 };
+}
+
+export function tricamWorkspaceView(id = "A"): WorkspaceView {
+  const view = workspaceView(id);
+  view.workspace.frames.forEach(frame => {
+    frame.views = [1, 2, 3].map(value => ({ ...frame.image!, view: value, id: value === 1 ? frame.image!.id : `${frame.image!.id}-v${value}`, geometryTag: `geom-v${value}` }));
+    frame.image = frame.views[0];
+  });
+  return view;
 }
 
 export function workspaceState(view = workspaceView()): ReturnType<typeof useWorkspace> {

@@ -189,7 +189,7 @@ describe("拍照点规划页面与真实候选编辑器的接线", () => {
 });
 
 describe("拍照点规划页面的胶路示教比例", () => {
-  const untaught = (id: string): ShotSpec => ({ id, poseId: id, camera: "CAM-1", bead: "J1", skip: false, path: [] });
+  const untaught = (id: string): ShotSpec => ({ id, poseId: id, camera: "CAM-1", view: 1, bead: "J1", skip: false, path: [] });
   it.each([
     { name: "要检的拍照点都已示教", shots: () => shotList(twoLines), percent: "100", tone: "ok", note: /沿示教中线量胶/ },
     { name: "有未示教的拍照点：可以保存但不能开工", shots: () => [...shotList(twoLines), untaught("P3"), untaught("P4")], percent: "50", tone: "warn", note: /未示教：P3、P4，可以保存，但不能开工/ },

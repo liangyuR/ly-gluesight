@@ -8,7 +8,7 @@ import { workspaceApi } from "../src/features/workspace/api";
 import { recipeApi, useCycle } from "../src/features/cycle/api";
 import { cameraApi } from "../src/features/camera";
 import type { ShotTeach, WorkspaceView } from "../src/features/workspace/types";
-import { deferred, snapshot, summary, twoLines, workspaceState, workspaceView } from "./fixtures";
+import { deferred, snapshot, summary, tricamWorkspaceView, twoLines, workspaceState, workspaceView } from "./fixtures";
 
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/cycle/api", () => ({ useCycle: vi.fn(),recipeApi:{list:vi.fn(),preview:vi.fn()} }));
@@ -16,7 +16,7 @@ vi.mock("../src/features/camera",()=>({cameraApi:{rigConfig:vi.fn()}}));
 vi.mock("../src/features/plc",()=>({subscribe:vi.fn(()=>()=>{})}));
 vi.mock("../src/lib/desktop",()=>({desktopAvailable:()=>true}));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
-  get:vi.fn(),list:vi.fn(),image: vi.fn(), trial: vi.fn(), saveTeach: vi.fn(), capture: vi.fn(), saveParams: vi.fn(), restoreTeach: vi.fn(),
+  get:vi.fn(),list:vi.fn(),image: vi.fn(), trial: vi.fn(), saveTeach: vi.fn(), capture: vi.fn(), selectView: vi.fn(), saveParams: vi.fn(), restoreTeach: vi.fn(),
 } }));
 
 const PENDING = "沿示教中线量胶的 lyFlow 流程尚未接入（P0 步 L），图像测量暂不可用";
@@ -50,7 +50,7 @@ beforeEach(() => {
   vi.mocked(workspaceApi.image).mockResolvedValue({ url: "data:image/png;base64,AA==", width: 100, height: 60 });
   vi.mocked(workspaceApi.get).mockResolvedValue(ws.data!);vi.mocked(workspaceApi.list).mockResolvedValue([ws.data!.workspace]);
   vi.mocked(recipeApi.list).mockResolvedValue({recipes:[summary(ws.data!)],errors:[]});vi.mocked(cameraApi.rigConfig).mockResolvedValue([]);
-  for (const method of [workspaceApi.trial, workspaceApi.saveTeach, workspaceApi.capture, workspaceApi.saveParams, workspaceApi.restoreTeach]) {
+  for (const method of [workspaceApi.trial, workspaceApi.saveTeach, workspaceApi.capture, workspaceApi.selectView, workspaceApi.saveParams, workspaceApi.restoreTeach]) {
     vi.mocked(method).mockResolvedValue(ws.data!);
   }
 });
@@ -59,7 +59,7 @@ describe("单帧示教：试测与保存", () => {
   it("链接指定帧；试测与保存本帧只带帧号、图像和修订号，不再带参数", async () => {
     show("/recipe/teach?frame=1");
     expect(screen.getByRole("button", { name: "选择帧 k2" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("heading", { name: "P2 · CAM-1" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "P2 · CAM-1 · 视角 1" })).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "试测当前帧" }));
     expect(workspaceApi.trial).toHaveBeenCalledWith("A", 7, 1, "A-image-1");
     expect(vi.mocked(workspaceApi.trial).mock.lastCall).toHaveLength(4);
@@ -202,6 +202,75 @@ describe("单帧示教：试测与保存", () => {
     });
     await userEvent.click(screen.getByRole("button",{name:"保存并示教下一帧"}));
     expect(screen.getByRole("button",{name:"选择帧 k2"})).toHaveAttribute("aria-pressed","true");
+  });
+});
+
+describe("单帧示教：同次采集选择检测视角",()=>{
+  const selected=(view:WorkspaceView,value:number)=>{
+    const next=structuredClone(view),frame=next.workspace.frames[0],shot=next.workspace.doc.shots[0];
+    shot.view=value;shot.path=[];delete shot.mmPerPx;
+    frame.image=frame.views.find(image=>image.view===value)!;frame.trial=null;frame.saved=false;
+    next.workspace.revision++;next.workspace.validation=null;next.layout.shots=structuredClone(next.workspace.doc.shots);
+    next.layout.segments=next.layout.segments.filter(segment=>segment.shot!==0);
+    return next;
+  };
+  beforeEach(()=>{
+    ws=workspaceState(tricamWorkspaceView());
+    vi.mocked(workspaceApi.get).mockResolvedValue(ws.data!);vi.mocked(workspaceApi.list).mockResolvedValue([ws.data!.workspace]);
+    vi.mocked(workspaceApi.image).mockImplementation(async(_id,imageId)=>({url:"data:image/png;base64,"+imageId,width:100,height:60}));
+  });
+  it("同时显示三幅冻结图，选择视角 3 后保留全部视角并清除当前中线与试测",async()=>{
+    const initial=ws.data!,next=selected(initial,3);vi.mocked(workspaceApi.selectView).mockResolvedValueOnce(next);
+    await showProvider();expect(screen.getAllByRole("button",{name:/选择视角/})).toHaveLength(3);
+    for(const view of [1,2,3])expect(await screen.findByRole("img",{name:`冻结视角 ${view}`})).toHaveAttribute("src",`data:image/png;base64,A-image-0${view===1?"":`-v${view}`}`);
+    expect(screen.getByRole("button",{name:"选择视角 1"})).toHaveAttribute("aria-pressed","true");
+    await userEvent.click(screen.getByRole("button",{name:"选择视角 3"}));
+    expect(workspaceApi.selectView).toHaveBeenCalledExactlyOnceWith("A",7,0,3);
+    expect(screen.getByRole("heading",{name:"P1 · CAM-1 · 视角 3"})).toBeVisible();
+    expect(screen.getByRole("button",{name:"选择视角 3"})).toHaveAttribute("aria-pressed","true");
+    expect(screen.getAllByRole("button",{name:/选择视角/})).toHaveLength(3);
+    const image=await screen.findByRole("img",{name:"冻结图像 · A-image-0-v3"});expect(image.querySelector("polyline")).toBeNull();
+    expect(screen.getByRole("spinbutton",{name:"像素当量"})).toHaveValue(null);
+    expect(screen.getByRole("button",{name:"试测当前帧"})).toBeDisabled();expect(screen.getByRole("button",{name:"保存本帧示教"})).toBeDisabled();
+    expect(within(screen.getByRole("button",{name:"选择帧 k2"})).getByText("试测通过")).toBeVisible();
+    expect(workspaceApi.capture).not.toHaveBeenCalled();expect(next.workspace.frames[0].views.map(image=>image.capturedAt)).toEqual([1,1,1]);
+  });
+  it.each(["dirty","busy","editing","other-draft"])("%s 时不能切换冻结视角",async condition=>{
+    if(condition==="dirty")ws.dirty=true;if(condition==="busy")ws.busy=true;
+    if(condition==="editing")ws.frameDrafts={0:{path:twoLines[0],mmPerPx:.2}};
+    if(condition==="other-draft"){ws.frameDirty=true;ws.frameDrafts={1:{path:twoLines[1],mmPerPx:.2}};}
+    show();const button=screen.getByRole("button",{name:"选择视角 2"});expect(button).toBeDisabled();
+    await userEvent.click(button);expect(workspaceApi.selectView).not.toHaveBeenCalled();
+  });
+  it("切换等待时锁定帧和中线并阻止重复切换，失败可重试",async()=>{
+    const request=deferred<WorkspaceView>();vi.mocked(workspaceApi.selectView).mockReturnValueOnce(request.promise);
+    show();const button=screen.getByRole("button",{name:"选择视角 2"});fireEvent.click(button);fireEvent.click(button);
+    expect(workspaceApi.selectView).toHaveBeenCalledTimes(1);expect(button).toBeDisabled();
+    expect(screen.getByRole("button",{name:"选择视角 3"})).toBeDisabled();expect(screen.getByRole("button",{name:"选择帧 k2"})).toBeDisabled();
+    expect(screen.getByRole("spinbutton",{name:"像素当量"})).toBeDisabled();
+    await act(async()=>request.reject(new Error("视角图像已失效")));
+    expect(ws.setError).toHaveBeenCalledWith("Error: 视角图像已失效");expect(button).toBeEnabled();
+    await userEvent.click(button);expect(workspaceApi.selectView).toHaveBeenCalledTimes(2);
+  });
+  it.each(["resolve","reject"])("视角已改变后旧切换 %s 不覆盖新图或解锁新请求",async outcome=>{
+    const old=deferred<WorkspaceView>(),current=deferred<WorkspaceView>(),original=ws.data!,oldError=ws.setError;
+    vi.mocked(workspaceApi.selectView).mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
+    const page=show();await userEvent.click(screen.getByRole("button",{name:"选择视角 2"}));
+    ws=workspaceState(selected(original,3));page.rerender(<MemoryRouter><TeachingPage/></MemoryRouter>);
+    await userEvent.click(screen.getByRole("button",{name:"选择视角 2"}));
+    await act(async()=>{if(outcome==="resolve")old.resolve(selected(original,2));else old.reject(new Error("旧视角错误"));});
+    expect(screen.getByRole("button",{name:"选择视角 3"})).toHaveAttribute("aria-pressed","true");
+    expect(screen.getByRole("button",{name:"选择视角 2"})).toBeDisabled();expect(oldError).not.toHaveBeenCalled();expect(ws.setError).not.toHaveBeenCalled();
+    await act(async()=>current.resolve(ws.data!));expect(screen.getByRole("button",{name:"选择视角 2"})).toBeEnabled();
+  });
+  it("选中视角 2 后，视角 1 的迟到原图不覆盖主图",async()=>{
+    const old=deferred<{url:string;width:number;height:number}>(),initial=ws.data!;
+    vi.mocked(workspaceApi.image).mockImplementation((_id,imageId)=>imageId==="A-image-0"?old.promise:Promise.resolve({url:"data:image/png;base64,"+imageId,width:100,height:60}));
+    vi.mocked(workspaceApi.selectView).mockResolvedValueOnce(selected(initial,2));await showProvider();
+    await userEvent.click(screen.getByRole("button",{name:"选择视角 2"}));const image=await screen.findByRole("img",{name:"冻结图像 · A-image-0-v2"});
+    expect(image.querySelector("image")).toHaveAttribute("href","data:image/png;base64,A-image-0-v2");
+    await act(async()=>old.resolve({url:"data:image/png;base64,old-view-1",width:100,height:60}));
+    expect(image.querySelector("image")).toHaveAttribute("href","data:image/png;base64,A-image-0-v2");
   });
 });
 

@@ -147,14 +147,52 @@ pub struct Frame {
     /// 软触发（示教取图、回放"下一张"）出来的帧
     #[serde(skip)]
     pub manual: bool,
-    /// 整帧 8 位灰度（Mono8 原样，8 位 Bayer 已转灰度）。图像测量、帧录制或手动取图时才带上。
+    /// 按视角 1–3 排列的整帧灰度图；三目必须整组交付。单视角模拟测量可只交元数据。
     #[serde(skip)]
-    pub image: Option<Arc<FrameImage>>,
+    pub images: Vec<Arc<FrameImage>>,
+}
+
+impl Frame {
+    pub fn image(&self, view: u8) -> Option<Arc<FrameImage>> {
+        if !(1..=3).contains(&view) {
+            return None;
+        }
+        self.images.get(usize::from(view - 1)).cloned()
+    }
+
+    pub fn require_image(&self, view: u8, expected_views: u8) -> Result<Arc<FrameImage>, String> {
+        if !matches!(expected_views, 1 | 3) || self.images.len() != usize::from(expected_views) {
+            return Err(format!("设备应交付 {expected_views} 个视角，本帧实际 {} 幅图像", self.images.len()));
+        }
+        self.image(view).ok_or_else(|| format!("本帧缺少所选视角 {view} 的图像"))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_view_never_falls_back_to_another_image() {
+        let mut frame = Frame {
+            cam: 0, session: 7, counter: CounterSource::Synthetic,
+            frame_counter: 11, trigger_counter: 11, lost_packets: 0, ts: 100, manual: false,
+            images: [21, 42, 63].into_iter().map(|p| Arc::new(FrameImage::new(1, 1, vec![p]))).collect(),
+        };
+        for (view, pixel) in [(1, 21), (2, 42), (3, 63)] {
+            assert_eq!(frame.image(view).unwrap().pixels, vec![pixel]);
+        }
+        assert!(frame.image(0).is_none());
+        assert!(frame.image(4).is_none());
+        assert_eq!(frame.require_image(2, 3).unwrap().pixels, vec![42]);
+        assert!(frame.require_image(1, 1).is_err());
+        frame.images.truncate(1);
+        assert!(frame.require_image(1, 3).is_err());
+        assert!(frame.require_image(2, 1).is_err());
+        assert!(frame.image(2).is_none());
+        assert!(frame.image(3).is_none());
+        assert_eq!((frame.session, frame.frame_counter, frame.trigger_counter), (7, 11, 11));
+    }
 
     /// 2×2 周期里各位置的通道（0 = R，1 = G，2 = B），按 [行][列]。
     const PHASES: [(&str, [[usize; 2]; 2]); 4] = [

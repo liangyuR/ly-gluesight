@@ -139,7 +139,7 @@ export function nextShotId(shots: ShotSpec[]) {
 /** 新加的拍照点：Pose 同编号，相机与胶条沿用上一行，中线留空（到单帧示教里点出）。 */
 export function newShot(shots: ShotSpec[], cameras: { id: string }[]): ShotSpec {
   const id = nextShotId(shots), last = shots.at(-1);
-  return { id, poseId: id, camera: last?.camera ?? cameras[0]?.id ?? "", bead: last?.bead ?? "J1", skip: false, path: [] };
+  return { id, poseId: id, camera: last?.camera ?? cameras[0]?.id ?? "", view: last?.view ?? 1, bead: last?.bead ?? "J1", skip: false, path: [] };
 }
 
 /** 后端不认 null：没单独设的可选字段整项去掉。 */
@@ -179,6 +179,7 @@ function ShotTable({ shots, cameras, detect, limits, onChange }: {
               <th>编号</th>
               <th>Pose</th>
               <th>相机</th>
+              <th>视角</th>
               <th>胶条</th>
               <th>标定引用</th>
               <th>不检</th>
@@ -210,6 +211,11 @@ function ShotTable({ shots, cameras, detect, limits, onChange }: {
                             {c.name} · {c.id}
                           </option>
                         ))}
+                      </select>
+                    </td>
+                    <td>
+                      <select aria-label={`${row} · 视角`} className="input" value={s.view} onChange={(e) => edit(k, { view: Number(e.target.value), path: [], mmPerPx: undefined })}>
+                        {[1, 2, 3].map(view => <option key={view} value={view}>视角 {view}</option>)}
                       </select>
                     </td>
                     <td>
@@ -245,7 +251,7 @@ function ShotTable({ shots, cameras, detect, limits, onChange }: {
                   {expanded && (
                     <tr className="rcp-override">
                       <td />
-                      <td colSpan={9}>
+                      <td colSpan={10}>
                         <div className="rcp-override-body" role="group" aria-label={`${row} · 单独设置`}>
                           <label className="check">
                             <input type="checkbox" checked={s.detect !== undefined} onChange={(e) => edit(k, { detect: e.target.checked ? structuredClone(detect) : undefined })} />
@@ -273,7 +279,7 @@ function ShotTable({ shots, cameras, detect, limits, onChange }: {
           <Plus size={14} />
           添加拍照点
         </button>
-        <span className="muted hint">按拍照顺序排列。中线在配方工作台的“单帧示教”里于冻结原图上点出，这里只读；未示教的拍照点可以保存，但不能开工。不检的拍照点只要求这一帧到达。标定引用留空用该相机的工位标定；同一 Pose 可以触发两台相机。</span>
+        <span className="muted hint">按拍照顺序排列。视角 1–3 对应同次触发的图像，切换视角后需要重新点中线。中线在“单帧示教”里于冻结原图上点出；未示教的拍照点可以保存，但不能开工。不检的拍照点只要求这一帧到达。标定引用留空用该相机的工位标定；同一 Pose 可以触发两台相机。</span>
       </div>
     </>
   );
