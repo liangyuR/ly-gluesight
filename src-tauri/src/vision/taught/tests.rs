@@ -209,9 +209,11 @@ fn native_taught_measurement_uses_pixels_for_width_offset_gaps_polarity_and_fres
         std::fs::write(dir.join(format!("{name}.lyflow.json")), graph.to_string()).unwrap();
         let run = measure_shot_with_graph(&engine, &recipe, 0, &image, &format!("native-taught-{name}"), "", &graph);
         if blank {
-            let error = run.unwrap_err();
-            assert!(error.contains("没找到胶"), "{error}");
-            evidence.push(json!({"name":name,"fixtureBytes":pgm.len(),"error":error}));
+            // 空白图照常返回测量：每站都是无胶，交给判定判断胶
+            let m = run.unwrap();
+            assert_eq!((m.idx.len(), m.coverage), (41, 0.0));
+            assert!(m.st.iter().all(|&s| s == ST_GAP));
+            evidence.push(json!({"name":name,"fixtureBytes":pgm.len(),"measurement":m}));
         } else {
             let m = run.unwrap();
             assert_eq!(m.idx.len(), 41);

@@ -112,12 +112,12 @@ mod tests {
         for k in [0, 2, 3] { assert_eq!(gap_measurements[k]["st"], first_measurements[k]["st"]); }
         let (empty, empty_measurements) = measure(&prepared, 4, 101, "empty-shot", |k|
             Ok(if k == 1 { FrameImage::new(256, 160, vec![210; 256 * 160]) } else { image() })).unwrap();
-        assert_eq!(empty.verdict, Verdict::ErrInspect);
-        assert_eq!(empty.fault_code, judge::fault::PROCESS_TIMEOUT);
+        // 整个拍照点没有胶是漏涂：照常测量，判断胶，不当作检测执行失败
+        assert_eq!((empty.verdict, empty.fault_code), (Verdict::NgGap, 0));
+        assert!(empty.reason.contains("没找到胶"), "{}", empty.reason);
         assert_eq!(empty_measurements.len(), 4);
-        assert_eq!(empty_measurements[1]["located"], false);
-        assert!(empty_measurements[1]["error"].as_str().unwrap().contains("没找到胶"));
-        assert!(empty_measurements[1]["idx"].as_array().unwrap().is_empty());
+        assert!(empty_measurements[1]["error"].is_null());
+        assert!(empty_measurements[1]["st"].as_array().unwrap().iter().all(|status| status == crate::measure::ST_GAP));
         let (failed, failed_measurements) = measure(&prepared, 4, 101, "failed-piece", |k|
             Ok(if k == 2 { FrameImage::new(200, 100, vec![210; 200 * 100]) } else { image() })).unwrap();
         assert_eq!(failed.verdict, Verdict::ErrInspect);
