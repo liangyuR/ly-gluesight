@@ -98,3 +98,5 @@ attempt7 源码 `1e1162da5466424b626248ff550a9bc1fa4860f5` 在独占运行窗口
 本轮只读复核六份逐件结果、五份实际part.json及92张1280×1024 PGM的大小/头部（120,587,804字节），不计算内容哈希。首项没有收到帧，故没有part.json/原图，保留明确录制失败。其余五件的cycle/bundle/revision、shot/camera/view/session/ordinal/帧及触发计数与历史对应。最终统计6件=3OK+3ERR、机器IDLE，原生及Modbus子进程由自身身份守卫停止。正式证据见[当前队列压力验收](evidence/p0-queue-pressure-current-c.json)。P0-18准备与P0-19/P0-20工具修复均已在本轮原生复验，attempt2–6失败报告不改。
 
 后续400件工具预防修复 `09dbddb517a8644cc40f45e8864f3d1a50ab01f1`：每组先离线且严格空闲，通过正常Settings/检测节拍UI保存原值，完整settings读回相等后配置Replay；连接后要求目标bundle预热成功日志时间不早于本组saveStartedAt，避免300条日志窗口挤出旧成功日志。68项工具回归通过、0失败，155.3036ms（`p0-current-prewarm-tools-c.log`）；400件manifest.features必须为[]，本轮400原生实测仍待执行。该预防工具提交不能替换本次压力实测源1e1162d。洁净对照不关闭默认带噪良品P0-09，也不替代Robot五工况、现场W0/W7或硬件验收。
+
+P0-19同类工具补充：Robot准备脚本修复提交 `f7785b2d616f82eb2ca9669969f3aa69ec239972` 复用严格空闲判定并要求sim.running===false，接受身份一致且filled/total完整的IDLE/FAULT保留last part/result；锁定或未知锁、ACQUIRE、排队/未填满、SN/cycle/recipe不一致及模拟器运行均拒绝。4项工具自检通过、0失败，10.8577ms（`p0-robot-quiescent-tools-c.log`），其中site守卫组覆盖上述边界。未运行真实Robot准备/发布/五工况，不计Robot原生通过或400件通过；已完成的压力实测仍归属1e1162d，原证据不改。
