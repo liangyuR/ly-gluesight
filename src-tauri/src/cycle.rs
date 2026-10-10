@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedReceiver, UnboundedSender};
 
+use crate::arming::ArmBudget;
 use crate::camera::{Acquisition, CameraRig, CameraSource, FRAME_QUEUE};
 use crate::frame::Frame;
 use crate::history;
@@ -957,6 +958,9 @@ impl Machine {
     }
 
     async fn start_part(&mut self, request: Option<Request>) {
+        let started = Instant::now();
+        let settings = host(&self.app).settings();
+        let mut budget = ArmBudget::with_start(started, settings.timeouts.arm());
         if let Err(error) = host(&self.app).audit.ready() {
             self.enter_fault(format!("审计尚未就绪，拒绝布防：{error}"));
             return;
@@ -969,7 +973,7 @@ impl Machine {
         crate::workspace::clear_live(&self.app);
         self.alarms.clear();
         host(&self.app).shared.lock().unwrap().measured.clear();
-        let t0 = Instant::now();
+        budget.mark("entry-readiness-workspace");
         let app = self.app.clone();
         let engine = plc(&app);
         let sn = request.as_ref().map_or_else(|| read_tag_u32(engine, tag::PART_SN).unwrap_or(0), |r| r.sn);
@@ -978,7 +982,6 @@ impl Machine {
         log(&app, "info", "partStart↑", format!("SN={sn} 产品代码={code} N={count}"));
 
         let host = host(&app);
-        let settings = host.settings();
         let cycle_id = match host.cycle_ids.take(&app) {
             Ok(id) => id,
             Err(reason) => return self.refuse(sn, None, fault::PROCESS_TIMEOUT, reason).await,
@@ -1008,6 +1011,17 @@ impl Machine {
         // 从这一刻起这个配方算在检测中（不能删、不能改编号）
         host.shared.lock().unwrap().part_recipe = Some(recipe.clone());
         let id = Some(recipe.id.clone());
+        macro_rules! arm_remaining {
+            ($stage:expr) => {
+                match budget.remaining($stage) {
+                    Ok(remaining) => remaining,
+                    Err(reason) => {
+                        log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "refused", "trace": budget.trace()}).to_string());
+                        return self.refuse(sn, id.clone(), fault::PROCESS_TIMEOUT, reason).await;
+                    }
+                }
+            };
+        }
         let n = recipe.shot_count();
         let plan = if request.is_some() {
             match crate::plc::recipe_plan(host, &recipe).and_then(|plan| self.s7.validate_plan(&plan).map(|_| plan)) {
@@ -1023,12 +1037,19 @@ impl Machine {
             Ok(prepared) => prepared,
             Err(reason) => return self.refuse(sn, id, fault::NO_RECIPE, reason).await,
         };
+        budget.mark("identity-recipe-plan");
+        arm_remaining!("before-verify");
         if let Some(prepared) = production.clone() {
-            let checked = tokio::time::timeout(settings.timeouts.arm(), tauri::async_runtime::spawn_blocking(move || prepared.verify())).await;
+            let checked = budget.run("prepared-verify", async {
+                tauri::async_runtime::spawn_blocking(move || prepared.verify()).await.map_err(|error| error.to_string())
+            }).await;
             match checked {
-                Ok(Ok(Ok(()))) => {}
-                Ok(Ok(Err(reason))) => return self.refuse(sn, id, fault::NO_RECIPE, format!("发布包核验失败：{reason}")).await,
-                _ => return self.refuse(sn, id, fault::PROCESS_TIMEOUT, "布防前发布资源核验超时或异常".into()).await,
+                Ok(Ok(())) => {}
+                Ok(Err(reason)) => return self.refuse(sn, id, fault::NO_RECIPE, format!("发布包核验失败：{reason}")).await,
+                Err(reason) => {
+                    log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "refused", "trace": budget.trace()}).to_string());
+                    return self.refuse(sn, id, fault::PROCESS_TIMEOUT, reason).await;
+                }
             }
         }
         let rig_gen = host.camera.generation();
@@ -1064,17 +1085,12 @@ impl Machine {
         let issued = plan.as_ref().map(|p| p.camera_slots.iter().zip(p.camera_shots).filter(|(id, _)| !id.is_empty())
             .map(|(id, count)| (id.clone(), count as u64)).collect());
         let bundle_id = production.as_ref().map(|prepared| prepared.bundle.id.clone());
+        budget.mark("camera-router");
+        arm_remaining!("before-recording");
         if let Err(reason) = host.audit.begin_recording(&cycle_id) {
             return self.refuse(sn, id, fault::PROCESS_TIMEOUT, format!("录制追溯屏障建立失败：{reason}")).await;
         }
         let recording = host.recorder.begin(settings.record, sn, recipe.clone(), &cycle_id, bundle_id.as_deref());
-        if let Err(reason) = host.audit.health() {
-            if let Some(recording) = recording {
-                host.recorder.finish(recording, Verdict::ErrInspect, "布防前追溯健康检查失败", settings.record_keep, (settings.record_max_gb as f64 * 1e9) as u64, Vec::new());
-            }
-            return self.refuse(sn, id, fault::PROCESS_TIMEOUT, format!("录制开始后追溯健康检查失败，未启动相机：{reason}")).await;
-        }
-        host.camera.begin_part(&cams);
         self.run_id = self.run_id.wrapping_add(1);
         self.part = Some(Part {
             run_id: self.run_id,
@@ -1107,23 +1123,42 @@ impl Machine {
             recording,
             recipe: recipe.clone(),
         });
-        let r = if let Some(plan) = &plan { self.s7.arm(engine, plan).await } else {
-            async {
+        budget.mark("recording-begin");
+        arm_remaining!("before-audit-health");
+        let audit = host.audit.clone();
+        let health = budget.run("audit-health", async move {
+            tauri::async_runtime::spawn_blocking(move || audit.health()).await.map_err(|error| error.to_string())?
+        }).await;
+        if let Err(reason) = health {
+            host.audit.fail(reason.clone());
+            log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "refused", "trace": budget.trace()}).to_string());
+            return self.refuse(sn, id, fault::PROCESS_TIMEOUT, format!("录制开始后追溯健康检查失败，未启动相机：{reason}")).await;
+        }
+        arm_remaining!("before-camera-begin");
+        host.camera.begin_part(&self.part.as_ref().unwrap().cams);
+        budget.mark("camera-begin");
+        arm_remaining!("before-plc-arm");
+        let r = budget.run("plc-arm-confirmed", async {
+            if let Some(plan) = &plan { self.s7.arm(engine, plan).await } else {
                 put(&app, tag::BUSY, json!(true)).await?;
                 put(&app, tag::ARMED, json!(true)).await
-            }.await
-        };
+            }
+        }).await;
         if let Err(e) = r {
-            let reason = format!("布防写入失败：{e}");
+            let reason = format!("布防写入失败或总预算超时：{e}");
+            log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "fault", "trace": budget.trace()}).to_string());
             if self.is_s7() { self.s7.fault(engine, reason.clone()).await; }
+            else {
+                let _ = put(&app, tag::ARMED, json!(false)).await;
+                let _ = put(&app, tag::BUSY, json!(false)).await;
+                let _ = put(&app, tag::VISION_READY, json!(false)).await;
+            }
             return self.enter_fault(reason);
         }
+        self.part.as_mut().unwrap().armed_at = Instant::now();
         self.set_phase(Phase::Acquire);
-        let elapsed = t0.elapsed();
-        log(&app, "info", "armed↑ busy↑", format!("{} · N={n} · 布防耗时 {} ms", recipe.id, elapsed.as_millis()));
-        if elapsed > host.settings().timeouts.arm() {
-            log(&app, "warn", "布防慢", format!("超过 T_arm {} ms", host.settings().timeouts.arm_ms));
-        }
+        log(&app, "info", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "armed", "trace": budget.trace()}).to_string());
+        log(&app, "info", "armed↑ busy↑", format!("{} · N={n} · 布防耗时 {} ms", recipe.id, budget.elapsed().as_millis()));
     }
 
     /// 校验没过，不布防，直接回写 ERR。

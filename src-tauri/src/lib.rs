@@ -1,3 +1,4 @@
+mod arming;
 mod audit;
 mod camera;
 mod commands;

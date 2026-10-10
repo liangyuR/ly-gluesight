@@ -277,7 +277,7 @@ impl Audit {
         Ok(self.spool.lock().map_err(|_| "追溯 spool 锁损坏")?.cycles())
     }
 
-    fn fail(&self, error: String) {
+    pub(crate) fn fail(&self, error: String) {
         let _ = set_failure(&self.failure, error.clone());
         app_log(&self.app, "err", "持久追溯故障", error);
     }
