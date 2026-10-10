@@ -252,9 +252,9 @@ PR #12 孤立 `_pending` 清理补充（本段静态实现，尚未执行新增�
 
 ## 2026-10-10 · PR #11 预热排队超时修复
 
-预热仍共用一个许可，绝对 30 秒包含许可等待与 blocking 执行器排队。尚未开始的超时转为带 1 秒冷却的可重试状态；每次尝试只安排一个延迟 Refresh，按届时所选配方重新检查，重复 Refresh 不能并发启动同一项。已开始的失败、panic 或超时仍永久拒绝该缓存项，后台线程返回前不释放许可，超时后的迟到成功不能成为 Ready。
+预热仍共用一个许可，排队与实际执行各有独立的 30 秒上限。排队窗口包含许可等待与 blocking 执行器排队；只有 blocking 工作线程真正开始后才起算完整执行窗口，排队不扣减执行预算。尚未开始的超时转为带 1 秒冷却的可重试状态；每次尝试只安排一个延迟 Refresh，按届时所选配方重新检查，重复 Refresh 不能并发启动同一项。已开始的失败、panic 或超时仍永久拒绝该缓存项，后台线程返回前不释放许可，超时后的迟到成功不能成为 Ready。
 
-`production::warmup_tests` 的 7 项 gate 回归覆盖累计排队后恢复、blocking 池排队过期不执行、实际执行挂起保留许可及迟到结果隔离、实际失败隔离、panic 释放许可和并发重试去重。原生 100 件恢复控制完成后，在空闲窗口实际执行 `cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib`，默认完整回归 174 项通过、0 失败、21 项忽略，耗时 0.88 秒；上述 7 项 gate 均通过。见[预热审查修复证据](evidence/p0-step5-warmup-review-c.json)。受控 Gate 不冒充真实 DLL 永久卡死注入。
+较早合并预算实现的 `production::warmup_tests` 7 项 gate 回归覆盖累计排队后恢复、blocking 池排队过期不执行、实际执行挂起保留许可及迟到结果隔离、实际失败隔离、panic 释放许可和并发重试去重。该次验证未覆盖迟到启动仍需完整执行窗口，保留为历史尝试。原生 100 件恢复控制完成后，在空闲窗口实际执行 `cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib`，默认完整回归 174 项通过、0 失败、21 项忽略，耗时 0.88 秒；上述 7 项 gate 均通过。见[预热审查修复证据](evidence/p0-step5-warmup-review-c.json)。受控 Gate 不冒充真实 DLL 永久卡死注入。
 
 
 ## 2026-10-10 · PR #11 系统设置环境刷新修复
@@ -262,3 +262,6 @@ PR #12 孤立 `_pending` 清理补充（本段静态实现，尚未执行新增�
 `cycle_save_settings` 成功持久化并应用设置后广播 `cycle://settings-changed`。工作台订阅该事件并复用现有延迟刷新：干净候选重新读取后端环境指纹并显示试测失效；未保存配置、中线草稿及操作期间合并待刷新标记，解除后补读，晚到响应和旧候选响应不能覆盖新编辑或新选择。无新增阈值或生产 Gate。
 
 C: 独立分支 `codex/p0-step5-settings-refresh` 定向 `workspace-context.test.tsx` 与 `settings.test.tsx` 共 85 项通过（17.16 秒），应用及测试 TypeScript 检查通过。日志位于恢复目录 `p0-step5-settings-refresh-focused-c.log`、`p0-step5-settings-refresh-types-app-c.log`、`p0-step5-settings-refresh-types-tests-c.log`。为保持原生验收窗口，此 helper 未运行 Cargo、全覆盖率或原生 UI；集成后统一验证。
+
+
+PR #11 执行窗口修正：新增真实单线程 blocking 池 gate，先排队约 600 ms，再执行约 300 ms，排队和执行预算各 800 ms；跨越原申请起点的 800 ms 后仍保持 Preparing，释放执行 gate 后成功。该用例同时防止错误地从取得许可而非工作线程真正开始计执行时间。实际执行超时仍永久 Failed，许可直至线程返回才释放，迟到成功不追认；未开始的排队超时仍可冷却重试。本轮在 C: 共享 target 执行默认完整 Rust 回归，175 项通过、0 失败、21 项忽略，测试耗时 0.93 秒；8 项预热 gate 均通过。日志 `p0-step5-warmup-budgets-c.log` 与源码 SHA256 见同一预热审查修复证据的 `executionWindowCorrection`，旧 174 项结果及合并窗口合同完整保留为 `historicalAttempt`，不再作为最终合同。前端未修改，本轮未重复前端覆盖率或原生 UI。
