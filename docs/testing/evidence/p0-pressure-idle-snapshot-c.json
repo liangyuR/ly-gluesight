@@ -1,0 +1,802 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-10",
+  "runtimeSourceCommit": "3b736f144d53de9971afcb9d9e8aab00e8f1f640",
+  "scope": "Native pressure attempt5 preparation success and retained-idle-snapshot tool failure; incomplete pressure acceptance",
+  "status": "tool-idle-snapshot-fix-retest-pending",
+  "passed": false,
+  "benchmark": false,
+  "physicalValidation": false,
+  "s7HardwareValidation": false,
+  "originalArtifacts": {
+    "report": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\attempt-5\\report.json",
+    "setup40Report": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\attempt-5\\setup-40\\setup-report.json",
+    "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-queue-pressure-attempt5-c.log",
+    "archivedProfile": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\failed-profile-attempt5"
+  },
+  "sourceGuards": {
+    "initial": {
+      "repository": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation",
+      "head": "3b736f144d53de9971afcb9d9e8aab00e8f1f640",
+      "businessDirty": "",
+      "checkedAt": "2026-10-10T11:58:54.816Z"
+    },
+    "last": {
+      "repository": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation",
+      "head": "3b736f144d53de9971afcb9d9e8aab00e8f1f640",
+      "businessDirty": "",
+      "checkedAt": "2026-10-10T12:00:34.388Z"
+    }
+  },
+  "preparation40": {
+    "passed": true,
+    "captures": 40,
+    "trialsPassed": 40,
+    "explicitCaptureRetries": [
+      {
+        "k": 1,
+        "attempt": 1,
+        "error": "正在处理 PLC 事务，请稍后重试取图",
+        "at": "2026-10-10T11:59:10.284Z",
+        "elapsedAfterFirstLockMs": 0,
+        "previousId": null,
+        "cycle": {
+          "measurementWorkers": {
+            "capacity": 4,
+            "running": 0,
+            "timedOut": 0,
+            "availableCapacity": 4
+          },
+          "phase": "FAULT",
+          "plcLocked": false,
+          "plcHandshake": null,
+          "since": 1791633536054,
+          "fault": "PLC 未连接",
+          "productSource": "plc",
+          "activeRecipeId": null,
+          "triggerMode": null,
+          "part": null,
+          "result": null,
+          "stats": {
+            "total": 0,
+            "ok": 0,
+            "ng": 0,
+            "err": 0
+          },
+          "strayFrames": 0,
+          "alarms": [
+            "配方 MTR-HSG-A 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布",
+            "配方 MTR-HSG-B 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布"
+          ]
+        },
+        "sim": {
+          "running": false,
+          "continuous": false,
+          "parts": 0,
+          "message": ""
+        }
+      },
+      {
+        "k": 4,
+        "attempt": 1,
+        "error": "正在处理 PLC 事务，请稍后重试取图",
+        "at": "2026-10-10T11:59:12.312Z",
+        "elapsedAfterFirstLockMs": 0,
+        "previousId": null,
+        "cycle": {
+          "measurementWorkers": {
+            "capacity": 4,
+            "running": 0,
+            "timedOut": 0,
+            "availableCapacity": 4
+          },
+          "phase": "FAULT",
+          "plcLocked": false,
+          "plcHandshake": null,
+          "since": 1791633536054,
+          "fault": "PLC 未连接",
+          "productSource": "plc",
+          "activeRecipeId": null,
+          "triggerMode": null,
+          "part": null,
+          "result": null,
+          "stats": {
+            "total": 0,
+            "ok": 0,
+            "ng": 0,
+            "err": 0
+          },
+          "strayFrames": 0,
+          "alarms": [
+            "配方 MTR-HSG-A 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布",
+            "配方 MTR-HSG-B 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布"
+          ]
+        },
+        "sim": {
+          "running": false,
+          "continuous": false,
+          "parts": 0,
+          "message": ""
+        }
+      },
+      {
+        "k": 4,
+        "attempt": 2,
+        "error": "正在处理 PLC 事务，请稍后重试取图",
+        "at": "2026-10-10T11:59:12.508Z",
+        "elapsedAfterFirstLockMs": 196,
+        "previousId": null,
+        "cycle": {
+          "measurementWorkers": {
+            "capacity": 4,
+            "running": 0,
+            "timedOut": 0,
+            "availableCapacity": 4
+          },
+          "phase": "FAULT",
+          "plcLocked": false,
+          "plcHandshake": null,
+          "since": 1791633536054,
+          "fault": "PLC 未连接",
+          "productSource": "plc",
+          "activeRecipeId": null,
+          "triggerMode": null,
+          "part": null,
+          "result": null,
+          "stats": {
+            "total": 0,
+            "ok": 0,
+            "ng": 0,
+            "err": 0
+          },
+          "strayFrames": 0,
+          "alarms": [
+            "配方 MTR-HSG-A 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布",
+            "配方 MTR-HSG-B 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布"
+          ]
+        },
+        "sim": {
+          "running": false,
+          "continuous": false,
+          "parts": 0,
+          "message": ""
+        }
+      },
+      {
+        "k": 8,
+        "attempt": 1,
+        "error": "正在处理 PLC 事务，请稍后重试取图",
+        "at": "2026-10-10T11:59:15.831Z",
+        "elapsedAfterFirstLockMs": 0,
+        "previousId": null,
+        "cycle": {
+          "measurementWorkers": {
+            "capacity": 4,
+            "running": 0,
+            "timedOut": 0,
+            "availableCapacity": 4
+          },
+          "phase": "FAULT",
+          "plcLocked": false,
+          "plcHandshake": null,
+          "since": 1791633536054,
+          "fault": "PLC 未连接",
+          "productSource": "plc",
+          "activeRecipeId": null,
+          "triggerMode": null,
+          "part": null,
+          "result": null,
+          "stats": {
+            "total": 0,
+            "ok": 0,
+            "ng": 0,
+            "err": 0
+          },
+          "strayFrames": 0,
+          "alarms": [
+            "配方 MTR-HSG-A 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布",
+            "配方 MTR-HSG-B 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布"
+          ]
+        },
+        "sim": {
+          "running": false,
+          "continuous": false,
+          "parts": 0,
+          "message": ""
+        }
+      },
+      {
+        "k": 18,
+        "attempt": 1,
+        "error": "正在处理 PLC 事务，请稍后重试取图",
+        "at": "2026-10-10T11:59:27.147Z",
+        "elapsedAfterFirstLockMs": 0,
+        "previousId": null,
+        "cycle": {
+          "measurementWorkers": {
+            "capacity": 4,
+            "running": 0,
+            "timedOut": 0,
+            "availableCapacity": 4
+          },
+          "phase": "FAULT",
+          "plcLocked": false,
+          "plcHandshake": null,
+          "since": 1791633536054,
+          "fault": "PLC 未连接",
+          "productSource": "plc",
+          "activeRecipeId": null,
+          "triggerMode": null,
+          "part": null,
+          "result": null,
+          "stats": {
+            "total": 0,
+            "ok": 0,
+            "ng": 0,
+            "err": 0
+          },
+          "strayFrames": 0,
+          "alarms": [
+            "配方 MTR-HSG-A 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布",
+            "配方 MTR-HSG-B 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布"
+          ]
+        },
+        "sim": {
+          "running": false,
+          "continuous": false,
+          "parts": 0,
+          "message": ""
+        }
+      },
+      {
+        "k": 30,
+        "attempt": 1,
+        "error": "正在处理 PLC 事务，请稍后重试取图",
+        "at": "2026-10-10T11:59:46.212Z",
+        "elapsedAfterFirstLockMs": 0,
+        "previousId": null,
+        "cycle": {
+          "measurementWorkers": {
+            "capacity": 4,
+            "running": 0,
+            "timedOut": 0,
+            "availableCapacity": 4
+          },
+          "phase": "FAULT",
+          "plcLocked": false,
+          "plcHandshake": null,
+          "since": 1791633536054,
+          "fault": "PLC 未连接",
+          "productSource": "plc",
+          "activeRecipeId": null,
+          "triggerMode": null,
+          "part": null,
+          "result": null,
+          "stats": {
+            "total": 0,
+            "ok": 0,
+            "ng": 0,
+            "err": 0
+          },
+          "strayFrames": 0,
+          "alarms": [
+            "配方 MTR-HSG-A 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布",
+            "配方 MTR-HSG-B 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布"
+          ]
+        },
+        "sim": {
+          "running": false,
+          "continuous": false,
+          "parts": 0,
+          "message": ""
+        }
+      },
+      {
+        "k": 35,
+        "attempt": 1,
+        "error": "正在处理 PLC 事务，请稍后重试取图",
+        "at": "2026-10-10T11:59:55.639Z",
+        "elapsedAfterFirstLockMs": 0,
+        "previousId": null,
+        "cycle": {
+          "measurementWorkers": {
+            "capacity": 4,
+            "running": 0,
+            "timedOut": 0,
+            "availableCapacity": 4
+          },
+          "phase": "FAULT",
+          "plcLocked": false,
+          "plcHandshake": null,
+          "since": 1791633536054,
+          "fault": "PLC 未连接",
+          "productSource": "plc",
+          "activeRecipeId": null,
+          "triggerMode": null,
+          "part": null,
+          "result": null,
+          "stats": {
+            "total": 0,
+            "ok": 0,
+            "ng": 0,
+            "err": 0
+          },
+          "strayFrames": 0,
+          "alarms": [
+            "配方 MTR-HSG-A 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布",
+            "配方 MTR-HSG-B 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布"
+          ]
+        },
+        "sim": {
+          "running": false,
+          "continuous": false,
+          "parts": 0,
+          "message": ""
+        }
+      }
+    ],
+    "source": {
+      "directory": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\attempt-5\\input-40",
+      "physicalValidation": false,
+      "imageCount": 80,
+      "size": [
+        1280,
+        1024
+      ],
+      "source": "Independent synthetic clean Gray8 PGM replay inputs; original source metadata is not used for content matching"
+    },
+    "validationRevision": 165,
+    "validationChecks": [
+      {
+        "name": "设备与采集",
+        "passed": true,
+        "detail": "配方引用的相机已就绪"
+      },
+      {
+        "name": "胶路示教",
+        "passed": true,
+        "detail": "要检的拍照点都已示教中线（100%）"
+      },
+      {
+        "name": "示教与标定",
+        "passed": true,
+        "detail": "全部相机/拍照点的当前配置已保存"
+      },
+      {
+        "name": "总览布置",
+        "passed": true,
+        "detail": "总览显示布置已保存"
+      },
+      {
+        "name": "代表性样本",
+        "passed": true,
+        "detail": "规则验证需至少一件合格样本、一件缺陷样本，全部结论与人工标注一致；图像能力由逐帧试测校验"
+      },
+      {
+        "name": "生产版本",
+        "passed": true,
+        "detail": "候选基于当前生产版本"
+      }
+    ],
+    "sampleResults": [
+      {
+        "historyId": null,
+        "sampleId": "1791633615132-163-46",
+        "name": "P0-PRESSURE-40-normal",
+        "sn": 0,
+        "expected": "OK",
+        "actual": "OK",
+        "passed": true,
+        "reason": "40 个拍照点全部合格 · 4040 点"
+      },
+      {
+        "historyId": null,
+        "sampleId": "1791633626692-164-47",
+        "name": "P0-PRESSURE-40-gap",
+        "sn": 0,
+        "expected": "NG_GAP",
+        "actual": "NG_GAP",
+        "passed": true,
+        "reason": "P2 · J1 断胶 7.0 mm > 6.0 mm · s=47.0–54.0"
+      }
+    ],
+    "productionVersion": 1,
+    "candidateVersionAfterPublish": 2,
+    "candidateRevisionAfterPublish": 166,
+    "meaning": "normal/gap are independent clean controls; do not claim default noisy normal P0-09 was repaired"
+  },
+  "attempt": {
+    "failedStage": "callback-missing-91",
+    "error": "Error: Timed out: ACK released, queues empty, audit durable and Machine IDLE\n    at until (file:///C:/Users/11601/project/ly-gluesight/tmp/p0-final-validation/tests/native/p0-cyclehost-queue-pressure.mjs:19:9)\n    at async finish (file:///C:/Users/11601/project/ly-gluesight/tmp/p0-final-validation/tests/native/p0-cyclehost-queue-pressure.mjs:320:19)\n    at async file:///C:/Users/11601/project/ly-gluesight/tmp/p0-final-validation/tests/native/p0-cyclehost-queue-pressure.mjs:477:57",
+    "originalPassed": false,
+    "originalCompletedCasesCount": 0,
+    "faultInjectionsObserved": 1,
+    "completedScenarios": 0,
+    "normalRecoveryExecuted": false,
+    "extraCallbackScenarioExecuted": false,
+    "measurementQueueScenarioExecuted": false,
+    "casesMeaning": "case is appended only after finish and normal recovery; empty array does not erase the observed first fault injection"
+  },
+  "observedFault": {
+    "tag": "callback-missing-91",
+    "prefill": {
+      "count": 64,
+      "sn": null,
+      "before": {
+        "cam": 0,
+        "id": "cam1",
+        "name": "相机 1",
+        "source": "replay",
+        "acquisition": "triggered",
+        "ready": true,
+        "message": "回放 4 帧 · 下一帧第 1 张",
+        "device": null,
+        "sdkVersion": "4.8.1.2",
+        "frames": 44,
+        "fps": 0,
+        "maxFps": null,
+        "lostPackets": 0,
+        "droppedFrames": 0,
+        "warnings": []
+      },
+      "after": {
+        "cam": 0,
+        "id": "cam1",
+        "name": "相机 1",
+        "source": "replay",
+        "acquisition": "triggered",
+        "ready": true,
+        "message": "回放 4 帧 · 下一帧第 1 张",
+        "device": null,
+        "sdkVersion": "4.8.1.2",
+        "frames": 108,
+        "fps": 1269.8439,
+        "maxFps": null,
+        "lostPackets": 0,
+        "droppedFrames": 0,
+        "warnings": []
+      },
+      "countersBefore": {
+        "id": "cam1",
+        "session": 4,
+        "counterSource": "synthetic",
+        "lastTriggerCounter": 0
+      },
+      "countersAfter": {
+        "id": "cam1",
+        "session": 4,
+        "counterSource": "synthetic",
+        "lastTriggerCounter": 64
+      },
+      "droppedDelta": 0,
+      "returned": {
+        "schemaVersion": 1,
+        "identifier": "com.xyzrobotics.tujiaovision.p0-tests.pressure",
+        "enabled": true,
+        "callbackCapacity": 64,
+        "measureCapacity": 32,
+        "callbackQueued": 0,
+        "measureQueued": 0,
+        "callbackHold": true,
+        "measureHold": false,
+        "callbackConsumerHeld": true,
+        "measureBlockedConsumer": false,
+        "holdRemainingMs": 9957,
+        "heldJob": null,
+        "measureQueueFull": 0,
+        "cameras": [
+          {
+            "id": "cam1",
+            "session": 4,
+            "counterSource": "synthetic",
+            "lastTriggerCounter": 64
+          }
+        ]
+      },
+      "pressure": {
+        "schemaVersion": 1,
+        "identifier": "com.xyzrobotics.tujiaovision.p0-tests.pressure",
+        "enabled": true,
+        "callbackCapacity": 64,
+        "measureCapacity": 32,
+        "callbackQueued": 64,
+        "measureQueued": 0,
+        "callbackHold": true,
+        "measureHold": false,
+        "callbackConsumerHeld": true,
+        "measureBlockedConsumer": false,
+        "holdRemainingMs": 9891,
+        "heldJob": null,
+        "measureQueueFull": 0,
+        "cameras": [
+          {
+            "id": "cam1",
+            "session": 4,
+            "counterSource": "synthetic",
+            "lastTriggerCounter": 64
+          }
+        ]
+      }
+    },
+    "emits": 4,
+    "drops": 4,
+    "expectedCodes": [
+      90,
+      91
+    ],
+    "doneWire": {
+      "heartbeat": false,
+      "partStart": true,
+      "partEnd": true,
+      "resultAck": false,
+      "faultReset": false,
+      "visionReady": true,
+      "armed": false,
+      "busy": true,
+      "done": true,
+      "partSn": 750000100,
+      "productCode": 724,
+      "shotCount": 4,
+      "resultCode": 90,
+      "faultCode": 91,
+      "resultSn": 750000100
+    },
+    "lastWire": {
+      "heartbeat": true,
+      "partStart": false,
+      "partEnd": false,
+      "resultAck": false,
+      "faultReset": false,
+      "visionReady": true,
+      "armed": false,
+      "busy": false,
+      "done": false,
+      "partSn": 750000100,
+      "productCode": 724,
+      "shotCount": 4,
+      "resultCode": 90,
+      "faultCode": 91,
+      "resultSn": 750000100
+    },
+    "cycleId": "6bc85829b4ad25e083eda3fe80863032",
+    "sn": 750000100,
+    "recipeId": "P0-PRESSURE-4",
+    "recipeRevision": "P0-PRESSURE-4-v1",
+    "bundleId": "release-1791633543773925500-43704-0",
+    "phase": "IDLE",
+    "plcLocked": false,
+    "part": {
+      "received": 0,
+      "queue": 0,
+      "filled": 404,
+      "total": 404,
+      "measuredFrames": 0
+    },
+    "frameStatuses": [
+      "missing",
+      "missing",
+      "missing",
+      "missing"
+    ],
+    "result": {
+      "cycleId": "6bc85829b4ad25e083eda3fe80863032",
+      "sn": 750000100,
+      "verdict": "ERR_INSPECT",
+      "plcCode": 90,
+      "faultCode": 91,
+      "drainMs": 1026
+    },
+    "history": {
+      "id": 1,
+      "ts": 1791633636415,
+      "sn": 750000100,
+      "recipeId": "P0-PRESSURE-4",
+      "recipeVersion": 1,
+      "recipeRevision": "P0-PRESSURE-4-v1",
+      "triggerMode": "fly",
+      "verdict": "ERR_INSPECT",
+      "plcCode": 90,
+      "faultCode": 91,
+      "reason": "拍照点 P1（cam1）、P2（cam1）、P3（cam1）、P4（cam1）没有收到帧",
+      "drainMs": 1026,
+      "framesExpected": 4,
+      "framesReceived": 0,
+      "retestOf": null,
+      "cycleId": "6bc85829b4ad25e083eda3fe80863032",
+      "bundleId": "release-1791633543773925500-43704-0",
+      "delivery": {
+        "state": "acknowledged",
+        "updatedAt": 1791633636437,
+        "message": "PLC 已确认结果（开发协议）"
+      }
+    },
+    "pressure": {
+      "schemaVersion": 1,
+      "identifier": "com.xyzrobotics.tujiaovision.p0-tests.pressure",
+      "enabled": true,
+      "callbackCapacity": 64,
+      "measureCapacity": 32,
+      "callbackQueued": 0,
+      "measureQueued": 0,
+      "callbackHold": false,
+      "measureHold": false,
+      "callbackConsumerHeld": false,
+      "measureBlockedConsumer": false,
+      "holdRemainingMs": 0,
+      "heldJob": null,
+      "measureQueueFull": 0,
+      "cameras": [
+        {
+          "id": "cam1",
+          "session": 4,
+          "counterSource": "synthetic",
+          "lastTriggerCounter": 68
+        }
+      ]
+    },
+    "measurementWorkers": {
+      "capacity": 4,
+      "running": 0,
+      "timedOut": 0,
+      "availableCapacity": 4
+    }
+  },
+  "archivedAuditSpoolObservation": {
+    "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\failed-profile-attempt5\\audit-spool",
+    "method": "read-only directory metadata after owned process cleanup",
+    "entries": [
+      {
+        "name": ".health",
+        "bytes": 0
+      }
+    ],
+    "pendingEventReceipts": 0
+  },
+  "toolDefect": {
+    "issue": "P0-19",
+    "predicate": "!cycle.part",
+    "reason": "IDLE snapshot intentionally retains last completed part and result",
+    "timeoutMs": 20000,
+    "productionChangeRequired": false,
+    "requiredRetest": "strict quiescent identity/result/filled/queue/worker/ACK/spool predicate followed by normal recovery and remaining two cases",
+    "fixSourceCommit": "eacb039cb6353648193334ff7a554f3e449e2931",
+    "focusedRegression": {
+      "testFile": "tests/native/p0-clean-cyclehost-setup.test.mjs",
+      "passed": 25,
+      "failed": 0,
+      "durationMs": 121.8407,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-quiescent-tools-c.log",
+      "nativeRetestExecuted": false
+    }
+  },
+  "settings": {
+    "productSource": "plc",
+    "manualRecipeId": null,
+    "timeouts": {
+      "armMs": 200,
+      "motionMs": 30000,
+      "drainMs": 1000,
+      "procMs": 3000,
+      "ackMs": 5000
+    },
+    "historyDays": 180,
+    "lyflowCore": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native\\lyflow_core.dll",
+    "vision": true,
+    "record": "all",
+    "recordKeep": 1000,
+    "recordMaxGb": 20
+  },
+  "lifecycle": [
+    {
+      "event": "browser-connected",
+      "at": "2026-10-10T11:58:56.330Z",
+      "stage": "fresh-pressure-native",
+      "cleanup": false,
+      "debugPort": 9343,
+      "pid": 43704
+    },
+    {
+      "event": "native-page-selected",
+      "at": "2026-10-10T11:58:56.335Z",
+      "stage": "fresh-pressure-native",
+      "cleanup": false,
+      "url": "http://tauri.localhost/#/guide"
+    },
+    {
+      "event": "cleanup-start",
+      "at": "2026-10-10T12:00:56.569Z",
+      "stage": "callback-missing-91",
+      "cleanup": true
+    },
+    {
+      "event": "page-close",
+      "at": "2026-10-10T12:00:56.579Z",
+      "stage": "callback-missing-91",
+      "cleanup": true,
+      "url": "http://tauri.localhost/#/plc"
+    },
+    {
+      "event": "browser-disconnected",
+      "at": "2026-10-10T12:00:56.579Z",
+      "stage": "callback-missing-91",
+      "cleanup": true
+    },
+    {
+      "event": "owned-child-exit",
+      "at": "2026-10-10T12:00:57.113Z",
+      "stage": "callback-missing-91",
+      "cleanup": true,
+      "name": "native-pressure",
+      "pid": 43704,
+      "executable": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\gluesight-pressure-3b736f144d53de9971afcb9d9e8aab00e8f1f640.exe",
+      "code": null,
+      "signal": "SIGTERM"
+    },
+    {
+      "event": "owned-child-exit",
+      "at": "2026-10-10T12:00:57.624Z",
+      "stage": "callback-missing-91",
+      "cleanup": true,
+      "name": "modbus-fixture",
+      "pid": 37112,
+      "executable": "C:\\Users\\11601\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+      "code": null,
+      "signal": "SIGTERM"
+    }
+  ],
+  "processCleanup": [
+    {
+      "name": "modbus-fixture",
+      "identity": {
+        "pid": 37112,
+        "path": "C:\\Users\\11601\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+        "start": "2026-10-10T11:58:54.8506706Z",
+        "workingSetBytes": 16642048,
+        "privateBytes": 10272768
+      },
+      "stopped": {
+        "at": "2026-10-10T12:00:57.624Z",
+        "verified": {
+          "pid": 37112,
+          "path": "C:\\Users\\11601\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+          "start": "2026-10-10T11:58:54.8506706Z",
+          "workingSetBytes": 16769024,
+          "privateBytes": 10186752
+        },
+        "exitCode": null,
+        "signal": "SIGTERM"
+      },
+      "error": null
+    },
+    {
+      "name": "native-pressure",
+      "identity": {
+        "pid": 43704,
+        "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\gluesight-pressure-3b736f144d53de9971afcb9d9e8aab00e8f1f640.exe",
+        "start": "2026-10-10T11:58:55.3681378Z",
+        "workingSetBytes": 24588288,
+        "privateBytes": 3706880
+      },
+      "stopped": {
+        "at": "2026-10-10T12:00:57.113Z",
+        "verified": {
+          "pid": 43704,
+          "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-queue-pressure-current\\gluesight-pressure-3b736f144d53de9971afcb9d9e8aab00e8f1f640.exe",
+          "start": "2026-10-10T11:58:55.3681378Z",
+          "workingSetBytes": 82833408,
+          "privateBytes": 58564608
+        },
+        "exitCode": null,
+        "signal": "SIGTERM"
+      },
+      "error": null
+    }
+  ],
+  "boundaries": [
+    "No page crash or premature context close observed; cleanup closes are preserved in lifecycle",
+    "Only owned PID/path/start-verified native 43704 and Modbus 37112 were stopped",
+    "Original attempt2/3/4 evidence is unchanged",
+    "No claim of full pressure, CycleHost 400, real camera/PLC hardware or P0-09 acceptance",
+    "No business content hash matching was introduced; default timeouts are unchanged"
+  ]
+}

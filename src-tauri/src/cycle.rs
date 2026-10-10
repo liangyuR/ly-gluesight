@@ -8,9 +8,11 @@ use ly_plc::{now_ms, EdgeEvent, LinkState, PlcEngine, ProtocolKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
+#[cfg(feature = "p0-pressure-test")]
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedReceiver, UnboundedSender};
 
+use crate::arming::ArmBudget;
 use crate::camera::{Acquisition, CameraRig, CameraSource, FRAME_QUEUE};
 use crate::frame::Frame;
 use crate::history;
@@ -269,6 +271,13 @@ pub struct CycleHost {
     interrupted_recordings: usize,
 }
 
+fn frame_receive_enabled() -> bool {
+    #[cfg(feature = "p0-pressure-test")]
+    { return crate::pressure::frame_receive_enabled(); }
+    #[cfg(not(feature = "p0-pressure-test"))]
+    { true }
+}
+
 impl CycleHost {
     pub fn init(app: &AppHandle) -> Result<Self, String> {
         let settings_path = app.path().app_config_dir().map_err(|e| e.to_string())?.join("cycle.json");
@@ -356,7 +365,7 @@ impl CycleHost {
                         Some(input) => machine.on_input(input).await,
                         None => break,
                     },
-                    Some(frame) = frames.recv() => machine.on_frame(frame),
+                    Some(frame) = frames.recv(), if frame_receive_enabled() => machine.on_frame(frame),
                     _ = tick.tick() => machine.on_tick().await,
                 }
                 // 快照最多 20 次/秒
@@ -957,6 +966,9 @@ impl Machine {
     }
 
     async fn start_part(&mut self, request: Option<Request>) {
+        let started = Instant::now();
+        let settings = host(&self.app).settings();
+        let mut budget = ArmBudget::with_start(started, settings.timeouts.arm());
         if let Err(error) = host(&self.app).audit.ready() {
             self.enter_fault(format!("审计尚未就绪，拒绝布防：{error}"));
             return;
@@ -969,7 +981,7 @@ impl Machine {
         crate::workspace::clear_live(&self.app);
         self.alarms.clear();
         host(&self.app).shared.lock().unwrap().measured.clear();
-        let t0 = Instant::now();
+        budget.mark("entry-readiness-workspace");
         let app = self.app.clone();
         let engine = plc(&app);
         let sn = request.as_ref().map_or_else(|| read_tag_u32(engine, tag::PART_SN).unwrap_or(0), |r| r.sn);
@@ -978,7 +990,6 @@ impl Machine {
         log(&app, "info", "partStart↑", format!("SN={sn} 产品代码={code} N={count}"));
 
         let host = host(&app);
-        let settings = host.settings();
         let cycle_id = match host.cycle_ids.take(&app) {
             Ok(id) => id,
             Err(reason) => return self.refuse(sn, None, fault::PROCESS_TIMEOUT, reason).await,
@@ -1008,6 +1019,17 @@ impl Machine {
         // 从这一刻起这个配方算在检测中（不能删、不能改编号）
         host.shared.lock().unwrap().part_recipe = Some(recipe.clone());
         let id = Some(recipe.id.clone());
+        macro_rules! arm_remaining {
+            ($stage:expr) => {
+                match budget.remaining($stage) {
+                    Ok(remaining) => remaining,
+                    Err(reason) => {
+                        log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "refused", "trace": budget.trace()}).to_string());
+                        return self.refuse(sn, id.clone(), fault::PROCESS_TIMEOUT, reason).await;
+                    }
+                }
+            };
+        }
         let n = recipe.shot_count();
         let plan = if request.is_some() {
             match crate::plc::recipe_plan(host, &recipe).and_then(|plan| self.s7.validate_plan(&plan).map(|_| plan)) {
@@ -1023,12 +1045,19 @@ impl Machine {
             Ok(prepared) => prepared,
             Err(reason) => return self.refuse(sn, id, fault::NO_RECIPE, reason).await,
         };
+        budget.mark("identity-recipe-plan");
+        arm_remaining!("before-verify");
         if let Some(prepared) = production.clone() {
-            let checked = tokio::time::timeout(settings.timeouts.arm(), tauri::async_runtime::spawn_blocking(move || prepared.verify())).await;
+            let checked = budget.run("prepared-verify", async {
+                tauri::async_runtime::spawn_blocking(move || prepared.verify()).await.map_err(|error| error.to_string())
+            }).await;
             match checked {
-                Ok(Ok(Ok(()))) => {}
-                Ok(Ok(Err(reason))) => return self.refuse(sn, id, fault::NO_RECIPE, format!("发布包核验失败：{reason}")).await,
-                _ => return self.refuse(sn, id, fault::PROCESS_TIMEOUT, "布防前发布资源核验超时或异常".into()).await,
+                Ok(Ok(())) => {}
+                Ok(Err(reason)) => return self.refuse(sn, id, fault::NO_RECIPE, format!("发布包核验失败：{reason}")).await,
+                Err(reason) => {
+                    log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "refused", "trace": budget.trace()}).to_string());
+                    return self.refuse(sn, id, fault::PROCESS_TIMEOUT, reason).await;
+                }
             }
         }
         let rig_gen = host.camera.generation();
@@ -1065,17 +1094,12 @@ impl Machine {
         let issued = plan.as_ref().map(|p| p.camera_slots.iter().zip(p.camera_shots)
             .map(|(id, count)| (id.clone(), count as u64)).collect());
         let bundle_id = production.as_ref().map(|prepared| prepared.bundle.id.clone());
+        budget.mark("camera-router");
+        arm_remaining!("before-recording");
         if let Err(reason) = host.audit.begin_recording(&cycle_id) {
             return self.refuse(sn, id, fault::PROCESS_TIMEOUT, format!("录制追溯屏障建立失败：{reason}")).await;
         }
         let recording = host.recorder.begin(settings.record, sn, recipe.clone(), &cycle_id, bundle_id.as_deref());
-        if let Err(reason) = host.audit.health() {
-            if let Some(recording) = recording {
-                host.recorder.finish(recording, Verdict::ErrInspect, "布防前追溯健康检查失败", settings.record_keep, (settings.record_max_gb as f64 * 1e9) as u64, Vec::new());
-            }
-            return self.refuse(sn, id, fault::PROCESS_TIMEOUT, format!("录制开始后追溯健康检查失败，未启动相机：{reason}")).await;
-        }
-        host.camera.begin_part(&cams);
         self.run_id = self.run_id.wrapping_add(1);
         self.part = Some(Part {
             run_id: self.run_id,
@@ -1108,23 +1132,52 @@ impl Machine {
             recording,
             recipe: recipe.clone(),
         });
-        let r = if let Some(plan) = &plan { self.s7.arm(engine, plan).await } else {
-            async {
+        budget.mark("recording-begin");
+        arm_remaining!("before-audit-health");
+        let audit = host.audit.clone();
+        let health = budget.run("audit-health", async move {
+            tauri::async_runtime::spawn_blocking(move || audit.health()).await.map_err(|error| error.to_string())?
+        }).await;
+        if let Err(reason) = health {
+            host.audit.fail(reason.clone());
+            log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "refused", "trace": budget.trace()}).to_string());
+            return self.refuse(sn, id, fault::PROCESS_TIMEOUT, format!("录制开始后追溯健康检查失败，未启动相机：{reason}")).await;
+        }
+        arm_remaining!("before-camera-begin");
+        host.camera.begin_part(&self.part.as_ref().unwrap().cams);
+        budget.mark("camera-begin");
+        arm_remaining!("before-plc-arm");
+        let r = budget.run_serial("plc-arm-confirmed", async {
+            if let Some(plan) = &plan { self.s7.arm(engine, plan).await } else {
                 put(&app, tag::BUSY, json!(true)).await?;
                 put(&app, tag::ARMED, json!(true)).await
-            }.await
-        };
+            }
+        }).await;
         if let Err(e) = r {
-            let reason = format!("布防写入失败：{e}");
+            let mut reason = format!("布防写入失败或总预算超时：{e}");
+            log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "fault", "trace": budget.trace()}).to_string());
             if self.is_s7() { self.s7.fault(engine, reason.clone()).await; }
+            else {
+                let mut cleanup_errors = Vec::new();
+                for output in [tag::ARMED, tag::BUSY, tag::VISION_READY] {
+                    if let Err(error) = put(&app, output, json!(false)).await {
+                        cleanup_errors.push(format!("{output}：{error}"));
+                    }
+                }
+                if !cleanup_errors.is_empty() {
+                    engine.disconnect().await;
+                    reason.push_str(&format!("；无法确认撤销输出，已断开通讯停止 PC 心跳：{}", cleanup_errors.join("；")));
+                }
+            }
             return self.enter_fault(reason);
         }
+        let elapsed = budget.elapsed();
+        let mut trace = budget.trace();
+        trace["elapsedMs"] = json!(elapsed.as_secs_f64() * 1000.0);
+        self.part.as_mut().unwrap().armed_at = Instant::now();
         self.set_phase(Phase::Acquire);
-        let elapsed = t0.elapsed();
         log(&app, "info", "armed↑ busy↑", format!("{} · N={n} · 布防耗时 {} ms", recipe.id, elapsed.as_millis()));
-        if elapsed > host.settings().timeouts.arm() {
-            log(&app, "warn", "布防慢", format!("超过 T_arm {} ms", host.settings().timeouts.arm_ms));
-        }
+        log(&app, "info", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "armed", "trace": trace}).to_string());
     }
 
     /// 校验没过，不布防，直接回写 ERR。
@@ -1212,7 +1265,10 @@ impl Machine {
         self.dirty = true;
         match self.measure_tx.try_send(job) {
             Ok(()) => {}
-            Err(TrySendError::Full(job)) | Err(TrySendError::Closed(job)) => {
+            Err(error) => {
+                #[cfg(feature = "p0-pressure-test")]
+                if matches!(&error, TrySendError::Full(_)) { crate::pressure::measure_queue_full(); }
+                let job = error.into_inner();
                 self.on_measured(Measured::failed(&job, "测量队列已满：测量跟不上帧率"));
             }
         }

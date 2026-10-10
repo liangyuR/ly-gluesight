@@ -9,7 +9,7 @@ import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, KV, Notice, Panel, Steps, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { Sample } from "./types";
-import { readImageFile, validateImageFile } from "./ImageImportButton";
+import { readImageBase64, validateImageFile } from "./ImageImportButton";
 
 export default function ValidationPage() {
   const {data,doc,dirty,frameDirty,busy,act,setError} = useWorkspace();
@@ -71,7 +71,13 @@ export default function ValidationPage() {
     setReading(true);
     const valid=()=>current.current.alive&&current.current.scope===scope&&current.current.sequence===operation.sequence&&pending.current===operation;
     try{
-      const images=await Promise.all(data.workspace.frames.map(async f=>({k:f.k,bytes:await readImageFile(files[f.k])})));
+      const images:{k:number;bytes:string}[]=[];
+      for(const frame of data.workspace.frames){
+        if(!valid())return;
+        const bytes=await readImageBase64(files[frame.k]);
+        if(!valid())return;
+        images.push({k:frame.k,bytes});
+      }
       if(!valid())return;
       const result=await act(()=>workspaceApi.importSample(doc.id,data.workspace.revision,sampleName.trim(),expected,images),"代表性原图样本组已保存");
       if(result&&valid()){setImporting(false);setFiles({});}

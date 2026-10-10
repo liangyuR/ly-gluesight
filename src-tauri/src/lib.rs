@@ -1,3 +1,4 @@
+mod arming;
 mod audit;
 mod camera;
 mod commands;
@@ -16,6 +17,8 @@ mod plc;
 mod plc_plan;
 mod plc_session;
 mod production;
+#[cfg(feature = "p0-pressure-test")]
+mod pressure;
 mod recipe;
 mod recipe_api;
 mod release;
@@ -39,6 +42,8 @@ fn open_store(app: &tauri::App) -> Result<store::Store, String> {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            #[cfg(feature = "p0-pressure-test")]
+            pressure::init(app.handle())?;
             app.manage(instance::acquire(&app.path().app_data_dir().map_err(|error| error.to_string())?)?);
             app.manage(open_store(app)?);
             app.manage(vision::VisionHost::default());
@@ -55,6 +60,12 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            #[cfg(feature = "p0-pressure-test")]
+            pressure::pressure_test_status,
+            #[cfg(feature = "p0-pressure-test")]
+            pressure::pressure_test_configure,
+            #[cfg(feature = "p0-pressure-test")]
+            pressure::pressure_test_emit,
             commands::app_info,
             commands::engine_status,
             plc::plc_get_config,

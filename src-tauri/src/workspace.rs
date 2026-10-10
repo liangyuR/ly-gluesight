@@ -2005,9 +2005,39 @@ fn measure_images(
     Ok((table, measurements))
 }
 
+const SAMPLE_IMAGE_MAX_BYTES: usize = 15_000_000;
+const SAMPLE_IMAGE_MAX_BASE64_BYTES: usize = SAMPLE_IMAGE_MAX_BYTES.div_ceil(3) * 4;
+
+fn decode_sample_base64(encoded: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    if encoded.is_empty() { return Err("样本原图不得为空".into()); }
+    if encoded.len() > SAMPLE_IMAGE_MAX_BASE64_BYTES { return Err("样本原图单图不超过 15 MB".into()); }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)
+        .map_err(|error| format!("样本原图不是有效 base64：{error}"))?;
+    if bytes.is_empty() || bytes.len() > SAMPLE_IMAGE_MAX_BYTES {
+        return Err("样本原图不得为空，单图不超过 15 MB".into());
+    }
+    Ok(bytes)
+}
+
+fn deserialize_sample_base64<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+    struct SampleBase64;
+    impl<'de> serde::de::Visitor<'de> for SampleBase64 {
+        type Value = Vec<u8>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("原图编码字节的 base64 字符串")
+        }
+        fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+            decode_sample_base64(value).map_err(E::custom)
+        }
+    }
+    deserializer.deserialize_str(SampleBase64)
+}
+
 #[derive(Deserialize)]
 pub struct SampleImageInput {
     pub k: usize,
+    #[serde(deserialize_with = "deserialize_sample_base64")]
     pub bytes: Vec<u8>,
 }
 
@@ -2140,6 +2170,52 @@ mod tests {
     fn tiny_image(k: usize) -> SampleImageInput {
         let mut bytes = b"P5\n3 2\n255\n".to_vec();bytes.extend([0, 32, 64, 128, 200, 255]);
         SampleImageInput { k, bytes }
+    }
+
+    #[test]
+    fn sample_base64_transport_preserves_all_byte_values() {
+        use base64::Engine;
+        let bytes: Vec<u8> = (0..=255).collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let input: SampleImageInput = serde_json::from_value(json!({"k": 7, "bytes": encoded})).unwrap();
+        assert_eq!(input.k, 7);
+        assert_eq!(input.bytes, bytes);
+    }
+
+    #[test]
+    fn sample_base64_rejects_empty_invalid_non_string_and_oversized_before_decode() {
+        for encoded in ["", "not base64!", "AQ", "AQ===", "Af==", "____", "data:image/png;base64,AQ==", "AQ==\n"] {
+            let error = serde_json::from_value::<SampleImageInput>(json!({"k": 0, "bytes": encoded})).err().unwrap();
+            assert!(error.to_string().contains(if encoded.is_empty() { "不得为空" } else { "base64" }), "{encoded}: {error}");
+        }
+        assert!(serde_json::from_value::<SampleImageInput>(json!({"k": 0, "bytes": [0, 255]})).is_err());
+        let oversized = "!".repeat(SAMPLE_IMAGE_MAX_BASE64_BYTES + 1);
+        let deserializer = serde::de::value::BorrowedStrDeserializer::<serde::de::value::Error>::new(&oversized);
+        let error = deserialize_sample_base64(deserializer).unwrap_err().to_string();
+        assert!(error.contains("15 MB"), "length must reject before invalid base64 is decoded: {error}");
+    }
+
+    #[test]
+    fn sample_base64_real_pgm_roundtrip_writes_each_shot_without_changing_pixels() {
+        use base64::Engine;
+        let root = ImportTestDir::new();
+        let workspace = import_workspace();
+        let wire = (0..workspace.frames.len()).map(|k| {
+            let mut bytes = b"P5\n3 2\n255\n".to_vec();
+            bytes.extend([k as u8, 32, 64, 128, 200, 255]);
+            json!({"k": k, "bytes": base64::engine::general_purpose::STANDARD.encode(bytes)})
+        }).collect::<Vec<_>>();
+        let inputs: Vec<SampleImageInput> = serde_json::from_value(json!(wire)).unwrap();
+        assert_eq!(inputs.len(), workspace.doc.shots.len());
+        let mut files = SampleImportFiles::new(&root.0, "1-7-4").unwrap();
+        files.write_images(&workspace, inputs).unwrap();
+        files.publish("1-7-4").unwrap();
+        files.keep = true;
+        for k in 0..workspace.frames.len() {
+            let image = crate::replay::load(&files.path.join(format!("k{k}.pgm"))).unwrap();
+            assert_eq!([image.width, image.height], [3, 2]);
+            assert_eq!(image.pixels, [k as u8, 32, 64, 128, 200, 255]);
+        }
     }
 
     #[test]
