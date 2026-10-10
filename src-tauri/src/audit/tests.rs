@@ -1052,7 +1052,7 @@ fn durable_spool_failed_append_serializes_ready_and_cleanup_without_an_empty_win
         let (attempted_tx, finished_tx) = (attempted_tx.clone(), finished_tx.clone());
         std::thread::spawn(move || {
             attempted_tx.send(()).unwrap();
-            let result = with_ready_spool(&spool, &failure, &running, || {
+            let result = with_ready_spool(&spool, &failure, &running, &Mutex::new(BTreeSet::new()), || {
                 actions.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             });
@@ -1087,7 +1087,7 @@ fn durable_spool_timeout_failure_does_not_wait_for_the_io_lock() {
     assert_eq!(*failure.lock().unwrap(), Some("deadline expired".into()));
     drop(io);
     publisher.join().unwrap();
-    assert_eq!(with_ready_spool(&spool, &failure, &AtomicBool::new(true), || Ok(())), Err("deadline expired".into()));
+    assert_eq!(with_ready_spool(&spool, &failure, &AtomicBool::new(true), &Mutex::new(BTreeSet::new()), || Ok(())), Err("deadline expired".into()));
 }
 
 #[cfg(windows)]
@@ -1102,9 +1102,114 @@ fn durable_spool_empty_probe_failure_prevents_ready_and_cleanup() {
     let locked = std::fs::OpenOptions::new().read(true).share_mode(1).open(path.join(".health")).unwrap();
     let error = spool_io(&spool, &failure, |spool| spool.probe()).unwrap_err();
     assert!(spool.lock().unwrap().empty());
-    assert_eq!(with_ready_spool(&spool, &failure, &running, || Ok(())), Err(error.clone()));
+    assert_eq!(with_ready_spool(&spool, &failure, &running, &Mutex::new(BTreeSet::new()), || Ok(())), Err(error.clone()));
     let mut cleaned = false;
-    assert_eq!(with_ready_spool(&spool, &failure, &running, || { cleaned = true; Ok(()) }), Err(error));
+    assert_eq!(with_ready_spool(&spool, &failure, &running, &Mutex::new(BTreeSet::new()), || { cleaned = true; Ok(()) }), Err(error));
     assert!(!cleaned);
     drop(locked);
+}
+
+#[test]
+fn durable_recording_barrier_waits_for_actual_recorder_callback_after_ack_and_empty_spool() {
+    use crate::frame::{CounterSource, Frame, FrameImage};
+    use crate::recorder::Recorder;
+    use crate::settings::RecordMode;
+    let dir = TestDir::new();
+    let spool = Arc::new(Mutex::new(spool::Spool::open(dir.0.join("spool")).unwrap()));
+    let failure = Arc::new(Mutex::new(None));
+    let pending = Arc::new(Mutex::new(BTreeSet::new()));
+    let running = AtomicBool::new(true);
+    let record = part("slow-recorder", 42);
+    track_recording(&spool, &failure, &pending, &record.cycle_id).unwrap();
+    for event in [Event::Insert(Box::new(record.clone())),
+        Event::Submission(record.cycle_id.clone(), delivery(PlcDeliveryState::Submitted, 20), Some(42)),
+        Event::Delivery(record.cycle_id.clone(), delivery(PlcDeliveryState::Acknowledged, 30))] {
+        persist_event(&spool, &failure, &pending, &event).unwrap();
+    }
+    let mut sink = dir.sink();
+    assert!(replay_cycle(&mut spool.lock().unwrap(), &record.cycle_id, &mut sink, 1).unwrap().0);
+    assert!(spool.lock().unwrap().empty());
+    assert_eq!(sink.detail(&record.cycle_id).summary.delivery.state, PlcDeliveryState::Acknowledged);
+    assert_eq!(sink.detail(&record.cycle_id).recording.state, RecordingState::Pending);
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let release_rx = Mutex::new(release_rx);
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let (callback_spool, callback_failure, callback_pending) = (spool.clone(), failure.clone(), pending.clone());
+    let callback = Arc::new(move |outcome: RecordingOutcome| {
+        entered_tx.send(outcome.clone()).unwrap();
+        release_rx.lock().unwrap().recv_timeout(Duration::from_secs(10)).unwrap();
+        done_tx.send(persist_event(&callback_spool, &callback_failure, &callback_pending, &Event::Recording(outcome))).unwrap();
+    });
+    let recorder = Recorder::new(dir.0.join("records"), Some(callback));
+    let recipe = record.recipe.clone().unwrap();
+    let mut recording = recorder.begin(RecordMode::All, record.sn, recipe, &record.cycle_id, record.bundle_id.as_deref()).unwrap();
+    recorder.frame(&mut recording, &Frame {
+        cam: 0, session: u64::MAX, counter: CounterSource::Synthetic,
+        frame_counter: u64::MAX - 1, trigger_counter: u64::MAX - 2,
+        lost_packets: 0, ts: 777, manual: false,
+        images: (0..3).map(|view| Arc::new(FrameImage::new(1, 1, vec![20 + view]))).collect(),
+    }, "cam1", 0, 1);
+    recorder.finish(recording, record.judgement.verdict, &record.judgement.reason, 10, u64::MAX, Vec::new());
+    let actual = entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(actual.state, RecorderState::Incomplete);
+    assert_eq!(actual.files.len(), 3);
+    assert!(spool.lock().unwrap().empty() && failure.lock().unwrap().is_none());
+    let mut actions = 0;
+    for _ in 0..2 {
+        assert!(with_ready_spool(&spool, &failure, &running, &pending, || { actions += 1; Ok(()) }).unwrap_err().contains("录制尚未完成"));
+    }
+    assert_eq!(actions, 0);
+    release_tx.send(()).unwrap();
+    assert_eq!(done_rx.recv_timeout(Duration::from_secs(10)).unwrap(), Ok(()));
+    assert!(pending.lock().unwrap().is_empty());
+    assert!(with_ready_spool(&spool, &failure, &running, &pending, || Ok(())).is_err());
+    assert!(replay_cycle(&mut spool.lock().unwrap(), &record.cycle_id, &mut sink, 2).unwrap().0);
+    assert_eq!(sink.detail(&record.cycle_id).recording.state, RecordingState::Incomplete);
+    assert_eq!(sink.detail(&record.cycle_id).summary.delivery.state, PlcDeliveryState::Acknowledged);
+    assert_eq!(sink.detail(&record.cycle_id).summary.plc_code, record.judgement.plc_code);
+    assert_eq!(with_ready_spool(&spool, &failure, &running, &pending, || Ok(())), Ok(()));
+    drop(recorder);
+}
+
+#[test]
+fn durable_recording_barrier_keeps_failed_terminal_append_latched_and_pending() {
+    let dir = TestDir::new();
+    let spool = Mutex::new(spool::Spool::with_limits(dir.0.join("spool"), 1, 1).unwrap());
+    let failure = Mutex::new(None);
+    let pending = Mutex::new(BTreeSet::new());
+    track_recording(&spool, &failure, &pending, "disk-full-recording").unwrap();
+    let error = persist_event(&spool, &failure, &pending, &Event::Recording(outcome("disk-full-recording", &[], RecorderState::Failed))).unwrap_err();
+    assert!(error.contains("容量不足"));
+    assert!(spool.lock().unwrap().empty());
+    assert!(pending.lock().unwrap().contains("disk-full-recording"));
+    assert_eq!(*failure.lock().unwrap(), Some(error.clone()));
+    let mut cleaned = false;
+    assert_eq!(with_ready_spool(&spool, &failure, &AtomicBool::new(true), &pending, || { cleaned = true; Ok(()) }), Err(error));
+    assert!(!cleaned);
+}
+
+#[test]
+fn durable_recording_barrier_handles_synchronous_off_callback_before_insert() {
+    use crate::recorder::Recorder;
+    use crate::settings::RecordMode;
+    let dir = TestDir::new();
+    let spool = Arc::new(Mutex::new(spool::Spool::open(dir.0.join("spool")).unwrap()));
+    let failure = Arc::new(Mutex::new(None));
+    let pending = Arc::new(Mutex::new(BTreeSet::new()));
+    let record = part("off-before-insert", 42);
+    track_recording(&spool, &failure, &pending, &record.cycle_id).unwrap();
+    let (callback_spool, callback_failure, callback_pending) = (spool.clone(), failure.clone(), pending.clone());
+    let recorder = Recorder::new(dir.0.join("records"), Some(Arc::new(move |outcome| {
+        persist_event(&callback_spool, &callback_failure, &callback_pending, &Event::Recording(outcome)).unwrap();
+    })));
+    assert!(recorder.begin(RecordMode::Off, record.sn, record.recipe.clone().unwrap(), &record.cycle_id, record.bundle_id.as_deref()).is_none());
+    assert!(pending.lock().unwrap().is_empty());
+    assert!(!spool.lock().unwrap().empty());
+    assert!(with_ready_spool(&spool, &failure, &AtomicBool::new(true), &pending, || Ok(())).is_err());
+    persist_event(&spool, &failure, &pending, &Event::Insert(Box::new(record.clone()))).unwrap();
+    let mut sink = dir.sink();
+    assert!(replay_cycle(&mut spool.lock().unwrap(), &record.cycle_id, &mut sink, 1).unwrap().0);
+    assert_eq!(sink.detail(&record.cycle_id).recording.state, RecordingState::Off);
+    assert_eq!(with_ready_spool(&spool, &failure, &AtomicBool::new(true), &pending, || Ok(())), Ok(()));
 }
