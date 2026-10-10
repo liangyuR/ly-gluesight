@@ -189,7 +189,7 @@ S7 运行时修复随本次集成一并验证：空闲时 PC 输出被清零（P
 
 ## PR #15 更新与回归范围
 
-PR #15 已更新到 main `451be27`，本轮业务回归通过，等待审查；PR #16 待随后整合。上表是 PR #17 的历史基线，不能作为本轮通过数字。
+PR #15 已更新到 main `451be27`，本轮业务回归通过，等待审查；PR #16 以 #15 为 base 并已纳入最新 main，本轮业务回归通过，等待审查。上表是 PR #17 的历史基线，不能作为本轮通过数字。
 
 - 审计事件先进入持久 `audit-spool`，最终检测记录耐久接受后才允许 PLC DONE；录制终态和数据库入库完成前拒绝下一件布防。
 - 启动先重放 spool，再处理仍中断的 Pending 录制和未引用临时目录；受 spool 引用的目录保留。重放身份采用 cycleId 与实际业务字段，冲突保留全部证据并闭锁。
@@ -199,7 +199,7 @@ PR #15 已更新到 main `451be27`，本轮业务回归通过，等待审查；P
 
 四组 400 件性能复跑、默认带噪夹具的 P0-09、W0 / W7 与现场检测准确率仍待完成。
 
-| 本轮验证 | 结果 |
+| PR #15 本轮验证 | 结果 |
 | --- | --- |
 | Rust 默认 `cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib` | 374 通过、0 失败、41 默认忽略 |
 | S7 会话 `... --lib plc_session -- --include-ignored --test-threads=1` | 46 通过、0 失败；含审计完成但设备离线、设备恢复、Acquire/Drain 设备故障与首次 ACK 只落一次 |
@@ -211,3 +211,31 @@ PR #15 已更新到 main `451be27`，本轮业务回归通过，等待审查；P
 冲突解决保留 main 的 D-0、计划版本、判定规则及 ACK 实际触发数基线，保留 PR #15 的目录健康探针和首次 ACK 耐久接受。新增审计等待恢复复用空闲设备检查，避免相机离线时短暂置高 Ready。S7 首轮 44 通过 / 1 失败来自旧测试要求 ACK 收尾设备离线即 Fault；按 main 规则改为离线正常释放、Ready 保持低，并额外验证 Acquire / Drain 的设备故障仍闭锁，最终 46 项全部通过。
 
 本机完整日志位于 `output/pr15-main-regression/`（不提交）：保留沙箱路径读取 / 依赖解析失败、前端停滞尝试、首次 S7 失败与最终通过日志。现有 C: DLL 缺少 `glue.taught_path` / `glue.bead_width`，首次专项 6 项在加载检查失败；负责人随后明确本轮不做算法或真实 DLL 回归。没有新原生桌面、400 件、Robot 五工况或现场硬件通过结论。
+
+
+## PR #16 更新与回归范围
+
+PR #16 以 PR #15 为 base，包含最新 main 与 #15 的持久审计及闭锁修复。上节数字仅来自 #15 的回归；#16 在本次整合源码上独立完成下表业务回归。按负责人明确要求，本轮不做算法或真实 DLL 回归。
+
+- 批量原图改用严格 base64 字符串，解码前检查编码长度；保留单图 15 MB、整组 80 MB、拍照点完整且唯一、图像格式 / 结构 / 尺寸及整组原子导入限制。验证坏编码、非字符串、空图、超限、真实 PGM 像素往返与失败不留下部分样本。
+- 默认构建不启用 `p0-pressure-test`；启用后也必须为 `com.xyzrobotics.tujiaovision.p0-tests.pressure` 调试实例。默认回归与 feature 回归分别执行，生产标识和 release 实例必须拒绝压力入口。
+- `ArmBudget` 验证多个短阶段不能重置总截止；入口到 PLC 布防确认共用 `T_arm=200 ms`。串行 PLC 写入等待副作用完成，再拒绝超过截止的成功，核验错误路径撤销输出 / 故障处理；阶段日志包含 `budgetMs`、`elapsedMs`、阶段累计及区间耗时。
+- 业务验证包含 Rust 默认与压力 feature、S7 回环、前端全量 / 覆盖率、类型检查、构建及 Node / Python 工具回归。压力桌面脚本、400 件性能和 Robot 五工况必须以实际执行证据另行记录，不能由工具单测推定通过。
+
+`p0-current400-arm-failure-c.json` 等 PR #16 历史证据保留当时第 53 件 arm 863 ms、400 件未通过的事实，不代表当前 ArmBudget 修复后的结果。P0-09、真实 DLL、W0 / W7 和现场准确率仍未验收。
+
+
+| PR #16 本轮验证 | 结果 |
+| --- | --- |
+| Rust 默认 `cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib` | 385 通过、0 失败、42 默认忽略 |
+| 压力 feature `... --lib --features p0-pressure-test` | 387 通过、0 失败、42 默认忽略；含生产 / release 标识拒绝和过期门控恢复 |
+| 完整 S7 会话 `... --lib plc_session -- --include-ignored --test-threads=1` | 47 通过、0 失败；包含布防截止等待原始日志副作用收尾、故障日志不会被迟到成功覆盖 |
+| 前端 `node node_modules/vitest/vitest.mjs run --coverage` | 42 文件、969 通过；语句 / 分支 / 函数 / 行 91.34% / 89.78% / 88.59% / 93.96%，全部门槛通过 |
+| 两组 TypeScript 与 Vite 生产构建 | 通过；保留既有大 chunk 提示 |
+| CycleHost 准备与性能工具 Node 测试 | 125 通过 |
+| Robot Python / Node、S7 Python、报告验证器 self-test | 39 / 17 / 21 / 10 通过 |
+| 新增原生工具脚本语法 | current-cyclehost-suite、cyclehost-queue-pressure、robot-current-setup 的 node --check 通过 |
+
+本轮顺序整合 main `451be27` 与 PR #15 `373b1a0`，保留 #15 的目录健康探针、单次 ACK、审计等待与设备状态联动、DONE 前持久记录和 main 的 D-0 / planVersion / 实际触发数规则。`arming::tests` 验证同步与异步阶段共用截止、健康探针超时不会继续布防、PLC 串行副作用先收尾再拒绝迟到成功。前端包含 40 张 1280×1024 PGM 顺序读取 / base64 完整像素传输，后端含真实文件写入与失败原子清理回归。
+
+本机完整日志位于 `output/pr16-main-regression/`（不提交）。本轮没有运行实际桌面队列压力、400 件性能、Robot 五工况或现场硬件；以上 feature / 工具单测不能代替这些执行。算法和真实 DLL 回归按负责人明确要求不纳入本轮。

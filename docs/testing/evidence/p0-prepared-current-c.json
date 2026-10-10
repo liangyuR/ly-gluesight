@@ -1,0 +1,681 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-10",
+  "passed": true,
+  "runtimeSourceCommit": "3b736f144d53de9971afcb9d9e8aab00e8f1f640",
+  "buildFeatures": [],
+  "productionDefaultFeatures": true,
+  "sourceGuard": {
+    "head": "3b736f144d53de9971afcb9d9e8aab00e8f1f640",
+    "gitStatusBeforeEvidenceCreation": "",
+    "reportedRuntimeGitStatus": ""
+  },
+  "fixtureStyle": "clean_step_edge",
+  "scope": "Serial direct Prepared calls with real LyFlow DLL and local judgement; independent clean synthetic control",
+  "physicalValidation": false,
+  "s7HardwareValidation": false,
+  "cycleHostAcceptance": false,
+  "reports": {
+    "original": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\report.json",
+    "independentlyVerified": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\verified-report.json"
+  },
+  "execution": {
+    "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib native_full_resolution_frozen_bundle_single_and_tricam_regression -- --ignored --test-threads=1 --nocapture",
+    "environment": {
+      "GLUESIGHT_P0_FIXTURE_STYLE": "clean_step_edge",
+      "GLUESIGHT_P0_REPORT_DIR": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1",
+      "LYFLOW_CORE_DLL": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native\\lyflow_core.dll"
+    },
+    "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-prepared-current-c.log",
+    "tests": 1,
+    "testSeconds": 13.21,
+    "buildSeconds": 11.82,
+    "reportElapsedMs": 12631.3829,
+    "startedAtUnixMs": 1791633324999,
+    "pid": 30308,
+    "os": "windows",
+    "arch": "x86_64"
+  },
+  "independentValidator": {
+    "passed": true,
+    "command": "python scripts/p0-regression-report.py \"C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\report.json\" --output \"C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\verified-report.json\"",
+    "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-prepared-current-validator-c.log",
+    "artifactVerification": {
+      "passed": true,
+      "uniqueFiles": 106,
+      "verifier": {
+        "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\scripts\\p0-regression-report.py",
+        "bytes": 27648
+      },
+      "scope": "Reads actual full-resolution fixture pixels and business fields; checks paths, dimensions and counts; recomputes latency and memory. No content fingerprints or content matching. Does not authenticate execution of an untrusted report or prove production scheduling."
+    }
+  },
+  "software": {
+    "package": "gluesight",
+    "version": "0.1.0",
+    "graphVersion": "taught-path-1",
+    "gitCommit": "3b736f144d53de9971afcb9d9e8aab00e8f1f640",
+    "gitStatus": "",
+    "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+    "originalSourceDirectory": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\src-tauri",
+    "originalTestExecutable": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\cargo-target\\debug\\deps\\gluesight_lib-3de80dc70980b226.exe",
+    "snapshotPolicy": "Software source and test executable are byte-for-byte archived under this fresh report directory so later compilation cannot invalidate referenced evidence.",
+    "testExecutable": {
+      "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\software\\test-executable.exe",
+      "bytes": 16353280
+    },
+    "testArguments": [
+      "native_full_resolution_frozen_bundle_single_and_tricam_regression",
+      "--ignored",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "sourceFiles": [
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\software\\src-tauri\\Cargo.toml",
+        "bytes": 1474
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\software\\src-tauri\\Cargo.lock",
+        "bytes": 134943
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\software\\src-tauri\\src\\production.rs",
+        "bytes": 12011
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\software\\src-tauri\\src\\production\\regression.rs",
+        "bytes": 28096
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\software\\src-tauri\\src\\vision.rs",
+        "bytes": 19547
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\software\\src-tauri\\src\\vision\\taught.rs",
+        "bytes": 11303
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\software\\src-tauri\\src\\recipe.rs",
+        "bytes": 43439
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\software\\src-tauri\\src\\simimage.rs",
+        "bytes": 9384
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\software\\src-tauri\\src\\sim.rs",
+        "bytes": 14725
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\software\\src-tauri\\src\\judge.rs",
+        "bytes": 13782
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\software\\src-tauri\\src\\release.rs",
+        "bytes": 54838
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\software\\src-tauri\\src\\frame.rs",
+        "bytes": 11337
+      },
+      {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\software\\src-tauri\\src\\measure.rs",
+        "bytes": 35255
+      }
+    ],
+    "reportVerifier": {
+      "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\software\\scripts\\p0-regression-report.py",
+      "bytes": 27648
+    }
+  },
+  "engine": {
+    "version": "1.1.0",
+    "identity": "1.1.0:C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native\\lyflow_core.dll",
+    "dll": {
+      "path": "\\\\?\\C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native\\lyflow_core.dll",
+      "bytes": 6050304
+    },
+    "loadAndSelfCheckMs": 36.6148
+  },
+  "totals": {
+    "steadyParts": 200,
+    "steadyMeasurements": 800,
+    "warmupMeasurements": 8,
+    "scenarioProbeMeasurements": 16
+  },
+  "initialMemory": {
+    "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+    "workingSetBytes": 5271552,
+    "privateBytes": 999424,
+    "peakWorkingSetBytes": 5271552
+  },
+  "finalMemory": {
+    "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+    "workingSetBytes": 36581376,
+    "privateBytes": 22478848,
+    "peakWorkingSetBytes": 91951104
+  },
+  "cases": [
+    {
+      "mode": "single_device_single_view",
+      "physicalDevices": 1,
+      "viewCount": 1,
+      "shotViews": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "shotsPerPart": 4,
+      "deviceFramesPerPart": 4,
+      "viewImagesPerPart": 4,
+      "selectedMeasurementsPerPart": 4,
+      "steadyParts": 100,
+      "steadyMeasurements": 400,
+      "warmupMeasurements": 4,
+      "scenarioProbeMeasurements": 8,
+      "imageSize": [
+        1280,
+        1024
+      ],
+      "recipeRevision": "P0-REGRESSION-1V-CLEAN-v1",
+      "bundleId": "release-1791633325029842800-30308-0",
+      "bundleRoot": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\release-1791633325029842800-30308-0",
+      "releaseManifest": {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\1-view\\releases\\P0-REGRESSION-1V-CLEAN\\release-1791633325029842800-30308-0\\manifest.json",
+        "bytes": 1995
+      },
+      "fixtures": {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\1-view\\fixtures.json",
+        "bytes": 9380
+      },
+      "fixtureRenderMs": 25.17,
+      "publishMs": 377.7292,
+      "preparedLoadMs": 80.5337,
+      "warmupMs": 182.5411,
+      "enginePreviouslyUsedInProcess": false,
+      "warmupKind": "first_graph_use_for_loaded_engine",
+      "steadyTotalMs": 5307.6965,
+      "preparedMeasureMs": {
+        "count": 400,
+        "p50": 12.2489,
+        "p95": 18.947599999999998,
+        "max": 36.6152,
+        "min": 9.691999999999998,
+        "mean": 13.20325825000001,
+        "unit": "ms",
+        "percentile": "nearest rank"
+      },
+      "engineRunIoParseMs": {
+        "count": 400,
+        "p50": 12.0,
+        "p95": 18.0,
+        "max": 36.0,
+        "min": 9.0,
+        "mean": 12.55,
+        "unit": "ms",
+        "percentile": "nearest rank"
+      },
+      "serialPartMeasureAndJudgeMs": {
+        "count": 100,
+        "p50": 53.3202,
+        "p95": 65.5022,
+        "max": 75.0107,
+        "min": 40.298500000000004,
+        "mean": 52.96806800000001,
+        "unit": "ms",
+        "percentile": "nearest rank"
+      },
+      "lastSelectedFrameToJudgeMs": {
+        "count": 100,
+        "p50": 11.8833,
+        "p95": 20.6665,
+        "max": 27.455199999999998,
+        "min": 9.7562,
+        "mean": 13.261715999999996,
+        "unit": "ms",
+        "percentile": "nearest rank"
+      },
+      "productionQueueWaitMs": null,
+      "productionPartEndToJudgeMs": null,
+      "steadyEvidence": {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\1-view\\steady-records.jsonl",
+        "bytes": 156218
+      },
+      "steadyLoopTiming": "Includes evidence serialization, buffered JSONL writes and memory sampling outside each per-part timer; final flush/fsync is also outside the per-part and steady-loop timers.",
+      "memory": {
+        "workingSet": {
+          "startBytes": 41381888,
+          "endBytes": 42938368,
+          "deltaBytes": 1556480,
+          "minBytes": 41381888,
+          "maxBytes": 42938368,
+          "linearSlopeBytesPerPart": 14194.501818181818
+        },
+        "private": {
+          "startBytes": 28200960,
+          "endBytes": 29491200,
+          "deltaBytes": 1290240,
+          "minBytes": 28200960,
+          "maxBytes": 29491200,
+          "linearSlopeBytesPerPart": 13792.349090909089
+        },
+        "samples": [
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 41381888,
+            "privateBytes": 28200960,
+            "peakWorkingSetBytes": 45318144,
+            "part": 0,
+            "elapsedMs": 0.0348
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 42135552,
+            "privateBytes": 28663808,
+            "peakWorkingSetBytes": 45318144,
+            "part": 10,
+            "elapsedMs": 501.92150000000004
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 41885696,
+            "privateBytes": 28348416,
+            "peakWorkingSetBytes": 45318144,
+            "part": 20,
+            "elapsedMs": 1037.8179
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 42070016,
+            "privateBytes": 28569600,
+            "peakWorkingSetBytes": 45318144,
+            "part": 30,
+            "elapsedMs": 1582.0159999999998
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 42270720,
+            "privateBytes": 28794880,
+            "peakWorkingSetBytes": 45318144,
+            "part": 40,
+            "elapsedMs": 2097.7578000000003
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 42049536,
+            "privateBytes": 28798976,
+            "peakWorkingSetBytes": 45318144,
+            "part": 50,
+            "elapsedMs": 2633.6056000000003
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 42774528,
+            "privateBytes": 29331456,
+            "peakWorkingSetBytes": 45518848,
+            "part": 60,
+            "elapsedMs": 3150.0552000000002
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 42852352,
+            "privateBytes": 29409280,
+            "peakWorkingSetBytes": 45596672,
+            "part": 70,
+            "elapsedMs": 3676.6639
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 42856448,
+            "privateBytes": 29413376,
+            "peakWorkingSetBytes": 45621248,
+            "part": 80,
+            "elapsedMs": 4199.3912
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 42848256,
+            "privateBytes": 29491200,
+            "peakWorkingSetBytes": 45670400,
+            "part": 90,
+            "elapsedMs": 4733.7384
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 42938368,
+            "privateBytes": 29491200,
+            "peakWorkingSetBytes": 45707264,
+            "part": 100,
+            "elapsedMs": 5307.695500000001
+          }
+        ],
+        "interpretation": "In-process samples every 10 parts after fixture allocation and warmup. Per-part JSON evidence is streamed to disk and dropped before sampling. Timing vectors are preallocated; the bounded memory-sample log, writer buffer, allocator caches and DLL state are included. This finite run alone does not prove absence of a memory leak."
+      },
+      "passed": true,
+      "strictOkParts": 100,
+      "scenarioProbeResults": {
+        "partialGap": {
+          "measurements": 4,
+          "verdict": "NG_GAP",
+          "plcCode": 13,
+          "faultCode": 0,
+          "reason": "P2 · J1 断胶 7.0 mm > 6.0 mm · s=47.0–54.0"
+        },
+        "wholeEmpty": {
+          "measurements": 4,
+          "verdict": "ERR_INSPECT",
+          "plcCode": 90,
+          "faultCode": 99,
+          "reason": "拍照点 P1 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段; 拍照点 P2 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段; 拍照点 P3 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段; 拍照点 P4 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段"
+        }
+      },
+      "fixtureDefinition": {
+        "source": "production::regression::clean_views: independent uniform 210 Gray8 background, 38 Gray8 straight bead, exact 32-pixel width; no texture, noise, nozzle or pose shift",
+        "fixtureStyle": "clean_step_edge",
+        "accuracyBoundary": "A clean synthetic fixture is a performance/control case only. It does not repair or supersede P0-09 failures on textured metal backgrounds.",
+        "imageSize": [
+          1280,
+          1024
+        ],
+        "format": "8-bit row-major grayscale, P5 PGM, no resizing",
+        "nominalWidthMm": 4.0,
+        "mmPerPx": 0.125,
+        "pathLengthPx": 800,
+        "stationsPerShot": 101,
+        "partialGap": {
+          "shot": 1,
+          "removedStations": [
+            147,
+            148,
+            149,
+            150,
+            151,
+            152,
+            153,
+            154
+          ],
+          "maxGapLenMm": 6.0
+        },
+        "wholeEmpty": "background only in every view; no dark bead in the detection region",
+        "fixtureReuse": "The same deterministic full-resolution pixels are reused across parts; rendering, camera transport and acquisition are outside the timed loop."
+      }
+    },
+    {
+      "mode": "single_device_three_views",
+      "physicalDevices": 1,
+      "viewCount": 3,
+      "shotViews": [
+        1,
+        2,
+        3,
+        1
+      ],
+      "shotsPerPart": 4,
+      "deviceFramesPerPart": 4,
+      "viewImagesPerPart": 12,
+      "selectedMeasurementsPerPart": 4,
+      "steadyParts": 100,
+      "steadyMeasurements": 400,
+      "warmupMeasurements": 4,
+      "scenarioProbeMeasurements": 8,
+      "imageSize": [
+        1280,
+        1024
+      ],
+      "recipeRevision": "P0-REGRESSION-3V-CLEAN-v1",
+      "bundleId": "release-1791633331246022000-30308-1",
+      "bundleRoot": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\release-1791633331246022000-30308-1",
+      "releaseManifest": {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\3-view\\releases\\P0-REGRESSION-3V-CLEAN\\release-1791633331246022000-30308-1\\manifest.json",
+        "bytes": 1995
+      },
+      "fixtures": {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\3-view\\fixtures.json",
+        "bytes": 20668
+      },
+      "fixtureRenderMs": 132.86860000000001,
+      "publishMs": 471.7779,
+      "preparedLoadMs": 127.2702,
+      "warmupMs": 177.79590000000002,
+      "enginePreviouslyUsedInProcess": true,
+      "warmupKind": "already_used_engine",
+      "steadyTotalMs": 5392.963400000001,
+      "preparedMeasureMs": {
+        "count": 400,
+        "p50": 12.1246,
+        "p95": 20.0067,
+        "max": 31.8475,
+        "min": 9.5582,
+        "mean": 13.414112499999995,
+        "unit": "ms",
+        "percentile": "nearest rank"
+      },
+      "engineRunIoParseMs": {
+        "count": 400,
+        "p50": 11.0,
+        "p95": 19.0,
+        "max": 31.0,
+        "min": 9.0,
+        "mean": 12.7425,
+        "unit": "ms",
+        "percentile": "nearest rank"
+      },
+      "serialPartMeasureAndJudgeMs": {
+        "count": 100,
+        "p50": 51.8763,
+        "p95": 72.9135,
+        "max": 88.1575,
+        "min": 40.1729,
+        "mean": 53.81267600000002,
+        "unit": "ms",
+        "percentile": "nearest rank"
+      },
+      "lastSelectedFrameToJudgeMs": {
+        "count": 100,
+        "p50": 11.733600000000001,
+        "p95": 20.337,
+        "max": 28.235,
+        "min": 9.618599999999999,
+        "mean": 13.377651000000007,
+        "unit": "ms",
+        "percentile": "nearest rank"
+      },
+      "productionQueueWaitMs": null,
+      "productionPartEndToJudgeMs": null,
+      "steadyEvidence": {
+        "path": "\\\\?\\C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-final-validation\\output\\playwright\\p0-prepared-current\\attempt-1\\3-view\\steady-records.jsonl",
+        "bytes": 156078
+      },
+      "steadyLoopTiming": "Includes evidence serialization, buffered JSONL writes and memory sampling outside each per-part timer; final flush/fsync is also outside the per-part and steady-loop timers.",
+      "memory": {
+        "workingSet": {
+          "startBytes": 80678912,
+          "endBytes": 81072128,
+          "deltaBytes": 393216,
+          "minBytes": 80494592,
+          "maxBytes": 81072128,
+          "linearSlopeBytesPerPart": 2506.0072727272727
+        },
+        "private": {
+          "startBytes": 67137536,
+          "endBytes": 67485696,
+          "deltaBytes": 348160,
+          "minBytes": 66932736,
+          "maxBytes": 67485696,
+          "linearSlopeBytesPerPart": 2353.338181818182
+        },
+        "samples": [
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 80678912,
+            "privateBytes": 67137536,
+            "peakWorkingSetBytes": 91951104,
+            "part": 0,
+            "elapsedMs": 0.0333
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 80494592,
+            "privateBytes": 66932736,
+            "peakWorkingSetBytes": 91951104,
+            "part": 10,
+            "elapsedMs": 546.3708
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 80805888,
+            "privateBytes": 67465216,
+            "peakWorkingSetBytes": 91951104,
+            "part": 20,
+            "elapsedMs": 1083.2781
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 80855040,
+            "privateBytes": 67465216,
+            "peakWorkingSetBytes": 91951104,
+            "part": 30,
+            "elapsedMs": 1593.3243
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 81014784,
+            "privateBytes": 67465216,
+            "peakWorkingSetBytes": 91951104,
+            "part": 40,
+            "elapsedMs": 2084.5186999999996
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 80801792,
+            "privateBytes": 67264512,
+            "peakWorkingSetBytes": 91951104,
+            "part": 50,
+            "elapsedMs": 2622.9609
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 80863232,
+            "privateBytes": 67461120,
+            "peakWorkingSetBytes": 91951104,
+            "part": 60,
+            "elapsedMs": 3159.78
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 81018880,
+            "privateBytes": 67485696,
+            "peakWorkingSetBytes": 91951104,
+            "part": 70,
+            "elapsedMs": 3667.6168000000002
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 80568320,
+            "privateBytes": 66998272,
+            "peakWorkingSetBytes": 91951104,
+            "part": 80,
+            "elapsedMs": 4150.7677
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 80826368,
+            "privateBytes": 67485696,
+            "peakWorkingSetBytes": 91951104,
+            "part": 90,
+            "elapsedMs": 4727.9592
+          },
+          {
+            "source": "GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX",
+            "workingSetBytes": 81072128,
+            "privateBytes": 67485696,
+            "peakWorkingSetBytes": 91951104,
+            "part": 100,
+            "elapsedMs": 5392.9613
+          }
+        ],
+        "interpretation": "In-process samples every 10 parts after fixture allocation and warmup. Per-part JSON evidence is streamed to disk and dropped before sampling. Timing vectors are preallocated; the bounded memory-sample log, writer buffer, allocator caches and DLL state are included. This finite run alone does not prove absence of a memory leak."
+      },
+      "passed": true,
+      "strictOkParts": 100,
+      "scenarioProbeResults": {
+        "partialGap": {
+          "measurements": 4,
+          "verdict": "NG_GAP",
+          "plcCode": 13,
+          "faultCode": 0,
+          "reason": "P2 · J1 断胶 7.0 mm > 6.0 mm · s=47.0–54.0"
+        },
+        "wholeEmpty": {
+          "measurements": 4,
+          "verdict": "ERR_INSPECT",
+          "plcCode": 90,
+          "faultCode": 99,
+          "reason": "拍照点 P1 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段; 拍照点 P2 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段; 拍照点 P3 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段; 拍照点 P4 检测区内没找到胶：示教线 ± 38.00 px 以内没有一站量到胶样的暗段"
+        }
+      },
+      "fixtureDefinition": {
+        "source": "production::regression::clean_views: independent uniform 210 Gray8 background, 38 Gray8 straight bead, exact 32-pixel width; no texture, noise, nozzle or pose shift",
+        "fixtureStyle": "clean_step_edge",
+        "accuracyBoundary": "A clean synthetic fixture is a performance/control case only. It does not repair or supersede P0-09 failures on textured metal backgrounds.",
+        "imageSize": [
+          1280,
+          1024
+        ],
+        "format": "8-bit row-major grayscale, P5 PGM, no resizing",
+        "nominalWidthMm": 4.0,
+        "mmPerPx": 0.125,
+        "pathLengthPx": 800,
+        "stationsPerShot": 101,
+        "partialGap": {
+          "shot": 1,
+          "removedStations": [
+            147,
+            148,
+            149,
+            150,
+            151,
+            152,
+            153,
+            154
+          ],
+          "maxGapLenMm": 6.0
+        },
+        "wholeEmpty": "background only in every view; no dark bead in the detection region",
+        "fixtureReuse": "The same deterministic full-resolution pixels are reused across parts; rendering, camera transport and acquisition are outside the timed loop."
+      }
+    }
+  ],
+  "measurementScope": {
+    "execution": "Serial direct production::Prepared calls using a verified immutable release bundle and real DLL, followed by the local judge.",
+    "engineTiming": "engineRunIoParseMs is ShotMeasurement.ms: native run, injected image I/O and output parsing, integer milliseconds. preparedMeasureMs includes graph contract validation with high-resolution wall time.",
+    "tailTiming": "lastSelectedFrameToJudgeMs starts immediately before submitting the fourth already-rendered selected image and ends after local judgement. serialPartMeasureAndJudgeMs spans all four serial measurements, wrapper assertions/telemetry and judgement. Both use the same captured judgement completion time. Neither is a production partEnd/queue tail measurement.",
+    "warmupTiming": "loadAndSelfCheckMs measures DLL load; warmupMs includes four full-size frozen-image measures and bundle verification. Only the first case is the first graph use of this benchmark's freshly loaded Engine. Run this exact ignored test alone with --test-threads=1 to isolate process-cold native initialization; other test activity and OS/DLL file caches are not controlled here.",
+    "unknownMetrics": [
+      "productionQueueWaitMs",
+      "productionPartEndToJudgeMs",
+      "physical three-view SDK synchronization",
+      "field accuracy",
+      "absence of memory leaks beyond this finite run"
+    ],
+    "excluded": [
+      "production dispatcher queue",
+      "PLC handshake and acknowledgement",
+      "camera acquisition and transport",
+      "physical tricam SDK unpacking/trigger wiring",
+      "Recorder write latency",
+      "end-to-end production scheduling proof"
+    ],
+    "artifacts": "Artifacts are identified by explicit report paths and byte counts; recipe revisions and bundle IDs are explicit business references."
+  },
+  "limits": [
+    "This is clean_step_edge only. The default simulated_metal/noisy good fixture P0-09 strict OK mismatch remains unresolved; no limits or expected good verdicts were relaxed.",
+    "Serial Prepared measurement and local judgement do not measure actual CycleHost queues, PLC submission/ACK, Recorder tail latency, camera transport, physical SDK synchronization or end-to-end scheduling.",
+    "Production queue wait and production partEnd-to-judge remain null, not zero. Last-selected-frame-to-judge starts with an already rendered/preloaded image and is not a production tail measurement.",
+    "The first mode is first graph use of the loaded engine; the second reuses it. OS/DLL file caches are uncontrolled.",
+    "Positive memory deltas and slopes are retained. This finite 200-part run does not prove absence of long-term memory growth.",
+    "Artifacts are explicit paths/byte counts and actual business fields; no resource content hash matching is performed."
+  ]
+}

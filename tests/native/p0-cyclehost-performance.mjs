@@ -359,9 +359,14 @@ export async function runCycleHostPerformance(page, options) {
       }
       assert(row, 'No settled, recorded, acknowledged new part within timeout');
       attempt.stage = 'partValidation';
-      const log = (await read('cycle_logs')).filter(line => line.ts >= began).find(line => line.ev === 'armed↑ busy↑');
+      const cycleLogs = (await read('cycle_logs')).filter(line => line.ts >= began);
+      const log = cycleLogs.find(line => line.ev === 'armed↑ busy↑');
       row.armMs = Number(log?.msg.match(/布防耗时 (\d+) ms/)?.[1]);
       row.armingLog = log;
+      row.armingStages = cycleLogs.filter(line => line.ev === '布防阶段').map(line => ({ ...line, detail: JSON.parse(line.msg) }));
+      assert(row.armingStages.some(line => line.detail.cycleId === row.detail.summary.cycleId &&
+        line.detail.status === 'armed' && line.detail.trace.budgetMs === 200 &&
+        line.detail.trace.elapsedMs < 200), 'Missing current-cycle arm confirmation inside the original total budget');
       assert(row.detail.summary.bundleId === report.provenance.bundleId, 'Running bundle differs from the explicit release ID');
       const failures = validatePart(row, layout, mode, scenario);
       assert(!seen.has(row.detail.summary.cycleId), 'Cycle identity reused');
@@ -414,6 +419,8 @@ export async function runCycleHostPerformance(page, options) {
     report.passed = report.accuracyFailures.length === 0;
   } catch (error) {
     report.error = error.stack ?? String(error);
+    try { report.failureCycleLogs = await read('cycle_logs'); }
+    catch (logError) { report.failureCycleLogsError = logError.stack ?? String(logError); }
     try {
       await enrichFailedAttempt(attempt, report.guard?.records?.root);
       report.failedAttempt = await persistFailedAttempt(output, attempt, error, report.completedParts);

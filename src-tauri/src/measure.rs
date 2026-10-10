@@ -256,6 +256,8 @@ fn report(out: &UnboundedSender<Input>, job: &Job, mut measured: Measured) {
 
 async fn dispatch(mut rx: Receiver<Job>, health: Arc<WorkerHealth>, runner: JobRunner, out: UnboundedSender<Input>) {
     while let Some(job) = rx.recv().await {
+        #[cfg(feature = "p0-pressure-test")]
+        crate::pressure::wait_measure(&job).await;
         let Some(deadline) = job.submitted_at.checked_add(job.timeout) else {
             report(&out, &job, Measured::failed(&job, "测量超时时间超出可用范围"));
             continue;
@@ -327,6 +329,8 @@ pub fn spawn_worker(app: AppHandle, out: UnboundedSender<Input>) -> (Sender<Job>
             simulate(job)
         }
     });
+    #[cfg(feature = "p0-pressure-test")]
+    crate::pressure::register_measure_queue(tx.clone());
     tauri::async_runtime::spawn(dispatch(rx, health.clone(), runner, out));
     (tx, health)
 }

@@ -4,12 +4,75 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
-export async function configureReplay(page, { views, directory, recordsRoot, allowUnpublished = false }) {
+export function isQuiescentCycleSnapshot(cycle) {
+  if (!cycle || !['IDLE', 'FAULT'].includes(cycle.phase) || cycle.plcLocked !== false) return false;
+  const part = cycle.part;
+  if (part == null) return true;
+  const result = cycle.result;
+  return typeof part.cycleId === 'string' && part.cycleId.length > 0
+    && typeof part.recipeId === 'string' && part.recipeId.length > 0
+    && Number.isSafeInteger(part.sn) && part.sn >= 0 && part.sn <= 0xffffffff
+    && result != null && result.cycleId === part.cycleId && result.sn === part.sn && result.recipeId === part.recipeId
+    && part.queue === 0 && Number.isSafeInteger(part.total) && part.total > 0 && part.filled === part.total;
+}
+
+export function isPublishedRecipeReady(observation, { layout, bundleId, warmupAfterTs = 0 }) {
+  assert(typeof layout?.id === 'string' && layout.id.length > 0 && Number.isSafeInteger(layout.version) && layout.version > 0 && typeof layout.revisionId === 'string' && layout.revisionId.length > 0, 'Require an explicit published recipe identity');
+  assert(typeof bundleId === 'string' && bundleId.length > 0, 'Require one explicit published bundle ID');
+  assert(Number.isSafeInteger(warmupAfterTs) && warmupAfterTs >= 0, 'Warmup log timestamp lower bound must be a nonnegative safe integer');
+  const actual = observation.layout;
+  assert(actual?.id === layout.id && actual.version === layout.version && actual.revisionId === layout.revisionId, 'Published recipe layout changed while waiting for warmup');
+  const prefixes = [`配方 ${layout.id} 开不了工：`, `配方 ${layout.id} 暂时开不了工：`];
+  const alarms = observation.cycle?.alarms;
+  if (!Array.isArray(alarms)) return false;
+  const targetAlarms = alarms.filter(alarm => typeof alarm === 'string' && prefixes.some(prefix => alarm.startsWith(prefix)));
+  const warming = '发布资源与图像引擎正在预热，完成前不能布防';
+  for (const alarm of targetAlarms) assert(prefixes.some(prefix => alarm === prefix + warming), 'Target recipe cannot run: ' + alarm);
+  const warmupLog = publishedRecipeWarmupLog(observation.logs, bundleId, warmupAfterTs);
+  return targetAlarms.length === 0 && !!warmupLog
+    && observation.cycle.phase === 'IDLE' && observation.cycle.fault == null && isQuiescentCycleSnapshot(observation.cycle)
+    && observation.sim?.running === false && observation.engine?.backend === 'LyFlow'
+    && observation.engine.ready === true && observation.engine.measuring === true;
+}
+
+function publishedRecipeWarmupLog(logs, bundleId, warmupAfterTs) {
+  const prefix = `发布包 ${bundleId} 已就绪，耗时 `;
+  return Array.isArray(logs) ? logs.findLast(log => Number.isSafeInteger(log?.ts) && log.ts >= warmupAfterTs && log.level === 'ok' && log.ev === '生产预热'
+    && typeof log.msg === 'string' && log.msg.startsWith(prefix) && /^\d+ ms$/.test(log.msg.slice(prefix.length))) : undefined;
+}
+
+export async function waitForPublishedRecipeReady(page, { layout, bundleId, timeoutMs = 90000, warmupAfterTs = 0 }) {
+  assert(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 90000, 'Published recipe warmup wait must be bounded by 90 seconds');
+  assert(Number.isSafeInteger(warmupAfterTs) && warmupAfterTs >= 0, 'Warmup log timestamp lower bound must be a nonnegative safe integer');
+  const started = Date.now(), deadline = started + timeoutMs;
+  let lastObservation = null, polls = 0;
+  const read = (command, args) => page.evaluate(({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
+  do {
+    let timer;
+    try {
+      lastObservation = await Promise.race([
+        Promise.all([read('cycle_layout', { recipeId: layout.id, revisionId: layout.revisionId }), read('cycle_snapshot'), read('cycle_logs'), read('engine_status'), read('sim_status')])
+          .then(([currentLayout, cycle, logs, engine, sim]) => ({ layout: currentLayout, cycle, logs, engine, sim })),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Published recipe warmup read exceeded its bounded deadline')), Math.max(1, deadline - Date.now())); }),
+      ]);
+    } finally { clearTimeout(timer); }
+    polls += 1;
+    if (isPublishedRecipeReady(lastObservation, { layout, bundleId, warmupAfterTs })) return {
+      ...lastObservation, warmupLog: publishedRecipeWarmupLog(lastObservation.logs, bundleId, warmupAfterTs),
+      warmupAfterTs, observedAt: new Date().toISOString(), elapsedMs: Date.now() - started, polls,
+    };
+    if (Date.now() < deadline) await page.waitForTimeout(Math.min(100, deadline - Date.now()));
+  } while (Date.now() < deadline);
+  throw new Error('Published recipe warmup did not become ready within ' + timeoutMs + ' ms: ' + JSON.stringify({ layout, bundleId, warmupAfterTs, polls, lastObservation }));
+}
+export async function configureReplay(page, { views, directory, recordsRoot, allowUnpublished = false, allowDisconnected = false }) {
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
   const records = await read('records_list'), cycle = await read('cycle_snapshot');
   assert(recordsRoot ? resolve(records.root).toLowerCase() === resolve(recordsRoot).toLowerCase() : records.root.includes('com.xyzrobotics.tujiaovision.p0-tests.performance'));
   assert(/^[cC]:[\\/]/.test(directory));
-  assert((cycle.phase === 'IDLE' || allowUnpublished && cycle.phase === 'FAULT' && !cycle.part && cycle.fault?.includes('没有一个配方开得了工')) && !(await read('sim_status')).running);
+  const quiescent = isQuiescentCycleSnapshot(cycle);
+  const disconnected = allowDisconnected && quiescent && cycle.phase === 'FAULT' && cycle.fault === 'PLC 未连接' && (await read('plc_get_status')).state === 'disconnected';
+  assert(quiescent && (cycle.phase === 'IDLE' || disconnected || allowUnpublished && cycle.phase === 'FAULT' && cycle.fault?.includes('没有一个配方开得了工')) && !(await read('sim_status')).running);
   await page.getByRole('navigation', { name: '操作导航' }).getByRole('link', { name: '设备与采集', exact: true }).click();
   await page.getByRole('button', { name: '回放目录', exact: true }).click();
   await page.getByRole('combobox', { name: '设备视角', exact: true }).selectOption(String(views));
@@ -24,8 +87,40 @@ export async function configureReplay(page, { views, directory, recordsRoot, all
   return (await read('camera_rig_config'))[0];
 }
 
+export async function captureTeachingSample(page, { readWorkspace, k, views, previousId, retryEvidence = [] }) {
+  assert(typeof readWorkspace === 'function' && Number.isInteger(k) && k >= 0 && [1, 3].includes(views));
+  const read = (command, args) => page.evaluate(({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
+  const button = page.getByRole('button', { name: '取新样本', exact: true });
+  const lockError = '正在处理 PLC 事务，请稍后重试取图';
+  const errors = page.locator('.wp-notice.warn').filter({ has: page.getByText('操作未完成', { exact: true }) }).locator('p');
+  const initial = await readWorkspace(), prior = previousId ?? initial.workspace.frames[k].image?.id;
+  const deadline = Date.now() + 30000; let clicks = 0, firstLockAt = null;
+  while (Date.now() < deadline) {
+    clicks += 1; await button.click({ timeout: Math.max(1, deadline - Date.now()) });
+    while (Date.now() < deadline) {
+      const state = await readWorkspace(), frame = state.workspace.frames[k];
+      if (frame.image?.id && frame.image.id !== prior && frame.views.length === views) return state;
+      const visibleErrors = [];
+      for (const error of await errors.all()) if (await error.isVisible()) visibleErrors.push((await error.innerText()).trim());
+      if (visibleErrors.some(error => error !== lockError)) throw new Error('Teaching capture failed: ' + visibleErrors.join('; '));
+      if (visibleErrors.length && await button.isEnabled()) {
+        const cycle = await read('cycle_snapshot'), sim = await read('sim_status');
+        const now = Date.now(); firstLockAt ??= now;
+        retryEvidence.push({ k, attempt: clicks, error: lockError, at: new Date(now).toISOString(), elapsedAfterFirstLockMs: now - firstLockAt, previousId: prior ?? null, cycle, sim });
+        assert(isQuiescentCycleSnapshot(cycle) && !sim.running, 'Teaching retry requires a quiescent closed workpiece, unlocked PLC and stopped simulator');
+        assert(clicks < 10 && now - firstLockAt < 5000, 'Teaching PLC-lock retries exhausted (10 attempts / 5 seconds)');
+        await page.waitForTimeout(Math.min(100, Math.max(0, deadline - Date.now())));
+        assert(Date.now() - firstLockAt < 5000, 'Teaching PLC-lock retry window expired');
+        break;
+      }
+      await page.waitForTimeout(Math.min(100, Math.max(0, deadline - Date.now())));
+    }
+  }
+  throw new Error('Replay capture did not complete within original 30s deadline: ' + await page.locator('main').innerText());
+}
+
 export async function teachCleanFixture(page, options) {
-  const { views, inputs, output, recordsRoot, allowUnpublished = false } = options;
+  const { views, inputs, output, recordsRoot, allowUnpublished = false, allowDisconnected = false } = options;
   assert([1, 3].includes(views));
   const id = options.id ?? `P0-CYCLEHOST-${views}V-CLEAN`;
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
@@ -47,9 +142,9 @@ export async function teachCleanFixture(page, options) {
   assert(provenance.physicalValidation === false && provenance.files.length === 32);
   const source = { directory: resolve(inputs), physicalValidation: false, imageCount: provenance.files.length, size: [1280, 1024], source: 'Independent synthetic clean Gray8 PGM replay inputs; original source metadata is not used for content matching' };
   await mkdir(output, { recursive: false });
-  const report = { id, views, startedAt: new Date().toISOString(), passed: false, source, scope: 'Independent desktop candidate taught, trialled, validated and published from CLEAN Prepared pixels via replay camera', physicalValidation: false, captures: [], trials: [] };
+  const report = { id, views, startedAt: new Date().toISOString(), passed: false, source, scope: 'Independent desktop candidate taught, trialled, validated and published from CLEAN Prepared pixels via replay camera', physicalValidation: false, captures: [], captureRetries: [], trials: [] };
   try {
-    report.camera = await configureReplay(page, { views, directory: join(inputs, `${views}-view`, 'normal'), recordsRoot, allowUnpublished });
+    report.camera = await configureReplay(page, { views, directory: join(inputs, `${views}-view`, 'normal'), recordsRoot, allowUnpublished, allowDisconnected });
     await page.getByRole('navigation', { name: '操作导航' }).getByRole('link', { name: '配方库', exact: true }).click();
     await page.getByRole('button', { name: '复制配方 MTR-HSG-B', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '建立候选配方', exact: true });
@@ -75,8 +170,7 @@ export async function teachCleanFixture(page, options) {
     for (let k = 0; k < 4; k++) {
       await page.getByRole('button', { name: `选择帧 k${k + 1}`, exact: true }).click();
       assert(!(await workspace()).workspace.frames[k].image, 'Do not overwrite an existing teaching frame');
-      await page.getByRole('button', { name: '取新样本', exact: true }).click();
-      const captured = await until(v => v.workspace.frames[k].views.length === views, 'Replay capture did not complete');
+      const captured = await captureTeachingSample(page, { readWorkspace: workspace, k, views, retryEvidence: report.captureRetries });
       report.captures.push({ k, image: captured.workspace.frames[k].image, views: captured.workspace.frames[k].views });
       const svg = page.locator('svg.wp-gray-image.editable');
       await svg.waitFor();

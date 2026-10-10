@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readImageBase64 } from "../src/features/workspace/ImageImportButton";
 import ValidationPage from "../src/features/workspace/ValidationPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
@@ -219,9 +220,55 @@ describe("验证与发布页面", () => {
     fireEvent.change(screen.getByRole("textbox",{name:"样本名称"}),{target:{value:"  缺陷原图  "}});
     await userEvent.selectOptions(screen.getByRole("combobox",{name:"人工确认的期望结论"}),"NG_POSITION");
     await userEvent.click(screen.getByRole("button",{name:"保存样本组"}));
-    expect(workspaceApi.importSample).toHaveBeenCalledWith("A",7,"缺陷原图","NG_POSITION",[{k:0,bytes:[0,128,255]},{k:1,bytes:[255,0]}]);
+    expect(workspaceApi.importSample).toHaveBeenCalledWith("A",7,"缺陷原图","NG_POSITION",[{k:0,bytes:"AID/"},{k:1,bytes:"/wA="}]);
     await waitFor(()=>expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
+
+  it.each([0,1,2])("PGM 原始字节跨 Base64 分块后完整往返，末块余数 %s",async tail=>{
+    const header=new TextEncoder().encode(`P5\n#${"x".repeat(tail)}\n257 96\n255\n`);
+    const bytes=new Uint8Array(header.length+257*96);
+    bytes.set(header);
+    for(let i=header.length;i<bytes.length;i++)bytes[i]=(i-header.length)%256;
+    const file=new File([bytes],"original.pgm");
+    Object.defineProperty(file,"arrayBuffer",{value:async()=>bytes.buffer});
+    const encoded=await readImageBase64(file);
+    expect(encoded).toBe(Buffer.from(bytes).toString("base64"));
+    expect(Buffer.compare(Buffer.from(encoded,"base64"),Buffer.from(bytes))).toBe(0);
+  });
+
+  it("40 张全分辨率 PGM 按顺序读取并发送紧凑字符串，不生成数字数组",async()=>{
+    const frame=ws.data!.workspace.frames[0];
+    ws.data!.workspace.frames=Array.from({length:40},(_,k)=>({...frame,k}));
+    const header=new TextEncoder().encode("P5\n1280 1024\n255\n");
+    const bytes=new Uint8Array(header.length+1280*1024);
+    bytes.set(header);
+    for(let i=header.length;i<bytes.length;i++)bytes[i]=(i-header.length)%256;
+    let active=0,maxActive=0;
+    const order:number[]=[];
+    const files=Array.from({length:40},(_,k)=>{
+      const file=new File([bytes],`full-k${k+1}.pgm`);
+      Object.defineProperty(file,"arrayBuffer",{value:vi.fn(async()=>{
+        active++;maxActive=Math.max(maxActive,active);order.push(k);
+        await Promise.resolve();active--;return bytes.buffer;
+      })});
+      return file;
+    });
+    show();await openImport();files.forEach((file,k)=>selectFile(k+1,file));
+    fireEvent.click(screen.getByRole("button",{name:"保存样本组"}));
+    await waitFor(()=>expect(workspaceApi.importSample).toHaveBeenCalledTimes(1),{timeout:20000});
+    const images=vi.mocked(workspaceApi.importSample).mock.calls[0][4];
+    expect(maxActive).toBe(1);
+    expect(order).toEqual(Array.from({length:40},(_,k)=>k));
+    expect(images).toHaveLength(40);
+    for(const [k,image] of images.entries()){
+      expect(image.k).toBe(k);
+      expect(typeof image.bytes).toBe("string");
+      expect(Array.isArray(image.bytes)).toBe(false);
+      expect(image.bytes.length).toBe(4*Math.ceil(bytes.length/3));
+      expect(Buffer.compare(Buffer.from(image.bytes,"base64"),Buffer.from(bytes))).toBe(0);
+    }
+    await waitFor(()=>expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  },30000);
 
   it("必须填名称、完整帧组；取消并重新打开不保留旧文件",async()=>{
     show();await openImport();selectFile(1);
@@ -292,7 +339,7 @@ describe("验证与发布页面", () => {
     await openImport();selectFile(1,imageFile("new-1.pgm",[7,8]));selectFile(2,imageFile("new-2.pgm",[9]));
     await userEvent.click(screen.getByRole("button",{name:"保存样本组"}));
     expect(workspaceApi.importSample).toHaveBeenCalledTimes(1);
-    expect(workspaceApi.importSample).toHaveBeenCalledWith(change==="recipe"?"B":"A",change==="recipe"?7:8,"代表性样本","OK",[{k:0,bytes:[7,8]},{k:1,bytes:[9]}]);
+    expect(workspaceApi.importSample).toHaveBeenCalledWith(change==="recipe"?"B":"A",change==="recipe"?7:8,"代表性样本","OK",[{k:0,bytes:"Bwg="},{k:1,bytes:"CQ=="}]);
     await waitFor(()=>expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     await act(async()=>oldReading.resolve(Uint8Array.from([1]).buffer));
     expect(workspaceApi.importSample).toHaveBeenCalledTimes(1);
