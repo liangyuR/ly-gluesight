@@ -1500,6 +1500,7 @@ pub fn cycle_save_settings(app: AppHandle, cycle: State<'_, CycleHost>, settings
     }
     cycle.save_settings(settings)?;
     measure::apply_settings(&app);
+    let _ = app.emit("cycle://settings-changed", ());
     Ok(())
 }
 
