@@ -1,0 +1,1886 @@
+{
+  "status": "passed",
+  "date": "2026-10-10",
+  "branch": "codex/p0-step6-history",
+  "runtimeBaseCommit": "c359cb6d615f2fbd3a141a4334e15fb4e599cb33",
+  "laterChanges": "b46602f and upstream step5 merge change only tests/docs/scripts, not runtime used by this executable",
+  "identifier": "com.xyzrobotics.tujiaovision.p0-tests.recovery",
+  "executable": {
+    "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-recovery-step6\\gluesight-p0-step6-recovery.exe",
+    "sha256": "85F926EC6358E5D710FB4668CDA0C3DBEE6307F4E3F716D86927120DD84BB484"
+  },
+  "dll": {
+    "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native\\lyflow_core.dll",
+    "version": "1.1.0",
+    "sha256": "b784205274b8a06611322e814e894ce654f174ef5f329ccbb5e7af54bffb3125"
+  },
+  "oldDatabaseBackup": [
+    {
+      "file": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\inspection.db.v0.1791611436765.4190ff8486c85b02.bak",
+      "sha256": "445b54e8d0fdfabca0532207c9c9d203c084721ea08726e43ed905ed228edacf",
+      "userVersion": 0,
+      "integrity": "ok",
+      "parts": 6
+    }
+  ],
+  "newDatabaseVersion": 2,
+  "parts": [
+    {
+      "scenario": "normal",
+      "summary": {
+        "id": 1,
+        "ts": 1791611727354,
+        "sn": 791611724,
+        "recipeId": "P0-TRICAM-UI",
+        "recipeVersion": 1,
+        "recipeHash": "c1574d7504b2a8d4",
+        "triggerMode": "fly",
+        "verdict": "OK_WITH_EXCURSION",
+        "plcCode": 2,
+        "faultCode": 0,
+        "reason": "P1 · J1 局部超差 2.0 mm，在允许范围内",
+        "drainMs": 31,
+        "framesExpected": 4,
+        "framesReceived": 4,
+        "retestOf": null,
+        "cycleId": "671659f9497c79a971161e6eb5e64c1b",
+        "bundleHash": "3b643e189e0f73e5",
+        "delivery": {
+          "state": "acknowledged",
+          "updatedAt": 1791611727554,
+          "message": "PLC 已确认结果（开发协议）"
+        }
+      },
+      "arming": {
+        "configuredArmMs": 200,
+        "elapsedMs": 112,
+        "log": {
+          "ts": 1791611725101,
+          "level": "info",
+          "ev": "armed↑ busy↑",
+          "msg": "P0-TRICAM-UI · N=4 · 布防耗时 112 ms"
+        }
+      },
+      "measurements": [
+        {
+          "k": 0,
+          "cycleId": "671659f9497c79a971161e6eb5e64c1b",
+          "bundleHash": "3b643e189e0f73e5",
+          "camera": "cam1",
+          "ms": 15,
+          "points": 77
+        },
+        {
+          "k": 1,
+          "cycleId": "671659f9497c79a971161e6eb5e64c1b",
+          "bundleHash": "3b643e189e0f73e5",
+          "camera": "cam1",
+          "ms": 18,
+          "points": 76
+        },
+        {
+          "k": 2,
+          "cycleId": "671659f9497c79a971161e6eb5e64c1b",
+          "bundleHash": "3b643e189e0f73e5",
+          "camera": "cam1",
+          "ms": 17,
+          "points": 77
+        },
+        {
+          "k": 3,
+          "cycleId": "671659f9497c79a971161e6eb5e64c1b",
+          "bundleHash": "3b643e189e0f73e5",
+          "camera": "cam1",
+          "ms": 14,
+          "points": 77
+        }
+      ],
+      "shots": [
+        {
+          "k": 0,
+          "shotId": "P1",
+          "camera": "cam1",
+          "view": 1,
+          "session": 1,
+          "ordinal": 1,
+          "frameCounter": 1,
+          "triggerCounter": 1,
+          "status": "done",
+          "error": null,
+          "score": 0.987013,
+          "ms": 15,
+          "rawFiles": [
+            {
+              "view": 1,
+              "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k000_P1_cam1_v1.pgm",
+              "hash": "fnv1a64:318dd219ea032e2b"
+            },
+            {
+              "view": 2,
+              "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k000_P1_cam1_v2.pgm",
+              "hash": "fnv1a64:3702c611df933d93"
+            },
+            {
+              "view": 3,
+              "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k000_P1_cam1_v3.pgm",
+              "hash": "fnv1a64:3702c611df933d93"
+            }
+          ]
+        },
+        {
+          "k": 1,
+          "shotId": "P2",
+          "camera": "cam1",
+          "view": 2,
+          "session": 1,
+          "ordinal": 2,
+          "frameCounter": 2,
+          "triggerCounter": 2,
+          "status": "done",
+          "error": null,
+          "score": 0.9736842,
+          "ms": 18,
+          "rawFiles": [
+            {
+              "view": 1,
+              "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k001_P2_cam1_v1.pgm",
+              "hash": "fnv1a64:e880aeebe88fa147"
+            },
+            {
+              "view": 2,
+              "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k001_P2_cam1_v2.pgm",
+              "hash": "fnv1a64:e8ad1f9ac2799d5b"
+            },
+            {
+              "view": 3,
+              "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k001_P2_cam1_v3.pgm",
+              "hash": "fnv1a64:e880aeebe88fa147"
+            }
+          ]
+        },
+        {
+          "k": 2,
+          "shotId": "P3",
+          "camera": "cam1",
+          "view": 3,
+          "session": 1,
+          "ordinal": 3,
+          "frameCounter": 3,
+          "triggerCounter": 3,
+          "status": "done",
+          "error": null,
+          "score": 0.97402596,
+          "ms": 17,
+          "rawFiles": [
+            {
+              "view": 1,
+              "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k002_P3_cam1_v1.pgm",
+              "hash": "fnv1a64:0c4bf06d29e35b92"
+            },
+            {
+              "view": 2,
+              "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k002_P3_cam1_v2.pgm",
+              "hash": "fnv1a64:0c4bf06d29e35b92"
+            },
+            {
+              "view": 3,
+              "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k002_P3_cam1_v3.pgm",
+              "hash": "fnv1a64:b434ebcf1a089d0c"
+            }
+          ]
+        },
+        {
+          "k": 3,
+          "shotId": "P4",
+          "camera": "cam1",
+          "view": 1,
+          "session": 1,
+          "ordinal": 4,
+          "frameCounter": 4,
+          "triggerCounter": 4,
+          "status": "done",
+          "error": null,
+          "score": 0.96103895,
+          "ms": 14,
+          "rawFiles": [
+            {
+              "view": 1,
+              "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k003_P4_cam1_v1.pgm",
+              "hash": "fnv1a64:a103eb92ac0dedcb"
+            },
+            {
+              "view": 2,
+              "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k003_P4_cam1_v2.pgm",
+              "hash": "fnv1a64:b1a9517f8812ba60"
+            },
+            {
+              "view": 3,
+              "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k003_P4_cam1_v3.pgm",
+              "hash": "fnv1a64:b1a9517f8812ba60"
+            }
+          ]
+        }
+      ],
+      "recording": {
+        "state": "complete",
+        "available": true,
+        "directory": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b",
+        "errors": []
+      },
+      "recordingObservations": [
+        {
+          "observedAt": 1791611727401,
+          "recordingState": "pending",
+          "deliveryState": "submitted",
+          "rawFrames": 0,
+          "rawComplete": false
+        },
+        {
+          "observedAt": 1791611727555,
+          "recordingState": "complete",
+          "deliveryState": "submitted",
+          "rawFrames": 12,
+          "rawComplete": true
+        },
+        {
+          "observedAt": 1791611727725,
+          "recordingState": "complete",
+          "deliveryState": "acknowledged",
+          "rawFrames": 12,
+          "rawComplete": true
+        }
+      ],
+      "originals": [
+        {
+          "k": 0,
+          "view": 1,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b\\k000_P1_cam1_v1.pgm",
+          "sha256": "0f54824d9635f504b8b4be3d7d68520e801d449dc0c582a317557e5557bf49b6",
+          "bytes": 1310737
+        },
+        {
+          "k": 0,
+          "view": 2,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b\\k000_P1_cam1_v2.pgm",
+          "sha256": "ad85628c8f17d2c7aad88ad958e664dac4a9d068a7ad68b8ab6f3bf5d35fdee5",
+          "bytes": 1310737
+        },
+        {
+          "k": 0,
+          "view": 3,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b\\k000_P1_cam1_v3.pgm",
+          "sha256": "ad85628c8f17d2c7aad88ad958e664dac4a9d068a7ad68b8ab6f3bf5d35fdee5",
+          "bytes": 1310737
+        },
+        {
+          "k": 1,
+          "view": 1,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b\\k001_P2_cam1_v1.pgm",
+          "sha256": "310c177ee243007ea8b9ac0bd7fe578d55da3ded6a7c7430eedaf26ea5de566a",
+          "bytes": 1310737
+        },
+        {
+          "k": 1,
+          "view": 2,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b\\k001_P2_cam1_v2.pgm",
+          "sha256": "f8709c69ac5607614571d94c406ab27f62d4b9772766342e60ed820e16b126a2",
+          "bytes": 1310737
+        },
+        {
+          "k": 1,
+          "view": 3,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b\\k001_P2_cam1_v3.pgm",
+          "sha256": "310c177ee243007ea8b9ac0bd7fe578d55da3ded6a7c7430eedaf26ea5de566a",
+          "bytes": 1310737
+        },
+        {
+          "k": 2,
+          "view": 1,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b\\k002_P3_cam1_v1.pgm",
+          "sha256": "718424f065ae05db70b35e252d87f8372804c4e2afb046b171582d702da7e9c9",
+          "bytes": 1310737
+        },
+        {
+          "k": 2,
+          "view": 2,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b\\k002_P3_cam1_v2.pgm",
+          "sha256": "718424f065ae05db70b35e252d87f8372804c4e2afb046b171582d702da7e9c9",
+          "bytes": 1310737
+        },
+        {
+          "k": 2,
+          "view": 3,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b\\k002_P3_cam1_v3.pgm",
+          "sha256": "2e9da35a143dfcaa5a23bf821532eb8b2eb15c8a485303e4b8145ae703ee9e6a",
+          "bytes": 1310737
+        },
+        {
+          "k": 3,
+          "view": 1,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b\\k003_P4_cam1_v1.pgm",
+          "sha256": "5fbb944fc12f46000849e14dac1077f48309a8fda753748df1243fc6c1b57c54",
+          "bytes": 1310737
+        },
+        {
+          "k": 3,
+          "view": 2,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b\\k003_P4_cam1_v2.pgm",
+          "sha256": "66b346a27c97a6ac77d1ee23b7e7171af7a7772f3155903a43fea6e0e9a37e9d",
+          "bytes": 1310737
+        },
+        {
+          "k": 3,
+          "view": 3,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b\\k003_P4_cam1_v3.pgm",
+          "sha256": "66b346a27c97a6ac77d1ee23b7e7171af7a7772f3155903a43fea6e0e9a37e9d",
+          "bytes": 1310737
+        }
+      ]
+    },
+    {
+      "scenario": "gap",
+      "summary": {
+        "id": 2,
+        "ts": 1791611730327,
+        "sn": 791611725,
+        "recipeId": "P0-TRICAM-UI",
+        "recipeVersion": 1,
+        "recipeHash": "c1574d7504b2a8d4",
+        "triggerMode": "fly",
+        "verdict": "NG_GAP",
+        "plcCode": 13,
+        "faultCode": 0,
+        "reason": "P2 · J1 断胶 8.0 mm > 6.0 mm · s=34.0–42.0",
+        "drainMs": 15,
+        "framesExpected": 4,
+        "framesReceived": 4,
+        "retestOf": null,
+        "cycleId": "5fc86f0df12db3dc85f804ec72a639e8",
+        "bundleHash": "3b643e189e0f73e5",
+        "delivery": {
+          "state": "acknowledged",
+          "updatedAt": 1791611730549,
+          "message": "PLC 已确认结果（开发协议）"
+        }
+      },
+      "arming": {
+        "configuredArmMs": 200,
+        "elapsedMs": 143,
+        "log": {
+          "ts": 1791611728070,
+          "level": "info",
+          "ev": "armed↑ busy↑",
+          "msg": "P0-TRICAM-UI · N=4 · 布防耗时 143 ms"
+        }
+      },
+      "measurements": [
+        {
+          "k": 0,
+          "cycleId": "5fc86f0df12db3dc85f804ec72a639e8",
+          "bundleHash": "3b643e189e0f73e5",
+          "camera": "cam1",
+          "ms": 19,
+          "points": 77
+        },
+        {
+          "k": 1,
+          "cycleId": "5fc86f0df12db3dc85f804ec72a639e8",
+          "bundleHash": "3b643e189e0f73e5",
+          "camera": "cam1",
+          "ms": 14,
+          "points": 76
+        },
+        {
+          "k": 2,
+          "cycleId": "5fc86f0df12db3dc85f804ec72a639e8",
+          "bundleHash": "3b643e189e0f73e5",
+          "camera": "cam1",
+          "ms": 18,
+          "points": 77
+        },
+        {
+          "k": 3,
+          "cycleId": "5fc86f0df12db3dc85f804ec72a639e8",
+          "bundleHash": "3b643e189e0f73e5",
+          "camera": "cam1",
+          "ms": 15,
+          "points": 77
+        }
+      ],
+      "shots": [
+        {
+          "k": 0,
+          "shotId": "P1",
+          "camera": "cam1",
+          "view": 1,
+          "session": 1,
+          "ordinal": 1,
+          "frameCounter": 5,
+          "triggerCounter": 5,
+          "status": "done",
+          "error": null,
+          "score": 0.987013,
+          "ms": 19,
+          "rawFiles": [
+            {
+              "view": 1,
+              "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k000_P1_cam1_v1.pgm",
+              "hash": "fnv1a64:3aef48e3e520f7d4"
+            },
+            {
+              "view": 2,
+              "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k000_P1_cam1_v2.pgm",
+              "hash": "fnv1a64:7a2a2f7b6617e81e"
+            },
+            {
+              "view": 3,
+              "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k000_P1_cam1_v3.pgm",
+              "hash": "fnv1a64:7a2a2f7b6617e81e"
+            }
+          ]
+        },
+        {
+          "k": 1,
+          "shotId": "P2",
+          "camera": "cam1",
+          "view": 2,
+          "session": 1,
+          "ordinal": 2,
+          "frameCounter": 6,
+          "triggerCounter": 6,
+          "status": "done",
+          "error": null,
+          "score": 0.8684211,
+          "ms": 14,
+          "rawFiles": [
+            {
+              "view": 1,
+              "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k001_P2_cam1_v1.pgm",
+              "hash": "fnv1a64:6afea846760ce5aa"
+            },
+            {
+              "view": 2,
+              "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k001_P2_cam1_v2.pgm",
+              "hash": "fnv1a64:4912fbf0d47f64a5"
+            },
+            {
+              "view": 3,
+              "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k001_P2_cam1_v3.pgm",
+              "hash": "fnv1a64:6afea846760ce5aa"
+            }
+          ]
+        },
+        {
+          "k": 2,
+          "shotId": "P3",
+          "camera": "cam1",
+          "view": 3,
+          "session": 1,
+          "ordinal": 3,
+          "frameCounter": 7,
+          "triggerCounter": 7,
+          "status": "done",
+          "error": null,
+          "score": 1,
+          "ms": 18,
+          "rawFiles": [
+            {
+              "view": 1,
+              "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k002_P3_cam1_v1.pgm",
+              "hash": "fnv1a64:913bf3210c6ebaa7"
+            },
+            {
+              "view": 2,
+              "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k002_P3_cam1_v2.pgm",
+              "hash": "fnv1a64:913bf3210c6ebaa7"
+            },
+            {
+              "view": 3,
+              "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k002_P3_cam1_v3.pgm",
+              "hash": "fnv1a64:77aa76afc73affba"
+            }
+          ]
+        },
+        {
+          "k": 3,
+          "shotId": "P4",
+          "camera": "cam1",
+          "view": 1,
+          "session": 1,
+          "ordinal": 4,
+          "frameCounter": 8,
+          "triggerCounter": 8,
+          "status": "done",
+          "error": null,
+          "score": 0.987013,
+          "ms": 15,
+          "rawFiles": [
+            {
+              "view": 1,
+              "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k003_P4_cam1_v1.pgm",
+              "hash": "fnv1a64:3b753138e43eb957"
+            },
+            {
+              "view": 2,
+              "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k003_P4_cam1_v2.pgm",
+              "hash": "fnv1a64:0277191008e5862b"
+            },
+            {
+              "view": 3,
+              "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k003_P4_cam1_v3.pgm",
+              "hash": "fnv1a64:0277191008e5862b"
+            }
+          ]
+        }
+      ],
+      "recording": {
+        "state": "complete",
+        "available": true,
+        "directory": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8",
+        "errors": []
+      },
+      "recordingObservations": [
+        {
+          "observedAt": 1791611730440,
+          "recordingState": "complete",
+          "deliveryState": "submitted",
+          "rawFrames": 12,
+          "rawComplete": true
+        },
+        {
+          "observedAt": 1791611730609,
+          "recordingState": "complete",
+          "deliveryState": "acknowledged",
+          "rawFrames": 12,
+          "rawComplete": true
+        }
+      ],
+      "originals": [
+        {
+          "k": 0,
+          "view": 1,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8\\k000_P1_cam1_v1.pgm",
+          "sha256": "183e35d8badcd2b153055d6aa4910a9a81cf32aaf386e2a9bcbe8190ea2711d3",
+          "bytes": 1310737
+        },
+        {
+          "k": 0,
+          "view": 2,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8\\k000_P1_cam1_v2.pgm",
+          "sha256": "80c611859fffadeeba81b3ebcf6332e4600a3bf6852b5f2ffa55b4eb8e62957b",
+          "bytes": 1310737
+        },
+        {
+          "k": 0,
+          "view": 3,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8\\k000_P1_cam1_v3.pgm",
+          "sha256": "80c611859fffadeeba81b3ebcf6332e4600a3bf6852b5f2ffa55b4eb8e62957b",
+          "bytes": 1310737
+        },
+        {
+          "k": 1,
+          "view": 1,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8\\k001_P2_cam1_v1.pgm",
+          "sha256": "30f8c95ccbdd7e75e759b0366db9ff97f830c676ff84294278989b472b632de0",
+          "bytes": 1310737
+        },
+        {
+          "k": 1,
+          "view": 2,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8\\k001_P2_cam1_v2.pgm",
+          "sha256": "720b50e8feaba7f4798392df81dbef238911b753c33e6f08ff51e6408748bffa",
+          "bytes": 1310737
+        },
+        {
+          "k": 1,
+          "view": 3,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8\\k001_P2_cam1_v3.pgm",
+          "sha256": "30f8c95ccbdd7e75e759b0366db9ff97f830c676ff84294278989b472b632de0",
+          "bytes": 1310737
+        },
+        {
+          "k": 2,
+          "view": 1,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8\\k002_P3_cam1_v1.pgm",
+          "sha256": "013a4d1d8db512085bb67f3eaa0d3e33de8e0b1fd155325df351b6d5c947c5e5",
+          "bytes": 1310737
+        },
+        {
+          "k": 2,
+          "view": 2,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8\\k002_P3_cam1_v2.pgm",
+          "sha256": "013a4d1d8db512085bb67f3eaa0d3e33de8e0b1fd155325df351b6d5c947c5e5",
+          "bytes": 1310737
+        },
+        {
+          "k": 2,
+          "view": 3,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8\\k002_P3_cam1_v3.pgm",
+          "sha256": "cf61e447be9da70dee06308f8451dd75ca72b692f6203548f1229ee18e12a363",
+          "bytes": 1310737
+        },
+        {
+          "k": 3,
+          "view": 1,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8\\k003_P4_cam1_v1.pgm",
+          "sha256": "1519d601ab3176e4ff4f71487f795f9b5afeb7b037edeaf3f591b84c20a778bb",
+          "bytes": 1310737
+        },
+        {
+          "k": 3,
+          "view": 2,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8\\k003_P4_cam1_v2.pgm",
+          "sha256": "33cdc4f68448194b4d533e9224107b13537cb1a0b20ed5712a10aedadf4a264b",
+          "bytes": 1310737
+        },
+        {
+          "k": 3,
+          "view": 3,
+          "camera": "cam1",
+          "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\records\\20261010\\20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8\\k003_P4_cam1_v3.pgm",
+          "sha256": "33cdc4f68448194b4d533e9224107b13537cb1a0b20ed5712a10aedadf4a264b",
+          "bytes": 1310737
+        }
+      ]
+    }
+  ],
+  "history": {
+    "exported": "已导出：C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\exports\\检测记录_20261010_135928.csv 打开所在文件夹",
+    "results": [
+      {
+        "historyId": 1,
+        "sn": 791611724,
+        "cycleId": "671659f9497c79a971161e6eb5e64c1b",
+        "bundleHash": "3b643e189e0f73e5",
+        "verdict": "OK_WITH_EXCURSION",
+        "views": [
+          {
+            "k": 0,
+            "view": 1,
+            "selectedView": true,
+            "teachingEnabled": true,
+            "imageBox": {
+              "x": 240,
+              "y": 317.671875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k000_P1_cam1_v1.pgm"
+          },
+          {
+            "k": 0,
+            "view": 2,
+            "selectedView": false,
+            "teachingEnabled": false,
+            "imageBox": {
+              "x": 240,
+              "y": 317.671875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k000_P1_cam1_v2.pgm"
+          },
+          {
+            "k": 0,
+            "view": 3,
+            "selectedView": false,
+            "teachingEnabled": false,
+            "imageBox": {
+              "x": 240,
+              "y": 317.671875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k000_P1_cam1_v3.pgm"
+          },
+          {
+            "k": 1,
+            "view": 1,
+            "selectedView": false,
+            "teachingEnabled": false,
+            "imageBox": {
+              "x": 240,
+              "y": 317.671875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k001_P2_cam1_v1.pgm"
+          },
+          {
+            "k": 1,
+            "view": 2,
+            "selectedView": true,
+            "teachingEnabled": true,
+            "imageBox": {
+              "x": 240,
+              "y": 317.671875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k001_P2_cam1_v2.pgm"
+          },
+          {
+            "k": 1,
+            "view": 3,
+            "selectedView": false,
+            "teachingEnabled": false,
+            "imageBox": {
+              "x": 240,
+              "y": 317.671875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k001_P2_cam1_v3.pgm"
+          },
+          {
+            "k": 2,
+            "view": 1,
+            "selectedView": false,
+            "teachingEnabled": false,
+            "imageBox": {
+              "x": 240,
+              "y": 317.671875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k002_P3_cam1_v1.pgm"
+          },
+          {
+            "k": 2,
+            "view": 2,
+            "selectedView": false,
+            "teachingEnabled": false,
+            "imageBox": {
+              "x": 240,
+              "y": 317.671875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k002_P3_cam1_v2.pgm"
+          },
+          {
+            "k": 2,
+            "view": 3,
+            "selectedView": true,
+            "teachingEnabled": true,
+            "imageBox": {
+              "x": 240,
+              "y": 317.671875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k002_P3_cam1_v3.pgm"
+          },
+          {
+            "k": 3,
+            "view": 1,
+            "selectedView": true,
+            "teachingEnabled": true,
+            "imageBox": {
+              "x": 240,
+              "y": 317.671875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k003_P4_cam1_v1.pgm"
+          },
+          {
+            "k": 3,
+            "view": 2,
+            "selectedView": false,
+            "teachingEnabled": false,
+            "imageBox": {
+              "x": 240,
+              "y": 317.671875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k003_P4_cam1_v2.pgm"
+          },
+          {
+            "k": 3,
+            "view": 3,
+            "selectedView": false,
+            "teachingEnabled": false,
+            "imageBox": {
+              "x": 240,
+              "y": 317.671875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135525_101_OK_WITH_EXCURSION_cycle_671659f9497c79a971161e6eb5e64c1b/k003_P4_cam1_v3.pgm"
+          }
+        ],
+        "comparisons": [
+          {
+            "id": "1-1791611969446-3",
+            "source": "original",
+            "candidateRevision": 0,
+            "candidateVersion": 1,
+            "candidateHash": "c1574d7504b2a8d4",
+            "bundleHash": "3b643e189e0f73e5",
+            "originalVerdict": "OK_WITH_EXCURSION",
+            "judgement": {
+              "verdict": "OK_WITH_EXCURSION",
+              "plcCode": 2,
+              "faultCode": 0,
+              "reason": "P1 · J1 局部超差 2.0 mm，在允许范围内",
+              "segments": [
+                {
+                  "verdict": "OK_WITH_EXCURSION",
+                  "min": 0.133728,
+                  "max": 0.200424,
+                  "excursionLen": 0,
+                  "wMin": 3.7892962,
+                  "wMax": 5.7645283,
+                  "wExcursionLen": 2
+                },
+                {
+                  "verdict": "OK",
+                  "min": 0.057848003,
+                  "max": 0.13048,
+                  "excursionLen": 0,
+                  "wMin": 3.792768,
+                  "wMax": 3.806544,
+                  "wExcursionLen": 0
+                },
+                {
+                  "verdict": "OK_WITH_EXCURSION",
+                  "min": -0.72318405,
+                  "max": 0.298592,
+                  "excursionLen": 0,
+                  "wMin": 3.788736,
+                  "wMax": 5.8483043,
+                  "wExcursionLen": 5
+                },
+                {
+                  "verdict": "OK_WITH_EXCURSION",
+                  "min": 0.132552,
+                  "max": 1.1422321,
+                  "excursionLen": 0,
+                  "wMin": 3.786272,
+                  "wMax": 5.8041763,
+                  "wExcursionLen": 5
+                }
+              ],
+              "gaps": []
+            },
+            "measurements": [
+              {
+                "k": 0,
+                "cycleId": "671659f9497c79a971161e6eb5e64c1b",
+                "bundleHash": "3b643e189e0f73e5",
+                "error": null,
+                "ms": 9,
+                "points": 77
+              },
+              {
+                "k": 1,
+                "cycleId": "671659f9497c79a971161e6eb5e64c1b",
+                "bundleHash": "3b643e189e0f73e5",
+                "error": null,
+                "ms": 8,
+                "points": 76
+              },
+              {
+                "k": 2,
+                "cycleId": "671659f9497c79a971161e6eb5e64c1b",
+                "bundleHash": "3b643e189e0f73e5",
+                "error": null,
+                "ms": 9,
+                "points": 77
+              },
+              {
+                "k": 3,
+                "cycleId": "671659f9497c79a971161e6eb5e64c1b",
+                "bundleHash": "3b643e189e0f73e5",
+                "error": null,
+                "ms": 10,
+                "points": 77
+              }
+            ]
+          },
+          {
+            "id": "1-1791611969872-4",
+            "source": "rules",
+            "candidateRevision": 46,
+            "candidateVersion": 2,
+            "candidateHash": "c1574d7504b2a8d4",
+            "bundleHash": "3b643e189e0f73e5",
+            "originalVerdict": "OK_WITH_EXCURSION",
+            "judgement": {
+              "verdict": "OK_WITH_EXCURSION",
+              "plcCode": 2,
+              "faultCode": 0,
+              "reason": "P1 · J1 局部超差 2.0 mm，在允许范围内",
+              "segments": [
+                {
+                  "verdict": "OK_WITH_EXCURSION",
+                  "min": 0.133728,
+                  "max": 0.200424,
+                  "excursionLen": 0,
+                  "wMin": 3.7892962,
+                  "wMax": 5.7645283,
+                  "wExcursionLen": 2
+                },
+                {
+                  "verdict": "OK",
+                  "min": 0.057848003,
+                  "max": 0.13048,
+                  "excursionLen": 0,
+                  "wMin": 3.792768,
+                  "wMax": 3.806544,
+                  "wExcursionLen": 0
+                },
+                {
+                  "verdict": "OK_WITH_EXCURSION",
+                  "min": -0.72318405,
+                  "max": 0.298592,
+                  "excursionLen": 0,
+                  "wMin": 3.788736,
+                  "wMax": 5.8483043,
+                  "wExcursionLen": 5
+                },
+                {
+                  "verdict": "OK_WITH_EXCURSION",
+                  "min": 0.132552,
+                  "max": 1.1422321,
+                  "excursionLen": 0,
+                  "wMin": 3.786272,
+                  "wMax": 5.8041763,
+                  "wExcursionLen": 5
+                }
+              ],
+              "gaps": []
+            },
+            "measurements": []
+          },
+          {
+            "id": "1-1791611970376-5",
+            "source": "raw",
+            "candidateRevision": 46,
+            "candidateVersion": 2,
+            "candidateHash": "c1574d7504b2a8d4",
+            "bundleHash": "3b643e189e0f73e5",
+            "originalVerdict": "OK_WITH_EXCURSION",
+            "judgement": {
+              "verdict": "OK_WITH_EXCURSION",
+              "plcCode": 2,
+              "faultCode": 0,
+              "reason": "P1 · J1 局部超差 2.0 mm，在允许范围内",
+              "segments": [
+                {
+                  "verdict": "OK_WITH_EXCURSION",
+                  "min": 0.133728,
+                  "max": 0.200424,
+                  "excursionLen": 0,
+                  "wMin": 3.7892962,
+                  "wMax": 5.7645283,
+                  "wExcursionLen": 2
+                },
+                {
+                  "verdict": "OK",
+                  "min": 0.057848003,
+                  "max": 0.13048,
+                  "excursionLen": 0,
+                  "wMin": 3.792768,
+                  "wMax": 3.806544,
+                  "wExcursionLen": 0
+                },
+                {
+                  "verdict": "OK_WITH_EXCURSION",
+                  "min": -0.72318405,
+                  "max": 0.298592,
+                  "excursionLen": 0,
+                  "wMin": 3.788736,
+                  "wMax": 5.8483043,
+                  "wExcursionLen": 5
+                },
+                {
+                  "verdict": "OK_WITH_EXCURSION",
+                  "min": 0.132552,
+                  "max": 1.1422321,
+                  "excursionLen": 0,
+                  "wMin": 3.786272,
+                  "wMax": 5.8041763,
+                  "wExcursionLen": 5
+                }
+              ],
+              "gaps": []
+            },
+            "measurements": [
+              {
+                "k": 0,
+                "cycleId": "candidate-c1574d7504b2a8d4-37372-17",
+                "bundleHash": null,
+                "error": null,
+                "ms": 9,
+                "points": 77
+              },
+              {
+                "k": 1,
+                "cycleId": "candidate-c1574d7504b2a8d4-37372-17",
+                "bundleHash": null,
+                "error": null,
+                "ms": 10,
+                "points": 76
+              },
+              {
+                "k": 2,
+                "cycleId": "candidate-c1574d7504b2a8d4-37372-17",
+                "bundleHash": null,
+                "error": null,
+                "ms": 10,
+                "points": 77
+              },
+              {
+                "k": 3,
+                "cycleId": "candidate-c1574d7504b2a8d4-37372-17",
+                "bundleHash": null,
+                "error": null,
+                "ms": 9,
+                "points": 77
+              }
+            ]
+          }
+        ],
+        "originalRecordUnchanged": true
+      },
+      {
+        "historyId": 2,
+        "sn": 791611725,
+        "cycleId": "5fc86f0df12db3dc85f804ec72a639e8",
+        "bundleHash": "3b643e189e0f73e5",
+        "verdict": "NG_GAP",
+        "views": [
+          {
+            "k": 0,
+            "view": 1,
+            "selectedView": true,
+            "teachingEnabled": true,
+            "imageBox": {
+              "x": 240,
+              "y": 318.46875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k000_P1_cam1_v1.pgm"
+          },
+          {
+            "k": 0,
+            "view": 2,
+            "selectedView": false,
+            "teachingEnabled": false,
+            "imageBox": {
+              "x": 240,
+              "y": 318.46875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k000_P1_cam1_v2.pgm"
+          },
+          {
+            "k": 0,
+            "view": 3,
+            "selectedView": false,
+            "teachingEnabled": false,
+            "imageBox": {
+              "x": 240,
+              "y": 318.46875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k000_P1_cam1_v3.pgm"
+          },
+          {
+            "k": 1,
+            "view": 1,
+            "selectedView": false,
+            "teachingEnabled": false,
+            "imageBox": {
+              "x": 240,
+              "y": 318.46875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k001_P2_cam1_v1.pgm"
+          },
+          {
+            "k": 1,
+            "view": 2,
+            "selectedView": true,
+            "teachingEnabled": true,
+            "imageBox": {
+              "x": 240,
+              "y": 318.46875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k001_P2_cam1_v2.pgm"
+          },
+          {
+            "k": 1,
+            "view": 3,
+            "selectedView": false,
+            "teachingEnabled": false,
+            "imageBox": {
+              "x": 240,
+              "y": 318.46875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k001_P2_cam1_v3.pgm"
+          },
+          {
+            "k": 2,
+            "view": 1,
+            "selectedView": false,
+            "teachingEnabled": false,
+            "imageBox": {
+              "x": 240,
+              "y": 318.46875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k002_P3_cam1_v1.pgm"
+          },
+          {
+            "k": 2,
+            "view": 2,
+            "selectedView": false,
+            "teachingEnabled": false,
+            "imageBox": {
+              "x": 240,
+              "y": 318.46875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k002_P3_cam1_v2.pgm"
+          },
+          {
+            "k": 2,
+            "view": 3,
+            "selectedView": true,
+            "teachingEnabled": true,
+            "imageBox": {
+              "x": 240,
+              "y": 318.46875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k002_P3_cam1_v3.pgm"
+          },
+          {
+            "k": 3,
+            "view": 1,
+            "selectedView": true,
+            "teachingEnabled": true,
+            "imageBox": {
+              "x": 240,
+              "y": 318.46875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k003_P4_cam1_v1.pgm"
+          },
+          {
+            "k": 3,
+            "view": 2,
+            "selectedView": false,
+            "teachingEnabled": false,
+            "imageBox": {
+              "x": 240,
+              "y": 318.46875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k003_P4_cam1_v2.pgm"
+          },
+          {
+            "k": 3,
+            "view": 3,
+            "selectedView": false,
+            "teachingEnabled": false,
+            "imageBox": {
+              "x": 240,
+              "y": 318.46875,
+              "width": 773,
+              "height": 324
+            },
+            "file": "20261010/20261010_135528_070_NG_GAP_cycle_5fc86f0df12db3dc85f804ec72a639e8/k003_P4_cam1_v3.pgm"
+          }
+        ],
+        "comparisons": [
+          {
+            "id": "2-1791611974228-6",
+            "source": "original",
+            "candidateRevision": 0,
+            "candidateVersion": 1,
+            "candidateHash": "c1574d7504b2a8d4",
+            "bundleHash": "3b643e189e0f73e5",
+            "originalVerdict": "NG_GAP",
+            "judgement": {
+              "verdict": "NG_GAP",
+              "plcCode": 13,
+              "faultCode": 0,
+              "reason": "P2 · J1 断胶 8.0 mm > 6.0 mm · s=34.0–42.0",
+              "segments": [
+                {
+                  "verdict": "OK_WITH_EXCURSION",
+                  "min": -1.466192,
+                  "max": -0.383264,
+                  "excursionLen": 0,
+                  "wMin": 3.7940001,
+                  "wMax": 5.826128,
+                  "wExcursionLen": 4
+                },
+                {
+                  "verdict": "NG_GAP",
+                  "min": -1.4927361,
+                  "max": -0.323736,
+                  "excursionLen": 0,
+                  "wMin": 3.79624,
+                  "wMax": 5.776176,
+                  "wExcursionLen": 1
+                },
+                {
+                  "verdict": "OK_WITH_EXCURSION",
+                  "min": -0.77336,
+                  "max": 0.435176,
+                  "excursionLen": 0,
+                  "wMin": 3.791424,
+                  "wMax": 5.729584,
+                  "wExcursionLen": 3
+                },
+                {
+                  "verdict": "OK_WITH_EXCURSION",
+                  "min": -0.69680804,
+                  "max": -0.382256,
+                  "excursionLen": 0,
+                  "wMin": 3.788624,
+                  "wMax": 5.7853603,
+                  "wExcursionLen": 3
+                }
+              ],
+              "gaps": [
+                {
+                  "segment": 1,
+                  "s0": 34,
+                  "s1": 42,
+                  "len": 8,
+                  "frames": [
+                    1
+                  ]
+                }
+              ]
+            },
+            "measurements": [
+              {
+                "k": 0,
+                "cycleId": "5fc86f0df12db3dc85f804ec72a639e8",
+                "bundleHash": "3b643e189e0f73e5",
+                "error": null,
+                "ms": 11,
+                "points": 77
+              },
+              {
+                "k": 1,
+                "cycleId": "5fc86f0df12db3dc85f804ec72a639e8",
+                "bundleHash": "3b643e189e0f73e5",
+                "error": null,
+                "ms": 12,
+                "points": 76
+              },
+              {
+                "k": 2,
+                "cycleId": "5fc86f0df12db3dc85f804ec72a639e8",
+                "bundleHash": "3b643e189e0f73e5",
+                "error": null,
+                "ms": 13,
+                "points": 77
+              },
+              {
+                "k": 3,
+                "cycleId": "5fc86f0df12db3dc85f804ec72a639e8",
+                "bundleHash": "3b643e189e0f73e5",
+                "error": null,
+                "ms": 11,
+                "points": 77
+              }
+            ]
+          },
+          {
+            "id": "2-1791611974492-7",
+            "source": "rules",
+            "candidateRevision": 46,
+            "candidateVersion": 2,
+            "candidateHash": "c1574d7504b2a8d4",
+            "bundleHash": "3b643e189e0f73e5",
+            "originalVerdict": "NG_GAP",
+            "judgement": {
+              "verdict": "NG_GAP",
+              "plcCode": 13,
+              "faultCode": 0,
+              "reason": "P2 · J1 断胶 8.0 mm > 6.0 mm · s=34.0–42.0",
+              "segments": [
+                {
+                  "verdict": "OK_WITH_EXCURSION",
+                  "min": -1.466192,
+                  "max": -0.383264,
+                  "excursionLen": 0,
+                  "wMin": 3.7940001,
+                  "wMax": 5.826128,
+                  "wExcursionLen": 4
+                },
+                {
+                  "verdict": "NG_GAP",
+                  "min": -1.4927361,
+                  "max": -0.323736,
+                  "excursionLen": 0,
+                  "wMin": 3.79624,
+                  "wMax": 5.776176,
+                  "wExcursionLen": 1
+                },
+                {
+                  "verdict": "OK_WITH_EXCURSION",
+                  "min": -0.77336,
+                  "max": 0.435176,
+                  "excursionLen": 0,
+                  "wMin": 3.791424,
+                  "wMax": 5.729584,
+                  "wExcursionLen": 3
+                },
+                {
+                  "verdict": "OK_WITH_EXCURSION",
+                  "min": -0.69680804,
+                  "max": -0.382256,
+                  "excursionLen": 0,
+                  "wMin": 3.788624,
+                  "wMax": 5.7853603,
+                  "wExcursionLen": 3
+                }
+              ],
+              "gaps": [
+                {
+                  "segment": 1,
+                  "s0": 34,
+                  "s1": 42,
+                  "len": 8,
+                  "frames": [
+                    1
+                  ]
+                }
+              ]
+            },
+            "measurements": []
+          },
+          {
+            "id": "2-1791611974782-8",
+            "source": "raw",
+            "candidateRevision": 46,
+            "candidateVersion": 2,
+            "candidateHash": "c1574d7504b2a8d4",
+            "bundleHash": "3b643e189e0f73e5",
+            "originalVerdict": "NG_GAP",
+            "judgement": {
+              "verdict": "NG_GAP",
+              "plcCode": 13,
+              "faultCode": 0,
+              "reason": "P2 · J1 断胶 8.0 mm > 6.0 mm · s=34.0–42.0",
+              "segments": [
+                {
+                  "verdict": "OK_WITH_EXCURSION",
+                  "min": -1.466192,
+                  "max": -0.383264,
+                  "excursionLen": 0,
+                  "wMin": 3.7940001,
+                  "wMax": 5.826128,
+                  "wExcursionLen": 4
+                },
+                {
+                  "verdict": "NG_GAP",
+                  "min": -1.4927361,
+                  "max": -0.323736,
+                  "excursionLen": 0,
+                  "wMin": 3.79624,
+                  "wMax": 5.776176,
+                  "wExcursionLen": 1
+                },
+                {
+                  "verdict": "OK_WITH_EXCURSION",
+                  "min": -0.77336,
+                  "max": 0.435176,
+                  "excursionLen": 0,
+                  "wMin": 3.791424,
+                  "wMax": 5.729584,
+                  "wExcursionLen": 3
+                },
+                {
+                  "verdict": "OK_WITH_EXCURSION",
+                  "min": -0.69680804,
+                  "max": -0.382256,
+                  "excursionLen": 0,
+                  "wMin": 3.788624,
+                  "wMax": 5.7853603,
+                  "wExcursionLen": 3
+                }
+              ],
+              "gaps": [
+                {
+                  "segment": 1,
+                  "s0": 34,
+                  "s1": 42,
+                  "len": 8,
+                  "frames": [
+                    1
+                  ]
+                }
+              ]
+            },
+            "measurements": [
+              {
+                "k": 0,
+                "cycleId": "candidate-c1574d7504b2a8d4-37372-26",
+                "bundleHash": null,
+                "error": null,
+                "ms": 10,
+                "points": 77
+              },
+              {
+                "k": 1,
+                "cycleId": "candidate-c1574d7504b2a8d4-37372-26",
+                "bundleHash": null,
+                "error": null,
+                "ms": 10,
+                "points": 76
+              },
+              {
+                "k": 2,
+                "cycleId": "candidate-c1574d7504b2a8d4-37372-26",
+                "bundleHash": null,
+                "error": null,
+                "ms": 9,
+                "points": 77
+              },
+              {
+                "k": 3,
+                "cycleId": "candidate-c1574d7504b2a8d4-37372-26",
+                "bundleHash": null,
+                "error": null,
+                "ms": 10,
+                "points": 77
+              }
+            ]
+          }
+        ],
+        "originalRecordUnchanged": true
+      }
+    ],
+    "candidateUnchanged": true,
+    "viewsShownPerPart": 12,
+    "accuracyQualified": false
+  },
+  "independentOriginalReplay": {
+    "historyId": 2,
+    "sn": 791611725,
+    "cycleId": "5fc86f0df12db3dc85f804ec72a639e8",
+    "bundleHash": "3b643e189e0f73e5",
+    "otherCandidate": {
+      "scope": "other-candidate",
+      "id": "2-1791611773357-6",
+      "candidateRevision": 0,
+      "candidateHash": "c1574d7504b2a8d4",
+      "bundleHash": "3b643e189e0f73e5",
+      "cycleId": "5fc86f0df12db3dc85f804ec72a639e8",
+      "verdict": "NG_GAP",
+      "measurements": [
+        {
+          "k": 0,
+          "ms": 12,
+          "points": 77,
+          "error": null
+        },
+        {
+          "k": 1,
+          "ms": 10,
+          "points": 76,
+          "error": null
+        },
+        {
+          "k": 2,
+          "ms": 9,
+          "points": 77,
+          "error": null
+        },
+        {
+          "k": 3,
+          "ms": 10,
+          "points": 77,
+          "error": null
+        }
+      ]
+    },
+    "dirtyCandidate": {
+      "scope": "unsaved-pose",
+      "id": "2-1791611774908-7",
+      "candidateRevision": 0,
+      "candidateHash": "c1574d7504b2a8d4",
+      "bundleHash": "3b643e189e0f73e5",
+      "cycleId": "5fc86f0df12db3dc85f804ec72a639e8",
+      "verdict": "NG_GAP",
+      "measurements": [
+        {
+          "k": 0,
+          "ms": 16,
+          "points": 77,
+          "error": null
+        },
+        {
+          "k": 1,
+          "ms": 14,
+          "points": 76,
+          "error": null
+        },
+        {
+          "k": 2,
+          "ms": 15,
+          "points": 77,
+          "error": null
+        },
+        {
+          "k": 3,
+          "ms": 13,
+          "points": 77,
+          "error": null
+        }
+      ]
+    },
+    "unsavedCandidatePreserved": true,
+    "storedCandidateAndProductionUnchanged": true,
+    "originalRecordUnchanged": true,
+    "accuracyQualified": false
+  },
+  "csv": {
+    "path": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.recovery\\exports\\检测记录_20261010_135928.csv",
+    "sha256": "9bb3259516306ca2af0797807b122fb73fa75204e5bf241e6d00f1348d3d32a8",
+    "header": [
+      "时间",
+      "SN",
+      "配方",
+      "版本",
+      "配置哈希",
+      "模式",
+      "结果",
+      "PLC 结果码",
+      "异常码",
+      "原因",
+      "收到帧",
+      "计划帧",
+      "收尾耗时(ms)",
+      "复检自",
+      "cycleId",
+      "发布包哈希",
+      "PLC 交付状态",
+      "PLC 交付更新时间",
+      "PLC 交付说明"
+    ],
+    "dataRows": 3
+  },
+  "frozenFilesEqualToOriginalP0Profile": [
+    {
+      "path": "graph.json",
+      "sha256": "ce8cdc885f3b6425e398541d75b62a31074cd6d7c45d5dd91eefbff3f45f20de"
+    },
+    {
+      "path": "manifest.json",
+      "sha256": "92c107a82748d8c1f93dd21be68a61dade6ff6bf0eb3932155a5d74ff91ade08"
+    },
+    {
+      "path": "recipe.json",
+      "sha256": "047e123d60a79d1bd34ba6429b8dbf9560db4632903ab10bc5c52f79367f5aea"
+    },
+    {
+      "path": "shots/00/calibration.json",
+      "sha256": "f12f7cee9155788e178d5644e7add3d1f67cd8b9c537b10c1d3b54f6286ea35b"
+    },
+    {
+      "path": "shots/00/centerline.json",
+      "sha256": "76822f87b6095c47ac6b6b63a5dfaef3b156b204b9af671a565b7a3cb7c36ee6"
+    },
+    {
+      "path": "shots/00/image.pgm",
+      "sha256": "3562bbaf212ba0b929c3597f67c808ccf9eb7d1a46ed7fd945b95837b566633d"
+    },
+    {
+      "path": "shots/00/points.json",
+      "sha256": "eeb72fdc16783b24e34b90bda3cbc990f8712d3c0fbd569172f0ee4d079b97c8"
+    },
+    {
+      "path": "shots/01/calibration.json",
+      "sha256": "92b94badba2c7822b8b50d47d6a0cd57dae1fde5b915926450954919207785b7"
+    },
+    {
+      "path": "shots/01/centerline.json",
+      "sha256": "277935d243ffeaa6ebbccd45d58b3aca062c8659286c80730b3756cc90bf3817"
+    },
+    {
+      "path": "shots/01/image.pgm",
+      "sha256": "0db342e72ce74f321d9c934eab767ccb6733430797a470c410bcfcf7b9d13146"
+    },
+    {
+      "path": "shots/01/points.json",
+      "sha256": "8811aa6a0c14d86f0cbd1d62733ab43b80538eb226011183ccedff9dc7590327"
+    },
+    {
+      "path": "shots/02/calibration.json",
+      "sha256": "399e101e0b7fa7bfd2cbf53d7bea9118bcb57daf584d15162853baa324de743d"
+    },
+    {
+      "path": "shots/02/centerline.json",
+      "sha256": "ad7c0ffd456fa678b33063662f7cdca1afa2b3dd86c9a928bfdaff83923a8c80"
+    },
+    {
+      "path": "shots/02/image.pgm",
+      "sha256": "ad6531e709a34041b8f7e48f4ee6158c0ddd76f2b4bb20a9128532bd92ab0762"
+    },
+    {
+      "path": "shots/02/points.json",
+      "sha256": "b9f11b5a46447242b6c51bc1b774b545c13597730d83205e6e05d8b04ad163f0"
+    },
+    {
+      "path": "shots/03/calibration.json",
+      "sha256": "f12f7cee9155788e178d5644e7add3d1f67cd8b9c537b10c1d3b54f6286ea35b"
+    },
+    {
+      "path": "shots/03/centerline.json",
+      "sha256": "fa5afd07273801b83a939d97975803d2aeb0705627c103017018f7aabd699f11"
+    },
+    {
+      "path": "shots/03/image.pgm",
+      "sha256": "3562bbaf212ba0b929c3597f67c808ccf9eb7d1a46ed7fd945b95837b566633d"
+    },
+    {
+      "path": "shots/03/points.json",
+      "sha256": "e489861811757ada494cc3f8f47f4e43ffcc78c52b785cd8d9a6dc35752d3059"
+    }
+  ],
+  "actualS7ProcessRecovery": {
+    "status": "passed",
+    "requestSeq": 101,
+    "sn": 70100101,
+    "cycleId": "46224c90d1642f9e411ead533e4abef9",
+    "resultCode": 90,
+    "faultCode": 98,
+    "reason": "相机 cam1 是模拟 / 回放相机，生产节拍不能用它的计数认拍照点",
+    "beforeDelivery": "submitted",
+    "crashWindowDelivery": "submitted",
+    "journalAcknowledgedAtTermination": true,
+    "sqliteWriterLockedAtTermination": true,
+    "afterDelivery": "acknowledged",
+    "recoveryMessage": "从持久握手记录恢复 PLC 确认：请求序号 101，收据时间 1791611842326",
+    "originalDetectionEvidenceUnchanged": true,
+    "pointPayload": null,
+    "plannedShots": 4,
+    "note": "Safe production refusal for Synthetic camera: no acquired image or measured point data; all four missing-shot records and original ERR evidence remain unchanged. Terminated after journal ACK, before the acknowledged audit line. Journal-only timestamp falls back to request startedAt and is not an exact ACK occurrence time.",
+    "report": {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-ack-process-recovery-retry2\\report.json",
+      "sha256": "27de59822754db018f94c5ec620f03b732abc31b8123b6fe4ebd7ef3f2ceaae9"
+    },
+    "wire": {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-ack-process-recovery-retry2\\wire.json",
+      "sha256": "b5d182130ecced0c4e73101ead460704b38f957f5f09c7e65a7eba91c500e721"
+    }
+  },
+  "scripts": [
+    {
+      "path": "tests\\native\\p0-history-produce-ui.js",
+      "sha256": "b2e05b1fd9126fdcd477e70c9492faeb9e711465b4afea9bb395e13edab3043a"
+    },
+    {
+      "path": "tests\\native\\p0-history-ui.js",
+      "sha256": "d7dbd5f7952e6d015951549498d91fbd1c9d517d9dea33ce6cd779c862a6bc38"
+    },
+    {
+      "path": "tests\\native\\p0-history-independent-ui.js",
+      "sha256": "51e0b9bf841a5115b16461453f94ccd5d6ac9130def5fbeeb209203c3477a50e"
+    },
+    {
+      "path": "tests\\native\\p0-ack-process-recovery.mjs",
+      "sha256": "d5051f0ecb9f0528c471d457ec1e8a298838f7f0e7adc96be608ce2426f46846"
+    }
+  ],
+  "screenshots": [
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\01-online-gap.png",
+      "sha256": "d93aaaaac9d7e6a950645b04aee19b98369c8eb47ef0aedbcebe479ca5329a17"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\01-online-normal.png",
+      "sha256": "8a7c94f76c4589d268995d82c057620be3f3bfa8d75f9053e7c2b91749962ae5"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-1-k1-v1.png",
+      "sha256": "df6aa60a091caae0f2e55d65b1490fd61801d1eee74f3bfea8910be44f33472c"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-1-k1-v2.png",
+      "sha256": "aee28ab68486a48b9433a30b6a7fcc3d31dc1dd349c31801d277fa242d989ca4"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-1-k1-v3.png",
+      "sha256": "f12e7d5ab29a4be3dcd1ae77bcf79976bab0bd5570e52e50b9bdc7dfdf687d96"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-1-k2-v1.png",
+      "sha256": "f33f7ac4ea3b4cba25ae96c051459b59adf8c8e2742b96b0ff5ca192257788d9"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-1-k2-v2.png",
+      "sha256": "269b209cb4e09513b307989f5f3c1ffa22fd0f8ce2c28babb9059837ead1f836"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-1-k2-v3.png",
+      "sha256": "5604f4993d3a9654764ff75f351e7709aba61747d39741e1cb735b4cd9fb5a6b"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-1-k3-v1.png",
+      "sha256": "1ea41b2c2ab55288cb8ea0969aca7ddce38a77a9252ebab3df20c3abd30d0f56"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-1-k3-v2.png",
+      "sha256": "362bf188199672612018fdd4ddaa9abf9646e0ec20f3d29c6b8659e252e4236e"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-1-k3-v3.png",
+      "sha256": "5c3afd564467d72a5f538b9e1df2e11fb18c82ddc61c103a92106db59b7b04e5"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-1-k4-v1.png",
+      "sha256": "614b086940d664a22b45b44d0f7fcd98094e6f237deab455356e01a857487899"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-1-k4-v2.png",
+      "sha256": "0f970699e9b15d376717def50cf9b67f1ff3e7af5cc02de7b08acccdde5edbb1"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-1-k4-v3.png",
+      "sha256": "6541d76c6ce0f7d41ccb31d1a0ff064fcdf8b9f002064101d3d1165b98effc84"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-2-k1-v1.png",
+      "sha256": "344b76bcbb6da05d450b6a3f24fa7caaf0518ead373612548cfdfc3a4d9a0f90"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-2-k1-v2.png",
+      "sha256": "54257fc9480640ad04c6880bc61cb1953e6209610afff37b525b2dbb1fd6018f"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-2-k1-v3.png",
+      "sha256": "0fe6da390bfbd714a95a31644bfa0a9acea4d73d572e6f0bbecd7ca5ee756135"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-2-k2-v1.png",
+      "sha256": "f498ba89869a67a587da89b76b99fbf8e794521fd7fb71e4ac249afee1b74f56"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-2-k2-v2.png",
+      "sha256": "42cc263eb558739300c142a903eb65eab252b06d2b52c910371b061e2a6cb579"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-2-k2-v3.png",
+      "sha256": "25c88951dda7577a725fff3aa5dfe90b3b11aee53568e412c006d7bd41cd49a1"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-2-k3-v1.png",
+      "sha256": "664a6feff6e327ba30b08198ca4f0818649e76741358c53832f0546e4aa2ceb8"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-2-k3-v2.png",
+      "sha256": "304e7eb5d700627cf80979ffcc8499f1492d94ff1c4adc8f661ec6f93f2a0b37"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-2-k3-v3.png",
+      "sha256": "3598a0cf35ba4d7051f5baa0d588b55ee96c3d9c4c66670668adc30dc5f05f4e"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-2-k4-v1.png",
+      "sha256": "b5caa39ddc65299d32832029562496eaee51bde85dabe358a1e03b230ed03db3"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-2-k4-v2.png",
+      "sha256": "81066ecb5a0f291a28c8cf39aa611770c478946d3ad8b3ba84079b51de9f4a81"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\02-history-2-k4-v3.png",
+      "sha256": "ef33ddb3359d62402156814f89c2300b1383a5b5fd965e6b84eba0c6b29ce032"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\03-original-independent-other-candidate.png",
+      "sha256": "a50cb0b2b4f9513092ecb49c802d80cbd46bfe6d45dc1e43ab0cec3fd863661e"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-history\\03-original-independent-unsaved-pose.png",
+      "sha256": "158eb1003ef486242fa8a73f228fcb06fb04d7a57a5412487a05505f3eee9fde"
+    }
+  ],
+  "rawReports": [
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-recovery-step6\\produce.json",
+      "sha256": "0ba2c52bc2ad853be95cae383f35201922e8cf99ba3f39db7f702ef7cc961207"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-recovery-step6\\history-visible.json",
+      "sha256": "bd1ed4261337dc0ae0fd1238f7cee42c9f4b76e1fb3669993496e124805338c5"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-recovery-step6\\independent.json",
+      "sha256": "501bd7458b9555a93840e4b69f54a165d8035c2de0f6d24ddf1de75aeb2164c8"
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-ack-process-recovery-retry2\\report.json",
+      "sha256": "27de59822754db018f94c5ec620f03b732abc31b8123b6fe4ebd7ef3f2ceaae9"
+    }
+  ],
+  "retainedFailedAttempts": [
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-ack-process-recovery\\report.json",
+      "sha256": "333cef993df5cffff9ebd4c801c30d51cfd90a9149e99fecb397a6c2367f5859",
+      "reason": "Harness connected before WebView navigation completed; added actual frontend readiness wait and repeated."
+    },
+    {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-step6-history-final\\output\\playwright\\p0-recovery-step6\\history-visible-retry-cli.json",
+      "sha256": "6307ca6acbe361da301b877154b3e055b9decdc9d25e0599028e9bc6444836c9",
+      "reason": "scrollIntoViewIfNeeded placed SVG y59.671875 behind the 60px fixed header; explicit normal centered scrolling now verifies every screenshot image in the viewport."
+    }
+  ],
+  "limits": [
+    "Real DLL measured full 1280x1024 synthetic images; PLC/cameras are simulators, not hardware qualification.",
+    "Normal remains actual OK_WITH_EXCURSION with original product limits and existing weak-edge accuracy gap.",
+    "Two measured parts do not establish throughput or tail latency.",
+    "Process ACK recovery uses actual S7 wire and safe refused part with zero measured pixels; it proves delivery recovery, not physical production measurement.",
+    "Only the exact matching durable receipt updates an existing cycle/SN; no fabricated receipt or missing history insertion."
+  ]
+}

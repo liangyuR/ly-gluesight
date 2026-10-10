@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use lyflow_client::{Core, RunHandle, RunImageInput, RunSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::camera::CameraSource;
 use crate::cycle::CycleHost;
@@ -325,6 +325,7 @@ pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, ca
         if let Some(id)=image_id.as_deref() { crate::workspace::station_image_ref(&app,cam.unwrap_or(0),id)?; }
         let doc = json!({"kind": "Record", "type": "image.PlaneCalib", "data": data, "ts": ly_plc::now_ms(), "sampleId":image_id});
         std::fs::write(&path, serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        let _ = app.emit("calibration://changed", ());
         calib_info(&path).ok_or_else(|| "标定文件写入后读不回来".into())
     })
     .await

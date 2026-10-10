@@ -53,12 +53,16 @@ async (page) => {
         await page.getByRole("button", { name: `查看 k${k + 1} 视角 ${view}`, exact: true }).click();
         const image = page.getByRole("img", { name: `原始 SN ${row.sn} · k${k + 1} · 视角 ${view}`, exact: true });
         await image.waitFor();
+        await image.scrollIntoViewIfNeeded();
+        await image.evaluate(element => element.scrollIntoView({ block: "center", behavior: "instant" }));
+        const imageBox = await image.boundingBox();
+        if (!imageBox || imageBox.width < 200 || imageBox.height < 150 || imageBox.y < 60 || imageBox.y + imageBox.height > 900) throw new Error(JSON.stringify(imageBox));
         if (await image.getAttribute("viewBox") !== "0 0 1280 1024") throw new Error("Unexpected recorded image resolution");
         const selectedView = view === [1, 2, 3, 1][k];
         const teachingEnabled = await page.getByRole("button", { name: "将此帧用于示教", exact: true }).isEnabled();
         if (teachingEnabled !== selectedView || !selectedView && await image.locator("polyline").count()) throw new Error("A non-detection view was exposed as a valid teaching image");
-        await page.screenshot({ path: `D:/project/ly-gluesight/tmp/p0-step7-regression/tmp/p0-step6-ui/02-history-${row.id}-k${k + 1}-v${view}.png`, fullPage: true });
-        views.push({ k, view, selectedView, teachingEnabled, file: raw.frames.find(f => f.k === k && f.view === view)?.file });
+        await page.screenshot({ path: `output/playwright/p0-history/02-history-${row.id}-k${k + 1}-v${view}.png`, fullPage: true });
+        views.push({ k, view, selectedView, teachingEnabled, imageBox, file: raw.frames.find(f => f.k === k && f.view === view)?.file });
       }
     }
     for (const comparison of added) {
