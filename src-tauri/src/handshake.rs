@@ -320,6 +320,30 @@ impl Snapshot {
         }
         self.request()
     }
+
+    /// 空闲时仍为 1 的 PLC 所有握手位：partEnd / resultAck 应在 PLC 释放时与 partStart 一起清零。
+    pub(crate) fn idle_plc_held(&self) -> Result<Vec<&'static str>, String> {
+        let mut held = Vec::new();
+        for tag in ["partEnd", "resultAck"] {
+            if self.read_bool(tag)? { held.push(tag); }
+        }
+        Ok(held)
+    }
+
+    /// 偏离空闲状态（[`idle_plan`]）的视觉所有输出，形如 `visionReady=0`。
+    pub(crate) fn idle_drift(&self) -> Result<Vec<String>, String> {
+        let mut drifted = Vec::new();
+        for op in idle_plan() {
+            match op.value.as_bool() {
+                Some(expected) => if self.read_bool(op.tag)? != expected { drifted.push(format!("{}={}", op.tag, u8::from(!expected))); },
+                None => {
+                    let actual = self.read_u32(op.tag)?;
+                    if Some(actual as u64) != op.value.as_u64() { drifted.push(format!("{}={actual}", op.tag)); }
+                }
+            }
+        }
+        Ok(drifted)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -493,6 +517,18 @@ pub(crate) fn release_plan() -> Vec<WriteOp> {
 
 pub(crate) fn fault_plan() -> Vec<WriteOp> {
     vec![WriteOp::new("visionReady", json!(false)), WriteOp::new("armed", json!(false)), WriteOp::new("visionFault", json!(true))]
+}
+
+/// 空闲（无在途事务）时视觉应保持的输出：其余握手位清零、协议版本 1，就绪位最后置位。
+pub(crate) fn idle_plan() -> Vec<WriteOp> {
+    vec![
+        WriteOp::new("armed", json!(false)),
+        WriteOp::new("done", json!(false)),
+        WriteOp::new("busy", json!(false)),
+        WriteOp::new("visionFault", json!(false)),
+        WriteOp::new("pcProtocolVersion", json!(PROTOCOL_VERSION)),
+        WriteOp::new("visionReady", json!(true)),
+    ]
 }
 
 pub(crate) fn reset_plan() -> Vec<WriteOp> {
@@ -922,6 +958,40 @@ mod tests {
         assert!(fault_plan().iter().all(|op| !["done", "busy", "resultSeq", "resultSn", "resultCode", "faultCode"].contains(&op.tag)));
         assert!(!reset_plan().contains(&WriteOp::new("visionReady", json!(true))));
         assert_eq!(release_plan(), vec![WriteOp::new("done", json!(false)), WriteOp::new("busy", json!(false))]);
+    }
+
+    fn idle_snapshot() -> Snapshot {
+        let mut s = snapshot();
+        s.values.insert("partStart", PlcValue::Bool(false));
+        s
+    }
+
+    #[test]
+    fn idle_checks_split_vision_outputs_from_plc_inputs() {
+        // 自动重写只碰 PC 区输出；等待清除的只有 PLC 区输入（协议文档第 2 节的所有者划分）
+        let direction = |tag: &str| FIELDS.iter().find(|f| f.tag == tag).unwrap().direction;
+        assert!(idle_plan().iter().all(|op| direction(op.tag) == Direction::Output));
+        assert_eq!(idle_plan().last().unwrap(), &WriteOp::new("visionReady", json!(true)));
+        let s = idle_snapshot();
+        assert!(s.idle_drift().unwrap().is_empty());
+        assert!(s.idle_plc_held().unwrap().is_empty());
+        assert!(s.idle_plc_held().unwrap().iter().all(|tag| direction(tag) == Direction::Input));
+
+        // PLC 重启 / DB 重新初始化：PC 区读回全 0
+        let mut s = idle_snapshot();
+        for op in idle_plan() {
+            s.values.insert(op.tag, if op.value.is_boolean() { PlcValue::Bool(false) } else { PlcValue::Int(0) });
+        }
+        assert_eq!(s.idle_drift().unwrap(), ["pcProtocolVersion=0", "visionReady=0"]);
+        let mut s = idle_snapshot();
+        for tag in ["armed", "busy", "done", "visionFault"] { s.values.insert(tag, PlcValue::Bool(true)); }
+        assert_eq!(s.idle_drift().unwrap(), ["armed=1", "done=1", "busy=1", "visionFault=1"]);
+
+        let mut s = idle_snapshot();
+        s.values.insert("partEnd", PlcValue::Bool(true));
+        s.values.insert("resultAck", PlcValue::Bool(true));
+        assert_eq!(s.idle_plc_held().unwrap(), ["partEnd", "resultAck"]);
+        assert!(s.idle_drift().unwrap().is_empty());
     }
 
     #[tokio::test]

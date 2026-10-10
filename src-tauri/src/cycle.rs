@@ -1268,7 +1268,23 @@ impl Machine {
                     log(&app, "info", "S7 事务结束", "结果序号已确认，PLC 输入已释放");
                 }
                 SessionEvent::Fault(reason) => self.enter_fault(reason),
+                SessionEvent::Restored(reason) => {
+                    log(&app, "warn", "S7 空闲恢复", reason.clone());
+                    if !self.alarms.contains(&reason) { self.alarms.push(reason); }
+                    self.dirty = true;
+                }
                 SessionEvent::None => {}
+            }
+            // 空闲等待提示（PLC 输入未释放、设备未就绪）跟着会话现状走，不进故障
+            let notice = self.s7.notice().map(str::to_owned);
+            let shown: Vec<String> = self.alarms.iter().filter(|m| m.starts_with(crate::plc_session::NOTICE)).cloned().collect();
+            if shown.as_slice() != notice.as_slice() {
+                self.alarms.retain(|m| !m.starts_with(crate::plc_session::NOTICE));
+                if let Some(notice) = notice {
+                    log(&app, "warn", "S7 握手", notice.clone());
+                    self.alarms.push(notice);
+                }
+                self.dirty = true;
             }
             if self.s7.phase() == SessionPhase::Releasing && self.phase == Phase::Report {
                 self.set_phase(Phase::Release);
