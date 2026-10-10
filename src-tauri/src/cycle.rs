@@ -1429,7 +1429,7 @@ impl Machine {
         if part.is_none() {
             let off = host(&self.app).settings().record == crate::settings::RecordMode::Off;
             host(&self.app).audit.recording(crate::recorder::RecordingOutcome { cycle_id, directory: None,
-                files: Vec::new(), available: false,
+                files: Vec::new(), retention_errors: Vec::new(), available: false,
                 state: if off { crate::recorder::RecordingState::Off } else { crate::recorder::RecordingState::Failed },
                 errors: if off { Vec::new() } else { vec![format!("布防校验未通过，未开始录制：{}", judgement.reason)] } });
         }

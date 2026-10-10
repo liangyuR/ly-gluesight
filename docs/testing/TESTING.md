@@ -231,6 +231,10 @@ C: 隔离原生程序已完成正式验收（构建 1m22s，SHA256 `85F926EC6358
 
 复用前先创建 `output/playwright/p0-history`，启动已核验标识的隔离原生程序并连接模拟 PLC，再运行三个 `async(page)` 脚本。ACK 进程专项要求先关闭现存隔离实例，传入 `--executable`、`--instance`（包含精确隔离标识及 SHA256）、`--appdata`、新的 `--output` 目录、后端导出的 `--template`、`--playwright-module`、`--fixture scripts/s7-handshake/s7_test_plc.py`；脚本仅接受 C: 的 `.p0-tests.recovery` 实例，结束后还原 PLC 配置并归档本轮握手证据。软件验收通过不替代现场硬件、准确率或步 7 的故障和性能验收。
 
+2026-10-10 PR #12 审查说明：数据库策略遵循 [P0 计划 D-0](../architecture/p0-plan.md)，任何与当前 `DB_VERSION` 不符的版本均改名备份后新建，包含高于当前版本的数据库；因此不采用“未来版本只拒绝打开”的建议。已有真实 SQLite 回归 `store::tests::mismatched_database_version_checkpoints_wal_and_keeps_complete_backup` 使用未来版本 73 和尚在 WAL 的旧数据，核对备份保留版本与全部数据、新库使用当前版本且不保留旧表、再次打开不重复备份。
+
+旧录制保留清理与本件录制完整性独立：清理错误保存在 `RecordingOutcome.retention_errors` 与 `part.json.retentionErrors`，审计单独记录 warn；本件原图、元数据或哈希失败仍进入完整性 `errors` 并禁止可用状态。新增 Windows 真实文件占用回归触发旧件删除失败，检查本件仍 Complete、三视角可按冻结哈希回放，释放占用后旧件可删除；另检查审计入库完整状态、原始判定与三视角引用不受清理告警影响，同一回调不重复告警。本次在 C: 独立工作树执行 `cargo test --offline --lib --manifest-path src-tauri/Cargo.toml`，默认全量 242 项通过、0 失败、26 项忽略，测试耗时 2.75 秒；上述新增两项及未来版本 WAL 用例均实际通过。日志 `C:\Users\11601\AppData\Local\Temp\gluesight-p0-recovery-20261010\p0-step6-retention-review-rust-c.log`，SHA256 `F700B6C4C22C671E047AEE91976ECF14AED94C600416D383E9AE130E4E6C7613`。
+
 ## lyFlow 原始图像注入回归（较早记录）
 
 客户端固定到主线 `5b796c3`（Image ABI v15），使用 `RunSpec.image_inputs` 注入完整 u8 灰度帧。运行库必须包含 `io.load_image`、`image.board_calib`、`image.load_calib`、`glue.locate`、`glue.station_calipers`；在 lyFlow 仓库设置 `LYFLOW_PACKS=glue` 后构建 core，系统设置填 DLL 绝对路径。

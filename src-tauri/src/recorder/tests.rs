@@ -339,6 +339,48 @@ fn pruning_preserves_current_and_in_use_recordings() {
     assert!(paths[1].exists() && paths[2].exists());
 }
 
+#[cfg(windows)]
+#[test]
+fn locked_old_recording_does_not_make_complete_current_recording_unavailable() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let dir = TestDir::new();
+    let old = dir.root().join("20000101").join("20000101_000000_cycle_old");
+    std::fs::create_dir_all(&old).unwrap();
+    let locked_path = old.join("image.pgm");
+    std::fs::write(&locked_path, "old-recording").unwrap();
+    let lock = std::fs::OpenOptions::new().read(true).share_mode(3).open(&locked_path).unwrap();
+    let (callback, outcomes) = callback();
+    let recorder = Recorder::new(dir.root(), Some(callback));
+    let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "cycle-retention-error", None).unwrap();
+    recorder.frame(&mut rec, &frame(21), "cam1", 0, 1);
+    recorder.finish(rec, Verdict::Ok, "本件完整", 1, 1, Vec::new());
+    let outcome = wait(&outcomes);
+    assert_eq!(outcome.state, RecordingState::Complete);
+    assert!(outcome.available);
+    assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+    assert_eq!(outcome.files.len(), 3);
+    assert!(outcome.retention_errors.iter().any(|error| error.contains("清理旧录制失败") && error.contains("cycle_old")), "{:?}", outcome.retention_errors);
+    assert_eq!(std::fs::read_to_string(&locked_path).unwrap(), "old-recording");
+    let meta = metadata(&outcome);
+    assert_eq!(meta["available"], true);
+    assert_eq!(meta["errors"], json!([]));
+    assert_eq!(meta["retentionErrors"], json!(outcome.retention_errors));
+    for file in &outcome.files {
+        assert_eq!(file_hash(&dir.root().join(&file.file)).unwrap(), file.hash);
+    }
+    let frames = crate::replay::scan_frames(outcome.directory.as_ref().unwrap(), 3, 0).unwrap();
+    assert_eq!(frames.len(), 1);
+    let images = crate::replay::load_entry(&frames[0]).unwrap();
+    assert_eq!(images.len(), 3);
+    for (view, image) in images.iter().enumerate() {
+        assert_eq!((image.width, image.height), (1, 1));
+        assert_eq!(image.pixels, [21 + view as u8]);
+    }
+    drop(lock);
+    assert!(prune(&dir.root(), 1, 1, &[outcome.directory.unwrap()]).is_empty());
+    assert!(!old.exists());
+}
+
 #[test]
 fn existing_target_is_preserved_and_partial_files_remain_at_the_actual_path() {
     let dir = TestDir::new();

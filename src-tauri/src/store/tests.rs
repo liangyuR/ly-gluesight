@@ -300,6 +300,7 @@ fn missing_measurements_are_returned_and_purge_cascades_to_shots() {
 #[test]
 fn mismatched_database_version_checkpoints_wal_and_keeps_complete_backup() {
     use rusqlite::config::DbConfig;
+    assert!(73 > DB_VERSION);
     let db = TestDb::new();
     let old = Connection::open(db.path()).unwrap();
     old.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; PRAGMA user_version=73; CREATE TABLE legacy(data TEXT); INSERT INTO legacy VALUES ('only-in-wal');").unwrap();
