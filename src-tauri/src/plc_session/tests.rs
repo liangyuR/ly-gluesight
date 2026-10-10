@@ -948,7 +948,7 @@ async fn s7_wire_devices_not_ready_while_idle_withdraws_ready_and_recovers() {
     rig.phase(SessionPhase::Releasing).await;
     rig.plc.control(json!({"op":"plc_release"}));
     rig.fresh().await;
-    assert!(matches!(rig.session.poll(&rig.engine, false, false).await, SessionEvent::Released));
+    assert!(matches!(rig.session.poll(&rig.engine, false, false).await, SessionEvent::Released(Some([2, 1, 1]))));
     assert_eq!(rig.session.phase(), SessionPhase::Idle);
     assert!(!rig.session.pending());
     assert_idle_outputs(&rig.plc.fields(), false);
@@ -963,6 +963,37 @@ async fn s7_wire_devices_not_ready_while_idle_withdraws_ready_and_recovers() {
     assert!(matches!(event, SessionEvent::Start(ref request) if request.request_seq == 2), "{event:?}");
     rig.session.report(&rig.engine, 90, crate::judge::fault::DEVICE_LOST).await.unwrap();
     rig.ack_release().await;
+    rig.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Python and local loopback S7 fixture"]
+async fn s7_wire_early_err_release_reports_plc_issued_triggers() {
+    let mut rig = Rig::new("early-err-triggers").await;
+    rig.request(1, 50).await;
+    rig.arm().await;
+    // 运动中途停了：槽 1 只发了 1 个触发，没有 partEnd；PC 运动超时提前判 ERR 97
+    rig.plc.values(json!({"camera1Triggers":1}));
+    rig.fresh().await;
+    assert!(matches!(rig.session.poll(&rig.engine, false, true).await, SessionEvent::None));
+    rig.session.report(&rig.engine, 90, crate::judge::fault::MOTION_TIMEOUT).await.unwrap();
+    rig.plc.control(json!({"op":"plc_ack"}));
+    rig.phase(SessionPhase::Releasing).await;
+    rig.plc.control(json!({"op":"plc_release"}));
+    rig.fresh().await;
+    let event = rig.session.poll(&rig.engine, false, true).await;
+    assert!(matches!(event, SessionEvent::Released(Some([1, 0, 0]))), "{event:?}");
+    // 下一件的请求清零了触发数，正常完成时报计划数
+    rig.request(2, 51).await;
+    rig.arm().await;
+    rig.end().await;
+    rig.report().await;
+    rig.plc.control(json!({"op":"plc_ack"}));
+    rig.phase(SessionPhase::Releasing).await;
+    rig.plc.control(json!({"op":"plc_release"}));
+    rig.fresh().await;
+    let event = rig.session.poll(&rig.engine, false, true).await;
+    assert!(matches!(event, SessionEvent::Released(Some([2, 1, 1]))), "{event:?}");
     rig.finish().await;
 }
 

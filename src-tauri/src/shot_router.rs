@@ -6,12 +6,15 @@
 //! - 布防（[`ShotRouter::arm`]）：基线 = max(本会话见到的最大计数, 上一件收尾推算的下限)；本会话还没见过帧时
 //!   用开流后的计数起点（模拟 / 回放为 0，海康按 [`Policy::counter_after_open`]，未经台架确认就拒绝布防）；
 //! - 路由（[`ShotRouter::route`]）：本机序号 = 触发计数 − 基线，对应这台相机的第几个拍照点；
-//! - 收尾（[`ShotRouter::close`]）：下一件的基线下限 = 基线 + PLC 报的本件已发触发数（S7 `cameraNTriggers`），
-//!   上一件迟到的帧就落在基线以内，成了旧帧；没有 PLC 计数时按计划数假定。
+//! - 收尾（[`ShotRouter::close`]）：下一件的基线下限 = 基线 + PLC 报的本件已发触发数（S7 `cameraNTriggers`：
+//!   partEnd 核对过的，或提前判 ERR 的件在 PLC 确认结果时读到的），上一件迟到的帧就落在基线以内，成了旧帧；
+//!   没有 PLC 计数时按计划数假定。
 //!
 //! 只靠计数分不出来的情况（都会让这件判 ERR，不会判 OK）：本件中途 Line0 上多一个干扰触发，后面的帧整体后移，
-//! 最后一帧成了超计划帧（96）；相机漏收一个触发脉冲，最后一个拍照点等不到帧（91）。没有 PLC 计数时，
-//! 上一件实际触发少于计划（中途停了），下一件的基线会偏高，直到故障复位清掉下限（[`Ledgers::clear_floors`]）。
+//! 最后一帧成了超计划帧（96）；相机漏收一个触发脉冲，最后一个拍照点等不到帧（91），之后每件的基线都偏高一格：
+//! 第一帧被当成上一件的迟到帧、最后一个拍照点等不到帧（91，原因写明"触发计数错位"）。这与"上一件最后一帧
+//! 迟到到下一件"在计数上一模一样，自动下调基线会在后一种情况下把帧整体错绑、凑齐一件，所以不自动改，
+//! 等故障复位清掉下限（[`Ledgers::clear_floors`]）后按实际见到的计数重新对齐。
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -339,6 +342,37 @@ struct Armed {
     shots: Vec<usize>,
     /// 本件见到的本会话最大触发计数（不低于基线）
     high: u64,
+    /// 布防时本会话见到的最大触发计数
+    seen: Option<u64>,
+    /// 布防后才到、布防前没见过、却不大于基线的计数（上一件迟到帧，或基线偏高）
+    stale: Vec<u64>,
+    /// 超出本件计划的计数
+    extra: Vec<u64>,
+}
+
+fn note(list: &mut Vec<u64>, counter: u64) {
+    if let Err(i) = list.binary_search(&counter) { list.insert(i, counter); }
+}
+
+/// 递增计数写成区间：41–43、45。
+fn runs(counters: &[u64]) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < counters.len() {
+        let mut j = i;
+        while j + 1 < counters.len() && counters[j + 1] == counters[j] + 1 { j += 1; }
+        out.push(if j == i { counters[i].to_string() } else { format!("{}–{}", counters[i], counters[j]) });
+        i = j + 1;
+    }
+    out.join("、")
+}
+
+impl Armed {
+    /// 本件应收的触发计数：基线 + 1 ..= 基线 + 计划数。
+    fn expected(&self) -> String {
+        let (first, last) = (self.baseline + 1, self.baseline + self.shots.len() as u64);
+        if first == last { first.to_string() } else { format!("{first}–{last}") }
+    }
 }
 
 /// 一件的拍照点路由。
@@ -380,7 +414,8 @@ impl ShotRouter {
                     None => return Err(Refusal::NoBaseline { camera }),
                 },
             };
-            armed.push(Armed { cam: now.cam, camera, session: now.session, baseline, shots: p.shots.clone(), high: baseline });
+            armed.push(Armed { cam: now.cam, camera, session: now.session, baseline, shots: p.shots.clone(), high: baseline,
+                seen: ledger.and_then(|l| l.last), stale: Vec::new(), extra: Vec::new() });
         }
         Ok(Self { cams: armed, shot_ids: plan.shot_ids.clone(), trusted: policy.trusted.clone(), bound: vec![None; plan.shot_count()] })
     }
@@ -397,11 +432,13 @@ impl ShotRouter {
             return Route::UntrustedCounter(f.source);
         }
         if f.trigger <= a.baseline {
+            if a.seen.is_none_or(|seen| f.trigger > seen) { note(&mut a.stale, f.trigger); }
             return Route::Stale { counter: f.trigger, baseline: Some(a.baseline) };
         }
         a.high = a.high.max(f.trigger);
         let ordinal = f.trigger - a.baseline;
         let Some(&shot) = usize::try_from(ordinal - 1).ok().and_then(|i| a.shots.get(i)) else {
+            note(&mut a.extra, f.trigger);
             return Route::Extra { ordinal, planned: a.shots.len() };
         };
         if self.bound[shot].is_some() {
@@ -441,7 +478,9 @@ impl ShotRouter {
         }
         let limit = armed.baseline.saturating_add(armed.shots.len() as u64);
         if let Some(last) = observed.last.filter(|last| *last > limit) {
-            return fail(fault::EXTRA_FRAME, format!("回调触发计数 {last} 超过本件计划截止计数 {limit}"));
+            return fail(fault::EXTRA_FRAME, format!(
+                "触发计数错位：本件应收 {}，回调已到 {last}，超过本件计划截止计数 {limit} 共 {} 个（多为本件多了干扰触发），拍照点归属不可信",
+                armed.expected(), last - limit));
         }
         if let Some((from, to)) = observed.backwards.filter(|(_, to)| *to > armed.baseline) {
             return fail(fault::DEVICE_LOST, format!("本件触发计数回退（{from} → {to}），需要重新打开相机"));
@@ -475,17 +514,21 @@ impl ShotRouter {
         self.shot_ids.get(shot).map_or("?", String::as_str)
     }
 
-    /// 给日志看的一句话。
+    /// 给日志看的一句话；会让整件判 ERR 的去向同时是结果原因，写明应收与实际收到的计数。
     pub fn describe(&self, f: &FrameMeta, r: &Route) -> String {
         let camera = self.camera_name(f.cam);
+        let expected = self.cams.iter().find(|a| a.cam == f.cam).map_or_else(|| "?".into(), Armed::expected);
         match *r {
             Route::Bound { shot, ordinal } => format!("{} · 相机 {camera} 本件第 {ordinal} 帧（触发计数 {}）", self.shot_name(shot), f.trigger),
             Route::Stale { counter, baseline: Some(b) } => {
-                format!("相机 {camera} 触发计数 {counter} 不大于本件基线 {b}：上一件或布防前的帧，不算本件")
+                format!("相机 {camera} 触发计数 {counter} 不大于本件基线 {b}：上一件或布防前的帧，不算本件（本件若随后缺帧，即触发计数错位）")
             }
             Route::Stale { .. } => format!("相机 {camera} 的帧来自布防前那次打开（会话 {}），不算本件", f.session),
-            Route::Duplicate { shot, .. } => format!("相机 {camera} 触发计数 {} 重复：{} 已有帧", f.trigger, self.shot_name(shot)),
-            Route::Extra { ordinal, planned } => format!("相机 {camera} 本件第 {ordinal} 帧超出计划的 {planned} 帧"),
+            Route::Duplicate { shot, .. } => format!("相机 {camera} 触发计数 {} 重复：{} 已有帧，同一计数又来一帧，拍照点归属不可信",
+                f.trigger, self.shot_name(shot)),
+            Route::Extra { ordinal, planned } => format!(
+                "相机 {camera} 触发计数错位：本件应收 {expected}，收到 {}，超出计划 {} 个（本件第 {ordinal} 帧，计划 {planned} 帧；多为本件多了干扰触发），拍照点归属不可信",
+                f.trigger, ordinal - planned as u64),
             Route::SessionChanged { armed, now } => {
                 format!("相机 {camera} 检测中重新打开过（会话 {armed} → {now}），之后的帧对不上拍照点")
             }
@@ -494,7 +537,7 @@ impl ShotRouter {
         }
     }
 
-    /// 缺帧时给结果的原因。
+    /// 缺帧时给结果的原因：缺哪些拍照点，以及各相机应收、实际收到的触发计数和可能的原因。
     pub fn missing_reason(&self) -> Option<String> {
         let missing = self.missing();
         if missing.is_empty() {
@@ -507,7 +550,44 @@ impl ShotRouter {
                 format!("{}（{camera}）", self.shot_name(k))
             })
             .collect();
-        Some(format!("拍照点 {}没有收到帧", names.join("、")))
+        let notes: Vec<String> = self.cams.iter().filter_map(|a| self.counter_note(a)).collect();
+        Some(format!("拍照点 {}没有收到帧：{}", names.join("、"), notes.join("；")))
+    }
+
+    /// 一台缺帧相机的计数对账。
+    fn counter_note(&self, a: &Armed) -> Option<String> {
+        let missing: Vec<u64> = (1..=a.shots.len() as u64).filter(|i| self.bound[a.shots[*i as usize - 1]].is_none())
+            .map(|i| a.baseline + i).collect();
+        if missing.is_empty() {
+            return None;
+        }
+        let bound: Vec<u64> = a.shots.iter().filter_map(|&k| self.bound[k]).collect();
+        let mut received: Vec<u64> = bound.iter().chain(&a.stale).chain(&a.extra).copied().collect();
+        received.sort_unstable();
+        received.dedup();
+        let received = if received.is_empty() { "无".to_string() } else { runs(&received) };
+        let (camera, expected) = (&a.camera, a.expected());
+        if !a.stale.is_empty() {
+            return Some(format!(
+                "相机 {camera} 触发计数错位：本件应收 {expected}，实际收到 {received}；{} 不大于本件基线 {}，被当作上一件的迟到帧。多为上一件相机漏收了触发脉冲，之后每件都会这样判 ERR；检查触发线路后执行故障复位，按实际计数重新对齐",
+                runs(&a.stale), a.baseline));
+        }
+        if !a.extra.is_empty() {
+            return Some(format!("相机 {camera} 触发计数错位：本件应收 {expected}，实际收到 {received}；{} 超出本件计划（多为本件多了干扰触发）",
+                runs(&a.extra)));
+        }
+        let last = bound.iter().max().copied();
+        let skipped: Vec<u64> = missing.iter().copied().filter(|c| last.is_some_and(|l| *c < l)).collect();
+        let trailing: Vec<u64> = missing.iter().copied().filter(|c| last.is_none_or(|l| *c > l)).collect();
+        let mut note = format!("相机 {camera} {}：本件应收 {expected}，实际收到 {received}",
+            if skipped.is_empty() { "缺帧" } else { "触发计数跳号" });
+        if !skipped.is_empty() {
+            note += &format!("；{} 相机已计数但帧没送到（传输丢帧或帧通道满）", runs(&skipped));
+        }
+        if !trailing.is_empty() {
+            note += &format!("；{} 未到（帧丢在传输里，或相机漏收了触发脉冲，后者下一件会报触发计数错位）", runs(&trailing));
+        }
+        Some(note)
     }
 
     /// 本件结束：推算各相机下一件的基线下限，记进计数账，并返回给日志。
@@ -633,8 +713,95 @@ mod tests {
             feed(&mut router, &mut primed(), &input);
             assert_eq!(router.missing(), [shot]);
             assert!(!router.complete());
-            assert_eq!(router.missing_reason().unwrap(), format!("拍照点 P{}（cam1）没有收到帧", shot + 1));
+            let reason = router.missing_reason().unwrap();
+            assert!(reason.starts_with(&format!("拍照点 P{}（cam1）没有收到帧：", shot + 1)), "{reason}");
+            if lost == 0 {
+                // 第一帧丢了、第二帧到了：相机计了数，帧没送到
+                assert!(reason.contains("相机 cam1 触发计数跳号：本件应收 41–42，实际收到 42；41 相机已计数但帧没送到"), "{reason}");
+            } else {
+                assert!(reason.contains("相机 cam1 缺帧：本件应收 41–42，实际收到 41；42 未到"), "{reason}");
+            }
+            assert!(!reason.contains("cam2") && !reason.contains("cam3"), "{reason}");
         }
+    }
+
+    #[test]
+    fn counter_runs_are_compact() {
+        assert_eq!(runs(&[]), "");
+        assert_eq!(runs(&[7]), "7");
+        assert_eq!(runs(&[41, 42, 43, 45, 47, 48]), "41–43、45、47–48");
+    }
+
+    /// cam1 漏收了 P1 的触发脉冲（PLC 报已发 2 个，相机只计了 1 个）：这一件 P4 缺帧；之后每件基线偏高一格，
+    /// 第一帧被当成上一件的迟到帧、最后一个拍照点缺帧，原因写明触发计数错位，绝不会错绑凑齐一件；
+    /// 故障复位清掉下限后按实际计数重新对齐。
+    #[test]
+    fn missed_trigger_pulse_desync_is_explicit_and_never_completes_a_shifted_part() {
+        let issued: &[(&str, u64)] = &[("cam1", 2), ("cam2", 1), ("cam3", 1)];
+        // 物理上的拍照点只能靠计数认，这里 cam1 的帧整体错位，不用 feed 的"绑到真拍照点"断言
+        let route_all = |router: &mut ShotRouter, ledgers: &mut Ledgers, frames: &[FrameMeta]| -> Vec<Route> {
+            frames.iter().map(|f| { ledgers.observe(f); router.route(f) }).collect()
+        };
+        let mut ledgers = primed();
+        let mut a = ShotRouter::arm(&plan4(), &ledgers, &prod(), &arm_cams(None)).unwrap();
+        // P4 的帧拿到计数 41，只能当成 P1（计数分不出来）
+        route_all(&mut a, &mut ledgers, &[frame(0, 41), frame(1, 8), frame(2, 101)]);
+        assert_eq!(a.missing(), [3]);
+        assert!(a.missing_reason().unwrap().contains("相机 cam1 缺帧：本件应收 41–42，实际收到 41；42 未到"));
+        a.close(&mut ledgers, Some(issued));
+
+        // 相机实际计数比基线少一格：之后每件都错位，但每件都缺最后一个拍照点、判 ERR，原因可操作
+        let mut camera_counter = 41;
+        let mut base = [8, 101];
+        for _ in 0..3 {
+            let mut part = ShotRouter::arm(&plan4(), &ledgers, &prod(), &arm_cams(None)).unwrap();
+            let baseline = part.baseline(0).unwrap();
+            assert_eq!(baseline, camera_counter + 1);
+            let first = camera_counter + 1;
+            let routes = route_all(&mut part, &mut ledgers, &[frame(0, first), frame(1, base[0] + 1), frame(2, base[1] + 1), frame(0, first + 1)]);
+            assert_eq!(routes[0], Route::Stale { counter: first, baseline: Some(baseline) });
+            assert_eq!(routes[1..].iter().filter(|r| matches!(r, Route::Bound { .. })).count(), 3);
+            assert!(!part.complete());
+            assert_eq!(part.missing(), [3]);
+            let reason = part.missing_reason().unwrap();
+            assert!(reason.starts_with("拍照点 P4（cam1）没有收到帧：相机 cam1 触发计数错位："), "{reason}");
+            assert!(reason.contains(&format!("本件应收 {}–{}，实际收到 {}–{}；{first} 不大于本件基线 {baseline}，被当作上一件的迟到帧",
+                baseline + 1, baseline + 2, first, first + 1)), "{reason}");
+            assert!(reason.contains("故障复位"), "{reason}");
+            part.close(&mut ledgers, Some(issued));
+            camera_counter += 2;
+            base = [base[0] + 1, base[1] + 1];
+        }
+
+        // 故障复位：不再用推算的下限，按实际见到的计数布防，下一件完整且绑对
+        ledgers.clear_floors();
+        let mut next = ShotRouter::arm(&plan4(), &ledgers, &prod(), &arm_cams(None)).unwrap();
+        assert_eq!(next.baseline(0), Some(camera_counter));
+        let frames = part_frames([camera_counter, base[0], base[1]]);
+        let input: Vec<_> = frames.iter().map(|(f, s)| (*f, Some(*s))).collect();
+        assert!(feed(&mut next, &mut ledgers, &input).iter().all(|r| matches!(r, Route::Bound { .. })));
+        assert!(next.complete());
+    }
+
+    #[test]
+    fn plc_counts_of_an_early_stopped_part_rebaseline_without_desync() {
+        // 运动超时：cam1 只发了 1 个触发就停了。PLC 确认时报的实际触发数 [1, 0, 0] 推下一件基线，不按计划数假定
+        let mut ledgers = primed();
+        let mut a = armed();
+        feed(&mut a, &mut ledgers, &[(frame(0, 41), Some(0))]);
+        a.close(&mut ledgers, Some(&[("cam1", 1), ("cam2", 0), ("cam3", 0)]));
+        let mut b = ShotRouter::arm(&plan4(), &ledgers, &prod(), &arm_cams(None)).unwrap();
+        assert_eq!([b.baseline(0), b.baseline(1), b.baseline(2)], [Some(41), Some(7), Some(100)]);
+        let input: Vec<_> = part_frames([41, 7, 100]).iter().map(|(f, s)| (*f, Some(*s))).collect();
+        assert!(feed(&mut b, &mut ledgers, &input).iter().all(|r| matches!(r, Route::Bound { .. })));
+        assert!(b.complete());
+        // 按计划数假定（以前的做法）时，下一件第一帧会被当成迟到帧
+        let mut ledgers = primed();
+        let mut a = armed();
+        feed(&mut a, &mut ledgers, &[(frame(0, 41), Some(0))]);
+        a.close(&mut ledgers, None);
+        let mut b = ShotRouter::arm(&plan4(), &ledgers, &prod(), &arm_cams(None)).unwrap();
+        assert!(matches!(b.route(&frame(0, 42)), Route::Stale { .. }));
     }
 
     #[test]
@@ -810,14 +977,26 @@ mod tests {
         assert_eq!(routes[5], Route::Extra { ordinal: 3, planned: 2 });
         assert_eq!(routes[5].fault(), Some(fault::EXTRA_FRAME));
         assert!(router.complete());
+        let reason = router.describe(&frame(0, 43), &routes[5]);
+        assert!(reason.contains("相机 cam1 触发计数错位：本件应收 41–42，收到 43，超出计划 1 个"), "{reason}");
+        let reason = router.describe(&frame(2, 102), &routes[4]);
+        assert!(reason.contains("相机 cam3 触发计数错位：本件应收 101，收到 102，超出计划 1 个"), "{reason}");
     }
 
     #[test]
     fn extra_trigger_mid_part_cannot_pass() {
         // P1 与 P4 之间 cam1 多了一个干扰触发：计数分不出哪个是干扰，后面的帧整体后移，最后一帧必然超计划
         let mut router = armed();
-        let routes: Vec<_> = [frame(0, 41), frame(0, 42), frame(1, 8), frame(2, 101), frame(0, 43)].iter().map(|f| router.route(f)).collect();
+        let mut ledgers = primed();
+        let frames = [frame(0, 41), frame(0, 42), frame(1, 8), frame(2, 101), frame(0, 43)];
+        let routes: Vec<_> = frames.iter().map(|f| { ledgers.observe(f); router.route(f) }).collect();
         assert!(routes.iter().any(|r| r.fault() == Some(fault::EXTRA_FRAME)), "{routes:?}");
+        // 下一件按见到的最高计数布防，不被这次干扰拖累
+        router.close(&mut ledgers, Some(&[("cam1", 2), ("cam2", 1), ("cam3", 1)]));
+        let mut next = ShotRouter::arm(&plan4(), &ledgers, &prod(), &arm_cams(None)).unwrap();
+        assert_eq!([next.baseline(0), next.baseline(1), next.baseline(2)], [Some(43), Some(8), Some(101)]);
+        let input: Vec<_> = part_frames([43, 8, 101]).iter().map(|(f, s)| (*f, Some(*s))).collect();
+        assert!(feed(&mut next, &mut ledgers, &input).iter().all(|r| matches!(r, Route::Bound { .. })));
     }
 
     #[test]

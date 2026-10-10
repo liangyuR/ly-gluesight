@@ -81,7 +81,9 @@ const RESTORE_LIMIT: usize = 2;
 
 #[derive(Debug)]
 pub enum SessionEvent {
-    None, Ready, Start(Request), End(Instant), Released, Fault(String),
+    None, Ready, Start(Request), End(Instant), Fault(String),
+    /// 结果已确认、双方已释放；附 PLC 确认结果时各槽的已发触发数（提前判 ERR 的件据此推下一件基线）
+    Released(Option<[u16; 3]>),
     /// 空闲时视觉输出被改写，已重写空闲输出并继续（附原因）
     Restored(String),
 }
@@ -104,6 +106,8 @@ pub struct PlcSession {
     withdrawn: bool,
     /// 空闲时外部改写视觉输出后自动重写的时刻
     restores: Vec<Instant>,
+    /// PLC 确认本件结果时读到的各槽已发触发数
+    ack_triggers: Option<[u16; 3]>,
 }
 
 impl PlcSession {
@@ -129,7 +133,7 @@ impl PlcSession {
             config_key: String::new(), connection: None, reset_low_seen: false,
             reset_level: false, heartbeat: Mutex::new(HeartbeatWatch::new(3000).expect("valid heartbeat timeout")),
             fault_written: false, fault_attempted: None, message: Some("S7 启动后需确认空闲输入并复位握手".into()),
-            withdrawn: false, restores: Vec::new() }
+            withdrawn: false, restores: Vec::new(), ack_triggers: None }
     }
 
     /// 空闲时的等待提示（以 [`NOTICE`] 开头）；不是故障。
@@ -385,6 +389,7 @@ impl PlcSession {
             self.fault_attempted = None;
             self.withdrawn = false;
             self.restores.clear();
+            self.ack_triggers = None;
             return Ok(SessionEvent::Ready);
         }
         if !self.heartbeat.lock().unwrap().is_live(now) { return Err("PLC 心跳活性尚未确认".into()); }
@@ -403,6 +408,7 @@ impl PlcSession {
                 self.journal.last_request_seq = request.request_seq;
                 self.persist(engine).await?;
                 self.phase = SessionPhase::Validating;
+                self.ack_triggers = None;
                 return Ok(SessionEvent::Start(request));
             }
             SessionPhase::Validating | SessionPhase::Acquiring | SessionPhase::Draining | SessionPhase::AwaitAck => {
@@ -431,6 +437,8 @@ impl PlcSession {
                 if self.phase == SessionPhase::AwaitAck {
                     let result = self.result().ok_or("S7 结果尚未生成")?;
                     if handshake::matching_ack(&snapshot, result)? {
+                        // PLC 已停发触发：此刻的计数就是本件实际发出的脉冲数
+                        self.ack_triggers = Some(snapshot.trigger_counts()?);
                         self.journal.pending.as_mut().unwrap().acknowledged = true;
                         self.persist(engine).await?;
                         self.write(engine, handshake::release_plan()).await?;
@@ -462,7 +470,7 @@ impl PlcSession {
                         self.message = Some(Self::withdrawn_notice());
                     }
                     self.phase = SessionPhase::Idle;
-                    return Ok(SessionEvent::Released);
+                    return Ok(SessionEvent::Released(self.ack_triggers.take()));
                 }
             }
             SessionPhase::Idle => return self.idle(engine, &snapshot, devices_ready).await,
