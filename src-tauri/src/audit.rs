@@ -14,7 +14,8 @@ use crate::store::{PartDetail, PartRecord, PartShot, PlcDelivery, PlcDeliverySta
 const PENDING_LIMIT: usize = 128;
 const CACHE_LIMIT: usize = 512;
 const PENDING_TTL_MS: i64 = 30 * 60 * 1000;
-const WRITE_ATTEMPTS: u8 = 3;
+const RETRY_BASE_MS: i64 = 1000;
+const RETRY_MAX_MS: i64 = 30_000;
 
 #[derive(Clone, Debug)]
 pub struct RecordedPart {
@@ -181,12 +182,19 @@ struct CycleEntry {
     recording: Option<RecordingEvidence>,
     saved_recording: Option<RecordingEvidence>,
     touched_at: i64,
-    failures: u8,
+    failures: u32,
+    retry_at: i64,
 }
 
 impl CycleEntry {
     fn pending(&self) -> bool {
         self.record.is_some() || self.delivery != self.saved_delivery || self.raw_files != self.saved_raw_files || self.recording != self.saved_recording
+    }
+
+    fn defer_retry(&mut self, now: i64) {
+        self.failures = self.failures.saturating_add(1);
+        let delay = (RETRY_BASE_MS << self.failures.saturating_sub(1).min(5)).min(RETRY_MAX_MS);
+        self.retry_at = now.saturating_add(delay);
     }
 }
 
@@ -239,8 +247,7 @@ impl Coordinator {
             Event::Recording(outcome) => merge_recording(&cycle, &mut entry, outcome, &mut notices),
         };
         if changed {
-            entry.failures = 0;
-            flush(&cycle, &mut entry, sink, &mut notices);
+            flush(&cycle, &mut entry, sink, now, &mut notices);
         }
         self.entries.insert(cycle, entry);
         self.trim(now, &mut notices);
@@ -252,19 +259,19 @@ impl Coordinator {
         self.trim(now, &mut notices);
         for cycle in &self.order {
             let entry = self.entries.get_mut(cycle).unwrap();
-            if entry.pending() && (entry.record.is_some() || entry.inserted || entry.failures > 0) && entry.failures < WRITE_ATTEMPTS {
+            if entry.pending() && (entry.record.is_some() || entry.inserted || entry.failures > 0) && now >= entry.retry_at {
                 if entry.record.is_none() && entry.failures > 0 {
                     match sink.find(cycle) {
                         Ok(Some(existing)) => restore(cycle, entry, existing.summary.delivery, existing.shots, existing.recording, &mut notices),
                         Ok(None) => (),
                         Err(error) => {
-                            entry.failures += 1;
+                            entry.defer_retry(now);
                             log(&mut notices, "err", "追溯原记录重读失败", cycle, error);
                             continue;
                         }
                     }
                 }
-                flush(cycle, entry, sink, &mut notices);
+                flush(cycle, entry, sink, now, &mut notices);
             }
         }
         notices
@@ -478,8 +485,8 @@ fn restore(cycle: &str, entry: &mut CycleEntry, delivery: PlcDelivery, shots: Ve
     }
 }
 
-fn flush(cycle: &str, entry: &mut CycleEntry, sink: &mut impl Sink, notices: &mut Vec<Notice>) {
-    if entry.failures >= WRITE_ATTEMPTS {
+fn flush(cycle: &str, entry: &mut CycleEntry, sink: &mut impl Sink, now: i64, notices: &mut Vec<Notice>) {
+    if now < entry.retry_at {
         return;
     }
     if let Some(part) = entry.record.as_ref() {
@@ -494,13 +501,14 @@ fn flush(cycle: &str, entry: &mut CycleEntry, sink: &mut impl Sink, notices: &mu
                 log(notices, "info", "重复追溯入库", cycle, "数据库已有相同 cycleId，保留原记录及原图证据");
             }
             Err(error) => {
-                entry.failures += 1;
+                let verdict = part.judgement.verdict;
+                entry.defer_retry(now);
                 log(
                     notices,
                     "err",
                     "追溯入库失败",
                     cycle,
-                    format!("{error}；保留待写原判定 {:?}，写入尝试 {}/{WRITE_ATTEMPTS}", part.judgement.verdict, entry.failures),
+                    format!("{error}；保留待写原判定 {verdict:?}，写入失败 {} 次，将退避重试", entry.failures),
                 );
                 return;
             }
@@ -574,10 +582,11 @@ fn flush(cycle: &str, entry: &mut CycleEntry, sink: &mut impl Sink, notices: &mu
     if changed {
         notices.push(Notice::Updated(cycle.into()));
     }
-    if failed {
-        entry.failures += 1;
-    } else {
+    if failed || (entry.pending() && entry.failures > 0) {
+        entry.defer_retry(now);
+    } else if !entry.pending() {
         entry.failures = 0;
+        entry.retry_at = 0;
     }
 }
 
