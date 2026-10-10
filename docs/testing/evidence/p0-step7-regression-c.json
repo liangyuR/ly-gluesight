@@ -226,12 +226,23 @@
         "sha256": "d2592b4ffcd75de3e0c7278712520fb4eb61b04ac5416a3c9513f2abc731233c",
         "bytes": 924
       }
+    },
+    "rustRetentionFinal": {
+      "passed": 260,
+      "failed": 0,
+      "ignored": 29,
+      "seconds": 2.76,
+      "source": "a18d82a includes PR12 actual retention failure separation",
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-rust-retention-final-c.log",
+        "sha256": "689ca0df55d953c033332485c96e082b849d7fe2ee15a7a75968d8a9e5298074",
+        "bytes": 30070
+      }
     }
   },
   "pending": [
     "actual CycleHost queue/engine/core/tail/memory measurement",
-    "five actual desktop Robot/Modbus scenarios",
-    "PR12 retention failure separation and integration checks"
+    "five actual desktop Robot/Modbus scenarios"
   ],
   "boundaries": [
     "Tests use local loopback and synthetic images; W0/W7 and physical three-view SDK remain independent.",
