@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-10",
+  "sourceCommit": "51374e66100b058f5c2d61711b9e3d1357bb2892",
+  "branch": "codex/p0-final-validation",
+  "passed": true,
+  "scope": "Integrate PR14 third review, PR15 recording/restart/S7 release repairs, and compact original-image transport",
+  "checks": [
+    {
+      "name": "Rust default",
+      "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib -- --test-threads=2",
+      "tests": 369,
+      "failed": 0,
+      "ignored": 33,
+      "testSeconds": 11.98,
+      "buildSeconds": 49.38,
+      "passed": true,
+      "log": "C:/Users/11601/AppData/Local/Temp/gluesight-p0-recovery-20261010/p0-final-review3-integration-rust-c.log"
+    }
+  ],
+  "limits": [
+    "No new frontend or S7 run in this final integration checkpoint; separate review evidence preserves its original source.",
+    "Current400 and default noisy Robot desktop acceptance remain separate; no physical camera/PLC or W0/W7 claim.",
+    "Following merge changes only documentation/evidence; no business code changed after this test."
+  ]
+}
