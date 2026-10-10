@@ -124,7 +124,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const off = subscribe<string>("workspace://changed", refresh);
     const offCameras = subscribe<unknown>("camera://changed", () => refresh(selected.current ?? ""));
     const offCalibration = subscribe<unknown>("calibration://changed", () => refresh(selected.current ?? ""));
-    return () => { alive = false; requestSerial.current++; off(); offCameras(); offCalibration(); };
+    const offSettings = subscribe<unknown>("cycle://settings-changed", () => refresh(selected.current ?? ""));
+    return () => { alive = false; requestSerial.current++; off(); offCameras(); offCalibration(); offSettings(); };
   }, [reloadList, select, accept]);
 
   useEffect(() => {
