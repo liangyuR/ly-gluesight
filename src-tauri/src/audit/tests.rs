@@ -17,9 +17,11 @@ impl TestDir {
         Self(dir)
     }
 
-    fn sink(&self) -> TestSink {
+    fn sink(&self) -> TestSink { self.sink_mode(false) }
+
+    fn sink_mode(&self, deferred: bool) -> TestSink {
         TestSink {
-            store: Store::open(&self.0.join("parts.sqlite")).unwrap(),
+            store: if deferred { Store::open_deferred_recovery(&self.0.join("parts.sqlite")).unwrap() } else { Store::open(&self.0.join("parts.sqlite")).unwrap() },
             inserts: 0,
             delivery_writes: 0,
             raw_writes: 0,
@@ -89,6 +91,14 @@ impl Sink for TestSink {
         self.delivery_writes += 1;
         fault(&mut self.fail_delivery)?;
         self.store.update_delivery(cycle, delivery)
+    }
+
+    fn matches_record(&mut self, part: &RecordedPart) -> Result<bool, String> {
+        self.store.matches_record(&part.borrowed())
+    }
+
+    fn submission_timing(&mut self, cycle: &str, drain_ms: u64) -> Result<bool, String> {
+        self.store.update_submission_timing(cycle, drain_ms)
     }
 
     fn raw_files(&mut self, cycle: &str, k: usize, files: &[ShotRawFile]) -> Result<bool, String> {
@@ -672,4 +682,317 @@ fn real_sqlite_lock_past_three_failures_recovers_original_part_ack_and_recording
     let counts = sink.counts();
     assert!(coordinator.retry(&mut sink, due + RETRY_MAX_MS).is_empty());
     assert_eq!(sink.counts(), counts);
+}
+
+
+#[test]
+fn durable_spool_survives_coordinator_ttl_capacity_and_replays_out_of_order_evidence_after_restart() {
+    let dir = TestDir::new();
+    let spool_path = dir.0.join("spool");
+    let mut spool = spool::Spool::open(spool_path.clone()).unwrap();
+    let mut sink = dir.sink();
+    let expected = part("durable", 42);
+    let expected_judgement = serde_json::to_value(&expected.judgement).unwrap();
+    spool.append(&Event::Recording(outcome("durable", &[(0, 1), (0, 2), (0, 3)], RecorderState::Complete))).unwrap();
+    spool.append(&Event::Delivery("durable".into(), delivery(PlcDeliveryState::Acknowledged, 77))).unwrap();
+    spool.append(&Event::Insert(Box::new(expected.clone()))).unwrap();
+    let mut volatile = Coordinator::new(1, 1);
+    sink.fail_insert = usize::MAX;
+    for (_, event) in spool.events("durable").unwrap() { volatile.handle(event, &mut sink, 1); }
+    volatile.retry(&mut sink, PENDING_TTL_MS + 1);
+    assert!(volatile.entries.is_empty());
+    assert!(!spool.empty());
+    drop(volatile);
+    drop(spool);
+    let mut reopened = spool::Spool::open(spool_path).unwrap();
+    sink.fail_insert = 0;
+    assert!(replay_cycle(&mut reopened, "durable", &mut sink, PENDING_TTL_MS + 2).unwrap().0);
+    assert!(reopened.empty());
+    let detail = sink.detail("durable");
+    assert_eq!(serde_json::to_value(&detail.judgement).unwrap(), expected_judgement);
+    assert_eq!(detail.summary.sn, expected.sn);
+    assert_eq!(detail.summary.delivery.state, PlcDeliveryState::Acknowledged);
+    assert_eq!(detail.summary.delivery.updated_at, 77);
+    assert_eq!(detail.recording.state, RecordingState::Complete);
+    assert!(detail.recording.available);
+    assert_eq!(detail.shots[0].raw_files.iter().map(|file| file.view).collect::<Vec<_>>(), [1, 2, 3]);
+}
+
+#[test]
+fn durable_spool_real_sqlite_lock_keeps_receipts_then_recovers_without_new_events() {
+    let dir = TestDir::new();
+    let mut sink = dir.sink();
+    let mut spool = spool::Spool::open(dir.0.join("spool")).unwrap();
+    spool.append(&Event::Insert(Box::new(part("locked-spool", 42)))).unwrap();
+    spool.append(&Event::Delivery("locked-spool".into(), delivery(PlcDeliveryState::Acknowledged, 99))).unwrap();
+    let lock = rusqlite::Connection::open(dir.0.join("parts.sqlite")).unwrap();
+    lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert!(!replay_cycle(&mut spool, "locked-spool", &mut sink, 1).unwrap().0);
+    assert_eq!(spool.events("locked-spool").unwrap().len(), 2);
+    lock.execute_batch("ROLLBACK").unwrap();
+    assert!(replay_cycle(&mut spool, "locked-spool", &mut sink, 2).unwrap().0);
+    assert!(spool.empty());
+    let detail = sink.detail("locked-spool");
+    assert_eq!(detail.summary.delivery.state, PlcDeliveryState::Acknowledged);
+    assert_eq!(detail.summary.delivery.updated_at, 99);
+    assert_eq!(detail.judgement.reason, "原始检测结论：P2 缺帧");
+}
+
+#[test]
+fn durable_spool_replays_sqlite_commit_before_receipt_cleanup_without_duplicate_or_regression() {
+    let dir = TestDir::new();
+    let mut sink = dir.sink();
+    let mut spool = spool::Spool::open(dir.0.join("spool")).unwrap();
+    spool.append(&Event::Insert(Box::new(part("committed", 42)))).unwrap();
+    spool.append(&Event::Delivery("committed".into(), delivery(PlcDeliveryState::Acknowledged, 88))).unwrap();
+    spool.append(&Event::Recording(outcome("committed", &[(0, 2)], RecorderState::Complete))).unwrap();
+    let mut coordinator = Coordinator::new(1, 1);
+    for (_, event) in spool.events("committed").unwrap() { coordinator.handle(event, &mut sink, 1); }
+    assert!(!coordinator.entries["committed"].pending());
+    let before = sink.detail("committed");
+    let counts = sink.counts();
+    drop(coordinator);
+    assert!(replay_cycle(&mut spool, "committed", &mut sink, 2).unwrap().0);
+    assert_eq!(sink.counts(), counts);
+    assert_eq!(sink.store.query(&HistoryQuery::default()).unwrap().total, 1);
+    assert_eq!(original(&sink.detail("committed")), original(&before));
+    assert_eq!(sink.detail("committed").recording, before.recording);
+    assert_eq!(sink.detail("committed").summary.delivery, before.summary.delivery);
+}
+
+#[test]
+fn durable_spool_capacity_bad_json_and_partial_commit_fail_closed_without_removing_evidence() {
+    let dir = TestDir::new();
+    let path = dir.0.join("bounded");
+    let mut spool = spool::Spool::with_limits(path.clone(), 1, 1024 * 1024).unwrap();
+    spool.append(&Event::Insert(Box::new(part("one", 42)))).unwrap();
+    assert!(spool.append(&Event::Insert(Box::new(part("two", 42)))).is_err());
+    assert_eq!(spool.cycles().into_iter().collect::<Vec<_>>(), ["one"]);
+    drop(spool);
+    assert_eq!(spool::Spool::open(path.clone()).unwrap().cycles().len(), 1);
+    let partial = path.join("00000000000000000002.tmp");
+    std::fs::write(&partial, b"{\"partial\":").unwrap();
+    assert!(spool::Spool::open(path.clone()).is_err());
+    assert!(partial.is_file());
+    std::fs::remove_file(&partial).unwrap();
+    let invalid = path.join("00000000000000000002.json");
+    std::fs::write(&invalid, b"broken-json").unwrap();
+    assert!(spool::Spool::open(path.clone()).is_err());
+    assert_eq!(std::fs::read(&invalid).unwrap(), b"broken-json");
+    assert!(path.join("00000000000000000001.json").is_file());
+}
+
+#[test]
+fn durable_spool_protects_promoted_and_pending_directories_before_recording_callback_exists() {
+    let dir = TestDir::new();
+    let records = dir.0.join("records");
+    let promoted = records.join("20261010").join("20261010_120000_000_OK_cycle_active");
+    let pending = records.join("_pending").join("20261010_120000_000_cycle_active");
+    std::fs::create_dir_all(&promoted).unwrap();
+    std::fs::create_dir_all(&pending).unwrap();
+    let mut spool = spool::Spool::open(dir.0.join("spool")).unwrap();
+    spool.append(&Event::Insert(Box::new(part("active", 42)))).unwrap();
+    let protected = spool.protected_directories(&records).unwrap();
+    assert!(protected.contains(&promoted.canonicalize().unwrap()));
+    assert!(protected.contains(&pending.canonicalize().unwrap()));
+    let outside = dir.0.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let mut recording = outcome("active", &[], RecorderState::Failed);
+    recording.directory = Some(outside);
+    spool.append(&Event::Recording(recording)).unwrap();
+    assert!(spool.protected_directories(&records).is_err());
+}
+
+#[test]
+fn durable_spool_roundtrip_preserves_actual_point_states_and_nan_without_business_fingerprints() {
+    let dir = TestDir::new();
+    let mut spool = spool::Spool::open(dir.0.join("spool")).unwrap();
+    let mut record = part("points", 42);
+    record.table = Some(vec![PointState::Pending, PointState::Measured { d: f32::NAN, w: 4.5 }, PointState::Gap, PointState::Invalid]);
+    spool.append(&Event::Insert(Box::new(record))).unwrap();
+    let (_, Event::Insert(record)) = spool.events("points").unwrap().remove(0) else { panic!("wrong persisted event"); };
+    let table = record.table.unwrap();
+    assert_eq!(table[0], PointState::Pending);
+    assert!(matches!(table[1], PointState::Measured { d, w } if d.is_nan() && w == 4.5));
+    assert_eq!(table[2], PointState::Gap);
+    assert_eq!(table[3], PointState::Invalid);
+}
+
+#[test]
+#[ignore = "subprocess fixture invoked only by the parent durability regression"]
+fn durable_spool_termination_child() {
+    let Some(path) = std::env::var_os("GLUESIGHT_AUDIT_SPOOL_CHILD") else { return };
+    let root = PathBuf::from(path);
+    let mut spool = spool::Spool::open(root.join("spool")).unwrap();
+    spool.append(&Event::Insert(Box::new(part("terminated", 42)))).unwrap();
+    spool.append(&Event::Delivery("terminated".into(), delivery(PlcDeliveryState::Acknowledged, 101))).unwrap();
+    let mut recording = outcome("terminated", &[(0, 1), (0, 2), (0, 3)], RecorderState::Complete);
+    let records = root.join("records");
+    let actual = records.join("cycle_terminated");
+    std::fs::create_dir_all(&actual).unwrap();
+    for file in &recording.files {
+        let mut pixels = b"P5\n100 60\n255\n".to_vec();
+        pixels.extend(vec![127; 6000]);
+        std::fs::write(records.join(&file.file), pixels).unwrap();
+    }
+    recording.directory = Some(actual);
+    spool.append(&Event::Recording(recording)).unwrap();
+    let ready = std::fs::File::create(root.join("durable-ready")).unwrap();
+    ready.sync_all().unwrap();
+    loop { std::thread::park(); }
+}
+
+#[test]
+fn durable_spool_recovers_after_real_process_termination_before_any_sqlite_insert() {
+    use std::process::{Command, Stdio};
+    struct Child(std::process::Child);
+    impl Drop for Child { fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); } }
+    let dir = TestDir::new();
+    let mut child = Child(Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "audit::tests::durable_spool_termination_child", "--ignored", "--nocapture"])
+        .env("GLUESIGHT_AUDIT_SPOOL_CHILD", &dir.0)
+        .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !dir.0.join("durable-ready").exists() {
+        assert!(child.0.try_wait().unwrap().is_none(), "durability fixture exited before commit");
+        assert!(std::time::Instant::now() < deadline, "durability fixture did not commit in time");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    assert!(!dir.0.join("parts.sqlite").exists());
+    let mut spool = spool::Spool::open(dir.0.join("spool")).unwrap();
+    let mut sink = dir.sink();
+    assert!(replay_cycle(&mut spool, "terminated", &mut sink, 1).unwrap().0);
+    let detail = sink.detail("terminated");
+    assert_eq!(detail.summary.delivery.state, PlcDeliveryState::Acknowledged);
+    assert_eq!(detail.summary.delivery.updated_at, 101);
+    assert_eq!(detail.judgement.reason, "原始检测结论：P2 缺帧");
+    assert_eq!(detail.shots[1].error.as_deref(), Some("原始缺帧原因"));
+    assert!(detail.recording.available);
+    for file in &detail.shots[0].raw_files {
+        let image = image::open(dir.0.join("records").join(&file.file)).unwrap();
+        assert_eq!((image.width(), image.height()), (100, 60));
+    }
+    assert!(spool.empty());
+}
+
+
+#[test]
+fn durable_submission_keeps_actual_plc_completion_timing_through_restart_and_ack() {
+    let dir = TestDir::new();
+    let mut spool = spool::Spool::open(dir.0.join("spool")).unwrap();
+    let mut sink = dir.sink();
+    let mut record = part("timed", 42);
+    record.drain_ms = None;
+    spool.append(&Event::Submission("timed".into(), delivery(PlcDeliveryState::Submitted, 50), Some(250))).unwrap();
+    spool.append(&Event::Insert(Box::new(record))).unwrap();
+    spool.append(&Event::Delivery("timed".into(), delivery(PlcDeliveryState::Acknowledged, 100))).unwrap();
+    assert!(replay_cycle(&mut spool, "timed", &mut sink, 1).unwrap().0);
+    assert_eq!(sink.detail("timed").summary.drain_ms, Some(250));
+    assert_eq!(sink.detail("timed").summary.delivery.state, PlcDeliveryState::Acknowledged);
+    spool.append(&Event::Submission("timed".into(), delivery(PlcDeliveryState::Failed, 200), None)).unwrap();
+    assert!(replay_cycle(&mut spool, "timed", &mut sink, 2).unwrap().0);
+    assert_eq!(sink.detail("timed").summary.drain_ms, Some(250));
+    assert_eq!(sink.detail("timed").summary.delivery.state, PlcDeliveryState::Acknowledged);
+    spool.append(&Event::Submission("timed".into(), delivery(PlcDeliveryState::Submitted, 50), Some(251))).unwrap();
+    assert!(!replay_cycle(&mut spool, "timed", &mut sink, 3).unwrap().0);
+    assert_eq!(sink.detail("timed").summary.drain_ms, Some(250));
+    assert!(!spool.empty());
+}
+
+
+#[test]
+fn durable_spool_conflicting_cycle_insert_retains_all_receipts_and_never_replaces_original() {
+    let dir = TestDir::new();
+    let mut sink = dir.sink();
+    let mut spool = spool::Spool::open(dir.0.join("spool")).unwrap();
+    let original_record = part("same-cycle", 42);
+    sink.store.insert(&original_record.borrowed()).unwrap();
+    let original_content = original(&sink.detail("same-cycle"));
+    let mut conflict = original_record.clone();
+    conflict.sn = 43;
+    spool.append(&Event::Insert(Box::new(conflict))).unwrap();
+    assert!(!replay_cycle(&mut spool, "same-cycle", &mut sink, 1).unwrap().0);
+    assert_eq!(sink.detail("same-cycle").summary.sn, 42);
+    assert_eq!(original(&sink.detail("same-cycle")), original_content);
+    assert_eq!(spool.events("same-cycle").unwrap().len(), 1);
+    let mut clean_spool = spool::Spool::open(dir.0.join("two-pending")).unwrap();
+    let one = part("not-yet-inserted", 42);
+    let mut two = one.clone();
+    two.judgement.reason = "different actual result".into();
+    clean_spool.append(&Event::Insert(Box::new(one))).unwrap();
+    clean_spool.append(&Event::Insert(Box::new(two))).unwrap();
+    assert!(!replay_cycle(&mut clean_spool, "not-yet-inserted", &mut sink, 2).unwrap().0);
+    assert!(sink.store.detail_by_cycle("not-yet-inserted").unwrap().is_none());
+    assert_eq!(clean_spool.events("not-yet-inserted").unwrap().len(), 2);
+}
+
+#[test]
+fn startup_replay_completes_durable_recording_before_interrupted_pending_is_marked_failed() {
+    let dir = TestDir::new();
+    let mut sink = dir.sink();
+    let record = part("startup-complete", 42);
+    sink.store.insert(&record.borrowed()).unwrap();
+    assert_eq!(sink.detail("startup-complete").recording.state, RecordingState::Pending);
+    let path = dir.0.join("spool");
+    let mut spool = spool::Spool::open(path.clone()).unwrap();
+    spool.append(&Event::Recording(outcome("startup-complete", &[(0, 2)], RecorderState::Complete))).unwrap();
+    drop(sink);
+    drop(spool);
+    let mut sink = dir.sink_mode(true);
+    let mut spool = spool::Spool::open(path).unwrap();
+    assert!(replay_cycle(&mut spool, "startup-complete", &mut sink, 1).unwrap().0);
+    assert_eq!(sink.store.finish_interrupted_recordings().unwrap(), 0);
+    assert_eq!(sink.detail("startup-complete").recording.state, RecordingState::Complete);
+    assert!(sink.detail("startup-complete").recording.available);
+}
+
+
+#[cfg(windows)]
+#[test]
+fn durable_spool_detects_real_windows_write_denial_without_losing_committed_event() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let dir = TestDir::new();
+    let path = dir.0.join("spool");
+    let mut spool = spool::Spool::open(path.clone()).unwrap();
+    spool.append(&Event::Insert(Box::new(part("protected", 42)))).unwrap();
+    let locked = std::fs::OpenOptions::new().read(true).share_mode(1).open(path.join(".health")).unwrap();
+    assert!(spool.probe().is_err());
+    assert_eq!(spool.events("protected").unwrap().len(), 1);
+    drop(locked);
+    spool.probe().unwrap();
+    let mut sink = dir.sink();
+    assert!(replay_cycle(&mut spool, "protected", &mut sink, 1).unwrap().0);
+    assert!(spool.empty());
+}
+
+#[cfg(windows)]
+#[test]
+fn durable_spool_rejects_windows_junction_roots_and_promoted_recording_children() {
+    use std::os::windows::process::CommandExt;
+    let dir = TestDir::new();
+    let outside = dir.0.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let sentinel = outside.join("keep.txt");
+    std::fs::write(&sentinel, b"preserve").unwrap();
+    let linked_root = dir.0.join("linked-root");
+    let output = std::process::Command::new("cmd.exe").args(["/C", "mklink", "/J"])
+        .arg(&linked_root).arg(&outside).creation_flags(0x08000000).output().unwrap();
+    assert!(output.status.success());
+    assert!(spool::Spool::open(linked_root.join("spool")).is_err());
+    assert!(!outside.join("spool").exists());
+    std::fs::remove_dir(&linked_root).unwrap();
+    let records = dir.0.join("records");
+    let day = records.join("20261010");
+    std::fs::create_dir_all(&day).unwrap();
+    let promoted = day.join("20261010_120000_000_OK_cycle_active");
+    let output = std::process::Command::new("cmd.exe").args(["/C", "mklink", "/J"])
+        .arg(&promoted).arg(&outside).creation_flags(0x08000000).output().unwrap();
+    assert!(output.status.success());
+    let mut spool = spool::Spool::open(dir.0.join("spool")).unwrap();
+    spool.append(&Event::Insert(Box::new(part("active", 42)))).unwrap();
+    assert!(spool.protected_directories(&records).is_err());
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"preserve");
+    std::fs::remove_dir(&promoted).unwrap();
 }
