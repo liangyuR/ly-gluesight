@@ -888,7 +888,8 @@ fn durable_submission_keeps_actual_plc_completion_timing_through_restart_and_ack
     spool.append(&Event::Submission("timed".into(), delivery(PlcDeliveryState::Submitted, 50), Some(250))).unwrap();
     spool.append(&Event::Insert(Box::new(record))).unwrap();
     spool.append(&Event::Delivery("timed".into(), delivery(PlcDeliveryState::Acknowledged, 100))).unwrap();
-    assert!(replay_cycle(&mut spool, "timed", &mut sink, 1).unwrap().0);
+    let (complete, notices) = replay_cycle(&mut spool, "timed", &mut sink, 1).unwrap();
+    assert!(complete, "{notices:#?}");
     assert_eq!(sink.detail("timed").summary.drain_ms, Some(250));
     assert_eq!(sink.detail("timed").summary.delivery.state, PlcDeliveryState::Acknowledged);
     spool.append(&Event::Submission("timed".into(), delivery(PlcDeliveryState::Failed, 200), None)).unwrap();
@@ -901,6 +902,34 @@ fn durable_submission_keeps_actual_plc_completion_timing_through_restart_and_ack
     assert!(!spool.empty());
 }
 
+
+#[test]
+fn durable_spool_snapshot_cleanup_preserves_ack_appended_during_replay() {
+    let dir = TestDir::new();
+    let path = dir.0.join("spool");
+    let mut spool = spool::Spool::open(path.clone()).unwrap();
+    let mut sink = dir.sink();
+    spool.append(&Event::Insert(Box::new(part("interleaved", 42)))).unwrap();
+    let snapshot = spool.events("interleaved").unwrap();
+    spool.append(&Event::Delivery("interleaved".into(), delivery(PlcDeliveryState::Acknowledged, 100))).unwrap();
+    let (complete, receipts, notices) = apply_spooled(snapshot, "interleaved", &mut sink, 1);
+    assert!(complete, "{notices:#?}");
+    assert_eq!(sink.detail("interleaved").summary.delivery.state, PlcDeliveryState::Pending);
+    let original_content = original(&sink.detail("interleaved"));
+    spool.remove(&receipts).unwrap();
+    drop(spool);
+    let mut spool = spool::Spool::open(path).unwrap();
+    let pending = spool.events("interleaved").unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(matches!(&pending[0].1, Event::Delivery(cycle, delivery) if cycle == "interleaved" && delivery.state == PlcDeliveryState::Acknowledged));
+    let (complete, notices) = replay_cycle(&mut spool, "interleaved", &mut sink, 2).unwrap();
+    assert!(complete, "{notices:#?}");
+    assert_eq!(sink.detail("interleaved").summary.delivery.state, PlcDeliveryState::Acknowledged);
+    assert_eq!(original(&sink.detail("interleaved")), original_content);
+    assert_eq!(sink.inserts, 1);
+    assert_eq!(sink.store.query(&HistoryQuery::default()).unwrap().total, 1);
+    assert!(spool.empty());
+}
 
 #[test]
 fn durable_spool_conflicting_cycle_insert_retains_all_receipts_and_never_replaces_original() {

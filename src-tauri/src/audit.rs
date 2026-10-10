@@ -679,7 +679,8 @@ fn flush(cycle: &str, entry: &mut CycleEntry, sink: &mut impl Sink, now: i64, no
         if let Some(drain_ms) = entry.drain_ms {
             match sink.submission_timing(cycle, drain_ms) {
                 Ok(true) => { entry.saved_drain_ms = Some(drain_ms); changed = true; },
-                Ok(false) => { failed = true; log(notices, "err", "PLC 提交耗时未写入", cycle, "原记录不存在，保留实际耗时事件"); },
+                Ok(false) if entry.inserted => { failed = true; log(notices, "err", "PLC 提交耗时未写入", cycle, "原记录不存在，保留实际耗时事件"); },
+                Ok(false) => (),
                 Err(error) => { failed = true; log(notices, "err", "PLC 提交耗时写入失败", cycle, error); },
             }
         }

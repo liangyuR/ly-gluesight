@@ -53,7 +53,7 @@ fn callback() -> (RecordingCallback, Receiver<RecordingOutcome>) {
 fn controlled(root: PathBuf) -> (Recorder, Receiver<Msg>, Receiver<RecordingOutcome>) {
     let (tx, rx) = channel();
     let (callback, outcomes) = callback();
-    (Recorder { root, tx, queued: Arc::new(AtomicUsize::new(0)), callback: Some(callback), startup_error: None, active: Arc::new(Mutex::new(HashSet::new())) }, rx, outcomes)
+    (Recorder { root, tx, queued: Arc::new(AtomicUsize::new(0)), callback: Some(callback), startup_error: None, protection: None, active: Arc::new(Mutex::new(HashSet::new())) }, rx, outcomes)
 }
 
 fn wait(outcomes: &Receiver<RecordingOutcome>) -> RecordingOutcome {
@@ -564,4 +564,43 @@ fn pending_cleanup_claim_is_exclusive_and_releases_the_registry_lock() {
     assert!(PendingClaim::acquire(&active, &path).is_none());
     drop(claim);
     assert!(!active.lock().unwrap().contains(&path));
+}
+
+
+#[test]
+fn rolling_prune_preserves_durable_pending_recording_and_removes_unprotected_old_recording() {
+    let dir = TestDir::new();
+    let protected = dir.root().join("20000101/20000101_000000_cycle_durable");
+    let disposable = dir.root().join("20000101/20000101_000001_cycle_old");
+    for path in [&protected, &disposable] {
+        std::fs::create_dir_all(path).unwrap();
+        std::fs::write(path.join("image.pgm"), b"original").unwrap();
+    }
+    let guarded = protected.clone();
+    let (callback, outcomes) = callback();
+    let recorder = Recorder::guarded(dir.root(), Some(callback), Arc::new(move || Ok(vec![guarded.clone()])), Arc::new(|_| {}));
+    let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "prune-new", None).unwrap();
+    recorder.frame(&mut rec, &frame(21), "cam1", 0, 1);
+    recorder.finish(rec, Verdict::Ok, "完整", 1, 1, Vec::new());
+    let outcome = wait(&outcomes);
+    assert!(outcome.available);
+    assert!(protected.join("image.pgm").is_file());
+    assert!(!disposable.exists());
+}
+
+#[test]
+fn failed_durable_guard_prevents_rolling_prune_of_old_evidence() {
+    let dir = TestDir::new();
+    let old = dir.root().join("20000101/20000101_000000_cycle_unresolved");
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(old.join("image.pgm"), b"original").unwrap();
+    let (callback, outcomes) = callback();
+    let recorder = Recorder::guarded(dir.root(), Some(callback), Arc::new(|| Err("待入库日志损坏".into())), Arc::new(|_| {}));
+    let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "guard-new", None).unwrap();
+    recorder.frame(&mut rec, &frame(21), "cam1", 0, 1);
+    recorder.finish(rec, Verdict::Ok, "完整", 1, 1, Vec::new());
+    let outcome = wait(&outcomes);
+    assert!(outcome.available);
+    assert_eq!(std::fs::read(old.join("image.pgm")).unwrap(), b"original");
+    assert!(outcome.retention_errors.iter().any(|error| error.contains("跳过滚动清理")));
 }

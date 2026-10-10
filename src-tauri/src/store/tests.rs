@@ -967,3 +967,91 @@ fn corrective_marker_never_uses_previous_synthetic_snapshot_to_guess_legacy_layo
     assert!(reopened.detail(1).unwrap().summary.recipe_revision.is_none());
     assert_eq!(reopened.detail(2).unwrap().summary.recipe_revision.as_deref(), Some(synthetic.revision_id.as_str()));
 }
+
+
+#[test]
+fn deferred_recovery_allows_durable_recording_replay_before_failing_remaining_pending() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = recipe();
+    let delivery = PlcDelivery { state: PlcDeliveryState::Submitted, updated_at: 9, message: None };
+    let completed = save(&store, &recipe, "durable-completed", &shots(&recipe), &delivery, None).unwrap();
+    let interrupted = save(&store, &recipe, "actually-interrupted", &shots(&recipe), &delivery, None).unwrap();
+    let original = store.detail(completed).unwrap().summary;
+    drop(store);
+    let reopened = Store::open_deferred_recovery(&db.path()).unwrap();
+    assert_eq!(reopened.detail(completed).unwrap().recording.state, RecordingState::Pending);
+    reopened.update_shot_raw_files("durable-completed", 0, &[ShotRawFile {
+        view: 1, file: "records/durable-completed/k000.pgm".into(), width: Some(2), height: Some(3),
+    }]).unwrap();
+    let evidence = RecordingEvidence { state: RecordingState::Complete, available: true,
+        directory: Some("records/durable-completed".into()), errors: Vec::new() };
+    reopened.update_recording("durable-completed", &evidence).unwrap();
+    assert_eq!(reopened.finish_interrupted_recordings().unwrap(), 1);
+    let detail = reopened.detail(completed).unwrap();
+    assert_eq!(detail.recording, evidence);
+    assert_eq!(serde_json::to_value(&detail.summary).unwrap(), serde_json::to_value(original).unwrap());
+    assert_eq!(reopened.detail(interrupted).unwrap().recording.state, RecordingState::Failed);
+    assert_eq!(reopened.finish_interrupted_recordings().unwrap(), 0);
+}
+
+
+#[test]
+fn submission_timing_is_a_single_cycle_observation_and_never_replaces_existing_measurement() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = recipe();
+    let delivery = PlcDelivery { state: PlcDeliveryState::Pending, updated_at: 9, message: None };
+    let id = save(&store, &recipe, "observed-submission", &shots(&recipe), &delivery, None).unwrap();
+    store.conn.lock().unwrap().execute("UPDATE parts SET drain_ms=NULL WHERE id=?1", [id]).unwrap();
+    let before = store.detail(id).unwrap();
+    assert!(!store.update_submission_timing("another-cycle", 53).unwrap());
+    assert!(store.update_submission_timing("observed-submission", 53).unwrap());
+    assert!(store.update_submission_timing("observed-submission", 53).unwrap());
+    assert!(store.update_submission_timing("observed-submission", 52).is_err());
+    assert!(store.update_submission_timing("observed-submission", u64::MAX).is_err());
+    let mut expected = serde_json::to_value(before).unwrap();
+    expected["summary"]["drainMs"] = serde_json::json!(53);
+    assert_eq!(serde_json::to_value(store.detail(id).unwrap()).unwrap(), expected);
+}
+
+
+#[test]
+fn durable_record_identity_checks_actual_fields_while_allowing_later_delivery_and_raw_evidence() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = recipe();
+    let table = table(&recipe);
+    let shots = shots(&recipe);
+    let pending = PlcDelivery { state: PlcDeliveryState::Pending, updated_at: 1235, message: None };
+    save(&store, &recipe, "record-identity", &shots, &pending, Some(&table)).unwrap();
+    let judgement = Judgement::error(crate::judge::fault::MISSING_FRAME, "P2 缺帧，P3 定位失败，P4 测量出错");
+    let mut record = PartRecord { ts: 1234, sn: 42, recipe: Some(&recipe), judgement: &judgement, drain_ms: None,
+        frames: &[], frames_expected: recipe.shot_count(), frames_received: 3, triggers: 4, table: Some(&table),
+        software_version: "test-p0", cycle_id: Some("record-identity"), bundle_id: Some("frozen-bundle-id"), delivery: &pending, shots: &shots };
+    assert!(store.matches_record(&record).unwrap());
+    store.update_delivery("record-identity", &PlcDelivery { state: PlcDeliveryState::Acknowledged, updated_at: 9999, message: None }).unwrap();
+    store.update_shot_raw_files("record-identity", 0, &[ShotRawFile { view: 1, file: "records/cycle/k000.pgm".into(), width: Some(2), height: Some(3) }]).unwrap();
+    assert!(store.matches_record(&record).unwrap());
+    record.sn = 43;
+    assert!(!store.matches_record(&record).unwrap());
+    record.sn = 42;
+    record.ts += 1;
+    assert!(!store.matches_record(&record).unwrap());
+    record.ts -= 1;
+    record.triggers += 1;
+    assert!(!store.matches_record(&record).unwrap());
+    record.triggers -= 1;
+    let mut wrong_shots = shots.clone();
+    wrong_shots[0].view = 2;
+    record.shots = &wrong_shots;
+    assert!(!store.matches_record(&record).unwrap());
+    record.shots = &shots;
+    record.table = None;
+    assert!(!store.matches_record(&record).unwrap());
+    record.table = Some(&table);
+    let mut changed = recipe.clone();
+    changed.product_code += 1;
+    record.recipe = Some(&changed);
+    assert!(!store.matches_record(&record).unwrap());
+}
