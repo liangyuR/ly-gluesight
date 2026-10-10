@@ -39,6 +39,8 @@ pub struct RecordedRawFile {
     pub k: usize,
     pub view: u8,
     pub file: String,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -474,7 +476,7 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState) -> Recor
                 match relative {
                     Ok(file) => {
                         frame.available = true;
-                        files.push(RecordedRawFile { k: frame.k, view: frame.view, file });
+                        files.push(RecordedRawFile { k: frame.k, view: frame.view, file, width: frame.width, height: frame.height });
                     }
                     Err(error) => {
                         frame.error = Some(format!("原图路径不在录制根目录：{error}"));

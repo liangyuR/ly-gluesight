@@ -262,6 +262,23 @@ pub fn load(releases_root: &Path, recipe_id: &str, bundle_id: &str) -> Result<Re
     load_directory(&root, recipe_id, bundle_id)
 }
 
+pub fn is_legacy_directory(releases_root: &Path, recipe_id: &str, directory: &str) -> Result<bool, String> {
+    safe_id(recipe_id)?;
+    valid_bundle_id(directory)?;
+    let root = absolute_path(releases_root)?.join(recipe_id).join(directory);
+    reject_links(&root, false)?;
+    let manifest: ReleaseManifest = read_json(&root.join("manifest.json"))?;
+    Ok(manifest.bundle_id.is_empty())
+}
+
+pub fn load_legacy(releases_root: &Path, recipe_id: &str, bundle_id: &str, directory: &str) -> Result<ReleaseBundle, String> {
+    safe_id(recipe_id)?;
+    valid_bundle_id(bundle_id)?;
+    valid_bundle_id(directory)?;
+    let root = absolute_path(releases_root)?.join(recipe_id).join(directory);
+    load_directory(&root, recipe_id, bundle_id)
+}
+
 fn load_directory(root: &Path, recipe_id: &str, bundle_id: &str) -> Result<ReleaseBundle, String> {
     safe_id(recipe_id)?;
     valid_bundle_id(bundle_id)?;
@@ -709,6 +726,50 @@ mod tests {
         let serialized = serde_json::to_value(&legacy.manifest).unwrap();
         assert!(serialized.get("recipeHash").is_none());
         assert!(serialized["files"].as_array().unwrap().iter().all(|entry| entry.get("hash").is_none()));
+    }
+
+    #[test]
+    fn legacy_directory_is_only_a_locator_for_a_persisted_explicit_bundle_id() {
+        let directory = Directory::new();
+        let bundle = publish(&directory.releases(), input()).unwrap();
+        let manifest_path = bundle.root.join("manifest.json");
+        let mut manifest = serde_json::to_value(&bundle.manifest).unwrap();
+        manifest.as_object_mut().unwrap().remove("bundleId");
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let unchanged = fs::read(&manifest_path).unwrap();
+        let database = directory.0.join("history.sqlite");
+        let store = crate::store::Store::open(&database).unwrap();
+        assert!(is_legacy_directory(&directory.releases(), "part-A", &bundle.id).unwrap());
+        let id = store.register_legacy_bundle("part-A", &bundle.id).unwrap();
+        let loaded = load_legacy(&directory.releases(), "part-A", &id, &bundle.id).unwrap();
+        assert_eq!(loaded.id, id);
+        assert_eq!(loaded.root, bundle.root);
+        loaded.verify().unwrap();
+        drop(store);
+        let store = crate::store::Store::open(&database).unwrap();
+        assert_eq!(store.register_legacy_bundle("part-A", &bundle.id).unwrap(), id);
+        assert_eq!(fs::read(manifest_path).unwrap(), unchanged);
+        assert!(load_legacy(&directory.releases(), "part-A", &id, "../outside").is_err());
+        assert!(load(&directory.releases(), "part-A", "legacy-bundle-missing").is_err());
+    }
+
+    #[test]
+    fn recreated_recipe_freezes_and_publishes_the_same_unconsumed_next_version() {
+        let directory = Directory::new();
+        let recipes_dir = directory.0.join("recipes");
+        let recipes = crate::recipe::RecipeStore::open(recipes_dir.clone()).unwrap();
+        let original = recipes.save_published(input().recipe, None).unwrap();
+        recipes.delete(&original.id).unwrap();
+        drop(recipes);
+        let recipes = crate::recipe::RecipeStore::open(recipes_dir).unwrap();
+        let mut candidate = input();
+        candidate.recipe.version = recipes.next_version(&original.id).unwrap();
+        assert_eq!(candidate.recipe.version, 8);
+        let frozen = publish(&directory.releases(), candidate).unwrap();
+        let saved = recipes.save_published(frozen.recipe.clone(), None).unwrap();
+        assert_eq!(saved.revision_id, frozen.manifest.recipe_revision);
+        assert_eq!(saved.version, frozen.manifest.recipe_version);
+        assert_eq!(recipes.save_published(frozen.recipe, None).unwrap().version, 8);
     }
 
     #[test]

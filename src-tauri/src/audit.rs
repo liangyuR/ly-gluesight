@@ -348,13 +348,13 @@ fn merge_delivery(cycle: &str, current: &mut Option<PlcDelivery>, mut incoming: 
 }
 
 fn raw_file(file: RecordedRawFile) -> Result<(usize, ShotRawFile), String> {
-    if file.k >= 64 || !(1..=3).contains(&file.view) {
+    if file.k >= 64 || !(1..=3).contains(&file.view) || file.width == 0 || file.height == 0 {
         return Err(format!("原图 k={} 或 view={} 越界", file.k, file.view));
     }
     if file.file.is_empty() || file.file.contains(['\\', ':', '\0']) || file.file.split('/').any(|part| matches!(part, "" | "." | "..")) {
         return Err("原图文件不是录制根目录内的相对路径".into());
     }
-    Ok((file.k, ShotRawFile { view: file.view, file: file.file }))
+    Ok((file.k, ShotRawFile { view: file.view, file: file.file, width: Some(file.width), height: Some(file.height) }))
 }
 
 fn merge_files(cycle: &str, entry: &mut CycleEntry, k: usize, incoming: ShotRawFile, notices: &mut Vec<Notice>) -> bool {
@@ -363,12 +363,14 @@ fn merge_files(cycle: &str, entry: &mut CycleEntry, k: usize, incoming: ShotRawF
         return false;
     }
     let files = entry.raw_files.entry(k).or_default();
-    if let Some(previous) = files.iter().find(|file| file.view == incoming.view) {
-        if previous.file != incoming.file {
+    if let Some(previous) = files.iter_mut().find(|file| file.view == incoming.view) {
+        if previous.file != incoming.file || (previous.width.is_some() && previous.width != incoming.width)
+            || (previous.height.is_some() && previous.height != incoming.height) {
             log(notices, "err", "原图身份冲突", cycle, format!("k={k} view={} 已有关联文件，保留首次原图证据", incoming.view));
             return false;
         }
-        return false;
+        if previous == &incoming { return false; }
+        *previous = incoming;
     } else {
         files.push(incoming);
         files.sort_by_key(|file| file.view);

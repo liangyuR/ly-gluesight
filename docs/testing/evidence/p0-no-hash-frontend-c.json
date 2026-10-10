@@ -61,10 +61,10 @@
     }
   ],
   "coverage": {
-    "statements": 91.36,
-    "branches": 89.79,
-    "functions": 88.62,
-    "lines": 93.95
+    "statements": 91.38,
+    "branches": 89.81,
+    "functions": 88.64,
+    "lines": 93.96
   },
   "buildChecks": [
     {
@@ -78,9 +78,9 @@
     {
       "command": "node node_modules/vite/bin/vite.js build",
       "passed": true,
-      "durationSeconds": 1.97,
-      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\no-hash-frontend-build.log",
-      "entry": "dist/assets/index-Cpk7GTJ2.js"
+      "durationSeconds": 1.12,
+      "log": "C:/Users/11601/AppData/Local/Temp/gluesight-p0-recovery-20261010/no-hash-structured-tags-build.log",
+      "entry": "dist/assets/index-D68PCzpT.js"
     }
   ],
   "syntaxChecks": {
@@ -98,9 +98,78 @@
     "Git commit identifiers"
   ],
   "pending": [
-    "Final backend tests and unified commit owned by root agent",
-    "Fresh isolated native 3-view capture, teaching, validation, publish, normal/gap actual cycles and history comparison",
-    "Fresh isolated process lock and restart acceptance"
+    "Final backend review fixes and unified commit owned by root agent",
+    "Fresh rebuilt isolated native UI teaching/publish and normal/gap cycles, historical reproduction/candidate retest, lock/restart"
   ],
-  "historicalEvidence": "Prior native hash-matching reports remain historical and are not acceptance evidence for this implementation"
+  "historicalEvidence": "Prior native hash-matching reports remain historical and are not acceptance evidence for this implementation",
+  "initialValidationBeforeNativeObservation": {
+    "tests": 960,
+    "files": 42,
+    "coverage": {
+      "statements": 91.36,
+      "branches": 89.79,
+      "functions": 88.62,
+      "lines": 93.95
+    },
+    "log": "C:/Users/11601/AppData/Local/Temp/gluesight-p0-recovery-20261010/no-hash-frontend-coverage.log",
+    "limitation": "Legacy string Tag fixtures did not cover new independently deserialized JSON structures; actual native teaching exposed a stale-by-reference UI bug."
+  },
+  "structuredTagFix": {
+    "problem": "TeachingPage compared equivalent JSON geometry values by object reference, incorrectly disabling save after a real successful DLL trial",
+    "change": "Compare actual JSON fields recursively; object key order is irrelevant and array order remains significant; no digest/fingerprint/serialization comparison",
+    "publicFixtures": "camera/calibration/geometry/parameters/engine/environment tags use actual structured values, with separately allocated geometry arrays",
+    "focused": [
+      {
+        "command": "node node_modules/vitest/vitest.mjs run tests/teaching.test.tsx",
+        "passed": true,
+        "tests": 58,
+        "files": 1,
+        "durationSeconds": 13.42,
+        "log": "C:/Users/11601/AppData/Local/Temp/gluesight-p0-recovery-20261010/no-hash-structured-tags-focused.log"
+      },
+      {
+        "command": "node node_modules/vitest/vitest.mjs run tests/teaching.test.tsx tests/workspace-context.test.tsx tests/workspace-api.test.ts tests/validation.test.tsx tests/history-detail.test.tsx",
+        "passed": true,
+        "tests": 170,
+        "files": 4,
+        "durationSeconds": 24.85,
+        "log": "C:/Users/11601/AppData/Local/Temp/gluesight-p0-recovery-20261010/no-hash-structured-tags-focused2.log"
+      }
+    ],
+    "preservedFirstCoverageAttempt": {
+      "testsPassed": 963,
+      "testsFailed": 1,
+      "durationSeconds": 199.09,
+      "log": "C:/Users/11601/AppData/Local/Temp/gluesight-p0-recovery-20261010/no-hash-structured-tags-coverage.log",
+      "failure": "Existing PLC logs combination test exceeded unchanged 5000ms limit"
+    },
+    "isolatedFailureRetest": {
+      "command": "node node_modules/vitest/vitest.mjs run tests/plc-logs.test.tsx",
+      "tests": 25,
+      "passed": true,
+      "durationSeconds": 10.89,
+      "log": "C:/Users/11601/AppData/Local/Temp/gluesight-p0-recovery-20261010/no-hash-structured-tags-plc-logs-retest.log"
+    },
+    "finalFullCoverage": {
+      "command": "node node_modules/vitest/vitest.mjs run --coverage --maxWorkers 1",
+      "tests": 964,
+      "files": 42,
+      "passed": true,
+      "durationSeconds": 344.59,
+      "log": "C:/Users/11601/AppData/Local/Temp/gluesight-p0-recovery-20261010/no-hash-structured-tags-coverage-final.log",
+      "timeoutsChanged": false
+    }
+  },
+  "recordingMetadataReviewFix": {
+    "change": "Re-read actual part.json and compare the complete actual JSON structure to the saved observation, including per-frame identity/session/counters and completeness",
+    "sameByteLengthMutationCases": 11,
+    "allowsObjectKeyReordering": true,
+    "command": "node --test tests/native/p0-cyclehost-performance.test.mjs scripts/robot-plc-demo/tests/test-console.mjs",
+    "testsPassed": 69,
+    "testsFailed": 0,
+    "durationSeconds": 0.7876655,
+    "log": "C:/Users/11601/AppData/Local/Temp/gluesight-p0-recovery-20261010/no-hash-metadata-actual-fields.log",
+    "staticIndependentReview": "No actionable issue reported by the independent review agent"
+  },
+  "backendEvidence": "docs/testing/evidence/p0-no-hash-backend-c.json"
 }

@@ -293,7 +293,7 @@ impl CycleHost {
             tx,
             plc_gate: tokio::sync::Mutex::new(()),
             sim: SimCtl::default(),
-            recipes: RecipeStore::open(data.join("recipes"))?,
+            recipes: RecipeStore::open_with_floors(data.join("recipes"), &app.state::<crate::store::Store>().recipe_version_floors()?)?,
             recorder: Recorder::guarded(records, Some(Arc::new(move |outcome| record_audit.recording(outcome))), protection, warning),
             cycle_ids: crate::cycle_ids::CycleIds::default(),
             audit,

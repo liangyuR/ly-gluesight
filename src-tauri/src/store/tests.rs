@@ -91,7 +91,7 @@ fn identity_shots_and_measurements_round_trip() {
     let store = Store::open(&db.path()).unwrap();
     let recipe = recipe();
     let mut shots = shots(&recipe);
-    shots[0].raw_files = vec![ShotRawFile { view: 1, file: "cycle/P1_v1.pgm".into() }];
+    shots[0].raw_files = vec![ShotRawFile { view: 1, file: "cycle/P1_v1.pgm".into() , width: None, height: None }];
     let delivery = PlcDelivery { state: PlcDeliveryState::Pending, updated_at: 1235, message: Some("等待提交".into()) };
     let cycle = store.reserve_cycle_id().unwrap();
     let table = table(&recipe);
@@ -220,7 +220,7 @@ fn raw_file_completion_adds_views_without_replacing_identity() {
     let store = Store::open(&db.path()).unwrap();
     let recipe = recipe();
     let id = save(&store, &recipe, "cycle", &shots(&recipe), &PlcDelivery::default(), None).unwrap();
-    let files: Vec<_> = (1..=3).map(|view| ShotRawFile { view, file: format!("cycle/P1_v{view}.pgm") }).collect();
+    let files: Vec<_> = (1..=3).map(|view| ShotRawFile { view, file: format!("cycle/P1_v{view}.pgm"), width: None, height: None }).collect();
     assert!(store.update_shot_raw_files("cycle", 0, &files[..1]).unwrap());
     assert!(store.update_shot_raw_files("cycle", 0, &files).unwrap());
     assert!(store.update_shot_raw_files("cycle", 0, &files).unwrap());
@@ -229,7 +229,7 @@ fn raw_file_completion_adds_views_without_replacing_identity() {
     replacement[0].file = "cycle/P2_v1.pgm".into();
     assert!(store.update_shot_raw_files("cycle", 0, &replacement).is_err());
     for file in ["../outside.pgm", "C:/outside.pgm", "/outside.pgm", "cycle\\P1.pgm"] {
-        assert!(store.update_shot_raw_files("cycle", 1, &[ShotRawFile { view: 1, file: file.into() }]).is_err());
+        assert!(store.update_shot_raw_files("cycle", 1, &[ShotRawFile { view: 1, file: file.into() , width: None, height: None }]).is_err());
     }
     assert!(store.update_shot_raw_files("cycle", 1, &[files[0].clone(), files[0].clone()]).is_err());
     assert!(!store.update_shot_raw_files("unknown", 0, &files).unwrap());
@@ -370,7 +370,7 @@ fn recording_available_requires_actual_refs_and_complete_error_free_evidence() {
     let complete = RecordingEvidence { state: RecordingState::Complete, available: true, directory: Some("records/cycle".into()), errors: Vec::new() };
     assert!(store.update_recording("cycle", &complete).unwrap_err().contains("原图引用"));
     store
-        .update_shot_raw_files("cycle", 0, &[ShotRawFile { view: 1, file: "cycle/k000_P1_cam1_v1.pgm".into() }])
+        .update_shot_raw_files("cycle", 0, &[ShotRawFile { view: 1, file: "cycle/k000_P1_cam1_v1.pgm".into() , width: None, height: None }])
         .unwrap();
     for invalid in [
         RecordingEvidence { state: RecordingState::Failed, ..complete.clone() },
@@ -416,7 +416,7 @@ fn reopening_fails_pending_recordings_once_without_changing_original_evidence_or
         view: 1,
         file: "records/cycle-interrupted/k000_P1_cam1_v1.pgm".into(),
 
-    }];
+     width: None, height: None }];
     let mut partial_shots = shots(&recipe);
     partial_shots[0].raw_files = partial.clone();
     let pending = save(&store, &recipe, "cycle-interrupted", &partial_shots, &delivery, Some(&table)).unwrap();
@@ -441,7 +441,7 @@ fn reopening_fails_pending_recordings_once_without_changing_original_evidence_or
                 view: 1,
                 file: "records/cycle-complete/k000_P1_cam1_v1.pgm".into(),
 
-            }]).unwrap();
+             width: None, height: None }]).unwrap();
         }
         store.update_recording(cycle, &RecordingEvidence {
             state,
@@ -526,7 +526,7 @@ fn pending_history_protection_includes_partial_directory_and_raw_only_references
     let recipe = recipe();
     let mut shots = shots(&recipe);
     shots[0].raw_files = vec![ShotRawFile { view: 1,
-        file: "_pending/20261010_000000_000_cycle_raw-only/image.pgm".into() }];
+        file: "_pending/20261010_000000_000_cycle_raw-only/image.pgm".into() , width: None, height: None }];
     save(&store, &recipe, "pending-references", &shots, &PlcDelivery::default(), None).unwrap();
     store.update_recording("pending-references", &RecordingEvidence {
         state: RecordingState::Incomplete, available: false,
@@ -738,10 +738,13 @@ fn legacy_v2_adds_revisions_without_erasing_snapshots_points_raw_or_acknowledgem
         let revision = format!("{}-v{version}", original.id);
         assert_eq!(detail.summary.recipe_revision.as_deref(), Some(revision.as_str()));
         assert_eq!(detail.summary.recipe_version, Some(version));
-        assert_eq!(detail.summary.bundle_id.as_deref(), Some("legacy-bundle-directory"));
+        let bundle = detail.summary.bundle_id.as_deref().unwrap();
+        assert!(bundle.starts_with("legacy-bundle-"));
+        assert_ne!(bundle, "legacy-bundle-directory");
+        assert_eq!(store.resolve_bundle(&original.id, bundle).unwrap(), (bundle.into(), Some("legacy-bundle-directory".into())));
         assert_eq!(detail.summary.delivery, PlcDelivery { state: PlcDeliveryState::Acknowledged, updated_at: 99, message: Some("PLC confirmed".into()) });
         assert_eq!(detail.shots[0].session, Some(u64::MAX));
-        assert_eq!(detail.shots[0].raw_files, [ShotRawFile { view: 1, file: "cycle/P1_v1.pgm".into() }]);
+        assert_eq!(detail.shots[0].raw_files, [ShotRawFile { view: 1, file: "cycle/P1_v1.pgm".into() , width: None, height: None }]);
         assert!(detail.recording.available);
         let snapshot = store.recipe_snapshot(&revision).unwrap().unwrap();
         assert_eq!((snapshot.id.as_str(), snapshot.version), (original.id.as_str(), version));
@@ -759,15 +762,17 @@ fn legacy_v2_adds_revisions_without_erasing_snapshots_points_raw_or_acknowledgem
     next.version = original.version + 2;
     let next = next.build().unwrap();
     save(&store, &next, "new-cycle", &shots(&next), &PlcDelivery::default(), None).unwrap();
+    let mapped_bundle = store.detail(1).unwrap().summary.bundle_id.unwrap();
     drop(store);
     let reopened = Store::open(&db.path()).unwrap();
+    assert_eq!(reopened.detail(1).unwrap().summary.bundle_id.as_deref(), Some(mapped_bundle.as_str()));
     assert_eq!(reopened.query(&HistoryQuery::default()).unwrap().total, 3);
     assert_eq!(reopened.recipe_snapshot(&next.revision_id).unwrap().unwrap().version, next.version);
     assert!(reopened.detail(1).unwrap().recording.available);
 }
 
 #[test]
-fn conflicting_legacy_revision_rolls_back_additions_and_preserves_original_rows() {
+fn ambiguous_legacy_revision_keeps_original_snapshots_and_readable_history_without_reproduction() {
     let db = TestDb::new();
     let legacy = legacy_v2(&db);
     let original = recipe();
@@ -775,12 +780,25 @@ fn conflicting_legacy_revision_rolls_back_additions_and_preserves_original_rows(
     let mut conflicting = original.clone();
     conflicting.shots[0].camera = "another-camera".into();
     let second = legacy_snapshot(&legacy, "old-two", &conflicting);
+    let judgement = serde_json::to_string(&Judgement::error(1, "original")).unwrap();
+    for token in ["old-one", "old-two"] {
+        legacy.execute("INSERT INTO parts(ts,sn,recipe_id,recipe_version,recipe_hash,verdict,plc_code,fault_code,reason,frames_expected,
+            frames_received,triggers,software_version,judgement,frames,delivery_state,delivery_updated_at,recording_state,recording_available,recording_directory)
+            VALUES(1,42,?1,?2,?3,'errInspect',90,1,'original',4,0,0,'legacy',?4,'[]','acknowledged',99,'complete',1,'records/cycle')",
+            params![original.id, original.version, token, judgement]).unwrap();
+    }
     drop(legacy);
-    assert!(Store::open(&db.path()).err().unwrap().contains("相同 ID、版本对应不同快照"));
-    let conn = Connection::open(db.path()).unwrap();
-    assert!(!table_columns(&conn, "parts").unwrap().contains("recipe_revision"));
-    assert!(!table_columns(&conn, "recipe_snapshots").unwrap().contains("revision_id"));
-    assert_eq!(conn.query_row("SELECT COUNT(*) FROM recipe_snapshots", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+    let store = Store::open(&db.path()).unwrap();
+    assert_eq!(store.query(&HistoryQuery::default()).unwrap().total, 2);
+    for id in [1, 2] {
+        let detail = store.detail(id).unwrap();
+        assert!(detail.summary.recipe_revision.is_none());
+        assert_eq!(detail.summary.delivery.state, PlcDeliveryState::Acknowledged);
+        assert!(detail.recording.available);
+    }
+    assert!(store.recipe_snapshot(&original.revision_id).unwrap().is_none());
+    let conn = store.conn.lock().unwrap();
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM recipe_snapshots WHERE revision_id IS NULL", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
     assert_eq!(conn.query_row("SELECT json FROM recipe_snapshots WHERE hash='old-one'", [], |r| r.get::<_, String>(0)).unwrap(), first);
     assert_eq!(conn.query_row("SELECT json FROM recipe_snapshots WHERE hash='old-two'", [], |r| r.get::<_, String>(0)).unwrap(), second);
 }
@@ -813,7 +831,7 @@ fn snapshot_version_metadata_and_explicit_revision_must_agree() {
 }
 
 #[test]
-fn legacy_missing_reference_cannot_attach_an_unrelated_same_revision_snapshot() {
+fn legacy_digest_token_is_ignored_when_actual_recipe_id_and_version_match() {
     let db = TestDb::new();
     let original = recipe();
     let conn = legacy_v2(&db);
@@ -823,8 +841,129 @@ fn legacy_missing_reference_cannot_attach_an_unrelated_same_revision_snapshot() 
         VALUES(1,42,?1,?2,'missing-reference','errInspect',90,1,'original',4,0,0,'legacy','{}','[]','notRequired',0,'off')",
         params![original.id, original.version]).unwrap();
     drop(conn);
-    assert!(Store::open(&db.path()).err().unwrap().contains("配方快照缺失"));
-    let conn = Connection::open(db.path()).unwrap();
-    assert!(!table_columns(&conn, "parts").unwrap().contains("recipe_revision"));
+    let store = Store::open(&db.path()).unwrap();
+    assert_eq!(store.query(&HistoryQuery::default()).unwrap().items[0].recipe_revision.as_deref(), Some(original.revision_id.as_str()));
+    assert_eq!(store.recipe_snapshot(&original.revision_id).unwrap().unwrap().version, original.version);
+    let conn = store.conn.lock().unwrap();
     assert_eq!(conn.query_row("SELECT recipe_hash FROM parts", [], |r| r.get::<_, String>(0)).unwrap(), "missing-reference");
+}
+
+#[test]
+fn missing_or_ambiguous_actual_snapshot_preserves_history_without_using_legacy_tokens() {
+    let db = TestDb::new();
+    let conn = legacy_v2(&db);
+    let original = recipe();
+    legacy_snapshot(&conn, "ignored-one", &original);
+    let mut second = original.clone(); second.version += 1; second.revision_id = format!("{}-v{}", second.id, second.version);
+    second.shots[0].camera = "different-camera".into();
+    legacy_snapshot(&conn, "ignored-two", &second);
+    for (id, version, token) in [(&original.id, original.version, Some("wrong-token")),
+        (&original.id, second.version, None), (&original.id, second.version + 1, Some("ignored-one")),
+        (&"unknown-recipe".to_string(), 1, Some("ignored-one"))] {
+        conn.execute("INSERT INTO parts(ts,sn,recipe_id,recipe_version,recipe_hash,verdict,plc_code,fault_code,reason,frames_expected,
+            frames_received,triggers,software_version,judgement,frames,delivery_state,delivery_updated_at,recording_state)
+            VALUES(1,42,?1,?2,?3,'errInspect',90,1,'original',4,0,0,'legacy','{}','[]','notRequired',0,'off')", params![id, version, token]).unwrap();
+    }
+    drop(conn);
+    let store = Store::open(&db.path()).unwrap();
+    let rows = store.query(&HistoryQuery::default()).unwrap().items;
+    assert_eq!(rows.len(), 4);
+    assert!(rows[0].recipe_revision.is_none());
+    assert!(rows[1].recipe_revision.is_none());
+    assert_eq!(rows[2].recipe_revision.as_deref(), Some(second.revision_id.as_str()));
+    assert_eq!(rows[3].recipe_revision.as_deref(), Some(original.revision_id.as_str()));
+    assert!(store.recipe_snapshot(&format!("{}-v{}", original.id, second.version + 1)).unwrap().is_none());
+    assert_eq!(store.conn.lock().unwrap().query_row("SELECT COUNT(*) FROM parts", [], |r| r.get::<_, i64>(0)).unwrap(), 4);
+}
+
+#[test]
+fn historical_version_floor_prevents_deleted_recipe_revision_reuse_and_keeps_old_snapshot() {
+    let db = TestDb::new();
+    let history = Store::open(&db.path()).unwrap();
+    let recipes_dir = db.0.join("recipes");
+    let recipes = crate::recipe::RecipeStore::open(recipes_dir.clone()).unwrap();
+    let mut doc = crate::recipe::samples().remove(1); doc.id = "OLD-HISTORY".into(); doc.product_code = 60004; doc.version = 7;
+    let original = recipes.save(doc.clone(), None).unwrap();
+    save(&history, &original, "old-cycle", &shots(&original), &PlcDelivery::default(), Some(&table(&original))).unwrap();
+    std::fs::remove_file(recipes_dir.join("OLD-HISTORY.json")).unwrap();
+    drop(recipes);
+    let recipes = crate::recipe::RecipeStore::open(recipes_dir).unwrap();
+    recipes.seed_version_floor(&history.recipe_version_floors().unwrap()).unwrap();
+    doc.version = recipes.next_version(&doc.id).unwrap();
+    doc.shots[0].camera = "new-camera".into();
+    assert_eq!(doc.version, 8);
+    let rebuilt = recipes.save_published(doc.clone(), None).unwrap();
+    save(&history, &rebuilt, "new-cycle", &shots(&rebuilt), &PlcDelivery::default(), Some(&table(&rebuilt))).unwrap();
+    assert_eq!(history.query(&HistoryQuery::default()).unwrap().total, 2);
+    assert_eq!(history.recipe_snapshot(&original.revision_id).unwrap().unwrap().shots[0].camera, original.shots[0].camera);
+    assert_eq!(history.recipe_snapshot(&rebuilt.revision_id).unwrap().unwrap().shots[0].camera, "new-camera");
+    history.conn.lock().unwrap().execute_batch("ALTER TABLE parts RENAME COLUMN recipe_version TO unavailable_version;").unwrap();
+    assert!(history.recipe_version_floors().is_err());
+}
+
+#[test]
+fn legacy_bundle_ids_are_distinct_stable_and_new_ids_without_mapping_stay_unresolved() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let first = store.register_legacy_bundle("A", "old-directory").unwrap();
+    assert_ne!(first, "old-directory");
+    assert_eq!(store.register_legacy_bundle("A", "old-directory").unwrap(), first);
+    let second = store.register_legacy_bundle("B", "old-directory").unwrap();
+    assert_ne!(first, second);
+    assert_eq!(store.resolve_bundle("A", &first).unwrap(), (first.clone(), Some("old-directory".into())));
+    assert_eq!(store.resolve_bundle("B", &first).unwrap(), (first.clone(), None));
+    drop(store);
+    let store = Store::open(&db.path()).unwrap();
+    assert_eq!(store.resolve_bundle("A", "old-directory").unwrap(), (first, Some("old-directory".into())));
+    assert_eq!(store.resolve_bundle("A", "legacy-bundle-missing").unwrap(), ("legacy-bundle-missing".into(), None));
+}
+
+#[test]
+fn raw_dimensions_enrich_legacy_refs_but_cannot_be_replaced_or_partially_specified() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = recipe();
+    save(&store, &recipe, "dims", &shots(&recipe), &PlcDelivery::default(), None).unwrap();
+    let mut raw = ShotRawFile { view: 1, file: "cycle/P1_v1.pgm".into(), width: None, height: None };
+    assert!(store.update_shot_raw_files("dims", 0, &[raw.clone()]).unwrap());
+    raw.width = Some(100);
+    assert!(store.update_shot_raw_files("dims", 0, &[raw.clone()]).is_err());
+    raw.height = Some(60);
+    assert!(store.update_shot_raw_files("dims", 0, &[raw.clone()]).unwrap());
+    raw.width = Some(200);
+    assert!(store.update_shot_raw_files("dims", 0, &[raw]).is_err());
+}
+
+#[test]
+fn corrective_marker_never_uses_previous_synthetic_snapshot_to_guess_legacy_layout() {
+    let db = TestDb::new();
+    let conn = legacy_v2(&db);
+    conn.execute_batch("ALTER TABLE recipe_snapshots ADD COLUMN revision_id TEXT;
+        ALTER TABLE parts ADD COLUMN recipe_revision TEXT; ALTER TABLE parts ADD COLUMN bundle_id TEXT;").unwrap();
+    let first = recipe();
+    legacy_snapshot(&conn, "old-first", &first);
+    let mut second = first.clone(); second.version += 1; second.shots[0].camera = "another-camera".into();
+    legacy_snapshot(&conn, "old-second", &second);
+    let mut synthetic = first.clone(); synthetic.version += 2; synthetic.revision_id = format!("{}-v{}", synthetic.id, synthetic.version);
+    let synthetic_json = serde_json::to_string(&synthetic).unwrap();
+    conn.execute("INSERT INTO recipe_snapshots(revision_id,recipe_id,version,json) VALUES(?1,?2,?3,?4)",
+        params![synthetic.revision_id, synthetic.id, synthetic.version, synthetic_json]).unwrap();
+    let judgement = serde_json::to_string(&Judgement::error(1, "original")).unwrap();
+    for token in [Some("old-first"), None] {
+        conn.execute("INSERT INTO parts(ts,sn,recipe_id,recipe_version,recipe_hash,recipe_revision,verdict,plc_code,fault_code,reason,frames_expected,
+            frames_received,triggers,software_version,judgement,frames,delivery_state,delivery_updated_at,recording_state)
+            VALUES(1,42,?1,?2,?3,?4,'errInspect',90,1,'original',4,0,0,'legacy',?5,'[]','acknowledged',99,'off')",
+            params![synthetic.id, synthetic.version, token, synthetic.revision_id, judgement]).unwrap();
+    }
+    drop(conn);
+    let store = Store::open(&db.path()).unwrap();
+    assert!(store.detail(1).unwrap().summary.recipe_revision.is_none());
+    assert_eq!(store.detail(2).unwrap().summary.recipe_revision.as_deref(), Some(synthetic.revision_id.as_str()));
+    assert_eq!(store.detail(1).unwrap().summary.delivery.state, PlcDeliveryState::Acknowledged);
+    assert_eq!(store.recipe_snapshot(&synthetic.revision_id).unwrap().unwrap().shots[0].camera, first.shots[0].camera);
+    assert_eq!(store.conn.lock().unwrap().query_row("SELECT json FROM recipe_snapshots WHERE revision_id=?1", [&synthetic.revision_id], |r| r.get::<_, String>(0)).unwrap(), synthetic_json);
+    drop(store);
+    let reopened = Store::open(&db.path()).unwrap();
+    assert!(reopened.detail(1).unwrap().summary.recipe_revision.is_none());
+    assert_eq!(reopened.detail(2).unwrap().summary.recipe_revision.as_deref(), Some(synthetic.revision_id.as_str()));
 }

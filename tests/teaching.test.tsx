@@ -56,6 +56,34 @@ beforeEach(() => {
 });
 
 describe("单帧示教：试测与保存", () => {
+  it("重建后的结构化几何字段相同且对象键顺序不同时仍可保存本帧", async () => {
+    const frame = ws.data!.workspace.frames[0];
+    frame.image!.geometryTag = ["P1", { camera: "cam1", view: 1, pose: { id: "P1", axis: [1, 2] } }];
+    frame.trial!.geometryTag = ["P1", { pose: { axis: [1, 2], id: "P1" }, view: 1, camera: "cam1" }];
+    show();
+    expect(screen.queryByText("试测已过期")).toBeNull();
+    const save = screen.getByRole("button", { name: "保存本帧示教" });
+    expect(save).toBeEnabled();
+    await userEvent.click(save);
+    expect(workspaceApi.saveTeach).toHaveBeenCalledWith("A", 7, 0, "A-image-0");
+  });
+
+  it.each([
+    ["视角改变", ["P1", { camera: "cam1", view: 2, pose: { id: "P1", axis: [1, 2] } }]],
+    ["字段缺失", ["P1", { camera: "cam1", view: 1 }]],
+    ["数组顺序改变", ["P1", { camera: "cam1", view: 1, pose: { id: "P1", axis: [2, 1] } }]],
+  ])("结构化几何%s时阻止保存本帧", async (_name, changed) => {
+    const frame = ws.data!.workspace.frames[0];
+    frame.image!.geometryTag = ["P1", { camera: "cam1", view: 1, pose: { id: "P1", axis: [1, 2] } }];
+    frame.trial!.geometryTag = changed;
+    show();
+    expect(screen.getByText("试测已过期")).toBeVisible();
+    const save = screen.getByRole("button", { name: "保存本帧示教" });
+    expect(save).toBeDisabled();
+    await userEvent.click(save);
+    expect(workspaceApi.saveTeach).not.toHaveBeenCalled();
+  });
+
   it("链接指定帧；试测与保存本帧只带帧号、图像和修订号，不再带参数", async () => {
     show("/recipe/teach?frame=1");
     expect(screen.getByRole("button", { name: "选择帧 k2" })).toHaveAttribute("aria-pressed", "true");

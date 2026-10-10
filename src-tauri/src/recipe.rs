@@ -2,7 +2,7 @@
 //! 一期按拍照点在图像里检测（P0 D-10）：每个拍照点示教一条胶路中线（图像像素），沿线每隔 spacing 一站；
 //! 每个拍照点自成一段，判定在段内做，段与段之间不连。`Recipe` 同时是检测记录里的配方快照。
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -533,9 +533,15 @@ pub struct RecipeStore {
 
 impl RecipeStore {
     pub fn open(dir: PathBuf) -> Result<Self, String> {
+        Self::open_with_floors(dir, &BTreeMap::new())
+    }
+
+    pub fn open_with_floors(dir: PathBuf, floors: &BTreeMap<String, u32>) -> Result<Self, String> {
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建配方目录失败：{e}"))?;
         let store = Self { dir, inner: RwLock::new(Vec::new()), errors: RwLock::new(Vec::new()) };
-        let empty = std::fs::read_dir(&store.dir).map_err(|e| e.to_string())?.flatten().all(|e| e.path().extension().is_none_or(|x| x != "json"));
+        store.seed_version_floor(floors)?;
+        let retired = store.retired_versions()?;
+        let empty = retired.is_empty() && std::fs::read_dir(&store.dir).map_err(|e| e.to_string())?.flatten().all(|e| e.path().extension().is_none_or(|x| x != "json"));
         if empty {
             for doc in samples() {
                 store.write(&doc)?;
@@ -547,6 +553,45 @@ impl RecipeStore {
 
     fn file(&self, id: &str) -> PathBuf {
         self.dir.join(format!("{id}.json"))
+    }
+
+    fn retired_versions(&self) -> Result<BTreeMap<String, u32>, String> {
+        match crate::fsio::read_text(&self.dir.join(".revision-versions")) {
+            Ok(text) => serde_json::from_str(&text).map_err(|e| format!("配方版本记录损坏，拒绝复用修订号：{e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+            Err(e) => Err(format!("读取配方版本记录失败：{e}")),
+        }
+    }
+
+    fn retire_version(&self, id: &str, version: u32) -> Result<(), String> {
+        let mut versions = self.retired_versions()?;
+        let recorded = versions.entry(id.to_ascii_lowercase()).or_default();
+        *recorded = (*recorded).max(version);
+        crate::fsio::write_atomic(&self.dir.join(".revision-versions"), &serde_json::to_string(&versions).map_err(|e| e.to_string())?)
+    }
+
+    fn version_after(&self, id: &str, active: Option<u32>) -> Result<u32, String> {
+        let retired = self.retired_versions()?.get(&id.to_ascii_lowercase()).copied().unwrap_or(0);
+        retired.max(active.unwrap_or(0)).checked_add(1).ok_or_else(|| "配方版本已达上限".into())
+    }
+
+    pub fn seed_version_floor(&self, floors: &BTreeMap<String, u32>) -> Result<(), String> {
+        let _inner = self.inner.write().unwrap();
+        let mut versions = self.retired_versions()?;
+        let before = versions.clone();
+        for (id, version) in floors {
+            let previous = versions.entry(id.to_ascii_lowercase()).or_default();
+            *previous = (*previous).max(*version);
+        }
+        if versions != before {
+            crate::fsio::write_atomic(&self.dir.join(".revision-versions"), &serde_json::to_string(&versions).map_err(|e| e.to_string())?)?;
+        }
+        Ok(())
+    }
+
+    pub fn next_version(&self, id: &str) -> Result<u32, String> {
+        let inner = self.inner.read().unwrap();
+        self.version_after(id, inner.iter().find(|(doc, _)| doc.id.eq_ignore_ascii_case(id)).map(|(doc, _)| doc.version))
     }
 
     fn write(&self, doc: &RecipeDoc) -> Result<(), String> {
@@ -627,10 +672,10 @@ impl RecipeStore {
             return Err(format!("配方目录里已有 {}.json 但没有加载（见配方页的提示）：移走它，或修好后重启程序", doc.id));
         }
         let old = inner.iter().find(|(d, _)| d.id == replacing).map(|(d, _)| d.version);
-        doc.version = match old {
-            Some(version) => version.checked_add(1).ok_or("配方版本已达上限")?,
-            None => doc.version.max(1),
-        };
+        doc.version = self.version_after(&doc.id, old)?.max(if old.is_none() { doc.version.max(1) } else { 1 });
+        if !replacing.eq_ignore_ascii_case(&doc.id) {
+            if let Some(version) = old { self.retire_version(&replacing, version)?; }
+        }
         let recipe = Arc::new(doc.build()?);
         self.write(&doc)?;
         // 只改了大小写时新旧是同一个文件，不能删
@@ -655,10 +700,8 @@ impl RecipeStore {
         if current.map(|(_, recipe)| recipe.revision_id.as_str()) != expected_base {
             return Err("待发布版本与当前生产配方冲突".into());
         }
-        let expected_version = match current {
-            Some((previous, _)) => previous.version.checked_add(1).ok_or("配方版本已达上限")?,
-            None => doc.version.max(1),
-        };
+        let floor = self.version_after(&doc.id, current.map(|(previous, _)| previous.version))?;
+        let expected_version = if current.is_some() { floor } else { floor.max(doc.version.max(1)) };
         if doc.version != expected_version { return Err("发布版本必须是明确分配的下一版本".into()); }
         if inner.iter().any(|(previous, _)| previous.id != doc.id &&
             (previous.id.eq_ignore_ascii_case(&doc.id) || previous.product_code == doc.product_code)) {
@@ -677,9 +720,8 @@ impl RecipeStore {
 
     pub fn delete(&self, id: &str) -> Result<(), String> {
         let mut inner = self.inner.write().unwrap();
-        if !inner.iter().any(|(d, _)| d.id == id) {
-            return Err("配方不存在".into());
-        }
+        let version = inner.iter().find(|(d, _)| d.id == id).ok_or("配方不存在")?.0.version;
+        self.retire_version(id, version)?;
         std::fs::remove_file(self.file(id)).map_err(|e| format!("删除配方文件失败：{e}"))?;
         inner.retain(|(d, _)| d.id != id);
         Ok(())
@@ -798,6 +840,80 @@ mod tests {
             assert_eq!(store.get(&doc.id).unwrap().version, 2);
             let _ = std::fs::remove_dir_all(dir);
         }
+    }
+
+    #[test]
+    fn deleted_and_renamed_ids_keep_monotonic_versions_across_restart() {
+        let dir = std::env::temp_dir().join(format!("gluesight-retired-version-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        let mut doc = three_cameras(); doc.id = "REUSED".into(); doc.product_code = 60002; doc.version = 1;
+        let original = store.save(doc.clone(), None).unwrap();
+        store.delete(&doc.id).unwrap();
+        drop(store);
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        assert_eq!(store.next_version("REUSED").unwrap(), 2);
+        let recreated = store.save(doc.clone(), None).unwrap();
+        assert_eq!(recreated.version, 2);
+        assert_ne!(recreated.revision_id, original.revision_id);
+        let mut renamed = store.doc("REUSED").unwrap(); renamed.id = "RENAMED".into();
+        assert_eq!(store.save(renamed, Some("REUSED")).unwrap().version, 3);
+        drop(store);
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        assert_eq!(store.next_version("REUSED").unwrap(), 3);
+        doc.version = store.next_version("REUSED").unwrap(); doc.product_code = 60003;
+        let assigned = doc.build().unwrap();
+        let published = store.save_published(doc.clone(), None).unwrap();
+        assert_eq!(published.revision_id, assigned.revision_id);
+        assert_eq!(published.version, 3);
+        assert_eq!(store.save_published(doc, None).unwrap().version, 3);
+        store.delete("RENAMED").unwrap();
+        let mut moved = store.doc("REUSED").unwrap(); moved.id = "RENAMED".into();
+        assert_eq!(store.save(moved, Some("REUSED")).unwrap().version, 4);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn historical_floors_are_loaded_before_automatic_samples_are_seeded() {
+        let dir = std::env::temp_dir().join(format!("gluesight-history-first-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let sample = samples().remove(0);
+        let floors = BTreeMap::from([(sample.id.clone(), 7)]);
+        let store = RecipeStore::open_with_floors(dir.clone(), &floors).unwrap();
+        assert!(store.list().is_empty());
+        assert_eq!(store.next_version(&sample.id).unwrap(), 8);
+        let mut candidate = sample; candidate.version = 1;
+        assert_eq!(store.save(candidate, None).unwrap().version, 8);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_publish_write_does_not_consume_the_frozen_target_version() {
+        let dir = std::env::temp_dir().join(format!("gluesight-publish-retry-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        let mut doc = three_cameras(); doc.id = "WRITE-RETRY".into(); doc.product_code = 60005;
+        doc.version = store.next_version(&doc.id).unwrap();
+        let blocking = store.file(&doc.id).with_extension("tmp");
+        std::fs::create_dir(&blocking).unwrap();
+        assert!(store.save_published(doc.clone(), None).is_err());
+        assert_eq!(store.next_version(&doc.id).unwrap(), doc.version);
+        std::fs::remove_dir(blocking).unwrap();
+        assert_eq!(store.save_published(doc.clone(), None).unwrap().version, doc.version);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn damaged_retired_version_ledger_never_resets_to_one() {
+        let dir = std::env::temp_dir().join(format!("gluesight-damaged-versions-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        let doc = three_cameras();
+        let original = store.get(&doc.id).unwrap();
+        std::fs::write(dir.join(".revision-versions"), "invalid").unwrap();
+        assert!(store.next_version(&doc.id).unwrap_err().contains("版本记录损坏"));
+        assert!(store.save(doc.clone(), None).unwrap_err().contains("版本记录损坏"));
+        assert!(store.delete(&doc.id).unwrap_err().contains("版本记录损坏"));
+        assert_eq!(store.get(&doc.id).unwrap().revision_id, original.revision_id);
+        drop(store);
+        assert!(RecipeStore::open(dir.clone()).err().unwrap().contains("版本记录损坏"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -175,7 +175,6 @@ fn recorded_entries(dir: &Path) -> Result<Option<Vec<Entry>>, String> {
         let canonical = path.canonicalize().map_err(|_| format!("回放原图 {file} 已丢失"))?;
         if !canonical.starts_with(&root) || !canonical.is_file() { return Err("回放原图路径越过录制目录".into()); }
         let size = match (frame["width"].as_u64(), frame["height"].as_u64()) {
-            (None, None) => None,
             (Some(width), Some(height)) if width > 0 && height > 0 => Some([
                 u32::try_from(width).map_err(|_| "回放原图宽度无效")?,
                 u32::try_from(height).map_err(|_| "回放原图高度无效")?,
@@ -626,6 +625,18 @@ mod tests {
         }
         serde_json::json!({"cycleId":"cycle-first","bundleId":"frozen-pack","available":true,
             "recipe":{"id":"recorded","version":1,"revisionId":"recorded-v1","shots":shots},"startedTs":1000,"frames":frames})
+    }
+
+    #[test]
+    fn cycle_recording_requires_dimensions_even_for_legacy_raw_references() {
+        let dir = Directory::new(&[]);
+        let original = cycle_recording(&dir.0);
+        for field in ["width", "height"] {
+            let mut metadata = original.clone();
+            metadata["frames"][0].as_object_mut().unwrap().remove(field);
+            std::fs::write(dir.0.join("part.json"), serde_json::to_vec(&metadata).unwrap()).unwrap();
+            assert!(scan_frames(&dir.0, 1, 1).unwrap_err().contains("尺寸"));
+        }
     }
 
     #[test]

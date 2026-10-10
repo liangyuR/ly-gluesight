@@ -77,6 +77,15 @@ export function validateCycleHostEvidence(report, rows) {
   return files;
 }
 
+export async function verifyRecordingMetadata(file, contents) {
+  assert(isAbsolute(file.path) && /^c:[\\/]/i.test(file.path));
+  const bytes = contents ?? await readFile(file.path);
+  assert.equal(bytes.length, file.bytes, 'Recording metadata size differs: ' + file.path);
+  const actual = JSON.parse(bytes.toString('utf8'));
+  assert.deepEqual(actual, file.document, 'Recorded metadata differs from the reported actual structure: ' + file.path);
+  return actual;
+}
+
 export async function verifyCycleHostReport(path) {
   const report = JSON.parse(await readFile(path, 'utf8'));
   assert(isAbsolute(report.rowsArtifact));
@@ -101,11 +110,7 @@ export async function verifyCycleHostReport(path) {
       const header = Buffer.from('P5\n1280 1024\n255\n');
       assert(bytes.subarray(0, header.length).equals(header) && bytes.length === header.length + 1280 * 1024);
     }
-    if (file.document) {
-      const actual = JSON.parse(bytes.toString('utf8'));
-      assert(actual.cycleId === file.document.cycleId && actual.sn === file.document.sn);
-      assert(actual.recipeRevision === file.document.recipeRevision && actual.bundleId === file.document.bundleId);
-    }
+    if (file.document) await verifyRecordingMetadata(file, bytes);
     checked.add(resolve(file.path).toLowerCase());
   }
   return { valid: true, passed: report.passed, parts: rows.length, mode: report.mode,

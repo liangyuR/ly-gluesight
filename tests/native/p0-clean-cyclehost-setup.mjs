@@ -4,12 +4,12 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
-export async function configureReplay(page, { views, directory, recordsRoot }) {
+export async function configureReplay(page, { views, directory, recordsRoot, allowUnpublished = false }) {
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
   const records = await read('records_list'), cycle = await read('cycle_snapshot');
   assert(recordsRoot ? resolve(records.root).toLowerCase() === resolve(recordsRoot).toLowerCase() : records.root.includes('com.xyzrobotics.tujiaovision.p0-tests.performance'));
   assert(/^[cC]:[\\/]/.test(directory));
-  assert(cycle.phase === 'IDLE' && !(await read('sim_status')).running);
+  assert((cycle.phase === 'IDLE' || allowUnpublished && cycle.phase === 'FAULT' && !cycle.part && cycle.fault?.includes('没有一个配方开得了工')) && !(await read('sim_status')).running);
   await page.getByRole('navigation', { name: '操作导航' }).getByRole('link', { name: '设备与采集', exact: true }).click();
   await page.getByRole('button', { name: '回放目录', exact: true }).click();
   await page.getByRole('combobox', { name: '设备视角', exact: true }).selectOption(String(views));
@@ -25,7 +25,7 @@ export async function configureReplay(page, { views, directory, recordsRoot }) {
 }
 
 export async function teachCleanFixture(page, options) {
-  const { views, inputs, output, recordsRoot } = options;
+  const { views, inputs, output, recordsRoot, allowUnpublished = false } = options;
   assert([1, 3].includes(views));
   const id = options.id ?? `P0-CYCLEHOST-${views}V-CLEAN`;
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
@@ -49,7 +49,7 @@ export async function teachCleanFixture(page, options) {
   await mkdir(output, { recursive: false });
   const report = { id, views, startedAt: new Date().toISOString(), passed: false, source, scope: 'Independent desktop candidate taught, trialled, validated and published from CLEAN Prepared pixels via replay camera', physicalValidation: false, captures: [], trials: [] };
   try {
-    report.camera = await configureReplay(page, { views, directory: join(inputs, `${views}-view`, 'normal'), recordsRoot });
+    report.camera = await configureReplay(page, { views, directory: join(inputs, `${views}-view`, 'normal'), recordsRoot, allowUnpublished });
     await page.getByRole('navigation', { name: '操作导航' }).getByRole('link', { name: '配方库', exact: true }).click();
     await page.getByRole('button', { name: '复制配方 MTR-HSG-B', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '建立候选配方', exact: true });

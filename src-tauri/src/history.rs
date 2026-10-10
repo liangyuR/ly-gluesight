@@ -39,10 +39,10 @@ pub fn history_recipe(store: State<'_, Store>, cycle: State<'_, CycleHost>, revi
     record_recipe(&store, revision_id.as_deref(), || recipe_id.as_deref().and_then(|id| cycle.recipe(id)))
 }
 
-fn record_recipe(store: &Store, revision_id: Option<&str>, current: impl FnOnce() -> Option<Arc<Recipe>>) -> Result<Option<Recipe>, String> {
+fn record_recipe(store: &Store, revision_id: Option<&str>, _current: impl FnOnce() -> Option<Arc<Recipe>>) -> Result<Option<Recipe>, String> {
     match revision_id {
         Some(revision_id) => store.recipe_snapshot(revision_id),
-        None => Ok(current().map(|r| (*r).clone())),
+        None => Ok(None),
     }
 }
 

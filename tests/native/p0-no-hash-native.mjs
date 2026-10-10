@@ -30,17 +30,37 @@ try {
   for(const page of browser.contexts().flatMap(context=>context.pages())) if(await page.evaluate(()=>!!window.__TAURI_INTERNALS__).catch(()=>false)) pages.push(page);
   assert.equal(pages.length,1);
   const page=pages[0], read=(command,args)=>page.evaluate(({command,args})=>window.__TAURI_INTERNALS__.invoke(command,args),{command,args});
-  const records=await read('records_list'),cycle=await read('cycle_snapshot'),settings=await read('cycle_get_settings'),engine=await read('engine_status');
+  const records=await read('records_list'),settings=await read('cycle_get_settings'),engine=await read('engine_status');
+  let cycle=await read('cycle_snapshot');
   assert.equal(cPath(records.root).toLowerCase(),recordsRoot.toLowerCase());
-  assert.equal(cycle.phase,'IDLE');assert.equal(cycle.fault,null);assert(!(await read('sim_status')).running);
+  const guardedProcess=await sampleProcess(instance.pid,cPath(instance.executable),instance.processStartTime);
+  assert.equal((await read('plc_get_config')).connection.protocol,'simulator');
+  if(values.stage==='setup') {
+    assert.equal((await read('history_query',{query:{limit:1}})).items.length,0,'Fresh profile must have zero history');
+    assert(!cycle.part && !(await read('sim_status')).running);
+    if((await read('plc_get_status')).state==='disconnected') {
+      await page.getByRole('navigation',{name:'操作导航'}).getByRole('link',{name:'PLC 通讯',exact:true}).click();
+      await page.getByRole('button',{name:'连接',exact:true}).click();
+      await page.waitForFunction(async()=> (await window.__TAURI_INTERNALS__.invoke('plc_get_status')).state==='connected');
+      await page.waitForTimeout(200);cycle=await read('cycle_snapshot');
+    }
+    assert(cycle.phase==='IDLE' || cycle.phase==='FAULT' && !cycle.part && cycle.fault?.includes('没有一个配方开得了工') && cycle.fault.includes('没有不可变发布包'));
+    report.freshSite={historyCount:0,cycle,simulator:await read('sim_status')};
+  }
+  else { assert.equal(cycle.phase,'IDLE');assert.equal(cycle.fault,null); }
+  assert(!(await read('sim_status')).running);
   assert(settings.vision && settings.record==='all' && settings.timeouts.armMs===200 && settings.recordMaxGb===20);
   assert(engine.backend==='LyFlow' && engine.ready && engine.measuring);
   assert.equal((await read('plc_get_config')).connection.protocol,'simulator');
   assert.equal((await read('plc_get_status')).state,'connected');
-  report.guard={recordsRoot,settings,engine,process:await sampleProcess(instance.pid,cPath(instance.executable),instance.processStartTime)};
+  report.guard={recordsRoot,settings,engine,process:guardedProcess};
   if(values.stage==='setup') {
-    report.setup=await teachCleanFixture(page,{views:3,inputs,output:join(output,'teaching'),recordsRoot,id});
+    report.setup=await teachCleanFixture(page,{views:3,inputs,output:join(output,'teaching'),recordsRoot,id,allowUnpublished:true});
     assert.equal(report.setup.layout.revisionId,`${id}-v${report.setup.layout.version}`);
+    await page.getByRole('navigation',{name:'操作导航'}).getByRole('link',{name:'在线检测',exact:true}).click();
+    if((await read('cycle_snapshot')).phase==='FAULT') await page.getByRole('button',{name:'复位故障',exact:true}).click();
+    await page.waitForFunction(async()=> {const cycle=await window.__TAURI_INTERNALS__.invoke('cycle_snapshot');return cycle.phase==='IDLE' && cycle.fault===null;});
+    report.readyAfterPublication=await read('cycle_snapshot');
   } else {
     const workspace=await read('workspace_get',{id}),layout=await read('cycle_layout',{recipeId:id});
     assert(!workspace.workspace.pending && workspace.productionVersion===layout.version);
@@ -88,6 +108,21 @@ try {
     } else if(values.stage==='history') {
       const cycles=await json(join(output,'cycles-report.json'));assert(cycles.passed && cycles.runs.length===2);
       report.results=[];
+      report.candidateBeforeEnvironmentRestore=await read('workspace_get',{id});
+      await configureReplay(page,{views:3,directory:join(inputs,'3-view','normal'),recordsRoot});
+      await page.getByRole('navigation',{name:'操作导航'}).getByRole('link',{name:'单帧示教',exact:true}).click();
+      report.candidateTrialsAfterEnvironmentRestore=[];
+      for(let k=0;k<4;k++) {
+        await page.getByRole('button',{name:`选择帧 k${k+1}`,exact:true}).click();
+        if(!(await read('workspace_get',{id})).workspace.frames[k].saved) {
+          await page.getByRole('button',{name:'试测当前帧',exact:true}).click();
+          await page.getByRole('button',{name:'保存本帧示教',exact:true}).click();
+          await page.waitForFunction(async({id,k})=>(await window.__TAURI_INTERNALS__.invoke('workspace_get',{id})).workspace.frames[k].saved,{id,k});
+        }
+        const frame=(await read('workspace_get',{id})).workspace.frames[k];
+        assert(frame.saved && frame.trial?.passed);
+        report.candidateTrialsAfterEnvironmentRestore.push({k,imageId:frame.image.id,trial:frame.trial});
+      }
       const candidateBefore=await read('workspace_get',{id});
       for(const run of cycles.runs) {
         const row=run.row.detail.summary,before=await read('history_detail',{id:row.id});

@@ -9,37 +9,40 @@
       "name": "Rust default",
       "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib",
       "passed": true,
-      "tests": 305,
+      "tests": 317,
       "ignored": 29,
-      "testSeconds": 5.84,
-      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-no-hash-rust-final-r2-c.log"
+      "testSeconds": 3.39,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-no-hash-review-rust-final-c.log"
     },
     {
       "name": "S7 loopback actual wire",
       "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib plc_session::tests:: -- --include-ignored --test-threads=1",
       "passed": true,
       "tests": 24,
-      "testSeconds": 54.47,
-      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-no-hash-s7-c.log"
+      "testSeconds": 50.47,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-no-hash-review-s7-c.log"
     },
     {
       "name": "Real LyFlow DLL integration",
       "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib native_ -- --ignored --skip native_full_resolution --test-threads=1",
       "passed": true,
       "tests": 5,
-      "testSeconds": 2.32,
-      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-no-hash-native-dll-c.log",
+      "testSeconds": 1.29,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-no-hash-review-native-dll-c.log",
       "dll": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native\\lyflow_core.dll",
       "version": "1.1.0"
     }
   ],
   "compatibility": [
-    "Existing v2 SQLite uses one immediate transaction to add revision_id/recipe_revision/bundle_id. Original columns, snapshot JSON, point BLOB, raw JSON and ACK values retained.",
-    "Old snapshot references only locate legacy records; actual recipe ID/version and reconstructed fields determine new revision IDs. Missing references or conflicting actual revisions roll back additions.",
-    "Old publication directory IDs remain readable. Old trial labels require new validation; frozen images are retained.",
+    "Existing v2 SQLite uses immediate transactions to add explicit revision/bundle references and migration mapping tables; original columns, snapshot JSON, point BLOB, raw JSON and ACK values are retained.",
+    "Legacy snapshot association uses actual recipe ID/version and actual structures, never legacy digest values. Missing or ambiguous snapshots leave history readable but cannot reproduce or fall back to the current recipe.",
+    "Corrective migration does not trust previous synthetic snapshots as legacy sources; new explicit runtime records remain intact.",
+    "Old publication directories are read through stable randomly assigned legacy-bundle IDs and a persisted directory-locator mapping. Directories and old manifests are not renamed or rewritten.",
+    "Retired recipe versions survive delete, rename and restart. Historical version floors are loaded before automatic samples, and failed publication writes do not consume the frozen target version.",
+    "New raw references persist recorded width/height. Legacy references use matching cycle/view/file metadata when present; decoded dimension changes and malformed metadata are refused without content hashes.",
     "PLC DBD20/84 and all other offsets remain fixed; reserved words must be zero. No plan content digest is computed or compared.",
     "Real temporary Windows junctions between cycles and linked roots are rejected before canonicalization and on later reads.",
-    "Missing/zero legacy recipe versions normalize to one; next save creates version two."
+    "Missing/zero legacy recipe versions normalize to one; subsequent saves use the actual monotonic version floor."
   ],
   "preservedFailures": [
     {
@@ -60,5 +63,19 @@
   "limits": [
     "No content digest gate remains; same-size image or engine byte changes are not detected through content hashes.",
     "No physical camera/S7 hardware acceptance or new 400-part benchmark claimed."
-  ]
+  ],
+  "reviewFixes": [
+    "Legacy recipe digest tokens no longer select or validate snapshots",
+    "Persisted explicit legacy bundle IDs replace copied directory tokens",
+    "Delete/recreate and rename cannot reuse historical revision IDs",
+    "Historical decoded images retain recorded dimension checks",
+    "Independent report validator rereads and compares the entire actual JSON structure"
+  ],
+  "reviewValidationCheckpoint": {
+    "tests": 316,
+    "passed": true,
+    "testSeconds": 3.53,
+    "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-no-hash-review-rust-c.log",
+    "supersededBy": "Final 317-test run adds historical no-fallback and synthetic migration correction coverage"
+  }
 }

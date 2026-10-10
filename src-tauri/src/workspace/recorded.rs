@@ -28,10 +28,52 @@ fn original_bytes(root: &Path, relative: &Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+fn expected_dimensions(root: &Path, cycle_id: &str, raw: &ShotRawFile) -> Result<Option<[u32; 2]>, String> {
+    let stored = match (raw.width, raw.height) {
+        (Some(width), Some(height)) if width > 0 && height > 0 => Some([width, height]),
+        (None, None) => None,
+        _ => return Err("历史原图的录制尺寸无效".into()),
+    };
+    let relative = relative_path(cycle_id, raw)?;
+    let metadata_path = root.join(relative).parent().ok_or("原图目录无效")?.join("part.json");
+    match std::fs::symlink_metadata(&metadata_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(stored),
+        Err(error) => return Err(format!("录制元数据无法读取：{error}")),
+        Ok(_) => crate::replay::checked_source_path(&metadata_path)?,
+    }
+    let metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(&metadata_path)
+        .map_err(|error| format!("录制元数据读取失败：{error}"))?)
+        .map_err(|error| format!("录制元数据损坏：{error}"))?;
+    if metadata["cycleId"].as_str() != Some(cycle_id) { return Err("录制元数据的 cycleId 与历史原图不一致".into()); }
+    let file = relative.file_name().and_then(|name| name.to_str()).ok_or("原图文件名无效")?;
+    let frames = metadata["frames"].as_array().ok_or("录制元数据缺少原图引用")?;
+    let mut matching = frames.iter().filter(|frame| frame["file"].as_str() == Some(file) && frame["view"].as_u64() == Some(u64::from(raw.view)));
+    let frame = matching.next().ok_or("录制元数据缺少对应原图")?;
+    if matching.next().is_some() || frame["cycleId"].as_str() != Some(cycle_id) || frame["available"].as_bool() != Some(true) {
+        return Err("录制元数据的原图身份重复、不一致或未落盘".into());
+    }
+    let dimension = |field: &str| frame[field].as_u64().and_then(|value| u32::try_from(value).ok()).filter(|value| *value > 0);
+    let size = [dimension("width").ok_or("录制原图宽度无效")?, dimension("height").ok_or("录制原图高度无效")?];
+    if stored.is_some_and(|expected| expected != size) { return Err("录制元数据尺寸与历史原图引用不一致".into()); }
+    Ok(Some(size))
+}
+
+fn checked_dimensions(bytes: &[u8], expected: Option<[u32; 2]>, file: &str) -> Result<(), String> {
+    if let Some(expected) = expected {
+        let reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()
+            .map_err(|error| format!("原图 {file} 解码失败：{error}"))?;
+        let (width, height) = reader.into_dimensions().map_err(|error| format!("原图 {file} 解码失败：{error}"))?;
+        if [width, height] != expected { return Err(format!("原图 {file} 的尺寸与录制尺寸不符")); }
+    }
+    Ok(())
+}
+
 pub(super) fn load_verified(root: &Path, cycle_id: &str, raw: &ShotRawFile) -> Result<FrameImage, String> {
     crate::replay::checked_source_path(root)?;
     let root = root.canonicalize().map_err(|_| "原图目录不存在或已清理".to_string())?;
     let bytes = original_bytes(&root, relative_path(cycle_id, raw)?)?;
+    let expected = expected_dimensions(&root, cycle_id, raw)?;
+    checked_dimensions(&bytes, expected, &raw.file)?;
     let image = image::load_from_memory(&bytes).map_err(|error| format!("原图 {} 解码失败：{error}", raw.file))?.into_luma8();
     let (width, height) = image.dimensions();
     Ok(FrameImage::new(width, height, image.into_raw()))
@@ -47,7 +89,9 @@ pub(super) fn frames(root: &Path, cycle_id: &str, shots: &[PartShot], ts: i64) -
             if !(1..=3).contains(&raw.view) || !seen.insert((shot.k, raw.view)) {
                 return Err("历史原图的拍照点或视角重复，不能确定对应图像".into());
             }
-            let checked = original_bytes(&root, relative_path(cycle_id, raw)?).map(|_| ());
+            let checked = original_bytes(&root, relative_path(cycle_id, raw)?).and_then(|bytes| {
+                checked_dimensions(&bytes, expected_dimensions(&root, cycle_id, raw)?, &raw.file)
+            });
             result.push(RawFrame { k: shot.k, view: raw.view, camera: shot.camera.clone(), file: raw.file.clone(), ts,
                 available: checked.is_ok(), error: checked.err(), cam: None, frame_counter: shot.frame_counter,
                 trigger_counter: shot.trigger_counter });
@@ -77,14 +121,14 @@ mod tests {
                 .arg(alias).arg(actual).output().unwrap();
             assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
         }
-        let raw = ShotRawFile { view: 1, file: "20261010/part_cycle_first/k0_v1.pgm".into() };
+        let raw = ShotRawFile { view: 1, file: "20261010/part_cycle_first/k0_v1.pgm".into(), width: None, height: None };
         assert!(load_verified(&root, "first", &raw).unwrap_err().contains("reparse"));
         let shot = PartShot { k: 0, shot_id: "P0".into(), camera: "cam1".into(), view: 1,
             session: None, ordinal: None, frame_counter: None, trigger_counter: None,
             status: FrameStatus::Done, error: None, score: None, ms: None, raw_files: vec![raw] };
         let listed = frames(&root, "first", &[shot], 1).unwrap();
         assert!(!listed[0].available && listed[0].error.as_ref().unwrap().contains("reparse"));
-        let direct = ShotRawFile { view: 1, file: "20261010/part_cycle_second/k0_v1.pgm".into() };
+        let direct = ShotRawFile { view: 1, file: "20261010/part_cycle_second/k0_v1.pgm".into(), width: None, height: None };
         assert!(load_verified(&linked_root, "second", &direct).unwrap_err().contains("reparse"));
         assert_eq!(load_verified(&root, "second", &direct).unwrap().pixels, [128]);
         std::fs::remove_dir(&linked_root).unwrap();
@@ -103,7 +147,7 @@ mod tests {
                 let file = format!("20261010/part_cycle_first/k{k}_v{view}.pgm");
                 let bytes = format!("raw-{k}-{view}").into_bytes();
                 std::fs::write(root.0.join(&file), &bytes).unwrap();
-                raw_files.push(ShotRawFile { view, file });
+                raw_files.push(ShotRawFile { view, file, width: None, height: None });
             }
             shots.push(PartShot { k, shot_id: format!("P{k}"), camera: "cam1".into(), view: [1,2,3,1][k],
                 session: Some(7), ordinal: Some(k as u64 + 1), frame_counter: Some(k as u64 + 1),
@@ -157,7 +201,7 @@ mod tests {
         let shots = vec![PartShot { k: 0, shot_id: recipe.shots[0].id.clone(), camera: recipe.shots[0].camera.clone(),
             view: 2, session: Some(frame.session), ordinal: Some(9), frame_counter: Some(frame.frame_counter),
             trigger_counter: Some(frame.trigger_counter), status: FrameStatus::Done, error: None, score: Some(1.0), ms: Some(2),
-            raw_files: outcome.files.iter().map(|raw| ShotRawFile { view: raw.view, file: raw.file.clone() }).collect() }];
+            raw_files: outcome.files.iter().map(|raw| ShotRawFile { view: raw.view, file: raw.file.clone(), width: Some(raw.width), height: Some(raw.height) }).collect() }];
         let files = frames(recorder.root(), cycle_id, &shots, frame.ts).unwrap();
         assert_eq!(files.len(), 3);
         assert!(files.iter().all(|file| file.available));
@@ -174,5 +218,41 @@ mod tests {
         let changed = frames(recorder.root(), cycle_id, &shots, frame.ts).unwrap();
         assert!(changed[1].available);
         assert!(changed[0].available && changed[2].available);
+        let metadata_path = outcome.directory.as_ref().unwrap().join("part.json");
+        let original_metadata = std::fs::read(&metadata_path).unwrap();
+        let mut legacy = selected.clone();
+        legacy.width = None;
+        legacy.height = None;
+        assert_eq!(load_verified(recorder.root(), cycle_id, &legacy).unwrap().pixels, [91, 92]);
+        std::fs::write(recorder.root().join(&selected.file), b"P5\n3 1\n255\n\x01\x02\x03").unwrap();
+        for reference in [selected, &legacy] {
+            assert!(load_verified(recorder.root(), cycle_id, reference).unwrap_err().contains("尺寸"));
+        }
+        let changed = frames(recorder.root(), cycle_id, &shots, frame.ts).unwrap();
+        assert!(!changed[1].available && changed[1].error.as_ref().unwrap().contains("尺寸"));
+        assert!(changed[0].available && changed[2].available);
+        std::fs::write(recorder.root().join(&selected.file), b"P5\n2 1\n255\n\x5b\x5c").unwrap();
+        let original: serde_json::Value = serde_json::from_slice(&original_metadata).unwrap();
+        for invalid in ["cycle", "dimensions", "missing-dimensions", "duplicate", "malformed"] {
+            let mut metadata = original.clone();
+            match invalid {
+                "cycle" => metadata["cycleId"] = "another-cycle".into(),
+                "dimensions" => metadata["frames"][1]["width"] = 3.into(),
+                "missing-dimensions" => { metadata["frames"][1].as_object_mut().unwrap().remove("width"); },
+                "duplicate" => {
+                    let duplicate = metadata["frames"][1].clone();
+                    metadata["frames"].as_array_mut().unwrap().push(duplicate);
+                },
+                _ => {},
+            }
+            let bytes = if invalid == "malformed" { b"broken".to_vec() } else { serde_json::to_vec(&metadata).unwrap() };
+            std::fs::write(&metadata_path, bytes).unwrap();
+            assert!(load_verified(recorder.root(), cycle_id, &legacy).is_err(), "{invalid}");
+        }
+        std::fs::write(&metadata_path, &original_metadata).unwrap();
+        std::fs::remove_file(&metadata_path).unwrap();
+        std::fs::write(recorder.root().join(&selected.file), b"P5\n3 1\n255\n\x01\x02\x03").unwrap();
+        assert!(load_verified(recorder.root(), cycle_id, selected).unwrap_err().contains("尺寸"));
+        assert_eq!(load_verified(recorder.root(), cycle_id, &legacy).unwrap().width, 3);
     }
 }

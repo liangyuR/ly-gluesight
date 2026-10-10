@@ -162,6 +162,8 @@ fn outcome(cycle: &str, files: &[(usize, u8)], state: RecorderState) -> Recordin
             .iter()
             .map(|(k, view)| RecordedRawFile {
                 k: *k,
+                width: 100,
+                height: 60,
                 view: *view,
                 file: format!("cycle_{cycle}/k{k:03}_P{}_cam1_v{view}.pgm", k + 1),
 

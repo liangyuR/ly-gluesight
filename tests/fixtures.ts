@@ -38,19 +38,19 @@ export function workspaceView(id = "A"): WorkspaceView {
       doc, baseRevision: `production-${id}`, revision: 7, updatedAt: 1, publishError: null, pending: null,
       frames: [0, 1].map(k => {
         const image: FrozenImage = { id: `${id}-image-${k}`, source: "camera", capturedAt: 1, size: [100, 60], camera: "CAM-1", view: 1,
-          cameraTag: "cam-v1", calibTag: "calib-v1", geometryTag: "geom-v1", exposureUs: 60, gainDb: 6, historyId: null };
+          cameraTag: { id: "CAM-1", source: "sim", viewCount: 1, acquisition: "triggered", exposureUs: 60, gainDb: 6 }, calibTag: { path: "C:/test/calib/plane_calib.json", value: null }, geometryTag: [`P${k + 1}`, `P${k + 1}`, "CAM-1", 1, "CAM-1"], exposureUs: 60, gainDb: 6, historyId: null };
         return { k, saved: false, backup: null, image, views: [image],
-        trial: { imageId: `${id}-image-${k}`, paramsTag: "params-v1", geometryTag: "geom-v1", engineTag: "engine-v1", passed: true,
+        trial: { imageId: `${id}-image-${k}`, paramsTag: [doc.spacing, structuredClone(doc.shots[k].path), doc.shots[k].mmPerPx, structuredClone(detect), doc.filterWindow], geometryTag: [`P${k + 1}`, `P${k + 1}`, "CAM-1", 1, "CAM-1"], engineTag: { path: "C:/test/lyflow_core.dll", version: "1.1.0" }, passed: true,
           score: .94, coverage: 1, elapsedMs: 8, reason: "试测通过", measurement: { ids: [2 * k, 2 * k + 1] } },
         };
       }),
       overview: { background: null, positions: [[.25, .5], [.75, .5]], saved: true },
       samples: [{ historyId: null, sampleId: "good", expected: "OK" }, { historyId: null, sampleId: "bad", expected: "NG_GAP" }],
       sampleBank: [
-        { id: "good", name: "良品组", geometryTag: "geom-v1", expected: "OK", createdAt: 1 },
-        { id: "bad", name: "断胶组", geometryTag: "geom-v1", expected: "NG_GAP", createdAt: 1 },
+        { id: "good", name: "良品组", geometryTag: doc.shots.map(shot => [shot.id, shot.poseId, shot.camera, shot.view]), expected: "OK", createdAt: 1 },
+        { id: "bad", name: "断胶组", geometryTag: doc.shots.map(shot => [shot.id, shot.poseId, shot.camera, shot.view]), expected: "NG_GAP", createdAt: 1 },
       ],
-      validation: { revision: 7, passed: true, checkedAt: 1, environmentTag: "env-v1", checks: [], samples: [] },
+      validation: { revision: 7, passed: true, checkedAt: 1, environmentTag: { cameras: [{ id: "CAM-1", source: "sim", viewCount: 1 }], calibration: null, engine: { path: "C:/test/lyflow_core.dll", version: "1.1.0" } }, checks: [], samples: [] },
     },
   };
 }
@@ -64,7 +64,7 @@ export function summary(view = workspaceView()): RecipeSummary {
 export function tricamWorkspaceView(id = "A"): WorkspaceView {
   const view = workspaceView(id);
   view.workspace.frames.forEach(frame => {
-    frame.views = [1, 2, 3].map(value => ({ ...frame.image!, view: value, id: value === 1 ? frame.image!.id : `${frame.image!.id}-v${value}`, geometryTag: `geom-v${value}` }));
+    frame.views = [1, 2, 3].map(value => ({ ...frame.image!, view: value, id: value === 1 ? frame.image!.id : `${frame.image!.id}-v${value}`, geometryTag: [`P${frame.k + 1}`, `P${frame.k + 1}`, "CAM-1", value, "CAM-1"] }));
     frame.image = frame.views[0];
   });
   return view;

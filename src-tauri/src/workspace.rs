@@ -228,7 +228,7 @@ pub struct Workspace {
 impl Workspace {
     fn new(mut doc: RecipeDoc, base_revision: Option<String>) -> Self {
         if base_revision.is_some() {
-            doc.version += 1;
+            doc.version = doc.version.saturating_add(1);
         }
         let count = doc.shots.len();
         Self {
@@ -469,8 +469,11 @@ pub fn workspace_get(app: AppHandle, id: String) -> Result<WorkspaceView, String
     let mut items = host.items.lock().unwrap();
     if !items.contains_key(&id) {
         let cycle = app.state::<CycleHost>();
-        let doc = cycle.recipes.doc(&id).ok_or("配方不存在")?;
-        let w = Workspace::new(doc, cycle.recipe(&id).map(|r| r.revision_id.clone()));
+        let mut doc = cycle.recipes.doc(&id).ok_or("配方不存在")?;
+        let base = cycle.recipe(&id).map(|r| r.revision_id.clone());
+        doc.version = cycle.recipes.next_version(&id)?;
+        if base.is_some() { doc.version -= 1; }
+        let w = Workspace::new(doc, base);
         host.save(&w)?;
         items.insert(id.clone(), w);
     }
@@ -504,7 +507,7 @@ fn refresh_teaching(w: &mut Workspace, tags: &[Option<(Value, Value)>], engine: 
 }
 
 #[tauri::command]
-pub fn workspace_create(app: AppHandle, doc: RecipeDoc) -> Result<WorkspaceView, String> {
+pub fn workspace_create(app: AppHandle, mut doc: RecipeDoc) -> Result<WorkspaceView, String> {
     safe_id(&doc.id)?;
     doc.build()?;
     let host = app.state::<WorkspaceHost>();
@@ -514,6 +517,7 @@ pub fn workspace_create(app: AppHandle, doc: RecipeDoc) -> Result<WorkspaceView,
         .chain(production.iter().map(|r| (r.id.as_str(), r.product_code))))?;
     // Windows 路径不区分大小写，未登记的旧目录也不能被新候选覆盖。
     if host.dir(&doc.id).exists() { return Err("配方目录已经存在，请换一个编号".into()); }
+    doc.version = app.state::<CycleHost>().recipes.next_version(&doc.id)?.max(doc.version.max(1));
     let w = Workspace::new(doc, None);
     host.save(&w)?;
     items.insert(w.doc.id.clone(), w.clone());
@@ -1354,7 +1358,7 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
     let cycle = app.state::<CycleHost>();
     let current = cycle.recipe(&release.doc.id);
     let recipe = release.doc.build()?;
-    let bundle = crate::release::load(&releases_root(app)?, &recipe.id, &release.bundle_id)?;
+    let bundle = load_bundle(app, &recipe.id, &release.bundle_id)?;
     if bundle.recipe != release.doc { return Err("待生效配方与不可变发布包不一致".into()); }
     if current.as_ref().is_some_and(|saved| saved.revision_id == recipe.revision_id) {
         return cycle.recipes.save_published(release.doc.clone(), release.base_revision.as_deref());
@@ -1435,10 +1439,29 @@ fn archived_release(dir: &Path, id: &str, version: u32) -> Result<Release, Strin
     selected.ok_or_else(|| "所选生产版本没有不可变发布包，请在工作台验证并发布".into())
 }
 
+fn load_bundle(app: &AppHandle, recipe_id: &str, reference: &str) -> Result<crate::release::ReleaseBundle, String> {
+    let root = releases_root(app)?;
+    let store = app.state::<Store>();
+    let (id, legacy) = store.resolve_bundle(recipe_id, reference)?;
+    let legacy = match legacy {
+        Some(directory) => Some(directory),
+        None if reference.starts_with("legacy-bundle-") => return Err("旧发布包的显式 ID 缺少目录映射，拒绝猜测位置".into()),
+        None if crate::release::is_legacy_directory(&root, recipe_id, reference)? => Some(reference.into()),
+        None => None,
+    };
+    match legacy {
+        Some(directory) => {
+            let id = if id == reference { store.register_legacy_bundle(recipe_id, &directory)? } else { id };
+            crate::release::load_legacy(&root, recipe_id, &id, &directory)
+        }
+        None => crate::release::load(&root, recipe_id, &id),
+    }
+}
+
 pub fn published_bundle(app: &AppHandle, recipe: &Recipe) -> Result<crate::release::ReleaseBundle, String> {
     let dir = app.state::<WorkspaceHost>().dir(&recipe.id).join("published");
     let published = archived_release(&dir, &recipe.id, recipe.version)?;
-    let bundle = crate::release::load(&releases_root(app)?, &recipe.id, &published.bundle_id)?;
+    let bundle = load_bundle(app, &recipe.id, &published.bundle_id)?;
     if bundle.recipe != published.doc || bundle.manifest.recipe_revision != recipe.revision_id {
         return Err("生产快照、配方与发布包身份不一致".into());
     }
@@ -1494,9 +1517,10 @@ pub fn apply_pending(app: &AppHandle) -> bool {
                 if w.revision == release.revision {
                     w.doc = app.state::<CycleHost>().recipes.doc(&id).unwrap();
                 }
-                w.doc.version = saved.version + 1;
+                let next_version = app.state::<CycleHost>().recipes.next_version(&saved.id);
+                w.doc.version = next_version.as_ref().copied().unwrap_or(saved.version);
                 w.validation = None;
-                w.publish_error = None;
+                w.publish_error = next_version.err();
                 w.revision += 1;
                 changed = true;
                 cycle::log(
@@ -1767,7 +1791,7 @@ pub async fn workspace_compare_original(app: AppHandle, history_id: i64) -> Resu
         let bundle_id = detail.summary.bundle_id.as_deref().ok_or("本件没有不可变发布包，不能按原版本重现")?;
         let recipe_revision = detail.summary.recipe_revision.as_deref().ok_or("历史记录缺少配方快照身份")?;
         let original = store.recipe_snapshot(recipe_revision)?.ok_or("原始配方快照缺失；不能使用当前配方替代")?;
-        let bundle = crate::release::load(&releases_root(&app)?, &original.id, bundle_id)?;
+        let bundle = load_bundle(&app, &original.id, bundle_id)?;
         let settings = app.state::<CycleHost>().settings();
         let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("原版本兼容引擎未加载")?;
         let prepared = crate::production::Prepared::load(bundle, engine, &original)?;

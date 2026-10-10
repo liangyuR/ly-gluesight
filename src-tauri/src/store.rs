@@ -75,6 +75,10 @@ pub struct RecordingEvidence {
 pub struct ShotRawFile {
     pub view: u8,
     pub file: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -331,6 +335,9 @@ pub fn same_measurement_layout(original: &Recipe, candidate: &Recipe) -> bool {
 fn validate_raw_files(files: &[ShotRawFile]) -> Result<(), String> {
     let mut views = std::collections::HashSet::new();
     for file in files {
+        if !matches!((file.width, file.height), (None, None) | (Some(1..), Some(1..))) {
+            return Err("原图尺寸必须同时提供有效宽高".into());
+        }
         if !(1..=3).contains(&file.view) || !views.insert(file.view) {
             return Err("原图元数据的视角越界或重复".into());
         }
@@ -389,44 +396,59 @@ fn migrate_revision_references(conn: &mut Connection) -> Result<(), String> {
             tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT;")).map_err(db_err)?;
         }
     }
-    if snapshots.contains("hash") && !snapshots.contains("revision_id") {
+    tx.execute_batch("CREATE TABLE IF NOT EXISTS identity_migrations(name TEXT PRIMARY KEY);").map_err(db_err)?;
+    let migrated: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM identity_migrations WHERE name='actual-recipe-versions')", [], |row| row.get(0)).map_err(db_err)?;
+    if snapshots.contains("hash") && !migrated {
         let originals = {
-            let mut stmt = tx.prepare("SELECT rowid,hash,recipe_id,version,json FROM recipe_snapshots ORDER BY rowid").map_err(db_err)?;
-            let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
-                r.get::<_, u32>(3)?, r.get::<_, String>(4)?))).map_err(db_err)?;
+            let mut stmt = tx.prepare("SELECT rowid,recipe_id,version,json,hash IS NOT NULL,revision_id FROM recipe_snapshots ORDER BY rowid").map_err(db_err)?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, u32>(2)?, r.get::<_, String>(3)?,
+                r.get::<_, bool>(4)?, r.get::<_, Option<String>>(5)?))).map_err(db_err)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(db_err)?
         };
         let mut recipes = std::collections::BTreeMap::<String, (Recipe, Option<i64>)>::new();
-        let mut references = std::collections::BTreeMap::new();
-        for (rowid, reference, id, version, json) in originals {
+        let mut ambiguous = BTreeSet::new();
+        let mut explicit = std::collections::BTreeMap::<String, Recipe>::new();
+        for (rowid, id, version, json, legacy_source, revision) in originals {
             let recipe: Recipe = serde_json::from_str(&json).map_err(|e| format!("旧配方快照无法读取，保留原库：{e}"))?;
             if recipe.id != id || recipe.version != version {
                 return Err("旧配方快照 ID 或版本不一致，保留原库".into());
             }
-            references.insert(reference, recipe.clone());
-            register_migrated_snapshot(&mut recipes, recipe, Some(rowid))?;
-        }
-        if parts.contains("recipe_hash") {
-            let records = {
-                let mut stmt = tx.prepare("SELECT id,recipe_id,recipe_version,recipe_hash FROM parts WHERE recipe_hash IS NOT NULL").map_err(db_err)?;
-                let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?,
-                    r.get::<_, Option<u32>>(2)?, r.get::<_, String>(3)?))).map_err(db_err)?;
-                rows.collect::<Result<Vec<_>, _>>().map_err(db_err)?
-            };
-            for (part, id, version, reference) in records {
-                let (Some(id), Some(version)) = (id, version) else { return Err("旧记录的配方 ID 或版本缺失，保留原库".into()) };
-                if version == 0 { return Err("旧记录的配方版本无效，保留原库".into()); }
-                let original = references.get(&reference).ok_or("旧记录引用的配方快照缺失，保留原库")?;
-                if original.id != id { return Err("旧记录的配方引用与 ID 不一致，保留原库".into()); }
-                let mut doc: crate::recipe::RecipeDoc = serde_json::from_value(serde_json::to_value(original).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-                doc.version = version;
-                let recipe = doc.build()?;
-                let revision = recipe.revision_id.clone();
-                register_migrated_snapshot(&mut recipes, recipe, None)?;
-                tx.execute("UPDATE parts SET recipe_revision=?2 WHERE id=?1", params![part, revision]).map_err(db_err)?;
+            if legacy_source {
+                register_migrated_snapshot(&mut recipes, &mut ambiguous, recipe, Some(rowid))?;
+            } else if let Some(revision) = revision {
+                if revision != recipe.revision_id { return Err("已保存快照的明确修订号与版本不一致".into()); }
+                explicit.insert(revision, recipe);
             }
         }
+        tx.execute("UPDATE recipe_snapshots SET revision_id=NULL WHERE hash IS NOT NULL", []).map_err(db_err)?;
+        let legacy_record = if parts.contains("recipe_hash") { "(recipe_hash IS NOT NULL OR recipe_revision IS NULL)" } else { "recipe_revision IS NULL" };
+        tx.execute(&format!("UPDATE parts SET recipe_revision=NULL WHERE {legacy_record}"), []).map_err(db_err)?;
+        let records = {
+            let mut stmt = tx.prepare(&format!("SELECT id,recipe_id,recipe_version FROM parts WHERE recipe_id IS NOT NULL AND recipe_version>0 AND {legacy_record}")).map_err(db_err)?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, u32>(2)?))).map_err(db_err)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db_err)?
+        };
+        for (part, id, version) in records {
+            let revision = format!("{id}-v{version}");
+            if ambiguous.contains(&(id.clone(), version)) { continue; }
+            if !recipes.contains_key(&revision) {
+                if ambiguous.iter().any(|(ambiguous_id, _)| ambiguous_id == &id) { continue; }
+                let candidates = recipes.values().filter(|(recipe, _)| recipe.id == id).map(|(recipe, _)| {
+                    let mut doc: crate::recipe::RecipeDoc = serde_json::from_value(serde_json::to_value(recipe).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+                    doc.version = version;
+                    Ok(doc)
+                }).collect::<Result<Vec<_>, String>>()?;
+                let Some(first) = candidates.first() else { continue };
+                if candidates.iter().any(|candidate| candidate != first) { continue; }
+                register_migrated_snapshot(&mut recipes, &mut ambiguous, first.build()?, None)?;
+            }
+            if let Some(existing) = explicit.get(&revision) {
+                if serde_json::to_value(existing).map_err(|e| e.to_string())? != serde_json::to_value(&recipes[&revision].0).map_err(|e| e.to_string())? { continue; }
+            }
+            tx.execute("UPDATE parts SET recipe_revision=?2 WHERE id=?1", params![part, revision]).map_err(db_err)?;
+        }
         for (revision, (recipe, rowid)) in recipes {
+            if explicit.contains_key(&revision) { continue; }
             if let Some(rowid) = rowid {
                 tx.execute("UPDATE recipe_snapshots SET revision_id=?2 WHERE rowid=?1", params![rowid, revision]).map_err(db_err)?;
             } else {
@@ -435,19 +457,32 @@ fn migrate_revision_references(conn: &mut Connection) -> Result<(), String> {
             }
         }
     }
-    if parts.contains("bundle_hash") && !parts.contains("bundle_id") {
-        tx.execute("UPDATE parts SET bundle_id=bundle_hash", []).map_err(db_err)?;
+    tx.execute("INSERT OR IGNORE INTO identity_migrations(name) VALUES('actual-recipe-versions')", []).map_err(db_err)?;
+    let existing_bundle_map: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_bundle_refs')", [], |row| row.get(0)).map_err(db_err)?;
+    tx.execute_batch("CREATE TABLE IF NOT EXISTS legacy_bundle_refs(recipe_id TEXT NOT NULL,bundle_id TEXT NOT NULL UNIQUE,
+        legacy_directory TEXT NOT NULL,PRIMARY KEY(recipe_id,legacy_directory));").map_err(db_err)?;
+    if parts.contains("bundle_hash") && !existing_bundle_map {
+        tx.execute("INSERT INTO legacy_bundle_refs(recipe_id,bundle_id,legacy_directory)
+            SELECT DISTINCT recipe_id,'legacy-bundle-' || lower(hex(randomblob(16))),bundle_hash FROM parts
+            WHERE recipe_id IS NOT NULL AND bundle_hash IS NOT NULL AND bundle_hash<>''
+            GROUP BY recipe_id,bundle_hash", []).map_err(db_err)?;
+        tx.execute("UPDATE parts SET bundle_id=(SELECT ref.bundle_id FROM legacy_bundle_refs ref
+            WHERE ref.recipe_id=parts.recipe_id AND ref.legacy_directory=parts.bundle_hash)
+            WHERE bundle_hash IS NOT NULL", []).map_err(db_err)?;
     }
     tx.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS recipe_revision ON recipe_snapshots(revision_id) WHERE revision_id IS NOT NULL;").map_err(db_err)?;
     tx.commit().map_err(db_err)
 }
 
 fn register_migrated_snapshot(
-    recipes: &mut std::collections::BTreeMap<String, (Recipe, Option<i64>)>, recipe: Recipe, rowid: Option<i64>,
+    recipes: &mut std::collections::BTreeMap<String, (Recipe, Option<i64>)>, ambiguous: &mut BTreeSet<(String, u32)>,
+    recipe: Recipe, rowid: Option<i64>,
 ) -> Result<(), String> {
+    if ambiguous.contains(&(recipe.id.clone(), recipe.version)) { return Ok(()); }
     if let Some((previous, _)) = recipes.get(&recipe.revision_id) {
         if serde_json::to_value(previous).map_err(|e| e.to_string())? != serde_json::to_value(&recipe).map_err(|e| e.to_string())? {
-            return Err("旧配方的相同 ID、版本对应不同快照，保留原库".into());
+            ambiguous.insert((recipe.id.clone(), recipe.version));
+            recipes.remove(&recipe.revision_id);
         }
     } else {
         recipes.insert(recipe.revision_id.clone(), (recipe, rowid));
@@ -577,6 +612,33 @@ impl Store {
 
     pub fn backup_path(&self) -> Option<&Path> {
         self.backup_path.as_deref()
+    }
+
+    pub fn recipe_version_floors(&self) -> Result<std::collections::BTreeMap<String, u32>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT recipe_id,MAX(version) FROM (
+            SELECT recipe_id,recipe_version AS version FROM parts WHERE recipe_id IS NOT NULL AND recipe_version IS NOT NULL
+            UNION ALL SELECT recipe_id,version FROM recipe_snapshots) GROUP BY recipe_id").map_err(db_err)?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))).map_err(db_err)?;
+        rows.collect::<Result<std::collections::BTreeMap<_, _>, _>>().map_err(db_err)
+    }
+
+    pub fn resolve_bundle(&self, recipe_id: &str, reference: &str) -> Result<(String, Option<String>), String> {
+        let conn = self.conn.lock().unwrap();
+        let mapped = conn.query_row("SELECT bundle_id,legacy_directory FROM legacy_bundle_refs WHERE recipe_id=?1 AND (bundle_id=?2 OR legacy_directory=?2)",
+            params![recipe_id, reference], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).optional().map_err(db_err)?;
+        Ok(mapped.map(|(id, directory)| (id, Some(directory))).unwrap_or_else(|| (reference.into(), None)))
+    }
+
+    pub fn register_legacy_bundle(&self, recipe_id: &str, directory: &str) -> Result<String, String> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_err)?;
+        tx.execute("INSERT OR IGNORE INTO legacy_bundle_refs(recipe_id,bundle_id,legacy_directory)
+            VALUES(?1,'legacy-bundle-' || lower(hex(randomblob(16))),?2)", params![recipe_id, directory]).map_err(db_err)?;
+        let id = tx.query_row("SELECT bundle_id FROM legacy_bundle_refs WHERE recipe_id=?1 AND legacy_directory=?2",
+            params![recipe_id, directory], |row| row.get(0)).map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
+        Ok(id)
     }
 
     pub fn reserve_cycle_id(&self) -> Result<String, String> {
@@ -791,7 +853,8 @@ impl Store {
             .optional()
             .map_err(db_err)?;
         let Some((id, previous)) = previous else { return Ok(false) };
-        if previous.iter().any(|old| !files.iter().any(|new| old.view == new.view && old.file == new.file)) {
+        if previous.iter().any(|old| !files.iter().any(|new| old.view == new.view && old.file == new.file
+            && (old.width.is_none() || old.width == new.width) && (old.height.is_none() || old.height == new.height))) {
             return Err("原图身份已保存，不能替换为另一组文件".into());
         }
         tx.execute(

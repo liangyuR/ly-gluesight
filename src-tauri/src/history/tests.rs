@@ -27,12 +27,11 @@ fn row(recipe: &Recipe, id: i64) -> StoredMeasurement {
 }
 
 #[test]
-fn a_named_missing_snapshot_never_falls_back_to_current_recipe() {
+fn missing_or_unidentified_snapshot_never_falls_back_to_current_recipe() {
     let path = std::env::temp_dir().join(format!("gluesight-history-snapshot-{}-{}.sqlite", std::process::id(), ly_plc::now_ms()));
     let store = Store::open(&path).unwrap();
-    let current = Arc::new(recipe());
     assert!(record_recipe(&store, Some("missing"), || panic!("不得读取当前配方")).unwrap().is_none());
-    assert_eq!(record_recipe(&store, None, || Some(current.clone())).unwrap().unwrap().revision_id, current.revision_id);
+    assert!(record_recipe(&store, None, || panic!("无身份历史不得读取当前配方")).unwrap().is_none());
     drop(store);
     let _ = std::fs::remove_file(&path);
 }

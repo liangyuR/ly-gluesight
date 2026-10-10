@@ -314,3 +314,41 @@ test('failed observations are preserved independently and never overwrite an ear
     await rm(directory, {recursive:true,force:true});
   }
 });
+
+for (const [name, mutate] of [
+  ['shot identity', value => value.frames[0].shotId = 'Q1'],
+  ['camera identity', value => value.frames[0].camera = 'cam2'],
+  ['view identity', value => value.frames[0].view = 2],
+  ['selected view', value => value.frames[0].selectedView = 2],
+  ['device session', value => value.frames[0].session = 8],
+  ['device ordinal', value => value.frames[0].ordinal = 2],
+  ['frame count', value => value.frames[0].frameCounter = 12],
+  ['trigger count', value => value.frames[0].triggerCounter = 12],
+  ['missing shots', value => value.missingShots = [0]],
+  ['dropped frame count', value => value.droppedFrames = 1],
+  ['frame availability', value => value.frames[0].available = false],
+]) {
+  test('actual same-size recording metadata change is refused: ' + name, async () => {
+    const { verifyRecordingMetadata } = await import('../../scripts/p0-cyclehost-report.mjs');
+    const directory = await mkdtemp(join(tmpdir(), 'p0-metadata-actual-fields-'));
+    try {
+      const document = replayEvidence().row.recordingMetadata.document;
+      const path = join(directory, 'part.json'), length = Buffer.byteLength(JSON.stringify(document)) + 100;
+      const encode = value => { const text = JSON.stringify(value); assert(Buffer.byteLength(text) <= length); return Buffer.from(text + ' '.repeat(length - Buffer.byteLength(text))); };
+      const file = { path, bytes: length, document };
+      await writeFile(path, encode(document));
+      assert.deepEqual(await verifyRecordingMetadata(file), document);
+      const reordered = Object.fromEntries(Object.entries(document).reverse());
+      await writeFile(path, encode(reordered));
+      assert.deepEqual(await verifyRecordingMetadata(file), document);
+      const changed = structuredClone(document); mutate(changed);
+      for (const key of ['cycleId', 'sn', 'recipeRevision', 'bundleId']) assert.equal(changed[key], document[key]);
+      await writeFile(path, encode(changed));
+      assert.equal((await readFile(path)).length, length);
+      await assert.rejects(() => verifyRecordingMetadata(file), /reported actual structure/);
+    } finally {
+      assert(dirname(resolve(directory)) === resolve(tmpdir()) && directory.startsWith(join(tmpdir(), 'p0-metadata-actual-fields-')));
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}

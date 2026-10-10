@@ -9,7 +9,7 @@ import { useWorkspace } from "./context";
 import { Badge, FrameRail, GrayViewer, KV, Notice, NumberField, Panel, Steps, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { FrozenImage, ShotTeach, WorkspaceView } from "./types";
 import ImageImportButton from "./ImageImportButton";
-import { sameTeach, shotTeach, teachError } from "./teach";
+import { sameJsonValue, sameTeach, shotTeach, teachError } from "./teach";
 
 function FrozenViewOption({ id, metadata, selected, disabled, onSelect }: { id: string; metadata: FrozenImage; selected: boolean; disabled: boolean; onSelect: () => void }) {
   const { image, loading, error } = useGrayImage(id, metadata.id);
@@ -64,7 +64,7 @@ export default function TeachingPage() {
   const setPath = (path: [number, number][]) => update({ ...t, path });
   const setDetect = (detect: DetectParams | undefined) => { const next: ShotTeach = { path: t.path, mmPerPx: t.mmPerPx }; if (detect) next.detect = detect; update(next); };
   const trial = frame.trial;
-  const staleTrial = !!trial && !editing && (trial.imageId !== frame.image?.id || trial.geometryTag !== frame.image?.geometryTag);
+  const staleTrial = !!trial && !editing && (trial.imageId !== frame.image?.id || !sameJsonValue(trial.geometryTag, frame.image?.geometryTag));
   const trialCurrent = !editing && !staleTrial && !!trial?.passed;
   const measured = !!trial && trial.measurement != null;
   const own = shotSegment(data.layout, k)?.segment;

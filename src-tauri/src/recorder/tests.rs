@@ -103,6 +103,7 @@ fn successful_finish_reports_only_existing_files_and_complete_metadata() {
     assert!(outcome.directory.as_ref().unwrap().file_name().unwrap().to_string_lossy().ends_with("_NG_WIDTH_cycle_cycle-complete"));
     assert_eq!(outcome.files.len(), 3);
     for file in &outcome.files {
+        assert_eq!((file.width, file.height), (1, 1));
         assert!(!file.file.contains('\\'));
         assert!(!file.file.contains(".."));
         let actual = recorder.root().join(&file.file);
