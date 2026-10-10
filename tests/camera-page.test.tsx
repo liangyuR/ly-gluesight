@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import CameraPage, { FlyshotCalibrationPage } from "../src/pages/CameraPage";
 import { cameraApi, defaultCameraConfig } from "../src/features/camera/api";
@@ -42,6 +42,23 @@ const show=()=>render(<MemoryRouter><CameraPage/></MemoryRouter>);
 const loaded=()=>screen.findByRole("button",{name:"相机 1 CAM-1"});
 
 describe("设备与采集页基础操作",()=>{
+  it("直接进入设备页不显示配方返回入口",async()=>{
+    show();await loaded();expect(screen.queryByRole("button",{name:/返回.*采集/})).not.toBeInTheDocument();
+  });
+  it.each(["","?purpose=validation"])("从采集进入配置后可经标定返回原流程 %s",async search=>{
+    const state={captureReturn:{recipeId:"A",search,cameraId:"CAM-2",planned:32,drain:2600,roundId:"history-1",previewK:2}};
+    function Destination(){const location=useLocation();return <div data-testid="destination">{JSON.stringify({search:location.search,state:location.state})}</div>;}
+    render(<MemoryRouter initialEntries={[{pathname:"/camera",state}]}><Routes><Route path="/camera" element={<CameraPage/>}/><Route path="/camera/calibration" element={<FlyshotCalibrationPage/>}/><Route path="/recipe/capture" element={<Destination/>}/></Routes></MemoryRouter>);
+    await loaded();expect(screen.getByRole("button",{name:"相机 2 CAM-2"})).toHaveClass("active");
+    const saving=deferred<string[]>();vi.mocked(cameraApi.saveConfig).mockReturnValueOnce(saving.promise);
+    await userEvent.click(screen.getByRole("button",{name:"保存并应用"}));
+    const label=search?"返回独立样本采集":"返回整圈采集";expect(screen.getByRole("button",{name:label})).toBeDisabled();
+    await act(async()=>saving.resolve([]));await waitFor(()=>expect(screen.getByRole("button",{name:label})).toBeEnabled());
+    await userEvent.click(screen.getByRole("link",{name:"飞拍工位标定"}));expect(screen.getByRole("button",{name:label})).toBeVisible();
+    await userEvent.click(screen.getByRole("link",{name:"设备与采集"}));await loaded();
+    await userEvent.click(screen.getByRole("button",{name:label}));expect(screen.getByTestId("destination")).toHaveTextContent(JSON.stringify({search,state}));
+    expect(cameraApi.saveConfig).toHaveBeenCalledTimes(1);
+  });
   it("三目设备标定明确绑定视角 1，其他视角提示独立标定或手动像素当量",async()=>{
     configs[0].viewCount=3;render(<MemoryRouter><FlyshotCalibrationPage/></MemoryRouter>);
     expect(await screen.findByRole("combobox",{name:"标定图像"})).toHaveValue("1");
