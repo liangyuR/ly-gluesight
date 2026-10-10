@@ -1,0 +1,145 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-10-10T10:32:44.327619+00:00",
+  "passed": true,
+  "runtimeSource": "8ffc091f10226a78bfd68640a5d9cf93fa618419",
+  "branch": "codex/p0-audit-durability",
+  "scope": "Final result and event durability before PLC DONE, bounded spool, fail-closed readiness and evidence retention, actual S7 crash recovery",
+  "physicalValidation": false,
+  "s7HardwareValidation": false,
+  "imageAccuracyValidation": false,
+  "benchmark": false,
+  "resourceContentMatchingUsed": false,
+  "capacity": {
+    "events": 4096,
+    "totalBytes": 67108864,
+    "eventBytes": 4194304
+  },
+  "softwareChecks": {
+    "rust": {
+      "passed": 335,
+      "failed": 0,
+      "ignored": 30,
+      "seconds": 3.87,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-audit-durability-rust-r3-c.log",
+        "bytes": 38283
+      }
+    },
+    "s7Loopback": {
+      "passed": 24,
+      "failed": 0,
+      "seconds": 50.54,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-audit-durability-s7-c.log",
+        "bytes": 4447
+      }
+    },
+    "realDll": {
+      "passed": 5,
+      "failed": 0,
+      "seconds": 1.26,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-audit-durability-native-dll-c.log",
+        "bytes": 3471
+      }
+    },
+    "frontendTypesAndBuild": {
+      "passed": true,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-audit-durability-native-build-c.log",
+        "bytes": 7256
+      }
+    },
+    "newDefaultRegressions": 18
+  },
+  "native": {
+    "report": {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-audit-durability\\output\\playwright\\p0-audit-durability\\attempt-1\\report.json",
+      "bytes": 305310
+    },
+    "beforeDone": {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-audit-durability\\output\\playwright\\p0-audit-durability\\attempt-1\\spool-before-done.json",
+      "bytes": 66351
+    },
+    "crashWindow": {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-audit-durability\\output\\playwright\\p0-audit-durability\\attempt-1\\crash-window.json",
+      "bytes": 39274
+    },
+    "profile": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.audit",
+    "freshProfile": true,
+    "configurationOnly": true,
+    "copiedDatabaseOrReleases": false,
+    "vision": false,
+    "resultCode": 90,
+    "faultCode": 98,
+    "sequence": 101,
+    "sn": 740000101,
+    "cycleId": "82c2449d2d8a3e56d3fe61e0d717f306",
+    "recipeRevision": "P0-AUDIT-SPOOL-v1",
+    "sqliteRowsBeforeRequest": 0,
+    "sqliteRowsBeforeDone": 0,
+    "doneBeforeDurableInsert": false,
+    "sqliteRowsAfterTermination": 0,
+    "restoredRows": 1,
+    "restoredShots": 4,
+    "recordingState": "failed",
+    "drainMs": null,
+    "delivery": {
+      "state": "acknowledged",
+      "updatedAt": 1791628277193,
+      "message": "PLC 结果序号已匹配确认"
+    },
+    "originalDetectionEvidencePreserved": true,
+    "remainingSpoolEvents": 0,
+    "acknowledgedSpoolEventObservedAtTermination": false,
+    "ackRecoveryPath": "Actual S7 ACK in journal; spool restored the missing part first and Machine startup associated the exact persisted ACK",
+    "testOnlyDoneWriteObservationDelayMs": 600,
+    "testOnlyS7TimeoutMs": 2000,
+    "ownedProcessesStopped": [
+      23956,
+      1824,
+      39988,
+      31680
+    ]
+  },
+  "software": {
+    "executable": {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-audit-durability\\output\\playwright\\p0-audit-durability\\gluesight-audit-8ffc091.exe",
+      "bytes": 22453248
+    },
+    "testScript": {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-audit-durability\\tests\\native\\p0-audit-process-recovery.mjs",
+      "bytes": 28130
+    },
+    "preparation": {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-audit-durability\\output\\playwright\\p0-audit-durability\\preparation.json",
+      "bytes": 2847
+    }
+  },
+  "preservedFailures": [
+    {
+      "kind": "compile",
+      "reason": "Existing Recorder test initializer lacked new protection field; fixed fixture",
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-audit-durability-rust-first-c.log",
+        "bytes": 914
+      }
+    },
+    {
+      "kind": "regression",
+      "reason": "Submission before Insert incorrectly deferred the first valid replay; fixed production branch and retained strict regression",
+      "passed": 333,
+      "failed": 1,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-audit-durability-rust-r2-c.log",
+        "bytes": 38886
+      }
+    }
+  ],
+  "limits": [
+    "Durability starts after final Record/event acceptance; Acquire memory and unfinished raw callbacks are outside this guarantee",
+    "Filesystem, SQLite and PLC are not a cross-device atomic transaction; no zero-loss power-failure claim",
+    "No actual image OK/gap, current 400-part benchmark, Robot five-scenario or hardware acceptance claim"
+  ]
+}

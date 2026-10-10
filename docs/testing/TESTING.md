@@ -313,7 +313,7 @@ PR #11 执行窗口修正：新增真实单线程 blocking 池 gate，先排队�
 新增真实临时文件系统 / SQLite 回归覆盖磁盘最新 100 份、多候选共享窗口、已清理历史及既有孤儿、并发复测、过期在途结果、历史编号复用、损坏 JSON / 数据库错误、Windows 文件锁回退和三层 junction 拒绝。在 ACK helper 释放共享 target 后，独占运行 `cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib`，269 项通过、0 失败、26 项忽略；编译 1m19s，测试 3.12 秒，以上 7 项新回归均实际通过。日志为 `C:\Users\11601\AppData\Local\Temp\gluesight-p0-recovery-20261010\p0-step6-comparison-retention-c.log`。此 helper 不重复原生桌面或测量验收。
 
 
-## 2026-10-10 · P0-15 待入库日志与生产闭锁（实现中）
+## 2026-10-10 · P0-15 待入库日志与生产闭锁
 
 原有内存重试不保证进程退出后的未入库记录可恢复。本分支将完整工件结果、PLC交付事件和录制结果写入独立有界待入库日志，实际落盘后才接受结果提交。SQLite失败期间原始事件保留；容量耗尽、未知临时文件、日志损坏或写入失败阻止后续布防。启动先完整回放日志，再将真正未完成的Pending录制标为失败，最后恢复PLC事务和初始化生产配方。
 
@@ -323,4 +323,10 @@ PR #11 执行窗口修正：新增真实单线程 blocking 池 gate，先排队�
 
 本保证从最终工件记录或事件被耐久接受开始。Acquire阶段尚未生成最终Record时强杀进程，cycleId和S7事务仍可追溯，但内存测量、尚未回调的原图或尚未生成的最终结论不在此恢复保证内；本分支未新增布防前Started全量记录。
 
-新增回归覆盖恢复排序、按cycle保存实际提交耗时、滚动保留保护及保护查询失败；审计专项和集成验证结果待执行后更新。
+源码 `8ffc091f10226a78bfd68640a5d9cf93fa618419` 完成 Rust **335通过/0失败/30默认忽略**（3.87秒）、S7真实回环 **24通过**（50.54秒）、真实LyFlow DLL **5通过**（1.26秒），前端类型与Vite构建通过。新增18项默认回归覆盖TTL/容量淘汰后的重启回放、真实SQLite锁、写库后未删收据的幂等回放、坏JSON/tmp/容量、Windows写拒绝和junction、实际子进程kill后恢复、原图提升目录保护、Submission乱序与实际耗时、同cycle内容冲突、快照后追加ACK保护、启动录制恢复顺序及滚动保留保护。
+
+全新 `.p0-tests.audit` 原生实例使用显式四shot几何与Sim相机，`vision=false`只用于协议持久化专项；没有示教或发布包，也不宣称任何图像检测通过。实际S7序号101、SN740000101被生产计数政策安全拒绝为90/98。请求之前实际持有SQLite `BEGIN IMMEDIATE`；仅在测试服务对DONE写入延迟一次600ms时观察完整Insert已落盘、DONE=false、SQLite零主行，随后实际DONE=true。实际ACK进入S7持久日志后中断本次原生进程，SQLite仍零主行；释放锁并启动同源码新进程，spool先恢复工件，Machine再关联精确ACK，最终1条原判定、4条shot、录制Failed/零原图、`drainMs=null`与Acknowledged交付，spool归零。中断时未观测到ACK spool事件，因此本次实际覆盖S7日志回退；单元回归另覆盖ACK事件已经在spool的路径。全部4个受控进程以及前置bootstrap均已退出。
+
+[紧凑证据](evidence/p0-audit-durability-c.json)引用C盘原始报告与日志，按实际字段、文件路径和字节数核查，无内容指纹匹配。首次编译缺少旧Recorder测试夹具字段、首次功能回归发现Submission早于Insert被错误退避，均保留原日志；修复生产分支后严格首轮回放通过，未放宽断言或改成多轮重试。600ms观测延迟及仅该专项的S7连接2000ms超时不作为性能结果，也不修改armMs=200或默认procMs=3000。
+
+复现工具为 `tests/native/p0-audit-process-recovery.mjs`，构建隔离overlay为 `tests/native/tauri-audit-test.json`。准备C盘全新配置、显式四shot配方及S7 DB100模板，程序manifest须包含相同identifier、executable和sourceGate；profile与每次输出目录必须不存在。参数为 `--executable --appdata --output --template --fixture --instance --recipe --settings --cameras --python --playwright-module --source-gate`，默认CDP9342。相机输入为 `{cameras:[...],nextId:2}`；模板可为配置本体或含template的导出对象。不得复制已有数据库或发布资产替代全新配置。
