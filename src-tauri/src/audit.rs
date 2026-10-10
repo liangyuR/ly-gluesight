@@ -113,6 +113,32 @@ mod part_table {
     }
 }
 
+fn set_failure(failure: &Mutex<Option<String>>, error: String) -> Result<(), String> {
+    *failure.lock().map_err(|_| "追溯状态锁损坏")? = Some(error);
+    Ok(())
+}
+
+fn spool_io<T>(spool: &Mutex<spool::Spool>, failure: &Mutex<Option<String>>,
+    action: impl FnOnce(&mut spool::Spool) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut spool = spool.lock().map_err(|_| "追溯 spool 锁损坏")?;
+    let result = action(&mut spool);
+    if let Err(error) = &result { set_failure(failure, error.clone())?; }
+    result
+}
+
+fn with_ready_spool<T>(spool: &Mutex<spool::Spool>, failure: &Mutex<Option<String>>, running: &AtomicBool,
+    action: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let spool = spool.lock().map_err(|_| "追溯 spool 锁损坏")?;
+    if !running.load(Ordering::SeqCst) { return Err("持久追溯线程已停止，禁止布防".into()); }
+    if let Some(error) = failure.lock().map_err(|_| "追溯状态锁损坏")?.as_ref() { return Err(error.clone()); }
+    if !spool.empty() { return Err("持久追溯仍有待入库事件，禁止下一件布防或历史清理".into()); }
+    let result = action();
+    drop(spool);
+    result
+}
+
 #[derive(Clone)]
 pub struct Audit {
     tx: SyncSender<()>,
@@ -140,20 +166,11 @@ impl Audit {
     }
 
     pub fn ready(&self) -> Result<(), String> {
-        if !self.running.load(Ordering::SeqCst) { return Err("持久追溯线程已停止，禁止布防".into()); }
-        if let Some(error) = self.failure.lock().map_err(|_| "追溯状态锁损坏")?.as_ref() { return Err(error.clone()); }
-        if !self.spool.lock().map_err(|_| "追溯 spool 锁损坏")?.empty() { return Err("持久追溯仍有待入库事件，禁止下一件布防".into()); }
-        Ok(())
+        with_ready_spool(&self.spool, &self.failure, &self.running, || Ok(()))
     }
 
     pub fn with_ready<T>(&self, action: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-        if !self.running.load(Ordering::SeqCst) { return Err("持久追溯线程已停止".into()); }
-        if let Some(error) = self.failure.lock().map_err(|_| "追溯状态锁损坏")?.as_ref() { return Err(error.clone()); }
-        let spool = self.spool.lock().map_err(|_| "追溯 spool 锁损坏")?;
-        if !spool.empty() { return Err("持久追溯尚未入库，暂停历史清理".into()); }
-        let result = action();
-        drop(spool);
-        result
+        with_ready_spool(&self.spool, &self.failure, &self.running, action)
     }
 
     pub fn protected_recording_directories(&self, root: &Path) -> Result<Vec<PathBuf>, String> {
@@ -165,13 +182,13 @@ impl Audit {
     }
 
     fn fail(&self, error: String) {
-        if let Ok(mut failure) = self.failure.lock() { *failure = Some(error.clone()); }
+        let _ = set_failure(&self.failure, error.clone());
         app_log(&self.app, "err", "持久追溯故障", error);
     }
 
     fn persist(&self, event: Event) -> Result<(), String> {
         let cycle = event.cycle_id().to_string();
-        let result = self.spool.lock().map_err(|_| "追溯 spool 锁损坏".to_string()).and_then(|mut spool| spool.append(&event));
+        let result = spool_io(&self.spool, &self.failure, |spool| spool.append(&event));
         if let Err(error) = result {
             let message = format!("cycleId={cycle}：{error}；原检测结论保留，禁止继续生产");
             self.fail(message.clone());
@@ -841,7 +858,7 @@ fn writer(audit: Audit, rx: Receiver<()>) {
     loop {
         let disconnected = matches!(rx.recv_timeout(Duration::from_secs(1)), Err(RecvTimeoutError::Disconnected));
         if last_probe.elapsed() >= Duration::from_secs(1) {
-            let result = audit.spool.lock().map_err(|_| "追溯 spool 锁损坏".to_string()).and_then(|spool| spool.probe());
+            let result = spool_io(&audit.spool, &audit.failure, |spool| spool.probe());
             if let Err(error) = result { audit.fail(error); }
             last_probe = Instant::now();
         }
@@ -852,14 +869,14 @@ fn writer(audit: Audit, rx: Receiver<()>) {
         for cycle in cycles {
             let now = ly_plc::now_ms();
             if retries.get(&cycle).is_some_and(|(_, due)| now < *due) { continue; }
-            let events = match audit.spool.lock().map_err(|_| "追溯 spool 锁损坏".to_string()).and_then(|spool| spool.events(&cycle)) {
+            let events = match spool_io(&audit.spool, &audit.failure, |spool| spool.events(&cycle)) {
                 Ok(events) => events,
                 Err(error) => { audit.fail(error); continue; }
             };
             let (complete, receipts, notices) = apply_spooled(events, &cycle, &mut sink, now);
             publish(&audit.app, notices);
             if complete {
-                match audit.spool.lock().map_err(|_| "追溯 spool 锁损坏".to_string()).and_then(|mut spool| spool.remove(&receipts)) {
+                match spool_io(&audit.spool, &audit.failure, |spool| spool.remove(&receipts)) {
                     Ok(()) => { retries.remove(&cycle); }
                     Err(error) => audit.fail(error),
                 }
