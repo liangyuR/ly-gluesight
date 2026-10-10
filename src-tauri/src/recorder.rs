@@ -6,7 +6,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
 use chrono::Local;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::frame::{CounterSource, Frame, FrameImage};
@@ -23,7 +23,7 @@ pub type RetentionWarning = Arc<dyn Fn(&[String]) + Send + Sync>;
 
 pub type RecordingCallback = Arc<dyn Fn(RecordingOutcome) + Send + Sync>;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RecordingState {
     Off,
@@ -33,7 +33,7 @@ pub enum RecordingState {
     Failed,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordedRawFile {
     pub k: usize,
@@ -43,7 +43,7 @@ pub struct RecordedRawFile {
     pub height: u32,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingOutcome {
     pub cycle_id: String,
@@ -127,6 +127,7 @@ pub struct Recorder {
     callback: Option<RecordingCallback>,
     startup_error: Option<String>,
     active: Arc<Mutex<HashSet<PathBuf>>>,
+    protection: Option<PendingProtection>,
 }
 
 impl Recorder {
@@ -143,12 +144,13 @@ impl Recorder {
         let queued = Arc::new(AtomicUsize::new(0));
         let active = Arc::new(Mutex::new(HashSet::new()));
         let (writer_root, writer_queue, writer_callback, writer_active) = (root.clone(), queued.clone(), callback.clone(), active.clone());
+        let protection = cleanup.as_ref().map(|(protection, _)| protection.clone());
         let startup_error = std::thread::Builder::new()
             .name("frame-recorder".into())
             .spawn(move || writer(writer_root, rx, writer_queue, writer_callback, writer_active, cleanup))
             .err()
             .map(|e| format!("录制线程启动失败：{e}"));
-        Self { root, tx, queued, callback, startup_error, active }
+        Self { root, tx, queued, callback, startup_error, active, protection }
     }
 
     pub fn root(&self) -> &Path {
@@ -300,7 +302,9 @@ impl Recorder {
             if let Msg::Finish(mut job) = error.0 {
                 job.recording.errors.push("录制写入线程已停止，收尾改为同步保存并报告".into());
                 let pending = job.recording.dir.clone();
-                let outcome = finish_recording(&self.root, job, WriteState::default());
+                let mut state = WriteState::default();
+                protect_retention(&mut job, &mut state, self.protection.as_ref());
+                let outcome = finish_recording(&self.root, job, state);
                 if !pending.exists() { self.active.lock().unwrap().remove(&pending); }
                 notify(&self.callback, outcome);
             }
@@ -327,6 +331,19 @@ struct WriteState {
     results: HashMap<(usize, u8), Result<(), String>>,
     errors: Vec<String>,
     retention_errors: Vec<String>,
+    retention_blocked: bool,
+}
+
+fn protect_retention(job: &mut FinishJob, state: &mut WriteState, protection: Option<&PendingProtection>) {
+    if let Some(protection) = protection {
+        match protection() {
+            Ok(paths) => job.in_use.extend(paths),
+            Err(error) => {
+                state.retention_blocked = true;
+                state.retention_errors.push(format!("无法确认待入库原图保护，跳过滚动清理：{error}"));
+            }
+        }
+    }
 }
 
 fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: Option<RecordingCallback>,
@@ -350,11 +367,12 @@ fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: 
                 }
                 queued.fetch_sub(1, Ordering::AcqRel);
             }
-            Msg::Finish(job) => {
+            Msg::Finish(mut job) => {
                 let mut state = cycles.remove(&job.recording.cycle_id).unwrap_or_default();
                 if let Some((protection, _)) = &cleanup {
                     state.retention_errors = cleaner.sweep(&root, &active, protection, &job.in_use);
                 }
+                protect_retention(&mut job, &mut state, cleanup.as_ref().map(|(protection, _)| protection));
                 let pending = job.recording.dir.clone();
                 let outcome = finish_recording(&root, job, state);
                 if !pending.exists() { active.lock().unwrap().remove(&pending); }
@@ -506,7 +524,7 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState) -> Recor
     let mut protected = in_use;
     protected.push(actual_dir.clone());
     let mut retention_errors = state.retention_errors;
-    retention_errors.extend(prune(root, keep as usize, max_bytes, &protected));
+    if !state.retention_blocked { retention_errors.extend(prune(root, keep as usize, max_bytes, &protected)); }
     let mut available = promoted && directory.is_some() && !files.is_empty() && rec.errors.is_empty();
     meta["frames"] = serde_json::to_value(&rec.frames).unwrap();
     meta["available"] = json!(available);

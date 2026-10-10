@@ -33,7 +33,7 @@ mod workspace;
 use tauri::Manager;
 
 fn open_store(app: &tauri::App) -> Result<store::Store, String> {
-    store::Store::open(&app.path().app_data_dir().map_err(|e| e.to_string())?.join("inspection.db"))
+    store::Store::open_deferred_recovery(&app.path().app_data_dir().map_err(|e| e.to_string())?.join("inspection.db"))
 }
 
 pub fn run() {

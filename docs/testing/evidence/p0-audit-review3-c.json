@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-10",
+  "runtimeSourceCommit": "bdfd76b35951d389da5d7fca7e27d17571ef067b",
+  "branch": "codex/p0-audit-durability",
+  "scope": "PR15 third review: preInsert recording restart, S7 audit wait, postbegin audit health and exact health probe recovery",
+  "passed": true,
+  "tracking": [
+    "P0-21",
+    "P0-22"
+  ],
+  "reviewFixes": [
+    {
+      "threadSuffix": "Dktl",
+      "problem": "Synchronous Recording persisted before Insert leaves orphan-only startup replay after Acquire interruption",
+      "fix": "Stage preInsert terminal in memory; append Insert then staged Recording under one spool lock. Recover existing consistent Recording-only orphan with confirmed missing SQLite row into durable interrupted archive without inventing final record."
+    },
+    {
+      "threadSuffix": "Dktn",
+      "problem": "Normal recording audit barrier treated as device failure during S7 release",
+      "fix": "Typed audit readiness mapped separately from device readiness. Ready remains low while waiting; ACK/pending remain, release resumes without reset. Actual device failures still fault."
+    },
+    {
+      "threadSuffix": "Dp76",
+      "problem": "Recorder.begin synchronous callback can latch audit failure before camera starts",
+      "fix": "Check audit failure, writer liveness and actual disk probe after begin and before camera.begin_part, ignoring own normal recording barrier."
+    },
+    {
+      "threadSuffix": "Dp7-",
+      "problem": "Interrupted health probe leaves one byte and blocks spool restart",
+      "fix": "Only exact single zero probe byte can truncate and sync. Unknown bytes remain unchanged and fail closed."
+    }
+  ],
+  "checks": [
+    {
+      "name": "Rust default",
+      "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib",
+      "passed": true,
+      "tests": 358,
+      "failed": 0,
+      "ignored": 33,
+      "testSeconds": 12.63,
+      "buildSeconds": 58.45,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-audit-review3-rust-c.log",
+      "sourceNote": "Executed before removal of one unused mut in an existing test; no behavior or assertion change afterwards."
+    },
+    {
+      "name": "S7 loopback full wire suite",
+      "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib s7_wire_ -- --include-ignored --test-threads=1",
+      "passed": true,
+      "tests": 25,
+      "failed": 0,
+      "ignored": 0,
+      "testSeconds": 54.17,
+      "buildSeconds": 12.51,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-audit-review3-s7-c.log"
+    }
+  ],
+  "newTests": {
+    "default": [
+      "durable_preinsert_recorder_off_crash_has_no_orphan_receipt",
+      "durable_staged_terminal_append_failure_keeps_insert_receipt_and_latches",
+      "durable_postbegin_health_rejects_synchronous_callback_failure_but_not_own_barrier",
+      "durable_legacy_recording_only_restart_archives_exact_events_and_protects_raw",
+      "durable_legacy_orphan_mixed_conflicting_or_lookup_error_remains_fail_closed",
+      "durable_health_probe_recovers_only_exact_own_single_zero_after_restart",
+      "durable_legacy_synchronous_off_or_failed_orphan_restart_keeps_original_archive",
+      "durable_postbegin_health_probes_disk_even_with_own_pending_recording"
+    ],
+    "s7": [
+      "s7_wire_recording_audit_wait_holds_release_then_recovers_without_reset",
+      "s7_wire_recording_audit_wait_does_not_mask_actual_device_fault"
+    ]
+  },
+  "capacity": {
+    "activeSpool": {
+      "maxEvents": 4096,
+      "maxBytes": 67108864
+    },
+    "interruptedPreinsertArchive": {
+      "directory": ".interrupted-preinsert",
+      "maxEvents": 4096,
+      "maxBytes": 67108864
+    },
+    "sharedLimit": false
+  },
+  "preservation": [
+    "Archive original event bytes and paths durably before removing active receipt; protect archived cycle/raw directories from recorder cleanup.",
+    "Only confirmed no-row, consistent legal Recording-only old cycles may archive. Mixed Submission/Delivery, conflict, lookup failure or unknown/corrupt archive remains fail closed.",
+    "Archive and referenced original images are not automatically removed; capacity errors preserve evidence.",
+    "No final record or OK is fabricated for interrupted Acquire before final record creation."
+  ],
+  "limits": [
+    "No new native process recovery, current-source 400-part suite, Robot five scenarios, DLL-specific suite or frontend regression was run in this checkpoint.",
+    "S7 acceptance is local loopback and does not prove W0/W7 field hardware.",
+    "Earlier native results remain attributed to their original source/executable.",
+    "P0-09 noisy normal remains strict OK; actual code 2 or clean fixture cannot count as that acceptance.",
+    "No content hash calculation or matching; explicit identity, actual structure and paths are retained."
+  ]
+}

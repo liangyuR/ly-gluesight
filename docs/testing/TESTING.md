@@ -172,9 +172,9 @@ jsdom 没有真实布局、灰度图解码与设备连接能力。测试环境�
 
 原 `docs/testing/evidence/` 下的 18 个机器生成的运行记录（JSON，对应已被取代的提交）已移出目录树，仍可在提交 cf1b25d 查看：`git show cf1b25d:docs/testing/evidence/<文件名>`。真实 DLL 回归设置 `GLUESIGHT_P0_REPORT_DIR` 后会重新生成报告（见 [真实 DLL 回归](#真实-dll-回归)）。
 
-## 本次集成验证
+## PR #17 集成验证（历史基线）
 
-集成分支在 PR #8–#14 之上改了判定规则、PLC 计划版本、引擎身份并删除旧数据兼容（见 [P0 计划](../architecture/p0-plan.md)）。
+PR #17 已合入 main，PR #11–#14 已由其覆盖并关闭。该集成在 PR #8–#14 之上改了判定规则、PLC 计划版本、引擎身份并删除旧数据兼容（见 [P0 计划](../architecture/p0-plan.md)）。
 
 | 验证 | 命令 | 结果 |
 | --- | --- | --- |
@@ -182,6 +182,32 @@ jsdom 没有真实布局、灰度图解码与设备连接能力。测试环境�
 | S7 回环专项 | `cargo test --offline --locked --lib plc_session -- --include-ignored --test-threads=1` | 41 项通过（含 29 项线协议场景），57.76 秒 |
 | 前端全量 | `pnpm test` | 42 个文件、965 项通过 |
 | 类型检查与构建 | `pnpm typecheck`、`pnpm build` | 通过 |
-| 真实 DLL 回归 | `cargo test --offline --locked --lib native_ -- --ignored --test-threads=1` | 未运行：唯一构建好的 DLL 在故障 D: 盘上。整拍照点无胶的期望已在三处真实 DLL 用例里改为 NG_GAP，C: 上有 DLL 后必须重跑确认 |
+| 真实 DLL 回归 | `cargo test --offline --locked --lib native_ -- --ignored --test-threads=1` | PR #17 当时未运行；C: 现有 DLL 缺少胶路算子，专项尝试在加载检查被拒绝；负责人明确本轮不做算法或真实 DLL 回归。整拍照点无胶的 NG_GAP 仍待后续真实 DLL 确认 |
 
 S7 运行时修复随本次集成一并验证：空闲时 PC 输出被清零（PLC 重启 / DB 重新初始化）自动重写、60 s 内反复被改写判故障、PLC 残留 partEnd / resultAck 只等待、设备未就绪撤下 visionReady；缺帧 / 多帧原因带相机与应收 / 实收计数；提前判 ERR 的件按 PLC 确认时的已发触发数推下一件基线；SDK 帧长度不足丢图不越界；PLC 字段超出 UInt 范围报错不截断；旧 `planHash` 点名直接拒绝。
+
+
+## PR #15 更新与回归范围
+
+PR #15 已更新到 main `451be27`，本轮业务回归通过，等待审查；PR #16 待随后整合。上表是 PR #17 的历史基线，不能作为本轮通过数字。
+
+- 审计事件先进入持久 `audit-spool`，最终检测记录耐久接受后才允许 PLC DONE；录制终态和数据库入库完成前拒绝下一件布防。
+- 启动先重放 spool，再处理仍中断的 Pending 录制和未引用临时目录；受 spool 引用的目录保留。重放身份采用 cycleId 与实际业务字段，冲突保留全部证据并闭锁。
+- 验证数据库瞬态失败重试、spool 写入或读取失败、损坏文件、同 cycleId 内容冲突、目录 create / rename 探针、worker 异常与录制失败；故障不得输出错误 OK 或被普通复位绕过。
+- S7 验证首次有效 ACK 只交付一次，录制 / 入库屏障存在时等待，解除后自动释放；等待期间心跳、输入变化与断线故障仍按协议处理。
+- 执行 Rust 默认、S7 回环、前端全量、类型检查与构建；按负责人要求，本轮不做算法或真实 DLL 回归。旧 PR #15 的 `docs/testing/evidence/` 记录只证明当时提交，不能替代这次 main 整合回归。
+
+四组 400 件性能复跑、默认带噪夹具的 P0-09、W0 / W7 与现场检测准确率仍待完成。
+
+| 本轮验证 | 结果 |
+| --- | --- |
+| Rust 默认 `cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib` | 374 通过、0 失败、41 默认忽略 |
+| S7 会话 `... --lib plc_session -- --include-ignored --test-threads=1` | 46 通过、0 失败；含审计完成但设备离线、设备恢复、Acquire/Drain 设备故障与首次 ACK 只落一次 |
+| 前端 `node node_modules/vitest/vitest.mjs run --coverage` | 42 文件、965 通过；语句 / 分支 / 函数 / 行 91.34% / 89.81% / 88.59% / 93.93%，全部门槛通过 |
+| 两组 TypeScript 与 Vite 生产构建 | 通过；保留既有大 chunk 提示 |
+| CycleHost 准备与性能工具 Node 测试 | 57 通过 |
+| Robot Python / Node、S7 Python、报告验证器 self-test | 39 / 17 / 21 / 10 通过 |
+
+冲突解决保留 main 的 D-0、计划版本、判定规则及 ACK 实际触发数基线，保留 PR #15 的目录健康探针和首次 ACK 耐久接受。新增审计等待恢复复用空闲设备检查，避免相机离线时短暂置高 Ready。S7 首轮 44 通过 / 1 失败来自旧测试要求 ACK 收尾设备离线即 Fault；按 main 规则改为离线正常释放、Ready 保持低，并额外验证 Acquire / Drain 的设备故障仍闭锁，最终 46 项全部通过。
+
+本机完整日志位于 `output/pr15-main-regression/`（不提交）：保留沙箱路径读取 / 依赖解析失败、前端停滞尝试、首次 S7 失败与最终通过日志。现有 C: DLL 缺少 `glue.taught_path` / `glue.bead_width`，首次专项 6 项在加载检查失败；负责人随后明确本轮不做算法或真实 DLL 回归。没有新原生桌面、400 件、Robot 五工况或现场硬件通过结论。

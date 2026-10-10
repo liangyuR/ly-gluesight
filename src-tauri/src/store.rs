@@ -404,6 +404,14 @@ fn fail_interrupted_recordings(conn: &mut Connection) -> Result<usize, String> {
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self, String> {
+        Self::open_inner(path, false)
+    }
+
+    pub fn open_deferred_recovery(path: &Path) -> Result<Self, String> {
+        Self::open_inner(path, true)
+    }
+
+    fn open_inner(path: &Path, defer_recovery: bool) -> Result<Self, String> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
@@ -495,8 +503,12 @@ impl Store {
              COMMIT;",
         )
         .map_err(db_err)?;
-        let interrupted_recordings = fail_interrupted_recordings(&mut conn)?;
+        let interrupted_recordings = if defer_recovery { 0 } else { fail_interrupted_recordings(&mut conn)? };
         Ok(Self { conn: Mutex::new(conn), backup_path, interrupted_recordings })
+    }
+
+    pub fn finish_interrupted_recordings(&self) -> Result<usize, String> {
+        fail_interrupted_recordings(&mut self.conn.lock().unwrap())
     }
 
     pub fn backup_path(&self) -> Option<&Path> {
@@ -649,6 +661,55 @@ impl Store {
         }
         tx.commit().map_err(db_err)?;
         Ok(id)
+    }
+
+    pub fn matches_record(&self, record: &PartRecord<'_>) -> Result<bool, String> {
+        let cycle = record.cycle_id.ok_or("审计重放缺少 cycleId")?;
+        let Some(existing) = self.detail_by_cycle(cycle)? else { return Ok(false); };
+        let summary = &existing.summary;
+        let actual_recipe = match summary.recipe_revision.as_deref() {
+            Some(revision) => self.recipe_snapshot(revision)?,
+            None => None,
+        };
+        let mut actual_shots = existing.shots;
+        let mut expected_shots = record.shots.to_vec();
+        for shot in actual_shots.iter_mut().chain(expected_shots.iter_mut()) { shot.raw_files.clear(); }
+        let consistent = summary.ts == record.ts && summary.sn == record.sn
+            && summary.cycle_id.as_deref() == record.cycle_id && summary.bundle_id.as_deref() == record.bundle_id
+            && summary.recipe_id.as_deref() == record.recipe.map(|recipe| recipe.id.as_str())
+            && summary.recipe_version == record.recipe.map(|recipe| recipe.version)
+            && summary.recipe_revision.as_deref() == record.recipe.map(|recipe| recipe.revision_id.as_str())
+            && summary.frames_expected == record.frames_expected && summary.frames_received == record.frames_received
+            && existing.triggers == record.triggers && existing.software_version == record.software_version
+            && serde_json::to_value(&existing.judgement).map_err(|error| error.to_string())? == serde_json::to_value(record.judgement).map_err(|error| error.to_string())?
+            && serde_json::to_value(&existing.frames).map_err(|error| error.to_string())? == serde_json::to_value(record.frames).map_err(|error| error.to_string())?
+            && serde_json::to_value(&actual_shots).map_err(|error| error.to_string())? == serde_json::to_value(&expected_shots).map_err(|error| error.to_string())?
+            && serde_json::to_value(actual_recipe).map_err(|error| error.to_string())? == serde_json::to_value(record.recipe).map_err(|error| error.to_string())?;
+        if !consistent { return Ok(false); }
+        let conn = self.conn.lock().unwrap();
+        let actual_points = conn.query_row("SELECT format,data FROM part_points WHERE part_id=?1", [summary.id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))).optional().map_err(db_err)?;
+        Ok(match (actual_points, record.table) {
+            (None, None) => true,
+            (Some((POINTS_FORMAT, data)), Some(table)) => data == encode(table),
+            _ => false,
+        })
+    }
+
+    pub fn update_submission_timing(&self, cycle_id: &str, drain_ms: u64) -> Result<bool, String> {
+        let value = i64::try_from(drain_ms).map_err(|_| "PLC 提交耗时超出存储范围")?;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(db_err)?;
+        let previous = tx.query_row("SELECT drain_ms FROM parts WHERE cycle_id=?1", [cycle_id], |row| row.get::<_, Option<i64>>(0))
+            .optional().map_err(db_err)?;
+        let Some(previous) = previous else { return Ok(false); };
+        if let Some(previous) = previous {
+            if previous != value { return Err("PLC 提交耗时已确认，不能替换原始观测".into()); }
+        } else {
+            tx.execute("UPDATE parts SET drain_ms=?2 WHERE cycle_id=?1", params![cycle_id, value]).map_err(db_err)?;
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(true)
     }
 
     pub fn update_delivery(&self, cycle_id: &str, delivery: &PlcDelivery) -> Result<bool, String> {

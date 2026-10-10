@@ -14,7 +14,7 @@
 | DLL 卡住、预热排队超时 | blocking Gate、许可耗尽、迟到结果、预热排队与执行各自截止（排队含许可及 blocking pool 等待，最多 30 秒；worker 开始后另有完整 30 秒） | 预热 Gate 与测量超时许可回归覆盖：排队超时可冷却重试，执行超时永久拒绝且许可持有到线程返回；不声明注入了真实 DLL 永久卡死 |
 | PLC 写拒绝、断线、ACK 错件 | S7 wire report/release 拒绝、done 后断线、匹配序号和持久 ACK 恢复 | S7 回环覆盖；桌面进程中断后按握手主日志恢复 SQLite ACK 已在步 6 验收 |
 | 录制磁盘错误 | Recorder 真实文件系统错误；Audit 注入 outcome；Pending 录制 SQLite reopen 与事务回滚 | Windows 真实文件占用使旧件保留清理失败时，本件录制仍 Complete、可回放，Audit 告警独立且去重。不声明真实磁盘满、断电或故障盘业务验收 |
-| 单目及三目真实像素 | `production::regression::native_full_resolution_frozen_bundle_single_and_tricam_regression`：每模式至少 100 件、每件四次真实测量、1280×1024、冻结发布包；场景 normal、gap、whole_empty | whole_empty（整帧无胶）现在期望 NG_GAP、0 次测量错误，原为 ERR；改后没有用真实 DLL 重跑。报告记录软件与 DLL 版本、夹具参数、逐帧 JSONL、分位数与进程内存 |
+| 单目及三目真实像素 | `production::regression::native_full_resolution_frozen_bundle_single_and_tricam_regression`：每模式至少 100 件、每件四次真实测量、1280×1024、冻结发布包；场景 normal、gap、whole_empty | whole_empty（整帧无胶）期望 NG_GAP、0 次测量错误，原为 ERR；PR #17 后尚未重跑，C: 现有 DLL 缺少胶路算子；负责人明确本轮不做算法或真实 DLL 回归，留待后续确认。报告记录软件与 DLL 版本、夹具参数、逐帧 JSONL、分位数与进程内存 |
 
 ## 耗时字段
 
@@ -33,5 +33,7 @@ Prepared 基准是串行调用，`productionPartEndToJudgeMs` 为 null。实际 
 - 演示使用开发 Modbus，不代表 S7 生产验收。
 - 性能运行时不得并行执行 Cargo、前端覆盖率或其他高负载任务。
 - 四组 CycleHost 各 100 件是去哈希前的程序；去哈希与集成后的程序没有重跑 400 件，同 profile 重复启动、四组合单件复验与五个演示场景待执行。
-- 审计瞬态失败按 1/2/4/8/16/30 秒退避后每 30 秒持续重试，但待写仍是有界内存（128 待写 / 512 缓存 / 该 cycle 30 分钟无新事件即淘汰），无持久 spool（P0-15）。
+- PR #17 已合入 main，PR #11–#14 已由其覆盖并关闭；PR #15 更新到 main 后业务回归通过、待审查，PR #16 待随后整合。
+- PR #15 用持久 spool 替代仅内存待写：最终记录耐久接受后才允许 DONE；录制终态和入库构成下一件屏障。数据库瞬态失败按 1/2/4/8/16/30 秒退避后每 30 秒持续重试；spool I/O、损坏或身份冲突闭锁。
+- 新增回归范围：启动先重放再中断录制恢复；空目录及运行中 create / rename 健康探针；首次有效 S7 ACK 交付一次，屏障解除后自动释放。本轮 Rust 374 项、S7 会话 46 项、前端 965 项及覆盖率通过，详见 TESTING.md，旧 PR #15 证据只作历史来源。
 - 不声明完成现场 W0 / W7，也不声明真实三目 SDK 交付形式已验证。
