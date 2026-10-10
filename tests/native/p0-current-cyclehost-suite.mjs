@@ -4,7 +4,7 @@ import { lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/pr
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { configureReplay, teachCleanFixture } from './p0-clean-cyclehost-setup.mjs';
+import { configureReplay, teachCleanFixture, isQuiescentCycleSnapshot } from './p0-clean-cyclehost-setup.mjs';
 import { runCycleHostPerformance, sampleProcess, scanReplayInputs } from './p0-cyclehost-performance.mjs';
 import { verifyCycleHostReport } from '../../scripts/p0-cyclehost-report.mjs';
 
@@ -67,13 +67,13 @@ function sourceGuard(expected) {
 async function warmReady() {
   return until(async () => {
     const cycle = await read('cycle_snapshot'), simulator = await read('sim_status'), plc = await read('plc_get_status'), engine = await read('engine_status');
-    return cycle?.phase === 'IDLE' && !cycle.part && !cycle.plcLocked && !simulator.running && plc.state === 'connected' && engine.ready && engine.measuring && { cycle, simulator, plc, engine };
+    return cycle?.phase === 'IDLE' && isQuiescentCycleSnapshot(cycle) && !simulator.running && plc.state === 'connected' && engine.ready && engine.measuring && { cycle, simulator, plc, engine };
   }, 'actual production warm-up and IDLE');
 }
 async function waitDisconnected() {
   return until(async () => {
     const cycle = await read('cycle_snapshot'), simulator = await read('sim_status'), plc = await read('plc_get_status');
-    return plc.state === 'disconnected' && cycle?.phase === 'FAULT' && cycle.fault === 'PLC 未连接' && !cycle.part && !cycle.plcLocked && !simulator.running && { cycle, simulator, plc };
+    return plc.state === 'disconnected' && cycle?.phase === 'FAULT' && cycle.fault === 'PLC 未连接' && isQuiescentCycleSnapshot(cycle) && !simulator.running && { cycle, simulator, plc };
   }, 'explicit disconnected PLC and neutral FAULT');
 }
 async function plcTransition(connected, label) {

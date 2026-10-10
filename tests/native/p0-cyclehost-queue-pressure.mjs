@@ -5,7 +5,7 @@ import { mkdir, readFile, writeFile, lstat, realpath, readdir } from 'node:fs/pr
 import { join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { configureReplay, captureTeachingSample } from './p0-clean-cyclehost-setup.mjs';
+import { configureReplay, captureTeachingSample, isQuiescentCycleSnapshot } from './p0-clean-cyclehost-setup.mjs';
 import { sampleProcess, recordedArtifact } from './p0-cyclehost-performance.mjs';
 
 const identifier = 'com.xyzrobotics.tujiaovision.p0-tests.pressure';
@@ -270,16 +270,17 @@ async function emit(count, sn = null) {
   assert.equal(countersAfter.lastTriggerCounter - countersBefore.lastTriggerCounter, count);
   return { count, sn, before, after, countersBefore, countersAfter, droppedDelta: after.droppedFrames - before.droppedFrames, returned, pressure: gates };
 }
-async function released() {
+async function released(sn) {
+  assert(Number.isSafeInteger(sn) && sn > 0, 'Require the expected acknowledged SN');
   return until(async () => { const state = await wire.snapshot(), cycle = await read('cycle_snapshot'), gates = await pressure();
     const spool = (await readdir(join(profile, 'audit-spool'))).filter(name => name !== '.health');
-    return !state.partStart && !state.partEnd && !state.resultAck && !state.done && !state.busy && !state.armed && cycle.phase === 'IDLE' && !cycle.part && !gates.callbackQueued && !gates.measureQueued && !gates.callbackHold && !gates.measureHold && spool.length === 0 && { wire: state, cycle, pressure: gates, spool };
+    return !state.partStart && !state.partEnd && !state.resultAck && !state.done && !state.busy && !state.armed && cycle.phase === 'IDLE' && isQuiescentCycleSnapshot(cycle) && cycle.result?.sn === sn && !gates.callbackQueued && !gates.measureQueued && !gates.callbackHold && !gates.measureHold && spool.length === 0 && { wire: state, cycle, pressure: gates, spool };
   }, 'ACK released, queues empty, audit durable and Machine IDLE', 20000);
 }
 async function waitDisconnected() {
   return until(async () => {
     const plc = await read('plc_get_status'), cycle = await read('cycle_snapshot');
-    return plc.state === 'disconnected' && cycle.phase === 'FAULT' && cycle.fault === 'PLC 未连接' && !cycle.part && cycle.plcLocked === false && !(await read('sim_status')).running && { plc, cycle };
+    return plc.state === 'disconnected' && cycle.phase === 'FAULT' && cycle.fault === 'PLC 未连接' && isQuiescentCycleSnapshot(cycle) && !(await read('sim_status')).running && { plc, cycle };
   }, 'disconnected PLC, no workpiece and unlocked native PLC 未连接 FAULT');
 }
 async function uiPlcConnection(connected) {
@@ -295,7 +296,7 @@ async function uiPlcConnection(connected) {
   return after;
 }
 async function waitReady() {
-  return until(async () => { const state = await wire.snapshot(), cycle = await read('cycle_snapshot'); return state.visionReady && !state.done && !state.busy && !state.armed && cycle.phase === 'IDLE' && { wire: state, cycle }; }, 'actual external PLC ready and native IDLE');
+  return until(async () => { const state = await wire.snapshot(), cycle = await read('cycle_snapshot'); return state.visionReady && !state.done && !state.busy && !state.armed && cycle.phase === 'IDLE' && isQuiescentCycleSnapshot(cycle) && { wire: state, cycle }; }, 'actual external PLC ready and native IDLE');
 }
 async function ready() {
   for (const address of [10, 11, 12, 13]) await wire.coil(address, false);
@@ -317,7 +318,7 @@ async function finish(recipe, sn, expected, tag) {
   await wire.coil(12, true);
   await until(async () => { const state = await wire.snapshot(); return !state.done && !state.busy && !state.armed && state; }, 'actual ACK clears DONE/busy');
   for (const address of [10, 11, 12]) await wire.coil(address, false);
-  const settled = await released();
+  const settled = await released(sn);
   const detail = await until(async () => {
     const row = (await read('history_query', { query: { sn: String(sn), recipeId: recipe.id, limit: 1 } })).items[0];
     if (!row || row.sn !== sn) return false;
@@ -325,6 +326,7 @@ async function finish(recipe, sn, expected, tag) {
     return value.summary.delivery.state === 'acknowledged' && !['pending'].includes(value.recording.state) && value;
   }, 'settled acknowledged history');
   assert.deepEqual([detail.summary.plcCode, detail.summary.faultCode, detail.summary.sn], [expected[0], expected[1], sn]);
+  assert.equal(settled.cycle.result.cycleId, detail.summary.cycleId, 'Retained final result must match the acknowledged history cycle');
   assert.equal(detail.shots.length, recipe.shots.length);
   for (const [k, shot] of detail.shots.entries()) assert.deepEqual([shot.k, shot.shotId, shot.camera, shot.view], [k, recipe.shots[k].id, recipe.shots[k].camera, recipe.shots[k].view]);
   const artifacts = [];
@@ -351,16 +353,16 @@ async function finish(recipe, sn, expected, tag) {
   }
   await save(tag + '.json', result); return result;
 }
-async function alignReplay(recipe, previous, expectedPadding) {
+async function alignReplay(recipe, sn, previous, expectedPadding) {
   const before = (await pressure()).cameras.find(camera => camera.id === 'cam1');
   assert(before?.counterSource === 'synthetic' && Number.isSafeInteger(before.lastTriggerCounter));
   const nextIndex = before.lastTriggerCounter % recipe.shots.length, padding = (recipe.shots.length - nextIndex) % recipe.shots.length;
   assert.equal(padding, expectedPadding, 'Actual session counter yields an unexpected Replay alignment');
   const alignment = { source: 'Ordinary PGM Replay advances once per actual trigger and starts index0/seq0 on each new session', before, frameCount: recipe.shots.length, nextIndex, padding, callbacks: null };
   if (padding) {
-    alignment.beforeRelease = await released(); alignment.gate = await configure(true, false);
+    alignment.beforeRelease = await released(sn); alignment.gate = await configure(true, false);
     alignment.callbacks = await emit(padding); assert.equal(alignment.callbacks.droppedDelta, 0); assert.equal(alignment.callbacks.pressure.callbackQueued, padding);
-    alignment.releasedGate = await configure(false, false); alignment.settled = await released();
+    alignment.releasedGate = await configure(false, false); alignment.settled = await released(sn);
   }
   const after = (await pressure()).cameras.find(camera => camera.id === 'cam1');
   assert.equal(after.session, before.session); assert.equal(after.lastTriggerCounter - before.lastTriggerCounter, padding);
@@ -485,7 +487,7 @@ try {
     }
     await save(specification.tag + '-observations.json', attempt); report.cases.push(result);
     const failedCameraSession = attempt.callbacks.countersBefore.session;
-    const alignment = await alignReplay(recipe, specification.tag, specification.expected[1] === 96 ? 3 : 0); result.replayAlignment = alignment;
+    const alignment = await alignReplay(recipe, sn, specification.tag, specification.expected[1] === 96 ? 3 : 0); result.replayAlignment = alignment;
     const recovered = await recovery(recipe, sn + 1, specification.tag);
     assert.equal(recovered.cameraSession, failedCameraSession, 'Recovery must retain the actual pressure-case camera session');
     const failedSessions = result.metadata.flatMap(entry => entry.document.frames.map(frame => frame.session)), recoverySessions = recovered.metadata.flatMap(entry => entry.document.frames.map(frame => frame.session));

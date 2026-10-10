@@ -4,13 +4,26 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
+export function isQuiescentCycleSnapshot(cycle) {
+  if (!cycle || !['IDLE', 'FAULT'].includes(cycle.phase) || cycle.plcLocked !== false) return false;
+  const part = cycle.part;
+  if (part == null) return true;
+  const result = cycle.result;
+  return typeof part.cycleId === 'string' && part.cycleId.length > 0
+    && typeof part.recipeId === 'string' && part.recipeId.length > 0
+    && Number.isSafeInteger(part.sn) && part.sn >= 0 && part.sn <= 0xffffffff
+    && result != null && result.cycleId === part.cycleId && result.sn === part.sn && result.recipeId === part.recipeId
+    && part.queue === 0 && Number.isSafeInteger(part.total) && part.total > 0 && part.filled === part.total;
+}
+
 export async function configureReplay(page, { views, directory, recordsRoot, allowUnpublished = false, allowDisconnected = false }) {
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
   const records = await read('records_list'), cycle = await read('cycle_snapshot');
   assert(recordsRoot ? resolve(records.root).toLowerCase() === resolve(recordsRoot).toLowerCase() : records.root.includes('com.xyzrobotics.tujiaovision.p0-tests.performance'));
   assert(/^[cC]:[\\/]/.test(directory));
-  const disconnected = allowDisconnected && cycle.phase === 'FAULT' && cycle.fault === 'PLC 未连接' && !cycle.part && cycle.plcLocked === false && (await read('plc_get_status')).state === 'disconnected';
-  assert((cycle.phase === 'IDLE' || disconnected || allowUnpublished && cycle.phase === 'FAULT' && !cycle.part && cycle.fault?.includes('没有一个配方开得了工')) && !(await read('sim_status')).running);
+  const quiescent = isQuiescentCycleSnapshot(cycle);
+  const disconnected = allowDisconnected && quiescent && cycle.phase === 'FAULT' && cycle.fault === 'PLC 未连接' && (await read('plc_get_status')).state === 'disconnected';
+  assert(quiescent && (cycle.phase === 'IDLE' || disconnected || allowUnpublished && cycle.phase === 'FAULT' && cycle.fault?.includes('没有一个配方开得了工')) && !(await read('sim_status')).running);
   await page.getByRole('navigation', { name: '操作导航' }).getByRole('link', { name: '设备与采集', exact: true }).click();
   await page.getByRole('button', { name: '回放目录', exact: true }).click();
   await page.getByRole('combobox', { name: '设备视角', exact: true }).selectOption(String(views));
@@ -45,7 +58,7 @@ export async function captureTeachingSample(page, { readWorkspace, k, views, pre
         const cycle = await read('cycle_snapshot'), sim = await read('sim_status');
         const now = Date.now(); firstLockAt ??= now;
         retryEvidence.push({ k, attempt: clicks, error: lockError, at: new Date(now).toISOString(), elapsedAfterFirstLockMs: now - firstLockAt, previousId: prior ?? null, cycle, sim });
-        assert(!cycle.part && cycle.plcLocked === false && ['IDLE', 'FAULT'].includes(cycle.phase) && !sim.running, 'Teaching retry requires no workpiece, unlocked PLC and stopped simulator');
+        assert(isQuiescentCycleSnapshot(cycle) && !sim.running, 'Teaching retry requires a quiescent closed workpiece, unlocked PLC and stopped simulator');
         assert(clicks < 10 && now - firstLockAt < 5000, 'Teaching PLC-lock retries exhausted (10 attempts / 5 seconds)');
         await page.waitForTimeout(Math.min(100, Math.max(0, deadline - Date.now())));
         assert(Date.now() - firstLockAt < 5000, 'Teaching PLC-lock retry window expired');
