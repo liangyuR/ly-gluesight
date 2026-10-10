@@ -27,10 +27,22 @@ pub(crate) fn unique_run_id(label: &str) -> String {
     format!("{label}-{}-{}", std::process::id(), NEXT_RUN.fetch_add(1, Ordering::Relaxed))
 }
 
+/// 文件大小与修改时间（毫秒）。
+pub(crate) fn file_identity(path: &Path) -> Result<(u64, u64), String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("读取核心库文件信息失败：{e}"))?;
+    let modified = meta.modified().map_err(|e| format!("读取核心库修改时间失败：{e}"))?;
+    let ms = modified.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis().min(u64::MAX as u128) as u64);
+    Ok((meta.len(), ms))
+}
+
 pub struct Engine {
     core: Arc<Core>,
     pub path: PathBuf,
     pub version: String,
+    /// 加载时核心库文件的大小与修改时间：同版本号重新编译的 DLL 也能分辨（不算文件摘要）
+    pub bytes: u64,
+    pub modified_ms: u64,
+    /// `版本:文件大小:修改时间`，写进发布包，生产加载时核对
     pub identity: String,
 }
 
@@ -41,8 +53,9 @@ impl Engine {
         check_operators(&serde_json::from_str(&core.manifest_json().map_err(|e| e.to_string())?)
             .map_err(|e| format!("核心库算子清单无效：{e}"))?)?;
         let version = core.version();
-        let identity = format!("{version}:{}", path.display());
-        Ok(Self { core: Arc::new(core), path: path.to_path_buf(), version, identity })
+        let (bytes, modified_ms) = file_identity(path)?;
+        let identity = format!("{version}:{bytes}:{modified_ms}");
+        Ok(Self { core: Arc::new(core), path: path.to_path_buf(), version, bytes, modified_ms, identity })
     }
 
     /// 跑一次图，返回 run summary 与图级命名输出（都已解析成 JSON）。

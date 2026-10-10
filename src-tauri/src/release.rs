@@ -797,10 +797,11 @@ mod tests {
         let directory = Directory::new();
         let mut source = input();
         let recipe = source.recipe.build().unwrap();
-        source.versions = Versions { engine: engine.version.clone(), graph: crate::production::GRAPH_VERSION.into() };
+        source.versions = Versions { engine: engine.identity.clone(), graph: crate::production::GRAPH_VERSION.into() };
         source.graph = ResourceSource::Bytes(serde_json::to_vec(&crate::production::graphs(&recipe).unwrap()).unwrap());
         let bundle = publish(&directory.releases(), source).unwrap();
         let prepared = crate::production::Prepared::load(bundle.clone(), engine, &recipe).unwrap();
+        assert!(prepared.engine_note.is_none());
         prepared.verify().unwrap();
         let mut value = serde_json::to_value(&bundle.manifest).unwrap();
         value.as_object_mut().unwrap().remove("bundleId");

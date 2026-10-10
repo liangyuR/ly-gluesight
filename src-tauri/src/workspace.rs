@@ -24,7 +24,8 @@ fn state_value(value: &impl Serialize) -> Value {
 }
 
 fn engine_state(engine: &vision::Engine) -> Value {
-    json!({"path": engine.path, "version": engine.version})
+    // 换了同版本号的另一份 DLL（大小或修改时间变了）也要重新试测
+    json!({"path": engine.path, "version": engine.version, "bytes": engine.bytes, "modifiedMs": engine.modified_ms})
 }
 
 fn calibration_state(path: &Path) -> Result<Value, String> {
@@ -1544,7 +1545,7 @@ fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeDoc, teachin
             calibration: Some(crate::release::ResourceSource::Bytes(serde_json::to_vec(&calibration).map_err(|e| e.to_string())?)) })
     }).collect::<Result<Vec<_>, String>>()?;
     crate::release::publish(&releases_root(app)?, crate::release::PublishInput { recipe: doc.clone(),
-        versions: crate::release::Versions { engine: engine.version.clone(), graph: crate::production::GRAPH_VERSION.into() },
+        versions: crate::release::Versions { engine: engine.identity.clone(), graph: crate::production::GRAPH_VERSION.into() },
         graph: crate::release::ResourceSource::Bytes(serde_json::to_vec(&crate::production::graphs(&recipe)?).map_err(|e| e.to_string())?), shots })
 }
 

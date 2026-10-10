@@ -78,7 +78,7 @@ mod tests {
         let original = doc.build().unwrap();
         let external = root.0.join("station.json");
         std::fs::write(&external, r#"{"mmPerPx":0.25}"#).unwrap();
-        let input = PublishInput { recipe: doc, versions: Versions { engine: engine.version.clone(), graph: crate::production::GRAPH_VERSION.into() },
+        let input = PublishInput { recipe: doc, versions: Versions { engine: engine.identity.clone(), graph: crate::production::GRAPH_VERSION.into() },
             graph: ResourceSource::Bytes(serde_json::to_vec(&crate::production::graphs(&original).unwrap()).unwrap()),
             shots: (0..4).map(|k| ShotInput { k, image: Some(ResourceSource::Bytes(pgm(&image()))),
                 calibration: Some(ResourceSource::File(external.clone())) }).collect() };
