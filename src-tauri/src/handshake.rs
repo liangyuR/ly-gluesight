@@ -175,8 +175,9 @@ impl Contract {
         let field = FIELDS.iter().find(|f| f.tag == tag).ok_or_else(|| format!("未知握手标签：{tag}"))?;
         let valid = match (field.data_type, value) {
             (DataType::Bool, PlcValue::Bool(_)) => true,
-            (DataType::U16, PlcValue::Int(n)) => u16::try_from(*n).is_ok(),
-            (DataType::U32, PlcValue::Int(n)) => u32::try_from(*n).is_ok(),
+            (DataType::U16, PlcValue::Int(n)) if u16::try_from(*n).is_err() => return Err(out_of_range(tag, *n, "UInt")),
+            (DataType::U32, PlcValue::Int(n)) if u32::try_from(*n).is_err() => return Err(out_of_range(tag, *n, "UDInt")),
+            (DataType::U16 | DataType::U32, PlcValue::Int(_)) => true,
             _ => false,
         };
         if !valid {
@@ -207,6 +208,10 @@ impl Contract {
         }
         Ok(())
     }
+}
+
+fn out_of_range(tag: &str, value: impl std::fmt::Display, kind: &str) -> String {
+    format!("PLC 字段 {tag}={value} 超出 {kind} 范围，按协议不能截断使用；核对 PLC 程序与点表类型")
 }
 
 #[derive(Clone, Debug)]
@@ -268,28 +273,34 @@ impl Snapshot {
 
     pub(crate) fn read_u32(&self, tag: &str) -> Result<u32, String> {
         match self.values.get(tag) {
-            Some(PlcValue::Int(v)) => u32::try_from(*v).map_err(|_| format!("{tag} 超出 U32 范围")),
+            Some(PlcValue::Int(v)) => u32::try_from(*v).map_err(|_| out_of_range(tag, v, "UDInt")),
             _ => Err(format!("{tag} 不是有效无符号整数")),
         }
+    }
+
+    /// UInt 字段：超出 0–65535 报错，不截断。
+    pub(crate) fn read_u16(&self, tag: &str) -> Result<u16, String> {
+        let value = self.read_u32(tag)?;
+        u16::try_from(value).map_err(|_| out_of_range(tag, value, "UInt"))
     }
 
     pub(crate) fn request(&self) -> Result<Request, String> {
         if self.read_u32("planReserved")? != 0 { return Err("PLC 计划保留位必须为零".into()); }
         let request = Request {
-            protocol_version: self.read_u32("protocolVersion")? as u16,
+            protocol_version: self.read_u16("protocolVersion")?,
             request_seq: self.read_u32("requestSeq")?,
             sn: self.read_u32("partSn")?,
-            product_code: self.read_u32("productCode")? as u16,
-            shot_count: self.read_u32("shotCount")? as u16,
+            product_code: self.read_u16("productCode")?,
+            shot_count: self.read_u16("shotCount")?,
             plan_version: self.read_u32("planVersion")?,
-            camera_shots: [self.read_u32("camera1Shots")? as u16, self.read_u32("camera2Shots")? as u16, self.read_u32("camera3Shots")? as u16],
+            camera_shots: [self.read_u16("camera1Shots")?, self.read_u16("camera2Shots")?, self.read_u16("camera3Shots")?],
         };
         request.validate()?;
         Ok(request)
     }
 
     pub(crate) fn trigger_counts(&self) -> Result<[u16; 3], String> {
-        Ok([self.read_u32("camera1Triggers")? as u16, self.read_u32("camera2Triggers")? as u16, self.read_u32("camera3Triggers")? as u16])
+        Ok([self.read_u16("camera1Triggers")?, self.read_u16("camera2Triggers")?, self.read_u16("camera3Triggers")?])
     }
 
     fn start_request(&self) -> Result<Request, String> {
@@ -763,6 +774,40 @@ mod tests {
             }
             assert!(Snapshot::from_values(&contract, &status, &values, 1010, 500).is_err());
         }
+    }
+
+    #[test]
+    fn out_of_range_uint_fields_are_named_instead_of_truncated() {
+        let (contract, status, mut values) = data();
+        values.get_mut("productCode").unwrap().value = Some(PlcValue::Int(70000));
+        let error = Snapshot::from_values(&contract, &status, &values, 1010, 500).unwrap_err();
+        assert!(error.contains("productCode=70000") && error.contains("UInt"), "{error}");
+        values.get_mut("productCode").unwrap().value = Some(PlcValue::Int(3));
+        values.get_mut("requestSeq").unwrap().value = Some(PlcValue::Int(1 << 32));
+        let error = Snapshot::from_values(&contract, &status, &values, 1010, 500).unwrap_err();
+        assert!(error.contains("requestSeq=4294967296") && error.contains("UDInt"), "{error}");
+
+        // 快照之外拿到的值（如测试或后续改动绕过类型校验）也不能被 as u16 截断成 4464 之类
+        for tag in ["protocolVersion", "productCode", "shotCount", "camera1Shots", "camera2Shots", "camera3Shots"] {
+            let mut s = snapshot();
+            s.values.insert(tag, PlcValue::Int(70000));
+            let error = s.request().unwrap_err();
+            assert!(error.contains(&format!("PLC 字段 {tag}=70000 超出 UInt 范围")), "{tag}: {error}");
+        }
+        for tag in ["camera1Triggers", "camera2Triggers", "camera3Triggers"] {
+            let mut s = snapshot();
+            let request = s.request().unwrap();
+            s.values.insert(tag, PlcValue::Int(65536 + 2));
+            let error = s.trigger_counts().unwrap_err();
+            assert!(error.contains(&format!("PLC 字段 {tag}=65538 超出 UInt 范围")), "{tag}: {error}");
+            assert_eq!(s.start_request().unwrap_err(), error);
+            s.values.insert("partEnd", PlcValue::Bool(true));
+            assert_eq!(verify_part_end(&s, &request).unwrap_err(), error);
+        }
+        let mut s = snapshot();
+        s.values.insert("shotCount", PlcValue::Int(65535));
+        s.values.insert("camera1Shots", PlcValue::Int(65533));
+        assert_eq!(s.request().unwrap().shot_count, 65535);
     }
 
     #[test]
