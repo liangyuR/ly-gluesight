@@ -2,6 +2,12 @@
 
 > 当前版本已按 AGENTS.md 移除业务内容哈希匹配。本文既有摘要、字节篡改门禁和旧版本验收仅为历史记录；新实现以明确 ID/版本、实际结构、路径/尺寸与设备计数为准。旧性能数据不能代表本次去哈希版本。
 
+2026-10-10 PR #14 第二轮审查修复：默认 Rust 326 项通过、0 失败、30 项忽略（3.74 秒）；Node 工具回归 57 项、Demo 启动守卫 3 项通过，后者没有启动或停止真实进程。真实 DLL 六项通过（1.70 秒），实际源码提交 `3632f0fe2ad10cf58873fff7d724905541d95e42`；本轮未重跑 S7、前端覆盖率、原生桌面或长时性能。首次 Rust 323 项通过、3 项失败的原日志保留：两项 SQLite 测试使用了非法空 judgement，另一项错误文案未保留既有测试要求的“身份”字样；修正夹具及文案后全量通过，既有断言和生产拒绝规则未放宽。详见[第二轮审查证据](evidence/p0-no-hash-review2-c.json)。
+
+本轮六项修复覆盖：旧配方仅按真实精确 ID/版本关联、历史原图完整身份、录制原图实际解码与尺寸、新发布包显式 bundleId、Demo 拒绝复用仍存活的旧进程、按当前 C 盘 APPDATA 核对独立性能 profile 的 recordsRoot。历史原图必须有 part.json，逐字段核对 cycleId、k、shotId、camera、selectedView、session、ordinal、frameCounter、triggerCounter 及 view/file/尺寸；缺失或不符的条目保留，但不可复测。录制收尾拒绝同长度损坏或尺寸变化的原图，其余视角仍保留为部分证据，原判定不变。
+
+旧 schema 的 NULL digest 记录若已经由早期迁移填入修订号，无法仅凭旧列分辨合成关联与当时新写入的记录。本次纠正保守解除没有真实精确快照或来源证明的复测关联，包含这个无法区分的过渡窗口；原 JSON、记录、原图引用和 ACK 均保留，也不回退当前配方。后续 Store.insert 在同一事务内写 explicit_recipe_records 来源表与快照、主记录、拍照点；写入失败全部回滚，历史清理级联删除来源行。此边界不声明 PR #15 持久审计已合入或运行，也不改变 P0-09 默认带噪良品预期严格 OK 的未解决状态。
+
 本次去哈希回归：Rust 317 项、S7 真实回环 24 项、真实 DLL 五项、前端 964 项全部通过，类型与生产构建通过。旧 v2 SQLite 保留原列和原记录；按实际 ID/版本迁移，缺失或歧义快照保留历史但禁止复测，旧发布目录通过独立 ID 映射读取。删除/改名/重启版本递增、历史版本下限、原图录制尺寸及 Windows 跨件 junction 拒绝均有实际回归。原生桌面使用提交 `72a7a5e` 的全新隔离 profile 完成三视角采图、示教、验证和发布；normal / gap 各一件得到严格 `OK` / `NG_GAP`，布防 20 / 23 ms，每件十二张原图完整。两件原包及候选共四次历史比较、二十四视图显示、同 profile 第二实例拒绝及重启后原记录/二十四原图恢复均通过，详见 [新桌面证据](evidence/p0-no-hash-native-c.json)。旧 400 件结果不套用到新版。详见 [后端证据](evidence/p0-no-hash-backend-c.json) 与 [前端及工具证据](evidence/p0-no-hash-frontend-c.json)。
 
 独立 Robot / PLC 模拟服务的配置、启动和升级回归见 [模拟服务说明](../../scripts/robot-plc-demo/README.md)。`pnpm sim:test` 运行隔离的协议测试；`pnpm sim:verify` 对运行中的专用桌面实例执行五工况联调。
