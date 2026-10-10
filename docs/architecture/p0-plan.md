@@ -4,7 +4,7 @@
 
 2026-10-10 去哈希补充已完成代码及独立桌面回归：Rust 317 项、前端 964 项、S7 回环 24 项、真实 DLL 五项通过；全新三视角 profile 的示教/发布、normal/gap 各一件、历史复测、进程锁和重启通过。[PR #14](https://github.com/liangyuR/ly-gluesight/pull/14) 交由审查，不自动合并；[当前验收记录](../testing/evidence/p0-no-hash-native-c.json) 与下文旧版本证据分别保留。现场硬件、准确率及新版长时性能验收仍待执行。
 
-2026-10-10 P0-15 已补齐最终记录/事件的有界持久待入库日志：DONE前耐久接受、审计未就绪拒绝布防、启动回放先于中断录制与PLC ACK恢复、原图和历史清理保护。当前源码 `8ffc091` 的 Rust335项、S7回环24项、真实DLL5项及实际原生S7+SQLite锁定→终止→重启恢复通过，见[审计恢复证据](../testing/evidence/p0-audit-durability-c.json)。本专项为Synthetic生产安全拒绝90/98，不代表图像准确率、400件长时性能或五个Robot工况通过；这些仍继续推进。
+2026-10-10 P0-15 已补齐最终记录/事件的有界持久待入库日志：DONE前耐久接受、审计未就绪拒绝布防、启动回放先于中断录制与PLC ACK恢复、原图和历史清理保护。[PR #15](https://github.com/liangyuR/ly-gluesight/pull/15) 已提交并推送，交由审查且不自动合并。当前源码 `8ffc091` 的 Rust335项、S7回环24项、真实DLL5项及实际原生S7+SQLite锁定→终止→重启恢复通过，见[审计恢复证据](../testing/evidence/p0-audit-durability-c.json)。本专项为Synthetic生产安全拒绝90/98，不代表图像准确率、400件长时性能或五个Robot工况通过；这些仍继续推进。
 
 > 范围与缺口依据 [软件架构图](gluesight-software-architecture.html) 的「可行性与缺口」「实施路线与验收」；S7 契约见 [plc-s7-phase1.md](../integration/plc-s7-phase1.md)。本文只排 P0 缺口的软件实施顺序与每步验收，现场门槛（W0 / W7）由负责人推进。
 >
