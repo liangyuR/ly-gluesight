@@ -925,38 +925,11 @@ mod tests {
         assert_eq!(second.revision_id, format!("{}-v{}", second.id, second.version));
         store.reload();
         assert_eq!(store.get(&second.id).unwrap().revision_id, second.revision_id);
-        let mut legacy = serde_json::to_value(&*second).unwrap();
-        legacy.as_object_mut().unwrap().remove("revisionId");
-        legacy["hash"] = serde_json::json!("old-content-value");
-        legacy["revisionId"] = serde_json::json!("untrusted-external-revision");
-        let restored: Recipe = serde_json::from_value(legacy).unwrap();
+        let mut forged = serde_json::to_value(&*second).unwrap();
+        forged["revisionId"] = serde_json::json!("untrusted-external-revision");
+        let restored: Recipe = serde_json::from_value(forged).unwrap();
         assert_eq!(restored.revision_id, second.revision_id);
         let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn legacy_missing_or_zero_version_reloads_as_one_and_next_save_is_two() {
-        for missing in [false, true] {
-            let dir = std::env::temp_dir().join(format!("gluesight-legacy-version-{}-{}-{missing}", std::process::id(), ly_plc::now_ms()));
-            let store = RecipeStore::open(dir.clone()).unwrap();
-            let mut doc = three_cameras();
-            doc.id = "LEGACY-VERSION".into();
-            doc.product_code = 60001;
-            doc.version = 0;
-            let mut value = serde_json::to_value(&doc).unwrap();
-            if missing { value.as_object_mut().unwrap().remove("version"); }
-            std::fs::write(store.file(&doc.id), serde_json::to_vec(&value).unwrap()).unwrap();
-            store.reload();
-            assert!(store.errors().is_empty(), "{:?}", store.errors());
-            assert_eq!(store.get(&doc.id).unwrap().revision_id, "LEGACY-VERSION-v1");
-            let loaded = store.doc(&doc.id).unwrap();
-            assert_eq!(loaded.version, 1);
-            assert_eq!(store.save(loaded, Some(&doc.id)).unwrap().revision_id, "LEGACY-VERSION-v2");
-            store.reload();
-            assert_eq!(store.doc(&doc.id).unwrap().version, 2);
-            assert_eq!(store.get(&doc.id).unwrap().version, 2);
-            let _ = std::fs::remove_dir_all(dir);
-        }
     }
 
     #[test]

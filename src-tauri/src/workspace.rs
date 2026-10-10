@@ -196,10 +196,9 @@ pub struct Validation {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Release {
     pub doc: RecipeDoc,
-    #[serde(alias = "bundleHash")]
     pub bundle_id: String,
     pub base_revision: Option<String>,
     pub revision: u64,
@@ -209,7 +208,7 @@ pub struct Release {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Workspace {
     pub doc: RecipeDoc,
     pub base_revision: Option<String>,
@@ -217,7 +216,6 @@ pub struct Workspace {
     pub frames: Vec<Teaching>,
     pub overview: Overview,
     pub samples: Vec<Sample>,
-    #[serde(default)]
     pub sample_bank: Vec<BankSample>,
     pub validation: Option<Validation>,
     pub pending: Option<Box<Release>>,
@@ -341,7 +339,7 @@ impl WorkspaceHost {
             let file = entry.path().join("workspace.json");
             if !file.is_file() { continue; }
             let loaded = crate::fsio::read_text(&file).map_err(|e| e.to_string())
-                .and_then(|text| decode_workspace(&text))
+                .and_then(|text| serde_json::from_str::<Workspace>(&text).map_err(|e| e.to_string()))
                 .and_then(|w| {
                     safe_id(&w.doc.id)?;
                     if w.doc.id != entry.file_name().to_string_lossy() { return Err("候选编号与目录不一致".into()); }
@@ -466,7 +464,7 @@ fn ensure_workspace_can_be_created(path: &Path) -> Result<(), String> {
     match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!("无法确认旧候选是否存在，拒绝覆盖：{error}")),
-        Ok(_) => Err("磁盘已有未加载的候选，旧基线无法证明或格式无效；文件已保留。请先备份旧候选目录，再从当前生产版本重新建立候选、重新示教并验证，不能覆盖旧数据".into()),
+        Ok(_) => Err("磁盘已有未加载的候选（旧格式不兼容或文件损坏），文件已保留。请先移走该候选目录，再从当前生产版本重新建立候选".into()),
     }
 }
 
@@ -1388,116 +1386,31 @@ pub fn releases_root(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("vision").join("releases"))
 }
 
-fn migrate_base(value: &mut Value) -> Result<(), String> {
-    if value.get("baseHash").is_some_and(|v| !v.is_null()) {
-        let explicit = value.get("baseRevision").and_then(Value::as_str).zip(value["doc"]["id"].as_str())
-            .is_some_and(|(revision, id)| revision.strip_prefix(&format!("{id}-v"))
-                .and_then(|version| version.parse::<u32>().ok()).is_some_and(|version| version > 0));
-        if !explicit {
-            return Err("旧候选或发布归档仅有旧基线引用，无法证明明确的生产来源；文件已保留，请先备份旧数据，再基于当前生产版本重建候选、重新示教并验证".into());
-        }
-    }
-    if let Some(object) = value.as_object_mut() { object.remove("baseHash"); }
-    Ok(())
-}
-
-fn decode_workspace(text: &str) -> Result<Workspace, String> {
-    let mut value: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
-    migrate_base(&mut value)?;
-    if let Some(pending) = value.get_mut("pending").filter(|v| !v.is_null()) { migrate_base(pending)?; }
-    serde_json::from_value(value).map_err(|e| e.to_string())
-}
-
-fn decode_release(text: &str) -> Result<Release, String> {
-    let mut value: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
-    migrate_base(&mut value)?;
-    serde_json::from_value(value).map_err(|e| e.to_string())
-}
-
 fn read_release(path: &Path) -> Result<Release, String> {
     let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     #[cfg(windows)]
     { use std::os::windows::fs::MetadataExt;
       if metadata.file_attributes() & 0x400 != 0 { return Err("发布归档不能是 reparse point".into()); } }
     if !metadata.is_file() || metadata.file_type().is_symlink() { return Err("发布归档不是普通文件".into()); }
-    decode_release(&crate::fsio::read_text(path).map_err(|e| e.to_string())?)
+    serde_json::from_str(&crate::fsio::read_text(path).map_err(|e| e.to_string())?).map_err(|e| format!("发布归档格式不兼容：{e}"))
 }
 
 fn archived_release(dir: &Path, id: &str, version: u32) -> Result<Release, String> {
     safe_id(id)?;
     comparisons::checked_directory(dir, false)?;
-    let current = dir.join(format!("{id}-v{version}.json"));
-    match std::fs::symlink_metadata(&current) {
-        Ok(_) => {
-            let release = read_release(&current)?;
-            if release.doc.id != id || release.doc.version != version { return Err("发布归档的配方或版本不一致".into()); }
-            return Ok(release);
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+    let path = dir.join(format!("{id}-v{version}.json"));
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err("所选生产版本没有不可变发布包，请在工作台验证并发布".into()),
         Err(e) => return Err(e.to_string()),
     }
-    let mut selected: Option<Release> = None;
-    for entry in std::fs::read_dir(dir).map_err(|_| "所选生产版本没有不可变发布包，请在工作台验证并发布".to_string())? {
-        let path = entry.map_err(|e| e.to_string())?.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") { continue; }
-        let release = read_release(&path)?;
-        if release.doc.id == id && release.doc.version == version {
-            if selected.as_ref().is_some_and(|old| state_value(old) != state_value(&release)) {
-                return Err("同一配方版本存在多个不同发布归档，请核查后重新发布".into());
-            }
-            selected = Some(release);
-        }
-    }
-    selected.ok_or_else(|| "所选生产版本没有不可变发布包，请在工作台验证并发布".into())
+    let release = read_release(&path)?;
+    if release.doc.id != id || release.doc.version != version { return Err("发布归档的配方或版本不一致".into()); }
+    Ok(release)
 }
 
-fn bundle_manifest_is_legacy(root: &Path, recipe_id: &str, directory: &str, expected_id: &str) -> Result<bool, String> {
-    safe_id(recipe_id)?;
-    if directory.is_empty() || directory.len() > 96 || !directory.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')) {
-        return Err("发布包目录引用无效".into());
-    }
-    let directory_path = root.join(recipe_id).join(directory);
-    comparisons::checked_directory(&directory_path, false)?;
-    let path = directory_path.join("manifest.json");
-    let metadata = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-    #[cfg(windows)]
-    { use std::os::windows::fs::MetadataExt;
-      if metadata.file_attributes() & 0x400 != 0 { return Err("发布清单不能是 reparse point".into()); } }
-    if !metadata.is_file() || metadata.file_type().is_symlink() { return Err("发布清单不是普通文件".into()); }
-    let manifest: Value = serde_json::from_str(&crate::fsio::read_text(&path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    if let Some(id) = manifest.get("bundleId") {
-        if id.as_str() != Some(expected_id) { return Err("发布清单与包的显式 ID 不一致".into()); }
-        return Ok(false);
-    }
-    let legacy_directory = directory.len() == 16 && directory.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-    let legacy_fields = manifest.get("recipeRevision").is_none()
-        && manifest.get("recipeHash").is_some_and(Value::is_string)
-        && manifest.get("files").and_then(Value::as_array).is_some_and(|files| !files.is_empty()
-            && files.iter().all(|entry| entry.get("hash").is_some_and(Value::is_string)));
-    if !legacy_directory || !legacy_fields { return Err("新发布包缺少明确 bundleId，拒绝按旧包猜测身份".into()); }
-    Ok(true)
-}
-
-fn load_bundle_from(root: &Path, store: &Store, recipe_id: &str, reference: &str) -> Result<crate::release::ReleaseBundle, String> {
-    let (id, legacy) = store.resolve_bundle(recipe_id, reference)?;
-    if legacy.is_none() && reference.starts_with("legacy-bundle-") {
-        return Err("旧发布包的显式 ID 缺少目录映射，拒绝猜测位置".into());
-    }
-    let directory = legacy.as_deref().unwrap_or(reference);
-    let legacy_format = bundle_manifest_is_legacy(root, recipe_id, directory, &id)?;
-    if legacy_format {
-        let id = if legacy.is_none() { store.register_legacy_bundle(recipe_id, directory)? } else { id };
-        crate::release::load_legacy(root, recipe_id, &id, directory)
-    } else if legacy.is_some() {
-        crate::release::load_legacy(root, recipe_id, &id, directory)
-    } else {
-        crate::release::load(root, recipe_id, &id)
-    }
-}
-
-fn load_bundle(app: &AppHandle, recipe_id: &str, reference: &str) -> Result<crate::release::ReleaseBundle, String> {
-    let root = releases_root(app)?;
-    load_bundle_from(&root, &app.state::<Store>(), recipe_id, reference)
+fn load_bundle(app: &AppHandle, recipe_id: &str, bundle_id: &str) -> Result<crate::release::ReleaseBundle, String> {
+    crate::release::load(&releases_root(app)?, recipe_id, bundle_id)
 }
 
 pub fn published_bundle(app: &AppHandle, recipe: &Recipe) -> Result<crate::release::ReleaseBundle, String> {
@@ -2465,98 +2378,38 @@ mod tests {
     }
 
     #[test]
-    fn legacy_archive_is_selected_by_actual_recipe_and_version_without_renaming_assets() {
+    fn old_format_candidate_pending_and_archive_are_rejected_without_migration() {
         let root = ImportTestDir::new();
-        let mut doc = crate::recipe::samples().remove(0); doc.version = 3;
-        let mut value = state_value(&archive_fixture(doc.clone()));
-        let object = value.as_object_mut().unwrap();
-        let bundle = object.remove("bundleId").unwrap(); object.insert("bundleHash".into(), bundle);
-        object.remove("baseRevision"); object.insert("baseHash".into(), Value::Null);
-        let path = root.0.join("previous-archive-name.json");
-        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-        let selected = archived_release(&root.0, &doc.id, 3).unwrap();
-        assert_eq!(selected.bundle_id, "prior-directory");
-        assert_eq!(selected.base_revision, None);
-        assert_eq!(selected.doc, doc); assert!(path.is_file());
-        let mut different = archive_fixture(doc.clone()); different.doc.name = "different actual recipe".into();
-        std::fs::write(root.0.join("another-archive.json"), serde_json::to_vec(&different).unwrap()).unwrap();
-        assert!(archived_release(&root.0, &doc.id, 3).unwrap_err().contains("多个"));
-    }
-
-    #[test]
-    fn legacy_trial_labels_are_invalidated_while_the_frozen_image_is_retained() {
-        let mut workspace = tricam_workspace(); workspace.doc.version = 3;
-        let mut value = state_value(&workspace);
-        value.as_object_mut().unwrap().remove("baseRevision");
-        value["baseHash"] = Value::Null;
-        let mut restored = decode_workspace(&serde_json::to_string(&value).unwrap()).unwrap();
-        assert_eq!(restored.base_revision, None);
-        let image = state_value(&restored.frames[0].image);
-        let tags = vec![Some((json!({"camera":"cam1"}), json!({"mmPerPx":0.25}))); restored.frames.len()];
-        assert!(refresh_teaching(&mut restored, &tags, Some(&json!({"path":"core.dll","version":"1"}))));
-        assert!(restored.frames.iter().all(|frame| frame.trial.is_none() && !frame.saved));
-        assert_eq!(state_value(&restored.frames[0].image), image);
-    }
-
-    #[test]
-    fn unproven_legacy_candidate_pending_and_archive_are_rejected_and_preserved() {
-        let root = ImportTestDir::new();
-        let mut workspace = tricam_workspace(); workspace.doc.version = 3;
-        let mut legacy = state_value(&workspace);
-        legacy.as_object_mut().unwrap().remove("baseRevision");
-        legacy["baseHash"] = json!("unproven-previous-reference");
-        for null_revision in [false, true] {
-            let mut value = legacy.clone();
-            if null_revision { value["baseRevision"] = Value::Null; }
-            assert!(decode_workspace(&value.to_string()).unwrap_err().contains("无法证明"));
-        }
-        let path = root.0.join("workspace.json");
-        let original = legacy.to_string(); std::fs::write(&path, &original).unwrap();
-        assert!(ensure_workspace_can_be_created(&path).unwrap_err().contains("备份"));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
-        assert!(ensure_workspace_can_be_created(&root.0.join("fresh.json")).is_ok());
-        let mut release = state_value(&archive_fixture(workspace.doc.clone()));
-        release.as_object_mut().unwrap().remove("baseRevision"); release["baseHash"] = json!("unproven-previous-reference");
-        let archive = root.0.join("legacy-release.json"); let archive_text = release.to_string();
-        std::fs::write(&archive, &archive_text).unwrap();
-        assert!(read_release(&archive).unwrap_err().contains("无法证明"));
-        assert_eq!(std::fs::read_to_string(&archive).unwrap(), archive_text);
-        let mut current = state_value(&workspace); current["pending"] = release;
-        assert!(decode_workspace(&current.to_string()).unwrap_err().contains("无法证明"));
-        legacy["baseRevision"] = json!(format!("{}-v2", workspace.doc.id));
-        assert_eq!(decode_workspace(&legacy.to_string()).unwrap().base_revision, Some(format!("{}-v2", workspace.doc.id)));
-    }
-
-    #[test]
-    fn legacy_base_requires_an_explicit_recipe_revision_for_all_document_kinds() {
         let workspace = tricam_workspace();
-        for reference in [json!("old-reference"), json!(""), json!(9), json!(false), json!([]), json!({"old": "reference"})] {
-            for base in [Value::Null, json!(""), json!("other-v2"), json!(format!("{}-v0", workspace.doc.id))] {
-                let mut candidate = state_value(&workspace);
-                candidate["baseRevision"] = base.clone(); candidate["baseHash"] = reference.clone();
-                assert!(decode_workspace(&candidate.to_string()).unwrap_err().contains("无法证明"));
-                let mut release = state_value(&archive_fixture(workspace.doc.clone()));
-                release["baseRevision"] = base; release["baseHash"] = reference.clone();
-                assert!(decode_release(&release.to_string()).unwrap_err().contains("无法证明"));
-                let mut pending = state_value(&workspace); pending["pending"] = release;
-                assert!(decode_workspace(&pending.to_string()).unwrap_err().contains("无法证明"));
-            }
-            let mut candidate = state_value(&workspace);
-            candidate["baseRevision"] = json!(format!("{}-v2", workspace.doc.id)); candidate["baseHash"] = reference.clone();
-            assert!(decode_workspace(&candidate.to_string()).is_ok());
-        }
-        for legacy_null in [false, true] {
-            let mut candidate = state_value(&workspace); candidate["baseRevision"] = Value::Null;
-            if legacy_null { candidate["baseHash"] = Value::Null; }
-            assert_eq!(decode_workspace(&candidate.to_string()).unwrap().base_revision, None);
-        }
-        let root = ImportTestDir::new();
+        let decode = |value: &Value| serde_json::from_str::<Workspace>(&value.to_string());
+        let mut candidate = state_value(&workspace);
+        candidate.as_object_mut().unwrap().remove("baseRevision");
+        candidate["baseHash"] = Value::Null;
+        assert!(decode(&candidate).unwrap_err().to_string().contains("baseHash"));
+        let mut candidate = state_value(&workspace);
+        candidate.as_object_mut().unwrap().remove("sampleBank");
+        assert!(decode(&candidate).unwrap_err().to_string().contains("sampleBank"));
+        let mut release = state_value(&archive_fixture(workspace.doc.clone()));
+        let bundle = release.as_object_mut().unwrap().remove("bundleId").unwrap();
+        release["bundleHash"] = bundle;
+        let mut pending = state_value(&workspace);
+        pending["pending"] = release.clone();
+        assert!(decode(&pending).unwrap_err().to_string().contains("bundleHash"));
         let mut current = archive_fixture(workspace.doc.clone()); current.doc.version = 3;
-        std::fs::write(root.0.join(format!("{}-v3.json", current.doc.id)), serde_json::to_vec(&current).unwrap()).unwrap();
-        let mut legacy = state_value(&archive_fixture(workspace.doc.clone())); legacy["baseHash"] = json!("unproven");
-        legacy["baseRevision"] = Value::Null;
-        std::fs::write(root.0.join("unrelated-old-v1.json"), legacy.to_string()).unwrap();
+        let archive = root.0.join(format!("{}-v3.json", current.doc.id));
+        let text = release.to_string();
+        std::fs::write(&archive, &text).unwrap();
+        assert!(archived_release(&root.0, &current.doc.id, 3).unwrap_err().contains("不兼容"));
+        assert_eq!(std::fs::read_to_string(&archive).unwrap(), text);
+        std::fs::remove_file(&archive).unwrap();
+        std::fs::write(root.0.join("previous-archive-name.json"), serde_json::to_vec(&current).unwrap()).unwrap();
+        assert!(archived_release(&root.0, &current.doc.id, 3).unwrap_err().contains("没有不可变发布包"));
+        std::fs::write(&archive, serde_json::to_vec(&current).unwrap()).unwrap();
         assert_eq!(archived_release(&root.0, &current.doc.id, 3).unwrap().doc, current.doc);
+        let unloaded = root.0.join("workspace.json");
+        std::fs::write(&unloaded, candidate.to_string()).unwrap();
+        assert!(ensure_workspace_can_be_created(&unloaded).unwrap_err().contains("文件已保留"));
+        assert!(ensure_workspace_can_be_created(&root.0.join("fresh.json")).is_ok());
     }
 
     #[test]
@@ -2682,77 +2535,4 @@ pub async fn workspace_import_sample(
     })
     .await
     .map_err(|e| e.to_string())?
-}
-
-#[cfg(test)]
-mod bundle_identity_tests {
-    use super::*;
-
-    fn published_fixture(root: &Path) -> crate::release::ReleaseBundle {
-        let mut doc = crate::recipe::samples().remove(0);
-        // 只留第一个拍照点要检（配方不允许全部不检），其余不检的不需要冻结图像
-        for shot in doc.shots.iter_mut().skip(1) { shot.skip = true; }
-        let mut pgm = b"P5\n1280 1024\n255\n".to_vec();
-        pgm.resize(pgm.len() + 1280 * 1024, 80);
-        let shots = doc.shots.iter().enumerate().map(|(k, _)| crate::release::ShotInput { k,
-            image: (k == 0).then(|| crate::release::ResourceSource::Bytes(pgm.clone())),
-            calibration: (k == 0).then(|| crate::release::ResourceSource::Bytes(br#"{"mmPerPx":0.1,"source":"manual"}"#.to_vec())) }).collect();
-        crate::release::publish(root, crate::release::PublishInput {
-            recipe: doc, versions: crate::release::Versions { engine: "test-engine".into(), graph: "test-graph".into() },
-            graph: crate::release::ResourceSource::Bytes(br#"{"schemaVersion":1,"nodes":[],"edges":[]}"#.to_vec()), shots,
-        }).unwrap()
-    }
-
-    #[test]
-    fn new_bundle_missing_or_mismatched_explicit_id_cannot_create_a_legacy_mapping() {
-        let directory = tests::ImportTestDir::new();
-        let root = directory.0.join("releases");
-        let store = Store::open(&directory.0.join("history.sqlite")).unwrap();
-        let bundle = published_fixture(&root);
-        assert_eq!(load_bundle_from(&root, &store, &bundle.recipe.id, &bundle.id).unwrap().id, bundle.id);
-        let path = bundle.root.join("manifest.json");
-        let mut value = serde_json::to_value(&bundle.manifest).unwrap();
-        value.as_object_mut().unwrap().remove("bundleId");
-        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-        assert!(load_bundle_from(&root, &store, &bundle.recipe.id, &bundle.id).unwrap_err().contains("bundleId"));
-        assert_eq!(store.resolve_bundle(&bundle.recipe.id, &bundle.id).unwrap(), (bundle.id.clone(), None));
-        let forged = store.register_legacy_bundle(&bundle.recipe.id, &bundle.id).unwrap();
-        assert!(load_bundle_from(&root, &store, &bundle.recipe.id, &forged).unwrap_err().contains("bundleId"));
-        value["bundleId"] = json!("different-explicit-id");
-        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-        assert!(load_bundle_from(&root, &store, &bundle.recipe.id, &bundle.id).unwrap_err().contains("显式 ID"));
-    }
-
-    #[test]
-    fn genuine_legacy_format_at_legacy_directory_keeps_stable_explicit_mapping_and_original_bytes() {
-        let directory = tests::ImportTestDir::new();
-        let root = directory.0.join("releases");
-        let bundle = published_fixture(&root);
-        let legacy_name = "0123456789abcdef";
-        let legacy_root = root.join(&bundle.recipe.id).join(legacy_name);
-        std::fs::rename(&bundle.root, &legacy_root).unwrap();
-        let path = legacy_root.join("manifest.json");
-        let mut value = serde_json::to_value(&bundle.manifest).unwrap();
-        value.as_object_mut().unwrap().remove("bundleId");
-        value.as_object_mut().unwrap().remove("recipeRevision");
-        value["recipeHash"] = json!("ignored-old-field");
-        for entry in value["files"].as_array_mut().unwrap() { entry["hash"] = json!("ignored-old-field"); }
-        let original = serde_json::to_vec(&value).unwrap();
-        std::fs::write(&path, &original).unwrap();
-        let database = directory.0.join("history.sqlite");
-        let store = Store::open(&database).unwrap();
-        let loaded = load_bundle_from(&root, &store, &bundle.recipe.id, legacy_name).unwrap();
-        assert!(loaded.id.starts_with("legacy-bundle-"));
-        assert_eq!(loaded.root, legacy_root);
-        assert_eq!(loaded.recipe, bundle.recipe);
-        let explicit = loaded.id;
-        drop(store);
-        let store = Store::open(&database).unwrap();
-        assert_eq!(load_bundle_from(&root, &store, &bundle.recipe.id, legacy_name).unwrap().id, explicit);
-        assert_eq!(load_bundle_from(&root, &store, &bundle.recipe.id, &explicit).unwrap().id, explicit);
-        assert_eq!(std::fs::read(&path).unwrap(), original);
-        value["recipeRevision"] = json!(bundle.manifest.recipe_revision);
-        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-        assert!(load_bundle_from(&root, &store, &bundle.recipe.id, &explicit).is_err());
-    }
 }
