@@ -330,3 +330,9 @@ PR #11 执行窗口修正：新增真实单线程 blocking 池 gate，先排队�
 [紧凑证据](evidence/p0-audit-durability-c.json)引用C盘原始报告与日志，按实际字段、文件路径和字节数核查，无内容指纹匹配。首次编译缺少旧Recorder测试夹具字段、首次功能回归发现Submission早于Insert被错误退避，均保留原日志；修复生产分支后严格首轮回放通过，未放宽断言或改成多轮重试。600ms观测延迟及仅该专项的S7连接2000ms超时不作为性能结果，也不修改armMs=200或默认procMs=3000。
 
 复现工具为 `tests/native/p0-audit-process-recovery.mjs`，构建隔离overlay为 `tests/native/tauri-audit-test.json`。准备C盘全新配置、显式四shot配方及S7 DB100模板，程序manifest须包含相同identifier、executable和sourceGate；profile与每次输出目录必须不存在。参数为 `--executable --appdata --output --template --fixture --instance --recipe --settings --cameras --python --playwright-module --source-gate`，默认CDP9342。相机输入为 `{cameras:[...],nextId:2}`；模板可为配置本体或含template的导出对象。不得复制已有数据库或发布资产替代全新配置。
+
+## 2026-10-10 · PR #15 审计故障与就绪检查并发修复
+
+Codex P1审查发现：spool写失败先释放锁、随后发布故障，布防或历史清理可能观察到“无故障且spool为空”。源码 `fc1e38a` 让append、健康探针、事件读取与收据删除的错误在spool锁内先锁存，ready/with_ready统一按spool→failure取锁；日志在释放spool后发布。异步落盘超时仍能独立锁存故障，不等待可能阻塞的磁盘I/O。
+
+完整Rust338项通过、0失败、30忽略，21.13秒。新增3项确定性并发与Windows真实文件锁回归，证明失败时就绪及清理动作均不放行，spool锁被占用时超时故障仍及时发布。见[并发修复证据](evidence/p0-audit-review-atomic-c.json)。本次未重跑原生中断专项；此前 `8ffc091` 的报告保持原来源，后续压力与性能使用包含本修复的新源码。

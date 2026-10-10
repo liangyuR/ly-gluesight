@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "sourceGate": "fc1e38aad128534c34a96fad1d7f45a538e07178",
+  "passed": true,
+  "review": {
+    "pullRequest": "https://github.com/liangyuR/ly-gluesight/pull/15",
+    "thread": "PRRT_kwDOUlfafc6rDRjU",
+    "priority": "P1",
+    "problem": "Spool append failure could release the spool lock before publishing a fault; readiness could observe no fault and an empty spool."
+  },
+  "fix": {
+    "ioFailurePublication": "Latch failure while holding the spool lock for append, probe, event reads and receipt removal. Emit logs after releasing the lock.",
+    "readyAndCleanup": "Acquire spool before failure, and retain spool lock across the cleanup action.",
+    "timeoutPublication": "Failure state remains independently publishable while spool I/O is blocked. No spool lock is acquired on async timeout."
+  },
+  "tests": {
+    "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib -- --test-threads=1",
+    "passed": 338,
+    "failed": 0,
+    "ignored": 30,
+    "durationSeconds": 21.13,
+    "newRegressionCount": 3,
+    "log": {
+      "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-audit-review-atomic-rust-c.log",
+      "bytes": 38567
+    }
+  },
+  "nativeCrashRecoveryRetested": false,
+  "nativeCrashRecoveryEvidence": "p0-audit-durability-c.json retains original 8ffc091 source attribution; current change is covered by deterministic concurrency and real Windows file-lock regression."
+}

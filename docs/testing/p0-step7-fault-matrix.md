@@ -47,3 +47,5 @@ P0-15 已通过当前源码 `8ffc091` 的18项新增默认回归和实际原生�
 实际S7请求前锁定SQLite，DONE前已有完整Insert且无主行；90/98安全拒绝被真实ACK后终止进程，重启恢复原判定、四shot、Failed录制和精确ACK。中断时ACK只在S7日志，因此实际证明先恢复主记录再恢复ACK；ACK已在spool、snapshot后追加ACK、提交后未清receipt的路径由真实文件/SQLite回归证明。原始报告、首次失败与边界见[审计证据](evidence/p0-audit-durability-c.json)和[验收说明](TESTING.md)。当前Rust335、S7回环24、真实DLL5通过；下文及前文旧版本279/964/400等分别保留来源，不标为新审计程序的400件或五工况结果。
 
 该保证从最终Record或事件被耐久接受开始，不覆盖Acquire中尚未生成的记录，不声明断电零丢失。下一轮继续当前程序的单目/三目长时性能、实际Machine队列压力及五个Robot工况；W0/W7硬件和准确率门槛独立保留。
+
+2026-10-10 PR #15审查补充：`fc1e38a` 修复spool失败发布与ready/历史清理检查的并发空窗。append/probe/read/remove在同一spool同步边界锁存故障，超时发布独立于磁盘锁；3项新增回归及完整Rust338项通过。原生恢复报告仍归属 `8ffc091`，见[并发修复证据](evidence/p0-audit-review-atomic-c.json)。
