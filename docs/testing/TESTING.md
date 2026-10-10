@@ -235,6 +235,10 @@ C: 隔离原生程序已完成正式验收（构建 1m22s，SHA256 `85F926EC6358
 
 旧录制保留清理与本件录制完整性独立：清理错误保存在 `RecordingOutcome.retention_errors` 与 `part.json.retentionErrors`，审计单独记录 warn；本件原图、元数据或哈希失败仍进入完整性 `errors` 并禁止可用状态。新增 Windows 真实文件占用回归触发旧件删除失败，检查本件仍 Complete、三视角可按冻结哈希回放，释放占用后旧件可删除；另检查审计入库完整状态、原始判定与三视角引用不受清理告警影响，同一回调不重复告警。本次在 C: 独立工作树执行 `cargo test --offline --lib --manifest-path src-tauri/Cargo.toml`，默认全量 242 项通过、0 失败、26 项忽略，测试耗时 2.75 秒；上述新增两项及未来版本 WAL 用例均实际通过。日志 `C:\Users\11601\AppData\Local\Temp\gluesight-p0-recovery-20261010\p0-step6-retention-review-rust-c.log`，SHA256 `F700B6C4C22C671E047AEE91976ECF14AED94C600416D383E9AE130E4E6C7613`。
 
+PR #12 孤立 `_pending` 清理补充（本段静态实现，尚未执行新增回归）：生产录制线程在启动及 Finish 前分批回收未引用的 pending 目录，每轮最多检查 64 项并保留扫描游标；仅在找到非活跃候选时读取一次当前 profile 的历史保护集合。`parts.recording_directory` 与 `part_shots.raw_files` 中的 pending 引用、回放在用路径及本进程活跃录制均保留；未成功搬离 pending 的收尾继续受本进程保护，避免异步审计尚未入库时丢失部分证据。引用查询或解析失败时保留目录，错误只记独立 retention 告警。清理占用通过短锁登记，磁盘检查与删除不持有活跃录制互斥锁；同名录制不能覆盖正在清理的目录。只删除当前 records 根下、命名符合录制规则且没有链接的普通 pending 目录；Windows reparse、子目录、超过 256 个文件均保守保留并报告。路径和子树检查与删除之间仍存在外部进程同时替换目录的非原子边界。
+
+新增 8 项回归覆盖短锁互斥清理占用、孤立目录回收、历史部分证据及当前活跃录制保护、64 项分批续扫、引用查询失败时完整性不降级、Windows junction 不跟随、仅活跃目录不查询历史、异步审计窗口内失败收尾保护，以及 SQLite 的目录/原图引用及损坏 JSON 防护。已完成 Rust 语法解析和 `git diff --check`；为保持原生性能验收的安静窗口，本分支未运行 Cargo 或新增测试，集成后再补真实执行结果。
+
 ## lyFlow 原始图像注入回归（较早记录）
 
 客户端固定到主线 `5b796c3`（Image ABI v15），使用 `RunSpec.image_inputs` 注入完整 u8 灰度帧。运行库必须包含 `io.load_image`、`image.board_calib`、`image.load_calib`、`glue.locate`、`glue.station_calipers`；在 lyFlow 仓库设置 `LYFLOW_PACKS=glue` 后构建 core，系统设置填 DLL 绝对路径。

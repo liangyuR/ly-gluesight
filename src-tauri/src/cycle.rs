@@ -269,13 +269,32 @@ impl CycleHost {
         let (settings, settings_note) = CycleSettings::load(&settings_path);
         let audit = Audit::new(app);
         let record_audit = audit.clone();
+        let camera = CameraRig::new(app, frame_tx)?;
+        let initial_replays: Vec<_> = camera.configs().into_iter().filter(|c| c.source == CameraSource::Replay)
+            .map(|c| PathBuf::from(c.replay_dir.trim())).collect();
+        let records = data.join("records");
+        let guarded_root = records.clone();
+        let guard_app = app.clone();
+        let warning_app = app.clone();
+        let protection = Arc::new(move || {
+            let mut paths = guard_app.try_state::<Store>().ok_or("检测记录数据库尚未初始化")?.pending_recording_directories(&guarded_root)?;
+            if let Some(host) = guard_app.try_state::<CycleHost>() {
+                paths.extend(host.camera.configs().into_iter().filter(|c| c.source == CameraSource::Replay).map(|c| PathBuf::from(c.replay_dir.trim())));
+            } else { paths.extend(initial_replays.clone()); }
+            Ok(paths)
+        });
+        let warning = Arc::new(move |errors: &[String]| {
+            if warning_app.try_state::<CycleHost>().is_some() {
+                log(&warning_app, "warn", "孤立录制清理失败", errors.join("；"));
+            } else { eprintln!("warn 孤立录制清理失败：{}", errors.join("；")); }
+        });
         Ok(Self {
-            camera: CameraRig::new(app, frame_tx)?,
+            camera,
             tx,
             plc_gate: tokio::sync::Mutex::new(()),
             sim: SimCtl::default(),
             recipes: RecipeStore::open(data.join("recipes"))?,
-            recorder: Recorder::new(data.join("records"), Some(Arc::new(move |outcome| record_audit.recording(outcome)))),
+            recorder: Recorder::guarded(records, Some(Arc::new(move |outcome| record_audit.recording(outcome))), protection, warning),
             cycle_ids: crate::cycle_ids::CycleIds::default(),
             audit,
             shared: Mutex::new(Shared {
