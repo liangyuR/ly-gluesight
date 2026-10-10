@@ -28,6 +28,14 @@ use crate::sim::{Scenario, SimCtl};
 use crate::audit::{Audit, RecordedPart};
 use crate::store::{PartShot, PlcDelivery, PlcDeliveryState, Store, VerdictCounts};
 
+pub(crate) fn s7_ack_delivery(had_ack: bool, session: &PlcSession) -> Option<PlcDelivery> {
+    (!had_ack && session.acknowledged()).then(|| PlcDelivery {
+        state: PlcDeliveryState::Acknowledged,
+        updated_at: now_ms(),
+        message: Some("PLC 结果序号已匹配确认".into()),
+    })
+}
+
 pub enum Input {
     Edge(EdgeEvent),
     Measured(Measured),
@@ -1276,8 +1284,12 @@ impl Machine {
             let previous = self.s7.phase();
             let had_ack = self.s7.acknowledged();
             let event = self.s7.poll_with_audit(plc(&app), reset, devices_ready, audit_ready).await;
-            if !had_ack && self.s7.acknowledged() {
-                if let Err(error) = self.deliver_durable(PlcDeliveryState::Acknowledged, Some("PLC 结果序号已匹配确认".into())).await {
+            if let Some(delivery) = s7_ack_delivery(had_ack, &self.s7) {
+                let result = match self.current_cycle_id.as_deref() {
+                    Some(cycle_id) => host(&app).audit.delivery_durable(cycle_id, delivery).await,
+                    None => Err("PLC 交付缺少工件身份".into()),
+                };
+                if let Err(error) = result {
                     self.s7.fault(plc(&app), format!("PLC 确认审计持久化失败：{error}")).await;
                     return self.enter_fault(format!("PLC 确认审计持久化失败：{error}"));
                 }
@@ -1301,10 +1313,6 @@ impl Machine {
                     log(&app, "info", "partEnd↑", "三路触发数量已核对，等待剩余帧");
                 }
                 SessionEvent::Released => {
-                    if let Err(error) = self.deliver_durable(PlcDeliveryState::Acknowledged, Some("PLC 结果序号已确认，双方握手已释放".into())).await {
-                        self.s7.fault(plc(&app), format!("PLC 释放审计持久化失败：{error}")).await;
-                        return self.enter_fault(format!("PLC 释放审计持久化失败：{error}"));
-                    }
                     self.alarms.retain(|m| !m.starts_with("PLC 未确认"));
                     self.set_phase(Phase::Idle);
                     log(&app, "info", "S7 事务结束", "结果序号已确认，PLC 输入已释放");

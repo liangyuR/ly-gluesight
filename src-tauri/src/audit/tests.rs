@@ -1404,3 +1404,114 @@ fn durable_postbegin_health_probes_disk_even_with_own_pending_recording() {
     assert!(pending.lock().unwrap().contains_key("before-camera"));
     drop(locked);
 }
+
+
+#[test]
+fn durable_directory_probe_restart_recovers_only_owned_names_and_exact_bytes() {
+    for marker in [".health-create.tmp", ".health-commit"] {
+        for bytes in [Vec::new(), vec![0]] {
+            let dir = TestDir::new();
+            let path = dir.0.join("spool");
+            let mut spool = spool::Spool::open(path.clone()).unwrap();
+            spool.append(&Event::Insert(Box::new(part("marker-restart", 1)))).unwrap();
+            let original = std::fs::read(path.join("00000000000000000001.json")).unwrap();
+            drop(spool);
+            std::fs::write(path.join(marker), &bytes).unwrap();
+            let spool = spool::Spool::open(path.clone()).unwrap();
+            assert_eq!(spool.events("marker-restart").unwrap().len(), 1);
+            assert_eq!(std::fs::read(path.join("00000000000000000001.json")).unwrap(), original);
+            assert!(!path.join(".health-create.tmp").exists());
+            assert!(!path.join(".health-commit").exists());
+        }
+        for bytes in [vec![1], vec![0, 0], b"{\"Insert\":{}}".to_vec()] {
+            let dir = TestDir::new();
+            let path = dir.0.join("spool");
+            let mut spool = spool::Spool::open(path.clone()).unwrap();
+            spool.append(&Event::Insert(Box::new(part("unknown-marker", 1)))).unwrap();
+            drop(spool);
+            std::fs::write(path.join(marker), &bytes).unwrap();
+            assert!(spool::Spool::open(path.clone()).is_err());
+            assert_eq!(std::fs::read(path.join(marker)).unwrap(), bytes);
+            assert!(path.join("00000000000000000001.json").exists());
+        }
+    }
+    let dir = TestDir::new();
+    let path = dir.0.join("spool");
+    drop(spool::Spool::open(path.clone()).unwrap());
+    std::fs::write(path.join("00000000000000000001.tmp"), [0]).unwrap();
+    assert!(spool::Spool::open(path.clone()).is_err());
+    assert_eq!(std::fs::read(path.join("00000000000000000001.tmp")).unwrap(), [0]);
+}
+
+#[cfg(windows)]
+#[test]
+fn durable_directory_probe_cleanup_denial_latches_failure_and_preserves_receipts() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let dir = TestDir::new();
+    let path = dir.0.join("spool");
+    let mut actual = spool::Spool::open(path.clone()).unwrap();
+    actual.append(&Event::Insert(Box::new(part("probe-cleanup-denied", 1)))).unwrap();
+    let original = std::fs::read(path.join("00000000000000000001.json")).unwrap();
+    std::fs::write(path.join(".health-commit"), [0]).unwrap();
+    let locked = std::fs::OpenOptions::new().read(true).share_mode(1).open(path.join(".health-commit")).unwrap();
+    let spool = Mutex::new(actual);
+    let failure = Mutex::new(None);
+    let error = spool_io(&spool, &failure, |spool| spool.probe()).unwrap_err();
+    assert!(error.contains("恢复中断审计探针失败"));
+    assert_eq!(*failure.lock().unwrap(), Some(error));
+    assert_eq!(std::fs::read(path.join(".health-commit")).unwrap(), [0]);
+    assert_eq!(std::fs::read(path.join("00000000000000000001.json")).unwrap(), original);
+    drop(locked);
+    assert!(spool.lock().unwrap().probe().is_ok());
+}
+
+#[cfg(windows)]
+#[test]
+fn durable_directory_probe_rejects_create_denied_when_existing_health_is_writable() {
+    use std::io::Write;
+    use std::os::windows::process::CommandExt;
+    struct DenyCreate { path: PathBuf, restore: bool }
+    impl DenyCreate {
+        fn set(path: &std::path::Path, deny: bool) -> Result<(), String> {
+            let script = r#"$ErrorActionPreference='Stop'; Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1') -ErrorAction Stop; $p=$env:GLUESIGHT_PROBE_ACL_PATH; $acl=Get-Acl -LiteralPath $p; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $rule=[System.Security.AccessControl.FileSystemAccessRule]::new($sid,[System.Security.AccessControl.FileSystemRights]::CreateFiles,[System.Security.AccessControl.InheritanceFlags]::None,[System.Security.AccessControl.PropagationFlags]::None,[System.Security.AccessControl.AccessControlType]::Deny); if($env:GLUESIGHT_PROBE_ACL_DENY -eq '1'){$acl.AddAccessRule($rule)}else{$acl.RemoveAccessRuleSpecific($rule)}; Set-Acl -LiteralPath $p -AclObject $acl"#;
+            let output = std::process::Command::new(std::env::var_os("GLUESIGHT_TEST_PWSH").unwrap_or_else(|| "pwsh".into()))
+                .args(["-NoProfile", "-NonInteractive", "-Command", script])
+                .env("GLUESIGHT_PROBE_ACL_PATH", path).env("GLUESIGHT_PROBE_ACL_DENY", if deny { "1" } else { "0" })
+                .creation_flags(0x08000000).output().map_err(|error| format!("启动 PowerShell 7 ACL 测试失败：{error}"))?;
+            if !output.status.success() {
+                return Err(format!("ACL 操作失败 status={} stdout={} stderr={}", output.status, String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)));
+            }
+            Ok(())
+        }
+        fn restore(&mut self) -> Result<(), String> {
+            Self::set(&self.path, false)?;
+            self.restore = false;
+            Ok(())
+        }
+    }
+    impl Drop for DenyCreate {
+        fn drop(&mut self) {
+            if self.restore {
+                if let Err(error) = Self::set(&self.path, false) { let _ = writeln!(std::io::stderr(), "ACL 清理失败：{error}"); }
+            }
+        }
+    }
+    let dir = TestDir::new();
+    let path = dir.0.join("spool");
+    let mut actual = spool::Spool::open(path.clone()).unwrap();
+    actual.append(&Event::Insert(Box::new(part("probe-create-denied", 1)))).unwrap();
+    let original = std::fs::read(path.join("00000000000000000001.json")).unwrap();
+    let mut guard = DenyCreate { path: path.clone(), restore: true };
+    DenyCreate::set(&path, true).expect("必须实际设置目录 CreateFiles 拒绝权限");
+    let mut health = std::fs::OpenOptions::new().write(true).open(path.join(".health")).unwrap();
+    health.write_all(&[0]).and_then(|_| health.set_len(0)).and_then(|_| health.sync_all()).unwrap();
+    drop(health);
+    let spool = Mutex::new(actual);
+    let failure = Mutex::new(None);
+    let error = spool_io(&spool, &failure, |spool| spool.probe()).unwrap_err();
+    assert!(error.contains("探针新建失败"), "{error}");
+    assert_eq!(*failure.lock().unwrap(), Some(error));
+    assert_eq!(std::fs::read(path.join("00000000000000000001.json")).unwrap(), original);
+    guard.restore().expect("必须恢复测试目录原访问权限");
+    assert!(spool.lock().unwrap().probe().is_ok());
+}
