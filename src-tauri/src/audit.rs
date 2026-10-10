@@ -387,6 +387,9 @@ fn merge_recording(cycle: &str, entry: &mut CycleEntry, outcome: RecordingOutcom
         return false;
     }
     entry.last_recording = Some(signature);
+    if !outcome.retention_errors.is_empty() {
+        log(notices, "warn", "录制保留清理失败", cycle, outcome.retention_errors.join("；"));
+    }
     if !outcome.errors.is_empty()
         || matches!(outcome.state, RecorderState::Failed | RecorderState::Incomplete)
         || (outcome.available && outcome.files.is_empty())

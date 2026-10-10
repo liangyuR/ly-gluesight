@@ -172,6 +172,7 @@ fn outcome(cycle: &str, files: &[(usize, u8)], state: RecorderState) -> Recordin
         } else {
             Vec::new()
         },
+        retention_errors: Vec::new(),
         available: state == RecorderState::Complete,
         state,
     }
@@ -210,6 +211,31 @@ fn recording_before_insert_keeps_all_views_hashes_and_original_measurement() {
     assert_eq!(detail.recording.state, RecordingState::Complete);
     assert!(detail.recording.available);
     assert!(!coordinator.entries["one"].pending());
+}
+
+#[test]
+fn retention_warning_preserves_complete_recording_and_is_logged_once() {
+    let dir = TestDir::new();
+    let mut sink = dir.sink();
+    let mut coordinator = Coordinator::new(8, 16);
+    coordinator.handle(Event::Insert(Box::new(part("retention", 42))), &mut sink, 1);
+    let before = original(&sink.detail("retention"));
+    let mut recording = outcome("retention", &[(0, 1), (0, 2), (0, 3)], RecorderState::Complete);
+    recording.retention_errors.push("清理旧录制失败 old-cycle：文件正在使用".into());
+    let notices = coordinator.handle(Event::Recording(recording.clone()), &mut sink, 2);
+    assert!(notices.iter().any(|notice| matches!(notice, Notice::Log { level: "warn", event: "录制保留清理失败", message }
+        if message.contains("cycleId=retention") && message.contains("old-cycle"))));
+    assert!(!notices.iter().any(|notice| matches!(notice, Notice::Log { level: "err", .. })));
+    let detail = sink.detail("retention");
+    assert_eq!(detail.recording.state, RecordingState::Complete);
+    assert!(detail.recording.available);
+    assert!(detail.recording.errors.is_empty());
+    assert_eq!(detail.shots[0].raw_files.len(), 3);
+    assert!(detail.shots[0].raw_files.iter().all(|file| file.hash.is_some()));
+    assert_eq!(original(&detail), before);
+    let calls = sink.counts();
+    assert!(coordinator.handle(Event::Recording(recording), &mut sink, 3).is_empty());
+    assert_eq!(sink.counts(), calls);
 }
 
 #[test]

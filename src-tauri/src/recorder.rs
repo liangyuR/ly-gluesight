@@ -44,6 +44,7 @@ pub struct RecordingOutcome {
     pub directory: Option<PathBuf>,
     pub files: Vec<RecordedRawFile>,
     pub errors: Vec<String>,
+    pub retention_errors: Vec<String>,
     pub available: bool,
     pub state: RecordingState,
 }
@@ -148,6 +149,7 @@ impl Recorder {
                     directory: None,
                     files: Vec::new(),
                     errors: Vec::new(),
+                    retention_errors: Vec::new(),
                     available: false,
                     state: RecordingState::Off,
                 },
@@ -167,6 +169,7 @@ impl Recorder {
                     directory: None,
                     files: Vec::new(),
                     errors: vec![error],
+                    retention_errors: Vec::new(),
                     available: false,
                     state: RecordingState::Failed,
                 },
@@ -388,6 +391,7 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState) -> Recor
             directory: rec.dir.exists().then_some(rec.dir),
             files: Vec::new(),
             errors: rec.errors,
+            retention_errors: Vec::new(),
             available: false,
             state: RecordingState::NotRetained,
         };
@@ -475,11 +479,12 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState) -> Recor
     }
     let mut protected = in_use;
     protected.push(actual_dir.clone());
-    rec.errors.extend(prune(root, keep as usize, max_bytes, &protected));
+    let retention_errors = prune(root, keep as usize, max_bytes, &protected);
     let mut available = promoted && directory.is_some() && !files.is_empty() && rec.errors.is_empty();
     meta["frames"] = serde_json::to_value(&rec.frames).unwrap();
     meta["available"] = json!(available);
     meta["errors"] = json!(rec.errors);
+    meta["retentionErrors"] = json!(retention_errors);
     if directory.is_some() {
         if let Err(error) = write_metadata(&actual_dir.join("part.json"), &meta) {
             rec.errors.push(error);
@@ -493,7 +498,7 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState) -> Recor
     } else {
         RecordingState::Incomplete
     };
-    RecordingOutcome { cycle_id: rec.cycle_id, directory, files, errors: rec.errors, available, state: outcome_state }
+    RecordingOutcome { cycle_id: rec.cycle_id, directory, files, errors: rec.errors, retention_errors, available, state: outcome_state }
 }
 
 fn dir_bytes(dir: &Path) -> Result<u64, String> {
