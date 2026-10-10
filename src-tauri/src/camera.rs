@@ -21,6 +21,8 @@ use crate::replay;
 use crate::sim::Scenario;
 use crate::simimage::{self, PoseError};
 
+mod delivery;
+
 /// 帧通道容量：检测节拍处理不过来时丢新帧并计数，不在内存里无限堆积。
 pub const FRAME_QUEUE: usize = 64;
 
@@ -363,15 +365,7 @@ impl Shared {
 
     fn deliver(&self, mut frame: Frame) {
         let current_session = frame.session == self.session.load(Ordering::SeqCst);
-        if current_session {
-            let mut identity = self.identity.lock().unwrap();
-            let advanced = identity.observe(&crate::shot_router::FrameMeta::from(&frame));
-            if frame.counter != CounterSource::Synthetic {
-                frame.manual = advanced && self.manual.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok();
-            }
-        } else if frame.counter != CounterSource::Synthetic {
-            frame.manual = false;
-        }
+        delivery::observe(&self.identity, &self.manual, &mut frame, current_session);
         if !frame.images.is_empty() && current_session {
             if frame.counter == CounterSource::Synthetic {
                 self.set_previews(frame.session, &frame.images);
@@ -410,9 +404,7 @@ impl Shared {
         if !self.wanted() {
             return;
         }
-        if self.rig.tx.try_send(frame).is_err() {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-        }
+        let _ = delivery::offer(&self.rig.tx, &self.dropped, frame);
     }
 
     fn fps(&self) -> f32 {

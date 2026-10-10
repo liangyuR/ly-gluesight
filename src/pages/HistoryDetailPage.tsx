@@ -51,7 +51,7 @@ export default function HistoryDetailPage() {
     const cycleId=detail.summary.cycleId??`history:${detail.summary.id}`;
     const measured:Measured[]=pts?layout.shots.map((shot,k)=>{
       const owned=idx.filter(j=>layout.points.k[j]===k);
-      return {cycleId,shotId:shot.id,camera:shot.camera,bundleHash:detail.summary.bundleHash,sn:detail.summary.sn,k,cam:detail.frames[k]?.cam??0,located:true,score:0,ms:0,error:null,idx:owned,d:owned.map(j=>pts.d[j]),w:owned.map(j=>pts.w?.[j]??null),st:owned.map(j=>pts.st[j]),px:[]};
+      return {cycleId,shotId:shot.id,camera:shot.camera,bundleHash:detail.summary.bundleHash,sn:detail.summary.sn,k,cam:detail.frames[k]?.cam??0,located:true,score:0,ms:0,queueMs:null,engineMs:null,coreMs:null,error:null,idx:owned,d:owned.map(j=>pts.d[j]),w:owned.map(j=>pts.w?.[j]??null),st:owned.map(j=>pts.st[j]),px:[]};
     }):[];
     const frames=layout.shots.map((shot,k)=>({...detail.frames[k]??{status:"waiting" as const,cam:0,arrivedMs:null,frameCounter:null,triggerCounter:null,counterJump:false,score:null,points:0,gapPoints:0,ms:null,session:null,ordinal:null,error:null},shotId:shot.id,camera:shot.camera,view:shot.view}));
     const part:PartView={cycleId,bundleHash:detail.summary.bundleHash,sn:detail.summary.sn,recipeId:layout.id,recipeHash:layout.hash,n:layout.shots.length,received:detail.summary.framesReceived,triggers:detail.triggers,queue:0,filled:idx.length,total:layout.points.k.length,frames,measuredFrames:detail.frames.length};

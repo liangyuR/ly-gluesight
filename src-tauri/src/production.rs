@@ -93,6 +93,29 @@ enum Entry {
     Failed(String),
 }
 
+async fn run_warmup<T, F>(slot: Arc<Semaphore>, timeout: Duration, operation: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    let deadline = Instant::now().checked_add(timeout).ok_or("图像引擎预热截止时间溢出")?;
+    let timeout_error = format!("图像引擎排队或预热超过 {} ms；尚未返回的引擎继续占用预热线程，请排查核心库或重启", timeout.as_millis());
+    let expired_error = timeout_error.clone();
+    let task = async move {
+        let permit = slot.acquire_owned().await.map_err(|error| format!("图像引擎预热线程已关闭：{error}"))?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            if Instant::now() >= deadline { return Err(expired_error); }
+            let result = operation();
+            if Instant::now() > deadline { Err(expired_error) } else { result }
+        }).await.map_err(|error| format!("图像引擎预热异常：{error}"))?
+    };
+    match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), task).await {
+        Ok(result) => result,
+        Err(_) => Err(timeout_error),
+    }
+}
+
 pub struct ProductionHost {
     entries: Mutex<HashMap<String, Entry>>,
     slot: Arc<Semaphore>,
@@ -123,21 +146,13 @@ impl ProductionHost {
         tauri::async_runtime::spawn(async move {
             let run_app = app.clone();
             let started = Instant::now();
-            let task = async move {
-                let permit = slot.acquire_owned().await.map_err(|e| e.to_string())?;
-                tauri::async_runtime::spawn_blocking(move || {
-                    let _permit = permit;
-                    let bundle = crate::workspace::published_bundle(&run_app, &recipe)?;
-                    let engine = run_app.state::<VisionHost>().engine(core.as_deref()).ok_or("图像核心库未加载，检查系统设置")?;
-                    let prepared = Prepared::load(bundle, engine, &recipe)?;
-                    prepared.warm()?;
-                    Ok::<_, String>(Arc::new(prepared))
-                }).await.map_err(|error| format!("图像引擎预热异常：{error}"))?
-            };
-            let result = match tokio::time::timeout(Duration::from_secs(30), task).await {
-                Ok(result) => result,
-                Err(_) => Err("图像引擎排队或预热超过 30 秒；尚未返回的引擎继续占用预热线程，请排查核心库或重启".into()),
-            };
+            let result = run_warmup(slot, Duration::from_secs(30), move || {
+                let bundle = crate::workspace::published_bundle(&run_app, &recipe)?;
+                let engine = run_app.state::<VisionHost>().engine(core.as_deref()).ok_or("图像核心库未加载，检查系统设置")?;
+                let prepared = Prepared::load(bundle, engine, &recipe)?;
+                prepared.warm()?;
+                Ok(Arc::new(prepared))
+            }).await;
             let state = match result {
                 Ok(prepared) => {
                     crate::cycle::log(&app, "ok", "生产预热", format!("发布包 {} 已就绪，耗时 {} ms", prepared.bundle.hash, started.elapsed().as_millis()));
@@ -163,3 +178,9 @@ pub fn ready(app: &AppHandle, recipe: &Recipe) -> Result<Option<Arc<Prepared>>, 
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod warmup_tests;
+
+#[cfg(test)]
+mod regression;

@@ -4,12 +4,21 @@ const names = {
   complete: '本件完成', stopping: '正在停止', stopped: '已停止',
   reset_requested: '复位已请求', error: '需要检查',
 };
-const labels = { normal: '正常', gap: '断胶', lostFrame: '丢帧', locateFail: '定位失败', countMismatch: '点数不符' };
+const labels = { normal: '正常', gap: '断胶', lostFrame: '丢帧', locateFail: '胶路未测得', countMismatch: '点数不符' };
 const signals = [
   ['partStart', 'C10 工件开始'], ['partEnd', 'C11 运动结束'], ['resultAck', 'C12 结果确认'],
   ['faultReset', 'C13 故障复位'], ['visionReady', 'C20 视觉就绪'], ['armed', 'C21 已布防'],
   ['busy', 'C22 检测中'], ['done', 'C23 结果有效'], ['heartbeat', 'C0 心跳'],
 ];
+
+export function shotPlan(recipe) {
+  const counts = new Map();
+  return recipe.shots.map((shot, k) => {
+    const ordinal = (counts.get(shot.camera) ?? 0) + 1;
+    counts.set(shot.camera, ordinal);
+    return { ...shot, k, ordinal };
+  });
+}
 
 // The server owns readiness. Missing or stale state never enables an operation.
 export function controlsFor(state, online, pending = false) {
@@ -79,12 +88,11 @@ function init() {
   function renderPath(recipe, k) {
     const svg = $('svg');
     const ns = 'http://www.w3.org/2000/svg';
-    const points = recipe.shots;
-    const xs = points.map(point => point[0]);
-    const ys = points.map(point => point[1]);
-    const xmin = Math.min(...xs), ymin = Math.min(...ys);
-    const dx = Math.max(...xs) - xmin || 1, dy = Math.max(...ys) - ymin || 1;
-    const xy = points.map(point => [50 + (point[0] - xmin) / dx * 320, 38 + (point[1] - ymin) / dy * 110]);
+    const points = shotPlan(recipe);
+    const height = Math.ceil(points.length / 4) * 100 + 20;
+    svg.setAttribute('viewBox', `0 0 420 ${height}`);
+    svg.style.height = `${height}px`;
+    const xy = points.map((_, index) => [42 + (index % 4) * 106, 36 + Math.floor(index / 4) * 100]);
     const make = (tag, attributes) => {
       const element = document.createElementNS(ns, tag);
       for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, value);
@@ -95,21 +103,29 @@ function init() {
     }));
     xy.forEach(([x, y], index) => {
       svg.append(make('circle', { cx: x, cy: y, r: 10, fill: '#30445e', stroke: '#72aaff', 'stroke-width': 2 }));
-      const label = make('text', { x: x + 13, y: y + 4, fill: '#b8c9df', 'font-size': 12 });
-      label.textContent = 'k' + (index + 1);
-      svg.append(label);
+      for (const [offset, value] of [[-17, points[index].id], [28, points[index].poseId],
+        [45, `${points[index].camera} · v${points[index].view}`], [62, `设备触发 #${points[index].ordinal}`]]) {
+        const label = make('text', { x, y: y + offset, fill: '#b8c9df', 'font-size': 11, 'text-anchor': 'middle' });
+        label.textContent = value;
+        svg.append(label);
+      }
     });
     const [x, y] = xy[k ?? 0] || xy[0];
     svg.append(make('circle', { id: 'robot', cx: x, cy: y, r: 6, fill: '#43d5a3' }));
+    const selected = points[k ?? 0];
+    const detect = selected.detect ?? recipe.detect;
+    const limits = selected.limits ?? recipe.limits;
+    $('#shot-detail').textContent = `${selected.id} · ${selected.path?.length ?? 0} 个中线点 · ${selected.mmPerPx ?? '未示教'} mm/px · 搜索半宽 ${detect.searchMm} mm · ${detect.polarity === 'dark' ? '暗胶' : '亮胶'} · 胶宽范围 ${detect.widthRange.join('–')} mm · 允许断口 ${limits.maxGapLen} mm`;
   }
 
   function renderState(s) {
     $('#phase').textContent = s.stopping ? '正在停止 · 等待本件完成' : names[s.phase] || s.phase;
     $('#message').textContent = s.stopping ? `已收到停止请求，完成本件并释放握手后停止。当前：${s.message}` : s.message;
-    $('#detail').textContent = `SN ${s.sn ?? '—'} · 已完成 ${s.parts} 件 · 触发桥 ${s.bridgeOnline ? '在线' : '离线'}`;
+    $('#detail').textContent = `SN ${s.sn ?? '—'} · cycleId ${s.cycleId ?? '—'} · 已完成 ${s.parts} 件 · 触发桥 ${s.bridgeOnline ? '在线' : '离线'}`;
     $('#endpoint').textContent = s.plcEndpoint;
     $('#unit').textContent = `站号 ${s.unitId} · 地址从 0 开始 · 32 位值按 ABCD 顺序`;
-    $('#recipe-summary').textContent = `${s.recipe.shots.length} 点飞拍 · ${s.recipe.id} · 产品代码 ${s.recipe.productCode}`;
+    const counts = Object.entries(s.plannedTriggers).map(([camera, count]) => `${camera} ${s.deviceTriggers[camera] ?? 0}/${count} 次`).join(' · ');
+    $('#recipe-summary').textContent = `${s.recipe.shots.length} 拍照点 · ${counts} · ${s.recipe.id} · 产品代码 ${s.recipe.productCode}`;
     $('#connection').textContent = s.plcError ? 'PLC 服务未连接：' + s.plcError : 'Modbus TCP 通讯正常';
     renderSignals(s.plc);
     const plc = s.plc || {};

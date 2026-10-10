@@ -65,7 +65,8 @@ fn measured(part: &Part, k: usize) -> Measured {
     let indices: Vec<_> = part.recipe.owned_points(k).map(|j| j as u32).collect();
     Measured { run_id: part.run_id, cycle_id: part.cycle_id.clone(), shot_id: shot.id.clone(),
         camera: shot.camera.clone(), bundle_hash: part.bundle_hash.clone(), sn: part.sn,
-        k, cam: part.frames[k].cam, located: true, score: 0.95, ms: 15, error: None,
+        k, cam: part.frames[k].cam, located: true, score: 0.95, ms: 15,
+        queue_ms: None, engine_ms: None, core_ms: None, error: None,
         d: vec![0.0; indices.len()], w: vec![4.0; indices.len()], st: vec![measure::ST_OK; indices.len()],
         idx: indices, px: Vec::new() }
 }

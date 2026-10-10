@@ -1,8 +1,8 @@
 {
-  "id": "ROBOT-DEMO",
-  "name": "Robot + PLC 单设备四点演示",
+  "id": "ROBOT-DEMO-3CAM",
+  "name": "Robot + PLC 三设备交错四点演示",
   "version": 1,
-  "productCode": 101,
+  "productCode": 103,
   "triggerMode": "fly",
   "schemaVersion": 4,
   "spacing": 1,
@@ -25,7 +25,7 @@
     {
       "id": "P2",
       "poseId": "Pose-2",
-      "camera": "cam1",
+      "camera": "cam2",
       "view": 1,
       "bead": "J1",
       "skip": false,
@@ -37,7 +37,7 @@
     {
       "id": "P3",
       "poseId": "Pose-3",
-      "camera": "cam1",
+      "camera": "cam3",
       "view": 1,
       "bead": "J1",
       "skip": false,

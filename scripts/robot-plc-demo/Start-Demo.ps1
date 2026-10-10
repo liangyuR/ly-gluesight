@@ -68,7 +68,7 @@ try {
             $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$($cfg.bridge.debugPort) --remote-debugging-address=127.0.0.1"
             Start-DemoProcess 'app' $demoExe ''
         } finally { $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $oldArgs }
-        Start-DemoProcess 'camera-bridge' $nodePath ('"' + (Join-Path $PSScriptRoot 'camera-bridge.mjs') + '"' + $configArgs)
+        Start-DemoProcess 'camera-bridge' $nodePath ('"' + (Join-Path $PSScriptRoot 'camera-bridge.mjs') + '"' + $configArgs + ' --recipe "' + $demoRecipe + '"')
     }
     $ready = $false
     for ($attempt=0; $attempt -lt 80; $attempt++) {

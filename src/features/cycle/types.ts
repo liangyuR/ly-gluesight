@@ -233,6 +233,9 @@ export interface Measured {
   located: boolean;
   score: number;
   ms: number;
+  queueMs: number | null;
+  engineMs: number | null;
+  coreMs: number | null;
   error: string | null;
   idx: number[];
   /** 胶条中线相对示教中线的横向偏移（mm） */

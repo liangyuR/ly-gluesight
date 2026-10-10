@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -17,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from modbus_wire import Client, receive
 from plc_service import PlcServer
 from robot_service import Robot, RobotServer
-from simulator_config import load_config, load_recipe
+from simulator_config import load_config, load_recipe, trigger_plan, validate_recipe
 
 
 def until(predicate, timeout=5):
@@ -34,6 +35,13 @@ def serve(server):
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
     thread.start()
     return thread
+
+
+def scripted_ack(ticket, **changes):
+    identity = {key: ticket[key] for key in ("sn", "k", "recipeId", "productCode", "shotCount", "shotId", "poseId", "camera", "view", "ordinal")}
+    identity.update(cycleId=f"scripted-{ticket['sn']}", recipeHash="scripted-recipe", bundleHash=None)
+    identity.update(changes)
+    return {"id": ticket["id"], "ok": True, "identity": identity, "evidence": {"scope": "scripted-test-peer"}}
 
 
 class ModbusTests(unittest.TestCase):
@@ -127,10 +135,10 @@ class VisionPeer:
                     flags = client.coils(10, 14)
                     if flags[0] and active is None:
                         high, low, product, shots = client.registers(100, 4)
-                        if product != 101:
+                        if product != self.case.recipe["productCode"]:
                             raise AssertionError("Unexpected product code")
                         active = (high << 16) | low
-                        scenario = "countMismatch" if shots != 4 else "normal"
+                        scenario = "countMismatch" if shots != len(self.case.recipe["shots"]) else "normal"
                         if scenario != "countMismatch":
                             client.coil(21, True)
                             client.coil(22, True)
@@ -140,10 +148,12 @@ class VisionPeer:
                             raise AssertionError("Trigger SN differs from PLC input")
                         self.triggers.append(ticket)
                         scenario = ticket["scenario"]
-                        self.case.request("/trigger-ack", {"id": ticket["id"], "ok": True})
+                        status, reply = self.case.request("/trigger-ack", scripted_ack(ticket))
+                        if status != 200:
+                            raise AssertionError(reply)
                     if active and not replied and (flags[1] or scenario == "countMismatch"):
                         code, fault = {"normal": (1, 0), "gap": (13, 0), "lostFrame": (90, 91),
-                                       "locateFail": (90, 92), "countMismatch": (90, 94)}[scenario]
+                                       "locateFail": (90, 99), "countMismatch": (90, 94)}[scenario]
                         result_sn = active + 1 if self.wrong_sn else active
                         client.write_registers(110, [code, fault, result_sn >> 16, result_sn & 65535])
                         client.coil(21, False)
@@ -220,7 +230,7 @@ class RobotTests(unittest.TestCase):
     def test_five_scenarios_over_real_http_and_modbus(self):
         self.start_peer()
         expected = {"normal": (1, 0), "gap": (13, 0), "lostFrame": (90, 91),
-                    "locateFail": (90, 92), "countMismatch": (90, 94)}
+                    "locateFail": (90, 99), "countMismatch": (90, 94)}
         sns = []
         for scenario, codes in expected.items():
             with self.subTest(scenario=scenario):
@@ -237,6 +247,27 @@ class RobotTests(unittest.TestCase):
                     self.assertFalse(state["plc"][flag], flag)
         self.assertEqual(len(set(sns)), 5)
         self.assertEqual([t["k"] for t in self.peer.triggers], [0, 1, 2, 3] * 4)
+        self.assertEqual([t["view"] for t in self.peer.triggers], [1, 2, 3, 1] * 4)
+        self.assertEqual(state["results"][0]["deviceTriggers"], {"cam1": 4})
+        self.assertEqual(len(state["results"][0]["triggerAcks"]), 4)
+        self.assertEqual(state["results"][-1]["deviceTriggers"], {"cam1": 0})
+        self.assertEqual(self.peer.errors, [])
+
+    def test_single_view_and_three_device_fixtures_keep_device_counts(self):
+        self.start_peer()
+        root = Path(__file__).resolve().parents[1] / "fixtures"
+        for name, expected in (("ROBOT-DEMO", {"cam1": 4}), ("ROBOT-DEMO-3CAM", {"cam1": 2, "cam2": 1, "cam3": 1})):
+            with self.subTest(recipe=name):
+                self.recipe = load_recipe(root / f"{name}.json")
+                self.robot = Robot(self.cfg, self.recipe, Path(self.temp.name) / name)
+                self.http.robot = self.robot
+                until(lambda: self.request("/state")[1]["bridgeOnline"])
+                self.assertEqual(self.request("/start", {})[0], 200)
+                state = until(self.finished)
+                self.assertEqual(state["phase"], "complete", state)
+                self.assertEqual(state["results"][-1]["deviceTriggers"], expected)
+                self.assertEqual([a["identity"]["ordinal"] for a in state["results"][-1]["triggerAcks"]],
+                                 [1, 1, 1, 2] if len(expected) == 3 else [1, 2, 3, 4])
         self.assertEqual(self.peer.errors, [])
 
     def test_count_and_restart_restore_results_without_reusing_sn(self):
@@ -402,6 +433,8 @@ class RobotTests(unittest.TestCase):
             ticket = until(lambda: self.request("/trigger")[1])
             self.assertEqual(ticket["k"], 0)
             self.assertEqual(self.request("/trigger-ack", {"id": "stale", "ok": True})[0], 409)
+            self.assertEqual(self.request("/trigger-ack", {"id": ticket["id"], "ok": True})[0], 400)
+            self.assertEqual(self.request("/trigger-ack", scripted_ack(ticket, view=3))[0], 400)
             self.request("/stop", {})
             state = until(self.finished)
             self.assertEqual(state["phase"], "error")
@@ -410,6 +443,53 @@ class RobotTests(unittest.TestCase):
             self.assertIn("触发桥未响应", state["message"])
             self.assertEqual(state["parts"], 0)
             self.assertFalse(state["plc"]["partStart"])
+
+    def test_changed_cycle_ack_and_negative_ack_cannot_produce_a_completed_part(self):
+        self.request("/trigger")
+        with Client(self.port, 7) as client:
+            client.coil(20, True)
+            self.assertEqual(self.request("/start", {})[0], 200)
+            until(lambda: client.coils(10, 1)[0])
+            client.coil(21, True)
+            first = until(lambda: self.request("/trigger")[1])
+            self.assertEqual(self.request("/trigger-ack", scripted_ack(first))[0], 200)
+            second = until(lambda: (ticket if (ticket := self.request("/trigger")[1]) and ticket["k"] == 1 else None))
+            self.assertEqual(self.request("/trigger-ack", scripted_ack(second, cycleId="previous-cycle"))[0], 409)
+            self.assertEqual(self.request("/trigger-ack", {"id": second["id"], "ok": False, "error": "scripted camera rejection"})[0], 200)
+            state = until(self.finished)
+            self.assertEqual(state["phase"], "error")
+            self.assertIn("scripted camera rejection", state["message"])
+            self.assertEqual(state["parts"], 0)
+            self.assertFalse(state["plc"]["resultAck"])
+
+    def test_plc_write_refusal_is_reported_and_a_later_run_recovers(self):
+        self.start_peer()
+        original = self.plc.memory.dispatch
+        def reject_part_registers(pdu):
+            return b"\x90\x04" if pdu[0] == 16 and pdu[1:3] == b"\x00\x64" else original(pdu)
+        with patch.object(self.plc.memory, "dispatch", side_effect=reject_part_registers):
+            self.assertEqual(self.request("/start", {})[0], 200)
+            state = until(self.finished)
+        self.assertEqual(state["phase"], "error")
+        self.assertIn("Modbus exception", state["message"])
+        self.assertEqual(state["parts"], 0)
+        self.assertFalse(state["plc"]["partStart"])
+        self.assertEqual(self.request("/start", {})[0], 200)
+        self.assertEqual(until(self.finished)["parts"], 1)
+
+    def test_result_disk_error_never_increments_completion(self):
+        self.start_peer()
+        result_path = Path(self.temp.name) / "robot-results.jsonl"
+        result_path.mkdir()
+        self.assertEqual(self.request("/start", {})[0], 200)
+        state = until(self.finished)
+        self.assertEqual(state["phase"], "error")
+        self.assertEqual(state["parts"], 0)
+        self.assertEqual(state["results"], [])
+        self.assertFalse(any(state["plc"][key] for key in ("partStart", "partEnd", "resultAck", "done")))
+        result_path.rmdir()
+        self.assertEqual(self.request("/start", {})[0], 200)
+        self.assertEqual(until(self.finished)["parts"], 1)
 
     def test_bad_http_input_and_origin_have_no_side_effect(self):
         for data in ([], {"count": 0}, {"count": True}, {"scenario": "unknown"}, {"continuous": "false"}):
@@ -445,6 +525,36 @@ class RobotTests(unittest.TestCase):
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_schema_four_fixtures_and_per_device_ordinals(self):
+        root = Path(__file__).resolve().parents[1] / "fixtures"
+        expected = {"ROBOT-DEMO": ([1, 1, 1, 1], {"cam1": 4}),
+                    "ROBOT-DEMO-TRICAM": ([1, 2, 3, 1], {"cam1": 4}),
+                    "ROBOT-DEMO-3CAM": ([1, 1, 1, 1], {"cam1": 2, "cam2": 1, "cam3": 1})}
+        for name, (views, counts) in expected.items():
+            with self.subTest(recipe=name):
+                recipe = load_recipe(root / f"{name}.json")
+                plan, devices = trigger_plan(recipe)
+                self.assertEqual([p["view"] for p in plan], views)
+                self.assertEqual(devices, counts)
+                self.assertEqual([p["ordinal"] for p in plan], [1, 1, 1, 2] if len(counts) == 3 else [1, 2, 3, 4])
+
+    def test_legacy_geometry_and_invalid_per_shot_contracts_are_rejected(self):
+        recipe = load_recipe(load_config()["robot"]["recipe"])
+        edits = [lambda r: r.update(schemaVersion=3), lambda r: r.update(schemaVersion=4.0),
+                 lambda r: r.update(shots=[[95, 50]]), lambda r: r["shots"][0].update(view=0),
+                 lambda r: r["shots"][0].update(view=4), lambda r: r["shots"][0].update(view=True),
+                 lambda r: r["shots"][0].pop("view"), lambda r: r["shots"][1].update(id="P1"),
+                 lambda r: r["shots"][0].update(poseId=""), lambda r: r["shots"][0].update(camera="../cam1"),
+                 lambda r: r["shots"][0].update(path=[[1, float("inf")], [2, 3]]),
+                 lambda r: r["shots"][0].update(mmPerPx=None),
+                 lambda r: r["shots"][0].update(detect={"searchMm": 2, "widthRange": [1, 5], "polarity": "dark"}),
+                 lambda r: r["shots"][0]["limits"].update(maxGapLen=-1)]
+        for edit in edits:
+            invalid = copy.deepcopy(recipe)
+            edit(invalid)
+            with self.subTest(recipe=invalid), self.assertRaises(ValueError):
+                validate_recipe(invalid)
+
     def test_config_paths_are_independent_of_current_directory_and_bad_config_fails(self):
         cfg = load_config()
         self.assertTrue(Path(cfg["robot"]["recipe"]).is_absolute())

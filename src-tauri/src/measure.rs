@@ -60,6 +60,9 @@ pub struct Measured {
     pub located: bool,
     pub score: f32,
     pub ms: u32,
+    pub queue_ms: Option<u32>,
+    pub engine_ms: Option<u32>,
+    pub core_ms: Option<u32>,
     /// 测量本身没做成（lyFlow 运行失败、没有示教资料、队列满等）
     pub error: Option<String>,
     pub idx: Vec<u32>,
@@ -93,6 +96,9 @@ impl Measured {
             located: false,
             score: 0.0,
             ms: 0,
+            queue_ms: None,
+            engine_ms: None,
+            core_ms: None,
             error: None,
             idx: Vec::new(),
             d: Vec::new(),
@@ -172,6 +178,7 @@ impl WorkerHealth {
 #[derive(Default)]
 struct ExecutionStatus {
     started: bool,
+    entered_at: Option<Instant>,
     finished: bool,
     timed_out: bool,
 }
@@ -183,7 +190,9 @@ struct Execution {
 
 impl Execution {
     fn start(&self, deadline: Instant) -> bool {
+        let entered_at = Instant::now();
         let mut status = self.status.lock().unwrap();
+        status.entered_at = Some(entered_at);
         if status.timed_out || Instant::now() >= deadline {
             status.finished = true;
             return false;
@@ -191,6 +200,10 @@ impl Execution {
         status.started = true;
         self.health.counts.lock().unwrap().running += 1;
         true
+    }
+
+    fn entered_at(&self) -> Option<Instant> {
+        self.status.lock().unwrap().entered_at
     }
 
     fn timeout(&self) {
@@ -232,8 +245,12 @@ fn timeout_result(job: &Job) -> Measured {
     Measured::failed(job, format!("{MEASURE_TIMEOUT}：拍照点 {} 超过 T_proc {} ms（含排队时间）", job.shot_id, job.timeout.as_millis()))
 }
 
+fn duration_ms(duration: Duration) -> u32 {
+    duration.as_millis().min(u32::MAX as u128) as u32
+}
+
 fn report(out: &UnboundedSender<Input>, job: &Job, mut measured: Measured) {
-    measured.ms = job.submitted_at.elapsed().as_millis().min(u32::MAX as u128) as u32;
+    measured.ms = duration_ms(job.submitted_at.elapsed());
     let _ = out.send(Input::Measured(measured));
 }
 
@@ -269,13 +286,21 @@ async fn dispatch(mut rx: Receiver<Job>, health: Arc<WorkerHealth>, runner: JobR
             if !worker_execution.start(deadline.into_std()) {
                 return (timeout_result(&worker_job), Instant::now());
             }
+            let entered_at = worker_execution.entered_at().unwrap();
             let _running = RunningJob { execution: worker_execution, _permit: permit };
-            let measured = runner(&worker_job);
-            (measured, Instant::now())
+            let mut measured = runner(&worker_job);
+            let completed = Instant::now();
+            measured.engine_ms = Some(duration_ms(completed.saturating_duration_since(entered_at)));
+            measured.core_ms = if worker_job.image_measurement && worker_job.image.is_some() && measured.error.is_none() {
+                Some(measured.ms)
+            } else {
+                None
+            };
+            (measured, completed)
         });
         let out = out.clone();
         tokio::spawn(async move {
-            let result = match tokio::time::timeout_at(deadline, task).await {
+            let mut result = match tokio::time::timeout_at(deadline, task).await {
                 Ok(Ok((measured, completed))) if tokio::time::Instant::from_std(completed) <= deadline => measured,
                 Ok(Err(_)) => Measured::failed(&job, "测量线程异常退出"),
                 _ => {
@@ -283,6 +308,7 @@ async fn dispatch(mut rx: Receiver<Job>, health: Arc<WorkerHealth>, runner: JobR
                     timeout_result(&job)
                 }
             };
+            result.queue_ms = execution.entered_at().map(|entered| duration_ms(entered.saturating_duration_since(job.submitted_at)));
             report(&out, &job, result);
         });
     }
@@ -433,6 +459,40 @@ mod tests {
             assert_eq!(json["shotId"], "P1");
             assert_eq!(json["bundleHash"], "bundle-7");
             assert!(json.get("runId").is_none());
+            for key in ["queueMs", "engineMs", "coreMs"] {
+                assert_eq!(json.get(key), Some(&serde_json::Value::Null));
+            }
+        }
+    }
+
+    #[test]
+    fn nullable_timing_fields_serialize_as_explicit_camel_case_values_without_changing_total_ms() {
+        let job = job(0, Duration::from_secs(1));
+        for (queue, engine, core) in [
+            (None, None, None),
+            (Some(7), Some(11), Some(3)),
+            (Some(0), Some(0), Some(0)),
+            (Some(7), None, None),
+            (Some(7), Some(11), None),
+        ] {
+            let mut measured = Measured::empty(&job);
+            measured.ms = 29;
+            measured.queue_ms = queue;
+            measured.engine_ms = engine;
+            measured.core_ms = core;
+            let wire = serde_json::to_string(&measured).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&wire).unwrap();
+            for (key, expected) in [("queueMs", queue), ("engineMs", engine), ("coreMs", core)] {
+                assert_eq!(json.get(key), Some(&serde_json::json!(expected)));
+            }
+            for key in ["queue_ms", "engine_ms", "core_ms", "runId"] {
+                assert!(json.get(key).is_none());
+            }
+            assert_eq!(json["ms"], 29);
+            assert_eq!(json["cycleId"], job.cycle_id);
+            assert_eq!(json["shotId"], job.shot_id);
+            assert_eq!(json["camera"], job.camera);
+            assert_eq!(json["bundleHash"], "bundle-7");
         }
     }
 
@@ -486,19 +546,30 @@ mod tests {
         let entered = Arc::new(AtomicUsize::new(0));
         let calls = entered.clone();
         let (tx, health, mut results, dispatcher) = worker(1, Arc::new(move |job| {
+            let core_started = Instant::now();
             calls.fetch_add(1, Ordering::SeqCst);
             if job.k == 0 {
                 gate.wait();
             }
-            Measured::empty(job)
+            let mut measured = Measured::empty(job);
+            if job.image_measurement {
+                measured.ms = duration_ms(core_started.elapsed());
+            }
+            measured
         }));
-        tx.send(job(0, Duration::from_millis(200))).await.unwrap();
+        let mut image_job = job(0, Duration::from_millis(200));
+        image_job.image_measurement = true;
+        image_job.image = Some(Arc::new(FrameImage::new(2, 2, vec![128; 4])));
+        tx.send(image_job).await.unwrap();
         wait_health(&health, WorkerHealthSnapshot { capacity: 1, running: 1, timed_out: 0, available_capacity: 0 }).await;
         assert!(health.can_arm());
         let result = next_result(&mut results).await;
         assert!(result.error.unwrap().starts_with(MEASURE_TIMEOUT));
         assert_eq!((result.cycle_id.as_str(), result.shot_id.as_str()), ("cycle-7", "P1"));
         assert!(result.ms >= 200);
+        assert!(result.queue_ms.is_some());
+        assert!(result.engine_ms.is_none());
+        assert!(result.core_ms.is_none());
         assert_eq!(health.snapshot(), WorkerHealthSnapshot { capacity: 1, running: 1, timed_out: 1, available_capacity: 0 });
         assert!(!health.can_arm());
 
@@ -508,6 +579,9 @@ mod tests {
             let result = next_result(&mut results).await;
             assert_eq!(result.k, k);
             assert!(result.error.unwrap().starts_with(MEASURE_TIMEOUT));
+            assert!(result.queue_ms.is_none());
+            assert!(result.engine_ms.is_none());
+            assert!(result.core_ms.is_none());
         }
         assert_eq!(entered.load(Ordering::SeqCst), 1);
         assert_eq!(health.snapshot().timed_out, 1);
@@ -519,10 +593,168 @@ mod tests {
         let recovered = next_result(&mut results).await;
         assert_eq!(recovered.k, 3);
         assert!(recovered.error.is_none());
+        assert!(recovered.queue_ms.is_some());
+        assert!(recovered.engine_ms.is_some());
+        assert!(recovered.core_ms.is_none());
         assert_eq!(entered.load(Ordering::SeqCst), 2);
         drop(tx);
         dispatcher.await.unwrap();
         assert!(results.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn full_measure_queue_rejects_one_job_then_recovers_without_leaks_or_duplicate_results() {
+        let gate = Arc::new(Gate::default());
+        let release = ReleaseOnDrop(gate.clone());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let entered = calls.clone();
+        let (tx, health, mut results, dispatcher) = worker(1, Arc::new(move |job| {
+            entered.fetch_add(1, Ordering::SeqCst);
+            gate.wait();
+            Measured::empty(job)
+        }));
+        tx.send(job(0, Duration::from_secs(5))).await.unwrap();
+        wait_health(&health, WorkerHealthSnapshot { capacity: 1, running: 1, timed_out: 0, available_capacity: 0 }).await;
+        tx.send(job(1, Duration::from_secs(5))).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while tx.capacity() != MEASURE_QUEUE {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        }).await.unwrap();
+        for k in 2..MEASURE_QUEUE + 2 {
+            assert!(tx.try_send(job(k, Duration::from_secs(5))).is_ok());
+        }
+        assert_eq!(tx.capacity(), 0);
+        let rejected = match tx.try_send(job(MEASURE_QUEUE + 2, Duration::from_secs(5))) {
+            Err(tokio::sync::mpsc::error::TrySendError::Full(job)) => job,
+            _ => panic!("expected the real bounded measurement queue to be full"),
+        };
+        let failure = Measured::failed(&rejected, "测量队列已满：测量跟不上帧率");
+        assert_eq!(failure.error.as_deref(), Some("测量队列已满：测量跟不上帧率"));
+        assert_eq!(failure.k, MEASURE_QUEUE + 2);
+        assert_eq!(failure.cycle_id, "cycle-7");
+        assert_eq!(failure.shot_id, format!("P{}", MEASURE_QUEUE + 3));
+        assert_eq!(failure.bundle_hash.as_deref(), Some("bundle-7"));
+        assert!(failure.queue_ms.is_none());
+        assert!(failure.engine_ms.is_none());
+        assert!(failure.core_ms.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(results.try_recv().is_err());
+        release.0.release();
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..MEASURE_QUEUE + 2 {
+            let measured = next_result(&mut results).await;
+            assert!(measured.k < MEASURE_QUEUE + 2);
+            assert!(measured.error.is_none());
+            assert!(measured.queue_ms.is_some());
+            assert!(measured.engine_ms.is_some());
+            assert!(measured.core_ms.is_none());
+            assert!(seen.insert(measured.k), "duplicate measurement result");
+        }
+        assert_eq!(seen.len(), MEASURE_QUEUE + 2);
+        assert_eq!(calls.load(Ordering::SeqCst), MEASURE_QUEUE + 2);
+        wait_health(&health, WorkerHealthSnapshot { capacity: 1, running: 0, timed_out: 0, available_capacity: 1 }).await;
+        assert!(health.can_arm());
+        assert_eq!(tx.capacity(), MEASURE_QUEUE);
+        tx.send(job(MEASURE_QUEUE + 3, Duration::from_secs(1))).await.unwrap();
+        let recovered = next_result(&mut results).await;
+        assert_eq!(recovered.k, MEASURE_QUEUE + 3);
+        assert!(recovered.error.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), MEASURE_QUEUE + 3);
+        wait_health(&health, WorkerHealthSnapshot { capacity: 1, running: 0, timed_out: 0, available_capacity: 1 }).await;
+        drop(tx);
+        dispatcher.await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(2), results.recv()).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn dispatch_observes_real_queue_and_engine_wall_times_and_preserves_image_core_time() {
+        let gates = [Arc::new(Gate::default()), Arc::new(Gate::default())];
+        let release = [ReleaseOnDrop(gates[0].clone()), ReleaseOnDrop(gates[1].clone())];
+        let (entered, image_started) = tokio::sync::oneshot::channel();
+        let entered = Mutex::new(Some(entered));
+        let (tx, health, mut results, dispatcher) = worker(1, Arc::new(move |job| {
+            let core_started = Instant::now();
+            if job.image_measurement {
+                let _ = entered.lock().unwrap().take().unwrap().send(());
+            }
+            gates[job.k].wait();
+            if job.image_measurement {
+                let mut measured = Measured::empty(job);
+                measured.ms = duration_ms(core_started.elapsed());
+                measured
+            } else {
+                simulate(job)
+            }
+        }));
+        tx.send(job(0, Duration::from_secs(5))).await.unwrap();
+        wait_health(&health, WorkerHealthSnapshot { capacity: 1, running: 1, timed_out: 0, available_capacity: 0 }).await;
+        let mut image_job = job(1, Duration::from_secs(5));
+        image_job.image_measurement = true;
+        image_job.image = Some(Arc::new(FrameImage::new(2, 2, vec![128; 4])));
+        tx.send(image_job).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        release[0].0.release();
+        tokio::time::timeout(Duration::from_secs(2), image_started).await.unwrap().unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        release[1].0.release();
+        let mut measured = [next_result(&mut results).await, next_result(&mut results).await];
+        measured.sort_by_key(|result| result.k);
+        let simulated = &measured[0];
+        assert_eq!(simulated.k, 0);
+        assert!(simulated.error.is_none());
+        assert!(simulated.queue_ms.is_some());
+        assert!(simulated.engine_ms.unwrap() >= 30);
+        assert!(simulated.core_ms.is_none());
+        let simulated_json = serde_json::to_value(simulated).unwrap();
+        assert_eq!(simulated_json["queueMs"], simulated.queue_ms.unwrap());
+        assert_eq!(simulated_json["engineMs"], simulated.engine_ms.unwrap());
+        assert_eq!(simulated_json.get("coreMs"), Some(&serde_json::Value::Null));
+        let image = &measured[1];
+        assert_eq!(image.k, 1);
+        assert!(image.error.is_none());
+        let (queue, engine, core) = (image.queue_ms.unwrap(), image.engine_ms.unwrap(), image.core_ms.unwrap());
+        assert!(queue >= 30);
+        assert!(engine >= 30);
+        assert!(core >= 30);
+        assert!(core <= engine);
+        assert!(image.ms >= queue + engine);
+        assert!(image.ms > core);
+        let json = serde_json::to_value(image).unwrap();
+        assert_eq!(json["queueMs"], queue);
+        assert_eq!(json["engineMs"], engine);
+        assert_eq!(json["coreMs"], core);
+        assert_eq!(json["ms"], image.ms);
+        wait_health(&health, WorkerHealthSnapshot { capacity: 1, running: 0, timed_out: 0, available_capacity: 1 }).await;
+        drop(tx);
+        dispatcher.await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(2), results.recv()).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn image_runner_error_reports_actual_engine_time_without_fabricating_core_time() {
+        let gate = Arc::new(Gate::default());
+        let release = ReleaseOnDrop(gate.clone());
+        let (tx, health, mut results, dispatcher) = worker(1, Arc::new(move |job| {
+            gate.wait();
+            Measured::failed(job, "controlled image runner failure")
+        }));
+        let mut image_job = job(0, Duration::from_secs(5));
+        image_job.image_measurement = true;
+        image_job.image = Some(Arc::new(FrameImage::new(2, 2, vec![128; 4])));
+        tx.send(image_job).await.unwrap();
+        wait_health(&health, WorkerHealthSnapshot { capacity: 1, running: 1, timed_out: 0, available_capacity: 0 }).await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        release.0.release();
+        let measured = next_result(&mut results).await;
+        assert_eq!(measured.error.as_deref(), Some("controlled image runner failure"));
+        assert!(measured.queue_ms.is_some());
+        assert!(measured.engine_ms.unwrap() >= 30);
+        assert!(measured.core_ms.is_none());
+        assert!(measured.ms >= measured.queue_ms.unwrap() + measured.engine_ms.unwrap());
+        drop(tx);
+        dispatcher.await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(2), results.recv()).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -566,6 +798,9 @@ mod tests {
         let result = next_result(&mut results).await;
         assert!(result.error.unwrap().starts_with(MEASURE_TIMEOUT));
         assert!(result.ms >= 100);
+        assert!(result.queue_ms.is_none());
+        assert!(result.engine_ms.is_none());
+        assert!(result.core_ms.is_none());
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert_eq!(health.snapshot(), WorkerHealthSnapshot { capacity: 1, running: 0, timed_out: 0, available_capacity: 1 });
         drop(tx);
@@ -582,6 +817,9 @@ mod tests {
         let failed = next_result(&mut results).await;
         assert_eq!(failed.error.as_deref(), Some("测量线程异常退出"));
         assert_eq!(failed.bundle_hash.as_deref(), Some("bundle-7"));
+        assert!(failed.queue_ms.is_some());
+        assert!(failed.engine_ms.is_none());
+        assert!(failed.core_ms.is_none());
         wait_health(&health, WorkerHealthSnapshot { capacity: 1, running: 0, timed_out: 0, available_capacity: 1 }).await;
         tx.send(job(1, Duration::from_secs(1))).await.unwrap();
         assert!(next_result(&mut results).await.error.is_none());

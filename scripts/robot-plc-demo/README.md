@@ -1,134 +1,140 @@
 # Robot + PLC 模拟服务
 
-用于 GlueSight 开发、升级后的联调回归和无设备演示。Robot、PLC、虚拟相机触发桥各自独立运行；默认全部绑定 `127.0.0.1`。
+用于 GlueSight 的本机协议联调和图像演示。Robot、Modbus TCP PLC、虚拟设备触发桥各自独立运行，默认绑定 127.0.0.1。Robot 写型号、SN 和计划拍照数，等待布防，按拍照点顺序触发设备，最后读取并确认检测结果。
 
-Robot 向 PLC 写入型号、SN、计划拍照数，等待 GlueSight 布防，按配方拍照点发出虚拟脉冲，最后接收并确认检测结果。PLC 使用真实 Modbus TCP 报文。相机桥只传递触发，图像由 GlueSight 模拟相机生成，定位、测量和判定仍走 lyFlow。
+配方采用 schemaVersion 4。每个拍照点保存 id、poseId、camera、view、bead、path（所选图像里的像素中线）、mmPerPx、detect 和 limits；可选 calib、skip。旧矩形坐标 shots、工件视野与模板框不再适用。
 
-## 常用命令
+| 夹具 | 产品代码 | 设备与视角顺序 | 每件设备触发数 |
+| --- | --- | --- | --- |
+| [ROBOT-DEMO-TRICAM.json](fixtures/ROBOT-DEMO-TRICAM.json)，默认 | 102 | cam1/v1 → cam1/v2 → cam1/v3 → cam1/v1 | cam1: 4 |
+| [ROBOT-DEMO.json](fixtures/ROBOT-DEMO.json) | 101 | cam1/v1，共四点 | cam1: 4 |
+| [ROBOT-DEMO-3CAM.json](fixtures/ROBOT-DEMO-3CAM.json) | 103 | cam1/v1 → cam2/v1 → cam3/v1 → cam1/v1 | cam1: 2、cam2: 1、cam3: 1 |
 
-从仓库根目录运行。需要 Python 3.11+；完整的 `sim:test` 还需要 Node 22+ 和 pnpm。启动桌面联调还需要 PowerShell 7、Rust/MSVC、WebView2 以及兼容项目的 lyFlow core DLL。Python 服务和测试仅使用标准库，无需 pip 安装。
+三目表示一台设备、一次触发交付三个视角，共用设备会话和计数。默认四点产生四次触发、十二幅设备图像、四张选中图像；视角数量不会增加 PLC 拍照数。三设备夹具用于保留设备间交错的覆盖，不代表现场有三台设备。网页展示的是拍照点顺序及设备内触发序号。
+
+## 运行命令
+
+从仓库根目录运行。Python 3.11+ 的服务和测试只用标准库；控制台与桥测试需要 Node 22+。桌面演示另外需要 PowerShell 7、项目构建环境、WebView2 和支持示教胶路的 lyFlow core DLL。
 
 | 命令 | 用途 |
 | --- | --- |
-| `pnpm sim:test` | 自动回归模型服务；不需要桌面、DLL 或已配置实例 |
-| `pnpm sim:services` | 仅启动 PLC、Robot 和网页联调台，适合开发接口 |
-| `pnpm sim:build` | 构建专用调试版并启动四个进程；首次桌面启动和 Rust 升级后使用 |
-| `pnpm sim:start` | 使用已构建的桌面程序启动，保留配方、原图和历史 |
-| `pnpm sim:verify` | 对运行中的桌面联调执行五种工况，核对结果码、SN 和握手释放 |
-| `pnpm sim:stop` | 等本件完成后停止登记的模拟进程，保留数据 |
+| pnpm sim:test | Python 协议、配方、样本测试，以及 Node 控制台和桥契约测试；无需桌面或 DLL |
+| pnpm sim:services | 只启动 Robot、PLC 和联调台 |
+| pnpm sim:build | 构建专用调试版并启动桌面及三个服务；首次使用或 Rust 升级后运行 |
+| pnpm sim:start | 复用已有构建和演示数据 |
+| pnpm sim:verify | 对运行中的桌面执行五工况，核对结果、SN、设备计数、逐点身份与握手释放 |
+| pnpm sim:stop | 本件完成后停止登记的演示进程，保留数据 |
 
-第一次构建前运行 `pnpm install --frozen-lockfile`。也可以双击 `启动联调.cmd` / `停止联调.cmd`；首次未构建时脚本会提示使用 `sim:build`。
+无需 pnpm 的模型测试入口：
 
-默认联调台为 <http://127.0.0.1:8766/>，PLC 为 `127.0.0.1:1502`，Unit ID 为 `1`。桌面应用标识固定为 `com.xyzrobotics.gluesight.robot-plc-demo`，数据保存在 `%APPDATA%` 下的同名目录。不要使用正式应用窗口连接相机桥。
+~~~powershell
+python -m unittest discover -s scripts/robot-plc-demo/tests -v
+node --test scripts/robot-plc-demo/tests/test-console.mjs
+~~~
 
-`sim:services` 不运行图像检测；网页显示触发桥离线是预期状态。`sim:test` 会自行创建测试用视觉应答端，从真实 TCP/HTTP 验证协议流程。它不会被启动脚本接入桌面联调。
+测试只用临时目录和系统分配的本机端口。Windows 沙箱若报 WinError 10013，应在获准的宿主环境运行本机 TCP/HTTP 测试。Node 的 RPC 测试使用显式测试应答，不证明桌面或 DLL 工作正常。
+
+联调台默认地址为 http://127.0.0.1:8766/，PLC 为 127.0.0.1:1502，Unit ID 为 1。专用应用标识为 com.xyzrobotics.gluesight.robot-plc-demo，数据在 %APPDATA% 下的同名目录。同一用户只运行一个桌面演示实例。
 
 ## 首次配置桌面
 
-`sim:build` 可以从没有演示数据的环境启动。随后在专用 GlueSight 窗口完成以下配置；后续升级会复用配置。
+1. 运行 pnpm sim:build，打开专用演示窗口。在系统设置启用 lyFlow 图像测量，填写当前 DLL 路径，确认引擎就绪，产品来源选择“PLC 下发产品代码”，帧录制选择“全部”。真实像素测量若仍报告“尚未接入”，应先完成算法接线；模型测试通过不能替代这一步。
+2. 默认夹具配置一台 cam1：来源“模拟相机”、触发采集、viewCount 为 3。单视角夹具为 cam1/viewCount 1；三设备夹具需要 cam1、cam2、cam3 三台模拟设备，各 viewCount 1。
+3. 按所选 JSON 创建候选配方，保持产品代码、全部逐点字段、站距、滤波、检测参数和限值一致。默认 P1→P4 的 Pose 为 Pose-1→Pose-4，视角为 1→2→3→1，图像为 1280×1024，人工像素当量为 0.112 mm/px，允许断口采用当前默认值 6 mm。
+4. 每个拍照点取新样本。三目每次一起冻结三个视角，在该点选中的视角上保存 JSON 中的像素中线和当量，执行真实图像试测并保存。换视角会清空该点示教和试测，需重新保存。保存工件总览。
+5. 运行 python scripts/robot-plc-demo/make-samples.py。脚本读取当前夹具对应的候选目录，核对 schema、设备、视角、尺寸和来源，导出新的样本目录。good/k1..k4.pgm 是四张选中图，导入为 OK；gap/k1..k4.pgm 是完整的缺胶组，导入为 NG_GAP。缺口位于第二个要检拍照点的中线中段，长度按该点断口限值及站距计算，不跨拍照点连接。
+6. 在工作台选择两组样本，运行规则与图像验证，通过后发布。发布包及真实示教 DLL 未接线时，此步骤会失败，不能直接把夹具写成已验证生产配方。
+7. PLC 使用 Modbus TCP、127.0.0.1:1502、站号 1、轮询 50 ms、超时 1000 ms、自动连接，采用下表的演示地址。若已有示例配方引用不存在的设备，在专用演示实例中修正这些引用。
+8. 联调台显示视觉、桥和握手就绪后运行一件，再执行 pnpm sim:verify。桥会拒绝配方、视角或引擎与夹具不一致的触发。
 
-1. 系统设置选择产品来源“PLC 下发产品代码”、飞拍测量“lyFlow”、帧录制“全部”。填写本机 `lyflow_core.dll` 路径并确认引擎就绪。DLL 的构建与 ABI 要求见 [项目测试说明](../../docs/testing/TESTING.md)。
-2. 设备与采集新建或配置 `cam1`，来源“模拟相机”、触发采集。演示配方只使用此相机。
-3. 运行 `python scripts/robot-plc-demo/make-board.py`，在工位标定中导入输出的 `calibration-board.pgm`。内角点 `9×6`，格长 `3.2 mm`；理想合成板的比例约为 `0.08 mm/px`。
-4. 根据 [配方夹具](fixtures/ROBOT-DEMO.json) 创建飞拍候选：`ROBOT-DEMO`、产品代码 `101`、相机 `cam1`；圆角矩形 `380×200 mm`、半径 `24 mm`、视野 `216×145 mm`、测量间距 `0.5 mm`。四点依次 `(95,50)`、`(285,50)`、`(285,150)`、`(95,150)`。位置公差、滤波和断胶限值参照 JSON。
-5. 四帧逐一取新样本、框选含安装孔及附近轮廓的定位模板、试测并保存。定位最低分数 `0.61`，搜索范围 `4 mm`，对比度 `25`。本例模板矩形可用 `[1225,75,350,350]`、`[912,75,350,350]`、`[1242,1387,350,350]`、`[867,1387,350,350]`；图像尺寸应为 `2700×1813`。保存工件总览。
-6. 运行 `python scripts/robot-plc-demo/make-samples.py` 从演示候选导出合成样本。导入良品组 `k1..k4.pgm`，期望 `OK`；再导入 `k1-gap.pgm` 配合 `k2..k4.pgm`，期望 `NG_GAP`。全部导入后统一勾选两组，运行规则与图像验证，通过后发布。
-7. PLC 选择 Modbus TCP、本机端口 `1502`、站号 `1`、轮询 `50 ms`、超时 `1000 ms`、自动连接，并使用默认握手地址表。如果出厂示例配方引用不存在的相机，在本演示实例中删除这些示例配方。
-8. 联调台显示“视觉、相机触发桥与握手均已就绪，可以运行”后，运行单件或执行 `pnpm sim:verify`。
+夹具不包含示教哈希、标定结果或发布记录。make-samples.py 只导出冻结的模拟原图并在图像中移除一段胶，不自动试测、判定或发布。provenance.json 明确记录 imageEngineValidated=false、physicalValidation=false、逐幅 SHA256、选中视角及设备触发数。默认三目还导出 replay/cam1_1_v1..v3.pgm 等十二幅图，可按设备帧分组回放；单视角导出四幅。导出的每组目录使用独立名称，避免混入上次样本。
 
-夹具 JSON 是配置规格，未包含示教哈希、标定结果或发布记录。启动脚本不会将未验证的夹具直接写成生产配方。生成器适用于上述默认四点几何；改胶路后应重新取样、示教、验证及发布。
+自定义候选可以用 --workspace 指定 workspace.json 所在目录，用 --output 指定新的输出目录。工位标定用的 make-board.py 仍可独立使用，其合成板比例为 0.08 mm/px，与本夹具的人工当量不同。
 
-## 运行、停止和错误恢复
+## 配置与恢复
 
-1. 开始前看 Robot 按钮下方的提示。只有 PLC 可连接、相机触发桥在线、视觉就绪，且 C10/C11/C12/C13/C21/C22/C23 全部为 0 时，“运行一件”和“连续运行”才可用。仅 C20 视觉就绪为 1 不代表上一件已经收尾。HTTP `/start` 同样检查这些条件，旧网页或直接调用接口也不能绕过。
-2. 单件完成后自动停止；连续运行时点击一次“本件后停止”。按钮会变为“停止请求已收到”，状态显示“正在停止 · 等待本件完成”。当前件继续拍照、检测、确认结果并释放握手，之后显示“已停止”。等待期间不能重新启动、复位或重复提交停止。
-3. “本件后停止”用于正常收尾。如果本件发生触发无响应、结果 SN 不匹配等错误，联调台保留“需要检查”和具体原因，不会把错误显示为成功停止。先按提示恢复连接或检查 GlueSight 配置；Robot 已不在运行且 PLC 可连接后，可点“故障复位”。
-4. 复位后显示“复位已请求”。复位只发送故障复位信号，不能修复缺失的相机、未发布的配方或离线的算法引擎。等按钮下方重新显示全部就绪，再运行一件确认恢复。
-5. 如果网页显示“连接已中断”，按钮会全部禁用，PLC 当前值显示“—”，历史结果仍可查看。此时网页无法确认当前件是否结束；检查服务并等待自动重连，恢复后重新确认状态。PLC 单独离线时不能启动或复位；相机触发桥离线时不能启动。
+demo.config.json 是默认服务配置，版本为 1。路径相对该文件解析。复制成 demo.local.json（已忽略）后，可修改 robot.recipe 来切换夹具，修改 runtimeDir 隔离输出，修改三个端口隔离模型服务：
 
-## 修改配置
-
-`demo.config.json` 是唯一的默认服务配置，含版本号、端口、站号、配方路径、运动时间和超时。相对路径以该 JSON 所在目录为基准。
-
-本机差异可复制为本目录 `demo.local.json`（已忽略），再运行：
-
-```powershell
+~~~powershell
 pnpm sim:services -Config scripts/robot-plc-demo/demo.local.json
-pnpm sim:stop -Config scripts/robot-plc-demo/demo.local.json
 pnpm sim:build -Config scripts/robot-plc-demo/demo.local.json
 pnpm sim:verify --config scripts/robot-plc-demo/demo.local.json
-```
+pnpm sim:stop -Config scripts/robot-plc-demo/demo.local.json
+~~~
 
-修改 `runtimeDir` 可以隔离服务日志；同时修改三个端口可以启动另一组纯模型服务。**桌面应用的数据目录由固定应用标识决定，同一用户只运行一个桌面演示实例。** 修改 PLC 端口或站号后，要在 GlueSight 通讯配置中同步修改；改配方后要保证 Robot 的 `id/productCode/shots` 与已发布配方一致。
+- 开始前必须同时满足 PLC 可连接、触发桥在线、视觉就绪，以及 C10/C11/C12/C13/C21/C22/C23 全部为 0。HTTP /start 同样检查，旧页面无法绕过。
+- “本件后停止”会完成当前件并释放握手；重复停止幂等。等待期间不能开始新件或复位。触发、结果或写入出错时保留具体错误，不显示为成功停止。
+- Robot 空闲且 PLC 可连接时可执行故障复位。复位发送 C13 脉冲，不能修复缺失设备、错误视角、未发布配方或不可用 DLL。
+- HTTP 断开时禁用操作、将 PLC 值显示为未知；恢复后重新读取状态。PLC 单独离线时不能启动或复位，桥离线时不能启动。
+- releaseSeconds 默认 0.2 秒，保持 C10/C11/C12 为低，至少应覆盖两次 PLC 轮询。motionSeconds 是每点运动时间，settleSeconds 是最后触发后等待，intervalSeconds 是件间隔。
 
-`motionSeconds` 是每点的模拟运动时间，`settleSeconds` 是末次触发到运动结束的等待，`intervalSeconds` 是连续件间隔。`releaseSeconds` 是每件完成前保持 C10/C11/C12 为低的时间，默认 `0.2 s`；应至少覆盖两次 PLC 轮询，避免连续启动时漏掉下降沿。`timeouts` 分别约束就绪、布防、触发应答、结果和释放等待。
+Start-Demo.ps1 的 -Recipe 覆盖同时传给 Robot 和桥。升级后先 sim:stop，再重新构建、启动。源码或配置哈希变化时启动脚本拒绝复用旧进程。
 
-可绕过 PowerShell，单独启动服务（Windows/Linux 均可运行 Python 服务）：
+## PLC 契约与工况
 
-```text
-python scripts/robot-plc-demo/plc_service.py --config scripts/robot-plc-demo/demo.config.json
-python scripts/robot-plc-demo/robot_service.py --config scripts/robot-plc-demo/demo.config.json
-node scripts/robot-plc-demo/camera-bridge.mjs --config scripts/robot-plc-demo/demo.config.json
-```
-
-独立命令的进程需自行管理。桌面桥要求专用调试构建和 WebView2 调试端口，通常使用 `sim:start` 统一启动。
-
-## 握手地址及工况
-
-地址从 0 开始；32 位整数使用高字在前的 ABCD 顺序。PLC 提供 256 个线圈及 256 个寄存器，支持功能码 1/2/3/4/5/6/15/16；本模型中离散输入与线圈共用存储，输入寄存器与保持寄存器共用存储。
+地址从 0 开始，32 位整数按高字在前 ABCD 顺序。演示 PLC 有 256 个线圈及寄存器，支持功能码 1/2/3/4/5/6/15/16。离散输入与线圈共用存储，输入寄存器与保持寄存器共用存储。
 
 | 地址 | 含义 | 写入方 |
 | --- | --- | --- |
 | C0 | 心跳 | GlueSight |
 | C10 / C11 / C12 / C13 | 工件开始 / 运动结束 / 结果确认 / 故障复位 | Robot |
 | C20 / C21 / C22 / C23 | 视觉就绪 / 已布防 / 检测中 / 结果有效 | GlueSight |
-| HR100..101 / HR102 / HR103 | 工件 SN / 产品代码 / 拍照数 | Robot |
-| HR104..105 | 保留，不使用 | — |
+| HR100..101 / HR102 / HR103 | SN / 产品代码 / 拍照点数 | Robot |
+| HR104..105 | 保留 | — |
 | HR110 / HR111 / HR112..113 | 结果码 / 异常码 / 结果 SN | GlueSight |
 
-| 工况 | 结果码 / 异常码 | 默认四点配方收到帧数 |
+设备计数作为 HTTP 状态和结果证据记录，没有新增 Modbus 地址。生产 S7 的设备槽、序号 ACK 和 planHash 仍按 [S7 契约](../../docs/integration/plc-s7-phase1.md)；单台三目四点在 S7 只占一个设备槽，cameraShots=[4,0,0]。
+
+| 工况 | 保留的结果码 / 异常码期望 | 设备触发数 / 预期到帧数 |
 | --- | --- | --- |
-| `normal` | 1 / 0 | 4 |
-| `gap` | 13 / 0 | 4 |
-| `lostFrame` | 90 / 91 | 3 |
-| `locateFail` | 90 / 92 | 4 |
-| `countMismatch` | 90 / 94 | 0，布防前拒绝 |
+| normal | 1 / 0 | 4 / 4 |
+| gap | 13 / 0 | 4 / 4；逐点段内缺胶 |
+| lostFrame | 90 / 91 | 4 / 3；最后一帧被抑制 |
+| locateFail | 90 / 99 | 4 / 4；最后一点胶线平移 130px |
+| countMismatch | 90 / 94 | 0 / 0；布防前拒绝 |
 
-以上期望对应仓库默认夹具。胶路或规则改变后，应重新验证期望，不能为了让升级检查变绿而放宽断言。
+这些是需要真实桌面/DLL 验证的契约期望。Python VisionPeer 只为协议测试写应答寄存器。locateFail 保留历史工况键名，在逐点示教模型里由图像偏移产生；当前真实示教 DLL 将整个检测区无胶作为测量错误 99，部分断口仍为 NG_GAP 13。本表依此语义更新，桌面五工况仍须实跑，不能用测试应答代替。
 
-Robot HTTP 接口：`GET /state` 获取状态和 PLC 快照，包括 `stopping`、`canStart`、`startBlockedReason` 和 `canReset`；`POST /start` 接收 `scenario`、`count`（1..100）、`continuous`，`POST /stop` 在本件后停止，`POST /reset` 仅空闲时复位。重复停止请求幂等，不会中断当前件或重复写入停止事件。`/start` 返回 `runId`；结果也带该 ID，因此检查不依赖历史件数。`GET /trigger` 与 `POST /trigger-ack` 由相机桥使用；ticket ID 包含进程会话 ID，重复、过期或不匹配的应答会被拒绝。
+GET /state 提供 contractVersion=2、recipe、plannedTriggers、deviceTriggers、cycleId、recipeHash、bundleHash、可操作状态及 PLC 快照。POST /start 接收 scenario、count（1..100）、continuous，返回 runId。POST /stop 在本件后停止，POST /reset 只允许空闲时执行。
 
-## 升级验证与数据
+GET /trigger 的 ticket 除 sn/k/scenario 外，还带 recipeId、productCode、shotCount、shotId、poseId、camera、view 和设备内 ordinal。桥先读取 cycle_snapshot、cycle_layout（当前 hash）、camera_rig_config、cycle_get_settings、engine_status 和 app_info，核对全部参与设备、逐点参数、cycleId 与发布资源身份，然后只调用已有 sim_robot_trigger(sn,k,scenario)。临发脉冲前再查工件，禁止中途换件或换包。成功 ACK 必须回传相同身份，Robot 把整件 ACK 绑定到同一 cycleId。已执行 ticket 缓存 ACK，丢失 HTTP 应答后的重试不会产生第二次脉冲；桥中途重启不能接续 k>0，需恢复后重跑。
 
-```powershell
+真实三目 SDK 的交付格式、同步计数和线路仍待现场确认。桥只允许模拟设备，不配置 SDK 拆包或实体触发线路。
+
+## 故障矩阵与验收边界
+
+| 故障 | 当前入口或验证层 |
+| --- | --- |
+| 设备间交错到达 | 三设备夹具保留 cam1→cam2→cam3→cam1 及各设备序号；任意到达顺序应单独跑 Rust shot_router 的 interleaved_frames 测试 |
+| 丢首/中/尾帧、多余触发 | 桌面支持 lostFrame 丢尾；首/中丢帧及额外计数由 Rust shot_router 故障矩阵验证 |
+| 错误设备、错误/缺失视角 | Node 桥契约测试证明发脉冲前拒绝；真实图像缺视角仍需 Rust/桌面验证 |
+| 上一件迟到、同 SN 重检 | 桥测试拒绝 cycleId 或发布包变更；原帧与迟到测量隔离由 Rust shot_router/cycle 验证 |
+| 触发桥失联、拒绝 ACK、ACK 身份不符 | Python 的真实 HTTP/Modbus 测试证明不计完成、清输入并保留错误 |
+| 队列满、DLL 卡住 | 应另跑 Rust measure 的排队截止、占用容量与迟到结果测试；本脚本没有虚构的 DLL 卡死注入命令，真实 DLL 卡死与尾延迟仍需专项回归 |
+| PLC 写拒绝 | Python 测试通过实际 Modbus 异常响应注入，核对不计完成及后续恢复 |
+| 磁盘写错误 | Python 测试使结果文件不可写，核对不计完成及恢复；录制/发布磁盘错误需另跑对应 Rust 测试 |
+
+sim:test 通过只证明上述脚本范围。P0 步 7 完整验收还需要真实 DLL 在线图像闭环、真实故障恢复、排队/引擎耗时、内存趋势，以及现场 SDK 和准确率证据。运行层的 native 测试要求见 [P0 计划](../../docs/architecture/p0-plan.md) 和 [测试记录](../../docs/testing/TESTING.md)。
+
+## 回归报告与数据
+
+~~~powershell
 pnpm sim:stop
 pnpm sim:test
 pnpm sim:build
 pnpm sim:verify
-```
+~~~
 
-`sim:test` 使用临时目录和操作系统分配的空闲端口，不读取演示 AppData、不需要联网下载，也不改动已运行的服务。测试覆盖 TCP 分片/粘包、多客户端、字序、异常报文、空闲连接与半包超时、五工况握手、连续停止与重复停止、完整待机检查、离线与复位反馈、错误 SN、缺失触发应答、重复启动、Origin 与输入校验、重启恢复、断电造成的末行损坏，以及回归失败覆盖旧通过报告。可在 CI 直接运行 `python -m unittest discover -s scripts/robot-plc-demo/tests -v`。
+sim:verify 真实增加五件演示记录，按 runId 关联结果，逐件检查结果码、异常码、SN、握手释放和设备触发数。只运行指定工况可用 --scenarios normal gap。失败返回非零并覆盖旧的通过报告。
 
-联调台控件状态的回归使用 Node 内置测试器，无需安装额外依赖：`node --test scripts/robot-plc-demo/tests/test-console.mjs`。它覆盖在线状态过期、请求提交中、停止等待、残留握手及 PLC 断开后的按钮行为。
+图像工况的报告要求真实应用/引擎应答、非空 cycleId、recipeHash 与不可变 bundleHash，记录应用版本、引擎版本、DLL 文件 SHA256、夹具文件 SHA256、逐点 ACK 和设备计数。测试应答端不能作为真实图像回归证据。DLL SHA256 来自应用报告路径在验证时的文件。triggerAckMs 是桥命令的应答时间，resultWaitMs 是 partEnd 后等待结果的时间，cycleMs 是 Robot 整件时间；它们不等于引擎或排队耗时。报告的 unmeasured 明示这些未测量项及现场精度缺口。
 
-`sim:verify` 会真实增加五件演示记录，逐件核对结果码、异常码、SN 和握手释放；失败时返回非零退出码并保留报告。只跑指定工况：`pnpm sim:verify --scenarios normal gap`。它不清空历史、不核对截图或图像精度；图像算法本身的原生回归见项目测试说明。
+默认输出在 output/playwright/robot-plc-demo/（已忽略）：
 
-默认运行输出在 `output/playwright/robot-plc-demo/`（已被 Git 忽略）：
+- services.json：进程身份、源码/配置/夹具哈希及构建程序哈希；停止脚本只关闭登记身份匹配的进程。
+- plc-wire.jsonl、robot-events.jsonl、robot-results.jsonl：实际协议值变化、事件和结果；重启恢复，末行写入中断时保留备份。
+- regression-latest.json：最近一次真实联调报告，包含失败原因。
+- samples/：按次生成的选中视角样本、全部冻结视角回放图及 provenance.json。
+- stdout/stderr 日志、演示程序与截图。
 
-- `services.json`：进程 PID、启动时间、可执行路径和源码/配置哈希。停止脚本只关闭身份匹配的进程。
-- `plc-wire.jsonl`：实际值变化；`robot-events.jsonl`：握手事件；`robot-results.jsonl`：完整结果，重启恢复。
-- `regression-latest.json`：最近一次五工况检查报告，包括失败原因。
-- `*.stdout.log` / `*.stderr.log`：服务日志；模拟程序、生成图、截图也放在此目录。
-
-首次手动试用的截图、旧报告和脚本保留在本机输出目录，不作为升级回归的固定输入。源码、配置、夹具、测试和使用说明保存在本目录；DLL、exe、原图、日志、AppData 和依赖目录不应提交。
-
-## 维护入口
-
-- `simulator_config.py`：配置校验与默认工况期望；增加配置字段时同步示例和测试。
-- `plc_service.py` / `modbus_wire.py`：PLC 内存与 Modbus 编解码。
-- `robot_service.py`：运动/握手状态机、结果恢复、HTTP API。
-- `console.html` / `console.mjs`：网页结构与状态显示；新增静态资源时同步 `robot_service.py` 的资源白名单。启动脚本的源码哈希包含 `.mjs`，改动后需要停止再启动服务。
-- `camera-bridge.mjs`：WebView2 通道与虚拟脉冲，只调用 `sim_robot_trigger`。
-- `src-tauri/src/sim.rs`：图像工况与受保护的外部触发；`src-tauri/src/simimage.rs`：合成图像。
-
-外部触发仅在专用调试应用标识、回环 Modbus PLC、模拟相机、已布防工件、匹配 SN 和连续 k 下允许。正式发布构建拒绝此命令。模型不包含品牌机器人运动学、碰撞检查或实物精度验收。
+源码、配置、夹具、测试和本说明可提交。DLL、exe、客户原图、AppData、依赖和运行输出不应提交。

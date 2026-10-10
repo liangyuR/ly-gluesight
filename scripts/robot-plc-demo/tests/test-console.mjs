@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { controlsFor } from '../console.mjs';
+import { readFileSync } from 'node:fs';
+import { controlsFor, shotPlan } from '../console.mjs';
+import { recipeContract, validateTrigger, triggerDispatcher } from '../camera-bridge.mjs';
 
 const idle = { running: false, stopping: false, canStart: true, canReset: true, startBlockedReason: null };
 
@@ -39,4 +41,166 @@ test('PLC loss disables start and reset without hiding a running Robot stop acti
   assert.equal(controls.one, true);
   assert.equal(controls.reset, true);
   assert.equal(controls.stop, false);
+});
+
+function fixture(name = 'ROBOT-DEMO-TRICAM') {
+  return JSON.parse(readFileSync(new URL(`../fixtures/${name}.json`, import.meta.url), 'utf8'));
+}
+
+function context(recipe = fixture()) {
+  const layout = { ...structuredClone(recipe), hash: 'scripted-recipe-hash' };
+  const rig = [...new Set(recipe.shots.map(shot => shot.camera))].map(id => ({
+    id, source: 'sim', acquisition: 'triggered', viewCount: recipe.shots.some(s => s.camera === id && s.view > 1) ? 3 : 1,
+  }));
+  const snapshot = { phase: 'ACQUIRE', part: {
+    sn: 123, cycleId: 'scripted-cycle-1', recipeId: recipe.id, recipeHash: layout.hash,
+    bundleHash: 'scripted-bundle-hash', n: recipe.shots.length,
+    frames: recipe.shots.map(s => ({ shotId: s.id, camera: s.camera, view: s.view, status: 'waiting' })),
+  } };
+  return { recipe, layout, rig, snapshot, settings: { vision: true },
+    engine: { backend: 'LyFlow', ready: true, measuring: true, path: 'scripted-test.dll', version: 'test' } };
+}
+
+function ticket(ctx, k = 0) {
+  const point = shotPlan(ctx.recipe)[k];
+  return { id: `scripted-session:123:${k}`, sn: 123, k, scenario: 'normal',
+    recipeId: ctx.recipe.id, productCode: ctx.recipe.productCode, shotCount: ctx.recipe.shots.length,
+    shotId: point.id, poseId: point.poseId, camera: point.camera, view: point.view, ordinal: point.ordinal };
+}
+
+function check(ctx, pulse = ticket(ctx), binding) {
+  return validateTrigger(pulse, ctx.recipe, ctx.snapshot, ctx.layout, ctx.rig, ctx.settings, ctx.engine, binding);
+}
+
+function rpc(ctx, calls, snapshots = []) {
+  return async (command, args) => {
+    calls.push({ command, args });
+    switch (command) {
+      case 'cycle_snapshot': return structuredClone(snapshots.shift() ?? ctx.snapshot);
+      case 'cycle_layout':
+        assert.deepEqual(args, { recipeId: ctx.recipe.id, hash: ctx.layout.hash });
+        return ctx.layout;
+      case 'camera_rig_config': return ctx.rig;
+      case 'cycle_get_settings': return ctx.settings;
+      case 'engine_status': return ctx.engine;
+      case 'app_info': return { name: 'scripted-test-app', version: 'test' };
+      case 'sim_robot_trigger': return null;
+      default: throw new Error(`Unexpected command ${command}`);
+    }
+  };
+}
+
+test('shot plans count devices once per pulse and keep view 1→2→3→1 separate from device ordinals', () => {
+  const tricam = shotPlan(fixture());
+  assert.deepEqual(tricam.map(p => p.view), [1, 2, 3, 1]);
+  assert.deepEqual(tricam.map(p => p.ordinal), [1, 2, 3, 4]);
+  const devices = shotPlan(fixture('ROBOT-DEMO-3CAM'));
+  assert.deepEqual(devices.map(p => p.camera), ['cam1', 'cam2', 'cam3', 'cam1']);
+  assert.deepEqual(devices.map(p => p.ordinal), [1, 1, 1, 2]);
+});
+
+test('release-only metadata may differ while all effective pixel geometry and limits must match', () => {
+  const ctx = context();
+  ctx.layout.version = 19;
+  ctx.layout.teachingHash = 'published';
+  delete ctx.layout.shots[0].detect;
+  delete ctx.layout.shots[0].limits;
+  assert.deepEqual(recipeContract(ctx.layout), recipeContract(ctx.recipe));
+  assert.equal(check(ctx).view, 1);
+  ctx.layout.shots[0].mmPerPx = 0.08;
+  assert.throws(() => check(ctx), /differs/);
+});
+
+test('preflight refuses wrong SN, shot, Pose, camera, view, ordinal, hash and malformed schema', () => {
+  const edits = [
+    ctx => { ctx.snapshot.part.sn++; }, ctx => { ctx.layout.hash = 'other'; },
+    ctx => { ctx.layout.schemaVersion = 3; }, ctx => { ctx.snapshot.part.cycleId = ''; },
+    ctx => { ctx.snapshot.part.bundleHash = null; },
+    ctx => { ctx.snapshot.part.n = 12; }, ctx => { ctx.snapshot.phase = 'DRAIN'; },
+    ctx => { ctx.snapshot.part.frames[0].shotId = 'P4'; }, ctx => { ctx.snapshot.part.frames[0].status = 'done'; },
+  ];
+  for (const edit of edits) {
+    const ctx = context();
+    edit(ctx);
+    assert.throws(() => check(ctx));
+  }
+  for (const [key, value] of [['shotId', 'P4'], ['poseId', 'Pose-3'], ['camera', 'cam2'], ['view', 3], ['ordinal', 2], ['k', -1], ['scenario', 'countMismatch']]) {
+    const ctx = context();
+    assert.throws(() => check(ctx, { ...ticket(ctx), [key]: value }), key);
+  }
+});
+
+test('all planned devices must expose the required views through triggered simulation', () => {
+  const edits = [
+    ctx => { ctx.rig[0].viewCount = 1; }, ctx => { ctx.rig[0].viewCount = 2; },
+    ctx => { ctx.rig[0].source = 'mvs'; }, ctx => { ctx.rig[0].source = 'replay'; },
+    ctx => { ctx.rig[0].acquisition = 'freeRun'; }, ctx => { ctx.rig.push({ ...ctx.rig[0] }); },
+    ctx => { ctx.rig = []; }, ctx => { ctx.settings.vision = false; },
+    ctx => { ctx.engine.measuring = false; }, ctx => { ctx.engine.ready = false; },
+    ctx => { ctx.engine.backend = '模拟测量'; },
+  ];
+  for (const edit of edits) {
+    const ctx = context();
+    edit(ctx);
+    assert.throws(() => check(ctx));
+  }
+});
+
+test('bridge invokes the existing Rust argument contract once and reuses an acknowledgement after a lost HTTP reply', async () => {
+  const ctx = context(), calls = [];
+  const dispatch = triggerDispatcher(ctx.recipe, rpc(ctx, calls));
+  for (let k = 0; k < 4; k++) {
+    const pulse = ticket(ctx, k);
+    const ack = await dispatch(pulse);
+    assert.equal(ack.ok, true, ack.error);
+    assert.equal(ack.identity.cycleId, 'scripted-cycle-1');
+    assert.deepEqual(await dispatch(pulse), ack);
+  }
+  assert.deepEqual(calls.filter(c => c.command === 'sim_robot_trigger').map(c => c.args),
+    [0, 1, 2, 3].map(k => ({ sn: 123, k, scenario: 'normal' })));
+  const changed = await dispatch({ ...ticket(ctx), view: 3 });
+  assert.equal(changed.ok, false);
+  assert.match(changed.error, /reused/);
+});
+
+test('wrong device and view are rejected before any pulse, with negative acknowledgements cached', async () => {
+  for (const key of ['camera', 'view']) {
+    const ctx = context(), calls = [];
+    const dispatch = triggerDispatcher(ctx.recipe, rpc(ctx, calls));
+    const pulse = { ...ticket(ctx), [key]: key === 'camera' ? 'wrong-device' : 3 };
+    const ack = await dispatch(pulse);
+    assert.equal(ack.ok, false);
+    assert.equal(calls.some(c => c.command === 'sim_robot_trigger'), false);
+    assert.deepEqual(await dispatch(pulse), ack);
+  }
+});
+
+test('same-SN cycle changes, bundle changes and a restarted bridge cannot resume at a later shot', async () => {
+  for (const edit of [ctx => { ctx.snapshot.part.cycleId = 'scripted-cycle-2'; },
+    ctx => { ctx.snapshot.part.bundleHash = 'different-bundle'; }]) {
+    const ctx = context(), calls = [];
+    const dispatch = triggerDispatcher(ctx.recipe, rpc(ctx, calls));
+    assert.equal((await dispatch(ticket(ctx))).ok, true);
+    edit(ctx);
+    assert.equal((await dispatch(ticket(ctx, 1))).ok, false);
+    assert.equal(calls.filter(c => c.command === 'sim_robot_trigger').length, 1);
+  }
+  const ctx = context(), calls = [];
+  const dispatch = triggerDispatcher(ctx.recipe, rpc(ctx, calls));
+  assert.equal((await dispatch(ticket(ctx, 1))).ok, false);
+  assert.equal(calls.some(c => c.command === 'sim_robot_trigger'), false);
+});
+
+test('a cycle change during preflight and an unavailable DLL never send a camera pulse', async () => {
+  const ctx = context(), calls = [];
+  const changed = structuredClone(ctx.snapshot);
+  changed.part.cycleId = 'changed-before-pulse';
+  const dispatch = triggerDispatcher(ctx.recipe, rpc(ctx, calls, [ctx.snapshot, changed]));
+  assert.equal((await dispatch(ticket(ctx))).ok, false);
+  assert.equal(calls.some(c => c.command === 'sim_robot_trigger'), false);
+  const unavailable = triggerDispatcher(ctx.recipe, async command => {
+    if (command === 'engine_status') throw new Error('scripted DLL unavailable');
+    return rpc(ctx, calls)(command);
+  });
+  assert.equal((await unavailable(ticket(ctx))).ok, false);
 });
