@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-10",
+  "runtimeSourceCommit": "7b6316090496aa4c9cdb5c9cc99b20572c471c99",
+  "branch": "codex/p0-audit-durability",
+  "scope": "Integrate latest PR14 fixes with PR15 third review corrections",
+  "passed": true,
+  "checks": [
+    {
+      "name": "Rust default integration",
+      "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib",
+      "passed": true,
+      "tests": 366,
+      "failed": 0,
+      "ignored": 33,
+      "testSeconds": 12.74,
+      "buildSeconds": 57.38,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-audit-review3-integration-rust-c.log"
+    },
+    {
+      "name": "Real LyFlow DLL integration",
+      "command": "cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib native_ -- --ignored --skip native_full_resolution --test-threads=1",
+      "passed": true,
+      "tests": 6,
+      "failed": 0,
+      "ignored": 0,
+      "testSeconds": 1.59,
+      "buildSeconds": 1.12,
+      "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-audit-review3-integration-dll-c.log",
+      "warnings": [
+        "Requested ORT API 19 is unavailable; installed ORT 1.17.1 supports APIs 1 and 17. Original warning remains in the log."
+      ]
+    }
+  ],
+  "earlierReviewEvidence": "p0-audit-review3-c.json",
+  "limits": [
+    "No new S7, native desktop/process-interruption, frontend, current-source 400-part, Robot five-scenario or field-hardware acceptance was run in this integration checkpoint.",
+    "Earlier PR15 third-review default 358 and S7 25 results remain tied to bdfd76b; previous native reports retain their original source/executable.",
+    "Acquire without a final record is not fabricated as completed; active spool and interrupted-preinsert archive remain independently bounded as recorded by the preceding review evidence.",
+    "No content hash calculation or matching; ORT warnings are retained, not treated as acceptance of hardware or algorithm accuracy."
+  ]
+}

@@ -313,3 +313,6 @@
 | P0-17 | ACK后Insert/Submission/Delivery均已入库且spool为空，但上件录制终态回调尚未发生，可能过早放行下一件 | `04c3839` 在录制开始前登记，同spool锁内耐久写入终态后解除；布防与历史清理同时检查未决录制。真实Recorder/SQLite回归3项、完整Rust341项通过，见[录制屏障证据](../testing/evidence/p0-audit-recording-barrier-c.json) |
 | P0-21 | 默认 Off 或 Recorder 提前失败的同步终态曾在 Insert 前写 spool；Acquire 中断后仅 Recording、无主行的旧事件无法完成启动回放。健康探针写入后中断留下 `[0]` 也曾阻止启动 | `bdfd76b` 先暂存同步终态，Insert 与暂存终态在同 spool 锁内顺序耐久接受，失败保留主收据、录制屏障并锁存故障。旧事件仅在 SQLite 确认无主行、全部为一致合法 Recording 时归档至 `.interrupted-preinsert`，原文、路径及原图保留；混合 Submission/Delivery、冲突或查询错误仍拒绝恢复。仅探针精确 `[0]` 可截空并 sync，其他字节保留且拒绝。活跃 spool 与归档各自4096事件/64MiB，容量分别约束，原图参与清理保护；Acquire 未生成最终记录不伪造最终结论。见[第三轮证据](../testing/evidence/p0-audit-review3-c.json) |
 | P0-22 | S7 释放时正常的未决录制曾被当作设备故障，ACK 后需人工复位；Recorder.begin 同步回调已经锁存审计故障时仍可能启动相机 | `bdfd76b` 使用独立审计等待状态，等待时 Ready 保持低、ACK与未决事务保留，耐久收尾后自动释放并允许下一件；真实设备或审计健康故障仍拒绝。begin 后、camera.begin_part 前重查故障、writer存活与实际磁盘探针，不被本件正常屏障误拦。8项新增默认回归与2项新增真实S7回归通过；完整358/25通过，不声明新原生400件或硬件验收。见[第三轮证据](../testing/evidence/p0-audit-review3-c.json) |
+
+
+2026-10-10 PR #15 第三轮修复合入最新 PR #14 后，集成源码 `7b6316090496aa4c9cdb5c9cc99b20572c471c99` 完整默认 Rust **366通过/0失败/33忽略**（测试12.74秒、编译57.38秒），真实 LyFlow DLL 专项 **6通过/0失败**（测试1.59秒、编译1.12秒）。ORT API19/运行时1.17.1兼容告警保留在原日志，不掩盖或改写。本轮未新增 S7、原生桌面/进程中断、前端、当前源码400件或现场硬件验收；此前第三轮358/25及其他历史报告仍保持原来源。见[第三轮集成证据](../testing/evidence/p0-audit-review3-integration-c.json)。

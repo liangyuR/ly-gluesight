@@ -379,3 +379,6 @@ Codex P1审查发现：spool写失败先释放锁、随后发布故障，布防�
 完整默认命令 `cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib`：**358通过/0失败/33默认忽略**，测试12.63秒、编译58.45秒。随后仅移除测试局部变量的 unused mut；完整 S7 命令 `cargo test --offline --locked --manifest-path src-tauri/Cargo.toml --lib s7_wire_ -- --include-ignored --test-threads=1`：**25通过/0失败/0忽略**，测试54.17秒、编译12.51秒。共享 C 盘 target 与 `S7_TEST_PYTHON` 沿用既有回环环境，日志路径见[第三轮审查证据](evidence/p0-audit-review3-c.json)。独立静态复核未发现新增必须修复问题。
 
 本轮未运行新的原生中断恢复、当前源码400件、Robot五工况、真实 DLL专项或前端回归；此前报告保持其原始源码归属。S7 结果来自本机回环，不代表现场硬件 W0/W7。P0-09 默认带噪 normal 仍严格预期 OK，实际2不能替代或重标为通过。
+
+
+2026-10-10 PR #15 第三轮修复合入最新 PR #14 后，集成源码 `7b6316090496aa4c9cdb5c9cc99b20572c471c99` 完整默认 Rust **366通过/0失败/33忽略**（测试12.74秒、编译57.38秒），真实 LyFlow DLL 专项 **6通过/0失败**（测试1.59秒、编译1.12秒）。ORT API19/运行时1.17.1兼容告警保留在原日志，不掩盖或改写。本轮未新增 S7、原生桌面/进程中断、前端、当前源码400件或现场硬件验收；此前第三轮358/25及其他历史报告仍保持原来源。见[第三轮集成证据](evidence/p0-audit-review3-integration-c.json)。
