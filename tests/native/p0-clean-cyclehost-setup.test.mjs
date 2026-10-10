@@ -57,7 +57,7 @@ const publishedOptions = { layout: publishedLayout, bundleId: 'release-40-explic
 function publishedReady() {
   return { layout: structuredClone(publishedLayout), cycle: { ...retainedFinal(), alarms: [] },
     sim: { running: false }, engine: { backend: 'LyFlow', ready: true, measuring: true },
-    logs: [{ level: 'ok', ev: '生产预热', msg: '发布包 release-40-explicit 已就绪，耗时 120 ms' }] };
+    logs: [{ ts: 1000, level: 'ok', ev: '生产预热', msg: '发布包 release-40-explicit 已就绪，耗时 120 ms' }] };
 }
 
 test('published recipe requires its exact layout and positive bundle warmup log', () => {
@@ -138,4 +138,38 @@ test('bounded wait fails on a real target error without polling again', async ()
 test('bounded wait also limits a stalled native read', async () => {
   const page = { evaluate: () => new Promise(() => {}), waitForTimeout: () => { throw new Error('Unexpected poll'); } };
   await assert.rejects(waitForPublishedRecipeReady(page, { ...publishedOptions, timeoutMs: 10 }), /read exceeded/);
+});
+for (const [name, ts, expected] of [
+  ['older completion log', 999, false],
+  ['missing completion timestamp', undefined, false],
+  ['null completion timestamp', null, false],
+  ['fractional completion timestamp', 1000.5, false],
+  ['completion at exact boundary', 1000, true],
+  ['newer completion log', 1001, true],
+]) test('warmup timestamp lower bound checks ' + name, () => {
+  const observation = publishedReady(); observation.logs[0].ts = ts;
+  assert.equal(isPublishedRecipeReady(observation, { ...publishedOptions, warmupAfterTs: 1000 }), expected);
+});
+
+for (const warmupAfterTs of [-1, null, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '1000']) test('invalid warmup timestamp lower bound ' + String(warmupAfterTs) + ' rejects before native reads', async () => {
+  assert.throws(() => isPublishedRecipeReady(publishedReady(), { ...publishedOptions, warmupAfterTs }), /nonnegative safe integer/);
+  const page = readOnlyPage([publishedReady()]);
+  await assert.rejects(waitForPublishedRecipeReady(page, { ...publishedOptions, warmupAfterTs }), /nonnegative safe integer/);
+  assert.equal(page.commands.length, 0);
+});
+
+test('bounded wait ignores previous warmup and returns a new timestamped completion', async () => {
+  const previous = publishedReady(), current = publishedReady(); current.logs[0].ts = 1001;
+  const page = readOnlyPage([previous, current]);
+  const result = await waitForPublishedRecipeReady(page, { ...publishedOptions, warmupAfterTs: 1001, timeoutMs: 1000 });
+  assert.equal(result.polls, 2); assert.equal(result.warmupAfterTs, 1001);
+  assert.deepEqual(result.logs, current.logs); assert.deepEqual(result.warmupLog, current.logs[0]);
+  assert.deepEqual(result.cycle, current.cycle); assert.deepEqual(result.engine, current.engine); assert.deepEqual(result.sim, current.sim);
+});
+
+test('default zero timestamp bound still requires an actual log timestamp', () => {
+  const observation = publishedReady(); delete observation.logs[0].ts;
+  assert.equal(isPublishedRecipeReady(observation, publishedOptions), false);
+  observation.logs[0].ts = 0;
+  assert.equal(isPublishedRecipeReady(observation, publishedOptions), true);
 });

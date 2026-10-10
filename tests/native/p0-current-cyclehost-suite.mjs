@@ -47,7 +47,7 @@ const report = { schemaVersion: 1, identifier, profile, startedAt: new Date().to
   requestedParts: 400, completedParts: 0, physicalValidation: false, s7HardwareValidation: false,
   scope: 'Current source, fresh profile, actual CycleHost and real LyFlow DLL; independently UI-taught 1V/3V clean replay controls, simulator PLC, four groups of 100',
   algorithmScope: 'Clean replay control only; default noisy-metal normal P0-09 remains independent and unresolved',
-  stages: [], plcTransitions: [], setup: [], groups: [] };
+  stages: [], plcTransitions: [], preparationResets: [], setup: [], groups: [] };
 let app, browser, page, stage = 'preflight';
 const read = (command, args) => page.evaluate(({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
 const save = (name, value) => writeFile(join(paths.output, name), JSON.stringify(value, null, 2) + '\n', { flag: 'wx' });
@@ -90,6 +90,20 @@ async function plcTransition(connected, label) {
   transition.after = connected ? await warmReady() : await waitDisconnected();
   transition.finishedAt = new Date().toISOString();
   return transition;
+}
+async function reapplyPreparationSettings(label, expectedSettings) {
+  const preparation = { label, before: await read('cycle_get_settings'), cycleBefore: await waitDisconnected() };
+  assert.deepEqual(preparation.before, expectedSettings, 'Production settings changed before group preparation');
+  await page.getByRole('navigation', { name: '操作导航' }).getByRole('link', { name: '系统设置', exact: true }).click();
+  const timing = page.locator('.panel').filter({ has: page.getByRole('heading', { name: '检测节拍', exact: true }) });
+  preparation.saveStartedAt = Date.now();
+  await timing.getByRole('button', { name: '保存', exact: true }).click();
+  await timing.getByText('已保存，从下一个工件开始生效', { exact: true }).waitFor({ state: 'visible' });
+  preparation.after = await read('cycle_get_settings');
+  assert.deepEqual(preparation.after, expectedSettings, 'Same-value UI save must preserve all production settings');
+  preparation.cycleAfter = await waitDisconnected();
+  preparation.finishedAt = new Date().toISOString(); report.preparationResets.push(preparation);
+  return preparation;
 }
 async function releaseFor(setup) {
   const directory = join(profile, 'vision', 'releases', setup.id), found = [];
@@ -181,14 +195,15 @@ try {
       const tag = mode + '-' + scenario, output = join(paths.output, tag), replayDir = join(paths.inputs, `${views}-view`, scenario);
       progress('current-100-' + tag);
       const offline = await plcTransition(false, tag + '-offline-before-camera-config');
+      const preparation = await reapplyPreparationSettings(tag, settings);
       await configureReplay(page, { views, directory: replayDir, recordsRoot, allowDisconnected: true });
       await waitDisconnected();
       const online = await plcTransition(true, tag + '-online-after-camera-config');
-      const ready = await waitForPublishedRecipeReady(page, { layout: setup.layout, bundleId: release.manifest.bundleId });
+      const ready = await waitForPublishedRecipeReady(page, { layout: setup.layout, bundleId: release.manifest.bundleId, warmupAfterTs: preparation.saveStartedAt });
       const identity = await sampleProcess(child.pid, paths.exe, app.identity.start);
       const run = await runCycleHostPerformance(page, { mode, scenario, source: 'replay', replayDir, fixture: release.fixture, releaseDir: release.releaseDir, executable: paths.exe, pid: child.pid, output, parts: 100 });
       const validation = await validateReport(join(output, 'cyclehost-report.json'), join(output, 'independent-validation.json'));
-      report.groups.push({ mode, scenario, sourceGate, runtime: identity, offline, online, ready, output, report: join(output, 'cyclehost-report.json'), validation, completedParts: run.completedParts, passed: run.passed && validation.valid && validation.passed });
+      report.groups.push({ mode, scenario, sourceGate, runtime: identity, offline, online, preparation, ready, output, report: join(output, 'cyclehost-report.json'), validation, completedParts: run.completedParts, passed: run.passed && validation.valid && validation.passed });
       report.completedParts += run.completedParts;
       await save(tag + '-association.json', report.groups.at(-1));
       assert(report.groups.at(-1).passed && run.completedParts === 100, 'Current clean control group failed');

@@ -16,9 +16,10 @@ export function isQuiescentCycleSnapshot(cycle) {
     && part.queue === 0 && Number.isSafeInteger(part.total) && part.total > 0 && part.filled === part.total;
 }
 
-export function isPublishedRecipeReady(observation, { layout, bundleId }) {
+export function isPublishedRecipeReady(observation, { layout, bundleId, warmupAfterTs = 0 }) {
   assert(typeof layout?.id === 'string' && layout.id.length > 0 && Number.isSafeInteger(layout.version) && layout.version > 0 && typeof layout.revisionId === 'string' && layout.revisionId.length > 0, 'Require an explicit published recipe identity');
   assert(typeof bundleId === 'string' && bundleId.length > 0, 'Require one explicit published bundle ID');
+  assert(Number.isSafeInteger(warmupAfterTs) && warmupAfterTs >= 0, 'Warmup log timestamp lower bound must be a nonnegative safe integer');
   const actual = observation.layout;
   assert(actual?.id === layout.id && actual.version === layout.version && actual.revisionId === layout.revisionId, 'Published recipe layout changed while waiting for warmup');
   const prefixes = [`配方 ${layout.id} 开不了工：`, `配方 ${layout.id} 暂时开不了工：`];
@@ -27,21 +28,22 @@ export function isPublishedRecipeReady(observation, { layout, bundleId }) {
   const targetAlarms = alarms.filter(alarm => typeof alarm === 'string' && prefixes.some(prefix => alarm.startsWith(prefix)));
   const warming = '发布资源与图像引擎正在预热，完成前不能布防';
   for (const alarm of targetAlarms) assert(prefixes.some(prefix => alarm === prefix + warming), 'Target recipe cannot run: ' + alarm);
-  const warmupLog = publishedRecipeWarmupLog(observation.logs, bundleId);
+  const warmupLog = publishedRecipeWarmupLog(observation.logs, bundleId, warmupAfterTs);
   return targetAlarms.length === 0 && !!warmupLog
     && observation.cycle.phase === 'IDLE' && observation.cycle.fault == null && isQuiescentCycleSnapshot(observation.cycle)
     && observation.sim?.running === false && observation.engine?.backend === 'LyFlow'
     && observation.engine.ready === true && observation.engine.measuring === true;
 }
 
-function publishedRecipeWarmupLog(logs, bundleId) {
+function publishedRecipeWarmupLog(logs, bundleId, warmupAfterTs) {
   const prefix = `发布包 ${bundleId} 已就绪，耗时 `;
-  return Array.isArray(logs) ? logs.findLast(log => log?.level === 'ok' && log.ev === '生产预热'
+  return Array.isArray(logs) ? logs.findLast(log => Number.isSafeInteger(log?.ts) && log.ts >= warmupAfterTs && log.level === 'ok' && log.ev === '生产预热'
     && typeof log.msg === 'string' && log.msg.startsWith(prefix) && /^\d+ ms$/.test(log.msg.slice(prefix.length))) : undefined;
 }
 
-export async function waitForPublishedRecipeReady(page, { layout, bundleId, timeoutMs = 90000 }) {
+export async function waitForPublishedRecipeReady(page, { layout, bundleId, timeoutMs = 90000, warmupAfterTs = 0 }) {
   assert(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 90000, 'Published recipe warmup wait must be bounded by 90 seconds');
+  assert(Number.isSafeInteger(warmupAfterTs) && warmupAfterTs >= 0, 'Warmup log timestamp lower bound must be a nonnegative safe integer');
   const started = Date.now(), deadline = started + timeoutMs;
   let lastObservation = null, polls = 0;
   const read = (command, args) => page.evaluate(({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
@@ -55,13 +57,13 @@ export async function waitForPublishedRecipeReady(page, { layout, bundleId, time
       ]);
     } finally { clearTimeout(timer); }
     polls += 1;
-    if (isPublishedRecipeReady(lastObservation, { layout, bundleId })) return {
-      ...lastObservation, warmupLog: publishedRecipeWarmupLog(lastObservation.logs, bundleId),
-      observedAt: new Date().toISOString(), elapsedMs: Date.now() - started, polls,
+    if (isPublishedRecipeReady(lastObservation, { layout, bundleId, warmupAfterTs })) return {
+      ...lastObservation, warmupLog: publishedRecipeWarmupLog(lastObservation.logs, bundleId, warmupAfterTs),
+      warmupAfterTs, observedAt: new Date().toISOString(), elapsedMs: Date.now() - started, polls,
     };
     if (Date.now() < deadline) await page.waitForTimeout(Math.min(100, deadline - Date.now()));
   } while (Date.now() < deadline);
-  throw new Error('Published recipe warmup did not become ready within ' + timeoutMs + ' ms: ' + JSON.stringify({ layout, bundleId, polls, lastObservation }));
+  throw new Error('Published recipe warmup did not become ready within ' + timeoutMs + ' ms: ' + JSON.stringify({ layout, bundleId, warmupAfterTs, polls, lastObservation }));
 }
 export async function configureReplay(page, { views, directory, recordsRoot, allowUnpublished = false, allowDisconnected = false }) {
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
