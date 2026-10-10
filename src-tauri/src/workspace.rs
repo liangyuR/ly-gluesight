@@ -1439,23 +1439,53 @@ fn archived_release(dir: &Path, id: &str, version: u32) -> Result<Release, Strin
     selected.ok_or_else(|| "所选生产版本没有不可变发布包，请在工作台验证并发布".into())
 }
 
+fn bundle_manifest_is_legacy(root: &Path, recipe_id: &str, directory: &str, expected_id: &str) -> Result<bool, String> {
+    safe_id(recipe_id)?;
+    if directory.is_empty() || directory.len() > 96 || !directory.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')) {
+        return Err("发布包目录引用无效".into());
+    }
+    let directory_path = root.join(recipe_id).join(directory);
+    comparisons::checked_directory(&directory_path, false)?;
+    let path = directory_path.join("manifest.json");
+    let metadata = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    { use std::os::windows::fs::MetadataExt;
+      if metadata.file_attributes() & 0x400 != 0 { return Err("发布清单不能是 reparse point".into()); } }
+    if !metadata.is_file() || metadata.file_type().is_symlink() { return Err("发布清单不是普通文件".into()); }
+    let manifest: Value = serde_json::from_str(&crate::fsio::read_text(&path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    if let Some(id) = manifest.get("bundleId") {
+        if id.as_str() != Some(expected_id) { return Err("发布清单与包的显式 ID 不一致".into()); }
+        return Ok(false);
+    }
+    let legacy_directory = directory.len() == 16 && directory.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    let legacy_fields = manifest.get("recipeRevision").is_none()
+        && manifest.get("recipeHash").is_some_and(Value::is_string)
+        && manifest.get("files").and_then(Value::as_array).is_some_and(|files| !files.is_empty()
+            && files.iter().all(|entry| entry.get("hash").is_some_and(Value::is_string)));
+    if !legacy_directory || !legacy_fields { return Err("新发布包缺少明确 bundleId，拒绝按旧包猜测身份".into()); }
+    Ok(true)
+}
+
+fn load_bundle_from(root: &Path, store: &Store, recipe_id: &str, reference: &str) -> Result<crate::release::ReleaseBundle, String> {
+    let (id, legacy) = store.resolve_bundle(recipe_id, reference)?;
+    if legacy.is_none() && reference.starts_with("legacy-bundle-") {
+        return Err("旧发布包的显式 ID 缺少目录映射，拒绝猜测位置".into());
+    }
+    let directory = legacy.as_deref().unwrap_or(reference);
+    let legacy_format = bundle_manifest_is_legacy(root, recipe_id, directory, &id)?;
+    if legacy_format {
+        let id = if legacy.is_none() { store.register_legacy_bundle(recipe_id, directory)? } else { id };
+        crate::release::load_legacy(root, recipe_id, &id, directory)
+    } else if legacy.is_some() {
+        crate::release::load_legacy(root, recipe_id, &id, directory)
+    } else {
+        crate::release::load(root, recipe_id, &id)
+    }
+}
+
 fn load_bundle(app: &AppHandle, recipe_id: &str, reference: &str) -> Result<crate::release::ReleaseBundle, String> {
     let root = releases_root(app)?;
-    let store = app.state::<Store>();
-    let (id, legacy) = store.resolve_bundle(recipe_id, reference)?;
-    let legacy = match legacy {
-        Some(directory) => Some(directory),
-        None if reference.starts_with("legacy-bundle-") => return Err("旧发布包的显式 ID 缺少目录映射，拒绝猜测位置".into()),
-        None if crate::release::is_legacy_directory(&root, recipe_id, reference)? => Some(reference.into()),
-        None => None,
-    };
-    match legacy {
-        Some(directory) => {
-            let id = if id == reference { store.register_legacy_bundle(recipe_id, &directory)? } else { id };
-            crate::release::load_legacy(&root, recipe_id, &id, &directory)
-        }
-        None => crate::release::load(&root, recipe_id, &id),
-    }
+    load_bundle_from(&root, &app.state::<Store>(), recipe_id, reference)
 }
 
 pub fn published_bundle(app: &AppHandle, recipe: &Recipe) -> Result<crate::release::ReleaseBundle, String> {
@@ -1578,10 +1608,10 @@ fn recorded(app: &AppHandle, history_id: i64) -> Result<(PathBuf, Vec<RawFrame>)
 
 fn history_image(app: &AppHandle, detail: &store::PartDetail, k: usize, view: u8) -> Result<FrameImage, String> {
     let cycle_id = detail.summary.cycle_id.as_deref().ok_or("历史记录没有 cycleId")?;
-    let raw = detail.shots.iter().find(|shot| shot.k == k)
-        .and_then(|shot| shot.raw_files.iter().find(|raw| raw.view == view))
+    let shot = detail.shots.iter().find(|shot| shot.k == k).ok_or("历史拍照点不存在")?;
+    let raw = shot.raw_files.iter().find(|raw| raw.view == view)
         .ok_or("所选拍照点视角的原图未保留")?;
-    recorded::load_verified(app.state::<CycleHost>().recorder.root(), cycle_id, raw)
+    recorded::load_verified(app.state::<CycleHost>().recorder.root(), cycle_id, shot, raw)
 }
 
 #[tauri::command]
@@ -2579,4 +2609,72 @@ pub async fn workspace_import_sample(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod bundle_identity_tests {
+    use super::*;
+
+    fn published_fixture(root: &Path) -> crate::release::ReleaseBundle {
+        let mut doc = crate::recipe::samples().remove(0);
+        for shot in &mut doc.shots { shot.skip = true; }
+        let shots = doc.shots.iter().enumerate().map(|(k, _)| crate::release::ShotInput { k, image: None, calibration: None }).collect();
+        crate::release::publish(root, crate::release::PublishInput {
+            recipe: doc, versions: crate::release::Versions { engine: "test-engine".into(), graph: "test-graph".into() },
+            graph: crate::release::ResourceSource::Bytes(br#"{"schemaVersion":1,"nodes":[],"edges":[]}"#.to_vec()), shots,
+        }).unwrap()
+    }
+
+    #[test]
+    fn new_bundle_missing_or_mismatched_explicit_id_cannot_create_a_legacy_mapping() {
+        let directory = tests::ImportTestDir::new();
+        let root = directory.0.join("releases");
+        let store = Store::open(&directory.0.join("history.sqlite")).unwrap();
+        let bundle = published_fixture(&root);
+        assert_eq!(load_bundle_from(&root, &store, &bundle.recipe.id, &bundle.id).unwrap().id, bundle.id);
+        let path = bundle.root.join("manifest.json");
+        let mut value = serde_json::to_value(&bundle.manifest).unwrap();
+        value.as_object_mut().unwrap().remove("bundleId");
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(load_bundle_from(&root, &store, &bundle.recipe.id, &bundle.id).unwrap_err().contains("bundleId"));
+        assert_eq!(store.resolve_bundle(&bundle.recipe.id, &bundle.id).unwrap(), (bundle.id.clone(), None));
+        let forged = store.register_legacy_bundle(&bundle.recipe.id, &bundle.id).unwrap();
+        assert!(load_bundle_from(&root, &store, &bundle.recipe.id, &forged).unwrap_err().contains("bundleId"));
+        value["bundleId"] = json!("different-explicit-id");
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(load_bundle_from(&root, &store, &bundle.recipe.id, &bundle.id).unwrap_err().contains("显式 ID"));
+    }
+
+    #[test]
+    fn genuine_legacy_format_at_legacy_directory_keeps_stable_explicit_mapping_and_original_bytes() {
+        let directory = tests::ImportTestDir::new();
+        let root = directory.0.join("releases");
+        let bundle = published_fixture(&root);
+        let legacy_name = "0123456789abcdef";
+        let legacy_root = root.join(&bundle.recipe.id).join(legacy_name);
+        std::fs::rename(&bundle.root, &legacy_root).unwrap();
+        let path = legacy_root.join("manifest.json");
+        let mut value = serde_json::to_value(&bundle.manifest).unwrap();
+        value.as_object_mut().unwrap().remove("bundleId");
+        value.as_object_mut().unwrap().remove("recipeRevision");
+        value["recipeHash"] = json!("ignored-old-field");
+        for entry in value["files"].as_array_mut().unwrap() { entry["hash"] = json!("ignored-old-field"); }
+        let original = serde_json::to_vec(&value).unwrap();
+        std::fs::write(&path, &original).unwrap();
+        let database = directory.0.join("history.sqlite");
+        let store = Store::open(&database).unwrap();
+        let loaded = load_bundle_from(&root, &store, &bundle.recipe.id, legacy_name).unwrap();
+        assert!(loaded.id.starts_with("legacy-bundle-"));
+        assert_eq!(loaded.root, legacy_root);
+        assert_eq!(loaded.recipe, bundle.recipe);
+        let explicit = loaded.id;
+        drop(store);
+        let store = Store::open(&database).unwrap();
+        assert_eq!(load_bundle_from(&root, &store, &bundle.recipe.id, legacy_name).unwrap().id, explicit);
+        assert_eq!(load_bundle_from(&root, &store, &bundle.recipe.id, &explicit).unwrap().id, explicit);
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        value["recipeRevision"] = json!(bundle.manifest.recipe_revision);
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(load_bundle_from(&root, &store, &bundle.recipe.id, &explicit).is_err());
+    }
 }

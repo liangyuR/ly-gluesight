@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { appendFile, mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve, win32 } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { recipeContract } from '../../scripts/robot-plc-demo/camera-bridge.mjs';
@@ -227,6 +227,15 @@ export async function sampleProcess(pid, executable, expectedStart) {
   return result;
 }
 
+export function validateTestRecordsRoot(recordsRoot, identifier = 'com.xyzrobotics.tujiaovision.p0-tests.performance', appdata = process.env.APPDATA) {
+  assert(['com.xyzrobotics.tujiaovision.p0-tests.performance', 'com.xyzrobotics.tujiaovision.p0-tests.performance.nohash'].includes(identifier), 'Only explicit isolated performance profiles are accepted');
+  assert(typeof appdata === 'string' && /^c:[\\/]/i.test(appdata) && win32.isAbsolute(appdata), 'APPDATA must be an absolute C-drive path');
+  assert(typeof recordsRoot === 'string' && /^c:[\\/]/i.test(recordsRoot) && win32.isAbsolute(recordsRoot), 'Actual records root must be on C:');
+  const expected = win32.join(win32.resolve(appdata), identifier, 'records');
+  assert.equal(win32.resolve(recordsRoot).toLowerCase(), expected.toLowerCase(), 'Actual records root differs from the current explicit isolated profile');
+  return expected;
+}
+
 export async function runCycleHostPerformance(page, options) {
   const { mode, scenario, fixture, releaseDir, executable, pid, output } = options;
   const parts = options.parts ?? 100, timeoutMs = options.timeoutMs ?? 30000;
@@ -270,7 +279,10 @@ export async function runCycleHostPerformance(page, options) {
       plc: await read('plc_get_config'), status: await read('plc_get_status'), settings: await read('cycle_get_settings'),
       cycle: await read('cycle_snapshot'), engine: await read('engine_status'), app: await read('app_info') };
     report.guard = guard;
-    assert(resolve(guard.records.root).toLowerCase() === 'c:\\users\\11601\\appdata\\roaming\\com.xyzrobotics.tujiaovision.p0-tests.performance\\records' && /^c:[\\/]/i.test(guard.records.root));
+    const identifier = options.identifier ?? 'com.xyzrobotics.tujiaovision.p0-tests.performance';
+    report.recordsRoot = validateTestRecordsRoot(guard.records.root, identifier);
+    report.identifier = identifier;
+    if (guard.app.identifier !== undefined) assert.equal(guard.app.identifier, identifier);
     assert(guard.app.version && guard.engine.version);
     assert(guard.plc.connection.protocol === 'simulator' && guard.status.state === 'connected' && guard.cycle.phase === 'IDLE');
     assert(guard.settings.timeouts.armMs === 200 && guard.settings.vision === true && guard.settings.record === 'all');
@@ -438,6 +450,7 @@ export async function connectAndRun(modulePath, endpoint, options) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { values } = parseArgs({ options: {
     'playwright-module': { type: 'string' }, cdp: { type: 'string', default: 'http://127.0.0.1:9338' },
+    identifier: { type: 'string', default: 'com.xyzrobotics.tujiaovision.p0-tests.performance' },
     source: { type: 'string', default: 'sim' }, 'replay-dir': { type: 'string' },
     mode: { type: 'string' }, scenario: { type: 'string' }, fixture: { type: 'string' },
     release: { type: 'string' }, executable: { type: 'string' }, pid: { type: 'string' },
@@ -445,7 +458,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   assert(values['playwright-module'], '--playwright-module must point to an installed Playwright index.mjs');
   const report = await connectAndRun(values['playwright-module'], values.cdp, {
     mode: values.mode, scenario: values.scenario, fixture: values.fixture,
-    source: values.source, replayDir: values['replay-dir'],
+    identifier: values.identifier, source: values.source, replayDir: values['replay-dir'],
     releaseDir: values.release, executable: values.executable, pid: Number(values.pid),
     output: values.output, parts: Number(values.parts) });
   console.log(JSON.stringify({ completed: report.completed, passed: report.passed,

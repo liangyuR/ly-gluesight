@@ -128,8 +128,7 @@ pub struct ReleaseBundle {
 impl ReleaseBundle {
     pub fn verify(&self) -> Result<(), String> {
         valid_bundle_id(&self.id)?;
-        let mut manifest: ReleaseManifest = read_json(&self.root.join("manifest.json"))?;
-        normalize_identity(&mut manifest, &self.id);
+        let manifest = read_manifest(&self.root, &self.id)?;
         if manifest != self.manifest || manifest.bundle_id != self.id {
             return Err("发布清单的身份、版本或结构不一致".into());
         }
@@ -267,8 +266,8 @@ pub fn is_legacy_directory(releases_root: &Path, recipe_id: &str, directory: &st
     valid_bundle_id(directory)?;
     let root = absolute_path(releases_root)?.join(recipe_id).join(directory);
     reject_links(&root, false)?;
-    let manifest: ReleaseManifest = read_json(&root.join("manifest.json"))?;
-    Ok(manifest.bundle_id.is_empty())
+    let manifest: serde_json::Value = read_json(&root.join("manifest.json"))?;
+    Ok(legacy_manifest(&manifest, directory))
 }
 
 pub fn load_legacy(releases_root: &Path, recipe_id: &str, bundle_id: &str, directory: &str) -> Result<ReleaseBundle, String> {
@@ -283,8 +282,7 @@ fn load_directory(root: &Path, recipe_id: &str, bundle_id: &str) -> Result<Relea
     safe_id(recipe_id)?;
     valid_bundle_id(bundle_id)?;
     reject_links(root, false)?;
-    let manifest_bytes = read_file(&root.join("manifest.json"))?;
-    let mut manifest: ReleaseManifest = serde_json::from_slice(&manifest_bytes).map_err(|e| format!("发布清单无法解析：{e}"))?;
+    let manifest = read_manifest(root, bundle_id)?;
     if manifest.schema_version != RELEASE_SCHEMA {
         return Err(format!("发布包格式版本 {}，当前为 {RELEASE_SCHEMA}，需要重新发布", manifest.schema_version));
     }
@@ -292,8 +290,6 @@ fn load_directory(root: &Path, recipe_id: &str, bundle_id: &str) -> Result<Relea
         return Err("发布清单的配方身份或资源引用无效".into());
     }
     validate_versions(&manifest.versions)?;
-    normalize_identity(&mut manifest, bundle_id);
-    if manifest.bundle_id != bundle_id { return Err("发布清单与包 ID 不一致".into()); }
     let mut files = BTreeMap::new();
     let mut names = BTreeSet::new();
     for entry in &manifest.files {
@@ -453,9 +449,26 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
     serde_json::from_slice(&read_file(path)?).map_err(|e| format!("发布资源 {} 无法解析：{e}", path.display()))
 }
 
-fn normalize_identity(manifest: &mut ReleaseManifest, bundle_id: &str) {
-    if manifest.bundle_id.is_empty() { manifest.bundle_id = bundle_id.into(); }
+fn legacy_manifest(value: &serde_json::Value, directory: &str) -> bool {
+    directory.len() == 16 && directory.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && value.get("bundleId").is_none() && value.get("recipeRevision").is_none()
+        && value.get("recipeHash").is_some_and(serde_json::Value::is_string)
+        && value.get("files").and_then(serde_json::Value::as_array).is_some_and(|files| !files.is_empty()
+            && files.iter().all(|entry| entry.get("hash").is_some_and(serde_json::Value::is_string)))
+}
+
+fn read_manifest(root: &Path, bundle_id: &str) -> Result<ReleaseManifest, String> {
+    let value: serde_json::Value = serde_json::from_slice(&read_file(&root.join("manifest.json"))?).map_err(|e| format!("发布清单无法解析：{e}"))?;
+    let mut manifest: ReleaseManifest = serde_json::from_value(value.clone()).map_err(|e| format!("发布清单无法解析：{e}"))?;
+    if let Some(id) = value.get("bundleId") {
+        if id.as_str() != Some(bundle_id) { return Err("发布清单与包的显式 ID 身份不一致".into()); }
+    } else {
+        let directory = root.file_name().and_then(|name| name.to_str()).ok_or("发布包目录没有有效名称")?;
+        if !legacy_manifest(&value, directory) { return Err("新发布包缺少明确 bundleId，拒绝按旧包猜测身份".into()); }
+        manifest.bundle_id = bundle_id.into();
+    }
     if manifest.recipe_revision.is_empty() { manifest.recipe_revision = format!("{}-v{}", manifest.recipe_id, manifest.recipe_version); }
+    Ok(manifest)
 }
 
 fn new_bundle_id() -> Result<String, String> {
@@ -708,19 +721,26 @@ mod tests {
         id
     }
 
-    #[test]
-    fn legacy_content_fields_are_ignored_and_explicit_recipe_version_is_rebuilt() {
-        let directory = Directory::new();
+    fn legacy_fixture(directory: &Directory) -> (ReleaseBundle, String) {
         let bundle = publish(&directory.releases(), input()).unwrap();
-        let path = bundle.root.join("manifest.json");
+        let legacy_directory = "0123456789abcdef".to_string();
+        let root = directory.releases().join(&bundle.recipe.id).join(&legacy_directory);
+        fs::rename(&bundle.root, &root).unwrap();
         let mut manifest = serde_json::to_value(&bundle.manifest).unwrap();
         manifest.as_object_mut().unwrap().remove("bundleId");
         manifest.as_object_mut().unwrap().remove("recipeRevision");
         manifest["recipeHash"] = serde_json::json!("ignored-legacy-value");
         for entry in manifest["files"].as_array_mut().unwrap() { entry["hash"] = serde_json::json!("different-ignored-value"); }
-        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-        let legacy = load(&directory.releases(), "part-A", &bundle.id).unwrap();
-        assert_eq!(legacy.id, bundle.id);
+        fs::write(root.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        (bundle, legacy_directory)
+    }
+
+    #[test]
+    fn legacy_content_fields_are_ignored_and_explicit_recipe_version_is_rebuilt() {
+        let directory = Directory::new();
+        let (_, locator) = legacy_fixture(&directory);
+        let legacy = load(&directory.releases(), "part-A", &locator).unwrap();
+        assert_eq!(legacy.id, locator);
         assert_eq!(legacy.manifest.recipe_revision, "part-A-v7");
         legacy.verify().unwrap();
         let serialized = serde_json::to_value(&legacy.manifest).unwrap();
@@ -731,26 +751,61 @@ mod tests {
     #[test]
     fn legacy_directory_is_only_a_locator_for_a_persisted_explicit_bundle_id() {
         let directory = Directory::new();
-        let bundle = publish(&directory.releases(), input()).unwrap();
-        let manifest_path = bundle.root.join("manifest.json");
-        let mut manifest = serde_json::to_value(&bundle.manifest).unwrap();
-        manifest.as_object_mut().unwrap().remove("bundleId");
-        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let (_, locator) = legacy_fixture(&directory);
+        let root = directory.releases().join("part-A").join(&locator);
+        let manifest_path = root.join("manifest.json");
         let unchanged = fs::read(&manifest_path).unwrap();
         let database = directory.0.join("history.sqlite");
         let store = crate::store::Store::open(&database).unwrap();
-        assert!(is_legacy_directory(&directory.releases(), "part-A", &bundle.id).unwrap());
-        let id = store.register_legacy_bundle("part-A", &bundle.id).unwrap();
-        let loaded = load_legacy(&directory.releases(), "part-A", &id, &bundle.id).unwrap();
+        assert!(is_legacy_directory(&directory.releases(), "part-A", &locator).unwrap());
+        let id = store.register_legacy_bundle("part-A", &locator).unwrap();
+        let loaded = load_legacy(&directory.releases(), "part-A", &id, &locator).unwrap();
         assert_eq!(loaded.id, id);
-        assert_eq!(loaded.root, bundle.root);
+        assert_eq!(loaded.root, root);
         loaded.verify().unwrap();
         drop(store);
         let store = crate::store::Store::open(&database).unwrap();
-        assert_eq!(store.register_legacy_bundle("part-A", &bundle.id).unwrap(), id);
+        assert_eq!(store.register_legacy_bundle("part-A", &locator).unwrap(), id);
         assert_eq!(fs::read(manifest_path).unwrap(), unchanged);
         assert!(load_legacy(&directory.releases(), "part-A", &id, "../outside").is_err());
         assert!(load(&directory.releases(), "part-A", "legacy-bundle-missing").is_err());
+    }
+
+    #[test]
+    fn new_release_requires_explicit_id_on_load_and_after_bundle_has_been_loaded() {
+        let directory = Directory::new();
+        let bundle = publish(&directory.releases(), input()).unwrap();
+        let path = bundle.root.join("manifest.json");
+        let mut value = serde_json::to_value(&bundle.manifest).unwrap();
+        value.as_object_mut().unwrap().remove("bundleId");
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(!is_legacy_directory(&directory.releases(), "part-A", &bundle.id).unwrap());
+        assert!(load(&directory.releases(), "part-A", &bundle.id).unwrap_err().contains("bundleId"));
+        assert!(load_legacy(&directory.releases(), "part-A", "legacy-bundle-forged", &bundle.id).unwrap_err().contains("bundleId"));
+        assert!(bundle.verify().unwrap_err().contains("bundleId"));
+        value["bundleId"] = serde_json::json!("another-explicit-id");
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(load(&directory.releases(), "part-A", &bundle.id).unwrap_err().contains("显式 ID"));
+        assert!(bundle.verify().unwrap_err().contains("显式 ID"));
+    }
+
+    #[test]
+    #[ignore = "requires LYFLOW_CORE_DLL; actual Prepared load and per-arm identity verification"]
+    fn native_prepared_rejects_missing_explicit_bundle_identity_on_later_verification() {
+        let dll = std::env::var_os("LYFLOW_CORE_DLL").expect("Set LYFLOW_CORE_DLL to a taught-path core");
+        let engine = std::sync::Arc::new(crate::vision::Engine::load(Path::new(&dll)).unwrap());
+        let directory = Directory::new();
+        let mut source = input();
+        let recipe = source.recipe.build().unwrap();
+        source.versions = Versions { engine: engine.version.clone(), graph: crate::production::GRAPH_VERSION.into() };
+        source.graph = ResourceSource::Bytes(serde_json::to_vec(&crate::production::graphs(&recipe).unwrap()).unwrap());
+        let bundle = publish(&directory.releases(), source).unwrap();
+        let prepared = crate::production::Prepared::load(bundle.clone(), engine, &recipe).unwrap();
+        prepared.verify().unwrap();
+        let mut value = serde_json::to_value(&bundle.manifest).unwrap();
+        value.as_object_mut().unwrap().remove("bundleId");
+        fs::write(bundle.root.join("manifest.json"), serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(prepared.verify().unwrap_err().contains("bundleId"));
     }
 
     #[test]
