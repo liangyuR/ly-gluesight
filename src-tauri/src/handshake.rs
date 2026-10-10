@@ -57,6 +57,9 @@ const FIELDS: &[Field] = &[
     output("faultCode", DataType::U16),
 ];
 
+/// 已改名的握手标签（D-0 不兼容旧配置）：旧点表直接拒绝，并说清新名字。
+const RETIRED_TAGS: &[(&str, &str)] = &[("planHash", "planReserved"), ("acceptedPlanHash", "acceptedPlanReserved")];
+
 const fn input(tag: &'static str, data_type: DataType, edge: bool) -> Field {
     Field { tag, data_type, direction: Direction::Input, edge }
 }
@@ -77,6 +80,11 @@ impl Contract {
             return Err("一期严格握手仅适用于 S7 协议".into());
         }
         config.validate()?;
+        for point in &config.points {
+            if let Some((old, new)) = RETIRED_TAGS.iter().find(|(old, _)| point.tags.iter().any(|t| t == old)) {
+                return Err(format!("点位 {} 使用已停用的握手标签 {old}（现为 {new}），请按一期 S7 模板重新生成点表", point.name));
+            }
+        }
         let mut ids = HashMap::new();
         let mut locations = Vec::new();
         for field in FIELDS {
