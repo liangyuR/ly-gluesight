@@ -149,6 +149,19 @@ test('release metadata may differ but explicit version, geometry and limits must
   assert.throws(() => check(ctx), /differs/);
 });
 
+test('schema five bridge uses per-view calibration references and verifies configured views', () => {
+  const ctx = context();
+  ctx.layout.shots[0].calib = 'cam1-v1';
+  assert.deepEqual(recipeContract(ctx.layout), recipeContract(ctx.recipe));
+  assert.equal(check(ctx).view, 1);
+  ctx.layout.shots[0].views = [{ view: 1, enabled: true, path: [[0, 0], [10, 0]], mmPerPx: 0.1 }];
+  assert.throws(() => check(ctx), /differs/);
+  const old = context();
+  old.recipe.schemaVersion = 4;
+  old.layout.schemaVersion = 4;
+  assert.throws(() => check(old), /schema 5/);
+});
+
 test('preflight refuses wrong SN, shot, Pose, camera, view, ordinal, revision and malformed schema', () => {
   const edits = [
     ctx => { ctx.snapshot.part.sn++; }, ctx => { ctx.layout.revisionId = 'other'; },

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::recipe::{Recipe, RecipeDoc, ShotSpec};
 
-pub const RELEASE_SCHEMA: u32 = 1;
+pub const RELEASE_SCHEMA: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -26,6 +26,7 @@ pub enum ResourceSource {
 #[derive(Clone, Debug)]
 pub struct ShotInput {
     pub k: usize,
+    pub view: u8,
     pub image: Option<ResourceSource>,
     pub calibration: Option<ResourceSource>,
 }
@@ -150,9 +151,15 @@ impl ReleaseBundle {
     }
 
     pub fn shot(&self, k: usize) -> Result<ShotResources, String> {
+        let shot = self.recipe.shots.get(k).ok_or("发布包内没有该拍照点")?;
+        let view = shot.enabled_views().first().copied().unwrap_or(shot.view);
+        self.view(k, view)
+    }
+
+    pub fn view(&self, k: usize, view: u8) -> Result<ShotResources, String> {
         self.verify()?;
-        let shot = self.recipe.shots.get(k).ok_or("发布包内没有该拍照点")?.clone();
-        let entry = self.manifest.shots.get(k).ok_or("发布清单内缺少拍照点")?;
+        let shot = self.recipe.shots.get(k).ok_or("发布包内没有该拍照点")?.for_view(view)?;
+        let entry = self.manifest.shots.iter().find(|s| s.k == k && s.view == view).ok_or("发布清单内缺少拍照点图像")?;
         let centerline = resource_path(&self.root, &entry.centerline)?;
         let points = resource_path(&self.root, &entry.points)?;
         Ok(ShotResources {
@@ -178,11 +185,12 @@ pub fn publish(releases_root: &Path, input: PublishInput) -> Result<ReleaseBundl
         if k >= recipe.shot_count() {
             return Err(format!("发布资源引用了不存在的拍照点 {k}"));
         }
-        if inputs.insert(k, shot).is_some() {
+        if inputs.insert((k, shot.view), shot).is_some() {
             return Err(format!("拍照点 {k} 的发布资源重复"));
         }
     }
-    if inputs.len() != recipe.shot_count() {
+    let expected = resource_views(&recipe);
+    if inputs.keys().copied().collect::<BTreeSet<_>>() != expected.iter().copied().collect() {
         return Err("发布资源未覆盖全部拍照点".into());
     }
     let mut files = BTreeMap::new();
@@ -191,12 +199,14 @@ pub fn publish(releases_root: &Path, input: PublishInput) -> Result<ReleaseBundl
     json_object(&graph, "测量图")?;
     add_file(&mut files, "graph.json".into(), graph)?;
     let mut shots = Vec::new();
-    for (k, shot) in recipe.shots.iter().enumerate() {
-        let source = inputs.remove(&k).ok_or("发布资源缺少拍照点")?;
+    for (k, view) in expected {
+        let projected = recipe.for_view(k, view)?;
+        let shot = &projected.shots[k];
+        let source = inputs.remove(&(k, view)).ok_or("发布资源缺少拍照点图像")?;
         if shot.measured() && (source.image.is_none() || source.calibration.is_none()) {
             return Err(format!("拍照点 {} 缺少发布原图或标定资源", shot.id));
         }
-        let prefix = format!("shots/{k:02}");
+        let prefix = format!("shots/{k:02}/v{}", shot.view);
         let (image, size) = if let Some(source) = source.image {
             let bytes = source_bytes(source)?;
             let (size, extension) = image_details(&bytes, &shot.id)?;
@@ -214,8 +224,8 @@ pub fn publish(releases_root: &Path, input: PublishInput) -> Result<ReleaseBundl
         } else { None };
         let centerline = format!("{prefix}/centerline.json");
         let points = format!("{prefix}/points.json");
-        add_file(&mut files, centerline.clone(), json_bytes(&centerline_data(&recipe, k, size))?)?;
-        add_file(&mut files, points.clone(), json_bytes(&points_data(&recipe, k, size))?)?;
+        add_file(&mut files, centerline.clone(), json_bytes(&centerline_data(&projected, k, size))?)?;
+        add_file(&mut files, points.clone(), json_bytes(&points_data(&projected, k, size))?)?;
         shots.push(ShotManifest { k, shot_id: shot.id.clone(), camera: shot.camera.clone(), view: shot.view, skip: shot.skip, size, image, calibration, centerline, points });
     }
     let bundle_id = new_bundle_id()?;
@@ -287,17 +297,18 @@ fn load_directory(root: &Path, recipe_id: &str, bundle_id: &str) -> Result<Relea
     let recipe: RecipeDoc = parse_resource(&files, &manifest.recipe)?;
     let built = recipe.build()?;
     built.ready()?;
-    if recipe.id != manifest.recipe_id || built.revision_id != manifest.recipe_revision || built.version != manifest.recipe_version || manifest.shots.len() != built.shot_count() {
+    if recipe.id != manifest.recipe_id || built.revision_id != manifest.recipe_revision || built.version != manifest.recipe_version || manifest.shots.len() != resource_views(&built).len() {
         return Err("发布清单与配方快照的身份、版本或拍照点数量不一致".into());
     }
     json_object(file_bytes(&files, &manifest.graph)?, "发布测量图")?;
     let mut referenced = BTreeSet::from([manifest.recipe.clone(), manifest.graph.clone()]);
-    for (k, shot) in built.shots.iter().enumerate() {
-        let entry = &manifest.shots[k];
+    for ((k, view), entry) in resource_views(&built).into_iter().zip(&manifest.shots) {
+        let projected = built.for_view(k, view)?;
+        let shot = &projected.shots[k];
         if entry.k != k || entry.shot_id != shot.id || entry.camera != shot.camera || entry.view != shot.view || entry.skip != shot.skip {
             return Err(format!("发布清单拍照点 {k} 的身份与配方不一致"));
         }
-        let prefix = format!("shots/{k:02}");
+        let prefix = format!("shots/{k:02}/v{}", shot.view);
         if entry.centerline != format!("{prefix}/centerline.json") || entry.points != format!("{prefix}/points.json") {
             return Err(format!("拍照点 {} 的几何资源引用无效", shot.id));
         }
@@ -327,7 +338,7 @@ fn load_directory(root: &Path, recipe_id: &str, bundle_id: &str) -> Result<Relea
         }
         let centerline: Centerline = parse_resource(&files, &entry.centerline)?;
         let points: MeasurePoints = parse_resource(&files, &entry.points)?;
-        if centerline != centerline_data(&built, k, entry.size) || points != points_data(&built, k, entry.size) {
+        if centerline != centerline_data(&projected, k, entry.size) || points != points_data(&projected, k, entry.size) {
             return Err(format!("拍照点 {} 的中线或测点与配方快照不一致", shot.id));
         }
     }
@@ -345,6 +356,13 @@ fn load_directory(root: &Path, recipe_id: &str, bundle_id: &str) -> Result<Relea
     Ok(ReleaseBundle { id: bundle_id.into(), root: root.to_path_buf(), manifest, recipe })
 }
 
+fn resource_views(recipe: &Recipe) -> Vec<(usize, u8)> {
+    recipe.shots.iter().enumerate().flat_map(|(k, shot)| {
+        let views = if shot.skip { vec![shot.view] } else { shot.enabled_views() };
+        views.into_iter().map(move |view| (k, view))
+    }).collect()
+}
+
 fn centerline_data(recipe: &Recipe, k: usize, size: Option<[u32; 2]>) -> Centerline {
     let shot = &recipe.shots[k];
     Centerline { schema_version: RELEASE_SCHEMA, shot_id: shot.id.clone(), camera: shot.camera.clone(), view: shot.view, size, spacing: recipe.spacing, mm_per_px: shot.mm_per_px, path: shot.path.clone() }
@@ -352,7 +370,7 @@ fn centerline_data(recipe: &Recipe, k: usize, size: Option<[u32; 2]>) -> Centerl
 
 fn points_data(recipe: &Recipe, k: usize, size: Option<[u32; 2]>) -> MeasurePoints {
     let shot = &recipe.shots[k];
-    let indices: Vec<_> = recipe.owned_points(k).collect();
+    let indices: Vec<_> = recipe.view_points(k, shot.view).collect();
     let points = indices.iter().map(|&j| [recipe.points.x[j], recipe.points.y[j]]).collect();
     MeasurePoints { schema_version: RELEASE_SCHEMA, shot_id: shot.id.clone(), camera: shot.camera.clone(), view: shot.view, size, spacing: recipe.spacing, indices, points }
 }
@@ -661,10 +679,31 @@ mod tests {
             versions: Versions { engine: "lyflow-test-1".into(), graph: "taught-path-v1".into() },
             graph: ResourceSource::Bytes(br#"{"schemaVersion":1,"nodes":[],"edges":[]}"#.to_vec()),
             shots: vec![
-                ShotInput { k: 0, image: Some(ResourceSource::Bytes(pgm(32, 24, 50))), calibration: Some(ResourceSource::Bytes(br#"{"mmPerPx":0.5,"source":"manual"}"#.to_vec())) },
-                ShotInput { k: 1, image: Some(ResourceSource::Bytes(pgm(64, 40, 80))), calibration: Some(ResourceSource::Bytes(br#"{"mmPerPx":0.5,"source":"manual"}"#.to_vec())) },
+                ShotInput { k: 0, view: 1, image: Some(ResourceSource::Bytes(pgm(32, 24, 50))), calibration: Some(ResourceSource::Bytes(br#"{"mmPerPx":0.5,"source":"manual"}"#.to_vec())) },
+                ShotInput { k: 1, view: 2, image: Some(ResourceSource::Bytes(pgm(64, 40, 80))), calibration: Some(ResourceSource::Bytes(br#"{"mmPerPx":0.5,"source":"manual"}"#.to_vec())) },
             ],
         }
+    }
+
+    #[test]
+    fn multiview_release_preserves_each_resource_without_adding_shots() {
+        let directory = Directory::new();
+        let mut data = input();
+        data.recipe.shots.truncate(1);
+        let shot = &mut data.recipe.shots[0];
+        shot.views = [1, 3].into_iter().map(|view| crate::recipe::ShotViewSpec { view, enabled: true,
+            path: shot.path.clone(), mm_per_px: shot.mm_per_px, detect: None, limits: None, calib: None }).collect();
+        data.shots.truncate(1);
+        let mut third = data.shots[0].clone();
+        third.view = 3;
+        data.shots.push(third);
+        let bundle = publish(&directory.releases(), data).unwrap();
+        assert_eq!(bundle.recipe.shots.len(), 1);
+        assert_eq!(bundle.manifest.shots.len(), 2);
+        assert_eq!(bundle.view(0, 3).unwrap().shot.view, 3);
+        assert_ne!(bundle.view(0, 1).unwrap().image, bundle.view(0, 3).unwrap().image);
+        let restored = load(&directory.releases(), &bundle.recipe.id, &bundle.id).unwrap();
+        assert_eq!(restored.view(0, 3).unwrap().points_data.indices.len(), 10);
     }
 
     fn copy_with_resources(directory: &Directory, bundle: &ReleaseBundle, mut manifest: ReleaseManifest, replacement: Option<(&str, Vec<u8>)>) -> String {

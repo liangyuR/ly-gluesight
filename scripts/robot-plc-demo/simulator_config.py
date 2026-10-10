@@ -87,8 +87,8 @@ def shot_limits(value, name):
 def validate_recipe(recipe):
     if not isinstance(recipe, dict):
         raise ValueError("Recipe must be an object")
-    if type(recipe.get("schemaVersion")) is not int or recipe["schemaVersion"] != 4:
-        raise ValueError("Unsupported recipe schemaVersion (expected 4); rebuild legacy recipes")
+    if type(recipe.get("schemaVersion")) is not int or recipe["schemaVersion"] != 5:
+        raise ValueError("Unsupported recipe schemaVersion (expected 5); rebuild legacy recipes")
     identifier(recipe.get("id"), "recipe.id")
     if not isinstance(recipe.get("name"), str) or not recipe["name"].strip():
         raise ValueError("Recipe requires a name")
@@ -108,7 +108,7 @@ def validate_recipe(recipe):
     ids, points = set(), 0
     for shot in shots:
         if not isinstance(shot, dict):
-            raise ValueError("Recipe schema 4 requires shot objects, not robot [x, y] coordinates")
+            raise ValueError("Recipe schema 5 requires shot objects, not robot [x, y] coordinates")
         identifier(shot.get("id"), "shot.id")
         if shot["id"] in ids:
             raise ValueError(f"Duplicate shot id: {shot['id']}")
@@ -167,9 +167,10 @@ def recipe_contract(recipe):
     contract = {key: recipe[key] for key in ("id", "productCode", "schemaVersion", "triggerMode", "spacing", "filterWindow", "detect", "limits")}
     contract["version"] = max(1, integer(recipe.get("version", 0), 0, 0xFFFFFFFF, "recipe.version"))
     contract["shots"] = [{"id": shot["id"], "poseId": shot["poseId"], "camera": shot["camera"], "view": shot["view"],
-                          "bead": shot["bead"], "calib": shot.get("calib") or shot["camera"], "skip": shot.get("skip", False),
+                          "bead": shot["bead"], "calib": shot.get("calib") or f"{shot['camera']}-v{shot['view']}", "skip": shot.get("skip", False),
                           "path": shot.get("path", []), "mmPerPx": shot.get("mmPerPx"),
-                          "detect": shot.get("detect") or recipe["detect"], "limits": shot.get("limits") or recipe["limits"]}
+                          "detect": shot.get("detect") or recipe["detect"], "limits": shot.get("limits") or recipe["limits"],
+                          "views": shot.get("views", [])}
                          for shot in recipe["shots"]]
     return contract
 

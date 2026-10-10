@@ -6,6 +6,7 @@ import { segmentLength, shotTaught, teachStatus } from "../../cycle/vis";
 import type { DetectParams, JudgeParams, Polarity, Recipe, RecipeDoc, ShotLimits, ShotSpec } from "../../cycle/types";
 
 interface Props {
+  collectedShots?: boolean;
   initial: RecipeDoc;
   originalId: string | null;
   /** 相机组里的相机：配方按编号引用 */
@@ -286,7 +287,7 @@ function ShotTable({ shots, cameras, detect, limits, onChange }: {
   );
 }
 
-export default function RecipeEditor({ initial, originalId, cameras, onSaved, onDraftChange, saveCandidate }: Props) {
+export default function RecipeEditor({ collectedShots = false, initial, originalId, cameras, onSaved, onDraftChange, saveCandidate }: Props) {
   const [doc, setDoc] = useState<RecipeDoc>(initial);
   const [preview, setPreview] = useState<Recipe | null>(null);
   const [previewDoc, setPreviewDoc] = useState<RecipeDoc | null>(null);
@@ -394,7 +395,7 @@ export default function RecipeEditor({ initial, originalId, cameras, onSaved, on
         </Section>
 
         <Section title="飞拍拍照点">
-          <ShotTable shots={doc.shots} cameras={cameras} detect={doc.detect} limits={doc.limits} onChange={(shots) => set("shots", shots)} />
+          {collectedShots ? <p className="muted">{doc.shots.length} 个拍照点由整圈实际采集生成；选图和不检测设置在单帧示教中调整。</p> : <ShotTable shots={doc.shots} cameras={cameras} detect={doc.detect} limits={doc.limits} onChange={(shots) => set("shots", shots)} />}
         </Section>
         </fieldset>
       </div>

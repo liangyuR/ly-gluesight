@@ -1,11 +1,12 @@
-import type { DetectParams, Judgement, Measured, Recipe, RecipeDoc, Verdict } from "../cycle/types";
+import type { DetectParams, Judgement, Measured, Recipe, RecipeDoc, ShotLimits, Verdict } from "../cycle/types";
 
 /** 一个拍照点的示教：在冻结原图上点出的中线（图像像素，从胶嘴一侧往外）、像素当量与可选的检测参数。
  * workspace_save_params 把它写进候选配方的这个拍照点；detect 不设时不发送（用配方的检测参数）。 */
 export interface ShotTeach {
   path: [number, number][];
-  mmPerPx: number;
+  mmPerPx: number | null;
   detect?: DetectParams;
+  limits?: ShotLimits;
 }
 export interface FrozenImage {
   id: string; source: string; capturedAt: number; size: [number, number];
@@ -15,10 +16,11 @@ export interface FrozenImage {
 export interface Trial {
   imageId: string; paramsTag: unknown; geometryTag: unknown; engineTag: unknown; passed: boolean;
   score: number; coverage: number; elapsedMs: number; reason: string;
-  measurement: unknown;
+  measurement: unknown; verdict?: Verdict;
 }
 /** 示教帧：冻结原图、试测与“已保存”；中线、像素当量与检测参数在候选配方的拍照点里。 */
 export interface Teaching {
+  viewStates?: { view: number; trial: Trial | null; saved: boolean; calibrationCheck?: { referenceMm: number; measuredMm: number; errorMm: number; passed: boolean } | null }[];
   k: number; image: FrozenImage | null; views: FrozenImage[]; trial: Trial | null; saved: boolean; backup: Teaching | null;
 }
 export interface Overview { background: string | null; positions: [number, number][]; saved: boolean }
@@ -36,6 +38,7 @@ export interface Workspace {
   doc: RecipeDoc; baseRevision: string | null; revision: number; frames: Teaching[];
   overview: Overview; samples: Sample[]; validation: Validation | null; pending: Release | null;
   sampleBank: BankSample[];
+  lastPosition?: { k: number; view: number } | null; captureId?: string | null;
   publishError: string | null; updatedAt: number;
 }
 /** coverage：要检的拍照点里已示教中线的比例（%）。 */
@@ -55,3 +58,11 @@ export interface Comparison {
   originalVerdict: Verdict; judgement: Judgement; measurements: Measured[]; createdAt: number;
 }
 export interface GrayImage { url: string; width: number; height: number }
+
+export interface CaptureRound {
+  roundId: string; recipeId: string; cameraId: string; deviceSession: number; plannedCount: number; receivedCount: number;
+  state: "waitingStart" | "receiving" | "draining" | "complete" | "failed";
+  plcPlannedCount?: number | null; plcActualCount?: number | null;
+  createdAt: number; endedAt: number | null; error: string | null; simulated: boolean;
+  frames: { shotId: string; ordinal: number; frameCounter: number; triggerCounter: number | null; originalPath: string; views: { view: number; path: string; width: number; height: number }[] }[];
+}

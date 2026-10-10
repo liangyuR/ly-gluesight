@@ -552,7 +552,16 @@ class RecipeContractVersionTests(unittest.TestCase):
                     recipe_contract(recipe)
 
 class ConfigurationTests(unittest.TestCase):
-    def test_schema_four_fixtures_and_per_device_ordinals(self):
+    def test_contract_uses_per_view_calibration_and_retains_view_configuration(self):
+        recipe = load_recipe(load_config()["robot"]["recipe"])
+        original = recipe_contract(recipe)
+        self.assertEqual(original["shots"][1]["calib"], "cam1-v2")
+        recipe["shots"][1]["calib"] = "cam1-v2"
+        self.assertEqual(recipe_contract(recipe), original)
+        recipe["shots"][1]["views"] = [{"view": 2, "enabled": True}]
+        self.assertNotEqual(recipe_contract(recipe), original)
+
+    def test_schema_five_fixtures_and_per_device_ordinals(self):
         root = Path(__file__).resolve().parents[1] / "fixtures"
         expected = {"ROBOT-DEMO": ([1, 1, 1, 1], {"cam1": 4}),
                     "ROBOT-DEMO-TRICAM": ([1, 2, 3, 1], {"cam1": 4}),
@@ -560,6 +569,7 @@ class ConfigurationTests(unittest.TestCase):
         for name, (views, counts) in expected.items():
             with self.subTest(recipe=name):
                 recipe = load_recipe(root / f"{name}.json")
+                self.assertEqual(recipe["schemaVersion"], 5)
                 plan, devices = trigger_plan(recipe)
                 self.assertEqual([p["view"] for p in plan], views)
                 self.assertEqual(devices, counts)
@@ -567,7 +577,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_legacy_geometry_and_invalid_per_shot_contracts_are_rejected(self):
         recipe = load_recipe(load_config()["robot"]["recipe"])
-        edits = [lambda r: r.update(schemaVersion=3), lambda r: r.update(schemaVersion=4.0),
+        edits = [lambda r: r.update(schemaVersion=3), lambda r: r.update(schemaVersion=4), lambda r: r.update(schemaVersion=5.0),
                  lambda r: r.update(shots=[[95, 50]]), lambda r: r["shots"][0].update(view=0),
                  lambda r: r["shots"][0].update(view=4), lambda r: r["shots"][0].update(view=True),
                  lambda r: r["shots"][0].pop("view"), lambda r: r["shots"][1].update(id="P1"),

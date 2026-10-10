@@ -1,6 +1,6 @@
 import { desktopCall } from "../../lib/desktop";
 import type { RecipeDoc } from "../cycle/types";
-import type { Comparison, FrozenImage, GrayImage, Overview, RecordImages, Sample, ShotTeach, Workspace, WorkspaceView } from "./types";
+import type { CaptureRound, Comparison, FrozenImage, GrayImage, Overview, RecordImages, Sample, ShotTeach, Workspace, WorkspaceView } from "./types";
 
 export async function decodeGray(input: ArrayBuffer | number[]): Promise<GrayImage> {
   const buf=input instanceof ArrayBuffer?input:Uint8Array.from(input).buffer;
@@ -21,6 +21,16 @@ export async function decodeGray(input: ArrayBuffer | number[]): Promise<GrayIma
 }
 
 export const workspaceApi = {
+  captureStart: (recipeId: string, cameraId: string, plannedCount: number, drainTimeoutMs: number) => desktopCall<CaptureRound>("recipe_capture_start", { recipeId, cameraId, plannedCount, drainTimeoutMs }),
+  captureGet: (roundId?: string) => desktopCall<CaptureRound | null>("recipe_capture_get", { roundId }),
+  captureStop: () => desktopCall<CaptureRound | null>("recipe_capture_stop"),
+  adoptCapture: (id: string, revision: number, roundId: string, reuseTeaching: boolean, correspondenceConfirmed: boolean) => desktopCall<WorkspaceView>("workspace_adopt_capture", { id, revision, roundId, reuseTeaching, correspondenceConfirmed }),
+  captureSample: (id: string, revision: number, roundId: string, expected: import("../cycle/types").Verdict, correspondenceConfirmed: boolean) => desktopCall<WorkspaceView>("workspace_capture_sample", { id, revision, roundId, expected, correspondenceConfirmed }),
+  setViews: (id: string, revision: number, k: number, views: number[], skip: boolean) => desktopCall<WorkspaceView>("workspace_set_views", { id, revision, k, views, skip }),
+  saveDraft: (id: string, revision: number, k: number, params: ShotTeach) => desktopCall<WorkspaceView>("workspace_save_draft", { id, revision, k, params }),
+  progress: (id: string, k: number, view: number) => desktopCall<WorkspaceView>("workspace_progress", { id, k, view }),
+  extractCenterline: (id: string, revision: number, k: number, imageId: string, roi: [number, number, number, number]) => desktopCall<{path: [number, number][]; message: string}>("workspace_extract_centerline", { id, revision, k, imageId, roi }),
+  checkCalibration: (id: string, revision: number, k: number, referenceMm: number, measuredMm: number, reuseMatching = false) => desktopCall<WorkspaceView>("workspace_check_calibration", { id, revision, k, referenceMm, measuredMm, reuseMatching }),
   list: () => desktopCall<Workspace[]>("workspace_list"),
   get: (id: string) => desktopCall<WorkspaceView>("workspace_get", { id }),
   create: (doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_create", { doc }),
@@ -40,9 +50,12 @@ export const workspaceApi = {
     desktopCall<WorkspaceView>("workspace_save_teach", { id, revision, k, imageId }),
   restoreTeach: (id: string, revision: number, k: number) => desktopCall<WorkspaceView>("workspace_restore_teach", { id, revision, k }),
   saveOverview: (id: string, revision: number, overview: Overview) => desktopCall<WorkspaceView>("workspace_save_overview", { id, revision, overview }),
-  validate: (id: string, revision: number, samples: Sample[]) => desktopCall<WorkspaceView>("workspace_validate", { id, revision, samples }),
+  validate: (id: string, revision: number, samples: Sample[], sourceConfirmed = false) => desktopCall<WorkspaceView>("workspace_validate", { id, revision, samples, sourceConfirmed }),
   importSample: (id:string, revision:number, name:string, expected:import("../cycle/types").Verdict, images:{k:number;bytes:string}[]) =>
     desktopCall<WorkspaceView>("workspace_import_sample", {id,revision,name,expected,images}),
+  retryPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_retry_publish", { id, revision }),
+  captureImage: (roundId: string, k: number, view?: number) => desktopCall<ArrayBuffer>("recipe_capture_image", { roundId, k, view }).then(decodeGray),
+  captureList: (recipeId: string) => desktopCall<Pick<CaptureRound,"roundId"|"recipeId"|"cameraId"|"plannedCount"|"receivedCount"|"state"|"createdAt"|"error">[]>("recipe_capture_list", { recipeId }),
   publish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish", { id, revision }),
   recordImages: (historyId: number) => desktopCall<RecordImages>("workspace_record_images", { historyId }),
   recordImage: (historyId: number, k: number, view?: number) => desktopCall<ArrayBuffer>("workspace_record_image", { historyId, k, view }).then(decodeGray),
@@ -54,7 +67,7 @@ export const workspaceApi = {
   comparisons: (id:string,historyId:number)=>desktopCall<Comparison[]>("workspace_comparisons",{id,historyId}),
   runtimeOverview: (id: string, revisionId: string) => desktopCall<Overview | null>("workspace_runtime_overview", { id, revisionId }),
   liveImage: (cycleId:string, revisionId:string, k:number) => desktopCall<ArrayBuffer>("workspace_live_image", {cycleId,revisionId,k}).then(decodeGray),
-  stationCapture: (cam:number)=>desktopCall<FrozenImage>("workspace_station_capture",{cam}),
-  stationImport: (cam:number,bytes:number[])=>desktopCall<FrozenImage>("workspace_station_import",{cam,bytes}),
-  stationImage: (cam:number,imageId:string)=>desktopCall<ArrayBuffer>("workspace_station_image",{cam,imageId}).then(decodeGray),
+  stationCapture: (cam:number,view=1)=>desktopCall<FrozenImage>("workspace_station_capture",{cam,view}),
+  stationImport: (cam:number,bytes:number[],view=1)=>desktopCall<FrozenImage>("workspace_station_import",{cam,bytes,view}),
+  stationImage: (cam:number,imageId:string,view=1)=>desktopCall<ArrayBuffer>("workspace_station_image",{cam,imageId,view}).then(decodeGray),
 };

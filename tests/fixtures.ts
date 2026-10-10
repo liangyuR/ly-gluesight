@@ -24,7 +24,7 @@ export function workspaceView(id = "A"): WorkspaceView {
   const limits: ShotLimits = { position, width: null, maxGapLen: .5, minPresent: .8 };
   const detect: DetectParams = { searchMm: 4, polarity: "dark", widthRange: [1, 6] };
   const doc: RecipeDoc = {
-    id, name: `工件 ${id}`, version: 2, productCode: 1, triggerMode: "fly", schemaVersion: 4,
+    id, name: `工件 ${id}`, version: 2, productCode: 1, triggerMode: "fly", schemaVersion: 5,
     spacing: 1, filterWindow: 3, detect, limits, shots: shotList(twoLines),
   };
   const layout: Recipe = {
@@ -38,17 +38,17 @@ export function workspaceView(id = "A"): WorkspaceView {
       doc, baseRevision: `production-${id}`, revision: 7, updatedAt: 1, publishError: null, pending: null,
       frames: [0, 1].map(k => {
         const image: FrozenImage = { id: `${id}-image-${k}`, source: "camera", capturedAt: 1, size: [100, 60], camera: "CAM-1", view: 1,
-          cameraTag: { id: "CAM-1", source: "sim", viewCount: 1, acquisition: "triggered", exposureUs: 60, gainDb: 6 }, calibTag: { path: "C:/test/calib/plane_calib.json", value: null }, geometryTag: [`P${k + 1}`, `P${k + 1}`, "CAM-1", 1, "CAM-1"], exposureUs: 60, gainDb: 6, historyId: null };
+          cameraTag: { id: "CAM-1", source: "sim", viewCount: 1, acquisition: "triggered", exposureUs: 60, gainDb: 6 }, calibTag: { path: "C:/test/calib/plane_calib.json", value: null }, geometryTag: [`P${k + 1}`, `P${k + 1}`, "CAM-1", 1, "CAM-1-v1"], exposureUs: 60, gainDb: 6, historyId: null };
         return { k, saved: false, backup: null, image, views: [image],
-        trial: { imageId: `${id}-image-${k}`, paramsTag: [doc.spacing, structuredClone(doc.shots[k].path), doc.shots[k].mmPerPx, structuredClone(detect), doc.filterWindow], geometryTag: [`P${k + 1}`, `P${k + 1}`, "CAM-1", 1, "CAM-1"], engineTag: { path: "C:/test/lyflow_core.dll", version: "1.1.0" }, passed: true,
+        trial: { imageId: `${id}-image-${k}`, paramsTag: [doc.shots[k].view, structuredClone(doc.shots[k].path), doc.shots[k].mmPerPx, structuredClone(detect), structuredClone(limits), doc.spacing, doc.filterWindow], geometryTag: [`P${k + 1}`, `P${k + 1}`, "CAM-1", 1, "CAM-1-v1"], engineTag: { path: "C:/test/lyflow_core.dll", version: "1.1.0" }, passed: true,
           score: .94, coverage: 1, elapsedMs: 8, reason: "试测通过", measurement: { ids: [2 * k, 2 * k + 1] } },
         };
       }),
       overview: { background: null, positions: [[.25, .5], [.75, .5]], saved: true },
       samples: [{ historyId: null, sampleId: "good", expected: "OK" }, { historyId: null, sampleId: "bad", expected: "NG_GAP" }],
       sampleBank: [
-        { id: "good", name: "良品组", geometryTag: doc.shots.map(shot => [shot.id, shot.poseId, shot.camera, shot.view]), expected: "OK", createdAt: 1 },
-        { id: "bad", name: "断胶组", geometryTag: doc.shots.map(shot => [shot.id, shot.poseId, shot.camera, shot.view]), expected: "NG_GAP", createdAt: 1 },
+        { id: "good", name: "良品组", geometryTag: doc.shots.map(shot => [shot.id, shot.poseId, shot.camera]), expected: "OK", createdAt: 1 },
+        { id: "bad", name: "断胶组", geometryTag: doc.shots.map(shot => [shot.id, shot.poseId, shot.camera]), expected: "NG_GAP", createdAt: 1 },
       ],
       validation: { revision: 7, passed: true, checkedAt: 1, environmentTag: { cameras: [{ id: "CAM-1", source: "sim", viewCount: 1 }], calibration: null, engine: { path: "C:/test/lyflow_core.dll", version: "1.1.0" } }, checks: [], samples: [] },
     },
@@ -64,7 +64,7 @@ export function summary(view = workspaceView()): RecipeSummary {
 export function tricamWorkspaceView(id = "A"): WorkspaceView {
   const view = workspaceView(id);
   view.workspace.frames.forEach(frame => {
-    frame.views = [1, 2, 3].map(value => ({ ...frame.image!, view: value, id: value === 1 ? frame.image!.id : `${frame.image!.id}-v${value}`, geometryTag: [`P${frame.k + 1}`, `P${frame.k + 1}`, "CAM-1", value, "CAM-1"] }));
+    frame.views = [1, 2, 3].map(value => ({ ...frame.image!, view: value, id: value === 1 ? frame.image!.id : `${frame.image!.id}-v${value}`, geometryTag: [`P${frame.k + 1}`, `P${frame.k + 1}`, "CAM-1", value, `CAM-1-v${value}`] }));
     frame.image = frame.views[0];
   });
   return view;
@@ -74,8 +74,8 @@ export function workspaceState(view = workspaceView()): ReturnType<typeof useWor
   return {
     list: [summary(view)], drafts: [view.workspace], cameras: [], selectedId: view.workspace.doc.id,
     data: view, doc: view.workspace.doc, preview: view.layout, previewError: "", error: "", notice: "",
-    busy: false, dirty: false, frameDirty: false, frameDrafts: {},
-    select: vi.fn(async () => view), clearSelection: vi.fn(), reloadList: vi.fn(async () => {}),
+    saveState: "saved", retrySave: vi.fn(), busy: false, dirty: false, frameDirty: false, frameDrafts: {},
+    rememberPosition: vi.fn(), select: vi.fn(async () => view), clearSelection: vi.fn(), reloadList: vi.fn(async () => {}),
     setDoc: vi.fn(), setFrameDraft: vi.fn(), setError: vi.fn(),
     saveDoc: vi.fn(async () => view), act: vi.fn(async request => request()),
   };

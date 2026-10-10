@@ -20,6 +20,7 @@ mod production;
 #[cfg(feature = "p0-pressure-test")]
 mod pressure;
 mod recipe;
+mod recipe_capture;
 mod recipe_api;
 mod release;
 mod recorder;
@@ -121,6 +122,19 @@ pub fn run() {
             sim::sim_stop,
             sim::sim_robot_trigger,
             workspace::workspace_list,
+            recipe_capture::recipe_capture_start,
+            recipe_capture::recipe_capture_get,
+            recipe_capture::recipe_capture_stop,
+            recipe_capture::recipe_capture_list,
+            recipe_capture::recipe_capture_image,
+            workspace::workspace_set_views,
+            workspace::workspace_save_draft,
+            workspace::workspace_progress,
+            workspace::workspace_check_calibration,
+            workspace::workspace_extract_centerline,
+            workspace::workspace_retry_publish,
+            workspace::workspace_adopt_capture,
+            workspace::workspace_capture_sample,
             workspace::workspace_get,
             workspace::workspace_create,
             workspace::workspace_delete,

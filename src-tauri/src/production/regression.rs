@@ -365,7 +365,7 @@ fn run_case(
         recipe: doc,
         versions: Versions { engine: engine.version.clone(), graph: GRAPH_VERSION.into() },
         graph: ResourceSource::Bytes(serde_json::to_vec(&graphs(&recipe).unwrap()).unwrap()),
-        shots: recipe.shots.iter().enumerate().map(|(k, shot)| ShotInput { k,
+        shots: recipe.shots.iter().enumerate().map(|(k, shot)| ShotInput { k, view: shot.view,
             image: Some(ResourceSource::Bytes(pgm(&fixtures.normal[k][shot.view as usize - 1]))),
             calibration: Some(ResourceSource::Bytes(serde_json::to_vec(&json!({"schemaVersion": 1, "mmPerPx": 0.125,
                 "source": "synthetic exact scale", "camera": shot.camera, "view": shot.view, "size": SIM_SIZE})).unwrap())) }).collect(),

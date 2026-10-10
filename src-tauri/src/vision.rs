@@ -18,7 +18,7 @@ use crate::measure::{Job, Measured, Measurer};
 use crate::recipe::Recipe;
 
 mod taught;
-pub use taught::{build_taught_graph, measure_shot, measure_shot_with_graph, ShotMeasurement};
+pub use taught::{build_taught_graph, measure_shot, measure_shot_with_graph, ShotMeasurement, MultiViewMeasurement, ViewMeasurement, measure_views, measure_views_with};
 
 unsafe extern "C" fn ignore_event(_: *const c_char, _: *mut c_void) {}
 
@@ -111,7 +111,11 @@ impl Measurer for LyFlowMeasurer {
             return Err("测量任务与已冻结发布包不一致".into());
         }
         let run_id = format!("shot-{}-{}", job.cycle_id, job.k);
-        Ok(prepared.measure(job.k, image, &run_id)?.into_measured(job))
+        if job.images.is_empty() {
+            Ok(prepared.measure(job.k, image, &run_id)?.into_measured(job))
+        } else {
+            Ok(prepared.measure_views(job.k, &job.images, &run_id)?.into_measured(job))
+        }
     }
 }
 
@@ -233,15 +237,15 @@ impl VisionHost {
 
 }
 
-/// 工位标定文件（标定属于相机工位，换型不重标）。按相机编号存，增删别的相机也跟着这台相机走；cam1 沿用单相机时代的文件名。
+
 pub fn station_calib_path(app: &AppHandle, cam_id: &str) -> Result<PathBuf, String> {
-    let name = if cam_id == crate::recipe::legacy_camera_id(0) { "plane_calib.json".to_string() } else { format!("plane_calib_{cam_id}.json") };
+    let name = format!("plane_calib_{cam_id}.json");
     Ok(app.path().app_config_dir().map_err(|e| e.to_string())?.join("calib").join(name))
 }
 
 /// 拍照点 k 的标定文件：按它的标定引用（缺省为相机编号）找工位标定。
 pub fn shot_calib_path(app: &AppHandle, recipe: &Recipe, k: usize) -> Result<PathBuf, String> {
-    station_calib_path(app, recipe.shots.get(k).ok_or("拍照点不存在")?.calib_ref())
+    station_calib_path(app, &recipe.shots.get(k).ok_or("拍照点不存在")?.calib_ref())
 }
 
 /// 配方各相机的来源：要么全是模拟，要么全是真实 / 回放（示教资料与标定的来路不同）。
@@ -259,6 +263,11 @@ pub fn recipe_source(app: &AppHandle, recipe: &Recipe) -> Result<CameraSource, S
         }
     }
     found.map(|(s, _)| s).ok_or_else(|| format!("配方 {} 没有拍照点", recipe.id))
+}
+
+fn station_view_key(device: &str, view: u8) -> Result<String, String> {
+    if !(1..=3).contains(&view) { return Err("标定图编号必须为 1、2 或 3".into()); }
+    Ok(format!("{device}-v{view}"))
 }
 
 fn camera_id(app: &AppHandle, cam: u8) -> Result<String, String> {
@@ -293,22 +302,27 @@ pub fn calib_info(path: &Path) -> Option<CalibInfo> {
 }
 
 #[tauri::command]
-pub fn vision_calib_info(app: AppHandle, cam: Option<u8>) -> Result<Option<CalibInfo>, String> {
-    Ok(calib_info(&station_calib_path(&app, &camera_id(&app, cam.unwrap_or(0))?)?))
+pub fn vision_calib_info(app: AppHandle, cam: Option<u8>, view: Option<u8>) -> Result<Option<CalibInfo>, String> {
+    let key = station_view_key(&camera_id(&app, cam.unwrap_or(0))?, view.unwrap_or(1))?;
+    Ok(calib_info(&station_calib_path(&app, &key)?))
 }
 
 /// 工位标定：用飞拍相机最近一帧整图跑 image.board_calib，结果存成工位标定文件。
 #[tauri::command]
-pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, cam: Option<u8>, image_id: Option<String>) -> Result<CalibInfo, String> {
+pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, cam: Option<u8>, view: Option<u8>, image_id: Option<String>) -> Result<CalibInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        if app.state::<CycleHost>().busy() { return Err("工件正在检测，结束后再标定".into()); }
+        let view = view.unwrap_or(1);
+        let key = station_view_key(&camera_id(&app, cam.unwrap_or(0))?, view)?;
+        if app.state::<CycleHost>().busy() || app.state::<CycleHost>().camera.recipe_capture().active() { return Err("设备正在采集或检测，结束后再标定".into()); }
         if pattern.iter().any(|n|!n.is_finite()||*n<2.0||*n>100.0||n.fract()!=0.0)||!square.is_finite()||square<=0.0 { return Err("棋盘格内角点与格长无效".into()); }
         let settings = app.state::<CycleHost>().settings();
         let engine = app.state::<VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("lyFlow 核心库未加载")?;
-        let image = if let Some(id)=image_id.as_deref() { crate::workspace::station_image_ref(&app,cam.unwrap_or(0),id)? } else { app
+        let image = if let Some(id)=image_id.as_deref() {
+            if crate::workspace::station_image_view(&app, cam.unwrap_or(0), id)? != view { return Err("冻结标定样本的图编号与当前选择不一致".into()); }
+            crate::workspace::station_image_ref(&app,cam.unwrap_or(0),id)? } else { app
             .state::<CycleHost>()
             .camera
-            .last_full(cam.unwrap_or(0))
+            .last_view(cam.unwrap_or(0), view)
             .ok_or("还没有整帧图像：打开图像测量后软触发一帧（标定板放在内边所在高度）")? };
         let graph = json!({
             "schemaVersion": 1,
@@ -331,13 +345,16 @@ pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, ca
             });
         }
         let data = r.record("calib").cloned().ok_or("标定没有输出")?;
-        let path = station_calib_path(&app, &camera_id(&app, cam.unwrap_or(0))?)?;
+        let path = station_calib_path(&app, &key)?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        if let Some(id)=image_id.as_deref() { crate::workspace::station_image_ref(&app,cam.unwrap_or(0),id)?; }
-        let doc = json!({"kind": "Record", "type": "image.PlaneCalib", "data": data, "ts": ly_plc::now_ms(), "sampleId":image_id});
-        std::fs::write(&path, serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        if let Some(id)=image_id.as_deref() {
+            if crate::workspace::station_image_view(&app, cam.unwrap_or(0), id)? != view { return Err("标定过程中样本视图已改变".into()); }
+            crate::workspace::station_image_ref(&app,cam.unwrap_or(0),id)?;
+        }
+        let doc = json!({"kind": "Record", "type": "image.PlaneCalib", "data": data, "ts": ly_plc::now_ms(), "sampleId":image_id,"cameraId":camera_id(&app,cam.unwrap_or(0))?,"view":view});
+        crate::fsio::write_atomic(&path, &serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?)?;
         let _ = app.emit("calibration://changed", ());
         calib_info(&path).ok_or_else(|| "标定文件写入后读不回来".into())
     })

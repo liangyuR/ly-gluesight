@@ -242,3 +242,68 @@ fn native_taught_measurement_uses_pixels_for_width_offset_gaps_polarity_and_fres
     std::fs::write(dir.join("report.json"), serde_json::to_string_pretty(&report).unwrap()).unwrap();
     println!("Native taught-path evidence: {}", dir.display());
 }
+
+#[test]
+fn multiview_failure_is_local_but_missing_image_is_acquisition_failure() {
+    let mut doc = crate::recipe::samples().remove(0);
+    doc.shots.truncate(1);
+    let shot = &mut doc.shots[0];
+    shot.views = [1, 2].into_iter().map(|view| crate::recipe::ShotViewSpec { view, enabled: true,
+        path: shot.path.clone(), mm_per_px: shot.mm_per_px, detect: None, limits: None, calib: None }).collect();
+    let recipe = doc.build().unwrap();
+    let images = vec![(1, std::sync::Arc::new(FrameImage::new(1, 1, vec![0]))), (2, std::sync::Arc::new(FrameImage::new(1, 1, vec![0])))];
+    let result = measure_views_with(&recipe, 0, &images, |view, _| {
+        if view == 1 { return Err("图 1 引擎失败".into()); }
+        let idx: Vec<_> = recipe.view_points(0, view).collect();
+        Ok(ShotMeasurement { idx: idx.iter().map(|&j| j as u32).collect(), d: vec![0.0; idx.len()], w: vec![4.0; idx.len()],
+            st: vec![ST_OK; idx.len()], px: idx.iter().map(|&j| [recipe.points.x[j], recipe.points.y[j]]).collect(), coverage: 1.0, ms: 1 })
+    }).unwrap();
+    assert_eq!(result.views.len(), 2);
+    assert!(result.views[0].error.is_some());
+    let mut table = vec![crate::judge::PointState::Pending; recipe.point_count()];
+    for (i, &j) in result.reading.idx.iter().enumerate() {
+        table[j as usize] = if result.reading.st[i] == ST_OK { crate::judge::PointState::Measured { d: 0.0, w: 4.0 } } else { crate::judge::PointState::Invalid };
+    }
+    assert_eq!(crate::judge::judge(&recipe, &table).verdict, crate::judge::Verdict::Ok);
+    assert!(measure_views_with(&recipe, 0, &images[..1], |_, _| panic!("must reject before measurement")).is_err());
+}
+
+#[test]
+#[ignore = "requires LYFLOW_CORE_DLL with glue.taught_path; real engine multiview OR contract"]
+fn native_multiview_or_accepts_valid_ng_and_retains_view_error() {
+    let dll = std::env::var_os("LYFLOW_CORE_DLL").expect("Set LYFLOW_CORE_DLL");
+    let engine = Engine::load(std::path::Path::new(&dll)).unwrap();
+    let mut doc = crate::recipe::samples().remove(0);
+    doc.shots.truncate(1);
+    doc.detect = crate::recipe::DetectParams { search_mm: 8.0, polarity: crate::recipe::Polarity::Dark, width_range: [1.5, 6.5] };
+    doc.shots[0].views = [1, 2].into_iter().map(|view| crate::recipe::ShotViewSpec {
+        view, enabled: true, path: vec![[40.0, 80.5], [200.0, 80.5]], mm_per_px: Some(0.25),
+        detect: None, limits: None, calib: None,
+    }).collect();
+    let mut normal = vec![210; 256 * 160];
+    for y in 74..90 { for x in 20..220 { normal[y * 256 + x] = 35; } }
+    let normal = std::sync::Arc::new(FrameImage::new(256, 160, normal));
+    let gap = std::sync::Arc::new(FrameImage::new(256, 160, vec![210; 256 * 160]));
+    let run = |doc: &crate::recipe::RecipeDoc, images: &[(u8, std::sync::Arc<FrameImage>)]| {
+        let recipe = doc.build().unwrap();
+        let result = measure_views(&engine, &recipe, 0, images, "native-multiview-or", "").unwrap();
+        let mut table = vec![crate::judge::PointState::Pending; recipe.point_count()];
+        for (i, &j) in result.reading.idx.iter().enumerate() {
+            table[j as usize] = match result.reading.st[i] {
+                ST_OK => crate::judge::PointState::Measured { d: result.reading.d[i], w: result.reading.w[i] },
+                ST_GAP => crate::judge::PointState::Gap,
+                _ => crate::judge::PointState::Invalid,
+            };
+        }
+        (crate::judge::judge(&recipe, &table), result.views)
+    };
+    let (ok, views) = run(&doc, &[(1, gap.clone()), (2, normal.clone())]);
+    assert_eq!(ok.verdict, crate::judge::Verdict::Ok);
+    assert_eq!(ok.segments[0].verdict, crate::judge::Verdict::NgGap);
+    assert!(views.iter().all(|v| v.error.is_none()));
+    doc.shots[0].views[1].path = vec![[400.0, 80.5], [560.0, 80.5]];
+    let (ok_with_error, views) = run(&doc, &[(1, normal.clone()), (2, normal.clone())]);
+    assert_eq!(ok_with_error.verdict, crate::judge::Verdict::Ok);
+    assert!(views[1].error.is_some());
+    assert_eq!(run(&doc, &[(1, gap), (2, normal)]).0.verdict, crate::judge::Verdict::ErrInspect);
+}

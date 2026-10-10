@@ -70,6 +70,7 @@ pub struct CameraConfig {
     pub name: String,
     pub source: CameraSource,
     pub view_count: u8,
+    pub composite_layout: Option<crate::recipe_capture::CompositeLayout>,
     pub serial: String,
     pub acquisition: Acquisition,
     pub fps: f32,
@@ -94,6 +95,7 @@ impl Default for CameraConfig {
             name: "相机".into(),
             source: CameraSource::Sim,
             view_count: 1,
+            composite_layout: None,
             serial: String::new(),
             acquisition: Acquisition::Triggered,
             fps: 20.0,
@@ -117,8 +119,8 @@ impl CameraConfig {
         if !matches!(self.view_count, 1 | 3) {
             return Err("视角数量只能是 1 或 3".into());
         }
-        if self.source == CameraSource::Mvs && self.view_count == 3 {
-            return Err("海康三目设备的 SDK 图像交付形式待现场确认，目前不能启用三视角取图".into());
+        if self.source == CameraSource::Mvs && self.view_count == 3 && self.composite_layout.is_none() {
+            return Err("三幅拼接图必须明确配置 SDK 交付布局，未确认布局不能启用".into());
         }
         if !(1.0..=1_000_000.0).contains(&self.exposure_us) {
             return Err("曝光时间需在 1–1000000 µs 之间".into());
@@ -240,6 +242,7 @@ struct RigShared {
     /// 需要整帧图像（图像测量或帧录制）；模拟测量时不必拷整帧
     capture: AtomicBool,
     dry_run: Mutex<Option<(Instant, Vec<DryFrame>)>>,
+    recipe_capture: Arc<crate::recipe_capture::RecipeCaptureHost>,
 }
 
 /// 单台相机的交付通道，取图回调与模拟 / 回放共用。
@@ -272,11 +275,12 @@ struct Shared {
     /// 海康相机本次打开开上了的 Chunk：触发计数、帧计数
     chunk_trigger: AtomicBool,
     chunk_frame: AtomicBool,
+    composite_layout: Mutex<Option<crate::recipe_capture::CompositeLayout>>,
 }
 
 impl Shared {
     fn capture(&self) -> bool {
-        self.rig.capture.load(Ordering::Relaxed)
+        self.rig.capture.load(Ordering::Relaxed) || self.rig.recipe_capture.active()
     }
 
     /// 连续采集的帧只更新缩略图，不送节拍。
@@ -363,11 +367,15 @@ impl Shared {
         }
     }
 
-    fn deliver(&self, mut frame: Frame) {
+    fn deliver(&self, frame: Frame) {
+        self.deliver_original(frame, None);
+    }
+
+    fn deliver_original(&self, mut frame: Frame, original: Option<Arc<FrameImage>>) {
         let current_session = frame.session == self.session.load(Ordering::SeqCst);
         delivery::observe(&self.identity, &self.manual, &mut frame, current_session);
         if !frame.images.is_empty() && current_session {
-            if frame.counter == CounterSource::Synthetic {
+            if frame.counter == CounterSource::Synthetic || frame.images.len() == 3 {
                 self.set_previews(frame.session, &frame.images);
             }
             *self.last_full.lock().unwrap() = Some(CapturedFrame::from_frame(&frame));
@@ -391,6 +399,7 @@ impl Shared {
                 let _ = self.rig.app.emit("camera://frame", &frame);
             }
         }
+        if self.rig.recipe_capture.offer(&frame, original) { return; }
         if let Some((started, frames)) = self.rig.dry_run.lock().unwrap().as_mut() {
             frames.push(DryFrame {
                 cam: self.cam,
@@ -547,7 +556,14 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
             Ok(_) if data.is_null() => None,
             Ok(len) => shared.gray_image(info.pixel_type, w, h, unsafe { std::slice::from_raw_parts(data, len) }),
         };
-        shared.deliver(Frame { cam: shared.cam, session, counter, frame_counter, trigger_counter, lost_packets: info.lost_packet, ts: now_ms(), manual: false, images: image.into_iter().collect() });
+        let images = match (&image, shared.composite_layout.lock().unwrap().as_ref()) {
+            (Some(image), Some(layout)) => match layout.split(image) {
+                Ok(images) => images,
+                Err(error) => { shared.unusable(error); Vec::new() }
+            },
+            _ => image.iter().cloned().collect(),
+        };
+        shared.deliver_original(Frame { cam: shared.cam, session, counter, frame_counter, trigger_counter, lost_packets: info.lost_packet, ts: now_ms(), manual: false, images }, image);
     }));
 }
 
@@ -555,6 +571,7 @@ extern "system" fn on_exception(msg: c_uint, user: *mut c_void) {
     if msg == mvs::MV_EXCEPTION_DEV_DISCONNECT && !user.is_null() {
         let shared = unsafe { &*(user as *const Shared) };
         shared.disconnected.store(true, Ordering::SeqCst);
+        shared.rig.recipe_capture.disconnected(shared.cam);
     }
 }
 
@@ -609,6 +626,7 @@ impl CameraSlot {
                 session: AtomicU64::new(0),
                 chunk_trigger: AtomicBool::new(false),
                 chunk_frame: AtomicBool::new(false),
+                composite_layout: Mutex::new(if config.view_count == 3 { config.composite_layout.clone() } else { None }),
             }),
             config: Mutex::new(config),
             state: Mutex::new(DeviceState::default()),
@@ -635,6 +653,7 @@ impl CameraSlot {
     }
 
     fn set_config(&self, config: CameraConfig) {
+        *self.shared.composite_layout.lock().unwrap() = if config.view_count == 3 { config.composite_layout.clone() } else { None };
         self.shared.free_run.store(config.acquisition == Acquisition::FreeRun, Ordering::Relaxed);
         *self.config.lock().unwrap() = config;
         self.state.lock().unwrap().warnings.clear();
@@ -1114,6 +1133,10 @@ pub struct CameraRig {
 }
 
 impl CameraRig {
+    pub fn recipe_capture(&self) -> &Arc<crate::recipe_capture::RecipeCaptureHost> { &self.rig.recipe_capture }
+
+    pub fn dry_run_active(&self) -> bool { self.rig.dry_run.lock().unwrap().is_some() }
+
     pub fn new(app: &AppHandle, tx: Sender<Frame>) -> Result<Self, String> {
         let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
         let path = dir.join("cameras.json");
@@ -1137,6 +1160,7 @@ impl CameraRig {
             pool: FramePool::new(48),
             capture: AtomicBool::new(false),
             dry_run: Mutex::new(None),
+            recipe_capture: crate::recipe_capture::RecipeCaptureHost::open(app.path().app_data_dir().map_err(|e| e.to_string())?.join("recipe-capture"))?,
         });
         let slots = file.cameras.into_iter().enumerate().map(|(i, c)| Arc::new(CameraSlot::new(&rig, i as u8, c))).collect();
         let mut this = Self { rig, slots: RwLock::new(slots), path, next_id: Mutex::new(file.next_id), save_lock: Mutex::new(()), generation: AtomicU64::new(0), notes };
@@ -1441,6 +1465,7 @@ fn assign_ids(configs: &mut [CameraConfig], next_id: &mut u32) -> bool {
 
 /// 相机组增删只能在空闲或故障时做：相机序号会重排（编号不变）。
 fn check_idle(cycle: &CycleHost) -> Result<(), String> {
+    if cycle.camera.recipe_capture().active() { return Err("示教整圈采集正在独占设备，请结束本轮采集后操作".into()); }
     if !cycle.busy() && matches!(cycle.phase(), Phase::Idle | Phase::Fault) {
         Ok(())
     } else {
@@ -1566,9 +1591,11 @@ mod view_tests {
     }
 
     #[test]
-    fn mvs_three_views_are_rejected_until_sdk_delivery_is_confirmed() {
+    fn mvs_three_views_require_explicit_sdk_layout() {
         let mut config = CameraConfig { source: CameraSource::Mvs, view_count: 3, ..CameraConfig::default() };
-        assert!(config.validate().unwrap_err().contains("SDK 图像交付形式待现场确认"));
+        assert!(config.validate().unwrap_err().contains("明确配置 SDK 交付布局"));
+        config.composite_layout = Some(crate::recipe_capture::CompositeLayout::Horizontal);
+        assert!(config.validate().is_ok());
         config.view_count = 1;
         assert!(config.validate().is_ok());
     }
@@ -1609,7 +1636,7 @@ mod view_tests {
 #[tauri::command]
 pub fn camera_dry_run_start(cycle: State<'_, CycleHost>) -> Result<(), String> {
     let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试空跑")?;
-    if cycle.busy() || cycle.phase() != Phase::Idle {
+    if cycle.busy() || cycle.phase() != Phase::Idle || cycle.camera.recipe_capture().active() {
         return Err("检测节拍不在空闲状态，不能开始空跑".into());
     }
     *cycle.camera.rig.dry_run.lock().unwrap() = Some((Instant::now(), Vec::new()));

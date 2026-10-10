@@ -2,7 +2,7 @@
 
 用于 GlueSight 的本机协议联调和图像演示。Robot、Modbus TCP PLC、虚拟设备触发桥各自独立运行，默认绑定 127.0.0.1。Robot 写型号、SN 和计划拍照数，等待布防，按拍照点顺序触发设备，最后读取并确认检测结果。
 
-配方采用 schemaVersion 4。每个拍照点保存 id、poseId、camera、view、bead、path（所选图像里的像素中线）、mmPerPx、detect 和 limits；可选 calib、skip。旧矩形坐标 shots、工件视野与模板框不再适用。
+配方采用 schemaVersion 5。当前演示夹具每个拍照点选择一幅图，保存 id、poseId、camera、view、bead、path（所选图像里的像素中线）、mmPerPx、detect 和 limits；可选 calib、skip。标定缺省引用为 camera-v1/v2/v3。旧版本夹具须重新建立；多图示教使用配方工作台的整圈采集流程。
 
 | 夹具 | 产品代码 | 设备与视角顺序 | 每件设备触发数 |
 | --- | --- | --- | --- |

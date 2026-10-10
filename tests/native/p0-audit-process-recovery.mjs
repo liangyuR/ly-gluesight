@@ -180,7 +180,7 @@ try {
   assert.equal(cPath(manifest.executable).toLowerCase(), paths.executable.toLowerCase());
   assert.equal(manifest.sourceGate ?? manifest.runtimeSource, values['source-gate']);
   assert(await absent(profile), 'Require absent dedicated profile; never reuse/copy production or previous test data');
-  assert.equal(recipe.schemaVersion, 4); assert.equal(recipe.version, 1);
+  assert.equal(recipe.schemaVersion, 5); assert.equal(recipe.version, 1);
   assert(/^P0-AUDIT-[A-Z0-9_-]+$/.test(recipe.id) && recipe.id.length <= 32);
   assert(!recipe.teachingId && recipe.triggerMode === 'fly' && recipe.shots.length === 4);
   assert(Number.isInteger(recipe.productCode) && recipe.productCode > 0 && recipe.productCode <= 65535);

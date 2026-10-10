@@ -1,0 +1,9 @@
+{
+  "productName": "GlueSight 配方创建软件回归",
+  "identifier": "com.xyzrobotics.gluesight.recipe-workflow-20261011",
+  "build": { "beforeBuildCommand": "" },
+  "app": {
+    "windows": [{ "label": "main", "title": "配方创建软件回归", "visible": false, "width": 1440, "height": 900 }]
+  },
+  "bundle": { "active": false }
+}

@@ -176,7 +176,7 @@ impl Rig {
         assert_eq!(self.session.phase(), SessionPhase::Acquiring);
     }
 
-    async fn end(&mut self) -> Instant { self.end_counts([2, 1, 1]).await }
+    async fn end(&mut self) -> Instant { self.end_counts(self.plan.camera_shots).await }
 
     async fn end_counts(&mut self, counts: [u16; 3]) -> Instant {
         self.plc.values(json!({"partEnd":true,"camera1Triggers":counts[0],"camera2Triggers":counts[1],"camera3Triggers":counts[2]}));
@@ -1269,4 +1269,27 @@ fn s7_wire_arm_deadline_settles_original_journal_before_fault_without_late_overw
         assert_eq!(restarted.journal.pending.unwrap().phase, SessionPhase::Fault);
         rig.finish().await;
     });
+}
+
+#[tokio::test]
+#[ignore = "requires Python and local loopback S7 fixture"]
+async fn s7_wire_teaching_capture_uses_single_device_and_holds_until_release() {
+    let mut rig = Rig::new("teaching-capture").await;
+    rig.plan = PlcPlan::compile("draft-empty".into(), 91, ["device1".into(), String::new(), String::new()],
+        (1..=20).map(|i| PlanShot { shot_id: format!("S{i:03}"), pose_id: format!("capture-{i}"), camera_id: "device1".into() }).collect()).unwrap();
+    rig.request(1, 777).await;
+    rig.session.bind_capture_id("capture-round-1").unwrap();
+    assert!(rig.session.bind_cycle_id("00000000000000000000000000000001").is_err());
+    rig.arm().await;
+    assert_eq!(rig.session.capture_id(), Some("capture-round-1"));
+    let persisted: Journal = serde_json::from_str(&std::fs::read_to_string(&rig.session.path).unwrap()).unwrap();
+    assert_eq!(persisted.pending.as_ref().unwrap().capture_id.as_deref(), Some("capture-round-1"));
+    assert!(persisted.pending.unwrap().cycle_id.is_none());
+    rig.end().await;
+    rig.report().await;
+    assert!(rig.session.pending());
+    assert_eq!(rig.session.capture_id(), Some("capture-round-1"));
+    rig.ack_release().await;
+    assert!(rig.session.capture_id().is_none());
+    rig.finish().await;
 }
