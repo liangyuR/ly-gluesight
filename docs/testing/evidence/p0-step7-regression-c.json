@@ -75,7 +75,13 @@
       "passed": 13
     },
     "cycleHostEvidenceSelfTests": {
-      "passed": 48
+      "passed": 51,
+      "failed": 0,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-cyclehost-tools-review-final-c.log",
+        "bytes": 3676,
+        "sha256": "4df3d9c68e6ccbcce7e9677e1e21443c223f7a497a9df538687a4fcb9a4b51da"
+      }
     },
     "frontendQuiet": {
       "passed": 947,
@@ -252,7 +258,35 @@
     },
     "armVerificationFix": {
       "evidence": "p0-arm-verify-c.json",
-      "nativeRetryPending": true
+      "nativeRetryPending": true,
+      "nativeRecoveryControl": {
+        "passed": 100,
+        "source": "d03fade",
+        "evidence": "p0-arm-verify-c.json",
+        "finalSuitePending": true
+      }
+    },
+    "rustReviewFinal": {
+      "source": "a3d4ad4",
+      "passed": 275,
+      "failed": 0,
+      "ignored": 30,
+      "seconds": 2.88,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-review-final-c.log",
+        "bytes": 31658,
+        "sha256": "94bd348e9996f4e6e36f341c264c242452db04a7f753293e55ddd7fca437fd0f"
+      }
+    },
+    "nativeBundleReviewFinal": {
+      "passed": 1,
+      "failed": 0,
+      "seconds": 0.51,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-review-native-final-c.log",
+        "bytes": 2211,
+        "sha256": "7e3910ec826f08961785937a757e7d7cc1a59d9f1964930d50959bff72b155b6"
+      }
     }
   },
   "pending": [
