@@ -178,6 +178,11 @@ fn outcome(cycle: &str, files: &[(usize, u8)], state: RecorderState) -> Recordin
     }
 }
 
+fn retry_due(coordinator: &mut Coordinator, sink: &mut TestSink, cycle: &str) -> Vec<Notice> {
+    let now = coordinator.entries[cycle].retry_at;
+    coordinator.retry(sink, now)
+}
+
 fn has_message(notices: &[Notice], message: &str) -> bool {
     notices.iter().any(|notice| matches!(notice, Notice::Log { message: text, .. } if text.contains(message)))
 }
@@ -314,6 +319,8 @@ fn failed_insert_retains_first_conclusion_early_ack_and_recording_for_retry() {
     let mut conflicting = record.clone();
     conflicting.judgement.reason = "重复事件不得替换结论".into();
     coordinator.handle(Event::Insert(Box::new(conflicting)), &mut sink, 4);
+    assert_eq!(sink.inserts, 1);
+    retry_due(&mut coordinator, &mut sink, "one");
     let detail = sink.detail("one");
     assert_eq!(detail.judgement.reason, record.judgement.reason);
     assert_eq!(detail.summary.delivery.state, PlcDeliveryState::Acknowledged);
@@ -375,7 +382,7 @@ fn failed_raw_reference_write_retries_without_exposing_complete_recording_as_ava
     assert!(has_message(&notices, "磁盘空间不足"));
     assert_eq!(sink.detail("one").recording.state, RecordingState::Pending);
     assert!(sink.detail("one").shots[0].raw_files.is_empty());
-    let notices = coordinator.retry(&mut sink, 3);
+    let notices = retry_due(&mut coordinator, &mut sink, "one");
     assert!(notices.contains(&Notice::Updated("one".into())));
     let after = sink.detail("one");
     assert_eq!(original(&after), original(&before));
@@ -395,7 +402,10 @@ fn failed_delivery_and_recording_updates_are_retained_until_retry() {
     coordinator.handle(Event::Delivery("one".into(), delivery(PlcDeliveryState::Acknowledged, 20)), &mut sink, 2);
     sink.fail_recording = 1;
     coordinator.handle(Event::Recording(outcome("one", &[], RecorderState::Off)), &mut sink, 3);
-    coordinator.retry(&mut sink, 4);
+    retry_due(&mut coordinator, &mut sink, "one");
+    let delivery_writes = sink.delivery_writes;
+    retry_due(&mut coordinator, &mut sink, "one");
+    assert_eq!(sink.delivery_writes, delivery_writes);
     let after = sink.detail("one");
     assert_eq!(after.summary.delivery.state, PlcDeliveryState::Acknowledged);
     assert_eq!(after.recording.state, RecordingState::Off);
@@ -404,23 +414,31 @@ fn failed_delivery_and_recording_updates_are_retained_until_retry() {
 }
 
 #[test]
-fn retries_stop_at_limit_and_pending_capacity_and_expiry_are_explicit() {
+fn retries_continue_with_capped_backoff_and_pending_capacity_and_expiry_remain_explicit() {
     let dir = TestDir::new();
     let mut sink = dir.sink();
     sink.fail_insert = 100;
     let mut coordinator = Coordinator::new(2, 3);
     coordinator.handle(Event::Insert(Box::new(part("failed", 42))), &mut sink, 1);
-    for now in 2..8 {
-        coordinator.retry(&mut sink, now);
+    let mut now = 1;
+    for expected_delay in [1000, 2000, 4000, 8000, 16000, 30000, 30000] {
+        assert_eq!(coordinator.entries["failed"].retry_at - now, expected_delay);
+        let attempts = sink.inserts;
+        let due = coordinator.entries["failed"].retry_at;
+        assert!(coordinator.retry(&mut sink, due - 1).is_empty());
+        assert_eq!(sink.inserts, attempts);
+        coordinator.retry(&mut sink, due);
+        now = due;
+        assert_eq!(sink.inserts, attempts + 1);
     }
-    assert_eq!(sink.inserts, WRITE_ATTEMPTS as usize);
+    assert_eq!(sink.inserts, 8);
     assert!(coordinator.entries["failed"].record.is_some());
-    coordinator.handle(Event::Delivery("never-formed-1".into(), delivery(PlcDeliveryState::Pending, 10)), &mut sink, 8);
-    let notices = coordinator.handle(Event::Delivery("never-formed-2".into(), delivery(PlcDeliveryState::Pending, 10)), &mut sink, 9);
+    coordinator.handle(Event::Delivery("never-formed-1".into(), delivery(PlcDeliveryState::Pending, 10)), &mut sink, now + 1);
+    let notices = coordinator.handle(Event::Delivery("never-formed-2".into(), delivery(PlcDeliveryState::Pending, 10)), &mut sink, now + 2);
     assert!(has_message(&notices, "待写 cycle 数量达到上限 2"));
     assert!(has_message(&notices, "待入库原判定"));
     assert_eq!(coordinator.entries.len(), 2);
-    let notices = coordinator.retry(&mut sink, PENDING_TTL_MS + 10);
+    let notices = coordinator.retry(&mut sink, PENDING_TTL_MS + now + 3);
     assert!(has_message(&notices, "超过 30 分钟"));
     assert!(coordinator.entries.is_empty());
     assert!(coordinator.order.is_empty());
@@ -558,7 +576,101 @@ fn cache_miss_database_failure_retains_ack_and_reloads_existing_evidence_on_retr
     assert!(has_message(&notices, "磁盘空间不足"));
     assert_eq!(sink.detail("one").summary.delivery.state, PlcDeliveryState::Pending);
     assert!(coordinator.entries["one"].pending());
-    coordinator.retry(&mut sink, 2);
+    retry_due(&mut coordinator, &mut sink, "one");
     assert_eq!(sink.detail("one").summary.delivery.state, PlcDeliveryState::Acknowledged);
     assert!(!coordinator.entries["one"].pending());
+}
+
+#[test]
+fn changed_events_merge_evidence_without_bypassing_retry_backoff() {
+    let dir = TestDir::new();
+    let mut sink = dir.sink();
+    sink.fail_insert = 100;
+    let mut coordinator = Coordinator::new(8, 16);
+    let record = part("backoff", 42);
+    coordinator.handle(Event::Insert(Box::new(record.clone())), &mut sink, 1);
+    let due = coordinator.entries["backoff"].retry_at;
+    for now in 2..100 {
+        let mut conflicting = record.clone();
+        conflicting.judgement.reason = "重复事件不得替换原结论".into();
+        coordinator.handle(Event::Insert(Box::new(conflicting)), &mut sink, now);
+        coordinator.handle(Event::Delivery("backoff".into(), delivery(PlcDeliveryState::Acknowledged, now)), &mut sink, now);
+    }
+    coordinator.handle(Event::Recording(outcome("backoff", &[(0, 1), (0, 2), (0, 3)], RecorderState::Complete)), &mut sink, due - 1);
+    assert_eq!(sink.counts(), (1, 0, 0, 0));
+    assert_eq!(coordinator.entries["backoff"].retry_at, due);
+    assert_eq!(coordinator.entries["backoff"].failures, 1);
+    assert!(coordinator.retry(&mut sink, due - 1).is_empty());
+    sink.fail_insert = 0;
+    let notices = coordinator.retry(&mut sink, due);
+    assert!(notices.contains(&Notice::Inserted(1)));
+    let detail = sink.detail("backoff");
+    assert_eq!(detail.judgement.reason, record.judgement.reason);
+    assert_eq!(detail.summary.delivery.state, PlcDeliveryState::Acknowledged);
+    assert_eq!(detail.summary.delivery.updated_at, 99);
+    assert_eq!(detail.recording.state, RecordingState::Complete);
+    assert_eq!(coordinator.entries["backoff"].failures, 0);
+    assert_eq!(coordinator.entries["backoff"].retry_at, 0);
+    let counts = sink.counts();
+    assert!(coordinator.retry(&mut sink, due + RETRY_MAX_MS).is_empty());
+    assert_eq!(sink.counts(), counts);
+}
+
+#[test]
+fn retry_counter_and_deadline_saturate_without_stopping_future_attempts() {
+    let mut entry = CycleEntry { failures: u32::MAX, ..Default::default() };
+    entry.defer_retry(42);
+    assert_eq!(entry.failures, u32::MAX);
+    assert_eq!(entry.retry_at, 42 + RETRY_MAX_MS);
+    entry.defer_retry(i64::MAX - 1);
+    assert_eq!(entry.failures, u32::MAX);
+    assert_eq!(entry.retry_at, i64::MAX);
+}
+
+#[test]
+fn real_sqlite_lock_past_three_failures_recovers_original_part_ack_and_recording_without_new_events() {
+    let dir = TestDir::new();
+    let mut sink = dir.sink();
+    let mut coordinator = Coordinator::new(8, 16);
+    coordinator.handle(Event::Insert(Box::new(part("baseline", 42))), &mut sink, 0);
+    let baseline = sink.detail("baseline");
+    let lock = rusqlite::Connection::open(dir.0.join("parts.sqlite")).unwrap();
+    lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let record = part("locked-cycle", 42);
+    coordinator.handle(Event::Insert(Box::new(record.clone())), &mut sink, 1);
+    coordinator.handle(Event::Delivery("locked-cycle".into(), delivery(PlcDeliveryState::Acknowledged, 77)), &mut sink, 2);
+    let recording = outcome("locked-cycle", &[(0, 1), (0, 2), (0, 3), (1, 1), (1, 2), (1, 3)], RecorderState::Complete);
+    coordinator.handle(Event::Recording(recording.clone()), &mut sink, 3);
+    for _ in 0..3 {
+        let due = coordinator.entries["locked-cycle"].retry_at;
+        let notices = coordinator.retry(&mut sink, due);
+        assert!(notices.iter().any(|notice| matches!(notice, Notice::Log { level: "err", event: "追溯入库失败", .. })));
+    }
+    assert_eq!(coordinator.entries["locked-cycle"].failures, 4);
+    assert!(coordinator.entries["locked-cycle"].record.is_some());
+    assert_eq!(sink.store.query(&HistoryQuery::default()).unwrap().total, 1);
+    lock.execute_batch("ROLLBACK").unwrap();
+    let due = coordinator.entries["locked-cycle"].retry_at;
+    let notices = coordinator.retry(&mut sink, due);
+    assert!(notices.iter().any(|notice| matches!(notice, Notice::Inserted(_))));
+    let after = sink.detail("locked-cycle");
+    assert_eq!(original(&after), original(&baseline));
+    assert_eq!(after.summary.cycle_id.as_deref(), Some("locked-cycle"));
+    assert_eq!(after.summary.sn, 42);
+    assert_eq!(after.summary.bundle_hash, record.bundle_hash);
+    assert_eq!(after.summary.delivery.state, PlcDeliveryState::Acknowledged);
+    assert_eq!(after.summary.delivery.updated_at, 77);
+    assert_eq!(after.recording.state, RecordingState::Complete);
+    assert!(after.recording.available && after.recording.errors.is_empty());
+    assert_eq!(after.recording.directory, recording.directory.map(|path| path.to_string_lossy().into_owned()));
+    for shot in &after.shots {
+        assert_eq!(shot.raw_files.iter().map(|raw| raw.view).collect::<Vec<_>>(), [1, 2, 3]);
+        assert!(shot.raw_files.iter().all(|raw| raw.hash.is_some()));
+    }
+    assert_eq!(sink.detail("baseline").summary.delivery.state, PlcDeliveryState::Pending);
+    assert!(!coordinator.entries["locked-cycle"].pending());
+    assert_eq!(coordinator.entries["locked-cycle"].failures, 0);
+    let counts = sink.counts();
+    assert!(coordinator.retry(&mut sink, due + RETRY_MAX_MS).is_empty());
+    assert_eq!(sink.counts(), counts);
 }
