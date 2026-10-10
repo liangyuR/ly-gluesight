@@ -35,7 +35,13 @@ if ($Build) {
     try {
         & pnpm exec tauri build --debug --no-bundle --config (Join-Path $PSScriptRoot 'tauri.json')
         if ($LASTEXITCODE -ne 0) { throw '演示构建失败' }
-        Copy-Item -LiteralPath (Join-Path $demoRoot 'src-tauri\target\debug\GlueSight.exe') -Destination $demoExe -Force
+        $demoTargetRoot = if ($env:CARGO_TARGET_DIR) {
+            [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR, (Join-Path $demoRoot 'src-tauri'))
+        } else { Join-Path $demoRoot 'src-tauri\target' }
+        if ($env:CARGO_BUILD_TARGET) { $demoTargetRoot = Join-Path $demoTargetRoot $env:CARGO_BUILD_TARGET }
+        $demoBuildExe = Join-Path $demoTargetRoot 'debug\GlueSight.exe'
+        if (!(Test-Path -LiteralPath $demoBuildExe -PathType Leaf)) { throw "找不到本次演示构建产物：$demoBuildExe" }
+        Copy-Item -LiteralPath $demoBuildExe -Destination $demoExe -Force
     } finally { Pop-Location }
 }
 if (!$ServicesOnly -and !(Test-Path -LiteralPath $demoExe)) {

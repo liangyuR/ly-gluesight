@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-10",
+  "branch": "codex/p0-step7-validation",
+  "status": "in_progress",
+  "checks": {
+    "rust": {
+      "passed": 258,
+      "failed": 0,
+      "ignored": 29,
+      "seconds": 2.71,
+      "command": "cargo test --offline --locked --lib",
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-rust-c.log",
+        "sha256": "0b6659d367bbfa896c354fed9347a8ebc60d700573718a1a16aca8bc8cf33acb",
+        "bytes": 29873
+      }
+    },
+    "s7Loopback": {
+      "passed": 24,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 50.94,
+      "command": "cargo test --offline --locked --lib plc_session::tests -- --include-ignored --test-threads=1 --nocapture",
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-s7-c.log",
+        "sha256": "14957d6f451cdb3e7265a9bd9dd4fec088b484e1257fe820d877afe2a949c1d3",
+        "bytes": 7515
+      }
+    },
+    "applicationTypes": {
+      "passed": true,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-types-app-c.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      }
+    },
+    "testTypes": {
+      "passed": true,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-types-tests-c.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      }
+    },
+    "productionBuild": {
+      "passed": true,
+      "javascript": "index-B4E0CHaX.js",
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-vite-build-c.log",
+        "sha256": "a0cc187b4091ffdcbbdbd39b4f02465bb4a5a97623d209284624e682e5aeaca4",
+        "bytes": 924
+      }
+    },
+    "frontendInitial": {
+      "passed": 940,
+      "failed": 7,
+      "files": 42,
+      "seconds": 167.54,
+      "log": {
+        "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-step7-frontend-c.log",
+        "sha256": "d851ddc3e7b1ae77efb0eec2b8790f7c1f5bb71e5cad5d9e1c719fde3f1662a8",
+        "bytes": 11947
+      },
+      "diagnosis": "Two 5000ms workflow test timeouts with five subsequent cleanup failures during concurrent native build. No affected workflow implementation changed from step6. Quiet full rerun pending; no pass claimed."
+    },
+    "preparedReportSelfTests": {
+      "passed": 11
+    },
+    "demoPythonTests": {
+      "passed": 35
+    },
+    "demoNodeTests": {
+      "passed": 13
+    },
+    "cycleHostEvidenceSelfTests": {
+      "passed": 30
+    }
+  },
+  "pending": [
+    "quiet full frontend coverage rerun",
+    "real DLL Prepared benchmark at least 100 parts per mode and report verification",
+    "actual CycleHost queue/engine/core/tail/memory measurement",
+    "five actual desktop Robot/Modbus scenarios"
+  ],
+  "boundaries": [
+    "Tests use local loopback and synthetic images; W0/W7 and physical three-view SDK remain independent.",
+    "Callback queue integration tests execute observe, offer, ShotRouter and Part judgement, including next complete part after recovery; no Machine or real PLC write is claimed by those unit tests."
+  ]
+}

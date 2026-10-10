@@ -172,13 +172,71 @@ impl Rig {
         assert_eq!(self.session.phase(), SessionPhase::Acquiring);
     }
 
-    async fn end(&mut self) -> Instant {
-        self.plc.values(json!({"partEnd":true,"camera1Triggers":2,"camera2Triggers":1,"camera3Triggers":1}));
+    async fn end(&mut self) -> Instant { self.end_counts([2, 1, 1]).await }
+
+    async fn end_counts(&mut self, counts: [u16; 3]) -> Instant {
+        self.plc.values(json!({"partEnd":true,"camera1Triggers":counts[0],"camera2Triggers":counts[1],"camera3Triggers":counts[2]}));
         self.fresh().await;
         let event = self.session.poll(&self.engine, false, true).await;
         let SessionEvent::End(ended_at) = event else { panic!("expected partEnd, got {event:?}") };
         assert_eq!(self.session.phase(), SessionPhase::Draining);
         ended_at
+    }
+
+    async fn reject_end_and_reset(&mut self, counts: [u16; 3]) {
+        assert_eq!(self.session.phase(), SessionPhase::Acquiring);
+        let request = self.session.request().unwrap().clone();
+        let cycle_id = self.session.cycle_id().map(str::to_owned);
+        let before = self.plc.fields();
+        self.plc.values(json!({"partEnd":true,"camera1Triggers":counts[0],"camera2Triggers":counts[1],"camera3Triggers":counts[2]}));
+        self.fresh().await;
+        let event = self.session.poll(&self.engine, false, true).await;
+        assert!(matches!(event, SessionEvent::Fault(ref error) if error.contains("PLC 实际触发数")
+            && error.contains(&format!("{counts:?}")) && error.contains(&format!("{:?}", request.camera_shots))), "{event:?}");
+        assert_eq!(self.session.phase(), SessionPhase::Fault);
+        assert!(self.session.pending());
+        assert_eq!(self.session.request(), Some(&request));
+        assert_eq!(self.session.cycle_id(), cycle_id.as_deref());
+        assert!(self.session.result().is_none());
+        assert!(!self.session.acknowledged());
+        let durable: Journal = serde_json::from_slice(&std::fs::read(&self.session.path).unwrap()).unwrap();
+        let pending = durable.pending.unwrap();
+        assert_eq!(pending.phase, SessionPhase::Fault);
+        assert_eq!(pending.request, request);
+        assert_eq!(pending.cycle_id, cycle_id);
+        assert!(pending.result.is_none());
+        assert!(!pending.acknowledged);
+        let fields = self.plc.fields();
+        assert_eq!(fields["armed"], false);
+        assert_eq!(fields["visionReady"], false);
+        assert_eq!(fields["visionFault"], true);
+        assert_eq!(fields["busy"], true);
+        assert_eq!(fields["done"], false);
+        for tag in ["resultCode", "faultCode", "resultSn", "resultSeq"] { assert_eq!(fields[tag], before[tag], "{tag}"); }
+        assert!(self.session.report(&self.engine, 1, 0).await.is_err());
+        assert!(self.session.result().is_none());
+        assert_eq!(self.plc.fields()["done"], false);
+        let active_reset = self.session.poll(&self.engine, true, true).await;
+        assert!(matches!(active_reset, SessionEvent::Fault(ref error) if error.contains("复位前 PLC 必须释放")), "{active_reset:?}");
+        assert!(self.session.pending());
+        assert_eq!(self.session.request(), Some(&request));
+        assert_eq!(self.plc.fields()["busy"], true);
+        self.plc.values(json!({"partStart":false,"partEnd":false,"resultAck":false}));
+        self.fresh().await;
+        assert!(matches!(self.session.poll(&self.engine, false, true).await, SessionEvent::None));
+        assert_eq!(self.session.phase(), SessionPhase::Fault);
+        assert!(self.session.pending());
+        assert!(matches!(self.session.poll(&self.engine, true, true).await, SessionEvent::Ready));
+        assert_eq!(self.session.phase(), SessionPhase::Idle);
+        assert!(!self.session.pending());
+        let durable: Journal = serde_json::from_slice(&std::fs::read(&self.session.path).unwrap()).unwrap();
+        assert!(durable.pending.is_none());
+        let fields = self.plc.fields();
+        assert_eq!(fields["visionReady"], true);
+        for tag in ["armed", "busy", "done", "visionFault"] { assert_eq!(fields[tag], false, "{tag}"); }
+        assert!(self.audit().iter().any(|record| record["action"] == "resetCompleted"
+            && record["pending"]["request"] == json!(request) && record["pending"]["cycleId"] == json!(cycle_id)
+            && record["pending"]["result"].is_null() && record["pending"]["acknowledged"] == false));
     }
 
     async fn report(&mut self) {
@@ -233,6 +291,50 @@ async fn s7_wire_same_sn_distinct_sequences_and_held_result() {
     assert_eq!(records.len(), 2);
     assert_eq!(records[0]["pending"]["request"]["requestSeq"], 1);
     assert_eq!(records[1]["pending"]["result"]["requestSeq"], 2);
+    rig.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Python and local loopback S7 fixture"]
+async fn s7_wire_end_extra_count_rejects_completion_and_requires_neutral_reset() {
+    let mut rig = Rig::new("end-extra-count").await;
+    assert_eq!(rig.plan.camera_shots, [2, 1, 1]);
+    rig.request(1, 50).await;
+    rig.session.bind_cycle_id("00000000000000000000000000000001").unwrap();
+    rig.arm().await;
+    rig.reject_end_and_reset([3, 1, 1]).await;
+    rig.request(2, 50).await;
+    rig.session.bind_cycle_id("00000000000000000000000000000002").unwrap();
+    rig.arm().await;
+    rig.end().await;
+    rig.report().await;
+    rig.ack_release().await;
+    rig.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Python and local loopback S7 fixture"]
+async fn s7_wire_end_unused_slots_reject_completion_and_require_neutral_reset() {
+    let mut rig = Rig::new("end-unused-slot").await;
+    let mut shots = rig.plan.shots.clone();
+    for shot in &mut shots { shot.camera_id = "cam1".into(); }
+    rig.plan = PlcPlan::compile("part-A".into(), 7, ["cam1".into(), String::new(), String::new()], shots).unwrap();
+    assert_eq!(rig.plan.camera_shots, [4, 0, 0]);
+    for (index, unused_slot) in [1usize, 2].into_iter().enumerate() {
+        let sequence = index as u32 * 2 + 1;
+        rig.request(sequence, 50).await;
+        rig.session.bind_cycle_id(&format!("{sequence:032x}")).unwrap();
+        rig.arm().await;
+        let mut counts = [4, 0, 0];
+        counts[unused_slot] = 1;
+        rig.reject_end_and_reset(counts).await;
+        rig.request(sequence + 1, 50).await;
+        rig.session.bind_cycle_id(&format!("{:032x}", sequence + 1)).unwrap();
+        rig.arm().await;
+        rig.end_counts([4, 0, 0]).await;
+        rig.report().await;
+        rig.ack_release().await;
+    }
     rig.finish().await;
 }
 

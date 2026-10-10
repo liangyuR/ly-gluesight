@@ -494,8 +494,8 @@ fn native_full_resolution_frozen_bundle_single_and_tricam_regression() {
             "gitStatus": command_output("git", &["-C", source.to_str().unwrap(), "status", "--porcelain"]),
             "rustc": command_output("rustc", &["--version"]), "testExecutable": artifact(&std::env::current_exe().unwrap()),
             "testArguments": std::env::args().skip(1).collect::<Vec<_>>(),
-            "sourceFiles": ["Cargo.toml", "Cargo.lock", "src/production.rs", "src/production/regression.rs", "src/vision.rs", "src/vision/taught.rs", "src/recipe.rs", "src/simimage.rs", "src/sim.rs", "src/judge.rs", "src/release.rs", "src/frame.rs", "src/measure.rs"]
-                .iter().map(|p| artifact(&source.join(p))).collect::<Vec<_>>(),
+            "sourceFiles": (["Cargo.toml", "Cargo.lock", "src/production.rs", "src/production/regression.rs", "src/vision.rs", "src/vision/taught.rs", "src/recipe.rs", "src/simimage.rs", "src/sim.rs", "src/judge.rs", "src/release.rs", "src/frame.rs", "src/measure.rs"]
+                .iter().map(|p| artifact(&source.join(p))).collect::<Vec<_>>()),
             "reportVerifier": artifact(&source.parent().unwrap().join("scripts/p0-regression-report.py"))},
         "engine": {"version": engine.version, "identity": engine.identity, "dll": dll_artifact, "loadAndSelfCheckMs": dll_load_ms},
         "initialMemory": initial_memory, "finalMemory": memory(), "cases": cases,

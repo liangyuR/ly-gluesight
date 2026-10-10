@@ -59,7 +59,7 @@ mod tests {
 
     #[test]
     fn full_frame_channel_advances_callback_ledger_counts_drops_and_recovers() {
-        let (tx, mut rx) = channel(FRAME_QUEUE);
+        let (tx, mut rx) = channel::<Frame>(FRAME_QUEUE);
         let identity = Mutex::new(Ledgers::default());
         let manual = AtomicU32::new(0);
         let dropped = AtomicU64::new(0);
@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn observation_without_an_offer_keeps_idle_baseline_and_manual_marking() {
-        let (tx, mut rx) = channel(FRAME_QUEUE);
+        let (tx, mut rx) = channel::<Frame>(FRAME_QUEUE);
         let identity = Mutex::new(Ledgers::default());
         let manual = AtomicU32::new(2);
         let dropped = AtomicU64::new(0);
@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn full_callback_channel_keeps_first_middle_and_last_missing_shots_in_place() {
         for missing in [0, 1, 3] {
-            let (tx, mut rx) = channel(FRAME_QUEUE);
+            let (tx, mut rx) = channel::<Frame>(FRAME_QUEUE);
             let identity = Mutex::new(Ledgers::default());
             let manual = AtomicU32::new(0);
             let dropped = AtomicU64::new(0);
@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn extra_callback_lost_to_full_channel_is_still_rejected_by_router_summary() {
-        let (tx, mut rx) = channel(FRAME_QUEUE);
+        let (tx, mut rx) = channel::<Frame>(FRAME_QUEUE);
         let identity = Mutex::new(Ledgers::default());
         let manual = AtomicU32::new(0);
         let dropped = AtomicU64::new(0);
@@ -229,4 +229,110 @@ mod tests {
         assert!(reason.contains('5') && reason.contains('4'));
         assert!(router.complete());
     }
+
+    #[test]
+    fn full_callback_channel_finishes_missing_first_middle_and_last_as_plc_error() {
+        for missing in [0, 1, 3] {
+            let (tx, mut rx) = channel::<Frame>(FRAME_QUEUE);
+            let identity = Mutex::new(Ledgers::default());
+            let manual = AtomicU32::new(0);
+            let dropped = AtomicU64::new(0);
+            for counter in 1..=FRAME_QUEUE as u64 {
+                callback(&identity, &manual, &tx, &dropped, frame(0, counter)).unwrap();
+            }
+            let baseline = identity.lock().unwrap().clone();
+            let mut received = Vec::new();
+            if missing != 0 {
+                while let Ok(stale) = rx.try_recv() { received.push(stale); }
+            }
+            for shot in 0..4 {
+                if shot == missing && shot != 0 {
+                    for counter in 1..=FRAME_QUEUE as u64 {
+                        callback(&identity, &manual, &tx, &dropped, frame(1, counter)).unwrap();
+                    }
+                }
+                let result = callback(&identity, &manual, &tx, &dropped, frame(0, 65 + shot));
+                if shot == missing {
+                    assert!(matches!(result, Err(TrySendError::Full(_))));
+                } else {
+                    result.unwrap();
+                }
+                while let Ok(accepted) = rx.try_recv() {
+                    if accepted.cam == 0 { received.push(accepted); }
+                }
+            }
+            assert_eq!(dropped.load(Ordering::Relaxed), 1);
+            let (judgement, shots) = crate::cycle::tests::judge_callback_channel(
+                &baseline, received, &identity.lock().unwrap());
+            assert_eq!(judgement.verdict, crate::judge::Verdict::ErrInspect);
+            assert_eq!(judgement.plc_code, 90);
+            assert_eq!(judgement.fault_code, fault::MISSING_FRAME);
+            for (k, shot) in shots.iter().enumerate() {
+                assert_eq!(shot.shot_id, format!("P{}", k + 1));
+                assert_eq!(shot.status, if k == missing as usize {
+                    crate::cycle::FrameStatus::Missing
+                } else { crate::cycle::FrameStatus::Done });
+                assert_eq!(shot.trigger_counter, (k != missing as usize).then_some(65 + k as u64));
+            }
+            let recovered_baseline = identity.lock().unwrap().clone();
+            let mut recovered = Vec::new();
+            for counter in 69..=72 {
+                callback(&identity, &manual, &tx, &dropped, frame(0, counter)).unwrap();
+                recovered.push(rx.try_recv().unwrap());
+            }
+            let (judgement, shots) = crate::cycle::tests::judge_callback_channel(
+                &recovered_baseline, recovered, &identity.lock().unwrap());
+            assert_eq!(judgement.verdict, crate::judge::Verdict::Ok);
+            assert_eq!(judgement.plc_code, 1);
+            assert_eq!(judgement.fault_code, 0);
+            assert!(shots.iter().all(|shot| shot.status == crate::cycle::FrameStatus::Done));
+        }
+    }
+
+    #[test]
+    fn extra_callback_dropped_by_full_channel_overrides_complete_ok_with_plc_error() {
+        let (tx, mut rx) = channel::<Frame>(FRAME_QUEUE);
+        let identity = Mutex::new(Ledgers::default());
+        let manual = AtomicU32::new(0);
+        let dropped = AtomicU64::new(0);
+        for counter in 1..=FRAME_QUEUE as u64 {
+            callback(&identity, &manual, &tx, &dropped, frame(0, counter)).unwrap();
+        }
+        let baseline = identity.lock().unwrap().clone();
+        while rx.try_recv().is_ok() {}
+        let mut received = Vec::new();
+        for counter in 65..=68 {
+            callback(&identity, &manual, &tx, &dropped, frame(0, counter)).unwrap();
+            received.push(rx.try_recv().unwrap());
+        }
+        let (normal, shots) = crate::cycle::tests::judge_callback_channel(
+            &baseline, received.clone(), &identity.lock().unwrap());
+        assert_eq!(normal.verdict, crate::judge::Verdict::Ok);
+        assert!(shots.iter().all(|shot| shot.status == crate::cycle::FrameStatus::Done));
+        for counter in 1..=FRAME_QUEUE as u64 {
+            callback(&identity, &manual, &tx, &dropped, frame(1, counter)).unwrap();
+        }
+        assert!(matches!(callback(&identity, &manual, &tx, &dropped, frame(0, 69)), Err(TrySendError::Full(_))));
+        let (judgement, shots) = crate::cycle::tests::judge_callback_channel(
+            &baseline, received, &identity.lock().unwrap());
+        assert!(shots.iter().all(|shot| shot.status == crate::cycle::FrameStatus::Done));
+        assert_eq!(judgement.verdict, crate::judge::Verdict::ErrInspect);
+        assert_eq!(judgement.plc_code, 90);
+        assert_eq!(judgement.fault_code, fault::EXTRA_FRAME);
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
+        while rx.try_recv().is_ok() {}
+        let recovered_baseline = identity.lock().unwrap().clone();
+        let mut recovered = Vec::new();
+        for counter in 70..=73 {
+            callback(&identity, &manual, &tx, &dropped, frame(0, counter)).unwrap();
+            recovered.push(rx.try_recv().unwrap());
+        }
+        let (judgement, shots) = crate::cycle::tests::judge_callback_channel(
+            &recovered_baseline, recovered, &identity.lock().unwrap());
+        assert_eq!(judgement.verdict, crate::judge::Verdict::Ok);
+        assert_eq!(judgement.plc_code, 1);
+        assert_eq!(judgement.fault_code, 0);
+        assert!(shots.iter().all(|shot| shot.status == crate::cycle::FrameStatus::Done));
+    }
+
 }

@@ -1,18 +1,18 @@
-# P0 步骤 7：准备中的软件故障矩阵
+# P0 步骤 7：验收中的软件故障矩阵
 
-状态：`codex/p0-step7-validation` 的源码准备稿，尚未完成集成验收。2026-10-10 D: 存储故障后停止构建压测，先保存源码；下表说明代码覆盖位置，不代表本次执行通过。
+状态：迁移到 C: 后恢复验收，Rust 默认 258 项通过、29 项默认忽略；S7 回环专项 24 项通过。新回调队列、测量队列和预热截止测试均已运行。前端首轮在并行原生构建时有两项 5 秒超时及五项级联失败，等待安静窗口完整重跑；性能和桌面演示仍待运行。真实结果及日志哈希见 [C 盘回归记录](evidence/p0-step7-regression-c.json)。
 
 | 场景 | 已准备的测试或路径 | 待完成 |
 | --- | --- | --- |
-| 跨设备乱序 | `shot_router::tests::interleaved_frames_bind_to_their_own_shots_in_any_order`、Cycle 四点交错回归 | 本版重跑；真实 SDK 与线路由 W0 验收 |
-| 丢首、中、尾帧 | ShotRouter missing 测试、Cycle `first_missing_frame_keeps_later_shots_and_expires_err91`、camera/delivery 的真实满通道测试 | 回调 helper→PartCycle→最终 ERR 组合 |
-| 多余触发 | ShotRouter extra 测试；camera/delivery 中即使额外帧被满通道拒绝，回调汇总仍拒绝该件 | S7 End `[3,1,1]` 和未使用槽计数专项、wire 故障保留测试 |
-| 错误相机、重连、上一件迟到 | ShotRouter 会话/相机/计数核验；Cycle 同 SN 不同 cycleId 的迟到结果回归；S7 arm 前重连测试 | 本版重跑与真实设备拔线 |
-| 帧队列满（64） | `camera/delivery.rs` 使用真实 bounded channel，核对回调计数、拒绝整组三视角、Closed、排空后恢复及缺帧位置 | 新模块尚未运行；最终周期判定组合 |
-| 测量队列满（32） | `measure::tests::full_measure_queue_rejects_one_job_then_recovers_without_leaks_or_duplicate_results` | 新测试尚未运行；实际 CycleHost 压力 |
-| 录制队列满（48） | Recorder `queue_full_rejects_all_views_and_finish_bypasses_the_frame_limit` | 本版重跑；不能替代帧队列测试 |
-| DLL 卡住、预热排队超时 | blocking Gate、许可耗尽、迟到结果、预热绝对截止（包含许可及 blocking pool 等待） | 新 Gate 测试尚未运行；不声明注入了真实 DLL 永久卡死 |
-| PLC 写拒绝、断线、ACK 错件 | S7 wire report/release 拒绝、done 后断线、匹配序号和持久 ACK 恢复 | 本版重跑；实际桌面重启到 SQLite 历史链路 |
+| 跨设备乱序 | `shot_router::tests::interleaved_frames_bind_to_their_own_shots_in_any_order`、Cycle 四点交错回归 | 默认回归通过；真实 SDK 与线路由 W0 验收 |
+| 丢首、中、尾帧 | ShotRouter missing 测试、Cycle `first_missing_frame_keeps_later_shots_and_expires_err91`、camera/delivery 的真实满通道测试 | 真实满通道回调→ShotRouter→Part 最终 ERR 91 / PLC 90 组合通过，恢复后下一件四点 OK；不声称覆盖 Machine 或实际 PLC 写入 |
+| 多余触发 | ShotRouter extra 测试；camera/delivery 中即使额外帧被满通道拒绝，回调汇总仍拒绝该件 | S7 End `[3,1,1]` 和 `[4,0,0]` 未使用槽触发专项通过：不提交 OK/done，保留事务、只在中性输入及显式复位后恢复；多余回调即使丢弃仍使完整件 ERR 96 / PLC 90 |
+| 错误相机、重连、上一件迟到 | ShotRouter 会话/相机/计数核验；Cycle 同 SN 不同 cycleId 的迟到结果回归；S7 arm 前重连测试 | 默认及 S7 回归通过；真实设备拔线仍属 W0 |
+| 帧队列满（64） | `camera/delivery.rs` 使用真实 bounded channel，核对回调计数、拒绝整组三视角、Closed、排空后恢复及缺帧位置 | 八项通道测试通过，含 Part 最终错误判定和下一件恢复 OK；Machine 桌面压力另测 |
+| 测量队列满（32） | `measure::tests::full_measure_queue_rejects_one_job_then_recovers_without_leaks_or_duplicate_results` | 默认回归通过；实际 CycleHost 压力另测 |
+| 录制队列满（48） | Recorder `queue_full_rejects_all_views_and_finish_bypasses_the_frame_limit` | 默认回归通过；不能替代帧队列测试 |
+| DLL 卡住、预热排队超时 | blocking Gate、许可耗尽、迟到结果、预热绝对截止（包含许可及 blocking pool 等待） | 四项预热 Gate 测试和测量超时许可回归通过；不声明注入了真实 DLL 永久卡死 |
+| PLC 写拒绝、断线、ACK 错件 | S7 wire report/release 拒绝、done 后断线、匹配序号和持久 ACK 恢复 | 24 项 S7 回环通过；实际桌面重启到 SQLite 历史链路随步 6 验收 |
 | 录制磁盘错误 | Recorder 真实文件系统错误；Audit 注入 outcome；Pending 录制 SQLite reopen 与事务回滚 | 不声明真实磁盘满、断电或当前故障磁盘上完成了业务验收 |
 | 单目及三目真实像素 | `production::regression::native_full_resolution_frozen_bundle_single_and_tricam_regression`：每模式至少 100 件、每件四次真实测量、1280×1024、冻结发布包；normal、gap、whole_empty | 尚未执行；输出版本、DLL/夹具哈希、逐帧 JSONL、分位数与进程内存 |
 

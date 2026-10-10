@@ -339,3 +339,31 @@ fn failed_or_unlocated_outputs_never_emit_nonfinite_scores_or_foreign_points() {
     assert!(normalized.st.is_empty());
     assert_eq!(p.frames[0].status, FrameStatus::Error);
 }
+
+
+pub(crate) fn judge_callback_channel(
+    baseline: &Ledgers, received: Vec<Frame>, observed: &Ledgers,
+) -> (Judgement, Vec<FrameView>) {
+    let base = baseline.get(0).and_then(|ledger| ledger.last).unwrap_or(0);
+    let mut p = part(&format!("callback-full-{base}"), &Ledgers::default(), true);
+    let camera = ArmCam { cam: 0, camera: "cam1".into(), session: 11,
+        source: Some(CounterSource::ChunkTrigger), counter_after_open: Some(0) };
+    p.router = ShotRouter::arm(&Plan::from_shots(&p.recipe.shots), baseline,
+        &Policy::production(None), &[camera]).unwrap();
+    for received in received {
+        if let Some(Route::Bound { shot, ordinal }) = p.receive_frame(&received) {
+            assert_eq!(shot as u64 + 1, ordinal);
+            assert_eq!(received.trigger_counter, base + ordinal);
+            p.apply_result(measured(&p, shot)).unwrap();
+        }
+    }
+    if let Some(ledger) = observed.get(0) {
+        if let Err(error) = p.router.check_observed(0, ledger) {
+            p.fault.get_or_insert(error);
+        }
+    }
+    let end = Instant::now();
+    p.end_at = Some(end);
+    p.expire(end + Duration::from_secs(3), Duration::from_secs(1), Duration::from_secs(2));
+    (p.judgement(), p.frames)
+}

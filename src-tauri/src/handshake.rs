@@ -821,6 +821,47 @@ mod tests {
     }
 
     #[test]
+    fn part_end_rejects_extra_count_in_a_used_camera_slot() {
+        let mut s = snapshot();
+        let request = s.request().unwrap();
+        assert_eq!(request.camera_shots, [2, 1, 1]);
+        s.values.insert("partEnd", PlcValue::Bool(true));
+        for (tag, value) in [("camera1Triggers", 3), ("camera2Triggers", 1), ("camera3Triggers", 1)] {
+            s.values.insert(tag, PlcValue::Int(value));
+        }
+        let error = verify_part_end(&s, &request).unwrap_err();
+        assert!(error.contains("[3, 1, 1]") && error.contains("[2, 1, 1]"), "{error}");
+        assert_eq!(s.request().unwrap(), request);
+        s.values.insert("camera1Triggers", PlcValue::Int(2));
+        assert!(verify_part_end(&s, &request).is_ok());
+    }
+
+    #[test]
+    fn part_end_rejects_each_unused_slot_even_when_total_count_matches() {
+        let mut s = snapshot();
+        for (tag, value) in [("camera1Shots", 4), ("camera2Shots", 0), ("camera3Shots", 0)] {
+            s.values.insert(tag, PlcValue::Int(value));
+        }
+        let request = s.request().unwrap();
+        request.validate().unwrap();
+        assert_eq!(request.camera_shots, [4, 0, 0]);
+        s.values.insert("partEnd", PlcValue::Bool(true));
+        for counts in [[4, 1, 0], [4, 0, 1], [3, 1, 0], [3, 0, 1], [4, 0, 0]] {
+            for (tag, value) in ["camera1Triggers", "camera2Triggers", "camera3Triggers"].into_iter().zip(counts) {
+                s.values.insert(tag, PlcValue::Int(value));
+            }
+            let result = verify_part_end(&s, &request);
+            if counts == [4, 0, 0] {
+                assert!(result.is_ok());
+            } else {
+                let error = result.unwrap_err();
+                assert!(error.contains(&format!("{counts:?}")) && error.contains("[4, 0, 0]"), "{error}");
+            }
+            assert_eq!(s.request().unwrap(), request);
+        }
+    }
+
+    #[test]
     fn write_plans_commit_last_and_fault_preserves_unacknowledged_result() {
         let arm = arm_plan(&snapshot().request().unwrap());
         assert_eq!(arm.last().unwrap(), &WriteOp::new("armed", json!(true)));
