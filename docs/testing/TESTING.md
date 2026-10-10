@@ -2,7 +2,7 @@
 
 > 当前版本已按 AGENTS.md 移除业务内容哈希匹配。本文既有摘要、字节篡改门禁和旧版本验收仅为历史记录；新实现以明确 ID/版本、实际结构、路径/尺寸与设备计数为准。旧性能数据不能代表本次去哈希版本。
 
-本次去哈希回归：Rust 317 项、S7 真实回环 24 项、真实 DLL 五项、前端 964 项全部通过，类型与生产构建通过。旧 v2 SQLite 保留原列和原记录；按实际 ID/版本迁移，缺失或歧义快照保留历史但禁止复测，旧发布目录通过独立 ID 映射读取。删除/改名/重启版本递增、历史版本下限、原图录制尺寸及 Windows 跨件 junction 拒绝均有实际回归。原生桌面新隔离实例验收另记；旧 400 件结果不套用到新版。详见 [后端证据](evidence/p0-no-hash-backend-c.json) 与 [前端及工具证据](evidence/p0-no-hash-frontend-c.json)。
+本次去哈希回归：Rust 317 项、S7 真实回环 24 项、真实 DLL 五项、前端 964 项全部通过，类型与生产构建通过。旧 v2 SQLite 保留原列和原记录；按实际 ID/版本迁移，缺失或歧义快照保留历史但禁止复测，旧发布目录通过独立 ID 映射读取。删除/改名/重启版本递增、历史版本下限、原图录制尺寸及 Windows 跨件 junction 拒绝均有实际回归。原生桌面使用提交 `72a7a5e` 的全新隔离 profile 完成三视角采图、示教、验证和发布；normal / gap 各一件得到严格 `OK` / `NG_GAP`，布防 20 / 23 ms，每件十二张原图完整。两件原包及候选共四次历史比较、二十四视图显示、同 profile 第二实例拒绝及重启后原记录/二十四原图恢复均通过，详见 [新桌面证据](evidence/p0-no-hash-native-c.json)。旧 400 件结果不套用到新版。详见 [后端证据](evidence/p0-no-hash-backend-c.json) 与 [前端及工具证据](evidence/p0-no-hash-frontend-c.json)。
 
 独立 Robot / PLC 模拟服务的配置、启动和升级回归见 [模拟服务说明](../../scripts/robot-plc-demo/README.md)。`pnpm sim:test` 运行隔离的协议测试；`pnpm sim:verify` 对运行中的专用桌面实例执行五工况联调。
 

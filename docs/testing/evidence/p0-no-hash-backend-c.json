@@ -59,7 +59,7 @@
     }
   ],
   "frontendEvidence": "docs/testing/evidence/p0-no-hash-frontend-c.json",
-  "nativeDesktop": "Pending fresh isolated profile acceptance; old 400-part reports are historical only.",
+  "nativeDesktop": "docs/testing/evidence/p0-no-hash-native-c.json",
   "limits": [
     "No content digest gate remains; same-size image or engine byte changes are not detected through content hashes.",
     "No physical camera/S7 hardware acceptance or new 400-part benchmark claimed."
@@ -77,5 +77,6 @@
     "testSeconds": 3.53,
     "log": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\p0-no-hash-review-rust-c.log",
     "supersededBy": "Final 317-test run adds historical no-fallback and synthetic migration correction coverage"
-  }
+  },
+  "runtimeSourceCommit": "72a7a5e078d97d06e438d4a4edf1f05932bf3660"
 }

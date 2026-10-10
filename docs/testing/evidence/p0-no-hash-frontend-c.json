@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "date": "2026-10-10",
   "workingDirectory": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash",
-  "scope": "Frontend and non-Rust tooling after removal of resource content hash matching; fresh native runtime acceptance pending",
+  "scope": "Frontend and non-Rust tooling after resource hash matching removal; fresh isolated native acceptance is recorded separately",
   "passed": true,
   "checks": [
     {
@@ -97,10 +97,7 @@
     "OBS password protocol authentication",
     "Git commit identifiers"
   ],
-  "pending": [
-    "Final backend review fixes and unified commit owned by root agent",
-    "Fresh rebuilt isolated native UI teaching/publish and normal/gap cycles, historical reproduction/candidate retest, lock/restart"
-  ],
+  "pending": [],
   "historicalEvidence": "Prior native hash-matching reports remain historical and are not acceptance evidence for this implementation",
   "initialValidationBeforeNativeObservation": {
     "tests": 960,
@@ -171,5 +168,6 @@
     "log": "C:/Users/11601/AppData/Local/Temp/gluesight-p0-recovery-20261010/no-hash-metadata-actual-fields.log",
     "staticIndependentReview": "No actionable issue reported by the independent review agent"
   },
-  "backendEvidence": "docs/testing/evidence/p0-no-hash-backend-c.json"
+  "backendEvidence": "docs/testing/evidence/p0-no-hash-backend-c.json",
+  "nativeEvidence": "docs/testing/evidence/p0-no-hash-native-c.json"
 }

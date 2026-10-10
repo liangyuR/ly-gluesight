@@ -47,6 +47,21 @@ try {
     assert(cycle.phase==='IDLE' || cycle.phase==='FAULT' && !cycle.part && cycle.fault?.includes('没有一个配方开得了工') && cycle.fault.includes('没有不可变发布包'));
     report.freshSite={historyCount:0,cycle,simulator:await read('sim_status')};
   }
+  else if(values.stage==='restart') {
+    assert(!cycle.part && !(await read('sim_status')).running);
+    report.beforeReconnect={cycle,plc:await read('plc_get_status')};
+    if(report.beforeReconnect.plc.state==='disconnected') {
+      assert(cycle.phase==='FAULT' && cycle.fault==='PLC 未连接');
+      await page.getByRole('navigation',{name:'操作导航'}).getByRole('link',{name:'PLC 通讯',exact:true}).click();
+      await page.getByRole('button',{name:'连接',exact:true}).click();
+      await page.waitForFunction(async()=> (await window.__TAURI_INTERNALS__.invoke('plc_get_status')).state==='connected');
+    }
+    await page.waitForFunction(async id=> !(await window.__TAURI_INTERNALS__.invoke('cycle_snapshot')).alarms.some(alarm=>alarm.includes(id)),id);
+    await page.getByRole('navigation',{name:'操作导航'}).getByRole('link',{name:'在线检测',exact:true}).click();
+    if((await read('cycle_snapshot')).phase==='FAULT') await page.getByRole('button',{name:'复位故障',exact:true}).click();
+    await page.waitForFunction(async()=> {const cycle=await window.__TAURI_INTERNALS__.invoke('cycle_snapshot');return cycle.phase==='IDLE' && cycle.fault===null;});
+    cycle=await read('cycle_snapshot');
+  }
   else { assert.equal(cycle.phase,'IDLE');assert.equal(cycle.fault,null); }
   assert(!(await read('sim_status')).running);
   assert(settings.vision && settings.record==='all' && settings.timeouts.armMs===200 && settings.recordMaxGb===20);

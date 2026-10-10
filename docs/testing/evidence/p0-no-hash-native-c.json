@@ -1,0 +1,429 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-10-10T09:51:39.698379+00:00",
+  "passed": true,
+  "runtimeSource": "72a7a5e078d97d06e438d4a4edf1f05932bf3660",
+  "branch": "codex/remove-hash-matching",
+  "scope": "Fresh isolated native acceptance of explicit resource IDs/revisions and actual structural/business fields after removal of resource content matching",
+  "physicalValidation": false,
+  "s7HardwareValidation": false,
+  "benchmark": false,
+  "resourceContentMatchingUsed": false,
+  "profile": "C:\\Users\\11601\\AppData\\Roaming\\com.xyzrobotics.tujiaovision.p0-tests.performance.nohash",
+  "freshProfile": {
+    "configurationOnly": true,
+    "databaseRecipesTeachingAndReleaseCopied": false,
+    "initialHistoryCount": 0,
+    "preparation": {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-final\\profile-preparation.json",
+      "bytes": 594
+    }
+  },
+  "software": {
+    "sourceGate": "72a7a5e078d97d06e438d4a4edf1f05932bf3660",
+    "executable": {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-final\\gluesight-no-hash-tests-final.exe",
+      "bytes": 22133248
+    },
+    "engine": {
+      "backend": "LyFlow",
+      "version": "1.1.0",
+      "path": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native\\lyflow_core.dll",
+      "bytes": 6050304
+    },
+    "buildLog": "C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\no-hash-final-native-build.log",
+    "buildSeconds": 67,
+    "testToolBaseCommit": "72a7a5e078d97d06e438d4a4edf1f05932bf3660",
+    "testToolChangesAfterGate": [
+      "Only restart stage operator workflow: manually connect the isolated simulator and reset the expected PLC-disconnected protection before asserting IDLE; no production changes"
+    ],
+    "tools": [
+      {
+        "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\tests\\native\\p0-no-hash-native.mjs",
+        "bytes": 15723
+      },
+      {
+        "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\tests\\native\\p0-clean-cyclehost-setup.mjs",
+        "bytes": 13045
+      },
+      {
+        "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\tests\\native\\p0-single-instance-acceptance.mjs",
+        "bytes": 6683
+      },
+      {
+        "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\tests\\native\\p0-cyclehost-performance.mjs",
+        "bytes": 29541
+      }
+    ]
+  },
+  "limits": {
+    "armMs": 200,
+    "recordMaxGb": 20,
+    "recordKeep": 1000,
+    "recordKeepScope": "Isolated acceptance evidence retention setting"
+  },
+  "reports": {
+    "setup": {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-final\\results\\setup-report.json",
+      "bytes": 273001
+    },
+    "cycles": {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-final\\results\\cycles-report.json",
+      "bytes": 367624
+    },
+    "history": {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-final\\results\\history-report.json",
+      "bytes": 585517
+    },
+    "restart": {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-final\\results\\restart-report.json",
+      "bytes": 27240
+    },
+    "singleInstance": {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-final\\single-instance\\report.json",
+      "bytes": 329329
+    }
+  },
+  "setup": {
+    "passed": true,
+    "recipeId": "P0-NO-HASH-3V",
+    "publishedVersion": 1,
+    "recipeRevision": "P0-NO-HASH-3V-v1",
+    "captureGroups": 4,
+    "viewsPerGroup": 3,
+    "trials": [
+      {
+        "k": 0,
+        "passed": true,
+        "coverage": 1,
+        "elapsedMs": 17
+      },
+      {
+        "k": 1,
+        "passed": true,
+        "coverage": 1,
+        "elapsedMs": 18
+      },
+      {
+        "k": 2,
+        "passed": true,
+        "coverage": 1,
+        "elapsedMs": 21
+      },
+      {
+        "k": 3,
+        "passed": true,
+        "coverage": 1,
+        "elapsedMs": 17
+      }
+    ],
+    "sampleValidation": [
+      {
+        "expected": "OK",
+        "actual": "OK",
+        "passed": true
+      },
+      {
+        "expected": "NG_GAP",
+        "actual": "NG_GAP",
+        "passed": true
+      }
+    ],
+    "inputProvenance": {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-final\\inputs\\provenance.json",
+      "bytes": 15510
+    },
+    "fixtureScope": "Deterministic synthetic clean Gray8 replay inputs; not noisy default Sim accuracy or physical camera qualification",
+    "postPublicationWarmupState": {
+      "measurementWorkers": {
+        "capacity": 4,
+        "running": 0,
+        "timedOut": 0,
+        "availableCapacity": 4
+      },
+      "phase": "FAULT",
+      "plcLocked": false,
+      "plcHandshake": null,
+      "since": 1791625529168,
+      "fault": "相机未就绪：没有一个配方开得了工（配方 MTR-HSG-A 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布）",
+      "productSource": "plc",
+      "activeRecipeId": null,
+      "triggerMode": null,
+      "part": null,
+      "result": null,
+      "stats": {
+        "total": 0,
+        "ok": 0,
+        "ng": 0,
+        "err": 0
+      },
+      "strayFrames": 0,
+      "alarms": [
+        "配方 MTR-HSG-A 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布",
+        "配方 MTR-HSG-B 开不了工：所选生产版本没有不可变发布包，请在工作台验证并发布",
+        "配方 P0-NO-HASH-3V 开不了工：发布资源与图像引擎正在预热，完成前不能布防"
+      ]
+    },
+    "readinessConfirmedBy": "cycles stage initial IDLE/null guard and both completed ACK cycles",
+    "observationTiming": "Post-publication snapshot includes transient resource/engine warmup; readiness is established by the subsequent cycles-stage guard and completed cycles, not by this snapshot."
+  },
+  "cycles": [
+    {
+      "scenario": "normal",
+      "historyId": 1,
+      "cycleId": "a694c9aed7522e5c1a836f314a500ef1",
+      "sn": 791625576,
+      "recipeRevision": "P0-NO-HASH-3V-v1",
+      "bundleId": "release-1791625557179369400-2504-0",
+      "verdict": "OK",
+      "plcCode": 1,
+      "faultCode": 0,
+      "delivery": "acknowledged",
+      "armMs": 20,
+      "partEndToSubmissionMs": 15,
+      "recording": "complete",
+      "shots": 4,
+      "rawImages": 12,
+      "imageSize": [
+        1280,
+        1024
+      ],
+      "actualFrameIdentityChecks": 12,
+      "measurementMs": [
+        14,
+        12,
+        14,
+        17
+      ]
+    },
+    {
+      "scenario": "gap",
+      "historyId": 2,
+      "cycleId": "3ed7f52f07f0c2af26a3098a93663f5c",
+      "sn": 791625577,
+      "recipeRevision": "P0-NO-HASH-3V-v1",
+      "bundleId": "release-1791625557179369400-2504-0",
+      "verdict": "NG_GAP",
+      "plcCode": 13,
+      "faultCode": 0,
+      "delivery": "acknowledged",
+      "armMs": 23,
+      "partEndToSubmissionMs": 15,
+      "recording": "complete",
+      "shots": 4,
+      "rawImages": 12,
+      "imageSize": [
+        1280,
+        1024
+      ],
+      "actualFrameIdentityChecks": 12,
+      "measurementMs": [
+        18,
+        14,
+        13,
+        17
+      ]
+    }
+  ],
+  "history": {
+    "passed": true,
+    "results": [
+      {
+        "scenario": "normal",
+        "historyId": 1,
+        "cycleId": "a694c9aed7522e5c1a836f314a500ef1",
+        "bundleId": "release-1791625557179369400-2504-0",
+        "originalRecordUnchanged": true,
+        "viewsSelectedAndImageStructureRead": 12,
+        "comparisons": [
+          {
+            "id": "1-1791625607875-6",
+            "source": "original",
+            "originalVerdict": "OK",
+            "actualVerdict": "OK",
+            "candidateVersion": 1,
+            "candidateRevision": 0,
+            "measurements": 4
+          },
+          {
+            "id": "1-1791625608138-7",
+            "source": "raw",
+            "originalVerdict": "OK",
+            "actualVerdict": "OK",
+            "candidateVersion": 2,
+            "candidateRevision": 31,
+            "measurements": 4
+          }
+        ]
+      },
+      {
+        "scenario": "gap",
+        "historyId": 2,
+        "cycleId": "3ed7f52f07f0c2af26a3098a93663f5c",
+        "bundleId": "release-1791625557179369400-2504-0",
+        "originalRecordUnchanged": true,
+        "viewsSelectedAndImageStructureRead": 12,
+        "comparisons": [
+          {
+            "id": "2-1791625609588-8",
+            "source": "original",
+            "originalVerdict": "NG_GAP",
+            "actualVerdict": "NG_GAP",
+            "candidateVersion": 1,
+            "candidateRevision": 0,
+            "measurements": 4
+          },
+          {
+            "id": "2-1791625609828-9",
+            "source": "raw",
+            "originalVerdict": "NG_GAP",
+            "actualVerdict": "NG_GAP",
+            "candidateVersion": 2,
+            "candidateRevision": 31,
+            "measurements": 4
+          }
+        ]
+      }
+    ],
+    "cameraEnvironmentRestore": {
+      "reason": "Changing replay directory changes actual camera configuration and correctly invalidates candidate trials. Restoring the teaching directory and rerunning all four real DLL trials/saves makes the candidate eligible for raw retest.",
+      "savedBeforeRestore": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "newTrialsPassed": [
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    "productionVersionAfter": 1,
+    "productionRevisionAfter": "P0-NO-HASH-3V-v1",
+    "productionBundleUnchanged": true,
+    "candidateVersionUsed": 2
+  },
+  "singleInstance": {
+    "passed": true,
+    "duplicateExitCode": 101,
+    "lockErrorObserved": true,
+    "firstInstanceStayedIdle": true,
+    "databaseActualValuesUnchanged": true,
+    "recordedFileInventoryUnchanged": true,
+    "recordedFiles": 26
+  },
+  "restart": {
+    "passed": true,
+    "initialProtection": "PLC 未连接",
+    "operatorAction": "Connect isolated local simulator and reset using UI; PLC configuration intentionally has manual connection",
+    "restored": [
+      {
+        "cycleId": "a694c9aed7522e5c1a836f314a500ef1",
+        "bundleId": "release-1791625557179369400-2504-0",
+        "recipeRevision": "P0-NO-HASH-3V-v1",
+        "delivery": "acknowledged",
+        "originals": 12
+      },
+      {
+        "cycleId": "3ed7f52f07f0c2af26a3098a93663f5c",
+        "bundleId": "release-1791625557179369400-2504-0",
+        "recipeRevision": "P0-NO-HASH-3V-v1",
+        "delivery": "acknowledged",
+        "originals": 12
+      }
+    ],
+    "finalState": {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-final\\final-state.json",
+      "bytes": 27471
+    }
+  },
+  "processes": {
+    "first": {
+      "sourceGate": "72a7a5e078d97d06e438d4a4edf1f05932bf3660",
+      "debugPort": 9340,
+      "bytes": 22133248,
+      "executable": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-final\\gluesight-no-hash-tests-final.exe",
+      "identifier": "com.xyzrobotics.tujiaovision.p0-tests.performance.nohash",
+      "processStartTime": "2026-10-10T09:45:28.4313316Z",
+      "runtimeBase": "72a7a5e078d97d06e438d4a4edf1f05932bf3660",
+      "pid": 2504
+    },
+    "restarted": {
+      "sourceGate": "72a7a5e078d97d06e438d4a4edf1f05932bf3660",
+      "debugPort": 9340,
+      "bytes": 22133248,
+      "executable": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-final\\gluesight-no-hash-tests-final.exe",
+      "identifier": "com.xyzrobotics.tujiaovision.p0-tests.performance.nohash",
+      "processStartTime": "2026-10-10T09:48:08.2068690Z",
+      "runtimeBase": "72a7a5e078d97d06e438d4a4edf1f05932bf3660",
+      "pid": 43804
+    },
+    "safeStop": {
+      "stoppedAt": "2026-10-10T09:49:22.5990012Z",
+      "processStartTime": "2026-10-10T09:48:08.2068690Z",
+      "pid": 43804,
+      "beforeStopFault": null,
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-final\\gluesight-no-hash-tests-final.exe",
+      "beforeStopPhase": "IDLE",
+      "simulatorRunning": false,
+      "reason": "Completed final no-hash native acceptance"
+    },
+    "safeStopArtifact": {
+      "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-final\\safe-stop.json",
+      "bytes": 415
+    }
+  },
+  "preservedEarlierFailures": [
+    {
+      "runtimeSource": "86d04aec9e295d68a6a67b93fe2ffee359ad31aa",
+      "stage": "fresh-site guard",
+      "reason": "Original setup fixture incorrectly assumed an already connected/published station would be IDLE. Guard now only permits known unpublished/default-recipe protection with zero history and no active work.",
+      "artifact": {
+        "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-native\\attempt-initial-site-guard\\setup-report.json",
+        "bytes": 1315
+      }
+    },
+    {
+      "runtimeSource": "86d04aec9e295d68a6a67b93fe2ffee359ad31aa",
+      "stage": "save teaching",
+      "reason": "Real passed trial was incorrectly marked stale because frontend compared structured geometry values by object reference. Fixed by direct recursive value comparison and covered by 964 frontend tests.",
+      "artifact": {
+        "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-native\\attempt-save-disabled\\setup-report.json",
+        "bytes": 3533
+      },
+      "snapshot": {
+        "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-native\\save-disabled.json",
+        "bytes": 42595
+      },
+      "screenshot": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-native\\save-disabled.png",
+      "archivedProfile": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-native\\failed-profile-86d04ae"
+    }
+  ],
+  "toolCorrections": [
+    {
+      "stage": "controlled restart stop guard",
+      "reason": "PowerShell ConvertFrom-Json parsed ISO start time as System.DateTime; a string/object comparison initially refused the stop without changing state. Read-only exact UTC tick/path comparison confirmed ownership and was used for the successful restart and final stop.",
+      "identityProof": {
+        "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-final\\restart-stop-identity.json",
+        "bytes": 503
+      },
+      "record": {
+        "path": "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-final\\before-restart-stop.json",
+        "bytes": 323
+      }
+    },
+    {
+      "stage": "auxiliary final-state capture",
+      "reason": "Initial helper relative module import was one directory too high; corrected before any state-changing action and final-state capture passed."
+    }
+  ],
+  "screenshots": [
+    "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-final\\results\\teaching\\published.png",
+    "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-final\\results\\history-normal.png",
+    "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-final\\results\\history-gap.png",
+    "C:\\Users\\11601\\project\\ly-gluesight\\tmp\\p0-no-hash\\output\\playwright\\p0-no-hash-final\\final-idle.png"
+  ],
+  "excludedHistoricalEvidence": "Old 400-part performance and prior content-matching reports are retained as history and not used as acceptance for this implementation"
+}
