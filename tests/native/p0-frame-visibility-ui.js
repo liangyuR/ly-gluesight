@@ -1,6 +1,6 @@
 async (page) => {
   const id = "P0-TRICAM-UI", bundleHash = "3b643e189e0f73e5", recipeHash = "c1574d7504b2a8d4";
-  const evidence = "D:/project/ly-gluesight/tmp/p0-step7-regression/tmp/p0-step5-ui";
+  const evidence = "output/playwright/p0-frame-visibility";
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
   const before = { records: await read("records_list"), plc: await read("plc_get_config"), cameras: await read("camera_rig_config"), settings: await read("cycle_get_settings"), workspace: await read("workspace_get", { id }) };
   if (!before.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || before.plc.connection.protocol !== "simulator" || before.cameras.some(c => c.source !== "sim") || before.settings.timeouts.armMs !== 200 || !before.settings.vision || before.settings.record !== "all") throw new Error("Isolated P0 preview guard rejected the app");
