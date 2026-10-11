@@ -28,7 +28,7 @@ beforeEach(()=>{
 });
 it("无需手填数量即可开始接收，等待 PLC 提供计划",async()=>{
  show();const button=screen.getByRole("button",{name:"开始接收 / 整圈重采"});await waitFor(()=>expect(button).toBeEnabled());await userEvent.click(button);
- expect(screen.queryByRole("spinbutton",{name:"PLC 计划触发次数"})).not.toBeInTheDocument();expect(screen.getByText("已收 0 张 / PLC 计划 待收到")).toBeVisible();expect(workspaceApi.captureStart).toHaveBeenCalledWith("A","CAM-1",1500);expect(screen.getByText("等待现场启动")).toBeVisible();expect(screen.queryByRole("button",{name:"采用本轮图像"})).toBeNull();
+ expect(screen.queryByRole("spinbutton",{name:"PLC 计划触发次数"})).not.toBeInTheDocument();expect(screen.getByText("已接收 0 张 · 等待 PLC 开始信号")).toBeVisible();expect(workspaceApi.captureStart).toHaveBeenCalledWith("A","CAM-1",1500);expect(screen.getByText("等待现场启动")).toBeVisible();expect(screen.queryByRole("button",{name:"采用本轮图像"})).toBeNull();
 });
 it.each([199,200,30000,30001])("在途等待 %s ms 按后端范围限制",async milliseconds=>{
  show();const button=screen.getByRole("button",{name:"开始接收 / 整圈重采"});await waitFor(()=>expect(button).toBeEnabled());
@@ -38,7 +38,7 @@ it.each([199,200,30000,30001])("在途等待 %s ms 按后端范围限制",async 
 });
 it("异常轮保留数量和原因，不能采用",async()=>{
  vi.mocked(workspaceApi.captureGet).mockResolvedValue({...round("failed"),receivedCount:19,error:"缺少一帧"});show();
- expect(await screen.findByText("缺少一帧")).toBeVisible();expect(screen.getByText("已收 19 张 / PLC 计划 20")).toBeVisible();expect(screen.queryByRole("button",{name:"采用本轮图像"})).toBeNull();
+ expect(await screen.findByText("缺少一帧")).toBeVisible();expect(screen.getByText("已接收 19 / 20 张")).toBeVisible();expect(screen.queryByRole("button",{name:"采用本轮图像"})).toBeNull();
 });
 it("重采带入示教必须人工确认轨迹顺序",async()=>{
  vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show();const adopt=await screen.findByRole("button",{name:"采用本轮图像"});
