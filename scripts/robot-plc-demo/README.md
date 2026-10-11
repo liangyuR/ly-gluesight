@@ -83,7 +83,7 @@ Start-Demo.ps1 的 -Recipe 覆盖同时传给 Robot 和桥。升级后先 sim:st
 | HR104..105 | 保留 | — |
 | HR110 / HR111 / HR112..113 | 结果码 / 异常码 / 结果 SN | GlueSight |
 
-设备计数作为 HTTP 状态和结果证据记录，没有新增 Modbus 地址。生产 S7 的设备槽、序号 ACK 和 planReserved 仍按 [S7 契约](../../docs/integration/plc-s7-phase1.md)；单台三目四点在 S7 只占一个设备槽，cameraShots=[4,0,0]。
+设备计数作为 HTTP 状态和结果证据记录，没有新增 Modbus 地址。生产 S7 的唯一设备、序号 ACK 和 planReserved 仍按 [S7 契约](../../docs/integration/plc-s7-phase1.md)；单台三目四点使用 deviceShots=4、完成时 deviceTriggers=4，视角数量不增加触发数。
 
 | 工况 | 保留的结果码 / 异常码期望 | 设备触发数 / 预期到帧数 |
 | --- | --- | --- |

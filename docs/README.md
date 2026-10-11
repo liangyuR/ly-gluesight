@@ -9,6 +9,7 @@
 
 ## 现场接入（[integration/](integration)）
 
+- [PLC 通讯协议 HTML 与时序图](integration/plc-communication-protocol.html)：可离线阅读，含单设备完整点表搜索及打印样式；三张时序图保持旧版，待协议检查完成后统一更新；另附 [Markdown 原文](integration/plc-communication-protocol.md)。
 - [一期 S7 握手契约与现场接入](integration/plc-s7-phase1.md)：DB 点表、事务与结果确认、故障恢复、计划导出和现场验证步骤。
 - [PLC SCL 参考程序](../scripts/s7-handshake/phase1_plc.scl)与 [S7 测试 PLC](../scripts/s7-handshake/README.md)：可审查的 PLC 侧实现及回环报文测试服务。
 
@@ -31,5 +32,7 @@
 - `design/`：界面设计与实现契约的状态文件，以 `implementation-contract.json` 为准。
 
 两张架构图均为自包含 HTML，无外部脚本、字体或联网请求。下载仓库后，用浏览器打开 `docs/architecture/` 下的文件即可离线查看；GitHub 文件页只展示源码。软件架构图中的完整源码路径相对于仓库根目录，Rust 短文件名位于 `src-tauri/src/`，`LyFlow/` 指外部引擎仓库。
+
+PLC 协议 HTML 的正文、图形、样式和交互也已全部嵌入，可直接打开。修改 Markdown 或时序图后，安装 `scripts/docs/requirements.txt` 中的依赖，运行 `python scripts/docs/build-plc-protocol.py` 重新生成；添加 `--check` 可核对生成物是否同步。
 
 2026-10-09：S7 软件实现与协议模拟联调已完成；真实 CPU、TIA 编译、三相机完整检测和现场验收仍待完成。架构图中的工期是带前提的规划估算，不代表现场交付承诺。

@@ -259,9 +259,9 @@ try {
   report.lock = { identity: children.get(lock).identity, acquiredAt: new Date().toISOString(), mode: 'BEGIN IMMEDIATE, no row writes' };
   report.doneObservationDelay = await control({ op: 'fault', function: 'write', kind: 'delay', db: 100, byte: 64, bit: 3, delay_ms: 600, count: 1 });
   const sn = 740000101, seq = 101;
-  await control({ op: 'plc_request', values: { protocolVersion: 1, requestSeq: seq, partSn: sn, productCode: recipe.productCode,
+  await control({ op: 'plc_request', values: { protocolVersion: plan.protocolVersion, requestSeq: seq, partSn: sn, productCode: recipe.productCode,
     shotCount: plan.shotCount, planVersion: plan.planVersion, planReserved: 0,
-    camera1Shots: plan.cameraShots[0], camera2Shots: plan.cameraShots[1], camera3Shots: plan.cameraShots[2] } });
+    deviceShots: plan.deviceShots } });
   progress('observe-durable-insert-before-done');
   const beforeDone = await waitFor(async () => {
     const spool = await spoolSnapshot(), original = event(spool, 'Insert', value => value.sn === sn);

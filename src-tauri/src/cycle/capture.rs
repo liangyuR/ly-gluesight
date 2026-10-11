@@ -6,6 +6,7 @@ impl Machine {
     pub(super) fn capture_devices_ready(&self) -> Result<(), String> {
         let rig = &host(&self.app).camera;
         let round = rig.recipe_capture().current().ok_or("没有正在执行的示教采集")?;
+        capture_device_id(&rig.configs(), &round.camera_id)?;
         let index = rig.index_of(&round.camera_id).ok_or("采集 device 已从设备配置移除")?;
         rig.check_ready_at(&[index])
     }
@@ -20,17 +21,15 @@ impl Machine {
         let capture = rig.recipe_capture().clone();
         let attempt = async {
             let round = capture.current().ok_or("没有正在执行的示教采集")?;
-            let configs = rig.configs();
-            let slots: [String; 3] = std::array::from_fn(|i| configs.get(i).map(|c| c.id.clone()).unwrap_or_default());
-            let slot = slots.iter().position(|id| id == &round.camera_id).ok_or("采集 device 未映射到 PLC 槽")?;
-            if request.camera_shots.iter().enumerate().any(|(i, &n)| (i == slot && n != request.shot_count) || (i != slot && n != 0)) {
-                return Err("示教采集只允许所选 device 对应的一个 PLC 槽触发，数量必须等于计划总数".into());
+            let device_id = capture_device_id(&rig.configs(), &round.camera_id)?;
+            if request.device_shots != request.shot_count {
+                return Err("示教采集设备触发数量必须等于计划总数".into());
             }
             self.capture_devices_ready()?;
             let shots = (0..request.shot_count).map(|k| PlanShot {
                 shot_id: format!("S{:03}", k + 1), pose_id: format!("采集序号{}", k + 1), camera_id: round.camera_id.clone(),
             }).collect();
-            let plan = PlcPlan::compile(round.recipe_id.clone(), request.plan_version, slots, shots)?;
+            let plan = PlcPlan::compile(round.recipe_id.clone(), request.plan_version, device_id, shots)?;
             self.s7.bind_capture_id(&round.round_id)?;
             self.s7.validate_plan(&plan)?;
             capture.set_plan_version(request.plan_version)?;
@@ -55,13 +54,9 @@ impl Machine {
         let capture = rig.recipe_capture();
         let result = (|| {
             let round = capture.current().ok_or("采集轮次不存在")?;
-            let slot = rig.index_of(&round.camera_id).ok_or("采集设备不存在")? as usize;
-            if slot >= 3 { return Err("采集设备没有 PLC 触发计数槽".into()); }
-            let counts = tag::CAMERA_TRIGGERS.iter().map(|tag| read_tag_u32(plc(&self.app), tag).ok_or_else(|| format!("PLC 缺少实际触发计数 {tag}"))).collect::<Result<Vec<_>, _>>()?;
-            if counts.iter().enumerate().any(|(i, &count)| i != slot && count != 0) {
-                return Err("非采集 device 的 PLC 槽也发生了触发，请核对现场程序".into());
-            }
-            capture.plc_ended(counts[slot])
+            capture_device_id(&rig.configs(), &round.camera_id)?;
+            let count = read_tag_u32(plc(&self.app), tag::DEVICE_TRIGGERS).ok_or("PLC 缺少设备实际触发计数")?;
+            capture.plc_ended(count)
         })();
         if let Err(error) = result { capture.fail(error); }
     }
@@ -98,5 +93,25 @@ impl Machine {
         } else if edge.tags.iter().any(|tag| tag == tag::PART_END) {
             self.end_capture();
         }
+    }
+}
+
+fn capture_device_id(configs: &[crate::camera::CameraConfig], selected_id: &str) -> Result<String, String> {
+    let device_id = crate::plc::sole_device_id(configs)?;
+    if device_id != selected_id { return Err("采集设备与唯一相机设备不一致".into()); }
+    Ok(device_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn teaching_capture_rejects_multiple_or_mismatched_devices() {
+        let device = crate::camera::CameraConfig { id: "device1".into(), view_count: 3, ..Default::default() };
+        assert_eq!(capture_device_id(&[device.clone()], "device1").unwrap(), "device1");
+        assert!(capture_device_id(&[device.clone()], "device2").is_err());
+        assert!(capture_device_id(&[device.clone(), crate::camera::CameraConfig { id: "device2".into(), ..device }], "device1").is_err());
+        assert!(capture_device_id(&[], "device1").is_err());
     }
 }

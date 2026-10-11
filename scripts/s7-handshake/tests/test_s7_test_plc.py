@@ -199,7 +199,10 @@ class S7HeartbeatTests(unittest.TestCase):
         state.heartbeat_ms = 15
         server = PLC.S7Server(state).start()
         try:
-            self.assertEqual(state.field_values()["protocolVersion"], 1)
+            self.assertEqual(state.field_values()["protocolVersion"], 2)
+            self.assertEqual(len(state.fields), 28)
+            self.assertEqual(state.fields["deviceShots"], {"db": 321, "byte": 24, "type": "u16"})
+            self.assertEqual(state.fields["deviceTriggers"], {"db": 321, "byte": 36, "type": "u16"})
             self.assertEqual(state.fields["requestSeq"], {"db": 321, "byte": 4, "type": "u32"})
             self.assertEqual(state.fields["acceptedPlanReserved"]["byte"], 84)
             deadline = time.monotonic() + 1
@@ -285,7 +288,7 @@ class S7ProcessApiTests(unittest.TestCase):
         self.assertTrue(self.fixture.command("status")["ok"])
 
     def test_request_ack_release_observe_pc_s7_writes(self):
-        response = self.fixture.command("plc_request", values={"requestSeq": 17, "partSn": 12345, "productCode": 7, "shotCount": 4, "camera1Shots": 2, "camera2Shots": 1, "camera3Shots": 1, "planVersion": 1, "planReserved": 0})
+        response = self.fixture.command("plc_request", values={"requestSeq": 17, "partSn": 12345, "productCode": 7, "shotCount": 4, "deviceShots": 4, "planVersion": 1, "planReserved": 0})
         self.assertTrue(response["ok"])
         self.assertTrue(response["result"]["partStart"])
         self.assertEqual(response["result"]["requestSeq"], 17)
@@ -305,11 +308,35 @@ class S7ProcessApiTests(unittest.TestCase):
         self.assertFalse(released["resultAck"])
 
     def test_field_update_validation_is_atomic(self):
-        result = self.fixture.command("plc_request", values={"requestSeq": 99, "camera1Shots": -1})
+        result = self.fixture.command("plc_request", values={"requestSeq": 99, "deviceShots": -1})
         self.assertFalse(result["ok"])
         fields = self.fixture.command("status")["result"]["fields"]
         self.assertEqual(fields["requestSeq"], 0)
         self.assertFalse(fields["partStart"])
+
+    def test_single_device_counts_use_the_preserved_wire_offsets(self):
+        response = self.fixture.command("plc_request", values={"shotCount": 4, "deviceShots": 4})
+        self.assertTrue(response["ok"])
+        self.assertTrue(self.fixture.command("plc_values", values={"deviceTriggers": 3})["ok"])
+        with connect((self.fixture.ready["host"], self.fixture.ready["port"])) as connection:
+            request = bytes.fromhex("0300001f 02f080 32010000 0002 000e 0000 0401 120a100200120064840000c0")
+            expected = bytes.fromhex("0300002b 02f080 32030000 0002 0002 0016 0000 0401 ff040090 000400000000000000000000000300000000")
+            self.assertEqual(exchange(connection, request), expected)
+
+    def test_removed_camera_fields_are_rejected_atomically(self):
+        removed = ("camera1Shots", "camera2Shots", "camera3Shots", "camera1Triggers", "camera2Triggers", "camera3Triggers")
+        for name in removed:
+            with self.subTest(field=name):
+                response = self.fixture.command("plc_request", values={"requestSeq": 99, name: 1})
+                self.assertFalse(response["ok"])
+                self.assertIn("unknown handshake field", response["error"])
+                response = self.fixture.command("configure_handshake", fields={"deviceShots": {"byte": 24, "type": "u16"}, name: {"byte": 26, "type": "u16"}})
+                self.assertFalse(response["ok"])
+                self.assertIn("removed handshake field", response["error"])
+                fields = self.fixture.command("status")["result"]["fields"]
+                self.assertEqual(len(fields), 28)
+                self.assertEqual(fields["requestSeq"], 0)
+                self.assertFalse(fields["partStart"])
 
     def test_nondefault_db_is_readable_through_real_s7(self):
         fixture = ProcessFixture("--db", "321")

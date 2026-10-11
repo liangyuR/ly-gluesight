@@ -101,8 +101,8 @@ impl Rig {
         let logbook = Arc::new(Logbook::open(&plc.directory.join("plc.db"), sink.clone(), 1).unwrap());
         let engine = PlcEngine::new(config, logbook, sink);
         let session = PlcSession::open(plc.directory.join("session.json"));
-        let plan = PlcPlan::compile("part-A".into(), 7, ["cam1".into(), "cam2".into(), "cam3".into()],
-            ["cam1", "cam2", "cam3", "cam1"].into_iter().enumerate().map(|(i, camera)| PlanShot {
+        let plan = PlcPlan::compile("part-A".into(), 7, "cam1".into(),
+            ["cam1"; 4].into_iter().enumerate().map(|(i, camera)| PlanShot {
                 shot_id: format!("P{}", i + 1), pose_id: format!("P{}", i + 1), camera_id: camera.into(),
             }).collect()).unwrap();
         let mut rig = Self { plc, engine, session, plan };
@@ -157,10 +157,10 @@ impl Rig {
 
     fn request_values(&mut self, seq: u32, sn: u32) {
         self.plc.control(json!({"op":"plc_request", "values":{
-            "protocolVersion":1,"requestSeq":seq,"partSn":sn,"productCode":1,
+            "protocolVersion":crate::handshake::PROTOCOL_VERSION,"requestSeq":seq,"partSn":sn,"productCode":1,
             "shotCount":self.plan.shot_count,"planVersion":self.plan.plan_version,"planReserved":0,
-            "camera1Shots":self.plan.camera_shots[0],"camera2Shots":self.plan.camera_shots[1],"camera3Shots":self.plan.camera_shots[2],
-            "camera1Triggers":0,"camera2Triggers":0,"camera3Triggers":0,"partEnd":false,"resultAck":false
+            "deviceShots":self.plan.device_shots,
+            "deviceTriggers":0,"partEnd":false,"resultAck":false
         }}));
     }
 
@@ -176,10 +176,10 @@ impl Rig {
         assert_eq!(self.session.phase(), SessionPhase::Acquiring);
     }
 
-    async fn end(&mut self) -> Instant { self.end_counts(self.plan.camera_shots).await }
+    async fn end(&mut self) -> Instant { self.end_counts(self.plan.device_shots).await }
 
-    async fn end_counts(&mut self, counts: [u16; 3]) -> Instant {
-        self.plc.values(json!({"partEnd":true,"camera1Triggers":counts[0],"camera2Triggers":counts[1],"camera3Triggers":counts[2]}));
+    async fn end_counts(&mut self, counts: u16) -> Instant {
+        self.plc.values(json!({"partEnd":true,"deviceTriggers":counts}));
         self.fresh().await;
         let event = self.session.poll(&self.engine, false, true).await;
         let SessionEvent::End(ended_at) = event else { panic!("expected partEnd, got {event:?}") };
@@ -187,16 +187,16 @@ impl Rig {
         ended_at
     }
 
-    async fn reject_end_and_reset(&mut self, counts: [u16; 3]) {
+    async fn reject_end_and_reset(&mut self, counts: u16) {
         assert_eq!(self.session.phase(), SessionPhase::Acquiring);
         let request = self.session.request().unwrap().clone();
         let cycle_id = self.session.cycle_id().map(str::to_owned);
         let before = self.plc.fields();
-        self.plc.values(json!({"partEnd":true,"camera1Triggers":counts[0],"camera2Triggers":counts[1],"camera3Triggers":counts[2]}));
+        self.plc.values(json!({"partEnd":true,"deviceTriggers":counts}));
         self.fresh().await;
         let event = self.session.poll(&self.engine, false, true).await;
-        assert!(matches!(event, SessionEvent::Fault(ref error) if error.contains("PLC 实际触发数")
-            && error.contains(&format!("{counts:?}")) && error.contains(&format!("{:?}", request.camera_shots))), "{event:?}");
+        assert!(matches!(event, SessionEvent::Fault(ref error) if error.contains("PLC 设备实际触发数")
+            && error.contains(&format!("{counts:?}")) && error.contains(&format!("{:?}", request.device_shots))), "{event:?}");
         assert_eq!(self.session.phase(), SessionPhase::Fault);
         assert!(self.session.pending());
         assert_eq!(self.session.request(), Some(&request));
@@ -302,11 +302,11 @@ async fn s7_wire_same_sn_distinct_sequences_and_held_result() {
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_end_extra_count_rejects_completion_and_requires_neutral_reset() {
     let mut rig = Rig::new("end-extra-count").await;
-    assert_eq!(rig.plan.camera_shots, [2, 1, 1]);
+    assert_eq!(rig.plan.device_shots, 4);
     rig.request(1, 50).await;
     rig.session.bind_cycle_id("00000000000000000000000000000001").unwrap();
     rig.arm().await;
-    rig.reject_end_and_reset([3, 1, 1]).await;
+    rig.reject_end_and_reset(5).await;
     rig.request(2, 50).await;
     rig.session.bind_cycle_id("00000000000000000000000000000002").unwrap();
     rig.arm().await;
@@ -318,27 +318,18 @@ async fn s7_wire_end_extra_count_rejects_completion_and_requires_neutral_reset()
 
 #[tokio::test]
 #[ignore = "requires Python and local loopback S7 fixture"]
-async fn s7_wire_end_unused_slots_reject_completion_and_require_neutral_reset() {
-    let mut rig = Rig::new("end-unused-slot").await;
-    let mut shots = rig.plan.shots.clone();
-    for shot in &mut shots { shot.camera_id = "cam1".into(); }
-    rig.plan = PlcPlan::compile("part-A".into(), 7, ["cam1".into(), String::new(), String::new()], shots).unwrap();
-    assert_eq!(rig.plan.camera_shots, [4, 0, 0]);
-    for (index, unused_slot) in [1usize, 2].into_iter().enumerate() {
-        let sequence = index as u32 * 2 + 1;
-        rig.request(sequence, 50).await;
-        rig.session.bind_cycle_id(&format!("{sequence:032x}")).unwrap();
-        rig.arm().await;
-        let mut counts = [4, 0, 0];
-        counts[unused_slot] = 1;
-        rig.reject_end_and_reset(counts).await;
-        rig.request(sequence + 1, 50).await;
-        rig.session.bind_cycle_id(&format!("{:032x}", sequence + 1)).unwrap();
-        rig.arm().await;
-        rig.end_counts([4, 0, 0]).await;
-        rig.report().await;
-        rig.ack_release().await;
-    }
+async fn s7_wire_end_missing_count_rejects_completion_and_requires_neutral_reset() {
+    let mut rig = Rig::new("end-missing-count").await;
+    rig.request(1, 50).await;
+    rig.session.bind_cycle_id("00000000000000000000000000000001").unwrap();
+    rig.arm().await;
+    rig.reject_end_and_reset(3).await;
+    rig.request(2, 50).await;
+    rig.session.bind_cycle_id("00000000000000000000000000000002").unwrap();
+    rig.arm().await;
+    rig.end_counts(4).await;
+    rig.report().await;
+    rig.ack_release().await;
     rig.finish().await;
 }
 
@@ -734,7 +725,7 @@ fn s7_wire_slow_end_journal_does_not_extend_frame_deadline() {
         let mut rig = Rig::new("slow-end-frame-deadline").await;
         rig.request(1, 50).await;
         rig.arm().await;
-        rig.plc.values(json!({"partEnd":true,"camera1Triggers":2,"camera2Triggers":1,"camera3Triggers":1}));
+        rig.plc.values(json!({"partEnd":true,"deviceTriggers":4}));
         rig.fresh().await;
 
         let (release, wait) = mpsc::channel();
@@ -834,7 +825,7 @@ async fn s7_wire_audit_failure_blocks_destructive_reset() {
 
 fn assert_idle_outputs(fields: &Value, ready: bool) {
     assert_eq!(fields["visionReady"], ready);
-    assert_eq!(fields["pcProtocolVersion"], 1);
+    assert_eq!(fields["pcProtocolVersion"], crate::handshake::PROTOCOL_VERSION);
     for tag in ["armed", "busy", "done", "visionFault"] { assert_eq!(fields[tag], false, "{tag}"); }
 }
 
@@ -948,7 +939,7 @@ async fn s7_wire_devices_not_ready_while_idle_withdraws_ready_and_recovers() {
     rig.phase(SessionPhase::Releasing).await;
     rig.plc.control(json!({"op":"plc_release"}));
     rig.fresh().await;
-    assert!(matches!(rig.session.poll(&rig.engine, false, false).await, SessionEvent::Released(Some([2, 1, 1]))));
+    assert!(matches!(rig.session.poll(&rig.engine, false, false).await, SessionEvent::Released(Some(4))));
     assert_eq!(rig.session.phase(), SessionPhase::Idle);
     assert!(!rig.session.pending());
     assert_idle_outputs(&rig.plc.fields(), false);
@@ -972,8 +963,8 @@ async fn s7_wire_early_err_release_reports_plc_issued_triggers() {
     let mut rig = Rig::new("early-err-triggers").await;
     rig.request(1, 50).await;
     rig.arm().await;
-    // 运动中途停了：槽 1 只发了 1 个触发，没有 partEnd；PC 运动超时提前判 ERR 97
-    rig.plc.values(json!({"camera1Triggers":1}));
+    // 运动中途停了：设备只发了 1 个触发，没有 partEnd；PC 运动超时提前判 ERR 97
+    rig.plc.values(json!({"deviceTriggers":1}));
     rig.fresh().await;
     assert!(matches!(rig.session.poll(&rig.engine, false, true).await, SessionEvent::None));
     rig.session.report(&rig.engine, 90, crate::judge::fault::MOTION_TIMEOUT).await.unwrap();
@@ -982,7 +973,7 @@ async fn s7_wire_early_err_release_reports_plc_issued_triggers() {
     rig.plc.control(json!({"op":"plc_release"}));
     rig.fresh().await;
     let event = rig.session.poll(&rig.engine, false, true).await;
-    assert!(matches!(event, SessionEvent::Released(Some([1, 0, 0]))), "{event:?}");
+    assert!(matches!(event, SessionEvent::Released(Some(1))), "{event:?}");
     // 下一件的请求清零了触发数，正常完成时报计划数
     rig.request(2, 51).await;
     rig.arm().await;
@@ -993,7 +984,7 @@ async fn s7_wire_early_err_release_reports_plc_issued_triggers() {
     rig.plc.control(json!({"op":"plc_release"}));
     rig.fresh().await;
     let event = rig.session.poll(&rig.engine, false, true).await;
-    assert!(matches!(event, SessionEvent::Released(Some([2, 1, 1]))), "{event:?}");
+    assert!(matches!(event, SessionEvent::Released(Some(4))), "{event:?}");
     rig.finish().await;
 }
 
@@ -1052,7 +1043,7 @@ async fn s7_wire_recording_audit_wait_holds_release_then_recovers_without_reset(
     }
     let durable = PlcSession::open(rig.session.path.clone());
     assert!(durable.pending() && durable.acknowledged());
-    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, true).await, SessionEvent::Released(Some([2, 1, 1]))));
+    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, true).await, SessionEvent::Released(Some(4))));
     assert_eq!(rig.session.phase(), SessionPhase::Idle);
     assert!(!rig.session.pending());
     assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, false).await, SessionEvent::None));
@@ -1085,7 +1076,7 @@ async fn s7_wire_recording_audit_wait_releases_offline_then_restores_ready() {
     assert!(rig.session.pending() && rig.session.acknowledged());
     assert_eq!(rig.plc.fields()["visionReady"], false);
     rig.fresh().await;
-    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, false, true).await, SessionEvent::Released(Some([2, 1, 1]))));
+    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, false, true).await, SessionEvent::Released(Some(4))));
     assert_eq!(rig.session.phase(), SessionPhase::Idle);
     assert!(!rig.session.pending());
     let fields = rig.plc.fields();
@@ -1192,7 +1183,7 @@ async fn s7_wire_released_does_not_create_second_ack_delivery_after_ready() {
     rig.plc.control(json!({"op":"plc_release"}));
     rig.fresh().await;
     let had_ack = rig.session.acknowledged();
-    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, true).await, SessionEvent::Released(Some([2, 1, 1]))));
+    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, true).await, SessionEvent::Released(Some(4))));
     assert_eq!(rig.plc.fields()["visionReady"], true);
     assert!(crate::cycle::s7_ack_delivery(had_ack, &rig.session).is_none());
     assert_eq!(store.detail_by_cycle(cycle).unwrap().unwrap().summary.delivery, accepted);
@@ -1275,7 +1266,7 @@ fn s7_wire_arm_deadline_settles_original_journal_before_fault_without_late_overw
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_teaching_capture_uses_single_device_and_holds_until_release() {
     let mut rig = Rig::new("teaching-capture").await;
-    rig.plan = PlcPlan::compile("draft-empty".into(), 91, ["device1".into(), String::new(), String::new()],
+    rig.plan = PlcPlan::compile("draft-empty".into(), 91, "device1".into(),
         (1..=20).map(|i| PlanShot { shot_id: format!("S{i:03}"), pose_id: format!("capture-{i}"), camera_id: "device1".into() }).collect()).unwrap();
     rig.request(1, 777).await;
     rig.session.bind_capture_id("capture-round-1").unwrap();

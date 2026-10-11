@@ -6,7 +6,7 @@ use ly_plc::{Access, DataType, EdgeMode, LinkState, PlcConfig, PlcEngine, PlcSta
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub(crate) const PROTOCOL_VERSION: u16 = 1;
+pub(crate) const PROTOCOL_VERSION: u16 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Direction {
@@ -30,12 +30,8 @@ const FIELDS: &[Field] = &[
     input("shotCount", DataType::U16, false),
     input("planVersion", DataType::U32, false),
     input("planReserved", DataType::U32, false),
-    input("camera1Shots", DataType::U16, false),
-    input("camera2Shots", DataType::U16, false),
-    input("camera3Shots", DataType::U16, false),
-    input("camera1Triggers", DataType::U16, false),
-    input("camera2Triggers", DataType::U16, false),
-    input("camera3Triggers", DataType::U16, false),
+    input("deviceShots", DataType::U16, false),
+    input("deviceTriggers", DataType::U16, false),
     input("ackSeq", DataType::U32, false),
     input("partStart", DataType::Bool, true),
     input("partEnd", DataType::Bool, true),
@@ -58,7 +54,12 @@ const FIELDS: &[Field] = &[
 ];
 
 /// 已改名的握手标签（D-0 不兼容旧配置）：旧点表直接拒绝，并说清新名字。
-const RETIRED_TAGS: &[(&str, &str)] = &[("planHash", "planReserved"), ("acceptedPlanHash", "acceptedPlanReserved")];
+const RETIRED_TAGS: &[(&str, &str)] = &[
+    ("planHash", "请使用 planReserved"), ("acceptedPlanHash", "请使用 acceptedPlanReserved"),
+    ("camera1Shots", "请使用 deviceShots"), ("camera2Shots", "已删除，不再配置设备通道 2"),
+    ("camera3Shots", "已删除，不再配置设备通道 3"), ("camera1Triggers", "请使用 deviceTriggers"),
+    ("camera2Triggers", "已删除，不再配置设备通道 2"), ("camera3Triggers", "已删除，不再配置设备通道 3"),
+];
 
 const fn input(tag: &'static str, data_type: DataType, edge: bool) -> Field {
     Field { tag, data_type, direction: Direction::Input, edge }
@@ -82,7 +83,7 @@ impl Contract {
         config.validate()?;
         for point in &config.points {
             if let Some((old, new)) = RETIRED_TAGS.iter().find(|(old, _)| point.tags.iter().any(|t| t == old)) {
-                return Err(format!("点位 {} 使用已停用的握手标签 {old}（现为 {new}），请按一期 S7 模板重新生成点表", point.name));
+                return Err(format!("点位 {} 使用已停用的握手标签 {old}（{new}），请按单设备 S7 协议 2 模板重新生成点表", point.name));
             }
         }
         let mut ids = HashMap::new();
@@ -293,14 +294,14 @@ impl Snapshot {
             product_code: self.read_u16("productCode")?,
             shot_count: self.read_u16("shotCount")?,
             plan_version: self.read_u32("planVersion")?,
-            camera_shots: [self.read_u16("camera1Shots")?, self.read_u16("camera2Shots")?, self.read_u16("camera3Shots")?],
+            device_shots: self.read_u16("deviceShots")?,
         };
         request.validate()?;
         Ok(request)
     }
 
-    pub(crate) fn trigger_counts(&self) -> Result<[u16; 3], String> {
-        Ok([self.read_u16("camera1Triggers")?, self.read_u16("camera2Triggers")?, self.read_u16("camera3Triggers")?])
+    pub(crate) fn trigger_count(&self) -> Result<u16, String> {
+        self.read_u16("deviceTriggers")
     }
 
     fn start_request(&self) -> Result<Request, String> {
@@ -315,8 +316,8 @@ impl Snapshot {
         if self.read_u32("pcProtocolVersion")? != PROTOCOL_VERSION as u32 {
             return Err("PC 协议版本尚未确认，需复位".into());
         }
-        if self.trigger_counts()? != [0; 3] {
-            return Err("布防前各相机触发计数必须清零".into());
+        if self.trigger_count()? != 0 {
+            return Err("布防前设备触发计数必须清零".into());
         }
         self.request()
     }
@@ -347,7 +348,7 @@ impl Snapshot {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Request {
     pub(crate) protocol_version: u16,
     pub(crate) request_seq: u32,
@@ -355,7 +356,7 @@ pub(crate) struct Request {
     pub(crate) product_code: u16,
     pub(crate) shot_count: u16,
     pub(crate) plan_version: u32,
-    pub(crate) camera_shots: [u16; 3],
+    pub(crate) device_shots: u16,
 }
 
 impl Request {
@@ -366,8 +367,8 @@ impl Request {
         if self.request_seq == 0 {
             return Err("requestSeq 不能为零".into());
         }
-        if self.shot_count == 0 || self.camera_shots.iter().map(|v| *v as u32).sum::<u32>() != self.shot_count as u32 {
-            return Err("各相机计划拍照数之和必须等于非零 shotCount".into());
+        if self.shot_count == 0 || self.device_shots != self.shot_count {
+            return Err("设备计划触发数 deviceShots 必须等于非零 shotCount".into());
         }
         Ok(())
     }
@@ -442,8 +443,8 @@ pub(crate) fn verify_part_end(snapshot: &Snapshot, request: &Request) -> Result<
     if snapshot.request()? != *request {
         return Err("运动结束时请求身份或拍照计划已改变".into());
     }
-    if snapshot.trigger_counts()? != request.camera_shots {
-        return Err(format!("PLC 实际触发数 {:?} 与计划 {:?} 不符", snapshot.trigger_counts()?, request.camera_shots));
+    if snapshot.trigger_count()? != request.device_shots {
+        return Err(format!("PLC 设备实际触发数 {} 与计划 {} 不符", snapshot.trigger_count()?, request.device_shots));
     }
     Ok(())
 }
@@ -720,9 +721,9 @@ mod tests {
             value: Some(if f.data_type == DataType::Bool { PlcValue::Bool(false) } else { PlcValue::Int(0) }), error: None, ts: 1,
         })).collect();
         for (tag, value) in [
-            ("protocolVersion", 1), ("pcProtocolVersion", 1), ("requestSeq", 7), ("partSn", 42),
+            ("protocolVersion", 2), ("pcProtocolVersion", 2), ("requestSeq", 7), ("partSn", 42),
             ("productCode", 3), ("shotCount", 4), ("planVersion", 2), ("planReserved", 0),
-            ("camera1Shots", 2), ("camera2Shots", 1), ("camera3Shots", 1),
+            ("deviceShots", 4),
         ] {
             values.get_mut(tag).unwrap().value = Some(PlcValue::Int(value));
         }
@@ -824,17 +825,17 @@ mod tests {
         assert!(error.contains("requestSeq=4294967296") && error.contains("UDInt"), "{error}");
 
         // 快照之外拿到的值（如测试或后续改动绕过类型校验）也不能被 as u16 截断成 4464 之类
-        for tag in ["protocolVersion", "productCode", "shotCount", "camera1Shots", "camera2Shots", "camera3Shots"] {
+        for tag in ["protocolVersion", "productCode", "shotCount", "deviceShots"] {
             let mut s = snapshot();
             s.values.insert(tag, PlcValue::Int(70000));
             let error = s.request().unwrap_err();
             assert!(error.contains(&format!("PLC 字段 {tag}=70000 超出 UInt 范围")), "{tag}: {error}");
         }
-        for tag in ["camera1Triggers", "camera2Triggers", "camera3Triggers"] {
+        for tag in ["deviceTriggers"] {
             let mut s = snapshot();
             let request = s.request().unwrap();
             s.values.insert(tag, PlcValue::Int(65536 + 2));
-            let error = s.trigger_counts().unwrap_err();
+            let error = s.trigger_count().unwrap_err();
             assert!(error.contains(&format!("PLC 字段 {tag}=65538 超出 UInt 范围")), "{tag}: {error}");
             assert_eq!(s.start_request().unwrap_err(), error);
             s.values.insert("partEnd", PlcValue::Bool(true));
@@ -842,7 +843,7 @@ mod tests {
         }
         let mut s = snapshot();
         s.values.insert("shotCount", PlcValue::Int(65535));
-        s.values.insert("camera1Shots", PlcValue::Int(65533));
+        s.values.insert("deviceShots", PlcValue::Int(65535));
         assert_eq!(s.request().unwrap().shot_count, 65535);
     }
 
@@ -853,7 +854,7 @@ mod tests {
         second.poll_count += 1;
         assert!(confirm_start(&first, &second).is_err());
         second.poll_count += 1;
-        assert_eq!(confirm_start(&first, &second).unwrap().camera_shots, [2, 1, 1]);
+        assert_eq!(confirm_start(&first, &second).unwrap().device_shots, 4);
         second.values.insert("planReserved", PlcValue::Int(100));
         assert!(confirm_start(&first, &second).is_err());
         second = first.clone();
@@ -865,9 +866,9 @@ mod tests {
     #[test]
     fn malformed_or_unreleased_request_cannot_arm() {
         for (tag, value) in [
-            ("requestSeq", PlcValue::Int(0)), ("protocolVersion", PlcValue::Int(2)),
-            ("camera2Shots", PlcValue::Int(3)), ("resultAck", PlcValue::Bool(true)),
-            ("camera1Triggers", PlcValue::Int(1)), ("done", PlcValue::Bool(true)),
+            ("requestSeq", PlcValue::Int(0)), ("protocolVersion", PlcValue::Int(1)),
+            ("deviceShots", PlcValue::Int(3)), ("resultAck", PlcValue::Bool(true)),
+            ("deviceTriggers", PlcValue::Int(1)), ("done", PlcValue::Bool(true)),
         ] {
             let mut s = snapshot();
             s.values.insert(tag, value);
@@ -893,60 +894,59 @@ mod tests {
     }
 
     #[test]
-    fn part_end_compares_each_camera_and_frozen_request() {
+    fn part_end_compares_device_count_and_frozen_request() {
         let mut s = snapshot();
         let request = s.request().unwrap();
         s.values.insert("partEnd", PlcValue::Bool(true));
-        for (tag, value) in [("camera1Triggers", 2), ("camera2Triggers", 1), ("camera3Triggers", 1)] {
-            s.values.insert(tag, PlcValue::Int(value));
-        }
+        s.values.insert("deviceTriggers", PlcValue::Int(4));
         assert!(verify_part_end(&s, &request).is_ok());
-        s.values.insert("camera2Triggers", PlcValue::Int(0));
-        assert!(verify_part_end(&s, &request).is_err());
-        s.values.insert("camera2Triggers", PlcValue::Int(1));
         s.values.insert("requestSeq", PlcValue::Int(8));
         assert!(verify_part_end(&s, &request).is_err());
     }
 
     #[test]
-    fn part_end_rejects_extra_count_in_a_used_camera_slot() {
+    fn part_end_rejects_missing_extra_or_view_multiplied_device_triggers() {
         let mut s = snapshot();
         let request = s.request().unwrap();
-        assert_eq!(request.camera_shots, [2, 1, 1]);
+        assert_eq!(request.device_shots, 4);
         s.values.insert("partEnd", PlcValue::Bool(true));
-        for (tag, value) in [("camera1Triggers", 3), ("camera2Triggers", 1), ("camera3Triggers", 1)] {
-            s.values.insert(tag, PlcValue::Int(value));
-        }
-        let error = verify_part_end(&s, &request).unwrap_err();
-        assert!(error.contains("[3, 1, 1]") && error.contains("[2, 1, 1]"), "{error}");
-        assert_eq!(s.request().unwrap(), request);
-        s.values.insert("camera1Triggers", PlcValue::Int(2));
-        assert!(verify_part_end(&s, &request).is_ok());
-    }
-
-    #[test]
-    fn part_end_rejects_each_unused_slot_even_when_total_count_matches() {
-        let mut s = snapshot();
-        for (tag, value) in [("camera1Shots", 4), ("camera2Shots", 0), ("camera3Shots", 0)] {
-            s.values.insert(tag, PlcValue::Int(value));
-        }
-        let request = s.request().unwrap();
-        request.validate().unwrap();
-        assert_eq!(request.camera_shots, [4, 0, 0]);
-        s.values.insert("partEnd", PlcValue::Bool(true));
-        for counts in [[4, 1, 0], [4, 0, 1], [3, 1, 0], [3, 0, 1], [4, 0, 0]] {
-            for (tag, value) in ["camera1Triggers", "camera2Triggers", "camera3Triggers"].into_iter().zip(counts) {
-                s.values.insert(tag, PlcValue::Int(value));
-            }
+        for count in [3, 5, 12, 4] {
+            s.values.insert("deviceTriggers", PlcValue::Int(count));
             let result = verify_part_end(&s, &request);
-            if counts == [4, 0, 0] {
+            if count == 4 {
                 assert!(result.is_ok());
             } else {
                 let error = result.unwrap_err();
-                assert!(error.contains(&format!("{counts:?}")) && error.contains("[4, 0, 0]"), "{error}");
+                assert!(error.contains(&format!("实际触发数 {count} 与计划 4")), "{error}");
             }
             assert_eq!(s.request().unwrap(), request);
         }
+    }
+
+    #[test]
+    fn contract_rejects_retired_multichannel_tags_even_as_extra_points() {
+        for old in ["camera1Shots", "camera2Shots", "camera3Shots", "camera1Triggers", "camera2Triggers", "camera3Triggers"] {
+            let mut cfg = config();
+            cfg.points.push(PlcPoint {
+                id: format!("old_{old}"), name: old.into(), address: "DB3.DBW0".into(),
+                data_type: DataType::U16, access: Access::Read, tags: vec![old.into()], ..PlcPoint::default()
+            });
+            let error = Contract::validate(&cfg).unwrap_err();
+            assert!(error.contains(old) && error.contains("已停用"), "{error}");
+        }
+    }
+
+    #[test]
+    fn request_deserialization_rejects_retired_channel_payloads() {
+        let request = snapshot().request().unwrap();
+        let mut value = serde_json::to_value(&request).unwrap();
+        value["cameraShots"] = json!([4, 0, 0]);
+        assert!(serde_json::from_value::<Request>(value).is_err());
+        let mut legacy = serde_json::to_value(&request).unwrap();
+        legacy.as_object_mut().unwrap().remove("deviceShots");
+        legacy["cameraShots"] = json!([4, 0, 0]);
+        assert!(serde_json::from_value::<Request>(legacy).is_err());
+        assert_eq!(serde_json::from_value::<Request>(serde_json::to_value(&request).unwrap()).unwrap(), request);
     }
 
     #[test]
