@@ -10,13 +10,14 @@
 
 ```json
 {
-  "abiVersion": 15,
-  "engineVersion": "与 lyflow_version 接口返回值一致的实际版本",
-  "sourceRevision": "正式构建对应的明确源码修订号"
+  "abiVersion": "1.1.0",
+  "engineVersion": "1.1.0",
+  "sourceRevision": "正式构建对应的完整40位Git源码修订号",
+  "localValidationOnly": false
 }
 ```
 
-ABI 字段是产物提供方的声明，不是动态探测结果。打包还会调用应用真实的图像输入、胶路测量和标定流程验证兼容性。必须具备 `io.load_image`、`image.board_calib`、`image.load_calib`、`glue.taught_path`、`glue.bead_width` 算子。脚本不构建其他仓库，不自动寻找或采用历史临时产物。
+ABI 跟随 lyFlow 产品版本，必须为字符串。当前固定 `1.1.0`：产物描述、依赖清单、DLL 的 `lyflow_abi_version_string()` 与 `lyflow_version()`，以及应用所用客户端 `ABI_VERSION` 必须完全一致；数字 `15`、字符串 `"15"`、其他版本或缺少新 ABI 接口的旧 DLL 均直接拒绝，不做转换或旧 ABI 回退。`localValidationOnly` 必须显式为 `false`；DLL 的 `lyflow_source_revision()`、描述与清单必须为完全相同的 40 位 Git 修订，空修订或 dirty/本机诊断候选不得进入 GS 依赖包。脚本先读取 DLL 的实际 ABI/引擎版本，再调用测量相关接口；应用自检通过后还会核对客户端版本。打包继续调用应用真实的图像输入、胶路测量和标定流程验证兼容性。必须具备 `io.load_image`、`image.board_calib`、`image.load_calib`、`glue.taught_path`、`glue.bead_width` 算子。脚本不构建其他仓库，不自动寻找或采用历史临时产物。
 
 ```powershell
 pnpm install --frozen-lockfile
@@ -82,6 +83,8 @@ pnpm run package -RuntimeBundle 'C:\release\runtime-bundle'
 & 'C:\Apps\GlueSight\GlueSight.exe' --check-packaged-runtime 'C:\reports\runtime.json'
 ```
 
-报告目录需事先存在。成功退出码为 0；失败为非零并记录原因。验证覆盖合成胶条正常测量、空白图缺胶、新帧偏移、棋盘格标定与空白图拒绝，以及随包 MVS 加载和枚举。它证明软件运行组件及接口可用，不代表真机触发收图、现场精度或长稳验收。
+报告目录需事先存在。成功退出码为 0；失败为非零并记录原因。脚本报告分别记录 DLL 实际 `abiVersion`、描述中的 `declaredAbiVersion` 和引擎 `version`；应用报告记录 `clientAbiVersion`、实际版本与加载路径。验证覆盖合成胶条正常测量、空白图缺胶、新帧偏移、棋盘格标定与空白图拒绝，以及随包 MVS 加载和枚举。它证明软件运行组件及接口可用，不代表真机触发收图、现场精度或长稳验收。
 
-当前实现的首版依赖包仍等待正式 lyFlow 产物。脚本、工作流和失败路径可独立验证，但在正式产物提供并完成全流程前，不能把代码回归标为已生成并验收首个安装包。
+本轮范围仅为 ABI 产品版本字符串改造，不接入 `glue.taught_path`。GS 客户端已固定到 `d4c54ee2a56b2c6f93f4fb1e6614f612a447d02b`；当前新 DLL 已通过客户端的 ABI/引擎版本及必需接口加载检查，随后因 lyFlow main 缺少 GS 必需的 `glue.taught_path` 而被应用拒绝。4 项真实 DLL 视觉业务测试均在加载阶段被这一算子缺失阻断，尚未完成注图后的并发测量、多视图、胶宽与标定验收。
+
+因此，本轮不宣称已有 GS 可用的运行库依赖包或通过验收的安装包。脚本专项与普通 Rust 回归通过，只证明 ABI 衔接及相应软件门禁；历史 DLL 测试结果不能作为当前产物验收结果。即使后续正式 lyFlow 产物通过实际源码修订与发布元数据检查，GS 业务验收仍需包含全部必需算子的正式产物，并重新完成上述真实 DLL 测试与完整打包流程。

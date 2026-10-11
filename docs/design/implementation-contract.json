@@ -20,7 +20,7 @@
       "vision.rs 使用已保存工位参数构建图，并允许标定选择冻结图像",
       "teach.rs 的随动试探可选择冻结图像，并检查输入与样本是否有效",
       "cycle.rs 在工件边界提交发布内容，并保留当前工件各帧的原图预览",
-      "lyflow-client 固定到 5b796c35d6cafd441a24bc09e620aaae399ca5ac，RunSpec.image_inputs 注入 Image ABI v15 的完整 u8 灰度像素",
+      "lyflow-client 固定到 Cargo.toml 的明确源码修订，客户端 ABI 与引擎产品版本字符串严格等于 1.1.0，RunSpec.image_inputs 注入完整 u8 灰度像素",
       "随动历史原图按相机编号和绝对帧计数匹配，在保存的沿程位置调用本机卡尺重测"
     ]
   },
@@ -61,7 +61,7 @@
     },
     "publicationAssets": "template、stations（含 workspaceParams）、calib 与示教 manifest；teachingId 为明确修订 ID；配方使用 id/version，不计算内容哈希",
     "sharedUse": "单帧试测、导入原图样本验证、历史原图复测与在线飞拍使用同一图和已保存工位参数",
-    "runtimeCompatibility": "客户端固定到 lyFlow 5b796c3，通过 Image ABI v15 注入完整灰度帧；运行时需加载与该 ABI 兼容、包含图像与 glue 算子的 core DLL。验证命令和证据范围见 docs/testing/TESTING.md。"
+    "runtimeCompatibility": "客户端固定到 Cargo.toml 的 lyFlow 源码修订，通过 RunSpec.image_inputs 注入完整灰度帧；运行时严格要求 ABI 版本字符串和引擎产品版本均为 1.1.0，包含图像与 glue 算子的 core DLL。数字 ABI 15 和缺少 lyflow_abi_version_string 的旧产物直接拒绝。验证命令和证据范围见 docs/testing/TESTING.md。"
   },
   "limits": [
     "随动原图复测要求完整相机和绝对帧计数、有限沿程位置及匹配图像尺寸的当前标定；复测不重新推算历史沿程位置",

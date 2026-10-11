@@ -33,7 +33,7 @@
 
 ## 算法连接与验收状态
 
-lyFlow 主线依赖已固定到 `5b796c35d6cafd441a24bc09e620aaae399ca5ac`，采用 Image ABI v15 的 `RunSpec.image_inputs` / `RunImageInput` 注入 `n_load.image` 的全分辨率 u8 灰度像素。核心库加载时检查飞拍和标定算子；缺少 glue 的库会给出明确原因。飞拍胶宽和实际图像坐标已传给判定与叠加显示。
+lyFlow 依赖固定到 `src-tauri/Cargo.toml` 中的明确源码修订，要求客户端 ABI 与引擎产品版本均为字符串 `1.1.0`，采用 `RunSpec.image_inputs` / `RunImageInput` 注入 `n_load.image` 的全分辨率 u8 灰度像素。核心库加载时先严格检查 ABI 与引擎版本，再检查飞拍和标定算子；缺少 glue 的库会给出明确原因。飞拍胶宽和实际图像坐标已传给判定与叠加显示。
 
 真实原生专项测试已验证棋盘标定的已知比例尺、飞拍毫米距离/胶宽、不同帧缓存隔离、空白帧定位失败及跨帧缺胶；全部 38 个后端测试通过，其中 3 个专项测试使用实际 DLL。离线样本组导入失败会清理暂存资料。
 

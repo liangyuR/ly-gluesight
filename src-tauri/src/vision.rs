@@ -48,7 +48,7 @@ pub struct Engine {
 
 impl Engine {
     pub fn load(path: &Path) -> Result<Self, String> {
-        let core = Core::load_from(path).map_err(|e| e.to_string())?;
+        let core = Core::load_from(path).map_err(|e| format!("加载 lyFlow 失败（{}；客户端 ABI {}）：{e}", path.display(), lyflow_client::ABI_VERSION))?;
         core.self_check()?;
         check_operators(&serde_json::from_str(&core.manifest_json().map_err(|e| e.to_string())?)
             .map_err(|e| format!("核心库算子清单无效：{e}"))?)?;

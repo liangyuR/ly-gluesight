@@ -124,7 +124,7 @@ CycleRun
 <article class="check-card"><h3>正常闭环</h3><p>cam1→cam2→cam3→cam1 的计划能承受跨机交错到达；每点用正确标定与模板，只有一个整件结论。每件的计划、物理触发、合法帧和完成 shot 可核对。</p><span class="proof">证据：原图、绑定日志、点表、PLC 结果与配方/资源版本。</span></article>
 <article class="check-card"><h3>异常不会放行</h3><p>缺首/中/尾帧、漏触发、重复、计数重置、重连、同 SN 旧结果、队列满、测量挂起、写拒绝、ACK 异常和磁盘错误均有预期处理及恢复；无法证明完整的检测不得输出 OK。</p><span class="proof">存图/存库失败时是停线还是降级留记录，在 W0 明确，不静默宣称追溯完整。</span></article>
 <article class="check-card"><h3>物理与节拍达标</h3><p>各 Pose 的尺度和重复性、良品和边界缺陷满足约定指标；最坏节拍与生产录制下结果按 deadline 到达，内存与队列无持续增长。</p><span class="proof">P95/P99 用于观察波动；工件能否放行仍受约定的硬截止限制。</span></article>
-<article class="check-card"><h3>能交付与复现</h3><p>新工控机可安装，兼容 DLL/驱动可追溯；相机、配方和数据可恢复。旧发布包不受新标定覆盖，历史能分别执行原版本重现和当前候选复测。</p><span class="proof">Image ABI v15、glue 算子包、MVS、WebView2 与配置版本进入交付清单。</span></article>
+<article class="check-card"><h3>能交付与复现</h3><p>新工控机可安装，兼容 DLL/驱动可追溯；相机、配方和数据可恢复。旧发布包不受新标定覆盖，历史能分别执行原版本重现和当前候选复测。</p><span class="proof">ABI/引擎产品版本 1.1.0、glue 算子包、MVS、WebView2 与配置版本进入交付清单。</span></article>
 </div></div>
 <div class="evidence"><p><strong>马上开始的顺序：</strong>先完成 W0 拍照/触发/验收表和逐 Pose 样片，再让 Agent 冻结 W1 接口与三机夹具；随后并行 W2/W3。第一个里程碑是“四个拍照点、三台相机、一个工件”的真实图像闭环。</p><p><strong>本页状态：</strong>方案与估算已补充；S7 握手子项已完成软件实现及协议模拟联调，详见上方进展。其余多相机工作包与现场验收仍待完成；原估算按完整范围保留，待首个真实三机闭环后重排。</p></div>
 </section>
