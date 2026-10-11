@@ -24,18 +24,23 @@ describe("应用路由与错误恢复", () => {
     expect(nav.getByRole("link", { name: "历史记录" })).toHaveAttribute("aria-current", "page");
   });
 
-  it("侧栏可折叠再展开，浏览器模式提示可见", async () => {
+  it("侧栏可折叠再展开，保留全部导航入口", async () => {
     render(<MemoryRouter initialEntries={["/history/retest"]}><App /></MemoryRouter>);
     await userEvent.click(screen.getByRole("button", { name: "折叠侧边栏" }));
     expect(document.querySelector(".sidebar")).toHaveClass("collapsed");
     await userEvent.click(screen.getByRole("button", { name: "展开侧边栏" }));
     expect(document.querySelector(".sidebar")).not.toHaveClass("collapsed");
-    expect(screen.getByText("浏览器查看模式：设备、配方保存与生产操作需要桌面后端。")).toBeVisible();
     const nav=within(screen.getByRole("navigation",{name:"操作导航"}));
     for(const item of navItems)expect(nav.getByRole("link",{name:item.label})).toHaveAttribute("href",item.path);
   });
 
-  it.each(navItems.map(item=>[item.path,item.label]))("直接打开 %s 显示 %s 且只选中对应导航",async(path,label)=>{
+  it.each([
+    ["/recipe/progress", "进度总览"],
+    ["/recipe/capture", "整圈采集"],
+    ["/camera/calibration", "飞拍工位标定"],
+    ["/plc", "PLC 通讯"],
+    ["/plc-logs", "通讯日志"],
+  ])("直接打开 %s 显示 %s 且只选中对应导航",async(path,label)=>{
     render(<MemoryRouter initialEntries={[path]}><App/></MemoryRouter>);
     expect(await screen.findByRole("heading",{level:1,name:label})).toBeVisible();
     const nav=within(screen.getByRole("navigation",{name:"操作导航"}));

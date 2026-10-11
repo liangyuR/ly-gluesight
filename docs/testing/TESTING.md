@@ -6,6 +6,8 @@
 
 项目使用 Vitest、React Testing Library、user-event 和 jsdom。测试操作真实的 React 页面与表单；需要桌面数据的页面使用受控接口返回值，避免连接现场相机、PLC 或改写生产配置。工作台状态测试使用真实 WorkspaceProvider，异步竞态通过可手动完成的 Promise 验证。
 
+2026-10-11 全仓测试审查、重复用例删减与覆盖率前后对照见 [单元测试精简记录](unit-test-simplification.md)。
+
 ## 运行
 
 首次安装依赖：`pnpm install --frozen-lockfile`。
