@@ -1,0 +1,1107 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="description" content="GlueSight PLC 通讯协议 1.1：完整 S7 点表、三目飞拍、生产与示教采集、握手时序和故障复位。">
+<title>GlueSight PLC 通讯协议 1.1</title>
+<style>:root{color-scheme:light;--bg:#f3f6f8;--paper:#fff;--ink:#172b36;--muted:#5e7280;--line:#dce5ea;--teal:#087f82;--blue:#245ea4;--soft:#edf7f7;--warn:#fff6e8;--amber:#845317}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:28px}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.8 "Segoe UI","Microsoft YaHei",sans-serif}
+a{color:var(--blue);text-underline-offset:4px}
+button,input{font:inherit}
+button,a,input,[tabindex]{outline-offset:4px}
+:focus-visible{outline:3px solid #0d8c9f}
+button{cursor:pointer}
+[hidden]{display:none!important}
+.skip{position:absolute;left:18px;top:-80px;z-index:9;padding:8px 16px;background:white}.skip:focus{top:14px}
+.layout{max-width:1500px;display:grid;grid-template-columns:254px minmax(0,1fr);margin:auto;min-height:100vh}
+.rail{position:sticky;top:0;height:100vh;overflow-y:auto;padding:34px 21px 25px;background:#eef3f5;border-right:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:12px;color:var(--ink);font-size:21px;font-weight:650;text-decoration:none;line-height:1.3}
+.brand-symbol{display:grid;place-items:center;width:39px;height:39px;border-radius:10px;background:var(--teal);color:white;font:650 25px/1 "Segoe UI",sans-serif}
+.brand small{display:block;font-size:12px;color:var(--muted);font-weight:400;margin-top:5px}
+.rail-meta{display:flex;gap:7px;margin:22px 0 20px}.rail-meta span{font-size:11px;background:white;border:1px solid var(--line);border-radius:5px;padding:2px 8px;color:var(--muted)}
+.rail nav{display:grid;gap:3px}.rail nav a{font-size:13px;padding:6px 9px;text-decoration:none;color:#425b69;border-left:3px solid transparent;border-radius:0 5px 5px 0}
+.rail nav a:hover{background:#e1ebef;color:var(--ink)}.rail nav a[aria-current=true]{border-left-color:var(--teal);color:var(--teal);background:#e0eeee;font-weight:600}
+.rail nav a.sub{padding-left:22px;font-size:12px}
+.rail-foot{border-top:1px solid var(--line);margin-top:23px;padding-top:15px;display:grid;gap:6px;font-size:11px;color:var(--muted)}
+.rail-foot a{color:var(--muted)}
+main{min-width:0;padding:44px 44px 26px}
+.hero-top{display:flex;justify-content:space-between;align-items:center;gap:16px}.eyebrow{color:var(--teal);font-size:12px;font-weight:650;letter-spacing:1.6px;margin:0 0 12px}
+.hero h1{font-size:40px;line-height:1.25;letter-spacing:-1px;margin:14px 0 11px;font-weight:650}.subtitle{font-size:17px;color:var(--muted);margin:0}
+.print-button,.download,.search-controls button{background:white;border:1px solid #c9d8df;border-radius:6px;padding:7px 12px;color:#345565;font-size:12px;text-decoration:none;white-space:nowrap}
+.print-button:hover,.download:hover,.search-controls button:hover{border-color:var(--teal);color:var(--teal)}
+.facts{display:grid;grid-template-columns:repeat(4,1fr);gap:15px;margin:26px 0}
+.facts>div{border-top:2px solid var(--teal);padding:12px 15px;background:white;border-radius:0 0 6px 6px}.facts span{display:block;font-size:11px;color:var(--muted);margin-bottom:3px}.facts strong{font-size:21px;line-height:1.4;font-weight:600}.facts small{font-size:11px;font-weight:400;color:var(--muted)}
+.overview-text>p:first-child{color:var(--muted);font-size:12px}.overview-text>p{margin:17px 0}
+.protocol-section,.sequence-section{margin-top:32px;background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:28px 30px;min-width:0}
+h2{font-size:23px;line-height:1.45;letter-spacing:-.3px;font-weight:650;margin:0 0 18px;padding-bottom:13px;border-bottom:1px solid var(--line);scroll-margin-top:28px}
+h3{font-size:17px;font-weight:650;margin:25px 0 12px;scroll-margin-top:28px}
+p{margin:14px 0}ol,ul{padding-left:24px;margin:15px 0}li{padding-left:3px;margin:8px 0}strong{font-weight:650}
+code{font:13px/1.6 Consolas,"Cascadia Code",monospace;background:#eef3f6;color:#255772;border-radius:3px;padding:1px 4px;overflow-wrap:anywhere}
+.callout{border-left:3px solid #dfac62;padding:14px 17px;border-radius:0 6px 6px 0;background:var(--warn);font-size:14px;color:#5d482c}
+.callout.requirement{background:var(--soft);border-color:#64adae;color:#24575f}
+.table-scroll{width:100%;overflow-x:auto;border:1px solid var(--line);border-radius:6px;margin:17px 0}
+table{border-collapse:collapse;width:100%;font-size:13px;line-height:1.65;min-width:570px}
+th,td{text-align:left;vertical-align:top;padding:12px 14px;border-bottom:1px solid var(--line)}
+th{background:#eef4f6;font-size:12px;color:#47616f;font-weight:650}
+tr:last-child td{border-bottom:0}tbody tr:nth-child(even){background:#fafcfd}tbody tr:hover{background:#eff8f8}
+.point-table{min-width:760px}.point-table th:first-child,.point-table td:first-child{width:155px;white-space:nowrap;font-family:Consolas,monospace}.point-table th:nth-child(2),.point-table td:nth-child(2){width:64px;white-space:nowrap}.point-table th:nth-child(3),.point-table td:nth-child(3){width:180px;white-space:nowrap}
+.point-search{background:#eff7f7;border:1px solid #d3e6e6;border-radius:7px;padding:13px 16px;margin-bottom:23px}.point-search label{display:block;font-size:12px;font-weight:600;color:#2c6067;margin-bottom:7px}.search-controls{display:flex;align-items:center;gap:10px}.search-controls input{min-width:0;flex:1;border:1px solid #bdd4da;border-radius:5px;background:white;padding:8px 10px;font-size:13px}.search-controls output{font-size:11px;color:var(--muted);white-space:nowrap}.point-search>p{font-size:12px;color:#80591e;margin:9px 0 0}
+.sequence-section{padding-bottom:22px}.sequence-section h2{margin-bottom:12px}.section-intro{color:var(--muted);font-size:13px;margin-bottom:19px}
+.diagram-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:18px 0 0}.diagram-tabs button{padding:9px 14px;background:#f4f7f9;color:#536c79;border:1px solid var(--line);border-radius:6px 6px 0 0;font-size:13px}
+.diagram-tabs button[aria-selected=true]{background:var(--teal);color:white;border-color:var(--teal)}
+.diagram-panel{margin:0;border:1px solid var(--line);border-radius:0 7px 7px 7px;overflow:hidden}.diagram-panel figcaption{display:flex;justify-content:space-between;gap:16px;align-items:center;padding:17px 19px;background:#f8fbfc;border-bottom:1px solid var(--line)}
+.diagram-panel h3{margin:0 0 4px;font-size:16px}.diagram-panel figcaption p{font-size:12px;color:var(--muted);margin:0}.diagram-scroll{overflow-x:auto;padding:10px 0;background:white}.diagram-scroll svg{display:block;width:100%;height:auto;min-width:820px}
+.diagram-note{color:var(--muted);font-size:12px;margin:16px 1px 0}.document-foot{padding:22px 2px 0;color:var(--muted);font-size:12px}.document-foot p{margin:6px 0}
+@media(min-width:1350px){main{padding-left:52px;padding-right:52px}}
+@media(max-width:1100px){.layout{grid-template-columns:218px minmax(0,1fr)}.rail{padding-left:15px;padding-right:15px}main{padding:30px 23px}.protocol-section,.sequence-section{padding:23px 20px}.facts{gap:9px}.facts>div{padding:10px}.facts strong{font-size:18px}}
+@media(max-width:760px){html{scroll-padding-top:14px}.layout{display:block}.rail{position:static;width:100%;height:auto;padding:20px;border-right:0;border-bottom:1px solid var(--line)}.brand{font-size:20px}.rail-meta{margin:13px 0}.rail nav{display:flex;gap:6px;overflow-x:auto;padding-bottom:7px}.rail nav a{border:1px solid var(--line);white-space:nowrap;background:white;padding:6px 10px;border-radius:5px;font-size:12px}.rail nav a.sub{padding-left:10px}.rail nav a[aria-current=true]{border-color:var(--teal)}.rail-foot{display:none}main{padding:24px 14px}.hero h1{font-size:31px}.subtitle{font-size:14px}.hero-top{gap:8px}.eyebrow{letter-spacing:.8px;font-size:10px}.print-button{font-size:11px;padding:6px 8px}.facts{grid-template-columns:repeat(2,1fr);gap:10px;margin:19px 0}.facts strong{font-size:21px}.facts>div{padding:10px 13px}.overview-text{font-size:14px}.protocol-section,.sequence-section{padding:20px 15px;margin-top:23px}h2{font-size:20px}h3{font-size:16px}body{font-size:14px}.callout{font-size:13px;padding:12px 13px}.diagram-tabs button{font-size:12px;padding:8px 10px}.diagram-panel figcaption{padding:13px;display:block}.diagram-panel figcaption .download{display:inline-block;margin-top:10px}.diagram-scroll svg{min-width:880px}.search-controls{flex-wrap:wrap}.search-controls input{flex-basis:70%}.search-controls output{width:100%}.point-table{min-width:750px}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+@media print{
+@page{size:A4 portrait;margin:14mm}
+html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;line-height:1.6}.layout{display:block;max-width:none}.rail,.skip,.print-button,.diagram-tabs,.download,.point-search{display:none!important}main{padding:0}.hero h1{font-size:27pt}.subtitle{font-size:12pt}.hero-top .eyebrow{font-size:9pt}.facts{gap:8px;margin:17px 0}.facts>div{background:#f4f8fa;padding:9px}.facts strong{font-size:15pt}.protocol-section,.sequence-section{padding:0;border:0;border-radius:0;margin:20px 0}.protocol-section>h2{break-after:avoid;font-size:16pt}h3{break-after:avoid;font-size:12pt}.sequence-section{break-before:page}.diagram-panel,.diagram-panel[hidden]{display:block!important;break-inside:avoid;border:0;margin:0 0 18px}.diagram-panel figcaption{background:white;padding:6px 0;border:0}.diagram-panel h3{font-size:12pt}.diagram-panel figcaption p{font-size:9pt}.diagram-scroll{overflow:visible;padding:0}.diagram-scroll svg{min-width:0!important;max-height:225mm;width:100%;height:auto}.diagram-note{font-size:9pt}.table-scroll{overflow:visible;border:0}table,.point-table{min-width:0;width:100%;font-size:8.5pt;table-layout:fixed}th,td{padding:7px 7px;overflow-wrap:anywhere}thead{display:table-header-group}tr{break-inside:avoid}.point-table th:first-child,.point-table td:first-child{width:25%;white-space:normal;font-size:8pt}.point-table th:nth-child(2),.point-table td:nth-child(2){width:10%;white-space:normal}.point-table th:nth-child(3),.point-table td:nth-child(3){width:27%;white-space:normal}.point-table code{font-size:8pt}.point-table tbody tr[hidden]{display:table-row!important}code{font-size:9pt;overflow-wrap:anywhere}.callout{break-inside:avoid;font-size:10pt}.document-foot{border-top:1px solid var(--line);font-size:9pt}a{color:inherit;text-decoration:none}.overview-text>p:first-child{font-size:9pt}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#overview">跳转到协议正文</a>
+<div class="layout">
+<aside class="rail" aria-label="协议导航">
+<a class="brand" href="#overview"><span class="brand-symbol">G</span><span>GlueSight<small>PLC 通讯协议</small></span></a>
+<div class="rail-meta"><span>文档 1.1</span><span>S7 协议 1</span></div>
+<nav aria-label="章节目录"><a href="#overview">协议概览</a><a href="#sequence">通讯时序图</a><a href="#section-1">1 通讯参数与分工</a><a href="#section-2">2 PLC 写入 PC 读取点表</a><a href="#section-3">3 PC 写入 PLC 读取点表</a><a href="#section-4">4 拍照计划与三目设备</a><a href="#section-4-1" class="sub">4.1 示教整圈采集</a><a href="#section-5">5 单件握手流程</a><a href="#section-6">6 结果与异常码</a><a href="#section-7">7 心跳与时间参数</a><a href="#section-8">8 启动重连与故障复位</a><a href="#section-9">9 四点飞拍示例</a><a href="#section-10">10 现场对接与验收清单</a></nav>
+<div class="rail-foot"><span>现场接入 · 2026-10-11</span><a href="plc-communication-protocol.md">Markdown 原文</a><a href="../../scripts/s7-handshake/phase1_plc.scl">PLC SCL 参考程序</a></div>
+</aside>
+<main id="content">
+<header id="overview" class="hero">
+<div class="hero-top"><p class="eyebrow">现场接入 / S7 ISO-on-TCP</p><button id="print-protocol" class="print-button" type="button">打印 / 保存 PDF</button></div>
+<h1>PLC 通讯协议</h1>
+<p class="subtitle">连续点胶飞拍 · 单件事务 · 结果确认与故障恢复</p>
+<div class="facts"><div><span>共享数据区</span><strong>DB100 <small>默认</small></strong></div><div><span>最小 DB 长度</span><strong>88 <small>字节</small></strong></div><div><span>双向点表</span><strong>32 <small>字段</small></strong></div><div><span>网络服务</span><strong>TCP 102</strong></div></div>
+<div class="overview-text"><p>文档修订：1.1；审核日期：2026-10-11；线上握手协议版本：1。</p>
+<p>适用于 GlueSight 一期连续点胶飞拍的 PLC 与视觉工控机对接。PLC 负责机器人运动和位置同步硬触发，PC 负责接件、相机布防、收图、检测及整件结果回传。一件只有一个在途事务，完成结果确认和双方释放后才能开始下一件。</p>
+<p class="callout warning"><strong>同一 DB 也承载示教整圈采集，线上没有生产/采集模式字段。采集成功同样返回 <code>1/0</code>，只表示采集完成，不表示产品合格。</strong> PLC 必须在外部维护并锁定本次用途，示教期间禁止生产自动发件和良品放行；不能仅凭 ready 或 resultCode=1 判断生产模式。示教执行条件和当前限制见第 4.1 节。</p>
+<p>本协议以仓库 S7 模板和双方握手实现为依据。PLC SCL 为接入参考，仍需现场 TIA 编译、真实 CPU、触发线路与相机联调验收。实现说明见 <a href="plc-s7-phase1.md">S7 握手契约与现场接入</a>。</p>
+</div>
+</header>
+<section id="sequence" class="sequence-section" aria-labelledby="sequence-heading">
+<p class="eyebrow">握手与状态交付</p><h2 id="sequence-heading">通讯时序图</h2>
+<p class="section-intro">沿生命线向下阅读，箭头表示写入、观察或物理触发。图中纵向间距不代表实际耗时；单件握手和故障恢复按正文条件执行。</p>
+<div class="diagram-tabs" role="tablist" aria-label="时序图场景"><button id="tab-normal" role="tab" aria-controls="panel-normal" aria-selected="true" type="button">正常生产一件</button><button id="tab-early-stop" role="tab" aria-controls="panel-early-stop" aria-selected="false" type="button">提前终止与故障</button><button id="tab-reset" role="tab" aria-controls="panel-reset" aria-selected="false" type="button">启动与显式复位</button></div><figure class="diagram-panel" id="panel-normal" role="tabpanel" aria-labelledby="tab-normal"><figcaption><div><h3>正常生产一件</h3><p>PLC 硬触发、PC 异步检测，再以匹配序号完成结果确认与释放。</p></div><a class="download" href="diagrams/plc-normal-sequence.svg" download>下载 SVG</a></figcaption><div class="diagram-scroll" tabindex="0" aria-label="正常生产一件，窄屏可横向滚动"><svg id="diagram-normal" xmlns="http://www.w3.org/2000/svg" width="1200" height="1670" viewBox="0 0 1200 1670" role="img" aria-labelledby="normal-normal-title normal-normal-desc">
+<title id="normal-normal-title">正常生产一件：接件 → 硬触发 → 结果 → 双方释放</title>
+<desc id="normal-normal-desc">生产用途下的一件事务时序。PLC直接硬触发一个三目设备，PC异步接收复合帧；各提交标志最后写入，结果校验、锁存和ACK后双方释放，追溯落盘后再ready。</desc>
+<defs>
+<marker id="normal-blue" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+<path d="M0 0 L9 4.5 L0 9Z" fill="#245b96"/>
+</marker>
+<marker id="normal-green" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+<path d="M0 0 L9 4.5 L0 9Z" fill="#13806d"/>
+</marker>
+</defs>
+<style>#diagram-normal text{font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;fill:#21364a}#diagram-normal .title{font-size:27px;font-weight:700}#diagram-normal .subtitle{font-size:16px;fill:#5c7083}#diagram-normal .actor{font-size:20px;font-weight:700}#diagram-normal .actor-sub{font-size:15px;fill:#526b7e}#diagram-normal .body{font-size:17px}#diagram-normal .small{font-size:15px;fill:#526b7e}#diagram-normal .step{font-size:18px;font-weight:650;fill:#245b96}#diagram-normal .number{font-size:16px;font-weight:700;fill:#fff}#diagram-normal .note-title{font-size:17px;font-weight:700;fill:#996328}#diagram-normal .warn{font-size:16px;fill:#8a5b22}#diagram-normal .good{font-size:17px;fill:#107260}#diagram-normal .panel-title{font-size:22px;font-weight:700}</style>
+<rect width="1200" height="1670" fill="#fff"/>
+<rect x="1" y="1" width="1198" height="1668" rx="16" fill="#fff" stroke="#dbe5ee"/>
+<rect x="1" y="1" width="1198" height="8" rx="4" fill="#245b96"/>
+<text x="32" y="49" class="title" text-anchor="start">正常生产一件：接件 → 硬触发 → 结果 → 双方释放</text>
+<text x="32" y="79" class="subtitle" text-anchor="start">协议修订 1.1 · 线上版本 1 · 一件一个在途事务 · S7 共享 DB 握手</text>
+<rect x="71" y="110" width="218" height="72" rx="12" fill="#edf4fb" stroke="#dbe5ee"/>
+<text x="180" y="140" class="actor" text-anchor="middle">PLC / 机器人</text>
+<text x="180" y="166" class="actor-sub" text-anchor="middle">运动、触发与结果锁存</text>
+<path d="M 180 182 V 1435" stroke="#b6c8d6" stroke-width="2" stroke-dasharray="6 7"/>
+<rect x="491" y="110" width="218" height="72" rx="12" fill="#edf4fb" stroke="#dbe5ee"/>
+<text x="600" y="140" class="actor" text-anchor="middle">三目设备</text>
+<text x="600" y="166" class="actor-sub" text-anchor="middle">一个 Device · 帧内三个视角</text>
+<path d="M 600 182 V 1435" stroke="#b6c8d6" stroke-width="2" stroke-dasharray="6 7"/>
+<rect x="911" y="110" width="218" height="72" rx="12" fill="#edf8f5" stroke="#dbe5ee"/>
+<text x="1020" y="140" class="actor" text-anchor="middle">视觉 PC</text>
+<text x="1020" y="166" class="actor-sub" text-anchor="middle">S7 握手、异步检测与追溯</text>
+<path d="M 1020 182 V 1435" stroke="#b6c8d6" stroke-width="2" stroke-dasharray="6 7"/>
+<circle cx="43" cy="203" r="16" fill="#245b96"/>
+<text x="43" y="209" class="number" text-anchor="middle">1</text>
+<text x="74" y="209" class="step" text-anchor="start">等待就绪：外部用途已锁定为生产</text>
+<rect x="260" y="214" width="740" height="25" rx="3" fill="#fff" stroke="none"/>
+<text x="270" y="231" class="body" text-anchor="start">visionReady=1；armed=busy=done=visionFault=0；版本均为 1</text>
+<path d="M 1020 267 H 180" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#normal-blue)"/>
+<text x="260" y="295" class="small" text-anchor="start">PLC 保持 partStart / partEnd / resultAck=0；双方心跳持续变化。</text>
+<circle cx="43" cy="318" r="16" fill="#245b96"/>
+<text x="43" y="324" class="number" text-anchor="middle">2</text>
+<text x="74" y="324" class="step" text-anchor="start">提交并冻结本件请求</text>
+<rect x="260" y="329" width="740" height="50" rx="3" fill="#fff" stroke="none"/>
+<text x="270" y="346" class="body" text-anchor="start">先写 requestSeq、SN、产品、计划、零触发数及 ackSeq=0</text>
+<text x="270" y="371" class="body" text-anchor="start">payload 写完后，最后置 partStart=1</text>
+<path d="M 180 392 H 1020" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#normal-blue)"/>
+<text x="260" y="420" class="small" text-anchor="start">请求 payload 冻结至双方释放且 PC 再次 ready；一个时刻仅一件在途。</text>
+<circle cx="43" cy="443" r="16" fill="#245b96"/>
+<text x="43" y="449" class="number" text-anchor="middle">3</text>
+<text x="74" y="449" class="step" text-anchor="start">PC 稳定读取、核对请求并完成设备布防</text>
+<rect x="260" y="454" width="740" height="50" rx="3" fill="#fff" stroke="none"/>
+<text x="270" y="471" class="body" text-anchor="start">visionReady=0 → acceptedSeq=requestSeq、acceptedPlanReserved=0</text>
+<text x="270" y="496" class="body" text-anchor="start">→ busy=1 → armed=1（最后提交）</text>
+<path d="M 1020 517 H 180" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#normal-blue)"/>
+<text x="260" y="545" class="small" text-anchor="start">PLC 核对完整发脉冲条件后才启动连续运动与触发；等待布防时禁止触发。</text>
+<circle cx="43" cy="568" r="16" fill="#245b96"/>
+<text x="43" y="574" class="number" text-anchor="middle">4</text>
+<text x="74" y="574" class="step" text-anchor="start">连续点胶飞拍：硬触发与收图相互独立</text>
+<rect x="225" y="594" width="405" height="25" rx="3" fill="#fff" stroke="none"/>
+<text x="235" y="611" class="body" text-anchor="start">按计划位置直接输出硬触发脉冲</text>
+<path d="M 180 640 H 600" fill="none" stroke="#13806d" stroke-width="2.5" marker-end="url(#normal-green)"/>
+<text x="240" y="665" class="small" text-anchor="start">PLC 用可靠输出计数源更新各槽触发数。</text>
+<rect x="630" y="686" width="350" height="25" rx="3" fill="#fff" stroke="none"/>
+<text x="640" y="703" class="body" text-anchor="start">设备帧（包含三个视角）</text>
+<path d="M 600 725 H 1020" fill="none" stroke="#13806d" stroke-width="2.5" stroke-dasharray="7 5" marker-end="url(#normal-green)"/>
+<text x="640" y="752" class="small" text-anchor="start">PC 按设备会话、计数及拍照点关联，异步检测。</text>
+<circle cx="43" cy="798" r="16" fill="#245b96"/>
+<text x="43" y="804" class="number" text-anchor="middle">5</text>
+<text x="74" y="804" class="step" text-anchor="start">运动与全部计划触发结束</text>
+<rect x="260" y="809" width="740" height="50" rx="3" fill="#fff" stroke="none"/>
+<text x="270" y="826" class="body" text-anchor="start">PLC 核对实际数等于计划数 → 写最终 camera1/2/3Triggers</text>
+<text x="270" y="851" class="body" text-anchor="start">→ partEnd=1；partStart 仍保持 1</text>
+<path d="M 180 872 H 1020" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#normal-blue)"/>
+<text x="260" y="900" class="small" text-anchor="start">PC 校验结束与计数，等待本件收帧和测量完成。</text>
+<circle cx="43" cy="923" r="16" fill="#245b96"/>
+<text x="43" y="929" class="number" text-anchor="middle">6</text>
+<text x="74" y="929" class="step" text-anchor="start">PC 发布整件结果</text>
+<rect x="260" y="934" width="740" height="50" rx="3" fill="#fff" stroke="none"/>
+<text x="270" y="951" class="body" text-anchor="start">armed=0，busy 保持 1；先写 resultCode、faultCode、resultSn、resultSeq</text>
+<text x="270" y="976" class="body" text-anchor="start">→ done=1（结果 payload 完成后最后提交）</text>
+<path d="M 1020 997 H 180" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#normal-blue)"/>
+<text x="260" y="1025" class="small" text-anchor="start">正常生产 OK / NG 必须在 PLC 完成最终计数核对并提交 partEnd 后出现。</text>
+<circle cx="43" cy="1048" r="16" fill="#245b96"/>
+<text x="43" y="1054" class="number" text-anchor="middle">7</text>
+<text x="74" y="1054" class="step" text-anchor="start">PLC 校验并锁存有效结果</text>
+<rect x="260" y="1059" width="740" height="50" rx="3" fill="#fff" stroke="none"/>
+<text x="270" y="1076" class="body" text-anchor="start">核对状态、resultSeq=requestSeq、resultSn=partSn 与已知结果码组合</text>
+<text x="270" y="1101" class="body" text-anchor="start">锁存结果 → ackSeq=resultSeq → resultAck=1</text>
+<path d="M 180 1122 H 1020" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#normal-blue)"/>
+<text x="260" y="1150" class="small" text-anchor="start">ACK 表示已接收结论，NG 与 ERR 也可有效确认；ACK 不代表良品。</text>
+<circle cx="43" cy="1169" r="16" fill="#245b96"/>
+<text x="43" y="1175" class="number" text-anchor="middle">8</text>
+<text x="74" y="1175" class="step" text-anchor="start">PC 确认 ACK 后释放结果占用</text>
+<rect x="260" y="1179" width="740" height="25" rx="3" fill="#fff" stroke="none"/>
+<text x="270" y="1196" class="body" text-anchor="start">核对匹配 ACK → 先清 done=0 → 再清 busy=0</text>
+<path d="M 1020 1227 H 180" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#normal-blue)"/>
+<circle cx="43" cy="1268" r="16" fill="#245b96"/>
+<text x="43" y="1274" class="number" text-anchor="middle">9</text>
+<text x="74" y="1274" class="step" text-anchor="start">PLC 看到 done=busy=0 后释放请求</text>
+<rect x="260" y="1284" width="740" height="25" rx="3" fill="#fff" stroke="none"/>
+<text x="270" y="1301" class="body" text-anchor="start">partStart=0、partEnd=0、resultAck=0</text>
+<path d="M 180 1332 H 1020" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#normal-blue)"/>
+<circle cx="43" cy="1373" r="16" fill="#245b96"/>
+<text x="43" y="1379" class="number" text-anchor="middle">10</text>
+<text x="74" y="1379" class="step" text-anchor="start">PC 确认 PLC 释放，并完成追溯落盘</text>
+<rect x="260" y="1389" width="740" height="25" rx="3" fill="#fff" stroke="none"/>
+<text x="270" y="1406" class="body" text-anchor="start">最后置 visionReady=1；此时才允许下一件更新请求</text>
+<path d="M 1020 1437 H 180" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#normal-blue)"/>
+<rect x="30" y="1475" width="1140" height="138" rx="12" fill="#f1f8fc" stroke="#cfe0ed"/>
+<text x="50" y="1504" class="step" text-anchor="start">触发放行必须逐项成立（本图描述协议要求）</text>
+<text x="50" y="1532" class="body" text-anchor="start">armed=busy=1；done=partEnd=visionReady=visionFault=0；acceptedSeq=requestSeq；双方心跳活跃。</text>
+<text x="50" y="1559" class="body" text-anchor="start">planReserved=acceptedPlanReserved=0，并满足现场用途与设备互锁；任一失效立即禁止新脉冲。</text>
+<text x="50" y="1586" class="warn" text-anchor="start">当前参考 FB 尚缺部分 ready / done / 保留字段检查；须补齐并做异常注入、真实 CPU / I/O / SDK 联调。</text>
+<text x="32" y="1643" class="small" text-anchor="start">箭头表示事件先后；纵向比例不代表真实时间。硬触发不经过 PC 的 S7 轮询；采集用途的 1/0 只表示采集完成。</text>
+</svg>
+</div></figure>
+<figure class="diagram-panel" id="panel-early-stop" role="tabpanel" aria-labelledby="tab-early-stop"><figcaption><div><h3>提前终止与故障</h3><p>区分可确认的 ERR 结果与没有有效 done 的故障，保留未结事务。</p></div><a class="download" href="diagrams/plc-early-stop-sequence.svg" download>下载 SVG</a></figcaption><div class="diagram-scroll" tabindex="0" aria-label="提前终止与故障，窄屏可横向滚动"><svg id="diagram-early-stop" xmlns="http://www.w3.org/2000/svg" width="1200" height="1945" viewBox="0 0 1200 1945" role="img" aria-labelledby="early-stop-early-title early-stop-early-desc">
+<title id="early-stop-early-title">已布防提前终止：有效 ERR 与握手故障的两种路径</title>
+<desc id="early-stop-early-desc">已布防提前终止的两种路径。PLC停止新脉冲后刷新末计数，与PC提交有效ERR结果可并行、先后不定，PC无需等待PLC刷新计数才置done。PLC末计数已刷新和有效结果已校验锁存两项条件在ACK前汇合；visionFault或没有有效done时保留pending，不强制ACK，实物处置后显式复位。</desc>
+<defs>
+<marker id="early-stop-blue" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+<path d="M0 0 L9 4.5 L0 9Z" fill="#245b96"/>
+</marker>
+<marker id="early-stop-green" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+<path d="M0 0 L9 4.5 L0 9Z" fill="#13806d"/>
+</marker>
+</defs>
+<style>#diagram-early-stop text{font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;fill:#21364a}#diagram-early-stop .title{font-size:27px;font-weight:700}#diagram-early-stop .subtitle{font-size:16px;fill:#5c7083}#diagram-early-stop .actor{font-size:20px;font-weight:700}#diagram-early-stop .actor-sub{font-size:15px;fill:#526b7e}#diagram-early-stop .body{font-size:17px}#diagram-early-stop .small{font-size:15px;fill:#526b7e}#diagram-early-stop .step{font-size:18px;font-weight:650;fill:#245b96}#diagram-early-stop .number{font-size:16px;font-weight:700;fill:#fff}#diagram-early-stop .note-title{font-size:17px;font-weight:700;fill:#996328}#diagram-early-stop .warn{font-size:16px;fill:#8a5b22}#diagram-early-stop .good{font-size:17px;fill:#107260}#diagram-early-stop .panel-title{font-size:22px;font-weight:700}</style>
+<rect width="1200" height="1945" fill="#fff"/>
+<rect x="1" y="1" width="1198" height="1943" rx="16" fill="#fff" stroke="#dbe5ee"/>
+<rect x="1" y="1" width="1198" height="8" rx="4" fill="#245b96"/>
+<text x="32" y="49" class="title" text-anchor="start">已布防提前终止：有效 ERR 与握手故障的两种路径</text>
+<text x="32" y="79" class="subtitle" text-anchor="start">先停新触发；有效结果才 ACK；异常结论不代表质量合格</text>
+<rect x="24" y="110" width="1152" height="1090" rx="14" fill="#fff" stroke="#cfdeea"/>
+<text x="48" y="146" class="panel-title" text-anchor="start">A · 握手仍可报告：提前终止形成有效 ERR 结果</text>
+<text x="48" y="173" class="small" text-anchor="start">前提：本件已布防；无需等待 partEnd；本路径不形成有效质量判定。</text>
+<rect x="153" y="194" width="235" height="52" rx="12" fill="#edf4fb" stroke="#dbe5ee"/>
+<text x="270" y="227" class="actor" text-anchor="middle">PLC / 机器人</text>
+<rect x="793" y="194" width="235" height="52" rx="12" fill="#edf8f5" stroke="#dbe5ee"/>
+<text x="910" y="227" class="actor" text-anchor="middle">视觉 PC</text>
+<path d="M270 246V1135 M910 246V1135" stroke="#b6c8d6" stroke-width="2" stroke-dasharray="6 7"/>
+<circle cx="43" cy="266" r="16" fill="#245b96"/>
+<text x="43" y="272" class="number" text-anchor="middle">A1</text>
+<text x="74" y="272" class="step" text-anchor="start">PC 提前终止并撤销布防</text>
+<rect x="360" y="284" width="520" height="25" rx="3" fill="#fff" stroke="none"/>
+<text x="370" y="301" class="body" text-anchor="start">visionReady=0；armed=0；busy 保持 1</text>
+<path d="M 910 330 H 270" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#early-stop-blue)"/>
+<text x="370" y="358" class="small" text-anchor="start">PLC 立即停止新脉冲，并限时等待有效结果。</text>
+<rect x="65" y="375" width="1080" height="258" rx="10" fill="none" stroke="#13806d" stroke-dasharray="7 5"/>
+<circle cx="43" cy="388" r="16" fill="#245b96"/>
+<text x="43" y="394" class="number" text-anchor="middle">A2</text>
+<text x="74" y="394" class="step" text-anchor="start">PLC 停稳触发并刷新实际末计数（接入要求；与 A3 可并行）</text>
+<rect x="360" y="399" width="650" height="50" rx="3" fill="#fff" stroke="none"/>
+<text x="370" y="416" class="body" text-anchor="start">计入最后已发脉冲 → 刷新 camera1/2/3Triggers</text>
+<text x="370" y="441" class="body" text-anchor="start">计数必须在 ACK 前写完；禁止继续发新脉冲</text>
+<path d="M 270 457 h 44 v 22 h -44" fill="none" stroke="#245b96" stroke-width="2.2" marker-end="url(#early-stop-blue)"/>
+<text x="370" y="484" class="small" text-anchor="start">PC 在 ACK 时读取这些计数，供后续帧归属使用。</text>
+<circle cx="43" cy="516" r="16" fill="#245b96"/>
+<text x="43" y="522" class="number" text-anchor="middle">A3</text>
+<text x="74" y="522" class="step" text-anchor="start">PC 写完异常结果后提交 done（与 A2 先后不定）</text>
+<rect x="360" y="529" width="730" height="50" rx="3" fill="#fff" stroke="none"/>
+<text x="370" y="546" class="body" text-anchor="start">resultCode=90；faultCode=91–100；写本件 resultSeq / resultSn</text>
+<text x="370" y="571" class="body" text-anchor="start">→ done=1（最后）；busy=1、armed=0、visionFault=0</text>
+<path d="M 910 595 H 270" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#early-stop-blue)"/>
+<text x="370" y="620" class="good" text-anchor="start">A2 与 A3 可并行、先后不定；PC 提交 done 无需等待 PLC 刷新末计数。</text>
+<circle cx="43" cy="651" r="16" fill="#245b96"/>
+<text x="43" y="657" class="number" text-anchor="middle">A4</text>
+<text x="74" y="657" class="step" text-anchor="start">PLC 校验完整状态、身份与结果组合后锁存</text>
+<rect x="360" y="664" width="730" height="50" rx="3" fill="#fff" stroke="none"/>
+<text x="370" y="681" class="body" text-anchor="start">done=1，armed=0，busy=1，visionReady=0；无协议故障</text>
+<text x="370" y="706" class="body" text-anchor="start">resultSeq=requestSeq；resultSn=partSn；90 / 91–100</text>
+<path d="M 270 725 h 44 v 22 h -44" fill="none" stroke="#245b96" stroke-width="2.2" marker-end="url(#early-stop-blue)"/>
+<text x="370" y="754" class="warn" text-anchor="start">提前 OK / NG、未知组合或身份不匹配：禁止确认和放行。</text>
+<circle cx="43" cy="786" r="16" fill="#245b96"/>
+<text x="43" y="792" class="number" text-anchor="middle">A5</text>
+<text x="74" y="792" class="step" text-anchor="start">条件汇合：末计数已刷新且结果有效，才允许 ACK</text>
+<rect x="360" y="801" width="650" height="25" rx="3" fill="#fff" stroke="none"/>
+<text x="370" y="818" class="body" text-anchor="start">末计数已刷新且有效结果已锁存 → ackSeq=resultSeq → resultAck=1</text>
+<path d="M 270 850 H 910" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#early-stop-blue)"/>
+<text x="370" y="878" class="small" text-anchor="start">A2 计数刷新与 A3 有效结果经 A4 校验，均须在 A5 ACK 前完成；ACK 不代表良品。</text>
+<circle cx="43" cy="901" r="16" fill="#245b96"/>
+<text x="43" y="907" class="number" text-anchor="middle">A6</text>
+<text x="74" y="907" class="step" text-anchor="start">按正常次序释放事务</text>
+<rect x="360" y="914" width="600" height="25" rx="3" fill="#fff" stroke="none"/>
+<text x="370" y="931" class="body" text-anchor="start">PC：done=0 → busy=0</text>
+<path d="M 910 965 H 270" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#early-stop-blue)"/>
+<rect x="360" y="993" width="600" height="25" rx="3" fill="#fff" stroke="none"/>
+<text x="370" y="1010" class="body" text-anchor="start">PLC：partStart / partEnd / resultAck=0</text>
+<path d="M 270 1044 H 910" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#early-stop-blue)"/>
+<rect x="360" y="1072" width="600" height="25" rx="3" fill="#fff" stroke="none"/>
+<text x="370" y="1089" class="body" text-anchor="start">PC：确认释放、追溯落盘 → visionReady=1</text>
+<path d="M 910 1123 H 270" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#early-stop-blue)"/>
+<rect x="48" y="1143" width="1104" height="40" rx="8" fill="#fff5e6" stroke="#ead0a3"/>
+<text x="66" y="1169" class="warn" text-anchor="start">当前参考 FB 未补齐提前停止后的末计数刷新；未补齐时须隔离并复位对齐，不能承诺连续下一件计数正确。</text>
+<rect x="24" y="1224" width="1152" height="660" rx="14" fill="#fff" stroke="#cfdeea"/>
+<text x="48" y="1260" class="panel-title" text-anchor="start">B · 握手故障：visionFault 或没有可用的有效 done</text>
+<text x="48" y="1287" class="small" text-anchor="start">例如心跳失活、请求身份变化或回写失败；残留结果不能用于 ACK。</text>
+<rect x="153" y="1308" width="235" height="52" rx="12" fill="#edf4fb" stroke="#dbe5ee"/>
+<text x="270" y="1341" class="actor" text-anchor="middle">PLC / 机器人</text>
+<rect x="793" y="1308" width="235" height="52" rx="12" fill="#edf8f5" stroke="#dbe5ee"/>
+<text x="910" y="1341" class="actor" text-anchor="middle">视觉 PC</text>
+<path d="M270 1360V1825 M910 1360V1825" stroke="#b6c8d6" stroke-width="2" stroke-dasharray="6 7"/>
+<circle cx="43" cy="1384" r="16" fill="#245b96"/>
+<text x="43" y="1390" class="number" text-anchor="middle">B1</text>
+<text x="74" y="1390" class="step" text-anchor="start">PC 进入握手故障，可能没有可提交的 done</text>
+<rect x="360" y="1397" width="690" height="50" rx="3" fill="#fff" stroke="none"/>
+<text x="370" y="1414" class="body" text-anchor="start">visionReady=0；armed=0；visionFault=1</text>
+<text x="370" y="1439" class="body" text-anchor="start">通信中断时 PLC 也必须按心跳失活停止新触发</text>
+<path d="M 910 1460 H 270" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#early-stop-blue)"/>
+<circle cx="43" cy="1519" r="16" fill="#245b96"/>
+<text x="43" y="1525" class="number" text-anchor="middle">B2</text>
+<text x="74" y="1525" class="step" text-anchor="start">PLC 停止新脉冲并锁入故障</text>
+<rect x="360" y="1534" width="690" height="50" rx="3" fill="#fff" stroke="none"/>
+<text x="370" y="1551" class="body" text-anchor="start">保留双方 pending、请求身份与现场信号</text>
+<text x="370" y="1576" class="body" text-anchor="start">没有有效 done / 身份不匹配 → 不强制 ACK</text>
+<path d="M 270 1595 h 44 v 22 h -44" fill="none" stroke="#245b96" stroke-width="2.2" marker-end="url(#early-stop-blue)"/>
+<text x="370" y="1630" class="warn" text-anchor="start">不得使用残留 resultCode / resultSeq 假装完成该件。</text>
+<circle cx="43" cy="1674" r="16" fill="#245b96"/>
+<text x="43" y="1680" class="number" text-anchor="middle">B3</text>
+<text x="74" y="1680" class="step" text-anchor="start">实物处置后，进入显式复位流程</text>
+<rect x="360" y="1687" width="690" height="50" rx="3" fill="#fff" stroke="none"/>
+<text x="370" y="1704" class="body" text-anchor="start">核对实物、SN、requestSeq、pending 与已锁存结果</text>
+<text x="370" y="1729" class="body" text-anchor="start">人工确认隔离、复检或已有有效结果 → 显式复位</text>
+<path d="M 270 1750 H 910" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#early-stop-blue)"/>
+<text x="370" y="1782" class="small" text-anchor="start">完成新低→高复位及就绪核验后，才允许下一件。</text>
+<text x="48" y="1855" class="small" text-anchor="start">本图的 A / B 是不同处理路径：检测 ERR 可有效确认；握手故障保留事务并按人工处置与复位规则执行。</text>
+<text x="32" y="1918" class="small" text-anchor="start">协议修订 1.1 · 线上版本 1 · A2 / A3 可并行、先后不定，其余按纵向步骤阅读；比例非真实时间。</text>
+</svg>
+</div></figure>
+<figure class="diagram-panel" id="panel-reset" role="tabpanel" aria-labelledby="tab-reset"><figcaption><div><h3>启动与显式复位</h3><p>实物处置完成后，建立中性输入并验证 ready 的低到高变化。</p></div><a class="download" href="diagrams/plc-reset-sequence.svg" download>下载 SVG</a></figcaption><div class="diagram-scroll" tabindex="0" aria-label="启动与显式复位，窄屏可横向滚动"><svg id="diagram-reset" xmlns="http://www.w3.org/2000/svg" width="1200" height="1580" viewBox="0 0 1200 1580" role="img" aria-labelledby="reset-reset-title reset-reset-desc">
+<title id="reset-reset-title">启动 / 重连：实物处置后的显式复位</title>
+<desc id="reset-reset-desc">操作员先核对并处置实物及未结事务，人工ReconcileConfirmed并对本地ResetRequest发新边沿。PLC释放输入，faultReset低至少一秒后高至少五百毫秒；PC验证心跳、设备、审计和稳定基线，完成记录后ready。PLC看到ready低到高并核验版本及四个输出均为零才放行。</desc>
+<defs>
+<marker id="reset-blue" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+<path d="M0 0 L9 4.5 L0 9Z" fill="#245b96"/>
+</marker>
+<marker id="reset-green" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+<path d="M0 0 L9 4.5 L0 9Z" fill="#13806d"/>
+</marker>
+</defs>
+<style>#diagram-reset text{font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;fill:#21364a}#diagram-reset .title{font-size:27px;font-weight:700}#diagram-reset .subtitle{font-size:16px;fill:#5c7083}#diagram-reset .actor{font-size:20px;font-weight:700}#diagram-reset .actor-sub{font-size:15px;fill:#526b7e}#diagram-reset .body{font-size:17px}#diagram-reset .small{font-size:15px;fill:#526b7e}#diagram-reset .step{font-size:18px;font-weight:650;fill:#245b96}#diagram-reset .number{font-size:16px;font-weight:700;fill:#fff}#diagram-reset .note-title{font-size:17px;font-weight:700;fill:#996328}#diagram-reset .warn{font-size:16px;fill:#8a5b22}#diagram-reset .good{font-size:17px;fill:#107260}#diagram-reset .panel-title{font-size:22px;font-weight:700}</style>
+<rect width="1200" height="1580" fill="#fff"/>
+<rect x="1" y="1" width="1198" height="1578" rx="16" fill="#fff" stroke="#dbe5ee"/>
+<rect x="1" y="1" width="1198" height="8" rx="4" fill="#245b96"/>
+<text x="32" y="49" class="title" text-anchor="start">启动 / 重连：实物处置后的显式复位</text>
+<text x="32" y="79" class="subtitle" text-anchor="start">先处置未结件，再建立中性基线与新复位边沿；连接成功不等于可以接件</text>
+<rect x="71" y="110" width="218" height="72" rx="12" fill="#edf4fb" stroke="#dbe5ee"/>
+<text x="180" y="140" class="actor" text-anchor="middle">操作员</text>
+<text x="180" y="166" class="actor-sub" text-anchor="middle">实物核对与人工处置</text>
+<path d="M 180 182 V 1382" stroke="#b6c8d6" stroke-width="2" stroke-dasharray="6 7"/>
+<rect x="491" y="110" width="218" height="72" rx="12" fill="#edf4fb" stroke="#dbe5ee"/>
+<text x="600" y="140" class="actor" text-anchor="middle">PLC / 参考 FB</text>
+<text x="600" y="166" class="actor-sub" text-anchor="middle">本地复位控制、输出互锁</text>
+<path d="M 600 182 V 1382" stroke="#b6c8d6" stroke-width="2" stroke-dasharray="6 7"/>
+<rect x="911" y="110" width="218" height="72" rx="12" fill="#edf8f5" stroke="#dbe5ee"/>
+<text x="1020" y="140" class="actor" text-anchor="middle">视觉 PC</text>
+<text x="1020" y="166" class="actor-sub" text-anchor="middle">新会话、审计与就绪核验</text>
+<path d="M 1020 182 V 1382" stroke="#b6c8d6" stroke-width="2" stroke-dasharray="6 7"/>
+<circle cx="43" cy="203" r="16" fill="#245b96"/>
+<text x="43" y="209" class="number" text-anchor="middle">1</text>
+<text x="74" y="209" class="step" text-anchor="start">启动 / 重连 / 配置变化：进入复位要求</text>
+<rect x="640" y="214" width="470" height="50" rx="3" fill="#fff" stroke="none"/>
+<text x="650" y="231" class="body" text-anchor="start">PC 保留 pending，要求显式复位</text>
+<text x="650" y="256" class="body" text-anchor="start">残留 visionReady 高不能证明新会话就绪</text>
+<path d="M 1020 277 h -44 v 22 h 44" fill="none" stroke="#245b96" stroke-width="2.2" marker-end="url(#reset-blue)"/>
+<text x="240" y="315" class="small" text-anchor="start">PLC 首次调用或 Startup 进入复位态；全程停止新触发，等待双方心跳变化。</text>
+<circle cx="43" cy="348" r="16" fill="#245b96"/>
+<text x="43" y="354" class="number" text-anchor="middle">2</text>
+<text x="74" y="354" class="step" text-anchor="start">操作员先完成实物与未结事务处置</text>
+<rect x="220" y="359" width="850" height="50" rx="3" fill="#fff" stroke="none"/>
+<text x="230" y="376" class="body" text-anchor="start">核对实物、运动、双方 pending、SN、requestSeq 与已锁存结果</text>
+<text x="230" y="401" class="body" text-anchor="start">决定隔离 / 复检 / 已有有效结果，并确认处置完成</text>
+<path d="M 180 422 H 600" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#reset-blue)"/>
+<text x="240" y="450" class="warn" text-anchor="start">运行中的未结件不能直接清输入强切下一件。</text>
+<circle cx="43" cy="473" r="16" fill="#245b96"/>
+<text x="43" y="479" class="number" text-anchor="middle">3</text>
+<text x="74" y="479" class="step" text-anchor="start">人工确认后，给本地 FB 新复位请求</text>
+<rect x="220" y="484" width="900" height="50" rx="3" fill="#fff" stroke="none"/>
+<text x="230" y="501" class="body" text-anchor="start">允许 ReconcileConfirmed；ResetRequest 先低，再发新上升沿</text>
+<text x="230" y="526" class="body" text-anchor="start">两者均为参考 FB 本地输入，不是新增 DB 点位；确认不可永久接 TRUE</text>
+<path d="M 180 547 H 600" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#reset-blue)"/>
+<circle cx="43" cy="598" r="16" fill="#245b96"/>
+<text x="43" y="604" class="number" text-anchor="middle">4</text>
+<text x="74" y="604" class="step" text-anchor="start">PLC 建立中性输入，并保持复位低电平</text>
+<rect x="640" y="609" width="490" height="50" rx="3" fill="#fff" stroke="none"/>
+<text x="650" y="626" class="body" text-anchor="start">partStart=partEnd=resultAck=0</text>
+<text x="650" y="651" class="body" text-anchor="start">faultReset=0 持续至少 1 s</text>
+<path d="M 600 672 H 1020" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#reset-blue)"/>
+<text x="240" y="703" class="small" text-anchor="start">复位期间保持 requestSeq、ackSeq 及连接会话基线稳定；PLC 须确认 PC 心跳活跃。</text>
+<circle cx="43" cy="733" r="16" fill="#245b96"/>
+<text x="43" y="739" class="number" text-anchor="middle">5</text>
+<text x="74" y="739" class="step" text-anchor="start">PLC 产生 PC 可观察的新 faultReset 上升沿</text>
+<rect x="640" y="749" width="490" height="25" rx="3" fill="#fff" stroke="none"/>
+<text x="650" y="766" class="body" text-anchor="start">faultReset=1，保持至少 500 ms</text>
+<path d="M 600 797 H 1020" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#reset-blue)"/>
+<circle cx="43" cy="853" r="16" fill="#245b96"/>
+<text x="43" y="859" class="number" text-anchor="middle">6</text>
+<text x="74" y="859" class="step" text-anchor="start">PC 核验复位条件，再清本侧输出</text>
+<rect x="640" y="864" width="510" height="75" rx="3" fill="#fff" stroke="none"/>
+<text x="650" y="881" class="body" text-anchor="start">设备就绪、PLC 心跳有变化、审计可用</text>
+<text x="650" y="906" class="body" text-anchor="start">输入中性且基线稳定；清 armed / done / busy / visionFault</text>
+<text x="650" y="931" class="body" text-anchor="start">pcProtocolVersion=1；visionReady 仍为 0</text>
+<path d="M 1020 947 h -44 v 22 h 44" fill="none" stroke="#245b96" stroke-width="2.2" marker-end="url(#reset-blue)"/>
+<circle cx="43" cy="1028" r="16" fill="#245b96"/>
+<text x="43" y="1034" class="number" text-anchor="middle">7</text>
+<text x="74" y="1034" class="step" text-anchor="start">PC 完成复位审计与持久化，再提交 ready</text>
+<rect x="640" y="1039" width="510" height="75" rx="3" fill="#fff" stroke="none"/>
+<text x="650" y="1056" class="body" text-anchor="start">记录原事务与复位审计，结束原 pending</text>
+<text x="650" y="1081" class="body" text-anchor="start">再次核验中性输入、连接与序号基线稳定</text>
+<text x="650" y="1106" class="body" text-anchor="start">最后置 visionReady=1</text>
+<path d="M 1020 1132 H 600" fill="none" stroke="#245b96" stroke-width="2.5" marker-end="url(#reset-blue)"/>
+<circle cx="43" cy="1193" r="16" fill="#245b96"/>
+<text x="43" y="1199" class="number" text-anchor="middle">8</text>
+<text x="74" y="1199" class="step" text-anchor="start">PLC 观察 ready 从低到高，完成放行核验</text>
+<rect x="640" y="1204" width="510" height="75" rx="3" fill="#fff" stroke="none"/>
+<text x="650" y="1221" class="body" text-anchor="start">必须已见 visionReady=0，然后观察到 1</text>
+<text x="650" y="1246" class="body" text-anchor="start">pcProtocolVersion=1；armed=busy=done=visionFault=0</text>
+<text x="650" y="1271" class="body" text-anchor="start">PC 心跳活跃，faultReset 高保持已满 500 ms</text>
+<path d="M 600 1290 h 44 v 22 h -44" fill="none" stroke="#245b96" stroke-width="2.2" marker-end="url(#reset-blue)"/>
+<text x="240" y="1339" class="good" text-anchor="start">PLC 清 faultReset，结束本地 pending，复位成功后才允许接收下一件。</text>
+<rect x="30" y="1380" width="1140" height="133" rx="12" fill="#fff5e6" stroke="#ead0a3"/>
+<text x="50" y="1411" class="note-title" text-anchor="start">复位超时、条件未满足或 ready 未形成低→高：仍禁止生产</text>
+<text x="50" y="1442" class="body" text-anchor="start">重新核对实物与未结事务处置，再发新的低→高复位请求；不要重复使用旧高电平。</text>
+<text x="50" y="1473" class="body" text-anchor="start">计数错位不得自动修改基线猜测归属；复位过程与真实触发、设备会话的重新对齐仍须现场验收。</text>
+<text x="32" y="1551" class="small" text-anchor="start">协议修订 1.1 · 线上版本 1 · 事件纵向有序，比例非真实时间 · 普通空闲恢复不能代替启动或重连后的显式复位。</text>
+</svg>
+</div></figure>
+<p class="diagram-note">三目设备的一次触发只计一次；PC 轮询不生成位置同步触发。示教采集的 <code>1/0</code> 只表示采集完成，不能作为良品信号。参考 FB 尚缺的保护以正文接入限制为准。</p>
+</section>
+<section class="protocol-section" aria-labelledby="section-1"><h2 id="section-1">1 通讯参数与分工</h2>
+<div class="table-scroll" tabindex="0"><table>
+<thead>
+<tr>
+<th>项目</th>
+<th>约定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>连接方式</td>
+<td>PC 作为 S7 ISO-on-TCP 客户端，读写 PLC 共享 DB</td>
+</tr>
+<tr>
+<td>TCP 端口</td>
+<td>默认 102</td>
+</tr>
+<tr>
+<td>PLC IP、CPU、固件</td>
+<td>现场填写，不能使用测试服务地址代替</td>
+</tr>
+<tr>
+<td>Rack、Slot、TSAP</td>
+<td>按实际 CPU 与连接配置确认</td>
+</tr>
+<tr>
+<td>共享 DB</td>
+<td>默认 DB100，可改号，双方配置及参考程序必须同步</td>
+</tr>
+<tr>
+<td>DB 属性</td>
+<td>标准 DB，关闭优化块访问，至少 88 字节；TIA 中核对实际偏移</td>
+</tr>
+<tr>
+<td>数值字节序</td>
+<td>S7 大端 ABCD；UInt 为 16 位无符号，UDInt 为 32 位无符号</td>
+</tr>
+<tr>
+<td>PC 轮询周期</td>
+<td>一期 S7 模板默认 50 ms</td>
+</tr>
+<tr>
+<td>心跳</td>
+<td>双方默认每 500 ms 翻转一次；观察变化，3 s 不变化判失活</td>
+</tr>
+<tr>
+<td>自动连接</td>
+<td>一期模板默认关闭；连接成功后仍必须显式复位</td>
+</tr>
+<tr>
+<td>写入所有权</td>
+<td>PLC 只写字节 0–63；PC 只写字节 64–87</td>
+</tr>
+</tbody>
+</table></div>
+<p>PLC 区在 PC 点表中必须设为只读，PC 区设为读写。禁止整 DB 清零或块复制覆盖对方区域；同一字节不能由双方分别写不同 bit。PC 的 50 ms 轮询不承担拍照位置或曝光时刻控制。</p>
+<p>现场触发程序须同时满足 <code>TriggerPermit=1</code> 和第 5 节的完整发脉冲条件。该信号是参考 FB 的本地输出，不是 DB 点位；当前参考程序的放行表达式缺少部分保护，见第 5 节接入限制。实际输出接线、脉冲宽度、极性和运动停止策略由 PLC/机器人程序负责。</p>
+</section>
+<section class="protocol-section" aria-labelledby="section-2"><div class="point-search"><label for="point-query">搜索两方向点表</label><div class="search-controls"><input id="point-query" type="search" placeholder="名称 / 地址 / 含义，例如 ackSeq" autocomplete="off"><button id="clear-query" type="button">清除</button><output id="point-count" aria-live="polite">32 / 32 个字段</output></div><p id="point-empty" hidden>没有匹配字段，请调整关键词。</p></div><h2 id="section-2">2 PLC 写入 PC 读取点表</h2>
+<p>以下地址按 DB100。标签名称区分大小写，PC 严格握手要求每个标签只配置一次。</p>
+<div class="table-scroll" tabindex="0"><table class="point-table">
+<thead>
+<tr>
+<th>地址</th>
+<th>类型</th>
+<th>标签</th>
+<th>含义及要求</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DB100.DBX0.0</td>
+<td>Bool</td>
+<td><code>partStart</code></td>
+<td>请求提交标志；payload 写完后最后置 1，保持至结果释放</td>
+</tr>
+<tr>
+<td>DB100.DBX0.1</td>
+<td>Bool</td>
+<td><code>partEnd</code></td>
+<td>本件运动及全部计划触发结束；最终计数写完后置 1</td>
+</tr>
+<tr>
+<td>DB100.DBX0.2</td>
+<td>Bool</td>
+<td><code>resultAck</code></td>
+<td>结果确认标志；锁存有效结果并写 ackSeq 后置 1</td>
+</tr>
+<tr>
+<td>DB100.DBX0.3</td>
+<td>Bool</td>
+<td><code>faultReset</code></td>
+<td>明确复位请求；必须先观察低电平，再有新上升沿</td>
+</tr>
+<tr>
+<td>DB100.DBX0.4</td>
+<td>Bool</td>
+<td><code>plcHeartbeat</code></td>
+<td>PLC 心跳，每 500 ms 翻转</td>
+</tr>
+<tr>
+<td>DB100.DBW2</td>
+<td>UInt</td>
+<td><code>protocolVersion</code></td>
+<td>固定 1</td>
+</tr>
+<tr>
+<td>DB100.DBD4</td>
+<td>UDInt</td>
+<td><code>requestSeq</code></td>
+<td>本件事务序号，非零且递增</td>
+</tr>
+<tr>
+<td>DB100.DBD8</td>
+<td>UDInt</td>
+<td><code>partSn</code></td>
+<td>工件数值 SN，不替代事务序号，不是字符串条码</td>
+</tr>
+<tr>
+<td>DB100.DBW12</td>
+<td>UInt</td>
+<td><code>productCode</code></td>
+<td>生产配方产品代码；PC 手动选配方时也必须匹配。示教采集不据此选择候选</td>
+</tr>
+<tr>
+<td>DB100.DBW14</td>
+<td>UInt</td>
+<td><code>shotCount</code></td>
+<td>协议总数为 1–65535；示教采集只接受 PC 预设的 1–64</td>
+</tr>
+<tr>
+<td>DB100.DBD16</td>
+<td>UDInt</td>
+<td><code>planVersion</code></td>
+<td>生产使用 PC 分配并导出的计划版本；示教见第 4.1 节，均不得为 0</td>
+</tr>
+<tr>
+<td>DB100.DBD20</td>
+<td>UDInt</td>
+<td><code>planReserved</code></td>
+<td>固定 0，非零拒绝处理</td>
+</tr>
+<tr>
+<td>DB100.DBW24</td>
+<td>UInt</td>
+<td><code>camera1Shots</code></td>
+<td>槽 1 计划触发数</td>
+</tr>
+<tr>
+<td>DB100.DBW26</td>
+<td>UInt</td>
+<td><code>camera2Shots</code></td>
+<td>槽 2 计划触发数，未使用时为 0</td>
+</tr>
+<tr>
+<td>DB100.DBW28</td>
+<td>UInt</td>
+<td><code>camera3Shots</code></td>
+<td>槽 3 计划触发数，未使用时为 0</td>
+</tr>
+<tr>
+<td>DB100.DBD32</td>
+<td>UDInt</td>
+<td><code>ackSeq</code></td>
+<td>确认时回显本件 resultSeq，新件开始前清为 0</td>
+</tr>
+<tr>
+<td>DB100.DBW36</td>
+<td>UInt</td>
+<td><code>camera1Triggers</code></td>
+<td>槽 1 本件已发脉冲数，布防前为 0</td>
+</tr>
+<tr>
+<td>DB100.DBW38</td>
+<td>UInt</td>
+<td><code>camera2Triggers</code></td>
+<td>槽 2 本件已发脉冲数，布防前为 0</td>
+</tr>
+<tr>
+<td>DB100.DBW40</td>
+<td>UInt</td>
+<td><code>camera3Triggers</code></td>
+<td>槽 3 本件已发脉冲数，布防前为 0</td>
+</tr>
+</tbody>
+</table></div>
+<p>PLC 区保留空间：DBX0.5–0.7、DBB1、DBW30、DBB42–63。保留空间不新增跨方向写入字段。</p>
+</section>
+<section class="protocol-section" aria-labelledby="section-3"><h2 id="section-3">3 PC 写入 PLC 读取点表</h2>
+<div class="table-scroll" tabindex="0"><table class="point-table">
+<thead>
+<tr>
+<th>地址</th>
+<th>类型</th>
+<th>标签</th>
+<th>含义及要求</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DB100.DBX64.0</td>
+<td>Bool</td>
+<td><code>visionReady</code></td>
+<td>可以接收下一件；连接成功不等于就绪</td>
+</tr>
+<tr>
+<td>DB100.DBX64.1</td>
+<td>Bool</td>
+<td><code>armed</code></td>
+<td>本件相机布防完成，必须结合 acceptedSeq 判断</td>
+</tr>
+<tr>
+<td>DB100.DBX64.2</td>
+<td>Bool</td>
+<td><code>busy</code></td>
+<td>事务处理中，包含等待结果确认阶段</td>
+</tr>
+<tr>
+<td>DB100.DBX64.3</td>
+<td>Bool</td>
+<td><code>done</code></td>
+<td>结果有效；PC 写完结果 payload 后最后置 1</td>
+</tr>
+<tr>
+<td>DB100.DBX64.4</td>
+<td>Bool</td>
+<td><code>visionFault</code></td>
+<td>协议或设备故障，停止新触发并处置</td>
+</tr>
+<tr>
+<td>DB100.DBX64.5</td>
+<td>Bool</td>
+<td><code>pcHeartbeat</code></td>
+<td>PC 通讯心跳，默认每 500 ms 翻转</td>
+</tr>
+<tr>
+<td>DB100.DBW66</td>
+<td>UInt</td>
+<td><code>pcProtocolVersion</code></td>
+<td>成功复位后为 1</td>
+</tr>
+<tr>
+<td>DB100.DBD68</td>
+<td>UDInt</td>
+<td><code>resultSeq</code></td>
+<td>本件结果事务序号，应等于 requestSeq</td>
+</tr>
+<tr>
+<td>DB100.DBD72</td>
+<td>UDInt</td>
+<td><code>resultSn</code></td>
+<td>本件结果 SN，应等于 partSn</td>
+</tr>
+<tr>
+<td>DB100.DBW76</td>
+<td>UInt</td>
+<td><code>resultCode</code></td>
+<td>生产整件结果或示教采集完成码，须结合外部锁定的用途，见第 6 节</td>
+</tr>
+<tr>
+<td>DB100.DBW78</td>
+<td>UInt</td>
+<td><code>faultCode</code></td>
+<td>检测异常码，正常质量结果为 0</td>
+</tr>
+<tr>
+<td>DB100.DBD80</td>
+<td>UDInt</td>
+<td><code>acceptedSeq</code></td>
+<td>已接受并布防的 requestSeq</td>
+</tr>
+<tr>
+<td>DB100.DBD84</td>
+<td>UDInt</td>
+<td><code>acceptedPlanReserved</code></td>
+<td>布防时写 0，核对接受状态时应为 0</td>
+</tr>
+</tbody>
+</table></div>
+<p>PC 区保留空间：DBX64.6–64.7、DBB65。PLC 不写此区域。<code>done=0</code> 时结果字段可能保留上件数值，不能作为新件结论。</p>
+</section>
+<section class="protocol-section" aria-labelledby="section-4"><h2 id="section-4">4 拍照计划与三目设备</h2>
+<p>PC 从已保存生产配方导出计划，PLC 工程师将产品代码、计划版本、拍照顺序、Pose 与实际触发输出建立对应表。当前导出 JSON 不包含 <code>productCode</code>、运动坐标或物理输出地址；产品代码从配方另外核对，运动路径由机器人/PLC 配置。</p>
+<p>必须满足：</p>
+<ul>
+<li><code>protocolVersion=pcProtocolVersion=1</code>。</li>
+<li><code>camera1Shots + camera2Shots + camera3Shots = shotCount</code>，总数非零。</li>
+<li><code>planVersion</code>、总数及各槽数量与 PC 当前计划一致。</li>
+<li>槽顺序按相机配置及导出的 <code>cameraSlots</code> 固定，不按连接或帧到达顺序排列。</li>
+<li>请求 payload 从 <code>partStart=1</code> 起冻结，保持至本件 start/end/ACK 已清且 PC 再次 ready；下一件仅在 ready 后更新。期间只更新触发计数、结束位和 ACK。</li>
+</ul>
+<p>当前三目设备按“一个 Device、一次触发一个设备帧、帧内三个视角”建模。设备映射在哪个槽，就只计入该槽；若仅配置一台设备则使用槽 1。检测选择一个或多个视角均不增加 PLC 触发数。例如四个拍照点分别选择视角 1、2、3、1，仍是 <code>shotCount=4</code>、<code>cameraShots=[4,0,0]</code>，整件结束触发数为 <code>[4,0,0]</code>。当前海康路径已能按明确配置的横向三等分、纵向三等分或三个矩形区域拆分单张拼接图；未配置布局拒绝启用，布局/尺寸不符产生图像错误。此软件路径不证明现场 SDK 一定如此交付，真实原图、视角顺序、计数来源和触发线路仍须联调验收。</p>
+<p><code>shotId</code> 标识拍照点且必须唯一；<code>poseId</code> 标识现场位置，可被多个拍照点引用；<code>cameraId</code> 标识设备；<code>view</code> 标识帧内视角，由 PC 配方管理，当前 PLC 计划 JSON 的 shots 不携带 view。</p>
+<p>计划版本由 PC 配方库分配，不手工猜测或复用。改变产品代码、拍照点顺序、ID、Pose 或设备绑定会分配新版本；只改检测限值、检测参数、示教中线、不检设置或视角选择沿用原版本。单独重排相机槽配置不会自动改变 planVersion；槽计数相同时，在线数量比较也不能识别槽位交换。因此改变槽映射必须暂停接件，重新导出并人工逐项评审双方映射，完成复位后再生产。拍照计划不使用内容哈希匹配；旧 <code>planHash</code>、<code>acceptedPlanHash</code> 标签直接拒绝，须按新模板重建点表，DBD20/84 固定为零值保留字段。</p>
+<h3 id="section-4-1">4.1 示教整圈采集</h3>
+<ol>
+<li>现场先切到示教用途并关闭自动生产请求与良品放行。确认双方上一事务已释放，PC 空闲后，由操作员在 PC 为候选草稿启动采集，选定一台已就绪的三视角设备及 1–64 次触发；真实设备要求 Line0 硬触发。PC 等待开始后，PLC 才能提交新 requestSeq，仍按第 5 节等待 armed。</li>
+<li><code>shotCount</code> 必须等于 PC 预设数量；所选设备对应槽的计划数等于总数，另两槽为 0。结束时也只允许该槽发生触发。每次触发必须交付完整三幅图，不能将三个视角计成三次拍照。</li>
+<li>当前采集路径从 PLC 请求记录非零 <code>planVersion</code>，按数量生成采集序列，不与已发布生产计划比较；<code>productCode</code> 不参与候选匹配，候选来自 PC 操作员选择。因此现场须事先核对候选、设备槽、数量、运动路径及版本并留记录；收到 armed 不证明这些业务身份已被 PC 在线核验。采集成功也不会自动发布生产配方，之后仍需示教、验证、发布并重新导出生产计划。</li>
+<li>正常收尾：PLC 写最终计数、置 partEnd，PC 等完整采集收尾窗口结束并确认收图与保存完成后，提交 <code>resultCode=1/faultCode=0</code>。该值仅为采集完成，需锁存、ACK、释放，不计入生产 OK/NG。采集接收失败、超时或操作员中止，在握手仍可报告时返回 <code>90/94</code>；采集布防失败、计数边界或通信故障可能直接进入 visionFault，没有 done。</li>
+<li>失败轮次不能继续补拍。处置未结事务并复位；PC 对失败的设备会话禁止再次采集，需重连该设备后整圈重采。正常完成或失败都会结束 PC 的采集占用，后续 start 可能转入生产路径；PLC 必须保持外部示教互锁，逐轮重新在 PC 启动采集。完成释放、确认 PC 无活动采集并核对生产配方/计划后，才可解除示教互锁。</li>
+</ol>
+<p class="callout warning"><strong>当前模式互锁缺口：</strong> DB 和参考 FB 均没有模式确认；PC 按收到 start 时是否存在活动采集轮次分流。PC 等待开始超时或操作员取消后，迟到的 start 可能按生产请求处理。上述人工流程不能消除此竞态；现场自动示教接入前需补齐可验证的双方模式互锁，期间不得把采集完成码接到良品放行。</p>
+</section>
+<section class="protocol-section" aria-labelledby="section-5"><h2 id="section-5">5 单件握手流程</h2>
+<div class="table-scroll" tabindex="0"><table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>PLC 动作</th>
+<th>PC 动作与放行条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>等待就绪</td>
+<td>保持 start/end/ACK 为 0，确认心跳活跃</td>
+<td><code>visionReady=1</code>，<code>armed/busy/done/visionFault=0</code>，协议版本为 1</td>
+</tr>
+<tr>
+<td>提交请求</td>
+<td>递增 requestSeq；写 SN、产品代码、计划和零触发数，最后置 partStart</td>
+<td>稳定读取请求，核对身份、配方、设备及计划</td>
+</tr>
+<tr>
+<td>等待布防</td>
+<td>保持请求，禁止发触发</td>
+<td>先撤 ready，写 acceptedSeq 和零保留位，置 busy，最后置 armed</td>
+</tr>
+<tr>
+<td>连续运动与触发</td>
+<td>核对布防条件后，按计划发硬脉冲并更新各槽计数</td>
+<td>收图并按设备会话、触发计数和拍照点关联，异步检测</td>
+</tr>
+<tr>
+<td>提交结束</td>
+<td>核对实际数等于计划数，写最终计数，再置 partEnd；start 仍为 1</td>
+<td>核对结束与计数，等待本件收帧及测量完成</td>
+</tr>
+<tr>
+<td>发布结果</td>
+<td>等待 done，不抢先 ACK</td>
+<td>撤 armed，保持 busy，写结果码、异常码、SN、序号，最后置 done</td>
+</tr>
+<tr>
+<td>确认结果</td>
+<td>核对并锁存结果，写 ackSeq，再置 resultAck</td>
+<td>核对匹配 ACK 后，先清 done，再清 busy</td>
+</tr>
+<tr>
+<td>双方释放</td>
+<td>看到 done=busy=0 后，清 start/end/ACK</td>
+<td>确认 PLC 已释放并完成追溯落盘，再置 ready</td>
+</tr>
+</tbody>
+</table></div>
+<p class="callout requirement"><strong>发脉冲的必要条件：</strong> <code>armed=1</code>、<code>busy=1</code>、<code>done=0</code>、<code>partEnd=0</code>、<code>visionReady=0</code>、<code>visionFault=0</code>、<code>acceptedSeq=requestSeq</code>、<code>planReserved=acceptedPlanReserved=0</code>，双方心跳活跃且现场用途、设备互锁满足。任一条件失效立即禁止新脉冲。</p>
+<p class="callout warning"><strong>参考程序接入限制：</strong> 当前 SCL 的 <code>AcceptedMatches</code> 仅核对序号，<code>TriggerPermit</code> 未完整检查 ready、done 和两处零值保留字段；PC 对非零保留字段的轮询故障不能替代 PLC 本扫描的输出互锁。现场接入须补齐上述检查并验证异常注入，不能将现有 FB 直接视为已实现完整条件。</p>
+<p>已发脉冲数必须来自可靠输出计数源；普通扫描采样高速布尔脉冲可能漏计。参考 FB 在布防时冻结三路累计 <code>IssuedPulseCount</code> 基线，以差值写本件计数；累计计数在本件内不得清零、回退或回绕。PLC 脉冲数证明输出了触发，PC 还须验证相机实际帧与计数。</p>
+<p>提前撤 armed 后，PLC 还须在停止触发并计入最后已发脉冲后刷新 DB 触发数，再 ACK；PC 在 ACK 时读取这些数供后续帧归属使用。当前 SCL 在发现 armed 低时直接转等结果，未再从累计计数刷新 DB，可能遗漏前一扫描后发出的末脉冲。现场须补齐并验证此路径；未补齐时，提前终止后应隔离并复位对齐，不能据此承诺连续下一件计数正确。</p>
+<p class="callout requirement"><strong>有效结果的必要条件：</strong> <code>done=1</code>、<code>armed=0</code>、<code>busy=1</code>、<code>visionReady=0</code>、无协议故障，<code>resultSeq=requestSeq</code>、<code>resultSn=partSn</code>，结果与异常码组合已知。正常 OK/NG 还要求 PLC 已核对最终计数并提交 partEnd。</p>
+<p>计划拒收或提前终止可直接返回 <code>resultCode=90</code>、<code>faultCode=91–100</code>，无需等 partEnd。等待布防时也可能收到这种结果；已布防后 armed 撤下时，PLC 停止新脉冲并限时等待结果。身份与结果组合有效后仍需锁存、ACK 和释放。提前出现 OK/NG、未知组合或身份不匹配均不得确认放行。</p>
+<p><code>resultAck</code> 只表示 PLC 已接收该件结论。NG 和检测异常都可以有效确认，不能把 ACK 作为良品信号。同一 SN 复检也必须使用新的 requestSeq。序号到达 4294967295 后，先处置未结件，在中性基线下重置并显式复位，不能直接回绕生产。</p>
+</section>
+<section class="protocol-section" aria-labelledby="section-6"><h2 id="section-6">6 结果与异常码</h2>
+<p>下表的质量语义仅适用于外部已锁定为生产的事务。示教采集只用 <code>1/0</code> 表示采集完成、<code>90/94</code> 表示可报告的采集失败，详见第 4.1 节；线上结果本身不能区分两种用途。</p>
+<div class="table-scroll" tabindex="0"><table>
+<thead>
+<tr>
+<th>resultCode</th>
+<th>名称</th>
+<th>PLC 处理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>OK</td>
+<td>合格结论</td>
+</tr>
+<tr>
+<td>2</td>
+<td>OK_WITH_EXCURSION</td>
+<td>存在局部超差，但符合配方允许条件的合格结论</td>
+</tr>
+<tr>
+<td>11</td>
+<td>NG_POSITION</td>
+<td>位置偏差不合格</td>
+</tr>
+<tr>
+<td>12</td>
+<td>NG_ABSOLUTE</td>
+<td>绝对限值超差不合格</td>
+</tr>
+<tr>
+<td>13</td>
+<td>NG_GAP</td>
+<td>断胶不合格</td>
+</tr>
+<tr>
+<td>14</td>
+<td>NG_WIDTH</td>
+<td>胶宽超差不合格</td>
+</tr>
+<tr>
+<td>90</td>
+<td>ERR_INSPECT</td>
+<td>未形成有效质量判定，按 faultCode 处置</td>
+</tr>
+</tbody>
+</table></div>
+<p>结果码 1、2、11–14 必须配 <code>faultCode=0</code>；90 配以下已知非零异常码。未知组合按故障处置，禁止按 OK 放行。</p>
+<div class="table-scroll" tabindex="0"><table>
+<thead>
+<tr>
+<th>faultCode</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>无检测异常，质量 NG 由 resultCode 表示</td>
+</tr>
+<tr>
+<td>91</td>
+<td>缺帧</td>
+</tr>
+<tr>
+<td>92</td>
+<td>定位失败</td>
+</tr>
+<tr>
+<td>93</td>
+<td>无效测量点</td>
+</tr>
+<tr>
+<td>94</td>
+<td>拍照计划或数量不匹配</td>
+</tr>
+<tr>
+<td>95</td>
+<td>配方不可用</td>
+</tr>
+<tr>
+<td>96</td>
+<td>多余帧</td>
+</tr>
+<tr>
+<td>97</td>
+<td>运动结束超时</td>
+</tr>
+<tr>
+<td>98</td>
+<td>设备丢失</td>
+</tr>
+<tr>
+<td>99</td>
+<td>布防或处理超时、测量执行失败等处理异常，结合 PC 原因查看</td>
+</tr>
+<tr>
+<td>100</td>
+<td>计划版本、槽映射或计划内容与 PC 不一致</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>visionFault</code> 是握手层故障信号，与 <code>faultCode</code> 不同。心跳失活、请求身份变化或回写失败可能只有 visionFault 和 PC 错误原因，没有可提交的 done；此时保留未结事务，不能拿残留结果 ACK。</p>
+<p>PLC 参考 FB 的 <code>LocalDiagnostic</code> 只在本地使用，不写 DBW78：7000 启动或未知状态需复位，7001 PC 心跳超时，7002 PC 协议故障，7003 阶段超时，7004 新件计划或前置条件错误，7005 布防或结果身份/状态不符，7006 触发计数不符，7007 序号耗尽，7008 在途 payload 改变，7009 外部互锁故障。</p>
+</section>
+<section class="protocol-section" aria-labelledby="section-7"><h2 id="section-7">7 心跳与时间参数</h2>
+<p>两端时间参数作用不同，现场必须一起核对，不能仅把 PLC 的等待时间写长。</p>
+<div class="table-scroll" tabindex="0"><table>
+<thead>
+<tr>
+<th>PC 生产检测设置</th>
+<th>默认</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>arm_ms</td>
+<td>200 ms</td>
+<td>检测布防总预算；提交前超时通常返回 90/99，布防回写或确认失败进入协议故障</td>
+</tr>
+<tr>
+<td>motion_ms</td>
+<td>30000 ms</td>
+<td>等待运动结束</td>
+</tr>
+<tr>
+<td>drain_ms</td>
+<td>1000 ms</td>
+<td>partEnd 后收尾收帧窗口</td>
+</tr>
+<tr>
+<td>proc_ms</td>
+<td>3000 ms</td>
+<td>等待测量完成</td>
+</tr>
+<tr>
+<td>ack_ms</td>
+<td>5000 ms</td>
+<td>等待 ACK 与释放的告警阈值</td>
+</tr>
+</tbody>
+</table></div>
+<p>布防回写或读回确认失败、超时时，PC 进入 visionFault 并保留事务，不保证还有 done/99，PLC 应按故障处置。ACK 或释放等待超过 PC 阈值只告警并保持事务，不自动丢弃 done 或开始下一件。PC S7 模板心跳默认 500 ms，契约允许配置 100–1000 ms；两端失活阈值均为 3 s。</p>
+<p>示教采集不使用生产 <code>arm_ms/motion_ms/proc_ms</code> 预算：PC 启动采集后等待 start 最长 120 s，接受 start 后重新计时，接收至 partEnd 最长 120 s。partEnd 后使用独立 <code>drainTimeoutMs</code>，默认 1000 ms、范围 200–30000 ms；即使提前收齐，也等完整窗口结束才确认完成。PLC <code>ResultTimeout</code> 必须覆盖该窗口和保存、通讯耗时，默认 10 s 不适用于例如 30 s 采集收尾。采集 ACK/释放仍使用上述 <code>ack_ms</code> 告警与事务保持规则。</p>
+<div class="table-scroll" tabindex="0"><table>
+<thead>
+<tr>
+<th>PLC 参考 FB 输入</th>
+<th>默认</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ArmTimeout</td>
+<td>10 s</td>
+<td>等待 PC 布防</td>
+</tr>
+<tr>
+<td>MotionTimeout</td>
+<td>30 s</td>
+<td>等待本件运动与触发结束</td>
+</tr>
+<tr>
+<td>ResultTimeout</td>
+<td>10 s</td>
+<td>等待 PC 结果，包括提前终止后的结果</td>
+</tr>
+<tr>
+<td>ReleaseTimeout</td>
+<td>10 s</td>
+<td>等待 PC 释放及下一次就绪，各阶段分别计时</td>
+</tr>
+<tr>
+<td>ResetTimeout</td>
+<td>10 s</td>
+<td>复位中性阶段与等待就绪阶段分别计时</td>
+</tr>
+</tbody>
+</table></div>
+<p>PLC 阶段超时锁入故障并停止新触发，保留 pending。现场根据实际运动时间、网络与处理耗时调整双方预算，预留余量；不要把 50 ms 轮询周期当作相机触发间隔或节拍保证。</p>
+</section>
+<section class="protocol-section" aria-labelledby="section-8"><h2 id="section-8">8 启动重连与故障复位</h2>
+<p>PC 启动、S7 重连或配置变化后要求显式复位；PLC 参考 FB 首次调用及 Startup 也进入复位态。残留 ready 高电平不证明新会话可接件，双方持久化的 pending 不因重连自动结束。</p>
+<ol>
+<li>停止新触发，核对实物、机器人动作、双方 pending、SN、requestSeq 和已锁存结果，决定隔离、复检或已有有效结果。</li>
+<li>操作员确认处置完成，再允许 <code>ReconcileConfirmed</code>。该输入不应永久接 TRUE。</li>
+<li>对参考 FB 的本地 <code>ResetRequest</code> 先置低，再发新上升沿；PLC 释放 partStart/partEnd/resultAck。运行中的未结件不能直接清输入强切下一件。</li>
+<li>保持 faultReset 为低至少 1 s，保持 requestSeq、ackSeq 基线不变，随后置 faultReset 高至少 500 ms，形成 PC 可观察的新边沿。</li>
+<li>PC 在设备就绪、PLC 心跳有变化且输入中性时清输出、记录复位审计并结束原 pending，最后置 visionReady。</li>
+<li>PLC 必须看到 ready 低状态后再到高状态，且 pcProtocolVersion=1、armed/busy/done/visionFault 全为 0，才认定复位成功。超时则重新处置并发新低→高复位请求。</li>
+</ol>
+<p>计数错位时 PC 不自动修改基线去猜测帧归属。相机漏脉冲与上件迟到帧可能无法仅靠计数区分；出现持续缺帧时按错误原因排查并复位重新对齐。</p>
+<p>无在途事务时，设备短暂未就绪可撤 ready 并在恢复后自动就绪；PLC 遗留 end/ACK 时 PC 等待 PLC 清除。PC 输出偶发被重置可审计后恢复，60 s 内第 3 次被覆盖会故障。上述空闲恢复不替代启动、重连或心跳中断后的显式复位。</p>
+</section>
+<section class="protocol-section" aria-labelledby="section-9"><h2 id="section-9">9 四点飞拍示例</h2>
+<p>以下仅用于说明数值与时序，现场必须替换成 PC 实际导出的版本和配方代码。</p>
+<div class="table-scroll" tabindex="0"><table>
+<thead>
+<tr>
+<th>项目</th>
+<th>示例值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>requestSeq / partSn / productCode</td>
+<td>17 / 12345 / 7</td>
+</tr>
+<tr>
+<td>protocolVersion / planVersion / planReserved</td>
+<td>1 / 41 / 0</td>
+</tr>
+<tr>
+<td>shotCount / 各槽计划数</td>
+<td>4 / [4,0,0]</td>
+</tr>
+<tr>
+<td>本件开始时各槽触发数</td>
+<td>[0,0,0]</td>
+</tr>
+<tr>
+<td>布防确认</td>
+<td>acceptedSeq=17，armed=busy=1，ready=0</td>
+</tr>
+<tr>
+<td>运动完成</td>
+<td>各槽触发数 [4,0,0]，随后 partEnd=1</td>
+</tr>
+<tr>
+<td>合格结果</td>
+<td>resultSeq=17，resultSn=12345，resultCode=1，faultCode=0，done=1</td>
+</tr>
+<tr>
+<td>PLC 确认</td>
+<td>锁存结果 → ackSeq=17 → resultAck=1</td>
+</tr>
+<tr>
+<td>释放</td>
+<td>PC 清 done/busy → PLC 清 start/end/ACK → PC 再置 ready</td>
+</tr>
+</tbody>
+</table></div>
+<p>序号 17 写入 DBD4 的原始字节为 <code>00 00 00 11</code>；计划版本 41 写入 DBD16 为 <code>00 00 00 29</code>；shotCount=4 写入 DBW14 为 <code>00 04</code>。均使用无符号大端值。</p>
+</section>
+<section class="protocol-section" aria-labelledby="section-10"><h2 id="section-10">10 现场对接与验收清单</h2>
+<ul>
+<li>填写 CPU、固件、TIA 版本、IP、rack/slot、TSAP、DB 号；按实际 CPU 核对远程读写权限，确认 DB 非优化及 88 字节偏移。</li>
+<li>导入 <a href="../../scripts/s7-handshake/phase1_plc.scl">PLC SCL 参考程序</a>，明确指定通讯 DB 号并完成编译，不能假定符号名称会自动分配 DB100。</li>
+<li>逐字段核对读写方向、UInt/UDInt 类型、bit 地址及大端字节序，确认无其他程序整块覆盖共享 DB。</li>
+<li>联合确认产品代码、PC 计划版本、逐 Pose 输出对应表、设备槽、触发电气特性与可靠计数源。</li>
+<li>核对生产/采集外部互锁，验证采集 <code>1/0</code> 不放行良品、PC 取消/等待超时后的迟到 start 不误入生产；补齐参考 FB 的放行保护及提前停止后末脉冲计数刷新，完成异常注入验收。</li>
+<li>示教采集验证 1–64 数量边界、单槽约束、完整三视角与原图保存、收尾窗口、失败重连整圈重采，以及采集/生产切换后的计划核对。</li>
+<li>验证正常 OK、质量 NG、计划拒收、缺帧、多帧、提前终止、错误 ACK 和请求中途被修改；身份错误时不能放行。</li>
+<li>验证 PC/PLC 重启、通讯断开、恒定心跳、写入拒绝和写后断线；保留 pending，实物处置后显式复位。</li>
+<li>确认 PLC 请求区、事务序号、FB pending 和锁存结果的保持性；冷启动、下载或断电丢数据时仍须进入复位态。</li>
+<li>完成真实三目 SDK、触发输出与收图计数联调，再做现场节拍、长稳和实物检测质量验收。软件回环通过不能替代这些验收。</li>
+</ul>
+<p>实现依据：<a href="../../src-tauri/src/inspection.rs">S7 点表模板</a>、<a href="../../src-tauri/src/handshake.rs">握手校验与提交顺序</a>、<a href="../../src-tauri/src/plc_session.rs">PC 会话</a>、<a href="../../src-tauri/src/plc_plan.rs">计划导出</a>、<a href="../../src-tauri/src/settings.rs">PC 时间设置</a>、<a href="../../src-tauri/src/cycle/capture.rs">示教采集握手</a>、<a href="../../src-tauri/src/recipe_capture.rs">采集状态与时间</a>、<a href="../../src-tauri/src/camera.rs">设备配置与拼接图拆分</a>、<a href="../../scripts/s7-handshake/phase1_plc.scl">PLC 参考 FB</a>。</p>
+</section>
+<footer class="document-foot"><p>协议正文与 Markdown 1.1 同步，时序图为阅读辅助。现场 CPU、接线、SDK、节拍与实物检测须单独验收。</p><p>正文和图形已嵌入单个 HTML，可离线阅读。相关源码与 SVG 下载链接使用仓库相对路径。</p></footer>
+</main>
+</div>
+<script>const tabs = [...document.querySelectorAll('.diagram-tabs [role="tab"]')];
+const panels = [...document.querySelectorAll('.diagram-panel')];
+function selectDiagram(index, focus = false) {
+  tabs.forEach((tab, i) => {
+    tab.setAttribute('aria-selected', String(i === index));
+    tab.tabIndex = i === index ? 0 : -1;
+    panels[i].hidden = i !== index;
+  });
+  if (focus) tabs[index].focus();
+}
+tabs.forEach((tab, index) => {
+  tab.addEventListener('click', () => selectDiagram(index));
+  tab.addEventListener('keydown', event => {
+    let next;
+    if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+    if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length;
+    if (event.key === 'Home') next = 0;
+    if (event.key === 'End') next = tabs.length - 1;
+    if (next !== undefined) {
+      event.preventDefault();
+      selectDiagram(next, true);
+    }
+  });
+});
+selectDiagram(0);
+const query = document.getElementById('point-query');
+const rows = [...document.querySelectorAll('.point-table tbody tr')];
+function filterPoints() {
+  const term = query.value.trim().toLocaleLowerCase();
+  rows.forEach(row => { row.hidden = !row.textContent.toLocaleLowerCase().includes(term); });
+  const count = rows.filter(row => !row.hidden).length;
+  document.getElementById('point-count').textContent = `${count} / ${rows.length} 个字段`;
+  document.getElementById('point-empty').hidden = count !== 0;
+}
+query.addEventListener('input', filterPoints);
+document.getElementById('clear-query').addEventListener('click', () => {
+  query.value = '';
+  filterPoints();
+  query.focus();
+});
+document.getElementById('print-protocol').addEventListener('click', () => window.print());
+const navLinks = [...document.querySelectorAll('.rail nav a')];
+const anchors = navLinks.map(link => document.getElementById(link.hash.slice(1)));
+let scheduled = false;
+function updateNavigation() {
+  let current = 0;
+  anchors.forEach((anchor, index) => { if (anchor.getBoundingClientRect().top < 150) current = index; });
+  navLinks.forEach((link, index) => {
+    if (index === current) link.setAttribute('aria-current', 'true');
+    else link.removeAttribute('aria-current');
+  });
+  scheduled = false;
+}
+window.addEventListener('scroll', () => {
+  if (!scheduled) { scheduled = true; requestAnimationFrame(updateNavigation); }
+}, { passive: true });
+updateNavigation();
+</script>
+</body>
+</html>
