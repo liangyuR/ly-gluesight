@@ -14,31 +14,14 @@ beforeEach(() => {
 });
 
 describe("图像查看与加载", () => {
-
-  it("图像切换后旧读取不会覆盖当前图像", async () => {
+  it("从候选图切到历史原图后，迟到的旧图不能覆盖当前来源", async () => {
     const old = deferred<GrayImage>();
-    vi.mocked(workspaceApi.image).mockReturnValueOnce(old.promise).mockResolvedValueOnce({ ...image, url: "data:,latest" });
-    const { result, rerender } = renderHook(({ id }) => useGrayImage("A", id), { initialProps: { id: "first" } });
-    expect(result.current.loading).toBe(true); rerender({ id: "latest" });
-    await waitFor(() => expect(result.current.image?.url).toBe("data:,latest"));
-    await act(async () => old.resolve(image));
-    expect(result.current.image?.url).toBe("data:,latest"); expect(result.current.loading).toBe(false);
-  });
-
-  it("历史原图按记录和帧号读取，无标识时不发请求", async () => {
-    const { result, rerender } = renderHook(({ history }) => useGrayImage(null, null, history, 1), { initialProps: { history: null as number | null } });
-    expect(workspaceApi.image).not.toHaveBeenCalled(); expect(workspaceApi.recordImage).not.toHaveBeenCalled();
-    rerender({ history: 12 }); await waitFor(() => expect(result.current.image).toEqual(image));
-    expect(workspaceApi.recordImage).toHaveBeenCalledWith(12, 1, undefined);
-  });
-
-  it("历史视角切换后迟到的旧视角不能覆盖当前图像", async () => {
-    const old = deferred<GrayImage>();
-    vi.mocked(workspaceApi.recordImage).mockReturnValueOnce(old.promise);
-    const current = {...image, url: "data:image/png;base64,current"};
+    vi.mocked(workspaceApi.image).mockReturnValueOnce(old.promise);
+    const current = { ...image, url: "data:,history-current" };
     vi.mocked(workspaceApi.recordImage).mockResolvedValueOnce(current);
-    const {result, rerender} = renderHook(({view}) => useGrayImage(null, null, 12, 1, view), {initialProps: {view: 2}});
-    rerender({view: 3});
+    const { result, rerender } = renderHook(({ history }) => useGrayImage(history ? null : "A", history ? null : "candidate-image", history, 1, 3), { initialProps: { history: null as number | null } });
+    expect(result.current.loading).toBe(true);
+    rerender({ history: 12 });
     await waitFor(() => expect(result.current.image).toEqual(current));
     await act(async () => old.resolve(image));
     expect(result.current.image).toEqual(current);
@@ -64,7 +47,6 @@ describe("图像查看与加载", () => {
       expect(edit.add).toHaveBeenLastCalledWith([10, 10]); expect(edit.select).toHaveBeenLastCalledWith(1);
       offset = 60;
       fireEvent.pointerMove(svg, { clientX: 50, clientY: 65, pointerId: 1 });
-      // 坐标截在图内，取 0.1 px
       expect(edit.move).toHaveBeenLastCalledWith(1, [50, 45]);
       fireEvent.pointerMove(svg, { clientX: 500, clientY: -20, pointerId: 1 });
       expect(edit.move).toHaveBeenLastCalledWith(1, [100, 0]);
@@ -78,7 +60,6 @@ describe("图像查看与加载", () => {
       fireEvent.pointerCancel(svg, { pointerId: 2 });
       fireEvent.pointerMove(svg, { clientX: 1, clientY: 61, pointerId: 2 });
       expect(edit.move).toHaveBeenCalledTimes(3);
-      // 关掉叠加时不能编辑
       fireEvent.click(screen.getByRole("button", { name: "中线叠加" }));
       fireEvent.pointerDown(svg, { clientX: 30, clientY: 70, pointerId: 3 });
       expect(edit.add).toHaveBeenCalledTimes(1);

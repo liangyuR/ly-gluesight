@@ -4,7 +4,7 @@
 
 > 2026-10-09：随动（follow）检测工况已整体移除，一期只做硬触发飞拍；随动标定、随动配方、相关测试与文档条目同步删除。
 
-项目使用 Vitest、React Testing Library、user-event 和 jsdom 验证局部规则与交互。UI 重点保留一次创建配方和完整逐帧示教流程，使用真实页面与 WorkspaceProvider，仅在桌面接口边界提供最小数据。工件启动到落盘由独立的隐藏桌面实例验证，使用模拟相机与 PLC、真实后端和磁盘。
+项目使用 Vitest、React Testing Library、user-event 和 jsdom 验证创建配方、逐帧示教到验证发布，以及少量关键失败保护；使用真实主流程页面与 WorkspaceProvider，在桌面接口边界提供最小数据。工件启动到落盘由独立的隐藏桌面实例验证，使用模拟相机与 PLC、真实后端和磁盘。辅助页面与 workflow 演示原型不再单独建立单元测试矩阵。
 
 当前范围、删减依据和三个流程的复现见 [前端轻量测试](frontend-lightweight-tests.md)；第一轮去重的历史基线见 [单元测试精简记录](unit-test-simplification.md)。
 
@@ -17,7 +17,7 @@
 | `pnpm test` | 一次运行全部前端测试 |
 | `pnpm test:watch` | 开发时持续运行相关测试 |
 | `pnpm test:coverage` | 全部前端测试与覆盖率报告，无覆盖率门槛 |
-| `pnpm test:ui` | 创建配方、完整逐帧示教两个前端流程 |
+| `pnpm test:ui` | 创建配方、逐帧示教到验证发布两个前端流程 |
 | `pnpm test:ui:production` | 自动构建、启动和关闭隔离 flow 桌面实例，验证工件启动到真实落盘 |
 | `pnpm test:ui:all` | 顺序运行创建配方、完整示教和生产落盘三个流程 |
 | `pnpm typecheck` | 同时检查应用和测试的 TypeScript 类型 |
@@ -64,7 +64,7 @@ cargo test --offline --locked --lib native_ -- --ignored --test-threads=1 --noca
 - Python 报文与故障注入：`python -m unittest discover -s scripts/s7-handshake/tests -v`。
 - Rust 契约和计划：在 `src-tauri` 下运行 `cargo test --offline --lib handshake` 与 `cargo test --offline --lib plc_plan`。
 - Rust 会话与生产 S7 驱动联调：在 `src-tauri` 下运行 `cargo test --offline --locked --lib plc_session -- --include-ignored --test-threads=1 --nocapture`，需要 Python 3 和本机 TCP 权限，不会连接生产 PLC；可用 `S7_TEST_PYTHON` 指定 Python 可执行文件。Windows 沙箱拒绝 localhost 连接（WinError 10013）时，在获准主机环境运行，不能跳过 TCP 后记为通过。
-- 前端：`pnpm exec vitest run tests/plc-page.test.tsx tests/plc-editors.test.tsx tests/plc-dialogs.test.tsx tests/connection-form.test.tsx tests/plc-operation-lock.test.tsx tests/plc-s7-template.test.tsx tests/plc-recipe-plan.test.tsx`。
+- 前端保留生产操作锁：`pnpm exec vitest run tests/plc-operation-lock.test.tsx`。生产主流程中的模拟 PLC 接线由 `pnpm test:ui:production` 验证；协议表单和模板矩阵不再逐项单测。
 
 会话专项日志在 `src-tauri/target/s7-session-tests/verification.log`，同目录各案例保存 `final-status.json`、`final-wire.json`、事务/审计文件与 DB 快照；这些本机产物不随源码提交。
 
@@ -94,15 +94,15 @@ cargo test --offline --locked --lib native_ -- --ignored --test-threads=1 --noca
 | 范围 | 保留验证 |
 | --- | --- |
 | 创建配方 | 真实配方库填写、创建请求、新候选选中、进度页到整圈采集路由；只模拟 Tauri 接口 |
-| 完整示教 | 两个拍照点从冻结原图点中线、保存、试测、完成示教并进入总览；使用真实工作台状态 |
+| 完整示教与发布 | 两个拍照点点中线、保存、试测、完成示教，保存总览，选择独立样本、验证、确认发布；使用真实主流程页面与工作台状态 |
 | 工件启动到落盘 | flow-tests 隐藏桌面实例中 UI 启动一件，经过模拟 PLC/相机、真实检测节拍、SQLite 和原图录制，独立只读连接检查文件 |
-| 工作台与纯状态 | 草稿保护、配方修订、异步刷新和保存隔离、流程失效、发布快照与周期身份 |
+| 工作台 | 草稿不丢、选择/保存隔离、失败恢复、修订身份；不遍历多个环境事件和请求结果组合 |
 | 采集/示教/发布关键交互 | 异常轮不可采用、独立验证样本、旧试测不可保存、发布确认与修订锁；不遍历完整配置矩阵 |
-| 在线与历史 | 切型/复位等待保护、周期隔离、过期原图/复测响应、原始记录保留 |
-| PLC 与设备 | 手写/生产锁、地址校验、输入解析、目录选择和相机来源切换的异步保护 |
-| 局部组件 | 图像坐标、曲线断口、弹窗焦点、请求重入、卸载清理和日志完整导出 |
+| 在线与历史 | 生产切型锁、周期隔离、旧结果不串件、原图缺失/录制失败的明确状态 |
+| PLC 操作锁 | 状态未确认、事务未结束或订阅失败时保持锁定 |
+| 图像交互 | 与当前图源对应的原图读取和中线坐标交互 |
 
-完整业务配置、布局/文案矩阵，以及 workflow 本地交互原型的建站、示教、发布、在线和历史整页模拟套件已删除。剩余局部测试用来保护有明确断言的规则和交互，不代表完整配置或真实图像测量验收。具体文件、数量与复现见 [前端轻量测试](frontend-lightweight-tests.md)。
+workflow 本地原型的整页、纯状态模型和局部组件测试已删除。相机/标定/PLC 表单、设置、日志导出、导航、图表展示与历史筛选等辅助测试也已删除；其全部配置和失败路径不再保证自动覆盖。剩余用例只围绕三条主流程与草稿、发布、生产锁、周期/图源隔离、落盘状态等主要业务风险。具体文件、数量与复现见 [前端轻量测试](frontend-lightweight-tests.md)。
 
 ## 历史修复记录
 

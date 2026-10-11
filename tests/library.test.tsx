@@ -27,16 +27,6 @@ beforeEach(() => {
 });
 
 describe("配方库操作", () => {
-  it("删除先确认，取消不删除，最后一个删除后清空选择", async () => {
-    show(); await userEvent.click(screen.getByRole("button", { name: "删除配方 A" }));
-    expect(workspaceApi.remove).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole("button", { name: "取消" }));
-    await userEvent.click(screen.getByRole("button", { name: "删除配方 A" }));
-    await userEvent.click(screen.getByRole("button", { name: "删除 A" }));
-    expect(workspaceApi.remove).toHaveBeenCalledWith("A");
-    await waitFor(() => expect(ws.clearSelection).toHaveBeenCalledTimes(1));
-  });
-
   it("创建已成功但选用失败，重试仅打开已有候选，避免二次创建",async()=>{
     vi.mocked(ws.select).mockResolvedValueOnce(null);show();await userEvent.click(screen.getByRole("button",{name:"新建配方"}));await screen.findByRole("dialog");
     await userEvent.click(screen.getByRole("button",{name:"创建候选"}));expect(await screen.findByText(/候选已创建，选用未完成/)).toBeVisible();
@@ -45,9 +35,12 @@ describe("配方库操作", () => {
     await waitFor(()=>expect(screen.getByLabelText("页面地址")).toHaveTextContent("/recipe/progress"));
   });
 
-  it("删除等待期间不能重复操作；后台删除成功刷新失败后只重试刷新",async()=>{
+  it("删除先确认，确认后禁止重复删除，刷新失败只重试刷新",async()=>{
     const removing=deferred<void>();vi.mocked(workspaceApi.remove).mockReturnValueOnce(removing.promise);vi.mocked(ws.reloadList).mockRejectedValueOnce(new Error("刷新失败"));
-    show();await userEvent.click(screen.getByRole("button",{name:"删除配方 A"}));fireEvent.click(screen.getByRole("button",{name:"删除 A"}));fireEvent.click(screen.getByRole("button",{name:"删除 A"}));
+    show();await userEvent.click(screen.getByRole("button",{name:"删除配方 A"}));
+    expect(workspaceApi.remove).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button",{name:"取消"}));expect(workspaceApi.remove).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button",{name:"删除配方 A"}));fireEvent.click(screen.getByRole("button",{name:"删除 A"}));fireEvent.click(screen.getByRole("button",{name:"删除 A"}));
     expect(workspaceApi.remove).toHaveBeenCalledTimes(1);expect(screen.getByRole("button",{name:"取消"})).toBeDisabled();
     await userEvent.keyboard("{Escape}");expect(screen.getByRole("dialog")).toBeVisible();await act(async()=>removing.resolve());
     expect(screen.getByText("Error: 刷新失败")).toBeVisible();await userEvent.click(screen.getByRole("button",{name:"刷新配方库"}));

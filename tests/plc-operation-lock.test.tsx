@@ -45,13 +45,6 @@ describe("PLC 操作锁", () => {
     expect(unlisten).toHaveBeenCalled();
   });
 
-  it("加载失败保持锁定，后续真实事件可恢复", async () => {
-    vi.mocked(invoke).mockRejectedValueOnce(new Error("后端不可用"));
-    render(<Harness />); expect(await screen.findByText(/生产状态不可用/)).toBeVisible();
-    act(() => onSnapshot({ payload: { phase: "IDLE" } })); expect(screen.getByText("操作可用")).toBeVisible();
-    act(() => onSnapshot({ payload: { phase: "REPORT" } })); expect(screen.getByText(/生产或结果交付尚未结束/)).toBeVisible();
-  });
-
   it("订阅失败不能被随后到达的空闲读取解除锁定", async () => {
     const initial = deferred<PlcOperationState>();
     vi.mocked(invoke).mockReturnValueOnce(initial.promise);

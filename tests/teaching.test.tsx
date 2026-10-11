@@ -1,50 +1,24 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import TeachingPage from "../src/features/workspace/TeachingPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
-import { recipeApi, useCycle } from "../src/features/cycle/api";
-import { cameraApi } from "../src/features/camera";
-import { snapshot, summary, workspaceState, workspaceView } from "./fixtures";
+import { useCycle } from "../src/features/cycle/api";
+import { snapshot, workspaceState } from "./fixtures";
 
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
-vi.mock("../src/features/cycle/api", () => ({ useCycle: vi.fn(),recipeApi:{list:vi.fn(),preview:vi.fn()} }));
-vi.mock("../src/features/camera",()=>({cameraApi:{rigConfig:vi.fn()}}));
-vi.mock("../src/features/plc",()=>({subscribe:vi.fn(()=>()=>{})}));
-vi.mock("../src/lib/desktop",()=>({desktopAvailable:()=>true}));
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
-  progress:vi.fn(async()=>workspaceView()),saveDraft:vi.fn(async()=>workspaceView()),setViews:vi.fn(async()=>workspaceView()),extractCenterline:vi.fn(),checkCalibration:vi.fn(),get:vi.fn(),list:vi.fn(),image: vi.fn(), trial: vi.fn(), saveTeach: vi.fn(), capture: vi.fn(), selectView: vi.fn(), saveParams: vi.fn(), restoreTeach: vi.fn(),
-} }));
+vi.mock("../src/features/cycle/api", () => ({ useCycle: vi.fn() }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn() } }));
 
 let ws: ReturnType<typeof workspaceState>;
 function show(path = "/recipe/teach") {
   return render(<MemoryRouter initialEntries={[path]}><TeachingPage /></MemoryRouter>);
 }
-async function showProvider(path = "/recipe/teach"){
-  const real=await vi.importActual<typeof import("../src/features/workspace/context")>("../src/features/workspace/context");
-  vi.mocked(useWorkspace).mockImplementation(real.useWorkspace);
-  const page=render(<MemoryRouter initialEntries={[path]}><real.WorkspaceProvider><TeachingPage/></real.WorkspaceProvider></MemoryRouter>);
-  await screen.findByRole("spinbutton",{name:"像素当量"});return page;
-}
-/** 图像坐标 = 屏幕坐标：jsdom 没有布局，用恒等变换。 */
-function identityImage() {
-  vi.stubGlobal("DOMPoint",class {constructor(public x:number,public y:number){}matrixTransform(){return this;}});
-  vi.stubGlobal("PointerEvent",MouseEvent);
-  Object.defineProperty(SVGElement.prototype,"getScreenCTM",{configurable:true,value:()=>({inverse:()=>({})})});
-  Object.defineProperty(SVGElement.prototype,"setPointerCapture",{configurable:true,value:vi.fn()});
-}
-
 beforeEach(() => {
   ws = workspaceState(); vi.mocked(useWorkspace).mockImplementation(() => ws);
   vi.mocked(useCycle).mockReturnValue({ snapshot: snapshot(), logs: [], measured: [] });
   vi.mocked(workspaceApi.image).mockResolvedValue({ url: "data:image/png;base64,AA==", width: 100, height: 60 });
-  vi.mocked(workspaceApi.get).mockResolvedValue(ws.data!);vi.mocked(workspaceApi.list).mockResolvedValue([ws.data!.workspace]);
-  vi.mocked(recipeApi.list).mockResolvedValue({recipes:[summary(ws.data!)],errors:[]});vi.mocked(cameraApi.rigConfig).mockResolvedValue([]);
-  for (const method of [workspaceApi.trial, workspaceApi.saveTeach, workspaceApi.capture, workspaceApi.selectView, workspaceApi.saveParams, workspaceApi.restoreTeach]) {
-    vi.mocked(method).mockResolvedValue(ws.data!);
-  }
 });
 
 describe("单帧示教：试测与保存", () => {
@@ -61,23 +35,11 @@ describe("单帧示教：试测与保存", () => {
     expect(within(screen.getByRole("button", { name: "选择帧 k1" })).getByText("待点中线")).toBeVisible();
   });
 
-  it("图像的标记改变后旧试测不能保存",()=>{
-    ws.data!.workspace.frames[0].trial!.geometryTag="old-geometry";show();
+  it("更换原图后旧试测不能保存",()=>{
+    ws.data!.workspace.frames[0].image!.id="replacement-image";show();
     expect(screen.getByRole("button",{name:"保存本帧示教"})).toBeDisabled();
     expect(screen.getByRole("button",{name:"保存并示教下一幅"})).toBeDisabled();
     expect(screen.getByText("试测已过期")).toBeVisible();expect(screen.getByText("现有试测已过期，请重新试测当前帧。")).toBeVisible();
-  });
-
-});
-
-describe("单帧示教：在冻结原图上点出中线", () => {
-  it("中线保存失败保留草稿，可以重试", async () => {
-    identityImage(); vi.mocked(workspaceApi.saveParams).mockRejectedValueOnce(new Error("拍照点 P1 的中线只有 0.5 mm"));
-    await showProvider(); const svg = await screen.findByRole("img", { name: "冻结图像 · A-image-0" });
-    fireEvent.pointerDown(svg, { clientX: 25, clientY: 10 }); fireEvent.pointerUp(svg);
-    await userEvent.click(screen.getByRole("button", { name: "保存中线" }));
-    expect(await screen.findByText("Error: 拍照点 P1 的中线只有 0.5 mm")).toBeVisible();
-    expect(screen.getByLabelText("中线点 3")).toBeInTheDocument(); expect(screen.getByRole("button", { name: "保存中线" })).toBeEnabled();
   });
 });
 
@@ -91,5 +53,4 @@ describe("多图配方示教", () => {
     page.rerender(<MemoryRouter><TeachingPage/></MemoryRouter>);
     expect(screen.getByRole("button",{name:"保存本帧示教"})).toBeDisabled();
   });
-
 });

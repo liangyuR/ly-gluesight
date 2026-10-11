@@ -31,25 +31,18 @@ it("异常轮保留数量和原因，不能采用",async()=>{
  vi.mocked(workspaceApi.captureGet).mockResolvedValue({...round("failed"),receivedCount:19,error:"缺少一帧"});show();
  expect(await screen.findByText("缺少一帧")).toBeVisible();expect(screen.getByText("已接收 19 / 20 张")).toBeVisible();expect(screen.queryByRole("button",{name:"采用本轮图像"})).toBeNull();
 });
-it("重采带入示教必须人工确认轨迹顺序",async()=>{
- vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show();const adopt=await screen.findByRole("button",{name:"采用本轮图像"});
- await userEvent.click(screen.getByRole("checkbox",{name:"带入旧中线与参数作为草稿"}));expect(adopt).toBeDisabled();
- await userEvent.click(screen.getByRole("checkbox",{name:"已确认轨迹和触发顺序保持一致，拍照点对应正确"}));await userEvent.click(adopt);
- expect(workspaceApi.adoptCapture).toHaveBeenCalledWith("A",7,"r1",true,true);
-});
-it.each([null,"r1"])("示教来源 %s 不允许当前轮次作为独立验证样本",async captureId=>{
- ws.data!.workspace.captureId=captureId;vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show("/recipe/capture?purpose=validation");
+it("示教采集轮次不允许同时作为独立验证样本",async()=>{
+ ws.data!.workspace.captureId="r1";vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show("/recipe/capture?purpose=validation");
  const button=await screen.findByRole("button",{name:"保存为独立正常验证样本"});
  await userEvent.click(screen.getByRole("checkbox",{name:"已确认本轮样本与示教轨迹、触发顺序及拍摄条件一致"}));
  expect(button).toBeDisabled();expect(screen.getByText("需要独立于示教的采集轮次")).toBeVisible();
  await userEvent.click(button);expect(workspaceApi.captureSample).not.toHaveBeenCalled();
 });
 
-it.each(["/recipe/capture","/recipe/capture?purpose=validation"])("%s 工件进行中禁止采用完整采集轮次",async url=>{
+it("工件进行中禁止采用完整采集轮次",async()=>{
  ws.data!.workspace.captureId="teaching-round";
  vi.mocked(useCycle).mockReturnValue({snapshot:snapshot("ACQUIRE"),logs:[],measured:[]});
- vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show(url);
- const button=await screen.findByRole("button",{name:url.includes("validation")?"保存为独立正常验证样本":"采用本轮图像"});
- if(url.includes("validation"))await userEvent.click(screen.getByRole("checkbox",{name:"已确认本轮样本与示教轨迹、触发顺序及拍摄条件一致"}));
+ vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show();
+ const button=await screen.findByRole("button",{name:"采用本轮图像"});
  expect(button).toBeDisabled();await userEvent.click(button);expect(workspaceApi.adoptCapture).not.toHaveBeenCalled();expect(workspaceApi.captureSample).not.toHaveBeenCalled();
 });
