@@ -46,7 +46,7 @@ describe("设备与采集页基础操作",()=>{
     show();await loaded();expect(screen.queryByRole("button",{name:/返回.*采集/})).not.toBeInTheDocument();
   });
   it.each(["","?purpose=validation"])("从采集进入配置后可经标定返回原流程 %s",async search=>{
-    const state={captureReturn:{recipeId:"A",search,cameraId:"CAM-2",planned:32,drain:2600,roundId:"history-1",previewK:2}};
+    const state={captureReturn:{recipeId:"A",search,cameraId:"CAM-2",drain:2600,roundId:"history-1",previewK:2}};
     function Destination(){const location=useLocation();return <div data-testid="destination">{JSON.stringify({search:location.search,state:location.state})}</div>;}
     render(<MemoryRouter initialEntries={[{pathname:"/camera",state}]}><Routes><Route path="/camera" element={<CameraPage/>}/><Route path="/camera/calibration" element={<FlyshotCalibrationPage/>}/><Route path="/recipe/capture" element={<Destination/>}/></Routes></MemoryRouter>);
     await loaded();expect(screen.getByRole("button",{name:"相机 2 CAM-2"})).toHaveClass("active");

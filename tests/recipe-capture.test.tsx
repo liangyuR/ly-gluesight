@@ -24,21 +24,21 @@ beforeEach(()=>{
  vi.mocked(cameraApi.rigStatus).mockResolvedValue([{id:"CAM-1",ready:true}] as Awaited<ReturnType<typeof cameraApi.rigStatus>>);
  vi.mocked(plcApi.getStatus).mockResolvedValue({state:"connected",message:"PLC已连接"} as Awaited<ReturnType<typeof plcApi.getStatus>>);
  vi.mocked(workspaceApi.captureGet).mockResolvedValue(null);vi.mocked(workspaceApi.captureList).mockResolvedValue([]);
- vi.mocked(workspaceApi.captureStart).mockImplementation(async()=>{const value=round("waitingStart");vi.mocked(workspaceApi.captureGet).mockResolvedValue(value);return value;});vi.mocked(workspaceApi.adoptCapture).mockResolvedValue(ws.data!);vi.mocked(workspaceApi.captureSample).mockResolvedValue(ws.data!);
+ vi.mocked(workspaceApi.captureStart).mockImplementation(async()=>{const value={...round("waitingStart"),plannedCount:null,receivedCount:0};vi.mocked(workspaceApi.captureGet).mockResolvedValue(value);return value;});vi.mocked(workspaceApi.adoptCapture).mockResolvedValue(ws.data!);vi.mocked(workspaceApi.captureSample).mockResolvedValue(ws.data!);
 });
-it("单个设备开始接收，收到计划数量仍等PLC结束而不允许采用",async()=>{
+it("无需手填数量即可开始接收，等待 PLC 提供计划",async()=>{
  show();const button=screen.getByRole("button",{name:"开始接收 / 整圈重采"});await waitFor(()=>expect(button).toBeEnabled());await userEvent.click(button);
- expect(workspaceApi.captureStart).toHaveBeenCalledWith("A","CAM-1",20,1500);expect(screen.getByText("等待现场启动")).toBeVisible();expect(screen.queryByRole("button",{name:"采用本轮图像"})).toBeNull();
+ expect(screen.queryByRole("spinbutton",{name:"PLC 计划触发次数"})).not.toBeInTheDocument();expect(screen.getByText("已收 0 张 / PLC 计划 待收到")).toBeVisible();expect(workspaceApi.captureStart).toHaveBeenCalledWith("A","CAM-1",1500);expect(screen.getByText("等待现场启动")).toBeVisible();expect(screen.queryByRole("button",{name:"采用本轮图像"})).toBeNull();
 });
 it.each([199,200,30000,30001])("在途等待 %s ms 按后端范围限制",async milliseconds=>{
  show();const button=screen.getByRole("button",{name:"开始接收 / 整圈重采"});await waitFor(()=>expect(button).toBeEnabled());
  const field=screen.getByRole("spinbutton",{name:"在途图像等待时间"});await userEvent.clear(field);await userEvent.type(field,String(milliseconds));
  if(milliseconds<200||milliseconds>30000) {expect(button).toBeDisabled();await userEvent.click(button);expect(workspaceApi.captureStart).not.toHaveBeenCalled();}
- else {expect(button).toBeEnabled();await userEvent.click(button);expect(workspaceApi.captureStart).toHaveBeenCalledWith("A","CAM-1",20,milliseconds);}
+ else {expect(button).toBeEnabled();await userEvent.click(button);expect(workspaceApi.captureStart).toHaveBeenCalledWith("A","CAM-1",milliseconds);}
 });
 it("异常轮保留数量和原因，不能采用",async()=>{
  vi.mocked(workspaceApi.captureGet).mockResolvedValue({...round("failed"),receivedCount:19,error:"缺少一帧"});show();
- expect(await screen.findByText("缺少一帧")).toBeVisible();expect(screen.getByText("实收 19 / 配置计划 20")).toBeVisible();expect(screen.queryByRole("button",{name:"采用本轮图像"})).toBeNull();
+ expect(await screen.findByText("缺少一帧")).toBeVisible();expect(screen.getByText("已收 19 张 / PLC 计划 20")).toBeVisible();expect(screen.queryByRole("button",{name:"采用本轮图像"})).toBeNull();
 });
 it("重采带入示教必须人工确认轨迹顺序",async()=>{
  vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show();const adopt=await screen.findByRole("button",{name:"采用本轮图像"});
@@ -84,20 +84,20 @@ it.each(["/recipe/capture","/recipe/capture?purpose=validation"])("%s 配置设�
  render(<MemoryRouter initialEntries={[url]}><Routes><Route path="/recipe/capture" element={<CapturePage/>}/><Route path="/camera" element={<DevicePage/>}/></Routes></MemoryRouter>);
  await screen.findByRole("option",{name:/采集异常/});
  await userEvent.selectOptions(screen.getByRole("combobox",{name:"采集 device"}),"CAM-2");
- const planned=screen.getByRole("spinbutton",{name:"PLC 计划触发次数"}),drain=screen.getByRole("spinbutton",{name:"在途图像等待时间"});
- await userEvent.clear(planned);await userEvent.type(planned,"32");await userEvent.clear(drain);await userEvent.type(drain,"2600");
+ const drain=screen.getByRole("spinbutton",{name:"在途图像等待时间"});
+ await userEvent.clear(drain);await userEvent.type(drain,"2600");
  await userEvent.selectOptions(screen.getByRole("combobox",{name:"采集历史"}),"history-1");
  await userEvent.click(screen.getByRole("link",{name:"配置设备"}));await userEvent.click(screen.getByRole("link",{name:"返回采集"}));
  expect(screen.getByRole("combobox",{name:"采集 device"})).toHaveValue("CAM-2");
- expect(screen.getByRole("spinbutton",{name:"PLC 计划触发次数"})).toHaveValue(32);expect(screen.getByRole("spinbutton",{name:"在途图像等待时间"})).toHaveValue(2600);
+ expect(screen.queryByRole("spinbutton",{name:"PLC 计划触发次数"})).not.toBeInTheDocument();expect(screen.getByRole("spinbutton",{name:"在途图像等待时间"})).toHaveValue(2600);
  expect(screen.getByRole("combobox",{name:"采集历史"})).toHaveValue("history-1");expect(ws.doc!.id).toBe("A");
  expect(screen.getByRole("heading",{name:url.includes("validation")?"实拍独立验证样本":"设备准备与整圈采集"})).toBeVisible();
  expect(workspaceApi.captureStart).not.toHaveBeenCalled();
 });
 
 it("返回时原设备已移除则选用仍存在的设备",async()=>{
- render(<MemoryRouter initialEntries={[{pathname:"/recipe/capture",state:{captureReturn:{recipeId:"A",search:"",cameraId:"removed",planned:32,drain:2600,previewK:0}}}]}><CapturePage/></MemoryRouter>);
+ render(<MemoryRouter initialEntries={[{pathname:"/recipe/capture",state:{captureReturn:{recipeId:"A",search:"",cameraId:"removed",drain:2600,previewK:0}}}]}><CapturePage/></MemoryRouter>);
  expect(screen.getByRole("combobox",{name:"采集 device"})).toHaveValue("CAM-1");
  const start=screen.getByRole("button",{name:"开始接收 / 整圈重采"});await waitFor(()=>expect(start).toBeEnabled());await userEvent.click(start);
- expect(workspaceApi.captureStart).toHaveBeenCalledWith("A","CAM-1",32,2600);
+ expect(workspaceApi.captureStart).toHaveBeenCalledWith("A","CAM-1",2600);
 });

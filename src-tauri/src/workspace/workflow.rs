@@ -306,7 +306,7 @@ pub(super) fn require_capture_plan(version: Option<u32>) -> Result<u32, String> 
 pub(super) fn capture_for(app: &AppHandle, id: &str, round_id: &str) -> Result<crate::recipe_capture::CaptureRound, String> {
     let round = app.state::<CycleHost>().camera.recipe_capture().get(round_id)?;
     if round.recipe_id != id || round.state != crate::recipe_capture::CaptureState::Complete || round.frames.is_empty()
-        || round.received_count != round.planned_count || round.frames.len() != round.planned_count as usize {
+        || !round.planned_count.is_some_and(|n| (1..=64).contains(&n) && round.received_count == n && round.frames.len() == n as usize) {
         return Err("采集轮次不属于当前配方或尚未完整完成，不能采用".into());
     }
     require_capture_plan(round.plc_plan_version)?;

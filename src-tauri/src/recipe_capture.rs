@@ -93,7 +93,7 @@ pub struct CaptureRound {
     pub camera_id: String,
     pub camera_config: serde_json::Value,
     pub device_session: u64,
-    pub planned_count: u32,
+    pub planned_count: Option<u32>,
     pub plc_planned_count: Option<u32>,
     pub plc_actual_count: Option<u32>,
     pub plc_plan_version: Option<u32>,
@@ -131,7 +131,7 @@ pub struct CaptureSummary {
     pub round_id: String,
     pub recipe_id: String,
     pub camera_id: String,
-    pub planned_count: u32,
+    pub planned_count: Option<u32>,
     pub received_count: u32,
     pub state: CaptureState,
     pub created_at: i64,
@@ -152,13 +152,21 @@ impl RecipeCaptureHost {
     fn validate_record(&self, expected_id: &str, round: &CaptureRound) -> Result<(), String> {
         let dir = self.safe_round_path(expected_id)?;
         if round.round_id != expected_id || round.recipe_id.is_empty() || round.camera_id.is_empty()
-            || round.device_session == 0 || !(1..=64).contains(&round.planned_count)
+            || round.device_session == 0 || round.planned_count.is_some_and(|n| !(1..=64).contains(&n))
             || round.frames.len() > round.received_count as usize {
             return Err("采集记录身份、计划数量或收图数量无效".into());
         }
+        if round.state == CaptureState::WaitingStart && (round.planned_count.is_some() || round.plc_planned_count.is_some()
+            || round.received_count != 0 || !round.frames.is_empty() || round.plc_actual_count.is_some()) {
+            return Err("等待 PLC 开始时不能预先指定触发数量或存在收图".into());
+        }
+        if matches!(round.state, CaptureState::Receiving | CaptureState::Draining | CaptureState::Complete)
+            && (round.planned_count.is_none() || round.plc_planned_count != round.planned_count) {
+            return Err("采集记录缺少有效的 PLC 开始计划数量".into());
+        }
         if round.state == CaptureState::Complete && (round.error.is_some() || round.ended_at.is_none()
-            || round.plc_planned_count != Some(round.planned_count) || round.plc_actual_count != Some(round.planned_count)
-            || round.received_count != round.planned_count || round.frames.len() != round.planned_count as usize) {
+            || round.plc_actual_count != round.planned_count
+            || Some(round.received_count) != round.planned_count || Some(round.frames.len() as u32) != round.planned_count) {
             return Err("完整采集缺少 PLC 结束、触发数量或完整图像证据".into());
         }
         for (k, shot) in round.frames.iter().enumerate() {
@@ -238,9 +246,9 @@ impl RecipeCaptureHost {
         Ok(round)
     }
 
-    pub fn start(&self, recipe_id: String, cam: u8, camera_id: String, camera_config: serde_json::Value, session: u64, source: Option<CounterSource>, trigger_baseline: Option<u64>, planned_count: u32, drain_timeout_ms: u64, simulated: bool) -> Result<CaptureRound, String> {
-        if planned_count == 0 || planned_count > 64 || !(200..=30000).contains(&drain_timeout_ms) || session == 0 {
-            return Err("计划数量须为 1–64，等待在途帧时间须为 200–30000 ms，且设备会话必须就绪".into());
+    pub fn start(&self, recipe_id: String, cam: u8, camera_id: String, camera_config: serde_json::Value, session: u64, source: Option<CounterSource>, trigger_baseline: Option<u64>, drain_timeout_ms: u64, simulated: bool) -> Result<CaptureRound, String> {
+        if !(200..=30000).contains(&drain_timeout_ms) || session == 0 {
+            return Err("等待在途帧时间须为 200–30000 ms，且设备会话必须就绪".into());
         }
         if trigger_baseline.is_none() { return Err("设备没有可验证的开流计数基线，请先配置计数起点或取得当前会话计数".into()); }
         let mut guard = self.current.lock().unwrap();
@@ -258,7 +266,7 @@ impl RecipeCaptureHost {
                 Err(e) => return Err(e.to_string()),
             }
         };
-        let round = CaptureRound { round_id, recipe_id, camera_id, camera_config, device_session: session, planned_count, plc_planned_count: None, plc_actual_count: None, plc_plan_version: None, received_count: 0, state: CaptureState::WaitingStart, created_at, ended_at: None, frames: Vec::new(), error: None, simulated };
+        let round = CaptureRound { round_id, recipe_id, camera_id, camera_config, device_session: session, planned_count: None, plc_planned_count: None, plc_actual_count: None, plc_plan_version: None, received_count: 0, state: CaptureState::WaitingStart, created_at, ended_at: None, frames: Vec::new(), error: None, simulated };
         self.save(&round)?;
         let frame_baseline = matches!(source, Some(CounterSource::SdkFrame | CounterSource::ChunkFrame)).then_some(trigger_baseline).flatten();
         *guard = Some(Running { round: round.clone(), cam, source, last_frame: frame_baseline, last_trigger: trigger_baseline, drain_timeout: Duration::from_millis(drain_timeout_ms), deadline: Instant::now() + Duration::from_secs(120) });
@@ -283,11 +291,16 @@ impl RecipeCaptureHost {
     pub fn plc_started(&self, planned_count: u32) -> Result<(), String> {
         let mut guard = self.current.lock().unwrap();
         let run = guard.as_mut().ok_or("没有等待开始的示教采集")?;
-        run.round.plc_planned_count = Some(planned_count);
-        if run.round.state != CaptureState::WaitingStart || planned_count != run.round.planned_count {
-            self.fail_running(run, "PLC 开始信号重复或计划触发数量与采集设置不一致".into());
+        if run.round.state != CaptureState::WaitingStart {
+            self.fail_running(run, "PLC 开始信号重复或顺序异常".into());
             return Err(run.round.error.clone().unwrap());
         }
+        run.round.plc_planned_count = Some(planned_count);
+        if !(1..=64).contains(&planned_count) {
+            self.fail_running(run, "PLC 计划触发数量须为 1–64".into());
+            return Err(run.round.error.clone().unwrap());
+        }
+        run.round.planned_count = Some(planned_count);
         run.round.state = CaptureState::Receiving;
         run.deadline = Instant::now() + Duration::from_secs(120);
         if let Err(e) = self.save(&run.round) { self.fail_running(run, e.clone()); return Err(e); }
@@ -307,7 +320,7 @@ impl RecipeCaptureHost {
         let mut guard = self.current.lock().unwrap();
         let run = guard.as_mut().ok_or("没有正在进行的示教采集")?;
         run.round.plc_actual_count = Some(actual_count);
-        if run.round.state != CaptureState::Receiving || actual_count != run.round.planned_count {
+        if run.round.state != CaptureState::Receiving || Some(actual_count) != run.round.planned_count {
             self.fail_running(run, "PLC 结束顺序异常或实际触发数量与计划不一致".into());
             return Err(run.round.error.clone().unwrap());
         }
@@ -341,7 +354,8 @@ impl RecipeCaptureHost {
             else if f.session != run.round.device_session { Some("设备会话已变化，不能混用不同会话的图像") }
             else if f.manual { Some("本轮收到手动触发图像") }
             else if f.lost_packets != 0 { Some("图像存在丢包") }
-            else if run.round.received_count > run.round.planned_count { Some("实际收图数量超过 PLC 计划数量") }
+            else if run.round.planned_count.is_none() { Some("尚未取得 PLC 计划触发数量，不能接收本轮图像") }
+            else if run.round.planned_count.is_some_and(|n| run.round.received_count > n) { Some("实际收图数量超过 PLC 计划数量") }
             else if f.images.len() != 3 { Some("一张拼接图必须完整交付图 1／2／3") }
             else if f.images.iter().any(|i| i.width == 0 || i.height == 0 || (i.width as usize).checked_mul(i.height as usize) != Some(i.pixels.len())) { Some("图像尺寸或像素长度无效") }
             else if run.round.frames.first().is_some_and(|shot| shot.views.iter().zip(&f.images).any(|(v, i)| v.width != i.width || v.height != i.height)) { Some("本轮图像尺寸发生变化") }
@@ -382,11 +396,13 @@ impl RecipeCaptureHost {
     fn tick(&self) {
         let mut guard = self.current.lock().unwrap();
         let Some(run) = guard.as_mut().filter(|r| r.round.state.active() && Instant::now() >= r.deadline) else { return; };
-        if run.round.state == CaptureState::Draining && run.round.frames.len() == run.round.planned_count as usize {
+        if run.round.state == CaptureState::Draining && run.round.planned_count.is_some_and(|n| run.round.frames.len() == n as usize)
+            && run.round.plc_actual_count == run.round.planned_count && Some(run.round.received_count) == run.round.planned_count {
             run.round.state = CaptureState::Complete;
             if let Err(e) = self.save(&run.round) { self.fail_running(run, e); }
         } else {
-            let error = format!("采集超时：计划 {} 张，已收到 {} 张；必须收到 PLC 结束且数量一致，请整圈重采", run.round.planned_count, run.round.received_count);
+            let plan = run.round.planned_count.map_or_else(|| "等待 PLC 开始请求".into(), |n| format!("计划 {n} 张"));
+            let error = format!("采集超时：{plan}，已收到 {} 张；必须收到 PLC 结束且数量一致，请整圈重采", run.round.received_count);
             self.fail_running(run, error);
         }
     }
@@ -421,7 +437,7 @@ fn compose_views(images: &[Arc<FrameImage>]) -> Result<Arc<FrameImage>, String> 
 }
 
 #[tauri::command]
-pub fn recipe_capture_start(app: AppHandle, recipe_id: String, camera_id: String, planned_count: u32, drain_timeout_ms: Option<u64>) -> Result<CaptureRound, String> {
+pub fn recipe_capture_start(app: AppHandle, recipe_id: String, camera_id: String, drain_timeout_ms: Option<u64>) -> Result<CaptureRound, String> {
     let cycle = app.state::<CycleHost>();
     let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务")?;
     if recipe_id.trim().is_empty() { return Err("请先创建配方草稿".into()); }
@@ -435,7 +451,7 @@ pub fn recipe_capture_start(app: AppHandle, recipe_id: String, camera_id: String
     let source = ledger.as_ref().and_then(|l| l.source).or(arm.source);
     let baseline = ledger.as_ref().and_then(|l| l.last).or(arm.counter_after_open);
     app.state::<crate::workspace::WorkspaceHost>().capture_for_candidate(&recipe_id, || {
-        cycle.camera.recipe_capture().start(recipe_id.clone(), cam, camera_id, serde_json::to_value(&config).map_err(|e| e.to_string())?, arm.session, source, baseline, planned_count, drain_timeout_ms.unwrap_or(1000), config.source != CameraSource::Mvs)
+        cycle.camera.recipe_capture().start(recipe_id.clone(), cam, camera_id, serde_json::to_value(&config).map_err(|e| e.to_string())?, arm.session, source, baseline, drain_timeout_ms.unwrap_or(1000), config.source != CameraSource::Mvs)
     })
 }
 
@@ -493,9 +509,9 @@ mod tests {
         RecipeCaptureHost::open(path).unwrap()
     }
 
-    fn start(host: &RecipeCaptureHost, count: u32) -> CaptureRound {
+    fn start(host: &RecipeCaptureHost) -> CaptureRound {
         let session = host.current().map_or(9, |r| r.device_session + 1);
-        host.start("recipe-a".into(), 0, "cam1".into(), serde_json::json!({"source":"sim"}), session, Some(CounterSource::Synthetic), Some(0), count, 200, true).unwrap()
+        host.start("recipe-a".into(), 0, "cam1".into(), serde_json::json!({"source":"sim"}), session, Some(CounterSource::Synthetic), Some(0), 200, true).unwrap()
     }
 
     fn frame(n: u64) -> Frame {
@@ -513,13 +529,77 @@ mod tests {
     }
 
     #[test]
+    fn waiting_round_has_no_plan_until_plc_start_in_memory_disk_and_summary() {
+        let host = host();
+        let round = start(&host);
+        assert_eq!(round.state, CaptureState::WaitingStart);
+        assert_eq!(round.planned_count, None);
+        assert_eq!(round.plc_planned_count, None);
+        assert_eq!(host.get(&round.round_id).unwrap().planned_count, None);
+        assert_eq!(host.list("recipe-a").unwrap()[0].planned_count, None);
+        let stored: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(host.root.join(&round.round_id).join("round.json")).unwrap()).unwrap();
+        assert!(stored["plannedCount"].is_null());
+        drain(&host);
+        let failed = host.get(&round.round_id).unwrap();
+        assert_eq!(failed.state, CaptureState::Failed);
+        assert_eq!(failed.planned_count, None);
+        assert!(failed.error.unwrap().contains("等待 PLC 开始请求"));
+    }
+
+    #[test]
+    fn plc_start_latches_only_a_valid_count_once_and_preserves_it_on_duplicate_start() {
+        for count in [1, 20, 64] {
+            let host = host();
+            let round = start(&host);
+            host.plc_started(count).unwrap();
+            let receiving = host.get(&round.round_id).unwrap();
+            assert_eq!(receiving.state, CaptureState::Receiving);
+            assert_eq!(receiving.planned_count, Some(count));
+            assert_eq!(receiving.plc_planned_count, Some(count));
+            assert_eq!(host.list("recipe-a").unwrap()[0].planned_count, Some(count));
+            assert!(host.plc_started(if count == 1 { 2 } else { 1 }).is_err());
+            let failed = host.get(&round.round_id).unwrap();
+            assert_eq!(failed.state, CaptureState::Failed);
+            assert_eq!(failed.planned_count, Some(count));
+            assert_eq!(failed.plc_planned_count, Some(count));
+        }
+        for invalid in [0, 65, u32::MAX] {
+            let host = host();
+            let round = start(&host);
+            assert!(host.plc_started(invalid).unwrap_err().contains("1–64"));
+            let failed = host.get(&round.round_id).unwrap();
+            assert_eq!(failed.state, CaptureState::Failed);
+            assert_eq!(failed.planned_count, None);
+            assert_eq!(failed.plc_planned_count, Some(invalid));
+        }
+    }
+
+    #[test]
+    fn plc_actual_count_must_match_the_latched_start_request() {
+        for actual in [0, 19, 21] {
+            let host = host();
+            let round = start(&host);
+            host.plc_started(20).unwrap();
+            assert!(host.plc_ended(actual).is_err());
+            let failed = host.get(&round.round_id).unwrap();
+            assert_eq!(failed.state, CaptureState::Failed);
+            assert_eq!(failed.planned_count, Some(20));
+            assert_eq!(failed.plc_actual_count, Some(actual));
+        }
+        let host = host();
+        let round = start(&host);
+        assert!(host.plc_ended(0).is_err());
+        assert_eq!(host.get(&round.round_id).unwrap().planned_count, None);
+    }
+
+    #[test]
     fn first_real_frame_requires_a_baseline_and_cannot_be_old_or_missing() {
         for source in [None, Some(CounterSource::SdkFrame), Some(CounterSource::ChunkFrame), Some(CounterSource::ChunkTrigger)] {
             let host = host();
-            assert!(host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), 9, source, None, 1, 200, false).is_err());
+            assert!(host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), 9, source, None, 200, false).is_err());
             for first in [10, 12] {
                 let session = first;
-                let round = host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), session, source, Some(10), 1, 200, false).unwrap();
+                let round = host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), session, source, Some(10), 200, false).unwrap();
                 host.plc_started(1).unwrap();
                 let mut f = frame(first);
                 f.session = session;
@@ -528,7 +608,7 @@ mod tests {
                 assert_eq!(host.current().unwrap().state, CaptureState::Failed);
                 assert!(host.current().unwrap().frames.is_empty());
             }
-            let round = host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), 9, source, Some(10), 1, 200, false).unwrap();
+            let round = host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), 9, source, Some(10), 200, false).unwrap();
             host.plc_started(1).unwrap();
             let mut f = frame(11); f.counter = source.unwrap_or(CounterSource::SdkFrame);
             receive(&host, &round, f);
@@ -542,16 +622,16 @@ mod tests {
         let host = host();
         let simulated = counter == CounterSource::Synthetic;
         let round = host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), 9,
-            Some(counter), Some(0), 20, 200, simulated).unwrap();
+            Some(counter), Some(0), 200, simulated).unwrap();
         host.plc_started(20).unwrap();
         for n in 1..=19 { let mut f = frame(n); f.counter = counter; receive(&host, &round, f); }
         host.plc_ended(20).unwrap();
         drain(&host);
         assert_eq!(host.current().unwrap().state, CaptureState::Failed);
         assert!(host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), 9,
-            Some(counter), Some(19), 20, 200, simulated).unwrap_err().contains("重新连接"));
+            Some(counter), Some(19), 200, simulated).unwrap_err().contains("重新连接"));
         let next = host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), 10,
-            Some(counter), Some(0), 20, 200, simulated).unwrap();
+            Some(counter), Some(0), 200, simulated).unwrap();
         host.plc_started(20).unwrap();
         let mut late = frame(20); late.counter = counter;
         receive(&host, &next, late);
@@ -563,11 +643,12 @@ mod tests {
     #[test]
     fn twenty_frames_are_twenty_shots_and_require_plc_end() {
         let host = host();
-        let round = start(&host, 20);
+        let round = start(&host);
         host.plc_started(20).unwrap();
         for n in 1..=20 { receive(&host, &round, frame(n)); }
         let result = host.current().unwrap();
         assert_eq!(result.state, CaptureState::Receiving);
+        assert_eq!(result.planned_count, Some(20));
         assert_eq!(result.frames.len(), 20);
         assert!(result.frames.iter().all(|s| s.views.len() == 3 && Path::new(&s.original_path).is_file()));
         host.plc_ended(20).unwrap();
@@ -580,7 +661,7 @@ mod tests {
     fn missing_or_extra_frames_are_failed_rounds() {
         for received in [19, 21] {
             let host = host();
-            let round = start(&host, 20);
+            let round = start(&host);
             host.plc_started(20).unwrap();
             for n in 1..=received { receive(&host, &round, frame(n)); }
             if received == 19 { host.plc_ended(20).unwrap(); drain(&host); }
@@ -591,7 +672,7 @@ mod tests {
     #[test]
     fn trailing_frames_are_accepted_but_extra_during_drain_fails() {
         let host = host();
-        let round = start(&host, 2);
+        let round = start(&host);
         host.plc_started(2).unwrap();
         receive(&host, &round, frame(1));
         host.plc_ended(2).unwrap();
@@ -605,7 +686,7 @@ mod tests {
     fn duplicate_gap_session_manual_and_packet_loss_fail() {
         for bad in [0, 1, 2, 3, 4] {
             let host = host();
-            let round = start(&host, 3);
+            let round = start(&host);
             host.plc_started(3).unwrap();
             receive(&host, &round, frame(1));
             let mut next = frame(2);
@@ -618,9 +699,9 @@ mod tests {
     #[test]
     fn stale_queued_frames_cannot_enter_a_new_round() {
         let host = host();
-        let old = start(&host, 1);
+        let old = start(&host);
         host.fail("中止");
-        let new = start(&host, 1);
+        let new = start(&host);
         assert_ne!(old.round_id, new.round_id);
         host.plc_started(1).unwrap();
         receive(&host, &old, frame(1));
@@ -636,7 +717,7 @@ mod tests {
     #[test]
     fn restart_marks_interrupted_round_failed_and_restores_latest() {
         let host = host();
-        let round = start(&host, 2);
+        let round = start(&host);
         let reopened = RecipeCaptureHost::open(host.root.clone()).unwrap();
         assert_eq!(reopened.current().unwrap().round_id, round.round_id);
         assert_eq!(reopened.current().unwrap().state, CaptureState::Failed);
@@ -644,15 +725,15 @@ mod tests {
     }
 
     #[test]
-    fn plc_plan_mismatch_start_order_and_disconnect_fail() {
+    fn invalid_plc_start_order_and_disconnect_fail() {
         let host = host();
-        start(&host, 2);
-        assert!(host.plc_started(3).is_err());
+        start(&host);
+        assert!(host.plc_started(65).is_err());
         assert_eq!(host.current().unwrap().state, CaptureState::Failed);
-        start(&host, 2);
+        start(&host);
         assert!(host.offer(&frame(1), None));
         assert_eq!(host.current().unwrap().state, CaptureState::Failed);
-        start(&host, 2);
+        start(&host);
         host.plc_started(2).unwrap();
         host.disconnected(0);
         assert_eq!(host.current().unwrap().state, CaptureState::Failed);
@@ -674,7 +755,7 @@ mod tests {
     #[test]
     fn persisted_record_cannot_redirect_images_or_fake_complete_evidence() {
         let host = host();
-        let round = start(&host, 1);
+        let round = start(&host);
         host.plc_started(1).unwrap();
         receive(&host, &round, frame(1));
         host.plc_ended(1).unwrap();
@@ -685,11 +766,15 @@ mod tests {
         assert!(host.validate_record(&round.round_id, &forged).is_err());
         forged = valid.clone(); forged.plc_actual_count = None;
         assert!(host.validate_record(&round.round_id, &forged).is_err());
+        for plan in [None, Some(0), Some(2)] {
+            forged = valid.clone(); forged.planned_count = plan;
+            assert!(host.validate_record(&round.round_id, &forged).is_err());
+        }
         forged = valid.clone(); forged.frames[0].views[0].view = 2;
         assert!(host.validate_record(&round.round_id, &forged).is_err());
         forged = valid; forged.round_id = "capture-other".into();
         assert!(host.validate_record(&round.round_id, &forged).is_err());
         assert!(host.get("capture-../../outside").is_err());
-        assert!(host.start("recipe-a".into(), 0, "cam1".into(), serde_json::json!({}), 9, None, None, 65, 200, true).is_err());
+        assert!(host.start("recipe-a".into(), 0, "cam1".into(), serde_json::json!({}), 9, None, None, 200, true).is_err());
     }
 }
