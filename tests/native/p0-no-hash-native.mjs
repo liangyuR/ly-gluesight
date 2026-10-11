@@ -1,8 +1,8 @@
+import { chromium } from 'playwright-core';
 import assert from 'node:assert/strict';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { pathToFileURL } from 'node:url';
 import { configureReplay, teachCleanFixture } from './p0-clean-cyclehost-setup.mjs';
 import { sampleProcess, recordedArtifact, scanReplayInputs, validatePart, validateReplayOutputs, persistFailedAttempt } from './p0-cyclehost-performance.mjs';
 
@@ -12,8 +12,8 @@ const recordsRoot = join(profile, 'records');
 const id = 'P0-NO-HASH-3V';
 const cPath = value => { const path = resolve(value); assert(/^C:\\/i.test(path)); return path; };
 const json = async path => JSON.parse((await readFile(cPath(path), 'utf8')).replace(/^\uFEFF/, ''));
-const { values } = parseArgs({ options: { instance:{type:'string'}, inputs:{type:'string'}, output:{type:'string'}, stage:{type:'string'}, 'playwright-module':{type:'string'}, cdp:{type:'string',default:'http://127.0.0.1:9340'} } });
-for (const key of ['instance','inputs','output','stage','playwright-module']) assert(values[key], 'Missing --' + key);
+const { values } = parseArgs({ options: { instance:{type:'string'}, inputs:{type:'string'}, output:{type:'string'}, stage:{type:'string'}, cdp:{type:'string',default:'http://127.0.0.1:9340'} } });
+for (const key of ['instance','inputs','output','stage']) assert(values[key], 'Missing --' + key);
 assert(['setup','cycles','history','restart'].includes(values.stage));
 const instance = await json(values.instance), inputs = cPath(values.inputs), output = cPath(values.output);
 assert.equal(instance.identifier, identifier);
@@ -22,7 +22,7 @@ await mkdir(output, { recursive:true });
 const destination = join(output, values.stage + '-report.json');
 try { await readFile(destination); throw new Error('Do not overwrite existing evidence: ' + destination); } catch(error) { if(error.code !== 'ENOENT') throw error; }
 const report = { startedAt:new Date().toISOString(), stage:values.stage, instance, passed:false, physicalValidation:false, s7HardwareValidation:false, benchmark:false, scope:'Fresh native acceptance using explicit IDs, actual resource structure and business results; no content fingerprint matching' };
-const { chromium } = await import(pathToFileURL(cPath(values['playwright-module'])).href);
+
 const browser = await chromium.connectOverCDP(values.cdp);
 let attempt = {stage:'guard',accepted:false};
 try {

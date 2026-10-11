@@ -4,19 +4,22 @@
 
 > 2026-10-09：随动（follow）检测工况已整体移除，一期只做硬触发飞拍；随动标定、随动配方、相关测试与文档条目同步删除。
 
-项目使用 Vitest、React Testing Library、user-event 和 jsdom。测试操作真实的 React 页面与表单；需要桌面数据的页面使用受控接口返回值，避免连接现场相机、PLC 或改写生产配置。工作台状态测试使用真实 WorkspaceProvider，异步竞态通过可手动完成的 Promise 验证。
+项目使用 Vitest、React Testing Library、user-event 和 jsdom 验证创建配方、逐帧示教到验证发布，以及少量关键失败保护；使用真实主流程页面与 WorkspaceProvider，在桌面接口边界提供最小数据。工件启动到落盘由独立的隐藏桌面实例验证，使用模拟相机与 PLC、真实后端和磁盘。辅助页面与 workflow 演示原型不再单独建立单元测试矩阵。
 
-2026-10-11 全仓测试审查、重复用例删减与覆盖率前后对照见 [单元测试精简记录](unit-test-simplification.md)。
+当前范围、删减依据和三个流程的复现见 [前端轻量测试](frontend-lightweight-tests.md)；第一轮去重的历史基线见 [单元测试精简记录](unit-test-simplification.md)。
 
 ## 运行
 
-首次安装依赖：`pnpm install --frozen-lockfile`。
+使用 Node 24.15+ 和 pnpm 11.1.3，首次安装依赖：`pnpm install --frozen-lockfile`。Playwright Core 已锁定为项目开发依赖，不需要全局安装或本机模块路径。
 
 | 命令 | 用途 |
 | --- | --- |
 | `pnpm test` | 一次运行全部前端测试 |
 | `pnpm test:watch` | 开发时持续运行相关测试 |
-| `pnpm test:coverage` | 全部测试、覆盖率报告与覆盖率门槛检查 |
+| `pnpm test:coverage` | 全部前端测试与覆盖率报告，无覆盖率门槛 |
+| `pnpm test:ui` | 创建配方、逐帧示教到验证发布两个前端流程 |
+| `pnpm test:ui:production` | 自动构建、启动和关闭隔离 flow 桌面实例，验证工件启动到真实落盘 |
+| `pnpm test:ui:all` | 顺序运行创建配方、完整示教和生产落盘三个流程 |
 | `pnpm typecheck` | 同时检查应用和测试的 TypeScript 类型 |
 | `pnpm build` | 验证生产前端构建 |
 
@@ -24,7 +27,7 @@
 
 HTML 覆盖率报告输出到 `coverage/index.html`，机器可读摘要为 `coverage/coverage-summary.json`。报告统计整个 `src`，包括未被测试执行的文件；只排除启动入口、类型声明和统一导出文件。测试代码和测试夹具不计入覆盖率。
 
-覆盖率门槛：语句 85%、分支 80%、函数 80%、行 85%。工作台状态另要求行 90% / 分支 70%，流程状态模型另要求行 80% / 分支 70%，工件总览另要求行 90% / 分支 80%。测试文件以 2 个工作进程运行，避免桌面机器一次启动过多测试进程。
+不设置全局或单文件覆盖率门槛。报告继续统计整个 `src`，用来发现遗漏，不通过增加页面模拟用例追求百分比。测试文件以 2 个工作进程运行，避免桌面机器一次启动过多测试进程。
 
 本机受限环境里默认 fork 测试进程可能停滞，或依赖链接解析异常。这时可直接运行已有依赖：`node node_modules/vitest/vitest.mjs run --coverage --pool=threads --maxWorkers=2`、`node node_modules/typescript/bin/tsc -b`、`node node_modules/typescript/bin/tsc --noEmit -p tsconfig.test.json`、`node node_modules/vite/bin/vite.js build`。Windows Codex 受限环境若遇到原生 realpath 的 EPERM，按项目的 Windows 命令环境指引加载兼容脚本；仍不可读时在获准的主机环境运行相同测试，不要改应用代码或关闭失败检查来掩盖环境错误。
 
@@ -61,7 +64,7 @@ cargo test --offline --locked --lib native_ -- --ignored --test-threads=1 --noca
 - Python 报文与故障注入：`python -m unittest discover -s scripts/s7-handshake/tests -v`。
 - Rust 契约和计划：在 `src-tauri` 下运行 `cargo test --offline --lib handshake` 与 `cargo test --offline --lib plc_plan`。
 - Rust 会话与生产 S7 驱动联调：在 `src-tauri` 下运行 `cargo test --offline --locked --lib plc_session -- --include-ignored --test-threads=1 --nocapture`，需要 Python 3 和本机 TCP 权限，不会连接生产 PLC；可用 `S7_TEST_PYTHON` 指定 Python 可执行文件。Windows 沙箱拒绝 localhost 连接（WinError 10013）时，在获准主机环境运行，不能跳过 TCP 后记为通过。
-- 前端：`pnpm exec vitest run tests/plc-page.test.tsx tests/plc-editors.test.tsx tests/plc-dialogs.test.tsx tests/connection-form.test.tsx tests/plc-operation-lock.test.tsx tests/plc-s7-template.test.tsx tests/plc-recipe-plan.test.tsx`。
+- 前端保留生产操作锁：`pnpm exec vitest run tests/plc-operation-lock.test.tsx`。生产主流程中的模拟 PLC 接线由 `pnpm test:ui:production` 验证；协议表单和模板矩阵不再逐项单测。
 
 会话专项日志在 `src-tauri/target/s7-session-tests/verification.log`，同目录各案例保存 `final-status.json`、`final-wire.json`、事务/审计文件与 DB 快照；这些本机产物不随源码提交。
 
@@ -71,6 +74,7 @@ cargo test --offline --locked --lib native_ -- --ignored --test-threads=1 --noca
 
 `scripts/Start-UiTestInstance.ps1` 构建并启动隐藏的隔离测试实例，相机、PLC 配置和历史目录与生产实例独立：
 
+- `-Profile flow`：`tests/native/tauri-flow-test.json`，标识 `com.xyzrobotics.tujiaovision.flow-tests`，输出 `output/playwright/flow-regression`；配合 `production-flow-ui.mjs` 验证启动到落盘，复现见 [前端轻量测试](frontend-lightweight-tests.md)。
 - 默认 `-Profile ui`：`tests/native/tauri-ui-test.json`，标识 `com.xyzrobotics.tujiaovision.ui-tests`，输出 `output/playwright/ui-regression`。
 - `-Profile p0`：`tests/native/tauri-p0-test.json`，标识 `com.xyzrobotics.tujiaovision.p0-tests`，输出 `output/playwright/p0-regression`。
 
@@ -79,53 +83,30 @@ cargo test --offline --locked --lib native_ -- --ignored --test-threads=1 --noca
 通过 Playwright CLI 连接该实例后，先执行 `tests/native/guard.js` 只读确认目录和模拟器，再按场景前置顺序运行 `tests/native/*-ui.js`。后台命令只用于只读断言；目录选择、参数更改、保存和写入都经过真实 UI。P0 流程用 `p0-*-ui.js`（建候选、示教、验证发布、在线、局部失效、实时图像显示、历史与原包重现等）；旧名义胶路模型的 `flyshot-*-ui.js` 没有改写，不再适用于当前配方。
 
 - 复用前先检查脚本里的本机路径：部分脚本固定写了本机的样本、回放目录、DLL 与输出路径（含旧的 D: 路径），需改成本机路径。离线原图和 DLL 不随仓库提供。
-- ACK 进程恢复专项 `p0-ack-process-recovery.mjs` 要求先关闭现存隔离实例，传入 `--executable`、`--instance`、`--appdata`、新的 `--output` 目录、后端导出的 `--template`、`--playwright-module` 与 `--fixture scripts/s7-handshake/s7_test_plc.py`；结束后还原 PLC 配置并归档本轮握手证据。
+- ACK 进程恢复专项 `p0-ack-process-recovery.mjs` 要求先关闭现存隔离实例，传入 `--executable`、`--instance`、`--appdata`、新的 `--output` 目录、后端导出的 `--template` 与 `--fixture scripts/s7-handshake/s7_test_plc.py`；结束后还原 PLC 配置并归档本轮握手证据。
 - 实际 CycleHost 性能脚本的准备与参数见 `tests/native/p0-cyclehost-performance.md`。
 - WebView2 直接写入系统下载目录时可能不发 CDP download 事件，`plc-log-export-ui.js` 只返回时间范围，运行后需核实新文件才能计为通过。
 
 仅检出源码或运行 `pnpm test` 不会自动完成这些原生 UI 测试。
 
-## 已覆盖的逻辑
+## 当前自动验证范围
 
-| 测试文件 | 关键行为 |
+| 范围 | 保留验证 |
 | --- | --- |
-| `workspace-context.test.tsx` | 配方恢复、快速切换、后台刷新竞态、草稿保护、保存修订、重复操作、防抖预览、事件清理、相机 / 标定 / 系统设置变更后的延后刷新 |
-| `teaching.test.tsx` | 指定帧、图像绑定、参数变更失效、保存与下一帧、生产期间取样限制 |
-| `validation.test.tsx` | 修订和样本期望失效、发布确认（含计划版本是否要 PLC 同步）、失败保留弹窗、历史来源、原图样本导入前置条件 |
-| `library.test.tsx` | 生产与候选去重、筛选、复制编号与产品代码、新建与删除确认、失败恢复 |
-| `recipe-editor.test.tsx` | 候选与生产保存、逐拍照点编辑（编号、Pose、相机、视角、胶条、不检、标定引用）、换视角清空中线、检测参数与限值覆盖（含最低有胶比例）、旧预览晚到 |
-| `geometry-page.test.tsx` | 真实编辑器与工作区的草稿/保存连接、候选切换与示教入口、工作中限制、飞拍可行性取拍照点相机曝光、不检与示教比例 |
-| `history.test.tsx` | 日期与结果筛选、分页复位、导出范围、空结果、查询返回顺序与失败恢复 |
-| `history-detail.test.tsx` | 原包重现、三目按保存视角查看原图、缺帧 / 测量出错 / PLC 确认 / 录制失败展示、规则与原图复测、原始记录保留、历史帧用于示教 |
-| `inspect.test.tsx` | 各生产阶段的切型限制、切换确认、故障复位、新件不显示旧结论 |
-| `settings.test.tsx` | 型号来源切换、两个设置分区保存互不覆盖、失败重试 |
-| `camera-config.test.tsx` | 采集模式、触发沿、后台固定序列号与未保存编辑、参数警告 |
-| `camera-page.test.tsx`、`camera-preview.test.tsx`、`frame-preview.test.tsx` | 相机增删与候选/生产引用保护、源切换、软触发/回放下一张、刷新失败重试、配置变化与连续预览作用域、历史帧/叠加显示 |
-| `offline-image-import.test.tsx` | 离线原图的格式/大小、二进制、重复操作、读取竞态、工位/修订/帧绑定、错误恢复 |
-| `overview.test.tsx` | 选帧、方向键及边界、自动布置、背景导入/移除/读取竞态、显示与物理规划分离 |
-| `calibration.test.tsx` | 冻结样本前置条件、标定尺寸加载、图像与工位绑定、失败保留原标定 |
-| `dry-run.test.tsx` | 当前相机帧计数、触发计数、跳号、最短间隔、启动失败 |
-| `feasibility.test.tsx` | 实际参数更新、运动模糊/触发间隔/视野重叠、无效输入不得显示可行 |
-| `sim-controls.test.tsx` | 工况切换、单件/连续、连接前置条件、重复启动、停止失败、配方删除 |
-| `plc-page.test.tsx` | 加载恢复、还原/保存/连接、重复操作、写入门槛、心跳点删除和地址表替换 |
-| `plc-logs.test.tsx` | 组合筛选、搜索分页、时间段校验、查询竞态、趋势、跟随清理、全部页 CSV 导出 |
-| `plc-dialogs.test.tsx` | 数值与布尔写入、非有限数值、等待期间重复回车、焦点循环与恢复、Esc 与遮罩 |
-| `plc-editors.test.tsx` | 协议端口、S7 预设、点位必填、ID 与标签去重、地址检查、JSON 导入 |
-| `connection-form.test.tsx` | 完整十六进制/数字格式、端口/TSAP/MC 范围、空值不变零、S7 1200/1500 相同参数仍保留所选型号、协议切换 |
-| `image-viewer.test.tsx` | 原图加载状态、缩放边界、叠加开关、换图重置、历史帧和过期读取 |
-| `visual-status.test.ts` | 工件与配方快照隔离、胶路颜色、缺帧、重复测量不回退、最终 NG 状态 |
-| `cycle-visuals.test.tsx` | 逐拍照点视图、帧选择、示教中线与站状态着色、段内断口位置、曲线公差与超差 |
-| `cycle-isolation.test.tsx` | 在线周期按 cycleId 隔离：同 SN 新周期清除旧测量，旧周期事件、快照和迟到请求不覆盖当前周期 |
-| `rejudge-retest.test.tsx` | 批量试算参数、原图复测入口、选件与筛选、缺图规则、重复操作、旧结果及错误隔离 |
-| `workflow-model.test.ts` | 示教与验证失效、历史备份恢复、工件边界发布快照、运行限制、代表性样本 |
-| `workflow-preview.test.tsx` | 所有流程页面的直接路由、存储损坏回退、情景筛选、重置、真实示教交互 |
-| `workflow-setup-operations.test.tsx`、`workflow-recipe-operations.test.tsx`、`workflow-production-operations.test.tsx`、`workflow-preview-components.test.tsx` | 预览的完整建站、多个本地候选、删除确认、示教/恢复、总览布置/背景、样本验证/边界发布、连续运行/停止、历史对照/导出、设置、缩放与叠加 |
-| `navigation.test.tsx` | 默认与未知路由、历史复测路由优先级、侧栏折叠、浏览器提示、页面错误重试 |
-| `sidebar.test.tsx`、`operation-guide.test.tsx` | 正式导航分组与整栏折叠、设备状态与卸载清理、全部引导链接和流程前置条件 |
+| 创建配方 | 真实配方库填写、创建请求、新候选选中、进度页到整圈采集路由；只模拟 Tauri 接口 |
+| 完整示教与发布 | 两个拍照点点中线、保存、试测、完成示教，保存总览，选择独立样本、验证、确认发布；使用真实主流程页面与工作台状态 |
+| 工件启动到落盘 | flow-tests 隐藏桌面实例中 UI 启动一件，经过模拟 PLC/相机、真实检测节拍、SQLite 和原图录制，独立只读连接检查文件 |
+| 工作台 | 草稿不丢、选择/保存隔离、失败恢复、修订身份；不遍历多个环境事件和请求结果组合 |
+| 采集/示教/发布关键交互 | 异常轮不可采用、独立验证样本、旧试测不可保存、发布确认与修订锁；不遍历完整配置矩阵 |
+| 在线与历史 | 生产切型锁、周期隔离、旧结果不串件、原图缺失/录制失败的明确状态 |
+| PLC 操作锁 | 状态未确认、事务未结束或订阅失败时保持锁定 |
+| 图像交互 | 与当前图源对应的原图读取和中线坐标交互 |
 
-## 已修复并有回归测试的问题
+workflow 本地原型的整页、纯状态模型和局部组件测试已删除。相机/标定/PLC 表单、设置、日志导出、导航、图表展示与历史筛选等辅助测试也已删除；其全部配置和失败路径不再保证自动覆盖。剩余用例只围绕三条主流程与草稿、发布、生产锁、周期/图源隔离、落盘状态等主要业务风险。具体文件、数量与复现见 [前端轻量测试](frontend-lightweight-tests.md)。
 
-以下为 2026-10-09 前修复的前端问题；第 15、16 条涉及的卡尺与模板拖动已随旧模型删除。
+## 历史修复记录
+
+以下为 2026-10-09 前的历史修复记录，部分页面用例已精简，不据此声明当前自动覆盖。第 15、16 条涉及的卡尺与模板拖动已随旧模型删除。
 
 1. PLC 写入输入允许 Infinity / -Infinity。
 2. PLC 写入等待期间，回车绕过禁用按钮重复发起写入。
@@ -267,7 +248,7 @@ Rust 最终新增边界包括嵌套标定比例、人工比例覆盖、标定复
 1. 运行 `pnpm build` 和 `pnpm tauri build --debug --no-bundle --config tests/native/tauri-recipe-workflow.json`。
 2. 运行 `python tests/native/recipe-workflow-images.py output/playwright/recipe-workflow/images`（需要 Pillow）。
 3. 设置当前进程 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9351`，用 `Start-Process -WindowStyle Hidden` 启动该独立构建。数据标识必须为 `com.xyzrobotics.gluesight.recipe-workflow-20261011`，不能使用生产 profile。
-4. 运行 `node tests/native/recipe-workflow-ipc.mjs --playwright-module <本机playwright/index.mjs> --images output/playwright/recipe-workflow/images --output output/playwright/recipe-workflow --skip-engine`。
+4. 运行 `node tests/native/recipe-workflow-ipc.mjs --images output/playwright/recipe-workflow/images --output output/playwright/recipe-workflow --skip-engine`。
 5. 重启同一隔离实例，重复上条命令并加 `--restart`。首次执行拒绝覆盖已存在的同名测试候选；需要重跑时先关闭此实例并备份其独立 profile。
 
 Windows 沙箱临时目录权限及 realpath 限制会使测试启动失败；本轮以 C 盘项目、隔离 TEMP 及限定宿主执行取得最终证据。前端默认 fork 在此机器有既知停滞，最终使用线程池，没有改依赖或跳过 UI suite。临时失败日志与运行数据不进入交付提交。

@@ -1,3 +1,4 @@
+import { chromium } from 'playwright-core';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
@@ -135,17 +136,17 @@ async function selfTest() {
 async function main() {
   const { values } = parseArgs({ options: {
     stage: { type: 'string' }, instance: { type: 'string' }, output: { type: 'string' }, dll: { type: 'string' },
-    samples: { type: 'string' }, 'playwright-module': { type: 'string' }, 'source-gate': { type: 'string' },
+    samples: { type: 'string' }, 'source-gate': { type: 'string' },
     cdp: { type: 'string', default: 'http://127.0.0.1:9340' }, 'self-test': { type: 'boolean' },
   } });
   if (values['self-test']) return selfTest();
   assert(process.platform === 'win32', 'This runner requires Windows');
   cPath(process.execPath);
   assert(['prepare', 'publish'].includes(values.stage), 'Use --stage prepare or publish');
-  for (const key of ['instance', 'output', 'dll', 'playwright-module', 'source-gate']) assert(values[key], 'Missing --' + key);
+  for (const key of ['instance', 'output', 'dll', 'source-gate']) assert(values[key], 'Missing --' + key);
   const profile = join(cPath(process.env.APPDATA), identifier), output = cPath(values.output), dll = cPath(values.dll);
   assert(output.toLowerCase() !== profile.toLowerCase() && !output.toLowerCase().startsWith(profile.toLowerCase() + '\\'), 'Evidence must be outside the existing Demo profile');
-  for (const file of [values.instance, dll, values['playwright-module'], defaultsPath]) await ordinaryPath(file, true);
+  for (const file of [values.instance, dll, defaultsPath]) await ordinaryPath(file, true);
   await ordinaryPath(profile);
   const instance = await json(values.instance), defaults = await json(defaultsPath), id = defaults.id;
   assert.equal(instance.identifier, identifier);
@@ -171,7 +172,7 @@ async function main() {
     sourceAttestation: 'Build manifest source gate plus current source/PID/start-time/CDP ancestry guards; no executable content fingerprint', instance, process: identity, captures: [], captureRetries: [], trials: [] };
   let browser, page, read;
   try {
-    const { chromium } = await import(pathToFileURL(cPath(values['playwright-module'])).href);
+
     browser = await chromium.connectOverCDP(values.cdp);
     const pages = [];
     for (const candidate of browser.contexts().flatMap(context => context.pages())) if (await candidate.evaluate(() => !!window.__TAURI_INTERNALS__?.invoke).catch(() => false)) pages.push(candidate);

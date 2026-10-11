@@ -1,5 +1,4 @@
-import type { FrameView, Measured, PartView, Recipe, ResultView } from "../src/features/cycle/types";
-import { workspaceView } from "./fixtures";
+import type { FrameView, Measured, PartView, ResultView } from "../src/features/cycle/types";
 
 export function cycleFrame(status: FrameView["status"] = "done", k = 0): FrameView {
   return { status, cam: 0, camera: "CAM-1", shotId: `P${k + 1}`, view: 1, session: 1, ordinal: k + 1, error: null, arrivedMs: 20, frameCounter: k + 101, triggerCounter: k + 201, counterJump: false, score: .9, points: 2, gapPoints: 0, ms: 8 };
@@ -18,10 +17,4 @@ export function cycleResult(sn = 1, cycleId = `cycle-${sn}`): ResultView {
       { verdict: "NG_POSITION", min: 3, max: 4.5, excursionLen: 1, wMin: null, wMax: null, wExcursionLen: 0 },
       { verdict: "OK", min: 3, max: 3, excursionLen: 0, wMin: null, wMax: null, wExcursionLen: 0 },
     ] };
-}
-/** 带胶宽限值的布局（胶宽曲线用）。 */
-export function widthLayout(): Recipe {
-  const layout = workspaceView().layout;
-  for (const g of layout.segments) g.width = { nominal: 2, tolUpper: .5, tolLower: .5, absMin: 1, absMax: 4, maxExcursionLen: 1 };
-  return layout;
 }

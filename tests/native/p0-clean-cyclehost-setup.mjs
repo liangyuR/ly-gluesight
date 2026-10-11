@@ -1,3 +1,4 @@
+import { chromium } from 'playwright-core';
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -238,8 +239,8 @@ export async function teachCleanFixture(page, options) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const { values } = parseArgs({ options: { 'playwright-module': { type: 'string' }, views: { type: 'string' }, inputs: { type: 'string' }, output: { type: 'string' }, cdp: { type: 'string', default: 'http://127.0.0.1:9338' } } });
-  const { chromium } = await import(pathToFileURL(resolve(values['playwright-module'])).href);
+  const { values } = parseArgs({ options: { views: { type: 'string' }, inputs: { type: 'string' }, output: { type: 'string' }, cdp: { type: 'string', default: 'http://127.0.0.1:9338' } } });
+
   const browser = await chromium.connectOverCDP(values.cdp);
   try {
     const pages = browser.contexts().flatMap(c => c.pages());
