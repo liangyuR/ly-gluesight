@@ -85,6 +85,8 @@ pnpm run package -RuntimeBundle 'C:\release\runtime-bundle'
 
 报告目录需事先存在。成功退出码为 0；失败为非零并记录原因。脚本报告分别记录 DLL 实际 `abiVersion`、描述中的 `declaredAbiVersion` 和引擎 `version`；应用报告记录 `clientAbiVersion`、实际版本与加载路径。验证覆盖合成胶条正常测量、空白图缺胶、新帧偏移、棋盘格标定与空白图拒绝，以及随包 MVS 加载和枚举。它证明软件运行组件及接口可用，不代表真机触发收图、现场精度或长稳验收。
 
-本轮范围仅为 ABI 产品版本字符串改造，不接入 `glue.taught_path`。GS 客户端已固定到 `d4c54ee2a56b2c6f93f4fb1e6614f612a447d02b`；当前新 DLL 已通过客户端的 ABI/引擎版本及必需接口加载检查，随后因 lyFlow main 缺少 GS 必需的 `glue.taught_path` 而被应用拒绝。4 项真实 DLL 视觉业务测试均在加载阶段被这一算子缺失阻断，尚未完成注图后的并发测量、多视图、胶宽与标定验收。
+应用首包版本保持 `0.1.0`，与 lyFlow 的 `1.1.0` 独立；应用的三处版本及 Cargo.lock 根包版本保持一致。历史 PR #26 合入旧打包分支，未进入 main；首次发包前必须补齐该 ABI 集成，不能仅根据 PR 的 merged 状态判断 main 已具备新版接口。
 
-因此，本轮不宣称已有 GS 可用的运行库依赖包或通过验收的安装包。脚本专项与普通 Rust 回归通过，只证明 ABI 衔接及相应软件门禁；历史 DLL 测试结果不能作为当前产物验收结果。即使后续正式 lyFlow 产物通过实际源码修订与发布元数据检查，GS 业务验收仍需包含全部必需算子的正式产物，并重新完成上述真实 DLL 测试与完整打包流程。
+2026-10-12 核对并下载了 lyFlow [Windows release 38150280499](https://github.com/liangyuR/lyFlow/actions/runs/38150280499) 的 `windows-release` 产物，运行库 ZIP 为 `lyflow-runtime-win-x64-v1.1.0.zip`，源码修订为 `c625155c480a1cc7511f966a9fe234700f6c1404`。实际 DLL 的 ABI、引擎版本与正式描述、源码修订校验通过，随后依赖导出因缺少 `glue.taught_path` 明确失败。失败报告位于本机 `src-tauri/target/dependency-runtime/runtime-validation.json`；没有生成或发布固定依赖 ZIP、安装包或应用 Release。
+
+需要提供包含全部必需算子的正式产物，并重新执行依赖导出、真实 DLL 视觉业务回归及 GitHub 完整打包流程。普通 Rust 回归与打包脚本专项通过不能替代此项产物验收；在缺失算子解决前，不应创建应用版本 tag 或宣称安装包可用。
