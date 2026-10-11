@@ -85,8 +85,8 @@ const RESTORE_LIMIT: usize = 2;
 #[derive(Debug)]
 pub enum SessionEvent {
     None, Ready, Start(Request), End(Instant), Fault(String),
-    /// 结果已确认、双方已释放；附 PLC 确认结果时各槽的已发触发数（提前判 ERR 的件据此推下一件基线）
-    Released(Option<[u16; 3]>),
+    /// 结果已确认、双方已释放；附 PLC 确认结果时设备的已发触发数（提前判 ERR 的件据此推下一件基线）
+    Released(Option<u16>),
     /// 空闲时视觉输出被改写，已重写空闲输出并继续（附原因）
     Restored(String),
 }
@@ -110,8 +110,8 @@ pub struct PlcSession {
     withdrawn: bool,
     /// 空闲时外部改写视觉输出后自动重写的时刻
     restores: Vec<Instant>,
-    /// PLC 确认本件结果时读到的各槽已发触发数
-    ack_triggers: Option<[u16; 3]>,
+    /// PLC 确认本件结果时读到的设备已发触发数
+    ack_triggers: Option<u16>,
 }
 
 impl PlcSession {
@@ -478,7 +478,7 @@ impl PlcSession {
                     let result = self.result().ok_or("S7 结果尚未生成")?;
                     if handshake::matching_ack(&snapshot, result)? {
                         // PLC 已停发触发：此刻的计数就是本件实际发出的脉冲数
-                        self.ack_triggers = Some(snapshot.trigger_counts()?);
+                        self.ack_triggers = Some(snapshot.trigger_count()?);
                         self.journal.pending.as_mut().unwrap().acknowledged = true;
                         self.persist(engine).await?;
                         self.write(engine, handshake::release_plan()).await?;
@@ -575,13 +575,13 @@ impl PlcSession {
 
     pub fn validate_plan(&self, plan: &PlcPlan) -> Result<(), String> {
         if self.phase != SessionPhase::Validating { return Err("当前 S7 事务不能布防".into()); }
-        let rebuilt = PlcPlan::compile(plan.recipe_id.clone(), plan.plan_version, plan.camera_slots.clone(), plan.shots.clone())?;
+        let rebuilt = PlcPlan::compile(plan.recipe_id.clone(), plan.plan_version, plan.device_id.clone(), plan.shots.clone())?;
         if &rebuilt != plan { return Err("软件拍照计划内容与计数不一致".into()); }
         let request = self.request().ok_or("缺少 S7 请求")?;
         if request.protocol_version != plan.protocol_version || request.plan_version != plan.plan_version
-            || request.shot_count != plan.shot_count || request.camera_shots != plan.camera_shots {
-            return Err(format!("拍照计划不一致：需 version={} shots={} cameraShots={:?}",
-                plan.plan_version, plan.shot_count, plan.camera_shots));
+            || request.shot_count != plan.shot_count || request.device_shots != plan.device_shots {
+            return Err(format!("拍照计划不一致：需 version={} shots={} deviceShots={}",
+                plan.plan_version, plan.shot_count, plan.device_shots));
         }
         Ok(())
     }
@@ -592,7 +592,7 @@ impl PlcSession {
             let snapshot = Snapshot::capture(engine, self.contract.as_ref().ok_or("S7 点表未校验")?, Self::max_age(engine))?;
             let request = self.request().ok_or("缺少 S7 请求")?;
             if snapshot.request()? != *request || !snapshot.read_bool(tag::PART_START)?
-                || snapshot.read_bool(tag::PART_END)? || snapshot.read_bool(tag::RESULT_ACK)? || snapshot.trigger_counts()? != [0; 3] {
+                || snapshot.read_bool(tag::PART_END)? || snapshot.read_bool(tag::RESULT_ACK)? || snapshot.trigger_count()? != 0 {
                 return Err("布防前请求或触发边界已改变".into());
             }
             self.write(engine, handshake::arm_plan(request)).await?;

@@ -78,7 +78,7 @@ try {
  await waitFor(async()=>{const status=await control({op:'status'});return status.fields.visionReady&&status},'actual S7 reset and ready');
  await control({op:'plc_values',values:{faultReset:false}});
  const plan=await read('plc_recipe_plan',{recipeId:'P0-TRICAM-UI'}), seq=101, sn=70100101;
- await control({op:'plc_request',values:{protocolVersion:1,requestSeq:seq,partSn:sn,productCode:701,shotCount:plan.shotCount,planVersion:plan.planVersion,camera1Shots:plan.cameraShots[0],camera2Shots:plan.cameraShots[1],camera3Shots:plan.cameraShots[2]}});
+ await control({op:'plc_request',values:{protocolVersion:plan.protocolVersion,requestSeq:seq,partSn:sn,productCode:701,shotCount:plan.shotCount,planVersion:plan.planVersion,deviceShots:plan.deviceShots}});
  const fields=await waitFor(async()=>{const s=await control({op:'status'});return s.fields.done&&s.fields.resultSeq===seq&&s.fields.resultSn===sn&&s.fields},'actual safe ERR result');
  if(fields.resultCode!==90||fields.armed)throw new Error(JSON.stringify(fields));
  const durable=await waitFor(async()=>{try{const j=JSON.parse(await readFile(journalPath,'utf8'));return j.pending?.cycleId&&j.pending?.result&&j}catch{return false}},'durable submitted S7 identity');

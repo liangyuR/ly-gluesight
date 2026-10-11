@@ -137,8 +137,14 @@ fn validate_config(config: &PlcConfig) -> Result<(), String> {
 
 pub fn recipe_plan(cycle: &CycleHost, recipe: &Recipe) -> Result<PlcPlan, String> {
     let configs = cycle.camera.configs();
-    let slots = std::array::from_fn(|index| configs.get(index).map(|c| c.id.clone()).unwrap_or_default());
-    PlcPlan::from_recipe(recipe, slots)
+    let device_id = sole_device_id(&configs)?;
+    PlcPlan::from_recipe(recipe, device_id)
+}
+
+pub(crate) fn sole_device_id(configs: &[crate::camera::CameraConfig]) -> Result<String, String> {
+    let [device] = configs else { return Err("PLC 只允许配置一台相机设备".into()); };
+    if device.id.trim().is_empty() { return Err("PLC 相机设备 ID 不能为空".into()); }
+    Ok(device.id.clone())
 }
 
 #[tauri::command]
@@ -177,6 +183,15 @@ pub fn plc_check_address(connection: ConnectionConfig, address: String, data_typ
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plc_export_accepts_exactly_one_identified_device() {
+        let device = crate::camera::CameraConfig { id: "device1".into(), view_count: 3, ..Default::default() };
+        assert_eq!(sole_device_id(&[device.clone()]).unwrap(), "device1");
+        assert!(sole_device_id(&[]).is_err());
+        assert!(sole_device_id(&[device.clone(), crate::camera::CameraConfig { id: "device2".into(), ..device }]).is_err());
+        assert!(sole_device_id(&[crate::camera::CameraConfig::default()]).is_err());
+    }
 
     #[test]
     fn retired_plan_tags_fail_validation_instead_of_being_renamed() {

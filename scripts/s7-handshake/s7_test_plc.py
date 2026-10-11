@@ -54,7 +54,7 @@ def handshake_fields(db):
     for byte, names in ((0, ("partStart", "partEnd", "resultAck", "faultReset", "plcHeartbeat")), (64, ("visionReady", "armed", "busy", "done", "visionFault", "pcHeartbeat"))):
         for bit, name in enumerate(names):
             fields[name] = {"db": db, "byte": byte, "bit": bit, "type": "bool"}
-    words = {"protocolVersion": 2, "productCode": 12, "shotCount": 14, "camera1Shots": 24, "camera2Shots": 26, "camera3Shots": 28, "camera1Triggers": 36, "camera2Triggers": 38, "camera3Triggers": 40, "pcProtocolVersion": 66, "resultCode": 76, "faultCode": 78}
+    words = {"protocolVersion": 2, "productCode": 12, "shotCount": 14, "deviceShots": 24, "deviceTriggers": 36, "pcProtocolVersion": 66, "resultCode": 76, "faultCode": 78}
     dwords = {"requestSeq": 4, "partSn": 8, "planVersion": 16, "planReserved": 20, "ackSeq": 32, "resultSeq": 68, "resultSn": 72, "acceptedSeq": 80, "acceptedPlanReserved": 84}
     for kind, addresses in (("u16", words), ("u32", dwords)):
         for name, byte in addresses.items():
@@ -76,7 +76,7 @@ class PlcState:
         self.heartbeat_enabled = True
         self.heartbeat_ms = 500
         self.configure_fields(handshake_fields(db))
-        self.plc_values({"protocolVersion": 1}, None)
+        self.plc_values({"protocolVersion": 2}, None)
 
     def event(self, event_kind, **details):
         with self.lock:
@@ -177,6 +177,8 @@ class PlcState:
         for name, source in fields.items():
             if not isinstance(name, str) or not name or not isinstance(source, dict):
                 raise ValueError("each field requires a name and address object")
+            if name in {"camera1Shots", "camera2Shots", "camera3Shots", "camera1Triggers", "camera2Triggers", "camera3Triggers"}:
+                raise ValueError(f"removed handshake field: {name}; use protocol version 2 single-device fields")
             field = {"db": integer(source.get("db", self.default_db), "db", 1), "byte": integer(source.get("byte"), "byte")}
             field["type"] = source.get("type", "bool" if "bit" in source else "u8")
             if field["type"] not in ("bool", "u8", "u16", "u32"):

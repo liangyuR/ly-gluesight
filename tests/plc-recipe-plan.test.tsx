@@ -8,9 +8,9 @@ import { deferred } from "./fixtures";
 
 vi.mock("../src/features/plc/api", () => ({ plcApi: { recipeChoices: vi.fn(), getOperationState: vi.fn(), recipePlan: vi.fn() } }));
 const plan = (recipeId = "A"): PlcRecipePlan => ({
-  protocolVersion: 1, recipeId, planVersion: 3, shotCount: 4,
-  cameraSlots: ["cam1", "cam2", "cam3"], cameraShots: [0, 4, 0],
-  shots: Array.from({ length: 4 }, (_, index) => ({ shotId: `shot-${index + 1}`, poseId: `pose-${index + 1}`, cameraId: "cam2" })),
+  protocolVersion: 2, recipeId, planVersion: 3, shotCount: 4,
+  deviceId: "composite-camera", deviceShots: 4,
+  shots: Array.from({ length: 4 }, (_, index) => ({ shotId: `shot-${index + 1}`, poseId: `pose-${index + 1}`, cameraId: "composite-camera" })),
 });
 const writeText = vi.fn();
 beforeEach(() => {
@@ -22,33 +22,38 @@ beforeEach(() => {
 });
 
 describe("只读配方握手计划", () => {
-  it("用户请求后读取当前生产配方，保留实际槽位计数并复制原始计划", async () => {
+  it("用户请求后读取唯一设备及触发数并复制原始计划", async () => {
     render(<S7RecipePlanPanel />); expect(plcApi.recipeChoices).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: "读取配方计划" }));
     expect(await screen.findByRole("button", { name: "复制计划 JSON" })).toBeEnabled();
     expect(screen.getByRole("combobox", { name: "生产配方" })).toHaveValue("A");
     expect(plcApi.recipePlan).toHaveBeenCalledWith("A");
-    const rows = screen.getAllByRole("row");
-    expect(within(rows[1]).getByText("0")).toBeVisible();
-    expect(within(rows[2]).getByText("4")).toBeVisible();
-    expect(within(rows[3]).getByText("0")).toBeVisible();
+    const deviceTable = screen.getByRole("table", { name: "单设备计划" });
+    const rows = within(deviceTable).getAllByRole("row");
+    expect(rows).toHaveLength(2);
+    expect(within(rows[1]).getByText("composite-camera")).toBeVisible();
+    expect(within(rows[1]).getByText("4")).toBeVisible();
+    expect(screen.queryByText(/槽位|未配置|相机 2|相机 3/)).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "复制计划 JSON" }));
     expect(writeText).toHaveBeenCalledWith(JSON.stringify(plan(), null, 2));
     expect(await screen.findByRole("button", { name: "已复制 JSON" })).toBeVisible();
   });
 
-  it("拍照点表在编号旁列出 Pose，同一 Pose 触发两台相机时都列出，不再有工件坐标中心", async () => {
-    vi.mocked(plcApi.recipePlan).mockResolvedValueOnce({ ...plan(), cameraShots: [2, 1, 1], shots: [
-      { shotId: "P1", poseId: "A1", cameraId: "cam1" }, { shotId: "P2", poseId: "A1", cameraId: "cam2" },
-      { shotId: "P3", poseId: "A3", cameraId: "cam3" }, { shotId: "P4", poseId: "A4", cameraId: "cam1" },
+  it("拍照点绑定唯一设备，三个视角不把设备触发数乘三", async () => {
+    vi.mocked(plcApi.recipePlan).mockResolvedValueOnce({ ...plan(), shots: [
+      { shotId: "P1", poseId: "A1", cameraId: "composite-camera" }, { shotId: "P2", poseId: "A1", cameraId: "composite-camera" },
+      { shotId: "P3", poseId: "A3", cameraId: "composite-camera" }, { shotId: "P4", poseId: "A4", cameraId: "composite-camera" },
     ] });
     render(<S7RecipePlanPanel />); await userEvent.click(screen.getByRole("button", { name: "读取配方计划" }));
     const table = await screen.findByRole("table", { name: "拍照点计划" });
     const headers = within(table).getAllByRole("columnheader").map(h => h.textContent);
-    expect(headers).toEqual(["拍照点", "Pose", "相机编号"]);
+    expect(headers).toEqual(["拍照点", "Pose", "相机设备 ID"]);
     const rows = within(table).getAllByRole("row").slice(1).map(r => within(r).getAllByRole("cell").map(c => c.textContent));
-    expect(rows).toEqual([["P1", "A1", "cam1"], ["P2", "A1", "cam2"], ["P3", "A3", "cam3"], ["P4", "A4", "cam1"]]);
-    expect(screen.queryByText(/中心/)).not.toBeInTheDocument();
+    expect(rows).toEqual([["P1", "A1", "composite-camera"], ["P2", "A1", "composite-camera"], ["P3", "A3", "composite-camera"], ["P4", "A4", "composite-camera"]]);
+    expect(screen.getByText(/三个视角不分别计数/)).toBeVisible();
+    const deviceTable = screen.getByRole("table", { name: "单设备计划" });
+    expect(within(deviceTable).getByText("4")).toBeVisible();
+    expect(within(deviceTable).queryByText("12")).toBeNull();
   });
 
   it("切换配方后忽略旧请求，不能把 A 的计划显示成 B", async () => {
@@ -71,9 +76,9 @@ describe("只读配方握手计划", () => {
   });
 
   it("计划校验失败显示原因，重新读取可恢复", async () => {
-    vi.mocked(plcApi.recipePlan).mockRejectedValueOnce(new Error("相机槽位不匹配"));
+    vi.mocked(plcApi.recipePlan).mockRejectedValueOnce(new Error("拍照点设备绑定不匹配"));
     render(<S7RecipePlanPanel />); await userEvent.click(screen.getByRole("button", { name: "读取配方计划" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("相机槽位不匹配");
+    expect(await screen.findByRole("alert")).toHaveTextContent("拍照点设备绑定不匹配");
     expect(screen.queryByRole("button", { name: "复制计划 JSON" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "刷新配方计划" }));
     expect(await screen.findByRole("button", { name: "复制计划 JSON" })).toBeVisible();

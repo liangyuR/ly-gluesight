@@ -9,7 +9,7 @@
 
 ## 现场接入（[integration/](integration)）
 
-- [PLC 通讯协议 HTML 与时序图](integration/plc-communication-protocol.html)：可离线阅读，含完整点表搜索、正常生产、提前终止和显式复位时序图，以及打印样式；另附 [Markdown 原文](integration/plc-communication-protocol.md)。
+- [PLC 通讯协议 HTML 与时序图](integration/plc-communication-protocol.html)：可离线阅读，含单设备完整点表搜索及打印样式；三张时序图保持旧版，待协议检查完成后统一更新；另附 [Markdown 原文](integration/plc-communication-protocol.md)。
 - [一期 S7 握手契约与现场接入](integration/plc-s7-phase1.md)：DB 点表、事务与结果确认、故障恢复、计划导出和现场验证步骤。
 - [PLC SCL 参考程序](../scripts/s7-handshake/phase1_plc.scl)与 [S7 测试 PLC](../scripts/s7-handshake/README.md)：可审查的 PLC 侧实现及回环报文测试服务。
 

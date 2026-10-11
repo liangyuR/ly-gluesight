@@ -550,7 +550,7 @@ fn restart_ack_recovery_only_visits_unresolved_database_cycles_and_preserves_aud
         save(&store, &recipe, cycle, &shots(&recipe), &PlcDelivery { state, updated_at: 200, message: None }, Some(&table(&recipe))).unwrap();
     }
     let pending = |cycle: &str, seq: u32| serde_json::json!({
-        "request":{"protocolVersion":1,"requestSeq":seq,"sn":42,"productCode":1,"shotCount":4,"planVersion":7,"planReserved":0,"cameraShots":[2,1,1]},
+        "request":{"protocolVersion":2,"requestSeq":seq,"sn":42,"productCode":1,"shotCount":4,"planVersion":7,"deviceShots":4},
         "result":{"requestSeq":seq,"sn":42,"resultCode":1,"faultCode":0},
         "phase":"releasing","cycleId":cycle,"acknowledged":true,"startedAt":1000
     });

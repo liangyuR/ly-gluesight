@@ -214,8 +214,8 @@ mod tests {
     }
 
     fn pending(cycle_id: &str, request_seq: u32, sn: u32) -> Pending {
-        Pending { capture_id: None, request: Request { protocol_version: 1, request_seq, sn, product_code: 1,
-            shot_count: 4, plan_version: 7, camera_shots: [2, 1, 1] },
+        Pending { capture_id: None, request: Request { protocol_version: crate::handshake::PROTOCOL_VERSION, request_seq, sn, product_code: 1,
+            shot_count: 4, plan_version: 7, device_shots: 4 },
             result: Some(ResultEnvelope { request_seq, sn, result_code: 1, fault_code: 0 }),
             phase: SessionPhase::Releasing, cycle_id: Some(cycle_id.into()), acknowledged: true, started_at: 1000 }
     }
@@ -355,7 +355,7 @@ mod tests {
         wrong_phase["pending"]["phase"] = json!("acquiring");
         cases.push(wrong_phase);
         let mut wrong_protocol = record(&valid, 2000);
-        wrong_protocol["pending"]["request"]["protocolVersion"] = json!(2);
+        wrong_protocol["pending"]["request"]["protocolVersion"] = json!(1);
         cases.push(wrong_protocol);
         for invalid in &cases { files.audit(invalid.clone()); }
         let mut unresolved = targets();

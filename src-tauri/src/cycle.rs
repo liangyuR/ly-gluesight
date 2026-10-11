@@ -479,7 +479,7 @@ struct Part {
     extra: usize,
     queue: usize,
     router: ShotRouter,
-    issued: Option<Vec<(String, u64)>>,
+    issued: Option<(String, u64)>,
     issued_verified: bool,
     routing_closed: bool,
     image_measurement: bool,
@@ -1122,9 +1122,7 @@ impl Machine {
             self.ledgers.set_floor(&Floor { cam: camera.cam, camera: camera.camera.clone(), session: camera.session,
                 baseline: router.baseline(camera.cam).unwrap_or(0) });
         }
-        // 按协议槽顺序保留三槽（空槽编号为空），PLC 确认时报的各槽触发数按位置对上
-        let issued = plan.as_ref().map(|p| p.camera_slots.iter().zip(p.camera_shots)
-            .map(|(id, count)| (id.clone(), count as u64)).collect());
+        let issued = plan.as_ref().map(|p| (p.device_id.clone(), u64::from(p.device_shots)));
         let bundle_id = production.as_ref().map(|prepared| prepared.bundle.id.clone());
         budget.mark("camera-router");
         arm_remaining!("before-recording");
@@ -1592,14 +1590,11 @@ impl Machine {
         }
     }
 
-    /// `plc_triggers`：PLC 确认结果时各槽的已发触发数；没有时用 partEnd 核对过的计划数，都没有按计划数假定。
-    fn close_routing(&mut self, plc_triggers: Option<[u16; 3]>) {
+    fn close_routing(&mut self, plc_triggers: Option<u16>) {
         let Some(part) = self.part.as_mut().filter(|part| !part.routing_closed) else { return };
         let issued = part.issued.as_ref().filter(|_| part.issued_verified || plc_triggers.is_some())
-            .map(|slots| slots.iter().enumerate().filter(|(_, (id, _))| !id.is_empty())
-                .map(|(slot, (id, planned))| (id.as_str(), plc_triggers.map_or(*planned, |counts| u64::from(counts[slot]))))
-                .collect::<Vec<_>>());
-        part.router.close(&mut self.ledgers, issued.as_deref());
+            .map(|(id, planned)| [(id.as_str(), plc_triggers.map_or(*planned, u64::from))]);
+        part.router.close(&mut self.ledgers, issued.as_ref().map(|counts| counts.as_slice()));
         part.routing_closed = true;
     }
 

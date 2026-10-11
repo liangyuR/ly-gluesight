@@ -21,7 +21,9 @@ python -u scripts/s7-handshake/s7_test_plc.py --port 0
 
 ## 默认一期点表
 
-多字节数值使用大端字节序。PLC `protocolVersion` 初始为 1，其他数据初始为 0；`plcHeartbeat` 每 500 ms 翻转。PC 字段由被测客户端写入。
+多字节数值使用大端字节序。PLC `protocolVersion` 初始为 2，其他数据初始为 0；`plcHeartbeat` 每 500 ms 翻转。PC 字段由被测客户端写入。
+
+协议 2 固定对应一个 SDK 相机设备，该设备的一帧包含图 1/2/3 三个视角。`deviceShots` 是本件计划触发数，与 `shotCount` 相等；`deviceTriggers` 是本件该设备实际已发脉冲数。视角不单独计数。旧协议的六个 `camera1/2/3Shots`、`camera1/2/3Triggers` 标签已删除，控制 API 及自定义映射均直接拒绝，不读取兼容；DB 保持至少 88 字节，字节 26–31 和 38–63 只是布局填充，没有通道含义。当前点表共 28 个字段。
 
 | 方向 | 地址 | 字段 |
 | --- | --- | --- |
@@ -30,9 +32,9 @@ python -u scripts/s7-handshake/s7_test_plc.py --port 0
 | PLC → PC | DBD4 / DBD8 | requestSeq / partSn |
 | PLC → PC | DBW12 / DBW14 | productCode / shotCount |
 | PLC → PC | DBD16 / DBD20 | planVersion / 保留位（填 0） |
-| PLC → PC | DBW24 / DBW26 / DBW28 | camera1Shots / camera2Shots / camera3Shots |
+| PLC → PC | DBW24 | deviceShots |
 | PLC → PC | DBD32 | ackSeq |
-| PLC → PC | DBW36 / DBW38 / DBW40 | camera1Triggers / camera2Triggers / camera3Triggers |
+| PLC → PC | DBW36 | deviceTriggers |
 | PC → PLC | DB100.DBX64.0 / .1 / .2 / .3 / .4 / .5 | visionReady / armed / busy / done / visionFault / pcHeartbeat |
 | PC → PLC | DBW66 | pcProtocolVersion |
 | PC → PLC | DBD68 / DBD72 | resultSeq / resultSn |
@@ -55,13 +57,13 @@ python -u scripts/s7-handshake/s7_test_plc.py --port 0
 `plc_request` 原子写入全部 `values` 并默认置 `partStart=true`；`plc_ack` 默认将当前 `resultSeq` 回显到 `ackSeq`，然后置 `resultAck=true`。调用方负责在看到有效 `done` 及匹配结果后发 ACK。`plc_release` 在 PC `done`、`busy` 均为 false 时清除 `partStart/partEnd/resultAck`。服务不自动发新件或自动确认错误结果，测试可通过 `plc_values` 或原始 DB 写入刻意构造旧序号、错误 ACK 和协议违规场景。
 
 ```json
-{"id":10,"op":"plc_request","values":{"requestSeq":17,"partSn":12345,"productCode":7,"shotCount":4,"planVersion":1,"planReserved":0,"camera1Shots":2,"camera2Shots":1,"camera3Shots":1}}
-{"id":11,"op":"plc_values","values":{"partEnd":true,"camera1Triggers":2,"camera2Triggers":1,"camera3Triggers":1}}
+{"id":10,"op":"plc_request","values":{"requestSeq":17,"partSn":12345,"productCode":7,"shotCount":4,"planVersion":1,"planReserved":0,"deviceShots":4}}
+{"id":11,"op":"plc_values","values":{"partEnd":true,"deviceTriggers":4}}
 {"id":12,"op":"plc_ack"}
 {"id":13,"op":"plc_release"}
 ```
 
-请求序号、工件SN、计划版本和相机计数的匹配由被测握手逻辑验收；控制 API 不替客户端过滤故障输入。要覆盖其他点表，可用 `configure_handshake` 完整替换字段映射。字段类型为 `bool/u8/u16/u32`，bool 必须有 `bit`：
+请求序号、工件SN、计划版本和设备计数的匹配由被测握手逻辑验收；控制 API 不替客户端过滤故障输入。要覆盖其他点表，可用 `configure_handshake` 完整替换字段映射，但不能恢复已删除的六个 camera 标签。字段类型为 `bool/u8/u16/u32`，bool 必须有 `bit`：
 
 ```json
 {"id":20,"op":"configure_handshake","fields":{"partStart":{"db":200,"byte":0,"bit":0},"requestSeq":{"db":200,"byte":4,"type":"u32"},"resultAck":{"db":200,"byte":0,"bit":2}}}
@@ -89,6 +91,6 @@ python -u scripts/s7-handshake/s7_test_plc.py --port 0
 
 Python 测试直接通过 socket 发送固定十六进制报文，并逐字节断言 COTP CC、S7 ACK_DATA、PDU reference、DB 字节/bit 数据、以 bit 为单位的长度、multi-item 填充以及 S7 错误码；不调用服务自身的报文编码函数充当客户端。还覆盖分包/粘包、读写拒绝、延迟超时、执行前后断线、重新连接、心跳冻结、子进程控制 API、请求/ACK/释放和非默认 DB。
 
-Windows 受限环境若在 `socket.connect` 返回 `WinError 10013`，需在获准的主机环境运行同一测试命令；不能跳过 TCP 断言后记录为通过。2026-10-09 已在主机环境运行上述命令，21 项全部通过。
+Windows 受限环境若在 `socket.connect` 返回 `WinError 10013`，需在获准的主机环境运行同一测试命令；不能跳过 TCP 断言后记录为通过。2026-10-11 已在主机环境运行上述命令，23 项全部通过，包含单设备计数固定线报文偏移及旧标签原子拒绝验证。
 
-这些 Python 测试证明受支持的 S7 线协议和测试服务行为。2026-10-09 已另行通过 17 项生产 `ly_plc::PlcEngine` 与本服务的线协议联调，以及 1 项事务文件恢复测试；命令与证据见 [S7 测试记录](../../docs/testing/TESTING.md#s7-一期握手)。接真实 Siemens CPU 的 PUT/GET、机架/插槽、网络和现场节拍验收仍属于后续硬件验证。
+这些 Python 测试证明受支持的 S7 线协议和测试服务行为。2026-10-09 的 17 项生产 `ly_plc::PlcEngine` 线协议联调及 1 项事务文件恢复测试属于旧协议历史证据，不能作为协议 2 的通过记录；命令与历史证据见 [S7 测试记录](../../docs/testing/TESTING.md#s7-一期握手)。`phase1_plc.scl` 仅完成静态核对，尚未在 TIA Portal 编译。接真实 Siemens CPU 的 PUT/GET、机架/插槽、网络和现场节拍验收仍属于后续硬件验证。

@@ -23,8 +23,8 @@ pub mod tag {
     pub const REQUEST_SEQ: &str = "requestSeq";
     pub const PLAN_VERSION: &str = "planVersion";
     pub const PLAN_RESERVED: &str = "planReserved";
-    pub const CAMERA_SHOTS: [&str; 3] = ["camera1Shots", "camera2Shots", "camera3Shots"];
-    pub const CAMERA_TRIGGERS: [&str; 3] = ["camera1Triggers", "camera2Triggers", "camera3Triggers"];
+    pub const DEVICE_SHOTS: &str = "deviceShots";
+    pub const DEVICE_TRIGGERS: &str = "deviceTriggers";
     pub const ACK_SEQ: &str = "ackSeq";
     pub const PLC_HEARTBEAT: &str = "plcHeartbeat";
     pub const PC_HEARTBEAT: &str = "pcHeartbeat";
@@ -105,13 +105,9 @@ pub fn s7_phase1_config(db_number: u16) -> Result<PlcConfig, String> {
         (tag::SHOT_COUNT, "计划拍照总数", "DBW14", U16, input, NoEdge),
         (tag::PLAN_VERSION, "拍照计划版本", "DBD16", U32, input, NoEdge),
         (tag::PLAN_RESERVED, "拍照计划保留位", "DBD20", U32, input, NoEdge),
-        (tag::CAMERA_SHOTS[0], "相机槽 1 计划数", "DBW24", U16, input, NoEdge),
-        (tag::CAMERA_SHOTS[1], "相机槽 2 计划数", "DBW26", U16, input, NoEdge),
-        (tag::CAMERA_SHOTS[2], "相机槽 3 计划数", "DBW28", U16, input, NoEdge),
+        (tag::DEVICE_SHOTS, "设备计划触发数", "DBW24", U16, input, NoEdge),
         (tag::ACK_SEQ, "确认事务序号", "DBD32", U32, input, NoEdge),
-        (tag::CAMERA_TRIGGERS[0], "相机槽 1 已发触发数", "DBW36", U16, input, NoEdge),
-        (tag::CAMERA_TRIGGERS[1], "相机槽 2 已发触发数", "DBW38", U16, input, NoEdge),
-        (tag::CAMERA_TRIGGERS[2], "相机槽 3 已发触发数", "DBW40", U16, input, NoEdge),
+        (tag::DEVICE_TRIGGERS, "设备已发触发数", "DBW36", U16, input, NoEdge),
         (tag::VISION_READY, "视觉就绪", "DBX64.0", Bool, output, NoEdge),
         (tag::ARMED, "已布防", "DBX64.1", Bool, output, NoEdge),
         (tag::BUSY, "检测中", "DBX64.2", Bool, output, NoEdge),
