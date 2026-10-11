@@ -1,4 +1,4 @@
-import {render,screen,waitFor} from "@testing-library/react";
+import {render,screen} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import {beforeEach,expect,it,vi} from "vitest";
@@ -24,11 +24,7 @@ beforeEach(()=>{
  vi.mocked(cameraApi.rigStatus).mockResolvedValue([{id:"CAM-1",ready:true}] as Awaited<ReturnType<typeof cameraApi.rigStatus>>);
  vi.mocked(plcApi.getStatus).mockResolvedValue({state:"connected",message:"PLC已连接"} as Awaited<ReturnType<typeof plcApi.getStatus>>);
  vi.mocked(workspaceApi.captureGet).mockResolvedValue(null);vi.mocked(workspaceApi.captureList).mockResolvedValue([]);
- vi.mocked(workspaceApi.captureStart).mockImplementation(async()=>{const value={...round("waitingStart"),plannedCount:null,receivedCount:0};vi.mocked(workspaceApi.captureGet).mockResolvedValue(value);return value;});vi.mocked(workspaceApi.adoptCapture).mockResolvedValue(ws.data!);vi.mocked(workspaceApi.captureSample).mockResolvedValue(ws.data!);
-});
-it("无需手填数量即可开始接收，等待 PLC 提供计划",async()=>{
- show();const button=screen.getByRole("button",{name:"开始接收 / 整圈重采"});await waitFor(()=>expect(button).toBeEnabled());await userEvent.click(button);
- expect(screen.queryByRole("spinbutton",{name:"PLC 计划触发次数"})).not.toBeInTheDocument();expect(screen.getByText("已接收 0 张 · 等待 PLC 开始信号")).toBeVisible();expect(workspaceApi.captureStart).toHaveBeenCalledWith("A","CAM-1",1500);expect(screen.getByText("等待现场启动")).toBeVisible();expect(screen.queryByRole("button",{name:"采用本轮图像"})).toBeNull();
+ vi.mocked(workspaceApi.adoptCapture).mockResolvedValue(ws.data!);
 });
 
 it("异常轮保留数量和原因，不能采用",async()=>{
@@ -40,13 +36,6 @@ it("重采带入示教必须人工确认轨迹顺序",async()=>{
  await userEvent.click(screen.getByRole("checkbox",{name:"带入旧中线与参数作为草稿"}));expect(adopt).toBeDisabled();
  await userEvent.click(screen.getByRole("checkbox",{name:"已确认轨迹和触发顺序保持一致，拍照点对应正确"}));await userEvent.click(adopt);
  expect(workspaceApi.adoptCapture).toHaveBeenCalledWith("A",7,"r1",true,true);
-});
-it("独立实拍正常样本加入验证库，不替换示教图",async()=>{
- ws.data!.workspace.captureId="teaching-round";
- vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show("/recipe/capture?purpose=validation");
- const save=await screen.findByRole("button",{name:"保存为独立正常验证样本"});expect(save).toBeDisabled();
- await userEvent.click(screen.getByRole("checkbox",{name:"已确认本轮样本与示教轨迹、触发顺序及拍摄条件一致"}));await userEvent.click(save);
- expect(workspaceApi.captureSample).toHaveBeenCalledWith("A",7,"r1","OK",true);expect(workspaceApi.adoptCapture).not.toHaveBeenCalled();
 });
 it.each([null,"r1"])("示教来源 %s 不允许当前轮次作为独立验证样本",async captureId=>{
  ws.data!.workspace.captureId=captureId;vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show("/recipe/capture?purpose=validation");

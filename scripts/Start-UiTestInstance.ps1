@@ -41,10 +41,10 @@ try {
         $taskUiProcess = Start-Process -FilePath $taskUiExecutable -WorkingDirectory $taskUiRoot -WindowStyle Hidden -PassThru `
             -RedirectStandardOutput (Join-Path $taskUiOutput 'stdout.log') -RedirectStandardError (Join-Path $taskUiOutput 'stderr.log')
     } finally { $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $taskUiOldArguments }
-    $taskUiState = @{ pid = $taskUiProcess.Id; executable = $taskUiExecutable; identifier = $taskUiOverlay.identifier;
-        debugPort = $DebugPort; startedAt = $taskUiProcess.StartTime.ToUniversalTime().ToString('o') }
-    $taskUiState | ConvertTo-Json | Set-Content -LiteralPath $taskUiManifest -Encoding utf8
     try {
+        $taskUiState = @{ pid = $taskUiProcess.Id; executable = $taskUiExecutable; identifier = $taskUiOverlay.identifier;
+            debugPort = $DebugPort; startedAt = $taskUiProcess.StartTime.ToUniversalTime().ToString('o') }
+        $taskUiState | ConvertTo-Json | Set-Content -LiteralPath $taskUiManifest -Encoding utf8
         $taskUiReady = $false
         for ($taskUiAttempt = 0; $taskUiAttempt -lt 40; $taskUiAttempt++) {
             try { $taskUiVersion = Invoke-RestMethod -Uri "http://127.0.0.1:$DebugPort/json/version" -TimeoutSec 1; $taskUiReady = [bool]$taskUiVersion.webSocketDebuggerUrl } catch { }

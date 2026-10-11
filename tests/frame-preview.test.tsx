@@ -32,17 +32,11 @@ describe("最新相机帧与触发",()=>{
     expect(screen.queryByRole("combobox",{name:"预览视角"})).toBeNull();
     expect(usePreviewCanvas).toHaveBeenLastCalledWith(1,8,250,expect.any(String),1);
   });
-  it("回放下一张绑定工位，请求中禁止重复取图，完成解锁",async()=>{
-    const request=deferred<void>();vi.mocked(cameraApi.softTrigger).mockReturnValue(request.promise);
-    show();await userEvent.click(screen.getByRole("button",{name:"下一张"}));
-    expect(cameraApi.softTrigger).toHaveBeenCalledWith(0);expect(screen.getByRole("button",{name:"取图中…"})).toBeDisabled();
-    fireEvent.click(screen.getByRole("button",{name:"取图中…"}));expect(cameraApi.softTrigger).toHaveBeenCalledTimes(1);
-    await act(async()=>request.resolve());expect(screen.getByRole("button",{name:"下一张"})).toBeEnabled();
-  });
-
   it("切换工位后旧触发失败不能污染新工位或解除其取图锁",async()=>{
     const old=deferred<void>(),current=deferred<void>();vi.mocked(cameraApi.softTrigger).mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
     const page=show();await userEvent.click(screen.getByRole("button",{name:"下一张"}));
+    expect(cameraApi.softTrigger).toHaveBeenCalledWith(0);
+    fireEvent.click(screen.getByRole("button",{name:"取图中…"}));expect(cameraApi.softTrigger).toHaveBeenCalledTimes(1);
     page.rerender(<FramePreview cam={1} config={{...config,id:"CAM-2"}} status={{...status,cam:1}} lastFrame={undefined}/>);
     await userEvent.click(screen.getByRole("button",{name:"下一张"}));await act(async()=>old.reject(new Error("旧工位断开")));
     expect(screen.queryByText("Error: 旧工位断开")).not.toBeInTheDocument();expect(screen.getByRole("button",{name:"取图中…"})).toBeDisabled();

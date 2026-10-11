@@ -3,6 +3,8 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "packageManager": "pnpm@11.1.3",
+  "engines": { "node": ">=24.15.0" },
   "scripts": {
     "dev": "tauri dev",
     "dev:web": "vite",
@@ -12,7 +14,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:ui": "vitest run tests/recipe-create-flow.test.tsx tests/teaching-flow.test.tsx",
-    "test:ui:production": "node tests/native/production-flow-ui.mjs",
+    "test:ui:production": "pwsh -NoProfile -File scripts/Test-UiProductionFlow.ps1",
+    "test:ui:all": "pnpm test:ui && pnpm test:ui:production",
     "sim:start": "pwsh -NoProfile -File scripts/robot-plc-demo/Start-Demo.ps1",
     "sim:build": "pwsh -NoProfile -File scripts/robot-plc-demo/Start-Demo.ps1 -Build",
     "sim:services": "pwsh -NoProfile -File scripts/robot-plc-demo/Start-Demo.ps1 -ServicesOnly",
@@ -44,6 +47,7 @@
     "@vitejs/plugin-react": "^6.1.1",
     "@vitest/coverage-v8": "^5.0.3",
     "jsdom": "^30.1.2",
+    "playwright-core": "1.64.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.0",
     "vitest": "^5.0.3"

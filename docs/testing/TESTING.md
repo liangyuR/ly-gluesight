@@ -10,7 +10,7 @@
 
 ## 运行
 
-首次安装依赖：`pnpm install --frozen-lockfile`。
+使用 Node 24.15+ 和 pnpm 11.1.3，首次安装依赖：`pnpm install --frozen-lockfile`。Playwright Core 已锁定为项目开发依赖，不需要全局安装或本机模块路径。
 
 | 命令 | 用途 |
 | --- | --- |
@@ -18,7 +18,8 @@
 | `pnpm test:watch` | 开发时持续运行相关测试 |
 | `pnpm test:coverage` | 全部前端测试与覆盖率报告，无覆盖率门槛 |
 | `pnpm test:ui` | 创建配方、完整逐帧示教两个前端流程 |
-| `pnpm test:ui:production --playwright-module <index.mjs> --instance <instance.json> --cdp <URL> --output <result.json>` | 已启动的隔离 flow 桌面实例：工件启动到真实落盘 |
+| `pnpm test:ui:production` | 自动构建、启动和关闭隔离 flow 桌面实例，验证工件启动到真实落盘 |
+| `pnpm test:ui:all` | 顺序运行创建配方、完整示教和生产落盘三个流程 |
 | `pnpm typecheck` | 同时检查应用和测试的 TypeScript 类型 |
 | `pnpm build` | 验证生产前端构建 |
 
@@ -82,7 +83,7 @@ cargo test --offline --locked --lib native_ -- --ignored --test-threads=1 --noca
 通过 Playwright CLI 连接该实例后，先执行 `tests/native/guard.js` 只读确认目录和模拟器，再按场景前置顺序运行 `tests/native/*-ui.js`。后台命令只用于只读断言；目录选择、参数更改、保存和写入都经过真实 UI。P0 流程用 `p0-*-ui.js`（建候选、示教、验证发布、在线、局部失效、实时图像显示、历史与原包重现等）；旧名义胶路模型的 `flyshot-*-ui.js` 没有改写，不再适用于当前配方。
 
 - 复用前先检查脚本里的本机路径：部分脚本固定写了本机的样本、回放目录、DLL 与输出路径（含旧的 D: 路径），需改成本机路径。离线原图和 DLL 不随仓库提供。
-- ACK 进程恢复专项 `p0-ack-process-recovery.mjs` 要求先关闭现存隔离实例，传入 `--executable`、`--instance`、`--appdata`、新的 `--output` 目录、后端导出的 `--template`、`--playwright-module` 与 `--fixture scripts/s7-handshake/s7_test_plc.py`；结束后还原 PLC 配置并归档本轮握手证据。
+- ACK 进程恢复专项 `p0-ack-process-recovery.mjs` 要求先关闭现存隔离实例，传入 `--executable`、`--instance`、`--appdata`、新的 `--output` 目录、后端导出的 `--template` 与 `--fixture scripts/s7-handshake/s7_test_plc.py`；结束后还原 PLC 配置并归档本轮握手证据。
 - 实际 CycleHost 性能脚本的准备与参数见 `tests/native/p0-cyclehost-performance.md`。
 - WebView2 直接写入系统下载目录时可能不发 CDP download 事件，`plc-log-export-ui.js` 只返回时间范围，运行后需核实新文件才能计为通过。
 
@@ -247,7 +248,7 @@ Rust 最终新增边界包括嵌套标定比例、人工比例覆盖、标定复
 1. 运行 `pnpm build` 和 `pnpm tauri build --debug --no-bundle --config tests/native/tauri-recipe-workflow.json`。
 2. 运行 `python tests/native/recipe-workflow-images.py output/playwright/recipe-workflow/images`（需要 Pillow）。
 3. 设置当前进程 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9351`，用 `Start-Process -WindowStyle Hidden` 启动该独立构建。数据标识必须为 `com.xyzrobotics.gluesight.recipe-workflow-20261011`，不能使用生产 profile。
-4. 运行 `node tests/native/recipe-workflow-ipc.mjs --playwright-module <本机playwright/index.mjs> --images output/playwright/recipe-workflow/images --output output/playwright/recipe-workflow --skip-engine`。
+4. 运行 `node tests/native/recipe-workflow-ipc.mjs --images output/playwright/recipe-workflow/images --output output/playwright/recipe-workflow --skip-engine`。
 5. 重启同一隔离实例，重复上条命令并加 `--restart`。首次执行拒绝覆盖已存在的同名测试候选；需要重跑时先关闭此实例并备份其独立 profile。
 
 Windows 沙箱临时目录权限及 realpath 限制会使测试启动失败；本轮以 C 盘项目、隔离 TEMP 及限定宿主执行取得最终证据。前端默认 fork 在此机器有既知停滞，最终使用线程池，没有改依赖或跳过 UI suite。临时失败日志与运行数据不进入交付提交。

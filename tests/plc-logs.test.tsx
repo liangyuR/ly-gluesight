@@ -56,20 +56,21 @@ describe("通讯日志查询与导出", () => {
     await userEvent.click(screen.getByRole("button", { name: "实时跟随中" })); expect(events.unsubscribe).toHaveBeenCalledTimes(1);
     page.unmount();
   });
-  it("导出沿用筛选，按批导出全部页并转义引号逗号，重复点击只导出一次", async () => {
-    await show(); const request = deferred<LogPage>(); vi.mocked(plcApi.queryLogs).mockReturnValueOnce(request.promise).mockResolvedValueOnce({ total: 1001, items: [{ ...entry, message: '胶宽,"正常"' }] });
-    const create = vi.fn((_blob: Blob) => "blob:csv"); const revoke = vi.fn();
-    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: create }); Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revoke });
-    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  it("按固定筛选完整导出、转义 CSV，等待期间不重复导出", async () => {
+    const now = new Date("2026-10-09T12:00:00+08:00").getTime(); const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    await show(); const request = deferred<LogPage>(); vi.mocked(plcApi.queryLogs).mockReturnValueOnce(request.promise).mockResolvedValueOnce({ total: 1001, items: [{ ...entry, message: '胶宽,"正常"\r下一行' }] });
+    const { create, revoke } = downloads();
     const button = screen.getByRole("button", { name: "导出 CSV" }); fireEvent.click(button); fireEvent.click(button);
     expect(screen.getByRole("button", { name: "导出中…" })).toBeDisabled();
+    clock.mockReturnValue(now + 30_000);
     await act(async () => request.resolve({ total: 1001, items: Array.from({ length: 1000 }, (_, i) => ({ ...entry, id: i })) }));
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     expect(plcApi.queryLogs).toHaveBeenCalledWith(expect.objectContaining({ limit: 1000, offset: 0 }));
     expect(plcApi.queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 1000, offset: 1000 }));
+    const batches = vi.mocked(plcApi.queryLogs).mock.calls.map(([q]) => q).filter(q => q.limit === 1000);
+    expect(batches).toHaveLength(2); expect(batches.every(q => q.end === now && q.start === now - 3_600_000)).toBe(true);
     expect(revoke).toHaveBeenCalledWith("blob:csv");
-    const text = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsText(create.mock.calls[0][0]); });
-    expect(text).toContain('"胶宽,""正常"""');
+    expect(await blobText(create.mock.calls[0][0])).toContain('"胶宽,""正常""\r下一行"');
   });
 
   it.each(["success", "error"])("切换筛选后旧导出的 %s 不下载或解锁新的导出", async kind => {
@@ -80,17 +81,6 @@ describe("通讯日志查询与导出", () => {
     await act(async () => kind === "success" ? old.resolve({ total: 1, items: [entry] }) : old.reject(new Error("过期导出失败")));
     expect(create).not.toHaveBeenCalled(); expect(screen.queryByText("Error: 过期导出失败")).toBeNull(); expect(screen.getByRole("button", { name: "导出中…" })).toBeDisabled();
     await act(async () => current.resolve({ total: 1, items: [entry] })); expect(create).toHaveBeenCalledTimes(1); expect(screen.getByRole("button", { name: "导出 CSV" })).toBeEnabled();
-  });
-
-  it("分批导出固定截止时间，包含 CR 的字段完整转义", async () => {
-    const now = new Date("2026-10-09T12:00:00+08:00").getTime(); const clock = vi.spyOn(Date, "now").mockReturnValue(now);
-    await show(); const { create } = downloads(); const first = deferred<LogPage>();
-    vi.mocked(plcApi.queryLogs).mockReturnValueOnce(first.promise).mockResolvedValueOnce({ total: 1001, items: [{ ...entry, id: 1001, message: "第一行\r第二行" }] });
-    fireEvent.click(screen.getByRole("button", { name: "导出 CSV" })); clock.mockReturnValue(now + 30_000);
-    await act(async () => first.resolve({ total: 1001, items: Array.from({ length: 1000 }, (_, id) => ({ ...entry, id })) }));
-    const batches = vi.mocked(plcApi.queryLogs).mock.calls.map(([q]) => q).filter(q => q.limit === 1000);
-    expect(batches).toHaveLength(2); expect(batches.every(q => q.end === now && q.start === now - 3_600_000)).toBe(true);
-    expect(await blobText(create.mock.calls[0][0])).toContain('"第一行\r第二行"');
   });
 
   it("超过五万条继续完整导出，不静默截断", async () => {

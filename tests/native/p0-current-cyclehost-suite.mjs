@@ -1,8 +1,9 @@
+import { chromium } from 'playwright-core';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { configureReplay, teachCleanFixture, isQuiescentCycleSnapshot, waitForPublishedRecipeReady } from './p0-clean-cyclehost-setup.mjs';
 import { runCycleHostPerformance, sampleProcess, scanReplayInputs } from './p0-cyclehost-performance.mjs';
@@ -31,10 +32,10 @@ async function fileArtifact(path) {
 }
 const { values } = parseArgs({ options: {
   exe: { type: 'string' }, manifest: { type: 'string' }, settings: { type: 'string' }, cameras: { type: 'string' },
-  plc: { type: 'string' }, inputs: { type: 'string' }, output: { type: 'string' }, playwright: { type: 'string' },
+  plc: { type: 'string' }, inputs: { type: 'string' }, output: { type: 'string' },
   'debug-port': { type: 'string', default: '9344' },
 } });
-for (const key of ['exe', 'manifest', 'settings', 'cameras', 'plc', 'inputs', 'output', 'playwright']) assert(values[key], 'Missing --' + key);
+for (const key of ['exe', 'manifest', 'settings', 'cameras', 'plc', 'inputs', 'output']) assert(values[key], 'Missing --' + key);
 const paths = Object.fromEntries(Object.entries(values).filter(([key]) => key !== 'debug-port').map(([key, value]) => [key, cPath(value)]));
 const profile = join(cPath(process.env.APPDATA), identifier), recordsRoot = join(profile, 'records');
 const repository = cPath(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'));
@@ -136,7 +137,7 @@ async function stopOwnedApp() {
   app.stopped = { verified, at: new Date().toISOString(), exitCode: app.child.exitCode, signal: app.child.signalCode };
 }
 try {
-  for (const key of ['exe', 'manifest', 'settings', 'cameras', 'plc', 'playwright']) await fileArtifact(paths[key]);
+  for (const key of ['exe', 'manifest', 'settings', 'cameras', 'plc']) await fileArtifact(paths[key]);
   const manifest = await json(paths.manifest), settings = await json(paths.settings), cameras = await json(paths.cameras), suppliedPlc = await json(paths.plc);
   const plc = structuredClone(suppliedPlc); plc.autoConnect = false;
   const sourceGate = manifest.sourceGate ?? manifest.runtimeSource;
@@ -174,7 +175,7 @@ try {
   await until(async () => { if (app.error || child.exitCode !== null) throw new Error(app.error ?? 'Owned native exited'); try { app.identity = await sampleProcess(child.pid, paths.exe); return app.identity; } catch { return false; } }, 'owned native PID/path/start identity', 5000);
   report.process = app.identity;
   await until(async () => { if (app.error || child.exitCode !== null) throw new Error(app.error ?? 'Owned native exited'); try { return (await fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal: AbortSignal.timeout(500) })).ok; } catch { return false; } }, 'owned native CDP');
-  const { chromium } = await import(pathToFileURL(paths.playwright).href);
+
   browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
   const native = await until(async () => { const found = []; for (const candidate of browser.contexts().flatMap(context => context.pages())) if (await candidate.evaluate(() => !!window.__TAURI_INTERNALS__?.invoke).catch(() => false)) found.push(candidate); return found.length && found; }, 'native invoke page');
   assert.equal(native.length, 1); page = native[0]; await page.waitForURL('http://tauri.localhost/**'); await page.getByRole('navigation', { name: '操作导航' }).waitFor();

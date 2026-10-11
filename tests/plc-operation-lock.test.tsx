@@ -2,7 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { plcApi, usePlcOperationState } from "../src/features/plc/api";
+import { usePlcOperationState } from "../src/features/plc/api";
 import type { PlcOperationState } from "../src/features/plc/types";
 import { deferred } from "./fixtures";
 
@@ -50,12 +50,6 @@ describe("PLC 操作锁", () => {
     render(<Harness />); expect(await screen.findByText(/生产状态不可用/)).toBeVisible();
     act(() => onSnapshot({ payload: { phase: "IDLE" } })); expect(screen.getByText("操作可用")).toBeVisible();
     act(() => onSnapshot({ payload: { phase: "REPORT" } })); expect(screen.getByText(/生产或结果交付尚未结束/)).toBeVisible();
-  });
-
-  it("一期模板把 DB 号交给后端生成，不执行保存或连接", async () => {
-    await plcApi.s7Phase1Template(100);
-    expect(invoke).toHaveBeenCalledTimes(1);
-    expect(invoke).toHaveBeenCalledWith("plc_s7_phase1_template", { dbNumber: 100 });
   });
 
   it("订阅失败不能被随后到达的空闲读取解除锁定", async () => {

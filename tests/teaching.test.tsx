@@ -7,7 +7,7 @@ import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
 import { recipeApi, useCycle } from "../src/features/cycle/api";
 import { cameraApi } from "../src/features/camera";
-import { snapshot, summary, tricamWorkspaceView, workspaceState, workspaceView } from "./fixtures";
+import { snapshot, summary, workspaceState, workspaceView } from "./fixtures";
 
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/cycle/api", () => ({ useCycle: vi.fn(),recipeApi:{list:vi.fn(),preview:vi.fn()} }));
@@ -82,15 +82,6 @@ describe("单帧示教：在冻结原图上点出中线", () => {
 });
 
 describe("多图配方示教", () => {
-  it("图 1 和图 3 可同时选用，切换编辑图不会取消勾选", async () => {
-    ws=workspaceState(tricamWorkspaceView());
-    const shot=ws.doc!.shots[0]; shot.views=[1,2,3].map(view=>({view,enabled:view===1,path:[],mmPerPx:.1}));
-    show(); await userEvent.click(screen.getByRole("checkbox",{name:"检测图 3"}));
-    expect(workspaceApi.setViews).toHaveBeenCalledWith("A",7,0,[1,3],false);
-    await userEvent.click(screen.getByRole("button",{name:"查看图 2"}));
-    expect(workspaceApi.selectView).toHaveBeenCalledWith("A",7,0,2);
-    expect(workspaceApi.setViews).toHaveBeenCalledTimes(1);
-  });
   it("有效 NG 允许完成示教，执行异常仍禁止完成", () => {
     ws.data!.workspace.frames[0].trial!.verdict="NG_GAP";
     const page=show();

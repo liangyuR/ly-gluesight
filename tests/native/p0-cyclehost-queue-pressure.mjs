@@ -1,9 +1,10 @@
+import { chromium } from 'playwright-core';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createConnection } from 'node:net';
 import { mkdir, readFile, writeFile, lstat, realpath, readdir } from 'node:fs/promises';
 import { join, dirname, resolve, basename } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { configureReplay, captureTeachingSample, isQuiescentCycleSnapshot, waitForPublishedRecipeReady } from './p0-clean-cyclehost-setup.mjs';
 import { sampleProcess, recordedArtifact } from './p0-cyclehost-performance.mjs';
@@ -201,10 +202,9 @@ export async function teachPressureFixture(page, options) {
 const { values } = parseArgs({ options: {
   executable: { type: 'string' }, instance: { type: 'string' }, appdata: { type: 'string' }, output: { type: 'string' },
   settings: { type: 'string' }, cameras: { type: 'string' }, template: { type: 'string' }, inputs: { type: 'string' },
-  python: { type: 'string' }, fixture: { type: 'string' }, 'fixture-config': { type: 'string' }, 'playwright-module': { type: 'string' },
-  'source-gate': { type: 'string' }, 'debug-port': { type: 'string', default: '9343' },
+  python: { type: 'string' }, fixture: { type: 'string' }, 'fixture-config': { type: 'string' }, 'source-gate': { type: 'string' }, 'debug-port': { type: 'string', default: '9343' },
 } });
-for (const key of ['executable', 'instance', 'appdata', 'output', 'settings', 'cameras', 'template', 'inputs', 'python', 'fixture', 'fixture-config', 'playwright-module', 'source-gate']) assert(values[key], 'Missing --' + key);
+for (const key of ['executable', 'instance', 'appdata', 'output', 'settings', 'cameras', 'template', 'inputs', 'python', 'fixture', 'fixture-config', 'source-gate']) assert(values[key], 'Missing --' + key);
 const paths = Object.fromEntries(Object.entries(values).filter(([key]) => !['source-gate', 'debug-port'].includes(key)).map(([key, value]) => [key, cPath(value)]));
 const output = paths.output, profile = paths.appdata, recordsRoot = join(profile, 'records'), debugPort = Number(values['debug-port']);
 assert.equal(profile.toLowerCase(), join(cPath(process.env.APPDATA), identifier).toLowerCase());
@@ -428,7 +428,7 @@ try {
   progress('fresh-pressure-native');
   app = await start('native-pressure', paths.executable, [], { ...env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort} --remote-debugging-address=127.0.0.1` });
   await until(async () => { if (app.error || app.child.exitCode !== null) throw new Error(app.error ?? 'Native app exited'); try { return (await fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal: AbortSignal.timeout(500) })).ok; } catch { return false; } }, 'owned native CDP');
-  const { chromium } = await import(pathToFileURL(paths['playwright-module']).href); browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
+  browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
   browser.on('disconnected', () => lifecycle('browser-disconnected'));
   report.cdpConnectedAt = new Date().toISOString(); lifecycle('browser-connected', { debugPort, pid: app.child.pid });
   const native = await until(async () => { const candidates = []; for (const candidate of browser.contexts().flatMap(context => context.pages())) if (await candidate.evaluate(() => !!window.__TAURI_INTERNALS__?.invoke).catch(() => false)) candidates.push(candidate); return candidates.length && candidates; }, 'native invoke page');

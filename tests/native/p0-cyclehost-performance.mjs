@@ -1,9 +1,10 @@
+import { chromium } from 'playwright-core';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { appendFile, mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve, win32 } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { recipeContract } from '../../scripts/robot-plc-demo/camera-bridge.mjs';
 
 const execute = promisify(execFile);
@@ -435,11 +436,10 @@ export async function runCycleHostPerformance(page, options) {
   return report;
 }
 
-export async function connectAndRun(modulePath, endpoint, options) {
+export async function connectAndRun(endpoint, options) {
   const address = new URL(endpoint);
   assert(address.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(address.hostname), 'Only local native CDP is allowed');
-  const runtime = await import(pathToFileURL(resolve(modulePath)).href);
-  const browser = await (runtime.chromium ?? runtime.default?.chromium).connectOverCDP(endpoint);
+  const browser = await chromium.connectOverCDP(endpoint);
   try {
     const pages = browser.contexts().flatMap(context => context.pages());
     const candidates = [];
@@ -456,14 +456,13 @@ export async function connectAndRun(modulePath, endpoint, options) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { values } = parseArgs({ options: {
-    'playwright-module': { type: 'string' }, cdp: { type: 'string', default: 'http://127.0.0.1:9338' },
+    cdp: { type: 'string', default: 'http://127.0.0.1:9338' },
     identifier: { type: 'string', default: 'com.xyzrobotics.tujiaovision.p0-tests.performance' },
     source: { type: 'string', default: 'sim' }, 'replay-dir': { type: 'string' },
     mode: { type: 'string' }, scenario: { type: 'string' }, fixture: { type: 'string' },
     release: { type: 'string' }, executable: { type: 'string' }, pid: { type: 'string' },
     output: { type: 'string' }, parts: { type: 'string', default: '100' } } });
-  assert(values['playwright-module'], '--playwright-module must point to an installed Playwright index.mjs');
-  const report = await connectAndRun(values['playwright-module'], values.cdp, {
+  const report = await connectAndRun(values.cdp, {
     mode: values.mode, scenario: values.scenario, fixture: values.fixture,
     identifier: values.identifier, source: values.source, replayDir: values['replay-dir'],
     releaseDir: values.release, executable: values.executable, pid: Number(values.pid),

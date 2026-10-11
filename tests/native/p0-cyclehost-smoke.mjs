@@ -1,15 +1,16 @@
+import { chromium } from 'playwright-core';
 import assert from 'node:assert/strict';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { configureReplay } from './p0-clean-cyclehost-setup.mjs';
 import { persistFailedAttempt, recordedArtifact, sampleProcess, scanReplayInputs, validateCameraSource, validatePart, validateReplayOutputs } from './p0-cyclehost-performance.mjs';
 
 process.env.PATH = ['C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native', 'C:\\vcpkg\\installed\\x64-windows\\bin', ...(process.env.PATH ?? '').split(';').filter(value => value && !/^D:/i.test(value))].join(';');
 const cPath = value => { const path = resolve(value); assert(/^C:\\/i.test(path), `C: required: ${path}`); return path; };
-const { values } = parseArgs({ options: { instance: {type:'string'}, baseline: {type:'string'}, output: {type:'string'}, 'playwright-module': {type:'string'}, cdp: {type:'string',default:'http://127.0.0.1:9338'} } });
-for (const key of ['instance','baseline','output','playwright-module']) assert(values[key], `Missing --${key}`);
+const { values } = parseArgs({ options: { instance: {type:'string'}, baseline: {type:'string'}, output: {type:'string'}, cdp: {type:'string',default:'http://127.0.0.1:9338'} } });
+for (const key of ['instance','baseline','output']) assert(values[key], `Missing --${key}`);
 const artifact = async path => { path=cPath(path);const bytes=await readFile(path);return {path,bytes:bytes.length}; };
 const json = async path => JSON.parse((await readFile(cPath(path),'utf8')).replace(/^\uFEFF/,''));
 const tree = async directory => {
@@ -27,7 +28,7 @@ assert(Number.isSafeInteger(instance.pid)&&instance.pid>0&&instance.processStart
 assert(baseline.passed&&baseline.runs.length===4&&baseline.runs.every(run=>run.passed&&run.completedParts===100&&run.independentValidatorPassed));
 await mkdir(output,{recursive:false});
 const report={startedAt:new Date().toISOString(),passed:false,scope:'Four actual native UI cycles after audit retry fix; one per combination; not a hundred-part performance benchmark',benchmark:false,partsPerCombination:1,instance,baseline:await artifact(values.baseline),software:await Promise.all(['p0-cyclehost-smoke.mjs','p0-cyclehost-performance.mjs','p0-clean-cyclehost-setup.mjs','../../scripts/robot-plc-demo/camera-bridge.mjs'].map(name=>artifact(join(dirname(fileURLToPath(import.meta.url)),name)))),runs:[],physicalValidation:false,s7HardwareValidation:false};
-const {chromium}=await import(pathToFileURL(cPath(values['playwright-module'])).href);
+
 const browser=await chromium.connectOverCDP(values.cdp);
 let attempt={stage:'guard',accepted:false,lastPoll:null},recordsRoot;
 try {

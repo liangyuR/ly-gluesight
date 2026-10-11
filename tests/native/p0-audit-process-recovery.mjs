@@ -1,9 +1,9 @@
+import { chromium } from 'playwright-core';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdir, readFile, writeFile, readdir, lstat, realpath } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { join, dirname, resolve, basename } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { sampleProcess } from './p0-cyclehost-performance.mjs';
 
@@ -12,10 +12,9 @@ const { values } = parseArgs({ options: {
   executable: { type: 'string' }, appdata: { type: 'string' }, output: { type: 'string' },
   template: { type: 'string' }, fixture: { type: 'string' }, instance: { type: 'string' },
   recipe: { type: 'string' }, settings: { type: 'string' }, cameras: { type: 'string' },
-  python: { type: 'string' }, 'playwright-module': { type: 'string' },
-  'source-gate': { type: 'string' }, 'debug-port': { type: 'string', default: '9342' },
+  python: { type: 'string' }, 'source-gate': { type: 'string' }, 'debug-port': { type: 'string', default: '9342' },
 } });
-for (const key of ['executable', 'appdata', 'output', 'template', 'fixture', 'instance', 'recipe', 'settings', 'cameras', 'python', 'playwright-module', 'source-gate']) {
+for (const key of ['executable', 'appdata', 'output', 'template', 'fixture', 'instance', 'recipe', 'settings', 'cameras', 'python', 'source-gate']) {
   assert(values[key], 'Missing --' + key);
 }
 const cPath = value => { const absolute = resolve(value); assert(/^c:\\/i.test(absolute), 'Only absolute C-drive paths are allowed'); return absolute; };
@@ -125,7 +124,7 @@ async function launch(label) {
     if (app.exitCode !== null || app.signalCode !== null || children.get(app).error) throw new Error('Native application exited during startup: ' + children.get(app).error);
     try { return (await fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal: AbortSignal.timeout(500) })).ok; } catch { return false; }
   }, 'owned native CDP');
-  const { chromium } = await import(pathToFileURL(paths['playwright-module']).href);
+
   browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
   const pages = await waitFor(async () => {
     const native = [];

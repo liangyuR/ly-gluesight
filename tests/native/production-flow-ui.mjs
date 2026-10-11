@@ -1,3 +1,4 @@
+import { chromium } from "playwright-core";
 import assert from "node:assert/strict";
 import { readFile, mkdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -241,7 +242,6 @@ async function main() {
     assert(process.argv[i].startsWith("--") && process.argv[i + 1], "参数必须为 --name value");
     args[process.argv[i].slice(2)] = process.argv[i + 1];
   }
-  assert(args["playwright-module"] && path.isAbsolute(args["playwright-module"]), "需要 --playwright-module 绝对路径");
   const cdp = args.cdp ?? "http://127.0.0.1:9339";
   const url = new URL(cdp);
   assert(["127.0.0.1", "localhost", "[::1]"].includes(url.hostname), "仅允许本机 CDP");
@@ -249,7 +249,6 @@ async function main() {
   const manifest = JSON.parse(await readFile(instance, "utf8"));
   assert.equal(manifest.identifier, identifier);
   assert.equal(Number(url.port), manifest.debugPort);
-  const { chromium } = await import(pathToFileURL(args["playwright-module"]).href);
   const browser = await chromium.connectOverCDP(cdp);
   try {
     const pages = browser.contexts().flatMap(context => context.pages());

@@ -1,11 +1,11 @@
+import { chromium } from 'playwright-core';
 import { spawn, spawnSync } from 'node:child_process';
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, i, all) => i % 2 ? pairs : [...pairs, [value.replace(/^--/, ''), all[i + 1]]], []));
-for (const required of ['executable','appdata','output','template','playwright-module','fixture','instance']) if (!args[required]) throw new Error(`Missing --${required}`);
+for (const required of ['executable','appdata','output','template','fixture','instance']) if (!args[required]) throw new Error(`Missing --${required}`);
 const appdata = path.resolve(args.appdata), output = path.resolve(args.output), executable = path.resolve(args.executable);
 if (!appdata.startsWith('C:\\') || !output.startsWith('C:\\') || !executable.startsWith('C:\\') || !path.basename(appdata).includes('.p0-tests.recovery')) throw new Error('Only C: isolated recovery app data and executable are allowed');
 const db = path.join(appdata,'inspection.db'), configPath = path.join(appdata,'plc.json'), journalPath = path.join(appdata,'plc-handshake.json');
@@ -15,7 +15,7 @@ if (path.resolve(instance.executable) !== executable || instance.identifier !== 
 if (appdata !== path.resolve(process.env.APPDATA,instance.identifier)) throw new Error('AppData must match the verified recovery identifier');
 try { await readFile(journalPath); throw new Error('Existing S7 transaction must be preserved; use a fresh isolated profile'); } catch(error) { if(error.code !== 'ENOENT') throw error; }
 const originalConfig = await readFile(configPath), exported = JSON.parse(await readFile(args.template,'utf8'));
-const { chromium } = await import(pathToFileURL(path.resolve(args['playwright-module'])).href);
+
 const sleep = ms => new Promise(resolve => setTimeout(resolve,ms));
 const python = args.python || 'python', debugPort = Number(args['debug-port'] || 9338);
 try { const response=await fetch(`http://127.0.0.1:${debugPort}/json/version`); if(response.ok) throw new Error('Stop the previous owned native instance before this process-recovery test'); } catch(error) { if(error.message.includes('Stop the previous')) throw error; }

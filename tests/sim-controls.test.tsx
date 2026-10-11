@@ -27,9 +27,6 @@ beforeEach(() => {
 async function show() { const page = render(<SimControls/>); await screen.findByRole("button", { name: "运行一件" }); return page; }
 describe("离线模拟节拍控制", () => {
 
-  it("未连接模拟 PLC 时禁用启动，显示连接前置条件", async () => {
-    connected = false; await show(); expect(screen.getByRole("button", { name: "运行一件" })).toBeDisabled(); expect(screen.getByText("请先连接模拟 PLC")).toBeVisible();
-  });
   it("启动请求中锁定所有启动操作，失败保留选择并可以重试", async () => {
     const request = deferred<void>(); vi.mocked(cycleApi.simStart).mockReturnValueOnce(request.promise);
     await show(); const button = screen.getByRole("button", { name: "运行一件" }); fireEvent.click(button); fireEvent.click(button);

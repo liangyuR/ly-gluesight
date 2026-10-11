@@ -1,17 +1,17 @@
+import { chromium } from 'playwright-core';
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
-import { pathToFileURL } from 'node:url';
 
 process.env.PATH = ['C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native', 'C:\\vcpkg\\installed\\x64-windows\\bin', ...(process.env.PATH ?? '').split(';').filter(value => value && !/^D:/i.test(value))].join(';');
 const execute = promisify(execFile);
 const { values } = parseArgs({ options: {
   instance: { type: 'string' }, output: { type: 'string' },
-  'playwright-module': { type: 'string' }, cdp: { type: 'string', default: 'http://127.0.0.1:9338' },
+  cdp: { type: 'string', default: 'http://127.0.0.1:9338' },
 } });
-for (const key of ['instance', 'output', 'playwright-module']) assert(values[key], `Missing --${key}`);
+for (const key of ['instance', 'output']) assert(values[key], `Missing --${key}`);
 const cPath = value => { const path = resolve(value); assert(/^C:\\/i.test(path), `C: required: ${path}`); return path; };
 const output = cPath(values.output);
 const instance = JSON.parse((await readFile(cPath(values.instance), 'utf8')).replace(/^\uFEFF/, ''));
@@ -21,7 +21,7 @@ const executable = cPath(instance.executable);
 
 assert(Number.isInteger(instance.pid) && instance.pid > 0);
 await mkdir(output, { recursive: false });
-const { chromium } = await import(pathToFileURL(cPath(values['playwright-module'])).href);
+
 const browser = await chromium.connectOverCDP(values.cdp);
 const report = { startedAt: new Date().toISOString(), instance, profile, passed: false };
 const processState = async () => JSON.parse((await execute('pwsh', ['-NoProfile', '-Command',

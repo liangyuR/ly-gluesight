@@ -21,11 +21,9 @@ p0-cyclehost-performance.mjs 连接一个已经启动、配置完成的专用 P0
 PowerShell 示例：先将路径和 PID 赋为当前原生实例的已核对值，再执行。输出目录必须不存在，每个组合使用新目录。
 
 ~~~powershell
-$taskPerfRoot = 'C:\Users\11601\project\ly-gluesight\tmp\p0-step6-audit'
-$taskPerfRuntime = 'C:\Users\11601\AppData\Local\npm-cache\_npx\e41f203b7505f1fb\node_modules\playwright\index.mjs'
+$taskPerfRoot = (Get-Location).Path
 $taskPerfArgs = @(
   "$taskPerfRoot\tests\native\p0-cyclehost-performance.mjs",
-  '--playwright-module', $taskPerfRuntime,
   '--cdp', 'http://127.0.0.1:9338',
   '--mode', 'tricam',
   '--scenario', 'normal',
@@ -40,7 +38,7 @@ $taskPerfArgs = @(
 & node "$taskPerfRoot\scripts\p0-cyclehost-report.mjs" (Join-Path $taskPerfOutput 'cyclehost-report.json')
 ~~~
 
-也可在已有 Playwright page 上调用导出的 runCycleHostPerformance(page, options)，使用同一组选项，不需要把 Playwright 加入项目依赖。单独 CLI 的 --playwright-module 指向已安装运行时；不会下载浏览器。CDP 只允许本机端点，自动选择唯一带 Tauri 内部接口的页面，不创建浏览器标签页。
+先在项目根目录执行 pnpm install --frozen-lockfile，脚本统一使用项目的 playwright-core 依赖，不需要指定本机运行时路径，也不会下载浏览器。也可在已有 Playwright page 上调用导出的 runCycleHostPerformance(page, options)，使用同一组选项。CDP 只允许本机端点，自动选择唯一带 Tauri 内部接口的页面，不创建浏览器标签页。
 
 ## 显式回放性能控制
 

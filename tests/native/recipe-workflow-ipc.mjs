@@ -1,18 +1,18 @@
+import { chromium } from 'playwright-core';
 import assert from 'node:assert/strict';
 import { mkdir, writeFile, copyFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
 const { values } = parseArgs({ options: {
-  'playwright-module': { type: 'string' }, images: { type: 'string' },
+  images: { type: 'string' },
   output: { type: 'string' }, cdp: { type: 'string', default: 'http://127.0.0.1:9351' },
   restart: { type: 'boolean', default: false },
   'skip-engine': { type: 'boolean', default: false },
 } });
-for (const key of ['playwright-module', 'images', 'output']) assert(values[key], `Missing --${key}`);
+for (const key of ['images', 'output']) assert(values[key], `Missing --${key}`);
 assert(values['skip-engine'], 'This workflow check requires --skip-engine; algorithm acceptance is separate');
-const { chromium } = await import(pathToFileURL(resolve(values['playwright-module'])).href);
+
 const browser = await chromium.connectOverCDP(values.cdp);
 const output = resolve(values.output), id = 'RECIPE-WORKFLOW-IPC';
 const report = { passed: false, fixtureSource: 'Generated persisted complete capture records; no live camera capture',

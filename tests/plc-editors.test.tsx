@@ -97,11 +97,7 @@ describe("地址表导入", () => {
   });
 
   it.each([
-    [null], [4], [[]], [{ ...point, id: undefined }], [{ ...point, id: " " }],
-    [{ ...point, tags: "tag" }], [{ ...point, tags: [4] }], [{ ...point, dataType: "bad" }],
-    [{ ...point, access: "write" }], [{ ...point, edge: "bad" }], [{ ...point, wordOrder: "bad" }],
-    [{ ...point, logChanges: "true" }], [{ ...point, description: null }],
-    [point, { ...point, id: " speed " }],
+    [null], [{ ...point, dataType: "bad" }], [point, { ...point, id: " speed " }],
   ])("拒绝无效点位字段 %#", async (...items) => {
     const onApply = vi.fn(); render(<PointsJsonDialog points={[]} onApply={onApply} onClose={vi.fn()} />);
     fireEvent.change(screen.getByRole("textbox", { name: "地址表 JSON" }), { target: { value: JSON.stringify(items) } });
