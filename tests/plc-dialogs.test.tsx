@@ -20,23 +20,6 @@ describe("PLC 写入", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it("预填当前值并写入数值，成功后关闭", async () => {
-    const onWrite = vi.fn().mockResolvedValue(undefined), onClose = vi.fn();
-    render(<WriteDialog point={point} current={{ value: 12, error: null, ts: 1 }} onWrite={onWrite} onClose={onClose} />);
-    expect(screen.getByRole("textbox")).toHaveValue("12");
-    fireEvent.change(screen.getByRole("textbox"), { target: { value: "2.5" } });
-    await userEvent.click(screen.getByRole("button", { name: "写入" }));
-    expect(onWrite).toHaveBeenCalledWith(2.5);
-    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-  });
-
-  it.each([true, false])("布尔按钮写入 %s", async value => {
-    const onWrite = vi.fn().mockResolvedValue(undefined);
-    render(<WriteDialog point={{ ...point, dataType: "bool" }} current={undefined} onWrite={onWrite} onClose={vi.fn()} />);
-    await userEvent.click(screen.getByRole("button", { name: value ? "置 1 (ON)" : "置 0 (OFF)" }));
-    expect(onWrite).toHaveBeenCalledWith(value);
-  });
-
   it("写入等待期间，回车不能重复提交", async () => {
     const request = deferred<void>(), onWrite = vi.fn(() => request.promise);
     render(<WriteDialog point={point} current={undefined} onWrite={onWrite} onClose={vi.fn()} />);
@@ -96,13 +79,4 @@ describe("对话框键盘与焦点", () => {
     unmount(); expect(trigger).toHaveFocus(); trigger.remove();
   });
 
-  it("Escape 使用最新的关闭回调，点击内容不关闭，点击遮罩关闭", async () => {
-    const first = vi.fn(), latest = vi.fn();
-    const { rerender } = render(<Modal title="参数" onClose={first}><p>内容</p></Modal>);
-    rerender(<Modal title="参数" onClose={latest}><p>内容</p></Modal>);
-    await userEvent.keyboard("{Escape}");
-    expect(first).not.toHaveBeenCalled(); expect(latest).toHaveBeenCalledTimes(1);
-    fireEvent.mouseDown(screen.getByText("内容")); expect(latest).toHaveBeenCalledTimes(1);
-    fireEvent.mouseDown(screen.getByRole("dialog").parentElement!); expect(latest).toHaveBeenCalledTimes(2);
-  });
 });

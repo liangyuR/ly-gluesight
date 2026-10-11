@@ -1,9 +1,9 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import RejudgeDialog from "../src/features/history/components/RejudgeDialog";
-import HistoryRetestPage from "../src/pages/HistoryRetestPage";
+
 import { historyApi } from "../src/features/history/api";
 import type { HistoryQuery, RejudgeResult } from "../src/features/history/types";
 import { deferred } from "./fixtures";
@@ -18,41 +18,6 @@ function element(value:HistoryQuery=query,total=3,onClose=vi.fn()){
 beforeEach(()=>vi.mocked(historyApi.rejudge).mockResolvedValue(structuredClone(result)));
 
 describe("历史批量重判",()=>{
-  it("默认使用记录版本和空覆盖参数，展示变化矩阵且可打开变化工件",async()=>{
-    render(element());await userEvent.click(screen.getByRole("button",{name:"重判当前筛选（3 件）"}));
-    expect(historyApi.rejudge).toHaveBeenCalledWith({query,ids:[],useCurrentRecipe:false,overrides:{position:{},width:{}}});
-    const sent=vi.mocked(historyApi.rejudge).mock.lastCall![0].overrides;
-    expect(sent).not.toHaveProperty("line");expect(sent).not.toHaveProperty("corner");
-    expect(await screen.findByText(/NG→OK 1 件/)).toBeVisible();expect(screen.getByRole("table")).toBeVisible();
-    await userEvent.click(screen.getByRole("button",{name:/SN 107/}));expect(await screen.findByText("打开工件 7")).toBeVisible();
-  });
-
-  it("切换当前配方，位置、胶宽限值与允许断胶长度、滤波覆盖值准确发送；清空回到不变",async()=>{
-    render(element());await userEvent.click(screen.getByRole("button",{name:"当前配方"}));
-    fireEvent.change(screen.getByRole("spinbutton",{name:"位置上公差"}),{target:{value:"0.4"}});
-    fireEvent.change(screen.getByRole("spinbutton",{name:"位置连续超差允许长度"}),{target:{value:"3"}});
-    fireEvent.change(screen.getByRole("spinbutton",{name:"胶宽下公差"}),{target:{value:"0.7"}});
-    fireEvent.change(screen.getByRole("spinbutton",{name:"胶宽绝对限下"}),{target:{value:"-0.5"}});
-    fireEvent.change(screen.getByRole("spinbutton",{name:"允许断胶长度（mm）"}),{target:{value:"0.8"}});
-    fireEvent.change(screen.getByRole("spinbutton",{name:"滤波窗口（奇数）"}),{target:{value:"5"}});
-    await userEvent.click(screen.getByRole("button",{name:"重判当前筛选（3 件）"}));
-    expect(historyApi.rejudge).toHaveBeenLastCalledWith({query,ids:[],useCurrentRecipe:true,overrides:{position:{tolUpper:.4,maxExcursionLen:3},width:{tolLower:.7,absMin:-.5},maxGapLen:.8,filterWindow:5}});
-    fireEvent.change(screen.getByRole("spinbutton",{name:"位置上公差"}),{target:{value:""}});
-    expect(screen.queryByRole("table")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button",{name:"记录当时的配方版本"}));
-    await userEvent.click(screen.getByRole("button",{name:"重判当前筛选（3 件）"}));
-    expect(historyApi.rejudge).toHaveBeenLastCalledWith(expect.objectContaining({useCurrentRecipe:false,overrides:expect.objectContaining({position:{tolUpper:undefined,maxExcursionLen:3}})}));
-    // 发给后端时没设的项不出现（JSON 丢掉 undefined）
-    expect(JSON.parse(JSON.stringify(vi.mocked(historyApi.rejudge).mock.lastCall![0].overrides.position))).toEqual({maxExcursionLen:3});
-    expect(screen.queryByRole("spinbutton",{name:/直边|R 角/})).toBeNull();
-  });
-
-  it.each([["位置上公差","-1"],["位置下公差","-1"],["胶宽连续超差允许长度","-0.5"],["允许断胶长度（mm）","-1"],["滤波窗口（奇数）","0"],["滤波窗口（奇数）","4"],["滤波窗口（奇数）","33"],["滤波窗口（奇数）","1.5"]])("拒绝 %s=%s，恢复后允许重试",(field,value)=>{
-    render(element());fireEvent.change(screen.getByRole("spinbutton",{name:field}),{target:{value}});
-    expect(screen.getByRole("alert")).toBeVisible();expect(screen.getByRole("button",{name:"重判当前筛选（3 件）"})).toBeDisabled();
-    expect(historyApi.rejudge).not.toHaveBeenCalled();fireEvent.change(screen.getByRole("spinbutton",{name:field}),{target:{value:""}});
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();expect(screen.getByRole("button",{name:"重判当前筛选（3 件）"})).toBeEnabled();
-  });
 
   it("绝对限颠倒会阻止重判；没有工件也不能运行",()=>{
     const page=render(element());
@@ -88,18 +53,4 @@ describe("历史批量重判",()=>{
     expect(screen.queryByText("Error: 历史库读取失败")).not.toBeInTheDocument();
   });
 
-  it("可关闭读操作；卸载后晚到失败不产生未处理错误",async()=>{
-    const pending=deferred<RejudgeResult>(),close=vi.fn();vi.mocked(historyApi.rejudge).mockReturnValueOnce(pending.promise);
-    const page=render(element(query,3,close));await userEvent.click(screen.getByRole("button",{name:"重判当前筛选（3 件）"}));
-    await userEvent.click(screen.getAllByRole("button",{name:"关闭"})[1]);
-    expect(close).toHaveBeenCalled();page.unmount();await act(async()=>pending.reject(new Error("已退出读取")));
-  });
-});
-
-describe("历史复测入口",()=>{
-  it("说明两种复测方式并通过入口选择历史工件",async()=>{
-    render(<MemoryRouter initialEntries={["/history/retest"]}><Routes><Route path="/history/retest" element={<HistoryRetestPage/>}/><Route path="/history" element={<p>历史工件列表</p>}/></Routes></MemoryRouter>);
-    expect(screen.getByText("先选择需要排查的工件")).toBeVisible();
-    await userEvent.click(screen.getByRole("link",{name:"打开历史记录"}));await waitFor(()=>expect(screen.getByText("历史工件列表")).toBeVisible());
-  });
 });

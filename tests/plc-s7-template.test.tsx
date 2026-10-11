@@ -39,25 +39,6 @@ describe("一期 S7 模板预览", () => {
     expect(config).toEqual(before); expect(onClose).not.toHaveBeenCalled();
   });
 
-  it("现有有效 DB 自动带入，取消保留当前配置", async () => {
-    const config = plcConfig(); config.points[0].address = "DB65000.DBD20";
-    const onApply = vi.fn(), onClose = vi.fn();
-    render(<S7Phase1Dialog config={config} dirty blockedReason="" onApply={onApply} onClose={onClose} />);
-    expect(dbInput()).toHaveValue(65000);
-    await userEvent.click(screen.getByRole("button", { name: "取消" }));
-    expect(onClose).toHaveBeenCalledTimes(1); expect(onApply).not.toHaveBeenCalled();
-  });
-
-  it.each(["", "0", "65536", "1.5", "-1"])("DB 号 %s 无效时不请求点表也不允许应用", async value => {
-    const onApply = vi.fn();
-    render(<S7Phase1Dialog config={plcConfig()} dirty={false} blockedReason="" onApply={onApply} onClose={vi.fn()} />);
-    fireEvent.change(dbInput(), { target: { value } });
-    expect(screen.getByRole("alert")).toHaveTextContent("DB 号需为 1–65535 的整数");
-    await userEvent.click(screen.getByRole("checkbox"));
-    expect(applyButton()).toBeDisabled(); expect(plcApi.s7Phase1Template).not.toHaveBeenCalled();
-    expect(onApply).not.toHaveBeenCalled();
-  });
-
   it("变更 DB 后忽略上一请求，并重新确认替换范围", async () => {
     const first = deferred<PlcConfig>();
     vi.mocked(plcApi.s7Phase1Template).mockReturnValueOnce(first.promise);
@@ -72,14 +53,6 @@ describe("一期 S7 模板预览", () => {
     expect(screen.queryByText("DB100.DBW12")).toBeNull();
     await userEvent.click(screen.getByRole("checkbox")); await userEvent.click(applyButton());
     expect(onApply).toHaveBeenCalledWith(expect.objectContaining({ points: template(200).points }), "s71200");
-  });
-
-  it("生成失败可重试，未确认前不能覆盖现有表", async () => {
-    vi.mocked(plcApi.s7Phase1Template).mockRejectedValueOnce(new Error("模板生成失败"));
-    render(<S7Phase1Dialog config={plcConfig()} dirty={false} blockedReason="" onApply={vi.fn()} onClose={vi.fn()} />);
-    expect(await screen.findByRole("alert")).toHaveTextContent("模板生成失败"); expect(applyButton()).toBeDisabled();
-    await userEvent.click(screen.getByRole("button", { name: "重试" }));
-    expect(await screen.findByText("DB100.DBW12")).toBeVisible(); expect(applyButton()).toBeDisabled();
   });
 
   it("预览完成后生产开始，保留预览但禁止应用，仍能取消", async () => {

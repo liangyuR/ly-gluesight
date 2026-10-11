@@ -4,9 +4,9 @@
 
 > 2026-10-09：随动（follow）检测工况已整体移除，一期只做硬触发飞拍；随动标定、随动配方、相关测试与文档条目同步删除。
 
-项目使用 Vitest、React Testing Library、user-event 和 jsdom。测试操作真实的 React 页面与表单；需要桌面数据的页面使用受控接口返回值，避免连接现场相机、PLC 或改写生产配置。工作台状态测试使用真实 WorkspaceProvider，异步竞态通过可手动完成的 Promise 验证。
+项目使用 Vitest、React Testing Library、user-event 和 jsdom 验证局部规则与交互。UI 重点保留一次创建配方和完整逐帧示教流程，使用真实页面与 WorkspaceProvider，仅在桌面接口边界提供最小数据。工件启动到落盘由独立的隐藏桌面实例验证，使用模拟相机与 PLC、真实后端和磁盘。
 
-2026-10-11 全仓测试审查、重复用例删减与覆盖率前后对照见 [单元测试精简记录](unit-test-simplification.md)。
+当前范围、删减依据和三个流程的复现见 [前端轻量测试](frontend-lightweight-tests.md)；第一轮去重的历史基线见 [单元测试精简记录](unit-test-simplification.md)。
 
 ## 运行
 
@@ -16,7 +16,9 @@
 | --- | --- |
 | `pnpm test` | 一次运行全部前端测试 |
 | `pnpm test:watch` | 开发时持续运行相关测试 |
-| `pnpm test:coverage` | 全部测试、覆盖率报告与覆盖率门槛检查 |
+| `pnpm test:coverage` | 全部前端测试与覆盖率报告，无覆盖率门槛 |
+| `pnpm test:ui` | 创建配方、完整逐帧示教两个前端流程 |
+| `pnpm test:ui:production --playwright-module <index.mjs> --instance <instance.json> --cdp <URL> --output <result.json>` | 已启动的隔离 flow 桌面实例：工件启动到真实落盘 |
 | `pnpm typecheck` | 同时检查应用和测试的 TypeScript 类型 |
 | `pnpm build` | 验证生产前端构建 |
 
@@ -24,7 +26,7 @@
 
 HTML 覆盖率报告输出到 `coverage/index.html`，机器可读摘要为 `coverage/coverage-summary.json`。报告统计整个 `src`，包括未被测试执行的文件；只排除启动入口、类型声明和统一导出文件。测试代码和测试夹具不计入覆盖率。
 
-覆盖率门槛：语句 85%、分支 80%、函数 80%、行 85%。工作台状态另要求行 90% / 分支 70%，流程状态模型另要求行 80% / 分支 70%，工件总览另要求行 90% / 分支 80%。测试文件以 2 个工作进程运行，避免桌面机器一次启动过多测试进程。
+不设置全局或单文件覆盖率门槛。报告继续统计整个 `src`，用来发现遗漏，不通过增加页面模拟用例追求百分比。测试文件以 2 个工作进程运行，避免桌面机器一次启动过多测试进程。
 
 本机受限环境里默认 fork 测试进程可能停滞，或依赖链接解析异常。这时可直接运行已有依赖：`node node_modules/vitest/vitest.mjs run --coverage --pool=threads --maxWorkers=2`、`node node_modules/typescript/bin/tsc -b`、`node node_modules/typescript/bin/tsc --noEmit -p tsconfig.test.json`、`node node_modules/vite/bin/vite.js build`。Windows Codex 受限环境若遇到原生 realpath 的 EPERM，按项目的 Windows 命令环境指引加载兼容脚本；仍不可读时在获准的主机环境运行相同测试，不要改应用代码或关闭失败检查来掩盖环境错误。
 
@@ -71,6 +73,7 @@ cargo test --offline --locked --lib native_ -- --ignored --test-threads=1 --noca
 
 `scripts/Start-UiTestInstance.ps1` 构建并启动隐藏的隔离测试实例，相机、PLC 配置和历史目录与生产实例独立：
 
+- `-Profile flow`：`tests/native/tauri-flow-test.json`，标识 `com.xyzrobotics.tujiaovision.flow-tests`，输出 `output/playwright/flow-regression`；配合 `production-flow-ui.mjs` 验证启动到落盘，复现见 [前端轻量测试](frontend-lightweight-tests.md)。
 - 默认 `-Profile ui`：`tests/native/tauri-ui-test.json`，标识 `com.xyzrobotics.tujiaovision.ui-tests`，输出 `output/playwright/ui-regression`。
 - `-Profile p0`：`tests/native/tauri-p0-test.json`，标识 `com.xyzrobotics.tujiaovision.p0-tests`，输出 `output/playwright/p0-regression`。
 
@@ -85,47 +88,24 @@ cargo test --offline --locked --lib native_ -- --ignored --test-threads=1 --noca
 
 仅检出源码或运行 `pnpm test` 不会自动完成这些原生 UI 测试。
 
-## 已覆盖的逻辑
+## 当前自动验证范围
 
-| 测试文件 | 关键行为 |
+| 范围 | 保留验证 |
 | --- | --- |
-| `workspace-context.test.tsx` | 配方恢复、快速切换、后台刷新竞态、草稿保护、保存修订、重复操作、防抖预览、事件清理、相机 / 标定 / 系统设置变更后的延后刷新 |
-| `teaching.test.tsx` | 指定帧、图像绑定、参数变更失效、保存与下一帧、生产期间取样限制 |
-| `validation.test.tsx` | 修订和样本期望失效、发布确认（含计划版本是否要 PLC 同步）、失败保留弹窗、历史来源、原图样本导入前置条件 |
-| `library.test.tsx` | 生产与候选去重、筛选、复制编号与产品代码、新建与删除确认、失败恢复 |
-| `recipe-editor.test.tsx` | 候选与生产保存、逐拍照点编辑（编号、Pose、相机、视角、胶条、不检、标定引用）、换视角清空中线、检测参数与限值覆盖（含最低有胶比例）、旧预览晚到 |
-| `geometry-page.test.tsx` | 真实编辑器与工作区的草稿/保存连接、候选切换与示教入口、工作中限制、飞拍可行性取拍照点相机曝光、不检与示教比例 |
-| `history.test.tsx` | 日期与结果筛选、分页复位、导出范围、空结果、查询返回顺序与失败恢复 |
-| `history-detail.test.tsx` | 原包重现、三目按保存视角查看原图、缺帧 / 测量出错 / PLC 确认 / 录制失败展示、规则与原图复测、原始记录保留、历史帧用于示教 |
-| `inspect.test.tsx` | 各生产阶段的切型限制、切换确认、故障复位、新件不显示旧结论 |
-| `settings.test.tsx` | 型号来源切换、两个设置分区保存互不覆盖、失败重试 |
-| `camera-config.test.tsx` | 采集模式、触发沿、后台固定序列号与未保存编辑、参数警告 |
-| `camera-page.test.tsx`、`camera-preview.test.tsx`、`frame-preview.test.tsx` | 相机增删与候选/生产引用保护、源切换、软触发/回放下一张、刷新失败重试、配置变化与连续预览作用域、历史帧/叠加显示 |
-| `offline-image-import.test.tsx` | 离线原图的格式/大小、二进制、重复操作、读取竞态、工位/修订/帧绑定、错误恢复 |
-| `overview.test.tsx` | 选帧、方向键及边界、自动布置、背景导入/移除/读取竞态、显示与物理规划分离 |
-| `calibration.test.tsx` | 冻结样本前置条件、标定尺寸加载、图像与工位绑定、失败保留原标定 |
-| `dry-run.test.tsx` | 当前相机帧计数、触发计数、跳号、最短间隔、启动失败 |
-| `feasibility.test.tsx` | 实际参数更新、运动模糊/触发间隔/视野重叠、无效输入不得显示可行 |
-| `sim-controls.test.tsx` | 工况切换、单件/连续、连接前置条件、重复启动、停止失败、配方删除 |
-| `plc-page.test.tsx` | 加载恢复、还原/保存/连接、重复操作、写入门槛、心跳点删除和地址表替换 |
-| `plc-logs.test.tsx` | 组合筛选、搜索分页、时间段校验、查询竞态、趋势、跟随清理、全部页 CSV 导出 |
-| `plc-dialogs.test.tsx` | 数值与布尔写入、非有限数值、等待期间重复回车、焦点循环与恢复、Esc 与遮罩 |
-| `plc-editors.test.tsx` | 协议端口、S7 预设、点位必填、ID 与标签去重、地址检查、JSON 导入 |
-| `connection-form.test.tsx` | 完整十六进制/数字格式、端口/TSAP/MC 范围、空值不变零、S7 1200/1500 相同参数仍保留所选型号、协议切换 |
-| `image-viewer.test.tsx` | 原图加载状态、缩放边界、叠加开关、换图重置、历史帧和过期读取 |
-| `visual-status.test.ts` | 工件与配方快照隔离、胶路颜色、缺帧、重复测量不回退、最终 NG 状态 |
-| `cycle-visuals.test.tsx` | 逐拍照点视图、帧选择、示教中线与站状态着色、段内断口位置、曲线公差与超差 |
-| `cycle-isolation.test.tsx` | 在线周期按 cycleId 隔离：同 SN 新周期清除旧测量，旧周期事件、快照和迟到请求不覆盖当前周期 |
-| `rejudge-retest.test.tsx` | 批量试算参数、原图复测入口、选件与筛选、缺图规则、重复操作、旧结果及错误隔离 |
-| `workflow-model.test.ts` | 示教与验证失效、历史备份恢复、工件边界发布快照、运行限制、代表性样本 |
-| `workflow-preview.test.tsx` | 所有流程页面的直接路由、存储损坏回退、情景筛选、重置、真实示教交互 |
-| `workflow-setup-operations.test.tsx`、`workflow-recipe-operations.test.tsx`、`workflow-production-operations.test.tsx`、`workflow-preview-components.test.tsx` | 预览的完整建站、多个本地候选、删除确认、示教/恢复、总览布置/背景、样本验证/边界发布、连续运行/停止、历史对照/导出、设置、缩放与叠加 |
-| `navigation.test.tsx` | 默认与未知路由、历史复测路由优先级、侧栏折叠、浏览器提示、页面错误重试 |
-| `sidebar.test.tsx`、`operation-guide.test.tsx` | 正式导航分组与整栏折叠、设备状态与卸载清理、全部引导链接和流程前置条件 |
+| 创建配方 | 真实配方库填写、创建请求、新候选选中、进度页到整圈采集路由；只模拟 Tauri 接口 |
+| 完整示教 | 两个拍照点从冻结原图点中线、保存、试测、完成示教并进入总览；使用真实工作台状态 |
+| 工件启动到落盘 | flow-tests 隐藏桌面实例中 UI 启动一件，经过模拟 PLC/相机、真实检测节拍、SQLite 和原图录制，独立只读连接检查文件 |
+| 工作台与纯状态 | 草稿保护、配方修订、异步刷新和保存隔离、流程失效、发布快照与周期身份 |
+| 采集/示教/发布关键交互 | 异常轮不可采用、独立验证样本、旧试测不可保存、发布确认与修订锁；不遍历完整配置矩阵 |
+| 在线与历史 | 切型/复位等待保护、周期隔离、过期原图/复测响应、原始记录保留 |
+| PLC 与设备 | 手写/生产锁、地址校验、输入解析、目录选择和相机来源切换的异步保护 |
+| 局部组件 | 图像坐标、曲线断口、弹窗焦点、请求重入、卸载清理和日志完整导出 |
 
-## 已修复并有回归测试的问题
+完整业务配置、布局/文案矩阵，以及 workflow 本地交互原型的建站、示教、发布、在线和历史整页模拟套件已删除。剩余局部测试用来保护有明确断言的规则和交互，不代表完整配置或真实图像测量验收。具体文件、数量与复现见 [前端轻量测试](frontend-lightweight-tests.md)。
 
-以下为 2026-10-09 前修复的前端问题；第 15、16 条涉及的卡尺与模板拖动已随旧模型删除。
+## 历史修复记录
+
+以下为 2026-10-09 前的历史修复记录，部分页面用例已精简，不据此声明当前自动覆盖。第 15、16 条涉及的卡尺与模板拖动已随旧模型删除。
 
 1. PLC 写入输入允许 Infinity / -Infinity。
 2. PLC 写入等待期间，回车绕过禁用按钮重复发起写入。

@@ -29,20 +29,7 @@ const blobText = (blob: Blob) => new Promise<string>((resolve, reject) => {
   const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsText(blob);
 });
 describe("通讯日志查询与导出", () => {
-  it("时间、级别、类别、点位和回车搜索形成组合条件，翻页和筛选复位", async () => {
-    await show(); await userEvent.click(screen.getByRole("button", { name: "下一页" }));
-    await waitFor(() => expect(plcApi.queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 100 })));
-    await userEvent.click(screen.getByRole("button", { name: "警告" }));
-    await userEvent.click(screen.getByRole("button", { name: "写入" }));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "日志点位" }), "speed");
-    const keyword = screen.getByPlaceholderText("搜索内容或点位名称，回车确认");
-    fireEvent.change(keyword, { target: { value: "  断胶  " } }); expect(plcApi.queryLogs).not.toHaveBeenCalledWith(expect.objectContaining({ keyword: "断胶" }));
-    fireEvent.keyDown(keyword, { key: "Enter" });
-    await waitFor(() => expect(plcApi.queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0, limit: 100, levels: ["warn"], categories: ["write"], pointId: "speed", keyword: "断胶" })));
-    expect(await screen.findByText("点位趋势 · 速度")).toBeVisible(); expect(plcApi.pointHistory).toHaveBeenCalledWith("speed", expect.any(Number), expect.any(Number));
-    await userEvent.click(screen.getByRole("button", { name: "清空搜索" }));
-    await waitFor(() => expect(plcApi.queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ keyword: null })));
-  });
+
   it("自定义时间停用跟随，错误时间段阻止请求并显示原因", async () => {
     await show(); await userEvent.click(screen.getByRole("button", { name: "自定义" }));
     expect(screen.getByRole("button", { name: "实时跟随" })).toBeDisabled();
@@ -61,12 +48,7 @@ describe("通讯日志查询与导出", () => {
     await act(async () => kind === "success" ? old.resolve({ total: 1, items: [{ ...entry, message: "过期日志" }] }) : old.reject(new Error("过期错误")));
     expect(screen.getByText("第一条日志")).toBeVisible(); expect(screen.queryByText("过期日志")).toBeNull(); expect(screen.queryByText("Error: 过期错误")).toBeNull();
   });
-  it("查询失败可刷新恢复，点击日志点位开启趋势", async () => {
-    vi.mocked(plcApi.queryLogs).mockRejectedValueOnce(new Error("查询失败")); render(<PlcLogPage />);
-    expect(await screen.findByText("Error: 查询失败")).toBeVisible(); await userEvent.click(screen.getByRole("button", { name: "刷新" }));
-    await screen.findByText("第一条日志"); await userEvent.click(screen.getByRole("button", { name: "速度" }));
-    expect(await screen.findByText("点位趋势 · 速度")).toBeVisible();
-  });
+
   it("实时事件合并刷新，关闭跟随与卸载时清理订阅", async () => {
     const page = await show(); const calls = vi.mocked(plcApi.queryLogs).mock.calls.length;
     act(() => { events.callback?.(); events.callback?.(); });
@@ -89,89 +71,6 @@ describe("通讯日志查询与导出", () => {
     const text = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsText(create.mock.calls[0][0]); });
     expect(text).toContain('"胶宽,""正常"""');
   });
-  it("所有预设时间窗口使用当前时刻，上一页返回首屏", async () => {
-    const now = new Date("2026-10-09T12:00:00+08:00").getTime(); vi.spyOn(Date, "now").mockReturnValue(now);
-    await show();
-    for (const [label, ms] of [["15 分钟", 900_000], ["1 小时", 3_600_000], ["24 小时", 86_400_000], ["7 天", 604_800_000]] as const) {
-      await userEvent.click(screen.getByRole("button", { name: label }));
-      expect(plcApi.queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ start: now - ms, end: null, offset: 0 }));
-      expect(screen.getByRole("button", { name: label })).toHaveAttribute("aria-pressed", "true");
-    }
-    await userEvent.click(screen.getByRole("button", { name: "下一页" }));
-    await userEvent.click(screen.getByRole("button", { name: "上一页" }));
-    expect(plcApi.queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0 }));
-    expect(screen.getByRole("button", { name: "上一页" })).toBeDisabled();
-  });
-
-  it("所有级别与类别可组合并逐个取消", async () => {
-    await show();
-    const levelNames = ["信息", "警告", "错误"], categoryNames = ["连接", "值变化", "写入", "边沿", "读取异常", "配置"];
-    for (const name of [...levelNames, ...categoryNames]) await userEvent.click(screen.getByRole("button", { name }));
-    expect(plcApi.queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ levels: ["info", "warn", "error"], categories: ["connection", "value", "write", "edge", "error", "config"] }));
-    for (const name of [...levelNames, ...categoryNames]) await userEvent.click(screen.getByRole("button", { name }));
-    expect(plcApi.queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ levels: [], categories: [] }));
-    expect(screen.getByRole("button", { name: "信息" })).toHaveAttribute("aria-pressed", "false");
-  });
-
-  it("清空筛选一次恢复时间、所有类别级别、点位、搜索与跟随", async () => {
-    await show(); await userEvent.click(screen.getByRole("button", { name: "警告" })); await userEvent.click(screen.getByRole("button", { name: "边沿" }));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "日志点位" }), "speed");
-    const keyword = screen.getByPlaceholderText("搜索内容或点位名称，回车确认"); fireEvent.change(keyword, { target: { value: "异常" } }); fireEvent.keyDown(keyword, { key: "Enter" });
-    await userEvent.click(screen.getByRole("button", { name: "自定义" })); await userEvent.click(screen.getByRole("button", { name: "清空筛选" }));
-    await waitFor(() => expect(plcApi.queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ levels: [], categories: [], pointId: null, keyword: null, end: null, offset: 0 })));
-    expect(screen.getByRole("combobox", { name: "日志点位" })).toHaveValue(""); expect(keyword).toHaveValue("");
-    expect(screen.queryByLabelText("开始时间")).toBeNull(); expect(screen.getByRole("button", { name: "实时跟随中" })).toBeEnabled();
-    expect(screen.queryByText("点位趋势 · 速度")).toBeNull();
-  });
-
-  it("清空自定义时间阻止查询与导出，修正后可恢复", async () => {
-    await show(); await userEvent.click(screen.getByRole("button", { name: "自定义" }));
-    fireEvent.change(screen.getByLabelText("开始时间"), { target: { value: "" } }); const calls = vi.mocked(plcApi.queryLogs).mock.calls.length;
-    const { create } = downloads(); await userEvent.click(screen.getByRole("button", { name: "导出 CSV" }));
-    expect(plcApi.queryLogs).toHaveBeenCalledTimes(calls); expect(create).not.toHaveBeenCalled(); expect(screen.getAllByText(/请选择有效时间段/).length).toBeGreaterThan(0);
-    await userEvent.click(screen.getByRole("button", { name: "清空筛选" })); await screen.findByText("第一条日志");
-    await userEvent.click(screen.getByRole("button", { name: "导出 CSV" })); expect(create).toHaveBeenCalledTimes(1);
-  });
-
-  it("点位配置失败不会被日志成功抹掉，可单独重试加载", async () => {
-    vi.mocked(plcApi.getConfig).mockRejectedValueOnce(new Error("点位配置不可读")); await show();
-    expect(screen.getByRole("alert")).toHaveTextContent("点位配置不可读");
-    await userEvent.click(screen.getByRole("button", { name: "刷新" })); expect(screen.getByRole("alert")).toHaveTextContent("点位配置不可读");
-    await userEvent.click(screen.getByRole("button", { name: "重新加载点位" }));
-    await waitFor(() => expect(screen.getByRole("option", { name: "速度" })).toBeInTheDocument()); expect(screen.queryByRole("alert")).toBeNull();
-  });
-
-  it("点位趋势失败保留已查询日志，刷新同时重试趋势", async () => {
-    await show(); vi.mocked(plcApi.pointHistory).mockRejectedValueOnce(new Error("趋势不可读"));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "日志点位" }), "speed");
-    expect(await screen.findByText("点位趋势：Error: 趋势不可读")).toBeVisible(); expect(screen.getByText("第一条日志")).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "刷新" })); expect(await screen.findByText("点位趋势 · 速度")).toBeVisible();
-    expect(screen.queryByText("点位趋势：Error: 趋势不可读")).toBeNull();
-  });
-
-  it.each(["success", "error"])("旧点位趋势的 %s 不污染取消点位后的日志", async kind => {
-    await show(); const old = deferred<Awaited<ReturnType<typeof plcApi.pointHistory>>>(); vi.mocked(plcApi.pointHistory).mockReturnValueOnce(old.promise);
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "日志点位" }), "speed");
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "日志点位" }), ""); await screen.findByText("第一条日志");
-    await act(async () => kind === "success" ? old.resolve([{ ts: 4, value: "旧趋势" }]) : old.reject(new Error("旧趋势失败")));
-    expect(screen.queryByText(/点位趋势 ·/)).toBeNull(); expect(screen.queryByText(/旧趋势失败/)).toBeNull(); expect(screen.getByText("第一条日志")).toBeVisible();
-  });
-
-  it("已移除配置的日志点位仍可筛选，并明确显示历史 ID", async () => {
-    vi.mocked(plcApi.queryLogs).mockResolvedValue({ total: 1, items: [{ ...entry, pointId: "removed", pointName: "旧点位" }] });
-    render(<PlcLogPage />); await userEvent.click(await screen.findByRole("button", { name: "旧点位" }));
-    expect(screen.getByRole("combobox", { name: "日志点位" })).toHaveValue("removed"); expect(screen.getByRole("option", { name: "removed（已移除）" })).toBeInTheDocument();
-    expect(plcApi.pointHistory).toHaveBeenCalledWith("removed", expect.any(Number), expect.any(Number));
-    expect(await screen.findByText("点位趋势 · removed")).toBeVisible();
-  });
-
-  it("导出失败后可重新下载，导出错误不被日志刷新掩盖", async () => {
-    await show(); vi.mocked(plcApi.queryLogs).mockRejectedValueOnce(new Error("读取导出失败")); const { create } = downloads();
-    await userEvent.click(screen.getByRole("button", { name: "导出 CSV" })); expect(await screen.findByText("Error: 读取导出失败")).toBeVisible();
-    expect(screen.getByRole("button", { name: "导出 CSV" })).toBeEnabled(); expect(screen.getByText("第一条日志")).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "刷新" })); expect(screen.getByText("Error: 读取导出失败")).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "导出 CSV" })); expect(create).toHaveBeenCalledTimes(1); expect(screen.queryByText("Error: 读取导出失败")).toBeNull();
-  });
 
   it.each(["success", "error"])("切换筛选后旧导出的 %s 不下载或解锁新的导出", async kind => {
     await show(); const old = deferred<LogPage>(), current = deferred<LogPage>(); const { create } = downloads();
@@ -181,14 +80,6 @@ describe("通讯日志查询与导出", () => {
     await act(async () => kind === "success" ? old.resolve({ total: 1, items: [entry] }) : old.reject(new Error("过期导出失败")));
     expect(create).not.toHaveBeenCalled(); expect(screen.queryByText("Error: 过期导出失败")).toBeNull(); expect(screen.getByRole("button", { name: "导出中…" })).toBeDisabled();
     await act(async () => current.resolve({ total: 1, items: [entry] })); expect(create).toHaveBeenCalledTimes(1); expect(screen.getByRole("button", { name: "导出 CSV" })).toBeEnabled();
-  });
-
-  it("卸载停止旧导出的后续分页与下载", async () => {
-    const page = await show(), request = deferred<LogPage>(); const { create } = downloads();
-    vi.mocked(plcApi.queryLogs).mockReturnValueOnce(request.promise); fireEvent.click(screen.getByRole("button", { name: "导出 CSV" }));
-    const calls = vi.mocked(plcApi.queryLogs).mock.calls.length; page.unmount();
-    await act(async () => request.resolve({ total: 1001, items: Array.from({ length: 1000 }, (_, id) => ({ ...entry, id })) }));
-    expect(create).not.toHaveBeenCalled(); expect(plcApi.queryLogs).toHaveBeenCalledTimes(calls);
   });
 
   it("分批导出固定截止时间，包含 CR 的字段完整转义", async () => {

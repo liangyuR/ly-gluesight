@@ -1,13 +1,13 @@
 param(
     [ValidateRange(1024, 65535)][int]$DebugPort = 9337,
     [switch]$SkipBuild,
-    [ValidateSet('ui', 'p0')][string]$Profile = 'ui'
+    [ValidateSet('ui', 'p0', 'flow')][string]$Profile = 'ui'
 )
 
 $ErrorActionPreference = 'Stop'
 $taskUiRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$taskUiConfig = Join-Path $taskUiRoot $(if ($Profile -eq 'p0') { 'tests\native\tauri-p0-test.json' } else { 'tests\native\tauri-ui-test.json' })
-$taskUiOutput = Join-Path $taskUiRoot $(if ($Profile -eq 'p0') { 'output\playwright\p0-regression' } else { 'output\playwright\ui-regression' })
+$taskUiConfig = Join-Path $taskUiRoot "tests\native\tauri-$Profile-test.json"
+$taskUiOutput = Join-Path $taskUiRoot "output\playwright\$Profile-regression"
 $taskUiExecutable = Join-Path $taskUiOutput 'gluesight-ui-tests.exe'
 $taskUiBuild = Join-Path $taskUiRoot 'src-tauri\target\debug\GlueSight.exe'
 $taskUiManifest = Join-Path $taskUiOutput 'instance.json'

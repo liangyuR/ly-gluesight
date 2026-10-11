@@ -11,6 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:ui": "vitest run tests/recipe-create-flow.test.tsx tests/teaching-flow.test.tsx",
+    "test:ui:production": "node tests/native/production-flow-ui.mjs",
     "sim:start": "pwsh -NoProfile -File scripts/robot-plc-demo/Start-Demo.ps1",
     "sim:build": "pwsh -NoProfile -File scripts/robot-plc-demo/Start-Demo.ps1 -Build",
     "sim:services": "pwsh -NoProfile -File scripts/robot-plc-demo/Start-Demo.ps1 -ServicesOnly",
