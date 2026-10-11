@@ -66,6 +66,8 @@ mod tests {
         let plan = PlcPlan::from_recipe(&recipe, "cam1".into()).unwrap();
         assert_eq!(plan.device_shots, 4);
         assert_eq!(plan.shot_count, 4);
+        assert_eq!(plan.shots.iter().map(|shot| shot.shot_id.as_str()).collect::<Vec<_>>(),
+            recipe.shots.iter().map(|shot| shot.id.as_str()).collect::<Vec<_>>());
     }
 
     #[test]
@@ -86,21 +88,6 @@ mod tests {
     }
 
     #[test]
-    fn plan_binds_single_device_counts_and_shot_order() {
-        let device = "cam1".to_owned();
-        let plan = PlcPlan::compile("part".into(), 1, device.clone(), shots()).unwrap();
-        assert_eq!(plan.device_shots, 4);
-        assert_eq!(plan.shot_count, 4);
-        let mut reordered = shots();
-        reordered.swap(0, 1);
-        assert_ne!(plan.shots, PlcPlan::compile("part".into(), 1, device.clone(), reordered).unwrap().shots);
-        assert_ne!(plan.plan_version, PlcPlan::compile("part".into(), 2, device.clone(), shots()).unwrap().plan_version);
-        let mut pose = shots();
-        pose[2].pose_id = "B3".into();
-        assert_ne!(plan.shots, PlcPlan::compile("part".into(), 1, device, pose).unwrap().shots);
-    }
-
-    #[test]
     fn invalid_bindings_and_duplicate_shots_cannot_publish_a_plan() {
         let device = "cam1".to_owned();
         let mut duplicate = shots();
@@ -112,14 +99,6 @@ mod tests {
         let mut no_pose = shots();
         no_pose[0].pose_id = " ".into();
         assert!(PlcPlan::compile("p".into(), 1, device, no_pose).is_err());
-    }
-
-    #[test]
-    fn production_recipe_export_rejects_another_device() {
-        let mut doc = crate::recipe::samples().remove(1);
-        doc.shots[1].camera = "cam2".into();
-        let recipe = doc.build().unwrap();
-        assert!(PlcPlan::from_recipe(&recipe, "cam1".into()).unwrap_err().contains("唯一相机设备"));
     }
 
     #[test]

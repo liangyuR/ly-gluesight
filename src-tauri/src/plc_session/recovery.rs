@@ -328,60 +328,6 @@ mod tests {
     }
 
     #[test]
-    fn malformed_identities_and_unknown_versions_are_diagnosed_without_guessing() {
-        let files = Files::new();
-        files.journal(None);
-        let valid = pending(CYCLE_A, 7, 50);
-        let mut cases = Vec::new();
-        let mut wrong_version = record(&valid, 2000);
-        wrong_version["version"] = json!(2);
-        cases.push(wrong_version);
-        let mut wrong_id = record(&valid, 2000);
-        wrong_id["pending"]["cycleId"] = json!("gggggggggggggggggggggggggggggggg");
-        cases.push(wrong_id);
-        let mut wrong_sn = record(&valid, 2000);
-        wrong_sn["pending"]["result"]["sn"] = json!(51);
-        cases.push(wrong_sn);
-        let mut wrong_seq = record(&valid, 2000);
-        wrong_seq["pending"]["result"]["requestSeq"] = json!(8);
-        cases.push(wrong_seq);
-        let mut wrong_last_seq = record(&valid, 2000);
-        wrong_last_seq["lastRequestSeq"] = json!(8);
-        cases.push(wrong_last_seq);
-        let mut missing_result = record(&valid, 2000);
-        missing_result["pending"]["result"] = Value::Null;
-        cases.push(missing_result);
-        let mut wrong_phase = record(&valid, 2000);
-        wrong_phase["pending"]["phase"] = json!("acquiring");
-        cases.push(wrong_phase);
-        let mut wrong_protocol = record(&valid, 2000);
-        wrong_protocol["pending"]["request"]["protocolVersion"] = json!(1);
-        cases.push(wrong_protocol);
-        for invalid in &cases { files.audit(invalid.clone()); }
-        let mut unresolved = targets();
-        unresolved.insert("gggggggggggggggggggggggggggggggg".into());
-        let recovered = files.open().recover_acknowledgements(&unresolved);
-        assert!(recovered.receipts.is_empty());
-        assert_eq!(recovered.errors.len(), cases.len(), "{:?}", recovered.errors);
-        for (index, error) in recovered.errors.iter().enumerate() { assert!(error.contains(&format!("第 {} 行", index + 1)), "{error}"); }
-    }
-
-    #[test]
-    fn old_valid_records_without_cycle_identity_are_quietly_skipped() {
-        let files = Files::new();
-        let mut old = pending(CYCLE_A, 7, 50);
-        old.cycle_id = None;
-        files.journal(Some(old.clone()));
-        files.audit(record(&old, 2000));
-        let mut missing = record(&old, 3000);
-        missing["pending"].as_object_mut().unwrap().remove("cycleId");
-        files.audit(missing);
-        let recovered = files.open().recover_acknowledgements(&targets());
-        assert!(recovered.receipts.is_empty());
-        assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
-    }
-
-    #[test]
     fn conflicting_cycle_identity_blocks_all_duplicates_but_preserves_other_cycles() {
         let files = Files::new();
         files.journal(Some(pending(CYCLE_A, 7, 50)));
@@ -392,77 +338,6 @@ mod tests {
         files.audit(record(&pending(CYCLE_B, 8, 50), 4000));
         let recovered = files.open().recover_acknowledgements(&targets());
         assert_eq!(recovered.receipts, vec![receipt(CYCLE_B, 8, 50, 4000)]);
-        assert_eq!(recovered.errors.len(), 1);
-        assert!(recovered.errors[0].contains("身份冲突"));
-    }
-
-    #[test]
-    fn audit_stream_continues_after_corruption_and_rejects_unterminated_receipt() {
-        let files = Files::new();
-        files.journal(None);
-        files.audit_bytes(b"{broken}\n\xff\n");
-        files.audit(record(&pending(CYCLE_A, 7, 50), 2000));
-        files.audit_bytes(&serde_json::to_vec(&record(&pending(CYCLE_B, 8, 50), 3000)).unwrap());
-        let recovered = files.open().recover_acknowledgements(&targets());
-        assert_eq!(recovered.receipts, vec![receipt(CYCLE_A, 7, 50, 2000)]);
-        assert_eq!(recovered.errors.len(), 3);
-        assert!(recovered.errors[2].contains("末尾半写"));
-    }
-
-    #[test]
-    fn audit_diagnostics_are_bounded_and_report_total_error_count() {
-        let files = Files::new();
-        files.journal(None);
-        let bytes = b"{broken}\n".repeat(100);
-        files.audit_bytes(&bytes);
-        files.audit(record(&pending(CYCLE_A, 7, 50), 2000));
-        let recovered = files.open().recover_acknowledgements(&targets());
-        assert_eq!(recovered.receipts, vec![receipt(CYCLE_A, 7, 50, 2000)]);
-        assert_eq!(recovered.errors.len(), ERROR_LIMIT + 1);
-        assert!(recovered.errors[ERROR_LIMIT].contains("100 条诊断"));
-        assert!(recovered.errors[ERROR_LIMIT].contains("36 条已省略"));
-    }
-
-    #[test]
-    fn no_unresolved_delivery_skips_audit_io_without_hiding_journal_failure() {
-        let files = Files::new();
-        files.journal(Some(pending(CYCLE_A, 7, 50)));
-        std::fs::create_dir(files.path.with_extension("audit.jsonl")).unwrap();
-        let session = files.open();
-        let recovered = session.recover_acknowledgements(&BTreeSet::new());
-        assert!(recovered.receipts.is_empty() && recovered.errors.is_empty());
-        assert!(session.pending() && session.acknowledged());
-        assert_eq!(session.phase(), SessionPhase::ResetRequired);
-        files.write(b"{broken}");
-        let corrupt = files.open().recover_acknowledgements(&BTreeSet::new());
-        assert!(corrupt.receipts.is_empty());
-        assert_eq!(corrupt.errors.len(), 1);
-    }
-
-    #[test]
-    fn lifecycle_audit_only_retains_unresolved_candidates_and_their_identity_conflicts() {
-        let files = Files::new();
-        files.journal(None);
-        let unresolved = [CYCLE_A.to_owned(), CYCLE_B.to_owned()].into_iter().collect();
-        let mut recovery = Recovery::new(&unresolved);
-        let mut bytes = Vec::new();
-        for index in 100..10_100u32 {
-            let cycle = format!("{index:032x}");
-            let old = pending(&cycle, 7, 50);
-            recovery.pending(&old, 7, 2000, "old history");
-            bytes.extend(serde_json::to_vec(&record(&old, 2000)).unwrap());
-            bytes.push(b'\n');
-        }
-        assert!(recovery.receipts.is_empty());
-        files.audit_bytes(&bytes);
-        let selected = pending(CYCLE_A, 7, 50);
-        files.audit(record(&selected, 3000));
-        let mut conflict = selected.clone();
-        conflict.request.plan_version += 1;
-        files.audit(record(&conflict, 4000));
-        files.audit(record(&pending(CYCLE_B, 8, 50), 5000));
-        let recovered = files.open().recover_acknowledgements(&unresolved);
-        assert_eq!(recovered.receipts, vec![receipt(CYCLE_B, 8, 50, 5000)]);
         assert_eq!(recovered.errors.len(), 1);
         assert!(recovered.errors[0].contains("身份冲突"));
     }

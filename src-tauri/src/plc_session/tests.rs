@@ -740,7 +740,7 @@ fn s7_wire_slow_end_journal_does_not_extend_frame_deadline() {
             tokio::time::sleep(Duration::from_millis(350)).await;
             let frame = crate::frame::Frame {
                 cam: 0, session: 1, counter: crate::frame::CounterSource::Synthetic,
-                frame_counter: 9002, trigger_counter: 2, lost_packets: 0, ts: now_ms(), manual: false, images: Vec::new(),
+                frame_counter: 9004, trigger_counter: 4, lost_packets: 0, ts: now_ms(), manual: false, images: Vec::new(),
             };
             release.send(()).unwrap();
             frame

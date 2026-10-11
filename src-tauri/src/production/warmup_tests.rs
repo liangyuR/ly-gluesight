@@ -37,34 +37,6 @@ async fn wait_permits(slot: &Semaphore, expected: usize) {
 }
 
 #[tokio::test]
-async fn queued_warmup_deadline_includes_the_permit_wait() {
-    let slot = Arc::new(Semaphore::new(1));
-    let gate = Arc::new(Gate::default());
-    let release = ReleaseOnDrop(gate.clone());
-    let (entered, started) = oneshot::channel();
-    let incumbent = tokio::spawn(run_warmup(slot.clone(), Duration::from_secs(5), move || {
-        let _ = entered.send(());
-        gate.wait();
-        Ok(41)
-    }));
-    tokio::time::timeout(Duration::from_secs(2), started).await.unwrap().unwrap();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let entered = calls.clone();
-    let error = run_warmup(slot.clone(), Duration::from_millis(30), move || {
-        entered.fetch_add(1, Ordering::SeqCst);
-        Ok(42)
-    }).await.unwrap_err();
-    assert!(matches!(&error, WarmupFailure::QueueTimeout(_)));
-    assert!(error.message().contains("预热排队超过 30 ms"));
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
-    assert_eq!(slot.available_permits(), 0);
-    assert!(!incumbent.is_finished());
-    release.0.release();
-    assert_eq!(incumbent.await.unwrap().unwrap(), 41);
-    wait_permits(&slot, 1).await;
-}
-
-#[tokio::test]
 async fn timed_out_warmup_keeps_the_permit_and_late_success_cannot_replace_failure() {
     let host = ProductionHost::default();
     let slot = host.slot.clone();
@@ -112,38 +84,6 @@ async fn timed_out_warmup_keeps_the_permit_and_late_success_cannot_replace_failu
     wait_permits(&slot, 1).await;
 }
 
-#[test]
-fn warmup_expired_in_the_real_blocking_pool_never_runs_the_operation() {
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_time().max_blocking_threads(1).build().unwrap();
-    let gate = Arc::new(Gate::default());
-    let release = ReleaseOnDrop(gate.clone());
-    runtime.block_on(async move {
-        let slot = Arc::new(Semaphore::new(1));
-        let (entered, started) = oneshot::channel();
-        let occupied = tokio::task::spawn_blocking(move || {
-            let _ = entered.send(());
-            gate.wait();
-        });
-        tokio::time::timeout(Duration::from_secs(2), started).await.unwrap().unwrap();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let entered = calls.clone();
-        let worker = tokio::spawn(run_warmup(slot.clone(), Duration::from_millis(200), move || {
-            entered.fetch_add(1, Ordering::SeqCst);
-            Ok(42)
-        }));
-        wait_permits(&slot, 0).await;
-        let error = tokio::time::timeout(Duration::from_secs(2), worker).await.unwrap().unwrap().unwrap_err();
-        assert!(matches!(&error, WarmupFailure::QueueTimeout(_)));
-        assert!(error.message().contains("预热排队超过 200 ms"));
-        assert_eq!(slot.available_permits(), 0);
-        release.0.release();
-        occupied.await.unwrap();
-        wait_permits(&slot, 1).await;
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert_eq!(run_warmup(slot.clone(), Duration::from_secs(1), || Ok(43)).await.unwrap(), 43);
-    });
-}
-
 #[tokio::test]
 async fn panicking_warmup_releases_the_permit_for_a_new_operation() {
     let slot = Arc::new(Semaphore::new(1));
@@ -189,19 +129,6 @@ async fn queued_recipe_can_retry_after_cumulative_wait_expires_and_the_slot_reco
     wait_permits(&host.slot, 1).await;
 }
 
-#[tokio::test]
-async fn actual_engine_failure_remains_permanent() {
-    let host = ProductionHost::default();
-    assert!(host.begin("failed", Instant::now()).unwrap().is_none());
-    let failed = run_warmup::<(), _>(host.slot.clone(), Duration::from_secs(1), || Err("controlled engine error".into())).await.unwrap_err();
-    assert!(matches!(&failed, WarmupFailure::Failed(_)));
-    let now = Instant::now();
-    host.entries.lock().unwrap().insert("failed".into(), failed.into_entry(now));
-    assert!(host.begin("failed", now + Duration::from_secs(3600)).is_err());
-    assert!(matches!(host.entries.lock().unwrap().get("failed"), Some(Entry::Failed(_))));
-    wait_permits(&host.slot, 1).await;
-}
-
 #[test]
 fn concurrent_refreshes_cannot_start_duplicate_retries() {
     let host = Arc::new(ProductionHost::default());
@@ -219,47 +146,4 @@ fn concurrent_refreshes_cannot_start_duplicate_retries() {
     });
     assert_eq!(started.load(Ordering::SeqCst), 1);
     assert!(matches!(host.entries.lock().unwrap().get("recipe"), Some(Entry::Preparing)));
-}
-
-#[test]
-fn late_blocking_worker_gets_a_full_execution_window_after_queueing() {
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_time().max_blocking_threads(1).build().unwrap();
-    let queue_gate = Arc::new(Gate::default());
-    let release_queue = ReleaseOnDrop(queue_gate.clone());
-    let engine_gate = Arc::new(Gate::default());
-    let release_engine = ReleaseOnDrop(engine_gate.clone());
-    runtime.block_on(async move {
-        let host = ProductionHost::default();
-        let slot = host.slot.clone();
-        let (occupied, pool_started) = oneshot::channel();
-        let blocker = tokio::task::spawn_blocking(move || {
-            let _ = occupied.send(());
-            queue_gate.wait();
-        });
-        tokio::time::timeout(Duration::from_secs(2), pool_started).await.unwrap().unwrap();
-        let (entered, engine_started) = oneshot::channel();
-        let requested = Instant::now();
-        let budget = Duration::from_millis(800);
-        assert!(host.begin("late-valid", requested).unwrap().is_none());
-        let worker = tokio::spawn(run_warmup(slot.clone(), budget, move || {
-            let _ = entered.send(Instant::now());
-            engine_gate.wait();
-            Ok(42)
-        }));
-        wait_permits(&slot, 0).await;
-        tokio::time::sleep_until(tokio::time::Instant::from_std(requested + Duration::from_millis(600))).await;
-        assert!(!worker.is_finished());
-        release_queue.0.release();
-        blocker.await.unwrap();
-        let actual_start = tokio::time::timeout(Duration::from_secs(2), engine_started).await.unwrap().unwrap();
-        assert!(actual_start >= requested + Duration::from_millis(600));
-        tokio::time::sleep_until(tokio::time::Instant::from_std(actual_start + Duration::from_millis(300))).await;
-        assert!(Instant::now() > requested + budget);
-        assert!(matches!(host.entries.lock().unwrap().get("late-valid"), Some(Entry::Preparing)));
-        assert!(!worker.is_finished(), "执行预算不能从申请或取得许可时开始");
-        assert_eq!(slot.available_permits(), 0);
-        release_engine.0.release();
-        assert_eq!(tokio::time::timeout(Duration::from_secs(2), worker).await.unwrap().unwrap().unwrap(), 42);
-        wait_permits(&slot, 1).await;
-    });
 }

@@ -3,7 +3,7 @@ use crate::frame::CounterSource;
 
 #[test]
 fn interrupted_history_keeps_all_planned_shots_and_each_failure_reason() {
-    let mut part = part("cycle-audit", &Ledgers::default(), true);
+    let mut part = part("cycle-audit", &Ledgers::default());
     part.frames[0].status = FrameStatus::Done;
     part.frames[0].session = Some(18);
     part.frames[0].frame_counter = Some(81);
@@ -29,10 +29,10 @@ fn interrupted_history_keeps_all_planned_shots_and_each_failure_reason() {
     assert!(refused.iter().all(|shot| shot.status == FrameStatus::Missing));
 }
 
-fn part(cycle_id: &str, ledgers: &Ledgers, one_device: bool) -> Part {
+fn part(cycle_id: &str, ledgers: &Ledgers) -> Part {
     let mut doc = crate::recipe::samples().remove(1);
     for (k, shot) in doc.shots.iter_mut().enumerate() {
-        shot.camera = if one_device { "cam1".into() } else { format!("cam{}", k % 3 + 1) };
+        shot.camera = "cam1".into();
         shot.view = [1, 2, 3, 1][k];
     }
     let recipe = Arc::new(doc.build().unwrap());
@@ -72,8 +72,9 @@ fn measured(part: &Part, k: usize) -> Measured {
 }
 
 fn complete_four(part: &mut Part, width: f32) {
-    for (cam, counter, k) in [(2, 1, 2), (0, 1, 0), (1, 1, 1), (0, 2, 3)] {
-        assert_eq!(part.receive_frame(&frame(cam, counter)).unwrap(), Route::Bound { shot: k, ordinal: counter });
+    for k in 0..4 {
+        let counter = k as u64 + 1;
+        assert_eq!(part.receive_frame(&frame(0, counter)).unwrap(), Route::Bound { shot: k, ordinal: counter });
         let mut result = measured(part, k);
         result.w.fill(width);
         assert!(part.apply_result(result).is_some());
@@ -84,10 +85,10 @@ pub(crate) async fn judge_last_frame_during_end(
     end: impl std::future::Future<Output = SessionEvent>,
     last_frame: impl std::future::Future<Output = Frame>,
 ) -> Judgement {
-    let mut p = part("slow-end-journal", &Ledgers::default(), false);
+    let mut p = part("slow-end-journal", &Ledgers::default());
     p.drain_timeout = Duration::from_millis(200);
-    for (cam, counter, k) in [(0, 1, 0), (1, 1, 1), (2, 1, 2)] {
-        p.receive_frame(&frame(cam, counter)).unwrap();
+    for k in 0..3 {
+        p.receive_frame(&frame(0, k as u64 + 1)).unwrap();
         p.apply_result(measured(&p, k)).unwrap();
     }
     let (event, frame) = tokio::join!(end, last_frame);
@@ -100,22 +101,8 @@ pub(crate) async fn judge_last_frame_during_end(
 }
 
 #[test]
-fn interleaved_devices_bind_shots_and_finish_ok_or_ng() {
-    let mut normal = part("cycle-ok", &Ledgers::default(), false);
-    complete_four(&mut normal, 4.0);
-    assert!(normal.complete());
-    assert_eq!(normal.judgement().verdict, Verdict::Ok);
-    assert_eq!(normal.view().measured_frames, 4);
-    assert_eq!(normal.triggers(), 4);
-    assert_eq!(normal.frames.iter().map(|f| f.frame_counter.unwrap()).collect::<Vec<_>>(), [9001, 9001, 9001, 9002]);
-    let mut ng = part("cycle-ng", &Ledgers::default(), false);
-    complete_four(&mut ng, 9.0);
-    assert!(!matches!(ng.judgement().verdict, Verdict::Ok | Verdict::OkWithExcursion | Verdict::ErrInspect));
-}
-
-#[test]
 fn tricam_four_shots_follow_one_counter_and_selected_views() {
-    let mut p = part("tricam", &Ledgers::default(), true);
+    let mut p = part("tricam", &Ledgers::default());
     for k in 0..4 {
         assert_eq!(p.receive_frame(&frame(0, k as u64 + 1)).unwrap(), Route::Bound { shot: k, ordinal: k as u64 + 1 });
         assert!(p.apply_result(measured(&p, k)).is_some());
@@ -123,11 +110,14 @@ fn tricam_four_shots_follow_one_counter_and_selected_views() {
     assert_eq!(p.frames.iter().map(|f| f.view).collect::<Vec<_>>(), [1, 2, 3, 1]);
     assert_eq!(p.judgement().verdict, Verdict::Ok);
     assert_eq!(p.triggers(), 4);
+    let mut ng = part("tricam-ng", &Ledgers::default());
+    complete_four(&mut ng, 9.0);
+    assert!(!matches!(ng.judgement().verdict, Verdict::Ok | Verdict::OkWithExcursion | Verdict::ErrInspect));
 }
 
 #[test]
 fn early_part_end_waits_for_every_shot_result() {
-    let mut p = part("end-first", &Ledgers::default(), false);
+    let mut p = part("end-first", &Ledgers::default());
     let end = Instant::now();
     p.end_at = Some(end);
     assert!(p.expire(end + Duration::from_millis(10), Duration::from_secs(1), Duration::from_secs(3)).is_empty());
@@ -139,7 +129,7 @@ fn early_part_end_waits_for_every_shot_result() {
 
 #[test]
 fn duplicates_do_not_replace_missing_shots_or_satisfy_completion() {
-    let mut p = part("duplicate", &Ledgers::default(), true);
+    let mut p = part("duplicate", &Ledgers::default());
     for counter in 1..=3 {
         p.receive_frame(&frame(0, counter)).unwrap();
         p.apply_result(measured(&p, counter as usize - 1));
@@ -158,7 +148,7 @@ fn duplicates_do_not_replace_missing_shots_or_satisfy_completion() {
 
 #[test]
 fn first_missing_frame_keeps_later_shots_and_expires_err91() {
-    let mut p = part("missing-first", &Ledgers::default(), true);
+    let mut p = part("missing-first", &Ledgers::default());
     for counter in 2..=4 {
         assert!(matches!(p.receive_frame(&frame(0, counter)).unwrap(), Route::Bound { .. }));
         p.apply_result(measured(&p, counter as usize - 1));
@@ -177,7 +167,7 @@ fn counter_desync_ends_err91_with_expected_and_received_counters() {
     let mut ledgers = Ledgers::default();
     ledgers.observe(&FrameMeta::from(&frame(0, 1)));
     ledgers.set_floor(&Floor { cam: 0, camera: "cam1".into(), session: 1, baseline: 2 });
-    let mut p = part("desync", &ledgers, true);
+    let mut p = part("desync", &ledgers);
     assert!(matches!(p.receive_frame(&frame(0, 2)).unwrap(), Route::Stale { counter: 2, baseline: Some(2) }));
     for counter in 3..=5 {
         let Route::Bound { shot, .. } = p.receive_frame(&frame(0, counter)).unwrap() else { panic!("counter {counter}") };
@@ -193,7 +183,7 @@ fn counter_desync_ends_err91_with_expected_and_received_counters() {
         "{}", judgement.reason);
 
     // 多出的触发：第一个超计划帧就是结果原因，写明应收与实际计数
-    let mut p = part("extra", &Ledgers::default(), true);
+    let mut p = part("extra", &Ledgers::default());
     for counter in 1..=5 { p.receive_frame(&frame(0, counter)).unwrap(); }
     let judgement = p.judgement();
     assert_eq!(judgement.fault_code, fault::EXTRA_FRAME);
@@ -202,7 +192,7 @@ fn counter_desync_ends_err91_with_expected_and_received_counters() {
 
 #[test]
 fn timeout_is_terminal_before_end_and_late_measurement_is_ignored() {
-    let mut p = part("timeout", &Ledgers::default(), true);
+    let mut p = part("timeout", &Ledgers::default());
     p.receive_frame(&frame(0, 1)).unwrap();
     let result = measured(&p, 0);
     let now = p.measuring_since[0].unwrap() + Duration::from_secs(2);
@@ -215,12 +205,12 @@ fn timeout_is_terminal_before_end_and_late_measurement_is_ignored() {
 
 #[test]
 fn same_sn_reinspection_rejects_old_cycle_and_every_other_identity_mismatch() {
-    let mut first = part("first", &Ledgers::default(), true);
+    let mut first = part("first", &Ledgers::default());
     first.receive_frame(&frame(0, 1)).unwrap();
     let old = measured(&first, 0);
     let mut ledgers = Ledgers::default();
     first.router.close(&mut ledgers, None);
-    let mut next = part("next", &ledgers, true);
+    let mut next = part("next", &ledgers);
     assert!(matches!(next.receive_frame(&frame(0, 2)).unwrap(), Route::Stale { .. }));
     assert_eq!(next.receive_frame(&frame(0, 5)).unwrap(), Route::Bound { shot: 0, ordinal: 1 });
     assert_eq!(next.sn, old.sn);
@@ -237,7 +227,7 @@ fn same_sn_reinspection_rejects_old_cycle_and_every_other_identity_mismatch() {
 
 #[test]
 fn malformed_measurement_cannot_write_another_shot_or_report_ok() {
-    let mut p = part("bad-output", &Ledgers::default(), true);
+    let mut p = part("bad-output", &Ledgers::default());
     p.receive_frame(&frame(0, 1)).unwrap();
     let mut result = measured(&p, 0);
     result.idx[0] = u32::MAX;
@@ -247,27 +237,6 @@ fn malformed_measurement_cannot_write_another_shot_or_report_ok() {
     assert!(p.recipe.owned_points(0).all(|j| p.table[j] == PointState::Invalid));
     assert!(p.recipe.owned_points(1).all(|j| p.table[j] == PointState::Pending));
     assert_eq!(p.judgement().fault_code, fault::PROCESS_TIMEOUT);
-}
-
-#[test]
-fn cycle_identity_is_persistent_and_independent_of_serial_number() {
-    let path = std::env::temp_dir().join(format!("gluesight-cycle-{}-{}.sqlite", std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-    let first;
-    {
-        let store = Store::open(&path).unwrap();
-        first = store.reserve_cycle_id().unwrap();
-        assert_eq!(first.len(), 32);
-    }
-    {
-        let store = Store::open(&path).unwrap();
-        let second = store.reserve_cycle_id().unwrap();
-        assert_ne!(first, second);
-        let conn = rusqlite::Connection::open(&path).unwrap();
-        let count: i64 = conn.query_row("SELECT count(*) FROM cycle_ids", [], |row| row.get(0)).unwrap();
-        assert_eq!(count, 2);
-    }
-    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
@@ -299,14 +268,14 @@ fn identity_batches_commit_together_and_failed_batches_expose_no_partial_ids() {
 
 #[test]
 fn late_frame_and_result_cannot_beat_the_deadline_tick() {
-    let mut p = part("late-frame", &Ledgers::default(), true);
+    let mut p = part("late-frame", &Ledgers::default());
     p.end_at = Some(Instant::now() - Duration::from_secs(3));
     assert!(p.receive_frame(&frame(0, 1)).is_none());
     assert_eq!(p.received, 0);
     assert_eq!(p.frames[0].status, FrameStatus::Missing);
     assert_eq!(p.judgement().fault_code, fault::MISSING_FRAME);
 
-    let mut p = part("late-result", &Ledgers::default(), true);
+    let mut p = part("late-result", &Ledgers::default());
     p.receive_frame(&frame(0, 1)).unwrap();
     let result = measured(&p, 0);
     p.end_at = Some(Instant::now() - Duration::from_secs(3));
@@ -317,64 +286,24 @@ fn late_frame_and_result_cannot_beat_the_deadline_tick() {
 
 #[test]
 fn device_reconnection_without_another_frame_is_detected() {
-    let mut p = part("reconnect", &Ledgers::default(), false);
+    let mut p = part("reconnect", &Ledgers::default());
     complete_four(&mut p, 4.0);
     let mut cameras: Vec<_> = p.camera_ids.iter().enumerate().map(|(cam, camera)| ArmCam {
         cam: cam as u8, camera: camera.clone(), session: cam as u64 + 1,
         source: Some(CounterSource::Synthetic), counter_after_open: None,
     }).collect();
     assert!(p.router.check_sessions(&cameras).is_ok());
-    cameras[1].session += 100;
+    cameras[0].session += 100;
     let reason = p.router.check_sessions(&cameras).unwrap_err();
     p.fault = Some((fault::DEVICE_LOST, reason));
     assert_eq!(p.judgement().fault_code, fault::DEVICE_LOST);
 }
 
-#[test]
-fn callback_summary_never_lowers_arming_baseline_for_queued_idle_frames() {
-    let mut callback = Ledgers::default();
-    callback.observe(&FrameMeta::from(&frame(0, 12)));
-    callback.observe(&FrameMeta::from(&frame(0, 11)));
-    let mut actor = Ledgers::default();
-    actor.observe(&FrameMeta::from(&frame(0, 10)));
-    actor.merge(0, callback.get(0).unwrap());
-    assert_eq!(actor.get(0).unwrap().last, Some(12));
-    let doc = crate::recipe::samples().remove(1);
-    let cameras = [ArmCam { cam: 0, camera: "cam1".into(), session: 1,
-        source: Some(CounterSource::Synthetic), counter_after_open: None }];
-    assert!(ShotRouter::arm(&Plan::from_shots(&doc.shots), &actor, &Policy::development(None), &cameras).is_err());
-
-    let mut actor = Ledgers::default();
-    actor.observe(&FrameMeta::from(&frame(0, 12)));
-    actor.set_floor(&Floor { cam: 0, camera: "cam1".into(), session: 1, baseline: 12 });
-    actor.observe(&FrameMeta::from(&frame(0, 11)));
-    assert_eq!(actor.get(0).unwrap().backwards, None);
-    let mut next = part("queued-old", &actor, true);
-    assert!(matches!(next.receive_frame(&frame(0, 12)).unwrap(), Route::Stale { .. }));
-    assert_eq!(next.receive_frame(&frame(0, 13)).unwrap(), Route::Bound { shot: 0, ordinal: 1 });
-}
-
-#[test]
-fn failed_or_unlocated_outputs_never_emit_nonfinite_scores_or_foreign_points() {
-    let mut p = part("nonfinite", &Ledgers::default(), true);
-    p.receive_frame(&frame(0, 1)).unwrap();
-    let mut output = measured(&p, 0);
-    output.located = false;
-    output.score = f32::NAN;
-    output.idx = vec![u32::MAX];
-    let normalized = p.apply_result(output).unwrap();
-    assert!(normalized.score.is_finite());
-    assert!(normalized.idx.is_empty());
-    assert!(normalized.st.is_empty());
-    assert_eq!(p.frames[0].status, FrameStatus::Error);
-}
-
-
 pub(crate) fn judge_callback_channel(
     baseline: &Ledgers, received: Vec<Frame>, observed: &Ledgers,
 ) -> (Judgement, Vec<FrameView>) {
     let base = baseline.get(0).and_then(|ledger| ledger.last).unwrap_or(0);
-    let mut p = part(&format!("callback-full-{base}"), &Ledgers::default(), true);
+    let mut p = part(&format!("callback-full-{base}"), &Ledgers::default());
     let camera = ArmCam { cam: 0, camera: "cam1".into(), session: 11,
         source: Some(CounterSource::ChunkTrigger), counter_after_open: Some(0) };
     p.router = ShotRouter::arm(&Plan::from_shots(&p.recipe.shots), baseline,

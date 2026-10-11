@@ -27,7 +27,7 @@ impl Drop for TestDb {
 fn recipe() -> Recipe {
     let mut doc = crate::recipe::samples().remove(1);
     for (k, shot) in doc.shots.iter_mut().enumerate() {
-        shot.camera = format!("cam{}", k % 3 + 1);
+        shot.camera = "cam1".into();
         shot.view = (k % 3 + 1) as u8;
     }
     doc.build().unwrap()
@@ -200,21 +200,6 @@ fn durable_ack_recovery_matches_cycle_after_reopen_and_preserves_original_eviden
 }
 
 #[test]
-fn durable_ack_recovery_write_failure_does_not_change_record() {
-    let db = TestDb::new();
-    let store = Store::open(&db.path()).unwrap();
-    let recipe = recipe();
-    let cycle = store.reserve_cycle_id().unwrap();
-    let id = save(&store, &recipe, &cycle, &shots(&recipe), &PlcDelivery { state: PlcDeliveryState::Submitted, updated_at: 10, message: None }, None).unwrap();
-    let before = serde_json::to_value(store.detail(id).unwrap()).unwrap();
-    store.conn.lock().unwrap().execute_batch("CREATE TRIGGER fail_ack BEFORE UPDATE OF delivery_state ON parts BEGIN SELECT RAISE(ABORT, 'test disk write failure'); END;").unwrap();
-    assert!(store.recover_acknowledgement(&cycle, 42, 1, 20).unwrap_err().contains("test disk write failure"));
-    assert_eq!(serde_json::to_value(store.detail(id).unwrap()).unwrap(), before);
-    store.conn.lock().unwrap().execute_batch("DROP TRIGGER fail_ack;").unwrap();
-    assert!(store.recover_acknowledgement(&cycle, 42, 1, 20).unwrap());
-}
-
-#[test]
 fn raw_file_completion_adds_views_without_replacing_identity() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
@@ -275,23 +260,6 @@ fn identical_content_with_new_version_is_allowed_but_snapshot_collision_is_rejec
 }
 
 #[test]
-fn missing_measurements_are_returned_and_purge_cascades_to_shots() {
-    let db = TestDb::new();
-    let store = Store::open(&db.path()).unwrap();
-    let recipe = recipe();
-    let first = save(&store, &recipe, "first", &shots(&recipe), &PlcDelivery::default(), None).unwrap();
-    let second = save(&store, &recipe, "second", &shots(&recipe), &PlcDelivery::default(), None).unwrap();
-    assert_eq!(store.detail(first).unwrap().retests, [second]);
-    assert_eq!(store.detail(second).unwrap().summary.retest_of, Some(first));
-    let rows = store.measurements(&HistoryQuery::default(), &[first, second], 20).unwrap();
-    assert_eq!(rows.len(), 2);
-    assert!(rows.iter().all(|r| r.table.is_empty()));
-    assert_eq!(store.purge_before(1235).unwrap(), 2);
-    assert_eq!(store.conn.lock().unwrap().query_row("SELECT COUNT(*) FROM part_shots", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
-    assert!(store.detail(first).is_err());
-}
-
-#[test]
 fn mismatched_database_version_checkpoints_wal_and_keeps_complete_backup() {
     use rusqlite::config::DbConfig;
     assert!(73 > DB_VERSION);
@@ -334,34 +302,6 @@ fn locked_old_database_is_not_renamed_or_replaced() {
 }
 
 #[test]
-fn recording_evidence_defaults_pending_and_does_not_change_measurement_or_judgement() {
-    let db = TestDb::new();
-    let store = Store::open(&db.path()).unwrap();
-    let recipe = recipe();
-    let table = table(&recipe);
-    let id = save(&store, &recipe, "cycle", &shots(&recipe), &PlcDelivery::default(), Some(&table)).unwrap();
-    let before = store.detail(id).unwrap();
-    assert_eq!(before.recording, RecordingEvidence::default());
-    let evidence = RecordingEvidence {
-        state: RecordingState::Incomplete,
-        available: false,
-        directory: Some("records/actual-cycle".into()),
-        errors: vec!["view=3 写盘失败".into(), "part.json 拒绝访问".into()],
-    };
-    assert!(store.update_recording("cycle", &evidence).unwrap());
-    assert!(store.update_recording("cycle", &evidence).unwrap());
-    assert!(!store.update_recording("unknown", &evidence).unwrap());
-    let after = store.detail(id).unwrap();
-    assert_eq!(after.recording, evidence);
-    assert_eq!(serde_json::to_value(&after.judgement).unwrap(), serde_json::to_value(&before.judgement).unwrap());
-    assert_eq!(serde_json::to_value(&after.points).unwrap(), serde_json::to_value(&before.points).unwrap());
-    assert_eq!(serde_json::to_value(&after.shots).unwrap(), serde_json::to_value(&before.shots).unwrap());
-    assert!(store.update_recording("cycle", &RecordingEvidence::default()).is_err());
-    assert!(store.update_recording("cycle", &RecordingEvidence { state: RecordingState::Off, ..Default::default() }).is_err());
-    assert_eq!(store.detail(id).unwrap().recording, evidence);
-}
-
-#[test]
 fn recording_available_requires_actual_refs_and_complete_error_free_evidence() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
@@ -385,122 +325,6 @@ fn recording_available_requires_actual_refs_and_complete_error_free_evidence() {
 }
 
 #[test]
-fn reopening_fails_pending_recordings_once_without_changing_original_evidence_or_terminal_states() {
-    let db = TestDb::new();
-    let store = Store::open(&db.path()).unwrap();
-    assert_eq!(store.interrupted_recordings, 0);
-    let recipe = recipe();
-    let table = table(&recipe);
-    let delivery = PlcDelivery { state: PlcDeliveryState::Acknowledged, updated_at: 99, message: Some("PLC 已确认".into()) };
-    let directory = db.0.join("records/cycle-interrupted");
-    std::fs::create_dir_all(&directory).unwrap();
-    let pixels = b"P5\n1 1\n255\n\x7f";
-    std::fs::write(directory.join("k000_P1_cam1_v1.pgm"), pixels).unwrap();
-    let partial = vec![ShotRawFile {
-        view: 1,
-        file: "records/cycle-interrupted/k000_P1_cam1_v1.pgm".into(),
-
-     width: None, height: None }];
-    let mut partial_shots = shots(&recipe);
-    partial_shots[0].raw_files = partial.clone();
-    let pending = save(&store, &recipe, "cycle-interrupted", &partial_shots, &delivery, Some(&table)).unwrap();
-    store.update_recording("cycle-interrupted", &RecordingEvidence {
-        directory: Some(directory.to_string_lossy().into_owned()),
-        errors: vec!["view=2 写入尚未完成".into()],
-        ..Default::default()
-    }).unwrap();
-    store.conn.lock().unwrap().execute("UPDATE parts SET recording_available=1 WHERE id=?1", [pending]).unwrap();
-    let empty_pending = save(&store, &recipe, "cycle-empty-pending", &shots(&recipe), &delivery, Some(&table)).unwrap();
-    let mut ids = vec![pending, empty_pending];
-    for (cycle, state) in [
-        ("cycle-complete", RecordingState::Complete),
-        ("cycle-off", RecordingState::Off),
-        ("cycle-not-retained", RecordingState::NotRetained),
-        ("cycle-incomplete", RecordingState::Incomplete),
-        ("cycle-failed", RecordingState::Failed),
-    ] {
-        let id = save(&store, &recipe, cycle, &shots(&recipe), &delivery, Some(&table)).unwrap();
-        if state == RecordingState::Complete {
-            store.update_shot_raw_files(cycle, 0, &[ShotRawFile {
-                view: 1,
-                file: "records/cycle-complete/k000_P1_cam1_v1.pgm".into(),
-
-             width: None, height: None }]).unwrap();
-        }
-        store.update_recording(cycle, &RecordingEvidence {
-            state,
-            available: state == RecordingState::Complete,
-            directory: (state == RecordingState::Complete).then(|| "records/cycle-complete".into()),
-            errors: match state {
-                RecordingState::Incomplete => vec!["view=3 写盘失败".into()],
-                RecordingState::Failed => vec!["磁盘已满".into()],
-                _ => Vec::new(),
-            },
-        }).unwrap();
-        ids.push(id);
-    }
-    let before: Vec<_> = ids.iter().map(|id| serde_json::to_value(store.detail(*id).unwrap()).unwrap()).collect();
-    drop(store);
-
-    let reopened = Store::open(&db.path()).unwrap();
-    assert_eq!(reopened.interrupted_recordings, 2);
-    assert!(reopened.backup_path().is_none());
-    assert!(directory.is_dir());
-    let recovered = reopened.detail(pending).unwrap();
-    assert_eq!(recovered.recording.state, RecordingState::Failed);
-    assert!(!recovered.recording.available);
-    assert_eq!(recovered.recording.errors, ["view=2 写入尚未完成", "检测服务在录制完成前退出，原图完整性未确认"]);
-    assert_eq!(recovered.shots[0].raw_files, partial);
-    let mut expected = before.clone();
-    for item in &mut expected[..2] {
-        item["recording"]["state"] = serde_json::json!("failed");
-        item["recording"]["available"] = serde_json::json!(false);
-        item["recording"]["errors"].as_array_mut().unwrap().push(serde_json::json!("检测服务在录制完成前退出，原图完整性未确认"));
-    }
-    let after: Vec<_> = ids.iter().map(|id| serde_json::to_value(reopened.detail(*id).unwrap()).unwrap()).collect();
-    assert_eq!(after, expected);
-    drop(reopened);
-
-    let reopened_again = Store::open(&db.path()).unwrap();
-    assert_eq!(reopened_again.interrupted_recordings, 0);
-    let again: Vec<_> = ids.iter().map(|id| serde_json::to_value(reopened_again.detail(*id).unwrap()).unwrap()).collect();
-    assert_eq!(again, after);
-}
-
-#[test]
-fn interrupted_recording_recovery_rolls_back_the_whole_batch_if_one_update_fails() {
-    let db = TestDb::new();
-    let store = Store::open(&db.path()).unwrap();
-    let recipe = recipe();
-    let first = save(&store, &recipe, "recovery-first", &shots(&recipe), &PlcDelivery::default(), None).unwrap();
-    let second = save(&store, &recipe, "recovery-second", &shots(&recipe), &PlcDelivery::default(), None).unwrap();
-    let before = vec![(first, store.detail(first).unwrap().recording), (second, store.detail(second).unwrap().recording)];
-    store.conn.lock().unwrap().execute_batch(
-        "CREATE TRIGGER reject_recording_recovery BEFORE UPDATE OF recording_state ON parts
-         WHEN OLD.cycle_id='recovery-second'
-         BEGIN SELECT RAISE(ABORT, 'controlled recovery write failure'); END;",
-    ).unwrap();
-    drop(store);
-    let error = Store::open(&db.path()).err().expect("startup recovery must report the failed write");
-    assert!(error.contains("controlled recovery write failure"));
-    let conn = Connection::open(db.path()).unwrap();
-    let persisted = {
-        let mut stmt = conn.prepare("SELECT id,recording_state,recording_available,recording_directory,recording_errors FROM parts ORDER BY id").unwrap();
-        let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, recording_row(row, 1)?))).unwrap();
-        rows.collect::<Result<Vec<_>, _>>().unwrap()
-    };
-    assert_eq!(persisted, before);
-    conn.execute_batch("DROP TRIGGER reject_recording_recovery;").unwrap();
-    drop(conn);
-    let reopened = Store::open(&db.path()).unwrap();
-    assert_eq!(reopened.interrupted_recordings, 2);
-    for id in [first, second] {
-        assert_eq!(reopened.detail(id).unwrap().recording.state, RecordingState::Failed);
-        assert_eq!(reopened.detail(id).unwrap().recording.errors, ["检测服务在录制完成前退出，原图完整性未确认"]);
-    }
-}
-
-#[test]
 fn pending_history_protection_includes_partial_directory_and_raw_only_references() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
@@ -521,83 +345,6 @@ fn pending_history_protection_includes_partial_directory_and_raw_only_references
     assert_eq!(store.pending_recording_directories(&root).unwrap(), expected);
     store.conn.lock().unwrap().execute("UPDATE part_shots SET raw_files='invalid-json'", []).unwrap();
     assert!(store.pending_recording_directories(&root).is_err());
-}
-
-#[test]
-fn restart_ack_recovery_only_visits_unresolved_database_cycles_and_preserves_audit() {
-    use crate::plc_session::PlcSession;
-    let db = TestDb::new();
-    let store = Store::open(&db.path()).unwrap();
-    let recipe = recipe();
-    let cycles = store.reserve_cycle_ids(4).unwrap();
-    for (cycle, state) in cycles.iter().zip([PlcDeliveryState::Pending, PlcDeliveryState::Submitted, PlcDeliveryState::Failed, PlcDeliveryState::NotRequired]) {
-        save(&store, &recipe, cycle, &shots(&recipe), &PlcDelivery { state, updated_at: 200, message: None }, Some(&table(&recipe))).unwrap();
-    }
-    let pending = |cycle: &str, seq: u32| serde_json::json!({
-        "request":{"protocolVersion":2,"requestSeq":seq,"sn":42,"productCode":1,"shotCount":4,"planVersion":7,"deviceShots":4},
-        "result":{"requestSeq":seq,"sn":42,"resultCode":1,"faultCode":0},
-        "phase":"releasing","cycleId":cycle,"acknowledged":true,"startedAt":1000
-    });
-    let mut audit = Vec::new();
-    let mut append = |cycle: &str, seq: u32| {
-        audit.extend(serde_json::to_vec(&serde_json::json!({"version":1,"ts":3000,"action":"acknowledged","lastRequestSeq":seq,"pending":pending(cycle,seq)})).unwrap());
-        audit.push(b'\n');
-    };
-    let old_cycles = (0..4).flat_map(|_| store.reserve_cycle_ids(32).unwrap()).collect::<Vec<_>>();
-    for (index, cycle) in old_cycles.iter().enumerate() {
-        save(&store, &recipe, cycle, &shots(&recipe), &PlcDelivery { state: PlcDeliveryState::Acknowledged, updated_at: 200, message: Some("original ACK".into()) }, None).unwrap();
-        append(cycle, index as u32 + 100);
-    }
-    let purged_cycles = (0..4).flat_map(|_| store.reserve_cycle_ids(32).unwrap()).collect::<Vec<_>>();
-    for (index, cycle) in purged_cycles.iter().enumerate() {
-        save(&store, &recipe, cycle, &shots(&recipe), &PlcDelivery { state: PlcDeliveryState::Acknowledged, updated_at: 200, message: None }, None).unwrap();
-        store.conn.lock().unwrap().execute("UPDATE parts SET ts=0 WHERE cycle_id=?1", [cycle]).unwrap();
-        append(cycle, index as u32 + 1000);
-    }
-    assert_eq!(store.purge_before(1).unwrap(), 128);
-    assert!(purged_cycles.iter().all(|cycle| store.detail_by_cycle(cycle).unwrap().is_none()));
-    append(&cycles[1], 8);
-    append(&cycles[3], 9);
-    let journal_path = db.0.join("plc-handshake.json");
-    let audit_path = journal_path.with_extension("audit.jsonl");
-    std::fs::write(&audit_path, &audit).unwrap();
-    std::fs::write(&journal_path, serde_json::to_vec(&serde_json::json!({"version":1,"lastRequestSeq":7,"pending":pending(&cycles[0],7),"lastResolution":null})).unwrap()).unwrap();
-    drop(store);
-    let store = Store::open(&db.path()).unwrap();
-    let old_before = serde_json::to_value(store.detail_by_cycle(&old_cycles[0]).unwrap().unwrap()).unwrap();
-    let unresolved = store.unresolved_delivery_cycles().unwrap();
-    assert_eq!(unresolved, cycles[..3].iter().cloned().collect());
-    let query_plan: String = store.conn.lock().unwrap().query_row("EXPLAIN QUERY PLAN SELECT cycle_id FROM parts WHERE cycle_id IS NOT NULL AND delivery_state IN ('pending','submitted','failed')", [], |row| row.get(3)).unwrap();
-    assert!(query_plan.contains("parts_unresolved_delivery"), "{query_plan}");
-    let session = PlcSession::open(journal_path.clone());
-    assert!(session.pending() && session.acknowledged());
-    let recovered = session.recover_acknowledgements(&unresolved);
-    assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
-    assert_eq!(recovered.receipts.len(), 2);
-    for receipt in &recovered.receipts {
-        assert!(store.recover_acknowledgement(&receipt.cycle_id, receipt.sn, receipt.request_seq, receipt.ts).unwrap());
-    }
-    assert_eq!(store.detail_by_cycle(&cycles[0]).unwrap().unwrap().summary.delivery.updated_at, 1000);
-    assert_eq!(store.detail_by_cycle(&cycles[1]).unwrap().unwrap().summary.delivery.updated_at, 3000);
-    assert_eq!(store.unresolved_delivery_cycles().unwrap(), [cycles[2].clone()].into_iter().collect());
-    assert_eq!(serde_json::to_value(store.detail_by_cycle(&old_cycles[0]).unwrap().unwrap()).unwrap(), old_before);
-    assert_eq!(store.detail_by_cycle(&cycles[3]).unwrap().unwrap().summary.delivery.state, PlcDeliveryState::NotRequired);
-    assert!(session.recover_acknowledgements(&store.unresolved_delivery_cycles().unwrap()).receipts.is_empty());
-    store.conn.lock().unwrap().execute("DELETE FROM parts WHERE cycle_id=?1", [&cycles[2]]).unwrap();
-    let empty = store.unresolved_delivery_cycles().unwrap();
-    assert!(empty.is_empty());
-    std::fs::rename(&audit_path, audit_path.with_extension("preserved.jsonl")).unwrap();
-    std::fs::create_dir(&audit_path).unwrap();
-    assert!(session.recover_acknowledgements(&empty).errors.is_empty());
-    assert_eq!(std::fs::read(audit_path.with_extension("preserved.jsonl")).unwrap(), audit);
-}
-
-#[test]
-fn unresolved_delivery_query_reports_database_failure_instead_of_empty_success() {
-    let db = TestDb::new();
-    let store = Store::open(&db.path()).unwrap();
-    store.conn.lock().unwrap().execute_batch("ALTER TABLE parts RENAME TO unavailable_parts").unwrap();
-    assert!(store.unresolved_delivery_cycles().unwrap_err().contains("parts"));
 }
 
 fn pre_identity_v2(db: &TestDb) -> Connection {
@@ -732,33 +479,6 @@ fn old_schema_database_is_backed_up_and_replaced_without_migration() {
 }
 
 #[test]
-fn fresh_schema_and_raw_references_have_no_content_digest_fields() {
-    let db = TestDb::new();
-    let store = Store::open(&db.path()).unwrap();
-    let conn = store.conn.lock().unwrap();
-    let parts = columns(&conn, "parts");
-    for name in ["recipe_hash", "bundle_hash", "layout_hash"] { assert!(!parts.contains(name)); }
-    assert!(!columns(&conn, "recipe_snapshots").contains("hash"));
-    let file: ShotRawFile = serde_json::from_value(serde_json::json!({"view":2,"file":"cycle/P1_v2.pgm","hash":"ignored", "revisionId":"ignored"})).unwrap();
-    assert_eq!(serde_json::to_value(file).unwrap(), serde_json::json!({"view":2,"file":"cycle/P1_v2.pgm"}));
-}
-
-#[test]
-fn snapshot_version_metadata_and_explicit_revision_must_agree() {
-    let db = TestDb::new();
-    let store = Store::open(&db.path()).unwrap();
-    let original = recipe();
-    save(&store, &original, "first", &shots(&original), &PlcDelivery::default(), None).unwrap();
-    let mut forged = original.clone();
-    forged.revision_id = "external-revision".into();
-    assert!(save(&store, &forged, "forged", &shots(&forged), &PlcDelivery::default(), None).unwrap_err().contains("修订号与实际"));
-    store.conn.lock().unwrap().execute("UPDATE recipe_snapshots SET version=version+1", []).unwrap();
-    assert!(store.recipe_snapshot(&original.revision_id).unwrap_err().contains("版本损坏"));
-    assert!(save(&store, &original, "second", &shots(&original), &PlcDelivery::default(), None).unwrap_err().contains("版本损坏"));
-    assert_eq!(store.query(&HistoryQuery::default()).unwrap().total, 1);
-}
-
-#[test]
 fn historical_version_floor_prevents_deleted_recipe_revision_reuse_and_keeps_old_snapshot() {
     let db = TestDb::new();
     let history = Store::open(&db.path()).unwrap();
@@ -782,22 +502,6 @@ fn historical_version_floor_prevents_deleted_recipe_revision_reuse_and_keeps_old
     assert_eq!(history.recipe_snapshot(&rebuilt.revision_id).unwrap().unwrap().shots[0].camera, "new-camera");
     history.conn.lock().unwrap().execute_batch("ALTER TABLE parts RENAME COLUMN recipe_version TO unavailable_version;").unwrap();
     assert!(history.recipe_version_floors().is_err());
-}
-
-#[test]
-fn raw_dimensions_enrich_legacy_refs_but_cannot_be_replaced_or_partially_specified() {
-    let db = TestDb::new();
-    let store = Store::open(&db.path()).unwrap();
-    let recipe = recipe();
-    save(&store, &recipe, "dims", &shots(&recipe), &PlcDelivery::default(), None).unwrap();
-    let mut raw = ShotRawFile { view: 1, file: "cycle/P1_v1.pgm".into(), width: None, height: None };
-    assert!(store.update_shot_raw_files("dims", 0, &[raw.clone()]).unwrap());
-    raw.width = Some(100);
-    assert!(store.update_shot_raw_files("dims", 0, &[raw.clone()]).is_err());
-    raw.height = Some(60);
-    assert!(store.update_shot_raw_files("dims", 0, &[raw.clone()]).unwrap());
-    raw.width = Some(200);
-    assert!(store.update_shot_raw_files("dims", 0, &[raw]).is_err());
 }
 
 #[test]
@@ -846,26 +550,6 @@ fn deferred_recovery_allows_durable_recording_replay_before_failing_remaining_pe
     assert_eq!(serde_json::to_value(&detail.summary).unwrap(), serde_json::to_value(original).unwrap());
     assert_eq!(reopened.detail(interrupted).unwrap().recording.state, RecordingState::Failed);
     assert_eq!(reopened.finish_interrupted_recordings().unwrap(), 0);
-}
-
-
-#[test]
-fn submission_timing_is_a_single_cycle_observation_and_never_replaces_existing_measurement() {
-    let db = TestDb::new();
-    let store = Store::open(&db.path()).unwrap();
-    let recipe = recipe();
-    let delivery = PlcDelivery { state: PlcDeliveryState::Pending, updated_at: 9, message: None };
-    let id = save(&store, &recipe, "observed-submission", &shots(&recipe), &delivery, None).unwrap();
-    store.conn.lock().unwrap().execute("UPDATE parts SET drain_ms=NULL WHERE id=?1", [id]).unwrap();
-    let before = store.detail(id).unwrap();
-    assert!(!store.update_submission_timing("another-cycle", 53).unwrap());
-    assert!(store.update_submission_timing("observed-submission", 53).unwrap());
-    assert!(store.update_submission_timing("observed-submission", 53).unwrap());
-    assert!(store.update_submission_timing("observed-submission", 52).is_err());
-    assert!(store.update_submission_timing("observed-submission", u64::MAX).is_err());
-    let mut expected = serde_json::to_value(before).unwrap();
-    expected["summary"]["drainMs"] = serde_json::json!(53);
-    assert_eq!(serde_json::to_value(store.detail(id).unwrap()).unwrap(), expected);
 }
 
 

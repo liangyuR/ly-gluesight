@@ -72,7 +72,7 @@ mod tests {
         doc.spacing = 1.0;
         doc.detect = crate::recipe::DetectParams { search_mm: 8.0, polarity: crate::recipe::Polarity::Dark, width_range: [1.5, 6.5] };
         for (k, shot) in doc.shots.iter_mut().enumerate() {
-            shot.camera = format!("cam{}", k % 3 + 1);
+            shot.camera = "cam1".into();
             shot.view = [1, 2, 3, 1][k];
             shot.path = vec![[40.0, 80.5], [200.0, 80.5]];
             shot.mm_per_px = Some(0.25);

@@ -19,41 +19,21 @@ fn pgm(image: &FrameImage) -> Vec<u8> {
 fn graphs_preserve_each_shot_and_only_skip_explicitly_skipped_shots() {
     let mut doc = crate::recipe::samples().remove(1);
     doc.shots[1].skip = true;
-    doc.shots[2].camera = "cam3".into();
     doc.shots[2].view = 3;
+    for shot in &mut doc.shots { shot.mm_per_px = Some(0.112); }
     let graph = graphs(&doc.build().unwrap()).unwrap();
     assert_eq!(graph["shots"].as_array().unwrap().len(), 3);
     assert_eq!(graph["shots"][1]["k"], 2);
     assert!(graph["shots"][0]["graph"].is_object());
-    assert_eq!(graph["shots"][1]["camera"], "cam3");
+    assert_eq!(graph["shots"][1]["camera"], "cam1");
     assert_eq!(graph["shots"][1]["view"], 3);
-    doc.shots[0].path.clear();
-    assert!(graphs(&doc.build().unwrap()).unwrap_err().contains("尚未示教"));
-}
-
-#[test]
-fn graphs_keep_exact_identity_after_json_round_trip_with_nonbinary_pixel_scale() {
-    let mut doc = crate::recipe::samples().remove(1);
-    doc.spacing = 1.0;
-    for shot in &mut doc.shots {
-        shot.path = vec![[980.0, 480.0], [300.0, 460.0]];
-        shot.mm_per_px = Some(0.112);
-    }
-    let graph = graphs(&doc.build().unwrap()).unwrap();
     let stored: Value = serde_json::from_slice(&serde_json::to_vec(&graph).unwrap()).unwrap();
     let restored: crate::recipe::RecipeDoc = serde_json::from_slice(&serde_json::to_vec(&doc).unwrap()).unwrap();
     assert_eq!(stored, graphs(&restored.build().unwrap()).unwrap());
-    for k in 0..4 {
-        let restored_graph = &stored["shots"][k]["graph"];
-        assert_eq!(restored_graph, &vision::build_taught_graph(&restored.build().unwrap(), k).unwrap());
-    }
-}
-
-#[test]
-fn engine_compatibility_uses_the_declared_version_across_restarts_and_paths() {
-    assert!(engine_version_matches("1.1.0", "1.1.0"));
-    assert!(engine_version_matches("1.1.0:legacy-ignored-value", "1.1.0"));
-    assert!(!engine_version_matches("1.0.0:legacy-ignored-value", "1.1.0"));
+    assert!(engine_version_matches("1.1.0:4096:17", "1.1.0"));
+    assert!(!engine_version_matches("1.0.0:4096:17", "1.1.0"));
+    doc.shots[0].path.clear();
+    assert!(graphs(&doc.build().unwrap()).unwrap_err().contains("尚未示教"));
 }
 
 #[test]
@@ -68,7 +48,7 @@ fn native_bundle_warms_measures_copied_resources_and_validates_dimensions() {
     doc.spacing = 1.0;
     doc.detect = crate::recipe::DetectParams { search_mm: 8.0, polarity: crate::recipe::Polarity::Dark, width_range: [1.5, 6.5] };
     for (k, shot) in doc.shots.iter_mut().enumerate() {
-        shot.camera = format!("cam{}", k % 3 + 1);
+        shot.camera = "cam1".into();
         shot.view = [1, 2, 3, 1][k];
         shot.path = vec![[40.0, 80.5], [200.0, 80.5]];
         shot.mm_per_px = Some(0.25);

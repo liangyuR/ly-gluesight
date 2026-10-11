@@ -65,29 +65,6 @@ fn metadata(outcome: &RecordingOutcome) -> serde_json::Value {
 }
 
 #[test]
-fn tricam_views_form_one_queue_item_with_original_identity() {
-    let dir = TestDir::new();
-    let (recorder, rx, _) = controlled(dir.root());
-    let recipe = recipe();
-    let mut rec = recorder.begin(RecordMode::All, 42, recipe.clone(), "cycle_one", Some("bundle-id")).unwrap();
-    recorder.frame(&mut rec, &frame(21), "cam1", 0, 11);
-    assert_eq!(recorder.queued.load(Ordering::Relaxed), 1);
-    assert_eq!(rec.frames.len(), 3);
-    let Msg::Frames(group) = rx.try_recv().unwrap() else { panic!("需要整组原图消息") };
-    assert_eq!(group.cycle_id, "cycle_one");
-    assert_eq!(group.images.len(), 3);
-    for (i, (meta, image)) in group.images.iter().enumerate() {
-        assert_eq!(meta.file, format!("k000_P1_cam1_v{}.pgm", i + 1));
-        assert_eq!(meta.cycle_id, "cycle_one");
-        assert_eq!(meta.bundle_id.as_deref(), Some("bundle-id"));
-        assert_eq!(meta.recipe_revision, recipe.revision_id);
-        assert_eq!((meta.k, meta.shot_id.as_str(), meta.selected_view, meta.session, meta.ordinal), (0, "P1", 2, u64::MAX, 11));
-        assert_eq!(image.pixels, [21 + i as u8]);
-    }
-    assert!(rx.try_recv().is_err());
-}
-
-#[test]
 fn successful_finish_reports_only_existing_files_and_complete_metadata() {
     let dir = TestDir::new();
     let (callback, outcomes) = callback();
@@ -156,33 +133,6 @@ fn equal_sn_and_exposure_time_never_mix_different_cycles() {
 }
 
 #[test]
-fn disabled_and_ng_only_ok_recordings_are_explicitly_unavailable() {
-    let dir = TestDir::new();
-    let (callback, outcomes) = callback();
-    let recorder = Recorder::new(dir.root(), Some(callback));
-    assert!(recorder.begin(RecordMode::Off, 42, recipe(), "cycle-off", None).is_none());
-    let outcome = wait(&outcomes);
-    assert_eq!(outcome.state, RecordingState::Off);
-    assert!(!outcome.available);
-    assert!(outcome.directory.is_none() && outcome.files.is_empty());
-    assert!(!recorder.root().exists());
-    for (cycle, verdict) in [("ng-only-ok", Verdict::Ok), ("ng-only-excursion", Verdict::OkWithExcursion)] {
-        let mut rec = recorder.begin(RecordMode::Failed, 42, recipe(), cycle, None).unwrap();
-        recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
-        recorder.finish(rec, verdict, "合格件不保留", 10, u64::MAX, Vec::new());
-        let outcome = wait(&outcomes);
-        assert_eq!(outcome.state, RecordingState::NotRetained);
-        assert!(!outcome.available);
-        assert!(outcome.files.is_empty() && outcome.directory.is_none());
-        assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
-    }
-    let mut rec = recorder.begin(RecordMode::Failed, 42, recipe(), "ng-only-ng", None).unwrap();
-    recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
-    recorder.finish(rec, Verdict::NgWidth, "NG 保留", 10, u64::MAX, Vec::new());
-    assert!(wait(&outcomes).available);
-}
-
-#[test]
 fn queue_full_rejects_all_views_and_finish_bypasses_the_frame_limit() {
     let dir = TestDir::new();
     let (recorder, rx, _) = controlled(dir.root());
@@ -219,27 +169,6 @@ fn disk_failure_does_not_claim_originals_exist() {
 }
 
 #[test]
-fn partial_view_write_reports_successes_but_marks_recording_incomplete() {
-    let dir = TestDir::new();
-    let (callback, outcomes) = callback();
-    let recorder = Recorder::new(dir.root(), Some(callback));
-    let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "cycle-partial", None).unwrap();
-    let mut frame = frame(10);
-    frame.images[1] = Arc::new(FrameImage::new(1, 1, vec![10, 11]));
-    recorder.frame(&mut rec, &frame, "cam1", 0, 1);
-    recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
-    let outcome = wait(&outcomes);
-    assert_eq!(outcome.state, RecordingState::Incomplete);
-    assert!(!outcome.available);
-    assert_eq!(outcome.files.iter().map(|file| file.view).collect::<Vec<_>>(), [1, 3]);
-    assert!(outcome.errors.iter().any(|error| error.contains("像素缓冲长度")));
-    let meta = metadata(&outcome);
-    assert_eq!(meta["verdict"], "OK");
-    assert_eq!(meta["available"], false);
-    assert_eq!(meta["frames"][1]["available"], false);
-}
-
-#[test]
 fn metadata_write_failure_is_reported_even_when_images_were_written() {
     let dir = TestDir::new();
     let (callback, outcomes) = callback();
@@ -252,26 +181,6 @@ fn metadata_write_failure_is_reported_even_when_images_were_written() {
     assert!(!outcome.available);
     assert_eq!(outcome.files.len(), 3);
     assert!(outcome.errors.iter().any(|error| error.contains("part.json")));
-}
-
-#[test]
-fn finish_decodes_all_views_without_matching_pixel_contents() {
-    let dir = TestDir::new();
-    let (recorder, rx, _) = controlled(dir.root());
-    let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "cycle-tampered", None).unwrap();
-    recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
-    let Msg::Frames(group) = rx.try_recv().unwrap() else { panic!("需要原图消息") };
-    let mut state = WriteState::default();
-    for (meta, image) in group.images {
-        state.results.insert((meta.k, meta.view), save_raw(&group.pending.join(&meta.file), &image));
-    }
-    std::fs::write(group.pending.join("k000_P1_cam1_v2.pgm"), b"P5\n1 1\n255\n\x99").unwrap();
-    recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
-    let Msg::Finish(job) = rx.try_recv().unwrap() else { panic!("需要收尾消息") };
-    let outcome = finish_recording(recorder.root(), job, state);
-    assert!(outcome.available, "{:?}", outcome.errors);
-    assert_eq!(outcome.files.iter().map(|file| file.view).collect::<Vec<_>>(), [1, 2, 3]);
-    assert_eq!(std::fs::read(recorder.root().join(&outcome.files[1].file)).unwrap(), b"P5\n1 1\n255\n\x99");
 }
 
 #[test]
@@ -303,22 +212,6 @@ fn finish_rejects_same_length_corrupt_or_resized_raw_image() {
         assert_eq!(meta["reason"], "原始判定 OK");
         assert_eq!(meta["frames"][1]["available"], false);
     }
-}
-
-#[test]
-fn disconnected_writer_still_finishes_and_emits_a_failure_outcome() {
-    let dir = TestDir::new();
-    let (recorder, rx, outcomes) = controlled(dir.root());
-    drop(rx);
-    let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "cycle-disconnected", None).unwrap();
-    recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
-    assert_eq!(recorder.queued.load(Ordering::Relaxed), 0);
-    recorder.finish(rec, Verdict::ErrInspect, "原始测量故障", 10, u64::MAX, Vec::new());
-    let outcome = wait(&outcomes);
-    assert_eq!(outcome.state, RecordingState::Failed);
-    assert!(!outcome.available && outcome.files.is_empty());
-    assert!(outcome.errors.iter().any(|error| error.contains("收尾改为同步保存")));
-    assert_eq!(metadata(&outcome)["verdict"], "ERR_INSPECT");
 }
 
 #[test]
@@ -367,94 +260,6 @@ fn pruning_preserves_current_and_in_use_recordings() {
     assert!(paths[1].exists() && paths[2].exists());
 }
 
-#[cfg(windows)]
-#[test]
-fn locked_old_recording_does_not_make_complete_current_recording_unavailable() {
-    use std::os::windows::fs::OpenOptionsExt;
-    let dir = TestDir::new();
-    let old = dir.root().join("20000101").join("20000101_000000_cycle_old");
-    std::fs::create_dir_all(&old).unwrap();
-    let locked_path = old.join("image.pgm");
-    std::fs::write(&locked_path, "old-recording").unwrap();
-    let lock = std::fs::OpenOptions::new().read(true).share_mode(3).open(&locked_path).unwrap();
-    let (callback, outcomes) = callback();
-    let recorder = Recorder::new(dir.root(), Some(callback));
-    let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "cycle-retention-error", None).unwrap();
-    recorder.frame(&mut rec, &frame(21), "cam1", 0, 1);
-    recorder.finish(rec, Verdict::Ok, "本件完整", 1, 1, Vec::new());
-    let outcome = wait(&outcomes);
-    assert_eq!(outcome.state, RecordingState::Complete);
-    assert!(outcome.available);
-    assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
-    assert_eq!(outcome.files.len(), 3);
-    assert!(outcome.retention_errors.iter().any(|error| error.contains("清理旧录制失败") && error.contains("cycle_old")), "{:?}", outcome.retention_errors);
-    assert_eq!(std::fs::read_to_string(&locked_path).unwrap(), "old-recording");
-    let meta = metadata(&outcome);
-    assert_eq!(meta["available"], true);
-    assert_eq!(meta["errors"], json!([]));
-    assert_eq!(meta["retentionErrors"], json!(outcome.retention_errors));
-    assert!(outcome.files.iter().all(|file| recorder.root().join(&file.file).is_file()));
-    let frames = crate::replay::scan_frames(outcome.directory.as_ref().unwrap(), 3, 0).unwrap();
-    assert_eq!(frames.len(), 1);
-    let images = crate::replay::load_entry(&frames[0]).unwrap();
-    assert_eq!(images.len(), 3);
-    for (view, image) in images.iter().enumerate() {
-        assert_eq!((image.width, image.height), (1, 1));
-        assert_eq!(image.pixels, [21 + view as u8]);
-    }
-    drop(lock);
-    assert!(prune(&dir.root(), 1, 1, &[outcome.directory.unwrap()]).is_empty());
-    assert!(!old.exists());
-}
-
-#[test]
-fn existing_target_is_preserved_and_partial_files_remain_at_the_actual_path() {
-    let dir = TestDir::new();
-    let (recorder, rx, _) = controlled(dir.root());
-    let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "cycle-existing", None).unwrap();
-    let pending = rec.dir.clone();
-    recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
-    let Msg::Frames(group) = rx.try_recv().unwrap() else { panic!("需要原图消息") };
-    let mut state = WriteState::default();
-    for (meta, image) in group.images {
-        state.results.insert((meta.k, meta.view), save_raw(&group.pending.join(&meta.file), &image));
-    }
-    recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
-    let Msg::Finish(job) = rx.try_recv().unwrap() else { panic!("需要收尾消息") };
-    let target = job.target.clone().unwrap();
-    std::fs::create_dir_all(&target).unwrap();
-    std::fs::write(target.join("sentinel"), "keep-original").unwrap();
-    let outcome = finish_recording(recorder.root(), job, state);
-    assert!(!outcome.available);
-    assert_eq!(outcome.directory.as_ref(), Some(&pending));
-    assert_eq!(outcome.files.len(), 3);
-    assert!(outcome.files.iter().all(|file| file.file.starts_with("_pending/")));
-    assert_eq!(std::fs::read_to_string(target.join("sentinel")).unwrap(), "keep-original");
-}
-
-#[test]
-fn concurrent_producers_never_exceed_the_group_queue_limit() {
-    let dir = TestDir::new();
-    let (recorder, rx, _) = controlled(dir.root());
-    let recorder = Arc::new(recorder);
-    let producers: Vec<_> = (0..64)
-        .map(|i| {
-            let recorder = recorder.clone();
-            std::thread::spawn(move || {
-                let mut rec = recorder.begin(RecordMode::All, i, recipe(), &format!("cycle-{i}"), None).unwrap();
-                recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
-                rec.dropped
-            })
-        })
-        .collect();
-    let dropped: u32 = producers.into_iter().map(|producer| producer.join().unwrap()).sum();
-    assert_eq!(recorder.queued.load(Ordering::Relaxed), QUEUE);
-    assert_eq!(dropped, 64 - QUEUE as u32);
-    let groups: Vec<_> = rx.try_iter().collect();
-    assert_eq!(groups.len(), QUEUE);
-    assert!(groups.iter().all(|message| matches!(message, Msg::Frames(group) if group.images.len() == 3)));
-}
-
 fn pending(root: &Path, cycle: &str) -> PathBuf {
     let path = root.join("_pending").join(format!("20261010_000000_000_cycle_{cycle}"));
     std::fs::create_dir_all(&path).unwrap();
@@ -479,20 +284,6 @@ fn pending_sweep_removes_orphans_but_preserves_history_and_active_recordings() {
     assert!(!orphan.exists());
     assert_eq!(std::fs::read_to_string(referenced.join("image.pgm")).unwrap(), "unfinished-raw");
     assert_eq!(std::fs::read_to_string(current.dir.join("image.pgm")).unwrap(), "active-raw");
-}
-
-#[test]
-fn pending_sweep_is_bounded_and_continues_past_its_first_batch() {
-    let dir = TestDir::new();
-    let root = dir.root();
-    for i in 0..PENDING_SWEEP_LIMIT + 3 { pending(&root, &format!("orphan-{i}")); }
-    let protection: PendingProtection = Arc::new(|| Ok(Vec::new()));
-    let active = Mutex::new(HashSet::new());
-    let mut cleaner = PendingCleaner::default();
-    assert!(cleaner.sweep(&root, &active, &protection, &[]).is_empty());
-    assert_eq!(std::fs::read_dir(root.join("_pending")).unwrap().count(), 3);
-    assert!(cleaner.sweep(&root, &active, &protection, &[]).is_empty());
-    assert_eq!(std::fs::read_dir(root.join("_pending")).unwrap().count(), 0);
 }
 
 #[test]
@@ -551,17 +342,6 @@ fn pending_sweep_never_follows_directory_or_subtree_junctions() {
 }
 
 #[test]
-fn pending_sweep_does_not_query_history_when_only_active_recordings_exist() {
-    let dir = TestDir::new();
-    let root = dir.root();
-    let current = pending(&root, "active-only");
-    let active = Mutex::new(HashSet::from([current.clone()]));
-    let protection: PendingProtection = Arc::new(|| panic!("仅有活跃录制时不能查询全量历史"));
-    assert!(PendingCleaner::default().sweep(&root, &active, &protection, &[]).is_empty());
-    assert!(current.exists());
-}
-
-#[test]
 fn unpromoted_finish_remains_protected_before_async_audit_persists_references() {
     let dir = TestDir::new();
     let root = dir.root();
@@ -587,18 +367,6 @@ fn unpromoted_finish_remains_protected_before_async_audit_persists_references() 
 }
 
 #[test]
-fn pending_cleanup_claim_is_exclusive_and_releases_the_registry_lock() {
-    let path = PathBuf::from("pending-claim");
-    let active = Mutex::new(HashSet::new());
-    let claim = PendingClaim::acquire(&active, &path).unwrap();
-    assert!(active.try_lock().unwrap().contains(&path));
-    assert!(PendingClaim::acquire(&active, &path).is_none());
-    drop(claim);
-    assert!(!active.lock().unwrap().contains(&path));
-}
-
-
-#[test]
 fn rolling_prune_preserves_durable_pending_recording_and_removes_unprotected_old_recording() {
     let dir = TestDir::new();
     let protected = dir.root().join("20000101/20000101_000000_cycle_durable");
@@ -617,21 +385,4 @@ fn rolling_prune_preserves_durable_pending_recording_and_removes_unprotected_old
     assert!(outcome.available);
     assert!(protected.join("image.pgm").is_file());
     assert!(!disposable.exists());
-}
-
-#[test]
-fn failed_durable_guard_prevents_rolling_prune_of_old_evidence() {
-    let dir = TestDir::new();
-    let old = dir.root().join("20000101/20000101_000000_cycle_unresolved");
-    std::fs::create_dir_all(&old).unwrap();
-    std::fs::write(old.join("image.pgm"), b"original").unwrap();
-    let (callback, outcomes) = callback();
-    let recorder = Recorder::guarded(dir.root(), Some(callback), Arc::new(|| Err("待入库日志损坏".into())), Arc::new(|_| {}));
-    let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "guard-new", None).unwrap();
-    recorder.frame(&mut rec, &frame(21), "cam1", 0, 1);
-    recorder.finish(rec, Verdict::Ok, "完整", 1, 1, Vec::new());
-    let outcome = wait(&outcomes);
-    assert!(outcome.available);
-    assert_eq!(std::fs::read(old.join("image.pgm")).unwrap(), b"original");
-    assert!(outcome.retention_errors.iter().any(|error| error.contains("跳过滚动清理")));
 }

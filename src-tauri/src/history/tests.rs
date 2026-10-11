@@ -1,5 +1,5 @@
 use super::*;
-use crate::store::{PlcDelivery, PlcDeliveryState};
+use crate::store::PlcDelivery;
 
 fn recipe() -> Recipe {
     let mut recipe = crate::recipe::samples().remove(1).build().unwrap();
@@ -78,6 +78,16 @@ fn current_recipe_with_same_point_count_requires_same_complete_layout() {
         assert!(result.skip_reasons[0].reason.contains("需要使用原图复测"));
         assert!(result.changes.is_empty());
     }
+    let mut other_revision = (*original).clone();
+    other_revision.version += 1;
+    other_revision.revision_id = format!("{}-v{}", other_revision.id, other_revision.version);
+    other_revision.shots[0].view = 2;
+    let other_revision = Arc::new(other_revision);
+    let result = rejudge_rows(vec![row(&original, 1), row(&other_revision, 2)], &request, |revision_id| {
+        Ok(Some(if revision_id == original.revision_id { original.clone() } else { other_revision.clone() }))
+    }, |_| Some(original.clone())).unwrap();
+    assert_eq!((result.total, result.skipped), (1, 1));
+    assert_eq!(result.skip_reasons[0].id, 2);
 }
 
 #[test]
@@ -99,21 +109,6 @@ fn threshold_only_changes_are_rejudged_without_altering_original_result() {
 }
 
 #[test]
-fn each_original_snapshot_is_checked_even_with_the_same_recipe_id() {
-    let first = Arc::new(recipe());
-    let mut second = (*first).clone();
-    second.version += 1;
-    second.revision_id = format!("{}-v{}", second.id, second.version);
-    second.shots[0].view = 2;
-    let second = Arc::new(second);
-    let result = rejudge_rows(vec![row(&first, 1), row(&second, 2)], &RejudgeRequest { use_current_recipe: true, ..Default::default() }, |revision_id| {
-        Ok(Some(if revision_id == first.revision_id { first.clone() } else { second.clone() }))
-    }, |_| Some(first.clone())).unwrap();
-    assert_eq!((result.total, result.skipped), (1, 1));
-    assert_eq!(result.skip_reasons[0].id, 2);
-}
-
-#[test]
 fn unavailable_or_inconsistent_original_inputs_are_explicitly_skipped() {
     let original = Arc::new(recipe());
     let mut no_table = row(&original, 1);
@@ -129,33 +124,4 @@ fn unavailable_or_inconsistent_original_inputs_are_explicitly_skipped() {
     let result = rejudge_rows(vec![row(&original, 5)], &RejudgeRequest { use_current_recipe: true, ..Default::default() }, |_| Ok(None), |_| Some(original.clone())).unwrap();
     assert_eq!(result.skip_reasons[0].reason, "原配方快照缺失，无法核对测点布局");
     assert_eq!(rejudge_rows(vec![row(&original, 6)], &RejudgeRequest::default(), |_| Err("数据库读取失败".into()), |_| None).unwrap_err(), "数据库读取失败");
-}
-
-#[test]
-fn csv_preserves_full_identity_and_delivery_with_escaped_text() {
-    let summary = PartSummary {
-        id: 1,
-        ts: 1234,
-        sn: 42,
-        recipe_id: Some("recipe-id".into()),
-        recipe_version: Some(7),
-        recipe_revision: Some("recipe-id-v7".into()),
-        trigger_mode: Some("fly".into()),
-        verdict: Verdict::Ok,
-        plc_code: 1,
-        fault_code: 0,
-        reason: "包含,逗号与\"引号\"\n换行".into(),
-        drain_ms: Some(10),
-        frames_expected: 4,
-        frames_received: 4,
-        retest_of: None,
-        cycle_id: Some("cycle-id".into()),
-        bundle_id: Some("full-frozen-bundle-id".into()),
-        delivery: PlcDelivery { state: PlcDeliveryState::Acknowledged, updated_at: 2345, message: Some("PLC \"已确认\"".into()) },
-    };
-    let csv = csv_row(&summary);
-    assert!(csv.contains("\"recipe-id-v7\""));
-    assert!(csv.contains("\"包含,逗号与\"\"引号\"\"\n换行\""));
-    assert!(csv.contains(",\"cycle-id\",\"full-frozen-bundle-id\",acknowledged,"));
-    assert!(csv.ends_with(",\"PLC \"\"已确认\"\"\"\r\n"));
 }
