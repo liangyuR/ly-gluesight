@@ -10,6 +10,8 @@
     "dev:web": "vite",
     "build": "tsc -b && vite build",
     "package": "pwsh -NoProfile -File scripts/Package-Windows.ps1",
+    "package:deps": "pwsh -NoProfile -File scripts/Export-RuntimeDependencies.ps1",
+    "package:deps:publish": "pwsh -NoProfile -File scripts/Publish-RuntimeDependencies.ps1",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
