@@ -7,6 +7,9 @@ use std::sync::{Arc, OnceLock};
 use libloading::Library;
 use serde::Serialize;
 
+#[cfg(windows)]
+mod windows;
+
 pub type Handle = *mut c_void;
 pub type ImageCallback = extern "system" fn(*mut u8, *mut FrameInfo, *mut c_void);
 pub type ExceptionCallback = extern "system" fn(c_uint, *mut c_void);
@@ -147,6 +150,10 @@ type FnVersion = unsafe extern "system" fn() -> c_uint;
 
 pub struct Api {
     _lib: Library,
+    #[cfg(windows)]
+    _directories: windows::DllDirectories,
+    finalize: FnInit,
+    initialized: bool,
     enum_devices: FnEnum,
     create_handle: FnCreate,
     open_device: FnOpen,
@@ -166,42 +173,65 @@ pub struct Api {
     get_enum: FnGetEnum,
     get_enum_entry: FnGetEnumEntry,
     pub version: String,
+    pub library_path: PathBuf,
 }
 
-fn candidates() -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if let Ok(dir) = std::env::var("CommonProgramFiles(x86)") {
-        out.push(PathBuf::from(dir).join(r"MVS\Runtime\Win64_x64\MvCameraControl.dll"));
+#[cfg(any(windows, test))]
+fn windows_candidates(executable: &std::path::Path, development: bool, common_files: Option<PathBuf>) -> Result<Vec<PathBuf>, String> {
+    let directory = executable.parent().filter(|p| p.is_absolute()).ok_or("无法确定 MVS 随包运行库目录")?;
+    let mut out = vec![directory.join("runtime").join("mvs").join("MvCameraControl.dll")];
+    if development {
+        if let Some(dir) = common_files.filter(|p| p.is_absolute()) {
+            out.push(dir.join("MVS").join("Runtime").join("Win64_x64").join("MvCameraControl.dll"));
+        }
+        out.push(PathBuf::from(r"C:\Program Files (x86)\Common Files\MVS\Runtime\Win64_x64\MvCameraControl.dll"));
     }
-    out.push(PathBuf::from(r"C:\Program Files (x86)\Common Files\MVS\Runtime\Win64_x64\MvCameraControl.dll"));
-    out.push(PathBuf::from(if cfg!(windows) { "MvCameraControl.dll" } else { "libMvCameraControl.so" }));
-    out
+    out.dedup();
+    Ok(out)
+}
+
+fn candidates() -> Result<Vec<PathBuf>, String> {
+    #[cfg(windows)]
+    {
+        let executable = std::env::current_exe().map_err(|e| format!("读取应用程序路径失败: {e}"))?;
+        windows_candidates(&executable, cfg!(debug_assertions), std::env::var_os("CommonProgramFiles(x86)").map(PathBuf::from))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(vec![PathBuf::from("libMvCameraControl.so")])
+    }
 }
 
 impl Api {
     fn load() -> Result<Self, String> {
+        Self::load_candidates(candidates()?)
+    }
+
+    fn load_candidates(paths: Vec<PathBuf>) -> Result<Self, String> {
         let mut last = String::from("未找到 MvCameraControl");
-        for path in candidates() {
-            match unsafe { Library::new(&path) } {
-                Ok(lib) => return unsafe { Self::bind(lib) },
+        for path in paths {
+            #[cfg(windows)]
+            let result = windows::load(&path).and_then(|(lib, directories, loaded_path)| unsafe { Self::bind(lib, loaded_path, directories) });
+            #[cfg(not(windows))]
+            let result = unsafe { Library::new(&path) }.map_err(|e| e.to_string()).and_then(|lib| unsafe { Self::bind(lib, path.clone()) });
+            match result {
+                Ok(api) => return Ok(api),
                 Err(e) => last = format!("{}: {e}", path.display()),
             }
         }
-        Err(format!("未安装海康 MVS 运行库（{last}）"))
+        Err(format!("海康 MVS 运行库加载失败（{last}）"))
     }
 
-    unsafe fn bind(lib: Library) -> Result<Self, String> {
+    unsafe fn bind(lib: Library, library_path: PathBuf, #[cfg(windows)] directories: windows::DllDirectories) -> Result<Self, String> {
         macro_rules! sym {
             ($name:literal) => {
                 *lib.get(concat!($name, "\0").as_bytes()).map_err(|e| format!("MVS 缺少接口 {}: {e}", $name))?
             };
         }
-        if let Ok(init) = lib.get::<FnInit>(b"MV_CC_Initialize\0") {
-            init();
-        }
+        let initialize: FnInit = sym!("MV_CC_Initialize");
+        let finalize: FnInit = sym!("MV_CC_Finalize");
         let version: FnVersion = sym!("MV_CC_GetSDKVersion");
-        let v = version();
-        Ok(Self {
+        let mut api = Self {
             enum_devices: sym!("MV_CC_EnumDevices"),
             create_handle: sym!("MV_CC_CreateHandle"),
             open_device: sym!("MV_CC_OpenDevice"),
@@ -220,15 +250,46 @@ impl Api {
             command: sym!("MV_CC_SetCommandValue"),
             get_enum: sym!("MV_CC_GetEnumValue"),
             get_enum_entry: sym!("MV_CC_GetEnumEntrySymbolic"),
-            version: format!("{}.{}.{}.{}", v >> 24, (v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff),
+            version: String::new(),
+            library_path,
+            finalize,
+            initialized: false,
             _lib: lib,
-        })
+            #[cfg(windows)]
+            _directories: directories,
+        };
+        check(initialize(), "初始化 MVS SDK")?;
+        api.initialized = true;
+        let v = version();
+        api.version = format!("{}.{}.{}.{}", v >> 24, (v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff);
+        eprintln!("MVS SDK {}: {}", api.version, api.library_path.display());
+        Ok(api)
+    }
+}
+
+impl Drop for Api {
+    fn drop(&mut self) {
+        if self.initialized {
+            unsafe { (self.finalize)(); }
+        }
     }
 }
 
 pub fn api() -> Result<Arc<Api>, String> {
     static API: OnceLock<Result<Arc<Api>, String>> = OnceLock::new();
     API.get_or_init(|| Api::load().map(Arc::new)).clone()
+}
+
+pub(crate) fn load_bundled_api() -> Result<Arc<Api>, String> {
+    #[cfg(windows)]
+    {
+        let executable = std::env::current_exe().map_err(|e| format!("读取应用程序路径失败: {e}"))?;
+        Api::load_candidates(windows_candidates(&executable, false, None)?).map(Arc::new)
+    }
+    #[cfg(not(windows))]
+    {
+        Err("MVS 随包检查仅支持 Windows".into())
+    }
 }
 
 fn check(code: i32, what: &str) -> Result<(), String> {
@@ -288,7 +349,11 @@ fn enumerate_raw(api: &Api) -> Result<(Box<DeviceInfoList>, Vec<DeviceSummary>),
 
 pub fn enumerate() -> Result<Vec<DeviceSummary>, String> {
     let api = api()?;
-    enumerate_raw(&api).map(|(_, s)| s)
+    enumerate_with_api(&api)
+}
+
+pub(crate) fn enumerate_with_api(api: &Api) -> Result<Vec<DeviceSummary>, String> {
+    enumerate_raw(api).map(|(_, s)| s)
 }
 
 /// 已打开的相机。所有接口均为线程安全，句柄可跨线程使用。
@@ -393,5 +458,54 @@ impl Drop for Device {
             (self.api.close_device)(self.handle);
             (self.api.destroy_handle)(self.handle);
         }
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn packaged_policy_ignores_system_installation() {
+        let executable = std::env::temp_dir().join("GlueSight.exe");
+        let system = std::env::temp_dir().join("system-sdk");
+        let paths = windows_candidates(&executable, false, Some(system)).unwrap();
+        assert_eq!(paths, vec![executable.parent().unwrap().join("runtime").join("mvs").join("MvCameraControl.dll")]);
+    }
+
+    #[test]
+    fn development_policy_supports_absolute_system_installation() {
+        let executable = std::env::temp_dir().join("GlueSight.exe");
+        let system = std::env::temp_dir().join("system-sdk");
+        let paths = windows_candidates(&executable, true, Some(system.clone())).unwrap();
+        assert_eq!(paths[1], system.join("MVS").join("Runtime").join("Win64_x64").join("MvCameraControl.dll"));
+        assert!(!paths.contains(&PathBuf::from("MvCameraControl.dll")));
+    }
+
+    #[test]
+    fn relative_executable_is_rejected() {
+        assert!(windows_candidates(Path::new("relative/GlueSight.exe"), false, None).is_err());
+    }
+
+    #[test]
+    fn relative_system_directory_is_not_searched() {
+        let executable = std::env::temp_dir().join("GlueSight.exe");
+        let paths = windows_candidates(&executable, true, Some(PathBuf::from("relative-sdk"))).unwrap();
+        assert!(!paths.iter().any(|p| p.starts_with("relative-sdk")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn missing_bundled_sdk_fails_even_with_system_sdk_present() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let executable = std::env::temp_dir().join(format!("gluesight-missing-mvs-{}-{nonce}", std::process::id())).join("GlueSight.exe");
+        let paths = windows_candidates(&executable, false, std::env::var_os("CommonProgramFiles(x86)").map(PathBuf::from)).unwrap();
+        let error = match Api::load_candidates(paths) {
+            Ok(_) => panic!("missing packaged SDK must not load a system installation"),
+            Err(error) => error,
+        };
+        assert!(error.contains("MVS 随包运行库不存在或不可访问"));
+        assert!(error.contains("gluesight-missing-mvs-"));
     }
 }

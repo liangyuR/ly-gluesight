@@ -13,6 +13,7 @@ mod instance;
 mod judge;
 mod measure;
 mod mvs;
+mod packaging;
 mod plc;
 mod plc_plan;
 mod plc_session;
@@ -35,6 +36,8 @@ mod vision;
 mod workspace;
 
 use tauri::Manager;
+
+pub use packaging::check_packaged_runtime;
 
 fn open_store(app: &tauri::App) -> Result<store::Store, String> {
     store::Store::open_deferred_recovery(&app.path().app_data_dir().map_err(|e| e.to_string())?.join("inspection.db"))

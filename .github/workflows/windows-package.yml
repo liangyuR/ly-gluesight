@@ -1,0 +1,148 @@
+name: Windows package
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      RUSTUP_TOOLCHAIN: stable
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Verify versions and installer policy
+        id: tools
+        run: |
+          $package = Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json
+          $tauri = Get-Content -LiteralPath src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $windows = Get-Content -LiteralPath src-tauri/tauri.windows.conf.json -Raw | ConvertFrom-Json
+          $cargo = Get-Content -LiteralPath src-tauri/Cargo.toml -Raw
+          if ($cargo -notmatch '(?ms)^\[package\]\s*(.*?)(?=^\[|\z)') { throw 'Missing Cargo package metadata.' }
+          if ($Matches[1] -notmatch '(?m)^version\s*=\s*"([^"]+)"\s*$') { throw 'Missing Cargo version.' }
+          $rustVersion = $Matches[1]
+          if ($package.version -ne $tauri.version -or $package.version -ne $rustVersion) { throw 'package.json, Cargo.toml and tauri.conf.json versions must agree.' }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and ($env:GITHUB_REF_NAME -notmatch '^v\d+\.\d+\.\d+$' -or $env:GITHUB_REF_NAME -ne "v$($package.version)")) { throw 'Tag must be vX.Y.Z and match all three application versions.' }
+          if ($windows.bundle.windows.webviewInstallMode.type -ne 'skip') { throw 'WebView2 installation must be skipped.' }
+          if ($package.packageManager -notmatch '^pnpm@(\d+\.\d+\.\d+)$') { throw 'packageManager must pin pnpm.' }
+          "pnpm=$($Matches[1])" >> $env:GITHUB_OUTPUT
+          if ($package.engines.node -notmatch '^>=(\d+\.\d+\.\d+)$') { throw 'engines.node must declare a minimum Node version.' }
+          "node=$($Matches[1])" >> $env:GITHUB_OUTPUT
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ steps.tools.outputs.node }}
+      - name: Prepare package and Rust tools
+        env:
+          PNPM_VERSION: ${{ steps.tools.outputs.pnpm }}
+        run: |
+          npm install --global "pnpm@$env:PNPM_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw 'pnpm installation failed.' }
+          rustup toolchain install stable --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
+          git config --global url.https://github.com/.insteadOf ssh://git@github.com/
+          git config --global --add url.https://github.com/.insteadOf git@github.com:
+      - name: Install locked frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Require a clean SDK environment
+        run: |
+          $mvsPaths = @('C:/Program Files (x86)/MVS', 'C:/Program Files/MVS', 'C:/Program Files (x86)/Common Files/MVS', 'C:/Program Files/Common Files/MVS')
+          if (@($mvsPaths | Where-Object { Test-Path -LiteralPath $_ }).Count -gt 0) { throw 'Packaging verification requires a runner without system MVS.' }
+      - name: Download pinned runtime bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $config = Get-Content -LiteralPath packaging/runtime.json -Raw | ConvertFrom-Json
+          if ($config.repository -ne $env:GITHUB_REPOSITORY) { throw 'Runtime bundle must come from this repository.' }
+          if ($config.tag -notmatch '^deps-win-x64-v\d+$' -or $config.asset -notmatch '^gluesight-runtime-win-x64-v\d+\.zip$') { throw 'Runtime release tag and asset must be explicitly versioned.' }
+          $download = Join-Path $env:RUNNER_TEMP 'runtime-download'
+          New-Item -ItemType Directory -Path $download | Out-Null
+          gh release download $config.tag --repo $config.repository --pattern $config.asset --dir $download
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned runtime dependency release is missing or inaccessible.' }
+          $zipPath = Join-Path $download $config.asset
+          $destination = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'runtime-bundle'))
+          . ./scripts/Runtime-Common.ps1
+          Expand-RuntimeArchive -Archive $zipPath -Destination $destination
+          $manifest = Get-Content -LiteralPath (Join-Path $destination 'runtime/manifest.json') -Raw | ConvertFrom-Json
+          if ($manifest.architecture -ne 'x64' -or $manifest.bundleVersion -ne $config.bundleVersion -or $manifest.mvs.version -ne $config.mvsVersion) { throw 'Runtime manifest does not match the pinned bundle and MVS version.' }
+          "RUNTIME_BUNDLE=$destination" >> $env:GITHUB_ENV
+      - name: Build bundled installer
+        run: pwsh -NoProfile -File scripts/Package-Windows.ps1 -RuntimeBundle $env:RUNTIME_BUNDLE
+      - name: Verify installed deployment
+        run: |
+          $installers = @(Get-ChildItem -LiteralPath src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis -Filter '*-setup.exe' -File)
+          if ($installers.Count -ne 1) { throw 'Expected exactly one NSIS installer.' }
+          $reportRoot = Join-Path $env:GITHUB_WORKSPACE 'src-tauri/target/package-reports'
+          pwsh -NoProfile -File scripts/Test-WindowsInstallation.ps1 -Installer $installers[0].FullName -InstallDir (Join-Path $env:RUNNER_TEMP 'gluesight-installed') -ReportDir $reportRoot
+          if ($LASTEXITCODE -ne 0) { throw 'Installed deployment verification failed.' }
+      - name: Upload installer and verification reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: gluesight-windows-x64
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+            src-tauri/target/package-runtime/runtime/manifest.json
+            src-tauri/target/package-runtime/runtime-validation.json
+            src-tauri/target/package-runtime/application-runtime-validation.json
+            src-tauri/target/package-reports/*.json
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gluesight-windows-failure-reports
+          retention-days: 14
+          if-no-files-found: ignore
+          path: |
+            src-tauri/target/package-runtime/runtime-validation.json
+            src-tauri/target/package-runtime/application-runtime-validation.json
+            src-tauri/target/package-reports/*.json
+
+  draft-release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: windows-2022
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: gluesight-windows-x64
+          path: release-artifacts
+      - name: Create a new draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') { throw 'Invalid application release tag.' }
+          gh release view $env:RELEASE_TAG --repo $env:RELEASE_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) { throw 'A release already exists for this tag; it will not be overwritten.' }
+          $assets = @(Get-ChildItem -LiteralPath release-artifacts -File -Recurse | Where-Object { $_.Extension -in @('.exe', '.json') } | ForEach-Object FullName)
+          if (@($assets | Where-Object { $_ -like '*-setup.exe' }).Count -ne 1) { throw 'Installer artifact is missing or ambiguous.' }
+          $notes = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          @"
+          Windows x64 安装包，携带 lyFlow 与 MVS 运行库。
+
+          目标电脑需预装 WebView2 和匹配的 MVS 设备驱动；本次构建已完成软件运行库自检及静默安装验证，真机收图与现场验收另行执行。
+          "@ | Set-Content -LiteralPath $notes -Encoding utf8NoBOM
+          gh release create $env:RELEASE_TAG @assets --repo $env:RELEASE_REPOSITORY --verify-tag --draft --title "GlueSight $env:RELEASE_TAG" --notes-file $notes
+          if ($LASTEXITCODE -ne 0) { throw 'Draft release creation failed.' }

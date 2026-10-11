@@ -1,52 +1,156 @@
 #Requires -Version 7.0
-param([Parameter(Mandatory)][string]$RuntimeDir)
-$ErrorActionPreference = 'Stop'
-Add-Type -TypeDefinition @'
+param(
+    [Parameter(Mandatory)][string]$RuntimeRoot,
+    [Parameter(Mandatory)][string]$ReportPath,
+    [switch]$ProbeProcess
+)
+. (Join-Path $PSScriptRoot 'Runtime-Common.ps1')
+Assert-RuntimePlatform
+$RuntimeRoot = [IO.Path]::GetFullPath($RuntimeRoot)
+$ReportPath = [IO.Path]::GetFullPath($ReportPath)
+if (-not $ProbeProcess) {
+    $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME 'pwsh.exe'))
+    $start.UseShellExecute = $false
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    foreach ($argument in @('-NoLogo', '-NoProfile', '-File', $PSCommandPath, '-RuntimeRoot', $RuntimeRoot, '-ReportPath', $ReportPath, '-ProbeProcess')) { $start.ArgumentList.Add($argument) }
+    $process = [Diagnostics.Process]::Start($start)
+    try {
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(90000)) {
+            $process.Kill($true)
+            $process.WaitForExit()
+            [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($ReportPath))
+            @{ success = $false; error = '运行库自检超过 90 秒，子进程已终止。' } | ConvertTo-Json | Set-Content -LiteralPath $ReportPath -Encoding utf8NoBOM
+            throw "运行库自检超时；请查看 $ReportPath"
+        }
+        Write-Host $stdout.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) {
+            Write-Host $stderr.GetAwaiter().GetResult()
+            throw "随包运行库自检失败；请查看 $ReportPath"
+        }
+    } finally { $process.Dispose() }
+    return
+}
+$report = [ordered]@{ success = $false; runtimeRoot = $RuntimeRoot; architecture = 'x64' }
+try {
+    $manifest = Assert-RuntimeManifest $RuntimeRoot
+    $config = Get-RuntimeConfiguration
+    Assert-MvsRuntimeStructure (Join-Path $RuntimeRoot 'mvs')
+    foreach ($path in @('lyflow/lyflow_core.dll', 'lyflow/lyflow-runtime.json', 'lyflow/msvcp140.dll', 'lyflow/vcruntime140.dll', 'lyflow/vcruntime140_1.dll', 'mvs/MvCameraControl.dll')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $RuntimeRoot $path) -PathType Leaf)) { throw "缺少必需运行库文件：$path" }
+    }
+    if (-not @(Get-ChildItem -LiteralPath (Join-Path $RuntimeRoot 'mvs/Licenses') -File -Recurse).Count) { throw 'MVS 许可证目录为空。' }
+    $descriptor = Get-Content -LiteralPath (Join-Path $RuntimeRoot 'lyflow/lyflow-runtime.json') -Raw | ConvertFrom-Json
+    Assert-NoRuntimeDigests $descriptor
+    if ($descriptor.abiVersion -ne $config.lyflowAbiVersion -or $descriptor.engineVersion -ne $manifest.lyflow.version -or
+        [string]::IsNullOrWhiteSpace($descriptor.sourceRevision) -or $descriptor.sourceRevision -ne $manifest.lyflow.sourceRevision) { throw 'lyFlow 正式产物描述与依赖包不一致。' }
+    Add-Type -TypeDefinition @'
 using System;
+using System.IO;
+using System.Linq;
+using System.Diagnostics;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 public static class PackagedRuntimeProbe {
-    [DllImport("kernel32", CharSet = CharSet.Unicode, SetLastError = true)]
-    static extern IntPtr LoadLibraryExW(string path, IntPtr file, uint flags);
-    [DllImport("kernel32", SetLastError = true)]
-    static extern IntPtr GetProcAddress(IntPtr module, string name);
-    [DllImport("kernel32")]
-    public static extern bool FreeLibrary(IntPtr module);
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    delegate IntPtr GetString();
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    delegate void FreeString(IntPtr value);
-    public static IntPtr Load(string path) {
-        var handle = LoadLibraryExW(path, IntPtr.Zero, 0x00000900);
-        if (handle == IntPtr.Zero) {
-            int code = Marshal.GetLastWin32Error();
-            throw new Win32Exception(code, path + ": " + new Win32Exception(code).Message);
+    public static string[] MvsModules { get; private set; } = Array.Empty<string>();
+    [DllImport("kernel32", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr LoadLibraryExW(string path, IntPtr file, uint flags);
+    [DllImport("kernel32", CharSet=CharSet.Ansi, ExactSpelling=true, SetLastError=true)] static extern IntPtr GetProcAddress(IntPtr module, string name);
+    [DllImport("kernel32", SetLastError=true)] static extern bool SetDefaultDllDirectories(uint flags);
+    [DllImport("kernel32", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr AddDllDirectory(string path);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate IntPtr GetString();
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate void FreeString(IntPtr value);
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)] delegate int MvsStatus();
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)] delegate uint MvsVersion();
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)] delegate int MvsEnum(uint mask, IntPtr list);
+    public static T Function<T>(IntPtr module, string name) where T : Delegate {
+        var pointer = GetProcAddress(module, name);
+        if (pointer == IntPtr.Zero) throw new Exception("运行库缺少接口：" + name);
+        return Marshal.GetDelegateForFunctionPointer<T>(pointer);
+    }
+    public static void Prepare(string root) {
+        if (!SetDefaultDllDirectories(0xC00)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        foreach (string component in new[]{"lyflow", "mvs"}) {
+            string path = Path.Combine(root, component);
+            foreach (string directory in new[]{path}.Concat(Directory.GetDirectories(path, "*", SearchOption.AllDirectories))) {
+                if (AddDllDirectory(directory) == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), directory);
+            }
         }
+    }
+    public static IntPtr Load(string path) {
+        var handle = LoadLibraryExW(path, IntPtr.Zero, 0xD00);
+        if (handle == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), path);
         return handle;
     }
-    public static string Read(IntPtr module, string name) {
-        var getter = GetProcAddress(module, name);
-        var freer = GetProcAddress(module, "lyflow_string_free");
-        if (getter == IntPtr.Zero || freer == IntPtr.Zero) throw new Exception("核心库缺少接口：" + name);
-        var value = Marshal.GetDelegateForFunctionPointer<GetString>(getter)();
-        if (value == IntPtr.Zero) throw new Exception("核心库返回空指针：" + name);
+    public static string Read(IntPtr module, string name, bool owned=true) {
+        IntPtr value = Function<GetString>(module, name)();
+        if (value == IntPtr.Zero) throw new Exception("接口返回空指针：" + name);
         try { return Marshal.PtrToStringUTF8(value); }
-        finally { Marshal.GetDelegateForFunctionPointer<FreeString>(freer)(value); }
+        finally { if (owned) Function<FreeString>(module, "lyflow_string_free")(value); }
+    }
+    public static void Require(IntPtr module, string[] names) {
+        foreach (string name in names) if (GetProcAddress(module, name) == IntPtr.Zero) throw new Exception("运行库缺少接口：" + name);
+    }
+    public static string ProbeMvs(IntPtr module, string runtimeRoot) {
+        int init = Function<MvsStatus>(module, "MV_CC_Initialize")();
+        if (init != 0) throw new Exception("MVS 初始化失败：0x" + init.ToString("X8"));
+        try {
+            uint version = Function<MvsVersion>(module, "MV_CC_GetSDKVersion")();
+            IntPtr list = Marshal.AllocHGlobal(8 + 256 * IntPtr.Size);
+            try {
+                Marshal.Copy(new byte[8 + 256 * IntPtr.Size], 0, list, 8 + 256 * IntPtr.Size);
+                int code = Function<MvsEnum>(module, "MV_CC_EnumDevices")(5, list);
+                if (code != 0) throw new Exception("MVS 枚举失败：0x" + code.ToString("X8"));
+            } finally { Marshal.FreeHGlobal(list); }
+            MvsModules = CheckModulePaths(runtimeRoot);
+            return String.Format("{0}.{1}.{2}.{3}", version >> 24, (version >> 16) & 255, (version >> 8) & 255, version & 255);
+        } finally {
+            int final = Function<MvsStatus>(module, "MV_CC_Finalize")();
+            if (final != 0) throw new Exception("MVS 结束失败：0x" + final.ToString("X8"));
+        }
+    }
+    public static string[] CheckModulePaths(string root) {
+        var packaged = Directory.GetFiles(root, "*", SearchOption.AllDirectories)
+            .Where(p => new[]{".dll", ".cti", ".ax"}.Contains(Path.GetExtension(p).ToLowerInvariant()))
+            .Select(Path.GetFileName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        string prefix = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var loaded = Process.GetCurrentProcess().Modules.Cast<ProcessModule>()
+            .Where(m => packaged.Contains(Path.GetFileName(m.FileName)) || Regex.IsMatch(Path.GetFileName(m.FileName), @"^(msvcr|msvcp|vcruntime)\d+(_\d+)?\.dll$", RegexOptions.IgnoreCase))
+            .Select(m => m.FileName).ToArray();
+        foreach (string path in loaded) if (!Path.GetFullPath(path).StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) throw new Exception("运行库被包外同名模块掩盖：" + path);
+        return loaded;
     }
 }
 '@
-$RuntimeDir = (Resolve-Path -LiteralPath $RuntimeDir).Path
-$core = [PackagedRuntimeProbe]::Load((Join-Path $RuntimeDir 'lyflow_core.dll'))
-try {
+    $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+    [PackagedRuntimeProbe]::Prepare($RuntimeRoot)
+    $core = [PackagedRuntimeProbe]::Load((Join-Path $RuntimeRoot 'lyflow/lyflow_core.dll'))
+    [PackagedRuntimeProbe]::Require($core, @('lyflow_run_start', 'lyflow_run_join', 'lyflow_run_free', 'lyflow_run_summary', 'lyflow_run_outputs', 'lyflow_validate', 'lyflow_cache_clear'))
     $problems = [PackagedRuntimeProbe]::Read($core, 'lyflow_manifest_problems')
-    if ($problems.Trim()) { throw "lyFlow 自检失败：$problems" }
-    $manifest = [PackagedRuntimeProbe]::Read($core, 'lyflow_manifest_json') | ConvertFrom-Json
-    foreach ($operator in @('io.load_image', 'image.board_calib', 'image.load_calib', 'glue.taught_path', 'glue.bead_width')) {
-        if ($operator -notin $manifest.operators.id) { throw "lyFlow 缺少必需算子：$operator" }
+    if ($problems.Trim()) { throw "lyFlow 注册表自检失败：$problems" }
+    $version = [PackagedRuntimeProbe]::Read($core, 'lyflow_version', $false)
+    if ($version -ne $manifest.lyflow.version) { throw "lyFlow 实际版本 $version 与正式描述不一致。" }
+    $operators = ([PackagedRuntimeProbe]::Read($core, 'lyflow_manifest_json') | ConvertFrom-Json).operators.id
+    foreach ($operator in $config.requiredOperators) {
+        if ($operator -notin $operators -or $operator -notin $manifest.lyflow.operators) { throw "lyFlow 缺少必需算子：$operator" }
     }
-    foreach ($dll in Get-ChildItem -LiteralPath $RuntimeDir -Filter '*.dll' -File) {
-        $handle = [PackagedRuntimeProbe]::Load($dll.FullName)
-        [void][PackagedRuntimeProbe]::FreeLibrary($handle)
-    }
-    Write-Host '运行库自检通过：DLL 依赖可加载，示教胶路测量和标定算子齐全。'
-} finally { [void][PackagedRuntimeProbe]::FreeLibrary($core) }
+    $mvs = [PackagedRuntimeProbe]::Load((Join-Path $RuntimeRoot 'mvs/MvCameraControl.dll'))
+    [PackagedRuntimeProbe]::Require($mvs, @('MV_CC_CreateHandle', 'MV_CC_OpenDevice', 'MV_CC_CloseDevice', 'MV_CC_DestroyHandle', 'MV_CC_StartGrabbing', 'MV_CC_StopGrabbing', 'MV_CC_GetOptimalPacketSize', 'MV_CC_RegisterImageCallBackEx', 'MV_CC_RegisterExceptionCallBack', 'MV_CC_SetEnumValueByString', 'MV_CC_SetFloatValue', 'MV_CC_GetFloatValue', 'MV_CC_SetIntValueEx', 'MV_CC_SetBoolValue', 'MV_CC_SetCommandValue', 'MV_CC_GetEnumValue', 'MV_CC_GetEnumEntrySymbolic'))
+    $mvsVersion = [PackagedRuntimeProbe]::ProbeMvs($mvs, $RuntimeRoot)
+    if ($mvsVersion -ne $config.mvsVersion) { throw "MVS 实际版本 $mvsVersion 与固定版本 $($config.mvsVersion) 不一致。" }
+    $report.lyflow = @{ version = $version; declaredAbiVersion = $descriptor.abiVersion; sourceRevision = $descriptor.sourceRevision; operators = @($operators) }
+    $report.mvs = @{ version = $mvsVersion; initialization = 'passed'; enumeration = 'passed' }
+    $report.mvs.modulesBeforeFinalize = @([PackagedRuntimeProbe]::MvsModules)
+    $report.modules = @([PackagedRuntimeProbe]::CheckModulePaths($RuntimeRoot))
+    $report.success = $true
+    Write-Host '运行库自检通过：文件清单、x64、接口、版本、必需算子及 MVS 初始化/枚举。ABI 声明另由应用注图自检验证。'
+} catch {
+    $report.error = $_.Exception.Message
+    Write-Host "运行库自检失败：$($report.error)"
+} finally {
+    [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($ReportPath))
+    $report | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $ReportPath -Encoding utf8NoBOM
+}
+if (-not $report.success) { exit 1 }
