@@ -546,7 +546,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <td>DB100.DBW14</td>
 <td>UInt</td>
 <td><code>shotCount</code></td>
-<td>协议总数为 1–65535；示教采集只接受 PC 预设的 1–64</td>
+<td>协议总数为 1–65535；示教采集接受 PLC 提供的 1–64</td>
 </tr>
 <tr>
 <td>DB100.DBD16</td>
@@ -690,8 +690,8 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <p>计划版本由 PC 配方库分配，不手工猜测或复用。改变产品代码、拍照点顺序、ID、Pose 或设备绑定会分配新版本；只改检测限值、检测参数、示教中线、不检设置或视角选择沿用原版本。更换设备或改变设备配置必须暂停接件，核对拍照点绑定，重新导出并人工评审设备与现场触发输出的对应关系，完成复位后再生产。拍照计划不使用内容哈希匹配；旧 <code>planHash</code>、<code>acceptedPlanHash</code> 标签直接拒绝，须按新模板重建点表，DBD20/84 固定为零值保留字段。</p>
 <h3 id="section-4-1">4.1 示教整圈采集</h3>
 <ol>
-<li>现场先切到示教用途并关闭自动生产请求与良品放行。确认双方上一事务已释放，PC 空闲后，由操作员在 PC 为候选草稿启动采集，使用唯一已就绪的三视角设备并设定 1–64 次触发；真实设备要求 Line0 硬触发。PC 等待开始后，PLC 才能提交新 requestSeq，仍按第 5 节等待 armed。</li>
-<li><code>shotCount=deviceShots</code> 必须等于 PC 预设数量；结束时 <code>deviceTriggers</code> 也必须等于该数量。每次触发必须交付完整三幅图，不能将三个视角计成三次拍照。</li>
+<li>现场先切到示教用途并关闭自动生产请求与良品放行。确认双方上一事务已释放，PC 空闲后，由操作员在 PC 为候选草稿启动采集，使用唯一已就绪的三视角设备，PC 不手填触发数量；真实设备要求 Line0 硬触发。PC 等待开始后，PLC 才能提交新 requestSeq，仍按第 5 节等待 armed。</li>
+<li>PLC 在开始请求中提供 <code>shotCount=deviceShots</code>，范围 1–64；PC 接受时锁存该数量，并按有效收图生成拍照点。结束时 <code>deviceTriggers</code>、实际接收数和完整保存帧数必须都等于该计划数量。每次触发必须交付完整三幅图，不能将三个视角计成三次拍照。</li>
 <li>当前采集路径从 PLC 请求记录非零 <code>planVersion</code>，按数量生成采集序列，不与已发布生产计划比较；<code>productCode</code> 不参与候选匹配，候选来自 PC 操作员选择。因此现场须事先核对候选、唯一设备、数量、运动路径及版本并留记录；收到 armed 不证明这些业务身份已被 PC 在线核验。采集成功也不会自动发布生产配方，之后仍需示教、验证、发布并重新导出生产计划。</li>
 <li>正常收尾：PLC 写最终计数、置 partEnd，PC 等完整采集收尾窗口结束并确认收图与保存完成后，提交 <code>resultCode=1/faultCode=0</code>。该值仅为采集完成，需锁存、ACK、释放，不计入生产 OK/NG。采集接收失败、超时或操作员中止，在握手仍可报告时返回 <code>90/94</code>；采集布防失败、计数边界或通信故障可能直接进入 visionFault，没有 done。</li>
 <li>失败轮次不能继续补拍。处置未结事务并复位；PC 对失败的设备会话禁止再次采集，需重连该设备后整圈重采。正常完成或失败都会结束 PC 的采集占用，后续 start 可能转入生产路径；PLC 必须保持外部示教互锁，逐轮重新在 PC 启动采集。完成释放、确认 PC 无活动采集并核对生产配方/计划后，才可解除示教互锁。</li>

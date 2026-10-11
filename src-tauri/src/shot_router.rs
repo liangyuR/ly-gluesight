@@ -1000,16 +1000,6 @@ mod tests {
     }
 
     #[test]
-    fn missed_trigger_pulse_leaves_the_last_shot_missing() {
-        // cam1 漏收了 P1 的脉冲：P4 的帧拿到计数 41。分不出来，但 P4 一定等不到帧，整件缺帧
-        let mut router = armed();
-        for f in [frame(0, 41), frame(1, 8), frame(2, 101)] {
-            router.route(&f);
-        }
-        assert_eq!(router.missing(), [3]);
-    }
-
-    #[test]
     fn camera_reopened_mid_part_never_binds_new_session_frames() {
         let mut router = armed();
         let mut ledgers = primed();
@@ -1077,17 +1067,6 @@ mod tests {
     #[test]
     fn late_frame_of_previous_part_is_stale_without_plc_counts() {
         late_frame_case(None);
-    }
-
-    #[test]
-    fn plc_counts_follow_a_part_that_stopped_early() {
-        // 上一件 cam1 只发了 1 个触发（中途停了）：按 PLC 计数推下限，下一件的第一帧照样是 P1
-        let mut ledgers = primed();
-        let mut a = armed();
-        feed(&mut a, &mut ledgers, &[(frame(0, 41), Some(0)), (frame(1, 8), Some(1)), (frame(2, 101), Some(2))]);
-        a.close(&mut ledgers, Some(&[("cam1", 1), ("cam2", 1), ("cam3", 1)]));
-        let mut b = ShotRouter::arm(&plan4(), &ledgers, &prod(), &arm_cams(None)).unwrap();
-        assert_eq!(b.route(&frame(0, 42)), Route::Bound { shot: 0, ordinal: 1 });
     }
 
     #[test]

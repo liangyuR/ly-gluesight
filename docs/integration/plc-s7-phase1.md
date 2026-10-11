@@ -11,7 +11,7 @@
 ## 1. 支持边界与责任
 
 - PLC/机器人维护运动路径、拍照位置、输出脉冲、脉冲宽度及唯一设备与触发输出的对应关系；GlueSight 的 UI、S7 网络轮询和 Windows 线程均不生成位置同步的硬触发。
-- 本次握手固定服务一台 SDK 三目设备，仅提供唯一设备的计划触发数 deviceShots 和实际触发数 deviceTriggers。配方每个拍照点绑定该设备与 Pose；软件已接入按设备会话与触发计数归属拍照点的路由，模拟与回放的软件闭环已完成，真实设备仍须联调验收。现场三目设备按一个 Device、一次触发一个含三视角的设备帧建模；全文称该连接为“设备通道 1”，不定义其他设备通道。一个拍照点选择一个或多个视角均不增加触发数，图 1/2/3 均属于该设备帧。当前海康路径已支持明确配置横向、纵向三等分或三个矩形区域的单张拼接图拆分；未配置布局拒绝启用，布局/尺寸不符产生图像错误。现场 SDK 原图交付、视角顺序、计数和触发线路仍待验收，不能把软件路径视为真机验证。
+- 本次握手固定服务一台 SDK 三目设备，仅提供唯一设备的计划触发数 deviceShots 和实际触发数 deviceTriggers。示教开始前 PC 不手填数量，由 PLC 的开始请求提供 1–64 次并由 PC 锁存，拍照点依据有效收图生成。配方每个拍照点绑定该设备与 Pose；软件已接入按设备会话与触发计数归属拍照点的路由，模拟与回放的软件闭环已完成，真实设备仍须联调验收。现场三目设备按一个 Device、一次触发一个含三视角的设备帧建模；全文称该连接为“设备通道 1”，不定义其他设备通道。一个拍照点选择一个或多个视角均不增加触发数，图 1/2/3 均属于该设备帧。当前海康路径已支持明确配置横向、纵向三等分或三个矩形区域的单张拼接图拆分；未配置布局拒绝启用，布局/尺寸不符产生图像错误。现场 SDK 原图交付、视角顺序、计数和触发线路仍待验收，不能把软件路径视为真机验证。
 - `TriggerPermit` 只允许现场触发程序开始/继续发新脉冲；SCL 不直接写物理输出。`IssuedPulseCount`（单个 UDInt） 由现场可靠计数源提供，每个实际输出脉冲加一，不能使用普通扫描对高速脉冲的布尔采样代替。PLC 发出脉冲不等于相机成功曝光，后者仍需相机帧/触发计数和完整性验证。
 - PLC 单独拥有 DB 字节 0–63；PC 单独拥有字节 64–87。PLC 代码只读 PC 区，PC 点表将 PLC 区设为只读。两个写入方不得共用同一字节，也不得用整 DB 的初始化/块复制覆盖对方区域。
 - 一件只有一个在途事务。普通质量 NG 可以按有效结果确认；通讯、身份或状态不确定进入故障，保留 pending，停止新触发及下一件。现场运动的停机策略由 PLC/机器人程序负责。
@@ -33,7 +33,7 @@
 | PLC | DB100.DBD4 | UDInt | `requestSeq`：本件非零递增事务序号 |
 | PLC | DB100.DBD8 | UDInt | `partSn`：工件 SN，不替代事务序号 |
 | PLC | DB100.DBW12 | UInt | `productCode`：生产配方产品代码，手动选配方也须匹配；示教候选由 PC 选择 |
-| PLC | DB100.DBW14 | UInt | `shotCount`：协议总拍照数 1–65535；示教采集只接受 PC 预设的 1–64 |
+| PLC | DB100.DBW14 | UInt | `shotCount`：协议总拍照数 1–65535；示教采集接受 PLC 提供的 1–64 |
 | PLC | DB100.DBD16 | UDInt | `planVersion`：生产使用配方库分配的导出版本，不等于配方修订；示教直接记录 PLC 非零版本，未与生产计划比对 |
 | PLC | DB100.DBD20 | UDInt | `planReserved`：保留位，固定写零，无业务身份用途；非零拒绝 |
 | PLC | DB100.DBW24 | UInt | `deviceShots`：唯一设备计划触发数，等于 shotCount |
@@ -171,9 +171,9 @@ FB 状态：10 等新件；20 等布防；30 允许运动触发；40 等结果�
 
 ## 8. 可复现的软件证据与未完成项
 
-2026-10-11 单设备协议 2 验证：Rust 默认回归 421 项通过、44 项默认忽略；`cargo test --offline --lib plc_session -- --include-ignored --test-threads=1 --nocapture` 的 48 项全部通过，包含真实 `ly_plc::PlcEngine` 与 Python peer 的回环 TCP、单设备正常/少触发/多触发、提前 ERR 的 ACK 实际计数、释放、重连和恢复。Python S7 回环测试 23 项通过；前端 43 个文件、990 项通过，类型检查及生产构建通过。Astra High 独立源码复核通过，28 个字段地址/类型/方向、HTML 正文与生成物同步检查通过。两份原生进程恢复脚本仅做语法及字段检查，未重新执行其完整 UI/进程场景。三张时序图按检查流程保持旧版，待协议确认后统一更新。
+2026-10-11 单设备协议 2 合并主分支后验证：Rust 默认回归 417 项通过、44 项默认忽略；`cargo test --offline --lib plc_session -- --include-ignored --test-threads=1 --nocapture` 的 48 项全部通过，包含真实 `ly_plc::PlcEngine` 与 Python peer 的回环 TCP、单设备正常/少触发/多触发、提前 ERR 的 ACK 实际计数、释放、重连和恢复。Python S7 回环测试 23 项通过；前端 43 个文件、963 项通过，类型检查及生产构建通过。Astra High 独立源码复核通过，28 个字段地址/类型/方向、HTML 正文与生成物同步检查通过。两份原生进程恢复脚本仅做语法及字段检查，未重新执行其完整 UI/进程场景。三张时序图按检查流程保持旧版，待协议确认后统一更新。
 
-当前日志保存在 `outputs/plc-single-device-rust-tests.log`、`outputs/plc-single-device-session-tests-final.log`、`outputs/plc-single-device-frontend-tests.log`，回环场景证据位于 `src-tauri/target/s7-session-tests/`。这些都是软件证据，不能证明双方模式互锁、上述 SCL 缺口或现场硬件已经完成验收。
+当前日志保存在 `outputs/plc-single-device-integrated-rust.log`、`outputs/plc-single-device-integrated-session.log`、`outputs/plc-single-device-integrated-frontend.log`，回环场景证据位于 `src-tauri/target/s7-session-tests/`。这些都是软件证据，不能证明双方模式互锁、上述 SCL 缺口或现场硬件已经完成验收。
 
 以下测试数量是先前集成阶段的历史记录，不能作为协议 2 的通过记录。
 

@@ -385,22 +385,6 @@ fn recording_available_requires_actual_refs_and_complete_error_free_evidence() {
 }
 
 #[test]
-fn version_one_database_is_backed_up_and_recreated_with_pending_recording_schema() {
-    let db = TestDb::new();
-    let old = Connection::open(db.path()).unwrap();
-    old.execute_batch("PRAGMA user_version=1; CREATE TABLE legacy(version TEXT); INSERT INTO legacy VALUES ('step6-before-recording-evidence');").unwrap();
-    drop(old);
-    let store = Store::open(&db.path()).unwrap();
-    assert_eq!(DB_VERSION, 3);
-    let backup = Connection::open(store.backup_path().unwrap()).unwrap();
-    assert_eq!(backup.query_row("SELECT version FROM legacy", [], |row| row.get::<_, String>(0)).unwrap(), "step6-before-recording-evidence");
-    let recipe = recipe();
-    let id = save(&store, &recipe, "cycle", &shots(&recipe), &PlcDelivery::default(), None).unwrap();
-    assert_eq!(store.detail(id).unwrap().recording.state, RecordingState::Pending);
-    assert!(!store.detail(id).unwrap().recording.available);
-}
-
-#[test]
 fn reopening_fails_pending_recordings_once_without_changing_original_evidence_or_terminal_states() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();

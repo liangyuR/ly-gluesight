@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import CameraPage, { FlyshotCalibrationPage } from "../src/pages/CameraPage";
 import { cameraApi, defaultCameraConfig } from "../src/features/camera/api";
@@ -10,8 +10,8 @@ import type { CameraConfig, CameraStatus, DeviceSummary } from "../src/features/
 import type { Snapshot } from "../src/features/cycle/types";
 import { deferred, shotList, snapshot, summary, workspaceView, twoLines } from "./fixtures";
 
-const hooks=vi.hoisted(()=>({phase:"IDLE",statuses:[] as CameraStatus[],desktop:true}));
-vi.mock("../src/lib/desktop",()=>({desktopAvailable:()=>hooks.desktop}));
+const hooks=vi.hoisted(()=>({phase:"IDLE",statuses:[] as CameraStatus[]}));
+vi.mock("../src/lib/desktop",()=>({desktopAvailable:()=>true}));
 vi.mock("../src/features/camera/api",async importOriginal=>{
   const actual=await importOriginal<typeof import("../src/features/camera/api")>();
   return {...actual,cameraApi:{...actual.cameraApi,rigConfig:vi.fn(),add:vi.fn(),remove:vi.fn(),listDevices:vi.fn(),records:vi.fn(),saveConfig:vi.fn(),softTrigger:vi.fn()},
@@ -30,7 +30,7 @@ let configs:CameraConfig[];
 const status=(config:CameraConfig,cam:number):CameraStatus=>({cam,id:config.id,name:config.name,source:config.source,acquisition:config.acquisition,ready:true,message:"",device:null,sdkVersion:null,frames:0,fps:0,maxFps:null,lostPackets:0,droppedFrames:0,warnings:[]});
 beforeEach(()=>{
   configs=[{...defaultCameraConfig,id:"CAM-1",name:"相机 1"},{...defaultCameraConfig,id:"CAM-2",name:"相机 2",source:"replay",replayDir:"D:/images"}];
-  hooks.phase="IDLE";hooks.desktop=true;hooks.statuses=configs.map(status);
+  hooks.phase="IDLE";hooks.statuses=configs.map(status);
   vi.mocked(cameraApi.rigConfig).mockImplementation(async()=>configs);
   vi.mocked(cameraApi.add).mockResolvedValue(2);vi.mocked(cameraApi.remove).mockResolvedValue(undefined);
   vi.mocked(cameraApi.records).mockResolvedValue({root:"D:/records",items:[]});vi.mocked(cameraApi.listDevices).mockResolvedValue([]);
@@ -42,6 +42,23 @@ const show=()=>render(<MemoryRouter><CameraPage/></MemoryRouter>);
 const loaded=()=>screen.findByRole("button",{name:"相机 1 CAM-1"});
 
 describe("设备与采集页基础操作",()=>{
+  it("直接进入设备页不显示配方返回入口",async()=>{
+    show();await loaded();expect(screen.queryByRole("button",{name:/返回.*采集/})).not.toBeInTheDocument();
+  });
+  it.each(["","?purpose=validation"])("从采集进入配置后可经标定返回原流程 %s",async search=>{
+    const state={captureReturn:{recipeId:"A",search,cameraId:"CAM-2",drain:2600,roundId:"history-1",previewK:2}};
+    function Destination(){const location=useLocation();return <div data-testid="destination">{JSON.stringify({search:location.search,state:location.state})}</div>;}
+    render(<MemoryRouter initialEntries={[{pathname:"/camera",state}]}><Routes><Route path="/camera" element={<CameraPage/>}/><Route path="/camera/calibration" element={<FlyshotCalibrationPage/>}/><Route path="/recipe/capture" element={<Destination/>}/></Routes></MemoryRouter>);
+    await loaded();expect(screen.getByRole("button",{name:"相机 2 CAM-2"})).toHaveClass("active");
+    const saving=deferred<string[]>();vi.mocked(cameraApi.saveConfig).mockReturnValueOnce(saving.promise);
+    await userEvent.click(screen.getByRole("button",{name:"保存并应用"}));
+    const label=search?"返回独立样本采集":"返回整圈采集";expect(screen.getByRole("button",{name:label})).toBeDisabled();
+    await act(async()=>saving.resolve([]));await waitFor(()=>expect(screen.getByRole("button",{name:label})).toBeEnabled());
+    await userEvent.click(screen.getByRole("link",{name:"飞拍工位标定"}));expect(screen.getByRole("button",{name:label})).toBeVisible();
+    await userEvent.click(screen.getByRole("link",{name:"设备与采集"}));await loaded();
+    await userEvent.click(screen.getByRole("button",{name:label}));expect(screen.getByTestId("destination")).toHaveTextContent(JSON.stringify({search,state}));
+    expect(cameraApi.saveConfig).toHaveBeenCalledTimes(1);
+  });
   it("三目设备标定明确绑定视角 1，其他视角提示独立标定或手动像素当量",async()=>{
     configs[0].viewCount=3;render(<MemoryRouter><FlyshotCalibrationPage/></MemoryRouter>);
     expect(await screen.findByRole("combobox",{name:"标定图像"})).toHaveValue("1");
@@ -158,11 +175,9 @@ describe("设备与采集页基础操作",()=>{
     hooks.phase="FAULT";page.rerender(<MemoryRouter><CameraPage/></MemoryRouter>);
     expect(screen.getByRole("textbox",{name:"名称"})).toBeEnabled();
   });
-  it("最多八台相机，浏览器预览中不能执行设备操作",async()=>{
+  it("最多八台相机，到达上限后仍可移除",async()=>{
     configs=Array.from({length:8},(_,i)=>({...defaultCameraConfig,id:`CAM-${i+1}`,name:`相机 ${i+1}`}));
-    const page=show();await loaded();expect(screen.getByRole("button",{name:"添加相机"})).toBeDisabled();expect(screen.getByRole("button",{name:"移除当前"})).toBeEnabled();
-    hooks.desktop=false;page.rerender(<MemoryRouter><CameraPage/></MemoryRouter>);
-    expect(screen.getByRole("button",{name:"添加相机"})).toBeDisabled();expect(screen.getByRole("button",{name:"移除当前"})).toBeDisabled();expect(screen.getByRole("button",{name:"模拟相机"})).toBeDisabled();
+    show();await loaded();expect(screen.getByRole("button",{name:"添加相机"})).toBeDisabled();expect(screen.getByRole("button",{name:"移除当前"})).toBeEnabled();
   });
   it("标定页面只列触发采集工位，没有适合工位时提供设备入口",async()=>{
     configs[1]={...configs[1],acquisition:"freeRun"};

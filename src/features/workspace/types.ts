@@ -60,7 +60,7 @@ export interface Comparison {
 export interface GrayImage { url: string; width: number; height: number }
 
 export interface CaptureRound {
-  roundId: string; recipeId: string; cameraId: string; deviceSession: number; plannedCount: number; receivedCount: number;
+  roundId: string; recipeId: string; cameraId: string; deviceSession: number; plannedCount: number | null; receivedCount: number;
   state: "waitingStart" | "receiving" | "draining" | "complete" | "failed";
   plcPlannedCount?: number | null; plcActualCount?: number | null;
   createdAt: number; endedAt: number | null; error: string | null; simulated: boolean;

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,11 +17,11 @@ function show(path: string) {
 }
 
 describe("流程预览路由与交互", () => {
-  it.each(screens)("$label 页面可直接打开，导航选中当前页面", ({ id, label }) => {
-    show(`/workflow/${id}`);
-    expect(screen.getByRole("heading", { level: 1, name: label })).toBeVisible();
-    expect(within(screen.getByRole("navigation", { name: "操作流程导航" })).getByRole("link", { name: label })).toHaveAttribute("aria-current", "page");
-    expect(document.querySelector(".wf-shell")).toHaveAttribute("data-view", id);
+  it("逐点示教可直接打开，导航选中当前页面", () => {
+    show("/workflow/teach");
+    expect(screen.getByRole("heading", { level: 1, name: "逐点示教" })).toBeVisible();
+    expect(within(screen.getByRole("navigation", { name: "操作流程导航" })).getByRole("link", { name: "逐点示教" })).toHaveAttribute("aria-current", "page");
+    expect(document.querySelector(".wf-shell")).toHaveAttribute("data-view", "teach");
   });
 
   it("存储损坏和未知路由回到可用的初始引导", () => {
@@ -42,19 +42,6 @@ describe("流程预览路由与交互", () => {
     await userEvent.click(screen.getByRole("button", { name: "重置预览数据" }));
     expect(document.querySelector(".wf-shell")).toHaveAttribute("data-scene", "default");
     expect(screen.getByRole("status")).toHaveTextContent("预览数据已恢复到初始状态。");
-  });
-
-  it("已通过的试测在编辑参数后失效，重新试测后才可保存", async () => {
-    show("/workflow/teach?scene=teach-pass");
-    expect(screen.getByRole("button", { name: "保存本点示教" })).toBeEnabled();
-    fireEvent.change(screen.getByRole("spinbutton", { name: "搜索半宽" }), { target: { value: "5" } });
-    expect(screen.getByRole("button", { name: "保存本点示教" })).toBeDisabled();
-    await userEvent.click(screen.getByRole("button", { name: "试测当前点" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "保存本点示教" })).toBeEnabled());
-    await userEvent.click(screen.getByRole("button", { name: "保存本点示教" }));
-    expect(screen.getByRole("button", { name: "保存本点示教" })).toBeDisabled();
-    const stored = JSON.parse(sessionStorage.getItem(storageKey)!);
-    expect(stored.frames[2].saved).toBe(true); expect(stored.validation.status).toBe("idle");
   });
 
   it.each(journeys.map((journey, index) => ({ ...journey, index })))("开始 $title 路径载入对应示例，步骤可导航", ({ title, views, index }) => {

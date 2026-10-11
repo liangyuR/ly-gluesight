@@ -212,12 +212,6 @@ describe("拍照点规划页面的胶路示教比例", () => {
 });
 
 describe("拍照点规划页面的空状态", () => {
-  it("浏览器模式显示桌面数据说明与查看入口", () => {
-    vi.mocked(desktopAvailable).mockReturnValue(false); show();
-    expect(screen.getByText("当前为浏览器查看模式")).toBeVisible(); expect(screen.getByRole("link", { name: "查看交互原型" })).toHaveAttribute("href", "/workflow/guide");
-    expect(screen.queryByRole("heading", { name: "配方默认检测与判定参数" })).toBeNull(); expect(workspaceApi.get).not.toHaveBeenCalled();
-  });
-
   it("有工作台但没有候选文档时显示选择入口，不装载编辑器", () => {
     controlled = { ...workspaceState(), doc: null }; show();
     expect(screen.getByText("尚未选择配方")).toBeVisible(); expect(screen.getByRole("link", { name: "打开配方库" })).toHaveAttribute("href", "/recipe");

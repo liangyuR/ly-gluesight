@@ -89,12 +89,6 @@ describe("通讯日志查询与导出", () => {
     const text = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsText(create.mock.calls[0][0]); });
     expect(text).toContain('"胶宽,""正常"""');
   });
-  it("导出请求失败显示原因并解锁，保留原查询结果", async () => {
-    await show(); vi.mocked(plcApi.queryLogs).mockRejectedValueOnce(new Error("导出失败"));
-    await userEvent.click(screen.getByRole("button", { name: "导出 CSV" }));
-    expect(await screen.findByText("Error: 导出失败")).toBeVisible(); expect(screen.getByRole("button", { name: "导出 CSV" })).toBeEnabled(); expect(screen.getByText("第一条日志")).toBeVisible();
-  });
-
   it("所有预设时间窗口使用当前时刻，上一页返回首屏", async () => {
     const now = new Date("2026-10-09T12:00:00+08:00").getTime(); vi.spyOn(Date, "now").mockReturnValue(now);
     await show();
@@ -174,6 +168,7 @@ describe("通讯日志查询与导出", () => {
   it("导出失败后可重新下载，导出错误不被日志刷新掩盖", async () => {
     await show(); vi.mocked(plcApi.queryLogs).mockRejectedValueOnce(new Error("读取导出失败")); const { create } = downloads();
     await userEvent.click(screen.getByRole("button", { name: "导出 CSV" })); expect(await screen.findByText("Error: 读取导出失败")).toBeVisible();
+    expect(screen.getByRole("button", { name: "导出 CSV" })).toBeEnabled(); expect(screen.getByText("第一条日志")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "刷新" })); expect(screen.getByText("Error: 读取导出失败")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "导出 CSV" })); expect(create).toHaveBeenCalledTimes(1); expect(screen.queryByText("Error: 读取导出失败")).toBeNull();
   });
