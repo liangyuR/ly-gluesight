@@ -60,6 +60,7 @@ try {
     if (-not (Test-Path -LiteralPath $applicationReport -PathType Leaf)) { throw '应用运行库自检未生成报告；停止生成安装包。' }
     $result = Get-Content -LiteralPath $applicationReport -Raw | ConvertFrom-Json
     if ($result.status -ne 'ok') { throw "应用运行库自检报告未通过；请查看 $applicationReport" }
+    Assert-LyFlowVersions $result.lyflow.clientAbiVersion $result.lyflow.version '应用客户端与实际引擎'
     & pnpm exec tauri bundle --bundles nsis --target x86_64-pc-windows-msvc --config $configPath
     if ($LASTEXITCODE -ne 0) { throw "Windows 安装包生成失败（退出码 $LASTEXITCODE）" }
 } finally { Pop-Location }

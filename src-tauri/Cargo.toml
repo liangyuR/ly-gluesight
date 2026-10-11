@@ -30,8 +30,8 @@ tokio = { version = "1", features = ["sync", "time", "macros"] }
 libloading = "0.8"
 rusqlite = { version = "0.40", features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-# lyFlow main：Image ABI v15 与 glue 飞拍/标定算子已合入；固定提交以便复现。
-lyflow-client = { git = "ssh://git@github.com/liangyuR/lyFlow.git", rev = "5b796c35d6cafd441a24bc09e620aaae399ca5ac" }
+# lyFlow ABI 跟随产品版本 1.1.0，固定提交以便复现。
+lyflow-client = { git = "ssh://git@github.com/liangyuR/lyFlow.git", rev = "d4c54ee2a56b2c6f93f4fb1e6614f612a447d02b" }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "pnm", "bmp", "tiff"] }
 ly-plc = { git = "ssh://git@github.com/liangyuR/ly-plc.git", branch = "main" }
 
