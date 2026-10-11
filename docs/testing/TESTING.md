@@ -6,7 +6,7 @@
 
 项目使用 Vitest、React Testing Library、user-event 和 jsdom 验证创建配方、逐帧示教到验证发布，以及少量关键失败保护；使用真实主流程页面与 WorkspaceProvider，在桌面接口边界提供最小数据。工件启动到落盘由独立的隐藏桌面实例验证，使用模拟相机与 PLC、真实后端和磁盘。辅助页面与 workflow 演示原型不再单独建立单元测试矩阵。
 
-当前范围、删减依据和三个流程的复现见 [前端轻量测试](frontend-lightweight-tests.md)；第一轮去重的历史基线见 [单元测试精简记录](unit-test-simplification.md)。
+当前范围、删减依据和三个流程的复现见 [前端轻量测试](frontend-lightweight-tests.md)；后端业务保留范围见 [后端轻量测试](backend-lightweight-tests.md)；第一轮去重的历史基线见 [单元测试精简记录](unit-test-simplification.md)。
 
 ## 运行
 
@@ -34,6 +34,8 @@ HTML 覆盖率报告输出到 `coverage/index.html`，机器可读摘要为 `cov
 ### Rust 后端
 
 在 `src-tauri` 下运行 `cargo test --offline --locked --lib`。`--offline` 要求依赖已缓存，首次准备依赖时需先允许 Cargo 获取。S7 外部进程用例和需要真实 DLL 的用例默认标为 ignored，普通 `cargo test` 不代表已完成这两项，分别见 [S7 一期握手](#s7-一期握手) 与 [真实 DLL 回归](#真实-dll-回归)。
+
+默认测试按配方、采集、示教验证发布、生产、PLC 和落盘业务保留；过时多设备场景、重复组合及辅助实现细节已精简。数量、保留保护与放弃覆盖见[后端轻量测试](backend-lightweight-tests.md)。
 
 `cargo fmt --all -- --check` 不通过：全库有大量与默认 rustfmt 不一致的排版，没有做全库重排，不能记作格式检查通过。
 

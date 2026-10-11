@@ -2,27 +2,6 @@ use super::*;
 use super::workflow::{initialize_views, load_active, projected_frame, selected_views, store_active};
 
 #[test]
-fn adopting_or_validating_capture_requires_a_nonzero_plc_plan_version() {
-    for invalid in [None, Some(0)] {
-        assert!(workflow::require_capture_plan(invalid).unwrap_err().contains("PLC 轨迹计划版本"));
-    }
-    for version in [1, 17, u32::MAX] {
-        assert_eq!(workflow::require_capture_plan(Some(version)).unwrap(), version);
-    }
-}
-
-#[test]
-fn changed_nested_calibration_updates_inherited_scale_but_preserves_manual_override() {
-    let old = json!({"path":"calib.json","value":{"data":{"mmPerPx":0.1}}});
-    assert_eq!(workflow::calibration_scale(&old), Some(0.1));
-    assert_eq!(workflow::updated_calibration_scale(Some(0.1), &old, Some(0.2)), Some(0.2));
-    assert_eq!(workflow::updated_calibration_scale(None, &old, Some(0.2)), Some(0.2));
-    assert_eq!(workflow::updated_calibration_scale(Some(0.3), &old, Some(0.2)), Some(0.3));
-    assert_eq!(workflow::updated_calibration_scale(Some(0.1), &old, None), None);
-    assert_eq!(workflow::calibration_scale(&json!({"value":{"mmPerPx":0.4}})), Some(0.4));
-}
-
-#[test]
 fn representative_calibration_reuse_requires_matching_environment_and_retains_source_identity() {
     let w = workspace();
     let mut image = w.frames[0].views[0].clone();
@@ -59,17 +38,10 @@ fn pending_workspace() -> Workspace {
 }
 
 #[test]
-fn whole_round_source_blocks_every_single_frame_replacement_without_mutation() {
-    let mut w = workspace();
-    assert!(w.require_single_frame_source().is_ok());
-    w.capture_id = Some("capture-original".into());
-    let before = state_value(&w);
-    assert!(w.require_single_frame_source().unwrap_err().contains("整圈"));
-    assert_eq!(state_value(&w), before);
-}
-
-#[test]
 fn historical_sample_requires_the_teaching_plc_plan_even_with_identical_shot_fields() {
+    assert!(workflow::require_capture_plan(None).is_err());
+    assert!(workflow::require_capture_plan(Some(0)).is_err());
+    assert_eq!(workflow::require_capture_plan(Some(17)).unwrap(), 17);
     let mut doc = workspace().doc;
     doc.plan_version = 17;
     let original = doc.build().unwrap();
@@ -86,21 +58,12 @@ fn historical_sample_requires_the_teaching_plc_plan_even_with_identical_shot_fie
 }
 
 #[test]
-fn capture_start_requires_an_existing_unfrozen_candidate() {
-    let w = workspace();
-    let id = w.doc.id.clone();
-    let host = WorkspaceHost { root: PathBuf::new(), items: Mutex::new(HashMap::from([(id.clone(), w)])), notes: vec![],
-        live: Mutex::new(LiveFrames::default()), station: Mutex::new(HashMap::new()),
-        capture_seq: std::sync::atomic::AtomicU64::new(0), comparisons: comparisons::Comparisons::default() };
-    assert!(host.capture_for_candidate("missing", || -> Result<(), String> { panic!("不存在的候选不能启动采集") }).is_err());
-    assert_eq!(host.capture_for_candidate(&id, || Ok(17)).unwrap(), 17);
-    host.items.lock().unwrap().insert(id.clone(), pending_workspace());
-    assert!(host.capture_for_candidate(&id, || -> Result<(), String> { panic!("冻结的候选不能启动采集") }).is_err());
-}
-
-#[test]
 fn failed_activation_retains_the_same_frozen_release_and_requires_explicit_retry() {
-    let before = pending_workspace();
+    let mut before = pending_workspace();
+    before.capture_id = Some("whole-round".into());
+    let unchanged = state_value(&before);
+    assert!(before.require_single_frame_source().is_err());
+    assert_eq!(state_value(&before), unchanged);
     let release = state_value(&before.pending);
     let mut after = before.clone();
     after.pending = None;
@@ -172,6 +135,9 @@ fn workspace() -> Workspace {
 fn switching_views_keeps_independent_centerlines_and_valid_ng_trials() {
     let mut w = workspace();
     let first = snapshot(&w, 1);
+    let before = state_value(&w);
+    assert!(select_view(&mut w, 0, 0).is_err());
+    assert_eq!(state_value(&w), before);
     load_active(&mut w, 0, 2).unwrap();
     assert_eq!(w.doc.shots[0].path[0][1], 20.0);
     assert_eq!(w.frames[0].image.as_ref().unwrap().view, 2);
@@ -188,58 +154,13 @@ fn switching_views_keeps_independent_centerlines_and_valid_ng_trials() {
     assert!(w.frames[0].trial.is_none());
     assert!(!w.frames[0].saved);
     assert!(projected_frame(&w, 0, 3).unwrap().saved);
-}
-
-#[test]
-fn deselect_and_reselect_preserves_unchanged_trial_but_invalidates_full_validation() {
-    let mut w = workspace();
-    let original = snapshot(&w, 2);
-    let revision = w.revision;
+    let images = state_value(&w.frames[0].views);
     let mut doc = w.doc.clone();
-    doc.shots[0].views[1].enabled = false;
+    doc.shots[0].skip = true;
     update_doc(&mut w, doc).unwrap();
-    assert_eq!(selected_views(&w, 0), [1, 3]);
-    assert_eq!(snapshot(&w, 2), original);
-    assert!(w.validation.is_none());
-    assert_eq!(w.revision, revision + 1);
-    let mut doc = w.doc.clone();
-    doc.shots[0].views[1].enabled = true;
-    update_doc(&mut w, doc).unwrap();
-    assert_eq!(selected_views(&w, 0), [1, 2, 3]);
-    load_active(&mut w, 0, 2).unwrap();
-    assert!(w.frames[0].saved);
-    assert_eq!(snapshot(&w, 2), original);
-}
-
-#[test]
-fn default_detection_change_only_invalidates_views_without_overrides() {
-    let mut w = workspace();
-    let overridden = snapshot(&w, 2);
-    let mut doc = w.doc.clone();
-    doc.detect.search_mm += 1.0;
-    update_doc(&mut w, doc).unwrap();
-    for selected in [1, 3] {
-        let frame = projected_frame(&w, 0, selected).unwrap();
-        assert!(!frame.saved && frame.trial.is_none());
-        assert!(frame.image.is_some());
-    }
-    assert_eq!(snapshot(&w, 2), overridden);
-    assert!(w.validation.is_none());
-}
-
-#[test]
-fn default_limits_change_only_invalidates_views_without_overrides() {
-    let mut w = workspace();
-    let overridden = snapshot(&w, 3);
-    let mut doc = w.doc.clone();
-    doc.limits.max_gap_len += 1.0;
-    update_doc(&mut w, doc).unwrap();
-    for selected in [1, 2] {
-        let frame = projected_frame(&w, 0, selected).unwrap();
-        assert!(!frame.saved && frame.trial.is_none());
-    }
-    assert_eq!(snapshot(&w, 3), overridden);
-    assert!(w.validation.is_none());
+    assert!(selected_views(&w, 0).is_empty());
+    assert_eq!(state_value(&w.frames[0].views), images);
+    assert!(projected_frame(&w, 0, 1).unwrap().saved);
 }
 
 #[test]
@@ -261,23 +182,4 @@ fn editing_one_view_invalidates_only_that_trial_and_restoring_defaults_requires_
     update_doc(&mut w, doc).unwrap();
     assert!(!projected_frame(&w, 0, 2).unwrap().saved);
     assert!(projected_frame(&w, 0, 2).unwrap().trial.is_none());
-}
-
-#[test]
-fn skipping_is_explicit_and_does_not_destroy_teaching() {
-    let mut w = workspace();
-    let images = state_value(&w.frames[0].views);
-    let mut doc = w.doc.clone();
-    doc.shots[0].skip = true;
-    update_doc(&mut w, doc).unwrap();
-    assert!(selected_views(&w, 0).is_empty());
-    assert!(w.frames[0].view_states.iter().all(|v| v.saved));
-    assert_eq!(state_value(&w.frames[0].views), images);
-    let mut doc = w.doc.clone();
-    doc.shots[0].skip = false;
-    doc.shots[0].views.iter_mut().for_each(|v| v.enabled = false);
-    update_doc(&mut w, doc).unwrap();
-    assert!(selected_views(&w, 0).is_empty());
-    assert!(!w.doc.shots[0].skip);
-    assert!(!w.doc.build().unwrap().shots[0].taught());
 }

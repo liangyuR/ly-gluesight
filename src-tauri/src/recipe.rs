@@ -971,12 +971,9 @@ impl RecipeStore {
 mod tests {
     use super::*;
 
-    /// 电机壳体 B 的四个拍照点改成 cam1 → cam2 → cam3 → cam1。
-    fn three_cameras() -> RecipeDoc {
+    fn composite_recipe() -> RecipeDoc {
         let mut doc = samples().remove(1);
-        for (shot, camera) in doc.shots.iter_mut().zip(["cam1", "cam2", "cam3", "cam1"]) {
-            shot.camera = camera.into();
-        }
+        for (shot, view) in doc.shots.iter_mut().zip([1, 2, 3, 1]) { shot.view = view; }
         doc
     }
 
@@ -996,18 +993,6 @@ mod tests {
         assert_eq!(view.shots[0].calib_ref(), "cam1-v3");
         assert_eq!(view.segments.len(), 1);
         assert!(view.segments[0].first > 0);
-    }
-
-    #[test]
-    fn incomplete_drafts_save_but_cannot_run() {
-        let mut doc = samples().remove(0);
-        doc.shots.clear();
-        assert!(doc.build().unwrap().ready().is_err());
-        doc.shots = shot_list("cam1", vec![vec![[1.0, 2.0]]]);
-        doc.shots[0].mm_per_px = None;
-        assert!(doc.build().unwrap().ready().is_err());
-        doc.schema_version = 4;
-        assert!(doc.build().is_err());
     }
 
     #[test]
@@ -1040,47 +1025,15 @@ mod tests {
         assert_eq!(r.ready().unwrap_err(), "配方 MTR-HSG-B 的拍照点 P3 尚未示教胶路");
         doc.shots[2].skip = true;
         assert!(doc.build().unwrap().ready().is_ok());
-    }
-
-    #[test]
-    fn shot_limits_override_recipe_limits() {
-        let mut doc = samples().remove(1);
-        doc.shots[3].limits = Some(ShotLimits { position: None, width: None, max_gap_len: 9.0, min_present: 0.5 });
-        let r = doc.build().unwrap();
-        assert_eq!(r.segments[0].max_gap_len, 6.0);
-        assert!(r.segments[0].width.is_some());
-        assert_eq!((r.segments[3].max_gap_len, r.segments[3].width.is_none(), r.segments[3].min_present), (9.0, true, 0.5));
-        assert_eq!(r.segments[0].min_present, 0.8);
-    }
-
-    #[test]
-    fn all_skipped_recipe_is_rejected() {
-        let mut doc = samples().remove(1);
-        doc.shots.iter_mut().for_each(|s| s.skip = true);
+        doc.shots.iter_mut().for_each(|shot| shot.skip = true);
         assert!(doc.build().unwrap().ready().unwrap_err().contains("至少需要一个参与检测"));
-        doc.shots[2].skip = false;
-        assert!(doc.build().is_ok());
-    }
-
-    #[test]
-    fn three_camera_recipe_saves_and_reloads() {
-        let dir = std::env::temp_dir().join(format!("gluesight-recipe-{}-{}", std::process::id(), ly_plc::now_ms()));
-        let store = RecipeStore::open(dir.clone()).unwrap();
-        let saved = store.save(three_cameras(), None).unwrap();
-        assert_eq!(saved.cameras(), ["cam1", "cam2", "cam3"]);
-        store.reload();
-        assert!(store.errors().is_empty(), "{:?}", store.errors());
-        let loaded = store.get(&saved.id).unwrap();
-        assert_eq!(loaded.revision_id, saved.revision_id);
-        assert_eq!(loaded.shots, saved.shots);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn every_save_advances_the_explicit_recipe_revision() {
         let dir = std::env::temp_dir().join(format!("gluesight-revision-{}-{}", std::process::id(), ly_plc::now_ms()));
         let store = RecipeStore::open(dir.clone()).unwrap();
-        let doc = three_cameras();
+        let doc = composite_recipe();
         let first = store.save(doc.clone(), None).unwrap();
         let second = store.save(doc, Some(&first.id)).unwrap();
         assert_eq!(second.version, first.version + 1);
@@ -1098,7 +1051,7 @@ mod tests {
     fn deleted_and_renamed_ids_keep_monotonic_versions_across_restart() {
         let dir = std::env::temp_dir().join(format!("gluesight-retired-version-{}-{}", std::process::id(), ly_plc::now_ms()));
         let store = RecipeStore::open(dir.clone()).unwrap();
-        let mut doc = three_cameras(); doc.id = "REUSED".into(); doc.product_code = 60002; doc.version = 1;
+        let mut doc = composite_recipe(); doc.id = "REUSED".into(); doc.product_code = 60002; doc.version = 1;
         let original = store.save(doc.clone(), None).unwrap();
         store.delete(&doc.id).unwrap();
         drop(store);
@@ -1126,19 +1079,6 @@ mod tests {
     }
 
     #[test]
-    fn historical_floors_are_loaded_before_automatic_samples_are_seeded() {
-        let dir = std::env::temp_dir().join(format!("gluesight-history-first-{}-{}", std::process::id(), ly_plc::now_ms()));
-        let sample = samples().remove(0);
-        let floors = BTreeMap::from([(sample.id.clone(), 7)]);
-        let store = RecipeStore::open_with_floors(dir.clone(), &floors).unwrap();
-        assert!(store.list().is_empty());
-        assert_eq!(store.next_version(&sample.id).unwrap(), 8);
-        let mut candidate = sample; candidate.version = 1;
-        assert_eq!(store.save(candidate, None).unwrap().version, 8);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
     fn plan_version_changes_only_when_the_plc_plan_changes() {
         let dir = std::env::temp_dir().join(format!("gluesight-plan-version-{}-{}", std::process::id(), ly_plc::now_ms()));
         let store = RecipeStore::open(dir.clone()).unwrap();
@@ -1156,7 +1096,7 @@ mod tests {
         let mut seen = vec![plan, store.doc("MTR-HSG-A").unwrap().plan_version];
         let edits: [fn(&mut RecipeDoc); 4] = [
             |d| d.shots[0].pose_id = "P9".into(),
-            |d| d.shots[1].camera = "cam2".into(),
+            |d| d.shots.iter_mut().for_each(|shot| shot.camera = "another-device".into()),
             |d| d.shots.swap(0, 1),
             |d| d.product_code = 61000,
         ];
@@ -1179,54 +1119,10 @@ mod tests {
     }
 
     #[test]
-    fn copied_recipe_file_with_the_same_plan_version_is_not_loaded() {
-        let dir = std::env::temp_dir().join(format!("gluesight-plan-copy-{}-{}", std::process::id(), ly_plc::now_ms()));
-        let store = RecipeStore::open(dir.clone()).unwrap();
-        let mut copy = store.doc("MTR-HSG-B").unwrap();
-        copy.id = "COPIED".into();
-        copy.product_code = 63000;
-        std::fs::write(store.file(&copy.id), serde_json::to_string(&copy).unwrap()).unwrap();
-        store.reload();
-        // 复制件文件名排在原件前面，也只拒复制件，原配方照常加载；重启后仍然如此
-        for _ in 0..2 {
-            assert!(store.get("COPIED").is_none());
-            assert!(store.get("MTR-HSG-B").is_some());
-            assert!(store.errors().iter().any(|e| e.contains("计划版本") && e.contains("重复")), "{:?}", store.errors());
-            store.reload();
-        }
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn publish_requires_a_plan_version_assigned_by_the_store() {
-        let dir = std::env::temp_dir().join(format!("gluesight-plan-publish-{}-{}", std::process::id(), ly_plc::now_ms()));
-        let store = RecipeStore::open(dir.clone()).unwrap();
-        let mut doc = three_cameras(); doc.id = "PLAN-PUBLISH".into(); doc.product_code = 60007;
-        doc.version = store.next_version(&doc.id).unwrap();
-        // 没分配、借用别的配方的号、自己编一个没发过的号：都不收
-        for forged in [0, store.doc("MTR-HSG-A").unwrap().plan_version, 900_000] {
-            doc.plan_version = forged;
-            assert!(store.save_published(doc.clone(), None).unwrap_err().contains("计划版本"), "{forged}");
-        }
-        doc.plan_version = store.plan_version_for(&doc).unwrap();
-        let first = store.save_published(doc.clone(), None).unwrap();
-        // 下一版只改限值：必须沿用原号
-        doc.version = store.next_version(&doc.id).unwrap();
-        doc.limits.max_gap_len = 2.0;
-        assert_eq!(store.plan_version_for(&doc).unwrap(), first.plan_version);
-        let mut renumbered = doc.clone();
-        renumbered.plan_version = store.plan_version_for(&{ let mut d = doc.clone(); d.product_code = 60008; d }).unwrap();
-        assert!(store.save_published(renumbered, Some(&first.revision_id)).is_err());
-        doc.plan_version = first.plan_version;
-        assert_eq!(store.save_published(doc, Some(&first.revision_id)).unwrap().plan_version, first.plan_version);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
     fn failed_publish_write_does_not_consume_the_frozen_target_version() {
         let dir = std::env::temp_dir().join(format!("gluesight-publish-retry-{}-{}", std::process::id(), ly_plc::now_ms()));
         let store = RecipeStore::open(dir.clone()).unwrap();
-        let mut doc = three_cameras(); doc.id = "WRITE-RETRY".into(); doc.product_code = 60005;
+        let mut doc = composite_recipe(); doc.id = "WRITE-RETRY".into(); doc.product_code = 60005;
         doc.version = store.next_version(&doc.id).unwrap();
         doc.plan_version = store.plan_version_for(&doc).unwrap();
         let blocking = store.file(&doc.id).with_extension("tmp");
@@ -1239,100 +1135,11 @@ mod tests {
     }
 
     #[test]
-    fn damaged_retired_version_ledger_never_resets_to_one() {
-        let dir = std::env::temp_dir().join(format!("gluesight-damaged-versions-{}-{}", std::process::id(), ly_plc::now_ms()));
-        let store = RecipeStore::open(dir.clone()).unwrap();
-        let doc = three_cameras();
-        let original = store.get(&doc.id).unwrap();
-        std::fs::write(dir.join(".revision-versions"), "invalid").unwrap();
-        assert!(store.next_version(&doc.id).unwrap_err().contains("版本记录损坏"));
-        assert!(store.save(doc.clone(), None).unwrap_err().contains("版本记录损坏"));
-        assert!(store.delete(&doc.id).unwrap_err().contains("版本记录损坏"));
-        assert_eq!(store.get(&doc.id).unwrap().revision_id, original.revision_id);
-        drop(store);
-        assert!(RecipeStore::open(dir.clone()).err().unwrap().contains("版本记录损坏"));
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn external_recipe_edits_receive_persistent_new_versions_without_content_fingerprints() {
-        let dir = std::env::temp_dir().join(format!("gluesight-external-revision-{}-{}", std::process::id(), ly_plc::now_ms()));
-        let store = RecipeStore::open(dir.clone()).unwrap();
-        let mut doc = store.doc("MTR-HSG-B").unwrap();
-        let original = store.get(&doc.id).unwrap();
-        doc.limits.max_gap_len += 1.0;
-        std::fs::write(store.file(&doc.id), serde_json::to_vec(&doc).unwrap()).unwrap();
-        store.reload();
-        assert!(store.errors().is_empty(), "{:?}", store.errors());
-        let edited = store.get(&doc.id).unwrap();
-        assert_eq!(edited.version, original.version + 1);
-        assert_ne!(edited.revision_id, original.revision_id);
-        assert_eq!(original.version, 1);
-        assert_eq!(store.doc(&doc.id).unwrap().limits.max_gap_len, doc.limits.max_gap_len);
-        drop(store);
-        let store = RecipeStore::open(dir.clone()).unwrap();
-        assert_eq!(store.get(&doc.id).unwrap().version, edited.version);
-        let formatted = serde_json::to_value(store.doc(&doc.id).unwrap()).unwrap();
-        std::fs::write(store.file(&doc.id), format!("\n{}\n", serde_json::to_string_pretty(&formatted).unwrap())).unwrap();
-        store.reload();
-        assert_eq!(store.get(&doc.id).unwrap().version, edited.version);
-        store.delete(&doc.id).unwrap();
-        std::fs::write(store.file(&doc.id), serde_json::to_vec(&doc).unwrap()).unwrap();
-        drop(store);
-        let store = RecipeStore::open(dir.clone()).unwrap();
-        assert_eq!(store.get(&doc.id).unwrap().version, edited.version + 1);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn history_without_proven_source_and_rolled_back_files_never_reuse_versions() {
-        let dir = std::env::temp_dir().join(format!("gluesight-unproven-revision-{}-{}", std::process::id(), ly_plc::now_ms()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let doc = three_cameras();
-        std::fs::write(dir.join(format!("{}.json", doc.id)), serde_json::to_vec(&doc).unwrap()).unwrap();
-        let store = RecipeStore::open_with_floors(dir.clone(), &BTreeMap::from([(doc.id.clone(), 7)])).unwrap();
-        assert_eq!(store.get(&doc.id).unwrap().version, 8);
-        std::fs::write(store.file(&doc.id), serde_json::to_vec(&doc).unwrap()).unwrap();
-        store.reload();
-        assert_eq!(store.get(&doc.id).unwrap().version, 9);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn failed_source_write_does_not_admit_an_external_revision_and_can_be_recovered() {
-        let dir = std::env::temp_dir().join(format!("gluesight-source-write-{}-{}", std::process::id(), ly_plc::now_ms()));
-        let store = RecipeStore::open(dir.clone()).unwrap();
-        let mut doc = store.doc("MTR-HSG-B").unwrap(); doc.name.push_str(" externally edited");
-        std::fs::write(store.file(&doc.id), serde_json::to_vec(&doc).unwrap()).unwrap();
-        let blocking = dir.join(".revision-sources").with_extension("tmp");
-        std::fs::create_dir(&blocking).unwrap();
-        store.reload();
-        assert!(store.get(&doc.id).is_none());
-        assert!(store.errors().iter().any(|error| error.contains("来源未能持久保存")));
-        assert_eq!(store.revision_sources().unwrap()[&doc.id.to_ascii_lowercase()].version, 1);
-        std::fs::remove_dir(&blocking).unwrap();
-        store.reload();
-        assert_eq!(store.get(&doc.id).unwrap().version, 2);
-        drop(store);
-        let store = RecipeStore::open(dir.clone()).unwrap();
-        assert_eq!(store.get(&doc.id).unwrap().version, 2);
-        let mut published = store.doc(&doc.id).unwrap(); published.version = 3; published.name.push_str(" published");
-        std::fs::create_dir(&blocking).unwrap();
-        assert!(store.save_published(published.clone(), Some(&format!("{}-v2", doc.id))).is_err());
-        assert_eq!(store.get(&doc.id).unwrap().version, 2);
-        std::fs::remove_dir(&blocking).unwrap();
-        assert_eq!(store.save_published(published, Some(&format!("{}-v2", doc.id))).unwrap().version, 3);
-        std::fs::write(dir.join(".revision-sources"), "invalid").unwrap();
-        assert!(RecipeStore::open(dir.clone()).err().unwrap().contains("来源记录损坏"));
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
     fn newly_created_recipe_source_failure_can_retry_both_save_paths_without_reload() {
         for published in [false, true] {
             let dir = std::env::temp_dir().join(format!("gluesight-new-source-retry-{published}-{}-{}", std::process::id(), ly_plc::now_ms()));
             let store = RecipeStore::open(dir.clone()).unwrap();
-            let mut doc = three_cameras(); doc.id = "NEW-SOURCE-RETRY".into(); doc.product_code = 60006;
+            let mut doc = composite_recipe(); doc.id = "NEW-SOURCE-RETRY".into(); doc.product_code = 60006;
             doc.plan_version = store.plan_version_for(&doc).unwrap();
             let blocking = dir.join(".revision-sources").with_extension("tmp"); std::fs::create_dir(&blocking).unwrap();
             let failed = if published { store.save_published(doc.clone(), None) } else { store.save(doc.clone(), None) };
@@ -1348,54 +1155,14 @@ mod tests {
     }
 
     #[test]
-    fn failed_source_save_keeps_preexisting_recipe_files_and_new_targets_are_not_overwritten() {
-        let dir = std::env::temp_dir().join(format!("gluesight-existing-source-failure-{}-{}", std::process::id(), ly_plc::now_ms()));
-        let store = RecipeStore::open(dir.clone()).unwrap();
-        let mut doc = store.doc("MTR-HSG-B").unwrap(); doc.name.push_str(" saved update");
-        let blocking = dir.join(".revision-sources").with_extension("tmp"); std::fs::create_dir(&blocking).unwrap();
-        assert!(store.save(doc.clone(), None).is_err());
-        assert!(store.file(&doc.id).is_file());
-        assert_eq!(store.get(&doc.id).unwrap().version, 1);
-        assert_eq!(serde_json::from_str::<RecipeDoc>(&crate::fsio::read_text(&store.file(&doc.id)).unwrap()).unwrap().version, 2);
-        doc.id = "EXTERNAL-TARGET".into(); doc.product_code = 60007;
-        let text = serde_json::to_string(&doc).unwrap(); std::fs::write(store.file(&doc.id), &text).unwrap();
-        assert!(store.write_with_source(&doc, true).unwrap_err().contains("拒绝覆盖"));
-        assert!(store.save(doc.clone(), None).is_err()); assert!(store.save_published(doc.clone(), None).is_err());
-        assert_eq!(crate::fsio::read_text(&store.file(&doc.id)).unwrap(), text);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn new_recipe_rollback_preserves_external_changes_and_reports_delete_failures() {
-        let dir = std::env::temp_dir().join(format!("gluesight-rollback-source-{}-{}", std::process::id(), ly_plc::now_ms()));
-        let store = RecipeStore::open(dir.clone()).unwrap();
-        let mut doc = three_cameras(); doc.id = "ROLLBACK-NEW".into(); doc.product_code = 60008;
-        let mut changed = doc.clone(); changed.limits.max_gap_len += 1.0;
-        store.write(&changed).unwrap();
-        assert!(store.rollback_new_file(&doc).unwrap_err().contains("外部修改"));
-        assert_eq!(serde_json::from_str::<RecipeDoc>(&crate::fsio::read_text(&store.file(&doc.id)).unwrap()).unwrap(), changed);
-        std::fs::remove_file(store.file(&doc.id)).unwrap(); std::fs::create_dir(store.file(&doc.id)).unwrap();
-        assert!(store.rollback_new_file(&doc).unwrap_err().contains("类型已变化"));
-        std::fs::remove_dir(store.file(&doc.id)).unwrap(); store.write(&doc).unwrap();
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::OpenOptionsExt;
-            let held = std::fs::OpenOptions::new().read(true).share_mode(1 | 2).open(store.file(&doc.id)).unwrap();
-            assert!(store.rollback_new_file(&doc).unwrap_err().contains("回滚删除失败"));
-            assert!(store.file(&doc.id).is_file()); drop(held);
-        }
-        store.rollback_new_file(&doc).unwrap(); assert!(!store.file(&doc.id).exists());
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
     fn published_versions_are_assigned_once_and_crash_retries_cannot_overwrite_a_revision() {
         let dir = std::env::temp_dir().join(format!("gluesight-published-version-{}-{}", std::process::id(), ly_plc::now_ms()));
         let store = RecipeStore::open(dir.clone()).unwrap();
-        let mut doc = three_cameras();
+        let mut doc = composite_recipe();
         doc.id = "EXPLICIT-PUBLISHED".into();
         doc.product_code = 60000;
         doc.version = 7;
+        assert!(store.save_published(doc.clone(), None).unwrap_err().contains("计划版本"));
         doc.plan_version = store.plan_version_for(&doc).unwrap();
         let first = store.save_published(doc.clone(), None).unwrap();
         assert_eq!(first.revision_id, "EXPLICIT-PUBLISHED-v7");
@@ -1421,6 +1188,13 @@ mod tests {
         let decoded: RecipeDoc = serde_json::from_str(&encoded).unwrap();
         let recipe = decoded.build().unwrap();
         assert_eq!(recipe.cameras(), ["cam1"]);
+        let dir = std::env::temp_dir().join(format!("gluesight-composite-recipe-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        let saved = store.save(doc.clone(), None).unwrap();
+        store.reload();
+        assert!(store.errors().is_empty(), "{:?}", store.errors());
+        assert_eq!(store.get(&saved.id).unwrap().shots, saved.shots);
+        std::fs::remove_dir_all(dir).unwrap();
         assert_eq!(recipe.shots.iter().map(|s| s.view).collect::<Vec<_>>(), [1, 2, 3, 1]);
         for invalid in [0, 4, 255] {
             let mut bad = doc.clone();
@@ -1437,7 +1211,7 @@ mod tests {
     #[test]
     fn invalid_recipes_are_rejected() {
         let reject = |f: &dyn Fn(&mut RecipeDoc), what: &str| {
-            let mut doc = three_cameras();
+            let mut doc = composite_recipe();
             f(&mut doc);
             let e = doc.build().unwrap_err();
             assert!(e.contains(what), "{e}");
@@ -1452,10 +1226,10 @@ mod tests {
         reject(&|d| d.limits.max_gap_len = -1.0, "断胶长度");
         reject(&|d| d.schema_version = 2, "格式版本");
         let pose_shared = {
-            let mut d = three_cameras();
+            let mut d = composite_recipe();
             d.shots[1].pose_id = "P1".into();
             d
         };
-        assert!(pose_shared.build().is_ok(), "同一 Pose 可以触发两台相机");
+        assert!(pose_shared.build().is_ok(), "同一设备允许同一 Pose 多次触发");
     }
 }

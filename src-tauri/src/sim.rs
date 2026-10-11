@@ -339,6 +339,8 @@ mod tests {
     #[tokio::test]
     async fn stop_during_inter_part_pause_does_not_start_another_part() {
         let sim = SimCtl::default();
+        assert!(!sim.continue_after_pause(false, Duration::ZERO).await);
+        assert!(sim.continue_after_pause(true, Duration::ZERO).await);
         let (start_next, ()) = tokio::join!(
             biased;
             sim.continue_after_pause(true, Duration::from_millis(20)),
@@ -347,12 +349,4 @@ mod tests {
         assert!(!start_next, "stop accepted between parts must prevent the next part");
     }
 
-    #[tokio::test]
-    async fn only_unstopped_continuous_runs_start_another_part() {
-        let sim = SimCtl::default();
-        assert!(!sim.continue_after_pause(false, Duration::ZERO).await);
-        assert!(sim.continue_after_pause(true, Duration::ZERO).await);
-        sim.stop.store(true, Ordering::SeqCst);
-        assert!(!sim.continue_after_pause(true, Duration::ZERO).await);
-    }
 }

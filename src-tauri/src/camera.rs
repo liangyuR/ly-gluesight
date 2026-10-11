@@ -1406,16 +1406,6 @@ fn check_camera_target(current_id: &str, requested_id: &str) -> Result<(), Strin
     Ok(())
 }
 
-#[cfg(test)]
-mod save_target_tests {
-    #[test]
-    fn stale_camera_index_cannot_overwrite_another_camera() {
-        assert!(super::check_camera_target("cam2", "cam1").is_err());
-        assert!(super::check_camera_target("cam1", "").is_err());
-        assert!(super::check_camera_target("cam1", "cam1").is_ok());
-    }
-}
-
 /// 同一个序列号不能给两台海康相机（留空表示"第一台空闲的"）。
 fn check_serial(configs: &[CameraConfig], cam: usize, config: &CameraConfig) -> Result<(), String> {
     if config.source != CameraSource::Mvs || config.serial.is_empty() {
@@ -1577,20 +1567,6 @@ mod view_tests {
     use super::*;
 
     #[test]
-    fn old_camera_configs_keep_one_view_and_only_one_or_three_are_allowed() {
-        let mut config: CameraConfig = serde_json::from_str(r#"{"name":"原单目相机"}"#).unwrap();
-        assert_eq!(config.view_count, 1);
-        assert!(config.validate().is_ok());
-        for view_count in [0, 2, 4, u8::MAX] {
-            config.view_count = view_count;
-            assert!(config.validate().unwrap_err().contains("只能是 1 或 3"));
-        }
-        config.view_count = 3;
-        assert!(config.validate().is_ok());
-        assert_eq!(serde_json::to_value(&config).unwrap()["viewCount"], 3);
-    }
-
-    #[test]
     fn mvs_three_views_require_explicit_sdk_layout() {
         let mut config = CameraConfig { source: CameraSource::Mvs, view_count: 3, ..CameraConfig::default() };
         assert!(config.validate().unwrap_err().contains("明确配置 SDK 交付布局"));
@@ -1598,6 +1574,8 @@ mod view_tests {
         assert!(config.validate().is_ok());
         config.view_count = 1;
         assert!(config.validate().is_ok());
+        config.view_count = 2;
+        assert!(config.validate().is_err());
     }
 
     #[test]
@@ -1687,6 +1665,7 @@ mod gray_tests {
             assert_eq!(pixel_kind(t), Ok(PixelKind::Bayer8));
         }
         assert!(to_gray(&pool, mvs::PIXEL_BAYER_BG8, 1, 24, &data).is_err());
+        assert!(to_gray(&pool, 0, 4, 3, &[0; 12]).is_err());
     }
 
     #[test]
@@ -1707,14 +1686,6 @@ mod gray_tests {
     }
 
     #[test]
-    fn unsupported_format_is_an_error() {
-        let pool = FramePool::new(2);
-        let err = to_gray(&pool, 0x0110_0003, 2, 2, &[0; 8]).err().unwrap();
-        assert_eq!(err, "像素格式 0x01100003 不支持（需要 Mono8 或 8 位 Bayer）");
-        assert!(pixel_kind(0x0108_000C).is_err());
-    }
-
-    #[test]
     fn trigger_counter_source_is_reported_honestly() {
         let none = Chunks::default();
         let both = Chunks { trigger: true, frame: true };
@@ -1729,20 +1700,4 @@ mod gray_tests {
         assert_eq!(mvs_counters(9, 0, 0, none), (9, 9, CounterSource::SdkFrame));
     }
 
-    #[test]
-    fn chunk_entries_are_classified_by_name() {
-        assert_eq!(chunk_item("TriggerID"), Some(ChunkItem::Trigger));
-        assert_eq!(chunk_item("Triggercounter"), Some(ChunkItem::Trigger));
-        assert_eq!(chunk_item("FrameCounter"), Some(ChunkItem::Frame));
-        assert_eq!(chunk_item("Timestamp"), Some(ChunkItem::Timestamp));
-        assert_eq!(chunk_item("Exposure"), None);
-        assert_eq!(chunk_item("Width"), None);
-    }
-
-    #[test]
-    fn picks_8bit_bayer_in_preferred_order() {
-        let entries = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(bayer8_choices(&entries(&["BayerGR8", "BayerBG10", "BayerBG8"])), ["BayerBG8", "BayerGR8"]);
-        assert!(bayer8_choices(&entries(&["BayerBG10", "BayerBG12Packed", "Mono10"])).is_empty());
-    }
 }

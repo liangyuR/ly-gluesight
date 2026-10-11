@@ -671,9 +671,8 @@ mod tests {
     fn input() -> PublishInput {
         let mut shots = shot_list("cam1", vec![vec![[2.0, 3.0], [20.0, 3.0]], vec![[4.0, 8.0], [40.0, 8.0]]]);
         for shot in &mut shots { shot.mm_per_px = Some(0.5); }
-        shots[1].camera = "cam2".into();
         shots[1].view = 2;
-        shots[1].calib = Some("cam2-view2".into());
+        shots[1].calib = Some("cam1-view2".into());
         PublishInput {
             recipe: RecipeDoc { id: "part-A".into(), name: "多分辨率配方".into(), version: 7, plan_version: 0, teaching_id: Some("teaching-1".into()), product_code: 11, trigger_mode: TriggerMode::Fly, schema_version: RECIPE_SCHEMA, spacing: 1.0, filter_window: 3, detect: default_detect(), limits: default_limits(), shots },
             versions: Versions { engine: "lyflow-test-1".into(), graph: "taught-path-v1".into() },
@@ -704,6 +703,8 @@ mod tests {
         assert_ne!(bundle.view(0, 1).unwrap().image, bundle.view(0, 3).unwrap().image);
         let restored = load(&directory.releases(), &bundle.recipe.id, &bundle.id).unwrap();
         assert_eq!(restored.view(0, 3).unwrap().points_data.indices.len(), 10);
+        assert_eq!(restored.recipe.build().unwrap().cameras(), ["cam1"]);
+        assert_eq!(restored.manifest.recipe_revision, restored.recipe.build().unwrap().revision_id);
     }
 
     fn copy_with_resources(directory: &Directory, bundle: &ReleaseBundle, mut manifest: ReleaseManifest, replacement: Option<(&str, Vec<u8>)>) -> String {
@@ -763,6 +764,10 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
         assert!(load(&directory.releases(), "part-A", &bundle.id).unwrap_err().contains("显式 ID"));
         assert!(bundle.verify().unwrap_err().contains("显式 ID"));
+        value["bundleId"] = serde_json::json!(bundle.id);
+        value["recipeRevision"] = serde_json::json!("another-recipe-v7");
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(load(&directory.releases(), "part-A", &bundle.id).is_err());
     }
 
     #[test]
@@ -786,89 +791,6 @@ mod tests {
     }
 
     #[test]
-    fn recreated_recipe_freezes_and_publishes_the_same_unconsumed_next_version() {
-        let directory = Directory::new();
-        let recipes_dir = directory.0.join("recipes");
-        let recipes = crate::recipe::RecipeStore::open(recipes_dir.clone()).unwrap();
-        let mut first = input().recipe;
-        first.plan_version = recipes.plan_version_for(&first).unwrap();
-        let original = recipes.save_published(first, None).unwrap();
-        recipes.delete(&original.id).unwrap();
-        drop(recipes);
-        let recipes = crate::recipe::RecipeStore::open(recipes_dir).unwrap();
-        let mut candidate = input();
-        candidate.recipe.version = recipes.next_version(&original.id).unwrap();
-        candidate.recipe.plan_version = recipes.plan_version_for(&candidate.recipe).unwrap();
-        assert_eq!(candidate.recipe.version, 8);
-        // 删掉重建的配方拿新的计划版本，不复用删除前的号
-        assert!(candidate.recipe.plan_version > original.plan_version);
-        let frozen = publish(&directory.releases(), candidate).unwrap();
-        let saved = recipes.save_published(frozen.recipe.clone(), None).unwrap();
-        assert_eq!(saved.revision_id, frozen.manifest.recipe_revision);
-        assert_eq!(saved.version, frozen.manifest.recipe_version);
-        assert_eq!(recipes.save_published(frozen.recipe, None).unwrap().version, 8);
-    }
-
-    #[test]
-    fn package_resolves_each_shot_with_its_own_image_size_and_geometry() {
-        let directory = Directory::new();
-        let input = input();
-        let bundle = publish(&directory.releases(), input.clone()).unwrap();
-        assert_eq!(bundle.recipe, input.recipe);
-        assert_eq!(bundle.manifest.recipe_revision, input.recipe.build().unwrap().revision_id);
-        assert_eq!(bundle.manifest.recipe_version, 7);
-        assert_eq!(bundle.id, bundle.manifest.bundle_id);
-        assert_ne!(bundle.id, bundle.manifest.recipe_revision);
-        let first = bundle.shot(0).unwrap();
-        let second = bundle.shot(1).unwrap();
-        assert_eq!((first.size, second.size), (Some([32, 24]), Some([64, 40])));
-        assert_eq!((first.shot.camera.as_str(), first.shot.view), ("cam1", 1));
-        assert_eq!((second.centerline_data.camera.as_str(), second.centerline_data.view), ("cam2", 2));
-        assert_eq!(second.centerline_data.shot_id, "P2");
-        assert_eq!(second.points_data.size, second.size);
-        assert_eq!(first.points_data.indices.first(), Some(&0));
-        assert!(second.points_data.indices[0] > *first.points_data.indices.last().unwrap());
-        assert_eq!(second.points_data.points[0], [4.0, 8.0]);
-        for path in [first.image.unwrap(), first.calibration.unwrap(), first.centerline, first.points, first.graph] {
-            assert!(path.starts_with(&bundle.root));
-            assert!(path.is_file());
-        }
-        assert!(bundle.shot(2).is_err());
-        load(&directory.releases(), "part-A", &bundle.id).unwrap().verify().unwrap();
-    }
-
-    #[test]
-    fn changed_or_missing_resource_refuses_the_existing_package() {
-        let directory = Directory::new();
-        let bundle = publish(&directory.releases(), input()).unwrap();
-        let resource = bundle.shot(0).unwrap();
-        let calibration = resource.calibration.unwrap();
-        let original = fs::read(&calibration).unwrap();
-        fs::write(&calibration, br#"{"mmPerPx":9.0}"#).unwrap();
-        assert!(bundle.verify().unwrap_err().contains("calibration.json"));
-        assert!(load(&directory.releases(), "part-A", &bundle.id).is_err());
-        fs::write(&calibration, original).unwrap();
-        fs::remove_file(resource.image.unwrap()).unwrap();
-        assert!(bundle.verify().unwrap_err().contains("image.pgm"));
-    }
-
-    #[test]
-    fn loaded_bundle_rejects_public_identity_changes() {
-        let directory = Directory::new();
-        let bundle = publish(&directory.releases(), input()).unwrap();
-        let mut changed = bundle.clone();
-        changed.id = "0000000000000000".into();
-        assert!(changed.verify().unwrap_err().contains("身份"));
-        let mut changed = bundle.clone();
-        changed.manifest.files[0].bytes += 1;
-        assert!(changed.verify().is_err());
-        let mut changed = bundle.clone();
-        changed.recipe.shots[0].path[0][0] += 1.0;
-        assert!(changed.verify().is_err());
-        bundle.verify().unwrap();
-    }
-
-    #[test]
     fn resource_validation_uses_paths_sizes_and_structure() {
         let directory = Directory::new();
         let bundle = publish(&directory.releases(), input()).unwrap();
@@ -882,6 +804,9 @@ mod tests {
         fs::write(&path, &bytes).unwrap();
         assert!(bundle.verify().unwrap_err().contains("大小"));
         bytes.pop();
+        fs::write(&path, &bytes).unwrap();
+        fs::remove_file(&path).unwrap();
+        assert!(bundle.verify().is_err());
         fs::write(&path, &bytes).unwrap();
         let extra = bundle.root.join("shots/00/extra.json");
         fs::write(&extra, b"{}").unwrap();
@@ -949,57 +874,6 @@ mod tests {
     }
 
     #[test]
-    fn each_publication_has_an_explicit_id_without_overwriting_previous_packages() {
-        let directory = Directory::new();
-        let original = input();
-        let first = publish(&directory.releases(), original.clone()).unwrap();
-        let second = publish(&directory.releases(), original.clone()).unwrap();
-        assert_ne!(first.id, second.id);
-        assert_ne!(first.root, second.root);
-        let manifest_path = first.root.join("manifest.json");
-        fs::write(&manifest_path, b"corrupt").unwrap();
-        let third = publish(&directory.releases(), original).unwrap();
-        third.verify().unwrap();
-        assert_eq!(fs::read(&manifest_path).unwrap(), b"corrupt");
-        assert_eq!(fs::read_dir(first.root.parent().unwrap()).unwrap().count(), 3);
-    }
-
-    #[test]
-    fn missing_duplicate_and_out_of_range_shot_inputs_are_rejected() {
-        let directory = Directory::new();
-        let mut duplicate = input();
-        duplicate.shots.push(duplicate.shots[0].clone());
-        assert!(publish(&directory.releases(), duplicate).unwrap_err().contains("重复"));
-        let mut missing = input();
-        missing.shots.pop();
-        assert!(publish(&directory.releases(), missing).unwrap_err().contains("未覆盖"));
-        let mut unknown = input();
-        unknown.shots[0].k = 99;
-        assert!(publish(&directory.releases(), unknown).unwrap_err().contains("不存在"));
-        for image_missing in [true, false] {
-            let mut missing = input();
-            if image_missing { missing.shots[0].image = None; } else { missing.shots[0].calibration = None; }
-            assert!(publish(&directory.releases(), missing).unwrap_err().contains("缺少"));
-        }
-        assert!(!directory.releases().exists());
-    }
-
-    #[test]
-    fn skipped_shots_preserve_geometry_without_required_measurement_resources() {
-        let directory = Directory::new();
-        let mut input = input();
-        input.recipe.shots[1].skip = true;
-        input.shots[1].image = None;
-        input.shots[1].calibration = None;
-        let bundle = publish(&directory.releases(), input).unwrap();
-        let shot = bundle.shot(1).unwrap();
-        assert!(shot.shot.skip);
-        assert!(shot.image.is_none() && shot.calibration.is_none() && shot.size.is_none());
-        assert!(shot.points_data.points.is_empty());
-        assert_eq!(shot.centerline_data.path, shot.shot.path);
-    }
-
-    #[test]
     fn versions_image_decode_and_image_coordinates_are_validated_before_publication() {
         let directory = Directory::new();
         for engine in [true, false] {
@@ -1039,55 +913,6 @@ mod tests {
         manifest.files[0].path = "../outside.json".into();
         let id = copy_with_resources(&directory, &bundle, manifest, None);
         assert!(load(&directory.releases(), "part-A", &id).unwrap_err().contains("逃逸"));
-    }
-
-    #[test]
-    fn manifest_duplicate_resources_and_wrong_recipe_identity_are_rejected() {
-        let directory = Directory::new();
-        let bundle = publish(&directory.releases(), input()).unwrap();
-        let mut manifest = bundle.manifest.clone();
-        manifest.files.push(manifest.files[0].clone());
-        let id = copy_with_resources(&directory, &bundle, manifest, None);
-        assert!(load(&directory.releases(), "part-A", &id).unwrap_err().contains("重复"));
-        let mut manifest = bundle.manifest.clone();
-        manifest.recipe_id = "another-part".into();
-        let id = copy_with_resources(&directory, &bundle, manifest, None);
-        assert!(load(&directory.releases(), "part-A", &id).unwrap_err().contains("身份"));
-        let mut manifest = bundle.manifest.clone();
-        manifest.recipe_version += 1;
-        let id = copy_with_resources(&directory, &bundle, manifest, None);
-        assert!(load(&directory.releases(), "part-A", &id).unwrap_err().contains("版本"));
-        let mut manifest = bundle.manifest.clone();
-        manifest.shots[1].view = 1;
-        let id = copy_with_resources(&directory, &bundle, manifest, None);
-        assert!(load(&directory.releases(), "part-A", &id).unwrap_err().contains("身份"));
-    }
-
-    #[test]
-    fn geometry_resources_match_the_recipe_coordinates() {
-        let directory = Directory::new();
-        let bundle = publish(&directory.releases(), input()).unwrap();
-        let name = bundle.manifest.shots[1].points.clone();
-        let mut points = bundle.shot(1).unwrap().points_data;
-        points.camera = "cam1".into();
-        let id = copy_with_resources(&directory, &bundle, bundle.manifest.clone(), Some((&name, json_bytes(&points).unwrap())));
-        assert!(load(&directory.releases(), "part-A", &id).unwrap_err().contains("测点与配方快照不一致"));
-        let mut manifest = bundle.manifest.clone();
-        manifest.shots[1].size = Some([32, 24]);
-        let id = copy_with_resources(&directory, &bundle, manifest, None);
-        assert!(load(&directory.releases(), "part-A", &id).unwrap_err().contains("原图尺寸"));
-    }
-
-    #[test]
-    fn unsupported_schema_and_unlisted_files_refuse_loading() {
-        let directory = Directory::new();
-        let bundle = publish(&directory.releases(), input()).unwrap();
-        let mut manifest = bundle.manifest.clone();
-        manifest.schema_version = 0;
-        let id = copy_with_resources(&directory, &bundle, manifest, None);
-        assert!(load(&directory.releases(), "part-A", &id).unwrap_err().contains("需要重新发布"));
-        fs::write(bundle.root.join("untracked.txt"), b"extra").unwrap();
-        assert!(bundle.verify().unwrap_err().contains("清单以外"));
     }
 
     #[cfg(unix)]

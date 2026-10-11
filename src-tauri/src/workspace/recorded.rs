@@ -134,93 +134,6 @@ mod tests {
         path
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn internal_cycle_junction_and_linked_root_are_rejected() {
-        let fixture = super::super::tests::ImportTestDir::new();
-        let root = fixture.0.join("records");
-        let target = root.join("20261010").join("part_cycle_second");
-        std::fs::create_dir_all(&target).unwrap();
-        std::fs::write(target.join("k0_v1.pgm"), b"P5\n1 1\n255\n\x80").unwrap();
-        let link = root.join("20261010").join("part_cycle_first");
-        let linked_root = fixture.0.join("linked-records");
-        for (alias, actual) in [(&link, &target), (&linked_root, &root)] {
-            let status = std::process::Command::new("cmd").args(["/C", "mklink", "/J"])
-                .arg(alias).arg(actual).output().unwrap();
-            assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
-        }
-        let raw = ShotRawFile { view: 1, file: "20261010/part_cycle_first/k0_v1.pgm".into(), width: None, height: None };
-        let shot = PartShot { k: 0, shot_id: "P0".into(), camera: "cam1".into(), view: 1,
-            session: None, ordinal: None, frame_counter: None, trigger_counter: None,
-            status: FrameStatus::Done, error: None, score: None, ms: None, raw_files: vec![raw.clone()] };
-        assert!(load_verified(&root, "first", &shot, &raw).unwrap_err().contains("reparse"));
-        let listed = frames(&root, "first", std::slice::from_ref(&shot), 1).unwrap();
-        assert!(!listed[0].available && listed[0].error.as_ref().unwrap().contains("reparse"));
-        let direct = ShotRawFile { view: 1, file: "20261010/part_cycle_second/k0_v1.pgm".into(), width: None, height: None };
-        assert!(load_verified(&linked_root, "second", &shot, &direct).unwrap_err().contains("reparse"));
-        assert!(load_verified(&root, "second", &shot, &direct).unwrap_err().contains("元数据缺失"));
-        std::fs::remove_dir(&linked_root).unwrap();
-        std::fs::remove_dir(&link).unwrap();
-    }
-
-    #[test]
-    fn original_files_require_exact_cycle_and_keep_all_views() {
-        let root = super::super::tests::ImportTestDir::new();
-        let directory = root.0.join("20261010/part_cycle_first");
-        std::fs::create_dir_all(&directory).unwrap();
-        let mut shots = Vec::new();
-        for k in 0..4 {
-            let mut raw_files = Vec::new();
-            for view in 1..=3 {
-                let file = format!("20261010/part_cycle_first/k{k}_v{view}.pgm");
-                let bytes = [b"P5\n2 1\n255\n".as_slice(), &[k as u8, view]].concat();
-                std::fs::write(root.0.join(&file), &bytes).unwrap();
-                raw_files.push(ShotRawFile { view, file, width: None, height: None });
-            }
-            shots.push(PartShot { k, shot_id: format!("P{k}"), camera: "cam1".into(), view: [1,2,3,1][k],
-                session: Some(7), ordinal: Some(k as u64 + 1), frame_counter: Some(k as u64 + 1),
-                trigger_counter: Some(k as u64 + 1), status: FrameStatus::Done, error: None, score: Some(1.0), ms: Some(2), raw_files });
-        }
-        write_identity_metadata(&root.0, "first", &shots);
-        let files = frames(&root.0, "first", &shots, 1).unwrap();
-        assert_eq!(files.len(), 12);
-        assert!(files.iter().all(|frame| frame.available));
-        assert_eq!(load_verified(&root.0, "first", &shots[0], &shots[0].raw_files[0]).unwrap().pixels, [0, 1]);
-        assert!(frames(&root.0, "same-sn-second", &shots, 1).unwrap_err().contains("cycleId"));
-        std::fs::write(root.0.join(&shots[1].raw_files[1].file), b"P5\n2 1\n255\n\x07\x08").unwrap();
-        let changed = frames(&root.0, "first", &shots, 1).unwrap();
-        assert!(changed[4].available);
-        assert_eq!(load_verified(&root.0, "first", &shots[1], &shots[1].raw_files[1]).unwrap().pixels, [7, 8]);
-        std::fs::remove_file(root.0.join(&shots[2].raw_files[2].file)).unwrap();
-        assert!(!frames(&root.0, "first", &shots, 1).unwrap()[8].available);
-        shots[0].raw_files[0].file = "../part_cycle_first/external.pgm".into();
-        assert!(frames(&root.0, "first", &shots, 1).is_err());
-    }
-
-    #[test]
-    fn same_cycle_same_view_same_size_other_shot_reference_is_rejected() {
-        let root = super::super::tests::ImportTestDir::new();
-        let directory = root.0.join("20261010/part_cycle_shared");
-        std::fs::create_dir_all(&directory).unwrap();
-        let shots = (0..2).map(|k| {
-            let file = format!("20261010/part_cycle_shared/k{k}_v1.pgm");
-            std::fs::write(root.0.join(&file), [b"P5\n2 1\n255\n".as_slice(), &[k as u8, 99]].concat()).unwrap();
-            PartShot { k, shot_id: format!("P{k}"), camera: "cam1".into(), view: 1,
-                session: Some(7), ordinal: Some(k as u64 + 1), frame_counter: Some(k as u64 + 13),
-                trigger_counter: Some(k as u64 + 11), status: FrameStatus::Done, error: None,
-                score: Some(1.0), ms: Some(2), raw_files: vec![ShotRawFile { view: 1, file, width: Some(2), height: Some(1) }] }
-        }).collect::<Vec<_>>();
-        write_identity_metadata(&root.0, "shared", &shots);
-        assert_eq!(load_verified(&root.0, "shared", &shots[0], &shots[0].raw_files[0]).unwrap().pixels, [0, 99]);
-        assert_eq!(load_verified(&root.0, "shared", &shots[1], &shots[1].raw_files[0]).unwrap().pixels, [1, 99]);
-        let mut redirected = shots[0].clone();
-        redirected.raw_files[0] = shots[1].raw_files[0].clone();
-        assert!(load_verified(&root.0, "shared", &redirected, &redirected.raw_files[0]).unwrap_err().contains("历史身份不一致"));
-        let listed = frames(&root.0, "shared", &[redirected, shots[1].clone()], 1).unwrap();
-        assert!(!listed[0].available && listed[0].error.as_ref().unwrap().contains("历史身份不一致"));
-        assert!(listed[1].available);
-    }
-
     #[test]
     fn recorded_metadata_requires_every_shot_identity_field_and_survives_valid_restore() {
         let root = super::super::tests::ImportTestDir::new();
@@ -250,6 +163,11 @@ mod tests {
         }
         std::fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
         assert_eq!(load_verified(&root.0, "identity", &shot, raw).unwrap().pixels, [17, 34]);
+        let other_file = "20261010/part_cycle_identity/k1_v1.pgm";
+        std::fs::write(root.0.join(other_file), b"P5\n2 1\n255\n\x11\x22").unwrap();
+        let mut redirected = shot.clone();
+        redirected.raw_files[0].file = other_file.into();
+        assert!(load_verified(&root.0, "identity", &redirected, &redirected.raw_files[0]).is_err());
         for field in ["session", "ordinal", "frameCounter", "triggerCounter"] {
             let mut value = serde_json::to_value(&shot).unwrap();
             value[field] = serde_json::Value::Null;

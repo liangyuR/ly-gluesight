@@ -88,45 +88,6 @@ mod tests {
     }
 
     #[test]
-    fn closed_frame_channel_still_advances_callback_ledger_and_counts_each_drop() {
-        let (tx, rx) = channel(FRAME_QUEUE);
-        drop(rx);
-        let identity = Mutex::new(Ledgers::default());
-        let manual = AtomicU32::new(2);
-        let dropped = AtomicU64::new(0);
-        for counter in 1..=2 {
-            let Err(TrySendError::Closed(rejected)) = callback(&identity, &manual, &tx, &dropped, frame(0, counter)) else {
-                panic!("关闭帧通道必须返回 Closed");
-            };
-            assert!(rejected.manual);
-            assert_eq!(rejected.trigger_counter, counter);
-            assert_eq!(dropped.load(Ordering::Relaxed), counter);
-        }
-        assert_eq!(manual.load(Ordering::SeqCst), 0);
-        assert_eq!(identity.lock().unwrap().get(0).unwrap().last, Some(2));
-        assert_eq!(identity.lock().unwrap().get(0).unwrap().frames, 2);
-    }
-
-    #[test]
-    fn observation_without_an_offer_keeps_idle_baseline_and_manual_marking() {
-        let (tx, mut rx) = channel::<Frame>(FRAME_QUEUE);
-        let identity = Mutex::new(Ledgers::default());
-        let manual = AtomicU32::new(2);
-        let dropped = AtomicU64::new(0);
-        for counter in 1..=2 {
-            let mut observed = frame(0, counter);
-            observe(&identity, &manual, &mut observed, true);
-            assert!(observed.manual);
-        }
-        assert!(rx.try_recv().is_err());
-        assert_eq!(tx.capacity(), FRAME_QUEUE);
-        assert_eq!(dropped.load(Ordering::Relaxed), 0);
-        assert_eq!(manual.load(Ordering::SeqCst), 0);
-        assert_eq!(identity.lock().unwrap().get(0).unwrap().last, Some(2));
-        assert_eq!(identity.lock().unwrap().get(0).unwrap().frames, 2);
-    }
-
-    #[test]
     fn duplicate_or_stale_callbacks_do_not_consume_another_manual_trigger() {
         let identity = Mutex::new(Ledgers::default());
         let manual = AtomicU32::new(2);

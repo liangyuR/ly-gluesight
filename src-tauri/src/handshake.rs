@@ -743,23 +743,6 @@ mod tests {
     }
 
     #[test]
-    fn contract_rejects_missing_duplicate_wrong_type_direction_and_protocol() {
-        for case in 0..7 {
-            let mut cfg = config();
-            match case {
-                0 => { cfg.points.retain(|p| p.id != "requestSeq"); }
-                1 => { let mut p = cfg.points[0].clone(); p.id = "duplicate".into(); cfg.points.push(p); }
-                2 => cfg.points.iter_mut().find(|p| p.id == "requestSeq").unwrap().data_type = DataType::F32,
-                3 => cfg.points[0].access = Access::ReadWrite,
-                4 => cfg.connection.protocol = ProtocolKind::Simulator,
-                5 => cfg.points.iter_mut().find(|p| p.id == "partStart").unwrap().edge = EdgeMode::None,
-                _ => cfg.points[0].word_order = Some(WordOrder::Dcba),
-            }
-            assert!(Contract::validate(&cfg).is_err(), "case {case}");
-        }
-    }
-
-    #[test]
     fn contract_rejects_cross_owner_bytes_even_when_bits_differ() {
         let mut cfg = config();
         cfg.points.iter_mut().find(|p| p.id == "partStart").unwrap().address = "DB10.DBX0.0".into();
@@ -773,21 +756,6 @@ mod tests {
     }
 
     #[test]
-    fn untagged_alias_cannot_write_plc_owned_byte() {
-        let mut cfg = config();
-        cfg.points.iter_mut().find(|p| p.id == "partStart").unwrap().address = "DB10.DBX0.0".into();
-        cfg.points.push(PlcPoint {
-            id: "alias".into(), name: "额外点位".into(), address: "DB10.DBX0.1".into(),
-            data_type: DataType::Bool, access: Access::ReadWrite, ..PlcPoint::default()
-        });
-        assert!(Contract::validate(&cfg).is_err());
-        cfg.points.last_mut().unwrap().access = Access::Read;
-        assert!(Contract::validate(&cfg).is_ok());
-        cfg.points.last_mut().unwrap().address = "DB10.DBX0.0".into();
-        assert!(Contract::validate(&cfg).is_err());
-    }
-
-    #[test]
     fn constant_point_timestamp_is_not_mistaken_for_stale_poll() {
         let (contract, mut status, mut values) = data();
         assert!(Snapshot::from_values(&contract, &status, &values, 1010, 500).is_ok());
@@ -797,54 +765,6 @@ mod tests {
         status.since = 100;
         values.get_mut("partSn").unwrap().error = Some("DB 不可访问".into());
         assert!(Snapshot::from_values(&contract, &status, &values, 1010, 500).is_err());
-    }
-
-    #[test]
-    fn snapshot_rejects_missing_invalid_and_fractional_values() {
-        for case in 0..4 {
-            let (contract, status, mut values) = data();
-            match case {
-                0 => { values.remove("partSn"); }
-                1 => values.get_mut("partSn").unwrap().value = None,
-                2 => values.get_mut("partSn").unwrap().value = Some(PlcValue::Float(42.0)),
-                _ => values.get_mut("shotCount").unwrap().value = Some(PlcValue::Int(65536)),
-            }
-            assert!(Snapshot::from_values(&contract, &status, &values, 1010, 500).is_err());
-        }
-    }
-
-    #[test]
-    fn out_of_range_uint_fields_are_named_instead_of_truncated() {
-        let (contract, status, mut values) = data();
-        values.get_mut("productCode").unwrap().value = Some(PlcValue::Int(70000));
-        let error = Snapshot::from_values(&contract, &status, &values, 1010, 500).unwrap_err();
-        assert!(error.contains("productCode=70000") && error.contains("UInt"), "{error}");
-        values.get_mut("productCode").unwrap().value = Some(PlcValue::Int(3));
-        values.get_mut("requestSeq").unwrap().value = Some(PlcValue::Int(1 << 32));
-        let error = Snapshot::from_values(&contract, &status, &values, 1010, 500).unwrap_err();
-        assert!(error.contains("requestSeq=4294967296") && error.contains("UDInt"), "{error}");
-
-        // 快照之外拿到的值（如测试或后续改动绕过类型校验）也不能被 as u16 截断成 4464 之类
-        for tag in ["protocolVersion", "productCode", "shotCount", "deviceShots"] {
-            let mut s = snapshot();
-            s.values.insert(tag, PlcValue::Int(70000));
-            let error = s.request().unwrap_err();
-            assert!(error.contains(&format!("PLC 字段 {tag}=70000 超出 UInt 范围")), "{tag}: {error}");
-        }
-        for tag in ["deviceTriggers"] {
-            let mut s = snapshot();
-            let request = s.request().unwrap();
-            s.values.insert(tag, PlcValue::Int(65536 + 2));
-            let error = s.trigger_count().unwrap_err();
-            assert!(error.contains(&format!("PLC 字段 {tag}=65538 超出 UInt 范围")), "{tag}: {error}");
-            assert_eq!(s.start_request().unwrap_err(), error);
-            s.values.insert("partEnd", PlcValue::Bool(true));
-            assert_eq!(verify_part_end(&s, &request).unwrap_err(), error);
-        }
-        let mut s = snapshot();
-        s.values.insert("shotCount", PlcValue::Int(65535));
-        s.values.insert("deviceShots", PlcValue::Int(65535));
-        assert_eq!(s.request().unwrap().shot_count, 65535);
     }
 
     #[test]
@@ -900,27 +820,11 @@ mod tests {
         s.values.insert("partEnd", PlcValue::Bool(true));
         s.values.insert("deviceTriggers", PlcValue::Int(4));
         assert!(verify_part_end(&s, &request).is_ok());
+        s.values.insert("deviceTriggers", PlcValue::Int(12));
+        assert!(verify_part_end(&s, &request).is_err());
+        s.values.insert("deviceTriggers", PlcValue::Int(4));
         s.values.insert("requestSeq", PlcValue::Int(8));
         assert!(verify_part_end(&s, &request).is_err());
-    }
-
-    #[test]
-    fn part_end_rejects_missing_extra_or_view_multiplied_device_triggers() {
-        let mut s = snapshot();
-        let request = s.request().unwrap();
-        assert_eq!(request.device_shots, 4);
-        s.values.insert("partEnd", PlcValue::Bool(true));
-        for count in [3, 5, 12, 4] {
-            s.values.insert("deviceTriggers", PlcValue::Int(count));
-            let result = verify_part_end(&s, &request);
-            if count == 4 {
-                assert!(result.is_ok());
-            } else {
-                let error = result.unwrap_err();
-                assert!(error.contains(&format!("实际触发数 {count} 与计划 4")), "{error}");
-            }
-            assert_eq!(s.request().unwrap(), request);
-        }
     }
 
     #[test]

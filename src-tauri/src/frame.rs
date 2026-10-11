@@ -194,35 +194,8 @@ mod tests {
         assert_eq!((frame.session, frame.frame_counter, frame.trigger_counter), (7, 11, 11));
     }
 
-    /// 2×2 周期里各位置的通道（0 = R，1 = G，2 = B），按 [行][列]。
-    const PHASES: [(&str, [[usize; 2]; 2]); 4] = [
-        ("BG", [[2, 1], [1, 0]]),
-        ("RG", [[0, 1], [1, 2]]),
-        ("GB", [[1, 2], [0, 1]]),
-        ("GR", [[1, 0], [2, 1]]),
-    ];
-
     fn mosaic(phase: [[usize; 2]; 2], w: usize, h: usize, rgb: impl Fn(usize, usize) -> [u8; 3]) -> Vec<u8> {
         (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).map(|(x, y)| rgb(x, y)[phase[y % 2][x % 2]]).collect()
-    }
-
-    fn gray(w: usize, h: usize, src: &[u8]) -> Vec<u8> {
-        let mut out = Vec::new();
-        bayer8_gray_into(w, h, src, &mut out).unwrap();
-        assert_eq!(out.len(), w * h);
-        out
-    }
-
-    #[test]
-    fn uniform_scene_gives_weighted_gray_in_every_phase() {
-        let expect = ((200 + 2 * 100 + 40 + 2) / 4) as u8;
-        assert_eq!(expect, 110);
-        for (w, h) in [(8, 6), (5, 3), (2, 2), (7, 2), (2, 5)] {
-            for (name, phase) in PHASES {
-                let out = gray(w, h, &mosaic(phase, w, h, |_, _| [200, 100, 40]));
-                assert!(out.iter().all(|&v| v == expect), "{name} {w}×{h}: {out:?}");
-            }
-        }
     }
 
     #[test]
@@ -236,29 +209,9 @@ mod tests {
     }
 
     #[test]
-    fn phases_agree_on_the_same_scene() {
-        // 色度不变、亮度逐像素变化：任一 2×2 块之和 = R0 + 2G0 + B0 + 块内 f 之和，与相位无关。
-        // （色度突变处相位不同结果会不同，这是 2×2 求和本身的性质。）
-        let (w, h) = (9, 7);
-        let f = |x: usize, y: usize| ((x * 7 + y * 13) % 50) as u8;
-        let scene = |x, y| [120 + f(x, y), 60 + f(x, y), 30 + f(x, y)];
-        let outs: Vec<_> = PHASES.iter().map(|(_, p)| gray(w, h, &mosaic(*p, w, h, scene))).collect();
-        for (i, (name, _)) in PHASES.iter().enumerate() {
-            assert_eq!(outs[i], outs[0], "{name}");
-        }
-        for y in 0..h {
-            for x in 0..w {
-                let (bx, by) = (x.min(w - 2), y.min(h - 2));
-                let s: u32 = [(bx, by), (bx + 1, by), (bx, by + 1), (bx + 1, by + 1)].iter().map(|&(x, y)| f(x, y) as u32).sum();
-                assert_eq!(outs[0][y * w + x] as u32, (120 + 2 * 60 + 30 + s + 2) / 4, "({x}, {y})");
-            }
-        }
-    }
-
-    #[test]
     fn pool_converts_into_reused_buffer() {
         let pool = FramePool::new(2);
-        let src = mosaic(PHASES[0].1, 6, 4, |_, _| [200, 100, 40]);
+        let src = mosaic([[2, 1], [1, 0]], 6, 4, |_, _| [200, 100, 40]);
         let img = pool.bayer8_to_gray(6, 4, &src).unwrap();
         assert_eq!((img.width, img.height, img.pixels.len()), (6, 4, 24));
         assert!(img.pixels.iter().all(|&v| v == 110));

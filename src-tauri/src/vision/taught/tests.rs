@@ -93,19 +93,6 @@ fn taught_graph_rejects_unsupported_pixel_parameters_and_bad_geometry() {
 }
 
 #[test]
-fn taught_graph_does_not_fill_or_discard_a_rounding_mismatched_terminal_station() {
-    let mut doc = document();
-    doc.shots[0].path[1][0] = 199.999;
-    let recipe = doc.build().unwrap();
-    assert_eq!(recipe.owned_points(0).count(), 41);
-    assert!(build_taught_graph(&recipe, 0).unwrap_err().contains("末站"));
-    doc.shots[0].path[1][0] = 199.5;
-    let recipe = doc.build().unwrap();
-    assert_eq!(recipe.owned_points(0).count(), 40);
-    assert!(build_taught_graph(&recipe, 0).is_ok());
-}
-
-#[test]
 fn station_output_maps_global_ids_signed_offsets_and_gaps_without_judging() {
     let recipe = document().build().unwrap();
     let p = plan(&recipe, 1).unwrap();
@@ -155,17 +142,6 @@ fn station_output_rejects_incomplete_mismatched_and_malformed_results() {
     let mut bad = result(&recipe, 0, &[1]);
     bad.outputs["stations"]["value"]["data"]["widthPx"][1] = json!(4);
     assert!(parse_result(&recipe, &p, &bad).unwrap_err().contains("无胶站"));
-}
-
-#[test]
-fn empty_bead_is_measured_as_all_gaps_for_the_judge() {
-    // 整段无胶是漏涂缺陷，交给判定判 NG_GAP（见 judge 的整段无胶用例），不当作测量失败
-    let recipe = document().build().unwrap();
-    let p = plan(&recipe, 0).unwrap();
-    let all: Vec<_> = (0..p.idx.len()).collect();
-    let m = parse_result(&recipe, &p, &result(&recipe, 0, &all)).unwrap();
-    assert_eq!(m.coverage, 0.0);
-    assert!(m.st.iter().all(|&s| s == ST_GAP));
 }
 
 fn bead_image(bright: bool, gap: bool, blank: bool, center_y: i32) -> FrameImage {

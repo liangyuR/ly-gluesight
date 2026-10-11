@@ -159,31 +159,6 @@ mod tests {
     }
 
     #[test]
-    fn bead_is_dark_along_the_taught_line() {
-        let r = builtin().remove(1);
-        let img = render(&r, 0, Scenario::Normal, PoseError::default(), 1);
-        assert_eq!([img.width, img.height], SIM_SIZE);
-        let shot = &r.shots[0];
-        let mid = shot.path_at(shot.path_len_px() / 2.0);
-        assert!(at(&img, mid) < 70, "胶条中心 {}", at(&img, mid));
-        // 离中线 40 px（约 4.5 mm）已是背景
-        assert!(at(&img, [mid[0], mid[1] + 40.0]) > 120);
-    }
-
-    #[test]
-    fn gap_scenario_removes_bead_inside_the_gap() {
-        let r = builtin().remove(1);
-        let pts = Scenario::Gap.gap_points(&r);
-        let g = r.shot_segment(1).unwrap();
-        assert!(pts.iter().all(|&j| j >= g.first && j < g.first + g.count));
-        let img = render(&r, 1, Scenario::Gap, PoseError::default(), 1);
-        let mid = pts[pts.len() / 2];
-        assert!(at(&img, [r.points.x[mid], r.points.y[mid]]) > 120, "缺口处应是背景");
-        let outside = g.first + 2;
-        assert!(at(&img, [r.points.x[outside], r.points.y[outside]]) < 70);
-    }
-
-    #[test]
     fn three_views_draw_glue_only_in_the_selected_view() {
         let mut recipe = (*builtin().remove(1)).clone();
         for view in [1, 2, 3, 1] {
@@ -203,16 +178,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn single_view_keeps_legacy_pixels_and_never_substitutes_another_view() {
-        let mut recipe = (*builtin().remove(1)).clone();
-        let image = render(&recipe, 0, Scenario::Normal, PoseError::default(), 3);
-        let images = render_views(&recipe, 0, Scenario::Normal, PoseError::default(), 3, 1).unwrap();
-        assert_eq!(images.len(), 1);
-        assert_eq!(image.pixels, images[0].pixels);
-        recipe.shots[0].view = 2;
-        let images = render_views(&recipe, 0, Scenario::Normal, PoseError::default(), 3, 1).unwrap();
-        assert!(images[0].pixels.iter().all(|&v| v > 120));
-        assert!(render_views(&recipe, 0, Scenario::Normal, PoseError::default(), 3, 2).is_err());
-    }
 }

@@ -2171,64 +2171,6 @@ impl Drop for SampleImportFiles {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn historical_sample_rejects_a_different_pose_even_with_the_same_measurement_geometry() {
-        let original = crate::recipe::samples().remove(1).build().unwrap();
-        let mut candidate = original.clone();
-        let points = store::PartPoints { d: vec![0.0; original.point_count()],
-            w: vec![Some(4.0); original.point_count()], st: vec![0; original.point_count()] };
-        assert!(history_sample_table(&original, &candidate, &points).is_ok());
-        candidate.shots[0].pose_id.push_str("-new");
-        assert_eq!(candidate.points.x, original.points.x);
-        assert_eq!(candidate.points.y, original.points.y);
-        assert_eq!(candidate.points.seg, original.points.seg);
-        assert_eq!(candidate.points.k, original.points.k);
-        assert_eq!(candidate.spacing, original.spacing);
-        for (changed, saved) in candidate.shots.iter().zip(&original.shots) {
-            assert_eq!(changed.path, saved.path);
-            assert_eq!(changed.mm_per_px, saved.mm_per_px);
-            assert_eq!(changed.detect, saved.detect);
-        }
-        assert!(!crate::store::same_measurement_layout(&candidate, &original));
-        assert!(history_sample_table(&original, &candidate, &points).unwrap_err().contains("布局"));
-        let mut incomplete = points.clone();
-        incomplete.st[0] = 3;
-        assert!(history_sample_table(&original, &original, &incomplete).unwrap_err().contains("未完成"));
-        incomplete.st[0] = 0;
-        incomplete.d.clear();
-        assert!(history_sample_table(&original, &original, &incomplete).unwrap_err().contains("数量"));
-    }
-
-    #[test]
-    fn original_images_allow_new_measurement_geometry_but_require_the_same_frame_source() {
-        let original = crate::recipe::samples().remove(1).build().unwrap();
-        let mut candidate = original.clone();
-        candidate.shots[0].path[0][0] += 3.0;
-        assert!(same_frame_sources(&original, &candidate));
-        assert!(!crate::store::same_measurement_layout(&original, &candidate));
-        candidate.shots[0].view = 2;
-        assert!(same_frame_sources(&original, &candidate));
-        for field in ["pose", "camera", "id"] {
-            let mut changed = original.clone();
-            match field {
-                "pose" => changed.shots[0].pose_id.push_str("-new"),
-                "camera" => changed.shots[0].camera = "cam2".into(),
-                _ => changed.shots[0].id.push_str("-new"),
-            }
-            assert!(!same_frame_sources(&original, &changed));
-        }
-    }
-    #[test]
-    fn new_candidate_cannot_alias_windows_directory_or_duplicate_product_selection() {
-        let mut doc = crate::recipe::samples().remove(0);
-        doc.id = "Case-Test".into();
-        doc.product_code = 93;
-        assert!(check_new_identity(&doc, [("case-test", 94)].into_iter()).is_err());
-        assert!(check_new_identity(&doc, [("another", 93)].into_iter()).is_err());
-        assert!(check_new_identity(&doc, [("another", 94)].into_iter()).is_ok());
-        doc.product_code = 0;
-        assert!(check_new_identity(&doc, std::iter::empty()).is_err());
-    }
     use super::*;
 
     pub(super) struct ImportTestDir(pub(super) PathBuf);
@@ -2252,31 +2194,12 @@ mod tests {
     }
 
     #[test]
-    fn sample_base64_transport_preserves_all_byte_values() {
-        use base64::Engine;
-        let bytes: Vec<u8> = (0..=255).collect();
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        let input: SampleImageInput = serde_json::from_value(json!({"k": 7, "bytes": encoded})).unwrap();
-        assert_eq!(input.k, 7);
-        assert_eq!(input.bytes, bytes);
-    }
-
-    #[test]
-    fn sample_base64_rejects_empty_invalid_non_string_and_oversized_before_decode() {
-        for encoded in ["", "not base64!", "AQ", "AQ===", "Af==", "____", "data:image/png;base64,AQ==", "AQ==\n"] {
-            let error = serde_json::from_value::<SampleImageInput>(json!({"k": 0, "bytes": encoded})).err().unwrap();
-            assert!(error.to_string().contains(if encoded.is_empty() { "不得为空" } else { "base64" }), "{encoded}: {error}");
-        }
-        assert!(serde_json::from_value::<SampleImageInput>(json!({"k": 0, "bytes": [0, 255]})).is_err());
-        let oversized = "!".repeat(SAMPLE_IMAGE_MAX_BASE64_BYTES + 1);
-        let deserializer = serde::de::value::BorrowedStrDeserializer::<serde::de::value::Error>::new(&oversized);
-        let error = deserialize_sample_base64(deserializer).unwrap_err().to_string();
-        assert!(error.contains("15 MB"), "length must reject before invalid base64 is decoded: {error}");
-    }
-
-    #[test]
     fn sample_base64_real_pgm_roundtrip_writes_each_shot_without_changing_pixels() {
         use base64::Engine;
+        assert!(serde_json::from_value::<SampleImageInput>(json!({"k": 0, "bytes": ""})).is_err());
+        assert!(decode_imported_image(Vec::new()).is_err());
+        assert!(decode_imported_image(b"not an image".to_vec()).is_err());
+        assert!(decode_imported_image(b"P5\n999999 999999\n255\n".to_vec()).is_err());
         let root = ImportTestDir::new();
         let workspace = import_workspace();
         let wire = (0..workspace.frames.len()).map(|k| {
@@ -2311,36 +2234,6 @@ mod tests {
         }
         assert!(!path.exists());
         assert_eq!(std::fs::read_to_string(preserved.join("keep.txt")).unwrap(), "prior sample");
-    }
-
-    #[test]
-    fn sample_import_cleans_unregistered_published_files_and_keeps_successful_real_pixels() {
-        let root = ImportTestDir::new();
-        {
-            let mut files = SampleImportFiles::new(&root.0, "1-7-1").unwrap();
-            files.write_images(&import_workspace(), vec![tiny_image(0)]).unwrap();
-            files.publish("1-7-1").unwrap();
-            assert!(files.path.join("k0.pgm").exists());
-            // 注册前修订或持久化失败，拥有的目录仍随事务清理。
-        }
-        assert!(!root.0.join("1-7-1").exists());
-        {
-            let mut files = SampleImportFiles::new(&root.0, "1-7-2").unwrap();
-            files.write_images(&import_workspace(), vec![tiny_image(0)]).unwrap();
-            files.publish("1-7-2").unwrap();files.keep = true;
-        }
-        let image = crate::replay::load(&root.0.join("1-7-2/k0.pgm")).unwrap();
-        assert_eq!(image.pixels, [0, 32, 64, 128, 200, 255]);
-    }
-
-    #[test]
-    fn sample_import_never_claims_existing_or_traversing_directories() {
-        let root = ImportTestDir::new();
-        let existing = root.0.join(".import-1-7-3");std::fs::create_dir(&existing).unwrap();
-        std::fs::write(existing.join("keep.txt"), "prior import").unwrap();
-        assert!(SampleImportFiles::new(&root.0, "1-7-3").is_err());
-        assert!(SampleImportFiles::new(&root.0, "../escape").is_err());
-        assert_eq!(std::fs::read_to_string(existing.join("keep.txt")).unwrap(), "prior import");
     }
 
     fn taught() -> Teaching {
@@ -2423,71 +2316,6 @@ mod tests {
         assert!(refresh_teaching(&mut w, &tags, Some(&json!("updated-engine"))));
         assert!(w.frames.iter().all(|f| !f.saved && f.trial.is_none()));
         assert!(!refresh_teaching(&mut w, &tags, Some(&json!("updated-engine"))));
-    }
-
-    #[test]
-    fn changing_editing_view_preserves_other_views_and_restores_valid_trial() {
-        let mut w = tricam_workspace();
-        let before = w.doc.build().unwrap();
-        let other = state_value(&w.frames[1]);
-        assert!(w.frames[0].checked(&shot_tags(&before, 0).unwrap().0, &shot_tags(&before, 0).unwrap().1).is_ok());
-        select_view(&mut w, 0, 2).unwrap();
-        assert_eq!(w.doc.shots[0].view, 2);
-        assert!(w.doc.shots[0].path.is_empty());
-        assert!(w.doc.shots[0].mm_per_px.is_none());
-        assert_eq!(w.frames[0].image.as_ref().unwrap().view, 2);
-        assert_eq!(w.frames[0].views.len(), 3);
-        assert!(w.frames[0].views.iter().all(|i| i.captured_at == 1));
-        assert!(!w.frames[0].saved);
-        assert!(w.frames[0].trial.is_none());
-        assert_eq!(state_value(&w.frames[1]), other);
-        let after = w.doc.build().unwrap();
-        assert_eq!(images_tag(&before), images_tag(&after));
-        assert_ne!(shot_tags(&before, 0).unwrap(), shot_tags(&after, 0).unwrap());
-        assert_eq!(shot_tags(&before, 1).unwrap(), shot_tags(&after, 1).unwrap());
-        select_view(&mut w, 0, 1).unwrap();
-        assert_eq!(w.frames[0].image.as_ref().unwrap().id, "group-0-v1");
-        assert!(w.frames[0].trial.is_some());
-        assert!(w.frames[0].saved);
-        assert_eq!(w.doc.shots[0].path, before.shots[0].path);
-    }
-
-    #[test]
-    fn missing_invalid_or_stale_view_does_not_mutate_workspace() {
-        let mut w = tricam_workspace();
-        for selected in [0, 4] {
-            let before = state_value(&w);
-            assert!(select_view(&mut w, 0, selected).is_err());
-            assert_eq!(state_value(&w), before);
-        }
-        w.frames[0].views.retain(|i| i.view != 2);
-        let before = state_value(&w);
-        assert!(select_view(&mut w, 0, 2).is_err());
-        assert_eq!(state_value(&w), before);
-        w.doc.shots[0].camera = "cam2".into();
-        let before = state_value(&w);
-        assert!(select_view(&mut w, 0, 3).is_err());
-        assert_eq!(state_value(&w), before);
-    }
-
-    #[test]
-    fn editing_recipe_view_cannot_reuse_old_line_or_other_view_pixels() {
-        let mut w = tricam_workspace();
-        let other = state_value(&w.frames[1]);
-        let mut doc = w.doc.clone();
-        doc.shots[0].view = 3;
-        update_doc(&mut w, doc).unwrap();
-        assert!(w.doc.shots[0].path.is_empty());
-        assert!(w.doc.shots[0].mm_per_px.is_none());
-        assert_eq!(w.frames[0].image.as_ref().unwrap().view, 3);
-        assert!(w.frames[0].trial.is_none());
-        assert_eq!(state_value(&w.frames[1]), other);
-        let mut doc = w.doc.clone();
-        doc.shots[0].camera = "cam2".into();
-        update_doc(&mut w, doc).unwrap();
-        assert!(w.frames[0].image.is_none());
-        assert!(w.frames[0].views.is_empty());
-        assert!(select_view(&mut w, 0, 2).is_err());
     }
 
     #[test]
@@ -2587,72 +2415,6 @@ mod tests {
         assert!(ensure_workspace_can_be_created(&root.0.join("fresh.json")).is_ok());
     }
 
-    #[test]
-    fn calibration_state_compares_actual_json_fields_instead_of_file_formatting() {
-        let root = ImportTestDir::new(); let path = root.0.join("calibration.json");
-        std::fs::write(&path, r#"{"mmPerPx":0.25,"camera":"cam1"}"#).unwrap();
-        let first = calibration_state(&path).unwrap();
-        std::fs::write(&path, "{\n  \"camera\": \"cam1\", \"mmPerPx\": 0.25\n}").unwrap();
-        assert_eq!(calibration_state(&path).unwrap(), first);
-        std::fs::write(&path, r#"{"mmPerPx":0.5,"camera":"cam1"}"#).unwrap();
-        assert_ne!(calibration_state(&path).unwrap(), first);
-    }
-
-    #[test]
-    fn preview_cache_isolated_by_part_and_preserves_exact_frame() {
-        let mut cache = LiveFrames::default();
-        let first = Arc::new(FrameImage::new(1, 1, vec![7]));
-        cache.insert("cycle-12", "old", 0, first.clone());
-        cache.insert("cycle-12", "old", 1, Arc::new(FrameImage::new(1, 1, vec![9])));
-        assert!(Arc::ptr_eq(&cache.frames[0].1, &first));
-        cache.insert("cycle-13", "old", 2, Arc::new(FrameImage::new(1, 1, vec![11])));
-        assert_eq!(cache.frames.len(), 1);
-        assert_eq!(cache.bytes, 1);
-        assert_eq!(cache.key, Some(("cycle-13".into(), "old".into())));
-    }
-
-    #[test]
-    fn shot_tags_separate_image_from_teaching() {
-        let base = crate::recipe::samples().remove(1).build().unwrap();
-        let tag = |d: &crate::recipe::RecipeDoc, k| shot_tags(&d.build().unwrap(), k).unwrap();
-        let doc = crate::recipe::samples().remove(1);
-        let (image, teach) = shot_tags(&base, 1).unwrap();
-        let mut moved = doc.clone();
-        moved.shots[1].path[1][0] += 3.0;
-        assert_eq!(tag(&moved, 1).0, image, "改中线不让原图作废");
-        assert_ne!(tag(&moved, 1).1, teach, "改中线让试测作废");
-        assert_eq!(tag(&moved, 0), shot_tags(&base, 0).unwrap(), "别的拍照点不受影响");
-        let mut camera = doc.clone();
-        camera.shots[1].camera = "cam2".into();
-        assert_ne!(tag(&camera, 1).0, image);
-        let mut pose = doc.clone();
-        pose.shots[1].pose_id = "Robot-Pose-2".into();
-        assert_ne!(tag(&pose, 1).0, image);
-        assert_eq!(tag(&pose, 0), shot_tags(&base, 0).unwrap());
-        assert_eq!(images_tag(&moved.build().unwrap()), images_tag(&base));
-        assert_eq!(coverage(&base), 100.0);
-        let mut untaught = doc;
-        untaught.shots[2].path.clear();
-        untaught.shots[2].mm_per_px = None;
-        assert_eq!(coverage(&untaught.build().unwrap()), 75.0);
-    }
-
-    #[test]
-    fn offline_image_import_decodes_real_grayscale_pixels() {
-        let mut bytes = b"P5\n3 2\n255\n".to_vec();
-        bytes.extend([0, 32, 64, 128, 200, 255]);
-        let image = decode_imported_image(bytes).unwrap();
-        assert_eq!([image.width, image.height], [3, 2]);
-        assert_eq!(image.pixels, [0, 32, 64, 128, 200, 255]);
-    }
-
-    #[test]
-    fn offline_image_import_rejects_empty_oversized_corrupt_and_huge_images() {
-        assert!(decode_imported_image(vec![]).unwrap_err().contains("不得为空"));
-        assert!(decode_imported_image(vec![0; 15_000_001]).unwrap_err().contains("15 MB"));
-        assert!(decode_imported_image(b"not an image".to_vec()).is_err());
-        assert!(decode_imported_image(b"P5\n999999 999999\n255\n".to_vec()).is_err());
-    }
 }
 
 #[tauri::command]

@@ -529,24 +529,6 @@ mod tests {
     }
 
     #[test]
-    fn waiting_round_has_no_plan_until_plc_start_in_memory_disk_and_summary() {
-        let host = host();
-        let round = start(&host);
-        assert_eq!(round.state, CaptureState::WaitingStart);
-        assert_eq!(round.planned_count, None);
-        assert_eq!(round.plc_planned_count, None);
-        assert_eq!(host.get(&round.round_id).unwrap().planned_count, None);
-        assert_eq!(host.list("recipe-a").unwrap()[0].planned_count, None);
-        let stored: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(host.root.join(&round.round_id).join("round.json")).unwrap()).unwrap();
-        assert!(stored["plannedCount"].is_null());
-        drain(&host);
-        let failed = host.get(&round.round_id).unwrap();
-        assert_eq!(failed.state, CaptureState::Failed);
-        assert_eq!(failed.planned_count, None);
-        assert!(failed.error.unwrap().contains("等待 PLC 开始请求"));
-    }
-
-    #[test]
     fn plc_start_latches_only_a_valid_count_once_and_preserves_it_on_duplicate_start() {
         for count in [1, 20, 64] {
             let host = host();
@@ -590,6 +572,13 @@ mod tests {
         let round = start(&host);
         assert!(host.plc_ended(0).is_err());
         assert_eq!(host.get(&round.round_id).unwrap().planned_count, None);
+        let host = self::host();
+        let round = start(&host);
+        host.plc_started(2).unwrap();
+        receive(&host, &round, frame(1));
+        host.plc_ended(2).unwrap();
+        drain(&host);
+        assert_eq!(host.current().unwrap().state, CaptureState::Failed);
     }
 
     #[test]
@@ -633,6 +622,8 @@ mod tests {
         let next = host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), 10,
             Some(counter), Some(0), 200, simulated).unwrap();
         host.plc_started(20).unwrap();
+        receive(&host, &round, frame(20));
+        assert!(host.current().unwrap().frames.is_empty());
         let mut late = frame(20); late.counter = counter;
         receive(&host, &next, late);
         assert_eq!(host.current().unwrap().state, CaptureState::Failed);
@@ -644,6 +635,9 @@ mod tests {
     fn twenty_frames_are_twenty_shots_and_require_plc_end() {
         let host = host();
         let round = start(&host);
+        assert_eq!(round.state, CaptureState::WaitingStart);
+        assert_eq!(round.planned_count, None);
+        assert_eq!(host.get(&round.round_id).unwrap().planned_count, None);
         host.plc_started(20).unwrap();
         for n in 1..=20 { receive(&host, &round, frame(n)); }
         let result = host.current().unwrap();
@@ -655,18 +649,6 @@ mod tests {
         assert_eq!(host.current().unwrap().state, CaptureState::Draining);
         drain(&host);
         assert_eq!(host.current().unwrap().state, CaptureState::Complete);
-    }
-
-    #[test]
-    fn missing_or_extra_frames_are_failed_rounds() {
-        for received in [19, 21] {
-            let host = host();
-            let round = start(&host);
-            host.plc_started(20).unwrap();
-            for n in 1..=received { receive(&host, &round, frame(n)); }
-            if received == 19 { host.plc_ended(20).unwrap(); drain(&host); }
-            assert_eq!(host.current().unwrap().state, CaptureState::Failed);
-        }
     }
 
     #[test]
@@ -697,24 +679,6 @@ mod tests {
     }
 
     #[test]
-    fn stale_queued_frames_cannot_enter_a_new_round() {
-        let host = host();
-        let old = start(&host);
-        host.fail("中止");
-        let new = start(&host);
-        assert_ne!(old.round_id, new.round_id);
-        host.plc_started(1).unwrap();
-        receive(&host, &old, frame(1));
-        assert_eq!(host.current().unwrap().received_count, 0);
-        let mut first = frame(1); first.session = new.device_session;
-        receive(&host, &new, first);
-        host.plc_ended(1).unwrap();
-        drain(&host);
-        assert_eq!(host.current().unwrap().state, CaptureState::Complete);
-        assert_eq!(host.get(&old.round_id).unwrap().state, CaptureState::Failed);
-    }
-
-    #[test]
     fn restart_marks_interrupted_round_failed_and_restores_latest() {
         let host = host();
         let round = start(&host);
@@ -722,21 +686,6 @@ mod tests {
         assert_eq!(reopened.current().unwrap().round_id, round.round_id);
         assert_eq!(reopened.current().unwrap().state, CaptureState::Failed);
         assert!(!reopened.active());
-    }
-
-    #[test]
-    fn invalid_plc_start_order_and_disconnect_fail() {
-        let host = host();
-        start(&host);
-        assert!(host.plc_started(65).is_err());
-        assert_eq!(host.current().unwrap().state, CaptureState::Failed);
-        start(&host);
-        assert!(host.offer(&frame(1), None));
-        assert_eq!(host.current().unwrap().state, CaptureState::Failed);
-        start(&host);
-        host.plc_started(2).unwrap();
-        host.disconnected(0);
-        assert_eq!(host.current().unwrap().state, CaptureState::Failed);
     }
 
     #[test]

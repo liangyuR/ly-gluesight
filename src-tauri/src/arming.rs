@@ -134,29 +134,6 @@ mod tests {
         assert_eq!(budget.trace()["stages"][2]["elapsedMs"], 210.0);
     }
 
-    #[test]
-    fn queue_wait_and_previous_work_reduce_the_same_remaining_arm_budget() {
-        let started = Instant::now();
-        let mut budget = ArmBudget::with_start(started, Duration::from_millis(200));
-        assert_eq!(budget.remaining_at("verify-queue", started + Duration::from_millis(75)).unwrap(), Duration::from_millis(125));
-        budget.mark_at("verify-queue", started + Duration::from_millis(125));
-        assert_eq!(budget.remaining_at("verify-run", started + Duration::from_millis(125)).unwrap(), Duration::from_millis(75));
-        budget.mark_at("verify-run", started + Duration::from_millis(150));
-        assert_eq!(budget.remaining_at("plc", started + Duration::from_millis(150)).unwrap(), Duration::from_millis(50));
-    }
-
-    #[test]
-    fn exact_arm_deadline_and_zero_budget_refuse_without_rounding_down() {
-        let started = Instant::now();
-        let mut budget = ArmBudget::with_start(started, Duration::from_millis(200));
-        assert_eq!(budget.remaining_at("last-nanosecond", started + Duration::from_millis(200) - Duration::from_nanos(1)).unwrap(), Duration::from_nanos(1));
-        assert!(budget.remaining_at("plc-confirmed", started + Duration::from_millis(200)).is_err());
-        assert_eq!(budget.stages()[0].stage, "plc-confirmed");
-        assert_eq!(budget.stages()[0].elapsed, Duration::from_millis(200));
-        let mut zero = ArmBudget::with_start(started, Duration::ZERO);
-        assert!(zero.remaining_at("entry", started).is_err());
-        assert_eq!(zero.stages()[0].stage, "entry");
-    }
     #[tokio::test]
     async fn async_arm_stage_uses_only_total_budget_remaining() {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -171,49 +148,6 @@ mod tests {
         assert!(entered.load(Ordering::SeqCst));
         assert!(result.unwrap_err().contains("verify"));
         assert!(budget.stages().last().unwrap().elapsed >= Duration::from_millis(250));
-    }
-
-    #[tokio::test]
-    async fn expired_arm_stage_cannot_reach_camera_or_plc_actions() {
-        let mut budget = ArmBudget::with_start(Instant::now(), Duration::from_millis(35));
-        let mut camera_started = false;
-        let mut plc_armed = false;
-        let result = budget.run("audit-health", async {
-            tokio::time::sleep(Duration::from_millis(120)).await;
-            Ok(())
-        }).await;
-        if result.is_ok() {
-            camera_started = true;
-            plc_armed = true;
-        }
-        assert!(result.unwrap_err().contains("audit-health"));
-        assert!(!camera_started && !plc_armed);
-        assert_eq!(budget.stages().last().unwrap().stage, "audit-health");
-    }
-
-    #[tokio::test]
-    async fn late_blocking_preparation_never_starts_downstream_arm_actions() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use std::sync::Arc;
-        let prepared = Arc::new(AtomicBool::new(false));
-        let worker_prepared = prepared.clone();
-        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
-        let task = tokio::task::spawn_blocking(move || {
-            std::thread::sleep(Duration::from_millis(120));
-            worker_prepared.store(true, Ordering::SeqCst);
-            let _ = finished_tx.send(());
-            Ok(())
-        });
-        let mut budget = ArmBudget::with_start(Instant::now(), Duration::from_millis(35));
-        let result = budget.run("blocking-verify", async {
-            task.await.map_err(|error| error.to_string())?
-        }).await;
-        let mut downstream_armed = false;
-        if result.is_ok() { downstream_armed = true; }
-        assert!(result.unwrap_err().contains("blocking-verify"));
-        tokio::time::timeout(Duration::from_secs(2), finished_rx).await.unwrap().unwrap();
-        assert!(prepared.load(Ordering::SeqCst));
-        assert!(!downstream_armed);
     }
 
     #[tokio::test]

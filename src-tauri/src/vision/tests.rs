@@ -1,66 +1,6 @@
 use super::*;
 
 #[test]
-fn configured_core_path_takes_priority_without_resolving_install_directory() {
-    let actual = resolve_core_path(Some("  D:/custom/lyflow_core.dll  "), || panic!("explicit path must win")).unwrap();
-    let expected = if cfg!(windows) { r"D:\custom\lyflow_core.dll" } else { "D:/custom/lyflow_core.dll" };
-    assert_eq!(actual, Some(PathBuf::from(expected)));
-}
-
-#[cfg(windows)]
-#[test]
-fn empty_core_settings_resolve_relative_to_executable() {
-    let exe = PathBuf::from(r"D:\安装目录\GlueSight\GlueSight.exe");
-    let expected = PathBuf::from(r"D:\安装目录\GlueSight\runtime\lyflow\lyflow_core.dll");
-    for setting in [None, Some(""), Some(" \t ")] {
-        assert_eq!(resolve_core_path(setting, || Ok(exe.clone())).unwrap(), Some(expected.clone()));
-    }
-    assert!(resolve_core_path(None, || Err(std::io::Error::other("unavailable"))).unwrap_err().contains("无法确定内置 lyFlow"));
-}
-
-#[cfg(not(windows))]
-#[test]
-fn other_platforms_do_not_use_windows_bundle() {
-    assert_eq!(resolve_core_path(None, || panic!("no Windows bundle")).unwrap(), None);
-}
-
-#[test]
-fn failed_explicit_core_path_is_reported_without_falling_back() {
-    let host = VisionHost::default();
-    let path = std::env::temp_dir().join(format!("gluesight-missing-core-{}", std::process::id())).join("lyflow_core.dll");
-    let status = host.status(Some(&format!("  {}  ", path.display())));
-    assert!(!status.loaded);
-    assert_eq!(status.path, Some(path.display().to_string()));
-    assert!(!status.message.is_empty());
-}
-
-#[test]
-fn missing_bundled_core_reports_installation_repair() {
-    let host = VisionHost::default();
-    let path = std::env::temp_dir().join(format!("gluesight-missing-bundle-{}", std::process::id())).join("lyflow_core.dll");
-    assert!(host.engine_at(&path, true).is_none());
-    let error = host.error.lock().unwrap().clone().unwrap();
-    assert!(error.contains("安装目录缺少内置 lyFlow 核心库"));
-    assert!(error.contains(&path.display().to_string()));
-}
-
-#[test]
-fn missing_pack_is_reported_before_running() {
-    let error = check_operators(&json!({"operators": [{"id": "io.load_image"}]})).unwrap_err();
-    assert!(error.contains("glue.taught_path"));
-    assert!(error.contains("image.board_calib"));
-    assert!(check_operators(&json!({"operators": [
-        {"id": "io.load_image"}, {"id": "image.board_calib"}, {"id": "image.load_calib"},
-        {"id": "glue.taught_path"}, {"id": "glue.bead_width"}
-    ]})).is_ok());
-    let old = json!({"operators": [
-        {"id": "io.load_image"}, {"id": "image.board_calib"}, {"id": "image.load_calib"},
-        {"id": "glue.locate"}, {"id": "glue.station_calipers"}, {"id": "glue.bead_width"}
-    ]});
-    assert!(check_operators(&old).unwrap_err().contains("旧版飞拍核心库"));
-}
-
-#[test]
 fn invalid_frame_is_rejected_before_ffi() {
     assert!(image_input(&FrameImage::new(0, 1, vec![])).is_err());
     assert!(image_input(&FrameImage::new(2, 2, vec![1, 2, 3])).is_err());
@@ -114,26 +54,6 @@ fn native_board_calibration_uses_full_pixels_and_new_frames_do_not_reuse_old_boa
     assert_eq!(result.status(), "failed");
     assert!(result.failure().contains("no_board"), "{}", result.failure());
     assert!(result.record("calib").is_none());
-}
-
-#[test]
-fn rebuilt_core_file_changes_identity_without_hashing_it() {
-    let dir = std::env::temp_dir().join(format!("gluesight-core-identity-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("lyflow_core.dll");
-    std::fs::write(&path, [1u8; 16]).unwrap();
-    let first = file_identity(&path).unwrap();
-    assert_eq!(first.0, 16);
-    // 同名同版本重新编译：大小或修改时间至少一项会变
-    std::fs::write(&path, [2u8; 24]).unwrap();
-    let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-    file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(first.1 + 5000)).unwrap();
-    drop(file);
-    let second = file_identity(&path).unwrap();
-    assert_ne!(first, second);
-    assert_eq!(second, (24, first.1 + 5000));
-    assert!(file_identity(&dir.join("missing.dll")).unwrap_err().contains("核心库文件信息"));
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

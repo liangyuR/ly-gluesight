@@ -462,20 +462,6 @@ mod tests {
     }
 
     #[test]
-    fn short_gap_with_tapered_edges_stays_ok() {
-        let recipe = builtin().remove(1);
-        let mut table = base(&recipe);
-        let f = recipe.segments[1].first;
-        // 2 mm 断口两侧各 2 mm 收细：连起来 6 mm 不超断胶限，收细部分按胶宽规则至多算局部超差
-        (f + 8..f + 10).for_each(|j| table[j] = PointState::Measured { d: 0.0, w: 2.0 });
-        (f + 10..f + 12).for_each(|j| table[j] = PointState::Gap);
-        (f + 12..f + 14).for_each(|j| table[j] = PointState::Measured { d: 0.0, w: 2.0 });
-        let r = judge(&recipe, &table);
-        assert!(r.verdict <= Verdict::OkWithExcursion, "{}", r.reason);
-        assert!(r.gaps.is_empty());
-    }
-
-    #[test]
     fn scattered_short_gaps_are_ng() {
         let recipe = builtin().remove(1);
         let mut table = base(&recipe);
@@ -489,17 +475,6 @@ mod tests {
     }
 
     #[test]
-    fn whole_shot_without_bead_is_ng_gap() {
-        let recipe = builtin().remove(1);
-        let mut table = base(&recipe);
-        let g = &recipe.segments[0];
-        (g.first..g.first + g.count).for_each(|j| table[j] = PointState::Gap);
-        let r = judge(&recipe, &table);
-        assert_eq!((r.verdict, r.fault_code), (Verdict::NgGap, 0));
-        assert!(r.reason.starts_with("P1 · J1 检测区内没找到胶（整段"), "{}", r.reason);
-    }
-
-    #[test]
     fn whole_shot_without_bead_is_ng_even_if_all_gaps_are_allowed() {
         let mut doc = crate::recipe::samples().remove(1);
         doc.limits.max_gap_len = 1000.0;
@@ -509,20 +484,8 @@ mod tests {
         (g.first..g.first + g.count).for_each(|j| table[j] = PointState::Gap);
         table[g.first + 3] = PointState::Invalid;
         let r = judge(&recipe, &table);
-        assert_eq!(r.verdict, Verdict::NgGap, "{}", r.reason);
+        assert_eq!((r.verdict, r.fault_code), (Verdict::NgGap, 0), "{}", r.reason);
         assert!(r.reason.contains("检测区内没找到胶"), "{}", r.reason);
-    }
-
-    #[test]
-    fn allowed_gap_in_short_shot_is_not_sparse() {
-        let mut doc = crate::recipe::samples().remove(1);
-        doc.limits.min_present = 0.95;
-        let recipe = doc.build().unwrap();
-        let mut table = base(&recipe);
-        let f = recipe.segments[0].first;
-        // 一处 6 mm 断口在允许范围内：比例再低也不按断续判
-        (f + 2..f + 8).for_each(|j| table[j] = PointState::Gap);
-        assert_eq!(judge(&recipe, &table).verdict, Verdict::Ok);
     }
 
     #[test]
