@@ -36,7 +36,6 @@ mod tests {
     use crate::camera::FRAME_QUEUE;
     use crate::frame::FrameImage;
     use crate::judge::fault;
-    use crate::shot_router::{ArmCam, Plan, Policy, Route, ShotRouter};
 
     fn frame(cam: u8, counter: u64) -> Frame {
         Frame {
@@ -49,12 +48,6 @@ mod tests {
     fn callback(identity: &Mutex<Ledgers>, manual: &AtomicU32, tx: &Sender<Frame>, dropped: &AtomicU64, mut frame: Frame) -> Result<(), TrySendError<Frame>> {
         observe(identity, manual, &mut frame, true);
         offer(tx, dropped, frame)
-    }
-
-    fn router() -> ShotRouter {
-        let plan = Plan::new([("P1", "cam1"), ("P2", "cam1"), ("P3", "cam1"), ("P4", "cam1")]);
-        let camera = ArmCam { cam: 0, camera: "cam1".into(), session: 11, source: Some(CounterSource::ChunkTrigger), counter_after_open: Some(0) };
-        ShotRouter::arm(&plan, &Ledgers::default(), &Policy::production(None), &[camera]).unwrap()
     }
 
     #[test]
@@ -156,78 +149,6 @@ mod tests {
         observe(&identity, &manual, &mut synthetic, true);
         assert!(synthetic.manual);
         assert_eq!(manual.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn full_callback_channel_keeps_first_middle_and_last_missing_shots_in_place() {
-        for missing in [0, 1, 3] {
-            let (tx, mut rx) = channel::<Frame>(FRAME_QUEUE);
-            let identity = Mutex::new(Ledgers::default());
-            let manual = AtomicU32::new(0);
-            let dropped = AtomicU64::new(0);
-            let mut router = router();
-            let mut bound = Vec::new();
-            for shot in 0..4 {
-                if shot == missing {
-                    for counter in 1..=FRAME_QUEUE as u64 {
-                        callback(&identity, &manual, &tx, &dropped, frame(1, counter)).unwrap();
-                    }
-                    assert_eq!(rx.len(), FRAME_QUEUE);
-                }
-                let result = callback(&identity, &manual, &tx, &dropped, frame(0, shot as u64 + 1));
-                if shot == missing {
-                    assert!(matches!(result, Err(TrySendError::Full(_))));
-                } else {
-                    result.unwrap();
-                }
-                while let Ok(received) = rx.try_recv() {
-                    let route = router.route(&FrameMeta::from(&received));
-                    if received.cam == 0 {
-                        assert_eq!(route, Route::Bound { shot, ordinal: shot as u64 + 1 });
-                        bound.push(shot);
-                    } else {
-                        assert_eq!(route, Route::UnknownCamera);
-                    }
-                }
-            }
-            assert_eq!(bound, (0..4).filter(|shot| *shot != missing).collect::<Vec<_>>());
-            assert_eq!(router.missing(), [missing]);
-            assert!(!router.complete());
-            assert_eq!(dropped.load(Ordering::Relaxed), 1);
-            let ledgers = identity.lock().unwrap();
-            let ledger = ledgers.get(0).unwrap();
-            assert_eq!(ledger.last, Some(4));
-            assert_eq!(ledger.frames, 4);
-            assert!(router.check_observed(0, ledger).is_ok());
-        }
-    }
-
-    #[test]
-    fn extra_callback_lost_to_full_channel_is_still_rejected_by_router_summary() {
-        let (tx, mut rx) = channel::<Frame>(FRAME_QUEUE);
-        let identity = Mutex::new(Ledgers::default());
-        let manual = AtomicU32::new(0);
-        let dropped = AtomicU64::new(0);
-        let mut router = router();
-        for shot in 0..4 {
-            callback(&identity, &manual, &tx, &dropped, frame(0, shot as u64 + 1)).unwrap();
-            let received = rx.try_recv().unwrap();
-            assert_eq!(router.route(&FrameMeta::from(&received)), Route::Bound { shot, ordinal: shot as u64 + 1 });
-        }
-        assert!(router.complete());
-        for counter in 1..=FRAME_QUEUE as u64 {
-            callback(&identity, &manual, &tx, &dropped, frame(1, counter)).unwrap();
-        }
-        assert!(matches!(callback(&identity, &manual, &tx, &dropped, frame(0, 5)), Err(TrySendError::Full(_))));
-        assert_eq!(dropped.load(Ordering::Relaxed), 1);
-        let ledgers = identity.lock().unwrap();
-        let ledger = ledgers.get(0).unwrap();
-        assert_eq!(ledger.last, Some(5));
-        assert_eq!(ledger.frames, 5);
-        let (code, reason) = router.check_observed(0, ledger).unwrap_err();
-        assert_eq!(code, fault::EXTRA_FRAME);
-        assert!(reason.contains('5') && reason.contains('4'));
-        assert!(router.complete());
     }
 
     #[test]

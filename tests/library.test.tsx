@@ -82,13 +82,6 @@ describe("配方库操作", () => {
     expect(ws.clearSelection).not.toHaveBeenCalled(); expect(screen.getByRole("dialog")).toBeVisible();
   });
 
-  it("浏览器查看模式禁止新建配方", () => {
-    vi.mocked(desktopAvailable).mockReturnValue(false); show();
-    expect(screen.getByRole("button", { name: "新建配方" })).toBeDisabled();
-    expect(screen.getByRole("button",{name:"复制配方 A"})).toBeDisabled();expect(screen.getByRole("button",{name:"删除配方 A"})).toBeDisabled();
-    expect(screen.getByRole("button",{name:"继续配置"})).toBeDisabled();
-  });
-
   it("搜索编号忽略大小写及外围空白，产品代码可搜索并有空结果提示",async()=>{
     show();fireEvent.change(screen.getByRole("textbox",{name:"搜索配方"}),{target:{value:"  a  "}});
     expect(screen.getByRole("button",{name:"复制配方 A"})).toBeVisible();

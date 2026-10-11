@@ -124,8 +124,12 @@ describe("预览逐点示教与总览", () => {
     number("搜索半宽", 4); number("胶宽下限 w", 6); number("胶宽上限 w", 5);
     expect(screen.getByText("胶宽上限必须大于下限")).toBeVisible(); click("试测当前点"); await finishTask();
     expect(screen.getByRole("button", { name: "保存本点示教" })).toBeDisabled();
-    number("胶宽下限 w", 2.5); number("胶宽上限 w", 5.5); select("取样情景", "完整胶路"); click("取新样本"); click("试测当前点"); await finishTask(); click("保存本点示教");
-    expect(stored().frames[2].saved).toBe(true); click("重置本点参数");
+    number("胶宽下限 w", 2.5); number("胶宽上限 w", 5.5); select("取样情景", "完整胶路"); click("取新样本"); click("试测当前点"); await finishTask();
+    expect(screen.getByRole("button", { name: "保存本点示教" })).toBeEnabled();
+    number("搜索半宽", 5); expect(screen.getByRole("button", { name: "保存本点示教" })).toBeDisabled();
+    click("试测当前点"); await finishTask(); expect(screen.getByRole("button", { name: "保存本点示教" })).toBeEnabled(); click("保存本点示教");
+    expect(screen.getByRole("button", { name: "保存本点示教" })).toBeDisabled();
+    expect(stored().frames[2].saved).toBe(true); expect(stored().validation.status).toBe("idle"); click("重置本点参数");
     expect(stored().frames[2]).toMatchObject({ params: { search: 4, polarity: "light", minWidth: 2.5, maxWidth: 5 }, trial: null, saved: false });
     select("取样情景", "完整胶路"); click("取新样本"); click("试测当前点"); await finishTask();
     expect(screen.getByRole("button", { name: "保存本点示教" })).toBeEnabled();

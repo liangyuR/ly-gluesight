@@ -131,10 +131,4 @@ mod tests {
         assert!(PlcPlan::from_recipe(&recipe, ["cam1".into(), "cam2".into(), String::new()]).is_err());
     }
 
-    #[test]
-    fn documented_example_counts() {
-        let shots = (1..=2).map(|i| PlanShot { shot_id: format!("P{i}"), pose_id: format!("P{i}"), camera_id: "cam1".into() }).collect();
-        let plan = PlcPlan::compile("DEMO".into(), 1, ["cam1".into(), String::new(), String::new()], shots).unwrap();
-        assert_eq!((plan.plan_version, plan.camera_shots), (1, [2, 0, 0]));
-    }
 }

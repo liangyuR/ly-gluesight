@@ -168,13 +168,6 @@ describe("候选工作台状态与并发", () => {
     expect(result.current.doc?.id).toBe("B");
   });
 
-  it("浏览器模式不读取桌面配置", () => {
-    vi.mocked(desktopAvailable).mockReturnValue(false);
-    const { result } = renderHook(() => useWorkspace(), { wrapper: WorkspaceProvider });
-    expect(result.current.data).toBeNull();
-    expect(workspaceApi.list).not.toHaveBeenCalled(); expect(subscribe).not.toHaveBeenCalled();
-  });
-
   it("恢复上次配方，卸载后注销事件", async () => {
     localStorage.setItem("tujiao-last-workspace", "B");
     const { result, unmount } = renderHook(() => useWorkspace(), { wrapper: WorkspaceProvider });

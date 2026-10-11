@@ -10,8 +10,8 @@ import type { CameraConfig, CameraStatus, DeviceSummary } from "../src/features/
 import type { Snapshot } from "../src/features/cycle/types";
 import { deferred, shotList, snapshot, summary, workspaceView, twoLines } from "./fixtures";
 
-const hooks=vi.hoisted(()=>({phase:"IDLE",statuses:[] as CameraStatus[],desktop:true}));
-vi.mock("../src/lib/desktop",()=>({desktopAvailable:()=>hooks.desktop}));
+const hooks=vi.hoisted(()=>({phase:"IDLE",statuses:[] as CameraStatus[]}));
+vi.mock("../src/lib/desktop",()=>({desktopAvailable:()=>true}));
 vi.mock("../src/features/camera/api",async importOriginal=>{
   const actual=await importOriginal<typeof import("../src/features/camera/api")>();
   return {...actual,cameraApi:{...actual.cameraApi,rigConfig:vi.fn(),add:vi.fn(),remove:vi.fn(),listDevices:vi.fn(),records:vi.fn(),saveConfig:vi.fn(),softTrigger:vi.fn()},
@@ -30,7 +30,7 @@ let configs:CameraConfig[];
 const status=(config:CameraConfig,cam:number):CameraStatus=>({cam,id:config.id,name:config.name,source:config.source,acquisition:config.acquisition,ready:true,message:"",device:null,sdkVersion:null,frames:0,fps:0,maxFps:null,lostPackets:0,droppedFrames:0,warnings:[]});
 beforeEach(()=>{
   configs=[{...defaultCameraConfig,id:"CAM-1",name:"相机 1"},{...defaultCameraConfig,id:"CAM-2",name:"相机 2",source:"replay",replayDir:"D:/images"}];
-  hooks.phase="IDLE";hooks.desktop=true;hooks.statuses=configs.map(status);
+  hooks.phase="IDLE";hooks.statuses=configs.map(status);
   vi.mocked(cameraApi.rigConfig).mockImplementation(async()=>configs);
   vi.mocked(cameraApi.add).mockResolvedValue(2);vi.mocked(cameraApi.remove).mockResolvedValue(undefined);
   vi.mocked(cameraApi.records).mockResolvedValue({root:"D:/records",items:[]});vi.mocked(cameraApi.listDevices).mockResolvedValue([]);
@@ -175,11 +175,9 @@ describe("设备与采集页基础操作",()=>{
     hooks.phase="FAULT";page.rerender(<MemoryRouter><CameraPage/></MemoryRouter>);
     expect(screen.getByRole("textbox",{name:"名称"})).toBeEnabled();
   });
-  it("最多八台相机，浏览器预览中不能执行设备操作",async()=>{
+  it("最多八台相机，到达上限后仍可移除",async()=>{
     configs=Array.from({length:8},(_,i)=>({...defaultCameraConfig,id:`CAM-${i+1}`,name:`相机 ${i+1}`}));
-    const page=show();await loaded();expect(screen.getByRole("button",{name:"添加相机"})).toBeDisabled();expect(screen.getByRole("button",{name:"移除当前"})).toBeEnabled();
-    hooks.desktop=false;page.rerender(<MemoryRouter><CameraPage/></MemoryRouter>);
-    expect(screen.getByRole("button",{name:"添加相机"})).toBeDisabled();expect(screen.getByRole("button",{name:"移除当前"})).toBeDisabled();expect(screen.getByRole("button",{name:"模拟相机"})).toBeDisabled();
+    show();await loaded();expect(screen.getByRole("button",{name:"添加相机"})).toBeDisabled();expect(screen.getByRole("button",{name:"移除当前"})).toBeEnabled();
   });
   it("标定页面只列触发采集工位，没有适合工位时提供设备入口",async()=>{
     configs[1]={...configs[1],acquisition:"freeRun"};

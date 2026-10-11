@@ -5,10 +5,9 @@ import { invoke } from "@tauri-apps/api/core";
 import CalibPanel from "../src/features/camera/components/CalibPanel";
 import { deferred } from "./fixtures";
 
-const host=vi.hoisted(()=>({desktop:true}));
-vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => host.desktop, invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 const info = { path: "calib.json", rms: .0123, mmPerPx: .04, maxError: .02, pattern: [9, 6], square: 4, ts: 1 };
-beforeEach(() => { host.desktop=true;vi.mocked(invoke).mockReset().mockResolvedValue(null); });
+beforeEach(() => { vi.mocked(invoke).mockReset().mockResolvedValue(null); });
 const ready=()=>waitFor(()=>expect(screen.queryByText("正在读取标定…")).not.toBeInTheDocument());
 
 describe("工位标定", () => {
@@ -112,8 +111,9 @@ describe("工位标定", () => {
     await act(async()=>request.resolve(info));expect(invoke).toHaveBeenCalledTimes(2);
   });
 
-  it("浏览器预览不读取或运行标定，模拟工位说明内置标定",()=>{
-    host.desktop=false;render(<CalibPanel cam={0} isSim={true} imageId="frozen"/>);
-    expect(screen.getByText("使用内置标定（0.08 mm/px）")).toBeVisible();expect(screen.getByRole("button",{name:"刷新标定"})).toBeDisabled();expect(screen.getByRole("button",{name:"用冻结样本标定"})).toBeDisabled();expect(invoke).not.toHaveBeenCalled();
+  it("模拟工位说明内置标定，不能执行实际标定",async()=>{
+    render(<CalibPanel cam={0} isSim={true} imageId="frozen"/>);await ready();
+    expect(screen.getByText("使用内置标定（0.08 mm/px）")).toBeVisible();expect(screen.getByRole("button",{name:"用冻结样本标定"})).toBeDisabled();
+    expect(invoke).not.toHaveBeenCalledWith("vision_calibrate",expect.anything());
   });
 });

@@ -269,20 +269,4 @@ mod tests {
         assert_eq!(pool.0.free.lock().unwrap().len(), 1);
     }
 
-    #[test]
-    fn time_full_frame_conversion() {
-        let (w, h) = (1280, 1024);
-        let src: Vec<u8> = (0..w * h).map(|i| (i * 31 % 251) as u8).collect();
-        let mut out = Vec::new();
-        bayer8_gray_into(w, h, &src, &mut out).unwrap();
-        let started = std::time::Instant::now();
-        let n = 10;
-        for _ in 0..n {
-            bayer8_gray_into(w, h, std::hint::black_box(&src), &mut out).unwrap();
-            std::hint::black_box(&out);
-        }
-        let ms = started.elapsed().as_secs_f64() * 1000.0 / n as f64;
-        // 本 crate 在 dev / test 配置下也是 opt-level 2（见 Cargo.toml）
-        eprintln!("Bayer → 灰度 {w}×{h}：{ms:.2} ms / 帧");
-    }
 }
