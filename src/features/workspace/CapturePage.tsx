@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { cameraApi } from "../camera/api";
 import { plcApi } from "../plc/api";
 import { useCycle } from "../cycle/api";
@@ -7,22 +7,30 @@ import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, KV, Notice, NumberField, Panel, Steps, WorkspaceBar, WorkspaceEmpty, GrayViewer } from "./components";
 import type { CaptureRound, GrayImage } from "./types";
+import type { CaptureNavigationState } from "./captureNavigation";
 
 const stateLabels: Record<CaptureRound["state"],string> = { waitingStart:"等待现场启动", receiving:"接收中", draining:"PLC 已结束，等待在途图像", complete:"采集完成", failed:"采集异常" };
+function captureCountText(round: Pick<CaptureRound,"state"|"receivedCount"|"plannedCount">) {
+  if(round.state==="waitingStart") return `已接收 ${round.receivedCount} 张 · 等待 PLC 开始信号`;
+  if(round.state==="complete") return `已接收 ${round.receivedCount} 张 · 数量核对通过`;
+  return round.plannedCount == null ? `已接收 ${round.receivedCount} 张` : `已接收 ${round.receivedCount} / ${round.plannedCount} 张`;
+}
 export default function CapturePage() {
   const {data,doc,cameras,busy,dirty,frameDirty,act,setError} = useWorkspace();
   const {snapshot} = useCycle();
   const [search] = useSearchParams();
+  const location = useLocation();
+  const captureReturn = (location.state as CaptureNavigationState | null)?.captureReturn;
   const validation = search.get("purpose") === "validation";
   const [cameraId,setCameraId] = useState("");
-  const [planned,setPlanned] = useState(20), [drain,setDrain] = useState(1500);
+  const [drain,setDrain] = useState(1500);
   const [round,setRound] = useState<CaptureRound | null>(null), [working,setWorking] = useState(false);
   const [history,setHistory] = useState<Awaited<ReturnType<typeof workspaceApi.captureList>>>([]);
   const [roundId,setRoundId] = useState<string | undefined>();
   const [previewK,setPreviewK] = useState(0), [preview,setPreview] = useState<GrayImage | null>(null), [previewError,setPreviewError] = useState("");
   const [plc,setPlc] = useState("正在读取 PLC 状态"), [deviceReady,setDeviceReady] = useState(false);
   const [reuse,setReuse] = useState(false), [confirmed,setConfirmed] = useState(false);
-  const selectedCamera = cameraId || cameras[0]?.id || "";
+  const selectedCamera = cameras.some(c=>c.id===cameraId) ? cameraId : cameras[0]?.id || "";
   const current = useRef({id:doc?.id,alive:true}); current.current.id=doc?.id;
   useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;};},[]);
   useEffect(() => {
@@ -38,7 +46,11 @@ export default function CapturePage() {
     return () => {alive=false;clearInterval(timer);};
   },[doc?.id,selectedCamera,setError,roundId]);
   useEffect(() => { setConfirmed(false); },[round?.roundId,validation]);
-  useEffect(() => { setRoundId(undefined); setPreviewK(0); setWorking(false); },[doc?.id]);
+  useEffect(() => {
+    const restored = captureReturn?.recipeId === doc?.id ? captureReturn : undefined;
+    setRoundId(restored?.roundId); setPreviewK(restored?.previewK ?? 0); setWorking(false);
+    if(restored) { setCameraId(restored.cameraId); setDrain(restored.drain); }
+  },[doc?.id,captureReturn]);
   useEffect(() => {
     let alive=true; setPreview(null); setPreviewError("");
     if(round?.frames[previewK]) void workspaceApi.captureImage(round.roundId,previewK).then(image=>{if(alive)setPreview(image);}).catch(e=>{if(alive)setPreviewError(String(e));});
@@ -49,22 +61,23 @@ export default function CapturePage() {
   const locked=busy || working || dirty || frameDirty || !!data.workspace.pending;
   const productionBusy=!!snapshot && !["IDLE","FAULT"].includes(snapshot.phase);
   const sampleSourceInvalid=validation && (!data.workspace.captureId || data.workspace.captureId===round?.roundId);
+  const navigationState: CaptureNavigationState = {captureReturn:{recipeId:doc.id,search:location.search,cameraId:selectedCamera,drain,roundId,previewK}};
   const start=async () => {
     if(locked || active) return; setWorking(true); setConfirmed(false);
-    try { const next=await workspaceApi.captureStart(doc.id,selectedCamera,planned,drain); if(current.current.alive && current.current.id===doc.id) {setRoundId(next.roundId); setRound(next); setPreviewK(0);} }
+    try { const next=await workspaceApi.captureStart(doc.id,selectedCamera,drain); if(current.current.alive && current.current.id===doc.id) {setRoundId(next.roundId); setRound(next); setPreviewK(0);} }
     catch(e) {if(current.current.alive && current.current.id===doc.id)setError(String(e));} finally {if(current.current.alive && current.current.id===doc.id)setWorking(false);}
   };
   const stop=async () => { if(locked) return; setWorking(true); try {const next=await workspaceApi.captureStop();if(current.current.alive && current.current.id===doc.id)setRound(next);} catch(e) {if(current.current.alive && current.current.id===doc.id)setError(String(e));} finally {if(current.current.alive && current.current.id===doc.id)setWorking(false);} };
   return <div className="wp-page"><WorkspaceBar/><Steps/><div className="wp-columns"><div className="wp-stack"><Panel title={validation ? "实拍独立验证样本" : "设备准备与整圈采集"} detail="选择一个 SDK device；每次触发的一张拼接图生成一个拍照点">
     <label className="field"><span>采集 device</span><select className="input" aria-label="采集 device" value={selectedCamera} disabled={locked || active} onChange={e=>setCameraId(e.target.value)}>{cameras.map(c=><option key={c.id} value={c.id}>{c.name} · {c.serial || c.source}</option>)}</select></label>
     <KV label="设备">{deviceReady ? "就绪" : "未就绪"}</KV><KV label="PLC">{plc}</KV>
-    <div className="wp-form-grid"><NumberField label="PLC 计划触发次数" value={planned} min={1} max={64} step={1} onChange={setPlanned} disabled={locked || active}/><NumberField label="在途图像等待时间" value={drain} min={200} max={30000} unit="ms" onChange={setDrain} disabled={locked || active}/></div>
-    <div className="wp-actions"><Link className="btn" to="/camera">配置设备</Link><Link className="btn" to="/plc">配置 PLC</Link><Link className="btn" to="/camera/calibration">毫米标定</Link></div>
-    <Notice title="现场启动机械臂">先确认合格涂胶工件、轨迹和触发顺序。GS 开始接收并就绪后，由现场启动机械臂；拍照点数量依据实际收图生成。</Notice>
-    <div className="wp-actions"><button className="btn primary" disabled={locked || active || productionBusy || !deviceReady || !selectedCamera || !Number.isInteger(planned) || planned<1 || planned>64 || !Number.isFinite(drain) || drain<200 || drain>30000} onClick={() => void start()}>开始接收 / 整圈重采</button><button className="btn danger" disabled={locked || !active} onClick={() => void stop()}>中止本轮</button></div>
+    <div className="wp-form-grid"><NumberField label="在途图像等待时间" value={drain} min={200} max={30000} unit="ms" onChange={setDrain} disabled={locked || active}/></div>
+    <div className="wp-actions"><Link className="btn" to="/camera" state={navigationState}>配置设备</Link><Link className="btn" to="/plc">配置 PLC</Link><Link className="btn" to="/camera/calibration" state={navigationState}>毫米标定</Link></div>
+    <Notice title="现场启动机械臂">先确认合格涂胶工件、轨迹和触发顺序。GS 开始接收并就绪后，由现场启动机械臂；触发数量由 PLC 自动提供，拍照点数量依据实际收图生成。</Notice>
+    <div className="wp-actions"><button className="btn primary" disabled={locked || active || productionBusy || !deviceReady || !selectedCamera || !Number.isFinite(drain) || drain<200 || drain>30000} onClick={() => void start()}>开始接收 / 整圈重采</button><button className="btn danger" disabled={locked || !active} onClick={() => void stop()}>中止本轮</button></div>
     {productionBusy && <p className="muted">当前工件结束后才能占用设备采集。</p>}
-  </Panel><Panel title="采集历史" detail="保留异常轮次供追溯，重新采集不会混用旧图"><select className="input" aria-label="采集历史" value={roundId ?? ""} disabled={active || working} onChange={e=>{setRoundId(e.target.value || undefined);setPreviewK(0);}}><option value="">最近轮次</option>{history.map(r=><option key={r.roundId} value={r.roundId}>{new Date(r.createdAt).toLocaleString("zh-CN")} · {stateLabels[r.state]} · {r.receivedCount}/{r.plannedCount}</option>)}</select></Panel>{round && <Panel title="采集结果" actions={<Badge tone={round.state==="complete" ? "ok" : round.state==="failed" ? "warn" : "info"}>{stateLabels[round.state]}</Badge>}>
-    <KV label="轮次">{round.roundId}</KV><KV label="数量核对">实收 {round.receivedCount} / 配置计划 {round.plannedCount}</KV><KV label="PLC 实际证据">计划 {round.plcPlannedCount ?? "待收到"} · 完成 {round.plcActualCount ?? "待收到"}</KV><KV label="数据来源">{round.simulated ? "模拟 / 回放（不代表现场硬件验收）" : "设备实拍"}</KV>
+  </Panel><Panel title="采集历史" detail="保留异常轮次供追溯，重新采集不会混用旧图"><select className="input" aria-label="采集历史" value={roundId ?? ""} disabled={active || working} onChange={e=>{setRoundId(e.target.value || undefined);setPreviewK(0);}}><option value="">最近轮次</option>{history.map(r=><option key={r.roundId} value={r.roundId}>{new Date(r.createdAt).toLocaleString("zh-CN")} · {stateLabels[r.state]} · {captureCountText(r)}</option>)}</select></Panel>{round && <Panel title="采集结果" actions={<Badge tone={round.state==="complete" ? "ok" : round.state==="failed" ? "warn" : "info"}>{stateLabels[round.state]}</Badge>}>
+    <KV label="轮次">{round.roundId}</KV><KV label="数量核对">{captureCountText(round)}</KV>{round.plcActualCount != null && <KV label="PLC 实际触发">{round.plcActualCount} 次</KV>}<KV label="数据来源">{round.simulated ? "模拟 / 回放（不代表现场硬件验收）" : "设备实拍"}</KV>
     {round.error && <Notice title="本轮异常，整圈重采" tone="warn">{round.error}</Notice>}
     <div className="table-wrap"><table className="table"><thead><tr><th>拍照点</th><th>帧号</th><th>触发计数</th><th>图像</th></tr></thead><tbody>{round.frames.map((f,i)=><tr key={f.shotId}><td><button className="btn small" onClick={()=>setPreviewK(i)}>{String(i+1).padStart(2,"0")}</button></td><td>{f.frameCounter}</td><td>{f.triggerCounter ?? "未提供"}</td><td>{f.views.map(v=>`图 ${v.view} · ${v.width}×${v.height}`).join(" / ")}</td></tr>)}</tbody></table></div>
     <GrayViewer image={preview} loading={!!round.frames[previewK] && !preview && !previewError} error={previewError} label={"拍照点 " + (previewK+1) + " · 完整拼接原图"}/>
