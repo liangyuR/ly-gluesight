@@ -10,7 +10,7 @@
 | Rust 默认 | 配方版本、采集与示教流程、相机/帧关联、生产周期、PLC、调度、SQLite、原图录制、审计恢复及历史，192 项 |
 | S7 专项 | 35 项真实生产驱动与本机 Python peer 的线协议测试 |
 | 桌面主流程 | 隔离 flow 实例内启动一件到 SQLite、原图和历史读回 |
-| 保留工具 | 打包契约、Windows 发布门禁、安装包自检、S7 Python 服务、Robot/Modbus 隔离协议及桌面进程恢复 |
+| 保留工具 | 打包契约、Windows 发布门禁、安装包自检、S7 Python 服务与 Robot/Modbus 隔离协议 |
 
 本轮默认回归已验证前端 40 项与 Rust 192 项，S7 专项 35 项通过。另有 1 个由父测试调用的耐久性子进程夹具，默认忽略，不单独执行。
 
@@ -67,7 +67,7 @@ S7 专项需要 Python 3 和本机 TCP 权限，可用 `S7_TEST_PYTHON` 指定 P
 | `p0-restart-connect-ui.js`、`p0-startup-ui.js` | 改写为 `offline-restart.mjs` | 重启后已发布配方按原发布包预热、可再次投产且结论不变，现从离线端到端终态重启同一隔离实例验证 |
 | `p0-plc-bootstrap-ui.js` | 保留 | 独立于链路：界面进入离线·合成图，核对 S7 回环地址与 28 个 DB100 点；2026-10-12 在 p0 实例上实跑通过 |
 | `p0-single-instance-acceptance.mjs` | 保留 | 前置为 p0 实例已有原图且节拍空闲（先跑 `p0-plc-bootstrap-ui.js` 再离线运行一件 MTR-HSG-A）；2026-10-12 实跑通过，重复启动以独占锁拒绝（退出码 101），数据库与原图不变 |
-| `p0-ack-process-recovery.mjs`、`p0-audit-process-recovery.mjs` | 保留，当前不可运行 | 需要外部 S7 Python 夹具（真机模式）配合模拟相机；真机模式加载时会把非海康相机改回海康，模拟相机只在离线时由站点模式生成并强制使用进程内 S7。另需已删除链路建立的 `P0-TRICAM-UI` / 701 配方，审计脚本还断言已删除的“模拟 / 回放相机”拒绝原因。ACK 日志与审计 spool 的重启恢复由 `plc_session`、`store`、`audit` 的 Rust 测试覆盖；是否改写或删除待定 |
+| `p0-ack-process-recovery.mjs`、`p0-audit-process-recovery.mjs`（及审计专用配置 `tauri-audit-test.json`） | 删除 | 需要外部 S7 Python 夹具（真机模式）配合模拟相机；真机模式加载时会把非海康相机改回海康，模拟相机只在离线时由站点模式生成并强制使用进程内 S7，站点模式下无法运行。另依赖已删除链路建立的 `P0-TRICAM-UI` / 701 配方，审计脚本还断言已不存在的“模拟 / 回放相机”拒绝原因。ACK 日志落盘后进程终止的重启恢复、审计 spool 在进程终止后的回放由 `plc_session`（`s7_wire_restart_after_persisted_ack_recovers_exact_cycle_before_and_after_reset` 等）、`store`（`durable_ack_recovery_matches_cycle_after_reopen_and_preserves_original_evidence`）、`audit`（`durable_spool_recovers_after_real_process_termination_before_any_sqlite_insert` 等）的 Rust 测试覆盖 |
 
 jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明真实布局、像素解码或硬件通信。桌面模拟流程证明业务接线与落盘，不证明真实 PLC、SDK、引擎测量准确率、现场节拍或持续运行。当前 UI 范围见 [UI 覆盖边界](UI_OPERATIONS.md)。
 
@@ -80,11 +80,11 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 | 样本集目录 | `GLUESIGHT_SAMPLE_SET` | `C:\Users\11601\gluesight-samples\mx11-demo` |
 | lyFlow 核心库 | `LYFLOW_CORE_DLL` | `C:\Users\11601\project\ly-gluesight\src-tauri\target\dependency-runtime\runtime\lyflow\lyflow_core.dll` |
 
-任一输入缺失时不启动实例，打印缺失项并以退出码 3 结束，不算通过。每次运行前只删除 `%APPDATA%` 与 `%LOCALAPPDATA%` 下该隔离标识的目录（名称、父目录和非链接逐项校验），保证从全新站点开始，覆盖首次建站无已发布配方的场景。
+任一输入缺失时不启动实例，打印缺失项并以退出码 3 结束，不算通过。样本集原件只读：每次运行把它复制到输出目录的 `sample-set/`，在副本 `sample-set.json` 的 `shots[].mmPerPx` 写入演示当量（S001 0.0853、S002 0.0916、S004 0.1232、S005 0.1284、S008 0.156，不检点不写），离线与重启续测都用这份副本。每次运行前只删除 `%APPDATA%` 与 `%LOCALAPPDATA%` 下该隔离标识的目录（名称、父目录和非链接逐项校验），保证从全新站点开始，覆盖首次建站无已发布配方的场景。
 
-**覆盖范围**：真机模式启动 → 系统设置指定 lyFlow → 进入离线·样本集（顶栏模式标识）→ 新建候选、离线产线送一圈 p01 并采用 → 逐点选视角、按 ROI 提取中线（沿主方向 PCA 投影分 12 段取均值成单向折线）、保存像素当量与检测参数、试测、保存示教 → 标定验证 → 独立采集 p01（合格）与 p02（NG_GAP）作验证样本 → 验证通过并发布生效 → 离线产线投产 p01、p02 → p01 为 OK 或 OK_WITH_EXCURSION，p02 为 NG_GAP 且原因含 S004 → 历史记录带样本件引用 → 离线控制台“最近样本件”期望/实际与历史列表样本徽标、结论的界面核对 → 历史页导出 CSV（行数与记录数一致）→ 在 p02 的历史详情界面依次按原发布包重现（发布包与配方修订为本件冻结值）、按候选规则重判、从原图复测整件，三者结论均为 NG_GAP，已保存对照可切换查看，原始记录与候选不变 → 界面退出离线，PLC 配置与相机组恢复 → 重启同一实例：仍为真机模式，历史与生产配方修订、示教身份不变，进入离线后原发布包预热就绪，再投产 p02 仍按原发布包得到 NG_GAP。业务步骤主要经 IPC 驱动；PLC 事务占用、发布资源预热等暂时拒绝按界面重试的方式最多重试 60 s，次数记在 `result.json` 的 `gateRetries`。
+**覆盖范围**：真机模式启动 → 系统设置指定 lyFlow → 进入离线·样本集（顶栏模式标识；离线控制台在未发布前提示尚无可运行的生产配方）→ 新建候选、离线产线送一圈 p01 并采用 → 逐点核对候选采用了样本集声明当量，选视角、按 ROI 提取中线（沿主方向 PCA 投影分 12 段取均值成单向折线）、保存参数（当量按候选当前值原样提交，接口仍要求该字段）、试测、保存示教 → 进度模型的标定步骤完成，所有示教视角的标定依据为样本集声明当量，全程不调用人工标定验证 → 独立采集 p01（期望合格）与 p02（期望 NG_GAP）作验证样本 → 验证通过，p01 实际 OK_WITH_EXCURSION 按合格类判为符合 → 发布生效（发布状态 active），离线控制台默认选中新配方 → 离线产线投产 p01、p02 → p01 为 OK 或 OK_WITH_EXCURSION，p02 为 NG_GAP 且原因含 S004 → 历史记录带样本件引用 → 离线控制台“最近样本件”期望/实际与历史列表样本徽标、结论的界面核对 → 历史页导出 CSV（行数与记录数一致）→ 在 p02 的历史详情界面依次按原发布包重现（发布包与配方修订为本件冻结值）、按候选规则重判、从原图复测整件，三者结论均为 NG_GAP，已保存对照可切换查看，原始记录与候选不变 → 界面退出离线，PLC 配置与相机组恢复 → 重启同一实例：仍为真机模式，历史与生产配方修订、示教身份不变，进入离线后原发布包预热就绪，再投产 p02 仍按原发布包得到 NG_GAP。业务步骤主要经 IPC 驱动；PLC 事务占用、发布资源预热等暂时拒绝按界面重试的方式最多重试 60 s，次数记在 `result.json` 的 `gateRetries`。
 
-**分支适配**：`result.json` 的 `branches` 记录标定验证与合格样本期望走了哪条路。`calibration: manualCheck` 表示当前版本仍需逐点人工标定验证（脚本录入占位的 10 mm/10 mm）；`normalExpectation: exactActual` 表示合格样本期望需写成实际结论。样本集声明当量满足标定、合格类匹配 OK/OK_WITH_EXCURSION 的规则合入后，两项应分别变为 `sampleSetDeclared`、`okClass`，届时删除脚本 `validateCandidate` 中对应的退回分支。另有一处已知界面问题：候选含“不检”拍照点时，历史详情的“从原图复测整件”按钮恒为禁用（前端要求所有帧都已保存示教，后端无此限制），脚本此时改经接口复测并在 `replay.raw.via` 记为 `ipc`；修复后应为 `ui`，届时删除 `replayInHistory` 中的退回分支。
+**结果字段**：`branches` 固定为 `calibration: sampleSetDeclared`、`normalExpectation: okClass`，由上述断言保证；`replay.*.via` 均为 `ui`，三种复测都经历史详情界面触发（“使用该配方候选”需在确认框中切换）。合并前用于兼容人工标定、精确期望和界面禁用复测的退回分支已删除。
 
 **边界**：每点 ROI、像素当量与 S004 窄搜索参数是让 mx11-demo 跑通流程的演示夹具，集中定义在脚本顶部；通过只说明建站到投产的业务接线、样本件追溯与原图复测一致，不代表中线提取或检测算法质量、现场标定精度、现场 PLC/SDK 或节拍。
 
@@ -119,18 +119,18 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 
 | 检查 | 结果 |
 | --- | --- |
-| Rust 默认 | 195 passed、0 failed、36 ignored（含进程内 S7 服务、虚拟产线 + 生产 S7 会话集成测试） |
+| Rust 默认 | 集成分支 201 passed、0 failed、36 ignored（含进程内 S7 服务、虚拟产线 + 生产 S7 会话集成测试） |
 | S7 本机线协议 | `cargo test -- --ignored` 36 passed、0 failed |
-| 前端 | 14 文件、41 passed |
+| 前端 | 集成分支 17 文件、54 passed |
 | 类型 | `pnpm typecheck` 通过 |
-| 离线端到端 | mx11-demo + lyFlow 1.1.0 全新站点通过，含重启续测约 47 s（不含构建）；p01 OK_WITH_EXCURSION（码 2），p02 NG_GAP（码 13，S004）；原包重现、规则重判、原图复测均为 NG_GAP；重启后原发布包预热并再投产 p02 结论不变 |
-| P0 保留脚本 | `p0-plc-bootstrap-ui.js` 与 `p0-single-instance-acceptance.mjs` 在 p0 实例实跑通过；两份进程恢复专项在站点模式下不可运行（见上表） |
+| 离线端到端 | 集成分支 mx11-demo 副本（声明逐点当量）+ lyFlow 1.1.0 全新站点通过：首段 29.7 s、重启续测 5.7 s，含增量构建总计 122 s；标定依据样本集声明当量、合格样本按合格类符合；p01 OK_WITH_EXCURSION（码 2），p02 NG_GAP（码 13，S004）；原包重现、规则重判、原图复测均经界面得到 NG_GAP；重启后原发布包预热并再投产 p02 结论不变 |
+| P0 保留脚本 | `p0-plc-bootstrap-ui.js` 与 `p0-single-instance-acceptance.mjs` 在 p0 实例实跑通过；两份进程恢复专项已删除（见上表） |
 | 生产桌面落盘 | 界面启用离线产线，正常件 OK，6 帧、460 测量点、6 张 PGM 和元数据落盘，SQLite 与历史原图读回通过；测试进程已关闭 |
-| 原生脚本抽查 | `guard.js` + `plc-ui.js`（ui 实例）、`p0-plc-bootstrap-ui.js`（p0 实例）在离线 S7 下通过；其余 P0 链路脚本只做语法检查 |
+| 原生脚本抽查 | `guard.js` + `plc-ui.js`（ui 实例）、`p0-plc-bootstrap-ui.js`（p0 实例）在离线 S7 下通过；旧 P0 界面链路脚本已按上表删除或改写 |
 | S7 Python | 23 项通过 |
 | 打包工具、文档产物 | 本轮未重跑 |
 
-本机日志与桌面报告 `output/playwright/flow-regression/result.json` 不提交。保留现有编译警告，未修改业务代码来消除警告。两份进程恢复专项只做脚本语法及依赖检查，本轮未重新执行完整场景。
+本机日志与桌面报告 `output/playwright/flow-regression/result.json` 不提交。保留现有编译警告，未修改业务代码来消除警告。
 
 ## 历史验证记录
 

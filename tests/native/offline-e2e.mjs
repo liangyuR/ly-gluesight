@@ -1,7 +1,7 @@
 import { chromium } from "playwright-core";
 import assert from "node:assert/strict";
 import { existsSync, statSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -13,6 +13,7 @@ export const defaultInputs = {
 };
 
 // 演示夹具：只为让 mx11-demo 跑通离线全流程而手工选定的 ROI、像素当量与检测参数，不代表算法调优结果或现场标定。
+// 像素当量写进本次输出目录里样本集副本的 shots[].mmPerPx，按样本集声明当量走标定验证。
 const TEACH = {
   S001: { roi: [0, 450, 560, 110], mmPerPx: 0.0853 },
   S002: { roi: [0, 470, 400, 100], mmPerPx: 0.0916 },
@@ -59,6 +60,19 @@ export function monotoneCenterline(points, segments = CENTERLINE_SEGMENTS) {
   const path = bins.filter(b => b.n).map(b => [b.x / b.n, b.y / b.n]);
   assert(path.length >= 3, "中线沿主方向分段后少于 3 个点");
   return path;
+}
+
+export async function prepareSampleSet(source, outputDir) {
+  const root = path.resolve(outputDir);
+  const target = path.join(root, "sample-set");
+  assert.equal(path.dirname(target), root);
+  await rm(target, { recursive: true, force: true });
+  await cp(source, target, { recursive: true });
+  const file = path.join(target, "sample-set.json");
+  const manifest = JSON.parse((await readFile(file, "utf8")).trim());
+  for (const shot of manifest.shots) if (TEACH[shot.shotId]) shot.mmPerPx = TEACH[shot.shotId].mmPerPx;
+  await writeFile(file, JSON.stringify(manifest, null, 2) + "\n");
+  return target;
 }
 
 export async function until(read, accepts, message, timeout = 30000, interval = 150) {
@@ -124,9 +138,11 @@ async function teach(ws, view) {
     const fixture = TEACH[shot.id];
     if (!fixture) continue;
     const imageId = (await ws.get()).workspace.frames[k].image.id;
+    const declared = (await ws.get()).workspace.doc.shots[k].mmPerPx;
+    assert(Math.abs(declared - fixture.mmPerPx) < 1e-6, `${shot.id} 未采用样本集声明当量：${declared}`);
     const extracted = await ws.edit("workspace_extract_centerline", { k, imageId, roi: fixture.roi });
     const centerline = monotoneCenterline(extracted.path);
-    await ws.edit("workspace_save_params", { k, params: { path: centerline, mmPerPx: fixture.mmPerPx, ...(fixture.detect ? { detect: fixture.detect } : {}) } });
+    await ws.edit("workspace_save_params", { k, params: { path: centerline, mmPerPx: declared, ...(fixture.detect ? { detect: fixture.detect } : {}) } });
     const tried = await ws.edit("workspace_trial", { k, imageId });
     const trial = tried.workspace.frames[k].trial;
     assert(trial?.passed, `${shot.id} 试测未通过：${trial?.reason}`);
@@ -136,26 +152,15 @@ async function teach(ws, view) {
   return taught;
 }
 
-// P4 合并适配点：标定验证与合格类匹配。先按合并后的规则验证，失败时退回当前分支的做法，并记录走了哪条分支。
-// 合并后：若 result.calibration 恒为 "sampleSetDeclared"、result.normalExpectation 恒为 "okClass"，删除对应的退回分支。
-async function validateCandidate(ws, taught, samples) {
-  const branches = { calibration: "sampleSetDeclared", normalExpectation: "okClass" };
-  const run = async list => (await ws.edit("workspace_validate", { samples: list, sourceConfirmed: true })).workspace.validation;
-  let list = samples.map(s => ({ historyId: null, sampleId: s.roundId, expected: s.expected }));
-  let validation = await run(list);
-  const calibrationFailed = validation.checks.some(c => !c.passed && c.name.includes("标定"));
-  if (calibrationFailed) {
-    branches.calibration = "manualCheck";
-    for (const { k } of taught) await ws.edit("workspace_check_calibration", { k, referenceMm: 10, measuredMm: 10, reuseMatching: false });
-    validation = await run(list);
+function assertSampleSetCalibration(view, taught, setId) {
+  const step = view.progress.steps.find(item => item.id === "calibration");
+  assert.equal(step.status, "done", `标定步骤未完成：${JSON.stringify(step)}`);
+  for (const { k, shotId } of taught) {
+    const views = view.progress.shots[k].views.filter(v => v.enabled);
+    assert(views.length && views.every(v => v.calibration.state === "sampleSet" && v.calibration.setId === setId
+      && Math.abs(v.calibration.mmPerPx - TEACH[shotId].mmPerPx) < 1e-6), `${shotId} 标定依据不是样本集声明当量：${JSON.stringify(views)}`);
   }
-  const normal = validation.samples.find(s => s.sampleId === samples[0].roundId);
-  if (!normal.passed && OK_CLASS.includes(normal.actual) && normal.actual !== normal.expected) {
-    branches.normalExpectation = "exactActual";
-    list = list.map(s => s.sampleId === normal.sampleId ? { ...s, expected: normal.actual } : s);
-    validation = await run(list);
-  }
-  return { validation, branches };
+  return { status: step.status, detail: step.detail };
 }
 
 export async function produce(call, recipeId, partId) {
@@ -185,25 +190,22 @@ async function replayInHistory(page, call, recipeId, summary) {
   const before = { detail: await call("history_detail", { id: summary.id }), workspace: (await call("workspace_get", { id: recipeId })).workspace };
   await page.getByRole("row", { name: `查看 SN ${summary.sn} 的记录`, exact: true }).click();
   await page.getByRole("button", { name: "使用该配方候选", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "切换配方工作台的当前配方", exact: true });
+  await dialog.waitFor();
+  const confirm = dialog.getByRole("button", { name: `切换到 ${recipeId}`, exact: true });
+  if (await confirm.isEnabled()) await confirm.click();
+  else await dialog.getByRole("button", { name: "取消", exact: true }).click();
+  await dialog.waitFor({ state: "hidden" });
   const titles = { original: "原发布包重现结果", rules: "规则重判结果", raw: "候选原图复测结果" };
   const results = {};
-  const viaIpc = [];
   for (const [button, source] of [["按原发布包重现", "original"], ["按候选规则重判", "rules"], ["从原图复测整件", "raw"]]) {
     const prior = await call("workspace_comparisons", { id: recipeId, historyId: summary.id });
     const control = page.getByRole("button", { name: button, exact: true });
-    const enabled = await until(() => control.isEnabled(), Boolean, "", source === "raw" ? 5000 : 15000).catch(error => {
-      if (source !== "raw") throw new Error(`历史详情“${button}”不可用`, { cause: error });
-      return false;
-    });
-    if (enabled) await control.click();
-    else {
-      // 已知界面问题：候选含“不检”拍照点时整件原图复测按钮恒为禁用；后端接口照常可用。修复后删除此分支。
-      viaIpc.push(source);
-      await call("workspace_compare", { id: recipeId, revision: before.workspace.revision, historyId: summary.id, raw: true });
-    }
+    await until(() => control.isEnabled(), Boolean, `历史详情“${button}”不可用`, 15000);
+    await control.click();
     const result = await until(async () => (await call("workspace_comparisons", { id: recipeId, historyId: summary.id })).find(c => c.source === source && !prior.some(p => p.id === c.id)),
       Boolean, `“${button}”未生成对照结果`, 60000);
-    if (enabled) await page.getByRole("heading", { name: titles[source], exact: true }).waitFor();
+    await page.getByRole("heading", { name: titles[source], exact: true }).waitFor();
     assert.equal(result.cycleId, summary.cycleId);
     assert.equal(result.originalVerdict, summary.verdict);
     assert.equal(result.judgement.verdict, summary.verdict, `${titles[source]}与原结论不一致：${result.judgement.reason}`);
@@ -211,12 +213,7 @@ async function replayInHistory(page, call, recipeId, summary) {
       assert.equal(result.bundleId, summary.bundleId, "原发布包重现未使用本件冻结的发布包");
       assert.equal(result.candidateRecipe.revisionId, summary.recipeRevision);
     }
-    results[source] = { id: result.id, verdict: result.judgement.verdict, reason: result.judgement.reason, via: enabled ? "ui" : "ipc" };
-  }
-  if (viaIpc.length) {
-    await page.getByRole("button", { name: "返回历史列表", exact: true }).click();
-    await page.getByRole("combobox", { name: "历史配方", exact: true }).selectOption(recipeId);
-    await page.getByRole("row", { name: `查看 SN ${summary.sn} 的记录`, exact: true }).click();
+    results[source] = { id: result.id, verdict: result.judgement.verdict, reason: result.judgement.reason, via: "ui" };
   }
   for (const [source, { id }] of Object.entries(results)) {
     await page.getByRole("combobox", { name: "已保存对照结果", exact: true }).selectOption(id);
@@ -248,9 +245,10 @@ export async function runOfflineE2E(page, options) {
   const engine = await until(() => call("engine_status"), e => e.ready, "lyFlow 引擎未就绪", 30000);
   step("lyFlow 就绪", { version: engine.version ?? null });
 
-  const preview = await call("site_preview_sample_set", { dir: options.sampleSet });
+  const offlineSampleSet = await prepareSampleSet(options.sampleSet, options.workDir);
+  const preview = await call("site_preview_sample_set", { dir: offlineSampleSet });
   for (const partId of [TEACH_PART, NORMAL_PART, DEFECT_PART]) assert(preview.parts.some(p => p.partId === partId), `样本集缺少 ${partId}`);
-  const entered = await call("site_enter_offline", { source: { kind: "sampleSet", dir: options.sampleSet } });
+  const entered = await call("site_enter_offline", { source: { kind: "sampleSet", dir: offlineSampleSet } });
   assert.equal(entered.mode, "offline");
   assert.equal(entered.source, "sampleSet");
   assert.equal(entered.measurement, "lyFlow");
@@ -260,7 +258,11 @@ export async function runOfflineE2E(page, options) {
   assert.equal(cameras.length, 1);
   assert.equal(cameras[0].source, "sampleSet");
   const cameraId = cameras[0].id;
-  step("进入离线·样本集", { port: entered.port, cameraId });
+  await navigation.getByRole("link", { name: "离线控制台", exact: true }).click();
+  const noRecipe = page.getByRole("note").filter({ hasText: /尚无可(开工|在当前样本集 \/ 相机组运行)的生产配方/ });
+  await noRecipe.waitFor();
+  const noRecipeText = (await noRecipe.innerText()).trim();
+  step("进入离线·样本集", { port: entered.port, cameraId, noRecipeText });
 
   const template = await call("recipe_template");
   const created = await call("workspace_create", { doc: template });
@@ -272,7 +274,8 @@ export async function runOfflineE2E(page, options) {
   step("首次建站采集并采用", { recipeId: id, roundId: teachRound.roundId, shots: preview.shotCount });
 
   const taught = await teach(ws, adopted);
-  step("示教完成", { taught: taught.map(t => t.shotId), skipped: [...SKIPPED] });
+  const calibration = assertSampleSetCalibration(await ws.get(), taught, preview.id);
+  step("示教完成", { taught: taught.map(t => t.shotId), skipped: [...SKIPPED], calibration });
 
   const samples = [];
   for (const [partId, expected] of [[NORMAL_PART, "OK"], [DEFECT_PART, "NG_GAP"]]) {
@@ -280,17 +283,25 @@ export async function runOfflineE2E(page, options) {
     await ws.edit("workspace_capture_sample", { roundId: round.roundId, expected, correspondenceConfirmed: true });
     samples.push({ partId, roundId: round.roundId, expected });
   }
-  const { validation, branches } = await validateCandidate(ws, taught, samples);
+  const validation = (await ws.edit("workspace_validate", { samples: samples.map(s => ({ historyId: null, sampleId: s.roundId, expected: s.expected })), sourceConfirmed: true })).workspace.validation;
   assert(validation.passed, `验证未通过：${JSON.stringify(validation.checks.filter(c => !c.passed))}`);
+  const normalSample = validation.samples.find(s => s.sampleId === samples[0].roundId);
+  assert.equal(normalSample.expected, "OK");
+  assert.equal(normalSample.actual, "OK_WITH_EXCURSION", `合格样本的实际结论变了：${normalSample.reason}`);
+  assert(normalSample.passed, "期望合格时 OK_WITH_EXCURSION 应判为符合");
   const defectSample = validation.samples.find(s => s.sampleId === samples[1].roundId);
   assert.equal(defectSample.actual, "NG_GAP", `缺陷样本验证结论不符：${defectSample.reason}`);
+  const branches = { calibration: "sampleSetDeclared", normalExpectation: "okClass" };
   step("验证通过", { branches, samples: validation.samples.map(s => ({ name: s.name, expected: s.expected, actual: s.actual, passed: s.passed })) });
 
   await ws.edit("workspace_publish", {});
   await until(async () => (await call("cycle_recipes")).find(r => r.id === id), Boolean, "发布后生产配方未生效", 30000);
-  await until(() => ws.get(), v => !v.workspace.pending, "待生效版本未提交", 30000);
+  const active = await until(() => ws.get(), v => !v.workspace.pending && v.workspace.publish.state === "active", "待生效版本未提交", 30000);
   const recipe = await call("cycle_layout", { recipeId: id });
-  step("发布生效", { recipeId: id });
+  await navigation.getByRole("link", { name: "离线控制台", exact: true }).click();
+  const runSelect = page.getByRole("combobox", { name: "离线配方", exact: true });
+  await until(() => runSelect.inputValue(), value => value === id, "发布后离线配方未默认选中新配方", 15000);
+  step("发布生效", { recipeId: id, publish: active.workspace.publish });
 
   const produced = {};
   for (const partId of [NORMAL_PART, DEFECT_PART]) produced[partId] = await produce(call, id, partId);
@@ -343,10 +354,11 @@ export async function runOfflineE2E(page, options) {
   const result = {
     passed: true,
     identifier,
-    inputs: { sampleSet: options.sampleSet, sampleSetId: preview.id, lyflow: options.lyflow, lyflowVersion: engine.version ?? null },
+    inputs: { sampleSet: options.sampleSet, offlineSampleSet, sampleSetId: preview.id, lyflow: options.lyflow, lyflowVersion: engine.version ?? null },
     elapsedMs: Date.now() - startedAt,
     recipe: { id, revisionId: recipe.revisionId, teachingId: recipe.teachingId ?? null },
     taught,
+    calibration,
     branches,
     gateRetries: Object.entries(gateRetries.reduce((counts, r) => ({ ...counts, [`${r.command}：${r.error}`]: (counts[`${r.command}：${r.error}`] ?? 0) + 1 }), {})).map(([what, count]) => ({ what, count })),
     validation: { checks: validation.checks.map(c => ({ name: c.name, passed: c.passed })), samples: validation.samples.map(s => ({ name: s.name, expected: s.expected, actual: s.actual, passed: s.passed })) },
@@ -389,9 +401,10 @@ async function main() {
     assert(page, "未找到 Tauri UI 页面");
     page.setDefaultTimeout(30000);
     await page.waitForFunction(() => !!window.__TAURI_INTERNALS__);
-    const result = await runOfflineE2E(page, { ...inputs, output: args.output ?? "output/playwright/e2e-regression/result.json" });
+    const output = args.output ?? "output/playwright/e2e-regression/result.json";
+    const result = await runOfflineE2E(page, { ...inputs, output, workDir: path.dirname(output) });
     process.stdout.write(JSON.stringify({ passed: result.passed, elapsedMs: result.elapsedMs, branches: result.branches,
-      production: Object.fromEntries(Object.entries(result.production).map(([k, v]) => [k, v.verdict])), replay: Object.fromEntries(["original", "rules", "raw"].map(k => [k, result.replay[k].verdict])) }) + "\n");
+      production: Object.fromEntries(Object.entries(result.production).map(([k, v]) => [k, v.verdict])), replay: Object.fromEntries(["original", "rules", "raw"].map(k => [k, `${result.replay[k].verdict} via ${result.replay[k].via}`])) }) + "\n");
   } finally { await browser.close(); }
 }
 

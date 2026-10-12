@@ -20,7 +20,7 @@ export async function runOfflineRestart(page, options) {
   assert.equal(layout.revisionId, previous.recipe.revisionId, "重启后生产配方修订改变");
   assert.equal(layout.teachingId, previous.recipe.teachingId, "重启后生产配方的示教身份改变");
 
-  const entered = await call("site_enter_offline", { source: { kind: "sampleSet", dir: options.sampleSet } });
+  const entered = await call("site_enter_offline", { source: { kind: "sampleSet", dir: previous.inputs.offlineSampleSet } });
   assert.equal(entered.source, "sampleSet");
   await until(() => call("plc_get_status"), s => s.state === "connected", "离线 S7 服务未连接");
   const prewarm = await until(async () => (await call("cycle_logs")).find(l => l.ev === "生产预热" && l.msg.includes(`发布包 ${before.bundleId} 已就绪`)),
@@ -50,7 +50,7 @@ async function main() {
     assert(process.argv[i].startsWith("--") && process.argv[i + 1], "参数必须为 --name value");
     args[process.argv[i].slice(2)] = process.argv[i + 1];
   }
-  for (const key of ["cdp", "instance", "previous", "sample-set", "output"]) assert(args[key], `缺少 --${key}`);
+  for (const key of ["cdp", "instance", "previous", "output"]) assert(args[key], `缺少 --${key}`);
   const url = new URL(args.cdp);
   assert(["127.0.0.1", "localhost", "[::1]"].includes(url.hostname), "仅允许本机 CDP");
   const manifest = JSON.parse(await readFile(args.instance, "utf8"));
@@ -62,7 +62,7 @@ async function main() {
     assert(page, "未找到 Tauri UI 页面");
     page.setDefaultTimeout(30000);
     await page.waitForFunction(() => !!window.__TAURI_INTERNALS__);
-    const result = await runOfflineRestart(page, { previous: args.previous, sampleSet: args["sample-set"], output: args.output });
+    const result = await runOfflineRestart(page, { previous: args.previous, output: args.output });
     process.stdout.write(JSON.stringify({ passed: result.passed, elapsedMs: result.elapsedMs, verdict: result.after.verdict, bundleId: result.after.bundleId }) + "\n");
   } finally { await browser.close(); }
 }

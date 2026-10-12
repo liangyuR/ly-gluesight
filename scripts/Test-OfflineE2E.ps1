@@ -61,7 +61,7 @@ try {
         Start-Sleep -Seconds 2
         Start-E2EInstance -Prebuilt
         & node (Join-Path $e2eProjectRoot 'tests\native\offline-restart.mjs') `
-            --cdp $e2eCdp --instance $e2eManifestPath --previous $e2eResult --sample-set $e2eSampleSet --output (Join-Path $e2eOutput 'restart.json')
+            --cdp $e2eCdp --instance $e2eManifestPath --previous $e2eResult --output (Join-Path $e2eOutput 'restart.json')
         $e2eExit = $LASTEXITCODE
     }
     if ($e2eExit -ne 0 -and $e2eExit -ne $e2eMissingInputExit) { Write-Error "离线端到端测试失败（退出码 $e2eExit）。日志见 $e2eOutput。" -ErrorAction Continue }
