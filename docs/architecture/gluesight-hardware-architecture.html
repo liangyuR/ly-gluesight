@@ -78,7 +78,7 @@ h2{margin:0;font-weight:600}
   <div class="mobile" aria-label="硬件连接图，窄屏排列">
     <div class="mobile-route" data-layer="trigger"><strong>PLC 硬件触发输出</strong><span class="mobile-arrow">↓ 触发线 → 相机触发输入</span><strong>相机 1　相机 2　相机 3</strong><span>曝光时刻由 PLC 硬件信号控制</span></div>
     <div class="mobile-route" data-layer="image"><strong>三台相机</strong><span class="mobile-arrow">↓ GigE 网线</span><strong>相机交换机</strong><span class="mobile-arrow">↓ 图像上传 ／ 参数下发</span><strong>视觉工控机 · GlueSight</strong><span>采集图像、胶路检测、显示与记录</span></div>
-    <div class="mobile-route" data-layer="control"><strong>PLC ↔ GlueSight</strong><span class="mobile-arrow">以太网 · Modbus TCP／S7／MC 三选一</span><span>开始、型号、SN、结束 ↔ 就绪、已布防、检测结果</span><strong>PLC ↔ Robot 控制柜</strong><span class="mobile-arrow">I/O 或现场总线，接口待确认</span><span>启动、允许、完成、故障</span></div>
+    <div class="mobile-route" data-layer="control"><strong>PLC ↔ GlueSight</strong><span class="mobile-arrow">以太网 · S7 ISO-on-TCP</span><span>开始、型号、SN、结束 ↔ 就绪、已布防、检测结果</span><strong>PLC ↔ Robot 控制柜</strong><span class="mobile-arrow">I/O 或现场总线，接口待确认</span><span>启动、允许、完成、故障</span></div>
     <div class="mobile-route" data-layer="physical"><strong>Robot 控制柜 → Robot 本体＋胶枪</strong><span>机器人专用动力／编码器电缆</span><span class="mobile-arrow">↓ 机械运动、涂胶</span><strong>工件／夹具</strong><span>三台相机光学观察胶嘴附近的胶路</span></div>
   </div>
   <p class="detail" aria-live="polite">PLC 硬件输出控制拍照时刻；图像通过网线送入工控机，检测结果回传 PLC。</p>
@@ -92,7 +92,7 @@ h2{margin:0;font-weight:600}
       const descriptions = {
         trigger: 'PLC → 三台相机触发输入：通过硬件触发线控制拍照时刻；图中不限定单路分配或三路独立输出。',
         image: '三台相机 ↔ 交换机 ↔ 工控机：GigE 网线上传图像、下发参数；图像进入 GlueSight 检测。',
-        control: 'PLC ↔ 软件经以太网通信，Modbus TCP／S7／MC 按配置选用；PLC ↔ Robot 交换运行握手，接口按现场确认。',
+        control: 'PLC ↔ 软件经以太网 S7 ISO-on-TCP 通信（一期只支持 S7）；PLC ↔ Robot 交换运行握手，接口按现场确认。',
         physical: 'Robot 控制柜通过专用电缆驱动本体与胶枪；胶枪对工件涂胶，三台相机光学观察胶路。'
       };
       let selected = null;
