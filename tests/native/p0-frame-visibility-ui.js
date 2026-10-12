@@ -2,12 +2,18 @@ async (page) => {
   const id = "P0-TRICAM-UI", recipeRevision = `${id}-v1`;
   const evidence = "output/playwright/p0-frame-visibility";
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
-  const before = { records: await read("records_list"), plc: await read("plc_get_config"), cameras: await read("camera_rig_config"), settings: await read("cycle_get_settings"), workspace: await read("workspace_get", { id }) };
-  if (!before.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || before.plc.connection.protocol !== "simulator" || before.cameras.some(c => c.source !== "sim") || before.settings.timeouts.armMs !== 200 || !before.settings.vision || before.settings.record !== "all") throw new Error("Isolated P0 preview guard rejected the app");
+  const before = { records: await read("records_list"), plc: await read("plc_get_status"), offline: await read("offline_status"), cameras: await read("camera_rig_config"), settings: await read("cycle_get_settings"), workspace: await read("workspace_get", { id }) };
+  if (!before.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || (before.plc.state === "connected" && !before.offline.enabled) || before.cameras.some(c => c.source !== "sim") || before.settings.timeouts.armMs !== 200 || !before.settings.vision || before.settings.record !== "all") throw new Error("Isolated P0 preview guard rejected the app");
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "PLC 通讯", exact: true }).click();
-  if ((await read("plc_get_status")).state !== "connected") await page.getByRole("button", { name: "连接", exact: true }).click();
-  await page.getByRole("button", { name: "断开", exact: true }).waitFor();
+  if (!(await read("offline_status")).enabled) {
+    await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "设备与采集", exact: true }).click();
+    await page.locator("details.panel > summary").filter({ hasText: "离线产线调试" }).click();
+    await page.getByRole("button", { name: "启用离线模式", exact: true }).click();
+  }
+  for (let attempt = 0; attempt < 100 && (await read("plc_get_status")).state !== "connected"; attempt++) await page.waitForTimeout(100);
+  if (!(await read("offline_status")).enabled || (await read("plc_get_status")).state !== "connected") throw new Error("Offline S7 line did not connect");
+  await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "在线检测", exact: true }).click();
+  if ((await read("cycle_snapshot")).phase === "FAULT") await page.getByRole("button", { name: "复位故障", exact: true }).click();
   let snapshot;
   for (let attempt = 0; attempt < 200; attempt++) {
     snapshot = await read("cycle_snapshot");
@@ -20,8 +26,8 @@ async (page) => {
   let addedPart = false, runStarted = 0, detail, recorded;
   if (!snapshot.part) {
     const previous = await read("history_query", { query: { recipeId: id, limit: 1 } });
-    await page.getByRole("combobox", { name: "模拟配方", exact: true }).selectOption(id);
-    await page.getByRole("combobox", { name: "模拟工况", exact: true }).selectOption("normal");
+    await page.getByRole("combobox", { name: "离线配方", exact: true }).selectOption(id);
+    await page.getByRole("combobox", { name: "离线工况", exact: true }).selectOption("normal");
     runStarted = Date.now();
     await page.getByRole("button", { name: "运行一件", exact: true }).click();
     addedPart = true;
@@ -30,7 +36,7 @@ async (page) => {
       if (recent.items[0]?.id > (previous.items[0]?.id ?? -1)) {
         detail = await read("history_detail", { id: recent.items[0].id });
         recorded = await read("workspace_record_images", { historyId: detail.summary.id });
-        if (recorded.complete && recorded.frames.length === 4 && recorded.frames.every(f => f.available) && !(await read("sim_status")).running) break;
+        if (recorded.complete && recorded.frames.length === 4 && recorded.frames.every(f => f.available) && !(await read("offline_status")).running) break;
       }
       await page.waitForTimeout(100);
     }

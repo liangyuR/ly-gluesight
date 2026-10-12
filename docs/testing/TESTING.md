@@ -55,20 +55,20 @@ S7 专项需要 Python 3 和本机 TCP 权限，可用 `S7_TEST_PYTHON` 指定 P
 
 jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明真实布局、像素解码或硬件通信。桌面模拟流程证明业务接线与落盘，不证明真实 PLC、SDK、引擎测量准确率、现场节拍或持续运行。当前 UI 范围见 [UI 覆盖边界](UI_OPERATIONS.md)。
 
-## 本轮验证（2026-10-12）
+## 本轮验证（2026-10-12，离线 S7 产线合并 P0 清理后）
 
 | 检查 | 结果 |
 | --- | --- |
-| Rust 默认 | 192 passed、0 failed、36 ignored |
-| S7 本机线协议 | 35 passed、0 failed |
-| 前端 | 14 文件、40 passed |
-| 类型与构建 | 应用/测试 TypeScript、生产前端与隔离 Tauri 构建通过 |
-| 生产桌面落盘 | 正常件 OK，6 帧、460 测量点、6 张 PGM 和元数据落盘，SQLite 与历史原图读回通过；测试进程已关闭 |
-| 打包工具 | PowerShell 48 项、Windows workflow Node 5 项通过 |
-| 模拟与协议工具 | Robot Python 36 项、Node 18 项、启动守卫 3 项、S7 Python 23 项通过 |
-| 文档产物 | 协议 HTML 同步检查、教程 HTML/PDF 同步完成；PDF 22 页，修改页渲染检查通过 |
+| Rust 默认 | 195 passed、0 failed、36 ignored（含进程内 S7 服务、虚拟产线 + 生产 S7 会话集成测试） |
+| S7 本机线协议 | `cargo test -- --ignored` 36 passed、0 failed |
+| 前端 | 14 文件、41 passed |
+| 类型 | `pnpm typecheck` 通过 |
+| 生产桌面落盘 | 界面启用离线产线，正常件 OK，6 帧、460 测量点、6 张 PGM 和元数据落盘，SQLite 与历史原图读回通过；测试进程已关闭 |
+| 原生脚本抽查 | `guard.js` + `plc-ui.js`（ui 实例）、`p0-plc-bootstrap-ui.js`（p0 实例）在离线 S7 下通过；其余 P0 链路脚本只做语法检查 |
+| S7 Python | 23 项通过 |
+| 打包工具、文档产物 | 本轮未重跑 |
 
-本机日志为 `output/trim-{rust,s7,frontend,typecheck,build,packaging,workflow,production-ui}.log`，桌面报告为 `output/playwright/flow-regression/result.json`；日志与测试数据不提交。保留现有编译警告，未修改业务代码来消除警告。两份进程恢复专项只做脚本语法及依赖检查，本轮未重新执行完整场景。
+本机日志与桌面报告 `output/playwright/flow-regression/result.json` 不提交。保留现有编译警告，未修改业务代码来消除警告。两份进程恢复专项只做脚本语法及依赖检查，本轮未重新执行完整场景。
 
 ## 历史验证记录
 

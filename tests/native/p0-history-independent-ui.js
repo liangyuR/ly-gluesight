@@ -1,8 +1,8 @@
 async (page) => {
   const id = "P0-TRICAM-UI";
   const read = (command, args) => page.evaluate(async ({command,args}) => window.__TAURI_INTERNALS__.invoke(command,args), {command,args});
-  const records = await read("records_list"), plc = await read("plc_get_config"), cameras = await read("camera_rig_config");
-  if (!records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || plc.connection.protocol !== "simulator" || cameras.some(c => c.source !== "sim")) throw new Error("Isolated native test guard rejected");
+  const records = await read("records_list"), offline = await read("offline_status"), cameras = await read("camera_rig_config");
+  if (!records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || !offline.enabled || cameras.some(c => c.source !== "sim")) throw new Error("Isolated native test guard rejected");
   const saved = await read("workspace_get", {id}), production = await read("cycle_layout", {recipeId:id});
   const recent = await read("history_query", {query:{recipeId:id,limit:20}});
   const row = recent.items.find(r => r.cycleId && r.bundleId && r.verdict === "NG_GAP");

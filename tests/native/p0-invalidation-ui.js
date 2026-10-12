@@ -12,8 +12,8 @@ async (page) => {
     } while (Date.now() - started < timeout);
     throw new Error(message + ": " + await page.locator("main").innerText());
   };
-  const guard = await page.evaluate(async () => ({ records: await window.__TAURI_INTERNALS__.invoke("records_list"), cameras: await window.__TAURI_INTERNALS__.invoke("camera_rig_config"), plc: await window.__TAURI_INTERNALS__.invoke("plc_get_config"), cycle: await window.__TAURI_INTERNALS__.invoke("cycle_snapshot"), production: await window.__TAURI_INTERNALS__.invoke("cycle_layout", { recipeId: "P0-TRICAM-UI" }) }));
-  if (!guard.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || guard.cameras.some(c => c.source !== "sim") || guard.plc.connection.protocol !== "simulator" || !["IDLE", "FAULT"].includes(guard.cycle.phase)) throw new Error(JSON.stringify(guard));
+  const guard = await page.evaluate(async () => ({ records: await window.__TAURI_INTERNALS__.invoke("records_list"), cameras: await window.__TAURI_INTERNALS__.invoke("camera_rig_config"), offline: await window.__TAURI_INTERNALS__.invoke("offline_status"), cycle: await window.__TAURI_INTERNALS__.invoke("cycle_snapshot"), production: await window.__TAURI_INTERNALS__.invoke("cycle_layout", { recipeId: "P0-TRICAM-UI" }) }));
+  if (!guard.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || guard.cameras.some(c => c.source !== "sim") || !guard.offline.enabled || !["IDLE", "FAULT"].includes(guard.cycle.phase)) throw new Error(JSON.stringify(guard));
   const initial = await read();
   if (initial.workspace.frames.some(f => !f.saved || !f.trial?.passed)) throw new Error("Start invalidation checks with all four saved native trials");
   const assertOnly = (before, after, k) => {
@@ -112,7 +112,7 @@ async (page) => {
   const extra = configs.find(c => !known.has(c.id));
   if (!extra || extra.source !== "sim" || extra.viewCount !== 3 || extra.acquisition !== "triggered") throw new Error(JSON.stringify(configs));
   const beforeCamera = await read();
-  if (beforeCamera.workspace.frames.some(f => !f.saved)) throw new Error("Adding an unrelated simulator camera invalidated existing teaching");
+  if (beforeCamera.workspace.frames.some(f => !f.saved)) throw new Error("Adding an unrelated sim camera invalidated existing teaching");
   await nav("拍照点规划");
   await page.getByRole("combobox", { name: "拍照点 3 · 相机", exact: true }).selectOption(extra.id);
   await page.getByRole("button", { name: "保存候选配置", exact: true }).last().click();

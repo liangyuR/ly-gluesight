@@ -29,25 +29,13 @@ try {
   const records = await invoke('records_list'), profile = dirname(records.root);
   assert(profile.endsWith('com.xyzrobotics.gluesight.recipe-workflow-20261011'));
   assert(/^[cC]:[\\/]/.test(profile));
-  let plc = await invoke('plc_get_config');
-  if (!values.restart && plc.connection.protocol !== 'simulator') {
+  if (!(await invoke('offline_status')).enabled) {
     assert.equal((await invoke('plc_get_status')).state, 'disconnected');
-    const specs = [
-      ['partStart', 'C10', 'bool'], ['partEnd', 'C11', 'bool'], ['resultAck', 'C12', 'bool'],
-      ['faultReset', 'C13', 'bool'], ['partSn', 'HR100', 'u32'], ['productCode', 'HR102', 'u16'],
-      ['shotCount', 'HR103', 'u16'], ['visionReady', 'C20', 'bool'], ['armed', 'C21', 'bool'],
-      ['busy', 'C22', 'bool'], ['done', 'C23', 'bool'], ['resultCode', 'HR110', 'u16'],
-      ['faultCode', 'HR111', 'u16'], ['resultSn', 'HR112', 'u32'],
-    ];
-    plc = { ...plc, connection: { ...plc.connection, protocol: 'simulator', host: '127.0.0.1' },
-      autoConnect: false, heartbeat: { pointId: null, intervalMs: 500 },
-      points: specs.map(([tag, address, dataType]) => ({ id: `p_${tag}`, name: tag, address, dataType,
-        access: 'readWrite', edge: ['partStart', 'partEnd', 'resultAck', 'faultReset'].includes(tag) ? 'rising' : 'none',
-        tags: [tag], wordOrder: dataType === 'bool' ? null : 'ABCD', logChanges: true, description: '隔离软件回归' })) };
-    await invoke('plc_save_config', { config: plc });
+    await invoke('offline_enable');
   }
-  assert.equal(plc.connection.protocol, 'simulator');
-  await invoke('plc_connect');
+  const offline = await invoke('offline_status');
+  assert(offline.enabled && Number.isInteger(offline.port));
+  assert.equal((await invoke('plc_get_config')).connection.host, '127.0.0.1');
   assert((await invoke('camera_rig_config')).every(camera => camera.source === 'sim'));
   report.profile = profile;
   if (values.restart) {

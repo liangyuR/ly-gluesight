@@ -1,6 +1,6 @@
 async (page) => {
-  const guard = await page.evaluate(async () => ({ records: await window.__TAURI_INTERNALS__.invoke("records_list"), cameras: await window.__TAURI_INTERNALS__.invoke("camera_rig_config"), plc: await window.__TAURI_INTERNALS__.invoke("plc_get_config") }));
-  if (!guard.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || guard.cameras.some(c => c.source === "mvs") || guard.plc.connection.protocol !== "simulator") throw new Error("The isolated offline P0 app is required");
+  const guard = await page.evaluate(async () => ({ records: await window.__TAURI_INTERNALS__.invoke("records_list"), cameras: await window.__TAURI_INTERNALS__.invoke("camera_rig_config"), offline: await window.__TAURI_INTERNALS__.invoke("offline_status") }));
+  if (!guard.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || guard.cameras.some(c => c.source === "mvs") || !guard.offline.enabled) throw new Error("The isolated offline P0 app is required");
   await page.getByRole("button", { name: "复制配方 MTR-HSG-B", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "建立候选配方", exact: true });
   await dialog.getByRole("textbox", { name: "配方编号", exact: true }).fill("P0-TRICAM-UI");

@@ -1,8 +1,8 @@
 async (page) => {
   const id = "P0-TRICAM-UI";
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
-  const guard = { records: await read("records_list"), cameras: await read("camera_rig_config"), plc: await read("plc_get_config"), cycle: await read("cycle_snapshot"), workspace: await read("workspace_get", { id }) };
-  if (!guard.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || guard.cameras.some(c => c.source !== "sim") || guard.plc.connection.protocol !== "simulator" || !["IDLE", "FAULT"].includes(guard.cycle.phase) || guard.workspace.workspace.frames.some(f => !f.saved || !f.trial?.passed)) throw new Error(JSON.stringify(guard));
+  const guard = { records: await read("records_list"), cameras: await read("camera_rig_config"), offline: await read("offline_status"), cycle: await read("cycle_snapshot"), workspace: await read("workspace_get", { id }) };
+  if (!guard.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || guard.cameras.some(c => c.source !== "sim") || !guard.offline.enabled || !["IDLE", "FAULT"].includes(guard.cycle.phase) || guard.workspace.workspace.frames.some(f => !f.saved || !f.trial?.passed)) throw new Error(JSON.stringify(guard));
   const known = new Set(guard.cameras.map(c => c.id));
   await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "设备与采集", exact: true }).click();
   let cameras;
