@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getAppInfo, getEngineStatus, type AppInfo, type EngineStatus } from "../lib/api";
-import { cycleApi, useRecipes, type CycleSettings, type Timeouts } from "../features/cycle";
+import { cycleApi, devLyflowHint, useRecipes, type CycleSettings, type Timeouts } from "../features/cycle";
+import { errorText } from "../lib/errors";
 
 const timeoutFields: [keyof Timeouts, string, string][] = [
   ["armMs", "布防目标 T_arm（ms）", "partStart↑ → armed↑，超出仅报警"],
@@ -50,7 +51,7 @@ function useResource<T>(load: () => Promise<T>) {
     setLoading(true);
     setError(null);
     Promise.resolve().then(load).then((value) => { if (active) setData(value); })
-      .catch((error: unknown) => { if (active) setError(String(error)); })
+      .catch((error: unknown) => { if (active) setError(errorText(error)); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [load, generation]);
@@ -99,7 +100,7 @@ function CycleSettingsPanel({ savePart }: { savePart: SavePart }) {
       const saved = await savePart({ productSource, manualRecipeId, historyDays, timeouts });
       if (saved && mounted.current) setNotice({ ok: true, text: "已保存，从下一个工件开始生效" });
     } catch (e) {
-      if (mounted.current) setNotice({ ok: false, text: String(e) });
+      if (mounted.current) setNotice({ ok: false, text: errorText(e) });
     } finally {
       pending.current = false;
       if (mounted.current) setSaving(false);
@@ -207,7 +208,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
         refresh();
       }
     } catch (e) {
-      if (mounted.current) setNotice({ ok: false, text: String(e) });
+      if (mounted.current) setNotice({ ok: false, text: errorText(e) });
     } finally {
       pending.current = false;
       if (mounted.current) setSaving(false);
@@ -279,6 +280,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
         <dt>说明</dt>
         <dd>{visibleEngine?.message ?? "--"}</dd>
       </dl>
+      {import.meta.env.DEV && visibleEngine && !visibleEngine.ready && <p className="notice" role="note">{devLyflowHint}</p>}
       {engineError && <div className="notice error" role="alert">引擎状态读取失败：{engineError} <button className="btn" onClick={refresh}>重试引擎状态</button></div>}
       <p className="muted hint">
         真机检测固定使用 lyFlow 流程，沿各拍照点的示教中线量胶，需要兼容的核心库和已验证发布的配方；离线 · 合成图使用模拟测量。发布资源预热完成后才能开工。帧录制保存同次触发的全部视角，可用于历史复测。

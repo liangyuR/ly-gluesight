@@ -341,3 +341,37 @@ export interface SampleRun {
 
 /** 测量点显示状态 */
 export type PointVis = "none" | "ok" | "exc" | "ng" | "gap" | "inv" | "miss";
+
+export type ReadinessKey = "plc" | "camera" | "recipe" | "engine" | "audit" | "site";
+export type ReadinessState = "ok" | "waiting" | "blocked";
+/** 处理该项要去的页面 */
+export type ReadinessTarget = "plc" | "camera" | "workspace" | "settings" | "offline";
+
+export interface ReadinessItem {
+  key: ReadinessKey;
+  title: string;
+  state: ReadinessState;
+  detail: string;
+  /** 操作前提（如复位故障需要满足的条件） */
+  hint: string | null;
+  target: ReadinessTarget | null;
+}
+
+/** 配方能否在当前站点（相机组、样本集、测量方式）开工 */
+export interface RecipeOption {
+  id: string;
+  name: string;
+  version: number;
+  productCode: number;
+  shotCount: number;
+  published: boolean;
+  runnable: boolean;
+  reason: string | null;
+  target: ReadinessTarget | null;
+}
+
+export interface Readiness {
+  ready: boolean;
+  items: ReadinessItem[];
+  recipes: RecipeOption[];
+}

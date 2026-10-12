@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Download, RefreshCw, Scale } from "lucide-react";
 import { subscribe } from "../features/plc";
 import { useRecipes } from "../features/cycle";
+import { errorText } from "../lib/errors";
 import { displayReason, formatTime, historyApi, RejudgeDialog, sampleLabelText, triggerModeLabel, verdictClass, verdictGroups, verdictLabel, type HistoryPage as Page, type HistoryQuery } from "../features/history";
 
 const PAGE = 50;
@@ -76,7 +77,7 @@ export default function HistoryPage() {
         setResult({ page: p, query, offset });
         setError("");
       })
-      .catch((e) => { if (serial === requestSerial.current) setError(String(e)); })
+      .catch((e) => { if (serial === requestSerial.current) setError(errorText(e)); })
       .finally(() => { if (serial === requestSerial.current) setLoading(false); });
   }, [query, offset]);
 
@@ -92,7 +93,7 @@ export default function HistoryPage() {
       const path = await historyApi.exportCsv(scope);
       if (alive.current && currentQuery.current === scope) setExported(path);
     } catch (e) {
-      if (alive.current && currentQuery.current === scope) setOperationError(String(e));
+      if (alive.current && currentQuery.current === scope) setOperationError(errorText(e));
     } finally {
       exportPending.current = false;
       if (alive.current) setExporting(false);
@@ -104,7 +105,7 @@ export default function HistoryPage() {
     revealPending.current = true; setRevealing(true); setOperationError("");
     const scope = query;
     try { await historyApi.reveal(exported); }
-    catch (e) { if (alive.current && currentQuery.current === scope) setOperationError(String(e)); }
+    catch (e) { if (alive.current && currentQuery.current === scope) setOperationError(errorText(e)); }
     finally {
       revealPending.current = false;
       if (alive.current) setRevealing(false);

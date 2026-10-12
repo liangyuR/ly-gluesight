@@ -4,6 +4,7 @@ import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { isNavGroup, navEntries, navItems } from "./nav";
 import { getEngineStatus, type EngineStatus } from "../lib/api";
 import { linkStateLabels, usePlcStatus } from "../features/plc";
+import { devLyflowHint } from "../features/cycle/readiness";
 
 export default function Sidebar(){
   const {pathname}=useLocation();
@@ -23,6 +24,6 @@ export default function Sidebar(){
   );
   return <aside className={"sidebar"+(collapsed?" collapsed":"")}><div className="sidebar-brand"><img src="/app-icon.png" alt="" className="brand-logo"/>{!collapsed&&<div className="brand-text"><strong>GlueSight</strong><span>胶路智检</span></div>}</div>
     <nav className="sidebar-nav" aria-label="操作导航">{navEntries.map(entry=>isNavGroup(entry)?<div className="nav-group" key={entry.label}><div className="nav-group-label" title={collapsed?entry.label:undefined}>{collapsed?<entry.icon size={17}/>:<span>{entry.label}</span>}</div>{entry.children.map(child=>item(child,true))}</div>:item(entry))}</nav>
-    <div className="sidebar-footer"><div className="status-list"><div className="engine-status" title={plc?.message??"PLC 未连接"}><span className={"dot "+plcDot}/>{!collapsed&&<span>PLC · {linkStateLabels[plc?.state??"disconnected"]}</span>}</div><div className="engine-status" title={engine?.message??"未连接后端"}><span className={"dot "+(engine?.ready?"ok":"warn")}/>{!collapsed&&<span>{engine?engine.backend+" · "+(engine.ready?"就绪":"未就绪"):"后端未连接"}</span>}</div></div><button className="icon-btn" onClick={()=>setCollapsed(v=>!v)} aria-label={collapsed?"展开侧边栏":"折叠侧边栏"}>{collapsed?<PanelLeftOpen size={18}/>:<PanelLeftClose size={18}/>}</button></div>
+    <div className="sidebar-footer"><div className="status-list"><div className="engine-status" title={plc?.message??"PLC 未连接"}><span className={"dot "+plcDot}/>{!collapsed&&<span>PLC · {linkStateLabels[plc?.state??"disconnected"]}</span>}</div><div className="engine-status" title={(engine?.message??"未连接后端")+(import.meta.env.DEV&&engine&&!engine.ready?"；"+devLyflowHint:"")}><span className={"dot "+(engine?.ready?"ok":"warn")}/>{!collapsed&&<span>{engine?engine.backend+" · "+(engine.ready?"就绪":"未就绪"):"后端未连接"}</span>}</div></div><button className="icon-btn" onClick={()=>setCollapsed(v=>!v)} aria-label={collapsed?"展开侧边栏":"折叠侧边栏"}>{collapsed?<PanelLeftOpen size={18}/>:<PanelLeftClose size={18}/>}</button></div>
   </aside>;
 }

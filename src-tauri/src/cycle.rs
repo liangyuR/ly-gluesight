@@ -1,4 +1,5 @@
 mod capture;
+pub mod readiness;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1618,6 +1619,12 @@ pub fn cycle_select_recipe(cycle: State<'_, CycleHost>, recipe_id: String) -> Re
 #[tauri::command]
 pub fn cycle_reset(cycle: State<'_, CycleHost>) {
     let _ = cycle.tx.send(Input::Reset);
+}
+
+/// 开工就绪报告：逐项列出 PLC 会话、相机、可开工配方、图像测量、审计录制与站点模式。
+#[tauri::command]
+pub async fn cycle_readiness(app: AppHandle) -> Result<readiness::Readiness, String> {
+    tauri::async_runtime::spawn_blocking(move || readiness::gather(&app)).await.map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
