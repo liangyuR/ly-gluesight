@@ -233,6 +233,7 @@ pub async fn site_enter_offline(app: AppHandle, source: OfflineSource) -> Result
         OfflineSource::Synthetic => (None, OfflineChoice { kind: SourceKind::Synthetic, sample_set_dir: previous_dir }, Ok(())),
     };
     crate::offline::enter(&app, set, lyflow).await?;
+    crate::offline::reset_after_enter(app.clone());
     if let Err(error) = save_choice(&app, &choice) {
         crate::cycle::log(&app, "warn", "站点模式", format!("上次的离线选择没能保存：{error}"));
     }

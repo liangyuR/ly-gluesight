@@ -371,6 +371,29 @@ pub(crate) async fn leave(app: &AppHandle) -> Result<(), String> {
     restored
 }
 
+/// 进入离线后由虚拟 PLC 像现场操作员一样复位一次，让节拍从"新连接待复位"进入空闲。
+pub(crate) fn reset_after_enter(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let offline = app.state::<OfflineHost>();
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        let line = loop {
+            if !offline.enabled() { return; }
+            if let Ok(line) = connected_line(&app.state::<PlcHost>(), &offline) { break line; }
+            if std::time::Instant::now() > until {
+                offline.set_message(&app, "离线 S7 服务 10 s 内未连接，未能自动复位");
+                return;
+            }
+            sleep(Duration::from_millis(50)).await;
+        };
+        let result = line.ensure_ready(&timing(&app, Duration::ZERO), &AtomicBool::new(false)).await;
+        if !offline.enabled() { return; }
+        match result {
+            Ok(()) => crate::cycle::log(&app, "info", "站点模式", "离线 PLC 已发 faultReset，视觉就绪"),
+            Err(error) => offline.set_message(&app, format!("离线 PLC 自动复位未完成：{error}")),
+        }
+    });
+}
+
 fn connected_line(plc: &PlcHost, offline: &OfflineHost) -> Result<Arc<Line>, String> {
     if !offline.enabled() { return Err("未进入离线模式：在离线控制台进入离线".into()); }
     if plc.engine().status().state != LinkState::Connected { return Err("离线 S7 服务尚未连接".into()); }
