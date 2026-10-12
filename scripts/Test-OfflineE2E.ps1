@@ -21,35 +21,53 @@ $e2eProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $e2eOutput = Join-Path $e2eProjectRoot 'output\playwright\e2e-regression'
 $e2eManifestPath = Join-Path $e2eOutput 'instance.json'
 $e2eIdentifier = 'com.xyzrobotics.tujiaovision.e2e-tests'
-$e2eOwnedInstance = $null
 $e2eExit = 0
 $e2eWatch = [Diagnostics.Stopwatch]::StartNew()
 $e2ePreviousLyflow = $env:LYFLOW_CORE_DLL
+$e2eExpectedExecutable = Join-Path $e2eOutput 'gluesight-ui-tests.exe'
+$script:e2eOwnedInstance = $null
+
+function Start-E2EInstance([switch]$Fresh, [switch]$Prebuilt) {
+    & (Join-Path $PSScriptRoot 'Start-UiTestInstance.ps1') -Profile e2e -ResetData:$Fresh -DebugPort $DebugPort -SkipBuild:$Prebuilt | Out-Host
+    $script:e2eOwnedInstance = Get-Content -LiteralPath $e2eManifestPath -Raw | ConvertFrom-Json
+}
+
+function Stop-E2EInstance {
+    $owned = $script:e2eOwnedInstance
+    $script:e2eOwnedInstance = $null
+    if (!$owned) { return }
+    $process = Get-Process -Id $owned.pid -ErrorAction SilentlyContinue
+    if (!$process) { return }
+    if ($owned.identifier -eq $e2eIdentifier -and $owned.executable -eq $e2eExpectedExecutable -and $process.Path -eq $e2eExpectedExecutable -and
+        $process.StartTime.ToUniversalTime() -eq ([datetime]$owned.startedAt).ToUniversalTime()) {
+        Stop-Process -InputObject $process
+        $process.WaitForExit(15000) | Out-Null
+    } else { Write-Warning '测试进程身份已改变，未停止该进程。' }
+}
+
 Push-Location -LiteralPath $e2eProjectRoot
 try {
     & node --input-type=module -e "await import('playwright-core');"
     if ($LASTEXITCODE -ne 0) { throw '请使用 Node 24.15+ 并先执行 pnpm install --frozen-lockfile。' }
     $env:LYFLOW_CORE_DLL = $e2eLyflow
-    & (Join-Path $PSScriptRoot 'Start-UiTestInstance.ps1') -Profile e2e -ResetData -DebugPort $DebugPort -SkipBuild:$SkipBuild | Out-Host
-    $e2eOwnedInstance = Get-Content -LiteralPath $e2eManifestPath -Raw | ConvertFrom-Json
+    $e2eCdp = "http://127.0.0.1:$DebugPort"
+    $e2eResult = Join-Path $e2eOutput 'result.json'
+    Start-E2EInstance -Fresh -Prebuilt:$SkipBuild
     & node (Join-Path $e2eProjectRoot 'tests\native\offline-e2e.mjs') `
-        --cdp "http://127.0.0.1:$DebugPort" --instance $e2eManifestPath --output (Join-Path $e2eOutput 'result.json') `
-        --sample-set $e2eSampleSet --lyflow $e2eLyflow
+        --cdp $e2eCdp --instance $e2eManifestPath --output $e2eResult --sample-set $e2eSampleSet --lyflow $e2eLyflow
     $e2eExit = $LASTEXITCODE
+    if ($e2eExit -eq 0) {
+        Stop-E2EInstance
+        Start-Sleep -Seconds 2
+        Start-E2EInstance -Prebuilt
+        & node (Join-Path $e2eProjectRoot 'tests\native\offline-restart.mjs') `
+            --cdp $e2eCdp --instance $e2eManifestPath --previous $e2eResult --sample-set $e2eSampleSet --output (Join-Path $e2eOutput 'restart.json')
+        $e2eExit = $LASTEXITCODE
+    }
     if ($e2eExit -ne 0 -and $e2eExit -ne $e2eMissingInputExit) { Write-Error "离线端到端测试失败（退出码 $e2eExit）。日志见 $e2eOutput。" -ErrorAction Continue }
 } finally {
     $env:LYFLOW_CORE_DLL = $e2ePreviousLyflow
-    if ($e2eOwnedInstance) {
-        $e2eOwnedProcess = Get-Process -Id $e2eOwnedInstance.pid -ErrorAction SilentlyContinue
-        if ($e2eOwnedProcess) {
-            $e2eExpectedExecutable = Join-Path $e2eOutput 'gluesight-ui-tests.exe'
-            if ($e2eOwnedInstance.identifier -eq $e2eIdentifier -and
-                $e2eOwnedInstance.executable -eq $e2eExpectedExecutable -and $e2eOwnedProcess.Path -eq $e2eExpectedExecutable -and
-                $e2eOwnedProcess.StartTime.ToUniversalTime() -eq ([datetime]$e2eOwnedInstance.startedAt).ToUniversalTime()) {
-                Stop-Process -InputObject $e2eOwnedProcess
-            } else { Write-Warning '测试进程身份已改变，未停止该进程。' }
-        }
-    }
+    Stop-E2EInstance
     Pop-Location
     Write-Host "离线端到端总耗时 $([math]::Round($e2eWatch.Elapsed.TotalSeconds, 1)) s"
 }

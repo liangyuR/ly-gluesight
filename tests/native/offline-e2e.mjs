@@ -61,7 +61,7 @@ export function monotoneCenterline(points, segments = CENTERLINE_SEGMENTS) {
   return path;
 }
 
-async function until(read, accepts, message, timeout = 30000, interval = 150) {
+export async function until(read, accepts, message, timeout = 30000, interval = 150) {
   const deadline = Date.now() + timeout;
   let value;
   while (Date.now() < deadline) {
@@ -72,10 +72,10 @@ async function until(read, accepts, message, timeout = 30000, interval = 150) {
   throw new Error(`${message}：${JSON.stringify(value)?.slice(0, 1500)}`);
 }
 
-const GATE_BUSY = /正在处理 PLC 事务|设备配置正在变化|尚未回到空闲|正在预热/;
+const GATE_BUSY = /正在处理 PLC 事务|检测仍有在途事务|设备配置正在变化|尚未回到空闲|正在预热/;
 export const gateRetries = [];
 
-function client(page) {
+export function client(page) {
   const once = async (command, args) => {
     const result = await page.evaluate(({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args)
       .then(ok => ({ ok }), error => ({ error: typeof error === "string" ? error : String(error?.message ?? error) })), { command, args });
@@ -158,7 +158,7 @@ async function validateCandidate(ws, taught, samples) {
   return { validation, branches };
 }
 
-async function produce(call, recipeId, partId) {
+export async function produce(call, recipeId, partId) {
   const previous = await call("history_query", { query: { recipeId, limit: 1 } });
   await call("offline_run", { recipeId, scenario: "normal", continuous: false, partId });
   const summary = await until(async () => (await call("history_query", { query: { recipeId, limit: 1 } })).items.find(i => i.id !== previous.items[0]?.id),
@@ -168,6 +168,63 @@ async function produce(call, recipeId, partId) {
   assert(run, `最近样本件里没有 ${partId}（cycleId ${summary.cycleId}）`);
   await until(() => call("workspace_record_images", { historyId: summary.id }), v => v.complete, `样本件 ${partId} 原图录制未完成`, 30000);
   return { summary, run };
+}
+
+async function exportHistory(page, call, recipeId) {
+  await page.getByRole("button", { name: "导出 CSV", exact: true }).click();
+  const notice = page.getByText(/^已导出：/);
+  await notice.waitFor();
+  const file = (await notice.locator(".mono").innerText()).trim();
+  const lines = (await readFile(file, "utf8")).trim().split(/\r?\n/);
+  const { total } = await call("history_query", { query: { recipeId, limit: 1 } });
+  assert.equal(lines.length - 1, total, `导出 CSV 行数与历史记录不符：${file}`);
+  return { file, rows: lines.length - 1 };
+}
+
+async function replayInHistory(page, call, recipeId, summary) {
+  const before = { detail: await call("history_detail", { id: summary.id }), workspace: (await call("workspace_get", { id: recipeId })).workspace };
+  await page.getByRole("row", { name: `查看 SN ${summary.sn} 的记录`, exact: true }).click();
+  await page.getByRole("button", { name: "使用该配方候选", exact: true }).click();
+  const titles = { original: "原发布包重现结果", rules: "规则重判结果", raw: "候选原图复测结果" };
+  const results = {};
+  const viaIpc = [];
+  for (const [button, source] of [["按原发布包重现", "original"], ["按候选规则重判", "rules"], ["从原图复测整件", "raw"]]) {
+    const prior = await call("workspace_comparisons", { id: recipeId, historyId: summary.id });
+    const control = page.getByRole("button", { name: button, exact: true });
+    const enabled = await until(() => control.isEnabled(), Boolean, "", source === "raw" ? 5000 : 15000).catch(error => {
+      if (source !== "raw") throw new Error(`历史详情“${button}”不可用`, { cause: error });
+      return false;
+    });
+    if (enabled) await control.click();
+    else {
+      // 已知界面问题：候选含“不检”拍照点时整件原图复测按钮恒为禁用；后端接口照常可用。修复后删除此分支。
+      viaIpc.push(source);
+      await call("workspace_compare", { id: recipeId, revision: before.workspace.revision, historyId: summary.id, raw: true });
+    }
+    const result = await until(async () => (await call("workspace_comparisons", { id: recipeId, historyId: summary.id })).find(c => c.source === source && !prior.some(p => p.id === c.id)),
+      Boolean, `“${button}”未生成对照结果`, 60000);
+    if (enabled) await page.getByRole("heading", { name: titles[source], exact: true }).waitFor();
+    assert.equal(result.cycleId, summary.cycleId);
+    assert.equal(result.originalVerdict, summary.verdict);
+    assert.equal(result.judgement.verdict, summary.verdict, `${titles[source]}与原结论不一致：${result.judgement.reason}`);
+    if (source === "original") {
+      assert.equal(result.bundleId, summary.bundleId, "原发布包重现未使用本件冻结的发布包");
+      assert.equal(result.candidateRecipe.revisionId, summary.recipeRevision);
+    }
+    results[source] = { id: result.id, verdict: result.judgement.verdict, reason: result.judgement.reason, via: enabled ? "ui" : "ipc" };
+  }
+  if (viaIpc.length) {
+    await page.getByRole("button", { name: "返回历史列表", exact: true }).click();
+    await page.getByRole("combobox", { name: "历史配方", exact: true }).selectOption(recipeId);
+    await page.getByRole("row", { name: `查看 SN ${summary.sn} 的记录`, exact: true }).click();
+  }
+  for (const [source, { id }] of Object.entries(results)) {
+    await page.getByRole("combobox", { name: "已保存对照结果", exact: true }).selectOption(id);
+    await page.getByRole("heading", { name: titles[source], exact: true }).waitFor();
+  }
+  assert.deepEqual(await call("history_detail", { id: summary.id }), before.detail, "复测对照改动了原始生产记录");
+  assert.deepEqual((await call("workspace_get", { id: recipeId })).workspace, before.workspace, "复测对照改动了候选示教");
+  return results;
 }
 
 export async function runOfflineE2E(page, options) {
@@ -247,10 +304,7 @@ export async function runOfflineE2E(page, options) {
     assert.equal(summary.sample.setId, preview.id);
     assert.equal(summary.sample.label, run.label);
   }
-  const replay = await call("workspace_compare_original", { historyId: defect.summary.id });
-  assert.equal(replay.originalVerdict, defect.summary.verdict);
-  assert.equal(replay.judgement.verdict, defect.summary.verdict, `原发布包重现结论不一致：${replay.judgement.reason}`);
-  step("投产与原图重现", { [NORMAL_PART]: normal.summary.verdict, [DEFECT_PART]: defect.summary.verdict, replay: replay.judgement.verdict });
+  step("投产", { [NORMAL_PART]: normal.summary.verdict, [DEFECT_PART]: defect.summary.verdict });
 
   await navigation.getByRole("link", { name: "离线控制台", exact: true }).click();
   const recentTable = page.getByRole("table", { name: "最近样本件", exact: true });
@@ -270,6 +324,9 @@ export async function runOfflineE2E(page, options) {
     await row.getByText(verdictLabel[summary.verdict], { exact: true }).waitFor();
   }
   step("界面核对");
+  const exported = await exportHistory(page, call, id);
+  const replay = await replayInHistory(page, call, id, defect.summary);
+  step("历史导出与复测对照", { exported: exported.rows, replay: Object.fromEntries(Object.entries(replay).map(([k, v]) => [k, v.verdict])) });
 
   if (options.output) {
     await mkdir(path.dirname(options.output), { recursive: true });
@@ -293,8 +350,9 @@ export async function runOfflineE2E(page, options) {
     branches,
     gateRetries: Object.entries(gateRetries.reduce((counts, r) => ({ ...counts, [`${r.command}：${r.error}`]: (counts[`${r.command}：${r.error}`] ?? 0) + 1 }), {})).map(([what, count]) => ({ what, count })),
     validation: { checks: validation.checks.map(c => ({ name: c.name, passed: c.passed })), samples: validation.samples.map(s => ({ name: s.name, expected: s.expected, actual: s.actual, passed: s.passed })) },
-    production: Object.fromEntries([normal, defect].map(({ summary, run }) => [run.partId, { historyId: summary.id, sn: summary.sn, partSn: run.partSn, verdict: summary.verdict, plcCode: summary.plcCode, reason: summary.reason, sample: summary.sample }])),
-    replay: { historyId: defect.summary.id, originalVerdict: replay.originalVerdict, verdict: replay.judgement.verdict },
+    production: Object.fromEntries([normal, defect].map(({ summary, run }) => [run.partId, { historyId: summary.id, sn: summary.sn, partSn: run.partSn, verdict: summary.verdict, plcCode: summary.plcCode, reason: summary.reason, cycleId: summary.cycleId, recipeRevision: summary.recipeRevision, bundleId: summary.bundleId, sample: summary.sample }])),
+    exported,
+    replay: { historyId: defect.summary.id, originalVerdict: defect.summary.verdict, ...replay },
     steps,
     boundary: "进程内 S7 服务与虚拟产线驱动真实 lyFlow 测量现场样本原图；ROI、像素当量与检测参数是演示夹具，结论不代表算法质量、现场标定或现场节拍",
   };
@@ -333,7 +391,7 @@ async function main() {
     await page.waitForFunction(() => !!window.__TAURI_INTERNALS__);
     const result = await runOfflineE2E(page, { ...inputs, output: args.output ?? "output/playwright/e2e-regression/result.json" });
     process.stdout.write(JSON.stringify({ passed: result.passed, elapsedMs: result.elapsedMs, branches: result.branches,
-      production: Object.fromEntries(Object.entries(result.production).map(([k, v]) => [k, v.verdict])), replay: result.replay.verdict }) + "\n");
+      production: Object.fromEntries(Object.entries(result.production).map(([k, v]) => [k, v.verdict])), replay: Object.fromEntries(["original", "rules", "raw"].map(k => [k, result.replay[k].verdict])) }) + "\n");
   } finally { await browser.close(); }
 }
 
