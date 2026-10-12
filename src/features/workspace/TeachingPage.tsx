@@ -9,6 +9,7 @@ import { useWorkspace } from "./context";
 import { Badge, FrameRail, GrayViewer, KV, Notice, NumberField, Panel, Steps, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { FrozenImage, ShotTeach, WorkspaceView } from "./types";
 import { sameJsonValue, sameTeach, shotTeach, teachError, selectedViews, teachingCounts } from "./teach";
+import { productionBusy as isProductionBusy } from "../cycle/phase";
 
 function FrozenViewOption({ id, metadata, selected, disabled, onSelect }: { id: string; metadata: FrozenImage; selected: boolean; disabled: boolean; onSelect: () => void }) {
   const { image, loading, error } = useGrayImage(id, metadata.id);
@@ -67,7 +68,7 @@ export default function TeachingPage() {
   const invalid = teachError(t);
   const taught = shot.path.length >= 2 && shot.mmPerPx != null;
   const unlocked = !busy && !dirty && !working && !reading && !data.workspace.pending;
-  const productionBusy = !!snapshot && !["IDLE","FAULT"].includes(snapshot.phase);
+  const productionBusy = isProductionBusy(snapshot);
   const update = (next: ShotTeach) => {if(unlocked)setFrameDraft(k,next);};
   const setPath = (path: [number, number][]) => update({ ...t, path });
   const setDetect = (detect: DetectParams | undefined) => { const next: ShotTeach = { ...t }; if (detect) next.detect = detect; else delete next.detect; update(next); };

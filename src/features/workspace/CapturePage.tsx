@@ -9,6 +9,7 @@ import { useWorkspace } from "./context";
 import { Badge, KV, Notice, NumberField, Panel, Steps, WorkspaceBar, WorkspaceEmpty, GrayViewer } from "./components";
 import type { CaptureRound, GrayImage } from "./types";
 import type { CaptureNavigationState } from "./captureNavigation";
+import { productionBusy as isProductionBusy } from "../cycle/phase";
 
 const stateLabels: Record<CaptureRound["state"],string> = { waitingStart:"等待现场启动", receiving:"接收中", draining:"PLC 已结束，等待在途图像", complete:"采集完成", failed:"采集异常" };
 function captureCountText(round: Pick<CaptureRound,"state"|"receivedCount"|"plannedCount">) {
@@ -62,7 +63,7 @@ export default function CapturePage() {
   if(!doc || !data) return <WorkspaceEmpty/>;
   const active=!!round && ["waitingStart","receiving","draining"].includes(round.state);
   const locked=busy || working || dirty || frameDirty || !!data.workspace.pending;
-  const productionBusy=!!snapshot && !["IDLE","FAULT"].includes(snapshot.phase);
+  const productionBusy=isProductionBusy(snapshot);
   const sampleSourceInvalid=validation && (!data.workspace.captureId || data.workspace.captureId===round?.roundId);
   const navigationState: CaptureNavigationState = {captureReturn:{recipeId:doc.id,search:location.search,cameraId:selectedCamera,drain,roundId,previewK}};
   const start=async () => {

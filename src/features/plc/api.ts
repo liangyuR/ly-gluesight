@@ -1,3 +1,4 @@
+import { phaseOccupied } from "../cycle/phase";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
@@ -81,7 +82,7 @@ export function usePlcOperationState() {
       if (!alive) return;
       setOperation({
         blockedReason: !state ? "生产状态不可用，已锁定 PLC 配置和手动写入"
-          : (state.plcLocked ?? !["IDLE", "FAULT"].includes(state.phase))
+          : (state.plcLocked ?? phaseOccupied(state.phase))
             ? "生产或结果交付尚未结束，PLC 配置和手动写入已锁定" : "",
         handshake: state?.plcHandshake ?? null,
       });

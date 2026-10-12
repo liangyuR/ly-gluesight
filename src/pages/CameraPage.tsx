@@ -9,6 +9,7 @@ import { Badge, Notice, Panel } from "../features/workspace/components";
 import StationCapture, { type StationView } from "../features/workspace/StationCapture";
 import { workspaceApi } from "../features/workspace/api";
 import type { CaptureNavigationState } from "../features/workspace/captureNavigation";
+import { productionBusy } from "../features/cycle/phase";
 
 type CameraView = "device" | "calibration";
 const sourceText = { mvs:"海康 MVS",sim:"合成图（离线）",sampleSet:"样本集（离线）" } as const;
@@ -75,7 +76,7 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
   const eligible=configs.map((c,i)=>({c,i})).filter(({c})=>view==="device"||c.acquisition==="triggered");
   const config=eligible.some(e=>e.i===cam)?configs[cam]:null;
   const status=statuses.find(s=>s.cam===cam)??null;
-  const busy=!!snapshot&&!["IDLE","FAULT"].includes(snapshot.phase);
+  const busy=productionBusy(snapshot);
   const referencedBy=config?references[config.id]??[]:[];
   const saved=()=>void reload();
   const add=async()=>{
