@@ -6,7 +6,7 @@
 
 | 测试层 | 保留验证 |
 | --- | --- |
-| 前端 | 创建配方、草稿编辑、采集、示教验证发布、生产操作锁、周期/图源隔离与历史显示，40 项 |
+| 前端 | 创建配方、草稿编辑、采集、示教验证发布、生产操作锁、周期/图源隔离与历史显示，39 项 |
 | Rust 默认 | 配方版本、采集与示教流程、相机/帧关联、生产周期、PLC、调度、SQLite、原图录制、审计恢复及历史，192 项 |
 | S7 专项 | 35 项真实生产驱动与本机 Python peer 的线协议测试 |
 | 桌面主流程 | 隔离 flow 实例内启动一件到 SQLite、原图和历史读回 |
@@ -29,7 +29,6 @@
 | `pnpm build` | 生产前端构建 |
 | `cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib` | 默认后端回归，依赖需已缓存 |
 | `pwsh -NoProfile -File tests/packaging/Test-RuntimeBundle.ps1` | 打包版本、ABI、源码修订及运行库依赖契约 |
-| `pnpm sim:test` | Robot/Modbus 模拟服务的隔离协议回归 |
 
 单文件前端测试示例：`pnpm exec vitest run tests/teaching.test.tsx`。默认测试不生成覆盖率报告。生产桌面测试已构建时可加 `-SkipBuild`，端口冲突可传 `-DebugPort 9349`。
 
@@ -50,7 +49,7 @@ S7 专项需要 Python 3 和本机 TCP 权限，可用 `S7_TEST_PYTHON` 指定 P
 
 `pnpm test:ui:production` 使用 `tests/native/production-flow-ui.mjs` 与 `tests/native/tauri-flow-test.json`，应用标识为 `com.xyzrobotics.tujiaovision.flow-tests`，报告输出到 `output/playwright/flow-regression`。运行时生成模拟图像，使用真实后端、SQLite、PGM 和元数据，并在历史页读回；结束时自动关闭本次进程。
 
-其余保留的桌面测试入口及前置条件见 [原生测试目录](../../tests/native/)。恢复专项应使用独立实例和新输出目录，避免使用生产配置。Robot/Modbus 服务的启动配置见[模拟服务说明](../../scripts/robot-plc-demo/README.md)。
+其余保留的桌面测试入口及前置条件见 [原生测试目录](../../tests/native/)。恢复专项应使用独立实例和新输出目录，避免使用生产配置。Robot/Modbus 模拟服务已删除，由进程内虚拟 S7 产线取代（另一 PR）。
 
 jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明真实布局、像素解码或硬件通信。桌面模拟流程证明业务接线与落盘，不证明真实 PLC、SDK、引擎测量准确率、现场节拍或持续运行。当前 UI 范围见 [UI 覆盖边界](UI_OPERATIONS.md)。
 

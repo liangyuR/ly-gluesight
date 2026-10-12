@@ -71,7 +71,7 @@
 <tr><td><span class="priority">P0 · W2 / W5 / W6</span><strong>收尾、超时与 PLC 交付</strong></td><td>S7 已实现顺序写入、读回确认、序号匹配 ACK、释放确认与故障保留；写失败不再假转态。整件收尾仍需从收到帧数改为唯一合法 shot 集合，DLL 超时后的任务终止与资源回收仍需验证。<span class="proof">cycle.rs；vision.rs</span></td><td>按计划中唯一 shot 集合收尾；故障保持，过期任务隔离；成功写入并按协议确认才转态。结果包与 ACK 身份一致，释放失败不放行下件；掉线由 PLC 心跳看门狗处理。</td></tr>
 <tr><td><span class="priority">P0 · W3 / W4</span><strong>资源冻结与点表覆盖</strong></td><td><code>Arc&lt;Recipe&gt;</code> 只冻结配方结构，标定仍可指向当前固定文件。最近 shot 分配与前端覆盖提示也需统一。<span class="proof">vision.rs；store.rs；recipe.rs；workspace.rs</span></td><td>发布包封存标定、模板、测点、算法图及版本，使用明确发布 ID、版本及实际结构核验。本件冻结运行设置。每个全局测点唯一归属一个可见 shot，遗漏、越界、重复写入均拒绝。</td></tr>
 <tr><td><span class="priority">P0 · W5</span><strong>多机历史和原图复测</strong></td><td>录像有相机和计数，但无 shot/cycleId；飞拍历史只筛 recipe.camera，再以首帧推 k。重判仅校验点数，无法证明几何兼容。<span class="proof">recorder.rs；workspace.rs；history.rs</span></td><td>按 cycleId→shotId→cameraId→原帧追溯；明确历史记录父 ID。原发布包重现与当前候选复测分开；同点数不同几何拒绝套用。原始判定保留。</td></tr>
-<tr><td><span class="priority">P0 · W0 / W6 / W7</span><strong>三机实物与交付证据</strong></td><td>现有 PLC 演示只用 cam1；合成图与离线链路不证明实物准确率、三机触发可靠性或连续产能。<span class="proof">scripts/robot-plc-demo/README.md；docs/testing/TESTING.md</span></td><td>软件模拟不证明实物准确率、触发可靠性或连续产能；专项清单已删除，安装包自检另见部署说明。</td></tr>
+<tr><td><span class="priority">P0 · W0 / W6 / W7</span><strong>三机实物与交付证据</strong></td><td>旧 Robot/Modbus 演示已删除，由进程内虚拟 S7 产线取代（另一 PR）；合成图与离线链路不证明实物准确率、三机触发可靠性或连续产能。<span class="proof">docs/testing/TESTING.md</span></td><td>软件模拟不证明实物准确率、触发可靠性或连续产能；专项清单已删除，安装包自检另见部署说明。</td></tr>
 </tbody></table></div></div>
 <div class="review-section"><h2>目标架构需要补出的两层契约</h2><div class="dual-grid">
 <article class="design-card"><h3>数据契约：ShotPlan 与不可变发布包</h3><pre class="contract">ReleaseBundle（唯一发布 ID）

@@ -1,6 +1,6 @@
 # S7 握手测试 PLC
 
-这个独立测试服务通过真实 TCP 套接字提供 TPKT / COTP / S7comm 的连接协商、ReadVar 和 WriteVar。它用于测试现有 `ly-plc` S7 客户端和一期握手，不启动桌面、不访问实际 PLC，也不修改旧 `robot-plc-demo`。
+这个独立测试服务通过真实 TCP 套接字提供 TPKT / COTP / S7comm 的连接协商、ReadVar 和 WriteVar。它用于测试现有 `ly-plc` S7 客户端和一期握手，不启动桌面、不访问实际 PLC。
 
 仅依赖 Python 3.11+ 标准库。服务固定绑定 `127.0.0.1`，由系统分配随机端口，不接受固定端口或外部监听地址。它不是 Siemens CPU 模拟器，不模拟 PLC 扫描周期、实际 PUT/GET 权限、优化 DB 或硬件时序。
 
