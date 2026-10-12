@@ -21,10 +21,14 @@ foreach ($name in @('LyFlowRuntime', 'MvsRuntime', 'VcRuntime', 'MvsLicense', 'R
 if ($PrepareOnly) { return }
 $configPath = Join-Path $stageRoot 'tauri.runtime.json'
 $applicationRuntime = @('vcruntime140.dll', 'vcruntime140_1.dll')
+$applicationRuntimeRoot = Join-Path $stageRoot 'application-runtime'
+[void][IO.Directory]::CreateDirectory($applicationRuntimeRoot)
 $resources = @{ 'target/package-runtime/runtime/' = 'runtime/' }
 foreach ($name in $applicationRuntime) {
-    Assert-X64RuntimeImage (Join-Path $stageRoot "runtime/lyflow/$name")
-    $resources["target/package-runtime/runtime/lyflow/$name"] = $name
+    $source = Join-Path $stageRoot "runtime/lyflow/$name"
+    Assert-X64RuntimeImage $source
+    Copy-Item -LiteralPath $source -Destination (Join-Path $applicationRuntimeRoot $name)
+    $resources["target/package-runtime/application-runtime/$name"] = $name
 }
 @{ bundle = @{ resources = $resources } } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configPath -Encoding utf8NoBOM
 Push-Location -LiteralPath $projectRoot
@@ -50,7 +54,7 @@ try {
     foreach ($name in $applicationRuntime) {
         $destination = Join-Path $releaseRoot $name
         if (Test-Path -LiteralPath $destination) { Assert-NoRuntimeLinks $destination }
-        Copy-Item -LiteralPath (Join-Path $sourceRuntime "lyflow/$name") -Destination $destination
+        Copy-Item -LiteralPath (Join-Path $applicationRuntimeRoot $name) -Destination $destination
     }
     $applicationReport = Join-Path $stageRoot 'application-runtime-validation.json'
     $start = [Diagnostics.ProcessStartInfo]::new($applicationPath)
