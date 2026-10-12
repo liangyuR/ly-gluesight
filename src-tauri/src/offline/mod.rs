@@ -29,6 +29,7 @@ pub use scenario::Scenario;
 
 const RECENT_RUNS: usize = 20;
 const CAPTURE_PLAN_VERSION: u32 = 1;
+const WARMUP_WAIT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -418,14 +419,21 @@ pub fn offline_run(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, Cyc
     if samples.is_some() && !scenario.handshake() {
         return Err("样本集图像是现场原图，只能选握手类工况（正常、传输丢帧、触发数不符、运动超时、ACK 不匹配）".into());
     }
-    crate::cycle::runnable_cams(&app, &recipe)?;
+    let warming = match crate::cycle::runnable_cams(&app, &recipe) {
+        Ok(_) => false,
+        Err(_) if crate::production::warming(&app, &recipe) => true,
+        Err(error) => return Err(error),
+    };
     if let (Some(set), Some(id)) = (&samples, part_id.as_deref()) {
         set.part(id).ok_or_else(|| format!("样本集里没有样本件 {id}"))?;
     }
     start_running(&offline, continuous)?;
     let order = PartOrder { sn: 0, product_code: recipe.product_code, plan_version: plan.plan_version,
         shot_count: plan.shot_count, device_shots: plan.device_shots };
-    tauri::async_runtime::spawn(run(app, line, recipe, order, scenario, continuous, samples.map(|set| (set, part_id))));
+    tauri::async_runtime::spawn(async move {
+        if warming && !wait_warmup(&app, &recipe).await { return finish(&app, &app.state::<OfflineHost>()); }
+        run(app, line, recipe, order, scenario, continuous, samples.map(|set| (set, part_id))).await
+    });
     Ok(())
 }
 
@@ -512,6 +520,21 @@ fn trigger_shot(app: &AppHandle, recipe: &Arc<Recipe>, sn: u32, scenario: Scenar
         None => TriggerPayload::Sim(sim_payload(recipe, sn, scenario, k)),
     };
     let _ = cycle.camera.trigger(cam, lost, Some(payload));
+}
+
+/// 刚发布的配方先预热发布资源与图像引擎：有界等待预热完成再开工，不直接拒绝。
+async fn wait_warmup(app: &AppHandle, recipe: &Recipe) -> bool {
+    let offline = app.state::<OfflineHost>();
+    offline.set_message(app, format!("等待预热：{} 的发布资源与图像引擎预热完成后开始运行（最多 {} s）", recipe.id, WARMUP_WAIT.as_secs()));
+    let until = std::time::Instant::now() + WARMUP_WAIT;
+    while crate::production::warming(app, recipe) && std::time::Instant::now() < until && !offline.stop.load(Ordering::SeqCst) {
+        sleep(Duration::from_millis(100)).await;
+    }
+    if offline.stop.load(Ordering::SeqCst) { offline.set_message(app, "离线产线已停止"); return false; }
+    match crate::cycle::runnable_cams(app, recipe) {
+        Ok(_) => true,
+        Err(error) => { offline.set_message(app, format!("已中止：{error}")); false }
+    }
 }
 
 async fn run(app: AppHandle, line: Arc<Line>, recipe: Arc<Recipe>, order: PartOrder, scenario: Scenario, continuous: bool,

@@ -8,7 +8,7 @@
     "node": ">=24.15.0"
   },
   "scripts": {
-    "dev": "tauri dev",
+    "dev": "pwsh -NoProfile -File scripts/Start-Dev.ps1",
     "dev:web": "vite",
     "build": "tsc -b && vite build",
     "package": "pwsh -NoProfile -File scripts/Package-Windows.ps1",

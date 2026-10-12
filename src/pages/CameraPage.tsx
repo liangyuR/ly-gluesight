@@ -10,6 +10,7 @@ import StationCapture, { type StationView } from "../features/workspace/StationC
 import { workspaceApi } from "../features/workspace/api";
 import type { CaptureNavigationState } from "../features/workspace/captureNavigation";
 import { productionBusy } from "../features/cycle/phase";
+import { errorText } from "../lib/errors";
 
 type CameraView = "device" | "calibration";
 const sourceText = { mvs:"海康 MVS",sim:"合成图（离线）",sampleSet:"样本集（离线）" } as const;
@@ -51,7 +52,7 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
         }
       });
       return {found,error:""};
-    }).catch(e=>({found:{},error:`相机引用读取失败：${String(e)}。刷新后再移除相机。`})):Promise.resolve({found:{},error:""});
+    }).catch(e=>({found:{},error:`相机引用读取失败：${errorText(e)}。刷新后再移除相机。`})):Promise.resolve({found:{},error:""});
     try{
       const [next,refs]=await Promise.all([cameraApi.rigConfig(),referenceRequest]);
       if(!mounted.current||serial!==loadSerial.current)return null;
@@ -60,7 +61,7 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
       if(selected)setCam(Math.max(0,next.findIndex(c=>c.id===selected)));
       setReferences(refs.found);setReferencesReady(!refs.error);setError(refs.error);
       return next;
-    }catch(e){if(mounted.current&&serial===loadSerial.current)setError(String(e));return null;}
+    }catch(e){if(mounted.current&&serial===loadSerial.current)setError(errorText(e));return null;}
     finally{if(mounted.current&&serial===loadSerial.current)setLoading(false);}
   },[view,captureReturn?.cameraId]);
   // 切换相机只切换已加载的配置；刷新与标定页面切换才重新读配置。
@@ -89,7 +90,7 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
       const i=await cameraApi.add({...base,name:"相机 "+n,serial:""});
       if(!mounted.current)return;
       const next=await reload();if(next&&mounted.current)setCam(Math.min(i,next.length-1));
-    }catch(e){if(mounted.current)setError(String(e));}
+    }catch(e){if(mounted.current)setError(errorText(e));}
     finally{pending.current=false;if(mounted.current)setAction("");}
   };
   const remove=async()=>{
@@ -97,7 +98,7 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
     if(!window.confirm("从相机组移除「"+config.name+"」？"))return;
     pending.current=true;setAction("remove");setError("");
     try{await cameraApi.remove(cam);if(!mounted.current)return;const next=await reload();if(next&&mounted.current)setCam(Math.min(Math.max(0,cam-1),next.length-1));}
-    catch(e){if(mounted.current)setError(String(e));}
+    catch(e){if(mounted.current)setError(errorText(e));}
     finally{pending.current=false;if(mounted.current)setAction("");}
   };
   return <div className="cam-page">

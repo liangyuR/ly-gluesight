@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { DetectParams, Recipe, RecipeDoc, RecipeSummary, SampleSetSummary, ShotLimits, ShotSpec, SiteStatus, Snapshot } from "../src/features/cycle/types";
+import type { DetectParams, Readiness, ReadinessItem, Recipe, RecipeDoc, RecipeOption, RecipeSummary, SampleSetSummary, ShotLimits, ShotSpec, SiteStatus, Snapshot } from "../src/features/cycle/types";
 import type { PartDetail, PartSummary } from "../src/features/history/types";
 import type { FrozenImage, WorkspaceView } from "../src/features/workspace/types";
 import type { useWorkspace } from "../src/features/workspace/context";
@@ -111,4 +111,14 @@ export function partDetail(): PartDetail {
     recording: {state:"complete",available:true,directory:"recorded",errors:[]},
     frames: [], triggers: 2, softwareVersion: "test", points: { d: [3, 3, 3, 3], st: [0, 0, 0, 0], w: [null, null, null, null] }, retests: [],
   };
+}
+
+export function recipeOption(id: string, runnable = true, over: Partial<RecipeOption> = {}): RecipeOption {
+  return { id, name: `工件 ${id}`, version: 1, productCode: 1, shotCount: 2, published: true, runnable,
+    reason: runnable ? null : "与样本集不符", target: runnable ? null : "workspace", ...over };
+}
+
+export function readiness(over: Partial<Readiness> = {}): Readiness {
+  const items: ReadinessItem[] = (["plc", "camera", "recipe", "engine", "audit", "site"] as const).map(key => ({ key, title: key, state: "ok", detail: "就绪", hint: null, target: null }));
+  return { ready: true, items, recipes: [recipeOption("A"), recipeOption("B")], ...over };
 }

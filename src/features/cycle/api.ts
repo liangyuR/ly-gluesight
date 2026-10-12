@@ -1,8 +1,8 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { subscribe } from "../plc";
 import { matchesPart, mergeMeasurements } from "./identity";
-import type { CycleSettings, LogLine, Measured, OfflineFault, OfflineSource, Recipe, RecipeDoc, RecipeSummary, SampleSetSummary, Scenario, SiteStatus, Snapshot } from "./types";
+import type { CycleSettings, LogLine, Measured, OfflineFault, OfflineSource, Readiness, Recipe, RecipeDoc, RecipeSummary, SampleSetSummary, Scenario, SiteStatus, Snapshot } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
   if (!isTauri() && ["cycle_save_settings","cycle_select_recipe","cycle_reset","site_enter_offline","site_leave_offline","site_preview_sample_set","site_pick_dir","offline_run","offline_stop","offline_inject","offline_capture"].includes(cmd))
@@ -32,6 +32,7 @@ export const cycleApi = {
   saveSettings: (settings: CycleSettings) => call<void>("cycle_save_settings", { settings }, () => undefined),
   selectRecipe: (recipeId: string) => call<void>("cycle_select_recipe", { recipeId }, () => undefined),
   reset: () => call<void>("cycle_reset", undefined, () => undefined),
+  readiness: () => call<Readiness | null>("cycle_readiness", undefined, () => null),
   offlineRun: (recipeId: string, scenario: Scenario, continuous: boolean, partId: string | null) =>
     call<void>("offline_run", { recipeId, scenario, continuous, partId }, () => undefined),
   offlineCapture: (partId: string | null) => call<void>("offline_capture", { partId }, () => undefined),
@@ -182,4 +183,30 @@ export function useSiteStatus() {
     return () => { alive = false; siteListeners.delete(update); off(); };
   }, []);
   return status;
+}
+
+/** 开工就绪报告：定时刷新，站点模式、配方库变化或 refreshKey 变化时立即重查。 */
+export function useReadiness(refreshKey?: string) {
+  const [readiness, setReadiness] = useState<Readiness | null>(null);
+  const serial = useRef(0);
+  const alive = useRef(true);
+  const refresh = useCallback(async () => {
+    const request = ++serial.current;
+    try {
+      const next = await cycleApi.readiness();
+      if (alive.current && request === serial.current) setReadiness(next);
+      return next;
+    } catch {
+      return null;
+    }
+  }, []);
+  useEffect(() => {
+    alive.current = true;
+    const timer = setInterval(() => void refresh(), 2000);
+    const offRecipes = listenRecipes(() => void refresh());
+    const offSite = subscribe<SiteStatus>("site://status", () => void refresh());
+    return () => { alive.current = false; clearInterval(timer); offRecipes(); offSite(); };
+  }, [refresh]);
+  useEffect(() => { void refresh(); }, [refresh, refreshKey]);
+  return { readiness, refresh };
 }

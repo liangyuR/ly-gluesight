@@ -2,17 +2,24 @@ import { useEffect, useRef, useState } from "react";
 import { FolderOpen, LogIn, LogOut, OctagonX, Play, Repeat, Square, Zap } from "lucide-react";
 import { usePlcStatus } from "../features/plc";
 import { formatTime, sampleLabelText, verdictLabel } from "../features/history/meta";
+import { errorText } from "../lib/errors";
 import {
   cycleApi,
   faultOptions,
   measurementLabel,
+  pickRunnable,
+  ReadinessChecklist,
+  RecipeRunSelect,
+  rejectionTarget,
   scenariosFor,
   siteApi,
   sourceLabel,
-  useRecipes,
+  TargetLink,
+  useReadiness,
   useSiteStatus,
   type OfflineChoice,
   type OfflineFault,
+  type ReadinessTarget,
   type SampleLabel,
   type SampleRun,
   type SampleSetSummary,
@@ -27,20 +34,24 @@ const labels: SampleLabel[] = ["ok", "ng", "unknown"];
 
 function useOperation() {
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [failure, setFailure] = useState<{ text: string; target: ReadinessTarget | null } | null>(null);
   const pending = useRef(false);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
     return () => { alive.current = false; };
   }, []);
-  const perform = async (operation: () => Promise<unknown>) => {
+  const perform = async (operation: () => Promise<unknown>, locate?: () => Promise<ReadinessTarget | null>) => {
     if (pending.current) return;
-    pending.current = true; setBusy(true); setError("");
-    try { await operation(); } catch (e) { if (alive.current) setError(String(e)); }
+    pending.current = true; setBusy(true); setFailure(null);
+    try { await operation(); } catch (e) {
+      const text = errorText(e);
+      const target = locate ? await locate() : null;
+      if (alive.current) setFailure({ text, target });
+    }
     finally { pending.current = false; if (alive.current) setBusy(false); }
   };
-  return { busy, error, perform, alive };
+  return { busy, error: failure?.text ?? "", failure, perform, alive };
 }
 
 function SampleSetView({ sampleSet }: { sampleSet: SampleSetSummary }) {
@@ -74,7 +85,7 @@ function OfflineEntry({ last }: { last: OfflineChoice | null }) {
       const summary = await siteApi.previewSampleSet(target);
       if (alive.current && request === serial.current) setPreview(summary);
     } catch (e) {
-      if (alive.current && request === serial.current) setPreviewError(String(e));
+      if (alive.current && request === serial.current) setPreviewError(errorText(e));
     } finally {
       if (alive.current && request === serial.current) setLoading(false);
     }
@@ -140,14 +151,15 @@ function OfflineEntry({ last }: { last: OfflineChoice | null }) {
 }
 
 function OfflineSession({ status }: { status: SiteStatus }) {
-  const recipes = useRecipes();
+  const { readiness, refresh } = useReadiness(`${status.source ?? ""}:${status.sampleSet?.id ?? ""}`);
+  const options = readiness?.recipes ?? null;
   const plc = usePlcStatus();
   const [recipeId, setRecipeId] = useState("");
   const [scenario, setScenario] = useState<Scenario>("normal");
   const [fault, setFault] = useState<OfflineFault>("disconnect");
   const [partId, setPartId] = useState("");
   const [stopRequested, setStopRequested] = useState(false);
-  const { busy, error, perform, alive } = useOperation();
+  const { busy, failure, perform, alive } = useOperation();
   const running = status.running;
   const sampleSet = status.source === "sampleSet" ? status.sampleSet : null;
   const scenarios = scenariosFor(status.source);
@@ -157,20 +169,21 @@ function OfflineSession({ status }: { status: SiteStatus }) {
     if (!running) setStopRequested(false);
   }, [running]);
   useEffect(() => {
-    if (!recipes.some(r => r.id === recipeId)) setRecipeId(recipes[0]?.id ?? "");
-  }, [recipes, recipeId]);
+    if (options) setRecipeId(current => pickRunnable(options, current));
+  }, [options]);
   useEffect(() => {
     if (partId && !sampleSet?.parts.some(p => p.partId === partId)) setPartId("");
   }, [sampleSet, partId]);
 
   const connected = plc?.state === "connected";
   const canRun = !running && !busy && connected && !!recipeId;
-  const run = (continuous: boolean) => void perform(() => cycleApi.offlineRun(recipeId, chosen, continuous, continuous || !partId ? null : partId));
+  const run = (continuous: boolean) => void perform(() => cycleApi.offlineRun(recipeId, chosen, continuous, continuous || !partId ? null : partId),
+    async () => rejectionTarget((await refresh()) ?? readiness, recipeId));
   const message = !connected ? "等待连接离线 S7 服务…" : stopRequested && running ? "已请求停止，等待本件完成…" : status.message;
 
   return (
     <div className="stack offline-console">
-      {error && <p className="notice error" role="alert">{error}</p>}
+      {failure && <p className="notice error" role="alert">{failure.text} <TargetLink target={failure.target} /></p>}
       <section className="panel" aria-label="离线状态">
         <div className="panel-toolbar">
           <h3 className="panel-title">当前：离线 · {status.source ? sourceLabel[status.source] : "—"}</h3>
@@ -186,16 +199,11 @@ function OfflineSession({ status }: { status: SiteStatus }) {
         </dl>
         {sampleSet && <SampleSetView sampleSet={sampleSet} />}
       </section>
+      {readiness && !readiness.ready && <ReadinessChecklist readiness={readiness} />}
       <section className="panel" aria-label="运行控制">
         <h3 className="panel-title">运行控制</h3>
         <div className="offline-controls">
-          <select aria-label="离线配方" className="input" value={recipeId} onChange={(e) => setRecipeId(e.target.value)} disabled={running || busy}>
-            {recipes.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.id} · 代码 {r.productCode} · N={r.shotCount}
-              </option>
-            ))}
-          </select>
+          <RecipeRunSelect options={options} value={recipeId} onChange={setRecipeId} disabled={running || busy} />
           <select aria-label="离线工况" className="input" value={chosen} onChange={(e) => setScenario(e.target.value as Scenario)} disabled={running || busy}>
             {scenarios.map(([v, label]) => (
               <option key={v} value={v}>

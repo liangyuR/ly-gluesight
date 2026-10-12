@@ -1,20 +1,22 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AppLayout from "../src/layout/AppLayout";
 import OfflinePage from "../src/pages/OfflinePage";
-import type { SiteStatus } from "../src/features/cycle/types";
-import { sampleSet, siteStatus } from "./fixtures";
+import type { Readiness, SiteStatus } from "../src/features/cycle/types";
+import { readiness, recipeOption, sampleSet, siteStatus } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: () => true }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 
 let site: SiteStatus;
+let report: Readiness | null;
 const listeners = new Map<string, (event: { payload: unknown }) => void>();
 beforeEach(() => {
   listeners.clear();
+  report = null;
   vi.mocked(listen).mockImplementation(async (event, listener) => {
     listeners.set(event, listener as (event: { payload: unknown }) => void);
     return () => {};
@@ -22,6 +24,7 @@ beforeEach(() => {
   vi.mocked(invoke).mockImplementation(async (command) => {
     if (command === "site_status") return site;
     if (command === "cycle_recipes") return [];
+    if (command === "cycle_readiness") return report;
     throw new Error(`未声明的桌面调用：${command}`);
   });
 });
@@ -48,5 +51,17 @@ describe("离线控制台工况", () => {
     render(<MemoryRouter><OfflinePage /></MemoryRouter>);
     const select = await screen.findByRole("combobox", { name: "离线工况" });
     expect(within(select).getAllByRole("option").map(o => (o as HTMLOptionElement).value)).toEqual(expected);
+  });
+});
+
+describe("离线控制台配方下拉", () => {
+  it("样本集下有不可运行的配方 → 只有可运行配方可选并默认选中第一个可运行配方", async () => {
+    site = siteStatus({ mode: "offline", source: "sampleSet", sampleSet: sampleSet() });
+    report = readiness({ recipes: [recipeOption("A", false), recipeOption("B"), recipeOption("C")] });
+    render(<MemoryRouter><OfflinePage /></MemoryRouter>);
+    const select = await screen.findByRole("combobox", { name: "离线配方" });
+    await waitFor(() => expect(select).toHaveValue("B"));
+    const options = within(select).getAllByRole("option") as HTMLOptionElement[];
+    expect(options.filter(o => !o.disabled).map(o => o.value)).toEqual(["B", "C"]);
   });
 });

@@ -235,7 +235,7 @@ impl ProductionHost {
     }
 
     fn ensure(&self, app: &AppHandle, recipe: Arc<Recipe>, core: Option<String>) -> Result<Arc<Prepared>, String> {
-        let key = format!("{}:{}:{}", recipe.id, recipe.revision_id, core.as_deref().unwrap_or_default());
+        let key = warmup_key(&recipe, core.as_deref());
         if let Some(prepared) = self.begin(&key, Instant::now())? { return Ok(prepared); }
         let app = app.clone();
         let slot = self.slot.clone();
@@ -268,6 +268,17 @@ impl ProductionHost {
         });
         Err("发布资源与图像引擎正在预热，完成前不能布防".into())
     }
+}
+
+fn warmup_key(recipe: &Recipe, core: Option<&str>) -> String {
+    format!("{}:{}:{}", recipe.id, recipe.revision_id, core.unwrap_or_default())
+}
+
+/// 这一配方的发布资源与图像引擎正在预热（尚未就绪也未失败）。
+pub fn warming(app: &AppHandle, recipe: &Recipe) -> bool {
+    if !crate::site::image_measurement(app) { return false; }
+    let key = warmup_key(recipe, app.state::<CycleHost>().settings().lyflow_core.as_deref());
+    matches!(app.state::<ProductionHost>().entries.lock().unwrap().get(&key), Some(Entry::Preparing))
 }
 
 pub fn ready(app: &AppHandle, recipe: &Recipe) -> Result<Option<Arc<Prepared>>, String> {
