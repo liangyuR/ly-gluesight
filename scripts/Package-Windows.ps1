@@ -20,7 +20,17 @@ foreach ($name in @('LyFlowRuntime', 'MvsRuntime', 'VcRuntime', 'MvsLicense', 'R
 & (Join-Path $PSScriptRoot 'Prepare-RuntimeDependencies.ps1') @parameters
 if ($PrepareOnly) { return }
 $configPath = Join-Path $stageRoot 'tauri.runtime.json'
-@{ bundle = @{ resources = @{ 'target/package-runtime/runtime/' = 'runtime/' } } } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configPath -Encoding utf8NoBOM
+$applicationRuntime = @('vcruntime140.dll', 'vcruntime140_1.dll')
+$applicationRuntimeRoot = Join-Path $stageRoot 'application-runtime'
+[void][IO.Directory]::CreateDirectory($applicationRuntimeRoot)
+$resources = @{ 'target/package-runtime/runtime/' = 'runtime/' }
+foreach ($name in $applicationRuntime) {
+    $source = Join-Path $stageRoot "runtime/lyflow/$name"
+    Assert-X64RuntimeImage $source
+    Copy-Item -LiteralPath $source -Destination (Join-Path $applicationRuntimeRoot $name)
+    $resources["target/package-runtime/application-runtime/$name"] = $name
+}
+@{ bundle = @{ resources = $resources } } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configPath -Encoding utf8NoBOM
 Push-Location -LiteralPath $projectRoot
 try {
     & pnpm exec tauri build --no-bundle --target x86_64-pc-windows-msvc --config $configPath
@@ -41,6 +51,11 @@ try {
         Remove-Item -LiteralPath $installedRuntime -Recurse -Force
     }
     Copy-RuntimeTree $sourceRuntime $installedRuntime
+    foreach ($name in $applicationRuntime) {
+        $destination = Join-Path $releaseRoot $name
+        if (Test-Path -LiteralPath $destination) { Assert-NoRuntimeLinks $destination }
+        Copy-Item -LiteralPath (Join-Path $applicationRuntimeRoot $name) -Destination $destination
+    }
     $applicationReport = Join-Path $stageRoot 'application-runtime-validation.json'
     $start = [Diagnostics.ProcessStartInfo]::new($applicationPath)
     $start.UseShellExecute = $false
@@ -60,6 +75,7 @@ try {
     if (-not (Test-Path -LiteralPath $applicationReport -PathType Leaf)) { throw '应用运行库自检未生成报告；停止生成安装包。' }
     $result = Get-Content -LiteralPath $applicationReport -Raw | ConvertFrom-Json
     if ($result.status -ne 'ok') { throw "应用运行库自检报告未通过；请查看 $applicationReport" }
+    Assert-LyFlowVersions $result.lyflow.clientAbiVersion $result.lyflow.version '应用客户端与实际引擎'
     & pnpm exec tauri bundle --bundles nsis --target x86_64-pc-windows-msvc --config $configPath
     if ($LASTEXITCODE -ne 0) { throw "Windows 安装包生成失败（退出码 $LASTEXITCODE）" }
 } finally { Pop-Location }

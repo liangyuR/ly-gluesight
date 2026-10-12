@@ -10,13 +10,14 @@
 
 ```json
 {
-  "abiVersion": 15,
-  "engineVersion": "与 lyflow_version 接口返回值一致的实际版本",
-  "sourceRevision": "正式构建对应的明确源码修订号"
+  "abiVersion": "1.1.0",
+  "engineVersion": "1.1.0",
+  "sourceRevision": "正式构建对应的完整40位Git源码修订号",
+  "localValidationOnly": false
 }
 ```
 
-ABI 字段是产物提供方的声明，不是动态探测结果。打包还会调用应用真实的图像输入、胶路测量和标定流程验证兼容性。必须具备 `io.load_image`、`image.board_calib`、`image.load_calib`、`glue.taught_path`、`glue.bead_width` 算子。脚本不构建其他仓库，不自动寻找或采用历史临时产物。
+ABI 跟随 lyFlow 产品版本，必须为字符串。当前固定 `1.1.0`：产物描述、依赖清单、DLL 的 `lyflow_abi_version_string()` 与 `lyflow_version()`，以及应用所用客户端 `ABI_VERSION` 必须完全一致；数字 `15`、字符串 `"15"`、其他版本或缺少新 ABI 接口的旧 DLL 均直接拒绝，不做转换或旧 ABI 回退。`localValidationOnly` 必须显式为 `false`；DLL 的 `lyflow_source_revision()`、描述与清单必须为完全相同的 40 位 Git 修订，空修订或 dirty/本机诊断候选不得进入 GS 依赖包。脚本先读取 DLL 的实际 ABI/引擎版本，再调用测量相关接口；应用自检通过后还会核对客户端版本。打包继续调用应用真实的图像输入、胶路测量和标定流程验证兼容性。必须具备 `io.load_image`、`image.board_calib`、`image.load_calib`、`glue.taught_path`、`glue.bead_width` 算子。脚本不构建其他仓库，不自动寻找或采用历史临时产物。
 
 ```powershell
 pnpm install --frozen-lockfile
@@ -32,7 +33,9 @@ pnpm run package -LyFlowRuntime 'C:\release\lyflow\bin' -MvsRuntime 'C:\release\
 
 其他可选参数：`-VcRuntime` / `VC_RUNTIME_DIR` 指定 x64 CRT；`-MvsLicense` 指定官方许可证目录；`-PrepareOnly` 仅收集并自检运行库，不编译或生成安装包。
 
-MVS 完整保留运行目录及子目录，包括 DLL、CTI、配置文件、manifest 和 `ThirdParty`，许可证放入 `runtime/mvs/Licenses`。lyFlow 收集运行依赖，排除调试符号、开发数据、配方和历史记录。两套运行库分别部署到 `runtime/lyflow`、`runtime/mvs`。
+MVS 完整保留运行目录及子目录，包括 DLL、CTI、配置文件、manifest 和 `ThirdParty`，许可证放入 `runtime/mvs/Licenses`。lyFlow 收集运行依赖，完整保留 `license/`、`licenses/` 子树中的无扩展名版权文件及其他许可格式，排除其他目录中的调试符号、开发数据、配方和历史记录。两套运行库分别部署到 `runtime/lyflow`、`runtime/mvs`。
+
+应用启动所需的 `vcruntime140.dll`、`vcruntime140_1.dll` 同时部署到 `GlueSight.exe` 所在目录，避免依赖目标电脑已有的 VC++ CRT。安装验证检查这两项文件的存在与 x64 架构。
 
 脚本每次重建项目内暂存目录，先检查文件结构、x64 架构、接口、实际版本、算子及 MVS 初始化/枚举，再编译应用、验证实际测量，全部通过后生成安装包。无相机时枚举结果为空允许通过；接口调用失败不允许通过。任一步失败都会停止。
 
@@ -82,6 +85,10 @@ pnpm run package -RuntimeBundle 'C:\release\runtime-bundle'
 & 'C:\Apps\GlueSight\GlueSight.exe' --check-packaged-runtime 'C:\reports\runtime.json'
 ```
 
-报告目录需事先存在。成功退出码为 0；失败为非零并记录原因。验证覆盖合成胶条正常测量、空白图缺胶、新帧偏移、棋盘格标定与空白图拒绝，以及随包 MVS 加载和枚举。它证明软件运行组件及接口可用，不代表真机触发收图、现场精度或长稳验收。
+报告目录需事先存在。成功退出码为 0；失败为非零并记录原因。脚本报告分别记录 DLL 实际 `abiVersion`、描述中的 `declaredAbiVersion` 和引擎 `version`；应用报告记录 `clientAbiVersion`、实际版本与加载路径。验证覆盖合成胶条正常测量、空白图缺胶、新帧偏移、棋盘格标定与空白图拒绝，以及随包 MVS 加载和枚举。它证明软件运行组件及接口可用，不代表真机触发收图、现场精度或长稳验收。
 
-当前实现的首版依赖包仍等待正式 lyFlow 产物。脚本、工作流和失败路径可独立验证，但在正式产物提供并完成全流程前，不能把代码回归标为已生成并验收首个安装包。
+应用首包版本保持 `0.1.0`，与 lyFlow 的 `1.1.0` 独立；应用的三处版本及 Cargo.lock 根包版本保持一致。历史 PR #26 合入旧打包分支，未进入 main；首次发包前必须补齐该 ABI 集成，不能仅根据 PR 的 merged 状态判断 main 已具备新版接口。
+
+2026-10-12 使用 lyFlow [Windows release 38158234330](https://github.com/liangyuR/lyFlow/actions/runs/38158234330) 的正式 `windows-release` 产物，运行库 ZIP 为 `lyflow-runtime-win-x64-v1.1.0.zip`，源码修订为 `32553f6d08c41f9db2c000e8694bd7b3ecc8bf92`。实际 DLL 的 ABI、引擎版本、源码修订、全部必需算子与 MVS 初始化/枚举通过，已导出固定依赖 ZIP。此前构建 `38150280499` 缺少 `glue.taught_path` 的阻塞由此正式产物解决。
+
+这份正式 DLL 已通过四项真实视觉回归：胶宽/偏移/缺胶/极性/新帧、多视图、并发同名运行隔离和棋盘格标定。普通回归、依赖导出与 DLL 回归不能替代完整安装包验收；发布 `v0.1.0` 前仍须通过 GitHub 的应用自检、NSIS 构建和静默安装后的自检。GitHub 成功运行生成草稿 Release，检查产物后显式正式发布。

@@ -2194,7 +2194,7 @@ dependencies = [
 [[package]]
 name = "lyflow-client"
 version = "1.1.0"
-source = "git+ssh://git@github.com/liangyuR/lyFlow.git?rev=5b796c35d6cafd441a24bc09e620aaae399ca5ac#5b796c35d6cafd441a24bc09e620aaae399ca5ac"
+source = "git+ssh://git@github.com/liangyuR/lyFlow.git?rev=d4c54ee2a56b2c6f93f4fb1e6614f612a447d02b#d4c54ee2a56b2c6f93f4fb1e6614f612a447d02b"
 dependencies = [
  "libloading 0.8.9",
  "serde_json",

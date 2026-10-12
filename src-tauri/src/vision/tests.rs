@@ -28,6 +28,17 @@ fn save_pgm(path: &Path, width: u32, height: u32, pixels: &[u8]) {
 #[ignore = "requires a real core DLL with std-image and glue"]
 fn native_board_calibration_uses_full_pixels_and_new_frames_do_not_reuse_old_board() {
     let engine = native_engine();
+    #[cfg(windows)]
+    {
+        let mixed = format!("{}/lyflow_core.dll", engine.path.parent().unwrap().display());
+        let loaded = Engine::load(Path::new(&mixed)).expect("Mixed Windows separators must load the bundled core");
+        assert_eq!(loaded.path.canonicalize().unwrap(), engine.path.canonicalize().unwrap());
+        assert_eq!(loaded.version, engine.version);
+        let host = VisionHost::default();
+        let first = host.engine_at(Path::new(&mixed), false).unwrap();
+        let second = host.engine_at(Path::new(&mixed), false).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+    }
     let (width, height) = (640, 480);
     let mut pixels = vec![220; width * height];
     for y in 0..280 {

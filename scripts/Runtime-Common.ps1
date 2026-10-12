@@ -3,7 +3,31 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 function Get-RuntimeConfiguration {
-    Get-Content -LiteralPath (Join-Path $PSScriptRoot '../packaging/runtime.json') -Raw | ConvertFrom-Json
+    $config = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../packaging/runtime.json') -Raw | ConvertFrom-Json
+    if ($config.lyflowAbiVersion -isnot [string] -or $config.lyflowAbiVersion -cnotmatch '^\d+\.\d+\.\d+$') { throw '固定 lyFlow ABI 必须是产品版本字符串。' }
+    $config
+}
+
+function Assert-LyFlowVersions($AbiVersion, $EngineVersion, [string]$Context) {
+    $expected = (Get-RuntimeConfiguration).lyflowAbiVersion
+    if ($AbiVersion -isnot [string] -or $EngineVersion -isnot [string] -or
+        $AbiVersion -cne $expected -or $EngineVersion -cne $expected) {
+        throw "$Context 的 lyFlow ABI 和引擎版本必须严格等于字符串 '$expected'；实际 ABI='$AbiVersion'，引擎='$EngineVersion'。不接受数字 ABI 或旧产物。"
+    }
+}
+
+function Assert-LyFlowSourceRevision($Actual, $Expected, [string]$Context) {
+    if ($Actual -isnot [string] -or $Expected -isnot [string] -or
+        $Actual -cnotmatch '^[0-9a-f]{40}$' -or $Expected -cnotmatch '^[0-9a-f]{40}$' -or $Actual -cne $Expected) {
+        throw "$Context 的 lyFlow sourceRevision 必须是与正式产物严格一致的 40 位 Git 修订；实际='$Actual'，期望='$Expected'。"
+    }
+}
+
+function Assert-LyFlowReleaseMetadata($Metadata, [string]$Context) {
+    Assert-LyFlowSourceRevision $Metadata.sourceRevision $Metadata.sourceRevision $Context
+    if ($Metadata.localValidationOnly -isnot [bool] -or $Metadata.localValidationOnly) {
+        throw "$Context 必须显式声明 localValidationOnly=false；拒绝 dirty 或仅本机诊断的 lyFlow 候选。"
+    }
 }
 
 function Assert-RuntimePlatform {
@@ -84,10 +108,13 @@ function Copy-RuntimeTree([string]$Source, [string]$Destination, [switch]$LyFlow
     Assert-NoRuntimeLinks $Source
     [void][IO.Directory]::CreateDirectory($Destination)
     foreach ($file in Get-ChildItem -LiteralPath $Source -Recurse -File -Force) {
-        if ($LyFlow -and $file.Extension -notin @('.dll', '.cti', '.ini', '.manifest', '.txt', '.lic', '.xml', '.yaml', '.yml', '.json')) { continue }
-        if ($file.Extension -in @('.pdb', '.ilk', '.exp', '.lib')) { continue }
         $relative = [IO.Path]::GetRelativePath($Source, $file.FullName)
-        if ($LyFlow -and ($relative -match '(?i)(^|[\\/])(tests?|examples?|samples?|recipes?|history|recordings?|logs?|debug)([\\/]|$)' -or $file.BaseName -match '(?i)(^|[_-])(test|debug|example)([_-]|$)' -or $file.Name -like '*.lyflow.json')) { continue }
+        $license = $LyFlow -and $relative -match '(?i)^licenses?[\\/]'
+        if (-not $license) {
+            if ($LyFlow -and $file.Extension -notin @('.dll', '.cti', '.ini', '.manifest', '.txt', '.lic', '.xml', '.yaml', '.yml', '.json')) { continue }
+            if ($file.Extension -in @('.pdb', '.ilk', '.exp', '.lib')) { continue }
+            if ($LyFlow -and ($relative -match '(?i)(^|[\\/])(tests?|examples?|samples?|recipes?|history|recordings?|logs?|debug)([\\/]|$)' -or $file.BaseName -match '(?i)(^|[_-])(test|debug|example)([_-]|$)' -or $file.Name -like '*.lyflow.json')) { continue }
+        }
         $target = Join-Path $Destination $relative
         [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))
         Copy-Item -LiteralPath $file.FullName -Destination $target
@@ -100,7 +127,9 @@ function Assert-RuntimeManifest([string]$RuntimeRoot) {
     $manifest = Get-Content -LiteralPath (Join-Path $RuntimeRoot 'manifest.json') -Raw | ConvertFrom-Json
     Assert-NoRuntimeDigests $manifest
     if ($manifest.bundleVersion -ne $config.bundleVersion -or $manifest.architecture -ne $config.architecture -or
-        $manifest.mvs.version -ne $config.mvsVersion -or $manifest.lyflow.abiVersion -ne $config.lyflowAbiVersion) { throw '运行库包版本、架构、MVS 版本或 lyFlow ABI 声明不符合固定配置。' }
+        $manifest.mvs.version -ne $config.mvsVersion) { throw '运行库包版本、架构或 MVS 版本不符合固定配置。' }
+    Assert-LyFlowVersions $manifest.lyflow.abiVersion $manifest.lyflow.version '依赖包清单'
+    Assert-LyFlowReleaseMetadata $manifest.lyflow '依赖包清单'
     $actual = @(Get-RuntimeFiles $RuntimeRoot | Where-Object path -ne 'manifest.json')
     if ($actual.Count -ne @($manifest.files).Count) { throw '运行库文件清单数量不一致。' }
     $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)

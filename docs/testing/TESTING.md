@@ -39,9 +39,15 @@ HTML 覆盖率报告输出到 `coverage/index.html`，机器可读摘要为 `cov
 
 `cargo fmt --all -- --check` 不通过：全库有大量与默认 rustfmt 不一致的排版，没有做全库重排，不能记作格式检查通过。
 
+### 打包版本契约回归
+
+运行 `pwsh -NoProfile -File tests/packaging/Test-RuntimeBundle.ps1`，覆盖字符串 ABI 的有效清单，数字 `15`、字符串 `"15"`、旧/未来/空白/空值 ABI 与引擎版本拒绝，以及应用客户端与引擎版本不一致；还覆盖源码修订非法/冒用、dirty DLL 空修订和本机诊断候选拒绝。该回归不需要正式 lyFlow DLL；它不能证明新 DLL 导出接口或完整安装包已验收。
+
+正式产物需运行 `pnpm run package`：独立进程探针必须读取 `lyflow_abi_version_string()`，将其与 `lyflow_version()`、描述、清单及固定配置严格比较，并核对 `lyflow_source_revision()` 与描述、清单的 40 位 Git 修订；应用加载必须由新客户端拒绝缺失接口或版本失配的 DLL，随后检查真实注图、胶宽与标定。安装包生成前再次核对应用报告中的 `clientAbiVersion` 和引擎版本。旧数字 ABI DLL 不在兼容范围内。软件回归不替代现场相机与 PLC 验收。
+
 ### 真实 DLL 回归
 
-客户端固定到 lyFlow 主线 `5b796c3`（Image ABI v15），通过 `RunSpec.image_inputs` 注入完整 u8 灰度帧。运行库必须包含 `io.load_image`、`image.board_calib`、`image.load_calib`、`glue.taught_path`、`glue.bead_width`（LyFlow `feat/glue-taught-path` 分支，在 lyFlow 仓库设置 `LYFLOW_PACKS=glue` 后构建 core）；缺算子时加载明确拒绝，安装包自检 `scripts/Test-PackagedRuntime.ps1` 用同一份算子清单。系统设置填 DLL 绝对路径。
+客户端固定到 `src-tauri/Cargo.toml` 中明确的 lyFlow 源码修订；当前要求 ABI 产品版本字符串 `1.1.0` 与引擎版本严格一致，通过 `RunSpec.image_inputs` 注入完整 u8 灰度帧。运行库必须包含 `io.load_image`、`image.board_calib`、`image.load_calib`、`glue.taught_path`、`glue.bead_width`（正式 lyFlow 产物包含标准算子包和 glue 包）；缺算子时加载明确拒绝，安装包自检 `scripts/Test-PackagedRuntime.ps1` 用同一份算子清单。系统设置填 DLL 绝对路径。
 
 真实 DLL 用例名都以 `native_` 开头。设置 `LYFLOW_CORE_DLL` 后运行：
 

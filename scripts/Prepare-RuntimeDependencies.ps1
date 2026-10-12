@@ -25,7 +25,8 @@ if ($RuntimeBundle) {
     if (-not (Test-Path -LiteralPath $descriptorPath)) { throw '正式 lyFlow 产物缺少 lyflow-runtime.json（abiVersion、engineVersion、sourceRevision）。' }
     $descriptor = Get-Content -LiteralPath $descriptorPath -Raw | ConvertFrom-Json
     Assert-NoRuntimeDigests $descriptor
-    if ($descriptor.abiVersion -ne $config.lyflowAbiVersion -or [string]::IsNullOrWhiteSpace($descriptor.engineVersion) -or [string]::IsNullOrWhiteSpace($descriptor.sourceRevision)) { throw '正式 lyFlow ABI 声明或版本/修订号无效。' }
+    Assert-LyFlowVersions $descriptor.abiVersion $descriptor.engineVersion '正式产物描述'
+    Assert-LyFlowReleaseMetadata $descriptor '正式产物描述'
     if (-not (Test-Path -LiteralPath (Join-Path $MvsRuntime 'MvCameraControl.dll'))) { throw 'MVS 目录缺少 MvCameraControl.dll；请设置 MVS_RUNTIME_DIR。' }
     if (-not $MvsLicense) {
         $candidates = @((Join-Path $MvsRuntime 'Licenses'), (Join-Path $MvsRuntime '../../Licenses'), (Join-Path $MvsRuntime 'License'), (Join-Path $MvsRuntime '../License'), (Join-Path $MvsRuntime '../../License'), (Join-Path ${env:ProgramFiles(x86)} 'MVS/License'))
@@ -56,7 +57,7 @@ if ($RuntimeBundle) {
     Copy-RuntimeTree $MvsLicense (Join-Path $runtimeRoot 'mvs/Licenses')
     [ordered]@{
         bundleVersion = $config.bundleVersion; architecture = $config.architecture
-        lyflow = @{ version = $descriptor.engineVersion; abiVersion = $descriptor.abiVersion; sourceRevision = $descriptor.sourceRevision; operators = $config.requiredOperators }
+        lyflow = @{ version = $descriptor.engineVersion; abiVersion = $descriptor.abiVersion; sourceRevision = $descriptor.sourceRevision; localValidationOnly = $false; operators = $config.requiredOperators }
         mvs = @{ version = $config.mvsVersion }
         files = @(Get-RuntimeFiles $runtimeRoot)
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runtimeRoot 'manifest.json') -Encoding utf8NoBOM
