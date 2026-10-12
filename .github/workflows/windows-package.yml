@@ -80,8 +80,21 @@ jobs:
           $manifest = Get-Content -LiteralPath (Join-Path $destination 'runtime/manifest.json') -Raw | ConvertFrom-Json
           if ($manifest.architecture -ne 'x64' -or $manifest.bundleVersion -ne $config.bundleVersion -or $manifest.mvs.version -ne $config.mvsVersion) { throw 'Runtime manifest does not match the pinned bundle and MVS version.' }
           "RUNTIME_BUNDLE=$destination" >> $env:GITHUB_ENV
-      - name: Build bundled installer
-        run: pwsh -NoProfile -File scripts/Package-Windows.ps1 -RuntimeBundle $env:RUNTIME_BUNDLE
+      - name: Prepare bundled runtime
+        run: pwsh -NoProfile -File scripts/Prepare-RuntimeDependencies.ps1 -RuntimeBundle $env:RUNTIME_BUNDLE
+      - name: Prepare installer resources
+        run: pwsh -NoProfile -File scripts/Prepare-PackageResources.ps1
+      - name: Production frontend build
+        run: pnpm build
+      - name: Production Rust build
+        working-directory: src-tauri
+        run: |
+          $env:TAURI_CONFIG = Get-Content -LiteralPath target/package-runtime/tauri.runtime.json -Raw
+          cargo build --locked --release --target x86_64-pc-windows-msvc --bin GlueSight --features tauri/custom-protocol
+      - name: Verify application runtime
+        run: pwsh -NoProfile -File scripts/Test-PackageApplication.ps1 -ApplicationPath src-tauri/target/x86_64-pc-windows-msvc/release/GlueSight.exe
+      - name: Bundle NSIS installer
+        run: pnpm exec tauri bundle --bundles nsis --target x86_64-pc-windows-msvc --config src-tauri/target/package-runtime/tauri.runtime.json
       - name: Verify installed deployment
         run: |
           $installers = @(Get-ChildItem -LiteralPath src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis -Filter '*-setup.exe' -File)
