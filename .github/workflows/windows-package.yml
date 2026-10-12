@@ -180,6 +180,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gluesight-windows-x64
+          overwrite: true
           retention-days: 14
           if-no-files-found: error
           path: |
@@ -194,6 +195,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gluesight-windows-failure-reports
+          overwrite: true
           retention-days: 14
           if-no-files-found: ignore
           path: |
