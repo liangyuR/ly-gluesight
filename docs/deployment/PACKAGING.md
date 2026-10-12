@@ -68,10 +68,12 @@ pnpm run package -RuntimeBundle 'C:\release\runtime-bundle'
 ## GitHub Actions
 
 - **Windows CI**：PR、main 提交和手动运行执行前端类型检查、测试、生产构建、打包脚本专项测试和 Rust 非忽略回归；不要求相机或 MVS 驱动。
-- **Windows package**：手动运行或推送 `vX.Y.Z` tag 时，从固定依赖 Release 下载 ZIP，调用同一本地打包脚本，完成静默安装及安装后的自检。依赖 Release 不存在时明确失败，不采用其他版本。
+- **Windows package**：手动运行或推送 `vX.Y.Z` tag 时，从固定依赖 Release 下载 ZIP，准备运行库与安装资源后，直接执行 `pnpm build`、`cargo build --locked --release --target x86_64-pc-windows-msvc --bin GlueSight --features tauri/custom-protocol`。Cargo 构建步骤通过 `TAURI_CONFIG` 读取暂存的 `tauri.runtime.json`，嵌入生产前端并沿用运行库资源配置。应用运行库自检通过后，直接执行 `pnpm exec tauri bundle --bundles nsis`，再完成静默安装及安装后的自检。依赖 Release 不存在时明确失败，不采用其他版本。
 - 手动打包上传安装包、依赖清单和验证报告，保留 14 天。版本 tag 必须与 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 一致；验证成功后创建草稿 Release，由负责人检查后正式发布。
 
 使用 GitHub 托管 `windows-2022` runner。Node.js/pnpm 版本读取项目声明，使用锁文件安装依赖；Rust 使用 stable。源码依赖仓库目前公开，CI 将 SSH GitHub 地址重写为 HTTPS，无需读取 Token。构建任务只读，创建草稿 Release 的任务单独获得写权限。
+
+workflow 不再通过 `Package-Windows.ps1` 调用构建；本机 `pnpm run package` 入口保留，共用 `Prepare-PackageResources.ps1` 和 `Test-PackageApplication.ps1` 的资源准备、CRT 部署和应用自检。CI 继续直接执行 `pnpm install --frozen-lockfile`、`pnpm test`、`pnpm build` 与 `cargo test --locked --lib`；打包专项脚本只验证部署约束，不代理前后端 build/test。
 
 ## 安装行为与验证边界
 
