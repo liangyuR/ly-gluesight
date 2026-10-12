@@ -14,6 +14,8 @@ import type { Comparison, RecordImages } from "../features/workspace/types";
 import Modal from "../features/plc/components/Modal";
 import { errorText } from "../lib/errors";
 
+const candidateTaught=(w:{doc:{shots:{skip?:boolean}[]};frames:{saved?:unknown}[]})=>w.doc.shots.every((shot,k)=>shot.skip||!!w.frames[k]?.saved);
+
 const comparisonLabel = { rules: "规则重判", raw: "候选原图复测", original: "原发布包重现" };
 export default function HistoryDetailPage() {
   const {id}=useParams(), navigate=useNavigate(), ws=useWorkspace();
@@ -63,7 +65,7 @@ export default function HistoryDetailPage() {
 
   const runCompare=async(fromRaw:boolean)=>{
     if(pending.current||!detail||!ws.data||ws.busy||ws.dirty||ws.frameDirty||ws.data.workspace.doc.id!==layout?.id)return;
-    if(fromRaw?(!raw?.complete||!ws.data.workspace.frames.every(f=>f.saved)):(!detail.points?.st.length||!detail.points.st.every(st=>st<2)))return;
+    if(fromRaw?(!raw?.complete||!candidateTaught(ws.data.workspace)):(!detail.points?.st.length||!detail.points.st.every(st=>st<2)))return;
     pending.current=true;savedSerial.current++;setWorking(true);setError("");
     const valid=()=>current.current.alive&&current.current.scope===scope;
     try{const result=await workspaceApi.compare(ws.data.workspace.doc.id,ws.data.workspace.revision,detail.summary.id,fromRaw);if(valid()){setComparison(result);setSavedComparisons(v=>[result,...v.filter(c=>c.id!==result.id)]);}}
@@ -110,7 +112,7 @@ export default function HistoryDetailPage() {
         <button className="btn" disabled={working||ws.busy||!layout||(!ws.list.some(r=>r.id===layout.id)&&!ws.drafts.some(r=>r.doc.id===layout.id))} onClick={()=>setSwitching(true)}>使用该配方候选</button>
         <button className="btn" disabled={working||!raw?.complete||!s.bundleId} onClick={()=>void runOriginal()}><ScanEye size={15}/>按原发布包重现</button>
         <button className="btn" disabled={disabled||!complete} onClick={()=>void runCompare(false)}><Scale size={15}/>按候选规则重判</button>
-        <button className="btn primary" disabled={disabled||!raw?.complete||!ws.data?.workspace.frames.every(f=>f.saved)} onClick={()=>void runCompare(true)}><ScanEye size={15}/>从原图复测整件</button>
+        <button className="btn primary" disabled={disabled||!raw?.complete||!(ws.data&&candidateTaught(ws.data.workspace))} onClick={()=>void runCompare(true)}><ScanEye size={15}/>从原图复测整件</button>
       </div>
       {ws.dirty||ws.frameDirty?<p className="c-warn">先保存候选配置和示教中线，再执行对照。</p>:!candidateReady&&<p className="muted">选择此配方的候选后，可以调整规则并对照原始结论。</p>}
       {ws.error&&<p className="c-warn">{ws.error}</p>}<p className="muted">{raw?.message??"正在检查原图保存状态…"} · 对照结果单独保存，原始生产记录保留。</p>

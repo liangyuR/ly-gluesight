@@ -47,6 +47,12 @@ describe("历史工件复测", () => {
     expect(screen.getByRole("button", { name: "将此帧用于示教" })).toBeDisabled();
   });
 
+  it("候选含不检拍照点 → 其余点已示教即可从原图复测整件",async()=>{
+    ws.data!.workspace.doc.shots[1].skip=true;ws.data!.workspace.frames[1].saved=false;
+    show();await screen.findByText(/原图完整/);
+    expect(screen.getByRole("button",{name:"从原图复测整件"})).toBeEnabled();
+  });
+
   it("候选修订改变后旧复测结果不能覆盖当前目标",async()=>{
     const pending=deferred<Comparison>();vi.mocked(workspaceApi.compare).mockReturnValueOnce(pending.promise);
     const old=comparison(),page=show();await screen.findByText(/原图完整/);await userEvent.click(screen.getByRole("button",{name:"按候选规则重判"}));
