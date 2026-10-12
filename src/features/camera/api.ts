@@ -53,7 +53,7 @@ export const cameraApi = {
   add: (config: CameraConfig) => call<number>("camera_add", { config }, () => 0),
   remove: (cam: number) => call<void>("camera_remove", { cam }, () => undefined),
   listDevices: () => call<DeviceSummary[]>("camera_list_devices", undefined, () => []),
-  pickReplayDir: (directory: string) => call<string | null>("camera_pick_replay_dir", { directory }, () => null),
+  pickReplayDir: (directory: string, title?: string) => call<string | null>("camera_pick_replay_dir", { directory, title: title ?? null }, () => null),
   preview: (cam: number, view?: number) => call<ArrayBuffer>("camera_preview", { cam, ...(view == null ? {} : { view }) }, () => new ArrayBuffer(0)).then(decodePreview),
   softTrigger: (cam: number) => call<void>("camera_soft_trigger", { cam }, () => undefined),
   dryRunStart: () => call<void>("camera_dry_run_start", undefined, () => undefined),

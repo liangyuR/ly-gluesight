@@ -15,6 +15,7 @@ const sources: [CameraSource, string][] = [
   ["mvs", "海康 MVS"],
   ["sim", "模拟相机"],
   ["replay", "回放目录"],
+  ["sampleSet", "样本集（离线）"],
 ];
 
 export default function CameraConfigPanel({ cam, initial, status, onSaved, onSavingChange }: Props) {
@@ -84,6 +85,7 @@ export default function CameraConfigPanel({ cam, initial, status, onSaved, onSav
   );
   const mvs = config.source === "mvs";
   const replay = config.source === "replay";
+  const sampleSet = config.source === "sampleSet";
   const triggered = config.acquisition === "triggered";
   const invalid=!config.name.trim()?"相机名称不能为空":
     ![1,3].includes(config.viewCount)?"设备视角数只能为 1 或 3":
@@ -92,6 +94,7 @@ export default function CameraConfigPanel({ cam, initial, status, onSaved, onSav
     !Number.isFinite(config.gainDb)?"增益需为有限数":
     ![config.triggerDelayUs,config.debouncerUs].every(v=>Number.isFinite(v)&&v>=0)?"触发延时与输入滤波需为非负有限数":
     !triggered&&!(config.fps>=1&&config.fps<=500)?"连续采集帧率需在 1–500 fps 之间":
+    sampleSet&&!triggered?"样本集相机只支持触发采集":
     replay&&!config.replayDir.trim()?"回放相机需要填写图片目录":
     replay&&(!Number.isInteger(config.replayChannel)||config.replayChannel<0)?"回放通道需为非负整数":"";
 
@@ -129,7 +132,7 @@ export default function CameraConfigPanel({ cam, initial, status, onSaved, onSav
         <span>图像源</span>
         <div className="segmented">
           {sources.map(([v, label]) => (
-            <button key={v} className={config.source === v ? "active" : ""} onClick={() => set("source", v)}>
+            <button key={v} className={config.source === v ? "active" : ""} onClick={() => { set("source", v); if (v === "sampleSet") set("acquisition", "triggered"); }}>
               {label}
             </button>
           ))}
@@ -141,11 +144,13 @@ export default function CameraConfigPanel({ cam, initial, status, onSaved, onSav
         </select>
         {config.viewCount === 3 && mvs && <label className="field"><span>SDK 拼接布局</span><select className="input" aria-label="SDK 拼接布局" value={config.compositeLayout?.kind ?? ""} onChange={e => set("compositeLayout", e.target.value ? {kind:e.target.value as "horizontal" | "vertical"} : null)}><option value="">请选择实际交付布局</option><option value="horizontal">横向三等分</option><option value="vertical">纵向三等分</option>{config.compositeLayout?.kind === "rects" && <option value="rects">已配置矩形区域</option>}</select></label>}
         {config.viewCount === 3 && <span className="hint-cell">每个拍照点可多选图 1／2／3 分别示教，三幅图共用一次设备触发。</span>}
+        {sampleSet ? <span className="hint-cell">图像来自离线模式中选择的样本集；相机编号（当前 {config.id || "未分配"}）需与样本集 cameraId 一致，视角数需与样本集一致，只支持触发采集。</span> : <>
         <span>采集方式</span>
         <div className="segmented">
           <button className={triggered ? "active" : ""} onClick={() => set("acquisition", "triggered")}>触发（飞拍）</button>
           <button className={!triggered ? "active" : ""} onClick={() => set("acquisition", "freeRun")}>连续（仅预览）</button>
         </div>
+        </>}
         {!triggered && (
           <>
             <span>帧率（fps）</span>

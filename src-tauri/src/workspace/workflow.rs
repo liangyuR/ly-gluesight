@@ -329,6 +329,8 @@ pub fn workspace_adopt_capture(app: AppHandle, id: String, revision: u64, round_
         return Err("继承示教前必须确认点数、轨迹及触发顺序对应一致".into());
     }
     let camera = app.state::<CycleHost>().camera.configs().into_iter().find(|c| c.id == round.camera_id).ok_or("采集设备不存在")?;
+    let sample_scale = (camera.source == CameraSource::SampleSet).then(|| crate::offline::sample_set(&app))
+        .flatten().filter(|set| set.has_camera(&round.camera_id)).and_then(|set| set.manifest().mm_per_px);
     let old = w.clone();
     w.doc.shots.clear(); w.frames.clear();
     for (k, captured) in round.frames.iter().enumerate() {
@@ -353,7 +355,7 @@ pub fn workspace_adopt_capture(app: AppHandle, id: String, revision: u64, round_
             projection.shots[k].view = raw.view;
             projection.shots[k].calib = w.doc.shots[k].views.iter().find(|v| v.view == raw.view).and_then(|v| v.calib.clone());
             let (camera_tag, calib_tag) = tags(&app, &projection, k)?;
-            let scale = vision::calib_info(&vision::shot_calib_path(&app, &projection, k)?).and_then(|c| c.mm_per_px).map(|scale| scale as f32);
+            let scale = vision::calib_info(&vision::shot_calib_path(&app, &projection, k)?).and_then(|c| c.mm_per_px).map(|scale| scale as f32).or(sample_scale);
             let previous_calib = old.frames.get(k).and_then(|f| f.views.iter().find(|i| i.view == raw.view)).map(|i| &i.calib_tag).unwrap_or(&Value::Null);
             let inherited_scale = if let Some(v) = w.doc.shots[k].views.iter_mut().find(|v| v.view == raw.view) {
                 v.mm_per_px = if reuse_teaching { updated_calibration_scale(v.mm_per_px, previous_calib, scale) } else { scale };

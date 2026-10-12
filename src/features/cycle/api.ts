@@ -5,7 +5,7 @@ import { matchesPart, mergeMeasurements } from "./identity";
 import type { CycleSettings, LogLine, Measured, OfflineFault, OfflineStatus, Recipe, RecipeDoc, RecipeSummary, Scenario, Snapshot } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
-  if (!isTauri() && ["cycle_save_settings","cycle_select_recipe","cycle_reset","offline_enable","offline_disable","offline_run","offline_stop","offline_inject"].includes(cmd))
+  if (!isTauri() && ["cycle_save_settings","cycle_select_recipe","cycle_reset","offline_enable","offline_disable","offline_run","offline_stop","offline_inject","offline_select_sample_set","offline_capture"].includes(cmd))
     return Promise.reject(new Error("生产配置与检测操作需要 GlueSight · 胶路智检 桌面后端"));
   if (!isTauri()) return Promise.resolve(fallback());
   return invoke<T>(cmd, args);
@@ -36,13 +36,15 @@ export const cycleApi = {
   offlineStatus: () => call<OfflineStatus>("offline_status", undefined, () => ({ ...offlineIdle })),
   offlineEnable: () => call<OfflineStatus>("offline_enable", undefined, () => ({ ...offlineIdle })).then(publishOffline),
   offlineDisable: () => call<OfflineStatus>("offline_disable", undefined, () => ({ ...offlineIdle })).then(publishOffline),
-  offlineRun: (recipeId: string, scenario: Scenario, continuous: boolean) =>
-    call<void>("offline_run", { recipeId, scenario, continuous }, () => undefined),
+  offlineSelectSampleSet: (dir: string | null) => call<OfflineStatus>("offline_select_sample_set", { dir }, () => ({ ...offlineIdle })).then(publishOffline),
+  offlineRun: (recipeId: string, scenario: Scenario, continuous: boolean, partId: string | null) =>
+    call<void>("offline_run", { recipeId, scenario, continuous, partId }, () => undefined),
+  offlineCapture: (partId: string | null) => call<void>("offline_capture", { partId }, () => undefined),
   offlineStop: (now: boolean) => call<void>("offline_stop", { now }, () => undefined),
   offlineInject: (fault: OfflineFault) => call<void>("offline_inject", { fault }, () => undefined),
 };
 
-const offlineIdle: OfflineStatus = { enabled: false, port: null, running: false, continuous: false, parts: 0, message: "", heartbeatStopped: false };
+const offlineIdle: OfflineStatus = { enabled: false, port: null, running: false, continuous: false, parts: 0, message: "", heartbeatStopped: false, sampleSet: null, sampleError: null, nextPart: null, recent: [] };
 const offlineListeners = new Set<(status: OfflineStatus) => void>();
 function publishOffline(status: OfflineStatus) {
   offlineListeners.forEach(f => f(status));

@@ -58,6 +58,8 @@
 .curve-box { flex: 1; min-height: 0; overflow: hidden; }
 .curve-box svg { display: block; font-family: inherit; }
 
+.offline-stack { display: flex; flex-direction: column; gap: 8px; }
+.offline-stack caption { text-align: left; font-size: 12px; padding-bottom: 4px; }
 .offline-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .offline-controls.compact { padding: 4px 8px; border: 1px dashed var(--border); border-radius: 6px; }
 .offline-controls.compact .input, .offline-controls.compact .btn { height: 28px; font-size: 12.5px; }

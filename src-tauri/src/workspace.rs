@@ -2364,8 +2364,8 @@ pub async fn workspace_import_sample(
             w.clone()
         };
         let r = w.doc.build()?;
-        if w.capture_id.is_some() || r.shots.iter().any(|shot| !shot.views.is_empty()) {
-            return Err("整圈多图配方请使用独立实拍整圈或完整历史原图作为验证样本".into());
+        if (0..r.shot_count()).any(|k| workflow::selected_views(&w, k).len() > 1) {
+            return Err("有拍照点选中了多幅图，请使用独立整圈采集或完整历史原图作为验证样本".into());
         }
         let mut unique = std::collections::HashSet::new();
         if images.len() != r.shot_count()

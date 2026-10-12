@@ -49,6 +49,7 @@ pub fn run() {
             app.manage(vision::VisionHost::default());
             app.manage(production::ProductionHost::default());
             app.manage(offline::OfflineHost::default());
+            offline::restore_sample_set(app.handle());
             app.manage(cycle::CycleHost::init(app.handle())?);
             app.manage(workspace::WorkspaceHost::init(app.handle())?);
             app.manage(plc::PlcHost::init(app.handle())?);
@@ -114,6 +115,8 @@ pub fn run() {
             offline::offline_enable,
             offline::offline_disable,
             offline::offline_run,
+            offline::offline_capture,
+            offline::offline_select_sample_set,
             offline::offline_stop,
             offline::offline_inject,
             workspace::workspace_list,

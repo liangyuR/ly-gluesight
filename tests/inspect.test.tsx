@@ -26,7 +26,7 @@ let values: Record<string, PointValue>;
 beforeEach(() => {
   state = snapshot(); layout = workspaceView().layout; logs = []; measured = []; values = {};
   recipeList = [summary(), summary(workspaceView("B"))];
-  offline = { enabled: false, port: null, running: false, continuous: false, parts: 0, message: "", heartbeatStopped: false };
+  offline = { enabled: false, port: null, running: false, continuous: false, parts: 0, message: "", heartbeatStopped: false, sampleSet: null, sampleError: null, nextPart: null, recent: [] };
   vi.mocked(useCycle).mockImplementation(() => ({ snapshot: state, logs, measured }));
   vi.mocked(useLayout).mockImplementation(() => layout);
   vi.mocked(cycleApi.selectRecipe).mockReset().mockResolvedValue(undefined);
@@ -66,7 +66,7 @@ describe("在线检测离线产线控件", () => {
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "离线配方" }), "B");
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "离线工况" }), "gap");
     await userEvent.click(screen.getByRole("button", { name: "运行一件" }));
-    expect(cycleApi.offlineRun).toHaveBeenCalledWith("B", "gap", false);
+    expect(cycleApi.offlineRun).toHaveBeenCalledWith("B", "gap", false, null);
   });
 });
 

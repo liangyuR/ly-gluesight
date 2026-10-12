@@ -38,6 +38,9 @@ export function sameJsonValue(a: unknown, b: unknown): boolean {
 export function selectedViews(shot: ShotSpec): number[] {
   return shot.views?.filter(v => v.enabled).map(v => v.view) ?? (shot.skip ? [] : [shot.view]);
 }
+export function canImportSampleGroup(shots: Pick<ShotSpec, "skip" | "views">[]) {
+  return shots.every(shot => shot.skip || (shot.views?.length ? shot.views.filter(v => v.enabled).length : 1) <= 1);
+}
 export function teachingCounts(shots: ShotSpec[], frames: import("./types").Teaching[]) {
   let total = 0, completed = 0;
   for (const shot of shots) {

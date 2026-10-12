@@ -14,7 +14,7 @@ vi.mock("../src/features/workspace/context",()=>({useWorkspace:vi.fn()}));
 vi.mock("../src/features/workspace/api",()=>({workspaceApi:{captureGet:vi.fn(),captureList:vi.fn(),captureStart:vi.fn(),captureStop:vi.fn(),adoptCapture:vi.fn(),captureSample:vi.fn(),captureImage:vi.fn()}}));
 vi.mock("../src/features/camera/api",()=>({cameraApi:{rigStatus:vi.fn()}}));
 vi.mock("../src/features/plc/api",()=>({plcApi:{getStatus:vi.fn()}}));
-vi.mock("../src/features/cycle/api",()=>({useCycle:vi.fn()}));
+vi.mock("../src/features/cycle/api",()=>({useCycle:vi.fn(),useOfflineStatus:()=>null}));
 let ws:ReturnType<typeof workspaceState>;
 const round=(state:CaptureRound["state"]="complete"):CaptureRound=>({roundId:"r1",recipeId:"A",cameraId:"CAM-1",deviceSession:7,plannedCount:20,receivedCount:20,state,createdAt:1,endedAt:2,error:null,simulated:true,frames:[]});
 const show=(url="/recipe/capture")=>render(<MemoryRouter initialEntries={[url]}><CapturePage/></MemoryRouter>);

@@ -1,4 +1,4 @@
-export type CameraSource = "sim" | "mvs" | "replay";
+export type CameraSource = "sim" | "mvs" | "replay" | "sampleSet";
 export type Acquisition = "triggered" | "freeRun";
 
 export interface CameraConfig {

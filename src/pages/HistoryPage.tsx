@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Download, RefreshCw, Scale } from "lucide-react";
 import { subscribe } from "../features/plc";
 import { useRecipes } from "../features/cycle";
-import { displayReason, formatTime, historyApi, RejudgeDialog, triggerModeLabel, verdictClass, verdictGroups, verdictLabel, type HistoryPage as Page, type HistoryQuery } from "../features/history";
+import { displayReason, formatTime, historyApi, RejudgeDialog, sampleLabelText, triggerModeLabel, verdictClass, verdictGroups, verdictLabel, type HistoryPage as Page, type HistoryQuery } from "../features/history";
 
 const PAGE = 50;
 const ranges: [string, string, number | null][] = [
@@ -195,6 +195,7 @@ export default function HistoryPage() {
                   <td className="mono nowrap">
                     {p.sn}
                     {p.retestOf && <span className="tag retest" title={`复检，上一次记录 #${p.retestOf}`}>复检</span>}
+                    {p.sample && <span className="tag subtle" title={`样本集 ${p.sample.setId} · 样本 SN ${p.sample.sn}`}>样本 {p.sample.partId}（{sampleLabelText[p.sample.label]}）</span>}
                   </td>
                   <td className="nowrap">
                     {p.recipeId ?? "—"}

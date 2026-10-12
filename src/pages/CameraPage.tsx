@@ -11,7 +11,7 @@ import { workspaceApi } from "../features/workspace/api";
 import type { CaptureNavigationState } from "../features/workspace/captureNavigation";
 
 type CameraView = "device" | "calibration";
-const sourceText = { mvs:"海康 MVS",sim:"模拟相机",replay:"回放目录" } as const;
+const sourceText = { mvs:"海康 MVS",sim:"模拟相机",replay:"回放目录",sampleSet:"样本集（离线）" } as const;
 export default function CameraPage({view="device"}:{view?:CameraView}) {
   const location=useLocation(),navigate=useNavigate();
   const captureReturn=(location.state as CaptureNavigationState | null)?.captureReturn;

@@ -671,6 +671,9 @@ pub fn usable_cams(app: &AppHandle, recipe: &Recipe, real_parts: bool) -> Result
         if real_parts && !image && cfg.source == CameraSource::Mvs {
             return Err(format!("{}（{}）是海康相机，飞拍的图像测量却没打开（系统设置）", cfg.name, cfg.id));
         }
+        if !image && cfg.source == CameraSource::SampleSet {
+            return Err(format!("{}（{}）取的是现场原图样本集，模拟测量不看图；请在系统设置打开图像测量（lyFlow）", cfg.name, cfg.id));
+        }
     }
     Ok(cams)
 }
@@ -1496,7 +1499,8 @@ impl Machine {
         Ok(RecordedPart { ts: now_ms(), sn, recipe, judgement: judgement.clone(),
             drain_ms, frames, frames_expected, frames_received: received, triggers, table,
             software_version: self.app.package_info().version.to_string(), cycle_id: cycle_id.clone(),
-            bundle_id: part.and_then(|p| p.bundle_id.clone()), delivery, shots })
+            bundle_id: part.and_then(|p| p.bundle_id.clone()), delivery, shots,
+            sample: crate::offline::claim_sample(&self.app, sn, &cycle_id) })
     }
 
     fn record_without_part(&self, sn: u32, judgement: &Judgement) -> Result<(), String> {

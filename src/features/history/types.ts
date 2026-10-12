@@ -1,4 +1,4 @@
-import type { FrameView, Judgement, Verdict } from "../cycle/types";
+import type { FrameView, Judgement, SampleLabel, Verdict } from "../cycle/types";
 
 export interface PlcDelivery {
   state: "notRequired" | "pending" | "submitted" | "acknowledged" | "failed";
@@ -58,6 +58,7 @@ export interface PartSummary {
   cycleId: string | null;
   bundleId: string | null;
   delivery: PlcDelivery;
+  sample: { setId: string; partId: string; sn: string; label: SampleLabel } | null;
 }
 
 export interface VerdictCounts {

@@ -9,7 +9,7 @@ import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, KV, Notice, Panel, Steps, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { Sample } from "./types";
-import { teachingCounts } from "./teach";
+import { canImportSampleGroup, teachingCounts } from "./teach";
 import { readImageBase64, validateImageFile } from "./ImageImportButton";
 
 export default function ValidationPage() {
@@ -55,7 +55,7 @@ export default function ValidationPage() {
   const locked=busy||reading||operating;
   const samplesLocked=locked||!!data.workspace.pending;
   const ready=!dirty&&!frameDirty&&!locked;
-  const canImportImages=!data.workspace.captureId&&!doc.shots.some(shot=>!!shot.views?.length);
+  const canImportImages=canImportSampleGroup(doc.shots);
   const validationCurrent=!!validation?.passed&&validation.revision===data.workspace.revision&&!selectionDirty;
   const canPublish=ready&&validationCurrent&&!data.workspace.pending;
   const choose=(key:Sample,enabled:boolean)=>{setSourceConfirmed(false);setSelection(previous=>({candidate,samples:enabled?[...previous.samples.filter(s=>!(s.historyId===key.historyId&&s.sampleId===key.sampleId)),key]:previous.samples.filter(s=>!(s.historyId===key.historyId&&s.sampleId===key.sampleId))}));};
@@ -95,7 +95,7 @@ export default function ValidationPage() {
       {name:"示教与标定",passed:taught.total>0&&taught.completed===taught.total,detail:"已完成 "+taught.completed+"/"+taught.total+" 幅示教，标定需满足 ±0.1 mm"},
       {name:"代表性样本",passed:false,detail:"至少一套独立正常整圈样本；缺陷样本可选"},
     ]).map(c=><div key={c.name} className={"wp-check-row "+(c.passed?"passed":"")}>{c.passed?<CheckCircle2 size={20}/>:<AlertTriangle size={20}/>}<div><strong>{c.name}</strong><p>{c.detail}</p></div></div>)}</div>
-    </Panel><Panel title="代表性验证样本" detail="使用完整原图重新运行当前候选检测；正常样本必须独立于示教采集" actions={<div className="wp-actions"><Link className="btn" to="/recipe/capture?purpose=validation">重新实拍样本</Link><button className="btn" disabled={!ready || !!data.workspace.pending || !canImportImages} title={canImportImages?undefined:"整圈多图配方请重新实拍或选择完整历史原图"} onClick={()=>{setFiles({});setImporting(true);}}><Upload size={15}/>导入原图样本组</button></div>}>
+    </Panel><Panel title="代表性验证样本" detail="使用完整原图重新运行当前候选检测；正常样本必须独立于示教采集" actions={<div className="wp-actions"><Link className="btn" to="/recipe/capture?purpose=validation">重新实拍样本</Link><button className="btn" disabled={!ready || !!data.workspace.pending || !canImportImages} title={canImportImages?undefined:"有拍照点选中了多幅图，请改用独立整圈采集或历史原图"} onClick={()=>{setFiles({});setImporting(true);}}><Upload size={15}/>导入原图样本组</button></div>}>
       <label className="field"><span>历史样本来源</span><select className="input" aria-label="历史样本来源" value={historyScope} disabled={samplesLocked} onChange={e=>setHistoryScope(e.target.value as "current"|"all")}><option value="current">当前配方</option><option value="all">全部配方</option></select></label>
       <p className="muted hint">历史样本必须保留完整整圈原图，轨迹顺序与成像条件适用；验证时重新运行当前候选。</p>
       <div className="table-wrap"><table className="table"><thead><tr><th>选用</th><th>样本</th><th>来源</th><th>人工期望</th></tr></thead><tbody>

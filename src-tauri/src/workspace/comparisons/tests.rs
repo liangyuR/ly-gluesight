@@ -21,7 +21,7 @@ fn history(store: &Store, cycle: &str, ts: i64) -> i64 {
         ts, sn: 42, recipe: None, judgement: &Judgement::error(1, "original"), drain_ms: None,
         frames: &[], frames_expected: 0, frames_received: 0, triggers: 0, table: None,
         software_version: "comparison-business-test", cycle_id: Some(cycle), bundle_id: None,
-        delivery: &PlcDelivery::default(), shots: &[],
+        delivery: &PlcDelivery::default(), shots: &[], sample: None,
     }).unwrap()
 }
 fn comparison(id: i64, cycle: &str, sequence: i64) -> Comparison {

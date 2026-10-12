@@ -18,6 +18,7 @@ use crate::frame::{CounterSource, Frame, FrameImage, FramePool};
 use crate::mvs::{self, DeviceSummary, FrameInfo};
 use crate::recipe::{legacy_camera_id, valid_camera_id, Recipe};
 use crate::replay;
+use crate::offline::sample_set::SampleSet;
 use crate::offline::Scenario;
 use crate::simimage::{self, PoseError};
 
@@ -44,6 +45,26 @@ pub struct SimRender {
     pub seed: u64,
 }
 
+/// 样本集相机取图的身份：哪个样本集的哪一件、哪个拍照点（相机编号与视角取自相机自身配置）。
+pub struct SampleTarget {
+    pub set: Arc<SampleSet>,
+    pub part_id: String,
+    pub shot_id: String,
+}
+
+impl SampleTarget {
+    /// 本身份在指定相机下的全部视角原图；缺任一幅即整帧不可用。
+    pub fn images(&self, camera_id: &str, view_count: u8) -> Result<Vec<Arc<FrameImage>>, String> {
+        self.set.load_views(&self.part_id, &self.shot_id, camera_id, view_count)
+    }
+}
+
+/// 触发携带的取图依据：模拟相机按配方合成，样本集相机按身份取原图。
+pub enum TriggerPayload {
+    Sim(SimRender),
+    Sample(SampleTarget),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum CameraSource {
@@ -51,6 +72,15 @@ pub enum CameraSource {
     Mvs,
     /// 从目录读图（帧录制或现场采的图）
     Replay,
+    /// 离线样本集：按触发携带的样本件与拍照点取现场原图
+    SampleSet,
+}
+
+impl CameraSource {
+    /// 合成图像（模拟相机）；其余来源都是真实原图，示教资料与标定按真实相机处理。
+    pub fn synthetic(self) -> bool {
+        self == CameraSource::Sim
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,6 +163,9 @@ impl CameraConfig {
         }
         if self.source == CameraSource::Replay && self.replay_dir.trim().is_empty() {
             return Err("回放相机需要填写图片目录".into());
+        }
+        if self.source == CameraSource::SampleSet && self.acquisition != Acquisition::Triggered {
+            return Err("样本集相机只支持触发采集".into());
         }
         Ok(())
     }
@@ -638,7 +671,7 @@ impl CameraSlot {
             return slot;
         }
         match slot.config().source {
-            CameraSource::Sim => slot.new_session(),
+            CameraSource::Sim | CameraSource::SampleSet => slot.new_session(),
             CameraSource::Replay => {
                 let _ = slot.load_replay();
             }
@@ -674,6 +707,12 @@ impl CameraSlot {
                 Acquisition::FreeRun => "模拟相机：连续采集不合成画面，飞拍要用触发采集".to_string(),
             },
             (CameraSource::Replay, Some((n, next))) => format!("回放 {n} 帧 · 下一帧第 {} 张", next + 1),
+            (CameraSource::SampleSet, _) => match crate::offline::sample_set(&self.shared.rig.app) {
+                Some(set) if set.has_camera(&config.id) => format!("样本集 {}：{} 件 · {} 个拍照点 · {} 个视角",
+                    set.manifest().name, set.manifest().parts.len(), set.manifest().shots.len(), config.view_count),
+                Some(set) => format!("样本集 {} 没有相机 {}，请把相机编号改成样本集的 cameraId", set.manifest().id, config.id),
+                None => "未选择离线样本集：在离线产线中选择样本集目录".to_string(),
+            },
             (CameraSource::Mvs, _) => match self.shared.unusable_note() {
                 Some(note) => format!("{note} · {state_message}"),
                 None => state_message,
@@ -770,6 +809,7 @@ impl CameraSlot {
             CameraSource::Sim => true,
             CameraSource::Mvs => self.device.lock().unwrap().is_some() && !self.shared.disconnected.load(Ordering::SeqCst),
             CameraSource::Replay => self.replay.lock().unwrap().is_some(),
+            CameraSource::SampleSet => crate::offline::sample_set(&self.shared.rig.app).is_some_and(|set| set.has_camera(&config.id)),
         }
     }
 
@@ -838,13 +878,13 @@ impl CameraSlot {
         }
     }
 
-    /// 按触发出一帧。模拟相机合成（render 为空时只有元数据），回放读下一张，海康发软触发。
-    /// `lose_in_transfer` 仅模拟相机使用：相机已曝光但帧在传输中丢失，主机侧表现为帧计数跳号。
-    pub fn trigger(&self, lose_in_transfer: bool, render: Option<SimRender>) -> bool {
-        self.trigger_frame(lose_in_transfer, render, false).is_ok()
+    /// 按触发出一帧。模拟相机合成（没有合成依据时只有元数据），样本集按触发身份取原图，回放读下一张，海康发软触发。
+    /// `lose_in_transfer` 仅模拟 / 样本集相机使用：相机已曝光但帧在传输中丢失，主机侧表现为帧计数跳号。
+    pub fn trigger(&self, lose_in_transfer: bool, payload: Option<TriggerPayload>) -> bool {
+        self.trigger_frame(lose_in_transfer, payload, false).is_ok()
     }
 
-    fn trigger_frame(&self, lose_in_transfer: bool, render: Option<SimRender>, manual: bool) -> Result<Option<CaptureTicket>, String> {
+    fn trigger_frame(&self, lose_in_transfer: bool, payload: Option<TriggerPayload>, manual: bool) -> Result<Option<CaptureTicket>, String> {
         let config = self.config();
         if let Err(e) = config.validate() {
             self.state.lock().unwrap().message = e.clone();
@@ -853,6 +893,7 @@ impl CameraSlot {
         let cam = self.shared.cam;
         match config.source {
             CameraSource::Sim => {
+                let render = match payload { Some(TriggerPayload::Sim(render)) => Some(render), _ => None };
                 let (session, n) = self.next_counters();
                 let ticket = CaptureTicket { session, frame_counter: n };
                 let shared = self.shared.clone();
@@ -877,6 +918,35 @@ impl CameraSlot {
                         }
                         Err(e) => {
                             cycle::log(&shared.rig.app, "err", "模拟取图", e);
+                            shared.deliver_in_order(session, n, None);
+                        }
+                    }
+                });
+                Ok(Some(ticket))
+            }
+            CameraSource::SampleSet => {
+                let target = match payload {
+                    Some(TriggerPayload::Sample(target)) => Some(target),
+                    _ => crate::offline::preview_target(&self.shared.rig.app),
+                };
+                let (session, n) = self.next_counters();
+                let ticket = CaptureTicket { session, frame_counter: n };
+                let shared = self.shared.clone();
+                if lose_in_transfer {
+                    shared.deliver_in_order(session, n, None);
+                    return Ok(Some(ticket));
+                }
+                let camera = config.id.clone();
+                let views = config.view_count;
+                tauri::async_runtime::spawn(async move {
+                    let loaded = tauri::async_runtime::spawn_blocking(move || {
+                        let target = target.ok_or("未选择离线样本集")?;
+                        target.images(&camera, views)
+                    }).await.map_err(|e| e.to_string()).and_then(|r| r);
+                    match loaded {
+                        Ok(images) => shared.deliver_in_order(session, n, Some(synthetic_frame(cam, session, n, images, manual))),
+                        Err(e) => {
+                            cycle::log(&shared.rig.app, "err", "样本集取图", format!("{e}；本帧按缺帧处理"));
                             shared.deliver_in_order(session, n, None);
                         }
                     }
@@ -912,7 +982,7 @@ impl CameraSlot {
         }
     }
 
-    fn soft_trigger(&self, render: Option<SimRender>) -> Result<Option<CaptureTicket>, String> {
+    fn soft_trigger(&self, payload: Option<TriggerPayload>) -> Result<Option<CaptureTicket>, String> {
         let config = self.config();
         config.validate()?;
         if config.source == CameraSource::Mvs && config.trigger_source != "Software" {
@@ -922,7 +992,7 @@ impl CameraSlot {
             self.shared.manual.fetch_add(1, Ordering::SeqCst);
         }
         self.shared.grab.store(config.source == CameraSource::Mvs, Ordering::SeqCst);
-        match self.trigger_frame(false, render, true) {
+        match self.trigger_frame(false, payload, true) {
             Ok(ticket) => Ok(ticket),
             Err(e) => {
                 self.shared.grab.store(false, Ordering::SeqCst);
@@ -1001,7 +1071,7 @@ impl CameraSlot {
     /// 应用新配置：海康相机重新打开，回放重新扫描目录。返回相机未接受的参数。
     fn apply_config(&self) -> Result<Vec<String>, String> {
         match self.config().source {
-            CameraSource::Sim => {
+            CameraSource::Sim | CameraSource::SampleSet => {
                 self.close();
                 self.new_session();
                 Ok(Vec::new())
@@ -1253,8 +1323,8 @@ impl CameraRig {
         self.rig.capture.store(on, Ordering::Relaxed);
     }
 
-    pub fn trigger(&self, cam: u8, lose_in_transfer: bool, render: Option<SimRender>) -> bool {
-        self.slot(cam as usize).is_some_and(|s| s.trigger(lose_in_transfer, render))
+    pub fn trigger(&self, cam: u8, lose_in_transfer: bool, payload: Option<TriggerPayload>) -> bool {
+        self.slot(cam as usize).is_some_and(|s| s.trigger(lose_in_transfer, payload))
     }
 
     pub fn last_full(&self, cam: u8) -> Option<Arc<FrameImage>> {
@@ -1265,7 +1335,7 @@ impl CameraRig {
         self.slot(cam as usize).and_then(|s| s.last_view(view))
     }
 
-    pub fn capture_views(&self, cam: u8, render: Option<SimRender>) -> Result<Vec<Arc<FrameImage>>, String> {
+    pub fn capture_views(&self, cam: u8, payload: Option<TriggerPayload>) -> Result<Vec<Arc<FrameImage>>, String> {
         let cycle = self.rig.app.state::<CycleHost>();
         let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试取图")?;
         check_idle(&cycle)?;
@@ -1275,7 +1345,7 @@ impl CameraRig {
         if !slot.is_ready() {
             return Err(format!("相机未就绪：{}", slot.status().message));
         }
-        let images = if config.source == CameraSource::Sim && render.is_none() {
+        let images = if config.source == CameraSource::Sim && !matches!(payload, Some(TriggerPayload::Sim(_))) {
             let images = slot.last_views();
             if images.is_empty() {
                 return Err("模拟相机尚未出图，请先运行一个模拟工件".into());
@@ -1283,7 +1353,7 @@ impl CameraRig {
             images
         } else if config.source != CameraSource::Mvs || (config.acquisition == Acquisition::Triggered && config.trigger_source == "Software") {
             let before = slot.shared.full_seq.load(Ordering::SeqCst);
-            let captured = match slot.soft_trigger(render)? {
+            let captured = match slot.soft_trigger(payload)? {
                 Some(ticket) => slot.wait_capture(ticket, Duration::from_secs(2))?,
                 None => slot.wait_views(before, Duration::from_secs(2)),
             };
@@ -1297,12 +1367,12 @@ impl CameraRig {
         Ok(images)
     }
 
-    pub fn capture_view(&self, cam: u8, view: u8, render: Option<SimRender>) -> Result<Arc<FrameImage>, String> {
+    pub fn capture_view(&self, cam: u8, view: u8, payload: Option<TriggerPayload>) -> Result<Arc<FrameImage>, String> {
         let slot = self.slot(cam as usize).ok_or("相机不存在")?;
         if view == 0 || view > slot.config().view_count {
             return Err(format!("相机没有视角 {view}"));
         }
-        self.capture_views(cam, render)?.get(view as usize - 1).cloned().ok_or_else(|| format!("这一帧缺少视角 {view}"))
+        self.capture_views(cam, payload)?.get(view as usize - 1).cloned().ok_or_else(|| format!("这一帧缺少视角 {view}"))
     }
 
     fn rebuild(&self, app: &AppHandle, configs: Vec<CameraConfig>) {
@@ -1516,9 +1586,9 @@ pub async fn camera_list_devices() -> Result<Vec<DeviceSummary>, String> {
 }
 
 #[tauri::command]
-pub async fn camera_pick_replay_dir(window: tauri::WebviewWindow, directory: String) -> Result<Option<String>, String> {
+pub async fn camera_pick_replay_dir(window: tauri::WebviewWindow, directory: String, title: Option<String>) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut dialog = rfd::FileDialog::new().set_parent(&window).set_title("选择回放图片目录");
+        let mut dialog = rfd::FileDialog::new().set_parent(&window).set_title(title.as_deref().unwrap_or("选择回放图片目录"));
         let directory = PathBuf::from(directory);
         if directory.is_dir() {
             dialog = dialog.set_directory(directory);

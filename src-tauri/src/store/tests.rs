@@ -82,6 +82,7 @@ fn save(store: &Store, recipe: &Recipe, cycle: &str, shots: &[PartShot], deliver
         bundle_id: Some("frozen-bundle-id"),
         delivery,
         shots,
+        sample: None,
     })
 }
 
@@ -565,7 +566,7 @@ fn durable_record_identity_checks_actual_fields_while_allowing_later_delivery_an
     let judgement = Judgement::error(crate::judge::fault::MISSING_FRAME, "P2 缺帧，P3 定位失败，P4 测量出错");
     let mut record = PartRecord { ts: 1234, sn: 42, recipe: Some(&recipe), judgement: &judgement, drain_ms: None,
         frames: &[], frames_expected: recipe.shot_count(), frames_received: 3, triggers: 4, table: Some(&table),
-        software_version: "test-p0", cycle_id: Some("record-identity"), bundle_id: Some("frozen-bundle-id"), delivery: &pending, shots: &shots };
+        software_version: "test-p0", cycle_id: Some("record-identity"), bundle_id: Some("frozen-bundle-id"), delivery: &pending, shots: &shots, sample: None };
     assert!(store.matches_record(&record).unwrap());
     store.update_delivery("record-identity", &PlcDelivery { state: PlcDeliveryState::Acknowledged, updated_at: 9999, message: None }).unwrap();
     store.update_shot_raw_files("record-identity", 0, &[ShotRawFile { view: 1, file: "records/cycle/k000.pgm".into(), width: Some(2), height: Some(3) }]).unwrap();

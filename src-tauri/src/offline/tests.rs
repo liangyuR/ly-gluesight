@@ -52,17 +52,22 @@ impl Bench {
         Self { _server: server, line: Line::new(memory, layout), engine, session: PlcSession::open(directory.join("session.json")), plan }
     }
 
-    /// 虚拟 PLC 跑一件，PC 侧按生产节拍的顺序驱动 S7 会话：开始 → 布防 → partEnd 后按实收帧判定回写。
     async fn run(&mut self, scenario: Scenario) -> Result<Outcome, String> {
+        self.run_with(4242, scenario, |_, lost| !lost).await
+    }
+
+    /// 虚拟 PLC 跑一件，PC 侧按生产节拍的顺序驱动 S7 会话：开始 → 布防 → partEnd 后按实收帧判定回写。
+    /// `deliver(k, lost)` 模拟相机侧：返回这次触发是否真的交付了一帧。
+    async fn run_with(&mut self, sn: u32, scenario: Scenario, mut deliver: impl FnMut(usize, bool) -> bool) -> Result<Outcome, String> {
         let Self { line, engine, session, plan, .. } = self;
         let delivered = Mutex::new(Vec::new());
         let finished = AtomicBool::new(false);
         let abort = AtomicBool::new(false);
-        let order = PartOrder { sn: 4242, product_code: 3, plan_version: plan.plan_version,
+        let order = PartOrder { sn, product_code: 3, plan_version: plan.plan_version,
             shot_count: plan.shot_count, device_shots: plan.device_shots };
         let plc = async {
             let result = match line.ensure_ready(&TIMING, &abort).await {
-                Ok(()) => line.run_part(&TIMING, &order, scenario, |_, lost| delivered.lock().unwrap().push(lost), &abort).await,
+                Ok(()) => line.run_part(&TIMING, &order, scenario, |k, lost| { let ok = deliver(k, lost); delivered.lock().unwrap().push(!ok) }, &abort).await,
                 Err(error) => Err(error),
             };
             finished.store(true, Ordering::SeqCst);
@@ -132,4 +137,48 @@ async fn stop_during_inter_part_pause_does_not_start_another_part() {
         async { offline.stop.store(true, Ordering::SeqCst); },
     );
     assert!(!start_next, "stop accepted between parts must prevent the next part");
+}
+
+#[tokio::test]
+async fn sample_set_line_fetches_each_trigger_by_part_shot_and_view_and_missing_image_is_a_missing_frame() {
+    use super::sample_set::{fixture::Fixture, SampleLabel, SampleSet};
+    let fixture = Fixture::new(&[1, 2, 3]);
+    std::fs::remove_file(fixture.0.join("parts/p02/S002_cam1_v2.png")).unwrap();
+    let set = Arc::new(SampleSet::load(&fixture.0).unwrap());
+    let shots: Vec<String> = set.manifest().shots.iter().map(|s| s.shot_id.clone()).collect();
+    let fetch = |part: &str, k: usize| match sample_payload(&set, part, &shots[k]) {
+        TriggerPayload::Sample(target) => target.images("cam1", 3),
+        TriggerPayload::Sim(_) => unreachable!(),
+    };
+    let pixels = |images: &[Arc<crate::frame::FrameImage>]| images.iter().map(|i| i.pixels[0]).collect::<Vec<_>>();
+    let offline = OfflineHost::default();
+    let mut bench = Bench::new("samples").await;
+    for (requested, part, number, sn, expected) in [
+        (Some("p02"), "p02", 2, 501, (90, fault::MISSING_FRAME, Verdict::ErrInspect)),
+        (None, "p01", 1, 502, (1, 0, Verdict::Ok)),
+    ] {
+        assert_eq!(offline.pick_part(&set, requested).unwrap(), part);
+        offline.begin_run(&set, part, sn, RunPurpose::Production);
+        let received = Mutex::new(Vec::new());
+        let result = bench.run_with(sn, Scenario::Normal, |k, lost| {
+            let images = (!lost).then(|| fetch(part, k).ok()).flatten();
+            received.lock().unwrap().push((k, images.as_deref().map(pixels)));
+            images.is_some()
+        }).await;
+        offline.finish_run(sn, &result);
+        let outcome = result.unwrap();
+        assert_eq!((outcome.sn, outcome.result_code, outcome.fault_code), (sn, expected.0, expected.1), "{part}");
+        for (k, images) in received.into_inner().unwrap() {
+            let wanted = (part != "p02" || k != 1).then(|| (1..=3).map(|v| Fixture::pixel(number, k as u8 + 1, v)).collect::<Vec<_>>());
+            assert_eq!(images, wanted, "{part} k={k}");
+        }
+        let reference = offline.claim(sn, &format!("cycle-{sn}")).unwrap();
+        assert_eq!((reference.part_id.as_str(), reference.label), (part, if part == "p01" { SampleLabel::Ok } else { SampleLabel::Ng }));
+        let run = offline.status().recent.into_iter().find(|r| r.part_sn == sn).unwrap();
+        assert_eq!((run.verdict, run.cycle_id), (Some(expected.2), Some(format!("cycle-{sn}"))));
+    }
+    for k in [3, 0, 2, 1] {
+        assert_eq!(pixels(&fetch("p01", k).unwrap()), (1..=3).map(|v| Fixture::pixel(1, k as u8 + 1, v)).collect::<Vec<_>>(), "乱序触发 k={k}");
+    }
+    bench.engine.disconnect().await;
 }
