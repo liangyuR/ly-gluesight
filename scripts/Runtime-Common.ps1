@@ -108,10 +108,13 @@ function Copy-RuntimeTree([string]$Source, [string]$Destination, [switch]$LyFlow
     Assert-NoRuntimeLinks $Source
     [void][IO.Directory]::CreateDirectory($Destination)
     foreach ($file in Get-ChildItem -LiteralPath $Source -Recurse -File -Force) {
-        if ($LyFlow -and $file.Extension -notin @('.dll', '.cti', '.ini', '.manifest', '.txt', '.lic', '.xml', '.yaml', '.yml', '.json')) { continue }
-        if ($file.Extension -in @('.pdb', '.ilk', '.exp', '.lib')) { continue }
         $relative = [IO.Path]::GetRelativePath($Source, $file.FullName)
-        if ($LyFlow -and ($relative -match '(?i)(^|[\\/])(tests?|examples?|samples?|recipes?|history|recordings?|logs?|debug)([\\/]|$)' -or $file.BaseName -match '(?i)(^|[_-])(test|debug|example)([_-]|$)' -or $file.Name -like '*.lyflow.json')) { continue }
+        $license = $LyFlow -and $relative -match '(?i)^licenses?[\\/]'
+        if (-not $license) {
+            if ($LyFlow -and $file.Extension -notin @('.dll', '.cti', '.ini', '.manifest', '.txt', '.lic', '.xml', '.yaml', '.yml', '.json')) { continue }
+            if ($file.Extension -in @('.pdb', '.ilk', '.exp', '.lib')) { continue }
+            if ($LyFlow -and ($relative -match '(?i)(^|[\\/])(tests?|examples?|samples?|recipes?|history|recordings?|logs?|debug)([\\/]|$)' -or $file.BaseName -match '(?i)(^|[_-])(test|debug|example)([_-]|$)' -or $file.Name -like '*.lyflow.json')) { continue }
+        }
         $target = Join-Path $Destination $relative
         [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))
         Copy-Item -LiteralPath $file.FullName -Destination $target

@@ -93,12 +93,22 @@ try {
     $source = Join-Path $root 'collect-source'
     [void][IO.Directory]::CreateDirectory((Join-Path $source 'ThirdParty'))
     [void][IO.Directory]::CreateDirectory((Join-Path $source 'recordings'))
-    foreach ($name in @('core.dll', 'ThirdParty/provider.cti', 'ThirdParty/settings.ini', 'debug.pdb', 'recordings/capture.txt', 'recipe.lyflow.json')) { 'fixture' | Set-Content -LiteralPath (Join-Path $source $name) }
+    [void][IO.Directory]::CreateDirectory((Join-Path $source 'licenses/vcpkg/boost-filesystem'))
+    [void][IO.Directory]::CreateDirectory((Join-Path $source 'licenses/visual-cpp'))
+    $licenses = @('licenses/vcpkg/boost-filesystem/copyright', 'licenses/visual-cpp/1033-Redist.rtf')
+    foreach ($name in (@('core.dll', 'ThirdParty/provider.cti', 'ThirdParty/settings.ini', 'debug.pdb', 'recordings/capture.txt', 'recipe.lyflow.json', 'source.cpp') + $licenses)) { 'fixture' | Set-Content -LiteralPath (Join-Path $source $name) }
     Copy-RuntimeTree $source (Join-Path $root 'collected-mvs')
     if (-not (Test-Path -LiteralPath (Join-Path $root 'collected-mvs/ThirdParty/provider.cti')) -or (Test-Path -LiteralPath (Join-Path $root 'collected-mvs/debug.pdb'))) { throw 'MVS递归收集规则错误。' }
     $passed++
     Copy-RuntimeTree $source (Join-Path $root 'collected-lyflow') -LyFlow
     if ((Test-Path -LiteralPath (Join-Path $root 'collected-lyflow/recordings/capture.txt')) -or (Test-Path -LiteralPath (Join-Path $root 'collected-lyflow/recipe.lyflow.json')) -or -not (Test-Path -LiteralPath (Join-Path $root 'collected-lyflow/ThirdParty/settings.ini'))) { throw 'lyFlow运行库与开发数据筛选规则错误。' }
+    $passed++
+    foreach ($license in $licenses) {
+        if (-not (Test-Path -LiteralPath (Join-Path $root "collected-lyflow/$license") -PathType Leaf)) { throw "lyFlow许可证未完整保留：$license" }
+    }
+    foreach ($developmentFile in @('debug.pdb', 'source.cpp', 'recordings/capture.txt', 'recipe.lyflow.json')) {
+        if (Test-Path -LiteralPath (Join-Path $root "collected-lyflow/$developmentFile")) { throw "lyFlow开发文件进入运行库：$developmentFile" }
+    }
     $passed++
     if ($IsWindows) {
         & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -File (Join-Path $PSScriptRoot '../../scripts/Test-PackagedRuntime.ps1') -RuntimeRoot (Join-Path $root 'runtime') -ReportPath (Join-Path $root 'failure.json')

@@ -33,7 +33,7 @@ pnpm run package -LyFlowRuntime 'C:\release\lyflow\bin' -MvsRuntime 'C:\release\
 
 其他可选参数：`-VcRuntime` / `VC_RUNTIME_DIR` 指定 x64 CRT；`-MvsLicense` 指定官方许可证目录；`-PrepareOnly` 仅收集并自检运行库，不编译或生成安装包。
 
-MVS 完整保留运行目录及子目录，包括 DLL、CTI、配置文件、manifest 和 `ThirdParty`，许可证放入 `runtime/mvs/Licenses`。lyFlow 收集运行依赖，排除调试符号、开发数据、配方和历史记录。两套运行库分别部署到 `runtime/lyflow`、`runtime/mvs`。
+MVS 完整保留运行目录及子目录，包括 DLL、CTI、配置文件、manifest 和 `ThirdParty`，许可证放入 `runtime/mvs/Licenses`。lyFlow 收集运行依赖，完整保留 `license/`、`licenses/` 子树中的无扩展名版权文件及其他许可格式，排除其他目录中的调试符号、开发数据、配方和历史记录。两套运行库分别部署到 `runtime/lyflow`、`runtime/mvs`。
 
 脚本每次重建项目内暂存目录，先检查文件结构、x64 架构、接口、实际版本、算子及 MVS 初始化/枚举，再编译应用、验证实际测量，全部通过后生成安装包。无相机时枚举结果为空允许通过；接口调用失败不允许通过。任一步失败都会停止。
 
@@ -87,6 +87,6 @@ pnpm run package -RuntimeBundle 'C:\release\runtime-bundle'
 
 应用首包版本保持 `0.1.0`，与 lyFlow 的 `1.1.0` 独立；应用的三处版本及 Cargo.lock 根包版本保持一致。历史 PR #26 合入旧打包分支，未进入 main；首次发包前必须补齐该 ABI 集成，不能仅根据 PR 的 merged 状态判断 main 已具备新版接口。
 
-2026-10-12 核对并下载了 lyFlow [Windows release 38150280499](https://github.com/liangyuR/lyFlow/actions/runs/38150280499) 的 `windows-release` 产物，运行库 ZIP 为 `lyflow-runtime-win-x64-v1.1.0.zip`，源码修订为 `c625155c480a1cc7511f966a9fe234700f6c1404`。实际 DLL 的 ABI、引擎版本与正式描述、源码修订校验通过，随后依赖导出因缺少 `glue.taught_path` 明确失败。失败报告位于本机 `src-tauri/target/dependency-runtime/runtime-validation.json`；没有生成或发布固定依赖 ZIP、安装包或应用 Release。
+2026-10-12 使用 lyFlow [Windows release 38158234330](https://github.com/liangyuR/lyFlow/actions/runs/38158234330) 的正式 `windows-release` 产物，运行库 ZIP 为 `lyflow-runtime-win-x64-v1.1.0.zip`，源码修订为 `32553f6d08c41f9db2c000e8694bd7b3ecc8bf92`。实际 DLL 的 ABI、引擎版本、源码修订、全部必需算子与 MVS 初始化/枚举通过，已导出固定依赖 ZIP。此前构建 `38150280499` 缺少 `glue.taught_path` 的阻塞由此正式产物解决。
 
-需要提供包含全部必需算子的正式产物，并重新执行依赖导出、真实 DLL 视觉业务回归及 GitHub 完整打包流程。普通 Rust 回归与打包脚本专项通过不能替代此项产物验收；在缺失算子解决前，不应创建应用版本 tag 或宣称安装包可用。
+这份正式 DLL 已通过四项真实视觉回归：胶宽/偏移/缺胶/极性/新帧、多视图、并发同名运行隔离和棋盘格标定。普通回归、依赖导出与 DLL 回归不能替代完整安装包验收；发布 `v0.1.0` 前仍须通过 GitHub 的应用自检、NSIS 构建和静默安装后的自检。GitHub 成功运行生成草稿 Release，检查产物后显式正式发布。
