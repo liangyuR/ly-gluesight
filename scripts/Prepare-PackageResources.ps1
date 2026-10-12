@@ -5,7 +5,7 @@ $applicationRuntimeRoot = Join-Path $stageRoot 'application-runtime'
 [void][IO.Directory]::CreateDirectory($applicationRuntimeRoot)
 $resources = @{ 'target/package-runtime/runtime/' = 'runtime/' }
 foreach ($name in @('vcruntime140.dll', 'vcruntime140_1.dll')) {
-    $source = Join-Path $stageRoot "runtime/lyflow/$name"
+    $source = Join-Path $stageRoot "runtime/crt/$name"
     Assert-X64RuntimeImage $source
     Copy-Item -LiteralPath $source -Destination (Join-Path $applicationRuntimeRoot $name)
     $resources["target/package-runtime/application-runtime/$name"] = $name

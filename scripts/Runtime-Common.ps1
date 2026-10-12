@@ -4,7 +4,15 @@ $ErrorActionPreference = 'Stop'
 
 function Get-RuntimeConfiguration {
     $config = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../packaging/runtime.json') -Raw | ConvertFrom-Json
-    if ($config.lyflowAbiVersion -isnot [string] -or $config.lyflowAbiVersion -cnotmatch '^\d+\.\d+\.\d+$') { throw '固定 lyFlow ABI 必须是产品版本字符串。' }
+    if ($config.schemaVersion -ne 2) { throw '拒绝旧运行依赖配置，请重建为拆分依赖格式。' }
+    $locked = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../packaging/lyflow.lock.json') -Raw | ConvertFrom-Json
+    Assert-NoRuntimeDigests $locked
+    if ($locked.schemaVersion -ne 1 -or $locked.packageId -cne $config.lyflow.packageId -or
+        $locked.architecture -cne $config.architecture -or $locked.version -cnotmatch ('^' + [regex]::Escape($config.lyflow.series) + '\.\d+$') -or
+        [version]$locked.version -lt [version]$config.lyflow.minimumVersion) { throw 'lyFlow 锁定记录不符合兼容系列、最低版本或包身份配置。' }
+    Assert-LyFlowSourceRevision $locked.sourceRevision $locked.sourceRevision 'lyFlow 锁定记录'
+    $config | Add-Member -NotePropertyName lyflowAbiVersion -NotePropertyValue $locked.version
+    $config | Add-Member -NotePropertyName lyflowSourceRevision -NotePropertyValue $locked.sourceRevision
     $config
 }
 
@@ -126,15 +134,16 @@ function Assert-RuntimeManifest([string]$RuntimeRoot) {
     Assert-NoRuntimeLinks $RuntimeRoot
     $manifest = Get-Content -LiteralPath (Join-Path $RuntimeRoot 'manifest.json') -Raw | ConvertFrom-Json
     Assert-NoRuntimeDigests $manifest
-    if ($manifest.bundleVersion -ne $config.bundleVersion -or $manifest.architecture -ne $config.architecture -or
+    if ($manifest.schemaVersion -ne 2 -or $manifest.bundleVersion -ne $config.bundleVersion -or $manifest.architecture -ne $config.architecture -or
         $manifest.mvs.version -ne $config.mvsVersion) { throw '运行库包版本、架构或 MVS 版本不符合固定配置。' }
     Assert-LyFlowVersions $manifest.lyflow.abiVersion $manifest.lyflow.version '依赖包清单'
     Assert-LyFlowReleaseMetadata $manifest.lyflow '依赖包清单'
+    Assert-LyFlowSourceRevision $manifest.lyflow.sourceRevision $config.lyflowSourceRevision '依赖包与锁定记录'
     $actual = @(Get-RuntimeFiles $RuntimeRoot | Where-Object path -ne 'manifest.json')
     if ($actual.Count -ne @($manifest.files).Count) { throw '运行库文件清单数量不一致。' }
     $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($file in $manifest.files) {
-        if (-not $seen.Add([string]$file.path) -or $file.path -notmatch '^(lyflow|mvs)/' -or $file.path.Contains('\') -or $file.path.Split('/') -contains '..') { throw "运行库文件清单路径无效：$($file.path)" }
+        if (-not $seen.Add([string]$file.path) -or $file.path -notmatch '^(lyflow|mvs|crt)/' -or $file.path.Contains('\') -or $file.path.Split('/') -contains '..') { throw "运行库文件清单路径无效：$($file.path)" }
         $match = @($actual | Where-Object path -CEQ $file.path)
         if ($match.Count -ne 1 -or $match[0].bytes -ne $file.bytes) { throw "运行库文件缺失或尺寸不符：$($file.path)" }
     }

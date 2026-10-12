@@ -1,12 +1,34 @@
 name: Windows package
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - 'scripts/*.ps1'
+      - 'packaging/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.node-version'
+      - 'rust-toolchain.toml'
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/Cargo.lock'
+      - 'src-tauri/tauri*.json'
+      - 'src-tauri/build.rs'
+      - 'src-tauri/icons/**'
+      - 'tests/packaging/**'
   workflow_dispatch:
+    inputs:
+      use_cache:
+        description: Restore and save dependency caches
+        type: boolean
+        default: true
   push:
     tags: ['v*']
 
 permissions:
   contents: read
+  packages: read
 
 concurrency:
   group: windows-package-${{ github.ref }}
@@ -18,7 +40,9 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
-      RUSTUP_TOOLCHAIN: stable
+      RUSTUP_TOOLCHAIN: 1.99.0
+      CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target/cargo-release
+      PACKAGE_TIMINGS: ${{ github.workspace }}/src-tauri/target/package-reports/stage-seconds.txt
     defaults:
       run:
         shell: pwsh
@@ -26,82 +50,132 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Verify versions and installer policy
         id: tools
         run: |
-          $package = Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json
-          $tauri = Get-Content -LiteralPath src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
-          $windows = Get-Content -LiteralPath src-tauri/tauri.windows.conf.json -Raw | ConvertFrom-Json
-          $cargo = Get-Content -LiteralPath src-tauri/Cargo.toml -Raw
-          if ($cargo -notmatch '(?ms)^\[package\]\s*(.*?)(?=^\[|\z)') { throw 'Missing Cargo package metadata.' }
-          if ($Matches[1] -notmatch '(?m)^version\s*=\s*"([^"]+)"\s*$') { throw 'Missing Cargo version.' }
-          $rustVersion = $Matches[1]
-          if ($package.version -ne $tauri.version -or $package.version -ne $rustVersion) { throw 'package.json, Cargo.toml and tauri.conf.json versions must agree.' }
-          if ($env:GITHUB_REF_TYPE -eq 'tag' -and ($env:GITHUB_REF_NAME -notmatch '^v\d+\.\d+\.\d+$' -or $env:GITHUB_REF_NAME -ne "v$($package.version)")) { throw 'Tag must be vX.Y.Z and match all three application versions.' }
-          if ($windows.bundle.windows.webviewInstallMode.type -ne 'skip') { throw 'WebView2 installation must be skipped.' }
-          if ($package.packageManager -notmatch '^pnpm@(\d+\.\d+\.\d+)$') { throw 'packageManager must pin pnpm.' }
-          "pnpm=$($Matches[1])" >> $env:GITHUB_OUTPUT
-          if ($package.engines.node -notmatch '^>=(\d+\.\d+\.\d+)$') { throw 'engines.node must declare a minimum Node version.' }
-          "node=$($Matches[1])" >> $env:GITHUB_OUTPUT
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            ./scripts/Test-PackageVersions.ps1 -Tag $env:GITHUB_REF_NAME -VerifyMainAncestor
+          } else { ./scripts/Test-PackageVersions.ps1 }
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ steps.tools.outputs.pnpm }}
+          standalone: true
+          run_install: false
       - uses: actions/setup-node@v6
+        id: node-tools
         with:
           node-version: ${{ steps.tools.outputs.node }}
+          cache: ${{ (github.event_name != 'workflow_dispatch' || inputs.use_cache) && 'pnpm' || '' }}
+          package-manager-cache: false
       - name: Prepare package and Rust tools
-        env:
-          PNPM_VERSION: ${{ steps.tools.outputs.pnpm }}
         run: |
-          npm install --global "pnpm@$env:PNPM_VERSION"
-          if ($LASTEXITCODE -ne 0) { throw 'pnpm installation failed.' }
-          rustup toolchain install stable --profile minimal
+          rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
           if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
           git config --global url.https://github.com/.insteadOf ssh://git@github.com/
           git config --global --add url.https://github.com/.insteadOf git@github.com:
+      - uses: Swatinem/rust-cache@v2
+        id: rust-cache
+        if: github.event_name != 'workflow_dispatch' || inputs.use_cache
+        with:
+          workspaces: src-tauri -> target/cargo-release
+          shared-key: windows-release-1.99.0
+          cache-workspace-crates: false
+      - name: Read dependency cache identities
+        id: cache-identity
+        run: |
+          $lock = Get-Content -LiteralPath packaging/lyflow.lock.json -Raw | ConvertFrom-Json
+          $config = Get-Content -LiteralPath packaging/runtime.json -Raw | ConvertFrom-Json
+          foreach ($part in @($lock.packageId, $lock.version, $lock.architecture, $config.repository, $config.tag, $config.asset, $config.bundleVersion)) {
+            if ([string]$part -notmatch '^[A-Za-z0-9._/-]+$') { throw 'Invalid dependency cache identity.' }
+          }
+          "nuget=nuget-$($lock.packageId)-$($lock.version)-$($lock.architecture)" >> $env:GITHUB_OUTPUT
+          "vendor=vendor-$($config.repository.Replace('/', '-'))-$($config.tag)-$($config.asset)-$($config.bundleVersion)" >> $env:GITHUB_OUTPUT
+          $pnpmLock = Get-Content -LiteralPath pnpm-lock.yaml -Raw
+          if ($pnpmLock -notmatch "(?m)^      '@tauri-apps/cli':\r?\n        specifier: [^\r\n]+\r?\n        version: (\d+\.\d+\.\d+)\s*$") { throw 'Missing locked Tauri CLI version.' }
+          $cli = $Matches[1]
+          "nsis=nsis-windows-$cli" >> $env:GITHUB_OUTPUT
+          "nsis-path=$(Join-Path $env:LOCALAPPDATA 'tauri/NSIS')" >> $env:GITHUB_OUTPUT
+      - uses: actions/cache@v4
+        id: nuget-cache
+        if: github.event_name != 'workflow_dispatch' || inputs.use_cache
+        with:
+          path: src-tauri/target/dependency-cache/nuget
+          key: ${{ steps.cache-identity.outputs.nuget }}
+      - uses: actions/cache@v4
+        id: vendor-cache
+        if: github.event_name != 'workflow_dispatch' || inputs.use_cache
+        with:
+          path: src-tauri/target/dependency-cache/vendor
+          key: ${{ steps.cache-identity.outputs.vendor }}
+      - uses: actions/cache@v4
+        id: nsis-cache
+        if: github.event_name != 'workflow_dispatch' || inputs.use_cache
+        with:
+          path: ${{ steps.cache-identity.outputs.nsis-path }}
+          key: ${{ steps.cache-identity.outputs.nsis }}
       - name: Install locked frontend dependencies
         run: pnpm install --frozen-lockfile
       - name: Require a clean SDK environment
         run: |
           $mvsPaths = @('C:/Program Files (x86)/MVS', 'C:/Program Files/MVS', 'C:/Program Files (x86)/Common Files/MVS', 'C:/Program Files/Common Files/MVS')
           if (@($mvsPaths | Where-Object { Test-Path -LiteralPath $_ }).Count -gt 0) { throw 'Packaging verification requires a runner without system MVS.' }
-      - name: Download pinned runtime bundle
+      - name: Prepare bundled runtime
         env:
           GH_TOKEN: ${{ github.token }}
+          LYFLOW_NUGET_TOKEN: ${{ secrets.LYFLOW_NUGET_TOKEN || github.token }}
         run: |
-          $config = Get-Content -LiteralPath packaging/runtime.json -Raw | ConvertFrom-Json
-          if ($config.repository -ne $env:GITHUB_REPOSITORY) { throw 'Runtime bundle must come from this repository.' }
-          if ($config.tag -notmatch '^deps-win-x64-v\d+$' -or $config.asset -notmatch '^gluesight-runtime-win-x64-v\d+\.zip$') { throw 'Runtime release tag and asset must be explicitly versioned.' }
-          $download = Join-Path $env:RUNNER_TEMP 'runtime-download'
-          New-Item -ItemType Directory -Path $download | Out-Null
-          gh release download $config.tag --repo $config.repository --pattern $config.asset --dir $download
-          if ($LASTEXITCODE -ne 0) { throw 'Pinned runtime dependency release is missing or inaccessible.' }
-          $zipPath = Join-Path $download $config.asset
-          $destination = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'runtime-bundle'))
-          . ./scripts/Runtime-Common.ps1
-          Expand-RuntimeArchive -Archive $zipPath -Destination $destination
-          $manifest = Get-Content -LiteralPath (Join-Path $destination 'runtime/manifest.json') -Raw | ConvertFrom-Json
-          if ($manifest.architecture -ne 'x64' -or $manifest.bundleVersion -ne $config.bundleVersion -or $manifest.mvs.version -ne $config.mvsVersion) { throw 'Runtime manifest does not match the pinned bundle and MVS version.' }
-          "RUNTIME_BUNDLE=$destination" >> $env:GITHUB_ENV
-      - name: Prepare bundled runtime
-        run: pwsh -NoProfile -File scripts/Prepare-RuntimeDependencies.ps1 -RuntimeBundle $env:RUNTIME_BUNDLE
+          New-Item -ItemType Directory -Path (Split-Path -Parent $env:PACKAGE_TIMINGS) -Force | Out-Null
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          try { ./scripts/Prepare-RuntimeDependencies.ps1 }
+          finally { "runtime=$($timer.Elapsed.TotalSeconds.ToString('F3', [Globalization.CultureInfo]::InvariantCulture))" | Add-Content -LiteralPath $env:PACKAGE_TIMINGS }
       - name: Prepare installer resources
         run: pwsh -NoProfile -File scripts/Prepare-PackageResources.ps1
       - name: Production frontend build
-        run: pnpm build
+        run: |
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          try {
+            pnpm build
+            if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed.' }
+          } finally { "frontend=$($timer.Elapsed.TotalSeconds.ToString('F3', [Globalization.CultureInfo]::InvariantCulture))" | Add-Content -LiteralPath $env:PACKAGE_TIMINGS }
       - name: Production Rust build
         working-directory: src-tauri
         run: |
           $env:TAURI_CONFIG = Get-Content -LiteralPath target/package-runtime/tauri.runtime.json -Raw
-          cargo build --locked --release --target x86_64-pc-windows-msvc --bin GlueSight --features tauri/custom-protocol
-      - name: Verify application runtime
-        run: pwsh -NoProfile -File scripts/Test-PackageApplication.ps1 -ApplicationPath src-tauri/target/x86_64-pc-windows-msvc/release/GlueSight.exe
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          try {
+            cargo build --locked --release --target x86_64-pc-windows-msvc --bin GlueSight --features tauri/custom-protocol
+            if ($LASTEXITCODE -ne 0) { throw 'Rust build failed.' }
+          } finally { "rust=$($timer.Elapsed.TotalSeconds.ToString('F3', [Globalization.CultureInfo]::InvariantCulture))" | Add-Content -LiteralPath $env:PACKAGE_TIMINGS }
+      - name: Verify actual DLL vision and application runtime
+        run: |
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          try {
+            ./scripts/Test-PackageApplication.ps1 -ApplicationPath src-tauri/target/cargo-release/x86_64-pc-windows-msvc/release/GlueSight.exe
+          } finally { "vision=$($timer.Elapsed.TotalSeconds.ToString('F3', [Globalization.CultureInfo]::InvariantCulture))" | Add-Content -LiteralPath $env:PACKAGE_TIMINGS }
       - name: Bundle NSIS installer
-        run: pnpm exec tauri bundle --bundles nsis --target x86_64-pc-windows-msvc --config src-tauri/target/package-runtime/tauri.runtime.json
+        run: |
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          try {
+            pnpm exec tauri bundle --bundles nsis --target x86_64-pc-windows-msvc --config src-tauri/target/package-runtime/tauri.runtime.json
+            if ($LASTEXITCODE -ne 0) { throw 'NSIS build failed.' }
+          } finally { "nsis=$($timer.Elapsed.TotalSeconds.ToString('F3', [Globalization.CultureInfo]::InvariantCulture))" | Add-Content -LiteralPath $env:PACKAGE_TIMINGS }
       - name: Verify installed deployment
         run: |
-          $installers = @(Get-ChildItem -LiteralPath src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis -Filter '*-setup.exe' -File)
+          $installers = @(Get-ChildItem -LiteralPath src-tauri/target/cargo-release/x86_64-pc-windows-msvc/release/bundle/nsis -Filter '*-setup.exe' -File)
           if ($installers.Count -ne 1) { throw 'Expected exactly one NSIS installer.' }
           $reportRoot = Join-Path $env:GITHUB_WORKSPACE 'src-tauri/target/package-reports'
-          pwsh -NoProfile -File scripts/Test-WindowsInstallation.ps1 -Installer $installers[0].FullName -InstallDir (Join-Path $env:RUNNER_TEMP 'gluesight-installed') -ReportDir $reportRoot
-          if ($LASTEXITCODE -ne 0) { throw 'Installed deployment verification failed.' }
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          try {
+            pwsh -NoProfile -File scripts/Test-WindowsInstallation.ps1 -Installer $installers[0].FullName -InstallDir (Join-Path $env:RUNNER_TEMP 'GlueSight 安装验收') -ReportDir $reportRoot
+            if ($LASTEXITCODE -ne 0) { throw 'Installed deployment verification failed.' }
+          } finally { "install=$($timer.Elapsed.TotalSeconds.ToString('F3', [Globalization.CultureInfo]::InvariantCulture))" | Add-Content -LiteralPath $env:PACKAGE_TIMINGS }
+      - name: Record release inputs and timings
+        if: always()
+        env:
+          VALIDATION_STATUS: ${{ job.status }}
+          CACHE_STATUS: '{"enabled":${{ github.event_name != ''workflow_dispatch'' || inputs.use_cache }},"pnpm":"${{ steps.node-tools.outputs.cache-hit }}","cargo":"${{ steps.rust-cache.outputs.cache-hit }}","nuget":"${{ steps.nuget-cache.outputs.cache-hit }}","vendor":"${{ steps.vendor-cache.outputs.cache-hit }}","nsis":"${{ steps.nsis-cache.outputs.cache-hit }}"}'
+        run: ./scripts/Write-ReleaseManifest.ps1 -TimingPath $env:PACKAGE_TIMINGS -CacheStatusJson $env:CACHE_STATUS -Status $env:VALIDATION_STATUS
       - name: Upload installer and verification reports
         uses: actions/upload-artifact@v4
         with:
@@ -109,11 +183,12 @@ jobs:
           retention-days: 14
           if-no-files-found: error
           path: |
-            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+            src-tauri/target/cargo-release/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
             src-tauri/target/package-runtime/runtime/manifest.json
             src-tauri/target/package-runtime/runtime-validation.json
             src-tauri/target/package-runtime/application-runtime-validation.json
             src-tauri/target/package-reports/*.json
+            src-tauri/target/package-reports/*.txt
       - name: Upload failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
@@ -125,6 +200,7 @@ jobs:
             src-tauri/target/package-runtime/runtime-validation.json
             src-tauri/target/package-runtime/application-runtime-validation.json
             src-tauri/target/package-reports/*.json
+            src-tauri/target/package-reports/*.txt
 
   draft-release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
