@@ -12,7 +12,7 @@ pnpm deps:lyflow:update -Version 1.1.0
 pnpm deps:lyflow:restore
 ```
 
-更新命令只选择 `1.1.x` 正式补丁版本，同时更新运行库锁定记录、Rust 客户端 Git rev、Cargo.toml 和 Cargo.lock；失败恢复原文件。跨到 `1.2` 或 `2` 必须显式修改系列并重新验收。客户端与 DLL 的完整 ABI/产品版本继续严格相等；升级后重新编译并发布 GlueSight，不支持只替换已安装程序的 DLL。
+更新命令从标准 NuGet v3 PackageBaseAddress 版本索引选择 `1.1.x` 正式补丁版本，同时更新运行库锁定记录、Rust 客户端 Git rev、Cargo.toml 和 Cargo.lock；失败恢复原文件。跨到 `1.2` 或 `2` 必须显式修改系列并重新验收。客户端与 DLL 的完整 ABI/产品版本继续严格相等；升级后重新编译并发布 GlueSight，不支持只替换已安装程序的 DLL。
 
 MVS `4.8.1.2`、许可证与应用所需 CRT 独立固定在 `deps-win-x64-v2` 的 `gluesight-vendor-runtime-win-x64-v2.zip`。该包不包含 lyFlow。旧合并依赖包拒绝读取，不做格式回退。应用版本、lyFlow 版本与厂商包版本独立。
 
@@ -21,6 +21,8 @@ MVS `4.8.1.2`、许可证与应用所需 CRT 独立固定在 `deps-win-x64-v2` �
 本机默认从 `$USERPROFILE/.ssh/github_nuget_auth.txt` 读取凭证，也可通过 `LYFLOW_NUGET_TOKEN` 提供；用户名通过 `LYFLOW_NUGET_USERNAME` 提供，默认 `liangyuR`。凭证仅用于认证，不写入仓库、缓存或产物。GitHub Actions 使用包授权后的只读 `GITHUB_TOKEN`，或仓库 Secret `LYFLOW_NUGET_TOKEN`。NuGet 包须给 GlueSight 仓库配置 Actions 读取权限。
 
 NuGet CLI 固定为官方 `6.14.0`，校验版本与微软签名。依赖缓存在 `src-tauri/target/dependency-cache`，按 NuGet 包 ID、完整版本、架构或厂商 tag/资产身份隔离。下载在临时目录进行，验证完整后才移动到正式缓存目录；命中后仍校验清单及实际 DLL。
+
+NuGet 下载默认总期限 1200 秒，每 30 秒显示等待进度。慢链路可通过 `LYFLOW_NUGET_TIMEOUT_SECONDS` 调整为 30 至 3600 秒；超时清理本次临时下载，不建立完整版本缓存。版本查询只接受同一 HTTPS 源及 owner 路径的元数据地址，禁止自动跳转认证请求。
 
 CI 分别缓存 pnpm、Cargo、NuGet 运行库、厂商依赖和 Tauri NSIS 工具。最终应用、安装包、组装运行库与验收报告不作为缓存复用。手动运行 `Windows package` 时设置 `use_cache=false` 可跳过全部缓存恢复和保存。
 
@@ -54,7 +56,7 @@ pnpm package:deps:publish -Archive 'C:\release\gluesight-vendor-runtime-win-x64-
 
 产物包含应用安装包、运行库清单、验证报告与 `release-manifest.json`，记录应用修订、依赖版本/来源、工具版本、缓存命中及各阶段耗时。成功与失败均保留诊断资料。GitHub 冷、热两次完整 workflow 才能证明缓存服务的实际收益；本机缓存检查不能替代该证据。
 
-软件自检覆盖合成图像胶路测量、空白图拒绝、偏移、多视图与棋盘格标定及 MVS 加载/枚举，不代表真机触发收图、现场精度或长稳验收。可使用安装后的无界面入口：
+软件自检覆盖合成图像胶路测量、空白图拒绝、偏移与棋盘格标定及 MVS 加载/枚举，不代表真机触发收图、现场精度或长稳验收。可使用安装后的无界面入口：
 
 ```powershell
 & 'C:\Apps\GlueSight\GlueSight.exe' --check-packaged-runtime 'C:\reports\runtime.json'

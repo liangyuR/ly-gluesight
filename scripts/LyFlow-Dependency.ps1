@@ -70,8 +70,7 @@ function Assert-X64OrX86NuGetTool([string]$Path) {
     }
 }
 
-function Invoke-LyFlowNuGet([string]$RepositoryRoot, [string]$Source, [string[]]$Arguments, [string]$CredentialFile) {
-    $tool = Get-NuGetTool $RepositoryRoot
+function Get-LyFlowNuGetCredential([string]$CredentialFile) {
     $token = $env:LYFLOW_NUGET_TOKEN
     $username = if ($env:LYFLOW_NUGET_USERNAME) { $env:LYFLOW_NUGET_USERNAME } else { 'liangyuR' }
     if (-not $token) {
@@ -85,6 +84,14 @@ function Invoke-LyFlowNuGet([string]$RepositoryRoot, [string]$Source, [string[]]
     }
     if (-not $token) { throw '缺少 NuGet 读取凭证；请配置 LYFLOW_NUGET_TOKEN 或凭证文件。' }
     if ($username -match '[;\r\n]' -or $token -match '[;\r\n]') { throw 'NuGet 凭证格式无效。' }
+    [pscustomobject]@{ username = $username; token = $token }
+}
+
+function Invoke-LyFlowNuGet([string]$RepositoryRoot, [string]$Source, [string[]]$Arguments, [string]$CredentialFile) {
+    $tool = Get-NuGetTool $RepositoryRoot
+    $credential = Get-LyFlowNuGetCredential $CredentialFile
+    $token = $credential.token
+    $username = $credential.username
     $directory = Join-Path $RepositoryRoot "src-tauri/target/dependency-tools/auth-$([guid]::NewGuid().ToString('N'))"
     [void][IO.Directory]::CreateDirectory($directory)
     $configPath = Join-Path $directory 'NuGet.Config'
@@ -95,13 +102,29 @@ function Invoke-LyFlowNuGet([string]$RepositoryRoot, [string]$Source, [string[]]
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
     $start.Environment['NuGetPackageSourceCredentials_LyFlow'] = "Username=$username;Password=$token;ValidAuthenticationTypes=Basic"
-    foreach ($argument in @($Arguments) + @('-ConfigFile', $configPath, '-NonInteractive', '-Verbosity', 'quiet')) { $start.ArgumentList.Add($argument) }
+    $verbosity = if ($Arguments[0] -ceq 'list') { 'normal' } else { 'quiet' }
+    foreach ($argument in @($Arguments) + @('-ConfigFile', $configPath, '-NonInteractive', '-Verbosity', $verbosity)) { $start.ArgumentList.Add($argument) }
     try {
         $process = [Diagnostics.Process]::Start($start)
         try {
             $stdout = $process.StandardOutput.ReadToEndAsync()
             $stderr = $process.StandardError.ReadToEndAsync()
-            if (-not $process.WaitForExit(300000)) { $process.Kill($true); throw 'NuGet 请求超时。' }
+            $timeoutSeconds = 1200
+            if ($env:LYFLOW_NUGET_TIMEOUT_SECONDS) {
+                if (-not [int]::TryParse($env:LYFLOW_NUGET_TIMEOUT_SECONDS, [ref]$timeoutSeconds) -or $timeoutSeconds -lt 30 -or $timeoutSeconds -gt 3600) {
+                    $process.Kill($true)
+                    throw 'LYFLOW_NUGET_TIMEOUT_SECONDS 必须是 30 至 3600 秒。'
+                }
+            }
+            $timer = [Diagnostics.Stopwatch]::StartNew()
+            while (-not $process.WaitForExit([Math]::Min(30000, $timeoutSeconds * 1000))) {
+                if ($timer.Elapsed.TotalSeconds -ge $timeoutSeconds) {
+                    $process.Kill($true)
+                    $process.WaitForExit()
+                    throw "NuGet 请求超过 $timeoutSeconds 秒；大运行库下载可配置 LYFLOW_NUGET_TIMEOUT_SECONDS（最多 3600 秒）。"
+                }
+                Write-Host "NuGet 固定源请求进行中：已等待 $([int]$timer.Elapsed.TotalSeconds) 秒。"
+            }
             $output = $stdout.GetAwaiter().GetResult()
             [void]$stderr.GetAwaiter().GetResult()
             if ($process.ExitCode -ne 0) { throw "NuGet 请求失败（退出码 $($process.ExitCode)）；请检查源、包版本和读取权限。" }
@@ -109,17 +132,50 @@ function Invoke-LyFlowNuGet([string]$RepositoryRoot, [string]$Source, [string[]]
         } finally { $process.Dispose() }
     } finally {
         $token = $null
+        $credential.token = $null
         $start.Environment.Remove('NuGetPackageSourceCredentials_LyFlow') | Out-Null
         Remove-Item -LiteralPath $configPath -Force
         Remove-Item -LiteralPath $directory -Force
     }
 }
 
+function Invoke-LyFlowNuGetMetadata([string]$Uri, [string]$Source, [string]$CredentialFile) {
+    $sourceUri = [uri]$Source
+    $requestUri = [uri]$Uri
+    $ownerPath = $sourceUri.AbsolutePath.Substring(0, $sourceUri.AbsolutePath.LastIndexOf('/') + 1)
+    if ($sourceUri.Scheme -cne 'https' -or $requestUri.Scheme -cne 'https' -or
+        $requestUri.Authority -cne $sourceUri.Authority -or $requestUri.UserInfo -or
+        -not $requestUri.AbsolutePath.StartsWith($ownerPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'NuGet 元数据端点必须使用相同 HTTPS 源及 owner 路径。'
+    }
+    $credential = Get-LyFlowNuGetCredential $CredentialFile
+    $handler = [Net.Http.HttpClientHandler]::new()
+    $handler.AllowAutoRedirect = $false
+    $client = [Net.Http.HttpClient]::new($handler)
+    $client.Timeout = [TimeSpan]::FromSeconds(60)
+    $authorization = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$($credential.username):$($credential.token)"))
+    $client.DefaultRequestHeaders.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new('Basic', $authorization)
+    try {
+        $response = $client.GetAsync($requestUri).GetAwaiter().GetResult()
+        try {
+            if (-not $response.IsSuccessStatusCode) { throw "NuGet 元数据读取失败，HTTP $([int]$response.StatusCode)。" }
+            $response.Content.ReadAsStringAsync().GetAwaiter().GetResult() | ConvertFrom-Json
+        } finally { $response.Dispose() }
+    } finally {
+        $credential.token = $null
+        $authorization = $null
+        $client.Dispose()
+        $handler.Dispose()
+    }
+}
+
 function Get-LyFlowAvailableVersions([string]$RepositoryRoot, $Config, [string]$CredentialFile) {
-    $output = Invoke-LyFlowNuGet $RepositoryRoot $Config.lyflow.source @('list', $Config.lyflow.packageId, '-AllVersions', '-Source', 'LyFlow') $CredentialFile
-    @($output -split '\r?\n' | ForEach-Object {
-        if ($_ -match ('^' + [regex]::Escape($Config.lyflow.packageId) + '\s+(\S+)\s*$')) { $Matches[1] }
-    })
+    $index = Invoke-LyFlowNuGetMetadata $Config.lyflow.source $Config.lyflow.source $CredentialFile
+    $resources = @($index.resources | Where-Object { $_.'@type' -ceq 'PackageBaseAddress/3.0.0' })
+    if ($resources.Count -ne 1) { throw 'NuGet v3 源必须声明唯一的 PackageBaseAddress/3.0.0。' }
+    $baseAddress = $resources[0].'@id'.TrimEnd('/')
+    $versions = Invoke-LyFlowNuGetMetadata "$baseAddress/$($Config.lyflow.packageId.ToLowerInvariant())/index.json" $Config.lyflow.source $CredentialFile
+    @($versions.versions)
 }
 
 function Get-LyFlowDllMetadata([string]$RuntimeRoot) {

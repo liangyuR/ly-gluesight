@@ -12,6 +12,8 @@ $locked = [pscustomobject]@{ schemaVersion = 1; packageId = $config.lyflow.packa
 $passed = 0
 $script:downloads = 0
 $script:interruptDownload = $false
+$script:metadataReader = (Get-Command Invoke-LyFlowNuGetMetadata).ScriptBlock
+$script:metadataRequests = [Collections.Generic.List[string]]::new()
 function Expect-Failure([string]$Name, [scriptblock]$Action, [string]$Message) {
     $failure = $null
     try { & $Action | Out-Null } catch { $failure = $_.Exception.Message }
@@ -39,6 +41,12 @@ function New-Fixture {
     $descriptor
 }
 function Invoke-LyFlowDllProbe([string]$RuntimeRoot) { $script:dllMetadata }
+function Invoke-LyFlowNuGetMetadata([string]$Uri, [string]$Source, [string]$CredentialFile) {
+    $script:metadataRequests.Add($Uri)
+    if ($Uri -ceq $config.lyflow.source) { return [pscustomobject]@{resources = @([pscustomobject]@{'@type' = 'PackageBaseAddress/3.0.0'; '@id' = 'https://nuget.pkg.github.com/liangyuR/download'})} }
+    if ($Uri -cne 'https://nuget.pkg.github.com/liangyuR/download/lyflow.runtime.win-x64/index.json') { throw '版本发现必须使用标准 PackageBaseAddress 包版本索引。' }
+    [pscustomobject]@{versions = @('1.1.9', '1.1.10', '1.2.0', '2.0.0', '1.1.11-preview')}
+}
 function Invoke-LyFlowNuGet([string]$RepositoryRoot, [string]$Source, [string[]]$Arguments, [string]$CredentialFile) {
     $script:downloads++
     if ($Arguments -contains 'list') { throw '普通恢复不允许查询最新版本。' }
@@ -63,6 +71,11 @@ function Invoke-LyFlowCargoUpdate([string]$Revision) {
 }
 try {
     New-Fixture | Out-Null
+    $discovered = @(Get-LyFlowAvailableVersions $root $config)
+    if ($script:metadataRequests.Count -ne 2 -or (Resolve-LyFlowPackageVersion $discovered $config.lyflow) -cne '1.1.10') { throw '默认 latest 必须从标准 v3 版本索引中选择兼容系列补丁。' }; $passed++
+    foreach ($uri in @('https://example.com/liangyuR/download/package/index.json', 'http://nuget.pkg.github.com/liangyuR/download/package/index.json', 'https://nuget.pkg.github.com/another-owner/download/package/index.json', 'https://user@nuget.pkg.github.com/liangyuR/download/package/index.json')) {
+        Expect-Failure '元数据端点边界' { & $script:metadataReader $uri $config.lyflow.source } '相同 HTTPS'
+    }
     if ((Resolve-LyFlowPackageVersion @('1.1.9', '1.1.10', '1.2.0', '1.1.11-preview') $config.lyflow) -cne '1.1.10') { throw '版本必须按数值选择最新稳定补丁。' }
     $passed++
     if ((Resolve-LyFlowPackageVersion @('1.1.10') $config.lyflow '1.1.0') -cne '1.1.0') { throw '指定版本应支持同系列回退。' }
