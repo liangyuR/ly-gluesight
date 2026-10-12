@@ -134,6 +134,7 @@ pub fn run() {
             workspace::workspace_check_calibration,
             workspace::workspace_extract_centerline,
             workspace::workspace_retry_publish,
+            workspace::workspace_abandon_publish,
             workspace::workspace_adopt_capture,
             workspace::workspace_capture_sample,
             workspace::workspace_get,

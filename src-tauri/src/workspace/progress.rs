@@ -31,7 +31,7 @@ pub struct Step {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub enum ShotState { Unconfigured, Draft, PendingTrial, TrialFailed, TrialPassed, Taught, Skipped }
+pub enum ShotState { Recapture, Unconfigured, Draft, PendingTrial, TrialFailed, TrialPassed, Taught, Skipped }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -81,21 +81,32 @@ pub struct Progress {
     pub next: Option<NextAction>,
 }
 
+/// 当前设备：按（拍照点，视角）的相机与标定标签，以及当前图像引擎。缺项表示该视角的相机当前不可用。
+#[derive(Clone, Debug, Default)]
+pub struct Devices {
+    pub views: HashMap<(usize, u8), (Value, Value)>,
+    pub engine: Option<Value>,
+}
+
 #[cfg(test)]
 impl Progress {
     pub fn step(&self, id: StepId) -> &Step { self.steps.iter().find(|s| s.id == id).expect("每个步骤都会生成") }
 }
 
-fn view_progress(w: &Workspace, recipe: Option<&Recipe>, k: usize, view: u8, enabled: bool) -> ViewProgress {
+fn view_progress(w: &Workspace, recipe: Option<&Recipe>, devices: &Devices, k: usize, view: u8, enabled: bool) -> ViewProgress {
     let skipped = w.doc.shots[k].skip;
     let projected = recipe.and_then(|r| r.for_view(k, view).ok());
     let frame = projected_frame(w, k, view).ok();
     let image = frame.as_ref().and_then(|f| f.image.as_ref());
     let shot = projected.as_ref().map(|r| &r.shots[k]);
     let check = w.frames.get(k).and_then(|f| f.view_states.iter().find(|s| s.view == view)).and_then(|s| s.calibration_check.as_ref());
+    let current = devices.views.get(&(k, view));
+    let device_changed = image.is_some_and(|image| current.is_none_or(|(camera, _)| *camera != image.camera_tag));
+    let calib_changed = image.is_some_and(|image| current.is_some_and(|(_, calib)| *calib != image.calib_tag));
     let calibration = match (check, image, shot) {
         (None, ..) | (_, None, _) | (_, _, None) => CalibrationState::Unverified,
-        (Some(c), Some(image), Some(shot)) if c.camera_tag != image.camera_tag || c.calib_tag != image.calib_tag || c.mm_per_px != shot.mm_per_px => CalibrationState::Stale,
+        (Some(c), Some(image), Some(shot)) if c.camera_tag != image.camera_tag || c.calib_tag != image.calib_tag || c.mm_per_px != shot.mm_per_px
+            || device_changed || calib_changed => CalibrationState::Stale,
         (Some(c), ..) => match &c.basis {
             CalibrationBasis::SampleSet { set_id } if c.passed => CalibrationState::SampleSet { set_id: set_id.clone(), mm_per_px: c.mm_per_px.unwrap_or_default() },
             CalibrationBasis::SampleSet { .. } => CalibrationState::Unverified,
@@ -108,6 +119,9 @@ fn view_progress(w: &Workspace, recipe: Option<&Recipe>, k: usize, view: u8, ena
         let (Some(image), Some(shot), Some(r), Some(frame)) = (image, shot, projected.as_ref(), frame.as_ref()) else {
             break 'state (ShotState::Unconfigured, false, "先整圈采集，取得这个拍照点的原图。".into());
         };
+        if device_changed {
+            break 'state (ShotState::Recapture, false, "当前设备与采集原图时不一致（相机参数、样本集或站点模式已变），需整圈重新采集；换回原设备后状态自动恢复。".into());
+        }
         if shot.path.is_empty() && shot.mm_per_px.is_none() {
             break 'state (ShotState::Unconfigured, false, "在原图上从胶嘴一侧往外依次点出胶路中线，填好像素当量后保存参数并试测。".into());
         }
@@ -119,6 +133,10 @@ fn view_progress(w: &Workspace, recipe: Option<&Recipe>, k: usize, view: u8, ena
         let stale = current.as_ref().is_none_or(|(image_tag, params_tag)| trial.image_id != image.id || &trial.geometry_tag != image_tag
             || &image.geometry_tag != image_tag || &trial.params_tag != params_tag);
         if stale { break 'state (ShotState::PendingTrial, true, "现有试测已过期，请重新保存参数并试测。".into()); }
+        if calib_changed { break 'state (ShotState::PendingTrial, true, "工位标定已变化：请重新验证像素当量后重新试测。".into()); }
+        if devices.engine.as_ref().is_some_and(|engine| *engine != trial.engine_tag) {
+            break 'state (ShotState::PendingTrial, true, "图像引擎已变化，请重新试测。".into());
+        }
         if !trial.passed { break 'state (ShotState::TrialFailed, false, trial.reason.clone()); }
         if frame.saved { break 'state (ShotState::Taught, false, "本帧示教已保存；发布前仍需整体验证。".into()); }
         (ShotState::TrialPassed, false, trial.reason.clone())
@@ -126,12 +144,12 @@ fn view_progress(w: &Workspace, recipe: Option<&Recipe>, k: usize, view: u8, ena
     ViewProgress { view, enabled, state, trial_stale, calibration, hint }
 }
 
-fn shot_progress(w: &Workspace, recipe: Option<&Recipe>, k: usize) -> ShotProgress {
+fn shot_progress(w: &Workspace, recipe: Option<&Recipe>, devices: &Devices, k: usize) -> ShotProgress {
     let selected = selected_views(w, k);
     let frame = &w.frames[k];
     let mut listed: Vec<u8> = frame.views.iter().map(|i| i.view).collect();
     if listed.is_empty() { listed = selected.clone(); }
-    let views: Vec<_> = listed.into_iter().map(|v| view_progress(w, recipe, k, v, selected.contains(&v))).collect();
+    let views: Vec<_> = listed.into_iter().map(|v| view_progress(w, recipe, devices, k, v, selected.contains(&v))).collect();
     let enabled: Vec<_> = views.iter().filter(|v| v.enabled).collect();
     let completed = enabled.iter().filter(|v| v.state == ShotState::Taught).count();
     let state = if w.doc.shots[k].skip { ShotState::Skipped }
@@ -141,6 +159,7 @@ fn shot_progress(w: &Workspace, recipe: Option<&Recipe>, k: usize) -> ShotProgre
 
 fn shot_state_text(state: ShotState) -> &'static str {
     match state {
+        ShotState::Recapture => "需重新采集",
         ShotState::Unconfigured => "未配置",
         ShotState::Draft => "编辑草稿",
         ShotState::PendingTrial => "待试测",
@@ -171,17 +190,22 @@ fn check_target(name: &str, first_open: Option<usize>) -> Target {
 }
 
 /// 候选配方的显式进度：各步骤状态、阻塞原因（带可跳转目标）与全局下一步。只读候选自身记录，不访问设备。
-pub fn compute(w: &Workspace, production_version: Option<u32>) -> Progress {
+/// 冻结图与 devices（当前设备）不一致时只在结果里标为需重新采集或过期，不改候选记录。
+pub fn compute(w: &Workspace, production_version: Option<u32>, devices: &Devices) -> Progress {
     let recipe = w.doc.build().ok();
-    let shots: Vec<_> = (0..w.frames.len().min(w.doc.shots.len())).map(|k| shot_progress(w, recipe.as_ref(), k)).collect();
+    let shots: Vec<_> = (0..w.frames.len().min(w.doc.shots.len())).map(|k| shot_progress(w, recipe.as_ref(), devices, k)).collect();
     let captured = w.capture_id.is_some() && !w.frames.is_empty();
     let need_capture = || vec![Blocker { message: "先采用一轮完整的整圈采集".into(), target: Target::Capture }];
     let label = |s: &ShotProgress| format!("拍照点 {} · {}", s.k + 1, s.shot_id);
 
+    let recapture: Vec<_> = shots.iter().filter(|s| s.state == ShotState::Recapture)
+        .map(|s| Blocker { message: format!("{}：当前设备与采集时不一致，需重新采集", label(s)), target: Target::Capture }).collect();
     let capture = Step { id: StepId::Capture, label: "整圈采集", optional: false,
-        status: if captured { StepStatus::Done } else { StepStatus::NotStarted },
-        detail: if captured { format!("已采用完整采集轮次，{} 个拍照点", w.frames.len()) } else { "等待设备就绪后整圈采集并采用".into() },
-        blockers: Vec::new() };
+        status: if !captured { StepStatus::NotStarted } else if recapture.is_empty() { StepStatus::Done } else { StepStatus::Blocked },
+        detail: if !captured { "等待设备就绪后整圈采集并采用".into() }
+            else if recapture.is_empty() { format!("已采用完整采集轮次，{} 个拍照点", w.frames.len()) }
+            else { "当前设备与采集时不一致，需整圈重新采集".into() },
+        blockers: recapture };
 
     let defaults = Step { id: StepId::Defaults, label: "配方默认参数", optional: true, status: StepStatus::Optional,
         detail: "可选：默认检测与判定参数，单帧示教时可按图覆盖".into(), blockers: Vec::new() };
@@ -193,7 +217,10 @@ pub fn compute(w: &Workspace, production_version: Option<u32>) -> Progress {
         let mut blockers = Vec::new();
         for s in &measured {
             if s.total == 0 { blockers.push(Blocker { message: format!("{}：未选检测图", label(s)), target: Target::Teach { k: s.k } }); }
-            else if s.state != ShotState::Taught { blockers.push(Blocker { message: format!("{}：{}", label(s), shot_state_text(s.state)), target: Target::Teach { k: s.k } }); }
+            else if s.state != ShotState::Taught {
+                let target = if s.state == ShotState::Recapture { Target::Capture } else { Target::Teach { k: s.k } };
+                blockers.push(Blocker { message: format!("{}：{}", label(s), shot_state_text(s.state)), target });
+            }
         }
         let status = if !captured { StepStatus::NotStarted }
             else if measured.is_empty() { StepStatus::Blocked }
@@ -231,6 +258,9 @@ pub fn compute(w: &Workspace, production_version: Option<u32>) -> Progress {
         detail: if w.overview.saved { "总览布置已保存".into() } else { "可选：未布置时按默认网格显示".into() }, blockers: Vec::new() };
 
     let active = match &w.publish { PublishState::Active { version, revision, .. } if *revision == w.revision => Some(*version), _ => None };
+    let site = |offline: bool| if offline { "（离线验证）" } else { "" };
+    let active_offline = matches!(w.publish, PublishState::Active { validation_site: Some(ValidationSite::Offline), .. });
+    let pending_offline = w.pending.as_ref().is_some_and(|p| p.validation_site == ValidationSite::Offline);
     let prerequisites = [&capture, &teach, &calibration];
     let validation = {
         let current = w.validation.as_ref().filter(|v| v.revision == w.revision);
@@ -254,9 +284,9 @@ pub fn compute(w: &Workspace, production_version: Option<u32>) -> Progress {
         let production = production_version.map_or("未发布".to_string(), |v| format!("生产 v{v}"));
         let pending = w.pending.as_ref().map(|p| p.doc.version);
         let (status, detail, blockers) = match (&w.publish, active) {
-            (_, Some(version)) => (StepStatus::Done, format!("v{version} 已生效"), Vec::new()),
-            (PublishState::Waiting, _) => (StepStatus::InProgress, format!("v{} 待生效：等待当前工件结束", pending.unwrap_or(w.doc.version)), Vec::new()),
-            (PublishState::Failed { message }, _) => (StepStatus::Blocked, format!("v{} 生效失败", pending.unwrap_or(w.doc.version)),
+            (_, Some(version)) => (StepStatus::Done, format!("v{version} 已生效{}", site(active_offline)), Vec::new()),
+            (PublishState::Waiting, _) => (StepStatus::InProgress, format!("v{} 待生效{}：等待当前工件结束", pending.unwrap_or(w.doc.version), site(pending_offline)), Vec::new()),
+            (PublishState::Failed { message }, _) => (StepStatus::Blocked, format!("v{} 生效失败，可重试或放弃该待生效版本", pending.unwrap_or(w.doc.version)),
                 vec![Blocker { message: message.clone(), target: Target::Validation }]),
             (PublishState::Uncertain { message }, _) => (StepStatus::Blocked, format!("v{} 生效状态不确定", pending.unwrap_or(w.doc.version)),
                 vec![Blocker { message: message.clone(), target: Target::Validation }]),

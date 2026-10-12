@@ -479,6 +479,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
 fn read_manifest(root: &Path, bundle_id: &str) -> Result<ReleaseManifest, String> {
     let value: serde_json::Value = serde_json::from_slice(&read_file(&root.join("manifest.json"))?).map_err(|e| format!("发布清单无法解析：{e}"))?;
     if value.get("bundleId").is_none() { return Err("发布清单缺少明确 bundleId，旧版发布包不再兼容，请重新发布".into()); }
+    if value.get("validationSite").is_none() { return Err("发布清单缺少验证现场标记（真机 / 离线），旧版发布包不再兼容，请重新验证并发布".into()); }
     let manifest: ReleaseManifest = serde_json::from_value(value).map_err(|e| format!("发布清单格式不兼容，请重新发布：{e}"))?;
     if manifest.bundle_id != bundle_id { return Err("发布清单与包的显式 ID 身份不一致".into()); }
     Ok(manifest)
@@ -658,5 +659,42 @@ impl Drop for Staging {
         {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TempDir(PathBuf);
+    impl Drop for TempDir { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+
+    fn publish_with(root: &Path, validation_site: ValidationSite) -> ReleaseBundle {
+        let mut recipe = crate::recipe::samples().remove(1);
+        recipe.shots.truncate(1);
+        let mut image = b"P5\n1000 700\n255\n".to_vec();
+        image.resize(image.len() + 1000 * 700, 128);
+        publish(root, PublishInput {
+            recipe, validation_site,
+            versions: Versions { engine: "1.1.0".into(), graph: "graph-1".into() },
+            graph: ResourceSource::Bytes(br#"{"graph":1}"#.to_vec()),
+            shots: vec![ShotInput { k: 0, view: 1, image: Some(ResourceSource::Bytes(image)),
+                calibration: Some(ResourceSource::Bytes(br#"{"mmPerPx":0.1}"#.to_vec())) }],
+        }).unwrap()
+    }
+
+    #[test]
+    fn validation_site_is_frozen_at_publish_and_bundles_without_it_are_rejected() {
+        let root = TempDir(std::env::temp_dir().join(format!("gluesight-{}", new_bundle_id().unwrap())));
+        for site in [ValidationSite::Real, ValidationSite::Offline] {
+            let bundle = publish_with(&root.0, site);
+            assert_eq!(load(&root.0, &bundle.manifest.recipe_id, &bundle.id).unwrap().manifest.validation_site, site);
+        }
+        let bundle = publish_with(&root.0, ValidationSite::Offline);
+        let path = bundle.root.join("manifest.json");
+        let mut manifest: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        manifest.as_object_mut().unwrap().remove("validationSite");
+        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(load(&root.0, &bundle.manifest.recipe_id, &bundle.id).is_err());
     }
 }

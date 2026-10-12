@@ -4,7 +4,7 @@ import type { CalibrationState, Progress, ProgressTarget, ShotState, StepId, Ste
 export const stepStatusText: Record<StepStatus, string> = { notStarted: "未开始", inProgress: "进行中", done: "完成", blocked: "阻塞", optional: "可选" };
 export const stepStatusTone: Record<StepStatus, "info" | "ok" | "warn" | "neutral"> = { notStarted: "neutral", inProgress: "info", done: "ok", blocked: "warn", optional: "neutral" };
 export const shotStateText: Record<ShotState, string> = {
-  unconfigured: "未配置", draft: "编辑草稿", pendingTrial: "待试测", trialFailed: "试测异常",
+  recapture: "需重新采集", unconfigured: "未配置", draft: "编辑草稿", pendingTrial: "待试测", trialFailed: "试测异常",
   trialPassed: "试测通过", taught: "已示教", skipped: "不检",
 };
 
