@@ -1,96 +1,63 @@
-# Windows 打包与 GitHub 构建
+# GlueSight Windows 发包
 
-交付 Windows x64 NSIS `setup.exe`，携带 lyFlow、MVS 和必要的 VC++ 运行库。MVS 设备驱动及 WebView2 由目标电脑预装；安装程序不携带或下载 WebView2，不安装设备驱动。目标电脑无需 Node.js、pnpm、Rust 或完整 MVS 开发工具。
+## 固定输入与兼容系列
 
-## 本机打包
+应用版本由 `package.json` 管理，Tauri、Cargo 和 Cargo.lock 根包必须一致。`pnpm version:set 0.1.1` 显式升版，`pnpm version:check` 只做检查。正式 tag 为 `vX.Y.Z`，必须与应用版本一致并位于 main 历史中。历史 Release 和同版本资产禁止覆盖。
 
-构建机需要 PowerShell 7、项目要求的 Node.js/pnpm、Rust x64 MSVC 工具链、Visual Studio C++ Build Tools 和 Windows SDK。首次构建需要联网获取依赖和 NSIS 工具。
+LyFlow 通过 GitHub Packages 的 `LyFlow.Runtime.win-x64` 原生 NuGet 包分发。`packaging/runtime.json` 声明源、包 ID、兼容系列 `1.1`、最低版本和必需算子；`packaging/lyflow.lock.json` 记录完整版本、架构及源码修订。普通开发、CI 和发包只恢复锁定版本，不查询最新版本。
 
-先准备正式 lyFlow 运行产物目录，包含当前应用所需 DLL、许可证及 `lyflow-runtime.json`：
-
-```json
-{
-  "abiVersion": "1.1.0",
-  "engineVersion": "1.1.0",
-  "sourceRevision": "正式构建对应的完整40位Git源码修订号",
-  "localValidationOnly": false
-}
+```powershell
+pnpm deps:lyflow:update
+pnpm deps:lyflow:update -Version 1.1.0
+pnpm deps:lyflow:restore
 ```
 
-ABI 跟随 lyFlow 产品版本，必须为字符串。当前固定 `1.1.0`：产物描述、依赖清单、DLL 的 `lyflow_abi_version_string()` 与 `lyflow_version()`，以及应用所用客户端 `ABI_VERSION` 必须完全一致；数字 `15`、字符串 `"15"`、其他版本或缺少新 ABI 接口的旧 DLL 均直接拒绝，不做转换或旧 ABI 回退。`localValidationOnly` 必须显式为 `false`；DLL 的 `lyflow_source_revision()`、描述与清单必须为完全相同的 40 位 Git 修订，空修订或 dirty/本机诊断候选不得进入 GS 依赖包。脚本先读取 DLL 的实际 ABI/引擎版本，再调用测量相关接口；应用自检通过后还会核对客户端版本。打包继续调用应用真实的图像输入、胶路测量和标定流程验证兼容性。必须具备 `io.load_image`、`image.board_calib`、`image.load_calib`、`glue.taught_path`、`glue.bead_width` 算子。脚本不构建其他仓库，不自动寻找或采用历史临时产物。
+更新命令从标准 NuGet v3 PackageBaseAddress 版本索引选择 `1.1.x` 正式补丁版本，同时更新运行库锁定记录、Rust 客户端 Git rev、Cargo.toml 和 Cargo.lock；失败恢复原文件。跨到 `1.2` 或 `2` 必须显式修改系列并重新验收。客户端与 DLL 的完整 ABI/产品版本继续严格相等；升级后重新编译并发布 GlueSight，不支持只替换已安装程序的 DLL。
+
+MVS `4.8.1.2`、许可证与应用所需 CRT 独立固定在 `deps-win-x64-v2` 的 `gluesight-vendor-runtime-win-x64-v2.zip`。该包不包含 lyFlow。旧合并依赖包拒绝读取，不做格式回退。应用版本、lyFlow 版本与厂商包版本独立。
+
+## 认证与缓存
+
+本机默认从 `$USERPROFILE/.ssh/github_nuget_auth.txt` 读取凭证，也可通过 `LYFLOW_NUGET_TOKEN` 提供；用户名通过 `LYFLOW_NUGET_USERNAME` 提供，默认 `liangyuR`。凭证仅用于认证，不写入仓库、缓存或产物。GitHub Actions 使用包授权后的只读 `GITHUB_TOKEN`，或仓库 Secret `LYFLOW_NUGET_TOKEN`。NuGet 包须给 GlueSight 仓库配置 Actions 读取权限。
+
+NuGet CLI 固定为官方 `6.14.0`，校验版本与微软签名。依赖缓存在 `src-tauri/target/dependency-cache`，按 NuGet 包 ID、完整版本、架构或厂商 tag/资产身份隔离。下载在临时目录进行，验证完整后才移动到正式缓存目录；命中后仍校验清单及实际 DLL。
+
+NuGet 下载默认总期限 1200 秒，每 30 秒显示等待进度。慢链路可通过 `LYFLOW_NUGET_TIMEOUT_SECONDS` 调整为 30 至 3600 秒；超时清理本次临时下载，不建立完整版本缓存。版本查询只接受同一 HTTPS 源及 owner 路径的元数据地址，禁止自动跳转认证请求。
+
+CI 分别缓存 pnpm、Cargo、NuGet 运行库、厂商依赖和 Tauri NSIS 工具。最终应用、安装包、组装运行库与验收报告不作为缓存复用。手动运行 `Windows package` 时设置 `use_cache=false` 可跳过全部缓存恢复和保存。
+
+不计算发布包或引擎文件的内容哈希。校验使用版本、Git 修订、文件清单、尺寸、路径、架构与 DLL 实际接口和算子。
+
+## 本机打包与厂商包维护
 
 ```powershell
 pnpm install --frozen-lockfile
-$env:LYFLOW_RUNTIME_DIR = 'C:\release\lyflow\bin'
-pnpm run package
+pnpm package
 ```
 
-MVS 默认从本机 `Common Files\MVS\Runtime\Win64_x64` 收集，VC++ CRT 通过 `vswhere` 查找。当前固定 MVS 版本为 `4.8.1.2`。参数优先于对应环境变量：
+默认恢复锁定 NuGet 包和厂商包，再完成前端、Rust、NSIS 构建与静默安装验证。不搜索相邻 LyFlow 构建目录，也不自动使用系统 MVS。诊断构建可显式提供 `-LyFlowRuntime`、`-MvsRuntime`、`-VcRuntime` 和 `-MvsLicense`，仍执行锁定版本及实际组件检查。
+
+厂商运行库变更时增加 `bundleVersion`、tag 和资产名，并从明确路径导出、验证和发布，禁止覆盖旧资产：
 
 ```powershell
-pnpm run package -LyFlowRuntime 'C:\release\lyflow\bin' -MvsRuntime 'C:\release\mvs\Win64_x64'
+pnpm package:deps -MvsRuntime 'C:\release\mvs\Win64_x64' -MvsLicense 'C:\release\mvs\License' -VcRuntime 'C:\release\crt'
+pnpm package:deps:publish -Archive 'C:\release\gluesight-vendor-runtime-win-x64-v2.zip'
 ```
 
-其他可选参数：`-VcRuntime` / `VC_RUNTIME_DIR` 指定 x64 CRT；`-MvsLicense` 指定官方许可证目录；`-PrepareOnly` 仅收集并自检运行库，不编译或生成安装包。
+厂商包保留 MVS DLL、CTI、配置、ThirdParty 和许可证；CRT 目录仅容纳可分发 CRT DLL 与许可文件。安装资源保持 `runtime/lyflow`、`runtime/mvs`，另有 `runtime/crt`；应用所需 `vcruntime140.dll` 和 `vcruntime140_1.dll` 同时部署到 EXE 根目录。WebView2 和设备驱动仍由目标机预装。
 
-MVS 完整保留运行目录及子目录，包括 DLL、CTI、配置文件、manifest 和 `ThirdParty`，许可证放入 `runtime/mvs/Licenses`。lyFlow 收集运行依赖，完整保留 `license/`、`licenses/` 子树中的无扩展名版权文件及其他许可格式，排除其他目录中的调试符号、开发数据、配方和历史记录。两套运行库分别部署到 `runtime/lyflow`、`runtime/mvs`。
+## CI 与发布门禁
 
-应用启动所需的 `vcruntime140.dll`、`vcruntime140_1.dll` 同时部署到 `GlueSight.exe` 所在目录，避免依赖目标电脑已有的 VC++ CRT。安装验证检查这两项文件的存在与 x64 架构。
+普通 PR 和 main 执行类型检查、前端测试/构建、发包脚本测试及 Rust 回归。影响发包、依赖配置、锁文件、工具链或 workflow 的 PR 额外执行完整 Windows 安装验证。手动或 tag 触发完整发包，只有 tag 成功后创建草稿 Release；负责人复核后正式发布。
 
-脚本每次重建项目内暂存目录，先检查文件结构、x64 架构、接口、实际版本、算子及 MVS 初始化/枚举，再编译应用、验证实际测量，全部通过后生成安装包。无相机时枚举结果为空允许通过；接口调用失败不允许通过。任一步失败都会停止。
+构建使用固定 Node `24.15.0`、pnpm `12.11.2`、Rust `1.99.0`。workflow 保留显式 pnpm、Cargo、Tauri 标准命令，版本及依赖准备脚本与本机共用。构建任务只读，创建草稿 Release 的任务单独获得内容写权限。
 
-默认产物位于 `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/`。设置 `CARGO_TARGET_DIR` 时按指定构建目录输出。`pnpm build` 仅构建前端；直接 `tauri build` 不执行运行库收集和完整交付检查。
+完整门禁覆盖：干净 SDK 环境、固定包结构/架构/版本/源码修订、实际 DLL 算子、应用无界面自检、NSIS 静默安装及安装后的运行库和应用自检。软件约定安装在英文目录，CI 使用 `GlueSight Installed` 执行常规安装验收，不设置中英文路径专项测试。安装包产品名及默认目录名使用 `GlueSight`，应用窗口保留中文名称。
 
-## 固定依赖包
+产物包含应用安装包、运行库清单、验证报告与 `release-manifest.json`，记录应用修订、依赖版本/来源、工具版本、缓存命中及各阶段耗时。成功与失败均保留诊断资料。GitHub 冷、热两次完整 workflow 才能证明缓存服务的实际收益；本机缓存检查不能替代该证据。
 
-云端 runner 无法读取本机 DLL，使用本仓库公开的固定依赖 Release。`packaging/runtime.json` 记录依赖版本、tag、资产名、MVS 版本、客户端 ABI 和必需组件。首版为 `deps-win-x64-v1` / `gluesight-runtime-win-x64-v1.zip`。
-
-在准备好正式产物的本机执行：
-
-```powershell
-$env:LYFLOW_RUNTIME_DIR = 'C:\release\lyflow\bin'
-pnpm run package:deps
-pnpm run package:deps:publish -Archive '.\src-tauri\target\dependencies\gluesight-runtime-win-x64-v1.zip'
-```
-
-导出命令不联网上传。发布命令需要本机已安装并登录 GitHub CLI，明确执行后才创建公开的预发布依赖 Release，不覆盖既有 Release 或资产。依赖更新必须使用新的版本、tag 和资产名，并提交配置变更。发布前确认所收集的正式组件和许可证适合公开分发。
-
-ZIP 根目录为 `runtime/`，包含两套运行库和 `manifest.json`。清单记录明确版本、修订、相对路径和尺寸，不使用内容摘要匹配；旧的带内容摘要字段的记录直接拒绝。下载不使用 `latest`，解压前拒绝越界路径、重复条目和链接。
-
-也可以使用已解压的固定依赖包在本机打包：
-
-```powershell
-pnpm run package -RuntimeBundle 'C:\release\runtime-bundle'
-```
-
-此模式不混用本机来源参数或相应环境变量，仍执行相同验证。
-
-## GitHub Actions
-
-- **Windows CI**：PR、main 提交和手动运行执行前端类型检查、测试、生产构建、打包脚本专项测试和 Rust 非忽略回归；不要求相机或 MVS 驱动。
-- **Windows package**：手动运行或推送 `vX.Y.Z` tag 时，从固定依赖 Release 下载 ZIP，准备运行库与安装资源后，直接执行 `pnpm build`、`cargo build --locked --release --target x86_64-pc-windows-msvc --bin GlueSight --features tauri/custom-protocol`。Cargo 构建步骤通过 `TAURI_CONFIG` 读取暂存的 `tauri.runtime.json`，嵌入生产前端并沿用运行库资源配置。应用运行库自检通过后，直接执行 `pnpm exec tauri bundle --bundles nsis`，再完成静默安装及安装后的自检。依赖 Release 不存在时明确失败，不采用其他版本。
-- 手动打包上传安装包、依赖清单和验证报告，保留 14 天。版本 tag 必须与 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 一致；验证成功后创建草稿 Release，由负责人检查后正式发布。
-
-使用 GitHub 托管 `windows-2022` runner。Node.js/pnpm 版本读取项目声明，使用锁文件安装依赖；Rust 使用 stable。源码依赖仓库目前公开，CI 将 SSH GitHub 地址重写为 HTTPS，无需读取 Token。构建任务只读，创建草稿 Release 的任务单独获得写权限。
-
-workflow 不再通过 `Package-Windows.ps1` 调用构建；本机 `pnpm run package` 入口保留，共用 `Prepare-PackageResources.ps1` 和 `Test-PackageApplication.ps1` 的资源准备、CRT 部署和应用自检。CI 继续直接执行 `pnpm install --frozen-lockfile`、`pnpm test`、`pnpm build` 与 `cargo test --locked --lib`；打包专项脚本只验证部署约束，不代理前后端 build/test。
-
-## 安装行为与验证边界
-
-安装支持简体中文/英文，沿用当前用户安装方式，目前未配置代码签名或自动更新。安装包不携带开发机设备配置及生产数据。
-
-系统设置的 lyFlow 核心库路径留空时使用内置引擎，已有手动路径继续生效。MVS 发布版固定使用随包运行库，缺失或失败直接报错，不回退到系统已安装的 MVS；开发版可使用系统安装目录。
-
-应用提供无界面验证入口，不启动 Tauri 界面或生产采集：
+软件自检覆盖合成图像胶路测量、空白图拒绝、偏移与棋盘格标定及 MVS 加载/枚举，不代表真机触发收图、现场精度或长稳验收。可使用安装后的无界面入口：
 
 ```powershell
 & 'C:\Apps\GlueSight\GlueSight.exe' --check-packaged-runtime 'C:\reports\runtime.json'
 ```
-
-报告目录需事先存在。成功退出码为 0；失败为非零并记录原因。脚本报告分别记录 DLL 实际 `abiVersion`、描述中的 `declaredAbiVersion` 和引擎 `version`；应用报告记录 `clientAbiVersion`、实际版本与加载路径。验证覆盖合成胶条正常测量、空白图缺胶、新帧偏移、棋盘格标定与空白图拒绝，以及随包 MVS 加载和枚举。它证明软件运行组件及接口可用，不代表真机触发收图、现场精度或长稳验收。
-
-应用首包版本保持 `0.1.0`，与 lyFlow 的 `1.1.0` 独立；应用的三处版本及 Cargo.lock 根包版本保持一致。历史 PR #26 合入旧打包分支，未进入 main；首次发包前必须补齐该 ABI 集成，不能仅根据 PR 的 merged 状态判断 main 已具备新版接口。
-
-2026-10-12 使用 lyFlow [Windows release 38158234330](https://github.com/liangyuR/lyFlow/actions/runs/38158234330) 的正式 `windows-release` 产物，运行库 ZIP 为 `lyflow-runtime-win-x64-v1.1.0.zip`，源码修订为 `32553f6d08c41f9db2c000e8694bd7b3ecc8bf92`。实际 DLL 的 ABI、引擎版本、源码修订、全部必需算子与 MVS 初始化/枚举通过，已导出固定依赖 ZIP。此前构建 `38150280499` 缺少 `glue.taught_path` 的阻塞由此正式产物解决。
-
-这份正式 DLL 已通过四项真实视觉回归：胶宽/偏移/缺胶/极性/新帧、多视图、并发同名运行隔离和棋盘格标定。普通回归、依赖导出与 DLL 回归不能替代完整安装包验收；发布 `v0.1.0` 前仍须通过 GitHub 的应用自检、NSIS 构建和静默安装后的自检。GitHub 成功运行生成草稿 Release，检查产物后显式正式发布。

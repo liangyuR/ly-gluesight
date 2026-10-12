@@ -1,6 +1,6 @@
 [package]
 name = "gluesight"
-version = "0.1.0"
+version = "0.1.1"
 description = "GlueSight · 胶路智检"
 edition = "2021"
 default-run = "GlueSight"
@@ -30,9 +30,9 @@ libloading = "0.8"
 rusqlite = { version = "0.40", features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # lyFlow ABI 跟随产品版本 1.1.0，固定提交以便复现。
-lyflow-client = { git = "ssh://git@github.com/liangyuR/lyFlow.git", rev = "d4c54ee2a56b2c6f93f4fb1e6614f612a447d02b" }
+lyflow-client = { git = "https://github.com/liangyuR/lyFlow.git", rev = "893a0f34f5685ea6b1cb2f0b2ba9994226a9a2df" }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "pnm", "bmp", "tiff"] }
-ly-plc = { git = "ssh://git@github.com/liangyuR/ly-plc.git", branch = "main" }
+ly-plc = { git = "https://github.com/liangyuR/ly-plc.git", rev = "f618a3223127c107a03cbd58215c67aa5c80d8c3" }
 
 # 模拟相机逐像素合成图像，未优化时一帧要一两秒，赶不上节拍
 [profile.dev.package.gluesight]

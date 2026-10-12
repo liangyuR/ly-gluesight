@@ -18,7 +18,7 @@
 
 ## 运行
 
-使用 Node 24.15+、pnpm 11.1.3。首次安装执行 `pnpm install --frozen-lockfile`。
+使用 Node 24.15.0、pnpm 12.11.2、Rust 1.99.0。首次安装执行 `pnpm install --frozen-lockfile`。
 
 | 命令 | 用途 |
 | --- | --- |

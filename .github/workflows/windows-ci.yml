@@ -5,6 +5,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      use_cache:
+        description: Restore and save dependency caches
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -19,7 +24,8 @@ jobs:
     timeout-minutes: 60
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
-      RUSTUP_TOOLCHAIN: stable
+      RUSTUP_TOOLCHAIN: 1.99.0
+      CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target/cargo-ci
     defaults:
       run:
         shell: pwsh
@@ -29,25 +35,29 @@ jobs:
           persist-credentials: false
       - name: Read tool versions
         id: tools
-        run: |
-          $package = Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json
-          if ($package.packageManager -notmatch '^pnpm@(\d+\.\d+\.\d+)$') { throw 'packageManager must pin pnpm.' }
-          "pnpm=$($Matches[1])" >> $env:GITHUB_OUTPUT
-          if ($package.engines.node -notmatch '^>=(\d+\.\d+\.\d+)$') { throw 'engines.node must declare a minimum Node version.' }
-          "node=$($Matches[1])" >> $env:GITHUB_OUTPUT
+        run: pwsh -NoProfile -File scripts/Test-PackageVersions.ps1
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ steps.tools.outputs.pnpm }}
+          standalone: true
+          run_install: false
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ steps.tools.outputs.node }}
+          cache: ${{ (github.event_name != 'workflow_dispatch' || inputs.use_cache) && 'pnpm' || '' }}
+          package-manager-cache: false
       - name: Prepare package and Rust tools
-        env:
-          PNPM_VERSION: ${{ steps.tools.outputs.pnpm }}
         run: |
-          npm install --global "pnpm@$env:PNPM_VERSION"
-          if ($LASTEXITCODE -ne 0) { throw 'pnpm installation failed.' }
-          rustup toolchain install stable --profile minimal
+          rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
           if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
           git config --global url.https://github.com/.insteadOf ssh://git@github.com/
           git config --global --add url.https://github.com/.insteadOf git@github.com:
+      - uses: Swatinem/rust-cache@v2
+        if: github.event_name != 'workflow_dispatch' || inputs.use_cache
+        with:
+          workspaces: src-tauri -> target/cargo-ci
+          shared-key: windows-ci-1.99.0
+          cache-workspace-crates: false
       - name: Install locked frontend dependencies
         run: pnpm install --frozen-lockfile
       - name: Typecheck
@@ -57,7 +67,10 @@ jobs:
       - name: Production frontend build
         run: pnpm build
       - name: Packaging script tests
-        run: pwsh -NoProfile -File tests/packaging/Test-RuntimeBundle.ps1
+        run: |
+          ./tests/packaging/Test-RuntimeBundle.ps1
+          ./tests/packaging/Test-LyFlowDependency.ps1
+          ./tests/packaging/Test-VendorDependency.ps1
       - name: Packaging workflow gate tests
         run: node --test tests/packaging/windows-workflow.test.mjs
       - name: Rust library regression

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "GlueSight · 胶路智检",
+  "productName": "GlueSight",
   "mainBinaryName": "GlueSight",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.xyzrobotics.tujiaovision",
   "build": {
     "beforeDevCommand": "pnpm dev:web",
