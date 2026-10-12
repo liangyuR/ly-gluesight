@@ -56,7 +56,7 @@ fn readiness_blocks_the_item_preventing_start_and_points_to_where_it_is_fixed() 
 #[test]
 fn sample_set_accepts_only_recipes_whose_shots_cameras_and_views_it_provides() {
     let recipe = crate::recipe::samples().remove(1).build().unwrap();
-    let shot = |id: &str, camera: &str, views: &[u8]| SampleShot { shot_id: id.into(), camera_id: camera.into(), views: views.to_vec(), origin: None };
+    let shot = |id: &str, camera: &str, views: &[u8]| SampleShot { shot_id: id.into(), camera_id: camera.into(), views: views.to_vec(), origin: None, mm_per_px: None };
     let manifest = |shots: Vec<SampleShot>| Manifest { schema_version: 1, id: "s".into(), name: "s".into(), source: String::new(), image_size: None,
         mm_per_px: None, cameras: vec![SampleCamera { id: "cam1".into(), views: vec![1] }], shots, parts: Vec::new() };
     let all = |camera: &str, views: &[u8]| (1..=4).map(|k| shot(&format!("P{k}"), camera, views)).collect::<Vec<_>>();
