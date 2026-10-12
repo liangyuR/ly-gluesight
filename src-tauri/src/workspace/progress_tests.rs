@@ -130,8 +130,8 @@ fn publish_step_reads_explicit_publish_state() {
         ("待生效", |w, r| { w.pending = r; w.publish = PublishState::Waiting; }, StepStatus::InProgress),
         ("生效失败", |w, r| { w.pending = r; w.publish = PublishState::Failed { message: "包缺失".into() }; }, StepStatus::Blocked),
         ("生效状态不确定", |w, r| { w.pending = r; w.publish = PublishState::Uncertain { message: "写盘失败".into() }; }, StepStatus::Blocked),
-        ("已生效", |w, _| { w.validation = None; w.publish = PublishState::Active { version: 3, revision: w.revision, warning: None, validation_site: Some(ValidationSite::Real) }; }, StepStatus::Done),
-        ("生效后又改了候选", |w, _| { w.publish = PublishState::Active { version: 3, revision: w.revision, warning: None, validation_site: Some(ValidationSite::Real) }; w.changed(); }, StepStatus::NotStarted),
+        ("已生效", |w, _| { w.validation = None; w.publish = PublishState::Active { version: 3, revision: w.revision, warning: None, validation_site: ValidationSite::Real }; }, StepStatus::Done),
+        ("生效后又改了候选", |w, _| { w.publish = PublishState::Active { version: 3, revision: w.revision, warning: None, validation_site: ValidationSite::Real }; w.changed(); }, StepStatus::NotStarted),
     ];
     for (name, edit, status) in cases {
         let mut w = captured();

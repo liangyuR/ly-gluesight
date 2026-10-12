@@ -259,7 +259,7 @@ pub fn compute(w: &Workspace, production_version: Option<u32>, devices: &Devices
 
     let active = match &w.publish { PublishState::Active { version, revision, .. } if *revision == w.revision => Some(*version), _ => None };
     let site = |offline: bool| if offline { "（离线验证）" } else { "" };
-    let active_offline = matches!(w.publish, PublishState::Active { validation_site: Some(ValidationSite::Offline), .. });
+    let active_offline = matches!(w.publish, PublishState::Active { validation_site: ValidationSite::Offline, .. });
     let pending_offline = w.pending.as_ref().is_some_and(|p| p.validation_site == ValidationSite::Offline);
     let prerequisites = [&capture, &teach, &calibration];
     let validation = {

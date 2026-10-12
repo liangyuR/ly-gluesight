@@ -334,7 +334,7 @@ pub enum PublishState {
     Failed { message: String },
     Uncertain { message: String },
     /// 已生效；revision 是生效后候选的修订号，候选再改动后回到草稿。
-    Active { version: u32, revision: u64, warning: Option<String>, #[serde(default)] validation_site: Option<ValidationSite> },
+    Active { version: u32, revision: u64, warning: Option<String>, validation_site: ValidationSite },
 }
 
 #[derive(Serialize)]
@@ -1542,7 +1542,7 @@ pub fn apply_pending(app: &AppHandle) -> bool {
                 w.doc.version = next_version.as_ref().copied().unwrap_or(saved.version);
                 w.validation = None;
                 w.revision += 1;
-                w.publish = PublishState::Active { version: saved.version, revision: w.revision, warning: next_version.err(), validation_site: Some(release.validation_site) };
+                w.publish = PublishState::Active { version: saved.version, revision: w.revision, warning: next_version.err(), validation_site: release.validation_site };
                 changed = true;
                 cycle::log(
                     app,

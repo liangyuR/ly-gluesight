@@ -5,7 +5,7 @@ import { lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/pr
 import { join, relative, resolve } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
 
-process.env.PATH = ['C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recovery-20261010\\native', 'C:\\vcpkg\\installed\\x64-windows\\bin', ...(process.env.PATH ?? '').split(';').filter(value => value && !/^D:/i.test(value))].join(';');
+process.env.PATH = [...(process.env.GLUESIGHT_NATIVE_PATH ?? '').split(';'), ...(process.env.PATH ?? '').split(';').filter(value => !/^D:/i.test(value))].filter(Boolean).join(';');
 const execute = promisify(execFile);
 const { values } = parseArgs({ options: {
   instance: { type: 'string' }, output: { type: 'string' },

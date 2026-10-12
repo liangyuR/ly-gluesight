@@ -52,7 +52,7 @@ export interface Workspace {
 export type PublishState =
   | { state: "draft" } | { state: "waiting" }
   | { state: "failed"; message: string } | { state: "uncertain"; message: string }
-  | { state: "active"; version: number; revision: number; warning: string | null; validationSite?: ValidationSite | null };
+  | { state: "active"; version: number; revision: number; warning: string | null; validationSite: ValidationSite };
 export type StepId = "capture" | "defaults" | "teach" | "calibration" | "overview" | "validation" | "publish";
 export type StepStatus = "notStarted" | "inProgress" | "done" | "blocked" | "optional";
 export type ProgressTarget = { page: "capture" } | { page: "teach"; k: number } | { page: "validation" } | { page: "camera" };
