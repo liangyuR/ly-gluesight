@@ -2,10 +2,10 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { subscribe } from "../plc";
 import { matchesPart, mergeMeasurements } from "./identity";
-import type { CycleSettings, LogLine, Measured, Recipe, RecipeDoc, RecipeSummary, Scenario, SimStatus, Snapshot } from "./types";
+import type { CycleSettings, LogLine, Measured, OfflineFault, OfflineStatus, Recipe, RecipeDoc, RecipeSummary, Scenario, Snapshot } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
-  if (!isTauri() && ["cycle_save_settings","cycle_select_recipe","cycle_reset","sim_start","sim_stop","recipe_save","recipe_delete"].includes(cmd))
+  if (!isTauri() && ["cycle_save_settings","cycle_select_recipe","cycle_reset","offline_enable","offline_disable","offline_run","offline_stop","offline_inject","recipe_save","recipe_delete"].includes(cmd))
     return Promise.reject(new Error("生产配置与检测操作需要 GlueSight · 胶路智检 桌面后端"));
   if (!isTauri()) return Promise.resolve(fallback());
   return invoke<T>(cmd, args);
@@ -33,11 +33,21 @@ export const cycleApi = {
   saveSettings: (settings: CycleSettings) => call<void>("cycle_save_settings", { settings }, () => undefined),
   selectRecipe: (recipeId: string) => call<void>("cycle_select_recipe", { recipeId }, () => undefined),
   reset: () => call<void>("cycle_reset", undefined, () => undefined),
-  simStatus: () => call<SimStatus>("sim_status", undefined, () => ({ running: false, continuous: false, parts: 0, message: "" })),
-  simStart: (recipeId: string, scenario: Scenario, continuous: boolean) =>
-    call<void>("sim_start", { recipeId, scenario, continuous }, () => undefined),
-  simStop: () => call<void>("sim_stop", undefined, () => undefined),
+  offlineStatus: () => call<OfflineStatus>("offline_status", undefined, () => ({ ...offlineIdle })),
+  offlineEnable: () => call<OfflineStatus>("offline_enable", undefined, () => ({ ...offlineIdle })).then(publishOffline),
+  offlineDisable: () => call<OfflineStatus>("offline_disable", undefined, () => ({ ...offlineIdle })).then(publishOffline),
+  offlineRun: (recipeId: string, scenario: Scenario, continuous: boolean) =>
+    call<void>("offline_run", { recipeId, scenario, continuous }, () => undefined),
+  offlineStop: (now: boolean) => call<void>("offline_stop", { now }, () => undefined),
+  offlineInject: (fault: OfflineFault) => call<void>("offline_inject", { fault }, () => undefined),
 };
+
+const offlineIdle: OfflineStatus = { enabled: false, port: null, running: false, continuous: false, parts: 0, message: "", heartbeatStopped: false };
+const offlineListeners = new Set<(status: OfflineStatus) => void>();
+function publishOffline(status: OfflineStatus) {
+  offlineListeners.forEach(f => f(status));
+  return status;
+}
 
 export const recipeApi = {
   list: () => call<{ recipes: RecipeSummary[]; errors: string[] }>("recipe_list", undefined, () => ({ recipes: [], errors: [] })),
@@ -157,11 +167,15 @@ export function useCycle() {
   return { snapshot, logs, measured: current };
 }
 
-export function useSimStatus() {
-  const [status, setStatus] = useState<SimStatus | null>(null);
+export function useOfflineStatus() {
+  const [status, setStatus] = useState<OfflineStatus | null>(null);
   useEffect(() => {
-    cycleApi.simStatus().then(setStatus);
-    return subscribe<SimStatus>("sim://status", setStatus);
+    let alive = true, received = false;
+    const update = (next: OfflineStatus) => { if (alive) { received = true; setStatus(next); } };
+    offlineListeners.add(update);
+    const off = subscribe<OfflineStatus>("offline://status", update);
+    void cycleApi.offlineStatus().then(next => { if (alive && !received) setStatus(next); }).catch(() => {});
+    return () => { alive = false; offlineListeners.delete(update); off(); };
   }, []);
   return status;
 }

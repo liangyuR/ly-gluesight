@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Plus, Trash2 } from "lucide-react";
 import { CalibPanel, cameraApi, CameraConfigPanel, defaultCameraConfig, DryRunPanel, FeasibilityCalc, FramePreview, useRigStatus, type CameraConfig } from "../features/camera";
-import { recipeApi, SimControls, useCycle } from "../features/cycle";
+import { OfflineControls, recipeApi, useCycle } from "../features/cycle";
 import { shotCameras } from "../features/cycle/vis";
 import { desktopAvailable } from "../lib/desktop";
 import { Badge, Notice, Panel } from "../features/workspace/components";
@@ -112,7 +112,7 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
     <div className="col"><fieldset disabled={busy||!!action||configSaving||!desktopAvailable()} className="cam-action-area">
       {view==="device"&&<FramePreview key={config.id} cam={cam} status={status} lastFrame={lastFrame[cam]} config={config}/>}
       {view==="calibration"&&<>{config.viewCount===3&&<label className="field"><span>标定图像</span><select className="input" aria-label="标定图像" value={calibView} onChange={e=>{setSample(null);setCalibView(Number(e.target.value));}}>{[1,2,3].map(v=><option key={v} value={v}>图 {v}</option>)}</select></label>}<CalibPanel key={config.id+":"+calibView} cam={cam} view={calibView} isSim={config.source==="sim"&&sample?.metadata.source!=="import"} imageId={sample?.metadata.id}/><FeasibilityCalc key={config.id} exposure={config.exposureUs} fps={status?.maxFps}/><DryRunPanel key={config.id} cam={cam} frameMs={status?.maxFps?1000/status.maxFps:null}/></>}
-    </fieldset>{view==="device"&&<Panel title="继续建站"><p className="muted">保存采集参数后，完成飞拍工位标定。</p><div className="wp-actions"><Link className="btn" to="/camera/calibration" state={navigationState}>飞拍工位标定</Link></div></Panel>}{view==="device"&&<details className="panel"><summary>模拟节拍调试</summary><p className="muted">用于台架和回放验证，检测参数以当前生产配方为准。</p><SimControls/></details>}</div></>:<div style={{gridColumn:"1/-1"}}><Notice title={view==="device"?"尚未加载采集设备":"没有触发采集相机"} tone="warn">{view==="device"?"在桌面软件中添加或连接相机。":"在设备与采集页添加相机，采集方式选择触发采集。"}</Notice></div>}
+    </fieldset>{view==="device"&&<Panel title="继续建站"><p className="muted">保存采集参数后，完成飞拍工位标定。</p><div className="wp-actions"><Link className="btn" to="/camera/calibration" state={navigationState}>飞拍工位标定</Link></div></Panel>}{view==="device"&&<details className="panel"><summary>离线产线调试</summary><p className="muted">进程内 S7 服务与虚拟产线，走生产 S7 握手，用于台架和回放验证；检测参数以当前生产配方为准。</p><OfflineControls/></details>}</div></>:<div style={{gridColumn:"1/-1"}}><Notice title={view==="device"?"尚未加载采集设备":"没有触发采集相机"} tone="warn">{view==="device"?"在桌面软件中添加或连接相机。":"在设备与采集页添加相机，采集方式选择触发采集。"}</Notice></div>}
   </div>;
 }
 export function FlyshotCalibrationPage(){return <CameraPage view="calibration"/>;}

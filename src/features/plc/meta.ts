@@ -1,53 +1,21 @@
 import type {
-  ConnectionConfig,
   DataType,
   EdgeMode,
   LinkState,
   LogCategory,
   LogLevel,
+  PlcConfig,
   PlcPoint,
   PointValue,
-  ProtocolKind,
   WordOrder,
 } from "./types";
 
-interface ProtocolMeta {
-  label: string;
-  defaultPort: number;
-  defaultOrder: WordOrder;
-  examples: string[];
-  hint: string;
-}
-
-export const protocols: Record<ProtocolKind, ProtocolMeta> = {
-  modbusTcp: {
-    label: "Modbus TCP",
-    defaultPort: 502,
-    defaultOrder: "ABCD",
-    examples: ["HR100", "IR0", "C10", "DI3", "HR5.3", "40001"],
-    hint: "HR 保持寄存器 / IR 输入寄存器 / C 线圈 / DI 离散输入，0 起始偏移；5-6 位传统地址 1 起始；.n 为寄存器位",
-  },
-  s7: {
-    label: "西门子 S7",
-    defaultPort: 102,
-    defaultOrder: "ABCD",
-    examples: ["DB1.DBW0", "DB1.DBX2.3", "DB1.8", "M10.0", "MW20", "I0.1", "QD4", "VW100"],
-    hint: "字节寻址，Bool 需带位号 (.0-.7)；V 区等价 DB1；1200/1500 需启用 PUT/GET 并取消 DB 优化访问",
-  },
-  mc: {
-    label: "三菱 MC (3E)",
-    defaultPort: 5000,
-    defaultOrder: "CDAB",
-    examples: ["D100", "D100.F", "M10", "X1F", "Y20", "W1A", "R200", "ZR1000"],
-    hint: "X/Y/B/W 为十六进制（iQ-F 可切换 X/Y 八进制），字软元件位号为十六进制 .0-.F，32 位默认低字在前",
-  },
-  simulator: {
-    label: "模拟器",
-    defaultPort: 0,
-    defaultOrder: "ABCD",
-    examples: ["HR100", "IR0", "C10", "DI3"],
-    hint: "使用 Modbus 地址格式；IR0 为秒计数器，DI0 每 5 秒翻转一次，其余地址可读写",
-  },
+export const s7Protocol = {
+  label: "西门子 S7",
+  defaultPort: 102,
+  defaultOrder: "ABCD" as WordOrder,
+  examples: ["DB1.DBW0", "DB1.DBX2.3", "DB1.8", "M10.0", "MW20", "I0.1", "QD4", "VW100"],
+  hint: "字节寻址，Bool 需带位号 (.0-.7)；V 区等价 DB1；1200/1500 需启用 PUT/GET 并取消 DB 优化访问",
 };
 
 export const s7CpuPresets = [
@@ -103,8 +71,13 @@ export function isMultiWord(dataType: DataType) {
   return ["u32", "i32", "f32", "f64"].includes(dataType);
 }
 
-export function effectiveOrder(point: PlcPoint, connection: ConnectionConfig): WordOrder {
-  return point.wordOrder ?? protocols[connection.protocol].defaultOrder;
+export function effectiveOrder(point: PlcPoint): WordOrder {
+  return point.wordOrder ?? s7Protocol.defaultOrder;
+}
+
+export function asS7(config: PlcConfig): PlcConfig {
+  if (config.connection.protocol === "s7") return config;
+  return { ...config, connection: { ...config.connection, protocol: "s7", port: s7Protocol.defaultPort } };
 }
 
 export function formatValue(v: PointValue | undefined) {

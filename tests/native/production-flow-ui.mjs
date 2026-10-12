@@ -138,27 +138,12 @@ export async function runProductionFlow(page, options = {}) {
   assert.equal(path.basename(path.dirname(root)), identifier, "录制目录不属于隔离实例");
   assert.equal(path.basename(root), "records");
   assert(guard.cameras.length > 0 && guard.cameras.every(camera => camera.source === "sim"), "设备必须全部为模拟设备");
-  const initialPlc = await invokeRead("plc_get_status");
-  if (guard.config.connection.protocol !== "simulator") {
-    assert.equal(initialPlc.state, "disconnected", "外部 PLC 必须未连接，才可配置隔离模拟流程");
+  const initialOffline = await invokeRead("offline_status");
+  if (!initialOffline.enabled) {
+    assert.notEqual((await invokeRead("plc_get_status")).state, "connected", "外部 PLC 必须未连接，才可启用离线产线");
   }
-  assert.equal((await invokeRead("sim_status")).running, false);
+  assert.equal(initialOffline.running, false);
   const navigation = page.getByRole("navigation", { name: "操作导航" });
-  if (guard.config.connection.protocol !== "simulator") {
-    await navigation.getByRole("link", { name: "PLC 通讯", exact: true }).click();
-    await page.getByRole("combobox", { name: "协议", exact: true }).selectOption("simulator");
-    const points = guard.config.points.map((point, index) => ({
-      ...point, address: point.dataType === "bool" ? `C${100 + index}` : `HR${100 + index * 4}`,
-      access: "readWrite", wordOrder: point.dataType === "bool" ? null : "ABCD",
-    }));
-    await page.getByRole("button", { name: "导入/导出", exact: true }).click();
-    const dialog = page.getByRole("dialog");
-    await dialog.getByRole("textbox", { name: "地址表 JSON", exact: true }).fill(JSON.stringify(points));
-    await dialog.getByRole("button", { name: "应用到地址表", exact: true }).click();
-    await page.getByRole("button", { name: "保存配置", exact: true }).click();
-    await until(page, () => invokeRead("plc_get_config"), config => config.connection.protocol === "simulator", "UI 未保存模拟 PLC 配置");
-  }
-  assert.equal((await invokeRead("plc_get_config")).connection.protocol, "simulator");
   await navigation.getByRole("link", { name: "系统设置", exact: true }).click();
   await page.getByRole("combobox", { name: "飞拍配方", exact: true }).selectOption("sim");
   await page.getByRole("combobox", { name: "帧录制", exact: true }).selectOption("all");
@@ -171,18 +156,24 @@ export async function runProductionFlow(page, options = {}) {
     await cyclePanel.getByRole("button", { name: "保存", exact: true }).click();
     await until(page, () => invokeRead("cycle_get_settings"), settings => settings.productSource === "plc", "UI 保存型号来源失败");
   }
-  if ((await invokeRead("plc_get_status")).state !== "connected") {
-    await navigation.getByRole("link", { name: "PLC 通讯", exact: true }).click();
-    await page.getByRole("button", { name: /^(连接|重连|使用已保存配置重连)$/ }).click();
-    await until(page, () => invokeRead("plc_get_status"), status => status.state === "connected", "模拟 PLC 未连接");
+  if (!initialOffline.enabled) {
+    await navigation.getByRole("link", { name: "设备与采集", exact: true }).click();
+    await page.locator("details.panel > summary").filter({ hasText: "离线产线调试" }).click();
+    await page.getByRole("button", { name: "启用离线模式", exact: true }).click();
   }
+  const offline = await until(page, () => invokeRead("offline_status"), status => status.enabled && Number.isInteger(status.port), "UI 未启用离线模式");
+  await until(page, () => invokeRead("plc_get_status"), status => status.state === "connected", "离线 S7 服务未连接");
+  const offlineConfig = await invokeRead("plc_get_config");
+  assert.equal(offlineConfig.connection.protocol, "s7");
+  assert.equal(offlineConfig.connection.host, "127.0.0.1");
+  assert.equal(offlineConfig.connection.port, offline.port);
   await navigation.getByRole("link", { name: "在线检测", exact: true }).click();
   if ((await invokeRead("cycle_snapshot")).phase === "FAULT") {
     await page.getByRole("button", { name: "复位故障", exact: true }).click();
+    await until(page, () => invokeRead("cycle_snapshot"), snapshot => snapshot.phase !== "FAULT", "复位故障后检测仍处于故障", 5000).catch(() => {});
   }
-  await until(page, () => invokeRead("cycle_snapshot"), snapshot => snapshot.phase === "IDLE", "检测未就绪");
-  await page.getByRole("combobox", { name: "模拟配方", exact: true }).selectOption(recipeId);
-  await page.getByRole("combobox", { name: "模拟工况", exact: true }).selectOption("normal");
+  await page.getByRole("combobox", { name: "离线配方", exact: true }).selectOption(recipeId);
+  await page.getByRole("combobox", { name: "离线工况", exact: true }).selectOption("normal");
   const recipe = await invokeRead("cycle_layout", { recipeId });
   const previous = await invokeRead("history_query", { query: { recipeId, limit: 1 } });
   const observations = [];
@@ -199,7 +190,7 @@ export async function runProductionFlow(page, options = {}) {
   assert(["OK", "OK_WITH_EXCURSION"].includes(summary.verdict), JSON.stringify(summary));
   assert.equal(summary.framesExpected, recipe.shots.length);
   assert.equal(summary.framesReceived, recipe.shots.length);
-  await until(page, () => invokeRead("sim_status"), status => !status.running && status.message.includes("完成"), "单件节拍握手未完成");
+  await until(page, () => invokeRead("offline_status"), status => !status.running && status.message.includes("完成"), "离线产线单件 S7 握手未完成");
   await page.getByText(new RegExp(`^SN ${summary.sn} 完成`)).waitFor();
   await page.locator(".fly-verdict").getByText(new RegExp(`判定结果 · SN ${summary.sn}`)).waitFor();
   const recorded = await until(page, () => invokeRead("workspace_record_images", { historyId: summary.id }), value => value.complete, "原图录制未完成");
@@ -227,7 +218,7 @@ export async function runProductionFlow(page, options = {}) {
     assert.equal(preview.bytes, 16 + preview.width * preview.height);
     assert(preview.sourceWidth > 0 && preview.sourceHeight > 0);
   }
-  const result = { passed: true, operation: "UI 工件启动、模拟测量、握手结束、SQLite 与原图真实落盘并重开读取", identifier, recipeId, startedAt, elapsedMs: Date.now() - startedAt, summary, observations, recorded, disk, boundary: "模拟相机与模拟测量；不代表现场 PLC、SDK 或 lyFlow 引擎验收" };
+  const result = { passed: true, operation: "UI 启用离线产线、工件启动、模拟测量、S7 握手结束、SQLite 与原图真实落盘并重开读取", identifier, recipeId, offlinePort: offline.port, startedAt, elapsedMs: Date.now() - startedAt, summary, observations, recorded, disk, boundary: "进程内 S7 服务、虚拟产线、模拟相机与模拟测量；不代表现场 PLC、SDK 或 lyFlow 引擎验收" };
   if (options.output) {
     await mkdir(path.dirname(options.output), { recursive: true });
     await page.screenshot({ path: path.join(path.dirname(options.output), "production-flow.png"), fullPage: true });

@@ -48,7 +48,9 @@ S7 专项需要 Python 3 和本机 TCP 权限，可用 `S7_TEST_PYTHON` 指定 P
 
 ## 隔离桌面与证据边界
 
-`pnpm test:ui:production` 使用 `tests/native/production-flow-ui.mjs` 与 `tests/native/tauri-flow-test.json`，应用标识为 `com.xyzrobotics.tujiaovision.flow-tests`，报告输出到 `output/playwright/flow-regression`。运行时生成模拟图像，使用真实后端、SQLite、PGM 和元数据，并在历史页读回；结束时自动关闭本次进程。
+`pnpm test:ui:production` 使用 `tests/native/production-flow-ui.mjs` 与 `tests/native/tauri-flow-test.json`，应用标识为 `com.xyzrobotics.tujiaovision.flow-tests`，报告输出到 `output/playwright/flow-regression`。测试在界面中启用离线产线，经生产 S7 握手运行一件；运行时生成模拟图像，使用真实后端、SQLite、PGM 和元数据，并在历史页读回；结束时自动关闭本次进程。
+
+离线产线替代原模拟节拍：在“设备与采集”页展开“离线产线调试”，点“启用离线模式”。软件在进程内启动本机 S7 服务（127.0.0.1 随机端口），PLC 临时切到该服务和一期默认点表并连接，不写入 plc.json；虚拟产线按生产 S7 握手提交工件、触发拍照并确认结果。启用后在“在线检测”页选择离线配方与工况，点“运行一件”或“连续运行”；相机页面板另提供故障注入和停用离线模式，停用后恢复原 PLC 配置。启用前外部 PLC 应断开；有在途工件时不能启用或停用，产线运行中不能停用，离线模式启用期间不能保存 PLC 配置。
 
 其余保留的桌面测试入口及前置条件见 [原生测试目录](../../tests/native/)。恢复专项应使用独立实例和新输出目录，避免使用生产配置。Robot/Modbus 服务的启动配置见[模拟服务说明](../../scripts/robot-plc-demo/README.md)。
 

@@ -18,15 +18,13 @@ import type {
 
 const previewConfig: PlcConfig = {
   connection: {
-    protocol: "simulator",
+    protocol: "s7",
     host: "192.168.0.10",
-    port: 502,
+    port: 102,
     timeoutMs: 1000,
     pollIntervalMs: 200,
     reconnectIntervalMs: 3000,
-    modbus: { unitId: 1 },
     s7: { rack: 0, slot: 1, connectionType: "pg", localTsap: null, remoteTsap: null, pduSize: 480 },
-    mc: { networkNo: 0, pcNo: 255, moduleIo: 0x03ff, moduleStation: 0, xyOctal: false },
   },
   points: [],
   heartbeat: { pointId: null, intervalMs: 1000 },

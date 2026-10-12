@@ -14,7 +14,7 @@ import {
   ShotStrip,
   SignalLamps,
   ShotTiles,
-  SimControls,
+  OfflineControls,
   UnrolledCurve,
   useCycle,
   useLayout,
@@ -179,7 +179,7 @@ export default function InspectPage() {
       <div className="fly-bar">
         <SignalLamps />
         <span className="spacer" />
-        <SimControls compact />
+        <OfflineControls compact />
         {phase === "FAULT" && (
           <button className="btn" onClick={resetFault} disabled={action !== null} aria-busy={action === "reset"}>
             <RotateCcw size={15} />

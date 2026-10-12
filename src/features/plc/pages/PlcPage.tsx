@@ -9,7 +9,7 @@ import S7Phase1Dialog from "../components/S7Phase1Dialog";
 import S7RecipePlanPanel from "../components/S7RecipePlanPanel";
 import { plcApi, usePlcOperationState, usePlcStatus, usePlcValues } from "../api";
 import { inspectionHandshakeTags } from "../../../business/plcTags";
-import { dataTypeLabels, edgeLabels, effectiveOrder, formatValue, isMultiWord, newPoint, protocols } from "../meta";
+import { asS7, dataTypeLabels, edgeLabels, effectiveOrder, formatValue, isMultiWord, newPoint, s7Protocol } from "../meta";
 import { formatClock } from "../time";
 import type { PlcConfig, PlcHandshakeState, PlcPoint, TagPreset } from "../types";
 
@@ -54,7 +54,7 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
     setLoadError("");
     plcApi.getConfig().then((c) => {
       if (serial !== loadSerial.current) return;
-      setSaved(c); setDraft(structuredClone(c));
+      setSaved(c); setDraft(asS7(structuredClone(c)));
     }).catch(e => { if (serial === loadSerial.current) setLoadError(String(e)); });
   };
 
@@ -138,7 +138,7 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
     });
 
   const savedPoints = new Map(saved?.points.map((p) => [p.id, JSON.stringify(p)]));
-  const meta = protocols[draft.connection.protocol];
+  const meta = s7Protocol;
   const writablePoints = draft.points.filter((p) => p.access === "readWrite");
   const protectedWrite = (point: PlcPoint) => saved?.connection.protocol === "s7"
     && (point.id === saved.heartbeat.pointId || point.tags.some(tag => inspectionHandshakeTags.has(tag)))
@@ -305,7 +305,7 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
                     <td className="mono">{p.address}</td>
                     <td className="nowrap">
                       {dataTypeLabels[p.dataType].split(" ")[0]}
-                      {isMultiWord(p.dataType) && <span className="cell-sub"> {effectiveOrder(p, draft.connection)}</span>}
+                      {isMultiWord(p.dataType) && <span className="cell-sub"> {effectiveOrder(p)}</span>}
                     </td>
                     <td>{p.access === "readWrite" ? "读写" : "只读"}</td>
                     <td>{p.edge === "none" ? <span className="muted">—</span> : edgeLabels[p.edge]}</td>
@@ -349,7 +349,7 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
       </div>
       </fieldset>
       </fieldset>
-      {draft.connection.protocol === "s7" && <S7RecipePlanPanel />}
+      <S7RecipePlanPanel />
 
       {editing && (
         <PointEditor
