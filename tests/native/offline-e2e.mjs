@@ -1,16 +1,12 @@
 import { chromium } from "playwright-core";
 import assert from "node:assert/strict";
 import { existsSync, statSync } from "node:fs";
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const identifier = "com.xyzrobotics.tujiaovision.e2e-tests";
 export const MISSING_INPUT_EXIT = 3;
-export const defaultInputs = {
-  sampleSet: "C:\\Users\\11601\\gluesight-samples\\mx11-demo",
-  lyflow: "C:\\Users\\11601\\project\\ly-gluesight\\src-tauri\\target\\dependency-runtime\\runtime\\lyflow\\lyflow_core.dll",
-};
 
 // 演示夹具：只为让 mx11-demo 跑通离线全流程而手工选定的 ROI、像素当量与检测参数，不代表算法调优结果或现场标定。
 // 像素当量写进本次输出目录里样本集副本的 shots[].mmPerPx，按样本集声明当量走标定验证。
@@ -35,8 +31,8 @@ const sampleLabelText = { ok: "合格", ng: "不合格", unknown: "未标注" };
 
 export function missingInputs(inputs) {
   const problems = [];
-  if (!inputs.sampleSet || !existsSync(path.join(inputs.sampleSet, "sample-set.json"))) problems.push(`样本集目录缺少 sample-set.json：${inputs.sampleSet || "（未设置 GLUESIGHT_SAMPLE_SET）"}`);
-  if (!inputs.lyflow || !existsSync(inputs.lyflow) || !statSync(inputs.lyflow).isFile()) problems.push(`lyFlow 核心库不存在：${inputs.lyflow || "（未设置 LYFLOW_CORE_DLL）"}`);
+  if (!inputs.sampleSet || !existsSync(path.join(inputs.sampleSet, "sample-set.json"))) problems.push(`样本集目录缺少 sample-set.json：${inputs.sampleSet || "（未通过 --sample-set 或 GLUESIGHT_SAMPLE_SET 提供）"}`);
+  if (!inputs.lyflow || !existsSync(inputs.lyflow) || !statSync(inputs.lyflow).isFile()) problems.push(`lyFlow 核心库不存在：${inputs.lyflow || "（未通过 --lyflow 或 LYFLOW_CORE_DLL 提供）"}`);
   return problems;
 }
 
@@ -62,10 +58,23 @@ export function monotoneCenterline(points, segments = CENTERLINE_SEGMENTS) {
   return path;
 }
 
+function within(parent, child) {
+  const rel = path.relative(parent, child);
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+}
+
 export async function prepareSampleSet(source, outputDir) {
-  const root = path.resolve(outputDir);
+  await mkdir(outputDir, { recursive: true });
+  const root = await realpath(outputDir);
   const target = path.join(root, "sample-set");
   assert.equal(path.dirname(target), root);
+  const realSource = await realpath(source);
+  const realTarget = existsSync(target) ? await realpath(target) : target;
+  for (const candidate of new Set([target, realTarget])) {
+    if (within(realSource, candidate) || within(candidate, realSource)) {
+      throw new Error(`样本集副本目录 ${candidate} 与样本集原件 ${realSource} 相同或互相包含，拒绝复制`);
+    }
+  }
   await rm(target, { recursive: true, force: true });
   await cp(source, target, { recursive: true });
   const file = path.join(target, "sample-set.json");
@@ -379,8 +388,8 @@ async function main() {
     args[process.argv[i].slice(2)] = process.argv[i + 1];
   }
   const inputs = {
-    sampleSet: args["sample-set"] ?? process.env.GLUESIGHT_SAMPLE_SET ?? defaultInputs.sampleSet,
-    lyflow: args.lyflow ?? process.env.LYFLOW_CORE_DLL ?? defaultInputs.lyflow,
+    sampleSet: args["sample-set"] ?? process.env.GLUESIGHT_SAMPLE_SET,
+    lyflow: args.lyflow ?? process.env.LYFLOW_CORE_DLL,
   };
   const problems = missingInputs(inputs);
   if (problems.length) {

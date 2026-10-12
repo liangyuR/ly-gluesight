@@ -5,6 +5,7 @@ use std::ffi::{c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use lyflow_client::{Core, RunHandle, RunImageInput, RunSpec};
 use serde::{Deserialize, Serialize};
@@ -178,7 +179,10 @@ fn resolve_core_path(path: Option<&str>, executable: impl FnOnce() -> std::io::R
 pub struct VisionHost {
     engine: Mutex<Option<Arc<Engine>>>,
     error: Mutex<Option<String>>,
+    failed: Mutex<Option<(PathBuf, Instant)>>,
 }
+
+const STATUS_RELOAD_BACKOFF: Duration = Duration::from_secs(5);
 
 impl VisionHost {
     pub fn engine(&self, path: Option<&str>) -> Option<Arc<Engine>> {
@@ -207,23 +211,35 @@ impl VisionHost {
                 let e = Arc::new(e);
                 *guard = Some(e.clone());
                 *self.error.lock().unwrap() = None;
+                *self.failed.lock().unwrap() = None;
                 Some(e)
             }
             Err(msg) => {
                 *guard = None;
                 *self.error.lock().unwrap() = Some(msg);
+                *self.failed.lock().unwrap() = Some((path.to_path_buf(), Instant::now()));
                 None
             }
         }
     }
 
     pub fn status(&self, path: Option<&str>) -> EngineStatus {
+        self.status_at(path, Instant::now())
+    }
+
+    /// 未加载时同一路径的失败在退避期内直接报上次原因，不反复加载核心库。
+    fn status_at(&self, path: Option<&str>, now: Instant) -> EngineStatus {
         let resolved = match resolve_core_path(path, std::env::current_exe) {
             Ok(path) => path,
             Err(message) => return EngineStatus { message, ..EngineStatus::default() },
         };
         let bundled = path.map(str::trim).filter(|p| !p.is_empty()).is_none();
-        let engine = resolved.as_deref().and_then(|path| self.engine_at(path, bundled));
+        let engine = resolved.as_deref().and_then(|path| {
+            let loaded = self.engine.lock().unwrap().as_ref().filter(|e| e.path == path).cloned();
+            let backing_off = self.failed.lock().unwrap().as_ref()
+                .is_some_and(|(failed, at)| failed == path && now.saturating_duration_since(*at) < STATUS_RELOAD_BACKOFF);
+            loaded.or_else(|| if backing_off { None } else { self.engine_at(path, bundled) })
+        });
         EngineStatus {
             loaded: engine.is_some(),
             path: resolved.as_ref().map(|path| path.display().to_string()),

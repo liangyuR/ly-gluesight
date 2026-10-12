@@ -17,6 +17,11 @@ pub struct Versions {
     pub graph: String,
 }
 
+/// 发布时所在站点：离线环境验证发布的版本不能在真机开工。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ValidationSite { Real, Offline }
+
 #[derive(Clone, Debug)]
 pub enum ResourceSource {
     File(PathBuf),
@@ -35,6 +40,7 @@ pub struct ShotInput {
 pub struct PublishInput {
     pub recipe: RecipeDoc,
     pub versions: Versions,
+    pub validation_site: ValidationSite,
     pub graph: ResourceSource,
     pub shots: Vec<ShotInput>,
 }
@@ -70,6 +76,7 @@ pub struct ReleaseManifest {
     pub bundle_id: String,
     pub recipe_version: u32,
     pub versions: Versions,
+    pub validation_site: ValidationSite,
     pub recipe: String,
     pub graph: String,
     pub shots: Vec<ShotManifest>,
@@ -232,7 +239,7 @@ pub fn publish(releases_root: &Path, input: PublishInput) -> Result<ReleaseBundl
     let manifest = ReleaseManifest {
         schema_version: RELEASE_SCHEMA,
         recipe_id: recipe.id.clone(), recipe_revision: recipe.revision_id.clone(), recipe_version: recipe.version, bundle_id: bundle_id.clone(),
-        versions: input.versions, recipe: "recipe.json".into(), graph: "graph.json".into(), shots,
+        versions: input.versions, validation_site: input.validation_site, recipe: "recipe.json".into(), graph: "graph.json".into(), shots,
         files: files.iter().map(|(path, bytes)| FileEntry { path: path.clone(), bytes: bytes.len() as u64 }).collect(),
     };
     let manifest_bytes = json_bytes(&manifest)?;
@@ -267,6 +274,27 @@ pub fn load(releases_root: &Path, recipe_id: &str, bundle_id: &str) -> Result<Re
     valid_bundle_id(bundle_id)?;
     let root = absolute_path(releases_root)?.join(recipe_id).join(bundle_id);
     load_directory(&root, recipe_id, bundle_id)
+}
+
+/// 只读清单并按文件元数据核对资源齐全、大小一致，不读取资源内容。
+pub fn peek(releases_root: &Path, recipe_id: &str, bundle_id: &str) -> Result<ReleaseManifest, String> {
+    safe_id(recipe_id)?;
+    valid_bundle_id(bundle_id)?;
+    let root = absolute_path(releases_root)?.join(recipe_id).join(bundle_id);
+    reject_links(&root, false)?;
+    let manifest = read_manifest(&root, bundle_id)?;
+    if manifest.schema_version != RELEASE_SCHEMA {
+        return Err(format!("发布包格式版本 {}，当前为 {RELEASE_SCHEMA}，需要重新发布", manifest.schema_version));
+    }
+    if manifest.recipe_id != recipe_id { return Err("发布清单的配方身份无效".into()); }
+    for entry in &manifest.files {
+        validate_relative(&entry.path)?;
+        let metadata = fs::symlink_metadata(resource_path(&root, &entry.path)?).map_err(|e| format!("读取发布资源 {} 失败：{e}", entry.path))?;
+        if !metadata.is_file() || is_link(&metadata) || metadata.len() != entry.bytes {
+            return Err(format!("发布资源 {} 的文件类型或大小不符", entry.path));
+        }
+    }
+    Ok(manifest)
 }
 
 fn load_directory(root: &Path, recipe_id: &str, bundle_id: &str) -> Result<ReleaseBundle, String> {

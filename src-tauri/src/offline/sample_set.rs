@@ -13,6 +13,7 @@ use crate::frame::FrameImage;
 pub const SCHEMA_VERSION: u64 = 1;
 const EXTS: [&str; 7] = ["jpg", "jpeg", "png", "bmp", "tif", "tiff", "pgm"];
 const MISSING_SHOWN: usize = 50;
+const LOCAL_HINT: &str = "请把样本集放到本地非同步目录（不能是 junction、符号链接或 OneDrive 等同步目录）";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -111,11 +112,11 @@ fn reject_link(path: &Path, metadata: &std::fs::Metadata) -> Result<(), String> 
     {
         use std::os::windows::fs::MetadataExt;
         if metadata.file_attributes() & 0x400 != 0 {
-            return Err(format!("样本集路径 {} 是 reparse point，拒绝读取", path.display()));
+            return Err(format!("样本集路径 {} 是 reparse point，拒绝读取；{LOCAL_HINT}", path.display()));
         }
     }
     if metadata.file_type().is_symlink() {
-        return Err(format!("样本集路径 {} 是符号链接，拒绝读取", path.display()));
+        return Err(format!("样本集路径 {} 是符号链接，拒绝读取；{LOCAL_HINT}", path.display()));
     }
     Ok(())
 }
@@ -171,7 +172,9 @@ impl Manifest {
             if shot.shot_id != expected { return Err(format!("第 {} 个拍照点编号应为 {expected}，实际 {}", k + 1, shot.shot_id)); }
             let camera_views = cameras.get(shot.camera_id.as_str()).ok_or_else(|| format!("拍照点 {} 引用了不存在的相机 {}", shot.shot_id, shot.camera_id))?;
             check_views(&shot.views, &format!("拍照点 {}", shot.shot_id))?;
-            if shot.views.iter().any(|v| !camera_views.contains(v)) { return Err(format!("拍照点 {} 的视角超出相机 {}", shot.shot_id, shot.camera_id)); }
+            if shot.views.iter().collect::<HashSet<_>>() != camera_views.iter().collect::<HashSet<_>>() {
+                return Err(format!("拍照点 {} 的视角 {:?} 必须与相机 {} 的视角 {:?} 一致", shot.shot_id, shot.views, shot.camera_id, camera_views));
+            }
             if bad_mm_per_px(shot.mm_per_px) { return Err(format!("拍照点 {} 的 mmPerPx 必须为正数或 null", shot.shot_id)); }
         }
         let mut parts = HashSet::new();
@@ -184,9 +187,15 @@ impl Manifest {
     }
 }
 
+fn image_dimensions(path: &Path) -> Result<[u32; 2], String> {
+    let (w, h) = image::ImageReader::open(path).and_then(|r| r.with_guessed_format()).map_err(|e| format!("无法读取：{e}"))?
+        .into_dimensions().map_err(|e| format!("无法读取尺寸：{e}"))?;
+    Ok([w, h])
+}
+
 impl SampleSet {
     pub fn load(dir: &Path) -> Result<Self, String> {
-        crate::image_file::checked_source_path(dir)?;
+        crate::image_file::checked_source_path(dir).map_err(|e| format!("{e}；{LOCAL_HINT}"))?;
         let root = dir.canonicalize().map_err(|e| format!("样本集目录 {} 无法访问：{e}", dir.display()))?;
         let file = root.join("sample-set.json");
         plain_entry(&file)?.filter(|m| m.is_file()).ok_or("样本集目录缺少 sample-set.json")?;
@@ -196,6 +205,7 @@ impl SampleSet {
         plain_entry(&parts_dir)?.filter(|m| m.is_dir()).ok_or("样本集目录缺少 parts 子目录")?;
         let mut images = HashMap::new();
         let mut missing = Vec::new();
+        let mut size = manifest.image_size;
         for part in &manifest.parts {
             let dir = parts_dir.join(&part.part_id);
             let mut files: HashMap<String, PathBuf> = HashMap::new();
@@ -215,9 +225,20 @@ impl SampleSet {
             for shot in &manifest.shots {
                 for &view in &shot.views {
                     let stem = format!("{}_{}_v{view}", shot.shot_id, shot.camera_id);
-                    match files.get(&stem.to_ascii_lowercase()) {
-                        Some(path) => { images.insert((part.part_id.clone(), shot.shot_id.clone(), shot.camera_id.clone(), view), path.clone()); }
-                        None => missing.push(format!("{}/{stem}", part.part_id)),
+                    let Some(path) = files.get(&stem.to_ascii_lowercase()) else {
+                        missing.push(format!("{}/{stem}", part.part_id));
+                        continue;
+                    };
+                    match image_dimensions(path) {
+                        Ok(found) if size.is_none_or(|expected| expected == found) => {
+                            size = Some(found);
+                            images.insert((part.part_id.clone(), shot.shot_id.clone(), shot.camera_id.clone(), view), path.clone());
+                        }
+                        Ok([w, h]) => {
+                            let [ew, eh] = size.unwrap_or_default();
+                            missing.push(format!("{}/{stem}（尺寸 {w}×{h} 与 {ew}×{eh} 不符）", part.part_id));
+                        }
+                        Err(error) => missing.push(format!("{}/{stem}（{error}）", part.part_id)),
                     }
                 }
             }
@@ -336,12 +357,14 @@ mod tests {
     #[test]
     fn manifest_contract_rejects_bad_versions_and_reports_missing_images() {
         type Edit = fn(&Fixture, &mut Value);
-        let cases: [(&str, Edit, Result<usize, &str>); 7] = [
+        let cases: [(&str, Edit, Result<usize, &str>); 9] = [
             ("完整样本集", |_, _| {}, Ok(0)),
             ("未知版本", |_, m| m["schemaVersion"] = 2.into(), Err("schemaVersion 2")),
             ("缺少版本", |_, m| { m.as_object_mut().unwrap().remove("schemaVersion"); }, Err("schemaVersion")),
             ("点号与顺序不符", |_, m| m["shots"][1]["shotId"] = "S005".into(), Err("S002")),
             ("逐点当量非正", |_, m| m["shots"][2]["mmPerPx"] = 0.0.into(), Err("S003")),
+            ("拍照点视角只是相机视角的子集", |_, m| m["cameras"][0]["views"] = serde_json::json!([1, 2]), Err("S001")),
+            ("一张图尺寸与 imageSize 不符", |f, _| image::save_buffer(f.0.join("parts/p01/S002_cam1_v1.png"), &[0; 9], 3, 3, image::ColorType::L8).unwrap(), Ok(1)),
             ("缺一张图", |f, _| std::fs::remove_file(f.0.join("parts/p02/S003_cam1_v1.png")).unwrap(), Ok(1)),
             ("整件目录缺失", |f, _| std::fs::remove_dir_all(f.0.join("parts/p01")).unwrap(), Ok(4)),
         ];
@@ -358,6 +381,37 @@ mod tests {
                 (Err(error), Err(needle)) => assert!(error.contains(needle), "{name}: {error}"),
                 (result, expected) => panic!("{name}: {:?} / {expected:?}", result.map(|s| s.missing().to_vec())),
             }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junction_at_set_root_parts_or_part_directory_is_rejected() {
+        fn junction(link: &Path, target: &Path) {
+            let output = std::process::Command::new("cmd.exe").args(["/D", "/C", "mklink", "/J"]).arg(link).arg(target).output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        }
+        let cases: [(&str, fn(&Fixture) -> PathBuf); 3] = [
+            ("样本集根目录", |f| { let link = f.0.with_extension("link"); junction(&link, &f.0); link }),
+            ("parts 目录", |f| {
+                let moved = f.0.join("moved-parts");
+                std::fs::rename(f.0.join("parts"), &moved).unwrap();
+                junction(&f.0.join("parts"), &moved);
+                f.0.clone()
+            }),
+            ("样本件目录", |f| {
+                let moved = f.0.join("moved-p01");
+                std::fs::rename(f.0.join("parts").join("p01"), &moved).unwrap();
+                junction(&f.0.join("parts").join("p01"), &moved);
+                f.0.clone()
+            }),
+        ];
+        for (name, link) in cases {
+            let fixture = Fixture::new(&[1]);
+            let dir = link(&fixture);
+            let loaded = SampleSet::load(&dir);
+            if dir != fixture.0 { let _ = std::fs::remove_dir(&dir); }
+            assert!(loaded.is_err(), "{name}");
         }
     }
 

@@ -239,12 +239,12 @@ pub fn sample_set(app: &AppHandle) -> Option<Arc<SampleSet>> {
     app.try_state::<OfflineHost>().and_then(|host| host.sample_set())
 }
 
-/// 无生产触发身份时（软触发、站位取图）样本集相机出当前样本件的第一个拍照点。
-pub fn preview_target(app: &AppHandle) -> Option<SampleTarget> {
+/// 无生产触发身份时（软触发、站位取图）样本集相机出当前样本件里该相机的第一个拍照点。
+pub fn preview_target(app: &AppHandle, camera_id: &str) -> Option<SampleTarget> {
     let host = app.try_state::<OfflineHost>()?;
     let set = host.sample_set()?;
     let part_id = host.preview_part.lock().unwrap().clone().unwrap_or_else(|| set.manifest().parts[0].part_id.clone());
-    let shot_id = set.manifest().shots.first()?.shot_id.clone();
+    let shot_id = set.manifest().shots.iter().find(|s| s.camera_id == camera_id)?.shot_id.clone();
     Some(SampleTarget { set, part_id, shot_id })
 }
 

@@ -1452,6 +1452,32 @@ pub fn published_bundle(app: &AppHandle, recipe: &Recipe) -> Result<crate::relea
     Ok(bundle)
 }
 
+/// 只核对生产版本对应发布包的清单与身份，不读取资源内容。
+pub fn published_manifest(app: &AppHandle, recipe: &Recipe) -> Result<crate::release::ReleaseManifest, String> {
+    let dir = app.state::<WorkspaceHost>().dir(&recipe.id).join("published");
+    let published = archived_release(&dir, &recipe.id, recipe.version)?;
+    let manifest = crate::release::peek(&releases_root(app)?, &recipe.id, &published.bundle_id)?;
+    if manifest.recipe_revision != recipe.revision_id || manifest.recipe_version != recipe.version {
+        return Err("生产快照、配方与发布包身份不一致".into());
+    }
+    Ok(manifest)
+}
+
+pub struct DraftSummary {
+    pub id: String,
+    pub name: String,
+    pub version: u32,
+    pub product_code: u16,
+    pub shot_count: usize,
+}
+
+pub fn draft_summaries(app: &AppHandle) -> Vec<DraftSummary> {
+    let Some(host) = app.try_state::<WorkspaceHost>() else { return Vec::new() };
+    let items = host.items.lock().unwrap();
+    items.values().map(|w| DraftSummary { id: w.doc.id.clone(), name: w.doc.name.clone(), version: w.doc.version,
+        product_code: w.doc.product_code, shot_count: w.doc.shots.len() }).collect()
+}
+
 fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeDoc, teaching: &[Teaching]) -> Result<crate::release::ReleaseBundle, String> {
     let recipe = doc.build()?;
     let settings = app.state::<CycleHost>().settings();
@@ -1479,6 +1505,7 @@ fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeDoc, teachin
     }
     crate::release::publish(&releases_root(app)?, crate::release::PublishInput { recipe: doc.clone(),
         versions: crate::release::Versions { engine: engine.identity.clone(), graph: crate::production::GRAPH_VERSION.into() },
+        validation_site: if crate::offline::enabled(app) { crate::release::ValidationSite::Offline } else { crate::release::ValidationSite::Real },
         graph: crate::release::ResourceSource::Bytes(serde_json::to_vec(&crate::production::graphs(&recipe)?).map_err(|e| e.to_string())?), shots })
 }
 

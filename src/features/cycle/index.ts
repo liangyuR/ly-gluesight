@@ -1,7 +1,7 @@
 import "./cycle.css";
 
 export { cycleApi, recipeApi, siteApi, useCycle, useLayout, useReadiness, useRecipes, useSiteStatus } from "./api";
-export { pickRunnable, rejectionTarget, targetLinks, devLyflowHint } from "./readiness";
+export { rejectionTarget, runChoice, showChecklist, targetLinks, devLyflowHint, useRunChoice } from "./readiness";
 export { default as ReadinessChecklist, TargetLink } from "./components/ReadinessChecklist";
 export { default as RecipeRunSelect } from "./components/RecipeRunSelect";
 export { faultOptions, measurementLabel, scenarioOptions, scenariosFor, siteModeText, sourceLabel } from "./offline";

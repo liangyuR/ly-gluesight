@@ -368,6 +368,8 @@ export interface RecipeOption {
   runnable: boolean;
   reason: string | null;
   target: ReadinessTarget | null;
+  /** 可运行但仍需等待的原因（如生产预热中） */
+  waiting: string | null;
 }
 
 export interface Readiness {

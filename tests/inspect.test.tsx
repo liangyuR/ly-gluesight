@@ -80,6 +80,13 @@ describe("在线检测开工检查清单", () => {
     expect(list.getByText("没有可开工配方（A：未示教）")).toBeVisible();
     expect(list.getByRole("link", { name: "去配方工作台" })).toHaveAttribute("href", "/recipe");
   });
+
+  it("在制件期间 → 不显示开工清单", () => {
+    state = { ...state, phase: "ACQUIRE" };
+    report = readiness({ ready: false, items: readiness().items.map(i => i.key === "audit" ? { ...i, state: "blocked", detail: "持久追溯故障" } : i) });
+    render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    expect(screen.queryByRole("region", { name: "开工检查清单" })).not.toBeInTheDocument();
+  });
 });
 
 describe("在线检测选帧、曲线与快照绑定", () => {

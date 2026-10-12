@@ -3,7 +3,7 @@ import { OctagonX, Play } from "lucide-react";
 import { errorText } from "../../../lib/errors";
 import { usePlcStatus } from "../../plc";
 import { cycleApi, useSiteStatus } from "../api";
-import { pickRunnable, rejectionTarget } from "../readiness";
+import { rejectionTarget, useRunChoice } from "../readiness";
 import type { Readiness, ReadinessTarget } from "../types";
 import RecipeRunSelect from "./RecipeRunSelect";
 import { TargetLink } from "./ReadinessChecklist";
@@ -16,7 +16,6 @@ interface Props {
 export default function OfflineControls({ readiness, refresh }: Props) {
   const status = useSiteStatus();
   const plc = usePlcStatus();
-  const [recipeId, setRecipeId] = useState("");
   const [error, setError] = useState<{ text: string; target: ReadinessTarget | null } | null>(null);
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
@@ -24,14 +23,14 @@ export default function OfflineControls({ readiness, refresh }: Props) {
   const offline = status?.mode === "offline";
   const running = !!status?.running;
   const options = readiness?.recipes ?? null;
+  const [recipeId, setRecipeId] = useRunChoice(options, running);
+  const message = plc?.state !== "connected" ? "等待连接离线 S7 服务…" : status?.message ?? "";
 
   useEffect(() => {
     alive.current = true;
     return () => { alive.current = false; };
   }, []);
-  useEffect(() => {
-    if (options) setRecipeId(current => pickRunnable(options, current));
-  }, [options]);
+  useEffect(() => setError(null), [message, running]);
 
   if (!status || !offline) return null;
 
@@ -46,7 +45,6 @@ export default function OfflineControls({ readiness, refresh }: Props) {
     finally { pending.current = false; if (alive.current) setBusy(false); }
   };
   const connected = plc?.state === "connected";
-  const message = !connected ? "等待连接离线 S7 服务…" : status.message;
 
   return (
     <div className="offline-controls compact">
@@ -60,8 +58,8 @@ export default function OfflineControls({ readiness, refresh }: Props) {
         <OctagonX size={15} />
         立即停止
       </button>
-      {error ? <span className="offline-msg c-ng" role="alert">{error.text} <TargetLink target={error.target} /></span>
-        : <span className="offline-msg" role="status">{message}</span>}
+      <span className="offline-msg" role="status">{message}</span>
+      {error && <span className="offline-msg c-ng" role="alert">{error.text} <TargetLink target={error.target} /></span>}
     </div>
   );
 }

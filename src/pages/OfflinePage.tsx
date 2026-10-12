@@ -7,15 +7,16 @@ import {
   cycleApi,
   faultOptions,
   measurementLabel,
-  pickRunnable,
   ReadinessChecklist,
   RecipeRunSelect,
   rejectionTarget,
   scenariosFor,
+  showChecklist,
   siteApi,
   sourceLabel,
   TargetLink,
   useReadiness,
+  useRunChoice,
   useSiteStatus,
   type OfflineChoice,
   type OfflineFault,
@@ -154,13 +155,13 @@ function OfflineSession({ status }: { status: SiteStatus }) {
   const { readiness, refresh } = useReadiness(`${status.source ?? ""}:${status.sampleSet?.id ?? ""}`);
   const options = readiness?.recipes ?? null;
   const plc = usePlcStatus();
-  const [recipeId, setRecipeId] = useState("");
   const [scenario, setScenario] = useState<Scenario>("normal");
   const [fault, setFault] = useState<OfflineFault>("disconnect");
   const [partId, setPartId] = useState("");
   const [stopRequested, setStopRequested] = useState(false);
   const { busy, failure, perform, alive } = useOperation();
   const running = status.running;
+  const [recipeId, setRecipeId] = useRunChoice(options, running);
   const sampleSet = status.source === "sampleSet" ? status.sampleSet : null;
   const scenarios = scenariosFor(status.source);
   const chosen = scenarios.some(([v]) => v === scenario) ? scenario : "normal";
@@ -168,9 +169,6 @@ function OfflineSession({ status }: { status: SiteStatus }) {
   useEffect(() => {
     if (!running) setStopRequested(false);
   }, [running]);
-  useEffect(() => {
-    if (options) setRecipeId(current => pickRunnable(options, current));
-  }, [options]);
   useEffect(() => {
     if (partId && !sampleSet?.parts.some(p => p.partId === partId)) setPartId("");
   }, [sampleSet, partId]);
@@ -199,7 +197,7 @@ function OfflineSession({ status }: { status: SiteStatus }) {
         </dl>
         {sampleSet && <SampleSetView sampleSet={sampleSet} />}
       </section>
-      {readiness && !readiness.ready && <ReadinessChecklist readiness={readiness} />}
+      {showChecklist(readiness, running) && <ReadinessChecklist readiness={readiness} />}
       <section className="panel" aria-label="运行控制">
         <h3 className="panel-title">运行控制</h3>
         <div className="offline-controls">

@@ -5,6 +5,7 @@ import { WorkpieceOverview } from "../features/workspace/OverviewPage";
 import Modal from "../features/plc/components/Modal";
 import { displayReason, triggerModeLabel, verdictLabel } from "../features/history";
 import { matchesPart } from "../features/cycle/identity";
+import { productionBusy } from "../features/cycle/phase";
 import ReadinessChecklist from "../features/cycle/components/ReadinessChecklist";
 import { errorText } from "../lib/errors";
 import {
@@ -17,6 +18,7 @@ import {
   SignalLamps,
   ShotTiles,
   OfflineControls,
+  showChecklist,
   UnrolledCurve,
   useCycle,
   useLayout,
@@ -208,7 +210,7 @@ export default function InspectPage() {
         </div>
       ))}
 
-      {readiness && !readiness.ready && <ReadinessChecklist readiness={readiness} />}
+      {showChecklist(readiness, productionBusy(snapshot)) && <ReadinessChecklist readiness={readiness} />}
 
       <div className="fly-body">
         <div className="fly-main">

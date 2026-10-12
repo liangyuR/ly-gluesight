@@ -135,7 +135,7 @@ export function partDetail(): PartDetail {
 
 export function recipeOption(id: string, runnable = true, over: Partial<RecipeOption> = {}): RecipeOption {
   return { id, name: `工件 ${id}`, version: 1, productCode: 1, shotCount: 2, published: true, runnable,
-    reason: runnable ? null : "与样本集不符", target: runnable ? null : "workspace", ...over };
+    reason: runnable ? null : "与样本集不符", target: runnable ? null : "workspace", waiting: null, ...over };
 }
 
 export function readiness(over: Partial<Readiness> = {}): Readiness {

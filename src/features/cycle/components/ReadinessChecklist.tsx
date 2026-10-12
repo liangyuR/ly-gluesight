@@ -9,7 +9,7 @@ export default function ReadinessChecklist({ readiness }: { readiness: Readiness
     <section className="panel readiness" aria-label="开工检查清单">
       <div className="panel-head">
         <h3 className="panel-title">开工检查清单</h3>
-        <span className="muted">以下各项全部就绪后才能接收工件</span>
+        <span className="muted">{readiness.ready ? "可以接收工件；等待项完成后自动就绪" : "阻塞项解决后才能接收工件"}</span>
       </div>
       <ul className="readiness-list">
         {readiness.items.map((item) => (

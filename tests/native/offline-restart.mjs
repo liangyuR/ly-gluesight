@@ -19,12 +19,19 @@ export async function runOfflineRestart(page, options) {
   const layout = await call("cycle_layout", { recipeId });
   assert.equal(layout.revisionId, previous.recipe.revisionId, "重启后生产配方修订改变");
   assert.equal(layout.teachingId, previous.recipe.teachingId, "重启后生产配方的示教身份改变");
+  const recipeOption = async () => (await call("cycle_readiness")).recipes.find(r => r.id === recipeId);
+  const realOption = await recipeOption();
+  assert(realOption, `真机就绪检查未列出配方 ${recipeId}`);
+  assert.equal(realOption.runnable, false, "离线环境验证发布的配方不应能在真机开工");
+  assert(realOption.reason?.includes("离线环境验证发布"), `真机拒绝原因不符：${realOption.reason}`);
+  assert.equal(realOption.target, "workspace", "真机拒绝应引导到工作台重新验证发布");
 
   const entered = await call("site_enter_offline", { source: { kind: "sampleSet", dir: previous.inputs.offlineSampleSet } });
   assert.equal(entered.source, "sampleSet");
   await until(() => call("plc_get_status"), s => s.state === "connected", "离线 S7 服务未连接");
   const prewarm = await until(async () => (await call("cycle_logs")).find(l => l.ev === "生产预热" && l.msg.includes(`发布包 ${before.bundleId} 已就绪`)),
     Boolean, `重启后发布包 ${before.bundleId} 未预热就绪`, 60000);
+  await until(recipeOption, r => r?.runnable === true, `离线后配方 ${recipeId} 仍不可运行`, 60000);
   const { summary } = await produce(call, recipeId, "p02");
   assert.equal(summary.bundleId, before.bundleId, "重启后投产未使用原发布包");
   assert.equal(summary.recipeRevision, before.recipeRevision);
@@ -34,6 +41,8 @@ export async function runOfflineRestart(page, options) {
 
   const result = {
     passed: true, identifier, recipeId, elapsedMs: Date.now() - startedAt,
+    realSiteRejection: { runnable: realOption.runnable, reason: realOption.reason, target: realOption.target },
+    offlineRunnable: true,
     prewarm: { ts: prewarm.ts, msg: prewarm.msg },
     before: { historyId: before.historyId, verdict: before.verdict, bundleId: before.bundleId, recipeRevision: before.recipeRevision },
     after: { historyId: summary.id, verdict: summary.verdict, bundleId: summary.bundleId, recipeRevision: summary.recipeRevision, reason: summary.reason },

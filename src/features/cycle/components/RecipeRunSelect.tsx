@@ -17,7 +17,7 @@ export default function RecipeRunSelect({ options, value, onChange, disabled }: 
         {!value && <option value="">{options ? "没有可运行配方" : "正在检查配方…"}</option>}
         {options?.map((r) => (
           <option key={r.id} value={r.id} disabled={!r.runnable} title={r.reason ?? undefined}>
-            {r.id} · 代码 {r.productCode} · N={r.shotCount}{r.runnable ? "" : `（不可运行：${r.reason ?? "原因未知"}）`}
+            {r.id} · 代码 {r.productCode} · N={r.shotCount}{r.runnable ? (r.waiting ? `（${r.waiting}）` : "") : `（不可运行：${r.reason ?? "原因未知"}）`}
           </option>
         ))}
       </select>

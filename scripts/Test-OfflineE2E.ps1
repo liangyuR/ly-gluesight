@@ -1,17 +1,21 @@
 #Requires -Version 7.0
 param(
     [ValidateRange(1024, 65535)][int]$DebugPort = 9341,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$SampleSet,
+    [string]$Lyflow
 )
 
 $ErrorActionPreference = 'Stop'
 $e2eMissingInputExit = 3
 if (!$IsWindows) { throw '离线端到端测试需要 Windows、WebView2 与 lyFlow。' }
-$e2eSampleSet = if ($env:GLUESIGHT_SAMPLE_SET) { $env:GLUESIGHT_SAMPLE_SET } else { 'C:\Users\11601\gluesight-samples\mx11-demo' }
-$e2eLyflow = if ($env:LYFLOW_CORE_DLL) { $env:LYFLOW_CORE_DLL } else { 'C:\Users\11601\project\ly-gluesight\src-tauri\target\dependency-runtime\runtime\lyflow\lyflow_core.dll' }
+$e2eSampleSet = if ($SampleSet) { $SampleSet } else { $env:GLUESIGHT_SAMPLE_SET }
+$e2eLyflow = if ($Lyflow) { $Lyflow } else { $env:LYFLOW_CORE_DLL }
 $e2eMissing = @()
-if (!(Test-Path -LiteralPath (Join-Path $e2eSampleSet 'sample-set.json') -PathType Leaf)) { $e2eMissing += "样本集目录缺少 sample-set.json：$e2eSampleSet（GLUESIGHT_SAMPLE_SET）" }
-if (!(Test-Path -LiteralPath $e2eLyflow -PathType Leaf)) { $e2eMissing += "lyFlow 核心库不存在：$e2eLyflow（LYFLOW_CORE_DLL）" }
+if (!$e2eSampleSet) { $e2eMissing += '未提供样本集目录（-SampleSet 或 GLUESIGHT_SAMPLE_SET）' }
+elseif (!(Test-Path -LiteralPath (Join-Path $e2eSampleSet 'sample-set.json') -PathType Leaf)) { $e2eMissing += "样本集目录缺少 sample-set.json：$e2eSampleSet（-SampleSet 或 GLUESIGHT_SAMPLE_SET）" }
+if (!$e2eLyflow) { $e2eMissing += '未提供 lyFlow 核心库（-Lyflow 或 LYFLOW_CORE_DLL）' }
+elseif (!(Test-Path -LiteralPath $e2eLyflow -PathType Leaf)) { $e2eMissing += "lyFlow 核心库不存在：$e2eLyflow（-Lyflow 或 LYFLOW_CORE_DLL）" }
 if ($e2eMissing.Count) {
     [Console]::Error.WriteLine("离线端到端输入缺失，未运行（不算通过，退出码 $e2eMissingInputExit）：`n$($e2eMissing -join "`n")")
     exit $e2eMissingInputExit

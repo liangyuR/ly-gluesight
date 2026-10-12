@@ -856,8 +856,10 @@ impl CameraSlot {
             }
             CameraSource::SampleSet => {
                 let target = match payload {
-                    Some(TriggerPayload::Sample(target)) => Some(target),
-                    _ => crate::offline::preview_target(&self.shared.rig.app),
+                    Some(TriggerPayload::Sample(target)) => Ok(target),
+                    Some(TriggerPayload::Sim(_)) => Err("样本集相机收到合成图触发，没有样本件身份".to_string()),
+                    None => crate::offline::preview_target(&self.shared.rig.app, &config.id)
+                        .ok_or_else(|| format!("未选择离线样本集，或样本集里没有相机 {} 的拍照点", config.id)),
                 };
                 let (session, n) = self.next_counters();
                 let ticket = CaptureTicket { session, frame_counter: n };
@@ -869,10 +871,8 @@ impl CameraSlot {
                 let camera = config.id.clone();
                 let views = config.view_count;
                 tauri::async_runtime::spawn(async move {
-                    let loaded = tauri::async_runtime::spawn_blocking(move || {
-                        let target = target.ok_or("未选择离线样本集")?;
-                        target.images(&camera, views)
-                    }).await.map_err(|e| e.to_string()).and_then(|r| r);
+                    let loaded = tauri::async_runtime::spawn_blocking(move || target?.images(&camera, views))
+                        .await.map_err(|e| e.to_string()).and_then(|r| r);
                     match loaded {
                         Ok(images) => shared.deliver_in_order(session, n, Some(synthetic_frame(cam, session, n, images, manual))),
                         Err(e) => {
