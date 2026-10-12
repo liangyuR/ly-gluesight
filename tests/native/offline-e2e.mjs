@@ -164,9 +164,9 @@ function assertSampleSetCalibration(view, taught, setId) {
 }
 
 export async function produce(call, recipeId, partId) {
-  const previous = await call("history_query", { query: { recipeId, limit: 1 } });
+  const previous = await call("history_query", { query: { recipeId, scope: "offline", limit: 1 } });
   await call("offline_run", { recipeId, scenario: "normal", continuous: false, partId });
-  const summary = await until(async () => (await call("history_query", { query: { recipeId, limit: 1 } })).items.find(i => i.id !== previous.items[0]?.id),
+  const summary = await until(async () => (await call("history_query", { query: { recipeId, scope: "offline", limit: 1 } })).items.find(i => i.id !== previous.items[0]?.id),
     Boolean, `样本件 ${partId} 未生成检测记录`, 60000);
   const site = await until(() => call("site_status"), s => !s.running, `样本件 ${partId} 握手未结束`, 30000);
   const run = site.recent.find(r => r.purpose === "production" && r.partId === partId && r.cycleId === summary.cycleId);
@@ -181,7 +181,7 @@ async function exportHistory(page, call, recipeId) {
   await notice.waitFor();
   const file = (await notice.locator(".mono").innerText()).trim();
   const lines = (await readFile(file, "utf8")).trim().split(/\r?\n/);
-  const { total } = await call("history_query", { query: { recipeId, limit: 1 } });
+  const { total } = await call("history_query", { query: { recipeId, scope: "offline", limit: 1 } });
   assert.equal(lines.length - 1, total, `导出 CSV 行数与历史记录不符：${file}`);
   return { file, rows: lines.length - 1 };
 }
@@ -327,7 +327,9 @@ export async function runOfflineE2E(page, options) {
     assert.equal(cells[5], sampleLabelText[run.label], `最近样本件 ${run.partId} 期望列不符`);
     assert.equal(cells[6], verdictLabel[run.verdict], `最近样本件 ${run.partId} 实际列不符`);
   }
+  assert.equal((await call("history_query", { query: { limit: 1 } })).total, 0, "离线件不得进入真机历史与统计");
   await navigation.getByRole("link", { name: "历史记录", exact: true }).click();
+  await page.getByRole("group", { name: "记录来源", exact: true }).getByRole("button", { name: "离线件", exact: true }).click();
   await page.getByRole("combobox", { name: "历史配方", exact: true }).selectOption(id);
   for (const { summary } of [normal, defect]) {
     const row = page.getByRole("row", { name: `查看 SN ${summary.sn} 的记录`, exact: true });

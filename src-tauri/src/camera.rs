@@ -229,6 +229,43 @@ struct Reorder {
     pending: BTreeMap<u64, Option<Frame>>,
 }
 
+impl Reorder {
+    /// 按帧号排队，返回现在可以依次交付的帧；空位（缺帧）占住帧号但不交付，后面的帧不必等它。
+    fn accept(&mut self, session: u64, seq: u64, frame: Option<Frame>) -> Vec<Frame> {
+        // 每台相机的帧序号从 1 开始；不能拿先到的那帧当起点，否则先合成完的第 2 帧会把第 1 帧挤到后面
+        if self.next == 0 {
+            self.next = 1;
+        }
+        if session != self.session || seq < self.next {
+            return frame.into_iter().collect();
+        }
+        self.pending.insert(seq, frame);
+        let mut ready = Vec::new();
+        while let Some(frame) = self.pending.remove(&self.next) {
+            self.next += 1;
+            ready.extend(frame);
+        }
+        ready
+    }
+}
+
+/// 样本集相机按触发身份取图后按帧号交付；取不到图（缺图、未选样本集）时本帧按缺帧占位，后面的帧照常交付。
+/// 返回取图失败的原因。
+#[allow(clippy::too_many_arguments)]
+fn sample_set_arrival(order: &Mutex<Reorder>, target: Option<SampleTarget>, camera: &str, views: u8, cam: u8, session: u64, n: u64, manual: bool,
+    mut deliver: impl FnMut(Frame)) -> Option<String> {
+    let loaded = target.ok_or_else(|| "未选择离线样本集".to_string()).and_then(|target| target.images(camera, views));
+    let (frame, error) = match loaded {
+        Ok(images) => (Some(synthetic_frame(cam, session, n, images, manual)), None),
+        Err(error) => (None, Some(error)),
+    };
+    let mut order = order.lock().unwrap();
+    for frame in order.accept(session, n, frame) {
+        deliver(frame);
+    }
+    error
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CaptureTicket {
     session: u64,
@@ -361,25 +398,8 @@ impl Shared {
 
     fn deliver_in_order(&self, session: u64, seq: u64, frame: Option<Frame>) {
         let mut order = self.order.lock().unwrap();
-        // 每台相机的帧序号从 1 开始；不能拿先到的那帧当起点，否则先合成完的第 2 帧会把第 1 帧挤到后面
-        if order.next == 0 {
-            order.next = 1;
-        }
-        if session != order.session || seq < order.next {
-            drop(order);
-            if let Some(f) = frame {
-                self.deliver(f);
-            }
-            return;
-        }
-        order.pending.insert(seq, frame);
-        loop {
-            let next = order.next;
-            let Some(f) = order.pending.remove(&next) else { break };
-            order.next += 1;
-            if let Some(f) = f {
-                self.deliver(f);
-            }
+        for frame in order.accept(session, seq, frame) {
+            self.deliver(frame);
         }
     }
 
@@ -869,16 +889,15 @@ impl CameraSlot {
                 let camera = config.id.clone();
                 let views = config.view_count;
                 tauri::async_runtime::spawn(async move {
-                    let loaded = tauri::async_runtime::spawn_blocking(move || {
-                        let target = target.ok_or("未选择离线样本集")?;
-                        target.images(&camera, views)
-                    }).await.map_err(|e| e.to_string()).and_then(|r| r);
-                    match loaded {
-                        Ok(images) => shared.deliver_in_order(session, n, Some(synthetic_frame(cam, session, n, images, manual))),
-                        Err(e) => {
-                            cycle::log(&shared.rig.app, "err", "样本集取图", format!("{e}；本帧按缺帧处理"));
-                            shared.deliver_in_order(session, n, None);
-                        }
+                    let worker = shared.clone();
+                    let failed = tauri::async_runtime::spawn_blocking(move || {
+                        sample_set_arrival(&worker.order, target, &camera, views, cam, session, n, manual, |frame| worker.deliver(frame))
+                    }).await.unwrap_or_else(|e| {
+                        shared.deliver_in_order(session, n, None);
+                        Some(e.to_string())
+                    });
+                    if let Some(e) = failed {
+                        cycle::log(&shared.rig.app, "err", "样本集取图", format!("{e}；本帧按缺帧处理"));
                     }
                 });
                 Ok(Some(ticket))
@@ -1577,6 +1596,25 @@ mod view_tests {
         }
         assert!(frame.image(0).is_none());
         assert!(frame.image(4).is_none());
+    }
+
+    #[test]
+    fn sample_set_missing_image_becomes_a_skipped_frame_and_later_triggers_still_arrive_in_order() {
+        use crate::offline::sample_set::fixture::Fixture;
+        let fixture = Fixture::new(&[1, 2, 3]);
+        std::fs::remove_file(fixture.0.join("parts/p02/S002_cam1_v2.png")).unwrap();
+        let set = Arc::new(SampleSet::load(&fixture.0).unwrap());
+        let order = Mutex::new(Reorder { session: 7, ..Reorder::default() });
+        let (mut delivered, mut failed) = (Vec::new(), Vec::new());
+        for (n, shot) in [(1, 1), (3, 3), (2, 2), (4, 4)] {
+            let target = SampleTarget { set: set.clone(), part_id: "p02".into(), shot_id: format!("S{shot:03}") };
+            let error = sample_set_arrival(&order, Some(target), "cam1", 3, 0, 7, n, false,
+                |frame| delivered.push((frame.frame_counter, frame.images.iter().map(|i| i.pixels[0]).collect::<Vec<_>>())));
+            if error.is_some() { failed.push(n); }
+        }
+        assert_eq!(failed, [2]);
+        let expected: Vec<_> = [1u64, 3, 4].into_iter().map(|n| (n, (1..=3).map(|v| Fixture::pixel(2, n as u8, v)).collect::<Vec<_>>())).collect();
+        assert_eq!(delivered, expected);
     }
 
     #[test]

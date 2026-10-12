@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Camera, Scale, ScanEye } from "lucide-react";
 import { computeVis, shotLabel, ShotTiles, UnrolledCurve, type Measured, type PartView, type Recipe } from "../features/cycle";
-import { displayReason, formatTime, historyApi, sampleLabelText, triggerModeLabel, verdictClass, verdictLabel, type PartDetail } from "../features/history";
+import { displayReason, formatTime, historyApi, sampleLabelText, sourceLabel, triggerModeLabel, verdictClass, verdictLabel, type PartDetail } from "../features/history";
 import PartTrace from "../features/history/components/PartTrace";
 import { subscribe } from "../features/plc";
 import { workspaceApi } from "../features/workspace/api";
@@ -105,7 +105,7 @@ export default function HistoryDetailPage() {
   const complete=!!detail.points?.st.length&&detail.points.st.every(st=>st<2);
   const imageLabel="原始 SN "+s.sn+" · k"+(selected+1)+" · 视角 "+selectedView;
   return <div className="stack hist-detail">
-    <div className="panel detail-head"><button className="icon-btn" onClick={()=>navigate("/history")} aria-label="返回历史列表"><ArrowLeft size={18}/></button><b className="mono">SN {s.sn}</b><span className="muted">{formatTime(s.ts)} · {s.recipeId??"无配方"} · v{s.recipeVersion??"—"} · #{s.recipeRevision?.slice(0,6)??"—"} · {triggerModeLabel(s.triggerMode)} · 帧 {s.framesReceived}/{s.framesExpected}</span><span className="spacer"/><span className={"vt big "+verdictClass(s.verdict)}>{verdictLabel[s.verdict]} · PLC {s.plcCode}{s.faultCode?" / "+s.faultCode:""}</span></div>
+    <div className="panel detail-head"><button className="icon-btn" onClick={()=>navigate("/history")} aria-label="返回历史列表"><ArrowLeft size={18}/></button><b className="mono">SN {s.sn}</b>{s.source!=="real"&&<span className="tag offline">{sourceLabel[s.source]}</span>}<span className="muted">{formatTime(s.ts)} · {s.recipeId??"无配方"} · v{s.recipeVersion??"—"} · #{s.recipeRevision?.slice(0,6)??"—"} · {triggerModeLabel(s.triggerMode)} · 帧 {s.framesReceived}/{s.framesExpected}</span><span className="spacer"/><span className={"vt big "+verdictClass(s.verdict)}>{verdictLabel[s.verdict]} · PLC {s.plcCode}{s.faultCode?" / "+s.faultCode:""}</span></div>
     {error&&<Notice title="操作未完成" tone="warn">{error}</Notice>}
     <Panel title="复测与候选对照" detail="原包重现使用本件冻结资源；候选复测使用当前示教；所有结果另存，原始判定保留">
       <div className="wp-actions"><Badge tone="neutral">原始生产 v{s.recipeVersion??"—"}</Badge><Badge>候选 {ws.data&&ws.data.workspace.doc.id===layout?.id?"v"+ws.data.workspace.doc.version+" · 修订 "+ws.data.workspace.revision:"尚未选择此配方"}</Badge><span className="spacer"/>

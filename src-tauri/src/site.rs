@@ -13,6 +13,7 @@ use crate::cycle::CycleHost;
 use crate::offline::sample_set::{Manifest, SampleSet, SampleSetSummary};
 use crate::offline::{OfflineHost, SampleRun};
 use crate::settings::RecordMode;
+use crate::store::RecordSource;
 use crate::vision::VisionHost;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,6 +169,15 @@ pub fn measurement_of(source: Option<SourceKind>) -> Measurement {
 
 pub fn measurement(app: &AppHandle) -> Measurement {
     measurement_of(crate::offline::source_kind(app))
+}
+
+/// 检测记录的来源：写库与录制时按当前站点模式与离线来源决定。
+pub fn record_source(app: &AppHandle) -> RecordSource {
+    match crate::offline::source_kind(app) {
+        None => RecordSource::Real,
+        Some(SourceKind::Synthetic) => RecordSource::OfflineSynthetic,
+        Some(SourceKind::SampleSet) => RecordSource::OfflineSample,
+    }
 }
 
 pub fn image_measurement(app: &AppHandle) -> bool {

@@ -36,7 +36,7 @@ const databaseState = async () => {
 };
 const rawState = async () => {
   const files = [];
-  const records = join(profile, 'records');
+  const records = join(profile, 'records-offline');
   const canonicalRoot = cPath(await realpath(records));
   const walk = async directory => {
     assert.equal((await realpath(directory)).toLowerCase(), join(canonicalRoot, relative(records, directory)).toLowerCase());
@@ -48,7 +48,7 @@ const rawState = async () => {
       else if (/\.pgm$/i.test(entry.name) || entry.name === 'part.json') files.push({path, bytes: info.size});
     }
   };
-  await walk(join(profile, 'records'));
+  await walk(records);
   assert(files.some(file => /\.pgm$/i.test(file.path)), 'Existing originals required');
   return files;
 };

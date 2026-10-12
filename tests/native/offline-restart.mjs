@@ -15,7 +15,7 @@ export async function runOfflineRestart(page, options) {
   const call = client(page);
   assert((await call("records_list")).root.includes(identifier), "数据目录不属于隔离实例");
   assert.equal((await call("site_status")).mode, "real", "重启后必须回到真机模式");
-  assert.equal((await call("history_query", { query: { recipeId, limit: 1 } })).total, Object.keys(previous.production).length, "重启后历史记录与重启前不一致");
+  assert.equal((await call("history_query", { query: { recipeId, scope: "offline", limit: 1 } })).total, Object.keys(previous.production).length, "重启后历史记录与重启前不一致");
   const layout = await call("cycle_layout", { recipeId });
   assert.equal(layout.revisionId, previous.recipe.revisionId, "重启后生产配方修订改变");
   assert.equal(layout.teachingId, previous.recipe.teachingId, "重启后生产配方的示教身份改变");

@@ -203,13 +203,55 @@ impl OfflineHost {
         }
     }
 
-    /// 生产节拍按 PLC 下发的 partSn 认领样本件，记下 cycleId。
+    /// 生产节拍按 PLC 下发的 partSn 认领样本件，记下 cycleId。只在离线期间生效：真机件不会认领到样本件。
     pub fn claim(&self, part_sn: u32, cycle_id: &str) -> Option<SampleRef> {
+        if !self.enabled() { return None; }
         let mut runs = self.runs.lock().unwrap();
         let run = runs.iter_mut().find(|r| r.part_sn == part_sn && r.purpose == RunPurpose::Production)?;
         run.cycle_id = Some(cycle_id.to_string());
         Some(run.reference.clone())
     }
+
+    /// 结束本次离线会话：停用、清掉样本集与本次运行的样本件记录，交回会话供恢复真实环境。
+    fn deactivate(&self) -> Option<Active> {
+        self.enabled.store(false, Ordering::SeqCst);
+        self.set_samples(None);
+        self.runs.lock().unwrap().clear();
+        self.active.lock().unwrap().take()
+    }
+}
+
+/// 恢复真实 PLC 配置之后怎么处理连接。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RestorePlan {
+    Reconnect,
+    StayDisconnected,
+    /// 真实配置没能应用：保持断开并停到安全配置，不留在已关闭的离线端口上，需人工修复。
+    Park(String),
+}
+
+pub(crate) fn restore_plan(applied: &Result<(), String>, reconnect: bool, valid: bool) -> RestorePlan {
+    match applied {
+        Err(error) => RestorePlan::Park(error.clone()),
+        Ok(()) if reconnect && valid => RestorePlan::Reconnect,
+        Ok(()) => RestorePlan::StayDisconnected,
+    }
+}
+
+fn parked_plc() -> PlcConfig {
+    PlcConfig { auto_connect: false, ..crate::inspection::default_plc_config() }
+}
+
+/// 把 PLC 恢复到真实配置；恢复失败时显式断开并停到安全配置。是否重连由调用方在环境全部恢复后执行。
+async fn restore_real_plc(app: &AppHandle, plc: &PlcHost, cycle: &CycleHost, real: PlcConfig, reconnect: bool) -> RestorePlan {
+    let valid = crate::plc::validate_config(&real).is_ok();
+    let applied = apply_plc_config(app, plc, cycle, real).await;
+    let plan = restore_plan(&applied, reconnect, valid);
+    if let RestorePlan::Park(_) = plan {
+        plc.engine().disconnect().await;
+        let _ = apply_plc_config(app, plc, cycle, parked_plc()).await;
+    }
+    plan
 }
 
 fn verdict_of(code: u16) -> Option<Verdict> {
@@ -319,13 +361,14 @@ pub(crate) async fn enter(app: &AppHandle, set: Option<Arc<SampleSet>>, lyflow: 
     *offline.active.lock().unwrap() = Some(Active { server, line: Arc::new(Line::new(memory, layout)), session, reconnect });
     offline.enabled.store(true, Ordering::SeqCst);
     if let Err(error) = apply_plc_config(app, &plc, &cycle, applied.plc.clone()).await {
-        offline.enabled.store(false, Ordering::SeqCst);
-        let taken = offline.active.lock().unwrap().take();
-        if let Some(active) = taken {
-            let _ = apply_plc_config(app, &plc, &cycle, active.session.leave().plc).await;
-        }
-        offline.set_samples(None);
-        return Err(error);
+        let Some(active) = offline.deactivate() else { return Err(error) };
+        let plan = restore_real_plc(app, &plc, &cycle, active.session.leave().plc, active.reconnect).await;
+        drop(active.server);
+        return match plan {
+            RestorePlan::Reconnect => { plc.engine().connect().await; Err(error) }
+            RestorePlan::StayDisconnected => Err(error),
+            RestorePlan::Park(restore) => Err(format!("{error}；回滚真机 PLC 配置也失败：{restore}，PLC 已断开，需人工修复 PLC 配置")),
+        };
     }
     apply_environment_rest(app, &cycle, &applied);
     plc.engine().connect().await;
@@ -349,27 +392,25 @@ pub(crate) async fn leave(app: &AppHandle) -> Result<(), String> {
     if offline.running.load(Ordering::SeqCst) { return Err("离线产线仍在运行，先停止".into()); }
     let pre = switch_preconditions(&cycle, Ok(()));
     crate::site::check_switch(pre.busy, pre.capturing)?;
-    let Some(active) = offline.active.lock().unwrap().take() else { return Ok(()) };
-    offline.enabled.store(false, Ordering::SeqCst);
-    offline.set_samples(None);
+    let Some(active) = offline.deactivate() else { return Ok(()) };
     let real = active.session.leave();
-    let restored = apply_plc_config(app, &plc, &cycle, real.plc.clone()).await;
+    let plan = restore_real_plc(app, &plc, &cycle, real.plc.clone(), active.reconnect).await;
     apply_environment_rest(app, &cycle, &real);
     drop(active.server);
-    if active.reconnect && restored.is_ok() && crate::plc::validate_config(&real.plc).is_ok() {
-        plc.engine().connect().await;
-    }
-    match &restored {
-        Ok(()) => {
+    if plan == RestorePlan::Reconnect { plc.engine().connect().await; }
+    match plan {
+        RestorePlan::Park(error) => {
+            let message = format!("故障·需人工修复：已退出离线，但真机 PLC 配置无法恢复（{error}）；PLC 已断开并停在安全配置，请在 PLC 页修正配置后保存");
+            offline.set_message(app, message.clone());
+            crate::cycle::log(app, "err", "站点模式", message.clone());
+            Err(message)
+        }
+        _ => {
             offline.set_message(app, "已退出离线，恢复真机 PLC、相机组与帧录制设置");
             crate::cycle::log(app, "info", "站点模式", "已退出离线，恢复真机 PLC、相机组与帧录制设置");
-        }
-        Err(error) => {
-            offline.set_message(app, format!("已退出离线，但恢复 PLC 配置失败：{error}"));
-            crate::cycle::log(app, "err", "站点模式", format!("退出离线时恢复 PLC 配置失败：{error}"));
+            Ok(())
         }
     }
-    restored
 }
 
 /// 进入离线后由虚拟 PLC 像现场操作员一样复位一次，让节拍从"新连接待复位"进入空闲。

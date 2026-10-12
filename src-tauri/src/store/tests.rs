@@ -65,6 +65,10 @@ fn table(recipe: &Recipe) -> Vec<PointState> {
 }
 
 fn save(store: &Store, recipe: &Recipe, cycle: &str, shots: &[PartShot], delivery: &PlcDelivery, table: Option<&[PointState]>) -> Result<i64, String> {
+    save_as(store, recipe, cycle, shots, delivery, table, RecordSource::Real)
+}
+
+fn save_as(store: &Store, recipe: &Recipe, cycle: &str, shots: &[PartShot], delivery: &PlcDelivery, table: Option<&[PointState]>, source: RecordSource) -> Result<i64, String> {
     let judgement = Judgement::error(crate::judge::fault::MISSING_FRAME, "P2 缺帧，P3 定位失败，P4 测量出错");
     store.insert(&PartRecord {
         ts: 1234,
@@ -82,8 +86,28 @@ fn save(store: &Store, recipe: &Recipe, cycle: &str, shots: &[PartShot], deliver
         bundle_id: Some("frozen-bundle-id"),
         delivery,
         shots,
-        sample: None,
+        source, sample: None,
     })
+}
+
+#[test]
+fn offline_parts_stay_out_of_real_history_statistics_and_rejudge_and_vice_versa() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = recipe();
+    let shots = shots(&recipe);
+    let delivery = PlcDelivery::default();
+    let real = save_as(&store, &recipe, "real-part", &shots, &delivery, None, RecordSource::Real).unwrap();
+    let synthetic = save_as(&store, &recipe, "synthetic-part", &shots, &delivery, None, RecordSource::OfflineSynthetic).unwrap();
+    let sample = save_as(&store, &recipe, "sample-part", &shots, &delivery, None, RecordSource::OfflineSample).unwrap();
+    for (scope, expected) in [(HistoryScope::Real, vec![real]), (HistoryScope::Offline, vec![sample, synthetic])] {
+        let query = HistoryQuery { scope, ..Default::default() };
+        let page = store.query(&query).unwrap();
+        assert_eq!(page.items.iter().map(|p| p.id).collect::<Vec<_>>(), expected, "{scope:?}");
+        assert_eq!((page.total, page.counts.err), (expected.len() as u64, expected.len() as u64), "{scope:?}");
+        assert_eq!(store.counts_since(0, scope).unwrap().err, expected.len() as u64, "{scope:?}");
+        assert_eq!(store.measurements(&query, &[], 10).unwrap().iter().map(|m| m.id).collect::<Vec<_>>(), expected, "{scope:?}");
+    }
 }
 
 #[test]
@@ -343,9 +367,9 @@ fn pending_history_protection_includes_partial_directory_and_raw_only_references
     }).unwrap();
     let mut expected = vec![directory, raw_directory];
     expected.sort();
-    assert_eq!(store.pending_recording_directories(&root).unwrap(), expected);
+    assert_eq!(store.pending_recording_directories(&root, HistoryScope::Real).unwrap(), expected);
     store.conn.lock().unwrap().execute("UPDATE part_shots SET raw_files='invalid-json'", []).unwrap();
-    assert!(store.pending_recording_directories(&root).is_err());
+    assert!(store.pending_recording_directories(&root, HistoryScope::Real).is_err());
 }
 
 fn pre_identity_v2(db: &TestDb) -> Connection {
@@ -566,7 +590,7 @@ fn durable_record_identity_checks_actual_fields_while_allowing_later_delivery_an
     let judgement = Judgement::error(crate::judge::fault::MISSING_FRAME, "P2 缺帧，P3 定位失败，P4 测量出错");
     let mut record = PartRecord { ts: 1234, sn: 42, recipe: Some(&recipe), judgement: &judgement, drain_ms: None,
         frames: &[], frames_expected: recipe.shot_count(), frames_received: 3, triggers: 4, table: Some(&table),
-        software_version: "test-p0", cycle_id: Some("record-identity"), bundle_id: Some("frozen-bundle-id"), delivery: &pending, shots: &shots, sample: None };
+        software_version: "test-p0", cycle_id: Some("record-identity"), bundle_id: Some("frozen-bundle-id"), delivery: &pending, shots: &shots, source: crate::store::RecordSource::Real, sample: None };
     assert!(store.matches_record(&record).unwrap());
     store.update_delivery("record-identity", &PlcDelivery { state: PlcDeliveryState::Acknowledged, updated_at: 9999, message: None }).unwrap();
     store.update_shot_raw_files("record-identity", 0, &[ShotRawFile { view: 1, file: "records/cycle/k000.pgm".into(), width: Some(2), height: Some(3) }]).unwrap();

@@ -29,7 +29,12 @@ export interface PartShot {
   rawFiles: { view: number; file: string }[];
 }
 
+/** 记录来源：真机件与离线件分开统计。 */
+export type RecordSource = "real" | "offlineSynthetic" | "offlineSample";
+export type HistoryScope = "real" | "offline";
+
 export interface HistoryQuery {
+  scope?: HistoryScope;
   from?: number | null;
   to?: number | null;
   verdicts?: Verdict[];
@@ -58,6 +63,7 @@ export interface PartSummary {
   cycleId: string | null;
   bundleId: string | null;
   delivery: PlcDelivery;
+  source: RecordSource;
   sample: { setId: string; partId: string; sn: string; label: SampleLabel } | null;
 }
 

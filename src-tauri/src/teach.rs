@@ -23,7 +23,7 @@ pub struct RecordListing {
 /// 帧录制目录，新的在前，最多 200 条。
 #[tauri::command]
 pub fn records_list(cycle: State<'_, CycleHost>) -> RecordListing {
-    let root = cycle.recorder.root().to_path_buf();
+    let root = cycle.recorders.root(crate::store::RecordSource::Real).to_path_buf();
     let mut items = Vec::new();
     if let Ok(days) = std::fs::read_dir(&root) {
         for day in days.flatten().map(|d| d.path()).filter(|p| p.is_dir() && !p.ends_with("_pending")) {

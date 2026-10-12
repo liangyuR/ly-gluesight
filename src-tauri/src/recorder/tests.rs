@@ -53,7 +53,7 @@ fn callback() -> (RecordingCallback, Receiver<RecordingOutcome>) {
 fn controlled(root: PathBuf) -> (Recorder, Receiver<Msg>, Receiver<RecordingOutcome>) {
     let (tx, rx) = channel();
     let (callback, outcomes) = callback();
-    (Recorder { root, tx, queued: Arc::new(AtomicUsize::new(0)), callback: Some(callback), startup_error: None, protection: None, active: Arc::new(Mutex::new(HashSet::new())) }, rx, outcomes)
+    (Recorder { root, tx, queued: Arc::new(AtomicUsize::new(0)), callback: Some(callback), startup_error: None, protection: None, active: Arc::new(Mutex::new(HashSet::new())), scope: HistoryScope::Real }, rx, outcomes)
 }
 
 fn wait(outcomes: &Receiver<RecordingOutcome>) -> RecordingOutcome {
@@ -385,4 +385,30 @@ fn rolling_prune_preserves_durable_pending_recording_and_removes_unprotected_old
     assert!(outcome.available);
     assert!(protected.join("image.pgm").is_file());
     assert!(!disposable.exists());
+}
+
+#[test]
+fn offline_recordings_beyond_retention_never_remove_real_raw_images() {
+    let dir = TestDir::new();
+    let (real_callback, real_outcomes) = callback();
+    let (offline_callback, offline_outcomes) = callback();
+    let recorders = Recorders::new(Recorder::new(dir.root(), Some(real_callback)), Recorder::new(dir.0.join("records-offline"), Some(offline_callback)),
+        Retention { keep: 2, max_bytes: u64::MAX });
+    let real_retention = Retention { keep: 2, max_bytes: u64::MAX };
+    let mut rec = recorders.begin(RecordSource::Real, RecordMode::All, 1, recipe(), "real-cycle", None).unwrap();
+    recorders.frame(&mut rec, &frame(1), "cam1", 0, 1);
+    recorders.finish(rec, Verdict::Ok, "真机件", real_retention);
+    let real = wait(&real_outcomes).directory.unwrap();
+    let mut offline = Vec::new();
+    for (i, source) in [RecordSource::OfflineSample, RecordSource::OfflineSynthetic, RecordSource::OfflineSample, RecordSource::OfflineSample].into_iter().enumerate() {
+        std::thread::sleep(Duration::from_millis(5));
+        let mut rec = recorders.begin(source, RecordMode::All, 2, recipe(), &format!("offline-{i}"), None).unwrap();
+        recorders.frame(&mut rec, &frame(10), "cam1", 0, 1);
+        recorders.finish(rec, Verdict::Ok, "离线件", real_retention);
+        offline.push(wait(&offline_outcomes).directory.unwrap());
+    }
+    assert!(real.join("part.json").is_file(), "离线录制超过保留数后真机原图被清理");
+    assert!(real.starts_with(recorders.root(RecordSource::Real)));
+    assert_eq!(offline.iter().map(|d| d.is_dir()).collect::<Vec<_>>(), [false, false, true, true]);
+    assert!(offline.iter().all(|d| d.starts_with(recorders.root(RecordSource::OfflineSample))));
 }

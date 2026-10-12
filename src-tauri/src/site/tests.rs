@@ -23,7 +23,7 @@ fn ready() -> Preconditions {
 }
 
 #[test]
-fn entering_offline_derives_temporary_environment_and_leaving_restores_the_real_one() {
+fn entering_offline_derives_temporary_environment_by_source() {
     let single = manifest(serde_json::json!([{"id": "cam7", "views": [1]}]));
     let triple = manifest(serde_json::json!([{"id": "cam7", "views": [3, 1, 2]}]));
     let cases: [(&str, Derivation, SourceKind, Vec<(&str, CameraSource, u8)>); 3] = [
@@ -41,7 +41,6 @@ fn entering_offline_derives_temporary_environment_and_leaving_restores_the_real_
         assert_eq!(derived, cameras, "{name}");
         assert!(applied.cameras.iter().all(|c| c.acquisition == Acquisition::Triggered), "{name}");
         assert_eq!(applied.record, RecordMode::All, "{name}");
-        assert_eq!(session.leave(), real(), "{name}");
     }
 }
 
