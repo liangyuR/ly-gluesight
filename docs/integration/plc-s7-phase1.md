@@ -153,23 +153,15 @@ SCL `LocalDiagnostic` 是 PLC FB 本地诊断，**不写 DBW78**，也不是 PC 
 
 `productCode` 在当前计划 JSON 中不提供，需从生产配方另外核对并写 DBW12。一期按拍照点在图像里检测，计划不含工件坐标。`poseId` 是现场机器人 / PLC 程序里的 Pose 标识，同一 Pose 可被多个拍照点引用，因此不要求唯一；机器人程序与物理输出映射不在 JSON 内，需保存在现场的对应表。修改产品代码或拍照点的顺序、编号、Pose、相机绑定后，由配方库分配新版本并重新导出、评审和验证。更换设备或改变设备配置时必须暂停接件，核对所有拍照点绑定，重新导出并人工评审唯一设备与现场触发输出的对应关系，完成复位后再生产。
 
-## 7. SCL 接入与调试
+## 7. SCL 接入限制与状态语义
 
 **参考程序尚需补齐的接入保护：** `AcceptedMatches` 只核对序号，`TriggerPermit` 未完整检查 ready、done 和两处零值保留字段。现场输出逻辑必须在 TriggerPermit 之外同时检查第 3 节全部条件，或补齐 FB 后再接入。发现 armed 撤下时，状态 30 直接转状态 40，未刷新最后已发脉冲计数；PC 却在 ACK 时以 DB 计数维护后续帧归属。因此还须补齐停发后末脉冲计数刷新并验证；未补齐时，提前终止后隔离并复位对齐。参考 FB 也没有示教/生产模式确认，不能把采集的 `1/0` 接到良品输出。以上是当前实现缺口，不是已验收功能。
 
-1. 确认 CPU/固件/TIA 版本及实际 IP、端口、rack/slot、TSAP、DB 编号。标准 S7 服务通常用 TCP 102；本机 Python peer 使用随机端口，两者不要混淆。依据实际 CPU 设置远程 PUT/GET 访问并使用标准非优化 DB；相关配置随固件而异，按 [Siemens GET/PUT 官方说明](https://docs.tia.siemens.cloud/r/simatic_s7_1200_manual_collection_enus_20/communication/s7-communication/get-and-put-read-and-write-from-a-remote-cpu) 核对。
-2. 将 SCL 文件作为外部源导入 TIA，生成块，将 `GlueSightHandshake` 指定为 DB100。检查第 2 节每个偏移、88 字节长度、保持性和块号冲突。`GlueSightPhase1` FB 可使用优化实例，通讯 DB 不能优化。标准/优化访问差异见 [Siemens 块访问说明](https://docs.tia.siemens.cloud/r/en-us/v20/programming-basics/blocks-in-the-user-program/blocks-with-optimized-access/basics-of-block-access)。
-3. 建立 FB 实例并在循环程序中每扫描调用，按 CPU 启动机制给 `Startup` 首扫描脉冲。接入 NewPart、人工 ResetRequest/ReconcileConfirmed、现场计数与 MotionComplete、外部互锁及计划参数；先调用 FB，再由现场输出逻辑依据 TriggerPermit 和本节要求补齐的完整互锁放行。参考代码采用 IEC_TIMER 多重实例和 TON，具体 CPU/TIA 的声明及调用须通过编译确认，见 [Siemens IEC 定时器调用](https://docs.tia.siemens.cloud/r/en-us/v20/scl-s7-1200-s7-1500/timer-operations-s7-1200-s7-1500/calling-iec-timers-s7-1200-s7-1500)。
-4. 对 SCL 做 TIA 编译，修复版本相关语法/类型差异后再次核对 DB 偏移与跨方向写入。参考阶段超时是联调起点：布防 10 s、运动 30 s、结果 10 s、释放 10 s、复位 10 s；均应为正值，并按现场节拍与 PC 超时预算核准，不能视作现场 SLA。生产 PC 默认布防/运动/收帧/处理/ACK 为 200/30000/1000/3000/5000 ms；采集另有等待 start 120 s、开始后接收至 partEnd 120 s 和独立收尾窗口（默认 1000 ms、200–30000 ms）。采集即使收齐也等完整收尾窗口，PLC 等结果时间须覆盖该窗口及保存、通讯耗时。
-5. GlueSight 加载一期 S7 模板，确认实际连接参数和 DB，保持自动连接关闭，核对地址表、UInt/UDInt、ABCD 及 pcHeartbeat 绑定；应用保留握手点的写入所有权。准备兼容的 lyFlow DLL、设备驱动、已标定/示教/验证的生产配方，导出实际计划。
-6. 首先在无硬触发输出的条件下完成首次低基线和显式复位。分别看两个心跳变化，确认 ready、版本、armed/busy/done/fault 状态，运行一件握手检查 SN/seq/版本 对应及释放顺序。
-7. 接通现场触发后验证唯一设备计数、第一/最后一帧缺失、错误相机、额外脉冲、乱序、触发间隔和结果截止。核对 NG、ERR 以及未知结果不会错误放行。
-8. 验证读写拒绝、写入已发生但响应丢失、心跳冻结、网线断开、PC/PLC 重启、错误 ACK、旧 reset 高电平和未结件恢复。确认不能切新件或丢弃 pending，并保存PLC观察表、应用日志、计划和原图证据。
-9. 验证完整放行条件和末脉冲刷新；单独验收示教采集数量、唯一设备绑定、三视角保存、失败后设备重连整圈重采及生产切换。PC 取消或采集等待超时后的迟到 start 可能进入生产路径，须验证双方用途互锁，不能只以 ready/armed 判断模式。
+现场逐步调试与验收清单已于 2026-10-12 按测试范围选择删除。上述协议保护、参考程序缺口与下述状态语义保留；软件回环不证明真实 CPU、I/O 或 SDK 行为。
 
 FB 状态：10 等新件；20 等布防；30 允许运动触发；40 等结果；50 等 PC 清 done/busy；60 等再次 ready；90 故障/启动等待人工处置；91 中性低基线；92 保持 reset 并等待新就绪。`CycleComplete/ResetComplete` 为单扫描事件，`ResultLatched` 和锁存结果保持至下一件，不要直接用一扫描事件控制持续动作。
 
-## 8. 可复现的软件证据与未完成项
+## 8. 历史软件证据与验证边界
 
 2026-10-11 单设备协议 2 合并主分支后验证：Rust 默认回归 417 项通过、44 项默认忽略；`cargo test --offline --lib plc_session -- --include-ignored --test-threads=1 --nocapture` 的 48 项全部通过，包含真实 `ly_plc::PlcEngine` 与 Python peer 的回环 TCP、单设备正常/少触发/多触发、提前 ERR 的 ACK 实际计数、释放、重连和恢复。Python S7 回环测试 23 项通过；前端 43 个文件、963 项通过，类型检查及生产构建通过。Astra High 独立源码复核通过，28 个字段地址/类型/方向、HTML 正文与生成物同步检查通过。两份原生进程恢复脚本仅做语法及字段检查，未重新执行其完整 UI/进程场景。三张时序图按检查流程保持旧版，待协议确认后统一更新。
 

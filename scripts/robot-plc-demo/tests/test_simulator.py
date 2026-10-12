@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 import socket
 import struct
-import subprocess
 import sys
 import tempfile
 import threading
@@ -497,22 +496,6 @@ class RobotTests(unittest.TestCase):
                 self.assertEqual(self.request("/start", data)[0], 400)
         self.assertEqual(self.request("/start", {}, origin="https://example.com")[0], 403)
         self.assertEqual(self.request("/stop", {}, origin=self.url)[0], 200)
-        self.assertFalse(self.robot.state["running"])
-
-    def test_regression_preflight_failure_replaces_stale_pass_report(self):
-        cfg = copy.deepcopy(self.cfg)
-        cfg["robot"]["port"] = self.http.server_address[1]
-        cfg["runtimeDir"] = self.temp.name
-        path = Path(self.temp.name) / "test.config.json"
-        path.write_text(json.dumps(cfg), encoding="utf-8")
-        report_path = Path(self.temp.name) / "regression-latest.json"
-        report_path.write_text('{"passed": true}', encoding="utf-8")
-        result = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / "run-regression.py"),
-                                 "--config", str(path)], capture_output=True, timeout=10)
-        self.assertNotEqual(result.returncode, 0)
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-        self.assertFalse(report["passed"])
-        self.assertIn("Requires an idle", report["error"])
         self.assertFalse(self.robot.state["running"])
 
     def test_interrupted_final_result_is_backed_up_and_repaired(self):

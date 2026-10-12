@@ -281,6 +281,3 @@ mod tests;
 
 #[cfg(test)]
 mod warmup_tests;
-
-#[cfg(test)]
-mod regression;

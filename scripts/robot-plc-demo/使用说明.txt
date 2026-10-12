@@ -7,7 +7,6 @@ GlueSight Robot + PLC 模拟服务
   pnpm sim:services  只启动 Robot / PLC / 联调台
   pnpm sim:build     首次构建或升级后构建，并启动桌面联调
   pnpm sim:start     复用已有构建和配置启动
-  pnpm sim:verify    对运行中的桌面联调执行五工况检查
   pnpm sim:stop      本件完成后停止，保留配置与记录
 
 默认联调台：http://127.0.0.1:8766/

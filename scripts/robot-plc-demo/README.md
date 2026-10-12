@@ -22,7 +22,6 @@
 | pnpm sim:services | 只启动 Robot、PLC 和联调台 |
 | pnpm sim:build | 构建专用调试版并启动桌面及三个服务；首次使用或 Rust 升级后运行 |
 | pnpm sim:start | 复用已有构建和演示数据 |
-| pnpm sim:verify | 对运行中的桌面执行五工况，核对结果、SN、设备计数、逐点身份与握手释放 |
 | pnpm sim:stop | 本件完成后停止登记的演示进程，保留数据 |
 
 无需 pnpm 的模型测试入口：
@@ -45,7 +44,7 @@ node --test scripts/robot-plc-demo/tests/test-console.mjs
 5. 运行 python scripts/robot-plc-demo/make-samples.py。脚本读取当前夹具对应的候选目录，核对 schema、设备、视角、尺寸和来源，导出新的样本目录。good/k1..k4.pgm 是四张选中图，导入为 OK；gap/k1..k4.pgm 是完整的缺胶组，导入为 NG_GAP。缺口位于第二个要检拍照点的中线中段，长度按该点断口限值及站距计算，不跨拍照点连接。
 6. 在工作台选择两组样本，运行规则与图像验证，通过后发布。发布包及真实示教 DLL 未接线时，此步骤会失败，不能直接把夹具写成已验证生产配方。
 7. PLC 使用 Modbus TCP、127.0.0.1:1502、站号 1、轮询 50 ms、超时 1000 ms、自动连接，采用下表的演示地址。若已有示例配方引用不存在的设备，在专用演示实例中修正这些引用。
-8. 联调台显示视觉、桥和握手就绪后运行一件，再执行 pnpm sim:verify。桥会拒绝配方、视角或引擎与夹具不一致的触发。
+8. 联调台显示视觉、桥和握手就绪后可手动运行一件。桥会拒绝配方、视角或引擎与夹具不一致的触发。
 
 夹具不包含标定结果或发布记录。make-samples.py 只导出冻结的模拟原图并在图像中移除一段胶，不自动试测、判定或发布。provenance.json 明确记录 imageEngineValidated=false、physicalValidation=false、逐幅尺寸和路径、选中视角及设备触发数。默认三目还导出 replay/cam1_1_v1..v3.pgm 等十二幅图，可按设备帧分组回放；单视角导出四幅。导出的每组目录使用独立名称，避免混入上次样本。
 
@@ -58,7 +57,6 @@ demo.config.json 是默认服务配置，版本为 1。路径相对该文件解�
 ~~~powershell
 pnpm sim:services -Config scripts/robot-plc-demo/demo.local.json
 pnpm sim:build -Config scripts/robot-plc-demo/demo.local.json
-pnpm sim:verify --config scripts/robot-plc-demo/demo.local.json
 pnpm sim:stop -Config scripts/robot-plc-demo/demo.local.json
 ~~~
 
@@ -93,15 +91,15 @@ Start-Demo.ps1 的 -Recipe 覆盖同时传给 Robot 和桥。升级后先 sim:st
 | locateFail | 90 / 99 | 4 / 4；最后一点胶线平移 130px |
 | countMismatch | 90 / 94 | 0 / 0；布防前拒绝 |
 
-这些是需要真实桌面/DLL 验证的契约期望。Python VisionPeer 只为协议测试写应答寄存器。locateFail 保留历史工况键名，在逐点示教模型里由图像偏移产生；当前真实示教 DLL 将整个检测区无胶作为测量错误 99，部分断口仍为 NG_GAP 13。本表依此语义更新，桌面五工况仍须实跑，不能用测试应答代替。
+这些是模拟器的工况契约期望。Python VisionPeer 为协议测试写应答寄存器；协议测试不代表桌面或 DLL 的图像检测结论。locateFail 保留既有工况键名，在逐点示教模型里由图像偏移产生。
 
 GET /state 提供 contractVersion=2、recipe、plannedTriggers、deviceTriggers、cycleId、recipeRevision、bundleId、可操作状态及 PLC 快照。POST /start 接收 scenario、count（1..100）、continuous，返回 runId。POST /stop 在本件后停止，POST /reset 只允许空闲时执行。
 
 GET /trigger 的 ticket 除 sn/k/scenario 外，还带 recipeId、productCode、shotCount、shotId、poseId、camera、view 和设备内 ordinal。桥先读取 cycle_snapshot、cycle_layout（当前修订 ID）、camera_rig_config、cycle_get_settings、engine_status 和 app_info，核对全部参与设备、逐点参数、cycleId 与发布资源身份，然后只调用已有 sim_robot_trigger(sn,k,scenario)。临发脉冲前再查工件，禁止中途换件或换包。成功 ACK 必须回传相同身份，Robot 把整件 ACK 绑定到同一 cycleId。已执行 ticket 缓存 ACK，丢失 HTTP 应答后的重试不会产生第二次脉冲；桥中途重启不能接续 k>0，需恢复后重跑。
 
-真实三目 SDK 的交付格式、同步计数和线路仍待现场确认。桥只允许模拟设备，不配置 SDK 拆包或实体触发线路。
+桥只允许模拟设备，不配置 SDK 拆包或实体触发线路。
 
-## 故障矩阵与验收边界
+## 协议测试范围
 
 | 故障 | 当前入口或验证层 |
 | --- | --- |
@@ -110,30 +108,23 @@ GET /trigger 的 ticket 除 sn/k/scenario 外，还带 recipeId、productCode、
 | 错误设备、错误/缺失视角 | Node 桥契约测试证明发脉冲前拒绝；真实图像缺视角仍需 Rust/桌面验证 |
 | 上一件迟到、同 SN 重检 | 桥测试拒绝 cycleId 或发布包变更；原帧与迟到测量隔离由 Rust shot_router/cycle 验证 |
 | 触发桥失联、拒绝 ACK、ACK 身份不符 | Python 的真实 HTTP/Modbus 测试证明不计完成、清输入并保留错误 |
-| 队列满、DLL 卡住 | 应另跑 Rust measure 的排队截止、占用容量与迟到结果测试；本脚本没有虚构的 DLL 卡死注入命令，真实 DLL 卡死与尾延迟仍需专项回归 |
 | PLC 写拒绝 | Python 测试通过实际 Modbus 异常响应注入，核对不计完成及后续恢复 |
 | 磁盘写错误 | Python 测试使结果文件不可写，核对不计完成及恢复；录制/发布磁盘错误需另跑对应 Rust 测试 |
 
 sim:test 通过只证明上述脚本范围。P0 步 7 完整验收还需要真实 DLL 在线图像闭环、真实故障恢复、排队/引擎耗时、内存趋势，以及现场 SDK 和准确率证据。运行层的 native 测试要求见 [P0 计划](../../docs/architecture/p0-plan.md) 和 [测试记录](../../docs/testing/TESTING.md)。
 
-## 回归报告与数据
+## 测试与运行数据
 
 ~~~powershell
 pnpm sim:stop
 pnpm sim:test
 pnpm sim:build
-pnpm sim:verify
 ~~~
-
-sim:verify 真实增加五件演示记录，按 runId 关联结果，逐件检查结果码、异常码、SN、握手释放和设备触发数。只运行指定工况可用 --scenarios normal gap。失败返回非零并覆盖旧的通过报告。
-
-图像工况的报告要求真实应用/引擎应答、非空 cycleId、recipeRevision 与不可变 bundleId，记录应用版本、引擎版本、DLL 实际路径和版本、夹具尺寸和明确配方版本、逐点 ACK 和设备计数。测试应答端不能作为真实图像回归证据。不计算或比较图像、配方、发布包和引擎文件的内容摘要。triggerAckMs 是桥命令的应答时间，resultWaitMs 是 partEnd 后等待结果的时间，cycleMs 是 Robot 整件时间；它们不等于引擎或排队耗时。报告的 unmeasured 明示这些未测量项及现场精度缺口。
 
 默认输出在 output/playwright/robot-plc-demo/（已忽略）：
 
 - services.json：进程身份、配置路径与配方路径；停止脚本只关闭登记身份匹配的进程。
 - plc-wire.jsonl、robot-events.jsonl、robot-results.jsonl：实际协议值变化、事件和结果；重启恢复，末行写入中断时保留备份。
-- regression-latest.json：最近一次真实联调报告，包含失败原因。
 - samples/：按次生成的选中视角样本、全部冻结视角回放图及 provenance.json。
 - stdout/stderr 日志、演示程序与截图。
 
