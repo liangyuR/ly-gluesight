@@ -1,9 +1,9 @@
 async (page) => {
   const initial = await page.evaluate(async () => {
     const invoke = window.__TAURI_INTERNALS__.invoke;
-    return { records: await invoke("records_list"), plc: await invoke("plc_get_config") };
+    return { records: await invoke("records_list"), offline: await invoke("offline_status") };
   });
-  if (!initial.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || initial.plc.connection.protocol !== "simulator") throw new Error("P0 setup requires its isolated offline profile");
+  if (!initial.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || !initial.offline.enabled) throw new Error("P0 setup requires its isolated offline profile");
   await page.getByRole("button", { name: "模拟相机", exact: true }).click();
   await page.getByRole("combobox", { name: "设备视角", exact: true }).selectOption("3");
   await page.getByRole("button", { name: "触发（飞拍）", exact: true }).click();

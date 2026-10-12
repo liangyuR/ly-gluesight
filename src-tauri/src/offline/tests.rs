@@ -1,0 +1,135 @@
+use super::line::{Layout, Line, Outcome, PartOrder, Timing};
+use super::s7_server::S7Server;
+use super::*;
+use crate::judge::fault;
+use crate::plc_plan::{PlanShot, PlcPlan};
+use crate::plc_session::{PlcSession, SessionEvent, SessionPhase};
+use crate::inspection::tag;
+use ly_plc::{EventSink, Logbook, PlcEngine};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+const TIMING: Timing = Timing {
+    poll: Duration::from_millis(5),
+    shot_interval: Duration::from_millis(20),
+    end_delay: Duration::from_millis(20),
+    ack_delay: Duration::from_millis(20),
+    settle: Duration::from_millis(150),
+    arm_timeout: Duration::from_secs(5),
+    result_timeout: Duration::from_secs(5),
+    ready_timeout: Duration::from_secs(8),
+    release_timeout: Duration::from_secs(5),
+};
+
+struct Bench {
+    _server: S7Server,
+    line: Line,
+    engine: PlcEngine,
+    session: PlcSession,
+    plan: PlcPlan,
+}
+
+impl Bench {
+    async fn new(name: &str) -> Self {
+        let mut config = crate::inspection::default_plc_config();
+        let layout = Layout::from_config(&config).unwrap();
+        let memory = layout.memory();
+        let server = S7Server::start(memory.clone(), Some((layout.heartbeat(), Duration::from_millis(100)))).await.unwrap();
+        config.connection.host = "127.0.0.1".into();
+        config.connection.port = server.port();
+        config.connection.timeout_ms = 250;
+        config.connection.poll_interval_ms = 20;
+        config.connection.reconnect_interval_ms = 200;
+        config.heartbeat.interval_ms = 100;
+        let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/offline-tests")
+            .join(format!("{name}-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let sink: EventSink = Arc::new(|_| {});
+        let engine = PlcEngine::new(config, Arc::new(Logbook::open(&directory.join("plc.db"), sink.clone(), 1).unwrap()), sink);
+        engine.connect().await;
+        let plan = PlcPlan::compile("part-A".into(), 7, "cam1".into(), (1..=4).map(|i| PlanShot {
+            shot_id: format!("P{i}"), pose_id: format!("P{i}"), camera_id: "cam1".into(),
+        }).collect()).unwrap();
+        Self { _server: server, line: Line::new(memory, layout), engine, session: PlcSession::open(directory.join("session.json")), plan }
+    }
+
+    /// 虚拟 PLC 跑一件，PC 侧按生产节拍的顺序驱动 S7 会话：开始 → 布防 → partEnd 后按实收帧判定回写。
+    async fn run(&mut self, scenario: Scenario) -> Result<Outcome, String> {
+        let Self { line, engine, session, plan, .. } = self;
+        let delivered = Mutex::new(Vec::new());
+        let finished = AtomicBool::new(false);
+        let abort = AtomicBool::new(false);
+        let order = PartOrder { sn: 4242, product_code: 3, plan_version: plan.plan_version,
+            shot_count: plan.shot_count, device_shots: plan.device_shots };
+        let plc = async {
+            let result = match line.ensure_ready(&TIMING, &abort).await {
+                Ok(()) => line.run_part(&TIMING, &order, scenario, |_, lost| delivered.lock().unwrap().push(lost), &abort).await,
+                Err(error) => Err(error),
+            };
+            finished.store(true, Ordering::SeqCst);
+            result
+        };
+        let pc = async {
+            let until = Instant::now() + Duration::from_secs(15);
+            while !finished.load(Ordering::SeqCst) || !matches!(session.phase(), SessionPhase::Idle | SessionPhase::Fault) {
+                assert!(Instant::now() < until, "会话未收敛：{:?}", session.view());
+                match session.poll(engine, false, true).await {
+                    SessionEvent::Start(_) => session.arm(engine, plan).await.unwrap(),
+                    SessionEvent::End(_) => {
+                        let judgement = crate::cycle::tests::judge_delivered(&delivered.lock().unwrap());
+                        session.report(engine, judgement.plc_code, judgement.fault_code).await.unwrap();
+                    }
+                    _ => {}
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        tokio::join!(plc, pc).0
+    }
+}
+
+#[tokio::test]
+async fn offline_line_over_s7_completes_parts_with_matched_ack_and_returns_to_idle() {
+    let mut bench = Bench::new("normal").await;
+    for seq in [1, 2] {
+        let outcome = bench.run(Scenario::Normal).await.unwrap();
+        assert_eq!(outcome, Outcome { request_seq: seq, sn: 4242, result_code: 1, fault_code: 0 });
+        assert_eq!(bench.session.phase(), SessionPhase::Idle);
+        assert!(!bench.session.pending());
+        assert_eq!(bench.line.read(tag::RESULT_SEQ), seq);
+        assert_eq!(bench.line.read(tag::ACK_SEQ), seq);
+        assert_eq!(bench.line.read(tag::DEVICE_TRIGGERS), 4);
+        for field in [tag::PART_START, tag::PART_END, tag::RESULT_ACK, tag::DONE, tag::BUSY, tag::ARMED, tag::VISION_FAULT] {
+            assert_eq!(bench.line.read(field), 0, "{field}");
+        }
+    }
+    bench.engine.disconnect().await;
+}
+
+#[tokio::test]
+async fn offline_line_scenarios_end_in_err_result_or_handshake_fault() {
+    for (scenario, expected, phase) in [
+        (Scenario::LostFrame, Some((90, fault::MISSING_FRAME)), SessionPhase::Idle),
+        (Scenario::CountMismatch, None, SessionPhase::Fault),
+        (Scenario::AckMismatch, None, SessionPhase::Fault),
+    ] {
+        let mut bench = Bench::new(&format!("{scenario:?}")).await;
+        let result = bench.run(scenario).await;
+        assert_eq!(result.as_ref().ok().map(|o| (o.result_code, o.fault_code)), expected, "{scenario:?}: {result:?}");
+        assert_eq!(bench.session.phase(), phase, "{scenario:?}: {:?}", bench.session.view());
+        assert_eq!(bench.line.read(tag::PART_START), 0, "{scenario:?}");
+        bench.engine.disconnect().await;
+    }
+}
+
+#[tokio::test]
+async fn stop_during_inter_part_pause_does_not_start_another_part() {
+    let offline = OfflineHost::default();
+    assert!(!offline.continue_after_pause(false, Duration::ZERO).await);
+    assert!(offline.continue_after_pause(true, Duration::ZERO).await);
+    let (start_next, ()) = tokio::join!(
+        biased;
+        offline.continue_after_pause(true, Duration::from_millis(20)),
+        async { offline.stop.store(true, Ordering::SeqCst); },
+    );
+    assert!(!start_next, "stop accepted between parts must prevent the next part");
+}

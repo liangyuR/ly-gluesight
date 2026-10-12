@@ -16,7 +16,6 @@
     "code": [
       "src/layout/nav.ts",
       "src/pages/CameraPage.tsx",
-      "src/pages/RecipePage.tsx",
       "src/features/recipe/components/FlyshotTeach.tsx",
       "src/pages/InspectPage.tsx",
       "src/pages/HistoryPage.tsx",
@@ -832,14 +831,13 @@
     }
   ],
   "completionChecks": [
-    "13 个操作页面与 32 个关键情景均可在本地交互预览中访问。",
     "使用原生 React、HTML 控件和 SVG 图像区域，设计可以在源码中继续编辑。",
     "在 1440×900 和 1100×700 下检查布局、按钮、图像和必要滚动。",
     "维持纯黑背景、中性灰面板、蓝色关键色及 OK、NG、ERR 的语义颜色。",
     "验证冻结图像、试匹配、保存、参数失效、总览选帧和显示坐标独立。",
     "验证候选、生产和在制件配置快照独立，版本在工件边界切换。",
     "验证历史原始结果保留，无图时限制原图复测与示教。",
-    "检查正式软件与本地原型的前端构建和实际页面渲染。",
+    "检查正式软件的前端构建和实际页面渲染。",
     "示例测量与硬件状态明确标注，后端依赖不被误报为真实功能。"
   ],
   "application": {
@@ -855,29 +853,10 @@
       "#/history",
       "#/settings"
     ],
-    "scope": "正式桌面页面采用黑蓝视觉样式，并接入设备、候选工作台、实际图像测量与生产发布；操作流程预览独立使用示例数据。"
+    "scope": "正式桌面页面采用黑蓝视觉样式，并接入设备、候选工作台、实际图像测量与生产发布。"
   },
   "localPrototype": {
-    "status": "sample-data-prototype",
-    "entryRoute": "#/workflow/guide",
-    "entry": "现有软件右上角：操作流程预览",
-    "sources": [
-      "src/pages/WorkflowPreviewPage.tsx",
-      "src/features/workflow/model.ts",
-      "src/features/workflow/catalog.ts",
-      "src/features/workflow/context.ts",
-      "src/features/workflow/components.tsx",
-      "src/features/workflow/SetupViews.tsx",
-      "src/features/workflow/RecipeViews.tsx",
-      "src/features/workflow/ProductionViews.tsx",
-      "src/features/workflow/workflow.css"
-    ],
-    "operationalPages": 13,
-    "guidePages": 1,
-    "keyScenes": 32,
-    "journeys": 5,
-    "nativeComponents": "React / HTML / SVG / Lucide",
-    "paidDependenciesAdded": 0,
-    "sampleDataOnly": true
+    "status": "removed",
+    "note": "示例数据操作流程原型已删除，界面以正式桌面页面为准。"
   }
 }

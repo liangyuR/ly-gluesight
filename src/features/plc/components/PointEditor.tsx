@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import Modal from "./Modal";
 import { plcApi } from "../api";
-import { dataTypeLabels, edgeLabels, isMultiWord, protocols } from "../meta";
+import { dataTypeLabels, edgeLabels, isMultiWord, s7Protocol } from "../meta";
 import type { Access, ConnectionConfig, DataType, EdgeMode, PlcPoint, TagPreset, WordOrder } from "../types";
 
 interface PointEditorProps {
@@ -31,7 +31,7 @@ export default function PointEditor({ initial, isNew, existingIds, connection, t
     if (patch.address !== undefined || patch.dataType !== undefined) setCheck(null);
     setP((prev) => ({ ...prev, ...patch }));
   };
-  const meta = protocols[connection.protocol];
+  const meta = s7Protocol;
 
   useEffect(() => {
     let alive = true;

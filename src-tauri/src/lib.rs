@@ -13,6 +13,7 @@ mod instance;
 mod judge;
 mod measure;
 mod mvs;
+mod offline;
 mod packaging;
 mod plc;
 mod plc_plan;
@@ -26,7 +27,6 @@ mod recorder;
 mod replay;
 mod settings;
 mod shot_router;
-mod sim;
 mod simimage;
 mod store;
 mod teach;
@@ -48,6 +48,7 @@ pub fn run() {
             app.manage(open_store(app)?);
             app.manage(vision::VisionHost::default());
             app.manage(production::ProductionHost::default());
+            app.manage(offline::OfflineHost::default());
             app.manage(cycle::CycleHost::init(app.handle())?);
             app.manage(workspace::WorkspaceHost::init(app.handle())?);
             app.manage(plc::PlcHost::init(app.handle())?);
@@ -99,7 +100,6 @@ pub fn run() {
             recipe_api::recipe_doc,
             recipe_api::recipe_preview,
             recipe_api::recipe_template,
-            recipe_api::recipe_save,
             recipe_api::recipe_delete,
             teach::records_list,
             history::history_query,
@@ -110,10 +110,12 @@ pub fn run() {
             history::reveal_path,
             vision::vision_calib_info,
             vision::vision_calibrate,
-            sim::sim_status,
-            sim::sim_start,
-            sim::sim_stop,
-            sim::sim_robot_trigger,
+            offline::offline_status,
+            offline::offline_enable,
+            offline::offline_disable,
+            offline::offline_run,
+            offline::offline_stop,
+            offline::offline_inject,
             workspace::workspace_list,
             recipe_capture::recipe_capture_start,
             recipe_capture::recipe_capture_get,
@@ -132,9 +134,7 @@ pub fn run() {
             workspace::workspace_create,
             workspace::workspace_delete,
             workspace::workspace_save_doc,
-            workspace::workspace_capture,
             workspace::workspace_select_view,
-            workspace::workspace_import_image,
             workspace::workspace_image,
             workspace::workspace_trial,
             workspace::workspace_save_params,

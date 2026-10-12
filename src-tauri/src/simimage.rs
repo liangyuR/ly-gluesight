@@ -3,7 +3,7 @@
 
 use crate::frame::FrameImage;
 use crate::recipe::{Recipe, ShotSpec, SIM_MM_PER_PX};
-use crate::sim::Scenario;
+use crate::offline::Scenario;
 use std::sync::Arc;
 
 /// 模拟画面尺寸，与现场相机（MV-CU013-80GC）一致。

@@ -58,11 +58,11 @@
 .curve-box { flex: 1; min-height: 0; overflow: hidden; }
 .curve-box svg { display: block; font-family: inherit; }
 
-.sim-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.sim-controls.compact { padding: 4px 8px; border: 1px dashed var(--border); border-radius: 6px; }
-.sim-controls.compact .input, .sim-controls.compact .btn { height: 28px; font-size: 12.5px; }
-.sim-label { font-size: 12px; color: var(--warn); }
-.sim-msg { font-size: 12px; color: var(--text-muted); }
+.offline-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.offline-controls.compact { padding: 4px 8px; border: 1px dashed var(--border); border-radius: 6px; }
+.offline-controls.compact .input, .offline-controls.compact .btn { height: 28px; font-size: 12.5px; }
+.offline-label { font-size: 12px; color: var(--warn); }
+.offline-msg { font-size: 12px; color: var(--text-muted); }
 
 /* 实时检测（飞拍） */
 .fly { display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 640px; }

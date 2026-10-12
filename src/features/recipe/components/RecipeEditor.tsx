@@ -1,19 +1,15 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Plus, Save, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Save } from "lucide-react";
 import { recipeApi } from "../../cycle/api";
 import ShotTiles from "../../cycle/components/ShotTiles";
-import { segmentLength, shotTaught, teachStatus } from "../../cycle/vis";
-import type { DetectParams, JudgeParams, Polarity, Recipe, RecipeDoc, ShotLimits, ShotSpec } from "../../cycle/types";
+import { segmentLength, shotTaught } from "../../cycle/vis";
+import type { DetectParams, JudgeParams, Polarity, Recipe, RecipeDoc, ShotLimits } from "../../cycle/types";
 
 interface Props {
-  collectedShots?: boolean;
   initial: RecipeDoc;
   originalId: string | null;
-  /** 相机组里的相机：配方按编号引用 */
-  cameras: { id: string; name: string }[];
-  onSaved: (id: string) => void;
   onDraftChange?: (doc: RecipeDoc) => void;
-  saveCandidate?: (doc: RecipeDoc) => Promise<boolean>;
+  saveCandidate: (doc: RecipeDoc) => Promise<boolean>;
 }
 
 const paramFields: [keyof JudgeParams, string][] = [
@@ -130,164 +126,7 @@ function LimitsEditor({ prefix, value, onChange }: { prefix: string; value: Shot
   );
 }
 
-/** 新拍照点的编号：P1、P2… 里第一个没用过的。 */
-export function nextShotId(shots: ShotSpec[]) {
-  const used = new Set(shots.map((s) => s.id));
-  let n = 1;
-  while (used.has(`P${n}`)) n++;
-  return `P${n}`;
-}
-
-/** 新加的拍照点：Pose 同编号，相机与胶条沿用上一行，中线留空（到单帧示教里点出）。 */
-export function newShot(shots: ShotSpec[], cameras: { id: string }[]): ShotSpec {
-  const id = nextShotId(shots), last = shots.at(-1);
-  return { id, poseId: id, camera: last?.camera ?? cameras[0]?.id ?? "", view: last?.view ?? 1, bead: last?.bead ?? "J1", skip: false, path: [] };
-}
-
-/** 后端不认 null：没单独设的可选字段整项去掉。 */
-function tidy(shot: ShotSpec): ShotSpec {
-  const next = { ...shot };
-  if (!next.calib) delete next.calib;
-  if (next.detect === undefined) delete next.detect;
-  if (next.limits === undefined) delete next.limits;
-  if (next.mmPerPx === undefined) delete next.mmPerPx;
-  return next;
-}
-
-function ShotTable({ shots, cameras, detect, limits, onChange }: {
-  shots: ShotSpec[]; cameras: { id: string; name: string }[]; detect: DetectParams; limits: ShotLimits; onChange: (shots: ShotSpec[]) => void;
-}) {
-  const [open, setOpen] = useState<Set<number>>(new Set());
-  const edit = (k: number, patch: Partial<ShotSpec>) => onChange(shots.map((s, i) => (i === k ? tidy({ ...s, ...patch }) : s)));
-  const move = (k: number, to: number) => {
-    const next = [...shots];
-    [next[k], next[to]] = [next[to], next[k]];
-    setOpen(new Set());
-    onChange(next);
-  };
-  const toggle = (k: number) => setOpen((prev) => {
-    const next = new Set(prev);
-    if (next.has(k)) next.delete(k);
-    else next.add(k);
-    return next;
-  });
-  return (
-    <>
-      <div className="table-wrap">
-        <table className="table rcp-shots">
-          <thead>
-            <tr>
-              <th>序号</th>
-              <th>编号</th>
-              <th>Pose</th>
-              <th>相机</th>
-              <th>视角</th>
-              <th>胶条</th>
-              <th>标定引用</th>
-              <th>不检</th>
-              <th>示教状态</th>
-              <th>单独设置</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {shots.map((s, k) => {
-              const row = `拍照点 ${k + 1}`;
-              const custom = s.detect !== undefined || s.limits !== undefined;
-              const expanded = open.has(k);
-              return (
-                <Fragment key={k}>
-                  <tr>
-                    <td className="mono muted">{k + 1}</td>
-                    <td>
-                      <input aria-label={`${row} · 编号`} className="input mono rcp-shot-id" value={s.id} onChange={(e) => edit(k, { id: e.target.value.trim() })} />
-                    </td>
-                    <td>
-                      <input aria-label={`${row} · Pose`} className="input mono rcp-shot-id" value={s.poseId} onChange={(e) => edit(k, { poseId: e.target.value })} />
-                    </td>
-                    <td>
-                      <select aria-label={`${row} · 相机`} className="input" value={s.camera} onChange={(e) => edit(k, { camera: e.target.value })}>
-                        {!cameras.some((c) => c.id === s.camera) && <option value={s.camera}>{s.camera}（不在相机组里）</option>}
-                        {cameras.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name} · {c.id}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td>
-                      <select aria-label={`${row} · 视角`} className="input" value={s.view} onChange={(e) => edit(k, { view: Number(e.target.value), path: [], mmPerPx: undefined })}>
-                        {[1, 2, 3].map(view => <option key={view} value={view}>视角 {view}</option>)}
-                      </select>
-                    </td>
-                    <td>
-                      <input aria-label={`${row} · 胶条`} className="input mono rcp-shot-bead" value={s.bead} onChange={(e) => edit(k, { bead: e.target.value })} />
-                    </td>
-                    <td>
-                      <input aria-label={`${row} · 标定引用`} className="input mono rcp-shot-id" placeholder={s.camera} value={s.calib ?? ""} onChange={(e) => edit(k, { calib: e.target.value.trim() || undefined })} />
-                    </td>
-                    <td className="center">
-                      <input aria-label={`${row} · 不检`} type="checkbox" checked={s.skip} onChange={(e) => edit(k, { skip: e.target.checked })} />
-                    </td>
-                    <td className={`rcp-teach ${s.skip ? "muted" : shotTaught(s) ? "c-ok" : "c-warn"}`}>{teachStatus(s)}</td>
-                    <td>
-                      <button type="button" className="btn small" aria-label={`${row} · 单独设置`} aria-expanded={expanded} onClick={() => toggle(k)}>
-                        {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                        {custom ? "已单独设" : "用默认"}
-                      </button>
-                    </td>
-                    <td>
-                      <span className="rcp-row-actions">
-                        <button type="button" className="icon-btn" aria-label={`上移${row}`} disabled={k === 0} onClick={() => move(k, k - 1)}>
-                          <ArrowUp size={14} />
-                        </button>
-                        <button type="button" className="icon-btn" aria-label={`下移${row}`} disabled={k === shots.length - 1} onClick={() => move(k, k + 1)}>
-                          <ArrowDown size={14} />
-                        </button>
-                        <button type="button" className="icon-btn" aria-label={`删除${row}`} onClick={() => { setOpen(new Set()); onChange(shots.filter((_, i) => i !== k)); }}>
-                          <Trash2 size={14} />
-                        </button>
-                      </span>
-                    </td>
-                  </tr>
-                  {expanded && (
-                    <tr className="rcp-override">
-                      <td />
-                      <td colSpan={10}>
-                        <div className="rcp-override-body" role="group" aria-label={`${row} · 单独设置`}>
-                          <label className="check">
-                            <input type="checkbox" checked={s.detect !== undefined} onChange={(e) => edit(k, { detect: e.target.checked ? structuredClone(detect) : undefined })} />
-                            单独设检测参数
-                          </label>
-                          {s.detect && <DetectEditor prefix={`${s.id} · `} value={s.detect} onChange={(next) => edit(k, { detect: next })} />}
-                          <label className="check">
-                            <input type="checkbox" checked={s.limits !== undefined} onChange={(e) => edit(k, { limits: e.target.checked ? structuredClone(limits) : undefined })} />
-                            单独设判定限值
-                          </label>
-                          {s.limits && <LimitsEditor prefix={`${s.id} · `} value={s.limits} onChange={(next) => edit(k, { limits: next })} />}
-                          <p className="muted hint">不勾选时用上面的默认值；取消勾选即删除这个拍照点的单独设置。</p>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </Fragment>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <div className="rcp-actions">
-        <button type="button" className="btn small" disabled={shots.length >= 64} onClick={() => onChange([...shots, newShot(shots, cameras)])}>
-          <Plus size={14} />
-          添加拍照点
-        </button>
-        <span className="muted hint">按拍照顺序排列。视角 1–3 对应同次触发的图像，切换视角后需要重新点中线。中线在“单帧示教”里于冻结原图上点出；未示教的拍照点可以保存，但不能开工。不检的拍照点只要求这一帧到达。标定引用留空用该相机的工位标定；同一 Pose 可以触发两台相机。</span>
-      </div>
-    </>
-  );
-}
-
-export default function RecipeEditor({ collectedShots = false, initial, originalId, cameras, onSaved, onDraftChange, saveCandidate }: Props) {
+export default function RecipeEditor({ initial, originalId, onDraftChange, saveCandidate }: Props) {
   const [doc, setDoc] = useState<RecipeDoc>(initial);
   const [preview, setPreview] = useState<Recipe | null>(null);
   const [previewDoc, setPreviewDoc] = useState<RecipeDoc | null>(null);
@@ -321,15 +160,8 @@ export default function RecipeEditor({ collectedShots = false, initial, original
     if (pendingSave.current || previewDoc !== doc || previewError) return;
     pendingSave.current = true; setSaving(true); setNotice(null);
     try {
-      if (saveCandidate) {
-        const saved = await saveCandidate(doc);
-        if (mounted.current) setNotice(saved ? { ok: true, text: "候选配置已保存，生产版本保持不变" } : { ok: false, text: "候选配置未保存，请修正错误后重试" });
-        return;
-      }
-      const r = await recipeApi.save(doc, originalId);
-      if (!mounted.current) return;
-      setNotice({ ok: true, text: `已保存 ${r.id} v${r.version}` });
-      onSaved(r.id);
+      const saved = await saveCandidate(doc);
+      if (mounted.current) setNotice(saved ? { ok: true, text: "候选配置已保存，生产版本保持不变" } : { ok: false, text: "候选配置未保存，请修正错误后重试" });
     } catch (e) {
       if (mounted.current) setNotice({ ok: false, text: String(e) });
     } finally { pendingSave.current = false; if (mounted.current) setSaving(false); }
@@ -354,7 +186,7 @@ export default function RecipeEditor({ collectedShots = false, initial, original
           </h3>
           <button className="btn primary" onClick={() => void save()} disabled={saving || !!previewError || previewDoc !== doc}>
             <Save size={15} />
-            {saving ? "保存中…" : saveCandidate ? "保存候选配置" : "保存"}
+            {saving ? "保存中…" : "保存候选配置"}
           </button>
         </div>
         {notice && <div className={`notice ${notice.ok ? "ok" : "error"}`}>{notice.text}</div>}
@@ -363,7 +195,7 @@ export default function RecipeEditor({ collectedShots = false, initial, original
           <div className="form-grid">
             <label className="field">
               <span>配方编号</span>
-              <input className="input mono" value={doc.id} disabled={!!saveCandidate} onChange={(e) => set("id", e.target.value.trim())} />
+              <input className="input mono" value={doc.id} readOnly disabled />
             </label>
             <label className="field">
               <span>名称</span>
@@ -395,7 +227,7 @@ export default function RecipeEditor({ collectedShots = false, initial, original
         </Section>
 
         <Section title="飞拍拍照点">
-          {collectedShots ? <p className="muted">{doc.shots.length} 个拍照点由整圈实际采集生成；选图和不检测设置在单帧示教中调整。</p> : <ShotTable shots={doc.shots} cameras={cameras} detect={doc.detect} limits={doc.limits} onChange={(shots) => set("shots", shots)} />}
+          <p className="muted">{doc.shots.length} 个拍照点由整圈实际采集生成；选图和不检测设置在单帧示教中调整。</p>
         </Section>
         </fieldset>
       </div>

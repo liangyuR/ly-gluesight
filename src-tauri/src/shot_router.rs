@@ -229,8 +229,8 @@ impl Policy {
         Self { trusted: vec![CounterSource::ChunkTrigger], counter_after_open }
     }
 
-    /// 开发演示（Modbus / MC / 模拟）：模拟、回放的计数也认。
-    pub fn development(counter_after_open: Option<u64>) -> Self {
+    /// 离线产线（进程内 S7 服务）：模拟、回放相机的计数也认；接真实 PLC 时不用。
+    pub fn offline(counter_after_open: Option<u64>) -> Self {
         Self { trusted: vec![CounterSource::ChunkTrigger, CounterSource::Synthetic], counter_after_open }
     }
 
@@ -592,7 +592,7 @@ impl ShotRouter {
 
     /// 本件结束：推算各相机下一件的基线下限，记进计数账，并返回给日志。
     /// `issued`：PLC 报的本件各相机已发触发数（S7 `cameraNTriggers`，按相机编号）。没有时按计划数假定
-    /// （模拟节拍按计划触发，丢在传输里的帧也占了计数）；见到的更高计数优先。
+    /// （离线产线按计划触发，丢在传输里的帧也占了计数）；见到的更高计数优先。
     pub fn close(&self, ledgers: &mut Ledgers, issued: Option<&[(&str, u64)]>) -> Vec<Floor> {
         let floors: Vec<Floor> = self
             .cams
@@ -723,8 +723,8 @@ mod tests {
         assert_eq!(untrusted.fault(), Some(fault::DEVICE_LOST));
         let synthetic = ArmCam { source: Some(Synthetic), ..camera() };
         assert!(matches!(ShotRouter::arm(&plan(), &Ledgers::default(), &Policy::production(Some(0)), &[synthetic.clone()]), Err(Refusal::Untrusted { .. })));
-        let mut development = ShotRouter::arm(&plan(), &Ledgers::default(), &Policy::development(None), &[synthetic]).unwrap();
-        assert_eq!(development.route(&FrameMeta { source: Synthetic, ..frame(1) }), Route::Bound { shot: 0, ordinal: 1 });
+        let mut offline = ShotRouter::arm(&plan(), &Ledgers::default(), &Policy::offline(None), &[synthetic]).unwrap();
+        assert_eq!(offline.route(&FrameMeta { source: Synthetic, ..frame(1) }), Route::Bound { shot: 0, ordinal: 1 });
     }
 
     #[test]

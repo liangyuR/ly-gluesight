@@ -1,4 +1,4 @@
-export type ProtocolKind = "modbusTcp" | "s7" | "mc" | "simulator";
+export type ProtocolKind = "s7";
 export type DataType = "bool" | "u8" | "i8" | "u16" | "i16" | "u32" | "i32" | "f32" | "f64";
 export type WordOrder = "ABCD" | "CDAB" | "BADC" | "DCBA";
 export type Access = "read" | "readWrite";
@@ -18,10 +18,6 @@ export interface PlcPoint {
   description: string;
 }
 
-export interface ModbusOptions {
-  unitId: number;
-}
-
 export interface S7Options {
   rack: number;
   slot: number;
@@ -31,14 +27,6 @@ export interface S7Options {
   pduSize: number;
 }
 
-export interface McOptions {
-  networkNo: number;
-  pcNo: number;
-  moduleIo: number;
-  moduleStation: number;
-  xyOctal: boolean;
-}
-
 export interface ConnectionConfig {
   protocol: ProtocolKind;
   host: string;
@@ -46,9 +34,7 @@ export interface ConnectionConfig {
   timeoutMs: number;
   pollIntervalMs: number;
   reconnectIntervalMs: number;
-  modbus: ModbusOptions;
   s7: S7Options;
-  mc: McOptions;
 }
 
 export interface HeartbeatConfig {

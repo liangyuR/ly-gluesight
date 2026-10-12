@@ -1,12 +1,18 @@
 async (page) => {
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
   const records = await read("records_list");
-  const config = await read("plc_get_config");
+  const plc = await read("plc_get_status"), offline = await read("offline_status");
   const cameras = await read("camera_rig_config");
-  if (!records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || config.connection.protocol !== "simulator" || cameras.some(c => c.source !== "sim")) throw new Error("P0 offline guard rejected the restarted app");
-  await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "PLC 通讯", exact: true }).click();
-  if ((await read("plc_get_status")).state !== "connected") await page.getByRole("button", { name: "连接", exact: true }).click();
-  await page.getByRole("button", { name: "断开", exact: true }).waitFor();
+  if (!records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || (plc.state === "connected" && !offline.enabled) || cameras.some(c => c.source !== "sim")) throw new Error("P0 offline guard rejected the restarted app");
+  if (!(await read("offline_status")).enabled) {
+    await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "设备与采集", exact: true }).click();
+    await page.locator("details.panel > summary").filter({ hasText: "离线产线调试" }).click();
+    await page.getByRole("button", { name: "启用离线模式", exact: true }).click();
+  }
+  for (let attempt = 0; attempt < 100 && (await read("plc_get_status")).state !== "connected"; attempt++) await page.waitForTimeout(100);
+  if (!(await read("offline_status")).enabled || (await read("plc_get_status")).state !== "connected") throw new Error("Offline S7 line did not connect");
+  await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "在线检测", exact: true }).click();
+  if ((await read("cycle_snapshot")).phase === "FAULT") await page.getByRole("button", { name: "复位故障", exact: true }).click();
   const status = await read("plc_get_status");
   if (status.state !== "connected") throw new Error(JSON.stringify(status));
   let snapshot;

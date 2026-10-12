@@ -4,7 +4,8 @@ export type FrameStatus = "waiting" | "measuring" | "done" | "locateFailed" | "e
 export type Verdict = "OK" | "OK_WITH_EXCURSION" | "NG_POSITION" | "NG_WIDTH" | "NG_ABSOLUTE" | "NG_GAP" | "ERR_INSPECT";
 export type TriggerMode = "fly" | "stop";
 export type ProductSource = "plc" | "manual";
-export type Scenario = "normal" | "excursion" | "gap" | "lostFrame" | "locateFail" | "countMismatch" | "random";
+export type Scenario = "normal" | "excursion" | "gap" | "lostFrame" | "locateFail" | "countMismatch" | "motionTimeout" | "ackMismatch" | "random";
+export type OfflineFault = "disconnect" | "heartbeatStop" | "heartbeatResume" | "rejectWrite" | "rejectRead" | "delay" | "clear";
 export type RecordMode = "off" | "failed" | "all";
 
 export interface JudgeParams {
@@ -279,11 +280,14 @@ export interface CycleSettings {
   recordMaxGb: number;
 }
 
-export interface SimStatus {
+export interface OfflineStatus {
+  enabled: boolean;
+  port: number | null;
   running: boolean;
   continuous: boolean;
   parts: number;
   message: string;
+  heartbeatStopped: boolean;
 }
 
 /** 测量点显示状态 */

@@ -24,7 +24,7 @@
 | 追溯 | 历史页、单件追溯、离线重判 | 完成 |
 | 配方 | `recipe.rs` | **写死**两个演示配方（`builtin()`） |
 | 示教 | — | **缺**：真实相机需要的 `vision.json`（模板 / 锚点 / 测量点）没有生成途径 |
-| 配方页 | `RecipePage.tsx` | **占位**，不连后端 |
+| 配方页 | `RecipePage.tsx` | 当时为占位；现已删除，配方经工作台编辑、验证与发布 |
 
 ### 1.2 lyFlow 历史依赖
 
@@ -176,7 +176,7 @@ PLC 握手时序、faultCode 表（91–99）、`judge` 的断胶合并与局部
 | M1 | 相机组（最多 8 台），模拟 / 海康 / 回放三种驱动，触发采集与连续采集；整帧缓冲池；`camera.json` 自动迁移成 `cameras.json`。图像源页按相机分标签，可增删 | `camera.rs`、`frame.rs`、`CameraPage.tsx` |
 | M2 | 实时检测页：多台相机时主视图与各相机窗 2×2 等大；主视图画胶路、胶嘴位置与此刻的可测窗口；相机窗叠加这一帧测到的点；随动多一条胶宽展开曲线 | `InspectPage.tsx`、`CameraTile.tsx`、`TrajectoryMap.tsx`、`UnrolledCurve.tsx` |
 | M3 | 随动的帧 → 点映射：胶嘴定位（名义速度推算 / PLC 进度寄存器）、按"能看到的点最多"选相机、按测量步长抽帧并预判出窗、测不成与丢帧的点在窗口内补测；随动模拟相机按胶嘴位置合成画面 | `follow.rs`、`simfollow.rs`、`cycle.rs` |
-| M4 | 配方落盘（每个一个 JSON，内容变了版本 +1），配方页编辑胶路（圆角矩形 / 折线倒圆，CSV / DXF 导入）、分段限值（位置 + 胶宽）、飞拍拍照点与随动参数，实时预览；飞拍示教（取帧 → 对齐名义测量点 → 框模板）；随动标定（点胶嘴、点胶条方向或自动找方向、两点量比例、试测）；工位标定按相机分文件 | `recipe.rs`、`recipe_api.rs`、`teach.rs`、`RecipePage.tsx`、`FollowCalibPanel.tsx` |
+| M4 | 配方落盘（每个一个 JSON，内容变了版本 +1），配方页编辑胶路（圆角矩形 / 折线倒圆，CSV / DXF 导入）、分段限值（位置 + 胶宽）、飞拍拍照点与随动参数，实时预览；飞拍示教（取帧 → 对齐名义测量点 → 框模板）；随动标定（点胶嘴、点胶条方向或自动找方向、两点量比例、试测）；工位标定按相机分文件 | `recipe.rs`、`recipe_api.rs`、`teach.rs`、`RecipePage.tsx`（已删除）、`FollowCalibPanel.tsx` |
 | M5 | 测量后端统一成 `Measurer` 接口；随动用本程序卡尺（沿法向找一对反极性边缘，得偏移与胶宽）；飞拍图像测量仍走 lyFlow；判定加胶宽（`NG_WIDTH`，PLC 14）；点表 BLOB 升到格式 2（带胶宽），旧格式照读 | `measure.rs`、`caliper.rs`、`judge.rs`、`store.rs` |
 
 ### 8.2 与计划的出入

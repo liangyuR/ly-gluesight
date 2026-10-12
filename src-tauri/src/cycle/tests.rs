@@ -41,10 +41,10 @@ fn part(cycle_id: &str, ledgers: &Ledgers) -> Part {
         cam: cam as u8, camera: id.clone(), session: cam as u64 + 1,
         source: Some(CounterSource::Synthetic), counter_after_open: None,
     }).collect();
-    let router = ShotRouter::arm(&Plan::from_shots(&recipe.shots), ledgers, &Policy::development(None), &identities).unwrap();
+    let router = ShotRouter::arm(&Plan::from_shots(&recipe.shots), ledgers, &Policy::offline(None), &identities).unwrap();
     Part {
         run_id: 1, cycle_id: cycle_id.into(), bundle_id: Some("release-1".into()), production: None, sn: 88,
-        scenario: Scenario::Normal, frames: recipe.shots.iter().map(|shot| FrameView {
+        scenario: crate::offline::Scenario::Normal, frames: recipe.shots.iter().map(|shot| FrameView {
             shot_id: shot.id.clone(), camera: shot.camera.clone(), view: shot.view, ..FrameView::waiting()
         }).collect(), measuring_since: vec![None; recipe.shot_count()],
         table: vec![PointState::Pending; recipe.point_count()], received: 0, extra: 0, queue: 0,
@@ -324,4 +324,19 @@ pub(crate) fn judge_callback_channel(
     p.end_at = Some(end);
     p.expire(end + Duration::from_secs(3), Duration::from_secs(1), Duration::from_secs(2));
     (p.judgement(), p.frames)
+}
+
+/// 离线产线按触发顺序交付的帧（true 为传输中丢失），走生产节拍的帧路由与判定。
+pub(crate) fn judge_delivered(lost: &[bool]) -> Judgement {
+    let mut p = part("offline-line", &Ledgers::default());
+    for (index, lost) in lost.iter().enumerate() {
+        if *lost { continue; }
+        if let Some(Route::Bound { shot, .. }) = p.receive_frame(&frame(0, index as u64 + 1)) {
+            p.apply_result(measured(&p, shot)).unwrap();
+        }
+    }
+    let end = Instant::now();
+    p.end_at = Some(end);
+    p.expire(end + Duration::from_secs(3), Duration::from_secs(1), Duration::from_secs(2));
+    p.judgement()
 }
