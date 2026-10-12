@@ -18,7 +18,7 @@ use crate::frame::{CounterSource, Frame, FrameImage, FramePool};
 use crate::mvs::{self, DeviceSummary, FrameInfo};
 use crate::recipe::{legacy_camera_id, valid_camera_id, Recipe};
 use crate::replay;
-use crate::sim::Scenario;
+use crate::offline::Scenario;
 use crate::simimage::{self, PoseError};
 
 mod delivery;

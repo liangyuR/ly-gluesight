@@ -38,9 +38,6 @@ impl PlcHost {
             }
             PlcEvent::Edge(e) => {
                 let _ = handle.emit("plc://edge", &e);
-                if let Some(cycle) = handle.try_state::<CycleHost>() {
-                    let _ = cycle.tx.send(Input::Edge(e));
-                }
             }
         });
         let logbook = Arc::new(Logbook::open(&log_path, sink.clone(), config.log_retention_days)?);
@@ -75,11 +72,11 @@ pub fn plc_get_config(plc: State<'_, PlcHost>) -> PlcConfig {
 pub async fn plc_save_config(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>, config: PlcConfig) -> Result<(), String> {
     let _gate = cycle.plc_gate.lock().await;
     require_idle(&cycle)?;
+    if crate::offline::enabled(&app) { return Err("离线模式使用临时 PLC 配置，先停用离线模式再修改".into()); }
     validate_config(&config)?;
     config.save(&plc.config_path)?;
     let r = plc.engine.apply_config(config).await;
     inspection::invalidate_tags();
-    // 开工检查看 PLC 是不是模拟器
     let _ = cycle.tx.send(Input::Refresh);
     // 配置保存不一定改变连接状态，配置使用方不能只等 disconnected/connected。
     if r.is_ok() {
@@ -129,9 +126,10 @@ fn require_idle(cycle: &CycleHost) -> Result<(), String> {
     if cycle.busy() { Err("PLC 仍有在途事务，请完成握手或处理故障并复位后再修改".into()) } else { Ok(()) }
 }
 
-fn validate_config(config: &PlcConfig) -> Result<(), String> {
+pub(crate) fn validate_config(config: &PlcConfig) -> Result<(), String> {
+    if config.connection.protocol != ProtocolKind::S7 { return Err("只支持西门子 S7 协议".into()); }
     config.validate()?;
-    if config.connection.protocol == ProtocolKind::S7 { Contract::validate(config)?; }
+    Contract::validate(config)?;
     Ok(())
 }
 

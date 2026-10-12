@@ -80,20 +80,6 @@ impl Machine {
             Err(error) => self.enter_fault(error),
         }
     }
-
-    pub(super) async fn capture_edge(&mut self, edge: &EdgeEvent) {
-        let capture = host(&self.app).camera.recipe_capture().clone();
-        if edge.tags.iter().any(|tag| tag == tag::PART_START) {
-            if let Some(version) = read_tag_u32(plc(&self.app), tag::PLAN_VERSION).filter(|v| *v > 0) {
-                if let Err(error) = capture.set_plan_version(version) { capture.fail(error); return; }
-            }
-            let result = read_tag_u32(plc(&self.app), tag::SHOT_COUNT).ok_or_else(|| "PLC 缺少计划拍照数量".to_owned())
-                .and_then(|count| capture.plc_started(count));
-            if let Err(error) = result { capture.fail(error); }
-        } else if edge.tags.iter().any(|tag| tag == tag::PART_END) {
-            self.end_capture();
-        }
-    }
 }
 
 fn capture_device_id(configs: &[crate::camera::CameraConfig], selected_id: &str) -> Result<String, String> {

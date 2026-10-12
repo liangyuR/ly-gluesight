@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use ly_plc::{now_ms, EdgeEvent, LinkState, PlcEngine, ProtocolKind};
+use ly_plc::{now_ms, LinkState, PlcEngine};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedReceiver, UnboundedSender};
 
@@ -16,7 +16,7 @@ use crate::camera::{Acquisition, CameraRig, CameraSource, FRAME_QUEUE};
 use crate::frame::Frame;
 use crate::history;
 use crate::handshake::Request;
-use crate::inspection::{read_tag_u32, tag, tag_is_on, write_tag};
+use crate::inspection::{read_tag_u32, tag};
 use crate::judge::{self, fault, Judgement, PointState, Verdict};
 use crate::measure::{self, Job, Measured, WorkerHealth};
 use crate::plc::PlcHost;
@@ -25,7 +25,7 @@ use crate::recipe::{Recipe, RecipeStore, TriggerMode};
 use crate::recorder::{Recorder, Recording};
 use crate::settings::{CycleSettings, ProductSource};
 use crate::shot_router::{ArmCam, Floor, FrameMeta, Ledgers, Plan, Policy, Route, ShotRouter};
-use crate::sim::{Scenario, SimCtl};
+use crate::offline::Scenario;
 use crate::audit::{Audit, RecordedPart};
 use crate::store::{PartShot, PlcDelivery, PlcDeliveryState, Store, VerdictCounts};
 
@@ -38,7 +38,6 @@ pub(crate) fn s7_ack_delivery(had_ack: bool, session: &PlcSession) -> Option<Plc
 }
 
 pub enum Input {
-    Edge(EdgeEvent),
     Measured(Measured),
     Reset,
     Refresh,
@@ -269,7 +268,6 @@ pub struct CycleHost {
     pub tx: UnboundedSender<Input>,
     pub plc_gate: tokio::sync::Mutex<()>,
     pub camera: CameraRig,
-    pub sim: SimCtl,
     pub recipes: RecipeStore,
     pub recorder: Recorder,
     pub cycle_ids: crate::cycle_ids::CycleIds,
@@ -318,7 +316,6 @@ impl CycleHost {
             camera,
             tx,
             plc_gate: tokio::sync::Mutex::new(()),
-            sim: SimCtl::default(),
             recipes: RecipeStore::open_with_floors(data.join("recipes"), &app.state::<crate::store::Store>().recipe_version_floors()?)?,
             recorder: Recorder::guarded(records, Some(Arc::new(move |outcome| {
                 if let Err(error) = record_audit.recording(outcome) { eprintln!("录制审计持久化失败：{error}"); }
@@ -449,10 +446,6 @@ pub fn log(app: &AppHandle, level: &'static str, ev: impl Into<String>, msg: imp
         }
     }
     let _ = app.emit("cycle://log", line);
-}
-
-async fn put(app: &AppHandle, t: &str, v: Value) -> Result<(), String> {
-    write_tag(plc(app), t, v).await
 }
 
 struct Part {
@@ -652,9 +645,9 @@ fn missing_recipe(id: &str) -> String {
     format!("选中的配方 {id} 不存在或没能加载（见配方页）")
 }
 
-/// PLC 用模拟器时没有实物：海康相机配模拟测量可以用来试触发、调曝光。
+/// 离线产线没有实物：海康相机配模拟测量可以用来试触发、调曝光。
 pub fn real_parts(app: &AppHandle) -> bool {
-    plc(app).config().connection.protocol != ProtocolKind::Simulator
+    !crate::offline::enabled(app)
 }
 
 /// 配方用的相机此刻在相机组里的序号。相机不在相机组里、不是触发采集、
@@ -709,7 +702,6 @@ struct Machine {
     part: Option<Part>,
     active_recipe: Option<Arc<Recipe>>,
     fault: Option<String>,
-    fault_needs_reset: bool,
     done_at: Option<Instant>,
     ack_alarmed: bool,
     result: Option<ResultView>,
@@ -728,8 +720,6 @@ struct Machine {
     dirty: bool,
     published: Instant,
     dropped_seen: u64,
-    /// 通讯可能在两个 tick 之间完成断开/重连，仍需向新连接同步输出信号。
-    plc_connected_since: Option<i64>,
     s7: PlcSession,
     s7_reset_requested: bool,
     run_id: u64,
@@ -770,7 +760,6 @@ impl Machine {
             part: None,
             active_recipe: None,
             fault: Some("PLC 未连接".into()),
-            fault_needs_reset: false,
             done_at: None,
             ack_alarmed: false,
             result: None,
@@ -787,7 +776,6 @@ impl Machine {
             dirty: true,
             published: Instant::now(),
             dropped_seen: 0,
-            plc_connected_since: None,
             s7,
             s7_reset_requested: false,
             run_id: 0,
@@ -797,12 +785,10 @@ impl Machine {
 
     fn set_phase(&mut self, phase: Phase) {
         self.phase = phase;
-        host(&self.app).busy.store(!matches!(phase, Phase::Idle | Phase::Fault) || (self.is_s7() && self.s7.pending()), Ordering::SeqCst);
+        host(&self.app).busy.store(!matches!(phase, Phase::Idle | Phase::Fault) || self.s7.pending(), Ordering::SeqCst);
         self.since = now_ms();
         self.dirty = true;
     }
-
-    fn is_s7(&self) -> bool { plc(&self.app).config().connection.protocol == ProtocolKind::S7 }
 
     fn alarm(&mut self, msg: String) {
         if !self.alarms.contains(&msg) {
@@ -847,12 +833,6 @@ impl Machine {
                 Required { rig_gen, cams: Ok(Vec::new()), watch, warnings }
             }
         }
-    }
-
-    /// 空闲、故障时的相机检查：没被配方用到的备用相机不拦着开工。
-    fn check_idle_cams(&mut self) -> Result<(), String> {
-        host(&self.app).audit.ready()?;
-        self.check_idle_devices()
     }
 
     fn check_idle_devices(&mut self) -> Result<(), String> {
@@ -912,7 +892,7 @@ impl Machine {
             measurement_workers: self.workers.snapshot(),
             phase: self.phase,
             plc_locked: host.busy(),
-            plc_handshake: self.is_s7().then(|| self.s7.view()),
+            plc_handshake: Some(self.s7.view()),
             since: self.since,
             fault: self.fault.clone(),
             product_source: host.settings().product_source,
@@ -931,59 +911,13 @@ impl Machine {
     async fn on_input(&mut self, input: Input) {
         self.dirty = true;
         match input {
-            Input::Edge(e) if e.rising && !self.is_s7() => self.on_edge(e).await,
-            Input::Edge(_) => {}
             Input::Measured(m) => self.on_measured(m),
-            Input::Reset if self.is_s7() => self.s7_reset_requested = true,
-            Input::Reset => self.reset().await,
+            Input::Reset => self.s7_reset_requested = true,
             Input::Refresh => self.required = None,
         }
     }
 
-    async fn on_edge(&mut self, e: EdgeEvent) {
-        let has = |t: &str| e.tags.iter().any(|x| x == t);
-        if host(&self.app).camera.recipe_capture().active() && !self.is_s7() {
-            self.capture_edge(&e).await;
-            return;
-        }
-        if has(tag::PART_START) {
-            if self.phase == Phase::Idle {
-                self.start_part(None).await;
-            } else {
-                log(&self.app, "warn", "partStart↑", format!("当前状态 {:?}，忽略", self.phase));
-            }
-        } else if has(tag::PART_END) {
-            if self.phase == Phase::Acquire {
-                if let Some(p) = self.part.as_mut() {
-                    p.end_at = Some(Instant::now());
-                }
-                self.set_phase(Phase::Drain);
-                log(&self.app, "info", "partEnd↑", "运动结束，等待剩余帧");
-            }
-        } else if has(tag::RESULT_ACK) {
-            if self.phase == Phase::Report {
-                if let Err(error) = self.deliver_durable(PlcDeliveryState::Acknowledged, Some("PLC 已确认结果（开发协议）".into())).await {
-                    return self.enter_fault(format!("PLC 确认审计未可靠保存，保留完成信号：{error}"));
-                }
-                let a = self.app.clone();
-                let r = async {
-                    put(&a, tag::DONE, json!(false)).await?;
-                    put(&a, tag::BUSY, json!(false)).await
-                }
-                .await;
-                if let Err(e) = r {
-                    return self.enter_fault(format!("释放握手写入失败：{e}"));
-                }
-                self.alarms.retain(|m| !m.starts_with("PLC 未确认"));
-                self.set_phase(Phase::Release);
-                log(&self.app, "info", "resultAck↑", "PLC 已确认 · done↓ busy↓");
-            }
-        } else if has(tag::FAULT_RESET) {
-            self.reset().await;
-        }
-    }
-
-    async fn start_part(&mut self, request: Option<Request>) {
+    async fn start_part(&mut self, request: Request) {
         if host(&self.app).camera.recipe_capture().active() || self.s7.capture_id().is_some() { return; }
         let started = Instant::now();
         let settings = host(&self.app).settings();
@@ -1007,9 +941,7 @@ impl Machine {
         budget.mark("entry-readiness-workspace");
         let app = self.app.clone();
         let engine = plc(&app);
-        let sn = request.as_ref().map_or_else(|| read_tag_u32(engine, tag::PART_SN).unwrap_or(0), |r| r.sn);
-        let code = request.as_ref().map_or_else(|| read_tag_u32(engine, tag::PRODUCT_CODE).unwrap_or(0), |r| r.product_code as u32);
-        let count = request.as_ref().map_or_else(|| read_tag_u32(engine, tag::SHOT_COUNT).unwrap_or(0) as usize, |r| r.shot_count as usize);
+        let (sn, code, count) = (request.sn, request.product_code as u32, request.shot_count as usize);
         log(&app, "info", "partStart↑", format!("SN={sn} 产品代码={code} N={count}"));
 
         let host = host(&app);
@@ -1018,10 +950,8 @@ impl Machine {
             Err(reason) => return self.refuse(sn, None, fault::PROCESS_TIMEOUT, reason).await,
         };
         self.current_cycle_id = Some(cycle_id.clone());
-        if request.is_some() {
-            if let Err(error) = self.s7.bind_cycle_id(&cycle_id) {
-                return self.refuse(sn, None, fault::PROCESS_TIMEOUT, format!("S7 事务无法绑定工件身份：{error}")).await;
-            }
+        if let Err(error) = self.s7.bind_cycle_id(&cycle_id) {
+            return self.refuse(sn, None, fault::PROCESS_TIMEOUT, format!("S7 事务无法绑定工件身份：{error}")).await;
         }
         if !self.workers.can_arm() {
             return self.refuse(sn, None, fault::PROCESS_TIMEOUT, "测量工作线程全部超时且尚未返回，拒绝布防".into()).await;
@@ -1054,13 +984,11 @@ impl Machine {
             };
         }
         let n = recipe.shot_count();
-        let plan = if request.is_some() {
-            match crate::plc::recipe_plan(host, &recipe).and_then(|plan| self.s7.validate_plan(&plan).map(|_| plan)) {
-                Ok(plan) if recipe.product_code as u32 == code => Some(plan),
-                Ok(_) => return self.refuse(sn, id, fault::NO_RECIPE, "PLC 产品代码与所选配方不一致".into()).await,
-                Err(reason) => return self.refuse(sn, id, fault::PLAN_MISMATCH, reason).await,
-            }
-        } else { None };
+        let plan = match crate::plc::recipe_plan(host, &recipe).and_then(|plan| self.s7.validate_plan(&plan).map(|_| plan)) {
+            Ok(plan) if recipe.product_code as u32 == code => plan,
+            Ok(_) => return self.refuse(sn, id, fault::NO_RECIPE, "PLC 产品代码与所选配方不一致".into()).await,
+            Err(reason) => return self.refuse(sn, id, fault::PLAN_MISMATCH, reason).await,
+        };
         if count != n {
             return self.refuse(sn, id, fault::SHOT_COUNT_MISMATCH, format!("PLC 下发拍照点数 {count}，配方 {} 为 {n}", recipe.id)).await;
         }
@@ -1104,7 +1032,7 @@ impl Machine {
             if let Some(ledger) = observed { self.ledgers.merge(cam, &ledger); }
             identities.push(identity);
         }
-        let policy = if self.is_s7() { Policy::production(None) } else { Policy::development(None) };
+        let policy = if real_parts(&app) { Policy::production(None) } else { Policy::offline(None) };
         let router = match ShotRouter::arm(&Plan::from_shots(&recipe.shots), &self.ledgers, &policy, &identities) {
             Ok(router) => router,
             Err(error) => return self.refuse(sn, id, error.fault(), error.to_string()).await,
@@ -1113,7 +1041,7 @@ impl Machine {
             self.ledgers.set_floor(&Floor { cam: camera.cam, camera: camera.camera.clone(), session: camera.session,
                 baseline: router.baseline(camera.cam).unwrap_or(0) });
         }
-        let issued = plan.as_ref().map(|p| (p.device_id.clone(), u64::from(p.device_shots)));
+        let issued = Some((plan.device_id.clone(), u64::from(plan.device_shots)));
         let bundle_id = production.as_ref().map(|prepared| prepared.bundle.id.clone());
         budget.mark("camera-router");
         arm_remaining!("before-recording");
@@ -1128,7 +1056,7 @@ impl Machine {
             bundle_id,
             production,
             sn,
-            scenario: host.sim.part_scenario(),
+            scenario: crate::offline::part_scenario(&app),
             frames: recipe.shots.iter().map(|shot| FrameView {
                 shot_id: shot.id.clone(), camera: shot.camera.clone(), view: shot.view, ..FrameView::waiting()
             }).collect(),
@@ -1168,28 +1096,11 @@ impl Machine {
         host.camera.begin_part(&self.part.as_ref().unwrap().cams);
         budget.mark("camera-begin");
         arm_remaining!("before-plc-arm");
-        let r = budget.run_serial("plc-arm-confirmed", async {
-            if let Some(plan) = &plan { self.s7.arm(engine, plan).await } else {
-                put(&app, tag::BUSY, json!(true)).await?;
-                put(&app, tag::ARMED, json!(true)).await
-            }
-        }).await;
+        let r = budget.run_serial("plc-arm-confirmed", self.s7.arm(engine, &plan)).await;
         if let Err(e) = r {
-            let mut reason = format!("布防写入失败或总预算超时：{e}");
+            let reason = format!("布防写入失败或总预算超时：{e}");
             log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "fault", "trace": budget.trace()}).to_string());
-            if self.is_s7() { self.s7.fault(engine, reason.clone()).await; }
-            else {
-                let mut cleanup_errors = Vec::new();
-                for output in [tag::ARMED, tag::BUSY, tag::VISION_READY] {
-                    if let Err(error) = put(&app, output, json!(false)).await {
-                        cleanup_errors.push(format!("{output}：{error}"));
-                    }
-                }
-                if !cleanup_errors.is_empty() {
-                    engine.disconnect().await;
-                    reason.push_str(&format!("；无法确认撤销输出，已断开通讯停止 PC 心跳：{}", cleanup_errors.join("；")));
-                }
-            }
+            self.s7.fault(engine, reason.clone()).await;
             return self.enter_fault(reason);
         }
         let elapsed = budget.elapsed();
@@ -1327,14 +1238,7 @@ impl Machine {
             self.required = None;
             self.dirty = true;
         }
-        let plc_status = plc(&self.app).status();
-        let connected = plc_status.state == LinkState::Connected;
-        let new_connection = connected && self.plc_connected_since != Some(plc_status.since);
-        self.plc_connected_since = connected.then_some(plc_status.since);
-        if new_connection && !self.is_s7() && self.phase != Phase::Fault {
-            self.enter_fault("PLC 连接已更新，重新同步握手信号".into());
-        }
-        let s7 = self.is_s7();
+        let connected = plc(&self.app).status().state == LinkState::Connected;
         let capture_host = host(&app).camera.recipe_capture().clone();
         if capture_host.active() && !connected { capture_host.fail("PLC 连接中断，请整圈重采"); }
         let cameras = if capture_host.active() { self.capture_devices_ready() } else { match self.phase {
@@ -1345,15 +1249,14 @@ impl Machine {
                 None => Ok(()),
             },
             Phase::Report | Phase::Release => Ok(()),
-            _ if s7 => self.check_idle_devices(),
-            _ => self.check_idle_cams(),
+            _ => self.check_idle_devices(),
         } };
         let dropped = host(&self.app).camera.dropped_total();
         if dropped > self.dropped_seen {
             log(&self.app, "warn", "丢帧", format!("帧通道满，累计丢弃 {dropped} 帧：检测节拍处理不过来"));
             self.dropped_seen = dropped;
         }
-        if s7 {
+        {
             let audit_ready = match host(&self.app).audit.readiness() {
                 Ok(crate::audit::AuditReadiness::Ready) => true,
                 Ok(crate::audit::AuditReadiness::WaitingRecording | crate::audit::AuditReadiness::WaitingStore) => false,
@@ -1383,14 +1286,13 @@ impl Machine {
                 SessionEvent::Ready => {
                     self.ledgers.clear_floors();
                     self.fault = None;
-                    self.fault_needs_reset = false;
                     self.alarms.clear();
                     self.set_phase(Phase::Idle);
                     log(&app, "ok", "S7 复位完成", "输入基线已核验，视觉就绪");
                 }
                 SessionEvent::Start(request) => {
                     if capture_host.active() { self.start_capture_s7(request).await; }
-                    else { self.start_part(Some(request)).await; }
+                    else { self.start_part(request).await; }
                 },
                 SessionEvent::End(ended_at) if self.s7.capture_id().is_some() => {
                     let _ = ended_at;
@@ -1442,24 +1344,8 @@ impl Machine {
             }
             if previous != self.s7.phase() { self.dirty = true; }
             host(&app).busy.store(!matches!(self.phase, Phase::Idle | Phase::Fault) || self.s7.pending(), Ordering::SeqCst);
-        } else if self.phase != Phase::Fault {
-            if !connected {
-                return self.enter_fault("PLC 未连接".into());
-            }
-            if let Err(e) = &cameras {
-                return self.enter_fault(format!("相机未就绪：{e}"));
-            }
         }
         if self.s7.capture_id().is_some() { self.finish_capture_s7().await; }
-        // 等待自动恢复的故障：原因跟着现状走（PLC 连上了但相机还没好，就别还显示"PLC 未连接"）
-        if !s7 && self.phase == Phase::Fault && !self.fault_needs_reset {
-            let reason = if !connected { Some("PLC 未连接".to_string()) } else { cameras.as_ref().err().map(|e| format!("相机未就绪：{e}")) };
-            if let Some(r) = reason.filter(|r| self.fault.as_deref() != Some(r.as_str())) {
-                self.fault = Some(r);
-                self.dirty = true;
-            }
-        }
-        let connected = connected && cameras.is_ok();
         let timeouts = host(&self.app).settings().timeouts;
         if matches!(self.phase, Phase::Acquire | Phase::Drain) {
             if let Some(part) = self.part.as_mut() {
@@ -1470,7 +1356,6 @@ impl Machine {
             }
         }
         match self.phase {
-            Phase::Fault if !s7 && connected && !self.fault_needs_reset => self.recover().await,
             Phase::Acquire => {
                 let Some(part) = self.part.as_mut() else { return };
                 if part.armed_at.elapsed() > timeouts.motion() {
@@ -1489,12 +1374,6 @@ impl Machine {
                 if !self.ack_alarmed && self.done_at.is_some_and(|t| t.elapsed() > timeouts.ack()) {
                     self.ack_alarmed = true;
                     self.alarm(format!("PLC 未确认结果（超过 T_ack {} ms），保持 done", timeouts.ack_ms));
-                }
-            }
-            Phase::Release if !s7 => {
-                if !tag_is_on(plc(&self.app), tag::PART_START) {
-                    self.set_phase(Phase::Idle);
-                    log(&self.app, "info", "partStart↓", "回到空闲");
                 }
             }
             Phase::Release if now_ms().saturating_sub(self.since) > timeouts.ack_ms as i64 => {
@@ -1531,17 +1410,7 @@ impl Machine {
         let r = match durable {
             Err(error) => Err(format!("审计记录未可靠保存，未提交 PLC 完成信号：{error}")),
             Ok(()) => {
-                let sent = if self.is_s7() {
-                    self.s7.report(plc(&app), judgement.plc_code, judgement.fault_code).await
-                } else {
-                    async {
-                        put(&app, tag::ARMED, json!(false)).await?;
-                        put(&app, tag::RESULT_CODE, json!(judgement.plc_code)).await?;
-                        put(&app, tag::FAULT_CODE, json!(judgement.fault_code)).await?;
-                        put(&app, tag::RESULT_SN, json!(sn)).await?;
-                        put(&app, tag::DONE, json!(true)).await
-                    }.await
-                };
+                let sent = self.s7.report(plc(&app), judgement.plc_code, judgement.fault_code).await;
                 self.done_at = sent.as_ref().ok().map(|_| Instant::now());
                 drain_ms = sent.as_ref().ok().and_then(|_| self.part.as_ref().and_then(|part| part.end_at)).map(|end| end.elapsed().as_millis() as u64);
                 let delivery = PlcDelivery { state: if sent.is_ok() { PlcDeliveryState::Submitted } else { PlcDeliveryState::Failed },
@@ -1568,10 +1437,7 @@ impl Machine {
         match r {
             Ok(()) => self.set_phase(Phase::Report),
             Err(reason) => {
-                let _ = put(&app, tag::ARMED, json!(false)).await;
-                let _ = put(&app, tag::VISION_READY, json!(false)).await;
-                if self.is_s7() { self.s7.fault(plc(&app), reason.clone()).await; }
-                self.fault_needs_reset = true;
+                self.s7.fault(plc(&app), reason.clone()).await;
                 self.fault = Some(reason.clone());
                 self.alarm(reason);
                 self.set_phase(Phase::Fault);
@@ -1651,11 +1517,6 @@ impl Machine {
         self.record_without_part(sn, judgement)
     }
 
-    async fn deliver_durable(&self, state: PlcDeliveryState, message: Option<String>) -> Result<(), String> {
-        let cycle_id = self.current_cycle_id.as_deref().ok_or("PLC 交付缺少工件身份")?;
-        host(&self.app).audit.delivery_durable(cycle_id, PlcDelivery { state, updated_at: now_ms(), message }).await
-    }
-
     fn delivery(&self, state: PlcDeliveryState, message: Option<String>) -> Result<(), String> {
         let cycle_id = self.current_cycle_id.as_deref().ok_or("PLC 交付缺少工件身份")?;
         host(&self.app).audit.delivery(cycle_id, PlcDelivery { state, updated_at: now_ms(), message })
@@ -1697,46 +1558,9 @@ impl Machine {
                 log(&self.app, "err", "故障交付审计持久化失败", error);
             }
         }
-        self.fault_needs_reset = in_flight || self.is_s7();
         log(&self.app, "err", "故障", reason.clone());
         self.fault = Some(reason);
         self.set_phase(Phase::Fault);
-    }
-
-    async fn recover(&mut self) {
-        let app = self.app.clone();
-        let r = async {
-            put(&app, tag::ARMED, json!(false)).await?;
-            put(&app, tag::BUSY, json!(false)).await?;
-            put(&app, tag::DONE, json!(false)).await?;
-            put(&app, tag::VISION_READY, json!(true)).await
-        }
-        .await;
-        match r {
-            Ok(()) => {
-                self.fault = None;
-                self.alarms.clear();
-                self.set_phase(Phase::Idle);
-                log(&app, "ok", "visionReady↑", "视觉就绪，等待工件");
-            }
-            Err(e) => {
-                self.fault_needs_reset = true;
-                self.fault = Some(format!("无法写入视觉就绪信号：{e}"));
-                self.dirty = true;
-            }
-        }
-    }
-
-    async fn reset(&mut self) {
-        if self.phase != Phase::Fault {
-            return;
-        }
-        self.fault_needs_reset = false;
-        self.ledgers.clear_floors();
-        log(&self.app, "info", "故障复位", "");
-        if plc(&self.app).status().state == LinkState::Connected && self.check_idle_cams().is_ok() {
-            self.recover().await;
-        }
     }
 }
 

@@ -13,7 +13,7 @@ use crate::frame::FrameImage;
 use crate::judge::PointState;
 use crate::recipe::Recipe;
 use crate::settings::RecordMode;
-use crate::sim::Scenario;
+use crate::offline::Scenario;
 use crate::vision;
 
 /// 测量队列容量。满了说明测量跟不上帧率，新帧直接记为测量出错，不在内存里堆积。

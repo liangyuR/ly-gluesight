@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use ly_plc::{Access, ConnectionConfig, DataType, EdgeMode, HeartbeatConfig, PlcConfig, PlcEngine, PlcPoint, PlcValue, ProtocolKind};
-use serde_json::Value;
 
 pub mod tag {
     pub const PART_START: &str = "partStart";
@@ -63,21 +62,12 @@ pub fn read_tag(engine: &PlcEngine, tag: &str) -> Option<PlcValue> {
     engine.values().get(&id).and_then(|v| v.value.clone())
 }
 
-pub fn tag_is_on(engine: &PlcEngine, tag: &str) -> bool {
-    read_tag(engine, tag).is_some_and(|v| v.is_truthy())
-}
-
 pub fn read_tag_u32(engine: &PlcEngine, tag: &str) -> Option<u32> {
     match read_tag(engine, tag)? {
         PlcValue::Int(i) => u32::try_from(i).ok(),
         PlcValue::Float(f) => Some(f as u32),
         PlcValue::Bool(b) => Some(b as u32),
     }
-}
-
-pub async fn write_tag(engine: &PlcEngine, tag: &str, value: Value) -> Result<(), String> {
-    let id = point_id(engine, tag).ok_or_else(|| format!("地址表中没有标签为 {tag} 的点位"))?;
-    engine.write_point(&id, &value).await
 }
 
 pub fn default_plc_config() -> PlcConfig {

@@ -883,7 +883,7 @@ pub async fn workspace_capture(
         }
         let render = (config.source == CameraSource::Sim).then(|| crate::camera::SimRender {
             recipe: Arc::new(r.clone()), k,
-            scenario: crate::sim::Scenario::Normal,
+            scenario: crate::offline::Scenario::Normal,
             pose: crate::simimage::PoseError::default(), seed: 0,
         });
         let images = cycle.camera.capture_views(cam, render)?;
