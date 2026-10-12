@@ -274,20 +274,69 @@ export interface CycleSettings {
   timeouts: Timeouts;
   historyDays: number;
   lyflowCore: string | null;
-  vision: boolean;
   record: RecordMode;
   recordKeep: number;
   recordMaxGb: number;
 }
 
-export interface OfflineStatus {
-  enabled: boolean;
+export type SiteMode = "real" | "offline";
+export type SiteSourceKind = "sampleSet" | "synthetic";
+export type OfflineSource = { kind: "sampleSet"; dir: string } | { kind: "synthetic" };
+
+export interface OfflineChoice {
+  kind: SiteSourceKind;
+  sampleSetDir: string | null;
+}
+
+export interface SiteStatus {
+  mode: SiteMode;
+  source: SiteSourceKind | null;
+  last: OfflineChoice | null;
+  measurement: "lyFlow" | "simulated";
   port: number | null;
   running: boolean;
   continuous: boolean;
   parts: number;
   message: string;
   heartbeatStopped: boolean;
+  sampleSet: SampleSetSummary | null;
+  nextPart: string | null;
+  recent: SampleRun[];
+}
+
+export type SampleLabel = "ok" | "ng" | "unknown";
+
+export interface SamplePart {
+  partId: string;
+  sn: string;
+  label: SampleLabel;
+}
+
+export interface SampleSetSummary {
+  id: string;
+  name: string;
+  source: string;
+  dir: string;
+  shotCount: number;
+  cameras: { id: string; views: number[] }[];
+  mmPerPx: number | null;
+  parts: SamplePart[];
+  missing: string[];
+  missingCount: number;
+}
+
+export interface SampleRun {
+  ts: number;
+  partSn: number;
+  partId: string;
+  sampleSn: string;
+  label: SampleLabel;
+  purpose: "production" | "capture";
+  cycleId: string | null;
+  resultCode: number | null;
+  faultCode: number | null;
+  verdict: Verdict | null;
+  message: string | null;
 }
 
 /** 测量点显示状态 */

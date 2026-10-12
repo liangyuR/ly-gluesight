@@ -171,9 +171,9 @@ impl RecipeCaptureHost {
         }
         for (k, shot) in round.frames.iter().enumerate() {
             let ordinal = k as u32 + 1;
-            if shot.ordinal != ordinal || shot.shot_id != format!("S{ordinal:04}") || shot.views.len() != 3
+            if shot.ordinal != ordinal || shot.shot_id != format!("S{ordinal:04}") || shot.views.len() != view_count(&round.camera_config)
                 || shot.views.iter().enumerate().any(|(v, image)| image.view as usize != v + 1 || image.width == 0 || image.height == 0) {
-                return Err("采集拍照点顺序或三幅图结构无效".into());
+                return Err("采集拍照点顺序或图像数量与设备视角数不符".into());
             }
             let shot_dir = self.root.join(expected_id).join(format!("shot-{ordinal:04}"));
             let mut files = vec![(PathBuf::from(&shot.original_path), shot_dir.join("original.png"))];
@@ -356,7 +356,7 @@ impl RecipeCaptureHost {
             else if f.lost_packets != 0 { Some("图像存在丢包") }
             else if run.round.planned_count.is_none() { Some("尚未取得 PLC 计划触发数量，不能接收本轮图像") }
             else if run.round.planned_count.is_some_and(|n| run.round.received_count > n) { Some("实际收图数量超过 PLC 计划数量") }
-            else if f.images.len() != 3 { Some("一张拼接图必须完整交付图 1／2／3") }
+            else if f.images.len() != view_count(&run.round.camera_config) { Some("一帧必须完整交付设备配置的全部视角图像") }
             else if f.images.iter().any(|i| i.width == 0 || i.height == 0 || (i.width as usize).checked_mul(i.height as usize) != Some(i.pixels.len())) { Some("图像尺寸或像素长度无效") }
             else if run.round.frames.first().is_some_and(|shot| shot.views.iter().zip(&f.images).any(|(v, i)| v.width != i.width || v.height != i.height)) { Some("本轮图像尺寸发生变化") }
             else if run.source.is_some_and(|source| source != f.counter) { Some("帧计数来源发生变化") }
@@ -423,13 +423,18 @@ impl RecipeCaptureHost {
     }
 }
 
+/// 采集设备每帧交付的视角数（1 或 3），取自本轮记下的设备配置。
+fn view_count(camera_config: &serde_json::Value) -> usize {
+    camera_config.get("viewCount").and_then(serde_json::Value::as_u64).filter(|n| matches!(n, 1 | 3)).unwrap_or(3) as usize
+}
+
 fn save_image(path: &Path, image: &FrameImage) -> Result<(), String> {
     image::save_buffer_with_format(path, &image.pixels, image.width, image.height, image::ColorType::L8, image::ImageFormat::Png).map_err(|e| e.to_string())
 }
 
 fn compose_views(images: &[Arc<FrameImage>]) -> Result<Arc<FrameImage>, String> {
     let height = images.first().ok_or("没有图像")?.height;
-    if images.iter().any(|i| i.height != height) { return Err("模拟／回放图像高度不一致，无法保留拼接原图".into()); }
+    if images.iter().any(|i| i.height != height) { return Err("模拟／样本集图像高度不一致，无法保留拼接原图".into()); }
     let width = images.iter().try_fold(0u32, |w, i| w.checked_add(i.width)).ok_or("图像宽度溢出")?;
     let mut pixels = Vec::with_capacity(width as usize * height as usize);
     for y in 0..height as usize { for image in images { let start = y * image.width as usize; pixels.extend_from_slice(&image.pixels[start..start + image.width as usize]); } }
@@ -441,11 +446,13 @@ pub fn recipe_capture_start(app: AppHandle, recipe_id: String, camera_id: String
     let cycle = app.state::<CycleHost>();
     let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务")?;
     if recipe_id.trim().is_empty() { return Err("请先创建配方草稿".into()); }
-    if cycle.busy() || cycle.phase() != Phase::Idle || cycle.camera.dry_run_active() { return Err("设备正被检测或空跑占用".into()); }
+    if cycle.busy() { return Err("工件正在检测，结束后再开始整圈采集".into()); }
+    if cycle.camera.dry_run_active() { return Err("相机正在空跑，先停止空跑".into()); }
+    if !matches!(cycle.phase(), Phase::Idle | Phase::Fault) { return Err("节拍尚未回到空闲，稍后再试".into()); }
     let cam = cycle.camera.require(&camera_id)?;
     let slot = cycle.camera.slot(cam as usize).ok_or("设备不存在")?;
     let config = slot.config();
-    if !slot.is_ready() || config.acquisition != Acquisition::Triggered || config.view_count != 3 { return Err("采集要求已就绪的单个 device、触发模式及三幅图交付".into()); }
+    if !slot.is_ready() || config.acquisition != Acquisition::Triggered { return Err("采集要求已就绪的单个 device 与触发模式".into()); }
     if config.source == CameraSource::Mvs && config.trigger_source != "Line0" { return Err("真实示教采集必须使用 PLC Line0 硬触发".into()); }
     let (arm, ledger) = slot.routing_state()?;
     let source = ledger.as_ref().and_then(|l| l.source).or(arm.source);
@@ -483,7 +490,7 @@ pub fn recipe_capture_image(app: AppHandle, round_id: String, k: usize, view: Op
         None => &shot.original_path,
         Some(view) => &shot.views.iter().find(|v| v.view == view).ok_or("图像不存在")?.path,
     };
-    let image = crate::replay::load(Path::new(path))?;
+    let image = crate::image_file::load(Path::new(path))?;
     let scale = (image.width as f32 / 900.0).max(image.height as f32 / 650.0).max(1.0);
     let w = (image.width as f32 / scale).max(1.0) as u32;
     let h = (image.height as f32 / scale).max(1.0) as u32;
@@ -649,6 +656,23 @@ mod tests {
         assert_eq!(host.current().unwrap().state, CaptureState::Draining);
         drain(&host);
         assert_eq!(host.current().unwrap().state, CaptureState::Complete);
+    }
+
+    #[test]
+    fn each_frame_must_carry_exactly_the_device_view_count() {
+        for (device_views, delivered, accepted) in [(1, 1, true), (1, 3, false), (3, 3, true), (3, 1, false)] {
+            let host = host();
+            let round = host.start("recipe-a".into(), 0, "cam1".into(), serde_json::json!({"viewCount": device_views}), 9,
+                Some(CounterSource::Synthetic), Some(0), 200, true).unwrap();
+            host.plc_started(1).unwrap();
+            let mut f = frame(1);
+            f.images.truncate(delivered);
+            receive(&host, &round, f);
+            let _ = host.plc_ended(1);
+            drain(&host);
+            let state = host.get(&round.round_id).unwrap().state;
+            assert_eq!(state == CaptureState::Complete, accepted, "{device_views} 视角设备收到 {delivered} 幅：{state:?}");
+        }
     }
 
     #[test]

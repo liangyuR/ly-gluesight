@@ -200,8 +200,8 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
     setSaving(true);
     setNotice(null);
     try {
-      const { lyflowCore, vision, record, recordKeep, recordMaxGb } = settings;
-      const saved = await savePart({ lyflowCore, vision, record, recordKeep, recordMaxGb });
+      const { lyflowCore, record, recordKeep, recordMaxGb } = settings;
+      const saved = await savePart({ lyflowCore, record, recordKeep, recordMaxGb });
       if (saved && mounted.current) {
         setNotice({ ok: true, text: "已保存" });
         refresh();
@@ -217,32 +217,23 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
   return (
     <div className="panel">
       <div className="panel-toolbar">
-        <h3 className="panel-title">测量与帧录制</h3>
+        <h3 className="panel-title">lyFlow 与帧录制</h3>
         <button className="btn primary" disabled={!settings || saving || !!invalid} aria-busy={saving} onClick={save}>{saving ? "保存中…" : "保存"}</button>
       </div>
-      {loading && !settings && <p role="status">正在读取测量与帧录制设置…</p>}
+      {loading && !settings && <p role="status">正在读取 lyFlow 与帧录制设置…</p>}
       {error && <div className="notice error" role="alert">{error} <button className="btn" onClick={reload}>重试</button></div>}
       {settings && <>
       <fieldset className="form-grid" disabled={saving} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
-        <label className="field">
-          <span>飞拍配方</span>
-          <select id="measure-fly" className="input" value={settings.vision ? "lyFlow" : "sim"} onChange={(e) => update({ ...settings, vision: e.target.value === "lyFlow" })}>
-            <option value="sim">模拟测量（不看图像）</option>
-            <option value="lyFlow">lyFlow 流程（沿示教中线量胶）</option>
-          </select>
+        <label className="field span-2">
+          <span>核心库路径（lyflow_core.dll）</span>
+          <input
+            id="lyflow-core"
+            className="input mono"
+            placeholder="留空自动使用安装包内置引擎；也可指定其他核心库路径"
+            value={settings.lyflowCore ?? ""}
+            onChange={(e) => update({ ...settings, lyflowCore: e.target.value || null })}
+          />
         </label>
-        {settings.vision && (
-          <label className="field span-2">
-            <span>核心库路径（lyflow_core.dll）</span>
-            <input
-              id="lyflow-core"
-              className="input mono"
-              placeholder="留空自动使用安装包内置引擎；也可指定其他核心库路径"
-              value={settings.lyflowCore ?? ""}
-              onChange={(e) => update({ ...settings, lyflowCore: e.target.value || null })}
-            />
-          </label>
-        )}
         <label className="field">
           <span>帧录制</span>
           <select id="record-mode" className="input" value={settings.record} onChange={(e) => update({ ...settings, record: e.target.value as CycleSettings["record"] })}>
@@ -277,6 +268,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
           />
         </label>
       </fieldset>
+      <p className="muted hint">离线模式下帧录制临时为保留全部，退出后恢复此设置。</p>
       {invalid && <div className="notice error" role="alert">{invalid}</div>}
       </>}
       <dl className="kv" style={{ marginTop: 12 }}>
@@ -289,7 +281,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
       </dl>
       {engineError && <div className="notice error" role="alert">引擎状态读取失败：{engineError} <button className="btn" onClick={refresh}>重试引擎状态</button></div>}
       <p className="muted hint">
-        lyFlow 流程沿各拍照点的示教中线量胶，需要兼容的核心库和已验证发布的配方。发布资源预热完成后才能开工。帧录制保存同次触发的全部视角，可用于历史复测和回放。
+        真机检测固定使用 lyFlow 流程，沿各拍照点的示教中线量胶，需要兼容的核心库和已验证发布的配方；离线 · 合成图使用模拟测量。发布资源预热完成后才能开工。帧录制保存同次触发的全部视角，可用于历史复测。
       </p>
       {notice && <div className={`notice ${notice.ok ? "ok" : "error"}`} role={notice.ok ? "status" : "alert"}>{notice.text}</div>}
     </div>

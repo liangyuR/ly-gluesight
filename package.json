@@ -20,6 +20,7 @@
     "version:set": "pwsh -NoProfile -File scripts/Set-PackageVersion.ps1",
     "test": "vitest run",
     "test:watch": "vitest",
+    "samples:test": "python -m unittest discover -s scripts/sample-set/tests -v",
     "test:ui:production": "pwsh -NoProfile -File scripts/Test-UiProductionFlow.ps1",
     "guide:build": "node scripts/user-guide/build-guide.mjs",
     "guide:serve": "python -m http.server 8772 --bind 127.0.0.1 --directory docs/user-guide",

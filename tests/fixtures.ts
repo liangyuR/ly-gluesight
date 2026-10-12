@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { DetectParams, Recipe, RecipeDoc, RecipeSummary, ShotLimits, ShotSpec, Snapshot } from "../src/features/cycle/types";
+import type { DetectParams, Recipe, RecipeDoc, RecipeSummary, SampleSetSummary, ShotLimits, ShotSpec, SiteStatus, Snapshot } from "../src/features/cycle/types";
 import type { PartDetail, PartSummary } from "../src/features/history/types";
 import type { FrozenImage, WorkspaceView } from "../src/features/workspace/types";
 import type { useWorkspace } from "../src/features/workspace/context";
@@ -89,9 +89,19 @@ export function snapshot(phase: Snapshot["phase"] = "IDLE"): Snapshot {
   };
 }
 
+export function siteStatus(over: Partial<SiteStatus> = {}): SiteStatus {
+  return { mode: "real", source: null, last: null, measurement: "lyFlow", port: null, running: false, continuous: false, parts: 0, message: "",
+    heartbeatStopped: false, sampleSet: null, nextPart: null, recent: [], ...over };
+}
+
+export function sampleSet(name = "壳体样本"): SampleSetSummary {
+  return { id: "set-1", name, source: "现场", dir: "C:/samples/set-1", shotCount: 2, cameras: [{ id: "CAM-1", views: [1] }], mmPerPx: 0.1,
+    parts: [{ partId: "part-1", sn: "SN1", label: "ok" }], missing: [], missingCount: 0 };
+}
+
 export function partSummary(id = 1): PartSummary {
   return { id, sn: 100 + id, ts: 1, recipeId: "A", recipeVersion: 1, recipeRevision: "revisionId-A", triggerMode: "fly",
-    verdict: "NG_GAP", plcCode: 2, faultCode: 0, reason: "断胶", drainMs: 20, framesExpected: 2, framesReceived: 2, retestOf: null, cycleId: `cycle-${id}`, bundleId: "bundle-A", delivery: { state: "acknowledged", updatedAt: 1, message: null } };
+    verdict: "NG_GAP", plcCode: 2, faultCode: 0, reason: "断胶", drainMs: 20, framesExpected: 2, framesReceived: 2, retestOf: null, cycleId: `cycle-${id}`, bundleId: "bundle-A", delivery: { state: "acknowledged", updatedAt: 1, message: null }, sample: null };
 }
 
 export function partDetail(): PartDetail {

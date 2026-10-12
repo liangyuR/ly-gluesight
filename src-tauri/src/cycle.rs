@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedReceiver, UnboundedSender};
 
 use crate::arming::ArmBudget;
-use crate::camera::{Acquisition, CameraRig, CameraSource, FRAME_QUEUE};
+use crate::camera::{Acquisition, CameraRig, FRAME_QUEUE};
 use crate::frame::Frame;
 use crate::history;
 use crate::handshake::Request;
@@ -292,8 +292,6 @@ impl CycleHost {
         let interrupted_recordings = app.state::<Store>().finish_interrupted_recordings()?;
         let record_audit = audit.clone();
         let camera = CameraRig::new(app, frame_tx)?;
-        let initial_replays: Vec<_> = camera.configs().into_iter().filter(|c| c.source == CameraSource::Replay)
-            .map(|c| PathBuf::from(c.replay_dir.trim())).collect();
         let records = data.join("records");
         let guarded_root = records.clone();
         let guard_app = app.clone();
@@ -302,9 +300,6 @@ impl CycleHost {
         let protection = Arc::new(move || {
             let mut paths = guard_app.try_state::<Store>().ok_or("检测记录数据库尚未初始化")?.pending_recording_directories(&guarded_root)?;
             paths.extend(protection_audit.protected_recording_directories(&guarded_root)?);
-            if let Some(host) = guard_app.try_state::<CycleHost>() {
-                paths.extend(host.camera.configs().into_iter().filter(|c| c.source == CameraSource::Replay).map(|c| PathBuf::from(c.replay_dir.trim())));
-            } else { paths.extend(initial_replays.clone()); }
             Ok(paths)
         });
         let warning = Arc::new(move |errors: &[String]| {
@@ -645,18 +640,16 @@ fn missing_recipe(id: &str) -> String {
     format!("选中的配方 {id} 不存在或没能加载（见配方页）")
 }
 
-/// 离线产线没有实物：海康相机配模拟测量可以用来试触发、调曝光。
+/// 离线产线没有实物，按离线计数策略布防。
 pub fn real_parts(app: &AppHandle) -> bool {
     !crate::offline::enabled(app)
 }
 
-/// 配方用的相机此刻在相机组里的序号。相机不在相机组里、不是触发采集、
-/// 实物检测（real_parts）时海康相机却没开图像测量时返回原因。
-pub fn usable_cams(app: &AppHandle, recipe: &Recipe, real_parts: bool) -> Result<Vec<u8>, String> {
+/// 配方用的相机此刻在相机组里的序号。相机不在相机组里、不是触发采集或视角不够时返回原因。
+pub fn usable_cams(app: &AppHandle, recipe: &Recipe) -> Result<Vec<u8>, String> {
     let host = host(app);
     let cams = host.camera.resolve(&recipe.cameras())?;
     crate::vision::recipe_source(app, recipe)?;
-    let image = host.settings().vision;
     for &c in &cams {
         let cfg = host.camera.slot(c as usize).ok_or("相机组改过了")?.config();
         if cfg.acquisition == Acquisition::FreeRun {
@@ -667,18 +660,14 @@ pub fn usable_cams(app: &AppHandle, recipe: &Recipe, real_parts: bool) -> Result
                 return Err(format!("拍照点 {} 选择视角 {}，设备 {} 只配置了 {} 个视角", shot.id, shot.view, cfg.id, cfg.view_count));
             }
         }
-        // 模拟测量不看图，真实工件按模拟结果回写就是把实物判了 OK
-        if real_parts && !image && cfg.source == CameraSource::Mvs {
-            return Err(format!("{}（{}）是海康相机，飞拍的图像测量却没打开（系统设置）", cfg.name, cfg.id));
-        }
     }
     Ok(cams)
 }
 
-pub fn runnable_cams(app: &AppHandle, recipe: &Recipe, real_parts: bool) -> Result<Vec<u8>, String> {
+pub fn runnable_cams(app: &AppHandle, recipe: &Recipe) -> Result<Vec<u8>, String> {
     recipe.ready()?;
     crate::production::ready(app, recipe)?;
-    usable_cams(app, recipe, real_parts)
+    usable_cams(app, recipe)
 }
 
 /// 空闲时对相机的要求：配方、设置变了（Refresh）或相机组增删过才重算。
@@ -812,11 +801,10 @@ impl Machine {
         let host = host(&self.app);
         let rig_gen = host.camera.generation();
         let settings = host.settings();
-        let real = real_parts(&self.app);
         match settings.product_source {
             ProductSource::Manual => {
                 let cams = match (self.current_recipe(), settings.manual_recipe_id.as_deref()) {
-                    (Some(r), _) => runnable_cams(&self.app, &r, real),
+                    (Some(r), _) => runnable_cams(&self.app, &r),
                     (None, Some(id)) => Err(missing_recipe(id)),
                     (None, None) => Ok(Vec::new()),
                 };
@@ -825,7 +813,7 @@ impl Machine {
             ProductSource::Plc => {
                 let (mut watch, mut warnings) = (Vec::new(), Vec::new());
                 for r in host.recipes.list() {
-                    match runnable_cams(&self.app, &r, real) {
+                    match runnable_cams(&self.app, &r) {
                         Ok(c) => watch.push((r.id.clone(), c)),
                         Err(e) => warnings.push(format!("配方 {} 开不了工：{e}", r.id)),
                     }
@@ -1012,7 +1000,7 @@ impl Machine {
             }
         }
         let rig_gen = host.camera.generation();
-        let cams = match runnable_cams(&app, &recipe, real_parts(&app)) {
+        let cams = match runnable_cams(&app, &recipe) {
             Ok(c) => c,
             Err(reason) => return self.refuse(sn, id, fault::NO_RECIPE, reason).await,
         };
@@ -1048,7 +1036,7 @@ impl Machine {
         if let Err(reason) = host.audit.begin_recording(&cycle_id) {
             return self.refuse(sn, id, fault::PROCESS_TIMEOUT, format!("录制追溯屏障建立失败：{reason}")).await;
         }
-        let recording = host.recorder.begin(settings.record, sn, recipe.clone(), &cycle_id, bundle_id.as_deref());
+        let recording = host.recorder.begin(crate::site::record_mode(&app), sn, recipe.clone(), &cycle_id, bundle_id.as_deref());
         self.run_id = self.run_id.wrapping_add(1);
         self.part = Some(Part {
             run_id: self.run_id,
@@ -1069,7 +1057,7 @@ impl Machine {
             issued,
             issued_verified: false,
             routing_closed: false,
-            image_measurement: settings.vision,
+            image_measurement: crate::site::image_measurement(&app),
             proc_timeout: settings.timeouts.proc(),
             drain_timeout: settings.timeouts.drain(),
             armed_at: Instant::now(),
@@ -1092,9 +1080,6 @@ impl Machine {
             log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "refused", "trace": budget.trace()}).to_string());
             return self.refuse(sn, id, fault::PROCESS_TIMEOUT, format!("录制开始后追溯健康检查失败，未启动相机：{reason}")).await;
         }
-        arm_remaining!("before-camera-begin");
-        host.camera.begin_part(&self.part.as_ref().unwrap().cams);
-        budget.mark("camera-begin");
         arm_remaining!("before-plc-arm");
         let r = budget.run_serial("plc-arm-confirmed", self.s7.arm(engine, &plan)).await;
         if let Err(e) = r {
@@ -1477,9 +1462,7 @@ impl Machine {
         let Some(rec) = self.part.as_mut().filter(|p| p.sn == sn).and_then(|p| p.recording.take()) else { return };
         let host = host(&self.app);
         let settings = host.settings();
-        // 回放相机正在用的录制目录不能被滚动删除
-        let in_use = host.camera.configs().into_iter().filter(|c| c.source == CameraSource::Replay).map(|c| PathBuf::from(c.replay_dir.trim())).collect();
-        host.recorder.finish(rec, judgement.verdict, &judgement.reason, settings.record_keep, (settings.record_max_gb as f64 * 1e9) as u64, in_use);
+        host.recorder.finish(rec, judgement.verdict, &judgement.reason, settings.record_keep, (settings.record_max_gb as f64 * 1e9) as u64, Vec::new());
     }
 
     fn recorded_part(&self, sn: u32, recipe_id: Option<&str>, judgement: &Judgement, drain_ms: Option<u64>, delivery: PlcDelivery) -> Result<RecordedPart, String> {
@@ -1496,13 +1479,14 @@ impl Machine {
         Ok(RecordedPart { ts: now_ms(), sn, recipe, judgement: judgement.clone(),
             drain_ms, frames, frames_expected, frames_received: received, triggers, table,
             software_version: self.app.package_info().version.to_string(), cycle_id: cycle_id.clone(),
-            bundle_id: part.and_then(|p| p.bundle_id.clone()), delivery, shots })
+            bundle_id: part.and_then(|p| p.bundle_id.clone()), delivery, shots,
+            sample: crate::offline::claim_sample(&self.app, sn, &cycle_id) })
     }
 
     fn record_without_part(&self, sn: u32, judgement: &Judgement) -> Result<(), String> {
         if self.part.as_ref().is_none_or(|part| part.sn != sn) {
             let cycle_id = self.current_cycle_id.clone().ok_or("工件身份缺失")?;
-            let off = host(&self.app).settings().record == crate::settings::RecordMode::Off;
+            let off = crate::site::record_mode(&self.app) == crate::settings::RecordMode::Off;
             host(&self.app).audit.recording(crate::recorder::RecordingOutcome { cycle_id, directory: None,
                 files: Vec::new(), retention_errors: Vec::new(), available: false,
                 state: if off { crate::recorder::RecordingState::Off } else { crate::recorder::RecordingState::Failed },

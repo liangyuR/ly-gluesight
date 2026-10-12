@@ -3,6 +3,7 @@ import ErrorBoundary from "./ErrorBoundary";
 import Sidebar from "./Sidebar";
 import { navItems } from "./nav";
 import { desktopAvailable } from "../lib/desktop";
+import { SiteModeBadge } from "../features/cycle";
 
 export default function AppLayout() {
   const { pathname } = useLocation();
@@ -14,6 +15,7 @@ export default function AppLayout() {
       <main className="main">
         <header className="main-header">
           <h1>{current?.label ?? ""}</h1>
+          <SiteModeBadge />
         </header>
         <section className="main-body">
           <ErrorBoundary key={pathname}>

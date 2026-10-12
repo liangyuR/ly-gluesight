@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { cameraApi } from "../camera/api";
 import { plcApi } from "../plc/api";
-import { useCycle } from "../cycle/api";
+import { cycleApi, useCycle, useSiteStatus } from "../cycle/api";
+import SamplePartSelect from "../cycle/components/SamplePartSelect";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, KV, Notice, NumberField, Panel, Steps, WorkspaceBar, WorkspaceEmpty, GrayViewer } from "./components";
@@ -18,6 +19,8 @@ function captureCountText(round: Pick<CaptureRound,"state"|"receivedCount"|"plan
 export default function CapturePage() {
   const {data,doc,cameras,busy,dirty,frameDirty,act,setError} = useWorkspace();
   const {snapshot} = useCycle();
+  const site = useSiteStatus();
+  const [offlinePart,setOfflinePart] = useState(""), [offlineSending,setOfflineSending] = useState(false);
   const [search] = useSearchParams();
   const location = useLocation();
   const captureReturn = (location.state as CaptureNavigationState | null)?.captureReturn;
@@ -67,6 +70,12 @@ export default function CapturePage() {
     try { const next=await workspaceApi.captureStart(doc.id,selectedCamera,drain); if(current.current.alive && current.current.id===doc.id) {setRoundId(next.roundId); setRound(next); setPreviewK(0);} }
     catch(e) {if(current.current.alive && current.current.id===doc.id)setError(String(e));} finally {if(current.current.alive && current.current.id===doc.id)setWorking(false);}
   };
+  const offlineSampleSet = site?.mode==="offline" && site.source==="sampleSet" && !site.running && round?.state==="waitingStart" ? site.sampleSet : null;
+  const sendOffline=async () => {
+    if(offlineSending) return; setOfflineSending(true);
+    try { await cycleApi.offlineCapture(offlinePart && offlineSampleSet?.parts.some(p=>p.partId===offlinePart) ? offlinePart : null); }
+    catch(e) {if(current.current.alive && current.current.id===doc.id)setError(String(e));} finally {if(current.current.alive)setOfflineSending(false);}
+  };
   const stop=async () => { if(locked) return; setWorking(true); try {const next=await workspaceApi.captureStop();if(current.current.alive && current.current.id===doc.id)setRound(next);} catch(e) {if(current.current.alive && current.current.id===doc.id)setError(String(e));} finally {if(current.current.alive && current.current.id===doc.id)setWorking(false);} };
   return <div className="wp-page"><WorkspaceBar/><Steps/><div className="wp-columns"><div className="wp-stack"><Panel title={validation ? "实拍独立验证样本" : "设备准备与整圈采集"} detail="选择一个 SDK device；每次触发的一张拼接图生成一个拍照点">
     <label className="field"><span>采集 device</span><select className="input" aria-label="采集 device" value={selectedCamera} disabled={locked || active} onChange={e=>setCameraId(e.target.value)}>{cameras.map(c=><option key={c.id} value={c.id}>{c.name} · {c.serial || c.source}</option>)}</select></label>
@@ -76,8 +85,9 @@ export default function CapturePage() {
     <Notice title="现场启动机械臂">先确认合格涂胶工件、轨迹和触发顺序。GS 开始接收并就绪后，由现场启动机械臂；触发数量由 PLC 自动提供，拍照点数量依据实际收图生成。</Notice>
     <div className="wp-actions"><button className="btn primary" disabled={locked || active || productionBusy || !deviceReady || !selectedCamera || !Number.isFinite(drain) || drain<200 || drain>30000} onClick={() => void start()}>开始接收 / 整圈重采</button><button className="btn danger" disabled={locked || !active} onClick={() => void stop()}>中止本轮</button></div>
     {productionBusy && <p className="muted">当前工件结束后才能占用设备采集。</p>}
+    {offlineSampleSet && <div className="wp-stack"><strong>由离线产线送一圈</strong><p className="muted">离线样本集模式下由虚拟 PLC 发开始/结束边沿，图像来自所选样本件。</p><div className="wp-actions"><SamplePartSelect sampleSet={offlineSampleSet} nextPart={site?.nextPart ?? null} value={offlinePart} onChange={setOfflinePart} disabled={offlineSending} label="离线样本件"/><button className="btn" disabled={offlineSending} onClick={() => void sendOffline()}>离线产线送一圈</button></div></div>}
   </Panel><Panel title="采集历史" detail="保留异常轮次供追溯，重新采集不会混用旧图"><select className="input" aria-label="采集历史" value={roundId ?? ""} disabled={active || working} onChange={e=>{setRoundId(e.target.value || undefined);setPreviewK(0);}}><option value="">最近轮次</option>{history.map(r=><option key={r.roundId} value={r.roundId}>{new Date(r.createdAt).toLocaleString("zh-CN")} · {stateLabels[r.state]} · {captureCountText(r)}</option>)}</select></Panel>{round && <Panel title="采集结果" actions={<Badge tone={round.state==="complete" ? "ok" : round.state==="failed" ? "warn" : "info"}>{stateLabels[round.state]}</Badge>}>
-    <KV label="轮次">{round.roundId}</KV><KV label="数量核对">{captureCountText(round)}</KV>{round.plcActualCount != null && <KV label="PLC 实际触发">{round.plcActualCount} 次</KV>}<KV label="数据来源">{round.simulated ? "模拟 / 回放（不代表现场硬件验收）" : "设备实拍"}</KV>
+    <KV label="轮次">{round.roundId}</KV><KV label="数量核对">{captureCountText(round)}</KV>{round.plcActualCount != null && <KV label="PLC 实际触发">{round.plcActualCount} 次</KV>}<KV label="数据来源">{round.simulated ? "离线 / 模拟（不代表现场硬件验收）" : "设备实拍"}</KV>
     {round.error && <Notice title="本轮异常，整圈重采" tone="warn">{round.error}</Notice>}
     <div className="table-wrap"><table className="table"><thead><tr><th>拍照点</th><th>帧号</th><th>触发计数</th><th>图像</th></tr></thead><tbody>{round.frames.map((f,i)=><tr key={f.shotId}><td><button className="btn small" onClick={()=>setPreviewK(i)}>{String(i+1).padStart(2,"0")}</button></td><td>{f.frameCounter}</td><td>{f.triggerCounter ?? "未提供"}</td><td>{f.views.map(v=>`图 ${v.view} · ${v.width}×${v.height}`).join(" / ")}</td></tr>)}</tbody></table></div>
     <GrayViewer image={preview} loading={!!round.frames[previewK] && !preview && !previewError} error={previewError} label={"拍照点 " + (previewK+1) + " · 完整拼接原图"}/>

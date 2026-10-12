@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::cycle::{self, FrameView};
 use crate::judge::{Judgement, PointState};
+use crate::offline::sample_set::SampleRef;
 use crate::recipe::Recipe;
 use crate::recorder::{RecordedRawFile, RecordingOutcome, RecordingState as RecorderState};
 use crate::store::{PartDetail, PartRecord, PartShot, PlcDelivery, PlcDeliveryState, RecordingEvidence, RecordingState, ShotRawFile, Store};
@@ -39,6 +40,7 @@ pub struct RecordedPart {
     pub bundle_id: Option<String>,
     pub delivery: PlcDelivery,
     pub shots: Vec<PartShot>,
+    pub sample: Option<SampleRef>,
 }
 
 impl RecordedPart {
@@ -59,6 +61,7 @@ impl RecordedPart {
             bundle_id: self.bundle_id.as_deref(),
             delivery: &self.delivery,
             shots: &self.shots,
+            sample: self.sample.as_ref(),
         }
     }
 }

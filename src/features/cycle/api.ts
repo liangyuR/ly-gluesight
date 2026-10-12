@@ -2,10 +2,10 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { subscribe } from "../plc";
 import { matchesPart, mergeMeasurements } from "./identity";
-import type { CycleSettings, LogLine, Measured, OfflineFault, OfflineStatus, Recipe, RecipeDoc, RecipeSummary, Scenario, Snapshot } from "./types";
+import type { CycleSettings, LogLine, Measured, OfflineFault, OfflineSource, Recipe, RecipeDoc, RecipeSummary, SampleSetSummary, Scenario, SiteStatus, Snapshot } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
-  if (!isTauri() && ["cycle_save_settings","cycle_select_recipe","cycle_reset","offline_enable","offline_disable","offline_run","offline_stop","offline_inject"].includes(cmd))
+  if (!isTauri() && ["cycle_save_settings","cycle_select_recipe","cycle_reset","site_enter_offline","site_leave_offline","site_preview_sample_set","site_pick_dir","offline_run","offline_stop","offline_inject","offline_capture"].includes(cmd))
     return Promise.reject(new Error("生产配置与检测操作需要 GlueSight · 胶路智检 桌面后端"));
   if (!isTauri()) return Promise.resolve(fallback());
   return invoke<T>(cmd, args);
@@ -17,7 +17,6 @@ const defaultSettings: CycleSettings = {
   timeouts: { armMs: 200, motionMs: 30000, drainMs: 1000, procMs: 3000, ackMs: 5000 },
   historyDays: 180,
   lyflowCore: null,
-  vision: false,
   record: "off",
   recordKeep: 100,
   recordMaxGb: 20,
@@ -33,21 +32,27 @@ export const cycleApi = {
   saveSettings: (settings: CycleSettings) => call<void>("cycle_save_settings", { settings }, () => undefined),
   selectRecipe: (recipeId: string) => call<void>("cycle_select_recipe", { recipeId }, () => undefined),
   reset: () => call<void>("cycle_reset", undefined, () => undefined),
-  offlineStatus: () => call<OfflineStatus>("offline_status", undefined, () => ({ ...offlineIdle })),
-  offlineEnable: () => call<OfflineStatus>("offline_enable", undefined, () => ({ ...offlineIdle })).then(publishOffline),
-  offlineDisable: () => call<OfflineStatus>("offline_disable", undefined, () => ({ ...offlineIdle })).then(publishOffline),
-  offlineRun: (recipeId: string, scenario: Scenario, continuous: boolean) =>
-    call<void>("offline_run", { recipeId, scenario, continuous }, () => undefined),
+  offlineRun: (recipeId: string, scenario: Scenario, continuous: boolean, partId: string | null) =>
+    call<void>("offline_run", { recipeId, scenario, continuous, partId }, () => undefined),
+  offlineCapture: (partId: string | null) => call<void>("offline_capture", { partId }, () => undefined),
   offlineStop: (now: boolean) => call<void>("offline_stop", { now }, () => undefined),
   offlineInject: (fault: OfflineFault) => call<void>("offline_inject", { fault }, () => undefined),
 };
 
-const offlineIdle: OfflineStatus = { enabled: false, port: null, running: false, continuous: false, parts: 0, message: "", heartbeatStopped: false };
-const offlineListeners = new Set<(status: OfflineStatus) => void>();
-function publishOffline(status: OfflineStatus) {
-  offlineListeners.forEach(f => f(status));
+const siteReal: SiteStatus = { mode: "real", source: null, last: null, measurement: "lyFlow", port: null, running: false, continuous: false, parts: 0, message: "", heartbeatStopped: false, sampleSet: null, nextPart: null, recent: [] };
+const siteListeners = new Set<(status: SiteStatus) => void>();
+function publishSite(status: SiteStatus) {
+  siteListeners.forEach(f => f(status));
   return status;
 }
+
+export const siteApi = {
+  status: () => call<SiteStatus>("site_status", undefined, () => ({ ...siteReal })),
+  enterOffline: (source: OfflineSource) => call<SiteStatus>("site_enter_offline", { source }, () => ({ ...siteReal })).then(publishSite),
+  leaveOffline: () => call<SiteStatus>("site_leave_offline", undefined, () => ({ ...siteReal })).then(publishSite),
+  previewSampleSet: (dir: string) => call<SampleSetSummary>("site_preview_sample_set", { dir }, () => Promise.reject("非桌面环境") as never),
+  pickDir: (directory: string, title: string) => call<string | null>("site_pick_dir", { directory, title }, () => null),
+};
 
 export const recipeApi = {
   list: () => call<{ recipes: RecipeSummary[]; errors: string[] }>("recipe_list", undefined, () => ({ recipes: [], errors: [] })),
@@ -166,15 +171,15 @@ export function useCycle() {
   return { snapshot, logs, measured: current };
 }
 
-export function useOfflineStatus() {
-  const [status, setStatus] = useState<OfflineStatus | null>(null);
+export function useSiteStatus() {
+  const [status, setStatus] = useState<SiteStatus | null>(null);
   useEffect(() => {
     let alive = true, received = false;
-    const update = (next: OfflineStatus) => { if (alive) { received = true; setStatus(next); } };
-    offlineListeners.add(update);
-    const off = subscribe<OfflineStatus>("offline://status", update);
-    void cycleApi.offlineStatus().then(next => { if (alive && !received) setStatus(next); }).catch(() => {});
-    return () => { alive = false; offlineListeners.delete(update); off(); };
+    const update = (next: SiteStatus) => { if (alive) { received = true; setStatus(next); } };
+    siteListeners.add(update);
+    const off = subscribe<SiteStatus>("site://status", update);
+    void siteApi.status().then(next => { if (alive && !received) setStatus(next); }).catch(() => {});
+    return () => { alive = false; siteListeners.delete(update); off(); };
   }, []);
   return status;
 }

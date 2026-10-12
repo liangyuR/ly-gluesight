@@ -1161,7 +1161,7 @@ async fn s7_wire_released_does_not_create_second_ack_delivery_after_ready() {
     let submitted = PlcDelivery { state: PlcDeliveryState::Submitted, updated_at: 1, message: Some("结果已提交".into()) };
     store.insert(&PartRecord { ts: 1, sn: 12345, recipe: None, judgement: &judgement, drain_ms: None,
         frames: &[], frames_expected: 4, frames_received: 0, triggers: 4, table: None,
-        software_version: "single-ack-test", cycle_id: Some(cycle), bundle_id: None, delivery: &submitted, shots: &[] }).unwrap();
+        software_version: "single-ack-test", cycle_id: Some(cycle), bundle_id: None, delivery: &submitted, shots: &[], sample: None }).unwrap();
     rig.plc.control(json!({"op":"plc_ack"}));
     let until = Instant::now() + Duration::from_secs(6);
     let mut deliveries = 0;

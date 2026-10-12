@@ -1,8 +1,8 @@
 async (page) => {
   if (!await page.evaluate(() => !!window.__uiOperations)) throw new Error("Run guard.js first");
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
-  const offline = await read("offline_status");
-  if (!offline.enabled) throw new Error("PLC UI checks require the offline S7 line");
+  const offline = await read("site_status");
+  if (!(offline.mode === "offline")) throw new Error("PLC UI checks require the offline S7 line");
   await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "PLC 通讯", exact: true }).click();
   const retention = page.getByRole("spinbutton", { name: "日志保留天数（0 为永久）", exact: true });
   const original = await retention.inputValue();
@@ -11,7 +11,7 @@ async (page) => {
   if (await retention.inputValue() !== original) throw new Error("PLC restore did not recover the active configuration");
   await retention.fill(String(Number(original) === 7 ? 8 : 7));
   await page.getByRole("button", { name: "保存配置", exact: true }).click();
-  await page.getByText(/先停用离线模式/).first().waitFor();
+  await page.getByText(/退出离线后再修改/).first().waitFor();
   if ((await read("plc_get_config")).logRetentionDays !== Number(original)) throw new Error("Offline mode must not persist a temporary PLC configuration");
   await page.getByRole("button", { name: "还原", exact: true }).click();
   await page.getByRole("button", { name: "断开", exact: true }).click();

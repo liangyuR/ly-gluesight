@@ -22,7 +22,7 @@ vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
   saveOverview: vi.fn(), captureGet: vi.fn(), captureList: vi.fn(), captureStart: vi.fn(),
   captureSample: vi.fn(), captureImage: vi.fn(), validate: vi.fn(), publish: vi.fn(),
 } }));
-vi.mock("../src/features/cycle/api", () => ({ recipeApi: { list: vi.fn() }, useCycle: vi.fn() }));
+vi.mock("../src/features/cycle/api", () => ({ recipeApi: { list: vi.fn() }, useCycle: vi.fn(), useSiteStatus: () => null }));
 vi.mock("../src/features/camera", () => ({ cameraApi: { rigConfig: vi.fn() } }));
 vi.mock("../src/features/camera/api", () => ({ cameraApi: { rigStatus: vi.fn() } }));
 vi.mock("../src/features/plc/api", () => ({ plcApi: { getStatus: vi.fn() } }));
@@ -64,7 +64,7 @@ it("从采集原图完成逐帧示教、总览、独立样本采集验证并确�
   vi.mocked(cameraApi.rigConfig).mockResolvedValue([{
     id: "CAM-1", name: "拼接设备", source: "sim", viewCount: 3, serial: "DEVICE", acquisition: "triggered",
     fps: 20, triggerSource: "Line0", triggerActivation: "RisingEdge", triggerDelayUs: 0, debouncerUs: 0,
-    exposureUs: 60, gainDb: 0, strobe: false, chunk: true, replayDir: "", replayChannel: 0,
+    exposureUs: 60, gainDb: 0, strobe: false, chunk: true,
   }]);
   vi.mocked(captureCameraApi.rigStatus).mockResolvedValue([{ id: "CAM-1", ready: true }] as Awaited<ReturnType<typeof captureCameraApi.rigStatus>>);
   vi.mocked(plcApi.getStatus).mockResolvedValue({ state: "connected", message: "PLC 已连接" } as Awaited<ReturnType<typeof plcApi.getStatus>>);

@@ -1,11 +1,12 @@
 import type { ComponentType } from "react";
-import { Cable, Camera, History, ScanEye, ScrollText, Settings, SlidersHorizontal, type LucideIcon } from "lucide-react";
+import { Cable, Camera, FlaskConical, History, ScanEye, ScrollText, Settings, SlidersHorizontal, type LucideIcon } from "lucide-react";
 import InspectPage from "../pages/InspectPage";
 import CameraPage, { FlyshotCalibrationPage } from "../pages/CameraPage";
 import { PlcLogsPage, PlcSettingsPage } from "../pages/PlcPages";
 import HistoryPage from "../pages/HistoryPage";
 import SettingsPage from "../pages/SettingsPage";
 import OperationGuidePage from "../pages/OperationGuidePage";
+import OfflinePage from "../pages/OfflinePage";
 import LibraryPage from "../features/workspace/LibraryPage";
 import ProgressPage from "../features/workspace/ProgressPage";
 import CapturePage from "../features/workspace/CapturePage";
@@ -52,6 +53,7 @@ export const navEntries: NavEntry[] = [
     label: "设备与运行",
     icon: Cable,
     children: [
+      { path:"/offline",label:"离线控制台",icon:FlaskConical,element:OfflinePage },
       { path:"/camera",label:"设备与采集",icon:Camera,element:CameraPage },
       { path: "/plc", label: "PLC 通讯", icon: Cable, element: PlcSettingsPage },
       { path:"/camera/calibration",label:"飞拍工位标定",icon:Camera,element:FlyshotCalibrationPage },

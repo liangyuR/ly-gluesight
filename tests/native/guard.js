@@ -5,8 +5,8 @@ async (page) => {
     if (!["com.xyzrobotics.tujiaovision.ui-tests", "com.xyzrobotics.tujiaovision.p0-tests"].some(id => records.root.includes(id))) throw new Error("Non-isolated data directory");
     const cameras = await invoke("camera_rig_config");
     const plc = await invoke("plc_get_config");
-    const offline = await invoke("offline_status");
-    if (!offline.enabled || cameras.some(c => c.source === "mvs")) throw new Error("UI testing requires the offline S7 line and offline cameras");
+    const offline = await invoke("site_status");
+    if (!(offline.mode === "offline") || cameras.some(c => c.source === "mvs")) throw new Error("UI testing requires the offline S7 line and offline cameras");
     const phase = (await invoke("cycle_snapshot")).phase;
     if (!["IDLE", "NOT_READY", "FAULT"].includes(phase)) throw new Error("UI configuration testing requires a stopped cycle");
     window.__uiOperations = { startedAt: new Date().toISOString(), checks: [], initial: { cameras, plc, offline, phase }, dataRoot: records.root };

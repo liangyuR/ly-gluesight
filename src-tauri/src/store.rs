@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cycle::{FrameStatus, FrameView};
 use crate::judge::{Judgement, PointState, Verdict};
+use crate::offline::sample_set::SampleRef;
 use crate::recipe::Recipe;
 
 /// 一件工件的完整结果，入库一行；测量点按弧长顺序压成一个 BLOB，格式见 POINTS_FORMAT。
@@ -28,6 +29,7 @@ pub struct PartRecord<'a> {
     pub bundle_id: Option<&'a str>,
     pub delivery: &'a PlcDelivery,
     pub shots: &'a [PartShot],
+    pub sample: Option<&'a SampleRef>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,7 +101,7 @@ pub struct PartShot {
     pub raw_files: Vec<ShotRawFile>,
 }
 
-pub const DB_VERSION: i64 = 3;
+pub const DB_VERSION: i64 = 4;
 
 /// 测量点 BLOB 格式版本。1：每点 f32 位置 + u8 状态（5 字节）；2：f32 位置 + f32 胶宽 + u8 状态（9 字节）。
 const POINTS_FORMAT: i64 = 2;
@@ -176,6 +178,8 @@ pub struct PartSummary {
     pub cycle_id: Option<String>,
     pub bundle_id: Option<String>,
     pub delivery: PlcDelivery,
+    /// 离线样本集运行的样本件引用（只用于展示与追溯，不参与判定）
+    pub sample: Option<SampleRef>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -257,7 +261,7 @@ fn parse_verdict(s: &str) -> Verdict {
 
 const SUMMARY_COLS: &str = "id, ts, sn, recipe_id, recipe_version, recipe_revision, trigger_mode, verdict, plc_code, fault_code, \
                             reason, drain_ms, frames_expected, frames_received, retest_of, cycle_id, bundle_id, \
-                            delivery_state, delivery_updated_at, delivery_message";
+                            delivery_state, delivery_updated_at, delivery_message, sample";
 
 fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
     Ok(PartSummary {
@@ -279,6 +283,8 @@ fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
         cycle_id: row.get(15)?,
         bundle_id: row.get(16)?,
         delivery: delivery_row(row, 17)?,
+        sample: row.get::<_, Option<String>>(20)?.map(|text| serde_json::from_str(&text)
+            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(20, rusqlite::types::Type::Text, Box::new(e)))).transpose()?,
     })
 }
 
@@ -466,7 +472,8 @@ impl Store {
                  recording_state TEXT NOT NULL DEFAULT 'pending',
                  recording_available INTEGER NOT NULL DEFAULT 0,
                  recording_directory TEXT,
-                 recording_errors TEXT NOT NULL DEFAULT '[]'
+                 recording_errors TEXT NOT NULL DEFAULT '[]',
+                 sample TEXT
              );
              CREATE INDEX IF NOT EXISTS parts_ts ON parts(ts);
              CREATE INDEX IF NOT EXISTS parts_sn ON parts(sn);
@@ -502,7 +509,7 @@ impl Store {
                  PRIMARY KEY (part_id, k),
                  UNIQUE (part_id, shot_id)
              );
-             PRAGMA user_version = 3;
+             PRAGMA user_version = 4;
              COMMIT;",
         )
         .map_err(db_err)?;
@@ -605,9 +612,9 @@ impl Store {
         tx.execute(
             "INSERT INTO parts (ts, sn, recipe_id, recipe_version, recipe_revision, trigger_mode, verdict, plc_code, fault_code,
                  reason, drain_ms, frames_expected, frames_received, triggers, retest_of, software_version, judgement, frames,
-                 cycle_id, bundle_id, delivery_state, delivery_updated_at, delivery_message)
+                 cycle_id, bundle_id, delivery_state, delivery_updated_at, delivery_message, sample)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                 ?19, ?20, ?21, ?22, ?23)",
+                 ?19, ?20, ?21, ?22, ?23, ?24)",
             params![
                 r.ts,
                 r.sn,
@@ -632,6 +639,7 @@ impl Store {
                 enum_name(r.delivery.state),
                 r.delivery.updated_at,
                 r.delivery.message,
+                r.sample.map(serde_json::to_string).transpose().map_err(|e| e.to_string())?,
             ],
         )
         .map_err(db_err)?;
@@ -683,6 +691,7 @@ impl Store {
             && summary.recipe_version == record.recipe.map(|recipe| recipe.version)
             && summary.recipe_revision.as_deref() == record.recipe.map(|recipe| recipe.revision_id.as_str())
             && summary.frames_expected == record.frames_expected && summary.frames_received == record.frames_received
+            && summary.sample.as_ref() == record.sample
             && existing.triggers == record.triggers && existing.software_version == record.software_version
             && serde_json::to_value(&existing.judgement).map_err(|error| error.to_string())? == serde_json::to_value(record.judgement).map_err(|error| error.to_string())?
             && serde_json::to_value(&existing.frames).map_err(|error| error.to_string())? == serde_json::to_value(record.frames).map_err(|error| error.to_string())?
@@ -933,7 +942,7 @@ impl Store {
             .query_row(
                 &format!("SELECT {SUMMARY_COLS}, judgement, frames, triggers, software_version,recording_state,recording_available,recording_directory,recording_errors FROM parts WHERE id = ?1"),
                 [id],
-                |row| Ok((summary(row)?, row.get::<_, String>(20)?, row.get::<_, String>(21)?, row.get::<_, i64>(22)? as u64, row.get::<_, String>(23)?, recording_row(row, 24)?)),
+                |row| Ok((summary(row)?, row.get::<_, String>(21)?, row.get::<_, String>(22)?, row.get::<_, i64>(23)? as u64, row.get::<_, String>(24)?, recording_row(row, 25)?)),
             )
             .optional()
             .map_err(db_err)?

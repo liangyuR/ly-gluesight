@@ -17,6 +17,7 @@ type Editing = { point: PlcPoint; isNew: boolean } | null;
 
 interface PlcPageProps {
   tagPresets?: TagPreset[];
+  readOnly?: boolean;
 }
 
 const configText = (config: PlcConfig | null) => JSON.stringify(config, (_key, value) =>
@@ -27,7 +28,7 @@ const handshakePhaseLabels: Record<PlcHandshakeState["phase"], string> = {
   draining: "等待帧处理结束", awaitAck: "等待结果确认", releasing: "等待握手释放", fault: "故障",
 };
 
-export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
+export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPageProps) {
   const status = usePlcStatus();
   const values = usePlcValues();
   const { blockedReason, handshake } = usePlcOperationState();
@@ -156,7 +157,7 @@ export default function PlcPage({ tagPresets = [] }: PlcPageProps) {
         </div>
         {handshake.message && <p className="muted hint">{handshake.message}</p>}
       </section>}
-      <fieldset disabled={busy} className="stack" style={fieldsetStyle}>
+      <fieldset disabled={busy || readOnly} className="stack" style={fieldsetStyle}>
       <div className="panel">
         <div className="panel-toolbar">
           <div className="row">

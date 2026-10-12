@@ -72,7 +72,7 @@ pub fn plc_get_config(plc: State<'_, PlcHost>) -> PlcConfig {
 pub async fn plc_save_config(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>, config: PlcConfig) -> Result<(), String> {
     let _gate = cycle.plc_gate.lock().await;
     require_idle(&cycle)?;
-    if crate::offline::enabled(&app) { return Err("离线模式使用临时 PLC 配置，先停用离线模式再修改".into()); }
+    if crate::offline::enabled(&app) { return Err("离线模式由站点模式管理 PLC 配置，退出离线后再修改".into()); }
     validate_config(&config)?;
     config.save(&plc.config_path)?;
     let r = plc.engine.apply_config(config).await;

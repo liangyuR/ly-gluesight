@@ -158,6 +158,7 @@ fn part(cycle: &str, sn: u32) -> RecordedPart {
         bundle_id: Some("frozen-bundle".into()),
         delivery: delivery(PlcDeliveryState::Pending, 10),
         shots,
+        sample: None,
     }
 }
 

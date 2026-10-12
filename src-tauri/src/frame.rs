@@ -113,7 +113,7 @@ pub enum CounterSource {
     ChunkFrame,
     /// 没有 Chunk，只有 SDK 帧号
     SdkFrame,
-    /// 模拟、回放相机自己编的号：每次触发加一，（重新）加载时从 0 重来
+    /// 模拟、样本集相机自己编的号：每次触发加一，（重新）加载时从 0 重来
     Synthetic,
 }
 
@@ -135,7 +135,7 @@ impl CounterSource {
 pub struct Frame {
     /// 相机组里的序号（从 0 开始）
     pub cam: u8,
-    /// 设备会话号：海康每打开一次、模拟 / 回放每（重新）加载一次换一个新号，进程内不重复。
+    /// 设备会话号：海康每打开一次、模拟 / 样本集每（重新）加载一次换一个新号，进程内不重复。
     /// 会话变了，触发计数可能从头数起
     pub session: u64,
     /// 触发计数的来源
@@ -144,7 +144,7 @@ pub struct Frame {
     pub trigger_counter: u64,
     pub lost_packets: u32,
     pub ts: i64,
-    /// 软触发（示教取图、回放"下一张"）出来的帧
+    /// 软触发（示教取图、样本集"下一张"）出来的帧
     #[serde(skip)]
     pub manual: bool,
     /// 按视角 1–3 排列的整帧灰度图；三目必须整组交付。单视角模拟测量可只交元数据。

@@ -191,11 +191,11 @@ try {
   assert(/^P0-AUDIT-[A-Z0-9_-]+$/.test(recipe.id) && recipe.id.length <= 32);
   assert(!recipe.teachingId && recipe.triggerMode === 'fly' && recipe.shots.length === 4);
   assert(Number.isInteger(recipe.productCode) && recipe.productCode > 0 && recipe.productCode <= 65535);
-  assert(settings.vision === false && settings.record === 'all' && settings.productSource === 'plc');
+  assert(settings.record === 'all' && settings.productSource === 'plc');
   assert(settings.timeouts.armMs === 200 && settings.recordMaxGb === 20 && settings.timeouts.procMs >= 200);
   assert(settings.lyflowCore === null || /^c:\\/i.test(settings.lyflowCore), 'No non-C engine configuration');
   assert(Array.isArray(cameras.cameras) && cameras.cameras.length > 0 && cameras.cameras.length <= 3);
-  assert(cameras.cameras.every(camera => camera.source === 'sim' && camera.acquisition === 'triggered' && !camera.replayDir));
+  assert(cameras.cameras.every(camera => camera.source === 'sim' && camera.acquisition === 'triggered'));
   assert(recipe.shots.every(shot => cameras.cameras.some(camera => camera.id === shot.camera && camera.viewCount >= shot.view)));
   assert(recipe.shots.every(shot => !shot.skip && shot.path.length >= 2 && shot.mmPerPx > 0));
   report.inputs = inputs; report.buildManifest = manifest; report.settings = settings; report.explicitRefusalFixture = recipe;
@@ -242,7 +242,6 @@ try {
     for (const [key, value] of Object.entries(expected)) assert.deepEqual(actual[key], value, 'Configured camera field differs: ' + key);
   }
   assert((await read('history_query', { query: { limit: 1 } })).items.length === 0);
-  assert.equal((await read('cycle_get_settings')).vision, false);
   await page.getByRole('navigation', { name: '操作导航' }).getByRole('link', { name: 'PLC 通讯', exact: true }).click();
   await page.getByRole('button', { name: '连接', exact: true }).click();
   await page.waitForFunction(async () => (await window.__TAURI_INTERNALS__.invoke('plc_get_status')).state === 'connected');

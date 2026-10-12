@@ -4,7 +4,7 @@
 //! - 计数账（[`Ledgers`]）：每台相机本会话见到的最大触发计数。节拍对每一帧都记账，空闲时的游离帧、
 //!   手动取的帧也记，否则下一件的基线会落后；
 //! - 布防（[`ShotRouter::arm`]）：基线 = max(本会话见到的最大计数, 上一件收尾推算的下限)；本会话还没见过帧时
-//!   用开流后的计数起点（模拟 / 回放为 0，海康按 [`Policy::counter_after_open`]，未经台架确认就拒绝布防）；
+//!   用开流后的计数起点（模拟 / 样本集为 0，海康按 [`Policy::counter_after_open`]，未经台架确认就拒绝布防）；
 //! - 路由（[`ShotRouter::route`]）：本机序号 = 触发计数 − 基线，对应这台相机的第几个拍照点；
 //! - 收尾（[`ShotRouter::close`]）：下一件的基线下限 = 基线 + PLC 报的本件已发触发数（S7 `cameraNTriggers`：
 //!   partEnd 核对过的，或提前判 ERR 的件在 PLC 确认结果时读到的），上一件迟到的帧就落在基线以内，成了旧帧；
@@ -23,7 +23,7 @@ use crate::frame::{CounterSource, Frame};
 use crate::judge::fault;
 use crate::recipe::ShotSpec;
 
-/// 模拟、回放相机（重新）加载后的触发计数起点：第一帧是 1。
+/// 模拟、样本集相机（重新）加载后的触发计数起点：第一帧是 1。
 pub const SYNTHETIC_START: u64 = 0;
 
 /// 路由要用的帧身份。
@@ -229,7 +229,7 @@ impl Policy {
         Self { trusted: vec![CounterSource::ChunkTrigger], counter_after_open }
     }
 
-    /// 离线产线（进程内 S7 服务）：模拟、回放相机的计数也认；接真实 PLC 时不用。
+    /// 离线产线（进程内 S7 服务）：模拟、样本集相机的计数也认；接真实 PLC 时不用。
     pub fn offline(counter_after_open: Option<u64>) -> Self {
         Self { trusted: vec![CounterSource::ChunkTrigger, CounterSource::Synthetic], counter_after_open }
     }
@@ -248,7 +248,7 @@ pub struct ArmCam {
     pub camera: String,
     /// 此刻的会话号
     pub session: u64,
-    /// 出第一帧之前就确定的计数来源：模拟、回放为 Synthetic；海康要看帧里的 Chunk，为空
+    /// 出第一帧之前就确定的计数来源：模拟、样本集为 Synthetic；海康要看帧里的 Chunk，为空
     pub source: Option<CounterSource>,
     pub counter_after_open: Option<u64>,
 }
@@ -279,7 +279,7 @@ impl fmt::Display for Refusal {
             Refusal::NoCamera { camera } => write!(f, "配方的相机 {camera} 不在相机组里"),
             Refusal::SharedSlot { camera, other } => write!(f, "相机 {camera} 与 {other} 对到了同一台相机"),
             Refusal::Untrusted { camera, source: CounterSource::Synthetic } => {
-                write!(f, "相机 {camera} 是模拟 / 回放相机，生产节拍不能用它的计数认拍照点")
+                write!(f, "相机 {camera} 是模拟 / 样本集相机，生产节拍不能用它的计数认拍照点")
             }
             Refusal::Untrusted { camera, source } => {
                 write!(f, "相机 {camera} 的帧只有{}，没有触发计数，认不出拍照点（相机需开启 Chunk 触发计数）", source.label())

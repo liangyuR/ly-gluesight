@@ -1,8 +1,8 @@
 async (page) => {
   const id = "P0-TRICAM-UI"; let bundleId;
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
-  const guard = { records: await read("records_list"), cameras: await read("camera_rig_config"), offline: await read("offline_status"), status: await read("plc_get_status"), settings: await read("cycle_get_settings"), cycle: await read("cycle_snapshot"), engine: await read("engine_status") };
-  if (!guard.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || guard.cameras.some(c => c.source !== "sim") || !guard.offline.enabled || guard.status.state !== "connected" || guard.cycle.phase !== "IDLE" || guard.settings.timeouts.armMs !== 200 || !guard.settings.vision || guard.settings.record !== "all" || !guard.engine.ready || !guard.engine.measuring) throw new Error(JSON.stringify(guard));
+  const guard = { records: await read("records_list"), cameras: await read("camera_rig_config"), offline: await read("site_status"), status: await read("plc_get_status"), settings: await read("cycle_get_settings"), cycle: await read("cycle_snapshot"), engine: await read("engine_status") };
+  if (!guard.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || guard.cameras.some(c => c.source !== "sim") || !(guard.offline.mode === "offline") || guard.status.state !== "connected" || guard.cycle.phase !== "IDLE" || guard.settings.timeouts.armMs !== 200 || !guard.settings.vision || guard.settings.record !== "all" || !guard.engine.ready || !guard.engine.measuring) throw new Error(JSON.stringify(guard));
   const production = await read("cycle_layout", { recipeId: id });
   if (production.revisionId !== `${id}-v1`) throw new Error("Original production recipe changed");
   await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "在线检测", exact: true }).click();
@@ -11,9 +11,12 @@ async (page) => {
   for (const scenario of ["normal", "gap"]) {
     const prior = await read("history_query", { query: { recipeId: id, limit: 1 } });
     const previousId = prior.items[0]?.id ?? -1;
+    await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "离线控制台", exact: true }).click();
+    await page.getByRole("combobox", { name: "离线配方", exact: true }).selectOption(id);
     await page.getByRole("combobox", { name: "离线工况", exact: true }).selectOption(scenario);
     const started = Date.now();
     await page.getByRole("button", { name: "运行一件", exact: true }).click();
+    await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "在线检测", exact: true }).click();
     let detail, raw;
     const recordingObservations = [];
     for (let attempt = 0; attempt < 200; attempt++) {
@@ -45,8 +48,8 @@ async (page) => {
     if (measured.length !== 4 || measured.some(m => m.cycleId !== s.cycleId || m.bundleId !== bundleId || m.error || !m.located)) throw new Error(JSON.stringify(measured));
     await page.screenshot({ path: `output/playwright/p0-history/01-online-${scenario}.png`, fullPage: true });
     results.push({ scenario, summary: s, recordingObservations, arming: { configuredArmMs: 200, elapsedMs: armMs, log: arming }, shots: detail.shots, recording: detail.recording, originals: raw, measurements: measured.map(m => ({ k: m.k, cycleId: m.cycleId, bundleId: m.bundleId, camera: m.camera, ms: m.ms, points: m.idx.length })), logs });
-    for (let attempt = 0; attempt < 100 && (await read("offline_status")).running; attempt++) await page.waitForTimeout(100);
-    if ((await read("offline_status")).running || (await read("cycle_snapshot")).phase !== "IDLE") throw new Error("Offline line did not finish the result handshake");
+    for (let attempt = 0; attempt < 100 && (await read("site_status")).running; attempt++) await page.waitForTimeout(100);
+    if ((await read("site_status")).running || (await read("cycle_snapshot")).phase !== "IDLE") throw new Error("Offline line did not finish the result handshake");
   }
   return { results, engine: guard.engine, settings: guard.settings, productionRevision: production.revisionId, bundleId };
 }

@@ -1,4 +1,4 @@
-export type CameraSource = "sim" | "mvs" | "replay";
+export type CameraSource = "mvs" | "sim" | "sampleSet";
 export type Acquisition = "triggered" | "freeRun";
 
 export interface CameraConfig {
@@ -20,8 +20,6 @@ export interface CameraConfig {
   strobe: boolean;
   chunk: boolean;
   counterAfterOpen?: number | null;
-  replayDir: string;
-  replayChannel: number;
 }
 
 export interface DeviceSummary {
@@ -73,10 +71,4 @@ export interface PreviewImage {
   fullWidth: number;
   fullHeight: number;
   data: ImageData;
-}
-
-export interface RecordEntry {
-  path: string;
-  name: string;
-  frames: number;
 }

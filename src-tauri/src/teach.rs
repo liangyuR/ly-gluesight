@@ -1,4 +1,4 @@
-//! 帧录制目录列表（回放相机选目录用）。
+//! 帧录制目录列表（测试脚本用来定位录制根目录）。
 
 use serde::Serialize;
 use tauri::State;

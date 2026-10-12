@@ -21,7 +21,7 @@ fn relative_path<'a>(cycle_id: &str, raw: &'a ShotRawFile) -> Result<&'a Path, S
 
 fn original_bytes(root: &Path, relative: &Path) -> Result<Vec<u8>, String> {
     let source = root.join(relative);
-    crate::replay::checked_source_path(&source)?;
+    crate::image_file::checked_source_path(&source)?;
     let path = source.canonicalize().map_err(|_| "原图未保留或已按保留策略清理".to_string())?;
     if !path.starts_with(root) || !path.is_file() { return Err("原图路径越过录制目录或不是文件".into()); }
     let bytes = std::fs::read(path).map_err(|error| format!("原图读取失败：{error}"))?;
@@ -39,7 +39,7 @@ fn expected_dimensions(root: &Path, cycle_id: &str, shot: &PartShot, raw: &ShotR
     match std::fs::symlink_metadata(&metadata_path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err("录制元数据缺失，不能核验历史原图完整身份".into()),
         Err(error) => return Err(format!("录制元数据无法读取：{error}")),
-        Ok(_) => crate::replay::checked_source_path(&metadata_path)?,
+        Ok(_) => crate::image_file::checked_source_path(&metadata_path)?,
     }
     let metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(&metadata_path)
         .map_err(|error| format!("录制元数据读取失败：{error}"))?)
@@ -83,7 +83,7 @@ fn checked_dimensions(bytes: &[u8], expected: Option<[u32; 2]>, file: &str) -> R
 }
 
 pub(super) fn load_verified(root: &Path, cycle_id: &str, shot: &PartShot, raw: &ShotRawFile) -> Result<FrameImage, String> {
-    crate::replay::checked_source_path(root)?;
+    crate::image_file::checked_source_path(root)?;
     let root = root.canonicalize().map_err(|_| "原图目录不存在或已清理".to_string())?;
     let bytes = original_bytes(&root, relative_path(cycle_id, raw)?)?;
     let expected = expected_dimensions(&root, cycle_id, shot, raw)?;
@@ -94,7 +94,7 @@ pub(super) fn load_verified(root: &Path, cycle_id: &str, shot: &PartShot, raw: &
 }
 
 pub(super) fn frames(root: &Path, cycle_id: &str, shots: &[PartShot], ts: i64) -> Result<Vec<RawFrame>, String> {
-    crate::replay::checked_source_path(root)?;
+    crate::image_file::checked_source_path(root)?;
     let root = root.canonicalize().map_err(|_| "原图目录不存在或已清理".to_string())?;
     let mut result = Vec::new();
     let mut seen = std::collections::HashSet::new();

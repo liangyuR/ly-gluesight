@@ -81,7 +81,7 @@ export default function CalibPanel({ cam, view=1, isSim, imageId }: { cam: numbe
         </button>
       </div>
       {isSim ? (
-        <p className="muted">模拟相机的像素当量已知（0.08 mm/px），自动使用内置标定。</p>
+        <p className="muted">合成图相机的像素当量已知（0.08 mm/px），自动使用内置标定。</p>
       ) : (
         <fieldset disabled={busy||loading||!isTauri()} style={{border:0,padding:0,margin:0,minWidth:0}}><div className="calib-row">
           <label className="field">

@@ -281,7 +281,7 @@ pub async fn workspace_extract_centerline(app: AppHandle, id: String, revision: 
             let r = w.doc.build()?.for_view(k, w.doc.shots[k].view)?;
             (image_file(&host, &id, &image_id)?, r.shot_detect(k).polarity)
         };
-        let image = crate::replay::load(&path)?;
+        let image = crate::image_file::load(&path)?;
         let points = super::centerline::extract(&image, roi, polarity)?;
         let items = host.items.lock().unwrap(); let current = items.get(&id).ok_or("候选不存在")?; current.expect(revision)?;
         if current.frames[k].image.as_ref().is_none_or(|i| i.id != image_id) { return Err("提取期间图像已变化".into()); }
@@ -329,6 +329,8 @@ pub fn workspace_adopt_capture(app: AppHandle, id: String, revision: u64, round_
         return Err("继承示教前必须确认点数、轨迹及触发顺序对应一致".into());
     }
     let camera = app.state::<CycleHost>().camera.configs().into_iter().find(|c| c.id == round.camera_id).ok_or("采集设备不存在")?;
+    let sample_scale = (camera.source == CameraSource::SampleSet).then(|| crate::offline::sample_set(&app))
+        .flatten().filter(|set| set.has_camera(&round.camera_id)).and_then(|set| set.manifest().mm_per_px);
     let old = w.clone();
     w.doc.shots.clear(); w.frames.clear();
     for (k, captured) in round.frames.iter().enumerate() {
@@ -346,14 +348,14 @@ pub fn workspace_adopt_capture(app: AppHandle, id: String, revision: u64, round_
         let mut frame = Teaching::empty(k);
         w.doc.shots.push(shot);
         for raw in &captured.views {
-            let image = crate::replay::load(Path::new(&raw.path))?;
+            let image = crate::image_file::load(Path::new(&raw.path))?;
             if [image.width, image.height] != [raw.width, raw.height] { return Err("采集图尺寸与记录不一致".into()); }
             let recipe = w.doc.build()?;
             let mut projection = recipe.clone();
             projection.shots[k].view = raw.view;
             projection.shots[k].calib = w.doc.shots[k].views.iter().find(|v| v.view == raw.view).and_then(|v| v.calib.clone());
             let (camera_tag, calib_tag) = tags(&app, &projection, k)?;
-            let scale = vision::calib_info(&vision::shot_calib_path(&app, &projection, k)?).and_then(|c| c.mm_per_px).map(|scale| scale as f32);
+            let scale = vision::calib_info(&vision::shot_calib_path(&app, &projection, k)?).and_then(|c| c.mm_per_px).map(|scale| scale as f32).or(sample_scale);
             let previous_calib = old.frames.get(k).and_then(|f| f.views.iter().find(|i| i.view == raw.view)).map(|i| &i.calib_tag).unwrap_or(&Value::Null);
             let inherited_scale = if let Some(v) = w.doc.shots[k].views.iter_mut().find(|v| v.view == raw.view) {
                 v.mm_per_px = if reuse_teaching { updated_calibration_scale(v.mm_per_px, previous_calib, scale) } else { scale };
@@ -365,7 +367,7 @@ pub fn workspace_adopt_capture(app: AppHandle, id: String, revision: u64, round_
             let image_id = format!("{}-{k}-v{}", round.round_id, raw.view);
             let path = image_file(&host, &w.doc.id, &image_id)?;
             std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
-            crate::replay::save_pgm(&path, &image)?;
+            crate::image_file::save_pgm(&path, &image)?;
             frame.views.push(FrozenImage { id: image_id, view: raw.view, source: format!("capture:{}", round.round_id),
                 captured_at: round.created_at, size: [raw.width, raw.height], camera: round.camera_id.clone(), camera_tag, calib_tag,
                 geometry_tag: shot_tags(&projection, k)?.0, exposure_us: Some(camera.exposure_us), gain_db: Some(camera.gain_db), history_id: None });
@@ -402,10 +404,10 @@ pub fn workspace_capture_sample(app: AppHandle, id: String, revision: u64, round
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     for (k, frame) in round.frames.iter().enumerate() {
         for raw in &frame.views {
-            let image = crate::replay::load(Path::new(&raw.path))?;
+            let image = crate::image_file::load(Path::new(&raw.path))?;
             let frozen = w.frames[k].views.iter().find(|i| i.view == raw.view).ok_or("样本的图编号与示教不一致")?;
             if [image.width, image.height] != frozen.size { return Err("验证样本与示教图的尺寸不一致".into()); }
-            crate::replay::save_pgm(&dir.join(format!("k{k}-v{}.pgm", raw.view)), &image)?;
+            crate::image_file::save_pgm(&dir.join(format!("k{k}-v{}.pgm", raw.view)), &image)?;
         }
     }
     w.sample_bank.push(BankSample { id: round_id.clone(), name: format!("独立采集 {}", round.created_at), geometry_tag: images_tag(&recipe), expected, created_at: round.created_at, capture_id: Some(round_id.clone()), camera_state: round.camera_config });

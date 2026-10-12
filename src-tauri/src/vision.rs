@@ -230,7 +230,7 @@ impl VisionHost {
             version: engine.as_ref().map(|e| e.version.clone()),
             message: match (&engine, &resolved) {
                 (Some(_), _) => "已加载".into(),
-                (None, None) => "未配置核心库路径，飞拍件会判 ERR（不用 lyFlow 时在系统设置里把飞拍改为模拟测量）".into(),
+                (None, None) => "未配置核心库路径，飞拍件会判 ERR；请在系统设置指定 lyFlow 核心库".into(),
                 (None, Some(_)) => self.error.lock().unwrap().clone().unwrap_or_else(|| "加载失败".into()),
             },
         }
@@ -249,15 +249,15 @@ pub fn shot_calib_path(app: &AppHandle, recipe: &Recipe, k: usize) -> Result<Pat
     station_calib_path(app, &recipe.shots.get(k).ok_or("拍照点不存在")?.calib_ref())
 }
 
-/// 配方各相机的来源：要么全是模拟，要么全是真实 / 回放（示教资料与标定的来路不同）。
+/// 配方各相机的来源：要么全是模拟合成，要么全是真实原图（海康 / 离线样本集），示教资料与标定的来路不同。
 pub fn recipe_source(app: &AppHandle, recipe: &Recipe) -> Result<CameraSource, String> {
     let rig = &app.state::<CycleHost>().camera;
     let mut found: Option<(CameraSource, String)> = None;
     for id in recipe.cameras() {
         let source = rig.slot(rig.require(&id)? as usize).ok_or("相机不存在")?.config().source;
         match &found {
-            Some((first, first_id)) if (*first == CameraSource::Sim) != (source == CameraSource::Sim) => {
-                return Err(format!("配方 {} 的相机来源不一致：{first_id} 是 {first:?}，{id} 是 {source:?}；要么全用模拟相机，要么全用真实 / 回放相机", recipe.id));
+            Some((first, first_id)) if first.synthetic() != source.synthetic() => {
+                return Err(format!("配方 {} 的相机来源不一致：{first_id} 是 {first:?}，{id} 是 {source:?}；要么全用模拟相机，要么全用真实原图（海康 / 样本集）相机", recipe.id));
             }
             Some(_) => {}
             None => found = Some((source, id)),

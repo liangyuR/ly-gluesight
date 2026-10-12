@@ -130,6 +130,9 @@ h1, h3, p { margin: 0; }
   border-bottom: 1px solid var(--border);
 }
 .main-header h1 { font-size: 20px; font-weight: 600; }
+.site-badge { margin-left: auto; display: inline-flex; align-items: center; height: 28px; padding: 0 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: var(--text-muted); text-decoration: none; white-space: nowrap; }
+.site-badge:hover { color: var(--text); }
+.site-badge.offline { color: var(--warn); background: var(--warn-soft); border-color: var(--warn); font-weight: 600; }
 .main-body { flex: 1; min-height: 0; overflow: auto; padding: 20px; }
 
 .panel {
