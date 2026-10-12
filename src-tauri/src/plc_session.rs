@@ -362,6 +362,9 @@ impl PlcSession {
             self.fault_attempted = None;
             self.message = Some("S7 连接会话已更新，需确认空闲输入后复位；未结事务保留".into());
         }
+        if status.poll_count == 0 || status.last_poll.is_none_or(|polled| polled < status.since) {
+            return Ok(SessionEvent::None);
+        }
         let snapshot = Snapshot::capture(engine, self.contract.as_ref().unwrap(), Self::max_age(engine))?;
         let now = now_ms();
         let heartbeat = snapshot.read_bool(tag::PLC_HEARTBEAT)?;

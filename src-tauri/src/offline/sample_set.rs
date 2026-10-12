@@ -250,7 +250,7 @@ impl SampleSet {
     pub fn summary(&self) -> SampleSetSummary {
         let m = &self.manifest;
         SampleSetSummary {
-            id: m.id.clone(), name: m.name.clone(), source: m.source.clone(), dir: self.root.display().to_string(),
+            id: m.id.clone(), name: m.name.clone(), source: m.source.clone(), dir: { let dir = self.root.display().to_string(); dir.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(dir) },
             shot_count: m.shots.len(), cameras: m.cameras.clone(), mm_per_px: m.mm_per_px,
             parts: m.parts.iter().map(|p| PartSummary { part_id: p.part_id.clone(), sn: p.sn.clone(), label: p.label }).collect(),
             missing: self.missing.iter().take(MISSING_SHOWN).cloned().collect(),

@@ -30,6 +30,10 @@ struct Bench {
 
 impl Bench {
     async fn new(name: &str) -> Self {
+        Self::new_with(name, |_| {}).await
+    }
+
+    async fn new_with(name: &str, before_connect: impl FnOnce(&S7Server)) -> Self {
         let mut config = crate::inspection::default_plc_config();
         let layout = Layout::from_config(&config).unwrap();
         let memory = layout.memory();
@@ -45,6 +49,7 @@ impl Bench {
         std::fs::create_dir_all(&directory).unwrap();
         let sink: EventSink = Arc::new(|_| {});
         let engine = PlcEngine::new(config, Arc::new(Logbook::open(&directory.join("plc.db"), sink.clone(), 1).unwrap()), sink);
+        before_connect(&server);
         engine.connect().await;
         let plan = PlcPlan::compile("part-A".into(), 7, "cam1".into(), (1..=4).map(|i| PlanShot {
             shot_id: format!("P{i}"), pose_id: format!("P{i}"), camera_id: "cam1".into(),
@@ -107,6 +112,24 @@ async fn offline_line_over_s7_completes_parts_with_matched_ack_and_returns_to_id
             assert_eq!(bench.line.read(field), 0, "{field}");
         }
     }
+    bench.engine.disconnect().await;
+}
+
+#[tokio::test]
+async fn new_connection_before_first_poll_waits_instead_of_faulting_and_disconnecting() {
+    let mut bench = Bench::new_with("first-poll", |server| {
+        server.inject(s7_server::Fault::Delay(Duration::from_millis(200)));
+        server.inject(s7_server::Fault::Delay(Duration::from_millis(200)));
+    }).await;
+    let until = Instant::now() + Duration::from_secs(3);
+    while bench.engine.status().state != LinkState::Connected {
+        assert!(Instant::now() < until, "未连上离线 S7 服务");
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    assert_eq!(bench.engine.status().poll_count, 0);
+    let event = bench.session.poll(&bench.engine, false, true).await;
+    assert!(!matches!(event, SessionEvent::Fault(_)), "{event:?}");
+    assert_eq!(bench.engine.status().state, LinkState::Connected);
     bench.engine.disconnect().await;
 }
 
