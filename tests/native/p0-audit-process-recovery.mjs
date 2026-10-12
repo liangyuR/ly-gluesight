@@ -1,11 +1,19 @@
 import { chromium } from 'playwright-core';
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync, execFile } from 'node:child_process';
 import { mkdir, readFile, writeFile, readdir, lstat, realpath } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
-import { join, dirname, resolve, basename } from 'node:path';
-import { parseArgs } from 'node:util';
-import { sampleProcess } from './p0-cyclehost-performance.mjs';
+import { join, dirname, resolve, basename, isAbsolute } from 'node:path';
+import { parseArgs, promisify } from 'node:util';
+async function verifyProcessIdentity(pid, executable, expectedStart) {
+  assert(Number.isSafeInteger(pid) && pid > 0 && isAbsolute(executable));
+  const command = "$p = Get-Process -Id " + pid + " -ErrorAction Stop; [pscustomobject]@{pid=$p.Id;path=$p.Path;start=$p.StartTime.ToUniversalTime().ToString('o')} | ConvertTo-Json -Compress";
+  const { stdout } = await promisify(execFile)('pwsh', ['-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true });
+  const identity = JSON.parse(stdout);
+  assert.equal(resolve(identity.path).toLowerCase(), resolve(executable).toLowerCase(), 'PID belongs to a different executable');
+  if (expectedStart) assert.equal(identity.start, expectedStart, 'Owned process restarted during the run');
+  return identity;
+}
 
 const identifier = 'com.xyzrobotics.tujiaovision.p0-tests.audit';
 const { values } = parseArgs({ options: {
@@ -70,7 +78,7 @@ function startChild(name, executable, arguments_, options = {}) {
 async function identify(child) {
   const state = children.get(child);
   assert(child.pid && child.exitCode === null && !state.error, state.error ?? 'Owned child exited before identity check');
-  state.identity = await sampleProcess(child.pid, state.executable);
+  state.identity = await verifyProcessIdentity(child.pid, state.executable);
   report.ownedProcesses.push({ name: state.name, ...state.identity });
   return state.identity;
 }
@@ -80,7 +88,7 @@ async function stopChild(child, force = true) {
   if (child.exitCode !== null || child.signalCode !== null) { state.stopped ??= { at: new Date().toISOString(), alreadyExited: true, exitCode: child.exitCode, signal: child.signalCode }; return; }
   assert(state.identity, 'Cannot terminate a process without recorded path/start identity');
   const ended = new Promise(done => child.once('exit', done));
-  const verified = force ? await sampleProcess(child.pid, state.executable, state.identity.start) : state.identity;
+  const verified = force ? await verifyProcessIdentity(child.pid, state.executable, state.identity.start) : state.identity;
   if (force) child.kill();
   await bounded(ended, 10000, 'Owned child did not exit: ' + state.name);
   state.stopped = { at: new Date().toISOString(), verified, exitCode: child.exitCode, signal: child.signalCode };
@@ -137,7 +145,7 @@ async function launch(label) {
   page = pages[0]; await page.waitForURL('http://tauri.localhost/**');
   await page.getByRole('navigation', { name: '操作导航' }).waitFor();
   assert.equal(cPath((await read('records_list')).root).toLowerCase(), join(profile, 'records').toLowerCase());
-  await sampleProcess(app.pid, paths.executable, children.get(app).identity.start);
+  await verifyProcessIdentity(app.pid, paths.executable, children.get(app).identity.start);
   return page;
 }
 async function stopApp() {

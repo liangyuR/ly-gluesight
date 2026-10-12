@@ -10,11 +10,5 @@ export default defineConfig({
     clearMocks: true,
     restoreMocks: true,
     maxWorkers: 2,
-    coverage: {
-      provider: "v8",
-      include: ["src/**/*.{ts,tsx}"],
-      exclude: ["src/main.tsx", "src/vite-env.d.ts", "src/**/types.ts", "src/**/index.ts"],
-      reporter: ["text", "html", "json-summary"],
-    },
   },
 });

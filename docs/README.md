@@ -2,21 +2,21 @@
 
 ## 架构与规划（[architecture/](architecture)）
 
-- [软件架构、一期可行性与实施路线](architecture/gluesight-software-architecture.html)：目标架构、当前缺口、单负责人与多 Agent 的分工、W0–W7 工作包及 S7 实施进展。
+- [软件架构、一期可行性与实施路线](architecture/gluesight-software-architecture.html)：历史目标架构与实施估算、Agent 分工及 S7 实施进展；当前测试范围以测试说明为准。
 - [三相机硬件连接架构](architecture/gluesight-hardware-architecture.html)：PLC 硬件触发、三台相机、交换机、工控机与 Robot 的连接关系，可按链路高亮。注意：2026-10-10 确认现场是一台三目设备（SDK 中一个 Device、一次触发出三幅图），图中三台独立相机与三条线路待现场确认后更新，见 [P0 计划 1.2 节](architecture/p0-plan.md)。
-- [一期 P0 实施计划](architecture/p0-plan.md)：已定决策（含 D-11 三目相机）、步 0–7 与步 T 的顺序、范围与完成标准、现场并行事项、问题跟踪与剩余风险。
+- [一期 P0 实施计划](architecture/p0-plan.md)：已定决策（含 D-11 三目相机）、步 0–7 与步 T 的顺序、范围与完成标准、历史问题跟踪与软件验证边界。
 - [历史规划与实施记录](architecture/roadmap.md)：早期飞拍与随动规划，当前一期范围以软件架构图为准。
 
 ## 现场接入（[integration/](integration)）
 
 - [PLC 通讯协议 HTML 与时序图](integration/plc-communication-protocol.html)：可离线阅读，含单设备完整点表搜索及打印样式；三张时序图保持旧版，待协议检查完成后统一更新；另附 [Markdown 原文](integration/plc-communication-protocol.md)。
-- [一期 S7 握手契约与现场接入](integration/plc-s7-phase1.md)：DB 点表、事务与结果确认、故障恢复、计划导出和现场验证步骤。
+- [一期 S7 握手契约与现场接入](integration/plc-s7-phase1.md)：DB 点表、事务与结果确认、故障恢复、计划导出与参考程序限制。
 - [PLC SCL 参考程序](../scripts/s7-handshake/phase1_plc.scl)与 [S7 测试 PLC](../scripts/s7-handshake/README.md)：可审查的 PLC 侧实现及回环报文测试服务。
 
-## 测试与验收（[testing/](testing)）
+## 测试（[testing/](testing)）
 
-- [测试记录与复现](testing/TESTING.md)：测试命令、覆盖范围、P0 验证汇总和未验证边界。
-- [UI 操作验收](testing/UI_OPERATIONS.md)：基本操作、分层证据和边界。
+- [测试记录与复现](testing/TESTING.md)：测试命令、覆盖范围、历史验证记录和当前边界。
+- [UI 覆盖边界](testing/UI_OPERATIONS.md)：当前主流程覆盖及未覆盖范围。
 - [操作逻辑修复记录](testing/UX_FIXES_2026-10-09.md)。
 
 ## 部署（[deployment/](deployment)）

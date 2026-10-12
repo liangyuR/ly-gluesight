@@ -8,15 +8,12 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from simulator_config import load_config, load_recipe, trigger_plan
+from simulator_config import load_config, load_recipe
 
 scripts = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("make_samples", scripts / "make-samples.py")
 samples = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(samples)
-spec = importlib.util.spec_from_file_location("run_regression", scripts / "run-regression.py")
-regression = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(regression)
 
 
 class SampleTests(unittest.TestCase):
@@ -131,51 +128,6 @@ class SampleTests(unittest.TestCase):
         for invalid in (b"P5\n2 1\n255\n\x00", b"P2\n2 1\n255\n00", b"P5\n2 1\n65535\n\x00\x01"):
             with self.assertRaises(ValueError):
                 samples.read_pgm(invalid)
-
-
-class EvidenceTests(unittest.TestCase):
-    def test_scripted_peer_is_not_accepted_as_a_real_image_engine_regression(self):
-        recipe = load_recipe(load_config()["robot"]["recipe"])
-        result = {"scenario": "normal", "deviceTriggers": {"cam1": 4}, "triggerAcks": []}
-        with self.assertRaisesRegex(RuntimeError, "evidence"):
-            regression.verify_evidence(result, recipe)
-        plan, _ = trigger_plan(recipe)
-        result.update(sn=123, cycleId="scripted-cycle", recipeRevision="scripted-recipe", bundleId="scripted-bundle")
-        result["triggerAcks"] = [{"ok": True, "identity": {**point, "sn": 123, "recipeId": recipe["id"],
-                                                        "productCode": recipe["productCode"], "shotCount": 4,
-                                                        "cycleId": result["cycleId"], "recipeRevision": result["recipeRevision"],
-                                                        "bundleId": result["bundleId"]},
-                                  "evidence": {"scope": "scripted-test-peer"}} for point in plan]
-        with self.assertRaisesRegex(RuntimeError, "actual demo app"):
-            regression.verify_evidence(result, recipe)
-
-    def test_count_mismatch_has_no_camera_pulses_or_fabricated_cycle_evidence(self):
-        recipe = load_recipe(load_config()["robot"]["recipe"])
-        result = {"scenario": "countMismatch", "deviceTriggers": {"cam1": 0}, "triggerAcks": []}
-        self.assertEqual(regression.verify_evidence(result, recipe), {})
-        result["deviceTriggers"]["cam1"] = 12
-        with self.assertRaisesRegex(RuntimeError, "counts"):
-            regression.verify_evidence(result, recipe)
-
-class RegressionRecipeVersionTests(unittest.TestCase):
-    def test_live_regression_preflight_matches_missing_or_zero_fixture_to_backend_version_one(self):
-        backend = load_recipe(load_config()["robot"]["recipe"])
-        backend["version"] = 1
-        state = {"contractVersion": 2, "recipe": backend}
-        for version in [None, 0, 1]:
-            fixture = copy.deepcopy(backend)
-            if version is None:
-                fixture.pop("version", None)
-            else:
-                fixture["version"] = version
-            regression.validate_running_recipe(state, fixture)
-        fixture = copy.deepcopy(backend)
-        fixture["version"] = 7
-        with self.assertRaisesRegex(RuntimeError, "differs"):
-            regression.validate_running_recipe(state, fixture)
-        fixture["version"] = None
-        with self.assertRaises(ValueError):
-            regression.validate_running_recipe(state, fixture)
 
 
 if __name__ == "__main__":

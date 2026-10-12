@@ -9,14 +9,17 @@ process.env.PATH = ['C:\\Users\\11601\\AppData\\Local\\Temp\\gluesight-p0-recove
 const execute = promisify(execFile);
 const { values } = parseArgs({ options: {
   instance: { type: 'string' }, output: { type: 'string' },
-  cdp: { type: 'string', default: 'http://127.0.0.1:9338' },
+  cdp: { type: 'string', default: 'http://127.0.0.1:9337' },
 } });
 for (const key of ['instance', 'output']) assert(values[key], `Missing --${key}`);
 const cPath = value => { const path = resolve(value); assert(/^C:\\/i.test(path), `C: required: ${path}`); return path; };
 const output = cPath(values.output);
 const instance = JSON.parse((await readFile(cPath(values.instance), 'utf8')).replace(/^\uFEFF/, ''));
-assert(['com.xyzrobotics.tujiaovision.p0-tests.performance', 'com.xyzrobotics.tujiaovision.p0-tests.performance.nohash'].includes(instance.identifier));
-const profile = join('C:\\Users\\11601\\AppData\\Roaming', instance.identifier);
+assert.equal(instance.identifier, 'com.xyzrobotics.tujiaovision.p0-tests');
+assert(Number.isInteger(instance.debugPort) && instance.debugPort >= 1024 && instance.debugPort <= 65535);
+assert.equal(values.cdp, 'http://127.0.0.1:' + instance.debugPort, 'CDP must match the isolated instance debug port');
+assert(typeof instance.startedAt === 'string' && Number.isFinite(new Date(instance.startedAt).getTime()), 'Instance requires its process start time');
+const profile = join(cPath(process.env.APPDATA), instance.identifier);
 const executable = cPath(instance.executable);
 
 assert(Number.isInteger(instance.pid) && instance.pid > 0);
@@ -57,7 +60,7 @@ try {
   assert.equal(resolve((await read('records_list')).root).toLowerCase(), join(profile, 'records').toLowerCase());
   report.before = { process: await processState(), cycle: await read('cycle_snapshot'), database: await databaseState(), originals: await rawState() };
   assert.equal(resolve(report.before.process.path).toLowerCase(), executable.toLowerCase());
-  assert.equal(new Date(report.before.process.start).getTime(), new Date(instance.processStartTime).getTime());
+  assert.equal(new Date(report.before.process.start).getTime(), new Date(instance.startedAt).getTime());
   assert.equal(report.before.cycle.phase, 'IDLE');
   assert.equal(report.before.cycle.fault, null);
   const duplicate = spawn(executable, [], { cwd: resolve(executable, '..'), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });

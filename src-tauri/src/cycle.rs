@@ -9,8 +9,6 @@ use ly_plc::{now_ms, EdgeEvent, LinkState, PlcEngine, ProtocolKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
-#[cfg(feature = "p0-pressure-test")]
-use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedReceiver, UnboundedSender};
 
 use crate::arming::ArmBudget;
@@ -285,13 +283,6 @@ pub struct CycleHost {
     interrupted_recordings: usize,
 }
 
-fn frame_receive_enabled() -> bool {
-    #[cfg(feature = "p0-pressure-test")]
-    { return crate::pressure::frame_receive_enabled(); }
-    #[cfg(not(feature = "p0-pressure-test"))]
-    { true }
-}
-
 impl CycleHost {
     pub fn init(app: &AppHandle) -> Result<Self, String> {
         let settings_path = app.path().app_config_dir().map_err(|e| e.to_string())?.join("cycle.json");
@@ -379,7 +370,7 @@ impl CycleHost {
                         Some(input) => machine.on_input(input).await,
                         None => break,
                     },
-                    Some(frame) = frames.recv(), if frame_receive_enabled() => machine.on_frame(frame),
+                    Some(frame) = frames.recv() => machine.on_frame(frame),
                     _ = tick.tick() => machine.on_tick().await,
                 }
                 // 快照最多 20 次/秒
@@ -1303,8 +1294,6 @@ impl Machine {
         match self.measure_tx.try_send(job) {
             Ok(()) => {}
             Err(error) => {
-                #[cfg(feature = "p0-pressure-test")]
-                if matches!(&error, TrySendError::Full(_)) { crate::pressure::measure_queue_full(); }
                 let job = error.into_inner();
                 self.on_measured(Measured::failed(&job, "测量队列已满：测量跟不上帧率"));
             }
