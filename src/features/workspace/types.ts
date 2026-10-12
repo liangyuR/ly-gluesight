@@ -35,8 +35,11 @@ export interface Validation {
   checks: { name: string; passed: boolean; detail: string }[];
   samples: { historyId: number | null; sampleId:string | null; name:string; sn: number; expected: Verdict; actual: Verdict | null; passed: boolean; reason: string }[];
 }
+/** 发布时所在站点：离线验证发布的版本只能在离线运行。 */
+export type ValidationSite = "real" | "offline";
 export interface Release {
   doc: RecipeDoc; bundleId: string; baseRevision: string | null; revision: number; frames: Teaching[]; overview: Overview; validation: Validation;
+  validationSite: ValidationSite;
 }
 export interface Workspace {
   doc: RecipeDoc; baseRevision: string | null; revision: number; frames: Teaching[];
@@ -49,7 +52,7 @@ export interface Workspace {
 export type PublishState =
   | { state: "draft" } | { state: "waiting" }
   | { state: "failed"; message: string } | { state: "uncertain"; message: string }
-  | { state: "active"; version: number; revision: number; warning: string | null };
+  | { state: "active"; version: number; revision: number; warning: string | null; validationSite?: ValidationSite | null };
 export type StepId = "capture" | "defaults" | "teach" | "calibration" | "overview" | "validation" | "publish";
 export type StepStatus = "notStarted" | "inProgress" | "done" | "blocked" | "optional";
 export type ProgressTarget = { page: "capture" } | { page: "teach"; k: number } | { page: "validation" } | { page: "camera" };
@@ -57,7 +60,7 @@ export interface ProgressStep {
   id: StepId; label: string; optional: boolean; status: StepStatus; detail: string;
   blockers: { message: string; target: ProgressTarget }[];
 }
-export type ShotState = "unconfigured" | "draft" | "pendingTrial" | "trialFailed" | "trialPassed" | "taught" | "skipped";
+export type ShotState = "recapture" | "unconfigured" | "draft" | "pendingTrial" | "trialFailed" | "trialPassed" | "taught" | "skipped";
 export type CalibrationState =
   | { state: "unverified" } | { state: "stale" }
   | { state: "verified"; errorMm: number } | { state: "failed"; errorMm: number }

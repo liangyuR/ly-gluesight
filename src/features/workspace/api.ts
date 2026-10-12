@@ -51,6 +51,7 @@ export const workspaceApi = {
   importSample: (id:string, revision:number, name:string, expected:import("../cycle/types").Verdict, images:{k:number;bytes:string}[]) =>
     desktopCall<WorkspaceView>("workspace_import_sample", {id,revision,name,expected,images}),
   retryPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_retry_publish", { id, revision }),
+  abandonPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_abandon_publish", { id, revision }),
   captureImage: (roundId: string, k: number, view?: number) => desktopCall<ArrayBuffer>("recipe_capture_image", { roundId, k, view }).then(decodeGray),
   captureList: (recipeId: string) => desktopCall<Pick<CaptureRound,"roundId"|"recipeId"|"cameraId"|"plannedCount"|"receivedCount"|"state"|"createdAt"|"error">[]>("recipe_capture_list", { recipeId }),
   publish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish", { id, revision }),

@@ -140,7 +140,7 @@ it("从采集原图完成逐帧示教、总览、独立样本采集验证并确�
     response.workspace.publish = { state: "waiting" };
     Object.assign(response.progress.steps.find(step => step.id === "publish")!, { status: "inProgress", detail: "v2 待生效：等待当前工件结束" });
     response.workspace.pending = { doc: structuredClone(response.workspace.doc), bundleId: "bundle-A-v2", baseRevision: response.workspace.baseRevision,
-      revision, frames: structuredClone(response.workspace.frames), overview: structuredClone(response.workspace.overview), validation: structuredClone(response.workspace.validation!),
+      revision, frames: structuredClone(response.workspace.frames), overview: structuredClone(response.workspace.overview), validation: structuredClone(response.workspace.validation!), validationSite: "real",
     };
     return structuredClone(response);
   });

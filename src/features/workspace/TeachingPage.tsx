@@ -90,7 +90,7 @@ export default function TeachingPage() {
   const own = shotSegment(data.layout, k)?.segment;
   const stations: [number, number][] = own ? Array.from({ length: own.count }, (_, i) => [data.layout.points.x[own.first + i], data.layout.points.y[own.first + i]]) : [];
   const lengthPx = pathLength(t.path);
-  const canTrial = unlocked && !!frame.image && enabled && (editing ? !invalid : taught);
+  const canTrial = unlocked && !!frame.image && enabled && viewState !== "recapture" && (editing ? !invalid : taught);
   const saveAndTrial = async () => {
     if (!canTrial || !frame.image) return;
     const imageId = frame.image.id;
@@ -166,6 +166,7 @@ export default function TeachingPage() {
         <div className="wp-actions"><button className="btn" disabled={!canTrial} onClick={() => void saveAndTrial()}><WandSparkles size={15} />保存参数并试测</button><button className="btn primary" disabled={!unlocked || !trialCurrent || viewState === "taught"} onClick={() => void save()}><Save size={15} />保存本帧示教</button><button className="btn" disabled={!unlocked || !trialCurrent} onClick={() => void save(true)}>保存并示教下一幅</button></div>
         <div className="wp-rule-stat"><div><span>量成比例</span><strong>{measured ? (trial!.coverage * 100).toFixed(1) + "%" : "—"}</strong></div><div><span>处理耗时</span><strong>{trial ? trial.elapsedMs + " ms" : "—"}</strong></div></div>
         {viewState === "trialFailed" && !editing && <Notice title="试测异常" tone="warn">{trial?.reason}</Notice>}
+        {viewState === "recapture" && <Notice title="需重新采集" tone="warn">{viewProgress?.hint} <Link className="btn small" to="/recipe/capture">整圈重新采集</Link></Notice>}
         <p className="muted">{hint}</p>
       </Panel></div>
       <div className="wp-stack"><Panel title="像素当量与标定验证" detail="标定误差目标 ±0.1 mm；修改当量后需重新试测和验证"><div className="wp-form-grid">

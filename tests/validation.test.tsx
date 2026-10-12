@@ -9,7 +9,7 @@ import { historyApi } from "../src/features/history/api";
 import { workspaceState } from "./fixtures";
 
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { publish: vi.fn(), retryPublish: vi.fn() } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { publish: vi.fn(), retryPublish: vi.fn(), abandonPublish: vi.fn() } }));
 vi.mock("../src/features/history/api", () => ({ historyApi: { query: vi.fn() } }));
 let ws: ReturnType<typeof workspaceState>;
 const show = () => render(<MemoryRouter><ValidationPage /></MemoryRouter>);
@@ -22,7 +22,7 @@ beforeEach(() => {
 
 describe("验证与发布页面", () => {
   it("发布失败后冻结样本配置并重试同一待生效版本", async () => {
-    ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, baseRevision: "old", frames: [], overview: ws.data!.workspace.overview, validation: ws.data!.workspace.validation! };
+    ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, baseRevision: "old", frames: [], overview: ws.data!.workspace.overview, validation: ws.data!.workspace.validation!, validationSite: "real" };
     ws.data!.workspace.publish = { state: "failed", message: "发布包缺失" };
     show();
     expect(screen.getByRole("checkbox", { name: "选用样本 良品组" })).toBeDisabled();
@@ -35,11 +35,19 @@ describe("验证与发布页面", () => {
     expect(workspaceApi.publish).not.toHaveBeenCalled();
   });
 
-  it("人工期望只提供合格与具体异常类型 → 不再单列 OK·局部超差", () => {
+  it("生效失败 → 确认后放弃同一修订的待生效版本；状态不确定时不能放弃", async () => {
+    vi.mocked(workspaceApi.abandonPublish).mockResolvedValue(ws.data!);
+    ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, baseRevision: "old", frames: [], overview: ws.data!.workspace.overview, validation: ws.data!.workspace.validation!, validationSite: "real" };
+    ws.data!.workspace.publish = { state: "failed", message: "发布包缺失" };
+    const page = show();
+    await userEvent.click(screen.getByRole("button", { name: "放弃待生效版本" }));
+    expect(workspaceApi.abandonPublish).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: /确认放弃/ }));
+    expect(workspaceApi.abandonPublish).toHaveBeenCalledWith("A", 7);
+    page.unmount();
+    ws.data!.workspace.publish = { state: "uncertain", message: "写盘失败" };
     show();
-    const options = Array.from((screen.getByRole("combobox", { name: "良品组期望结论" }) as HTMLSelectElement).options).map(o => o.textContent);
-    expect(options[0]).toBe("合格");
-    expect(options).not.toContain("OK · 局部超差");
+    expect(screen.queryByRole("button", { name: "放弃待生效版本" })).not.toBeInTheDocument();
   });
 
   it("拍照计划变化 → 发布确认里提供 PLC 配方握手计划入口", async () => {

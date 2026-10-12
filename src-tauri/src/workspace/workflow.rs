@@ -137,53 +137,6 @@ pub(super) fn check_view(app: &AppHandle, w: &Workspace, k: usize, selected: u8,
     Ok(())
 }
 
-pub(super) fn refresh_views(app: &AppHandle, w: &mut Workspace) -> Result<bool, String> {
-    let recipe = w.doc.build()?;
-    let settings = app.state::<CycleHost>().settings();
-    let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).map(|e| engine_state(&e));
-    let mut changed = false;
-    for k in 0..w.frames.len() {
-        let selected = w.doc.shots[k].view;
-        for state in &mut w.frames[k].view_states {
-            let current = recipe.for_view(k, state.view).and_then(|r| tags(app, &r, k).map(|tags| (r, tags)));
-            let stale = current.as_ref().map_or(true, |(r, (camera, calib))| {
-                state.trial.as_ref().is_some_and(|t| shot_tags(r, k).map_or(true, |p| p.1 != t.params_tag)
-                    || engine.as_ref().is_none_or(|e| t.engine_tag != *e))
-                    || state.calibration_check.as_ref().is_some_and(|c| c.camera_tag != *camera || c.calib_tag != *calib || c.mm_per_px != r.shots[k].mm_per_px)
-            });
-            if stale && (state.saved || state.trial.is_some()) {
-                state.saved = false; state.trial = None;
-                changed = true;
-            }
-        }
-        let frame = &mut w.frames[k];
-        for image in &mut frame.views {
-            let mut projected = recipe.clone();
-            projected.shots[k].view = image.view;
-            projected.shots[k].calib = w.doc.shots[k].views.iter().find(|v| v.view == image.view).and_then(|v| v.calib.clone());
-            if let Ok((camera, calib)) = tags(app, &projected, k) {
-                if image.camera_tag != camera {
-                    if let Some(state) = frame.view_states.iter_mut().find(|s| s.view == image.view) {
-                        if state.saved || state.trial.is_some() { state.saved = false; state.trial = None; changed = true; }
-                    }
-                }
-                if image.camera_tag == camera && image.calib_tag != calib {
-                    let current_scale = vision::calib_info(&vision::shot_calib_path(app, &projected, k)?).and_then(|c| c.mm_per_px).map(|v| v as f32);
-                    if let Some(spec) = w.doc.shots[k].views.iter_mut().find(|v| v.view == image.view) {
-                        spec.mm_per_px = updated_calibration_scale(spec.mm_per_px, &image.calib_tag, current_scale);
-                    }
-                    image.calib_tag = calib;
-                    if let Some(state) = frame.view_states.iter_mut().find(|s| s.view == image.view) { state.trial = None; state.saved = false; }
-                    changed = true;
-                }
-            }
-        }
-        if !w.doc.shots[k].views.is_empty() { load_active(w, k, selected)?; }
-    }
-    if changed { w.changed(); }
-    Ok(changed)
-}
-
 #[tauri::command]
 pub fn workspace_set_views(app: AppHandle, id: String, revision: u64, k: usize, views: Vec<u8>, skip: bool) -> Result<WorkspaceView, String> {
     let unique: std::collections::HashSet<_> = views.iter().copied().collect();
@@ -304,15 +257,20 @@ pub fn workspace_retry_publish(app: AppHandle, id: String, revision: u64) -> Res
     view(&app, w)
 }
 
-/// 有界等待 PLC 事务门：整圈采集刚结束或刚进入离线时 PLC 事务仍在收尾，等它释放而不是立即拒绝。
-/// 在阻塞线程里调用。
+#[tauri::command]
+pub fn workspace_abandon_publish(app: AppHandle, id: String, revision: u64) -> Result<WorkspaceView, String> {
+    let host = app.state::<WorkspaceHost>(); let mut items = host.items.lock().unwrap();
+    let mut w = items.get(&id).ok_or("候选不存在")?.clone();
+    w.abandon_publish(revision)?;
+    host.save(&w)?; items.insert(id, w.clone());
+    view(&app, w)
+}
+
+/// 有界等待 PLC 事务门：整圈采集刚结束或刚进入离线时 PLC 事务仍在收尾，排队等它释放而不是立即拒绝。
+/// 只能在阻塞线程（spawn_blocking 或普通线程）里调用，不能在 async 任务里调用。
 pub(crate) fn wait_plc_gate<'a>(gate: &'a tokio::sync::Mutex<()>, what: &str) -> Result<tokio::sync::MutexGuard<'a, ()>, String> {
-    let deadline = Instant::now() + std::time::Duration::from_secs(3);
-    loop {
-        if let Ok(guard) = gate.try_lock() { return Ok(guard); }
-        if Instant::now() >= deadline { return Err(format!("PLC 事务 3 秒内仍未结束，暂不能{what}；请确认在线检测或离线产线已停止后重试")); }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    tauri::async_runtime::block_on(async { tokio::time::timeout(std::time::Duration::from_secs(3), gate.lock()).await })
+        .map_err(|_| format!("PLC 事务 3 秒内仍未结束，暂不能{what}；请确认在线检测或离线产线已停止后重试"))
 }
 
 pub(super) fn require_capture_plan(version: Option<u32>) -> Result<u32, String> {
