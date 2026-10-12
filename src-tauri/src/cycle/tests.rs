@@ -50,7 +50,7 @@ fn part(cycle_id: &str, ledgers: &Ledgers) -> Part {
         table: vec![PointState::Pending; recipe.point_count()], received: 0, extra: 0, queue: 0,
         router, issued: None, issued_verified: false, routing_closed: false, image_measurement: false, proc_timeout: Duration::from_secs(1), drain_timeout: Duration::from_secs(2),
         armed_at: Instant::now(), end_at: None, fault: None, cams: (0..cameras.len() as u8).collect(),
-        camera_ids: cameras, rig_gen: 1, recording: None, recipe,
+        camera_ids: cameras, rig_gen: 1, source: RecordSource::Real, recording: None, recipe,
     }
 }
 
@@ -339,4 +339,17 @@ pub(crate) fn judge_delivered(lost: &[bool]) -> Judgement {
     p.end_at = Some(end);
     p.expire(end + Duration::from_secs(3), Duration::from_secs(1), Duration::from_secs(2));
     p.judgement()
+}
+
+#[test]
+fn reset_during_recipe_capture_still_requires_service_readiness() {
+    let device = || Ok(());
+    for (service, device_ok, ready) in [
+        (Err("生产生效版本尚未确认".to_string()), true, false),
+        (Ok(()), false, false),
+        (Ok(()), true, true),
+    ] {
+        let result = capture::capture_readiness(service.clone(), || if device_ok { device() } else { Err("采集相机未就绪".into()) });
+        assert_eq!(result.is_ok(), ready, "{service:?} {device_ok}");
+    }
 }

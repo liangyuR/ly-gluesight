@@ -23,12 +23,12 @@ use crate::measure::{self, Job, Measured, WorkerHealth};
 use crate::plc::PlcHost;
 use crate::plc_session::{PlcSession, SessionEvent, SessionPhase, SessionView};
 use crate::recipe::{Recipe, RecipeStore, TriggerMode};
-use crate::recorder::{Recorder, Recording};
+use crate::recorder::{Recorder, Recorders, Recording, Retention};
 use crate::settings::{CycleSettings, ProductSource};
 use crate::shot_router::{ArmCam, Floor, FrameMeta, Ledgers, Plan, Policy, Route, ShotRouter};
 use crate::offline::Scenario;
 use crate::audit::{Audit, RecordedPart};
-use crate::store::{PartShot, PlcDelivery, PlcDeliveryState, Store, VerdictCounts};
+use crate::store::{HistoryScope, PartShot, PlcDelivery, PlcDeliveryState, RecordSource, Store, VerdictCounts};
 
 pub(crate) fn s7_ack_delivery(had_ack: bool, session: &PlcSession) -> Option<PlcDelivery> {
     (!had_ack && session.acknowledged()).then(|| PlcDelivery {
@@ -270,7 +270,7 @@ pub struct CycleHost {
     pub plc_gate: tokio::sync::Mutex<()>,
     pub camera: CameraRig,
     pub recipes: RecipeStore,
-    pub recorder: Recorder,
+    pub recorders: Recorders,
     pub cycle_ids: crate::cycle_ids::CycleIds,
     pub audit: Audit,
     settings_path: PathBuf,
@@ -291,31 +291,31 @@ impl CycleHost {
         let (settings, settings_note) = CycleSettings::load(&settings_path);
         let audit = Audit::new(app, data.join("audit-spool"))?;
         let interrupted_recordings = app.state::<Store>().finish_interrupted_recordings()?;
-        let record_audit = audit.clone();
         let camera = CameraRig::new(app, frame_tx)?;
-        let records = data.join("records");
-        let guarded_root = records.clone();
-        let guard_app = app.clone();
-        let protection_audit = audit.clone();
-        let warning_app = app.clone();
-        let protection = Arc::new(move || {
-            let mut paths = guard_app.try_state::<Store>().ok_or("检测记录数据库尚未初始化")?.pending_recording_directories(&guarded_root)?;
-            paths.extend(protection_audit.protected_recording_directories(&guarded_root)?);
-            Ok(paths)
-        });
-        let warning = Arc::new(move |errors: &[String]| {
-            if warning_app.try_state::<CycleHost>().is_some() {
-                log(&warning_app, "warn", "孤立录制清理失败", errors.join("；"));
-            } else { eprintln!("warn 孤立录制清理失败：{}", errors.join("；")); }
-        });
+        let recorder = |root: PathBuf, scope: HistoryScope| {
+            let (guarded_root, guard_app, protection_audit, warning_app, record_audit) = (root.clone(), app.clone(), audit.clone(), app.clone(), audit.clone());
+            let protection = Arc::new(move || {
+                let mut paths = guard_app.try_state::<Store>().ok_or("检测记录数据库尚未初始化")?.pending_recording_directories(&guarded_root, scope)?;
+                paths.extend(protection_audit.protected_recording_directories(&guarded_root)?);
+                Ok(paths)
+            });
+            let warning = Arc::new(move |errors: &[String]| {
+                if warning_app.try_state::<CycleHost>().is_some() {
+                    log(&warning_app, "warn", "孤立录制清理失败", errors.join("；"));
+                } else { eprintln!("warn 孤立录制清理失败：{}", errors.join("；")); }
+            });
+            Recorder::guarded(root, Some(Arc::new(move |outcome| {
+                if let Err(error) = record_audit.recording(outcome) { eprintln!("录制审计持久化失败：{error}"); }
+            })), protection, warning)
+        };
+        let recorders = Recorders::new(recorder(data.join("records"), HistoryScope::Real),
+            recorder(data.join("records-offline"), HistoryScope::Offline), crate::recorder::OFFLINE_RETENTION);
         Ok(Self {
             camera,
             tx,
             plc_gate: tokio::sync::Mutex::new(()),
             recipes: RecipeStore::open_with_floors(data.join("recipes"), &app.state::<crate::store::Store>().recipe_version_floors()?)?,
-            recorder: Recorder::guarded(records, Some(Arc::new(move |outcome| {
-                if let Err(error) = record_audit.recording(outcome) { eprintln!("录制审计持久化失败：{error}"); }
-            })), protection, warning),
+            recorders,
             cycle_ids: crate::cycle_ids::CycleIds::default(),
             audit,
             shared: Mutex::new(Shared {
@@ -473,6 +473,7 @@ struct Part {
     camera_ids: Vec<String>,
     /// 开工时相机组的版本：检测中增删了相机，cams 里的序号就不对了
     rig_gen: u64,
+    source: RecordSource,
     recording: Option<Recording>,
 }
 
@@ -697,6 +698,7 @@ struct Machine {
     result: Option<ResultView>,
     stats: Stats,
     stats_day: i64,
+    stats_scope: HistoryScope,
     stray: u64,
     stray_times: VecDeque<Instant>,
     alarms: Vec<String>,
@@ -718,7 +720,7 @@ struct Machine {
 
 impl Machine {
     fn new(app: AppHandle, measure_tx: Sender<Job>, workers: Arc<WorkerHealth>) -> Self {
-        let stats = app.state::<Store>().counts_since(history::local_midnight_ms()).map(Stats::from).unwrap_or_default();
+        let stats = today_stats(&app, HistoryScope::Real);
         let s7 = PlcSession::open(app.path().app_data_dir().expect("app data directory").join("plc-handshake.json"));
         let recovery = match app.state::<Store>().unresolved_delivery_cycles() {
             Ok(unresolved) => s7.recover_acknowledgements(&unresolved),
@@ -755,6 +757,7 @@ impl Machine {
             result: None,
             stats,
             stats_day: history::local_day(),
+            stats_scope: HistoryScope::Real,
             stray: 0,
             stray_times: VecDeque::new(),
             alarms: Vec::new(),
@@ -824,12 +827,18 @@ impl Machine {
         }
     }
 
-    fn check_idle_devices(&mut self) -> Result<(), String> {
+    /// 与配方无关的服务就绪：生产生效版本已确认、工件身份可分配、测量线程可布防。
+    fn service_ready(&self) -> Result<(), String> {
         if crate::workspace::activation_uncertain(&self.app) { return Err("生产生效版本尚未确认，请先核实发布状态".into()); }
         host(&self.app).cycle_ids.ready(&self.app)?;
         if !self.workers.can_arm() {
             return Err("测量工作线程全部超时且尚未返回，拒绝布防；需排查图像引擎或重启检测服务".into());
         }
+        Ok(())
+    }
+
+    fn check_idle_devices(&mut self) -> Result<(), String> {
+        self.service_ready()?;
         let host = host(&self.app);
         if self.required.as_ref().is_none_or(|r| r.rig_gen != host.camera.generation()) {
             let req = self.compute_required();
@@ -1037,7 +1046,8 @@ impl Machine {
         if let Err(reason) = host.audit.begin_recording(&cycle_id) {
             return self.refuse(sn, id, fault::PROCESS_TIMEOUT, format!("录制追溯屏障建立失败：{reason}")).await;
         }
-        let recording = host.recorder.begin(crate::site::record_mode(&app), sn, recipe.clone(), &cycle_id, bundle_id.as_deref());
+        let source = crate::site::record_source(&app);
+        let recording = host.recorders.begin(source, crate::site::record_mode(&app), sn, recipe.clone(), &cycle_id, bundle_id.as_deref());
         self.run_id = self.run_id.wrapping_add(1);
         self.part = Some(Part {
             run_id: self.run_id,
@@ -1067,6 +1077,7 @@ impl Machine {
             cams,
             camera_ids,
             rig_gen,
+            source,
             recording,
             recipe: recipe.clone(),
         });
@@ -1147,7 +1158,7 @@ impl Machine {
         };
         let camera = part.camera_id(f.cam);
         if let Some(rec) = part.recording.as_mut() {
-            host(&self.app).recorder.frame(rec, &f, &camera, k, ordinal);
+            host(&self.app).recorders.frame(rec, &f, &camera, k, ordinal);
         }
         let shot = &part.recipe.shots[k];
         let submitted_at = part.measuring_since[k].unwrap();
@@ -1227,7 +1238,13 @@ impl Machine {
         let connected = plc(&self.app).status().state == LinkState::Connected;
         let capture_host = host(&app).camera.recipe_capture().clone();
         if capture_host.active() && !connected { capture_host.fail("PLC 连接中断，请整圈重采"); }
-        let cameras = if capture_host.active() { self.capture_devices_ready() } else { match self.phase {
+        let scope = HistoryScope::of(crate::site::record_source(&app));
+        if scope != self.stats_scope {
+            self.stats_scope = scope;
+            self.stats = today_stats(&app, scope);
+            self.dirty = true;
+        }
+        let cameras = if capture_host.active() { capture::capture_readiness(self.service_ready(), || self.capture_devices_ready()) } else { match self.phase {
             // 在途的件只看它自己用的相机；等 PLC 确认结果时相机掉线不打断握手，回到空闲再查
             Phase::Acquire | Phase::Drain => match self.part.as_ref() {
                 Some(p) if p.rig_gen != host(&self.app).camera.generation() => Err("检测中增删了相机".into()),
@@ -1463,7 +1480,8 @@ impl Machine {
         let Some(rec) = self.part.as_mut().filter(|p| p.sn == sn).and_then(|p| p.recording.take()) else { return };
         let host = host(&self.app);
         let settings = host.settings();
-        host.recorder.finish(rec, judgement.verdict, &judgement.reason, settings.record_keep, (settings.record_max_gb as f64 * 1e9) as u64, Vec::new());
+        host.recorders.finish(rec, judgement.verdict, &judgement.reason,
+            Retention { keep: settings.record_keep, max_bytes: (settings.record_max_gb as f64 * 1e9) as u64 });
     }
 
     fn recorded_part(&self, sn: u32, recipe_id: Option<&str>, judgement: &Judgement, drain_ms: Option<u64>, delivery: PlcDelivery) -> Result<RecordedPart, String> {
@@ -1477,11 +1495,12 @@ impl Machine {
         let table = part.map(|p| p.table.clone()).filter(|t| t.iter().any(|x| *x != PointState::Pending));
         let (received, triggers) = part.map_or((0, 0), |p| (p.received, p.triggers()));
         let shots = recorded_shots(recipe.as_deref(), &frames, &judgement.reason);
+        let source = part.map_or_else(|| crate::site::record_source(&self.app), |p| p.source);
+        let sample = (source == RecordSource::OfflineSample).then(|| crate::offline::claim_sample(&self.app, sn, &cycle_id)).flatten();
         Ok(RecordedPart { ts: now_ms(), sn, recipe, judgement: judgement.clone(),
             drain_ms, frames, frames_expected, frames_received: received, triggers, table,
             software_version: self.app.package_info().version.to_string(), cycle_id: cycle_id.clone(),
-            bundle_id: part.and_then(|p| p.bundle_id.clone()), delivery, shots,
-            sample: crate::offline::claim_sample(&self.app, sn, &cycle_id) })
+            bundle_id: part.and_then(|p| p.bundle_id.clone()), delivery, shots, source, sample })
     }
 
     fn record_without_part(&self, sn: u32, judgement: &Judgement) -> Result<(), String> {
@@ -1547,6 +1566,11 @@ impl Machine {
         self.fault = Some(reason);
         self.set_phase(Phase::Fault);
     }
+}
+
+/// 今日统计只算当前站点的范围：真机只算真机件，离线只算离线件。
+fn today_stats(app: &AppHandle, scope: HistoryScope) -> Stats {
+    app.state::<Store>().counts_since(history::local_midnight_ms(), scope).map(Stats::from).unwrap_or_default()
 }
 
 #[tauri::command]

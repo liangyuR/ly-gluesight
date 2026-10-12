@@ -101,3 +101,8 @@ mod tests {
         assert!(capture_device_id(&[], "device1").is_err());
     }
 }
+
+/// 示教采集期间的复位 / 就绪判定：只放宽"没有可开工配方"，生产生效版本、工件身份、测量线程与采集相机仍须就绪。
+pub(super) fn capture_readiness(service: Result<(), String>, device: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    service.and_then(|()| device())
+}

@@ -1604,7 +1604,7 @@ pub struct RecordImages {
 fn recorded(app: &AppHandle, history_id: i64) -> Result<(PathBuf, Vec<RawFrame>), String> {
     let detail = app.state::<Store>().detail(history_id)?;
     let cycle_id = detail.summary.cycle_id.as_deref().ok_or("历史记录没有 cycleId，不能确定对应原图")?;
-    let root = app.state::<CycleHost>().recorder.root().to_path_buf();
+    let root = app.state::<CycleHost>().recorders.root(detail.summary.source).to_path_buf();
     let frames = recorded::frames(&root, cycle_id, &detail.shots, detail.summary.ts)?;
     Ok((root, frames))
 }
@@ -1614,7 +1614,7 @@ fn history_image(app: &AppHandle, detail: &store::PartDetail, k: usize, view: u8
     let shot = detail.shots.iter().find(|shot| shot.k == k).ok_or("历史拍照点不存在")?;
     let raw = shot.raw_files.iter().find(|raw| raw.view == view)
         .ok_or("所选拍照点视角的原图未保留")?;
-    recorded::load_verified(app.state::<CycleHost>().recorder.root(), cycle_id, shot, raw)
+    recorded::load_verified(app.state::<CycleHost>().recorders.root(detail.summary.source), cycle_id, shot, raw)
 }
 
 #[tauri::command]

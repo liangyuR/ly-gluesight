@@ -4,9 +4,13 @@ import { ChevronLeft, ChevronRight, Download, RefreshCw, Scale } from "lucide-re
 import { subscribe } from "../features/plc";
 import { useRecipes } from "../features/cycle";
 import { errorText } from "../lib/errors";
-import { displayReason, formatTime, historyApi, RejudgeDialog, sampleLabelText, triggerModeLabel, verdictClass, verdictGroups, verdictLabel, type HistoryPage as Page, type HistoryQuery } from "../features/history";
+import { displayReason, formatTime, historyApi, RejudgeDialog, sampleLabelText, sourceLabel, triggerModeLabel, verdictClass, verdictGroups, verdictLabel, type HistoryPage as Page, type HistoryQuery, type HistoryScope } from "../features/history";
 
 const PAGE = 50;
+const scopes: [HistoryScope, string][] = [
+  ["real", "真机件"],
+  ["offline", "离线件"],
+];
 const ranges: [string, string, number | null][] = [
   ["today", "今天", 0],
   ["7d", "7 天", 7],
@@ -24,6 +28,7 @@ function rangeStart(days: number | null) {
 export default function HistoryPage() {
   const navigate = useNavigate();
   const recipes = useRecipes();
+  const [scope, setScope] = useState<HistoryScope>("real");
   const [range, setRange] = useState("today");
   const [groups, setGroups] = useState<string[]>([]);
   const [sn, setSn] = useState("");
@@ -44,12 +49,13 @@ export default function HistoryPage() {
 
   const query = useMemo<HistoryQuery>(
     () => ({
+      scope,
       from: rangeStart(ranges.find((r) => r[0] === range)![2]),
       verdicts: verdictGroups.filter((g) => groups.includes(g.key)).flatMap((g) => g.verdicts),
       sn,
       recipeId: recipeId || null,
     }),
-    [range, groups, sn, recipeId],
+    [scope, range, groups, sn, recipeId],
   );
   const currentQuery = useRef(query);
   currentQuery.current = query;
@@ -117,6 +123,13 @@ export default function HistoryPage() {
     <div className="stack">
       <div className="panel">
         <div className="filter-row">
+          <div className="segmented" role="group" aria-label="记录来源">
+            {scopes.map(([key, label]) => (
+              <button key={key} aria-pressed={scope === key} className={scope === key ? "active" : ""} onClick={() => { setScope(key); setOffset(0); }}>
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="segmented">
             {ranges.map(([key, label]) => (
               <button key={key} aria-pressed={range === key} className={range === key ? "active" : ""} onClick={() => { setRange(key); setOffset(0); }}>
@@ -153,8 +166,9 @@ export default function HistoryPage() {
             {exporting ? "导出中…" : "导出 CSV"}
           </button>
         </div>
+        {scope === "offline" && <div className="notice">离线件来自离线验证（合成图或样本集），与真机件分开统计，不计入真机产量与良率。</div>}
         <div className="hist-counts">
-          <span>共 <b>{page?.total ?? 0}</b> 件</span>
+          <span>{scope === "offline" ? "离线" : "真机"}共 <b>{page?.total ?? 0}</b> 件</span>
           <span>OK <b className="c-ok">{c?.ok ?? 0}</b></span>
           <span>局部超差 <b className="c-warn">{c?.excursion ?? 0}</b></span>
           <span>NG <b className="c-ng">{c?.ng ?? 0}</b></span>
@@ -196,6 +210,7 @@ export default function HistoryPage() {
                   <td className="mono nowrap">
                     {p.sn}
                     {p.retestOf && <span className="tag retest" title={`复检，上一次记录 #${p.retestOf}`}>复检</span>}
+                    {p.source !== "real" && <span className="tag offline">{sourceLabel[p.source]}</span>}
                     {p.sample && <span className="tag subtle" title={`样本集 ${p.sample.setId} · 样本 SN ${p.sample.sn}`}>样本 {p.sample.partId}（{sampleLabelText[p.sample.label]}）</span>}
                   </td>
                   <td className="nowrap">

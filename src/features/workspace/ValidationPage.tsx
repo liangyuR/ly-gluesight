@@ -32,6 +32,7 @@ export default function ValidationPage() {
   const [confirm,setConfirm] = useState(false);
   const [abandoning,setAbandoning] = useState(false);
   const site = useSiteStatus();
+  const recordScope = site?.mode === "offline" ? "offline" : "real";
   const [sourceConfirmed,setSourceConfirmed] = useState(false);
   const [importing,setImporting] = useState(false);
   const [sampleName,setSampleName] = useState("代表性样本");
@@ -52,9 +53,9 @@ export default function ValidationPage() {
   useEffect(()=>{
     setRecords([]);
     if(!doc)return;let alive=true;
-    historyApi.query({recipeId:historyScope==="current"?doc.id:undefined,limit:50}).then(r=>alive&&setRecords(r.items)).catch(e=>alive&&setError(errorText(e)));
+    historyApi.query({recipeId:historyScope==="current"?doc.id:undefined,limit:50,scope:recordScope}).then(r=>alive&&setRecords(r.items)).catch(e=>alive&&setError(errorText(e)));
     return()=>{alive=false;};
-  },[doc?.id,historyScope,setError]);
+  },[doc?.id,historyScope,recordScope,setError]);
   if(!data||!doc)return <WorkspaceEmpty/>;
   const validation=data.workspace.validation;
   const selectionDirty=JSON.stringify(samples)!==JSON.stringify(data.workspace.samples);

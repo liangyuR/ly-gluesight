@@ -29,7 +29,54 @@ pub struct PartRecord<'a> {
     pub bundle_id: Option<&'a str>,
     pub delivery: &'a PlcDelivery,
     pub shots: &'a [PartShot],
+    pub source: RecordSource,
     pub sample: Option<&'a SampleRef>,
+}
+
+/// 记录来源：按写库时的站点模式与离线来源决定。真机件与离线件分开统计、分开保存原图。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RecordSource {
+    #[default]
+    Real,
+    OfflineSynthetic,
+    OfflineSample,
+}
+
+impl RecordSource {
+    pub fn offline(self) -> bool {
+        self != Self::Real
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Real => "真机",
+            Self::OfflineSynthetic => "离线·合成图",
+            Self::OfflineSample => "离线·样本集",
+        }
+    }
+}
+
+/// 历史查询范围：真机件或离线件，两者不混在一起统计。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HistoryScope {
+    #[default]
+    Real,
+    Offline,
+}
+
+impl HistoryScope {
+    pub fn of(source: RecordSource) -> Self {
+        if source.offline() { Self::Offline } else { Self::Real }
+    }
+
+    fn clause(self, prefix: &str) -> String {
+        match self {
+            Self::Real => format!("{prefix}source = 'real'"),
+            Self::Offline => format!("{prefix}source IN ('offlineSynthetic','offlineSample')"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,7 +148,7 @@ pub struct PartShot {
     pub raw_files: Vec<ShotRawFile>,
 }
 
-pub const DB_VERSION: i64 = 4;
+pub const DB_VERSION: i64 = 5;
 
 /// 测量点 BLOB 格式版本。1：每点 f32 位置 + u8 状态（5 字节）；2：f32 位置 + f32 胶宽 + u8 状态（9 字节）。
 const POINTS_FORMAT: i64 = 2;
@@ -153,6 +200,7 @@ pub struct HistoryQuery {
     pub verdicts: Vec<Verdict>,
     pub sn: Option<String>,
     pub recipe_id: Option<String>,
+    pub scope: HistoryScope,
     pub offset: u32,
     pub limit: u32,
 }
@@ -178,6 +226,7 @@ pub struct PartSummary {
     pub cycle_id: Option<String>,
     pub bundle_id: Option<String>,
     pub delivery: PlcDelivery,
+    pub source: RecordSource,
     /// 离线样本集运行的样本件引用（只用于展示与追溯，不参与判定）
     pub sample: Option<SampleRef>,
 }
@@ -261,7 +310,7 @@ fn parse_verdict(s: &str) -> Verdict {
 
 const SUMMARY_COLS: &str = "id, ts, sn, recipe_id, recipe_version, recipe_revision, trigger_mode, verdict, plc_code, fault_code, \
                             reason, drain_ms, frames_expected, frames_received, retest_of, cycle_id, bundle_id, \
-                            delivery_state, delivery_updated_at, delivery_message, sample";
+                            delivery_state, delivery_updated_at, delivery_message, sample, source";
 
 fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
     Ok(PartSummary {
@@ -285,6 +334,7 @@ fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
         delivery: delivery_row(row, 17)?,
         sample: row.get::<_, Option<String>>(20)?.map(|text| serde_json::from_str(&text)
             .map_err(|e| rusqlite::Error::FromSqlConversionFailure(20, rusqlite::types::Type::Text, Box::new(e)))).transpose()?,
+        source: enum_column(row, 21)?,
     })
 }
 
@@ -473,9 +523,11 @@ impl Store {
                  recording_available INTEGER NOT NULL DEFAULT 0,
                  recording_directory TEXT,
                  recording_errors TEXT NOT NULL DEFAULT '[]',
-                 sample TEXT
+                 sample TEXT,
+                 source TEXT NOT NULL CHECK(source IN ('real','offlineSynthetic','offlineSample'))
              );
              CREATE INDEX IF NOT EXISTS parts_ts ON parts(ts);
+             CREATE INDEX IF NOT EXISTS parts_source_ts ON parts(source, ts);
              CREATE INDEX IF NOT EXISTS parts_sn ON parts(sn);
              CREATE UNIQUE INDEX IF NOT EXISTS parts_cycle ON parts(cycle_id) WHERE cycle_id IS NOT NULL;
              CREATE INDEX IF NOT EXISTS parts_unresolved_delivery ON parts(cycle_id)
@@ -509,7 +561,7 @@ impl Store {
                  PRIMARY KEY (part_id, k),
                  UNIQUE (part_id, shot_id)
              );
-             PRAGMA user_version = 4;
+             PRAGMA user_version = 5;
              COMMIT;",
         )
         .map_err(db_err)?;
@@ -574,6 +626,9 @@ impl Store {
         } else if !r.shots.is_empty() || r.table.is_some() {
             return Err("缺少原配方，不能保存无身份的拍照点或测量点".into());
         }
+        if r.sample.is_some() && r.source != RecordSource::OfflineSample {
+            return Err("只有离线·样本集的记录可以关联样本件".into());
+        }
         for shot in r.shots {
             if shot.score.is_some_and(|x| !x.is_finite()) {
                 return Err("拍照点得分不是有限数".into());
@@ -612,9 +667,9 @@ impl Store {
         tx.execute(
             "INSERT INTO parts (ts, sn, recipe_id, recipe_version, recipe_revision, trigger_mode, verdict, plc_code, fault_code,
                  reason, drain_ms, frames_expected, frames_received, triggers, retest_of, software_version, judgement, frames,
-                 cycle_id, bundle_id, delivery_state, delivery_updated_at, delivery_message, sample)
+                 cycle_id, bundle_id, delivery_state, delivery_updated_at, delivery_message, sample, source)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                 ?19, ?20, ?21, ?22, ?23, ?24)",
+                 ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
             params![
                 r.ts,
                 r.sn,
@@ -640,6 +695,7 @@ impl Store {
                 r.delivery.updated_at,
                 r.delivery.message,
                 r.sample.map(serde_json::to_string).transpose().map_err(|e| e.to_string())?,
+                enum_name(r.source),
             ],
         )
         .map_err(db_err)?;
@@ -691,7 +747,7 @@ impl Store {
             && summary.recipe_version == record.recipe.map(|recipe| recipe.version)
             && summary.recipe_revision.as_deref() == record.recipe.map(|recipe| recipe.revision_id.as_str())
             && summary.frames_expected == record.frames_expected && summary.frames_received == record.frames_received
-            && summary.sample.as_ref() == record.sample
+            && summary.sample.as_ref() == record.sample && summary.source == record.source
             && existing.triggers == record.triggers && existing.software_version == record.software_version
             && serde_json::to_value(&existing.judgement).map_err(|error| error.to_string())? == serde_json::to_value(record.judgement).map_err(|error| error.to_string())?
             && serde_json::to_value(&existing.frames).map_err(|error| error.to_string())? == serde_json::to_value(record.frames).map_err(|error| error.to_string())?
@@ -851,7 +907,7 @@ impl Store {
     }
 
     fn filter(q: &HistoryQuery, prefix: &str) -> (String, Vec<SqlValue>) {
-        let mut clauses = Vec::new();
+        let mut clauses = vec![q.scope.clause(prefix)];
         let mut args = Vec::new();
         if let Some(from) = q.from {
             clauses.push(format!("{prefix}ts >= ?"));
@@ -873,11 +929,11 @@ impl Store {
             clauses.push(format!("{prefix}recipe_id = ?"));
             args.push(SqlValue::Text(id.to_string()));
         }
-        let sql = if clauses.is_empty() { String::new() } else { format!(" WHERE {}", clauses.join(" AND ")) };
-        (sql, args)
+        (format!(" WHERE {}", clauses.join(" AND ")), args)
     }
 
-    pub fn pending_recording_directories(&self, root: &Path) -> Result<Vec<PathBuf>, String> {
+    /// 某个录制根目录下仍被历史引用的 _pending 目录；只看同一范围的记录，真机与离线各管各的根目录。
+    pub fn pending_recording_directories(&self, root: &Path, scope: HistoryScope) -> Result<Vec<PathBuf>, String> {
         let root_text = root.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_string();
         let prefix = format!("{root_text}/");
         let mut paths = Vec::new();
@@ -902,11 +958,12 @@ impl Store {
             Ok(())
         };
         let conn = self.conn.lock().map_err(|_| "数据库锁异常，暂停孤立录制清理".to_string())?;
-        let mut stmt = conn.prepare("SELECT recording_directory FROM parts WHERE instr(lower(recording_directory),'_pending')>0").map_err(db_err)?;
+        let mut stmt = conn.prepare(&format!("SELECT recording_directory FROM parts WHERE instr(lower(recording_directory),'_pending')>0 AND {}", scope.clause(""))).map_err(db_err)?;
         for row in stmt.query_map([], |row| row.get::<_, String>(0)).map_err(db_err)? {
             protect(&row.map_err(db_err)?)?;
         }
-        let mut stmt = conn.prepare("SELECT raw_files FROM part_shots WHERE NOT json_valid(raw_files) OR instr(lower(raw_files),'_pending')>0").map_err(db_err)?;
+        let mut stmt = conn.prepare(&format!("SELECT s.raw_files FROM part_shots s JOIN parts p ON p.id=s.part_id \
+            WHERE (NOT json_valid(s.raw_files) OR instr(lower(s.raw_files),'_pending')>0) AND {}", scope.clause("p."))).map_err(db_err)?;
         for row in stmt.query_map([], |row| row.get::<_, String>(0)).map_err(db_err)? {
             let files: Vec<ShotRawFile> = serde_json::from_str(&row.map_err(db_err)?).map_err(|e| format!("历史原图引用损坏，暂停清理：{e}"))?;
             validate_raw_files(&files)?;
@@ -942,7 +999,7 @@ impl Store {
             .query_row(
                 &format!("SELECT {SUMMARY_COLS}, judgement, frames, triggers, software_version,recording_state,recording_available,recording_directory,recording_errors FROM parts WHERE id = ?1"),
                 [id],
-                |row| Ok((summary(row)?, row.get::<_, String>(21)?, row.get::<_, String>(22)?, row.get::<_, i64>(23)? as u64, row.get::<_, String>(24)?, recording_row(row, 25)?)),
+                |row| Ok((summary(row)?, row.get::<_, String>(22)?, row.get::<_, String>(23)?, row.get::<_, i64>(24)? as u64, row.get::<_, String>(25)?, recording_row(row, 26)?)),
             )
             .optional()
             .map_err(db_err)?
@@ -1056,8 +1113,8 @@ impl Store {
         rows.collect::<Result<_, _>>().map_err(db_err)
     }
 
-    pub fn counts_since(&self, since: i64) -> Result<VerdictCounts, String> {
-        self.query(&HistoryQuery { from: Some(since), limit: 1, ..Default::default() }).map(|p| p.counts)
+    pub fn counts_since(&self, since: i64, scope: HistoryScope) -> Result<VerdictCounts, String> {
+        self.query(&HistoryQuery { from: Some(since), scope, limit: 1, ..Default::default() }).map(|p| p.counts)
     }
 
     pub(crate) fn comparison_cycle(&self, id: i64) -> Result<Option<String>, String> {

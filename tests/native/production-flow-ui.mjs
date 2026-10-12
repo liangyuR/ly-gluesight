@@ -40,6 +40,7 @@ async function verifyDisk(root, detail, recipe) {
     assert.equal(part.frames_received, recipe.shots.length);
     assert.equal(part.frames_expected, recipe.shots.length);
     assert.equal(part.triggers, recipe.shots.length);
+    assert.equal(part.source, "offlineSynthetic");
     assert.equal(part.recording_state, "complete");
     assert.equal(part.recording_available, 1);
     assert.deepEqual(JSON.parse(part.recording_errors), []);
@@ -172,7 +173,7 @@ export async function runProductionFlow(page, options = {}) {
   await page.getByRole("combobox", { name: "离线配方", exact: true }).selectOption(recipeId);
   await page.getByRole("combobox", { name: "离线工况", exact: true }).selectOption("normal");
   const recipe = await invokeRead("cycle_layout", { recipeId });
-  const previous = await invokeRead("history_query", { query: { recipeId, limit: 1 } });
+  const previous = await invokeRead("history_query", { query: { recipeId, scope: "offline", limit: 1 } });
   const observations = [];
   const startedAt = Date.now();
   await page.getByRole("button", { name: "运行一件", exact: true }).click();
@@ -181,7 +182,7 @@ export async function runProductionFlow(page, options = {}) {
     if (observations.at(-1)?.phase !== snapshot.phase || observations.at(-1)?.received !== snapshot.part?.received) {
       observations.push({ phase: snapshot.phase, received: snapshot.part?.received, filled: snapshot.part?.filled, cycleId: snapshot.part?.cycleId });
     }
-    const history = await invokeRead("history_query", { query: { recipeId, limit: 1 } });
+    const history = await invokeRead("history_query", { query: { recipeId, scope: "offline", limit: 1 } });
     return history.items.find(item => item.id !== previous.items[0]?.id);
   }, Boolean, "未生成新的工件记录");
   assert(["OK", "OK_WITH_EXCURSION"].includes(summary.verdict), JSON.stringify(summary));
@@ -198,8 +199,9 @@ export async function runProductionFlow(page, options = {}) {
   assert.equal(detail.points.st.length, recipe.points.k.length);
   assert(detail.points.st.every(state => state === 0));
   assert(detail.frames.every(frame => frame.status === "done"));
-  const disk = await verifyDisk(root, detail, recipe);
+  const disk = await verifyDisk(path.join(path.dirname(root), "records-offline"), detail, recipe);
   await navigation.getByRole("link", { name: "历史记录", exact: true }).click();
+  await page.getByRole("group", { name: "记录来源", exact: true }).getByRole("button", { name: "离线件", exact: true }).click();
   await page.getByRole("combobox", { name: "历史配方", exact: true }).selectOption(recipeId);
   await page.getByRole("row", { name: `查看 SN ${summary.sn} 的记录`, exact: true }).click();
   await page.getByRole("heading", { name: "逐拍照点结果与原图", exact: true }).waitFor();
