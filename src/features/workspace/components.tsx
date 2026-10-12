@@ -26,7 +26,7 @@ export function NumberField({ label, value, unit, onChange, min, max, step = 1, 
 }
 export function WorkspaceEmpty() {
   const { error } = useWorkspace();
-  return <div className="wp-page">{error && <Notice title="无法加载候选配置" tone="warn">{error}</Notice>}<div className="wp-empty"><Camera size={32} /><h2>{desktopAvailable() ? "尚未选择配方" : "当前为浏览器查看模式"}</h2><p>{desktopAvailable() ? "在配方库选择或新建配方，再开始规划拍照点与示教中线。" : "请在桌面软件中连接实际数据；交互设计可在“操作流程预览”中查看。"}</p><Link className="btn primary" to={desktopAvailable() ? "/recipe" : "/workflow/guide"}>{desktopAvailable() ? "打开配方库" : "查看交互原型"}</Link></div></div>;
+  return <div className="wp-page">{error && <Notice title="无法加载候选配置" tone="warn">{error}</Notice>}<div className="wp-empty"><Camera size={32} /><h2>{desktopAvailable() ? "尚未选择配方" : "当前为浏览器查看模式"}</h2><p>{desktopAvailable() ? "在配方库选择或新建配方，再开始规划拍照点与示教中线。" : "请在桌面软件中连接实际数据。"}</p>{desktopAvailable() && <Link className="btn primary" to="/recipe">打开配方库</Link>}</div></div>;
 }
 export function WorkspaceBar() {
   const { list, drafts, selectedId, select, data, doc, dirty, frameDirty, busy, previewError, error, notice, saveDoc, saveState, retrySave } = useWorkspace();

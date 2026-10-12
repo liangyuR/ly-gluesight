@@ -5,7 +5,7 @@ import { matchesPart, mergeMeasurements } from "./identity";
 import type { CycleSettings, LogLine, Measured, OfflineFault, OfflineStatus, Recipe, RecipeDoc, RecipeSummary, Scenario, Snapshot } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
-  if (!isTauri() && ["cycle_save_settings","cycle_select_recipe","cycle_reset","offline_enable","offline_disable","offline_run","offline_stop","offline_inject","recipe_save","recipe_delete"].includes(cmd))
+  if (!isTauri() && ["cycle_save_settings","cycle_select_recipe","cycle_reset","offline_enable","offline_disable","offline_run","offline_stop","offline_inject"].includes(cmd))
     return Promise.reject(new Error("生产配置与检测操作需要 GlueSight · 胶路智检 桌面后端"));
   if (!isTauri()) return Promise.resolve(fallback());
   return invoke<T>(cmd, args);
@@ -54,23 +54,25 @@ export const recipeApi = {
   doc: (id: string) => call<RecipeDoc>("recipe_doc", { id }, () => Promise.reject("非桌面环境") as never),
   preview: (doc: RecipeDoc) => call<Recipe>("recipe_preview", { doc }, () => Promise.reject("非桌面环境") as never),
   template: () => call<RecipeDoc>("recipe_template", undefined, () => Promise.reject("非桌面环境") as never),
-  save: (doc: RecipeDoc, originalId: string | null) =>
-    call<RecipeSummary>("recipe_save", { doc, originalId }, () => Promise.reject("非桌面环境") as never).then((r) => {
-      layoutCache.clear();
-      notifyRecipes();
-      return r;
-    }),
-  remove: (id: string) =>
-    call<void>("recipe_delete", { id }, () => undefined).then(() => {
-      layoutCache.clear();
-      notifyRecipes();
-    }),
 };
 
 const layoutCache = new Map<string, Promise<Recipe | null>>();
 const recipeListeners = new Set<() => void>();
+let stopRecipeEvents: (() => void) | null = null;
 function notifyRecipes() {
+  layoutCache.clear();
   recipeListeners.forEach((f) => f());
+}
+function listenRecipes(f: () => void) {
+  recipeListeners.add(f);
+  stopRecipeEvents ??= subscribe<string>("workspace://changed", notifyRecipes);
+  return () => {
+    recipeListeners.delete(f);
+    if (recipeListeners.size === 0 && stopRecipeEvents) {
+      stopRecipeEvents();
+      stopRecipeEvents = null;
+    }
+  };
 }
 
 /**
@@ -82,9 +84,7 @@ export function useLayout(recipeId: string | null | undefined, revisionId?: stri
   const [gen, setGen] = useState(0);
   const key = recipeId ? `${recipeId}:${revisionId ?? ""}` : "";
   useEffect(() => {
-    const f = () => setGen((g) => g + 1);
-    recipeListeners.add(f);
-    return () => void recipeListeners.delete(f);
+    return listenRecipes(() => setGen((g) => g + 1));
   }, []);
   useEffect(() => {
     if (!recipeId) return;
@@ -114,8 +114,7 @@ export function useRecipes() {
   useEffect(() => {
     const load = () => cycleApi.recipes().then(setRecipes).catch(() => setRecipes([]));
     load();
-    recipeListeners.add(load);
-    return () => void recipeListeners.delete(load);
+    return listenRecipes(load);
   }, []);
   return recipes;
 }

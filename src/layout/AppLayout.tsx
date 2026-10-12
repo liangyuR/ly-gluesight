@@ -1,5 +1,4 @@
-import { Link, Outlet, useLocation } from "react-router-dom";
-import { LayoutGrid } from "lucide-react";
+import { Outlet, useLocation } from "react-router-dom";
 import ErrorBoundary from "./ErrorBoundary";
 import Sidebar from "./Sidebar";
 import { navItems } from "./nav";
@@ -15,7 +14,6 @@ export default function AppLayout() {
       <main className="main">
         <header className="main-header">
           <h1>{current?.label ?? ""}</h1>
-          <Link to="/workflow/guide" className="btn workflow-entry"><LayoutGrid size={16} />操作流程预览</Link>
         </header>
         <section className="main-body">
           <ErrorBoundary key={pathname}>

@@ -67,10 +67,8 @@ node node_modules/vitest/vitest.mjs run --coverage --pool=threads --maxWorkers=2
 node node_modules/typescript/bin/tsc -b
 node node_modules/typescript/bin/tsc --noEmit -p tsconfig.test.json
 cargo test --manifest-path src-tauri/Cargo.toml --lib --offline
-node --test tests/native/p0-clean-cyclehost-setup.test.mjs tests/native/p0-cyclehost-performance.test.mjs scripts/robot-plc-demo/tests/test-console.mjs
-python -m unittest discover -s scripts/robot-plc-demo/tests -p 'test_*.py'
+node --test tests/native/p0-clean-cyclehost-setup.test.mjs tests/native/p0-cyclehost-performance.test.mjs
 python -m unittest discover -s scripts/s7-handshake/tests -p 'test_*.py'
-& ./scripts/robot-plc-demo/tests/test_start_guard.ps1
 ```
 
 覆盖率前后对照均使用 V8、threads、2 workers；运行报告写入本机 `tmp/frontend-before.json`、`tmp/frontend-after.json` 和 `tmp/coverage-before`、`tmp/coverage-after`。后端/脚本日志为 `tmp/unit-test-*.log`，这些运行产物不提交。
