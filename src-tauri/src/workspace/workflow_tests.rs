@@ -67,7 +67,7 @@ fn plc_gate_waiter_is_queued_ahead_of_later_contenders() {
     let holder = gate.clone().blocking_lock_owned();
     let waiter = {
         let (gate, order) = (gate.clone(), order.clone());
-        std::thread::spawn(move || workflow::wait_plc_gate(&gate, "测试").map(|_guard| order.lock().unwrap().push("waiter")))
+        std::thread::spawn(move || workflow::lock_plc_gate(&gate, std::time::Duration::from_secs(3), "测试").map(|_guard| order.lock().unwrap().push("waiter")))
     };
     std::thread::sleep(std::time::Duration::from_millis(100));
     {

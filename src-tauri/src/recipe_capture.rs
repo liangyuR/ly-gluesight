@@ -448,9 +448,8 @@ pub async fn recipe_capture_start(app: AppHandle, recipe_id: String, camera_id: 
 
 fn start_capture(app: AppHandle, recipe_id: String, camera_id: String, drain_timeout_ms: Option<u64>) -> Result<CaptureRound, String> {
     let cycle = app.state::<CycleHost>();
-    let _gate = crate::workspace::wait_plc_gate(&cycle.plc_gate, "开始整圈采集")?;
     if recipe_id.trim().is_empty() { return Err("请先创建配方草稿".into()); }
-    if cycle.busy() { return Err("工件正在检测，结束后再开始整圈采集".into()); }
+    let Some(_gate) = crate::workspace::wait_idle_plc_gate(&cycle, "开始整圈采集")? else { return Err("工件正在检测，结束后再开始整圈采集".into()) };
     if cycle.camera.dry_run_active() { return Err("相机正在空跑，先停止空跑".into()); }
     if !matches!(cycle.phase(), Phase::Idle | Phase::Fault) { return Err("节拍尚未回到空闲，稍后再试".into()); }
     let cam = cycle.camera.require(&camera_id)?;
