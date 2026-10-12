@@ -448,11 +448,7 @@ pub fn recipe_capture_start(app: AppHandle, recipe_id: String, camera_id: String
     if recipe_id.trim().is_empty() { return Err("请先创建配方草稿".into()); }
     if cycle.busy() { return Err("工件正在检测，结束后再开始整圈采集".into()); }
     if cycle.camera.dry_run_active() { return Err("相机正在空跑，先停止空跑".into()); }
-    match cycle.phase() {
-        Phase::Idle => {}
-        Phase::Fault => return Err("节拍处于故障或待复位状态：到在线检测页查看原因并复位后再开始".into()),
-        _ => return Err("节拍尚未回到空闲，稍后再试".into()),
-    }
+    if !matches!(cycle.phase(), Phase::Idle | Phase::Fault) { return Err("节拍尚未回到空闲，稍后再试".into()); }
     let cam = cycle.camera.require(&camera_id)?;
     let slot = cycle.camera.slot(cam as usize).ok_or("设备不存在")?;
     let config = slot.config();
