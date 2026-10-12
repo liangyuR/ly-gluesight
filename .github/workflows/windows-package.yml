@@ -167,7 +167,7 @@ jobs:
           $reportRoot = Join-Path $env:GITHUB_WORKSPACE 'src-tauri/target/package-reports'
           $timer = [Diagnostics.Stopwatch]::StartNew()
           try {
-            pwsh -NoProfile -File scripts/Test-WindowsInstallation.ps1 -Installer $installers[0].FullName -InstallDir (Join-Path $env:RUNNER_TEMP 'GlueSight 安装验收') -ReportDir $reportRoot
+            pwsh -NoProfile -File scripts/Test-WindowsInstallation.ps1 -Installer $installers[0].FullName -InstallDir (Join-Path $env:RUNNER_TEMP 'GlueSight Installed') -ReportDir $reportRoot
             if ($LASTEXITCODE -ne 0) { throw 'Installed deployment verification failed.' }
           } finally { "install=$($timer.Elapsed.TotalSeconds.ToString('F3', [Globalization.CultureInfo]::InvariantCulture))" | Add-Content -LiteralPath $env:PACKAGE_TIMINGS }
       - name: Record release inputs and timings

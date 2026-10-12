@@ -19,6 +19,12 @@ if ($ReportDir.Equals($InstallDir, [StringComparison]::OrdinalIgnoreCase) -or $R
     throw '验证报告必须放在安装目录之外。'
 }
 New-Item -ItemType Directory -Path $ReportDir -Force | Out-Null
+Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+public static class InstallationCodePage {
+    [DllImport("kernel32.dll")] public static extern uint GetACP();
+}
+'@
 $reportPath = Join-Path $ReportDir 'installation.json'
 $report = [ordered]@{
     installer = $Installer
@@ -26,6 +32,7 @@ $report = [ordered]@{
     status = 'failed'
     guiStarted = $false
     hardwareVerified = $false
+    systemAnsiCodePage = [InstallationCodePage]::GetACP()
 }
 try {
     $processInfo = [Diagnostics.ProcessStartInfo]::new()
