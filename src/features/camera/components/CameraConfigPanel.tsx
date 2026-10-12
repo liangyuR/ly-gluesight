@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { FolderOpen, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { cameraApi } from "../api";
-import type { CameraConfig, CameraSource, CameraStatus, DeviceSummary, RecordEntry } from "../types";
+import type { CameraConfig, CameraSource, CameraStatus, DeviceSummary } from "../types";
 
 interface Props {
   cam: number;
@@ -11,27 +11,17 @@ interface Props {
   onSavingChange?: (saving:boolean) => void;
 }
 
-const sources: [CameraSource, string][] = [
-  ["mvs", "海康 MVS"],
-  ["sim", "模拟相机"],
-  ["replay", "回放目录"],
-  ["sampleSet", "样本集（离线）"],
-];
+const sourceText: Record<CameraSource, string> = { mvs: "海康 MVS", sim: "合成图（离线）", sampleSet: "样本集（离线）" };
 
 export default function CameraConfigPanel({ cam, initial, status, onSaved, onSavingChange }: Props) {
   const [config, setConfig] = useState<CameraConfig>(initial);
   const [devices, setDevices] = useState<DeviceSummary[]>([]);
-  const [records, setRecords] = useState<RecordEntry[]>([]);
   const [deviceError, setDeviceError] = useState("");
-  const [recordError, setRecordError] = useState("");
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
-  const [choosingDirectory, setChoosingDirectory] = useState(false);
-  const [directoryError, setDirectoryError] = useState("");
-  const directoryPending = useRef(false);
-  const mounted=useRef(true),deviceSerial=useRef(0),recordSerial=useRef(0),pending=useRef(false);
+  const mounted=useRef(true),deviceSerial=useRef(0),pending=useRef(false);
   const current=useRef({cam,source:config.source});current.current={cam,source:config.source};
-  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;deviceSerial.current++;recordSerial.current++;};},[]);
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;deviceSerial.current++;};},[]);
   useEffect(()=>()=>onSavingChange?.(false),[onSavingChange]);
 
   const refreshDevices = () => {
@@ -42,17 +32,10 @@ export default function CameraConfigPanel({ cam, initial, status, onSaved, onSav
       .then(r=>{if(mounted.current&&serial===deviceSerial.current&&current.current.source==="mvs")setDevices(r);})
       .catch(e=>{if(mounted.current&&serial===deviceSerial.current&&current.current.source==="mvs")setDeviceError(String(e));});
   };
-  const refreshRecords=()=>{
-    const serial=++recordSerial.current;
-    setRecordError("");
-    cameraApi.records().then(r=>{if(mounted.current&&serial===recordSerial.current&&current.current.source==="replay")setRecords(r.items);})
-      .catch(e=>{if(mounted.current&&serial===recordSerial.current&&current.current.source==="replay")setRecordError(String(e));});
-  };
 
   useEffect(() => {
     if (config.source === "mvs") refreshDevices();
-    if (config.source === "replay") refreshRecords();
-    return()=>{deviceSerial.current++;recordSerial.current++;};
+    return()=>{deviceSerial.current++;};
   }, [config.source]);
 
   // 序列号留空的相机连上后后台会固定序列号：页面每次重新取配置都跟上；用户在表单里改过还没保存就不动
@@ -64,27 +47,11 @@ export default function CameraConfigPanel({ cam, initial, status, onSaved, onSav
   }, [initial]);
 
   const set = <K extends keyof CameraConfig>(key: K, value: CameraConfig[K]) => {setNotice(null);setConfig(c=>({ ...c, [key]: value }));};
-  const chooseDirectory = async () => {
-    if (directoryPending.current || pending.current) return;
-    directoryPending.current = true;
-    setChoosingDirectory(true);
-    setDirectoryError("");
-    try {
-      const directory = await cameraApi.pickReplayDir(config.replayDir);
-      if (mounted.current && current.current.cam === cam && current.current.source === "replay" && directory !== null) set("replayDir", directory);
-    } catch (e) {
-      if (mounted.current && current.current.cam === cam && current.current.source === "replay") setDirectoryError(String(e));
-    } finally {
-      directoryPending.current = false;
-      if (mounted.current) setChoosingDirectory(false);
-    }
-  };
-  const numberLabels={triggerDelayUs:"触发延时（µs）",debouncerUs:"输入滤波（µs）",exposureUs:"曝光时间（µs）",gainDb:"增益（dB）",fps:"帧率（fps）",replayChannel:config.viewCount === 3 ? "回放设备编号（0=首设备）" : "通道"};
-  const num = (key: "triggerDelayUs" | "debouncerUs" | "exposureUs" | "gainDb" | "fps" | "replayChannel", step = 1) => (
+  const numberLabels={triggerDelayUs:"触发延时（µs）",debouncerUs:"输入滤波（µs）",exposureUs:"曝光时间（µs）",gainDb:"增益（dB）",fps:"帧率（fps）"};
+  const num = (key: "triggerDelayUs" | "debouncerUs" | "exposureUs" | "gainDb" | "fps", step = 1) => (
     <input id={`cam-${key}`} aria-label={numberLabels[key]} className="input mono" type="number" step={step} value={Number.isFinite(config[key])?config[key]:""} onChange={(e) => set(key, e.target.value===""?NaN:Number(e.target.value))} />
   );
   const mvs = config.source === "mvs";
-  const replay = config.source === "replay";
   const sampleSet = config.source === "sampleSet";
   const triggered = config.acquisition === "triggered";
   const invalid=!config.name.trim()?"相机名称不能为空":
@@ -94,12 +61,10 @@ export default function CameraConfigPanel({ cam, initial, status, onSaved, onSav
     !Number.isFinite(config.gainDb)?"增益需为有限数":
     ![config.triggerDelayUs,config.debouncerUs].every(v=>Number.isFinite(v)&&v>=0)?"触发延时与输入滤波需为非负有限数":
     !triggered&&!(config.fps>=1&&config.fps<=500)?"连续采集帧率需在 1–500 fps 之间":
-    sampleSet&&!triggered?"样本集相机只支持触发采集":
-    replay&&!config.replayDir.trim()?"回放相机需要填写图片目录":
-    replay&&(!Number.isInteger(config.replayChannel)||config.replayChannel<0)?"回放通道需为非负整数":"";
+    sampleSet&&!triggered?"样本集相机只支持触发采集":"";
 
   const save = async () => {
-    if(pending.current||directoryPending.current||invalid)return;
+    if(pending.current||invalid)return;
     pending.current=true;
     setSaving(true);
     onSavingChange?.(true);
@@ -122,21 +87,15 @@ export default function CameraConfigPanel({ cam, initial, status, onSaved, onSav
     <div className="panel cam-config">
       <div className="panel-toolbar">
         <h3 className="panel-title">相机参数</h3>
-        <button className="btn primary" onClick={save} disabled={saving||choosingDirectory||!!invalid}>
+        <button className="btn primary" onClick={save} disabled={saving||!!invalid}>
           {saving ? "写入中…" : "保存并应用"}
         </button>
       </div>
-      <fieldset disabled={saving||choosingDirectory} style={{border:0,padding:0,margin:0,minWidth:0}}><div className="cfg-grid">
+      <fieldset disabled={saving} style={{border:0,padding:0,margin:0,minWidth:0}}><div className="cfg-grid">
         <span>名称</span>
         <input id="cam-name" aria-label="名称" className="input" value={config.name} onChange={(e) => set("name", e.target.value)} />
         <span>图像源</span>
-        <div className="segmented">
-          {sources.map(([v, label]) => (
-            <button key={v} className={config.source === v ? "active" : ""} onClick={() => { set("source", v); if (v === "sampleSet") set("acquisition", "triggered"); }}>
-              {label}
-            </button>
-          ))}
-        </div>
+        <span>{sourceText[config.source]}</span>
         <span>设备视角</span>
         <select aria-label="设备视角" className="input" value={config.viewCount} onChange={e => set("viewCount", Number(e.target.value))}>
           <option value={1}>单视角</option>
@@ -144,7 +103,7 @@ export default function CameraConfigPanel({ cam, initial, status, onSaved, onSav
         </select>
         {config.viewCount === 3 && mvs && <label className="field"><span>SDK 拼接布局</span><select className="input" aria-label="SDK 拼接布局" value={config.compositeLayout?.kind ?? ""} onChange={e => set("compositeLayout", e.target.value ? {kind:e.target.value as "horizontal" | "vertical"} : null)}><option value="">请选择实际交付布局</option><option value="horizontal">横向三等分</option><option value="vertical">纵向三等分</option>{config.compositeLayout?.kind === "rects" && <option value="rects">已配置矩形区域</option>}</select></label>}
         {config.viewCount === 3 && <span className="hint-cell">每个拍照点可多选图 1／2／3 分别示教，三幅图共用一次设备触发。</span>}
-        {sampleSet ? <span className="hint-cell">图像来自离线模式中选择的样本集；相机编号（当前 {config.id || "未分配"}）需与样本集 cameraId 一致，视角数需与样本集一致，只支持触发采集。</span> : <>
+        {sampleSet ? <span className="hint-cell">图像来自离线控制台所选样本集，相机与视角按样本集生成，只支持触发采集。</span> : <>
         <span>采集方式</span>
         <div className="segmented">
           <button className={triggered ? "active" : ""} onClick={() => set("acquisition", "triggered")}>触发（飞拍）</button>
@@ -156,33 +115,6 @@ export default function CameraConfigPanel({ cam, initial, status, onSaved, onSav
             <span>帧率（fps）</span>
             {num("fps")}
             <span className="hint-cell">按此帧率出帧，只更新缩略图，不进入检测节拍</span>
-          </>
-        )}
-        {replay && (
-          <>
-            <span>图片目录</span>
-            <div className="row">
-              <input id="cam-replayDir" aria-label="图片目录" className="input mono grow" value={config.replayDir} placeholder="D:\现场图\Glue1" onChange={(e) => set("replayDir", e.target.value)} />
-              <button className="btn cam-directory-btn" onClick={chooseDirectory}><FolderOpen size={16} />{choosingDirectory ? "选择中…" : "选择目录"}</button>
-            </div>
-            {directoryError && <span className="hint-cell c-ng" role="alert">{directoryError}</span>}
-            {recordError&&<span className="hint-cell c-ng">{recordError} <button className="btn small" onClick={refreshRecords}>重新读取录制</button></span>}
-            {records.length > 0 && (
-              <>
-                <span>帧录制</span>
-                <select aria-label="帧录制" className="input" value="" onChange={(e) => e.target.value && set("replayDir", e.target.value)}>
-                  <option value="">从录制目录里选…</option>
-                  {records.map((r) => (
-                    <option key={r.path} value={r.path}>
-                      {r.name} · {r.frames} 帧
-                    </option>
-                  ))}
-                </select>
-              </>
-            )}
-            <span>{numberLabels.replayChannel}</span>
-            {num("replayChannel")}
-            <span className="hint-cell">{config.viewCount === 3 ? <>Frame{"{序号}"}_1/2/3 自动读取同次采集的三个视角；新录制格式按设备编号读取 cam{"{设备}"}_{"{序号}"}_v1/2/3，三个视角需齐全。</> : <>认 cam{"{通道}"}_{"{序号}"}.pgm（帧录制）与 Frame{"{序号}"}_{"{通道}"}.jpg（海康演示图）；0 取目录里的第一个通道</>}</span>
           </>
         )}
         {mvs && (
@@ -259,7 +191,7 @@ export default function CameraConfigPanel({ cam, initial, status, onSaved, onSav
       )}
       {config.source === "sim" && (
         <p className="muted hint">
-          {triggered ? "模拟相机收到触发后约 180 ms 交付一帧，用于没有硬件时跑通节拍。" : "模拟相机连续采集不合成画面；检测要用触发采集。"}
+          {triggered ? "合成图相机收到触发后约 180 ms 交付一帧，用于没有硬件时跑通节拍。" : "合成图相机连续采集不合成画面；检测要用触发采集。"}
         </p>
       )}
       {notice && <div className={`notice ${notice.ok ? "ok" : "error"}`}>{notice.text}</div>}

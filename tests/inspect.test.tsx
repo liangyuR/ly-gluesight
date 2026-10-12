@@ -5,15 +5,15 @@ import InspectPage from "../src/pages/InspectPage";
 import { cycleApi, useCycle, useLayout } from "../src/features/cycle/api";
 import { workspaceApi } from "../src/features/workspace/api";
 import { plcApi } from "../src/features/plc/api";
-import { snapshot, summary, workspaceView } from "./fixtures";
+import { siteStatus, snapshot, summary, workspaceView } from "./fixtures";
 import { cycleMeasurement, cyclePart, cycleResult } from "./cycle-visual-fixtures";
 import { plcConfig } from "./plc-fixtures";
-import type { LogLine, Measured, OfflineStatus, Recipe, RecipeSummary, Snapshot } from "../src/features/cycle/types";
+import type { LogLine, Measured, Recipe, RecipeSummary, SiteStatus, Snapshot } from "../src/features/cycle/types";
 import type { PointValue } from "../src/features/plc/types";
 
 vi.mock("../src/features/cycle/api", () => ({
   useCycle: vi.fn(), useRecipes: () => recipeList, useLayout: vi.fn(),
-  useOfflineStatus: () => offline, cycleApi: { selectRecipe: vi.fn(), reset: vi.fn(), offlineRun: vi.fn(), offlineStop: vi.fn() },
+  useSiteStatus: () => site, cycleApi: { selectRecipe: vi.fn(), reset: vi.fn(), offlineRun: vi.fn(), offlineStop: vi.fn() },
 }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { runtimeOverview: vi.fn(), liveImage: vi.fn() } }));
 vi.mock("../src/features/plc/api", () => ({ plcApi: { getConfig: vi.fn() }, usePlcValues: () => values,
@@ -21,12 +21,12 @@ vi.mock("../src/features/plc/api", () => ({ plcApi: { getConfig: vi.fn() }, useP
 
 let state: Snapshot, layout: Recipe | null, logs: LogLine[], measured: Measured[];
 let recipeList: RecipeSummary[];
-let offline: OfflineStatus;
+let site: SiteStatus;
 let values: Record<string, PointValue>;
 beforeEach(() => {
   state = snapshot(); layout = workspaceView().layout; logs = []; measured = []; values = {};
   recipeList = [summary(), summary(workspaceView("B"))];
-  offline = { enabled: false, port: null, running: false, continuous: false, parts: 0, message: "", heartbeatStopped: false, sampleSet: null, sampleError: null, nextPart: null, recent: [] };
+  site = siteStatus();
   vi.mocked(useCycle).mockImplementation(() => ({ snapshot: state, logs, measured }));
   vi.mocked(useLayout).mockImplementation(() => layout);
   vi.mocked(cycleApi.selectRecipe).mockReset().mockResolvedValue(undefined);
@@ -53,20 +53,18 @@ describe("在线检测切型锁定", () => {
 });
 
 describe("在线检测离线产线控件", () => {
-  it("离线模式未启用 → 不显示离线运行控件", () => {
+  it("真机模式 → 不显示离线运行控件", () => {
     render(<InspectPage />);
     expect(screen.queryByRole("button", { name: "运行一件" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("combobox", { name: "离线工况" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "启用离线模式" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "离线配方" })).not.toBeInTheDocument();
   });
 
-  it("离线已启用时运行一件 → 按所选配方与工况请求单件运行", async () => {
-    offline = { ...offline, enabled: true, port: 50102 };
+  it("离线模式运行一件 → 按所选配方请求正常件单件运行", async () => {
+    site = siteStatus({ mode: "offline", source: "synthetic", measurement: "simulated", port: 50102 });
     render(<InspectPage />);
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "离线配方" }), "B");
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "离线工况" }), "gap");
     await userEvent.click(screen.getByRole("button", { name: "运行一件" }));
-    expect(cycleApi.offlineRun).toHaveBeenCalledWith("B", "gap", false, null);
+    expect(cycleApi.offlineRun).toHaveBeenCalledWith("B", "normal", false, null);
   });
 });
 

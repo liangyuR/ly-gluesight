@@ -274,14 +274,25 @@ export interface CycleSettings {
   timeouts: Timeouts;
   historyDays: number;
   lyflowCore: string | null;
-  vision: boolean;
   record: RecordMode;
   recordKeep: number;
   recordMaxGb: number;
 }
 
-export interface OfflineStatus {
-  enabled: boolean;
+export type SiteMode = "real" | "offline";
+export type SiteSourceKind = "sampleSet" | "synthetic";
+export type OfflineSource = { kind: "sampleSet"; dir: string } | { kind: "synthetic" };
+
+export interface OfflineChoice {
+  kind: SiteSourceKind;
+  sampleSetDir: string | null;
+}
+
+export interface SiteStatus {
+  mode: SiteMode;
+  source: SiteSourceKind | null;
+  last: OfflineChoice | null;
+  measurement: "lyFlow" | "simulated";
   port: number | null;
   running: boolean;
   continuous: boolean;
@@ -289,7 +300,6 @@ export interface OfflineStatus {
   message: string;
   heartbeatStopped: boolean;
   sampleSet: SampleSetSummary | null;
-  sampleError: string | null;
   nextPart: string | null;
   recent: SampleRun[];
 }

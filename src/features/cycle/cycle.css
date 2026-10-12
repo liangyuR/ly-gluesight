@@ -65,6 +65,13 @@
 .offline-controls.compact .input, .offline-controls.compact .btn { height: 28px; font-size: 12.5px; }
 .offline-label { font-size: 12px; color: var(--warn); }
 .offline-msg { font-size: 12px; color: var(--text-muted); }
+.offline-console { display: flex; flex-direction: column; gap: 12px; }
+.offline-summary { margin: 0; }
+.offline-effects { font-size: 13px; }
+.offline-effects ul { margin: 6px 0; padding-left: 20px; }
+.site-managed { display: flex; flex-direction: column; gap: 4px; padding: 10px 14px; border: 1px solid var(--warn); border-radius: 6px; background: var(--warn-soft); color: var(--warn); font-size: 13px; }
+.site-managed span { color: var(--text-muted); }
+.site-managed a { margin-left: 6px; color: var(--accent-text); }
 
 /* 实时检测（飞拍） */
 .fly { display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 640px; }

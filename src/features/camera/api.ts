@@ -1,10 +1,10 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 import { subscribe } from "../plc";
-import type { CameraConfig, CameraStatus, DeviceSummary, DryFrame, Frame, PreviewImage, RecordEntry } from "./types";
+import type { CameraConfig, CameraStatus, DeviceSummary, DryFrame, Frame, PreviewImage } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
-  if (!isTauri() && ["camera_save_config","camera_add","camera_remove","camera_soft_trigger","camera_dry_run_start","camera_dry_run_stop","camera_pick_replay_dir"].includes(cmd))
+  if (!isTauri() && ["camera_save_config","camera_add","camera_remove","camera_soft_trigger","camera_dry_run_start","camera_dry_run_stop"].includes(cmd))
     return Promise.reject(new Error("设备操作需要 GlueSight · 胶路智检 桌面后端"));
   if (!isTauri()) return Promise.resolve(fallback());
   return invoke<T>(cmd, args);
@@ -13,7 +13,7 @@ function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallbac
 export const defaultCameraConfig: CameraConfig = {
   id: "",
   name: "相机",
-  source: "sim",
+  source: "mvs",
   viewCount: 1,
   serial: "",
   acquisition: "triggered",
@@ -27,8 +27,6 @@ export const defaultCameraConfig: CameraConfig = {
   strobe: true,
   chunk: true,
   counterAfterOpen: null,
-  replayDir: "",
-  replayChannel: 0,
 };
 
 /** 解析 camera_preview 的二进制：16 字节头（缩略图宽高、原图宽高）+ 灰度像素。 */
@@ -53,13 +51,11 @@ export const cameraApi = {
   add: (config: CameraConfig) => call<number>("camera_add", { config }, () => 0),
   remove: (cam: number) => call<void>("camera_remove", { cam }, () => undefined),
   listDevices: () => call<DeviceSummary[]>("camera_list_devices", undefined, () => []),
-  pickReplayDir: (directory: string, title?: string) => call<string | null>("camera_pick_replay_dir", { directory, title: title ?? null }, () => null),
   preview: (cam: number, view?: number) => call<ArrayBuffer>("camera_preview", { cam, ...(view == null ? {} : { view }) }, () => new ArrayBuffer(0)).then(decodePreview),
   softTrigger: (cam: number) => call<void>("camera_soft_trigger", { cam }, () => undefined),
   dryRunStart: () => call<void>("camera_dry_run_start", undefined, () => undefined),
   dryRunGet: () => call<DryFrame[] | null>("camera_dry_run_get", undefined, () => null),
   dryRunStop: () => call<DryFrame[]>("camera_dry_run_stop", undefined, () => []),
-  records: () => call<{ root: string; items: RecordEntry[] }>("records_list", undefined, () => ({ root: "", items: [] })),
 };
 
 /** 相机组状态每秒刷新；各相机最近一帧攒起来每 250 ms 交一次（缩略图本来也是 250 ms 取一次），页面不必跟着每帧重画。 */

@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { DetectParams, Recipe, RecipeDoc, RecipeSummary, ShotLimits, ShotSpec, Snapshot } from "../src/features/cycle/types";
+import type { DetectParams, Recipe, RecipeDoc, RecipeSummary, SampleSetSummary, ShotLimits, ShotSpec, SiteStatus, Snapshot } from "../src/features/cycle/types";
 import type { PartDetail, PartSummary } from "../src/features/history/types";
 import type { FrozenImage, WorkspaceView } from "../src/features/workspace/types";
 import type { useWorkspace } from "../src/features/workspace/context";
@@ -87,6 +87,16 @@ export function snapshot(phase: Snapshot["phase"] = "IDLE"): Snapshot {
     phase, since: 1, fault: null, productSource: "manual", activeRecipeId: "A", triggerMode: "fly",
     part: null, result: null, stats: { total: 0, ok: 0, ng: 0, err: 0 }, strayFrames: 0, alarms: [],
   };
+}
+
+export function siteStatus(over: Partial<SiteStatus> = {}): SiteStatus {
+  return { mode: "real", source: null, last: null, measurement: "lyFlow", port: null, running: false, continuous: false, parts: 0, message: "",
+    heartbeatStopped: false, sampleSet: null, nextPart: null, recent: [], ...over };
+}
+
+export function sampleSet(name = "壳体样本"): SampleSetSummary {
+  return { id: "set-1", name, source: "现场", dir: "C:/samples/set-1", shotCount: 2, cameras: [{ id: "CAM-1", views: [1] }], mmPerPx: 0.1,
+    parts: [{ partId: "part-1", sn: "SN1", label: "ok" }], missing: [], missingCount: 0 };
 }
 
 export function partSummary(id = 1): PartSummary {
