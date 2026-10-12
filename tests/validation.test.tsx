@@ -23,7 +23,7 @@ beforeEach(() => {
 describe("验证与发布页面", () => {
   it("发布失败后冻结样本配置并重试同一待生效版本", async () => {
     ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, baseRevision: "old", frames: [], overview: ws.data!.workspace.overview, validation: ws.data!.workspace.validation! };
-    ws.data!.workspace.publishError = "生效状态保存失败";
+    ws.data!.workspace.publish = { state: "failed", message: "发布包缺失" };
     show();
     expect(screen.getByRole("checkbox", { name: "选用样本 良品组" })).toBeDisabled();
     expect(screen.getByRole("combobox", { name: "良品组期望结论" })).toBeDisabled();
@@ -33,6 +33,20 @@ describe("验证与发布页面", () => {
     await userEvent.click(screen.getByRole("button", { name: "重试发布 / 切换" }));
     expect(workspaceApi.retryPublish).toHaveBeenCalledWith("A", 7);
     expect(workspaceApi.publish).not.toHaveBeenCalled();
+  });
+
+  it("人工期望只提供合格与具体异常类型 → 不再单列 OK·局部超差", () => {
+    show();
+    const options = Array.from((screen.getByRole("combobox", { name: "良品组期望结论" }) as HTMLSelectElement).options).map(o => o.textContent);
+    expect(options[0]).toBe("合格");
+    expect(options).not.toContain("OK · 局部超差");
+  });
+
+  it("拍照计划变化 → 发布确认里提供 PLC 配方握手计划入口", async () => {
+    ws.data!.planChanged = true;
+    show();
+    await userEvent.click(screen.getByRole("button", { name: "发布生产配方" }));
+    expect(screen.getByRole("link", { name: "查看 PLC 配方握手计划" })).toHaveAttribute("href", "/plc?panel=s7-plan");
   });
 
   it("验证未通过时不能发布", () => {

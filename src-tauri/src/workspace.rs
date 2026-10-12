@@ -20,8 +20,11 @@ mod recorded;
 mod reproduce;
 mod workflow;
 mod centerline;
+pub mod progress;
 #[cfg(test)]
 mod workflow_tests;
+#[cfg(test)]
+mod progress_tests;
 pub use workflow::*;
 
 fn state_value(value: &impl Serialize) -> Value {
@@ -236,7 +239,7 @@ pub struct Workspace {
     pub sample_bank: Vec<BankSample>,
     pub validation: Option<Validation>,
     pub pending: Option<Box<Release>>,
-    pub publish_error: Option<String>,
+    pub publish: PublishState,
     pub updated_at: i64,
     #[serde(default)]
     pub last_position: Option<workflow::Position>,
@@ -260,7 +263,7 @@ impl Workspace {
             sample_bank: Vec::new(),
             validation: None,
             pending: None,
-            publish_error: None,
+            publish: PublishState::Draft,
             updated_at: ly_plc::now_ms(),
             last_position: None,
             capture_id: None,
@@ -291,21 +294,34 @@ impl Workspace {
     }
 
     fn retry_publish(&mut self, revision: u64) -> Result<(), String> {
-        if self.revision != revision || self.pending.is_none() || self.publish_error.is_none() {
+        if self.revision != revision || self.pending.is_none() || !matches!(self.publish, PublishState::Failed { .. } | PublishState::Uncertain { .. }) {
             return Err("没有可以重试的发布版本".into());
         }
-        self.publish_error = None;
+        self.publish = PublishState::Waiting;
         Ok(())
     }
 
     fn activation_uncertain(&self) -> bool {
-        self.publish_error.as_ref().is_some_and(|message| message.starts_with("生产生效状态未能保存"))
+        matches!(self.publish, PublishState::Uncertain { .. })
     }
 
     fn retain_failed_activation(&mut self, before: Self, error: &str) {
         *self = before;
-        self.publish_error = Some(format!("生产生效状态未能保存：{error}，请检查数据目录"));
+        self.publish = PublishState::Uncertain { message: format!("生产生效状态未能保存：{error}，请检查数据目录") };
     }
+}
+
+/// 候选的发布与生效状态。Waiting / Failed / Uncertain 时 pending 保存冻结的待生效版本。
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum PublishState {
+    #[default]
+    Draft,
+    Waiting,
+    Failed { message: String },
+    Uncertain { message: String },
+    /// 已生效；revision 是生效后候选的修订号，候选再改动后回到草稿。
+    Active { version: u32, revision: u64, warning: Option<String> },
 }
 
 #[derive(Serialize)]
@@ -319,6 +335,7 @@ pub struct WorkspaceView {
     /// 候选的拍照计划与生产配方不同（或还没发布过）：生效后 PLC 侧要同步新的计划版本
     pub plan_changed: bool,
     pub coverage: f32,
+    pub progress: progress::Progress,
 }
 
 pub struct WorkspaceHost {
@@ -470,6 +487,7 @@ fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
     let production = app.state::<CycleHost>().recipes.doc(&w.doc.id);
     let plan_changed = production.as_ref().is_none_or(|p| p.plan_version == 0 || !p.same_plan(&w.doc));
     let coverage = coverage(&layout);
+    let progress = progress::compute(&w, production_version);
     Ok(WorkspaceView {
         workspace: w,
         layout,
@@ -477,6 +495,7 @@ fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
         production_plan_version: production.map(|p| p.plan_version),
         plan_changed,
         coverage,
+        progress,
     })
 }
 
@@ -1138,6 +1157,12 @@ fn history_sample_table(original: &Recipe, candidate: &Recipe, points: &store::P
     }).collect()
 }
 
+/// 验证样本是否符合人工期望：期望合格时 OK 与 OK_WITH_EXCURSION 都算符合，其余结论须完全一致。
+fn sample_matches(expected: Verdict, actual: Verdict) -> bool {
+    let qualified = |v| matches!(v, Verdict::Ok | Verdict::OkWithExcursion);
+    if qualified(expected) { qualified(actual) } else { expected == actual }
+}
+
 fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
     let r = w.doc.build()?;
     let initial_environment = environment(app, &r)?;
@@ -1202,7 +1227,7 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
                     sn: 0,
                     expected: sample.expected,
                     actual: Some(j.verdict),
-                    passed: j.verdict == sample.expected,
+                    passed: sample_matches(sample.expected, j.verdict),
                     reason: j.reason,
                 });
             }
@@ -1230,7 +1255,7 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
                 sn: detail.summary.sn,
                 expected: sample.expected,
                 actual: Some(j.verdict),
-                passed: j.verdict == sample.expected,
+                passed: sample_matches(sample.expected, j.verdict),
                 reason: j.reason,
             })
         })();
@@ -1358,7 +1383,7 @@ pub fn workspace_publish(
         overview: w.overview.clone(),
         validation: validated.clone(),
     }));
-    next.publish_error = None;
+    next.publish = PublishState::Waiting;
     host.save(&next)?;
     *w = next;
     let _ = app.state::<CycleHost>().tx.send(cycle::Input::Refresh);
@@ -1464,7 +1489,7 @@ pub fn apply_pending(app: &AppHandle) -> bool {
     let mut items = host.items.lock().unwrap();
     let ids: Vec<_> = items
         .iter()
-        .filter(|(_, w)| w.pending.is_some() && w.publish_error.is_none())
+        .filter(|(_, w)| w.pending.is_some() && w.publish == PublishState::Waiting)
         .map(|(id, _)| id.clone())
         .collect();
     let mut changed = false;
@@ -1482,8 +1507,8 @@ pub fn apply_pending(app: &AppHandle) -> bool {
                 let next_version = app.state::<CycleHost>().recipes.next_version(&saved.id);
                 w.doc.version = next_version.as_ref().copied().unwrap_or(saved.version);
                 w.validation = None;
-                w.publish_error = next_version.err();
                 w.revision += 1;
+                w.publish = PublishState::Active { version: saved.version, revision: w.revision, warning: next_version.err() };
                 changed = true;
                 cycle::log(
                     app,
@@ -1500,7 +1525,7 @@ pub fn apply_pending(app: &AppHandle) -> bool {
             }
             Err(e) => {
                 w.pending = Some(Box::new(release));
-                w.publish_error = Some(e.clone());
+                w.publish = PublishState::Failed { message: e.clone() };
                 cycle::log(app, "err", "发布配方", e);
             }
         }

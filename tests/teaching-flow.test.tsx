@@ -13,7 +13,7 @@ import { cameraApi } from "../src/features/camera";
 import { cameraApi as captureCameraApi } from "../src/features/camera/api";
 import { plcApi } from "../src/features/plc/api";
 import { historyApi } from "../src/features/history/api";
-import type { CaptureRound } from "../src/features/workspace/types";
+import type { CaptureRound, ShotState, WorkspaceView } from "../src/features/workspace/types";
 import { snapshot, summary, tricamWorkspaceView, twoLines } from "./fixtures";
 
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
@@ -29,6 +29,12 @@ vi.mock("../src/features/plc/api", () => ({ plcApi: { getStatus: vi.fn() } }));
 vi.mock("../src/features/history/api", () => ({ historyApi: { query: vi.fn() } }));
 vi.mock("../src/features/plc", () => ({ subscribe: () => () => {} }));
 vi.mock("../src/lib/desktop", () => ({ desktopAvailable: () => true }));
+
+function shotState(view: WorkspaceView, k: number, state: ShotState) {
+  const shot = view.progress.shots[k];
+  shot.state = state; shot.completed = state === "taught" ? 1 : 0;
+  shot.views[0].state = state;
+}
 
 it("从采集原图完成逐帧示教、总览、独立样本采集验证并确认发布", async () => {
   vi.stubGlobal("DOMPoint", class {
@@ -50,6 +56,7 @@ it("从采集原图完成逐帧示教、总览、独立样本采集验证并确�
   candidate.coverage = 0;
   candidate.workspace.doc.shots.forEach(shot => { shot.path = []; delete shot.mmPerPx; });
   candidate.workspace.frames.forEach(frame => { frame.trial = null; frame.saved = false; });
+  [0, 1].forEach(k => shotState(candidate, k, "unconfigured"));
   candidate.layout.shots = structuredClone(candidate.workspace.doc.shots);
   candidate.layout.segments = [];
   candidate.layout.points = { x: [], y: [], seg: [], k: [] };
@@ -77,10 +84,13 @@ it("从采集原图完成逐帧示教、总览、独立样本采集验证并确�
     response.workspace.doc.shots[k].path = structuredClone(twoLines[k]);
     response.workspace.doc.shots[k].mmPerPx = .1;
     response.layout.shots = structuredClone(response.workspace.doc.shots);
+    shotState(response, k, "pendingTrial");
     vi.mocked(workspaceApi.saveParams).mockResolvedValueOnce(structuredClone(response));
     response.workspace.frames[k].trial = trials[k];
+    shotState(response, k, "trialPassed");
     vi.mocked(workspaceApi.trial).mockResolvedValueOnce(structuredClone(response));
     response.workspace.frames[k].saved = true;
+    shotState(response, k, "taught");
     response.workspace.revision++;
     response.coverage = (k + 1) * 50;
     if (k === 1) response.layout = taughtLayout;
@@ -127,6 +137,8 @@ it("从采集原图完成逐帧示教、总览、独立样本采集验证并确�
   });
   vi.mocked(workspaceApi.publish).mockImplementation(async (id, revision) => {
     expect([id, revision]).toEqual(["A", 13]);
+    response.workspace.publish = { state: "waiting" };
+    Object.assign(response.progress.steps.find(step => step.id === "publish")!, { status: "inProgress", detail: "v2 待生效：等待当前工件结束" });
     response.workspace.pending = { doc: structuredClone(response.workspace.doc), bundleId: "bundle-A-v2", baseRevision: response.workspace.baseRevision,
       revision, frames: structuredClone(response.workspace.frames), overview: structuredClone(response.workspace.overview), validation: structuredClone(response.workspace.validation!),
     };
@@ -146,7 +158,7 @@ it("从采集原图完成逐帧示教、总览、独立样本采集验证并确�
     const imageId = `A-image-${k}`;
     const image = await screen.findByRole("img", { name: `冻结图像 · ${imageId}` });
     expect(screen.getByRole("button", { name: "选择帧 k" + (k + 1) })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "试测当前帧" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "保存参数并试测" })).toBeDisabled();
     for (const [clientX, clientY] of twoLines[k]) {
       fireEvent.pointerDown(image, { clientX, clientY });
       fireEvent.pointerUp(image);
@@ -154,12 +166,10 @@ it("从采集原图完成逐帧示教、总览、独立样本采集验证并确�
     fireEvent.change(screen.getByRole("spinbutton", { name: "像素当量" }), { target: { value: ".1" } });
     expect(screen.getByLabelText("中线点 2")).toBeVisible();
     expect(screen.getByRole("button", { name: "保存本帧示教" })).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: "保存中线" }));
+    await user.click(screen.getByRole("button", { name: "保存参数并试测" }));
     expect(workspaceApi.saveParams).toHaveBeenNthCalledWith(k + 1, "A", 7 + 2 * k, k, { path: twoLines[k], mmPerPx: .1 });
-    await waitFor(() => expect(screen.getByRole("button", { name: "试测当前帧" })).toBeEnabled());
-    expect(screen.queryByText("示教中线有未保存的修改")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "试测当前帧" }));
-    expect(workspaceApi.trial).toHaveBeenNthCalledWith(k + 1, "A", 8 + 2 * k, k, imageId);
+    await waitFor(() => expect(workspaceApi.trial).toHaveBeenNthCalledWith(k + 1, "A", 8 + 2 * k, k, imageId));
+    expect(screen.queryByText("示教参数有未保存的修改")).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("button", { name: "保存并示教下一幅" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "保存并示教下一幅" }));
     expect(workspaceApi.saveTeach).toHaveBeenNthCalledWith(k + 1, "A", 8 + 2 * k, k, imageId);
@@ -167,7 +177,7 @@ it("从采集原图完成逐帧示教、总览、独立样本采集验证并确�
   }
 
   expect(screen.getByRole("button", { name: "保存本帧示教" })).toBeDisabled();
-  await user.click(screen.getByRole("link", { name: "布置总览" }));
+  await user.click(screen.getByRole("link", { name: "工件总览（可选）" }));
   const firstPosition = await screen.findByRole("button", { name: "总览选择帧 k1" });
   fireEvent.keyDown(firstPosition, { key: "ArrowRight" });
   await user.click(screen.getByRole("button", { name: "保存总览" }));
@@ -181,23 +191,23 @@ it("从采集原图完成逐帧示教、总览、独立样本采集验证并确�
   await waitFor(() => expect(startCapture).toBeEnabled());
   await user.click(startCapture);
   expect(workspaceApi.captureStart).toHaveBeenCalledWith("A", "CAM-1", 1500);
-  const saveSample = await screen.findByRole("button", { name: "保存为独立正常验证样本" });
+  const saveSample = await screen.findByRole("button", { name: "保存为独立验证样本" });
   expect(saveSample).toBeDisabled();
   await user.click(screen.getByRole("checkbox", { name: "已确认本轮样本与示教轨迹、触发顺序及拍摄条件一致" }));
   await user.click(saveSample);
-  await screen.findByText("正常验证样本已加入样本库");
+  await screen.findByText("独立验证样本已加入样本库");
   await user.click(screen.getByRole("link", { name: "进入验证" }));
   expect(await screen.findByRole("checkbox", { name: "选用样本 独立采集 2" })).toBeChecked();
   await user.click(screen.getByRole("checkbox", { name: "已确认所选样本的拍摄条件、轨迹和触发顺序适用于当前候选" }));
   await user.click(screen.getByRole("button", { name: "运行整套图像验证" }));
-  await screen.findByText("一致");
+  await screen.findByText("符合");
   const publish = screen.getByRole("button", { name: "发布生产配方" });
   await waitFor(() => expect(publish).toBeEnabled());
   await user.click(publish);
   expect(await screen.findByRole("dialog", { name: "发布生产配方" })).toBeVisible();
   expect(workspaceApi.publish).not.toHaveBeenCalled();
   await user.click(screen.getByRole("button", { name: "确认发布 v2" }));
-  await screen.findByText("等待工件边界");
+  await screen.findByText("v2 待生效：等待当前工件结束");
   expect(workspaceApi.publish).toHaveBeenCalledTimes(1);
   expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
   expect(workspaceApi.saveParams).toHaveBeenCalledTimes(2);

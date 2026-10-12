@@ -7,13 +7,19 @@ pub struct CalibrationCheck {
     pub verification_id: String,
     pub source_k: usize,
     pub source_image_id: String,
-    pub reference_mm: f64,
-    pub measured_mm: f64,
-    pub error_mm: f64,
+    pub basis: CalibrationBasis,
     pub passed: bool,
     pub camera_tag: Value,
     pub calib_tag: Value,
     pub mm_per_px: Option<f32>,
+}
+
+/// 标定验证的依据：人工参考件实测，或样本集声明的像素当量（不伪造参考 / 实测值）。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum CalibrationBasis {
+    Manual { reference_mm: f64, measured_mm: f64, error_mm: f64 },
+    SampleSet { set_id: String },
 }
 
 pub(super) fn calibration_scale(tag: &Value) -> Option<f32> {
@@ -145,9 +151,8 @@ pub(super) fn refresh_views(app: &AppHandle, w: &mut Workspace) -> Result<bool, 
                     || engine.as_ref().is_none_or(|e| t.engine_tag != *e))
                     || state.calibration_check.as_ref().is_some_and(|c| c.camera_tag != *camera || c.calib_tag != *calib || c.mm_per_px != r.shots[k].mm_per_px)
             });
-            if stale && (state.saved || state.trial.is_some() || state.calibration_check.as_ref().is_some_and(|c| c.passed)) {
+            if stale && (state.saved || state.trial.is_some()) {
                 state.saved = false; state.trial = None;
-                if let Some(check) = &mut state.calibration_check { check.passed = false; }
                 changed = true;
             }
         }
@@ -249,7 +254,7 @@ pub fn workspace_check_calibration(app: AppHandle, id: String, revision: u64, k:
     let error_mm = measured_mm - reference_mm;
     let check = CalibrationCheck {
         verification_id: format!("calibration-{}-{revision}-{k}-{selected}", ly_plc::now_ms()), source_k: k, source_image_id,
-        reference_mm, measured_mm, error_mm, passed: error_mm.abs() <= 0.1 + 1e-9,
+        basis: CalibrationBasis::Manual { reference_mm, measured_mm, error_mm }, passed: error_mm.abs() <= 0.1 + 1e-9,
         camera_tag, calib_tag, mm_per_px: r.shots[k].mm_per_px,
     };
     w.frames[k].view_states.iter_mut().find(|s| s.view == selected).unwrap().calibration_check = Some(check.clone());
@@ -299,6 +304,17 @@ pub fn workspace_retry_publish(app: AppHandle, id: String, revision: u64) -> Res
     view(&app, w)
 }
 
+/// 有界等待 PLC 事务门：整圈采集刚结束或刚进入离线时 PLC 事务仍在收尾，等它释放而不是立即拒绝。
+/// 在阻塞线程里调用。
+pub(crate) fn wait_plc_gate<'a>(gate: &'a tokio::sync::Mutex<()>, what: &str) -> Result<tokio::sync::MutexGuard<'a, ()>, String> {
+    let deadline = Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        if let Ok(guard) = gate.try_lock() { return Ok(guard); }
+        if Instant::now() >= deadline { return Err(format!("PLC 事务 3 秒内仍未结束，暂不能{what}；请确认在线检测或离线产线已停止后重试")); }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 pub(super) fn require_capture_plan(version: Option<u32>) -> Result<u32, String> {
     version.filter(|version| *version > 0).ok_or_else(|| "采集轮次缺少有效的 PLC 轨迹计划版本，请重新采集".into())
 }
@@ -316,9 +332,13 @@ pub(super) fn capture_for(app: &AppHandle, id: &str, round_id: &str) -> Result<c
 }
 
 #[tauri::command]
-pub fn workspace_adopt_capture(app: AppHandle, id: String, revision: u64, round_id: String, reuse_teaching: bool, correspondence_confirmed: bool) -> Result<WorkspaceView, String> {
+pub async fn workspace_adopt_capture(app: AppHandle, id: String, revision: u64, round_id: String, reuse_teaching: bool, correspondence_confirmed: bool) -> Result<WorkspaceView, String> {
+    tauri::async_runtime::spawn_blocking(move || adopt_capture(app, id, revision, round_id, reuse_teaching, correspondence_confirmed)).await.map_err(|e| e.to_string())?
+}
+
+fn adopt_capture(app: AppHandle, id: String, revision: u64, round_id: String, reuse_teaching: bool, correspondence_confirmed: bool) -> Result<WorkspaceView, String> {
     let cycle = app.state::<CycleHost>();
-    let _gate = cycle.plc_gate.try_lock().map_err(|_| "设备配置正在变化，请稍后重试")?;
+    let _gate = wait_plc_gate(&cycle.plc_gate, "采用采集图像")?;
     if cycle.busy() { return Err("请等待当前工件和 PLC 事务结束后采用采集图像".into()); }
     let round = capture_for(&app, &id, &round_id)?;
     let host = app.state::<WorkspaceHost>();
@@ -329,8 +349,8 @@ pub fn workspace_adopt_capture(app: AppHandle, id: String, revision: u64, round_
         return Err("继承示教前必须确认点数、轨迹及触发顺序对应一致".into());
     }
     let camera = app.state::<CycleHost>().camera.configs().into_iter().find(|c| c.id == round.camera_id).ok_or("采集设备不存在")?;
-    let sample_scale = (camera.source == CameraSource::SampleSet).then(|| crate::offline::sample_set(&app))
-        .flatten().filter(|set| set.has_camera(&round.camera_id)).and_then(|set| set.manifest().mm_per_px);
+    let sample_set = (camera.source == CameraSource::SampleSet).then(|| crate::offline::sample_set(&app))
+        .flatten().filter(|set| set.has_camera(&round.camera_id));
     let old = w.clone();
     w.doc.shots.clear(); w.frames.clear();
     for (k, captured) in round.frames.iter().enumerate() {
@@ -347,6 +367,10 @@ pub fn workspace_adopt_capture(app: AppHandle, id: String, revision: u64, round_
         }
         let mut frame = Teaching::empty(k);
         w.doc.shots.push(shot);
+        let declared = sample_set.as_ref().and_then(|set| {
+            let shot = set.manifest().shots.iter().filter(|s| s.camera_id == round.camera_id).nth(k)?;
+            set.shot_mm_per_px(&shot.shot_id).map(|mm| (set.manifest().id.clone(), mm))
+        });
         for raw in &captured.views {
             let image = crate::image_file::load(Path::new(&raw.path))?;
             if [image.width, image.height] != [raw.width, raw.height] { return Err("采集图尺寸与记录不一致".into()); }
@@ -355,10 +379,11 @@ pub fn workspace_adopt_capture(app: AppHandle, id: String, revision: u64, round_
             projection.shots[k].view = raw.view;
             projection.shots[k].calib = w.doc.shots[k].views.iter().find(|v| v.view == raw.view).and_then(|v| v.calib.clone());
             let (camera_tag, calib_tag) = tags(&app, &projection, k)?;
-            let scale = vision::calib_info(&vision::shot_calib_path(&app, &projection, k)?).and_then(|c| c.mm_per_px).map(|scale| scale as f32).or(sample_scale);
+            let calibrated = vision::calib_info(&vision::shot_calib_path(&app, &projection, k)?).and_then(|c| c.mm_per_px).map(|scale| scale as f32);
+            let scale = declared.as_ref().map(|(_, mm)| *mm).or(calibrated);
             let previous_calib = old.frames.get(k).and_then(|f| f.views.iter().find(|i| i.view == raw.view)).map(|i| &i.calib_tag).unwrap_or(&Value::Null);
             let inherited_scale = if let Some(v) = w.doc.shots[k].views.iter_mut().find(|v| v.view == raw.view) {
-                v.mm_per_px = if reuse_teaching { updated_calibration_scale(v.mm_per_px, previous_calib, scale) } else { scale };
+                v.mm_per_px = if reuse_teaching && declared.is_none() { updated_calibration_scale(v.mm_per_px, previous_calib, scale) } else { scale };
                 v.mm_per_px
             } else { scale };
             if w.doc.shots[k].view == raw.view {
@@ -368,10 +393,15 @@ pub fn workspace_adopt_capture(app: AppHandle, id: String, revision: u64, round_
             let path = image_file(&host, &w.doc.id, &image_id)?;
             std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
             crate::image_file::save_pgm(&path, &image)?;
+            let calibration_check = declared.as_ref().map(|(set_id, mm)| CalibrationCheck {
+                verification_id: format!("sample-set-{}-{k}-v{}", round.round_id, raw.view), source_k: k, source_image_id: image_id.clone(),
+                basis: CalibrationBasis::SampleSet { set_id: set_id.clone() }, passed: true,
+                camera_tag: camera_tag.clone(), calib_tag: calib_tag.clone(), mm_per_px: Some(*mm),
+            });
             frame.views.push(FrozenImage { id: image_id, view: raw.view, source: format!("capture:{}", round.round_id),
                 captured_at: round.created_at, size: [raw.width, raw.height], camera: round.camera_id.clone(), camera_tag, calib_tag,
                 geometry_tag: shot_tags(&projection, k)?.0, exposure_us: Some(camera.exposure_us), gain_db: Some(camera.gain_db), history_id: None });
-            frame.view_states.push(ViewTeaching { view: raw.view, trial: None, saved: false, calibration_check: None });
+            frame.view_states.push(ViewTeaching { view: raw.view, trial: None, saved: false, calibration_check });
         }
         frame.image = frame.views.iter().find(|i| i.view == w.doc.shots[k].view).cloned();
         if frame.image.is_none() { return Err("采集图缺少继承示教使用的图编号".into()); }
@@ -385,10 +415,14 @@ pub fn workspace_adopt_capture(app: AppHandle, id: String, revision: u64, round_
 }
 
 #[tauri::command]
-pub fn workspace_capture_sample(app: AppHandle, id: String, revision: u64, round_id: String, expected: Verdict, correspondence_confirmed: bool) -> Result<WorkspaceView, String> {
+pub async fn workspace_capture_sample(app: AppHandle, id: String, revision: u64, round_id: String, expected: Verdict, correspondence_confirmed: bool) -> Result<WorkspaceView, String> {
     if !correspondence_confirmed { return Err("请确认验证采集与示教的轨迹、触发顺序对应一致".into()); }
+    tauri::async_runtime::spawn_blocking(move || capture_sample(app, id, revision, round_id, expected)).await.map_err(|e| e.to_string())?
+}
+
+fn capture_sample(app: AppHandle, id: String, revision: u64, round_id: String, expected: Verdict) -> Result<WorkspaceView, String> {
     let cycle = app.state::<CycleHost>();
-    let _gate = cycle.plc_gate.try_lock().map_err(|_| "设备配置正在变化，请稍后重试")?;
+    let _gate = wait_plc_gate(&cycle.plc_gate, "加入验证样本")?;
     if cycle.busy() { return Err("请等待当前工件和 PLC 事务结束后加入验证样本".into()); }
     let round = capture_for(&app, &id, &round_id)?;
     let host = app.state::<WorkspaceHost>(); let mut items = host.items.lock().unwrap();

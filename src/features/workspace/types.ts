@@ -18,9 +18,13 @@ export interface Trial {
   score: number; coverage: number; elapsedMs: number; reason: string;
   measurement: unknown; verdict?: Verdict;
 }
+export interface CalibrationCheck {
+  basis: { kind: "manual"; referenceMm: number; measuredMm: number; errorMm: number } | { kind: "sampleSet"; setId: string };
+  passed: boolean; mmPerPx: number | null;
+}
 /** 示教帧：冻结原图、试测与“已保存”；中线、像素当量与检测参数在候选配方的拍照点里。 */
 export interface Teaching {
-  viewStates?: { view: number; trial: Trial | null; saved: boolean; calibrationCheck?: { referenceMm: number; measuredMm: number; errorMm: number; passed: boolean } | null }[];
+  viewStates?: { view: number; trial: Trial | null; saved: boolean; calibrationCheck?: CalibrationCheck | null }[];
   k: number; image: FrozenImage | null; views: FrozenImage[]; trial: Trial | null; saved: boolean; backup: Teaching | null;
 }
 export interface Overview { background: string | null; positions: [number, number][]; saved: boolean }
@@ -39,7 +43,31 @@ export interface Workspace {
   overview: Overview; samples: Sample[]; validation: Validation | null; pending: Release | null;
   sampleBank: BankSample[];
   lastPosition?: { k: number; view: number } | null; captureId?: string | null;
-  publishError: string | null; updatedAt: number;
+  publish: PublishState; updatedAt: number;
+}
+/** 发布与生效状态（后端显式枚举）。 */
+export type PublishState =
+  | { state: "draft" } | { state: "waiting" }
+  | { state: "failed"; message: string } | { state: "uncertain"; message: string }
+  | { state: "active"; version: number; revision: number; warning: string | null };
+export type StepId = "capture" | "defaults" | "teach" | "calibration" | "overview" | "validation" | "publish";
+export type StepStatus = "notStarted" | "inProgress" | "done" | "blocked" | "optional";
+export type ProgressTarget = { page: "capture" } | { page: "teach"; k: number } | { page: "validation" } | { page: "camera" };
+export interface ProgressStep {
+  id: StepId; label: string; optional: boolean; status: StepStatus; detail: string;
+  blockers: { message: string; target: ProgressTarget }[];
+}
+export type ShotState = "unconfigured" | "draft" | "pendingTrial" | "trialFailed" | "trialPassed" | "taught" | "skipped";
+export type CalibrationState =
+  | { state: "unverified" } | { state: "stale" }
+  | { state: "verified"; errorMm: number } | { state: "failed"; errorMm: number }
+  | { state: "sampleSet"; setId: string; mmPerPx: number };
+export interface ViewProgress { view: number; enabled: boolean; state: ShotState; trialStale: boolean; calibration: CalibrationState; hint: string }
+export interface ShotProgress { k: number; shotId: string; state: ShotState; completed: number; total: number; views: ViewProgress[] }
+/** 后端计算的候选进度：步骤、逐拍照点状态与下一步。 */
+export interface Progress {
+  steps: ProgressStep[]; shots: ShotProgress[];
+  next: { step: StepId; label: string; target: ProgressTarget } | null;
 }
 /** coverage：要检的拍照点里已示教中线的比例（%）。 */
 export interface WorkspaceView {
@@ -49,6 +77,7 @@ export interface WorkspaceView {
   /** 候选的拍照计划（产品代码、拍照点顺序 / Pose / 相机）与生产不同：生效后 PLC 要同步新的计划版本 */
   planChanged: boolean;
   coverage: number;
+  progress: Progress;
 }
 export interface RawFrame { k: number; camera: string; view: number; file: string; ts: number; available: boolean; error: string | null; cam?: number | null; frameCounter?: number | null; triggerCounter?: number | null }
 export interface RecordImages { historyId: number; frames: RawFrame[]; complete: boolean; message: string }

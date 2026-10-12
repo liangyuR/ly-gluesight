@@ -8,7 +8,7 @@ fn representative_calibration_reuse_requires_matching_environment_and_retains_so
     image.camera_tag = json!({"id":"device1","session":2});
     image.calib_tag = json!({"path":"device1-view1","value":{"data":{"mmPerPx":0.1}}});
     let check = CalibrationCheck { verification_id:"verification-a".into(), source_k:7, source_image_id:"capture-a-v1".into(),
-        reference_mm:10.0, measured_mm:10.05, error_mm:0.05, passed:true,
+        basis: workflow::CalibrationBasis::Manual { reference_mm:10.0, measured_mm:10.05, error_mm:0.05 }, passed:true,
         camera_tag:image.camera_tag.clone(), calib_tag:image.calib_tag.clone(), mm_per_px:Some(0.1) };
     assert!(workflow::reusable_calibration(&check, &image.camera_tag, &image.calib_tag, Some(0.1), &image));
     assert!(!workflow::reusable_calibration(&check, &json!({"id":"device2"}), &image.calib_tag, Some(0.1), &image));
@@ -90,7 +90,7 @@ fn failed_activation_retains_the_same_frozen_release_and_requires_explicit_retry
     assert!(restored.retry_publish(restored.revision).is_err());
 }
 
-fn workspace() -> Workspace {
+pub(super) fn workspace() -> Workspace {
     let mut doc = crate::recipe::samples().remove(1);
     doc.shots.truncate(1);
     doc.shots[0].views.clear();

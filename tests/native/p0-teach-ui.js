@@ -79,6 +79,6 @@ async (page) => {
   }
   const final = await read();
   if (final.workspace.frames.some(f => !f.saved || !f.trial?.passed || f.image?.size?.[0] !== 1280 || f.image?.size?.[1] !== 1024)) throw new Error("All four full-resolution frames must be saved after a real successful trial");
-  await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "工件总览", exact: true }).click();
+  await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "工件总览（可选）", exact: true }).click();
   return { id, saved: final.workspace.frames.map(f => f.saved), captures, results };
 }

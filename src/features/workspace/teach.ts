@@ -26,30 +26,9 @@ export function teachError(t: ShotTeach) {
   return "";
 }
 
-export function sameJsonValue(a: unknown, b: unknown): boolean {
-  if (Object.is(a, b)) return true;
-  if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((value, i) => sameJsonValue(value, b[i]));
-  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
-  const left = a as Record<string, unknown>, right = b as Record<string, unknown>;
-  const keys = Object.keys(left);
-  return keys.length === Object.keys(right).length && keys.every(key => Object.hasOwn(right, key) && sameJsonValue(left[key], right[key]));
-}
-
 export function selectedViews(shot: ShotSpec): number[] {
   return shot.views?.filter(v => v.enabled).map(v => v.view) ?? (shot.skip ? [] : [shot.view]);
 }
 export function canImportSampleGroup(shots: Pick<ShotSpec, "skip" | "views">[]) {
   return shots.every(shot => shot.skip || (shot.views?.length ? shot.views.filter(v => v.enabled).length : 1) <= 1);
-}
-export function teachingCounts(shots: ShotSpec[], frames: import("./types").Teaching[]) {
-  let total = 0, completed = 0;
-  for (const shot of shots) {
-    const k = shots.indexOf(shot), frame = frames[k];
-    if (shot.skip) continue;
-    for (const view of selectedViews(shot)) {
-      total++;
-      if (frame?.viewStates?.find(v => v.view === view)?.saved ?? (shot.view === view && frame?.saved)) completed++;
-    }
-  }
-  return { total, completed };
 }

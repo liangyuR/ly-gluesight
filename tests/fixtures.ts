@@ -1,7 +1,7 @@
 import { vi } from "vitest";
 import type { DetectParams, Recipe, RecipeDoc, RecipeSummary, SampleSetSummary, ShotLimits, ShotSpec, SiteStatus, Snapshot } from "../src/features/cycle/types";
 import type { PartDetail, PartSummary } from "../src/features/history/types";
-import type { FrozenImage, WorkspaceView } from "../src/features/workspace/types";
+import type { FrozenImage, Progress, WorkspaceView } from "../src/features/workspace/types";
 import type { useWorkspace } from "../src/features/workspace/context";
 
 export function deferred<T>() {
@@ -33,9 +33,9 @@ export function workspaceView(id = "A"): WorkspaceView {
     points: { x: [10, 20, 30, 40], y: [10, 10, 10, 10], seg: [0, 0, 1, 1], k: [0, 0, 1, 1] },
   };
   return {
-    layout, productionVersion: 1, productionPlanVersion: 1, planChanged: false, coverage: 100,
+    layout, productionVersion: 1, productionPlanVersion: 1, planChanged: false, coverage: 100, progress: progress([1]),
     workspace: {
-      doc, baseRevision: `production-${id}`, revision: 7, updatedAt: 1, publishError: null, pending: null,
+      doc, baseRevision: `production-${id}`, revision: 7, updatedAt: 1, publish: { state: "draft" }, pending: null,
       frames: [0, 1].map(k => {
         const image: FrozenImage = { id: `${id}-image-${k}`, source: "camera", capturedAt: 1, size: [100, 60], camera: "CAM-1", view: 1,
           cameraTag: { id: "CAM-1", source: "sim", viewCount: 1, acquisition: "triggered", exposureUs: 60, gainDb: 6 }, calibTag: { path: "C:/test/calib/plane_calib.json", value: null }, geometryTag: [`P${k + 1}`, `P${k + 1}`, "CAM-1", 1, "CAM-1-v1"], exposureUs: 60, gainDb: 6, historyId: null };
@@ -55,6 +55,25 @@ export function workspaceView(id = "A"): WorkspaceView {
   };
 }
 
+/** 后端进度的静态样例：两个拍照点都已试测通过、未保存示教，标定未验证，当前修订验证通过。 */
+export function progress(views: number[]): Progress {
+  const step = (id: Progress["steps"][number]["id"], label: string, status: Progress["steps"][number]["status"], detail: string, optional = false) => ({ id, label, optional, status, detail, blockers: [] });
+  return {
+    steps: [
+      step("capture", "整圈采集", "done", "已采用完整采集轮次，2 个拍照点"),
+      step("defaults", "配方默认参数", "optional", "可选", true),
+      step("teach", "单帧示教", "inProgress", "0 / 2 幅已示教"),
+      step("calibration", "像素当量与标定验证", "notStarted", "0 / 2 幅满足 ±0.1 mm"),
+      step("overview", "工件总览", "done", "总览布置已保存", true),
+      step("validation", "验证", "done", "当前修订验证通过"),
+      step("publish", "发布与生效", "notStarted", "可发布 v2（当前生产 v1）"),
+    ],
+    shots: [0, 1].map(k => ({ k, shotId: `P${k + 1}`, state: "trialPassed", completed: 0, total: 1,
+      views: views.map(view => ({ view, enabled: view === 1, state: view === 1 ? "trialPassed" : "unconfigured", trialStale: false, calibration: { state: "unverified" }, hint: view === 1 ? "试测通过" : "" })) })),
+    next: { step: "teach", label: "继续示教拍照点 1", target: { page: "teach", k: 0 } },
+  };
+}
+
 export function summary(view = workspaceView()): RecipeSummary {
   const { layout: r } = view;
   return { id: r.id, name: r.name, version: 1, revisionId: r.revisionId, productCode: r.productCode,
@@ -63,6 +82,7 @@ export function summary(view = workspaceView()): RecipeSummary {
 
 export function tricamWorkspaceView(id = "A"): WorkspaceView {
   const view = workspaceView(id);
+  view.progress = progress([1, 2, 3]);
   view.workspace.frames.forEach(frame => {
     frame.views = [1, 2, 3].map(value => ({ ...frame.image!, view: value, id: value === 1 ? frame.image!.id : `${frame.image!.id}-v${value}`, geometryTag: [`P${frame.k + 1}`, `P${frame.k + 1}`, "CAM-1", value, `CAM-1-v${value}`] }));
     frame.image = frame.views[0];

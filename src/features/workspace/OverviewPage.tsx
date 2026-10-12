@@ -1,3 +1,4 @@
+import { errorText } from "../../lib/errors";
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { Link } from "react-router-dom";
 import { Save, Upload } from "lucide-react";
@@ -98,7 +99,7 @@ export default function OverviewPage() {
     savingRef.current=true;setSaving(true);const serial=++saveSerial.current;
     const valid=()=>current.current.alive&&current.current.scope===scope&&serial===saveSerial.current;
     try{await act(()=>workspaceApi.saveOverview(doc.id,data.workspace.revision,overview),"总览布置已保存，拍照与测量不受影响");}
-    catch(e){if(valid())setError(String(e));}
+    catch(e){if(valid())setError(errorText(e));}
     finally{if(valid()){savingRef.current=false;setSaving(false);}}
   };
   return <div className="wp-page"><WorkspaceBar /><Steps /><div className="wp-actions"><Badge tone={data.workspace.overview.saved&&!displayDirty?"ok":"warn"}>{data.workspace.overview.saved&&!displayDirty?"总览已保存":"总览待保存"}</Badge><span className="spacer" /><Link className="btn" to="/recipe/validation">验证与发布</Link></div><div className="wp-columns"><Panel title="工件总览" detail="在背景图上布置各拍照点的显示框；点击帧框查看绑定原图" actions={<button className="btn primary" disabled={!unlocked} onClick={()=>void save()}><Save size={15}/>保存总览</button>}>

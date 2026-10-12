@@ -37,6 +37,12 @@
 .wp-steps a > span { display:grid; place-items:center; width:21px; height:21px; border:1px solid var(--border-strong); border-radius:50%; font-size:11px; flex-shrink:0; }
 .wp-steps a.active > span { border-color:var(--accent); color:var(--text); background:var(--accent); }
 .wp-steps a > svg { margin-left:auto; }
+.wp-steps a > small { font-size:11px; color:var(--text-muted); }
+.wp-steps a > small.wp-step-status { padding:1px 6px; border-radius:9px; background:var(--bg-sunken, transparent); }
+.wp-steps a > small.wp-step-status.done { color:var(--ok); }
+.wp-steps a > small.wp-step-status.blocked { color:var(--warn, var(--ng)); }
+.wp-blockers { margin:6px 0 0; padding-left:18px; font-size:12px; }
+.wp-offline-feed { margin-top:12px; padding:10px; border:1px dashed var(--border-strong); border-radius:6px; }
 .wp-teach { display:grid; grid-template-columns:148px minmax(0,1fr) 254px; gap:16px; align-items:start; }
 .wp-frame-list { display:flex; flex-direction:column; gap:8px; }
 .wp-frame-item { display:flex; flex-direction:column; gap:5px; align-items:stretch; border:1px solid var(--border); border-radius:6px; padding:8px; color:var(--text-muted); background:var(--bg); text-align:left; min-width:0; }

@@ -442,9 +442,13 @@ fn compose_views(images: &[Arc<FrameImage>]) -> Result<Arc<FrameImage>, String> 
 }
 
 #[tauri::command]
-pub fn recipe_capture_start(app: AppHandle, recipe_id: String, camera_id: String, drain_timeout_ms: Option<u64>) -> Result<CaptureRound, String> {
+pub async fn recipe_capture_start(app: AppHandle, recipe_id: String, camera_id: String, drain_timeout_ms: Option<u64>) -> Result<CaptureRound, String> {
+    tauri::async_runtime::spawn_blocking(move || start_capture(app, recipe_id, camera_id, drain_timeout_ms)).await.map_err(|e| e.to_string())?
+}
+
+fn start_capture(app: AppHandle, recipe_id: String, camera_id: String, drain_timeout_ms: Option<u64>) -> Result<CaptureRound, String> {
     let cycle = app.state::<CycleHost>();
-    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务")?;
+    let _gate = crate::workspace::wait_plc_gate(&cycle.plc_gate, "开始整圈采集")?;
     if recipe_id.trim().is_empty() { return Err("请先创建配方草稿".into()); }
     if cycle.busy() { return Err("工件正在检测，结束后再开始整圈采集".into()); }
     if cycle.camera.dry_run_active() { return Err("相机正在空跑，先停止空跑".into()); }

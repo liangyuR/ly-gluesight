@@ -30,6 +30,8 @@ pub struct SampleShot {
     pub views: Vec<u8>,
     #[serde(default)]
     pub origin: Option<String>,
+    #[serde(default)]
+    pub mm_per_px: Option<f32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -126,6 +128,10 @@ fn plain_entry(path: &Path) -> Result<Option<std::fs::Metadata>, String> {
     }
 }
 
+fn bad_mm_per_px(value: Option<f32>) -> bool {
+    value.is_some_and(|v| !v.is_finite() || v <= 0.0)
+}
+
 fn check_views(views: &[u8], what: &str) -> Result<(), String> {
     let unique: HashSet<_> = views.iter().collect();
     if views.is_empty() || unique.len() != views.len() || views.iter().any(|v| !(1..=3).contains(v)) {
@@ -150,7 +156,7 @@ impl Manifest {
     fn validate(&self) -> Result<(), String> {
         if self.id.trim().is_empty() { return Err("样本集 id 不能为空".into()); }
         if self.image_size.is_some_and(|[w, h]| w == 0 || h == 0) { return Err("样本集 imageSize 无效".into()); }
-        if self.mm_per_px.is_some_and(|v| !v.is_finite() || v <= 0.0) { return Err("样本集 mmPerPx 必须为正数或 null".into()); }
+        if bad_mm_per_px(self.mm_per_px) { return Err("样本集 mmPerPx 必须为正数或 null".into()); }
         if self.cameras.is_empty() || self.shots.is_empty() || self.parts.is_empty() {
             return Err("样本集的 cameras、shots、parts 都不能为空".into());
         }
@@ -166,6 +172,7 @@ impl Manifest {
             let camera_views = cameras.get(shot.camera_id.as_str()).ok_or_else(|| format!("拍照点 {} 引用了不存在的相机 {}", shot.shot_id, shot.camera_id))?;
             check_views(&shot.views, &format!("拍照点 {}", shot.shot_id))?;
             if shot.views.iter().any(|v| !camera_views.contains(v)) { return Err(format!("拍照点 {} 的视角超出相机 {}", shot.shot_id, shot.camera_id)); }
+            if bad_mm_per_px(shot.mm_per_px) { return Err(format!("拍照点 {} 的 mmPerPx 必须为正数或 null", shot.shot_id)); }
         }
         let mut parts = HashSet::new();
         for part in &self.parts {
@@ -228,6 +235,11 @@ impl SampleSet {
 
     pub fn reference(&self, part_id: &str) -> Option<SampleRef> {
         self.part(part_id).map(|p| SampleRef { set_id: self.manifest.id.clone(), part_id: p.part_id.clone(), sn: p.sn.clone(), label: p.label })
+    }
+
+    pub fn shot_mm_per_px(&self, shot_id: &str) -> Option<f32> {
+        let shot = self.manifest.shots.iter().find(|s| s.shot_id == shot_id)?;
+        shot.mm_per_px.or(self.manifest.mm_per_px)
     }
 
     pub fn has_camera(&self, camera_id: &str) -> bool {
@@ -324,11 +336,12 @@ mod tests {
     #[test]
     fn manifest_contract_rejects_bad_versions_and_reports_missing_images() {
         type Edit = fn(&Fixture, &mut Value);
-        let cases: [(&str, Edit, Result<usize, &str>); 6] = [
+        let cases: [(&str, Edit, Result<usize, &str>); 7] = [
             ("完整样本集", |_, _| {}, Ok(0)),
             ("未知版本", |_, m| m["schemaVersion"] = 2.into(), Err("schemaVersion 2")),
             ("缺少版本", |_, m| { m.as_object_mut().unwrap().remove("schemaVersion"); }, Err("schemaVersion")),
             ("点号与顺序不符", |_, m| m["shots"][1]["shotId"] = "S005".into(), Err("S002")),
+            ("逐点当量非正", |_, m| m["shots"][2]["mmPerPx"] = 0.0.into(), Err("S003")),
             ("缺一张图", |f, _| std::fs::remove_file(f.0.join("parts/p02/S003_cam1_v1.png")).unwrap(), Ok(1)),
             ("整件目录缺失", |f, _| std::fs::remove_dir_all(f.0.join("parts/p01")).unwrap(), Ok(4)),
         ];
@@ -345,6 +358,25 @@ mod tests {
                 (Err(error), Err(needle)) => assert!(error.contains(needle), "{name}: {error}"),
                 (result, expected) => panic!("{name}: {:?} / {expected:?}", result.map(|s| s.missing().to_vec())),
             }
+        }
+    }
+
+    #[test]
+    fn shot_mm_per_px_shot_value_overrides_global_then_falls_back_else_none() {
+        let cases: [(&str, Option<f32>, Option<f32>, &str, Option<f32>); 4] = [
+            ("逐点覆盖全局", Some(0.25), Some(0.125), "S002", Some(0.125)),
+            ("未声明逐点回落全局", Some(0.25), Some(0.125), "S001", Some(0.25)),
+            ("都未声明", None, None, "S002", None),
+            ("拍照点不存在", Some(0.25), Some(0.125), "S009", None),
+        ];
+        for (name, global, shot, query, expected) in cases {
+            let fixture = Fixture::new(&[1]);
+            let mut manifest = fixture.manifest();
+            manifest["mmPerPx"] = serde_json::json!(global);
+            manifest["shots"][1]["mmPerPx"] = serde_json::json!(shot);
+            fixture.write_manifest(&manifest);
+            let set = SampleSet::load(&fixture.0).unwrap();
+            assert_eq!(set.shot_mm_per_px(query), expected, "{name}");
         }
     }
 }

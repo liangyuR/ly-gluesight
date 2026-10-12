@@ -1,3 +1,4 @@
+import { errorText } from "../../lib/errors";
 import { useEffect, useRef, useState } from "react";
 import { verdictLabel } from "../history/meta";
 import { matchesPart } from "../cycle/identity";
@@ -28,7 +29,7 @@ export default function RuntimeFrame({part,layout,k,measured,vis}:{part:PartView
     setPreview({scope,image:null,error:"",loading:true});
     void workspaceApi.liveImage(part.cycleId,part.recipeRevision,k)
       .then(image=>{if(valid())setPreview({scope,image,error:"",loading:false});})
-      .catch(error=>{if(valid())setPreview({scope,image:null,error:String(error),loading:false});});
+      .catch(error=>{if(valid())setPreview({scope,image:null,error:errorText(error),loading:false});});
     return()=>{alive=false;};
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[scope]);

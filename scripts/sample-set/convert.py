@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import shutil
 import sys
@@ -106,6 +107,41 @@ def parse_shots(spec: str, total: int) -> list[int]:
             raise ConvertError(f"拍照点范围 {chunk} 超出 1..{total}")
         selected.update(range(start, end + 1))
     return sorted(selected)
+
+
+def parse_mm_per_px(text: str, what: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise ConvertError(f"{what} 不是数字：{text!r}") from None
+    if not _is_mm_per_px(value):
+        raise ConvertError(f"{what} 必须为正的有限数：{text!r}")
+    return value
+
+
+def parse_shot_mm_per_px(spec: str) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for chunk in spec.split(","):
+        sid, sep, value = chunk.strip().partition("=")
+        sid = sid.strip()
+        if not sep or not SHOT_ID_RE.fullmatch(sid):
+            raise ConvertError(f"无法解析逐点像素当量：{chunk!r}（格式 S001=0.085）")
+        if sid in result:
+            raise ConvertError(f"逐点像素当量重复：{sid}")
+        result[sid] = parse_mm_per_px(value.strip(), f"拍照点 {sid} 的像素当量")
+    return result
+
+
+def apply_mm_per_px(manifest: dict, mm_per_px: str | None, shot_mm_per_px: str | None) -> None:
+    if mm_per_px is not None:
+        manifest["mmPerPx"] = parse_mm_per_px(mm_per_px, "--mm-per-px")
+    if shot_mm_per_px is None:
+        return
+    shots = {s["shotId"]: s for s in manifest["shots"]}
+    for sid, value in parse_shot_mm_per_px(shot_mm_per_px).items():
+        if sid not in shots:
+            raise ConvertError(f"--shot-mm-per-px 中的拍照点 {sid} 不在生成的清单里（共 {len(shots)} 个拍照点）")
+        shots[sid]["mmPerPx"] = value
 
 
 def scan_isv(src: Path) -> SourceSet:
@@ -250,7 +286,8 @@ def prepare_output(src: Path, out: Path, force: bool) -> None:
 
 
 def convert(kind: str, src: Path, out: Path, shots_spec: str | None, set_id: str | None,
-            name: str | None, force: bool) -> dict:
+            name: str | None, force: bool, mm_per_px: str | None = None,
+            shot_mm_per_px: str | None = None) -> dict:
     if not src.is_dir():
         raise ConvertError(f"源目录不存在：{src}")
     source = scan_isv(src) if kind == "isv" else scan_mx11(src)
@@ -259,6 +296,7 @@ def convert(kind: str, src: Path, out: Path, shots_spec: str | None, set_id: str
     selection = parse_shots(shots_spec, len(source.shots)) if shots_spec else None
     default_id, default_name = default_identity(source, selection, shots_spec)
     manifest, copies = build_manifest(source, set_id or default_id, name or default_name, selection)
+    apply_mm_per_px(manifest, mm_per_px, shot_mm_per_px)
 
     per_part = Counter(c[0] for c in copies if c[3] is not None)
     missing = [f"{c[0]}/{c[1]}（{c[2]}）" for c in copies if c[3] is None]
@@ -288,7 +326,9 @@ def convert(kind: str, src: Path, out: Path, shots_spec: str | None, set_id: str
 
     labels = Counter(p["label"] for p in manifest["parts"])
     print(f"[完成] {out}")
-    print(f"  id={manifest['id']} name={manifest['name']} imageSize={manifest['imageSize']}")
+    shot_mm = {s["shotId"]: s["mmPerPx"] for s in manifest["shots"] if "mmPerPx" in s}
+    print(f"  id={manifest['id']} name={manifest['name']} imageSize={manifest['imageSize']} "
+          f"mmPerPx={manifest['mmPerPx']}" + (f" 逐点 {shot_mm}" if shot_mm else ""))
     print(f"  件数 {len(manifest['parts'])}，拍照点 {len(manifest['shots'])}，复制文件 {len(copies) - len(missing)}，"
           f"大小 {total_bytes / 1024 / 1024:.1f} MiB，标签 {dict(labels)}")
     return manifest
@@ -296,6 +336,10 @@ def convert(kind: str, src: Path, out: Path, shots_spec: str | None, set_id: str
 
 def _is_pos_int(v) -> bool:
     return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+
+def _is_mm_per_px(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0
 
 
 def validate_set(root: Path) -> tuple[list[str], list[str]]:
@@ -322,8 +366,8 @@ def validate_set(root: Path) -> tuple[list[str], list[str]]:
     if not (isinstance(size, list) and len(size) == 2 and all(_is_pos_int(v) for v in size)):
         errors.append("imageSize 必须是 [宽, 高] 正整数")
     mm = doc.get("mmPerPx", None)
-    if mm is not None and (isinstance(mm, bool) or not isinstance(mm, (int, float)) or mm <= 0):
-        errors.append("mmPerPx 必须是正数或 null")
+    if mm is not None and not _is_mm_per_px(mm):
+        errors.append("mmPerPx 必须是正的有限数或 null")
 
     cameras: dict[str, set] = {}
     raw_cameras = doc.get("cameras")
@@ -356,6 +400,8 @@ def validate_set(root: Path) -> tuple[list[str], list[str]]:
         sid, cid, views = shot.get("shotId"), shot.get("cameraId"), shot.get("views")
         if sid != f"S{i:03d}":
             errors.append(f"shots[{i - 1}].shotId 应为 S{i:03d}，实际 {sid!r}")
+        if shot.get("mmPerPx") is not None and not _is_mm_per_px(shot["mmPerPx"]):
+            errors.append(f"shots[{i - 1}]（{sid}）.mmPerPx 必须是正的有限数或 null")
         if cid not in cameras:
             errors.append(f"shots[{i - 1}].cameraId 未在 cameras 中声明：{cid!r}")
             continue
@@ -453,6 +499,9 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--id", dest="set_id")
         p.add_argument("--name")
         p.add_argument("--force", action="store_true", help="允许覆盖已存在的样本集输出目录")
+        p.add_argument("--mm-per-px", dest="mm_per_px", help="全局像素当量（mm/px），写入 mmPerPx")
+        p.add_argument("--shot-mm-per-px", dest="shot_mm_per_px",
+                       help="逐拍照点像素当量，覆盖全局，如 S001=0.085,S002=0.09（shotId 为生成后的编号）")
     v = sub.add_parser("validate", help="按契约校验样本集目录")
     v.add_argument("root", type=Path)
     v.add_argument("--strict", action="store_true", help="缺图也视为失败（退出码 2）")
@@ -461,7 +510,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "validate":
             return run_validate(args.root, args.strict)
-        convert(args.command, args.source, args.output, args.shots, args.set_id, args.name, args.force)
+        convert(args.command, args.source, args.output, args.shots, args.set_id, args.name, args.force,
+                args.mm_per_px, args.shot_mm_per_px)
         return run_validate(args.output, False)
     except ConvertError as e:
         print(f"[错误] {e}", file=sys.stderr)

@@ -21,10 +21,10 @@ async (page) => {
   for (let attempt = 0; attempt < 200; attempt++) {
     published = await read();
     if (published.productionVersion === validated.workspace.doc.version && !published.workspace.pending) break;
-    if (published.workspace.publishError) throw new Error(published.workspace.publishError);
+    if (["failed","uncertain"].includes(published.workspace.publish.state)) throw new Error(published.workspace.publish.message);
     await page.waitForTimeout(150);
   }
-  if (published.productionVersion !== validated.workspace.doc.version || published.workspace.pending || published.workspace.publishError) throw new Error(JSON.stringify(published));
+  if (published.productionVersion !== validated.workspace.doc.version || published.workspace.pending || published.workspace.publish.state !== "active") throw new Error(JSON.stringify(published));
   await page.screenshot({ path: root + "/07-published.png", fullPage: true });
   const production = await page.evaluate(async id => window.__TAURI_INTERNALS__.invoke("cycle_layout", { recipeId: id }), id);
   if (!production.teachingId || production.shots.some((s, k) => s.view !== [1, 2, 3, 1][k])) throw new Error("The production recipe must contain the teaching identity and four planned views");

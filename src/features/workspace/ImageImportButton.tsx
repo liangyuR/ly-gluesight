@@ -1,3 +1,4 @@
+import { errorText } from "../../lib/errors";
 import { useEffect, useRef, useState } from "react";
 import { Upload } from "lucide-react";
 
@@ -43,7 +44,7 @@ export default function ImageImportButton({ scope, disabled, onImport, onError, 
     pending.current = true; setReading(true);report(true);
     const valid = () => current.current.alive && current.current.scope === scope&&request===serial.current;
     try { const bytes = await readImageFile(file); if (valid()) await onImport(bytes); }
-    catch (e) { if (valid()) onError(String(e)); }
+    catch (e) { if (valid()) onError(errorText(e)); }
     finally { if(request===serial.current){pending.current = false;report(false);if (current.current.alive) setReading(false);} }
   };
   return <>

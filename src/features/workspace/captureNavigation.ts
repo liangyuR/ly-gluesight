@@ -1,3 +1,5 @@
+import type { ReturnNavigationState } from "./returnNavigation";
+
 export interface CaptureReturn {
   recipeId: string;
   search: string;
@@ -7,6 +9,6 @@ export interface CaptureReturn {
   previewK: number;
 }
 
-export interface CaptureNavigationState {
+export interface CaptureNavigationState extends ReturnNavigationState {
   captureReturn?: CaptureReturn;
 }

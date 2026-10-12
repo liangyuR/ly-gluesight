@@ -106,6 +106,28 @@ class SampleSetTests(unittest.TestCase):
         self.assertEqual((part["label"], part["shotLabels"]), ("ok", {"S001": "ok", "S002": "ok", "S003": "ok"}))
         self.assertIn(b"_MX11_1_5_Ok", (out / "parts/p01/S002_cam1_v1.jpg").read_bytes())
 
+    def test_像素当量参数_全局写入mmPerPx且逐点只写入指定拍照点(self):
+        out = self.root / "out"
+        self.assertEqual(run("isv", str(self.make_isv()), str(out), "--mm-per-px", "0.1",
+                             "--shot-mm-per-px", "S002=0.085"), 0)
+        doc = load(out)
+
+        self.assertEqual(doc["mmPerPx"], 0.1)
+        self.assertEqual([s.get("mmPerPx") for s in doc["shots"]], [None, 0.085, None])
+
+    def test_像素当量非正非有限或shotId不在清单_拒绝且不生成输出(self):
+        cases = [
+            ("全局非正", "--mm-per-px", "0"),
+            ("逐点非有限", "--shot-mm-per-px", "S001=nan"),
+            ("未知shotId", "--shot-mm-per-px", "S004=0.1"),
+        ]
+        src = self.make_isv()
+        for i, (name, flag, value) in enumerate(cases):
+            with self.subTest(name):
+                out = self.root / f"out{i}"
+                self.assertEqual(run("isv", str(src), str(out), flag, value), 1)
+                self.assertFalse(out.exists())
+
     def test_validate_缺图或未知schemaVersion时报告并按严格程度返回退出码(self):
         def drop_image(out: Path):
             (out / "parts/p01/S002_cam1_v1.jpg").unlink()
@@ -115,9 +137,15 @@ class SampleSetTests(unittest.TestCase):
             doc["schemaVersion"] = 2
             (out / "sample-set.json").write_text(json.dumps(doc), encoding="utf-8")
 
+        def bad_shot_mm(out: Path):
+            doc = load(out)
+            doc["shots"][1]["mmPerPx"] = 0
+            (out / "sample-set.json").write_text(json.dumps(doc), encoding="utf-8")
+
         cases = [
             ("缺图", drop_image, False, ["parts/p01/S002_cam1_v1"], 0, 2),
             ("未知版本", bump_version, True, [], 1, 1),
+            ("逐点当量非正", bad_shot_mm, True, [], 1, 1),
         ]
         src = self.make_isv()
         for i, (name, mutate, has_errors, expected_missing, code, strict_code) in enumerate(cases):
