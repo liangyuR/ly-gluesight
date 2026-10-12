@@ -6,7 +6,6 @@ import { PlcLogsPage, PlcSettingsPage } from "../pages/PlcPages";
 import HistoryPage from "../pages/HistoryPage";
 import SettingsPage from "../pages/SettingsPage";
 import OperationGuidePage from "../pages/OperationGuidePage";
-import HistoryRetestPage from "../pages/HistoryRetestPage";
 import LibraryPage from "../features/workspace/LibraryPage";
 import ProgressPage from "../features/workspace/ProgressPage";
 import CapturePage from "../features/workspace/CapturePage";
@@ -39,7 +38,6 @@ export const navEntries: NavEntry[] = [
   { label:"生产与复盘",icon:ScanEye,children:[
     { path:"/inspect",label:"在线检测",icon:ScanEye,element:InspectPage },
     { path:"/history",label:"历史记录",icon:History,element:HistoryPage },
-    { path:"/history/retest",label:"历史复测",icon:History,element:HistoryRetestPage },
   ] },
   { label:"配方工作台",icon:SlidersHorizontal,children:[
     { path:"/recipe",label:"配方库",icon:SlidersHorizontal,element:LibraryPage },

@@ -1,6 +1,4 @@
-//! 配方页用的命令：列表、编辑、预览、保存（内容变了版本号 +1）、删除、导入胶路点。
-
-use std::sync::Arc;
+//! 配方命令：列表、读取、预览、模板与删除。生产配方只经工作台发布写入。
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
@@ -52,28 +50,6 @@ pub fn recipe_template(cycle: State<'_, CycleHost>) -> RecipeDoc {
         }
     }
     doc
-}
-
-#[tauri::command]
-pub fn recipe_save(app: AppHandle, cycle: State<'_, CycleHost>, doc: RecipeDoc, original_id: Option<String>) -> Result<RecipeSummary, String> {
-    let gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试生产配方操作")?;
-    if cycle.busy() && app.state::<crate::plc::PlcHost>().engine().config().connection.protocol == ly_plc::ProtocolKind::S7 {
-        return Err("S7 在途事务结束或故障复位后才能修改生产配方".into());
-    }
-    if original_id.as_deref().is_some_and(|o| o != doc.id && cycle.recipe_in_use(o)) {
-        return Err("该配方正在检测中，工件结束后再改编号".into());
-    }
-    let saved: Arc<Recipe> = cycle.recipes.save(doc, original_id.as_deref())?;
-    if let Some(old) = original_id.filter(|o| *o != saved.id) {
-        // 示教的中线在配方里，跟着配方走；改了编号的配方正被人工选中时，跟着改过去
-        let mut settings = cycle.settings();
-        if settings.manual_recipe_id.as_deref() == Some(old.as_str()) {
-            settings.manual_recipe_id = Some(saved.id.clone());
-            cycle.save_settings_locked(settings, &gate)?;
-        }
-    }
-    let _ = cycle.tx.send(Input::Refresh);
-    Ok(RecipeSummary::from(&*saved))
 }
 
 #[tauri::command]

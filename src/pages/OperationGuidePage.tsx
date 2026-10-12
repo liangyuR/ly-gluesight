@@ -8,7 +8,7 @@ import { Badge, Notice, Panel } from "../features/workspace/components";
 const journeys=[
   {title:"首次建站",detail:"连接采集设备和 PLC，完成工位标定、配方示教与发布。",links:[["设备与采集","/camera"],["PLC 通讯","/plc"],["工位标定","/camera/calibration"],["配方库","/recipe"]]},
   {title:"日常生产",detail:"确认当前生产版本与设备就绪，检查工件总览、原图及检测结论。",links:[["在线检测","/inspect"],["历史记录","/history"]]},
-  {title:"缺陷排查",detail:"从整件结论定位到帧和原图，区分缺陷与测量异常，再进行候选复测。",links:[["历史记录","/history"],["历史复测","/history/retest"],["单帧示教","/recipe/teach"]]},
+  {title:"缺陷排查",detail:"从整件结论定位到帧和原图，区分缺陷与测量异常，再进行候选复测。",links:[["历史记录","/history"],["单帧示教","/recipe/teach"]]},
   {title:"配置变更",detail:"修改候选配置、重新试测与验证，发布后在工件边界生效。",links:[["拍照规划","/recipe/geometry"],["单帧示教","/recipe/teach"],["工件总览","/recipe/overview"],["验证与发布","/recipe/validation"]]},
 ];
 export default function OperationGuidePage(){

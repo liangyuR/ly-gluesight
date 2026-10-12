@@ -130,7 +130,6 @@ h1, h3, p { margin: 0; }
   border-bottom: 1px solid var(--border);
 }
 .main-header h1 { font-size: 20px; font-weight: 600; }
-.workflow-entry { margin-left: auto; text-decoration: none; font-size: 13px; }
 .main-body { flex: 1; min-height: 0; overflow: auto; padding: 20px; }
 
 .panel {

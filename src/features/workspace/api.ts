@@ -36,9 +36,7 @@ export const workspaceApi = {
   create: (doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_create", { doc }),
   remove: (id: string) => desktopCall<void>("workspace_delete", { id }),
   saveDoc: (id: string, revision: number, doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_save_doc", { id, revision, doc }),
-  capture: (id: string, revision: number, k: number) => desktopCall<WorkspaceView>("workspace_capture", { id, revision, k }),
   selectView: (id: string, revision: number, k: number, view: number) => desktopCall<WorkspaceView>("workspace_select_view", { id, revision, k, view }),
-  importImage: (id: string, revision: number, k: number, bytes: number[]) => desktopCall<WorkspaceView>("workspace_import_image", { id, revision, k, bytes }),
   image: (id: string, imageId: string) => desktopCall<ArrayBuffer>("workspace_image", { id, imageId }).then(decodeGray),
   /** 按候选里已保存的中线试测冻结原图。 */
   trial: (id: string, revision: number, k: number, imageId: string) =>
@@ -48,7 +46,6 @@ export const workspaceApi = {
     desktopCall<WorkspaceView>("workspace_save_params", { id, revision, k, params }),
   saveTeach: (id: string, revision: number, k: number, imageId: string) =>
     desktopCall<WorkspaceView>("workspace_save_teach", { id, revision, k, imageId }),
-  restoreTeach: (id: string, revision: number, k: number) => desktopCall<WorkspaceView>("workspace_restore_teach", { id, revision, k }),
   saveOverview: (id: string, revision: number, overview: Overview) => desktopCall<WorkspaceView>("workspace_save_overview", { id, revision, overview }),
   validate: (id: string, revision: number, samples: Sample[], sourceConfirmed = false) => desktopCall<WorkspaceView>("workspace_validate", { id, revision, samples, sourceConfirmed }),
   importSample: (id:string, revision:number, name:string, expected:import("../cycle/types").Verdict, images:{k:number;bytes:string}[]) =>
