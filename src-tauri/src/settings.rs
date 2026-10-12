@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-/// 帧录制：把一件工件的整帧图像与元数据落盘，供回放相机重放。
+/// 帧录制：把一件工件的整帧图像与元数据落盘，供历史复测。离线期间临时为保留全部。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RecordMode {
@@ -64,8 +64,6 @@ pub struct CycleSettings {
     pub history_days: u32,
     /// lyFlow 核心库（lyflow_core.dll）路径
     pub lyflow_core: Option<String>,
-    /// 飞拍配方用 lyFlow 流程测量图像；关闭时用模拟测量
-    pub vision: bool,
     pub record: RecordMode,
     /// 帧录制最多保留多少件、总共多少 GB，超出删最旧的
     pub record_keep: u32,
@@ -80,7 +78,6 @@ impl Default for CycleSettings {
             timeouts: Timeouts::default(),
             history_days: 180,
             lyflow_core: std::env::var("LYFLOW_CORE_DLL").ok(),
-            vision: false,
             record: RecordMode::Off,
             record_keep: 100,
             record_max_gb: 20.0,

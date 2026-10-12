@@ -14,14 +14,16 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::time::sleep;
 
 use crate::camera::{CameraSource, SampleTarget, SimRender, TriggerPayload};
-use crate::cycle::{CycleHost, Input};
+use crate::cycle::{CycleHost, Input, Phase};
 use crate::judge::Verdict;
 use crate::plc::PlcHost;
 use crate::recipe::{Recipe, TriggerMode};
+use crate::settings::RecordMode;
 use crate::simimage::PoseError;
+use crate::site::{Derivation, Environment, OfflineChoice, OfflineSession, Preconditions, SiteMode, SiteStatus, SourceKind};
 use line::{Layout, Line, Outcome, PartOrder, Timing};
 use s7_server::{Fault, S7Server};
-use sample_set::{SampleLabel, SampleRef, SampleSet, SampleSetSummary};
+use sample_set::{SampleLabel, SampleRef, SampleSet};
 
 pub use scenario::Scenario;
 
@@ -66,39 +68,19 @@ pub struct SampleRun {
     reference: SampleRef,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OfflineStatus {
-    pub enabled: bool,
-    pub port: Option<u16>,
-    pub running: bool,
-    pub continuous: bool,
-    pub parts: u32,
-    pub message: String,
-    pub heartbeat_stopped: bool,
-    pub sample_set: Option<SampleSetSummary>,
-    pub sample_error: Option<String>,
-    pub next_part: Option<String>,
-    pub recent: Vec<SampleRun>,
-}
-
 struct Active {
     server: S7Server,
     line: Arc<Line>,
-    previous: PlcConfig,
+    session: OfflineSession,
     reconnect: bool,
 }
 
-#[derive(Serialize, Deserialize)]
-struct SavedSampleSet {
-    dir: String,
-}
-
-/// 离线产线：进程内 S7 服务 + 虚拟 PLC / 机器人，PC 侧照常走生产 S7 握手。
+/// 离线产线：进程内 S7 服务 + 虚拟 PLC / 机器人，PC 侧照常走生产 S7 握手。由站点模式进入与退出。
 #[derive(Default)]
 pub struct OfflineHost {
     active: Mutex<Option<Active>>,
     enabled: AtomicBool,
+    last: Mutex<Option<OfflineChoice>>,
     running: AtomicBool,
     stop: AtomicBool,
     abort: Arc<AtomicBool>,
@@ -108,7 +90,6 @@ pub struct OfflineHost {
     part_scenario: Mutex<Option<Scenario>>,
     message: Mutex<String>,
     samples: Mutex<Option<Arc<SampleSet>>>,
-    sample_error: Mutex<Option<String>>,
     cursor: AtomicUsize,
     preview_part: Mutex<Option<String>>,
     runs: Mutex<VecDeque<SampleRun>>,
@@ -133,11 +114,27 @@ impl OfflineHost {
         *self.preview_part.lock().unwrap() = None;
     }
 
-    pub fn status(&self) -> OfflineStatus {
+    pub fn last(&self) -> Option<OfflineChoice> {
+        self.last.lock().unwrap().clone()
+    }
+
+    pub fn set_last(&self, choice: Option<OfflineChoice>) {
+        *self.last.lock().unwrap() = choice;
+    }
+
+    fn kind(&self) -> Option<SourceKind> {
+        self.active.lock().unwrap().as_ref().map(|a| a.session.kind())
+    }
+
+    pub fn status(&self) -> SiteStatus {
         let active = self.active.lock().unwrap();
         let set = self.sample_set();
-        OfflineStatus {
-            enabled: self.enabled(),
+        let source = active.as_ref().map(|a| a.session.kind());
+        SiteStatus {
+            mode: if active.is_some() { SiteMode::Offline } else { SiteMode::Real },
+            source,
+            last: self.last(),
+            measurement: crate::site::measurement_of(source),
             port: active.as_ref().map(|a| a.server.port()),
             running: self.running.load(Ordering::SeqCst),
             continuous: self.continuous.load(Ordering::SeqCst),
@@ -149,14 +146,13 @@ impl OfflineHost {
                 parts[self.cursor.load(Ordering::SeqCst) % parts.len()].part_id.clone()
             }),
             sample_set: set.map(|s| s.summary()),
-            sample_error: self.sample_error.lock().unwrap().clone(),
             recent: self.runs.lock().unwrap().iter().cloned().collect(),
         }
     }
 
     fn set_message(&self, app: &AppHandle, message: impl Into<String>) {
         *self.message.lock().unwrap() = message.into();
-        let _ = app.emit("offline://status", self.status());
+        let _ = app.emit("site://status", self.status());
     }
 
     async fn continue_after_pause(&self, continuous: bool, pause: Duration) -> bool {
@@ -224,6 +220,16 @@ pub fn enabled(app: &AppHandle) -> bool {
     app.try_state::<OfflineHost>().is_some_and(|host| host.enabled())
 }
 
+pub fn source_kind(app: &AppHandle) -> Option<SourceKind> {
+    app.try_state::<OfflineHost>().and_then(|host| host.kind())
+}
+
+pub fn applied_record(app: &AppHandle) -> Option<RecordMode> {
+    let host = app.try_state::<OfflineHost>()?;
+    let active = host.active.lock().unwrap();
+    active.as_ref().map(|a| a.session.applied().record)
+}
+
 pub fn part_scenario(app: &AppHandle) -> Scenario {
     app.try_state::<OfflineHost>().map_or(Scenario::Normal, |host| host.part_scenario())
 }
@@ -243,24 +249,6 @@ pub fn preview_target(app: &AppHandle) -> Option<SampleTarget> {
 
 pub fn claim_sample(app: &AppHandle, part_sn: u32, cycle_id: &str) -> Option<SampleRef> {
     app.try_state::<OfflineHost>()?.claim(part_sn, cycle_id)
-}
-
-fn sample_set_file(app: &AppHandle) -> Result<std::path::PathBuf, String> {
-    Ok(app.path().app_config_dir().map_err(|e| e.to_string())?.join("offline-sample-set.json"))
-}
-
-/// 启动时恢复上次选择的样本集；读不了只记原因，不阻塞启动。
-pub fn restore_sample_set(app: &AppHandle) {
-    let Some(host) = app.try_state::<OfflineHost>() else { return };
-    let saved = sample_set_file(app).and_then(|path| crate::fsio::read_json::<SavedSampleSet>(&path));
-    match saved {
-        Ok(Some(saved)) => match SampleSet::load(std::path::Path::new(&saved.dir)) {
-            Ok(set) => host.set_samples(Some(Arc::new(set))),
-            Err(error) => *host.sample_error.lock().unwrap() = Some(format!("上次选择的样本集 {} 无法加载：{error}", saved.dir)),
-        },
-        Ok(None) => {}
-        Err(error) => *host.sample_error.lock().unwrap() = Some(error),
-    }
 }
 
 async fn apply_plc_config(app: &AppHandle, plc: &PlcHost, cycle: &CycleHost, config: PlcConfig) -> Result<(), String> {
@@ -291,105 +279,102 @@ fn recipe_interval(recipe: &Recipe) -> Duration {
     Duration::from_millis(match recipe.trigger_mode { TriggerMode::Fly => 450, TriggerMode::Stop => 1100 })
 }
 
-#[tauri::command]
-pub fn offline_status(offline: State<'_, OfflineHost>) -> OfflineStatus {
-    offline.status()
+fn switch_preconditions(cycle: &CycleHost, lyflow: Result<(), String>) -> Preconditions {
+    Preconditions {
+        busy: cycle.busy() || !matches!(cycle.phase(), Phase::Idle | Phase::Fault),
+        capturing: cycle.camera.recipe_capture().active(),
+        lyflow,
+    }
 }
 
-#[tauri::command]
-pub async fn offline_enable(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>, offline: State<'_, OfflineHost>) -> Result<OfflineStatus, String> {
+fn apply_environment_rest(app: &AppHandle, cycle: &CycleHost, environment: &Environment) {
+    cycle.camera.replace_temporarily(app, environment.cameras.clone());
+    crate::measure::apply_settings(app);
+}
+
+/// 进入离线：起进程内 S7 服务，按来源派生 PLC / 相机组 / 测量 / 帧录制并临时应用；真实环境保存在会话里。
+pub(crate) async fn enter(app: &AppHandle, set: Option<Arc<SampleSet>>, lyflow: Result<(), String>) -> Result<(), String> {
+    let plc = app.state::<PlcHost>();
+    let cycle = app.state::<CycleHost>();
+    let offline = app.state::<OfflineHost>();
     let _gate = cycle.plc_gate.lock().await;
-    if offline.enabled() { return Ok(offline.status()); }
-    if cycle.busy() { return Err("PLC 仍有在途事务，完成握手或复位后再启用离线模式".into()); }
-    let previous = plc.engine().config();
-    let reconnect = previous.auto_connect || plc.engine().status().state == LinkState::Connected;
-    let mut config = crate::inspection::default_plc_config();
-    let layout = Layout::from_config(&config)?;
+    if offline.enabled() { return Err("已处于离线模式；切换来源请先退出离线".into()); }
+    let early = switch_preconditions(&cycle, Ok(()));
+    crate::site::check_switch(early.busy, early.capturing)?;
+    let real = Environment { plc: plc.engine().config(), cameras: cycle.camera.configs(), record: cycle.settings().record };
+    let reconnect = real.plc.auto_connect || plc.engine().status().state == LinkState::Connected;
+    let layout = Layout::from_config(&crate::inspection::default_plc_config())?;
     let memory = layout.memory();
     let server = S7Server::start(memory.clone(), Some((layout.heartbeat(), Duration::from_millis(500)))).await
         .map_err(|e| format!("离线 S7 服务启动失败：{e}"))?;
-    config.connection.host = "127.0.0.1".into();
-    config.connection.port = server.port();
-    config.auto_connect = false;
-    crate::plc::validate_config(&config)?;
-    if let Err(error) = apply_plc_config(&app, &plc, &cycle, config).await {
-        let _ = apply_plc_config(&app, &plc, &cycle, previous).await;
+    let port = server.port();
+    let derivation = match &set { Some(set) => Derivation::SampleSet(set.manifest()), None => Derivation::Synthetic };
+    let session = OfflineSession::enter(real, derivation, port, switch_preconditions(&cycle, lyflow))?;
+    let applied = session.applied().clone();
+    let kind = session.kind();
+    offline.set_samples(set);
+    offline.runs.lock().unwrap().clear();
+    offline.parts.store(0, Ordering::SeqCst);
+    *offline.active.lock().unwrap() = Some(Active { server, line: Arc::new(Line::new(memory, layout)), session, reconnect });
+    offline.enabled.store(true, Ordering::SeqCst);
+    if let Err(error) = apply_plc_config(app, &plc, &cycle, applied.plc.clone()).await {
+        offline.enabled.store(false, Ordering::SeqCst);
+        let taken = offline.active.lock().unwrap().take();
+        if let Some(active) = taken {
+            let _ = apply_plc_config(app, &plc, &cycle, active.session.leave().plc).await;
+        }
+        offline.set_samples(None);
         return Err(error);
     }
-    let port = server.port();
-    *offline.active.lock().unwrap() = Some(Active { server, line: Arc::new(Line::new(memory, layout)), previous, reconnect });
-    offline.enabled.store(true, Ordering::SeqCst);
+    apply_environment_rest(app, &cycle, &applied);
     plc.engine().connect().await;
-    offline.set_message(&app, format!("离线模式已启用：S7 127.0.0.1:{port}，DB100 一期点表"));
-    crate::cycle::log(&app, "warn", "离线模式", format!("PLC 已切换到进程内 S7 服务 127.0.0.1:{port}，原配置保留，停用后恢复"));
-    Ok(offline.status())
+    let what = match (kind, offline.sample_set()) {
+        (SourceKind::SampleSet, Some(set)) => format!("样本集 {}（{} 件 × {} 个拍照点，缺图 {} 张），lyFlow 测量", set.manifest().name,
+            set.manifest().parts.len(), set.manifest().shots.len(), set.missing().len()),
+        _ => "合成图，模拟测量".to_string(),
+    };
+    offline.set_message(app, format!("已进入离线·{what}；S7 127.0.0.1:{port}"));
+    crate::cycle::log(app, "warn", "站点模式", format!("进入离线·{what}：PLC 临时连接 127.0.0.1:{port}，相机组临时生成 {} 台，帧录制临时保留全部；真实配置保留，退出后恢复", applied.cameras.len()));
+    Ok(())
 }
 
-#[tauri::command]
-pub async fn offline_disable(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>, offline: State<'_, OfflineHost>) -> Result<OfflineStatus, String> {
+/// 退出离线：恢复进入前的 PLC、相机组与帧录制。
+pub(crate) async fn leave(app: &AppHandle) -> Result<(), String> {
+    let plc = app.state::<PlcHost>();
+    let cycle = app.state::<CycleHost>();
+    let offline = app.state::<OfflineHost>();
     let _gate = cycle.plc_gate.lock().await;
-    if !offline.enabled() { return Ok(offline.status()); }
+    if !offline.enabled() { return Ok(()); }
     if offline.running.load(Ordering::SeqCst) { return Err("离线产线仍在运行，先停止".into()); }
-    if cycle.busy() { return Err("离线事务未结束：等本件释放或复位故障后再停用".into()); }
-    let Some(active) = offline.active.lock().unwrap().take() else { return Ok(offline.status()) };
+    let pre = switch_preconditions(&cycle, Ok(()));
+    crate::site::check_switch(pre.busy, pre.capturing)?;
+    let Some(active) = offline.active.lock().unwrap().take() else { return Ok(()) };
     offline.enabled.store(false, Ordering::SeqCst);
-    let previous = active.previous.clone();
-    apply_plc_config(&app, &plc, &cycle, previous.clone()).await?;
+    offline.set_samples(None);
+    let real = active.session.leave();
+    let restored = apply_plc_config(app, &plc, &cycle, real.plc.clone()).await;
+    apply_environment_rest(app, &cycle, &real);
     drop(active.server);
-    if active.reconnect && crate::plc::validate_config(&previous).is_ok() {
+    if active.reconnect && restored.is_ok() && crate::plc::validate_config(&real.plc).is_ok() {
         plc.engine().connect().await;
     }
-    offline.set_message(&app, "离线模式已停用，已恢复原 PLC 配置");
-    crate::cycle::log(&app, "info", "离线模式", "已停用，恢复原 PLC 配置");
-    Ok(offline.status())
-}
-
-#[tauri::command]
-pub async fn offline_select_sample_set(app: AppHandle, cycle: State<'_, CycleHost>, offline: State<'_, OfflineHost>, dir: Option<String>) -> Result<OfflineStatus, String> {
-    if offline.running.load(Ordering::SeqCst) { return Err("离线产线运行中，停止后再切换样本集".into()); }
-    if cycle.busy() || cycle.camera.recipe_capture().active() { return Err("检测或整圈采集进行中，结束后再切换样本集".into()); }
-    let path = sample_set_file(&app)?;
-    match dir.map(|d| d.trim().to_string()).filter(|d| !d.is_empty()) {
-        Some(dir) => {
-            let loaded = tauri::async_runtime::spawn_blocking({
-                let dir = dir.clone();
-                move || SampleSet::load(std::path::Path::new(&dir))
-            }).await.map_err(|e| e.to_string())?;
-            let set = match loaded {
-                Ok(set) => set,
-                Err(error) => {
-                    *offline.sample_error.lock().unwrap() = Some(error.clone());
-                    return Err(error);
-                }
-            };
-            let note = format!("样本集 {}（{}）：{} 件 × {} 个拍照点，缺图 {} 张", set.manifest().name, set.manifest().id,
-                set.manifest().parts.len(), set.manifest().shots.len(), set.missing().len());
-            crate::fsio::write_atomic(&path, &serde_json::to_string_pretty(&SavedSampleSet { dir }).map_err(|e| e.to_string())?)?;
-            offline.set_samples(Some(Arc::new(set)));
-            *offline.sample_error.lock().unwrap() = None;
-            crate::cycle::log(&app, "info", "离线样本集", note.clone());
-            offline.set_message(&app, note);
+    match &restored {
+        Ok(()) => {
+            offline.set_message(app, "已退出离线，恢复真机 PLC、相机组与帧录制设置");
+            crate::cycle::log(app, "info", "站点模式", "已退出离线，恢复真机 PLC、相机组与帧录制设置");
         }
-        None => {
-            match std::fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(format!("清除样本集选择失败：{e}")),
-            }
-            offline.set_samples(None);
-            *offline.sample_error.lock().unwrap() = None;
-            offline.set_message(&app, "已清除离线样本集");
+        Err(error) => {
+            offline.set_message(app, format!("已退出离线，但恢复 PLC 配置失败：{error}"));
+            crate::cycle::log(app, "err", "站点模式", format!("退出离线时恢复 PLC 配置失败：{error}"));
         }
     }
-    let _ = cycle.tx.send(Input::Refresh);
-    let _ = app.emit("camera://changed", ());
-    Ok(offline.status())
+    restored
 }
 
 fn connected_line(plc: &PlcHost, offline: &OfflineHost) -> Result<Arc<Line>, String> {
-    if !offline.enabled() { return Err("离线模式未启用".into()); }
+    if !offline.enabled() { return Err("未进入离线模式：在离线控制台进入离线".into()); }
     if plc.engine().status().state != LinkState::Connected { return Err("离线 S7 服务尚未连接".into()); }
-    offline.active.lock().unwrap().as_ref().map(|a| a.line.clone()).ok_or_else(|| "离线模式未启用".into())
+    offline.active.lock().unwrap().as_ref().map(|a| a.line.clone()).ok_or_else(|| "未进入离线模式：在离线控制台进入离线".into())
 }
 
 fn start_running(offline: &OfflineHost, continuous: bool) -> Result<(), String> {
@@ -407,19 +392,10 @@ pub fn offline_run(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, Cyc
     let recipe = cycle.recipe(&recipe_id).ok_or("配方不存在")?;
     let plan = crate::plc::recipe_plan(&cycle, &recipe)?;
     let samples = offline.sample_set();
-    for c in crate::cycle::runnable_cams(&app, &recipe, false)? {
-        let cam = cycle.camera.slot(c as usize).ok_or("相机不存在")?.config();
-        if cam.source == CameraSource::Mvs && cam.trigger_source != "Software" {
-            return Err("相机触发源为 Line0，离线产线发不出硬触发；改为 Software 或切换到模拟相机".into());
-        }
-        if samples.is_some() != (cam.source == CameraSource::SampleSet) {
-            return Err(if samples.is_some() {
-                format!("已选择离线样本集，相机 {} 需改为样本集来源；不用样本集时先清除样本集", cam.id)
-            } else {
-                format!("相机 {} 是样本集来源，先在离线产线中选择样本集目录", cam.id)
-            });
-        }
+    if samples.is_some() && !scenario.handshake() {
+        return Err("样本集图像是现场原图，只能选握手类工况（正常、传输丢帧、触发数不符、运动超时、ACK 不匹配）".into());
     }
+    crate::cycle::runnable_cams(&app, &recipe)?;
     if let (Some(set), Some(id)) = (&samples, part_id.as_deref()) {
         set.part(id).ok_or_else(|| format!("样本集里没有样本件 {id}"))?;
     }
@@ -482,7 +458,7 @@ pub fn offline_inject(app: AppHandle, offline: State<'_, OfflineHost>, fault: Of
         });
     }
     crate::cycle::log(&app, "warn", "离线故障注入", format!("{fault:?}"));
-    let _ = app.emit("offline://status", offline.status());
+    let _ = app.emit("site://status", offline.status());
     Ok(())
 }
 
@@ -504,16 +480,15 @@ fn sim_payload(recipe: &Arc<Recipe>, sn: u32, scenario: Scenario, k: usize) -> S
     }
 }
 
-fn trigger_shot(app: &AppHandle, recipe: &Arc<Recipe>, sn: u32, scenario: Scenario, vision: bool, sample: Option<(&Arc<SampleSet>, &str)>, k: usize, lost: bool) {
+fn trigger_shot(app: &AppHandle, recipe: &Arc<Recipe>, sn: u32, scenario: Scenario, sample: Option<(&Arc<SampleSet>, &str)>, k: usize, lost: bool) {
     let cycle = app.state::<CycleHost>();
     let Some(shot) = recipe.shots.get(k) else { return };
     let Ok(cam) = cycle.camera.require(&shot.camera) else { return };
-    let tricam = cycle.camera.slot(cam as usize).is_some_and(|s| s.config().view_count == 3);
     let payload = match sample {
-        Some((set, part_id)) => Some(sample_payload(set, part_id, &shot.id)),
-        None => (vision || tricam).then(|| TriggerPayload::Sim(sim_payload(recipe, sn, scenario, k))),
+        Some((set, part_id)) => sample_payload(set, part_id, &shot.id),
+        None => TriggerPayload::Sim(sim_payload(recipe, sn, scenario, k)),
     };
-    let _ = cycle.camera.trigger(cam, lost, payload);
+    let _ = cycle.camera.trigger(cam, lost, Some(payload));
 }
 
 async fn run(app: AppHandle, line: Arc<Line>, recipe: Arc<Recipe>, order: PartOrder, scenario: Scenario, continuous: bool,
@@ -525,9 +500,7 @@ async fn run(app: AppHandle, line: Arc<Line>, recipe: Arc<Recipe>, order: PartOr
     while !offline.stop.load(Ordering::SeqCst) {
         seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
         let s = scenario.resolve(seed >> 8);
-        let settings = app.state::<CycleHost>().settings();
-        let vision = settings.vision || settings.record != crate::settings::RecordMode::Off;
-        let how = if settings.vision { "（lyFlow 测量）" } else { "（模拟测量）" };
+        let how = if crate::site::image_measurement(&app) { "（lyFlow 测量）" } else { "（模拟测量）" };
         let part_id = match &set {
             Some(set) => match offline.pick_part(set, requested.take().as_deref()) {
                 Ok(id) => Some(id),
@@ -546,7 +519,7 @@ async fn run(app: AppHandle, line: Arc<Line>, recipe: Arc<Recipe>, order: PartOr
         *offline.part_scenario.lock().unwrap() = Some(s);
         let order = PartOrder { sn, ..order.clone() };
         let sample = set.as_ref().zip(part_id.as_deref());
-        let shot = |k, lost| trigger_shot(&app, &recipe, sn, s, vision, sample, k, lost);
+        let shot = |k, lost| trigger_shot(&app, &recipe, sn, s, sample, k, lost);
         let result = line.run_part(&timing, &order, s, shot, &offline.abort).await;
         *offline.part_scenario.lock().unwrap() = None;
         offline.parts.fetch_add(1, Ordering::SeqCst);
@@ -597,7 +570,7 @@ fn finish(app: &AppHandle, offline: &OfflineHost) {
         if message.starts_with("已请求") { *message = "离线产线已停止".into(); }
     }
     offline.running.store(false, Ordering::SeqCst);
-    let _ = app.emit("offline://status", offline.status());
+    let _ = app.emit("site://status", offline.status());
 }
 
 #[cfg(test)]

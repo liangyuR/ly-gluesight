@@ -499,7 +499,7 @@ fn environment(app: &AppHandle, recipe: &Recipe) -> Result<Value, String> {
         }
     }
     let settings = cycle.settings();
-    values.push(json!([settings.vision, settings.lyflow_core]));
+    values.push(json!([crate::site::image_measurement(app), settings.lyflow_core]));
     values.push(json!(app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).map(|engine| engine_state(&engine))));
     Ok(state_value(&values))
 }
@@ -777,7 +777,7 @@ fn keep_views(
         let image_id = format!("{captured_at}-{revision}-{k}-{seq}-v{v}");
         let path = image_file(&host, id, &image_id)?;
         std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
-        crate::replay::save_pgm(&path, &image)?;
+        crate::image_file::save_pgm(&path, &image)?;
         frozen.push(FrozenImage {
             id: image_id,
             view: v,
@@ -892,7 +892,7 @@ pub fn workspace_image(
     image_id: String,
 ) -> Result<tauri::ipc::Response, String> {
     safe_id(&id)?;
-    let image = crate::replay::load(&image_file(&host, &id, &image_id)?)?;
+    let image = crate::image_file::load(&image_file(&host, &id, &image_id)?)?;
     Ok(preview_response(&image))
 }
 
@@ -955,7 +955,7 @@ pub async fn workspace_trial(
             r
         };
         let (image_tag, teach_tag) = shot_tags(&r, k)?;
-        let image = crate::replay::load(&image_file(&app.state::<WorkspaceHost>(), &id, &image_id)?)?;
+        let image = crate::image_file::load(&image_file(&app.state::<WorkspaceHost>(), &id, &image_id)?)?;
         let settings = app.state::<CycleHost>().settings();
         let engine_tag = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).map(|engine| engine_state(&engine)).unwrap_or_default();
         let started = Instant::now();
@@ -1142,7 +1142,7 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
     let r = w.doc.build()?;
     let initial_environment = environment(app, &r)?;
     let cycle = app.state::<CycleHost>();
-    let usability = cycle::usable_cams(app, &r, cycle::real_parts(app))
+    let usability = cycle::usable_cams(app, &r)
         .and_then(|cams| cycle.camera.check_ready_at(&cams));
     let camera_ok = usability.is_ok();
     let mut checks = vec![Check {
@@ -1190,8 +1190,8 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
                 let dir = app.state::<WorkspaceHost>().dir(&r.id).join("samples").join(sample_id);
                 let (table, _) = measure_images(app, w, r.shot_count(), 0, |k, v| {
                     let path = dir.join(format!("k{k}-v{v}.pgm"));
-                    if path.is_file() { crate::replay::load(&path) }
-                    else if workflow::selected_views(w, k).len() == 1 { crate::replay::load(&dir.join(format!("k{k}.pgm"))) }
+                    if path.is_file() { crate::image_file::load(&path) }
+                    else if workflow::selected_views(w, k).len() == 1 { crate::image_file::load(&dir.join(format!("k{k}.pgm"))) }
                     else { Err(format!("样本缺少拍照点 {} 图 {v}", k + 1)) }
                 })?;
                 let j = judge::judge(&r, &table);
@@ -1341,7 +1341,7 @@ pub fn workspace_publish(
     if current_base != w.base_revision || environment_tag != validated.environment_tag {
         return Err("验证后相机、标定或生产版本已变化，请重新验证".into());
     }
-    let cams = cycle::usable_cams(&app, &recipe, cycle::real_parts(&app))?;
+    let cams = cycle::usable_cams(&app, &recipe)?;
     app.state::<CycleHost>().camera.check_ready_at(&cams)?;
     let mut release_doc = w.doc.clone();
     release_doc.teaching_id = Some(vision::unique_run_id(&format!("teaching-{}-v{}", release_doc.id, release_doc.version)));
@@ -1972,7 +1972,7 @@ fn measure_paths(
     sn: u32,
 ) -> Result<(Vec<PointState>, Vec<Value>), String> {
     if (0..w.doc.shots.len()).any(|k| workflow::selected_views(w, k).len() > 1) { return Err("多图验证请采集完整拼接帧或使用历史整圈原图".into()); }
-    measure_images(app, w, paths.len(), sn, |k, _| crate::replay::load(&paths[k]))
+    measure_images(app, w, paths.len(), sn, |k, _| crate::image_file::load(&paths[k]))
 }
 
 fn measure_images(app: &AppHandle, w: &Workspace, count: usize, sn: u32,
@@ -2072,7 +2072,7 @@ impl SampleImportFiles {
             if frame.image.as_ref().is_some_and(|reference| [image.width, image.height] != reference.size) {
                 return Err(format!("k{} 原图尺寸与示教不同", input.k + 1));
             }
-            crate::replay::save_pgm(&self.path.join(format!("k{}.pgm", input.k)), &image)?;
+            crate::image_file::save_pgm(&self.path.join(format!("k{}.pgm", input.k)), &image)?;
             // 单张解码、落盘、释放；不将整组高分辨率图像同时保留在内存。
         }
         Ok(())
@@ -2143,7 +2143,7 @@ mod tests {
         files.publish("1-7-4").unwrap();
         files.keep = true;
         for k in 0..workspace.frames.len() {
-            let image = crate::replay::load(&files.path.join(format!("k{k}.pgm"))).unwrap();
+            let image = crate::image_file::load(&files.path.join(format!("k{k}.pgm"))).unwrap();
             assert_eq!([image.width, image.height], [3, 2]);
             assert_eq!(image.pixels, [k as u8, 32, 64, 128, 200, 255]);
         }

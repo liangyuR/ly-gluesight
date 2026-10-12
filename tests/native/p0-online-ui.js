@@ -2,8 +2,8 @@ async (page) => {
   const id = "P0-TRICAM-UI";
   const evidence = "output/playwright/p0-step5-ui";
   const invokeRead = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
-  const guard = { records: await invokeRead("records_list"), cameras: await invokeRead("camera_rig_config"), offline: await invokeRead("offline_status"), status: await invokeRead("plc_get_status"), settings: await invokeRead("cycle_get_settings"), engine: await invokeRead("engine_status") };
-  if (!guard.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || guard.cameras.some(c => c.source !== "sim") || !guard.offline.enabled || guard.status.state !== "connected" || guard.settings.timeouts.armMs !== 200 || !guard.settings.vision || guard.settings.record !== "all" || !guard.engine.ready || !guard.engine.measuring) throw new Error(JSON.stringify(guard));
+  const guard = { records: await invokeRead("records_list"), cameras: await invokeRead("camera_rig_config"), offline: await invokeRead("site_status"), status: await invokeRead("plc_get_status"), settings: await invokeRead("cycle_get_settings"), engine: await invokeRead("engine_status") };
+  if (!guard.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || guard.cameras.some(c => c.source !== "sim") || !(guard.offline.mode === "offline") || guard.status.state !== "connected" || guard.settings.timeouts.armMs !== 200 || !guard.settings.vision || guard.settings.record !== "all" || !guard.engine.ready || !guard.engine.measuring) throw new Error(JSON.stringify(guard));
   await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "在线检测", exact: true }).click();
   const initial = await invokeRead("cycle_snapshot");
   if (initial.alarms.some(a => a.includes(id))) throw new Error("The published P0 recipe is not runnable: " + initial.alarms.join("; "));
@@ -18,9 +18,12 @@ async (page) => {
   for (const [scenario, imageName] of [["normal", "09-online-normal"], ["gap", "10-online-gap"]]) {
     const previous = await invokeRead("history_query", { query: { recipeId: id, limit: 1 } });
     const previousId = previous.items[0]?.id ?? -1;
+    await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "离线控制台", exact: true }).click();
+    await page.getByRole("combobox", { name: "离线配方", exact: true }).selectOption(id);
     await page.getByRole("combobox", { name: "离线工况", exact: true }).selectOption(scenario);
     const runStartedAt = Date.now();
     await page.getByRole("button", { name: "运行一件", exact: true }).click();
+    await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "在线检测", exact: true }).click();
     const observations = [];
     let summary;
     for (let attempt = 0; attempt < 200; attempt++) {
@@ -29,7 +32,7 @@ async (page) => {
       if (!last || last.phase !== snapshot.phase || last.received !== snapshot.part?.received || last.filled !== snapshot.part?.filled || last.queue !== snapshot.part?.queue) observations.push({ observedAt: Date.now(), phase: snapshot.phase, cycleId: snapshot.part?.cycleId, sn: snapshot.part?.sn, received: snapshot.part?.received, filled: snapshot.part?.filled, queue: snapshot.part?.queue, result: snapshot.result });
       const history = await invokeRead("history_query", { query: { recipeId: id, limit: 1 } });
       if (history.items[0]?.id > previousId) { summary = history.items[0]; break; }
-      if (!((await invokeRead("offline_status")).running) && attempt > 5) throw new Error("Offline line stopped before a new recorded result: " + await page.locator("main").innerText());
+      if (!((await invokeRead("site_status")).running) && attempt > 5) throw new Error("Offline line stopped before a new recorded result: " + await page.locator("main").innerText());
       await page.waitForTimeout(100);
     }
     if (!summary) throw new Error("No new production result within 20 seconds");
@@ -57,8 +60,8 @@ async (page) => {
       await page.screenshot({ path: `${evidence}/${imageName}-k${k + 1}.png`, fullPage: true });
     }
     rows.push({ scenario, summary, arming: { configuredArmMs: guard.settings.timeouts.armMs, elapsedMs: armingMs, log: armingLog }, judgement: detail.judgement, frames: detail.frames, triggers: detail.triggers, softwareVersion: detail.softwareVersion, measurements: measured.map(m => ({ k: m.k, cycleId: m.cycleId, shotId: m.shotId, camera: m.camera, bundleId: m.bundleId, located: m.located, score: m.score, ms: m.ms, points: m.idx.length, error: m.error })), recorded, recordingSettledMs, observations, cycleLogs });
-    for (let attempt = 0; attempt < 100 && (await invokeRead("offline_status")).running; attempt++) await page.waitForTimeout(100);
-    if ((await invokeRead("offline_status")).running) throw new Error("The offline line did not finish the one-part handshake");
+    for (let attempt = 0; attempt < 100 && (await invokeRead("site_status")).running; attempt++) await page.waitForTimeout(100);
+    if ((await invokeRead("site_status")).running) throw new Error("The offline line did not finish the one-part handshake");
   }
   return { engine: guard.engine, recipeRevision: production.revisionId, teachingId: production.teachingId, rows, final: await invokeRead("cycle_snapshot") };
 }

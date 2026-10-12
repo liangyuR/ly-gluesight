@@ -1,8 +1,8 @@
 async (page) => {
   const id = "P0-TRICAM-UI";
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
-  const guard = { records: await read("records_list"), offline: await read("offline_status"), cameras: await read("camera_rig_config"), cycle: await read("cycle_snapshot"), workspace: await read("workspace_get", { id }) };
-  if (!guard.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || !guard.offline.enabled || guard.cameras.some(c => c.source !== "sim") || guard.cycle.phase !== "IDLE" || guard.workspace.workspace.frames.some(f => !f.saved || !f.trial?.passed)) throw new Error(JSON.stringify(guard));
+  const guard = { records: await read("records_list"), offline: await read("site_status"), cameras: await read("camera_rig_config"), cycle: await read("cycle_snapshot"), workspace: await read("workspace_get", { id }) };
+  if (!guard.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || !(guard.offline.mode === "offline") || guard.cameras.some(c => c.source !== "sim") || guard.cycle.phase !== "IDLE" || guard.workspace.workspace.frames.some(f => !f.saved || !f.trial?.passed)) throw new Error(JSON.stringify(guard));
   const recent = await read("history_query", { query: { recipeId: id, limit: 20 } });
   const selected = [recent.items.find(item => item.verdict.startsWith("OK")), recent.items.find(item => item.verdict === "NG_GAP")];
   const bundleId = selected[0]?.bundleId;

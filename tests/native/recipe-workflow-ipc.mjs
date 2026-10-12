@@ -29,12 +29,12 @@ try {
   const records = await invoke('records_list'), profile = dirname(records.root);
   assert(profile.endsWith('com.xyzrobotics.gluesight.recipe-workflow-20261011'));
   assert(/^[cC]:[\\/]/.test(profile));
-  if (!(await invoke('offline_status')).enabled) {
+  if (!((await invoke('site_status')).mode === "offline")) {
     assert.equal((await invoke('plc_get_status')).state, 'disconnected');
-    await invoke('offline_enable');
+    await invoke('site_enter_offline', { source: { kind: 'synthetic' } });
   }
-  const offline = await invoke('offline_status');
-  assert(offline.enabled && Number.isInteger(offline.port));
+  const offline = await invoke('site_status');
+  assert((offline.mode === "offline") && Number.isInteger(offline.port));
   assert.equal((await invoke('plc_get_config')).connection.host, '127.0.0.1');
   assert((await invoke('camera_rig_config')).every(camera => camera.source === 'sim'));
   report.profile = profile;

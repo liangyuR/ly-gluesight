@@ -116,7 +116,7 @@ impl Prepared {
         for (k, shot) in self.recipe.shots.iter().enumerate() {
             for view in shot.enabled_views() {
                 let resource = self.bundle.view(k, view)?;
-                let image = crate::replay::load(resource.image.as_ref().ok_or("发布包缺少示教原图")?)?;
+                let image = crate::image_file::load(resource.image.as_ref().ok_or("发布包缺少示教原图")?)?;
                 self.measure_view(k, view, &image, &format!("warm-{}-{k}-v{view}-{}", self.bundle.id, ly_plc::now_ms()))?;
             }
         }
@@ -271,8 +271,8 @@ impl ProductionHost {
 }
 
 pub fn ready(app: &AppHandle, recipe: &Recipe) -> Result<Option<Arc<Prepared>>, String> {
+    if !crate::site::image_measurement(app) { return Ok(None); }
     let settings = app.state::<CycleHost>().settings();
-    if !settings.vision { return Ok(None); }
     app.state::<ProductionHost>().ensure(app, Arc::new(recipe.clone()), settings.lyflow_core).map(Some)
 }
 

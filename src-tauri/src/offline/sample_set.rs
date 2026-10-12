@@ -179,7 +179,7 @@ impl Manifest {
 
 impl SampleSet {
     pub fn load(dir: &Path) -> Result<Self, String> {
-        crate::replay::checked_source_path(dir)?;
+        crate::image_file::checked_source_path(dir)?;
         let root = dir.canonicalize().map_err(|e| format!("样本集目录 {} 无法访问：{e}", dir.display()))?;
         let file = root.join("sample-set.json");
         plain_entry(&file)?.filter(|m| m.is_file()).ok_or("样本集目录缺少 sample-set.json")?;
@@ -239,7 +239,7 @@ impl SampleSet {
         (1..=view_count).map(|view| {
             let path = self.images.get(&(part_id.to_string(), shot_id.to_string(), camera_id.to_string(), view))
                 .ok_or_else(|| format!("样本集缺图：{part_id}/{shot_id}_{camera_id}_v{view}"))?;
-            let image = crate::replay::load(path)?;
+            let image = crate::image_file::load(path)?;
             if let Some(size) = self.manifest.image_size.filter(|size| *size != [image.width, image.height]) {
                 return Err(format!("样本图 {} 尺寸 {}×{} 与样本集 imageSize {}×{} 不符", path.display(), image.width, image.height, size[0], size[1]));
             }

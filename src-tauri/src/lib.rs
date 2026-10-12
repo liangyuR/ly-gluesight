@@ -24,8 +24,9 @@ mod recipe_capture;
 mod recipe_api;
 mod release;
 mod recorder;
-mod replay;
+mod image_file;
 mod settings;
+mod site;
 mod shot_router;
 mod simimage;
 mod store;
@@ -49,8 +50,9 @@ pub fn run() {
             app.manage(vision::VisionHost::default());
             app.manage(production::ProductionHost::default());
             app.manage(offline::OfflineHost::default());
-            offline::restore_sample_set(app.handle());
+            let site_note = site::restore_choice(app.handle());
             app.manage(cycle::CycleHost::init(app.handle())?);
+            if let Some(note) = site_note { cycle::log(app.handle(), "warn", "站点模式", note); }
             app.manage(workspace::WorkspaceHost::init(app.handle())?);
             app.manage(plc::PlcHost::init(app.handle())?);
             plc::PlcHost::start_if_configured(app.handle());
@@ -91,7 +93,6 @@ pub fn run() {
             camera::camera_add,
             camera::camera_remove,
             camera::camera_list_devices,
-            camera::camera_pick_replay_dir,
             camera::camera_preview,
             camera::camera_soft_trigger,
             camera::camera_dry_run_start,
@@ -111,12 +112,13 @@ pub fn run() {
             history::reveal_path,
             vision::vision_calib_info,
             vision::vision_calibrate,
-            offline::offline_status,
-            offline::offline_enable,
-            offline::offline_disable,
+            site::site_status,
+            site::site_enter_offline,
+            site::site_leave_offline,
+            site::site_preview_sample_set,
+            site::site_pick_dir,
             offline::offline_run,
             offline::offline_capture,
-            offline::offline_select_sample_set,
             offline::offline_stop,
             offline::offline_inject,
             workspace::workspace_list,

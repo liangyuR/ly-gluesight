@@ -35,11 +35,11 @@ pub struct EngineStatus {
 pub async fn engine_status(app: AppHandle) -> EngineStatus {
     tauri::async_runtime::spawn_blocking(move || {
         let settings = app.state::<CycleHost>().settings();
-        if !settings.vision {
+        if !crate::site::image_measurement(&app) {
             return EngineStatus {
                 backend: "模拟测量",
                 ready: true,
-                message: "飞拍：模拟测量".into(),
+                message: "离线·合成图：模拟测量".into(),
                 version: None,
                 path: None,
                 measuring: false,

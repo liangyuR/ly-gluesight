@@ -3,8 +3,8 @@ async (page) => {
   const evidence = "output/playwright/p0-step5-ui";
   const read = (command, args) => page.evaluate(async ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args });
   const workspace = () => read("workspace_get", { id });
-  const guard = { records: await read("records_list"), cameras: await read("camera_rig_config"), offline: await read("offline_status"), cycle: await read("cycle_snapshot"), production: await read("cycle_layout", { recipeId: id }) };
-  if (!guard.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || guard.cameras.some(c => c.source !== "sim") || !guard.cameras.some(c => c.id === "cam2" && c.viewCount === 3 && c.acquisition === "triggered") || !guard.offline.enabled || guard.cycle.phase !== "IDLE") throw new Error(JSON.stringify(guard));
+  const guard = { records: await read("records_list"), cameras: await read("camera_rig_config"), offline: await read("site_status"), cycle: await read("cycle_snapshot"), production: await read("cycle_layout", { recipeId: id }) };
+  if (!guard.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || guard.cameras.some(c => c.source !== "sim") || !guard.cameras.some(c => c.id === "cam2" && c.viewCount === 3 && c.acquisition === "triggered") || !(guard.offline.mode === "offline") || guard.cycle.phase !== "IDLE") throw new Error(JSON.stringify(guard));
   const initial = await workspace();
   if (initial.workspace.frames.some(f => !f.saved || !f.trial?.passed)) throw new Error("Candidate must be restored before camera continuation");
   const beforeOptions = await page.getByRole("combobox", { name: "拍照点 3 · 相机", exact: true }).locator("option").evaluateAll(options => options.map(option => option.value));

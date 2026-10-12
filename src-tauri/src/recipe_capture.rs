@@ -434,7 +434,7 @@ fn save_image(path: &Path, image: &FrameImage) -> Result<(), String> {
 
 fn compose_views(images: &[Arc<FrameImage>]) -> Result<Arc<FrameImage>, String> {
     let height = images.first().ok_or("没有图像")?.height;
-    if images.iter().any(|i| i.height != height) { return Err("模拟／回放图像高度不一致，无法保留拼接原图".into()); }
+    if images.iter().any(|i| i.height != height) { return Err("模拟／样本集图像高度不一致，无法保留拼接原图".into()); }
     let width = images.iter().try_fold(0u32, |w, i| w.checked_add(i.width)).ok_or("图像宽度溢出")?;
     let mut pixels = Vec::with_capacity(width as usize * height as usize);
     for y in 0..height as usize { for image in images { let start = y * image.width as usize; pixels.extend_from_slice(&image.pixels[start..start + image.width as usize]); } }
@@ -488,7 +488,7 @@ pub fn recipe_capture_image(app: AppHandle, round_id: String, k: usize, view: Op
         None => &shot.original_path,
         Some(view) => &shot.views.iter().find(|v| v.view == view).ok_or("图像不存在")?.path,
     };
-    let image = crate::replay::load(Path::new(path))?;
+    let image = crate::image_file::load(Path::new(path))?;
     let scale = (image.width as f32 / 900.0).max(image.height as f32 / 650.0).max(1.0);
     let w = (image.width as f32 / scale).max(1.0) as u32;
     let h = (image.height as f32 / scale).max(1.0) as u32;

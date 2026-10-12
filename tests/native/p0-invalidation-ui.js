@@ -12,8 +12,8 @@ async (page) => {
     } while (Date.now() - started < timeout);
     throw new Error(message + ": " + await page.locator("main").innerText());
   };
-  const guard = await page.evaluate(async () => ({ records: await window.__TAURI_INTERNALS__.invoke("records_list"), cameras: await window.__TAURI_INTERNALS__.invoke("camera_rig_config"), offline: await window.__TAURI_INTERNALS__.invoke("offline_status"), cycle: await window.__TAURI_INTERNALS__.invoke("cycle_snapshot"), production: await window.__TAURI_INTERNALS__.invoke("cycle_layout", { recipeId: "P0-TRICAM-UI" }) }));
-  if (!guard.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || guard.cameras.some(c => c.source !== "sim") || !guard.offline.enabled || !["IDLE", "FAULT"].includes(guard.cycle.phase)) throw new Error(JSON.stringify(guard));
+  const guard = await page.evaluate(async () => ({ records: await window.__TAURI_INTERNALS__.invoke("records_list"), cameras: await window.__TAURI_INTERNALS__.invoke("camera_rig_config"), offline: await window.__TAURI_INTERNALS__.invoke("site_status"), cycle: await window.__TAURI_INTERNALS__.invoke("cycle_snapshot"), production: await window.__TAURI_INTERNALS__.invoke("cycle_layout", { recipeId: "P0-TRICAM-UI" }) }));
+  if (!guard.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || guard.cameras.some(c => c.source !== "sim") || !(guard.offline.mode === "offline") || !["IDLE", "FAULT"].includes(guard.cycle.phase)) throw new Error(JSON.stringify(guard));
   const initial = await read();
   if (initial.workspace.frames.some(f => !f.saved || !f.trial?.passed)) throw new Error("Start invalidation checks with all four saved native trials");
   const assertOnly = (before, after, k) => {

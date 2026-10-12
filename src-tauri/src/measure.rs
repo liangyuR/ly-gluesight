@@ -124,9 +124,8 @@ pub trait Measurer: Send + Sync {
 /// 需要整帧图像的场合：图像测量或帧录制。设置变了之后调一次。
 pub fn apply_settings(app: &AppHandle) {
     app.state::<crate::production::ProductionHost>().clear();
-    let settings = app.state::<CycleHost>().settings();
-    let record = settings.record != RecordMode::Off;
-    app.state::<CycleHost>().camera.set_capture(settings.vision || record);
+    let record = crate::site::record_mode(app) != RecordMode::Off;
+    app.state::<CycleHost>().camera.set_capture(crate::site::image_measurement(app) || record);
 }
 
 fn run_image(_app: &AppHandle, job: &Job, image: &FrameImage) -> Measured {

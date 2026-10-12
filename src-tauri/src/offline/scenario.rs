@@ -22,6 +22,11 @@ pub enum Scenario {
 }
 
 impl Scenario {
+    /// 只改变虚拟 PLC / 机器人握手、不依赖合成图的工况；现场原图样本集只能用这些。
+    pub fn handshake(self) -> bool {
+        matches!(self, Scenario::Normal | Scenario::LostFrame | Scenario::CountMismatch | Scenario::MotionTimeout | Scenario::AckMismatch)
+    }
+
     pub fn lost_frame(self, n: usize) -> Option<usize> {
         (self == Scenario::LostFrame && n > 0).then(|| 3.min(n - 1))
     }
