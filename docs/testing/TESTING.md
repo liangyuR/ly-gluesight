@@ -25,6 +25,7 @@
 | `pnpm test` | 全部前端测试，包含创建配方与完整示教发布流程 |
 | `pnpm test:watch` | 开发时持续运行相关前端测试 |
 | `pnpm test:ui:production` | 自动构建、启动与关闭隔离桌面实例，验证一件生产落盘 |
+| `pnpm test:e2e:offline` | 全新隔离站点上用离线·样本集与真实 lyFlow 走完建站、示教、验证、发布、投产与复测 |
 | `pnpm typecheck` | 应用及测试 TypeScript 类型检查 |
 | `pnpm build` | 生产前端构建 |
 | `cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib` | 默认后端回归，依赖需已缓存 |
@@ -51,7 +52,41 @@ S7 专项需要 Python 3 和本机 TCP 权限，可用 `S7_TEST_PYTHON` 指定 P
 
 其余保留的桌面测试入口及前置条件见 [原生测试目录](../../tests/native/)。恢复专项应使用独立实例和新输出目录，避免使用生产配置。Robot/Modbus 模拟服务、模拟节拍与回放目录相机已删除，由站点模式的离线产线取代。
 
+**P0 原生脚本（站点模式下的处理）**
+
+旧 P0 界面链路以 `p0-setup-ui.js` 在离线期间新建三视角模拟相机、`p0-create-ui.js` 在“拍照点规划”页手工编辑拍照点为起点，后续脚本都依赖它产生的 `P0-TRICAM-UI` 配方。站点模式下离线相机只由离线来源生成、离线期间相机页只读，拍照点改由整圈采集生成，“取新样本”“拍照点规划”和视觉设置也已删除，这条链路无法成立。处理如下：
+
+| 脚本 | 处理 | 理由 |
+| --- | --- | --- |
+| `p0-setup-ui.js`、`p0-create-ui.js`、`p0-camera-refresh-ui.js` | 删除 | 依赖离线期间增改模拟相机、手工编辑拍照点和已删除的视觉设置；建站、采集、建候选由离线端到端覆盖 |
+| `p0-teach-ui.js`、`p0-invalidation-ui.js`、`p0-camera-invalidation-ui.js` | 删除 | 依赖“取新样本”和“拍照点规划”改 Pose / 相机；示教由离线端到端与前端示教测试覆盖，视角切换和改参后失效由 `workspace/workflow_tests.rs` 覆盖，相机与 Pose 现由采集轮次决定 |
+| `p0-validate-publish-ui.js`、`p0-publish-reviewed-ui.js` | 删除 | 依赖本机不提交的 PGM 证据目录；后者断言“期望 OK、实际 OK_WITH_EXCURSION 判为不符合”，与合格类都算符合的决策冲突；验证发布由离线端到端覆盖 |
+| `p0-online-ui.js`、`p0-history-produce-ui.js`、`p0-frame-visibility-ui.js` | 删除 | 依赖已删除的 `settings.vision` 字段和三视角配方；合成图生产落盘由 `test:ui:production` 覆盖，样本集投产、录制与原图读回由离线端到端覆盖；布局可见性属于当时的界面修复验收证据 |
+| `p0-history-ui.js` | 改写进离线端到端 | 历史导出 CSV、按原发布包重现、按候选规则重判、从原图复测整件、已保存对照切换与“原始记录和候选不被改动”，现从离线端到端的投产终态在历史详情界面执行 |
+| `p0-history-independent-ui.js` | 删除 | 依赖“拍照点规划”里切换其他候选、未保存的 Pose；原发布包重现只用冻结发布包的规则由离线端到端的重现断言（发布包、配方修订一致）覆盖 |
+| `p0-restart-connect-ui.js`、`p0-startup-ui.js` | 改写为 `offline-restart.mjs` | 重启后已发布配方按原发布包预热、可再次投产且结论不变，现从离线端到端终态重启同一隔离实例验证 |
+| `p0-plc-bootstrap-ui.js` | 保留 | 独立于链路：界面进入离线·合成图，核对 S7 回环地址与 28 个 DB100 点；2026-10-12 在 p0 实例上实跑通过 |
+| `p0-single-instance-acceptance.mjs` | 保留 | 前置为 p0 实例已有原图且节拍空闲（先跑 `p0-plc-bootstrap-ui.js` 再离线运行一件 MTR-HSG-A）；2026-10-12 实跑通过，重复启动以独占锁拒绝（退出码 101），数据库与原图不变 |
+| `p0-ack-process-recovery.mjs`、`p0-audit-process-recovery.mjs` | 保留，当前不可运行 | 需要外部 S7 Python 夹具（真机模式）配合模拟相机；真机模式加载时会把非海康相机改回海康，模拟相机只在离线时由站点模式生成并强制使用进程内 S7。另需已删除链路建立的 `P0-TRICAM-UI` / 701 配方，审计脚本还断言已删除的“模拟 / 回放相机”拒绝原因。ACK 日志与审计 spool 的重启恢复由 `plc_session`、`store`、`audit` 的 Rust 测试覆盖；是否改写或删除待定 |
+
 jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明真实布局、像素解码或硬件通信。桌面模拟流程证明业务接线与落盘，不证明真实 PLC、SDK、引擎测量准确率、现场节拍或持续运行。当前 UI 范围见 [UI 覆盖边界](UI_OPERATIONS.md)。
+
+## 离线端到端
+
+`pnpm test:e2e:offline` 由 `scripts/Test-OfflineE2E.ps1` 驱动 `tests/native/offline-e2e.mjs`，配置为 `tests/native/tauri-e2e-test.json`，应用标识 `com.xyzrobotics.tujiaovision.e2e-tests`（隐藏窗口），报告与截图输出到 `output/playwright/e2e-regression`（`result.json`、`restart.json`、`offline-e2e-history.png`）。第一段通过后，脚本关闭实例、保留数据目录重启同一实例，再由 `tests/native/offline-restart.mjs` 做重启续测。已构建时加 `-SkipBuild` 直接跑；端口冲突传 `-DebugPort`。共享 Cargo 缓存时设置 `CARGO_TARGET_DIR`，脚本从该目录取构建产物。
+
+| 输入 | 环境变量 | 默认值 |
+| --- | --- | --- |
+| 样本集目录 | `GLUESIGHT_SAMPLE_SET` | `C:\Users\11601\gluesight-samples\mx11-demo` |
+| lyFlow 核心库 | `LYFLOW_CORE_DLL` | `C:\Users\11601\project\ly-gluesight\src-tauri\target\dependency-runtime\runtime\lyflow\lyflow_core.dll` |
+
+任一输入缺失时不启动实例，打印缺失项并以退出码 3 结束，不算通过。每次运行前只删除 `%APPDATA%` 与 `%LOCALAPPDATA%` 下该隔离标识的目录（名称、父目录和非链接逐项校验），保证从全新站点开始，覆盖首次建站无已发布配方的场景。
+
+**覆盖范围**：真机模式启动 → 系统设置指定 lyFlow → 进入离线·样本集（顶栏模式标识）→ 新建候选、离线产线送一圈 p01 并采用 → 逐点选视角、按 ROI 提取中线（沿主方向 PCA 投影分 12 段取均值成单向折线）、保存像素当量与检测参数、试测、保存示教 → 标定验证 → 独立采集 p01（合格）与 p02（NG_GAP）作验证样本 → 验证通过并发布生效 → 离线产线投产 p01、p02 → p01 为 OK 或 OK_WITH_EXCURSION，p02 为 NG_GAP 且原因含 S004 → 历史记录带样本件引用 → 离线控制台“最近样本件”期望/实际与历史列表样本徽标、结论的界面核对 → 历史页导出 CSV（行数与记录数一致）→ 在 p02 的历史详情界面依次按原发布包重现（发布包与配方修订为本件冻结值）、按候选规则重判、从原图复测整件，三者结论均为 NG_GAP，已保存对照可切换查看，原始记录与候选不变 → 界面退出离线，PLC 配置与相机组恢复 → 重启同一实例：仍为真机模式，历史与生产配方修订、示教身份不变，进入离线后原发布包预热就绪，再投产 p02 仍按原发布包得到 NG_GAP。业务步骤主要经 IPC 驱动；PLC 事务占用、发布资源预热等暂时拒绝按界面重试的方式最多重试 60 s，次数记在 `result.json` 的 `gateRetries`。
+
+**分支适配**：`result.json` 的 `branches` 记录标定验证与合格样本期望走了哪条路。`calibration: manualCheck` 表示当前版本仍需逐点人工标定验证（脚本录入占位的 10 mm/10 mm）；`normalExpectation: exactActual` 表示合格样本期望需写成实际结论。样本集声明当量满足标定、合格类匹配 OK/OK_WITH_EXCURSION 的规则合入后，两项应分别变为 `sampleSetDeclared`、`okClass`，届时删除脚本 `validateCandidate` 中对应的退回分支。另有一处已知界面问题：候选含“不检”拍照点时，历史详情的“从原图复测整件”按钮恒为禁用（前端要求所有帧都已保存示教，后端无此限制），脚本此时改经接口复测并在 `replay.raw.via` 记为 `ipc`；修复后应为 `ui`，届时删除 `replayInHistory` 中的退回分支。
+
+**边界**：每点 ROI、像素当量与 S004 窄搜索参数是让 mx11-demo 跑通流程的演示夹具，集中定义在脚本顶部；通过只说明建站到投产的业务接线、样本件追溯与原图复测一致，不代表中线提取或检测算法质量、现场标定精度、现场 PLC/SDK 或节拍。
 
 ## 站点模式（真机 / 离线）
 
@@ -88,6 +123,8 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 | S7 本机线协议 | `cargo test -- --ignored` 36 passed、0 failed |
 | 前端 | 14 文件、41 passed |
 | 类型 | `pnpm typecheck` 通过 |
+| 离线端到端 | mx11-demo + lyFlow 1.1.0 全新站点通过，含重启续测约 47 s（不含构建）；p01 OK_WITH_EXCURSION（码 2），p02 NG_GAP（码 13，S004）；原包重现、规则重判、原图复测均为 NG_GAP；重启后原发布包预热并再投产 p02 结论不变 |
+| P0 保留脚本 | `p0-plc-bootstrap-ui.js` 与 `p0-single-instance-acceptance.mjs` 在 p0 实例实跑通过；两份进程恢复专项在站点模式下不可运行（见上表） |
 | 生产桌面落盘 | 界面启用离线产线，正常件 OK，6 帧、460 测量点、6 张 PGM 和元数据落盘，SQLite 与历史原图读回通过；测试进程已关闭 |
 | 原生脚本抽查 | `guard.js` + `plc-ui.js`（ui 实例）、`p0-plc-bootstrap-ui.js`（p0 实例）在离线 S7 下通过；其余 P0 链路脚本只做语法检查 |
 | S7 Python | 23 项通过 |

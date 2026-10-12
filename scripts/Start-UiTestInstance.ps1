@@ -1,7 +1,8 @@
 param(
     [ValidateRange(1024, 65535)][int]$DebugPort = 9337,
     [switch]$SkipBuild,
-    [ValidateSet('ui', 'p0', 'flow')][string]$Profile = 'ui'
+    [switch]$ResetData,
+    [ValidateSet('ui', 'p0', 'flow', 'e2e')][string]$Profile = 'ui'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -9,13 +10,28 @@ $taskUiRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $taskUiConfig = Join-Path $taskUiRoot "tests\native\tauri-$Profile-test.json"
 $taskUiOutput = Join-Path $taskUiRoot "output\playwright\$Profile-regression"
 $taskUiExecutable = Join-Path $taskUiOutput 'gluesight-ui-tests.exe'
-$taskUiBuild = Join-Path $taskUiRoot 'src-tauri\target\debug\GlueSight.exe'
+$taskUiTarget = if ($env:CARGO_TARGET_DIR) { [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) } else { Join-Path $taskUiRoot 'src-tauri\target' }
+$taskUiBuild = Join-Path $taskUiTarget 'debug\GlueSight.exe'
 $taskUiManifest = Join-Path $taskUiOutput 'instance.json'
 $taskUiExisting = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $taskUiExecutable })
 if ($taskUiExisting.Count) { throw "隔离 UI 实例仍在运行：$($taskUiExisting.Id -join ', ')。请先完成或关闭该实例。" }
 $taskUiOverlay = Get-Content -LiteralPath $taskUiConfig -Raw | ConvertFrom-Json
 if ($taskUiOverlay.identifier -ne "com.xyzrobotics.tujiaovision.$Profile-tests" -or $taskUiOverlay.app.windows[0].visible) {
     throw 'UI test configuration must use the isolated application identifier and a hidden window.'
+}
+if ($ResetData) {
+    $taskUiIdentifier = "com.xyzrobotics.tujiaovision.$Profile-tests"
+    foreach ($taskUiBase in @($env:APPDATA, $env:LOCALAPPDATA)) {
+        if (!$taskUiBase -or !(Test-Path -LiteralPath $taskUiBase -PathType Container)) { throw '无法定位用户数据目录，拒绝清理。' }
+        $taskUiData = Join-Path ([IO.Path]::GetFullPath($taskUiBase)) $taskUiIdentifier
+        if (!(Test-Path -LiteralPath $taskUiData)) { continue }
+        $taskUiItem = Get-Item -LiteralPath $taskUiData -Force
+        if (!$taskUiItem.PSIsContainer -or $taskUiItem.LinkType -or $taskUiItem.Name -cne $taskUiIdentifier -or
+            [IO.Path]::GetFullPath($taskUiItem.Parent.FullName) -ne [IO.Path]::GetFullPath($taskUiBase) -or $taskUiIdentifier -notmatch '^com\.xyzrobotics\.tujiaovision\.[a-z0-9]+-tests$') {
+            throw "拒绝清理非隔离测试数据目录：$taskUiData"
+        }
+        Remove-Item -LiteralPath $taskUiItem.FullName -Recurse -Force
+    }
 }
 New-Item -ItemType Directory -Path $taskUiOutput -Force | Out-Null
 Push-Location -LiteralPath $taskUiRoot
