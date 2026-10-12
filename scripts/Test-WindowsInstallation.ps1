@@ -6,6 +6,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'Runtime-Common.ps1')
 if (-not $IsWindows -or [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -ne 'X64') {
     throw '安装验证必须在 Windows x64 PowerShell 中执行。'
 }
@@ -43,6 +44,12 @@ try {
     } finally { $process.Dispose() }
     foreach ($relative in @('GlueSight.exe', 'runtime/manifest.json', 'runtime/lyflow/lyflow_core.dll', 'runtime/mvs/MvCameraControl.dll')) {
         if (-not (Test-Path -LiteralPath (Join-Path $InstallDir $relative) -PathType Leaf)) { throw "安装目录缺少 $relative。" }
+    }
+    foreach ($name in @('vcruntime140.dll', 'vcruntime140_1.dll')) {
+        $path = Join-Path $InstallDir $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "安装目录缺少 $name。" }
+        Assert-NoRuntimeLinks $path
+        Assert-X64RuntimeImage $path
     }
     $webViewInstallers = @(Get-ChildItem -LiteralPath $InstallDir -File -Recurse | Where-Object { $_.Name -match '(?i)(webview.*(setup|installer)|(setup|installer).*webview).*\.exe$' })
     if ($webViewInstallers.Count -ne 0) { throw '安装目录不应携带 WebView2 安装程序。' }

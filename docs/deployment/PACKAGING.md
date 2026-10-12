@@ -35,6 +35,8 @@ pnpm run package -LyFlowRuntime 'C:\release\lyflow\bin' -MvsRuntime 'C:\release\
 
 MVS 完整保留运行目录及子目录，包括 DLL、CTI、配置文件、manifest 和 `ThirdParty`，许可证放入 `runtime/mvs/Licenses`。lyFlow 收集运行依赖，完整保留 `license/`、`licenses/` 子树中的无扩展名版权文件及其他许可格式，排除其他目录中的调试符号、开发数据、配方和历史记录。两套运行库分别部署到 `runtime/lyflow`、`runtime/mvs`。
 
+应用启动所需的 `vcruntime140.dll`、`vcruntime140_1.dll` 同时部署到 `GlueSight.exe` 所在目录，避免依赖目标电脑已有的 VC++ CRT。安装验证检查这两项文件的存在与 x64 架构。
+
 脚本每次重建项目内暂存目录，先检查文件结构、x64 架构、接口、实际版本、算子及 MVS 初始化/枚举，再编译应用、验证实际测量，全部通过后生成安装包。无相机时枚举结果为空允许通过；接口调用失败不允许通过。任一步失败都会停止。
 
 默认产物位于 `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/`。设置 `CARGO_TARGET_DIR` 时按指定构建目录输出。`pnpm build` 仅构建前端；直接 `tauri build` 不执行运行库收集和完整交付检查。

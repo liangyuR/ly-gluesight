@@ -20,7 +20,13 @@ foreach ($name in @('LyFlowRuntime', 'MvsRuntime', 'VcRuntime', 'MvsLicense', 'R
 & (Join-Path $PSScriptRoot 'Prepare-RuntimeDependencies.ps1') @parameters
 if ($PrepareOnly) { return }
 $configPath = Join-Path $stageRoot 'tauri.runtime.json'
-@{ bundle = @{ resources = @{ 'target/package-runtime/runtime/' = 'runtime/' } } } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configPath -Encoding utf8NoBOM
+$applicationRuntime = @('vcruntime140.dll', 'vcruntime140_1.dll')
+$resources = @{ 'target/package-runtime/runtime/' = 'runtime/' }
+foreach ($name in $applicationRuntime) {
+    Assert-X64RuntimeImage (Join-Path $stageRoot "runtime/lyflow/$name")
+    $resources["target/package-runtime/runtime/lyflow/$name"] = $name
+}
+@{ bundle = @{ resources = $resources } } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configPath -Encoding utf8NoBOM
 Push-Location -LiteralPath $projectRoot
 try {
     & pnpm exec tauri build --no-bundle --target x86_64-pc-windows-msvc --config $configPath
@@ -41,6 +47,11 @@ try {
         Remove-Item -LiteralPath $installedRuntime -Recurse -Force
     }
     Copy-RuntimeTree $sourceRuntime $installedRuntime
+    foreach ($name in $applicationRuntime) {
+        $destination = Join-Path $releaseRoot $name
+        if (Test-Path -LiteralPath $destination) { Assert-NoRuntimeLinks $destination }
+        Copy-Item -LiteralPath (Join-Path $sourceRuntime "lyflow/$name") -Destination $destination
+    }
     $applicationReport = Join-Path $stageRoot 'application-runtime-validation.json'
     $start = [Diagnostics.ProcessStartInfo]::new($applicationPath)
     $start.UseShellExecute = $false
