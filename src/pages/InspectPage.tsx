@@ -5,20 +5,17 @@ import { WorkpieceOverview } from "../features/workspace/OverviewPage";
 import Modal from "../features/plc/components/Modal";
 import { displayReason, triggerModeLabel, verdictLabel } from "../features/history";
 import { matchesPart } from "../features/cycle/identity";
-import { productionBusy } from "../features/cycle/phase";
-import ReadinessChecklist from "../features/cycle/components/ReadinessChecklist";
+import InspectionReadiness from "../features/cycle/components/InspectionReadiness";
 import { errorText } from "../lib/errors";
 import {
   computeVis,
   currentFrame,
   cycleApi,
   CycleStepper,
-  shotCameras,
   ShotStrip,
   SignalLamps,
   ShotTiles,
   OfflineControls,
-  showChecklist,
   UnrolledCurve,
   useCycle,
   useLayout,
@@ -46,7 +43,7 @@ export default function InspectPage() {
   const { snapshot, logs, measured } = useCycle();
   const recipes = useRecipes();
   const site = useSiteStatus();
-  const [view, setView] = useState<"part" | "frame">("part");
+  const [view, setView] = useState<"image" | "part" | "frame">("image");
   const [frameSelection, setFrameSelection] = useState<{ scope: string; k: number } | null>(null);
   const [pointSelection, setPointSelection] = useState<{ scope: string; j: number } | null>(null);
   const [pendingRecipe, setPendingRecipe] = useState<string | null>(null);
@@ -95,6 +92,7 @@ export default function InspectPage() {
     if (!Number.isInteger(k) || k < 0 || k > lastShot) return;
     setFrameSelection({ scope: selectionScope, k });
     setPointSelection(null);
+    setView("image");
   };
   const selectPoint = (j: number | null) => {
     if (j === null) { setPointSelection(null); return; }
@@ -104,7 +102,6 @@ export default function InspectPage() {
     if (k >= 0 && k <= lastShot) setFrameSelection({ scope: selectionScope, k });
   };
   const trigger = snapshot?.triggerMode ?? layout?.triggerMode;
-  const cams = layout ? shotCameras(layout.shots) : [];
   const canSwitch = (phase === "IDLE" || phase === "FAULT") && snapshot?.productSource === "manual";
   const switchProblem = !canSwitch ? "当前工件已开始或型号由 PLC 下发，暂时不能切换配方" : pendingRecipe && !recipes.some(recipe => recipe.id === pendingRecipe) ? "该配方已不在配方库中，请重新选择" : "";
 
@@ -181,7 +178,7 @@ export default function InspectPage() {
           SN <b className="mono">{part?.sn ?? result?.sn ?? "—"}</b>
         </span>
         <span className="spacer" />
-        <CycleStepper snapshot={snapshot} />
+        {snapshot && phase !== "FAULT" && <CycleStepper snapshot={snapshot} />}
       </div>
 
       <div className="fly-bar">
@@ -204,20 +201,13 @@ export default function InspectPage() {
         {snapshot.measurementWorkers.timedOut>=snapshot.measurementWorkers.capacity&&"全部测量容量被占用，当前不可布防。"}
       </div>}
 
-      {snapshot?.alarms.map((a) => (
-        <div key={a} className="alarm-bar">
-          {a}
-        </div>
-      ))}
-
-      {showChecklist(readiness, productionBusy(snapshot)) && <ReadinessChecklist readiness={readiness} />}
+      <InspectionReadiness snapshot={snapshot} readiness={readiness} />
 
       <div className="fly-body">
         <div className="fly-main">
-          <div className={`insp-top${cams.length > 1 ? " grid" : ""}`}>
-            <div className="panel">
+            <div className="panel inspect-view" role="region" aria-label="检测主视图">
               <div className="panel-head">
-                <h3 className="panel-title">主视图</h3>
+                <h3 className="panel-title">检测视图</h3>
                 <div className="legend">
                   <span><i style={{ background: "var(--ok)" }} />合格</span>
                   <span><i style={{ background: "var(--warn)" }} />超公差（允许内）</span>
@@ -226,17 +216,16 @@ export default function InspectPage() {
                   <span><i style={{ background: "var(--text-disabled)" }} />待测</span>
                 </div>
                 <span className="spacer" />
-                <div className="segmented">
-                  <button className={view === "part" ? "active" : ""} aria-pressed={view === "part"} onClick={() => setView("part")}>整件</button>
+                <div className="segmented" aria-label="检测视图切换">
+                  <button className={view === "image" ? "active" : ""} aria-pressed={view === "image"} onClick={() => setView("image")}>原图</button>
+                  <button className={view === "part" ? "active" : ""} aria-pressed={view === "part"} onClick={() => setView("part")}>整件布置</button>
                   <button className={view === "frame" ? "active" : ""} aria-pressed={view === "frame"} onClick={() => setView("frame")}>逐拍照点</button>
                 </div>
               </div>
-              {layout ? view==="frame" ? <ShotTiles layout={layout} vis={vis} current={cur} selected={selected} onSelect={selectFrame} selectedPoint={selectedPoint} /> : <WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={selectFrame} vis={vis}/> : <div className="empty">等待配方</div>}
+              {view === "image" ? <RuntimeFrame part={ownLayout ? part : null} layout={layout} k={selected} measured={shown} vis={vis}/> :
+                layout ? view === "frame" ? <ShotTiles layout={layout} vis={vis} current={cur} selected={selected} onSelect={selectFrame} selectedPoint={selectedPoint} /> :
+                  <WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={selectFrame} vis={vis}/> : <div className="empty">等待配方</div>}
             </div>
-            <div className={`cam-tiles n${cams.length}`}>
-              <RuntimeFrame part={ownLayout ? part : null} layout={layout} k={selected} measured={shown} vis={vis}/>
-            </div>
-          </div>
 
           <div className="panel">
             <div className="panel-head">
@@ -297,10 +286,10 @@ function VerdictCard({ phase, result, sn }: { phase: string; result: ResultView 
   if (!result) {
     const idle = phase === "IDLE" || phase === "FAULT";
     return (
-      <div className="panel fly-verdict v-run">
+      <div className={`panel fly-verdict ${idle ? "v-empty" : "v-run"}`}>
         <div className="vl"><span>判定结果</span><span className="mono">PLC —</span></div>
-        <strong>{idle ? "等待工件" : "检测中…"}</strong>
-        <div className="vr">{idle ? "" : `SN ${sn ?? "—"}`}</div>
+        <strong>{idle ? "暂无检测结果" : "检测中…"}</strong>
+        <div className="vr">{idle ? "完成检测后显示整件判定" : `SN ${sn ?? "—"}`}</div>
       </div>
     );
   }

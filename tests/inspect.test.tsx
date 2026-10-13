@@ -90,6 +90,19 @@ describe("在线检测开工检查清单", () => {
 });
 
 describe("在线检测选帧、曲线与快照绑定", () => {
+  it("从整件布置选择拍照点 → 返回对应原图且保留整件判定", async () => {
+    state = { ...state, phase: "REPORT", part: cyclePart(), result: cycleResult() };
+    render(<InspectPage />);
+    const main = within(screen.getByRole("region", { name: "检测主视图" }));
+    expect(main.getByRole("button", { name: "原图" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(main.getByRole("button", { name: "整件布置" }));
+    fireEvent.click(main.getByRole("button", { name: "总览选择帧 k2" }));
+    expect(main.getByRole("button", { name: "原图" })).toHaveAttribute("aria-pressed", "true");
+    expect(main.getByRole("heading", { name: "选中帧 k2" })).toBeVisible();
+    expect(screen.getByText("测试样本偏移超差")).toBeVisible();
+    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith("cycle-1", "revisionId-A", 1));
+  });
+
   it("同 SN 重检的新周期清除旧选帧、选点、测量值和结论", async () => {
     state = { ...state, phase: "REPORT", part: cyclePart(), result: cycleResult() }; measured = [cycleMeasurement()];
     const page = render(<InspectPage />);
@@ -97,7 +110,7 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     expect(screen.getByText(/点 2 · P1 · J1 · s=1.00/)).toBeVisible();
     state = { ...state, phase: "FAULT", fault: "新件相机错误", part: { ...cyclePart(1, "cycle-2"), frames: [cyclePart().frames[0], { ...cyclePart().frames[1], status: "waiting" }] } };
     page.rerender(<InspectPage />);
-    expect(screen.getByText("等待工件")).toBeVisible();
+    expect(screen.getByText("暂无检测结果")).toBeVisible();
     expect(screen.queryByText("测试样本偏移超差")).not.toBeInTheDocument();
     expect(screen.queryByText(/点 2 · P1 · J1 · s=1.00/)).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "选中帧 k1" })).toBeVisible();

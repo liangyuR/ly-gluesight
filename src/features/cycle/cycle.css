@@ -81,7 +81,7 @@
 .alarm-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 6px; background: var(--ng-soft); color: var(--ng); font-size: 13px; }
 .alarm-bar.warn { background: var(--warn-soft); color: var(--warn); }
 .fly-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 12px; }
-.fly-main { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(480px, 1fr) 150px 190px; gap: 12px; min-height: 0; }
+.fly-main { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(460px, 1fr) 128px 190px; gap: 12px; min-height: 0; }
 .fly-side { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto minmax(120px, 1fr); gap: 12px; min-height: 0; }
 .fly-side > .panel:not(:last-child) { min-height: auto; }
 .fly .panel { display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; padding: 12px 14px; }
@@ -112,6 +112,7 @@
 .fly-verdict.v-err { border-color: var(--err); background: linear-gradient(var(--err-soft), var(--err-soft)), var(--bg-panel); }
 .fly-verdict.v-err strong { color: var(--err); }
 .fly-verdict.v-run strong { color: var(--accent-text); font-size: 20px; }
+.fly-verdict.v-empty strong { font-size: 20px; }
 
 .kv2 { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; font-size: 12.5px; }
 .kv2 span { color: var(--text-muted); }
@@ -140,14 +141,10 @@
 .stats5 span { display: block; font-size: 11px; color: var(--text-muted); }
 .stats5 b { font: 600 15px "Cascadia Mono", Consolas, monospace; }
 
-/* 主视图 + 相机窗 */
-.insp-top { display: grid; grid-template-columns: minmax(0, 1fr) clamp(240px, 28vw, 400px); gap: 12px; min-height: 0; }
-.cam-tiles { display: grid; grid-auto-rows: minmax(0, 1fr); gap: 8px; min-height: 0; }
-.cam-tiles.n1 { grid-auto-rows: minmax(0, 1fr); }
-/* 多台相机：主视图与各相机窗等大，两列排开 */
-.insp-top.grid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: minmax(0, 1fr); }
-.insp-top.grid .cam-tiles { display: contents; }
-.insp-top.grid > .panel { min-height: 0; }
+.inspect-view > .panel-head { flex-shrink: 0; }
+.fly .inspect-view > .wp-runtime-frame { flex: 1; padding: 0; border: 0; background: transparent; }
+.inspect-view > .wp-overview { flex: 1; min-height: 0; height: 100%; }
+.inspect-view .wp-runtime-strip { gap: 24px; }
 .shot { cursor: pointer; font: inherit; color: inherit; text-align: left; min-width: 110px; }
 .shot.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
 .shot-strip { overflow-x: auto; padding: 2px; }
@@ -183,3 +180,36 @@ button.shot-tile { cursor: pointer; }
 .readiness-item a, .offline-guide a, .offline-msg a, .notice a { color: var(--accent-text); margin-left: 6px; white-space: nowrap; }
 .offline-guide { font-size: 12.5px; color: var(--warn); }
 .reset-note { font-size: 12px; max-width: 360px; }
+.inspection-readiness { flex-shrink: 0; }
+.readiness-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; }
+.readiness-summary .panel-title { margin: 0; color: var(--text-muted); font-size: 13px; }
+.readiness-summary-state { font-size: 18px; font-weight: 600; }
+.device-blocked { border-left: 3px solid var(--ng); }
+.device-blocked .readiness-summary-state { color: var(--ng); }
+.device-ready .readiness-summary-state { color: var(--ok); }
+.device-busy .readiness-summary-state { color: var(--accent-text); }
+.device-unknown .readiness-summary-state, .device-waiting .readiness-summary-state { color: var(--warn); }
+.readiness-fault { margin: 0; color: var(--text); font-size: 13px; overflow-wrap: anywhere; }
+.readiness-embedded .panel-head { min-height: 0; }
+.readiness-embedded .panel-title { font-size: 13px; }
+.readiness-embedded .panel-head .muted { font-size: 12px; }
+.readiness-embedded .readiness-item { grid-template-columns: 40px 115px minmax(0, max-content) auto; gap: 8px 12px; padding: 6px 10px; }
+.readiness-embedded .readiness-item > a { justify-self: start; margin: 0; }
+.readiness-embedded .readiness-item.r-blocked { background: var(--bg-elev); border: 1px solid var(--border); }
+.readiness-details, .readiness-diagnostics { color: var(--text-muted); font-size: 12px; }
+.readiness-details { margin-top: 8px; }
+.readiness-details > summary, .readiness-diagnostics > summary { cursor: pointer; width: fit-content; padding: 4px 0; }
+.readiness-details > summary:focus-visible, .readiness-diagnostics > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.readiness-alarm-list { margin: 6px 0 0; padding-left: 20px; color: var(--warn); overflow-wrap: anywhere; }
+.readiness-alarm-list li + li { margin-top: 4px; }
+@media (max-width: 1100px) {
+  .fly-body { grid-template-columns: minmax(0, 1fr) 260px; }
+  .inspect-view > .panel-head .legend { flex-basis: 100%; order: 1; }
+  .inspect-view .wp-runtime-strip { gap: 10px; }
+}
+@media (max-width: 760px) {
+  .fly-body { grid-template-columns: minmax(0, 1fr); }
+  .fly-main { grid-template-rows: minmax(460px, 1fr) 128px 190px; }
+  .readiness-embedded .readiness-item { grid-template-columns: 40px minmax(0, 1fr); }
+  .readiness-embedded .readiness-detail, .readiness-embedded .readiness-item > a { grid-column: 2; }
+}
