@@ -68,6 +68,8 @@ pub struct CycleSettings {
     /// 帧录制最多保留多少件、总共多少 GB，超出删最旧的
     pub record_keep: u32,
     pub record_max_gb: f32,
+    pub offline_record_keep: u32,
+    pub offline_record_max_gb: f32,
 }
 
 impl Default for CycleSettings {
@@ -81,6 +83,8 @@ impl Default for CycleSettings {
             record: RecordMode::Off,
             record_keep: 100,
             record_max_gb: 20.0,
+            offline_record_keep: 300,
+            offline_record_max_gb: 10.0,
         }
     }
 }
@@ -115,6 +119,30 @@ impl CycleSettings {
         if !(self.record_max_gb >= 0.5 && self.record_max_gb <= 10_000.0) {
             return Err("帧录制总大小需在 0.5–10000 GB 之间".into());
         }
+        if !(1..=100_000).contains(&self.offline_record_keep) {
+            return Err("离线原图保留件数需在 1–100000 之间".into());
+        }
+        if !(self.offline_record_max_gb >= 0.5 && self.offline_record_max_gb <= 10_000.0) {
+            return Err("离线原图总大小需在 0.5–10000 GB 之间".into());
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offline_retention_outside_supported_limits_is_rejected() {
+        for (keep, max_gb, valid) in [
+            (0, 10.0, false), (100_001, 10.0, false),
+            (300, 0.49, false), (300, 10_001.0, false),
+            (300, f32::NAN, false), (300, f32::INFINITY, false),
+            (1, 0.5, true), (100_000, 10_000.0, true),
+        ] {
+            let settings = CycleSettings { offline_record_keep: keep, offline_record_max_gb: max_gb, ..CycleSettings::default() };
+            assert_eq!(settings.validate().is_ok(), valid, "keep={keep}, max_gb={max_gb}");
+        }
     }
 }

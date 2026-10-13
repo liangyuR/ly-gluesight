@@ -23,7 +23,7 @@ use crate::measure::{self, Job, Measured, WorkerHealth};
 use crate::plc::PlcHost;
 use crate::plc_session::{PlcSession, SessionEvent, SessionPhase, SessionView};
 use crate::recipe::{Recipe, RecipeStore, TriggerMode};
-use crate::recorder::{Recorder, Recorders, Recording, Retention};
+use crate::recorder::{Recorder, Recorders, Recording};
 use crate::settings::{CycleSettings, ProductSource};
 use crate::shot_router::{ArmCam, Floor, FrameMeta, Ledgers, Plan, Policy, Route, ShotRouter};
 use crate::offline::Scenario;
@@ -309,7 +309,7 @@ impl CycleHost {
             })), protection, warning)
         };
         let recorders = Recorders::new(recorder(data.join("records"), HistoryScope::Real),
-            recorder(data.join("records-offline"), HistoryScope::Offline), crate::recorder::OFFLINE_RETENTION);
+            recorder(data.join("records-offline"), HistoryScope::Offline));
         Ok(Self {
             camera,
             tx,
@@ -1480,8 +1480,7 @@ impl Machine {
         let Some(rec) = self.part.as_mut().filter(|p| p.sn == sn).and_then(|p| p.recording.take()) else { return };
         let host = host(&self.app);
         let settings = host.settings();
-        host.recorders.finish(rec, judgement.verdict, &judgement.reason,
-            Retention { keep: settings.record_keep, max_bytes: (settings.record_max_gb as f64 * 1e9) as u64 });
+        host.recorders.finish(rec, judgement.verdict, &judgement.reason, &settings);
     }
 
     fn recorded_part(&self, sn: u32, recipe_id: Option<&str>, judgement: &Judgement, drain_ms: Option<u64>, delivery: PlcDelivery) -> Result<RecordedPart, String> {

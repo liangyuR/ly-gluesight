@@ -74,6 +74,9 @@ function measureError(settings: CycleSettings) {
   if (!integerIn(settings.recordKeep, 1, 100000)) return "帧录制保留件数需为 1–100000 之间的整数";
   if (!Number.isFinite(settings.recordMaxGb) || settings.recordMaxGb < 0.5 || settings.recordMaxGb > 10000)
     return "帧录制总大小需在 0.5–10000 GB 之间";
+  if (!integerIn(settings.offlineRecordKeep, 1, 100000)) return "离线原图保留件数需为 1–100000 之间的整数";
+  if (!Number.isFinite(settings.offlineRecordMaxGb) || settings.offlineRecordMaxGb < 0.5 || settings.offlineRecordMaxGb > 10000)
+    return "离线原图总大小需在 0.5–10000 GB 之间";
   return null;
 }
 
@@ -201,8 +204,8 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
     setSaving(true);
     setNotice(null);
     try {
-      const { lyflowCore, record, recordKeep, recordMaxGb } = settings;
-      const saved = await savePart({ lyflowCore, record, recordKeep, recordMaxGb });
+      const { lyflowCore, record, recordKeep, recordMaxGb, offlineRecordKeep, offlineRecordMaxGb } = settings;
+      const saved = await savePart({ lyflowCore, record, recordKeep, recordMaxGb, offlineRecordKeep, offlineRecordMaxGb });
       if (saved && mounted.current) {
         setNotice({ ok: true, text: "已保存" });
         refresh();
@@ -236,7 +239,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
           />
         </label>
         <label className="field">
-          <span>帧录制</span>
+          <span>真机帧录制</span>
           <select id="record-mode" className="input" value={settings.record} onChange={(e) => update({ ...settings, record: e.target.value as CycleSettings["record"] })}>
             <option value="off">关闭</option>
             <option value="failed">只留 NG / ERR 件</option>
@@ -244,7 +247,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
           </select>
         </label>
         <label className="field">
-          <span>录制最多保留（件）</span>
+          <span>真机录制最多保留（件）</span>
           <input
             id="record-keep"
             className="input mono"
@@ -256,7 +259,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
           />
         </label>
         <label className="field">
-          <span>录制总大小上限（GB）</span>
+          <span>真机录制总大小上限（GB）</span>
           <input
             id="record-max-gb"
             className="input mono"
@@ -268,8 +271,34 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
             onChange={(e) => update({ ...settings, recordMaxGb: numberValue(e.target.value) })}
           />
         </label>
+        <label className="field">
+          <span>离线原图最多保留（件）</span>
+          <input
+            id="offline-record-keep"
+            className="input mono"
+            type="number"
+            min={1}
+            max={100000}
+            step={1}
+            value={numberInput(settings.offlineRecordKeep)}
+            onChange={(e) => update({ ...settings, offlineRecordKeep: numberValue(e.target.value) })}
+          />
+        </label>
+        <label className="field">
+          <span>离线原图总大小上限（GB）</span>
+          <input
+            id="offline-record-max-gb"
+            className="input mono"
+            type="number"
+            min={0.5}
+            max={10000}
+            step="any"
+            value={numberInput(settings.offlineRecordMaxGb)}
+            onChange={(e) => update({ ...settings, offlineRecordMaxGb: numberValue(e.target.value) })}
+          />
+        </label>
       </fieldset>
-      <p className="muted hint">离线模式下帧录制临时为保留全部，退出后恢复此设置。</p>
+      <p className="muted hint">离线模式保留全部工件原图，使用独立的件数与容量上限。超出任一上限时删除最旧的离线原图；保存后在后续录制清理时生效。退出离线模式后恢复真机帧录制设置。</p>
       {invalid && <div className="notice error" role="alert">{invalid}</div>}
       </>}
       <dl className="kv" style={{ marginTop: 12 }}>
