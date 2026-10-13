@@ -47,7 +47,15 @@ it("工件进行中禁止采用完整采集轮次",async()=>{
  expect(button).toBeDisabled();await userEvent.click(button);expect(workspaceApi.adoptCapture).not.toHaveBeenCalled();expect(workspaceApi.captureSample).not.toHaveBeenCalled();
 });
 
-it("PLC 未连接 → 开始接收禁用并给出 PLC 通讯入口",async()=>{
+it("个别拍照点尺寸与其余不同 → 汇总标出不一致且仅该点显示实际尺寸",async()=>{
+ const frame=(i:number,width:number)=>({shotId:"s"+i,ordinal:i,frameCounter:i,triggerCounter:i,originalPath:"",views:[{view:1,path:"",width,height:1024}]});
+ vi.mocked(workspaceApi.captureImage).mockReturnValue(new Promise(()=>{}));
+ vi.mocked(workspaceApi.captureGet).mockResolvedValue({...round(),frames:[frame(1,1280),frame(2,1280),frame(3,640)]});show();
+ expect(await screen.findByText("尺寸不一致 · 多数为 1280×1024")).toBeVisible();
+ expect(screen.getByRole("button",{name:/^03/})).toHaveTextContent("640×1024");
+ expect(screen.getByRole("button",{name:/^01/})).not.toHaveTextContent("×");
+});
+it("PLC 未连接 →开始接收禁用并给出 PLC 通讯入口",async()=>{
  vi.mocked(plcApi.getStatus).mockResolvedValue({state:"disconnected",message:"PLC 未连接"} as Awaited<ReturnType<typeof plcApi.getStatus>>);show();
  expect(await screen.findByText(/PLC 未连接：整圈采集依赖/)).toBeVisible();
  expect(screen.getByRole("button",{name:"开始接收 / 整圈重采"})).toBeDisabled();
