@@ -37,9 +37,15 @@ export default function ShotStrip({ layout, part, vis, selected, onSelect, compa
     const container = strip.current;
     const item = container?.children[selected] as HTMLElement | undefined;
     if (!container || !item) return;
-    const left = item.offsetLeft - container.offsetLeft;
-    if (left < container.scrollLeft) container.scrollLeft = left;
-    else if (left + item.offsetWidth > container.scrollLeft + container.clientWidth) container.scrollLeft = left + item.offsetWidth - container.clientWidth;
+    const reveal = () => {
+      const left = item.getBoundingClientRect().left - container.getBoundingClientRect().left + container.scrollLeft;
+      if (left < container.scrollLeft) container.scrollLeft = left;
+      else if (left + item.offsetWidth > container.scrollLeft + container.clientWidth) container.scrollLeft = left + item.offsetWidth - container.clientWidth;
+    };
+    reveal();
+    const observer = new ResizeObserver(reveal);
+    observer.observe(container);
+    return () => observer.disconnect();
   }, [compact, selected, layout.id, layout.revisionId]);
   const frames = part && part.recipeId === layout.id && part.recipeRevision === layout.revisionId ? part.frames : null;
   return (
@@ -48,6 +54,7 @@ export default function ShotStrip({ layout, part, vis, selected, onSelect, compa
         const f = frames?.[k];
         const [label, tone] = labels[f?.status ?? "waiting"];
         const bad = f && (f.status === "locateFailed" || f.status === "error" || f.status === "missing");
+        const attention = f?.viewResults?.filter(view => view.verdict !== "OK" || !!view.error).length ?? 0;
         return (
           <button key={k} type="button" className={`shot s-${f?.status ?? "waiting"}${f?.gapPoints ? " has-gap" : ""}${selected===k ? " selected" : ""}`} aria-label={`查看帧 k${k+1}`} aria-pressed={selected===k} onClick={()=>onSelect?.(k)}>
             <div className="shot-head">
@@ -60,6 +67,7 @@ export default function ShotStrip({ layout, part, vis, selected, onSelect, compa
               <ShotLine layout={layout} k={k} vis={vis} compact className="shot-img" />
             )}
             <div className={`shot-foot mono${bad ? " c-err" : ""}`} title={f?.error??undefined}>{f ? footer(f) : "—"}</div>
+            {compact && attention > 0 && <span className="shot-attention">检测图注意 {attention}</span>}
           </button>
         );
       })}

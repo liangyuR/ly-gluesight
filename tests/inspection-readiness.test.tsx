@@ -62,7 +62,7 @@ describe("在线检测设备状态", () => {
     render(<MemoryRouter><InspectionReadiness snapshot={{ ...snapshot(), alarms: ["设备告警原文"] }} readiness={report} onDiagnostics={openDiagnostics} /></MemoryRouter>);
     expect(screen.queryByRole("heading", { name: "开工检查清单" })).not.toBeInTheDocument();
     expect(screen.queryByText("设备告警原文")).not.toBeInTheDocument();
-    expect(screen.getByText("请在工作台验证并发布")).not.toBeVisible();
+    expect(screen.queryByText("请在工作台验证并发布")).not.toBeInTheDocument();
     await userEvent.click(screen.getByLabelText("recipe说明"));
     expect(screen.getByText("请在工作台验证并发布")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "已就绪 5 项 · 诊断详情 1 条" }));

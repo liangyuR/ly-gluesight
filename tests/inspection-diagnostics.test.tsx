@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import InspectionDiagnostics, { type DiagnosticGroup } from "../src/features/cycle/components/InspectionDiagnostics";
 import RuntimeFrame from "../src/features/workspace/RuntimeFrame";
+import ShotStrip from "../src/features/cycle/components/ShotStrip";
 import { workspaceApi } from "../src/features/workspace/api";
 import { cyclePart } from "./cycle-visual-fixtures";
 import { snapshot, workspaceView } from "./fixtures";
@@ -17,10 +18,13 @@ it("本点完成但另一检测图异常 → 主区可发现且诊断保留独�
   ];
   function Screen() {
     const [group, setGroup] = useState<DiagnosticGroup | null>(null);
-    return <><RuntimeFrame compact onDiagnostics={() => setGroup("capture")} part={part} layout={workspaceView().layout} k={0} measured={[]} />
-      {group && <InspectionDiagnostics group={group} onGroup={setGroup} onClose={() => setGroup(null)} snapshot={{ ...snapshot(), part }} readiness={null} layout={workspaceView().layout} part={part} selected={0} logs={[]} />}</>;
+    const [selected, setSelected] = useState(1);
+    return <><ShotStrip compact layout={workspaceView().layout} part={part} vis={[]} selected={selected} onSelect={setSelected} /><RuntimeFrame compact onDiagnostics={() => setGroup("capture")} part={part} layout={workspaceView().layout} k={selected} measured={[]} />
+      {group && <InspectionDiagnostics group={group} onGroup={setGroup} onClose={() => setGroup(null)} snapshot={{ ...snapshot(), part }} readiness={null} layout={workspaceView().layout} part={part} selected={selected} logs={[]} />}</>;
   }
   render(<Screen />);
+  expect(within(screen.getByRole("button", { name: "查看帧 k1" })).getByText("检测图注意 1")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "查看帧 k1" }));
   const trigger = screen.getByRole("button", { name: "检测图异常 / 注意 1" });
   await userEvent.click(trigger);
   const drawer = within(screen.getByRole("dialog", { name: "检测诊断" }));

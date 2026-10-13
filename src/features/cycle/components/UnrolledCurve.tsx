@@ -12,6 +12,7 @@ interface Props {
   quantity?: "d" | "w";
   selected?: number | null;
   onSelect?: (index: number | null) => void;
+  compact?: boolean;
 }
 const pointLabels: Record<PointVis, string> = { none: "待测", ok: "合格", exc: "超公差", ng: "NG", gap: "断胶", inv: "未测成", miss: "缺帧" };
 
@@ -26,7 +27,7 @@ function niceTicks(lo: number, hi: number): number[] {
 }
 
 /** 展开曲线：横轴按拍照点分段（段与段之间留断口），段内是沿示教中线的弧长。 */
-export default function UnrolledCurve({ layout, measured, vis, quantity = "d", selected, onSelect }: Props) {
+export default function UnrolledCurve({ layout, measured, vis, quantity = "d", selected, onSelect, compact = false }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 800, h: 150 });
   const [localSelection, setLocalSelection] = useState<{ scope: string; index: number } | null>(null);
@@ -209,7 +210,7 @@ export default function UnrolledCurve({ layout, measured, vis, quantity = "d", s
     {n > 0 && <div className="curve-selection" style={{ display: "flex", alignItems: "center", flexWrap: "wrap", flexShrink: 0, gap: 8, paddingTop: 6, fontSize: 12 }}>
       <input type="range" style={{ width: 160 }} min={0} max={n - 1} step={1} value={point ?? 0} aria-label={`${curveName}曲线选点`}
         aria-valuetext={`点 ${(point ?? 0) + 1}`} onFocus={() => { if (point === null) select(0); }} onChange={event => select(Number(event.target.value))} />
-      <span role="status">{point === null ? "点击曲线或用方向键选择测量点" : `点 ${point + 1}${sel ? ` · ${sel.g.name} · s=${sel.s.toFixed(2)} mm` : ""} · ${quantity === "w" ? "胶宽" : "d"}=${Number.isNaN(values[point]) ? "—" : values[point].toFixed(2)} mm · ${pointLabels[vis[point] ?? "none"]}`}</span>
+      <span role="status">{point === null ? compact ? "" : "点击曲线或用方向键选择测量点" : `点 ${point + 1}${sel ? ` · ${sel.g.name} · s=${sel.s.toFixed(2)} mm` : ""} · ${quantity === "w" ? "胶宽" : "d"}=${Number.isNaN(values[point]) ? "—" : values[point].toFixed(2)} mm · ${pointLabels[vis[point] ?? "none"]}`}</span>
       {point !== null && <button type="button" className="btn small" aria-label={`清除${curveName}曲线选点`} onClick={() => select(null)}>清除选点</button>}
     </div>}
     </div>

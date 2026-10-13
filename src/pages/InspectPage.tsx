@@ -238,7 +238,7 @@ export default function InspectPage() {
               <div className="legend"><span><i style={{ background: "var(--ok)" }} />公差带</span><span><i style={{ background: "var(--ng)" }} />绝对限</span></div>
               {layout?.segments.some(segment => segment.width) && <div className="segmented"><button aria-pressed={curveQuantity === "d"} className={curveQuantity === "d" ? "active" : ""} onClick={() => setQuantity("d")}>偏移</button><button aria-pressed={curveQuantity === "w"} className={curveQuantity === "w" ? "active" : ""} onClick={() => setQuantity("w")}>胶宽</button></div>}
             </div>
-            {layout && <UnrolledCurve key={`${selectionScope}:${curveQuantity}`} quantity={curveQuantity} layout={layout} measured={shown} vis={vis} selected={selectedPoint} onSelect={selectPoint} />}
+            {layout && <UnrolledCurve compact key={`${selectionScope}:${curveQuantity}`} quantity={curveQuantity} layout={layout} measured={shown} vis={vis} selected={selectedPoint} onSelect={selectPoint} />}
           </div>
         </div>
 

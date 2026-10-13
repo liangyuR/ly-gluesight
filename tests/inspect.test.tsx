@@ -129,6 +129,6 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     expect(screen.queryByText("3.00–4.50")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "查看帧 k1" })).toHaveClass("s-waiting");
     expect(workspaceApi.liveImage).not.toHaveBeenCalled();
-    expect(screen.getByText("点击曲线或用方向键选择测量点")).toBeVisible();
+    expect(screen.queryByText(/点 2 ·/)).not.toBeInTheDocument();
   });
 });
