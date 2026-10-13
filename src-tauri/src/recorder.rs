@@ -12,7 +12,7 @@ use serde_json::json;
 use crate::frame::{CounterSource, Frame, FrameImage};
 use crate::judge::Verdict;
 use crate::recipe::{valid_camera_id, Recipe};
-use crate::settings::RecordMode;
+use crate::settings::{CycleSettings, RecordMode};
 use crate::store::{HistoryScope, RecordSource};
 
 const QUEUE: usize = 48;
@@ -133,25 +133,15 @@ pub struct Recorder {
     scope: HistoryScope,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Retention {
-    pub keep: u32,
-    pub max_bytes: u64,
-}
-
-/// 离线原图的滚动保留：与真机设置无关，只清理离线录制根目录。
-pub const OFFLINE_RETENTION: Retention = Retention { keep: 300, max_bytes: 10_000_000_000 };
-
 /// 真机与离线各用一个录制根目录、各自滚动清理：离线连续跑多少件都不会挤掉真机原图。
 pub struct Recorders {
     real: Recorder,
     offline: Recorder,
-    offline_retention: Retention,
 }
 
 impl Recorders {
-    pub fn new(real: Recorder, offline: Recorder, offline_retention: Retention) -> Self {
-        Self { real, offline: Recorder { scope: HistoryScope::Offline, ..offline }, offline_retention }
+    pub fn new(real: Recorder, offline: Recorder) -> Self {
+        Self { real, offline: Recorder { scope: HistoryScope::Offline, ..offline } }
     }
 
     pub fn get(&self, scope: HistoryScope) -> &Recorder {
@@ -173,10 +163,12 @@ impl Recorders {
         self.get(rec.scope).frame(rec, frame, camera, k, ordinal)
     }
 
-    /// `real` 是系统设置里的真机保留数量与容量；离线件按离线保留规则清理离线根目录。
-    pub fn finish(&self, rec: Recording, verdict: Verdict, reason: &str, real: Retention) {
-        let retention = if rec.scope == HistoryScope::Offline { self.offline_retention } else { real };
-        self.get(rec.scope).finish(rec, verdict, reason, retention.keep, retention.max_bytes, Vec::new())
+    pub fn finish(&self, rec: Recording, verdict: Verdict, reason: &str, settings: &CycleSettings) {
+        let (keep, max_gb) = match rec.scope {
+            HistoryScope::Offline => (settings.offline_record_keep, settings.offline_record_max_gb),
+            HistoryScope::Real => (settings.record_keep, settings.record_max_gb),
+        };
+        self.get(rec.scope).finish(rec, verdict, reason, keep, (max_gb as f64 * 1e9) as u64, Vec::new())
     }
 }
 

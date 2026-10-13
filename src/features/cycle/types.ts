@@ -277,6 +277,8 @@ export interface CycleSettings {
   record: RecordMode;
   recordKeep: number;
   recordMaxGb: number;
+  offlineRecordKeep: number;
+  offlineRecordMaxGb: number;
 }
 
 export type SiteMode = "real" | "offline";
