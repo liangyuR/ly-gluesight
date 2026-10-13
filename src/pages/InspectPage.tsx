@@ -6,14 +6,14 @@ import Modal from "../features/plc/components/Modal";
 import { displayReason, triggerModeLabel, verdictLabel } from "../features/history";
 import { matchesPart } from "../features/cycle/identity";
 import InspectionReadiness from "../features/cycle/components/InspectionReadiness";
+import InspectionDiagnostics, { type DiagnosticGroup } from "../features/cycle/components/InspectionDiagnostics";
+import ContextHelp from "../features/cycle/components/ContextHelp";
 import { errorText } from "../lib/errors";
 import {
   computeVis,
   currentFrame,
   cycleApi,
-  CycleStepper,
   ShotStrip,
-  SignalLamps,
   ShotTiles,
   OfflineControls,
   UnrolledCurve,
@@ -22,7 +22,6 @@ import {
   useReadiness,
   useRecipes,
   useSiteStatus,
-  type LogLine,
   type Measured,
   type Recipe,
   type ResultView,
@@ -34,16 +33,15 @@ function verdictTone(v: Verdict) {
   return v.startsWith("OK") ? "v-ok" : v === "ERR_INSPECT" ? "v-err" : "v-ng";
 }
 
-function clock(ts: number) {
-  const d = new Date(ts);
-  return `${d.toLocaleTimeString("zh-CN", { hour12: false })}.${String(d.getMilliseconds()).padStart(3, "0")}`;
-}
+const phaseLabels: Record<string, string> = { IDLE: "空闲", VALIDATE: "校验", ACQUIRE: "采集", DRAIN: "收尾", JUDGE: "判定", REPORT: "回写", RELEASE: "释放", FAULT: "故障" };
 
 export default function InspectPage() {
   const { snapshot, logs, measured } = useCycle();
   const recipes = useRecipes();
   const site = useSiteStatus();
   const [view, setView] = useState<"image" | "part" | "frame">("image");
+  const [diagnostics, setDiagnostics] = useState<DiagnosticGroup | null>(null);
+  const [quantity, setQuantity] = useState<"d" | "w">("d");
   const [frameSelection, setFrameSelection] = useState<{ scope: string; k: number } | null>(null);
   const [pointSelection, setPointSelection] = useState<{ scope: string; j: number } | null>(null);
   const [pendingRecipe, setPendingRecipe] = useState<string | null>(null);
@@ -104,6 +102,7 @@ export default function InspectPage() {
     if (k >= 0 && k <= lastShot) { setFrameSelection({ scope: selectionScope, k }); setView("image"); }
   };
   const trigger = snapshot?.triggerMode ?? layout?.triggerMode;
+  const curveQuantity = layout?.segments.some(segment => segment.width) ? quantity : "d";
   const canSwitch = (phase === "IDLE" || phase === "FAULT") && snapshot?.productSource === "manual";
   const switchProblem = !canSwitch ? "当前工件已开始或型号由 PLC 下发，暂时不能切换配方" : pendingRecipe && !recipes.some(recipe => recipe.id === pendingRecipe) ? "该配方已不在配方库中，请重新选择" : "";
 
@@ -148,9 +147,10 @@ export default function InspectPage() {
   };
 
   return (
-    <div className="fly">
-      <div className="fly-bar">
+    <div className="fly inspect-operator">
+      <div className="fly-bar inspect-toolbar">
         <span className="fly-chip">{triggerModeLabel(trigger)}</span>
+        <span className="fly-chip">{site?.mode === "offline" ? "离线" : site ? "真机" : "模式确认中"}</span>
         {snapshot?.productSource === "manual" ? (
           <span className="fly-chip">
             配方
@@ -173,23 +173,18 @@ export default function InspectPage() {
         ) : (
           <span className="fly-chip" title="型号由 PLC 下发的产品代码匹配">
             {layout ? `${layout.id} · v${layout.version}` : "等待 PLC 下发型号"}
-            {layout && <span className="muted mono">#{layout.revisionId.slice(0, 6)}</span>}
           </span>
         )}
         <span className="fly-chip">
           SN <b className="mono">{part?.sn ?? result?.sn ?? "—"}</b>
         </span>
         <span className="spacer" />
-        {snapshot && phase !== "FAULT" && <CycleStepper snapshot={snapshot} />}
-      </div>
-
-      <div className="fly-bar">
-        <SignalLamps />
-        <span className="spacer" />
+        <span className="phase-label">{snapshot ? phaseLabels[phase] : "状态确认中"}</span>
+        <button className="btn" onClick={() => setDiagnostics("readiness")}>诊断</button>
         <OfflineControls readiness={readiness} refresh={refreshReadiness} />
         {phase === "FAULT" && (
           <>
-            <span className="muted reset-note">{site?.mode === "offline" ? "离线：由离线产线自动复位" : "真机：由 PLC 发 faultReset 复位；PLC 已连接、心跳正常且设备就绪时也可点此复位"}</span>
+            <ContextHelp label="复位条件">{site?.mode === "offline" ? "离线：由离线产线自动复位" : "真机：由 PLC 发 faultReset 复位；PLC 已连接、心跳正常且设备就绪时也可点此复位"}</ContextHelp>
             <button className="btn" onClick={resetFault} disabled={action !== null} aria-busy={action === "reset"}>
               <RotateCcw size={15} />
               {action === "reset" ? "复位中…" : "复位故障"}
@@ -203,67 +198,59 @@ export default function InspectPage() {
         {snapshot.measurementWorkers.timedOut>=snapshot.measurementWorkers.capacity&&"全部测量容量被占用，当前不可布防。"}
       </div>}
 
-      <InspectionReadiness snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} />
+      <InspectionReadiness snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} />
 
       <div className="fly-body">
         <div className="fly-main">
             <div className="panel inspect-view" role="region" aria-label="检测主视图">
               <div className="panel-head">
                 <h3 className="panel-title">检测视图</h3>
-                <div className="legend">
-                  <span><i style={{ background: "var(--ok)" }} />合格</span>
-                  <span><i style={{ background: "var(--warn)" }} />超公差（允许内）</span>
-                  <span><i style={{ background: "var(--ng)" }} />NG / 断胶</span>
-                  <span><i style={{ background: "var(--err)" }} />未测成</span>
-                  <span><i style={{ background: "var(--text-disabled)" }} />待测</span>
-                </div>
+                <ContextHelp label="查看范围说明">选择拍照点或曲线测量点后进入手动查看；返回当前拍照点可恢复跟随。新工件自动恢复跟随，右侧始终保留整件判定。</ContextHelp>
                 <span className="spacer" />
-                {manualView ? <button className="btn small" onClick={resumeFollowing}>返回当前拍照点</button> : <span className="muted">跟随当前拍照点</span>}
+                {manualView ? <><span className="view-mode">手动查看</span><button className="btn small" onClick={resumeFollowing}>返回当前拍照点</button></> : <span className="muted">跟随当前拍照点</span>}
                 <div className="segmented" aria-label="检测视图切换">
                   <button className={view === "image" ? "active" : ""} aria-pressed={view === "image"} onClick={() => setView("image")}>原图</button>
                   <button className={view === "part" ? "active" : ""} aria-pressed={view === "part"} onClick={() => setView("part")}>整件布置</button>
                   <button className={view === "frame" ? "active" : ""} aria-pressed={view === "frame"} onClick={() => setView("frame")}>逐拍照点</button>
                 </div>
               </div>
-              {view === "image" ? <RuntimeFrame part={ownLayout ? part : null} layout={layout} k={selected} measured={shown} vis={vis}/> :
+              {view === "image" ? <RuntimeFrame compact onDiagnostics={() => setDiagnostics("capture")} part={ownLayout ? part : null} layout={layout} k={selected} measured={shown} vis={vis}/> :
                 layout ? view === "frame" ? <ShotTiles layout={layout} vis={vis} current={cur} selected={selected} onSelect={selectFrame} selectedPoint={selectedPoint} /> :
                   <WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={selectFrame} vis={vis}/> : <div className="empty">等待配方</div>}
             </div>
 
-          <div className="panel">
+          <div className="panel inspect-shots">
             <div className="panel-head">
               <h3 className="panel-title">拍照点</h3>
-              <span className="muted">拍照点按本件设备内触发顺序匹配；设备原始计数单独显示</span>
+              <ContextHelp label="拍照点匹配说明">拍照点按本件设备内触发顺序匹配；设备原始计数在采集诊断中显示。绿色为合格，黄色为允许范围内的局部超差，红色为 NG 或断胶，灰色为待测。</ContextHelp>
               <span className="spacer" />
               <span className="muted mono">
-                Chunk 触发 {part?.triggers ?? 0} · 收到 {part?.received ?? 0}
+                收到 {part?.received ?? 0} / {layout?.shots.length ?? 0}
               </span>
             </div>
-            {layout && <ShotStrip layout={layout} part={part} vis={vis} selected={selected} onSelect={selectFrame}/>}
+            {layout && <ShotStrip compact layout={layout} part={part} vis={vis} selected={selected} onSelect={selectFrame}/>}
           </div>
 
-          <div className="panel">
+          <div className="panel inspect-curve">
             <div className="panel-head">
-              <h3 className="panel-title">展开曲线</h3>
-              <span className="muted">
-                横向偏移 d（mm，相对示教中线），横轴按拍照点分段、段内为沿中线的弧长；绿色带为公差，红虚线为绝对限，段与段之间不连
-              </span>
+              <h3 className="panel-title">{curveQuantity === "d" ? "横向偏移" : "胶宽"} <span className="muted">mm</span></h3>
+              <ContextHelp label="曲线读法">横轴按检测段展开，段内为沿示教中线的弧长，段与段之间不连接。绿色带为公差，红虚线为绝对限；点击曲线或用方向键选择测量点，可查看对应原图。横向偏移相对于示教中线。</ContextHelp>
+              <div className="legend"><span><i style={{ background: "var(--ok)" }} />公差带</span><span><i style={{ background: "var(--ng)" }} />绝对限</span></div>
+              {layout?.segments.some(segment => segment.width) && <div className="segmented"><button aria-pressed={curveQuantity === "d"} className={curveQuantity === "d" ? "active" : ""} onClick={() => setQuantity("d")}>偏移</button><button aria-pressed={curveQuantity === "w"} className={curveQuantity === "w" ? "active" : ""} onClick={() => setQuantity("w")}>胶宽</button></div>}
             </div>
-            {layout && <UnrolledCurve key={`${selectionScope}:d`} layout={layout} measured={shown} vis={vis} selected={selectedPoint} onSelect={selectPoint} />}
+            {layout && <UnrolledCurve key={`${selectionScope}:${curveQuantity}`} quantity={curveQuantity} layout={layout} measured={shown} vis={vis} selected={selectedPoint} onSelect={selectPoint} />}
           </div>
         </div>
 
         <div className="fly-side">
           <VerdictCard phase={phase} result={result} sn={part?.sn} />
-          <Progress snapshot={snapshot} result={partResult} />
+          <Progress snapshot={snapshot} result={partResult} onDiagnostics={() => setDiagnostics("capture")} />
           <SegmentPanel layout={layout} measured={shown} result={partResult} />
-          <div className="panel">
-            <h3 className="panel-title" style={{ marginBottom: 0 }}>事件</h3>
-            <EventLog logs={logs} />
-          </div>
+          <Stats snapshot={snapshot} />
         </div>
       </div>
 
+      {diagnostics && <InspectionDiagnostics group={diagnostics} onGroup={setDiagnostics} onClose={() => setDiagnostics(null)} snapshot={snapshot} readiness={readiness} readinessError={readinessError} layout={layout} part={ownLayout ? part : null} selected={selected} logs={logs} />}
       {pendingRecipe && (
         <Modal
           title="切换配方"
@@ -292,7 +279,7 @@ function VerdictCard({ phase, result, sn }: { phase: string; result: ResultView 
       <div className={`panel fly-verdict ${idle ? "v-empty" : "v-run"}`}>
         <div className="vl"><span>判定结果</span><span className="mono">PLC —</span></div>
         <strong>{idle ? "暂无检测结果" : "检测中…"}</strong>
-        <div className="vr">{idle ? "完成检测后显示整件判定" : `SN ${sn ?? "—"}`}</div>
+        {!idle && <div className="vr">SN {sn ?? "—"}</div>}
       </div>
     );
   }
@@ -308,7 +295,7 @@ function VerdictCard({ phase, result, sn }: { phase: string; result: ResultView 
   );
 }
 
-function Progress({ snapshot, result }: { snapshot: Snapshot | null; result: ResultView | null }) {
+function Progress({ snapshot, result, onDiagnostics }: { snapshot: Snapshot | null; result: ResultView | null; onDiagnostics: () => void }) {
   const part = snapshot?.part;
   const pct = part && part.total ? (part.filled / part.total) * 100 : 0;
   return (
@@ -320,16 +307,10 @@ function Progress({ snapshot, result }: { snapshot: Snapshot | null; result: Res
         <span>测量点</span>
         <b>{part ? `${part.filled} / ${part.total}` : "—"}</b>
         <div className="bar"><i style={{ width: `${pct}%` }} /></div>
-        <span>处理队列</span>
-        <b>{part?.queue ?? 0}</b>
-        <span>测量线程</span>
-        <b>{snapshot ? `${snapshot.measurementWorkers.running} / ${snapshot.measurementWorkers.capacity}` : "—"}</b>
-        <span>收尾耗时（partEnd→done）</span>
+        <span>收尾耗时</span>
         <b>{result?.drainMs != null ? `${result.drainMs} ms` : "—"}</b>
-        <span>游离帧</span>
-        <b className={snapshot?.strayFrames ? "c-warn" : ""}>{snapshot?.strayFrames ?? 0}</b>
       </div>
-      <Stats snapshot={snapshot} />
+      <button className="btn small" onClick={onDiagnostics}>采集详情{snapshot?.strayFrames ? ` · 游离帧 ${snapshot.strayFrames}` : ""}</button>
     </div>
   );
 }
@@ -358,9 +339,9 @@ function SegmentPanel({ layout, measured, result }: { layout: Recipe | null; mea
   const errored = result?.verdict === "ERR_INSPECT";
   const width = layout?.segments.some((g) => g.width);
   return (
-    <div className="panel">
+    <div className="panel inspect-segments">
       <div className="panel-head">
-        <h3 className="panel-title">逐拍照点结果</h3>
+        <h3 className="panel-title">检测段结果</h3>
         <span className="spacer" />
         <span className="muted" style={{ fontSize: 11 }}>{width ? "偏移 d · 胶宽" : "偏移 d 最小–最大"}</span>
       </div>
@@ -383,23 +364,6 @@ function SegmentPanel({ layout, measured, result }: { layout: Recipe | null; mea
           );
         })}
       </div>
-    </div>
-  );
-}
-
-function EventLog({ logs }: { logs: LogLine[] }) {
-  return (
-    <div className="event-log">
-      {logs
-        .slice(-80)
-        .reverse()
-        .map((l, i) => (
-          <div key={`${l.ts}-${i}`} className={`l-${l.level}`}>
-            <span className="tm">{clock(l.ts)}</span>
-            <span className="ev">{l.ev}</span>
-            {l.msg}
-          </div>
-        ))}
     </div>
   );
 }

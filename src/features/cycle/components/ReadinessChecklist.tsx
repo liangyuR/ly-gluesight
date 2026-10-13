@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { devLyflowHint, targetLinks } from "../readiness";
 import type { Readiness, ReadinessItem, ReadinessState, ReadinessTarget } from "../types";
+import ContextHelp from "./ContextHelp";
 
 const stateText: Record<ReadinessState, string> = { ok: "就绪", waiting: "等待", blocked: "阻塞" };
 
@@ -30,11 +31,10 @@ function ReadinessItems({ items, compact = false }: { items: ReadinessItem[]; co
         <b>{item.title}</b>
         <div className="readiness-detail">
           {item.detail}
-          {compact ? (item.hint || (import.meta.env.DEV && item.key === "engine" && item.state !== "ok")) && <details className="readiness-item-help">
-            <summary aria-label={`${item.title}说明`}>说明</summary>
+          {compact ? (item.hint || (import.meta.env.DEV && item.key === "engine" && item.state !== "ok")) && <ContextHelp label={`${item.title}说明`}>
             {item.hint && <span className="muted readiness-hint">{item.hint}</span>}
             {import.meta.env.DEV && item.key === "engine" && item.state !== "ok" && <span className="muted readiness-hint">{devLyflowHint}</span>}
-          </details> : <>
+          </ContextHelp> : <>
             {item.hint && <span className="muted readiness-hint">{item.hint}</span>}
             {import.meta.env.DEV && item.key === "engine" && item.state !== "ok" && <span className="muted readiness-hint">{devLyflowHint}</span>}
           </>}

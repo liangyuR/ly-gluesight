@@ -8,9 +8,10 @@ interface ModalProps {
   footer?: ReactNode;
   width?: number;
   children: ReactNode;
+  className?: string;
 }
 
-export default function Modal({ title, onClose, closeDisabled = false, footer, width = 520, children }: ModalProps) {
+export default function Modal({ title, onClose, closeDisabled = false, footer, width = 520, children, className = "" }: ModalProps) {
   const ref = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
   close.current = () => { if (!closeDisabled) onClose(); };
@@ -32,7 +33,7 @@ export default function Modal({ title, onClose, closeDisabled = false, footer, w
     return () => { cancelAnimationFrame(frame); document.removeEventListener("keydown",key); if (previous?.isConnected) previous.focus(); };
   },[]);
   return (
-    <div className="modal-mask" onMouseDown={(e) => e.target === e.currentTarget && close.current()}>
+    <div className={`modal-mask ${className}`} onMouseDown={(e) => e.target === e.currentTarget && close.current()}>
       <div ref={ref} className="modal" style={{ width, maxWidth:"calc(100vw - 40px)" }} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
         <div className="modal-header">
           <h3 id={titleId}>{title}</h3>

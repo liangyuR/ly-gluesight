@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import type { FrameView, PartView, PointVis, Recipe } from "../types";
 import { shotLabel, shotSegment } from "../vis";
 import { ShotLine } from "./ShotTiles";
@@ -29,10 +30,20 @@ function footer(f: FrameView) {
   }
 }
 
-export default function ShotStrip({ layout, part, vis, selected, onSelect }: { layout: Recipe; part: PartView | null; vis: PointVis[]; selected?:number; onSelect?:(k:number)=>void }) {
+export default function ShotStrip({ layout, part, vis, selected, onSelect, compact = false }: { layout: Recipe; part: PartView | null; vis: PointVis[]; selected?:number; onSelect?:(k:number)=>void; compact?: boolean }) {
+  const strip = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!compact || selected == null) return;
+    const container = strip.current;
+    const item = container?.children[selected] as HTMLElement | undefined;
+    if (!container || !item) return;
+    const left = item.offsetLeft - container.offsetLeft;
+    if (left < container.scrollLeft) container.scrollLeft = left;
+    else if (left + item.offsetWidth > container.scrollLeft + container.clientWidth) container.scrollLeft = left + item.offsetWidth - container.clientWidth;
+  }, [compact, selected, layout.id, layout.revisionId]);
   const frames = part && part.recipeId === layout.id && part.recipeRevision === layout.revisionId ? part.frames : null;
   return (
-    <div className="shot-strip" style={{ gridTemplateColumns: `repeat(${layout.shots.length}, minmax(0, 1fr))` }}>
+    <div ref={strip} className={`shot-strip${compact ? " compact" : ""}`} style={{ gridTemplateColumns: `repeat(${layout.shots.length}, minmax(${compact ? "112px" : "0"}, 1fr))` }}>
       {layout.shots.map((shot, k) => {
         const f = frames?.[k];
         const [label, tone] = labels[f?.status ?? "waiting"];
