@@ -1,4 +1,4 @@
-import {render,screen} from "@testing-library/react";
+import {render,screen,within} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import {beforeEach,expect,it,vi} from "vitest";
@@ -63,6 +63,13 @@ it("切换拍照点且新图未读回 → 保留当前图像不回到读取占�
  await userEvent.click(screen.getByRole("button",{name:/^02/}));
  expect(screen.getByRole("img",{name:"拍照点 01 · 完整拼接原图 · 正在读取 02"})).toBeVisible();
  expect(screen.queryByText("正在读取原图…")).toBeNull();
+});
+it("采集完成后设备准备收起 → 收起栏仍可直接整圈重采",async()=>{
+ vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());vi.mocked(workspaceApi.captureStart).mockResolvedValue(round("waitingStart"));show();
+ const bar=await screen.findByRole("region",{name:"设备准备"});
+ expect(screen.queryByRole("combobox",{name:"采集 device"})).toBeNull();
+ await userEvent.click(within(bar).getByRole("button",{name:"开始接收 / 整圈重采"}));
+ expect(workspaceApi.captureStart).toHaveBeenCalledWith("A","CAM-1",1500);
 });
 it("PLC 未连接 →开始接收禁用并给出 PLC 通讯入口",async()=>{
  vi.mocked(plcApi.getStatus).mockResolvedValue({state:"disconnected",message:"PLC 未连接"} as Awaited<ReturnType<typeof plcApi.getStatus>>);show();
