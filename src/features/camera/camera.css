@@ -15,6 +15,17 @@
 
 .calc-in { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .calc-in .input { width: 100%; }
+.flyshot-guide { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; counter-reset: step; }
+.flyshot-guide li { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px 10px 38px; position: relative; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-panel); counter-increment: step; }
+.flyshot-guide li::before { content: counter(step); position: absolute; left: 12px; top: 10px; display: grid; place-items: center; width: 18px; height: 18px; border: 1px solid var(--border-strong); border-radius: 50%; font-size: 11px; color: var(--text-muted); }
+.flyshot-guide strong { font-size: 12px; font-weight: 600; }
+.flyshot-guide span { font-size: 11px; line-height: 1.6; color: var(--text-muted); }
+@media (max-width: 1050px) { .flyshot-guide { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.calc-src { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 16px; font-size: 11px; color: var(--text-muted); }
+.calc-src.linked { color: var(--accent-text); }
+.calc-src.changed { color: var(--warn); }
+.calc-restore { padding: 0; border: 0; background: none; color: var(--accent-text); font-size: 11px; text-decoration: underline; cursor: pointer; }
+.calc-axis { width: 100%; margin-top: 4px; font-size: 12px; }
 .calc-out { display: grid; gap: 6px; font-size: 13px; }
 .calc-out div { display: grid; grid-template-columns: 150px 1fr auto; gap: 10px; align-items: center; padding: 7px 10px; border-radius: 6px; background: var(--bg-elev); border: 1px solid var(--border); }
 .calc-out div > span:first-child { color: var(--text-muted); }
