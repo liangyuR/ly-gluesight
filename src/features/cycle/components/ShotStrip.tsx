@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import type { FrameView, PartView, PointVis, Recipe } from "../types";
 import { shotLabel, shotSegment } from "../vis";
 import { ShotLine } from "./ShotTiles";
@@ -29,14 +30,31 @@ function footer(f: FrameView) {
   }
 }
 
-export default function ShotStrip({ layout, part, vis, selected, onSelect }: { layout: Recipe; part: PartView | null; vis: PointVis[]; selected?:number; onSelect?:(k:number)=>void }) {
+export default function ShotStrip({ layout, part, vis, selected, onSelect, compact = false }: { layout: Recipe; part: PartView | null; vis: PointVis[]; selected?:number; onSelect?:(k:number)=>void; compact?: boolean }) {
+  const strip = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!compact || selected == null) return;
+    const container = strip.current;
+    const item = container?.children[selected] as HTMLElement | undefined;
+    if (!container || !item) return;
+    const reveal = () => {
+      const left = item.getBoundingClientRect().left - container.getBoundingClientRect().left + container.scrollLeft;
+      if (left < container.scrollLeft) container.scrollLeft = left;
+      else if (left + item.offsetWidth > container.scrollLeft + container.clientWidth) container.scrollLeft = left + item.offsetWidth - container.clientWidth;
+    };
+    reveal();
+    const observer = new ResizeObserver(reveal);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [compact, selected, layout.id, layout.revisionId]);
   const frames = part && part.recipeId === layout.id && part.recipeRevision === layout.revisionId ? part.frames : null;
   return (
-    <div className="shot-strip" style={{ gridTemplateColumns: `repeat(${layout.shots.length}, minmax(0, 1fr))` }}>
+    <div ref={strip} className={`shot-strip${compact ? " compact" : ""}`} style={{ gridTemplateColumns: `repeat(${layout.shots.length}, minmax(${compact ? "112px" : "0"}, 1fr))` }}>
       {layout.shots.map((shot, k) => {
         const f = frames?.[k];
         const [label, tone] = labels[f?.status ?? "waiting"];
         const bad = f && (f.status === "locateFailed" || f.status === "error" || f.status === "missing");
+        const attention = f?.viewResults?.filter(view => view.verdict !== "OK" || !!view.error).length ?? 0;
         return (
           <button key={k} type="button" className={`shot s-${f?.status ?? "waiting"}${f?.gapPoints ? " has-gap" : ""}${selected===k ? " selected" : ""}`} aria-label={`查看帧 k${k+1}`} aria-pressed={selected===k} onClick={()=>onSelect?.(k)}>
             <div className="shot-head">
@@ -49,6 +67,7 @@ export default function ShotStrip({ layout, part, vis, selected, onSelect }: { l
               <ShotLine layout={layout} k={k} vis={vis} compact className="shot-img" />
             )}
             <div className={`shot-foot mono${bad ? " c-err" : ""}`} title={f?.error??undefined}>{f ? footer(f) : "—"}</div>
+            {compact && attention > 0 && <span className="shot-attention">检测图注意 {attention}</span>}
           </button>
         );
       })}

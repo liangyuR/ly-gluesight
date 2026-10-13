@@ -81,15 +81,32 @@ describe("在线检测开工检查清单", () => {
     expect(list.getByRole("link", { name: "去配方工作台" })).toHaveAttribute("href", "/recipe");
   });
 
-  it("在制件期间 → 不显示开工清单", () => {
+  it("在制件期间出现阻塞 → 保留本件检测中并显示下一件异常", () => {
     state = { ...state, phase: "ACQUIRE" };
     report = readiness({ ready: false, items: readiness().items.map(i => i.key === "audit" ? { ...i, state: "blocked", detail: "持久追溯故障" } : i) });
     render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    expect(screen.queryByRole("region", { name: "开工检查清单" })).not.toBeInTheDocument();
+    expect(screen.getByText("本件检测中／下一件条件异常")).toBeVisible();
+    expect(screen.getByText("持久追溯故障")).toBeVisible();
   });
 });
 
 describe("在线检测选帧、曲线与快照绑定", () => {
+  it("从整件布置选择拍照点 → 返回对应原图且保留整件判定", async () => {
+    state = { ...state, phase: "REPORT", part: cyclePart(), result: cycleResult() };
+    render(<InspectPage />);
+    const main = within(screen.getByRole("region", { name: "检测主视图" }));
+    expect(main.getByRole("button", { name: "原图" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(main.getByRole("button", { name: "整件布置" }));
+    fireEvent.click(main.getByRole("button", { name: "总览选择帧 k2" }));
+    expect(main.getByRole("button", { name: "原图" })).toHaveAttribute("aria-pressed", "true");
+    expect(main.getByText(/P2 · CAM-1 · 视角 1 · k2/)).toBeVisible();
+    expect(screen.getByText("测试样本偏移超差")).toBeVisible();
+    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith("cycle-1", "revisionId-A", 1));
+    await userEvent.click(screen.getByRole("button", { name: "返回当前拍照点" }));
+    expect(screen.getByText("跟随当前拍照点")).toBeVisible();
+    expect(screen.getByText("测试样本偏移超差")).toBeVisible();
+  });
+
   it("同 SN 重检的新周期清除旧选帧、选点、测量值和结论", async () => {
     state = { ...state, phase: "REPORT", part: cyclePart(), result: cycleResult() }; measured = [cycleMeasurement()];
     const page = render(<InspectPage />);
@@ -97,10 +114,11 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     expect(screen.getByText(/点 2 · P1 · J1 · s=1.00/)).toBeVisible();
     state = { ...state, phase: "FAULT", fault: "新件相机错误", part: { ...cyclePart(1, "cycle-2"), frames: [cyclePart().frames[0], { ...cyclePart().frames[1], status: "waiting" }] } };
     page.rerender(<InspectPage />);
-    expect(screen.getByText("等待工件")).toBeVisible();
+    expect(screen.getByText("暂无检测结果")).toBeVisible();
     expect(screen.queryByText("测试样本偏移超差")).not.toBeInTheDocument();
     expect(screen.queryByText(/点 2 · P1 · J1 · s=1.00/)).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "选中帧 k1" })).toBeVisible();
+    expect(screen.getByText(/P1 · CAM-1 · 视角 1 · k1/)).toBeVisible();
+    expect(screen.getByText("跟随当前拍照点")).toBeVisible();
     expect(screen.queryByText("3.00–4.50")).not.toBeInTheDocument();
     await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith("cycle-2", "revisionId-A", 0));
   });
@@ -111,6 +129,6 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     expect(screen.queryByText("3.00–4.50")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "查看帧 k1" })).toHaveClass("s-waiting");
     expect(workspaceApi.liveImage).not.toHaveBeenCalled();
-    expect(screen.getByText("点击曲线或用方向键选择测量点")).toBeVisible();
+    expect(screen.queryByText(/点 2 ·/)).not.toBeInTheDocument();
   });
 });

@@ -81,7 +81,7 @@
 .alarm-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 6px; background: var(--ng-soft); color: var(--ng); font-size: 13px; }
 .alarm-bar.warn { background: var(--warn-soft); color: var(--warn); }
 .fly-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 12px; }
-.fly-main { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(480px, 1fr) 150px 190px; gap: 12px; min-height: 0; }
+.fly-main { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(460px, 1fr) 128px 190px; gap: 12px; min-height: 0; }
 .fly-side { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto minmax(120px, 1fr); gap: 12px; min-height: 0; }
 .fly-side > .panel:not(:last-child) { min-height: auto; }
 .fly .panel { display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; padding: 12px 14px; }
@@ -112,6 +112,7 @@
 .fly-verdict.v-err { border-color: var(--err); background: linear-gradient(var(--err-soft), var(--err-soft)), var(--bg-panel); }
 .fly-verdict.v-err strong { color: var(--err); }
 .fly-verdict.v-run strong { color: var(--accent-text); font-size: 20px; }
+.fly-verdict.v-empty strong { font-size: 20px; }
 
 .kv2 { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; font-size: 12.5px; }
 .kv2 span { color: var(--text-muted); }
@@ -140,14 +141,10 @@
 .stats5 span { display: block; font-size: 11px; color: var(--text-muted); }
 .stats5 b { font: 600 15px "Cascadia Mono", Consolas, monospace; }
 
-/* 主视图 + 相机窗 */
-.insp-top { display: grid; grid-template-columns: minmax(0, 1fr) clamp(240px, 28vw, 400px); gap: 12px; min-height: 0; }
-.cam-tiles { display: grid; grid-auto-rows: minmax(0, 1fr); gap: 8px; min-height: 0; }
-.cam-tiles.n1 { grid-auto-rows: minmax(0, 1fr); }
-/* 多台相机：主视图与各相机窗等大，两列排开 */
-.insp-top.grid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: minmax(0, 1fr); }
-.insp-top.grid .cam-tiles { display: contents; }
-.insp-top.grid > .panel { min-height: 0; }
+.inspect-view > .panel-head { flex-shrink: 0; }
+.fly .inspect-view > .wp-runtime-frame { flex: 1; padding: 0; border: 0; background: transparent; }
+.inspect-view > .wp-overview { flex: 1; min-height: 0; height: 100%; }
+.inspect-view .wp-runtime-strip { gap: 24px; }
 .shot { cursor: pointer; font: inherit; color: inherit; text-align: left; min-width: 110px; }
 .shot.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
 .shot-strip { overflow-x: auto; padding: 2px; }
@@ -183,3 +180,119 @@ button.shot-tile { cursor: pointer; }
 .readiness-item a, .offline-guide a, .offline-msg a, .notice a { color: var(--accent-text); margin-left: 6px; white-space: nowrap; }
 .offline-guide { font-size: 12.5px; color: var(--warn); }
 .reset-note { font-size: 12px; max-width: 360px; }
+.inspect-operator { min-height: 580px; gap: 8px; }
+.app-shell:has(.inspect-operator) .sidebar-brand, .app-shell:has(.inspect-operator) .sidebar-footer { flex-shrink: 0; }
+.app-shell:has(.inspect-operator) .sidebar-nav { min-height: 0; overflow-y: auto; }
+.inspect-operator .fly-body { grid-template-columns: minmax(0, 1fr) 280px; gap: 8px; }
+.inspect-operator .fly-main { grid-template-rows: minmax(240px, 1fr) 96px clamp(156px, 20vh, 210px); gap: 8px; }
+.inspect-operator .fly-side { grid-template-rows: auto auto minmax(100px, 1fr) auto; gap: 8px; }
+.inspect-operator .panel { padding: 8px 10px; gap: 6px; }
+.inspect-toolbar { flex-shrink: 0; gap: 8px; }
+.inspect-toolbar .phase-label { color: var(--text-muted); font-size: 13px; }
+.inspect-toolbar .fly-chip { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
+.inspect-operator .inspection-readiness { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; }
+.inspect-operator .readiness-summary { gap: 10px; }
+.inspect-operator .readiness-summary-state { font-size: 16px; }
+.inspect-operator .readiness-fault, .inspect-operator .readiness-refresh-error, .inspect-operator .readiness-embedded { grid-column: 1 / -1; }
+.inspect-operator .readiness-embedded:empty { display: none; }
+.readiness-diagnostics-entry { grid-column: 2; grid-row: 1; border: 0; background: transparent; color: var(--accent-text); cursor: pointer; font: inherit; font-size: 12px; padding: 4px; }
+.inspect-operator .readiness-list { gap: 3px; }
+.inspect-operator .readiness-item { padding: 3px 0; border: 0 !important; background: transparent !important; }
+.inspect-operator .readiness-detail { display: block; }
+.readiness-item-help { display: inline-block; margin-left: 8px; font-size: 12px; }
+.readiness-item-help summary { cursor: pointer; color: var(--accent-text); }
+.readiness-item-help[open] { display: block; margin-left: 0; }
+.readiness-refresh-error { font-size: 12px; color: var(--warn); }
+.readiness-refresh-error p { overflow-wrap: anywhere; }
+.inspect-operator .wp-runtime-frame.compact { display: flex; flex-direction: column; min-height: 0; gap: 4px; }
+.inspect-operator .wp-runtime-frame .wp-viewport { min-height: 110px; }
+.inspect-operator .wp-runtime-frame .wp-image-tools { min-height: 32px; padding: 2px 8px; gap: 8px; flex-wrap: wrap; }
+.inspect-operator .wp-runtime-frame .wp-image-tools > span { overflow-wrap: anywhere; }
+.inspect-operator .wp-runtime-strip { gap: 10px; }
+.inspect-operator .wp-runtime-strip .wp-kv { flex-direction: row; align-items: center; justify-content: flex-start; gap: 8px; padding: 2px 0; border: 0; font-size: 12px; }
+.inspect-operator .wp-runtime-strip .wp-kv strong { font-size: 12px; }
+.runtime-view-attention { align-self: flex-start; color: var(--warn); }
+.inspect-operator .wp-runtime-frame > .c-err { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.view-mode { color: var(--accent-text); font-size: 12px; }
+.inspect-operator .shot-strip { position: relative; overflow-x: auto; overflow-y: hidden; gap: 6px; }
+.inspect-operator .shot-head { font-size: 12px; min-width: 0; }
+.inspect-operator .shot-head b { flex: 1; }
+.inspect-operator .shot-head > span { flex-shrink: 0; white-space: nowrap; }
+.inspect-operator .shot-foot { display: none; }
+.inspect-operator .shot { position: relative; }
+.inspect-operator .shot-attention { position: absolute; right: 4px; bottom: 2px; padding: 1px 4px; border-radius: 3px; background: var(--bg-panel); color: var(--warn); font-size: 11px; }
+.inspect-operator .inspect-curve .legend { flex: 1; }
+.inspect-operator .fly-verdict .vr { min-height: 0; overflow-wrap: anywhere; }
+.inspect-operator .fly-verdict strong { font-size: 24px; }
+.inspect-operator .fly-verdict.v-empty strong { font-size: 18px; }
+.inspect-segments { align-self: start; max-height: 100%; }
+.inspect-segments .seg-list { min-height: 0; overflow: auto; }
+.inspect-segments .seg-list > div { grid-template-columns: 12px minmax(0, 1fr) auto; gap: 2px 8px; }
+.inspect-segments .seg-list > div > span:nth-child(2) { white-space: normal; overflow-wrap: anywhere; }
+.inspect-segments .seg-list .rng { grid-column: 2 / 4; grid-row: 2; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.inspect-segments .seg-list .ss { grid-column: 3; grid-row: 1; }
+.inspect-operator .stats5 { margin: 0; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
+.inspect-operator .stats5 > div { display: flex; align-items: center; justify-content: center; gap: 4px; }
+.inspect-operator .stats5 span, .inspect-operator .stats5 b { white-space: nowrap; }
+.inspect-operator .stats5 b { font-size: 12px; }
+.modal-mask.inspection-drawer { display: flex; justify-content: flex-end; }
+.inspection-drawer .modal { height: 100%; max-height: 100%; border-radius: 0; max-width: 100vw !important; }
+.inspection-drawer .modal-body { display: flex; flex-direction: column; gap: 16px; }
+.diagnostic-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.diagnostic-content { overflow-wrap: anywhere; }
+.diagnostic-content h3 { margin: 12px 0 8px; font-size: 14px; }
+.diagnostic-content .readiness-item { grid-template-columns: 40px minmax(0, 1fr); gap: 6px; }
+.diagnostic-content .readiness-detail, .diagnostic-content .readiness-item > a { grid-column: 2; }
+.diagnostic-kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 18px; font-size: 13px; }
+.diagnostic-kv dt { color: var(--text-muted); }
+.diagnostic-kv dd { margin: 0; text-align: right; }
+.diagnostic-content .stepper { flex-wrap: wrap; }
+.diagnostic-content .table td { white-space: normal; overflow-wrap: anywhere; }
+.diagnostic-content .event-log { max-height: none; overflow: visible; white-space: normal; }
+.diagnostic-alarms { padding-left: 18px; }
+.diagnostic-alarms li + li { margin-top: 8px; }
+@media (max-width: 1100px) {
+  .inspect-operator .fly-body { grid-template-columns: minmax(0, 1fr) 245px; }
+  .inspect-operator .wp-runtime-strip { display: grid; grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .inspect-operator { height: auto; }
+  .inspect-operator .fly-body { grid-template-columns: minmax(0, 1fr); }
+  .inspect-operator .fly-main { grid-template-rows: minmax(360px, 1fr) 100px 190px; }
+  .inspect-operator .fly-side { grid-template-rows: auto; }
+  .inspect-operator .inspection-readiness { grid-template-columns: minmax(0, 1fr); }
+  .readiness-diagnostics-entry { grid-column: 1; grid-row: auto; justify-self: start; }
+}
+.inspection-readiness { flex-shrink: 0; }
+.readiness-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; }
+.readiness-summary .panel-title { margin: 0; color: var(--text-muted); font-size: 13px; }
+.readiness-summary-state { font-size: 18px; font-weight: 600; }
+.device-blocked { border-left: 3px solid var(--ng); }
+.device-blocked .readiness-summary-state { color: var(--ng); }
+.device-ready .readiness-summary-state { color: var(--ok); }
+.device-busy .readiness-summary-state { color: var(--accent-text); }
+.device-unknown .readiness-summary-state, .device-waiting .readiness-summary-state { color: var(--warn); }
+.readiness-fault { margin: 0; color: var(--text); font-size: 13px; overflow-wrap: anywhere; }
+.readiness-embedded .panel-head { min-height: 0; }
+.readiness-embedded .panel-title { font-size: 13px; }
+.readiness-embedded .panel-head .muted { font-size: 12px; }
+.readiness-embedded .readiness-item { grid-template-columns: 40px 115px minmax(0, max-content) auto; gap: 8px 12px; padding: 6px 10px; }
+.readiness-embedded .readiness-item > a { justify-self: start; margin: 0; }
+.readiness-embedded .readiness-item.r-blocked { background: var(--bg-elev); border: 1px solid var(--border); }
+.readiness-details, .readiness-diagnostics { color: var(--text-muted); font-size: 12px; }
+.readiness-details { margin-top: 8px; }
+.readiness-details > summary, .readiness-diagnostics > summary { cursor: pointer; width: fit-content; padding: 4px 0; }
+.readiness-details > summary:focus-visible, .readiness-diagnostics > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.readiness-alarm-list { margin: 6px 0 0; padding-left: 20px; color: var(--warn); overflow-wrap: anywhere; }
+.readiness-alarm-list li + li { margin-top: 4px; }
+@media (max-width: 1100px) {
+  .fly-body { grid-template-columns: minmax(0, 1fr) 260px; }
+  .inspect-view > .panel-head .legend { flex-basis: 100%; order: 1; }
+  .inspect-view .wp-runtime-strip { gap: 10px; }
+}
+@media (max-width: 760px) {
+  .fly-body { grid-template-columns: minmax(0, 1fr); }
+  .fly-main { grid-template-rows: minmax(460px, 1fr) 128px 190px; }
+  .readiness-embedded .readiness-item { grid-template-columns: 40px minmax(0, 1fr); }
+  .readiness-embedded .readiness-detail, .readiness-embedded .readiness-item > a { grid-column: 2; }
+}

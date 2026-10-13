@@ -188,14 +188,31 @@ export function useSiteStatus() {
 }
 
 /** 开工就绪报告：定时刷新，站点模式、配方库变化或 refreshKey 变化时立即重查。 */
+export type ReadinessLoadStatus = "loading" | "success" | "error";
+
 export function useReadiness(refreshKey?: string) {
   const [readiness, setReadiness] = useState<Readiness | null>(null);
+  const [status, setStatus] = useState<ReadinessLoadStatus>("loading");
+  const [error, setError] = useState<string | null>(null);
   const inflight = useRef<Promise<Readiness | null> | null>(null);
   const queued = useRef<Promise<Readiness | null> | null>(null);
   const alive = useRef(true);
   const start = useCallback((): Promise<Readiness | null> => {
     const run: Promise<Readiness | null> = cycleApi.readiness()
-      .then(next => { if (alive.current) setReadiness(next); return next; }, () => null)
+      .then(next => {
+        if (alive.current) {
+          setReadiness(next);
+          setStatus("success");
+          setError(null);
+        }
+        return next;
+      }, reason => {
+        if (alive.current) {
+          setStatus("error");
+          setError(reason instanceof Error ? reason.message : String(reason));
+        }
+        return null;
+      })
       .finally(() => { if (inflight.current === run) inflight.current = null; });
     inflight.current = run;
     return run;
@@ -214,5 +231,5 @@ export function useReadiness(refreshKey?: string) {
     return () => { alive.current = false; clearInterval(timer); offRecipes(); offSite(); };
   }, [refresh, start]);
   useEffect(() => { void refresh(); }, [refresh, refreshKey]);
-  return { readiness, refresh };
+  return { readiness, refresh, status, error };
 }

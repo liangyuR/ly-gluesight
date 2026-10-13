@@ -114,8 +114,8 @@ export interface PathEditing {
   select: (index: number | null) => void;
 }
 
-export function GrayViewer({ image, loading = false, error = "", label, overlay, onEdit, region, onRegion }: {
-  image: GrayImage | null; loading?: boolean; error?: string; label: string; overlay?: ImageOverlay; onEdit?: PathEditing; region?: [number, number, number, number] | null; onRegion?: (region: [number, number, number, number]) => void;
+export function GrayViewer({ image, loading = false, error = "", label, overlay, onEdit, region, onRegion, emptyTitle, emptyHint }: {
+  image: GrayImage | null; loading?: boolean; error?: string; label: string; overlay?: ImageOverlay; onEdit?: PathEditing; region?: [number, number, number, number] | null; onRegion?: (region: [number, number, number, number]) => void; emptyTitle?: string; emptyHint?: string;
 }) {
   const [zoom, setZoom] = useState(1);
   const regionStart = useRef<[number, number] | null>(null);
@@ -135,8 +135,9 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
   const handle = size / 120, dot = size / 320;
   const editing = !!onEdit && shown;
   const path = overlay?.path ?? [];
+  const hint = error || (emptyHint ?? "取样后在这张图上点出胶路中线。机器人应停在当前拍照点。");
   return <div className="wp-viewport"><div className="wp-image-tools"><span>{label}</span><div><button className="icon-btn" aria-label="缩小原图" onClick={() => setZoom(z => Math.max(.5,z-.25))}><Minus size={15} /></button><span>{Math.round(zoom * 100)}%</span><button className="icon-btn" aria-label="放大原图" onClick={() => setZoom(z => Math.min(4,z+.25))}><Plus size={15} /></button><button className="icon-btn" aria-label="适应窗口" onClick={() => setZoom(1)}><RotateCcw size={15} /></button>{overlay && <button className={"btn small" + (shown ? " active" : "")} aria-pressed={shown} onClick={() => setShown(v => !v)}>中线叠加</button>}</div></div>
-    {!image ? <div className="wp-image-empty"><Camera size={32} /><strong>{loading ? "正在读取原图…" : error ? "原图不可用" : "尚未冻结本帧图像"}</strong><span>{error || "取样后在这张图上点出胶路中线。机器人应停在当前拍照点。"}</span></div> :
+    {!image ? <div className="wp-image-empty"><Camera size={32} /><strong>{loading ? "正在读取原图…" : error ? "原图不可用" : emptyTitle ?? "尚未冻结本帧图像"}</strong>{hint && <span>{hint}</span>}</div> :
       <svg role="img" className={"wp-gray-image" + (editing ? " editable" : "")} viewBox={"0 0 " + image.width + " " + image.height} aria-label={label} onPointerDown={e => {
         if (onRegion) { const p = point(e); if (p) { regionStart.current = p; onRegion([p[0], p[1], 0, 0]); e.currentTarget.setPointerCapture?.(e.pointerId); } return; }
         if (!editing || !onEdit) return;
