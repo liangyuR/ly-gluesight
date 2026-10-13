@@ -55,6 +55,15 @@ it("个别拍照点尺寸与其余不同 → 汇总标出不一致且仅该点�
  expect(screen.getByRole("button",{name:/^03/})).toHaveTextContent("640×1024");
  expect(screen.getByRole("button",{name:/^01/})).not.toHaveTextContent("×");
 });
+it("切换拍照点且新图未读回 → 保留当前图像不回到读取占位",async()=>{
+ const frame=(i:number)=>({shotId:"s"+i,ordinal:i,frameCounter:i,triggerCounter:i,originalPath:"",views:[{view:1,path:"",width:1280,height:1024}]});
+ vi.mocked(workspaceApi.captureImage).mockResolvedValueOnce({url:"data:image/png;base64,",width:1280,height:1024}).mockReturnValue(new Promise(()=>{}));
+ vi.mocked(workspaceApi.captureGet).mockResolvedValue({...round(),frames:[frame(1),frame(2)]});show();
+ await screen.findByRole("img",{name:"拍照点 01 · 完整拼接原图"});
+ await userEvent.click(screen.getByRole("button",{name:/^02/}));
+ expect(screen.getByRole("img",{name:"拍照点 01 · 完整拼接原图 · 正在读取 02"})).toBeVisible();
+ expect(screen.queryByText("正在读取原图…")).toBeNull();
+});
 it("PLC 未连接 →开始接收禁用并给出 PLC 通讯入口",async()=>{
  vi.mocked(plcApi.getStatus).mockResolvedValue({state:"disconnected",message:"PLC 未连接"} as Awaited<ReturnType<typeof plcApi.getStatus>>);show();
  expect(await screen.findByText(/PLC 未连接：整圈采集依赖/)).toBeVisible();
