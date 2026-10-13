@@ -81,11 +81,12 @@ describe("在线检测开工检查清单", () => {
     expect(list.getByRole("link", { name: "去配方工作台" })).toHaveAttribute("href", "/recipe");
   });
 
-  it("在制件期间 → 不显示开工清单", () => {
+  it("在制件期间出现阻塞 → 保留本件检测中并显示下一件异常", () => {
     state = { ...state, phase: "ACQUIRE" };
     report = readiness({ ready: false, items: readiness().items.map(i => i.key === "audit" ? { ...i, state: "blocked", detail: "持久追溯故障" } : i) });
     render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    expect(screen.queryByRole("region", { name: "开工检查清单" })).not.toBeInTheDocument();
+    expect(screen.getByText("本件检测中／下一件条件异常")).toBeVisible();
+    expect(screen.getByText("持久追溯故障")).toBeVisible();
   });
 });
 
@@ -101,6 +102,9 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     expect(main.getByRole("heading", { name: "选中帧 k2" })).toBeVisible();
     expect(screen.getByText("测试样本偏移超差")).toBeVisible();
     await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith("cycle-1", "revisionId-A", 1));
+    await userEvent.click(screen.getByRole("button", { name: "返回当前拍照点" }));
+    expect(screen.getByText("跟随当前拍照点")).toBeVisible();
+    expect(screen.getByText("测试样本偏移超差")).toBeVisible();
   });
 
   it("同 SN 重检的新周期清除旧选帧、选点、测量值和结论", async () => {
@@ -114,6 +118,7 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     expect(screen.queryByText("测试样本偏移超差")).not.toBeInTheDocument();
     expect(screen.queryByText(/点 2 · P1 · J1 · s=1.00/)).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "选中帧 k1" })).toBeVisible();
+    expect(screen.getByText("跟随当前拍照点")).toBeVisible();
     expect(screen.queryByText("3.00–4.50")).not.toBeInTheDocument();
     await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith("cycle-2", "revisionId-A", 0));
   });

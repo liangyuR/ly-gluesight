@@ -68,7 +68,7 @@ export default function InspectPage() {
   const overview=usePublishedOverview(layout);
   const selectionScope = `${part?.cycleId ?? "idle"}:${part?.bundleId ?? ""}:${part?.recipeRevision ?? layout?.revisionId}:${layout?.id}:${layout?.shots.length}`;
   const operationScope = `${part?.cycleId ?? "idle"}:${snapshot?.since}:${snapshot?.fault ?? ""}`;
-  const { readiness, refresh: refreshReadiness } = useReadiness(`${phase}:${snapshot?.fault ?? ""}:${snapshot?.activeRecipeId ?? ""}:${snapshot?.productSource ?? ""}:${snapshot?.alarms.length ?? 0}`);
+  const { readiness, status: readinessStatus, error: readinessError, refresh: refreshReadiness } = useReadiness(`${phase}:${snapshot?.fault ?? ""}:${snapshot?.activeRecipeId ?? ""}:${snapshot?.productSource ?? ""}:${snapshot?.alarms.length ?? 0}`);
   const currentOperation = useRef({ phase, scope: operationScope });
   currentOperation.current = { phase, scope: operationScope };
 
@@ -88,6 +88,8 @@ export default function InspectPage() {
   const lastShot = Math.max(0, (layout?.shots.length ?? 1) - 1);
   const selected = frameSelection?.scope === selectionScope ? Math.min(lastShot, Math.max(0, frameSelection.k)) : Math.min(lastShot, Math.max(0, currentFrame(ownLayout ? part : null)));
   const selectedPoint = pointSelection?.scope === selectionScope && pointSelection.j < (layout?.points.k.length ?? 0) ? pointSelection.j : null;
+  const manualView = frameSelection?.scope === selectionScope;
+  const resumeFollowing = () => { setFrameSelection(null); setPointSelection(null); };
   const selectFrame = (k: number) => {
     if (!Number.isInteger(k) || k < 0 || k > lastShot) return;
     setFrameSelection({ scope: selectionScope, k });
@@ -99,7 +101,7 @@ export default function InspectPage() {
     if (!layout || !Number.isInteger(j) || j < 0 || j >= layout.points.k.length) return;
     setPointSelection({ scope: selectionScope, j });
     const k = layout.points.k[j];
-    if (k >= 0 && k <= lastShot) setFrameSelection({ scope: selectionScope, k });
+    if (k >= 0 && k <= lastShot) { setFrameSelection({ scope: selectionScope, k }); setView("image"); }
   };
   const trigger = snapshot?.triggerMode ?? layout?.triggerMode;
   const canSwitch = (phase === "IDLE" || phase === "FAULT") && snapshot?.productSource === "manual";
@@ -201,7 +203,7 @@ export default function InspectPage() {
         {snapshot.measurementWorkers.timedOut>=snapshot.measurementWorkers.capacity&&"全部测量容量被占用，当前不可布防。"}
       </div>}
 
-      <InspectionReadiness snapshot={snapshot} readiness={readiness} />
+      <InspectionReadiness snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} />
 
       <div className="fly-body">
         <div className="fly-main">
@@ -216,6 +218,7 @@ export default function InspectPage() {
                   <span><i style={{ background: "var(--text-disabled)" }} />待测</span>
                 </div>
                 <span className="spacer" />
+                {manualView ? <button className="btn small" onClick={resumeFollowing}>返回当前拍照点</button> : <span className="muted">跟随当前拍照点</span>}
                 <div className="segmented" aria-label="检测视图切换">
                   <button className={view === "image" ? "active" : ""} aria-pressed={view === "image"} onClick={() => setView("image")}>原图</button>
                   <button className={view === "part" ? "active" : ""} aria-pressed={view === "part"} onClick={() => setView("part")}>整件布置</button>

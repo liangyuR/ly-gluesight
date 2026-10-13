@@ -4,17 +4,17 @@ import type { Readiness, ReadinessItem, ReadinessState, ReadinessTarget } from "
 
 const stateText: Record<ReadinessState, string> = { ok: "就绪", waiting: "等待", blocked: "阻塞" };
 
-export default function ReadinessChecklist({ readiness, embedded = false }: { readiness: Readiness; embedded?: boolean }) {
+export default function ReadinessChecklist({ readiness, embedded = false, includeReady = true }: { readiness: Readiness; embedded?: boolean; includeReady?: boolean }) {
   const visibleItems = embedded ? readiness.items.filter(item => item.state !== "ok") : readiness.items;
   const readyItems = readiness.items.filter(item => item.state === "ok");
   return (
     <section className={embedded ? "readiness readiness-embedded" : "panel readiness"} aria-label="开工检查清单">
-      {(!embedded || visibleItems.length > 0) && <div className="panel-head">
+      {!embedded && <div className="panel-head">
         <h3 className="panel-title">开工检查清单</h3>
         {!embedded && <span className="muted">{readiness.ready ? "可以接收工件；等待项完成后自动就绪" : "阻塞项解决后才能接收工件"}</span>}
       </div>}
-      {visibleItems.length > 0 && <ReadinessItems items={visibleItems} />}
-      {embedded && readyItems.length > 0 && <details className="readiness-details">
+      {visibleItems.length > 0 && <ReadinessItems items={visibleItems} compact={embedded} />}
+      {embedded && includeReady && readyItems.length > 0 && <details className="readiness-details">
         <summary>已就绪项目（{readyItems.length}）</summary>
         <ReadinessItems items={readyItems} />
       </details>}
@@ -22,17 +22,23 @@ export default function ReadinessChecklist({ readiness, embedded = false }: { re
   );
 }
 
-function ReadinessItems({ items }: { items: ReadinessItem[] }) {
+function ReadinessItems({ items, compact = false }: { items: ReadinessItem[]; compact?: boolean }) {
   return <ul className="readiness-list">
     {items.map((item) => (
       <li key={item.key} className={`readiness-item r-${item.state}`}>
         <span className="readiness-state">{stateText[item.state]}</span>
         <b>{item.title}</b>
-        <span className="readiness-detail">
+        <div className="readiness-detail">
           {item.detail}
-          {item.hint && <span className="muted readiness-hint">{item.hint}</span>}
-          {import.meta.env.DEV && item.key === "engine" && item.state !== "ok" && <span className="muted readiness-hint">{devLyflowHint}</span>}
-        </span>
+          {compact ? (item.hint || (import.meta.env.DEV && item.key === "engine" && item.state !== "ok")) && <details className="readiness-item-help">
+            <summary aria-label={`${item.title}说明`}>说明</summary>
+            {item.hint && <span className="muted readiness-hint">{item.hint}</span>}
+            {import.meta.env.DEV && item.key === "engine" && item.state !== "ok" && <span className="muted readiness-hint">{devLyflowHint}</span>}
+          </details> : <>
+            {item.hint && <span className="muted readiness-hint">{item.hint}</span>}
+            {import.meta.env.DEV && item.key === "engine" && item.state !== "ok" && <span className="muted readiness-hint">{devLyflowHint}</span>}
+          </>}
+        </div>
         {item.state !== "ok" && <TargetLink target={item.target} />}
       </li>
     ))}
