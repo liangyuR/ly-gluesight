@@ -45,7 +45,7 @@ export default function CapturePage() {
   const [round,setRound] = useState<CaptureRound | null>(null), [working,setWorking] = useState(false);
   const [history,setHistory] = useState<Awaited<ReturnType<typeof workspaceApi.captureList>>>([]);
   const [roundId,setRoundId] = useState<string | undefined>();
-  const [previewK,setPreviewK] = useState(0), [preview,setPreview] = useState<GrayImage | null>(null), [previewError,setPreviewError] = useState("");
+  const [previewK,setPreviewK] = useState(0), [preview,setPreview] = useState<{k: number; image: GrayImage} | null>(null), [previewError,setPreviewError] = useState("");
   const [plc,setPlc] = useState("正在读取 PLC 状态"), [plcConnected,setPlcConnected] = useState(false), [deviceReady,setDeviceReady] = useState(false);
   const [sampleExpected,setSampleExpected] = useState<Verdict>("OK");
   const [reuse,setReuse] = useState(false), [confirmed,setConfirmed] = useState(false);
@@ -70,9 +70,13 @@ export default function CapturePage() {
     setRoundId(restored?.roundId); setPreviewK(restored?.previewK ?? 0); setWorking(false);
     if(restored) { setCameraId(restored.cameraId); setDrain(restored.drain); }
   },[doc?.id,captureReturn]);
+  useEffect(() => { setPreview(null); },[round?.roundId]);
   useEffect(() => {
-    let alive=true; setPreview(null); setPreviewError("");
-    if(round?.frames[previewK]) void workspaceApi.captureImage(round.roundId,previewK).then(image=>{if(alive)setPreview(image);}).catch(e=>{if(alive)setPreviewError(errorText(e));});
+    let alive=true; setPreviewError("");
+    if(round?.frames[previewK]) void workspaceApi.captureImage(round.roundId,previewK).then(async image=>{
+      const decoded=new Image(); decoded.src=image.url; await Promise.race([decoded.decode?.().catch(()=>{}),new Promise(r=>setTimeout(r,150))]);
+      if(alive)setPreview({k:previewK,image});
+    }).catch(e=>{if(alive){setPreview(null);setPreviewError(errorText(e));}});
     return () => {alive=false;};
   },[round?.roundId,round?.frames.length,previewK]);
   if(!doc || !data) return <WorkspaceEmpty/>;
@@ -102,8 +106,12 @@ export default function CapturePage() {
     if(!step || !round?.frames.length) return;
     e.preventDefault();
     const next=Math.min(round.frames.length-1,Math.max(0,previewK+step));
-    setPreviewK(next); (e.currentTarget.children[next] as HTMLElement | undefined)?.focus();
+    setPreviewK(next);
+    const item=e.currentTarget.children[next] as HTMLElement | undefined;
+    item?.focus({preventScroll:true}); item?.scrollIntoView({block:"nearest"});
   };
+  const pad=(k: number) => String(k+1).padStart(2,"0");
+  const shownK=preview?.k ?? previewK;
   return <div className="wp-page"><WorkspaceBar/><Steps/><div className="wp-columns"><div className="wp-stack"><Panel title={validation ? "实拍独立验证样本" : "设备准备与整圈采集"} detail="选择一个 SDK device；每次触发的一张拼接图生成一个拍照点">
     <label className="field"><span>采集 device</span><select className="input" aria-label="采集 device" value={selectedCamera} disabled={locked || active} onChange={e=>setCameraId(e.target.value)}>{cameras.map(c=><option key={c.id} value={c.id}>{c.name} · {c.serial || c.source}</option>)}</select></label>
     <KV label="设备">{deviceReady ? "就绪" : "未就绪"}</KV><KV label="PLC">{plc}</KV>
@@ -123,13 +131,13 @@ export default function CapturePage() {
     </div>
     {round.error && <Notice title="本轮异常，整圈重采" tone="warn">{round.error}</Notice>}
     <div className="wp-capture-result">
-    <GrayViewer image={preview} loading={!!round.frames[previewK] && !preview && !previewError} error={previewError} label={"拍照点 " + String(previewK+1).padStart(2,"0") + " · 完整拼接原图"}/>
+    <GrayViewer image={preview?.image ?? null} loading={!!round.frames[previewK] && !preview && !previewError} error={previewError} label={"拍照点 " + pad(shownK) + " · 完整拼接原图" + (shownK!==previewK ? " · 正在读取 " + pad(previewK) : "")}/>
     <div className="wp-capture-side">
     <div className="wp-capture-side-head"><strong>拍照点 · {round.frames.length}</strong><small>↑↓ 切换</small></div>
     {round.frames.length ? <div className="wp-capture-shots" aria-label="拍照点选择" onKeyDown={shotKey}>{round.frames.map((f,i)=>{
       const odd=!!spec?.differs(f), warn=odd || f.triggerCounter == null;
       return <button key={f.shotId} className={"wp-capture-shot" + (previewK===i ? " selected" : "")} aria-pressed={previewK===i} onClick={()=>setPreviewK(i)}>
-        <strong>{String(i+1).padStart(2,"0")}</strong><i className={"wp-capture-dot" + (warn ? " warn" : "")}/><span>帧 {f.frameCounter} · 触发 {f.triggerCounter ?? "未提供"}</span>{odd && <small>{frameSpec(f)}</small>}
+        <strong>{pad(i)}</strong><i className={"wp-capture-dot" + (warn ? " warn" : "")}/><span>帧 {f.frameCounter} · 触发 {f.triggerCounter ?? "未提供"}</span>{odd && <small>{frameSpec(f)}</small>}
       </button>;
     })}</div> : <p className="muted">尚未收到图像</p>}
     {round.state==="complete" && <div className="wp-capture-actions">{!validation && data.workspace.frames.length>0 && <><label className="check"><input type="checkbox" checked={reuse} disabled={locked} onChange={e=>setReuse(e.target.checked)}/>带入旧中线与参数作为草稿</label>{reuse && <label className="check"><input type="checkbox" checked={confirmed} disabled={locked} onChange={e=>setConfirmed(e.target.checked)}/>已确认轨迹和触发顺序保持一致，拍照点对应正确</label>}</>}
