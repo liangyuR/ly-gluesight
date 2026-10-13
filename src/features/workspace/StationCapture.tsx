@@ -1,3 +1,4 @@
+import { errorText } from "../../lib/errors";
 import { useEffect, useRef, useState } from "react";
 import { Camera } from "lucide-react";
 import { workspaceApi } from "./api";
@@ -20,7 +21,7 @@ export default function StationCapture({cam,view=1,sample,onSample}:{cam:number;
     const valid=()=>current.current.alive&&current.current.cam===cam&&current.current.view===view&&serial.current===request;
     setBusy(true);setError("");onSample(null);
     try{const metadata=await workspaceApi.stationCapture(cam,view);if(!valid())return;const image=await workspaceApi.stationImage(cam,metadata.id,view);if(valid())onSample({metadata,image});}
-    catch(e){if(valid())setError(String(e));}finally{if(valid()){pending.current=false;setBusy(false);}}
+    catch(e){if(valid())setError(errorText(e));}finally{if(valid()){pending.current=false;setBusy(false);}}
   };
   const importImage=async(bytes:number[])=>{
     if(pending.current)return;pending.current=true;

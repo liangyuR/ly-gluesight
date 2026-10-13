@@ -107,7 +107,7 @@ try {
     await mutate('workspace_progress', { k: 7, view: 2 });
     await assert.rejects(invoke('workspace_publish', { id, revision: state.workspace.revision }), /完整验证/);
     report.checks.push('Independent sample accepted; incomplete teaching/engine validation prevents publication');
-    assert.equal(state.workspace.pending, null, state.workspace.publishError);
+    assert.equal(state.workspace.pending, null, JSON.stringify(state.workspace.publish));
     assert.equal(state.productionVersion, null);
     assert.equal((await invoke('history_query', { query: { limit: 1 } })).items.length, 0);
     report.checks.push('Draft and validation operations do not create production versions or inspection records');

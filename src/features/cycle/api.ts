@@ -1,8 +1,8 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { subscribe } from "../plc";
 import { matchesPart, mergeMeasurements } from "./identity";
-import type { CycleSettings, LogLine, Measured, OfflineFault, OfflineSource, Recipe, RecipeDoc, RecipeSummary, SampleSetSummary, Scenario, SiteStatus, Snapshot } from "./types";
+import type { CycleSettings, LogLine, Measured, OfflineFault, OfflineSource, Readiness, Recipe, RecipeDoc, RecipeSummary, SampleSetSummary, Scenario, SiteStatus, Snapshot } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
   if (!isTauri() && ["cycle_save_settings","cycle_select_recipe","cycle_reset","site_enter_offline","site_leave_offline","site_preview_sample_set","site_pick_dir","offline_run","offline_stop","offline_inject","offline_capture"].includes(cmd))
@@ -32,6 +32,7 @@ export const cycleApi = {
   saveSettings: (settings: CycleSettings) => call<void>("cycle_save_settings", { settings }, () => undefined),
   selectRecipe: (recipeId: string) => call<void>("cycle_select_recipe", { recipeId }, () => undefined),
   reset: () => call<void>("cycle_reset", undefined, () => undefined),
+  readiness: () => call<Readiness | null>("cycle_readiness", undefined, () => null),
   offlineRun: (recipeId: string, scenario: Scenario, continuous: boolean, partId: string | null) =>
     call<void>("offline_run", { recipeId, scenario, continuous, partId }, () => undefined),
   offlineCapture: (partId: string | null) => call<void>("offline_capture", { partId }, () => undefined),
@@ -182,4 +183,34 @@ export function useSiteStatus() {
     return () => { alive = false; siteListeners.delete(update); off(); };
   }, []);
   return status;
+}
+
+/** 开工就绪报告：定时刷新，站点模式、配方库变化或 refreshKey 变化时立即重查。 */
+export function useReadiness(refreshKey?: string) {
+  const [readiness, setReadiness] = useState<Readiness | null>(null);
+  const inflight = useRef<Promise<Readiness | null> | null>(null);
+  const queued = useRef<Promise<Readiness | null> | null>(null);
+  const alive = useRef(true);
+  const start = useCallback((): Promise<Readiness | null> => {
+    const run: Promise<Readiness | null> = cycleApi.readiness()
+      .then(next => { if (alive.current) setReadiness(next); return next; }, () => null)
+      .finally(() => { if (inflight.current === run) inflight.current = null; });
+    inflight.current = run;
+    return run;
+  }, []);
+  /** 上次查询未返回时不再并发；显式刷新排在其后补查一次。 */
+  const refresh = useCallback((): Promise<Readiness | null> => {
+    if (!inflight.current) return start();
+    queued.current ??= inflight.current.then(() => { queued.current = null; return start(); });
+    return queued.current;
+  }, [start]);
+  useEffect(() => {
+    alive.current = true;
+    const timer = setInterval(() => { if (!inflight.current && !queued.current) void start(); }, 2000);
+    const offRecipes = listenRecipes(() => void refresh());
+    const offSite = subscribe<SiteStatus>("site://status", () => void refresh());
+    return () => { alive.current = false; clearInterval(timer); offRecipes(); offSite(); };
+  }, [refresh, start]);
+  useEffect(() => { void refresh(); }, [refresh, refreshKey]);
+  return { readiness, refresh };
 }

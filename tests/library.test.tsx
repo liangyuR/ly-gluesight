@@ -43,7 +43,7 @@ describe("配方库操作", () => {
     await userEvent.click(screen.getByRole("button",{name:"删除配方 A"}));fireEvent.click(screen.getByRole("button",{name:"删除 A"}));fireEvent.click(screen.getByRole("button",{name:"删除 A"}));
     expect(workspaceApi.remove).toHaveBeenCalledTimes(1);expect(screen.getByRole("button",{name:"取消"})).toBeDisabled();
     await userEvent.keyboard("{Escape}");expect(screen.getByRole("dialog")).toBeVisible();await act(async()=>removing.resolve());
-    expect(screen.getByText("Error: 刷新失败")).toBeVisible();await userEvent.click(screen.getByRole("button",{name:"刷新配方库"}));
+    expect(screen.getByText("刷新失败")).toBeVisible();await userEvent.click(screen.getByRole("button",{name:"刷新配方库"}));
     expect(workspaceApi.remove).toHaveBeenCalledTimes(1);await waitFor(()=>expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 

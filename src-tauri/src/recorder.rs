@@ -13,6 +13,7 @@ use crate::frame::{CounterSource, Frame, FrameImage};
 use crate::judge::Verdict;
 use crate::recipe::{valid_camera_id, Recipe};
 use crate::settings::RecordMode;
+use crate::store::{HistoryScope, RecordSource};
 
 const QUEUE: usize = 48;
 const PENDING_SWEEP_LIMIT: usize = 64;
@@ -106,6 +107,7 @@ enum Msg {
 }
 
 pub struct Recording {
+    scope: HistoryScope,
     started: i64,
     dir: PathBuf,
     name: String,
@@ -128,6 +130,54 @@ pub struct Recorder {
     startup_error: Option<String>,
     active: Arc<Mutex<HashSet<PathBuf>>>,
     protection: Option<PendingProtection>,
+    scope: HistoryScope,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Retention {
+    pub keep: u32,
+    pub max_bytes: u64,
+}
+
+/// 离线原图的滚动保留：与真机设置无关，只清理离线录制根目录。
+pub const OFFLINE_RETENTION: Retention = Retention { keep: 300, max_bytes: 10_000_000_000 };
+
+/// 真机与离线各用一个录制根目录、各自滚动清理：离线连续跑多少件都不会挤掉真机原图。
+pub struct Recorders {
+    real: Recorder,
+    offline: Recorder,
+    offline_retention: Retention,
+}
+
+impl Recorders {
+    pub fn new(real: Recorder, offline: Recorder, offline_retention: Retention) -> Self {
+        Self { real, offline: Recorder { scope: HistoryScope::Offline, ..offline }, offline_retention }
+    }
+
+    pub fn get(&self, scope: HistoryScope) -> &Recorder {
+        match scope {
+            HistoryScope::Real => &self.real,
+            HistoryScope::Offline => &self.offline,
+        }
+    }
+
+    pub fn root(&self, source: RecordSource) -> &Path {
+        self.get(HistoryScope::of(source)).root()
+    }
+
+    pub fn begin(&self, source: RecordSource, mode: RecordMode, sn: u32, recipe: Arc<Recipe>, cycle_id: &str, bundle_id: Option<&str>) -> Option<Recording> {
+        self.get(HistoryScope::of(source)).begin(mode, sn, recipe, cycle_id, bundle_id)
+    }
+
+    pub fn frame(&self, rec: &mut Recording, frame: &Frame, camera: &str, k: usize, ordinal: u64) {
+        self.get(rec.scope).frame(rec, frame, camera, k, ordinal)
+    }
+
+    /// `real` 是系统设置里的真机保留数量与容量；离线件按离线保留规则清理离线根目录。
+    pub fn finish(&self, rec: Recording, verdict: Verdict, reason: &str, real: Retention) {
+        let retention = if rec.scope == HistoryScope::Offline { self.offline_retention } else { real };
+        self.get(rec.scope).finish(rec, verdict, reason, retention.keep, retention.max_bytes, Vec::new())
+    }
 }
 
 impl Recorder {
@@ -150,7 +200,7 @@ impl Recorder {
             .spawn(move || writer(writer_root, rx, writer_queue, writer_callback, writer_active, cleanup))
             .err()
             .map(|e| format!("录制线程启动失败：{e}"));
-        Self { root, tx, queued, callback, startup_error, active, protection }
+        Self { root, tx, queued, callback, startup_error, active, protection, scope: HistoryScope::Real }
     }
 
     pub fn root(&self) -> &Path {
@@ -204,6 +254,7 @@ impl Recorder {
             return None;
         }
         Some(Recording {
+            scope: self.scope,
             started: ly_plc::now_ms(),
             dir,
             name,

@@ -1,3 +1,4 @@
+import { errorText } from "../../lib/errors";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Copy, Plus, Search, Trash2 } from "lucide-react";
@@ -46,13 +47,13 @@ export default function LibraryPage() {
       if(code>65535)throw new Error("产品代码已用完，删除不再使用的配方后重试");
       setCreatedId(null);
       setCreating({...template,shots:copied ? template.shots : [],id,name:copied ? copied.name + "（副本）" : "新配方",productCode:code,version:1,teachingId:null});
-    } catch(e) { if(current.current.alive)setError(String(e)); } finally { pending.current=false;if(current.current.alive)setWorking(false); }
+    } catch(e) { if(current.current.alive)setError(errorText(e)); } finally { pending.current=false;if(current.current.alive)setWorking(false); }
   };
   const open=async(id:string)=>{
     if(pending.current||blocked)return;
     pending.current=true;setWorking(true);
     try { const selected=await select(id);if(selected?.workspace.doc.id===id&&current.current.alive)navigate("/recipe/progress"); }
-    catch(error){if(current.current.alive)setError(String(error));}
+    catch(error){if(current.current.alive)setError(errorText(error));}
     finally{pending.current=false;if(current.current.alive)setWorking(false);}
   };
   const create = async () => {
@@ -67,7 +68,7 @@ export default function LibraryPage() {
       const selected=await select(id);if(!current.current.alive)return;
       if(selected?.workspace.doc.id!==id){setDialogError("候选已创建，选用未完成。修正加载错误后重试打开候选。");return;}
       setCreating(null);setCreatedId(null);navigate("/recipe/progress");
-    } catch(e) { if(current.current.alive)setDialogError(String(e)); } finally { pending.current=false;if(current.current.alive)setWorking(false); }
+    } catch(e) { if(current.current.alive)setDialogError(errorText(e)); } finally { pending.current=false;if(current.current.alive)setWorking(false); }
   };
   const remove = async () => {
     if (!deleting || pending.current||blocked) return;
@@ -84,7 +85,7 @@ export default function LibraryPage() {
         else clearSelection();
       }
       if(current.current.alive){setDeleting(null);setRemovedId(null);}
-    } catch(e) { if(current.current.alive)setDialogError(String(e)); } finally { pending.current=false;if(current.current.alive)setWorking(false); }
+    } catch(e) { if(current.current.alive)setDialogError(errorText(e)); } finally { pending.current=false;if(current.current.alive)setWorking(false); }
   };
   const visible = ids.map(id => {
     const production = list.find(r => r.id === id);

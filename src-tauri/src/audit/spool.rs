@@ -272,6 +272,7 @@ impl Spool {
         for cycle in self.cycles() { events.extend(self.events(&cycle)?.into_iter().map(|(_, event)| event)); }
         for event in events {
                 if let Event::Recording(outcome) = event {
+                    if outcome.directory.as_deref().is_some_and(|directory| !directory.starts_with(root)) { continue; }
                     let mut candidates = Vec::new();
                     if let Some(directory) = outcome.directory { candidates.push(directory); }
                     for file in outcome.files {

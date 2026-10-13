@@ -15,7 +15,7 @@ use crate::judge::{Judgement, PointState};
 use crate::offline::sample_set::SampleRef;
 use crate::recipe::Recipe;
 use crate::recorder::{RecordedRawFile, RecordingOutcome, RecordingState as RecorderState};
-use crate::store::{PartDetail, PartRecord, PartShot, PlcDelivery, PlcDeliveryState, RecordingEvidence, RecordingState, ShotRawFile, Store};
+use crate::store::{PartDetail, PartRecord, PartShot, PlcDelivery, PlcDeliveryState, RecordSource, RecordingEvidence, RecordingState, ShotRawFile, Store};
 
 const PENDING_TTL_MS: i64 = 30 * 60 * 1000;
 const RETRY_BASE_MS: i64 = 1000;
@@ -40,6 +40,7 @@ pub struct RecordedPart {
     pub bundle_id: Option<String>,
     pub delivery: PlcDelivery,
     pub shots: Vec<PartShot>,
+    pub source: RecordSource,
     pub sample: Option<SampleRef>,
 }
 
@@ -61,6 +62,7 @@ impl RecordedPart {
             bundle_id: self.bundle_id.as_deref(),
             delivery: &self.delivery,
             shots: &self.shots,
+            source: self.source,
             sample: self.sample.as_ref(),
         }
     }

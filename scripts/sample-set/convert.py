@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import shutil
 import sys
@@ -26,7 +27,8 @@ MX11_FILE_RE = re.compile(
 )
 MX11_RET_RE = re.compile(r"_ret\.[A-Za-z]+$", re.IGNORECASE)
 SHOT_ID_RE = re.compile(r"^S\d{3}$")
-IMAGE_NAME_RE = re.compile(r"^(S\d{3})_([^_]+)_v(\d+)\.([A-Za-z]+)$")
+IMAGE_NAME_RE = re.compile(r"^(S[0-9]{3})_(.+)_v([0-9]+)\.([A-Za-z]+)$")
+ID_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
 
 
 class ConvertError(Exception):
@@ -58,39 +60,111 @@ class SourceSet:
     ignored: list = field(default_factory=list)
 
 
-def read_image_size(path: Path) -> tuple[int, int]:
-    with open(path, "rb") as f:
-        if f.read(2) != b"\xff\xd8":
-            raise ConvertError(f"不是 JPEG 文件：{path}")
-        while True:
-            byte = f.read(1)
-            if not byte:
-                break
-            if byte != b"\xff":
-                continue
+def _jpeg_size(f) -> tuple[int, int] | None:
+    if f.read(2) != b"\xff\xd8":
+        return None
+    while True:
+        byte = f.read(1)
+        if not byte:
+            return None
+        if byte != b"\xff":
+            continue
+        marker = f.read(1)
+        while marker == b"\xff":
             marker = f.read(1)
-            while marker == b"\xff":
-                marker = f.read(1)
-            if not marker:
-                break
-            code = marker[0]
-            if code in (0x01, 0xD8) or 0xD0 <= code <= 0xD7:
-                continue
-            if code == 0xD9:
-                break
-            raw_len = f.read(2)
-            if len(raw_len) < 2:
-                break
-            length = int.from_bytes(raw_len, "big")
-            if code in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
-                data = f.read(5)
-                if len(data) < 5:
-                    break
-                height = int.from_bytes(data[1:3], "big")
-                width = int.from_bytes(data[3:5], "big")
-                return width, height
-            f.seek(length - 2, 1)
-    raise ConvertError(f"未找到 JPEG SOF 头：{path}")
+        if not marker:
+            return None
+        code = marker[0]
+        if code in (0x01, 0xD8) or 0xD0 <= code <= 0xD7:
+            continue
+        if code == 0xD9:
+            return None
+        raw_len = f.read(2)
+        if len(raw_len) < 2:
+            return None
+        length = int.from_bytes(raw_len, "big")
+        if code in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+            data = f.read(5)
+            if len(data) < 5:
+                return None
+            return int.from_bytes(data[3:5], "big"), int.from_bytes(data[1:3], "big")
+        f.seek(length - 2, 1)
+
+
+def _png_size(f) -> tuple[int, int] | None:
+    head = f.read(24)
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n" or head[12:16] != b"IHDR":
+        return None
+    return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+
+def _bmp_size(f) -> tuple[int, int] | None:
+    head = f.read(26)
+    if len(head) < 22 or head[:2] != b"BM":
+        return None
+    if int.from_bytes(head[14:18], "little") == 12:
+        return int.from_bytes(head[18:20], "little"), int.from_bytes(head[20:22], "little")
+    if len(head) < 26:
+        return None
+    width = int.from_bytes(head[18:22], "little", signed=True)
+    height = int.from_bytes(head[22:26], "little", signed=True)
+    return width, abs(height)
+
+
+def _pgm_size(f) -> tuple[int, int] | None:
+    data = f.read(1024)
+    if data[:2] not in (b"P5", b"P2"):
+        return None
+    tokens: list[bytes] = []
+    for line in data[2:].split(b"\n"):
+        tokens.extend(line.split(b"#", 1)[0].split())
+        if len(tokens) >= 2:
+            break
+    if len(tokens) < 2 or not all(t.isdigit() for t in tokens[:2]):
+        return None
+    return int(tokens[0]), int(tokens[1])
+
+
+def _tiff_size(f) -> tuple[int, int] | None:
+    head = f.read(8)
+    if len(head) < 8 or head[:4] not in (b"II*\x00", b"MM\x00*"):
+        return None
+    order = "little" if head[:2] == b"II" else "big"
+    f.seek(int.from_bytes(head[4:8], order))
+    raw_count = f.read(2)
+    if len(raw_count) < 2:
+        return None
+    found: dict[int, int] = {}
+    for _ in range(int.from_bytes(raw_count, order)):
+        entry = f.read(12)
+        if len(entry) < 12:
+            return None
+        tag, kind = int.from_bytes(entry[0:2], order), int.from_bytes(entry[2:4], order)
+        if tag in (256, 257) and kind in (3, 4):
+            found[tag] = int.from_bytes(entry[8:10] if kind == 3 else entry[8:12], order)
+    if 256 not in found or 257 not in found:
+        return None
+    return found[256], found[257]
+
+
+SIZE_READERS = {
+    "jpg": _jpeg_size, "jpeg": _jpeg_size, "png": _png_size, "bmp": _bmp_size,
+    "pgm": _pgm_size, "tif": _tiff_size, "tiff": _tiff_size,
+}
+
+
+def read_image_size(path: Path) -> tuple[int, int]:
+    reader = SIZE_READERS.get(path.suffix.lower().lstrip("."))
+    if reader is None:
+        raise ConvertError(f"不支持的图像格式：{path}")
+    try:
+        with open(path, "rb") as f:
+            size = reader(f)
+    except OSError as e:
+        raise ConvertError(f"读取图像失败：{path}：{e}") from None
+    if size is None or size[0] <= 0 or size[1] <= 0:
+        raise ConvertError(f"无法解析图像头部尺寸：{path}")
+    return size
 
 
 def parse_shots(spec: str, total: int) -> list[int]:
@@ -106,6 +180,41 @@ def parse_shots(spec: str, total: int) -> list[int]:
             raise ConvertError(f"拍照点范围 {chunk} 超出 1..{total}")
         selected.update(range(start, end + 1))
     return sorted(selected)
+
+
+def parse_mm_per_px(text: str, what: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise ConvertError(f"{what} 不是数字：{text!r}") from None
+    if not _is_mm_per_px(value):
+        raise ConvertError(f"{what} 必须为正的有限数：{text!r}")
+    return value
+
+
+def parse_shot_mm_per_px(spec: str) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for chunk in spec.split(","):
+        sid, sep, value = chunk.strip().partition("=")
+        sid = sid.strip()
+        if not sep or not SHOT_ID_RE.fullmatch(sid):
+            raise ConvertError(f"无法解析逐点像素当量：{chunk!r}（格式 S001=0.085）")
+        if sid in result:
+            raise ConvertError(f"逐点像素当量重复：{sid}")
+        result[sid] = parse_mm_per_px(value.strip(), f"拍照点 {sid} 的像素当量")
+    return result
+
+
+def apply_mm_per_px(manifest: dict, mm_per_px: str | None, shot_mm_per_px: str | None) -> None:
+    if mm_per_px is not None:
+        manifest["mmPerPx"] = parse_mm_per_px(mm_per_px, "--mm-per-px")
+    if shot_mm_per_px is None:
+        return
+    shots = {s["shotId"]: s for s in manifest["shots"]}
+    for sid, value in parse_shot_mm_per_px(shot_mm_per_px).items():
+        if sid not in shots:
+            raise ConvertError(f"--shot-mm-per-px 中的拍照点 {sid} 不在生成的清单里（共 {len(shots)} 个拍照点）")
+        shots[sid]["mmPerPx"] = value
 
 
 def scan_isv(src: Path) -> SourceSet:
@@ -233,6 +342,19 @@ def default_identity(source: SourceSet, selection: list[int] | None, shots_spec:
     return set_id, name
 
 
+def ensure_replaceable_set(out: Path) -> None:
+    allowed = {MANIFEST: Path.is_file, "parts": Path.is_dir}
+    for entry in out.iterdir():
+        check = allowed.get(entry.name)
+        if check is None or entry.is_symlink() or not check(entry):
+            raise ConvertError(f"输出目录顶层只能有 {MANIFEST} 与 parts/，发现 {entry.name}，拒绝覆盖：{out}")
+    if not (out / MANIFEST).is_file():
+        raise ConvertError(f"输出目录不是样本集（缺少 {MANIFEST}），拒绝覆盖：{out}")
+    errors, _ = validate_set(out)
+    if errors:
+        raise ConvertError(f"输出目录不是有效样本集（格式错误 {len(errors)} 项，首项：{errors[0]}），拒绝覆盖：{out}")
+
+
 def prepare_output(src: Path, out: Path, force: bool) -> None:
     src_r, out_r = src.resolve(), out.resolve()
     if out_r == src_r or src_r in out_r.parents or out_r in src_r.parents:
@@ -243,14 +365,14 @@ def prepare_output(src: Path, out: Path, force: bool) -> None:
         if any(out.iterdir()):
             if not force:
                 raise ConvertError(f"输出目录已存在且非空：{out}（使用 --force 覆盖）")
-            if not (out / MANIFEST).is_file():
-                raise ConvertError(f"输出目录不是样本集（缺少 {MANIFEST}），拒绝覆盖：{out}")
+            ensure_replaceable_set(out)
             shutil.rmtree(out)
     out.mkdir(parents=True, exist_ok=True)
 
 
 def convert(kind: str, src: Path, out: Path, shots_spec: str | None, set_id: str | None,
-            name: str | None, force: bool) -> dict:
+            name: str | None, force: bool, mm_per_px: str | None = None,
+            shot_mm_per_px: str | None = None) -> dict:
     if not src.is_dir():
         raise ConvertError(f"源目录不存在：{src}")
     source = scan_isv(src) if kind == "isv" else scan_mx11(src)
@@ -259,6 +381,7 @@ def convert(kind: str, src: Path, out: Path, shots_spec: str | None, set_id: str
     selection = parse_shots(shots_spec, len(source.shots)) if shots_spec else None
     default_id, default_name = default_identity(source, selection, shots_spec)
     manifest, copies = build_manifest(source, set_id or default_id, name or default_name, selection)
+    apply_mm_per_px(manifest, mm_per_px, shot_mm_per_px)
 
     per_part = Counter(c[0] for c in copies if c[3] is not None)
     missing = [f"{c[0]}/{c[1]}（{c[2]}）" for c in copies if c[3] is None]
@@ -288,7 +411,9 @@ def convert(kind: str, src: Path, out: Path, shots_spec: str | None, set_id: str
 
     labels = Counter(p["label"] for p in manifest["parts"])
     print(f"[完成] {out}")
-    print(f"  id={manifest['id']} name={manifest['name']} imageSize={manifest['imageSize']}")
+    shot_mm = {s["shotId"]: s["mmPerPx"] for s in manifest["shots"] if "mmPerPx" in s}
+    print(f"  id={manifest['id']} name={manifest['name']} imageSize={manifest['imageSize']} "
+          f"mmPerPx={manifest['mmPerPx']}" + (f" 逐点 {shot_mm}" if shot_mm else ""))
     print(f"  件数 {len(manifest['parts'])}，拍照点 {len(manifest['shots'])}，复制文件 {len(copies) - len(missing)}，"
           f"大小 {total_bytes / 1024 / 1024:.1f} MiB，标签 {dict(labels)}")
     return manifest
@@ -296,6 +421,10 @@ def convert(kind: str, src: Path, out: Path, shots_spec: str | None, set_id: str
 
 def _is_pos_int(v) -> bool:
     return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+
+def _is_mm_per_px(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0
 
 
 def validate_set(root: Path) -> tuple[list[str], list[str]]:
@@ -319,11 +448,12 @@ def validate_set(root: Path) -> tuple[list[str], list[str]]:
     if "source" in doc and not isinstance(doc["source"], str):
         errors.append("source 必须是字符串")
     size = doc.get("imageSize")
-    if not (isinstance(size, list) and len(size) == 2 and all(_is_pos_int(v) for v in size)):
+    image_size = size if isinstance(size, list) and len(size) == 2 and all(_is_pos_int(v) for v in size) else None
+    if image_size is None:
         errors.append("imageSize 必须是 [宽, 高] 正整数")
     mm = doc.get("mmPerPx", None)
-    if mm is not None and (isinstance(mm, bool) or not isinstance(mm, (int, float)) or mm <= 0):
-        errors.append("mmPerPx 必须是正数或 null")
+    if mm is not None and not _is_mm_per_px(mm):
+        errors.append("mmPerPx 必须是正的有限数或 null")
 
     cameras: dict[str, set] = {}
     raw_cameras = doc.get("cameras")
@@ -333,7 +463,7 @@ def validate_set(root: Path) -> tuple[list[str], list[str]]:
     for i, cam in enumerate(raw_cameras):
         cid = cam.get("id") if isinstance(cam, dict) else None
         views = cam.get("views") if isinstance(cam, dict) else None
-        if not isinstance(cid, str) or not re.fullmatch(r"[A-Za-z0-9-]+", cid):
+        if not isinstance(cid, str) or not ID_RE.fullmatch(cid):
             errors.append(f"cameras[{i}].id 非法：{cid!r}")
             continue
         if cid in cameras:
@@ -356,12 +486,14 @@ def validate_set(root: Path) -> tuple[list[str], list[str]]:
         sid, cid, views = shot.get("shotId"), shot.get("cameraId"), shot.get("views")
         if sid != f"S{i:03d}":
             errors.append(f"shots[{i - 1}].shotId 应为 S{i:03d}，实际 {sid!r}")
+        if shot.get("mmPerPx") is not None and not _is_mm_per_px(shot["mmPerPx"]):
+            errors.append(f"shots[{i - 1}]（{sid}）.mmPerPx 必须是正的有限数或 null")
         if cid not in cameras:
             errors.append(f"shots[{i - 1}].cameraId 未在 cameras 中声明：{cid!r}")
             continue
-        if not (isinstance(views, list) and views and all(v in cameras[cid] for v in views)
-                and len(set(views)) == len(views)):
-            errors.append(f"shots[{i - 1}].views 必须是相机 {cid} 已声明视角的非空子集")
+        if not (isinstance(views, list) and views and all(_is_pos_int(v) for v in views)
+                and len(set(views)) == len(views) and set(views) == cameras[cid]):
+            errors.append(f"shots[{i - 1}].views 必须等于相机 {cid} 声明的视角 {sorted(cameras[cid])}")
             continue
         shots.append((sid, cid, views))
     shot_ids = {s[0] for s in shots}
@@ -376,14 +508,14 @@ def validate_set(root: Path) -> tuple[list[str], list[str]]:
             errors.append(f"parts[{i}] 必须是对象")
             continue
         pid = part.get("partId")
-        if not isinstance(pid, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", pid):
+        if not isinstance(pid, str) or not ID_RE.fullmatch(pid):
             errors.append(f"parts[{i}].partId 非法：{pid!r}")
             continue
-        if pid in part_ids:
-            errors.append(f"partId 重复：{pid}")
-        part_ids.add(pid)
-        if not isinstance(part.get("sn"), str):
-            errors.append(f"{pid}.sn 必须是字符串")
+        if pid.lower() in part_ids:
+            errors.append(f"partId 重复（不区分大小写）：{pid}")
+        part_ids.add(pid.lower())
+        if not isinstance(part.get("sn"), str) or not part["sn"].strip():
+            errors.append(f"{pid}.sn 必须是非空字符串")
         if part.get("label") not in LABELS:
             errors.append(f"{pid}.label 必须是 ok/ng/unknown：{part.get('label')!r}")
         shot_labels = part.get("shotLabels", {})
@@ -411,6 +543,15 @@ def validate_set(root: Path) -> tuple[list[str], list[str]]:
                 errors.append(f"parts/{pid}/{names[0]} 未在 shots 中声明")
             elif len(names) > 1:
                 errors.append(f"parts/{pid} 中 {key[0]}_{key[1]}_v{key[2]} 存在多个文件：{sorted(names)}")
+            elif image_size is not None:
+                try:
+                    actual = read_image_size(part_dir / names[0])
+                except ConvertError as e:
+                    errors.append(f"parts/{pid}/{names[0]} {e}")
+                    continue
+                if list(actual) != image_size:
+                    errors.append(f"parts/{pid}/{names[0]} 尺寸 {actual[0]}×{actual[1]} "
+                                  f"与 imageSize {image_size[0]}×{image_size[1]} 不一致")
         for sid, cid, views in shots:
             for v in views:
                 if (sid, cid, v) not in present:
@@ -419,7 +560,7 @@ def validate_set(root: Path) -> tuple[list[str], list[str]]:
     parts_root = root / "parts"
     if parts_root.is_dir():
         for d in parts_root.iterdir():
-            if d.name not in part_ids:
+            if d.name.lower() not in part_ids:
                 errors.append(f"parts/{d.name} 未在 parts 中声明")
     return errors, missing
 
@@ -453,6 +594,9 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--id", dest="set_id")
         p.add_argument("--name")
         p.add_argument("--force", action="store_true", help="允许覆盖已存在的样本集输出目录")
+        p.add_argument("--mm-per-px", dest="mm_per_px", help="全局像素当量（mm/px），写入 mmPerPx")
+        p.add_argument("--shot-mm-per-px", dest="shot_mm_per_px",
+                       help="逐拍照点像素当量，覆盖全局，如 S001=0.085,S002=0.09（shotId 为生成后的编号）")
     v = sub.add_parser("validate", help="按契约校验样本集目录")
     v.add_argument("root", type=Path)
     v.add_argument("--strict", action="store_true", help="缺图也视为失败（退出码 2）")
@@ -461,7 +605,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "validate":
             return run_validate(args.root, args.strict)
-        convert(args.command, args.source, args.output, args.shots, args.set_id, args.name, args.force)
+        convert(args.command, args.source, args.output, args.shots, args.set_id, args.name, args.force,
+                args.mm_per_px, args.shot_mm_per_px)
         return run_validate(args.output, False)
     except ConvertError as e:
         print(f"[错误] {e}", file=sys.stderr)

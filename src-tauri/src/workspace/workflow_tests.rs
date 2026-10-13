@@ -8,7 +8,7 @@ fn representative_calibration_reuse_requires_matching_environment_and_retains_so
     image.camera_tag = json!({"id":"device1","session":2});
     image.calib_tag = json!({"path":"device1-view1","value":{"data":{"mmPerPx":0.1}}});
     let check = CalibrationCheck { verification_id:"verification-a".into(), source_k:7, source_image_id:"capture-a-v1".into(),
-        reference_mm:10.0, measured_mm:10.05, error_mm:0.05, passed:true,
+        basis: workflow::CalibrationBasis::Manual { reference_mm:10.0, measured_mm:10.05, error_mm:0.05 }, passed:true,
         camera_tag:image.camera_tag.clone(), calib_tag:image.calib_tag.clone(), mm_per_px:Some(0.1) };
     assert!(workflow::reusable_calibration(&check, &image.camera_tag, &image.calib_tag, Some(0.1), &image));
     assert!(!workflow::reusable_calibration(&check, &json!({"id":"device2"}), &image.calib_tag, Some(0.1), &image));
@@ -33,8 +33,55 @@ fn pending_workspace() -> Workspace {
     let mut w = workspace();
     w.pending = Some(Box::new(Release { doc: w.doc.clone(), bundle_id: "frozen-release-17".into(),
         base_revision: w.base_revision.clone(), revision: w.revision, frames: w.frames.clone(),
-        overview: w.overview.clone(), validation: w.validation.clone().unwrap() }));
+        overview: w.overview.clone(), validation: w.validation.clone().unwrap(), validation_site: ValidationSite::Real }));
     w
+}
+
+#[test]
+fn only_failed_activation_can_be_abandoned_and_returns_to_draft() {
+    for (publish, abandonable) in [
+        (PublishState::Failed { message: "发布包缺失".into() }, true),
+        (PublishState::Uncertain { message: "写盘失败".into() }, false),
+        (PublishState::Waiting, false),
+    ] {
+        let mut w = pending_workspace();
+        w.publish = publish.clone();
+        let before = state_value(&w);
+        assert!(w.abandon_publish(w.revision + 1).is_err());
+        assert_eq!(w.abandon_publish(w.revision).is_ok(), abandonable, "{publish:?}");
+        if abandonable {
+            assert!(w.pending.is_none());
+            assert_eq!(w.publish, PublishState::Draft);
+            assert_eq!(w.base_revision, serde_json::from_value::<Workspace>(before).unwrap().base_revision);
+            assert!(w.expect(w.revision).is_ok());
+        } else {
+            assert_eq!(state_value(&w), before, "{publish:?}");
+        }
+    }
+}
+
+#[test]
+fn plc_gate_waiter_is_queued_ahead_of_later_contenders() {
+    let gate = Arc::new(tokio::sync::Mutex::new(()));
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let holder = gate.clone().blocking_lock_owned();
+    let waiter = {
+        let (gate, order) = (gate.clone(), order.clone());
+        std::thread::spawn(move || workflow::lock_plc_gate(&gate, std::time::Duration::from_secs(3), "测试").map(|_guard| order.lock().unwrap().push("waiter")))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    {
+        let (gate, order) = (gate.clone(), order.clone());
+        std::thread::spawn(move || {
+            let _guard = gate.blocking_lock();
+            order.lock().unwrap().push("later");
+            std::thread::sleep(std::time::Duration::from_millis(3500));
+        });
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    drop(holder);
+    assert!(waiter.join().unwrap().is_ok());
+    assert_eq!(order.lock().unwrap().first(), Some(&"waiter"));
 }
 
 #[test]
@@ -90,7 +137,7 @@ fn failed_activation_retains_the_same_frozen_release_and_requires_explicit_retry
     assert!(restored.retry_publish(restored.revision).is_err());
 }
 
-fn workspace() -> Workspace {
+pub(super) fn workspace() -> Workspace {
     let mut doc = crate::recipe::samples().remove(1);
     doc.shots.truncate(1);
     doc.shots[0].views.clear();

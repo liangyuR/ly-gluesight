@@ -13,7 +13,9 @@ export default function S7RecipePlanPanel() {
   const mounted = useRef(true);
   const serial = useRef(0);
   const copyPending = useRef(false);
+  const root = useRef<HTMLDivElement>(null);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; serial.current++; }; }, []);
+  useEffect(() => { if (window.location.hash.includes("panel=s7-plan")) root.current?.scrollIntoView?.({ block: "start" }); }, []);
 
   const readPlan = async (recipeId: string) => {
     const request = ++serial.current;
@@ -57,7 +59,7 @@ export default function S7RecipePlanPanel() {
     } finally { copyPending.current = false; if (mounted.current) setCopying(false); }
   };
 
-  return <div className="panel">
+  return <div className="panel" id="s7-plan" ref={root}>
     <div className="panel-toolbar"><h3 className="panel-title">配方握手计划 · 只读</h3><div className="row">
       {plan && <button className="btn" disabled={copying} onClick={() => void copy()}>{copied ? "已复制 JSON" : "复制计划 JSON"}</button>}
       <button className="btn" disabled={loading} onClick={() => void load()}>{recipes ? "刷新配方计划" : "读取配方计划"}</button>

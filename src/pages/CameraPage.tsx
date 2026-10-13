@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { Plus, Trash2 } from "lucide-react";
 import { CalibPanel, cameraApi, CameraConfigPanel, defaultCameraConfig, DryRunPanel, FeasibilityCalc, FramePreview, useRigStatus, type CameraConfig } from "../features/camera";
 import { OfflineManagedNotice, recipeApi, useCycle, useSiteStatus } from "../features/cycle";
@@ -9,13 +9,16 @@ import { Badge, Notice, Panel } from "../features/workspace/components";
 import StationCapture, { type StationView } from "../features/workspace/StationCapture";
 import { workspaceApi } from "../features/workspace/api";
 import type { CaptureNavigationState } from "../features/workspace/captureNavigation";
+import { ReturnButton } from "../features/workspace/returnNavigation";
+import { productionBusy } from "../features/cycle/phase";
+import { errorText } from "../lib/errors";
 
 type CameraView = "device" | "calibration";
 const sourceText = { mvs:"海康 MVS",sim:"合成图（离线）",sampleSet:"样本集（离线）" } as const;
 export default function CameraPage({view="device"}:{view?:CameraView}) {
-  const location=useLocation(),navigate=useNavigate();
+  const location=useLocation();
   const captureReturn=(location.state as CaptureNavigationState | null)?.captureReturn;
-  const navigationState:CaptureNavigationState={captureReturn};
+  const navigationState:CaptureNavigationState={...(location.state as CaptureNavigationState | null)};
   const {statuses,lastFrame}=useRigStatus();
   const {snapshot}=useCycle();
   const site=useSiteStatus();
@@ -50,7 +53,7 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
         }
       });
       return {found,error:""};
-    }).catch(e=>({found:{},error:`相机引用读取失败：${String(e)}。刷新后再移除相机。`})):Promise.resolve({found:{},error:""});
+    }).catch(e=>({found:{},error:`相机引用读取失败：${errorText(e)}。刷新后再移除相机。`})):Promise.resolve({found:{},error:""});
     try{
       const [next,refs]=await Promise.all([cameraApi.rigConfig(),referenceRequest]);
       if(!mounted.current||serial!==loadSerial.current)return null;
@@ -59,7 +62,7 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
       if(selected)setCam(Math.max(0,next.findIndex(c=>c.id===selected)));
       setReferences(refs.found);setReferencesReady(!refs.error);setError(refs.error);
       return next;
-    }catch(e){if(mounted.current&&serial===loadSerial.current)setError(String(e));return null;}
+    }catch(e){if(mounted.current&&serial===loadSerial.current)setError(errorText(e));return null;}
     finally{if(mounted.current&&serial===loadSerial.current)setLoading(false);}
   },[view,captureReturn?.cameraId]);
   // 切换相机只切换已加载的配置；刷新与标定页面切换才重新读配置。
@@ -75,7 +78,7 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
   const eligible=configs.map((c,i)=>({c,i})).filter(({c})=>view==="device"||c.acquisition==="triggered");
   const config=eligible.some(e=>e.i===cam)?configs[cam]:null;
   const status=statuses.find(s=>s.cam===cam)??null;
-  const busy=!!snapshot&&!["IDLE","FAULT"].includes(snapshot.phase);
+  const busy=productionBusy(snapshot);
   const referencedBy=config?references[config.id]??[]:[];
   const saved=()=>void reload();
   const add=async()=>{
@@ -88,7 +91,7 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
       const i=await cameraApi.add({...base,name:"相机 "+n,serial:""});
       if(!mounted.current)return;
       const next=await reload();if(next&&mounted.current)setCam(Math.min(i,next.length-1));
-    }catch(e){if(mounted.current)setError(String(e));}
+    }catch(e){if(mounted.current)setError(errorText(e));}
     finally{pending.current=false;if(mounted.current)setAction("");}
   };
   const remove=async()=>{
@@ -96,11 +99,11 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
     if(!window.confirm("从相机组移除「"+config.name+"」？"))return;
     pending.current=true;setAction("remove");setError("");
     try{await cameraApi.remove(cam);if(!mounted.current)return;const next=await reload();if(next&&mounted.current)setCam(Math.min(Math.max(0,cam-1),next.length-1));}
-    catch(e){if(mounted.current)setError(String(e));}
+    catch(e){if(mounted.current)setError(errorText(e));}
     finally{pending.current=false;if(mounted.current)setAction("");}
   };
   return <div className="cam-page">
-    {captureReturn&&<div className="dev-bar"><button className="btn primary" disabled={configSaving||!!action} onClick={()=>navigate({pathname:"/recipe/capture",search:captureReturn.search},{state:navigationState})}>{new URLSearchParams(captureReturn.search).get("purpose")==="validation"?"返回独立样本采集":"返回整圈采集"}</button><span className="muted">配置后保存并应用，再返回继续采集。</span></div>}
+    <ReturnButton disabled={configSaving||!!action} hint="配置后保存并应用，再返回继续。"/>
     <div className="cam-tabs">{eligible.map(({c,i})=><button key={c.id} aria-label={`${c.name} ${c.id}`} className={"tab"+(i===cam?" active":"")} disabled={!!action||configSaving} onClick={()=>setCam(i)}><i className={statuses.find(s=>s.cam===i)?.ready?"ok":""}/>{c.name}<span className="muted mono">{c.id}</span></button>)}
       {view==="device"&&<><button className="btn" onClick={()=>void reload()} disabled={loading||!!action||configSaving}>刷新配置</button><button className="btn" onClick={()=>void add()} disabled={busy||readOnly||loading||!!action||configSaving||!desktopAvailable()||configs.length>=8}><Plus size={15}/>{action==="add"?"添加中…":"添加相机"}</button>{configs.length>1&&<button className="btn" onClick={()=>void remove()} disabled={busy||readOnly||loading||!!action||configSaving||!desktopAvailable()||!referencesReady||!!referencedBy.length}><Trash2 size={15}/>{action==="remove"?"移除中…":"移除当前"}</button>}</>}
       {view!=="device"&&<Link className="btn" to="/camera" state={navigationState}>设备与采集</Link>}

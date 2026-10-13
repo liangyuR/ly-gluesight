@@ -163,10 +163,9 @@ async fn stop_during_inter_part_pause_does_not_start_another_part() {
 }
 
 #[tokio::test]
-async fn sample_set_line_fetches_each_trigger_by_part_shot_and_view_and_missing_image_is_a_missing_frame() {
+async fn sample_set_line_fetches_each_trigger_by_part_shot_and_view_and_claims_the_sample_by_part_sn() {
     use super::sample_set::{fixture::Fixture, SampleLabel, SampleSet};
     let fixture = Fixture::new(&[1, 2, 3]);
-    std::fs::remove_file(fixture.0.join("parts/p02/S002_cam1_v2.png")).unwrap();
     let set = Arc::new(SampleSet::load(&fixture.0).unwrap());
     let shots: Vec<String> = set.manifest().shots.iter().map(|s| s.shot_id.clone()).collect();
     let fetch = |part: &str, k: usize| match sample_payload(&set, part, &shots[k]) {
@@ -175,9 +174,10 @@ async fn sample_set_line_fetches_each_trigger_by_part_shot_and_view_and_missing_
     };
     let pixels = |images: &[Arc<crate::frame::FrameImage>]| images.iter().map(|i| i.pixels[0]).collect::<Vec<_>>();
     let offline = OfflineHost::default();
+    offline.enabled.store(true, Ordering::SeqCst);
     let mut bench = Bench::new("samples").await;
     for (requested, part, number, sn, expected) in [
-        (Some("p02"), "p02", 2, 501, (90, fault::MISSING_FRAME, Verdict::ErrInspect)),
+        (Some("p02"), "p02", 2, 501, (1, 0, Verdict::Ok)),
         (None, "p01", 1, 502, (1, 0, Verdict::Ok)),
     ] {
         assert_eq!(offline.pick_part(&set, requested).unwrap(), part);
@@ -192,7 +192,7 @@ async fn sample_set_line_fetches_each_trigger_by_part_shot_and_view_and_missing_
         let outcome = result.unwrap();
         assert_eq!((outcome.sn, outcome.result_code, outcome.fault_code), (sn, expected.0, expected.1), "{part}");
         for (k, images) in received.into_inner().unwrap() {
-            let wanted = (part != "p02" || k != 1).then(|| (1..=3).map(|v| Fixture::pixel(number, k as u8 + 1, v)).collect::<Vec<_>>());
+            let wanted = Some((1..=3).map(|v| Fixture::pixel(number, k as u8 + 1, v)).collect::<Vec<_>>());
             assert_eq!(images, wanted, "{part} k={k}");
         }
         let reference = offline.claim(sn, &format!("cycle-{sn}")).unwrap();
@@ -204,4 +204,32 @@ async fn sample_set_line_fetches_each_trigger_by_part_shot_and_view_and_missing_
         assert_eq!(pixels(&fetch("p01", k).unwrap()), (1..=3).map(|v| Fixture::pixel(1, k as u8 + 1, v)).collect::<Vec<_>>(), "乱序触发 k={k}");
     }
     bench.engine.disconnect().await;
+}
+
+#[test]
+fn real_part_with_the_same_part_sn_after_leaving_offline_gets_no_sample_reference() {
+    use super::sample_set::{fixture::Fixture, SampleSet};
+    let fixture = Fixture::new(&[1]);
+    let set = SampleSet::load(&fixture.0).unwrap();
+    let offline = OfflineHost::default();
+    offline.enabled.store(true, Ordering::SeqCst);
+    offline.begin_run(&set, "p01", 777, RunPurpose::Production);
+    assert!(offline.deactivate().is_none());
+    assert!(offline.claim(777, "real-cycle").is_none());
+    assert!(offline.status().recent.is_empty());
+    offline.begin_run(&set, "p01", 778, RunPurpose::Production);
+    assert!(offline.claim(778, "real-cycle").is_none(), "未启用离线时不认领样本件");
+}
+
+#[test]
+fn restoring_the_real_plc_reconnects_only_after_a_valid_config_was_applied_and_parks_on_failure() {
+    let failed = Err("配置无效".to_string());
+    for (applied, reconnect, valid, expected) in [
+        (&Ok(()), true, true, RestorePlan::Reconnect),
+        (&Ok(()), false, true, RestorePlan::StayDisconnected),
+        (&Ok(()), true, false, RestorePlan::StayDisconnected),
+        (&failed, true, true, RestorePlan::Park("配置无效".into())),
+    ] {
+        assert_eq!(restore_plan(applied, reconnect, valid), expected, "{applied:?} {reconnect} {valid}");
+    }
 }

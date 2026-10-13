@@ -244,6 +244,7 @@ fn csv_row(p: &PartSummary) -> String {
     let delivery = serde_json::to_value(p.delivery.state).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
     let cells = [
         format_ts(p.ts),
+        p.source.label().into(),
         p.sn.to_string(),
         esc(p.recipe_id.as_deref().unwrap_or("")),
         p.recipe_version.map(|v| v.to_string()).unwrap_or_default(),
@@ -274,7 +275,7 @@ pub async fn history_export(app: AppHandle, query: HistoryQuery) -> Result<Strin
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join(format!("检测记录_{}.csv", Local::now().format("%Y%m%d_%H%M%S")));
         let mut f = std::io::BufWriter::new(std::fs::File::create(&path).map_err(|e| e.to_string())?);
-        write!(f, "\u{feff}时间,SN,配方,版本,配方修订号,模式,结果,PLC 结果码,异常码,原因,收到帧,计划帧,收尾耗时(ms),复检自,cycleId,发布包 ID,PLC 交付状态,PLC 交付更新时间,PLC 交付说明\r\n").map_err(|e| e.to_string())?;
+        write!(f, "\u{feff}时间,来源,SN,配方,版本,配方修订号,模式,结果,PLC 结果码,异常码,原因,收到帧,计划帧,收尾耗时(ms),复检自,cycleId,发布包 ID,PLC 交付状态,PLC 交付更新时间,PLC 交付说明\r\n").map_err(|e| e.to_string())?;
         let store = app.state::<Store>();
         let mut q = HistoryQuery { limit: 500, offset: 0, ..query };
         loop {

@@ -22,7 +22,7 @@ function show() { return render(element()); }
 function comparison():Comparison{return {id:"compare-1",historyId:1,source:"rules",cycleId:"cycle-1",bundleId:"bundle-A",candidateId:"A",candidateRevision:7,candidateRecipe:ws.data!.layout,
   originalVerdict:"NG_GAP",judgement:{...detail.judgement,verdict:"OK",reason:"候选合格"},measurements:[],createdAt:1};}
 beforeEach(() => {
-  ws = workspaceState(); ws.data!.workspace.frames.forEach(f => f.saved = true);
+  ws = workspaceState(); ws.data!.workspace.frames.forEach(f => f.saved = true); ws.data!.progress.shots.forEach(s => s.state = "taught");
   detail = partDetail(); vi.mocked(useWorkspace).mockImplementation(() => ws);
   vi.mocked(historyApi.detail).mockResolvedValue(detail); vi.mocked(historyApi.recipe).mockResolvedValue(ws.data!.layout);
   vi.mocked(workspaceApi.recordImages).mockResolvedValue(structuredClone(raw));
@@ -45,6 +45,29 @@ describe("历史工件复测", () => {
     expect(screen.getByRole("button", { name: "按原发布包重现" })).toBeDisabled();
     expect(workspaceApi.compareOriginal).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "将此帧用于示教" })).toBeDisabled();
+  });
+
+  it("候选含不检拍照点 → 其余点已示教即可从原图复测整件",async()=>{
+    ws.data!.workspace.doc.shots[1].skip=true;ws.data!.workspace.frames[1].saved=false;ws.data!.progress.shots[1].state="skipped";
+    show();await screen.findByText(/原图完整/);
+    expect(screen.getByRole("button",{name:"从原图复测整件"})).toBeEnabled();
+  });
+
+  it("帧已保存但后端进度判为需重新采集 → 不能从原图复测整件",async()=>{
+    ws.data!.progress.shots[0].state="recapture";
+    show();await screen.findByText(/原图完整/);
+    expect(screen.getByRole("button",{name:"从原图复测整件"})).toBeDisabled();
+  });
+
+  it("打开切换确认框 → 不显示之前的旧错误；自动保存失败时不再提示正在自动保存",async()=>{
+    ws.data!.workspace.doc.id="B";ws.drafts=[ws.data!.workspace];ws.error="旧操作失败";ws.dirty=true;ws.saveState="failed";
+    vi.mocked(ws.setError).mockImplementation(message=>{ws.error=message;});
+    show();await screen.findByText(/原图完整/);
+    await userEvent.click(screen.getByRole("button",{name:"使用该配方候选"}));
+    const dialog=screen.getByRole("dialog");
+    expect(dialog).not.toHaveTextContent("旧操作失败");
+    expect(dialog).toHaveTextContent("自动保存失败");
+    expect(dialog).not.toHaveTextContent("正在自动保存");
   });
 
   it("候选修订改变后旧复测结果不能覆盖当前目标",async()=>{

@@ -32,10 +32,12 @@ describe("创建配方流程", () => {
             workspace: {
               doc, baseRevision: null, revision: 1, frames: [],
               overview: { background: null, positions: [], saved: false },
-              samples: [], sampleBank: [], validation: null, pending: null, publishError: null, updatedAt: 1,
+              samples: [], sampleBank: [], validation: null, pending: null, publish: { state: "draft" }, updatedAt: 1,
             },
             layout: { ...doc, revisionId: "candidate-1", segments: [], points: { x: [], y: [], seg: [], k: [] } },
             productionVersion: null, productionPlanVersion: null, planChanged: true, coverage: 0,
+            progress: { steps: [{ id: "capture", label: "整圈采集", optional: false, status: "notStarted", detail: "等待设备就绪后整圈采集并采用", blockers: [] }],
+              shots: [], next: { step: "capture", label: "开始整圈采集", target: { page: "capture" } } },
           };
           return structuredClone(created);
         }
@@ -76,10 +78,10 @@ describe("创建配方流程", () => {
     });
     expect(invoke).toHaveBeenCalledWith("workspace_get", { id: "SHELL-2026" });
     expect(screen.getByRole("combobox", { name: "当前配方" })).toHaveValue("SHELL-2026");
-    expect(screen.getByText("0 个拍照点")).toBeVisible();
+    expect(screen.getByText("等待设备就绪后整圈采集并采用")).toBeVisible();
     expect(localStorage.getItem("tujiao-last-workspace")).toBe("SHELL-2026");
 
-    await user.click(screen.getByRole("link", { name: "继续配置" }));
+    await user.click(screen.getByRole("link", { name: "开始整圈采集" }));
     expect(await screen.findByRole("heading", { name: "设备准备与整圈采集" })).toBeVisible();
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("recipe_capture_list", { recipeId: "SHELL-2026" }));
     expect(screen.getByRole("combobox", { name: "当前配方" })).toHaveValue("SHELL-2026");

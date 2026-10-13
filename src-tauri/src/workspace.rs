@@ -12,6 +12,7 @@ use crate::cycle::{self, CycleHost};
 use crate::frame::FrameImage;
 use crate::judge::{self, PointState, Verdict};
 use crate::recipe::{DetectParams, Recipe, RecipeDoc};
+use crate::release::ValidationSite;
 use crate::store::{self, Store};
 use crate::vision;
 
@@ -20,8 +21,11 @@ mod recorded;
 mod reproduce;
 mod workflow;
 mod centerline;
+pub mod progress;
 #[cfg(test)]
 mod workflow_tests;
+#[cfg(test)]
+mod progress_tests;
 pub use workflow::*;
 
 fn state_value(value: &impl Serialize) -> Value {
@@ -222,6 +226,7 @@ pub struct Release {
     pub frames: Vec<Teaching>,
     pub overview: Overview,
     pub validation: Validation,
+    pub validation_site: ValidationSite,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -236,7 +241,7 @@ pub struct Workspace {
     pub sample_bank: Vec<BankSample>,
     pub validation: Option<Validation>,
     pub pending: Option<Box<Release>>,
-    pub publish_error: Option<String>,
+    pub publish: PublishState,
     pub updated_at: i64,
     #[serde(default)]
     pub last_position: Option<workflow::Position>,
@@ -260,7 +265,7 @@ impl Workspace {
             sample_bank: Vec::new(),
             validation: None,
             pending: None,
-            publish_error: None,
+            publish: PublishState::Draft,
             updated_at: ly_plc::now_ms(),
             last_position: None,
             capture_id: None,
@@ -291,21 +296,45 @@ impl Workspace {
     }
 
     fn retry_publish(&mut self, revision: u64) -> Result<(), String> {
-        if self.revision != revision || self.pending.is_none() || self.publish_error.is_none() {
+        if self.revision != revision || self.pending.is_none() || !matches!(self.publish, PublishState::Failed { .. } | PublishState::Uncertain { .. }) {
             return Err("没有可以重试的发布版本".into());
         }
-        self.publish_error = None;
+        self.publish = PublishState::Waiting;
+        Ok(())
+    }
+
+    /// 生效失败时放弃冻结的待生效版本，候选回到草稿；生产版本不受影响。状态不确定时须先核实，不能放弃。
+    fn abandon_publish(&mut self, revision: u64) -> Result<(), String> {
+        if self.revision != revision || self.pending.is_none() || !matches!(self.publish, PublishState::Failed { .. }) {
+            return Err("只有生效失败的待生效版本可以放弃；生效状态不确定时请先核实发布状态".into());
+        }
+        self.pending = None;
+        self.publish = PublishState::Draft;
+        self.updated_at = ly_plc::now_ms();
         Ok(())
     }
 
     fn activation_uncertain(&self) -> bool {
-        self.publish_error.as_ref().is_some_and(|message| message.starts_with("生产生效状态未能保存"))
+        matches!(self.publish, PublishState::Uncertain { .. })
     }
 
     fn retain_failed_activation(&mut self, before: Self, error: &str) {
         *self = before;
-        self.publish_error = Some(format!("生产生效状态未能保存：{error}，请检查数据目录"));
+        self.publish = PublishState::Uncertain { message: format!("生产生效状态未能保存：{error}，请检查数据目录") };
     }
+}
+
+/// 候选的发布与生效状态。Waiting / Failed / Uncertain 时 pending 保存冻结的待生效版本。
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum PublishState {
+    #[default]
+    Draft,
+    Waiting,
+    Failed { message: String },
+    Uncertain { message: String },
+    /// 已生效；revision 是生效后候选的修订号，候选再改动后回到草稿。
+    Active { version: u32, revision: u64, warning: Option<String>, validation_site: ValidationSite },
 }
 
 #[derive(Serialize)]
@@ -319,6 +348,7 @@ pub struct WorkspaceView {
     /// 候选的拍照计划与生产配方不同（或还没发布过）：生效后 PLC 侧要同步新的计划版本
     pub plan_changed: bool,
     pub coverage: f32,
+    pub progress: progress::Progress,
 }
 
 pub struct WorkspaceHost {
@@ -409,7 +439,7 @@ impl WorkspaceHost {
                 });
             match loaded {
                 Ok(w) => { items.insert(w.doc.id.clone(), w); }
-                Err(error) => notes.push(format!("{} 未加载：{error}。文件已保留；旧格式不兼容，请重新建候选", file.display())),
+                Err(error) => notes.push(format!("{} 未加载：{error}。{}", file.display(), unloaded_hint(&entry.path()))),
             }
         }
         Ok(Self {
@@ -470,6 +500,7 @@ fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
     let production = app.state::<CycleHost>().recipes.doc(&w.doc.id);
     let plan_changed = production.as_ref().is_none_or(|p| p.plan_version == 0 || !p.same_plan(&w.doc));
     let coverage = coverage(&layout);
+    let progress = progress::compute(&w, production_version, &devices(app, &w, &layout));
     Ok(WorkspaceView {
         workspace: w,
         layout,
@@ -477,6 +508,7 @@ fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
         production_plan_version: production.map(|p| p.plan_version),
         plan_changed,
         coverage,
+        progress,
     })
 }
 
@@ -504,6 +536,32 @@ fn environment(app: &AppHandle, recipe: &Recipe) -> Result<Value, String> {
     Ok(state_value(&values))
 }
 
+/// 当前设备的相机与标定标签（按冻结图的拍照点与视角）以及当前引擎，只读，不改候选记录。
+fn devices(app: &AppHandle, w: &Workspace, recipe: &Recipe) -> progress::Devices {
+    let settings = app.state::<CycleHost>().settings();
+    let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).map(|e| engine_state(&e));
+    let mut views = HashMap::new();
+    for (k, frame) in w.frames.iter().enumerate().take(recipe.shot_count()) {
+        for image in &frame.views {
+            if let Ok(current) = recipe.for_view(k, image.view).and_then(|r| tags(app, &r, k)) {
+                views.insert((k, image.view), current);
+            }
+        }
+    }
+    progress::Devices { views, engine }
+}
+
+/// 相机标签：设备参数；样本集相机另含样本集编号，换同名相机的另一套样本集也算设备变化。
+fn camera_state(config: &crate::camera::CameraConfig, sample_set: Option<&str>) -> Value {
+    let mut value = state_value(config);
+    if config.source == CameraSource::SampleSet {
+        if let Some(object) = value.as_object_mut() {
+            object.insert("sampleSet".into(), json!(sample_set));
+        }
+    }
+    value
+}
+
 /// 拍照点 k 的相机参数与实际标定值：冻结图像时记下，之后变了就要重新取样。
 fn tags(app: &AppHandle, recipe: &Recipe, k: usize) -> Result<(Value, Value), String> {
     let cycle = app.state::<CycleHost>();
@@ -515,8 +573,9 @@ fn tags(app: &AppHandle, recipe: &Recipe, k: usize) -> Result<(Value, Value), St
         .ok_or("相机不存在")?
         .config();
     let calib = vision::shot_calib_path(app, recipe, k)?;
+    let sample_set = crate::offline::sample_set(app).map(|set| set.manifest().id.clone());
     Ok((
-        state_value(&config),
+        camera_state(&config, sample_set.as_deref()),
         calibration_state(&calib)?,
     ))
 }
@@ -528,11 +587,15 @@ pub fn workspace_list(host: State<'_, WorkspaceHost>) -> Vec<Workspace> {
     out
 }
 
+fn unloaded_hint(dir: &Path) -> String {
+    format!("旧格式不兼容或文件损坏，文件已保留。请先移走候选目录 {}，再从当前生产版本重新建立候选；该目录含已发布归档，移走后需重新验证和发布才能生产", dir.display())
+}
+
 fn ensure_workspace_can_be_created(path: &Path) -> Result<(), String> {
     match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!("无法确认旧候选是否存在，拒绝覆盖：{error}")),
-        Ok(_) => Err("磁盘已有未加载的候选（旧格式不兼容或文件损坏），文件已保留。请先移走该候选目录，再从当前生产版本重新建立候选".into()),
+        Ok(_) => Err(format!("磁盘已有未加载的候选：{}", unloaded_hint(path.parent().unwrap_or(path)))),
     }
 }
 
@@ -552,30 +615,7 @@ pub fn workspace_get(app: AppHandle, id: String) -> Result<WorkspaceView, String
         host.save(&w)?;
         items.insert(id.clone(), w);
     }
-    let mut w = items[&id].clone();
-    if w.pending.is_none() && workflow::refresh_views(&app, &mut w)? {
-        host.save(&w)?;
-        items.insert(id, w.clone());
-    }
-    view(&app, w)
-}
-
-fn refresh_teaching(w: &mut Workspace, tags: &[Option<(Value, Value)>], engine: Option<&Value>) -> bool {
-    let mut changed = false;
-    for (k, frame) in w.frames.iter_mut().enumerate() {
-        if w.doc.shots.get(k).is_none_or(|s| s.skip) { continue; }
-        let image_stale = frame.image.as_ref().is_some_and(|image| {
-            tags.get(k).and_then(Option::as_ref).is_none_or(|(camera, calib)| &image.camera_tag != camera || &image.calib_tag != calib)
-        });
-        let engine_stale = engine.is_some_and(|engine| frame.trial.as_ref().is_some_and(|trial| &trial.engine_tag != engine));
-        if (image_stale || engine_stale) && (frame.saved || frame.trial.is_some()) {
-            frame.saved = false;
-            frame.trial = None;
-            changed = true;
-        }
-    }
-    if changed { w.changed(); }
-    changed
+    view(&app, items[&id].clone())
 }
 
 #[tauri::command]
@@ -1138,6 +1178,17 @@ fn history_sample_table(original: &Recipe, candidate: &Recipe, points: &store::P
     }).collect()
 }
 
+impl SampleResult {
+    /// 按候选判定结果对照人工期望：期望合格时 OK 与 OK_WITH_EXCURSION 都算符合，其余结论须完全一致。
+    pub fn judged(sample: &Sample, name: String, sn: u32, judgement: judge::Judgement) -> Self {
+        let qualified = |v| matches!(v, Verdict::Ok | Verdict::OkWithExcursion);
+        let actual = judgement.verdict;
+        let passed = if qualified(sample.expected) { qualified(actual) } else { sample.expected == actual };
+        Self { history_id: sample.history_id, sample_id: sample.sample_id.clone(), name, sn, expected: sample.expected,
+            actual: Some(actual), passed, reason: judgement.reason }
+    }
+}
+
 fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
     let r = w.doc.build()?;
     let initial_environment = environment(app, &r)?;
@@ -1194,17 +1245,7 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
                     else if workflow::selected_views(w, k).len() == 1 { crate::image_file::load(&dir.join(format!("k{k}.pgm"))) }
                     else { Err(format!("样本缺少拍照点 {} 图 {v}", k + 1)) }
                 })?;
-                let j = judge::judge(&r, &table);
-                return Ok(SampleResult {
-                    history_id: None,
-                    sample_id: Some(bank.id.clone()),
-                    name: bank.name.clone(),
-                    sn: 0,
-                    expected: sample.expected,
-                    actual: Some(j.verdict),
-                    passed: j.verdict == sample.expected,
-                    reason: j.reason,
-                });
+                return Ok(SampleResult::judged(sample, bank.name.clone(), 0, judge::judge(&r, &table)));
             }
             let history_id = sample.history_id.ok_or("样本来源未指定")?;
             let detail = store.detail(history_id)?;
@@ -1222,17 +1263,7 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
             }
             if w.frames.iter().flat_map(|f| &f.views).any(|i| i.history_id == Some(history_id)) { return Err("示教原图所属工件不能同时作为独立验证样本".into()); }
             let (table, _) = measure_images(app, w, r.shot_count(), detail.summary.sn, |k, v| history_image(app, &detail, k, v))?;
-            let j = judge::judge(&r, &table);
-            Ok(SampleResult {
-                history_id: sample.history_id,
-                sample_id: None,
-                name: format!("SN {}", detail.summary.sn),
-                sn: detail.summary.sn,
-                expected: sample.expected,
-                actual: Some(j.verdict),
-                passed: j.verdict == sample.expected,
-                reason: j.reason,
-            })
+            Ok(SampleResult::judged(sample, format!("SN {}", detail.summary.sn), detail.summary.sn, judge::judge(&r, &table)))
         })();
         results.push(result.unwrap_or_else(|e| {
             SampleResult {
@@ -1357,8 +1388,9 @@ pub fn workspace_publish(
         frames: w.frames.clone(),
         overview: w.overview.clone(),
         validation: validated.clone(),
+        validation_site: bundle.manifest.validation_site,
     }));
-    next.publish_error = None;
+    next.publish = PublishState::Waiting;
     host.save(&next)?;
     *w = next;
     let _ = app.state::<CycleHost>().tx.send(cycle::Input::Refresh);
@@ -1427,6 +1459,32 @@ pub fn published_bundle(app: &AppHandle, recipe: &Recipe) -> Result<crate::relea
     Ok(bundle)
 }
 
+/// 只核对生产版本对应发布包的清单与身份，不读取资源内容。
+pub fn published_manifest(app: &AppHandle, recipe: &Recipe) -> Result<crate::release::ReleaseManifest, String> {
+    let dir = app.state::<WorkspaceHost>().dir(&recipe.id).join("published");
+    let published = archived_release(&dir, &recipe.id, recipe.version)?;
+    let manifest = crate::release::peek(&releases_root(app)?, &recipe.id, &published.bundle_id)?;
+    if manifest.recipe_revision != recipe.revision_id || manifest.recipe_version != recipe.version {
+        return Err("生产快照、配方与发布包身份不一致".into());
+    }
+    Ok(manifest)
+}
+
+pub struct DraftSummary {
+    pub id: String,
+    pub name: String,
+    pub version: u32,
+    pub product_code: u16,
+    pub shot_count: usize,
+}
+
+pub fn draft_summaries(app: &AppHandle) -> Vec<DraftSummary> {
+    let Some(host) = app.try_state::<WorkspaceHost>() else { return Vec::new() };
+    let items = host.items.lock().unwrap();
+    items.values().map(|w| DraftSummary { id: w.doc.id.clone(), name: w.doc.name.clone(), version: w.doc.version,
+        product_code: w.doc.product_code, shot_count: w.doc.shots.len() }).collect()
+}
+
 fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeDoc, teaching: &[Teaching]) -> Result<crate::release::ReleaseBundle, String> {
     let recipe = doc.build()?;
     let settings = app.state::<CycleHost>().settings();
@@ -1454,6 +1512,7 @@ fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeDoc, teachin
     }
     crate::release::publish(&releases_root(app)?, crate::release::PublishInput { recipe: doc.clone(),
         versions: crate::release::Versions { engine: engine.identity.clone(), graph: crate::production::GRAPH_VERSION.into() },
+        validation_site: if crate::offline::enabled(app) { crate::release::ValidationSite::Offline } else { crate::release::ValidationSite::Real },
         graph: crate::release::ResourceSource::Bytes(serde_json::to_vec(&crate::production::graphs(&recipe)?).map_err(|e| e.to_string())?), shots })
 }
 
@@ -1464,7 +1523,7 @@ pub fn apply_pending(app: &AppHandle) -> bool {
     let mut items = host.items.lock().unwrap();
     let ids: Vec<_> = items
         .iter()
-        .filter(|(_, w)| w.pending.is_some() && w.publish_error.is_none())
+        .filter(|(_, w)| w.pending.is_some() && w.publish == PublishState::Waiting)
         .map(|(id, _)| id.clone())
         .collect();
     let mut changed = false;
@@ -1482,8 +1541,8 @@ pub fn apply_pending(app: &AppHandle) -> bool {
                 let next_version = app.state::<CycleHost>().recipes.next_version(&saved.id);
                 w.doc.version = next_version.as_ref().copied().unwrap_or(saved.version);
                 w.validation = None;
-                w.publish_error = next_version.err();
                 w.revision += 1;
+                w.publish = PublishState::Active { version: saved.version, revision: w.revision, warning: next_version.err(), validation_site: release.validation_site };
                 changed = true;
                 cycle::log(
                     app,
@@ -1500,7 +1559,7 @@ pub fn apply_pending(app: &AppHandle) -> bool {
             }
             Err(e) => {
                 w.pending = Some(Box::new(release));
-                w.publish_error = Some(e.clone());
+                w.publish = PublishState::Failed { message: e.clone() };
                 cycle::log(app, "err", "发布配方", e);
             }
         }
@@ -1545,7 +1604,7 @@ pub struct RecordImages {
 fn recorded(app: &AppHandle, history_id: i64) -> Result<(PathBuf, Vec<RawFrame>), String> {
     let detail = app.state::<Store>().detail(history_id)?;
     let cycle_id = detail.summary.cycle_id.as_deref().ok_or("历史记录没有 cycleId，不能确定对应原图")?;
-    let root = app.state::<CycleHost>().recorder.root().to_path_buf();
+    let root = app.state::<CycleHost>().recorders.root(detail.summary.source).to_path_buf();
     let frames = recorded::frames(&root, cycle_id, &detail.shots, detail.summary.ts)?;
     Ok((root, frames))
 }
@@ -1555,7 +1614,7 @@ fn history_image(app: &AppHandle, detail: &store::PartDetail, k: usize, view: u8
     let shot = detail.shots.iter().find(|shot| shot.k == k).ok_or("历史拍照点不存在")?;
     let raw = shot.raw_files.iter().find(|raw| raw.view == view)
         .ok_or("所选拍照点视角的原图未保留")?;
-    recorded::load_verified(app.state::<CycleHost>().recorder.root(), cycle_id, shot, raw)
+    recorded::load_verified(app.state::<CycleHost>().recorders.root(detail.summary.source), cycle_id, shot, raw)
 }
 
 #[tauri::command]
@@ -2231,23 +2290,6 @@ mod tests {
     }
 
     #[test]
-    fn environment_changes_invalidate_only_affected_teaching_and_require_a_fresh_trial() {
-        let mut w = tricam_workspace();
-        let before = w.clone();
-        let mut tags = vec![Some(("camera".into(), "calib".into())); 4];
-        tags[1] = Some(("camera".into(), "new-calib".into()));
-        assert!(refresh_teaching(&mut w, &tags, Some(&json!("test-engine"))));
-        assert_eq!(w.revision, before.revision + 1);
-        assert!(!w.frames[1].saved && w.frames[1].trial.is_none());
-        assert_eq!(serde_json::to_value(&w.frames[1].image).unwrap(), serde_json::to_value(&before.frames[1].image).unwrap());
-        for k in [0, 2, 3] { assert_eq!(serde_json::to_value(&w.frames[k]).unwrap(), serde_json::to_value(&before.frames[k]).unwrap()); }
-        assert!(!refresh_teaching(&mut w, &tags, Some(&json!("test-engine"))));
-        assert!(refresh_teaching(&mut w, &tags, Some(&json!("updated-engine"))));
-        assert!(w.frames.iter().all(|f| !f.saved && f.trial.is_none()));
-        assert!(!refresh_teaching(&mut w, &tags, Some(&json!("updated-engine"))));
-    }
-
-    #[test]
     fn teach_rejects_replaced_image_parameters_geometry_and_failed_trial() {
         let original = taught();
         assert!(original.checked(&json!("geometry"), &json!("teach")).is_ok());
@@ -2291,6 +2333,7 @@ mod tests {
                 samples: vec![],
                 environment_tag: "test".into(),
             },
+            validation_site: ValidationSite::Real,
         }));
         w.doc.name = "changed after enqueue".into();
         w.changed();
@@ -2306,7 +2349,8 @@ mod tests {
     fn archive_fixture(doc: RecipeDoc) -> Release {
         Release { doc, bundle_id: "prior-directory".into(), base_revision: None, revision: 1,
             frames: vec![taught()], overview: Overview::default(),
-            validation: Validation { revision: 1, passed: true, checked_at: 1, checks: vec![], samples: vec![], environment_tag: Value::Null } }
+            validation: Validation { revision: 1, passed: true, checked_at: 1, checks: vec![], samples: vec![], environment_tag: Value::Null },
+            validation_site: ValidationSite::Real }
     }
 
     #[test]
@@ -2340,7 +2384,7 @@ mod tests {
         assert_eq!(archived_release(&root.0, &current.doc.id, 3).unwrap().doc, current.doc);
         let unloaded = root.0.join("workspace.json");
         std::fs::write(&unloaded, candidate.to_string()).unwrap();
-        assert!(ensure_workspace_can_be_created(&unloaded).unwrap_err().contains("文件已保留"));
+        assert!(ensure_workspace_can_be_created(&unloaded).unwrap_err().contains(&root.0.display().to_string()));
         assert!(ensure_workspace_can_be_created(&root.0.join("fresh.json")).is_ok());
     }
 

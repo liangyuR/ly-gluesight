@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
-import { Link, NavLink } from "react-router-dom";
+import { Link, NavLink, useLocation } from "react-router-dom";
 import { AlertTriangle, Camera, ChevronRight, Info, Minus, Plus, RotateCcw } from "lucide-react";
 import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import type { PointVis, Recipe } from "../cycle/types";
 import { shotSegment, visColor } from "../cycle/vis";
-import type { GrayImage, Teaching } from "./types";
-import { sameTeach, shotTeach, selectedViews } from "./teach";
+import type { GrayImage, StepId, StepStatus, Teaching } from "./types";
+import { sameTeach, shotTeach } from "./teach";
+import { errorText } from "../../lib/errors";
+import { shotStateText, stepStatusText } from "./progress";
 
 export function Badge({ children, tone = "info" }: { children: ReactNode; tone?: "info" | "ok" | "ng" | "warn" | "neutral" }) {
   return <span className={"wp-badge " + tone}>{children}</span>;
@@ -29,20 +31,41 @@ export function WorkspaceEmpty() {
   return <div className="wp-page">{error && <Notice title="无法加载候选配置" tone="warn">{error}</Notice>}<div className="wp-empty"><Camera size={32} /><h2>{desktopAvailable() ? "尚未选择配方" : "当前为浏览器查看模式"}</h2><p>{desktopAvailable() ? "在配方库选择或新建配方，再开始规划拍照点与示教中线。" : "请在桌面软件中连接实际数据。"}</p>{desktopAvailable() && <Link className="btn primary" to="/recipe">打开配方库</Link>}</div></div>;
 }
 export function WorkspaceBar() {
-  const { list, drafts, selectedId, select, data, doc, dirty, frameDirty, busy, previewError, error, notice, saveDoc, saveState, retrySave } = useWorkspace();
+  const { list, drafts, selectedId, select, data, doc, dirty, frameDirty, busy, previewError, error, notice, saveDoc, saveState, retrySave, setError } = useWorkspace();
+  const { pathname } = useLocation();
+  useEffect(() => () => setError(""), [pathname, setError]);
   const choices = [...list.map(r => ({ id:r.id, name:r.name })), ...drafts.filter(w => !list.some(r => r.id === w.doc.id)).map(w => ({ id:w.doc.id, name:w.doc.name }))];
-  return <><div className="wp-workbench-bar"><label className="wp-recipe-picker">当前配方<select className="input" value={selectedId ?? ""} disabled={busy || dirty || frameDirty} onChange={e => void select(e.target.value)}><option value="" disabled>选择配方</option>{choices.map(r => <option key={r.id} value={r.id}>{r.id} · {r.name}</option>)}</select></label>{data && <><Badge>候选 v{doc?.version}</Badge><Badge tone="neutral">生产 {data.productionVersion ? "v" + data.productionVersion : "未发布"}</Badge><span className="muted">修订 {data.workspace.revision}</span>{data.workspace.pending && <Badge tone="warn">v{data.workspace.pending.doc.version} 待工件结束后生效</Badge>}</>}<Badge tone={saveState === "failed" ? "warn" : "neutral"}>{saveState === "saving" ? "保存中" : saveState === "failed" ? "保存失败" : saveState === "pending" ? "等待保存" : "草稿已保存"}</Badge>{saveState === "failed" && <button className="btn small" onClick={retrySave}>重试保存</button>}<span className="spacer" /><Link className="btn" to="/recipe">配方库</Link></div>
+  const publish = data?.workspace.publish;
+  return <><div className="wp-workbench-bar"><label className="wp-recipe-picker">当前配方<select className="input" value={selectedId ?? ""} disabled={busy || dirty || frameDirty} onChange={e => void select(e.target.value)}><option value="" disabled>选择配方</option>{choices.map(r => <option key={r.id} value={r.id}>{r.id} · {r.name}</option>)}</select></label>{data && <><Badge>候选 v{doc?.version}</Badge><Badge tone="neutral">生产 {data.productionVersion ? "v" + data.productionVersion : "未发布"}</Badge><span className="muted">修订 {data.workspace.revision}</span>{publish?.state === "waiting" && <Badge tone="warn">v{data.workspace.pending?.doc.version} 待工件结束后生效</Badge>}</>}<Badge tone={saveState === "failed" ? "warn" : "neutral"}>{saveState === "saving" ? "保存中" : saveState === "failed" ? "保存失败" : saveState === "pending" ? "等待保存" : "草稿已保存"}</Badge>{saveState === "failed" && <button className="btn small" onClick={retrySave}>重试保存</button>}<span className="spacer" /><Link className="btn" to="/recipe">配方库</Link></div>
     {dirty && <Notice title="候选配置尚未保存" tone="warn"><span>保存后再执行示教、验证和发布。</span><button className="btn small primary" disabled={busy || !!previewError} onClick={() => void saveDoc()}>保存候选配置</button></Notice>}
-    {frameDirty && <Notice title="示教中线有未保存的修改" tone="warn">编辑进度正在自动保存；保存草稿不等于完成示教，修改后需要重新试测。</Notice>}
+    {frameDirty && <Notice title="示教参数有未保存的修改" tone="warn">编辑进度正在自动保存为草稿；保存草稿不等于完成示教，需“保存参数并试测”后再保存本帧示教。</Notice>}
     {previewError && <Notice title="候选参数无效" tone="warn">{previewError}</Notice>}
     {error && <Notice title="操作未完成" tone="warn">{error}</Notice>}
     {notice && <Notice title={notice} tone="ok" />}
-    {data?.workspace.pending && <Notice title="发布处理中，候选已冻结">等待当前工件结束后切换；发布失败可在验证与发布页重试同一版本。</Notice>}
-    {data?.workspace.publishError && <Notice title="待生效版本发布失败" tone="warn">{data.workspace.publishError}</Notice>}
+    {publish?.state === "waiting" && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效失败可在验证与发布页重试同一版本。</Notice>}
+    {publish?.state === "failed" && <Notice title="生效失败，可重试同一版本" tone="warn">{publish.message}</Notice>}
+    {publish?.state === "uncertain" && <Notice title="生效状态不确定，请先核实发布状态" tone="ng">{publish.message}</Notice>}
+    {publish?.state === "active" && publish.warning && <Notice title={`v${publish.version} 已生效，但候选版本号未能更新`} tone="warn">{publish.warning}</Notice>}
   </>;
 }
+const stepPages: [string, string, StepId[], boolean][] = [
+  ["/recipe/progress", "进度总览", [], false],
+  ["/recipe/capture", "整圈采集", ["capture"], false],
+  ["/recipe/geometry", "配方默认参数", ["defaults"], true],
+  ["/recipe/teach", "单帧示教", ["teach", "calibration"], false],
+  ["/recipe/overview", "工件总览", ["overview"], true],
+  ["/recipe/validation", "验证与发布", ["validation", "publish"], false],
+];
+/** 工作台步骤：与侧栏“配方工作台”条目同序同名，状态取后端进度。 */
 export function Steps() {
-  return <nav className="wp-steps" aria-label="配方配置步骤">{[["/recipe/progress","进度总览"],["/recipe/capture","整圈采集"],["/recipe/teach","单帧示教"],["/recipe/validation","验证与发布"]].map(([path,label],i) => <NavLink key={path} to={path} className={({isActive}) => isActive ? "active" : ""}><span>{i + 1}</span>{label}{i < 3 && <ChevronRight size={14} />}</NavLink>)}</nav>;
+  const { data } = useWorkspace();
+  const status = (ids: StepId[]) => {
+    const steps = data?.progress.steps.filter(s => ids.includes(s.id)) ?? [];
+    if (!steps.length) return null;
+    for (const key of ["blocked", "inProgress", "notStarted", "optional"] as StepStatus[]) if (steps.some(s => s.status === key)) return key;
+    return "done" as StepStatus;
+  };
+  return <nav className="wp-steps" aria-label="配方配置步骤">{stepPages.map(([path, label, ids, optional], i) => { const s = status(ids); return <NavLink key={path} to={path} end className={({isActive}) => isActive ? "active" : ""}><span>{i + 1}</span>{label}{optional && <small>（可选）</small>}{s && s !== "optional" && <small className={"wp-step-status " + s}>{stepStatusText[s]}</small>}{i < stepPages.length - 1 && <ChevronRight size={14} />}</NavLink>; })}</nav>;
 }
 
 export function useGrayImage(id: string | null, imageId: string | null, historyId?: number | null, k = 0, view?: number) {
@@ -53,7 +76,7 @@ export function useGrayImage(id: string | null, imageId: string | null, historyI
     setState({key,image:null,error:"",loading:!!imageId||!!historyId});
     if (!imageId && !historyId) return;
     const request = historyId ? workspaceApi.recordImage(historyId, k, view) : workspaceApi.image(id!, imageId!);
-    request.then(image => alive && setState({key,image,error:"",loading:false})).catch(e => alive && setState({key,image:null,error:String(e),loading:false}));
+    request.then(image => alive && setState({key,image,error:"",loading:false})).catch(e => alive && setState({key,image:null,error:errorText(e),loading:false}));
     return () => { alive = false; };
   }, [id, imageId, historyId, k, view]);
   return state.key===key?state:{image:null,error:"",loading:!!imageId||!!historyId};
@@ -155,11 +178,10 @@ export function FrameRail({ id, frames, selected, onSelect, disabled }: { id: st
   return <div className="wp-frame-list" aria-label="示教帧选择">{frames.map(frame => {
     const shot = data?.workspace.doc.shots[frame.k];
     const dirty = !!frameDrafts[frame.k] && !!shot && !sameTeach(frameDrafts[frame.k], shotTeach(shot));
-    const enabled = shot ? selectedViews(shot) : [];
-    const complete = enabled.filter(view => frame.viewStates?.find(v => v.view === view)?.saved ?? (shot?.view === view && frame.saved)).length;
-    const status = shot?.skip ? "不检" : !enabled.length ? "未选图" : complete === enabled.length ? "已完成" : complete > 0 ? `部分完成 ${complete}/${enabled.length}` : dirty ? "草稿待保存" : frame.saved ? "已保存" : frame.trial ? frame.trial.passed ? "试测通过" : "试测未通过" : shot && shot.path.length < 2 ? frame.image ? "待点中线" : "待取样" : frame.image ? "待试测" : "待取样";
+    const progress = data?.progress.shots[frame.k];
+    const status = dirty ? "草稿待保存" : !progress ? "未配置" : progress.state !== "skipped" && progress.total === 0 ? "未选图" : progress.total > 1 && progress.completed > 0 && progress.completed < progress.total ? `部分完成 ${progress.completed}/${progress.total}` : shotStateText[progress.state];
     return <button key={frame.k} className={"wp-frame-item " + (selected === frame.k ? "selected" : "")} aria-label={"选择帧 k" + (frame.k + 1)} aria-pressed={selected === frame.k} onClick={() => onSelect(frame.k)} disabled={disabled}>
-      <FrameThumbnail id={id} frame={frame} /><strong>k{frame.k + 1}{shot ? " · " + shot.id : ""}<small>{shot ? `选中 ${enabled.length} 幅图` : frame.image?.camera ?? "未取样"}</small></strong><span>{status}</span>
+      <FrameThumbnail id={id} frame={frame} /><strong>k{frame.k + 1}{shot ? " · " + shot.id : ""}<small>{progress ? `选中 ${progress.total} 幅图` : frame.image?.camera ?? "未取样"}</small></strong><span>{status}</span>
     </button>;
   })}</div>;
 }

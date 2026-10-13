@@ -9,7 +9,7 @@ use tokio::sync::Semaphore;
 use crate::cycle::{CycleHost, Input};
 use crate::frame::FrameImage;
 use crate::recipe::Recipe;
-use crate::release::ReleaseBundle;
+use crate::release::{ReleaseBundle, ValidationSite};
 use crate::vision::{self, Engine, ShotMeasurement, VisionHost};
 
 pub const GRAPH_VERSION: &str = "taught-path-2-multiview";
@@ -235,7 +235,7 @@ impl ProductionHost {
     }
 
     fn ensure(&self, app: &AppHandle, recipe: Arc<Recipe>, core: Option<String>) -> Result<Arc<Prepared>, String> {
-        let key = format!("{}:{}:{}", recipe.id, recipe.revision_id, core.as_deref().unwrap_or_default());
+        let key = warmup_key(&recipe, core.as_deref());
         if let Some(prepared) = self.begin(&key, Instant::now())? { return Ok(prepared); }
         let app = app.clone();
         let slot = self.slot.clone();
@@ -270,10 +270,67 @@ impl ProductionHost {
     }
 }
 
+fn warmup_key(recipe: &Recipe, core: Option<&str>) -> String {
+    format!("{}:{}:{}", recipe.id, recipe.revision_id, core.unwrap_or_default())
+}
+
+/// 生产预热的只读状态，查询不触发预热。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Warmup {
+    /// 尚未开始，或可重试的失败已到重试时间
+    Pending,
+    Preparing,
+    Ready,
+    /// 引擎排队超时，稍后自动重试
+    Retryable(String),
+    Failed(String),
+}
+
+impl ProductionHost {
+    fn warmup(&self, key: &str, now: Instant) -> Warmup {
+        match self.entries.lock().unwrap().get(key) {
+            None => Warmup::Pending,
+            Some(Entry::Preparing) => Warmup::Preparing,
+            Some(Entry::Ready(_)) => Warmup::Ready,
+            Some(Entry::Retryable { error, retry_at }) if now < *retry_at => Warmup::Retryable(error.clone()),
+            Some(Entry::Retryable { .. }) => Warmup::Pending,
+            Some(Entry::Failed(error)) => Warmup::Failed(error.clone()),
+        }
+    }
+
+    fn prepared(&self, key: &str) -> Option<Arc<Prepared>> {
+        match self.entries.lock().unwrap().get(key) { Some(Entry::Ready(prepared)) => Some(prepared.clone()), _ => None }
+    }
+}
+
+pub fn warmup(app: &AppHandle, recipe: &Recipe) -> Warmup {
+    if !crate::site::image_measurement(app) { return Warmup::Ready; }
+    let key = warmup_key(recipe, app.state::<CycleHost>().settings().lyflow_core.as_deref());
+    app.state::<ProductionHost>().warmup(&key, Instant::now())
+}
+
+/// 这一配方的发布资源与图像引擎正在预热（尚未就绪也未失败）。
+pub fn warming(app: &AppHandle, recipe: &Recipe) -> bool {
+    warmup(app, recipe) == Warmup::Preparing
+}
+
+pub const OFFLINE_VALIDATED: &str = "该版本在离线环境验证发布，需在真机重新验证并发布";
+
+/// 离线验证发布的版本只能在离线模式运行。
+pub fn site_admits(site: ValidationSite, offline: bool) -> Result<(), String> {
+    if site == ValidationSite::Offline && !offline { Err(OFFLINE_VALIDATED.into()) } else { Ok(()) }
+}
+
 pub fn ready(app: &AppHandle, recipe: &Recipe) -> Result<Option<Arc<Prepared>>, String> {
     if !crate::site::image_measurement(app) { return Ok(None); }
-    let settings = app.state::<CycleHost>().settings();
-    app.state::<ProductionHost>().ensure(app, Arc::new(recipe.clone()), settings.lyflow_core).map(Some)
+    let core = app.state::<CycleHost>().settings().lyflow_core;
+    let host = app.state::<ProductionHost>();
+    let site = match host.prepared(&warmup_key(recipe, core.as_deref())) {
+        Some(prepared) => prepared.bundle.manifest.validation_site,
+        None => crate::workspace::published_manifest(app, recipe)?.validation_site,
+    };
+    site_admits(site, crate::offline::enabled(app))?;
+    host.ensure(app, Arc::new(recipe.clone()), core).map(Some)
 }
 
 #[cfg(test)]

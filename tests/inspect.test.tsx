@@ -1,19 +1,20 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import InspectPage from "../src/pages/InspectPage";
 import { cycleApi, useCycle, useLayout } from "../src/features/cycle/api";
 import { workspaceApi } from "../src/features/workspace/api";
 import { plcApi } from "../src/features/plc/api";
-import { siteStatus, snapshot, summary, workspaceView } from "./fixtures";
+import { readiness, siteStatus, snapshot, summary, workspaceView } from "./fixtures";
 import { cycleMeasurement, cyclePart, cycleResult } from "./cycle-visual-fixtures";
 import { plcConfig } from "./plc-fixtures";
-import type { LogLine, Measured, Recipe, RecipeSummary, SiteStatus, Snapshot } from "../src/features/cycle/types";
+import type { LogLine, Measured, Readiness, Recipe, RecipeSummary, SiteStatus, Snapshot } from "../src/features/cycle/types";
 import type { PointValue } from "../src/features/plc/types";
 
 vi.mock("../src/features/cycle/api", () => ({
   useCycle: vi.fn(), useRecipes: () => recipeList, useLayout: vi.fn(),
-  useSiteStatus: () => site, cycleApi: { selectRecipe: vi.fn(), reset: vi.fn(), offlineRun: vi.fn(), offlineStop: vi.fn() },
+  useSiteStatus: () => site, useReadiness: () => ({ readiness: report, refresh: async () => report }), cycleApi: { selectRecipe: vi.fn(), reset: vi.fn(), offlineRun: vi.fn(), offlineStop: vi.fn() },
 }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { runtimeOverview: vi.fn(), liveImage: vi.fn() } }));
 vi.mock("../src/features/plc/api", () => ({ plcApi: { getConfig: vi.fn() }, usePlcValues: () => values,
@@ -22,11 +23,13 @@ vi.mock("../src/features/plc/api", () => ({ plcApi: { getConfig: vi.fn() }, useP
 let state: Snapshot, layout: Recipe | null, logs: LogLine[], measured: Measured[];
 let recipeList: RecipeSummary[];
 let site: SiteStatus;
+let report: Readiness;
 let values: Record<string, PointValue>;
 beforeEach(() => {
   state = snapshot(); layout = workspaceView().layout; logs = []; measured = []; values = {};
   recipeList = [summary(), summary(workspaceView("B"))];
   site = siteStatus();
+  report = readiness();
   vi.mocked(useCycle).mockImplementation(() => ({ snapshot: state, logs, measured }));
   vi.mocked(useLayout).mockImplementation(() => layout);
   vi.mocked(cycleApi.selectRecipe).mockReset().mockResolvedValue(undefined);
@@ -65,6 +68,24 @@ describe("在线检测离线产线控件", () => {
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "离线配方" }), "B");
     await userEvent.click(screen.getByRole("button", { name: "运行一件" }));
     expect(cycleApi.offlineRun).toHaveBeenCalledWith("B", "normal", false, null);
+  });
+});
+
+describe("在线检测开工检查清单", () => {
+  it("非可开工 → 清单列出阻塞项原因与去处", () => {
+    const ok = readiness().items;
+    report = readiness({ ready: false, items: ok.map(i => i.key === "recipe" ? { ...i, state: "blocked", detail: "没有可开工配方（A：未示教）", target: "workspace" } : i) });
+    render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    const list = within(screen.getByRole("region", { name: "开工检查清单" }));
+    expect(list.getByText("没有可开工配方（A：未示教）")).toBeVisible();
+    expect(list.getByRole("link", { name: "去配方工作台" })).toHaveAttribute("href", "/recipe");
+  });
+
+  it("在制件期间 → 不显示开工清单", () => {
+    state = { ...state, phase: "ACQUIRE" };
+    report = readiness({ ready: false, items: readiness().items.map(i => i.key === "audit" ? { ...i, state: "blocked", detail: "持久追溯故障" } : i) });
+    render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    expect(screen.queryByRole("region", { name: "开工检查清单" })).not.toBeInTheDocument();
   });
 });
 

@@ -33,7 +33,7 @@ it("异常轮保留数量和原因，不能采用",async()=>{
 });
 it("示教采集轮次不允许同时作为独立验证样本",async()=>{
  ws.data!.workspace.captureId="r1";vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show("/recipe/capture?purpose=validation");
- const button=await screen.findByRole("button",{name:"保存为独立正常验证样本"});
+ const button=await screen.findByRole("button",{name:"保存为独立验证样本"});
  await userEvent.click(screen.getByRole("checkbox",{name:"已确认本轮样本与示教轨迹、触发顺序及拍摄条件一致"}));
  expect(button).toBeDisabled();expect(screen.getByText("需要独立于示教的采集轮次")).toBeVisible();
  await userEvent.click(button);expect(workspaceApi.captureSample).not.toHaveBeenCalled();
@@ -45,4 +45,11 @@ it("工件进行中禁止采用完整采集轮次",async()=>{
  vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show();
  const button=await screen.findByRole("button",{name:"采用本轮图像"});
  expect(button).toBeDisabled();await userEvent.click(button);expect(workspaceApi.adoptCapture).not.toHaveBeenCalled();expect(workspaceApi.captureSample).not.toHaveBeenCalled();
+});
+
+it("PLC 未连接 → 开始接收禁用并给出 PLC 通讯入口",async()=>{
+ vi.mocked(plcApi.getStatus).mockResolvedValue({state:"disconnected",message:"PLC 未连接"} as Awaited<ReturnType<typeof plcApi.getStatus>>);show();
+ expect(await screen.findByText(/PLC 未连接：整圈采集依赖/)).toBeVisible();
+ expect(screen.getByRole("button",{name:"开始接收 / 整圈重采"})).toBeDisabled();
+ expect(screen.getByRole("link",{name:"前往 PLC 通讯"})).toHaveAttribute("href","/plc");
 });

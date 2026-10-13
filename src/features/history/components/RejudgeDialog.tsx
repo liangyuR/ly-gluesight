@@ -5,6 +5,7 @@ import type { Verdict } from "../../cycle/types";
 import { historyApi } from "../api";
 import { formatTime, verdictClass, verdictGroups, verdictLabel } from "../meta";
 import type { HistoryQuery, KindOverride, Overrides, RejudgeResult } from "../types";
+import { errorText } from "../../../lib/errors";
 
 const order: Verdict[] = verdictGroups.flatMap((g) => g.verdicts);
 const kindFields: [keyof KindOverride, string][] = [
@@ -55,7 +56,7 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
       const next=await historyApi.rejudge({ query, ids: [], useCurrentRecipe: useCurrent, overrides });
       if(valid())setResult(next);
     } catch (e) {
-      if(valid())setError(String(e));
+      if(valid())setError(errorText(e));
     } finally {
       pending.current=false;if(current.current.alive)setRunning(false);
     }

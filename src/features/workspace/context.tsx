@@ -1,3 +1,4 @@
+import { errorText } from "../../lib/errors";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { cameraApi, type CameraConfig } from "../camera";
 import { recipeApi } from "../cycle/api";
@@ -105,7 +106,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         try { localStorage.setItem("tujiao-last-workspace", id); } catch { /* view preference only */ }
         return next;
       }
-    } catch (e) { if (serial === requestSerial.current) setError(String(e)); }
+    } catch (e) { if (serial === requestSerial.current) setError(errorText(e)); }
     return null;
   }, [accept]);
 
@@ -119,9 +120,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       try { preferred = localStorage.getItem("tujiao-last-workspace"); } catch { /* view preference only */ }
       const ids = [...records.recipes.map(r => r.id), ...drafts.map(w => w.doc.id)];
       if (alive && !selected.current && ids.length) await select(preferred && ids.includes(preferred) ? preferred : ids[0]);
-    }).catch(e => setError(String(e)));
+    }).catch(e => setError(errorText(e)));
     const refresh = (id: string) => {
-      void reloadList().catch(e => setError(String(e)));
+      void reloadList().catch(e => setError(errorText(e)));
       if (id && id === selected.current) {
         pendingRefresh.current = id;
         setRefreshRevision(revision => revision + 1);
@@ -145,7 +146,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       if (next.workspace.doc.id !== id) throw new Error("候选响应与所选配方不一致，请重试选择");
       pendingRefresh.current = null;
       accept(next);
-    }).catch(e => { if (current()) setError(String(e)); });
+    }).catch(e => { if (current()) setError(errorText(e)); });
     return () => { alive = false; };
   }, [refreshRevision, selectedId, dirty, frameDirty, busy, accept]);
 
@@ -154,7 +155,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     let alive = true;
     const timer = setTimeout(() => recipeApi.preview(doc).then(r => {
       if (alive) { setPreview(r); setPreviewError(""); }
-    }).catch(e => { if (alive) setPreviewError(String(e)); }), 250);
+    }).catch(e => { if (alive) setPreviewError(errorText(e)); }), 250);
     return () => { alive = false; clearTimeout(timer); };
   }, [doc, data?.workspace.doc]);
 
@@ -171,11 +172,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         accept(next);
       }
       try { await reloadList(); }
-      catch (e) { if (current()) setError(`候选操作已完成，但配方列表刷新失败：${String(e)}`); }
+      catch (e) { if (current()) setError(`候选操作已完成，但配方列表刷新失败：${errorText(e)}`); }
       if (!current()) return null;
       setNotice(message);
       return next;
-    } catch (e) { if (current()) setError(String(e)); return null; }
+    } catch (e) { if (current()) setError(errorText(e)); return null; }
     finally { acting.current = false; setBusy(false); }
   }, [accept, reloadList]);
 
@@ -185,7 +186,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     void workspaceApi.progress(id,k,view).then(next => {
       if (selected.current !== id) return;
       setData(previous => previous?.workspace.doc.id === id ? {...previous,workspace:{...previous.workspace,lastPosition:next.workspace.lastPosition}} : previous);
-    }).catch(e => { if (selected.current === id) setError(String(e)); });
+    }).catch(e => { if (selected.current === id) setError(errorText(e)); });
   }, []);
 
   const saveDoc = useCallback((draft?: RecipeDoc) => {

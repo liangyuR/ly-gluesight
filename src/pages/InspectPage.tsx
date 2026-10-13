@@ -5,6 +5,9 @@ import { WorkpieceOverview } from "../features/workspace/OverviewPage";
 import Modal from "../features/plc/components/Modal";
 import { displayReason, triggerModeLabel, verdictLabel } from "../features/history";
 import { matchesPart } from "../features/cycle/identity";
+import { productionBusy } from "../features/cycle/phase";
+import ReadinessChecklist from "../features/cycle/components/ReadinessChecklist";
+import { errorText } from "../lib/errors";
 import {
   computeVis,
   currentFrame,
@@ -15,10 +18,13 @@ import {
   SignalLamps,
   ShotTiles,
   OfflineControls,
+  showChecklist,
   UnrolledCurve,
   useCycle,
   useLayout,
+  useReadiness,
   useRecipes,
+  useSiteStatus,
   type LogLine,
   type Measured,
   type Recipe,
@@ -39,6 +45,7 @@ function clock(ts: number) {
 export default function InspectPage() {
   const { snapshot, logs, measured } = useCycle();
   const recipes = useRecipes();
+  const site = useSiteStatus();
   const [view, setView] = useState<"part" | "frame">("part");
   const [frameSelection, setFrameSelection] = useState<{ scope: string; k: number } | null>(null);
   const [pointSelection, setPointSelection] = useState<{ scope: string; j: number } | null>(null);
@@ -64,6 +71,7 @@ export default function InspectPage() {
   const overview=usePublishedOverview(layout);
   const selectionScope = `${part?.cycleId ?? "idle"}:${part?.bundleId ?? ""}:${part?.recipeRevision ?? layout?.revisionId}:${layout?.id}:${layout?.shots.length}`;
   const operationScope = `${part?.cycleId ?? "idle"}:${snapshot?.since}:${snapshot?.fault ?? ""}`;
+  const { readiness, refresh: refreshReadiness } = useReadiness(`${phase}:${snapshot?.fault ?? ""}:${snapshot?.activeRecipeId ?? ""}:${snapshot?.productSource ?? ""}:${snapshot?.alarms.length ?? 0}`);
   const currentOperation = useRef({ phase, scope: operationScope });
   currentOperation.current = { phase, scope: operationScope };
 
@@ -121,7 +129,7 @@ export default function InspectPage() {
         setPendingRecipe(null); setSwitchError("");
       }
     } catch (e) {
-      if (mounted.current && request === switchRequest.current) setSwitchError(String(e));
+      if (mounted.current && request === switchRequest.current) setSwitchError(errorText(e));
     } finally {
       activeAction.current = null;
       if (mounted.current) setAction(null);
@@ -133,7 +141,7 @@ export default function InspectPage() {
     activeAction.current = "reset"; setAction("reset"); setResetError("");
     try { await cycleApi.reset(); }
     catch (error) {
-      if (mounted.current && currentOperation.current.phase === "FAULT" && currentOperation.current.scope === scope) setResetError(String(error));
+      if (mounted.current && currentOperation.current.phase === "FAULT" && currentOperation.current.scope === scope) setResetError(errorText(error));
     } finally {
       activeAction.current = null;
       if (mounted.current) setAction(null);
@@ -179,12 +187,15 @@ export default function InspectPage() {
       <div className="fly-bar">
         <SignalLamps />
         <span className="spacer" />
-        <OfflineControls />
+        <OfflineControls readiness={readiness} refresh={refreshReadiness} />
         {phase === "FAULT" && (
-          <button className="btn" onClick={resetFault} disabled={action !== null} aria-busy={action === "reset"}>
-            <RotateCcw size={15} />
-            {action === "reset" ? "复位中…" : "复位故障"}
-          </button>
+          <>
+            <span className="muted reset-note">{site?.mode === "offline" ? "离线：由离线产线自动复位" : "真机：由 PLC 发 faultReset 复位；PLC 已连接、心跳正常且设备就绪时也可点此复位"}</span>
+            <button className="btn" onClick={resetFault} disabled={action !== null} aria-busy={action === "reset"}>
+              <RotateCcw size={15} />
+              {action === "reset" ? "复位中…" : "复位故障"}
+            </button>
+          </>
         )}
       </div>
       {resetError && <div className="notice error" role="alert">{resetError}</div>}
@@ -198,6 +209,8 @@ export default function InspectPage() {
           {a}
         </div>
       ))}
+
+      {showChecklist(readiness, productionBusy(snapshot)) && <ReadinessChecklist readiness={readiness} />}
 
       <div className="fly-body">
         <div className="fly-main">

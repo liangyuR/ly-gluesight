@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Camera, Scale, ScanEye } from "lucide-react";
 import { computeVis, shotLabel, ShotTiles, UnrolledCurve, type Measured, type PartView, type Recipe } from "../features/cycle";
-import { displayReason, formatTime, historyApi, sampleLabelText, triggerModeLabel, verdictClass, verdictLabel, type PartDetail } from "../features/history";
+import { displayReason, formatTime, historyApi, sampleLabelText, sourceLabel, triggerModeLabel, verdictClass, verdictLabel, type PartDetail } from "../features/history";
 import PartTrace from "../features/history/components/PartTrace";
 import { subscribe } from "../features/plc";
 import { workspaceApi } from "../features/workspace/api";
@@ -10,7 +10,11 @@ import { useWorkspace } from "../features/workspace/context";
 import { Badge, GrayViewer, Notice, Panel, shotOverlay, useGrayImage } from "../features/workspace/components";
 import { WorkpieceOverview } from "../features/workspace/OverviewPage";
 import { usePublishedOverview } from "../features/workspace/RuntimeFrame";
-import type { Comparison, RecordImages } from "../features/workspace/types";
+import type { Comparison, RecordImages, WorkspaceView } from "../features/workspace/types";
+import Modal from "../features/plc/components/Modal";
+import { errorText } from "../lib/errors";
+
+const candidateTaught=(v:WorkspaceView)=>v.progress.shots.length===v.workspace.doc.shots.length&&v.progress.shots.every(s=>s.state==="taught"||s.state==="skipped");
 
 const comparisonLabel = { rules: "规则重判", raw: "候选原图复测", original: "原发布包重现" };
 export default function HistoryDetailPage() {
@@ -22,6 +26,7 @@ export default function HistoryDetailPage() {
   const selectedView=viewSelection?.k===selected?viewSelection.view:layout?.shots[selected]?.view??1;
   const [savedComparisons,setSavedComparisons]=useState<Comparison[]>([]);
   const [visual,setVisual]=useState<"shots"|"part">("shots");
+  const [switching,setSwitching]=useState(false);
   const pending=useRef(false),savedSerial=useRef(0);
   const scope=`${id??""}:${ws.data?.workspace.doc.id??""}:${ws.data?.workspace.revision??""}`;
   const current=useRef({scope,selected,selectedView,historyId:id,alive:true});
@@ -32,7 +37,7 @@ export default function HistoryDetailPage() {
   const image=useGrayImage(null,null,available?detail?.summary.id:null,selected,selectedView);
   useEffect(()=>{
     let alive=true;const serial=++savedSerial.current;setSavedComparisons([]);setComparison(null);
-    if(detail?.summary.recipeId)void workspaceApi.comparisons(detail.summary.recipeId,detail.summary.id).then(v=>alive&&serial===savedSerial.current&&setSavedComparisons(v)).catch(e=>alive&&serial===savedSerial.current&&setError(String(e)));
+    if(detail?.summary.recipeId)void workspaceApi.comparisons(detail.summary.recipeId,detail.summary.id).then(v=>alive&&serial===savedSerial.current&&setSavedComparisons(v)).catch(e=>alive&&serial===savedSerial.current&&setError(errorText(e)));
     return()=>{alive=false;};
   },[detail?.summary.id,ws.doc?.id,ws.data?.workspace.revision]);
 
@@ -40,9 +45,9 @@ export default function HistoryDetailPage() {
     let alive=true;setDetail(null);setLayout(null);setComparison(null);setRaw(null);setError("");setSelected(0);setViewSelection(null);
     void historyApi.detail(Number(id)).then(async d=>{
       if(!alive)return;setDetail(d);
-      void workspaceApi.recordImages(d.summary.id).then(v=>alive&&setRaw(v)).catch(e=>alive&&setRaw({historyId:d.summary.id,frames:[],complete:false,message:String(e)}));
+      void workspaceApi.recordImages(d.summary.id).then(v=>alive&&setRaw(v)).catch(e=>alive&&setRaw({historyId:d.summary.id,frames:[],complete:false,message:errorText(e)}));
       const r=await historyApi.recipe(d.summary.recipeRevision,d.summary.recipeId);if(alive)setLayout(r);
-    }).catch(e=>alive&&setError(String(e)));
+    }).catch(e=>alive&&setError(errorText(e)));
     return()=>{alive=false;};
   },[id]);
   const result=useMemo(()=>{
@@ -60,25 +65,25 @@ export default function HistoryDetailPage() {
 
   const runCompare=async(fromRaw:boolean)=>{
     if(pending.current||!detail||!ws.data||ws.busy||ws.dirty||ws.frameDirty||ws.data.workspace.doc.id!==layout?.id)return;
-    if(fromRaw?(!raw?.complete||!ws.data.workspace.frames.every(f=>f.saved)):(!detail.points?.st.length||!detail.points.st.every(st=>st<2)))return;
+    if(fromRaw?(!raw?.complete||!candidateTaught(ws.data)):(!detail.points?.st.length||!detail.points.st.every(st=>st<2)))return;
     pending.current=true;savedSerial.current++;setWorking(true);setError("");
     const valid=()=>current.current.alive&&current.current.scope===scope;
     try{const result=await workspaceApi.compare(ws.data.workspace.doc.id,ws.data.workspace.revision,detail.summary.id,fromRaw);if(valid()){setComparison(result);setSavedComparisons(v=>[result,...v.filter(c=>c.id!==result.id)]);}}
-    catch(e){if(valid())setError(String(e));}finally{pending.current=false;if(current.current.alive)setWorking(false);}
+    catch(e){if(valid())setError(errorText(e));}finally{pending.current=false;if(current.current.alive)setWorking(false);}
   };
   const runOriginal=async()=>{
     if(pending.current||!detail||!raw?.complete||!detail.summary.bundleId)return;
     pending.current=true;savedSerial.current++;setWorking(true);setError("");
     const valid=()=>current.current.alive&&current.current.historyId===id;
     try{const result=await workspaceApi.compareOriginal(detail.summary.id);if(valid()){setComparison(result);setSavedComparisons(v=>[result,...v.filter(c=>c.id!==result.id)]);}}
-    catch(error){if(valid())setError(String(error));}finally{pending.current=false;if(current.current.alive)setWorking(false);}
+    catch(error){if(valid())setError(errorText(error));}finally{pending.current=false;if(current.current.alive)setWorking(false);}
   };
   useEffect(()=>{
     let alive=true;
     const stop=subscribe<string>("history://updated",cycleId=>{
       if(!detail||cycleId!==detail.summary.cycleId)return;
-      void historyApi.detail(detail.summary.id).then(next=>alive&&setDetail(next)).catch(error=>alive&&setError(String(error)));
-      void workspaceApi.recordImages(detail.summary.id).then(next=>alive&&setRaw(next)).catch(error=>alive&&setError(String(error)));
+      void historyApi.detail(detail.summary.id).then(next=>alive&&setDetail(next)).catch(error=>alive&&setError(errorText(error)));
+      void workspaceApi.recordImages(detail.summary.id).then(next=>alive&&setRaw(next)).catch(error=>alive&&setError(errorText(error)));
     });
     return()=>{alive=false;stop();};
   },[detail?.summary.id,detail?.summary.cycleId]);
@@ -90,8 +95,9 @@ export default function HistoryDetailPage() {
       const next=await ws.act(()=>workspaceApi.historyCapture(ws.data!.workspace.doc.id,ws.data!.workspace.revision,detail.summary.id,selected),"历史原图已绑定到候选示教；原示教资料可在该帧恢复");
       if(next&&current.current.alive&&current.current.selected===selected&&
         (valid()||current.current.scope===`${id??""}:${next.workspace.doc.id}:${next.workspace.revision}`))navigate("/recipe/teach?frame="+selected);
-    }catch(e){if(valid())setError(String(e));}finally{pending.current=false;if(current.current.alive)setWorking(false);}
+    }catch(e){if(valid())setError(errorText(e));}finally{pending.current=false;if(current.current.alive)setWorking(false);}
   };
+  const confirmSwitch=async()=>{if(!layout||ws.dirty||ws.frameDirty)return;const next=await ws.select(layout.id);if(next&&current.current.alive)setSwitching(false);};
   if(!detail)return <div className={error?"notice error":"muted"}>{error||"加载中…"}</div>;
   const s=detail.summary,j=detail.judgement;
   const candidateReady=!!ws.data&&ws.data.workspace.doc.id===layout?.id&&!ws.dirty&&!ws.frameDirty;
@@ -99,14 +105,14 @@ export default function HistoryDetailPage() {
   const complete=!!detail.points?.st.length&&detail.points.st.every(st=>st<2);
   const imageLabel="原始 SN "+s.sn+" · k"+(selected+1)+" · 视角 "+selectedView;
   return <div className="stack hist-detail">
-    <div className="panel detail-head"><button className="icon-btn" onClick={()=>navigate("/history")} aria-label="返回历史列表"><ArrowLeft size={18}/></button><b className="mono">SN {s.sn}</b><span className="muted">{formatTime(s.ts)} · {s.recipeId??"无配方"} · v{s.recipeVersion??"—"} · #{s.recipeRevision?.slice(0,6)??"—"} · {triggerModeLabel(s.triggerMode)} · 帧 {s.framesReceived}/{s.framesExpected}</span><span className="spacer"/><span className={"vt big "+verdictClass(s.verdict)}>{verdictLabel[s.verdict]} · PLC {s.plcCode}{s.faultCode?" / "+s.faultCode:""}</span></div>
+    <div className="panel detail-head"><button className="icon-btn" onClick={()=>navigate("/history")} aria-label="返回历史列表"><ArrowLeft size={18}/></button><b className="mono">SN {s.sn}</b>{s.source!=="real"&&<span className="tag offline">{sourceLabel[s.source]}</span>}<span className="muted">{formatTime(s.ts)} · {s.recipeId??"无配方"} · v{s.recipeVersion??"—"} · #{s.recipeRevision?.slice(0,6)??"—"} · {triggerModeLabel(s.triggerMode)} · 帧 {s.framesReceived}/{s.framesExpected}</span><span className="spacer"/><span className={"vt big "+verdictClass(s.verdict)}>{verdictLabel[s.verdict]} · PLC {s.plcCode}{s.faultCode?" / "+s.faultCode:""}</span></div>
     {error&&<Notice title="操作未完成" tone="warn">{error}</Notice>}
     <Panel title="复测与候选对照" detail="原包重现使用本件冻结资源；候选复测使用当前示教；所有结果另存，原始判定保留">
       <div className="wp-actions"><Badge tone="neutral">原始生产 v{s.recipeVersion??"—"}</Badge><Badge>候选 {ws.data&&ws.data.workspace.doc.id===layout?.id?"v"+ws.data.workspace.doc.version+" · 修订 "+ws.data.workspace.revision:"尚未选择此配方"}</Badge><span className="spacer"/>
-        <button className="btn" disabled={working||ws.busy||!layout||(!ws.list.some(r=>r.id===layout.id)&&!ws.drafts.some(r=>r.doc.id===layout.id))} onClick={()=>layout&&void ws.select(layout.id)}>使用该配方候选</button>
+        <button className="btn" disabled={working||ws.busy||!layout||(!ws.list.some(r=>r.id===layout.id)&&!ws.drafts.some(r=>r.doc.id===layout.id))} onClick={()=>{ws.setError("");setSwitching(true);}}>使用该配方候选</button>
         <button className="btn" disabled={working||!raw?.complete||!s.bundleId} onClick={()=>void runOriginal()}><ScanEye size={15}/>按原发布包重现</button>
         <button className="btn" disabled={disabled||!complete} onClick={()=>void runCompare(false)}><Scale size={15}/>按候选规则重判</button>
-        <button className="btn primary" disabled={disabled||!raw?.complete||!ws.data?.workspace.frames.every(f=>f.saved)} onClick={()=>void runCompare(true)}><ScanEye size={15}/>从原图复测整件</button>
+        <button className="btn primary" disabled={disabled||!raw?.complete||!(ws.data&&candidateTaught(ws.data))} onClick={()=>void runCompare(true)}><ScanEye size={15}/>从原图复测整件</button>
       </div>
       {ws.dirty||ws.frameDirty?<p className="c-warn">先保存候选配置和示教中线，再执行对照。</p>:!candidateReady&&<p className="muted">选择此配方的候选后，可以调整规则并对照原始结论。</p>}
       {ws.error&&<p className="c-warn">{ws.error}</p>}<p className="muted">{raw?.message??"正在检查原图保存状态…"} · 对照结果单独保存，原始生产记录保留。</p>
@@ -129,7 +135,22 @@ export default function HistoryDetailPage() {
       <Panel title="原始测量曲线" className="curve-panel" detail="原始横向偏移、胶宽和原版公差，按拍照点分段">
         {layout&&result&&<UnrolledCurve layout={layout} measured={result.measured} vis={result.vis}/>}
       </Panel>
+      {switching&&layout&&<SwitchCandidate from={ws.data?.workspace.doc.id??null} to={layout.id} unsaved={ws.dirty||ws.frameDirty} saveFailed={ws.saveState==="failed"} busy={ws.busy} error={ws.error} onCancel={()=>setSwitching(false)} onConfirm={()=>void confirmSwitch()}/>}
       <PartTrace detail={detail} layout={layout} raw={raw} selected={selected} selectedView={selectedView} onSelect={(k,view)=>{setSelected(k);setViewSelection({k,view});}}/>
     </div>
   </div>;
+}
+
+function SwitchCandidate({from,to,unsaved,saveFailed,busy,error,onCancel,onConfirm}:{from:string|null;to:string;unsaved:boolean;saveFailed:boolean;busy:boolean;error:string;onCancel:()=>void;onConfirm:()=>void}){
+  const same=from===to;
+  return <Modal title="切换配方工作台的当前配方" onClose={onCancel} closeDisabled={busy} footer={<>
+    {error&&!same&&<span className="form-error" role="alert">{error}</span>}
+    <button className="btn" disabled={busy} onClick={onCancel}>取消</button>
+    <button className="btn primary" disabled={busy||unsaved||same} aria-busy={busy} onClick={onConfirm}>{busy?"切换中…":"切换到 "+to}</button>
+  </>}>
+    {same?<p>配方工作台当前已是 <b>{to}</b> 的候选，可以直接对照。</p>:<>
+      <p>配方工作台是全局的：确认后，工作台当前配方{from?<>从 <b>{from}</b> </>:""}切换为 <b>{to}</b>，示教、验证与发布等各页随之显示 <b>{to}</b> 的候选。{from&&<> <b>{from}</b> 已保存的内容不受影响。</>}</p>
+      {unsaved&&<p className="c-warn" role="alert"><b>{from}</b> 还有未保存的修改，{saveFailed?"自动保存失败；请回到配方工作台重试保存":"正在自动保存"}，保存完成前不能切换，以免丢失这些修改。</p>}
+    </>}
+  </Modal>;
 }
