@@ -113,10 +113,10 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
     <ReturnButton disabled={configSaving||!!action} hint="配置后保存并应用，再返回继续。"/>
     <div className="cam-tabs">{eligible.map(({c,i})=><button key={c.id} aria-label={`${c.name} ${c.id}`} className={"tab"+(i===cam?" active":"")} disabled={!!action||configSaving} onClick={()=>setCam(i)}><i className={statuses.find(s=>s.cam===i)?.ready?"ok":""}/>{c.name}<span className="muted mono">{c.id}</span></button>)}
       {view==="device"&&<><button className="btn" onClick={()=>void reload()} disabled={loading||!!action||configSaving}>刷新配置</button><button className="btn" onClick={()=>void add()} disabled={busy||readOnly||loading||!!action||configSaving||!desktopAvailable()||configs.length>=8}><Plus size={15}/>{action==="add"?"添加中…":"添加相机"}</button>{configs.length>1&&<button className="btn" onClick={()=>void remove()} disabled={busy||readOnly||loading||!!action||configSaving||!desktopAvailable()||!referencesReady||!!referencedBy.length}><Trash2 size={15}/>{action==="remove"?"移除中…":"移除当前"}</button>}</>}
-      {view!=="device"&&<Link className="btn" to="/camera" state={navigationState}>设备与采集</Link>}
+      {view!=="device"&&<Link className="btn" to="/camera" state={navigationState}>相机与采集</Link>}
     </div>
     <div className="dev-bar"><Badge tone={status?.ready?"ok":"warn"}>{status?.ready?"已连接":"未就绪"}</Badge>{status&&<Badge tone="neutral">{sourceText[status.source]} · {status.acquisition==="freeRun"?"连续采集":"触发采集"}</Badge>}{status?.device&&<span className="chip-static">{status.device.model} · {status.device.serial}</span>}<span className="chip-static">帧 {status?.frames??0} · {status?.fps?status.fps.toFixed(1)+" fps":"—"}</span>{!!status?.lostPackets&&<Badge tone="warn">丢包 {status.lostPackets}</Badge>}<span className="muted">{status?.message}</span></div>
-    {view==="calibration"&&<ol className="flyshot-guide" aria-label="飞拍工位标定步骤">
+    {view==="calibration"&&<ol className="flyshot-guide" aria-label="飞拍标定步骤">
       <li><strong>冻结标定样本</strong><span>把标定板放在胶路所在平面，取样或导入一张原图</span></li>
       <li><strong>工位标定</strong><span>识别棋盘格得到像素当量（mm/px），检测时据此把胶宽、偏移换算成毫米</span></li>
       <li><strong>飞拍可行性</strong><span>用当量、曝光、帧率和手填的速度、间距，核算会不会拖影、来不来得及拍</span></li>
@@ -133,7 +133,7 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
     <div className="col"><fieldset disabled={busy||!!action||configSaving||!desktopAvailable()} className="cam-action-area">
       {view==="device"&&<FramePreview key={config.id} cam={cam} status={status} lastFrame={lastFrame[cam]} config={config}/>}
       {view==="calibration"&&<>{config.viewCount===3&&<label className="field"><span>标定图像</span><select className="input" aria-label="标定图像" value={calibView} onChange={e=>{setSample(null);setCalibView(Number(e.target.value));}}>{[1,2,3].map(v=><option key={v} value={v}>图 {v}</option>)}</select></label>}<CalibPanel key={config.id+":"+calibView} cam={cam} view={calibView} isSim={config.source==="sim"&&sample?.metadata.source!=="import"} imageId={sample?.metadata.id} onMmPerPx={setCalibMm}/><FeasibilityCalc key={"feasibility:"+config.id} sources={feasibility} imageSize={sample?.image}/><DryRunPanel key={"dry-run:"+config.id}cam={cam} frameMs={status?.maxFps?1000/status.maxFps:null}/></>}
-    </fieldset>{view==="device"&&<Panel title="继续建站"><p className="muted">保存采集参数后，完成飞拍工位标定。</p><div className="wp-actions"><Link className="btn" to="/camera/calibration" state={navigationState}>飞拍工位标定</Link></div></Panel>}</div></>:<div style={{gridColumn:"1/-1"}}><Notice title={view==="device"?"尚未加载采集设备":"没有触发采集相机"} tone="warn">{view==="device"?"在桌面软件中添加或连接相机。":"在设备与采集页添加相机，采集方式选择触发采集。"}</Notice></div>}
+    </fieldset>{view==="device"&&<Panel title="继续建站"><p className="muted">保存采集参数后，完成飞拍标定。</p><div className="wp-actions"><Link className="btn" to="/camera/calibration" state={navigationState}>飞拍标定</Link></div></Panel>}</div></>:<div style={{gridColumn:"1/-1"}}><Notice title={view==="device"?"尚未加载采集设备":"没有触发采集相机"} tone="warn">{view==="device"?"在桌面软件中添加或连接相机。":"在相机与采集页添加相机，采集方式选择触发采集。"}</Notice></div>}
   </div>;
 }
 export function FlyshotCalibrationPage(){return <CameraPage view="calibration"/>;}

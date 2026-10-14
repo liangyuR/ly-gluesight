@@ -1,6 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import AppLayout from "./layout/AppLayout";
-import { navItems } from "./layout/nav";
+import { navItems, pageRoutes } from "./layout/nav";
 import HistoryDetailPage from "./pages/HistoryDetailPage";
 import { WorkspaceProvider } from "./features/workspace/context";
 
@@ -9,7 +9,7 @@ export default function App() {
     <Routes>
       <Route element={<WorkspaceProvider><AppLayout /></WorkspaceProvider>}>
         <Route index element={<Navigate to={navItems[0].path} replace />} />
-        {navItems.map(({ path, element: Page }) => (
+        {pageRoutes.map(({ path, element: Page }) => (
           <Route key={path} path={path} element={<Page />} />
         ))}
         <Route path="/history/:id" element={<HistoryDetailPage />} />

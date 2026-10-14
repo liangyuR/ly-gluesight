@@ -56,7 +56,7 @@ const stepPages: [string, string, StepId[], boolean][] = [
   ["/recipe/overview", "工件总览", ["overview"], true],
   ["/recipe/validation", "验证与发布", ["validation", "publish"], false],
 ];
-/** 工作台步骤：与侧栏“配方工作台”条目同序同名，状态取后端进度。 */
+/** 工作台步骤：侧栏只有“配方”入口，步骤间导航由此承担，状态取后端进度。 */
 export function Steps() {
   const { data } = useWorkspace();
   const status = (ids: StepId[]) => {

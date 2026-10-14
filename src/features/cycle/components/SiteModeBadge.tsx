@@ -7,7 +7,7 @@ export default function SiteModeBadge() {
   if (!status) return null;
   const text = siteModeText(status);
   return (
-    <Link to="/offline" className={`site-badge${status.mode === "offline" ? " offline" : ""}`} aria-label={`站点模式：${text}`} title="打开离线控制台">
+    <Link to="/offline" className={`site-badge${status.mode === "offline" ? " offline" : ""}`} aria-label={`站点模式：${text}`} title="打开离线模式">
       {text}
     </Link>
   );

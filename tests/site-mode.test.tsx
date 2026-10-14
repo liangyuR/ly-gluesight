@@ -33,7 +33,7 @@ beforeEach(() => {
 });
 
 describe("顶栏站点模式标识", () => {
-  it("site://status 依次推送真机、离线样本集、离线合成图 → 标识随之切换且指向离线控制台", async () => {
+  it("site://status 依次推送真机、离线样本集、离线合成图 → 标识随之切换且指向离线模式", async () => {
     site = siteStatus();
     render(<MemoryRouter initialEntries={["/guide"]}><Routes><Route element={<AppLayout />}><Route path="/guide" element={<div />} /></Route></Routes></MemoryRouter>);
     const header = within(screen.getByRole("banner"));
@@ -45,7 +45,7 @@ describe("顶栏站点模式标识", () => {
   });
 });
 
-describe("离线控制台工况", () => {
+describe("离线模式工况", () => {
   it.each([
     ["sampleSet", ["normal", "lostFrame", "countMismatch", "motionTimeout", "ackMismatch"]],
     ["synthetic", ["normal", "excursion", "gap", "lostFrame", "locateFail", "countMismatch", "motionTimeout", "ackMismatch", "random"]],
@@ -57,7 +57,7 @@ describe("离线控制台工况", () => {
   });
 });
 
-describe("离线控制台配方下拉", () => {
+describe("离线模式配方下拉", () => {
   it("样本集下有不可运行的配方 → 只有可运行配方可选并默认选中第一个可运行配方", async () => {
     site = siteStatus({ mode: "offline", source: "sampleSet", sampleSet: sampleSet() });
     report = readiness({ recipes: [recipeOption("A", false), recipeOption("B"), recipeOption("C")] });

@@ -1,13 +1,13 @@
 import { Outlet, useLocation } from "react-router-dom";
 import ErrorBoundary from "./ErrorBoundary";
 import Sidebar from "./Sidebar";
-import { navItems } from "./nav";
+import { matchRoute, pageRoutes } from "./nav";
 import { desktopAvailable } from "../lib/desktop";
 import { SiteModeBadge } from "../features/cycle";
 
 export default function AppLayout() {
   const { pathname } = useLocation();
-  const current = navItems.filter((item) => pathname === item.path || pathname.startsWith(item.path + "/")).sort((a,b) => b.path.length - a.path.length)[0];
+  const current = matchRoute(pageRoutes, pathname);
 
   return (
     <div className="app-shell">
