@@ -1,5 +1,4 @@
 export type CameraSource = "mvs" | "sim" | "sampleSet";
-export type Acquisition = "triggered" | "freeRun";
 
 export interface CameraConfig {
   /** 相机编号：配方用它引用相机，建相机时分配、之后不变 */
@@ -9,8 +8,6 @@ export interface CameraConfig {
   viewCount: number;
   compositeLayout?: {kind:"horizontal" | "vertical"} | {kind:"rects";rects:{x:number;y:number;width:number;height:number}[]} | null;
   serial: string;
-  acquisition: Acquisition;
-  fps: number;
   triggerSource: "Line0" | "Software";
   triggerActivation: "RisingEdge" | "FallingEdge";
   triggerDelayUs: number;
@@ -35,8 +32,9 @@ export interface CameraStatus {
   id: string;
   name: string;
   source: CameraSource;
-  acquisition: Acquisition;
   ready: boolean;
+  /** 已释放给海康 MVS 客户端，不自动重连 */
+  released: boolean;
   message: string;
   device: DeviceSummary | null;
   sdkVersion: string | null;

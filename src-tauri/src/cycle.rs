@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedReceiver, UnboundedSender};
 
 use crate::arming::ArmBudget;
-use crate::camera::{Acquisition, CameraRig, FRAME_QUEUE};
+use crate::camera::{CameraRig, FRAME_QUEUE};
 use crate::frame::Frame;
 use crate::history;
 use crate::handshake::Request;
@@ -647,16 +647,13 @@ pub fn real_parts(app: &AppHandle) -> bool {
     !crate::offline::enabled(app)
 }
 
-/// 配方用的相机此刻在相机组里的序号。相机不在相机组里、不是触发采集或视角不够时返回原因。
+/// 配方用的相机此刻在相机组里的序号。相机不在相机组里或视角不够时返回原因。
 pub fn usable_cams(app: &AppHandle, recipe: &Recipe) -> Result<Vec<u8>, String> {
     let host = host(app);
     let cams = host.camera.resolve(&recipe.cameras())?;
     crate::vision::recipe_source(app, recipe)?;
     for &c in &cams {
         let cfg = host.camera.slot(c as usize).ok_or("相机组改过了")?.config();
-        if cfg.acquisition == Acquisition::FreeRun {
-            return Err(format!("{}（{}）是连续采集，飞拍配方要用触发采集", cfg.name, cfg.id));
-        }
         for shot in recipe.shots.iter().filter(|s| s.camera == cfg.id) {
             if shot.enabled_views().iter().any(|view| *view > cfg.view_count) || shot.view > cfg.view_count {
                 return Err(format!("拍照点 {} 选择视角 {}，设备 {} 只配置了 {} 个视角", shot.id, shot.view, cfg.id, cfg.view_count));

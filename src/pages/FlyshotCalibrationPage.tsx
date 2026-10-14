@@ -25,12 +25,7 @@ export default function FlyshotCalibrationPage() {
   const [calibMm,setCalibMm]=useState<number|null>(null);
   useEffect(()=>setSample(null),[cam,configs[cam],calibView]);
   useEffect(()=>setCalibView(1),[cam]);
-  useEffect(()=>{
-    if(!configs.length)return;
-    const eligible=configs.findIndex(c=>c.acquisition==="triggered");
-    if(eligible>=0&&configs[cam]?.acquisition!=="triggered")setCam(eligible);
-  },[configs,cam,setCam]);
-  const config=configs[cam]?.acquisition==="triggered"?configs[cam]:null;
+  const config=configs[cam]??null;
   const status=statuses.find(s=>s.cam===cam)??null;
   const busy=productionBusy(snapshot);
   const sampleSet=offline&&site?.source==="sampleSet"?site.sampleSet:null;
@@ -50,9 +45,9 @@ export default function FlyshotCalibrationPage() {
       <li><strong>飞拍可行性</strong><span>用当量、曝光、帧率和手填的速度、间距，核算会不会拖影、来不来得及拍</span></li>
     </ol>
     {notice&&<div className="cam-notice">{notice}</div>}
-    <CameraList configs={configs} statuses={statuses} selected={cam} filter={c=>c.acquisition==="triggered"} onSelect={setCam} onRefresh={()=>void reload()} refreshing={loading}/>
+    <CameraList configs={configs} statuses={statuses} selected={cam} onSelect={setCam} onRefresh={()=>void reload()} refreshing={loading}/>
     {config&&state?<main className="cam-main">
-      <header className="cam-head"><strong>{config.name}</strong><span className="mono muted">{config.id}</span><Badge tone={state.tone==="ok"?"ok":"warn"}>{state.tone==="ok"?"已连接":state.tone==="warn"?"未绑定":"未连接"}</Badge><span className="muted cam-head-info">{state.tone==="warn"?<>到<Link to="/camera" state={navigationState}>相机与采集</Link>绑定设备</>:state.text}</span></header>
+      <header className="cam-head"><strong>{config.name}</strong><span className="mono muted">{config.id}</span><Badge tone={state.tone==="ok"?"ok":"warn"}>{state.label}</Badge><span className="muted cam-head-info">{state.label==="未绑定"?<>到<Link to="/camera" state={navigationState}>相机与采集</Link>绑定设备</>:state.text}</span></header>
       <div className="cam-body">
         <fieldset disabled={busy||!desktopAvailable()} className="cam-action-area">
           <StationCapture key={config.id+":"+calibView} cam={cam} view={calibView} sample={sample} onSample={setSample}/>
@@ -63,6 +58,6 @@ export default function FlyshotCalibrationPage() {
           <FeasibilityCalc key={"feasibility:"+config.id} sources={feasibility} imageSize={sample?.image}/>
         </fieldset>
       </div>
-    </main>:<main className="cam-main"><Notice title="没有触发采集相机" tone="warn">在<Link to="/camera" state={navigationState}>相机与采集</Link>页添加相机并绑定设备。</Notice></main>}
+    </main>:<main className="cam-main"><Notice title={loading?"正在读取相机配置":"尚未添加相机"} tone="warn">在<Link to="/camera" state={navigationState}>相机与采集</Link>页添加相机并绑定设备。</Notice></main>}
   </div>;
 }

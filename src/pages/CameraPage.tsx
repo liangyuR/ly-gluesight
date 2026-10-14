@@ -29,8 +29,6 @@ export default function CameraPage() {
   const form=useRef<CameraConfigHandle>(null);
   const mounted=useRef(true),pending=useRef(false);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
-  const unpinned=statuses.some(s=>s.device&&configs[s.cam]?.source==="mvs"&&!configs[s.cam]?.serial);
-  useEffect(()=>{if(unpinned)void reload();},[unpinned,reload]);
   const {guard,dialog}=useUnsavedGuard({dirty,save:()=>form.current?.save()??Promise.resolve(true),discard:()=>form.current?.discard()});
 
   const config=configs[cam]??null;
@@ -61,6 +59,14 @@ export default function CameraPage() {
     catch(e){if(mounted.current)setError(errorText(e));}
     finally{pending.current=false;if(mounted.current)setAction("");}
   };
+  const released=!!status?.released;
+  const handOver=async()=>{
+    if(!config||pending.current||configSaving)return;
+    pending.current=true;setAction(released?"reconnect":"release");setError("");
+    try{if(released)await cameraApi.reconnect(cam);else await cameraApi.release(cam);}
+    catch(e){if(mounted.current)setError(errorText(e));}
+    finally{pending.current=false;if(mounted.current)setAction("");}
+  };
   const state=config?cameraState(config,status):null;
   const notice=error?<Notice title="操作未完成" tone="warn">{error}</Notice>:busy?<Notice title="当前工件正在检测">相机配置与出图测试在工件结束后可操作。</Notice>:readOnly?<OfflineManagedNotice>相机组按离线来源临时生成，离线期间不能修改或增删相机。</OfflineManagedNotice>:null;
 
@@ -72,17 +78,18 @@ export default function CameraPage() {
     {config&&state?<main className="cam-main">
       <header className="cam-head">
         <strong>{config.name}</strong><span className="mono muted">{config.id}</span>
-        <Badge tone={state.tone==="ok"?"ok":"warn"}>{state.tone==="ok"?"已连接":state.tone==="warn"?"未绑定":"未连接"}</Badge>
-        <span className="muted cam-head-info">{status?.ready?[status.device&&`${status.device.model} · ${status.device.serial}${status.device.ip?" · "+status.device.ip:""}`,`${status.fps?status.fps.toFixed(1):"0.0"} fps`,`丢包 ${status.lostPackets}`].filter(Boolean).join(" · "):state.tone==="warn"?"在下方选择要绑定的设备":state.text}</span>
+        <Badge tone={state.tone==="ok"?"ok":"warn"}>{state.label}</Badge>
+        <span className="muted cam-head-info">{status?.ready?[status.device&&`${status.device.model} · ${status.device.serial}${status.device.ip?" · "+status.device.ip:""}`,`${status.fps?status.fps.toFixed(1):"0.0"} fps`,`丢包 ${status.lostPackets}`].filter(Boolean).join(" · "):released?"在海康 MVS 客户端调焦、调光圈，完成后关闭 MVS 再重新连接":state.label==="未绑定"?"在下方选择要绑定的设备":state.text}</span>
         <span className="spacer"/>
+        {!readOnly&&config.source==="mvs"&&!!config.serial&&<button className="btn" onClick={()=>void handOver()} disabled={!desktop||!!action||configSaving||(!released&&busy)} title={released?"收回相机并重新打开":"关闭相机，供海康 MVS 客户端连接调焦"}>{action==="release"?"释放中…":action==="reconnect"?"连接中…":released?"重新连接":"释放给 MVS"}</button>}
         {!readOnly&&<details className="cam-more"><summary className="icon-btn" aria-label="更多操作"><MoreHorizontal size={18}/></summary><div className="cam-more-menu"><button className="btn" onClick={()=>void remove()} disabled={locked||loading||configSaving||!!removeBlocked}><Trash2 size={15}/>{action==="remove"?"移除中…":"移除相机"}</button>{removeBlocked&&<small className="muted">{removeBlocked}</small>}</div></details>}
       </header>
       <div className="cam-body">
         <div className="cam-col">
-          <CameraConfigPanel ref={form} key={config.id+":"+config.source} cam={cam} initial={config} status={status} locked={locked} onSaved={()=>void reload()} onSavingChange={setConfigSaving} onDirtyChange={setDirty}/>
+          <CameraConfigPanel ref={form} key={config.id+":"+config.source} cam={cam} initial={config} status={status} locked={locked} saveBlocked={released?"已释放给 MVS，重新连接后再保存":""} onSaved={()=>void reload()} onSavingChange={setConfigSaving} onDirtyChange={setDirty}/>
           <Link className="cam-next" to="/camera/calibration" state={navigationState}>保存后前往飞拍标定<ChevronRight size={14}/></Link>
         </div>
-        <FramePreview key={config.id} cam={cam} status={status} lastFrame={lastFrame[cam]} config={config} blockedReason={busy?"工件检测中":!desktop?"需要桌面后端":config.source==="mvs"&&!config.serial?"未绑定设备":dirty?"先保存并应用再测试":""}/>
+        <FramePreview key={config.id} cam={cam} status={status} lastFrame={lastFrame[cam]} config={config} blockedReason={busy?"工件检测中":!desktop?"需要桌面后端":config.source==="mvs"&&!config.serial?"未绑定设备":released?"已释放给 MVS":dirty?"先保存并应用再测试":""}/>
       </div>
     </main>:<main className="cam-main"><div className="wp-empty"><Camera size={32}/><h2>{loading?"正在读取相机配置":"尚未添加相机"}</h2><p>{desktop?"添加相机后绑定具体设备，配置触发接线并测试出图。":"请在桌面软件中添加或连接相机。"}</p>{desktop&&!readOnly&&!loading&&<button className="btn primary" onClick={()=>void add()} disabled={locked}><Plus size={15}/>添加相机</button>}</div></main>}
     {dialog}

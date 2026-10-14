@@ -14,21 +14,21 @@ interface Props {
   initial: CameraConfig;
   status: CameraStatus | null;
   locked?: boolean;
+  saveBlocked?: string;
   onSaved?: (c: CameraConfig) => void;
   onSavingChange?: (saving:boolean) => void;
   onDirtyChange?: (dirty:boolean) => void;
 }
 
 const sourceText: Record<CameraSource, string> = { mvs: "海康 MVS", sim: "合成图（离线）", sampleSet: "样本集（离线）" };
-const normalize = (c: CameraConfig): CameraConfig => ({ ...c, acquisition: "triggered" });
 
 function Group({ title, open = true, children }: { title: string; open?: boolean; children: ReactNode }) {
   return <details className="cfg-group" open={open}><summary>{title}</summary><div className="cfg-grid">{children}</div></details>;
 }
 
-export default function CameraConfigPanel({ ref, cam, initial, status, locked, onSaved, onSavingChange, onDirtyChange }: Props) {
+export default function CameraConfigPanel({ ref, cam, initial, status, locked, saveBlocked, onSaved, onSavingChange, onDirtyChange }: Props) {
   const [baseline, setBaseline] = useState<CameraConfig>(initial);
-  const [config, setConfig] = useState<CameraConfig>(() => normalize(initial));
+  const [config, setConfig] = useState<CameraConfig>(initial);
   const [devices, setDevices] = useState<DeviceSummary[]>([]);
   const [deviceError, setDeviceError] = useState("");
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
@@ -52,14 +52,7 @@ export default function CameraConfigPanel({ ref, cam, initial, status, locked, o
     return()=>{deviceSerial.current++;};
   }, [config.source]);
 
-  // 序列号留空的相机连上后后台会固定序列号：页面每次重新取配置都跟上；用户在表单里改过还没保存就不动
-  const shownSerial = useRef(initial.serial);
-  useEffect(() => {
-    const prev = shownSerial.current;
-    shownSerial.current = initial.serial;
-    setBaseline(initial);
-    setConfig((c) => (c.serial === prev ? { ...c, serial: initial.serial } : c));
-  }, [initial]);
+  useEffect(() => { setBaseline(initial); }, [initial]);
 
   const dirty = JSON.stringify(config) !== JSON.stringify(baseline);
   useEffect(()=>{onDirtyChange?.(dirty);},[dirty,onDirtyChange]);
@@ -81,7 +74,7 @@ export default function CameraConfigPanel({ ref, cam, initial, status, locked, o
     ![config.triggerDelayUs,config.debouncerUs].every(v=>Number.isFinite(v)&&v>=0)?"触发延时与输入滤波需为非负有限数":"";
 
   const save = async () => {
-    if(pending.current||invalid)return false;
+    if(pending.current||invalid||saveBlocked)return false;
     pending.current=true;
     setSaving(true);
     onSavingChange?.(true);
@@ -91,7 +84,6 @@ export default function CameraConfigPanel({ ref, cam, initial, status, locked, o
       const warnings = await cameraApi.saveConfig(cam, next);
       if(!mounted.current||current.current.cam!==cam)return true;
       setNotice({ ok: warnings.length === 0, text: warnings.length ? `已应用，${warnings.length} 项参数相机未接受` : "已保存并应用" });
-      shownSerial.current = next.serial;
       setBaseline(next);
       onSaved?.(next);
       return true;
@@ -102,7 +94,7 @@ export default function CameraConfigPanel({ ref, cam, initial, status, locked, o
       pending.current=false;if(mounted.current&&current.current.cam===cam){setSaving(false);onSavingChange?.(false);}
     }
   };
-  const discard = () => {setNotice(null);setConfig(normalize(baseline));};
+  const discard = () => {setNotice(null);setConfig(baseline);};
   const saveRef=useRef(save);saveRef.current=save;
   const discardRef=useRef(discard);discardRef.current=discard;
   useImperativeHandle(ref,()=>({save:()=>saveRef.current(),discard:()=>discardRef.current()}),[]);
@@ -127,7 +119,6 @@ export default function CameraConfigPanel({ ref, cam, initial, status, locked, o
           {config.viewCount === 3 && <span className="hint-cell">每个拍照点可多选图 1／2／3 分别示教，三幅图共用一次设备触发。</span>}
           {config.source === "sampleSet" && <span className="hint-cell">图像来自离线模式所选样本集，相机与视角按样本集生成。</span>}
           {config.source === "sim" && <span className="hint-cell">合成图相机收到触发后约 180 ms 交付一帧，用于没有硬件时跑通节拍。</span>}
-          {initial.acquisition === "freeRun" && <span className="hint-cell c-warn">连续采集已停用，保存后改为触发采集。</span>}
         </Group>
         {mvs && <>
           <Group title="物理设备">
@@ -182,10 +173,10 @@ export default function CameraConfigPanel({ ref, cam, initial, status, locked, o
         </>}
       </fieldset>
       {!locked && <div className="cam-save-bar">
-        {invalid ? <span className="c-ng" role="alert">{invalid}</span> : dirty ? <span className="c-warn">● 有未保存修改</span> : notice ? <span className={notice.ok ? "c-ok" : "c-ng"}>{notice.text}</span> : <span className="muted">参数与相机一致</span>}
+        {invalid ? <span className="c-ng" role="alert">{invalid}</span> : saveBlocked && dirty ? <span className="c-warn">{saveBlocked}</span> : dirty ? <span className="c-warn">● 有未保存修改</span> : notice ? <span className={notice.ok ? "c-ok" : "c-ng"}>{notice.text}</span> : <span className="muted">参数与相机一致</span>}
         <span className="spacer" />
         <button className="btn" onClick={discard} disabled={saving||!dirty}>放弃</button>
-        <button className="btn primary" onClick={()=>void save()} disabled={saving||!dirty||!!invalid}>{saving ? "写入中…" : "保存并应用"}</button>
+        <button className="btn primary" onClick={()=>void save()} disabled={saving||!dirty||!!invalid||!!saveBlocked} title={saveBlocked||undefined}>{saving ? "写入中…" : "保存并应用"}</button>
       </div>}
       {warnings.length > 0 && <details className="cam-warnings"><summary>相机未接受 {warnings.length} 项参数</summary><ul>{warnings.map((w) => <li key={w}>{w}</li>)}</ul></details>}
     </section>
