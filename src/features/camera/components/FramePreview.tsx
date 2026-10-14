@@ -16,7 +16,7 @@ function ago(ms: number) {
 }
 
 export default function FramePreview({ cam, status, lastFrame, config, blockedReason }: { cam: number; status: CameraStatus | null; lastFrame: Frame | undefined; config: CameraConfig | null; blockedReason?: string }) {
-  const scope=JSON.stringify([cam,config?.id,config?.source,config?.acquisition,config?.serial,config?.triggerSource,config?.viewCount]);
+  const scope=JSON.stringify([cam,config?.id,config?.source,config?.serial,config?.triggerSource,config?.viewCount]);
   const [selectedView, setSelectedView] = useState({scope, view: 1});
   const view = selectedView.scope === scope && selectedView.view <= (config?.viewCount ?? 1) ? selectedView.view : 1;
   const { img, canvas } = usePreviewCanvas(cam, lastFrame?.frameCounter,250,scope,view);

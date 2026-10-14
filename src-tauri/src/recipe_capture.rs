@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use crate::camera::{Acquisition, CameraSource};
+use crate::camera::CameraSource;
 use crate::cycle::{CycleHost, Phase};
 use crate::frame::{CounterSource, Frame, FrameImage};
 
@@ -450,12 +450,11 @@ fn start_capture(app: AppHandle, recipe_id: String, camera_id: String, drain_tim
     let cycle = app.state::<CycleHost>();
     if recipe_id.trim().is_empty() { return Err("请先创建配方草稿".into()); }
     let Some(_gate) = crate::workspace::wait_idle_plc_gate(&cycle, "开始整圈采集")? else { return Err("工件正在检测，结束后再开始整圈采集".into()) };
-    if cycle.camera.dry_run_active() { return Err("相机正在空跑，先停止空跑".into()); }
     if !matches!(cycle.phase(), Phase::Idle | Phase::Fault) { return Err("节拍尚未回到空闲，稍后再试".into()); }
     let cam = cycle.camera.require(&camera_id)?;
     let slot = cycle.camera.slot(cam as usize).ok_or("设备不存在")?;
     let config = slot.config();
-    if !slot.is_ready() || config.acquisition != Acquisition::Triggered { return Err("采集要求已就绪的单个 device 与触发模式".into()); }
+    if !slot.is_ready() { return Err("采集要求已就绪的单个 device".into()); }
     if config.source == CameraSource::Mvs && config.trigger_source != "Line0" { return Err("真实示教采集必须使用 PLC Line0 硬触发".into()); }
     let (arm, ledger) = slot.routing_state()?;
     let source = ledger.as_ref().and_then(|l| l.source).or(arm.source);

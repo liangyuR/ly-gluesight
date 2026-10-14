@@ -8,7 +8,7 @@ use ly_plc::PlcConfig;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
-use crate::camera::{Acquisition, CameraConfig, CameraSource};
+use crate::camera::{CameraConfig, CameraSource};
 use crate::cycle::CycleHost;
 use crate::offline::sample_set::{Manifest, SampleSet, SampleSetSummary};
 use crate::offline::{OfflineHost, SampleRun};
@@ -148,7 +148,7 @@ fn sample_set_cameras(manifest: &Manifest) -> Result<Vec<CameraConfig>, String> 
         };
         Ok(CameraConfig {
             id: camera.id.clone(), name: format!("样本集 {}", camera.id), source: CameraSource::SampleSet, view_count,
-            acquisition: Acquisition::Triggered, trigger_source: "Software".into(), ..CameraConfig::default()
+            trigger_source: "Software".into(), ..CameraConfig::default()
         })
     }).collect()
 }
@@ -157,7 +157,7 @@ fn sample_set_cameras(manifest: &Manifest) -> Result<Vec<CameraConfig>, String> 
 fn synthetic_cameras(real: &[CameraConfig]) -> Vec<CameraConfig> {
     real.iter().map(|camera| CameraConfig {
         id: camera.id.clone(), name: camera.name.clone(), source: CameraSource::Sim, view_count: camera.view_count,
-        composite_layout: camera.composite_layout.clone(), acquisition: Acquisition::Triggered, trigger_source: "Software".into(),
+        composite_layout: camera.composite_layout.clone(), trigger_source: "Software".into(),
         ..CameraConfig::default()
     }).collect()
 }
