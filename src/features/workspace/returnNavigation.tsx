@@ -8,9 +8,10 @@ export function returnState<T extends object>(location: Pick<Location, "pathname
   return { ...state, returnTo: { pathname: location.pathname, search: location.search, label, state } } as ReturnNavigationState & Partial<T>;
 }
 
-export function ReturnButton({ disabled, hint }: { disabled?: boolean; hint?: string }) {
+export function ReturnButton({ disabled, hint, guard }: { disabled?: boolean; hint?: string; guard?: (go: () => void) => void }) {
   const location = useLocation(), navigate = useNavigate();
   const target = (location.state as ReturnNavigationState | null)?.returnTo;
   if (!target) return null;
-  return <div className="dev-bar"><button className="btn primary" disabled={disabled} onClick={() => navigate({ pathname: target.pathname, search: target.search }, { state: target.state })}>返回{target.label}</button>{hint && <span className="muted">{hint}</span>}</div>;
+  const go = () => navigate({ pathname: target.pathname, search: target.search }, { state: target.state });
+  return <div className="dev-bar"><button className="btn primary" disabled={disabled} onClick={() => guard ? guard(go) : go()}>返回{target.label}</button>{hint && <span className="muted">{hint}</span>}</div>;
 }

@@ -1,7 +1,8 @@
 import type { ComponentType } from "react";
 import { BookOpen, Cable, Camera, Crosshair, FlaskConical, History, LayoutDashboard, ScanEye, ScrollText, Settings, type LucideIcon } from "lucide-react";
 import InspectPage from "../pages/InspectPage";
-import CameraPage, { FlyshotCalibrationPage } from "../pages/CameraPage";
+import CameraPage from "../pages/CameraPage";
+import FlyshotCalibrationPage from "../pages/FlyshotCalibrationPage";
 import { PlcLogsPage, PlcSettingsPage } from "../pages/PlcPages";
 import HistoryPage from "../pages/HistoryPage";
 import SettingsPage from "../pages/SettingsPage";

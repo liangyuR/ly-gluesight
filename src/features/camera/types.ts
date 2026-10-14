@@ -56,14 +56,6 @@ export interface Frame {
   ts: number;
 }
 
-export interface DryFrame {
-  cam: number;
-  tMs: number;
-  frameCounter: number;
-  triggerCounter: number;
-  lostPackets: number;
-}
-
 /** 缩略图：像素为缩略图尺寸，full 为原图尺寸 */
 export interface PreviewImage {
   width: number;
