@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Plus, Trash2 } from "lucide-react";
-import { CalibPanel, cameraApi, CameraConfigPanel, defaultCameraConfig, DryRunPanel, FeasibilityCalc, FramePreview, useRigStatus, type CameraConfig } from "../features/camera";
+import { CalibPanel, cameraApi, CameraConfigPanel, defaultCameraConfig, DryRunPanel, FeasibilityCalc, FramePreview, useRigStatus, type CameraConfig, type FeasibilitySources } from "../features/camera";
 import { OfflineManagedNotice, recipeApi, useCycle, useSiteStatus } from "../features/cycle";
 import { shotCameras } from "../features/cycle/vis";
 import { desktopAvailable } from "../lib/desktop";
@@ -29,6 +29,7 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
   const [error,setError]=useState("");
   const [calibView,setCalibView]=useState(1);
   const [sample,setSample]=useState<StationView|null>(null);
+  const [calibMm,setCalibMm]=useState<number|null>(null);
   const [loading,setLoading]=useState(false);
   const [action,setAction]=useState("");
   const [configSaving,setConfigSaving]=useState(false);
@@ -81,6 +82,12 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
   const busy=productionBusy(snapshot);
   const referencedBy=config?references[config.id]??[]:[];
   const saved=()=>void reload();
+  const sampleSet=offline&&site?.source==="sampleSet"?site.sampleSet:null;
+  const feasibility:FeasibilitySources={
+    exposure:config?{value:config.exposureUs,from:"来自相机参数"}:null,
+    fps:status?.maxFps?{value:status.maxFps,from:"来自相机最高帧率"}:null,
+    mmPerPx:sampleSet?.mmPerPx?{value:sampleSet.mmPerPx,from:"来自样本集声明"}:calibMm?{value:calibMm,from:"来自工位标定"}:null,
+  };
   const add=async()=>{
     if(pending.current||loading||configSaving||busy||readOnly||configs.length>=8||!desktopAvailable())return;
     pending.current=true;setAction("add");
@@ -109,6 +116,13 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
       {view!=="device"&&<Link className="btn" to="/camera" state={navigationState}>设备与采集</Link>}
     </div>
     <div className="dev-bar"><Badge tone={status?.ready?"ok":"warn"}>{status?.ready?"已连接":"未就绪"}</Badge>{status&&<Badge tone="neutral">{sourceText[status.source]} · {status.acquisition==="freeRun"?"连续采集":"触发采集"}</Badge>}{status?.device&&<span className="chip-static">{status.device.model} · {status.device.serial}</span>}<span className="chip-static">帧 {status?.frames??0} · {status?.fps?status.fps.toFixed(1)+" fps":"—"}</span>{!!status?.lostPackets&&<Badge tone="warn">丢包 {status.lostPackets}</Badge>}<span className="muted">{status?.message}</span></div>
+    {view==="calibration"&&<ol className="flyshot-guide" aria-label="飞拍工位标定步骤">
+      <li><strong>冻结标定样本</strong><span>把标定板放在胶路所在平面，取样或导入一张原图</span></li>
+      <li><strong>工位标定</strong><span>识别棋盘格得到像素当量（mm/px），检测时据此把胶宽、偏移换算成毫米</span></li>
+      <li><strong>飞拍可行性</strong><span>用当量、曝光、帧率和手填的速度、间距，核算会不会拖影、来不来得及拍</span></li>
+      <li><strong>触发空跑</strong><span>机器人不带工件走一遍，实测 PLC 触发与收图是否一一对应</span></li>
+    </ol>}
+    {view==="calibration"&&sampleSet&&<div style={{gridColumn:"1/-1"}}><Notice title="离线样本集可跳过工位标定">{sampleSet.mmPerPx?`样本集「${sampleSet.name}」已声明像素当量 ${sampleSet.mmPerPx} mm/px，采用采集轮次时自动作为当量依据；本页的工位标定和触发空跑不影响离线流程。`:`样本集「${sampleSet.name}」没有声明像素当量，示教时需要用已知尺寸人工验证当量；本页的工位标定和触发空跑不影响离线流程。`}</Notice></div>}
     {error&&<div style={{gridColumn:"1/-1"}}><Notice title="操作未完成" tone="warn">{error}</Notice></div>}
     {view==="device"&&referencedBy.length>0&&<div style={{gridColumn:"1/-1"}}><Notice title="当前相机被配方引用">先在 {referencedBy.join("、")} 中改选相机并保存，再移除此相机。</Notice></div>}
     {readOnly&&<div style={{gridColumn:"1/-1"}}><OfflineManagedNotice>相机组按离线来源临时生成，离线期间不能修改或增删相机。</OfflineManagedNotice></div>}
@@ -118,7 +132,7 @@ export default function CameraPage({view="device"}:{view?:CameraView}) {
     </fieldset>{view==="device"&&<Panel title="实际参数状态"><Badge tone={status?.warnings.length?"warn":status?.ready?"ok":"neutral"}>{status?.warnings.length?"存在未接受参数":status?.ready?"参数已应用":"等待相机连接"}</Badge>{status?.warnings.map(w=><p key={w} className="c-warn">{w}</p>)}<p className="muted">连接状态和参数接受状态分别确认。保存后以相机实际返回结果为准。</p></Panel>}</div>
     <div className="col"><fieldset disabled={busy||!!action||configSaving||!desktopAvailable()} className="cam-action-area">
       {view==="device"&&<FramePreview key={config.id} cam={cam} status={status} lastFrame={lastFrame[cam]} config={config}/>}
-      {view==="calibration"&&<>{config.viewCount===3&&<label className="field"><span>标定图像</span><select className="input" aria-label="标定图像" value={calibView} onChange={e=>{setSample(null);setCalibView(Number(e.target.value));}}>{[1,2,3].map(v=><option key={v} value={v}>图 {v}</option>)}</select></label>}<CalibPanel key={config.id+":"+calibView} cam={cam} view={calibView} isSim={config.source==="sim"&&sample?.metadata.source!=="import"} imageId={sample?.metadata.id}/><FeasibilityCalc key={config.id} exposure={config.exposureUs} fps={status?.maxFps}/><DryRunPanel key={config.id} cam={cam} frameMs={status?.maxFps?1000/status.maxFps:null}/></>}
+      {view==="calibration"&&<>{config.viewCount===3&&<label className="field"><span>标定图像</span><select className="input" aria-label="标定图像" value={calibView} onChange={e=>{setSample(null);setCalibView(Number(e.target.value));}}>{[1,2,3].map(v=><option key={v} value={v}>图 {v}</option>)}</select></label>}<CalibPanel key={config.id+":"+calibView} cam={cam} view={calibView} isSim={config.source==="sim"&&sample?.metadata.source!=="import"} imageId={sample?.metadata.id} onMmPerPx={setCalibMm}/><FeasibilityCalc key={"feasibility:"+config.id} sources={feasibility} imageSize={sample?.image}/><DryRunPanel key={"dry-run:"+config.id}cam={cam} frameMs={status?.maxFps?1000/status.maxFps:null}/></>}
     </fieldset>{view==="device"&&<Panel title="继续建站"><p className="muted">保存采集参数后，完成飞拍工位标定。</p><div className="wp-actions"><Link className="btn" to="/camera/calibration" state={navigationState}>飞拍工位标定</Link></div></Panel>}</div></>:<div style={{gridColumn:"1/-1"}}><Notice title={view==="device"?"尚未加载采集设备":"没有触发采集相机"} tone="warn">{view==="device"?"在桌面软件中添加或连接相机。":"在设备与采集页添加相机，采集方式选择触发采集。"}</Notice></div>}
   </div>;
 }

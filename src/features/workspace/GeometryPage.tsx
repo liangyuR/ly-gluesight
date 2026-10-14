@@ -20,6 +20,6 @@ export default function GeometryPage() {
       <RecipeEditor key={doc.id + ":" + data.workspace.revision} initial={doc} originalId={data.workspace.baseRevision ? doc.id : null} onDraftChange={setDoc} saveCandidate={async candidate => !!(await saveDoc(candidate))} />
       </fieldset>
     </Panel>
-    <FeasibilityCalc exposure={cameras.find(c => c.id === camera)?.exposureUs ?? 60} fps={undefined} />
+    <FeasibilityCalc sources={{ exposure: (exposure => exposure != null ? { value: exposure, from: "来自相机参数" } : null)(cameras.find(c => c.id === camera)?.exposureUs) }} />
   </div>;
 }
