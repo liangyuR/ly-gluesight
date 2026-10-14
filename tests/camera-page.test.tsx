@@ -14,16 +14,18 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 
 const device = (serial: string) => ({ serial, model: "MV-CA050", userName: "", transport: "GigE" as const, ip: "192.168.1.10" });
 const camera = (id: string, name: string, over: Partial<CameraConfig> = {}): CameraConfig => ({ ...defaultCameraConfig, id, name, serial: id + "-SN", ...over });
-const status = (cam: number, config: CameraConfig): CameraStatus => ({ cam, id: config.id, name: config.name, source: "mvs", acquisition: "triggered", ready: true, message: "", device: device(config.serial), sdkVersion: null, frames: 0, fps: 0, maxFps: null, lostPackets: 0, droppedFrames: 0, warnings: [] });
+const status = (cam: number, config: CameraConfig): CameraStatus => ({ cam, id: config.id, name: config.name, source: "mvs", ready: true, released: false, message: "", device: device(config.serial), sdkVersion: null, frames: 0, fps: 0, maxFps: null, lostPackets: 0, droppedFrames: 0, warnings: [] });
 
 let configs: CameraConfig[];
+let released: string[];
 beforeEach(() => {
   configs = [camera("cam1", "左相机"), camera("cam2", "右相机")];
+  released = [];
   vi.mocked(listen).mockResolvedValue(() => {});
   vi.mocked(invoke).mockImplementation(async (command) => {
     switch (command) {
       case "camera_rig_config": return configs;
-      case "camera_rig_status": return configs.map((c, i) => status(i, c));
+      case "camera_rig_status": return configs.map((c, i) => ({ ...status(i, c), ...(released.includes(c.id) ? { ready: false, released: true, device: null } : {}) }));
       case "camera_list_devices": return configs.map(c => device(c.serial));
       case "camera_save_config": return [];
       case "camera_preview": return new ArrayBuffer(0);
@@ -67,6 +69,15 @@ describe("相机参数校验", () => {
     renderPage();
     expect(await screen.findByRole("alert")).toHaveTextContent("请选择要绑定的相机设备");
     expect(screen.getByRole("button", { name: "保存并应用" })).toBeDisabled();
+  });
+
+  it("相机已释放给 MVS 时修改参数 → 不能保存并提示先重新连接", async () => {
+    released = ["cam1"];
+    renderPage();
+    expect(await screen.findByRole("button", { name: "重新连接" })).toBeEnabled();
+    await userEvent.type(screen.getByRole("textbox", { name: "名称" }), "X");
+    expect(screen.getByRole("button", { name: "保存并应用" })).toBeDisabled();
+    expect(screen.getByText("已释放给 MVS，重新连接后再保存")).toBeVisible();
   });
 });
 

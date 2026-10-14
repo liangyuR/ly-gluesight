@@ -3,7 +3,6 @@
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
-use crate::camera::Acquisition;
 use crate::cycle::{CycleHost, Input, RecipeSummary};
 use crate::recipe::{self, Recipe, RecipeDoc};
 use crate::settings::CycleSettings;
@@ -42,9 +41,9 @@ pub fn recipe_template(cycle: State<'_, CycleHost>) -> RecipeDoc {
     doc.id = format!("NEW-{}", doc.product_code);
     doc.name = "新配方".into();
     doc.version = 1;
-    // 默认挑触发采集的相机
+    // 默认挑相机组第一台
     let configs = cycle.camera.configs();
-    if let Some(c) = configs.iter().find(|c| c.acquisition == Acquisition::Triggered).or(configs.first()) {
+    if let Some(c) = configs.first() {
         for shot in &mut doc.shots {
             shot.camera = c.id.clone();
         }

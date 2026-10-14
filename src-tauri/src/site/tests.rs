@@ -39,7 +39,6 @@ fn entering_offline_derives_temporary_environment_by_source() {
         assert_eq!(applied.plc.points, crate::inspection::default_plc_config().points, "{name}");
         let derived: Vec<_> = applied.cameras.iter().map(|c| (c.id.as_str(), c.source, c.view_count)).collect();
         assert_eq!(derived, cameras, "{name}");
-        assert!(applied.cameras.iter().all(|c| c.acquisition == Acquisition::Triggered), "{name}");
         assert_eq!(applied.record, RecordMode::All, "{name}");
     }
 }

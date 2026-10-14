@@ -367,23 +367,15 @@ unsafe impl Send for Device {}
 unsafe impl Sync for Device {}
 
 impl Device {
-    /// 打开序列号匹配的相机；序列号为空时打开第一台不在 exclude 里的（相机组里别的相机开着或指定了的）。
-    pub fn open(serial: &str, exclude: &[String]) -> Result<Self, String> {
+    /// 打开序列号匹配的相机。
+    pub fn open(serial: &str) -> Result<Self, String> {
+        if serial.trim().is_empty() {
+            return Err("未绑定设备".into());
+        }
         let api = api()?;
         let (list, summaries) = enumerate_raw(&api)?;
-        let index = if serial.is_empty() {
-            summaries.iter().position(|s| !exclude.contains(&s.serial))
-        } else {
-            summaries.iter().position(|s| s.serial == serial)
-        };
-        let Some(index) = index else {
-            return Err(if !serial.is_empty() {
-                format!("未找到序列号为 {serial} 的相机")
-            } else if summaries.is_empty() {
-                "未发现相机".into()
-            } else {
-                "没有空闲的相机：找到的相机都已给了相机组里别的相机".into()
-            });
+        let Some(index) = summaries.iter().position(|s| s.serial == serial) else {
+            return Err(format!("未找到序列号为 {serial} 的相机"));
         };
         let mut handle: Handle = std::ptr::null_mut();
         check(unsafe { (api.create_handle)(&mut handle, list.devices[index]) }, "创建相机句柄")?;

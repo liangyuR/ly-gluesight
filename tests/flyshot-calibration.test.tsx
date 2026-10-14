@@ -10,10 +10,10 @@ import type {CameraStatus} from "../src/features/camera/types";
 import {snapshot,siteStatus} from "./fixtures";
 vi.mock("../src/features/camera/api",async original=>({...await original<object>(),cameraApi:{rigConfig:vi.fn()},useRigStatus:vi.fn()}));
 vi.mock("../src/features/cycle/api",async original=>({...await original<object>(),useCycle:vi.fn(),useSiteStatus:vi.fn()}));
-const status=(frames:number):CameraStatus=>({cam:0,id:"CAM-1",name:"相机 1",source:"mvs",acquisition:"triggered",ready:true,message:"",device:null,sdkVersion:null,frames,fps:0,maxFps:5.6,lostPackets:0,droppedFrames:0,warnings:[]});
+const status=(frames:number):CameraStatus=>({cam:0,id:"CAM-1",name:"相机 1",source:"mvs",ready:true,released:false,message:"",device:null,sdkVersion:null,frames,fps:0,maxFps:5.6,lostPackets:0,droppedFrames:0,warnings:[]});
 beforeEach(()=>{
  localStorage.clear();
- vi.mocked(cameraApi.rigConfig).mockResolvedValue([{...defaultCameraConfig,id:"CAM-1",name:"相机 1",acquisition:"triggered"}]);
+ vi.mocked(cameraApi.rigConfig).mockResolvedValue([{...defaultCameraConfig,id:"CAM-1",name:"相机 1",serial:"SN1"}]);
  vi.mocked(useRigStatus).mockReturnValue({statuses:[status(1)],lastFrame:{}} as ReturnType<typeof useRigStatus>);
  vi.mocked(useCycle).mockReturnValue({snapshot:snapshot(),logs:[],measured:[]});
  vi.mocked(useSiteStatus).mockReturnValue(siteStatus());
