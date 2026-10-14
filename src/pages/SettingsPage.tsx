@@ -204,8 +204,8 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
     setSaving(true);
     setNotice(null);
     try {
-      const { lyflowCore, record, recordKeep, recordMaxGb, offlineRecordKeep, offlineRecordMaxGb } = settings;
-      const saved = await savePart({ lyflowCore, record, recordKeep, recordMaxGb, offlineRecordKeep, offlineRecordMaxGb });
+      const { record, recordKeep, recordMaxGb, offlineRecordKeep, offlineRecordMaxGb } = settings;
+      const saved = await savePart({ record, recordKeep, recordMaxGb, offlineRecordKeep, offlineRecordMaxGb });
       if (saved && mounted.current) {
         setNotice({ ok: true, text: "已保存" });
         refresh();
@@ -228,16 +228,6 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
       {error && <div className="notice error" role="alert">{error} <button className="btn" onClick={reload}>重试</button></div>}
       {settings && <>
       <fieldset className="form-grid" disabled={saving} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
-        <label className="field span-2">
-          <span>核心库路径（lyflow_core.dll）</span>
-          <input
-            id="lyflow-core"
-            className="input mono"
-            placeholder="留空自动使用安装包内置引擎；也可指定其他核心库路径"
-            value={settings.lyflowCore ?? ""}
-            onChange={(e) => update({ ...settings, lyflowCore: e.target.value || null })}
-          />
-        </label>
         <label className="field">
           <span>真机帧录制</span>
           <select id="record-mode" className="input" value={settings.record} onChange={(e) => update({ ...settings, record: e.target.value as CycleSettings["record"] })}>
@@ -308,6 +298,8 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
         </dd>
         <dt>说明</dt>
         <dd>{visibleEngine?.message ?? "--"}</dd>
+        <dt>运行库目录</dt>
+        <dd className="mono">{visibleEngine?.path ?? "--"}</dd>
       </dl>
       {import.meta.env.DEV && visibleEngine && !visibleEngine.ready && <p className="notice" role="note">{devLyflowHint}</p>}
       {engineError && <div className="notice error" role="alert">引擎状态读取失败：{engineError} <button className="btn" onClick={refresh}>重试引擎状态</button></div>}

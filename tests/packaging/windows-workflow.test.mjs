@@ -165,7 +165,6 @@ test('dependency cache identity uses the locked Tauri version and platform NSIS 
   const directory = mkdtempSync(join(tmpdir(), 'gluesight-cache-identity-'));
   try {
     mkdirSync(join(directory, 'packaging'));
-    writeFileSync(join(directory, 'packaging/lyflow.lock.json'), JSON.stringify({ packageId: 'LyFlow.Runtime.win-x64', version: '1.1.2', architecture: 'x64' }));
     writeFileSync(join(directory, 'packaging/runtime.json'), JSON.stringify({ repository: 'example/repo', tag: 'vendor-v2', asset: 'vendor-v2.zip', bundleVersion: 2 }));
     writeFileSync(join(directory, 'pnpm-lock.yaml'), "importers:\n  .:\n    devDependencies:\n      '@tauri-apps/cli':\n        specifier: ^2.11.5\n        version: 2.11.5\n");
     const scriptPath = join(directory, 'identity.ps1');
@@ -178,7 +177,6 @@ test('dependency cache identity uses the locked Tauri version and platform NSIS 
     });
     assert.equal(result.status, 0, result.stderr);
     const output = readFileSync(outputPath, 'utf8');
-    assert.match(output, /nuget=nuget-LyFlow\.Runtime\.win-x64-1\.1\.2-x64/);
     assert.match(output, /nsis=nsis-windows-2\.11\.5/);
     assert.ok(output.includes(`nsis-path=${join(directory, 'app-data', 'tauri', 'NSIS')}`));
     assert.match(workflow, /"pnpm":"\$\{\{ steps\.node-tools\.outputs\.cache-hit \}\}"/);
@@ -186,9 +184,9 @@ test('dependency cache identity uses the locked Tauri version and platform NSIS 
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('release manifest records locked dependency identity, timings and cache outcomes without credentials', () => {
+test('release manifest records the packaged lyFlow version, timings and cache outcomes', () => {
   withFixture(undefined, (directory) => {
-    const env = { ...process.env, GIT_DIR: join(directory, 'git-metadata'), GIT_WORK_TREE: directory, LYFLOW_NUGET_TOKEN: 'fixture-secret-must-not-leak' };
+    const env = { ...process.env, GIT_DIR: join(directory, 'git-metadata'), GIT_WORK_TREE: directory };
     const toolDirectory = join(directory, 'tools');
     mkdirSync(toolDirectory);
     for (const [name, version] of Object.entries({ node: 'v24.15.0', pnpm: '12.11.2', rustc: 'rustc 1.99.0', cargo: 'cargo 1.99.0' })) {
@@ -200,19 +198,18 @@ test('release manifest records locked dependency identity, timings and cache out
       assert.equal(result.status, 0, result.stderr);
     }
     mkdirSync(join(directory, 'packaging'));
-    const lock = { packageId: 'LyFlow.Runtime.win-x64', version: '1.1.2', sourceRevision: '1234567890abcdef1234567890abcdef12345678', architecture: 'x64' };
-    writeFileSync(join(directory, 'packaging/lyflow.lock.json'), JSON.stringify(lock));
-    writeFileSync(join(directory, 'packaging/runtime.json'), JSON.stringify({ repository: 'example/repository', tag: 'vendor-v2', asset: 'vendor-v2.zip', bundleVersion: 2, mvsVersion: '4.8.1.2' }));
+    writeFileSync(join(directory, 'packaging/runtime.json'), JSON.stringify({ repository: 'example/repository', tag: 'vendor-v2', asset: 'vendor-v2.zip', bundleVersion: 2, mvsVersion: '4.8.1.2', lyflow: { repository: 'liangyuR/lyFlow', series: '1.1' } }));
+    const runtimeManifest = join(directory, 'runtime/manifest.json');
+    mkdirSync(join(directory, 'runtime'));
+    writeFileSync(runtimeManifest, JSON.stringify({ lyflow: { repository: 'liangyuR/lyFlow', series: '1.1', version: '1.1.3', abiVersion: '1.1.0', clientTag: 'v1.1.3', operators: [] } }));
     writeFileSync(join(directory, 'timings.txt'), 'runtime=1.250\nrust=2.500\n');
     const outputPath = join(directory, 'reports/release-manifest.json');
-    const result = spawnSync('pwsh', ['-NoProfile', '-File', releaseManifest, '-ProjectRoot', directory, '-OutputPath', outputPath, '-TimingPath', join(directory, 'timings.txt'), '-CacheStatusJson', '{"enabled":true,"nuget":"true"}', '-Status', 'success'], { encoding: 'utf8', env, cwd: directory });
+    const result = spawnSync('pwsh', ['-NoProfile', '-File', releaseManifest, '-ProjectRoot', directory, '-OutputPath', outputPath, '-RuntimeManifestPath', runtimeManifest, '-TimingPath', join(directory, 'timings.txt'), '-CacheStatusJson', '{"enabled":true,"lyflow":"true"}', '-Status', 'success'], { encoding: 'utf8', env, cwd: directory });
     assert.equal(result.status, 0, result.stderr);
-    const output = readFileSync(outputPath, 'utf8');
-    assert.doesNotMatch(output, /fixture-secret-must-not-leak/);
-    const manifest = JSON.parse(output);
-    assert.deepEqual(manifest.lyflow, lock);
+    const manifest = JSON.parse(readFileSync(outputPath, 'utf8'));
+    assert.deepEqual(manifest.lyflow, { repository: 'liangyuR/lyFlow', series: '1.1', version: '1.1.3', abiVersion: '1.1.0', clientTag: 'v1.1.3' });
     assert.deepEqual(manifest.stageSeconds, { runtime: 1.25, rust: 2.5 });
-    assert.equal(manifest.caches.nuget, 'true');
+    assert.equal(manifest.caches.lyflow, 'true');
     assert.equal(manifest.application.version, '0.1.0');
     assert.equal(manifest.validationStatus, 'success');
     assert.equal(manifest.tools.rustc, 'rustc 1.99.0');

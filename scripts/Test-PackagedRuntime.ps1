@@ -43,10 +43,8 @@ try {
     }
     if (-not @(Get-ChildItem -LiteralPath (Join-Path $RuntimeRoot 'mvs/Licenses') -File -Recurse).Count) { throw 'MVS 许可证目录为空。' }
     $descriptor = Get-Content -LiteralPath (Join-Path $RuntimeRoot 'lyflow/lyflow-runtime.json') -Raw | ConvertFrom-Json
-    Assert-NoRuntimeDigests $descriptor
-    Assert-LyFlowVersions $descriptor.abiVersion $descriptor.engineVersion '正式产物描述'
+    Assert-LyFlowVersions $descriptor.abiVersion $descriptor.engineVersion '正式产物描述' $manifest.lyflow.version
     Assert-LyFlowReleaseMetadata $descriptor '正式产物描述'
-    Assert-LyFlowSourceRevision $descriptor.sourceRevision $manifest.lyflow.sourceRevision '正式产物描述与依赖包'
     Add-Type -TypeDefinition @'
 using System;
 using System.IO;
@@ -130,9 +128,7 @@ public static class PackagedRuntimeProbe {
     $core = [PackagedRuntimeProbe]::Load((Join-Path $RuntimeRoot 'lyflow/lyflow_core.dll'))
     $abiVersion = [PackagedRuntimeProbe]::Read($core, 'lyflow_abi_version_string', $false)
     $version = [PackagedRuntimeProbe]::Read($core, 'lyflow_version', $false)
-    Assert-LyFlowVersions $abiVersion $version '实际 DLL'
-    $sourceRevision = [PackagedRuntimeProbe]::Read($core, 'lyflow_source_revision', $false)
-    Assert-LyFlowSourceRevision $sourceRevision $descriptor.sourceRevision '实际 DLL 与正式产物描述'
+    Assert-LyFlowVersions $abiVersion $version '实际 DLL' $manifest.lyflow.version
     [PackagedRuntimeProbe]::Require($core, @('lyflow_run_start', 'lyflow_run_join', 'lyflow_run_free', 'lyflow_run_summary', 'lyflow_run_outputs', 'lyflow_validate', 'lyflow_cache_clear'))
     $problems = [PackagedRuntimeProbe]::Read($core, 'lyflow_manifest_problems')
     if ($problems.Trim()) { throw "lyFlow 注册表自检失败：$problems" }
@@ -144,12 +140,12 @@ public static class PackagedRuntimeProbe {
     [PackagedRuntimeProbe]::Require($mvs, @('MV_CC_CreateHandle', 'MV_CC_OpenDevice', 'MV_CC_CloseDevice', 'MV_CC_DestroyHandle', 'MV_CC_StartGrabbing', 'MV_CC_StopGrabbing', 'MV_CC_GetOptimalPacketSize', 'MV_CC_RegisterImageCallBackEx', 'MV_CC_RegisterExceptionCallBack', 'MV_CC_SetEnumValueByString', 'MV_CC_SetFloatValue', 'MV_CC_GetFloatValue', 'MV_CC_SetIntValueEx', 'MV_CC_SetBoolValue', 'MV_CC_SetCommandValue', 'MV_CC_GetEnumValue', 'MV_CC_GetEnumEntrySymbolic'))
     $mvsVersion = [PackagedRuntimeProbe]::ProbeMvs($mvs, $RuntimeRoot)
     if ($mvsVersion -ne $config.mvsVersion) { throw "MVS 实际版本 $mvsVersion 与固定版本 $($config.mvsVersion) 不一致。" }
-    $report.lyflow = @{ version = $version; abiVersion = $abiVersion; declaredAbiVersion = $descriptor.abiVersion; sourceRevision = $sourceRevision; declaredSourceRevision = $descriptor.sourceRevision; operators = @($operators) }
+    $report.lyflow = @{ version = $version; abiVersion = $abiVersion; declaredAbiVersion = $descriptor.abiVersion; series = $config.lyflow.series; operators = @($operators) }
     $report.mvs = @{ version = $mvsVersion; initialization = 'passed'; enumeration = 'passed' }
     $report.mvs.modulesBeforeFinalize = @([PackagedRuntimeProbe]::MvsModules)
     $report.modules = @([PackagedRuntimeProbe]::CheckModulePaths($RuntimeRoot))
     $report.success = $true
-    Write-Host '运行库自检通过：文件清单、x64、接口、实际 ABI/引擎版本严格匹配、必需算子及 MVS 初始化/枚举。客户端版本另由应用自检报告验证。'
+    Write-Host '运行库自检通过：文件清单、x64、接口、实际引擎版本与清单一致且属于锁定系列、必需算子及 MVS 初始化/枚举。客户端版本另由应用自检报告验证。'
 } catch {
     $report.error = $_.Exception.Message
     Write-Host "运行库自检失败：$($report.error)"

@@ -3,19 +3,22 @@ param(
     [ValidateRange(1024, 65535)][int]$DebugPort = 9341,
     [switch]$SkipBuild,
     [string]$SampleSet,
-    [string]$Lyflow
+    [string]$LyFlowRuntime
 )
 
 $ErrorActionPreference = 'Stop'
 $e2eMissingInputExit = 3
 if (!$IsWindows) { throw '离线端到端测试需要 Windows、WebView2 与 lyFlow。' }
 $e2eSampleSet = if ($SampleSet) { $SampleSet } else { $env:GLUESIGHT_SAMPLE_SET }
-$e2eLyflow = if ($Lyflow) { $Lyflow } else { $env:LYFLOW_CORE_DLL }
+$e2eLyflow = if ($LyFlowRuntime) { [IO.Path]::GetFullPath($LyFlowRuntime) } elseif ($env:GLUESIGHT_LYFLOW_RUNTIME) { $env:GLUESIGHT_LYFLOW_RUNTIME } else {
+    $e2eRestored = & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'Restore-LyFlowRuntime.ps1')
+    if ($LASTEXITCODE -eq 0) { @($e2eRestored)[-1] }
+}
 $e2eMissing = @()
 if (!$e2eSampleSet) { $e2eMissing += '未提供样本集目录（-SampleSet 或 GLUESIGHT_SAMPLE_SET）' }
 elseif (!(Test-Path -LiteralPath (Join-Path $e2eSampleSet 'sample-set.json') -PathType Leaf)) { $e2eMissing += "样本集目录缺少 sample-set.json：$e2eSampleSet（-SampleSet 或 GLUESIGHT_SAMPLE_SET）" }
-if (!$e2eLyflow) { $e2eMissing += '未提供 lyFlow 核心库（-Lyflow 或 LYFLOW_CORE_DLL）' }
-elseif (!(Test-Path -LiteralPath $e2eLyflow -PathType Leaf)) { $e2eMissing += "lyFlow 核心库不存在：$e2eLyflow（-Lyflow 或 LYFLOW_CORE_DLL）" }
+if (!$e2eLyflow) { $e2eMissing += 'lyFlow 运行库恢复失败且未提供（-LyFlowRuntime 或 GLUESIGHT_LYFLOW_RUNTIME）' }
+elseif (!(Test-Path -LiteralPath (Join-Path $e2eLyflow 'lyflow_core.dll') -PathType Leaf)) { $e2eMissing += "lyFlow 运行库目录缺少 lyflow_core.dll：$e2eLyflow" }
 if ($e2eMissing.Count) {
     [Console]::Error.WriteLine("离线端到端输入缺失，未运行（不算通过，退出码 $e2eMissingInputExit）：`n$($e2eMissing -join "`n")")
     exit $e2eMissingInputExit
@@ -27,7 +30,7 @@ $e2eManifestPath = Join-Path $e2eOutput 'instance.json'
 $e2eIdentifier = 'com.xyzrobotics.tujiaovision.e2e-tests'
 $e2eExit = 0
 $e2eWatch = [Diagnostics.Stopwatch]::StartNew()
-$e2ePreviousLyflow = $env:LYFLOW_CORE_DLL
+$e2ePreviousLyflow = $env:GLUESIGHT_LYFLOW_RUNTIME
 $e2eExpectedExecutable = Join-Path $e2eOutput 'gluesight-ui-tests.exe'
 $script:e2eOwnedInstance = $null
 
@@ -53,12 +56,12 @@ Push-Location -LiteralPath $e2eProjectRoot
 try {
     & node --input-type=module -e "await import('playwright-core');"
     if ($LASTEXITCODE -ne 0) { throw '请使用 Node 24.15+ 并先执行 pnpm install --frozen-lockfile。' }
-    $env:LYFLOW_CORE_DLL = $e2eLyflow
+    $env:GLUESIGHT_LYFLOW_RUNTIME = $e2eLyflow
     $e2eCdp = "http://127.0.0.1:$DebugPort"
     $e2eResult = Join-Path $e2eOutput 'result.json'
     Start-E2EInstance -Fresh -Prebuilt:$SkipBuild
     & node (Join-Path $e2eProjectRoot 'tests\native\offline-e2e.mjs') `
-        --cdp $e2eCdp --instance $e2eManifestPath --output $e2eResult --sample-set $e2eSampleSet --lyflow $e2eLyflow
+        --cdp $e2eCdp --instance $e2eManifestPath --output $e2eResult --sample-set $e2eSampleSet --lyflow-runtime $e2eLyflow
     $e2eExit = $LASTEXITCODE
     if ($e2eExit -eq 0) {
         Stop-E2EInstance
@@ -70,7 +73,7 @@ try {
     }
     if ($e2eExit -ne 0 -and $e2eExit -ne $e2eMissingInputExit) { Write-Error "离线端到端测试失败（退出码 $e2eExit）。日志见 $e2eOutput。" -ErrorAction Continue }
 } finally {
-    $env:LYFLOW_CORE_DLL = $e2ePreviousLyflow
+    $env:GLUESIGHT_LYFLOW_RUNTIME = $e2ePreviousLyflow
     Stop-E2EInstance
     Pop-Location
     Write-Host "离线端到端总耗时 $([math]::Round($e2eWatch.Elapsed.TotalSeconds, 1)) s"

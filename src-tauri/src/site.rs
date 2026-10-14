@@ -215,8 +215,7 @@ async fn load_sample_set(dir: &str) -> Result<SampleSet, String> {
 async fn lyflow_state(app: &AppHandle) -> Result<(), String> {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let path = app.state::<CycleHost>().settings().lyflow_core;
-        let status = app.state::<VisionHost>().status(path.as_deref());
+        let status = app.state::<VisionHost>().status();
         if status.loaded { Ok(()) } else { Err(status.message) }
     }).await.map_err(|e| e.to_string())?
 }

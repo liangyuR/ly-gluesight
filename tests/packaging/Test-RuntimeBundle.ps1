@@ -22,7 +22,9 @@ try {
     [IO.File]::WriteAllBytes((Join-Path $root 'runtime/lyflow/lyflow_core.dll'), $image)
     'license' | Set-Content -LiteralPath (Join-Path $root 'runtime/mvs/Licenses/notice.txt')
     $config = Get-RuntimeConfiguration
-    $manifest = @{ schemaVersion=2; bundleVersion = $config.bundleVersion; architecture = 'x64'; lyflow = @{version=$config.lyflowAbiVersion; abiVersion=$config.lyflowAbiVersion; sourceRevision=$config.lyflowSourceRevision; localValidationOnly=$false; operators=$config.requiredOperators}; mvs = @{version=$config.mvsVersion}; files = @(Get-RuntimeFiles (Join-Path $root 'runtime')) }
+    $inSeries = "$($config.lyflow.series).0"
+    $otherSeries = "$([int]$config.lyflow.series.Split('.')[0] + 1).0.0"
+    $manifest = @{ schemaVersion=2; bundleVersion = $config.bundleVersion; architecture = 'x64'; lyflow = @{version=$inSeries; abiVersion=$inSeries; localValidationOnly=$false; operators=$config.requiredOperators}; mvs = @{version=$config.mvsVersion}; files = @(Get-RuntimeFiles (Join-Path $root 'runtime')) }
     Save-FixtureManifest $manifest
     [void](Assert-RuntimeManifest (Join-Path $root 'runtime'))
     $passed++
@@ -35,30 +37,23 @@ try {
     $manifest.architecture = 'x86'; Save-FixtureManifest $manifest
     Expect-Failure '包架构错误' { Assert-RuntimeManifest (Join-Path $root 'runtime') } '架构'
     $manifest.architecture = 'x64'
-    foreach ($invalidAbi in @(15, '15', '1.0.0', '1.1.1', '1.1.0 ', '', $null)) {
+    foreach ($invalidAbi in @(15, '15', $otherSeries, "$inSeries ", '', $null)) {
         $manifest.lyflow.abiVersion = $invalidAbi; Save-FixtureManifest $manifest
         Expect-Failure "错误 ABI '$invalidAbi'" { Assert-RuntimeManifest (Join-Path $root 'runtime') } 'ABI'
     }
-    $manifest.lyflow.abiVersion = $config.lyflowAbiVersion
-    foreach ($invalidVersion in @(15, '1.0.0', '1.1.1', '1.1.0 ', '', $null)) {
+    $manifest.lyflow.abiVersion = $inSeries
+    foreach ($invalidVersion in @(15, $otherSeries, "$inSeries ", '', $null)) {
         $manifest.lyflow.version = $invalidVersion; Save-FixtureManifest $manifest
         Expect-Failure "错误引擎版本 '$invalidVersion'" { Assert-RuntimeManifest (Join-Path $root 'runtime') } '引擎版本'
     }
-    $manifest.lyflow.version = $config.lyflowAbiVersion
-    Expect-Failure '旧客户端数字 ABI' { Assert-LyFlowVersions 15 '1.1.0' '应用客户端' } 'ABI'
-    Expect-Failure '客户端与实际引擎失配' { Assert-LyFlowVersions '1.1.0' '1.1.1' '应用客户端' } '引擎版本'
-    foreach ($invalidRevision in @('', 'fixture', ('a' * 39), ('g' * 40), $null)) {
-        $manifest.lyflow.sourceRevision = $invalidRevision; Save-FixtureManifest $manifest
-        Expect-Failure "非法源码修订 '$invalidRevision'" { Assert-RuntimeManifest (Join-Path $root 'runtime') } 'sourceRevision'
-    }
-    $manifest.lyflow.sourceRevision = $config.lyflowSourceRevision
+    $manifest.lyflow.version = $inSeries
+    Expect-Failure '旧客户端数字 ABI' { Assert-LyFlowVersions 15 $inSeries '应用客户端' } 'ABI'
+    Expect-Failure '实际引擎与打包版本失配' { Assert-LyFlowVersions $inSeries "$($config.lyflow.series).1" '应用客户端' $inSeries } '不一致'
     foreach ($localOnly in @($true, 'false', $null)) {
         $manifest.lyflow.localValidationOnly = $localOnly; Save-FixtureManifest $manifest
         Expect-Failure '本机诊断候选' { Assert-RuntimeManifest (Join-Path $root 'runtime') } 'localValidationOnly'
     }
     $manifest.lyflow.localValidationOnly = $false
-    Expect-Failure 'DLL 伪造源码修订' { Assert-LyFlowSourceRevision ('b' * 40) ('a' * 40) '实际 DLL' } 'sourceRevision'
-    Expect-Failure 'dirty DLL 空修订' { Assert-LyFlowSourceRevision '' ('a' * 40) '实际 DLL' } 'sourceRevision'
     $manifest.lyflow.hash = 'obsolete'; Save-FixtureManifest $manifest
     Expect-Failure '旧摘要记录' { Assert-RuntimeManifest (Join-Path $root 'runtime') } '摘要'
     $manifest.lyflow.Remove('hash')
@@ -125,7 +120,7 @@ try {
                 $backup = Join-Path $root $name
                 Move-Item -LiteralPath $library -Destination $backup
                 try {
-                    $inventory = @{ schemaVersion=2; bundleVersion=$config.bundleVersion; architecture='x64'; lyflow=@{version=$config.lyflowAbiVersion; abiVersion=$config.lyflowAbiVersion; sourceRevision=$config.lyflowSourceRevision; localValidationOnly=$false; operators=$config.requiredOperators}; mvs=@{version=$config.mvsVersion}; files=@(Get-RuntimeFiles $realRoot | Where-Object path -ne 'manifest.json') }
+                    $inventory = @{ schemaVersion=2; bundleVersion=$config.bundleVersion; architecture='x64'; lyflow=@{version=$inSeries; abiVersion=$inSeries; localValidationOnly=$false; operators=$config.requiredOperators}; mvs=@{version=$config.mvsVersion}; files=@(Get-RuntimeFiles $realRoot | Where-Object path -ne 'manifest.json') }
                     $inventory | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $realRoot 'manifest.json')
                     [void](Assert-RuntimeManifest $realRoot)
                     & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -File (Join-Path $PSScriptRoot '../../scripts/Test-PackagedRuntime.ps1') -RuntimeRoot $realRoot -ReportPath (Join-Path $root 'missing-mvs.json')

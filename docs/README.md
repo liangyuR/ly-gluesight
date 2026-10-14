@@ -22,6 +22,7 @@
 ## 部署（[deployment/](deployment)）
 
 - [Windows 打包与运行库部署](deployment/PACKAGING.md)。
+- [lyFlow 运行库依赖](architecture/lyflow-dependency.md)：Release 来源、系列锁定、校验、缓存、开发启动参数与升级命令。
 
 ## 使用教程
 

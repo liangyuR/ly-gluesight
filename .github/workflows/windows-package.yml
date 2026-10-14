@@ -28,7 +28,6 @@ on:
 
 permissions:
   contents: read
-  packages: read
 
 concurrency:
   group: windows-package-${{ github.ref }}
@@ -81,15 +80,25 @@ jobs:
           workspaces: src-tauri -> target/cargo-release
           shared-key: windows-release-1.99.0
           cache-workspace-crates: false
+      - name: Resolve lyFlow release
+        id: lyflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          . ./scripts/LyFlow-Dependency.ps1
+          $config = Get-LyFlowDependencyConfig $env:GITHUB_WORKSPACE
+          [void](Get-LyFlowCargoTag (Join-Path $env:GITHUB_WORKSPACE 'src-tauri/Cargo.toml') $config)
+          $release = Select-LyFlowRelease (Get-LyFlowReleases $config.lyflow.repository) $config
+          "version=$($release.version)" >> $env:GITHUB_OUTPUT
+          "cache-key=lyflow-$($config.lyflow.repository.Replace('/', '-'))-$($release.version)-x64" >> $env:GITHUB_OUTPUT
+          Write-Host "lyFlow $($config.lyflow.series) latest release: $($release.tag)"
       - name: Read dependency cache identities
         id: cache-identity
         run: |
-          $lock = Get-Content -LiteralPath packaging/lyflow.lock.json -Raw | ConvertFrom-Json
           $config = Get-Content -LiteralPath packaging/runtime.json -Raw | ConvertFrom-Json
-          foreach ($part in @($lock.packageId, $lock.version, $lock.architecture, $config.repository, $config.tag, $config.asset, $config.bundleVersion)) {
+          foreach ($part in @($config.repository, $config.tag, $config.asset, $config.bundleVersion)) {
             if ([string]$part -notmatch '^[A-Za-z0-9._/-]+$') { throw 'Invalid dependency cache identity.' }
           }
-          "nuget=nuget-$($lock.packageId)-$($lock.version)-$($lock.architecture)" >> $env:GITHUB_OUTPUT
           "vendor=vendor-$($config.repository.Replace('/', '-'))-$($config.tag)-$($config.asset)-$($config.bundleVersion)" >> $env:GITHUB_OUTPUT
           $pnpmLock = Get-Content -LiteralPath pnpm-lock.yaml -Raw
           if ($pnpmLock -notmatch "(?m)^      '@tauri-apps/cli':\r?\n        specifier: [^\r\n]+\r?\n        version: (\d+\.\d+\.\d+)\s*$") { throw 'Missing locked Tauri CLI version.' }
@@ -97,11 +106,11 @@ jobs:
           "nsis=nsis-windows-$cli" >> $env:GITHUB_OUTPUT
           "nsis-path=$(Join-Path $env:LOCALAPPDATA 'tauri/NSIS')" >> $env:GITHUB_OUTPUT
       - uses: actions/cache@v4
-        id: nuget-cache
+        id: lyflow-cache
         if: github.event_name != 'workflow_dispatch' || inputs.use_cache
         with:
-          path: src-tauri/target/dependency-cache/nuget
-          key: ${{ steps.cache-identity.outputs.nuget }}
+          path: src-tauri/target/dependency-cache/lyflow
+          key: ${{ steps.lyflow.outputs.cache-key }}
       - uses: actions/cache@v4
         id: vendor-cache
         if: github.event_name != 'workflow_dispatch' || inputs.use_cache
@@ -123,7 +132,6 @@ jobs:
       - name: Prepare bundled runtime
         env:
           GH_TOKEN: ${{ github.token }}
-          LYFLOW_NUGET_TOKEN: ${{ secrets.LYFLOW_NUGET_TOKEN || github.token }}
         run: |
           New-Item -ItemType Directory -Path (Split-Path -Parent $env:PACKAGE_TIMINGS) -Force | Out-Null
           $timer = [Diagnostics.Stopwatch]::StartNew()
@@ -174,7 +182,7 @@ jobs:
         if: always()
         env:
           VALIDATION_STATUS: ${{ job.status }}
-          CACHE_STATUS: '{"enabled":${{ github.event_name != ''workflow_dispatch'' || inputs.use_cache }},"pnpm":"${{ steps.node-tools.outputs.cache-hit }}","cargo":"${{ steps.rust-cache.outputs.cache-hit }}","nuget":"${{ steps.nuget-cache.outputs.cache-hit }}","vendor":"${{ steps.vendor-cache.outputs.cache-hit }}","nsis":"${{ steps.nsis-cache.outputs.cache-hit }}"}'
+          CACHE_STATUS: '{"enabled":${{ github.event_name != ''workflow_dispatch'' || inputs.use_cache }},"pnpm":"${{ steps.node-tools.outputs.cache-hit }}","cargo":"${{ steps.rust-cache.outputs.cache-hit }}","lyflow":"${{ steps.lyflow-cache.outputs.cache-hit }}","vendor":"${{ steps.vendor-cache.outputs.cache-hit }}","nsis":"${{ steps.nsis-cache.outputs.cache-hit }}"}'
         run: ./scripts/Write-ReleaseManifest.ps1 -TimingPath $env:PACKAGE_TIMINGS -CacheStatusJson $env:CACHE_STATUS -Status $env:VALIDATION_STATUS
       - name: Upload installer and verification reports
         uses: actions/upload-artifact@v4

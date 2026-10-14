@@ -1,6 +1,6 @@
 import { chromium } from "playwright-core";
 import assert from "node:assert/strict";
-import { existsSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { cp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -32,7 +32,7 @@ const sampleLabelText = { ok: "合格", ng: "不合格", unknown: "未标注" };
 export function missingInputs(inputs) {
   const problems = [];
   if (!inputs.sampleSet || !existsSync(path.join(inputs.sampleSet, "sample-set.json"))) problems.push(`样本集目录缺少 sample-set.json：${inputs.sampleSet || "（未通过 --sample-set 或 GLUESIGHT_SAMPLE_SET 提供）"}`);
-  if (!inputs.lyflow || !existsSync(inputs.lyflow) || !statSync(inputs.lyflow).isFile()) problems.push(`lyFlow 核心库不存在：${inputs.lyflow || "（未通过 --lyflow 或 LYFLOW_CORE_DLL 提供）"}`);
+  if (!inputs.lyflow || !existsSync(path.join(inputs.lyflow, "lyflow_core.dll"))) problems.push(`lyFlow 运行库目录缺少 lyflow_core.dll：${inputs.lyflow || "（未通过 --lyflow-runtime 或 GLUESIGHT_LYFLOW_RUNTIME 提供）"}`);
   return problems;
 }
 
@@ -248,8 +248,8 @@ export async function runOfflineE2E(page, options) {
   assert((await call("workspace_list")).every(w => !w.captureId), "全新站点不应已有采集建立的候选");
   const before = { plc: await call("plc_get_config"), cameras: await call("camera_rig_config") };
   const settings = await call("cycle_get_settings");
-  if (settings.lyflowCore !== options.lyflow || settings.productSource !== "plc") {
-    await call("cycle_save_settings", { settings: { ...settings, lyflowCore: options.lyflow, productSource: "plc" } });
+  if (settings.productSource !== "plc") {
+    await call("cycle_save_settings", { settings: { ...settings, productSource: "plc" } });
   }
   const engine = await until(() => call("engine_status"), e => e.ready, "lyFlow 引擎未就绪", 30000);
   step("lyFlow 就绪", { version: engine.version ?? null });
@@ -391,7 +391,7 @@ async function main() {
   }
   const inputs = {
     sampleSet: args["sample-set"] ?? process.env.GLUESIGHT_SAMPLE_SET,
-    lyflow: args.lyflow ?? process.env.LYFLOW_CORE_DLL,
+    lyflow: args["lyflow-runtime"] ?? process.env.GLUESIGHT_LYFLOW_RUNTIME,
   };
   const problems = missingInputs(inputs);
   if (problems.length) {

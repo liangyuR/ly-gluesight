@@ -121,8 +121,7 @@ pub(super) fn check_view(app: &AppHandle, w: &Workspace, k: usize, selected: u8,
     if !frame.saved { return Err(format!("拍照点 {} 图 {selected} 尚未完成示教", k + 1)); }
     let (image, params) = shot_tags(&r, k)?;
     frame.checked(&image, &params)?;
-    let settings = app.state::<CycleHost>().settings();
-    let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("图像核心库未加载")?;
+    let engine = app.state::<vision::VisionHost>().engine().ok_or("图像核心库未加载")?;
     frame.checked_engine(&engine_state(&engine))?;
     let (ct, cal) = tags(app, &r, k)?;
     let frozen = frame.image.as_ref().ok_or("示教原图缺失")?;

@@ -9,7 +9,7 @@ export const targetLinks: Record<ReadinessTarget, { path: string; label: string 
   offline: { path: "/offline", label: "去离线模式" },
 };
 
-export const devLyflowHint = "开发构建：用 pnpm dev 启动会先恢复锁定版本 lyFlow 并设置 LYFLOW_CORE_DLL；恢复失败（无凭证或离线）时只告警继续启动。系统设置里已保存的核心库路径优先于该环境变量。";
+export const devLyflowHint = "开发构建：pnpm dev 启动前会准备锁定系列的 lyFlow 运行库并放到程序同目录的 runtime/lyflow；取不到时停止启动（加 -NoLyFlow 可无引擎启动）。联合开发可用 -LyFlowRuntime 临时指向本机运行库。";
 
 /** 运行配方的显示值：运行中保持用户所选；所选配方暂不可运行时为空，不改选别的；从未选过时为第一个可运行配方。 */
 export function runChoice(options: RecipeOption[] | null, chosen: string | null, running: boolean): string {

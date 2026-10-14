@@ -14,5 +14,5 @@ Expand-RuntimeArchive $Archive $stageRoot
 $existing = & gh api "repos/$($config.repository)/releases/tags/$($config.tag)" 2>&1
 if ($LASTEXITCODE -eq 0) { throw '依赖 Release 已存在；请使用新依赖版本，禁止覆盖既有资产。' }
 if (($existing -join "`n") -notmatch '(HTTP 404|Not Found)') { throw "无法确认依赖 Release 是否存在：$($existing -join ' ')" }
-& gh release create $config.tag $Archive --repo $config.repository --prerelease --title "Windows x64 厂商运行库 v$($config.bundleVersion)" --notes 'GlueSight 固定版本厂商依赖：MVS、许可证和 VC++ CRT。lyFlow 通过独立 NuGet 包恢复。现场需预装 MVS 驱动及 WebView2。'
+& gh release create $config.tag $Archive --repo $config.repository --prerelease --title "Windows x64 厂商运行库 v$($config.bundleVersion)" --notes 'GlueSight 固定版本厂商依赖：MVS、许可证和 VC++ CRT。lyFlow 运行库从 lyFlow 仓库 Release 独立恢复。现场需预装 MVS 驱动及 WebView2。'
 if ($LASTEXITCODE -ne 0) { throw "发布依赖 Release 失败（退出码 $LASTEXITCODE）；禁止用覆盖上传重试。" }

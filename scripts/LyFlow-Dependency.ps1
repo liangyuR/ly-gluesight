@@ -6,176 +6,72 @@ $script:LyFlowDependencyScriptPath = $PSCommandPath
 
 function Get-LyFlowDependencyConfig([string]$RepositoryRoot, [string]$RuntimeConfigPath) {
     if (-not $RuntimeConfigPath) { $RuntimeConfigPath = Join-Path $RepositoryRoot 'packaging/runtime.json' }
-    $config = Get-Content -LiteralPath $RuntimeConfigPath -Raw | ConvertFrom-Json
-    Assert-NoRuntimeDigests $config
-    if ($config.schemaVersion -ne 2 -or $config.architecture -cne 'x64') { throw 'lyFlow 依赖配置必须使用 schema 2 和 x64 架构。' }
-    $dependency = $config.lyflow
-    if ($dependency.source -notmatch '^https://' -or $dependency.packageId -cne 'LyFlow.Runtime.win-x64' -or
-        $dependency.series -cnotmatch '^\d+\.\d+$') { throw 'lyFlow NuGet 来源、包 ID 或兼容系列无效。' }
-    Assert-LyFlowCompatibleVersion $dependency.minimumVersion $dependency
-    $config
+    Get-RuntimeConfiguration $RuntimeConfigPath
 }
 
-function Assert-LyFlowCompatibleVersion($Version, $Dependency) {
-    if ($Version -isnot [string] -or $Version -cnotmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
-        throw "lyFlow 只接受完整正式版本，拒绝预发布或非法版本：$Version"
+function Get-LyFlowGitUrl($Config) { "https://github.com/$($Config.lyflow.repository).git" }
+
+function Get-LyFlowCargoTag([string]$CargoTomlPath, $Config) {
+    $text = [IO.File]::ReadAllText($CargoTomlPath)
+    $entries = @([regex]::Matches($text, '(?m)^[ \t]*lyflow-client[ \t]*=.*$') | ForEach-Object { $_.Value.TrimEnd("`r") })
+    if ($entries.Count -ne 1) { throw "Cargo.toml 必须恰有一个 lyflow-client 依赖，实际 $($entries.Count) 个。" }
+    if ($entries[0] -cnotmatch '^\s*lyflow-client\s*=\s*\{\s*git\s*=\s*"([^"]+)"\s*,\s*tag\s*=\s*"([^"]+)"\s*\}\s*$') {
+        throw 'Cargo.toml 的 lyflow-client 必须写成 { git = "...", tag = "vX.Y.Z" }，不得使用 rev、branch 或其他字段。'
     }
-    if (($Version -replace '\.\d+$', '') -cne $Dependency.series -or [version]$Version -lt [version]$Dependency.minimumVersion) {
-        throw "lyFlow 版本 $Version 不属于允许的 $($Dependency.series) 系列或低于最低版本。"
+    $url = $Matches[1]
+    $tag = $Matches[2]
+    if ($url -cne (Get-LyFlowGitUrl $Config)) { throw "lyflow-client 的 git 地址必须是 $(Get-LyFlowGitUrl $Config)：$url" }
+    if ($tag -cnotmatch '^v(.+)$' -or -not (Test-LyFlowSeriesVersion $Matches[1] $Config.lyflow.series)) {
+        throw "lyflow-client 的 tag $tag 不属于 packaging/runtime.json 的 $($Config.lyflow.series) 系列。"
     }
+    $tag
 }
 
-function Resolve-LyFlowPackageVersion([string[]]$Versions, $Dependency, [string]$Version) {
-    if ($Version) { Assert-LyFlowCompatibleVersion $Version $Dependency; return $Version }
-    $valid = @($Versions | Where-Object {
-        try { Assert-LyFlowCompatibleVersion $_ $Dependency; $true } catch { $false }
-    } | Sort-Object { [version]$_ } -Descending -Unique)
-    if (-not $valid.Count) { throw 'NuGet 源中没有允许兼容系列的正式 lyFlow 包。' }
-    $valid[0]
-}
-
-function Get-LyFlowDependencyLock([string]$RepositoryRoot, $Config, [string]$LockPath) {
-    if (-not $LockPath) { $LockPath = Join-Path $RepositoryRoot 'packaging/lyflow.lock.json' }
-    $locked = Get-Content -LiteralPath $LockPath -Raw | ConvertFrom-Json
-    Assert-NoRuntimeDigests $locked
-    if ($locked.schemaVersion -ne 1 -or $locked.packageId -cne $Config.lyflow.packageId -or $locked.architecture -cne 'x64') {
-        throw 'lyFlow 锁定记录 schema、包 ID 或架构无效。'
-    }
-    Assert-LyFlowCompatibleVersion $locked.version $Config.lyflow
-    Assert-LyFlowSourceRevision $locked.sourceRevision $locked.sourceRevision '锁定记录'
-    $locked
-}
-
-function Get-NuGetTool([string]$RepositoryRoot) {
-    $path = Join-Path $RepositoryRoot 'src-tauri/target/dependency-tools/nuget-6.14.0.exe'
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($path))
-        $partial = "$path.$([guid]::NewGuid().ToString('N')).partial"
-        try {
-            Invoke-WebRequest -Uri 'https://dist.nuget.org/win-x86-commandline/v6.14.0/nuget.exe' -OutFile $partial
-            Assert-X64OrX86NuGetTool $partial
-            Move-Item -LiteralPath $partial -Destination $path
-        } finally { if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force } }
-    }
-    Assert-X64OrX86NuGetTool $path
-    $path
-}
-
-function Assert-X64OrX86NuGetTool([string]$Path) {
-    $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($Path).ProductVersion
-    if ($version -notmatch '^6\.14\.0(?:[.+-]|$)') { throw 'NuGet CLI 必须是固定 6.14.0 版本。' }
-    $signature = Get-AuthenticodeSignature -LiteralPath $Path
-    if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
-        throw 'NuGet CLI 的 Microsoft Authenticode 签名无效。'
-    }
-}
-
-function Get-LyFlowNuGetCredential([string]$CredentialFile) {
-    $token = $env:LYFLOW_NUGET_TOKEN
-    $username = if ($env:LYFLOW_NUGET_USERNAME) { $env:LYFLOW_NUGET_USERNAME } else { 'liangyuR' }
-    if (-not $token) {
-        if (-not $CredentialFile) { $CredentialFile = Join-Path $env:USERPROFILE '.ssh/github_nuget_auth.txt' }
-        if (Test-Path -LiteralPath $CredentialFile -PathType Leaf) {
-            $credential = [IO.File]::ReadAllText($CredentialFile).Trim()
-            if ($credential -match '(?m)(?:github_pat_[A-Za-z0-9_]+|ghp_[A-Za-z0-9]+)') { $token = $Matches[0] }
-            elseif ($credential -notmatch '\s|=|:') { $token = $credential }
-            else { throw '凭证文件缺少可识别的 GitHub token；可使用 LYFLOW_NUGET_TOKEN。' }
+function Get-LyFlowReleases([string]$Repository) {
+    $gh = Get-Command gh -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($gh) {
+        & $gh.Source auth status *> $null
+        if ($LASTEXITCODE -eq 0) {
+            $output = @(& $gh.Source api --paginate "repos/$Repository/releases?per_page=100" --jq '.[] | {tag_name, draft, prerelease, assets: [.assets[] | {name, browser_download_url}]}' 2>&1)
+            if ($LASTEXITCODE -eq 0) {
+                return @($output | Where-Object { $_ -is [string] -and $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json })
+            }
+            Write-Warning "gh api 查询 lyFlow Release 失败，改用匿名 GitHub API：$(($output | Select-Object -Last 1))"
         }
     }
-    if (-not $token) { throw '缺少 NuGet 读取凭证；请配置 LYFLOW_NUGET_TOKEN 或凭证文件。' }
-    if ($username -match '[;\r\n]' -or $token -match '[;\r\n]') { throw 'NuGet 凭证格式无效。' }
-    [pscustomobject]@{ username = $username; token = $token }
+    $releases = [Collections.Generic.List[object]]::new()
+    $headers = @{ Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+    for ($page = 1; $page -le 20; $page++) {
+        $batch = @(Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/releases?per_page=100&page=$page" -Headers $headers -TimeoutSec 60)
+        foreach ($release in $batch) { $releases.Add($release) }
+        if ($batch.Count -lt 100) { break }
+    }
+    $releases.ToArray()
 }
 
-function Invoke-LyFlowNuGet([string]$RepositoryRoot, [string]$Source, [string[]]$Arguments, [string]$CredentialFile) {
-    $tool = Get-NuGetTool $RepositoryRoot
-    $credential = Get-LyFlowNuGetCredential $CredentialFile
-    $token = $credential.token
-    $username = $credential.username
-    $directory = Join-Path $RepositoryRoot "src-tauri/target/dependency-tools/auth-$([guid]::NewGuid().ToString('N'))"
-    [void][IO.Directory]::CreateDirectory($directory)
-    $configPath = Join-Path $directory 'NuGet.Config'
-    $escapedSource = [Security.SecurityElement]::Escape($Source)
-    [IO.File]::WriteAllText($configPath, "<configuration><packageSources><clear/><add key=`"LyFlow`" value=`"$escapedSource`" /></packageSources></configuration>")
-    $start = [Diagnostics.ProcessStartInfo]::new($tool)
-    $start.UseShellExecute = $false
-    $start.RedirectStandardOutput = $true
-    $start.RedirectStandardError = $true
-    $start.Environment['NuGetPackageSourceCredentials_LyFlow'] = "Username=$username;Password=$token;ValidAuthenticationTypes=Basic"
-    $verbosity = if ($Arguments[0] -ceq 'list') { 'normal' } else { 'quiet' }
-    foreach ($argument in @($Arguments) + @('-ConfigFile', $configPath, '-NonInteractive', '-Verbosity', $verbosity)) { $start.ArgumentList.Add($argument) }
-    try {
-        $process = [Diagnostics.Process]::Start($start)
-        try {
-            $stdout = $process.StandardOutput.ReadToEndAsync()
-            $stderr = $process.StandardError.ReadToEndAsync()
-            $timeoutSeconds = 1200
-            if ($env:LYFLOW_NUGET_TIMEOUT_SECONDS) {
-                if (-not [int]::TryParse($env:LYFLOW_NUGET_TIMEOUT_SECONDS, [ref]$timeoutSeconds) -or $timeoutSeconds -lt 30 -or $timeoutSeconds -gt 3600) {
-                    $process.Kill($true)
-                    throw 'LYFLOW_NUGET_TIMEOUT_SECONDS 必须是 30 至 3600 秒。'
-                }
-            }
-            $timer = [Diagnostics.Stopwatch]::StartNew()
-            while (-not $process.WaitForExit([Math]::Min(30000, $timeoutSeconds * 1000))) {
-                if ($timer.Elapsed.TotalSeconds -ge $timeoutSeconds) {
-                    $process.Kill($true)
-                    $process.WaitForExit()
-                    throw "NuGet 请求超过 $timeoutSeconds 秒；大运行库下载可配置 LYFLOW_NUGET_TIMEOUT_SECONDS（最多 3600 秒）。"
-                }
-                Write-Host "NuGet 固定源请求进行中：已等待 $([int]$timer.Elapsed.TotalSeconds) 秒。"
-            }
-            $output = $stdout.GetAwaiter().GetResult()
-            [void]$stderr.GetAwaiter().GetResult()
-            if ($process.ExitCode -ne 0) { throw "NuGet 请求失败（退出码 $($process.ExitCode)）；请检查源、包版本和读取权限。" }
-            $output.Replace($token, '[REDACTED]')
-        } finally { $process.Dispose() }
-    } finally {
-        $token = $null
-        $credential.token = $null
-        $start.Environment.Remove('NuGetPackageSourceCredentials_LyFlow') | Out-Null
-        Remove-Item -LiteralPath $configPath -Force
-        Remove-Item -LiteralPath $directory -Force
+function Select-LyFlowRelease($Releases, $Config) {
+    $series = $Config.lyflow.series
+    $prefix = "https://github.com/$($Config.lyflow.repository)/releases/download/"
+    $candidates = foreach ($release in @($Releases)) {
+        if ((Get-RuntimeField $release 'draft') -ne $false -or (Get-RuntimeField $release 'prerelease') -ne $false) { continue }
+        $tag = Get-RuntimeField $release 'tag_name'
+        if ($tag -isnot [string] -or $tag -cnotmatch '^v(.+)$' -or -not (Test-LyFlowSeriesVersion $Matches[1] $series)) { continue }
+        $version = $tag.Substring(1)
+        $assetName = "lyflow-runtime-win-x64-v$version.zip"
+        $asset = @(@(Get-RuntimeField $release 'assets') | Where-Object { $null -ne $_ -and (Get-RuntimeField $_ 'name') -ceq $assetName }) | Select-Object -First 1
+        if (-not $asset) { continue }
+        $url = Get-RuntimeField $asset 'browser_download_url'
+        if ($url -isnot [string] -or -not $url.StartsWith($prefix, [StringComparison]::Ordinal)) { continue }
+        [pscustomobject]@{ version = $version; tag = $tag; assetName = $assetName; downloadUrl = $url }
     }
+    $selected = @($candidates | Sort-Object { [version]$_.version } -Descending) | Select-Object -First 1
+    if (-not $selected) { throw "$($Config.lyflow.repository) 没有 $series 系列带 Windows 运行库资产的正式 Release。" }
+    $selected
 }
 
-function Invoke-LyFlowNuGetMetadata([string]$Uri, [string]$Source, [string]$CredentialFile) {
-    $sourceUri = [uri]$Source
-    $requestUri = [uri]$Uri
-    $ownerPath = $sourceUri.AbsolutePath.Substring(0, $sourceUri.AbsolutePath.LastIndexOf('/') + 1)
-    if ($sourceUri.Scheme -cne 'https' -or $requestUri.Scheme -cne 'https' -or
-        $requestUri.Authority -cne $sourceUri.Authority -or $requestUri.UserInfo -or
-        -not $requestUri.AbsolutePath.StartsWith($ownerPath, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'NuGet 元数据端点必须使用相同 HTTPS 源及 owner 路径。'
-    }
-    $credential = Get-LyFlowNuGetCredential $CredentialFile
-    $handler = [Net.Http.HttpClientHandler]::new()
-    $handler.AllowAutoRedirect = $false
-    $client = [Net.Http.HttpClient]::new($handler)
-    $client.Timeout = [TimeSpan]::FromSeconds(60)
-    $authorization = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$($credential.username):$($credential.token)"))
-    $client.DefaultRequestHeaders.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new('Basic', $authorization)
-    try {
-        $response = $client.GetAsync($requestUri).GetAwaiter().GetResult()
-        try {
-            if (-not $response.IsSuccessStatusCode) { throw "NuGet 元数据读取失败，HTTP $([int]$response.StatusCode)。" }
-            $response.Content.ReadAsStringAsync().GetAwaiter().GetResult() | ConvertFrom-Json
-        } finally { $response.Dispose() }
-    } finally {
-        $credential.token = $null
-        $authorization = $null
-        $client.Dispose()
-        $handler.Dispose()
-    }
-}
-
-function Get-LyFlowAvailableVersions([string]$RepositoryRoot, $Config, [string]$CredentialFile) {
-    $index = Invoke-LyFlowNuGetMetadata $Config.lyflow.source $Config.lyflow.source $CredentialFile
-    $resources = @($index.resources | Where-Object { $_.'@type' -ceq 'PackageBaseAddress/3.0.0' })
-    if ($resources.Count -ne 1) { throw 'NuGet v3 源必须声明唯一的 PackageBaseAddress/3.0.0。' }
-    $baseAddress = $resources[0].'@id'.TrimEnd('/')
-    $versions = Invoke-LyFlowNuGetMetadata "$baseAddress/$($Config.lyflow.packageId.ToLowerInvariant())/index.json" $Config.lyflow.source $CredentialFile
-    @($versions.versions)
+function Save-LyFlowReleaseAsset($Release, [string]$Destination) {
+    $ProgressPreference = 'SilentlyContinue'
+    Invoke-WebRequest -Uri $Release.downloadUrl -OutFile $Destination -TimeoutSec 900 -MaximumRetryCount 2 -RetryIntervalSec 3
 }
 
 function Get-LyFlowDllMetadata([string]$RuntimeRoot) {
@@ -232,14 +128,12 @@ public static class LyFlowDependencyProbe {
     [pscustomobject]@{
         version = [LyFlowDependencyProbe]::Read($core, 'lyflow_version', $false)
         abiVersion = [LyFlowDependencyProbe]::Read($core, 'lyflow_abi_version_string', $false)
-        sourceRevision = [LyFlowDependencyProbe]::Read($core, 'lyflow_source_revision', $false)
         operators = @(([LyFlowDependencyProbe]::Read($core, 'lyflow_manifest_json', $true) | ConvertFrom-Json).operators.id)
     }
 }
 
 function Invoke-LyFlowDllProbe([string]$RuntimeRoot) {
-    $commonPath = $script:LyFlowDependencyScriptPath
-    $payload = @($commonPath, $RuntimeRoot) | ConvertTo-Json -Compress
+    $payload = @($script:LyFlowDependencyScriptPath, $RuntimeRoot) | ConvertTo-Json -Compress
     $encodedPayload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payload))
     $command = "`$p = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$encodedPayload')) | ConvertFrom-Json; . `$p[0]; Get-LyFlowDllMetadata `$p[1] | ConvertTo-Json -Depth 5 -Compress"
     $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME 'pwsh.exe'))
@@ -259,111 +153,135 @@ function Invoke-LyFlowDllProbe([string]$RuntimeRoot) {
     } finally { $process.Dispose() }
 }
 
-function Test-LyFlowRuntimeDirectory([string]$RuntimeRoot, $Config, $Lock) {
+function Test-LyFlowRuntimeDirectory([string]$RuntimeRoot, $Config, [string]$Version) {
+    $series = $Config.lyflow.series
     Assert-NoRuntimeLinks $RuntimeRoot
-    $descriptor = Get-Content -LiteralPath (Join-Path $RuntimeRoot 'lyflow-runtime.json') -Raw | ConvertFrom-Json
-    Assert-NoRuntimeDigests $descriptor
-    if ($descriptor.schemaVersion -ne 1 -or $descriptor.architecture -cne 'x64' -or
-        $descriptor.abiVersion -cne $Lock.version -or $descriptor.engineVersion -cne $Lock.version) {
-        throw 'NuGet 运行库描述 schema、架构、ABI 或产品版本与锁定记录不符。'
+    $descriptorPath = Join-Path $RuntimeRoot 'lyflow-runtime.json'
+    if (-not (Test-Path -LiteralPath $descriptorPath -PathType Leaf)) { throw "lyFlow 运行库缺少 lyflow-runtime.json：$RuntimeRoot" }
+    $descriptor = Get-Content -LiteralPath $descriptorPath -Raw | ConvertFrom-Json
+    foreach ($field in @('engineVersion', 'abiVersion')) {
+        $value = Get-RuntimeField $descriptor $field
+        if (-not (Test-LyFlowSeriesVersion $value $series)) { throw "lyFlow 运行库描述的 $field '$value' 不属于 $series 系列。" }
     }
-    Assert-LyFlowReleaseMetadata $descriptor 'NuGet 运行库描述'
-    Assert-LyFlowSourceRevision $descriptor.sourceRevision $Lock.sourceRevision 'NuGet 运行库描述'
-    $files = @(Get-ChildItem -LiteralPath $RuntimeRoot -File -Recurse -Force)
-    if ($files.Count -ne @($descriptor.files).Count) { throw 'NuGet 运行库文件数量与清单不符。' }
+    if ($descriptor.engineVersion -cne $Version) { throw "lyFlow 运行库描述的引擎版本 $($descriptor.engineVersion) 与所选版本 $Version 不一致。" }
+    if ((Get-RuntimeField $descriptor 'architecture') -cne 'x64') { throw 'lyFlow 运行库描述的架构必须是 x64。' }
+    Assert-LyFlowReleaseMetadata $descriptor 'lyFlow 运行库描述'
+    $files = @(Get-RuntimeField $descriptor 'files')
+    if (-not $files.Count) { throw 'lyFlow 运行库描述没有文件清单。' }
     $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-    foreach ($entry in $descriptor.files) {
-        $path = $entry.path
+    foreach ($entry in $files) {
+        $path = Get-RuntimeField $entry 'path'
         if ($path -isnot [string] -or -not $path -or $path.Contains('\') -or $path.Contains(':') -or
             $path.StartsWith('/') -or $path.Split('/') -contains '..' -or $path.Split('/') -contains '.' -or -not $seen.Add($path)) {
-            throw 'NuGet 运行库清单路径无效或重复。'
+            throw "lyFlow 运行库文件清单路径无效或重复：$path"
         }
-        $file = Join-Path $RuntimeRoot $path
-        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "NuGet 运行库清单文件缺失：$path" }
-        if ($entry.PSObject.Properties.Name -contains 'bytes' -and (Get-Item -LiteralPath $file).Length -ne $entry.bytes) { throw "NuGet 运行库文件尺寸不符：$path" }
+        if (-not (Test-Path -LiteralPath (Join-Path $RuntimeRoot $path) -PathType Leaf)) { throw "lyFlow 运行库清单文件缺失：$path" }
     }
-    foreach ($required in @('lyflow_core.dll', 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')) {
-        if (-not (Test-Path -LiteralPath (Join-Path $RuntimeRoot $required) -PathType Leaf)) { throw "NuGet 运行库缺少 DLL：$required" }
-    }
-    if (-not (Test-Path -LiteralPath (Join-Path $RuntimeRoot 'licenses') -PathType Container) -or
-        -not @(Get-ChildItem -LiteralPath (Join-Path $RuntimeRoot 'licenses') -File -Recurse).Count) { throw 'NuGet 运行库许可证目录为空。' }
-    foreach ($file in $files | Where-Object Extension -in @('.dll', '.exe', '.cti', '.ax')) { Assert-X64RuntimeImage $file.FullName }
-    $actual = Invoke-LyFlowDllProbe $RuntimeRoot
-    if ($actual.version -cne $Lock.version -or $actual.abiVersion -cne $Lock.version) { throw 'NuGet 实际 DLL ABI 或产品版本与锁定记录不符。' }
-    Assert-LyFlowSourceRevision $actual.sourceRevision $Lock.sourceRevision 'NuGet 实际 DLL'
+    if (-not $seen.Contains('lyflow_core.dll')) { throw 'lyFlow 运行库文件清单缺少 lyflow_core.dll。' }
+    $declared = @(@(Get-RuntimeField $descriptor 'operators') | ForEach-Object { Get-RuntimeField $_ 'id' })
     foreach ($operator in $Config.requiredOperators) {
-        if ($operator -notin @($actual.operators) -or $operator -notin @($descriptor.operators.id)) { throw "NuGet 运行库缺少必需算子：$operator" }
+        if ($operator -cnotin $declared) { throw "lyFlow 运行库描述缺少必需算子：$operator" }
+    }
+    foreach ($file in Get-ChildItem -LiteralPath $RuntimeRoot -File -Recurse -Force | Where-Object Extension -eq '.dll') { Assert-X64RuntimeImage $file.FullName }
+    $actual = Invoke-LyFlowDllProbe $RuntimeRoot
+    if ($actual.version -cne $Version) { throw "lyFlow 实际 DLL 引擎版本 $($actual.version) 与所选版本 $Version 不一致。" }
+    if (-not (Test-LyFlowSeriesVersion $actual.abiVersion $series)) { throw "lyFlow 实际 DLL ABI 版本 $($actual.abiVersion) 不属于 $series 系列。" }
+    foreach ($operator in $Config.requiredOperators) {
+        if ($operator -cnotin @($actual.operators)) { throw "lyFlow 实际 DLL 缺少必需算子：$operator" }
     }
     $descriptor
+}
+
+function Get-LyFlowCacheRoot([string]$RepositoryRoot) {
+    Join-Path ([IO.Path]::GetFullPath($RepositoryRoot)) 'src-tauri/target/dependency-cache/lyflow'
 }
 
 function Remove-LyFlowCacheDirectory([string]$Path, [string]$CacheRoot) {
     $absolute = [IO.Path]::GetFullPath($Path)
     $prefix = [IO.Path]::GetFullPath($CacheRoot).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
-    if (-not $absolute.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw '拒绝删除 NuGet 缓存目录以外的路径。' }
+    if (-not $absolute.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw '拒绝删除 lyFlow 缓存目录以外的路径。' }
     if (Test-Path -LiteralPath $absolute) { Assert-NoRuntimeLinks $absolute; Remove-Item -LiteralPath $absolute -Recurse -Force }
 }
 
-function Restore-LyFlowDependency([string]$RepositoryRoot, $Config, $Lock, [string]$CredentialFile) {
-    Assert-LyFlowCompatibleVersion $Lock.version $Config.lyflow
-    Assert-LyFlowSourceRevision $Lock.sourceRevision $Lock.sourceRevision '恢复锁定记录'
-    $cacheRoot = Join-Path $RepositoryRoot 'src-tauri/target/dependency-cache/nuget'
+function Get-LyFlowCachedFallback([string]$CacheRoot, $Config, [string]$Reason) {
+    $series = $Config.lyflow.series
+    $cached = @(Get-ChildItem -LiteralPath $CacheRoot -Directory | Where-Object { Test-LyFlowSeriesVersion $_.Name $series } | Sort-Object { [version]$_.Name } -Descending)
+    foreach ($directory in $cached) {
+        try { [void](Test-LyFlowRuntimeDirectory $directory.FullName $Config $directory.Name) }
+        catch { Write-Warning "跳过未通过校验的 lyFlow 缓存 $($directory.Name)：$($_.Exception.Message)"; continue }
+        Write-Warning "$Reason；改用本机已缓存的 $series 系列最高版本 $($directory.Name)，它可能不是最新 Release。"
+        return [pscustomobject]@{ version = $directory.Name; path = $directory.FullName; source = 'cache-fallback' }
+    }
+    throw "$Reason；本机也没有 $series 系列校验通过的 lyFlow 缓存。"
+}
+
+function Restore-LyFlowDependency([string]$RepositoryRoot, $Config, [switch]$NoFallback) {
+    $cacheRoot = Get-LyFlowCacheRoot $RepositoryRoot
     [void][IO.Directory]::CreateDirectory($cacheRoot)
     Assert-NoRuntimeLinks $cacheRoot
-    $packageRoot = Join-Path $cacheRoot $Config.lyflow.packageId.ToLowerInvariant()
-    [void][IO.Directory]::CreateDirectory($packageRoot)
-    $cached = Join-Path $packageRoot $Lock.version
-    $native = Join-Path $cached 'runtimes/win-x64/native'
-    if (Test-Path -LiteralPath $cached) {
+    try { $releases = Get-LyFlowReleases $Config.lyflow.repository }
+    catch {
+        $reason = "查询 $($Config.lyflow.repository) 的 Release 失败：$($_.Exception.Message)"
+        if ($NoFallback) { throw $reason }
+        return Get-LyFlowCachedFallback $cacheRoot $Config $reason
+    }
+    $release = Select-LyFlowRelease $releases $Config
+    $target = Join-Path $cacheRoot $release.version
+    if (Test-Path -LiteralPath $target) {
         try {
-            [void](Test-LyFlowRuntimeDirectory $native $Config $Lock)
-            Write-Host "lyFlow NuGet 缓存验证通过：$($Lock.version)"
-            return $native
+            [void](Test-LyFlowRuntimeDirectory $target $Config $release.version)
+            Write-Host "lyFlow $($release.version) 缓存校验通过，跳过下载。"
+            return [pscustomobject]@{ version = $release.version; path = $target; source = 'cache' }
         } catch {
-            Write-Host "lyFlow NuGet 缓存不完整或不符合锁定记录，重新获取固定版本 $($Lock.version)。"
-            Remove-LyFlowCacheDirectory $cached $cacheRoot
+            Write-Warning "lyFlow $($release.version) 缓存未通过校验，删除后重新下载：$($_.Exception.Message)"
+            Remove-LyFlowCacheDirectory $target $cacheRoot
         }
     }
-    $temporary = Join-Path $cacheRoot ".restore-$([guid]::NewGuid().ToString('N'))"
+    $temporary = Join-Path $cacheRoot ".download-$([guid]::NewGuid().ToString('N'))"
     [void][IO.Directory]::CreateDirectory($temporary)
     try {
-        [void](Invoke-LyFlowNuGet $RepositoryRoot $Config.lyflow.source @('install', $Config.lyflow.packageId, '-Version', $Lock.version, '-Source', 'LyFlow', '-OutputDirectory', $temporary, '-ExcludeVersion', '-DirectDownload', '-NoCache', '-PackageSaveMode', 'nupkg') $CredentialFile)
-        $downloaded = Join-Path $temporary $Config.lyflow.packageId
-        [void](Test-LyFlowRuntimeDirectory (Join-Path $downloaded 'runtimes/win-x64/native') $Config $Lock)
-        Move-Item -LiteralPath $downloaded -Destination $cached
-        Write-Host "lyFlow NuGet 固定版本恢复并验证通过：$($Lock.version)"
-        $native
+        $archive = Join-Path $temporary $release.assetName
+        Write-Host "下载 lyFlow $($release.tag)：$($release.downloadUrl)"
+        try { Save-LyFlowReleaseAsset $release $archive }
+        catch {
+            $reason = "下载 lyFlow $($release.tag) 失败：$($_.Exception.Message)"
+            if ($NoFallback) { throw $reason }
+            return Get-LyFlowCachedFallback $cacheRoot $Config $reason
+        }
+        $expanded = Join-Path $temporary 'runtime'
+        Expand-RuntimeArchive $archive $expanded ''
+        [void](Test-LyFlowRuntimeDirectory $expanded $Config $release.version)
+        if (Test-Path -LiteralPath $target) { throw 'lyFlow 缓存被并发写入，请重试。' }
+        Move-Item -LiteralPath $expanded -Destination $target
+        Write-Host "lyFlow $($release.version) 下载并校验通过，已写入缓存。"
+        [pscustomobject]@{ version = $release.version; path = $target; source = 'download' }
     } finally { Remove-LyFlowCacheDirectory $temporary $cacheRoot }
 }
 
-function Invoke-LyFlowCargoUpdate([string]$Revision) {
-    & cargo update -p lyflow-client --precise $Revision
-    if ($LASTEXITCODE -ne 0) { throw 'Cargo 客户端锁定更新失败，恢复原始依赖文件。' }
+function Invoke-LyFlowCargoUpdate {
+    & cargo update -p lyflow-client
+    if ($LASTEXITCODE -ne 0) { throw "cargo update -p lyflow-client 失败（退出码 $LASTEXITCODE）。" }
 }
 
-function Set-LyFlowDependencyFiles([string]$RepositoryRoot, $Lock) {
-    $paths = @((Join-Path $RepositoryRoot 'packaging/lyflow.lock.json'), (Join-Path $RepositoryRoot 'src-tauri/Cargo.toml'), (Join-Path $RepositoryRoot 'src-tauri/Cargo.lock'))
+function Set-LyFlowDependencyFiles([string]$RepositoryRoot, [string]$Series, [string]$Tag) {
+    $paths = @((Join-Path $RepositoryRoot 'packaging/runtime.json'), (Join-Path $RepositoryRoot 'src-tauri/Cargo.toml'), (Join-Path $RepositoryRoot 'src-tauri/Cargo.lock'))
     $backups = @($paths | ForEach-Object { ,([IO.File]::ReadAllBytes($_)) })
-    $previousLock = [IO.File]::ReadAllText($paths[2])
-    $plcPattern = '(?ms)^\[\[package\]\]\r?\nname = "ly-plc"\r?\n.*?(?=^\[\[package\]\]|\z)'
-    $previousPlc = [regex]::Match($previousLock, $plcPattern).Value
     try {
+        $runtime = [IO.File]::ReadAllText($paths[0])
+        $seriesPattern = '("series"\s*:\s*")[^"]*(")'
+        if ([regex]::Matches($runtime, $seriesPattern).Count -ne 1) { throw 'packaging/runtime.json 必须恰有一个 series 字段。' }
+        [IO.File]::WriteAllText($paths[0], [regex]::Replace($runtime, $seriesPattern, [Text.RegularExpressions.MatchEvaluator]{ param($match) $match.Groups[1].Value + $Series + $match.Groups[2].Value }))
+        $config = Get-LyFlowDependencyConfig $RepositoryRoot
         $cargo = [IO.File]::ReadAllText($paths[1])
-        $pattern = '(?m)^(lyflow-client\s*=\s*\{[^\r\n]*\brev\s*=\s*")[0-9a-f]{40}("[^\r\n]*\})\s*$'
-        if ([regex]::Matches($cargo, $pattern).Count -ne 1) { throw 'Cargo.toml 必须包含唯一的固定 lyflow-client Git rev。' }
-        $revision = $Lock.sourceRevision
-        $cargo = [regex]::Replace($cargo, $pattern, [Text.RegularExpressions.MatchEvaluator]{ param($match) $match.Groups[1].Value + $revision + $match.Groups[2].Value })
-        [IO.File]::WriteAllText($paths[1], $cargo)
+        $tagPattern = '(?m)^([ \t]*lyflow-client[ \t]*=[^\r\n]*\btag[ \t]*=[ \t]*")[^"]*(")'
+        if ([regex]::Matches($cargo, $tagPattern).Count -ne 1) { throw 'Cargo.toml 必须恰有一个使用 tag 的 lyflow-client 依赖。' }
+        [IO.File]::WriteAllText($paths[1], [regex]::Replace($cargo, $tagPattern, [Text.RegularExpressions.MatchEvaluator]{ param($match) $match.Groups[1].Value + $Tag + $match.Groups[2].Value }))
+        if ((Get-LyFlowCargoTag $paths[1] $config) -cne $Tag) { throw 'Cargo.toml 的 lyflow-client tag 写入失败。' }
         Push-Location -LiteralPath (Join-Path $RepositoryRoot 'src-tauri')
-        try {
-            Invoke-LyFlowCargoUpdate $revision
-            $lockText = [IO.File]::ReadAllText($paths[2])
-            if ([regex]::Match($lockText, $plcPattern).Value -cne $previousPlc) { throw '更新 lyFlow 不允许改变 ly-plc 锁定记录。' }
-            if ($lockText -notmatch ('(?s)name = "lyflow-client"\s+version = "' + [regex]::Escape($Lock.version) + '"\s+source = "[^"\r\n]*#' + $revision + '"')) {
-                throw 'Cargo.lock 的 lyflow-client 版本或 Git 修订未与 NuGet 包配套。'
-            }
-        } finally { Pop-Location }
-        $Lock | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $paths[0] -Encoding utf8NoBOM
+        try { Invoke-LyFlowCargoUpdate } finally { Pop-Location }
+        $lock = [IO.File]::ReadAllText($paths[2])
+        $source = 'source = "git+' + (Get-LyFlowGitUrl $config) + '?tag=' + $Tag + '#'
+        if (-not $lock.Contains($source)) { throw "Cargo.lock 的 lyflow-client 没有切换到 $Tag。" }
     } catch {
         for ($index = 0; $index -lt $paths.Count; $index++) { [IO.File]::WriteAllBytes($paths[$index], $backups[$index]) }
         throw

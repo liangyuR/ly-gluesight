@@ -530,16 +530,14 @@ fn environment(app: &AppHandle, recipe: &Recipe) -> Result<Value, String> {
             values.push(calibration_state(&vision::shot_calib_path(app, &projected, k)?)?);
         }
     }
-    let settings = cycle.settings();
-    values.push(json!([crate::site::image_measurement(app), settings.lyflow_core]));
-    values.push(json!(app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).map(|engine| engine_state(&engine))));
+    values.push(json!([crate::site::image_measurement(app)]));
+    values.push(json!(app.state::<vision::VisionHost>().engine().map(|engine| engine_state(&engine))));
     Ok(state_value(&values))
 }
 
 /// 当前设备的相机与标定标签（按冻结图的拍照点与视角）以及当前引擎，只读，不改候选记录。
 fn devices(app: &AppHandle, w: &Workspace, recipe: &Recipe) -> progress::Devices {
-    let settings = app.state::<CycleHost>().settings();
-    let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).map(|e| engine_state(&e));
+    let engine = app.state::<vision::VisionHost>().engine().map(|e| engine_state(&e));
     let mut views = HashMap::new();
     for (k, frame) in w.frames.iter().enumerate().take(recipe.shot_count()) {
         for image in &frame.views {
@@ -945,8 +943,7 @@ fn measure_image(app: &AppHandle, r: &Recipe, k: usize, image: &FrameImage) -> R
     if !shot.taught() {
         return Err("还没有胶路中线：先在原图上点出中线并保存".into());
     }
-    let settings = app.state::<CycleHost>().settings();
-    let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("lyFlow 核心库未加载")?;
+    let engine = app.state::<vision::VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
     let run_id = format!("trial-{}-{k}-{}", r.revision_id, ly_plc::now_ms());
     let measured = vision::measure_shot(&engine, r, k, image, &run_id, "")?;
     let coverage = measured.coverage as f64;
@@ -996,8 +993,7 @@ pub async fn workspace_trial(
         };
         let (image_tag, teach_tag) = shot_tags(&r, k)?;
         let image = crate::image_file::load(&image_file(&app.state::<WorkspaceHost>(), &id, &image_id)?)?;
-        let settings = app.state::<CycleHost>().settings();
-        let engine_tag = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).map(|engine| engine_state(&engine)).unwrap_or_default();
+        let engine_tag = app.state::<vision::VisionHost>().engine().map(|engine| engine_state(&engine)).unwrap_or_default();
         let started = Instant::now();
         let (measurement, score, coverage, passed, reason) =
             measure_image(&app, &r, k, &image).unwrap_or_else(|e| (Value::Null, 0.0, 0.0, false, e));
@@ -1084,8 +1080,7 @@ pub fn workspace_save_teach(
         return Err("图像已变更，请重新试测".into());
     }
     frame.checked(&image_tag, &teach_tag)?;
-    let settings = app.state::<CycleHost>().settings();
-    let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("lyFlow 核心库未加载")?;
+    let engine = app.state::<vision::VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
     frame.checked_engine(&engine_state(&engine))?;
     let (camera_tag, calib_tag) = tags(&app, &r, k)?;
     let frozen = frame.image.as_ref().unwrap();
@@ -1487,8 +1482,7 @@ pub fn draft_summaries(app: &AppHandle) -> Vec<DraftSummary> {
 
 fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeDoc, teaching: &[Teaching]) -> Result<crate::release::ReleaseBundle, String> {
     let recipe = doc.build()?;
-    let settings = app.state::<CycleHost>().settings();
-    let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("发布前必须加载兼容的图像核心库")?;
+    let engine = app.state::<vision::VisionHost>().engine().ok_or("发布前必须加载兼容的图像核心库")?;
     let mut shots = Vec::new();
     let mut w = Workspace::new(doc.clone(), None); w.frames = teaching.to_vec();
     for (k, shot) in recipe.shots.iter().enumerate() {
@@ -1829,8 +1823,7 @@ pub async fn workspace_compare_original(app: AppHandle, history_id: i64) -> Resu
         let recipe_revision = detail.summary.recipe_revision.as_deref().ok_or("历史记录缺少配方快照身份")?;
         let original = store.recipe_snapshot(recipe_revision)?.ok_or("原始配方快照缺失；不能使用当前配方替代")?;
         let bundle = load_bundle(&app, &original.id, bundle_id)?;
-        let settings = app.state::<CycleHost>().settings();
-        let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("原版本兼容引擎未加载")?;
+        let engine = app.state::<vision::VisionHost>().engine().ok_or("原版本兼容引擎未加载")?;
         let prepared = crate::production::Prepared::load(bundle, engine, &original)?;
         prepared.verify()?;
         let (judgement, measurements) = reproduce::measure(&prepared, original.shot_count(), detail.summary.sn, &cycle_id,
@@ -2038,8 +2031,7 @@ fn measure_images(app: &AppHandle, w: &Workspace, count: usize, sn: u32,
     mut load: impl FnMut(usize, u8) -> Result<FrameImage, String>) -> Result<(Vec<PointState>, Vec<Value>), String> {
     let recipe = w.doc.build()?;
     if count != recipe.shot_count() { return Err("样本组的原图数量与拍照点不一致".into()); }
-    let settings = app.state::<CycleHost>().settings();
-    let engine = app.state::<vision::VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("lyFlow 核心库未加载")?;
+    let engine = app.state::<vision::VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
     let mut table = vec![PointState::Pending; recipe.point_count()];
     let mut measurements = Vec::new();
     let run = vision::unique_run_id(&format!("candidate-{}", recipe.revision_id));

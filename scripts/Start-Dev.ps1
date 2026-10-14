@@ -1,31 +1,63 @@
 #Requires -Version 7.0
 param(
+    [switch]$NoLyFlow,
+    [string]$LyFlowRuntime,
+    [string]$LyFlowSource,
     [Parameter(ValueFromRemainingArguments)][string[]]$TauriArgs
 )
 
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$TauriArgs = @($TauriArgs | Where-Object { $null -ne $_ })
 
-if ($env:LYFLOW_CORE_DLL) {
-    Write-Host "沿用已设置的 LYFLOW_CORE_DLL=$($env:LYFLOW_CORE_DLL)"
+function Stop-Dev([string]$Message) {
+    [Console]::Error.WriteLine($Message)
+    exit 1
+}
+
+if ($NoLyFlow -and $LyFlowRuntime) { Stop-Dev '-NoLyFlow 与 -LyFlowRuntime 不能同时使用。' }
+$targetRoot = if ($env:CARGO_TARGET_DIR) {
+    if ([IO.Path]::IsPathRooted($env:CARGO_TARGET_DIR)) { [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) }
+    else { [IO.Path]::GetFullPath((Join-Path $root "src-tauri/$env:CARGO_TARGET_DIR")) }
+} else { Join-Path $root 'src-tauri/target' }
+$debugRuntime = Join-Path $targetRoot 'debug/runtime/lyflow'
+
+if ($NoLyFlow) {
+    if (Test-Path -LiteralPath $debugRuntime) { Remove-Item -LiteralPath $debugRuntime -Recurse -Force }
+    Write-Warning "已按 -NoLyFlow 跳过 lyFlow 运行库并清空 $debugRuntime；本次启动没有图像测量引擎。"
+} elseif ($LyFlowRuntime) {
+    $runtimePath = [IO.Path]::GetFullPath($LyFlowRuntime)
+    if (-not (Test-Path -LiteralPath (Join-Path $runtimePath 'lyflow_core.dll') -PathType Leaf)) { Stop-Dev "-LyFlowRuntime 目录缺少 lyflow_core.dll：$runtimePath" }
+    $env:GLUESIGHT_LYFLOW_RUNTIME = $runtimePath
+    Write-Warning "联合开发：本次启动使用 GLUESIGHT_LYFLOW_RUNTIME=$runtimePath（仅当前进程，不落盘）。"
 } else {
-    $output = Join-Path ([IO.Path]::GetTempPath()) "gluesight-lyflow-$PID-$([guid]::NewGuid().ToString('N')).txt"
+    $output = Join-Path ([IO.Path]::GetTempPath()) "gluesight-lyflow-$PID-$([guid]::NewGuid().ToString('N')).json"
     try {
         & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'Restore-LyFlowRuntime.ps1') -RepositoryRoot $root -OutputFile $output
-        if ($LASTEXITCODE -ne 0) { throw "恢复脚本退出码 $LASTEXITCODE" }
-        $native = (Get-Content -LiteralPath $output -Raw).Trim()
-        $core = Join-Path $native 'lyflow_core.dll'
-        if (-not (Test-Path -LiteralPath $core -PathType Leaf)) { throw "恢复目录缺少 lyflow_core.dll：$native" }
-        $env:LYFLOW_CORE_DLL = $core
-        Write-Host "lyFlow 锁定版本已就绪：LYFLOW_CORE_DLL=$core"
-    } catch {
-        Write-Warning "lyFlow 锁定版本恢复失败，继续启动，lyFlow 将显示未加载：$($_.Exception.Message)"
-        Write-Warning '配置 NuGet 凭证（LYFLOW_NUGET_TOKEN 或 ~/.ssh/github_nuget_auth.txt）后重新执行 pnpm dev，或在系统设置中指定核心库路径。'
-    } finally {
-        Remove-Item -LiteralPath $output -ErrorAction SilentlyContinue
-    }
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output -PathType Leaf)) {
+            Stop-Dev "lyFlow 运行库恢复失败（退出码 $LASTEXITCODE），已停止启动。请检查网络或上方错误；如需无引擎启动，执行 pnpm dev -NoLyFlow。"
+        }
+        $runtime = Get-Content -LiteralPath $output -Raw | ConvertFrom-Json
+    } finally { Remove-Item -LiteralPath $output -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $debugRuntime) { Remove-Item -LiteralPath $debugRuntime -Recurse -Force }
+    [void][IO.Directory]::CreateDirectory($debugRuntime)
+    foreach ($item in Get-ChildItem -LiteralPath $runtime.path -Force) { Copy-Item -LiteralPath $item.FullName -Destination $debugRuntime -Recurse -Force }
+    Write-Host "lyFlow $($runtime.version) 已复制到 $debugRuntime"
 }
-Write-Host '系统设置里已保存的核心库路径优先于 LYFLOW_CORE_DLL。'
+
+if ($LyFlowSource) {
+    $sourceRoot = [IO.Path]::GetFullPath($LyFlowSource)
+    $client = Join-Path $sourceRoot 'crates/lyflow-client'
+    if (-not (Test-Path -LiteralPath (Join-Path $client 'Cargo.toml') -PathType Leaf)) { Stop-Dev "-LyFlowSource 不是 lyFlow 仓库根目录（缺少 crates/lyflow-client/Cargo.toml）：$sourceRoot" }
+    . (Join-Path $PSScriptRoot 'LyFlow-Dependency.ps1')
+    $gitUrl = Get-LyFlowGitUrl (Get-LyFlowDependencyConfig $root)
+    $patch = "patch.`"$gitUrl`".lyflow-client.path='$($client.Replace('\', '/'))'"
+    $separator = [Array]::IndexOf($TauriArgs, '--')
+    $TauriArgs = if ($separator -ge 0) {
+        @($TauriArgs[0..$separator]) + @('--config', $patch) + @($TauriArgs | Select-Object -Skip ($separator + 1))
+    } else { @($TauriArgs) + @('--', '--config', $patch) }
+    Write-Warning "联合开发：lyflow-client 改用本地源码 $client。本地 src-tauri/Cargo.lock 会变化，不要提交。"
+}
 
 Push-Location -LiteralPath $root
 try {

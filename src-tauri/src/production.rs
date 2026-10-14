@@ -26,15 +26,22 @@ pub fn graphs(recipe: &Recipe) -> Result<Value, String> {
     Ok(json!({"schemaVersion": 2, "version": GRAPH_VERSION, "shots": shots}))
 }
 
+/// 同一 主.次 系列的引擎兼容运行：发布时 1.1.0 的版本可以在 1.1.x 上生产。
 fn engine_version_matches(published: &str, loaded: &str) -> bool {
-    published.split(':').next() == Some(loaded)
+    let published = vision::series_of(published.split(':').next().unwrap_or_default());
+    published.is_some() && published == vision::series_of(loaded)
 }
 
-/// 版本号相同但核心库文件（大小或修改时间）与发布时不同：照常生产，但要让人知道结果不是验证时那份文件量的。
+/// 引擎与发布时不是同一份（同系列另一补丁版本，或同版本号但文件大小、修改时间变了）：照常生产，但要让人知道结果不是验证时那份引擎量的。
 fn engine_file_note(published: &str, engine: &Engine) -> Option<String> {
-    (published != engine.identity).then(|| format!(
-        "当前核心库 {} 与发布时的文件不同（发布时 {published}，现在 {}）：同版本号但文件大小或修改时间变了，建议重新验证并发布",
-        engine.path.display(), engine.identity))
+    if published == engine.identity { return None; }
+    let version = published.split(':').next().unwrap_or_default();
+    Some(if version != engine.version {
+        format!("发布时引擎 lyFlow {version}，当前 {}：同系列兼容运行，建议择机重新验证并发布", engine.version)
+    } else {
+        format!("当前核心库 {} 与发布时的文件不同（发布时 {published}，现在 {}）：同版本号但文件大小或修改时间变了，建议重新验证并发布",
+            engine.path.display(), engine.identity)
+    })
 }
 
 pub struct Prepared {
@@ -234,8 +241,8 @@ impl ProductionHost {
         Ok(None)
     }
 
-    fn ensure(&self, app: &AppHandle, recipe: Arc<Recipe>, core: Option<String>) -> Result<Arc<Prepared>, String> {
-        let key = warmup_key(&recipe, core.as_deref());
+    fn ensure(&self, app: &AppHandle, recipe: Arc<Recipe>) -> Result<Arc<Prepared>, String> {
+        let key = warmup_key(&recipe);
         if let Some(prepared) = self.begin(&key, Instant::now())? { return Ok(prepared); }
         let app = app.clone();
         let slot = self.slot.clone();
@@ -244,7 +251,7 @@ impl ProductionHost {
             let started = Instant::now();
             let result = run_warmup(slot, Duration::from_secs(30), move || {
                 let bundle = crate::workspace::published_bundle(&run_app, &recipe)?;
-                let engine = run_app.state::<VisionHost>().engine(core.as_deref()).ok_or("图像核心库未加载，检查系统设置")?;
+                let engine = run_app.state::<VisionHost>().engine().ok_or("图像核心库未加载")?;
                 let prepared = Prepared::load(bundle, engine, &recipe)?;
                 prepared.warm()?;
                 Ok(Arc::new(prepared))
@@ -270,8 +277,8 @@ impl ProductionHost {
     }
 }
 
-fn warmup_key(recipe: &Recipe, core: Option<&str>) -> String {
-    format!("{}:{}:{}", recipe.id, recipe.revision_id, core.unwrap_or_default())
+fn warmup_key(recipe: &Recipe) -> String {
+    format!("{}:{}", recipe.id, recipe.revision_id)
 }
 
 /// 生产预热的只读状态，查询不触发预热。
@@ -305,7 +312,7 @@ impl ProductionHost {
 
 pub fn warmup(app: &AppHandle, recipe: &Recipe) -> Warmup {
     if !crate::site::image_measurement(app) { return Warmup::Ready; }
-    let key = warmup_key(recipe, app.state::<CycleHost>().settings().lyflow_core.as_deref());
+    let key = warmup_key(recipe);
     app.state::<ProductionHost>().warmup(&key, Instant::now())
 }
 
@@ -323,14 +330,13 @@ pub fn site_admits(site: ValidationSite, offline: bool) -> Result<(), String> {
 
 pub fn ready(app: &AppHandle, recipe: &Recipe) -> Result<Option<Arc<Prepared>>, String> {
     if !crate::site::image_measurement(app) { return Ok(None); }
-    let core = app.state::<CycleHost>().settings().lyflow_core;
     let host = app.state::<ProductionHost>();
-    let site = match host.prepared(&warmup_key(recipe, core.as_deref())) {
+    let site = match host.prepared(&warmup_key(recipe)) {
         Some(prepared) => prepared.bundle.manifest.validation_site,
         None => crate::workspace::published_manifest(app, recipe)?.validation_site,
     };
     site_admits(site, crate::offline::enabled(app))?;
-    host.ensure(app, Arc::new(recipe.clone()), core).map(Some)
+    host.ensure(app, Arc::new(recipe.clone())).map(Some)
 }
 
 #[cfg(test)]
