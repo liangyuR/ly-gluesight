@@ -103,7 +103,7 @@ export default function CameraConfigPanel({ cam, initial, status, onSaved, onSav
         </select>
         {config.viewCount === 3 && mvs && <label className="field"><span>SDK 拼接布局</span><select className="input" aria-label="SDK 拼接布局" value={config.compositeLayout?.kind ?? ""} onChange={e => set("compositeLayout", e.target.value ? {kind:e.target.value as "horizontal" | "vertical"} : null)}><option value="">请选择实际交付布局</option><option value="horizontal">横向三等分</option><option value="vertical">纵向三等分</option>{config.compositeLayout?.kind === "rects" && <option value="rects">已配置矩形区域</option>}</select></label>}
         {config.viewCount === 3 && <span className="hint-cell">每个拍照点可多选图 1／2／3 分别示教，三幅图共用一次设备触发。</span>}
-        {sampleSet ? <span className="hint-cell">图像来自离线控制台所选样本集，相机与视角按样本集生成，只支持触发采集。</span> : <>
+        {sampleSet ? <span className="hint-cell">图像来自离线模式所选样本集，相机与视角按样本集生成，只支持触发采集。</span> : <>
         <span>采集方式</span>
         <div className="segmented">
           <button className={triggered ? "active" : ""} onClick={() => set("acquisition", "triggered")}>触发（飞拍）</button>

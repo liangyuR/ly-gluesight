@@ -144,7 +144,7 @@ export async function runProductionFlow(page, options = {}) {
   assert.notEqual((await invokeRead("plc_get_status")).state, "connected", "外部 PLC 必须未连接，才可进入离线");
   const navigation = page.getByRole("navigation", { name: "操作导航" });
   if (guard.settings.productSource !== "plc") {
-    await navigation.getByRole("link", { name: "系统设置", exact: true }).click();
+    await page.getByRole("link", { name: "系统设置", exact: true }).click();
     await page.getByRole("combobox", { name: "型号来源", exact: true }).selectOption("plc");
     const cyclePanel = page.locator(".panel").filter({ has: page.getByRole("heading", { name: "检测节拍", exact: true }) });
     await cyclePanel.getByRole("button", { name: "保存", exact: true }).click();
@@ -168,7 +168,7 @@ export async function runProductionFlow(page, options = {}) {
     await navigation.getByRole("link", { name: "在线检测", exact: true }).click();
     await page.getByRole("button", { name: "复位故障", exact: true }).click();
     await until(page, () => invokeRead("cycle_snapshot"), snapshot => snapshot.phase !== "FAULT", "复位故障后检测仍处于故障", 5000).catch(() => {});
-    await navigation.getByRole("link", { name: "离线控制台", exact: true }).click();
+    await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
   }
   await page.getByRole("combobox", { name: "离线配方", exact: true }).selectOption(recipeId);
   await page.getByRole("combobox", { name: "离线工况", exact: true }).selectOption("normal");
@@ -218,7 +218,7 @@ export async function runProductionFlow(page, options = {}) {
     assert.equal(preview.bytes, 16 + preview.width * preview.height);
     assert(preview.sourceWidth > 0 && preview.sourceHeight > 0);
   }
-  await navigation.getByRole("link", { name: "离线控制台", exact: true }).click();
+  await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
   await page.getByRole("button", { name: "退出离线", exact: true }).click();
   await until(page, () => invokeRead("site_status"), status => status.mode === "real", "UI 未退出离线模式");
   await page.getByRole("link", { name: "站点模式：真机", exact: true }).waitFor();

@@ -172,7 +172,7 @@ export default function TeachingPage() {
       <div className="wp-stack"><Panel title="像素当量与标定验证" detail="标定误差目标 ±0.1 mm；修改当量后需重新试测和验证"><div className="wp-form-grid">
         <NumberField label="像素当量" value={t.mmPerPx} unit="mm/px" min={.0001} step={.0005} onChange={v => update({ ...t, mmPerPx: Number.isFinite(v) ? v : null })} disabled={!unlocked || shot.skip} />
       </div>
-        <Link className="btn small" to="/camera/calibration" state={returnState(location, "单帧示教")}>飞拍工位标定</Link>
+        <Link className="btn small" to="/camera/calibration" state={returnState(location, "单帧示教")}>飞拍标定</Link>
         <p className="muted">{calibrationText(calibration)}</p>
         {calibration.state === "sampleSet" ? <p className="muted hint">当量来自样本集声明，标定验证以此为依据；改动当量后需按人工流程重新验证。</p> : <>
         <div className="wp-form-grid"><NumberField label="已知参考尺寸" value={referenceMm} unit="mm" onChange={setReferenceMm} disabled={!unlocked}/><NumberField label="实测尺寸" value={measuredMm} unit="mm" onChange={setMeasuredMm} disabled={!unlocked}/></div>

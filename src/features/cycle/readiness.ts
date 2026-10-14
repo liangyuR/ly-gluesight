@@ -3,10 +3,10 @@ import type { Readiness, ReadinessTarget, RecipeOption } from "./types";
 
 export const targetLinks: Record<ReadinessTarget, { path: string; label: string }> = {
   plc: { path: "/plc", label: "去 PLC 通讯" },
-  camera: { path: "/camera", label: "去设备与采集" },
+  camera: { path: "/camera", label: "去相机与采集" },
   workspace: { path: "/recipe", label: "去配方工作台" },
   settings: { path: "/settings", label: "去系统设置" },
-  offline: { path: "/offline", label: "去离线控制台" },
+  offline: { path: "/offline", label: "去离线模式" },
 };
 
 export const devLyflowHint = "开发构建：用 pnpm dev 启动会先恢复锁定版本 lyFlow 并设置 LYFLOW_CORE_DLL；恢复失败（无凭证或离线）时只告警继续启动。系统设置里已保存的核心库路径优先于该环境变量。";

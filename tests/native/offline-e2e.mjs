@@ -267,7 +267,7 @@ export async function runOfflineE2E(page, options) {
   assert.equal(cameras.length, 1);
   assert.equal(cameras[0].source, "sampleSet");
   const cameraId = cameras[0].id;
-  await navigation.getByRole("link", { name: "离线控制台", exact: true }).click();
+  await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
   const noRecipe = page.getByRole("note").filter({ hasText: /尚无可(开工|在当前样本集 \/ 相机组运行)的生产配方/ });
   await noRecipe.waitFor();
   const noRecipeText = (await noRecipe.innerText()).trim();
@@ -307,7 +307,7 @@ export async function runOfflineE2E(page, options) {
   await until(async () => (await call("cycle_recipes")).find(r => r.id === id), Boolean, "发布后生产配方未生效", 30000);
   const active = await until(() => ws.get(), v => !v.workspace.pending && v.workspace.publish.state === "active", "待生效版本未提交", 30000);
   const recipe = await call("cycle_layout", { recipeId: id });
-  await navigation.getByRole("link", { name: "离线控制台", exact: true }).click();
+  await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
   const runSelect = page.getByRole("combobox", { name: "离线配方", exact: true });
   await until(() => runSelect.inputValue(), value => value === id, "发布后离线配方未默认选中新配方", 15000);
   step("发布生效", { recipeId: id, publish: active.workspace.publish });
@@ -326,7 +326,7 @@ export async function runOfflineE2E(page, options) {
   }
   step("投产", { [NORMAL_PART]: normal.summary.verdict, [DEFECT_PART]: defect.summary.verdict });
 
-  await navigation.getByRole("link", { name: "离线控制台", exact: true }).click();
+  await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
   const recentTable = page.getByRole("table", { name: "最近样本件", exact: true });
   for (const { run } of [normal, defect]) {
     const row = recentTable.getByRole("row").filter({ has: page.getByRole("cell", { name: String(run.partSn), exact: true }) });
@@ -354,7 +354,7 @@ export async function runOfflineE2E(page, options) {
     await mkdir(path.dirname(options.output), { recursive: true });
     await page.screenshot({ path: path.join(path.dirname(options.output), "offline-e2e-history.png"), fullPage: true });
   }
-  await navigation.getByRole("link", { name: "离线控制台", exact: true }).click();
+  await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
   await page.getByRole("button", { name: "退出离线", exact: true }).click();
   await until(() => call("site_status"), s => s.mode === "real", "未退出离线模式");
   await page.getByRole("link", { name: "站点模式：真机", exact: true }).waitFor();
