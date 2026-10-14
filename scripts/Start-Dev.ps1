@@ -45,6 +45,13 @@ if ($NoLyFlow) {
     Write-Host "lyFlow $($runtime.version) 已复制到 $debugRuntime"
 }
 
+if (-not $LyFlowSource) {
+    $lock = Get-Content -LiteralPath (Join-Path $root 'src-tauri/Cargo.lock') -Raw
+    if ($lock -match '(?ms)^name = "lyflow-client"\r?\nversion = "[^"]+"\r?\n(?!source = "git\+)') {
+        Stop-Dev 'src-tauri/Cargo.lock 仍指向联合开发时的本地 lyflow-client。执行 git checkout -- src-tauri/Cargo.lock 恢复后再启动，或继续加 -LyFlowSource。'
+    }
+}
+
 if ($LyFlowSource) {
     $sourceRoot = [IO.Path]::GetFullPath($LyFlowSource)
     $client = Join-Path $sourceRoot 'crates/lyflow-client'
@@ -52,6 +59,9 @@ if ($LyFlowSource) {
     . (Join-Path $PSScriptRoot 'LyFlow-Dependency.ps1')
     $gitUrl = Get-LyFlowGitUrl (Get-LyFlowDependencyConfig $root)
     $patch = "patch.`"$gitUrl`".lyflow-client.path='$($client.Replace('\', '/'))'"
+    # 本地源码版本与锁定版本不同时 cargo 只记 patch.unused、仍用 Release 客户端，先把锁切到本地源码
+    & cargo update -p lyflow-client --manifest-path (Join-Path $root 'src-tauri/Cargo.toml') --config $patch
+    if ($LASTEXITCODE -ne 0) { Stop-Dev "lyflow-client 切换到本地源码失败（退出码 $LASTEXITCODE）：$client" }
     $separator = [Array]::IndexOf($TauriArgs, '--')
     $TauriArgs = if ($separator -ge 0) {
         @($TauriArgs[0..$separator]) + @('--config', $patch) + @($TauriArgs | Select-Object -Skip ($separator + 1))
