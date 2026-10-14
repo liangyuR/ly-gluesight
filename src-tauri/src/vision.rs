@@ -156,25 +156,78 @@ impl RunResult {
 #[serde(rename_all = "camelCase")]
 pub struct EngineStatus {
     pub loaded: bool,
+    /// 运行库目录
     pub path: Option<String>,
     pub version: Option<String>,
+    /// 开发构建临时指向本机 lyFlow 运行库（联合开发）
+    pub overridden: bool,
     pub message: String,
 }
 
-fn resolve_core_path(path: Option<&str>, executable: impl FnOnce() -> std::io::Result<PathBuf>) -> Result<Option<PathBuf>, String> {
-    if let Some(path) = path.map(str::trim).filter(|p| !p.is_empty()) {
-        return Ok(Some(PathBuf::from(if cfg!(windows) { path.replace('/', "\\") } else { path.to_string() })));
-    }
-    if cfg!(windows) {
-        let executable = executable().map_err(|e| format!("无法确定内置 lyFlow 核心库路径：{e}"))?;
-        let dir = executable.parent().ok_or("无法确定程序安装目录")?;
-        Ok(Some(dir.join("runtime").join("lyflow").join("lyflow_core.dll")))
-    } else {
-        Ok(None)
+/// 本版本锁定的 lyFlow 系列（packaging/runtime.json 的 lyflow.series，编译时带入）。
+pub const LYFLOW_SERIES: &str = env!("GLUESIGHT_LYFLOW_SERIES");
+/// 仅开发构建读取：联合开发时由 pnpm dev -LyFlowRuntime 设置，只对本次启动有效，不落盘。
+const RUNTIME_OVERRIDE: &str = "GLUESIGHT_LYFLOW_RUNTIME";
+
+struct RuntimeDir {
+    dir: PathBuf,
+    overridden: bool,
+}
+
+impl RuntimeDir {
+    fn core(&self) -> PathBuf {
+        self.dir.join("lyflow_core.dll")
     }
 }
 
-/// lyFlow 引擎。优先按设置路径加载，否则使用安装目录内的核心库。
+fn override_dir() -> Option<String> {
+    if cfg!(debug_assertions) { std::env::var(RUNTIME_OVERRIDE).ok() } else { None }
+}
+
+/// 运行库只在程序同目录的 runtime/lyflow；开发构建可被联合开发覆盖。
+fn runtime_dir(override_dir: Option<String>, executable: impl FnOnce() -> std::io::Result<PathBuf>) -> Result<RuntimeDir, String> {
+    if let Some(dir) = override_dir.map(|d| d.trim().to_string()).filter(|d| !d.is_empty()) {
+        return Ok(RuntimeDir { dir: PathBuf::from(dir), overridden: true });
+    }
+    let executable = executable().map_err(|e| format!("无法确定 lyFlow 运行库位置：{e}"))?;
+    let dir = executable.parent().ok_or("无法确定程序所在目录")?;
+    Ok(RuntimeDir { dir: dir.join("runtime").join("lyflow"), overridden: false })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeDescriptor {
+    engine_version: String,
+    abi_version: String,
+    architecture: String,
+    #[serde(default)]
+    local_validation_only: bool,
+}
+
+pub(crate) fn series_of(version: &str) -> Option<String> {
+    let mut parts = version.split('.');
+    let (major, minor) = (parts.next()?, parts.next()?);
+    (major.parse::<u32>().is_ok() && minor.parse::<u32>().is_ok()).then(|| format!("{major}.{minor}"))
+}
+
+/// 运行库自带的描述文件：引擎与 ABI 版本属于锁定系列、x64、正式构建。只看版本字段，不看文件摘要。
+fn check_runtime(dir: &Path, series: &str) -> Result<(), String> {
+    let path = dir.join("lyflow-runtime.json");
+    let text = crate::fsio::read_text(&path).map_err(|e| format!("lyFlow 运行库缺少描述文件 {}（{e}）", path.display()))?;
+    let descriptor: RuntimeDescriptor = serde_json::from_str(&text).map_err(|e| format!("lyFlow 运行库描述文件无效：{e}"))?;
+    if descriptor.architecture != "x64" {
+        return Err(format!("lyFlow 运行库架构为 {}，需要 x64", descriptor.architecture));
+    }
+    if descriptor.local_validation_only {
+        return Err("lyFlow 运行库是本地验证构建，不能用于 GlueSight".into());
+    }
+    if [&descriptor.engine_version, &descriptor.abi_version].iter().any(|v| series_of(v).as_deref() != Some(series)) {
+        return Err(format!("lyFlow 运行库 {}（ABI {}）不属于本版本锁定的 {series}.x 系列", descriptor.engine_version, descriptor.abi_version));
+    }
+    Ok(())
+}
+
+/// lyFlow 引擎：只从程序同目录的 runtime/lyflow 加载，加载前核对运行库描述文件。
 #[derive(Default)]
 pub struct VisionHost {
     engine: Mutex<Option<Arc<Engine>>>,
@@ -185,10 +238,9 @@ pub struct VisionHost {
 const STATUS_RELOAD_BACKOFF: Duration = Duration::from_secs(5);
 
 impl VisionHost {
-    pub fn engine(&self, path: Option<&str>) -> Option<Arc<Engine>> {
-        match resolve_core_path(path, std::env::current_exe) {
-            Ok(Some(resolved)) => self.engine_at(&resolved, path.map(str::trim).filter(|p| !p.is_empty()).is_none()),
-            Ok(None) => None,
+    pub fn engine(&self) -> Option<Arc<Engine>> {
+        match runtime_dir(override_dir(), std::env::current_exe) {
+            Ok(runtime) => self.engine_at(&runtime),
             Err(message) => {
                 *self.error.lock().unwrap() = Some(message);
                 None
@@ -196,16 +248,24 @@ impl VisionHost {
         }
     }
 
-    fn engine_at(&self, path: &Path, bundled: bool) -> Option<Arc<Engine>> {
+    fn engine_at(&self, runtime: &RuntimeDir) -> Option<Arc<Engine>> {
+        let path = runtime.core();
         let mut guard = self.engine.lock().unwrap();
         if let Some(e) = guard.as_ref().filter(|e| e.path == path) {
             return Some(e.clone());
         }
-        let loaded = if bundled && !path.is_file() {
-            Err(format!("安装目录缺少内置 lyFlow 核心库：{}。请重新安装完整安装包，或在系统设置中指定核心库路径。", path.display()))
+        let loaded = if !path.is_file() {
+            Err(if runtime.overridden {
+                format!("联合开发指定的 lyFlow 运行库目录缺少 lyflow_core.dll：{}", runtime.dir.display())
+            } else {
+                format!("缺少 lyFlow 运行库：{}。安装版请重新安装完整安装包；开发请用 pnpm dev 启动（会准备锁定系列的运行库）。", runtime.dir.display())
+            })
+        } else if runtime.overridden {
+            Engine::load(&path)
         } else {
-            Engine::load(path)
+            check_runtime(&runtime.dir, LYFLOW_SERIES).and_then(|()| Engine::load(&path))
         };
+        let path = path.as_path();
         match loaded {
             Ok(e) => {
                 let e = Arc::new(e);
@@ -223,31 +283,30 @@ impl VisionHost {
         }
     }
 
-    pub fn status(&self, path: Option<&str>) -> EngineStatus {
-        self.status_at(path, Instant::now())
+    pub fn status(&self) -> EngineStatus {
+        self.status_at(override_dir(), Instant::now())
     }
 
     /// 未加载时同一路径的失败在退避期内直接报上次原因，不反复加载核心库。
-    fn status_at(&self, path: Option<&str>, now: Instant) -> EngineStatus {
-        let resolved = match resolve_core_path(path, std::env::current_exe) {
-            Ok(path) => path,
+    fn status_at(&self, override_dir: Option<String>, now: Instant) -> EngineStatus {
+        let runtime = match runtime_dir(override_dir, std::env::current_exe) {
+            Ok(runtime) => runtime,
             Err(message) => return EngineStatus { message, ..EngineStatus::default() },
         };
-        let bundled = path.map(str::trim).filter(|p| !p.is_empty()).is_none();
-        let engine = resolved.as_deref().and_then(|path| {
-            let loaded = self.engine.lock().unwrap().as_ref().filter(|e| e.path == path).cloned();
-            let backing_off = self.failed.lock().unwrap().as_ref()
-                .is_some_and(|(failed, at)| failed == path && now.saturating_duration_since(*at) < STATUS_RELOAD_BACKOFF);
-            loaded.or_else(|| if backing_off { None } else { self.engine_at(path, bundled) })
-        });
+        let path = runtime.core();
+        let loaded = self.engine.lock().unwrap().as_ref().filter(|e| e.path == path).cloned();
+        let backing_off = self.failed.lock().unwrap().as_ref()
+            .is_some_and(|(failed, at)| *failed == path && now.saturating_duration_since(*at) < STATUS_RELOAD_BACKOFF);
+        let engine = loaded.or_else(|| if backing_off { None } else { self.engine_at(&runtime) });
         EngineStatus {
             loaded: engine.is_some(),
-            path: resolved.as_ref().map(|path| path.display().to_string()),
+            path: Some(runtime.dir.display().to_string()),
             version: engine.as_ref().map(|e| e.version.clone()),
-            message: match (&engine, &resolved) {
-                (Some(_), _) => "已加载".into(),
-                (None, None) => "未配置核心库路径，飞拍件会判 ERR；请在系统设置指定 lyFlow 核心库".into(),
-                (None, Some(_)) => self.error.lock().unwrap().clone().unwrap_or_else(|| "加载失败".into()),
+            overridden: runtime.overridden,
+            message: match &engine {
+                Some(_) if runtime.overridden => "已加载（联合开发覆盖）".into(),
+                Some(_) => "已加载".into(),
+                None => self.error.lock().unwrap().clone().unwrap_or_else(|| "加载失败".into()),
             },
         }
     }
@@ -332,8 +391,7 @@ pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, ca
         let key = station_view_key(&camera_id(&app, cam.unwrap_or(0))?, view)?;
         if app.state::<CycleHost>().busy() || app.state::<CycleHost>().camera.recipe_capture().active() { return Err("设备正在采集或检测，结束后再标定".into()); }
         if pattern.iter().any(|n|!n.is_finite()||*n<2.0||*n>100.0||n.fract()!=0.0)||!square.is_finite()||square<=0.0 { return Err("棋盘格内角点与格长无效".into()); }
-        let settings = app.state::<CycleHost>().settings();
-        let engine = app.state::<VisionHost>().engine(settings.lyflow_core.as_deref()).ok_or("lyFlow 核心库未加载")?;
+        let engine = app.state::<VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
         let image = if let Some(id)=image_id.as_deref() {
             if crate::workspace::station_image_view(&app, cam.unwrap_or(0), id)? != view { return Err("冻结标定样本的图编号与当前选择不一致".into()); }
             crate::workspace::station_image_ref(&app,cam.unwrap_or(0),id)? } else { app

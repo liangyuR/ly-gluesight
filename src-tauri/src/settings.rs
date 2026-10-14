@@ -62,8 +62,6 @@ pub struct CycleSettings {
     pub manual_recipe_id: Option<String>,
     pub timeouts: Timeouts,
     pub history_days: u32,
-    /// lyFlow 核心库（lyflow_core.dll）路径
-    pub lyflow_core: Option<String>,
     pub record: RecordMode,
     /// 帧录制最多保留多少件、总共多少 GB，超出删最旧的
     pub record_keep: u32,
@@ -79,7 +77,6 @@ impl Default for CycleSettings {
             manual_recipe_id: None,
             timeouts: Timeouts::default(),
             history_days: 180,
-            lyflow_core: std::env::var("LYFLOW_CORE_DLL").ok(),
             record: RecordMode::Off,
             record_keep: 100,
             record_max_gb: 20.0,

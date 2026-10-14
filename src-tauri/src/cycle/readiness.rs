@@ -341,7 +341,7 @@ pub fn gather(app: &AppHandle) -> Readiness {
         checked.map_or_else(Check::Blocked, |()| Check::Ok)
     };
     let engine = image.then(|| {
-        let status = app.state::<crate::vision::VisionHost>().status(settings.lyflow_core.as_deref());
+        let status = app.state::<crate::vision::VisionHost>().status();
         if status.loaded { Ok(status.version.unwrap_or_default()) } else { Err(status.message) }
     });
     let workers = match snapshot.as_ref().map(|s| &s.measurement_workers) {

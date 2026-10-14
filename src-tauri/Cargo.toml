@@ -18,6 +18,7 @@ default = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+serde_json = "1"
 
 [dependencies]
 base64 = "=0.22.1"
@@ -29,8 +30,8 @@ tokio = { version = "1", features = ["sync", "time", "macros"] }
 libloading = "0.8"
 rusqlite = { version = "0.40", features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-# lyFlow ABI 跟随产品版本 1.1.0，固定提交以便复现。
-lyflow-client = { git = "https://github.com/liangyuR/lyFlow.git", rev = "893a0f34f5685ea6b1cb2f0b2ba9994226a9a2df" }
+# tag 必须属于 packaging/runtime.json 的 lyflow.series；升级用 pnpm deps:lyflow:update。
+lyflow-client = { git = "https://github.com/liangyuR/lyFlow.git", tag = "v1.1.1" }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "pnm", "bmp", "tiff"] }
 ly-plc = { git = "https://github.com/liangyuR/ly-plc.git", rev = "f618a3223127c107a03cbd58215c67aa5c80d8c3" }
 

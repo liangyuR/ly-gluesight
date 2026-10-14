@@ -1,7 +1,6 @@
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-use crate::cycle::CycleHost;
 use crate::vision::VisionHost;
 
 #[derive(Serialize)]
@@ -34,7 +33,6 @@ pub struct EngineStatus {
 #[tauri::command]
 pub async fn engine_status(app: AppHandle) -> EngineStatus {
     tauri::async_runtime::spawn_blocking(move || {
-        let settings = app.state::<CycleHost>().settings();
         if !crate::site::image_measurement(&app) {
             return EngineStatus {
                 backend: "模拟测量",
@@ -45,7 +43,7 @@ pub async fn engine_status(app: AppHandle) -> EngineStatus {
                 measuring: false,
             };
         }
-        let s = app.state::<VisionHost>().status(settings.lyflow_core.as_deref());
+        let s = app.state::<VisionHost>().status();
         EngineStatus { backend: "LyFlow", ready: s.loaded, message: format!("飞拍：lyFlow {}", s.message), version: s.version, path: s.path, measuring: s.loaded }
     })
     .await

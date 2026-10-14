@@ -4,14 +4,23 @@ param(
     [string]$OutputPath,
     [string]$TimingPath,
     [string]$CacheStatusJson = '{}',
-    [string]$Status = 'unknown'
+    [string]$Status = 'unknown',
+    [string]$RuntimeManifestPath
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if (!$OutputPath) { $OutputPath = Join-Path $ProjectRoot 'src-tauri/target/package-reports/release-manifest.json' }
+if (!$RuntimeManifestPath) { $RuntimeManifestPath = Join-Path $ProjectRoot 'src-tauri/target/package-runtime/runtime/manifest.json' }
 $package = Get-Content -LiteralPath (Join-Path $ProjectRoot 'package.json') -Raw | ConvertFrom-Json
-$lock = Get-Content -LiteralPath (Join-Path $ProjectRoot 'packaging/lyflow.lock.json') -Raw | ConvertFrom-Json
 $config = Get-Content -LiteralPath (Join-Path $ProjectRoot 'packaging/runtime.json') -Raw | ConvertFrom-Json
+$lyflow = [ordered]@{ repository = $config.lyflow.repository; series = $config.lyflow.series; version = $null; abiVersion = $null; clientTag = $null }
+if (Test-Path -LiteralPath $RuntimeManifestPath -PathType Leaf) {
+    $packaged = (Get-Content -LiteralPath $RuntimeManifestPath -Raw | ConvertFrom-Json).lyflow
+    foreach ($name in @('version', 'abiVersion', 'clientTag')) {
+        $property = $packaged.PSObject.Properties[$name]
+        if ($property) { $lyflow[$name] = $property.Value }
+    }
+}
 $revision = & git -C $ProjectRoot rev-parse HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Cannot read application source revision.' }
 $tools = [ordered]@{}
@@ -52,7 +61,7 @@ if ($TimingPath -and (Test-Path -LiteralPath $TimingPath)) {
 $manifest = [ordered]@{
     schemaVersion = 1
     application = [ordered]@{ version = $package.version; sourceRevision = $revision.Trim() }
-    lyflow = $lock
+    lyflow = $lyflow
     vendor = [ordered]@{ repository = $config.repository; tag = $config.tag; asset = $config.asset; bundleVersion = $config.bundleVersion; mvsVersion = $config.mvsVersion }
     tools = $tools
     caches = $CacheStatusJson | ConvertFrom-Json

@@ -15,10 +15,23 @@ fn graphs_preserve_each_shot_and_only_skip_explicitly_skipped_shots() {
     let stored: Value = serde_json::from_slice(&serde_json::to_vec(&graph).unwrap()).unwrap();
     let restored: crate::recipe::RecipeDoc = serde_json::from_slice(&serde_json::to_vec(&doc).unwrap()).unwrap();
     assert_eq!(stored, graphs(&restored.build().unwrap()).unwrap());
-    assert!(engine_version_matches("1.1.0:4096:17", "1.1.0"));
-    assert!(!engine_version_matches("1.0.0:4096:17", "1.1.0"));
     doc.shots[0].path.clear();
     assert!(graphs(&doc.build().unwrap()).unwrap_err().contains("尚未示教"));
+}
+
+#[test]
+fn release_runs_on_any_engine_of_the_same_series_only() {
+    let cases = [
+        ("1.1.0:4096:17", "1.1.0", true),
+        ("1.1.0:4096:17", "1.1.7", true),
+        ("1.1.3:4096:17", "1.1.0", true),
+        ("1.1.0:4096:17", "1.2.0", false),
+        ("1.1.0:4096:17", "2.1.0", false),
+        ("bad:4096:17", "1.1.0", false),
+    ];
+    for (published, loaded, runs) in cases {
+        assert_eq!(engine_version_matches(published, loaded), runs, "{published} → {loaded}");
+    }
 }
 
 #[test]

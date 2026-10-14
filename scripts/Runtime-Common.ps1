@@ -2,39 +2,49 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Get-RuntimeConfiguration {
-    $config = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../packaging/runtime.json') -Raw | ConvertFrom-Json
-    if ($config.schemaVersion -ne 2) { throw '拒绝旧运行依赖配置，请重建为拆分依赖格式。' }
-    $locked = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../packaging/lyflow.lock.json') -Raw | ConvertFrom-Json
-    Assert-NoRuntimeDigests $locked
-    if ($locked.schemaVersion -ne 1 -or $locked.packageId -cne $config.lyflow.packageId -or
-        $locked.architecture -cne $config.architecture -or $locked.version -cnotmatch ('^' + [regex]::Escape($config.lyflow.series) + '\.\d+$') -or
-        [version]$locked.version -lt [version]$config.lyflow.minimumVersion) { throw 'lyFlow 锁定记录不符合兼容系列、最低版本或包身份配置。' }
-    Assert-LyFlowSourceRevision $locked.sourceRevision $locked.sourceRevision 'lyFlow 锁定记录'
-    $config | Add-Member -NotePropertyName lyflowAbiVersion -NotePropertyValue $locked.version
-    $config | Add-Member -NotePropertyName lyflowSourceRevision -NotePropertyValue $locked.sourceRevision
+function Get-RuntimeConfiguration([string]$Path = (Join-Path $PSScriptRoot '../packaging/runtime.json')) {
+    $config = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    Assert-LyFlowRuntimeConfig $config
     $config
 }
 
-function Assert-LyFlowVersions($AbiVersion, $EngineVersion, [string]$Context) {
-    $expected = (Get-RuntimeConfiguration).lyflowAbiVersion
-    if ($AbiVersion -isnot [string] -or $EngineVersion -isnot [string] -or
-        $AbiVersion -cne $expected -or $EngineVersion -cne $expected) {
-        throw "$Context 的 lyFlow ABI 和引擎版本必须严格等于字符串 '$expected'；实际 ABI='$AbiVersion'，引擎='$EngineVersion'。不接受数字 ABI 或旧产物。"
-    }
+function Get-RuntimeField($Object, [string]$Name) {
+    if ($null -eq $Object -or $Object -is [string] -or $Object -is [ValueType]) { return $null }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($property) { $property.Value }
 }
 
-function Assert-LyFlowSourceRevision($Actual, $Expected, [string]$Context) {
-    if ($Actual -isnot [string] -or $Expected -isnot [string] -or
-        $Actual -cnotmatch '^[0-9a-f]{40}$' -or $Expected -cnotmatch '^[0-9a-f]{40}$' -or $Actual -cne $Expected) {
-        throw "$Context 的 lyFlow sourceRevision 必须是与正式产物严格一致的 40 位 Git 修订；实际='$Actual'，期望='$Expected'。"
+function Assert-LyFlowRuntimeConfig($Config) {
+    Assert-NoRuntimeDigests $Config
+    if ((Get-RuntimeField $Config 'schemaVersion') -ne 2 -or (Get-RuntimeField $Config 'architecture') -cne 'x64') {
+        throw '拒绝旧运行依赖配置：packaging/runtime.json 必须使用 schema 2 和 x64 架构。'
+    }
+    $lyflow = Get-RuntimeField $Config 'lyflow'
+    if ($lyflow -isnot [Management.Automation.PSCustomObject]) { throw 'packaging/runtime.json 缺少 lyflow 配置。' }
+    $names = [string]::Join(',', @($lyflow.PSObject.Properties.Name | Sort-Object))
+    if ($names -cne 'repository,series') { throw "lyFlow 配置只允许 repository 与 series 字段，拒绝旧 NuGet 或锁定字段：$names" }
+    if ($lyflow.repository -isnot [string] -or $lyflow.repository -cnotmatch '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$') { throw "lyFlow 仓库必须写成 owner/name：$($lyflow.repository)" }
+    if ($lyflow.series -isnot [string] -or $lyflow.series -cnotmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)$') { throw "lyFlow 系列必须写成 主.次：$($lyflow.series)" }
+}
+
+function Test-LyFlowSeriesVersion($Version, [string]$Series) {
+    $Version -is [string] -and $Version -cmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$' -and
+        $Version.Substring(0, $Version.LastIndexOf('.')) -ceq $Series
+}
+
+function Assert-LyFlowVersions($AbiVersion, $EngineVersion, [string]$Context, [string]$ExpectedEngineVersion) {
+    $series = (Get-RuntimeConfiguration).lyflow.series
+    if (-not (Test-LyFlowSeriesVersion $AbiVersion $series)) { throw "$Context 的 lyFlow ABI 版本 '$AbiVersion' 不属于 $series 系列。" }
+    if (-not (Test-LyFlowSeriesVersion $EngineVersion $series)) { throw "$Context 的 lyFlow 引擎版本 '$EngineVersion' 不属于 $series 系列。" }
+    if ($ExpectedEngineVersion -and $EngineVersion -cne $ExpectedEngineVersion) {
+        throw "$Context 的 lyFlow 引擎版本 '$EngineVersion' 与所选版本 '$ExpectedEngineVersion' 不一致。"
     }
 }
 
 function Assert-LyFlowReleaseMetadata($Metadata, [string]$Context) {
-    Assert-LyFlowSourceRevision $Metadata.sourceRevision $Metadata.sourceRevision $Context
-    if ($Metadata.localValidationOnly -isnot [bool] -or $Metadata.localValidationOnly) {
-        throw "$Context 必须显式声明 localValidationOnly=false；拒绝 dirty 或仅本机诊断的 lyFlow 候选。"
+    $localOnly = Get-RuntimeField $Metadata 'localValidationOnly'
+    if ($localOnly -isnot [bool] -or $localOnly) {
+        throw "$Context 必须显式声明 localValidationOnly=false；拒绝仅本机诊断的 lyFlow 候选。"
     }
 }
 
@@ -138,7 +148,6 @@ function Assert-RuntimeManifest([string]$RuntimeRoot) {
         $manifest.mvs.version -ne $config.mvsVersion) { throw '运行库包版本、架构或 MVS 版本不符合固定配置。' }
     Assert-LyFlowVersions $manifest.lyflow.abiVersion $manifest.lyflow.version '依赖包清单'
     Assert-LyFlowReleaseMetadata $manifest.lyflow '依赖包清单'
-    Assert-LyFlowSourceRevision $manifest.lyflow.sourceRevision $config.lyflowSourceRevision '依赖包与锁定记录'
     $actual = @(Get-RuntimeFiles $RuntimeRoot | Where-Object path -ne 'manifest.json')
     if ($actual.Count -ne @($manifest.files).Count) { throw '运行库文件清单数量不一致。' }
     $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -158,14 +167,14 @@ function Assert-MvsRuntimeStructure([string]$MvsRoot) {
     }
 }
 
-function Expand-RuntimeArchive([string]$Archive, [string]$Destination) {
+function Expand-RuntimeArchive([string]$Archive, [string]$Destination, [string]$EntryPrefix = 'runtime/') {
     $root = [IO.Path]::GetFullPath($Destination).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
     $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
     try {
         $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         foreach ($entry in $zip.Entries) {
             $name = $entry.FullName.Replace('\', '/')
-            if ($name -notmatch '^runtime/' -or $name.Contains(':') -or $name.Split('/') -contains '..' -or -not $seen.Add($name)) { throw "依赖 ZIP 条目路径无效：$name" }
+            if (-not $name.StartsWith($EntryPrefix, [StringComparison]::Ordinal) -or $name.StartsWith('/') -or $name.Contains(':') -or $name.Split('/') -contains '..' -or -not $seen.Add($name)) { throw "依赖 ZIP 条目路径无效：$name" }
             $target = [IO.Path]::GetFullPath((Join-Path $Destination $name))
             if (-not $target.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { throw "依赖 ZIP 条目逃出暂存目录：$name" }
             $unixType = ($entry.ExternalAttributes -shr 16) -band 0xf000

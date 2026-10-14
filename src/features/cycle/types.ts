@@ -273,7 +273,6 @@ export interface CycleSettings {
   manualRecipeId: string | null;
   timeouts: Timeouts;
   historyDays: number;
-  lyflowCore: string | null;
   record: RecordMode;
   recordKeep: number;
   recordMaxGb: number;
