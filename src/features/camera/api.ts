@@ -1,10 +1,10 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 import { subscribe } from "../plc";
-import type { CameraConfig, CameraStatus, DeviceSummary, DryFrame, Frame, PreviewImage } from "./types";
+import type { CameraConfig, CameraStatus, DeviceSummary, Frame, PreviewImage } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
-  if (!isTauri() && ["camera_save_config","camera_add","camera_remove","camera_soft_trigger","camera_dry_run_start","camera_dry_run_stop"].includes(cmd))
+  if (!isTauri() && ["camera_save_config","camera_add","camera_remove","camera_soft_trigger"].includes(cmd))
     return Promise.reject(new Error("设备操作需要 GlueSight · 胶路智检 桌面后端"));
   if (!isTauri()) return Promise.resolve(fallback());
   return invoke<T>(cmd, args);
@@ -53,9 +53,6 @@ export const cameraApi = {
   listDevices: () => call<DeviceSummary[]>("camera_list_devices", undefined, () => []),
   preview: (cam: number, view?: number) => call<ArrayBuffer>("camera_preview", { cam, ...(view == null ? {} : { view }) }, () => new ArrayBuffer(0)).then(decodePreview),
   softTrigger: (cam: number) => call<void>("camera_soft_trigger", { cam }, () => undefined),
-  dryRunStart: () => call<void>("camera_dry_run_start", undefined, () => undefined),
-  dryRunGet: () => call<DryFrame[] | null>("camera_dry_run_get", undefined, () => null),
-  dryRunStop: () => call<DryFrame[]>("camera_dry_run_stop", undefined, () => []),
 };
 
 /** 相机组状态每秒刷新；各相机最近一帧攒起来每 250 ms 交一次（缩略图本来也是 250 ms 取一次），页面不必跟着每帧重画。 */

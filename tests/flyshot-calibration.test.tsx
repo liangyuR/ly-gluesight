@@ -2,7 +2,7 @@ import {render,screen} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import {beforeEach,expect,it,vi} from "vitest";
-import { FlyshotCalibrationPage } from "../src/pages/CameraPage";
+import FlyshotCalibrationPage from "../src/pages/FlyshotCalibrationPage";
 import FeasibilityCalc from "../src/features/camera/components/FeasibilityCalc";
 import {cameraApi,defaultCameraConfig,useRigStatus} from "../src/features/camera/api";
 import {useCycle,useSiteStatus} from "../src/features/cycle/api";
