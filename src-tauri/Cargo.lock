@@ -2181,7 +2181,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 [[package]]
 name = "ly-plc"
 version = "0.1.0"
-source = "git+https://github.com/liangyuR/ly-plc.git?rev=1113dc67f82ed4b552bc57d37e413f4c269445a9#1113dc67f82ed4b552bc57d37e413f4c269445a9"
+source = "git+https://github.com/liangyuR/ly-plc.git?rev=f71789b3b567bf3648ffacd5535d3446f2ed30e3#f71789b3b567bf3648ffacd5535d3446f2ed30e3"
 dependencies = [
  "async-trait",
  "rusqlite",
