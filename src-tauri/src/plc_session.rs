@@ -365,7 +365,12 @@ impl PlcSession {
         if status.poll_count == 0 || status.last_poll.is_none_or(|polled| polled < status.since) {
             return Ok(SessionEvent::None);
         }
-        let snapshot = Snapshot::capture(engine, self.contract.as_ref().unwrap(), Self::max_age(engine))?;
+        let contract = self.contract.as_ref().unwrap();
+        let snapshot = if matches!(self.phase, SessionPhase::ResetRequired | SessionPhase::Fault) {
+            Snapshot::capture_for_reset(engine, contract, Self::max_age(engine))?
+        } else {
+            Snapshot::capture(engine, contract, Self::max_age(engine))?
+        };
         let now = now_ms();
         let heartbeat = snapshot.read_bool(tag::PLC_HEARTBEAT)?;
         let observation = self.heartbeat.lock().unwrap().observe(heartbeat, now);
@@ -394,7 +399,14 @@ impl PlcSession {
             if !self.heartbeat.lock().unwrap().is_live(now) { return Err("尚未观察到 PLC 心跳翻转，不能复位".into()); }
             if !audit_ready { return Ok(SessionEvent::None); }
             let baseline = handshake::ResetBaseline::capture(&snapshot)?;
-            self.audit(engine, "resetRequested", "明确复位请求；尚未清除未结事务").await?;
+            let repair = snapshot.sn_repair_plan();
+            let reason = if repair.is_empty() { "明确复位请求；尚未清除未结事务".to_owned() } else {
+                let tags = repair.iter().map(|op| op.tag).collect::<Vec<_>>().join("、");
+                self.write(engine, repair).await?;
+                baseline.verify(&Snapshot::capture(engine, self.contract.as_ref().unwrap(), Self::max_age(engine))?)?;
+                format!("明确复位请求；已把声明长度异常的 {tags} 重写为空 STRING；尚未清除未结事务")
+            };
+            self.audit(engine, "resetRequested", &reason).await?;
             self.write(engine, handshake::reset_plan()).await?;
             let after = Snapshot::capture(engine, self.contract.as_ref().unwrap(), Self::max_age(engine))?;
             baseline.verify(&after)?;
