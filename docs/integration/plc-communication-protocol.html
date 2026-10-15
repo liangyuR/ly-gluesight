@@ -353,7 +353,12 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <li>字节 +2 至 +25：字符区 24 字节，有效字符之后的未用字节补 0。</li>
 </ul>
 <p><code>partSn</code> 占 DBB38–63（头 DBB38/39，字符 DBB40–63），<code>resultSn</code> 占 DBB88–113（头 DBB88/89，字符 DBB90–113）。两段均须在 DB 中按 <code>STRING[24]</code> 声明并保留起始值，空串时头为 <code>18 00</code>（声明 24、实际 0）。</p>
-<p class="callout warning"><strong>长度头异常不是请求 payload 不合法。</strong> PC 每个轮询周期都读取两段 STRING，声明长度字节不为 24 或实际长度大于 24 时该点位读错误，与心跳、序号等字段读失败一样直接进入视觉故障（<code>visionFault=1</code>、<code>visionReady=0</code>）。这与是否有 <code>partStart</code> 无关，空闲时同样发生；读错误持续期间显式复位也无法完成。最常见原因是用块操作、<code>FILL_BLK</code> 或整 DB 清零覆盖了头字节 DBB38 或 DBB88，或 DB 仍是协议 2 的 UDInt 布局。PC 复位不会重写 <code>resultSn</code>，必须由 PLC 恢复 DB 起始值（TIA 重新初始化该 DB 或按 <code>18 00</code> 写回头字节），再按第 8 节复位。禁止整 DB 清零。</p>
+<p class="callout warning"><strong>长度头异常不是请求 payload 不合法。</strong> PC 每个轮询周期都读取两段 STRING，声明长度字节不为 24 或实际长度大于 24 时该点位读错误，与心跳、序号等字段读失败一样直接进入视觉故障（<code>visionFault=1</code>、<code>visionReady=0</code>）。这与是否有 <code>partStart</code> 无关，空闲时同样发生。最常见原因是用块操作、<code>FILL_BLK</code> 或整 DB 清零覆盖了头字节 DBB38 或 DBB88，或 DB 仍是协议 2 的 UDInt 布局。两段的恢复责任按所有者划分：</p>
+<ul>
+<li><code>resultSn</code>（PC 区）仅声明长度字节不为 24 时，PC 在显式复位中自行恢复：满足第 8 节复位条件后，PC 先把 <code>resultSn</code> 写回空串（头 <code>18 00</code>），读回确认并记入复位审计，再继续清输出、置 <code>visionReady</code>。实际长度大于 24 等其他读错误不在此列，仍须 PLC 恢复。</li>
+<li><code>partSn</code>（PLC 区）长度头异常时 PC 不写该区，显式复位无法完成；必须由 PLC 恢复 DB 起始值（TIA 重新初始化该 DB 或按 <code>18 00</code> 写回头字节），再按第 8 节复位。</li>
+</ul>
+<p>PC 的自恢复只是兜底，不改变 PLC 职责：禁止整 DB 清零。</p>
 <p>SN 规则：</p>
 <ul>
 <li>长度 1–24 个字符，每个字符为 ASCII 可打印字符 0x20–0x7E；去掉首尾空白后不能为空。</li>
