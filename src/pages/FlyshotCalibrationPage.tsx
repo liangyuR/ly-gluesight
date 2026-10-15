@@ -30,7 +30,7 @@ export default function FlyshotCalibrationPage() {
   const busy=productionBusy(snapshot);
   const sampleSet=offline&&site?.source==="sampleSet"?site.sampleSet:null;
   const feasibility:FeasibilitySources={
-    exposure:config?{value:config.exposureUs,from:"来自相机参数"}:null,
+    exposure:null,
     fps:status?.maxFps?{value:status.maxFps,from:"来自相机最高帧率"}:null,
     mmPerPx:sampleSet?.mmPerPx?{value:sampleSet.mmPerPx,from:"来自样本集声明"}:calibMm?{value:calibMm,from:"来自工位标定"}:null,
   };

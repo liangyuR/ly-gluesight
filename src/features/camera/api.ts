@@ -20,8 +20,6 @@ export const defaultCameraConfig: CameraConfig = {
   triggerActivation: "RisingEdge",
   triggerDelayUs: 0,
   debouncerUs: 5,
-  exposureUs: 60,
-  gainDb: 6,
   strobe: true,
   chunk: true,
   counterAfterOpen: null,

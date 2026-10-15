@@ -1,6 +1,6 @@
 import { desktopCall } from "../../lib/desktop";
-import type { RecipeDoc } from "../cycle/types";
-import type { CaptureRound, Comparison, FrozenImage, GrayImage, Overview, RecordImages, Sample, ShotTeach, Workspace, WorkspaceView } from "./types";
+import type { CameraImaging, RecipeDoc } from "../cycle/types";
+import type { CaptureRound, Comparison, FrozenImage, GrayImage, ImagingSaved, Overview, RecordImages, Sample, ShotTeach, Workspace, WorkspaceView } from "./types";
 
 export async function decodeGray(input: ArrayBuffer | number[]): Promise<GrayImage> {
   const buf=input instanceof ArrayBuffer?input:Uint8Array.from(input).buffer;
@@ -36,6 +36,8 @@ export const workspaceApi = {
   create: (doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_create", { doc }),
   remove: (id: string) => desktopCall<void>("workspace_delete", { id }),
   saveDoc: (id: string, revision: number, doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_save_doc", { id, revision, doc }),
+  /** 写进候选配方，并在设备空闲时立即下发到这台相机；applyError 为下发失败的原因（参数已保存）。 */
+  setCameraImaging: (id: string, revision: number, camera: string, imaging: CameraImaging) => desktopCall<ImagingSaved>("workspace_set_camera_imaging", { id, revision, camera, imaging }),
   selectView: (id: string, revision: number, k: number, view: number) => desktopCall<WorkspaceView>("workspace_select_view", { id, revision, k, view }),
   image: (id: string, imageId: string) => desktopCall<ArrayBuffer>("workspace_image", { id, imageId }).then(decodeGray),
   /** 按候选里已保存的中线试测冻结原图。 */

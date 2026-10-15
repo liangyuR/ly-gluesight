@@ -1,4 +1,4 @@
-import type { DetectParams, Judgement, Measured, Recipe, RecipeDoc, ShotLimits, Verdict } from "../cycle/types";
+import type { CameraImaging, DetectParams, Judgement, Measured, Recipe, RecipeDoc, ShotLimits, Verdict } from "../cycle/types";
 
 /** 一个拍照点的示教：在冻结原图上点出的中线（图像像素，从胶嘴一侧往外）、像素当量与可选的检测参数。
  * workspace_save_params 把它写进候选配方的这个拍照点；detect 不设时不发送（用配方的检测参数）。 */
@@ -46,6 +46,7 @@ export interface Workspace {
   overview: Overview; samples: Sample[]; validation: Validation | null; pending: Release | null;
   sampleBank: BankSample[];
   lastPosition?: { k: number; view: number } | null; captureId?: string | null;
+  unboundImaging?: Record<string, CameraImaging>;
   publish: PublishState; updatedAt: number;
 }
 /** 发布与生效状态（后端显式枚举）。 */
@@ -90,6 +91,7 @@ export interface Comparison {
   originalVerdict: Verdict; judgement: Judgement; measurements: Measured[]; createdAt: number;
 }
 export interface GrayImage { url: string; width: number; height: number }
+export interface ImagingSaved { view: WorkspaceView; applyError: string | null }
 
 export interface CaptureRound {
   roundId: string; recipeId: string; cameraId: string; deviceSession: number; plannedCount: number | null; receivedCount: number;

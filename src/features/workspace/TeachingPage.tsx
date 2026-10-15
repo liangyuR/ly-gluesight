@@ -4,7 +4,7 @@ import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { Eraser, Save, Trash2, Undo2, WandSparkles } from "lucide-react";
 import { useCycle } from "../cycle/api";
 import { pathLength, shotLabel, shotSegment } from "../cycle/vis";
-import type { DetectParams, Polarity, JudgeParams, ShotLimits } from "../cycle/types";
+import type { DetectParams, Polarity, JudgeParams, RecipeDoc, ShotLimits } from "../cycle/types";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, FrameRail, GrayViewer, KV, Notice, NumberField, Panel, Steps, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
@@ -20,6 +20,13 @@ function FrozenViewOption({ id, metadata, selected, disabled, onSelect }: { id: 
     <span className="wp-view-thumbnail">{image ? <img src={image.url} alt={"图 " + metadata.view} /> : <span>{loading ? "读取中…" : error ? "图像不可用" : "等待图像"}</span>}</span>
     <strong>图 {metadata.view}{selected ? " · 已选" : ""}</strong><small>{metadata.size[0]} × {metadata.size[1]}</small>
   </button>;
+}
+
+function imagingMismatch(image: FrozenImage | null | undefined, doc: RecipeDoc) {
+  const current = image && doc.cameras?.[image.camera];
+  if (!image || !current || image.exposureUs == null || image.gainDb == null) return null;
+  if (image.exposureUs === current.exposureUs && image.gainDb === current.gainDb) return null;
+  return `采集时曝光 ${image.exposureUs} µs / 增益 ${image.gainDb} dB，与配方当前值（${current.exposureUs} µs / ${current.gainDb} dB）不同`;
 }
 
 export default function TeachingPage() {
@@ -67,6 +74,7 @@ export default function TeachingPage() {
   if (!data || !doc) return <WorkspaceEmpty />;
   if (!frame || !shot) return <div className="wp-page"><WorkspaceBar /><Steps /><Notice title="当前配方没有拍照点" tone="warn">请先完成整圈采集并采用本轮图像。</Notice><Link className="btn" to="/recipe/capture">整圈采集</Link></div>;
   const saved = shotTeach(shot);
+  const imagingHint = imagingMismatch(frame.image, data.workspace.doc);
   const t = frameDrafts[k] ?? saved;
   const editing = !sameTeach(t, saved);
   const invalid = teachError(t);
@@ -189,7 +197,7 @@ export default function TeachingPage() {
         {t.limits ? <div className="wp-stack">{limitGroup("position","位置")}{limitGroup("width","胶宽")}<div className="wp-form-grid"><NumberField label="允许连续缺胶长度" value={t.limits.maxGapLen} unit="mm" min={0} step={.1} disabled={!unlocked} onChange={v=>t.limits && changeLimits({...t.limits,maxGapLen:v})}/><NumberField label="最低有胶比例" value={t.limits.minPresent} min={0} max={1} step={.05} disabled={!unlocked} onChange={v=>t.limits && changeLimits({...t.limits,minPresent:v})}/></div></div> : <p className="muted hint">判定限值沿用配方默认值。测量误差目标与胶宽合格公差分别设置。</p>}
         {editing && invalid && <Notice title="本帧中线无效" tone="warn">{invalid}</Notice>}
         </Panel>
-      <Panel title="样本绑定"><KV label="工作帧">k{k+1}</KV><KV label="当前编辑图">图 {shot.view}</KV><KV label="图像">{frame.image?.id ?? "未冻结"}</KV><KV label="曝光">{frame.image?.exposureUs != null ? frame.image.exposureUs + " μs" : "未记录"}</KV><KV label="增益">{frame.image?.gainDb != null ? frame.image.gainDb + " dB" : "未记录"}</KV><KV label="原图更新">仅通过整圈重新采集</KV></Panel>
+      <Panel title="样本绑定"><KV label="工作帧">k{k+1}</KV><KV label="当前编辑图">图 {shot.view}</KV><KV label="图像">{frame.image?.id ?? "未冻结"}</KV><KV label="曝光">{frame.image?.exposureUs != null ? frame.image.exposureUs + " μs" : "未记录"}</KV><KV label="增益">{frame.image?.gainDb != null ? frame.image.gainDb + " dB" : "未记录"}</KV><KV label="原图更新">仅通过整圈重新采集</KV>{imagingHint && <p className="c-warn" role="note">{imagingHint}；样本仍可用，需要时整圈重采</p>}</Panel>
       <Notice title="保存与发布分开">中线保存进候选配方，生产配方不变；保存本帧后，先验证代表性样本，再发布生产版本。</Notice></div>
     </div></div>;
 }

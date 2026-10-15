@@ -79,7 +79,8 @@ fn progress_compares_frozen_images_with_current_devices() {
     type Edit = fn(&mut Workspace, &mut Devices);
     let cases: [(&str, Edit, ShotState, bool, fn(&CalibrationState) -> bool); 7] = [
         ("设备与采集时一致", |_, _| {}, ShotState::Taught, false, |c| matches!(c, CalibrationState::SampleSet { .. })),
-        ("曝光参数改变", |_, d| { d.views.get_mut(&(0, 1)).unwrap().0 = json!({"exposureUs": 80.0}); }, ShotState::Recapture, false, |c| *c == CalibrationState::Stale),
+        ("配方改了这台相机的曝光与增益", |w, _| set_imaging(w, "cam1", crate::recipe::CameraImaging { exposure_us: 80.0, gain_db: 2.0 }).unwrap(),
+            ShotState::Taught, false, |c| matches!(c, CalibrationState::SampleSet { .. })),
         ("相机当前不可用", |_, d| d.views.clear(), ShotState::Recapture, false, |c| *c == CalibrationState::Stale),
         ("换同名相机的另一套样本集", |w, d| {
             for image in &mut w.frames[0].views { image.camera_tag = sample_set_camera("mx11"); }

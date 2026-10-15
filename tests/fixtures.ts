@@ -24,8 +24,8 @@ export function workspaceView(id = "A"): WorkspaceView {
   const limits: ShotLimits = { position, width: null, maxGapLen: .5, minPresent: .8 };
   const detect: DetectParams = { searchMm: 4, polarity: "dark", widthRange: [1, 6] };
   const doc: RecipeDoc = {
-    id, name: `工件 ${id}`, version: 2, productCode: 1, triggerMode: "fly", schemaVersion: 5,
-    spacing: 1, filterWindow: 3, detect, limits, shots: shotList(twoLines),
+    id, name: `工件 ${id}`, version: 2, productCode: 1, triggerMode: "fly", schemaVersion: 6,
+    spacing: 1, filterWindow: 3, detect, limits, shots: shotList(twoLines), cameras: { "CAM-1": { exposureUs: 60, gainDb: 6 } },
   };
   const layout: Recipe = {
     ...structuredClone(doc), revisionId: `revisionId-${id}`,
@@ -38,7 +38,7 @@ export function workspaceView(id = "A"): WorkspaceView {
       doc, baseRevision: `production-${id}`, revision: 7, updatedAt: 1, publish: { state: "draft" }, pending: null,
       frames: [0, 1].map(k => {
         const image: FrozenImage = { id: `${id}-image-${k}`, source: "camera", capturedAt: 1, size: [100, 60], camera: "CAM-1", view: 1,
-          cameraTag: { id: "CAM-1", source: "sim", viewCount: 1, acquisition: "triggered", exposureUs: 60, gainDb: 6 }, calibTag: { path: "C:/test/calib/plane_calib.json", value: null }, geometryTag: [`P${k + 1}`, `P${k + 1}`, "CAM-1", 1, "CAM-1-v1"], exposureUs: 60, gainDb: 6, historyId: null };
+          cameraTag: { id: "CAM-1", source: "sim", viewCount: 1, acquisition: "triggered" }, calibTag: { path: "C:/test/calib/plane_calib.json", value: null }, geometryTag: [`P${k + 1}`, `P${k + 1}`, "CAM-1", 1, "CAM-1-v1"], exposureUs: 60, gainDb: 6, historyId: null };
         return { k, saved: false, backup: null, image, views: [image],
         trial: { imageId: `${id}-image-${k}`, paramsTag: [doc.shots[k].view, structuredClone(doc.shots[k].path), doc.shots[k].mmPerPx, structuredClone(detect), structuredClone(limits), doc.spacing, doc.filterWindow], geometryTag: [`P${k + 1}`, `P${k + 1}`, "CAM-1", 1, "CAM-1-v1"], engineTag: { path: "C:/test/lyflow_core.dll", version: "1.1.0" }, passed: true,
           score: .94, coverage: 1, elapsedMs: 8, reason: "试测通过", measurement: { ids: [2 * k, 2 * k + 1] } },

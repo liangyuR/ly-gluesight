@@ -93,7 +93,7 @@ export interface Recipe {
   teachingId?: string | null;
   productCode: number;
   triggerMode: TriggerMode;
-  /** 配方文件格式版本，当前为 4 */
+  /** 配方文件格式版本，当前为 6 */
   schemaVersion: number;
   /** 站距（mm） */
   spacing: number;
@@ -116,7 +116,7 @@ export interface RecipeDoc {
   teachingId?: string | null;
   productCode: number;
   triggerMode: TriggerMode;
-  /** 配方文件格式版本，当前为 4；不符的文件后端拒绝 */
+  /** 配方文件格式版本，当前为 6；不符的文件后端拒绝 */
   schemaVersion: number;
   /** 站距（mm） */
   spacing: number;
@@ -125,7 +125,16 @@ export interface RecipeDoc {
   detect: DetectParams;
   limits: ShotLimits;
   shots: ShotSpec[];
+  /** 各相机的曝光与增益：拍照点用到的相机各一组 */
+  cameras: Record<string, CameraImaging>;
 }
+
+export interface CameraImaging {
+  exposureUs: number;
+  gainDb: number;
+}
+
+export const DEFAULT_IMAGING: CameraImaging = { exposureUs: 60, gainDb: 6 };
 
 export interface RecipeSummary {
   id: string;

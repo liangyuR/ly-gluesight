@@ -12,8 +12,6 @@ export interface CameraConfig {
   triggerActivation: "RisingEdge" | "FallingEdge";
   triggerDelayUs: number;
   debouncerUs: number;
-  exposureUs: number;
-  gainDb: number;
   strobe: boolean;
   chunk: boolean;
   counterAfterOpen?: number | null;

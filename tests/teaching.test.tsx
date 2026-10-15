@@ -46,4 +46,15 @@ describe("单帧示教", () => {
     expect(ws.setError).toHaveBeenCalledWith(expect.stringContaining("保存参数未完成，未进行试测"));
     expect(workspaceApi.trial).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["配方曝光与增益和采集时相同 → 不提示", 60, 6, false],
+    ["配方曝光已改 → 提示采集时的值", 80, 6, true],
+    ["配方增益已改 → 提示采集时的值", 60, 2, true],
+  ])("%s", (_, exposureUs, gainDb, hinted) => {
+    ws.data!.workspace.doc.cameras["CAM-1"] = { exposureUs, gainDb };
+    show();
+    const hint = screen.queryByText(/采集时曝光 60 µs \/ 增益 6 dB，与配方当前值/);
+    if (hinted) expect(hint).toBeVisible(); else expect(hint).toBeNull();
+  });
 });

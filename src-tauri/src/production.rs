@@ -62,7 +62,7 @@ impl Prepared {
             || recipe.product_code != expected.product_code || recipe.trigger_mode != expected.trigger_mode || recipe.schema_version != expected.schema_version
             || recipe.shots != expected.shots || recipe.spacing != expected.spacing || recipe.detect != expected.detect
             || recipe.limits != expected.limits || recipe.filter_window != expected.filter_window || recipe.teaching_id != expected.teaching_id
-            || recipe.plan_version != expected.plan_version { return Err("发布包配方与所选生产版本不一致，请重新发布".into()); }
+            || recipe.plan_version != expected.plan_version || recipe.camera_imaging != expected.camera_imaging { return Err("发布包配方与所选生产版本不一致，请重新发布".into()); }
         if bundle.manifest.versions.graph != GRAPH_VERSION || !engine_version_matches(&bundle.manifest.versions.engine, &engine.version) {
             return Err("发布包的算法图或引擎版本与当前引擎不一致，请重新验证并发布".into());
         }

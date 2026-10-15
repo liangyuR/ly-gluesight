@@ -322,6 +322,11 @@ fn adopt_capture(app: AppHandle, id: String, revision: u64, round_id: String, re
         .flatten().filter(|set| set.has_camera(&round.camera_id));
     let old = w.clone();
     w.doc.shots.clear(); w.frames.clear();
+    let imaging = w.doc.cameras.get(&round.camera_id).or(w.unbound_imaging.get(&round.camera_id)).copied().unwrap_or(round.imaging);
+    let others: Vec<_> = std::mem::take(&mut w.doc.cameras).into_iter().filter(|(c, _)| *c != round.camera_id).collect();
+    w.unbound_imaging.extend(others);
+    w.unbound_imaging.remove(&round.camera_id);
+    w.doc.cameras.insert(round.camera_id.clone(), imaging);
     for (k, captured) in round.frames.iter().enumerate() {
         let id = format!("S{:03}", k + 1);
         let mut shot = if reuse_teaching { old.doc.shots[k].clone() } else {
@@ -369,7 +374,7 @@ fn adopt_capture(app: AppHandle, id: String, revision: u64, round_id: String, re
             });
             frame.views.push(FrozenImage { id: image_id, view: raw.view, source: format!("capture:{}", round.round_id),
                 captured_at: round.created_at, size: [raw.width, raw.height], camera: round.camera_id.clone(), camera_tag, calib_tag,
-                geometry_tag: shot_tags(&projection, k)?.0, exposure_us: Some(camera.exposure_us), gain_db: Some(camera.gain_db), history_id: None });
+                geometry_tag: shot_tags(&projection, k)?.0, exposure_us: Some(round.imaging.exposure_us), gain_db: Some(round.imaging.gain_db), history_id: None });
             frame.view_states.push(ViewTeaching { view: raw.view, trial: None, saved: false, calibration_check });
         }
         frame.image = frame.views.iter().find(|i| i.view == w.doc.shots[k].view).cloned();

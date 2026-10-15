@@ -140,6 +140,7 @@ pub fn run() {
             workspace::workspace_create,
             workspace::workspace_delete,
             workspace::workspace_save_doc,
+            workspace::workspace_set_camera_imaging,
             workspace::workspace_select_view,
             workspace::workspace_image,
             workspace::workspace_trial,

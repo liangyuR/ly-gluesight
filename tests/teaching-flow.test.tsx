@@ -71,7 +71,7 @@ it("从采集原图完成逐帧示教、总览、独立样本采集验证并确�
   vi.mocked(cameraApi.rigConfig).mockResolvedValue([{
     id: "CAM-1", name: "拼接设备", source: "sim", viewCount: 3, serial: "DEVICE",
     triggerSource: "Line0", triggerActivation: "RisingEdge", triggerDelayUs: 0, debouncerUs: 0,
-    exposureUs: 60, gainDb: 0, strobe: false, chunk: true,
+    strobe: false, chunk: true,
   }]);
   vi.mocked(captureCameraApi.rigStatus).mockResolvedValue([{ id: "CAM-1", ready: true }] as Awaited<ReturnType<typeof captureCameraApi.rigStatus>>);
   vi.mocked(plcApi.getStatus).mockResolvedValue({ state: "connected", message: "PLC 已连接" } as Awaited<ReturnType<typeof plcApi.getStatus>>);
