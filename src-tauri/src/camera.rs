@@ -16,7 +16,7 @@ use tokio::sync::mpsc::Sender;
 use crate::cycle::{self, CycleHost, Phase};
 use crate::frame::{CounterSource, Frame, FrameImage, FramePool};
 use crate::mvs::{self, DeviceSummary, FrameInfo};
-use crate::recipe::{legacy_camera_id, valid_camera_id, Recipe};
+use crate::recipe::{legacy_camera_id, valid_camera_id, CameraImaging, Recipe};
 use crate::offline::sample_set::SampleSet;
 use crate::offline::Scenario;
 use crate::simimage::{self, PoseError};
@@ -95,8 +95,6 @@ pub struct CameraConfig {
     pub trigger_activation: String,
     pub trigger_delay_us: f32,
     pub debouncer_us: i64,
-    pub exposure_us: f32,
-    pub gain_db: f32,
     pub strobe: bool,
     pub chunk: bool,
     pub counter_after_open: Option<u64>,
@@ -115,8 +113,6 @@ impl Default for CameraConfig {
             trigger_activation: "RisingEdge".into(),
             trigger_delay_us: 0.0,
             debouncer_us: 5,
-            exposure_us: 60.0,
-            gain_db: 6.0,
             strobe: true,
             chunk: true,
             counter_after_open: None,
@@ -131,9 +127,6 @@ impl CameraConfig {
         }
         if self.source == CameraSource::Mvs && self.view_count == 3 && self.composite_layout.is_none() {
             return Err("三幅拼接图必须明确配置 SDK 交付布局，未确认布局不能启用".into());
-        }
-        if !(1.0..=1_000_000.0).contains(&self.exposure_us) {
-            return Err("曝光时间需在 1–1000000 µs 之间".into());
         }
         if !["Line0", "Software"].contains(&self.trigger_source.as_str()) {
             return Err("触发源只能是 Line0 或 Software".into());
@@ -591,6 +584,8 @@ pub struct CameraSlot {
     seq: Mutex<u64>,
     /// 已释放给海康 MVS 客户端（调焦、光圈）：关闭设备且不自动重连，直到重新连接
     released: AtomicBool,
+    /// 本次打开后已写进海康相机的曝光与增益；关闭、重开时清空，下次必写
+    imaging: Mutex<Option<CameraImaging>>,
 }
 
 /// 后台循环是否该（重新）打开这台海康相机：释放给 MVS 期间一律不开，免得把 MVS 客户端挤掉。
@@ -635,6 +630,7 @@ impl CameraSlot {
             state: Mutex::new(DeviceState::default()),
             seq: Mutex::new(0),
             released: AtomicBool::new(false),
+            imaging: Mutex::new(None),
         };
         if let Err(e) = slot.config().validate() {
             slot.state.lock().unwrap().message = e;
@@ -902,8 +898,29 @@ impl CameraSlot {
 
     fn close(&self) {
         self.device.lock().unwrap().take();
+        self.imaging.lock().unwrap().take();
         self.shared.disconnected.store(false, Ordering::SeqCst);
         self.shared.unusable.store(0, Ordering::Relaxed);
+    }
+
+    /// 把配方的曝光与增益写进已打开的海康相机，不重开、不换会话；与上次写入相同时不再写。模拟、样本集相机不用写。
+    pub fn set_imaging(&self, imaging: &CameraImaging) -> Result<(), String> {
+        let config = self.config();
+        imaging.validate(&config.id)?;
+        if config.source != CameraSource::Mvs { return Ok(()); }
+        if self.released.load(Ordering::SeqCst) {
+            return Err(format!("{}已释放给海康 MVS 客户端，重新连接后才能下发曝光与增益", config.name));
+        }
+        let device = self.device.lock().unwrap();
+        let d = device.as_ref().filter(|_| !self.shared.disconnected.load(Ordering::SeqCst))
+            .ok_or_else(|| format!("{}未连接，不能下发曝光与增益", config.name))?;
+        let mut applied = self.imaging.lock().unwrap();
+        if applied.as_ref() == Some(imaging) { return Ok(()); }
+        *applied = None;
+        d.set_float("ExposureTime", imaging.exposure_us).map_err(|e| format!("{}写入曝光时间失败：{e}", config.name))?;
+        d.set_float("Gain", imaging.gain_db).map_err(|e| format!("{}写入增益失败：{e}", config.name))?;
+        *applied = Some(*imaging);
+        Ok(())
     }
 
     fn open(&self) -> Result<String, String> {
@@ -997,9 +1014,7 @@ fn apply(d: &mvs::Device, c: &CameraConfig) -> Result<(Vec<String>, Option<f32>,
         must(d.set_int("LineDebouncerTime", c.debouncer_us));
     }
     must(d.set_enum("ExposureAuto", "Off"));
-    must(d.set_float("ExposureTime", c.exposure_us));
     must(d.set_enum("GainAuto", "Off"));
-    must(d.set_float("Gain", c.gain_db));
     if d.set_enum("LineSelector", "Line1").is_ok() {
         if c.strobe {
             must(d.set_enum("LineMode", "Strobe"));
@@ -1159,6 +1174,17 @@ impl CameraRig {
                 let st = slot.status();
                 return Err(format!("{}未就绪：{}", st.name, st.message));
             }
+        }
+        Ok(())
+    }
+
+    /// 把配方的曝光与增益下发到这些相机；有一台写不进去就返回原因。
+    pub fn apply_imaging(&self, cams: &[u8], recipe: &Recipe) -> Result<(), String> {
+        for &c in cams {
+            let slot = self.slot(c as usize).ok_or("相机组改过了")?;
+            let id = slot.config().id;
+            let imaging = recipe.imaging(&id).ok_or_else(|| format!("配方 {} 没有相机 {id} 的曝光与增益", recipe.id))?;
+            slot.set_imaging(&imaging)?;
         }
         Ok(())
     }

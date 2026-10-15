@@ -28,7 +28,7 @@ it("相机状态轮询多次刷新 → 飞拍可行性只渲染一个面板",asy
 });
 
 it("速度和拍照点间距未填 → 不给出满足结论并列出缺项",()=>{
- render(<FeasibilityCalc sources={{exposure:{value:60,from:"来自相机参数"},fps:{value:5.6,from:"来自相机最高帧率"},mmPerPx:{value:0.04,from:"来自工位标定"}}} imageSize={{width:1280,height:1024}}/>);
+ render(<FeasibilityCalc sources={{exposure:{value:60,from:"来自配方"},fps:{value:5.6,from:"来自相机最高帧率"},mmPerPx:{value:0.04,from:"来自工位标定"}}} imageSize={{width:1280,height:1024}}/>);
  expect(screen.getByRole("status")).toHaveTextContent("还缺：速度、最小拍照点间距");
  expect(screen.queryByText("满足")).toBeNull();
 });

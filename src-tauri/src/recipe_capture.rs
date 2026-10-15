@@ -8,6 +8,7 @@ use tauri::{AppHandle, Manager};
 use crate::camera::CameraSource;
 use crate::cycle::{CycleHost, Phase};
 use crate::frame::{CounterSource, Frame, FrameImage};
+use crate::recipe::CameraImaging;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -92,6 +93,7 @@ pub struct CaptureRound {
     pub recipe_id: String,
     pub camera_id: String,
     pub camera_config: serde_json::Value,
+    pub imaging: CameraImaging,
     pub device_session: u64,
     pub planned_count: Option<u32>,
     pub plc_planned_count: Option<u32>,
@@ -246,7 +248,7 @@ impl RecipeCaptureHost {
         Ok(round)
     }
 
-    pub fn start(&self, recipe_id: String, cam: u8, camera_id: String, camera_config: serde_json::Value, session: u64, source: Option<CounterSource>, trigger_baseline: Option<u64>, drain_timeout_ms: u64, simulated: bool) -> Result<CaptureRound, String> {
+    pub fn start(&self, recipe_id: String, cam: u8, camera_id: String, camera_config: serde_json::Value, imaging: CameraImaging, session: u64, source: Option<CounterSource>, trigger_baseline: Option<u64>, drain_timeout_ms: u64, simulated: bool) -> Result<CaptureRound, String> {
         if !(200..=30000).contains(&drain_timeout_ms) || session == 0 {
             return Err("等待在途帧时间须为 200–30000 ms，且设备会话必须就绪".into());
         }
@@ -266,7 +268,7 @@ impl RecipeCaptureHost {
                 Err(e) => return Err(e.to_string()),
             }
         };
-        let round = CaptureRound { round_id, recipe_id, camera_id, camera_config, device_session: session, planned_count: None, plc_planned_count: None, plc_actual_count: None, plc_plan_version: None, received_count: 0, state: CaptureState::WaitingStart, created_at, ended_at: None, frames: Vec::new(), error: None, simulated };
+        let round = CaptureRound { round_id, recipe_id, camera_id, camera_config, imaging, device_session: session, planned_count: None, plc_planned_count: None, plc_actual_count: None, plc_plan_version: None, received_count: 0, state: CaptureState::WaitingStart, created_at, ended_at: None, frames: Vec::new(), error: None, simulated };
         self.save(&round)?;
         let frame_baseline = matches!(source, Some(CounterSource::SdkFrame | CounterSource::ChunkFrame)).then_some(trigger_baseline).flatten();
         *guard = Some(Running { round: round.clone(), cam, source, last_frame: frame_baseline, last_trigger: trigger_baseline, drain_timeout: Duration::from_millis(drain_timeout_ms), deadline: Instant::now() + Duration::from_secs(120) });
@@ -459,8 +461,10 @@ fn start_capture(app: AppHandle, recipe_id: String, camera_id: String, drain_tim
     let (arm, ledger) = slot.routing_state()?;
     let source = ledger.as_ref().and_then(|l| l.source).or(arm.source);
     let baseline = ledger.as_ref().and_then(|l| l.last).or(arm.counter_after_open);
-    app.state::<crate::workspace::WorkspaceHost>().capture_for_candidate(&recipe_id, || {
-        cycle.camera.recipe_capture().start(recipe_id.clone(), cam, camera_id, serde_json::to_value(&config).map_err(|e| e.to_string())?, arm.session, source, baseline, drain_timeout_ms.unwrap_or(1000), config.source != CameraSource::Mvs)
+    app.state::<crate::workspace::WorkspaceHost>().capture_for_candidate(&recipe_id, |workspace| {
+        let imaging = workspace.imaging(&camera_id);
+        slot.set_imaging(&imaging)?;
+        cycle.camera.recipe_capture().start(recipe_id.clone(), cam, camera_id, serde_json::to_value(&config).map_err(|e| e.to_string())?, imaging, arm.session, source, baseline, drain_timeout_ms.unwrap_or(1000), config.source != CameraSource::Mvs)
     })
 }
 
@@ -520,7 +524,7 @@ mod tests {
 
     fn start(host: &RecipeCaptureHost) -> CaptureRound {
         let session = host.current().map_or(9, |r| r.device_session + 1);
-        host.start("recipe-a".into(), 0, "cam1".into(), serde_json::json!({"source":"sim"}), session, Some(CounterSource::Synthetic), Some(0), 200, true).unwrap()
+        host.start("recipe-a".into(), 0, "cam1".into(), serde_json::json!({"source":"sim"}), crate::recipe::DEFAULT_IMAGING, session, Some(CounterSource::Synthetic), Some(0), 200, true).unwrap()
     }
 
     fn frame(n: u64) -> Frame {
@@ -594,10 +598,10 @@ mod tests {
     fn first_real_frame_requires_a_baseline_and_cannot_be_old_or_missing() {
         for source in [None, Some(CounterSource::SdkFrame), Some(CounterSource::ChunkFrame), Some(CounterSource::ChunkTrigger)] {
             let host = host();
-            assert!(host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), 9, source, None, 200, false).is_err());
+            assert!(host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), crate::recipe::DEFAULT_IMAGING, 9, source, None, 200, false).is_err());
             for first in [10, 12] {
                 let session = first;
-                let round = host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), session, source, Some(10), 200, false).unwrap();
+                let round = host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), crate::recipe::DEFAULT_IMAGING, session, source, Some(10), 200, false).unwrap();
                 host.plc_started(1).unwrap();
                 let mut f = frame(first);
                 f.session = session;
@@ -606,7 +610,7 @@ mod tests {
                 assert_eq!(host.current().unwrap().state, CaptureState::Failed);
                 assert!(host.current().unwrap().frames.is_empty());
             }
-            let round = host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), 9, source, Some(10), 200, false).unwrap();
+            let round = host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), crate::recipe::DEFAULT_IMAGING, 9, source, Some(10), 200, false).unwrap();
             host.plc_started(1).unwrap();
             let mut f = frame(11); f.counter = source.unwrap_or(CounterSource::SdkFrame);
             receive(&host, &round, f);
@@ -619,16 +623,16 @@ mod tests {
         for counter in [CounterSource::Synthetic, CounterSource::SdkFrame, CounterSource::ChunkTrigger] {
         let host = host();
         let simulated = counter == CounterSource::Synthetic;
-        let round = host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), 9,
+        let round = host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), crate::recipe::DEFAULT_IMAGING, 9,
             Some(counter), Some(0), 200, simulated).unwrap();
         host.plc_started(20).unwrap();
         for n in 1..=19 { let mut f = frame(n); f.counter = counter; receive(&host, &round, f); }
         host.plc_ended(20).unwrap();
         drain(&host);
         assert_eq!(host.current().unwrap().state, CaptureState::Failed);
-        assert!(host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), 9,
+        assert!(host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), crate::recipe::DEFAULT_IMAGING, 9,
             Some(counter), Some(19), 200, simulated).unwrap_err().contains("重新连接"));
-        let next = host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), 10,
+        let next = host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), crate::recipe::DEFAULT_IMAGING, 10,
             Some(counter), Some(0), 200, simulated).unwrap();
         host.plc_started(20).unwrap();
         receive(&host, &round, frame(20));
@@ -664,7 +668,7 @@ mod tests {
     fn each_frame_must_carry_exactly_the_device_view_count() {
         for (device_views, delivered, accepted) in [(1, 1, true), (1, 3, false), (3, 3, true), (3, 1, false)] {
             let host = host();
-            let round = host.start("recipe-a".into(), 0, "cam1".into(), serde_json::json!({"viewCount": device_views}), 9,
+            let round = host.start("recipe-a".into(), 0, "cam1".into(), serde_json::json!({"viewCount": device_views}), crate::recipe::DEFAULT_IMAGING, 9,
                 Some(CounterSource::Synthetic), Some(0), 200, true).unwrap();
             host.plc_started(1).unwrap();
             let mut f = frame(1);
@@ -750,6 +754,6 @@ mod tests {
         forged = valid; forged.round_id = "capture-other".into();
         assert!(host.validate_record(&round.round_id, &forged).is_err());
         assert!(host.get("capture-../../outside").is_err());
-        assert!(host.start("recipe-a".into(), 0, "cam1".into(), serde_json::json!({}), 9, None, None, 200, true).is_err());
+        assert!(host.start("recipe-a".into(), 0, "cam1".into(), serde_json::json!({}), crate::recipe::DEFAULT_IMAGING, 9, None, None, 200, true).is_err());
     }
 }

@@ -834,6 +834,17 @@ impl Machine {
         Ok(())
     }
 
+    /// 人工选定的配方先把曝光与增益下发下去，布防时只需核对；失败只记日志，布防阶段再强制下发。
+    fn preapply_imaging(&self, recipe: Arc<Recipe>, cams: Vec<u8>) {
+        if host(&self.app).camera.recipe_capture().active() { return; }
+        let app = self.app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            if let Err(error) = app.state::<CycleHost>().camera.apply_imaging(&cams, &recipe) {
+                log(&app, "warn", "相机", format!("配方 {} 的曝光与增益预先下发失败，开工布防时再下发：{error}", recipe.id));
+            }
+        });
+    }
+
     fn check_idle_devices(&mut self) -> Result<(), String> {
         self.service_ready()?;
         let host = host(&self.app);
@@ -845,6 +856,9 @@ impl Machine {
             if req.warnings != self.config_warnings {
                 self.config_warnings = req.warnings.clone();
                 self.dirty = true;
+            }
+            if let (Ok(cams), Some(recipe)) = (&req.cams, self.current_recipe().filter(|_| host.settings().product_source == ProductSource::Manual)) {
+                self.preapply_imaging(recipe, cams.clone());
             }
             self.required = Some(req);
         }
@@ -1013,6 +1027,20 @@ impl Machine {
         };
         if let Err(reason) = host.camera.check_ready_at(&cams) {
             return self.refuse(sn, id, fault::DEVICE_LOST, reason).await;
+        }
+        let imaging = {
+            let (app, recipe, cams) = (app.clone(), recipe.clone(), cams.clone());
+            budget.run("camera-imaging", async move {
+                tauri::async_runtime::spawn_blocking(move || app.state::<CycleHost>().camera.apply_imaging(&cams, &recipe)).await.map_err(|error| error.to_string())
+            }).await
+        };
+        match imaging {
+            Ok(Ok(())) => {}
+            Ok(Err(reason)) => return self.refuse(sn, id, fault::DEVICE_LOST, format!("相机曝光与增益下发失败：{reason}")).await,
+            Err(reason) => {
+                log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "refused", "trace": budget.trace()}).to_string());
+                return self.refuse(sn, id, fault::PROCESS_TIMEOUT, reason).await;
+            }
         }
         let camera_ids = recipe.cameras();
         let mut identities: Vec<ArmCam> = Vec::new();

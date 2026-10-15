@@ -28,7 +28,8 @@ pub fn recipe_doc(cycle: State<'_, CycleHost>, id: String) -> Result<RecipeDoc, 
 
 /// 按编辑中的内容生成配方但不保存，配方页画预览用。
 #[tauri::command]
-pub fn recipe_preview(doc: RecipeDoc) -> Result<Recipe, String> {
+pub fn recipe_preview(mut doc: RecipeDoc) -> Result<Recipe, String> {
+    doc.sync_imaging();
     doc.build()
 }
 
@@ -47,6 +48,7 @@ pub fn recipe_template(cycle: State<'_, CycleHost>) -> RecipeDoc {
         for shot in &mut doc.shots {
             shot.camera = c.id.clone();
         }
+        doc.sync_imaging();
     }
     doc
 }

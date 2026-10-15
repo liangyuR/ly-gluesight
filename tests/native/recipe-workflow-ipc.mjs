@@ -73,10 +73,10 @@ try {
         }
         frames.push({ shotId: `S${String(k + 1).padStart(4, '0')}`, ordinal: k + 1, frameCounter: k + 1, triggerCounter: k + 1, originalPath, views });
       }
-      const record = { roundId, recipeId: id, cameraId: camera.id, cameraConfig: camera, deviceSession: 1, plannedCount: 20,
+      const record = { roundId, recipeId: id, cameraId: camera.id, cameraConfig: camera, imaging: { exposureUs: 80, gainDb: 3 }, deviceSession: 1, plannedCount: 20,
         plcPlannedCount: 20, plcActualCount: 20, plcPlanVersion: 1, receivedCount: 20, state: 'complete',
         createdAt: Date.now(), endedAt: Date.now(), frames, error: null, simulated: true };
-      const text = JSON.stringify(record).replace(/"(fps|triggerDelayUs|exposureUs|gainDb)":(-?\d+)(?=[,}])/g, '"$1":$2.0');
+      const text = JSON.stringify(record).replace(/"(fps|triggerDelayUs)":(-?\d+)(?=[,}])/g, '"$1":$2.0');
       await writeFile(join(profile, 'recipe-capture', roundId, 'round.json'), text, { flag: 'wx' });
       return roundId;
     };
@@ -85,6 +85,7 @@ try {
     await mutate('workspace_adopt_capture', { roundId: teaching, reuseTeaching: false, correspondenceConfirmed: false });
     assert.equal(state.workspace.doc.shots.length, 20);
     assert(state.workspace.frames.every(frame => frame.views.length === 3));
+    assert.deepEqual(state.workspace.doc.cameras, { [camera.id]: { exposureUs: 80, gainDb: 3 } });
     report.checks.push('Adopt 20 complete persisted shots with three independent views');
     await assert.rejects(invoke('workspace_capture_sample', { id, revision: state.workspace.revision, roundId: teaching, expected: 'OK', correspondenceConfirmed: true }), /示教采集不能/);
     await assert.rejects(invoke('workspace_restore_teach', { id, revision: state.workspace.revision, k: 0 }), /整圈示教不能/);

@@ -9,7 +9,7 @@ import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, KV, Notice, NumberField, Panel, Steps, WorkspaceBar, WorkspaceEmpty, GrayViewer } from "./components";
 import type { CaptureRound, GrayImage } from "./types";
-import type { Verdict } from "../cycle/types";
+import { DEFAULT_IMAGING, type CameraImaging, type Verdict } from "../cycle/types";
 import { expectedChoices } from "./progress";
 import type { CaptureNavigationState } from "./captureNavigation";
 import { productionBusy as isProductionBusy } from "../cycle/phase";
@@ -49,6 +49,7 @@ export default function CapturePage() {
   const [plc,setPlc] = useState("正在读取 PLC 状态"), [plcConnected,setPlcConnected] = useState(false), [deviceReady,setDeviceReady] = useState(false);
   const [sampleExpected,setSampleExpected] = useState<Verdict>("OK");
   const [reuse,setReuse] = useState(false), [confirmed,setConfirmed] = useState(false);
+  const [imagingDraft,setImagingDraft] = useState<CameraImaging & {camera: string} | null>(null), [applyError,setApplyError] = useState({camera:"",message:""});
   const selectedCamera = cameras.some(c=>c.id===cameraId) ? cameraId : cameras[0]?.id || "";
   const current = useRef({id:doc?.id,alive:true}); current.current.id=doc?.id;
   useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;};},[]);
@@ -119,9 +120,19 @@ export default function CapturePage() {
   const pad=(k: number) => String(k+1).padStart(2,"0");
   const shownK=preview?.k ?? previewK;
   const finished=!!round && !active, collapsed=finished && prepOpenFor!==round.roundId;
+  const savedImaging=data.workspace.doc.cameras?.[selectedCamera] ?? data.workspace.unboundImaging?.[selectedCamera] ?? DEFAULT_IMAGING;
+  const imaging=imagingDraft?.camera===selectedCamera ? imagingDraft : savedImaging;
+  const imagingInvalid=!(imaging.exposureUs>=1 && imaging.exposureUs<=1_000_000) ? "曝光时间需在 1–1000000 µs 之间" : !(Number.isFinite(imaging.gainDb) && imaging.gainDb>=0) ? "增益需为不小于 0 的有限数" : "";
+  const liveError=applyError.camera===selectedCamera ? applyError.message : "";
+  const imagingChanged=imaging.exposureUs!==savedImaging.exposureUs || imaging.gainDb!==savedImaging.gainDb;
+  const editImaging=(key: keyof CameraImaging, value: number) => setImagingDraft({...imaging,[key]:value,camera:selectedCamera});
+  const applyImaging=() => { const camera=selectedCamera, next={exposureUs:imaging.exposureUs,gainDb:imaging.gainDb}; void act(async () => { const saved=await workspaceApi.setCameraImaging(doc.id,data.workspace.revision,camera,next); setApplyError({camera,message:saved.applyError ?? ""}); setImagingDraft(null); return saved.view; },"曝光与增益已写入候选配方"); };
   const startDisabled=locked || active || !!startBlocked || !selectedCamera || !Number.isFinite(drain) || drain<200 || drain>30000;
   const prepPanel = <Panel key="prep" title={validation ? "实拍独立验证样本" : "设备准备与整圈采集"} detail="选择一个 SDK device；每次触发的一张拼接图生成一个拍照点" actions={finished && <button className="btn small" onClick={()=>setPrepOpenFor(null)}>收起</button>}>
     <label className="field"><span>采集 device</span><select className="input" aria-label="采集 device" value={selectedCamera} disabled={locked || active} onChange={e=>setCameraId(e.target.value)}>{cameras.map(c=><option key={c.id} value={c.id}>{c.name} · {c.serial || c.source}</option>)}</select></label>
+    <div className="wp-form-grid"><NumberField label="曝光时间（µs）" value={imaging.exposureUs} min={1} max={1_000_000} onChange={v=>editImaging("exposureUs",v)} disabled={locked || active}/><NumberField label="增益（dB）" value={imaging.gainDb} min={0} step={0.5} onChange={v=>editImaging("gainDb",v)} disabled={locked || active}/></div>
+    <div className="wp-actions"><button className="btn" disabled={locked || active || !selectedCamera || !!imagingInvalid || (!imagingChanged && !liveError)} onClick={applyImaging}>应用</button><span className="muted">写入候选配方并立即下发到相机</span></div>
+    {imagingInvalid ? <p className="c-ng" role="alert">{imagingInvalid}</p> : liveError && <Notice title="已写入候选配方，但没能下发到相机" tone="warn">{liveError}</Notice>}
     <KV label="设备">{deviceReady ? "就绪" : "未就绪"}</KV><KV label="PLC">{plc}</KV>
     <div className="wp-form-grid"><NumberField label="在途图像等待时间" value={drain} min={200} max={30000} unit="ms" onChange={setDrain} disabled={locked || active}/></div>
     <div className="wp-actions"><Link className="btn" to="/camera" state={navigationState}>配置设备</Link><Link className="btn" to="/plc" state={navigationState}>PLC 通讯</Link><Link className="btn" to="/camera/calibration" state={navigationState}>飞拍标定</Link></div>

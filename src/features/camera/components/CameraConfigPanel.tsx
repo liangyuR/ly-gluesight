@@ -59,7 +59,7 @@ export default function CameraConfigPanel({ ref, cam, initial, status, locked, s
   useEffect(()=>()=>onDirtyChange?.(false),[onDirtyChange]);
 
   const set = <K extends keyof CameraConfig>(key: K, value: CameraConfig[K]) => {setNotice(null);setConfig(c=>({ ...c, [key]: value }));};
-  const numberLabels={triggerDelayUs:"触发延时（µs）",debouncerUs:"输入滤波（µs）",exposureUs:"曝光时间（µs）",gainDb:"增益（dB）"};
+  const numberLabels={triggerDelayUs:"触发延时（µs）",debouncerUs:"输入滤波（µs）"};
   const num = (key: keyof typeof numberLabels, step = 1) => (
     <input id={`cam-${key}`} aria-label={numberLabels[key]} className="input mono" type="number" step={step} value={Number.isFinite(config[key])?config[key]:""} onChange={(e) => set(key, e.target.value===""?NaN:Number(e.target.value))} />
   );
@@ -69,8 +69,6 @@ export default function CameraConfigPanel({ ref, cam, initial, status, locked, s
     ![1,3].includes(config.viewCount)?"设备视角数只能为 1 或 3":
     mvs&&!config.serial?"请选择要绑定的相机设备":
     mvs&&config.counterAfterOpen!=null&&(!Number.isSafeInteger(config.counterAfterOpen)||config.counterAfterOpen<0)?"开流前触发计数需为非负安全整数，未知时请留空":
-    !(config.exposureUs>=1&&config.exposureUs<=1_000_000)?"曝光时间需在 1–1000000 µs 之间":
-    !Number.isFinite(config.gainDb)?"增益需为有限数":
     ![config.triggerDelayUs,config.debouncerUs].every(v=>Number.isFinite(v)&&v>=0)?"触发延时与输入滤波需为非负有限数":"";
 
   const save = async () => {
@@ -158,11 +156,7 @@ export default function CameraConfigPanel({ ref, cam, initial, status, locked, s
             <label className="check"><input type="checkbox" checked={config.chunk} onChange={(e) => set("chunk", e.target.checked)} />帧计数、触发计数、时间戳</label>
           </Group>
           <Group title="成像">
-            <span>曝光时间（µs）</span>
-            {num("exposureUs")}
-            <span className="hint-cell">运动中取图需要微秒级曝光配合频闪</span>
-            <span>增益（dB）</span>
-            {num("gainDb", 0.5)}
+            <span className="hint-cell">曝光与增益随配方保存，在配方采集页调整并下发；这里取图沿用相机当前值（最近一次配方下发或在海康 MVS 客户端设置的值）。</span>
           </Group>
           <Group title="高级" open={false}>
             <span>开流前触发计数</span>

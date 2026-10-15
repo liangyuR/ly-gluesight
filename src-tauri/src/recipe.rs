@@ -169,7 +169,33 @@ fn valid_label(s: &str) -> bool {
 }
 
 /// 配方文件格式版本。不一致的文件列为加载错误，不迁移。
-pub const RECIPE_SCHEMA: u32 = 5;
+pub const RECIPE_SCHEMA: u32 = 6;
+
+/// 一台相机在这个配方下的曝光与增益：示教采集和生产布防前下发到相机。
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CameraImaging {
+    pub exposure_us: f32,
+    pub gain_db: f32,
+}
+
+pub const DEFAULT_IMAGING: CameraImaging = CameraImaging { exposure_us: 60.0, gain_db: 6.0 };
+
+impl Default for CameraImaging {
+    fn default() -> Self { DEFAULT_IMAGING }
+}
+
+impl CameraImaging {
+    pub fn validate(&self, camera: &str) -> Result<(), String> {
+        if !(1.0..=1_000_000.0).contains(&self.exposure_us) {
+            return Err(format!("相机 {camera} 的曝光时间需在 1–1000000 µs 之间"));
+        }
+        if !(self.gain_db.is_finite() && self.gain_db >= 0.0) {
+            return Err(format!("相机 {camera} 的增益需为不小于 0 的有限数"));
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -341,11 +367,17 @@ pub struct Recipe {
     pub detect: DetectParams,
     pub limits: ShotLimits,
     pub shots: Vec<ShotSpec>,
+    #[serde(rename = "cameras")]
+    pub camera_imaging: BTreeMap<String, CameraImaging>,
     pub segments: Vec<Segment>,
     pub points: PathPoints,
 }
 
 impl Recipe {
+    pub fn imaging(&self, camera: &str) -> Option<CameraImaging> {
+        self.camera_imaging.get(camera).copied()
+    }
+
     pub fn shot_count(&self) -> usize {
         self.shots.len()
     }
@@ -432,9 +464,29 @@ pub struct RecipeDoc {
     pub limits: ShotLimits,
     #[serde(default)]
     pub shots: Vec<ShotSpec>,
+    /// 各相机的曝光与增益：拍照点用到的相机各一组，不多不少
+    #[serde(default)]
+    pub cameras: BTreeMap<String, CameraImaging>,
 }
 
 impl RecipeDoc {
+    pub fn shot_cameras(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for s in &self.shots {
+            if !out.contains(&s.camera) { out.push(s.camera.clone()); }
+        }
+        out
+    }
+
+    /// 拍照点新用到的相机补默认成像参数，不再用到的相机去掉，返回去掉的那些。
+    pub fn sync_imaging(&mut self) -> BTreeMap<String, CameraImaging> {
+        let used = self.shot_cameras();
+        let (kept, dropped): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut self.cameras).into_iter().partition(|(c, _)| used.contains(c));
+        self.cameras = kept;
+        for c in used { self.cameras.entry(c).or_default(); }
+        dropped
+    }
+
     /// PLC 侧要照着走的那部分：两份配方这几项逐项相同，就是同一份拍照计划（逐字段比较，不算摘要）。
     pub fn same_plan(&self, other: &RecipeDoc) -> bool {
         self.product_code == other.product_code
@@ -469,6 +521,16 @@ impl RecipeDoc {
             if !ids.insert(shot.id.as_str()) {
                 return Err(format!("拍照点编号 {} 重复", shot.id));
             }
+        }
+        let used = self.shot_cameras();
+        if let Some(missing) = used.iter().find(|c| !self.cameras.contains_key(*c)) {
+            return Err(format!("相机 {missing} 被拍照点使用，但配方没有它的曝光与增益"));
+        }
+        for (camera, imaging) in &self.cameras {
+            if !used.contains(camera) {
+                return Err(format!("配方给了相机 {camera} 的曝光与增益，但没有拍照点使用它"));
+            }
+            imaging.validate(camera)?;
         }
         Ok(())
     }
@@ -525,6 +587,7 @@ impl RecipeDoc {
             detect: self.detect.clone(),
             limits: self.limits.clone(),
             shots: self.shots.clone(),
+            camera_imaging: self.cameras.clone(),
             segments,
             points,
         };
@@ -587,7 +650,7 @@ fn sample_path(k: usize) -> Vec<[f32; 2]> {
 
 /// 首次启动写入的样例配方：模拟相机按示例中线就能跑；换真实相机要重新示教。
 pub fn samples() -> Vec<RecipeDoc> {
-    let doc = |id: &str, name: &str, code: u16, n: usize, trigger_mode| RecipeDoc {
+    let doc = |id: &str, name: &str, code: u16, n: usize, trigger_mode| { let mut doc = RecipeDoc {
         id: id.into(),
         name: name.into(),
         version: 1,
@@ -601,7 +664,8 @@ pub fn samples() -> Vec<RecipeDoc> {
         detect: default_detect(),
         limits: default_limits(),
         shots: shot_list(&legacy_camera_id(0), (0..n).map(sample_path).collect()),
-    };
+        cameras: BTreeMap::new(),
+    }; doc.sync_imaging(); doc };
     vec![doc("MTR-HSG-A", "电机壳体 A", 12, 6, TriggerMode::Fly), doc("MTR-HSG-B", "电机壳体 B", 13, 4, TriggerMode::Stop)]
 }
 
@@ -1091,12 +1155,13 @@ mod tests {
         doc.detect.search_mm = 9.0;
         doc.shots[0].path[1][0] += 5.0;
         doc.shots[1].skip = true;
+        doc.cameras.get_mut("cam1").unwrap().exposure_us = 90.0;
         assert_eq!(store.save(doc.clone(), None).unwrap().plan_version, plan);
         // 改了 Pose、相机、拍照点顺序或产品代码：发新号，且和别的配方都不重
         let mut seen = vec![plan, store.doc("MTR-HSG-A").unwrap().plan_version];
         let edits: [fn(&mut RecipeDoc); 4] = [
             |d| d.shots[0].pose_id = "P9".into(),
-            |d| d.shots.iter_mut().for_each(|shot| shot.camera = "another-device".into()),
+            |d| { d.shots.iter_mut().for_each(|shot| shot.camera = "another-device".into()); d.sync_imaging(); },
             |d| d.shots.swap(0, 1),
             |d| d.product_code = 61000,
         ];
@@ -1231,5 +1296,29 @@ mod tests {
             d
         };
         assert!(pose_shared.build().is_ok(), "同一设备允许同一 Pose 多次触发");
+    }
+
+    #[test]
+    fn camera_imaging_must_cover_exactly_the_shot_cameras_within_limits() {
+        fn imaging(d: &mut RecipeDoc, exposure_us: f32, gain_db: f32) { d.cameras.insert("cam1".into(), CameraImaging { exposure_us, gain_db }); }
+        let cases: [(&str, fn(&mut RecipeDoc), Option<&str>); 8] = [
+            ("拍照点相机都有成像参数", |_| {}, None),
+            ("拍照点相机缺成像参数", |d| { d.cameras.clear(); }, Some("没有它的曝光与增益")),
+            ("给了没被使用的相机", |d| { d.cameras.insert("cam9".into(), DEFAULT_IMAGING); }, Some("没有拍照点使用它")),
+            ("曝光低于 1 µs", |d| imaging(d, 0.5, 6.0), Some("曝光时间")),
+            ("曝光超过 1 s", |d| imaging(d, 1_000_001.0, 6.0), Some("曝光时间")),
+            ("增益为负", |d| imaging(d, 60.0, -0.5), Some("增益")),
+            ("增益不是有限数", |d| imaging(d, 60.0, f32::NAN), Some("增益")),
+            ("曝光与增益在边界上", |d| imaging(d, 1_000_000.0, 0.0), None),
+        ];
+        for (name, edit, error) in cases {
+            let mut doc = composite_recipe();
+            edit(&mut doc);
+            match (doc.build(), error) {
+                (Ok(recipe), None) => assert_eq!(recipe.imaging("cam1"), doc.cameras.get("cam1").copied(), "{name}"),
+                (Err(e), Some(what)) => assert!(e.contains(what), "{name}: {e}"),
+                (result, _) => panic!("{name}: {:?}", result.map(|_| ())),
+            }
+        }
     }
 }

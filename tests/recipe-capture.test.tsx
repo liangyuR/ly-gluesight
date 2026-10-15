@@ -11,7 +11,7 @@ import {useCycle} from "../src/features/cycle/api";
 import type {CaptureRound} from "../src/features/workspace/types";
 import {snapshot,workspaceState} from "./fixtures";
 vi.mock("../src/features/workspace/context",()=>({useWorkspace:vi.fn()}));
-vi.mock("../src/features/workspace/api",()=>({workspaceApi:{captureGet:vi.fn(),captureList:vi.fn(),captureStart:vi.fn(),captureStop:vi.fn(),adoptCapture:vi.fn(),captureSample:vi.fn(),captureImage:vi.fn()}}));
+vi.mock("../src/features/workspace/api",()=>({workspaceApi:{setCameraImaging:vi.fn(),captureGet:vi.fn(),captureList:vi.fn(),captureStart:vi.fn(),captureStop:vi.fn(),adoptCapture:vi.fn(),captureSample:vi.fn(),captureImage:vi.fn()}}));
 vi.mock("../src/features/camera/api",()=>({cameraApi:{rigStatus:vi.fn()}}));
 vi.mock("../src/features/plc/api",()=>({plcApi:{getStatus:vi.fn()}}));
 vi.mock("../src/features/cycle/api",()=>({useCycle:vi.fn(),useSiteStatus:()=>null}));
@@ -19,7 +19,7 @@ let ws:ReturnType<typeof workspaceState>;
 const round=(state:CaptureRound["state"]="complete"):CaptureRound=>({roundId:"r1",recipeId:"A",cameraId:"CAM-1",deviceSession:7,plannedCount:20,receivedCount:20,state,createdAt:1,endedAt:2,error:null,simulated:true,frames:[]});
 const show=(url="/recipe/capture")=>render(<MemoryRouter initialEntries={[url]}><CapturePage/></MemoryRouter>);
 beforeEach(()=>{
- ws=workspaceState();ws.cameras=[{id:"CAM-1",name:"拼接设备",source:"sim",viewCount:3,serial:"DEVICE",triggerSource:"Line0",triggerActivation:"RisingEdge",triggerDelayUs:0,debouncerUs:0,exposureUs:60,gainDb:0,strobe:false,chunk:true}];
+ ws=workspaceState();ws.cameras=[{id:"CAM-1",name:"拼接设备",source:"sim",viewCount:3,serial:"DEVICE",triggerSource:"Line0",triggerActivation:"RisingEdge",triggerDelayUs:0,debouncerUs:0,strobe:false,chunk:true}];
  vi.mocked(useWorkspace).mockImplementation(()=>ws);vi.mocked(useCycle).mockReturnValue({snapshot:snapshot(),logs:[],measured:[]});
  vi.mocked(cameraApi.rigStatus).mockResolvedValue([{id:"CAM-1",ready:true}] as Awaited<ReturnType<typeof cameraApi.rigStatus>>);
  vi.mocked(plcApi.getStatus).mockResolvedValue({state:"connected",message:"PLC已连接"} as Awaited<ReturnType<typeof plcApi.getStatus>>);
@@ -27,6 +27,15 @@ beforeEach(()=>{
  vi.mocked(workspaceApi.adoptCapture).mockResolvedValue(ws.data!);
 });
 
+it("改曝光与增益后点应用 → 按所选相机写入候选并显示下发失败原因",async()=>{
+ vi.mocked(workspaceApi.setCameraImaging).mockResolvedValue({view:ws.data!,applyError:"拼接设备未连接，不能下发曝光与增益"});show();
+ const exposure=await screen.findByRole("spinbutton",{name:"曝光时间（µs）"}),gain=screen.getByRole("spinbutton",{name:"增益（dB）"}),apply=screen.getByRole("button",{name:"应用"});
+ expect(exposure).toHaveValue(60);expect(apply).toBeDisabled();
+ await userEvent.clear(exposure);await userEvent.type(exposure,"120");await userEvent.clear(gain);await userEvent.type(gain,"2.5");
+ await userEvent.click(apply);
+ expect(workspaceApi.setCameraImaging).toHaveBeenCalledWith("A",7,"CAM-1",{exposureUs:120,gainDb:2.5});
+ expect(await screen.findByText("拼接设备未连接，不能下发曝光与增益")).toBeVisible();
+});
 it("异常轮保留数量和原因，不能采用",async()=>{
  vi.mocked(workspaceApi.captureGet).mockResolvedValue({...round("failed"),receivedCount:19,error:"缺少一帧"});show();
  expect(await screen.findByText("缺少一帧")).toBeVisible();expect(screen.getByText("已接收 19 / 20 张")).toBeVisible();expect(screen.queryByRole("button",{name:"采用本轮图像"})).toBeNull();

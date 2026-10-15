@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -11,7 +11,7 @@ use crate::camera::CameraSource;
 use crate::cycle::{self, CycleHost};
 use crate::frame::FrameImage;
 use crate::judge::{self, PointState, Verdict};
-use crate::recipe::{DetectParams, Recipe, RecipeDoc};
+use crate::recipe::{CameraImaging, DetectParams, Recipe, RecipeDoc};
 use crate::release::ValidationSite;
 use crate::store::{self, Store};
 use crate::vision;
@@ -247,9 +247,41 @@ pub struct Workspace {
     pub last_position: Option<workflow::Position>,
     #[serde(default)]
     pub capture_id: Option<String>,
+    /// 还没有拍照点使用的相机在采集页调好的曝光与增益：配方只收拍照点用到的相机，用上时并入配方
+    #[serde(default)]
+    pub unbound_imaging: BTreeMap<String, CameraImaging>,
+}
+
+/// 按拍照点用到的相机整理配方的成像参数：不再用到的挪到 unbound，新用到的优先取 unbound 里调好的，没有就用默认值。
+fn sync_doc_imaging(doc: &mut RecipeDoc, unbound: &mut BTreeMap<String, CameraImaging>) {
+    let before = doc.cameras.keys().cloned().collect::<Vec<_>>();
+    let dropped = doc.sync_imaging();
+    for (camera, imaging) in doc.cameras.iter_mut() {
+        if let Some(staged) = unbound.remove(camera) {
+            if !before.contains(camera) { *imaging = staged; }
+        }
+    }
+    unbound.extend(dropped);
+}
+
+/// 改一台相机的成像参数：拍照点用到的写进候选配方，还没用到的先记在 unbound。不动已采集的图像与示教。
+fn set_imaging(w: &mut Workspace, camera: &str, imaging: CameraImaging) -> Result<(), String> {
+    if !crate::recipe::valid_camera_id(camera) { return Err("相机编号无效".into()); }
+    imaging.validate(camera)?;
+    let target = if w.doc.cameras.contains_key(camera) { &mut w.doc.cameras } else { &mut w.unbound_imaging };
+    if target.get(camera) == Some(&imaging) { return Ok(()); }
+    target.insert(camera.to_string(), imaging);
+    w.doc.build()?;
+    w.changed();
+    Ok(())
 }
 
 impl Workspace {
+    /// 这台相机当前该用的成像参数：配方里的，或采集页先调好的，都没有时用默认值。
+    pub fn imaging(&self, camera: &str) -> CameraImaging {
+        self.doc.cameras.get(camera).or_else(|| self.unbound_imaging.get(camera)).copied().unwrap_or_default()
+    }
+
     fn new(mut doc: RecipeDoc, base_revision: Option<String>) -> Self {
         if base_revision.is_some() {
             doc.version = doc.version.saturating_add(1);
@@ -269,6 +301,7 @@ impl Workspace {
             updated_at: ly_plc::now_ms(),
             last_position: None,
             capture_id: None,
+            unbound_imaging: BTreeMap::new(),
         }
     }
 
@@ -399,11 +432,11 @@ impl LiveFrames {
 }
 
 impl WorkspaceHost {
-    pub(crate) fn capture_for_candidate<T>(&self, id: &str, start: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    pub(crate) fn capture_for_candidate<T>(&self, id: &str, start: impl FnOnce(&Workspace) -> Result<T, String>) -> Result<T, String> {
         let items = self.items.lock().unwrap();
         let workspace = items.get(id).ok_or("请先创建或打开配方草稿")?;
         workspace.expect(workspace.revision)?;
-        start()
+        start(workspace)
     }
 
     /// 候选与已提交的发布快照都保留相机引用，删除相机前核对。
@@ -620,6 +653,7 @@ pub fn workspace_get(app: AppHandle, id: String) -> Result<WorkspaceView, String
 pub fn workspace_create(app: AppHandle, mut doc: RecipeDoc) -> Result<WorkspaceView, String> {
     safe_id(&doc.id)?;
     doc.shots.clear();
+    doc.cameras.clear();
     doc.build()?;
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
@@ -683,6 +717,41 @@ pub fn workspace_save_doc(
     view(&app, w)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImagingSaved {
+    pub view: WorkspaceView,
+    /// 已写进候选，但没能下发到相机的原因
+    pub apply_error: Option<String>,
+}
+
+/// 采集页调曝光与增益：先写进候选，再在设备空闲时立即下发到这台相机，方便边看预览边调。
+#[tauri::command]
+pub async fn workspace_set_camera_imaging(app: AppHandle, id: String, revision: u64, camera: String, imaging: CameraImaging) -> Result<ImagingSaved, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let saved = {
+            let host = app.state::<WorkspaceHost>();
+            let mut items = host.items.lock().unwrap();
+            let mut w = items.get(&id).ok_or("候选配置不存在")?.clone();
+            w.expect(revision)?;
+            set_imaging(&mut w, &camera, imaging)?;
+            host.save(&w)?;
+            items.insert(id, w.clone());
+            w
+        };
+        let apply_error = apply_live_imaging(&app, &camera, &imaging).err();
+        Ok(ImagingSaved { view: view(&app, saved)?, apply_error })
+    }).await.map_err(|e| e.to_string())?
+}
+
+fn apply_live_imaging(app: &AppHandle, camera: &str, imaging: &CameraImaging) -> Result<(), String> {
+    let cycle = app.state::<CycleHost>();
+    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，稍后再点应用下发到相机")?;
+    crate::camera::check_idle(&cycle)?;
+    let cam = cycle.camera.require(camera)?;
+    cycle.camera.slot(cam as usize).ok_or("相机不存在")?.set_imaging(imaging)
+}
+
 fn update_doc(w: &mut Workspace, mut doc: RecipeDoc) -> Result<(), String> {
     for shot in &mut doc.shots {
         let Some(old_k) = w.doc.shots.iter().position(|old| old.id == shot.id) else { continue };
@@ -702,8 +771,11 @@ fn update_doc(w: &mut Workspace, mut doc: RecipeDoc) -> Result<(), String> {
             shot.path = projected.path; shot.mm_per_px = projected.mm_per_px; shot.detect = projected.detect; shot.limits = projected.limits; shot.calib = projected.calib;
         }
     }
+    let mut unbound = w.unbound_imaging.clone();
+    sync_doc_imaging(&mut doc, &mut unbound);
     let recipe = doc.build()?;
     if doc == w.doc { return Ok(()); }
+    w.unbound_imaging = unbound;
     let before = w.doc.build()?;
     let frames = recipe.shots.iter().enumerate().map(|(k, shot)| {
         let Some(old_k) = w.doc.shots.iter().position(|s| s.id == shot.id) else { return Teaching::empty(k); };
@@ -826,8 +898,8 @@ fn keep_views(
             camera_tag: camera_tag.clone(),
             calib_tag: view_calib_tag,
             geometry_tag: shot_tags(&image_recipe, k)?.0,
-            exposure_us: (history_id.is_none() && !imported).then_some(config.exposure_us),
-            gain_db: (history_id.is_none() && !imported).then_some(config.gain_db),
+            exposure_us: None,
+            gain_db: None,
             history_id,
         });
     }
@@ -1977,8 +2049,8 @@ pub async fn workspace_station_capture(app: AppHandle, cam: u8, view: Option<u8>
             camera_tag: state_value(&slot.config()),
             calib_tag: Value::Null,
             geometry_tag: Value::Null,
-            exposure_us: Some(config.exposure_us),
-            gain_db: Some(config.gain_db),
+            exposure_us: None,
+            gain_db: None,
             history_id: None,
         };
         host.station
