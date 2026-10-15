@@ -109,7 +109,7 @@ def build():
 <div class="hero-top"><p class="eyebrow">现场接入 / S7 ISO-on-TCP</p><button id="print-protocol" class="print-button" type="button">打印 / 保存 PDF</button></div>
 <h1>PLC 通讯协议</h1>
 <p class="subtitle">连续点胶飞拍 · 单件事务 · 结果确认与故障恢复</p>
-<div class="facts"><div><span>共享数据区</span><strong>DB100 <small>默认</small></strong></div><div><span>最小 DB 长度</span><strong>88 <small>字节</small></strong></div><div><span>双向点表</span><strong>{field_count} <small>字段</small></strong></div><div><span>网络服务</span><strong>TCP 102</strong></div></div>
+<div class="facts"><div><span>共享数据区</span><strong>DB100 <small>默认</small></strong></div><div><span>最小 DB 长度</span><strong>114 <small>字节</small></strong></div><div><span>双向点表</span><strong>{field_count} <small>字段</small></strong></div><div><span>网络服务</span><strong>TCP 102</strong></div></div>
 <div class="overview-text">{overview}</div>
 </header>
 <section id="sequence" class="sequence-section" aria-labelledby="sequence-heading">

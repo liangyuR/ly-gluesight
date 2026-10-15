@@ -620,7 +620,7 @@ impl PlcSession {
             return Err("结果码或异常码与一期协议不一致".into());
         }
         let request = self.request().ok_or("缺少 S7 请求")?;
-        let envelope = ResultEnvelope { request_seq: request.request_seq, sn: request.sn, result_code, fault_code };
+        let envelope = ResultEnvelope { request_seq: request.request_seq, sn: request.sn.clone(), result_code, fault_code };
         self.journal.pending.as_mut().unwrap().result = Some(envelope.clone());
         let attempt = async {
             self.persist(engine).await?;

@@ -11,7 +11,7 @@
       "steps": [
         "启动 GlueSight，点击顶栏的模式标识“真机”，进入“离线模式”（工艺分组）。",
         "来源选“合成图”，点击“进入离线”；顶栏变为“离线 · 合成图”。已加载 lyFlow 且有离线样本集时，也可选“样本集”并点“选择样本集目录”。",
-        "选择已发布的离线配方和工况“正常件”，点击“运行一件”；在“在线检测”查看工件 SN、4/4 帧和 OK。",
+        "选择已发布的离线配方和工况“正常件”，点击“运行一件”；在“在线检测”查看工件 SN（离线件形如 OFFLINE-0001234567）、4/4 帧和 OK。",
         "前往“历史记录”确认同一 SN 已保存，然后回到离线模式点“退出离线”。若尚未建站，请依次完成第 2 至 13 节。"
       ],
       "images": [{"src":"01-guide.png","caption":"总览页把首次建站、日常生产、缺陷排查和配置变更的入口集中在一起。"}],
@@ -45,8 +45,8 @@
       "steps": [
         "点击“载入一期 S7 点表”，选择 CPU 预设（S7-1200 或 S7-1500，机架 0 / 插槽 1）和 DB 号（默认 DB100），应用到草稿。",
         "填写 PLC 的 IP / 主机名、通信超时和轮询周期，保存配置并连接，确认状态为“已连接”。PLC 侧需启用 PUT/GET，并关闭该 DB 的优化访问。",
-        "核对 PLC 区：partStart、partEnd、resultAck、faultReset、心跳、requestSeq、partSn、productCode、shotCount 与设备触发数。",
-        "核对 PC 区：visionReady、armed、busy、done、visionFault、resultSeq、resultSn、resultCode 和 faultCode。完整点表见 S7 一期握手说明。"
+        "核对 PLC 区：partStart、partEnd、resultAck、faultReset、心跳、requestSeq、partSn（字符串 SN，STRING[24]）、productCode、shotCount 与设备触发数。协议版本须为 3，DB 至少 114 字节；旧协议 2 点表会被拒绝，需按一期模板重新生成。",
+        "核对 PC 区：visionReady、armed、busy、done、visionFault、resultSeq、resultSn（字符串 SN，须与 partSn 逐字节相等）、resultCode 和 faultCode。工件 SN 不合规（1–24 个可打印 ASCII 字符）时软件不接件并进入视觉故障，PLC 释放 partStart 并复位后重试。完整点表见 S7 一期握手说明。"
       ],
       "note": "练习时不必连接 PLC：进入离线后，软件在本机启动进程内 S7 服务并按同一握手运行，真实 PLC 配置保存不动，退出离线后恢复。离线期间 PLC 页只读；进入离线前应断开外部 PLC。"
     },

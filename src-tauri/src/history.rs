@@ -115,7 +115,7 @@ pub struct MatrixCell {
 #[derive(Clone, Debug, Serialize)]
 pub struct Change {
     pub id: i64,
-    pub sn: u32,
+    pub sn: String,
     pub ts: i64,
     pub from: Verdict,
     pub to: Verdict,
@@ -125,7 +125,7 @@ pub struct Change {
 #[derive(Clone, Debug, Serialize)]
 pub struct RejudgeSkip {
     pub id: i64,
-    pub sn: u32,
+    pub sn: String,
     pub ts: i64,
     pub reason: String,
 }
@@ -186,7 +186,7 @@ fn rejudge_rows(
         let mut skip = |reason: &str| {
             skipped += 1;
             if skip_reasons.len() < 300 {
-                skip_reasons.push(RejudgeSkip { id: row.id, sn: row.sn, ts: row.ts, reason: reason.into() });
+                skip_reasons.push(RejudgeSkip { id: row.id, sn: row.sn.clone(), ts: row.ts, reason: reason.into() });
             }
         };
         if row.verdict == Verdict::ErrInspect {
@@ -230,7 +230,7 @@ fn rejudge_rows(
         total += 1;
         *matrix.entry((row.verdict, j.verdict)).or_default() += 1;
         if j.verdict != row.verdict && changes.len() < 300 {
-            changes.push(Change { id: row.id, sn: row.sn, ts: row.ts, from: row.verdict, to: j.verdict, reason: j.reason });
+            changes.push(Change { id: row.id, sn: row.sn.clone(), ts: row.ts, from: row.verdict, to: j.verdict, reason: j.reason });
         }
     }
     let mut matrix: Vec<_> = matrix.into_iter().map(|((from, to), count)| MatrixCell { from, to, count }).collect();
@@ -245,7 +245,7 @@ fn csv_row(p: &PartSummary) -> String {
     let cells = [
         format_ts(p.ts),
         p.source.label().into(),
-        p.sn.to_string(),
+        esc(&p.sn),
         esc(p.recipe_id.as_deref().unwrap_or("")),
         p.recipe_version.map(|v| v.to_string()).unwrap_or_default(),
         esc(p.recipe_revision.as_deref().unwrap_or("")),

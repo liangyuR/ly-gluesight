@@ -171,7 +171,7 @@ export interface FrameView {
 export interface PartView {
   cycleId: string;
   bundleId: string | null;
-  sn: number;
+  sn: string;
   recipeId: string;
   /** 本件配方快照的修订 ID */
   recipeRevision: string;
@@ -216,7 +216,7 @@ export interface Judgement {
 
 export interface ResultView extends Judgement {
   cycleId: string | null;
-  sn: number;
+  sn: string;
   recipeId: string | null;
   ts: number;
   drainMs: number | null;
@@ -249,7 +249,7 @@ export interface Measured {
   shotId: string;
   camera: string;
   bundleId: string | null;
-  sn: number;
+  sn: string;
   k: number;
   cam: number;
   located: boolean;
@@ -337,7 +337,7 @@ export interface SampleSetSummary {
 
 export interface SampleRun {
   ts: number;
-  partSn: number;
+  partSn: string;
   partId: string;
   sampleSn: string;
   label: SampleLabel;

@@ -33,7 +33,7 @@ export interface BankSample { id:string; name:string; geometryTag: unknown; expe
 export interface Validation {
   revision: number; passed: boolean; checkedAt: number; environmentTag: unknown;
   checks: { name: string; passed: boolean; detail: string }[];
-  samples: { historyId: number | null; sampleId:string | null; name:string; sn: number; expected: Verdict; actual: Verdict | null; passed: boolean; reason: string }[];
+  samples: { historyId: number | null; sampleId:string | null; name:string; sn: string; expected: Verdict; actual: Verdict | null; passed: boolean; reason: string }[];
 }
 /** 发布时所在站点：离线验证发布的版本只能在离线运行。 */
 export type ValidationSite = "real" | "offline";

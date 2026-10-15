@@ -58,12 +58,12 @@ impl Bench {
     }
 
     async fn run(&mut self, scenario: Scenario) -> Result<Outcome, String> {
-        self.run_with(4242, scenario, |_, lost| !lost).await
+        self.run_with(" a-4242 ~".into(), scenario, |_, lost| !lost).await
     }
 
     /// 虚拟 PLC 跑一件，PC 侧按生产节拍的顺序驱动 S7 会话：开始 → 布防 → partEnd 后按实收帧判定回写。
     /// `deliver(k, lost)` 模拟相机侧：返回这次触发是否真的交付了一帧。
-    async fn run_with(&mut self, sn: u32, scenario: Scenario, mut deliver: impl FnMut(usize, bool) -> bool) -> Result<Outcome, String> {
+    async fn run_with(&mut self, sn: String, scenario: Scenario, mut deliver: impl FnMut(usize, bool) -> bool) -> Result<Outcome, String> {
         let Self { line, engine, session, plan, .. } = self;
         let delivered = Mutex::new(Vec::new());
         let finished = AtomicBool::new(false);
@@ -102,7 +102,7 @@ async fn offline_line_over_s7_completes_parts_with_matched_ack_and_returns_to_id
     let mut bench = Bench::new("normal").await;
     for seq in [1, 2] {
         let outcome = bench.run(Scenario::Normal).await.unwrap();
-        assert_eq!(outcome, Outcome { request_seq: seq, sn: 4242, result_code: 1, fault_code: 0 });
+        assert_eq!(outcome, Outcome { request_seq: seq, sn: " a-4242 ~".into(), result_code: 1, fault_code: 0 });
         assert_eq!(bench.session.phase(), SessionPhase::Idle);
         assert!(!bench.session.pending());
         assert_eq!(bench.line.read(tag::RESULT_SEQ), seq);
@@ -180,22 +180,23 @@ async fn sample_set_line_fetches_each_trigger_by_part_shot_and_view_and_claims_t
         (Some("p02"), "p02", 2, 501, (1, 0, Verdict::Ok)),
         (None, "p01", 1, 502, (1, 0, Verdict::Ok)),
     ] {
+        let sn = OfflineHost::sn_text(sn);
         assert_eq!(offline.pick_part(&set, requested).unwrap(), part);
-        offline.begin_run(&set, part, sn, RunPurpose::Production);
+        offline.begin_run(&set, part, &sn, RunPurpose::Production);
         let received = Mutex::new(Vec::new());
-        let result = bench.run_with(sn, Scenario::Normal, |k, lost| {
+        let result = bench.run_with(sn.clone(), Scenario::Normal, |k, lost| {
             let images = (!lost).then(|| fetch(part, k).ok()).flatten();
             received.lock().unwrap().push((k, images.as_deref().map(pixels)));
             images.is_some()
         }).await;
-        offline.finish_run(sn, &result);
+        offline.finish_run(&sn, &result);
         let outcome = result.unwrap();
-        assert_eq!((outcome.sn, outcome.result_code, outcome.fault_code), (sn, expected.0, expected.1), "{part}");
+        assert_eq!((&outcome.sn, outcome.result_code, outcome.fault_code), (&sn, expected.0, expected.1), "{part}");
         for (k, images) in received.into_inner().unwrap() {
             let wanted = Some((1..=3).map(|v| Fixture::pixel(number, k as u8 + 1, v)).collect::<Vec<_>>());
             assert_eq!(images, wanted, "{part} k={k}");
         }
-        let reference = offline.claim(sn, &format!("cycle-{sn}")).unwrap();
+        let reference = offline.claim(&sn, &format!("cycle-{sn}")).unwrap();
         assert_eq!((reference.part_id.as_str(), reference.label), (part, if part == "p01" { SampleLabel::Ok } else { SampleLabel::Ng }));
         let run = offline.status().recent.into_iter().find(|r| r.part_sn == sn).unwrap();
         assert_eq!((run.verdict, run.cycle_id), (Some(expected.2), Some(format!("cycle-{sn}"))));
@@ -213,12 +214,12 @@ fn real_part_with_the_same_part_sn_after_leaving_offline_gets_no_sample_referenc
     let set = SampleSet::load(&fixture.0).unwrap();
     let offline = OfflineHost::default();
     offline.enabled.store(true, Ordering::SeqCst);
-    offline.begin_run(&set, "p01", 777, RunPurpose::Production);
+    offline.begin_run(&set, "p01", "SN-777", RunPurpose::Production);
     assert!(offline.deactivate().is_none());
-    assert!(offline.claim(777, "real-cycle").is_none());
+    assert!(offline.claim("SN-777", "real-cycle").is_none());
     assert!(offline.status().recent.is_empty());
-    offline.begin_run(&set, "p01", 778, RunPurpose::Production);
-    assert!(offline.claim(778, "real-cycle").is_none(), "未启用离线时不认领样本件");
+    offline.begin_run(&set, "p01", "SN-778", RunPurpose::Production);
+    assert!(offline.claim("SN-778", "real-cycle").is_none(), "未启用离线时不认领样本件");
 }
 
 #[test]

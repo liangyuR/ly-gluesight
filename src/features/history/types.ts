@@ -47,7 +47,7 @@ export interface HistoryQuery {
 export interface PartSummary {
   id: number;
   ts: number;
-  sn: number;
+  sn: string;
   recipeId: string | null;
   recipeVersion: number | null;
   recipeRevision: string | null;
@@ -123,6 +123,6 @@ export interface RejudgeResult {
   skipped: number;
   limitHit: boolean;
   matrix: { from: Verdict; to: Verdict; count: number }[];
-  changes: { id: number; sn: number; ts: number; from: Verdict; to: Verdict; reason: string }[];
-  skipReasons: { id: number; sn: number; ts: number; reason: string }[];
+  changes: { id: number; sn: string; ts: number; from: Verdict; to: Verdict; reason: string }[];
+  skipReasons: { id: number; sn: string; ts: number; reason: string }[];
 }

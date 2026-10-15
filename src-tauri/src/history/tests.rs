@@ -15,7 +15,7 @@ fn row(recipe: &Recipe, id: i64) -> StoredMeasurement {
     StoredMeasurement {
         id,
         ts: 1234,
-        sn: 42,
+        sn: "SN-42".into(),
         recipe_id: Some(recipe.id.clone()),
         recipe_revision: Some(recipe.revision_id.clone()),
         verdict: judge::judge(recipe, &table).verdict,

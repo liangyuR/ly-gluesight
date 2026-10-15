@@ -6,7 +6,8 @@ use ly_plc::{Access, DataType, EdgeMode, LinkState, PlcConfig, PlcEngine, PlcSta
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub(crate) const PROTOCOL_VERSION: u16 = 2;
+pub(crate) const PROTOCOL_VERSION: u16 = 3;
+pub(crate) const SN_MAX_LEN: usize = 24;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Direction {
@@ -25,7 +26,7 @@ struct Field {
 const FIELDS: &[Field] = &[
     input("protocolVersion", DataType::U16, false),
     input("requestSeq", DataType::U32, false),
-    input("partSn", DataType::U32, false),
+    input("partSn", DataType::String, false),
     input("productCode", DataType::U16, false),
     input("shotCount", DataType::U16, false),
     input("planVersion", DataType::U32, false),
@@ -48,7 +49,7 @@ const FIELDS: &[Field] = &[
     output("acceptedSeq", DataType::U32),
     output("acceptedPlanReserved", DataType::U32),
     output("resultSeq", DataType::U32),
-    output("resultSn", DataType::U32),
+    output("resultSn", DataType::String),
     output("resultCode", DataType::U16),
     output("faultCode", DataType::U16),
 ];
@@ -83,7 +84,7 @@ impl Contract {
         config.validate()?;
         for point in &config.points {
             if let Some((old, new)) = RETIRED_TAGS.iter().find(|(old, _)| point.tags.iter().any(|t| t == old)) {
-                return Err(format!("点位 {} 使用已停用的握手标签 {old}（{new}），请按单设备 S7 协议 2 模板重新生成点表", point.name));
+                return Err(format!("点位 {} 使用已停用的握手标签 {old}（{new}），请按单设备 S7 协议 {PROTOCOL_VERSION} 模板重新生成点表", point.name));
             }
         }
         let mut ids = HashMap::new();
@@ -97,7 +98,7 @@ impl Contract {
                 return Err(format!("握手标签 {} 重复", field.tag));
             }
             if point.data_type != field.data_type {
-                return Err(format!("{} 必须使用 {:?} 类型", field.tag, field.data_type));
+                return Err(format!("{} 必须使用 {:?} 类型，请按单设备 S7 协议 {PROTOCOL_VERSION} 模板重新生成点表", field.tag, field.data_type));
             }
             let access = if field.direction == Direction::Input { Access::Read } else { Access::ReadWrite };
             if point.access != access {
@@ -112,6 +113,9 @@ impl Contract {
             let location = ly_plc::resolve(&config.connection, &point.address, point.data_type)?;
             if location.area.code != 0x84 || !point.address.trim().to_ascii_uppercase().starts_with("DB") {
                 return Err(format!("{} 必须使用标准 S7 DB 地址", field.tag));
+            }
+            if field.data_type == DataType::String && location.len as usize != SN_MAX_LEN + 2 {
+                return Err(format!("{} 必须为 S7 STRING[{SN_MAX_LEN}]，地址写成 DB{{n}}.DBB起始字节.{SN_MAX_LEN}", field.tag));
             }
             if field.direction == Direction::Output && !location.writable {
                 return Err(format!("{} 所在地址不可写", field.tag));
@@ -179,6 +183,7 @@ impl Contract {
             (DataType::U16, PlcValue::Int(n)) if u16::try_from(*n).is_err() => return Err(out_of_range(tag, *n, "UInt")),
             (DataType::U32, PlcValue::Int(n)) if u32::try_from(*n).is_err() => return Err(out_of_range(tag, *n, "UDInt")),
             (DataType::U16 | DataType::U32, PlcValue::Int(_)) => true,
+            (DataType::String, PlcValue::Text(_)) => true,
             _ => false,
         };
         if !valid {
@@ -201,6 +206,7 @@ impl Contract {
                 DataType::Bool => op.value.as_bool().is_some(),
                 DataType::U16 => op.value.as_u64().is_some_and(|v| u16::try_from(v).is_ok()),
                 DataType::U32 => op.value.as_u64().is_some_and(|v| u32::try_from(v).is_ok()),
+                DataType::String => op.value.as_str().is_some_and(|v| check_sn(v).is_ok()),
                 _ => false,
             };
             if !valid {
@@ -209,6 +215,20 @@ impl Contract {
         }
         Ok(())
     }
+}
+
+pub(crate) fn check_sn(sn: &str) -> Result<(), String> {
+    let count = sn.chars().count();
+    if !(1..=SN_MAX_LEN).contains(&count) {
+        return Err(format!("partSn 长度 {count} 不在 1–{SN_MAX_LEN} 个字符之间"));
+    }
+    if let Some(c) = sn.chars().find(|c| !(' '..='~').contains(c)) {
+        return Err(format!("partSn 含非 ASCII 可打印字符 U+{:04X}", c as u32));
+    }
+    if sn.trim().is_empty() {
+        return Err("partSn 不能全为空白".into());
+    }
+    Ok(())
 }
 
 fn out_of_range(tag: &str, value: impl std::fmt::Display, kind: &str) -> String {
@@ -272,6 +292,13 @@ impl Snapshot {
         }
     }
 
+    pub(crate) fn read_text(&self, tag: &str) -> Result<&str, String> {
+        match self.values.get(tag) {
+            Some(PlcValue::Text(v)) => Ok(v),
+            _ => Err(format!("{tag} 不是有效字符串")),
+        }
+    }
+
     pub(crate) fn read_u32(&self, tag: &str) -> Result<u32, String> {
         match self.values.get(tag) {
             Some(PlcValue::Int(v)) => u32::try_from(*v).map_err(|_| out_of_range(tag, v, "UDInt")),
@@ -290,7 +317,7 @@ impl Snapshot {
         let request = Request {
             protocol_version: self.read_u16("protocolVersion")?,
             request_seq: self.read_u32("requestSeq")?,
-            sn: self.read_u32("partSn")?,
+            sn: self.read_text("partSn")?.to_owned(),
             product_code: self.read_u16("productCode")?,
             shot_count: self.read_u16("shotCount")?,
             plan_version: self.read_u32("planVersion")?,
@@ -352,7 +379,7 @@ impl Snapshot {
 pub(crate) struct Request {
     pub(crate) protocol_version: u16,
     pub(crate) request_seq: u32,
-    pub(crate) sn: u32,
+    pub(crate) sn: String,
     pub(crate) product_code: u16,
     pub(crate) shot_count: u16,
     pub(crate) plan_version: u32,
@@ -367,6 +394,7 @@ impl Request {
         if self.request_seq == 0 {
             return Err("requestSeq 不能为零".into());
         }
+        check_sn(&self.sn)?;
         if self.shot_count == 0 || self.device_shots != self.shot_count {
             return Err("设备计划触发数 deviceShots 必须等于非零 shotCount".into());
         }
@@ -410,7 +438,7 @@ pub(crate) async fn stable_start(engine: &PlcEngine, contract: &Contract, timeou
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ResultEnvelope {
     pub(crate) request_seq: u32,
-    pub(crate) sn: u32,
+    pub(crate) sn: String,
     pub(crate) result_code: u16,
     pub(crate) fault_code: u16,
 }
@@ -420,12 +448,15 @@ pub(crate) fn matching_ack(snapshot: &Snapshot, result: &ResultEnvelope) -> Resu
         return Err("待确认结果的 done 已被清除，必须故障复位".into());
     }
     for (tag, expected) in [
-        ("requestSeq", result.request_seq), ("resultSeq", result.request_seq), ("resultSn", result.sn),
+        ("requestSeq", result.request_seq), ("resultSeq", result.request_seq),
         ("resultCode", result.result_code as u32), ("faultCode", result.fault_code as u32),
     ] {
         if snapshot.read_u32(tag)? != expected {
             return Err(format!("待确认结果的 {tag} 与本次结果不一致"));
         }
+    }
+    if snapshot.read_text("resultSn")? != result.sn {
+        return Err("待确认结果的 resultSn 与本次结果不一致".into());
     }
     if !snapshot.read_bool("resultAck")? {
         return Ok(false);
@@ -506,7 +537,7 @@ pub(crate) fn report_plan(result: &ResultEnvelope) -> Vec<WriteOp> {
         WriteOp::new("busy", json!(true)),
         WriteOp::new("resultCode", json!(result.result_code)),
         WriteOp::new("faultCode", json!(result.fault_code)),
-        WriteOp::new("resultSn", json!(result.sn)),
+        WriteOp::new("resultSn", json!(result.sn.as_str())),
         WriteOp::new("resultSeq", json!(result.request_seq)),
         WriteOp::new("done", json!(true)),
     ]
@@ -520,7 +551,7 @@ pub(crate) fn fault_plan() -> Vec<WriteOp> {
     vec![WriteOp::new("visionReady", json!(false)), WriteOp::new("armed", json!(false)), WriteOp::new("visionFault", json!(true))]
 }
 
-/// 空闲（无在途事务）时视觉应保持的输出：其余握手位清零、协议版本 1，就绪位最后置位。
+/// 空闲（无在途事务）时视觉应保持的输出：其余握手位清零、写当前协议版本，就绪位最后置位。
 pub(crate) fn idle_plan() -> Vec<WriteOp> {
     vec![
         WriteOp::new("armed", json!(false)),
@@ -561,6 +592,7 @@ pub(crate) fn verify_writes(contract: &Contract, values: &HashMap<String, PointV
         let matches = match value {
             PlcValue::Bool(v) => op.value.as_bool() == Some(*v),
             PlcValue::Int(v) => op.value.as_i64() == Some(*v),
+            PlcValue::Text(v) => op.value.as_str() == Some(v.as_str()),
             PlcValue::Float(_) => false,
         };
         if !matches {
@@ -695,10 +727,11 @@ mod tests {
         let points = FIELDS.iter().map(|field| {
             let index = usize::from(field.direction == Direction::Output);
             let offset = offsets[index];
-            offsets[index] += field.data_type.byte_size().max(1);
+            offsets[index] += if field.data_type == DataType::String { SN_MAX_LEN as u32 + 2 } else { field.data_type.byte_size().max(1) };
             let address = match field.data_type {
                 DataType::Bool => format!("DB{}.DBX{offset}.0", index + 1),
                 DataType::U16 => format!("DB{}.DBW{offset}", index + 1),
+                DataType::String => format!("DB{}.DBB{offset}.{SN_MAX_LEN}", index + 1),
                 _ => format!("DB{}.DBD{offset}", index + 1),
             };
             PlcPoint {
@@ -718,10 +751,15 @@ mod tests {
         let contract = Contract::validate(&config()).unwrap();
         let status = PlcStatus { state: LinkState::Connected, message: String::new(), since: 100, last_poll: Some(1000), cycle_ms: Some(2), poll_count: 10, error_count: 0 };
         let mut values: HashMap<_, _> = FIELDS.iter().map(|f| (f.tag.into(), PointValue {
-            value: Some(if f.data_type == DataType::Bool { PlcValue::Bool(false) } else { PlcValue::Int(0) }), error: None, ts: 1,
+            value: Some(match f.data_type {
+                DataType::Bool => PlcValue::Bool(false),
+                DataType::String => PlcValue::Text(String::new()),
+                _ => PlcValue::Int(0),
+            }), error: None, ts: 1,
         })).collect();
+        values.get_mut("partSn").unwrap().value = Some(PlcValue::Text("SN-42".into()));
         for (tag, value) in [
-            ("protocolVersion", 2), ("pcProtocolVersion", 2), ("requestSeq", 7), ("partSn", 42),
+            ("protocolVersion", 3), ("pcProtocolVersion", 3), ("requestSeq", 7),
             ("productCode", 3), ("shotCount", 4), ("planVersion", 2), ("planReserved", 0),
             ("deviceShots", 4),
         ] {
@@ -739,7 +777,7 @@ mod tests {
     }
 
     fn result() -> ResultEnvelope {
-        ResultEnvelope { request_seq: 7, sn: 42, result_code: 1, fault_code: 0 }
+        ResultEnvelope { request_seq: 7, sn: "SN-42".into(), result_code: 1, fault_code: 0 }
     }
 
     #[test]
@@ -786,13 +824,39 @@ mod tests {
     #[test]
     fn malformed_or_unreleased_request_cannot_arm() {
         for (tag, value) in [
-            ("requestSeq", PlcValue::Int(0)), ("protocolVersion", PlcValue::Int(1)),
+            ("requestSeq", PlcValue::Int(0)), ("protocolVersion", PlcValue::Int(2)),
             ("deviceShots", PlcValue::Int(3)), ("resultAck", PlcValue::Bool(true)),
             ("deviceTriggers", PlcValue::Int(1)), ("done", PlcValue::Bool(true)),
         ] {
             let mut s = snapshot();
             s.values.insert(tag, value);
             assert!(s.start_request().is_err(), "{tag}");
+        }
+    }
+
+    #[test]
+    fn part_sn_outside_1_to_24_printable_ascii_cannot_arm_but_valid_sn_is_kept_verbatim() {
+        for sn in ["", "   ", "A\u{7f}B", "A\tB", "SN-\u{e9}", &"X".repeat(25)] {
+            let mut s = snapshot();
+            s.values.insert("partSn", PlcValue::Text(sn.into()));
+            assert!(s.start_request().is_err(), "{sn:?}");
+        }
+        let mut s = snapshot();
+        s.values.insert("partSn", PlcValue::Text(" a-01 ~".into()));
+        assert_eq!(s.start_request().unwrap().sn, " a-01 ~");
+    }
+
+    #[test]
+    fn contract_rejects_protocol_2_numeric_sn_table_and_non_string24_sn() {
+        for (tag, data_type, address) in [
+            ("partSn", DataType::U32, "DB9.DBD0"), ("resultSn", DataType::U32, "DB9.DBD0"),
+            ("partSn", DataType::String, "DB9.DBB0.20"), ("resultSn", DataType::String, "DB9.DBB0.30"),
+        ] {
+            let mut cfg = config();
+            let point = cfg.points.iter_mut().find(|p| p.id == tag).unwrap();
+            point.data_type = data_type;
+            point.address = address.into();
+            assert!(Contract::validate(&cfg).is_err(), "{tag} {address}");
         }
     }
 
@@ -809,6 +873,9 @@ mod tests {
         assert!(matching_ack(&s, &result).is_err());
         s.values.insert("ackSeq", PlcValue::Int(7));
         assert!(matching_ack(&s, &result).unwrap());
+        s.values.insert("resultSn", PlcValue::Text("SN-42 ".into()));
+        assert!(matching_ack(&s, &result).is_err());
+        s.values.insert("resultSn", PlcValue::Text("SN-42".into()));
         s.values.insert("done", PlcValue::Bool(false));
         assert!(matching_ack(&s, &result).is_err());
     }

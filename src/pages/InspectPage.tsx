@@ -176,7 +176,7 @@ export default function InspectPage() {
           </span>
         )}
         <span className="fly-chip">
-          SN <b className="mono">{part?.sn ?? result?.sn ?? "—"}</b>
+          SN <b className="mono">{part?.sn || result?.sn || "—"}</b>
         </span>
         <span className="spacer" />
         <span className="phase-label">{snapshot ? phaseLabels[phase] : "状态确认中"}</span>
@@ -272,14 +272,14 @@ export default function InspectPage() {
   );
 }
 
-function VerdictCard({ phase, result, sn }: { phase: string; result: ResultView | null; sn?: number }) {
+function VerdictCard({ phase, result, sn }: { phase: string; result: ResultView | null; sn?: string }) {
   if (!result) {
     const idle = phase === "IDLE" || phase === "FAULT";
     return (
       <div className={`panel fly-verdict ${idle ? "v-empty" : "v-run"}`}>
         <div className="vl"><span>判定结果</span><span className="mono">PLC —</span></div>
         <strong>{idle ? "暂无检测结果" : "检测中…"}</strong>
-        {!idle && <div className="vr">SN {sn ?? "—"}</div>}
+        {!idle && <div className="vr">SN {sn || "—"}</div>}
       </div>
     );
   }

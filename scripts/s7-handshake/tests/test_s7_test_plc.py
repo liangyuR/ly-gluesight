@@ -81,7 +81,6 @@ class S7WireTests(unittest.TestCase):
         expected = bytes.fromhex("03000021 02f080 32030000 0002 0002 000c 0000 0401 ff040040 0000000712345678")
         self.assertEqual(exchange(self.connection, READ_BYTES), expected)
         self.assertEqual(self.state.field_values()["requestSeq"], 7)
-        self.assertEqual(self.state.field_values()["partSn"], 0x12345678)
 
     def test_bit_write_preserves_neighboring_bits(self):
         self.state.control({"op": "write_db", "byte": 64, "hex": "81"})
@@ -199,8 +198,10 @@ class S7HeartbeatTests(unittest.TestCase):
         state.heartbeat_ms = 15
         server = PLC.S7Server(state).start()
         try:
-            self.assertEqual(state.field_values()["protocolVersion"], 2)
+            self.assertEqual(state.field_values()["protocolVersion"], 3)
             self.assertEqual(len(state.fields), 28)
+            self.assertEqual(state.fields["partSn"], {"db": 321, "byte": 38, "type": "string"})
+            self.assertEqual(state.fields["resultSn"], {"db": 321, "byte": 88, "type": "string"})
             self.assertEqual(state.fields["deviceShots"], {"db": 321, "byte": 24, "type": "u16"})
             self.assertEqual(state.fields["deviceTriggers"], {"db": 321, "byte": 36, "type": "u16"})
             self.assertEqual(state.fields["requestSeq"], {"db": 321, "byte": 4, "type": "u32"})
@@ -220,6 +221,45 @@ class S7HeartbeatTests(unittest.TestCase):
             self.assertNotEqual(state.field_values()["plcHeartbeat"], frozen)
         finally:
             server.stop()
+
+
+class S7SerialNumberTests(unittest.TestCase):
+    def setUp(self):
+        self.state = PLC.PlcState()
+        self.state.heartbeat_enabled = False
+
+    def read(self, byte, size):
+        return self.state.control({"op": "read_db", "byte": byte, "size": size})["hex"]
+
+    def test_fresh_db_strings_declare_capacity_24_and_empty_length(self):
+        self.assertEqual(self.read(38, 26), "1800" + "00" * 24)
+        self.assertEqual(self.read(88, 26), "1800" + "00" * 24)
+
+    def test_shorter_part_sn_after_24_char_sn_writes_new_length_and_zero_padding(self):
+        self.state.control({"op": "plc_request", "values": {"partSn": "ABCDEFGHIJKL-MNOPQRSTUVW"}})
+        self.assertEqual(self.read(38, 26), "1818" + b"ABCDEFGHIJKL-MNOPQRSTUVW".hex())
+        self.state.control({"op": "plc_values", "values": {"partSn": "SN-1"}})
+        self.assertEqual(self.read(38, 26), "1804" + b"SN-1".hex() + "00" * 20)
+        self.assertEqual(self.state.field_values()["partSn"], "SN-1")
+
+    def test_invalid_part_sn_rejects_whole_request_and_keeps_memory(self):
+        for value in ("", "A" * 25, "   ", "SN\t1", "SN-é", 12345):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    self.state.control({"op": "plc_request", "values": {"requestSeq": 5, "partSn": value}})
+                self.assertEqual(self.read(38, 26), "1800" + "00" * 24)
+                self.assertEqual(self.state.field_values()["requestSeq"], 0)
+                self.assertFalse(self.state.field_values()["partStart"])
+
+    def test_result_sn_not_byte_equal_to_part_sn_blocks_plc_ack(self):
+        self.state.control({"op": "plc_request", "values": {"requestSeq": 9, "partSn": "SN-12345"}})
+        for value in ("sn-12345", "SN-12345 ", "SN-1234"):
+            with self.subTest(value=value):
+                self.state.control({"op": "plc_values", "values": {"resultSeq": 9, "resultSn": value}})
+                with self.assertRaises(ValueError):
+                    self.state.control({"op": "plc_ack"})
+                self.assertFalse(self.state.field_values()["resultAck"])
+                self.assertEqual(self.state.field_values()["ackSeq"], 0)
 
 
 class ProcessFixture:
@@ -288,13 +328,15 @@ class S7ProcessApiTests(unittest.TestCase):
         self.assertTrue(self.fixture.command("status")["ok"])
 
     def test_request_ack_release_observe_pc_s7_writes(self):
-        response = self.fixture.command("plc_request", values={"requestSeq": 17, "partSn": 12345, "productCode": 7, "shotCount": 4, "deviceShots": 4, "planVersion": 1, "planReserved": 0})
+        response = self.fixture.command("plc_request", values={"requestSeq": 17, "partSn": "SN-12345", "productCode": 7, "shotCount": 4, "deviceShots": 4, "planVersion": 1, "planReserved": 0})
         self.assertTrue(response["ok"])
         self.assertTrue(response["result"]["partStart"])
         self.assertEqual(response["result"]["requestSeq"], 17)
         with connect((self.fixture.ready["host"], self.fixture.ready["port"])) as connection:
             result_seq = bytes.fromhex("03000027 02f080 32010000 0003 000e 0008 0501 120a10020004006484000220 0004002000000011")
             self.assertEqual(exchange(connection, result_seq), WRITE_ACK)
+            result_sn = bytes.fromhex("0300003d 02f080 32010000 0003 000e 001e 0501 120a1002001a0064840002c0 000400d0 1808534e2d3132333435") + bytes(16)
+            self.assertEqual(exchange(connection, result_sn), WRITE_ACK)
             self.assertEqual(exchange(connection, WRITE_DONE), DONE_ACK)
             acknowledged = self.fixture.command("plc_ack")
             self.assertTrue(acknowledged["ok"])
@@ -320,7 +362,7 @@ class S7ProcessApiTests(unittest.TestCase):
         self.assertTrue(self.fixture.command("plc_values", values={"deviceTriggers": 3})["ok"])
         with connect((self.fixture.ready["host"], self.fixture.ready["port"])) as connection:
             request = bytes.fromhex("0300001f 02f080 32010000 0002 000e 0000 0401 120a100200120064840000c0")
-            expected = bytes.fromhex("0300002b 02f080 32030000 0002 0002 0016 0000 0401 ff040090 000400000000000000000000000300000000")
+            expected = bytes.fromhex("0300002b 02f080 32030000 0002 0002 0016 0000 0401 ff040090 000400000000000000000000000318000000")
             self.assertEqual(exchange(connection, request), expected)
 
     def test_removed_camera_fields_are_rejected_atomically(self):

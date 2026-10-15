@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ly_plc::PlcConfig;
+use ly_plc::{DataType, PlcConfig};
 use tokio::time::{sleep, Instant};
 
 use super::s7_server::{BitAddr, Memory, SharedMemory};
@@ -27,6 +27,7 @@ struct Slot {
     byte: u32,
     bit: Option<u8>,
     len: u32,
+    text: bool,
 }
 
 /// 握手字段在 DB 中的位置，全部从 PLC 配置的握手契约解析。
@@ -42,7 +43,8 @@ impl Layout {
             let id = contract.point_id(field)?;
             let point = config.points.iter().find(|p| p.id == id).ok_or_else(|| format!("握手点位 {id} 不存在"))?;
             let location = ly_plc::resolve(&config.connection, &point.address, point.data_type)?;
-            slots.insert(field, Slot { db: location.area.index, byte: location.start, bit: location.bit, len: location.len });
+            slots.insert(field, Slot { db: location.area.index, byte: location.start, bit: location.bit, len: location.len,
+                text: point.data_type == DataType::String });
         }
         Ok(Self { slots })
     }
@@ -52,7 +54,7 @@ impl Layout {
         BitAddr { db: slot.db, byte: slot.byte, bit: slot.bit.unwrap_or(0) }
     }
 
-    /// 按点表分配 DB（至少 1024 字节），PLC 协议版本预置为当前版本。
+    /// 按点表分配 DB（至少 1024 字节），PLC 协议版本预置为当前版本，STRING 字段预置为声明长度正确的空串。
     pub fn memory(&self) -> SharedMemory {
         let mut extents = BTreeMap::<u16, usize>::new();
         for slot in self.slots.values() {
@@ -62,6 +64,9 @@ impl Layout {
         let mut memory = Memory::default();
         for (db, end) in extents { memory.create(db, end.max(1024)); }
         self.set(&mut memory, tag::PROTOCOL_VERSION, PROTOCOL_VERSION as u32);
+        for (field, slot) in &self.slots {
+            if slot.text { self.set_text(&mut memory, field, ""); }
+        }
         Arc::new(Mutex::new(memory))
     }
 
@@ -72,6 +77,22 @@ impl Layout {
             None => memory.read(slot.db, slot.byte, slot.len as usize)
                 .map(|bytes| bytes.iter().fold(0u32, |value, byte| (value << 8) | *byte as u32)).unwrap_or(0),
         }
+    }
+
+    fn get_text(&self, memory: &Memory, field: &str) -> String {
+        let slot = self.slots[field];
+        memory.read(slot.db, slot.byte, slot.len as usize).ok()
+            .and_then(|bytes| bytes.get(2..2 + bytes[1] as usize).map(|chars| chars.iter().map(|&b| b as char).collect()))
+            .unwrap_or_default()
+    }
+
+    fn set_text(&self, memory: &mut Memory, field: &str, value: &str) {
+        let slot = self.slots[field];
+        let mut bytes = vec![0u8; slot.len as usize];
+        bytes[0] = (slot.len - 2) as u8;
+        bytes[1] = value.len() as u8;
+        bytes[2..2 + value.len()].copy_from_slice(value.as_bytes());
+        let _ = memory.write(slot.db, slot.byte, &bytes);
     }
 
     fn set(&self, memory: &mut Memory, field: &str, value: u32) {
@@ -99,7 +120,7 @@ pub struct Timing {
 /// PLC 下发的一件：计划字段取自生效配方编译出的 PLC 拍照计划。
 #[derive(Clone, Debug)]
 pub struct PartOrder {
-    pub sn: u32,
+    pub sn: String,
     pub product_code: u16,
     pub plan_version: u32,
     pub shot_count: u16,
@@ -109,7 +130,7 @@ pub struct PartOrder {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Outcome {
     pub request_seq: u32,
-    pub sn: u32,
+    pub sn: String,
     pub result_code: u16,
     pub fault_code: u16,
 }
@@ -136,8 +157,18 @@ impl Line {
         self.layout.get(&self.memory.lock().unwrap(), field)
     }
 
+    fn read_text(&self, field: &str) -> String {
+        self.layout.get_text(&self.memory.lock().unwrap(), field)
+    }
+
     fn write(&self, values: &[(&str, u32)]) {
         let mut memory = self.memory.lock().unwrap();
+        for (field, value) in values { self.layout.set(&mut memory, field, *value); }
+    }
+
+    fn write_request(&self, sn: &str, values: &[(&str, u32)]) {
+        let mut memory = self.memory.lock().unwrap();
+        self.layout.set_text(&mut memory, tag::PART_SN, sn);
         for (field, value) in values { self.layout.set(&mut memory, field, *value); }
     }
 
@@ -208,8 +239,8 @@ impl Line {
     async fn drive(&self, timing: &Timing, order: &PartOrder, scenario: Scenario,
         mut trigger: impl FnMut(usize, bool), abort: &AtomicBool) -> Result<Outcome, String> {
         let seq = self.read(tag::REQUEST_SEQ).wrapping_add(1).max(1);
-        self.write(&[
-            (tag::PROTOCOL_VERSION, PROTOCOL_VERSION as u32), (tag::REQUEST_SEQ, seq), (tag::PART_SN, order.sn),
+        self.write_request(&order.sn, &[
+            (tag::PROTOCOL_VERSION, PROTOCOL_VERSION as u32), (tag::REQUEST_SEQ, seq),
             (tag::PRODUCT_CODE, order.product_code as u32), (tag::SHOT_COUNT, order.shot_count as u32),
             (tag::PLAN_VERSION, order.plan_version), (tag::PLAN_RESERVED, 0), (tag::DEVICE_SHOTS, order.device_shots as u32),
             (tag::DEVICE_TRIGGERS, 0), (tag::PART_END, 0), (tag::RESULT_ACK, 0), (tag::FAULT_RESET, 0), (tag::PART_START, 1),
@@ -233,7 +264,7 @@ impl Line {
             }
         }
         self.until(timing, timing.result_timeout, abort, "本件结果", published).await?;
-        let outcome = Outcome { request_seq: seq, sn: self.read(tag::RESULT_SN),
+        let outcome = Outcome { request_seq: seq, sn: self.read_text(tag::RESULT_SN),
             result_code: self.read(tag::RESULT_CODE) as u16, fault_code: self.read(tag::FAULT_CODE) as u16 };
         self.hold(timing, timing.ack_delay, abort).await?;
         let ack = if scenario == Scenario::AckMismatch { seq.wrapping_add(1) } else { seq };

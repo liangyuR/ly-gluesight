@@ -67,6 +67,7 @@ pub fn read_tag_u32(engine: &PlcEngine, tag: &str) -> Option<u32> {
         PlcValue::Int(i) => u32::try_from(i).ok(),
         PlcValue::Float(f) => Some(f as u32),
         PlcValue::Bool(b) => Some(b as u32),
+        PlcValue::Text(_) => None,
     }
 }
 
@@ -78,7 +79,7 @@ pub fn s7_phase1_config(db_number: u16) -> Result<PlcConfig, String> {
     if db_number == 0 {
         return Err("S7 DB 号必须在 1–65535 之间".into());
     }
-    use DataType::{Bool, U16, U32};
+    use DataType::{Bool, String as Text, U16, U32};
     use EdgeMode::{None as NoEdge, Rising};
     let input = Access::Read;
     let output = Access::ReadWrite;
@@ -90,7 +91,6 @@ pub fn s7_phase1_config(db_number: u16) -> Result<PlcConfig, String> {
         (tag::PLC_HEARTBEAT, "PLC 心跳", "DBX0.4", Bool, input, NoEdge),
         (tag::PROTOCOL_VERSION, "握手协议版本", "DBW2", U16, input, NoEdge),
         (tag::REQUEST_SEQ, "请求事务序号", "DBD4", U32, input, NoEdge),
-        (tag::PART_SN, "工件 SN", "DBD8", U32, input, NoEdge),
         (tag::PRODUCT_CODE, "产品代码", "DBW12", U16, input, NoEdge),
         (tag::SHOT_COUNT, "计划拍照总数", "DBW14", U16, input, NoEdge),
         (tag::PLAN_VERSION, "拍照计划版本", "DBD16", U32, input, NoEdge),
@@ -98,6 +98,7 @@ pub fn s7_phase1_config(db_number: u16) -> Result<PlcConfig, String> {
         (tag::DEVICE_SHOTS, "设备计划触发数", "DBW24", U16, input, NoEdge),
         (tag::ACK_SEQ, "确认事务序号", "DBD32", U32, input, NoEdge),
         (tag::DEVICE_TRIGGERS, "设备已发触发数", "DBW36", U16, input, NoEdge),
+        (tag::PART_SN, "工件 SN", "DBB38.24", Text, input, NoEdge),
         (tag::VISION_READY, "视觉就绪", "DBX64.0", Bool, output, NoEdge),
         (tag::ARMED, "已布防", "DBX64.1", Bool, output, NoEdge),
         (tag::BUSY, "检测中", "DBX64.2", Bool, output, NoEdge),
@@ -106,11 +107,11 @@ pub fn s7_phase1_config(db_number: u16) -> Result<PlcConfig, String> {
         (tag::PC_HEARTBEAT, "上位机心跳", "DBX64.5", Bool, output, NoEdge),
         (tag::PC_PROTOCOL_VERSION, "上位机协议版本", "DBW66", U16, output, NoEdge),
         (tag::RESULT_SEQ, "结果事务序号", "DBD68", U32, output, NoEdge),
-        (tag::RESULT_SN, "结果 SN", "DBD72", U32, output, NoEdge),
         (tag::RESULT_CODE, "结果码", "DBW76", U16, output, NoEdge),
         (tag::FAULT_CODE, "异常码", "DBW78", U16, output, NoEdge),
         (tag::ACCEPTED_SEQ, "布防事务序号", "DBD80", U32, output, NoEdge),
         (tag::ACCEPTED_PLAN_RESERVED, "布防计划保留位", "DBD84", U32, output, NoEdge),
+        (tag::RESULT_SN, "结果 SN", "DBB88.24", Text, output, NoEdge),
     ];
     let points = definitions.into_iter().map(|(tag, name, address, data_type, access, edge)| PlcPoint {
         id: format!("p_{tag}"), name: name.into(), address: format!("DB{db_number}.{address}"),

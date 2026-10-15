@@ -122,7 +122,7 @@ export default function PointEditor({ initial, isNew, existingIds, connection, t
         </label>
         <label className="field">
           <span>数据类型</span>
-          <select className="input" value={p.dataType} onChange={(e) => update({ dataType: e.target.value as DataType, wordOrder: e.target.value === "bool" ? null : p.wordOrder })}>
+          <select className="input" value={p.dataType} onChange={(e) => update({ dataType: e.target.value as DataType, wordOrder: e.target.value === "bool" || e.target.value === "string" ? null : p.wordOrder })}>
             {Object.entries(dataTypeLabels).map(([k, v]) => (
               <option key={k} value={k}>
                 {v}

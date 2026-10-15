@@ -10,7 +10,7 @@ const ERROR_LIMIT: usize = 64;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AckReceipt {
     pub cycle_id: String,
-    pub sn: u32,
+    pub sn: String,
     pub request_seq: u32,
     pub ts: i64,
 }
@@ -64,7 +64,7 @@ impl<'a> Recovery<'a> {
         let Some(cycle_id) = pending.cycle_id.as_deref() else { return };
         let result = pending.result.as_ref().unwrap();
         let candidate = Candidate {
-            receipt: AckReceipt { cycle_id: cycle_id.into(), sn: result.sn, request_seq: result.request_seq, ts },
+            receipt: AckReceipt { cycle_id: cycle_id.into(), sn: result.sn.clone(), request_seq: result.request_seq, ts },
             request: pending.request.clone(), result: result.clone(),
         };
         let mut conflict = false;
@@ -214,9 +214,9 @@ mod tests {
     }
 
     fn pending(cycle_id: &str, request_seq: u32, sn: u32) -> Pending {
-        Pending { capture_id: None, request: Request { protocol_version: crate::handshake::PROTOCOL_VERSION, request_seq, sn, product_code: 1,
+        Pending { capture_id: None, request: Request { protocol_version: crate::handshake::PROTOCOL_VERSION, request_seq, sn: format!("SN-{sn}"), product_code: 1,
             shot_count: 4, plan_version: 7, device_shots: 4 },
-            result: Some(ResultEnvelope { request_seq, sn, result_code: 1, fault_code: 0 }),
+            result: Some(ResultEnvelope { request_seq, sn: format!("SN-{sn}"), result_code: 1, fault_code: 0 }),
             phase: SessionPhase::Releasing, cycle_id: Some(cycle_id.into()), acknowledged: true, started_at: 1000 }
     }
 
@@ -229,7 +229,7 @@ mod tests {
     }
 
     fn receipt(cycle_id: &str, request_seq: u32, sn: u32, ts: i64) -> AckReceipt {
-        AckReceipt { cycle_id: cycle_id.into(), request_seq, sn, ts }
+        AckReceipt { cycle_id: cycle_id.into(), request_seq, sn: format!("SN-{sn}"), ts }
     }
 
     #[test]

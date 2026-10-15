@@ -19,6 +19,27 @@ def integer(value, name, minimum=0, maximum=65535):
     return value
 
 
+SN_CAPACITY = 24
+FIELD_SIZES = {"bool": 1, "u8": 1, "u16": 2, "u32": 4, "string": SN_CAPACITY + 2}
+
+
+def serial_number(value, name):
+    if not isinstance(value, str) or not 1 <= len(value) <= SN_CAPACITY or not all(" " <= char <= "~" for char in value) or not value.strip():
+        raise ValueError(f"{name} must be 1..{SN_CAPACITY} printable ASCII characters and not blank")
+    return value
+
+
+def s7_string(text):
+    data = text.encode("ascii")
+    return bytes([SN_CAPACITY, len(data)]) + data + bytes(SN_CAPACITY - len(data))
+
+
+def s7_string_value(raw):
+    if raw[0] != SN_CAPACITY or raw[1] > SN_CAPACITY:
+        return None
+    return bytes(raw[2:2 + raw[1]]).decode("latin-1")
+
+
 class ItemError(Exception):
     def __init__(self, code):
         self.code = code
@@ -55,8 +76,9 @@ def handshake_fields(db):
         for bit, name in enumerate(names):
             fields[name] = {"db": db, "byte": byte, "bit": bit, "type": "bool"}
     words = {"protocolVersion": 2, "productCode": 12, "shotCount": 14, "deviceShots": 24, "deviceTriggers": 36, "pcProtocolVersion": 66, "resultCode": 76, "faultCode": 78}
-    dwords = {"requestSeq": 4, "partSn": 8, "planVersion": 16, "planReserved": 20, "ackSeq": 32, "resultSeq": 68, "resultSn": 72, "acceptedSeq": 80, "acceptedPlanReserved": 84}
-    for kind, addresses in (("u16", words), ("u32", dwords)):
+    dwords = {"requestSeq": 4, "planVersion": 16, "planReserved": 20, "ackSeq": 32, "resultSeq": 68, "acceptedSeq": 80, "acceptedPlanReserved": 84}
+    strings = {"partSn": 38, "resultSn": 88}
+    for kind, addresses in (("u16", words), ("u32", dwords), ("string", strings)):
         for name, byte in addresses.items():
             fields[name] = {"db": db, "byte": byte, "type": kind}
     return fields
@@ -76,7 +98,7 @@ class PlcState:
         self.heartbeat_enabled = True
         self.heartbeat_ms = 500
         self.configure_fields(handshake_fields(db))
-        self.plc_values({"protocolVersion": 2}, None)
+        self.plc_values({"protocolVersion": 3}, None)
 
     def event(self, event_kind, **details):
         with self.lock:
@@ -178,19 +200,24 @@ class PlcState:
             if not isinstance(name, str) or not name or not isinstance(source, dict):
                 raise ValueError("each field requires a name and address object")
             if name in {"camera1Shots", "camera2Shots", "camera3Shots", "camera1Triggers", "camera2Triggers", "camera3Triggers"}:
-                raise ValueError(f"removed handshake field: {name}; use protocol version 2 single-device fields")
+                raise ValueError(f"removed handshake field: {name}; use deviceShots and deviceTriggers")
             field = {"db": integer(source.get("db", self.default_db), "db", 1), "byte": integer(source.get("byte"), "byte")}
             field["type"] = source.get("type", "bool" if "bit" in source else "u8")
-            if field["type"] not in ("bool", "u8", "u16", "u32"):
-                raise ValueError("field type must be bool, u8, u16 or u32")
+            if field["type"] not in FIELD_SIZES:
+                raise ValueError("field type must be bool, u8, u16, u32 or string")
             if field["type"] == "bool":
                 field["bit"] = integer(source.get("bit"), "bit", 0, 7)
-            size = {"bool": 1, "u8": 1, "u16": 2, "u32": 4}[field["type"]]
+            if field["type"] == "string" and field["byte"] % 2:
+                raise ValueError(f"{name} string must start at an even byte")
             with self.lock:
-                self.memory(field["db"], field["byte"], size)
+                self.memory(field["db"], field["byte"], FIELD_SIZES[field["type"]])
             parsed[name] = field
         with self.lock:
             self.fields = parsed
+            for field in parsed.values():
+                buf = self.dbs[field["db"]]
+                if field["type"] == "string" and buf[field["byte"]] != SN_CAPACITY:
+                    buf[field["byte"]:field["byte"] + FIELD_SIZES["string"]] = s7_string("")
         return parsed
 
     def field_values(self):
@@ -201,10 +228,18 @@ class PlcState:
                 byte = field["byte"]
                 if field["type"] == "bool":
                     result[name] = bool((buf[byte] >> field["bit"]) & 1)
+                elif field["type"] == "string":
+                    result[name] = s7_string_value(buf[byte:byte + FIELD_SIZES["string"]])
                 else:
-                    size = {"u8": 1, "u16": 2, "u32": 4}[field["type"]]
-                    result[name] = int.from_bytes(buf[byte:byte + size], "big")
+                    result[name] = int.from_bytes(buf[byte:byte + FIELD_SIZES[field["type"]]], "big")
             return result
+
+    def string_bytes(self, name):
+        with self.lock:
+            field = self.fields[name]
+            buf = self.dbs[field["db"]]
+            byte = field["byte"]
+            return bytes(buf[byte:byte + 2 + min(buf[byte + 1], SN_CAPACITY)])
 
     def plc_values(self, values, default_signal):
         if not isinstance(values, dict):
@@ -226,9 +261,12 @@ class PlcState:
                     item = Item(1, 1, field["db"], 0x84, field["byte"] * 8 + field["bit"])
                     encoded.append((item, 3, 1, bytes([value])))
                 else:
-                    size = {"u8": 1, "u16": 2, "u32": 4}[field["type"]]
-                    value = integer(value, name, 0, (1 << (size * 8)) - 1)
-                    encoded.append((Item(2, size, field["db"], 0x84, field["byte"] * 8), 4, size * 8, value.to_bytes(size, "big")))
+                    size = FIELD_SIZES[field["type"]]
+                    if field["type"] == "string":
+                        data = s7_string(serial_number(value, name))
+                    else:
+                        data = integer(value, name, 0, (1 << (size * 8)) - 1).to_bytes(size, "big")
+                    encoded.append((Item(2, size, field["db"], 0x84, field["byte"] * 8), 4, size * 8, data))
             for update in encoded:
                 self.write_item(*update)
             self.event("plc_values", values=updates)
@@ -289,13 +327,15 @@ class PlcState:
             return self.configure_fields(command.get("fields"))
         if op in ("plc_request", "plc_ack", "plc_values"):
             values = command.get("values", {})
-            if op == "plc_ack" and isinstance(values, dict):
-                with self.lock:
+            with self.lock:
+                if op == "plc_ack" and isinstance(values, dict):
                     current = self.field_values()
                     values = dict(values)
                     if "ackSeq" in current and "resultSeq" in current:
                         values.setdefault("ackSeq", current["resultSeq"])
-            return self.plc_values(values, {"plc_request": "partStart", "plc_ack": "resultAck"}.get(op))
+                    if "partSn" in self.fields and "resultSn" in self.fields and self.string_bytes("resultSn") != self.string_bytes("partSn"):
+                        raise ValueError("resultSn does not match partSn byte for byte")
+                return self.plc_values(values, {"plc_request": "partStart", "plc_ack": "resultAck"}.get(op))
         if op == "plc_release":
             with self.lock:
                 current = self.field_values()
@@ -563,7 +603,7 @@ def main():
     parser.add_argument("--pdu-size", type=int, default=960)
     args = parser.parse_args()
     try:
-        integer(args.db_size, "db-size", 88, 65536)
+        integer(args.db_size, "db-size", 114, 65536)
         integer(args.db, "db", 1, 65535)
         integer(args.pdu_size, "pdu-size", 240, 960)
     except ValueError as error:

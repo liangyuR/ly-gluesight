@@ -70,7 +70,7 @@ fn successful_finish_reports_only_existing_files_and_complete_metadata() {
     let (callback, outcomes) = callback();
     let recorder = Recorder::new(dir.root(), Some(callback));
     let recipe = recipe();
-    let mut rec = recorder.begin(RecordMode::All, 42, recipe.clone(), "cycle-complete", Some("frozen-bundle")).unwrap();
+    let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe.clone(), "cycle-complete", Some("frozen-bundle")).unwrap();
     recorder.frame(&mut rec, &frame(21), "cam1", 0, 11);
     recorder.finish(rec, Verdict::NgWidth, "原始胶宽不合格", 10, u64::MAX, Vec::new());
     let outcome = wait(&outcomes);
@@ -115,7 +115,7 @@ fn equal_sn_and_exposure_time_never_mix_different_cycles() {
     let (callback, outcomes) = callback();
     let recorder = Recorder::new(dir.root(), Some(callback));
     for (cycle, seed, verdict) in [("cycle-a", 10, Verdict::Ok), ("cycle-b", 30, Verdict::NgWidth)] {
-        let mut rec = recorder.begin(RecordMode::All, 42, recipe(), cycle, None).unwrap();
+        let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), cycle, None).unwrap();
         recorder.frame(&mut rec, &frame(seed), "cam1", 0, 1);
         recorder.finish(rec, verdict, cycle, 10, u64::MAX, Vec::new());
     }
@@ -124,7 +124,7 @@ fn equal_sn_and_exposure_time_never_mix_different_cycles() {
     assert!(first.available && second.available, "{:?} {:?}", first.errors, second.errors);
     assert_ne!(first.directory, second.directory);
     for (outcome, seed, verdict) in [(&first, 10, "OK"), (&second, 30, "NG_WIDTH")] {
-        assert_eq!(metadata(outcome)["sn"], 42);
+        assert_eq!(metadata(outcome)["sn"], "SN-42");
         assert_eq!(metadata(outcome)["verdict"], verdict);
         for file in &outcome.files {
             assert_eq!(*std::fs::read(recorder.root().join(&file.file)).unwrap().last().unwrap(), seed + file.view - 1);
@@ -137,7 +137,7 @@ fn queue_full_rejects_all_views_and_finish_bypasses_the_frame_limit() {
     let dir = TestDir::new();
     let (recorder, rx, _) = controlled(dir.root());
     recorder.queued.store(QUEUE, Ordering::Relaxed);
-    let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "cycle-full", None).unwrap();
+    let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "cycle-full", None).unwrap();
     recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
     assert_eq!(rec.dropped, 1);
     assert_eq!(rec.frames.len(), 3);
@@ -158,7 +158,7 @@ fn disk_failure_does_not_claim_originals_exist() {
     std::fs::write(dir.root(), "blocked-root").unwrap();
     let (callback, outcomes) = callback();
     let recorder = Recorder::new(dir.root(), Some(callback));
-    let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "cycle-disk-error", None).unwrap();
+    let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "cycle-disk-error", None).unwrap();
     recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
     recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
     let outcome = wait(&outcomes);
@@ -173,7 +173,7 @@ fn metadata_write_failure_is_reported_even_when_images_were_written() {
     let dir = TestDir::new();
     let (callback, outcomes) = callback();
     let recorder = Recorder::new(dir.root(), Some(callback));
-    let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "cycle-meta-error", None).unwrap();
+    let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "cycle-meta-error", None).unwrap();
     std::fs::create_dir_all(rec.dir.join("part.json")).unwrap();
     recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
     recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
@@ -188,7 +188,7 @@ fn finish_rejects_same_length_corrupt_or_resized_raw_image() {
     for replacement in [b"P9\n2 3\n255\nabcdef".as_slice(), b"P5\n3 2\n255\nabcdef".as_slice()] {
         let dir = TestDir::new();
         let (recorder, rx, _) = controlled(dir.root());
-        let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "cycle-invalid-image", None).unwrap();
+        let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "cycle-invalid-image", None).unwrap();
         let mut input = frame(10);
         input.images = (0..3).map(|view| Arc::new(FrameImage::new(2, 3, vec![10 + view; 6]))).collect();
         recorder.frame(&mut rec, &input, "cam1", 0, 1);
@@ -220,12 +220,12 @@ fn invalid_cycles_missing_images_and_duplicate_shots_are_never_available() {
     let (callback, outcomes) = callback();
     let recorder = Recorder::new(dir.root(), Some(callback));
     for cycle in ["", "../escape", "C:drive", "folder\\escape", "folder/escape"] {
-        assert!(recorder.begin(RecordMode::All, 42, recipe(), cycle, None).is_none());
+        assert!(recorder.begin(RecordMode::All, "SN-42", recipe(), cycle, None).is_none());
         let outcome = wait(&outcomes);
         assert_eq!(outcome.state, RecordingState::Failed);
         assert!(!outcome.available && outcome.directory.is_none());
     }
-    let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "cycle-empty", None).unwrap();
+    let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "cycle-empty", None).unwrap();
     let mut missing = frame(10);
     missing.images.clear();
     recorder.frame(&mut rec, &missing, "cam1", 0, 1);
@@ -234,7 +234,7 @@ fn invalid_cycles_missing_images_and_duplicate_shots_are_never_available() {
     assert!(!outcome.available && outcome.files.is_empty());
     assert_eq!(metadata(&outcome)["missingShots"].as_array().unwrap().len(), 1);
 
-    let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "cycle-duplicate", None).unwrap();
+    let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "cycle-duplicate", None).unwrap();
     recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
     recorder.frame(&mut rec, &frame(30), "cam1", 0, 1);
     recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
@@ -274,7 +274,7 @@ fn pending_sweep_removes_orphans_but_preserves_history_and_active_recordings() {
     let orphan = pending(&root, "orphan");
     let referenced = pending(&root, "referenced-partial");
     let (recorder, _, _) = controlled(root.clone());
-    let current = recorder.begin(RecordMode::All, 42, recipe(), "active-current", None).unwrap();
+    let current = recorder.begin(RecordMode::All, "SN-42", recipe(), "active-current", None).unwrap();
     std::fs::create_dir_all(&current.dir).unwrap();
     std::fs::write(current.dir.join("image.pgm"), "active-raw").unwrap();
     let reference = referenced.clone();
@@ -297,7 +297,7 @@ fn failed_history_guard_retains_pending_and_only_reports_retention_warnings() {
         Arc::new(move |errors| warn_tx.send(errors.to_vec()).unwrap()));
     let startup = warnings.recv_timeout(Duration::from_secs(10)).unwrap();
     assert!(startup.iter().any(|error| error.contains("历史引用读取失败")));
-    let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "guard-error-complete", None).unwrap();
+    let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "guard-error-complete", None).unwrap();
     recorder.frame(&mut rec, &frame(21), "cam1", 0, 1);
     recorder.finish(rec, Verdict::Ok, "本件完整", 10, u64::MAX, Vec::new());
     let outcome = wait(&outcomes);
@@ -347,7 +347,7 @@ fn unpromoted_finish_remains_protected_before_async_audit_persists_references() 
     let root = dir.root();
     let (callback, outcomes) = callback();
     let recorder = Recorder::guarded(root.clone(), Some(callback), Arc::new(|| Ok(Vec::new())), Arc::new(|_| {}));
-    let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "partial-before-audit", None).unwrap();
+    let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "partial-before-audit", None).unwrap();
     let pending = rec.dir.clone();
     let target = root.join(&rec.name[..8]).join(format!("{}_OK_cycle_{}", rec.name, rec.cycle_id));
     std::fs::create_dir_all(&target).unwrap();
@@ -358,7 +358,7 @@ fn unpromoted_finish_remains_protected_before_async_audit_persists_references() 
     assert_eq!(partial.directory.as_ref(), Some(&pending));
     assert!(partial.files.iter().all(|file| recorder.root().join(&file.file).is_file()));
     assert!(recorder.active.lock().unwrap().contains(&pending));
-    let mut next = recorder.begin(RecordMode::All, 42, recipe(), "next-complete", None).unwrap();
+    let mut next = recorder.begin(RecordMode::All, "SN-42", recipe(), "next-complete", None).unwrap();
     recorder.frame(&mut next, &frame(21), "cam1", 0, 1);
     recorder.finish(next, Verdict::Ok, "下一件完整", 10, u64::MAX, Vec::new());
     let complete = wait(&outcomes);
@@ -378,7 +378,7 @@ fn rolling_prune_preserves_durable_pending_recording_and_removes_unprotected_old
     let guarded = protected.clone();
     let (callback, outcomes) = callback();
     let recorder = Recorder::guarded(dir.root(), Some(callback), Arc::new(move || Ok(vec![guarded.clone()])), Arc::new(|_| {}));
-    let mut rec = recorder.begin(RecordMode::All, 42, recipe(), "prune-new", None).unwrap();
+    let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "prune-new", None).unwrap();
     recorder.frame(&mut rec, &frame(21), "cam1", 0, 1);
     recorder.finish(rec, Verdict::Ok, "完整", 1, 1, Vec::new());
     let outcome = wait(&outcomes);
@@ -395,7 +395,7 @@ fn changed_offline_retention_prunes_next_recording_without_removing_real_raw_ima
     let recorders = Recorders::new(Recorder::new(dir.root(), Some(real_callback)), Recorder::new(dir.0.join("records-offline"), Some(offline_callback)));
     let settings_path = dir.0.join("cycle.json");
     let mut settings = CycleSettings { record_keep: 1, offline_record_keep: 3, ..CycleSettings::default() };
-    let mut rec = recorders.begin(RecordSource::Real, RecordMode::All, 1, recipe(), "real-cycle", None).unwrap();
+    let mut rec = recorders.begin(RecordSource::Real, RecordMode::All, "SN-1", recipe(), "real-cycle", None).unwrap();
     recorders.frame(&mut rec, &frame(1), "cam1", 0, 1);
     recorders.finish(rec, Verdict::Ok, "真机件", &settings);
     let real = wait(&real_outcomes).directory.unwrap();
@@ -411,7 +411,7 @@ fn changed_offline_retention_prunes_next_recording_without_removing_real_raw_ima
             settings = saved;
         }
         std::thread::sleep(Duration::from_millis(5));
-        let mut rec = recorders.begin(source, RecordMode::All, 2, recipe(), &format!("offline-{i}"), None).unwrap();
+        let mut rec = recorders.begin(source, RecordMode::All, "SN-2", recipe(), &format!("offline-{i}"), None).unwrap();
         recorders.frame(&mut rec, &frame(10), "cam1", 0, 1);
         recorders.finish(rec, Verdict::Ok, "离线件", &settings);
         offline.push(wait(&offline_outcomes).directory.unwrap());
@@ -428,7 +428,7 @@ fn changed_offline_retention_prunes_next_recording_without_removing_real_raw_ima
     settings.save(&settings_path).unwrap();
     let (settings, note) = CycleSettings::load(&settings_path);
     assert!(note.is_none());
-    let mut rec = recorders.begin(RecordSource::OfflineSynthetic, RecordMode::All, 3, recipe(), "offline-capacity", None).unwrap();
+    let mut rec = recorders.begin(RecordSource::OfflineSynthetic, RecordMode::All, "SN-3", recipe(), "offline-capacity", None).unwrap();
     recorders.frame(&mut rec, &frame(20), "cam1", 0, 1);
     recorders.finish(rec, Verdict::Ok, "离线容量限制", &settings);
     let latest = wait(&offline_outcomes);

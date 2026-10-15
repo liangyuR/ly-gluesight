@@ -1,10 +1,12 @@
 # GlueSight PLC 通讯协议
 
-文档修订：1.2；审核日期：2026-10-11；线上握手协议版本：2。
+文档修订：1.3；审核日期：2026-10-15；线上握手协议版本：3。
 
 适用于 GlueSight 一期连续点胶飞拍的 PLC 与视觉工控机对接。PLC 负责机器人运动和位置同步硬触发，PC 负责接件、相机布防、收图、检测及整件结果回传。一件只有一个在途事务，完成结果确认和双方释放后才能开始下一件。
 
-**设备数量固定为一台 SDK 三目相机设备。** 全文统一称“设备通道 1”，图 1、图 2、图 3 是该设备帧内的视角。点表只保留唯一设备的 `deviceShots` 与 `deviceTriggers`，直接删除额外设备通道。协议版本 2 不接受旧多通道点表或计划，须重新生成点表并重新导出计划。
+**设备数量固定为一台 SDK 三目相机设备。** 全文统一称“设备通道 1”，图 1、图 2、图 3 是该设备帧内的视角。点表只保留唯一设备的 `deviceShots` 与 `deviceTriggers`，直接删除额外设备通道。协议版本 3 不接受旧多通道点表或计划，须重新生成点表并重新导出计划。
+
+**协议版本 3 起工件 SN 为 S7 STRING，与旧版布局不兼容。** `partSn` 与 `resultSn` 由 UDInt 数值改为 `STRING[24]` 字符串，DB 由 88 字节扩为至少 114 字节，`protocolVersion`/`pcProtocolVersion` 由 2 升为 3。旧点表（`partSn`/`resultSn` 为 UDInt 的协议 2 点表）和旧 PLC 程序（`protocolVersion=2`）直接被 PC 拒绝，不做兼容读取；须按协议 3 模板重新生成点表，PLC 按新布局重建 DB 并更新版本号。
 
 **同一 DB 也承载示教整圈采集，线上没有生产/采集模式字段。采集成功同样返回 `1/0`，只表示采集完成，不表示产品合格。** PLC 必须在外部维护并锁定本次用途，示教期间禁止生产自动发件和良品放行；不能仅凭 ready 或 resultCode=1 判断生产模式。示教执行条件和当前限制见第 4.1 节。
 
@@ -19,12 +21,13 @@
 | PLC IP、CPU、固件 | 现场填写，不能使用测试服务地址代替 |
 | Rack、Slot、TSAP | 按实际 CPU 与连接配置确认 |
 | 共享 DB | 默认 DB100，可改号，双方配置及参考程序必须同步 |
-| DB 属性 | 标准 DB，关闭优化块访问，至少 88 字节；TIA 中核对实际偏移 |
+| DB 属性 | 标准 DB，关闭优化块访问，至少 114 字节；TIA 中核对实际偏移 |
 | 数值字节序 | S7 大端 ABCD；UInt 为 16 位无符号，UDInt 为 32 位无符号 |
+| 字符串 | 工件 SN 使用 S7 `STRING[24]`（字节 0 声明最大长度，字节 1 实际长度，其后为字符），见第 2.1 节 |
 | PC 轮询周期 | 一期 S7 模板默认 50 ms |
 | 心跳 | 双方默认每 500 ms 翻转一次；观察变化，3 s 不变化判失活 |
 | 自动连接 | 一期模板默认关闭；连接成功后仍必须显式复位 |
-| 写入所有权 | PLC 只写字节 0–63；PC 只写字节 64–87 |
+| 写入所有权 | PLC 只写字节 0–63；PC 只写字节 64–113 |
 
 PLC 区在 PC 点表中必须设为只读，PC 区设为读写。禁止整 DB 清零或块复制覆盖对方区域；同一字节不能由双方分别写不同 bit。PC 的 50 ms 轮询不承担拍照位置或曝光时刻控制。
 
@@ -41,9 +44,9 @@ PLC 区在 PC 点表中必须设为只读，PC 区设为读写。禁止整 DB �
 | DB100.DBX0.2 | Bool | `resultAck` | 结果确认标志；锁存有效结果并写 ackSeq 后置 1 |
 | DB100.DBX0.3 | Bool | `faultReset` | 明确复位请求；必须先观察低电平，再有新上升沿 |
 | DB100.DBX0.4 | Bool | `plcHeartbeat` | PLC 心跳，每 500 ms 翻转 |
-| DB100.DBW2 | UInt | `protocolVersion` | 固定 2 |
+| DB100.DBW2 | UInt | `protocolVersion` | 固定 3；2 及其他值拒绝 |
 | DB100.DBD4 | UDInt | `requestSeq` | 本件事务序号，非零且递增 |
-| DB100.DBD8 | UDInt | `partSn` | 工件数值 SN，不替代事务序号，不是字符串条码 |
+| DB100.DBB38.24 | STRING[24] | `partSn` | 工件 SN 字符串，占字节 38–63；不替代事务序号，规则见第 2.1 节 |
 | DB100.DBW12 | UInt | `productCode` | 生产配方产品代码；PC 手动选配方时也必须匹配。示教采集不据此选择候选 |
 | DB100.DBW14 | UInt | `shotCount` | 协议总数为 1–65535；示教采集接受 PLC 提供的 1–64 |
 | DB100.DBD16 | UDInt | `planVersion` | 生产使用 PC 分配并导出的计划版本；示教见第 4.1 节，均不得为 0 |
@@ -52,7 +55,7 @@ PLC 区在 PC 点表中必须设为只读，PC 区设为读写。禁止整 DB �
 | DB100.DBD32 | UDInt | `ackSeq` | 确认时回显本件 resultSeq，新件开始前清为 0 |
 | DB100.DBW36 | UInt | `deviceTriggers` | 设备通道 1 本件已发脉冲数，布防前为 0，结束时等于 deviceShots |
 
-PLC 区保留空间：DBX0.5–0.7、DBB1、DBB26–31、DBB38–63。空白字节不定义设备通道或计数字段，不新增跨方向写入字段；其余现用字段地址不移动。
+PLC 区保留空间：DBX0.5–0.7、DBB1、**DBB8–11（原 `partSn` 的 DBD8，协议 3 起为保留字段，不再配置点位）**、DBB26–31。保留字节不定义设备通道或计数字段，不新增跨方向写入字段；除 SN 迁入 DBB38–63 外，其余现用字段地址不移动。
 
 ## 3 PC 写入 PLC 读取点表
 
@@ -64,15 +67,34 @@ PLC 区保留空间：DBX0.5–0.7、DBB1、DBB26–31、DBB38–63。空白字�
 | DB100.DBX64.3 | Bool | `done` | 结果有效；PC 写完结果 payload 后最后置 1 |
 | DB100.DBX64.4 | Bool | `visionFault` | 协议或设备故障，停止新触发并处置 |
 | DB100.DBX64.5 | Bool | `pcHeartbeat` | PC 通讯心跳，默认每 500 ms 翻转 |
-| DB100.DBW66 | UInt | `pcProtocolVersion` | 成功复位后为 2 |
+| DB100.DBW66 | UInt | `pcProtocolVersion` | 成功复位后为 3 |
 | DB100.DBD68 | UDInt | `resultSeq` | 本件结果事务序号，应等于 requestSeq |
-| DB100.DBD72 | UDInt | `resultSn` | 本件结果 SN，应等于 partSn |
+| DB100.DBB88.24 | STRING[24] | `resultSn` | 本件结果 SN，占字节 88–113；须与 partSn 逐字节相等 |
 | DB100.DBW76 | UInt | `resultCode` | 生产整件结果或示教采集完成码，须结合外部锁定的用途，见第 6 节 |
 | DB100.DBW78 | UInt | `faultCode` | 检测异常码，正常质量结果为 0 |
 | DB100.DBD80 | UDInt | `acceptedSeq` | 已接受并布防的 requestSeq |
 | DB100.DBD84 | UDInt | `acceptedPlanReserved` | 布防时写 0，核对接受状态时应为 0 |
 
-PC 区保留空间：DBX64.6–64.7、DBB65。PLC 不写此区域。`done=0` 时结果字段可能保留上件数值，不能作为新件结论。
+PC 区保留空间：DBX64.6–64.7、DBB65、**DBB72–75（原 `resultSn` 的 DBD72，协议 3 起为保留字段，不再配置点位）**。PLC 不写此区域。`done=0` 时结果字段可能保留上件数值，不能作为新件结论。
+
+### 2.1 工件 SN（S7 STRING）
+
+`partSn`（`DB{n}.DBB38.24`）与 `resultSn`（`DB{n}.DBB88.24`）均为 `STRING[24]`，布局相同：
+
+- 字节 +0：声明最大长度，固定 24（0x18）。
+- 字节 +1：实际长度，0–24。
+- 字节 +2 至 +25：字符区 24 字节，有效字符之后的未用字节补 0。
+
+`partSn` 占 DBB38–63（头 DBB38/39，字符 DBB40–63），`resultSn` 占 DBB88–113（头 DBB88/89，字符 DBB90–113）。PLC 必须把 `partSn` 按 `STRING[24]` 初始化，空串时头为 `18 00`（声明 24、实际 0）；PC 读取 STRING 时要求声明长度字节等于 24，不等则该点位读错误，按请求 payload 不合法处理。
+
+SN 规则：
+
+- 长度 1–24 个字符，每个字符为 ASCII 可打印字符 0x20–0x7E；去掉首尾空白后不能为空。
+- SN 原样保存与回显，PC 不做 trim 或大小写变换。PLC 侧要求 `resultSn` 与 `partSn` 逐字节相等（含声明长度、实际长度和字符区）。
+- SN 不替代 `requestSeq`；同一 SN 复检仍须新的 `requestSeq`。
+- 离线产线（仿真）为每件分配形如 `OFFLINE-0001234567`（`OFFLINE-` 加 10 位数字）的 SN，同一离线运行内唯一，样本件按 SN 字符串认领。
+
+不合规 `partSn`（声明长度不为 24、实际长度为 0 或超过 24、含 0x20–0x7E 以外字符、去掉首尾空白后为空）与其他请求 payload 不合法完全同样处理，见第 5 节。
 
 ## 4 拍照计划与三目设备
 
@@ -80,7 +102,7 @@ PC 从已保存生产配方导出计划，PLC 工程师将产品代码、计划�
 
 必须满足：
 
-- `protocolVersion=pcProtocolVersion=2`。
+- `protocolVersion=pcProtocolVersion=3`。
 - `deviceShots=shotCount`，总数非零。
 - `planVersion`、总数及设备计划触发数与 PC 当前计划一致。
 - PC 只配置一台设备，导出计划的 `deviceId` 必须对应此设备；所有拍照点的 `cameraId` 都指向该设备。
@@ -106,14 +128,16 @@ PC 从已保存生产配方导出计划，PLC 工程师将产品代码、计划�
 
 | 阶段 | PLC 动作 | PC 动作与放行条件 |
 | --- | --- | --- |
-| 等待就绪 | 保持 start/end/ACK 为 0，确认心跳活跃 | `visionReady=1`，`armed/busy/done/visionFault=0`，协议版本为 2 |
-| 提交请求 | 递增 requestSeq；写 SN、产品代码、计划和零触发数，最后置 partStart | 稳定读取请求，核对身份、配方、设备及计划 |
+| 等待就绪 | 保持 start/end/ACK 为 0，确认心跳活跃 | `visionReady=1`，`armed/busy/done/visionFault=0`，协议版本为 3 |
+| 提交请求 | 递增 requestSeq；写 SN（STRING）、产品代码、计划和零触发数，最后置 partStart | 稳定读取请求，核对 SN 格式、身份、配方、设备及计划 |
 | 等待布防 | 保持请求，禁止发触发 | 先撤 ready，写 acceptedSeq 和零保留位，置 busy，最后置 armed |
 | 连续运动与触发 | 核对布防条件后，按计划向唯一设备发硬脉冲并更新 deviceTriggers | 收图并按设备会话、触发计数和拍照点关联，异步检测 |
 | 提交结束 | 核对实际数等于计划数，写最终计数，再置 partEnd；start 仍为 1 | 核对结束与计数，等待本件收帧及测量完成 |
 | 发布结果 | 等待 done，不抢先 ACK | 撤 armed，保持 busy，写结果码、异常码、SN、序号，最后置 done |
 | 确认结果 | 核对并锁存结果，写 ackSeq，再置 resultAck | 核对匹配 ACK 后，先清 done，再清 busy |
 | 双方释放 | 看到 done=busy=0 后，清 start/end/ACK | 确认 PLC 已释放并完成追溯落盘，再置 ready |
+
+**请求 payload 不合法：** `requestSeq=0`、`planReserved≠0`、`deviceShots≠shotCount`、协议版本不符，以及 `partSn` 不合规（见第 2.1 节），均按同一方式处理：PC 不布防、不生成结果、不写 `resultCode`，进入视觉故障（`visionFault=1`、`visionReady=0`），没有可提交的 done。PLC 须释放 `partStart`，并执行故障复位（`faultReset` 上升沿，见第 8 节）后重新开始，不能等待 armed 或结果。
 
 **发脉冲的必要条件：** `armed=1`、`busy=1`、`done=0`、`partEnd=0`、`visionReady=0`、`visionFault=0`、`acceptedSeq=requestSeq`、`planReserved=acceptedPlanReserved=0`，双方心跳活跃且现场用途、设备互锁满足。任一条件失效立即禁止新脉冲。
 
@@ -123,7 +147,7 @@ PC 从已保存生产配方导出计划，PLC 工程师将产品代码、计划�
 
 提前撤 armed 后，PLC 还须在停止触发并计入最后已发脉冲后刷新 DB 触发数，再 ACK；PC 在 ACK 时读取这些数供后续帧归属使用。当前 SCL 在发现 armed 低时直接转等结果，未再从累计计数刷新 DB，可能遗漏前一扫描后发出的末脉冲。现场须补齐并验证此路径；未补齐时，提前终止后应隔离并复位对齐，不能据此承诺连续下一件计数正确。
 
-**有效结果的必要条件：** `done=1`、`armed=0`、`busy=1`、`visionReady=0`、无协议故障，`resultSeq=requestSeq`、`resultSn=partSn`，结果与异常码组合已知。正常 OK/NG 还要求 PLC 已核对最终计数并提交 partEnd。
+**有效结果的必要条件：** `done=1`、`armed=0`、`busy=1`、`visionReady=0`、无协议故障，`resultSeq=requestSeq`、`resultSn` 与 `partSn` 逐字节相等，结果与异常码组合已知。正常 OK/NG 还要求 PLC 已核对最终计数并提交 partEnd。
 
 计划拒收或提前终止可直接返回 `resultCode=90`、`faultCode=91–100`，无需等 partEnd。等待布防时也可能收到这种结果；已布防后 armed 撤下时，PLC 停止新脉冲并限时等待结果。身份与结果组合有效后仍需锁存、ACK 和释放。提前出现 OK/NG、未知组合或身份不匹配均不得确认放行。
 
@@ -198,7 +222,7 @@ PC 启动、S7 重连或配置变化后要求显式复位；PLC 参考 FB 首次
 3. 对参考 FB 的本地 `ResetRequest` 先置低，再发新上升沿；PLC 释放 partStart/partEnd/resultAck。运行中的未结件不能直接清输入强切下一件。
 4. 保持 faultReset 为低至少 1 s，保持 requestSeq、ackSeq 基线不变，随后置 faultReset 高至少 500 ms，形成 PC 可观察的新边沿。
 5. PC 在设备就绪、PLC 心跳有变化且输入中性时清输出、记录复位审计并结束原 pending，最后置 visionReady。
-6. PLC 必须看到 ready 低状态后再到高状态，且 pcProtocolVersion=2、armed/busy/done/visionFault 全为 0，才认定复位成功。超时则重新处置并发新低→高复位请求。
+6. PLC 必须看到 ready 低状态后再到高状态，且 pcProtocolVersion=3、armed/busy/done/visionFault 全为 0，才认定复位成功。超时则重新处置并发新低→高复位请求。
 
 计数错位时 PC 不自动修改基线去猜测帧归属。相机漏脉冲与上件迟到帧可能无法仅靠计数区分；出现持续缺帧时按错误原因排查并复位重新对齐。
 
@@ -210,17 +234,26 @@ PC 启动、S7 重连或配置变化后要求显式复位；PLC 参考 FB 首次
 
 | 项目 | 示例值 |
 | --- | --- |
-| requestSeq / partSn / productCode | 17 / 12345 / 7 |
-| protocolVersion / planVersion / planReserved | 2 / 41 / 0 |
+| requestSeq / partSn / productCode | 17 / `"A24-000123"` / 7 |
+| protocolVersion / planVersion / planReserved | 3 / 41 / 0 |
 | shotCount / deviceShots | 4 / 4 |
 | 本件开始时 deviceTriggers | 0 |
 | 布防确认 | acceptedSeq=17，armed=busy=1，ready=0 |
 | 运动完成 | deviceTriggers=4，随后 partEnd=1 |
-| 合格结果 | resultSeq=17，resultSn=12345，resultCode=1，faultCode=0，done=1 |
+| 合格结果 | resultSeq=17，resultSn=`"A24-000123"`，resultCode=1，faultCode=0，done=1 |
 | PLC 确认 | 锁存结果 → ackSeq=17 → resultAck=1 |
 | 释放 | PC 清 done/busy → PLC 清 start/end/ACK → PC 再置 ready |
 
 序号 17 写入 DBD4 的原始字节为 `00 00 00 11`；计划版本 41 写入 DBD16 为 `00 00 00 29`；shotCount=4 写入 DBW14 为 `00 04`。均使用无符号大端值。
+
+`partSn="A24-000123"`（10 个字符）写入 DBB38 起 26 字节的原始内容为：
+
+```text
+DBB38  DBB39  DBB40 ........................... DBB49  DBB50 ... DBB63
+18     0A     41 32 34 2D 30 30 30 31 32 33            00 x 14
+```
+
+即 `18 0A 41 32 34 2D 30 30 30 31 32 33 00 00 00 00 00 00 00 00 00 00 00 00 00 00`：`0x18=24` 为声明最大长度，`0x0A=10` 为实际长度，`41 32 34 2D 30 30 30 31 32 33` 是 `A24-000123` 的 ASCII，其后 14 个字节补 0。PC 回写的 `resultSn` 在 DBB88 起为同样的 26 字节。空串 SN 的头为 `18 00`，属于不合规 SN。
 
 ## 10 实现依据与验证边界
 

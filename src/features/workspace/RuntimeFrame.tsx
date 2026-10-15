@@ -37,7 +37,7 @@ export default function RuntimeFrame({part,layout,k,measured,vis,compact=false,o
   const m=measured.find(m=>m.k===k&&matchesPart(m,part));
   const shot=layout?.shots[k];
   const attention=frame?.viewResults?.filter(result=>result.verdict!=="OK"||!!result.error).length??0;
-  const label=compact?[frame?.shotId??shot?.id,shot?.poseId&&shot.poseId!==shot.id?"Pose "+shot.poseId:null,frame?.camera??shot?.camera,"视角 "+(frame?.view??shot?.view??"—"),"k"+(k+1)].filter(Boolean).join(" · "):"SN "+(part?.sn??"—")+" · k"+(k+1);
+  const label=compact?[frame?.shotId??shot?.id,shot?.poseId&&shot.poseId!==shot.id?"Pose "+shot.poseId:null,frame?.camera??shot?.camera,"视角 "+(frame?.view??shot?.view??"—"),"k"+(k+1)].filter(Boolean).join(" · "):"SN "+(part?.sn||"—")+" · k"+(k+1);
   const contents=<>
     <GrayViewer image={image?.image??null} loading={image?.loading??false} error={image?.error??""} label={label} overlay={shotOverlay(layout,k,vis)} emptyTitle={compact?"等待本拍照点图像":undefined} emptyHint={compact?"":"本拍照点采集完成后显示原图；可在下方切换拍照点查看。"}/>
     <div className="wp-runtime-strip"><KV label="帧状态"><Badge tone={frame?.gapPoints?"ng":frame?.status==="done"?"ok":"warn"}>{frame?.gapPoints?"含缺胶":frame?.status==="done"?"测量完成":frame?.status==="error"?"测量出错":frame?.status==="locateFailed"?"定位失败":frame?.status==="missing"?"未到达":"等待测量"}</Badge></KV><KV label="得分">{m?.score.toFixed(3)??"—"}</KV><KV label="测量点 / 缺胶">{frame ? frame.points+" / "+frame.gapPoints : "—"}</KV><KV label="处理耗时">{m?m.ms+" ms":"—"}</KV></div>
