@@ -113,7 +113,7 @@ pub struct Recording {
     name: String,
     cycle_id: String,
     bundle_id: Option<String>,
-    sn: u32,
+    sn: String,
     recipe: Arc<Recipe>,
     mode: RecordMode,
     frames: Vec<FrameMeta>,
@@ -155,7 +155,7 @@ impl Recorders {
         self.get(HistoryScope::of(source)).root()
     }
 
-    pub fn begin(&self, source: RecordSource, mode: RecordMode, sn: u32, recipe: Arc<Recipe>, cycle_id: &str, bundle_id: Option<&str>) -> Option<Recording> {
+    pub fn begin(&self, source: RecordSource, mode: RecordMode, sn: &str, recipe: Arc<Recipe>, cycle_id: &str, bundle_id: Option<&str>) -> Option<Recording> {
         self.get(HistoryScope::of(source)).begin(mode, sn, recipe, cycle_id, bundle_id)
     }
 
@@ -199,7 +199,7 @@ impl Recorder {
         &self.root
     }
 
-    pub fn begin(&self, mode: RecordMode, sn: u32, recipe: Arc<Recipe>, cycle_id: &str, bundle_id: Option<&str>) -> Option<Recording> {
+    pub fn begin(&self, mode: RecordMode, sn: &str, recipe: Arc<Recipe>, cycle_id: &str, bundle_id: Option<&str>) -> Option<Recording> {
         if mode == RecordMode::Off {
             notify(
                 &self.callback,
@@ -252,7 +252,7 @@ impl Recorder {
             name,
             cycle_id: cycle_id.into(),
             bundle_id: bundle_id.map(str::to_string),
-            sn,
+            sn: sn.into(),
             recipe,
             mode,
             frames: Vec::new(),

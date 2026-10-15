@@ -50,12 +50,12 @@ pub enum RunPurpose {
     Capture,
 }
 
-/// 离线产线跑过的一件：PLC 数值 partSn ↔ 样本件。标签只用于展示，不参与判定。
+/// 离线产线跑过的一件：PLC 字符串 partSn ↔ 样本件。标签只用于展示，不参与判定。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SampleRun {
     pub ts: i64,
-    pub part_sn: u32,
+    pub part_sn: String,
     pub part_id: String,
     pub sample_sn: String,
     pub label: SampleLabel,
@@ -182,15 +182,19 @@ impl OfflineHost {
         self.next_sn.fetch_add(1, Ordering::SeqCst)
     }
 
-    fn begin_run(&self, set: &SampleSet, part_id: &str, part_sn: u32, purpose: RunPurpose) {
+    fn sn_text(n: u32) -> String {
+        format!("OFFLINE-{n:010}")
+    }
+
+    fn begin_run(&self, set: &SampleSet, part_id: &str, part_sn: &str, purpose: RunPurpose) {
         let Some(reference) = set.reference(part_id) else { return };
         let mut runs = self.runs.lock().unwrap();
-        runs.push_front(SampleRun { ts: now_ms(), part_sn, part_id: reference.part_id.clone(), sample_sn: reference.sn.clone(),
+        runs.push_front(SampleRun { ts: now_ms(), part_sn: part_sn.into(), part_id: reference.part_id.clone(), sample_sn: reference.sn.clone(),
             label: reference.label, purpose, cycle_id: None, result_code: None, fault_code: None, verdict: None, message: None, reference });
         runs.truncate(RECENT_RUNS);
     }
 
-    fn finish_run(&self, part_sn: u32, result: &Result<Outcome, String>) {
+    fn finish_run(&self, part_sn: &str, result: &Result<Outcome, String>) {
         let mut runs = self.runs.lock().unwrap();
         let Some(run) = runs.iter_mut().find(|r| r.part_sn == part_sn) else { return };
         match result {
@@ -204,7 +208,7 @@ impl OfflineHost {
     }
 
     /// 生产节拍按 PLC 下发的 partSn 认领样本件，记下 cycleId。只在离线期间生效：真机件不会认领到样本件。
-    pub fn claim(&self, part_sn: u32, cycle_id: &str) -> Option<SampleRef> {
+    pub fn claim(&self, part_sn: &str, cycle_id: &str) -> Option<SampleRef> {
         if !self.enabled() { return None; }
         let mut runs = self.runs.lock().unwrap();
         let run = runs.iter_mut().find(|r| r.part_sn == part_sn && r.purpose == RunPurpose::Production)?;
@@ -290,7 +294,7 @@ pub fn preview_target(app: &AppHandle, camera_id: &str) -> Option<SampleTarget> 
     Some(SampleTarget { set, part_id, shot_id })
 }
 
-pub fn claim_sample(app: &AppHandle, part_sn: u32, cycle_id: &str) -> Option<SampleRef> {
+pub fn claim_sample(app: &AppHandle, part_sn: &str, cycle_id: &str) -> Option<SampleRef> {
     app.try_state::<OfflineHost>()?.claim(part_sn, cycle_id)
 }
 
@@ -469,7 +473,7 @@ pub fn offline_run(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, Cyc
         set.part(id).ok_or_else(|| format!("样本集里没有样本件 {id}"))?;
     }
     start_running(&offline, continuous)?;
-    let order = PartOrder { sn: 0, product_code: recipe.product_code, plan_version: plan.plan_version,
+    let order = PartOrder { sn: String::new(), product_code: recipe.product_code, plan_version: plan.plan_version,
         shot_count: plan.shot_count, device_shots: plan.device_shots };
     tauri::async_runtime::spawn(async move {
         if warming && !wait_warmup(&app, &recipe).await { return finish(&app, &app.state::<OfflineHost>()); }
@@ -498,7 +502,7 @@ pub fn offline_capture(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_,
     if let Some(id) = part_id.as_deref() { set.part(id).ok_or_else(|| format!("样本集里没有样本件 {id}"))?; }
     start_running(&offline, false)?;
     let n = shots.len() as u16;
-    let order = PartOrder { sn: 0, product_code: 0, plan_version: CAPTURE_PLAN_VERSION, shot_count: n, device_shots: n };
+    let order = PartOrder { sn: String::new(), product_code: 0, plan_version: CAPTURE_PLAN_VERSION, shot_count: n, device_shots: n };
     tauri::async_runtime::spawn(capture(app, line, set, part_id, cam, order));
     Ok(())
 }
@@ -539,8 +543,8 @@ pub fn sample_payload(set: &Arc<SampleSet>, part_id: &str, shot_id: &str) -> Tri
     TriggerPayload::Sample(SampleTarget { set: set.clone(), part_id: part_id.to_string(), shot_id: shot_id.to_string() })
 }
 
-fn sim_payload(recipe: &Arc<Recipe>, sn: u32, scenario: Scenario, k: usize) -> SimRender {
-    let r = |i: u32| ((sn.wrapping_mul(2_654_435_761).wrapping_add(i * 40_503) >> 8) % 1000) as f32 / 500.0 - 1.0;
+fn sim_payload(recipe: &Arc<Recipe>, part: u32, scenario: Scenario, k: usize) -> SimRender {
+    let r = |i: u32| ((part.wrapping_mul(2_654_435_761).wrapping_add(i * 40_503) >> 8) % 1000) as f32 / 500.0 - 1.0;
     let pose = PoseError { dx: 4.0 * r(1), dy: 4.0 * r(2), deg: 0.3 * r(3) };
     let n = recipe.shot_count();
     SimRender {
@@ -548,17 +552,17 @@ fn sim_payload(recipe: &Arc<Recipe>, sn: u32, scenario: Scenario, k: usize) -> S
         k,
         scenario,
         pose: if scenario.locate_fail_frame(n) == Some(k) { PoseError { dx: pose.dx + 130.0, dy: pose.dy + 130.0, ..pose } } else { pose },
-        seed: sn as u64 * 16 + k as u64,
+        seed: part as u64 * 16 + k as u64,
     }
 }
 
-fn trigger_shot(app: &AppHandle, recipe: &Arc<Recipe>, sn: u32, scenario: Scenario, sample: Option<(&Arc<SampleSet>, &str)>, k: usize, lost: bool) {
+fn trigger_shot(app: &AppHandle, recipe: &Arc<Recipe>, part: u32, scenario: Scenario, sample: Option<(&Arc<SampleSet>, &str)>, k: usize, lost: bool) {
     let cycle = app.state::<CycleHost>();
     let Some(shot) = recipe.shots.get(k) else { return };
     let Ok(cam) = cycle.camera.require(&shot.camera) else { return };
     let payload = match sample {
         Some((set, part_id)) => sample_payload(set, part_id, &shot.id),
-        None => TriggerPayload::Sim(sim_payload(recipe, sn, scenario, k)),
+        None => TriggerPayload::Sim(sim_payload(recipe, part, scenario, k)),
     };
     let _ = cycle.camera.trigger(cam, lost, Some(payload));
 }
@@ -601,16 +605,17 @@ async fn run(app: AppHandle, line: Arc<Line>, recipe: Arc<Recipe>, order: PartOr
             offline.set_message(&app, format!("已中止：{error}"));
             break;
         }
-        let sn = offline.next_sn();
-        if let (Some(set), Some(id)) = (&set, &part_id) { offline.begin_run(set, id, sn, RunPurpose::Production); }
+        let number = offline.next_sn();
+        let sn = OfflineHost::sn_text(number);
+        if let (Some(set), Some(id)) = (&set, &part_id) { offline.begin_run(set, id, &sn, RunPurpose::Production); }
         *offline.part_scenario.lock().unwrap() = Some(s);
-        let order = PartOrder { sn, ..order.clone() };
+        let order = PartOrder { sn: sn.clone(), ..order.clone() };
         let sample = set.as_ref().zip(part_id.as_deref());
-        let shot = |k, lost| trigger_shot(&app, &recipe, sn, s, sample, k, lost);
+        let shot = |k, lost| trigger_shot(&app, &recipe, number, s, sample, k, lost);
         let result = line.run_part(&timing, &order, s, shot, &offline.abort).await;
         *offline.part_scenario.lock().unwrap() = None;
         offline.parts.fetch_add(1, Ordering::SeqCst);
-        offline.finish_run(sn, &result);
+        offline.finish_run(&sn, &result);
         match result {
             Ok(outcome) => offline.set_message(&app, format!("SN {sn}{what} 完成，resultCode = {}", outcome.result_code)),
             Err(error) => {
@@ -632,9 +637,9 @@ async fn capture(app: AppHandle, line: Arc<Line>, set: Arc<SampleSet>, requested
         let part_id = offline.pick_part(&set, requested.as_deref())?;
         offline.set_message(&app, format!("整圈采集运行中：样本件 {part_id}"));
         line.ensure_ready(&timing, &offline.abort).await?;
-        let sn = offline.next_sn();
-        offline.begin_run(&set, &part_id, sn, RunPurpose::Capture);
-        let order = PartOrder { sn, ..order };
+        let sn = OfflineHost::sn_text(offline.next_sn());
+        offline.begin_run(&set, &part_id, &sn, RunPurpose::Capture);
+        let order = PartOrder { sn: sn.clone(), ..order };
         let shots = &set.manifest().shots;
         let trigger = |k: usize, lost| {
             let Some(shot) = shots.get(k) else { return };
@@ -642,7 +647,7 @@ async fn capture(app: AppHandle, line: Arc<Line>, set: Arc<SampleSet>, requested
         };
         let result = line.run_part(&timing, &order, Scenario::Normal, trigger, &offline.abort).await;
         offline.parts.fetch_add(1, Ordering::SeqCst);
-        offline.finish_run(sn, &result);
+        offline.finish_run(&sn, &result);
         result.map(|outcome| format!("整圈采集 SN {sn} · 样本件 {part_id} 完成，resultCode = {}", outcome.result_code))
             .map_err(|error| format!("整圈采集 SN {sn} · 样本件 {part_id} 已中止：{error}"))
     }.await;

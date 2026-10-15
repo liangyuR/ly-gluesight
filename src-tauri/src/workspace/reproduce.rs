@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use crate::judge::{self, Judgement, PointState};
 use crate::production::Prepared;
 
-pub(super) fn measure(prepared: &Prepared, count: usize, sn: u32, cycle_id: &str,
+pub(super) fn measure(prepared: &Prepared, count: usize, sn: &str, cycle_id: &str,
     mut load: impl FnMut(usize, u8) -> Result<crate::frame::FrameImage, String>) -> Result<(Judgement, Vec<Value>), String> {
     let recipe = &prepared.recipe;
     if count != recipe.shot_count() { return Err("原图数量与原发布计划不一致".into()); }

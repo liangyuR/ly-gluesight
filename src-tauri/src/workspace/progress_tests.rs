@@ -154,6 +154,6 @@ fn qualified_expectation_accepts_ok_and_ok_with_excursion_only() {
     ] {
         let sample = Sample { history_id: None, sample_id: Some("round-2".into()), expected };
         let judgement = judge::Judgement { verdict: actual, ..judge::Judgement::error(0, "候选判定") };
-        assert_eq!(SampleResult::judged(&sample, "独立采集".into(), 0, judgement).passed, matched, "{expected:?} / {actual:?}");
+        assert_eq!(SampleResult::judged(&sample, "独立采集".into(), String::new(), judgement).passed, matched, "{expected:?} / {actual:?}");
     }
 }

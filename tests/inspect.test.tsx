@@ -112,7 +112,7 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     const page = render(<InspectPage />);
     fireEvent.change(screen.getByRole("slider", { name: "位置曲线选点" }), { target: { value: "1" } });
     expect(screen.getByText(/点 2 · P1 · J1 · s=1.00/)).toBeVisible();
-    state = { ...state, phase: "FAULT", fault: "新件相机错误", part: { ...cyclePart(1, "cycle-2"), frames: [cyclePart().frames[0], { ...cyclePart().frames[1], status: "waiting" }] } };
+    state = { ...state, phase: "FAULT", fault: "新件相机错误", part: { ...cyclePart("1", "cycle-2"), frames: [cyclePart().frames[0], { ...cyclePart().frames[1], status: "waiting" }] } };
     page.rerender(<InspectPage />);
     expect(screen.getByText("暂无检测结果")).toBeVisible();
     expect(screen.queryByText("测试样本偏移超差")).not.toBeInTheDocument();

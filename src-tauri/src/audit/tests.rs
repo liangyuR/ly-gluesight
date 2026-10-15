@@ -144,7 +144,7 @@ fn part(cycle: &str, sn: u32) -> RecordedPart {
         .collect();
     RecordedPart {
         ts: 1234,
-        sn,
+        sn: format!("SN-{sn}"),
         recipe: Some(recipe.clone()),
         judgement: Judgement::error(crate::judge::fault::MISSING_FRAME, "原始检测结论：P2 缺帧"),
         drain_ms: Some(42),
@@ -489,10 +489,10 @@ fn durable_spool_conflicting_cycle_insert_retains_all_receipts_and_never_replace
     sink.store.insert(&original_record.borrowed()).unwrap();
     let original_content = original(&sink.detail("same-cycle"));
     let mut conflict = original_record.clone();
-    conflict.sn = 43;
+    conflict.sn = "SN-43".into();
     spool.append(&Event::Insert(Box::new(conflict))).unwrap();
     assert!(!replay_cycle(&mut spool, "same-cycle", &mut sink, 1).unwrap().0);
-    assert_eq!(sink.detail("same-cycle").summary.sn, 42);
+    assert_eq!(sink.detail("same-cycle").summary.sn, "SN-42");
     assert_eq!(original(&sink.detail("same-cycle")), original_content);
     assert_eq!(spool.events("same-cycle").unwrap().len(), 1);
     let mut clean_spool = spool::Spool::open(dir.0.join("two-pending")).unwrap();
@@ -610,7 +610,7 @@ fn durable_recording_barrier_waits_for_actual_recorder_callback_after_ack_and_em
     });
     let recorder = Recorder::new(dir.0.join("records"), Some(callback));
     let recipe = record.recipe.clone().unwrap();
-    let mut recording = recorder.begin(RecordMode::All, record.sn, recipe, &record.cycle_id, record.bundle_id.as_deref()).unwrap();
+    let mut recording = recorder.begin(RecordMode::All, &record.sn, recipe, &record.cycle_id, record.bundle_id.as_deref()).unwrap();
     recorder.frame(&mut recording, &Frame {
         cam: 0, session: u64::MAX, counter: CounterSource::Synthetic,
         frame_counter: u64::MAX - 1, trigger_counter: u64::MAX - 2,
@@ -653,7 +653,7 @@ fn durable_recording_barrier_handles_synchronous_off_callback_before_insert() {
     let recorder = Recorder::new(dir.0.join("records"), Some(Arc::new(move |outcome| {
         persist_event(&callback_spool, &callback_failure, &callback_pending, &Event::Recording(outcome)).unwrap();
     })));
-    assert!(recorder.begin(RecordMode::Off, record.sn, record.recipe.clone().unwrap(), &record.cycle_id, record.bundle_id.as_deref()).is_none());
+    assert!(recorder.begin(RecordMode::Off, &record.sn, record.recipe.clone().unwrap(), &record.cycle_id, record.bundle_id.as_deref()).is_none());
     assert!(pending.lock().unwrap().contains_key(&record.cycle_id));
     assert!(spool.lock().unwrap().empty());
     assert!(with_ready_spool(&spool, &failure, &AtomicBool::new(true), &pending, || Ok(())).is_err());

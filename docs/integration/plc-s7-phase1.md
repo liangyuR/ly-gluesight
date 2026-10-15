@@ -2,7 +2,7 @@
 
 面向电气与视觉对接的完整协议见 [PLC 通讯协议](plc-communication-protocol.md)。一期架构、剩余工作包和验收路线见 [软件架构图](../architecture/gluesight-software-architecture.html)，文档入口见 [docs 索引](../README.md)。
 
-本页按 2026-10-11 源码复核。生产与示教整圈采集共用以下点表，DB 没有用途字段；示教成功也回传 `1/0`，只表示采集完成。现场须以外部模式互锁隔离生产请求和良品放行；具体流程、超时与当前模式切换缺口见 [通讯协议 4.1 节](plc-communication-protocol.md#41-示教整圈采集)。
+本页按 2026-10-15 协议 3 复核。生产与示教整圈采集共用以下点表，DB 没有用途字段；示教成功也回传 `1/0`，只表示采集完成。现场须以外部模式互锁隔离生产请求和良品放行；具体流程、超时与当前模式切换缺口见 [通讯协议 4.1 节](plc-communication-protocol.md#41-示教整圈采集)。
 
 本协议由 GlueSight 项目定义，通过现有 `ly-plc` 的 S7 ISO-on-TCP 客户端读写 PLC DB。**CPU 型号、固件、IP、机架/插槽、TSAP、TIA Portal 版本及实际触发输出尚未确定。** DB100 是建议的默认共享区；现场可选择其他 DB，但双方配置必须一致。
 
@@ -13,14 +13,14 @@
 - PLC/机器人维护运动路径、拍照位置、输出脉冲、脉冲宽度及唯一设备与触发输出的对应关系；GlueSight 的 UI、S7 网络轮询和 Windows 线程均不生成位置同步的硬触发。
 - 本次握手固定服务一台 SDK 三目设备，仅提供唯一设备的计划触发数 deviceShots 和实际触发数 deviceTriggers。示教开始前 PC 不手填数量，由 PLC 的开始请求提供 1–64 次并由 PC 锁存，拍照点依据有效收图生成。配方每个拍照点绑定该设备与 Pose；软件已接入按设备会话与触发计数归属拍照点的路由，模拟与回放的软件闭环已完成，真实设备仍须联调验收。现场三目设备按一个 Device、一次触发一个含三视角的设备帧建模；全文称该连接为“设备通道 1”，不定义其他设备通道。一个拍照点选择一个或多个视角均不增加触发数，图 1/2/3 均属于该设备帧。当前海康路径已支持明确配置横向、纵向三等分或三个矩形区域的单张拼接图拆分；未配置布局拒绝启用，布局/尺寸不符产生图像错误。现场 SDK 原图交付、视角顺序、计数和触发线路仍待验收，不能把软件路径视为真机验证。
 - `TriggerPermit` 只允许现场触发程序开始/继续发新脉冲；SCL 不直接写物理输出。`IssuedPulseCount`（单个 UDInt） 由现场可靠计数源提供，每个实际输出脉冲加一，不能使用普通扫描对高速脉冲的布尔采样代替。PLC 发出脉冲不等于相机成功曝光，后者仍需相机帧/触发计数和完整性验证。
-- PLC 单独拥有 DB 字节 0–63；PC 单独拥有字节 64–87。PLC 代码只读 PC 区，PC 点表将 PLC 区设为只读。两个写入方不得共用同一字节，也不得用整 DB 的初始化/块复制覆盖对方区域。
+- PLC 单独拥有 DB 字节 0–63；PC 单独拥有字节 64–113。PLC 代码只读 PC 区，PC 点表将 PLC 区设为只读。两个写入方不得共用同一字节，也不得用整 DB 的初始化/块复制覆盖对方区域。
 - 一件只有一个在途事务。普通质量 NG 可以按有效结果确认；通讯、身份或状态不确定进入故障，保留 pending，停止新触发及下一件。现场运动的停机策略由 PLC/机器人程序负责。
 
-**单设备协议版本 2：** 点表共 28 个字段，删除额外设备通道；旧多通道点表和计划直接拒绝，须按新模板重建并重新导出。
+**单设备协议版本 3：** 点表共 28 个字段，删除额外设备通道；工件 SN `partSn`/`resultSn` 由 UDInt 改为 S7 `STRING[24]`，DB 至少 114 字节，`protocolVersion`/`pcProtocolVersion` 由 2 升为 3。旧多通道点表和计划、旧协议 2 点表（SN 为 UDInt）、旧 PLC 程序（`protocolVersion=2`）直接拒绝，须按协议 3 模板重建点表并重新导出，不做兼容读取。
 
 ## 2. DB100 点表
 
-使用**关闭优化块访问的标准 DB**，至少 88 字节。多字节值为 S7 大端 ABCD；PC `u16/u32` 对应 PLC `UInt/UDInt`，不能用有符号 `Int/DInt` 接收大于其上限的 序号。布尔按指定 bit 访问。
+使用**关闭优化块访问的标准 DB**，至少 114 字节。多字节值为 S7 大端 ABCD；PC `u16/u32` 对应 PLC `UInt/UDInt`，不能用有符号 `Int/DInt` 接收大于其上限的 序号。布尔按指定 bit 访问。工件 SN 使用 `STRING[24]`，规则见下表后的说明。
 
 | 所有者 | 地址 | 类型 | 标签及含义 |
 | --- | --- | --- | --- |
@@ -29,9 +29,8 @@
 | PLC | DB100.DBX0.2 | Bool | `resultAck`：匹配结果已接收，保持到 PC 清 done/busy |
 | PLC | DB100.DBX0.3 | Bool | `faultReset`：明确复位请求，必须有新低→高边沿 |
 | PLC | DB100.DBX0.4 | Bool | `plcHeartbeat`：名义每 500 ms 翻转 |
-| PLC | DB100.DBW2 | UInt | `protocolVersion`：固定 2 |
+| PLC | DB100.DBW2 | UInt | `protocolVersion`：固定 3；2 及其他值拒绝 |
 | PLC | DB100.DBD4 | UDInt | `requestSeq`：本件非零递增事务序号 |
-| PLC | DB100.DBD8 | UDInt | `partSn`：工件 SN，不替代事务序号 |
 | PLC | DB100.DBW12 | UInt | `productCode`：生产配方产品代码，手动选配方也须匹配；示教候选由 PC 选择 |
 | PLC | DB100.DBW14 | UInt | `shotCount`：协议总拍照数 1–65535；示教采集接受 PLC 提供的 1–64 |
 | PLC | DB100.DBD16 | UDInt | `planVersion`：生产使用配方库分配的导出版本，不等于配方修订；示教直接记录 PLC 非零版本，未与生产计划比对 |
@@ -39,21 +38,24 @@
 | PLC | DB100.DBW24 | UInt | `deviceShots`：唯一设备计划触发数，等于 shotCount |
 | PLC | DB100.DBD32 | UDInt | `ackSeq`：确认时回显本件 resultSeq |
 | PLC | DB100.DBW36 | UInt | `deviceTriggers`：唯一设备本件已发脉冲数；布防前为 0，结束时等于计划数 |
-| PLC | DBB0 保留位、DBB1、DBB26–31、DBB38–63 | 保留 | 不另作跨方向写入字段 |
+| PLC | DB100.DBB38.24 | STRING[24] | `partSn`：工件 SN 字符串，占 DBB38–63（DBB38 声明最大长度 24，DBB39 实际长度，DBB40–63 字符，未用补 0），不替代事务序号 |
+| PLC | DBB0 保留位、DBB1、DBB8–11（原 partSn 的 DBD8，协议 3 保留，不配置点位）、DBB26–31 | 保留 | 不另作跨方向写入字段 |
 | PC | DB100.DBX64.0 | Bool | `visionReady`：可以接收下一件；不能仅凭连接成功启动 |
 | PC | DB100.DBX64.1 | Bool | `armed`：本件布防完成；结合 acceptedSeq 核对 |
 | PC | DB100.DBX64.2 | Bool | `busy`：事务处理中，直到有效 ACK 后清除 |
 | PC | DB100.DBX64.3 | Bool | `done`：结果提交标志；结果 payload 写好后最后置位 |
 | PC | DB100.DBX64.4 | Bool | `visionFault`：协议/设备故障，需处置并复位 |
 | PC | DB100.DBX64.5 | Bool | `pcHeartbeat`：PC 通讯心跳，建议 500 ms |
-| PC | DB100.DBW66 | UInt | `pcProtocolVersion`：成功复位后为 2 |
+| PC | DB100.DBW66 | UInt | `pcProtocolVersion`：成功复位后为 3 |
 | PC | DB100.DBD68 | UDInt | `resultSeq`：结果对应的 requestSeq |
-| PC | DB100.DBD72 | UDInt | `resultSn`：结果对应的 partSn |
 | PC | DB100.DBW76 | UInt | `resultCode`：生产整件结果或示教采集完成码，不能单凭该值确定用途 |
 | PC | DB100.DBW78 | UInt | `faultCode`：检测异常码；正常质量结果为 0 |
 | PC | DB100.DBD80 | UDInt | `acceptedSeq`：已接受并布防的 requestSeq |
 | PC | DB100.DBD84 | UDInt | `acceptedPlanReserved`：保留位，布防时 PC 写零，核对接受状态时应为零 |
-| PC | DBB64 保留位、DBB65 | 保留 | PLC 不写 |
+| PC | DB100.DBB88.24 | STRING[24] | `resultSn`：结果对应的 partSn，占 DBB88–113，须与 partSn 逐字节相等 |
+| PC | DBB64 保留位、DBB65、DBB72–75（原 resultSn 的 DBD72，协议 3 保留，不配置点位） | 保留 | PLC 不写 |
+
+**工件 SN（STRING）：** 1–24 个字符，每个字符为 ASCII 可打印字符 0x20–0x7E，去掉首尾空白后不能为空。PLC 必须按 `STRING[24]` 初始化 `partSn`（空串时头为 `18 00`），PC 读取时要求声明长度字节等于 24，否则该点位读错误。SN 原样保存与回显，不做 trim 或大小写变换；PLC 侧要求 `resultSn` 与 `partSn` 逐字节相等。不合规 `partSn` 与请求 payload 不合法（`requestSeq=0`、`planReserved≠0`、`deviceShots≠shotCount`、协议版本不符）同样处理：PC 不布防、不生成结果、不写 `resultCode`，进入视觉故障（`visionFault=1`、`visionReady=0`），PLC 须释放 `partStart` 并执行故障复位（`faultReset` 上升沿）后重新开始。字节示例见 [通讯协议第 9 节](plc-communication-protocol.md#9-四点飞拍示例)。离线产线（仿真）分配形如 `OFFLINE-0001234567` 的 SN（`OFFLINE-` 加 10 位数字），同一离线运行内唯一。
 
 SCL 使用符号 DB 名 `GlueSightHandshake`。导入后在 TIA 的块属性中**明确指定编号 100**，关闭优化访问，查看每个字段的实际偏移；源文件的符号名称本身不会保证自动分配到 DB100。使用其他 DB 编号时，同步改 PC 模板和测试 peer 的 `--db`。
 
@@ -64,7 +66,7 @@ SCL 使用符号 DB 名 `GlueSightHandshake`。导入后在 TIA 的块属性中*
 3. **等布防承诺。** 必须同时满足 `armed=1`、`busy=1`、`done=partEnd=visionReady=visionFault=0`、`acceptedSeq=requestSeq`、`planReserved=acceptedPlanReserved=0`，且心跳活跃、现场用途和设备互锁满足，才允许现场触发。不以任意单一高电平代替这组条件；当前参考 FB 尚缺部分检查，见第 7 节。
 4. **运动与硬触发。** 现场程序按已核对的拍照点次序向唯一设备发脉冲。SCL 在布防确认时冻结单路累计脉冲计数基线，以增量形成本件触发数；计数回退、超计划、设备身份错误均停止新触发。`IssuedPulseCount` 在一件内不得重置/回绕。
 5. **先最终计数，后结束。** 运动完成后，deviceTriggers 必须等于 deviceShots，再置 `partEnd=1`；`partStart` 继续保持。PC 核对计数并等待图像及测量完成。
-6. **先验证并接收结果，后 ACK。** `done=1` 时核对 `resultSeq=requestSeq`、`resultSn=partSn`，检查结果码及异常码并在 PLC 侧锁存；随后写 `ackSeq=resultSeq`，最后置 `resultAck=1`。有效 NG/检测异常表示已收到了该件结论，ACK 不表示良品放行。
+6. **先验证并接收结果，后 ACK。** `done=1` 时核对 `resultSeq=requestSeq`、`resultSn` 与 `partSn` 逐字节相等，检查结果码及异常码并在 PLC 侧锁存；随后写 `ackSeq=resultSeq`，最后置 `resultAck=1`。有效 NG/检测异常表示已收到了该件结论，ACK 不表示良品放行。
 7. **等待双方释放。** PLC 保持 request payload、start/end/ACK，直到 PC `done=0` 且 `busy=0`。再清 start/end/ACK，等 PC 再次 ready，才结束 pending 并允许下一件。
 
 拒收和提前终止也必须完成结果握手：等待布防时允许 PC 直接提交 `ERR_INSPECT=90`；已经布防后，若 `armed` 撤销但 busy 和已接受身份仍正确，PLC 立即停止新触发，限时等待结果。没有经过本地设备计数核对并置 `partEnd` 时，只接受 `90` 与 `91–100` 的已知异常码组合，不能把提前到达的 OK/NG 当有效结论。结果必须满足 seq/SN、armed 低、busy 高和 ready 低，再锁存并 ACK。`visionFault`、心跳失活或身份改变仍直接进入保留 pending 的故障态。
@@ -77,7 +79,7 @@ PC 启动、重新建立 S7 连接或发现配置变化后进入复位要求态�
 
 恢复顺序：确认实物工件和动作已被处理 → 查看并记录双方 pending、SN、序号、已收结果 → 操作员设置 `ReconcileConfirmed` → 将本地 `ResetRequest` 先置低，再发新的上升沿。`ReconcileConfirmed` 不应永久接常量 TRUE。复位不是自动重试原件：PC 明确复位会结束未结事务，需先决定这件是隔离、复检还是已有有效结果。
 
-参考 FB 收到合格复位请求后释放 PLC 的 start/end/ACK，将 `faultReset` 保持低至少 1 s，再置高并保持至少 500 ms，直到看到 **ready 的低状态再到高状态**、`pcProtocolVersion=2`，且 armed/busy/done/visionFault 全低。这样可覆盖初始 Fault/ResetRequired，以及无在途时从 Idle 发起明确复位；不会把先前残留的 ready 高电平认作复位成功。若现场扫描错过 ready 低相或 PC 未处理请求，复位超时停在故障态，必须重做新低→高请求，不能直接放行。
+参考 FB 收到合格复位请求后释放 PLC 的 start/end/ACK，将 `faultReset` 保持低至少 1 s，再置高并保持至少 500 ms，直到看到 **ready 的低状态再到高状态**、`pcProtocolVersion=3`，且 armed/busy/done/visionFault 全低。这样可覆盖初始 Fault/ResetRequired，以及无在途时从 Idle 发起明确复位；不会把先前残留的 ready 高电平认作复位成功。若现场扫描错过 ready 低相或 PC 未处理请求，复位超时停在故障态，必须重做新低→高请求，不能直接放行。
 
 如果 PC 还有在途请求，应先让该请求进入明确故障并完成实物处置；不能在运转中清 PLC 输入来强行切下一件。中性基线期间保持 requestSeq、ackSeq 不变。两个方向的心跳都要求观察**变化**；恒定 1 与恒定 0 都不是活性证据。参考 PLC 在 PC 心跳 3 s 不变时停新触发并锁故障；PC 对 PLC 心跳同样使用 3 s 变化超时。
 
@@ -134,7 +136,7 @@ SCL `LocalDiagnostic` 是 PLC FB 本地诊断，**不写 DBW78**，也不是 PC 
 
 ```json
 {
-  "protocolVersion": 2,
+  "protocolVersion": 3,
   "recipeId": "DEMO",
   "planVersion": 1,
   "shotCount": 2,
@@ -163,11 +165,11 @@ FB 状态：10 等新件；20 等布防；30 允许运动触发；40 等结果�
 
 ## 8. 历史软件证据与验证边界
 
-2026-10-11 单设备协议 2 合并主分支后验证：Rust 默认回归 417 项通过、44 项默认忽略；`cargo test --offline --lib plc_session -- --include-ignored --test-threads=1 --nocapture` 的 48 项全部通过，包含真实 `ly_plc::PlcEngine` 与 Python peer 的回环 TCP、单设备正常/少触发/多触发、提前 ERR 的 ACK 实际计数、释放、重连和恢复。Python S7 回环测试 23 项通过；前端 43 个文件、963 项通过，类型检查及生产构建通过。Astra High 独立源码复核通过，28 个字段地址/类型/方向、HTML 正文与生成物同步检查通过。两份原生进程恢复脚本仅做语法及字段检查，未重新执行其完整 UI/进程场景。三张时序图按检查流程保持旧版，待协议确认后统一更新。
+2026-10-11 单设备协议 2（SN 为 UDInt，已被协议 3 取代）合并主分支后验证：Rust 默认回归 417 项通过、44 项默认忽略；`cargo test --offline --lib plc_session -- --include-ignored --test-threads=1 --nocapture` 的 48 项全部通过，包含真实 `ly_plc::PlcEngine` 与 Python peer 的回环 TCP、单设备正常/少触发/多触发、提前 ERR 的 ACK 实际计数、释放、重连和恢复。Python S7 回环测试 23 项通过；前端 43 个文件、963 项通过，类型检查及生产构建通过。Astra High 独立源码复核通过，28 个字段地址/类型/方向、HTML 正文与生成物同步检查通过。两份原生进程恢复脚本仅做语法及字段检查，未重新执行其完整 UI/进程场景。三张时序图按检查流程保持旧版，待协议确认后统一更新。
 
 当前日志保存在 `outputs/plc-single-device-integrated-rust.log`、`outputs/plc-single-device-integrated-session.log`、`outputs/plc-single-device-integrated-frontend.log`，回环场景证据位于 `src-tauri/target/s7-session-tests/`。这些都是软件证据，不能证明双方模式互锁、上述 SCL 缺口或现场硬件已经完成验收。
 
-以下测试数量是先前集成阶段的历史记录，不能作为协议 2 的通过记录。
+以下测试数量是先前集成阶段的历史记录，不能作为协议 2 或协议 3 的通过记录；协议 3（SN 改 STRING）的软件验证需按新点表重新运行，本页尚未记录其结果。
 
 [Python S7 测试 peer](../../scripts/s7-handshake/README.md) 使用真正的回环 TCP、TPKT/COTP/S7 ReadVar/WriteVar，支持默认点表、非默认 DB、故障注入和 PLC 请求/ACK 控制。运行：
 

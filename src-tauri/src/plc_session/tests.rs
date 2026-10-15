@@ -155,7 +155,7 @@ impl Rig {
         }
     }
 
-    fn request_values(&mut self, seq: u32, sn: u32) {
+    fn request_values(&mut self, seq: u32, sn: &str) {
         self.plc.control(json!({"op":"plc_request", "values":{
             "protocolVersion":crate::handshake::PROTOCOL_VERSION,"requestSeq":seq,"partSn":sn,"productCode":1,
             "shotCount":self.plan.shot_count,"planVersion":self.plan.plan_version,"planReserved":0,
@@ -164,7 +164,7 @@ impl Rig {
         }}));
     }
 
-    async fn request(&mut self, seq: u32, sn: u32) {
+    async fn request(&mut self, seq: u32, sn: &str) {
         self.request_values(seq, sn);
         self.phase(SessionPhase::Validating).await;
         assert_eq!(self.session.request().unwrap().request_seq, seq);
@@ -280,7 +280,7 @@ impl Rig {
 async fn s7_wire_same_sn_distinct_sequences_and_held_result() {
     let mut rig = Rig::new("same-sn").await;
     for sequence in [1, 2] {
-        rig.request(sequence, 12345).await;
+        rig.request(sequence, " a-12345 ").await;
         rig.arm().await;
         rig.end().await;
         rig.report().await;
@@ -288,7 +288,7 @@ async fn s7_wire_same_sn_distinct_sequences_and_held_result() {
         assert_eq!(rig.session.phase(), SessionPhase::AwaitAck);
         assert_eq!(rig.plc.fields()["done"], true);
         rig.ack_release().await;
-        assert_eq!(rig.plc.fields()["resultSn"], 12345);
+        assert_eq!(rig.plc.fields()["resultSn"], " a-12345 ");
         assert_eq!(rig.plc.fields()["resultSeq"], sequence);
     }
     let records = rig.audit().into_iter().filter(|r| r["action"] == "acknowledged").collect::<Vec<_>>();
@@ -303,11 +303,11 @@ async fn s7_wire_same_sn_distinct_sequences_and_held_result() {
 async fn s7_wire_end_extra_count_rejects_completion_and_requires_neutral_reset() {
     let mut rig = Rig::new("end-extra-count").await;
     assert_eq!(rig.plan.device_shots, 4);
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     rig.session.bind_cycle_id("00000000000000000000000000000001").unwrap();
     rig.arm().await;
     rig.reject_end_and_reset(5).await;
-    rig.request(2, 50).await;
+    rig.request(2, "SN-50").await;
     rig.session.bind_cycle_id("00000000000000000000000000000002").unwrap();
     rig.arm().await;
     rig.end().await;
@@ -320,11 +320,11 @@ async fn s7_wire_end_extra_count_rejects_completion_and_requires_neutral_reset()
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_end_missing_count_rejects_completion_and_requires_neutral_reset() {
     let mut rig = Rig::new("end-missing-count").await;
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     rig.session.bind_cycle_id("00000000000000000000000000000001").unwrap();
     rig.arm().await;
     rig.reject_end_and_reset(3).await;
-    rig.request(2, 50).await;
+    rig.request(2, "SN-50").await;
     rig.session.bind_cycle_id("00000000000000000000000000000002").unwrap();
     rig.arm().await;
     rig.end_counts(4).await;
@@ -337,7 +337,7 @@ async fn s7_wire_end_missing_count_rejects_completion_and_requires_neutral_reset
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_plan_mismatch_refusal_still_requires_ack() {
     let mut rig = Rig::new("plan-mismatch").await;
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     let mut wrong = rig.plan.clone();
     wrong.plan_version += 1;
     assert!(rig.session.validate_plan(&wrong).is_err());
@@ -356,16 +356,16 @@ async fn s7_wire_plan_mismatch_refusal_still_requires_ack() {
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_late_ack_cannot_release_next_same_sn() {
     let mut rig = Rig::new("late-ack").await;
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     rig.arm().await;
     rig.end().await;
     rig.report().await;
     rig.ack_release().await;
-    rig.request(2, 50).await;
+    rig.request(2, "SN-50").await;
     rig.arm().await;
     rig.end().await;
     rig.report().await;
-    rig.plc.control(json!({"op":"plc_ack","values":{"ackSeq":1}}));
+    rig.plc.values(json!({"ackSeq":1,"resultAck":true}));
     rig.phase(SessionPhase::Fault).await;
     assert_eq!(rig.plc.fields()["done"], true);
     assert_eq!(rig.plc.fields()["busy"], true);
@@ -377,9 +377,9 @@ async fn s7_wire_late_ack_cannot_release_next_same_sn() {
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_early_ack_and_active_reset_preserve_pending() {
     let mut rig = Rig::new("early-ack-reset").await;
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     rig.arm().await;
-    rig.plc.control(json!({"op":"plc_ack","values":{"ackSeq":1}}));
+    rig.plc.values(json!({"ackSeq":1,"resultAck":true}));
     rig.phase(SessionPhase::Fault).await;
     assert!(rig.session.pending());
     assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Fault(_)));
@@ -387,7 +387,7 @@ async fn s7_wire_early_ack_and_active_reset_preserve_pending() {
     rig.plc.values(json!({"partStart":false,"partEnd":false,"resultAck":false}));
     rig.fresh().await;
     assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready));
-    rig.request(2, 50).await;
+    rig.request(2, "SN-50").await;
     rig.arm().await;
     assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Fault(_)));
     assert!(rig.session.pending());
@@ -400,7 +400,7 @@ async fn s7_wire_early_ack_and_active_reset_preserve_pending() {
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_result_write_rejection_retains_envelope_and_fault_is_not_repeated() {
     let mut rig = Rig::new("result-write-reject").await;
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     rig.arm().await;
     rig.end().await;
     rig.plc.fault(68, None, "reject", false);
@@ -425,7 +425,7 @@ async fn s7_wire_result_write_rejection_retains_envelope_and_fault_is_not_repeat
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_fault_best_effort_continues_after_ready_rejection() {
     let mut rig = Rig::new("fault-best-effort").await;
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     rig.arm().await;
     rig.plc.fault(64, Some(0), "reject", false);
     rig.session.fault(&rig.engine, "injected fault".into()).await;
@@ -441,7 +441,7 @@ async fn s7_wire_fault_best_effort_continues_after_ready_rejection() {
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_disconnect_after_done_applied_never_commits_success() {
     let mut rig = Rig::new("disconnect-after-apply").await;
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     rig.arm().await;
     rig.end().await;
     rig.plc.fault(64, Some(3), "disconnect", true);
@@ -468,7 +468,7 @@ async fn s7_wire_disconnect_after_done_applied_never_commits_success() {
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_release_write_failure_does_not_finish_transaction() {
     let mut rig = Rig::new("release-write-reject").await;
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     rig.arm().await;
     rig.end().await;
     rig.report().await;
@@ -487,7 +487,7 @@ async fn s7_wire_release_write_failure_does_not_finish_transaction() {
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_ack_journal_write_failure_preserves_acknowledgement() {
     let mut rig = Rig::new("ack-journal-write-failure").await;
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     rig.arm().await;
     rig.end().await;
     rig.report().await;
@@ -529,7 +529,7 @@ async fn s7_wire_ack_journal_write_failure_preserves_acknowledgement() {
 fn s7_wire_ack_journal_monitor_failure_preserves_acknowledgement() {
     tokio::runtime::Builder::new_current_thread().enable_all().max_blocking_threads(1).build().unwrap().block_on(async {
         let mut rig = Rig::new("ack-journal-monitor-failure").await;
-        rig.request(1, 50).await;
+        rig.request(1, "SN-50").await;
         rig.arm().await;
         rig.end().await;
         rig.report().await;
@@ -581,7 +581,7 @@ fn s7_wire_ack_journal_monitor_failure_preserves_acknowledgement() {
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_heartbeat_stop_faults_without_clearing_pending() {
     let mut rig = Rig::new("heartbeat-stop").await;
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     rig.arm().await;
     rig.plc.control(json!({"op":"heartbeat","enabled":false}));
     rig.phase(SessionPhase::Fault).await;
@@ -599,7 +599,7 @@ async fn s7_wire_heartbeat_stop_faults_without_clearing_pending() {
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_restart_pending_requires_neutral_explicit_reset_and_audit() {
     let mut rig = Rig::new("restart-pending").await;
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     rig.arm().await;
     rig.end().await;
     rig.report().await;
@@ -628,7 +628,7 @@ async fn s7_wire_restart_pending_requires_neutral_explicit_reset_and_audit() {
 async fn s7_wire_restart_after_persisted_ack_recovers_exact_cycle_before_and_after_reset() {
     let mut rig = Rig::new("restart-ack-cycle").await;
     let cycle_id = "0123456789abcdef0123456789abcdef";
-    rig.request(7, 50).await;
+    rig.request(7, "SN-50").await;
     rig.session.bind_cycle_id(cycle_id).unwrap();
     rig.arm().await;
     rig.end().await;
@@ -643,7 +643,7 @@ async fn s7_wire_restart_after_persisted_ack_recovers_exact_cycle_before_and_aft
     assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
     assert_eq!(recovered.receipts.len(), 1);
     assert_eq!(recovered.receipts[0].cycle_id, cycle_id);
-    assert_eq!(recovered.receipts[0].sn, 50);
+    assert_eq!(recovered.receipts[0].sn, "SN-50");
     assert_eq!(recovered.receipts[0].request_seq, 7);
     assert!(recovered.receipts[0].ts > 0);
     assert_eq!(rig.session.recover_acknowledgements(&[cycle_id.to_owned()].into_iter().collect()), recovered);
@@ -659,7 +659,7 @@ async fn s7_wire_restart_after_persisted_ack_recovers_exact_cycle_before_and_aft
     assert!(audit_recovered.errors.is_empty(), "{:?}", audit_recovered.errors);
     assert_eq!(audit_recovered.receipts.len(), 1);
     assert_eq!(audit_recovered.receipts[0].cycle_id, cycle_id);
-    assert_eq!(audit_recovered.receipts[0].sn, 50);
+    assert_eq!(audit_recovered.receipts[0].sn, "SN-50");
     assert_eq!(audit_recovered.receipts[0].request_seq, 7);
     assert!(audit_recovered.receipts[0].ts >= recovered.receipts[0].ts);
     assert_eq!(rig.session.recover_acknowledgements(&[cycle_id.to_owned()].into_iter().collect()), audit_recovered);
@@ -686,7 +686,7 @@ async fn s7_wire_corrupt_journal_cannot_reset_or_overwrite_evidence() {
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_accepted_outputs_and_done_are_continuously_verified() {
     let mut rig = Rig::new("output-tamper").await;
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     rig.arm().await;
     rig.plc.values(json!({"acceptedSeq":55}));
     rig.phase(SessionPhase::Fault).await;
@@ -694,7 +694,7 @@ async fn s7_wire_accepted_outputs_and_done_are_continuously_verified() {
     rig.plc.values(json!({"partStart":false,"partEnd":false,"resultAck":false}));
     rig.fresh().await;
     assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready));
-    rig.request(2, 50).await;
+    rig.request(2, "SN-50").await;
     rig.arm().await;
     rig.end().await;
     rig.report().await;
@@ -723,7 +723,7 @@ async fn s7_wire_slow_durable_io_keeps_observing_heartbeat() {
 fn s7_wire_slow_end_journal_does_not_extend_frame_deadline() {
     tokio::runtime::Builder::new_current_thread().enable_all().max_blocking_threads(1).build().unwrap().block_on(async {
         let mut rig = Rig::new("slow-end-frame-deadline").await;
-        rig.request(1, 50).await;
+        rig.request(1, "SN-50").await;
         rig.arm().await;
         rig.plc.values(json!({"partEnd":true,"deviceTriggers":4}));
         rig.fresh().await;
@@ -764,7 +764,7 @@ fn s7_wire_slow_end_journal_does_not_extend_frame_deadline() {
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_heartbeat_fault_stops_outputs_before_slow_io_finishes() {
     let mut rig = Rig::new("heartbeat-during-io").await;
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     rig.arm().await;
     rig.plc.control(json!({"op":"heartbeat","enabled":false}));
     let (release, wait) = mpsc::channel();
@@ -790,7 +790,7 @@ async fn s7_wire_heartbeat_fault_stops_outputs_before_slow_io_finishes() {
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_unconfirmable_fault_stops_pc_heartbeat() {
     let mut rig = Rig::new("unconfirmable-fault").await;
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     rig.arm().await;
     for bit in [0, 1, 4] { rig.plc.fault(64, Some(bit), "reject", false); }
     rig.session.fault(&rig.engine, "stop outputs rejected".into()).await;
@@ -806,7 +806,7 @@ async fn s7_wire_unconfirmable_fault_stops_pc_heartbeat() {
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_audit_failure_blocks_destructive_reset() {
     let mut rig = Rig::new("audit-failure").await;
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     rig.arm().await;
     rig.end().await;
     rig.report().await;
@@ -844,7 +844,7 @@ async fn s7_wire_idle_db_reinit_restores_outputs_without_reset() {
     assert_idle_outputs(&rig.plc.fields(), true);
     assert!(rig.audit().iter().any(|record| record["action"] == "idleOutputsRestored" && record["pending"].is_null()));
     assert!(matches!(rig.session.poll(&rig.engine, false, true).await, SessionEvent::None));
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     rig.arm().await;
     rig.end().await;
     rig.report().await;
@@ -892,7 +892,7 @@ async fn s7_wire_idle_plc_leftovers_wait_without_fault_until_released() {
     rig.fresh().await;
     assert!(matches!(rig.session.poll(&rig.engine, false, true).await, SessionEvent::None));
     assert!(rig.session.notice().is_none() && rig.session.view().message.is_none());
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     rig.arm().await;
     rig.end().await;
     rig.report().await;
@@ -931,7 +931,7 @@ async fn s7_wire_devices_not_ready_while_idle_withdraws_ready_and_recovers() {
     assert!(!rig.audit().iter().any(|record| record["action"] == "idleOutputsRestored"));
 
     // 结果已确认后设备掉线：事务照常结束，不置就绪；设备恢复后补上
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     rig.arm().await;
     rig.end().await;
     rig.report().await;
@@ -948,7 +948,7 @@ async fn s7_wire_devices_not_ready_while_idle_withdraws_ready_and_recovers() {
     assert_idle_outputs(&rig.plc.fields(), true);
 
     // 就绪撤销前 PLC 已经发来新件：照常接下事务，由节拍拒收判 ERR，不判握手故障
-    rig.request_values(2, 51);
+    rig.request_values(2, "SN-51");
     rig.fresh().await;
     let event = rig.session.poll(&rig.engine, false, false).await;
     assert!(matches!(event, SessionEvent::Start(ref request) if request.request_seq == 2), "{event:?}");
@@ -961,7 +961,7 @@ async fn s7_wire_devices_not_ready_while_idle_withdraws_ready_and_recovers() {
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_early_err_release_reports_plc_issued_triggers() {
     let mut rig = Rig::new("early-err-triggers").await;
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     rig.arm().await;
     // 运动中途停了：设备只发了 1 个触发，没有 partEnd；PC 运动超时提前判 ERR 97
     rig.plc.values(json!({"deviceTriggers":1}));
@@ -975,7 +975,7 @@ async fn s7_wire_early_err_release_reports_plc_issued_triggers() {
     let event = rig.session.poll(&rig.engine, false, true).await;
     assert!(matches!(event, SessionEvent::Released(Some(1))), "{event:?}");
     // 下一件的请求清零了触发数，正常完成时报计划数
-    rig.request(2, 51).await;
+    rig.request(2, "SN-51").await;
     rig.arm().await;
     rig.end().await;
     rig.report().await;
@@ -1005,7 +1005,7 @@ fn unfinished_temporary_journal_blocks_recovery_even_when_main_file_exists() {
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_reconnect_between_validation_and_arm_cannot_commit() {
     let mut rig = Rig::new("reconnect-before-arm").await;
-    rig.request(1, 50).await;
+    rig.request(1, "SN-50").await;
     let original = rig.session.connection.unwrap();
     rig.engine.disconnect().await;
     rig.engine.connect().await;
@@ -1024,7 +1024,7 @@ async fn s7_wire_reconnect_between_validation_and_arm_cannot_commit() {
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_recording_audit_wait_holds_release_then_recovers_without_reset() {
     let mut rig = Rig::new("recording-audit-wait").await;
-    rig.request(1, 12345).await;
+    rig.request(1, "SN-12345").await;
     rig.arm().await;
     rig.end().await;
     rig.report().await;
@@ -1051,7 +1051,7 @@ async fn s7_wire_recording_audit_wait_holds_release_then_recovers_without_reset(
     rig.fresh().await;
     assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, true).await, SessionEvent::None));
     assert_eq!(rig.plc.fields()["visionReady"], true);
-    rig.request(2, 12345).await;
+    rig.request(2, "SN-12345").await;
     rig.arm().await;
     rig.end().await;
     rig.report().await;
@@ -1063,7 +1063,7 @@ async fn s7_wire_recording_audit_wait_holds_release_then_recovers_without_reset(
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_recording_audit_wait_releases_offline_then_restores_ready() {
     let mut rig = Rig::new("recording-audit-offline-release").await;
-    rig.request(1, 12345).await;
+    rig.request(1, "SN-12345").await;
     rig.arm().await;
     rig.end().await;
     rig.report().await;
@@ -1087,7 +1087,7 @@ async fn s7_wire_recording_audit_wait_releases_offline_then_restores_ready() {
     rig.fresh().await;
     assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, true).await, SessionEvent::None));
     assert_eq!(rig.plc.fields()["visionReady"], true);
-    rig.request(2, 12345).await;
+    rig.request(2, "SN-12345").await;
     rig.arm().await;
     rig.end().await;
     rig.report().await;
@@ -1100,7 +1100,7 @@ async fn s7_wire_recording_audit_wait_releases_offline_then_restores_ready() {
 async fn s7_wire_acquire_and_drain_audit_wait_does_not_mask_device_fault() {
     for draining in [false, true] {
         let mut rig = Rig::new(if draining { "drain-audit-device-fault" } else { "acquire-audit-device-fault" }).await;
-        rig.request(1, 12345).await;
+        rig.request(1, "SN-12345").await;
         rig.arm().await;
         if draining { rig.end().await; }
         let event = rig.session.poll_with_audit(&rig.engine, false, false, false).await;
@@ -1135,7 +1135,7 @@ async fn s7_wire_idle_audit_recovery_keeps_ready_low_until_devices_recover() {
     assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, true).await, SessionEvent::None));
     assert_eq!(rig.plc.fields()["visionReady"], true);
     assert!(rig.session.notice().is_none());
-    rig.request(1, 12345).await;
+    rig.request(1, "SN-12345").await;
     rig.arm().await;
     rig.end().await;
     rig.report().await;
@@ -1150,7 +1150,7 @@ async fn s7_wire_released_does_not_create_second_ack_delivery_after_ready() {
     use crate::store::{PartRecord, PlcDelivery, PlcDeliveryState, Store};
     let mut rig = Rig::new("released-single-delivery").await;
     let cycle = "1123456789abcdef0123456789abcdef";
-    rig.request(1, 12345).await;
+    rig.request(1, "SN-12345").await;
     rig.session.bind_cycle_id(cycle).unwrap();
     rig.arm().await;
     rig.end().await;
@@ -1159,7 +1159,7 @@ async fn s7_wire_released_does_not_create_second_ack_delivery_after_ready() {
     assert_eq!(rig.session.phase(), SessionPhase::AwaitAck);
     let store = Store::open(&rig.plc.directory.join("single-ack.sqlite")).unwrap();
     let submitted = PlcDelivery { state: PlcDeliveryState::Submitted, updated_at: 1, message: Some("结果已提交".into()) };
-    store.insert(&PartRecord { ts: 1, sn: 12345, recipe: None, judgement: &judgement, drain_ms: None,
+    store.insert(&PartRecord { ts: 1, sn: "SN-12345", recipe: None, judgement: &judgement, drain_ms: None,
         frames: &[], frames_expected: 4, frames_received: 0, triggers: 4, table: None,
         software_version: "single-ack-test", cycle_id: Some(cycle), bundle_id: None, delivery: &submitted, shots: &[], source: crate::store::RecordSource::Real, sample: None }).unwrap();
     rig.plc.control(json!({"op":"plc_ack"}));
@@ -1188,7 +1188,7 @@ async fn s7_wire_released_does_not_create_second_ack_delivery_after_ready() {
     assert!(crate::cycle::s7_ack_delivery(had_ack, &rig.session).is_none());
     assert_eq!(store.detail_by_cycle(cycle).unwrap().unwrap().summary.delivery, accepted);
     assert_eq!(deliveries, 1);
-    rig.request(2, 12345).await;
+    rig.request(2, "SN-12345").await;
     rig.arm().await;
     rig.end().await;
     rig.report().await;
@@ -1202,7 +1202,7 @@ fn s7_wire_arm_deadline_settles_original_journal_before_fault_without_late_overw
     use std::sync::atomic::{AtomicBool, Ordering};
     tokio::runtime::Builder::new_current_thread().enable_all().max_blocking_threads(1).build().unwrap().block_on(async {
         let mut rig = Rig::new("arm-deadline-journal-settlement").await;
-        rig.request(1, 12345).await;
+        rig.request(1, "SN-12345").await;
         let cycle = "223456789abcdef0123456789abcdef0";
         rig.session.bind_cycle_id(cycle).unwrap();
         let path = rig.session.path.clone();
@@ -1253,7 +1253,7 @@ fn s7_wire_arm_deadline_settles_original_journal_before_fault_without_late_overw
         assert_eq!(pending.phase, SessionPhase::Fault);
         assert_eq!(pending.cycle_id.as_deref(), Some(cycle));
         assert_eq!(pending.request.request_seq, 1);
-        assert_eq!(pending.request.sn, 12345);
+        assert_eq!(pending.request.sn, "SN-12345");
         assert!(!temporary.exists());
         let restarted = PlcSession::open(path);
         assert!(restarted.load_error.is_none());
@@ -1268,7 +1268,7 @@ async fn s7_wire_teaching_capture_uses_single_device_and_holds_until_release() {
     let mut rig = Rig::new("teaching-capture").await;
     rig.plan = PlcPlan::compile("draft-empty".into(), 91, "device1".into(),
         (1..=20).map(|i| PlanShot { shot_id: format!("S{i:03}"), pose_id: format!("capture-{i}"), camera_id: "device1".into() }).collect()).unwrap();
-    rig.request(1, 777).await;
+    rig.request(1, "SN-777").await;
     rig.session.bind_capture_id("capture-round-1").unwrap();
     assert!(rig.session.bind_cycle_id("00000000000000000000000000000001").is_err());
     rig.arm().await;

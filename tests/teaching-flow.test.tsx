@@ -131,7 +131,7 @@ it("从采集原图完成逐帧示教、总览、独立样本采集验证并确�
     expect([id, revision, samples, confirmed]).toEqual(["A", 13, [{ historyId: null, sampleId: "validation-round", expected: "OK" }], true]);
     response.workspace.validation = { revision, passed: true, checkedAt: 4, environmentTag: {},
       checks: [{ name: "独立正常样本", passed: true, detail: "独立整圈与当前示教一致" }],
-      samples: [{ historyId: null, sampleId: "validation-round", name: "独立采集 2", sn: 0, expected: "OK", actual: "OK", passed: true, reason: "" }],
+      samples: [{ historyId: null, sampleId: "validation-round", name: "独立采集 2", sn: "", expected: "OK", actual: "OK", passed: true, reason: "" }],
     };
     return structuredClone(response);
   });

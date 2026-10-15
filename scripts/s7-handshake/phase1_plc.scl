@@ -14,7 +14,7 @@ VERSION : 0.1
       reserved1 : Byte;
       protocolVersion : UInt;
       requestSeq : UDInt;
-      partSn : UDInt;
+      reserved8 : UDInt;
       productCode : UInt;
       shotCount : UInt;
       planVersion : UDInt;
@@ -23,7 +23,7 @@ VERSION : 0.1
       reserved26 : Array[26..31] of Byte;
       ackSeq : UDInt;
       deviceTriggers : UInt;
-      reserved38 : Array[38..63] of Byte;
+      partSn : String[24];
       visionReady : Bool;
       armed : Bool;
       busy : Bool;
@@ -35,14 +35,15 @@ VERSION : 0.1
       reserved65 : Byte;
       pcProtocolVersion : UInt;
       resultSeq : UDInt;
-      resultSn : UDInt;
+      reserved72 : UDInt;
       resultCode : UInt;
       faultCode : UInt;
       acceptedSeq : UDInt;
       acceptedPlanReserved : UDInt;
+      resultSn : String[24];
    END_VAR
 BEGIN
-   protocolVersion := UINT#2;
+   protocolVersion := UINT#3;
 END_DATA_BLOCK
 
 FUNCTION_BLOCK "GlueSightPhase1"
@@ -53,7 +54,7 @@ VERSION : 0.1
       NewPart : Bool;
       ResetRequest : Bool;
       ReconcileConfirmed : Bool;
-      PartSn : UDInt;
+      PartSn : String[24];
       ProductCode : UInt;
       PlanVersion : UDInt;
       DeviceShots : UInt;
@@ -78,7 +79,7 @@ VERSION : 0.1
       ResetComplete : Bool;
       ResultLatched : Bool;
       CapturedResultSeq : UDInt;
-      CapturedResultSn : UDInt;
+      CapturedResultSn : String[24];
       CapturedResultCode : UInt;
       CapturedFaultCode : UInt;
       LocalDiagnostic : UInt;
@@ -93,7 +94,7 @@ VERSION : 0.1
       ResetReadyLowSeen : Bool;
       TimerState : UInt;
       FrozenSeq : UDInt;
-      FrozenSn : UDInt;
+      FrozenSn : String[24];
       FrozenProductCode : UInt;
       FrozenPlanVersion : UDInt;
       FrozenShotCount : UInt;
@@ -125,7 +126,7 @@ BEGIN
    #TriggerPermit := FALSE;
    #ReadyForPart := FALSE;
    #TripCode := UINT#0;
-   "GlueSightHandshake".protocolVersion := UINT#2;
+   "GlueSightHandshake".protocolVersion := UINT#3;
 
    IF #Startup OR NOT #Initialized THEN
       #Initialized := TRUE;
@@ -221,7 +222,7 @@ BEGIN
                AND NOT "GlueSightHandshake".partStart AND NOT "GlueSightHandshake".partEnd
                AND NOT "GlueSightHandshake".resultAck THEN
                IF (#DeviceShots = UINT#0)
-                  OR #MotionComplete OR ("GlueSightHandshake".pcProtocolVersion <> UINT#2) THEN
+                  OR #MotionComplete OR ("GlueSightHandshake".pcProtocolVersion <> UINT#3) THEN
                   #TripCode := UINT#7004;
                ELSIF "GlueSightHandshake".requestSeq = UDINT#4294967295 THEN
                   #TripCode := UINT#7007;
@@ -372,7 +373,7 @@ BEGIN
             END_IF;
             IF #ResetReadyLowSeen AND #ResetHoldTimer.Q AND #PcAlive
                AND "GlueSightHandshake".visionReady
-               AND ("GlueSightHandshake".pcProtocolVersion = UINT#2)
+               AND ("GlueSightHandshake".pcProtocolVersion = UINT#3)
                AND NOT "GlueSightHandshake".armed AND NOT "GlueSightHandshake".busy
                AND NOT "GlueSightHandshake".done AND NOT "GlueSightHandshake".visionFault THEN
                "GlueSightHandshake".faultReset := FALSE;
@@ -398,7 +399,7 @@ BEGIN
 
    #ReadyForPart := (#State = UINT#10) AND #PcAlive
       AND "GlueSightHandshake".visionReady AND NOT "GlueSightHandshake".visionFault
-      AND ("GlueSightHandshake".pcProtocolVersion = UINT#2)
+      AND ("GlueSightHandshake".pcProtocolVersion = UINT#3)
       AND NOT "GlueSightHandshake".armed AND NOT "GlueSightHandshake".busy
       AND NOT "GlueSightHandshake".done AND NOT "GlueSightHandshake".partStart
       AND NOT "GlueSightHandshake".partEnd AND NOT "GlueSightHandshake".resultAck

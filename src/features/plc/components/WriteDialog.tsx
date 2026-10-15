@@ -12,13 +12,14 @@ interface WriteDialogProps {
 }
 
 export default function WriteDialog({ point, current, blockedReason = "", onWrite, onClose }: WriteDialogProps) {
-  const [text, setText] = useState(current?.value !== null && current?.value !== undefined ? String(Number(current.value)) : "");
+  const [text, setText] = useState(current?.value !== null && current?.value !== undefined ? typeof current.value === "string" ? current.value : String(Number(current.value)) : "");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const writing = useRef(false);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const isBool = point.dataType === "bool";
+  const isString = point.dataType === "string";
 
   const write = async (value: unknown) => {
     if (writing.current) return;
@@ -37,7 +38,8 @@ export default function WriteDialog({ point, current, blockedReason = "", onWrit
     }
   };
 
-  const submitNumber = () => {
+  const submitValue = () => {
+    if (isString) return write(text);
     const n = Number(text);
     if (text.trim() === "" || !Number.isFinite(n)) return setError("请输入有效数值");
     write(n);
@@ -56,7 +58,7 @@ export default function WriteDialog({ point, current, blockedReason = "", onWrit
             取消
           </button>
           {!isBool && (
-            <button className="btn primary" disabled={busy || !!blockedReason} onClick={submitNumber}>
+            <button className="btn primary" disabled={busy || !!blockedReason} onClick={submitValue}>
               写入
             </button>
           )}
@@ -89,7 +91,7 @@ export default function WriteDialog({ point, current, blockedReason = "", onWrit
             disabled={busy || !!blockedReason}
             value={text}
             onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && submitNumber()}
+            onKeyDown={(e) => e.key === "Enter" && submitValue()}
           />
         )}
       </div>

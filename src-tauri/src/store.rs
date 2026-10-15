@@ -15,7 +15,7 @@ use crate::recipe::Recipe;
 /// 一件工件的完整结果，入库一行；测量点按弧长顺序压成一个 BLOB，格式见 POINTS_FORMAT。
 pub struct PartRecord<'a> {
     pub ts: i64,
-    pub sn: u32,
+    pub sn: &'a str,
     pub recipe: Option<&'a Recipe>,
     pub judgement: &'a Judgement,
     pub drain_ms: Option<u64>,
@@ -148,7 +148,7 @@ pub struct PartShot {
     pub raw_files: Vec<ShotRawFile>,
 }
 
-pub const DB_VERSION: i64 = 5;
+pub const DB_VERSION: i64 = 6;
 
 /// 测量点 BLOB 格式版本。1：每点 f32 位置 + u8 状态（5 字节）；2：f32 位置 + f32 胶宽 + u8 状态（9 字节）。
 const POINTS_FORMAT: i64 = 2;
@@ -210,7 +210,7 @@ pub struct HistoryQuery {
 pub struct PartSummary {
     pub id: i64,
     pub ts: i64,
-    pub sn: u32,
+    pub sn: String,
     pub recipe_id: Option<String>,
     pub recipe_version: Option<u32>,
     pub recipe_revision: Option<String>,
@@ -284,7 +284,7 @@ pub struct PartDetail {
 pub struct StoredMeasurement {
     pub id: i64,
     pub ts: i64,
-    pub sn: u32,
+    pub sn: String,
     pub recipe_id: Option<String>,
     pub recipe_revision: Option<String>,
     pub verdict: Verdict,
@@ -497,7 +497,7 @@ impl Store {
              CREATE TABLE IF NOT EXISTS parts (
                  id INTEGER PRIMARY KEY,
                  ts INTEGER NOT NULL,
-                 sn INTEGER NOT NULL,
+                 sn TEXT NOT NULL,
                  recipe_id TEXT,
                  recipe_version INTEGER,
                  recipe_revision TEXT,
@@ -561,7 +561,7 @@ impl Store {
                  PRIMARY KEY (part_id, k),
                  UNIQUE (part_id, shot_id)
              );
-             PRAGMA user_version = 5;
+             PRAGMA user_version = 6;
              COMMIT;",
         )
         .map_err(db_err)?;
@@ -658,7 +658,7 @@ impl Store {
             )
             .map_err(db_err)?;
         }
-        let retest_of: Option<i64> = if r.sn == 0 {
+        let retest_of: Option<i64> = if r.sn.is_empty() {
             None
         } else {
             tx.query_row("SELECT id FROM parts WHERE sn = ?1 ORDER BY id DESC LIMIT 1", [r.sn], |row| row.get(0)).optional().map_err(db_err)?
@@ -819,7 +819,7 @@ impl Store {
         rows.collect::<Result<BTreeSet<_>, _>>().map_err(db_err)
     }
 
-    pub fn recover_acknowledgement(&self, cycle_id: &str, sn: u32, request_seq: u32, acknowledged_at: i64) -> Result<bool, String> {
+    pub fn recover_acknowledgement(&self, cycle_id: &str, sn: &str, request_seq: u32, acknowledged_at: i64) -> Result<bool, String> {
         if cycle_id.len() != 32 || !cycle_id.bytes().all(|b| b.is_ascii_hexdigit()) || request_seq == 0 || acknowledged_at < 0 {
             return Err("PLC 确认收据的身份无效".into());
         }
@@ -827,7 +827,7 @@ impl Store {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_err)?;
         let previous = tx.query_row(
             "SELECT sn,delivery_state,delivery_updated_at,delivery_message FROM parts WHERE cycle_id=?1",
-            [cycle_id], |r| Ok((r.get::<_, u32>(0)?, delivery_row(r, 1)?)),
+            [cycle_id], |r| Ok((r.get::<_, String>(0)?, delivery_row(r, 1)?)),
         ).optional().map_err(db_err)?;
         let Some((recorded_sn, previous)) = previous else { return Err("PLC 已确认，但对应 cycleId 的检测记录不存在；保留握手审计供核查".into()) };
         if recorded_sn != sn { return Err("PLC 确认收据与检测记录的 SN 不一致".into()); }
@@ -922,8 +922,8 @@ impl Store {
             args.extend(q.verdicts.iter().map(|v| SqlValue::Text(verdict_str(*v))));
         }
         if let Some(sn) = q.sn.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            clauses.push(format!("CAST({prefix}sn AS TEXT) LIKE ?"));
-            args.push(SqlValue::Text(format!("%{sn}%")));
+            clauses.push(format!("{prefix}sn LIKE ? ESCAPE '\\'"));
+            args.push(SqlValue::Text(format!("%{}%", sn.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"))));
         }
         if let Some(id) = q.recipe_id.as_deref().filter(|s| !s.is_empty()) {
             clauses.push(format!("{prefix}recipe_id = ?"));

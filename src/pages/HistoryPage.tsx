@@ -208,7 +208,7 @@ export default function HistoryPage() {
                 }}>
                   <td className="mono nowrap">{formatTime(p.ts)}</td>
                   <td className="mono nowrap">
-                    {p.sn}
+                    {p.sn || "—"}
                     {p.retestOf && <span className="tag retest" title={`复检，上一次记录 #${p.retestOf}`}>复检</span>}
                     {p.source !== "real" && <span className="tag offline">{sourceLabel[p.source]}</span>}
                     {p.sample && <span className="tag subtle" title={`样本集 ${p.sample.setId} · 样本 SN ${p.sample.sn}`}>样本 {p.sample.partId}（{sampleLabelText[p.sample.label]}）</span>}

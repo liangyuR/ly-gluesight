@@ -1,5 +1,5 @@
 export type ProtocolKind = "s7";
-export type DataType = "bool" | "u8" | "i8" | "u16" | "i16" | "u32" | "i32" | "f32" | "f64";
+export type DataType = "bool" | "u8" | "i8" | "u16" | "i16" | "u32" | "i32" | "f32" | "f64" | "string";
 export type WordOrder = "ABCD" | "CDAB" | "BADC" | "DCBA";
 export type Access = "read" | "readWrite";
 export type EdgeMode = "none" | "rising" | "falling" | "both";
@@ -62,7 +62,7 @@ export interface PlcStatus {
   errorCount: number;
 }
 
-export type PlcValue = boolean | number;
+export type PlcValue = boolean | number | string;
 
 export interface PointValue {
   value: PlcValue | null;

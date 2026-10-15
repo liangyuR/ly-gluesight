@@ -43,7 +43,7 @@ fn part(cycle_id: &str, ledgers: &Ledgers) -> Part {
     }).collect();
     let router = ShotRouter::arm(&Plan::from_shots(&recipe.shots), ledgers, &Policy::offline(None), &identities).unwrap();
     Part {
-        run_id: 1, cycle_id: cycle_id.into(), bundle_id: Some("release-1".into()), production: None, sn: 88,
+        run_id: 1, cycle_id: cycle_id.into(), bundle_id: Some("release-1".into()), production: None, sn: "SN-88".into(),
         scenario: crate::offline::Scenario::Normal, frames: recipe.shots.iter().map(|shot| FrameView {
             shot_id: shot.id.clone(), camera: shot.camera.clone(), view: shot.view, ..FrameView::waiting()
         }).collect(), measuring_since: vec![None; recipe.shot_count()],
@@ -64,7 +64,7 @@ fn measured(part: &Part, k: usize) -> Measured {
     let shot = &part.recipe.shots[k];
     let indices: Vec<_> = part.recipe.owned_points(k).map(|j| j as u32).collect();
     Measured { views: Vec::new(), run_id: part.run_id, cycle_id: part.cycle_id.clone(), shot_id: shot.id.clone(),
-        camera: shot.camera.clone(), bundle_id: part.bundle_id.clone(), sn: part.sn,
+        camera: shot.camera.clone(), bundle_id: part.bundle_id.clone(), sn: part.sn.clone(),
         k, cam: part.frames[k].cam, located: true, score: 0.95, ms: 15,
         queue_ms: None, engine_ms: None, core_ms: None, error: None,
         d: vec![0.0; indices.len()], w: vec![4.0; indices.len()], st: vec![measure::ST_OK; indices.len()],

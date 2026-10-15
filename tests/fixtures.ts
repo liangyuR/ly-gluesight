@@ -120,7 +120,7 @@ export function sampleSet(name = "壳体样本"): SampleSetSummary {
 }
 
 export function partSummary(id = 1): PartSummary {
-  return { id, sn: 100 + id, ts: 1, recipeId: "A", recipeVersion: 1, recipeRevision: "revisionId-A", triggerMode: "fly",
+  return { id, sn: `SN-${100 + id}`, ts: 1, recipeId: "A", recipeVersion: 1, recipeRevision: "revisionId-A", triggerMode: "fly",
     verdict: "NG_GAP", plcCode: 2, faultCode: 0, reason: "断胶", drainMs: 20, framesExpected: 2, framesReceived: 2, retestOf: null, cycleId: `cycle-${id}`, bundleId: "bundle-A", delivery: { state: "acknowledged", updatedAt: 1, message: null }, source: "real", sample: null };
 }
 

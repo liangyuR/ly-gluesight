@@ -24,7 +24,7 @@ const RETRY_MAX_MS: i64 = 30_000;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecordedPart {
     pub ts: i64,
-    pub sn: u32,
+    pub sn: String,
     #[serde(with = "part_recipe")]
     pub recipe: Option<Arc<Recipe>>,
     pub judgement: Judgement,
@@ -48,7 +48,7 @@ impl RecordedPart {
     fn borrowed(&self) -> PartRecord<'_> {
         PartRecord {
             ts: self.ts,
-            sn: self.sn,
+            sn: &self.sn,
             recipe: self.recipe.as_deref(),
             judgement: &self.judgement,
             drain_ms: self.drain_ms,

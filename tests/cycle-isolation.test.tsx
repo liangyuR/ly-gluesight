@@ -10,7 +10,7 @@ vi.mock("../src/features/plc", () => ({ subscribe: vi.fn() }));
 
 const events = new Map<string, (value: unknown) => void>();
 const emit = (event: string, value: unknown) => act(() => events.get(event)?.(value));
-const state = (cycleId = "cycle-1", since = 1): Snapshot => ({ ...snapshot("ACQUIRE"), since, part: cyclePart(1, cycleId) });
+const state = (cycleId = "cycle-1", since = 1): Snapshot => ({ ...snapshot("ACQUIRE"), since, part: cyclePart("1", cycleId) });
 
 beforeEach(() => {
   events.clear();
@@ -31,7 +31,7 @@ describe("在线周期身份与迟到响应隔离", () => {
     expect(hook.result.current.measured).toHaveLength(1);
     emit("cycle://snapshot", state("cycle-2", 2));
     expect(hook.result.current.measured).toEqual([]);
-    emit("cycle://frame", { ...cycleMeasurement(1, "cycle-2"), score: .97 });
+    emit("cycle://frame", { ...cycleMeasurement("1", "cycle-2"), score: .97 });
     emit("cycle://frame", { ...cycleMeasurement(), error: "旧线程迟到" });
     expect(hook.result.current.measured).toHaveLength(1);
     expect(hook.result.current.measured[0]).toMatchObject({ cycleId: "cycle-2", score: .97, error: null });
@@ -63,9 +63,9 @@ describe("在线周期身份与迟到响应隔离", () => {
     await waitFor(() => expect(cycleApi.partData).toHaveBeenCalledTimes(1));
     emit("cycle://snapshot", state("cycle-2", 2));
     await waitFor(() => expect(cycleApi.partData).toHaveBeenCalledTimes(2));
-    emit("cycle://frame", { ...cycleMeasurement(1, "cycle-2"), score: .99 });
+    emit("cycle://frame", { ...cycleMeasurement("1", "cycle-2"), score: .99 });
     await act(async () => old.resolve([cycleMeasurement()]));
-    await act(async () => current.resolve([{ ...cycleMeasurement(1, "cycle-2"), score: .8 }]));
+    await act(async () => current.resolve([{ ...cycleMeasurement("1", "cycle-2"), score: .8 }]));
     expect(hook.result.current.measured).toHaveLength(1);
     expect(hook.result.current.measured[0]).toMatchObject({ cycleId: "cycle-2", score: .99 });
   });

@@ -14,8 +14,8 @@ export const s7Protocol = {
   label: "西门子 S7",
   defaultPort: 102,
   defaultOrder: "ABCD" as WordOrder,
-  examples: ["DB1.DBW0", "DB1.DBX2.3", "DB1.8", "M10.0", "MW20", "I0.1", "QD4", "VW100"],
-  hint: "字节寻址，Bool 需带位号 (.0-.7)；V 区等价 DB1；1200/1500 需启用 PUT/GET 并取消 DB 优化访问",
+  examples: ["DB1.DBW0", "DB1.DBX2.3", "DB1.8", "DB100.DBB38.24", "M10.0", "MW20", "I0.1", "QD4", "VW100"],
+  hint: "字节寻址，Bool 需带位号 (.0-.7)；String 写成 DB100.DBB38.24（起始字节.最大长度）；V 区等价 DB1；1200/1500 需启用 PUT/GET 并取消 DB 优化访问",
 };
 
 export const s7CpuPresets = [
@@ -36,6 +36,7 @@ export const dataTypeLabels: Record<DataType, string> = {
   i32: "Int32 (DInt)",
   f32: "Float32 (Real)",
   f64: "Float64 (LReal)",
+  string: "String (S7 STRING)",
 };
 
 export const edgeLabels: Record<EdgeMode, string> = {

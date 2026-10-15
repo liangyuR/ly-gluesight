@@ -37,7 +37,7 @@ Windows 受限环境遇到 Node realpath EPERM 时，按仓库 AGENTS.md 的 Win
 
 ## S7 一期握手
 
-协议与点表见 [S7 一期握手说明](../integration/plc-s7-phase1.md)。[S7 测试 PLC](../../scripts/s7-handshake/README.md) 仅监听本机回环地址，使用真实 TPKT/COTP/S7 报文。
+协议与点表见 [S7 一期握手说明](../integration/plc-s7-phase1.md)。[S7 测试 PLC](../../scripts/s7-handshake/README.md) 仅监听本机回环地址，使用真实 TPKT/COTP/S7 报文。S7 协议自版本 3 起工件 SN 为 STRING[24]、DB 至少 114 字节，旧协议 2 点表和 PLC 程序被拒绝；下列专项与历史记录中的通过数据按协议 2 取得，协议 3 需重新运行。
 
 ```powershell
 python -m unittest discover -s scripts/s7-handshake/tests -v
@@ -114,7 +114,7 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 
 **生产记录隔离**
 
-配方共享，生产记录按来源隔离：检测记录带来源（真机 / 离线·合成图 / 离线·样本集，库版本 5，旧库按 D-0 备份后重建）。历史页默认只看真机件，“离线件”切换查看离线件，列表与详情标注离线来源；统计、批量重判与 CSV 导出（含“来源”列）只算当前范围，在线检测的今日统计跟随当前站点模式。离线原图写入数据目录下独立的 `records-offline`，按系统设置中的离线原图保留件数和容量上限（默认 300 件 / 10 GB）单独清理，保存后在下一次录制收尾时按新上限清理，任一超限均删除最旧原图，真机 `records` 只按系统设置清理，离线连续运行不会挤掉真机原图（`recorder` 的 `changed_offline_retention_prunes_next_recording_without_removing_real_raw_images`）。样本件认领只在离线期间生效，退出离线清空本次运行记录，同 partSn 的真机件不带样本引用。
+配方共享，生产记录按来源隔离：检测记录带来源（真机 / 离线·合成图 / 离线·样本集，库版本 6，旧库按 D-0 备份后重建；离线件 SN 形如 `OFFLINE-0001234567`，同一离线运行内唯一）。历史页默认只看真机件，“离线件”切换查看离线件，列表与详情标注离线来源；统计、批量重判与 CSV 导出（含“来源”列）只算当前范围，在线检测的今日统计跟随当前站点模式。离线原图写入数据目录下独立的 `records-offline`，按系统设置中的离线原图保留件数和容量上限（默认 300 件 / 10 GB）单独清理，保存后在下一次录制收尾时按新上限清理，任一超限均删除最旧原图，真机 `records` 只按系统设置清理，离线连续运行不会挤掉真机原图（`recorder` 的 `changed_offline_retention_prunes_next_recording_without_removing_real_raw_images`）。样本件认领只在离线期间生效，退出离线清空本次运行记录，同 partSn 的真机件不带样本引用。
 
 **退出与历史复测**
 

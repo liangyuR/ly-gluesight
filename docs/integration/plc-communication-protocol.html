@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'">
-<meta name="description" content="GlueSight PLC 通讯协议 1.2：单设备 S7 点表、三目飞拍、生产与示教采集和故障复位。">
-<title>GlueSight PLC 通讯协议 1.2</title>
+<meta name="description" content="GlueSight PLC 通讯协议 1.3：单设备 S7 点表、三目飞拍、生产与示教采集和故障复位。">
+<title>GlueSight PLC 通讯协议 1.3</title>
 <style>:root{color-scheme:light;--bg:#f3f6f8;--paper:#fff;--ink:#172b36;--muted:#5e7280;--line:#dce5ea;--teal:#087f82;--blue:#245ea4;--soft:#edf7f7;--warn:#fff6e8;--amber:#845317}
 *{box-sizing:border-box}
 html{scroll-behavior:smooth;scroll-padding-top:28px}
@@ -71,19 +71,20 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <div class="layout">
 <aside class="rail" aria-label="协议导航">
 <a class="brand" href="#overview"><span class="brand-symbol">G</span><span>GlueSight<small>PLC 通讯协议</small></span></a>
-<div class="rail-meta"><span>文档 1.2</span><span>S7 协议 2</span></div>
-<nav aria-label="章节目录"><a href="#overview">协议概览</a><a href="#sequence">通讯时序图</a><a href="#section-1">1 通讯参数与分工</a><a href="#section-2">2 PLC 写入 PC 读取点表</a><a href="#section-3">3 PC 写入 PLC 读取点表</a><a href="#section-4">4 拍照计划与三目设备</a><a href="#section-4-1" class="sub">4.1 示教整圈采集</a><a href="#section-5">5 单件握手流程</a><a href="#section-6">6 结果与异常码</a><a href="#section-7">7 心跳与时间参数</a><a href="#section-8">8 启动重连与故障复位</a><a href="#section-9">9 四点飞拍示例</a><a href="#section-10">10 实现依据与验证边界</a></nav>
-<div class="rail-foot"><span>现场接入 · 2026-10-11</span><a href="plc-communication-protocol.md">Markdown 原文</a><a href="../../scripts/s7-handshake/phase1_plc.scl">PLC SCL 参考程序</a></div>
+<div class="rail-meta"><span>文档 1.3</span><span>S7 协议 3</span></div>
+<nav aria-label="章节目录"><a href="#overview">协议概览</a><a href="#sequence">通讯时序图</a><a href="#section-1">1 通讯参数与分工</a><a href="#section-2">2 PLC 写入 PC 读取点表</a><a href="#section-3">3 PC 写入 PLC 读取点表</a><a href="#section-2-1" class="sub">2.1 工件 SN（S7 STRING）</a><a href="#section-4">4 拍照计划与三目设备</a><a href="#section-4-1" class="sub">4.1 示教整圈采集</a><a href="#section-5">5 单件握手流程</a><a href="#section-6">6 结果与异常码</a><a href="#section-7">7 心跳与时间参数</a><a href="#section-8">8 启动重连与故障复位</a><a href="#section-9">9 四点飞拍示例</a><a href="#section-10">10 实现依据与验证边界</a></nav>
+<div class="rail-foot"><span>现场接入 · 2026-10-15</span><a href="plc-communication-protocol.md">Markdown 原文</a><a href="../../scripts/s7-handshake/phase1_plc.scl">PLC SCL 参考程序</a></div>
 </aside>
 <main id="content">
 <header id="overview" class="hero">
 <div class="hero-top"><p class="eyebrow">现场接入 / S7 ISO-on-TCP</p><button id="print-protocol" class="print-button" type="button">打印 / 保存 PDF</button></div>
 <h1>PLC 通讯协议</h1>
 <p class="subtitle">连续点胶飞拍 · 单件事务 · 结果确认与故障恢复</p>
-<div class="facts"><div><span>共享数据区</span><strong>DB100 <small>默认</small></strong></div><div><span>最小 DB 长度</span><strong>88 <small>字节</small></strong></div><div><span>双向点表</span><strong>28 <small>字段</small></strong></div><div><span>网络服务</span><strong>TCP 102</strong></div></div>
-<div class="overview-text"><p>文档修订：1.2；审核日期：2026-10-11；线上握手协议版本：2。</p>
+<div class="facts"><div><span>共享数据区</span><strong>DB100 <small>默认</small></strong></div><div><span>最小 DB 长度</span><strong>114 <small>字节</small></strong></div><div><span>双向点表</span><strong>28 <small>字段</small></strong></div><div><span>网络服务</span><strong>TCP 102</strong></div></div>
+<div class="overview-text"><p>文档修订：1.3；审核日期：2026-10-15；线上握手协议版本：3。</p>
 <p>适用于 GlueSight 一期连续点胶飞拍的 PLC 与视觉工控机对接。PLC 负责机器人运动和位置同步硬触发，PC 负责接件、相机布防、收图、检测及整件结果回传。一件只有一个在途事务，完成结果确认和双方释放后才能开始下一件。</p>
-<p class="callout warning"><strong>设备数量固定为一台 SDK 三目相机设备。</strong> 全文统一称“设备通道 1”，图 1、图 2、图 3 是该设备帧内的视角。点表只保留唯一设备的 <code>deviceShots</code> 与 <code>deviceTriggers</code>，直接删除额外设备通道。协议版本 2 不接受旧多通道点表或计划，须重新生成点表并重新导出计划。</p>
+<p class="callout warning"><strong>设备数量固定为一台 SDK 三目相机设备。</strong> 全文统一称“设备通道 1”，图 1、图 2、图 3 是该设备帧内的视角。点表只保留唯一设备的 <code>deviceShots</code> 与 <code>deviceTriggers</code>，直接删除额外设备通道。协议版本 3 不接受旧多通道点表或计划，须重新生成点表并重新导出计划。</p>
+<p class="callout warning"><strong>协议版本 3 起工件 SN 为 S7 STRING，与旧版布局不兼容。</strong> <code>partSn</code> 与 <code>resultSn</code> 由 UDInt 数值改为 <code>STRING[24]</code> 字符串，DB 由 88 字节扩为至少 114 字节，<code>protocolVersion</code>/<code>pcProtocolVersion</code> 由 2 升为 3。旧点表（<code>partSn</code>/<code>resultSn</code> 为 UDInt 的协议 2 点表）和旧 PLC 程序（<code>protocolVersion=2</code>）直接被 PC 拒绝，不做兼容读取；须按协议 3 模板重新生成点表，PLC 按新布局重建 DB 并更新版本号。</p>
 <p class="callout warning"><strong>同一 DB 也承载示教整圈采集，线上没有生产/采集模式字段。采集成功同样返回 <code>1/0</code>，只表示采集完成，不表示产品合格。</strong> PLC 必须在外部维护并锁定本次用途，示教期间禁止生产自动发件和良品放行；不能仅凭 ready 或 resultCode=1 判断生产模式。示教执行条件和当前限制见第 4.1 节。</p>
 <p>本协议以仓库 S7 模板和双方握手实现为依据。PLC SCL 为接入参考，仍需现场 TIA 编译、真实 CPU、触发线路与相机联调验收。实现说明见 <a href="plc-s7-phase1.md">S7 握手契约与现场接入</a>。</p>
 </div>
@@ -449,11 +450,15 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 </tr>
 <tr>
 <td>DB 属性</td>
-<td>标准 DB，关闭优化块访问，至少 88 字节；TIA 中核对实际偏移</td>
+<td>标准 DB，关闭优化块访问，至少 114 字节；TIA 中核对实际偏移</td>
 </tr>
 <tr>
 <td>数值字节序</td>
 <td>S7 大端 ABCD；UInt 为 16 位无符号，UDInt 为 32 位无符号</td>
+</tr>
+<tr>
+<td>字符串</td>
+<td>工件 SN 使用 S7 <code>STRING[24]</code>（字节 0 声明最大长度，字节 1 实际长度，其后为字符），见第 2.1 节</td>
 </tr>
 <tr>
 <td>PC 轮询周期</td>
@@ -469,7 +474,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 </tr>
 <tr>
 <td>写入所有权</td>
-<td>PLC 只写字节 0–63；PC 只写字节 64–87</td>
+<td>PLC 只写字节 0–63；PC 只写字节 64–113</td>
 </tr>
 </tbody>
 </table></div>
@@ -522,7 +527,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <td>DB100.DBW2</td>
 <td>UInt</td>
 <td><code>protocolVersion</code></td>
-<td>固定 2</td>
+<td>固定 3；2 及其他值拒绝</td>
 </tr>
 <tr>
 <td>DB100.DBD4</td>
@@ -531,10 +536,10 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <td>本件事务序号，非零且递增</td>
 </tr>
 <tr>
-<td>DB100.DBD8</td>
-<td>UDInt</td>
+<td>DB100.DBB38.24</td>
+<td>STRING[24]</td>
 <td><code>partSn</code></td>
-<td>工件数值 SN，不替代事务序号，不是字符串条码</td>
+<td>工件 SN 字符串，占字节 38–63；不替代事务序号，规则见第 2.1 节</td>
 </tr>
 <tr>
 <td>DB100.DBW12</td>
@@ -580,7 +585,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 </tr>
 </tbody>
 </table></div>
-<p>PLC 区保留空间：DBX0.5–0.7、DBB1、DBB26–31、DBB38–63。空白字节不定义设备通道或计数字段，不新增跨方向写入字段；其余现用字段地址不移动。</p>
+<p>PLC 区保留空间：DBX0.5–0.7、DBB1、<strong>DBB8–11（原 <code>partSn</code> 的 DBD8，协议 3 起为保留字段，不再配置点位）</strong>、DBB26–31。保留字节不定义设备通道或计数字段，不新增跨方向写入字段；除 SN 迁入 DBB38–63 外，其余现用字段地址不移动。</p>
 </section>
 <section class="protocol-section" aria-labelledby="section-3"><h2 id="section-3">3 PC 写入 PLC 读取点表</h2>
 <div class="table-scroll" tabindex="0"><table class="point-table">
@@ -633,7 +638,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <td>DB100.DBW66</td>
 <td>UInt</td>
 <td><code>pcProtocolVersion</code></td>
-<td>成功复位后为 2</td>
+<td>成功复位后为 3</td>
 </tr>
 <tr>
 <td>DB100.DBD68</td>
@@ -642,10 +647,10 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <td>本件结果事务序号，应等于 requestSeq</td>
 </tr>
 <tr>
-<td>DB100.DBD72</td>
-<td>UDInt</td>
+<td>DB100.DBB88.24</td>
+<td>STRING[24]</td>
 <td><code>resultSn</code></td>
-<td>本件结果 SN，应等于 partSn</td>
+<td>本件结果 SN，占字节 88–113；须与 partSn 逐字节相等</td>
 </tr>
 <tr>
 <td>DB100.DBW76</td>
@@ -673,13 +678,29 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 </tr>
 </tbody>
 </table></div>
-<p>PC 区保留空间：DBX64.6–64.7、DBB65。PLC 不写此区域。<code>done=0</code> 时结果字段可能保留上件数值，不能作为新件结论。</p>
+<p>PC 区保留空间：DBX64.6–64.7、DBB65、<strong>DBB72–75（原 <code>resultSn</code> 的 DBD72，协议 3 起为保留字段，不再配置点位）</strong>。PLC 不写此区域。<code>done=0</code> 时结果字段可能保留上件数值，不能作为新件结论。</p>
+<h3 id="section-2-1">2.1 工件 SN（S7 STRING）</h3>
+<p><code>partSn</code>（<code>DB{n}.DBB38.24</code>）与 <code>resultSn</code>（<code>DB{n}.DBB88.24</code>）均为 <code>STRING[24]</code>，布局相同：</p>
+<ul>
+<li>字节 +0：声明最大长度，固定 24（0x18）。</li>
+<li>字节 +1：实际长度，0–24。</li>
+<li>字节 +2 至 +25：字符区 24 字节，有效字符之后的未用字节补 0。</li>
+</ul>
+<p><code>partSn</code> 占 DBB38–63（头 DBB38/39，字符 DBB40–63），<code>resultSn</code> 占 DBB88–113（头 DBB88/89，字符 DBB90–113）。PLC 必须把 <code>partSn</code> 按 <code>STRING[24]</code> 初始化，空串时头为 <code>18 00</code>（声明 24、实际 0）；PC 读取 STRING 时要求声明长度字节等于 24，不等则该点位读错误，按请求 payload 不合法处理。</p>
+<p>SN 规则：</p>
+<ul>
+<li>长度 1–24 个字符，每个字符为 ASCII 可打印字符 0x20–0x7E；去掉首尾空白后不能为空。</li>
+<li>SN 原样保存与回显，PC 不做 trim 或大小写变换。PLC 侧要求 <code>resultSn</code> 与 <code>partSn</code> 逐字节相等（含声明长度、实际长度和字符区）。</li>
+<li>SN 不替代 <code>requestSeq</code>；同一 SN 复检仍须新的 <code>requestSeq</code>。</li>
+<li>离线产线（仿真）为每件分配形如 <code>OFFLINE-0001234567</code>（<code>OFFLINE-</code> 加 10 位数字）的 SN，同一离线运行内唯一，样本件按 SN 字符串认领。</li>
+</ul>
+<p>不合规 <code>partSn</code>（声明长度不为 24、实际长度为 0 或超过 24、含 0x20–0x7E 以外字符、去掉首尾空白后为空）与其他请求 payload 不合法完全同样处理，见第 5 节。</p>
 </section>
 <section class="protocol-section" aria-labelledby="section-4"><h2 id="section-4">4 拍照计划与三目设备</h2>
 <p>PC 从已保存生产配方导出计划，PLC 工程师将产品代码、计划版本、拍照顺序、Pose 与实际触发输出建立对应表。当前导出 JSON 不包含 <code>productCode</code>、运动坐标或物理输出地址；产品代码从配方另外核对，运动路径由机器人/PLC 配置。</p>
 <p>必须满足：</p>
 <ul>
-<li><code>protocolVersion=pcProtocolVersion=2</code>。</li>
+<li><code>protocolVersion=pcProtocolVersion=3</code>。</li>
 <li><code>deviceShots=shotCount</code>，总数非零。</li>
 <li><code>planVersion</code>、总数及设备计划触发数与 PC 当前计划一致。</li>
 <li>PC 只配置一台设备，导出计划的 <code>deviceId</code> 必须对应此设备；所有拍照点的 <code>cameraId</code> 都指向该设备。</li>
@@ -711,12 +732,12 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <tr>
 <td>等待就绪</td>
 <td>保持 start/end/ACK 为 0，确认心跳活跃</td>
-<td><code>visionReady=1</code>，<code>armed/busy/done/visionFault=0</code>，协议版本为 2</td>
+<td><code>visionReady=1</code>，<code>armed/busy/done/visionFault=0</code>，协议版本为 3</td>
 </tr>
 <tr>
 <td>提交请求</td>
-<td>递增 requestSeq；写 SN、产品代码、计划和零触发数，最后置 partStart</td>
-<td>稳定读取请求，核对身份、配方、设备及计划</td>
+<td>递增 requestSeq；写 SN（STRING）、产品代码、计划和零触发数，最后置 partStart</td>
+<td>稳定读取请求，核对 SN 格式、身份、配方、设备及计划</td>
 </tr>
 <tr>
 <td>等待布防</td>
@@ -750,11 +771,12 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 </tr>
 </tbody>
 </table></div>
+<p class="callout warning"><strong>请求 payload 不合法：</strong> <code>requestSeq=0</code>、<code>planReserved≠0</code>、<code>deviceShots≠shotCount</code>、协议版本不符，以及 <code>partSn</code> 不合规（见第 2.1 节），均按同一方式处理：PC 不布防、不生成结果、不写 <code>resultCode</code>，进入视觉故障（<code>visionFault=1</code>、<code>visionReady=0</code>），没有可提交的 done。PLC 须释放 <code>partStart</code>，并执行故障复位（<code>faultReset</code> 上升沿，见第 8 节）后重新开始，不能等待 armed 或结果。</p>
 <p class="callout requirement"><strong>发脉冲的必要条件：</strong> <code>armed=1</code>、<code>busy=1</code>、<code>done=0</code>、<code>partEnd=0</code>、<code>visionReady=0</code>、<code>visionFault=0</code>、<code>acceptedSeq=requestSeq</code>、<code>planReserved=acceptedPlanReserved=0</code>，双方心跳活跃且现场用途、设备互锁满足。任一条件失效立即禁止新脉冲。</p>
 <p class="callout warning"><strong>参考程序接入限制：</strong> 当前 SCL 的 <code>AcceptedMatches</code> 仅核对序号，<code>TriggerPermit</code> 未完整检查 ready、done 和两处零值保留字段；PC 对非零保留字段的轮询故障不能替代 PLC 本扫描的输出互锁。现场接入须补齐上述检查并验证异常注入，不能将现有 FB 直接视为已实现完整条件。</p>
 <p>已发脉冲数必须来自可靠输出计数源；普通扫描采样高速布尔脉冲可能漏计。参考 FB 在布防时冻结唯一设备的累计 <code>IssuedPulseCount</code> 基线，以差值写 <code>deviceTriggers</code>；累计计数在本件内不得清零、回退或回绕。PLC 脉冲数证明输出了触发，PC 还须验证相机实际帧与计数。</p>
 <p>提前撤 armed 后，PLC 还须在停止触发并计入最后已发脉冲后刷新 DB 触发数，再 ACK；PC 在 ACK 时读取这些数供后续帧归属使用。当前 SCL 在发现 armed 低时直接转等结果，未再从累计计数刷新 DB，可能遗漏前一扫描后发出的末脉冲。现场须补齐并验证此路径；未补齐时，提前终止后应隔离并复位对齐，不能据此承诺连续下一件计数正确。</p>
-<p class="callout requirement"><strong>有效结果的必要条件：</strong> <code>done=1</code>、<code>armed=0</code>、<code>busy=1</code>、<code>visionReady=0</code>、无协议故障，<code>resultSeq=requestSeq</code>、<code>resultSn=partSn</code>，结果与异常码组合已知。正常 OK/NG 还要求 PLC 已核对最终计数并提交 partEnd。</p>
+<p class="callout requirement"><strong>有效结果的必要条件：</strong> <code>done=1</code>、<code>armed=0</code>、<code>busy=1</code>、<code>visionReady=0</code>、无协议故障，<code>resultSeq=requestSeq</code>、<code>resultSn</code> 与 <code>partSn</code> 逐字节相等，结果与异常码组合已知。正常 OK/NG 还要求 PLC 已核对最终计数并提交 partEnd。</p>
 <p>计划拒收或提前终止可直接返回 <code>resultCode=90</code>、<code>faultCode=91–100</code>，无需等 partEnd。等待布防时也可能收到这种结果；已布防后 armed 撤下时，PLC 停止新脉冲并限时等待结果。身份与结果组合有效后仍需锁存、ACK 和释放。提前出现 OK/NG、未知组合或身份不匹配均不得确认放行。</p>
 <p><code>resultAck</code> 只表示 PLC 已接收该件结论。NG 和检测异常都可以有效确认，不能把 ACK 作为良品信号。同一 SN 复检也必须使用新的 requestSeq。序号到达 4294967295 后，先处置未结件，在中性基线下重置并显式复位，不能直接回绕生产。</p>
 </section>
@@ -950,7 +972,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <li>对参考 FB 的本地 <code>ResetRequest</code> 先置低，再发新上升沿；PLC 释放 partStart/partEnd/resultAck。运行中的未结件不能直接清输入强切下一件。</li>
 <li>保持 faultReset 为低至少 1 s，保持 requestSeq、ackSeq 基线不变，随后置 faultReset 高至少 500 ms，形成 PC 可观察的新边沿。</li>
 <li>PC 在设备就绪、PLC 心跳有变化且输入中性时清输出、记录复位审计并结束原 pending，最后置 visionReady。</li>
-<li>PLC 必须看到 ready 低状态后再到高状态，且 pcProtocolVersion=2、armed/busy/done/visionFault 全为 0，才认定复位成功。超时则重新处置并发新低→高复位请求。</li>
+<li>PLC 必须看到 ready 低状态后再到高状态，且 pcProtocolVersion=3、armed/busy/done/visionFault 全为 0，才认定复位成功。超时则重新处置并发新低→高复位请求。</li>
 </ol>
 <p>计数错位时 PC 不自动修改基线去猜测帧归属。相机漏脉冲与上件迟到帧可能无法仅靠计数区分；出现持续缺帧时按错误原因排查并复位重新对齐。</p>
 <p>无在途事务时，设备短暂未就绪可撤 ready 并在恢复后自动就绪；PLC 遗留 end/ACK 时 PC 等待 PLC 清除。PC 输出偶发被重置可审计后恢复，60 s 内第 3 次被覆盖会故障。上述空闲恢复不替代启动、重连或心跳中断后的显式复位。</p>
@@ -967,11 +989,11 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <tbody>
 <tr>
 <td>requestSeq / partSn / productCode</td>
-<td>17 / 12345 / 7</td>
+<td>17 / <code>&quot;A24-000123&quot;</code> / 7</td>
 </tr>
 <tr>
 <td>protocolVersion / planVersion / planReserved</td>
-<td>2 / 41 / 0</td>
+<td>3 / 41 / 0</td>
 </tr>
 <tr>
 <td>shotCount / deviceShots</td>
@@ -991,7 +1013,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 </tr>
 <tr>
 <td>合格结果</td>
-<td>resultSeq=17，resultSn=12345，resultCode=1，faultCode=0，done=1</td>
+<td>resultSeq=17，resultSn=<code>&quot;A24-000123&quot;</code>，resultCode=1，faultCode=0，done=1</td>
 </tr>
 <tr>
 <td>PLC 确认</td>
@@ -1004,12 +1026,17 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 </tbody>
 </table></div>
 <p>序号 17 写入 DBD4 的原始字节为 <code>00 00 00 11</code>；计划版本 41 写入 DBD16 为 <code>00 00 00 29</code>；shotCount=4 写入 DBW14 为 <code>00 04</code>。均使用无符号大端值。</p>
+<p><code>partSn=&quot;A24-000123&quot;</code>（10 个字符）写入 DBB38 起 26 字节的原始内容为：</p>
+<pre><code class="language-text">DBB38  DBB39  DBB40 ........................... DBB49  DBB50 ... DBB63
+18     0A     41 32 34 2D 30 30 30 31 32 33            00 x 14
+</code></pre>
+<p>即 <code>18 0A 41 32 34 2D 30 30 30 31 32 33 00 00 00 00 00 00 00 00 00 00 00 00 00 00</code>：<code>0x18=24</code> 为声明最大长度，<code>0x0A=10</code> 为实际长度，<code>41 32 34 2D 30 30 30 31 32 33</code> 是 <code>A24-000123</code> 的 ASCII，其后 14 个字节补 0。PC 回写的 <code>resultSn</code> 在 DBB88 起为同样的 26 字节。空串 SN 的头为 <code>18 00</code>，属于不合规 SN。</p>
 </section>
 <section class="protocol-section" aria-labelledby="section-10"><h2 id="section-10">10 实现依据与验证边界</h2>
 <p>本协议保留通信参数、点表、状态条件和参考程序限制。现场操作验收清单已按本轮测试范围删除；软件回环结果不能证明真实 CPU、I/O、SDK、节拍或实物质量。</p>
 <p>实现依据：<a href="../../src-tauri/src/inspection.rs">S7 点表模板</a>、<a href="../../src-tauri/src/handshake.rs">握手校验与提交顺序</a>、<a href="../../src-tauri/src/plc_session.rs">PC 会话</a>、<a href="../../src-tauri/src/plc_plan.rs">计划导出</a>、<a href="../../src-tauri/src/settings.rs">PC 时间设置</a>、<a href="../../src-tauri/src/cycle/capture.rs">示教采集握手</a>、<a href="../../src-tauri/src/recipe_capture.rs">采集状态与时间</a>、<a href="../../src-tauri/src/camera.rs">设备配置与拼接图拆分</a>、<a href="../../scripts/s7-handshake/phase1_plc.scl">PLC 参考 FB</a>。</p>
 </section>
-<footer class="document-foot"><p>协议正文与 Markdown 1.2 同步；时序图保持旧版，待协议检查完成后统一更新。现场 CPU、接线、SDK、节拍与实物检测须单独验收。</p><p>正文和图形已嵌入单个 HTML，可离线阅读。相关源码与 SVG 下载链接使用仓库相对路径。</p></footer>
+<footer class="document-foot"><p>协议正文与 Markdown 1.3 同步；时序图保持旧版，待协议检查完成后统一更新。现场 CPU、接线、SDK、节拍与实物检测须单独验收。</p><p>正文和图形已嵌入单个 HTML，可离线阅读。相关源码与 SVG 下载链接使用仓库相对路径。</p></footer>
 </main>
 </div>
 <script>const tabs = [...document.querySelectorAll('.diagram-tabs [role="tab"]')];

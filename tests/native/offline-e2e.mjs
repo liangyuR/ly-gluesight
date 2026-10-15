@@ -329,7 +329,7 @@ export async function runOfflineE2E(page, options) {
   await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
   const recentTable = page.getByRole("table", { name: "最近样本件", exact: true });
   for (const { run } of [normal, defect]) {
-    const row = recentTable.getByRole("row").filter({ has: page.getByRole("cell", { name: String(run.partSn), exact: true }) });
+    const row = recentTable.getByRole("row").filter({ has: page.getByRole("cell", { name: run.partSn, exact: true }) });
     await row.waitFor();
     const cells = (await row.getByRole("cell").allInnerTexts()).map(text => text.trim());
     assert.equal(cells[1], run.partId);

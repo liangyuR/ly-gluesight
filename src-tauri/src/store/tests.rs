@@ -72,7 +72,7 @@ fn save_as(store: &Store, recipe: &Recipe, cycle: &str, shots: &[PartShot], deli
     let judgement = Judgement::error(crate::judge::fault::MISSING_FRAME, "P2 缺帧，P3 定位失败，P4 测量出错");
     store.insert(&PartRecord {
         ts: 1234,
-        sn: 42,
+        sn: "SN-42",
         recipe: Some(recipe),
         judgement: &judgement,
         drain_ms: Some(321),
@@ -199,8 +199,8 @@ fn durable_ack_recovery_matches_cycle_after_reopen_and_preserves_original_eviden
     drop(store);
     let store = Store::open(&db.path()).unwrap();
     let before = store.detail_by_cycle(&cycles[0]).unwrap().unwrap();
-    assert!(store.recover_acknowledgement(&cycles[0], 42, 17, 100).unwrap());
-    assert!(!store.recover_acknowledgement(&cycles[0], 42, 17, 999).unwrap());
+    assert!(store.recover_acknowledgement(&cycles[0], "SN-42", 17, 100).unwrap());
+    assert!(!store.recover_acknowledgement(&cycles[0], "SN-42", 17, 999).unwrap());
     let after = store.detail_by_cycle(&cycles[0]).unwrap().unwrap();
     assert_eq!(after.summary.delivery.state, PlcDeliveryState::Acknowledged);
     assert_eq!(after.summary.delivery.updated_at, 200);
@@ -211,16 +211,16 @@ fn durable_ack_recovery_matches_cycle_after_reopen_and_preserves_original_eviden
     recovered["summary"].as_object_mut().unwrap().remove("delivery");
     assert_eq!(original, recovered);
     assert_eq!(store.detail_by_cycle(&cycles[1]).unwrap().unwrap().summary.delivery.state, PlcDeliveryState::Failed);
-    assert!(store.recover_acknowledgement(&cycles[1], 43, 18, 101).is_err());
-    assert!(store.recover_acknowledgement(&cycles[1], 42, 18, 101).unwrap());
-    assert!(store.recover_acknowledgement(&cycles[2], 42, 19, 102).is_err());
-    assert!(!store.recover_acknowledgement(&cycles[3], 42, 20, 103).unwrap());
-    assert!(store.recover_acknowledgement("ffffffffffffffffffffffffffffffff", 42, 17, 100).is_err());
-    assert!(store.recover_acknowledgement("invalid", 42, 17, 100).is_err());
-    assert!(store.recover_acknowledgement(&cycles[1], 42, 0, 100).is_err());
+    assert!(store.recover_acknowledgement(&cycles[1], "SN-43", 18, 101).is_err());
+    assert!(store.recover_acknowledgement(&cycles[1], "SN-42", 18, 101).unwrap());
+    assert!(store.recover_acknowledgement(&cycles[2], "SN-42", 19, 102).is_err());
+    assert!(!store.recover_acknowledgement(&cycles[3], "SN-42", 20, 103).unwrap());
+    assert!(store.recover_acknowledgement("ffffffffffffffffffffffffffffffff", "SN-42", 17, 100).is_err());
+    assert!(store.recover_acknowledgement("invalid", "SN-42", 17, 100).is_err());
+    assert!(store.recover_acknowledgement(&cycles[1], "SN-42", 0, 100).is_err());
     drop(store);
     let store = Store::open(&db.path()).unwrap();
-    assert!(!store.recover_acknowledgement(&cycles[0], 42, 17, 100).unwrap());
+    assert!(!store.recover_acknowledgement(&cycles[0], "SN-42", 17, 100).unwrap());
     assert_eq!(serde_json::to_value(store.detail_by_cycle(&cycles[0]).unwrap().unwrap()).unwrap(), serde_json::to_value(after).unwrap());
 }
 
@@ -589,16 +589,16 @@ fn durable_record_identity_checks_actual_fields_while_allowing_later_delivery_an
     let pending = PlcDelivery { state: PlcDeliveryState::Pending, updated_at: 1235, message: None };
     save(&store, &recipe, "record-identity", &shots, &pending, Some(&table)).unwrap();
     let judgement = Judgement::error(crate::judge::fault::MISSING_FRAME, "P2 缺帧，P3 定位失败，P4 测量出错");
-    let mut record = PartRecord { ts: 1234, sn: 42, recipe: Some(&recipe), judgement: &judgement, drain_ms: None,
+    let mut record = PartRecord { ts: 1234, sn: "SN-42", recipe: Some(&recipe), judgement: &judgement, drain_ms: None,
         frames: &[], frames_expected: recipe.shot_count(), frames_received: 3, triggers: 4, table: Some(&table),
         software_version: "test-p0", cycle_id: Some("record-identity"), bundle_id: Some("frozen-bundle-id"), delivery: &pending, shots: &shots, source: crate::store::RecordSource::Real, sample: None };
     assert!(store.matches_record(&record).unwrap());
     store.update_delivery("record-identity", &PlcDelivery { state: PlcDeliveryState::Acknowledged, updated_at: 9999, message: None }).unwrap();
     store.update_shot_raw_files("record-identity", 0, &[ShotRawFile { view: 1, file: "records/cycle/k000.pgm".into(), width: Some(2), height: Some(3) }]).unwrap();
     assert!(store.matches_record(&record).unwrap());
-    record.sn = 43;
+    record.sn = "SN-43";
     assert!(!store.matches_record(&record).unwrap());
-    record.sn = 42;
+    record.sn = "SN-42";
     record.ts += 1;
     assert!(!store.matches_record(&record).unwrap());
     record.ts -= 1;

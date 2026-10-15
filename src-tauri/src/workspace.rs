@@ -198,7 +198,7 @@ pub struct SampleResult {
     pub history_id: Option<i64>,
     pub sample_id: Option<String>,
     pub name: String,
-    pub sn: u32,
+    pub sn: String,
     pub expected: Verdict,
     pub actual: Option<Verdict>,
     pub passed: bool,
@@ -1247,7 +1247,7 @@ fn history_sample_table(original: &Recipe, candidate: &Recipe, points: &store::P
 
 impl SampleResult {
     /// 按候选判定结果对照人工期望：期望合格时 OK 与 OK_WITH_EXCURSION 都算符合，其余结论须完全一致。
-    pub fn judged(sample: &Sample, name: String, sn: u32, judgement: judge::Judgement) -> Self {
+    pub fn judged(sample: &Sample, name: String, sn: String, judgement: judge::Judgement) -> Self {
         let qualified = |v| matches!(v, Verdict::Ok | Verdict::OkWithExcursion);
         let actual = judgement.verdict;
         let passed = if qualified(sample.expected) { qualified(actual) } else { sample.expected == actual };
@@ -1306,13 +1306,13 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
                 }
                 if w.capture_id.as_deref() == Some(sample_id) { return Err("示教采集不能作为独立验证样本".into()); }
                 let dir = app.state::<WorkspaceHost>().dir(&r.id).join("samples").join(sample_id);
-                let (table, _) = measure_images(app, w, r.shot_count(), 0, |k, v| {
+                let (table, _) = measure_images(app, w, r.shot_count(), "", |k, v| {
                     let path = dir.join(format!("k{k}-v{v}.pgm"));
                     if path.is_file() { crate::image_file::load(&path) }
                     else if workflow::selected_views(w, k).len() == 1 { crate::image_file::load(&dir.join(format!("k{k}.pgm"))) }
                     else { Err(format!("样本缺少拍照点 {} 图 {v}", k + 1)) }
                 })?;
-                return Ok(SampleResult::judged(sample, bank.name.clone(), 0, judge::judge(&r, &table)));
+                return Ok(SampleResult::judged(sample, bank.name.clone(), String::new(), judge::judge(&r, &table)));
             }
             let history_id = sample.history_id.ok_or("样本来源未指定")?;
             let detail = store.detail(history_id)?;
@@ -1329,8 +1329,8 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
                 return Err("历史样本的采集结构或 PLC 轨迹计划版本不匹配，或原图不完整".into());
             }
             if w.frames.iter().flat_map(|f| &f.views).any(|i| i.history_id == Some(history_id)) { return Err("示教原图所属工件不能同时作为独立验证样本".into()); }
-            let (table, _) = measure_images(app, w, r.shot_count(), detail.summary.sn, |k, v| history_image(app, &detail, k, v))?;
-            Ok(SampleResult::judged(sample, format!("SN {}", detail.summary.sn), detail.summary.sn, judge::judge(&r, &table)))
+            let (table, _) = measure_images(app, w, r.shot_count(), &detail.summary.sn, |k, v| history_image(app, &detail, k, v))?;
+            Ok(SampleResult::judged(sample, format!("SN {}", detail.summary.sn), detail.summary.sn.clone(), judge::judge(&r, &table)))
         })();
         results.push(result.unwrap_or_else(|e| {
             SampleResult {
@@ -1340,7 +1340,7 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
                     .sample_id
                     .clone()
                     .unwrap_or_else(|| format!("记录 #{}", sample.history_id.unwrap_or(0))),
-                sn: 0,
+                sn: String::new(),
                 expected: sample.expected,
                 actual: None,
                 passed: false,
@@ -1810,7 +1810,7 @@ pub async fn workspace_compare(
         let mut measurements = Vec::new();
         let table = if raw {
             if !detail.recording.available { return Err("原图未完整保留，无法完成整件复测".into()); }
-            let (table, measured) = measure_images(&app, &w, recipe.shot_count(), detail.summary.sn,
+            let (table, measured) = measure_images(&app, &w, recipe.shot_count(), &detail.summary.sn,
                 |k, v| history_image(&app, &detail, k, v))?;
             measurements = measured;
             table
@@ -1898,7 +1898,7 @@ pub async fn workspace_compare_original(app: AppHandle, history_id: i64) -> Resu
         let engine = app.state::<vision::VisionHost>().engine().ok_or("原版本兼容引擎未加载")?;
         let prepared = crate::production::Prepared::load(bundle, engine, &original)?;
         prepared.verify()?;
-        let (judgement, measurements) = reproduce::measure(&prepared, original.shot_count(), detail.summary.sn, &cycle_id,
+        let (judgement, measurements) = reproduce::measure(&prepared, original.shot_count(), &detail.summary.sn, &cycle_id,
             |k, selected| history_image(&app, &detail, k, selected))?;
         let comparison = Comparison { id: comparison_id(&app, history_id), history_id, source: "original".into(),
             cycle_id, bundle_id: Some(bundle_id.into()), candidate_id: original.id.clone(),
@@ -2093,13 +2093,13 @@ fn measure_paths(
     app: &AppHandle,
     w: &Workspace,
     paths: &[PathBuf],
-    sn: u32,
+    sn: &str,
 ) -> Result<(Vec<PointState>, Vec<Value>), String> {
     if (0..w.doc.shots.len()).any(|k| workflow::selected_views(w, k).len() > 1) { return Err("多图验证请采集完整拼接帧或使用历史整圈原图".into()); }
     measure_images(app, w, paths.len(), sn, |k, _| crate::image_file::load(&paths[k]))
 }
 
-fn measure_images(app: &AppHandle, w: &Workspace, count: usize, sn: u32,
+fn measure_images(app: &AppHandle, w: &Workspace, count: usize, sn: &str,
     mut load: impl FnMut(usize, u8) -> Result<FrameImage, String>) -> Result<(Vec<PointState>, Vec<Value>), String> {
     let recipe = w.doc.build()?;
     if count != recipe.shot_count() { return Err("样本组的原图数量与拍照点不一致".into()); }

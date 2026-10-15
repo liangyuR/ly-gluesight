@@ -200,7 +200,7 @@ mod tests {
         let frame = Frame { cam: 0, session: 7, counter: CounterSource::Synthetic, frame_counter: 13,
             trigger_counter: 11, lost_packets: 0, ts: 777, manual: false,
             images: (0..3).map(|view| Arc::new(FrameImage::new(2, 1, vec![17 + view, 71 + view]))).collect() };
-        let mut recording = recorder.begin(RecordMode::All, 42, recipe.clone(), cycle_id, Some("original-bundle")).unwrap();
+        let mut recording = recorder.begin(RecordMode::All, "SN-42", recipe.clone(), cycle_id, Some("original-bundle")).unwrap();
         recorder.frame(&mut recording, &frame, &recipe.shots[0].camera, 0, 9);
         recorder.finish(recording, Verdict::NgWidth, "保留原始判定", 10, u64::MAX, Vec::new());
         let outcome = rx.recv_timeout(Duration::from_secs(10)).expect("真实 Recorder 必须完成收尾");
