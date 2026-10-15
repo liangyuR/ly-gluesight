@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 
 pub(crate) const PROTOCOL_VERSION: u16 = 3;
 pub(crate) const SN_MAX_LEN: usize = 24;
+const SN_HEADER_MISMATCH: &str = "PLC 字符串声明长度";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Direction {
@@ -192,7 +193,13 @@ impl Contract {
         Ok(value)
     }
 
+    fn sn_header_mismatch(&self, values: &HashMap<String, PointValue>, tag: &str) -> bool {
+        self.point_id(tag).ok().and_then(|id| values.get(id)).and_then(|point| point.error.as_deref())
+            .is_some_and(|error| error.starts_with(SN_HEADER_MISMATCH))
+    }
+
     fn validate_writes(&self, writes: &[WriteOp]) -> Result<(), String> {
+        let publishes = writes.iter().any(|op| op.tag == "done" && op.value == json!(true));
         let mut tags = HashSet::new();
         for op in writes {
             let field = FIELDS.iter().find(|f| f.tag == op.tag).ok_or_else(|| format!("未知握手标签：{}", op.tag))?;
@@ -206,7 +213,7 @@ impl Contract {
                 DataType::Bool => op.value.as_bool().is_some(),
                 DataType::U16 => op.value.as_u64().is_some_and(|v| u16::try_from(v).is_ok()),
                 DataType::U32 => op.value.as_u64().is_some_and(|v| u32::try_from(v).is_ok()),
-                DataType::String => op.value.as_str().is_some_and(|v| check_sn(v).is_ok()),
+                DataType::String => op.value.as_str().is_some_and(|v| check_sn(v).is_ok() || (v.is_empty() && !publishes)),
                 _ => false,
             };
             if !valid {
@@ -241,6 +248,7 @@ pub(crate) struct Snapshot {
     pub(crate) poll_count: u64,
     pub(crate) last_poll: i64,
     values: HashMap<&'static str, PlcValue>,
+    broken_outputs: Vec<&'static str>,
 }
 
 fn check_freshness(status: &PlcStatus, now: i64, max_age_ms: u64) -> Result<i64, String> {
@@ -266,12 +274,40 @@ impl Snapshot {
         now: i64,
         max_age_ms: u64,
     ) -> Result<Self, String> {
+        Self::read(contract, status, values, now, max_age_ms, false)
+    }
+
+    fn read(
+        contract: &Contract,
+        status: &PlcStatus,
+        raw: &HashMap<String, PointValue>,
+        now: i64,
+        max_age_ms: u64,
+        tolerate_output_sn_header: bool,
+    ) -> Result<Self, String> {
         let last_poll = check_freshness(status, now, max_age_ms)?;
-        let values = FIELDS.iter().map(|f| Ok((f.tag, contract.value(values, f.tag)?.clone()))).collect::<Result<_, String>>()?;
-        Ok(Self { connection_since: status.since, poll_count: status.poll_count, last_poll, values })
+        let mut values = HashMap::new();
+        let mut broken_outputs = Vec::new();
+        for field in FIELDS {
+            if tolerate_output_sn_header && field.direction == Direction::Output && field.data_type == DataType::String
+                && contract.sn_header_mismatch(raw, field.tag) {
+                broken_outputs.push(field.tag);
+                continue;
+            }
+            values.insert(field.tag, contract.value(raw, field.tag)?.clone());
+        }
+        Ok(Self { connection_since: status.since, poll_count: status.poll_count, last_poll, values, broken_outputs })
     }
 
     pub(crate) fn capture(engine: &PlcEngine, contract: &Contract, max_age_ms: u64) -> Result<Self, String> {
+        Self::capture_with(engine, contract, max_age_ms, false)
+    }
+
+    pub(crate) fn capture_for_reset(engine: &PlcEngine, contract: &Contract, max_age_ms: u64) -> Result<Self, String> {
+        Self::capture_with(engine, contract, max_age_ms, true)
+    }
+
+    fn capture_with(engine: &PlcEngine, contract: &Contract, max_age_ms: u64, tolerate_output_sn_header: bool) -> Result<Self, String> {
         contract.check_config(engine)?;
         for _ in 0..3 {
             let before = engine.status();
@@ -279,10 +315,14 @@ impl Snapshot {
             let after = engine.status();
             if before.state == after.state && before.since == after.since && before.poll_count == after.poll_count {
                 contract.check_config(engine)?;
-                return Self::from_values(contract, &after, &values, ly_plc::now_ms(), max_age_ms);
+                return Self::read(contract, &after, &values, ly_plc::now_ms(), max_age_ms, tolerate_output_sn_header);
             }
         }
         Err("PLC 轮询快照更新中，请重新读取".into())
+    }
+
+    pub(crate) fn sn_repair_plan(&self) -> Vec<WriteOp> {
+        self.broken_outputs.iter().map(|&tag| WriteOp::new(tag, json!(""))).collect()
     }
 
     pub(crate) fn read_bool(&self, tag: &str) -> Result<bool, String> {
