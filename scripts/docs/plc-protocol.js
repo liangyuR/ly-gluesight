@@ -1,28 +1,32 @@
-const tabs = [...document.querySelectorAll('.diagram-tabs [role="tab"]')];
-const panels = [...document.querySelectorAll('.diagram-panel')];
-function selectDiagram(index, focus = false) {
-  tabs.forEach((tab, i) => {
-    tab.setAttribute('aria-selected', String(i === index));
-    tab.tabIndex = i === index ? 0 : -1;
-    panels[i].hidden = i !== index;
-  });
-  if (focus) tabs[index].focus();
-}
-tabs.forEach((tab, index) => {
-  tab.addEventListener('click', () => selectDiagram(index));
-  tab.addEventListener('keydown', event => {
-    let next;
-    if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
-    if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length;
-    if (event.key === 'Home') next = 0;
-    if (event.key === 'End') next = tabs.length - 1;
-    if (next !== undefined) {
-      event.preventDefault();
-      selectDiagram(next, true);
-    }
-  });
+mermaid.initialize({
+  startOnLoad: true,
+  securityLevel: 'strict',
+  theme: 'base',
+  fontFamily: 'system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif',
+  themeVariables: {
+    fontFamily: 'system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif',
+    fontSize: '15px',
+    primaryColor: '#edf4fb',
+    primaryTextColor: '#21364a',
+    primaryBorderColor: '#245b96',
+    lineColor: '#245b96',
+    textColor: '#21364a',
+    actorBkg: '#edf4fb',
+    actorBorder: '#245b96',
+    actorTextColor: '#21364a',
+    actorLineColor: '#b6c8d6',
+    signalColor: '#245b96',
+    signalTextColor: '#21364a',
+    noteBkgColor: '#f1f8fc',
+    noteBorderColor: '#cfe0ed',
+    noteTextColor: '#21364a',
+    labelBoxBkgColor: '#edf8f5',
+    labelBoxBorderColor: '#13806d',
+    labelTextColor: '#13806d',
+    loopTextColor: '#13806d'
+  },
+  sequence: { useMaxWidth: true, mirrorActors: true, messageAlign: 'center', noteAlign: 'left' }
 });
-selectDiagram(0);
 const query = document.getElementById('point-query');
 const rows = [...document.querySelectorAll('.point-table tbody tr')];
 function filterPoints() {

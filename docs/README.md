@@ -34,6 +34,6 @@
 
 两张架构图均为自包含 HTML，无外部脚本、字体或联网请求。下载仓库后，用浏览器打开 `docs/architecture/` 下的文件即可离线查看；GitHub 文件页只展示源码。软件架构图中的完整源码路径相对于仓库根目录，Rust 短文件名位于 `src-tauri/src/`，`LyFlow/` 指外部引擎仓库。
 
-PLC 协议 HTML 的正文、图形、样式和交互也已全部嵌入，可直接打开。修改 Markdown 或时序图后，安装 `scripts/docs/requirements.txt` 中的依赖，运行 `python scripts/docs/build-plc-protocol.py` 重新生成；添加 `--check` 可核对生成物是否同步。
+PLC 协议 HTML 的正文、时序图、样式、交互及 Mermaid 渲染脚本也已全部嵌入，可直接离线打开。时序图以 Mermaid 写在协议 Markdown 第 9 节，GitHub 可直接渲染。修改 Markdown 或时序图后，先在仓库根目录运行 `pnpm install`（提供锁定版本的 `mermaid`），再安装 `scripts/docs/requirements.txt` 中的依赖，运行 `python scripts/docs/build-plc-protocol.py` 重新生成；添加 `--check` 可核对生成物是否同步。
 
 2026-10-09：S7 软件实现与协议模拟联调已完成；真实 CPU、TIA 编译、三相机完整检测和现场验收仍待完成。架构图中的工期是带前提的规划估算，不代表现场交付承诺。

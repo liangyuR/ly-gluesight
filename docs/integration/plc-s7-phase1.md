@@ -55,7 +55,7 @@
 | PC | DB100.DBB88.24 | STRING[24] | `resultSn`：结果对应的 partSn，占 DBB88–113，须与 partSn 逐字节相等 |
 | PC | DBB64 保留位、DBB65、DBB72–75（原 resultSn 的 DBD72，协议 3 保留，不配置点位） | 保留 | PLC 不写 |
 
-**工件 SN（STRING）：** 1–24 个字符，每个字符为 ASCII 可打印字符 0x20–0x7E，去掉首尾空白后不能为空。PLC 必须按 `STRING[24]` 初始化 `partSn`（空串时头为 `18 00`），PC 读取时要求声明长度字节等于 24，否则该点位读错误。SN 原样保存与回显，不做 trim 或大小写变换；PLC 侧要求 `resultSn` 与 `partSn` 逐字节相等。不合规 `partSn` 与请求 payload 不合法（`requestSeq=0`、`planReserved≠0`、`deviceShots≠shotCount`、协议版本不符）同样处理：PC 不布防、不生成结果、不写 `resultCode`，进入视觉故障（`visionFault=1`、`visionReady=0`），PLC 须释放 `partStart` 并执行故障复位（`faultReset` 上升沿）后重新开始。字节示例见 [通讯协议第 9 节](plc-communication-protocol.md#9-四点飞拍示例)。离线产线（仿真）分配形如 `OFFLINE-0001234567` 的 SN（`OFFLINE-` 加 10 位数字），同一离线运行内唯一。
+**工件 SN（STRING）：** 1–24 个字符，每个字符为 ASCII 可打印字符 0x20–0x7E，去掉首尾空白后不能为空。PLC 必须按 `STRING[24]` 初始化 `partSn`（空串时头为 `18 00`），PC 读取时要求声明长度字节等于 24，否则该点位读错误。SN 原样保存与回显，不做 trim 或大小写变换；PLC 侧要求 `resultSn` 与 `partSn` 逐字节相等。不合规 `partSn` 与请求 payload 不合法（`requestSeq=0`、`planReserved≠0`、`deviceShots≠shotCount`、协议版本不符）同样处理：PC 不布防、不生成结果、不写 `resultCode`，进入视觉故障（`visionFault=1`、`visionReady=0`），PLC 须释放 `partStart` 并执行故障复位（`faultReset` 上升沿）后重新开始。字节示例见 [通讯协议第 10 节](plc-communication-protocol.md#10-四点飞拍示例)。离线产线（仿真）分配形如 `OFFLINE-0001234567` 的 SN（`OFFLINE-` 加 10 位数字），同一离线运行内唯一。
 
 SCL 使用符号 DB 名 `GlueSightHandshake`。导入后在 TIA 的块属性中**明确指定编号 100**，关闭优化访问，查看每个字段的实际偏移；源文件的符号名称本身不会保证自动分配到 DB100。使用其他 DB 编号时，同步改 PC 模板和测试 peer 的 `--db`。
 
