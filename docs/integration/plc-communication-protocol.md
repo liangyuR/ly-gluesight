@@ -85,7 +85,9 @@ PC 区保留空间：DBX64.6–64.7、DBB65、**DBB72–75（原 `resultSn` 的 
 - 字节 +1：实际长度，0–24。
 - 字节 +2 至 +25：字符区 24 字节，有效字符之后的未用字节补 0。
 
-`partSn` 占 DBB38–63（头 DBB38/39，字符 DBB40–63），`resultSn` 占 DBB88–113（头 DBB88/89，字符 DBB90–113）。PLC 必须把 `partSn` 按 `STRING[24]` 初始化，空串时头为 `18 00`（声明 24、实际 0）；PC 读取 STRING 时要求声明长度字节等于 24，不等则该点位读错误，按请求 payload 不合法处理。
+`partSn` 占 DBB38–63（头 DBB38/39，字符 DBB40–63），`resultSn` 占 DBB88–113（头 DBB88/89，字符 DBB90–113）。两段均须在 DB 中按 `STRING[24]` 声明并保留起始值，空串时头为 `18 00`（声明 24、实际 0）。
+
+**长度头异常不是请求 payload 不合法。** PC 每个轮询周期都读取两段 STRING，声明长度字节不为 24 或实际长度大于 24 时该点位读错误，与心跳、序号等字段读失败一样直接进入视觉故障（`visionFault=1`、`visionReady=0`）。这与是否有 `partStart` 无关，空闲时同样发生；读错误持续期间显式复位也无法完成。最常见原因是用块操作、`FILL_BLK` 或整 DB 清零覆盖了头字节 DBB38 或 DBB88，或 DB 仍是协议 2 的 UDInt 布局。PC 复位不会重写 `resultSn`，必须由 PLC 恢复 DB 起始值（TIA 重新初始化该 DB 或按 `18 00` 写回头字节），再按第 8 节复位。禁止整 DB 清零。
 
 SN 规则：
 
@@ -94,7 +96,7 @@ SN 规则：
 - SN 不替代 `requestSeq`；同一 SN 复检仍须新的 `requestSeq`。
 - 离线产线（仿真）为每件分配形如 `OFFLINE-0001234567`（`OFFLINE-` 加 10 位数字）的 SN，同一离线运行内唯一，样本件按 SN 字符串认领。
 
-不合规 `partSn`（声明长度不为 24、实际长度为 0 或超过 24、含 0x20–0x7E 以外字符、去掉首尾空白后为空）与其他请求 payload 不合法完全同样处理，见第 5 节。
+长度头正常但内容不合规的 `partSn`（实际长度为 0、含 0x20–0x7E 以外字符、去掉首尾空白后为空）在 PC 读取请求时判定，与其他请求 payload 不合法完全同样处理，见第 5 节。
 
 ## 4 拍照计划与三目设备
 
@@ -228,7 +230,106 @@ PC 启动、S7 重连或配置变化后要求显式复位；PLC 参考 FB 首次
 
 无在途事务时，设备短暂未就绪可撤 ready 并在恢复后自动就绪；PLC 遗留 end/ACK 时 PC 等待 PLC 清除。PC 输出偶发被重置可审计后恢复，60 s 内第 3 次被覆盖会故障。上述空闲恢复不替代启动、重连或心跳中断后的显式复位。
 
-## 9 四点飞拍示例
+## 9 通讯时序图
+
+以下时序图描述协议要求，条件以正文和点表为准。箭头表示写入、观察或物理触发的先后，纵向间距不代表实际耗时；硬触发不经过 PC 的 S7 轮询。
+
+### 9.1 正常生产一件
+
+外部用途已锁定为生产时，PLC 直接硬触发唯一三目设备，PC 异步收图检测；各提交标志最后写入，结果校验、锁存和 ACK 后双方释放，追溯落盘后再 ready。
+
+```mermaid
+sequenceDiagram
+    participant PLC as PLC / 机器人<br/>运动、触发与结果锁存
+    participant DEV as 三目设备<br/>一个 Device · 帧内三个视角
+    participant PC as 视觉 PC<br/>S7 握手、异步检测与追溯
+
+    PC->>PLC: 1. 等待就绪：外部用途已锁定为生产<br/>visionReady=1；armed=busy=done=visionFault=0；版本均为 3
+    Note over PLC,PC: PLC 保持 partStart / partEnd / resultAck=0；双方心跳持续变化。
+    PLC->>PC: 2. 提交并冻结本件请求<br/>先写 requestSeq、SN、产品、计划、零触发数及 ackSeq=0<br/>payload 写完后，最后置 partStart=1
+    Note over PLC,PC: 请求 payload 冻结至双方释放且 PC 再次 ready；一个时刻仅一件在途。
+    PC->>PLC: 3. PC 稳定读取、核对请求并完成设备布防<br/>visionReady=0 → acceptedSeq=requestSeq、acceptedPlanReserved=0<br/>→ busy=1 → armed=1（最后提交）
+    Note over PLC,PC: PLC 核对完整发脉冲条件后才启动连续运动与触发；等待布防时禁止触发。
+    loop 4. 连续点胶飞拍：硬触发与收图相互独立
+        PLC->>DEV: 按计划位置直接输出硬触发脉冲
+        Note over PLC,DEV: PLC 用可靠输出计数源更新 deviceTriggers。
+        DEV-->>PC: 设备帧（包含三个视角）
+        Note over DEV,PC: PC 按设备会话、计数及拍照点关联，异步检测。
+    end
+    PLC->>PC: 5. 运动与全部计划触发结束<br/>PLC 核对实际数等于计划数 → 写最终 deviceTriggers<br/>→ partEnd=1；partStart 仍保持 1
+    Note over PLC,PC: PC 校验结束与计数，等待本件收帧和测量完成。
+    PC->>PLC: 6. PC 发布整件结果<br/>armed=0，busy 保持 1；先写 resultCode、faultCode、resultSn、resultSeq<br/>→ done=1（结果 payload 完成后最后提交）
+    Note over PLC,PC: 正常生产 OK / NG 必须在 PLC 完成最终计数核对并提交 partEnd 后出现。
+    PLC->>PC: 7. PLC 校验并锁存有效结果<br/>核对状态、resultSeq=requestSeq、resultSn 与 partSn 逐字节相等及已知结果码组合<br/>锁存结果 → ackSeq=resultSeq → resultAck=1
+    Note over PLC,PC: ACK 表示已接收结论，NG 与 ERR 也可有效确认；ACK 不代表良品。
+    PC->>PLC: 8. PC 确认 ACK 后释放结果占用<br/>核对匹配 ACK → 先清 done=0 → 再清 busy=0
+    PLC->>PC: 9. PLC 看到 done=busy=0 后释放请求<br/>partStart=0、partEnd=0、resultAck=0
+    PC->>PLC: 10. PC 确认 PLC 释放，并完成追溯落盘<br/>最后置 visionReady=1；此时才允许下一件更新请求
+    Note over PLC,PC: 触发放行必须逐项成立：armed=busy=1；done=partEnd=visionReady=visionFault=0；<br/>acceptedSeq=requestSeq；planReserved=acceptedPlanReserved=0；双方心跳活跃，<br/>并满足现场用途与设备互锁；任一失效立即禁止新脉冲。<br/>当前参考 FB 尚缺部分 ready / done / 保留字段检查；须补齐并做异常注入、真实 CPU / I/O / SDK 联调。
+```
+
+### 9.2 提前终止与故障
+
+已布防后提前终止有两种路径：握手仍可报告时形成有效 ERR 结果并按正常次序确认释放；握手故障时保留未结事务，实物处置后显式复位。检测 ERR 可有效确认，异常结论不代表质量合格。
+
+```mermaid
+sequenceDiagram
+    participant PLC as PLC / 机器人
+    participant PC as 视觉 PC
+
+    alt A · 握手仍可报告：提前终止形成有效 ERR 结果（本件已布防，无需等待 partEnd）
+        PC->>PLC: A1. PC 提前终止并撤销布防<br/>visionReady=0；armed=0；busy 保持 1
+        Note over PLC,PC: PLC 立即停止新脉冲，并限时等待有效结果。
+        par A2. PLC 刷新末计数（接入要求）
+            PLC->>PLC: A2. PLC 停稳触发并刷新实际末计数<br/>计入最后已发脉冲 → 刷新 deviceTriggers<br/>计数必须在 ACK 前写完；禁止继续发新脉冲
+            Note over PLC,PC: PC 在 ACK 时读取这些计数，供后续帧归属使用。
+        and A3. PC 提交 ERR 结果
+            PC->>PLC: A3. PC 写完异常结果后提交 done<br/>resultCode=90；faultCode=91–100；写本件 resultSeq / resultSn<br/>→ done=1（最后）；busy=1、armed=0、visionFault=0
+        end
+        Note over PLC,PC: A2 与 A3 可并行、先后不定；PC 提交 done 无需等待 PLC 刷新末计数。
+        PLC->>PLC: A4. PLC 校验完整状态、身份与结果组合后锁存<br/>done=1，armed=0，busy=1，visionReady=0；无协议故障<br/>resultSeq=requestSeq；resultSn 与 partSn 逐字节相等；90 / 91–100
+        Note over PLC,PC: 提前 OK / NG、未知组合或身份不匹配：禁止确认和放行。
+        PLC->>PC: A5. 条件汇合：末计数已刷新且结果有效，才允许 ACK<br/>末计数已刷新且有效结果已锁存 → ackSeq=resultSeq → resultAck=1
+        Note over PLC,PC: A2 计数刷新与 A3 有效结果经 A4 校验，均须在 A5 ACK 前完成；ACK 不代表良品。
+        PC->>PLC: A6. 按正常次序释放事务<br/>PC：done=0 → busy=0
+        PLC->>PC: PLC：partStart / partEnd / resultAck=0
+        PC->>PLC: PC：确认释放、追溯落盘 → visionReady=1
+        Note over PLC,PC: 当前参考 FB 未补齐提前停止后的末计数刷新；<br/>未补齐时须隔离并复位对齐，不能承诺连续下一件计数正确。
+    else B · 握手故障：visionFault 或没有可用的有效 done（心跳失活、请求身份变化或回写失败等）
+        PC->>PLC: B1. PC 进入握手故障，可能没有可提交的 done<br/>visionReady=0；armed=0；visionFault=1<br/>通信中断时 PLC 也必须按心跳失活停止新触发
+        PLC->>PLC: B2. PLC 停止新脉冲并锁入故障<br/>保留双方 pending、请求身份与现场信号<br/>没有有效 done / 身份不匹配 → 不强制 ACK
+        Note over PLC,PC: 残留结果不能用于 ACK：不得使用残留 resultCode / resultSeq 假装完成该件。
+        PLC->>PC: B3. 实物处置后，进入显式复位流程<br/>核对实物、SN、requestSeq、pending 与已锁存结果<br/>人工确认隔离、复检或已有有效结果 → 显式复位
+        Note over PLC,PC: 完成新低→高复位及就绪核验后，才允许下一件，见 9.3。
+    end
+```
+
+### 9.3 启动与显式复位
+
+启动、重连或配置变化后，先处置未结件，再建立中性基线与新复位边沿；连接成功不等于可以接件，普通空闲恢复不能代替显式复位。
+
+```mermaid
+sequenceDiagram
+    participant OP as 操作员<br/>实物核对与人工处置
+    participant PLC as PLC / 参考 FB<br/>本地复位控制、输出互锁
+    participant PC as 视觉 PC<br/>新会话、审计与就绪核验
+
+    PC->>PC: 1. 启动 / 重连 / 配置变化：进入复位要求<br/>PC 保留 pending，要求显式复位<br/>残留 visionReady 高不能证明新会话就绪
+    Note over OP,PC: PLC 首次调用或 Startup 进入复位态；全程停止新触发，等待双方心跳变化。
+    OP->>PLC: 2. 操作员先完成实物与未结事务处置<br/>核对实物、运动、双方 pending、SN、requestSeq 与已锁存结果<br/>决定隔离 / 复检 / 已有有效结果，并确认处置完成
+    Note over OP,PLC: 运行中的未结件不能直接清输入强切下一件。
+    OP->>PLC: 3. 人工确认后，给本地 FB 新复位请求<br/>允许 ReconcileConfirmed；ResetRequest 先低，再发新上升沿<br/>两者均为参考 FB 本地输入，不是新增 DB 点位；确认不可永久接 TRUE
+    PLC->>PC: 4. PLC 建立中性输入，并保持复位低电平<br/>partStart=partEnd=resultAck=0<br/>faultReset=0 持续至少 1 s
+    Note over OP,PC: 复位期间保持 requestSeq、ackSeq 及连接会话基线稳定；PLC 须确认 PC 心跳活跃。
+    PLC->>PC: 5. PLC 产生 PC 可观察的新 faultReset 上升沿<br/>faultReset=1，保持至少 500 ms
+    PC->>PC: 6. PC 核验复位条件，再清本侧输出<br/>设备就绪、PLC 心跳有变化、审计可用<br/>输入中性且基线稳定；清 armed / done / busy / visionFault<br/>pcProtocolVersion=3；visionReady 仍为 0
+    PC->>PLC: 7. PC 完成复位审计与持久化，再提交 ready<br/>记录原事务与复位审计，结束原 pending<br/>再次核验中性输入、连接与序号基线稳定<br/>最后置 visionReady=1
+    PLC->>PLC: 8. PLC 观察 ready 从低到高，完成放行核验<br/>必须已见 visionReady=0，然后观察到 1<br/>pcProtocolVersion=3；armed=busy=done=visionFault=0<br/>PC 心跳活跃，faultReset 高保持已满 500 ms
+    Note over OP,PC: PLC 清 faultReset，结束本地 pending，复位成功后才允许接收下一件。
+    Note over OP,PC: 复位超时、条件未满足或 ready 未形成低→高：仍禁止生产。<br/>重新核对实物与未结事务处置，再发新的低→高复位请求；不要重复使用旧高电平。<br/>计数错位不得自动修改基线猜测归属；复位过程与真实触发、设备会话的重新对齐仍须现场验收。
+```
+
+## 10 四点飞拍示例
 
 以下仅用于说明数值与时序，现场必须替换成 PC 实际导出的版本和配方代码。
 
@@ -255,7 +356,7 @@ DBB38  DBB39  DBB40 ........................... DBB49  DBB50 ... DBB63
 
 即 `18 0A 41 32 34 2D 30 30 30 31 32 33 00 00 00 00 00 00 00 00 00 00 00 00 00 00`：`0x18=24` 为声明最大长度，`0x0A=10` 为实际长度，`41 32 34 2D 30 30 30 31 32 33` 是 `A24-000123` 的 ASCII，其后 14 个字节补 0。PC 回写的 `resultSn` 在 DBB88 起为同样的 26 字节。空串 SN 的头为 `18 00`，属于不合规 SN。
 
-## 10 实现依据与验证边界
+## 11 实现依据与验证边界
 
 本协议保留通信参数、点表、状态条件和参考程序限制。现场操作验收清单已按本轮测试范围删除；软件回环结果不能证明真实 CPU、I/O、SDK、节拍或实物质量。
 
