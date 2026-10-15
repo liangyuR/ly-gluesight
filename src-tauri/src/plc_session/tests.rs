@@ -854,6 +854,27 @@ async fn s7_wire_idle_db_reinit_restores_outputs_without_reset() {
 
 #[tokio::test]
 #[ignore = "requires Python and local loopback S7 fixture"]
+async fn s7_wire_zeroed_sn_headers_reset_heals_result_sn_only_after_part_sn_restored() {
+    let mut rig = Rig::new("sn-header-reset").await;
+    let header = |rig: &mut Rig, byte: u16| rig.plc.control(json!({"op":"read_db", "db":100, "byte":byte, "size":2}))["data"].clone();
+    rig.plc.control(json!({"op":"write_db", "db":100, "byte":88, "data":[0, 0]}));
+    rig.plc.control(json!({"op":"write_db", "db":100, "byte":38, "data":[0, 0]}));
+    rig.fresh().await;
+    assert!(matches!(rig.session.poll(&rig.engine, false, true).await, SessionEvent::Fault(_)));
+    rig.session.poll(&rig.engine, true, true).await;
+    assert_eq!(rig.session.phase(), SessionPhase::Fault);
+    assert!(rig.session.view().message.unwrap().contains("partSn"), "{:?}", rig.session.view());
+    assert_eq!(header(&mut rig, 88), json!([0, 0]));
+    rig.plc.control(json!({"op":"write_db", "db":100, "byte":38, "data":[24, 0]}));
+    rig.fresh().await;
+    assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready), "{:?}", rig.session.view());
+    assert_eq!(header(&mut rig, 88), json!([24, 0]));
+    assert_idle_outputs(&rig.plc.fields(), true);
+    rig.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_idle_repeated_output_overwrite_faults_on_third_restore() {
     let mut rig = Rig::new("idle-overwrite").await;
     for _ in 0..2 {
