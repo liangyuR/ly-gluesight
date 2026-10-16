@@ -166,7 +166,7 @@ pub struct EngineStatus {
 
 /// 本版本锁定的 lyFlow 系列（packaging/runtime.json 的 lyflow.series，编译时带入）。
 pub const LYFLOW_SERIES: &str = env!("GLUESIGHT_LYFLOW_SERIES");
-/// 仅开发构建读取：联合开发时由 pnpm dev -LyFlowRuntime 设置，只对本次启动有效，不落盘。
+/// 仅开发构建读取：联合开发时由 pnpm dev:joint -LyFlowRuntime 设置，只对本次启动有效，不落盘。
 const RUNTIME_OVERRIDE: &str = "GLUESIGHT_LYFLOW_RUNTIME";
 
 struct RuntimeDir {
@@ -258,7 +258,7 @@ impl VisionHost {
             Err(if runtime.overridden {
                 format!("联合开发指定的 lyFlow 运行库目录缺少 lyflow_core.dll：{}", runtime.dir.display())
             } else {
-                format!("缺少 lyFlow 运行库：{}。安装版请重新安装完整安装包；开发请用 pnpm dev 启动（会准备锁定系列的运行库）。", runtime.dir.display())
+                format!("缺少 lyFlow 运行库：{}。安装版请重新安装完整安装包；开发请先执行 pnpm deps:lyflow:dev 准备锁定系列的运行库。", runtime.dir.display())
             })
         } else if runtime.overridden {
             Engine::load(&path)

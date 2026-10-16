@@ -8,7 +8,8 @@
     "node": ">=24.15.0"
   },
   "scripts": {
-    "dev": "pwsh -NoProfile -File scripts/Start-Dev.ps1",
+    "dev": "tauri dev",
+    "dev:joint": "pwsh -NoProfile -File scripts/Start-JointDev.ps1",
     "dev:web": "vite",
     "build": "tsc -b && vite build",
     "package": "pwsh -NoProfile -File scripts/Package-Windows.ps1",
@@ -16,6 +17,7 @@
     "package:deps:publish": "pwsh -NoProfile -File scripts/Publish-RuntimeDependencies.ps1",
     "deps:lyflow:update": "pwsh -NoProfile -File scripts/Update-LyFlowDependency.ps1",
     "deps:lyflow:restore": "pwsh -NoProfile -File scripts/Restore-LyFlowRuntime.ps1",
+    "deps:lyflow:dev": "pwsh -NoProfile -File scripts/Install-DevLyFlowRuntime.ps1",
     "version:check": "pwsh -NoProfile -File scripts/Test-PackageVersions.ps1",
     "version:set": "pwsh -NoProfile -File scripts/Set-PackageVersion.ps1",
     "test": "vitest run",

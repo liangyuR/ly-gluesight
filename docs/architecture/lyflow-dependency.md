@@ -33,31 +33,35 @@
 
 ## 开发启动
 
-`pnpm dev`（`scripts/Start-Dev.ps1`）：
+`pnpm dev` 就是 `tauri dev`，不恢复、不复制运行库。首次开发或锁定系列变化后先准备运行库：
 
-| 参数 | 行为 |
-| --- | --- |
-| 默认 | 恢复运行库，清空后完整复制到 `src-tauri/target/debug/runtime/lyflow/`，再启动 `tauri dev`。恢复失败则以非零退出码停止，提示可加 `-NoLyFlow`。 |
-| `-NoLyFlow` | 跳过恢复，删除 `debug/runtime/lyflow/` 防止残留旧版本，告警后无引擎启动。 |
-| `-LyFlowRuntime <目录>` | 跳过恢复，为本次进程设置 `GLUESIGHT_LYFLOW_RUNTIME=<目录>`，debug 构建优先读取，不落盘。 |
-| `-LyFlowSource <lyFlow 仓库根>` | 通过 `tauri dev -- --config 'patch."https://github.com/liangyuR/lyFlow.git".lyflow-client.path=...'` 让 Cargo 使用 `<源>/crates/lyflow-client`。本地 Cargo.lock 会变化，不要提交。 |
+```powershell
+pnpm deps:lyflow:dev   # 恢复运行库，清空后完整复制到 src-tauri/target/debug/runtime/lyflow/
+pnpm dev
+```
 
-设置 `CARGO_TARGET_DIR` 时复制到该目录下的 `debug/runtime/lyflow/`。运行时只从程序同目录的 `runtime/lyflow/` 加载引擎，没有核心库路径设置。
+设置 `CARGO_TARGET_DIR` 时复制到该目录下的 `debug/runtime/lyflow/`。运行时只从程序同目录的 `runtime/lyflow/` 加载引擎，没有核心库路径设置；目录缺失或不属于锁定系列时应用照常启动，引擎状态显示原因，重新执行 `pnpm deps:lyflow:dev` 即可。
 
 ## 联合开发
 
-同时改 lyFlow 引擎和客户端时：
+同时改 lyFlow 引擎和客户端时用 `pnpm dev:joint`（`scripts/Start-JointDev.ps1`），至少指定一个参数：
+
+| 参数 | 行为 |
+| --- | --- |
+| `-LyFlowRuntime <目录>` | 为本次进程设置 `GLUESIGHT_LYFLOW_RUNTIME=<目录>`，debug 构建优先读取，不落盘。 |
+| `-LyFlowSource <lyFlow 仓库根>` | 先 `cargo update -p lyflow-client` 把锁切到本地源码，再通过 `tauri dev -- --config 'patch."https://github.com/liangyuR/lyFlow.git".lyflow-client.path=...'` 让 Cargo 使用 `<源>/crates/lyflow-client`。 |
 
 ```powershell
-pnpm dev -LyFlowRuntime D:\work\lyFlow\out\runtime -LyFlowSource D:\work\lyFlow
+pnpm dev:joint -LyFlowRuntime D:\work\lyFlow\out\runtime -LyFlowSource D:\work\lyFlow
 ```
 
-两个参数都只影响本次启动；结束后执行 `git checkout src-tauri/Cargo.lock` 丢弃本地锁文件变化。
+两个参数都只影响本次启动；用过 `-LyFlowSource` 后执行 `git checkout -- src-tauri/Cargo.lock` 丢弃本地锁文件变化，不要提交。
 
 ## 命令
 
 ```powershell
-pnpm deps:lyflow:restore            # 恢复并输出运行库目录
+pnpm deps:lyflow:restore            # 恢复到缓存并输出运行库目录
+pnpm deps:lyflow:dev                # 恢复并复制到 debug 构建的 runtime/lyflow
 pnpm deps:lyflow:update             # 当前系列最新 Release
 pnpm deps:lyflow:update -Series 1.2 # 切换系列
 ```
