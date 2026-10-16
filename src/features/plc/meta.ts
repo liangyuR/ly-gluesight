@@ -98,6 +98,7 @@ export function newPoint(): PlcPoint {
     wordOrder: null,
     access: "read",
     edge: "none",
+    poll: true,
     logChanges: true,
     tags: [],
     description: "",

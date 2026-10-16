@@ -13,6 +13,7 @@ export interface PlcPoint {
   wordOrder: WordOrder | null;
   access: Access;
   edge: EdgeMode;
+  poll: boolean;
   logChanges: boolean;
   tags: string[];
   description: string;
@@ -60,6 +61,17 @@ export interface PlcStatus {
   cycleMs: number | null;
   pollCount: number;
   errorCount: number;
+  dials: number;
+  outageDials: number;
+  lastDialError: PlcError | null;
+  lastError: PlcError | null;
+}
+
+export type PlcErrorKind = "offline" | "link" | "timeout" | "rejected" | "invalid" | "decode" | "mismatch";
+
+export interface PlcError {
+  kind: PlcErrorKind;
+  message: string;
 }
 
 export type PlcValue = boolean | number | string;
@@ -67,6 +79,7 @@ export type PlcValue = boolean | number | string;
 export interface PointValue {
   value: PlcValue | null;
   error: string | null;
+  errorKind: PlcErrorKind | null;
   ts: number;
 }
 
