@@ -35,7 +35,7 @@
 .wp-steps a { display:flex; justify-content:center; align-items:center; gap:8px; min-height:42px; flex:1; color:var(--text-muted); padding:8px; font-size:12px; text-decoration:none; }
 .wp-steps a.active { background:var(--accent-soft); color:var(--accent-text); }
 .wp-steps a > span { display:grid; place-items:center; width:21px; height:21px; border:1px solid var(--border-strong); border-radius:50%; font-size:11px; flex-shrink:0; }
-.wp-steps a.active > span { border-color:var(--accent); color:var(--text); background:var(--accent); }
+.wp-steps a.active > span { border-color:var(--primary); color:var(--on-primary); background:var(--primary); }
 .wp-steps a > svg { margin-left:auto; }
 .wp-steps a > small { font-size:11px; color:var(--text-muted); }
 .wp-steps a > small.wp-step-status { padding:1px 6px; border-radius:9px; background:var(--bg-sunken, transparent); }

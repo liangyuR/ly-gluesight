@@ -3,7 +3,7 @@
   "product": "GlueSight · 胶路智检",
   "title": "涂胶检测操作流程 · Black / Blue",
   "status": "workflow-design-specification",
-  "scope": "使用本地免费组件完成整套可交互操作流程，并将现有软件 UI 更换为纯黑加蓝色关键色。",
+  "scope": "使用本地免费组件完成整套可交互操作流程，并将现有软件 UI 更换为青钢风格（Material 3 tonal 分层 + 工业数据密度）。",
   "documentation": {
     "purpose": "保留界面与工作流设计规格。当前操作、实现约束和验证方式以以下仓库文档为准。",
     "userGuide": "docs/user-guide/index.html",
@@ -32,38 +32,49 @@
       "minimumHeight": 700
     },
     "layout": {
-      "sidebarWidth": 204,
-      "collapsedSidebarWidth": 64,
+      "sidebarWidth": 220,
+      "collapsedSidebarWidth": 72,
       "headerHeight": 60,
       "pagePadding": 20,
       "panelGap": 16,
-      "radius": 6,
+      "radius": {
+        "xs": 4,
+        "sm": 8,
+        "md": 12,
+        "lg": 16,
+        "xl": 28,
+        "full": 999
+      },
       "controlHeight": 36
     },
     "colors": {
-      "background": "#000000",
-      "surface": "#0A0A0A",
-      "surfaceRaised": "#141414",
-      "border": "#262626",
-      "borderStrong": "#3D3D3D",
-      "text": "#F5F5F5",
-      "textSecondary": "#A3A3A3",
-      "textDisabled": "#737373",
-      "accent": "#2563EB",
-      "accentHover": "#2866F0",
-      "accentText": "#8BB0FF",
-      "accentSoft": "#101C38",
-      "success": "#4ADE80",
-      "warning": "#FBBF24",
-      "danger": "#F87171",
-      "measurementInvalid": "#FBBF24"
+      "surface": "#0F1417",
+      "surfaceLowest": "#0A0E11",
+      "surfaceLow": "#171C1F",
+      "surfaceMid": "#1B2124",
+      "surfaceHigh": "#262B2F",
+      "surfaceHighest": "#30363A",
+      "outline": "#83909A",
+      "outlineVariant": "#3A4750",
+      "text": "#DEE3E7",
+      "textSecondary": "#B3BFC6",
+      "primary": "#7FD4F0",
+      "onPrimary": "#00363F",
+      "primaryContainer": "#004E63",
+      "onPrimaryContainer": "#B9EBFF",
+      "secondaryContainer": "#344A52",
+      "success": "#5EE19A",
+      "warning": "#FFC247",
+      "danger": "#FF5C5C",
+      "fault": "#E08CFF"
     },
     "colorRules": [
-      "主背景为纯黑，面板使用中性灰，不使用大面积藏蓝底。",
-      "蓝色用于主要按钮、焦点、选中、当前步骤和运行进度。",
-      "红黄绿只承担检测结果与告警语义，不作为普通装饰色。",
-      "测量无效使用独立图标、文字和中性色，与真实缺陷区分。",
-      "每个状态都有文字或图标，不能只靠颜色。"
+      "青钢风格：种子色 #0F819E 推导 Material 3 tonal 角色，深色为默认主题。",
+      "分层靠 surface 明度区分，面板不加边框；1px 线只留给输入框、表格和图像区域。",
+      "能点的是胶囊（按钮、导航指示器），装数据的是圆角矩形（面板 16）。",
+      "主色用于主要按钮、焦点、选中、当前步骤和运行进度。",
+      "红黄绿只承担检测结果与告警语义；系统或检测异常使用紫色故障色，与工件 NG 区分。",
+      "每个状态都有文字或图标，不只靠颜色。"
     ],
     "typography": {
       "uiFamily": [
@@ -139,6 +150,22 @@
         "defect",
         "missing",
         "invalid"
+      ]
+    },
+    "motion": {
+      "durations": {
+        "short": 120,
+        "medium": 240,
+        "long": 400
+      },
+      "easing": {
+        "spatial": "cubic-bezier(0.38, 1.21, 0.22, 1)",
+        "standard": "cubic-bezier(0.2, 0, 0, 1)",
+        "decelerate": "cubic-bezier(0.05, 0.7, 0.1, 1)"
+      },
+      "rules": [
+        "动效只表达状态或位置变化，不做入场表演和装饰循环。",
+        "单个动画不超过 400 ms，系统开启减少动态效果时全部降为瞬时。"
       ]
     }
   },
@@ -833,7 +860,7 @@
   "completionChecks": [
     "使用原生 React、HTML 控件和 SVG 图像区域，设计可以在源码中继续编辑。",
     "在 1440×900 和 1100×700 下检查布局、按钮、图像和必要滚动。",
-    "维持纯黑背景、中性灰面板、蓝色关键色及 OK、NG、ERR 的语义颜色。",
+    "维持青钢 surface 分层、青色主色及 OK、NG、警告、故障的语义颜色。",
     "验证冻结图像、试匹配、保存、参数失效、总览选帧和显示坐标独立。",
     "验证候选、生产和在制件配置快照独立，版本在工件边界切换。",
     "验证历史原始结果保留，无图时限制原图复测与示教。",
@@ -841,7 +868,7 @@
     "示例测量与硬件状态明确标注，后端依赖不被误报为真实功能。"
   ],
   "application": {
-    "style": "pure-black-blue",
+    "style": "qing-steel",
     "sourceTokens": "src/styles.css",
     "entryRoute": "#/camera",
     "routes": [
