@@ -41,6 +41,10 @@ const previewStatus: PlcStatus = {
   cycleMs: null,
   pollCount: 0,
   errorCount: 0,
+  dials: 0,
+  outageDials: 0,
+  lastDialError: null,
+  lastError: null,
 };
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {

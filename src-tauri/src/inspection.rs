@@ -67,7 +67,7 @@ pub fn read_tag_u32(engine: &PlcEngine, tag: &str) -> Option<u32> {
         PlcValue::Int(i) => u32::try_from(i).ok(),
         PlcValue::Float(f) => Some(f as u32),
         PlcValue::Bool(b) => Some(b as u32),
-        PlcValue::Text(_) => None,
+        PlcValue::Text(_) | PlcValue::Bytes(_) => None,
     }
 }
 

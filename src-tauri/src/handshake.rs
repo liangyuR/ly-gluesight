@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::time::{Duration, Instant};
 
-use ly_plc::{Access, DataType, EdgeMode, LinkState, PlcConfig, PlcEngine, PlcStatus, PlcValue, PointValue, ProtocolKind, WordOrder};
+use ly_plc::{Access, DataType, EdgeMode, LinkState, PlcConfig, PlcEngine, PlcError, PlcStatus, PlcValue, PointValue, ProtocolKind, WordOrder};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -97,6 +97,9 @@ impl Contract {
             };
             if point.tags.iter().filter(|t| t.as_str() == field.tag).count() != 1 {
                 return Err(format!("握手标签 {} 重复", field.tag));
+            }
+            if !point.poll {
+                return Err(format!("{} 必须参与轮询，握手依赖轮询读回确认", field.tag));
             }
             if point.data_type != field.data_type {
                 return Err(format!("{} 必须使用 {:?} 类型，请按单设备 S7 协议 {PROTOCOL_VERSION} 模板重新生成点表", field.tag, field.data_type));
@@ -194,8 +197,8 @@ impl Contract {
     }
 
     fn sn_header_mismatch(&self, values: &HashMap<String, PointValue>, tag: &str) -> bool {
-        self.point_id(tag).ok().and_then(|id| values.get(id)).and_then(|point| point.error.as_deref())
-            .is_some_and(|error| error.starts_with(SN_HEADER_MISMATCH))
+        self.point_id(tag).ok().and_then(|id| values.get(id)).and_then(|point| point.error.as_ref())
+            .is_some_and(|error| matches!(error, PlcError::Decode(m) if m.starts_with(SN_HEADER_MISMATCH)))
     }
 
     fn validate_writes(&self, writes: &[WriteOp]) -> Result<(), String> {
@@ -633,7 +636,7 @@ pub(crate) fn verify_writes(contract: &Contract, values: &HashMap<String, PointV
             PlcValue::Bool(v) => op.value.as_bool() == Some(*v),
             PlcValue::Int(v) => op.value.as_i64() == Some(*v),
             PlcValue::Text(v) => op.value.as_str() == Some(v.as_str()),
-            PlcValue::Float(_) => false,
+            PlcValue::Float(_) | PlcValue::Bytes(_) => false,
         };
         if !matches {
             return Ok(false);
@@ -673,7 +676,7 @@ pub(crate) async fn write_confirmed(
         if connection_stamp(engine, contract, max_age_ms)?.since != initial.since {
             return Err("PLC 连接已变化，必须复位".into());
         }
-        engine.write_point(contract.point_id(op.tag)?, &op.value).await
+        Ok(engine.write_point(contract.point_id(op.tag)?, &op.value).await?)
     }).await?;
     let written = connection_stamp(engine, contract, max_age_ms)?;
     if written.since != initial.since {
@@ -789,7 +792,8 @@ mod tests {
 
     fn data() -> (Contract, PlcStatus, HashMap<String, PointValue>) {
         let contract = Contract::validate(&config()).unwrap();
-        let status = PlcStatus { state: LinkState::Connected, message: String::new(), since: 100, last_poll: Some(1000), cycle_ms: Some(2), poll_count: 10, error_count: 0 };
+        let status = PlcStatus { state: LinkState::Connected, message: String::new(), since: 100, last_poll: Some(1000), cycle_ms: Some(2), poll_count: 10, error_count: 0,
+            dials: 1, outage_dials: 1, last_dial_error: None, last_error: None };
         let mut values: HashMap<_, _> = FIELDS.iter().map(|f| (f.tag.into(), PointValue {
             value: Some(match f.data_type {
                 DataType::Bool => PlcValue::Bool(false),
@@ -834,6 +838,14 @@ mod tests {
     }
 
     #[test]
+    fn unpolled_handshake_point_is_rejected_by_contract() {
+        let mut cfg = config();
+        assert!(Contract::validate(&cfg).is_ok());
+        cfg.points.iter_mut().find(|p| p.id == "resultSn").unwrap().poll = false;
+        assert!(Contract::validate(&cfg).unwrap_err().contains("resultSn"));
+    }
+
+    #[test]
     fn constant_point_timestamp_is_not_mistaken_for_stale_poll() {
         let (contract, mut status, mut values) = data();
         assert!(Snapshot::from_values(&contract, &status, &values, 1010, 500).is_ok());
@@ -841,7 +853,7 @@ mod tests {
         status.since = 1001;
         assert!(Snapshot::from_values(&contract, &status, &values, 1010, 500).is_err());
         status.since = 100;
-        values.get_mut("partSn").unwrap().error = Some("DB 不可访问".into());
+        values.get_mut("partSn").unwrap().error = Some(PlcError::Rejected("DB 不可访问".into()));
         assert!(Snapshot::from_values(&contract, &status, &values, 1010, 500).is_err());
     }
 
@@ -1024,7 +1036,7 @@ mod tests {
         assert!(!verify_writes(&contract, &values, &writes).unwrap());
         values.get_mut("busy").unwrap().value = Some(PlcValue::Bool(true));
         assert!(verify_writes(&contract, &values, &writes).unwrap());
-        values.get_mut("busy").unwrap().error = Some("读取被拒绝".into());
+        values.get_mut("busy").unwrap().error = Some(PlcError::Rejected("读取被拒绝".into()));
         assert!(verify_writes(&contract, &values, &writes).is_err());
         assert!(verify_writes(&contract, &values, &[WriteOp::new("partStart", json!(false))]).is_err());
     }

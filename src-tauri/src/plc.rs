@@ -119,7 +119,7 @@ pub async fn plc_write_point(plc: State<'_, PlcHost>, cycle: State<'_, CycleHost
     if inspection::reserved_s7_point(&plc.engine.config(), &id) {
         return Err("S7 握手点由生产状态机管理，禁止手动写入".into());
     }
-    plc.engine.write_point(&id, &value).await
+    Ok(plc.engine.write_point(&id, &value).await?)
 }
 
 fn require_idle(cycle: &CycleHost) -> Result<(), String> {
