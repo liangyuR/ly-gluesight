@@ -160,8 +160,8 @@ export default function UnrolledCurve({ layout, measured, vis, quantity = "d", s
       }}>
         {niceTicks(lo, hi).map((v) => (
           <g key={v}>
-            <line x1={PAD.l} x2={w - PAD.r} y1={Y(v)} y2={Y(v)} stroke="var(--border)" />
-            <text x={PAD.l - 5} y={Y(v) + 3} textAnchor="end" fontSize={10} fill="var(--text-muted)">
+            <line x1={PAD.l} x2={w - PAD.r} y1={Y(v)} y2={Y(v)} stroke="var(--outline-variant)" />
+            <text x={PAD.l - 5} y={Y(v) + 3} textAnchor="end" fontSize={10} fill="var(--on-surface-variant)">
               {v}
             </text>
           </g>
@@ -171,18 +171,18 @@ export default function UnrolledCurve({ layout, measured, vis, quantity = "d", s
           const x0 = X(axis.offsets[gi]), x1 = X(axis.offsets[gi] + axis.lens[gi]);
           return (
             <g key={`${g.name}:${gi}`} aria-label={`段 ${g.name}`}>
-              {gi > 0 && <rect x={X(axis.offsets[gi] - axis.gap)} width={Math.max(0, x0 - X(axis.offsets[gi] - axis.gap))} y={PAD.t} height={plotB - PAD.t} fill="var(--bg-hover)" />}
+              {gi > 0 && <rect x={X(axis.offsets[gi] - axis.gap)} width={Math.max(0, x0 - X(axis.offsets[gi] - axis.gap))} y={PAD.t} height={plotB - PAD.t} fill="var(--state-hover)" />}
               {p && (
                 <>
-                  <rect x={x0} width={x1 - x0} y={Y(p.nominal + p.tolUpper)} height={Y(p.nominal - p.tolLower) - Y(p.nominal + p.tolUpper)} fill="var(--ok-soft)" />
+                  <rect x={x0} width={x1 - x0} y={Y(p.nominal + p.tolUpper)} height={Y(p.nominal - p.tolLower) - Y(p.nominal + p.tolUpper)} fill="var(--ok-container)" />
                   <line x1={x0} x2={x1} y1={Y(p.absMax)} y2={Y(p.absMax)} stroke="var(--ng)" strokeDasharray="4 3" />
                   <line x1={x0} x2={x1} y1={Y(p.absMin)} y2={Y(p.absMin)} stroke="var(--ng)" strokeDasharray="4 3" />
                 </>
               )}
-              <line x1={x0} x2={x0} y1={PAD.t} y2={plotB + 8} stroke="var(--border-strong)" />
+              <line x1={x0} x2={x0} y1={PAD.t} y2={plotB + 8} stroke="var(--outline)" />
               <rect x={x0} width={Math.max(1, x1 - x0)} y={plotB + 3} height={4} fill={CAM_COLORS[g.shot % CAM_COLORS.length]} opacity={0.7} />
               {x1 - x0 > 36 && (
-                <text x={(x0 + x1) / 2} y={h - 6} textAnchor="middle" fontSize={10.5} fill="var(--text-muted)">
+                <text x={(x0 + x1) / 2} y={h - 6} textAnchor="middle" fontSize={10.5} fill="var(--on-surface-variant)">
                   {g.name}
                 </text>
               )}
@@ -190,7 +190,7 @@ export default function UnrolledCurve({ layout, measured, vis, quantity = "d", s
           );
         })}
         {lines.map((pts, i) => (
-          <polyline key={i} points={pts} fill="none" stroke="var(--text)" strokeWidth={1} />
+          <polyline key={i} points={pts} fill="none" stroke="var(--on-surface)" strokeWidth={1} />
         ))}
         {vis.map((v, j) => {
           const a = j < n ? at(j) : null;
@@ -202,8 +202,8 @@ export default function UnrolledCurve({ layout, measured, vis, quantity = "d", s
           ) : null;
         })}
         {point !== null && sel && <g aria-label={`曲线选中点 ${point + 1}`}>
-          <line x1={X(sel.v)} x2={X(sel.v)} y1={PAD.t} y2={plotB} stroke="var(--accent)" strokeDasharray="3 3" />
-          {!Number.isNaN(values[point]) && <circle cx={X(sel.v)} cy={Y(values[point])} r={4} fill="var(--accent)" />}
+          <line x1={X(sel.v)} x2={X(sel.v)} y1={PAD.t} y2={plotB} stroke="var(--primary)" strokeDasharray="3 3" />
+          {!Number.isNaN(values[point]) && <circle cx={X(sel.v)} cy={Y(values[point])} r={4} fill="var(--primary)" />}
         </g>}
       </svg>
     </div>

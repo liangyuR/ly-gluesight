@@ -1,12 +1,12 @@
 .rcp-editor { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 30%); gap: 16px; align-items: start; }
 .rcp-form { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 .rcp-form .panel-toolbar { margin-bottom: 0; }
-.rcp-section { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
+.rcp-section { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--outline-variant); }
 .rcp-limits .input { width: 62px; height: 28px; padding: 0 6px; }
 .rcp-limits td, .rcp-limits th { padding: 4px 3px; white-space: nowrap; }
 .sub-title { white-space: nowrap; flex-shrink: 0; }
 .rcp-preview { position: sticky; top: 0; display: flex; flex-direction: column; gap: 8px; }
 .rcp-tiles { max-height: 420px; }
 .rcp-segs { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11.5px; }
-.rcp-segs span { padding: 2px 7px; border-radius: 4px; background: var(--bg-elev); border: 1px solid var(--border); }
+.rcp-segs span { padding: 2px 8px; border-radius: var(--r-full); background: var(--surface-high); }
 .btn.small { height: 26px; font-size: 12px; }

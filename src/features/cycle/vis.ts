@@ -2,13 +2,13 @@ import type { JudgeParams, Judgement, Measured, PartView, PointVis, Recipe, Segm
 import { matchesPart } from "./identity";
 
 export const visColor: Record<PointVis, string> = {
-  none: "var(--text-disabled)",
+  none: "var(--on-surface-disabled)",
   ok: "var(--ok)",
   exc: "var(--warn)",
   ng: "var(--ng)",
   gap: "var(--ng)",
-  inv: "var(--err)",
-  miss: "var(--err)",
+  inv: "var(--fault)",
+  miss: "var(--fault)",
 };
 
 /** 相机在各处的代表色（曲线底部的测量归属）。 */

@@ -159,11 +159,11 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
         if (p) onEdit.move(current.index, p);
       }} onPointerUp={() => { drag.current = null; regionStart.current = null; }} onPointerCancel={() => { drag.current = null; regionStart.current = null; }}>
         <g ref={group} transform={"translate(" + image.width/2 + " " + image.height/2 + ") scale(" + zoom + ") translate(" + -image.width/2 + " " + -image.height/2 + ")"}><image href={image.url} width={image.width} height={image.height} />
-          {region && <rect x={region[0]} y={region[1]} width={region[2]} height={region[3]} fill="var(--accent)" fillOpacity={.12} stroke="var(--accent-text)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
+          {region && <rect x={region[0]} y={region[1]} width={region[2]} height={region[3]} fill="var(--primary)" fillOpacity={.12} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
           {overlay && shown && <g aria-label="中线叠加">
-            {overlay.stations?.map(([x, y], i) => <circle key={"s" + i} cx={x} cy={y} r={dot} fill={overlay.stationColors?.[i] ?? "var(--accent)"} opacity={overlay.stale ? .35 : .9} />)}
-            {path.length >= 2 && <polyline points={path.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--accent-text)" strokeWidth={2} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
-            {onEdit && path.map(([x, y], i) => <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--accent)" : "var(--bg)"} fillOpacity={.85} stroke={i === 0 ? "var(--ok)" : "var(--accent-text)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
+            {overlay.stations?.map(([x, y], i) => <circle key={"s" + i} cx={x} cy={y} r={dot} fill={overlay.stationColors?.[i] ?? "var(--primary)"} opacity={overlay.stale ? .35 : .9} />)}
+            {path.length >= 2 && <polyline points={path.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeWidth={2} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
+            {onEdit && path.map(([x, y], i) => <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--primary)" : "var(--surface-lowest)"} fillOpacity={.85} stroke={i === 0 ? "var(--ok)" : "var(--primary)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
           </g>}
         </g></svg>}
     {image && <div className="wp-image-footer"><span>{image.width} × {image.height} px</span><span>{onRegion ? "拖动框选一段连续胶路区域" : onEdit ? "点击图像依次加中线点（从胶嘴一侧往外，绿圈为起点），拖动点可调整" : "原始灰度图像"}</span></div>}
