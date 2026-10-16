@@ -36,31 +36,17 @@ function shotState(view: WorkspaceView, k: number, state: ShotState) {
   shot.views[0].state = state;
 }
 
-it("从采集原图完成逐帧示教、总览、独立样本采集验证并确认发布", async () => {
-  vi.stubGlobal("DOMPoint", class {
-    constructor(public x: number, public y: number) {}
-    matrixTransform() { return this; }
-  });
-  vi.stubGlobal("PointerEvent", MouseEvent);
-  Object.defineProperty(SVGElement.prototype, "getScreenCTM", { configurable: true, value: () => ({ inverse: () => ({}) }) });
-  Object.defineProperty(SVGElement.prototype, "setPointerCapture", { configurable: true, value: vi.fn() });
-
+function candidateView() {
   const candidate = tricamWorkspaceView();
-  const taughtLayout = structuredClone(candidate.layout);
-  const trials = candidate.workspace.frames.map(frame => structuredClone(frame.trial!));
   candidate.workspace.captureId = "captured-round";
   candidate.workspace.validation = null;
   candidate.workspace.overview.saved = false;
   candidate.workspace.sampleBank = [];
   candidate.workspace.samples = [];
-  candidate.coverage = 0;
-  candidate.workspace.doc.shots.forEach(shot => { shot.path = []; delete shot.mmPerPx; });
-  candidate.workspace.frames.forEach(frame => { frame.trial = null; frame.saved = false; });
-  [0, 1].forEach(k => shotState(candidate, k, "unconfigured"));
-  candidate.layout.shots = structuredClone(candidate.workspace.doc.shots);
-  candidate.layout.segments = [];
-  candidate.layout.points = { x: [], y: [], seg: [], k: [] };
+  return candidate;
+}
 
+function mockSite(candidate: WorkspaceView) {
   vi.mocked(workspaceApi.get).mockResolvedValue(candidate);
   vi.mocked(workspaceApi.list).mockResolvedValue([candidate.workspace]);
   vi.mocked(workspaceApi.image).mockResolvedValue({ url: "data:image/png;base64,AA==", width: 100, height: 60 });
@@ -77,8 +63,40 @@ it("从采集原图完成逐帧示教、总览、独立样本采集验证并确�
   vi.mocked(plcApi.getStatus).mockResolvedValue({ state: "connected", message: "PLC 已连接" } as Awaited<ReturnType<typeof plcApi.getStatus>>);
   vi.mocked(historyApi.query).mockResolvedValue({ items: [], total: 0, counts: { ok: 0, ng: 0, err: 0, excursion: 0 } });
   vi.mocked(useCycle).mockReturnValue({ snapshot: snapshot(), logs: [], measured: [] });
+}
 
-  let response = structuredClone(candidate);
+function renderWorkspace(path: string) {
+  render(<MemoryRouter initialEntries={[path]}><WorkspaceProvider><Routes>
+    <Route path="/recipe/teach" element={<TeachingPage />} />
+    <Route path="/recipe/overview" element={<OverviewPage />} />
+    <Route path="/recipe/validation" element={<ValidationPage />} />
+    <Route path="/recipe/capture" element={<CapturePage />} />
+  </Routes></WorkspaceProvider></MemoryRouter>);
+  return userEvent.setup();
+}
+
+it("两幅原图逐帧保存参数并试测、保存示教 → 自动进入下一幅，每步沿用上一步返回的修订", async () => {
+  vi.stubGlobal("DOMPoint", class {
+    constructor(public x: number, public y: number) {}
+    matrixTransform() { return this; }
+  });
+  vi.stubGlobal("PointerEvent", MouseEvent);
+  Object.defineProperty(SVGElement.prototype, "getScreenCTM", { configurable: true, value: () => ({ inverse: () => ({}) }) });
+  Object.defineProperty(SVGElement.prototype, "setPointerCapture", { configurable: true, value: vi.fn() });
+
+  const candidate = candidateView();
+  const taughtLayout = structuredClone(candidate.layout);
+  const trials = candidate.workspace.frames.map(frame => structuredClone(frame.trial!));
+  candidate.coverage = 0;
+  candidate.workspace.doc.shots.forEach(shot => { shot.path = []; delete shot.mmPerPx; });
+  candidate.workspace.frames.forEach(frame => { frame.trial = null; frame.saved = false; });
+  [0, 1].forEach(k => shotState(candidate, k, "unconfigured"));
+  candidate.layout.shots = structuredClone(candidate.workspace.doc.shots);
+  candidate.layout.segments = [];
+  candidate.layout.points = { x: [], y: [], seg: [], k: [] };
+  mockSite(candidate);
+
+  const response = structuredClone(candidate);
   for (const k of [0, 1]) {
     response.workspace.revision++;
     response.workspace.doc.shots[k].path = structuredClone(twoLines[k]);
@@ -96,62 +114,8 @@ it("从采集原图完成逐帧示教、总览、独立样本采集验证并确�
     if (k === 1) response.layout = taughtLayout;
     vi.mocked(workspaceApi.saveTeach).mockResolvedValueOnce(structuredClone(response));
   }
-  vi.mocked(workspaceApi.saveOverview).mockImplementation(async (id, revision, overview) => {
-    expect([id, revision]).toEqual(["A", 11]);
-    response.workspace.overview = { ...structuredClone(overview), saved: true };
-    response.workspace.revision++;
-    return structuredClone(response);
-  });
-  const independentRound: CaptureRound = {
-    roundId: "validation-round", recipeId: "A", cameraId: "CAM-1", deviceSession: 2,
-    plannedCount: 2, receivedCount: 2, state: "complete", createdAt: 2, endedAt: 3,
-    error: null, simulated: true,
-    frames: [0, 1].map(k => ({ shotId: `P${k + 1}`, ordinal: k + 1, frameCounter: k + 1,
-      triggerCounter: k + 1, originalPath: `validation/k${k}.pgm`,
-      views: [1, 2, 3].map(view => ({ view, path: `validation/k${k}-v${view}.pgm`, width: 100, height: 60 })),
-    })),
-  };
-  let receiving = false;
-  vi.mocked(workspaceApi.captureGet).mockImplementation(async () => receiving ? independentRound : null);
-  vi.mocked(workspaceApi.captureList).mockResolvedValue([]);
-  vi.mocked(workspaceApi.captureStart).mockImplementation(async () => {
-    receiving = true;
-    return { ...independentRound, state: "waitingStart", receivedCount: 0, endedAt: null, frames: [] };
-  });
-  vi.mocked(workspaceApi.captureImage).mockResolvedValue({ url: "data:image/png;base64,AA==", width: 100, height: 60 });
-  vi.mocked(workspaceApi.captureSample).mockImplementation(async (id, revision, roundId, expected, confirmed) => {
-    expect([id, revision, roundId, expected, confirmed]).toEqual(["A", 12, "validation-round", "OK", true]);
-    expect(roundId).not.toBe(response.workspace.captureId);
-    response.workspace.sampleBank = [{ id: roundId, name: "独立采集 2", geometryTag: response.workspace.doc.shots.map(shot => [shot.id, shot.poseId, shot.camera]), expected, createdAt: 2 }];
-    response.workspace.samples = [{ historyId: null, sampleId: roundId, expected }];
-    response.workspace.revision++;
-    return structuredClone(response);
-  });
-  vi.mocked(workspaceApi.validate).mockImplementation(async (id, revision, samples, confirmed) => {
-    expect([id, revision, samples, confirmed]).toEqual(["A", 13, [{ historyId: null, sampleId: "validation-round", expected: "OK" }], true]);
-    response.workspace.validation = { revision, passed: true, checkedAt: 4, environmentTag: {},
-      checks: [{ name: "独立正常样本", passed: true, detail: "独立整圈与当前示教一致" }],
-      samples: [{ historyId: null, sampleId: "validation-round", name: "独立采集 2", sn: "", expected: "OK", actual: "OK", passed: true, reason: "" }],
-    };
-    return structuredClone(response);
-  });
-  vi.mocked(workspaceApi.publish).mockImplementation(async (id, revision) => {
-    expect([id, revision]).toEqual(["A", 13]);
-    response.workspace.publish = { state: "waiting" };
-    Object.assign(response.progress.steps.find(step => step.id === "publish")!, { status: "inProgress", detail: "v2 待生效：等待当前工件结束" });
-    response.workspace.pending = { doc: structuredClone(response.workspace.doc), bundleId: "bundle-A-v2", baseRevision: response.workspace.baseRevision,
-      revision, frames: structuredClone(response.workspace.frames), overview: structuredClone(response.workspace.overview), validation: structuredClone(response.workspace.validation!), validationSite: "real",
-    };
-    return structuredClone(response);
-  });
 
-  render(<MemoryRouter initialEntries={["/recipe/teach"]}><WorkspaceProvider><Routes>
-    <Route path="/recipe/teach" element={<TeachingPage />} />
-    <Route path="/recipe/overview" element={<OverviewPage />} />
-    <Route path="/recipe/validation" element={<ValidationPage />} />
-    <Route path="/recipe/capture" element={<CapturePage />} />
-  </Routes></WorkspaceProvider></MemoryRouter>);
-  const user = userEvent.setup();
+  const user = renderWorkspace("/recipe/teach");
   expect(await screen.findByText(/全部 0／2 幅/)).toBeVisible();
 
   for (const k of [0, 1]) {
@@ -177,12 +141,73 @@ it("从采集原图完成逐帧示教、总览、独立样本采集验证并确�
   }
 
   expect(screen.getByRole("button", { name: "保存本帧示教" })).toBeDisabled();
-  await user.click(screen.getByRole("link", { name: "工件总览（可选）" }));
+  expect(workspaceApi.saveParams).toHaveBeenCalledTimes(2);
+  expect(workspaceApi.trial).toHaveBeenCalledTimes(2);
+  expect(workspaceApi.saveTeach).toHaveBeenCalledTimes(2);
+});
+
+it("示教完成后保存总览、实拍独立样本并验证 → 新样本自动选入验证，确认后按同一修订发布", async () => {
+  const candidate = candidateView();
+  candidate.workspace.frames.forEach(frame => { frame.saved = true; });
+  [0, 1].forEach(k => shotState(candidate, k, "taught"));
+  mockSite(candidate);
+
+  const response = structuredClone(candidate);
+  vi.mocked(workspaceApi.saveOverview).mockImplementation(async (id, revision, overview) => {
+    expect([id, revision]).toEqual(["A", 7]);
+    response.workspace.overview = { ...structuredClone(overview), saved: true };
+    response.workspace.revision++;
+    return structuredClone(response);
+  });
+  const independentRound: CaptureRound = {
+    roundId: "validation-round", recipeId: "A", cameraId: "CAM-1", deviceSession: 2,
+    plannedCount: 2, receivedCount: 2, state: "complete", createdAt: 2, endedAt: 3,
+    error: null, simulated: true,
+    frames: [0, 1].map(k => ({ shotId: `P${k + 1}`, ordinal: k + 1, frameCounter: k + 1,
+      triggerCounter: k + 1, originalPath: `validation/k${k}.pgm`,
+      views: [1, 2, 3].map(view => ({ view, path: `validation/k${k}-v${view}.pgm`, width: 100, height: 60 })),
+    })),
+  };
+  let receiving = false;
+  vi.mocked(workspaceApi.captureGet).mockImplementation(async () => receiving ? independentRound : null);
+  vi.mocked(workspaceApi.captureList).mockResolvedValue([]);
+  vi.mocked(workspaceApi.captureStart).mockImplementation(async () => {
+    receiving = true;
+    return { ...independentRound, state: "waitingStart", receivedCount: 0, endedAt: null, frames: [] };
+  });
+  vi.mocked(workspaceApi.captureImage).mockResolvedValue({ url: "data:image/png;base64,AA==", width: 100, height: 60 });
+  vi.mocked(workspaceApi.captureSample).mockImplementation(async (id, revision, roundId, expected, confirmed) => {
+    expect([id, revision, roundId, expected, confirmed]).toEqual(["A", 8, "validation-round", "OK", true]);
+    expect(roundId).not.toBe(response.workspace.captureId);
+    response.workspace.sampleBank = [{ id: roundId, name: "独立采集 2", geometryTag: response.workspace.doc.shots.map(shot => [shot.id, shot.poseId, shot.camera]), expected, createdAt: 2 }];
+    response.workspace.samples = [{ historyId: null, sampleId: roundId, expected }];
+    response.workspace.revision++;
+    return structuredClone(response);
+  });
+  vi.mocked(workspaceApi.validate).mockImplementation(async (id, revision, samples, confirmed) => {
+    expect([id, revision, samples, confirmed]).toEqual(["A", 9, [{ historyId: null, sampleId: "validation-round", expected: "OK" }], true]);
+    response.workspace.validation = { revision, passed: true, checkedAt: 4, environmentTag: {},
+      checks: [{ name: "独立正常样本", passed: true, detail: "独立整圈与当前示教一致" }],
+      samples: [{ historyId: null, sampleId: "validation-round", name: "独立采集 2", sn: "", expected: "OK", actual: "OK", passed: true, reason: "" }],
+    };
+    return structuredClone(response);
+  });
+  vi.mocked(workspaceApi.publish).mockImplementation(async (id, revision) => {
+    expect([id, revision]).toEqual(["A", 9]);
+    response.workspace.publish = { state: "waiting" };
+    Object.assign(response.progress.steps.find(step => step.id === "publish")!, { status: "inProgress", detail: "v2 待生效：等待当前工件结束" });
+    response.workspace.pending = { doc: structuredClone(response.workspace.doc), bundleId: "bundle-A-v2", baseRevision: response.workspace.baseRevision,
+      revision, frames: structuredClone(response.workspace.frames), overview: structuredClone(response.workspace.overview), validation: structuredClone(response.workspace.validation!), validationSite: "real",
+    };
+    return structuredClone(response);
+  });
+
+  const user = renderWorkspace("/recipe/overview");
   const firstPosition = await screen.findByRole("button", { name: "总览选择帧 k1" });
   fireEvent.keyDown(firstPosition, { key: "ArrowRight" });
   await user.click(screen.getByRole("button", { name: "保存总览" }));
   await screen.findByText("总览布置已保存，拍照与测量不受影响");
-  expect(workspaceApi.saveOverview).toHaveBeenCalledWith("A", 11, { background: null, positions: [[.26, .5], [.75, .5]], saved: false });
+  expect(workspaceApi.saveOverview).toHaveBeenCalledWith("A", 7, { background: null, positions: [[.26, .5], [.75, .5]], saved: false });
   await user.click(screen.getByRole("link", { name: "验证与发布" }));
   expect(await screen.findByRole("button", { name: "发布生产配方" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "运行整套图像验证" })).toBeDisabled();
@@ -210,7 +235,4 @@ it("从采集原图完成逐帧示教、总览、独立样本采集验证并确�
   await screen.findByText("v2 待生效：等待当前工件结束");
   expect(workspaceApi.publish).toHaveBeenCalledTimes(1);
   expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
-  expect(workspaceApi.saveParams).toHaveBeenCalledTimes(2);
-  expect(workspaceApi.trial).toHaveBeenCalledTimes(2);
-  expect(workspaceApi.saveTeach).toHaveBeenCalledTimes(2);
 });
