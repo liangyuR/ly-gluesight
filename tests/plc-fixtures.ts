@@ -1,7 +1,7 @@
 import type { PlcConfig, PlcPoint } from "../src/features/plc/types";
 
 export const plcPoint: PlcPoint = { id: "speed", name: "速度", address: "DB1.DBD0", dataType: "f32", wordOrder: null,
-  access: "readWrite", edge: "none", logChanges: true, tags: [], description: "" };
+  access: "readWrite", edge: "none", poll: true, logChanges: true, tags: [], description: "" };
 export function plcConfig(): PlcConfig {
   return { connection: { protocol: "s7", host: "192.168.1.10", port: 102, timeoutMs: 1000, pollIntervalMs: 200,
     reconnectIntervalMs: 3000,
