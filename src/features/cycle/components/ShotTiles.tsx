@@ -47,9 +47,9 @@ export function ShotLine({ layout, k, vis, compact = false, selectedPoint = null
   return (
     <svg className={className} viewBox={viewBox} preserveAspectRatio="xMidYMid meet" aria-label={`拍照点 ${shot.id} 示教中线`}>
       {shot.path.length >= 2 && (
-        <polyline points={shot.path.map(([px, py]) => `${fmt(px)},${fmt(py)}`).join(" ")} fill="none" stroke="var(--border-strong)" strokeWidth={compact ? 4 : 8} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+        <polyline points={shot.path.map(([px, py]) => `${fmt(px)},${fmt(py)}`).join(" ")} fill="none" stroke="var(--outline)" strokeWidth={compact ? 4 : 8} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
       )}
-      {shot.path.length > 0 && !compact && <circle cx={shot.path[0][0]} cy={shot.path[0][1]} r={4} fill="var(--bg)" stroke="var(--text-muted)" vectorEffect="non-scaling-stroke" aria-label="胶嘴一侧" />}
+      {shot.path.length > 0 && !compact && <circle cx={shot.path[0][0]} cy={shot.path[0][1]} r={4} fill="var(--surface-lowest)" stroke="var(--on-surface-variant)" vectorEffect="non-scaling-stroke" aria-label="胶嘴一侧" />}
       {segRuns.map((r, i) =>
         r.state === "gap" ? null : (
           <polyline
@@ -74,7 +74,7 @@ export function ShotLine({ layout, k, vis, compact = false, selectedPoint = null
       })}
       {selected !== null && (
         <g aria-label={`选中测量点 ${selected + 1}`}>
-          <circle cx={x[selected]} cy={y[selected]} r={5} fill="none" stroke="var(--text)" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+          <circle cx={x[selected]} cy={y[selected]} r={5} fill="none" stroke="var(--on-surface)" strokeWidth={2} vectorEffect="non-scaling-stroke" />
         </g>
       )}
     </svg>

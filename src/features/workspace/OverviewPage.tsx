@@ -30,7 +30,7 @@ export function WorkpieceOverview({layout,overview,selected=0,onSelect,onMove,vi
     return [p.x,p.y];
   };
   return <svg ref={svg} className={"wp-overview " + (onMove ? "editable" : "")} viewBox="0 0 800 420" aria-label="工件总览，选择帧查看原图">
-    <rect width={800} height={420} fill="var(--bg)" />
+    <rect width={800} height={420} fill="var(--surface-lowest)" />
     {overview?.background && <image href={overview.background} x={110} y={46} width={580} height={292} preserveAspectRatio="xMidYMid meet" opacity={.85} />}
     {positions.map(([x,y],k) => {
       const shot = layout.shots[k];
@@ -45,12 +45,12 @@ export function WorkpieceOverview({layout,overview,selected=0,onSelect,onMove,vi
         if(e.key==="Enter"||e.key===" "){e.preventDefault();onSelect?.(k);}
         if(onMove&&e.key.startsWith("Arrow")){e.preventDefault();const step=e.shiftKey ? 0.04 : 0.01;onMove(k,[Math.min(1,Math.max(0,x+(e.key==="ArrowRight"?step:e.key==="ArrowLeft"?-step:0))),Math.min(1,Math.max(0,y+(e.key==="ArrowDown"?step:e.key==="ArrowUp"?-step:0)))]);}
       }}>
-      <rect x={140+x*520-57} y={74+y*230-38} width={114} height={76} rx={5} fill={on ? "var(--accent-soft)" : "var(--bg-panel)"} fillOpacity={.84} stroke={on?"var(--accent)":tone ?? "var(--border-strong)"} strokeWidth={on||tone?2:1} strokeDasharray={shot?.skip||state==="untaught"?"5 4":undefined} />
-      <text x={140+x*520} y={74+y*230-6} textAnchor="middle" fill={on?"var(--accent-text)":"var(--text-muted)"} fontSize={15}>k{k+1}</text>
-      <text x={140+x*520} y={74+y*230+14} textAnchor="middle" fill="var(--text-muted)" fontSize={11} className="mono">{shotLabel(shot,k)}</text>
-      {state && <text x={140+x*520} y={74+y*230+30} textAnchor="middle" fill={tone ?? "var(--text-muted)"} fontSize={11}>{shotStateLabel[state]}</text>}
+      <rect x={140+x*520-57} y={74+y*230-38} width={114} height={76} rx={10} fill={on ? "var(--primary-container)" : "var(--surface-low)"} fillOpacity={.84} stroke={on?"var(--primary)":tone ?? "var(--outline)"} strokeWidth={on||tone?2:1} strokeDasharray={shot?.skip||state==="untaught"?"5 4":undefined} />
+      <text x={140+x*520} y={74+y*230-6} textAnchor="middle" fill={on?"var(--primary)":"var(--on-surface-variant)"} fontSize={15}>k{k+1}</text>
+      <text x={140+x*520} y={74+y*230+14} textAnchor="middle" fill="var(--on-surface-variant)" fontSize={11} className="mono">{shotLabel(shot,k)}</text>
+      {state && <text x={140+x*520} y={74+y*230+30} textAnchor="middle" fill={tone ?? "var(--on-surface-variant)"} fontSize={11}>{shotStateLabel[state]}</text>}
     </g>;})}
-    <text x={400} y={373} textAnchor="middle" fill="var(--text-muted)" fontSize={12}>{onMove ? "拖动帧框或用方向键微调显示位置；拍照与测量不受影响" : "显示布置与生产配方快照绑定"}</text>
+    <text x={400} y={373} textAnchor="middle" fill="var(--on-surface-variant)" fontSize={12}>{onMove ? "拖动帧框或用方向键微调显示位置；拍照与测量不受影响" : "显示布置与生产配方快照绑定"}</text>
   </svg>;
 }
 
