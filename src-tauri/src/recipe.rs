@@ -691,6 +691,7 @@ impl RecipeStore {
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建配方目录失败：{e}"))?;
         let store = Self { dir, inner: RwLock::new(Vec::new()), errors: RwLock::new(Vec::new()) };
         store.seed_version_floor(floors)?;
+        store.retire_outdated_sources()?;
         let retired = store.retired_versions()?;
         let sources = store.revision_sources()?;
         let empty = retired.is_empty() && sources.is_empty() && std::fs::read_dir(&store.dir).map_err(|e| e.to_string())?.flatten().all(|e| e.path().extension().is_none_or(|x| x != "json"));
@@ -728,6 +729,28 @@ impl RecipeStore {
             doc.build().map_err(|e| format!("配方修订来源记录无效：{e}"))?;
         }
         Ok(sources)
+    }
+
+    /// 旧格式的修订来源无法再证明配方内容（D-0）：原文件备份后移除，其修订号与计划版本并入版本记录，仍不复用。
+    fn retire_outdated_sources(&self) -> Result<(), String> {
+        let path = self.dir.join(".revision-sources");
+        let text = match crate::fsio::read_text(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(format!("读取配方修订来源记录失败：{e}")),
+        };
+        let mut sources: BTreeMap<String, RecipeDoc> = serde_json::from_str(&text).map_err(|e| format!("配方修订来源记录损坏，拒绝复用修订号：{e}"))?;
+        let outdated: Vec<RecipeDoc> = sources.values().filter(|d| d.schema_version != RECIPE_SCHEMA).cloned().collect();
+        if outdated.is_empty() { return Ok(()); }
+        std::fs::copy(&path, self.dir.join(format!(".revision-sources.outdated-{}", chrono::Local::now().format("%Y%m%d-%H%M%S"))))
+            .map_err(|e| format!("备份旧格式配方修订来源记录失败：{e}"))?;
+        let plan = outdated.iter().map(|d| d.plan_version).max().unwrap_or(0).max(self.issued_plan_version()?);
+        crate::fsio::write_atomic(&self.dir.join(".plan-version"), &plan.to_string())?;
+        for doc in &outdated {
+            self.retire_version(&doc.id, doc.version)?;
+            sources.remove(&doc.id.to_ascii_lowercase());
+        }
+        crate::fsio::write_atomic(&path, &serde_json::to_string(&sources).map_err(|e| e.to_string())?)
     }
 
     fn remember_source(&self, doc: &RecipeDoc) -> Result<(), String> {
@@ -1180,6 +1203,23 @@ mod tests {
         let mut recreated = b.clone();
         recreated.product_code = 62000;
         assert!(store.save(recreated, None).unwrap().plan_version > store.doc("MTR-HSG-A").unwrap().plan_version);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn outdated_revision_source_is_retired_without_blocking_startup_or_reusing_numbers() {
+        let dir = std::env::temp_dir().join(format!("gluesight-outdated-source-{}-{}", std::process::id(), ly_plc::now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut old = samples().remove(0);
+        old.schema_version = RECIPE_SCHEMA - 1;
+        old.version = 7;
+        old.plan_version = 40;
+        let sources = BTreeMap::from([(old.id.to_ascii_lowercase(), old.clone())]);
+        std::fs::write(dir.join(".revision-sources"), serde_json::to_string(&sources).unwrap()).unwrap();
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        assert!(store.next_version(&old.id).unwrap() > old.version);
+        let mut doc = composite_recipe(); doc.id = "AFTER-OUTDATED".into(); doc.product_code = 60007;
+        assert!(store.plan_version_for(&doc).unwrap() > old.plan_version);
         let _ = std::fs::remove_dir_all(dir);
     }
 

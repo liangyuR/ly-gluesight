@@ -199,7 +199,14 @@ impl RecipeCaptureHost {
             let path = entry.map_err(|e| e.to_string())?.path().join("round.json");
             if !path.is_file() { continue; }
             if !std::fs::canonicalize(&path).map_err(|e| e.to_string())?.starts_with(&canonical_root) { return Err("采集记录路径越出保存目录".into()); }
-            let mut round: CaptureRound = serde_json::from_str(&crate::fsio::read_text(&path).map_err(|e| e.to_string())?).map_err(|e| format!("采集记录无法读取：{e}"))?;
+            let mut round: CaptureRound = match serde_json::from_str(&crate::fsio::read_text(&path).map_err(|e| e.to_string())?) {
+                Ok(round) => round,
+                Err(_) => {
+                    let backup = path.with_file_name(format!("round.broken-{}.json", chrono::Local::now().format("%Y%m%d-%H%M%S")));
+                    std::fs::rename(&path, &backup).map_err(|e| format!("采集记录无法读取且备份失败：{e}"))?;
+                    continue;
+                }
+            };
             if round.state.active() {
                 round.state = CaptureState::Failed;
                 round.error = Some("应用退出导致本轮采集中断，请整圈重采".into());
@@ -716,6 +723,20 @@ mod tests {
         assert_eq!(reopened.current().unwrap().round_id, round.round_id);
         assert_eq!(reopened.current().unwrap().state, CaptureState::Failed);
         assert!(!reopened.active());
+    }
+
+    #[test]
+    fn unreadable_old_round_record_is_backed_up_instead_of_blocking_startup() {
+        let host = host();
+        let round = start(&host);
+        let dir = host.root.join(&round.round_id);
+        let mut old: serde_json::Value = serde_json::from_str(&crate::fsio::read_text(&dir.join("round.json")).unwrap()).unwrap();
+        old.as_object_mut().unwrap().remove("imaging");
+        crate::fsio::write_atomic(&dir.join("round.json"), &old.to_string()).unwrap();
+        let reopened = RecipeCaptureHost::open(host.root.clone()).unwrap();
+        assert!(reopened.current().is_none());
+        assert!(!dir.join("round.json").exists());
+        assert!(std::fs::read_dir(&dir).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with("round.broken-")));
     }
 
     #[test]
