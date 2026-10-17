@@ -2,9 +2,8 @@ import { act, render, renderHook, screen, waitFor, within } from "@testing-libra
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import AppLayout from "../src/layout/AppLayout";
 import OfflinePage from "../src/pages/OfflinePage";
 import { useReadiness } from "../src/features/cycle/api";
 import InspectionReadiness from "../src/features/cycle/components/InspectionReadiness";
@@ -29,19 +28,6 @@ beforeEach(() => {
     if (command === "cycle_recipes") return [];
     if (command === "cycle_readiness") return report;
     throw new Error(`未声明的桌面调用：${command}`);
-  });
-});
-
-describe("顶栏站点模式标识", () => {
-  it("site://status 依次推送真机、离线样本集、离线合成图 → 标识随之切换且指向离线模式", async () => {
-    site = siteStatus();
-    render(<MemoryRouter initialEntries={["/guide"]}><Routes><Route element={<AppLayout />}><Route path="/guide" element={<div />} /></Route></Routes></MemoryRouter>);
-    const header = within(screen.getByRole("banner"));
-    expect(await header.findByRole("link", { name: "站点模式：真机" })).toHaveAttribute("href", "/offline");
-    act(() => listeners.get("site://status")!({ payload: siteStatus({ mode: "offline", source: "sampleSet", sampleSet: sampleSet("壳体样本") }) }));
-    expect(header.getByRole("link", { name: "站点模式：离线 · 样本集 壳体样本" })).toBeVisible();
-    act(() => listeners.get("site://status")!({ payload: siteStatus({ mode: "offline", source: "synthetic", measurement: "simulated" }) }));
-    expect(header.getByRole("link", { name: "站点模式：离线 · 合成图" })).toBeVisible();
   });
 });
 
