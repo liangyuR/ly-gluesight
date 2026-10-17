@@ -176,6 +176,7 @@ export default function TeachingPage() {
   const hint = editing && !shot.skip ? "中线或参数已改，点“运行一次算法”；现有试测不用于保存或发布。" : viewProgress?.hint ?? "";
   const detect = t.detect;
   const defaults = data.workspace.doc.detect;
+  const searchHalfPx = t.mmPerPx != null && Number.isFinite(t.mmPerPx) && t.mmPerPx > 0 ? (detect ?? defaults).searchMm / t.mmPerPx : undefined;
   const changeLimits = (limits: ShotLimits | undefined) => { const next={...t}; if(limits) next.limits=limits; else delete next.limits; update(next); };
   const limitGroup = (key: "position" | "width", title: string) => {
     const value=t.limits?.[key];
@@ -207,7 +208,7 @@ export default function TeachingPage() {
             const edge = p.edge ?? p.candidateEdge;
             const width = p.edge ? p.width : p.candidateWidth;
             return edge ? [{ from: edge[0], to: edge[1], color: p.edge ? "var(--ok)" : "var(--ng)", label: i % Math.max(1, Math.ceil(points.length / 4)) === 0 && width != null ? width.toFixed(2) + (p.edge ? " mm" : " mm 候选") : undefined }] : [];
-          }), stale: editing, selected: vertex }}
+          }), searchHalfPx, stale: editing, selected: vertex }}
           onEdit={unlocked && enabled && !regionMode ? { add: p => setPath([...t.path, p]), move: (i, p) => setPath(t.path.map((q, j) => j === i ? p : q)), select: setVertex } : undefined} />
         {productionBusy && <p className="muted hint">工件正在检测，当前可编辑已保存图像；重采需等待工件结束。</p>}
         <div className="wp-actions" style={{marginTop:10}}>

@@ -108,6 +108,27 @@ function renderWorkspace(path: string) {
   return userEvent.setup();
 }
 
+it("本图搜索参数覆盖配方默认 → 按有效当量换算搜索带，当量无效时隐藏", async () => {
+  const candidate = groupedCandidate();
+  candidate.workspace.doc.detect.searchMm = 15;
+  candidate.workspace.doc.shots[0].detect = { searchMm: 4, polarity: "dark", widthRange: [1, 5] };
+  candidate.workspace.doc.shots[0].mmPerPx = .1;
+  mockSite(candidate);
+  renderWorkspace("/recipe/teach");
+  await screen.findByRole("img", { name: "P1 · CAM-1 · 图 1" });
+  const edges = () => [...screen.getByLabelText("搜索带边界").querySelectorAll("polyline")].map(edge => {
+    const points = edge.getAttribute("points")!.split(" ");
+    return `${points[0]} ${points[points.length - 1]}`;
+  });
+  expect(edges()).toEqual(["10,50 20,50", "10,-30 20,-30"]);
+  fireEvent.click(screen.getByRole("checkbox", { name: "本图自定义参数（取消可恢复配方默认）" }));
+  expect(edges()).toEqual(["10,160 20,160", "10,-140 20,-140"]);
+  for (const value of ["", "0"]) {
+    fireEvent.change(screen.getByRole("spinbutton", { name: "像素当量" }), { target: { value } });
+    expect(screen.queryByLabelText("搜索带边界")).not.toBeInTheDocument();
+  }
+});
+
 it("每组三相机图仅示教选中图 → 保存后进入下一组并沿用最新修订", async () => {
   vi.stubGlobal("DOMPoint", class {
     constructor(public x: number, public y: number) {}

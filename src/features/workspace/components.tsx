@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
 import { AlertTriangle, Camera, ChevronRight, Info, Minus, Plus, RotateCcw } from "lucide-react";
 import { desktopAvailable } from "../../lib/desktop";
@@ -9,6 +9,7 @@ import { shotSegment, visColor } from "../cycle/vis";
 import type { GrayImage, StepId, StepStatus } from "./types";
 import { errorText } from "../../lib/errors";
 import { stepStatusText } from "./progress";
+import { searchBand } from "./searchBand";
 
 export function Badge({ children, tone = "info" }: { children: ReactNode; tone?: "info" | "ok" | "ng" | "warn" | "neutral" }) {
   return <span className={"wp-badge " + tone}>{children}</span>;
@@ -87,6 +88,7 @@ export interface ImageOverlay {
   path: [number, number][];
   /** 各站位置（来自配方布局，中线保存后才有） */
   stations?: [number, number][];
+  searchHalfPx?: number;
   /** 各站颜色；不给时统一用强调色 */
   stationColors?: string[];
   segments?: { from: [number, number]; to: [number, number]; color: string; label?: string }[];
@@ -135,6 +137,8 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
   };
   const regionStart = useRef<[number, number] | null>(null);
   const [shown, setShown] = useState(true);
+  const [bandShown, setBandShown] = useState(true);
+  const bandClip = useId();
   const [allHandles, setAllHandles] = useState(false);
   const group = useRef<SVGGElement>(null);
   const drag = useRef<{ index: number; inverse: DOMMatrix } | null>(null);
@@ -167,8 +171,9 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
   const handle = size / 120, dot = size / 320;
   const editing = !!onEdit && shown;
   const path = overlay?.path ?? [];
+  const band = searchBand(path, overlay?.searchHalfPx);
   const hint = error || (emptyHint ?? "取样后在这张图上点出胶路中线。机器人应停在当前拍照点。");
-  return <div className="wp-viewport"><div className="wp-image-tools"><span>{label}</span><div><button className="icon-btn" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></button><span>{Math.round(zoom * 100)}%</span><button className="icon-btn" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></button><button className="icon-btn" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></button>{overlay && <button className={"btn small" + (shown ? " active" : "")} aria-pressed={shown} onClick={() => setShown(v => !v)}>中线叠加</button>}{onEdit && overlay && <button className={"btn small" + (allHandles ? " active" : "")} aria-pressed={allHandles} disabled={!shown} onClick={() => setAllHandles(v => !v)}>编辑点</button>}</div></div>
+  return <div className="wp-viewport"><div className="wp-image-tools"><span>{label}</span><div><button className="icon-btn" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></button><span>{Math.round(zoom * 100)}%</span><button className="icon-btn" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></button><button className="icon-btn" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></button>{overlay && <button className={"btn small" + (shown ? " active" : "")} aria-pressed={shown} onClick={() => setShown(v => !v)}>中线叠加</button>}{band && <button className={"btn small" + (bandShown ? " active" : "")} aria-pressed={bandShown} onClick={() => setBandShown(v => !v)}>搜索带</button>}{onEdit && overlay && <button className={"btn small" + (allHandles ? " active" : "")} aria-pressed={allHandles} disabled={!shown} onClick={() => setAllHandles(v => !v)}>编辑点</button>}</div></div>
     {!image ? <div className="wp-image-empty"><Camera size={32} /><strong>{loading ? "正在读取原图…" : error ? "原图不可用" : emptyTitle ?? "尚未冻结本帧图像"}</strong>{hint && <span>{hint}</span>}</div> :
       <svg ref={svg} role="img" tabIndex={0} className={"wp-gray-image" + (editing ? " editable" : "") + (panning ? " panning" : "")} viewBox={"0 0 " + image.width + " " + image.height} aria-label={label} aria-description="Ctrl 加滚轮缩放，中键拖动平移；聚焦后加减键缩放，0 适应窗口" onKeyDown={e => {
         if (e.altKey || e.metaKey || drag.current || regionStart.current || pan.current) return;
@@ -216,6 +221,11 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
         if (p) onEdit.move(current.index, p);
       }} onPointerUp={stopGesture} onPointerCancel={stopGesture} onLostPointerCapture={stopGesture}>
         <g ref={group} transform={"translate(" + (image.width/2 + x) + " " + (image.height/2 + y) + ") scale(" + zoom + ") translate(" + -image.width/2 + " " + -image.height/2 + ")"}><image href={image.url} width={image.width} height={image.height} />
+          {band && bandShown && <g aria-label="搜索带边界" pointerEvents="none" clipPath={`url(#${bandClip})`} fill="none" stroke="var(--primary)" opacity={.45}>
+            <defs><clipPath id={bandClip}><rect width={image.width} height={image.height} /></clipPath></defs>
+            {[band.left, band.right].map((edge, i) => <polyline key={i} points={edge.map(p => p.join(",")).join(" ")} strokeWidth={1} strokeDasharray="5 5" vectorEffect="non-scaling-stroke" />)}
+            {band.bars.map(i => <line key={i} x1={band.left[i][0]} y1={band.left[i][1]} x2={band.right[i][0]} y2={band.right[i][1]} strokeWidth={1} strokeDasharray="2 6" vectorEffect="non-scaling-stroke" />)}
+          </g>}
           {region && <rect x={region[0]} y={region[1]} width={region[2]} height={region[3]} fill="var(--primary)" fillOpacity={.12} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
           {overlay && shown && <g aria-label="中线叠加">
             {overlay.stations?.map(([x, y], i) => <circle key={"s" + i} cx={x} cy={y} r={dot} fill={overlay.stationColors?.[i] ?? "var(--primary)"} opacity={overlay.stale ? .35 : .9} />)}
