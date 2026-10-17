@@ -43,7 +43,7 @@ export default function CapturePage() {
   const location = useLocation();
   const captureReturn = (location.state as CaptureNavigationState | null)?.captureReturn;
   const validation = search.get("purpose") === "validation";
-  const [selection,setSelection] = useState<string[] | null>(null), [readyIds,setReadyIds] = useState<string[]>([]);
+  const [excluded,setExcluded] = useState<string[]>([]), [readyIds,setReadyIds] = useState<string[]>([]);
   const [drain,setDrain] = useState(1500);
   const [round,setRound] = useState<CaptureRound | null>(null), [working,setWorking] = useState(false);
   const [history,setHistory] = useState<Awaited<ReturnType<typeof workspaceApi.captureList>>>([]);
@@ -53,9 +53,7 @@ export default function CapturePage() {
   const [sampleExpected,setSampleExpected] = useState<Verdict>("OK");
   const [reuse,setReuse] = useState(false), [confirmed,setConfirmed] = useState(false);
   const [imagingDrafts,setImagingDrafts] = useState<Record<string,CameraImaging>>({}), [applyErrors,setApplyErrors] = useState<Record<string,string>>({});
-  const known = (ids: string[]) => cameras.filter(c=>ids.includes(c.id)).map(c=>c.id);
-  const connected = known(readyIds);
-  const chosen = known(selection ?? (connected.length ? connected : cameras.map(c=>c.id)));
+  const chosen = cameras.filter(c=>!excluded.includes(c.id)).map(c=>c.id);
   const current = useRef({id:doc?.id,alive:true}); current.current.id=doc?.id;
   useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;};},[]);
   useEffect(() => {
@@ -74,7 +72,7 @@ export default function CapturePage() {
   useEffect(() => {
     const restored = captureReturn?.recipeId === doc?.id ? captureReturn : undefined;
     setRoundId(restored?.roundId); setPreviewK(restored?.previewK ?? 0); setWorking(false);
-    if(restored) { setSelection(restored.cameraIds); setDrain(restored.drain); }
+    if(restored) { setExcluded(restored.excludedCameraIds); setDrain(restored.drain); }
   },[doc?.id,captureReturn]);
   useEffect(() => { setPreview(null); },[round?.roundId]);
   const shownCamera = round?.cameras.some(c=>c.cameraId===previewCamera) ? previewCamera : round?.cameras[0]?.cameraId ?? "";
@@ -98,7 +96,7 @@ export default function CapturePage() {
   const locked=busy || working || dirty || frameDirty || !!data.workspace.pending;
   const productionBusy=isProductionBusy(snapshot);
   const sampleSourceInvalid=validation && (!data.workspace.captureId || data.workspace.captureId===round?.roundId);
-  const captureState = {captureReturn:{recipeId:doc.id,search:location.search,cameraIds:chosen,drain,roundId,previewK}};
+  const captureState = {captureReturn:{recipeId:doc.id,search:location.search,cameraIds:chosen,excludedCameraIds:excluded,drain,roundId,previewK}};
   const navigationState: CaptureNavigationState = {...captureState, returnTo:{pathname:location.pathname,search:location.search,label:validation ? "独立样本采集" : "整圈采集",state:captureState}};
   const nameOf = (id: string) => cameras.find(c=>c.id===id)?.name ?? id;
   const notReady = chosen.filter(id=>!readyIds.includes(id));
@@ -138,9 +136,9 @@ export default function CapturePage() {
     const next=Object.fromEntries(changedImaging.map(id=>{ const {exposureUs,gainDb}=imagingOf(id); return [id,{exposureUs,gainDb}]; }));
     void act(async () => { const saved=await workspaceApi.setCameraImaging(doc.id,data.workspace.revision,next); setApplyErrors(saved.applyErrors ?? {}); setImagingDrafts({}); return saved.view; },"曝光与增益已写入候选配方");
   };
-  const toggleCamera=(id: string, on: boolean) => setSelection(known(on ? [...chosen,id] : chosen.filter(c=>c!==id)));
+  const toggleCamera=(id: string, on: boolean) => setExcluded(x=>on ? x.filter(c=>c!==id) : [...x.filter(c=>c!==id),id]);
   const startDisabled=locked || active || !!startBlocked || !chosen.length || !Number.isFinite(drain) || drain<200 || drain>30000;
-  const prepPanel = <Panel key="prep" title={validation ? "实拍独立验证样本" : "设备准备与整圈采集"} detail="选择参与采集的相机（默认全选已连接相机）；每次 PLC 触发各相机各出一张图，共同组成一个拍照点" actions={finished && <button className="btn small" onClick={()=>setPrepOpenFor(null)}>收起</button>}>
+  const prepPanel = <Panel key="prep" title={validation ? "实拍独立验证样本" : "设备准备与整圈采集"} detail="选择参与采集的相机（默认全选已配置相机）；每次 PLC 触发各相机各出一张图，共同组成一个拍照点" actions={finished && <button className="btn small" onClick={()=>setPrepOpenFor(null)}>收起</button>}>
     <div className="wp-capture-cameras" role="group" aria-label="采集相机">{cameras.map(c=>{
       const on=chosen.includes(c.id), imaging=imagingOf(c.id), invalid=on ? imagingInvalid(imaging) : "", ready=readyIds.includes(c.id);
       return <div key={c.id} className={"wp-capture-camera" + (on ? "" : " off")}>

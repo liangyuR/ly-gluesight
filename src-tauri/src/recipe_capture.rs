@@ -68,6 +68,8 @@ impl CaptureState {
 
 /// 一轮整圈采集最多同时使用的相机数。
 const MAX_CAMERAS: usize = 8;
+/// PLC 一圈最多触发次数；每台相机的写盘队列能放下一整圈。
+const MAX_TRIGGERS: usize = 64;
 /// 多相机时配方拍照点编号为 "S001-{相机编号}"，须在 32 个字符以内。
 const MAX_MULTI_CAMERA_ID: usize = 27;
 
@@ -177,6 +179,8 @@ struct RunCam {
     source: Option<CounterSource>,
     last_frame: Option<u64>,
     last_trigger: Option<u64>,
+    /// 本轮因这台相机的帧或设备出错而失败
+    faulted: bool,
 }
 
 struct Running {
@@ -196,7 +200,8 @@ pub struct RecipeCaptureHost {
     root: PathBuf,
     current: Mutex<Option<Running>>,
     uncertain_sessions: Mutex<std::collections::HashSet<(String, u64)>>,
-    tx: mpsc::SyncSender<QueuedFrame>,
+    /// 按本轮相机顺序，每台相机一个写盘线程
+    writers: Vec<mpsc::SyncSender<QueuedFrame>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -306,19 +311,21 @@ impl RecipeCaptureHost {
             }
             if latest.as_ref().is_none_or(|last| round.created_at >= last.created_at) { latest = Some(round); }
         }
-        let (tx, rx) = mpsc::sync_channel::<QueuedFrame>(64);
+        let (writers, receivers): (Vec<_>, Vec<_>) = (0..MAX_CAMERAS).map(|_| mpsc::sync_channel::<QueuedFrame>(MAX_TRIGGERS)).unzip();
         let current = latest.map(|round| Running { round, cams: Vec::new(), drain_timeout: Duration::from_secs(1), deadline: Instant::now() });
-        let host = Arc::new(Self { root, current: Mutex::new(current), uncertain_sessions: Mutex::new(uncertain_sessions), tx });
-        let weak = Arc::downgrade(&host);
-        std::thread::spawn(move || loop {
-            let item = rx.recv_timeout(Duration::from_millis(50));
-            let Some(host) = weak.upgrade() else { break };
-            match item {
-                Ok(item) => host.receive(item),
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) => host.tick(),
-            }
-        });
+        let host = Arc::new(Self { root, current: Mutex::new(current), uncertain_sessions: Mutex::new(uncertain_sessions), writers });
+        for (i, rx) in receivers.into_iter().enumerate() {
+            let weak = Arc::downgrade(&host);
+            std::thread::spawn(move || loop {
+                let item = rx.recv_timeout(Duration::from_millis(50));
+                let Some(host) = weak.upgrade() else { break };
+                match item {
+                    Ok(item) => host.receive(item),
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => if i == 0 { host.tick() },
+                }
+            });
+        }
         Ok(host)
     }
 
@@ -360,8 +367,9 @@ impl RecipeCaptureHost {
         }
         let mut guard = self.current.lock().unwrap();
         if guard.as_ref().is_some_and(|r| r.round.state.active()) { return Err("已有示教采集正在占用设备".into()); }
-        if let Some(d) = devices.iter().find(|d| self.uncertain_sessions.lock().unwrap().contains(&(d.camera_id.clone(), d.session))) {
-            return Err(format!("相机 {}：上一轮采集异常，当前设备会话可能仍有在途旧帧；请重新连接该相机后整圈重采", d.camera_id));
+        let uncertain: Vec<_> = devices.iter().filter(|d| self.uncertain_sessions.lock().unwrap().contains(&(d.camera_id.clone(), d.session))).map(|d| d.camera_id.as_str()).collect();
+        if !uncertain.is_empty() {
+            return Err(format!("相机 {}：上一轮采集异常，当前设备会话可能仍有在途旧帧；请重新连接这些相机后整圈重采", uncertain.join("、")));
         }
         let created_at = ly_plc::now_ms();
         let mut suffix = 0u32;
@@ -374,7 +382,7 @@ impl RecipeCaptureHost {
             }
         };
         let cams = devices.iter().map(|d| RunCam {
-            cam: d.cam, source: d.source, last_trigger: d.trigger_baseline,
+            cam: d.cam, source: d.source, last_trigger: d.trigger_baseline, faulted: false,
             last_frame: matches!(d.source, Some(CounterSource::SdkFrame | CounterSource::ChunkFrame)).then_some(d.trigger_baseline).flatten(),
         }).collect();
         let cameras = devices.into_iter().map(|d| CaptureCamera { camera_id: d.camera_id, camera_config: d.camera_config, imaging: d.imaging, device_session: d.session, received_count: 0 }).collect();
@@ -384,9 +392,16 @@ impl RecipeCaptureHost {
         Ok(round)
     }
 
+    /// 失败后，可能还有本轮在途帧的相机要换新会话才能再采：PLC 已报完且与计划一致、这台相机收满计划数且本身没出错时，
+    /// 它不会再有本轮的帧，可以直接用当前会话；其余相机（含收图未满、PLC 未报完或报数不符）都记为可疑。
     fn fail_running(&self, run: &mut Running, error: String) {
         run.round.state = CaptureState::Failed;
-        self.uncertain_sessions.lock().unwrap().extend(run.round.cameras.iter().map(|c| (c.camera_id.clone(), c.device_session)));
+        let round = &run.round;
+        let plc_done = round.planned_count.is_some() && round.plc_actual_count == round.planned_count;
+        let unsettled = round.cameras.iter().enumerate()
+            .filter(|(j, c)| !plc_done || Some(c.received_count) != round.planned_count || run.cams.get(*j).is_some_and(|r| r.faulted))
+            .map(|(_, c)| (c.camera_id.clone(), c.device_session));
+        self.uncertain_sessions.lock().unwrap().extend(unsettled);
         run.round.error = Some(error);
         if let Err(error) = self.save(&run.round) { run.round.error = Some(format!("{}；异常记录保存失败：{error}", run.round.error.as_deref().unwrap_or_default())); }
     }
@@ -399,6 +414,7 @@ impl RecipeCaptureHost {
         let mut guard = self.current.lock().unwrap();
         let Some(run) = guard.as_mut().filter(|r| r.round.state.active()) else { return };
         if let Some(j) = run.camera_of(cam) {
+            run.cams[j].faulted = true;
             let error = format!("相机 {} 断连，请整圈重采", run.round.cameras[j].camera_id);
             self.fail_running(run, error);
         }
@@ -452,12 +468,15 @@ impl RecipeCaptureHost {
         let Some(run) = guard.as_mut().filter(|r| r.round.state.active()) else { return false; };
         let Some(j) = run.camera_of(frame.cam) else { return true; };
         if run.round.state == CaptureState::WaitingStart {
+            run.cams[j].faulted = true;
             let error = format!("相机 {}：PLC 开始前收到帧，无法确定本轮归属", run.round.cameras[j].camera_id);
             self.fail_running(run, error);
             return true;
         }
-        if self.tx.try_send(QueuedFrame { round_id: run.round.round_id.clone(), frame: frame.clone(), original }).is_err() {
-            self.fail_running(run, "示教采集写盘队列已满或关闭，不能保证完整收图，请整圈重采".into());
+        if self.writers[j].try_send(QueuedFrame { round_id: run.round.round_id.clone(), frame: frame.clone(), original }).is_err() {
+            run.cams[j].faulted = true;
+            let error = format!("相机 {}：示教采集写盘队列已满或关闭，不能保证完整收图，请整圈重采", run.round.cameras[j].camera_id);
+            self.fail_running(run, error);
         }
         true
     }
@@ -488,6 +507,7 @@ impl RecipeCaptureHost {
             else { None };
         if let Some(error) = error {
             let error = format!("相机 {}：{error}", camera.camera_id);
+            run.cams[j].faulted = true;
             self.fail_running(run, error);
             return;
         }
@@ -522,6 +542,7 @@ impl RecipeCaptureHost {
                 }
                 let order = |id: &str| run.round.cameras.iter().position(|c| c.camera_id == id);
                 let Some(shot) = run.round.frames.get_mut(index) else {
+                    run.cams[j].faulted = true;
                     self.fail_running(run, format!("相机 {camera_id}：前一次触发的图像缺失，无法确定拍照点归属"));
                     return;
                 };
@@ -529,7 +550,7 @@ impl RecipeCaptureHost {
                 shot.cameras.insert(at, frame);
                 if let Err(e) = self.save(&run.round) { self.fail_running(run, e); }
             }
-            Err(e) => self.fail_running(run, format!("相机 {camera_id}：保存采集图像失败：{e}")),
+            Err(e) => { run.cams[j].faulted = true; self.fail_running(run, format!("相机 {camera_id}：保存采集图像失败：{e}")) }
         }
     }
 
@@ -913,6 +934,26 @@ mod tests {
         host.plc_started(2).unwrap();
         for n in 1..=2 { receive(&host, &round, frame(n)); }
         assert_eq!(host.current().unwrap().recipe_shots().unwrap().iter().map(|s| s.shot_id.clone()).collect::<Vec<_>>(), ["S001", "S002"]);
+    }
+
+    /// 收满计划且 PLC 报数一致的相机不会再有本轮帧，不必重连；其余相机一次全部点名。
+    #[test]
+    fn failure_requires_reconnecting_only_cameras_that_may_still_have_frames_and_names_them_all() {
+        let restart = |host: &RecipeCaptureHost| host.start("recipe-a".into(), (0..3u8).map(|i| device(i, &format!("cam{}", i + 1), serde_json::json!({"viewCount": 1}), 10 + i as u64, Some(CounterSource::Synthetic), Some(i as u64 * 100))).collect(), 200, true);
+        let host = host();
+        let round = start_three(&host);
+        host.plc_started(2).unwrap();
+        for (cam, n) in [(0, 1), (1, 1), (2, 1), (0, 2), (2, 2)] { receive(&host, &round, cam_frame(cam, n)); }
+        host.plc_ended(2).unwrap();
+        drain(&host);
+        let error = restart(&host).unwrap_err();
+        assert!(error.starts_with("相机 cam2："), "{error}");
+        let host = self::host();
+        let round = start_three(&host);
+        host.plc_started(2).unwrap();
+        receive(&host, &round, cam_frame(0, 1));
+        host.fail("操作员中止");
+        assert!(restart(&host).unwrap_err().starts_with("相机 cam1、cam2、cam3："));
     }
 
     #[test]

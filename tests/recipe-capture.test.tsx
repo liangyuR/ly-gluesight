@@ -42,13 +42,23 @@ it("两台相机各改曝光与增益后点应用 → 按相机一次写入候�
  expect(await screen.findByText("相机2 已写入候选配方，但没能下发到相机")).toBeVisible();
  expect(screen.queryByText("相机1 已写入候选配方，但没能下发到相机")).toBeNull();
 });
-it("三台相机中两台已连接 → 默认选中已连接的两台并按它们开始接收",async()=>{
+it("三台相机中一台未就绪 → 仍默认勾选全部，开始接收禁用并点名未就绪相机",async()=>{
  ws.cameras=[device("CAM-1","相机1"),device("CAM-2","相机2"),device("CAM-3","相机3")];
- vi.mocked(cameraApi.rigStatus).mockResolvedValue([{id:"CAM-1",ready:true},{id:"CAM-2",ready:false},{id:"CAM-3",ready:true}] as Awaited<ReturnType<typeof cameraApi.rigStatus>>);
- vi.mocked(workspaceApi.captureStart).mockResolvedValue(round("waitingStart"));show();
+ vi.mocked(cameraApi.rigStatus).mockResolvedValue([{id:"CAM-1",ready:true},{id:"CAM-2",ready:false},{id:"CAM-3",ready:true}] as Awaited<ReturnType<typeof cameraApi.rigStatus>>);show();
+ expect(await screen.findByText("采集相机未就绪：相机2。")).toBeVisible();
+ const group=screen.getByRole("group",{name:"采集相机"});
+ for(const name of [/相机1/,/相机2/,/相机3/]) expect(within(group).getByRole("checkbox",{name})).toBeChecked();
+ const start=screen.getByRole("button",{name:"开始接收 / 整圈重采"});
+ expect(start).toBeDisabled();await userEvent.click(start);expect(workspaceApi.captureStart).not.toHaveBeenCalled();
+});
+it("从配置设备返回 → 保留手动取消的相机，新增相机自动勾选",async()=>{
+ ws.cameras=[device("CAM-1","相机1"),device("CAM-2","相机2"),device("CAM-3","相机3")];
+ vi.mocked(cameraApi.rigStatus).mockResolvedValue(["CAM-1","CAM-2","CAM-3"].map(id=>({id,ready:true})) as Awaited<ReturnType<typeof cameraApi.rigStatus>>);
+ vi.mocked(workspaceApi.captureStart).mockResolvedValue(round("waitingStart"));
+ const captureReturn={recipeId:"A",search:"",cameraIds:["CAM-1"],excludedCameraIds:["CAM-2"],drain:1500,previewK:0};
+ render(<MemoryRouter initialEntries={[{pathname:"/recipe/capture",state:{captureReturn}}]}><CapturePage/></MemoryRouter>);
  const group=await screen.findByRole("group",{name:"采集相机"});
- await waitFor(()=>expect(within(group).getByRole("checkbox",{name:/相机2/})).not.toBeChecked());
- expect(within(group).getByRole("checkbox",{name:/相机1/})).toBeChecked();expect(within(group).getByRole("checkbox",{name:/相机3/})).toBeChecked();
+ expect(within(group).getByRole("checkbox",{name:/相机2/})).not.toBeChecked();expect(within(group).getByRole("checkbox",{name:/相机3/})).toBeChecked();
  const start=screen.getByRole("button",{name:"开始接收 / 整圈重采"});
  await waitFor(()=>expect(start).toBeEnabled());await userEvent.click(start);
  expect(workspaceApi.captureStart).toHaveBeenCalledWith("A",["CAM-1","CAM-3"],1500);
