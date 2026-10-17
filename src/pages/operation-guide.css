@@ -1,6 +1,7 @@
 .guide-page { display:flex; flex-direction:column; gap:12px; min-width:0; }
+.guide-page .btn { text-decoration:none; }
 .guide-toolbar, .guide-toolbar > div { display:flex; align-items:center; justify-content:space-between; gap:12px; }
-.guide-toolbar p, .guide-note, .guide-footnote { color:var(--on-surface-variant); font-size:12px; }
+.guide-toolbar { justify-content:flex-end; }
 .guide-status-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
 .guide-status { display:flex; flex-direction:column; gap:16px; min-width:0; padding:20px; border-radius:var(--r-lg); background:var(--surface-low); }
 .guide-status header { display:flex; align-items:center; flex-wrap:wrap; gap:10px; }
@@ -14,14 +15,11 @@
 .guide-value { display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:4px 12px; overflow-wrap:anywhere; }
 .guide-value > span { color:var(--on-surface-variant); }
 .guide-value strong { font-weight:500; }
-.guide-value small { flex-basis:100%; color:var(--on-surface-variant); }
 .guide-camera-list { display:flex; flex-direction:column; gap:8px; max-height:112px; overflow:auto; }
 .guide-camera-list:empty { display:none; }
-.guide-note { margin-top:auto; line-height:1.7; }
 .guide-plc-message, .guide-error { overflow-wrap:anywhere; }
 .guide-error { color:var(--warn); font-size:12px; }
 .guide-section-heading { display:flex; align-items:baseline; gap:12px; margin-top:10px; flex-wrap:wrap; }
-.guide-section-heading p { color:var(--on-surface-variant); font-size:12px; }
 .guide-journeys { display:flex; flex-direction:column; gap:12px; }
 .guide-journey { display:grid; grid-template-columns:minmax(230px, 1fr) minmax(0, 2fr) auto; align-items:center; gap:20px; padding:20px; background:var(--surface-low); border-radius:var(--r-lg); }
 .guide-journey.production { background:var(--surface-mid); }
@@ -37,7 +35,6 @@
 .guide-journey li a:hover { background:var(--surface-highest); }
 .guide-journey li a span { opacity:.7; font-size:11px; }
 .guide-primary-action { white-space:nowrap; }
-.guide-footnote { padding:0 4px 6px; }
 @media (max-width:1400px) {
   .guide-journey { grid-template-columns:minmax(0,1fr) auto; gap:12px; }
   .guide-journey nav { grid-row:2; grid-column:1 / -1; }

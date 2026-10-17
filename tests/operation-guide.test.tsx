@@ -36,7 +36,6 @@ it("设备连接成功但没有已发布配方 → 保留开工检查入口，�
   expect(await screen.findByText("1/1 设备就绪")).toBeVisible();
   expect(await screen.findByText("0 个已发布")).toBeVisible();
   expect(screen.queryByText(/^(可生产|已完成)$/)).not.toBeInTheDocument();
-  expect(screen.getByText("连接成功不代表已完成生产握手。")).toBeVisible();
   for (const [title, label, path] of [
     ["首次建站", "配置采集设备", "/camera"],
     ["日常生产", "进入在线检测", "/inspect"],
