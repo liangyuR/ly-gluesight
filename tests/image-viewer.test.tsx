@@ -67,4 +67,79 @@ describe("图像查看与加载", () => {
       Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: previous });
     }
   });
+  it("Ctrl 滚轮以鼠标处缩放并限制倍率，普通滚轮仍滚动页面，键盘可复位", () => {
+    const previous = globalThis.DOMPoint;
+    class TestPoint {
+      constructor(public x: number, public y: number) {}
+      matrixTransform() { return this; }
+    }
+    Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: TestPoint });
+    try {
+      render(<GrayViewer image={image} label="缩放图像" />);
+      const svg = screen.getByRole("img", { name: "缩放图像" });
+      Object.defineProperty(svg, "getScreenCTM", { value: () => ({ inverse: () => ({}) }) });
+      const ordinary = new WheelEvent("wheel", { deltaY: -100, bubbles: true, cancelable: true });
+      fireEvent(svg, ordinary);
+      expect(ordinary.defaultPrevented).toBe(false);
+      expect(screen.getByText("100%")).toBeVisible();
+      const modified = new WheelEvent("wheel", { ctrlKey: true, deltaY: -100, clientX: 25, clientY: 15, bubbles: true, cancelable: true });
+      fireEvent(svg, modified);
+      expect(modified.defaultPrevented).toBe(true);
+      expect(screen.getByText("122%")).toBeVisible();
+      const transform = svg.querySelector("g")!.getAttribute("transform")!;
+      const [tx, ty, scale] = transform.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+      expect(tx + (25 - image.width / 2) * scale).toBeCloseTo(25);
+      expect(ty + (15 - image.height / 2) * scale).toBeCloseTo(15);
+      for (let n = 0; n < 20; n++) fireEvent.wheel(svg, { ctrlKey: true, deltaY: -200 });
+      expect(screen.getByText("400%")).toBeVisible();
+      for (let n = 0; n < 20; n++) fireEvent.wheel(svg, { ctrlKey: true, deltaY: 200 });
+      expect(screen.getByText("50%")).toBeVisible();
+      fireEvent.keyDown(svg, { key: "0", ctrlKey: true });
+      expect(screen.getByText("100%")).toBeVisible();
+      fireEvent.keyDown(svg, { key: "+" });
+      expect(screen.getByText("125%")).toBeVisible();
+      fireEvent.keyDown(svg, { key: "-" });
+      expect(screen.getByText("100%")).toBeVisible();
+    } finally {
+      Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: previous });
+    }
+  });
+
+  it.each([false, true])("中键平移（框选模式 %s）不修改示教，取消拖动和换图后不残留视角", (regionMode) => {
+    const previous = globalThis.DOMPoint;
+    class TestPoint {
+      constructor(public x: number, public y: number) {}
+      matrixTransform() { return new TestPoint(this.x / 2, this.y / 2); }
+    }
+    Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: TestPoint });
+    const edit = { add: vi.fn(), move: vi.fn(), select: vi.fn() };
+    const onRegion = vi.fn();
+    try {
+      const { rerender } = render(<GrayViewer image={image} label="平移图像" overlay={{ path: [[20,20]] }} onEdit={edit} onRegion={regionMode ? onRegion : undefined} />);
+      const svg = screen.getByRole("img", { name: "平移图像" });
+      Object.defineProperty(svg, "getScreenCTM", { value: () => ({ inverse: () => ({}) }) });
+      fireEvent.pointerDown(svg, { button: 1, clientX: 20, clientY: 20, pointerId: 1 });
+      fireEvent.pointerMove(svg, { clientX: 60, clientY: 40, pointerId: 1 });
+      expect(svg.querySelector("g")).toHaveAttribute("transform", "translate(70 40) scale(1) translate(-50 -30)");
+      expect(edit.add).not.toHaveBeenCalled();
+      expect(edit.move).not.toHaveBeenCalled();
+      expect(onRegion).not.toHaveBeenCalled();
+      fireEvent.pointerCancel(svg, { pointerId: 1 });
+      fireEvent.pointerMove(svg, { clientX: 100, clientY: 100, pointerId: 1 });
+      expect(svg.querySelector("g")).toHaveAttribute("transform", "translate(70 40) scale(1) translate(-50 -30)");
+      fireEvent.click(screen.getByRole("button", { name: "适应窗口" }));
+      expect(svg.querySelector("g")).toHaveAttribute("transform", "translate(50 30) scale(1) translate(-50 -30)");
+      fireEvent.keyDown(svg, { key: "+" });
+      fireEvent.pointerDown(svg, { button: 1, clientX: 20, clientY: 20, pointerId: 2 });
+      fireEvent.pointerMove(svg, { clientX: 60, clientY: 40, pointerId: 2 });
+      rerender(<GrayViewer image={{ ...image, url: "data:,next-image" }} label="平移图像" />);
+      expect(screen.getByText("100%")).toBeVisible();
+      expect(svg.querySelector("g")).toHaveAttribute("transform", "translate(50 30) scale(1) translate(-50 -30)");
+      fireEvent.pointerMove(svg, { clientX: 100, clientY: 100, pointerId: 2 });
+      expect(svg.querySelector("g")).toHaveAttribute("transform", "translate(50 30) scale(1) translate(-50 -30)");
+    } finally {
+      Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: previous });
+    }
+  });
+
 });

@@ -116,12 +116,43 @@ export interface PathEditing {
 export function GrayViewer({ image, loading = false, error = "", label, overlay, onEdit, region, onRegion, emptyTitle, emptyHint }: {
   image: GrayImage | null; loading?: boolean; error?: string; label: string; overlay?: ImageOverlay; onEdit?: PathEditing; region?: [number, number, number, number] | null; onRegion?: (region: [number, number, number, number]) => void; emptyTitle?: string; emptyHint?: string;
 }) {
-  const [zoom, setZoom] = useState(1);
+  const [viewport, setViewport] = useState({ zoom: 1, x: 0, y: 0 });
+  const { zoom, x, y } = viewport;
+  const svg = useRef<SVGSVGElement>(null);
+  const pan = useRef<{ start: DOMPoint; x: number; y: number; inverse: DOMMatrix } | null>(null);
+  const [panning, setPanning] = useState(false);
+  const reset = () => { setViewport({ zoom: 1, x: 0, y: 0 }); };
+  const zoomBy = (factor: number, anchor?: DOMPoint) => {
+    if (!image || drag.current || regionStart.current || pan.current) return;
+    setViewport(previous => {
+      const next = Math.min(4, Math.max(.5, previous.zoom * factor));
+      const ratio = next / previous.zoom;
+      const ax = (anchor?.x ?? image.width / 2) - image.width / 2;
+      const ay = (anchor?.y ?? image.height / 2) - image.height / 2;
+      return { zoom: next, x: ax - (ax - previous.x) * ratio, y: ay - (ay - previous.y) * ratio };
+    });
+  };
   const regionStart = useRef<[number, number] | null>(null);
   const [shown, setShown] = useState(true);
   const group = useRef<SVGGElement>(null);
   const drag = useRef<{ index: number; inverse: DOMMatrix } | null>(null);
-  useEffect(() => { setZoom(1); drag.current = null; }, [image?.url]);
+  const stopGesture = () => { drag.current = null; regionStart.current = null; pan.current = null; setPanning(false); };
+  useEffect(() => { reset(); stopGesture(); }, [image?.url, image?.width, image?.height]);
+  useEffect(() => {
+    const element = svg.current;
+    if (!element || !image) return;
+    const wheel = (event: WheelEvent) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      const inverse = element.getScreenCTM()?.inverse();
+      if (!inverse || !event.deltaY) return;
+      const anchor = new DOMPoint(event.clientX, event.clientY).matrixTransform(inverse);
+      const pixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? element.clientHeight : 1);
+      zoomBy(Math.exp(-Math.max(-200, Math.min(200, pixels)) * .002), anchor);
+    };
+    element.addEventListener("wheel", wheel, { passive: false });
+    return () => element.removeEventListener("wheel", wheel);
+  }, [image?.url, image?.width, image?.height]);
   const point = (e: PointerEvent<SVGSVGElement>, inverse?: DOMMatrix): [number, number] | null => {
     const transform = inverse ?? group.current?.getScreenCTM()?.inverse();
     if (!transform || !image) return null;
@@ -135,9 +166,28 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
   const editing = !!onEdit && shown;
   const path = overlay?.path ?? [];
   const hint = error || (emptyHint ?? "取样后在这张图上点出胶路中线。机器人应停在当前拍照点。");
-  return <div className="wp-viewport"><div className="wp-image-tools"><span>{label}</span><div><button className="icon-btn" aria-label="缩小原图" onClick={() => setZoom(z => Math.max(.5,z-.25))}><Minus size={15} /></button><span>{Math.round(zoom * 100)}%</span><button className="icon-btn" aria-label="放大原图" onClick={() => setZoom(z => Math.min(4,z+.25))}><Plus size={15} /></button><button className="icon-btn" aria-label="适应窗口" onClick={() => setZoom(1)}><RotateCcw size={15} /></button>{overlay && <button className={"btn small" + (shown ? " active" : "")} aria-pressed={shown} onClick={() => setShown(v => !v)}>中线叠加</button>}</div></div>
+  return <div className="wp-viewport"><div className="wp-image-tools"><span>{label}</span><div><button className="icon-btn" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></button><span>{Math.round(zoom * 100)}%</span><button className="icon-btn" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></button><button className="icon-btn" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></button>{overlay && <button className={"btn small" + (shown ? " active" : "")} aria-pressed={shown} onClick={() => setShown(v => !v)}>中线叠加</button>}</div></div>
     {!image ? <div className="wp-image-empty"><Camera size={32} /><strong>{loading ? "正在读取原图…" : error ? "原图不可用" : emptyTitle ?? "尚未冻结本帧图像"}</strong>{hint && <span>{hint}</span>}</div> :
-      <svg role="img" className={"wp-gray-image" + (editing ? " editable" : "")} viewBox={"0 0 " + image.width + " " + image.height} aria-label={label} onPointerDown={e => {
+      <svg ref={svg} role="img" tabIndex={0} className={"wp-gray-image" + (editing ? " editable" : "") + (panning ? " panning" : "")} viewBox={"0 0 " + image.width + " " + image.height} aria-label={label} aria-description="Ctrl 加滚轮缩放，中键拖动平移；聚焦后加减键缩放，0 适应窗口" onKeyDown={e => {
+        if (e.altKey || e.metaKey || drag.current || regionStart.current || pan.current) return;
+        if (["+", "=", "-", "0"].includes(e.key)) {
+          e.preventDefault();
+          if (e.key === "0") reset(); else zoomBy(e.key === "-" ? 1/1.25 : 1.25);
+        }
+      }} onAuxClick={e => { if (e.button === 1) e.preventDefault(); }} onPointerDown={e => {
+        if (pan.current || drag.current || regionStart.current) return;
+        if (e.button === 1) {
+          const inverse = e.currentTarget.getScreenCTM()?.inverse();
+          if (!inverse) return;
+          e.preventDefault();
+          e.currentTarget.focus({ preventScroll: true });
+          pan.current = { start: new DOMPoint(e.clientX, e.clientY).matrixTransform(inverse), x, y, inverse };
+          setPanning(true);
+          e.currentTarget.setPointerCapture?.(e.pointerId);
+          return;
+        }
+        if (e.button !== 0) return;
+        e.currentTarget.focus({ preventScroll: true });
         if (onRegion) { const p = point(e); if (p) { regionStart.current = p; onRegion([p[0], p[1], 0, 0]); e.currentTarget.setPointerCapture?.(e.pointerId); } return; }
         if (!editing || !onEdit) return;
         const inverse = group.current?.getScreenCTM()?.inverse();
@@ -151,13 +201,19 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
         drag.current = { index, inverse };
         e.currentTarget.setPointerCapture?.(e.pointerId);
       }} onPointerMove={e => {
+        if (pan.current) {
+          const gesture = pan.current;
+          const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(gesture.inverse);
+          setViewport(previous => ({ ...previous, x: gesture.x + p.x - gesture.start.x, y: gesture.y + p.y - gesture.start.y }));
+          return;
+        }
         if (onRegion && regionStart.current) { const p = point(e), a = regionStart.current; if (p) onRegion([Math.min(a[0],p[0]), Math.min(a[1],p[1]), Math.abs(p[0]-a[0]), Math.abs(p[1]-a[1])]); return; }
         const current = drag.current;
         if (!current || !onEdit) return;
         const p = point(e, current.inverse);
         if (p) onEdit.move(current.index, p);
-      }} onPointerUp={() => { drag.current = null; regionStart.current = null; }} onPointerCancel={() => { drag.current = null; regionStart.current = null; }}>
-        <g ref={group} transform={"translate(" + image.width/2 + " " + image.height/2 + ") scale(" + zoom + ") translate(" + -image.width/2 + " " + -image.height/2 + ")"}><image href={image.url} width={image.width} height={image.height} />
+      }} onPointerUp={stopGesture} onPointerCancel={stopGesture} onLostPointerCapture={stopGesture}>
+        <g ref={group} transform={"translate(" + (image.width/2 + x) + " " + (image.height/2 + y) + ") scale(" + zoom + ") translate(" + -image.width/2 + " " + -image.height/2 + ")"}><image href={image.url} width={image.width} height={image.height} />
           {region && <rect x={region[0]} y={region[1]} width={region[2]} height={region[3]} fill="var(--primary)" fillOpacity={.12} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
           {overlay && shown && <g aria-label="中线叠加">
             {overlay.stations?.map(([x, y], i) => <circle key={"s" + i} cx={x} cy={y} r={dot} fill={overlay.stationColors?.[i] ?? "var(--primary)"} opacity={overlay.stale ? .35 : .9} />)}
@@ -165,6 +221,6 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
             {onEdit && path.map(([x, y], i) => <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--primary)" : "var(--surface-lowest)"} fillOpacity={.85} stroke={i === 0 ? "var(--ok)" : "var(--primary)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
           </g>}
         </g></svg>}
-    {image && <div className="wp-image-footer"><span>{image.width} × {image.height} px</span><span>{onRegion ? "拖动框选一段连续胶路区域" : onEdit ? "点击图像依次加中线点（从胶嘴一侧往外，绿圈为起点），拖动点可调整" : "原始灰度图像"}</span></div>}
+    {image && <div className="wp-image-footer"><span>{image.width} × {image.height} px · Ctrl＋滚轮缩放 · 中键拖动 · + / − / 0</span><span>{onRegion ? "拖动框选一段连续胶路区域" : onEdit ? "点击图像依次加中线点（从胶嘴一侧往外，绿圈为起点），拖动点可调整" : "原始灰度图像"}</span></div>}
   </div>;
 }
