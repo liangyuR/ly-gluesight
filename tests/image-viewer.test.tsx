@@ -14,6 +14,35 @@ beforeEach(() => {
 });
 
 describe("图像查看与加载", () => {
+  it("搜索带沿局部法向显示半宽并裁剪到原图，独立隐藏不影响测量结果", () => {
+    const overlay = {
+      path: [[5, 10], [5, 10], [5, 50], [25, 50]] as [number, number][],
+      searchHalfPx: 10,
+      segments: [{ from: [2, 20] as [number, number], to: [8, 20] as [number, number], color: "red", label: "候选 0.6 mm" }],
+    };
+    const { rerender } = render(<GrayViewer image={image} label="带界图像" overlay={overlay} />);
+    const band = screen.getByLabelText("搜索带边界");
+    const edges = [...band.querySelectorAll("polyline")].map(edge => edge.getAttribute("points")!.split(" ").map(p => p.split(",").map(Number)));
+    expect(edges[0]).toHaveLength(31);
+    expect(edges[0][0]).toEqual([-5, 10]);
+    expect(edges[1][0]).toEqual([15, 10]);
+    expect(edges[0][20][0]).toBeCloseTo(5 - Math.sqrt(50));
+    expect(edges[0][20][1]).toBeCloseTo(50 + Math.sqrt(50));
+    expect(edges[1][30]).toEqual([25, 40]);
+    expect(band).toHaveAttribute("clip-path", `url(#${band.querySelector("clipPath")!.id})`);
+    expect(band.querySelector("clipPath rect")).toHaveAttribute("width", "100");
+    expect(band.querySelector("clipPath rect")).toHaveAttribute("height", "60");
+    fireEvent.click(screen.getByRole("button", { name: "搜索带" }));
+    expect(screen.queryByLabelText("搜索带边界")).not.toBeInTheDocument();
+    expect(screen.getByText("候选 0.6 mm")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "搜索带" }));
+    fireEvent.click(screen.getByRole("button", { name: "中线叠加" }));
+    expect(screen.getByLabelText("搜索带边界")).toBeInTheDocument();
+    for (const searchHalfPx of [NaN, Infinity, 0, -1]) {
+      rerender(<GrayViewer image={image} label="带界图像" overlay={{ ...overlay, searchHalfPx }} />);
+      expect(screen.queryByLabelText("搜索带边界")).not.toBeInTheDocument();
+    }
+  });
   it("从候选图切到历史原图后，迟到的旧图不能覆盖当前来源", async () => {
     const old = deferred<GrayImage>();
     vi.mocked(workspaceApi.image).mockReturnValueOnce(old.promise);
