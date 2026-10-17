@@ -482,7 +482,7 @@ pub fn offline_run(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, Cyc
     Ok(())
 }
 
-/// 为正在等待 PLC 开始的整圈采集轮次跑一圈样本件：拍照点数 = 样本集拍照点数，触发全部发往采集设备。
+/// 为正在等待 PLC 开始的整圈采集轮次跑一圈样本件：每次触发同时发往本轮全部相机，第 k 次触发取各相机在样本集里的第 k 个拍照点。
 #[tauri::command]
 pub fn offline_capture(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>, offline: State<'_, OfflineHost>,
     part_id: Option<String>) -> Result<(), String> {
@@ -491,19 +491,28 @@ pub fn offline_capture(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_,
     let round = cycle.camera.recipe_capture().current()
         .filter(|r| r.state == crate::recipe_capture::CaptureState::WaitingStart)
         .ok_or("没有等待 PLC 开始的整圈采集：先在整圈采集页点“开始接收”")?;
-    let cam = cycle.camera.require(&round.camera_id)?;
-    let config = cycle.camera.slot(cam as usize).ok_or("采集设备不存在")?.config();
-    if config.source != CameraSource::SampleSet { return Err(format!("采集设备 {} 不是样本集来源", config.id)); }
-    let shots = &set.manifest().shots;
-    if let Some(shot) = shots.iter().find(|s| s.camera_id != config.id || (1..=config.view_count).any(|v| !s.views.contains(&v))) {
-        return Err(format!("样本集拍照点 {} 的相机或视角（{}，{:?}）与采集设备 {}（{} 个视角）不符", shot.shot_id, shot.camera_id, shot.views, config.id, config.view_count));
+    let mut feeds = Vec::with_capacity(round.cameras.len());
+    for camera in &round.cameras {
+        let cam = cycle.camera.require(&camera.camera_id)?;
+        let config = cycle.camera.slot(cam as usize).ok_or("采集设备不存在")?.config();
+        if config.source != CameraSource::SampleSet { return Err(format!("采集相机 {} 不是样本集来源", config.id)); }
+        let shots: Vec<_> = set.manifest().shots.iter().filter(|s| s.camera_id == config.id).collect();
+        if let Some(shot) = shots.iter().find(|s| (1..=config.view_count).any(|v| !s.views.contains(&v))) {
+            return Err(format!("样本集拍照点 {} 的视角 {:?} 与采集相机 {}（{} 个视角）不符", shot.shot_id, shot.views, config.id, config.view_count));
+        }
+        feeds.push((cam, config.id, shots.iter().map(|s| s.shot_id.clone()).collect::<Vec<_>>()));
     }
-    if shots.len() > 64 { return Err(format!("整圈采集最多 64 个拍照点，样本集有 {} 个；请用 --shots 子集生成样本集", shots.len())); }
+    let n = feeds[0].2.len();
+    if let Some((_, id, shots)) = feeds.iter().find(|(_, _, shots)| shots.len() != n || shots.is_empty()) {
+        return Err(format!("样本集里相机 {id} 有 {} 个拍照点，与其他采集相机（{n} 个）不一致或为空", shots.len()));
+    }
+    if n > 64 { return Err(format!("整圈采集最多 64 次触发，样本集每台相机有 {n} 个拍照点；请用 --shots 子集生成样本集")); }
     if let Some(id) = part_id.as_deref() { set.part(id).ok_or_else(|| format!("样本集里没有样本件 {id}"))?; }
     start_running(&offline, false)?;
-    let n = shots.len() as u16;
+    let n = n as u16;
     let order = PartOrder { sn: String::new(), product_code: 0, plan_version: CAPTURE_PLAN_VERSION, shot_count: n, device_shots: n };
-    tauri::async_runtime::spawn(capture(app, line, set, part_id, cam, order));
+    let feeds = feeds.into_iter().map(|(cam, _, shots)| (cam, shots)).collect();
+    tauri::async_runtime::spawn(capture(app, line, set, part_id, feeds, order));
     Ok(())
 }
 
@@ -630,7 +639,7 @@ async fn run(app: AppHandle, line: Arc<Line>, recipe: Arc<Recipe>, order: PartOr
     finish(&app, &offline);
 }
 
-async fn capture(app: AppHandle, line: Arc<Line>, set: Arc<SampleSet>, requested: Option<String>, cam: u8, order: PartOrder) {
+async fn capture(app: AppHandle, line: Arc<Line>, set: Arc<SampleSet>, requested: Option<String>, feeds: Vec<(u8, Vec<String>)>, order: PartOrder) {
     let offline = app.state::<OfflineHost>();
     let timing = timing(&app, Duration::from_millis(300));
     let result = async {
@@ -640,10 +649,11 @@ async fn capture(app: AppHandle, line: Arc<Line>, set: Arc<SampleSet>, requested
         let sn = OfflineHost::sn_text(offline.next_sn());
         offline.begin_run(&set, &part_id, &sn, RunPurpose::Capture);
         let order = PartOrder { sn: sn.clone(), ..order };
-        let shots = &set.manifest().shots;
         let trigger = |k: usize, lost| {
-            let Some(shot) = shots.get(k) else { return };
-            let _ = app.state::<CycleHost>().camera.trigger(cam, lost, Some(sample_payload(&set, &part_id, &shot.shot_id)));
+            for (cam, shots) in &feeds {
+                let Some(shot_id) = shots.get(k) else { continue };
+                let _ = app.state::<CycleHost>().camera.trigger(*cam, lost, Some(sample_payload(&set, &part_id, shot_id)));
+            }
         };
         let result = line.run_part(&timing, &order, Scenario::Normal, trigger, &offline.abort).await;
         offline.parts.fetch_add(1, Ordering::SeqCst);

@@ -51,8 +51,8 @@ impl Bench {
         let engine = PlcEngine::new(config, Arc::new(Logbook::open(&directory.join("plc.db"), sink.clone(), 1).unwrap()), sink);
         before_connect(&server);
         engine.connect().await;
-        let plan = PlcPlan::compile("part-A".into(), 7, "cam1".into(), (1..=4).map(|i| PlanShot {
-            shot_id: format!("P{i}"), pose_id: format!("P{i}"), camera_id: "cam1".into(),
+        let plan = PlcPlan::compile("part-A".into(), 7, vec!["cam1".into()], (1..=4).map(|i| PlanShot {
+            shot_id: format!("P{i}"), pose_id: format!("P{i}"), camera_ids: vec!["cam1".into()],
         }).collect()).unwrap();
         Self { _server: server, line: Line::new(memory, layout), engine, session: PlcSession::open(directory.join("session.json")), plan }
     }

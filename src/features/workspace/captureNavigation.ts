@@ -3,7 +3,7 @@ import type { ReturnNavigationState } from "./returnNavigation";
 export interface CaptureReturn {
   recipeId: string;
   search: string;
-  cameraId: string;
+  cameraIds: string[];
   drain: number;
   roundId?: string;
   previewK: number;
