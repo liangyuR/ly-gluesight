@@ -89,7 +89,6 @@
 .wp-image-picker-bar { display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
 .wp-image-picker h2 { display:flex; flex-direction:column; gap:4px; margin:0; font-size:13px; }
 .wp-image-picker h2 span { color:var(--on-surface-variant); font-size:11px; font-weight:400; }
-.wp-image-picker .hint { margin:8px 0 0; }
 .wp-group-images { display:flex; flex:1 1 420px; min-width:0; gap:8px; overflow-x:auto; }
 .wp-view-choice { font-size:11px; }
 .wp-sample-details { border-radius:var(--r-lg); background:var(--surface-low); }

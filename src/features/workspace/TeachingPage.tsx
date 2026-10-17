@@ -192,19 +192,17 @@ export default function TeachingPage() {
       </button>)}</nav></Panel>
       <div className="wp-stack"><section className="panel wp-image-picker" aria-label="本组检测图选择">
         <div className="wp-image-picker-bar"><h2>{group.poseId}<span>检测图</span></h2>
-          <div className="wp-group-images" role="group" aria-label="本组图像" aria-describedby="image-picker-hint">{group.members.flatMap(member => data.workspace.frames[member].views.map(view => <FrozenViewOption key={view.id} id={doc.id} metadata={view} selected={group.choice?.k === member && group.choice.view === view.view} disabled={!unlocked || editing || frameDirty} onSelect={() => void selectImage(member,view.view)} />))}</div>
+          <div className="wp-group-images" role="group" aria-label="本组图像">{group.members.flatMap(member => data.workspace.frames[member].views.map(view => <FrozenViewOption key={view.id} id={doc.id} metadata={view} selected={group.choice?.k === member && group.choice.view === view.view} disabled={!unlocked || editing || frameDirty} onSelect={() => void selectImage(member,view.view)} />))}</div>
           <Link className="btn small" to="/recipe/capture">重新采集</Link>
         </div>
-        <p id="image-picker-hint" className="muted hint">选择胶路清晰的一张图用于示教与检测，其余图仅采集。{(editing || frameDirty) && "当前有未保存的示教修改，暂不能切换检测图。"}</p>
         {group.selected.length > 1 && <p className="c-warn" role="alert">本组原先选择了多张图，请重新选择一张作为检测图。</p>}
       </section>
-      {enabled ? <><Panel title={enabled ? shot.camera + " · 中线示教" : "中线示教"} detail={enabled ? "框选胶路 → 提取与修正中线 → 试测 → 保存本组" : "先从上方选择本组唯一的检测图"}>
+      {enabled ? <><Panel title={shot.camera + " · 中线示教"}>
         <div className="wp-actions"><button className="btn" aria-pressed={regionMode} disabled={!unlocked || !frame.image} onClick={() => setRegionMode(v => !v)}>{regionMode ? "结束框选 / 手工修正" : "框选胶路区域"}</button>
           <button className="btn" disabled={!unlocked || !frame.image || loading || !!error} onClick={() => void extract()}><WandSparkles size={15}/>{operation === "extract" ? "提取中…" : "自动提取中线"}</button>
           <button className="btn primary" disabled={!canTrial} title={trialDisabledReason || "保存当前参数，对本图运行一次检测算法"} onClick={() => void saveAndTrial()}><Play size={15}/>{operation === "trial" ? "计算中…" : "运行一次算法"}</button>
         </div>
-        <p className="muted hint" role="status">{regionMode ? roiValid ? "区域已选好，点击自动提取中线；提取结果可继续拖动修正。" : "在图像上按住左键框选一段连续胶路（至少 5×5 像素，最多 400 万像素），再点击自动提取中线。" : extractionHint || "自动提取需先框选胶路区域，也可直接在图上逐点绘制中线。"}</p>
-        {trialDisabledReason && <p className="muted hint">暂不能运行：{trialDisabledReason}。单次试测会保存候选参数，不会发布生产配方。</p>}
+        {(regionMode || extractionHint) && <p className="muted hint" role="status">{regionMode ? roiValid ? "区域已选好，点击自动提取中线；提取结果可继续拖动修正。" : "在图像上按住左键框选一段连续胶路（至少 5×5 像素，最多 400 万像素），再点击自动提取中线。" : extractionHint}</p>}
         {trialFresh && <div className="wp-actions" aria-label="本次算法结果"><Badge tone={trialCurrent ? "info" : "warn"}>{trial?.verdict ?? "执行异常"}</Badge><span>量成比例 {measured ? (trial!.coverage * 100).toFixed(1) + "%" : "—"}</span><span>耗时 {trial?.elapsedMs} ms</span><span className="muted">绿色：有效胶宽 · 红色：未通过候选 / 无候选</span></div>}
         <GrayViewer image={image} loading={loading} error={error} label={frame.image ? group.poseId + " · " + shot.camera + " · 图 " + shot.view : "等待取样"}
           region={region} onRegion={regionMode && unlocked && enabled ? setRegion : undefined}
