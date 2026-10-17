@@ -72,6 +72,8 @@ const MAX_CAMERAS: usize = 8;
 const MAX_TRIGGERS: usize = 64;
 /// 多相机时配方拍照点编号为 "S001-{相机编号}"，须在 32 个字符以内。
 const MAX_MULTI_CAMERA_ID: usize = 27;
+/// 等 PLC 开始后整圈收图、以及 PLC 结束后已收到图像写盘完成的上限。
+const ROUND_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -181,6 +183,8 @@ struct RunCam {
     last_trigger: Option<u64>,
     /// 本轮因这台相机的帧或设备出错而失败
     faulted: bool,
+    /// 已从相机到达并进入写盘队列的帧数；received_count 要等写盘线程取出后才累加
+    queued: u32,
 }
 
 struct Running {
@@ -188,6 +192,8 @@ struct Running {
     cams: Vec<RunCam>,
     drain_timeout: Duration,
     deadline: Instant,
+    /// PLC 结束后，图像均已到达、只差写盘时最多等到这里
+    write_deadline: Option<Instant>,
 }
 
 impl Running {
@@ -312,7 +318,7 @@ impl RecipeCaptureHost {
             if latest.as_ref().is_none_or(|last| round.created_at >= last.created_at) { latest = Some(round); }
         }
         let (writers, receivers): (Vec<_>, Vec<_>) = (0..MAX_CAMERAS).map(|_| mpsc::sync_channel::<QueuedFrame>(MAX_TRIGGERS)).unzip();
-        let current = latest.map(|round| Running { round, cams: Vec::new(), drain_timeout: Duration::from_secs(1), deadline: Instant::now() });
+        let current = latest.map(|round| Running { round, cams: Vec::new(), drain_timeout: Duration::from_secs(1), deadline: Instant::now(), write_deadline: None });
         let host = Arc::new(Self { root, current: Mutex::new(current), uncertain_sessions: Mutex::new(uncertain_sessions), writers });
         for (i, rx) in receivers.into_iter().enumerate() {
             let weak = Arc::downgrade(&host);
@@ -382,13 +388,13 @@ impl RecipeCaptureHost {
             }
         };
         let cams = devices.iter().map(|d| RunCam {
-            cam: d.cam, source: d.source, last_trigger: d.trigger_baseline, faulted: false,
+            cam: d.cam, source: d.source, last_trigger: d.trigger_baseline, faulted: false, queued: 0,
             last_frame: matches!(d.source, Some(CounterSource::SdkFrame | CounterSource::ChunkFrame)).then_some(d.trigger_baseline).flatten(),
         }).collect();
         let cameras = devices.into_iter().map(|d| CaptureCamera { camera_id: d.camera_id, camera_config: d.camera_config, imaging: d.imaging, device_session: d.session, received_count: 0 }).collect();
         let round = CaptureRound { round_id, recipe_id, cameras, planned_count: None, plc_planned_count: None, plc_actual_count: None, plc_plan_version: None, state: CaptureState::WaitingStart, created_at, ended_at: None, frames: Vec::new(), error: None, simulated };
         self.save(&round)?;
-        *guard = Some(Running { round: round.clone(), cams, drain_timeout: Duration::from_millis(drain_timeout_ms), deadline: Instant::now() + Duration::from_secs(120) });
+        *guard = Some(Running { round: round.clone(), cams, drain_timeout: Duration::from_millis(drain_timeout_ms), deadline: Instant::now() + ROUND_TIMEOUT, write_deadline: None });
         Ok(round)
     }
 
@@ -434,7 +440,7 @@ impl RecipeCaptureHost {
         }
         run.round.planned_count = Some(planned_count);
         run.round.state = CaptureState::Receiving;
-        run.deadline = Instant::now() + Duration::from_secs(120);
+        run.deadline = Instant::now() + ROUND_TIMEOUT;
         if let Err(e) = self.save(&run.round) { self.fail_running(run, e.clone()); return Err(e); }
         Ok(())
     }
@@ -459,6 +465,7 @@ impl RecipeCaptureHost {
         run.round.state = CaptureState::Draining;
         run.round.ended_at = Some(ly_plc::now_ms());
         run.deadline = Instant::now() + run.drain_timeout;
+        run.write_deadline = Some(Instant::now() + ROUND_TIMEOUT);
         if let Err(e) = self.save(&run.round) { self.fail_running(run, e.clone()); return Err(e); }
         Ok(())
     }
@@ -477,6 +484,8 @@ impl RecipeCaptureHost {
             run.cams[j].faulted = true;
             let error = format!("相机 {}：示教采集写盘队列已满或关闭，不能保证完整收图，请整圈重采", run.round.cameras[j].camera_id);
             self.fail_running(run, error);
+        } else {
+            run.cams[j].queued += 1;
         }
         true
     }
@@ -558,23 +567,27 @@ impl RecipeCaptureHost {
         let mut guard = self.current.lock().unwrap();
         let Some(run) = guard.as_mut().filter(|r| r.round.state.active() && Instant::now() >= r.deadline) else { return; };
         let round = &run.round;
-        let all_arrived = round.planned_count.is_some_and(|n| round.frames.len() == n as usize && round.complete_shots() == n
+        let plc_ended = round.state == CaptureState::Draining && round.plc_actual_count == round.planned_count;
+        let arrived = round.planned_count.is_some_and(|n| run.cams.iter().all(|c| c.queued == n));
+        let written = round.planned_count.is_some_and(|n| round.frames.len() == n as usize && round.complete_shots() == n
             && round.cameras.iter().all(|c| c.received_count == n));
-        if round.state == CaptureState::Draining && all_arrived && round.plc_actual_count == round.planned_count {
+        if plc_ended && arrived && written {
             run.round.state = CaptureState::Complete;
             if let Err(e) = self.save(&run.round) { self.fail_running(run, e); }
-        } else {
-            let error = match round.planned_count {
-                None => "采集超时：仍在等待 PLC 开始请求，请整圈重采".to_string(),
-                Some(n) => {
-                    let short: Vec<_> = round.cameras.iter().filter(|c| c.received_count != n)
-                        .map(|c| format!("相机 {} 收到 {}/{n} 张", c.camera_id, c.received_count)).collect();
-                    if short.is_empty() { format!("采集超时：各相机均已收到 {n} 张，但未收到 PLC 结束；请整圈重采") }
-                    else { format!("采集超时：计划触发 {n} 次，{}；必须收到 PLC 结束且各相机数量一致，请整圈重采", short.join("、")) }
-                }
-            };
-            self.fail_running(run, error);
+            return;
         }
+        if plc_ended && arrived && run.write_deadline.is_some_and(|d| Instant::now() < d) { return; }
+        let error = match round.planned_count {
+            None => "采集超时：仍在等待 PLC 开始请求，请整圈重采".to_string(),
+            Some(n) => {
+                let short: Vec<_> = round.cameras.iter().zip(&run.cams).filter(|(_, r)| r.queued != n)
+                    .map(|(c, r)| format!("相机 {} 收到 {}/{n} 张", c.camera_id, r.queued)).collect();
+                if !short.is_empty() { format!("采集超时：计划触发 {n} 次，{}；必须收到 PLC 结束且各相机数量一致，请整圈重采", short.join("、")) }
+                else if plc_ended { format!("采集超时：PLC 已结束且各相机均已收到 {n} 张，但 {} s 内只写完 {}/{n} 个拍照点；请检查磁盘后整圈重采", ROUND_TIMEOUT.as_secs(), round.complete_shots()) }
+                else { format!("采集超时：各相机均已收到 {n} 张，但未收到 PLC 结束；请整圈重采") }
+            }
+        };
+        self.fail_running(run, error);
     }
 
     pub fn list(&self, recipe_id: &str) -> Result<Vec<CaptureSummary>, String> {
@@ -697,6 +710,8 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEST: AtomicU64 = AtomicU64::new(1);
+    /// 后台写盘线程每 50 ms 会 tick；测试手动推进各步，只由 drain() 结束在途等待，避免机器高负载时被后台提前判定。
+    const TEST_DRAIN_MS: u64 = 30000;
 
     fn host() -> Arc<RecipeCaptureHost> {
         let path = std::env::temp_dir().join(format!("gluesight-capture-{}-{}-{}", std::process::id(), ly_plc::now_ms(), NEXT_TEST.fetch_add(1, Ordering::Relaxed)));
@@ -708,18 +723,18 @@ mod tests {
     }
 
     fn single(host: &RecipeCaptureHost, config: serde_json::Value, session: u64, source: Option<CounterSource>, baseline: Option<u64>, simulated: bool) -> Result<CaptureRound, String> {
-        host.start("r".into(), vec![device(0, "cam1", config, session, source, baseline)], 200, simulated)
+        host.start("r".into(), vec![device(0, "cam1", config, session, source, baseline)], TEST_DRAIN_MS, simulated)
     }
 
     fn start(host: &RecipeCaptureHost) -> CaptureRound {
         let session = host.current().map_or(9, |r| r.cameras[0].device_session + 1);
-        host.start("recipe-a".into(), vec![device(0, "cam1", serde_json::json!({"source":"sim"}), session, Some(CounterSource::Synthetic), Some(0))], 200, true).unwrap()
+        host.start("recipe-a".into(), vec![device(0, "cam1", serde_json::json!({"source":"sim"}), session, Some(CounterSource::Synthetic), Some(0))], TEST_DRAIN_MS, true).unwrap()
     }
 
     /// 三台单视角相机，各自会话 10/11/12、触发计数基线 0/100/200。
     fn start_three(host: &RecipeCaptureHost) -> CaptureRound {
         let devices = (0..3u8).map(|i| device(i, &format!("cam{}", i + 1), serde_json::json!({"viewCount": 1}), 10 + i as u64, Some(CounterSource::Synthetic), Some(i as u64 * 100))).collect();
-        host.start("recipe-a".into(), devices, 200, true).unwrap()
+        host.start("recipe-a".into(), devices, TEST_DRAIN_MS, true).unwrap()
     }
 
     fn frame(n: u64) -> Frame {
@@ -734,8 +749,20 @@ mod tests {
             images: vec![Arc::new(FrameImage::new(2, 2, vec![cam; 4]))] }
     }
 
-    fn receive(host: &RecipeCaptureHost, round: &CaptureRound, f: Frame) {
+    /// 帧已到达并进入写盘队列（offer 的计数），尚未写盘。
+    fn arrive(host: &RecipeCaptureHost, round: &CaptureRound, f: &Frame) {
+        let mut guard = host.current.lock().unwrap();
+        let Some(run) = guard.as_mut().filter(|r| r.round.round_id == round.round_id && r.round.state.active()) else { return };
+        if let Some(j) = run.camera_of(f.cam) { run.cams[j].queued += 1; }
+    }
+
+    fn write(host: &RecipeCaptureHost, round: &CaptureRound, f: Frame) {
         host.receive(QueuedFrame { round_id: round.round_id.clone(), frame: f, original: None });
+    }
+
+    fn receive(host: &RecipeCaptureHost, round: &CaptureRound, f: Frame) {
+        arrive(host, round, &f);
+        write(host, round, f);
     }
 
     fn drain(host: &RecipeCaptureHost) {
@@ -906,6 +933,39 @@ mod tests {
         assert!(!error.contains("cam1") && !error.contains("cam3"), "{error}");
     }
 
+    /// 现场 debug 构建写 PNG 慢：PLC 已结束、各相机图像都已到达，只差写盘时，在途等待到期不能误报未收到 PLC 结束。
+    #[test]
+    fn plc_ended_and_all_frames_arrived_but_not_written_waits_for_writes_then_completes() {
+        let host = host();
+        let round = start_three(&host);
+        host.plc_started(2).unwrap();
+        for n in 1..=2 { for cam in 0..3 { arrive(&host, &round, &cam_frame(cam, n)); } }
+        for (cam, n) in [(0, 1), (1, 1), (2, 1), (0, 2)] { write(&host, &round, cam_frame(cam, n)); }
+        host.plc_ended(2).unwrap();
+        drain(&host);
+        let waiting = host.current().unwrap();
+        assert_eq!(waiting.state, CaptureState::Draining, "{:?}", waiting.error);
+        for cam in 1..3 { write(&host, &round, cam_frame(cam, 2)); }
+        host.tick();
+        assert_eq!(host.get(&round.round_id).unwrap().state, CaptureState::Complete);
+    }
+
+    #[test]
+    fn writes_still_pending_at_the_write_limit_fail_as_a_write_timeout_not_a_missing_plc_end() {
+        let host = host();
+        let round = start_three(&host);
+        host.plc_started(2).unwrap();
+        for n in 1..=2 { for cam in 0..3 { arrive(&host, &round, &cam_frame(cam, n)); } }
+        for cam in 0..3 { write(&host, &round, cam_frame(cam, 1)); }
+        host.plc_ended(2).unwrap();
+        host.current.lock().unwrap().as_mut().unwrap().write_deadline = Some(Instant::now());
+        drain(&host);
+        let failed = host.current().unwrap();
+        assert_eq!(failed.state, CaptureState::Failed);
+        let error = failed.error.unwrap();
+        assert!(error.contains("写完 1/2") && !error.contains("未收到 PLC 结束"), "{error}");
+    }
+
     #[test]
     fn trigger_counts_are_checked_per_camera_not_across_cameras() {
         for (gap_on, accepted) in [(None, true), (Some(1u8), false)] {
@@ -939,7 +999,7 @@ mod tests {
     /// 收满计划且 PLC 报数一致的相机不会再有本轮帧，不必重连；其余相机一次全部点名。
     #[test]
     fn failure_requires_reconnecting_only_cameras_that_may_still_have_frames_and_names_them_all() {
-        let restart = |host: &RecipeCaptureHost| host.start("recipe-a".into(), (0..3u8).map(|i| device(i, &format!("cam{}", i + 1), serde_json::json!({"viewCount": 1}), 10 + i as u64, Some(CounterSource::Synthetic), Some(i as u64 * 100))).collect(), 200, true);
+        let restart = |host: &RecipeCaptureHost| host.start("recipe-a".into(), (0..3u8).map(|i| device(i, &format!("cam{}", i + 1), serde_json::json!({"viewCount": 1}), 10 + i as u64, Some(CounterSource::Synthetic), Some(i as u64 * 100))).collect(), TEST_DRAIN_MS, true);
         let host = host();
         let round = start_three(&host);
         host.plc_started(2).unwrap();
@@ -973,7 +1033,7 @@ mod tests {
     fn each_frame_must_carry_exactly_the_device_view_count() {
         for (device_views, delivered, accepted) in [(1, 1, true), (1, 3, false), (3, 3, true), (3, 1, false)] {
             let host = host();
-            let round = host.start("recipe-a".into(), vec![device(0, "cam1", serde_json::json!({"viewCount": device_views}), 9, Some(CounterSource::Synthetic), Some(0))], 200, true).unwrap();
+            let round = host.start("recipe-a".into(), vec![device(0, "cam1", serde_json::json!({"viewCount": device_views}), 9, Some(CounterSource::Synthetic), Some(0))], TEST_DRAIN_MS, true).unwrap();
             host.plc_started(1).unwrap();
             let mut f = frame(1);
             f.images.truncate(delivered);
@@ -995,6 +1055,18 @@ mod tests {
         receive(&host, &round, frame(2));
         assert_eq!(host.current().unwrap().state, CaptureState::Draining);
         receive(&host, &round, frame(3));
+        assert_eq!(host.current().unwrap().state, CaptureState::Failed);
+    }
+
+    #[test]
+    fn extra_frame_still_in_write_queue_at_drain_end_fails_instead_of_completing() {
+        let host = host();
+        let round = start(&host);
+        host.plc_started(1).unwrap();
+        receive(&host, &round, frame(1));
+        host.plc_ended(1).unwrap();
+        arrive(&host, &round, &frame(2));
+        drain(&host);
         assert_eq!(host.current().unwrap().state, CaptureState::Failed);
     }
 
