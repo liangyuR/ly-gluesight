@@ -67,9 +67,9 @@ it("多相机轮次切换相机 → 按相机读取同一拍照点的原图",asy
  ws.cameras=[device("CAM-1","相机1"),device("CAM-2","相机2")];
  vi.mocked(workspaceApi.captureImage).mockResolvedValue({url:"data:image/png;base64,",width:1280,height:1024});
  vi.mocked(workspaceApi.captureGet).mockResolvedValue({...round(),cameras:[{cameraId:"CAM-1",deviceSession:7,receivedCount:1},{cameraId:"CAM-2",deviceSession:8,receivedCount:1}],plannedCount:1,frames:[shot(1,["CAM-1","CAM-2"])]});show();
- await screen.findByRole("img",{name:"拍照点 01 · 相机1 · 完整拼接原图"});
+ await screen.findByRole("img",{name:"拍照点 S001 · 相机1 · 完整拼接原图"});
  await userEvent.click(within(screen.getByRole("group",{name:"查看相机"})).getByRole("button",{name:"相机2"}));
- expect(await screen.findByRole("img",{name:"拍照点 01 · 相机2 · 完整拼接原图"})).toBeVisible();
+ expect(await screen.findByRole("img",{name:"拍照点 S001 · 相机2 · 完整拼接原图"})).toBeVisible();
  expect(workspaceApi.captureImage).toHaveBeenLastCalledWith("r1",0,"CAM-2");
 });
 it("异常轮保留数量和原因，不能采用",async()=>{
@@ -97,15 +97,15 @@ it("个别拍照点尺寸与其余不同 → 汇总标出不一致且仅该点�
  vi.mocked(workspaceApi.captureImage).mockReturnValue(new Promise(()=>{}));
  vi.mocked(workspaceApi.captureGet).mockResolvedValue({...round(),frames:[shot(1),shot(2),shot(3,["CAM-1"],640)]});show();
  expect(await screen.findByText("尺寸不一致 · 多数为 1280×1024")).toBeVisible();
- expect(screen.getByRole("button",{name:/^03/})).toHaveTextContent("640×1024");
- expect(screen.getByRole("button",{name:/^01/})).not.toHaveTextContent("×");
+ expect(screen.getByRole("button",{name:/^S003/})).toHaveTextContent("640×1024");
+ expect(screen.getByRole("button",{name:/^S001/})).not.toHaveTextContent("×");
 });
 it("切换拍照点且新图未读回 → 保留当前图像不回到读取占位",async()=>{
  vi.mocked(workspaceApi.captureImage).mockResolvedValueOnce({url:"data:image/png;base64,",width:1280,height:1024}).mockReturnValue(new Promise(()=>{}));
  vi.mocked(workspaceApi.captureGet).mockResolvedValue({...round(),frames:[shot(1),shot(2)]});show();
- await screen.findByRole("img",{name:"拍照点 01 · 完整拼接原图"});
- await userEvent.click(screen.getByRole("button",{name:/^02/}));
- expect(screen.getByRole("img",{name:"拍照点 01 · 完整拼接原图 · 正在读取 02"})).toBeVisible();
+ await screen.findByRole("img",{name:"拍照点 S001 · 完整拼接原图"});
+ await userEvent.click(screen.getByRole("button",{name:/^S002/}));
+ expect(screen.getByRole("img",{name:"拍照点 S001 · 完整拼接原图 · 正在读取 S002"})).toBeVisible();
  expect(screen.queryByText("正在读取原图…")).toBeNull();
 });
 it("采集完成后设备准备收起 → 收起栏仍可直接整圈重采",async()=>{

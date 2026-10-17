@@ -258,7 +258,7 @@ impl RecipeCaptureHost {
         }
         for (k, shot) in round.frames.iter().enumerate() {
             let ordinal = k as u32 + 1;
-            if shot.ordinal != ordinal || shot.shot_id != format!("S{ordinal:04}") || shot.cameras.is_empty() {
+            if shot.ordinal != ordinal || shot.shot_id != format!("S{ordinal:03}") || shot.cameras.is_empty() {
                 return Err("采集拍照点顺序无效".into());
             }
             let mut last = None;
@@ -538,7 +538,7 @@ impl RecipeCaptureHost {
             Ok(frame) => {
                 let index = ordinal as usize - 1;
                 if run.round.frames.len() == index {
-                    run.round.frames.push(CaptureShot { shot_id: format!("S{ordinal:04}"), ordinal, cameras: Vec::new() });
+                    run.round.frames.push(CaptureShot { shot_id: format!("S{ordinal:03}"), ordinal, cameras: Vec::new() });
                 }
                 let order = |id: &str| run.round.cameras.iter().position(|c| c.camera_id == id);
                 let Some(shot) = run.round.frames.get_mut(index) else {
