@@ -1,0 +1,48 @@
+import { render, screen, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+import { beforeEach, expect, it, vi } from "vitest";
+import OperationGuidePage from "../src/pages/OperationGuidePage";
+
+const api = vi.hoisted(() => ({ camera: vi.fn(), plc: vi.fn(), recipes: vi.fn(), drafts: vi.fn(), site: vi.fn() }));
+vi.mock("../src/lib/desktop", () => ({ desktopAvailable: () => true }));
+vi.mock("../src/features/camera", () => ({ cameraApi: { rigStatus: api.camera } }));
+vi.mock("../src/features/plc", () => ({ plcApi: { getStatus: api.plc }, linkStateLabels: { connected: "已连接" }, subscribe: () => () => {} }));
+vi.mock("../src/features/cycle", () => ({ recipeApi: { list: api.recipes }, siteApi: { status: api.site }, siteModeText: () => "真机" }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: api.drafts } }));
+
+beforeEach(() => {
+  api.camera.mockResolvedValue([]);
+  api.plc.mockResolvedValue({ state: "connected", message: "通讯连接成功" });
+  api.recipes.mockResolvedValue({ recipes: [], errors: [] });
+  api.drafts.mockResolvedValue([]);
+  api.site.mockResolvedValue({ mode: "real" });
+});
+
+it("设备未返回且生产库读取失败 → 不伪造零值，独立显示已连接的 PLC", async () => {
+  api.camera.mockReturnValue(new Promise(() => {}));
+  api.recipes.mockRejectedValue(new Error("配方库不可读"));
+  render(<MemoryRouter><OperationGuidePage /></MemoryRouter>);
+  const camera = within(screen.getByRole("region", { name: "采集设备" }));
+  expect(camera.getByText("读取中…")).toBeVisible();
+  expect(camera.queryByText("未配置相机")).not.toBeInTheDocument();
+  expect(await screen.findByText("配方库不可读")).toBeVisible();
+  expect(screen.queryByText("0 个已发布")).not.toBeInTheDocument();
+  expect(screen.getByText("已连接")).toBeVisible();
+});
+
+it("设备连接成功但没有已发布配方 → 保留开工检查入口，不宣告生产或流程完成", async () => {
+  api.camera.mockResolvedValue([{ id: "CAM-1", name: "相机 1", ready: true, message: "设备已连接" }]);
+  render(<MemoryRouter><OperationGuidePage /></MemoryRouter>);
+  expect(await screen.findByText("1/1 设备就绪")).toBeVisible();
+  expect(await screen.findByText("0 个已发布")).toBeVisible();
+  expect(screen.queryByText(/^(可生产|已完成)$/)).not.toBeInTheDocument();
+  expect(screen.getByText("连接成功不代表已完成生产握手。")).toBeVisible();
+  for (const [title, label, path] of [
+    ["首次建站", "配置采集设备", "/camera"],
+    ["日常生产", "进入在线检测", "/inspect"],
+    ["缺陷排查", "打开历史记录", "/history"],
+    ["配置变更", "打开配方库", "/recipe"],
+  ]) {
+    expect(within(screen.getByRole("region", { name: title })).getByRole("link", { name: label })).toHaveAttribute("href", path);
+  }
+});

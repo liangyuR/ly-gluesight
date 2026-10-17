@@ -1,21 +1,97 @@
+import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { ChevronRight } from "lucide-react";
-import { useRigStatus } from "../features/camera";
-import { usePlcStatus } from "../features/plc";
-import { siteModeText, useSiteStatus } from "../features/cycle";
-import { useWorkspace } from "../features/workspace/context";
-import { Badge, Notice, Panel } from "../features/workspace/components";
+import { Bug, Camera, Cable, ChevronRight, FlaskConical, GitBranch, Play, RefreshCw, ScanEye, Wrench, type LucideIcon } from "lucide-react";
+import { cameraApi } from "../features/camera";
+import { linkStateLabels, plcApi, subscribe } from "../features/plc";
+import { recipeApi, siteApi, siteModeText } from "../features/cycle";
+import { workspaceApi } from "../features/workspace/api";
+import { Badge } from "../features/workspace/components";
+import { desktopAvailable } from "../lib/desktop";
+import { errorText } from "../lib/errors";
+import "./operation-guide.css";
 
-const journeys=[
-  {title:"首次建站",detail:"连接采集设备和 PLC，完成工位标定、配方示教与发布。",links:[["相机与采集","/camera"],["PLC 通讯","/plc"],["飞拍标定","/camera/calibration"],["配方库","/recipe"]]},
-  {title:"日常生产",detail:"确认当前生产版本与设备就绪，检查工件总览、原图及检测结论。",links:[["在线检测","/inspect"],["历史记录","/history"]]},
-  {title:"缺陷排查",detail:"从整件结论定位到帧和原图，区分缺陷与测量异常，再进行候选复测。",links:[["历史记录","/history"],["单帧示教","/recipe/teach"]]},
-  {title:"配置变更",detail:"修改候选配置、重新试测与验证，发布后在工件边界生效。",links:[["配方默认参数（可选）","/recipe/geometry"],["单帧示教","/recipe/teach"],["工件总览","/recipe/overview"],["验证与发布","/recipe/validation"]]},
+type Resource<T> = { data: T | null; error: string; loading: boolean };
+function useOverviewResource<T>(request: () => Promise<T>, refresh: number, interval = 0) {
+  const [state, setState] = useState<Resource<T>>({ data: null, error: "", loading: true });
+  useEffect(() => {
+    if (!desktopAvailable()) return;
+    let alive = true, pending = false;
+    const load = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const data = await request();
+        if (alive) setState({ data, error: "", loading: false });
+      } catch (e) {
+        if (alive) setState({ data: null, error: errorText(e), loading: false });
+      } finally { pending = false; }
+    };
+    setState({ data: null, error: "", loading: true });
+    void load();
+    const timer = interval ? setInterval(() => void load(), interval) : undefined;
+    return () => { alive = false; clearInterval(timer); };
+  }, [request, refresh, interval]);
+  return state;
+}
+function unavailable(state: Resource<unknown>) {
+  return !desktopAvailable() ? "需桌面后端" : state.error ? "读取失败" : state.loading ? "读取中…" : "状态未提供";
+}
+function StatusCard({ title, icon: Icon, status, children, links }: { title: string; icon: LucideIcon; status: ReactNode; children: ReactNode; links: [string, string][] }) {
+  return <section className="guide-status" aria-label={title}>
+    <header><span className="guide-icon"><Icon size={21} /></span><h2>{title}</h2>{status}</header>
+    <div className="guide-status-content">{children}</div>
+    <footer>{links.map(([label, path], i) => <Link key={path} className={i === 0 ? "btn small" : "guide-text-link"} to={path}>{label}</Link>)}</footer>
+  </section>;
+}
+function ReadError({ state }: { state: Resource<unknown> }) {
+  return state.error ? <p className="guide-error" role="alert">{state.error}</p> : null;
+}
+
+const journeys: { title: string; detail: string; icon: LucideIcon; action: string; path: string; links: [string, string][]; production?: boolean }[] = [
+  { title: "首次建站", detail: "接入设备，完成采集示教与验证发布", icon: Wrench, action: "配置采集设备", path: "/camera", links: [["相机接入", "/camera"], ["PLC 通讯", "/plc"], ["飞拍标定", "/camera/calibration"], ["建立配方", "/recipe"]] },
+  { title: "日常生产", detail: "开工条件与当前工件状态以在线检测为准", icon: ScanEye, action: "进入在线检测", path: "/inspect", production: true, links: [["核对开工条件", "/inspect"], ["监看检测", "/inspect"], ["查看历史", "/history"]] },
+  { title: "缺陷排查", detail: "先查历史帧与原图，再选择候选复测", icon: Bug, action: "打开历史记录", path: "/history", links: [["定位工件与帧", "/history"], ["选择候选", "/recipe"], ["调整示教", "/recipe/teach"]] },
+  { title: "配置变更", detail: "候选验证后发布；在途工件保持原快照", icon: GitBranch, action: "打开配方库", path: "/recipe", links: [["选择候选", "/recipe"], ["采集 / 示教", "/recipe/capture"], ["验证与发布", "/recipe/validation"], ["核对 PLC 计划", "/plc?panel=s7-plan"]] },
 ];
-export default function OperationGuidePage(){
-  const {statuses}=useRigStatus();
-  const plc=usePlcStatus();
-  const {list,drafts}=useWorkspace();
-  const site=useSiteStatus();
-  return <div className="wp-page"><Notice title="从建站到生产，配置按步骤完成">候选配置独立保存。图像试测和规则验证通过后，发布生产配方；在线工件保持开始检测时的版本。</Notice><div className="wp-three"><Panel title="采集设备" actions={<Badge tone={statuses.length&&statuses.every(s=>s.ready)?"ok":"warn"}>{statuses.filter(s=>s.ready).length}/{statuses.length} 就绪</Badge>}><p className="muted">检查连接、采集方式和相机实际接受的参数；曝光与增益在配方整圈采集页调整。</p><Link className="btn" to="/camera">配置采集设备</Link></Panel><Panel title="PLC 通讯" actions={<Badge tone={plc?.state==="connected"?"ok":"warn"}>{plc?.state==="connected"?"已连接":"未连接"}</Badge>}><p className="muted">通讯连接后，还需检查工件开始、布防、结果和确认点位。</p><Link className="btn" to="/plc">检查通讯与点位</Link></Panel><Panel title="配方版本" actions={<Badge tone="neutral">{list.length} 个生产配方</Badge>}><p className="muted">{drafts.length} 个候选工作区。已开始的工件继续使用原生产快照。</p><Link className="btn" to="/recipe">打开配方库</Link></Panel><Panel title="站点模式" actions={site&&<Badge tone={site.mode==="offline"?"warn":"neutral"}>{siteModeText(site)}</Badge>}><p className="muted">{site?.mode==="offline"?`当前为${siteModeText(site)}，PLC 与相机组由离线模式管理。`:"真机：连接现场 PLC 与海康相机。离线调试在离线模式中切换。"}</p><Link className="btn" to="/offline">打开离线模式</Link></Panel></div><div className="wp-library-grid">{journeys.map(j=><Panel key={j.title} title={j.title} className="wp-guide-card"><p>{j.detail}</p><div className="wp-guide-links">{j.links.map(([label,path],i)=><span key={path} className="wp-actions"><Link to={path}>{label}</Link>{i<j.links.length-1&&<ChevronRight size={12}/>}</span>)}</div><Link className="btn" to={j.links[0][1]} style={{marginTop:12}}>开始{j.title}<ChevronRight size={14}/></Link></Panel>)}</div></div>;
+
+export default function OperationGuidePage() {
+  const [refresh, setRefresh] = useState(0);
+  useEffect(() => subscribe("workspace://changed", () => setRefresh(value => value + 1)), []);
+  const cameras = useOverviewResource(cameraApi.rigStatus, refresh, 5000);
+  const plc = useOverviewResource(plcApi.getStatus, refresh, 5000);
+  const recipes = useOverviewResource(recipeApi.list, refresh);
+  const drafts = useOverviewResource(workspaceApi.list, refresh);
+  const site = useOverviewResource(siteApi.status, refresh, 5000);
+  const ready = cameras.data?.filter(camera => camera.ready).length;
+  const cameraLabel = cameras.data ? cameras.data.length ? `${ready}/${cameras.data.length} 设备就绪` : "未配置相机" : unavailable(cameras);
+  const pending = drafts.data?.filter(draft => draft.publish.state === "waiting").length;
+  const failed = drafts.data?.filter(draft => ["failed", "uncertain"].includes(draft.publish.state)).length;
+  return <div className="guide-page">
+    <div className="guide-toolbar"><p>查看站点状态，选择工作流</p><div><Link className="guide-text-link" to="/offline">{site.data ? siteModeText(site.data) : unavailable(site)} · 离线模式</Link><button className="icon-btn" aria-label="刷新总览状态" disabled={!desktopAvailable()} onClick={() => setRefresh(value => value + 1)}><RefreshCw size={17} /></button></div></div>
+    <ReadError state={site} />
+    <div className="guide-status-grid">
+      <StatusCard title="采集设备" icon={Camera} status={<Badge tone={cameras.data?.length && ready === cameras.data.length ? "ok" : "neutral"}>{cameraLabel}</Badge>} links={[["相机与采集", "/camera"], ["查看标定", "/camera/calibration"]]}>
+        <div className="guide-camera-list">{cameras.data?.map(camera => <div className="guide-value" key={camera.id}><span>{camera.name}</span><strong>{camera.ready ? "设备就绪" : camera.released ? "已释放" : "未就绪"}</strong><small>{camera.message}</small></div>)}</div>
+        <ReadError state={cameras} /><p className="guide-note">设备就绪后，仍需核对配方与开工条件。</p>
+      </StatusCard>
+      <StatusCard title="PLC 通讯" icon={Cable} status={<Badge tone={plc.data?.state === "connected" ? "ok" : "neutral"}>{plc.data ? linkStateLabels[plc.data.state] : unavailable(plc)}</Badge>} links={[["PLC 通讯", "/plc"], ["通讯日志", "/plc-logs"]]}>
+        <div className="guide-value"><span>通讯协议</span><strong>Siemens S7</strong></div>
+        <p className="guide-plc-message">{plc.data?.message || (plc.data ? "检查工件开始、布防、结果与确认点位" : unavailable(plc))}</p>
+        <ReadError state={plc} /><p className="guide-note">连接成功不代表已完成生产握手。</p>
+      </StatusCard>
+      <StatusCard title="配方版本" icon={FlaskConical} status={<Badge tone="neutral">{recipes.data ? recipes.data.errors.length ? "部分读取失败" : `${recipes.data.recipes.length} 个已发布` : unavailable(recipes)}</Badge>} links={[["打开配方库", "/recipe"]]}>
+        <div className="guide-value"><span>已加载候选</span><strong>{drafts.data ? `${drafts.data.length} 个` : unavailable(drafts)}</strong></div>
+        {drafts.data && <div className="guide-value"><span>已加载发布</span><strong>{failed || pending ? `${pending} 个待生效 · ${failed} 个需处理` : "无待生效版本"}</strong></div>}
+        <ReadError state={recipes} /><ReadError state={drafts} />{recipes.data?.errors.map((error, i) => <p className="guide-error" role="alert" key={i}>{error}</p>)}
+        <p className="guide-note">候选独立保存，发布版本在工件边界生效。</p>
+      </StatusCard>
+    </div>
+    <div className="guide-section-heading"><h2>工作流</h2><p>步骤为操作路径，完成状态请在对应工作台确认</p></div>
+    <div className="guide-journeys">{journeys.map(({ title, detail, icon: Icon, action, path, links, production }) => <section className={`guide-journey${production ? " production" : ""}`} aria-label={title} key={title}>
+      <div className="guide-journey-title"><span className="guide-icon"><Icon size={22} /></span><div><h3>{title}</h3><p>{detail}</p></div></div>
+      <nav aria-label={`${title}步骤`}><ol>{links.map(([label, target], i) => <li key={label}><Link to={target}><span>{i + 1}</span>{label}</Link>{i < links.length - 1 && <ChevronRight size={13} aria-hidden="true" />}</li>)}</ol></nav>
+      <Link className={`btn guide-primary-action${production ? " primary" : ""}`} to={path}>{production && <Play size={15} />}{action}</Link>
+    </section>)}</div>
+    <p className="guide-footnote">计划变更后需在 PLC 侧核对计划版本与拍照点数。历史原图可用时，才能执行原图复测。</p>
+  </div>;
 }
