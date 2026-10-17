@@ -154,7 +154,7 @@ export interface PlcRecipePlan {
   recipeId: string;
   planVersion: number;
   shotCount: number;
-  deviceId: string;
+  deviceIds: string[];
   deviceShots: number;
-  shots: { shotId: string; poseId: string; cameraId: string }[];
+  shots: { shotId: string; poseId: string; cameraIds: string[] }[];
 }

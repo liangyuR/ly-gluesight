@@ -19,7 +19,7 @@ export default function FlyshotCalibrationPage() {
   const {snapshot}=useCycle();
   const site=useSiteStatus();
   const offline=site?.mode==="offline";
-  const {configs,cam,setCam,error,loading,reload}=useRigConfig({withReferences:false,preferredId:captureReturn?.cameraId,reloadKey:offline});
+  const {configs,cam,setCam,error,loading,reload}=useRigConfig({withReferences:false,preferredId:captureReturn?.cameraIds[0],reloadKey:offline});
   const [calibView,setCalibView]=useState(1);
   const [sample,setSample]=useState<StationView|null>(null);
   const [calibMm,setCalibMm]=useState<number|null>(null);

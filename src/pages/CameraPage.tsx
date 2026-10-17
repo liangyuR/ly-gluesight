@@ -22,7 +22,7 @@ export default function CameraPage() {
   const {snapshot}=useCycle();
   const site=useSiteStatus();
   const readOnly=site?.mode==="offline";
-  const {configs,cam,setCam,error,setError,loading,references,referencesReady,reload}=useRigConfig({withReferences:true,preferredId:captureReturn?.cameraId,reloadKey:readOnly});
+  const {configs,cam,setCam,error,setError,loading,references,referencesReady,reload}=useRigConfig({withReferences:true,preferredId:captureReturn?.cameraIds[0],reloadKey:readOnly});
   const [action,setAction]=useState("");
   const [configSaving,setConfigSaving]=useState(false);
   const [dirty,setDirty]=useState(false);

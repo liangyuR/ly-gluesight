@@ -66,6 +66,21 @@ impl CaptureState {
     fn active(&self) -> bool { matches!(self, Self::WaitingStart | Self::Receiving | Self::Draining) }
 }
 
+/// 一轮整圈采集最多同时使用的相机数。
+const MAX_CAMERAS: usize = 8;
+/// 多相机时配方拍照点编号为 "S001-{相机编号}"，须在 32 个字符以内。
+const MAX_MULTI_CAMERA_ID: usize = 27;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaptureCamera {
+    pub camera_id: String,
+    pub camera_config: serde_json::Value,
+    pub imaging: CameraImaging,
+    pub device_session: u64,
+    pub received_count: u32,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CaptureView {
@@ -75,15 +90,24 @@ pub struct CaptureView {
     pub height: u32,
 }
 
+/// 一台相机在一次触发里交付的帧。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaptureFrame {
+    pub camera_id: String,
+    pub frame_counter: u64,
+    pub trigger_counter: Option<u64>,
+    pub original_path: String,
+    pub views: Vec<CaptureView>,
+}
+
+/// 一次 PLC 触发：参与本轮的每台相机各一帧，按本轮相机顺序排列。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CaptureShot {
     pub shot_id: String,
     pub ordinal: u32,
-    pub frame_counter: u64,
-    pub trigger_counter: Option<u64>,
-    pub original_path: String,
-    pub views: Vec<CaptureView>,
+    pub cameras: Vec<CaptureFrame>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -91,15 +115,11 @@ pub struct CaptureShot {
 pub struct CaptureRound {
     pub round_id: String,
     pub recipe_id: String,
-    pub camera_id: String,
-    pub camera_config: serde_json::Value,
-    pub imaging: CameraImaging,
-    pub device_session: u64,
+    pub cameras: Vec<CaptureCamera>,
     pub planned_count: Option<u32>,
     pub plc_planned_count: Option<u32>,
     pub plc_actual_count: Option<u32>,
     pub plc_plan_version: Option<u32>,
-    pub received_count: u32,
     pub state: CaptureState,
     pub created_at: i64,
     pub ended_at: Option<i64>,
@@ -108,14 +128,66 @@ pub struct CaptureRound {
     pub simulated: bool,
 }
 
-struct Running {
-    round: CaptureRound,
+/// 采用到候选配方时的一个拍照点：第 k 次触发里某台相机的帧。
+pub struct RecipeShot<'a> {
+    pub k: usize,
+    pub shot_id: String,
+    pub pose_id: String,
+    pub camera: &'a CaptureCamera,
+    pub frame: &'a CaptureFrame,
+}
+
+impl CaptureRound {
+    pub fn camera_ids(&self) -> Vec<String> { self.cameras.iter().map(|c| c.camera_id.clone()).collect() }
+
+    /// 所有相机都已到图的触发数。
+    pub fn complete_shots(&self) -> u32 { self.frames.iter().filter(|s| s.cameras.len() == self.cameras.len()).count() as u32 }
+
+    /// 按"触发顺序 → 本轮相机顺序"展开成配方拍照点；同一次触发共用 Pose。
+    pub fn recipe_shots(&self) -> Result<Vec<RecipeShot<'_>>, String> {
+        let multi = self.cameras.len() > 1;
+        let mut shots = Vec::with_capacity(self.frames.len() * self.cameras.len());
+        for (k, shot) in self.frames.iter().enumerate() {
+            if shot.cameras.len() != self.cameras.len() || shot.cameras.iter().zip(&self.cameras).any(|(f, c)| f.camera_id != c.camera_id) {
+                return Err(format!("采集拍照点 {} 缺少部分相机的图像", shot.shot_id));
+            }
+            let pose_id = format!("S{:03}", k + 1);
+            for (camera, frame) in self.cameras.iter().zip(&shot.cameras) {
+                let shot_id = if multi { format!("{pose_id}-{}", camera.camera_id) } else { pose_id.clone() };
+                shots.push(RecipeShot { k, shot_id, pose_id: pose_id.clone(), camera, frame });
+            }
+        }
+        Ok(shots)
+    }
+}
+
+/// 开始采集时一台相机的身份与计数起点。
+pub struct CaptureDevice {
+    pub cam: u8,
+    pub camera_id: String,
+    pub camera_config: serde_json::Value,
+    pub imaging: CameraImaging,
+    pub session: u64,
+    pub source: Option<CounterSource>,
+    pub trigger_baseline: Option<u64>,
+}
+
+struct RunCam {
     cam: u8,
     source: Option<CounterSource>,
     last_frame: Option<u64>,
     last_trigger: Option<u64>,
+}
+
+struct Running {
+    round: CaptureRound,
+    cams: Vec<RunCam>,
     drain_timeout: Duration,
     deadline: Instant,
+}
+
+impl Running {
+    fn camera_of(&self, cam: u8) -> Option<usize> { self.cams.iter().position(|c| c.cam == cam) }
 }
 
 struct QueuedFrame { round_id: String, frame: Frame, original: Option<Arc<FrameImage>> }
@@ -132,12 +204,16 @@ pub struct RecipeCaptureHost {
 pub struct CaptureSummary {
     pub round_id: String,
     pub recipe_id: String,
-    pub camera_id: String,
+    pub camera_ids: Vec<String>,
     pub planned_count: Option<u32>,
     pub received_count: u32,
     pub state: CaptureState,
     pub created_at: i64,
     pub error: Option<String>,
+}
+
+fn camera_dir(root: &Path, round_id: &str, ordinal: u32, camera_id: &str) -> PathBuf {
+    root.join(round_id).join(format!("shot-{ordinal:04}")).join(camera_id)
 }
 
 impl RecipeCaptureHost {
@@ -153,13 +229,16 @@ impl RecipeCaptureHost {
 
     fn validate_record(&self, expected_id: &str, round: &CaptureRound) -> Result<(), String> {
         let dir = self.safe_round_path(expected_id)?;
-        if round.round_id != expected_id || round.recipe_id.is_empty() || round.camera_id.is_empty()
-            || round.device_session == 0 || round.planned_count.is_some_and(|n| !(1..=64).contains(&n))
-            || round.frames.len() > round.received_count as usize {
-            return Err("采集记录身份、计划数量或收图数量无效".into());
+        let cameras = &round.cameras;
+        if round.round_id != expected_id || round.recipe_id.is_empty() || cameras.is_empty() || cameras.len() > MAX_CAMERAS
+            || cameras.iter().enumerate().any(|(i, c)| !crate::recipe::valid_camera_id(&c.camera_id) || c.device_session == 0
+                || cameras[..i].iter().any(|o| o.camera_id == c.camera_id))
+            || round.planned_count.is_some_and(|n| !(1..=64).contains(&n))
+            || cameras.iter().any(|c| round.frames.iter().filter(|s| s.cameras.iter().any(|f| f.camera_id == c.camera_id)).count() > c.received_count as usize) {
+            return Err("采集记录身份、相机、计划数量或收图数量无效".into());
         }
         if round.state == CaptureState::WaitingStart && (round.planned_count.is_some() || round.plc_planned_count.is_some()
-            || round.received_count != 0 || !round.frames.is_empty() || round.plc_actual_count.is_some()) {
+            || cameras.iter().any(|c| c.received_count != 0) || !round.frames.is_empty() || round.plc_actual_count.is_some()) {
             return Err("等待 PLC 开始时不能预先指定触发数量或存在收图".into());
         }
         if matches!(round.state, CaptureState::Receiving | CaptureState::Draining | CaptureState::Complete)
@@ -168,23 +247,33 @@ impl RecipeCaptureHost {
         }
         if round.state == CaptureState::Complete && (round.error.is_some() || round.ended_at.is_none()
             || round.plc_actual_count != round.planned_count
-            || Some(round.received_count) != round.planned_count || Some(round.frames.len() as u32) != round.planned_count) {
-            return Err("完整采集缺少 PLC 结束、触发数量或完整图像证据".into());
+            || cameras.iter().any(|c| Some(c.received_count) != round.planned_count)
+            || Some(round.frames.len() as u32) != round.planned_count || round.complete_shots() as usize != round.frames.len()) {
+            return Err("完整采集缺少 PLC 结束、各相机触发数量或完整图像证据".into());
         }
         for (k, shot) in round.frames.iter().enumerate() {
             let ordinal = k as u32 + 1;
-            if shot.ordinal != ordinal || shot.shot_id != format!("S{ordinal:04}") || shot.views.len() != view_count(&round.camera_config)
-                || shot.views.iter().enumerate().any(|(v, image)| image.view as usize != v + 1 || image.width == 0 || image.height == 0) {
-                return Err("采集拍照点顺序或图像数量与设备视角数不符".into());
+            if shot.ordinal != ordinal || shot.shot_id != format!("S{ordinal:04}") || shot.cameras.is_empty() {
+                return Err("采集拍照点顺序无效".into());
             }
-            let shot_dir = self.root.join(expected_id).join(format!("shot-{ordinal:04}"));
-            let mut files = vec![(PathBuf::from(&shot.original_path), shot_dir.join("original.png"))];
-            files.extend(shot.views.iter().map(|v| (PathBuf::from(&v.path), shot_dir.join(format!("view-{}.png", v.view)))));
-            for (stored, expected) in files {
-                if stored != expected { return Err("采集图像路径与轮次目录不一致".into()); }
-                let actual = std::fs::canonicalize(&expected).map_err(|e| format!("采集图像不存在：{e}"))?;
-                let required = dir.join(format!("shot-{ordinal:04}")).join(expected.file_name().ok_or("图像文件名无效")?);
-                if actual != required { return Err("采集图像路径越出本轮目录或链接到其他拍照点".into()); }
+            let mut last = None;
+            for frame in &shot.cameras {
+                let index = cameras.iter().position(|c| c.camera_id == frame.camera_id).ok_or("采集拍照点引用了本轮之外的相机")?;
+                if last.is_some_and(|l| index <= l) { return Err("采集拍照点的相机重复或顺序与本轮不一致".into()); }
+                last = Some(index);
+                if frame.views.len() != view_count(&cameras[index].camera_config)
+                    || frame.views.iter().enumerate().any(|(v, image)| image.view as usize != v + 1 || image.width == 0 || image.height == 0) {
+                    return Err(format!("相机 {} 的图像数量与设备视角数不符", frame.camera_id));
+                }
+                let frame_dir = camera_dir(&self.root, expected_id, ordinal, &frame.camera_id);
+                let mut files = vec![(PathBuf::from(&frame.original_path), frame_dir.join("original.png"))];
+                files.extend(frame.views.iter().map(|v| (PathBuf::from(&v.path), frame_dir.join(format!("view-{}.png", v.view)))));
+                for (stored, expected) in files {
+                    if stored != expected { return Err("采集图像路径与轮次目录不一致".into()); }
+                    let actual = std::fs::canonicalize(&expected).map_err(|e| format!("采集图像不存在：{e}"))?;
+                    let required = dir.join(format!("shot-{ordinal:04}")).join(&frame.camera_id).join(expected.file_name().ok_or("图像文件名无效")?);
+                    if actual != required { return Err("采集图像路径越出本轮目录或链接到其他拍照点".into()); }
+                }
             }
         }
         Ok(())
@@ -213,12 +302,12 @@ impl RecipeCaptureHost {
                 crate::fsio::write_atomic(&path, &serde_json::to_string_pretty(&round).map_err(|e| e.to_string())?)?;
             }
             if round.state == CaptureState::Failed {
-                uncertain_sessions.insert((round.camera_id.clone(), round.device_session));
+                uncertain_sessions.extend(round.cameras.iter().map(|c| (c.camera_id.clone(), c.device_session)));
             }
             if latest.as_ref().is_none_or(|last| round.created_at >= last.created_at) { latest = Some(round); }
         }
         let (tx, rx) = mpsc::sync_channel::<QueuedFrame>(64);
-        let current = latest.map(|round| Running { round, cam: 0, source: None, last_frame: None, last_trigger: None, drain_timeout: Duration::from_secs(1), deadline: Instant::now() });
+        let current = latest.map(|round| Running { round, cams: Vec::new(), drain_timeout: Duration::from_secs(1), deadline: Instant::now() });
         let host = Arc::new(Self { root, current: Mutex::new(current), uncertain_sessions: Mutex::new(uncertain_sessions), tx });
         let weak = Arc::downgrade(&host);
         std::thread::spawn(move || loop {
@@ -255,15 +344,24 @@ impl RecipeCaptureHost {
         Ok(round)
     }
 
-    pub fn start(&self, recipe_id: String, cam: u8, camera_id: String, camera_config: serde_json::Value, imaging: CameraImaging, session: u64, source: Option<CounterSource>, trigger_baseline: Option<u64>, drain_timeout_ms: u64, simulated: bool) -> Result<CaptureRound, String> {
-        if !(200..=30000).contains(&drain_timeout_ms) || session == 0 {
-            return Err("等待在途帧时间须为 200–30000 ms，且设备会话必须就绪".into());
+    pub fn start(&self, recipe_id: String, devices: Vec<CaptureDevice>, drain_timeout_ms: u64, simulated: bool) -> Result<CaptureRound, String> {
+        if !(200..=30000).contains(&drain_timeout_ms) {
+            return Err("等待在途帧时间须为 200–30000 ms".into());
         }
-        if trigger_baseline.is_none() { return Err("设备没有可验证的开流计数基线，请先配置计数起点或取得当前会话计数".into()); }
+        if devices.is_empty() || devices.len() > MAX_CAMERAS { return Err(format!("整圈采集须选择 1–{MAX_CAMERAS} 台相机")); }
+        for (i, d) in devices.iter().enumerate() {
+            let id = &d.camera_id;
+            if !crate::recipe::valid_camera_id(id) || (devices.len() > 1 && id.len() > MAX_MULTI_CAMERA_ID) {
+                return Err(format!("相机编号 {id:?} 无效；多相机采集时相机编号最长 {MAX_MULTI_CAMERA_ID} 个字符"));
+            }
+            if devices[..i].iter().any(|o| o.camera_id == *id || o.cam == d.cam) { return Err(format!("相机 {id} 被重复选择")); }
+            if d.session == 0 { return Err(format!("相机 {id}：设备会话尚未就绪")); }
+            if d.trigger_baseline.is_none() { return Err(format!("相机 {id}：没有可验证的开流计数基线，请先配置计数起点或取得当前会话计数")); }
+        }
         let mut guard = self.current.lock().unwrap();
         if guard.as_ref().is_some_and(|r| r.round.state.active()) { return Err("已有示教采集正在占用设备".into()); }
-        if self.uncertain_sessions.lock().unwrap().contains(&(camera_id.clone(), session)) {
-            return Err("上一轮采集异常，当前设备会话可能仍有在途旧帧；请重新连接设备后整圈重采".into());
+        if let Some(d) = devices.iter().find(|d| self.uncertain_sessions.lock().unwrap().contains(&(d.camera_id.clone(), d.session))) {
+            return Err(format!("相机 {}：上一轮采集异常，当前设备会话可能仍有在途旧帧；请重新连接该相机后整圈重采", d.camera_id));
         }
         let created_at = ly_plc::now_ms();
         let mut suffix = 0u32;
@@ -275,16 +373,20 @@ impl RecipeCaptureHost {
                 Err(e) => return Err(e.to_string()),
             }
         };
-        let round = CaptureRound { round_id, recipe_id, camera_id, camera_config, imaging, device_session: session, planned_count: None, plc_planned_count: None, plc_actual_count: None, plc_plan_version: None, received_count: 0, state: CaptureState::WaitingStart, created_at, ended_at: None, frames: Vec::new(), error: None, simulated };
+        let cams = devices.iter().map(|d| RunCam {
+            cam: d.cam, source: d.source, last_trigger: d.trigger_baseline,
+            last_frame: matches!(d.source, Some(CounterSource::SdkFrame | CounterSource::ChunkFrame)).then_some(d.trigger_baseline).flatten(),
+        }).collect();
+        let cameras = devices.into_iter().map(|d| CaptureCamera { camera_id: d.camera_id, camera_config: d.camera_config, imaging: d.imaging, device_session: d.session, received_count: 0 }).collect();
+        let round = CaptureRound { round_id, recipe_id, cameras, planned_count: None, plc_planned_count: None, plc_actual_count: None, plc_plan_version: None, state: CaptureState::WaitingStart, created_at, ended_at: None, frames: Vec::new(), error: None, simulated };
         self.save(&round)?;
-        let frame_baseline = matches!(source, Some(CounterSource::SdkFrame | CounterSource::ChunkFrame)).then_some(trigger_baseline).flatten();
-        *guard = Some(Running { round: round.clone(), cam, source, last_frame: frame_baseline, last_trigger: trigger_baseline, drain_timeout: Duration::from_millis(drain_timeout_ms), deadline: Instant::now() + Duration::from_secs(120) });
+        *guard = Some(Running { round: round.clone(), cams, drain_timeout: Duration::from_millis(drain_timeout_ms), deadline: Instant::now() + Duration::from_secs(120) });
         Ok(round)
     }
 
     fn fail_running(&self, run: &mut Running, error: String) {
         run.round.state = CaptureState::Failed;
-        self.uncertain_sessions.lock().unwrap().insert((run.round.camera_id.clone(), run.round.device_session));
+        self.uncertain_sessions.lock().unwrap().extend(run.round.cameras.iter().map(|c| (c.camera_id.clone(), c.device_session)));
         run.round.error = Some(error);
         if let Err(error) = self.save(&run.round) { run.round.error = Some(format!("{}；异常记录保存失败：{error}", run.round.error.as_deref().unwrap_or_default())); }
     }
@@ -294,7 +396,12 @@ impl RecipeCaptureHost {
     }
 
     pub fn disconnected(&self, cam: u8) {
-        if let Some(run) = self.current.lock().unwrap().as_mut().filter(|r| r.cam == cam && r.round.state.active()) { self.fail_running(run, "采集设备断连，请整圈重采".into()); }
+        let mut guard = self.current.lock().unwrap();
+        let Some(run) = guard.as_mut().filter(|r| r.round.state.active()) else { return };
+        if let Some(j) = run.camera_of(cam) {
+            let error = format!("相机 {} 断连，请整圈重采", run.round.cameras[j].camera_id);
+            self.fail_running(run, error);
+        }
     }
 
     pub fn plc_started(&self, planned_count: u32) -> Result<(), String> {
@@ -343,9 +450,10 @@ impl RecipeCaptureHost {
     pub fn offer(&self, frame: &Frame, original: Option<Arc<FrameImage>>) -> bool {
         let mut guard = self.current.lock().unwrap();
         let Some(run) = guard.as_mut().filter(|r| r.round.state.active()) else { return false; };
-        if frame.cam != run.cam { return true; }
+        let Some(j) = run.camera_of(frame.cam) else { return true; };
         if run.round.state == CaptureState::WaitingStart {
-            self.fail_running(run, "PLC 开始前收到帧，无法确定本轮归属".into());
+            let error = format!("相机 {}：PLC 开始前收到帧，无法确定本轮归属", run.round.cameras[j].camera_id);
+            self.fail_running(run, error);
             return true;
         }
         if self.tx.try_send(QueuedFrame { round_id: run.round.round_id.clone(), frame: frame.clone(), original }).is_err() {
@@ -358,31 +466,41 @@ impl RecipeCaptureHost {
         let mut guard = self.current.lock().unwrap();
         let Some(run) = guard.as_mut().filter(|r| r.round.round_id == item.round_id && r.round.state.active()) else { return; };
         let f = item.frame;
-        run.round.received_count += 1;
+        let Some(j) = run.camera_of(f.cam) else { return; };
+        run.round.cameras[j].received_count += 1;
+        let camera = &run.round.cameras[j];
+        let state = &run.cams[j];
+        let ordinal = camera.received_count;
+        let first = run.round.frames.iter().find_map(|s| s.cameras.iter().find(|c| c.camera_id == camera.camera_id));
         let error = if run.round.state == CaptureState::WaitingStart { Some("PLC 开始前收到帧，无法确定本轮归属") }
-            else if f.session != run.round.device_session { Some("设备会话已变化，不能混用不同会话的图像") }
+            else if f.session != camera.device_session { Some("设备会话已变化，不能混用不同会话的图像") }
             else if f.manual { Some("本轮收到手动触发图像") }
             else if f.lost_packets != 0 { Some("图像存在丢包") }
             else if run.round.planned_count.is_none() { Some("尚未取得 PLC 计划触发数量，不能接收本轮图像") }
-            else if run.round.planned_count.is_some_and(|n| run.round.received_count > n) { Some("实际收图数量超过 PLC 计划数量") }
-            else if f.images.len() != view_count(&run.round.camera_config) { Some("一帧必须完整交付设备配置的全部视角图像") }
+            else if run.round.planned_count.is_some_and(|n| ordinal > n) { Some("实际收图数量超过 PLC 计划触发数量") }
+            else if f.images.len() != view_count(&camera.camera_config) { Some("一帧必须完整交付设备配置的全部视角图像") }
             else if f.images.iter().any(|i| i.width == 0 || i.height == 0 || (i.width as usize).checked_mul(i.height as usize) != Some(i.pixels.len())) { Some("图像尺寸或像素长度无效") }
-            else if run.round.frames.first().is_some_and(|shot| shot.views.iter().zip(&f.images).any(|(v, i)| v.width != i.width || v.height != i.height)) { Some("本轮图像尺寸发生变化") }
-            else if run.source.is_some_and(|source| source != f.counter) { Some("帧计数来源发生变化") }
-            else if run.source.is_none() && !matches!(f.counter, CounterSource::ChunkTrigger | CounterSource::Synthetic) && run.last_trigger.is_some_and(|last| last.checked_add(1) != Some(f.frame_counter)) { Some("首帧计数与开流基线不连续") }
-            else if run.last_frame.is_some_and(|last| last.checked_add(1) != Some(f.frame_counter)) { Some("SDK 帧号重复、跳号或顺序异常") }
-            else if matches!(f.counter, CounterSource::ChunkTrigger | CounterSource::Synthetic) && run.last_trigger.is_some_and(|last| last.checked_add(1) != Some(f.trigger_counter)) { Some("触发计数重复、跳号或顺序异常") }
+            else if first.is_some_and(|shot| shot.views.iter().zip(&f.images).any(|(v, i)| v.width != i.width || v.height != i.height)) { Some("本轮图像尺寸发生变化") }
+            else if state.source.is_some_and(|source| source != f.counter) { Some("帧计数来源发生变化") }
+            else if state.source.is_none() && !matches!(f.counter, CounterSource::ChunkTrigger | CounterSource::Synthetic) && state.last_trigger.is_some_and(|last| last.checked_add(1) != Some(f.frame_counter)) { Some("首帧计数与开流基线不连续") }
+            else if state.last_frame.is_some_and(|last| last.checked_add(1) != Some(f.frame_counter)) { Some("SDK 帧号重复、跳号或顺序异常") }
+            else if matches!(f.counter, CounterSource::ChunkTrigger | CounterSource::Synthetic) && state.last_trigger.is_some_and(|last| last.checked_add(1) != Some(f.trigger_counter)) { Some("触发计数重复、跳号或顺序异常") }
             else { None };
-        if let Some(error) = error { self.fail_running(run, error.into()); return; }
-        run.source = Some(f.counter);
-        run.last_frame = Some(f.frame_counter);
+        if let Some(error) = error {
+            let error = format!("相机 {}：{error}", camera.camera_id);
+            self.fail_running(run, error);
+            return;
+        }
+        let camera_id = camera.camera_id.clone();
+        let state = &mut run.cams[j];
+        state.source = Some(f.counter);
+        state.last_frame = Some(f.frame_counter);
         let trigger = matches!(f.counter, CounterSource::ChunkTrigger | CounterSource::Synthetic).then_some(f.trigger_counter);
-        run.last_trigger = trigger;
-        let ordinal = run.round.received_count;
-        let dir = self.root.join(&run.round.round_id).join(format!("shot-{ordinal:04}"));
+        state.last_trigger = trigger;
+        let dir = camera_dir(&self.root, &run.round.round_id, ordinal, &camera_id);
         let round_id = run.round.round_id.clone();
         drop(guard);
-        let saved = (|| -> Result<CaptureShot, String> {
+        let saved = (|| -> Result<CaptureFrame, String> {
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             let original = match item.original { Some(image) => image, None => compose_views(&f.images)? };
             let original_path = dir.join("original.png");
@@ -392,26 +510,48 @@ impl RecipeCaptureHost {
                 save_image(&path, image)?;
                 Ok(CaptureView { view: i as u8 + 1, path: path.to_string_lossy().into_owned(), width: image.width, height: image.height })
             }).collect::<Result<Vec<_>, String>>()?;
-            Ok(CaptureShot { shot_id: format!("S{ordinal:04}"), ordinal, frame_counter: f.frame_counter, trigger_counter: trigger, original_path: original_path.to_string_lossy().into_owned(), views })
+            Ok(CaptureFrame { camera_id: camera_id.clone(), frame_counter: f.frame_counter, trigger_counter: trigger, original_path: original_path.to_string_lossy().into_owned(), views })
         })();
         let mut guard = self.current.lock().unwrap();
         let Some(run) = guard.as_mut().filter(|r| r.round.round_id == round_id && r.round.state.active()) else { return; };
         match saved {
-            Ok(shot) => { run.round.frames.push(shot); if let Err(e) = self.save(&run.round) { self.fail_running(run, e); } }
-            Err(e) => self.fail_running(run, format!("保存采集图像失败：{e}")),
+            Ok(frame) => {
+                let index = ordinal as usize - 1;
+                if run.round.frames.len() == index {
+                    run.round.frames.push(CaptureShot { shot_id: format!("S{ordinal:04}"), ordinal, cameras: Vec::new() });
+                }
+                let order = |id: &str| run.round.cameras.iter().position(|c| c.camera_id == id);
+                let Some(shot) = run.round.frames.get_mut(index) else {
+                    self.fail_running(run, format!("相机 {camera_id}：前一次触发的图像缺失，无法确定拍照点归属"));
+                    return;
+                };
+                let at = shot.cameras.iter().position(|c| order(&c.camera_id) > Some(j)).unwrap_or(shot.cameras.len());
+                shot.cameras.insert(at, frame);
+                if let Err(e) = self.save(&run.round) { self.fail_running(run, e); }
+            }
+            Err(e) => self.fail_running(run, format!("相机 {camera_id}：保存采集图像失败：{e}")),
         }
     }
 
     fn tick(&self) {
         let mut guard = self.current.lock().unwrap();
         let Some(run) = guard.as_mut().filter(|r| r.round.state.active() && Instant::now() >= r.deadline) else { return; };
-        if run.round.state == CaptureState::Draining && run.round.planned_count.is_some_and(|n| run.round.frames.len() == n as usize)
-            && run.round.plc_actual_count == run.round.planned_count && Some(run.round.received_count) == run.round.planned_count {
+        let round = &run.round;
+        let all_arrived = round.planned_count.is_some_and(|n| round.frames.len() == n as usize && round.complete_shots() == n
+            && round.cameras.iter().all(|c| c.received_count == n));
+        if round.state == CaptureState::Draining && all_arrived && round.plc_actual_count == round.planned_count {
             run.round.state = CaptureState::Complete;
             if let Err(e) = self.save(&run.round) { self.fail_running(run, e); }
         } else {
-            let plan = run.round.planned_count.map_or_else(|| "等待 PLC 开始请求".into(), |n| format!("计划 {n} 张"));
-            let error = format!("采集超时：{plan}，已收到 {} 张；必须收到 PLC 结束且数量一致，请整圈重采", run.round.received_count);
+            let error = match round.planned_count {
+                None => "采集超时：仍在等待 PLC 开始请求，请整圈重采".to_string(),
+                Some(n) => {
+                    let short: Vec<_> = round.cameras.iter().filter(|c| c.received_count != n)
+                        .map(|c| format!("相机 {} 收到 {}/{n} 张", c.camera_id, c.received_count)).collect();
+                    if short.is_empty() { format!("采集超时：各相机均已收到 {n} 张，但未收到 PLC 结束；请整圈重采") }
+                    else { format!("采集超时：计划触发 {n} 次，{}；必须收到 PLC 结束且各相机数量一致，请整圈重采", short.join("、")) }
+                }
+            };
             self.fail_running(run, error);
         }
     }
@@ -424,7 +564,7 @@ impl RecipeCaptureHost {
             if !entry.path().join("round.json").is_file() { continue; }
             let r = self.get(&id)?;
             if r.recipe_id == recipe_id {
-                rounds.push(CaptureSummary { round_id: r.round_id, recipe_id: r.recipe_id, camera_id: r.camera_id, planned_count: r.planned_count, received_count: r.received_count, state: r.state, created_at: r.created_at, error: r.error });
+                rounds.push(CaptureSummary { camera_ids: r.camera_ids(), received_count: r.complete_shots(), round_id: r.round_id, recipe_id: r.recipe_id, planned_count: r.planned_count, state: r.state, created_at: r.created_at, error: r.error });
             }
         }
         rounds.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| b.round_id.cmp(&a.round_id)));
@@ -451,27 +591,39 @@ fn compose_views(images: &[Arc<FrameImage>]) -> Result<Arc<FrameImage>, String> 
 }
 
 #[tauri::command]
-pub async fn recipe_capture_start(app: AppHandle, recipe_id: String, camera_id: String, drain_timeout_ms: Option<u64>) -> Result<CaptureRound, String> {
-    tauri::async_runtime::spawn_blocking(move || start_capture(app, recipe_id, camera_id, drain_timeout_ms)).await.map_err(|e| e.to_string())?
+pub async fn recipe_capture_start(app: AppHandle, recipe_id: String, camera_ids: Vec<String>, drain_timeout_ms: Option<u64>) -> Result<CaptureRound, String> {
+    tauri::async_runtime::spawn_blocking(move || start_capture(app, recipe_id, camera_ids, drain_timeout_ms)).await.map_err(|e| e.to_string())?
 }
 
-fn start_capture(app: AppHandle, recipe_id: String, camera_id: String, drain_timeout_ms: Option<u64>) -> Result<CaptureRound, String> {
+fn start_capture(app: AppHandle, recipe_id: String, camera_ids: Vec<String>, drain_timeout_ms: Option<u64>) -> Result<CaptureRound, String> {
     let cycle = app.state::<CycleHost>();
     if recipe_id.trim().is_empty() { return Err("请先创建配方草稿".into()); }
+    if camera_ids.is_empty() { return Err("请至少选择一台采集相机".into()); }
     let Some(_gate) = crate::workspace::wait_idle_plc_gate(&cycle, "开始整圈采集")? else { return Err("工件正在检测，结束后再开始整圈采集".into()) };
     if !matches!(cycle.phase(), Phase::Idle | Phase::Fault) { return Err("节拍尚未回到空闲，稍后再试".into()); }
-    let cam = cycle.camera.require(&camera_id)?;
-    let slot = cycle.camera.slot(cam as usize).ok_or("设备不存在")?;
-    let config = slot.config();
-    if !slot.is_ready() { return Err("采集要求已就绪的单个 device".into()); }
-    if config.source == CameraSource::Mvs && config.trigger_source != "Line0" { return Err("真实示教采集必须使用 PLC Line0 硬触发".into()); }
-    let (arm, ledger) = slot.routing_state()?;
-    let source = ledger.as_ref().and_then(|l| l.source).or(arm.source);
-    let baseline = ledger.as_ref().and_then(|l| l.last).or(arm.counter_after_open);
+    let mut slots = Vec::with_capacity(camera_ids.len());
+    for camera_id in &camera_ids {
+        let cam = cycle.camera.require(camera_id)?;
+        let slot = cycle.camera.slot(cam as usize).ok_or_else(|| format!("相机 {camera_id} 不存在"))?;
+        let config = slot.config();
+        if !slot.is_ready() { return Err(format!("相机 {}（{camera_id}）未就绪", config.name)); }
+        if config.source == CameraSource::Mvs && config.trigger_source != "Line0" { return Err(format!("相机 {}（{camera_id}）必须使用 PLC Line0 硬触发", config.name)); }
+        slots.push((cam, slot, config));
+    }
+    let simulated = slots.iter().any(|(_, _, config)| config.source != CameraSource::Mvs);
     app.state::<crate::workspace::WorkspaceHost>().capture_for_candidate(&recipe_id, |workspace| {
-        let imaging = workspace.imaging(&camera_id);
-        slot.set_imaging(&imaging)?;
-        cycle.camera.recipe_capture().start(recipe_id.clone(), cam, camera_id, serde_json::to_value(&config).map_err(|e| e.to_string())?, imaging, arm.session, source, baseline, drain_timeout_ms.unwrap_or(1000), config.source != CameraSource::Mvs)
+        let mut devices = Vec::with_capacity(slots.len());
+        for (cam, slot, config) in &slots {
+            let imaging = workspace.imaging(&config.id);
+            slot.set_imaging(&imaging)?;
+            let (arm, ledger) = slot.routing_state().map_err(|e| format!("相机 {}：{e}", config.id))?;
+            devices.push(CaptureDevice {
+                cam: *cam, camera_id: config.id.clone(), camera_config: serde_json::to_value(config).map_err(|e| e.to_string())?, imaging,
+                session: arm.session, source: ledger.as_ref().and_then(|l| l.source).or(arm.source),
+                trigger_baseline: ledger.as_ref().and_then(|l| l.last).or(arm.counter_after_open),
+            });
+        }
+        cycle.camera.recipe_capture().start(recipe_id.clone(), devices, drain_timeout_ms.unwrap_or(1000), simulated)
     })
 }
 
@@ -495,13 +647,14 @@ pub fn recipe_capture_list(app: AppHandle, recipe_id: String) -> Result<Vec<Capt
 }
 
 #[tauri::command]
-pub fn recipe_capture_image(app: AppHandle, round_id: String, k: usize, view: Option<u8>) -> Result<tauri::ipc::Response, String> {
+pub fn recipe_capture_image(app: AppHandle, round_id: String, k: usize, camera_id: String, view: Option<u8>) -> Result<tauri::ipc::Response, String> {
     let cycle = app.state::<CycleHost>();
     let round = cycle.camera.recipe_capture().get(&round_id)?;
     let shot = round.frames.get(k).ok_or("拍照点不存在")?;
+    let frame = shot.cameras.iter().find(|f| f.camera_id == camera_id).ok_or_else(|| format!("拍照点 {} 没有相机 {camera_id} 的图像", shot.shot_id))?;
     let path = match view {
-        None => &shot.original_path,
-        Some(view) => &shot.views.iter().find(|v| v.view == view).ok_or("图像不存在")?.path,
+        None => &frame.original_path,
+        Some(view) => &frame.views.iter().find(|v| v.view == view).ok_or("图像不存在")?.path,
     };
     let image = crate::image_file::load(Path::new(path))?;
     let scale = (image.width as f32 / 900.0).max(image.height as f32 / 650.0).max(1.0);
@@ -529,14 +682,35 @@ mod tests {
         RecipeCaptureHost::open(path).unwrap()
     }
 
+    fn device(cam: u8, id: &str, config: serde_json::Value, session: u64, source: Option<CounterSource>, baseline: Option<u64>) -> CaptureDevice {
+        CaptureDevice { cam, camera_id: id.into(), camera_config: config, imaging: crate::recipe::DEFAULT_IMAGING, session, source, trigger_baseline: baseline }
+    }
+
+    fn single(host: &RecipeCaptureHost, config: serde_json::Value, session: u64, source: Option<CounterSource>, baseline: Option<u64>, simulated: bool) -> Result<CaptureRound, String> {
+        host.start("r".into(), vec![device(0, "cam1", config, session, source, baseline)], 200, simulated)
+    }
+
     fn start(host: &RecipeCaptureHost) -> CaptureRound {
-        let session = host.current().map_or(9, |r| r.device_session + 1);
-        host.start("recipe-a".into(), 0, "cam1".into(), serde_json::json!({"source":"sim"}), crate::recipe::DEFAULT_IMAGING, session, Some(CounterSource::Synthetic), Some(0), 200, true).unwrap()
+        let session = host.current().map_or(9, |r| r.cameras[0].device_session + 1);
+        host.start("recipe-a".into(), vec![device(0, "cam1", serde_json::json!({"source":"sim"}), session, Some(CounterSource::Synthetic), Some(0))], 200, true).unwrap()
+    }
+
+    /// 三台单视角相机，各自会话 10/11/12、触发计数基线 0/100/200。
+    fn start_three(host: &RecipeCaptureHost) -> CaptureRound {
+        let devices = (0..3u8).map(|i| device(i, &format!("cam{}", i + 1), serde_json::json!({"viewCount": 1}), 10 + i as u64, Some(CounterSource::Synthetic), Some(i as u64 * 100))).collect();
+        host.start("recipe-a".into(), devices, 200, true).unwrap()
     }
 
     fn frame(n: u64) -> Frame {
         Frame { cam: 0, session: 9, counter: CounterSource::Synthetic, frame_counter: n, trigger_counter: n, lost_packets: 0, ts: 0, manual: false,
             images: (1..=3).map(|v| Arc::new(FrameImage::new(2, 2, vec![v; 4]))).collect() }
+    }
+
+    /// 三相机轮次里第 cam 台相机的第 n 次触发。
+    fn cam_frame(cam: u8, n: u64) -> Frame {
+        let counter = cam as u64 * 100 + n;
+        Frame { cam, session: 10 + cam as u64, counter: CounterSource::Synthetic, frame_counter: counter, trigger_counter: counter, lost_packets: 0, ts: 0, manual: false,
+            images: vec![Arc::new(FrameImage::new(2, 2, vec![cam; 4]))] }
     }
 
     fn receive(host: &RecipeCaptureHost, round: &CaptureRound, f: Frame) {
@@ -546,6 +720,15 @@ mod tests {
     fn drain(host: &RecipeCaptureHost) {
         host.current.lock().unwrap().as_mut().unwrap().deadline = Instant::now();
         host.tick();
+    }
+
+    fn complete_three(host: &RecipeCaptureHost) -> CaptureRound {
+        let round = start_three(host);
+        host.plc_started(2).unwrap();
+        for n in 1..=2 { for cam in 0..3 { receive(host, &round, cam_frame(cam, n)); } }
+        host.plc_ended(2).unwrap();
+        drain(host);
+        host.get(&round.round_id).unwrap()
     }
 
     #[test]
@@ -605,10 +788,10 @@ mod tests {
     fn first_real_frame_requires_a_baseline_and_cannot_be_old_or_missing() {
         for source in [None, Some(CounterSource::SdkFrame), Some(CounterSource::ChunkFrame), Some(CounterSource::ChunkTrigger)] {
             let host = host();
-            assert!(host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), crate::recipe::DEFAULT_IMAGING, 9, source, None, 200, false).is_err());
+            assert!(single(&host, serde_json::json!({}), 9, source, None, false).is_err());
             for first in [10, 12] {
                 let session = first;
-                let round = host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), crate::recipe::DEFAULT_IMAGING, session, source, Some(10), 200, false).unwrap();
+                let round = single(&host, serde_json::json!({}), session, source, Some(10), false).unwrap();
                 host.plc_started(1).unwrap();
                 let mut f = frame(first);
                 f.session = session;
@@ -617,7 +800,7 @@ mod tests {
                 assert_eq!(host.current().unwrap().state, CaptureState::Failed);
                 assert!(host.current().unwrap().frames.is_empty());
             }
-            let round = host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), crate::recipe::DEFAULT_IMAGING, 9, source, Some(10), 200, false).unwrap();
+            let round = single(&host, serde_json::json!({}), 9, source, Some(10), false).unwrap();
             host.plc_started(1).unwrap();
             let mut f = frame(11); f.counter = source.unwrap_or(CounterSource::SdkFrame);
             receive(&host, &round, f);
@@ -630,17 +813,14 @@ mod tests {
         for counter in [CounterSource::Synthetic, CounterSource::SdkFrame, CounterSource::ChunkTrigger] {
         let host = host();
         let simulated = counter == CounterSource::Synthetic;
-        let round = host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), crate::recipe::DEFAULT_IMAGING, 9,
-            Some(counter), Some(0), 200, simulated).unwrap();
+        let round = single(&host, serde_json::json!({}), 9, Some(counter), Some(0), simulated).unwrap();
         host.plc_started(20).unwrap();
         for n in 1..=19 { let mut f = frame(n); f.counter = counter; receive(&host, &round, f); }
         host.plc_ended(20).unwrap();
         drain(&host);
         assert_eq!(host.current().unwrap().state, CaptureState::Failed);
-        assert!(host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), crate::recipe::DEFAULT_IMAGING, 9,
-            Some(counter), Some(19), 200, simulated).unwrap_err().contains("重新连接"));
-        let next = host.start("r".into(), 0, "cam1".into(), serde_json::json!({}), crate::recipe::DEFAULT_IMAGING, 10,
-            Some(counter), Some(0), 200, simulated).unwrap();
+        assert!(single(&host, serde_json::json!({}), 9, Some(counter), Some(19), simulated).unwrap_err().contains("重新连接"));
+        let next = single(&host, serde_json::json!({}), 10, Some(counter), Some(0), simulated).unwrap();
         host.plc_started(20).unwrap();
         receive(&host, &round, frame(20));
         assert!(host.current().unwrap().frames.is_empty());
@@ -664,7 +844,7 @@ mod tests {
         assert_eq!(result.state, CaptureState::Receiving);
         assert_eq!(result.planned_count, Some(20));
         assert_eq!(result.frames.len(), 20);
-        assert!(result.frames.iter().all(|s| s.views.len() == 3 && Path::new(&s.original_path).is_file()));
+        assert!(result.frames.iter().all(|s| s.cameras.len() == 1 && s.cameras[0].views.len() == 3 && Path::new(&s.cameras[0].original_path).is_file()));
         host.plc_ended(20).unwrap();
         assert_eq!(host.current().unwrap().state, CaptureState::Draining);
         drain(&host);
@@ -672,11 +852,87 @@ mod tests {
     }
 
     #[test]
+    fn three_cameras_one_trigger_is_one_shot_with_an_image_per_camera_and_completes_only_together() {
+        let host = host();
+        let round = start_three(&host);
+        host.plc_started(2).unwrap();
+        for (cam, n) in [(1, 1), (0, 1), (2, 1), (0, 2), (2, 2)] { receive(&host, &round, cam_frame(cam, n)); }
+        let receiving = host.current().unwrap();
+        assert_eq!(receiving.state, CaptureState::Receiving);
+        assert_eq!(receiving.complete_shots(), 1);
+        assert_eq!(receiving.frames[0].cameras.iter().map(|f| f.camera_id.as_str()).collect::<Vec<_>>(), ["cam1", "cam2", "cam3"]);
+        host.plc_ended(2).unwrap();
+        receive(&host, &round, cam_frame(1, 2));
+        drain(&host);
+        let done = host.get(&round.round_id).unwrap();
+        assert_eq!(done.state, CaptureState::Complete);
+        assert_eq!(done.frames[1].cameras.iter().map(|f| (f.camera_id.as_str(), f.trigger_counter)).collect::<Vec<_>>(),
+            [("cam1", Some(2)), ("cam2", Some(102)), ("cam3", Some(202))]);
+    }
+
+    #[test]
+    fn drain_timeout_names_only_the_camera_that_is_short() {
+        let host = host();
+        let round = start_three(&host);
+        host.plc_started(2).unwrap();
+        for (cam, n) in [(0, 1), (1, 1), (2, 1), (0, 2), (2, 2)] { receive(&host, &round, cam_frame(cam, n)); }
+        host.plc_ended(2).unwrap();
+        drain(&host);
+        let failed = host.current().unwrap();
+        assert_eq!(failed.state, CaptureState::Failed);
+        let error = failed.error.unwrap();
+        assert!(error.contains("相机 cam2 收到 1/2 张"), "{error}");
+        assert!(!error.contains("cam1") && !error.contains("cam3"), "{error}");
+    }
+
+    #[test]
+    fn trigger_counts_are_checked_per_camera_not_across_cameras() {
+        for (gap_on, accepted) in [(None, true), (Some(1u8), false)] {
+            let host = host();
+            let round = start_three(&host);
+            host.plc_started(3).unwrap();
+            for n in 1..=2 { for cam in [2, 0, 1] { receive(&host, &round, cam_frame(cam, n)); } }
+            if let Some(cam) = gap_on { receive(&host, &round, cam_frame(cam, 4)); }
+            let state = host.current().unwrap();
+            assert_eq!(state.state == CaptureState::Receiving, accepted, "{:?}", state.error);
+            if !accepted { assert!(state.error.unwrap().starts_with("相机 cam2：")); }
+        }
+    }
+
+    #[test]
+    fn recipe_shots_expand_trigger_major_with_a_shared_pose_per_trigger() {
+        let host = host();
+        let three = complete_three(&host);
+        let shots = three.recipe_shots().unwrap();
+        assert_eq!(shots.iter().map(|s| (s.shot_id.as_str(), s.pose_id.as_str(), s.camera.camera_id.as_str(), s.frame.trigger_counter)).collect::<Vec<_>>(), [
+            ("S001-cam1", "S001", "cam1", Some(1)), ("S001-cam2", "S001", "cam2", Some(101)), ("S001-cam3", "S001", "cam3", Some(201)),
+            ("S002-cam1", "S002", "cam1", Some(2)), ("S002-cam2", "S002", "cam2", Some(102)), ("S002-cam3", "S002", "cam3", Some(202)),
+        ]);
+        let host = self::host();
+        let round = start(&host);
+        host.plc_started(2).unwrap();
+        for n in 1..=2 { receive(&host, &round, frame(n)); }
+        assert_eq!(host.current().unwrap().recipe_shots().unwrap().iter().map(|s| s.shot_id.clone()).collect::<Vec<_>>(), ["S001", "S002"]);
+    }
+
+    #[test]
+    fn start_rejects_a_camera_selected_twice_and_names_the_camera_without_baseline() {
+        let host = host();
+        let config = serde_json::json!({"viewCount": 1});
+        let twice = vec![device(0, "cam1", config.clone(), 9, None, Some(0)), device(0, "cam2", config.clone(), 9, None, Some(0))];
+        assert!(host.start("r".into(), twice, 200, false).is_err());
+        let twice = vec![device(0, "cam1", config.clone(), 9, None, Some(0)), device(1, "cam1", config.clone(), 10, None, Some(0))];
+        assert!(host.start("r".into(), twice, 200, false).is_err());
+        let missing = vec![device(0, "cam1", config.clone(), 9, None, Some(0)), device(1, "cam2", config, 10, None, None)];
+        assert!(host.start("r".into(), missing, 200, false).unwrap_err().starts_with("相机 cam2"));
+        assert!(host.current().is_none());
+    }
+
+    #[test]
     fn each_frame_must_carry_exactly_the_device_view_count() {
         for (device_views, delivered, accepted) in [(1, 1, true), (1, 3, false), (3, 3, true), (3, 1, false)] {
             let host = host();
-            let round = host.start("recipe-a".into(), 0, "cam1".into(), serde_json::json!({"viewCount": device_views}), crate::recipe::DEFAULT_IMAGING, 9,
-                Some(CounterSource::Synthetic), Some(0), 200, true).unwrap();
+            let round = host.start("recipe-a".into(), vec![device(0, "cam1", serde_json::json!({"viewCount": device_views}), 9, Some(CounterSource::Synthetic), Some(0))], 200, true).unwrap();
             host.plc_started(1).unwrap();
             let mut f = frame(1);
             f.images.truncate(delivered);
@@ -726,12 +982,14 @@ mod tests {
     }
 
     #[test]
-    fn unreadable_old_round_record_is_backed_up_instead_of_blocking_startup() {
+    fn old_single_camera_round_record_is_backed_up_instead_of_blocking_startup() {
         let host = host();
         let round = start(&host);
         let dir = host.root.join(&round.round_id);
         let mut old: serde_json::Value = serde_json::from_str(&crate::fsio::read_text(&dir.join("round.json")).unwrap()).unwrap();
-        old.as_object_mut().unwrap().remove("imaging");
+        let object = old.as_object_mut().unwrap();
+        object.remove("cameras");
+        object.insert("cameraId".into(), "cam1".into());
         crate::fsio::write_atomic(&dir.join("round.json"), &old.to_string()).unwrap();
         let reopened = RecipeCaptureHost::open(host.root.clone()).unwrap();
         assert!(reopened.current().is_none());
@@ -762,7 +1020,7 @@ mod tests {
         drain(&host);
         let valid = host.get(&round.round_id).unwrap();
         let mut forged = valid.clone();
-        forged.frames[0].views[0].path = host.root.join("external.png").to_string_lossy().into_owned();
+        forged.frames[0].cameras[0].views[0].path = host.root.join("external.png").to_string_lossy().into_owned();
         assert!(host.validate_record(&round.round_id, &forged).is_err());
         forged = valid.clone(); forged.plc_actual_count = None;
         assert!(host.validate_record(&round.round_id, &forged).is_err());
@@ -770,11 +1028,17 @@ mod tests {
             forged = valid.clone(); forged.planned_count = plan;
             assert!(host.validate_record(&round.round_id, &forged).is_err());
         }
-        forged = valid.clone(); forged.frames[0].views[0].view = 2;
+        forged = valid.clone(); forged.frames[0].cameras[0].views[0].view = 2;
         assert!(host.validate_record(&round.round_id, &forged).is_err());
         forged = valid; forged.round_id = "capture-other".into();
         assert!(host.validate_record(&round.round_id, &forged).is_err());
         assert!(host.get("capture-../../outside").is_err());
-        assert!(host.start("recipe-a".into(), 0, "cam1".into(), serde_json::json!({}), crate::recipe::DEFAULT_IMAGING, 9, None, None, 200, true).is_err());
+        let host = self::host();
+        let three = complete_three(&host);
+        let mut forged = three.clone();
+        forged.frames[1].cameras.remove(1);
+        assert!(host.validate_record(&three.round_id, &forged).is_err());
+        forged = three.clone(); forged.frames[0].cameras.swap(0, 1);
+        assert!(host.validate_record(&three.round_id, &forged).is_err());
     }
 }

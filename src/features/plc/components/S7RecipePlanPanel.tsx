@@ -74,10 +74,10 @@ export default function S7RecipePlanPanel() {
     {plan && <>
       <p className="hint">协议 {plan.protocolVersion} · 计划版本 {plan.planVersion} · 共 {plan.shotCount} 个拍照点</p>
       <div className="table-wrap"><table className="table" aria-label="单设备计划"><thead><tr><th>相机设备 ID</th><th>计划触发数</th></tr></thead><tbody>
-        <tr><td className="mono">{plan.deviceId}</td><td>{plan.deviceShots}</td></tr>
+        <tr><td className="mono">{plan.deviceIds.join("、")}</td><td>{plan.deviceShots}</td></tr>
       </tbody></table></div>
       <div className="table-wrap"><table className="table" aria-label="拍照点计划"><thead><tr><th>拍照点</th><th>Pose</th><th>相机设备 ID</th></tr></thead><tbody>
-        {plan.shots.map(shot => <tr key={shot.shotId}><td className="mono">{shot.shotId}</td><td className="mono">{shot.poseId}</td><td className="mono">{shot.cameraId}</td></tr>)}
+        {plan.shots.map(shot => <tr key={shot.shotId}><td className="mono">{shot.shotId}</td><td className="mono">{shot.poseId}</td><td className="mono">{shot.cameraIds.join("、")}</td></tr>)}
       </tbody></table></div>
       <p className="muted hint">每次触发唯一相机设备，SDK 返回一幅包含图 1 / 图 2 / 图 3 的拼接图。三个视角不分别计数，计划触发数等于拍照点数。</p>
       <details><summary>查看完整计划 JSON</summary><pre className="mono" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{JSON.stringify(plan, null, 2)}</pre></details>

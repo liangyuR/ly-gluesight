@@ -1,6 +1,6 @@
 import { desktopCall } from "../../lib/desktop";
 import type { CameraImaging, RecipeDoc } from "../cycle/types";
-import type { CaptureRound, Comparison, FrozenImage, GrayImage, ImagingSaved, Overview, RecordImages, Sample, ShotTeach, Workspace, WorkspaceView } from "./types";
+import type { CaptureRound, CaptureSummary, Comparison, FrozenImage, GrayImage, ImagingSaved, Overview, RecordImages, Sample, ShotTeach, Workspace, WorkspaceView } from "./types";
 
 export async function decodeGray(input: ArrayBuffer | number[]): Promise<GrayImage> {
   const buf=input instanceof ArrayBuffer?input:Uint8Array.from(input).buffer;
@@ -21,7 +21,7 @@ export async function decodeGray(input: ArrayBuffer | number[]): Promise<GrayIma
 }
 
 export const workspaceApi = {
-  captureStart: (recipeId: string, cameraId: string, drainTimeoutMs: number) => desktopCall<CaptureRound>("recipe_capture_start", { recipeId, cameraId, drainTimeoutMs }),
+  captureStart: (recipeId: string, cameraIds: string[], drainTimeoutMs: number) => desktopCall<CaptureRound>("recipe_capture_start", { recipeId, cameraIds, drainTimeoutMs }),
   captureGet: (roundId?: string) => desktopCall<CaptureRound | null>("recipe_capture_get", { roundId }),
   captureStop: () => desktopCall<CaptureRound | null>("recipe_capture_stop"),
   adoptCapture: (id: string, revision: number, roundId: string, reuseTeaching: boolean, correspondenceConfirmed: boolean) => desktopCall<WorkspaceView>("workspace_adopt_capture", { id, revision, roundId, reuseTeaching, correspondenceConfirmed }),
@@ -36,8 +36,8 @@ export const workspaceApi = {
   create: (doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_create", { doc }),
   remove: (id: string) => desktopCall<void>("workspace_delete", { id }),
   saveDoc: (id: string, revision: number, doc: RecipeDoc) => desktopCall<WorkspaceView>("workspace_save_doc", { id, revision, doc }),
-  /** 写进候选配方，并在设备空闲时立即下发到这台相机；applyError 为下发失败的原因（参数已保存）。 */
-  setCameraImaging: (id: string, revision: number, camera: string, imaging: CameraImaging) => desktopCall<ImagingSaved>("workspace_set_camera_imaging", { id, revision, camera, imaging }),
+  /** 按相机写进候选配方，并在设备空闲时分别下发；applyErrors 为各相机下发失败的原因（参数已保存）。 */
+  setCameraImaging: (id: string, revision: number, imaging: Record<string, CameraImaging>) => desktopCall<ImagingSaved>("workspace_set_camera_imaging", { id, revision, imaging }),
   selectView: (id: string, revision: number, k: number, view: number) => desktopCall<WorkspaceView>("workspace_select_view", { id, revision, k, view }),
   image: (id: string, imageId: string) => desktopCall<ArrayBuffer>("workspace_image", { id, imageId }).then(decodeGray),
   /** 按候选里已保存的中线试测冻结原图。 */
@@ -54,8 +54,8 @@ export const workspaceApi = {
     desktopCall<WorkspaceView>("workspace_import_sample", {id,revision,name,expected,images}),
   retryPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_retry_publish", { id, revision }),
   abandonPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_abandon_publish", { id, revision }),
-  captureImage: (roundId: string, k: number, view?: number) => desktopCall<ArrayBuffer>("recipe_capture_image", { roundId, k, view }).then(decodeGray),
-  captureList: (recipeId: string) => desktopCall<Pick<CaptureRound,"roundId"|"recipeId"|"cameraId"|"plannedCount"|"receivedCount"|"state"|"createdAt"|"error">[]>("recipe_capture_list", { recipeId }),
+  captureImage: (roundId: string, k: number, cameraId: string, view?: number) => desktopCall<ArrayBuffer>("recipe_capture_image", { roundId, k, cameraId, view }).then(decodeGray),
+  captureList: (recipeId: string) => desktopCall<CaptureSummary[]>("recipe_capture_list", { recipeId }),
   publish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish", { id, revision }),
   recordImages: (historyId: number) => desktopCall<RecordImages>("workspace_record_images", { historyId }),
   recordImage: (historyId: number, k: number, view?: number) => desktopCall<ArrayBuffer>("workspace_record_image", { historyId, k, view }).then(decodeGray),

@@ -460,7 +460,7 @@ struct Part {
     extra: usize,
     queue: usize,
     router: ShotRouter,
-    issued: Option<(String, u64)>,
+    issued: Option<(Vec<String>, u64)>,
     issued_verified: bool,
     routing_closed: bool,
     image_measurement: bool,
@@ -1065,7 +1065,7 @@ impl Machine {
             self.ledgers.set_floor(&Floor { cam: camera.cam, camera: camera.camera.clone(), session: camera.session,
                 baseline: router.baseline(camera.cam).unwrap_or(0) });
         }
-        let issued = Some((plan.device_id.clone(), u64::from(plan.device_shots)));
+        let issued = Some((plan.device_ids.clone(), u64::from(plan.device_shots)));
         let bundle_id = production.as_ref().map(|prepared| prepared.bundle.id.clone());
         budget.mark("camera-router");
         arm_remaining!("before-recording");
@@ -1477,7 +1477,7 @@ impl Machine {
     fn close_routing(&mut self, plc_triggers: Option<u16>) {
         let Some(part) = self.part.as_mut().filter(|part| !part.routing_closed) else { return };
         let issued = part.issued.as_ref().filter(|_| part.issued_verified || plc_triggers.is_some())
-            .map(|(id, planned)| [(id.as_str(), plc_triggers.map_or(*planned, u64::from))]);
+            .map(|(ids, planned)| ids.iter().map(|id| (id.as_str(), plc_triggers.map_or(*planned, u64::from))).collect::<Vec<_>>());
         part.router.close(&mut self.ledgers, issued.as_ref().map(|counts| counts.as_slice()));
         part.routing_closed = true;
     }

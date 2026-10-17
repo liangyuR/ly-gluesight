@@ -160,20 +160,20 @@ it("示教完成后保存总览、实拍独立样本并验证 → 新样本自�
     return structuredClone(response);
   });
   const independentRound: CaptureRound = {
-    roundId: "validation-round", recipeId: "A", cameraId: "CAM-1", deviceSession: 2,
-    plannedCount: 2, receivedCount: 2, state: "complete", createdAt: 2, endedAt: 3,
+    roundId: "validation-round", recipeId: "A", cameras: [{ cameraId: "CAM-1", deviceSession: 2, receivedCount: 2 }],
+    plannedCount: 2, state: "complete", createdAt: 2, endedAt: 3,
     error: null, simulated: true,
-    frames: [0, 1].map(k => ({ shotId: `P${k + 1}`, ordinal: k + 1, frameCounter: k + 1,
+    frames: [0, 1].map(k => ({ shotId: `P${k + 1}`, ordinal: k + 1, cameras: [{ cameraId: "CAM-1", frameCounter: k + 1,
       triggerCounter: k + 1, originalPath: `validation/k${k}.pgm`,
       views: [1, 2, 3].map(view => ({ view, path: `validation/k${k}-v${view}.pgm`, width: 100, height: 60 })),
-    })),
+    }] })),
   };
   let receiving = false;
   vi.mocked(workspaceApi.captureGet).mockImplementation(async () => receiving ? independentRound : null);
   vi.mocked(workspaceApi.captureList).mockResolvedValue([]);
   vi.mocked(workspaceApi.captureStart).mockImplementation(async () => {
     receiving = true;
-    return { ...independentRound, state: "waitingStart", receivedCount: 0, endedAt: null, frames: [] };
+    return { ...independentRound, state: "waitingStart", cameras: [{ cameraId: "CAM-1", deviceSession: 2, receivedCount: 0 }], endedAt: null, frames: [] };
   });
   vi.mocked(workspaceApi.captureImage).mockResolvedValue({ url: "data:image/png;base64,AA==", width: 100, height: 60 });
   vi.mocked(workspaceApi.captureSample).mockImplementation(async (id, revision, roundId, expected, confirmed) => {
@@ -215,7 +215,7 @@ it("示教完成后保存总览、实拍独立样本并验证 → 新样本自�
   const startCapture = await screen.findByRole("button", { name: "开始接收 / 整圈重采" });
   await waitFor(() => expect(startCapture).toBeEnabled());
   await user.click(startCapture);
-  expect(workspaceApi.captureStart).toHaveBeenCalledWith("A", "CAM-1", 1500);
+  expect(workspaceApi.captureStart).toHaveBeenCalledWith("A", ["CAM-1"], 1500);
   const saveSample = await screen.findByRole("button", { name: "保存为独立验证样本" });
   expect(saveSample).toBeDisabled();
   await user.click(screen.getByRole("checkbox", { name: "已确认本轮样本与示教轨迹、触发顺序及拍摄条件一致" }));

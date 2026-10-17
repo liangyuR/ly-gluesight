@@ -101,9 +101,9 @@ impl Rig {
         let logbook = Arc::new(Logbook::open(&plc.directory.join("plc.db"), sink.clone(), 1).unwrap());
         let engine = PlcEngine::new(config, logbook, sink);
         let session = PlcSession::open(plc.directory.join("session.json"));
-        let plan = PlcPlan::compile("part-A".into(), 7, "cam1".into(),
+        let plan = PlcPlan::compile("part-A".into(), 7, vec!["cam1".into()],
             ["cam1"; 4].into_iter().enumerate().map(|(i, camera)| PlanShot {
-                shot_id: format!("P{}", i + 1), pose_id: format!("P{}", i + 1), camera_id: camera.into(),
+                shot_id: format!("P{}", i + 1), pose_id: format!("P{}", i + 1), camera_ids: vec![camera.into()],
             }).collect()).unwrap();
         let mut rig = Self { plc, engine, session, plan };
         rig.engine.connect().await;
@@ -1287,8 +1287,8 @@ fn s7_wire_arm_deadline_settles_original_journal_before_fault_without_late_overw
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_teaching_capture_uses_single_device_and_holds_until_release() {
     let mut rig = Rig::new("teaching-capture").await;
-    rig.plan = PlcPlan::compile("draft-empty".into(), 91, "device1".into(),
-        (1..=20).map(|i| PlanShot { shot_id: format!("S{i:03}"), pose_id: format!("capture-{i}"), camera_id: "device1".into() }).collect()).unwrap();
+    rig.plan = PlcPlan::compile("draft-empty".into(), 91, vec!["device1".into()],
+        (1..=20).map(|i| PlanShot { shot_id: format!("S{i:03}"), pose_id: format!("capture-{i}"), camera_ids: vec!["device1".into()] }).collect()).unwrap();
     rig.request(1, "SN-777").await;
     rig.session.bind_capture_id("capture-round-1").unwrap();
     assert!(rig.session.bind_cycle_id("00000000000000000000000000000001").is_err());

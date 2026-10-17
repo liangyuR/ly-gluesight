@@ -721,26 +721,27 @@ pub fn workspace_save_doc(
 #[serde(rename_all = "camelCase")]
 pub struct ImagingSaved {
     pub view: WorkspaceView,
-    /// 已写进候选，但没能下发到相机的原因
-    pub apply_error: Option<String>,
+    /// 已写进候选，但没能下发到相机的原因，按相机编号
+    pub apply_errors: BTreeMap<String, String>,
 }
 
-/// 采集页调曝光与增益：先写进候选，再在设备空闲时立即下发到这台相机，方便边看预览边调。
+/// 采集页调曝光与增益：几台相机一起写进候选，再在设备空闲时分别下发到各台相机，方便边看预览边调。
 #[tauri::command]
-pub async fn workspace_set_camera_imaging(app: AppHandle, id: String, revision: u64, camera: String, imaging: CameraImaging) -> Result<ImagingSaved, String> {
+pub async fn workspace_set_camera_imaging(app: AppHandle, id: String, revision: u64, imaging: BTreeMap<String, CameraImaging>) -> Result<ImagingSaved, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        if imaging.is_empty() { return Err("没有要应用的相机参数".into()); }
         let saved = {
             let host = app.state::<WorkspaceHost>();
             let mut items = host.items.lock().unwrap();
             let mut w = items.get(&id).ok_or("候选配置不存在")?.clone();
             w.expect(revision)?;
-            set_imaging(&mut w, &camera, imaging)?;
+            for (camera, imaging) in &imaging { set_imaging(&mut w, camera, *imaging)?; }
             host.save(&w)?;
             items.insert(id, w.clone());
             w
         };
-        let apply_error = apply_live_imaging(&app, &camera, &imaging).err();
-        Ok(ImagingSaved { view: view(&app, saved)?, apply_error })
+        let apply_errors = imaging.iter().filter_map(|(camera, imaging)| apply_live_imaging(&app, camera, imaging).err().map(|e| (camera.clone(), e))).collect();
+        Ok(ImagingSaved { view: view(&app, saved)?, apply_errors })
     }).await.map_err(|e| e.to_string())?
 }
 
@@ -1282,7 +1283,7 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
         detail: if teaching { "所有选中图已完成有效试测和 ±0.1 mm 标定误差验证".into() }
             else { "存在未完成的示教或标定验证，请进入对应图处理".into() } });
     let captured = w.capture_id.as_ref().is_some_and(|id| cycle.camera.recipe_capture().get(id)
-        .is_ok_and(|round| round.recipe_id == w.doc.id && round.state == crate::recipe_capture::CaptureState::Complete && round.frames.len() == r.shot_count()));
+        .is_ok_and(|round| round.recipe_id == w.doc.id && round.state == crate::recipe_capture::CaptureState::Complete && round.recipe_shots().is_ok_and(|shots| shots.len() == r.shot_count())));
     checks.push(Check { name: "完整采集".into(), passed: captured, detail: if captured { "示教来自完整的独立采集轮次".into() } else { "请先采用完整采集轮次".into() } });
     let store = app.state::<Store>();
     let mut results = Vec::new();
