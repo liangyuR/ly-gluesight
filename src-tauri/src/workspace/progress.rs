@@ -184,7 +184,7 @@ fn check_target(name: &str, first_open: Option<usize>) -> Target {
     match name {
         "设备与采集" => Target::Camera,
         "完整采集" => Target::Capture,
-        "胶路示教" | "示教与标定" => Target::Teach { k: first_open.unwrap_or(0) },
+        "胶路示教" | "示教与标定" | "拍照点组选图" => Target::Teach { k: first_open.unwrap_or(0) },
         _ => Target::Validation,
     }
 }
@@ -195,6 +195,8 @@ pub fn compute(w: &Workspace, production_version: Option<u32>, devices: &Devices
     let recipe = w.doc.build().ok();
     let shots: Vec<_> = (0..w.frames.len().min(w.doc.shots.len())).map(|k| shot_progress(w, recipe.as_ref(), devices, k)).collect();
     let captured = w.capture_id.is_some() && !w.frames.is_empty();
+    let mut groups: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (k, shot) in w.doc.shots.iter().enumerate() { groups.entry(&shot.pose_id).or_default().push(k); }
     let need_capture = || vec![Blocker { message: "先采用一轮完整的整圈采集".into(), target: Target::Capture }];
     let label = |s: &ShotProgress| format!("拍照点 {} · {}", s.k + 1, s.shot_id);
 
@@ -203,7 +205,7 @@ pub fn compute(w: &Workspace, production_version: Option<u32>, devices: &Devices
     let capture = Step { id: StepId::Capture, label: "整圈采集", optional: false,
         status: if !captured { StepStatus::NotStarted } else if recapture.is_empty() { StepStatus::Done } else { StepStatus::Blocked },
         detail: if !captured { "等待设备就绪后整圈采集并采用".into() }
-            else if recapture.is_empty() { format!("已采用完整采集轮次，{} 个拍照点", w.frames.len()) }
+            else if recapture.is_empty() { format!("已采用完整采集轮次，{} 个拍照点组，{} 张相机图", groups.len(), w.frames.len()) }
             else { "当前设备与采集时不一致，需整圈重新采集".into() },
         blockers: recapture };
 
@@ -211,10 +213,14 @@ pub fn compute(w: &Workspace, production_version: Option<u32>, devices: &Devices
         detail: "可选：默认检测与判定参数，单帧示教时可按图覆盖".into(), blockers: Vec::new() };
 
     let measured: Vec<_> = shots.iter().filter(|s| s.state != ShotState::Skipped).collect();
-    let total: usize = measured.iter().map(|s| s.total).sum();
-    let completed: usize = measured.iter().map(|s| s.completed).sum();
+    let total = groups.len();
+    let completed = groups.values().filter(|indices| {
+        let selected: Vec<_> = indices.iter().flat_map(|k| shots.get(*k).into_iter().flat_map(|s| s.views.iter().filter(|v| v.enabled))).collect();
+        selected.len() == 1 && selected[0].state == ShotState::Taught
+    }).count();
+    let group_errors = w.group_selection_errors();
     let teach = {
-        let mut blockers = Vec::new();
+        let mut blockers: Vec<_> = group_errors.iter().map(|(k, message)| Blocker { message: message.clone(), target: Target::Teach { k: *k } }).collect();
         for s in &measured {
             if s.total == 0 { blockers.push(Blocker { message: format!("{}：未选检测图", label(s)), target: Target::Teach { k: s.k } }); }
             else if s.state != ShotState::Taught {
@@ -223,14 +229,14 @@ pub fn compute(w: &Workspace, production_version: Option<u32>, devices: &Devices
             }
         }
         let status = if !captured { StepStatus::NotStarted }
-            else if measured.is_empty() { StepStatus::Blocked }
+            else if measured.is_empty() || !group_errors.is_empty() { StepStatus::Blocked }
             else if blockers.is_empty() { StepStatus::Done }
             else if measured.iter().any(|s| s.state == ShotState::TrialFailed) { StepStatus::Blocked }
             else if completed > 0 || measured.iter().any(|s| s.state > ShotState::Unconfigured) { StepStatus::InProgress }
             else { StepStatus::NotStarted };
         if captured && measured.is_empty() { blockers.push(Blocker { message: "至少需要一个参与检测的拍照点".into(), target: Target::Teach { k: 0 } }); }
         Step { id: StepId::Teach, label: "单帧示教", optional: false, status,
-            detail: if captured { format!("{completed} / {total} 幅已示教") } else { "整圈采集后逐点示教".into() },
+            detail: if captured { format!("{completed} / {total} 组已示教") } else { "整圈采集后逐点示教".into() },
             blockers: if captured { blockers } else { need_capture() } }
     };
 
@@ -265,7 +271,9 @@ pub fn compute(w: &Workspace, production_version: Option<u32>, devices: &Devices
     let validation = {
         let current = w.validation.as_ref().filter(|v| v.revision == w.revision);
         let first_open = shots.iter().find(|s| s.state != ShotState::Taught && s.state != ShotState::Skipped).map(|s| s.k);
-        let (status, detail, blockers) = if let Some(version) = active {
+        let (status, detail, blockers) = if !group_errors.is_empty() {
+            (StepStatus::Blocked, "请先完成每个拍照点组的选图".into(), teach.blockers.clone())
+        } else if let Some(version) = active {
             (StepStatus::Done, format!("已随 v{version} 验证并发布"), Vec::new())
         } else if let Some(v) = current {
             let blockers: Vec<_> = v.checks.iter().filter(|c| !c.passed).map(|c| Blocker { message: format!("{}：{}", c.name, c.detail), target: check_target(&c.name, first_open) }).collect();
@@ -284,6 +292,7 @@ pub fn compute(w: &Workspace, production_version: Option<u32>, devices: &Devices
         let production = production_version.map_or("未发布".to_string(), |v| format!("生产 v{v}"));
         let pending = w.pending.as_ref().map(|p| p.doc.version);
         let (status, detail, blockers) = match (&w.publish, active) {
+            _ if !group_errors.is_empty() => (StepStatus::Blocked, "请先完成每个拍照点组的选图".into(), teach.blockers.clone()),
             (_, Some(version)) => (StepStatus::Done, format!("v{version} 已生效{}", site(active_offline)), Vec::new()),
             (PublishState::Waiting, _) => (StepStatus::InProgress, format!("v{} 待生效{}：等待当前工件结束", pending.unwrap_or(w.doc.version), site(pending_offline)), Vec::new()),
             (PublishState::Failed { message }, _) => (StepStatus::Blocked, format!("v{} 生效失败，可重试或放弃该待生效版本", pending.unwrap_or(w.doc.version)),

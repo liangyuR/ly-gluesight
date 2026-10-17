@@ -6,10 +6,9 @@ import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import type { PointVis, Recipe } from "../cycle/types";
 import { shotSegment, visColor } from "../cycle/vis";
-import type { GrayImage, StepId, StepStatus, Teaching } from "./types";
-import { sameTeach, shotTeach } from "./teach";
+import type { GrayImage, StepId, StepStatus } from "./types";
 import { errorText } from "../../lib/errors";
-import { shotStateText, stepStatusText } from "./progress";
+import { stepStatusText } from "./progress";
 
 export function Badge({ children, tone = "info" }: { children: ReactNode; tone?: "info" | "ok" | "ng" | "warn" | "neutral" }) {
   return <span className={"wp-badge " + tone}>{children}</span>;
@@ -168,21 +167,4 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
         </g></svg>}
     {image && <div className="wp-image-footer"><span>{image.width} × {image.height} px</span><span>{onRegion ? "拖动框选一段连续胶路区域" : onEdit ? "点击图像依次加中线点（从胶嘴一侧往外，绿圈为起点），拖动点可调整" : "原始灰度图像"}</span></div>}
   </div>;
-}
-
-function FrameThumbnail({ id, frame }: { id: string; frame: Teaching }) {
-  const {image} = useGrayImage(id, frame.image?.id ?? null);
-  return <span className="wp-frame-thumbnail">{image ? <img src={image.url} alt="" /> : <Camera size={19} />}</span>;
-}
-export function FrameRail({ id, frames, selected, onSelect, disabled }: { id: string; frames: Teaching[]; selected: number; onSelect: (k: number) => void; disabled?: boolean }) {
-  const { frameDrafts, data } = useWorkspace();
-  return <div className="wp-frame-list" aria-label="示教帧选择">{frames.map(frame => {
-    const shot = data?.workspace.doc.shots[frame.k];
-    const dirty = !!frameDrafts[frame.k] && !!shot && !sameTeach(frameDrafts[frame.k], shotTeach(shot));
-    const progress = data?.progress.shots[frame.k];
-    const status = dirty ? "草稿待保存" : !progress ? "未配置" : progress.state !== "skipped" && progress.total === 0 ? "未选图" : progress.total > 1 && progress.completed > 0 && progress.completed < progress.total ? `部分完成 ${progress.completed}/${progress.total}` : shotStateText[progress.state];
-    return <button key={frame.k} className={"wp-frame-item " + (selected === frame.k ? "selected" : "")} aria-label={"选择帧 k" + (frame.k + 1)} aria-pressed={selected === frame.k} onClick={() => onSelect(frame.k)} disabled={disabled}>
-      <FrameThumbnail id={id} frame={frame} /><strong>k{frame.k + 1}{shot ? " · " + shot.id : ""}<small>{progress ? `选中 ${progress.total} 幅图` : frame.image?.camera ?? "未取样"}</small></strong><span>{status}</span>
-    </button>;
-  })}</div>;
 }

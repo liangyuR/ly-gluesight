@@ -27,7 +27,8 @@ export function teachError(t: ShotTeach) {
 }
 
 export function selectedViews(shot: ShotSpec): number[] {
-  return shot.views?.filter(v => v.enabled).map(v => v.view) ?? (shot.skip ? [] : [shot.view]);
+  if (shot.skip) return [];
+  return shot.views?.length ? shot.views.filter(v => v.enabled).map(v => v.view) : [shot.view];
 }
 export function canImportSampleGroup(shots: Pick<ShotSpec, "skip" | "views">[]) {
   return shots.every(shot => shot.skip || (shot.views?.length ? shot.views.filter(v => v.enabled).length : 1) <= 1);

@@ -21,6 +21,7 @@ export async function decodeGray(input: ArrayBuffer | number[]): Promise<GrayIma
 }
 
 export const workspaceApi = {
+  selectGroupImage: (id: string, revision: number, k: number, view: number) => desktopCall<WorkspaceView>("workspace_select_group_image", { id, revision, k, view }),
   captureStart: (recipeId: string, cameraIds: string[], drainTimeoutMs: number) => desktopCall<CaptureRound>("recipe_capture_start", { recipeId, cameraIds, drainTimeoutMs }),
   captureGet: (roundId?: string) => desktopCall<CaptureRound | null>("recipe_capture_get", { roundId }),
   captureStop: () => desktopCall<CaptureRound | null>("recipe_capture_stop"),

@@ -6,6 +6,7 @@ use super::*;
 fn captured() -> Workspace {
     let mut w = workspace();
     w.capture_id = Some("round-1".into());
+    for view in &mut w.doc.shots[0].views { view.enabled = view.view == 1; }
     w
 }
 
