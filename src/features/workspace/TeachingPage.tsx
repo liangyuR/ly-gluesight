@@ -1,20 +1,19 @@
 import { errorText } from "../../lib/errors";
 import { useEffect, useRef, useState } from "react";
-import { Link, useLocation, useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Eraser, Play, Save, Trash2, Undo2, WandSparkles } from "lucide-react";
 import { useCycle } from "../cycle/api";
 import { pathLength, shotSegment } from "../cycle/vis";
-import type { DetectParams, Polarity, JudgeParams, RecipeDoc, ShotLimits } from "../cycle/types";
+import type { RecipeDoc } from "../cycle/types";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
-import { Badge, GrayViewer, KV, Notice, NumberField, Panel, Steps, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
+import { Badge, GrayViewer, KV, Notice, Panel, Steps, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { FrozenImage, ShotTeach, WorkspaceView } from "./types";
 import { sameTeach, shotTeach, teachError } from "./teach";
-import { calibrationText } from "./progress";
-import { returnState } from "./returnNavigation";
 import { TrialResult, trialPoints } from "./TrialResult";
 import { teachingGroups } from "./teachingGroups";
 import { productionBusy as isProductionBusy } from "../cycle/phase";
+import { TeachingSettings } from "./TeachingSettings";
 
 function FrozenViewOption({ id, metadata, selected, disabled, onSelect }: { id: string; metadata: FrozenImage; selected: boolean; disabled: boolean; onSelect: () => void }) {
   const { image, loading, error } = useGrayImage(id, metadata.id);
@@ -36,7 +35,6 @@ export default function TeachingPage() {
   const { data, doc, dirty, busy, frameDirty, frameDrafts, setFrameDraft, act, setError, rememberPosition } = useWorkspace();
   const {snapshot} = useCycle();
   const [search] = useSearchParams();
-  const location = useLocation();
   const requested=Number(search.get("frame") ?? data?.workspace.lastPosition?.k ?? 0);
   const requestedFrame=Number.isSafeInteger(requested)&&requested>=0?requested:0;
   const frameCount=data?.workspace.frames.length??0;
@@ -51,13 +49,11 @@ export default function TeachingPage() {
   const [vertex,setVertex]=useState<number|null>(null);
   const [region, setRegion] = useState<[number,number,number,number] | null>(null);
   const [regionMode, setRegionMode] = useState(false);
-  const [referenceMm, setReferenceMm] = useState(10), [measuredMm, setMeasuredMm] = useState(NaN);
-  const [reuseCalibration,setReuseCalibration] = useState(false);
   const pending=useRef(false),serial=useRef(0);
   const scope=JSON.stringify([doc?.id,k,data?.workspace.doc.shots[k]?.view,data?.workspace.frames[k]?.image?.id]);
   const current=useRef({scope,alive:true,revision:data?.workspace.revision});current.current.scope=scope;current.current.revision=data?.workspace.revision;
   useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;serial.current++;};},[]);
-  useEffect(()=>{serial.current++;pending.current=false;setWorking(false);setVertex(null);setRegion(null);setRegionMode(false);setReferenceMm(10);setMeasuredMm(NaN);setReuseCalibration(false);setOperation(null);setExtractionHint("");},[scope]);
+  useEffect(()=>{serial.current++;pending.current=false;setWorking(false);setVertex(null);setRegion(null);setRegionMode(false);setOperation(null);setExtractionHint("");},[scope]);
   const perform=async(request:()=>Promise<WorkspaceView>,message:string)=>{
     if(pending.current||busy||dirty)return null;
     pending.current=true;setWorking(true);
@@ -87,7 +83,6 @@ export default function TeachingPage() {
   const productionBusy = isProductionBusy(snapshot);
   const update = (next: ShotTeach) => {if(unlocked)setFrameDraft(k,next);};
   const setPath = (path: [number, number][]) => update({ ...t, path });
-  const setDetect = (detect: DetectParams | undefined) => { const next: ShotTeach = { ...t }; if (detect) next.detect = detect; else delete next.detect; update(next); };
   const shotProgress = data.progress.shots[k];
   const viewProgress = shotProgress?.views.find(v => v.view === shot.view);
   const groups = teachingGroups(doc.shots, data.progress);
@@ -174,15 +169,8 @@ export default function TeachingPage() {
   };
 
   const hint = editing && !shot.skip ? "中线或参数已改，点“运行一次算法”；现有试测不用于保存或发布。" : viewProgress?.hint ?? "";
-  const detect = t.detect;
   const defaults = data.workspace.doc.detect;
-  const searchHalfPx = t.mmPerPx != null && Number.isFinite(t.mmPerPx) && t.mmPerPx > 0 ? (detect ?? defaults).searchMm / t.mmPerPx : undefined;
-  const changeLimits = (limits: ShotLimits | undefined) => { const next={...t}; if(limits) next.limits=limits; else delete next.limits; update(next); };
-  const limitGroup = (key: "position" | "width", title: string) => {
-    const value=t.limits?.[key];
-    return <div key={key}><label className="check"><input type="checkbox" checked={!!value} disabled={!unlocked} onChange={e => t.limits && changeLimits({...t.limits,[key]:e.target.checked ? structuredClone(doc.limits[key] ?? {nominal:0,tolUpper:.1,tolLower:.1,absMin:-1,absMax:1,maxExcursionLen:1}) : null})}/>{title}</label>{value && <div className="wp-form-grid">{([["nominal","名义值"],["tolUpper","上公差"],["tolLower","下公差"],["absMin","绝对下限"],["absMax","绝对上限"],["maxExcursionLen","允许超差长度"]] as [keyof JudgeParams,string][]).map(([field,label]) => <NumberField key={field} label={title + label} value={value[field]} unit="mm" step={.1} disabled={!unlocked} onChange={v => t.limits && changeLimits({...t.limits,[key]:{...value,[field]:v}})}/>)}</div>}</div>;
-  };
-  const polarity: Record<Polarity, string> = { dark: "暗胶条", light: "亮胶条" };
+  const searchHalfPx = t.mmPerPx != null && Number.isFinite(t.mmPerPx) && t.mmPerPx > 0 ? (t.detect ?? defaults).searchMm / t.mmPerPx : undefined;
   return <div className="wp-page"><WorkspaceBar /><Steps />
     <div className="wp-actions wp-teach-summary"><strong>拍照组 {groupIndex+1}／{groups.length}</strong><Badge tone={group.complete ? "ok" : "neutral"}>{group.status}</Badge><span className="muted">已完成 {completedGroups}／{groups.length} 组 · 每组示教一张图</span><span className="spacer" /><Link className="btn" to="/recipe/overview">工件总览（可选）</Link></div>
     <div className="wp-teach">
@@ -229,26 +217,9 @@ export default function TeachingPage() {
         <p className="muted">{hint}</p>
         {points && <TrialResult points={points} />}
       </Panel></> : <Notice title="选择本组检测图">点击上方一张图开始示教，每组只需完成这一张。</Notice>}</div>
-      {enabled && <div className="wp-stack"><Panel title="像素当量与标定验证" detail="标定误差目标 ±0.1 mm；修改当量后需重新试测和验证"><div className="wp-form-grid">
-        <NumberField label="像素当量" value={t.mmPerPx} unit="mm/px" min={.0001} step={.0005} onChange={v => update({ ...t, mmPerPx: Number.isFinite(v) ? v : null })} disabled={!unlocked || !enabled} />
-      </div>
-        <Link className="btn small" to="/camera/calibration" state={returnState(location, "单帧示教")}>飞拍标定</Link>
-        <p className="muted">{calibrationText(calibration)}</p>
-        {calibration.state === "sampleSet" ? <p className="muted hint">当量来自样本集声明，标定验证以此为依据；改动当量后需按人工流程重新验证。</p> : <>
-        <div className="wp-form-grid"><NumberField label="已知参考尺寸" value={referenceMm} unit="mm" onChange={setReferenceMm} disabled={!unlocked}/><NumberField label="实测尺寸" value={measuredMm} unit="mm" onChange={setMeasuredMm} disabled={!unlocked}/></div>
-        <label className="check"><input type="checkbox" checked={reuseCalibration} disabled={!unlocked || editing} onChange={e=>setReuseCalibration(e.target.checked)}/>已确认同设备同图的其他拍照点成像几何适用，复用此次代表点验证</label><button className="btn" disabled={!unlocked || editing || !(referenceMm > 0 && measuredMm > 0)} onClick={() => void perform(() => workspaceApi.checkCalibration(doc.id,data.workspace.revision,k,referenceMm,measuredMm,reuseCalibration), "已保存当前图的标定验证")}>记录人工标定验证</button>
-        <p className="muted">记录已知参考件的实测误差（人工验证记录），请填写实际测量结果。</p></>}
-        <label className="check" style={{marginTop:12}}><input type="checkbox" checked={!!detect} disabled={!unlocked || !enabled} onChange={e => setDetect(e.target.checked ? structuredClone(defaults) : undefined)} />本图自定义参数（取消可恢复配方默认）</label>
-        {detect ? <div className="wp-form-grid" style={{marginTop:8}}>
-          <NumberField label="搜索半宽" value={detect.searchMm} unit="mm" min={.1} step={.5} onChange={v => setDetect({ ...detect, searchMm: v })} disabled={!unlocked} />
-          <label className="field wp-field"><span>极性</span><select className="input" aria-label="极性" value={detect.polarity} disabled={!unlocked} onChange={e => setDetect({ ...detect, polarity: e.target.value as Polarity })}><option value="dark">暗胶条</option><option value="light">亮胶条</option></select></label>
-          <NumberField label="胶宽下限" value={detect.widthRange[0]} unit="mm" min={.1} step={.1} onChange={v => setDetect({ ...detect, widthRange: [v, detect.widthRange[1]] })} disabled={!unlocked} />
-          <NumberField label="胶宽上限" value={detect.widthRange[1]} unit="mm" min={.1} step={.1} onChange={v => setDetect({ ...detect, widthRange: [detect.widthRange[0], v] })} disabled={!unlocked} />
-        </div> : <p className="muted hint">用配方的检测参数：搜索半宽 {defaults.searchMm} mm · {polarity[defaults.polarity]} · 胶宽 {defaults.widthRange[0]}–{defaults.widthRange[1]} mm</p>}
-        <label className="check"><input type="checkbox" checked={!!t.limits} disabled={!unlocked || !enabled} onChange={e=>changeLimits(e.target.checked ? structuredClone(doc.limits) : undefined)}/>本图自定义判定限值（取消可恢复默认）</label>
-        {t.limits ? <div className="wp-stack">{limitGroup("position","位置")}{limitGroup("width","胶宽")}<div className="wp-form-grid"><NumberField label="允许连续缺胶长度" value={t.limits.maxGapLen} unit="mm" min={0} step={.1} disabled={!unlocked} onChange={v=>t.limits && changeLimits({...t.limits,maxGapLen:v})}/><NumberField label="最低有胶比例" value={t.limits.minPresent} min={0} max={1} step={.05} disabled={!unlocked} onChange={v=>t.limits && changeLimits({...t.limits,minPresent:v})}/></div></div> : <p className="muted hint">判定限值沿用配方默认值。测量误差目标与胶宽合格公差分别设置。</p>}
-        {editing && invalid && <Notice title="本组中线无效" tone="warn">{invalid}</Notice>}
-        </Panel>
+      {enabled && <div className="wp-stack wp-teach-settings"><TeachingSettings key={scope} teach={t} savedMmPerPx={saved.mmPerPx} defaults={defaults} defaultLimits={doc.limits} calibration={calibration} disabled={!unlocked} editing={editing} onChange={update}
+        onRecord={async (reference, measured, reuse) => !!await perform(() => workspaceApi.checkCalibration(doc.id,data.workspace.revision,k,reference,measured,reuse), "已保存当前图的标定验证")} />
+      {editing && invalid && <Notice title="本组中线无效" tone="warn">{invalid}</Notice>}
       <details className="wp-sample-details"><summary>图像采集信息</summary><Panel title="当前检测图"><KV label="拍照组">{group.poseId}</KV><KV label="相机">{shot.camera}</KV><KV label="当前编辑图">图 {shot.view}</KV><KV label="图像">{frame.image?.id ?? "未冻结"}</KV><KV label="曝光">{frame.image?.exposureUs != null ? frame.image.exposureUs + " μs" : "未记录"}</KV><KV label="增益">{frame.image?.gainDb != null ? frame.image.gainDb + " dB" : "未记录"}</KV><KV label="原图更新">仅通过整圈重新采集</KV>{imagingHint && <p className="c-warn" role="note">{imagingHint}；样本仍可用，需要时整圈重采</p>}</Panel></details>
       <Notice title="保存与发布分开">中线保存进候选配方，生产配方不变；保存本组后，先验证代表性样本，再发布生产版本。</Notice></div>}
     </div></div>;

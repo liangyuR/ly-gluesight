@@ -18,7 +18,7 @@ import { snapshot, summary, tricamWorkspaceView, twoLines } from "./fixtures";
 
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
   get: vi.fn(), list: vi.fn(), image: vi.fn(), progress: vi.fn(),
-  selectGroupImage: vi.fn(), saveDraft: vi.fn(), saveParams: vi.fn(), trial: vi.fn(), saveTeach: vi.fn(), extractCenterline: vi.fn(),
+  selectGroupImage: vi.fn(), saveDraft: vi.fn(), saveParams: vi.fn(), trial: vi.fn(), saveTeach: vi.fn(), extractCenterline: vi.fn(), checkCalibration: vi.fn(),
   saveOverview: vi.fn(), captureGet: vi.fn(), captureList: vi.fn(), captureStart: vi.fn(),
   captureSample: vi.fn(), captureImage: vi.fn(), validate: vi.fn(), publish: vi.fn(),
 } }));
@@ -108,21 +108,35 @@ function renderWorkspace(path: string) {
   return userEvent.setup();
 }
 
-it("本图搜索参数覆盖配方默认 → 按有效当量换算搜索带，当量无效时隐藏", async () => {
+it("本图参数覆盖后恢复默认 → 搜索带与试测载荷使用配方默认，当量无效时隐藏", async () => {
   const candidate = groupedCandidate();
   candidate.workspace.doc.detect.searchMm = 15;
   candidate.workspace.doc.shots[0].detect = { searchMm: 4, polarity: "dark", widthRange: [1, 5] };
+  candidate.workspace.doc.shots[0].limits = { ...structuredClone(candidate.workspace.doc.limits), position: null, maxGapLen: 3 };
   candidate.workspace.doc.shots[0].mmPerPx = .1;
   mockSite(candidate);
-  renderWorkspace("/recipe/teach");
+  const response = structuredClone(candidate);
+  delete response.workspace.doc.shots[0].detect;
+  delete response.workspace.doc.shots[0].limits;
+  response.workspace.revision++;
+  vi.mocked(workspaceApi.saveParams).mockResolvedValue(response);
+  vi.mocked(workspaceApi.trial).mockResolvedValue(response);
+  const user = renderWorkspace("/recipe/teach");
   await screen.findByRole("img", { name: "P1 · CAM-1 · 图 1" });
   const edges = () => [...screen.getByLabelText("搜索带边界").querySelectorAll("polyline")].map(edge => {
     const points = edge.getAttribute("points")!.split(" ");
     return `${points[0]} ${points[points.length - 1]}`;
   });
   expect(edges()).toEqual(["10,50 20,50", "10,-30 20,-30"]);
-  fireEvent.click(screen.getByRole("checkbox", { name: "本图自定义参数（取消可恢复配方默认）" }));
+  fireEvent.click(screen.getByText("检测参数", { exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: "恢复配方默认检测参数" }));
   expect(edges()).toEqual(["10,160 20,160", "10,-140 20,-140"]);
+  await user.click(screen.getByText("判定限值", { exact: true }));
+  expect(screen.getByRole("checkbox", { name: "位置判定" })).not.toBeChecked();
+  await user.click(screen.getByRole("button", { name: "恢复配方默认判定限值" }));
+  await user.click(screen.getByRole("button", { name: "运行一次算法" }));
+  await waitFor(() => expect(workspaceApi.saveParams).toHaveBeenLastCalledWith("A", 7, 0, { path: candidate.workspace.doc.shots[0].path, mmPerPx: .1 }));
+  await waitFor(() => expect(workspaceApi.trial).toHaveBeenLastCalledWith("A", 8, 0, candidate.workspace.frames[0].image!.id));
   for (const value of ["", "0"]) {
     fireEvent.change(screen.getByRole("spinbutton", { name: "像素当量" }), { target: { value } });
     expect(screen.queryByLabelText("搜索带边界")).not.toBeInTheDocument();
@@ -298,6 +312,77 @@ it("同组切换检测相机 → 原图取消选中且编辑切到新图，其�
   await user.click(screen.getByRole("button", { name: "选择拍照组 P2" }));
   expect(await screen.findByRole("img", { name: "P2 · CAM-1 · 图 1" })).toBeVisible();
   expect(screen.getByRole("button", { name: "选择检测图 CAM-1 · 图 1" })).toHaveAttribute("aria-pressed", "true");
+});
+
+it.each([
+  ["通过", true, true, "已验证"],
+  ["未通过", false, false, "验证未通过"],
+] as const)("人工验证返回%s → 采用后端判定，复用仅按人工选择提交", async (_label, passed, reuse, expectedStatus) => {
+  const candidate = groupedCandidate();
+  mockSite(candidate);
+  const response = structuredClone(candidate);
+  response.workspace.revision++;
+  response.progress.shots[0].views[0].calibration = { state: passed ? "verified" : "failed", errorMm: passed ? .05 : .2 };
+  vi.mocked(workspaceApi.checkCalibration).mockResolvedValue(response);
+  const user = renderWorkspace("/recipe/teach");
+  await user.type(await screen.findByRole("spinbutton", { name: "实测尺寸" }), "10.05");
+  expect(screen.getByText("+0.050 mm")).toBeVisible();
+  expect(screen.getByText("未验证", { exact: true })).toBeVisible();
+  const reuseInput = screen.getByRole("checkbox", { name: "复用到其他适用拍照点" });
+  expect(reuseInput).not.toBeChecked();
+  if (reuse) await user.click(reuseInput);
+  await user.click(screen.getByRole("button", { name: "记录验证" }));
+  expect(workspaceApi.checkCalibration).toHaveBeenLastCalledWith("A", 7, 0, 10, 10.05, reuse);
+  expect(await screen.findByText(expectedStatus, { exact: true })).toBeVisible();
+  expect(screen.getByText(new RegExp(`0.1 mm/px · 误差 ${passed ? "0.050" : "0.200"} mm`))).toBeVisible();
+});
+
+it("已勾选复用后切换拍照组 → 新图恢复单图验证，不沿用上一图的人工确认", async () => {
+  const candidate = groupedCandidate();
+  mockSite(candidate);
+  const response = structuredClone(candidate);
+  response.workspace.revision++;
+  response.progress.shots[3].views[0].calibration = { state: "verified", errorMm: .02 };
+  vi.mocked(workspaceApi.checkCalibration).mockResolvedValue(response);
+  const user = renderWorkspace("/recipe/teach");
+  await user.click(await screen.findByRole("checkbox", { name: "复用到其他适用拍照点" }));
+  await user.click(screen.getByRole("button", { name: "选择拍照组 P2" }));
+  expect(screen.getByRole("checkbox", { name: "复用到其他适用拍照点" })).not.toBeChecked();
+  await user.type(screen.getByRole("spinbutton", { name: "实测尺寸" }), "10.02");
+  await user.click(screen.getByRole("button", { name: "记录验证" }));
+  expect(workspaceApi.checkCalibration).toHaveBeenLastCalledWith("A", 7, 3, 10, 10.02, false);
+  expect(await screen.findByText("已验证", { exact: true })).toBeVisible();
+});
+
+it("修改样本集声明当量 → 草稿不沿用旧验证，保存试测后进入人工验证", async () => {
+  const candidate = groupedCandidate();
+  candidate.progress.shots[0].views[0].calibration = { state: "sampleSet", setId: "set-1", mmPerPx: .1 };
+  mockSite(candidate);
+  const response = structuredClone(candidate);
+  vi.mocked(workspaceApi.saveParams).mockImplementation(async (_id, _revision, k, params) => {
+    Object.assign(response.workspace.doc.shots[k], params);
+    response.workspace.revision++;
+    response.progress.shots[k].views[0].calibration = { state: "stale" };
+    shotState(response, k, "pendingTrial");
+    return structuredClone(response);
+  });
+  vi.mocked(workspaceApi.trial).mockImplementation(async () => {
+    shotState(response, 0, "trialPassed");
+    return structuredClone(response);
+  });
+  const user = renderWorkspace("/recipe/teach");
+  await user.click(await screen.findByText("标定", { exact: true }));
+  expect(screen.getByText(/样本集 set-1 声明/)).toBeVisible();
+  expect(screen.queryByRole("spinbutton", { name: "实测尺寸" })).not.toBeInTheDocument();
+  await user.clear(screen.getByRole("spinbutton", { name: "像素当量" }));
+  await user.type(screen.getByRole("spinbutton", { name: "像素当量" }), "0.2");
+  expect(screen.getByText("需重新验证", { exact: true })).toBeVisible();
+  expect(screen.getByRole("button", { name: "保存本组示教" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "记录验证" })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "运行一次算法" }));
+  expect(await screen.findByRole("spinbutton", { name: "实测尺寸" })).toHaveValue(null);
+  expect(screen.getByRole("button", { name: "记录验证" })).toBeDisabled();
+  expect(screen.queryByText("已验证", { exact: true })).not.toBeInTheDocument();
 });
 
 it("示教完成后保存总览、实拍独立样本并验证 → 新样本自动选入验证，确认后按同一修订发布", async () => {
