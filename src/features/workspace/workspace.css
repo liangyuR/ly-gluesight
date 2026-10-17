@@ -113,6 +113,8 @@
 .wp-image-tools > div { display:flex; align-items:center; gap:3px; }
 .wp-gray-image { display:block; width:100%; height:clamp(250px,36vh,420px); background:var(--surface-lowest); }
 .wp-gray-image.editable { cursor:crosshair; touch-action:none; }
+.wp-gray-image.panning { cursor:grabbing; }
+.wp-gray-image:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
 .wp-image-empty { display:flex; min-height:280px; flex-direction:column; gap:12px; align-items:center; justify-content:center; padding:25px; color:var(--on-surface-variant); text-align:center; font-size:12px; }
 .wp-image-empty span { line-height:1.8; }
 .wp-image-empty strong { font-weight:500; color:var(--on-surface); }
