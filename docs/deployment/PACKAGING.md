@@ -14,7 +14,7 @@ pnpm deps:lyflow:update -Series 1.2
 
 跨系列升级必须显式传 `-Series` 并重新验收；升级后重新编译并发布 GlueSight，不支持只替换已安装程序的 DLL。
 
-MVS `4.8.1.2`、许可证与应用所需 CRT 独立固定在 `deps-win-x64-v2` 的 `gluesight-vendor-runtime-win-x64-v2.zip`。该包不包含 lyFlow。旧合并依赖包拒绝读取，不做格式回退。应用版本、lyFlow 版本与厂商包版本独立。
+MVS SDK `4.8.2.2`（取自 MVS 客户端 V5.1.0 安装包内的 SDK 运行库）、许可证与应用所需 CRT 独立固定在 `deps-win-x64-v3` 的 `gluesight-vendor-runtime-win-x64-v3.zip`。现场预装 MVS 客户端 V5.1.0 提供设备驱动，与随包 SDK 同版本。该包不包含 lyFlow。旧合并依赖包拒绝读取，不做格式回退。应用版本、lyFlow 版本与厂商包版本独立。
 
 ## 缓存
 
@@ -37,7 +37,7 @@ pnpm package
 
 ```powershell
 pnpm package:deps -MvsRuntime 'C:\release\mvs\Win64_x64' -MvsLicense 'C:\release\mvs\License' -VcRuntime 'C:\release\crt'
-pnpm package:deps:publish -Archive 'C:\release\gluesight-vendor-runtime-win-x64-v2.zip'
+pnpm package:deps:publish -Archive 'C:\release\gluesight-vendor-runtime-win-x64-v3.zip'
 ```
 
 厂商包保留 MVS DLL、CTI、配置、ThirdParty 和许可证；CRT 目录仅容纳可分发 CRT DLL 与许可文件。安装资源保持 `runtime/lyflow`、`runtime/mvs`，另有 `runtime/crt`；应用所需 `vcruntime140.dll` 和 `vcruntime140_1.dll` 同时部署到 EXE 根目录。WebView2 和设备驱动仍由目标机预装。
