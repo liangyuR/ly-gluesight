@@ -71,7 +71,7 @@ export default function OperationGuidePage() {
     <ReadError state={site} />
     <div className="guide-status-grid">
       <StatusCard title="采集设备" icon={Camera} status={<Badge tone={cameras.data?.length && ready === cameras.data.length ? "ok" : "neutral"}>{cameraLabel}</Badge>} links={[["相机与采集", "/camera"], ["查看标定", "/camera/calibration"]]}>
-        <div className="guide-camera-list">{cameras.data?.map(camera => <div className="guide-value" key={camera.id}><span>{camera.name}</span><strong>{camera.ready ? "设备就绪" : camera.released ? "已释放" : "未就绪"}</strong><small>{camera.message}</small></div>)}</div>
+        <div className="guide-camera-list">{cameras.data?.map(camera => <div className="guide-value" key={camera.id}><span>{camera.name}</span><strong>{camera.ready ? "设备就绪" : camera.released ? "已释放" : "未就绪"}</strong></div>)}</div>
         <ReadError state={cameras} />
       </StatusCard>
       <StatusCard title="PLC 通讯" icon={Cable} status={<Badge tone={plc.data?.state === "connected" ? "ok" : "neutral"}>{plc.data ? linkStateLabels[plc.data.state] : unavailable(plc)}</Badge>} links={[["PLC 通讯", "/plc"], ["通讯日志", "/plc-logs"]]}>
