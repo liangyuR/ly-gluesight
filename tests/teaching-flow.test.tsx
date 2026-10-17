@@ -216,7 +216,7 @@ it("框选提取后运行一次算法 → 使用最新参数和整数区域，�
       ...groupedCandidate().workspace.frames[0].trial!,
       passed: true, coverage: .5, elapsedMs: 8, verdict: "NG_GAP",
       measurement: { unit: "mm", ids: [0, 1], status: ["ok", "no_bead"], innerCenter: [.125, null],
-        width: [2.5, null], px: [[12, 21], [22, 20]], edges: [[[12, 15], [12, 27]], null], coverage: .5, ms: 8 },
+        width: [2.5, null], px: [[12, 21], [22, 20]], edges: [[[12, 15], [12, 27]], null], candidateWidth: [null, 3.2], candidateEdges: [null, [[22, 12], [22, 28]]], coverage: .5, ms: 8 },
     };
     response.workspace.revision++;
     shotState(response, 0, "trialPassed");
@@ -243,10 +243,13 @@ it("框选提取后运行一次算法 → 使用最新参数和整数区域，�
   expect(within(table).getByText("2.500")).toBeVisible();
   expect(within(table).getByText("缺胶")).toBeVisible();
   expect(image.querySelector('line[x1="12"][y1="15"][x2="12"][y2="27"]')).not.toBeNull();
-  expect(image.querySelector('circle[cx="22"][cy="20"][fill="var(--ng)"]')).not.toBeNull();
+  expect(image.querySelector('line[x1="22"][y1="12"][x2="22"][y2="28"][stroke="var(--ng)"]')).not.toBeNull();
+  expect(within(table).getByText("3.200（候选，未通过）")).toHaveClass("c-ng");
+  expect(screen.getByText("逐点试测结果 · 测得 1 / 2 · 未测 1")).toBeVisible();
   await user.click(screen.getByRole("button", { name: "删除末点" }));
   expect(screen.queryByRole("table", { name: "逐点试测结果" })).not.toBeInTheDocument();
   expect(image.querySelector('line[stroke="var(--ok)"]')).toBeNull();
+  expect(image.querySelector('line[stroke="var(--ng)"]')).toBeNull();
   expect(screen.getByRole("button", { name: "保存本组示教" })).toBeDisabled();
 });
 
