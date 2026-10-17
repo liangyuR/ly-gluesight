@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>07 相机组总览 · cam2 断连</title>
+<link rel="stylesheet" href="camera-design.css">
+<script src="shell.js"></script>
+</head>
+<body>
+<div class="app-shell">
+  <main class="main">
+    <header class="main-header">
+      <h1>相机与采集</h1>
+      <a class="site-badge" href="#">真机</a>
+    </header>
+    <div class="main-body">
+
+      <div class="ov-toolbar">
+        <div class="summary"><strong>相机组</strong><span class="mono">3 / 8</span><span>·</span><span class="state c-ok"><i data-icon="check-circle"></i>1 台已连接</span><span>·</span><span class="state c-fault"><i data-icon="unplug"></i>1 台断连</span><span>·</span><span class="state c-warn"><i data-icon="link-off"></i>1 台未绑定</span></div>
+        <span class="spacer"></span>
+        <span class="muted small">状态每秒刷新 · 14:32:39</span>
+        <button class="icon-btn" aria-label="刷新相机配置"><i data-icon="refresh-cw"></i></button>
+        <button class="btn"><i data-icon="plus" data-size="15"></i>添加相机</button>
+      </div>
+
+      <div class="cam-grid">
+        <a class="cam-card c1" href="03-detail.html">
+          <div class="cam-card-head"><strong>相机 1</strong><span class="mono">cam1</span><span class="badge ok"><i data-icon="check"></i>已连接</span></div>
+          <div class="cam-card-sub">MV-CA060-10GM · <span class="mono">DA1234567</span> · <span class="mono">192.168.1.11</span> · GigE</div>
+          <div class="thumb" data-bead="1"><span class="thumb-fresh"><i data-icon="activity" data-size="11"></i>刚刚</span><span class="thumb-tag">2448×2048 · Mono8</span></div>
+          <div class="stats">
+            <div class="stat"><span>帧计数</span><b>12 064</b></div>
+            <div class="stat"><span>触发计数</span><b>12 064</b></div>
+            <div class="stat"><span>丢包</span><b>0</b></div>
+            <div class="stat"><span>最近出图</span><b class="text">1 秒前</b></div>
+          </div>
+          <div class="cam-card-foot"><span>Line0 · 上升沿 · 滤波 5 µs</span><span>·</span><span class="mono">12.0 fps</span><span class="link">参数详情<i data-icon="chevron-right" data-size="14"></i></span></div>
+        </a>
+
+        <a class="cam-card c2" href="03-detail.html">
+          <div class="cam-card-head"><strong>相机 2</strong><span class="mono">cam2</span><span class="badge fault"><i data-icon="unplug"></i>断连</span></div>
+          <div class="cam-card-sub">MV-CA060-10GM · <span class="mono">DA1234588</span> · <span class="mono">192.168.1.12</span> · GigE</div>
+          <div class="thumb dim" data-bead="2"><div class="thumb-fault"><strong><i data-icon="unplug" data-size="15"></i>设备掉线：GigE 心跳超时</strong><span>最后一帧 14:31:58 · 之后无图像，自动重连中…</span></div></div>
+          <div class="stats">
+            <div class="stat"><span>帧计数</span><b>8 859</b></div>
+            <div class="stat"><span>触发计数</span><b>8 859</b></div>
+            <div class="stat fault"><span>丢包</span><b>142</b></div>
+            <div class="stat fault"><span>最近出图</span><b class="text">41 秒前</b></div>
+          </div>
+          <div class="card-fault">
+            <div class="msg"><i data-icon="info" data-size="15"></i><span>掉线前丢包从 0 升到 142，更像网络问题。依次检查：网线与交换机端口灯 → 供电 / PoE → IP <span class="mono">192.168.1.12</span> 是否冲突 → 详情里“重新枚举”确认设备重新出现。</span></div>
+            <div class="row"><button class="btn small"><i data-icon="refresh-cw" data-size="13"></i>立即重新连接</button><span class="link">查看 cam2 详情<i data-icon="chevron-right" data-size="14"></i></span></div>
+          </div>
+        </a>
+
+        <a class="cam-card c3 unbound" href="03-detail.html">
+          <div class="cam-card-head"><strong>相机 3</strong><span class="mono">cam3</span><span class="badge warn"><i data-icon="link-off"></i>未绑定</span></div>
+          <div class="cam-card-sub">海康 MVS · 尚未绑定物理设备</div>
+          <div class="unbound-line"><i data-icon="alert-triangle" data-size="15"></i><span>未绑定设备</span><span class="link">进入详情选择设备<i data-icon="chevron-right" data-size="14"></i></span></div>
+          <div class="cam-card-foot"><span>不参与同步核对；配方若引用 cam3 将无法采集</span></div>
+        </a>
+      </div>
+
+      <section class="panel sync-panel" aria-label="同步触发核对">
+        <div class="sync-head">
+          <h2 class="panel-title">同步触发核对</h2>
+          <span class="badge fault"><i data-icon="pause"></i>已暂停：cam2 断连，参与相机不足 2 台</span>
+          <span class="sync-meta"><span>自打开本页：触发 <b>98</b> 次</span><span>不同步 <b>0</b> 次</span><span>暂停于 <b>14:31:58</b></span></span>
+          <span class="spacer"></span>
+          <span class="muted small">cam2 恢复连接后自动继续</span>
+        </div>
+        <div class="sync-grid">
+          <table class="table">
+            <thead><tr><th>相机</th><th class="num">触发前</th><th class="num">触发后</th><th class="num">变化</th><th>结果</th></tr></thead>
+            <tbody>
+              <tr><td><span class="row"><span class="dot" style="background:var(--camera-1)"></span>相机 1 <span class="mono muted">cam1</span></span></td><td class="num">12 063</td><td class="num">12 064</td><td class="num">+1</td><td><span class="state muted"><i data-icon="check"></i>计数正常（无对照相机）</span></td></tr>
+              <tr><td><span class="row"><span class="dot fault"></span>相机 2 <span class="mono muted">cam2</span></span></td><td class="num muted">8 859</td><td class="num muted">—</td><td class="num muted">—</td><td><span class="state c-fault"><i data-icon="unplug"></i>断连，已排除</span></td></tr>
+              <tr><td><span class="row"><span class="dot off"></span>相机 3 <span class="mono muted">cam3</span></span></td><td class="num muted">—</td><td class="num muted">—</td><td class="num muted">—</td><td><span class="state muted"><i data-icon="minus"></i>未绑定，已排除</span></td></tr>
+            </tbody>
+          </table>
+          <div class="inset sync-hint">
+            <strong>断连期间的计数</strong>
+            <ol>
+              <li>cam2 掉线期间错过的触发<b>不会补计数</b>；恢复后首次核对可能显示落后一次，属正常，之后应持续 +1。</li>
+              <li>断连属<b>系统故障</b>（紫色），与检测结果 NG 无关；若正在生产，在线检测页会同时提示设备掉线。</li>
+              <li>若反复掉线，优先检查网线 / 交换机，再在详情里核对 IP 与包长设置。</li>
+            </ol>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+</body>
+</html>

@@ -16,42 +16,13 @@
 .cam-list-text { display: flex; flex-direction: column; min-width: 0; font-size: 13px; }
 .cam-list-text strong { font-weight: 500; }
 .cam-list-text small { font-size: 11.5px; color: var(--on-surface-variant); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cam-list-add { margin-top: 6px; justify-content: center; }
 
 .cam-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .cam-head { display: flex; align-items: center; gap: 10px; min-height: 36px; flex-wrap: wrap; }
 .cam-head > strong { font-size: 16px; font-weight: 600; }
 .cam-head-info { font-size: 12.5px; }
-.cam-more { position: relative; }
-.cam-more > summary { list-style: none; }
-.cam-more > summary::-webkit-details-marker { display: none; }
-.cam-more-menu { position: absolute; right: 0; top: 34px; z-index: 5; display: flex; flex-direction: column; gap: 6px; width: 240px; padding: 10px; border-radius: var(--r-md); background: var(--surface-high); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); }
-.cam-more-menu .btn { justify-content: flex-start; }
 .cam-body { display: grid; grid-template-columns: minmax(340px, 420px) minmax(0, 1fr); gap: 16px; align-items: start; }
-.cam-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.cam-next { display: inline-flex; align-items: center; gap: 4px; align-self: flex-start; font-size: 12.5px; color: var(--primary); text-decoration: none; }
-.cam-next:hover { text-decoration: underline; }
 
-.cam-config { padding-bottom: 0; }
-.cam-config-fields { display: flex; flex-direction: column; padding: 0; margin: 0; border: 0; min-width: 0; }
-.cfg-group { border-top: 1px solid var(--outline-variant); padding: 10px 0; }
-.cfg-group:first-child { border-top: 0; padding-top: 0; }
-.cfg-group > summary { cursor: pointer; font-size: 13px; font-weight: 600; margin-bottom: 10px; }
-.cfg-group:not([open]) > summary { margin-bottom: 0; }
-.cam-save-bar { position: sticky; bottom: -20px; display: flex; align-items: center; gap: 8px; margin: 0 -16px; padding: 10px 16px; border-top: 1px solid var(--outline-variant); background: var(--surface-low); font-size: 12.5px; }
-.cam-warnings { font-size: 12.5px; color: var(--warn); }
-.cam-warnings summary { cursor: pointer; }
-.cam-warnings ul { margin: 6px 0 0; padding-left: 20px; }
-.cam-test-hint { margin: -4px 0 0; font-size: 12.5px; }
-.cam-test-stats { font-size: 12px; }
-.preview-box.fresh { box-shadow: inset 0 0 0 2px var(--primary); }
-
-.cfg-grid { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 8px 12px; align-items: center; font-size: 13px; }
-.cfg-grid > span { color: var(--on-surface-variant); }
-.cfg-grid .input { width: 100%; }
-.cfg-grid .row .grow { flex: 1; min-width: 0; }
-.cam-directory-btn { flex-shrink: 0; white-space: nowrap; padding: 0 10px; }
-.cfg-grid .hint-cell { grid-column: 2; margin-top: -4px; font-size: 11.5px; color: var(--on-surface-variant); }
 
 .calc-in { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .calc-in .input { width: 100%; }
@@ -71,9 +42,6 @@
 .calc-out div > span:first-child { color: var(--on-surface-variant); }
 .calc-out b { font-weight: 500; font-size: 12.5px; }
 .calc-out .big { background: var(--primary-container); color: var(--on-primary-container); }
-
-.preview-box { display: grid; place-items: center; min-height: 220px; border-radius: var(--r-md); background: var(--surface-lowest); overflow: hidden; }
-.preview-box canvas { max-width: 100%; max-height: 420px; }
 
 .calib-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .calib-row .input { width: 100%; }

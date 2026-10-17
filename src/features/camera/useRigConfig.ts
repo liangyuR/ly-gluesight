@@ -15,6 +15,7 @@ export function useRigConfig({ withReferences, preferredId, reloadKey }: { withR
   const [loading,setLoading]=useState(false);
   const [references,setReferences]=useState<Record<string,string[]>>({});
   const [referencesReady,setReferencesReady]=useState(false);
+  const [referenceError,setReferenceError]=useState("");
   const mounted=useRef(true),loadSerial=useRef(0);
   const current=useRef({cam,configs});current.current={cam,configs};
   const chosen=useRef<string|undefined>(undefined);
@@ -34,19 +35,19 @@ export function useRigConfig({ withReferences, preferredId, reloadKey }: { withR
         }
       });
       return {found,error:""};
-    }).catch(e=>({found:{},error:`相机引用读取失败：${errorText(e)}。刷新后再移除相机。`})):Promise.resolve({found:{},error:""});
+    }).catch(e=>({found:{},error:`相机引用尚未读取：${errorText(e)}。在配方库处理后刷新再移除相机。`})):Promise.resolve({found:{},error:""});
     try{
       const [next,refs]=await Promise.all([cameraApi.rigConfig(),referenceRequest]);
       if(!mounted.current||serial!==loadSerial.current)return null;
       const selected=chosen.current ?? current.current.configs[current.current.cam]?.id ?? preferredId;
       setConfigs(next);
       if(selected){const i=Math.max(0,next.findIndex(c=>c.id===selected));chosen.current=next[i]?.id;current.current={cam:i,configs:next};setCam(i);}
-      setReferences(refs.found);setReferencesReady(!refs.error);setError(refs.error);
+      setReferences(refs.found);setReferencesReady(!refs.error);setReferenceError(refs.error);setError("");
       return next;
     }catch(e){if(mounted.current&&serial===loadSerial.current)setError(errorText(e));return null;}
     finally{if(mounted.current&&serial===loadSerial.current)setLoading(false);}
   },[withReferences,preferredId]);
   const reloadRef=useRef(reload);reloadRef.current=reload;
   useEffect(()=>{void reloadRef.current();},[reloadKey]);
-  return {configs,cam,setCam:select,error,setError,loading,references,referencesReady,reload};
+  return {configs,cam,setCam:select,error,setError,loading,references,referencesReady,referenceError,reload};
 }
