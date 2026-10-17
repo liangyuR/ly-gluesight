@@ -31,7 +31,7 @@ describe("单帧示教", () => {
     Object.assign(view, { state: "pendingTrial", trialStale: true, hint: "现有试测已过期，请重新保存参数并试测。" });
     ws.data!.progress.shots[0].state = "pendingTrial";
     show();
-    expect(screen.getByText("已过期")).toBeVisible();
+    expect(screen.queryByRole("table", { name: "逐点试测结果" })).not.toBeInTheDocument();
     expect(screen.getByText("现有试测已过期，请重新保存参数并试测。")).toBeVisible();
     expect(within(screen.getByRole("button", { name: "选择拍照组 P1" })).getByText("试测已过期")).toBeVisible();
     for (const name of ["保存本组示教", "保存并进入下一组"]) expect(screen.getByRole("button", { name })).toBeDisabled();
@@ -41,7 +41,7 @@ describe("单帧示教", () => {
     ws.frameDrafts = { 0: { path: [[10, 10], [30, 10]], mmPerPx: .1 } }; ws.frameDirty = true;
     vi.mocked(workspaceApi.saveParams).mockRejectedValue("候选配置已更新");
     show();
-    await userEvent.click(screen.getByRole("button", { name: "保存参数并试测" }));
+    await userEvent.click(screen.getByRole("button", { name: "运行一次算法" }));
     expect(workspaceApi.saveParams).toHaveBeenCalledWith("A", 7, 0, { path: [[10, 10], [30, 10]], mmPerPx: .1 });
     expect(ws.setError).toHaveBeenCalledWith(expect.stringContaining("保存参数未完成，未进行试测"));
     expect(workspaceApi.trial).not.toHaveBeenCalled();

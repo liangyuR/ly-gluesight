@@ -1,7 +1,7 @@
 import { errorText } from "../../lib/errors";
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
-import { Eraser, Save, Trash2, Undo2, WandSparkles } from "lucide-react";
+import { Eraser, Play, Save, Trash2, Undo2, WandSparkles } from "lucide-react";
 import { useCycle } from "../cycle/api";
 import { pathLength, shotSegment } from "../cycle/vis";
 import type { DetectParams, Polarity, JudgeParams, RecipeDoc, ShotLimits } from "../cycle/types";
@@ -12,6 +12,7 @@ import type { FrozenImage, ShotTeach, WorkspaceView } from "./types";
 import { sameTeach, shotTeach, teachError } from "./teach";
 import { calibrationText } from "./progress";
 import { returnState } from "./returnNavigation";
+import { TrialResult, trialPoints } from "./TrialResult";
 import { teachingGroups } from "./teachingGroups";
 import { productionBusy as isProductionBusy } from "../cycle/phase";
 
@@ -45,6 +46,8 @@ export default function TeachingPage() {
   useEffect(()=>{setK(previous=>Math.min(previous,Math.max(0,frameCount-1)));},[frameCount]);
   const [working,setWorking]=useState(false);
   const reading=false;
+  const [operation,setOperation]=useState<"extract" | "trial" | null>(null);
+  const [extractionHint,setExtractionHint]=useState("");
   const [vertex,setVertex]=useState<number|null>(null);
   const [region, setRegion] = useState<[number,number,number,number] | null>(null);
   const [regionMode, setRegionMode] = useState(false);
@@ -54,7 +57,7 @@ export default function TeachingPage() {
   const scope=JSON.stringify([doc?.id,k,data?.workspace.doc.shots[k]?.view,data?.workspace.frames[k]?.image?.id]);
   const current=useRef({scope,alive:true,revision:data?.workspace.revision});current.current.scope=scope;current.current.revision=data?.workspace.revision;
   useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;serial.current++;};},[]);
-  useEffect(()=>{serial.current++;pending.current=false;setWorking(false);setVertex(null);setRegion(null);setRegionMode(false);setReferenceMm(10);setMeasuredMm(NaN);setReuseCalibration(false);},[scope]);
+  useEffect(()=>{serial.current++;pending.current=false;setWorking(false);setVertex(null);setRegion(null);setRegionMode(false);setReferenceMm(10);setMeasuredMm(NaN);setReuseCalibration(false);setOperation(null);setExtractionHint("");},[scope]);
   const perform=async(request:()=>Promise<WorkspaceView>,message:string)=>{
     if(pending.current||busy||dirty)return null;
     pending.current=true;setWorking(true);
@@ -80,7 +83,6 @@ export default function TeachingPage() {
   const t = frameDrafts[k] ?? saved;
   const editing = !sameTeach(t, saved);
   const invalid = teachError(t);
-  const taught = shot.path.length >= 2 && shot.mmPerPx != null;
   const unlocked = !busy && !dirty && !working && !reading && !data.workspace.pending;
   const productionBusy = isProductionBusy(snapshot);
   const update = (next: ShotTeach) => {if(unlocked)setFrameDraft(k,next);};
@@ -97,25 +99,61 @@ export default function TeachingPage() {
   const calibration = viewProgress?.calibration ?? { state: "unverified" as const };
   const viewState = viewProgress?.state ?? "unconfigured";
   const trial = frame.trial;
-  const trialCurrent = !editing && (viewState === "trialPassed" || viewState === "taught");
-  const measured = !!trial && trial.measurement != null;
+  const trialFresh = !editing && !viewProgress?.trialStale && trial?.imageId === frame.image?.id && ["trialPassed", "taught", "trialFailed"].includes(viewState);
+  const trialCurrent = trialFresh && (viewState === "trialPassed" || viewState === "taught");
+  const points = trialFresh ? trialPoints(trial?.measurement) : null;
+  const measured = trialFresh && !!trial && trial.measurement != null;
   const own = shotSegment(data.layout, k)?.segment;
   const stations: [number, number][] = own ? Array.from({ length: own.count }, (_, i) => [data.layout.points.x[own.first + i], data.layout.points.y[own.first + i]]) : [];
   const lengthPx = pathLength(t.path);
-  const canTrial = unlocked && !!frame.image && enabled && viewState !== "recapture" && (editing ? !invalid : taught);
+  const trialDisabledReason = !enabled ? "请先选择本组检测图" : !frame.image ? "请先采用采集图像" : viewState === "recapture" ? "图像或设备已变化，请重新采集" : t.path.length < 2 ? "请先提取或绘制至少两个中线点" : invalid ? invalid : data.workspace.pending ? "候选版本正在等待生效" : !unlocked ? "正在处理或保存，请稍候" : "";
+  const canTrial = !trialDisabledReason;
+  const roi: [number, number, number, number] | null = region && frame.image ? (() => {
+    const x = Math.max(0, Math.floor(region[0])), y = Math.max(0, Math.floor(region[1]));
+    return [x, y, Math.min(frame.image.size[0], Math.ceil(region[0] + region[2])) - x, Math.min(frame.image.size[1], Math.ceil(region[1] + region[3])) - y];
+  })() : null;
+  const roiValid = !!roi && roi[2] >= 5 && roi[3] >= 5 && roi[2] * roi[3] <= 4_000_000;
+  const extract = async () => {
+    if (!unlocked || !enabled || !frame.image || pending.current) return;
+    if (!roiValid || !roi) { setRegionMode(true); setExtractionHint("请在图像上按住左键，框选一段连续胶路（至少 5×5 像素，最多 400 万像素），再点自动提取中线。"); return; }
+    const capturedScope = scope;
+    setOperation("extract"); setExtractionHint("");
+    try {
+      let candidate = data;
+      if (editing) {
+        const saved = await perform(() => workspaceApi.saveDraft(doc.id,data.workspace.revision,k,t), "");
+        if (!saved) return;
+        candidate = saved;
+      }
+      let extracted: Awaited<ReturnType<typeof workspaceApi.extractCenterline>> | null = null;
+      const result = await perform(async () => {
+        extracted = await workspaceApi.extractCenterline(doc.id,candidate.workspace.revision,k,frame.image!.id,roi);
+        return candidate;
+      }, "");
+      if (result && extracted && current.current.scope === capturedScope) {
+        const output = extracted as Awaited<ReturnType<typeof workspaceApi.extractCenterline>>;
+        setFrameDraft(k,{...t,path:output.path}); setRegionMode(false); setVertex(null);
+        setExtractionHint(output.message || "中线已提取，请检查后运行一次算法。");
+      }
+    } finally { if (current.current.scope === capturedScope) setOperation(null); }
+  };
   const saveAndTrial = async () => {
-    if (!canTrial || !frame.image) return;
-    const imageId = frame.image.id;
-    let revision = data.workspace.revision;
-    if (editing) {
-      const params: ShotTeach = { path: t.path, mmPerPx: t.mmPerPx };
-      if (t.detect) params.detect = t.detect;
-      if (t.limits) params.limits = t.limits;
-      const saved = await perform(() => workspaceApi.saveParams(doc.id,revision,k,params).catch(e => { throw new Error(`保存参数未完成，未进行试测：${errorText(e)}`); }), "");
-      if (!saved) return;
-      revision = saved.workspace.revision;
-    }
-    await perform(() => workspaceApi.trial(doc.id,revision,k,imageId).catch(e => { throw new Error(`${editing ? "参数已保存到候选，" : ""}试测未完成：${errorText(e)}`); }), "");
+    if (!canTrial || !frame.image || pending.current) return;
+    const capturedScope = scope;
+    setOperation("trial"); setRegionMode(false);
+    try {
+      const imageId = frame.image.id;
+      let revision = data.workspace.revision;
+      if (editing) {
+        const params: ShotTeach = { path: t.path, mmPerPx: t.mmPerPx };
+        if (t.detect) params.detect = t.detect;
+        if (t.limits) params.limits = t.limits;
+        const saved = await perform(() => workspaceApi.saveParams(doc.id,revision,k,params).catch(e => { throw new Error(`保存参数未完成，未进行试测：${errorText(e)}`); }), "");
+        if (!saved) return;
+        revision = saved.workspace.revision;
+      }
+      await perform(() => workspaceApi.trial(doc.id,revision,k,imageId).catch(e => { throw new Error(`${editing ? "参数已保存到候选，" : ""}试测未完成：${errorText(e)}`); }), "");
+    } finally { if (current.current.scope === capturedScope) setOperation(null); }
   };
   const selectImage = async (targetK: number, view: number) => {
     if (!unlocked || editing || frameDirty || pending.current) return;
@@ -135,7 +173,7 @@ export default function TeachingPage() {
     if (result?.workspace.doc.id===doc.id && next && current.current.scope===scope && current.current.alive) advance();
   };
 
-  const hint = editing && !shot.skip ? "中线或参数已改，点“保存参数并试测”；现有试测不用于保存或发布。" : viewProgress?.hint ?? "";
+  const hint = editing && !shot.skip ? "中线或参数已改，点“运行一次算法”；现有试测不用于保存或发布。" : viewProgress?.hint ?? "";
   const detect = t.detect;
   const defaults = data.workspace.doc.detect;
   const changeLimits = (limits: ShotLimits | undefined) => { const next={...t}; if(limits) next.limits=limits; else delete next.limits; update(next); };
@@ -156,16 +194,16 @@ export default function TeachingPage() {
         {group.selected.length > 1 && <p className="c-warn" role="alert">本组原先选择了多张图，请重新选择一张作为检测图。</p>}
       </Panel>
       {enabled ? <><Panel title={enabled ? shot.camera + " · 中线示教" : "中线示教"} detail={enabled ? "框选胶路 → 提取与修正中线 → 试测 → 保存本组" : "先从上方选择本组唯一的检测图"}>
-        <div className="wp-actions"><button className="btn" aria-pressed={regionMode} disabled={!unlocked || !enabled || !frame.image} onClick={() => setRegionMode(v => !v)}>{regionMode ? "结束框选 / 手工修正" : "框选胶路区域"}</button><button className="btn" disabled={!unlocked || !enabled || !frame.image || !region || region[2] < 2 || region[3] < 2} onClick={async () => {
-          if (!frame.image || !region) return;
-          const capturedScope=scope; setWorking(true);
-          try { const result = await workspaceApi.extractCenterline(doc.id,data.workspace.revision,k,frame.image.id,region); if (current.current.alive && current.current.scope===capturedScope) { setFrameDraft(k,{...t,path:result.path}); setRegionMode(false); } }
-          catch(e) { if(current.current.scope===capturedScope) setError(errorText(e)); }
-          finally { if(current.current.scope===capturedScope) setWorking(false); }
-        }}><WandSparkles size={15}/>自动提取中线</button></div>
+        <div className="wp-actions"><button className="btn" aria-pressed={regionMode} disabled={!unlocked || !frame.image} onClick={() => setRegionMode(v => !v)}>{regionMode ? "结束框选 / 手工修正" : "框选胶路区域"}</button>
+          <button className="btn" disabled={!unlocked || !frame.image || loading || !!error} onClick={() => void extract()}><WandSparkles size={15}/>{operation === "extract" ? "提取中…" : "自动提取中线"}</button>
+          <button className="btn primary" disabled={!canTrial} title={trialDisabledReason || "保存当前参数，对本图运行一次检测算法"} onClick={() => void saveAndTrial()}><Play size={15}/>{operation === "trial" ? "计算中…" : "运行一次算法"}</button>
+        </div>
+        <p className="muted hint" role="status">{regionMode ? roiValid ? "区域已选好，点击自动提取中线；提取结果可继续拖动修正。" : "在图像上按住左键框选一段连续胶路（至少 5×5 像素，最多 400 万像素），再点击自动提取中线。" : extractionHint || "自动提取需先框选胶路区域，也可直接在图上逐点绘制中线。"}</p>
+        {trialDisabledReason && <p className="muted hint">暂不能运行：{trialDisabledReason}。单次试测会保存候选参数，不会发布生产配方。</p>}
+        {trialFresh && <div className="wp-actions" aria-label="本次算法结果"><Badge tone={trialCurrent ? "info" : "warn"}>{trial?.verdict ?? "执行异常"}</Badge><span>量成比例 {measured ? (trial!.coverage * 100).toFixed(1) + "%" : "—"}</span><span>耗时 {trial?.elapsedMs} ms</span><span className="muted">绿色：测得胶条中心 · 红色：未测到胶条</span></div>}
         <GrayViewer image={image} loading={loading} error={error} label={frame.image ? group.poseId + " · " + shot.camera + " · 图 " + shot.view : "等待取样"}
           region={region} onRegion={regionMode && unlocked && enabled ? setRegion : undefined}
-          overlay={{ path: t.path, stations, stale: editing, selected: vertex }}
+          overlay={{ path: t.path, stations: points?.map(p => p.px) ?? stations, stationColors: points?.map(p => p.status === "ok" ? "var(--ok)" : "var(--ng)"), stale: editing, selected: vertex }}
           onEdit={unlocked && enabled && !regionMode ? { add: p => setPath([...t.path, p]), move: (i, p) => setPath(t.path.map((q, j) => j === i ? p : q)), select: setVertex } : undefined} />
         {productionBusy && <p className="muted hint">工件正在检测，当前可编辑已保存图像；重采需等待工件结束。</p>}
         <div className="wp-actions" style={{marginTop:10}}>
@@ -176,12 +214,13 @@ export default function TeachingPage() {
         </div>
         {frame.image && <div className="wp-kv"><span>取样来源</span><strong>{frame.image.source} · {new Date(frame.image.capturedAt).toLocaleString("zh-CN")}</strong></div>}
       </Panel>
-      <Panel title="本组试测结果" actions={trial && !editing && <Badge tone={trialCurrent?"ok":"warn"}>{viewProgress?.trialStale?"已过期":trial.passed ? "有效 · " + (trial.verdict ?? "已完成") : "执行异常"}</Badge>}>
-        <div className="wp-actions"><button className="btn" disabled={!canTrial} onClick={() => void saveAndTrial()}><WandSparkles size={15} />保存参数并试测</button><button className="btn primary" disabled={!unlocked || !enabled || !trialCurrent || viewState === "taught"} onClick={() => void save()}><Save size={15} />保存本组示教</button><button className="btn" disabled={!unlocked || !enabled || !trialCurrent || !nextGroup} onClick={() => void save(true)}>保存并进入下一组</button></div>
-        <div className="wp-rule-stat"><div><span>量成比例</span><strong>{measured ? (trial!.coverage * 100).toFixed(1) + "%" : "—"}</strong></div><div><span>处理耗时</span><strong>{trial ? trial.elapsedMs + " ms" : "—"}</strong></div></div>
+      <Panel title="本组试测结果" actions={trialFresh && trial && <Badge tone={trialCurrent?"ok":"warn"}>{viewProgress?.trialStale?"已过期":trial.passed ? "有效 · " + (trial.verdict ?? "已完成") : "执行异常"}</Badge>}>
+        <div className="wp-actions"><button className="btn primary" disabled={!unlocked || !enabled || !trialCurrent || viewState === "taught"} onClick={() => void save()}><Save size={15} />保存本组示教</button><button className="btn" disabled={!unlocked || !enabled || !trialCurrent || !nextGroup} onClick={() => void save(true)}>保存并进入下一组</button></div>
+        <div className="wp-rule-stat"><div><span>量成比例</span><strong>{measured ? (trial!.coverage * 100).toFixed(1) + "%" : "—"}</strong></div><div><span>处理耗时</span><strong>{trialFresh && trial ? trial.elapsedMs + " ms" : "—"}</strong></div></div>
         {viewState === "trialFailed" && !editing && <Notice title="试测异常" tone="warn">{trial?.reason}</Notice>}
         {viewState === "recapture" && <Notice title="需重新采集" tone="warn">{viewProgress?.hint} <Link className="btn small" to="/recipe/capture">整圈重新采集</Link></Notice>}
         <p className="muted">{hint}</p>
+        {points && <TrialResult points={points} />}
       </Panel></> : <Notice title="选择本组检测图">点击上方一张图开始示教，每组只需完成这一张。</Notice>}</div>
       {enabled && <div className="wp-stack"><Panel title="像素当量与标定验证" detail="标定误差目标 ±0.1 mm；修改当量后需重新试测和验证"><div className="wp-form-grid">
         <NumberField label="像素当量" value={t.mmPerPx} unit="mm/px" min={.0001} step={.0005} onChange={v => update({ ...t, mmPerPx: Number.isFinite(v) ? v : null })} disabled={!unlocked || !enabled} />

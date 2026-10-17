@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { expect, it, vi } from "vitest";
@@ -18,7 +18,7 @@ import { snapshot, summary, tricamWorkspaceView, twoLines } from "./fixtures";
 
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
   get: vi.fn(), list: vi.fn(), image: vi.fn(), progress: vi.fn(),
-  selectGroupImage: vi.fn(), saveDraft: vi.fn(), saveParams: vi.fn(), trial: vi.fn(), saveTeach: vi.fn(),
+  selectGroupImage: vi.fn(), saveDraft: vi.fn(), saveParams: vi.fn(), trial: vi.fn(), saveTeach: vi.fn(), extractCenterline: vi.fn(),
   saveOverview: vi.fn(), captureGet: vi.fn(), captureList: vi.fn(), captureStart: vi.fn(),
   captureSample: vi.fn(), captureImage: vi.fn(), validate: vi.fn(), publish: vi.fn(),
 } }));
@@ -157,7 +157,7 @@ it("每组三相机图仅示教选中图 → 保存后进入下一组并沿用�
     const imageId = `A-image-${group}-cam1`;
     const image = await screen.findByRole("img", { name: `P${group + 1} · CAM-1 · 图 1` });
     expect(screen.getByRole("button", { name: "选择拍照组 P" + (group + 1) })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "保存参数并试测" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "运行一次算法" })).toBeDisabled();
     for (const [clientX, clientY] of twoLines[group]) {
       fireEvent.pointerDown(image, { clientX, clientY });
       fireEvent.pointerUp(image);
@@ -165,7 +165,7 @@ it("每组三相机图仅示教选中图 → 保存后进入下一组并沿用�
     fireEvent.change(screen.getByRole("spinbutton", { name: "像素当量" }), { target: { value: ".1" } });
     expect(screen.getByLabelText("中线点 2")).toBeVisible();
     expect(screen.getByRole("button", { name: "保存本组示教" })).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: "保存参数并试测" }));
+    await user.click(screen.getByRole("button", { name: "运行一次算法" }));
     expect(workspaceApi.saveParams).toHaveBeenNthCalledWith(group + 1, "A", 7 + 2 * group, k, { path: twoLines[group], mmPerPx: .1 });
     await waitFor(() => expect(workspaceApi.trial).toHaveBeenNthCalledWith(group + 1, "A", 8 + 2 * group, k, imageId));
     expect(screen.queryByText("示教参数有未保存的修改")).not.toBeInTheDocument();
@@ -180,6 +180,74 @@ it("每组三相机图仅示教选中图 → 保存后进入下一组并沿用�
   expect(workspaceApi.saveParams).toHaveBeenCalledTimes(2);
   expect(workspaceApi.trial).toHaveBeenCalledTimes(2);
   expect(workspaceApi.saveTeach).toHaveBeenCalledTimes(2);
+});
+
+it("框选提取后运行一次算法 → 使用最新参数和整数区域，展示实测点并在编辑后失效", async () => {
+  vi.stubGlobal("DOMPoint", class {
+    constructor(public x: number, public y: number) {}
+    matrixTransform() { return this; }
+  });
+  vi.stubGlobal("PointerEvent", MouseEvent);
+  Object.defineProperty(SVGElement.prototype, "getScreenCTM", { configurable: true, value: () => ({ inverse: () => ({}) }) });
+  Object.defineProperty(SVGElement.prototype, "setPointerCapture", { configurable: true, value: vi.fn() });
+  const candidate = groupedCandidate();
+  candidate.workspace.doc.shots[0].path = [];
+  delete candidate.workspace.doc.shots[0].mmPerPx;
+  candidate.workspace.frames[0].trial = null;
+  candidate.workspace.frames[0].saved = false;
+  shotState(candidate, 0, "unconfigured");
+  mockSite(candidate);
+  const extracted: [number, number][] = [[12, 20], [22, 20], [32, 20]];
+  const response = structuredClone(candidate);
+  vi.mocked(workspaceApi.saveDraft).mockImplementation(async (_id, _revision, k, params) => {
+    Object.assign(response.workspace.doc.shots[k], params);
+    response.workspace.revision++;
+    return structuredClone(response);
+  });
+  vi.mocked(workspaceApi.extractCenterline).mockResolvedValue({ path: extracted, message: "中线已提取" });
+  vi.mocked(workspaceApi.saveParams).mockImplementation(async (_id, _revision, k, params) => {
+    Object.assign(response.workspace.doc.shots[k], params);
+    response.workspace.revision++;
+    shotState(response, k, "pendingTrial");
+    return structuredClone(response);
+  });
+  vi.mocked(workspaceApi.trial).mockImplementation(async () => {
+    response.workspace.frames[0].trial = {
+      ...groupedCandidate().workspace.frames[0].trial!,
+      passed: true, coverage: .5, elapsedMs: 8, verdict: "NG_GAP",
+      measurement: { unit: "mm", ids: [0, 1], status: ["ok", "no_bead"], innerCenter: [.125, null],
+        width: [2.5, null], px: [[12, 21], [22, 20]], coverage: .5, ms: 8 },
+    };
+    response.workspace.revision++;
+    shotState(response, 0, "trialPassed");
+    return structuredClone(response);
+  });
+  const user = renderWorkspace("/recipe/teach");
+  const image = await screen.findByRole("img", { name: "P1 · CAM-1 · 图 1" });
+  await user.click(screen.getByRole("button", { name: "自动提取中线" }));
+  expect(screen.getByRole("button", { name: "结束框选 / 手工修正" })).toHaveAttribute("aria-pressed", "true");
+  expect(workspaceApi.extractCenterline).not.toHaveBeenCalled();
+  fireEvent.pointerDown(image, { clientX: 10.2, clientY: 12.4 });
+  fireEvent.pointerMove(image, { clientX: 50.8, clientY: 42.7 });
+  fireEvent.pointerUp(image);
+  fireEvent.change(screen.getByRole("spinbutton", { name: "像素当量" }), { target: { value: ".2" } });
+  await user.click(screen.getByRole("button", { name: "自动提取中线" }));
+  expect(await screen.findByLabelText("中线点 3")).toBeVisible();
+  expect(workspaceApi.saveDraft).toHaveBeenCalledWith("A", 7, 0, { path: [], mmPerPx: .2 });
+  expect(workspaceApi.extractCenterline).toHaveBeenCalledWith("A", 8, 0, "A-image-0-cam1", [10, 12, 41, 31]);
+  await user.click(screen.getByRole("button", { name: "运行一次算法" }));
+  const table = await screen.findByRole("table", { name: "逐点试测结果" });
+  expect(workspaceApi.saveParams).toHaveBeenCalledWith("A", 8, 0, { path: extracted, mmPerPx: .2 });
+  expect(workspaceApi.trial).toHaveBeenCalledWith("A", 9, 0, "A-image-0-cam1");
+  expect(within(table).getByText("0.125")).toBeVisible();
+  expect(within(table).getByText("2.500")).toBeVisible();
+  expect(within(table).getByText("缺胶")).toBeVisible();
+  expect(image.querySelector('circle[cx="12"][cy="21"][fill="var(--ok)"]')).not.toBeNull();
+  expect(image.querySelector('circle[cx="22"][cy="20"][fill="var(--ng)"]')).not.toBeNull();
+  await user.click(screen.getByRole("button", { name: "删除末点" }));
+  expect(screen.queryByRole("table", { name: "逐点试测结果" })).not.toBeInTheDocument();
+  expect(image.querySelector('circle[fill="var(--ok)"]')).toBeNull();
+  expect(screen.getByRole("button", { name: "保存本组示教" })).toBeDisabled();
 });
 
 it("同组切换检测相机 → 原图取消选中且编辑切到新图，其他组保持原选择", async () => {
