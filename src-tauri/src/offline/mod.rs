@@ -472,12 +472,15 @@ pub fn offline_run(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, Cyc
     if let (Some(set), Some(id)) = (&samples, part_id.as_deref()) {
         set.part(id).ok_or_else(|| format!("样本集里没有样本件 {id}"))?;
     }
+    let sample_shots = samples.as_ref().map(|set| set.manifest().recipe_shots(&recipe)
+        .map(|shots| shots.into_iter().map(|s| s.shot_id.clone()).collect::<Vec<_>>())).transpose()
+        .map_err(|reason| format!("样本集与配方不符：{reason}"))?;
     start_running(&offline, continuous)?;
     let order = PartOrder { sn: String::new(), product_code: recipe.product_code, plan_version: plan.plan_version,
         shot_count: plan.shot_count, device_shots: plan.device_shots };
     tauri::async_runtime::spawn(async move {
         if warming && !wait_warmup(&app, &recipe).await { return finish(&app, &app.state::<OfflineHost>()); }
-        run(app, line, recipe, order, scenario, continuous, samples.map(|set| (set, part_id))).await
+        run(app, line, recipe, order, scenario, continuous, samples.zip(sample_shots).map(|(set, shots)| (set, shots, part_id))).await
     });
     Ok(())
 }
@@ -566,13 +569,14 @@ fn sim_payload(recipe: &Arc<Recipe>, part: u32, scenario: Scenario, k: usize) ->
 }
 
 /// 第 trigger 次 PLC 触发：同时触发这次 Pose 的全部相机，各取自己的拍照点。
-fn trigger_shot(app: &AppHandle, recipe: &Arc<Recipe>, groups: &[Vec<usize>], part: u32, scenario: Scenario, sample: Option<(&Arc<SampleSet>, &str)>, trigger: usize, lost: bool) {
+/// 样本集图按 `sample_shots[配方拍照点下标]` 取（见 [`sample_set::Manifest::recipe_shots`]）。
+fn trigger_shot(app: &AppHandle, recipe: &Arc<Recipe>, groups: &[Vec<usize>], part: u32, scenario: Scenario, sample: Option<(&Arc<SampleSet>, &[String], &str)>, trigger: usize, lost: bool) {
     let cycle = app.state::<CycleHost>();
     for &k in groups.get(trigger).map_or(&[][..], Vec::as_slice) {
         let shot = &recipe.shots[k];
         let Ok(cam) = cycle.camera.require(&shot.camera) else { continue };
         let payload = match sample {
-            Some((set, part_id)) => sample_payload(set, part_id, &shot.id),
+            Some((set, sample_shots, part_id)) => sample_payload(set, part_id, &sample_shots[k]),
             None => TriggerPayload::Sim(sim_payload(recipe, part, scenario, k)),
         };
         let _ = cycle.camera.trigger(cam, lost, Some(payload));
@@ -595,11 +599,11 @@ async fn wait_warmup(app: &AppHandle, recipe: &Recipe) -> bool {
 }
 
 async fn run(app: AppHandle, line: Arc<Line>, recipe: Arc<Recipe>, order: PartOrder, scenario: Scenario, continuous: bool,
-    samples: Option<(Arc<SampleSet>, Option<String>)>) {
+    samples: Option<(Arc<SampleSet>, Vec<String>, Option<String>)>) {
     let offline = app.state::<OfflineHost>();
     let timing = timing(&app, recipe_interval(&recipe));
     let mut seed = (now_ms() % 997) as u32;
-    let (set, mut requested) = samples.map_or((None, None), |(set, part)| (Some(set), part));
+    let (set, sample_shots, mut requested) = samples.map_or((None, Vec::new(), None), |(set, shots, part)| (Some(set), shots, part));
     let groups = match crate::plc_plan::trigger_groups(&recipe) {
         Ok(groups) => groups,
         Err(error) => { offline.set_message(&app, format!("已中止：{error}")); return finish(&app, &offline); }
@@ -626,7 +630,7 @@ async fn run(app: AppHandle, line: Arc<Line>, recipe: Arc<Recipe>, order: PartOr
         if let (Some(set), Some(id)) = (&set, &part_id) { offline.begin_run(set, id, &sn, RunPurpose::Production); }
         *offline.part_scenario.lock().unwrap() = Some(s);
         let order = PartOrder { sn: sn.clone(), ..order.clone() };
-        let sample = set.as_ref().zip(part_id.as_deref());
+        let sample = set.as_ref().zip(part_id.as_deref()).map(|(set, part_id)| (set, sample_shots.as_slice(), part_id));
         let shot = |k, lost| trigger_shot(&app, &recipe, &groups, number, s, sample, k, lost);
         let result = line.run_part(&timing, &order, s, shot, &offline.abort).await;
         *offline.part_scenario.lock().unwrap() = None;
