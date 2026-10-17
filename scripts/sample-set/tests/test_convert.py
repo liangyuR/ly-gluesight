@@ -115,6 +115,23 @@ class SampleSetTests(unittest.TestCase):
                 self.assertEqual(part["shotLabels"], expected_shot_labels)
                 self.assertEqual(len(list((out / "parts/p01").iterdir())), 3)
 
+    def test_单圈点位相机图_点位按数值排序且缺图时各相机第k个拍照点仍对应点位k(self):
+        src = self.root / "round"
+        src.mkdir()
+        for point in (1, 2, 10):
+            for cam in (1, 2):
+                if (point, cam) != (2, 2):
+                    (src / f"{point}_{cam}.bmp").write_bytes(fake_bmp(1280, 1024))
+        out = self.root / "out"
+        self.assertEqual(run("round", str(src), str(out)), 0)
+        doc = load(out)
+        per_camera = {c["id"]: [s["origin"] for s in doc["shots"] if s["cameraId"] == c["id"]] for c in doc["cameras"]}
+
+        self.assertEqual(per_camera, {"cam1": ["1_1.bmp", "2_1.bmp", "10_1.bmp"], "cam2": ["1_2.bmp", "2_2", "10_2.bmp"]})
+        self.assertEqual(len(doc["parts"]), 1)
+        _, missing = convert.validate_set(out)
+        self.assertEqual(missing, ["parts/p01/S004_cam2_v1"])
+
     def test_shots子集_从S001重新编号并只按所选点汇总标签(self):
         src = self.make_mx11({"2032720000": {"2": "Ok", "3": "Breaking", "5": "Ok", "7": "Ok"}})
         out = self.root / "out"
