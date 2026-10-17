@@ -17,6 +17,8 @@ pub struct ShotMeasurement {
     pub st: Vec<u8>,
     pub px: Vec<[f32; 2]>,
     pub edges: Vec<Option<[[f32; 2]; 2]>>,
+    pub candidate_width: Vec<Option<f32>>,
+    pub candidate_edges: Vec<Option<[[f32; 2]; 2]>>,
     pub coverage: f32,
     pub ms: u32,
 }
@@ -38,7 +40,8 @@ impl ShotMeasurement {
     pub fn record(&self) -> Value {
         let status: Vec<_> = self.st.iter().map(|s| if *s == ST_OK { "ok" } else { "no_bead" }).collect();
         json!({"unit": "mm", "ids": self.idx, "status": status, "innerCenter": self.d,
-            "width": self.w, "px": self.px, "edges": self.edges, "coverage": self.coverage, "ms": self.ms})
+            "width": self.w, "px": self.px, "edges": self.edges, "candidateWidth": self.candidate_width,
+            "candidateEdges": self.candidate_edges, "coverage": self.coverage, "ms": self.ms})
     }
 }
 
@@ -74,7 +77,7 @@ pub fn measure_views_with(
             return Err(format!("拍照点 {} 图 {view} 缺失或重复", shot.id));
         }
     }
-    let mut out = ShotMeasurement { idx: Vec::new(), d: Vec::new(), w: Vec::new(), st: Vec::new(), px: Vec::new(), edges: Vec::new(), coverage: 0.0, ms: 0 };
+    let mut out = ShotMeasurement { idx: Vec::new(), d: Vec::new(), w: Vec::new(), st: Vec::new(), px: Vec::new(), edges: Vec::new(), candidate_width: Vec::new(), candidate_edges: Vec::new(), coverage: 0.0, ms: 0 };
     let mut views = Vec::new();
     for view in selected {
         let image = &images.iter().find(|(v, _)| *v == view).unwrap().1;
@@ -84,6 +87,12 @@ pub fn measure_views_with(
                 && reading.st.len() == expected.len() && reading.d.len() == expected.len()
                 && reading.w.len() == expected.len() && reading.px.len() == expected.len()
                 && reading.edges.len() == expected.len()
+                && reading.candidate_width.len() == expected.len() && reading.candidate_edges.len() == expected.len()
+                && reading.candidate_width.iter().zip(&reading.candidate_edges).all(|(width, edge)| match (width, edge) {
+                    (Some(width), Some(points)) => width.is_finite() && *width > 0.0 && points.iter().flatten().all(|v| v.is_finite()),
+                    (None, None) => true,
+                    _ => false,
+                })
                 && reading.edges.iter().enumerate().all(|(i, edge)| match edge {
                     Some(points) => reading.st[i] == ST_OK && points.iter().flatten().all(|v| v.is_finite()),
                     None => reading.st[i] != ST_OK,
@@ -94,6 +103,7 @@ pub fn measure_views_with(
                     && (state != ST_OK || (reading.d[i].is_finite() && reading.w[i].is_finite()))) => {
                 out.idx.extend(&reading.idx); out.d.extend(&reading.d); out.w.extend(&reading.w);
                 out.st.extend(&reading.st); out.px.extend(&reading.px); out.edges.extend(&reading.edges);
+                out.candidate_width.extend(&reading.candidate_width); out.candidate_edges.extend(&reading.candidate_edges);
                 out.ms = out.ms.saturating_add(reading.ms);
                 views.push(ViewMeasurement { view, reading: Some(reading), error: None });
             }
@@ -102,7 +112,7 @@ pub fn measure_views_with(
                 for j in expected {
                     out.idx.push(j as u32); out.d.push(f32::NAN); out.w.push(f32::NAN);
                     out.st.push(crate::measure::ST_INVALID); out.px.push([recipe.points.x[j], recipe.points.y[j]]);
-                    out.edges.push(None);
+                    out.edges.push(None); out.candidate_width.push(None); out.candidate_edges.push(None);
                 }
                 views.push(ViewMeasurement { view, reading: None, error: Some(error) });
             }
@@ -238,12 +248,17 @@ fn parse_result(recipe: &Recipe, p: &ShotPlan, result: &RunResult) -> Result<Sho
     for key in ["s", "center", "normal", "present", "lo", "hi", "widthPx"] {
         if stations[key].as_array().map(Vec::len) != Some(n) { return Err(format!("算法逐站结果 {key} 长度与配方不一致")); }
     }
+    let candidate_keys = ["candidateLo", "candidateHi", "candidateWidthPx"];
+    let has_candidates = candidate_keys.iter().any(|key| stations.get(*key).is_some());
+    if has_candidates && candidate_keys.iter().any(|key| stations[*key].as_array().map(Vec::len) != Some(n)) {
+        return Err("算法逐站候选结果长度与配方不一致".into());
+    }
     let number = |key: &str, i: usize| stations[key][i].as_f64().filter(|v| v.is_finite()).ok_or_else(|| format!("算法第 {} 站的 {key} 不是有限数", i + 1));
     let xy = |key: &str, i: usize| -> Result<[f64; 2], String> {
         let a = stations[key][i].as_array().filter(|a| a.len() == 2).ok_or_else(|| format!("算法第 {} 站的 {key} 不是二维坐标", i + 1))?;
         Ok([a[0].as_f64().filter(|v| v.is_finite()).ok_or("算法坐标不是有限数")?, a[1].as_f64().filter(|v| v.is_finite()).ok_or("算法坐标不是有限数")?])
     };
-    let mut m = ShotMeasurement { idx: Vec::with_capacity(n), d: Vec::with_capacity(n), w: Vec::with_capacity(n), st: Vec::with_capacity(n), px: Vec::with_capacity(n), edges: Vec::with_capacity(n), coverage: 0.0, ms: 0 };
+    let mut m = ShotMeasurement { idx: Vec::with_capacity(n), d: Vec::with_capacity(n), w: Vec::with_capacity(n), st: Vec::with_capacity(n), px: Vec::with_capacity(n), edges: Vec::with_capacity(n), candidate_width: Vec::with_capacity(n), candidate_edges: Vec::with_capacity(n), coverage: 0.0, ms: 0 };
     let mut present = 0;
     for (i, &j) in p.idx.iter().enumerate() {
         let s = number("s", i)?;
@@ -258,6 +273,22 @@ fn parse_result(recipe: &Recipe, p: &ShotPlan, result: &RunResult) -> Result<Sho
         }
         let has_bead = stations["present"][i].as_bool().ok_or("算法有胶状态不是布尔值")?;
         m.idx.push(j as u32);
+        if has_candidates && candidate_keys.iter().any(|key| !stations[*key][i].is_null()) {
+            let lo = number("candidateLo", i)?;
+            let hi = number("candidateHi", i)?;
+            let width = number("candidateWidthPx", i)?;
+            if hi <= lo || width <= 0.0 || (width - (hi - lo)).abs() > 0.003 || lo < -p.half - 0.001 || hi > p.half + 0.001 {
+                return Err(format!("算法第 {} 站候选胶边或胶宽超出搜索范围", i + 1));
+            }
+            m.candidate_width.push(Some((width * p.scale) as f32));
+            m.candidate_edges.push(Some([
+                [(center[0] + normal[0] * lo) as f32, (center[1] + normal[1] * lo) as f32],
+                [(center[0] + normal[0] * hi) as f32, (center[1] + normal[1] * hi) as f32],
+            ]));
+        } else {
+            m.candidate_width.push(None);
+            m.candidate_edges.push(None);
+        }
         if has_bead {
             let lo = number("lo", i)?;
             let hi = number("hi", i)?;
