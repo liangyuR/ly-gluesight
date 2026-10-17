@@ -880,7 +880,7 @@ fn app_log(app: &AppHandle, level: &'static str, event: &'static str, message: i
     if app.try_state::<cycle::CycleHost>().is_some() {
         cycle::log(app, level, event, message);
     } else {
-        eprintln!("[{level}] {event}：{message}");
+        crate::applog::write(level, event, &message);
     }
 }
 

@@ -302,10 +302,10 @@ impl CycleHost {
             let warning = Arc::new(move |errors: &[String]| {
                 if warning_app.try_state::<CycleHost>().is_some() {
                     log(&warning_app, "warn", "孤立录制清理失败", errors.join("；"));
-                } else { eprintln!("warn 孤立录制清理失败：{}", errors.join("；")); }
+                } else { crate::applog::write("warn", "孤立录制清理失败", &errors.join("；")); }
             });
             Recorder::guarded(root, Some(Arc::new(move |outcome| {
-                if let Err(error) = record_audit.recording(outcome) { eprintln!("录制审计持久化失败：{error}"); }
+                if let Err(error) = record_audit.recording(outcome) { crate::applog::write("err", "录制审计持久化失败", &error); }
             })), protection, warning)
         };
         let recorders = Recorders::new(recorder(data.join("records"), HistoryScope::Real),
@@ -434,6 +434,7 @@ fn host(app: &AppHandle) -> &CycleHost {
 
 pub fn log(app: &AppHandle, level: &'static str, ev: impl Into<String>, msg: impl Into<String>) {
     let line = LogLine { ts: now_ms(), level, ev: ev.into(), msg: msg.into() };
+    crate::applog::write(level, &line.ev, &line.msg);
     {
         let mut s = host(app).shared.lock().unwrap();
         s.logs.push_back(line.clone());

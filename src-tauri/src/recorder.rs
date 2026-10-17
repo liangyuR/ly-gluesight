@@ -362,10 +362,10 @@ fn safe_cycle_id(id: &str) -> bool {
 fn notify(callback: &Option<RecordingCallback>, outcome: RecordingOutcome) {
     if let Some(callback) = callback {
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(outcome))).is_err() {
-            eprintln!("录制结果回调发生异常");
+            crate::applog::write("err", "录制", "录制结果回调发生异常");
         }
     } else if !outcome.errors.is_empty() {
-        eprintln!("录制 {} 失败：{}", outcome.cycle_id, outcome.errors.join("；"));
+        crate::applog::write("err", "录制", &format!("{} 失败：{}", outcome.cycle_id, outcome.errors.join("；")));
     }
 }
 
