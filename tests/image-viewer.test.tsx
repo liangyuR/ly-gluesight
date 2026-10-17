@@ -14,6 +14,35 @@ beforeEach(() => {
 });
 
 describe("图像查看与加载", () => {
+  it("搜索带沿局部法向显示半宽并裁剪到原图，独立隐藏不影响测量结果", () => {
+    const overlay = {
+      path: [[5, 10], [5, 10], [5, 50], [25, 50]] as [number, number][],
+      searchHalfPx: 10,
+      segments: [{ from: [2, 20] as [number, number], to: [8, 20] as [number, number], color: "red", label: "候选 0.6 mm" }],
+    };
+    const { rerender } = render(<GrayViewer image={image} label="带界图像" overlay={overlay} />);
+    const band = screen.getByLabelText("搜索带边界");
+    const edges = [...band.querySelectorAll("polyline")].map(edge => edge.getAttribute("points")!.split(" ").map(p => p.split(",").map(Number)));
+    expect(edges[0]).toHaveLength(31);
+    expect(edges[0][0]).toEqual([-5, 10]);
+    expect(edges[1][0]).toEqual([15, 10]);
+    expect(edges[0][20][0]).toBeCloseTo(5 - Math.sqrt(50));
+    expect(edges[0][20][1]).toBeCloseTo(50 + Math.sqrt(50));
+    expect(edges[1][30]).toEqual([25, 40]);
+    expect(band).toHaveAttribute("clip-path", `url(#${band.querySelector("clipPath")!.id})`);
+    expect(band.querySelector("clipPath rect")).toHaveAttribute("width", "100");
+    expect(band.querySelector("clipPath rect")).toHaveAttribute("height", "60");
+    fireEvent.click(screen.getByRole("button", { name: "搜索带" }));
+    expect(screen.queryByLabelText("搜索带边界")).not.toBeInTheDocument();
+    expect(screen.getByText("候选 0.6 mm")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "搜索带" }));
+    fireEvent.click(screen.getByRole("button", { name: "中线叠加" }));
+    expect(screen.getByLabelText("搜索带边界")).toBeInTheDocument();
+    for (const searchHalfPx of [NaN, Infinity, 0, -1]) {
+      rerender(<GrayViewer image={image} label="带界图像" overlay={{ ...overlay, searchHalfPx }} />);
+      expect(screen.queryByLabelText("搜索带边界")).not.toBeInTheDocument();
+    }
+  });
   it("从候选图切到历史原图后，迟到的旧图不能覆盖当前来源", async () => {
     const old = deferred<GrayImage>();
     vi.mocked(workspaceApi.image).mockReturnValueOnce(old.promise);
@@ -67,4 +96,110 @@ describe("图像查看与加载", () => {
       Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: previous });
     }
   });
+  it("密集中线隐藏内部编辑圆点，展开后可拖动且测量横线始终位于上层", () => {
+    const previous = globalThis.DOMPoint;
+    class TestPoint {
+      constructor(public x: number, public y: number) {}
+      matrixTransform() { return this; }
+    }
+    Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: TestPoint });
+    const edit = { add: vi.fn(), move: vi.fn(), select: vi.fn() };
+    try {
+      const path = Array.from({ length: 158 }, (_, i) => [50, i / 3] as [number, number]);
+      render(<GrayViewer image={image} label="测量图像" onEdit={edit} overlay={{ path, segments: [{ from: [40, 30], to: [60, 30], color: "green", label: "3.5 mm" }] }} />);
+      const svg = screen.getByRole("img", { name: "测量图像" });
+      Object.defineProperty(svg.querySelector("g")!, "getScreenCTM", { value: () => ({ inverse: () => ({}) }) });
+      const measurement = screen.getByLabelText("测量横线");
+      expect(svg.querySelectorAll("[data-vertex]")).toHaveLength(2);
+      expect(measurement.querySelector("line")).toHaveAttribute("vector-effect", "non-scaling-stroke");
+      fireEvent.click(screen.getByRole("button", { name: "编辑点" }));
+      const vertex = screen.getByLabelText("中线点 80");
+      expect(vertex.compareDocumentPosition(measurement) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+      fireEvent.pointerDown(vertex, { clientX: 50, clientY: 26, pointerId: 1 });
+      fireEvent.pointerMove(svg, { clientX: 55, clientY: 27, pointerId: 1 });
+      expect(edit.move).toHaveBeenLastCalledWith(79, [55, 27]);
+      expect(edit.add).not.toHaveBeenCalled();
+      fireEvent.pointerUp(svg, { pointerId: 1 });
+      fireEvent.click(screen.getByRole("button", { name: "编辑点" }));
+      expect(screen.queryByLabelText("中线点 80")).not.toBeInTheDocument();
+      expect(screen.getByText("3.5 mm")).toBeInTheDocument();
+    } finally {
+      Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: previous });
+    }
+  });
+  it("Ctrl 滚轮以鼠标处缩放并限制倍率，普通滚轮仍滚动页面，键盘可复位", () => {
+    const previous = globalThis.DOMPoint;
+    class TestPoint {
+      constructor(public x: number, public y: number) {}
+      matrixTransform() { return this; }
+    }
+    Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: TestPoint });
+    try {
+      render(<GrayViewer image={image} label="缩放图像" />);
+      const svg = screen.getByRole("img", { name: "缩放图像" });
+      Object.defineProperty(svg, "getScreenCTM", { value: () => ({ inverse: () => ({}) }) });
+      const ordinary = new WheelEvent("wheel", { deltaY: -100, bubbles: true, cancelable: true });
+      fireEvent(svg, ordinary);
+      expect(ordinary.defaultPrevented).toBe(false);
+      expect(screen.getByText("100%")).toBeVisible();
+      const modified = new WheelEvent("wheel", { ctrlKey: true, deltaY: -100, clientX: 25, clientY: 15, bubbles: true, cancelable: true });
+      fireEvent(svg, modified);
+      expect(modified.defaultPrevented).toBe(true);
+      expect(screen.getByText("122%")).toBeVisible();
+      const transform = svg.querySelector("g")!.getAttribute("transform")!;
+      const [tx, ty, scale] = transform.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+      expect(tx + (25 - image.width / 2) * scale).toBeCloseTo(25);
+      expect(ty + (15 - image.height / 2) * scale).toBeCloseTo(15);
+      for (let n = 0; n < 20; n++) fireEvent.wheel(svg, { ctrlKey: true, deltaY: -200 });
+      expect(screen.getByText("400%")).toBeVisible();
+      for (let n = 0; n < 20; n++) fireEvent.wheel(svg, { ctrlKey: true, deltaY: 200 });
+      expect(screen.getByText("50%")).toBeVisible();
+      fireEvent.keyDown(svg, { key: "0", ctrlKey: true });
+      expect(screen.getByText("100%")).toBeVisible();
+      fireEvent.keyDown(svg, { key: "+" });
+      expect(screen.getByText("125%")).toBeVisible();
+      fireEvent.keyDown(svg, { key: "-" });
+      expect(screen.getByText("100%")).toBeVisible();
+    } finally {
+      Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: previous });
+    }
+  });
+
+  it.each([false, true])("中键平移（框选模式 %s）不修改示教，取消拖动和换图后不残留视角", (regionMode) => {
+    const previous = globalThis.DOMPoint;
+    class TestPoint {
+      constructor(public x: number, public y: number) {}
+      matrixTransform() { return new TestPoint(this.x / 2, this.y / 2); }
+    }
+    Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: TestPoint });
+    const edit = { add: vi.fn(), move: vi.fn(), select: vi.fn() };
+    const onRegion = vi.fn();
+    try {
+      const { rerender } = render(<GrayViewer image={image} label="平移图像" overlay={{ path: [[20,20]] }} onEdit={edit} onRegion={regionMode ? onRegion : undefined} />);
+      const svg = screen.getByRole("img", { name: "平移图像" });
+      Object.defineProperty(svg, "getScreenCTM", { value: () => ({ inverse: () => ({}) }) });
+      fireEvent.pointerDown(svg, { button: 1, clientX: 20, clientY: 20, pointerId: 1 });
+      fireEvent.pointerMove(svg, { clientX: 60, clientY: 40, pointerId: 1 });
+      expect(svg.querySelector("g")).toHaveAttribute("transform", "translate(70 40) scale(1) translate(-50 -30)");
+      expect(edit.add).not.toHaveBeenCalled();
+      expect(edit.move).not.toHaveBeenCalled();
+      expect(onRegion).not.toHaveBeenCalled();
+      fireEvent.pointerCancel(svg, { pointerId: 1 });
+      fireEvent.pointerMove(svg, { clientX: 100, clientY: 100, pointerId: 1 });
+      expect(svg.querySelector("g")).toHaveAttribute("transform", "translate(70 40) scale(1) translate(-50 -30)");
+      fireEvent.click(screen.getByRole("button", { name: "适应窗口" }));
+      expect(svg.querySelector("g")).toHaveAttribute("transform", "translate(50 30) scale(1) translate(-50 -30)");
+      fireEvent.keyDown(svg, { key: "+" });
+      fireEvent.pointerDown(svg, { button: 1, clientX: 20, clientY: 20, pointerId: 2 });
+      fireEvent.pointerMove(svg, { clientX: 60, clientY: 40, pointerId: 2 });
+      rerender(<GrayViewer image={{ ...image, url: "data:,next-image" }} label="平移图像" />);
+      expect(screen.getByText("100%")).toBeVisible();
+      expect(svg.querySelector("g")).toHaveAttribute("transform", "translate(50 30) scale(1) translate(-50 -30)");
+      fireEvent.pointerMove(svg, { clientX: 100, clientY: 100, pointerId: 2 });
+      expect(svg.querySelector("g")).toHaveAttribute("transform", "translate(50 30) scale(1) translate(-50 -30)");
+    } finally {
+      Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: previous });
+    }
+  });
+
 });

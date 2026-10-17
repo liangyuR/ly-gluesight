@@ -1,10 +1,11 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 import { subscribe } from "../plc";
+import type { CameraImaging } from "../cycle/types";
 import type { CameraConfig, CameraStatus, DeviceSummary, Frame, PreviewImage } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
-  if (!isTauri() && ["camera_save_config","camera_add","camera_remove","camera_soft_trigger","camera_release","camera_reconnect"].includes(cmd))
+  if (!isTauri() && ["camera_save_config","camera_add","camera_remove","camera_soft_trigger","camera_release","camera_reconnect","camera_set_imaging"].includes(cmd))
     return Promise.reject(new Error("设备操作需要 GlueSight · 胶路智检 桌面后端"));
   if (!isTauri()) return Promise.resolve(fallback());
   return invoke<T>(cmd, args);
@@ -49,6 +50,7 @@ export const cameraApi = {
   listDevices: () => call<DeviceSummary[]>("camera_list_devices", undefined, () => []),
   preview: (cam: number, view?: number) => call<ArrayBuffer>("camera_preview", { cam, ...(view == null ? {} : { view }) }, () => new ArrayBuffer(0)).then(decodePreview),
   softTrigger: (cam: number) => call<void>("camera_soft_trigger", { cam }, () => undefined),
+  setImaging: (cam: number, id: string, imaging: CameraImaging) => call<void>("camera_set_imaging", { cam, id, imaging }, () => undefined),
   release: (cam: number) => call<void>("camera_release", { cam }, () => undefined),
   reconnect: (cam: number) => call<string>("camera_reconnect", { cam }, () => ""),
 };

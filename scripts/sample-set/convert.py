@@ -26,6 +26,7 @@ MX11_FILE_RE = re.compile(
     re.IGNORECASE,
 )
 MX11_RET_RE = re.compile(r"_ret\.[A-Za-z]+$", re.IGNORECASE)
+ROUND_FILE_RE = re.compile(r"^(?P<point>\d+)_(?P<cam>\d+)\.(?P<ext>" + "|".join(IMAGE_EXTS) + r")$", re.IGNORECASE)
 SHOT_ID_RE = re.compile(r"^S\d{3}$")
 IMAGE_NAME_RE = re.compile(r"^(S[0-9]{3})_(.+)_v([0-9]+)\.([A-Za-z]+)$")
 ID_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
@@ -280,6 +281,28 @@ def scan_mx11(src: Path) -> SourceSet:
     return SourceSet("mx11", [shots[k] for k in sorted(shots)], parts, src.name, ignored)
 
 
+def scan_round(src: Path) -> SourceSet:
+    part = SourcePart(sn=src.name, origin=src.name, captured_at=datetime.max.replace(tzinfo=TZ))
+    ignored: list[str] = []
+    for f in sorted(src.iterdir()):
+        fm = ROUND_FILE_RE.match(f.name) if f.is_file() else None
+        if not fm:
+            ignored.append(f.name + ("/" if f.is_dir() else ""))
+            continue
+        key = (int(fm["point"]), int(fm["cam"]))
+        if key in part.files:
+            raise ConvertError(f"点位 {key[0]} 相机 {key[1]} 重复：{part.files[key].name}、{f.name}")
+        part.files[key] = f
+        part.captured_at = min(part.captured_at, datetime.fromtimestamp(f.stat().st_mtime, TZ).replace(microsecond=0))
+    points = sorted({k[0] for k in part.files})
+    cams = sorted({k[1] for k in part.files})
+    shots = [
+        SourceShot(key=(p, c), origin=part.files[(p, c)].name if (p, c) in part.files else f"{p}_{c}", camera_id=f"cam{c}")
+        for p in points for c in cams
+    ]
+    return SourceSet("round", shots, [part] if part.files else [], src.name, ignored)
+
+
 def part_label(labels: list[str]) -> str:
     if not labels:
         return "unknown"
@@ -333,7 +356,7 @@ def build_manifest(source: SourceSet, set_id: str, name: str, selection: list[in
 
 def default_identity(source: SourceSet, selection: list[int] | None, shots_spec: str | None) -> tuple[str, str]:
     day = min(p.captured_at for p in source.parts).strftime("%Y%m%d")
-    prefix = {"isv": "ISV", "mx11": "MX11"}[source.kind]
+    prefix = {"isv": "ISV", "mx11": "MX11", "round": "单圈"}[source.kind]
     set_id = f"{source.kind}-{day}"
     name = f"{prefix} 现场原图（{len(source.parts)} 件）"
     if selection:
@@ -375,7 +398,7 @@ def convert(kind: str, src: Path, out: Path, shots_spec: str | None, set_id: str
             shot_mm_per_px: str | None = None) -> dict:
     if not src.is_dir():
         raise ConvertError(f"源目录不存在：{src}")
-    source = scan_isv(src) if kind == "isv" else scan_mx11(src)
+    source = {"isv": scan_isv, "mx11": scan_mx11, "round": scan_round}[kind](src)
     if not source.parts:
         raise ConvertError(f"源目录中没有可识别的件：{src}")
     selection = parse_shots(shots_spec, len(source.shots)) if shots_spec else None
@@ -586,7 +609,8 @@ def run_validate(root: Path, strict: bool) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="把现场原图转换为离线样本集 v1，并校验样本集格式")
     sub = parser.add_subparsers(dest="command", required=True)
-    for kind, help_text in (("isv", "转换 ISV 现场原图"), ("mx11", "转换 MX11 现场原图")):
+    for kind, help_text in (("isv", "转换 ISV 现场原图"), ("mx11", "转换 MX11 现场原图"),
+                            ("round", "转换一圈手动采集图（<点位>_<相机序号>.<ext>，相机序号 n 对应 camn）")):
         p = sub.add_parser(kind, help=help_text)
         p.add_argument("source", type=Path)
         p.add_argument("output", type=Path)

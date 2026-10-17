@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
 import { AlertTriangle, Camera, ChevronRight, Info, Minus, Plus, RotateCcw } from "lucide-react";
 import { desktopAvailable } from "../../lib/desktop";
@@ -6,10 +6,10 @@ import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import type { PointVis, Recipe } from "../cycle/types";
 import { shotSegment, visColor } from "../cycle/vis";
-import type { GrayImage, StepId, StepStatus, Teaching } from "./types";
-import { sameTeach, shotTeach } from "./teach";
+import type { GrayImage, StepId, StepStatus } from "./types";
 import { errorText } from "../../lib/errors";
-import { shotStateText, stepStatusText } from "./progress";
+import { stepStatusText } from "./progress";
+import { searchBand } from "./searchBand";
 
 export function Badge({ children, tone = "info" }: { children: ReactNode; tone?: "info" | "ok" | "ng" | "warn" | "neutral" }) {
   return <span className={"wp-badge " + tone}>{children}</span>;
@@ -38,7 +38,7 @@ export function WorkspaceBar() {
   const publish = data?.workspace.publish;
   return <><div className="wp-workbench-bar"><label className="wp-recipe-picker">当前配方<select className="input" value={selectedId ?? ""} disabled={busy || dirty || frameDirty} onChange={e => void select(e.target.value)}><option value="" disabled>选择配方</option>{choices.map(r => <option key={r.id} value={r.id}>{r.id} · {r.name}</option>)}</select></label>{data && <><Badge>候选 v{doc?.version}</Badge><Badge tone="neutral">生产 {data.productionVersion ? "v" + data.productionVersion : "未发布"}</Badge><span className="muted">修订 {data.workspace.revision}</span>{publish?.state === "waiting" && <Badge tone="warn">v{data.workspace.pending?.doc.version} 待工件结束后生效</Badge>}</>}<Badge tone={saveState === "failed" ? "warn" : "neutral"}>{saveState === "saving" ? "保存中" : saveState === "failed" ? "保存失败" : saveState === "pending" ? "等待保存" : "草稿已保存"}</Badge>{saveState === "failed" && <button className="btn small" onClick={retrySave}>重试保存</button>}<span className="spacer" /><Link className="btn" to="/recipe">配方库</Link></div>
     {dirty && <Notice title="候选配置尚未保存" tone="warn"><span>保存后再执行示教、验证和发布。</span><button className="btn small primary" disabled={busy || !!previewError} onClick={() => void saveDoc()}>保存候选配置</button></Notice>}
-    {frameDirty && <Notice title="示教参数有未保存的修改" tone="warn">编辑进度正在自动保存为草稿；保存草稿不等于完成示教，需“保存参数并试测”后再保存本帧示教。</Notice>}
+    {frameDirty && <Notice title="示教参数有未保存的修改" tone="warn">编辑进度正在自动保存为草稿；保存草稿不等于完成示教，需“运行一次算法”后再保存本组示教。</Notice>}
     {previewError && <Notice title="候选参数无效" tone="warn">{previewError}</Notice>}
     {error && <Notice title="操作未完成" tone="warn">{error}</Notice>}
     {notice && <Notice title={notice} tone="ok" />}
@@ -88,8 +88,10 @@ export interface ImageOverlay {
   path: [number, number][];
   /** 各站位置（来自配方布局，中线保存后才有） */
   stations?: [number, number][];
+  searchHalfPx?: number;
   /** 各站颜色；不给时统一用强调色 */
   stationColors?: string[];
+  segments?: { from: [number, number]; to: [number, number]; color: string; label?: string }[];
   /** 中线改了还没保存：各站是旧的，淡显 */
   stale?: boolean;
   /** 选中的中线点 */
@@ -117,12 +119,46 @@ export interface PathEditing {
 export function GrayViewer({ image, loading = false, error = "", label, overlay, onEdit, region, onRegion, emptyTitle, emptyHint }: {
   image: GrayImage | null; loading?: boolean; error?: string; label: string; overlay?: ImageOverlay; onEdit?: PathEditing; region?: [number, number, number, number] | null; onRegion?: (region: [number, number, number, number]) => void; emptyTitle?: string; emptyHint?: string;
 }) {
-  const [zoom, setZoom] = useState(1);
+  const [viewport, setViewport] = useState({ zoom: 1, x: 0, y: 0 });
+  const { zoom, x, y } = viewport;
+  const svg = useRef<SVGSVGElement>(null);
+  const pan = useRef<{ start: DOMPoint; x: number; y: number; inverse: DOMMatrix } | null>(null);
+  const [panning, setPanning] = useState(false);
+  const reset = () => { setViewport({ zoom: 1, x: 0, y: 0 }); };
+  const zoomBy = (factor: number, anchor?: DOMPoint) => {
+    if (!image || drag.current || regionStart.current || pan.current) return;
+    setViewport(previous => {
+      const next = Math.min(4, Math.max(.5, previous.zoom * factor));
+      const ratio = next / previous.zoom;
+      const ax = (anchor?.x ?? image.width / 2) - image.width / 2;
+      const ay = (anchor?.y ?? image.height / 2) - image.height / 2;
+      return { zoom: next, x: ax - (ax - previous.x) * ratio, y: ay - (ay - previous.y) * ratio };
+    });
+  };
   const regionStart = useRef<[number, number] | null>(null);
   const [shown, setShown] = useState(true);
+  const [bandShown, setBandShown] = useState(true);
+  const bandClip = useId();
+  const [allHandles, setAllHandles] = useState(false);
   const group = useRef<SVGGElement>(null);
   const drag = useRef<{ index: number; inverse: DOMMatrix } | null>(null);
-  useEffect(() => { setZoom(1); drag.current = null; }, [image?.url]);
+  const stopGesture = () => { drag.current = null; regionStart.current = null; pan.current = null; setPanning(false); };
+  useEffect(() => { reset(); stopGesture(); setAllHandles(false); }, [image?.url, image?.width, image?.height]);
+  useEffect(() => {
+    const element = svg.current;
+    if (!element || !image) return;
+    const wheel = (event: WheelEvent) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      const inverse = element.getScreenCTM()?.inverse();
+      if (!inverse || !event.deltaY) return;
+      const anchor = new DOMPoint(event.clientX, event.clientY).matrixTransform(inverse);
+      const pixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? element.clientHeight : 1);
+      zoomBy(Math.exp(-Math.max(-200, Math.min(200, pixels)) * .002), anchor);
+    };
+    element.addEventListener("wheel", wheel, { passive: false });
+    return () => element.removeEventListener("wheel", wheel);
+  }, [image?.url, image?.width, image?.height]);
   const point = (e: PointerEvent<SVGSVGElement>, inverse?: DOMMatrix): [number, number] | null => {
     const transform = inverse ?? group.current?.getScreenCTM()?.inverse();
     if (!transform || !image) return null;
@@ -135,10 +171,30 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
   const handle = size / 120, dot = size / 320;
   const editing = !!onEdit && shown;
   const path = overlay?.path ?? [];
+  const band = searchBand(path, overlay?.searchHalfPx);
   const hint = error || (emptyHint ?? "取样后在这张图上点出胶路中线。机器人应停在当前拍照点。");
-  return <div className="wp-viewport"><div className="wp-image-tools"><span>{label}</span><div><button className="icon-btn" aria-label="缩小原图" onClick={() => setZoom(z => Math.max(.5,z-.25))}><Minus size={15} /></button><span>{Math.round(zoom * 100)}%</span><button className="icon-btn" aria-label="放大原图" onClick={() => setZoom(z => Math.min(4,z+.25))}><Plus size={15} /></button><button className="icon-btn" aria-label="适应窗口" onClick={() => setZoom(1)}><RotateCcw size={15} /></button>{overlay && <button className={"btn small" + (shown ? " active" : "")} aria-pressed={shown} onClick={() => setShown(v => !v)}>中线叠加</button>}</div></div>
+  return <div className="wp-viewport"><div className="wp-image-tools"><span>{label}</span><div><button className="icon-btn" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></button><span>{Math.round(zoom * 100)}%</span><button className="icon-btn" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></button><button className="icon-btn" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></button>{overlay && <button className={"btn small" + (shown ? " active" : "")} aria-pressed={shown} onClick={() => setShown(v => !v)}>中线叠加</button>}{band && <button className={"btn small" + (bandShown ? " active" : "")} aria-pressed={bandShown} onClick={() => setBandShown(v => !v)}>搜索带</button>}{onEdit && overlay && <button className={"btn small" + (allHandles ? " active" : "")} aria-pressed={allHandles} disabled={!shown} onClick={() => setAllHandles(v => !v)}>编辑点</button>}</div></div>
     {!image ? <div className="wp-image-empty"><Camera size={32} /><strong>{loading ? "正在读取原图…" : error ? "原图不可用" : emptyTitle ?? "尚未冻结本帧图像"}</strong>{hint && <span>{hint}</span>}</div> :
-      <svg role="img" className={"wp-gray-image" + (editing ? " editable" : "")} viewBox={"0 0 " + image.width + " " + image.height} aria-label={label} onPointerDown={e => {
+      <svg ref={svg} role="img" tabIndex={0} className={"wp-gray-image" + (editing ? " editable" : "") + (panning ? " panning" : "")} viewBox={"0 0 " + image.width + " " + image.height} aria-label={label} aria-description="Ctrl 加滚轮缩放，中键拖动平移；聚焦后加减键缩放，0 适应窗口" onKeyDown={e => {
+        if (e.altKey || e.metaKey || drag.current || regionStart.current || pan.current) return;
+        if (["+", "=", "-", "0"].includes(e.key)) {
+          e.preventDefault();
+          if (e.key === "0") reset(); else zoomBy(e.key === "-" ? 1/1.25 : 1.25);
+        }
+      }} onAuxClick={e => { if (e.button === 1) e.preventDefault(); }} onPointerDown={e => {
+        if (pan.current || drag.current || regionStart.current) return;
+        if (e.button === 1) {
+          const inverse = e.currentTarget.getScreenCTM()?.inverse();
+          if (!inverse) return;
+          e.preventDefault();
+          e.currentTarget.focus({ preventScroll: true });
+          pan.current = { start: new DOMPoint(e.clientX, e.clientY).matrixTransform(inverse), x, y, inverse };
+          setPanning(true);
+          e.currentTarget.setPointerCapture?.(e.pointerId);
+          return;
+        }
+        if (e.button !== 0) return;
+        e.currentTarget.focus({ preventScroll: true });
         if (onRegion) { const p = point(e); if (p) { regionStart.current = p; onRegion([p[0], p[1], 0, 0]); e.currentTarget.setPointerCapture?.(e.pointerId); } return; }
         if (!editing || !onEdit) return;
         const inverse = group.current?.getScreenCTM()?.inverse();
@@ -152,37 +208,37 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
         drag.current = { index, inverse };
         e.currentTarget.setPointerCapture?.(e.pointerId);
       }} onPointerMove={e => {
+        if (pan.current) {
+          const gesture = pan.current;
+          const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(gesture.inverse);
+          setViewport(previous => ({ ...previous, x: gesture.x + p.x - gesture.start.x, y: gesture.y + p.y - gesture.start.y }));
+          return;
+        }
         if (onRegion && regionStart.current) { const p = point(e), a = regionStart.current; if (p) onRegion([Math.min(a[0],p[0]), Math.min(a[1],p[1]), Math.abs(p[0]-a[0]), Math.abs(p[1]-a[1])]); return; }
         const current = drag.current;
         if (!current || !onEdit) return;
         const p = point(e, current.inverse);
         if (p) onEdit.move(current.index, p);
-      }} onPointerUp={() => { drag.current = null; regionStart.current = null; }} onPointerCancel={() => { drag.current = null; regionStart.current = null; }}>
-        <g ref={group} transform={"translate(" + image.width/2 + " " + image.height/2 + ") scale(" + zoom + ") translate(" + -image.width/2 + " " + -image.height/2 + ")"}><image href={image.url} width={image.width} height={image.height} />
+      }} onPointerUp={stopGesture} onPointerCancel={stopGesture} onLostPointerCapture={stopGesture}>
+        <g ref={group} transform={"translate(" + (image.width/2 + x) + " " + (image.height/2 + y) + ") scale(" + zoom + ") translate(" + -image.width/2 + " " + -image.height/2 + ")"}><image href={image.url} width={image.width} height={image.height} />
+          {band && bandShown && <g aria-label="搜索带边界" pointerEvents="none" clipPath={`url(#${bandClip})`} fill="none" stroke="var(--primary)" opacity={.45}>
+            <defs><clipPath id={bandClip}><rect width={image.width} height={image.height} /></clipPath></defs>
+            {[band.left, band.right].map((edge, i) => <polyline key={i} points={edge.map(p => p.join(",")).join(" ")} strokeWidth={1} strokeDasharray="5 5" vectorEffect="non-scaling-stroke" />)}
+            {band.bars.map(i => <line key={i} x1={band.left[i][0]} y1={band.left[i][1]} x2={band.right[i][0]} y2={band.right[i][1]} strokeWidth={1} strokeDasharray="2 6" vectorEffect="non-scaling-stroke" />)}
+          </g>}
           {region && <rect x={region[0]} y={region[1]} width={region[2]} height={region[3]} fill="var(--primary)" fillOpacity={.12} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
           {overlay && shown && <g aria-label="中线叠加">
             {overlay.stations?.map(([x, y], i) => <circle key={"s" + i} cx={x} cy={y} r={dot} fill={overlay.stationColors?.[i] ?? "var(--primary)"} opacity={overlay.stale ? .35 : .9} />)}
             {path.length >= 2 && <polyline points={path.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeWidth={2} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
-            {onEdit && path.map(([x, y], i) => <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--primary)" : "var(--surface-lowest)"} fillOpacity={.85} stroke={i === 0 ? "var(--ok)" : "var(--primary)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
+            {onEdit && path.map(([x, y], i) => (allHandles || path.length <= 24 || i === 0 || i === path.length - 1 || overlay.selected === i) && <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--primary)" : "var(--surface-lowest)"} fillOpacity={.85} stroke={i === 0 ? "var(--ok)" : "var(--primary)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
+            {overlay.segments && <g aria-label="测量横线" pointerEvents="none">
+              {overlay.segments.map((segment, i) => <g key={i}>
+                <line x1={segment.from[0]} y1={segment.from[1]} x2={segment.to[0]} y2={segment.to[1]} stroke={segment.color} strokeWidth={2} vectorEffect="non-scaling-stroke" />
+                {segment.label && <text x={segment.to[0]} y={segment.to[1]} dx={4 / zoom} dy={-4 / zoom} fontSize={12 / zoom} fill={segment.color} stroke="var(--surface-lowest)" strokeWidth={3} paintOrder="stroke" vectorEffect="non-scaling-stroke">{segment.label}</text>}
+              </g>)}
+            </g>}
           </g>}
         </g></svg>}
-    {image && <div className="wp-image-footer"><span>{image.width} × {image.height} px</span><span>{onRegion ? "拖动框选一段连续胶路区域" : onEdit ? "点击图像依次加中线点（从胶嘴一侧往外，绿圈为起点），拖动点可调整" : "原始灰度图像"}</span></div>}
+    {image && <div className="wp-image-footer"><span>{image.width} × {image.height} px · Ctrl＋滚轮缩放 · 中键拖动 · + / − / 0</span><span>{onRegion ? "拖动框选一段连续胶路区域" : onEdit ? (path.length > 24 && !allHandles ? "密集中线仅显示端点；打开“编辑点”可调整全部点" : "点击图像依次加中线点（从胶嘴一侧往外，绿圈为起点），拖动点可调整") : "原始灰度图像"}</span></div>}
   </div>;
-}
-
-function FrameThumbnail({ id, frame }: { id: string; frame: Teaching }) {
-  const {image} = useGrayImage(id, frame.image?.id ?? null);
-  return <span className="wp-frame-thumbnail">{image ? <img src={image.url} alt="" /> : <Camera size={19} />}</span>;
-}
-export function FrameRail({ id, frames, selected, onSelect, disabled }: { id: string; frames: Teaching[]; selected: number; onSelect: (k: number) => void; disabled?: boolean }) {
-  const { frameDrafts, data } = useWorkspace();
-  return <div className="wp-frame-list" aria-label="示教帧选择">{frames.map(frame => {
-    const shot = data?.workspace.doc.shots[frame.k];
-    const dirty = !!frameDrafts[frame.k] && !!shot && !sameTeach(frameDrafts[frame.k], shotTeach(shot));
-    const progress = data?.progress.shots[frame.k];
-    const status = dirty ? "草稿待保存" : !progress ? "未配置" : progress.state !== "skipped" && progress.total === 0 ? "未选图" : progress.total > 1 && progress.completed > 0 && progress.completed < progress.total ? `部分完成 ${progress.completed}/${progress.total}` : shotStateText[progress.state];
-    return <button key={frame.k} className={"wp-frame-item " + (selected === frame.k ? "selected" : "")} aria-label={"选择帧 k" + (frame.k + 1)} aria-pressed={selected === frame.k} onClick={() => onSelect(frame.k)} disabled={disabled}>
-      <FrameThumbnail id={id} frame={frame} /><strong>k{frame.k + 1}{shot ? " · " + shot.id : ""}<small>{progress ? `选中 ${progress.total} 幅图` : frame.image?.camera ?? "未取样"}</small></strong><span>{status}</span>
-    </button>;
-  })}</div>;
 }

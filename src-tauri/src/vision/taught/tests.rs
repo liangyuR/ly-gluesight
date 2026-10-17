@@ -31,7 +31,8 @@ fn result(recipe: &Recipe, k: usize, gaps: &[usize]) -> RunResult {
     let yes = present.iter().filter(|&&x| x).count();
     RunResult { summary: json!({"status": "ok"}), outputs: json!({
         "stations": {"value": {"data": {"count":n, "unit":"px", "s":s, "center":center,
-            "normal":vec![[0.0,1.0];n], "present":present, "lo":lo, "hi":hi, "widthPx":width}}},
+            "normal":vec![[0.0,1.0];n], "present":present, "lo":lo, "hi":hi, "widthPx":width,
+            "candidateLo": vec![Value::Null;n], "candidateHi": vec![Value::Null;n], "candidateWidthPx": vec![Value::Null;n]}}},
         "beadInfo": {"value": {"data": {"unit":"px", "lineSource":"taught", "pathOk":true,
             "stations":n, "present":yes, "coverage":yes as f64 / n as f64}}}
     }) }
@@ -93,10 +94,17 @@ fn taught_graph_rejects_unsupported_pixel_parameters_and_bad_geometry() {
 }
 
 #[test]
-fn station_output_maps_global_ids_signed_offsets_and_gaps_without_judging() {
-    let recipe = document().build().unwrap();
+fn station_output_maps_global_ids_signed_offsets_and_rejected_candidates_without_changing_gap_judgement() {
+    let mut doc = document();
+    doc.limits.max_gap_len = 0.0;
+    let recipe = doc.build().unwrap();
     let p = plan(&recipe, 1).unwrap();
-    let m = parse_result(&recipe, &p, &result(&recipe, 1, &[5, 6])).unwrap();
+    let mut output = result(&recipe, 1, &[5, 6]);
+    let raw = &mut output.outputs["stations"]["value"]["data"];
+    raw["candidateLo"][5] = json!(-10.0);
+    raw["candidateHi"][5] = json!(18.0);
+    raw["candidateWidthPx"][5] = json!(28.0);
+    let m = parse_result(&recipe, &p, &output).unwrap();
     assert_eq!(m.idx, (41..82).collect::<Vec<_>>());
     assert_eq!(m.d[0], 0.5);
     assert_eq!(m.w[0], 4.0);
@@ -108,8 +116,25 @@ fn station_output_maps_global_ids_signed_offsets_and_gaps_without_judging() {
     let record = m.record();
     assert_eq!(record["unit"], "mm");
     assert_eq!(record["status"][5], "no_bead");
+    assert_eq!(record["edges"][0], json!([[40.0, 74.0], [40.0, 90.0]]));
+    assert!(record["edges"][5].is_null());
     assert!(record["width"][5].is_null() && record["innerCenter"][5].is_null());
+    assert_eq!(record["candidateWidth"][5], 7.0);
+    assert_eq!(record["candidateEdges"][5], json!([[60.0, 70.0], [60.0, 98.0]]));
+    assert!(record["candidateWidth"][6].is_null() && record["candidateEdges"][6].is_null());
     assert!(record.get("passed").is_none());
+    let baseline = parse_result(&recipe, &p, &result(&recipe, 1, &[5, 6])).unwrap();
+    let judged = |reading: &ShotMeasurement| {
+        let mut table = vec![crate::judge::PointState::Measured { d: 0.0, w: 4.0 }; recipe.point_count()];
+        for (i, &j) in reading.idx.iter().enumerate() {
+            table[j as usize] = if reading.st[i] == ST_OK {
+                crate::judge::PointState::Measured { d: reading.d[i], w: reading.w[i] }
+            } else { crate::judge::PointState::Gap };
+        }
+        serde_json::to_value(crate::judge::judge(&recipe, &table)).unwrap()
+    };
+    assert_eq!(judged(&m)["verdict"], "NG_GAP");
+    assert_eq!(judged(&m), judged(&baseline));
 }
 
 #[test]
@@ -123,6 +148,8 @@ fn station_output_rejects_incomplete_mismatched_and_malformed_results() {
         ("/outputs/beadInfo/value/data/pathOk", json!(false)),
         ("/outputs/stations/value/data/count", json!(40)),
         ("/outputs/stations/value/data/lo", json!([])),
+        ("/outputs/stations/value/data/candidateLo", json!([])),
+        ("/outputs/stations/value/data/candidateHi/0", json!(10)),
         ("/outputs/stations/value/data/s/1", json!(0)),
         ("/outputs/stations/value/data/center/0", json!([0, 0])),
         ("/outputs/stations/value/data/normal/0", json!([0, 0])),
@@ -157,7 +184,8 @@ fn multiview_failure_is_local_but_missing_image_is_acquisition_failure() {
         if view == 1 { return Err("图 1 引擎失败".into()); }
         let idx: Vec<_> = recipe.view_points(0, view).collect();
         Ok(ShotMeasurement { idx: idx.iter().map(|&j| j as u32).collect(), d: vec![0.0; idx.len()], w: vec![4.0; idx.len()],
-            st: vec![ST_OK; idx.len()], px: idx.iter().map(|&j| [recipe.points.x[j], recipe.points.y[j]]).collect(), coverage: 1.0, ms: 1 })
+            st: vec![ST_OK; idx.len()], px: idx.iter().map(|&j| [recipe.points.x[j], recipe.points.y[j]]).collect(),
+            edges: idx.iter().map(|&j| Some([[recipe.points.x[j], recipe.points.y[j] - 2.0], [recipe.points.x[j], recipe.points.y[j] + 2.0]])).collect(), candidate_width: vec![None; idx.len()], candidate_edges: vec![None; idx.len()], coverage: 1.0, ms: 1 })
     }).unwrap();
     assert_eq!(result.views.len(), 2);
     assert!(result.views[0].error.is_some());

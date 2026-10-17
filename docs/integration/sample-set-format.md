@@ -69,8 +69,10 @@
 ```
 python scripts/sample-set/convert.py isv  <ISV源目录>  <输出目录> [--shots 1-8] [--id ID] [--name 名称] [--force] [--mm-per-px 0.1] [--shot-mm-per-px S001=0.085,S002=0.09]
 python scripts/sample-set/convert.py mx11 <MX11源目录> <输出目录> [--shots 36-43] [--id ID] [--name 名称] [--force] [--mm-per-px 0.1] [--shot-mm-per-px S001=0.085]
+python scripts/sample-set/convert.py round <单圈源目录> <输出目录> [--id ID] [--name 名称] [--force] [--mm-per-px 0.1]
 python scripts/sample-set/convert.py validate <样本集目录> [--strict]
 ```
+- `round`：源目录平铺一圈手动采集图 `<点位>_<相机序号>.<ext>`（如 `10_3.bmp`），生成 1 件样本（sn 为源目录名）。点位与相机序号都按数值排序；相机序号 n 对应 cameraId `camn`；拍照点按“点位 → 相机”顺序编号（S001 = 点位 1 相机 1，S002 = 点位 1 相机 2 …），每台相机的第 k 个拍照点即第 k 个点位。某点位缺某相机的图时仍保留该拍照点并按缺图报告，不错位。
 - `--shots` 按排序后的拍照点序号选子集，生成的 shotId 从 S001 连续重新编号，`shots[].origin` 保留原始来源。
 - 使用 `--shots` 时，`label` 与 `shotLabels` 只按所选拍照点计算。
 - `--mm-per-px` 写入全局 `mmPerPx`；`--shot-mm-per-px` 写入对应 `shots[].mmPerPx`，shotId 指生成后的编号（受 `--shots` 重新编号影响）。值必须为正的有限数，shotId 必须是生成清单中存在的拍照点，否则报错退出且不写输出。

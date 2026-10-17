@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getAppInfo, getEngineStatus, type AppInfo, type EngineStatus } from "../lib/api";
+import { getAppInfo, getEngineStatus, openLogDir, type AppInfo, type EngineStatus } from "../lib/api";
 import { cycleApi, devLyflowHint, useRecipes, type CycleSettings, type Timeouts } from "../features/cycle";
 import { errorText } from "../lib/errors";
 
@@ -314,6 +314,11 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
 export default function SettingsPage() {
   const { data: info, error, loading, reload } = useResource<AppInfo>(getAppInfo);
   const savePart = useSavePart();
+  const [logError, setLogError] = useState<string | null>(null);
+  const openLogs = () => {
+    setLogError(null);
+    openLogDir().catch((e: unknown) => setLogError(errorText(e)));
+  };
 
   return (
     <div className="stack">
@@ -328,7 +333,11 @@ export default function SettingsPage() {
           <dd>{info?.name ?? "--"}</dd>
           <dt>版本</dt>
           <dd>{info?.version ?? "--"}</dd>
+          <dt>日志目录</dt>
+          <dd className="mono">{info?.logDir ?? "--"}</dd>
         </dl>
+        <button className="btn" style={{ marginTop: 12 }} onClick={openLogs}>打开日志目录</button>
+        {logError && <div className="notice error" role="alert">打开日志目录失败：{logError}</div>}
       </div>
     </div>
   );

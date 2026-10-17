@@ -219,21 +219,17 @@ pub fn evaluate(mut f: Facts) -> Readiness {
     Readiness { ready: items.iter().all(|i| i.state != ItemState::Blocked), items, recipes: f.recipes }
 }
 
-/// 样本集按拍照点编号、相机编号与视角取图：配方的每个拍照点都要在样本集里有同编号、同相机的图，
-/// 且提供该相机配置的全部视角（样本集相机每次取 1..=视角数）。
+/// 样本集按相机编号 + 相机内序号取图（见 [`Manifest::recipe_shots`]），且要提供该相机配置的全部视角
+/// （样本集相机每次取 1..=视角数）。
 pub fn sample_set_mismatch(recipe: &Recipe, manifest: &Manifest, view_count: impl Fn(&str) -> Option<u8>) -> Option<String> {
-    let missing: Vec<&str> = recipe.shots.iter().filter(|s| !manifest.shots.iter().any(|m| m.shot_id == s.id)).map(|s| s.id.as_str()).collect();
-    if !missing.is_empty() {
-        return Some(format!("配方 {} 个拍照点，样本集 {} 个；拍照点 {} 不在样本集中", recipe.shot_count(), manifest.shots.len(), missing.join("、")));
-    }
-    for shot in &recipe.shots {
-        let sample = manifest.shots.iter().find(|m| m.shot_id == shot.id)?;
-        if sample.camera_id != shot.camera {
-            return Some(format!("拍照点 {} 用相机 {}，样本集里是 {}", shot.id, shot.camera, sample.camera_id));
-        }
+    let samples = match manifest.recipe_shots(recipe) {
+        Ok(samples) => samples,
+        Err(reason) => return Some(reason),
+    };
+    for (shot, sample) in recipe.shots.iter().zip(samples) {
         let needed = view_count(&shot.camera).unwrap_or(1);
         if let Some(view) = (1..=needed).find(|v| !sample.views.contains(v)) {
-            return Some(format!("拍照点 {} 需要视角 {view}，样本集只有视角 {:?}", shot.id, sample.views));
+            return Some(format!("拍照点 {}（相机 {}，样本集 {}）需要视角 {view}，样本集只有视角 {:?}", shot.id, shot.camera, sample.shot_id, sample.views));
         }
     }
     None
@@ -287,8 +283,7 @@ fn recipe_problem(app: &AppHandle, host: &CycleHost, recipe: &Recipe, image: boo
         return Err((format!("与样本集不符：{reason}"), Target::Workspace));
     }
     let cams = usable_cams(app, recipe).map_err(|e| (e, Target::Camera))?;
-    let device = crate::plc::sole_device_id(&host.camera.configs()).map_err(|e| (e, Target::Camera))?;
-    crate::plc_plan::PlcPlan::from_recipe(recipe, device).map_err(workspace)?;
+    crate::plc::recipe_plan(host, recipe).map_err(workspace)?;
     Ok((cams, waiting))
 }
 

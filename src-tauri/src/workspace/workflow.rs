@@ -136,6 +136,68 @@ pub(super) fn check_view(app: &AppHandle, w: &Workspace, k: usize, selected: u8,
     Ok(())
 }
 
+fn doc_group_selection_errors(doc: &RecipeDoc) -> Vec<(usize, String)> {
+    let mut groups: Vec<(usize, &str, usize)> = Vec::new();
+    for (k, shot) in doc.shots.iter().enumerate() {
+        let count = shot.enabled_views().len();
+        if let Some(group) = groups.iter_mut().find(|(_, pose, _)| *pose == shot.pose_id) {
+            group.2 += count;
+        } else {
+            groups.push((k, &shot.pose_id, count));
+        }
+    }
+    groups.into_iter().filter(|(_, _, count)| *count != 1).map(|(k, pose, count)| {
+        (k, if count == 0 { format!("拍照点组 {pose}：请选择一张图示教") }
+            else { format!("拍照点组 {pose}：已选 {count} 张图，每组只能选择一张") })
+    }).collect()
+}
+
+impl Release {
+    pub fn check_group_selection(&self) -> Result<(), String> {
+        match doc_group_selection_errors(&self.doc).into_iter().next() {
+            Some((_, message)) => Err(message),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Workspace {
+    pub fn group_selection_errors(&self) -> Vec<(usize, String)> {
+        doc_group_selection_errors(&self.doc)
+    }
+
+    pub fn select_group_image(&mut self, k: usize, selected: u8) -> Result<(), String> {
+        let pose = self.doc.shots.get(k).ok_or("拍照点不存在")?.pose_id.clone();
+        if !self.frames.get(k).is_some_and(|frame| frame.views.iter().any(|image| image.view == selected)) {
+            return Err("本轮没有所选图像".into());
+        }
+        let mut next = self.clone();
+        let group: Vec<_> = next.doc.shots.iter().enumerate().filter(|(_, shot)| shot.pose_id == pose).map(|(index, _)| index).collect();
+        for index in group {
+            initialize_views(&mut next, index);
+            store_active(&mut next, index);
+            let shot = &mut next.doc.shots[index];
+            shot.skip = index != k;
+            for image in &mut shot.views { image.enabled = index == k && image.view == selected; }
+        }
+        load_active(&mut next, k, selected)?;
+        next.last_position = Some(Position { k, view: selected });
+        next.changed();
+        *self = next;
+        Ok(())
+    }
+}
+
+#[tauri::command]
+pub fn workspace_select_group_image(app: AppHandle, id: String, revision: u64, k: usize, view: u8) -> Result<WorkspaceView, String> {
+    let host = app.state::<WorkspaceHost>();
+    let mut items = host.items.lock().unwrap();
+    let mut w = items.get(&id).ok_or("候选不存在")?.clone();
+    w.expect(revision)?;
+    w.select_group_image(k, view)?;
+    host.save(&w)?; items.insert(id, w.clone()); super::view(&app, w)
+}
+
 #[tauri::command]
 pub fn workspace_set_views(app: AppHandle, id: String, revision: u64, k: usize, views: Vec<u8>, skip: bool) -> Result<WorkspaceView, String> {
     let unique: std::collections::HashSet<_> = views.iter().copied().collect();
@@ -292,13 +354,46 @@ pub(super) fn require_capture_plan(version: Option<u32>) -> Result<u32, String> 
 pub(super) fn capture_for(app: &AppHandle, id: &str, round_id: &str) -> Result<crate::recipe_capture::CaptureRound, String> {
     let round = app.state::<CycleHost>().camera.recipe_capture().get(round_id)?;
     if round.recipe_id != id || round.state != crate::recipe_capture::CaptureState::Complete || round.frames.is_empty()
-        || !round.planned_count.is_some_and(|n| (1..=64).contains(&n) && round.received_count == n && round.frames.len() == n as usize) {
+        || !round.planned_count.is_some_and(|n| (1..=64).contains(&n) && round.cameras.iter().all(|c| c.received_count == n)
+            && round.frames.len() == n as usize && round.complete_shots() == n) {
         return Err("采集轮次不属于当前配方或尚未完整完成，不能采用".into());
     }
     require_capture_plan(round.plc_plan_version)?;
-    let config = app.state::<CycleHost>().camera.configs().into_iter().find(|c| c.id == round.camera_id).ok_or("采集设备不存在")?;
-    if state_value(&config) != round.camera_config { return Err("采集后设备参数或拼接布局已改变，请重新采集".into()); }
+    let configs = app.state::<CycleHost>().camera.configs();
+    for camera in &round.cameras {
+        let config = configs.iter().find(|c| c.id == camera.camera_id).ok_or_else(|| format!("采集相机 {} 已不在设备配置里", camera.camera_id))?;
+        if state_value(config) != camera.camera_config { return Err(format!("采集后相机 {} 的参数或拼接布局已改变，请重新采集", camera.camera_id)); }
+    }
     Ok(round)
+}
+
+/// 按采集轮次重建候选的拍照点与相机曝光增益。全部拍照点加完才校验：多相机时只加了第一台相机的点就校验会误判其余相机未被使用。
+pub(super) fn adopt_shots(w: &mut Workspace, round: &crate::recipe_capture::CaptureRound, reuse_teaching: bool) -> Result<(), String> {
+    let expanded = round.recipe_shots()?;
+    let old = std::mem::take(&mut w.doc.shots);
+    if reuse_teaching && old.len() != expanded.len() { return Err("继承示教前必须确认点数、相机、轨迹及触发顺序对应一致".into()); }
+    let used = round.camera_ids();
+    let imaging: Vec<_> = round.cameras.iter().map(|c| (c.camera_id.clone(), w.doc.cameras.get(&c.camera_id).or(w.unbound_imaging.get(&c.camera_id)).copied().unwrap_or(c.imaging))).collect();
+    let others: Vec<_> = std::mem::take(&mut w.doc.cameras).into_iter().filter(|(c, _)| !used.contains(c)).collect();
+    w.unbound_imaging.extend(others);
+    for (camera, imaging) in imaging {
+        w.unbound_imaging.remove(&camera);
+        w.doc.cameras.insert(camera, imaging);
+    }
+    for (k, captured) in expanded.iter().enumerate() {
+        let camera_id = &captured.camera.camera_id;
+        let mut shot = if reuse_teaching { old[k].clone() } else {
+            crate::recipe::ShotSpec { id: captured.shot_id.clone(), pose_id: captured.pose_id.clone(), camera: camera_id.clone(), view: 1, calib: None,
+                bead: "J1".into(), skip: false, path: Vec::new(), mm_per_px: None, detect: None, limits: None, views: Vec::new() }
+        };
+        if reuse_teaching && shot.camera != *camera_id { return Err("采集相机或相机顺序已改变，不能按原对应关系继承示教".into()); }
+        if !reuse_teaching {
+            shot.views = captured.frame.views.iter().map(|v| ShotViewSpec { view: v.view, enabled: false, path: Vec::new(), mm_per_px: None,
+                detect: None, limits: None, calib: None }).collect();
+        }
+        w.doc.shots.push(shot);
+    }
+    w.doc.validate()
 }
 
 #[tauri::command]
@@ -314,38 +409,29 @@ fn adopt_capture(app: AppHandle, id: String, revision: u64, round_id: String, re
     let mut items = host.items.lock().unwrap();
     let mut w = items.get(&id).ok_or("候选不存在")?.clone(); w.expect(revision)?;
     if w.capture_id.as_deref() == Some(&round_id) { return view(&app, w); }
-    if reuse_teaching && (!correspondence_confirmed || w.doc.shots.len() != round.frames.len()) {
-        return Err("继承示教前必须确认点数、轨迹及触发顺序对应一致".into());
+    let expanded = round.recipe_shots()?;
+    if reuse_teaching && !correspondence_confirmed {
+        return Err("继承示教前必须确认点数、相机、轨迹及触发顺序对应一致".into());
     }
-    let camera = app.state::<CycleHost>().camera.configs().into_iter().find(|c| c.id == round.camera_id).ok_or("采集设备不存在")?;
-    let sample_set = (camera.source == CameraSource::SampleSet).then(|| crate::offline::sample_set(&app))
-        .flatten().filter(|set| set.has_camera(&round.camera_id));
+    let configs = app.state::<CycleHost>().camera.configs();
+    let offline_set = crate::offline::sample_set(&app);
+    let mut sample_sets = std::collections::BTreeMap::new();
+    for camera in &round.cameras {
+        let config = configs.iter().find(|c| c.id == camera.camera_id).ok_or_else(|| format!("采集相机 {} 不存在", camera.camera_id))?;
+        let set = offline_set.clone().filter(|set| config.source == CameraSource::SampleSet && set.has_camera(&camera.camera_id));
+        sample_sets.insert(camera.camera_id.clone(), set);
+    }
     let old = w.clone();
-    w.doc.shots.clear(); w.frames.clear();
-    let imaging = w.doc.cameras.get(&round.camera_id).or(w.unbound_imaging.get(&round.camera_id)).copied().unwrap_or(round.imaging);
-    let others: Vec<_> = std::mem::take(&mut w.doc.cameras).into_iter().filter(|(c, _)| *c != round.camera_id).collect();
-    w.unbound_imaging.extend(others);
-    w.unbound_imaging.remove(&round.camera_id);
-    w.doc.cameras.insert(round.camera_id.clone(), imaging);
-    for (k, captured) in round.frames.iter().enumerate() {
-        let id = format!("S{:03}", k + 1);
-        let mut shot = if reuse_teaching { old.doc.shots[k].clone() } else {
-            crate::recipe::ShotSpec { id: id.clone(), pose_id: id, camera: round.camera_id.clone(), view: 1, calib: None,
-                bead: "J1".into(), skip: false, path: Vec::new(), mm_per_px: None, detect: None, limits: None, views: Vec::new() }
-        };
-        if reuse_teaching && shot.camera != round.camera_id { return Err("采集设备已改变，不能按原对应关系继承示教".into()); }
-        shot.camera = round.camera_id.clone();
-        if !reuse_teaching {
-            shot.views = captured.views.iter().map(|v| ShotViewSpec { view: v.view, enabled: false, path: Vec::new(), mm_per_px: None,
-                detect: None, limits: None, calib: None }).collect();
-        }
+    w.frames.clear();
+    adopt_shots(&mut w, &round, reuse_teaching)?;
+    for (k, captured) in expanded.iter().enumerate() {
+        let camera_id = &captured.camera.camera_id;
         let mut frame = Teaching::empty(k);
-        w.doc.shots.push(shot);
-        let declared = sample_set.as_ref().and_then(|set| {
-            let shot = set.manifest().shots.iter().filter(|s| s.camera_id == round.camera_id).nth(k)?;
+        let declared = sample_sets.get(camera_id).cloned().flatten().and_then(|set| {
+            let shot = set.manifest().shots.iter().filter(|s| s.camera_id == *camera_id).nth(captured.k)?;
             set.shot_mm_per_px(&shot.shot_id).map(|mm| (set.manifest().id.clone(), mm))
         });
-        for raw in &captured.views {
+        for raw in &captured.frame.views {
             let image = crate::image_file::load(Path::new(&raw.path))?;
             if [image.width, image.height] != [raw.width, raw.height] { return Err("采集图尺寸与记录不一致".into()); }
             let recipe = w.doc.build()?;
@@ -373,8 +459,8 @@ fn adopt_capture(app: AppHandle, id: String, revision: u64, round_id: String, re
                 camera_tag: camera_tag.clone(), calib_tag: calib_tag.clone(), mm_per_px: Some(*mm),
             });
             frame.views.push(FrozenImage { id: image_id, view: raw.view, source: format!("capture:{}", round.round_id),
-                captured_at: round.created_at, size: [raw.width, raw.height], camera: round.camera_id.clone(), camera_tag, calib_tag,
-                geometry_tag: shot_tags(&projection, k)?.0, exposure_us: Some(round.imaging.exposure_us), gain_db: Some(round.imaging.gain_db), history_id: None });
+                captured_at: round.created_at, size: [raw.width, raw.height], camera: camera_id.clone(), camera_tag, calib_tag,
+                geometry_tag: shot_tags(&projection, k)?.0, exposure_us: Some(captured.camera.imaging.exposure_us), gain_db: Some(captured.camera.imaging.gain_db), history_id: None });
             frame.view_states.push(ViewTeaching { view: raw.view, trial: None, saved: false, calibration_check });
         }
         frame.image = frame.views.iter().find(|i| i.view == w.doc.shots[k].view).cloned();
@@ -403,21 +489,22 @@ fn capture_sample(app: AppHandle, id: String, revision: u64, round_id: String, e
     if w.capture_id.as_deref() == Some(&round_id) { return Err("示教采集不能同时作为独立验证样本，请重新采集一圈".into()); }
     let teaching_round = capture_for(&app, &id, w.capture_id.as_deref().ok_or("尚未采用示教采集")?)?;
     if teaching_round.plc_plan_version != round.plc_plan_version { return Err("验证采集与示教的 PLC 轨迹计划版本不同".into()); }
-    if w.doc.shots.len() != round.frames.len() || w.doc.shots.iter().any(|s| s.camera != round.camera_id) { return Err("验证采集的点数或设备与候选不同".into()); }
+    let expanded = round.recipe_shots()?;
+    if w.doc.shots.len() != expanded.len() || w.doc.shots.iter().zip(&expanded).any(|(s, e)| s.camera != e.camera.camera_id) { return Err("验证采集的点数或相机与候选不同".into()); }
     if w.sample_bank.iter().any(|b| b.id == round_id) { return view(&app, w); }
     if w.sample_bank.len() >= 100 { return Err("最多保留 100 组验证样本".into()); }
     let recipe = w.doc.build()?;
     let dir = host.dir(&id).join("samples").join(&round_id);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    for (k, frame) in round.frames.iter().enumerate() {
-        for raw in &frame.views {
+    for (k, captured) in expanded.iter().enumerate() {
+        for raw in &captured.frame.views {
             let image = crate::image_file::load(Path::new(&raw.path))?;
             let frozen = w.frames[k].views.iter().find(|i| i.view == raw.view).ok_or("样本的图编号与示教不一致")?;
             if [image.width, image.height] != frozen.size { return Err("验证样本与示教图的尺寸不一致".into()); }
             crate::image_file::save_pgm(&dir.join(format!("k{k}-v{}.pgm", raw.view)), &image)?;
         }
     }
-    w.sample_bank.push(BankSample { id: round_id.clone(), name: format!("独立采集 {}", round.created_at), geometry_tag: images_tag(&recipe), expected, created_at: round.created_at, capture_id: Some(round_id.clone()), camera_state: round.camera_config });
+    w.sample_bank.push(BankSample { id: round_id.clone(), name: format!("独立采集 {}", round.created_at), geometry_tag: images_tag(&recipe), expected, created_at: round.created_at, capture_id: Some(round_id.clone()), camera_state: state_value(&round.cameras.iter().map(|c| &c.camera_config).collect::<Vec<_>>()) });
     w.samples.push(Sample { history_id: None, sample_id: Some(round_id), expected });
     w.changed(); host.save(&w)?; items.insert(id, w.clone()); view(&app, w)
 }

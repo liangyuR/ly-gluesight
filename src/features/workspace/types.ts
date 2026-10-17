@@ -91,12 +91,17 @@ export interface Comparison {
   originalVerdict: Verdict; judgement: Judgement; measurements: Measured[]; createdAt: number;
 }
 export interface GrayImage { url: string; width: number; height: number }
-export interface ImagingSaved { view: WorkspaceView; applyError: string | null }
+export interface ImagingSaved { view: WorkspaceView; applyErrors: Record<string, string> }
 
+export interface CaptureCamera { cameraId: string; deviceSession: number; receivedCount: number; imaging?: CameraImaging }
+/** 一台相机在一次触发里交付的帧 */
+export interface CaptureCameraFrame { cameraId: string; frameCounter: number; triggerCounter: number | null; originalPath: string; views: { view: number; path: string; width: number; height: number }[] }
 export interface CaptureRound {
-  roundId: string; recipeId: string; cameraId: string; deviceSession: number; plannedCount: number | null; receivedCount: number;
+  roundId: string; recipeId: string; cameras: CaptureCamera[]; plannedCount: number | null;
   state: "waitingStart" | "receiving" | "draining" | "complete" | "failed";
   plcPlannedCount?: number | null; plcActualCount?: number | null;
   createdAt: number; endedAt: number | null; error: string | null; simulated: boolean;
-  frames: { shotId: string; ordinal: number; frameCounter: number; triggerCounter: number | null; originalPath: string; views: { view: number; path: string; width: number; height: number }[] }[];
+  /** 每项是一次 PLC 触发，cameras 按本轮相机顺序 */
+  frames: { shotId: string; ordinal: number; cameras: CaptureCameraFrame[] }[];
 }
+export interface CaptureSummary { roundId: string; recipeId: string; cameraIds: string[]; plannedCount: number | null; receivedCount: number; state: CaptureRound["state"]; createdAt: number; error: string | null }

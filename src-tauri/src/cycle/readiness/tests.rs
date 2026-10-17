@@ -110,20 +110,70 @@ fn bundle_check_never_remembers_success_and_retries_failure_only_after_it_expire
     assert!(checks.check(key(), now + FAILED_CHECK_TTL, || Ok(())).is_ok(), "失败到期后重查");
 }
 
+fn sample_shot(id: &str, camera: &str, views: &[u8]) -> SampleShot {
+    SampleShot { shot_id: id.into(), camera_id: camera.into(), views: views.to_vec(), origin: None, mm_per_px: None }
+}
+
+/// 样本集清单：按给出的相机顺序依次编号 S001…（与 convert.py 一致）。
+fn sample_manifest(cameras: &[&str], order: &[(usize, &str)], views: &[u8]) -> Manifest {
+    Manifest { schema_version: 1, id: "s".into(), name: "s".into(), source: String::new(), image_size: None, mm_per_px: None,
+        cameras: cameras.iter().map(|c| SampleCamera { id: (*c).into(), views: views.to_vec() }).collect(),
+        shots: order.iter().enumerate().map(|(i, (_, camera))| sample_shot(&format!("S{:03}", i + 1), camera, views)).collect(), parts: Vec::new() }
+}
+
+/// 整圈采集采用后的配方结构：点位 → 相机，多相机编号 S001-cam1…，同一点位共用 Pose。
+fn captured_recipe(points: usize, cameras: &[&str]) -> Recipe {
+    let mut doc = crate::recipe::samples().remove(1);
+    let template = doc.shots[0].clone();
+    doc.shots = (1..=points).flat_map(|p| cameras.iter().map(move |c| (p, *c))).map(|(p, camera)| crate::recipe::ShotSpec {
+        id: if cameras.len() > 1 { format!("S{p:03}-{camera}") } else { format!("S{p:03}") }, pose_id: format!("S{p:03}"), camera: camera.into(), ..template.clone()
+    }).collect();
+    doc.sync_imaging();
+    doc.build().unwrap()
+}
+
+fn point_major(points: usize, cameras: &[&'static str]) -> Vec<(usize, &'static str)> {
+    (1..=points).flat_map(|p| cameras.iter().map(move |c| (p, *c))).collect()
+}
+
 #[test]
-fn sample_set_accepts_only_recipes_whose_shots_cameras_and_camera_views_it_provides() {
-    let recipe = crate::recipe::samples().remove(1).build().unwrap();
-    let shot = |id: &str, camera: &str, views: &[u8]| SampleShot { shot_id: id.into(), camera_id: camera.into(), views: views.to_vec(), origin: None, mm_per_px: None };
-    let manifest = |shots: Vec<SampleShot>| Manifest { schema_version: 1, id: "s".into(), name: "s".into(), source: String::new(), image_size: None,
-        mm_per_px: None, cameras: vec![SampleCamera { id: "cam1".into(), views: vec![1] }], shots, parts: Vec::new() };
-    let all = |camera: &str, views: &[u8]| (1..=4).map(|k| shot(&format!("P{k}"), camera, views)).collect::<Vec<_>>();
-    let cases = [
-        ("编号、相机、视角齐全", all("cam1", &[1]), 1, false),
-        ("样本集少一个拍照点", all("cam1", &[1]).into_iter().take(3).collect(), 1, true),
-        ("相机编号不同", all("cam2", &[1]), 1, true),
-        ("相机配置 3 个视角，样本集只有视角 1", all("cam1", &[1]), 3, true),
+fn sample_set_matches_recipe_shots_by_camera_and_in_camera_order_not_by_shot_id() {
+    let one = crate::recipe::samples().remove(1).build().unwrap();
+    let three = captured_recipe(4, &["cam1", "cam2", "cam3"]);
+    let mut cam2_short = point_major(4, &["cam1", "cam2", "cam3"]);
+    cam2_short.retain(|&(p, c)| !(p == 4 && c == "cam2"));
+    let cases: [(&str, &Recipe, Manifest, u8, Option<&str>); 6] = [
+        ("单相机：配方 P1…与样本集 S001…编号不同，按顺序对应", &one, sample_manifest(&["cam1"], &point_major(4, &["cam1"]), &[1]), 1, None),
+        ("单相机样本集少一个拍照点", &one, sample_manifest(&["cam1"], &point_major(3, &["cam1"]), &[1]), 1, Some("相机 cam1 在样本集里只有 3 个拍照点，缺第 4 个")),
+        ("相机编号不同", &one, sample_manifest(&["cam2"], &point_major(4, &["cam2"]), &[1]), 1, Some("相机 cam1 在样本集里只有 0 个拍照点")),
+        ("相机配置 3 个视角，样本集只有视角 1", &one, sample_manifest(&["cam1"], &point_major(4, &["cam1"]), &[1]), 3, Some("需要视角 2")),
+        ("三相机按点位 → 相机交错", &three, sample_manifest(&["cam1", "cam2", "cam3"], &point_major(4, &["cam1", "cam2", "cam3"]), &[1]), 1, None),
+        ("三相机里 cam2 少最后一个点位", &three, sample_manifest(&["cam1", "cam2", "cam3"], &cam2_short, &[1]), 1, Some("相机 cam2 在样本集里只有 3 个拍照点，缺第 4 个")),
     ];
-    for (name, shots, view_count, mismatch) in cases {
-        assert_eq!(sample_set_mismatch(&recipe, &manifest(shots), |_| Some(view_count)).is_some(), mismatch, "{name}");
+    for (name, recipe, manifest, view_count, expected) in cases {
+        let mismatch = sample_set_mismatch(recipe, &manifest, |_| Some(view_count));
+        match expected {
+            None => assert_eq!(mismatch, None, "{name}"),
+            Some(text) => assert!(mismatch.as_deref().is_some_and(|m| m.contains(text)), "{name}：{mismatch:?}"),
+        }
     }
+}
+
+#[test]
+fn each_trigger_takes_the_sample_shot_of_the_same_point_for_every_camera() {
+    let cameras = ["cam1", "cam2", "cam3"];
+    let recipe = captured_recipe(12, &cameras);
+    let camera_major: Vec<_> = cameras.iter().flat_map(|c| (1..=12).map(move |p| (p, *c))).collect();
+    for order in [point_major(12, &cameras), camera_major] {
+        let manifest = sample_manifest(&cameras, &order, &[1]);
+        let mapped = manifest.recipe_shots(&recipe).unwrap();
+        for (shot, sample) in recipe.shots.iter().zip(&mapped) {
+            let index: usize = sample.shot_id[1..].parse().unwrap();
+            assert_eq!(order[index - 1], (shot.pose_id[1..].parse().unwrap(), shot.camera.as_str()), "{} → {}", shot.id, sample.shot_id);
+        }
+    }
+    let manifest = sample_manifest(&cameras, &point_major(12, &cameras), &[1]);
+    let mapped = manifest.recipe_shots(&recipe).unwrap();
+    let k = recipe.shots.iter().position(|s| s.id == "S010-cam3").unwrap();
+    assert_eq!(mapped[k].shot_id, "S030");
 }

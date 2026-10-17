@@ -26,14 +26,26 @@ impl PlcHost {
         let log_path = app.path().app_data_dir().map_err(|e| e.to_string())?.join("logs").join("plc.db");
         let config = PlcConfig::load(&config_path).unwrap_or_else(inspection::default_plc_config);
         let handle = app.clone();
+        let last_link = std::sync::Mutex::new(None);
         let sink: EventSink = Arc::new(move |event| match event {
             PlcEvent::Status(s) => {
+                let link = (s.state, s.message.clone());
+                let mut last = last_link.lock().unwrap();
+                if last.as_ref() != Some(&link) {
+                    let level = if s.state == ly_plc::LinkState::Error { "err" } else { "info" };
+                    crate::applog::write(level, "PLC 连接", &format!("{:?}：{}", s.state, s.message));
+                    *last = Some(link);
+                }
+                drop(last);
                 let _ = handle.emit("plc://status", s);
             }
             PlcEvent::Values(v) => {
                 let _ = handle.emit("plc://values", v);
             }
             PlcEvent::Logs(l) => {
+                for entry in l.iter().filter(|e| e.level == "warn" || e.level == "error") {
+                    crate::applog::write(&entry.level, &format!("PLC {}", entry.category), &entry.message);
+                }
                 let _ = handle.emit("plc://log", l);
             }
             PlcEvent::Edge(e) => {
@@ -135,14 +147,10 @@ pub(crate) fn validate_config(config: &PlcConfig) -> Result<(), String> {
 
 pub fn recipe_plan(cycle: &CycleHost, recipe: &Recipe) -> Result<PlcPlan, String> {
     let configs = cycle.camera.configs();
-    let device_id = sole_device_id(&configs)?;
-    PlcPlan::from_recipe(recipe, device_id)
-}
-
-pub(crate) fn sole_device_id(configs: &[crate::camera::CameraConfig]) -> Result<String, String> {
-    let [device] = configs else { return Err("PLC 只允许配置一台相机设备".into()); };
-    if device.id.trim().is_empty() { return Err("PLC 相机设备 ID 不能为空".into()); }
-    Ok(device.id.clone())
+    if let Some(missing) = recipe.cameras().into_iter().find(|id| !configs.iter().any(|c| &c.id == id)) {
+        return Err(format!("配方 {} 用到的相机 {missing} 不在设备配置里", recipe.id));
+    }
+    PlcPlan::from_recipe(recipe)
 }
 
 #[tauri::command]
@@ -181,15 +189,6 @@ pub fn plc_check_address(connection: ConnectionConfig, address: String, data_typ
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn plc_export_accepts_exactly_one_identified_device() {
-        let device = crate::camera::CameraConfig { id: "device1".into(), view_count: 3, ..Default::default() };
-        assert_eq!(sole_device_id(&[device.clone()]).unwrap(), "device1");
-        assert!(sole_device_id(&[]).is_err());
-        assert!(sole_device_id(&[device.clone(), crate::camera::CameraConfig { id: "device2".into(), ..device }]).is_err());
-        assert!(sole_device_id(&[crate::camera::CameraConfig::default()]).is_err());
-    }
 
     #[test]
     fn retired_plan_tags_fail_validation_instead_of_being_renamed() {

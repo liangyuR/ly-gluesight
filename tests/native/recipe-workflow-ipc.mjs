@@ -71,7 +71,7 @@ try {
           await copyFile(join(resolve(values.images), 'view.png'), path);
           views.push({ view, path, width: 300, height: 300 });
         }
-        frames.push({ shotId: `S${String(k + 1).padStart(4, '0')}`, ordinal: k + 1, frameCounter: k + 1, triggerCounter: k + 1, originalPath, views });
+        frames.push({ shotId: `S${String(k + 1).padStart(3, '0')}`, ordinal: k + 1, frameCounter: k + 1, triggerCounter: k + 1, originalPath, views });
       }
       const record = { roundId, recipeId: id, cameraId: camera.id, cameraConfig: camera, imaging: { exposureUs: 80, gainDb: 3 }, deviceSession: 1, plannedCount: 20,
         plcPlannedCount: 20, plcActualCount: 20, plcPlanVersion: 1, receivedCount: 20, state: 'complete',

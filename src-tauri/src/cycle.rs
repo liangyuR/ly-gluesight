@@ -302,10 +302,10 @@ impl CycleHost {
             let warning = Arc::new(move |errors: &[String]| {
                 if warning_app.try_state::<CycleHost>().is_some() {
                     log(&warning_app, "warn", "孤立录制清理失败", errors.join("；"));
-                } else { eprintln!("warn 孤立录制清理失败：{}", errors.join("；")); }
+                } else { crate::applog::write("warn", "孤立录制清理失败", &errors.join("；")); }
             });
             Recorder::guarded(root, Some(Arc::new(move |outcome| {
-                if let Err(error) = record_audit.recording(outcome) { eprintln!("录制审计持久化失败：{error}"); }
+                if let Err(error) = record_audit.recording(outcome) { crate::applog::write("err", "录制审计持久化失败", &error); }
             })), protection, warning)
         };
         let recorders = Recorders::new(recorder(data.join("records"), HistoryScope::Real),
@@ -434,6 +434,7 @@ fn host(app: &AppHandle) -> &CycleHost {
 
 pub fn log(app: &AppHandle, level: &'static str, ev: impl Into<String>, msg: impl Into<String>) {
     let line = LogLine { ts: now_ms(), level, ev: ev.into(), msg: msg.into() };
+    crate::applog::write(level, &line.ev, &line.msg);
     {
         let mut s = host(app).shared.lock().unwrap();
         s.logs.push_back(line.clone());
@@ -459,7 +460,7 @@ struct Part {
     extra: usize,
     queue: usize,
     router: ShotRouter,
-    issued: Option<(String, u64)>,
+    issued: Option<(Vec<String>, u64)>,
     issued_verified: bool,
     routing_closed: bool,
     image_measurement: bool,
@@ -998,8 +999,8 @@ impl Machine {
             Ok(_) => return self.refuse(sn, id, fault::NO_RECIPE, "PLC 产品代码与所选配方不一致".into()).await,
             Err(reason) => return self.refuse(sn, id, fault::PLAN_MISMATCH, reason).await,
         };
-        if count != n {
-            return self.refuse(sn, id, fault::SHOT_COUNT_MISMATCH, format!("PLC 下发拍照点数 {count}，配方 {} 为 {n}", recipe.id)).await;
+        if count != plan.shot_count as usize {
+            return self.refuse(sn, id, fault::SHOT_COUNT_MISMATCH, format!("PLC 下发触发次数 {count}，配方 {} 为 {}（{n} 个拍照点）", recipe.id, plan.shot_count)).await;
         }
         let production = match crate::production::ready(&app, &recipe) {
             Ok(prepared) => prepared,
@@ -1064,7 +1065,7 @@ impl Machine {
             self.ledgers.set_floor(&Floor { cam: camera.cam, camera: camera.camera.clone(), session: camera.session,
                 baseline: router.baseline(camera.cam).unwrap_or(0) });
         }
-        let issued = Some((plan.device_id.clone(), u64::from(plan.device_shots)));
+        let issued = Some((plan.device_ids.clone(), u64::from(plan.device_shots)));
         let bundle_id = production.as_ref().map(|prepared| prepared.bundle.id.clone());
         budget.mark("camera-router");
         arm_remaining!("before-recording");
@@ -1476,7 +1477,7 @@ impl Machine {
     fn close_routing(&mut self, plc_triggers: Option<u16>) {
         let Some(part) = self.part.as_mut().filter(|part| !part.routing_closed) else { return };
         let issued = part.issued.as_ref().filter(|_| part.issued_verified || plc_triggers.is_some())
-            .map(|(id, planned)| [(id.as_str(), plc_triggers.map_or(*planned, u64::from))]);
+            .map(|(ids, planned)| ids.iter().map(|id| (id.as_str(), plc_triggers.map_or(*planned, u64::from))).collect::<Vec<_>>());
         part.router.close(&mut self.ledgers, issued.as_ref().map(|counts| counts.as_slice()));
         part.routing_closed = true;
     }

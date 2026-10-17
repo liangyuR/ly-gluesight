@@ -3,6 +3,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 export interface AppInfo {
   name: string;
   version: string;
+  logDir?: string | null;
 }
 
 export interface EngineStatus {
@@ -17,6 +18,11 @@ export interface EngineStatus {
 export async function getAppInfo(): Promise<AppInfo> {
   if (!isTauri()) return { name: "GlueSight · 胶路智检", version: "dev" };
   return invoke<AppInfo>("app_info");
+}
+
+export async function openLogDir(): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("app_open_log_dir");
 }
 
 export async function getEngineStatus(): Promise<EngineStatus> {
