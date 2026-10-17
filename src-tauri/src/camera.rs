@@ -1516,6 +1516,18 @@ pub fn camera_soft_trigger(cycle: State<'_, CycleHost>, cam: usize) -> Result<()
     slot.soft_trigger(None).map(|_| ())
 }
 
+/// 调试用：把曝光与增益临时写进相机，不写配方；示教采集和生产布防前仍按配方重新下发。
+#[tauri::command]
+pub async fn camera_set_imaging(app: AppHandle, cam: usize, id: String, imaging: CameraImaging) -> Result<(), String> {
+    check_user_editable(&app, None)?;
+    let cycle = app.state::<CycleHost>();
+    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试相机操作")?;
+    check_idle(&cycle)?;
+    let slot = rig(&app).slot(cam).ok_or("相机不存在")?;
+    check_camera_target(&slot.config().id, &id)?;
+    tauri::async_runtime::spawn_blocking(move || slot.set_imaging(&imaging)).await.map_err(|e| e.to_string())?
+}
+
 /// 把海康相机释放给 MVS 客户端（调焦、光圈）：关闭设备，后台不再自动重连，直到重新连接。
 #[tauri::command]
 pub async fn camera_release(app: AppHandle, cam: usize) -> Result<(), String> {

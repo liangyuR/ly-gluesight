@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>06 离线托管 · 样本集相机详情</title>
+<link rel="stylesheet" href="camera-design.css">
+<script src="shell.js"></script>
+</head>
+<body data-plc="PLC · 离线模拟">
+<div class="app-shell">
+  <main class="main">
+    <header class="main-header">
+      <a class="crumb" href="01-overview-sync-ok.html"><i data-icon="chevron-left"></i>相机组总览</a>
+      <span class="muted">/</span>
+      <h1>相机 1</h1><span class="header-id">cam1</span>
+      <span class="badge neutral"><i data-icon="database"></i>样本集（离线）</span>
+      <nav class="segmented cam-switch" aria-label="切换相机">
+        <a class="active" href="#"><span class="dot" style="background:var(--camera-1)"></span>cam1</a>
+        <a href="#"><span class="dot" style="background:var(--camera-2)"></span>cam2</a>
+      </nav>
+      <a class="site-badge offline" href="#">离线 · 样本集 后盖涂胶-2024-10</a>
+    </header>
+    <div class="main-body">
+
+      <div class="site-managed" role="note" style="margin-bottom:16px">
+        <strong>离线模式由站点模式管理</strong>
+        <span>相机组按离线样本集“后盖涂胶-2024-10”临时生成（2 台，图像源 = 样本集），离线期间不能修改、添加或移除相机；绑定与触发接线不适用。退出离线后恢复原相机组配置。<a href="#">打开离线模式</a></span>
+      </div>
+
+      <div class="detail">
+        <div class="detail-col">
+          <section class="panel" aria-label="基础信息">
+            <div class="panel-head"><h2 class="panel-title">基础信息</h2><span class="spacer"></span><span class="lock-note"><i data-icon="lock" data-size="13"></i>由样本集生成，只读</span></div>
+            <div class="cfg-grid">
+              <span class="lbl">名称</span><input class="input" value="相机 1" disabled>
+              <span class="lbl">相机编号</span><div class="val ro"><span class="mono">cam1</span><span class="muted tiny">与样本集记录的相机编号一致，配方按它引用</span></div>
+              <span class="lbl">图像源</span><div class="val ro">样本集（离线）<span class="muted tiny">后盖涂胶-2024-10 · 36 幅 · 2 台相机</span></div>
+              <span class="lbl">设备视角</span><label class="select"><select class="input" disabled><option>单视角（按样本集）</option></select></label>
+              <span class="hint">图像来自离线模式所选样本集，相机数与视角按样本集生成，不可在此更改。</span>
+            </div>
+          </section>
+
+          <section class="panel" aria-label="绑定设备">
+            <h2 class="panel-title">绑定设备</h2>
+            <div class="na"><i data-icon="link-off" data-size="16"></i><div><strong>不适用：样本集相机没有物理设备</strong>离线期间不枚举、不绑定海康设备。原相机组的绑定关系已保留，退出离线后原样恢复。</div></div>
+          </section>
+
+          <section class="panel" aria-label="触发接线">
+            <h2 class="panel-title">触发接线</h2>
+            <div class="na"><i data-icon="radio" data-size="16"></i><div><strong>不适用：离线图像源按节拍自动出图</strong>不接触发线，没有触发沿、滤波、延时、频闪和 Chunk 设置；触发计数即样本序号，由离线节拍推进。</div></div>
+          </section>
+
+          <section class="panel adv" aria-label="高级参数（调试）">
+            <details>
+              <summary><i data-icon="chevron-right" data-size="16" class="chev"></i>高级参数（调试）<span class="badge neutral">离线不适用</span><span class="spacer"></span><span class="muted tiny">样本集图像没有曝光 / 增益可下发</span></summary>
+            </details>
+          </section>
+
+          <a class="link quiet" href="#">飞拍标定（离线期间沿用原标定）<i data-icon="chevron-right" data-size="14"></i></a>
+        </div>
+
+        <div class="detail-side">
+          <section class="panel" aria-label="出图验证">
+            <div class="panel-head"><h2 class="panel-title">出图验证</h2><span class="badge neutral"><i data-icon="database"></i>样本集 · 按节拍自动出图</span><span class="spacer"></span><span class="muted tiny mono">样本 23 / 36</span></div>
+            <div class="preview fresh" data-bead="3"><span class="thumb-fresh"><i data-icon="activity" data-size="11"></i>刚刚 · 10:02:41</span><span class="thumb-tag">2448×2048 · Mono8 · 样本 #23</span></div>
+            <div class="verify-stats" style="margin-top:12px">
+              <div class="stat"><span>帧计数</span><b>23</b></div>
+              <div class="stat"><span>触发计数</span><b>23</b></div>
+              <div class="stat"><span>丢包 / 丢帧</span><b class="text muted">不适用</b></div>
+              <div class="stat"><span>最近出图</span><b class="text">1 秒前</b></div>
+            </div>
+            <div class="verify-actions" style="margin-top:12px">
+              <button class="btn" disabled><i data-icon="zap" data-size="15"></i>取一帧</button>
+              <span class="hint">离线图像源按节拍自动出图，不需要也不能软触发；释放给 MVS 不适用。</span>
+            </div>
+          </section>
+
+          <section class="panel" aria-label="参数生效情况">
+            <h2 class="panel-title">参数生效情况</h2>
+            <div class="applied">
+              <div class="head"><span class="state muted"><i data-icon="minus"></i>不适用</span></div>
+              <div class="foot">样本集相机没有设备参数可写入，也不会产生“未接受”列表。</div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+</body>
+</html>

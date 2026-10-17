@@ -44,8 +44,14 @@ export interface CameraStatus {
   warnings: string[];
 }
 
+/** 触发计数来源：chunkTrigger 与 synthetic 才是真的触发计数，其余照填帧计数 */
+export type CounterSource = "chunkTrigger" | "chunkFrame" | "sdkFrame" | "synthetic";
+
 export interface Frame {
   cam: number;
+  /** 设备会话号：重开相机后换新号，触发计数可能从头数起 */
+  session: number;
+  counter: CounterSource;
   frameCounter: number;
   triggerCounter: number;
   lostPackets: number;

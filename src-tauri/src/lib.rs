@@ -99,6 +99,7 @@ pub fn run() {
             camera::camera_list_devices,
             camera::camera_preview,
             camera::camera_soft_trigger,
+            camera::camera_set_imaging,
             camera::camera_release,
             camera::camera_reconnect,
             recipe_api::recipe_list,

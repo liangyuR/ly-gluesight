@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import type { CameraConfig, CameraStatus } from "../types";
 
@@ -11,7 +10,7 @@ export function cameraState(config: CameraConfig, status: CameraStatus | null): 
   return { tone:"off", label:"未连接", text:status?.message || "未连接" };
 }
 
-export default function CameraList({ configs, statuses, selected, disabled, onSelect, onRefresh, refreshing, footer }: {
+export default function CameraList({ configs, statuses, selected, disabled, onSelect, onRefresh, refreshing }: {
   configs: CameraConfig[];
   statuses: CameraStatus[];
   selected: number;
@@ -19,7 +18,6 @@ export default function CameraList({ configs, statuses, selected, disabled, onSe
   onSelect: (cam: number) => void;
   onRefresh?: () => void;
   refreshing?: boolean;
-  footer?: ReactNode;
 }) {
   return <aside className="cam-list" aria-label="相机列表">
     <div className="cam-list-head"><span>相机 {configs.length}/8</span>{onRefresh&&<button className="icon-btn" onClick={onRefresh} disabled={refreshing||disabled} aria-label="刷新相机配置" title="刷新相机配置"><RefreshCw size={14}/></button>}</div>
@@ -30,6 +28,5 @@ export default function CameraList({ configs, statuses, selected, disabled, onSe
         <span className="cam-list-text"><span><strong>{config.name}</strong> <span className="mono muted">{config.id}</span></span><small>{state.text}</small></span>
       </button>;
     })}
-    {footer}
   </aside>;
 }

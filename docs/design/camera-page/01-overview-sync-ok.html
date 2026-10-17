@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>01 相机组总览 · 同步正常</title>
+<link rel="stylesheet" href="camera-design.css">
+<script src="shell.js"></script>
+</head>
+<body>
+<div class="app-shell">
+  <main class="main">
+    <header class="main-header">
+      <h1>相机与采集</h1>
+      <a class="site-badge" href="#">真机</a>
+    </header>
+    <div class="main-body">
+
+      <div class="ov-toolbar">
+        <div class="summary"><strong>相机组</strong><span class="mono">3 / 8</span><span>·</span><span class="state c-ok"><i data-icon="check-circle"></i>2 台已连接</span><span>·</span><span class="state c-warn"><i data-icon="link-off"></i>1 台未绑定</span></div>
+        <span class="spacer"></span>
+        <span class="muted small">状态每秒刷新 · 14:32:09</span>
+        <button class="icon-btn" aria-label="刷新相机配置"><i data-icon="refresh-cw"></i></button>
+        <button class="btn"><i data-icon="plus" data-size="15"></i>添加相机</button>
+      </div>
+
+      <div class="cam-grid">
+        <a class="cam-card c1" href="03-detail.html">
+          <div class="cam-card-head"><strong>相机 1</strong><span class="mono">cam1</span><span class="badge ok"><i data-icon="check"></i>已连接</span></div>
+          <div class="cam-card-sub">MV-CA060-10GM · <span class="mono">DA1234567</span> · <span class="mono">192.168.1.11</span> · GigE</div>
+          <div class="thumb" data-bead="1"><span class="thumb-fresh"><i data-icon="activity" data-size="11"></i>刚刚</span><span class="thumb-tag">2448×2048 · Mono8</span></div>
+          <div class="stats">
+            <div class="stat"><span>帧计数</span><b>12 034</b></div>
+            <div class="stat"><span>触发计数</span><b>12 034</b></div>
+            <div class="stat"><span>丢包</span><b>0</b></div>
+            <div class="stat"><span>最近出图</span><b class="text">2 秒前</b></div>
+          </div>
+          <div class="cam-card-foot"><span>Line0 · 上升沿 · 滤波 5 µs</span><span>·</span><span class="mono">12.0 fps</span><span class="link">参数详情<i data-icon="chevron-right" data-size="14"></i></span></div>
+        </a>
+
+        <a class="cam-card c2" href="03-detail.html">
+          <div class="cam-card-head"><strong>相机 2</strong><span class="mono">cam2</span><span class="badge ok"><i data-icon="check"></i>已连接</span></div>
+          <div class="cam-card-sub">MV-CA060-10GM · <span class="mono">DA1234588</span> · <span class="mono">192.168.1.12</span> · GigE</div>
+          <div class="thumb" data-bead="2"><span class="thumb-fresh"><i data-icon="activity" data-size="11"></i>刚刚</span><span class="thumb-tag">2448×2048 · Mono8</span></div>
+          <div class="stats">
+            <div class="stat"><span>帧计数</span><b>8 842</b></div>
+            <div class="stat"><span>触发计数</span><b>8 842</b></div>
+            <div class="stat"><span>丢包</span><b>0</b></div>
+            <div class="stat"><span>最近出图</span><b class="text">2 秒前</b></div>
+          </div>
+          <div class="cam-card-foot"><span>Line0 · 上升沿 · 滤波 5 µs</span><span>·</span><span class="mono">12.0 fps</span><span class="link">参数详情<i data-icon="chevron-right" data-size="14"></i></span></div>
+        </a>
+
+        <a class="cam-card c3 unbound" href="03-detail.html">
+          <div class="cam-card-head"><strong>相机 3</strong><span class="mono">cam3</span><span class="badge warn"><i data-icon="link-off"></i>未绑定</span></div>
+          <div class="cam-card-sub">海康 MVS · 尚未绑定物理设备</div>
+          <div class="unbound-line"><i data-icon="alert-triangle" data-size="15"></i><span>未绑定设备</span><span class="link">进入详情选择设备<i data-icon="chevron-right" data-size="14"></i></span></div>
+          <div class="cam-card-foot"><span>不参与同步核对；配方若引用 cam3 将无法采集</span></div>
+        </a>
+      </div>
+
+      <section class="panel sync-panel" aria-label="同步触发核对">
+        <div class="sync-head">
+          <h2 class="panel-title">同步触发核对</h2>
+          <span class="badge ok"><i data-icon="check"></i>最近一次触发：全部同步</span>
+          <span class="sync-meta"><span>自打开本页：触发 <b>86</b> 次</span><span>不同步 <b>0</b> 次</span><span>最近一次 <b>14:32:07.418</b></span></span>
+          <span class="spacer"></span>
+          <span class="muted small">按各相机 Chunk 触发计数前后值比对，窗口 500 ms</span>
+        </div>
+        <div class="sync-grid">
+          <table class="table">
+            <thead><tr><th>相机</th><th class="num">触发前</th><th class="num">触发后</th><th class="num">变化</th><th>结果</th></tr></thead>
+            <tbody>
+              <tr><td><span class="row"><span class="dot" style="background:var(--camera-1)"></span>相机 1 <span class="mono muted">cam1</span></span></td><td class="num">12 033</td><td class="num">12 034</td><td class="num">+1</td><td><span class="state c-ok"><i data-icon="check"></i>同步</span></td></tr>
+              <tr><td><span class="row"><span class="dot" style="background:var(--camera-2)"></span>相机 2 <span class="mono muted">cam2</span></span></td><td class="num">8 841</td><td class="num">8 842</td><td class="num">+1</td><td><span class="state c-ok"><i data-icon="check"></i>同步</span></td></tr>
+              <tr><td><span class="row"><span class="dot off"></span>相机 3 <span class="mono muted">cam3</span></span></td><td class="num muted">—</td><td class="num muted">—</td><td class="num muted">—</td><td><span class="state muted"><i data-icon="minus"></i>未绑定，已排除</span></td></tr>
+            </tbody>
+          </table>
+          <div class="inset sync-hint">
+            <strong>怎么看</strong>
+            <ol>
+              <li>PLC / 机器人每发一次触发，所有已绑定相机的<b>触发计数都应 +1</b>；某台 +0 即落后。</li>
+              <li>触发计数来自相机 Chunk 数据；<b>关闭 Chunk 的相机无法核对</b>，会在此标注原因。</li>
+              <li>核对只看同步性，不判断图像内容；画面是否正确在配方工作台的整圈采集里确认。</li>
+            </ol>
+          </div>
+        </div>
+      </section>
+
+      <div class="row" style="margin-top:16px;justify-content:flex-end">
+        <a class="link quiet" href="#">保存后前往飞拍标定<i data-icon="chevron-right" data-size="14"></i></a>
+      </div>
+
+    </div>
+  </main>
+</div>
+</body>
+</html>
