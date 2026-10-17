@@ -1,11 +1,11 @@
 {
   "repository": "liangyuR/ly-gluesight",
   "schemaVersion": 2,
-  "tag": "deps-win-x64-v2",
-  "asset": "gluesight-vendor-runtime-win-x64-v2.zip",
-  "bundleVersion": 2,
+  "tag": "deps-win-x64-v3",
+  "asset": "gluesight-vendor-runtime-win-x64-v3.zip",
+  "bundleVersion": 3,
   "architecture": "x64",
-  "mvsVersion": "4.8.1.2",
+  "mvsVersion": "4.8.2.2",
   "lyflow": {
     "repository": "liangyuR/lyFlow",
     "series": "1.1"
