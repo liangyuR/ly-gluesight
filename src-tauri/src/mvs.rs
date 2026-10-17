@@ -262,7 +262,7 @@ impl Api {
         api.initialized = true;
         let v = version();
         api.version = format!("{}.{}.{}.{}", v >> 24, (v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff);
-        eprintln!("MVS SDK {}: {}", api.version, api.library_path.display());
+        crate::applog::write("info", "MVS SDK", &format!("{}：{}", api.version, api.library_path.display()));
         Ok(api)
     }
 }

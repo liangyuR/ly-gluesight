@@ -8,6 +8,7 @@ use crate::vision::VisionHost;
 pub struct AppInfo {
     name: String,
     version: String,
+    log_dir: Option<String>,
 }
 
 #[tauri::command]
@@ -16,7 +17,17 @@ pub fn app_info(app: AppHandle) -> AppInfo {
     AppInfo {
         name: pkg.name.clone(),
         version: pkg.version.to_string(),
+        log_dir: crate::applog::dir(&app).ok().map(|dir| dir.display().to_string()),
     }
+}
+
+#[tauri::command]
+pub fn app_open_log_dir(app: AppHandle) -> Result<(), String> {
+    let dir = crate::applog::dir(&app)?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    std::process::Command::new("explorer").arg(&dir).spawn().map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[derive(Serialize)]

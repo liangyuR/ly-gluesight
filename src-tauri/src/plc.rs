@@ -26,14 +26,26 @@ impl PlcHost {
         let log_path = app.path().app_data_dir().map_err(|e| e.to_string())?.join("logs").join("plc.db");
         let config = PlcConfig::load(&config_path).unwrap_or_else(inspection::default_plc_config);
         let handle = app.clone();
+        let last_link = std::sync::Mutex::new(None);
         let sink: EventSink = Arc::new(move |event| match event {
             PlcEvent::Status(s) => {
+                let link = (s.state, s.message.clone());
+                let mut last = last_link.lock().unwrap();
+                if last.as_ref() != Some(&link) {
+                    let level = if s.state == ly_plc::LinkState::Error { "err" } else { "info" };
+                    crate::applog::write(level, "PLC 连接", &format!("{:?}：{}", s.state, s.message));
+                    *last = Some(link);
+                }
+                drop(last);
                 let _ = handle.emit("plc://status", s);
             }
             PlcEvent::Values(v) => {
                 let _ = handle.emit("plc://values", v);
             }
             PlcEvent::Logs(l) => {
+                for entry in l.iter().filter(|e| e.level == "warn" || e.level == "error") {
+                    crate::applog::write(&entry.level, &format!("PLC {}", entry.category), &entry.message);
+                }
                 let _ = handle.emit("plc://log", l);
             }
             PlcEvent::Edge(e) => {

@@ -1,3 +1,4 @@
+mod applog;
 mod arming;
 mod audit;
 mod camera;
@@ -45,6 +46,7 @@ fn open_store(app: &tauri::App) -> Result<store::Store, String> {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            if let Err(error) = applog::init(app.handle()) { eprintln!("{error}"); }
             app.manage(instance::acquire(&app.path().app_data_dir().map_err(|error| error.to_string())?)?);
             app.manage(open_store(app)?);
             app.manage(vision::VisionHost::default());
@@ -65,6 +67,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
+            commands::app_open_log_dir,
             commands::engine_status,
             plc::plc_get_config,
             plc::plc_save_config,
