@@ -31,6 +31,7 @@ fn snapshot(w: &Workspace, selected: u8) -> Value {
 
 fn pending_workspace() -> Workspace {
     let mut w = workspace();
+    for view in &mut w.doc.shots[0].views { view.enabled = view.view == 1; }
     w.pending = Some(Box::new(Release { doc: w.doc.clone(), bundle_id: "frozen-release-17".into(),
         base_revision: w.base_revision.clone(), revision: w.revision, frames: w.frames.clone(),
         overview: w.overview.clone(), validation: w.validation.clone().unwrap(), validation_site: ValidationSite::Real }));
@@ -253,4 +254,73 @@ fn three_camera_round_adopts_every_camera_shot_into_a_recipe_that_builds() {
     ]);
     assert_eq!(w.doc.cameras.keys().map(String::as_str).collect::<Vec<_>>(), cameras);
     w.doc.build().unwrap();
+}
+#[test]
+fn selecting_group_image_keeps_drafts_and_capture_plan_but_measures_only_selected_camera() {
+    let mut w = workspace();
+    let template = w.doc.shots[0].clone();
+    let frame = w.frames[0].clone();
+    let imaging = *w.doc.cameras.values().next().unwrap();
+    w.doc.shots.clear();
+    w.frames.clear();
+    w.doc.cameras.clear();
+    for pose in ["S001", "S002"] {
+        for camera in ["cam1", "cam2", "cam3"] {
+            let mut shot = template.clone();
+            shot.id = format!("{pose}-{camera}");
+            shot.pose_id = pose.into();
+            shot.camera = camera.into();
+            w.doc.cameras.insert(camera.into(), imaging);
+            w.doc.shots.push(shot);
+            let mut image = frame.clone();
+            image.k = w.frames.len();
+            w.frames.push(image);
+        }
+    }
+    w.select_group_image(3, 1).unwrap();
+    let other = state_value(&w.doc.shots[3..].to_vec());
+    let draft = w.doc.shots[0].path.clone();
+    let plan = crate::plc_plan::trigger_groups(&w.doc.build().unwrap()).unwrap();
+    w.select_group_image(0, 1).unwrap();
+    w.select_group_image(1, 2).unwrap();
+    assert!(w.doc.shots[0].skip && w.doc.shots[2].skip);
+    assert_eq!(w.doc.shots[1].enabled_views(), vec![2]);
+    assert_eq!(w.doc.shots[1].view, 2);
+    assert_eq!(w.doc.shots[0].path, draft);
+    assert_eq!(state_value(&w.doc.shots[3..].to_vec()), other);
+    assert_eq!(crate::plc_plan::trigger_groups(&w.doc.build().unwrap()).unwrap(), plan);
+    assert!(w.group_selection_errors().is_empty());
+    let before = state_value(&w);
+    assert!(w.select_group_image(1, 4).is_err());
+    assert_eq!(state_value(&w), before);
+}
+
+#[test]
+fn missing_or_multiple_group_images_block_teaching_validation_and_publish_progress() {
+    for selected in [0, 1, 2] {
+        let mut w = workspace();
+        w.capture_id = Some("round-1".into());
+        for image in &mut w.doc.shots[0].views { image.enabled = image.view <= selected; }
+        let progress = progress::compute(&w, None, &progress::Devices::default());
+        assert_eq!(w.group_selection_errors().is_empty(), selected == 1);
+        if selected != 1 {
+            for step in [progress::StepId::Teach, progress::StepId::Validation, progress::StepId::Publish] {
+                assert_eq!(progress.step(step).status, progress::StepStatus::Blocked);
+            }
+        }
+    }
+}
+
+#[test]
+fn invalid_frozen_group_selection_rejects_activation_and_retry_even_when_current_draft_is_valid() {
+    for selected in [0, 1, 2] {
+        let mut w = pending_workspace();
+        w.publish = PublishState::Failed { message: "等待重试".into() };
+        for image in &mut w.pending.as_mut().unwrap().doc.shots[0].views { image.enabled = image.view <= selected; }
+        assert!(w.group_selection_errors().is_empty());
+        assert_eq!(w.pending.as_ref().unwrap().check_group_selection().is_ok(), selected == 1);
+        let before = state_value(&w);
+        assert_eq!(w.retry_publish(w.revision).is_ok(), selected == 1);
+        if selected != 1 { assert_eq!(state_value(&w), before); }
+    }
 }

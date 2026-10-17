@@ -136,6 +136,68 @@ pub(super) fn check_view(app: &AppHandle, w: &Workspace, k: usize, selected: u8,
     Ok(())
 }
 
+fn doc_group_selection_errors(doc: &RecipeDoc) -> Vec<(usize, String)> {
+    let mut groups: Vec<(usize, &str, usize)> = Vec::new();
+    for (k, shot) in doc.shots.iter().enumerate() {
+        let count = shot.enabled_views().len();
+        if let Some(group) = groups.iter_mut().find(|(_, pose, _)| *pose == shot.pose_id) {
+            group.2 += count;
+        } else {
+            groups.push((k, &shot.pose_id, count));
+        }
+    }
+    groups.into_iter().filter(|(_, _, count)| *count != 1).map(|(k, pose, count)| {
+        (k, if count == 0 { format!("拍照点组 {pose}：请选择一张图示教") }
+            else { format!("拍照点组 {pose}：已选 {count} 张图，每组只能选择一张") })
+    }).collect()
+}
+
+impl Release {
+    pub fn check_group_selection(&self) -> Result<(), String> {
+        match doc_group_selection_errors(&self.doc).into_iter().next() {
+            Some((_, message)) => Err(message),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Workspace {
+    pub fn group_selection_errors(&self) -> Vec<(usize, String)> {
+        doc_group_selection_errors(&self.doc)
+    }
+
+    pub fn select_group_image(&mut self, k: usize, selected: u8) -> Result<(), String> {
+        let pose = self.doc.shots.get(k).ok_or("拍照点不存在")?.pose_id.clone();
+        if !self.frames.get(k).is_some_and(|frame| frame.views.iter().any(|image| image.view == selected)) {
+            return Err("本轮没有所选图像".into());
+        }
+        let mut next = self.clone();
+        let group: Vec<_> = next.doc.shots.iter().enumerate().filter(|(_, shot)| shot.pose_id == pose).map(|(index, _)| index).collect();
+        for index in group {
+            initialize_views(&mut next, index);
+            store_active(&mut next, index);
+            let shot = &mut next.doc.shots[index];
+            shot.skip = index != k;
+            for image in &mut shot.views { image.enabled = index == k && image.view == selected; }
+        }
+        load_active(&mut next, k, selected)?;
+        next.last_position = Some(Position { k, view: selected });
+        next.changed();
+        *self = next;
+        Ok(())
+    }
+}
+
+#[tauri::command]
+pub fn workspace_select_group_image(app: AppHandle, id: String, revision: u64, k: usize, view: u8) -> Result<WorkspaceView, String> {
+    let host = app.state::<WorkspaceHost>();
+    let mut items = host.items.lock().unwrap();
+    let mut w = items.get(&id).ok_or("候选不存在")?.clone();
+    w.expect(revision)?;
+    w.select_group_image(k, view)?;
+    host.save(&w)?; items.insert(id, w.clone()); super::view(&app, w)
+}
+
 #[tauri::command]
 pub fn workspace_set_views(app: AppHandle, id: String, revision: u64, k: usize, views: Vec<u8>, skip: bool) -> Result<WorkspaceView, String> {
     let unique: std::collections::HashSet<_> = views.iter().copied().collect();

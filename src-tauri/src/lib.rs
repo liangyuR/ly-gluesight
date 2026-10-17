@@ -133,6 +133,7 @@ pub fn run() {
             recipe_capture::recipe_capture_list,
             recipe_capture::recipe_capture_image,
             workspace::workspace_set_views,
+            workspace::workspace_select_group_image,
             workspace::workspace_save_draft,
             workspace::workspace_progress,
             workspace::workspace_check_calibration,

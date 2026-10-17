@@ -18,7 +18,7 @@ import { snapshot, summary, tricamWorkspaceView, twoLines } from "./fixtures";
 
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
   get: vi.fn(), list: vi.fn(), image: vi.fn(), progress: vi.fn(),
-  saveDraft: vi.fn(), saveParams: vi.fn(), trial: vi.fn(), saveTeach: vi.fn(),
+  selectGroupImage: vi.fn(), saveDraft: vi.fn(), saveParams: vi.fn(), trial: vi.fn(), saveTeach: vi.fn(),
   saveOverview: vi.fn(), captureGet: vi.fn(), captureList: vi.fn(), captureStart: vi.fn(),
   captureSample: vi.fn(), captureImage: vi.fn(), validate: vi.fn(), publish: vi.fn(),
 } }));
@@ -43,6 +43,39 @@ function candidateView() {
   candidate.workspace.overview.saved = false;
   candidate.workspace.sampleBank = [];
   candidate.workspace.samples = [];
+  return candidate;
+}
+
+function groupedCandidate() {
+  const candidate = candidateView();
+  const shots = candidate.workspace.doc.shots;
+  const frames = candidate.workspace.frames;
+  const progress = candidate.progress.shots;
+  candidate.workspace.doc.shots = shots.flatMap(shot => [1, 2, 3].map(camera => ({
+    ...structuredClone(shot), id: `${shot.poseId}-cam${camera}`, camera: `CAM-${camera}`, skip: camera !== 1,
+  })));
+  candidate.workspace.frames = frames.flatMap((frame, group) => [1, 2, 3].map(camera => {
+    const copy = structuredClone(frame);
+    copy.k = group * 3 + camera - 1;
+    copy.image = { ...copy.image!, id: `${frame.image!.id}-cam${camera}`, camera: `CAM-${camera}`,
+      cameraTag: { id: `CAM-${camera}`, source: "sim", acquisition: "triggered", viewCount: 1 },
+      geometryTag: [`P${group + 1}-cam${camera}`, `P${group + 1}`, `CAM-${camera}`, 1, `CAM-${camera}-v1`],
+    };
+    copy.views = [copy.image];
+    if (copy.trial) {
+      copy.trial.imageId = copy.image.id;
+      copy.trial.geometryTag = copy.image.geometryTag;
+    }
+    return copy;
+  }));
+  candidate.progress.shots = progress.flatMap((shot, group) => [1, 2, 3].map(camera => ({
+    ...structuredClone(shot), k: group * 3 + camera - 1, shotId: `P${group + 1}-cam${camera}`,
+    state: camera === 1 ? shot.state : "skipped", total: camera === 1 ? 1 : 0,
+    views: [{ ...structuredClone(shot.views[0]), enabled: camera === 1 }],
+  })));
+  candidate.layout.shots = structuredClone(candidate.workspace.doc.shots);
+  candidate.layout.segments.forEach(segment => { segment.shot *= 3; });
+  candidate.layout.points.k = candidate.layout.points.k.map(k => k * 3);
   return candidate;
 }
 
@@ -75,7 +108,7 @@ function renderWorkspace(path: string) {
   return userEvent.setup();
 }
 
-it("两幅原图逐帧保存参数并试测、保存示教 → 自动进入下一幅，每步沿用上一步返回的修订", async () => {
+it("每组三相机图仅示教选中图 → 保存后进入下一组并沿用最新修订", async () => {
   vi.stubGlobal("DOMPoint", class {
     constructor(public x: number, public y: number) {}
     matrixTransform() { return this; }
@@ -84,22 +117,23 @@ it("两幅原图逐帧保存参数并试测、保存示教 → 自动进入下�
   Object.defineProperty(SVGElement.prototype, "getScreenCTM", { configurable: true, value: () => ({ inverse: () => ({}) }) });
   Object.defineProperty(SVGElement.prototype, "setPointerCapture", { configurable: true, value: vi.fn() });
 
-  const candidate = candidateView();
+  const candidate = groupedCandidate();
   const taughtLayout = structuredClone(candidate.layout);
   const trials = candidate.workspace.frames.map(frame => structuredClone(frame.trial!));
   candidate.coverage = 0;
   candidate.workspace.doc.shots.forEach(shot => { shot.path = []; delete shot.mmPerPx; });
   candidate.workspace.frames.forEach(frame => { frame.trial = null; frame.saved = false; });
-  [0, 1].forEach(k => shotState(candidate, k, "unconfigured"));
+  [0, 3].forEach(k => shotState(candidate, k, "unconfigured"));
   candidate.layout.shots = structuredClone(candidate.workspace.doc.shots);
   candidate.layout.segments = [];
   candidate.layout.points = { x: [], y: [], seg: [], k: [] };
   mockSite(candidate);
 
   const response = structuredClone(candidate);
-  for (const k of [0, 1]) {
+  for (const group of [0, 1]) {
+    const k = group * 3;
     response.workspace.revision++;
-    response.workspace.doc.shots[k].path = structuredClone(twoLines[k]);
+    response.workspace.doc.shots[k].path = structuredClone(twoLines[group]);
     response.workspace.doc.shots[k].mmPerPx = .1;
     response.layout.shots = structuredClone(response.workspace.doc.shots);
     shotState(response, k, "pendingTrial");
@@ -110,40 +144,68 @@ it("两幅原图逐帧保存参数并试测、保存示教 → 自动进入下�
     response.workspace.frames[k].saved = true;
     shotState(response, k, "taught");
     response.workspace.revision++;
-    response.coverage = (k + 1) * 50;
-    if (k === 1) response.layout = taughtLayout;
+    response.coverage = (group + 1) * 50;
+    if (group === 1) response.layout = taughtLayout;
     vi.mocked(workspaceApi.saveTeach).mockResolvedValueOnce(structuredClone(response));
   }
 
   const user = renderWorkspace("/recipe/teach");
-  expect(await screen.findByText(/全部 0／2 幅/)).toBeVisible();
+  expect(await screen.findByText(/已完成 0／2 组/)).toBeVisible();
 
-  for (const k of [0, 1]) {
-    const imageId = `A-image-${k}`;
-    const image = await screen.findByRole("img", { name: `冻结图像 · ${imageId}` });
-    expect(screen.getByRole("button", { name: "选择帧 k" + (k + 1) })).toHaveAttribute("aria-pressed", "true");
+  for (const group of [0, 1]) {
+    const k = group * 3;
+    const imageId = `A-image-${group}-cam1`;
+    const image = await screen.findByRole("img", { name: `P${group + 1} · CAM-1 · 图 1` });
+    expect(screen.getByRole("button", { name: "选择拍照组 P" + (group + 1) })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "保存参数并试测" })).toBeDisabled();
-    for (const [clientX, clientY] of twoLines[k]) {
+    for (const [clientX, clientY] of twoLines[group]) {
       fireEvent.pointerDown(image, { clientX, clientY });
       fireEvent.pointerUp(image);
     }
     fireEvent.change(screen.getByRole("spinbutton", { name: "像素当量" }), { target: { value: ".1" } });
     expect(screen.getByLabelText("中线点 2")).toBeVisible();
-    expect(screen.getByRole("button", { name: "保存本帧示教" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "保存本组示教" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "保存参数并试测" }));
-    expect(workspaceApi.saveParams).toHaveBeenNthCalledWith(k + 1, "A", 7 + 2 * k, k, { path: twoLines[k], mmPerPx: .1 });
-    await waitFor(() => expect(workspaceApi.trial).toHaveBeenNthCalledWith(k + 1, "A", 8 + 2 * k, k, imageId));
+    expect(workspaceApi.saveParams).toHaveBeenNthCalledWith(group + 1, "A", 7 + 2 * group, k, { path: twoLines[group], mmPerPx: .1 });
+    await waitFor(() => expect(workspaceApi.trial).toHaveBeenNthCalledWith(group + 1, "A", 8 + 2 * group, k, imageId));
     expect(screen.queryByText("示教参数有未保存的修改")).not.toBeInTheDocument();
-    await waitFor(() => expect(screen.getByRole("button", { name: "保存并示教下一幅" })).toBeEnabled());
-    await user.click(screen.getByRole("button", { name: "保存并示教下一幅" }));
-    expect(workspaceApi.saveTeach).toHaveBeenNthCalledWith(k + 1, "A", 8 + 2 * k, k, imageId);
-    await screen.findByText(new RegExp(`全部 ${k + 1}／2 幅`));
+    const saveLabel = group === 0 ? "保存并进入下一组" : "保存本组示教";
+    await waitFor(() => expect(screen.getByRole("button", { name: saveLabel })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: saveLabel }));
+    expect(workspaceApi.saveTeach).toHaveBeenNthCalledWith(group + 1, "A", 8 + 2 * group, k, imageId);
+    await screen.findByText(new RegExp(`已完成 ${group + 1}／2 组`));
   }
 
-  expect(screen.getByRole("button", { name: "保存本帧示教" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "保存本组示教" })).toBeDisabled();
   expect(workspaceApi.saveParams).toHaveBeenCalledTimes(2);
   expect(workspaceApi.trial).toHaveBeenCalledTimes(2);
   expect(workspaceApi.saveTeach).toHaveBeenCalledTimes(2);
+});
+
+it("同组切换检测相机 → 原图取消选中且编辑切到新图，其他组保持原选择", async () => {
+  const candidate = groupedCandidate();
+  mockSite(candidate);
+  const response = structuredClone(candidate);
+  response.workspace.revision++;
+  response.workspace.doc.shots[0].skip = true;
+  response.workspace.doc.shots[1].skip = false;
+  response.progress.shots[0].state = "skipped";
+  response.progress.shots[0].views[0].enabled = false;
+  response.progress.shots[1].state = "trialPassed";
+  response.progress.shots[1].views[0].enabled = true;
+  response.layout.shots = structuredClone(response.workspace.doc.shots);
+  vi.mocked(workspaceApi.selectGroupImage).mockResolvedValue(response);
+  const user = renderWorkspace("/recipe/teach");
+  const secondCamera = await screen.findByRole("button", { name: "选择检测图 CAM-2 · 图 1" });
+  expect(screen.getByRole("button", { name: "选择检测图 CAM-1 · 图 1" })).toHaveAttribute("aria-pressed", "true");
+  await user.click(secondCamera);
+  expect(workspaceApi.selectGroupImage).toHaveBeenCalledWith("A", 7, 1, 1);
+  expect(await screen.findByRole("img", { name: "P1 · CAM-2 · 图 1" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "选择检测图 CAM-2 · 图 1" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "选择检测图 CAM-1 · 图 1" })).toHaveAttribute("aria-pressed", "false");
+  await user.click(screen.getByRole("button", { name: "选择拍照组 P2" }));
+  expect(await screen.findByRole("img", { name: "P2 · CAM-1 · 图 1" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "选择检测图 CAM-1 · 图 1" })).toHaveAttribute("aria-pressed", "true");
 });
 
 it("示教完成后保存总览、实拍独立样本并验证 → 新样本自动选入验证，确认后按同一修订发布", async () => {
@@ -204,6 +266,7 @@ it("示教完成后保存总览、实拍独立样本并验证 → 新样本自�
 
   const user = renderWorkspace("/recipe/overview");
   const firstPosition = await screen.findByRole("button", { name: "总览选择帧 k1" });
+  await waitFor(() => expect(screen.getByRole("button", { name: "保存总览" })).toBeEnabled());
   fireEvent.keyDown(firstPosition, { key: "ArrowRight" });
   await user.click(screen.getByRole("button", { name: "保存总览" }));
   await screen.findByText("总览布置已保存，拍照与测量不受影响");

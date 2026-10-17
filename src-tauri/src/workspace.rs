@@ -332,6 +332,7 @@ impl Workspace {
         if self.revision != revision || self.pending.is_none() || !matches!(self.publish, PublishState::Failed { .. } | PublishState::Uncertain { .. }) {
             return Err("没有可以重试的发布版本".into());
         }
+        self.pending.as_ref().unwrap().check_group_selection()?;
         self.publish = PublishState::Waiting;
         Ok(())
     }
@@ -1271,6 +1272,10 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
             .err()
             .unwrap_or_else(|| "配方引用的相机已就绪".into()),
     }];
+    let group_errors = w.group_selection_errors();
+    checks.push(Check { name: "拍照点组选图".into(), passed: group_errors.is_empty(),
+        detail: if group_errors.is_empty() { "每个拍照点组已选定一张示教图".into() }
+            else { group_errors.into_iter().map(|(_, message)| message).collect::<Vec<_>>().join("；") } });
     let ready = r.ready();
     checks.push(Check {
         name: "胶路示教".into(),
@@ -1429,6 +1434,7 @@ pub fn workspace_publish(
     if w.pending.is_some() {
         return Err("已有待生效版本，请等待工件结束".into());
     }
+    if let Some((_, message)) = w.group_selection_errors().into_iter().next() { return Err(message); }
     let validated = w
         .validation
         .as_ref()
@@ -1466,6 +1472,7 @@ pub fn workspace_publish(
 }
 
 fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Arc<Recipe>, String> {
+    release.check_group_selection()?;
     let cycle = app.state::<CycleHost>();
     let current = cycle.recipe(&release.doc.id);
     let recipe = release.doc.build()?;
