@@ -305,6 +305,35 @@ pub(super) fn capture_for(app: &AppHandle, id: &str, round_id: &str) -> Result<c
     Ok(round)
 }
 
+/// 按采集轮次重建候选的拍照点与相机曝光增益。全部拍照点加完才校验：多相机时只加了第一台相机的点就校验会误判其余相机未被使用。
+pub(super) fn adopt_shots(w: &mut Workspace, round: &crate::recipe_capture::CaptureRound, reuse_teaching: bool) -> Result<(), String> {
+    let expanded = round.recipe_shots()?;
+    let old = std::mem::take(&mut w.doc.shots);
+    if reuse_teaching && old.len() != expanded.len() { return Err("继承示教前必须确认点数、相机、轨迹及触发顺序对应一致".into()); }
+    let used = round.camera_ids();
+    let imaging: Vec<_> = round.cameras.iter().map(|c| (c.camera_id.clone(), w.doc.cameras.get(&c.camera_id).or(w.unbound_imaging.get(&c.camera_id)).copied().unwrap_or(c.imaging))).collect();
+    let others: Vec<_> = std::mem::take(&mut w.doc.cameras).into_iter().filter(|(c, _)| !used.contains(c)).collect();
+    w.unbound_imaging.extend(others);
+    for (camera, imaging) in imaging {
+        w.unbound_imaging.remove(&camera);
+        w.doc.cameras.insert(camera, imaging);
+    }
+    for (k, captured) in expanded.iter().enumerate() {
+        let camera_id = &captured.camera.camera_id;
+        let mut shot = if reuse_teaching { old[k].clone() } else {
+            crate::recipe::ShotSpec { id: captured.shot_id.clone(), pose_id: captured.pose_id.clone(), camera: camera_id.clone(), view: 1, calib: None,
+                bead: "J1".into(), skip: false, path: Vec::new(), mm_per_px: None, detect: None, limits: None, views: Vec::new() }
+        };
+        if reuse_teaching && shot.camera != *camera_id { return Err("采集相机或相机顺序已改变，不能按原对应关系继承示教".into()); }
+        if !reuse_teaching {
+            shot.views = captured.frame.views.iter().map(|v| ShotViewSpec { view: v.view, enabled: false, path: Vec::new(), mm_per_px: None,
+                detect: None, limits: None, calib: None }).collect();
+        }
+        w.doc.shots.push(shot);
+    }
+    w.doc.validate()
+}
+
 #[tauri::command]
 pub async fn workspace_adopt_capture(app: AppHandle, id: String, revision: u64, round_id: String, reuse_teaching: bool, correspondence_confirmed: bool) -> Result<WorkspaceView, String> {
     tauri::async_runtime::spawn_blocking(move || adopt_capture(app, id, revision, round_id, reuse_teaching, correspondence_confirmed)).await.map_err(|e| e.to_string())?
@@ -319,7 +348,7 @@ fn adopt_capture(app: AppHandle, id: String, revision: u64, round_id: String, re
     let mut w = items.get(&id).ok_or("候选不存在")?.clone(); w.expect(revision)?;
     if w.capture_id.as_deref() == Some(&round_id) { return view(&app, w); }
     let expanded = round.recipe_shots()?;
-    if reuse_teaching && (!correspondence_confirmed || w.doc.shots.len() != expanded.len()) {
+    if reuse_teaching && !correspondence_confirmed {
         return Err("继承示教前必须确认点数、相机、轨迹及触发顺序对应一致".into());
     }
     let configs = app.state::<CycleHost>().camera.configs();
@@ -331,28 +360,11 @@ fn adopt_capture(app: AppHandle, id: String, revision: u64, round_id: String, re
         sample_sets.insert(camera.camera_id.clone(), set);
     }
     let old = w.clone();
-    w.doc.shots.clear(); w.frames.clear();
-    let used = round.camera_ids();
-    let imaging: Vec<_> = round.cameras.iter().map(|c| (c.camera_id.clone(), w.doc.cameras.get(&c.camera_id).or(w.unbound_imaging.get(&c.camera_id)).copied().unwrap_or(c.imaging))).collect();
-    let others: Vec<_> = std::mem::take(&mut w.doc.cameras).into_iter().filter(|(c, _)| !used.contains(c)).collect();
-    w.unbound_imaging.extend(others);
-    for (camera, imaging) in imaging {
-        w.unbound_imaging.remove(&camera);
-        w.doc.cameras.insert(camera, imaging);
-    }
+    w.frames.clear();
+    adopt_shots(&mut w, &round, reuse_teaching)?;
     for (k, captured) in expanded.iter().enumerate() {
         let camera_id = &captured.camera.camera_id;
-        let mut shot = if reuse_teaching { old.doc.shots[k].clone() } else {
-            crate::recipe::ShotSpec { id: captured.shot_id.clone(), pose_id: captured.pose_id.clone(), camera: camera_id.clone(), view: 1, calib: None,
-                bead: "J1".into(), skip: false, path: Vec::new(), mm_per_px: None, detect: None, limits: None, views: Vec::new() }
-        };
-        if reuse_teaching && shot.camera != *camera_id { return Err("采集相机或相机顺序已改变，不能按原对应关系继承示教".into()); }
-        if !reuse_teaching {
-            shot.views = captured.frame.views.iter().map(|v| ShotViewSpec { view: v.view, enabled: false, path: Vec::new(), mm_per_px: None,
-                detect: None, limits: None, calib: None }).collect();
-        }
         let mut frame = Teaching::empty(k);
-        w.doc.shots.push(shot);
         let declared = sample_sets.get(camera_id).cloned().flatten().and_then(|set| {
             let shot = set.manifest().shots.iter().filter(|s| s.camera_id == *camera_id).nth(captured.k)?;
             set.shot_mm_per_px(&shot.shot_id).map(|mm| (set.manifest().id.clone(), mm))

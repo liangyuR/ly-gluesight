@@ -23,9 +23,10 @@ function captureCountText(round: {state: CaptureRound["state"]; receivedCount: n
 const completeShots = (round: CaptureRound) => round.frames.filter(f=>f.cameras.length===round.cameras.length).length;
 type CaptureFrame = CaptureRound["frames"][number];
 function frameSpec(frame: CaptureFrame) {
-  const views = frame.cameras.flatMap(c=>c.views);
-  const sizes = [...new Set(views.map(v=>`${v.width}×${v.height}`))].join(" / ");
-  return views.length > 1 ? `每点 ${views.length} 图 · ${sizes}` : sizes;
+  const sizes = [...new Set(frame.cameras.flatMap(c=>c.views).map(v=>`${v.width}×${v.height}`))].join(" / ");
+  const counts = [...new Set(frame.cameras.map(c=>c.views.length))].join(" / ");
+  if(frame.cameras.length > 1) return `每台 ${counts} 图 · ${sizes}`;
+  return counts !== "1" ? `每点 ${counts} 图 · ${sizes}` : sizes;
 }
 function roundSpec(frames: CaptureFrame[]) {
   const counts = new Map<string,number>();
@@ -124,7 +125,7 @@ export default function CapturePage() {
     const item=e.currentTarget.children[next] as HTMLElement | undefined;
     item?.focus({preventScroll:true}); item?.scrollIntoView({block:"nearest"});
   };
-  const pad=(k: number) => String(k+1).padStart(2,"0");
+  const pad=(k: number) => "S" + String(k+1).padStart(3,"0");
   const shown=preview?.camera===shownCamera ? preview : null, shownK=shown?.k ?? previewK;
   const multi=(round?.cameras.length ?? 0) > 1;
   const finished=!!round && !active, collapsed=finished && prepOpenFor!==round.roundId;
@@ -180,7 +181,7 @@ export default function CapturePage() {
       </button>;
     })}</div> : <p className="muted">尚未收到图像</p>}
     {round.state==="complete" && <div className="wp-capture-actions">{!validation && data.workspace.frames.length>0 && <><label className="check"><input type="checkbox" checked={reuse} disabled={locked} onChange={e=>setReuse(e.target.checked)}/>带入旧中线与参数作为草稿</label>{reuse && <label className="check"><input type="checkbox" checked={confirmed} disabled={locked} onChange={e=>setConfirmed(e.target.checked)}/>已确认相机、轨迹和触发顺序保持一致，拍照点对应正确</label>}</>}
-      <label className="check" hidden={!validation}><input type="checkbox" checked={confirmed} disabled={locked} onChange={e=>setConfirmed(e.target.checked)}/>已确认本轮样本与示教轨迹、触发顺序及拍摄条件一致</label>
+      {validation && <label className="check"><input type="checkbox" checked={confirmed} disabled={locked} onChange={e=>setConfirmed(e.target.checked)}/>已确认本轮样本与示教轨迹、触发顺序及拍摄条件一致</label>}
       {validation && <label className="field"><span>样本人工期望</span><select className="input" aria-label="样本人工期望" value={sampleExpected} disabled={locked} onChange={e=>setSampleExpected(e.target.value as Verdict)}>{expectedChoices.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>}
       {sampleSourceInvalid && <Notice title="需要独立于示教的采集轮次" tone="warn">{data.workspace.captureId ? "当前轮次已用于示教，请重新采集一圈作为验证样本。" : "请先采用示教采集轮次，再采集独立验证样本。"}</Notice>}
       <button className="btn primary" disabled={locked || productionBusy || sampleSourceInvalid || ((validation || reuse) && !confirmed)} onClick={() => void act(() => validation ? workspaceApi.captureSample(doc.id,data.workspace.revision,round.roundId,sampleExpected,confirmed) : workspaceApi.adoptCapture(doc.id,data.workspace.revision,round.roundId,reuse,confirmed),validation ? "独立验证样本已加入样本库" : "已采用本轮图像，请逐点选择检测图并示教")}>{validation ? "保存为独立验证样本" : "采用本轮图像"}</button>
