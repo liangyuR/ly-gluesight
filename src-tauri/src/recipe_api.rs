@@ -14,16 +14,28 @@ pub struct RecipeListing {
     pub recipes: Vec<RecipeSummary>,
     /// 读不了的配方文件
     pub errors: Vec<String>,
+    pub unavailable: Vec<recipe::UnavailableRecipe>,
 }
 
 #[tauri::command]
 pub fn recipe_list(cycle: State<'_, CycleHost>) -> RecipeListing {
-    RecipeListing { recipes: cycle.recipes.list().iter().map(|r| RecipeSummary::from(&**r)).collect(), errors: cycle.recipes.errors() }
+    RecipeListing { recipes: cycle.recipes.list().iter().map(|r| RecipeSummary::from(&**r)).collect(), errors: cycle.recipes.errors(), unavailable: cycle.recipes.unavailable() }
 }
 
 #[tauri::command]
 pub fn recipe_doc(cycle: State<'_, CycleHost>, id: String) -> Result<RecipeDoc, String> {
     cycle.recipes.doc(&id).ok_or_else(|| format!("配方不存在：{id}"))
+}
+
+#[tauri::command]
+pub fn recipe_delete_unavailable(cycle: State<'_, CycleHost>, file_name: String) -> Result<(), String> {
+    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试配方操作")?;
+    if cycle.busy() {
+        return Err("检测结束或故障复位后才能删除不可用配方".into());
+    }
+    cycle.recipes.delete_unavailable(&file_name)?;
+    let _ = cycle.tx.send(Input::Refresh);
+    Ok(())
 }
 
 /// 按编辑中的内容生成配方但不保存，配方页画预览用。

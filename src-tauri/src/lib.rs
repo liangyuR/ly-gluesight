@@ -103,6 +103,7 @@ pub fn run() {
             recipe_api::recipe_preview,
             recipe_api::recipe_template,
             recipe_api::recipe_delete,
+            recipe_api::recipe_delete_unavailable,
             teach::records_list,
             history::history_query,
             history::history_detail,

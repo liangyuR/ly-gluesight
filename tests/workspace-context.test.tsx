@@ -19,7 +19,7 @@ let calibrationChanged: () => void;
 beforeEach(() => {
   const a = workspaceView(), b = workspaceView("B");
   vi.mocked(desktopAvailable).mockReturnValue(true);
-  vi.mocked(recipeApi.list).mockResolvedValue({ recipes: [summary(a), summary(b)], errors: [] });
+  vi.mocked(recipeApi.list).mockResolvedValue({ recipes: [summary(a), summary(b)], errors: [], unavailable: [] });
   vi.mocked(workspaceApi.list).mockResolvedValue([a.workspace, b.workspace]);
   vi.mocked(workspaceApi.get).mockImplementation(async id => workspaceView(id));
   vi.mocked(workspaceApi.saveDoc).mockResolvedValue(a);

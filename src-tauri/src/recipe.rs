@@ -675,11 +675,41 @@ pub fn builtin() -> Vec<Arc<Recipe>> {
     samples().iter().map(|d| Arc::new(d.build().unwrap())).collect()
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnavailableRecipe {
+    pub file_name: String,
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub schema_version: Option<u32>,
+    pub current_schema_version: u32,
+    pub reason: String,
+}
+
+impl UnavailableRecipe {
+    fn from_file(path: &std::path::Path, reason: String) -> Option<Self> {
+        let text = RecipeStore::read_regular_file(path).ok()?;
+        if serde_json::from_str::<RecipeDoc>(&text).ok().is_some_and(|doc| doc.build().is_ok()) {
+            return None;
+        }
+        let value = serde_json::from_str::<serde_json::Value>(&text).ok();
+        Some(Self {
+            file_name: path.file_name().and_then(|name| name.to_str()).unwrap_or_default().into(),
+            id: value.as_ref().and_then(|v| v.get("id")?.as_str()).map(str::to_owned),
+            name: value.as_ref().and_then(|v| v.get("name")?.as_str()).map(str::to_owned),
+            schema_version: value.as_ref().and_then(|v| v.get("schemaVersion")?.as_u64()).and_then(|v| u32::try_from(v).ok()),
+            current_schema_version: RECIPE_SCHEMA,
+            reason,
+        })
+    }
+}
+
 /// 磁盘上的配方库：每个配方一个 `<id>.json`。
 pub struct RecipeStore {
     dir: PathBuf,
     inner: RwLock<Vec<(RecipeDoc, Arc<Recipe>)>>,
     errors: RwLock<Vec<String>>,
+    unavailable: RwLock<Vec<UnavailableRecipe>>,
 }
 
 impl RecipeStore {
@@ -689,7 +719,7 @@ impl RecipeStore {
 
     pub fn open_with_floors(dir: PathBuf, floors: &BTreeMap<String, u32>) -> Result<Self, String> {
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建配方目录失败：{e}"))?;
-        let store = Self { dir, inner: RwLock::new(Vec::new()), errors: RwLock::new(Vec::new()) };
+        let store = Self { dir, inner: RwLock::new(Vec::new()), errors: RwLock::new(Vec::new()), unavailable: RwLock::new(Vec::new()) };
         store.seed_version_floor(floors)?;
         store.retire_outdated_sources()?;
         let retired = store.retired_versions()?;
@@ -881,13 +911,14 @@ impl RecipeStore {
         };
         let mut list = Vec::new();
         let mut errors = Vec::new();
+        let mut unavailable = Vec::new();
         if let Ok(rd) = std::fs::read_dir(&self.dir) {
             let mut paths: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
             paths.sort();
             // 计划版本重复（多半是复制了配方文件）：只留修订来源能证明这个号属于它的那一份，与文件名先后无关
             let mut plan_users: BTreeMap<u32, Vec<String>> = BTreeMap::new();
             for p in &paths {
-                if let Some(d) = crate::fsio::read_text(p).ok().and_then(|s| serde_json::from_str::<RecipeDoc>(&s).ok()).filter(|d| d.plan_version != 0) {
+                if let Some(d) = Self::read_regular_file(p).ok().and_then(|s| serde_json::from_str::<RecipeDoc>(&s).ok()).filter(|d| d.plan_version != 0) {
                     plan_users.entry(d.plan_version).or_default().push(d.id.to_ascii_lowercase());
                 }
             }
@@ -900,8 +931,7 @@ impl RecipeStore {
             for p in paths {
                 let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
                 let stem = p.file_stem().and_then(|n| n.to_str()).unwrap_or_default().to_string();
-                let parsed = crate::fsio::read_text(&p)
-                    .map_err(|e| e.to_string())
+                let parsed = Self::read_regular_file(&p)
                     .and_then(|s| serde_json::from_str::<RecipeDoc>(&s).map_err(|e| e.to_string()))
                     .and_then(|mut d| {
                         let r = d.build()?;
@@ -939,7 +969,12 @@ impl RecipeStore {
                             Err(error) => errors.push(format!("{name}：修订来源未能持久保存，没有加载：{error}")),
                         }
                     },
-                    Err(e) => errors.push(format!("{name}：{e}")),
+                    Err(e) => {
+                        errors.push(format!("{name}：{e}"));
+                        if let Some(item) = UnavailableRecipe::from_file(&p, e) {
+                            unavailable.push(item);
+                        }
+                    },
                 }
             }
         }
@@ -952,6 +987,61 @@ impl RecipeStore {
         }
         *inner = list;
         *self.errors.write().unwrap() = errors;
+        *self.unavailable.write().unwrap() = unavailable;
+    }
+
+    fn read_regular_file(path: &std::path::Path) -> Result<String, String> {
+        let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        #[cfg(windows)]
+        { use std::os::windows::fs::MetadataExt;
+          if metadata.file_attributes() & 0x400 != 0 { return Err("配方文件为 reparse point，拒绝读取或删除".into()); } }
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err("配方文件类型不安全，拒绝读取或删除".into());
+        }
+        crate::fsio::read_text(path).map_err(|e| e.to_string())
+    }
+
+    pub fn unavailable(&self) -> Vec<UnavailableRecipe> {
+        self.unavailable.read().unwrap().clone()
+    }
+
+    pub fn delete_unavailable(&self, file_name: &str) -> Result<(), String> {
+        if file_name.is_empty() || file_name.starts_with('.') || !file_name.ends_with(".json")
+            || file_name.contains(['/', '\\', ':']) || file_name.trim() != file_name {
+            return Err("无效的配方文件名".into());
+        }
+        self.reload();
+        {
+            let inner = self.inner.write().unwrap();
+            if !self.unavailable.read().unwrap().iter().any(|item| item.file_name == file_name) {
+                return Err("该文件不在不可用配方列表中，请刷新后重试".into());
+            }
+            let path = self.dir.join(file_name);
+            let text = Self::read_regular_file(&path)?;
+            if serde_json::from_str::<RecipeDoc>(&text).ok().is_some_and(|doc| doc.build().is_ok()) {
+                return Err("配方内容已可用，请刷新后通过正常配方操作处理".into());
+            }
+            let stem = path.file_stem().and_then(|name| name.to_str()).ok_or("无效的配方文件名")?;
+            if inner.iter().any(|(doc, _)| doc.id.eq_ignore_ascii_case(stem)) {
+                return Err("该文件对应已加载的生产配方，拒绝删除".into());
+            }
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(version) = value.get("version").and_then(|v| v.as_u64()).and_then(|v| u32::try_from(v).ok()) {
+                    self.retire_version(stem, version)?;
+                    if let Some(id) = value.get("id").and_then(|v| v.as_str())
+                        .filter(|id| !id.trim().is_empty() && !inner.iter().any(|(doc, _)| doc.id.eq_ignore_ascii_case(id))) {
+                        self.retire_version(id, version)?;
+                    }
+                }
+                if let Some(plan) = value.get("planVersion").and_then(|v| v.as_u64()).and_then(|v| u32::try_from(v).ok()) {
+                    let plan = plan.max(self.issued_plan_version()?);
+                    crate::fsio::write_atomic(&self.dir.join(".plan-version"), &plan.to_string())?;
+                }
+            }
+            std::fs::remove_file(&path).map_err(|e| format!("删除不可用配方失败：{e}"))?;
+        }
+        self.reload();
+        Ok(())
     }
 
     pub fn list(&self) -> Vec<Arc<Recipe>> {
@@ -1057,6 +1147,53 @@ impl RecipeStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn obsolete_recipe_is_manageable_but_never_runnable_and_deletion_preserves_versions() {
+        let dir = std::env::temp_dir().join(format!("gluesight-unavailable-{}-{}", std::process::id(), ly_plc::now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut old = samples().remove(0);
+        old.schema_version = RECIPE_SCHEMA - 1;
+        old.version = 7;
+        old.plan_version = 40;
+        let file_name = format!("{}.json", old.id);
+        std::fs::write(dir.join(&file_name), serde_json::to_string(&old).unwrap()).unwrap();
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        assert!(store.get(&old.id).is_none());
+        assert!(store.doc(&old.id).is_none());
+        assert!(store.list().is_empty());
+        let unavailable = store.unavailable();
+        assert_eq!(unavailable.len(), 1);
+        assert_eq!(unavailable[0].file_name, file_name);
+        assert_eq!(unavailable[0].id.as_deref(), Some(old.id.as_str()));
+        assert_eq!(unavailable[0].schema_version, Some(RECIPE_SCHEMA - 1));
+        assert!(store.delete_unavailable(&format!("../{file_name}")).is_err());
+        store.delete_unavailable(&file_name).unwrap();
+        assert!(!dir.join(&file_name).exists());
+        assert!(store.errors().is_empty());
+        assert!(store.unavailable().is_empty());
+        drop(store);
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        assert!(store.next_version(&old.id).unwrap() > old.version);
+        old.schema_version = RECIPE_SCHEMA;
+        let recreated = store.save(old.clone(), None).unwrap();
+        assert!(recreated.version > old.version);
+        assert!(recreated.plan_version > old.plan_version);
+        assert!(store.delete_unavailable(&file_name).is_err());
+        assert!(store.get(&old.id).is_some());
+        assert!(dir.join(&file_name).is_file());
+        let original = store.doc(&old.id).unwrap();
+        old.schema_version = RECIPE_SCHEMA - 1;
+        old.version = 100;
+        old.plan_version = 100;
+        std::fs::write(dir.join("obsolete-copy.json"), serde_json::to_string(&old).unwrap()).unwrap();
+        store.reload();
+        store.delete_unavailable("obsolete-copy.json").unwrap();
+        assert_eq!(store.doc(&old.id).unwrap(), original);
+        assert!(store.unavailable().is_empty());
+        assert!(store.errors().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     fn composite_recipe() -> RecipeDoc {
         let mut doc = samples().remove(1);
