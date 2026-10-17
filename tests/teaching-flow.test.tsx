@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { expect, it, vi } from "vitest";
 import TeachingPage from "../src/features/workspace/TeachingPage";
@@ -98,13 +99,14 @@ function mockSite(candidate: WorkspaceView) {
   vi.mocked(useCycle).mockReturnValue({ snapshot: snapshot(), logs: [], measured: [] });
 }
 
-function renderWorkspace(path: string) {
-  render(<MemoryRouter initialEntries={[path]}><WorkspaceProvider><Routes>
+function renderWorkspace(path: string, strict = false) {
+  const workspace = <MemoryRouter initialEntries={[path]}><WorkspaceProvider><Routes>
     <Route path="/recipe/teach" element={<TeachingPage />} />
     <Route path="/recipe/overview" element={<OverviewPage />} />
     <Route path="/recipe/validation" element={<ValidationPage />} />
     <Route path="/recipe/capture" element={<CapturePage />} />
-  </Routes></WorkspaceProvider></MemoryRouter>);
+  </Routes></WorkspaceProvider></MemoryRouter>;
+  render(strict ? <StrictMode>{workspace}</StrictMode> : workspace);
   return userEvent.setup();
 }
 
@@ -368,6 +370,69 @@ it("同组切换检测相机 → 原图取消选中且编辑切到新图，其�
   await user.click(screen.getByRole("button", { name: "选择拍照组 P2" }));
   expect(await screen.findByRole("img", { name: "P2 · CAM-1 · 图 1" })).toBeVisible();
   expect(screen.getByRole("button", { name: "选择检测图 CAM-1 · 图 1" })).toHaveAttribute("aria-pressed", "true");
+});
+
+it("未选检测图的组 → 默认保存首张，手动改选后返回该组仍保留选择", async () => {
+  let candidate = groupedCandidate();
+  candidate.workspace.lastPosition = { k: 4, view: 1 };
+  for (const k of [3, 4, 5]) {
+    candidate.workspace.doc.shots[k].skip = true;
+    candidate.workspace.doc.shots[k].views?.forEach(view => { view.enabled = false; });
+    shotState(candidate, k, "skipped");
+  }
+  mockSite(candidate);
+  const selecting = deferred<void>();
+  vi.mocked(workspaceApi.selectGroupImage).mockImplementation(async (_id, revision, k, view) => {
+    await selecting.promise;
+    const response = structuredClone(candidate);
+    response.workspace.revision = revision + 1;
+    response.workspace.doc.shots.forEach((shot, index) => {
+      if (shot.poseId !== response.workspace.doc.shots[k].poseId) return;
+      shot.skip = index !== k;
+      shot.views?.forEach(image => { image.enabled = index === k && image.view === view; });
+      shotState(response, index, index === k ? "pendingTrial" : "skipped");
+    });
+    candidate = response;
+    return response;
+  });
+  const user = renderWorkspace("/recipe/overview", true);
+  await screen.findByLabelText("工件总览，选择帧查看原图");
+  await user.click(screen.getByRole("link", { name: /单帧示教/ }));
+  await waitFor(() => expect(workspaceApi.selectGroupImage).toHaveBeenCalledWith("A", 7, 3, 1));
+  await act(async () => selecting.resolve(undefined));
+  expect(await screen.findByRole("img", { name: "P2 · CAM-1 · 图 1" })).toBeVisible();
+  expect(workspaceApi.selectGroupImage).toHaveBeenCalledWith("A", 7, 3, 1);
+  expect(screen.getByRole("button", { name: "选择检测图 CAM-1 · 图 1" })).toHaveAttribute("aria-pressed", "true");
+  await user.click(screen.getByRole("button", { name: "选择检测图 CAM-2 · 图 1" }));
+  expect(await screen.findByRole("img", { name: "P2 · CAM-2 · 图 1" })).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "选择拍照组 P1" }));
+  await screen.findByRole("img", { name: "P1 · CAM-1 · 图 1" });
+  await user.click(screen.getByRole("button", { name: "选择拍照组 P2" }));
+  expect(await screen.findByRole("img", { name: "P2 · CAM-2 · 图 1" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "选择检测图 CAM-2 · 图 1" })).toHaveAttribute("aria-pressed", "true");
+  expect(workspaceApi.selectGroupImage).toHaveBeenCalledTimes(2);
+});
+
+it("默认选图失败 → 显示错误并保留手动选图入口，不循环重试", async () => {
+  const candidate = groupedCandidate();
+  for (const k of [0, 1, 2]) {
+    candidate.workspace.doc.shots[k].skip = true;
+    candidate.workspace.doc.shots[k].views?.forEach(view => { view.enabled = false; });
+    shotState(candidate, k, "skipped");
+  }
+  mockSite(candidate);
+  const response = groupedCandidate();
+  response.workspace.revision++;
+  vi.mocked(workspaceApi.selectGroupImage).mockRejectedValueOnce(new Error("候选暂不可写")).mockResolvedValueOnce(response);
+  const user = renderWorkspace("/recipe/teach");
+  expect(await screen.findByText("候选暂不可写")).toBeVisible();
+  const firstImage = screen.getByRole("button", { name: "选择检测图 CAM-1 · 图 1" });
+  expect(firstImage).toHaveAttribute("aria-pressed", "false");
+  expect(firstImage).toBeEnabled();
+  await user.click(firstImage);
+  expect(await screen.findByRole("img", { name: "P1 · CAM-1 · 图 1" })).toBeVisible();
+  expect(screen.queryByText("候选暂不可写")).not.toBeInTheDocument();
+  expect(workspaceApi.selectGroupImage).toHaveBeenCalledTimes(2);
 });
 
 it.each([

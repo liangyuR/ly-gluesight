@@ -72,6 +72,20 @@ export default function TeachingPage() {
     rememberPosition(k,shot.view);
   }, [doc?.id,k,shot?.view,rememberPosition]);
   const {image,error,loading} = useGrayImage(doc?.id ?? null,frame?.image?.id ?? null);
+  const groups = doc && data ? teachingGroups(doc.shots, data.progress) : [];
+  const groupIndex = groups.findIndex(group => group.members.includes(k));
+  const group = groups[groupIndex];
+  const firstImage = group?.members.flatMap(member => data!.workspace.frames[member].views.map(view => ({ k: member, view: view.view, imageId: view.id })))[0];
+  const defaultScope = JSON.stringify([doc?.id, group?.poseId, firstImage?.imageId]);
+  const defaultSelection = useRef({ scope: "", attempted: false });
+  useEffect(() => {
+    if (defaultSelection.current.scope !== defaultScope) defaultSelection.current = { scope: defaultScope, attempted: false };
+    if (!doc || !data || !group || group.selected.length || !firstImage || busy || dirty || frameDirty || working || data.workspace.pending || defaultSelection.current.attempted) return;
+    defaultSelection.current.attempted = true;
+    void act(() => workspaceApi.selectGroupImage(doc.id,data.workspace.revision,firstImage.k,firstImage.view)).then(result => {
+      if (result && current.current.alive && current.current.scope === scope) setK(firstImage.k);
+    });
+  }, [defaultScope, doc, data, busy, dirty, frameDirty, working]);
   if (!data || !doc) return <WorkspaceEmpty />;
   if (!frame || !shot) return <div className="wp-page"><WorkspaceBar /><Steps /><Notice title="当前配方没有拍照点" tone="warn">请先完成整圈采集并采用本轮图像。</Notice><Link className="btn" to="/recipe/capture">整圈采集</Link></div>;
   const saved = shotTeach(shot);
@@ -85,9 +99,6 @@ export default function TeachingPage() {
   const setPath = (path: [number, number][]) => update({ ...t, path });
   const shotProgress = data.progress.shots[k];
   const viewProgress = shotProgress?.views.find(v => v.view === shot.view);
-  const groups = teachingGroups(doc.shots, data.progress);
-  const groupIndex = groups.findIndex(group => group.members.includes(k));
-  const group = groups[groupIndex];
   const completedGroups = groups.filter(group => group.complete).length;
   const enabled = group.choice?.k === k && group.choice.view === shot.view;
   const nextGroup = groups[groupIndex + 1];
