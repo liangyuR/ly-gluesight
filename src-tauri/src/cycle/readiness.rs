@@ -287,8 +287,7 @@ fn recipe_problem(app: &AppHandle, host: &CycleHost, recipe: &Recipe, image: boo
         return Err((format!("与样本集不符：{reason}"), Target::Workspace));
     }
     let cams = usable_cams(app, recipe).map_err(|e| (e, Target::Camera))?;
-    let device = crate::plc::sole_device_id(&host.camera.configs()).map_err(|e| (e, Target::Camera))?;
-    crate::plc_plan::PlcPlan::from_recipe(recipe, device).map_err(workspace)?;
+    crate::plc::recipe_plan(host, recipe).map_err(workspace)?;
     Ok((cams, waiting))
 }
 

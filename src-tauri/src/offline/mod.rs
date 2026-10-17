@@ -565,15 +565,18 @@ fn sim_payload(recipe: &Arc<Recipe>, part: u32, scenario: Scenario, k: usize) ->
     }
 }
 
-fn trigger_shot(app: &AppHandle, recipe: &Arc<Recipe>, part: u32, scenario: Scenario, sample: Option<(&Arc<SampleSet>, &str)>, k: usize, lost: bool) {
+/// 第 trigger 次 PLC 触发：同时触发这次 Pose 的全部相机，各取自己的拍照点。
+fn trigger_shot(app: &AppHandle, recipe: &Arc<Recipe>, groups: &[Vec<usize>], part: u32, scenario: Scenario, sample: Option<(&Arc<SampleSet>, &str)>, trigger: usize, lost: bool) {
     let cycle = app.state::<CycleHost>();
-    let Some(shot) = recipe.shots.get(k) else { return };
-    let Ok(cam) = cycle.camera.require(&shot.camera) else { return };
-    let payload = match sample {
-        Some((set, part_id)) => sample_payload(set, part_id, &shot.id),
-        None => TriggerPayload::Sim(sim_payload(recipe, part, scenario, k)),
-    };
-    let _ = cycle.camera.trigger(cam, lost, Some(payload));
+    for &k in groups.get(trigger).map_or(&[][..], Vec::as_slice) {
+        let shot = &recipe.shots[k];
+        let Ok(cam) = cycle.camera.require(&shot.camera) else { continue };
+        let payload = match sample {
+            Some((set, part_id)) => sample_payload(set, part_id, &shot.id),
+            None => TriggerPayload::Sim(sim_payload(recipe, part, scenario, k)),
+        };
+        let _ = cycle.camera.trigger(cam, lost, Some(payload));
+    }
 }
 
 /// 刚发布的配方先预热发布资源与图像引擎：有界等待预热完成再开工，不直接拒绝。
@@ -597,6 +600,10 @@ async fn run(app: AppHandle, line: Arc<Line>, recipe: Arc<Recipe>, order: PartOr
     let timing = timing(&app, recipe_interval(&recipe));
     let mut seed = (now_ms() % 997) as u32;
     let (set, mut requested) = samples.map_or((None, None), |(set, part)| (Some(set), part));
+    let groups = match crate::plc_plan::trigger_groups(&recipe) {
+        Ok(groups) => groups,
+        Err(error) => { offline.set_message(&app, format!("已中止：{error}")); return finish(&app, &offline); }
+    };
     while !offline.stop.load(Ordering::SeqCst) {
         seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
         let s = scenario.resolve(seed >> 8);
@@ -620,7 +627,7 @@ async fn run(app: AppHandle, line: Arc<Line>, recipe: Arc<Recipe>, order: PartOr
         *offline.part_scenario.lock().unwrap() = Some(s);
         let order = PartOrder { sn: sn.clone(), ..order.clone() };
         let sample = set.as_ref().zip(part_id.as_deref());
-        let shot = |k, lost| trigger_shot(&app, &recipe, number, s, sample, k, lost);
+        let shot = |k, lost| trigger_shot(&app, &recipe, &groups, number, s, sample, k, lost);
         let result = line.run_part(&timing, &order, s, shot, &offline.abort).await;
         *offline.part_scenario.lock().unwrap() = None;
         offline.parts.fetch_add(1, Ordering::SeqCst);

@@ -46,15 +46,35 @@ impl PlcPlan {
             shot_count: shots.len() as u16, device_ids, device_shots: shots.len() as u16, shots })
     }
 
-    pub fn from_recipe(recipe: &Recipe, device_id: String) -> Result<Self, String> {
+    pub fn from_recipe(recipe: &Recipe) -> Result<Self, String> {
         if recipe.plan_version == 0 {
             return Err(format!("配方 {} 还没有分配 PLC 计划版本：请保存或发布一次后再布防", recipe.id));
         }
-        let shots = recipe.shots.iter().map(|s| PlanShot {
-            shot_id: s.id.clone(), pose_id: s.pose_id.clone(), camera_ids: vec![s.camera.clone()],
+        let shots = trigger_groups(recipe)?.into_iter().map(|group| {
+            let first = &recipe.shots[group[0]];
+            PlanShot { shot_id: first.id.clone(), pose_id: first.pose_id.clone(), camera_ids: group.iter().map(|&k| recipe.shots[k].camera.clone()).collect() }
         }).collect();
-        Self::compile(recipe.id.clone(), recipe.plan_version, vec![device_id], shots)
+        Self::compile(recipe.id.clone(), recipe.plan_version, recipe.cameras(), shots)
     }
+}
+
+/// 配方拍照点按 PLC 触发分组（拍照点下标）：相邻、同 Pose 的拍照点属于同一次触发，同一台相机再次出现时算下一次触发。
+/// PLC 每次触发同时触发配方用到的全部相机，所以每组都必须按配方相机顺序各有一个拍照点。
+pub fn trigger_groups(recipe: &Recipe) -> Result<Vec<Vec<usize>>, String> {
+    let cameras = recipe.cameras();
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for (k, shot) in recipe.shots.iter().enumerate() {
+        match groups.last_mut() {
+            Some(group) if recipe.shots[group[0]].pose_id == shot.pose_id && !group.iter().any(|&i| recipe.shots[i].camera == shot.camera) => group.push(k),
+            _ => groups.push(vec![k]),
+        }
+    }
+    if let Some(group) = groups.iter().find(|group| group.iter().map(|&k| &recipe.shots[k].camera).ne(cameras.iter())) {
+        let first = &recipe.shots[group[0]];
+        return Err(format!("拍照点 {}（Pose {}）这次触发拍到的相机与配方相机 {} 不一致：PLC 每次触发同时触发全部相机，同一 Pose 须按相机顺序各有一个拍照点",
+            first.id, first.pose_id, cameras.join("、")));
+    }
+    Ok(groups)
 }
 
 #[cfg(test)]
@@ -64,9 +84,9 @@ mod tests {
     #[test]
     fn three_views_still_use_one_device_and_four_triggers() {
         let mut doc = crate::recipe::samples().remove(1);
-        for (shot, view) in doc.shots.iter_mut().zip([1, 2, 3, 1]) { shot.view = view; }
+        for ((shot, view), pose) in doc.shots.iter_mut().zip([1, 2, 3, 1]).zip(["P1", "P1", "P2", "P2"]) { shot.view = view; shot.pose_id = pose.into(); }
         let recipe = doc.build().unwrap();
-        let plan = PlcPlan::from_recipe(&recipe, "cam1".into()).unwrap();
+        let plan = PlcPlan::from_recipe(&recipe).unwrap();
         assert_eq!(plan.device_shots, 4);
         assert_eq!(plan.shot_count, 4);
         assert_eq!(plan.shots.iter().map(|shot| shot.shot_id.as_str()).collect::<Vec<_>>(),
@@ -78,10 +98,10 @@ mod tests {
         let mut doc = crate::recipe::samples().remove(1);
         doc.version = 9;
         doc.plan_version = 41;
-        let plan = PlcPlan::from_recipe(&doc.build().unwrap(), "cam1".into()).unwrap();
+        let plan = PlcPlan::from_recipe(&doc.build().unwrap()).unwrap();
         assert_eq!(plan.plan_version, 41);
         doc.plan_version = 0;
-        assert!(PlcPlan::from_recipe(&doc.build().unwrap(), "cam1".into()).unwrap_err().contains("计划版本"));
+        assert!(PlcPlan::from_recipe(&doc.build().unwrap()).unwrap_err().contains("计划版本"));
     }
 
     fn shots() -> Vec<PlanShot> {
@@ -133,5 +153,39 @@ mod tests {
         let mut twice = cameras.clone();
         twice[2] = "cam1".into();
         assert!(PlcPlan::compile("p".into(), 1, twice, triggers(1)).is_err());
+    }
+
+    /// 两个 Pose × 两台相机：P1 拍 cam1、cam2，P2 拍 cam1、cam2。
+    fn two_camera_doc() -> crate::recipe::RecipeDoc {
+        let mut doc = crate::recipe::samples().remove(1);
+        for (shot, (pose, camera)) in doc.shots.iter_mut().zip([("P1", "cam1"), ("P1", "cam2"), ("P2", "cam1"), ("P2", "cam2")]) {
+            shot.pose_id = pose.into();
+            shot.camera = camera.into();
+        }
+        doc.sync_imaging();
+        doc
+    }
+
+    #[test]
+    fn multi_camera_recipe_is_one_trigger_per_pose_firing_every_camera() {
+        let recipe = two_camera_doc().build().unwrap();
+        assert_eq!(trigger_groups(&recipe).unwrap(), [vec![0, 1], vec![2, 3]]);
+        let plan = PlcPlan::from_recipe(&recipe).unwrap();
+        assert_eq!((plan.shot_count, plan.device_shots), (2, 2));
+        assert_eq!(plan.device_ids, ["cam1", "cam2"]);
+        assert!(plan.shots.iter().all(|shot| shot.camera_ids == ["cam1", "cam2"]));
+    }
+
+    #[test]
+    fn a_pose_missing_a_camera_or_in_another_camera_order_cannot_form_a_plan() {
+        let mut missing = two_camera_doc();
+        missing.shots[3].pose_id = "P3".into();
+        let mut swapped = two_camera_doc();
+        swapped.shots.swap(2, 3);
+        for doc in [missing, swapped] {
+            let recipe = doc.build().unwrap();
+            assert!(trigger_groups(&recipe).is_err());
+            assert!(PlcPlan::from_recipe(&recipe).is_err());
+        }
     }
 }
