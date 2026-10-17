@@ -11,7 +11,7 @@ import { deferred, workspaceState, workspaceView } from "./fixtures";
 
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { create: vi.fn(), remove: vi.fn() } }));
-vi.mock("../src/features/cycle/api", () => ({ recipeApi: { template: vi.fn(), doc: vi.fn() } }));
+vi.mock("../src/features/cycle/api", () => ({ recipeApi: { template: vi.fn(), doc: vi.fn(), removeUnavailable: vi.fn() } }));
 vi.mock("../src/lib/desktop", () => ({ desktopAvailable: vi.fn() }));
 let ws: ReturnType<typeof workspaceState>;
 function Location() { return <output aria-label="页面地址">{useLocation().pathname}</output>; }
@@ -27,6 +27,24 @@ beforeEach(() => {
 });
 
 describe("配方库操作", () => {
+  it("旧格式配方 → 可见但不可使用，确认删除后从库中消失", async()=>{
+    ws.list=[];ws.drafts=[];
+    ws.unavailable=[{fileName:"OLD.json",id:"OLD",name:"旧配方",schemaVersion:5,currentSchemaVersion:6,reason:"文件格式不兼容"}];
+    vi.mocked(recipeApi.removeUnavailable).mockResolvedValue(undefined);
+    vi.mocked(ws.reloadList).mockImplementation(async()=>{ws.unavailable=[];});
+    show();
+    expect(screen.getByText("旧配方")).toBeVisible();
+    expect(screen.getByText("不可用")).toBeVisible();
+    expect(screen.queryByRole("button",{name:"继续配置"})).not.toBeInTheDocument();
+    expect(screen.getByRole("button",{name:"升级（暂未实现）"})).toBeDisabled();
+    await userEvent.click(screen.getByRole("button",{name:"删除文件"}));
+    expect(screen.getByRole("dialog")).toHaveTextContent("OLD.json");
+    await userEvent.click(screen.getByRole("button",{name:"确认删除文件"}));
+    await waitFor(()=>expect(screen.queryByText("旧配方")).not.toBeInTheDocument());
+    expect(recipeApi.removeUnavailable).toHaveBeenCalledWith("OLD.json");
+    expect(workspaceApi.remove).not.toHaveBeenCalled();
+    expect(screen.getByText("尚未加载配方")).toBeVisible();
+  });
   it("创建已成功但选用失败，重试仅打开已有候选，避免二次创建",async()=>{
     vi.mocked(ws.select).mockResolvedValueOnce(null);show();await userEvent.click(screen.getByRole("button",{name:"新建配方"}));await screen.findByRole("dialog");
     await userEvent.click(screen.getByRole("button",{name:"创建候选"}));expect(await screen.findByText(/候选已创建，选用未完成/)).toBeVisible();

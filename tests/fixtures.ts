@@ -92,7 +92,7 @@ export function tricamWorkspaceView(id = "A"): WorkspaceView {
 
 export function workspaceState(view = workspaceView()): ReturnType<typeof useWorkspace> {
   return {
-    list: [summary(view)], drafts: [view.workspace], cameras: [], selectedId: view.workspace.doc.id,
+    list: [summary(view)], drafts: [view.workspace], cameras: [], unavailable: [], selectedId: view.workspace.doc.id,
     data: view, doc: view.workspace.doc, preview: view.layout, previewError: "", error: "", notice: "",
     saveState: "saved", retrySave: vi.fn(), busy: false, dirty: false, frameDirty: false, frameDrafts: {},
     rememberPosition: vi.fn(), select: vi.fn(async () => view), clearSelection: vi.fn(), reloadList: vi.fn(async () => {}),

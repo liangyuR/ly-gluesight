@@ -1,7 +1,7 @@
 import { errorText } from "../../lib/errors";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { cameraApi, type CameraConfig } from "../camera";
-import { recipeApi } from "../cycle/api";
+import { recipeApi, type UnavailableRecipe } from "../cycle/api";
 import type { Recipe, RecipeDoc, RecipeSummary } from "../cycle/types";
 import { subscribe } from "../plc";
 import { desktopAvailable } from "../../lib/desktop";
@@ -11,7 +11,7 @@ import { sameTeach, shotTeach } from "./teach";
 import "./workspace.css";
 
 interface WorkspaceContextValue {
-  list: RecipeSummary[]; drafts: Workspace[]; cameras: CameraConfig[];
+  list: RecipeSummary[]; drafts: Workspace[]; cameras: CameraConfig[]; unavailable: UnavailableRecipe[];
   selectedId: string | null; data: WorkspaceView | null; doc: RecipeDoc | null; preview: Recipe | null;
   previewError: string; error: string; busy: boolean; dirty: boolean; frameDirty: boolean;
   /** 单帧示教里尚未保存的中线草稿，按拍照点下标 */
@@ -29,6 +29,8 @@ const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [list, setList] = useState<RecipeSummary[]>([]);
+  const [unavailable, setUnavailable] = useState<UnavailableRecipe[]>([]);
+  const [recipeErrors, setRecipeErrors] = useState("");
   const [drafts, setDrafts] = useState<Workspace[]>([]);
   const [cameras, setCameras] = useState<CameraConfig[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -88,7 +90,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (!desktopAvailable()) return;
     const [recipes, workspaces, configs] = await Promise.all([recipeApi.list(), workspaceApi.list(), cameraApi.rigConfig()]);
     setList(recipes.recipes); setDrafts(workspaces); setCameras(configs);
-    if (recipes.errors.length) setError(recipes.errors.join("；"));
+    setUnavailable(recipes.unavailable ?? []);
+    setRecipeErrors(recipes.errors.join("；"));
   }, []);
 
   const select = useCallback(async (id: string) => {
@@ -211,7 +214,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(timer);
   }, [doc, data, frameDrafts, dirty, busy, saveRetry, saveDoc, act]);
 
-  return <Context.Provider value={{ list, drafts, cameras, selectedId, data, doc, preview, previewError, error, busy, dirty, frameDirty,
+  return <Context.Provider value={{ list, drafts, cameras, unavailable, selectedId, data, doc, preview, previewError, error: error || recipeErrors, busy, dirty, frameDirty,
     clearSelection:()=>{pendingRefresh.current=null;requestSerial.current++;selected.current=null;setSelectedId(null);setData(null);setDoc(null);setPreview(null);setFrameDrafts({});setError("");setNotice("");},
     frameDrafts, rememberPosition, select, reloadList, setDoc, setFrameDraft:(k, teach) => setFrameDrafts(previous => ({ ...previous, [k]:teach })),
     act, saveDoc, saveState, retrySave: () => setSaveRetry(v => v + 1), notice, setError }}>{children}</Context.Provider>;

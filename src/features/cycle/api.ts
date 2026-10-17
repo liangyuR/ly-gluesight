@@ -56,8 +56,18 @@ export const siteApi = {
   pickDir: (directory: string, title: string) => call<string | null>("site_pick_dir", { directory, title }, () => null),
 };
 
+export interface UnavailableRecipe {
+  fileName: string;
+  id: string | null;
+  name: string | null;
+  schemaVersion: number | null;
+  currentSchemaVersion: number;
+  reason: string;
+}
+
 export const recipeApi = {
-  list: () => call<{ recipes: RecipeSummary[]; errors: string[] }>("recipe_list", undefined, () => ({ recipes: [], errors: [] })),
+  list: () => call<{ recipes: RecipeSummary[]; errors: string[]; unavailable: UnavailableRecipe[] }>("recipe_list", undefined, () => ({ recipes: [], errors: [], unavailable: [] })),
+  removeUnavailable: (fileName: string) => call<void>("recipe_delete_unavailable", { fileName }, () => Promise.reject("配方操作需要桌面后端") as never),
   doc: (id: string) => call<RecipeDoc>("recipe_doc", { id }, () => Promise.reject("非桌面环境") as never),
   preview: (doc: RecipeDoc) => call<Recipe>("recipe_preview", { doc }, () => Promise.reject("非桌面环境") as never),
   template: () => call<RecipeDoc>("recipe_template", undefined, () => Promise.reject("非桌面环境") as never),

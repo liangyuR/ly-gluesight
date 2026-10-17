@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Copy, Plus, Search, Trash2 } from "lucide-react";
 import { desktopAvailable } from "../../lib/desktop";
-import { recipeApi } from "../cycle/api";
+import { recipeApi, type UnavailableRecipe } from "../cycle/api";
 import type { RecipeDoc } from "../cycle/types";
 import Modal from "../plc/components/Modal";
 import { workspaceApi } from "./api";
@@ -11,13 +11,15 @@ import { useWorkspace } from "./context";
 import { Badge, Notice, Panel, WorkspaceBar } from "./components";
 
 export default function LibraryPage() {
-  const {list,drafts,selectedId,select,clearSelection,reloadList,busy,setError} = useWorkspace();
+  const {list,drafts,unavailable,selectedId,select,clearSelection,reloadList,busy,setError} = useWorkspace();
   const navigate = useNavigate();
   const [search,setSearch] = useState("");
   const [creating,setCreating] = useState<RecipeDoc | null>(null);
   const [working,setWorking] = useState(false);
   const [dialogError,setDialogError] = useState("");
   const [deleting,setDeleting] = useState<string | null>(null);
+  const [deletingUnavailable,setDeletingUnavailable] = useState<UnavailableRecipe | null>(null);
+  const [unavailableRemoved,setUnavailableRemoved] = useState(false);
   const [createdId,setCreatedId]=useState<string|null>(null);
   const [removedId,setRemovedId]=useState<string|null>(null);
   const pending=useRef(false);
@@ -26,7 +28,7 @@ export default function LibraryPage() {
   const available=desktopAvailable();
   const blocked=!available||busy||working;
   const ids = Array.from(new Set([...list.map(r => r.id),...drafts.map(w => w.doc.id)]));
-  const duplicateId=(id:string)=>ids.some(existing=>existing.toLowerCase()===id.toLowerCase());
+  const duplicateId=(id:string)=>[...ids,...unavailable.map(r=>r.fileName.replace(/\.json$/i,""))].some(existing=>existing.toLowerCase()===id.toLowerCase());
   const usedCodes=new Set([...list.map(r=>r.productCode),...drafts.map(w=>w.doc.productCode)]);
   const invalid=creating? !/^[A-Za-z0-9_-]{1,32}$/.test(creating.id)?"配方编号只能包含字母、数字、下划线和短横线，最多 32 位":
     duplicateId(creating.id)?"配方编号已存在，请换一个编号":!creating.name.trim()?"请填写配方名称":
@@ -87,6 +89,19 @@ export default function LibraryPage() {
       if(current.current.alive){setDeleting(null);setRemovedId(null);}
     } catch(e) { if(current.current.alive)setDialogError(errorText(e)); } finally { pending.current=false;if(current.current.alive)setWorking(false); }
   };
+  const removeUnavailable = async () => {
+    if (!deletingUnavailable || pending.current || blocked) return;
+    pending.current=true;setWorking(true);setDialogError("");
+    try {
+      if (!unavailableRemoved) await recipeApi.removeUnavailable(deletingUnavailable.fileName);
+      if (!current.current.alive) return;
+      setUnavailableRemoved(true);
+      await reloadList();
+      if (current.current.alive) { setDeletingUnavailable(null);setUnavailableRemoved(false); }
+    } catch(e) { if(current.current.alive)setDialogError(errorText(e)); }
+    finally { pending.current=false;if(current.current.alive)setWorking(false); }
+  };
+  const visibleUnavailable = unavailable.filter(r => [r.fileName,r.id,r.name].join(" ").toLowerCase().includes(search.trim().toLowerCase()));
   const visible = ids.map(id => {
     const production = list.find(r => r.id === id);
     const draft = drafts.find(w => w.doc.id === id);
@@ -97,7 +112,12 @@ export default function LibraryPage() {
     <div className="wp-library-grid">{visible.map(r => <Panel key={r.id} title={r.name} detail={r.id} className={"wp-recipe-card " + (r.id === selectedId ? "selected" : "")} actions={<Badge tone="neutral">飞拍</Badge>}>
       <div className="wp-actions"><Badge tone={r.production ? "ok" : "warn"}>{r.production ? "生产 v" + r.production.version : "未发布"}</Badge>{r.draft && <Badge>候选 v{r.draft.doc.version}</Badge>}{r.draft?.pending && <Badge tone="warn">待生效</Badge>}</div><p className="muted mono">代码 {r.draft?.doc.productCode ?? r.production?.productCode} · {(r.draft?.doc.shots.length ?? r.production?.shotCount) + " 个拍照点"}</p>
       <div className="wp-actions"><button className="btn primary" disabled={blocked} onClick={()=>void open(r.id)}>继续配置</button><button className="icon-btn" title="复制配方" aria-label={"复制配方 " + r.id} disabled={blocked} onClick={() => void prepare(r.id)}><Copy size={16} /></button><button className="icon-btn" title="删除配方" aria-label={"删除配方 " + r.id} disabled={blocked || !!r.draft?.pending} onClick={() => {setDeleting(r.id);setRemovedId(null);setDialogError("");}}><Trash2 size={16} /></button></div>
-    </Panel>)}</div>{!visible.length && <div className="wp-empty"><Search size={30} /><h2>{ids.length ? "没有匹配的配方" : "尚未加载配方"}</h2><p>{ids.length ? "修改搜索条件后重试。" : "桌面软件会从本地配方库读取已有配置。"}</p></div>}
+    </Panel>)}{visibleUnavailable.map(r => <Panel key={"unavailable:"+r.fileName} title={r.name || r.id || r.fileName} detail={r.fileName} className="wp-recipe-card" actions={<Badge tone="warn">不可用</Badge>}>
+      <p className="muted">文件格式 {r.schemaVersion ?? "未知"} · 当前格式 {r.currentSchemaVersion}</p>
+      <p>{r.reason}</p><p className="muted">仅展示文件信息，不能配置、试测、发布或用于生产。升级功能暂未实现。</p>
+      <div className="wp-actions"><button className="btn" disabled title="升级功能暂未实现">升级（暂未实现）</button><button className="btn danger" disabled={blocked} onClick={()=>{setDeletingUnavailable(r);setUnavailableRemoved(false);setDialogError("");}}><Trash2 size={16} />删除文件</button></div>
+    </Panel>)}</div>{!visible.length && !visibleUnavailable.length && <div className="wp-empty"><Search size={30} /><h2>{ids.length || unavailable.length ? "没有匹配的配方" : "尚未加载配方"}</h2><p>{ids.length || unavailable.length ? "修改搜索条件后重试。" : "桌面软件会从本地配方库读取已有配置。"}</p></div>}
+    {deletingUnavailable && <Modal title="删除不可用配方文件" onClose={()=>!working&&setDeletingUnavailable(null)} footer={<><button className="btn" disabled={working} onClick={()=>setDeletingUnavailable(null)}>取消</button><button className="btn danger" disabled={blocked} onClick={()=>void removeUnavailable()}>{working ? "处理中…" : unavailableRemoved ? "刷新配方库" : "确认删除文件"}</button></>}><p>将永久删除文件 {deletingUnavailable.fileName}。此操作不可撤销，同编号的候选、示教资料及历史记录保留。</p>{dialogError && <Notice title="操作未完成" tone="warn">{dialogError}</Notice>}</Modal>}
     {creating && <Modal title="建立候选配方" onClose={() => !working && setCreating(null)} footer={<><button className="btn" disabled={working} onClick={() => setCreating(null)}>取消</button><button className="btn primary" disabled={blocked || (!createdId&&!!invalid)} onClick={() => void create()}>{working ? "创建中…" : createdId?"打开已创建候选":"创建候选"}</button></>}><div className="wp-stack"><label className="field"><span>配方编号</span><input className="input mono" aria-label="配方编号" disabled={working||!!createdId} value={creating.id} maxLength={32} onChange={e => setCreating({...creating,id:e.target.value})} /></label><label className="field"><span>配方名称</span><input className="input" aria-label="配方名称" disabled={working||!!createdId} value={creating.name} onChange={e => setCreating({...creating,name:e.target.value})} /></label><label className="field"><span>产品代码</span><input className="input" aria-label="产品代码" disabled={working||!!createdId} type="number" min={1} max={65535} value={Number.isFinite(creating.productCode)?creating.productCode:""} onChange={e => setCreating({...creating,productCode:Number(e.target.value)})} /></label>{invalid&&!createdId&&<p className="form-error" role="alert">{invalid}</p>}<Notice title="先建立候选，验证后发布">新候选不会被 PLC 或在线检测自动使用。</Notice>{dialogError && <Notice title="无法创建" tone="warn">{dialogError}</Notice>}</div></Modal>}
     {deleting && <Modal title="删除配方" onClose={() => !working && setDeleting(null)} footer={<><button className="btn" disabled={working} onClick={() => setDeleting(null)}>取消</button><button className="btn danger" disabled={blocked} onClick={() => void remove()}>{removedId?"刷新配方库":"删除 "+deleting}</button></>}><p>将删除此配方的生产配置、候选及示教资料。已存储的历史结果和配方快照保留。</p>{dialogError && <Notice title="无法删除" tone="warn">{dialogError}</Notice>}</Modal>}
   </div>;

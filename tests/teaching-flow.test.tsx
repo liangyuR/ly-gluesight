@@ -53,7 +53,7 @@ function mockSite(candidate: WorkspaceView) {
   vi.mocked(workspaceApi.progress).mockImplementation(async (_id, k, view) => ({
     ...candidate, workspace: { ...candidate.workspace, lastPosition: { k, view } },
   }));
-  vi.mocked(recipeApi.list).mockResolvedValue({ recipes: [summary(candidate)], errors: [] });
+  vi.mocked(recipeApi.list).mockResolvedValue({ recipes: [summary(candidate)], errors: [], unavailable: [] });
   vi.mocked(cameraApi.rigConfig).mockResolvedValue([{
     id: "CAM-1", name: "拼接设备", source: "sim", viewCount: 3, serial: "DEVICE",
     triggerSource: "Line0", triggerActivation: "RisingEdge", triggerDelayUs: 0, debouncerUs: 0,
