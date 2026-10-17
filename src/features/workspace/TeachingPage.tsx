@@ -200,10 +200,10 @@ export default function TeachingPage() {
         </div>
         <p className="muted hint" role="status">{regionMode ? roiValid ? "区域已选好，点击自动提取中线；提取结果可继续拖动修正。" : "在图像上按住左键框选一段连续胶路（至少 5×5 像素，最多 400 万像素），再点击自动提取中线。" : extractionHint || "自动提取需先框选胶路区域，也可直接在图上逐点绘制中线。"}</p>
         {trialDisabledReason && <p className="muted hint">暂不能运行：{trialDisabledReason}。单次试测会保存候选参数，不会发布生产配方。</p>}
-        {trialFresh && <div className="wp-actions" aria-label="本次算法结果"><Badge tone={trialCurrent ? "info" : "warn"}>{trial?.verdict ?? "执行异常"}</Badge><span>量成比例 {measured ? (trial!.coverage * 100).toFixed(1) + "%" : "—"}</span><span>耗时 {trial?.elapsedMs} ms</span><span className="muted">绿色：测得胶条中心 · 红色：未测到胶条</span></div>}
+        {trialFresh && <div className="wp-actions" aria-label="本次算法结果"><Badge tone={trialCurrent ? "info" : "warn"}>{trial?.verdict ?? "执行异常"}</Badge><span>量成比例 {measured ? (trial!.coverage * 100).toFixed(1) + "%" : "—"}</span><span>耗时 {trial?.elapsedMs} ms</span><span className="muted">绿色横线：实测胶宽 · 红点：未测到胶条</span></div>}
         <GrayViewer image={image} loading={loading} error={error} label={frame.image ? group.poseId + " · " + shot.camera + " · 图 " + shot.view : "等待取样"}
           region={region} onRegion={regionMode && unlocked && enabled ? setRegion : undefined}
-          overlay={{ path: t.path, stations: points?.map(p => p.px) ?? stations, stationColors: points?.map(p => p.status === "ok" ? "var(--ok)" : "var(--ng)"), stale: editing, selected: vertex }}
+          overlay={{ path: t.path, stations: points?.filter(p => !p.edge).map(p => p.px) ?? stations, stationColors: points?.filter(p => !p.edge).map(p => p.status === "ok" ? "var(--ok)" : "var(--ng)"), segments: points?.flatMap((p, i) => p.edge ? [{ from: p.edge[0], to: p.edge[1], color: "var(--ok)", label: i % Math.max(1, Math.ceil(points.length / 4)) === 0 && p.width != null ? p.width.toFixed(2) + " mm" : undefined }] : []), stale: editing, selected: vertex }}
           onEdit={unlocked && enabled && !regionMode ? { add: p => setPath([...t.path, p]), move: (i, p) => setPath(t.path.map((q, j) => j === i ? p : q)), select: setVertex } : undefined} />
         {productionBusy && <p className="muted hint">工件正在检测，当前可编辑已保存图像；重采需等待工件结束。</p>}
         <div className="wp-actions" style={{marginTop:10}}>
