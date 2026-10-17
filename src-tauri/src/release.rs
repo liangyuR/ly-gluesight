@@ -140,20 +140,18 @@ impl ReleaseBundle {
         }
         let recipe: RecipeDoc = read_json(&self.root.join(&manifest.recipe))?;
         if recipe != self.recipe { return Err("发布配方的版本或实际布局不一致".into()); }
-        let mut checked = BTreeSet::new();
+        reject_links(&self.root, false)?;
+        let mut actual = BTreeMap::new();
+        inventory(&self.root, &self.root, &mut actual)?;
+        let listed = actual.remove("manifest.json").is_some();
         for entry in &manifest.files {
-            let path = self.root.join(&entry.path);
-            reject_links_once(&path, &mut checked)?;
-            let metadata = fs::metadata(&path).map_err(|e| format!("读取发布资源 {} 失败：{e}", entry.path))?;
-            if !metadata.is_file() || metadata.len() != entry.bytes {
-                return Err(format!("发布资源 {} 的文件类型或大小不符", entry.path));
+            match actual.remove(&entry.path) {
+                Some(bytes) if bytes == entry.bytes => {}
+                Some(_) => return Err(format!("发布资源 {} 的文件类型或大小不符", entry.path)),
+                None => return Err(format!("发布资源 {} 缺失或不是普通文件", entry.path)),
             }
         }
-        let mut actual = BTreeSet::new();
-        inventory_once(&self.root, &self.root, &mut actual, &mut checked)?;
-        let mut expected: BTreeSet<_> = manifest.files.iter().map(|entry| entry.path.clone()).collect();
-        expected.insert("manifest.json".into());
-        if actual != expected { return Err("发布目录存在清单以外的文件或缺失文件".into()); }
+        if !listed || !actual.is_empty() { return Err("发布目录存在清单以外的文件或缺失文件".into()); }
         Ok(())
     }
 
@@ -374,11 +372,11 @@ fn load_directory(root: &Path, recipe_id: &str, bundle_id: &str) -> Result<Relea
     if referenced != declared {
         return Err("发布清单存在未声明、未引用或重复资源".into());
     }
-    let mut actual = BTreeSet::new();
+    let mut actual = BTreeMap::new();
     inventory(root, root, &mut actual)?;
     let mut expected = declared;
     expected.insert("manifest.json".into());
-    if actual != expected {
+    if actual.into_keys().collect::<BTreeSet<_>>() != expected {
         return Err("发布目录存在清单以外的文件或缺失文件".into());
     }
     Ok(ReleaseBundle { id: bundle_id.into(), root: root.to_path_buf(), manifest, recipe })
@@ -554,30 +552,18 @@ fn reject_links(path: &Path, allow_missing: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn reject_links_once(path: &Path, checked: &mut BTreeSet<PathBuf>) -> Result<(), String> {
-    let absolute = absolute_path(path)?;
-    let mut cursor = PathBuf::new();
-    for component in absolute.components() {
-        cursor.push(component.as_os_str());
-        if matches!(component, Component::Prefix(_)) || checked.contains(&cursor) { continue; }
-        let metadata = fs::symlink_metadata(&cursor).map_err(|e| format!("发布资源不存在或无法读取 {}：{e}", cursor.display()))?;
-        if is_link(&metadata) { return Err(format!("发布资源不允许符号链接或目录重解析点：{}", cursor.display())); }
-        checked.insert(cursor.clone());
-    }
-    Ok(())
-}
-
-fn inventory_once(root: &Path, dir: &Path, files: &mut BTreeSet<String>, checked: &mut BTreeSet<PathBuf>) -> Result<(), String> {
-    reject_links_once(dir, checked)?;
+/// 调用方先核对根目录及其上级不是链接；目录项元数据不跟随链接，Windows 上直接取自目录枚举，不逐个打开文件。
+fn inventory(root: &Path, dir: &Path, files: &mut BTreeMap<String, u64>) -> Result<(), String> {
     for entry in fs::read_dir(dir).map_err(|e| format!("读取发布目录 {} 失败：{e}", dir.display()))? {
-        let path = entry.map_err(|e| e.to_string())?.path();
-        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let metadata = entry.metadata().map_err(|e| e.to_string())?;
         if is_link(&metadata) { return Err(format!("发布目录包含符号链接或目录重解析点：{}", path.display())); }
-        if metadata.is_dir() { inventory_once(root, &path, files, checked)?; }
+        if metadata.is_dir() { inventory(root, &path, files)?; }
         else if metadata.is_file() {
             let relative = path.strip_prefix(root).map_err(|_| "发布资源逃逸目录")?.to_str().ok_or("发布文件名不是 UTF-8")?.replace('\\', "/");
             validate_relative(&relative)?;
-            if !files.insert(relative) { return Err("发布目录包含重复资源".into()); }
+            if files.insert(relative, metadata.len()).is_some() { return Err("发布目录包含重复资源".into()); }
         } else { return Err(format!("发布目录包含非普通文件：{}", path.display())); }
     }
     Ok(())
@@ -619,23 +605,6 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
     file.write_all(bytes).and_then(|_| file.sync_all()).map_err(|e| format!("写入发布资源 {} 失败：{e}", path.display()))
 }
 
-fn inventory(root: &Path, dir: &Path, files: &mut BTreeSet<String>) -> Result<(), String> {
-    reject_links(dir, false)?;
-    for entry in fs::read_dir(dir).map_err(|e| format!("读取发布目录 {} 失败：{e}", dir.display()))? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-        if is_link(&metadata) { return Err(format!("发布目录包含符号链接：{}", path.display())); }
-        if metadata.is_dir() { inventory(root, &path, files)?; }
-        else if metadata.is_file() {
-            let relative = path.strip_prefix(root).map_err(|_| "发布资源逃逸目录")?.to_str().ok_or("发布文件名不是 UTF-8")?.replace('\\', "/");
-            validate_relative(&relative)?;
-            if !files.insert(relative) { return Err("发布目录包含重复资源".into()); }
-        } else { return Err(format!("发布目录包含非普通文件：{}", path.display())); }
-    }
-    Ok(())
-}
-
 struct Staging {
     path: PathBuf,
     parent: PathBuf,
@@ -655,7 +624,8 @@ impl Drop for Staging {
     fn drop(&mut self) {
         if self.path.parent() == Some(self.parent.as_path())
             && self.path.file_name().and_then(|p| p.to_str()).is_some_and(|p| p.starts_with(".pending-"))
-            && inventory(&self.path, &self.path, &mut BTreeSet::new()).is_ok()
+            && reject_links(&self.path, false).is_ok()
+            && inventory(&self.path, &self.path, &mut BTreeMap::new()).is_ok()
         {
             let _ = fs::remove_dir_all(&self.path);
         }
@@ -696,5 +666,24 @@ mod tests {
         manifest.as_object_mut().unwrap().remove("validationSite");
         fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         assert!(load(&root.0, &bundle.manifest.recipe_id, &bundle.id).is_err());
+    }
+
+    #[test]
+    fn bundle_changed_on_disk_after_publish_is_rejected_by_per_part_verify() {
+        let root = TempDir(std::env::temp_dir().join(format!("gluesight-{}", new_bundle_id().unwrap())));
+        let tamperings: [(&str, fn(&Path, &Path)); 5] = [
+            ("extra file", |root, _| fs::write(root.join("shots").join("extra.json"), b"{}").unwrap()),
+            ("resource resized", |_, resource| fs::write(resource, b"{}").unwrap()),
+            ("resource removed", |_, resource| fs::remove_file(resource).unwrap()),
+            ("resource replaced by directory", |_, resource| { fs::remove_file(resource).unwrap(); fs::create_dir(resource).unwrap(); }),
+            ("manifest removed", |root, _| fs::remove_file(root.join("manifest.json")).unwrap()),
+        ];
+        for (case, tamper) in tamperings {
+            let bundle = publish_with(&root.0, ValidationSite::Offline);
+            bundle.verify().unwrap();
+            let resource = bundle.manifest.files.iter().find(|entry| entry.path.starts_with("shots/")).unwrap();
+            tamper(&bundle.root, &bundle.root.join(&resource.path));
+            assert!(bundle.verify().is_err(), "{case}");
+        }
     }
 }
