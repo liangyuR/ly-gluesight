@@ -257,14 +257,15 @@ it("每组三相机图仅示教选中图 → 保存后进入下一组并沿用�
     }
     fireEvent.change(screen.getByRole("spinbutton", { name: "像素当量" }), { target: { value: ".1" } });
     expect(screen.getByLabelText("中线点 2")).toBeVisible();
-    expect(screen.getByRole("button", { name: "保存本组示教" })).toBeDisabled();
+    const actions = within(screen.getByRole("group", { name: "单帧示教操作" }));
+    expect(actions.getByRole("button", { name: "保存本组示教" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "运行一次算法" }));
     expect(workspaceApi.saveParams).toHaveBeenNthCalledWith(group + 1, "A", 7 + 2 * group, k, { path: twoLines[group], mmPerPx: .1 });
     await waitFor(() => expect(workspaceApi.trial).toHaveBeenNthCalledWith(group + 1, "A", 8 + 2 * group, k, imageId));
     expect(screen.queryByText("示教参数有未保存的修改")).not.toBeInTheDocument();
     const saveLabel = group === 0 ? "保存并进入下一组" : "保存本组示教";
-    await waitFor(() => expect(screen.getByRole("button", { name: saveLabel })).toBeEnabled());
-    await user.click(screen.getByRole("button", { name: saveLabel }));
+    await waitFor(() => expect(actions.getByRole("button", { name: saveLabel })).toBeEnabled());
+    await user.click(actions.getByRole("button", { name: saveLabel }));
     expect(workspaceApi.saveTeach).toHaveBeenNthCalledWith(group + 1, "A", 8 + 2 * group, k, imageId);
     await screen.findByText(new RegExp(`已完成 ${group + 1}／2 组`));
   }

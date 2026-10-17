@@ -197,9 +197,11 @@ export default function TeachingPage() {
         {group.selected.length > 1 && <p className="c-warn" role="alert">本组原先选择了多张图，请重新选择一张作为检测图。</p>}
       </section>
       {enabled ? <><Panel title={shot.camera + " · 中线示教"}>
-        <div className="wp-actions"><button className="btn" aria-pressed={regionMode} disabled={!unlocked || !frame.image} onClick={() => setRegionMode(v => !v)}>{regionMode ? "结束框选 / 手工修正" : "框选胶路区域"}</button>
+        <div className="wp-actions" role="group" aria-label="单帧示教操作"><button className="btn" aria-pressed={regionMode} disabled={!unlocked || !frame.image} onClick={() => setRegionMode(v => !v)}>{regionMode ? "结束框选 / 手工修正" : "框选胶路区域"}</button>
           <button className="btn" disabled={!unlocked || !frame.image || loading || !!error} onClick={() => void extract()}><WandSparkles size={15}/>{operation === "extract" ? "提取中…" : "自动提取中线"}</button>
           <button className="btn primary" disabled={!canTrial} title={trialDisabledReason || "保存当前参数，对本图运行一次检测算法"} onClick={() => void saveAndTrial()}><Play size={15}/>{operation === "trial" ? "计算中…" : "运行一次算法"}</button>
+          <button className="btn primary" disabled={!unlocked || !enabled || !trialCurrent || viewState === "taught"} onClick={() => void save()}><Save size={15} />保存本组示教</button>
+          <button className="btn" disabled={!unlocked || !enabled || !trialCurrent || !nextGroup} onClick={() => void save(true)}>保存并进入下一组</button>
         </div>
         {(regionMode || extractionHint) && <p className="muted hint" role="status">{regionMode ? roiValid ? "区域已选好，点击自动提取中线；提取结果可继续拖动修正。" : "在图像上按住左键框选一段连续胶路（至少 5×5 像素，最多 400 万像素），再点击自动提取中线。" : extractionHint}</p>}
         {trialFresh && <div className="wp-actions" aria-label="本次算法结果"><Badge tone={trialCurrent ? "info" : "warn"}>{trial?.verdict ?? "执行异常"}</Badge><span>量成比例 {measured ? (trial!.coverage * 100).toFixed(1) + "%" : "—"}</span><span>耗时 {trial?.elapsedMs} ms</span><span className="muted">绿色：有效胶宽 · 红色：未通过候选 / 无候选</span></div>}
@@ -222,7 +224,6 @@ export default function TeachingPage() {
         {frame.image && <div className="wp-kv"><span>取样来源</span><strong>{frame.image.source} · {new Date(frame.image.capturedAt).toLocaleString("zh-CN")}</strong></div>}
       </Panel>
       <Panel title="本组试测结果" actions={trialFresh && trial && <Badge tone={trialCurrent?"ok":"warn"}>{viewProgress?.trialStale?"已过期":trial.passed ? "有效 · " + (trial.verdict ?? "已完成") : "执行异常"}</Badge>}>
-        <div className="wp-actions"><button className="btn primary" disabled={!unlocked || !enabled || !trialCurrent || viewState === "taught"} onClick={() => void save()}><Save size={15} />保存本组示教</button><button className="btn" disabled={!unlocked || !enabled || !trialCurrent || !nextGroup} onClick={() => void save(true)}>保存并进入下一组</button></div>
         <div className="wp-rule-stat"><div><span>量成比例</span><strong>{measured ? (trial!.coverage * 100).toFixed(1) + "%" : "—"}</strong></div><div><span>处理耗时</span><strong>{trialFresh && trial ? trial.elapsedMs + " ms" : "—"}</strong></div></div>
         {viewState === "trialFailed" && !editing && <Notice title="试测异常" tone="warn">{trial?.reason}</Notice>}
         {viewState === "recapture" && <Notice title="需重新采集" tone="warn">{viewProgress?.hint} <Link className="btn small" to="/recipe/capture">整圈重新采集</Link></Notice>}
