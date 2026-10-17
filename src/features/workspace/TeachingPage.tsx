@@ -199,7 +199,8 @@ export default function TeachingPage() {
             const width = p.edge ? p.width : p.candidateWidth;
             return edge ? [{ from: edge[0], to: edge[1], color: p.edge ? "var(--ok)" : "var(--ng)", label: i % Math.max(1, Math.ceil(points.length / 4)) === 0 && width != null ? width.toFixed(2) + (p.edge ? " mm" : " mm 候选") : undefined }] : [];
           }), searchHalfPx, stale: editing, selected: vertex }}
-          onEdit={unlocked && enabled && !regionMode ? { add: p => setPath([...t.path, p]), move: (i, p) => setPath(t.path.map((q, j) => j === i ? p : q)), select: setVertex } : undefined} />
+          editDisabled={!unlocked}
+          onEdit={enabled && !regionMode ? { add: p => setPath([...t.path, p]), move: (i, p) => setPath(t.path.map((q, j) => j === i ? p : q)), select: setVertex } : undefined} />
         {productionBusy && <p className="muted hint">工件正在检测，当前可编辑已保存图像；重采需等待工件结束。</p>}
         <div className="wp-actions" style={{marginTop:10}}>
           <span className="muted">中线 {t.path.length} 点 · {t.mmPerPx != null && Number.isFinite(t.mmPerPx) && t.mmPerPx > 0 ? (lengthPx * t.mmPerPx).toFixed(1) + " mm" : lengthPx.toFixed(0) + " px"}{own && !editing ? " · " + own.count + " 站" : ""}</span><span className="spacer" />
@@ -219,7 +220,6 @@ export default function TeachingPage() {
       </Panel></> : <Notice title="选择本组检测图">点击上方一张图开始示教，每组只需完成这一张。</Notice>}</div>
       {enabled && <div className="wp-stack wp-teach-settings"><TeachingSettings key={scope} teach={t} savedMmPerPx={saved.mmPerPx} defaults={defaults} defaultLimits={doc.limits} calibration={calibration} disabled={!unlocked} editing={editing} onChange={update}
         onRecord={async (reference, measured, reuse) => !!await perform(() => workspaceApi.checkCalibration(doc.id,data.workspace.revision,k,reference,measured,reuse), "已保存当前图的标定验证")} />
-      {editing && invalid && <Notice title="本组中线无效" tone="warn">{invalid}</Notice>}
       <details className="wp-sample-details"><summary>图像采集信息</summary><Panel title="当前检测图"><KV label="拍照组">{group.poseId}</KV><KV label="相机">{shot.camera}</KV><KV label="当前编辑图">图 {shot.view}</KV><KV label="图像">{frame.image?.id ?? "未冻结"}</KV><KV label="曝光">{frame.image?.exposureUs != null ? frame.image.exposureUs + " μs" : "未记录"}</KV><KV label="增益">{frame.image?.gainDb != null ? frame.image.gainDb + " dB" : "未记录"}</KV><KV label="原图更新">仅通过整圈重新采集</KV>{imagingHint && <p className="c-warn" role="note">{imagingHint}；样本仍可用，需要时整圈重采</p>}</Panel></details>
       <Notice title="保存与发布分开">中线保存进候选配方，生产配方不变；保存本组后，先验证代表性样本，再发布生产版本。</Notice></div>}
     </div></div>;

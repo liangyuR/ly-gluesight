@@ -38,7 +38,6 @@ export function WorkspaceBar() {
   const publish = data?.workspace.publish;
   return <><div className="wp-workbench-bar"><label className="wp-recipe-picker">当前配方<select className="input" value={selectedId ?? ""} disabled={busy || dirty || frameDirty} onChange={e => void select(e.target.value)}><option value="" disabled>选择配方</option>{choices.map(r => <option key={r.id} value={r.id}>{r.id} · {r.name}</option>)}</select></label>{data && <><Badge>候选 v{doc?.version}</Badge><Badge tone="neutral">生产 {data.productionVersion ? "v" + data.productionVersion : "未发布"}</Badge><span className="muted">修订 {data.workspace.revision}</span>{publish?.state === "waiting" && <Badge tone="warn">v{data.workspace.pending?.doc.version} 待工件结束后生效</Badge>}</>}<Badge tone={saveState === "failed" ? "warn" : "neutral"}>{saveState === "saving" ? "保存中" : saveState === "failed" ? "保存失败" : saveState === "pending" ? "等待保存" : "草稿已保存"}</Badge>{saveState === "failed" && <button className="btn small" onClick={retrySave}>重试保存</button>}<span className="spacer" /><Link className="btn" to="/recipe">配方库</Link></div>
     {dirty && <Notice title="候选配置尚未保存" tone="warn"><span>保存后再执行示教、验证和发布。</span><button className="btn small primary" disabled={busy || !!previewError} onClick={() => void saveDoc()}>保存候选配置</button></Notice>}
-    {frameDirty && <Notice title="示教参数有未保存的修改" tone="warn">编辑进度正在自动保存为草稿；保存草稿不等于完成示教，需“运行一次算法”后再保存本组示教。</Notice>}
     {previewError && <Notice title="候选参数无效" tone="warn">{previewError}</Notice>}
     {error && <Notice title="操作未完成" tone="warn">{error}</Notice>}
     {notice && <Notice title={notice} tone="ok" />}
@@ -116,8 +115,8 @@ export interface PathEditing {
   select: (index: number | null) => void;
 }
 
-export function GrayViewer({ image, loading = false, error = "", label, overlay, onEdit, region, onRegion, emptyTitle, emptyHint }: {
-  image: GrayImage | null; loading?: boolean; error?: string; label: string; overlay?: ImageOverlay; onEdit?: PathEditing; region?: [number, number, number, number] | null; onRegion?: (region: [number, number, number, number]) => void; emptyTitle?: string; emptyHint?: string;
+export function GrayViewer({ image, loading = false, error = "", label, overlay, onEdit, editDisabled = false, region, onRegion, emptyTitle, emptyHint }: {
+  image: GrayImage | null; loading?: boolean; error?: string; label: string; overlay?: ImageOverlay; onEdit?: PathEditing; editDisabled?: boolean; region?: [number, number, number, number] | null; onRegion?: (region: [number, number, number, number]) => void; emptyTitle?: string; emptyHint?: string;
 }) {
   const [viewport, setViewport] = useState({ zoom: 1, x: 0, y: 0 });
   const { zoom, x, y } = viewport;
@@ -169,11 +168,11 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
   };
   const size = image ? Math.max(image.width, image.height) : 1;
   const handle = size / 120, dot = size / 320;
-  const editing = !!onEdit && shown;
+  const editing = !!onEdit && shown && !editDisabled;
   const path = overlay?.path ?? [];
   const band = searchBand(path, overlay?.searchHalfPx);
   const hint = error || (emptyHint ?? "取样后在这张图上点出胶路中线。机器人应停在当前拍照点。");
-  return <div className="wp-viewport"><div className="wp-image-tools"><span>{label}</span><div><button className="icon-btn" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></button><span>{Math.round(zoom * 100)}%</span><button className="icon-btn" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></button><button className="icon-btn" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></button>{overlay && <button className={"btn small" + (shown ? " active" : "")} aria-pressed={shown} onClick={() => setShown(v => !v)}>中线叠加</button>}{band && <button className={"btn small" + (bandShown ? " active" : "")} aria-pressed={bandShown} onClick={() => setBandShown(v => !v)}>搜索带</button>}{onEdit && overlay && <button className={"btn small" + (allHandles ? " active" : "")} aria-pressed={allHandles} disabled={!shown} onClick={() => setAllHandles(v => !v)}>编辑点</button>}</div></div>
+  return <div className="wp-viewport"><div className="wp-image-tools"><span>{label}</span><div><button className="icon-btn" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></button><span>{Math.round(zoom * 100)}%</span><button className="icon-btn" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></button><button className="icon-btn" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></button>{overlay && <button className={"btn small" + (shown ? " active" : "")} aria-pressed={shown} onClick={() => setShown(v => !v)}>中线叠加</button>}{band && <button className={"btn small" + (bandShown ? " active" : "")} aria-pressed={bandShown} onClick={() => setBandShown(v => !v)}>搜索带</button>}{onEdit && overlay && <button className={"btn small" + (allHandles ? " active" : "")} aria-pressed={allHandles} disabled={!shown || editDisabled} onClick={() => setAllHandles(v => !v)}>编辑点</button>}</div></div>
     {!image ? <div className="wp-image-empty"><Camera size={32} /><strong>{loading ? "正在读取原图…" : error ? "原图不可用" : emptyTitle ?? "尚未冻结本帧图像"}</strong>{hint && <span>{hint}</span>}</div> :
       <svg ref={svg} role="img" tabIndex={0} className={"wp-gray-image" + (editing ? " editable" : "") + (panning ? " panning" : "")} viewBox={"0 0 " + image.width + " " + image.height} aria-label={label} aria-description="Ctrl 加滚轮缩放，中键拖动平移；聚焦后加减键缩放，0 适应窗口" onKeyDown={e => {
         if (e.altKey || e.metaKey || drag.current || regionStart.current || pan.current) return;
@@ -216,7 +215,7 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
         }
         if (onRegion && regionStart.current) { const p = point(e), a = regionStart.current; if (p) onRegion([Math.min(a[0],p[0]), Math.min(a[1],p[1]), Math.abs(p[0]-a[0]), Math.abs(p[1]-a[1])]); return; }
         const current = drag.current;
-        if (!current || !onEdit) return;
+        if (!current || !onEdit || editDisabled) return;
         const p = point(e, current.inverse);
         if (p) onEdit.move(current.index, p);
       }} onPointerUp={stopGesture} onPointerCancel={stopGesture} onLostPointerCapture={stopGesture}>

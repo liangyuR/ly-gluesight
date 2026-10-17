@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { expect, it, vi } from "vitest";
@@ -14,7 +14,7 @@ import { cameraApi as captureCameraApi } from "../src/features/camera/api";
 import { plcApi } from "../src/features/plc/api";
 import { historyApi } from "../src/features/history/api";
 import type { CaptureRound, ShotState, WorkspaceView } from "../src/features/workspace/types";
-import { snapshot, summary, tricamWorkspaceView, twoLines } from "./fixtures";
+import { deferred, snapshot, summary, tricamWorkspaceView, twoLines } from "./fixtures";
 
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
   get: vi.fn(), list: vi.fn(), image: vi.fn(), progress: vi.fn(),
@@ -141,6 +141,62 @@ it("本图参数覆盖后恢复默认 → 搜索带与试测载荷使用配方�
     fireEvent.change(screen.getByRole("spinbutton", { name: "像素当量" }), { target: { value } });
     expect(screen.queryByLabelText("搜索带边界")).not.toBeInTheDocument();
   }
+});
+
+it("手工落点并自动保存 → 不插入瞬时警告、保留缩放与中线，缺少当量仍阻止试测", async () => {
+  vi.stubGlobal("DOMPoint", class {
+    constructor(public x: number, public y: number) {}
+    matrixTransform() { return this; }
+  });
+  vi.stubGlobal("PointerEvent", MouseEvent);
+  Object.defineProperty(SVGElement.prototype, "getScreenCTM", { configurable: true, value: () => ({ inverse: () => ({}) }) });
+  Object.defineProperty(SVGElement.prototype, "setPointerCapture", { configurable: true, value: vi.fn() });
+  const candidate = groupedCandidate();
+  candidate.workspace.doc.shots[0].path = [];
+  delete candidate.workspace.doc.shots[0].mmPerPx;
+  candidate.workspace.frames[0].trial = null;
+  candidate.workspace.frames[0].saved = false;
+  shotState(candidate, 0, "unconfigured");
+  mockSite(candidate);
+  const saving = deferred<void>();
+  vi.mocked(workspaceApi.saveDraft).mockImplementation(async (_id, revision, k, teach) => {
+    await saving.promise;
+    const response = structuredClone(candidate);
+    Object.assign(response.workspace.doc.shots[k], teach);
+    response.workspace.revision = revision + 1;
+    return response;
+  });
+  const user = renderWorkspace("/recipe/teach");
+  const image = await screen.findByRole("img", { name: "P1 · CAM-1 · 图 1" });
+  await user.click(screen.getByRole("button", { name: "放大原图" }));
+  const transform = image.querySelector("g")!.getAttribute("transform");
+  for (const [clientX, clientY] of [[10, 10], [20, 20]]) {
+    fireEvent.pointerDown(image, { clientX, clientY });
+    fireEvent.pointerUp(image);
+  }
+  const transientWarnings = ["示教参数有未保存的修改", "本组中线无效"].filter(title => screen.queryByText(title));
+  const editButton = screen.getByRole("button", { name: "编辑点" });
+  const point = screen.getByLabelText("中线点 2");
+  fireEvent.pointerDown(point, { clientX: 20, clientY: 20 });
+  await screen.findByText("保存中", {}, { timeout: 2500 });
+  expect(screen.getByRole("button", { name: "编辑点" })).toBe(editButton);
+  expect(editButton).toBeDisabled();
+  expect(screen.getByLabelText("中线点 2")).toBe(point);
+  fireEvent.pointerMove(image, { clientX: 30, clientY: 30 });
+  expect(point).toHaveAttribute("cx", "20");
+  fireEvent.pointerUp(image);
+  fireEvent.pointerDown(image, { clientX: 30, clientY: 30 });
+  fireEvent.pointerUp(image);
+  expect(screen.queryByLabelText("中线点 3")).not.toBeInTheDocument();
+  await act(async () => saving.resolve(undefined));
+  await screen.findByText("草稿已保存", {}, { timeout: 2500 });
+  expect(editButton).toBeEnabled();
+  expect(screen.getByRole("img", { name: "P1 · CAM-1 · 图 1" })).toBe(image);
+  expect(image.querySelector("g")).toHaveAttribute("transform", transform);
+  expect(screen.getByLabelText("中线点 2")).toHaveAttribute("cx", "20");
+  expect(screen.getByRole("button", { name: "运行一次算法" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "运行一次算法" })).toHaveAttribute("title", expect.stringContaining("像素当量"));
+  expect(transientWarnings).toEqual([]);
 });
 
 it("每组三相机图仅示教选中图 → 保存后进入下一组并沿用最新修订", async () => {
