@@ -16,6 +16,7 @@ pub struct ShotMeasurement {
     pub w: Vec<f32>,
     pub st: Vec<u8>,
     pub px: Vec<[f32; 2]>,
+    pub edges: Vec<Option<[[f32; 2]; 2]>>,
     pub coverage: f32,
     pub ms: u32,
 }
@@ -37,7 +38,7 @@ impl ShotMeasurement {
     pub fn record(&self) -> Value {
         let status: Vec<_> = self.st.iter().map(|s| if *s == ST_OK { "ok" } else { "no_bead" }).collect();
         json!({"unit": "mm", "ids": self.idx, "status": status, "innerCenter": self.d,
-            "width": self.w, "px": self.px, "coverage": self.coverage, "ms": self.ms})
+            "width": self.w, "px": self.px, "edges": self.edges, "coverage": self.coverage, "ms": self.ms})
     }
 }
 
@@ -73,7 +74,7 @@ pub fn measure_views_with(
             return Err(format!("拍照点 {} 图 {view} 缺失或重复", shot.id));
         }
     }
-    let mut out = ShotMeasurement { idx: Vec::new(), d: Vec::new(), w: Vec::new(), st: Vec::new(), px: Vec::new(), coverage: 0.0, ms: 0 };
+    let mut out = ShotMeasurement { idx: Vec::new(), d: Vec::new(), w: Vec::new(), st: Vec::new(), px: Vec::new(), edges: Vec::new(), coverage: 0.0, ms: 0 };
     let mut views = Vec::new();
     for view in selected {
         let image = &images.iter().find(|(v, _)| *v == view).unwrap().1;
@@ -82,12 +83,17 @@ pub fn measure_views_with(
             Ok(reading) if reading.idx.iter().copied().map(|v| v as usize).eq(expected.iter().copied())
                 && reading.st.len() == expected.len() && reading.d.len() == expected.len()
                 && reading.w.len() == expected.len() && reading.px.len() == expected.len()
+                && reading.edges.len() == expected.len()
+                && reading.edges.iter().enumerate().all(|(i, edge)| match edge {
+                    Some(points) => reading.st[i] == ST_OK && points.iter().flatten().all(|v| v.is_finite()),
+                    None => reading.st[i] != ST_OK,
+                })
                 && reading.coverage.is_finite() && (0.0..=1.0).contains(&reading.coverage)
                 && reading.px.iter().flatten().all(|v| v.is_finite())
                 && reading.st.iter().enumerate().all(|(i, &state)| state <= crate::measure::ST_INVALID
                     && (state != ST_OK || (reading.d[i].is_finite() && reading.w[i].is_finite()))) => {
                 out.idx.extend(&reading.idx); out.d.extend(&reading.d); out.w.extend(&reading.w);
-                out.st.extend(&reading.st); out.px.extend(&reading.px);
+                out.st.extend(&reading.st); out.px.extend(&reading.px); out.edges.extend(&reading.edges);
                 out.ms = out.ms.saturating_add(reading.ms);
                 views.push(ViewMeasurement { view, reading: Some(reading), error: None });
             }
@@ -96,6 +102,7 @@ pub fn measure_views_with(
                 for j in expected {
                     out.idx.push(j as u32); out.d.push(f32::NAN); out.w.push(f32::NAN);
                     out.st.push(crate::measure::ST_INVALID); out.px.push([recipe.points.x[j], recipe.points.y[j]]);
+                    out.edges.push(None);
                 }
                 views.push(ViewMeasurement { view, reading: None, error: Some(error) });
             }
@@ -236,7 +243,7 @@ fn parse_result(recipe: &Recipe, p: &ShotPlan, result: &RunResult) -> Result<Sho
         let a = stations[key][i].as_array().filter(|a| a.len() == 2).ok_or_else(|| format!("算法第 {} 站的 {key} 不是二维坐标", i + 1))?;
         Ok([a[0].as_f64().filter(|v| v.is_finite()).ok_or("算法坐标不是有限数")?, a[1].as_f64().filter(|v| v.is_finite()).ok_or("算法坐标不是有限数")?])
     };
-    let mut m = ShotMeasurement { idx: Vec::with_capacity(n), d: Vec::with_capacity(n), w: Vec::with_capacity(n), st: Vec::with_capacity(n), px: Vec::with_capacity(n), coverage: 0.0, ms: 0 };
+    let mut m = ShotMeasurement { idx: Vec::with_capacity(n), d: Vec::with_capacity(n), w: Vec::with_capacity(n), st: Vec::with_capacity(n), px: Vec::with_capacity(n), edges: Vec::with_capacity(n), coverage: 0.0, ms: 0 };
     let mut present = 0;
     for (i, &j) in p.idx.iter().enumerate() {
         let s = number("s", i)?;
@@ -263,6 +270,10 @@ fn parse_result(recipe: &Recipe, p: &ShotPlan, result: &RunResult) -> Result<Sho
             m.w.push((width * p.scale) as f32);
             m.st.push(ST_OK);
             m.px.push([(center[0] + normal[0] * mid) as f32, (center[1] + normal[1] * mid) as f32]);
+            m.edges.push(Some([
+                [(center[0] + normal[0] * lo) as f32, (center[1] + normal[1] * lo) as f32],
+                [(center[0] + normal[0] * hi) as f32, (center[1] + normal[1] * hi) as f32],
+            ]));
             present += 1;
         } else {
             if ["lo", "hi", "widthPx"].iter().any(|key| !stations[*key][i].is_null()) {
@@ -272,6 +283,7 @@ fn parse_result(recipe: &Recipe, p: &ShotPlan, result: &RunResult) -> Result<Sho
             m.w.push(f32::NAN);
             m.st.push(ST_GAP);
             m.px.push([center[0] as f32, center[1] as f32]);
+            m.edges.push(None);
         }
     }
     // 整条中线一站都没有胶：照常作为测量交给判定（整段断胶判 NG），不当作测量失败

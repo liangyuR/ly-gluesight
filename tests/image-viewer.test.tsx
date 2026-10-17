@@ -67,6 +67,37 @@ describe("图像查看与加载", () => {
       Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: previous });
     }
   });
+  it("密集中线隐藏内部编辑圆点，展开后可拖动且测量横线始终位于上层", () => {
+    const previous = globalThis.DOMPoint;
+    class TestPoint {
+      constructor(public x: number, public y: number) {}
+      matrixTransform() { return this; }
+    }
+    Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: TestPoint });
+    const edit = { add: vi.fn(), move: vi.fn(), select: vi.fn() };
+    try {
+      const path = Array.from({ length: 158 }, (_, i) => [50, i / 3] as [number, number]);
+      render(<GrayViewer image={image} label="测量图像" onEdit={edit} overlay={{ path, segments: [{ from: [40, 30], to: [60, 30], color: "green", label: "3.5 mm" }] }} />);
+      const svg = screen.getByRole("img", { name: "测量图像" });
+      Object.defineProperty(svg.querySelector("g")!, "getScreenCTM", { value: () => ({ inverse: () => ({}) }) });
+      const measurement = screen.getByLabelText("测量横线");
+      expect(svg.querySelectorAll("[data-vertex]")).toHaveLength(2);
+      expect(measurement.querySelector("line")).toHaveAttribute("vector-effect", "non-scaling-stroke");
+      fireEvent.click(screen.getByRole("button", { name: "编辑点" }));
+      const vertex = screen.getByLabelText("中线点 80");
+      expect(vertex.compareDocumentPosition(measurement) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+      fireEvent.pointerDown(vertex, { clientX: 50, clientY: 26, pointerId: 1 });
+      fireEvent.pointerMove(svg, { clientX: 55, clientY: 27, pointerId: 1 });
+      expect(edit.move).toHaveBeenLastCalledWith(79, [55, 27]);
+      expect(edit.add).not.toHaveBeenCalled();
+      fireEvent.pointerUp(svg, { pointerId: 1 });
+      fireEvent.click(screen.getByRole("button", { name: "编辑点" }));
+      expect(screen.queryByLabelText("中线点 80")).not.toBeInTheDocument();
+      expect(screen.getByText("3.5 mm")).toBeInTheDocument();
+    } finally {
+      Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: previous });
+    }
+  });
   it("Ctrl 滚轮以鼠标处缩放并限制倍率，普通滚轮仍滚动页面，键盘可复位", () => {
     const previous = globalThis.DOMPoint;
     class TestPoint {

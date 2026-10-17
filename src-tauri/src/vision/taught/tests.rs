@@ -108,6 +108,8 @@ fn station_output_maps_global_ids_signed_offsets_and_gaps_without_judging() {
     let record = m.record();
     assert_eq!(record["unit"], "mm");
     assert_eq!(record["status"][5], "no_bead");
+    assert_eq!(record["edges"][0], json!([[40.0, 74.0], [40.0, 90.0]]));
+    assert!(record["edges"][5].is_null());
     assert!(record["width"][5].is_null() && record["innerCenter"][5].is_null());
     assert!(record.get("passed").is_none());
 }
@@ -157,7 +159,8 @@ fn multiview_failure_is_local_but_missing_image_is_acquisition_failure() {
         if view == 1 { return Err("图 1 引擎失败".into()); }
         let idx: Vec<_> = recipe.view_points(0, view).collect();
         Ok(ShotMeasurement { idx: idx.iter().map(|&j| j as u32).collect(), d: vec![0.0; idx.len()], w: vec![4.0; idx.len()],
-            st: vec![ST_OK; idx.len()], px: idx.iter().map(|&j| [recipe.points.x[j], recipe.points.y[j]]).collect(), coverage: 1.0, ms: 1 })
+            st: vec![ST_OK; idx.len()], px: idx.iter().map(|&j| [recipe.points.x[j], recipe.points.y[j]]).collect(),
+            edges: idx.iter().map(|&j| Some([[recipe.points.x[j], recipe.points.y[j] - 2.0], [recipe.points.x[j], recipe.points.y[j] + 2.0]])).collect(), coverage: 1.0, ms: 1 })
     }).unwrap();
     assert_eq!(result.views.len(), 2);
     assert!(result.views[0].error.is_some());

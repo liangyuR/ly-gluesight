@@ -4,6 +4,7 @@ export interface TrialPoint {
   offset: number | null;
   width: number | null;
   px: [number, number];
+  edge: [[number, number], [number, number]] | null;
 }
 
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
@@ -23,7 +24,10 @@ export function trialPoints(measurement: unknown): TrialPoint[] | null {
     const size: unknown = width[i];
     if (!Number.isSafeInteger(ids[i]) || ids[i] < 0 || (state !== "ok" && state !== "no_bead") || !nullableFinite(offset) || !nullableFinite(size)) return null;
     if (!Array.isArray(position) || position.length !== 2 || !position.every(finite)) return null;
-    points.push({ id: ids[i], status: state, offset, width: size, px: [position[0], position[1]] });
+    const rawEdge = Array.isArray(record.edges) ? record.edges[i] : null;
+    const edge: TrialPoint['edge'] = state === 'ok' && Array.isArray(rawEdge) && rawEdge.length === 2 && rawEdge.every(p => Array.isArray(p) && p.length === 2 && p.every(finite))
+      ? [[rawEdge[0][0], rawEdge[0][1]], [rawEdge[1][0], rawEdge[1][1]]] : null;
+    points.push({ edge, id: ids[i], status: state, offset, width: size, px: [position[0], position[1]] });
   }
   return points;
 }
@@ -33,7 +37,7 @@ export function TrialResult({ points }: { points: TrialPoint[] }) {
   const value = (number: number | null) => number === null ? "未测" : number.toFixed(3);
   return <details open>
     <summary>逐点试测结果 · 测得 {measured} / {points.length} · 未测 {points.length - measured}</summary>
-    <p className="muted hint">原图上的测量站按测得、缺胶着色；偏移与胶宽见下表。</p>
+    <p className="muted hint">绿色横线连接测得的两侧胶边，红点表示未测到胶条；偏移与胶宽见下表。</p>
     <div className="table-wrap" style={{ maxHeight: 280, overflow: "auto" }}>
       <table className="table" aria-label="逐点试测结果"><thead><tr><th>测量站</th><th>状态</th><th>偏移 mm</th><th>胶宽 mm</th></tr></thead>
         <tbody>{points.map((point, index) => <tr key={index}><td>{point.id}</td><td className={point.status === "ok" ? "c-ok" : "c-warn"}>{point.status === "ok" ? "测得" : "缺胶"}</td><td>{value(point.offset)}</td><td>{value(point.width)}</td></tr>)}</tbody>

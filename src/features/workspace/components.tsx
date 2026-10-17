@@ -89,6 +89,7 @@ export interface ImageOverlay {
   stations?: [number, number][];
   /** 各站颜色；不给时统一用强调色 */
   stationColors?: string[];
+  segments?: { from: [number, number]; to: [number, number]; color: string; label?: string }[];
   /** 中线改了还没保存：各站是旧的，淡显 */
   stale?: boolean;
   /** 选中的中线点 */
@@ -134,10 +135,11 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
   };
   const regionStart = useRef<[number, number] | null>(null);
   const [shown, setShown] = useState(true);
+  const [allHandles, setAllHandles] = useState(false);
   const group = useRef<SVGGElement>(null);
   const drag = useRef<{ index: number; inverse: DOMMatrix } | null>(null);
   const stopGesture = () => { drag.current = null; regionStart.current = null; pan.current = null; setPanning(false); };
-  useEffect(() => { reset(); stopGesture(); }, [image?.url, image?.width, image?.height]);
+  useEffect(() => { reset(); stopGesture(); setAllHandles(false); }, [image?.url, image?.width, image?.height]);
   useEffect(() => {
     const element = svg.current;
     if (!element || !image) return;
@@ -166,7 +168,7 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
   const editing = !!onEdit && shown;
   const path = overlay?.path ?? [];
   const hint = error || (emptyHint ?? "取样后在这张图上点出胶路中线。机器人应停在当前拍照点。");
-  return <div className="wp-viewport"><div className="wp-image-tools"><span>{label}</span><div><button className="icon-btn" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></button><span>{Math.round(zoom * 100)}%</span><button className="icon-btn" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></button><button className="icon-btn" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></button>{overlay && <button className={"btn small" + (shown ? " active" : "")} aria-pressed={shown} onClick={() => setShown(v => !v)}>中线叠加</button>}</div></div>
+  return <div className="wp-viewport"><div className="wp-image-tools"><span>{label}</span><div><button className="icon-btn" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></button><span>{Math.round(zoom * 100)}%</span><button className="icon-btn" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></button><button className="icon-btn" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></button>{overlay && <button className={"btn small" + (shown ? " active" : "")} aria-pressed={shown} onClick={() => setShown(v => !v)}>中线叠加</button>}{onEdit && overlay && <button className={"btn small" + (allHandles ? " active" : "")} aria-pressed={allHandles} disabled={!shown} onClick={() => setAllHandles(v => !v)}>编辑点</button>}</div></div>
     {!image ? <div className="wp-image-empty"><Camera size={32} /><strong>{loading ? "正在读取原图…" : error ? "原图不可用" : emptyTitle ?? "尚未冻结本帧图像"}</strong>{hint && <span>{hint}</span>}</div> :
       <svg ref={svg} role="img" tabIndex={0} className={"wp-gray-image" + (editing ? " editable" : "") + (panning ? " panning" : "")} viewBox={"0 0 " + image.width + " " + image.height} aria-label={label} aria-description="Ctrl 加滚轮缩放，中键拖动平移；聚焦后加减键缩放，0 适应窗口" onKeyDown={e => {
         if (e.altKey || e.metaKey || drag.current || regionStart.current || pan.current) return;
@@ -218,9 +220,15 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
           {overlay && shown && <g aria-label="中线叠加">
             {overlay.stations?.map(([x, y], i) => <circle key={"s" + i} cx={x} cy={y} r={dot} fill={overlay.stationColors?.[i] ?? "var(--primary)"} opacity={overlay.stale ? .35 : .9} />)}
             {path.length >= 2 && <polyline points={path.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeWidth={2} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
-            {onEdit && path.map(([x, y], i) => <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--primary)" : "var(--surface-lowest)"} fillOpacity={.85} stroke={i === 0 ? "var(--ok)" : "var(--primary)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
+            {onEdit && path.map(([x, y], i) => (allHandles || path.length <= 24 || i === 0 || i === path.length - 1 || overlay.selected === i) && <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--primary)" : "var(--surface-lowest)"} fillOpacity={.85} stroke={i === 0 ? "var(--ok)" : "var(--primary)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
+            {overlay.segments && <g aria-label="测量横线" pointerEvents="none">
+              {overlay.segments.map((segment, i) => <g key={i}>
+                <line x1={segment.from[0]} y1={segment.from[1]} x2={segment.to[0]} y2={segment.to[1]} stroke={segment.color} strokeWidth={2} vectorEffect="non-scaling-stroke" />
+                {segment.label && <text x={segment.to[0]} y={segment.to[1]} dx={4 / zoom} dy={-4 / zoom} fontSize={12 / zoom} fill={segment.color} stroke="var(--surface-lowest)" strokeWidth={3} paintOrder="stroke" vectorEffect="non-scaling-stroke">{segment.label}</text>}
+              </g>)}
+            </g>}
           </g>}
         </g></svg>}
-    {image && <div className="wp-image-footer"><span>{image.width} × {image.height} px · Ctrl＋滚轮缩放 · 中键拖动 · + / − / 0</span><span>{onRegion ? "拖动框选一段连续胶路区域" : onEdit ? "点击图像依次加中线点（从胶嘴一侧往外，绿圈为起点），拖动点可调整" : "原始灰度图像"}</span></div>}
+    {image && <div className="wp-image-footer"><span>{image.width} × {image.height} px · Ctrl＋滚轮缩放 · 中键拖动 · + / − / 0</span><span>{onRegion ? "拖动框选一段连续胶路区域" : onEdit ? (path.length > 24 && !allHandles ? "密集中线仅显示端点；打开“编辑点”可调整全部点" : "点击图像依次加中线点（从胶嘴一侧往外，绿圈为起点），拖动点可调整") : "原始灰度图像"}</span></div>}
   </div>;
 }
