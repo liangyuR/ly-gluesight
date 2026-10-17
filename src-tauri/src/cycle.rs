@@ -999,8 +999,8 @@ impl Machine {
             Ok(_) => return self.refuse(sn, id, fault::NO_RECIPE, "PLC 产品代码与所选配方不一致".into()).await,
             Err(reason) => return self.refuse(sn, id, fault::PLAN_MISMATCH, reason).await,
         };
-        if count != n {
-            return self.refuse(sn, id, fault::SHOT_COUNT_MISMATCH, format!("PLC 下发拍照点数 {count}，配方 {} 为 {n}", recipe.id)).await;
+        if count != plan.shot_count as usize {
+            return self.refuse(sn, id, fault::SHOT_COUNT_MISMATCH, format!("PLC 下发触发次数 {count}，配方 {} 为 {}（{n} 个拍照点）", recipe.id, plan.shot_count)).await;
         }
         let production = match crate::production::ready(&app, &recipe) {
             Ok(prepared) => prepared,
