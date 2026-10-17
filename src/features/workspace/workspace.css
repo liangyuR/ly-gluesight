@@ -157,6 +157,33 @@
 .wp-check-row.passed > svg { color:var(--ok); }
 .wp-check-row strong { display:block; font-size:12px; font-weight:500; }
 .wp-check-row p { font-size:11px; color:var(--on-surface-variant); line-height:1.8; margin:3px 0 0; }
+.wp-teach-progress { display:flex; flex-direction:column; align-items:stretch; gap:12px; }
+.wp-teach-progress-head { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.wp-check-row .wp-teach-count { margin-left:auto; color:var(--on-surface); font-size:22px; font-weight:500; font-variant-numeric:tabular-nums; }
+.wp-teach-count small { color:var(--on-surface-variant); font-size:12px; font-weight:400; }
+.wp-teach-meter { width:100%; height:6px; border:0; border-radius:var(--r-full); overflow:hidden; accent-color:var(--primary); }
+.wp-teach-meter::-webkit-progress-bar { background:var(--surface-high); }
+.wp-teach-meter::-webkit-progress-value { background:var(--primary); border-radius:var(--r-full); }
+.wp-teach-counts { display:flex; gap:8px; flex-wrap:wrap; }
+.wp-teach-counts > span { display:flex; gap:12px; align-items:center; padding:5px 9px; border-radius:var(--r-sm); background:var(--surface-high); font-size:11px; }
+.wp-teach-counts b { font-variant-numeric:tabular-nums; font-weight:600; }
+.wp-teach-alert { display:flex; gap:8px; padding:10px; border-radius:var(--r-md); background:var(--warn-container); color:var(--on-warn-container); }
+.wp-teach-alert > svg { flex-shrink:0; margin-top:2px; }
+.wp-check-row .wp-teach-alert p { color:inherit; }
+.wp-teach-todo { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:10px; border-radius:var(--r-md); background:var(--surface-high); }
+.wp-teach-todo > span { color:var(--on-surface-variant); font-size:11px; }
+.wp-teach-todo > p { flex-basis:100%; }
+.wp-progress-diagnostics { font-size:11px; color:var(--on-surface-variant); }
+.wp-progress-diagnostics > summary { cursor:pointer; width:fit-content; padding:3px 0; }
+.wp-progress-diagnostics > .wp-blockers { max-height:220px; overflow:auto; }
+.wp-progress-diagnostics a { color:var(--primary); }
+.wp-teaching-groups { min-width:0; scroll-margin-top:16px; }
+.wp-teaching-groups:focus-visible { outline:2px solid var(--primary); outline-offset:3px; border-radius:var(--r-lg); }
+.wp-teach-filters { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px; }
+.wp-teach-filters .btn { gap:8px; }
+.wp-teach-filters .btn span { font-size:10px; opacity:.85; font-variant-numeric:tabular-nums; }
+.wp-teach-row-hint { max-width:340px; margin:5px 0 0; white-space:normal; font-size:11px; line-height:1.6; color:var(--on-surface-variant); }
+.wp-teach-empty { padding:28px 12px; text-align:center; color:var(--on-surface-variant); font-size:12px; }
 .wp-rule-stat { display:flex; gap:32px; margin:18px 0; }
 .wp-rule-stat > div { display:flex; flex-direction:column; gap:7px; color:var(--on-surface-variant); }
 .wp-rule-stat strong { font-size:24px; color:var(--on-surface); font-weight:500; }
