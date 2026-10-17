@@ -21,7 +21,7 @@ function FrozenViewOption({ id, metadata, selected, disabled, onSelect }: { id: 
   const label = metadata.camera + " · 图 " + metadata.view;
   return <button className={"wp-view-option" + (selected ? " selected" : "")} aria-label={"选择检测图 " + label} aria-pressed={selected} disabled={disabled} onClick={onSelect}>
     <span className="wp-view-thumbnail">{image ? <img src={image.url} alt={label} /> : <span>{loading ? "读取中…" : error ? "图像不可用" : "等待图像"}</span>}</span>
-    <strong>{label}</strong><span className="wp-view-choice">{selected ? "已选为本组检测图" : "选用此图"}</span>
+    <span className="wp-view-caption"><strong>{label}</strong><span className="wp-view-choice">{selected ? "当前检测图" : "选用此图"}</span></span>
   </button>;
 }
 
@@ -190,10 +190,14 @@ export default function TeachingPage() {
         <strong>{item.poseId}<span>{item.complete ? "已完成" : `${item.members.reduce((n,member) => n + data.workspace.frames[member].views.length,0)} 张图`}</span></strong>
         <small>{item.choice ? doc.shots[item.choice.k].camera + " · 图 " + item.choice.view : "未选定检测图"}</small><span>{item.status}</span>
       </button>)}</nav></Panel>
-      <div className="wp-stack"><Panel title={group.poseId + " · 选择一张检测图"} detail="选择胶路清晰的一张图；本组其余图仍采集，不参与检测。" actions={<Link className="btn small" to="/recipe/capture">重新采集</Link>}>
-        <div className="wp-group-images" aria-label="本组图像">{group.members.flatMap(member => data.workspace.frames[member].views.map(view => <FrozenViewOption key={view.id} id={doc.id} metadata={view} selected={group.choice?.k === member && group.choice.view === view.view} disabled={!unlocked || editing || frameDirty} onSelect={() => void selectImage(member,view.view)} />))}</div>
+      <div className="wp-stack"><section className="panel wp-image-picker" aria-label="本组检测图选择">
+        <div className="wp-image-picker-bar"><h2>{group.poseId}<span>检测图</span></h2>
+          <div className="wp-group-images" role="group" aria-label="本组图像" aria-describedby="image-picker-hint">{group.members.flatMap(member => data.workspace.frames[member].views.map(view => <FrozenViewOption key={view.id} id={doc.id} metadata={view} selected={group.choice?.k === member && group.choice.view === view.view} disabled={!unlocked || editing || frameDirty} onSelect={() => void selectImage(member,view.view)} />))}</div>
+          <Link className="btn small" to="/recipe/capture">重新采集</Link>
+        </div>
+        <p id="image-picker-hint" className="muted hint">选择胶路清晰的一张图用于示教与检测，其余图仅采集。{(editing || frameDirty) && "当前有未保存的示教修改，暂不能切换检测图。"}</p>
         {group.selected.length > 1 && <p className="c-warn" role="alert">本组原先选择了多张图，请重新选择一张作为检测图。</p>}
-      </Panel>
+      </section>
       {enabled ? <><Panel title={enabled ? shot.camera + " · 中线示教" : "中线示教"} detail={enabled ? "框选胶路 → 提取与修正中线 → 试测 → 保存本组" : "先从上方选择本组唯一的检测图"}>
         <div className="wp-actions"><button className="btn" aria-pressed={regionMode} disabled={!unlocked || !frame.image} onClick={() => setRegionMode(v => !v)}>{regionMode ? "结束框选 / 手工修正" : "框选胶路区域"}</button>
           <button className="btn" disabled={!unlocked || !frame.image || loading || !!error} onClick={() => void extract()}><WandSparkles size={15}/>{operation === "extract" ? "提取中…" : "自动提取中线"}</button>
