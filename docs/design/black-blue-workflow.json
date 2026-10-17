@@ -33,7 +33,9 @@
     },
     "layout": {
       "sidebarWidth": 220,
-      "collapsedSidebarWidth": 72,
+      "collapsedSidebarWidth": 88,
+      "sidebarOuterInset": 12,
+      "sidebarRadius": 28,
       "headerHeight": 60,
       "pagePadding": 20,
       "panelGap": 16,
