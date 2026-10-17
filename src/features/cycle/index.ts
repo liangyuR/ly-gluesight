@@ -10,7 +10,6 @@ export { default as ShotTiles } from "./components/ShotTiles";
 export { default as ShotStrip } from "./components/ShotStrip";
 export { default as UnrolledCurve } from "./components/UnrolledCurve";
 export { default as OfflineControls } from "./components/OfflineControls";
-export { default as SiteModeBadge } from "./components/SiteModeBadge";
 export { default as OfflineManagedNotice } from "./components/OfflineManagedNotice";
 export { CycleStepper, SignalLamps } from "./components/CycleStatus";
 export type * from "./types";
