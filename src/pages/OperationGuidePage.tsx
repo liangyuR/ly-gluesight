@@ -67,31 +67,29 @@ export default function OperationGuidePage() {
   const pending = drafts.data?.filter(draft => draft.publish.state === "waiting").length;
   const failed = drafts.data?.filter(draft => ["failed", "uncertain"].includes(draft.publish.state)).length;
   return <div className="guide-page">
-    <div className="guide-toolbar"><p>查看站点状态，选择工作流</p><div><Link className="guide-text-link" to="/offline">{site.data ? siteModeText(site.data) : unavailable(site)} · 离线模式</Link><button className="icon-btn" aria-label="刷新总览状态" disabled={!desktopAvailable()} onClick={() => setRefresh(value => value + 1)}><RefreshCw size={17} /></button></div></div>
+    <div className="guide-toolbar"><div><Link className="guide-text-link" to="/offline">{site.data ? siteModeText(site.data) : unavailable(site)} · 离线模式</Link><button className="icon-btn" aria-label="刷新总览状态" disabled={!desktopAvailable()} onClick={() => setRefresh(value => value + 1)}><RefreshCw size={17} /></button></div></div>
     <ReadError state={site} />
     <div className="guide-status-grid">
       <StatusCard title="采集设备" icon={Camera} status={<Badge tone={cameras.data?.length && ready === cameras.data.length ? "ok" : "neutral"}>{cameraLabel}</Badge>} links={[["相机与采集", "/camera"], ["查看标定", "/camera/calibration"]]}>
         <div className="guide-camera-list">{cameras.data?.map(camera => <div className="guide-value" key={camera.id}><span>{camera.name}</span><strong>{camera.ready ? "设备就绪" : camera.released ? "已释放" : "未就绪"}</strong><small>{camera.message}</small></div>)}</div>
-        <ReadError state={cameras} /><p className="guide-note">设备就绪后，仍需核对配方与开工条件。</p>
+        <ReadError state={cameras} />
       </StatusCard>
       <StatusCard title="PLC 通讯" icon={Cable} status={<Badge tone={plc.data?.state === "connected" ? "ok" : "neutral"}>{plc.data ? linkStateLabels[plc.data.state] : unavailable(plc)}</Badge>} links={[["PLC 通讯", "/plc"], ["通讯日志", "/plc-logs"]]}>
         <div className="guide-value"><span>通讯协议</span><strong>Siemens S7</strong></div>
         <p className="guide-plc-message">{plc.data?.message || (plc.data ? "检查工件开始、布防、结果与确认点位" : unavailable(plc))}</p>
-        <ReadError state={plc} /><p className="guide-note">连接成功不代表已完成生产握手。</p>
+        <ReadError state={plc} />
       </StatusCard>
       <StatusCard title="配方版本" icon={FlaskConical} status={<Badge tone="neutral">{recipes.data ? recipes.data.errors.length ? "部分读取失败" : `${recipes.data.recipes.length} 个已发布` : unavailable(recipes)}</Badge>} links={[["打开配方库", "/recipe"]]}>
         <div className="guide-value"><span>已加载候选</span><strong>{drafts.data ? `${drafts.data.length} 个` : unavailable(drafts)}</strong></div>
         {drafts.data && <div className="guide-value"><span>已加载发布</span><strong>{failed || pending ? `${pending} 个待生效 · ${failed} 个需处理` : "无待生效版本"}</strong></div>}
         <ReadError state={recipes} /><ReadError state={drafts} />{recipes.data?.errors.map((error, i) => <p className="guide-error" role="alert" key={i}>{error}</p>)}
-        <p className="guide-note">候选独立保存，发布版本在工件边界生效。</p>
       </StatusCard>
     </div>
-    <div className="guide-section-heading"><h2>工作流</h2><p>步骤为操作路径，完成状态请在对应工作台确认</p></div>
+    <div className="guide-section-heading"><h2>工作流</h2></div>
     <div className="guide-journeys">{journeys.map(({ title, detail, icon: Icon, action, path, links, production }) => <section className={`guide-journey${production ? " production" : ""}`} aria-label={title} key={title}>
       <div className="guide-journey-title"><span className="guide-icon"><Icon size={22} /></span><div><h3>{title}</h3><p>{detail}</p></div></div>
       <nav aria-label={`${title}步骤`}><ol>{links.map(([label, target], i) => <li key={label}><Link to={target}><span>{i + 1}</span>{label}</Link>{i < links.length - 1 && <ChevronRight size={13} aria-hidden="true" />}</li>)}</ol></nav>
       <Link className={`btn guide-primary-action${production ? " primary" : ""}`} to={path}>{production && <Play size={15} />}{action}</Link>
     </section>)}</div>
-    <p className="guide-footnote">计划变更后需在 PLC 侧核对计划版本与拍照点数。历史原图可用时，才能执行原图复测。</p>
   </div>;
 }
