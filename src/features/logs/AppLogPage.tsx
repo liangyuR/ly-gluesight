@@ -150,7 +150,7 @@ export default function AppLogPage() {
               <td className="mono nowrap">{formatTs(r.ts)}</td>
               <td><span className={`badge level-${badgeLevel[r.level]}`}>{levelText[r.level]}</span></td>
               <td className="nowrap">{r.ev}</td>
-              <td className="nowrap"><Cycle record={r} onFilter={setCycle} /></td>
+              <td><Cycle record={r} onFilter={setCycle} /></td>
               <td className="nowrap mono">{r.k != null ? `k${r.k + 1}` : ""}{r.shotId ? ` · ${r.shotId}` : ""}{r.camera ? ` · ${r.camera}` : ""}</td>
               <td className="msg"><span className="log-msg" title={r.msg}>{r.msg}</span>{r.data != null && <details className="log-data"><summary>结构化字段</summary><pre className="mono">{JSON.stringify(r.data, null, 2)}</pre></details>}</td>
             </tr>)}

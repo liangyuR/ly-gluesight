@@ -1,7 +1,7 @@
 .badge.level-debug, .chip.level-debug.on { background: var(--surface-high); color: var(--on-surface-variant); }
 .chip.level-debug.on { border-color: transparent; }
 .log-row-error td { background: color-mix(in srgb, var(--ng-container) 35%, transparent); }
-.log-cycle { display: inline-flex; align-items: center; gap: 8px; }
+.log-cycle { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; max-width: 220px; }
 .log-usage { font-size: 12px; gap: 12px; }
 .log-usage .link { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
 .log-data { margin-top: 4px; }
@@ -21,5 +21,5 @@
 .timeline-table { max-height: 420px; overflow: auto; }
 .timeline-mark td { font-weight: 600; }
 .timeline-selected td { background: var(--state-hover); }
-.app-log-table td.msg { min-width: 360px; }
+.app-log-table td.msg { min-width: 300px; }
 .log-msg { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
