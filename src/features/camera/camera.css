@@ -24,7 +24,7 @@
 .cam-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(440px, 560px); gap: 16px; align-items: start; }
 .cam-body .wp-gray-image { height: clamp(320px, calc(100vh - 430px), 640px); }
 .calib-desc { margin: 0; font-size: 12px; line-height: 1.6; }
-@media (max-width: 1250px) { .cam-body { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 1400px) { .cam-body { grid-template-columns: minmax(0, 1fr); } }
 
 
 .calc-in { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
