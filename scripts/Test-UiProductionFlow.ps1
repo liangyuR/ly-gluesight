@@ -17,7 +17,7 @@ try {
     & (Join-Path $PSScriptRoot 'Start-UiTestInstance.ps1') -Profile flow -DebugPort $DebugPort -SkipBuild:$SkipBuild | Out-Host
     $flowOwnedInstance = Get-Content -LiteralPath $flowManifestPath -Raw | ConvertFrom-Json
     & node (Join-Path $flowProjectRoot 'tests/native/production-flow-ui.mjs') `
-        --cdp "http://127.0.0.1:$DebugPort" --instance $flowManifestPath --output (Join-Path $flowOutput 'result.json')
+        --cdp "http://localhost:$DebugPort" --instance $flowManifestPath --output (Join-Path $flowOutput 'result.json')
     if ($LASTEXITCODE -ne 0) { throw "生产落盘测试失败（退出码 $LASTEXITCODE）。日志见 $flowOutput。" }
 } finally {
     if ($flowOwnedInstance) {
