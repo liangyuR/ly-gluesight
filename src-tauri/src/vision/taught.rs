@@ -220,6 +220,17 @@ pub fn measure_shot_with_graph(engine: &Engine, recipe: &Recipe, k: usize, image
     run_shot(engine, recipe, k, image, run_id, base_dir, p)
 }
 
+/// 评测用：按节点覆盖算法图参数（{"n_width": {...}}）后测量，用来比较参数取值，不进生产路径。
+#[cfg(test)]
+pub(super) fn measure_shot_patched(engine: &Engine, recipe: &Recipe, k: usize, image: &FrameImage, run_id: &str, patch: &Value) -> Result<ShotMeasurement, String> {
+    let mut p = plan(recipe, k)?;
+    for node in p.graph["nodes"].as_array_mut().into_iter().flatten() {
+        let Some(over) = node["id"].as_str().and_then(|id| patch.get(id)).and_then(Value::as_object) else { continue };
+        for (key, value) in over { node["params"][key] = value.clone(); }
+    }
+    run_shot(engine, recipe, k, image, run_id, "", p)
+}
+
 fn run_shot(engine: &Engine, recipe: &Recipe, k: usize, image: &FrameImage, run_id: &str, base_dir: &str, p: ShotPlan) -> Result<ShotMeasurement, String> {
     let start = Instant::now();
     if image.width == 0 || image.height == 0 || image.pixels.len() != image.width as usize * image.height as usize {

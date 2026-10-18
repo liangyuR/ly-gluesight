@@ -114,6 +114,31 @@ fn offline_parts_stay_out_of_real_history_statistics_and_rejudge_and_vice_versa(
 }
 
 #[test]
+fn neighbors_follow_list_filters_and_never_cross_record_scope() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = recipe();
+    let shots = shots(&recipe);
+    let delivery = PlcDelivery::default();
+    let insert = |cycle: &str, verdict: Verdict, source: RecordSource| {
+        let mut judgement = Judgement::error(0, "回看");
+        judgement.verdict = verdict;
+        store.insert(&PartRecord { ts: 1234, sn: "SN-42", recipe: Some(&recipe), judgement: &judgement, drain_ms: None, frames: &[],
+            frames_expected: recipe.shot_count(), frames_received: recipe.shot_count(), triggers: 4, table: None, software_version: "test",
+            cycle_id: Some(cycle), bundle_id: None, delivery: &delivery, shots: &shots, source, sample: None }).unwrap()
+    };
+    let a = insert("a", Verdict::NgGap, RecordSource::Real);
+    let b = insert("b", Verdict::Ok, RecordSource::Real);
+    let offline = insert("c", Verdict::NgGap, RecordSource::OfflineSample);
+    let d = insert("d", Verdict::NgWidth, RecordSource::Real);
+    insert("e", Verdict::Ok, RecordSource::Real);
+    let ng = HistoryQuery { verdicts: vec![Verdict::NgGap, Verdict::NgWidth], ..Default::default() };
+    assert_eq!(store.neighbors(&HistoryQuery::default(), b).unwrap(), (Some(a), Some(d)));
+    assert_eq!(store.neighbors(&ng, d).unwrap(), (Some(a), None));
+    assert_eq!(store.neighbors(&HistoryQuery { scope: HistoryScope::Offline, ..Default::default() }, offline).unwrap(), (None, None));
+}
+
+#[test]
 fn identity_shots_and_measurements_round_trip() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();

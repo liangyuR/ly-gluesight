@@ -21,7 +21,10 @@
 .cam-head { display: flex; align-items: center; gap: 10px; min-height: 36px; flex-wrap: wrap; }
 .cam-head > strong { font-size: 16px; font-weight: 600; }
 .cam-head-info { font-size: 12.5px; }
-.cam-body { display: grid; grid-template-columns: minmax(340px, 420px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.cam-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(440px, 560px); gap: 16px; align-items: start; }
+.cam-body .wp-gray-image { height: clamp(320px, calc(100vh - 430px), 640px); }
+.calib-desc { margin: 0; font-size: 12px; line-height: 1.6; }
+@media (max-width: 1400px) { .cam-body { grid-template-columns: minmax(0, 1fr); } }
 
 
 .calc-in { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }

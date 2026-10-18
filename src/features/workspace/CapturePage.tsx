@@ -12,7 +12,9 @@ import { cycleApi, useCycle, useSiteStatus } from "../cycle/api";
 import SamplePartSelect from "../cycle/components/SamplePartSelect";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
-import { AlertTriangle, ArrowRight, Cable, Camera, Crosshair, Play } from "lucide-react";
+import { AlertTriangle, ArrowRight, Cable, Camera, CheckCircle2, Crosshair, Play } from "lucide-react";
+import { scrollBehavior } from "./motion";
+import SelectionTrack from "../../components/SelectionTrack";
 import { Badge, Notice, NumberField, Panel, Steps, WorkspaceBar, WorkspaceEmpty, GrayViewer } from "./components";
 import "./capture.css";
 import type { CaptureRound, GrayImage } from "./types";
@@ -105,7 +107,7 @@ export default function CapturePage() {
   const [prepOpenFor,setPrepOpenFor] = useState<string | null>(null), [imagingOpen,setImagingOpen] = useState(false);
   const resultRef = useRef<HTMLDivElement>(null), wasActive = useRef(false);
   useEffect(() => {
-    if(wasActive.current && !active && round) resultRef.current?.scrollIntoView?.({block:"start",behavior:"smooth"});
+    if(wasActive.current && !active && round) resultRef.current?.scrollIntoView?.({block:"start",behavior:scrollBehavior()});
     wasActive.current=active;
   },[active,round?.roundId]);
   if(!doc || !data) return <WorkspaceEmpty/>;
@@ -133,6 +135,10 @@ export default function CapturePage() {
   };
   const stop=async () => { if(locked) return; setWorking(true); try {const next=await workspaceApi.captureStop();if(current.current.alive && current.current.id===doc.id)setRound(next);} catch(e) {if(current.current.alive && current.current.id===doc.id)setError(errorText(e));} finally {if(current.current.alive && current.current.id===doc.id)setWorking(false);} };
   const spec = round ? roundSpec(round.frames) : null;
+  const adopted = !validation && !!round && data.workspace.captureId === round.roundId;
+  const savedSample = validation && !!round && data.workspace.sampleBank.some(sample => sample.id === round.roundId);
+  const received = round ? completeShots(round) : 0;
+  const progress = round?.plannedCount ? Math.min(1, received / round.plannedCount) : null;
   const shotKey=(e: KeyboardEvent<HTMLDivElement>) => {
     const step = e.key==="ArrowDown" || e.key==="ArrowRight" ? 1 : e.key==="ArrowUp" || e.key==="ArrowLeft" ? -1 : 0;
     if(!step || !round?.frames.length) return;
@@ -195,16 +201,17 @@ export default function CapturePage() {
   </Panel>;
   const historyPanel = <Panel key="history" title="采集历史" detail="保留异常轮次供追溯，重新采集不会混用旧图">{history.length ? <select className="input" aria-label="采集历史" value={roundId ?? ""} disabled={active || working} onChange={e=>{setRoundId(e.target.value || undefined);setPreviewK(0);}}><option value="">最近轮次</option>{history.map(r=><option key={r.roundId} value={r.roundId}>{new Date(r.createdAt).toLocaleString("zh-CN")} · {stateLabels[r.state]} · {r.cameraIds.length} 台相机 · {captureCountText(r)}</option>)}</select> : <p className="wp-capture-empty">暂无采集轮次。完成第一圈采集后，可在此回看各轮结果。</p>}</Panel>;
   const resultPanel = round && <div key="result" ref={resultRef} className="wp-capture-anchor"><Panel title="采集结果" actions={<Badge tone={round.state==="complete" ? "ok" : round.state==="failed" ? "warn" : "info"}>{stateLabels[round.state]}</Badge>}>
+    {active && <div className="wp-capture-live" role="status" aria-label="采集进度">{progress == null ? <i className="wp-capture-breath" aria-hidden="true"/> : <span className="wp-capture-meter" aria-hidden="true"><span style={{ transform: `scaleX(${progress})` }}/></span>}<strong>{captureCountText({state:round.state,plannedCount:round.plannedCount,receivedCount:received})}</strong><span className="muted">{round.state==="waitingStart" ? "现场启动后开始计数；需要停止时点“中止本轮”" : round.state==="draining" ? "PLC 已结束，正在等待在途图像" : "各相机收齐后等待 PLC 结束信号"}</span></div>}
     <div className="wp-capture-summary">
       <span className="wp-capture-chip"><small>轮次</small><strong className="mono">{round.roundId}</strong></span>
-      <span className="wp-capture-chip"><small>数量核对</small><strong>{captureCountText({state:round.state,plannedCount:round.plannedCount,receivedCount:completeShots(round)})}</strong></span>
+      <span className="wp-capture-chip"><small>数量核对</small><strong>{captureCountText({state:round.state,plannedCount:round.plannedCount,receivedCount:received})}</strong></span>
       {multi && round.cameras.map(c=><span key={c.cameraId} className={"wp-capture-chip" + (round.plannedCount != null && c.receivedCount !== round.plannedCount && !active ? " warn" : "")}><small>{nameOf(c.cameraId)}</small><strong>{c.receivedCount}{round.plannedCount != null ? ` / ${round.plannedCount}` : ""} 张</strong></span>)}
       {round.plcActualCount != null && <span className="wp-capture-chip"><small>PLC 实际触发</small><strong>{round.plcActualCount} 次</strong></span>}
       {spec?.main && <span className={"wp-capture-chip" + (spec.uniform ? "" : " warn")}><small>图像规格</small><strong>{spec.uniform ? spec.main : `尺寸不一致 · 多数为 ${spec.main}`}</strong></span>}
       <Badge tone={round.simulated ? "warn" : "ok"}>{round.simulated ? "离线 / 模拟（不代表现场硬件验收）" : "设备实拍"}</Badge>
     </div>
     {round.error && <Notice title="本轮异常，整圈重采" tone="warn">{round.error}</Notice>}
-    {multi && <div className="wp-actions" role="group" aria-label="查看相机">{round.cameras.map(c=><button key={c.cameraId} className={"btn small" + (c.cameraId===shownCamera ? " primary" : "")} aria-pressed={c.cameraId===shownCamera} onClick={()=>setPreviewCamera(c.cameraId)}>{nameOf(c.cameraId)}</button>)}</div>}
+    {multi && <SelectionTrack className="wp-capture-cams" role="group" aria-label="查看相机" activeKey={shownCamera}>{round.cameras.map(c=><button key={c.cameraId} type="button" className={c.cameraId===shownCamera ? "active" : undefined} aria-pressed={c.cameraId===shownCamera} onClick={()=>setPreviewCamera(c.cameraId)}>{nameOf(c.cameraId)}</button>)}</SelectionTrack>}
     <div className="wp-capture-result">
     <GrayViewer image={shown?.image ?? null} loading={previewArrived && !shown && !previewError} error={previewError || (round.frames[previewK] && !previewArrived ? "该相机本次触发尚未到图" : "")} label={"拍照点 " + pad(shownK) + (multi ? " · " + nameOf(shownCamera) : "") + " · 完整拼接原图" + (shownK!==previewK ? " · 正在读取 " + pad(previewK) : "")}/>
     <div className="wp-capture-side">
@@ -216,12 +223,12 @@ export default function CapturePage() {
         <strong>{pad(i)}</strong><i className={"wp-capture-dot" + (warn ? " warn" : "")}/><span>{own ? `帧 ${own.frameCounter} · 触发 ${own.triggerCounter ?? "未提供"}` : "该相机未到图"}</span>{odd && <small>{frameSpec(f)}</small>}{missing>0 && <small>缺 {missing} 台相机</small>}
       </button>;
     })}</div> : <p className="muted">尚未收到图像</p>}
-    {round.state==="complete" && <div className="wp-capture-actions">{!validation && data.workspace.frames.length>0 && <><label className="check"><input type="checkbox" checked={reuse} disabled={locked} onChange={e=>setReuse(e.target.checked)}/>带入旧中线与参数作为草稿</label>{reuse && <label className="check"><input type="checkbox" checked={confirmed} disabled={locked} onChange={e=>setConfirmed(e.target.checked)}/>已确认相机、轨迹和触发顺序保持一致，拍照点对应正确</label>}</>}
+    {round.state==="complete" && <div className="wp-capture-actions">{(adopted || savedSample) && <p className="wp-capture-done" role="status"><CheckCircle2 size={15} aria-hidden="true"/>{adopted ? `已采用为示教图像 · ${round.frames.length} 个拍照点` : "已加入验证样本库"}</p>}{!validation && !adopted && data.workspace.frames.length>0 && <><label className="check"><input type="checkbox" checked={reuse} disabled={locked} onChange={e=>setReuse(e.target.checked)}/>带入旧中线与参数作为草稿</label>{reuse && <label className="check"><input type="checkbox" checked={confirmed} disabled={locked} onChange={e=>setConfirmed(e.target.checked)}/>已确认相机、轨迹和触发顺序保持一致，拍照点对应正确</label>}</>}
       {validation && <label className="check"><input type="checkbox" checked={confirmed} disabled={locked} onChange={e=>setConfirmed(e.target.checked)}/>已确认本轮样本与示教轨迹、触发顺序及拍摄条件一致</label>}
       {validation && <label className="field"><span>样本人工期望</span><select className="input" aria-label="样本人工期望" value={sampleExpected} disabled={locked} onChange={e=>setSampleExpected(e.target.value as Verdict)}>{expectedChoices.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>}
       {sampleSourceInvalid && <Notice title="需要独立于示教的采集轮次" tone="warn">{data.workspace.captureId ? "当前轮次已用于示教，请重新采集一圈作为验证样本。" : "请先采用示教采集轮次，再采集独立验证样本。"}</Notice>}
-      <button className="btn primary" disabled={locked || productionBusy || sampleSourceInvalid || ((validation || reuse) && !confirmed)} onClick={() => void act(() => validation ? workspaceApi.captureSample(doc.id,data.workspace.revision,round.roundId,sampleExpected,confirmed) : workspaceApi.adoptCapture(doc.id,data.workspace.revision,round.roundId,reuse,confirmed),validation ? "独立验证样本已加入样本库" : "已采用本轮图像，请逐点选择检测图并示教")}>{validation ? "保存为独立验证样本" : "采用本轮图像"}</button>
-      <Link className="btn" to={validation ? "/recipe/validation" : "/recipe/teach"}>{validation ? "进入验证" : "进入单帧示教"}</Link>
+      <button className={"btn" + (adopted || savedSample ? "" : " primary")} disabled={locked || productionBusy || sampleSourceInvalid || adopted || savedSample || ((validation || reuse) && !confirmed)} title={adopted ? "本轮已采用为示教图像" : savedSample ? "本轮已加入验证样本库" : undefined} onClick={() => void act(() => validation ? workspaceApi.captureSample(doc.id,data.workspace.revision,round.roundId,sampleExpected,confirmed) : workspaceApi.adoptCapture(doc.id,data.workspace.revision,round.roundId,reuse,confirmed),validation ? "独立验证样本已加入样本库" : "已采用本轮图像，请逐点选择检测图并示教")}>{validation ? "保存为独立验证样本" : "采用本轮图像"}</button>
+      <Link className={"btn" + (adopted || savedSample ? " primary" : "")} to={validation ? "/recipe/validation" : "/recipe/teach"}>{validation ? "进入验证" : "进入单帧示教"}<ArrowRight size={15} aria-hidden="true"/></Link>
     </div>}
     </div></div>
   </Panel></div>;
@@ -230,7 +237,7 @@ export default function CapturePage() {
     <span className={"wp-capture-chip" + (notReady.length || !chosen.length ? " warn" : "")}><small>相机</small><strong>{(chosen.length ? chosen.map(nameOf).join("、") : "未选择") + " · " + (chosen.length && !notReady.length ? "就绪" : "未就绪")}</strong></span>
     <span className={"wp-capture-chip" + (plcConnected ? "" : " warn")}><small>PLC</small><strong>{plc}</strong></span>
     <span className="wp-capture-chip"><small>在途图像等待</small><strong>{drain} ms</strong></span>
-    <div className="wp-actions"><button className="btn" onClick={()=>setPrepOpenFor(round?.roundId ?? null)}>展开设备准备</button><button className="btn" disabled={startDisabled} title={startReason || undefined} onClick={() => void start()}>整圈重采</button></div>
+    <div className="wp-actions"><button className="btn" onClick={()=>setPrepOpenFor(round?.roundId ?? null)}>展开设备准备</button><button className={"btn" + (validation && !savedSample ? " primary" : "")} disabled={startDisabled} title={startReason || undefined} onClick={() => void start()}>{validation ? "采集新一圈样本" : "整圈重采"}</button></div>
   </section>;
-  return <div className="wp-page"><WorkspaceBar/><Steps/><div className="wp-columns"><div className="wp-stack">{collapsed ? <>{prepBar}{resultPanel}{historyPanel}</> : <>{prepPanel}{historyPanel}{resultPanel}</>}</div><section className="wp-capture-rules" aria-label="采集规则"><h3>采集规则</h3><div><strong>数量相同不代表对应相同</strong><p>每轮独立保存。任一相机缺帧、重复、超量、断连或无法确定归属时整圈重采；不会把下一张图补到缺失位置。</p></div><div><strong>结束条件</strong><p>各相机都收齐计划数量后仍等待 PLC 结束通知，再等待在途图像；超时会写明是哪台相机缺图。PLC 实际计划和完成计数均由后端按相机核对。</p></div></section></div></div>;
+  return <div className="wp-page"><WorkspaceBar/><Steps/><div className="wp-columns"><div className="wp-stack">{collapsed ? <>{prepBar}{resultPanel}{historyPanel}</> : <>{prepPanel}{resultPanel}{historyPanel}</>}</div><section className="wp-capture-rules" aria-label="采集规则"><h3>采集规则</h3><div><strong>数量相同不代表对应相同</strong><p>每轮独立保存。任一相机缺帧、重复、超量、断连或无法确定归属时整圈重采；不会把下一张图补到缺失位置。</p></div><div><strong>结束条件</strong><p>各相机都收齐计划数量后仍等待 PLC 结束通知，再等待在途图像；超时会写明是哪台相机缺图。PLC 实际计划和完成计数均由后端按相机核对。</p></div></section></div></div>;
 }

@@ -53,7 +53,7 @@ export default function ProgressPage() {
           {!waiting && subs.map(step => <p key={step.id} className="wp-progress-sub"><span>{subLabels[step.id] ?? step.label}</span><Badge tone={stepStatusTone[step.status]}>{stepStatusText[step.status]}</Badge>{step.detail}</p>)}
         </div>
         <div className="wp-progress-meter">{isTeach && <>
-          <div className="wp-progress-bar" aria-hidden="true"><span style={{ width: tasks.length ? `${completed / tasks.length * 100}%` : 0 }}/></div>
+          <div className="wp-progress-bar" aria-hidden="true"><span style={{ transform: `scaleX(${tasks.length ? completed / tasks.length : 0})` }}/></div>
           <output aria-label="有效示教组数">{completed} / {tasks.length} 组有效</output>
         </>}</div>
         <output className="wp-progress-state" aria-label={stage.label + "状态"}>{waiting ? <Badge tone="neutral"><Lock size={12} aria-hidden="true"/>{stageStatusText.waiting}</Badge> : status !== "optional" && <Badge tone={status ? stageStatusTone[status] : "neutral"}>{status ? stageStatusText[status] : "状态待确认"}</Badge>}</output>

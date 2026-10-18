@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,8 +8,9 @@ import { workspaceApi } from "../src/features/workspace/api";
 import { useWorkspace } from "../src/features/workspace/context";
 import { deferred, partDetail, workspaceState } from "./fixtures";
 import type { Comparison, RecordImages } from "../src/features/workspace/types";
+import type { Measured, Recipe } from "../src/features/cycle/types";
 
-vi.mock("../src/features/history/api", () => ({ historyApi: { detail: vi.fn(), recipe: vi.fn() } }));
+vi.mock("../src/features/history/api", () => ({ historyApi: { detail: vi.fn(), recipe: vi.fn(), neighbors: vi.fn() } }));
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
   recordImages: vi.fn(), recordImage: vi.fn(), comparisons: vi.fn(), compare: vi.fn(), compareOriginal: vi.fn(), historyCapture: vi.fn(), runtimeOverview: vi.fn(),
@@ -25,6 +26,7 @@ beforeEach(() => {
   ws = workspaceState(); ws.data!.workspace.frames.forEach(f => f.saved = true); ws.data!.progress.shots.forEach(s => s.state = "taught");
   detail = partDetail(); vi.mocked(useWorkspace).mockImplementation(() => ws);
   vi.mocked(historyApi.detail).mockResolvedValue(detail); vi.mocked(historyApi.recipe).mockResolvedValue(ws.data!.layout);
+  vi.mocked(historyApi.neighbors).mockResolvedValue({ older: null, newer: null });
   vi.mocked(workspaceApi.recordImages).mockResolvedValue(structuredClone(raw));
   vi.mocked(workspaceApi.recordImage).mockResolvedValue({ url: "data:image/png;base64,AA==", width: 100, height: 60 });
   vi.mocked(workspaceApi.runtimeOverview).mockResolvedValue(null); vi.mocked(workspaceApi.comparisons).mockResolvedValue([]);
@@ -62,7 +64,7 @@ describe("历史工件复测", () => {
     expect(await screen.findByRole("button", { name: "查看 k1 视角 1" })).toBeEnabled();
     expect(screen.getByText("受管样本完整可用")).toBeVisible();
     expect(screen.queryByText("录制关闭")).not.toBeInTheDocument();
-    expect(screen.getByRole("img", { name: /离线样本原图 · 样本 SN/ })).toBeVisible();
+    expect(await screen.findByRole("img", { name: /离线样本原图 · 样本 SN/ })).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "从原图复测整件" }));
     await waitFor(() => expect(workspaceApi.compare).toHaveBeenCalledWith("A", ws.data!.workspace.revision, 1, true));
   });
@@ -120,5 +122,37 @@ describe("历史工件复测", () => {
     ws.data!.workspace.revision++;
     page.rerender(element());await act(async()=>pending.resolve(old));
     expect(screen.queryByRole("heading",{name:"规则重判结果"})).not.toBeInTheDocument();expect(screen.queryByText("候选合格")).not.toBeInTheDocument();
+  });
+
+  it("按原发布包重现后有一个拍照点与原结果不同 → 比对表只列该拍照点，点击后切到该帧", async () => {
+    const shot = (k: number, d: number[], st: number[]): Measured => ({ cycleId: "cycle-1", shotId: `P${k + 1}`, camera: "CAM-1", bundleId: "bundle-A", sn: "SN-101", k, cam: 0,
+      located: true, score: 1, ms: 5, queueMs: null, engineMs: null, coreMs: null, error: null, idx: [2 * k, 2 * k + 1], d, w: [null, null], st, px: [] });
+    vi.mocked(workspaceApi.compareOriginal).mockResolvedValue({ ...comparison(), source: "original", measurements: [shot(0, [3, 3], [0, 0]), shot(1, [3, 0], [0, 1])] });
+    show(); await screen.findByText(/原图完整/);
+    await userEvent.click(screen.getByRole("button", { name: "按原发布包重现" }));
+    expect(await screen.findByText("1 / 2 个拍照点与原结果不同", { exact: false })).toBeVisible();
+    const table = screen.getByRole("table", { name: "逐拍照点比对" });
+    expect(within(table).queryByRole("button", { name: "比对查看拍照点 k1" })).not.toBeInTheDocument();
+    await userEvent.click(within(table).getByRole("button", { name: "比对查看拍照点 k2" }));
+    expect(screen.getByRole("combobox", { name: "历史帧选择" })).toHaveValue("1");
+  });
+
+  it("原配方快照仍在加载 → 不提示缺失；确认缺失 → 提示原因并禁用按原发布包重现", async () => {
+    const recipe = deferred<Recipe | null>(); vi.mocked(historyApi.recipe).mockReturnValue(recipe.promise);
+    show(); await screen.findByText(/原图完整/);
+    expect(screen.queryByText("不能按原发布包重跑")).not.toBeInTheDocument();
+    await act(async () => recipe.resolve(null));
+    expect(await screen.findByText(/原配方快照 revisionId-A 缺失/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "按原发布包重现" })).toBeDisabled();
+  });
+
+  it("选中不检拍照点后按 → → 跳到其后的检测拍照点而不是回到开头", async () => {
+    const layout = ws.data!.layout;
+    layout.shots = [0, 1, 2, 3].map(k => ({ ...layout.shots[0], id: `P${k + 1}`, poseId: `P${k + 1}`, skip: k === 2 }));
+    show();
+    const frame = await screen.findByRole("combobox", { name: "历史帧选择" });
+    await userEvent.selectOptions(frame, "2");
+    fireEvent.keyDown(document.body, { key: "ArrowRight" });
+    expect(frame).toHaveValue("3");
   });
 });

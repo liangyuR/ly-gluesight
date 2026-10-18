@@ -1,0 +1,19 @@
+.wp-check-passed { border-radius:var(--r-md); background:var(--surface-mid); }
+.wp-check-passed > summary { display:flex; align-items:center; gap:10px; padding:12px; color:var(--on-surface-variant); font-size:13px; cursor:pointer; list-style:none; }
+.wp-check-passed > summary::-webkit-details-marker { display:none; }
+.wp-check-passed > summary > svg:first-child { flex-shrink:0; color:var(--ok); }
+.wp-check-passed > summary > span { flex:1; min-width:0; }
+.wp-check-passed > summary > svg:last-child { flex-shrink:0; transition:transform var(--dur-short) var(--ease-standard); }
+.wp-check-passed[open] > summary > svg:last-child { transform:rotate(180deg); }
+.wp-check-passed > summary:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; border-radius:var(--r-md); }
+.wp-check-passed > .wp-checklist { padding:0 8px 8px; }
+.wp-check-passed .wp-check-row { background:var(--surface-low); }
+.field.wp-sample-source { flex-direction:row; align-items:center; gap:10px; }
+.field.wp-sample-source > select.input { width:220px; }
+.wp-validate-actions { display:flex; align-items:center; flex-wrap:wrap; gap:10px 16px; margin-top:4px; padding-top:14px; border-top:1px solid var(--outline-variant); }
+.wp-validate-actions > .spacer { flex:1; }
+.wp-validate-actions > .check { font-size:13px; }
+.wp-validate-reason { margin:0; color:var(--on-surface-variant); font-size:12px; line-height:1.6; }
+.wp-validate-anchor { scroll-margin-top:16px; }
+.wp-publish-button { width:100%; margin-top:16px; }
+.wp-publish-button + .wp-validate-reason { margin-top:8px; text-align:center; }

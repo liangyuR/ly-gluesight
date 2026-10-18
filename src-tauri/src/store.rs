@@ -1056,6 +1056,19 @@ impl Store {
         Ok(HistoryPage { total, counts, items })
     }
 
+    /// 同一筛选条件下与 id 相邻的记录：(较早一件, 较晚一件)。
+    pub fn neighbors(&self, q: &HistoryQuery, id: i64) -> Result<(Option<i64>, Option<i64>), String> {
+        let conn = self.conn.lock().unwrap();
+        let (filter, args) = Self::filter(q, "");
+        let one = |cmp: &str, order: &str| -> Result<Option<i64>, String> {
+            let mut values = args.clone();
+            values.push(SqlValue::Integer(id));
+            conn.query_row(&format!("SELECT id FROM parts{filter} AND id {cmp} ? ORDER BY id {order} LIMIT 1"),
+                params_from_iter(values.iter()), |row| row.get(0)).optional().map_err(db_err)
+        };
+        Ok((one("<", "DESC")?, one(">", "ASC")?))
+    }
+
     pub fn detail(&self, id: i64) -> Result<PartDetail, String> {
         let conn = self.conn.lock().unwrap();
         let (summary, judgement, frames, triggers, software_version, recording) = conn
