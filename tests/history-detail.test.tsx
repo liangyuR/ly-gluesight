@@ -62,7 +62,7 @@ describe("历史工件复测", () => {
     expect(await screen.findByRole("button", { name: "查看 k1 视角 1" })).toBeEnabled();
     expect(screen.getByText("受管样本完整可用")).toBeVisible();
     expect(screen.queryByText("录制关闭")).not.toBeInTheDocument();
-    expect(screen.getByRole("img", { name: /离线样本原图 · 样本 SN/ })).toBeVisible();
+    expect(await screen.findByRole("img", { name: /离线样本原图 · 样本 SN/ })).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "从原图复测整件" }));
     await waitFor(() => expect(workspaceApi.compare).toHaveBeenCalledWith("A", ws.data!.workspace.revision, 1, true));
   });
