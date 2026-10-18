@@ -23,7 +23,7 @@ export function StateBadge({ tone, label }: { tone: Tone; label: string }) {
 }
 
 export function cameraColor(i: number) {
-  return { "--cam-color": `var(--camera-${(i % 8) + 1})` } as CSSProperties;
+  return { "--cam-color": `var(--cam-${(i % 8) + 1})` } as CSSProperties;
 }
 
 export function useNow(ms: number) {

@@ -230,7 +230,7 @@
 .wp-teaching-tools { margin:12px 0; align-items:flex-end; gap:12px; }
 .wp-teaching-tools > .wp-field { width:150px; }
 .wp-brush-width { width:180px; display:grid; gap:6px; }
-.wp-brush-width-slider { width:100%; margin:0; min-height:24px; accent-color:var(--accent, #7dcedb); cursor:ew-resize; }
+.wp-brush-width-slider { width:100%; margin:0; min-height:24px; accent-color:var(--primary); cursor:ew-resize; }
 .wp-brush-width-slider:disabled { cursor:not-allowed; }
 .wp-teaching-tools > .muted { padding-bottom:7px; font-size:12px; }
 .wp-plain-fieldset { border:0; padding:0; margin:0; min-width:0; }

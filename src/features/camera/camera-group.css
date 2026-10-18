@@ -24,7 +24,7 @@
 
 .cg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; align-items: start; }
 .cg-card { position: relative; display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; border-radius: var(--r-lg); background: var(--surface-low); min-width: 0; }
-.cg-card::before { content: ""; position: absolute; left: 0; top: 18px; bottom: 18px; width: 3px; border-radius: 0 3px 3px 0; background: var(--cam-color, var(--camera-1)); }
+.cg-card::before { content: ""; position: absolute; left: 0; top: 18px; bottom: 18px; width: 3px; border-radius: 0 3px 3px 0; background: var(--cam-color, var(--cam-1)); }
 .cg-card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .cg-card-head strong { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cg-card-head .mono { color: var(--on-surface-variant); font-size: 13px; }

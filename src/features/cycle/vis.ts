@@ -12,7 +12,7 @@ export const visColor: Record<PointVis, string> = {
 };
 
 /** 相机在各处的代表色（曲线底部的测量归属）。 */
-export const CAM_COLORS = Array.from({ length: 8 }, (_, i) => `var(--camera-${i + 1})`);
+export const CAM_COLORS = Array.from({ length: 8 }, (_, i) => `var(--cam-${i + 1})`);
 
 /** 拍照点用到的相机编号，按第一次出现的顺序（与 Recipe.cameras() 一致）。 */
 export function shotCameras(shots: Pick<ShotSpec, "camera">[]): string[] {
