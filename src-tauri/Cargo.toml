@@ -33,6 +33,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # tag 必须属于 packaging/runtime.json 的 lyflow.series；升级用 pnpm deps:lyflow:update。
 lyflow-client = { git = "https://github.com/liangyuR/lyFlow.git", tag = "v1.1.1" }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "pnm", "bmp", "tiff"] }
+# 诊断包 ZIP：与 png 解码共用已锁定的版本
+flate2 = "1"
+crc32fast = "1"
 ly-plc = { git = "https://github.com/liangyuR/ly-plc.git", rev = "4c207f579966cb7578139d5b5ff1aadd9c941437", version = "0.2.0" }
 
 # 模拟相机逐像素合成图像，未优化时一帧要一两秒，赶不上节拍
