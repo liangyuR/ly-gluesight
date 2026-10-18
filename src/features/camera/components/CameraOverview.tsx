@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useState, type MouseEvent, type ReactNode } from "react";
 import { Activity, AlertTriangle, Check, CheckCircle2, ChevronRight, Clock, Info, Link2Off, Lock, Minus, Plus, RefreshCw, Unplug } from "lucide-react";
 import { usePreviewCanvas } from "../api";
 import { SYNC_WINDOW_MS, type SyncMember, type SyncRow, type SyncState } from "../sync";
@@ -67,8 +67,9 @@ function CameraCard({ index, config, status, frame, now, lagging, locked, canRec
     try { await onReconnect(); } catch (e) { setError(String(e)); } finally { setBusy(false); }
   };
   const head = <div className="cg-card-head"><strong>{config.name}</strong><span className="mono">{config.id}</span>{lagging && health.tone === "ok" ? <span className="cg-badge warn"><AlertTriangle size={12} />触发落后</span> : <StateBadge {...health} />}</div>;
+  const openFromCard = (event: MouseEvent<HTMLElement>) => { if (!(event.target as Element).closest("button, a, input, select, label")) onOpen(); };
   const detail = <button className="cg-link" onClick={onOpen}>{locked ? <><Lock size={12} />只读查看</> : health.label === "未绑定" ? "进入详情选择设备" : "参数详情"}<ChevronRight size={14} /></button>;
-  if (health.label === "未绑定") return <article className="cg-card" style={cameraColor(index)} aria-label={`${config.name} ${config.id}`}>
+  if (health.label === "未绑定") return <article className="cg-card clickable" style={cameraColor(index)} aria-label={`${config.name} ${config.id}`} onClick={openFromCard}>
     {head}
     <div className="cg-card-sub">{sourceText[config.source]} · 尚未绑定物理设备</div>
     <div className="cg-line"><AlertTriangle size={15} /><span>未绑定设备</span>{detail}</div>
@@ -77,7 +78,7 @@ function CameraCard({ index, config, status, frame, now, lagging, locked, canRec
   const age = frame ? now - frame.ts : null;
   const fault = health.tone === "fault";
   const device = status?.device;
-  return <article className="cg-card" style={cameraColor(index)} aria-label={`${config.name} ${config.id}`}>
+  return <article className="cg-card clickable" style={cameraColor(index)} aria-label={`${config.name} ${config.id}`} onClick={openFromCard}>
     {head}
     <div className="cg-card-sub">{device ? <>{device.model} · <span className="mono">{device.serial}</span>{device.ip && <> · <span className="mono">{device.ip}</span></>} · {device.transport}</> : config.source === "mvs" ? <>序列号 <span className="mono">{config.serial}</span></> : sourceText[config.source]}</div>
     <div className={"cg-thumb" + (fault || status?.released ? " dim" : age != null && age < 1500 ? " fresh" : "")}>
@@ -85,6 +86,7 @@ function CameraCard({ index, config, status, frame, now, lagging, locked, canRec
       {!img && !fault && <span className="cg-thumb-empty">{status?.released ? "已释放给 MVS，重新连接后出图" : "等待第一帧"}</span>}
       {img && !fault && age != null && <span className={"cg-tag " + (age < 3000 ? "fresh" : "stale")}>{age < 3000 ? <Activity size={11} /> : <Clock size={11} />}{ago(age)}</span>}
       {img && <span className="cg-tag size">{img.fullWidth}×{img.fullHeight}</span>}
+      {img && config.viewCount === 3 && <span className="cg-tag views">三目 · 视角 1/3</span>}
       {fault && <div className="cg-thumb-fault"><strong><Unplug size={14} />{status?.message || "相机未连接"}</strong>{frame && <span>最后一帧 {clock(frame.ts)} · 后台每 2 秒自动重连</span>}</div>}
     </div>
     <div className="cg-stats">

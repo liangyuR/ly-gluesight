@@ -22,8 +22,11 @@
 .cg-toolbar .spacer { flex: 1; }
 .cg-toolbar .btn { flex-shrink: 0; }
 
-.cg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; align-items: start; }
+.cg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(max(300px, calc((100% - 32px) / 3)), 1fr)); gap: 16px; align-items: start; }
 .cg-card { position: relative; display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; border-radius: var(--r-lg); background: var(--surface-low); min-width: 0; }
+.cg-card.clickable { cursor: pointer; }
+.cg-card.clickable::after { content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--on-surface); opacity: 0; pointer-events: none; transition: opacity var(--dur-short) var(--ease-standard); }
+.cg-card.clickable:hover::after { opacity: .04; }
 .cg-card::before { content: ""; position: absolute; left: 0; top: 18px; bottom: 18px; width: 3px; border-radius: 0 3px 3px 0; background: var(--cam-color, var(--cam-1)); }
 .cg-card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .cg-card-head strong { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -47,6 +50,7 @@
 .cg-thumb-empty { padding: 12px; font-size: 12.5px; color: var(--on-surface-variant); text-align: center; }
 .cg-tag { position: absolute; display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: var(--r-full); background: rgba(10, 14, 17, .72); font-size: 11px; white-space: nowrap; }
 .cg-tag.size { left: 10px; bottom: 8px; color: var(--on-surface-variant); font-family: var(--font-mono); }
+.cg-tag.views { left: 10px; top: 8px; color: var(--on-surface-variant); }
 .cg-tag.fresh { right: 10px; top: 8px; color: var(--ok); }
 .cg-tag.stale { right: 10px; top: 8px; color: var(--warn); }
 .cg-thumb-fault { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 12px; text-align: center; font-size: 12.5px; color: var(--on-surface-variant); }

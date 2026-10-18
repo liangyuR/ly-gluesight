@@ -124,3 +124,12 @@ describe("高级参数（调试）", () => {
     expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("workspace_set_camera_imaging", expect.anything());
   });
 });
+
+describe("相机组总览", () => {
+  it("点相机卡的非按钮区域 → 进入该相机详情", async () => {
+    renderPage();
+    const card = await screen.findByRole("article", { name: "右相机 cam2" });
+    await userEvent.click(within(card).getByText("帧计数"));
+    expect(await switcher().findByRole("button", { name: "右相机 cam2" })).toHaveAttribute("aria-current", "true");
+  });
+});
