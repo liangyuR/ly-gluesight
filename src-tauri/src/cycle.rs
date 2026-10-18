@@ -1036,13 +1036,10 @@ impl Machine {
             };
         }
         let n = recipe.shot_count();
-        let plan = match crate::plc::recipe_plan(host, &recipe) {
+        let plan = match admission::admit(&request, &recipe, crate::plc::recipe_plan(host, &recipe)) {
             Ok(plan) => plan,
-            Err(reason) => return self.refuse(sn, id, fault::PLAN_MISMATCH, reason).await,
+            Err((code, reason)) => return self.refuse(sn, id, code, reason).await,
         };
-        if let Err((code, reason)) = admission::admit(&request, &recipe, &plan) {
-            return self.refuse(sn, id, code, reason).await;
-        }
         if let Err(reason) = self.s7.validate_plan(&plan) {
             return self.refuse(sn, id, fault::PLAN_MISMATCH, reason).await;
         }
