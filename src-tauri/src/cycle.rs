@@ -1,3 +1,4 @@
+mod admission;
 mod capture;
 pub mod readiness;
 use std::collections::VecDeque;
@@ -1035,13 +1036,15 @@ impl Machine {
             };
         }
         let n = recipe.shot_count();
-        let plan = match crate::plc::recipe_plan(host, &recipe).and_then(|plan| self.s7.validate_plan(&plan).map(|_| plan)) {
-            Ok(plan) if recipe.product_code as u32 == code => plan,
-            Ok(_) => return self.refuse(sn, id, fault::NO_RECIPE, "PLC 产品代码与所选配方不一致".into()).await,
+        let plan = match crate::plc::recipe_plan(host, &recipe) {
+            Ok(plan) => plan,
             Err(reason) => return self.refuse(sn, id, fault::PLAN_MISMATCH, reason).await,
         };
-        if count != plan.shot_count as usize {
-            return self.refuse(sn, id, fault::SHOT_COUNT_MISMATCH, format!("PLC 下发触发次数 {count}，配方 {} 为 {}（{n} 个拍照点）", recipe.id, plan.shot_count)).await;
+        if let Err((code, reason)) = admission::admit(&request, &recipe, &plan) {
+            return self.refuse(sn, id, code, reason).await;
+        }
+        if let Err(reason) = self.s7.validate_plan(&plan) {
+            return self.refuse(sn, id, fault::PLAN_MISMATCH, reason).await;
         }
         let production = match crate::production::ready(&app, &recipe) {
             Ok(prepared) => prepared,
