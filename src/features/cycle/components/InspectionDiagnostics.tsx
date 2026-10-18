@@ -16,7 +16,7 @@ export default function InspectionDiagnostics({ group, onGroup, onClose, snapsho
 }) {
   const frame = part?.frames[selected];
   const alarms = [...new Set(snapshot?.alarms ?? [])];
-  return <Modal title="检测诊断" className="inspection-drawer" width={520} onClose={onClose}>
+  return <Modal title="检测诊断" className="inspection-drawer" side width={520} onClose={onClose}>
     <nav className="diagnostic-tabs" aria-label="诊断分组">{groups.map(([key, label]) => <button key={key} className={`btn small${group === key ? " active" : ""}`} aria-pressed={group === key} onClick={() => onGroup(key)}>{label}</button>)}</nav>
     <section className="diagnostic-content" aria-label={groups.find(([key]) => key === group)?.[1]}>
       {group === "readiness" && <>
