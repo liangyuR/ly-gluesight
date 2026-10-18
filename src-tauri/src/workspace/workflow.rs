@@ -285,18 +285,34 @@ pub fn workspace_check_calibration(app: AppHandle, id: String, revision: u64, k:
         camera_tag, calib_tag, mm_per_px: r.shots[k].mm_per_px,
     };
     w.frames[k].view_states.iter_mut().find(|s| s.view == selected).unwrap().calibration_check = Some(check.clone());
-    if reuse_matching == Some(true) && check.passed {
-        let recipe = w.doc.build()?;
-        for other in 0..w.frames.len() {
-            if other == k || recipe.shots[other].camera != recipe.shots[k].camera { continue; }
-            let Ok(projected) = recipe.for_view(other, selected) else { continue };
-            let Ok((camera, calib)) = tags(&app, &projected, other) else { continue };
-            let frame = &mut w.frames[other];
-            if !frame.views.iter().any(|image| image.view == selected && reusable_calibration(&check, &camera, &calib, projected.shots[other].mm_per_px, image)) { continue; }
-            if let Some(state) = frame.view_states.iter_mut().find(|state| state.view == selected) { state.calibration_check = Some(check.clone()); }
-        }
-    }
+    if reuse_matching == Some(true) { reuse_calibration(&mut w, k, selected, &check, |recipe, other| tags(&app, recipe, other))?; }
     w.changed(); host.save(&w)?; items.insert(id, w.clone()); view(&app, w)
+}
+
+/// 把通过的人工标定验证复用到同一相机、同一图号且设备与标定一致的其他拍照点：
+/// 未设当量的点带入本次当量，已设成其他当量的点不覆盖。返回复用的拍照点数。
+pub(super) fn reuse_calibration(w: &mut Workspace, k: usize, selected: u8, check: &CalibrationCheck, tags_of: impl Fn(&Recipe, usize) -> Result<(Value, Value), String>) -> Result<usize, String> {
+    if !check.passed { return Ok(0); }
+    let recipe = w.doc.build()?;
+    let mut reused = 0;
+    for other in 0..w.frames.len() {
+        if other == k || recipe.shots[other].camera != recipe.shots[k].camera { continue; }
+        let Some(spec) = w.doc.shots[other].views.iter().find(|v| v.view == selected) else { continue };
+        if spec.mm_per_px.is_some_and(|mm| Some(mm) != check.mm_per_px) { continue; }
+        let Ok(projected) = recipe.for_view(other, selected) else { continue };
+        let Ok((camera, calib)) = tags_of(&projected, other) else { continue };
+        if !w.frames[other].views.iter().any(|image| image.view == selected && reusable_calibration(check, &camera, &calib, check.mm_per_px, image)) { continue; }
+        let shot = &mut w.doc.shots[other];
+        if let Some(v) = shot.views.iter_mut().find(|v| v.view == selected) { v.mm_per_px = check.mm_per_px; }
+        if shot.view == selected { shot.mm_per_px = check.mm_per_px; }
+        let frame = &mut w.frames[other];
+        match frame.view_states.iter_mut().find(|state| state.view == selected) {
+            Some(state) => state.calibration_check = Some(check.clone()),
+            None => frame.view_states.push(ViewTeaching { view: selected, trial: None, saved: false, calibration_check: Some(check.clone()) }),
+        }
+        reused += 1;
+    }
+    Ok(reused)
 }
 
 #[derive(Serialize)]

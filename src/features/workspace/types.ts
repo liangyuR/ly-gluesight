@@ -20,7 +20,7 @@ export interface Trial {
 }
 export interface CalibrationCheck {
   basis: { kind: "manual"; referenceMm: number; measuredMm: number; errorMm: number } | { kind: "sampleSet"; setId: string };
-  passed: boolean; mmPerPx: number | null;
+  passed: boolean; mmPerPx: number | null; verificationId?: string;
 }
 /** 示教帧：冻结原图、试测与“已保存”；中线、像素当量与检测参数在候选配方的拍照点里。 */
 export interface Teaching {

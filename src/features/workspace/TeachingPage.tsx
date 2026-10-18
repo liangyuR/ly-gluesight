@@ -32,6 +32,15 @@ function imagingMismatch(image: FrozenImage | null | undefined, doc: RecipeDoc) 
   return `采集时曝光 ${image.exposureUs} µs / 增益 ${image.gainDb} dB，与配方当前值（${current.exposureUs} µs / ${current.gainDb} dB）不同`;
 }
 
+/** 记录标定验证后的提示：勾选复用时说明实际复用到几个拍照点。 */
+function calibrationNotice(next: WorkspaceView, k: number, view: number, reuse: boolean) {
+  const check = next.workspace.frames[k]?.viewStates?.find(s => s.view === view)?.calibrationCheck;
+  if (!check?.passed) return "已记录标定验证：误差超出 ±0.1 mm，未通过";
+  if (!reuse) return "已记录当前图的标定验证";
+  const reused = next.workspace.frames.filter((frame, other) => other !== k && frame.viewStates?.some(s => s.view === view && s.calibrationCheck?.verificationId === check.verificationId)).length;
+  return reused ? `已记录标定验证，并把当量与验证复用到 ${reused} 个拍照点` : "已记录当前图的标定验证；没有可复用的拍照点（需同一相机、同一图号、设备与标定一致，且未单独设置其他当量）";
+}
+
 export default function TeachingPage() {
   const { data, doc, dirty, busy, frameDirty, frameDrafts, setFrameDraft, act, setError, rememberPosition } = useWorkspace();
   const {snapshot} = useCycle();
@@ -60,7 +69,7 @@ export default function TeachingPage() {
   const current=useRef({scope,alive:true,revision:data?.workspace.revision});current.current.scope=scope;current.current.revision=data?.workspace.revision;
   useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;serial.current++;};},[]);
   useEffect(()=>{serial.current++;pending.current=false;setWorking(false);setVertex(null);setRegion(null);setBrushPoints([]);setRegionMode(false);setOperation(null);setExtractionHint("");setExtractionFailure(null);},[scope]);
-  const perform=async(request:()=>Promise<WorkspaceView>,message:string)=>{
+  const perform=async(request:()=>Promise<WorkspaceView>,message:string | ((next: WorkspaceView) => string))=>{
     if(pending.current||busy||dirty)return null;
     pending.current=true;setWorking(true);
     const action=++serial.current;
@@ -267,7 +276,7 @@ export default function TeachingPage() {
         {points && <TrialResult points={points} />}
       </Panel></> : <Notice title="选择本组检测图">点击上方一张图开始示教，每组只需完成这一张。</Notice>}</div>
       {enabled && <div className="wp-stack wp-teach-settings"><TeachingSettings key={scope} teach={t} savedMmPerPx={saved.mmPerPx} defaults={defaults} defaultLimits={doc.limits} calibration={calibration} disabled={!unlocked} editing={editing} onChange={update}
-        onRecord={async (reference, measured, reuse) => !!await perform(() => workspaceApi.checkCalibration(doc.id,data.workspace.revision,k,reference,measured,reuse), "已保存当前图的标定验证")} />
+        onRecord={async (reference, measured, reuse) => !!await perform(() => workspaceApi.checkCalibration(doc.id,data.workspace.revision,k,reference,measured,reuse), next => calibrationNotice(next, k, shot.view, reuse))} />
       <details className="wp-sample-details"><summary>图像采集信息</summary><Panel title="当前检测图"><KV label="拍照组">{group.poseId}</KV><KV label="相机">{shot.camera}</KV><KV label="当前编辑图">图 {shot.view}</KV><KV label="图像">{frame.image?.id ?? "未冻结"}</KV><KV label="曝光">{frame.image?.exposureUs != null ? frame.image.exposureUs + " μs" : "未记录"}</KV><KV label="增益">{frame.image?.gainDb != null ? frame.image.gainDb + " dB" : "未记录"}</KV><KV label="原图更新">仅通过整圈重新采集</KV>{imagingHint && <p className="c-warn" role="note">{imagingHint}；样本仍可用，需要时整圈重采</p>}</Panel></details>
       <Notice title="保存与发布分开">中线保存进候选配方，已发布版本不变。离线样本模式下可直接试运行已保存候选；用于生产前仍需完成标定、代表性样本验证与发布。</Notice></div>}
     </div></div>;

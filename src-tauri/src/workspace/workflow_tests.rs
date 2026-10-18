@@ -24,6 +24,48 @@ fn representative_calibration_reuse_requires_matching_environment_and_retains_so
     assert_eq!(copied.source_image_id, "capture-a-v1");
 }
 
+#[test]
+fn calibration_reuse_brings_scale_to_unset_same_camera_shots_and_keeps_differing_ones() {
+    let mut doc = crate::recipe::samples().remove(1);
+    let base = doc.shots[0].clone();
+    doc.shots = (0..4).map(|k| {
+        let mut shot = base.clone();
+        shot.id = format!("P{k}"); shot.views.clear(); shot.view = 1; shot.path = Vec::new(); shot.mm_per_px = None; shot.skip = false;
+        if k == 3 { shot.camera = format!("{}-other", base.camera); }
+        shot
+    }).collect();
+    doc.shots[0].mm_per_px = Some(0.1);
+    doc.shots[2].mm_per_px = Some(0.2);
+    if let Some(imaging) = doc.cameras.get(&base.camera).cloned() { doc.cameras.insert(doc.shots[3].camera.clone(), imaging); }
+    let mut w = Workspace::new(doc, None);
+    for k in 0..4 {
+        let camera = w.doc.shots[k].camera.clone();
+        w.frames[k].views = vec![serde_json::from_value(json!({
+            "id":format!("capture-{k}-v1"), "view":1, "source":"capture:test", "capturedAt":1, "size":[300,100],
+            "camera":camera, "cameraTag":{"id":camera}, "calibTag":{"calib":camera}, "geometryTag":{}
+        })).unwrap()];
+        w.frames[k].image = Some(w.frames[k].views[0].clone());
+        initialize_views(&mut w, k);
+    }
+    let camera = w.doc.shots[0].camera.clone();
+    let check = CalibrationCheck { verification_id:"check-1".into(), source_k:0, source_image_id:"capture-0-v1".into(),
+        basis: workflow::CalibrationBasis::Manual { reference_mm:10.0, measured_mm:10.05, error_mm:0.05 }, passed:true,
+        camera_tag:json!({"id":camera}), calib_tag:json!({"calib":camera}), mm_per_px:Some(0.1) };
+    let tags = |recipe: &Recipe, k: usize| Ok((json!({"id":recipe.shots[k].camera}), json!({"calib":recipe.shots[k].camera})));
+    assert_eq!(workflow::reuse_calibration(&mut w, 0, 1, &check, tags).unwrap(), 1);
+    assert_eq!(w.doc.shots[1].mm_per_px, Some(0.1));
+    assert_eq!(w.doc.shots[1].views[0].mm_per_px, Some(0.1));
+    assert_eq!(w.frames[1].view_states[0].calibration_check.as_ref().unwrap().verification_id, "check-1");
+    assert_eq!(w.doc.shots[2].mm_per_px, Some(0.2));
+    assert!(w.frames[2].view_states.iter().all(|s| s.calibration_check.is_none()));
+    assert_eq!(w.doc.shots[3].mm_per_px, None);
+    assert!(w.frames[3].view_states.iter().all(|s| s.calibration_check.is_none()));
+    let mut failed = check.clone(); failed.passed = false;
+    w.doc.shots[1].mm_per_px = None; w.doc.shots[1].views[0].mm_per_px = None;
+    assert_eq!(workflow::reuse_calibration(&mut w, 0, 1, &failed, tags).unwrap(), 0);
+    assert_eq!(w.doc.shots[1].mm_per_px, None);
+}
+
 fn snapshot(w: &Workspace, selected: u8) -> Value {
     let frame = projected_frame(w, 0, selected).unwrap();
     json!({"image":frame.image,"trial":frame.trial,"saved":frame.saved})
