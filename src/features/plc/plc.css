@@ -32,9 +32,6 @@ select.input { padding-right: 6px; }
 .stats-inline b { color: var(--on-surface); font-weight: 500; margin-left: 4px; }
 .check { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--on-surface); cursor: pointer; }
 .check input { accent-color: var(--primary); width: 15px; height: 15px; }
-.notice { margin-top: 12px; padding: 8px 12px; border-radius: var(--r-md); font-size: 13px; }
-.notice.ok { background: var(--ok-container); color: var(--on-ok-container); }
-.notice.error { background: var(--ng-container); color: var(--on-ng-container); }
 
 .table-wrap { overflow-x: auto; }
 .table td { font-size: 13px; }
@@ -50,28 +47,6 @@ select.input { padding-right: 6px; }
 .span-2 { grid-column: span 2; }
 .form-error { color: var(--ng); font-size: 13px; margin-right: auto; }
 
-.modal-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  display: grid;
-  place-items: center;
-  background: rgba(0, 0, 0, 0.72);
-}
-.modal {
-  max-width: calc(100vw - 48px);
-  max-height: calc(100vh - 48px);
-  display: flex;
-  flex-direction: column;
-  background: var(--surface-high);
-  border-radius: var(--r-xl);
-  overflow: hidden;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
-}
-.modal-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--outline-variant); }
-.modal-header h3 { font-size: 15px; font-weight: 600; }
-.modal-body { padding: 18px; overflow: auto; }
-.modal-footer { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 18px; border-top: 1px solid var(--outline-variant); }
 .write-input { margin-top: 16px; }
 .write-input .input { width: 100%; }
 textarea.input.code { width: 100%; height: 360px; padding: 10px; resize: vertical; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; }
