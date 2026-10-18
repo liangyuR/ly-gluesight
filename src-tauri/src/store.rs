@@ -561,6 +561,7 @@ impl Store {
              CREATE INDEX IF NOT EXISTS parts_ts ON parts(ts);
              CREATE INDEX IF NOT EXISTS parts_source_ts ON parts(source, ts);
              CREATE INDEX IF NOT EXISTS parts_sn ON parts(sn);
+             CREATE INDEX IF NOT EXISTS parts_recording_directory ON parts(recording_directory);
              CREATE UNIQUE INDEX IF NOT EXISTS parts_cycle ON parts(cycle_id) WHERE cycle_id IS NOT NULL;
              CREATE INDEX IF NOT EXISTS parts_unresolved_delivery ON parts(cycle_id)
                  WHERE cycle_id IS NOT NULL AND delivery_state IN ('pending','submitted','failed');
@@ -1026,15 +1027,13 @@ impl Store {
     /// 滚动清理即将删除这些录制目录：引用它们的记录改为“按保留策略不存图”并写明原因，不再显示“已核验落盘”。
     pub fn release_recordings(&self, directories: &[PathBuf]) -> Result<(), String> {
         let note = "原图已按录制保留件数或容量上限滚动清理";
-        let mut conn = self.conn.lock().map_err(|_| "数据库锁异常，暂停滚动清理".to_string())?;
-        let tx = conn.transaction().map_err(db_err)?;
-        for directory in directories {
-            let key = directory.to_string_lossy().replace('\\', "/").to_lowercase();
-            tx.execute("UPDATE parts SET recording_state=?3, recording_available=0, recording_errors=json_insert(recording_errors,'$[#]',?2) \
-                WHERE lower(replace(recording_directory,'\\','/'))=?1 AND recording_state IN ('complete','incomplete')",
-                params![key, note, enum_name(RecordingState::NotRetained)]).map_err(db_err)?;
-        }
-        tx.commit().map_err(db_err)
+        let directories: Vec<_> = directories.iter().map(|directory| directory.to_string_lossy()).collect();
+        let directories = serde_json::to_string(&directories).map_err(|e| e.to_string())?;
+        let conn = self.conn.lock().map_err(|_| "数据库锁异常，暂停滚动清理".to_string())?;
+        conn.execute("UPDATE parts SET recording_state=?3, recording_available=0, recording_errors=json_insert(recording_errors,'$[#]',?2) \
+            WHERE recording_directory IN (SELECT value FROM json_each(?1)) AND recording_state IN ('complete','incomplete')",
+            params![directories, note, enum_name(RecordingState::NotRetained)]).map_err(db_err)?;
+        Ok(())
     }
 
     pub fn query(&self, q: &HistoryQuery) -> Result<HistoryPage, String> {

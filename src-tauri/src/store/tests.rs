@@ -406,7 +406,7 @@ fn rolling_retention_prune_marks_history_raw_images_unavailable() {
     use std::sync::Arc;
     let db = TestDb::new();
     let store = Arc::new(Store::open(&db.path()).unwrap());
-    let root = db.0.join("records-offline");
+    let root = db.0.join("Özil").join("records-offline");
     let old = root.join("20000101").join("20000101_000000_000_OK_cycle_old");
     std::fs::create_dir_all(&old).unwrap();
     std::fs::write(old.join("k000_P1_cam1_v1.pgm"), b"P5\n1 1\n255\n\0").unwrap();
