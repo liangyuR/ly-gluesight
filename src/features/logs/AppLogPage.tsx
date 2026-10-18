@@ -27,10 +27,12 @@ function Cycle({ record, onFilter }: { record: AppLogRecord; onFilter: (cycleId:
   if (!record.cycleId) return record.sn ? <span className="mono">SN {record.sn}</span> : <span className="muted">—</span>;
   const cycleId = record.cycleId;
   return <span className="log-cycle">
-    <button className="link mono" title={`只看工件 ${cycleId}`} onClick={() => onFilter(cycleId)}>{cycleId.slice(0, 8)}</button>
     {record.sn && <span className="mono muted">SN {record.sn}</span>}
-    {target === undefined ? <button className="link" onClick={() => void logsApi.findCycle(cycleId).then(setTarget).catch(() => setTarget(null))}>记录</button>
-      : target === null ? <span className="muted">无记录</span> : <Link to={`/history/${target}`}>#{target}</Link>}
+    <span>
+      <button className="link mono" title={`只看工件 ${cycleId}`} onClick={() => onFilter(cycleId)}>{cycleId.slice(0, 8)}</button>
+      {target === undefined ? <button className="link" onClick={() => void logsApi.findCycle(cycleId).then(setTarget).catch(() => setTarget(null))}>记录</button>
+        : target === null ? <span className="muted">无记录</span> : <Link to={`/history/${target}`}>#{target}</Link>}
+    </span>
   </span>;
 }
 

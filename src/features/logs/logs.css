@@ -1,7 +1,8 @@
 .badge.level-debug, .chip.level-debug.on { background: var(--surface-high); color: var(--on-surface-variant); }
 .chip.level-debug.on { border-color: transparent; }
 .log-row-error td { background: color-mix(in srgb, var(--ng-container) 35%, transparent); }
-.log-cycle { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; max-width: 220px; }
+.log-cycle { display: inline-flex; flex-direction: column; gap: 2px; white-space: nowrap; }
+.log-cycle > span { display: inline-flex; gap: 8px; }
 .log-usage { font-size: 12px; gap: 12px; }
 .log-usage .link { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
 .log-data { margin-top: 4px; }
