@@ -180,7 +180,10 @@ export function GrayViewer({ image, loading = false, error = "", label, tools, s
     return p && image ? [Math.min(p[0], image.width - 1), Math.min(p[1], image.height - 1)] : null;
   };
   const screenPx = (px: number) => px / (fit * zoom);
-  const handle = screenPx(7), dot = screenPx(3);
+  const stations = overlay?.stations ?? [];
+  const gaps = stations.slice(1).map((p, i) => Math.hypot(p[0] - stations[i][0], p[1] - stations[i][1])).filter(d => d > 0).sort((a, b) => a - b);
+  const stationGap = gaps.length ? gaps[gaps.length >> 1] * fit * zoom : Infinity;
+  const handle = screenPx(7), dot = screenPx(Math.min(3, Math.max(1, stationGap / 2)));
   const editing = !!onEdit && shown && !editDisabled;
   const path = overlay?.path ?? [];
   const band = searchBand(path, overlay?.searchHalfPx);
@@ -263,7 +266,7 @@ export function GrayViewer({ image, loading = false, error = "", label, tools, s
           </g>}
           {region && <rect x={region[0]} y={region[1]} width={region[2]} height={region[3]} fill="var(--primary)" fillOpacity={.12} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
           {overlay && shown && <g aria-label="中线叠加">
-            {overlay.stations?.map(([x, y], i) => <circle key={"s" + i} cx={x} cy={y} r={dot} fill={overlay.stationColors?.[i] ?? "var(--primary)"} opacity={overlay.stale ? .35 : .9} />)}
+            {stations.map(([x, y], i) => <circle key={"s" + i} cx={x} cy={y} r={dot} fill={overlay.stationColors?.[i] ?? "var(--primary)"} opacity={overlay.stale ? .35 : .9} />)}
             {path.length >= 2 && <polyline points={path.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeWidth={2} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
             {onEdit && path.map(([x, y], i) => (allHandles || path.length <= 24 || i === 0 || i === path.length - 1 || overlay.selected === i) && <circle key={"v" + i} data-vertex={i} aria-label={"中线点 " + (i + 1)} cx={x} cy={y} r={handle} fill={overlay.selected === i ? "var(--primary)" : "var(--surface-lowest)"} fillOpacity={.85} stroke={i === 0 ? "var(--ok)" : "var(--primary)"} strokeWidth={2} vectorEffect="non-scaling-stroke" />)}
             {overlay.segments && <g aria-label="测量横线" pointerEvents="none">
