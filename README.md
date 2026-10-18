@@ -24,6 +24,8 @@ pnpm dev               # tauri dev：启动 Vite 并编译运行 debug 版
 
 同时改 lyFlow 引擎或客户端时使用 `pnpm dev:joint`，参数见 [lyFlow 运行库依赖](docs/architecture/lyflow-dependency.md#联合开发)。
 
+固定使用本地编译的运行库：`pnpm deps:lyflow:local "C:\work\LyFlow\build\core\bin"`。重开终端或 IDE 后，`pnpm dev` 自动使用该目录；不带参数查看配置，带 `-Clear` 清除。仅开发构建生效，配置作用于当前 Windows 用户。
+
 ## 测试
 
 ```powershell
