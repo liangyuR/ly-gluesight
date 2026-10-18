@@ -198,8 +198,8 @@ importers:
         specifier: ^1.48.0
         version: 1.48.0(react@19.3.0)
       qing-steel:
-        specifier: github:liangyuR/qing-steel#158957478594ebaaa7a6e718396edd74eb6717b9
-        version: https://codeload.github.com/liangyuR/qing-steel/tar.gz/158957478594ebaaa7a6e718396edd74eb6717b9
+        specifier: github:liangyuR/qing-steel#v0.2.0
+        version: https://codeload.github.com/liangyuR/qing-steel/tar.gz/7d8ebe71d8a2e27806b700422a87aac1838b8bf8
       react:
         specifier: ^19.3.0
         version: 19.3.0
@@ -1329,8 +1329,8 @@ packages:
     resolution: {integrity: sha512-vYt7UD1U9Wg6138shLtLOvdAu+8DsC/ilFtEVHcH+wydcSpNE20AfSOduf6MkRFahL5FY7X1oU7nKVZFtfq8Fg==}
     engines: {node: '>=6'}
 
-  qing-steel@https://codeload.github.com/liangyuR/qing-steel/tar.gz/158957478594ebaaa7a6e718396edd74eb6717b9:
-    resolution: {gitHosted: true, integrity: sha512-VnbebCGtlefS3hOdXmCNZeL2pdG0wqH3oyDoCTSVGsLB1iJcczaUMmr3rUc7akcN+6i9OrMnEZRhlgatxWi4Ng==, tarball: https://codeload.github.com/liangyuR/qing-steel/tar.gz/158957478594ebaaa7a6e718396edd74eb6717b9}
+  qing-steel@https://codeload.github.com/liangyuR/qing-steel/tar.gz/7d8ebe71d8a2e27806b700422a87aac1838b8bf8:
+    resolution: {gitHosted: true, integrity: sha512-gGwcpd++zJqy9R7RdYk9q6SS7fMVpm0+U7sbl7t96iPr/xVE4qB9+XBaoptDVV9O7EVcjD8V62it80wupFKJ/w==, tarball: https://codeload.github.com/liangyuR/qing-steel/tar.gz/7d8ebe71d8a2e27806b700422a87aac1838b8bf8}
     version: 0.2.0
 
   react-dom@19.3.0:
@@ -2490,7 +2490,7 @@ snapshots:
 
   punycode@2.3.1: {}
 
-  qing-steel@https://codeload.github.com/liangyuR/qing-steel/tar.gz/158957478594ebaaa7a6e718396edd74eb6717b9: {}
+  qing-steel@https://codeload.github.com/liangyuR/qing-steel/tar.gz/7d8ebe71d8a2e27806b700422a87aac1838b8bf8: {}
 
   react-dom@19.3.0(react@19.3.0):
     dependencies:
