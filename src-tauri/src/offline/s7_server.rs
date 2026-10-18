@@ -9,7 +9,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-const MAX_PDU: u16 = 960;
+/// S7-200 SMART 只协商 240 字节 PDU，离线服务按现场 CPU 限制应答。
+const MAX_PDU: u16 = 240;
 const REJECTED: [u8; 2] = [0x81, 0x04];
 const TOO_LARGE: [u8; 2] = [0x85, 0x00];
 const AREA_DB: u8 = 0x84;

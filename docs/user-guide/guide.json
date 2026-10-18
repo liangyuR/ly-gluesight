@@ -43,10 +43,10 @@
       "id": "plc", "group": "首次建站", "title": "连接 PLC 并核对握手点位",
       "intro": "在真机模式进入“PLC 通讯”。软件只支持西门子 S7，按一期握手点表读写 PLC 的共享 DB。",
       "steps": [
-        "点击“载入一期 S7 点表”，选择 CPU 预设（S7-1200 或 S7-1500，机架 0 / 插槽 1）和 DB 号（默认 DB100），应用到草稿。",
-        "填写 PLC 的 IP / 主机名、通信超时和轮询周期，保存配置并连接，确认状态为“已连接”。PLC 侧需启用 PUT/GET，并关闭该 DB 的优化访问。",
-        "核对 PLC 区：partStart、partEnd、resultAck、faultReset、心跳、requestSeq、partSn（字符串 SN，STRING[24]）、productCode、shotCount 与设备触发数。协议版本须为 3，DB 至少 114 字节；旧协议 2 点表会被拒绝，需按一期模板重新生成。",
-        "核对 PC 区：visionReady、armed、busy、done、visionFault、resultSeq、resultSn（字符串 SN，须与 partSn 逐字节相等）、resultCode 和 faultCode。工件 SN 不合规（1–24 个可打印 ASCII 字符）时软件不接件并进入视觉故障，PLC 释放 partStart 并复位后重试。完整点表见 S7 一期握手说明。"
+        "点击“载入一期 S7 点表”，CPU 预设默认 S7-200 SMART（V 区固定 DB1，TSAP 0x0102 / 0x0201，PDU 240），工件 SN 字符串格式默认 200 SMART 字符串，应用到草稿。S7-1200 / 1500 可选，DB 号可改。",
+        "核对 PLC 的 IP / 主机名（交互表为 192.168.2.10，端口 102）、通信超时和轮询周期，保存配置并连接，确认状态为“已连接”。",
+        "核对 PLC 区：partStart、partEnd、resultAck、faultReset、心跳、requestSeq、partSn（DBB160 起，最大 50 字符的字符串 SN）、productCode、shotCount 与设备触发数。协议版本须为 4，序号类字段为 DInt；旧 DB100 或 STRING[24] 点表会被拒绝，需按一期模板重新生成。",
+        "核对 PC 区：visionReady、armed、busy、done、visionFault、resultSeq、resultSn（DBB100 起，与 partSn 同格式且内容相等）、resultCode（DBW76）和 faultCode（DBW78）。工件 SN 不合规（1–50 个可打印 ASCII 字符）时软件不接件并进入视觉故障，PLC 释放 partStart 并复位后重试。完整点表见 S7 一期握手说明。"
       ],
       "note": "练习时不必连接 PLC：进入离线后，软件在本机启动进程内 S7 服务并按同一握手运行，真实 PLC 配置保存不动，退出离线后恢复。离线期间 PLC 页只读；进入离线前应断开外部 PLC。"
     },

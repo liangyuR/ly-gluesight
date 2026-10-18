@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import Modal from "./Modal";
-import { dataTypeLabels, formatValue } from "../meta";
+import { dataTypeLabels, formatValue, isText } from "../meta";
 import type { PlcPoint, PointValue } from "../types";
 
 interface WriteDialogProps {
@@ -19,7 +19,7 @@ export default function WriteDialog({ point, current, blockedReason = "", onWrit
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const isBool = point.dataType === "bool";
-  const isString = point.dataType === "string";
+  const isString = isText(point.dataType);
 
   const write = async (value: unknown) => {
     if (writing.current) return;

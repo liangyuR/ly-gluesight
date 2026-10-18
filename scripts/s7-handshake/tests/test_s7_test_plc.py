@@ -19,16 +19,25 @@ SPEC.loader.exec_module(PLC)
 COTP_CR = bytes.fromhex("03000016 11e0 0000 0001 00 c0010a c1020100 c2020102")
 COTP_CC = bytes.fromhex("03000016 11d0 0001 0001 00 c0010a c1020102 c2020100")
 SETUP = bytes.fromhex("03000019 02f080 32010000 0001 0008 0000 f0000001000101e0")
-SETUP_ACK = bytes.fromhex("0300001b 02f080 32030000 0001 0008 0000 0000 f0000001000101e0")
-READ_BYTES = bytes.fromhex("0300001f 02f080 32010000 0002 000e 0000 0401 120a10020008006484000020")
-WRITE_BYTES = bytes.fromhex("03000027 02f080 32010000 0003 000e 0008 0501 120a10020004006484000020 0004002000000007")
+SETUP_ACK = bytes.fromhex("0300001b 02f080 32030000 0001 0008 0000 0000 f0000001000100f0")
+READ_BYTES = bytes.fromhex("0300001f 02f080 32010000 0002 000e 0000 0401 120a10020008000184000020")
+WRITE_BYTES = bytes.fromhex("03000027 02f080 32010000 0003 000e 0008 0501 120a10020004000184000020 0004002000000007")
 WRITE_ACK = bytes.fromhex("03000016 02f080 32030000 0003 0002 0001 0000 0501ff")
-WRITE_DONE = bytes.fromhex("03000024 02f080 32010000 0004 000e 0005 0501 120a10010001006484000203 0003000101")
+WRITE_DONE = bytes.fromhex("03000024 02f080 32010000 0004 000e 0005 0501 120a10010001000184000203 0003000101")
 DONE_ACK = bytes.fromhex("03000016 02f080 32030000 0004 0002 0001 0000 0501ff")
-READ_DONE = bytes.fromhex("0300001f 02f080 32010000 0005 000e 0000 0401 120a10010001006484000203")
+READ_DONE = bytes.fromhex("0300001f 02f080 32010000 0005 000e 0000 0401 120a10010001000184000203")
 READ_DONE_ACK = bytes.fromhex("0300001a 02f080 32030000 0005 0002 0005 0000 0401ff03000101")
-READ_MULTI = bytes.fromhex("0300002b 02f080 32010000 0006 001a 0000 0402 120a10020001006484000020 120a10020003006484000040")
-WRITE_MULTI = bytes.fromhex("03000036 02f080 32010000 0007 001a 000b 0502 120a10020001006484000020 120a10020001006484000040 00040008a100 00040008b2")
+READ_MULTI = bytes.fromhex("0300002b 02f080 32010000 0006 001a 0000 0402 120a10020001000184000020 120a10020003000184000040")
+WRITE_MULTI = bytes.fromhex("03000036 02f080 32010000 0007 001a 000b 0502 120a10020001000184000020 120a10020001000184000040 00040008a100 00040008b2")
+
+
+def write_bytes_packet(reference, db, byte, data):
+    item = bytes([0x12, 0x0A, 0x10, 0x02]) + len(data).to_bytes(2, "big") + db.to_bytes(2, "big") + b"\x84" + (byte * 8).to_bytes(3, "big")
+    parameters = b"\x05\x01" + item
+    payload = b"\x00\x04" + (len(data) * 8).to_bytes(2, "big") + data
+    s7 = b"\x32\x01\x00\x00" + reference.to_bytes(2, "big") + len(parameters).to_bytes(2, "big") + len(payload).to_bytes(2, "big") + parameters + payload
+    body = b"\x02\xf0\x80" + s7
+    return b"\x03\x00" + (len(body) + 4).to_bytes(2, "big") + body
 
 
 def receive_packet(connection):
@@ -97,7 +106,7 @@ class S7WireTests(unittest.TestCase):
         self.assertEqual(exchange(self.connection, READ_MULTI), expected)
 
     def test_multi_item_write_and_targeted_rejection(self):
-        self.state.control({"op": "fault", "function": "write", "kind": "reject", "db": 100, "byte": 8})
+        self.state.control({"op": "fault", "function": "write", "kind": "reject", "db": 1, "byte": 8})
         rejected = bytes.fromhex("03000017 02f080 32030000 0007 0002 0002 0000 0502ff03")
         self.assertEqual(exchange(self.connection, WRITE_MULTI), rejected)
         self.assertEqual(self.state.control({"op": "read_db", "byte": 4})["hex"], "a1")
@@ -107,7 +116,7 @@ class S7WireTests(unittest.TestCase):
         self.assertEqual(self.state.control({"op": "read_db", "byte": 8})["hex"], "b2")
 
     def test_unknown_db_and_out_of_bounds_have_s7_item_errors(self):
-        unknown = READ_BYTES.replace(bytes.fromhex("006484000020"), bytes.fromhex("006384000020"))
+        unknown = READ_BYTES.replace(bytes.fromhex("000184000020"), bytes.fromhex("006384000020"))
         self.assertEqual(exchange(self.connection, unknown), bytes.fromhex("03000019 02f080 32030000 0002 0002 0004 0000 04010a000000"))
         outside = READ_BYTES[:-3] + bytes.fromhex("002000")
         self.assertEqual(exchange(self.connection, outside), bytes.fromhex("03000019 02f080 32030000 0002 0002 0004 0000 040105000000"))
@@ -170,7 +179,7 @@ class S7WireTests(unittest.TestCase):
         self.assertEqual(self.state.field_values()["requestSeq"], 0)
 
     def test_oversized_read_is_rejected_before_encoding_bit_length(self):
-        request = READ_BYTES.replace(bytes.fromhex("100200080064"), bytes.fromhex("1002ffff0064"))
+        request = READ_BYTES.replace(bytes.fromhex("100200080001"), bytes.fromhex("1002ffff0001"))
         self.assertEqual(exchange(self.connection, request), bytes.fromhex("03000013 02f080 32030000 0002 0000 0000 8500"))
 
     def test_malformed_tpkt_disconnects_only_its_client(self):
@@ -198,13 +207,14 @@ class S7HeartbeatTests(unittest.TestCase):
         state.heartbeat_ms = 15
         server = PLC.S7Server(state).start()
         try:
-            self.assertEqual(state.field_values()["protocolVersion"], 3)
+            self.assertEqual(state.field_values()["protocolVersion"], 4)
             self.assertEqual(len(state.fields), 28)
-            self.assertEqual(state.fields["partSn"], {"db": 321, "byte": 38, "type": "string"})
-            self.assertEqual(state.fields["resultSn"], {"db": 321, "byte": 88, "type": "string"})
+            self.assertEqual(state.fields["partSn"], {"db": 321, "byte": 160, "type": "smart_string"})
+            self.assertEqual(state.fields["resultSn"], {"db": 321, "byte": 100, "type": "smart_string"})
             self.assertEqual(state.fields["deviceShots"], {"db": 321, "byte": 24, "type": "u16"})
             self.assertEqual(state.fields["deviceTriggers"], {"db": 321, "byte": 36, "type": "u16"})
-            self.assertEqual(state.fields["requestSeq"], {"db": 321, "byte": 4, "type": "u32"})
+            self.assertEqual(state.fields["requestSeq"], {"db": 321, "byte": 4, "type": "i32"})
+            self.assertEqual(state.fields["resultCode"], {"db": 321, "byte": 76, "type": "u16"})
             self.assertEqual(state.fields["acceptedPlanReserved"]["byte"], 84)
             deadline = time.monotonic() + 1
             while not state.field_values()["plcHeartbeat"] and time.monotonic() < deadline:
@@ -224,32 +234,50 @@ class S7HeartbeatTests(unittest.TestCase):
 
 
 class S7SerialNumberTests(unittest.TestCase):
+    HEADERS = {"smart_string": "", "string": "32"}
+
     def setUp(self):
         self.state = PLC.PlcState()
         self.state.heartbeat_enabled = False
 
-    def read(self, byte, size):
-        return self.state.control({"op": "read_db", "byte": byte, "size": size})["hex"]
+    def read(self, state, byte, size):
+        return state.control({"op": "read_db", "byte": byte, "size": size})["hex"]
 
-    def test_fresh_db_strings_declare_capacity_24_and_empty_length(self):
-        self.assertEqual(self.read(38, 26), "1800" + "00" * 24)
-        self.assertEqual(self.read(88, 26), "1800" + "00" * 24)
+    def test_fresh_db_sn_fields_are_empty_strings_in_the_configured_format(self):
+        for kind, declared in self.HEADERS.items():
+            with self.subTest(kind=kind):
+                state = PLC.PlcState(sn_kind=kind)
+                size = PLC.FIELD_SIZES[kind]
+                self.assertEqual(self.read(state, 160, size), declared + "00" * (size - len(declared) // 2))
+                self.assertEqual(self.read(state, 100, size), declared + "00" * (size - len(declared) // 2))
 
-    def test_shorter_part_sn_after_24_char_sn_writes_new_length_and_zero_padding(self):
-        self.state.control({"op": "plc_request", "values": {"partSn": "ABCDEFGHIJKL-MNOPQRSTUVW"}})
-        self.assertEqual(self.read(38, 26), "1818" + b"ABCDEFGHIJKL-MNOPQRSTUVW".hex())
-        self.state.control({"op": "plc_values", "values": {"partSn": "SN-1"}})
-        self.assertEqual(self.read(38, 26), "1804" + b"SN-1".hex() + "00" * 20)
-        self.assertEqual(self.state.field_values()["partSn"], "SN-1")
+    def test_shorter_part_sn_after_50_char_sn_writes_new_length_and_zero_padding(self):
+        for kind, declared in self.HEADERS.items():
+            with self.subTest(kind=kind):
+                state = PLC.PlcState(sn_kind=kind)
+                size = PLC.FIELD_SIZES[kind]
+                full = "ABCDEFGHIJKLMNOPQRSTUVWXY-abcdefghijklmnopqrstuvwx"
+                state.control({"op": "plc_request", "values": {"partSn": full}})
+                self.assertEqual(self.read(state, 160, size), declared + "32" + full.encode().hex())
+                state.control({"op": "plc_values", "values": {"partSn": "SN-1"}})
+                self.assertEqual(self.read(state, 160, size), declared + "04" + b"SN-1".hex() + "00" * 46)
+                self.assertEqual(state.field_values()["partSn"], "SN-1")
 
     def test_invalid_part_sn_rejects_whole_request_and_keeps_memory(self):
-        for value in ("", "A" * 25, "   ", "SN\t1", "SN-é", 12345):
+        for value in ("", "A" * 51, "   ", "SN\t1", "SN-é", 12345):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     self.state.control({"op": "plc_request", "values": {"requestSeq": 5, "partSn": value}})
-                self.assertEqual(self.read(38, 26), "1800" + "00" * 24)
+                self.assertEqual(self.read(self.state, 160, 51), "00" * 51)
                 self.assertEqual(self.state.field_values()["requestSeq"], 0)
                 self.assertFalse(self.state.field_values()["partStart"])
+
+    def test_dint_fields_round_trip_negative_values_for_fault_injection(self):
+        self.state.control({"op": "plc_values", "values": {"requestSeq": -1}})
+        self.assertEqual(self.read(self.state, 4, 4), "ffffffff")
+        self.assertEqual(self.state.field_values()["requestSeq"], -1)
+        with self.assertRaises(ValueError):
+            self.state.control({"op": "plc_values", "values": {"requestSeq": 1 << 31}})
 
     def test_result_sn_not_byte_equal_to_part_sn_blocks_plc_ack(self):
         self.state.control({"op": "plc_request", "values": {"requestSeq": 9, "partSn": "SN-12345"}})
@@ -333,9 +361,9 @@ class S7ProcessApiTests(unittest.TestCase):
         self.assertTrue(response["result"]["partStart"])
         self.assertEqual(response["result"]["requestSeq"], 17)
         with connect((self.fixture.ready["host"], self.fixture.ready["port"])) as connection:
-            result_seq = bytes.fromhex("03000027 02f080 32010000 0003 000e 0008 0501 120a10020004006484000220 0004002000000011")
+            result_seq = bytes.fromhex("03000027 02f080 32010000 0003 000e 0008 0501 120a10020004000184000220 0004002000000011")
             self.assertEqual(exchange(connection, result_seq), WRITE_ACK)
-            result_sn = bytes.fromhex("0300003d 02f080 32010000 0003 000e 001e 0501 120a1002001a0064840002c0 000400d0 1808534e2d3132333435") + bytes(16)
+            result_sn = write_bytes_packet(3, 1, 100, bytes([8]) + b"SN-12345" + bytes(42))
             self.assertEqual(exchange(connection, result_sn), WRITE_ACK)
             self.assertEqual(exchange(connection, WRITE_DONE), DONE_ACK)
             acknowledged = self.fixture.command("plc_ack")
@@ -361,8 +389,8 @@ class S7ProcessApiTests(unittest.TestCase):
         self.assertTrue(response["ok"])
         self.assertTrue(self.fixture.command("plc_values", values={"deviceTriggers": 3})["ok"])
         with connect((self.fixture.ready["host"], self.fixture.ready["port"])) as connection:
-            request = bytes.fromhex("0300001f 02f080 32010000 0002 000e 0000 0401 120a100200120064840000c0")
-            expected = bytes.fromhex("0300002b 02f080 32030000 0002 0002 0016 0000 0401 ff040090 000400000000000000000000000318000000")
+            request = bytes.fromhex("0300001f 02f080 32010000 0002 000e 0000 0401 120a100200120001840000c0")
+            expected = bytes.fromhex("0300002b 02f080 32030000 0002 0002 0016 0000 0401 ff040090 000400000000000000000000000300000000")
             self.assertEqual(exchange(connection, request), expected)
 
     def test_removed_camera_fields_are_rejected_atomically(self):
@@ -386,7 +414,7 @@ class S7ProcessApiTests(unittest.TestCase):
             self.assertEqual(fixture.ready["db"], 321)
             fixture.command("plc_request", values={"requestSeq": 7})
             with connect((fixture.ready["host"], fixture.ready["port"])) as connection:
-                request = READ_BYTES.replace(bytes.fromhex("006484000020"), bytes.fromhex("014184000020"))
+                request = READ_BYTES.replace(bytes.fromhex("000184000020"), bytes.fromhex("014184000020"))
                 self.assertEqual(exchange(connection, request)[25:29], b"\x00\x00\x00\x07")
         finally:
             fixture.close()

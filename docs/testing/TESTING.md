@@ -40,7 +40,7 @@ Windows 受限环境遇到 Node realpath EPERM 时，按仓库 AGENTS.md 的 Win
 
 ## S7 一期握手
 
-协议与点表见 [S7 一期握手说明](../integration/plc-s7-phase1.md)。[S7 测试 PLC](../../scripts/s7-handshake/README.md) 仅监听本机回环地址，使用真实 TPKT/COTP/S7 报文。S7 协议自版本 3 起工件 SN 为 STRING[24]、DB 至少 114 字节，旧协议 2 点表和 PLC 程序被拒绝；下列专项与历史记录中的通过数据按协议 2 取得，协议 3 需重新运行。
+协议与点表见 [S7 一期握手说明](../integration/plc-s7-phase1.md)。[S7 测试 PLC](../../scripts/s7-handshake/README.md) 仅监听本机回环地址，使用真实 TPKT/COTP/S7 报文。S7 协议版本 4 按交互表 V1.0（S7-200 SMART、DB1、DInt 序号、DBB160/DBB100 的 50 字符 SN）调整，旧协议 2、3 点表和 PLC 程序被拒绝；下列专项与历史记录中的通过数据按旧协议取得，协议 4 的运行结果见交互表适配 PR。
 
 ```powershell
 python -m unittest discover -s scripts/s7-handshake/tests -v
@@ -68,7 +68,7 @@ S7 专项需要 Python 3 和本机 TCP 权限，可用 `S7_TEST_PYTHON` 指定 P
 | `p0-history-ui.js` | 改写进离线端到端 | 历史导出 CSV、按原发布包重现、按候选规则重判、从原图复测整件、已保存对照切换与“原始记录和候选不被改动”，现从离线端到端的投产终态在历史详情界面执行 |
 | `p0-history-independent-ui.js` | 删除 | 依赖“拍照点规划”里切换其他候选、未保存的 Pose；原发布包重现只用冻结发布包的规则由离线端到端的重现断言（发布包、配方修订一致）覆盖 |
 | `p0-restart-connect-ui.js`、`p0-startup-ui.js` | 改写为 `offline-restart.mjs` | 重启后已发布配方按原发布包预热、可再次投产且结论不变，现从离线端到端终态重启同一隔离实例验证 |
-| `p0-plc-bootstrap-ui.js` | 保留 | 独立于链路：界面进入离线·合成图，核对 S7 回环地址与 28 个 DB100 点；2026-10-12 在 p0 实例上实跑通过 |
+| `p0-plc-bootstrap-ui.js` | 保留 | 独立于链路：界面进入离线·合成图，核对 S7 回环地址与 28 个 DB1 点（协议 4）；2026-10-12 在 p0 实例上实跑通过 |
 | `p0-single-instance-acceptance.mjs` | 保留 | 前置为 p0 实例已有原图且节拍空闲（先跑 `p0-plc-bootstrap-ui.js` 再离线运行一件 MTR-HSG-A；运行库目录可经 `GLUESIGHT_NATIVE_PATH` 前置到 PATH）；2026-10-12 实跑通过，重复启动以独占锁拒绝（退出码 101），数据库与原图不变 |
 | `p0-ack-process-recovery.mjs`、`p0-audit-process-recovery.mjs`（及审计专用配置 `tauri-audit-test.json`） | 删除 | 需要外部 S7 Python 夹具（真机模式）配合模拟相机；真机模式加载时会把非海康相机改回海康，模拟相机只在离线时由站点模式生成并强制使用进程内 S7，站点模式下无法运行。另依赖已删除链路建立的 `P0-TRICAM-UI` / 701 配方，审计脚本还断言已不存在的“模拟 / 回放相机”拒绝原因。ACK 日志落盘后进程终止的重启恢复、审计 spool 在进程终止后的回放由 `plc_session`（`s7_wire_restart_after_persisted_ack_recovers_exact_cycle_before_and_after_reset` 等）、`store`（`durable_ack_recovery_matches_cycle_after_reopen_and_preserves_original_evidence`）、`audit`（`durable_spool_recovers_after_real_process_termination_before_any_sqlite_insert` 等）的 Rust 测试覆盖 |
 
@@ -97,7 +97,7 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 
 软件启动总是真机模式：测量用 lyFlow，相机只接海康 MVS，PLC 只支持 S7。顶栏模式标识显示“真机”“离线 · 样本集 <名称>”或“离线 · 合成图”，点击进入“离线控制台”（设备与运行 → 离线控制台，`/offline`）。
 
-进入离线时软件临时派生并应用：PLC 切到进程内 S7 服务（127.0.0.1 随机端口、DB100 一期点表）；相机组按样本集 `cameras[]` 生成样本集相机，或按真实相机组同编号、同视角数生成模拟相机；测量用 lyFlow（样本集）或模拟测量（合成图）；帧录制临时为“全部”。真实 PLC、相机组和系统设置不改写，退出离线后全部恢复；恢复真机 PLC 配置失败时 PLC 保持断开并停在安全配置，离线控制台与日志标为“故障·需人工修复”。进入离线失败回滚时按进入前状态重连真机 PLC。离线期间相机页、PLC 页只读；有在途事务或整圈采集进行中时不能切换模式。离线模式不持久化，重启回到真机，但会记住上次来源和样本集目录。
+进入离线时软件临时派生并应用：PLC 切到进程内 S7 服务（127.0.0.1 随机端口、DB1 一期点表、PDU 240）；相机组按样本集 `cameras[]` 生成样本集相机，或按真实相机组同编号、同视角数生成模拟相机；测量用 lyFlow（样本集）或模拟测量（合成图）；帧录制临时为“全部”。真实 PLC、相机组和系统设置不改写，退出离线后全部恢复；恢复真机 PLC 配置失败时 PLC 保持断开并停在安全配置，离线控制台与日志标为“故障·需人工修复”。进入离线失败回滚时按进入前状态重连真机 PLC。离线期间相机页、PLC 页只读；有在途事务或整圈采集进行中时不能切换模式。离线模式不持久化，重启回到真机，但会记住上次来源和样本集目录。
 
 **离线 · 合成图跑一件**
 
