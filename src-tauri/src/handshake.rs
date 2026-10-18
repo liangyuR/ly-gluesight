@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 pub(crate) const PROTOCOL_VERSION: u16 = 4;
 pub(crate) const SN_MAX_LEN: usize = 50;
-const SN_HEADER_MISMATCH: &str = "PLC 字符串声明长度";
+const SN_HEADER_ERRORS: [&str; 2] = ["PLC 字符串声明长度", "PLC 字符串实际长度"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Direction {
@@ -84,6 +84,7 @@ fn sn_header(data_type: DataType) -> Option<usize> {
 pub(crate) struct Contract {
     config: PlcConfig,
     ids: HashMap<&'static str, String>,
+    sn_type: DataType,
 }
 
 impl Contract {
@@ -156,7 +157,8 @@ impl Contract {
             locations.push((*field, location));
             ids.insert(field.tag, point.id.clone());
         }
-        if sn_types.windows(2).any(|pair| pair[0] != pair[1]) {
+        let [sn_type, result_sn_type] = sn_types[..] else { return Err("partSn 与 resultSn 必须各配置一个字符串点位".into()) };
+        if sn_type != result_sn_type {
             return Err("partSn 与 resultSn 必须使用同一种字符串格式（SmartString 或 String），PLC 才能逐字节比较".into());
         }
         for point in config.points.iter().filter(|p| !ids.values().any(|id| id == &p.id)) {
@@ -179,7 +181,7 @@ impl Contract {
         if !(100..=1000).contains(&config.heartbeat.interval_ms) {
             return Err("PC 心跳周期必须在 100–1000 ms 之间".into());
         }
-        Ok(Self { config: config.clone(), ids })
+        Ok(Self { config: config.clone(), ids, sn_type })
     }
 
     pub(crate) fn point_id(&self, tag: &str) -> Result<&str, String> {
@@ -205,6 +207,10 @@ impl Contract {
             (DataType::U16, PlcValue::Int(n)) if u16::try_from(*n).is_err() => return Err(out_of_range(tag, *n, WORD)),
             (DataType::I32, PlcValue::Int(n)) if !(0..=i32::MAX as i64).contains(n) => return Err(out_of_range(tag, *n, DINT)),
             (DataType::U16 | DataType::I32, PlcValue::Int(_)) => true,
+            (DataType::String, PlcValue::Text(text)) if self.smart_length_reserved(text) => return Err(format!(
+                "{tag} 的 200 SMART 字符串长度字节为 {SN_MAX_LEN}，与 S7 STRING 的声明长度相同：PLC 可能按 S7 STRING 写入，核对两端 SN 格式（200 SMART 字符串 SN 最多 {} 个字符）",
+                SN_MAX_LEN - 1,
+            )),
             (DataType::String, PlcValue::Text(_)) => true,
             _ => false,
         };
@@ -214,9 +220,18 @@ impl Contract {
         Ok(value)
     }
 
-    fn sn_header_mismatch(&self, values: &HashMap<String, PointValue>, tag: &str) -> bool {
-        self.point_id(tag).ok().and_then(|id| values.get(id)).and_then(|point| point.error.as_ref())
-            .is_some_and(|error| matches!(error, PlcError::Decode(m) if m.starts_with(SN_HEADER_MISMATCH)))
+    /// 200 SMART 字符串的长度字节 50 与 S7 STRING 的声明长度相同，保留用于识别两端格式不一致。
+    fn smart_length_reserved(&self, text: &str) -> bool {
+        self.sn_type == DataType::SmartString && text.chars().count() == SN_MAX_LEN
+    }
+
+    fn sn_header_broken(&self, values: &HashMap<String, PointValue>, tag: &str) -> bool {
+        let Some(point) = self.point_id(tag).ok().and_then(|id| values.get(id)) else { return false };
+        match (&point.error, &point.value) {
+            (Some(PlcError::Decode(m)), _) => SN_HEADER_ERRORS.iter().any(|prefix| m.starts_with(prefix)),
+            (None, Some(PlcValue::Text(text))) => self.smart_length_reserved(text),
+            _ => false,
+        }
     }
 
     fn validate_writes(&self, writes: &[WriteOp]) -> Result<(), String> {
@@ -314,7 +329,7 @@ impl Snapshot {
         let mut broken_outputs = Vec::new();
         for field in FIELDS {
             if tolerate_output_sn_header && field.direction == Direction::Output && field.data_type == DataType::String
-                && contract.sn_header_mismatch(raw, field.tag) {
+                && contract.sn_header_broken(raw, field.tag) {
                 broken_outputs.push(field.tag);
                 continue;
             }
@@ -941,6 +956,22 @@ mod tests {
             set(&mut broken, tag, data_type, address);
             assert!(Contract::validate(&broken).is_err(), "{tag} {data_type:?} {address}");
         }
+    }
+
+    #[test]
+    fn smart_string_length_byte_50_from_s7_string_header_is_read_error_not_shifted_sn() {
+        let mut cfg = config();
+        for point in cfg.points.iter_mut().filter(|p| p.data_type == DataType::String) {
+            point.data_type = DataType::SmartString;
+        }
+        let contract = Contract::validate(&cfg).unwrap();
+        let (_, status, mut values) = data();
+        let sn = "9".repeat(SN_MAX_LEN - 1);
+        values.get_mut("partSn").unwrap().value = Some(PlcValue::Text(format!("1{sn}")));
+        let error = Snapshot::from_values(&contract, &status, &values, 1010, 1000).unwrap_err();
+        assert!(error.contains("partSn") && error.contains("S7 STRING"), "{error}");
+        values.get_mut("partSn").unwrap().value = Some(PlcValue::Text(sn.clone()));
+        assert_eq!(Snapshot::from_values(&contract, &status, &values, 1010, 1000).unwrap().request().unwrap().sn, sn);
     }
 
     #[test]

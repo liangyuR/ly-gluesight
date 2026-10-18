@@ -16,11 +16,11 @@
 - PLC 单独拥有字节 0–63 与 160–210（SN 为 S7 STRING 时到 211）；PC 单独拥有字节 64–150（S7 STRING 时到 151）。PLC 代码只读 PC 区，PC 点表将 PLC 区设为只读。两个写入方不得共用同一字节，也不得用整区初始化（含 `FILL_N`）/块复制覆盖对方区域。
 - 一件只有一个在途事务。普通质量 NG 可以按有效结果确认；通讯、身份或状态不确定进入故障，保留 pending，停止新触发及下一件。现场运动的停机策略由 PLC/机器人程序负责。
 
-**单设备协议版本 4：** 点表共 28 个字段，默认 DB1；序号、计划版本与保留字段为 DInt；`partSn` 在 DBB160、`resultSn` 在 DBB100，均为最大 50 字符的字符串；`resultCode`/`faultCode` 为 DBW76/DBW78；`protocolVersion`/`pcProtocolVersion` 由 3 升为 4。旧多通道点表和计划、旧协议 2/3 点表（DB100、SN 为 UDInt 或 `STRING[24]`、序号为 UDInt）、旧 PLC 程序（`protocolVersion` 不为 4）直接拒绝，须按协议 4 模板重建点表并重新导出，不做兼容读取。
+**单设备协议版本 4：** 点表共 28 个字段，默认 DB1；序号、计划版本与保留字段为 DInt；`partSn` 在 DBB160、`resultSn` 在 DBB100，均为 50 字符区域的字符串（200 SMART 字符串编码的 SN 最多 49 字符）；`resultCode`/`faultCode` 为 DBW76/DBW78；`protocolVersion`/`pcProtocolVersion` 由 3 升为 4。旧多通道点表和计划、旧协议 2/3 点表（DB100、SN 为 UDInt 或 `STRING[24]`、序号为 UDInt）、旧 PLC 程序（`protocolVersion` 不为 4）直接拒绝，须按协议 4 模板重建点表并重新导出，不做兼容读取。
 
 ## 2. DB1 点表（交互表 V1.0）
 
-S7-200 SMART 的共享区是 V 区，S7 协议中按 **DB1** 访问（`DB1.DBW2` 即 VW2），至少使用到 VB210（SN 为 S7 STRING 时到 VB211）。S7-1200/1500 接入时改用**关闭优化块访问的标准 DB**，可改号。多字节值为 S7 大端 ABCD；WORD 为 16 位无符号，DInt 为 32 位有符号，本协议只使用 0–2147483647，PC 读到负数按读错误进入视觉故障。布尔按指定 bit 访问。工件 SN 最大 50 字符，编码见下表后的说明。
+S7-200 SMART 的共享区是 V 区，S7 协议中按 **DB1** 访问（`DB1.DBW2` 即 VW2），至少使用到 VB210（SN 为 S7 STRING 时到 VB211）。S7-1200/1500 接入时改用**关闭优化块访问的标准 DB**，可改号。多字节值为 S7 大端 ABCD；WORD 为 16 位无符号，DInt 为 32 位有符号，本协议只使用 0–2147483647，PC 读到负数按读错误进入视觉故障。布尔按指定 bit 访问。工件 SN 区域 50 字符，编码见下表后的说明。
 
 | 所有者 | 地址 | 类型 | 标签及含义 |
 | --- | --- | --- | --- |
@@ -55,7 +55,7 @@ S7-200 SMART 的共享区是 V 区，S7 协议中按 **DB1** 访问（`DB1.DBW2`
 | PC | DB1.DBB100.50 | 字符串（50） | `resultSn`：结果对应的 partSn，与 partSn 同编码，默认占 DBB100–150，实际长度与字符须相等 |
 | PC | DBB64 保留位、DBB65、DBB72–75、DBB88–99、DBB152–159 | 保留 | PLC 不写 |
 
-**工件 SN（字符串）：** 1–50 个字符，每个字符为 ASCII 可打印字符 0x20–0x7E，去掉首尾空白后不能为空。默认按 200 SMART 字符串编码（首字节为实际长度，与 `STR_CPY`、`S==` 指令一致）；PLC 若按 `STRING[50]` 自行写声明长度与实际长度两个头字节，在“载入一期 S7 点表”中把 SN 格式改为 S7 STRING，此时空串头为 `32 00`，PC 要求声明长度字节等于 50，否则该点位读错误。两段 SN 必须同编码。SN 原样保存与回显，不做 trim 或大小写变换；PLC 侧要求 `resultSn` 与 `partSn` 的实际长度及字符相等。不合规 `partSn` 与请求 payload 不合法（`requestSeq=0`、`planReserved≠0`、`deviceShots≠shotCount`、协议版本不符）同样处理：PC 不布防、不生成结果、不写 `resultCode`，进入视觉故障（`visionFault=1`、`visionReady=0`），PLC 须释放 `partStart` 并执行故障复位（`faultReset` 上升沿）后重新开始。字节示例见 [通讯协议第 10 节](plc-communication-protocol.md#10-四点飞拍示例)。离线产线（仿真）分配形如 `OFFLINE-0001234567` 的 SN（`OFFLINE-` 加 10 位数字），同一离线运行内唯一。
+**工件 SN（字符串）：** 每个字符为 ASCII 可打印字符 0x20–0x7E，去掉首尾空白后不能为空。默认按 200 SMART 字符串编码（首字节为实际长度，与 `STR_CPY`、`S==` 指令一致），SN 为 1–49 个字符；长度字节 50 与 S7 STRING 的声明长度相同，保留用于识别格式错配，PC 读到时按该点位读错误处理。PLC 若按 `STRING[50]` 自行写声明长度与实际长度两个头字节，在“载入一期 S7 点表”中把 SN 格式改为 S7 STRING，此时 SN 为 1–50 个字符，空串头为 `32 00`，PC 要求声明长度字节等于 50，否则该点位读错误。两段 SN 必须同编码；格式选错时并非所有长度都会报错，调试时用现场最长的真实 SN 核对 PC 记录，见 [适配决策第 7.1 条](../decisions/plc-table.md#71-格式选错时的识别)。SN 原样保存与回显，不做 trim 或大小写变换；PLC 侧要求 `resultSn` 与 `partSn` 的实际长度及字符相等。不合规 `partSn` 与请求 payload 不合法（`requestSeq=0`、`planReserved≠0`、`deviceShots≠shotCount`、协议版本不符）同样处理：PC 不布防、不生成结果、不写 `resultCode`，进入视觉故障（`visionFault=1`、`visionReady=0`），PLC 须释放 `partStart` 并执行故障复位（`faultReset` 上升沿）后重新开始。字节示例见 [通讯协议第 10 节](plc-communication-protocol.md#10-四点飞拍示例)。离线产线（仿真）分配形如 `OFFLINE-0001234567` 的 SN（`OFFLINE-` 加 10 位数字），同一离线运行内唯一。
 
 SCL 使用符号 DB 名 `GlueSightHandshake`，仅适用于 S7-1200/1500：导入后在 TIA 的块属性中**明确指定编号**（交互表为 1），关闭优化访问，查看每个字段的实际偏移；源文件的符号名称本身不会保证自动分配到指定编号。使用其他 DB 编号时，同步改 PC 模板和测试 peer 的 `--db`。S7-200 SMART 不支持 SCL，须在 Micro/WIN SMART 中按同等逻辑实现，V 区地址与上表一致。
 

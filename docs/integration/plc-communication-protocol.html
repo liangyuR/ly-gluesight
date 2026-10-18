@@ -80,7 +80,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <div class="overview-text"><p>文档修订：2.0；审核日期：2026-10-19；线上握手协议版本：4。</p>
 <p>适用于 GlueSight 一期连续点胶飞拍的 PLC 与视觉工控机对接。PLC 负责机器人运动和位置同步硬触发，PC 负责接件、相机布防、收图、检测及整件结果回传。一件只有一个在途事务，完成结果确认和双方释放后才能开始下一件。</p>
 <p class="callout warning"><strong>设备数量固定为一台 SDK 三目相机设备。</strong> 全文统一称“设备通道 1”，图 1、图 2、图 3 是该设备帧内的视角。点表只保留唯一设备的 <code>deviceShots</code> 与 <code>deviceTriggers</code>，直接删除额外设备通道。协议不接受旧多通道点表或计划，须重新生成点表并重新导出计划。</p>
-<p class="callout warning"><strong>协议版本 4 按《涂胶检测通信交互表 20261018 V1.0》调整，与协议 3 布局不兼容。</strong> PLC 为西门子 S7-200 SMART，共享区为 V 区（S7 协议中的 DB1，原默认 DB100）；序号、计划版本与保留字段由 UDInt 改为 DInt；<code>partSn</code> 迁至 DBB160、<code>resultSn</code> 迁至 DBB100，均为最大 50 字符的字符串；<code>protocolVersion</code>/<code>pcProtocolVersion</code> 由 3 升为 4。旧点表（DB100、<code>STRING[24]</code>、UDInt）和旧 PLC 程序（<code>protocolVersion</code> 不为 4）直接被 PC 拒绝，不做兼容读取；须按协议 4 模板重新生成点表。与交互表的逐项差异见第 12 节，取舍理由与待 PLC 确认的问题见 <a href="../decisions/plc-table.md">交互表适配决策</a>。</p>
+<p class="callout warning"><strong>协议版本 4 按《涂胶检测通信交互表 20261018 V1.0》调整，与协议 3 布局不兼容。</strong> PLC 为西门子 S7-200 SMART，共享区为 V 区（S7 协议中的 DB1，原默认 DB100）；序号、计划版本与保留字段由 UDInt 改为 DInt；<code>partSn</code> 迁至 DBB160、<code>resultSn</code> 迁至 DBB100，均为 50 字符区域的字符串（200 SMART 字符串编码的 SN 最多 49 字符）；<code>protocolVersion</code>/<code>pcProtocolVersion</code> 由 3 升为 4。旧点表（DB100、<code>STRING[24]</code>、UDInt）和旧 PLC 程序（<code>protocolVersion</code> 不为 4）直接被 PC 拒绝，不做兼容读取；须按协议 4 模板重新生成点表。与交互表的逐项差异见第 12 节，取舍理由与待 PLC 确认的问题见 <a href="../decisions/plc-table.md">交互表适配决策</a>。</p>
 <p class="callout warning"><strong>同一 DB 也承载示教整圈采集，线上没有生产/采集模式字段。采集成功同样返回 <code>1/0</code>，只表示采集完成，不表示产品合格。</strong> PLC 必须在外部维护并锁定本次用途，示教期间禁止生产自动发件和良品放行；不能仅凭 ready 或 resultCode=1 判断生产模式。示教执行条件和当前限制见第 4.1 节。</p>
 <p>本协议以仓库 S7 模板和双方握手实现为依据。PLC SCL 为 S7-1200/1500 接入参考和 S7-200 SMART 的逻辑参考（200 SMART 不支持 SCL），仍需现场编程、真实 CPU、触发线路与相机联调验收。实现说明见 <a href="plc-s7-phase1.md">S7 握手契约与现场接入</a>。</p>
 </div>
@@ -124,7 +124,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 </tr>
 <tr>
 <td>字符串</td>
-<td>工件 SN 最大 50 字符，默认 200 SMART 字符串（首字节为实际长度），可选 S7 <code>STRING[50]</code>，见第 2.1 节</td>
+<td>工件 SN 区域 50 字符；默认 200 SMART 字符串（首字节为实际长度，SN 最多 49 字符），可选 S7 <code>STRING[50]</code>（SN 最多 50 字符），见第 2.1 节</td>
 </tr>
 <tr>
 <td>PC 轮询周期</td>
@@ -346,7 +346,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 </table></div>
 <p>PC 区保留空间：DBX64.6–64.7、DBB65、DBB72–75（协议 3 前的数值 <code>resultSn</code> 位置）、DBB88–99、DBB152–159。PLC 不写此区域。<code>done=0</code> 时结果字段可能保留上件数值，不能作为新件结论。</p>
 <h3 id="section-2-1">2.1 工件 SN 字符串</h3>
-<p><code>partSn</code>（<code>DB1.DBB160.50</code>）与 <code>resultSn</code>（<code>DB1.DBB100.50</code>）最大 50 字符，支持两种编码，两段必须相同，PC 校验点表时拒绝混用：</p>
+<p><code>partSn</code>（<code>DB1.DBB160.50</code>）与 <code>resultSn</code>（<code>DB1.DBB100.50</code>）按 50 字符分配区域，支持两种编码，两段必须相同，PC 校验点表时拒绝混用：</p>
 <div class="table-scroll" tabindex="0"><table class="point-table">
 <thead>
 <tr>
@@ -363,7 +363,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <td><code>smartString</code></td>
 <td>DBB160–210</td>
 <td>DBB100–150</td>
-<td>+0 实际长度 0–50；+1 起为字符；未用字节补 0</td>
+<td>+0 实际长度 0–49（50 保留，见下文）；+1 起为字符；未用字节补 0</td>
 </tr>
 <tr>
 <td>S7 <code>STRING[50]</code></td>
@@ -374,16 +374,17 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 </tr>
 </tbody>
 </table></div>
-<p>200 SMART 字符串与 <code>STR_CPY</code>、<code>S==</code> 等 200 SMART 字符串指令格式一致，是 S7-200 SMART 的默认选择；PLC 若按 <code>STRING[50]</code> 自行维护两个头字节，在 PLC 页“载入一期 S7 点表”中把“工件 SN 字符串格式”改为 S7 STRING。编码选错时 PC 读到的长度字节或字符不合规，按点位读错误或不合规 SN 进入视觉故障，不会把错误内容当作有效 SN。</p>
-<p class="callout warning"><strong>长度字节异常不是请求 payload 不合法。</strong> PC 每个轮询周期都读取两段 SN：实际长度大于 50，或 S7 STRING 的声明长度字节不为 50 时，该点位读错误，与心跳、序号等字段读失败一样直接进入视觉故障（<code>visionFault=1</code>、<code>visionReady=0</code>），与是否有 <code>partStart</code> 无关。200 SMART 字符串没有声明长度字节，整区清零后读为空串，空闲时不报错，提交请求时按不合规 SN 处理。S7 STRING 两段的恢复责任按所有者划分：</p>
+<p>200 SMART 字符串与 <code>STR_CPY</code>、<code>S==</code> 等 200 SMART 字符串指令格式一致，是 S7-200 SMART 的默认选择；PLC 若按 <code>STRING[50]</code> 自行维护两个头字节，在 PLC 页“载入一期 S7 点表”中把“工件 SN 字符串格式”改为 S7 STRING。</p>
+<p class="callout warning"><strong>两种编码的头字节并不总能区分。</strong> 200 SMART 字符串的长度字节 50 与 S7 STRING 的声明长度相同，因此 200 SMART 字符串编码的 SN 最多 49 字符，长度字节 50 保留：PC 按 200 SMART 字符串读到长度字节 50 时按读错误处理，提示核对两端 SN 格式。PLC 按 S7 STRING 写入时声明长度字节恒为 50，PC 若误选 200 SMART 字符串，在 PLC 写入 <code>partSn</code> 后的首个轮询即报错；PLC 按 200 SMART 字符串写入且遵守 49 字符上限时，PC 若误选 S7 STRING，声明长度字节不为 50，同样报错。PLC 写出 50 字符的 200 SMART 字符串、同时 PC 误选 S7 STRING 时，首字符为 0x20–0x32 的 SN 会被错读成另一个合规 SN（详见<a href="../decisions/plc-table.md#71-%E6%A0%BC%E5%BC%8F%E9%80%89%E9%94%99%E6%97%B6%E7%9A%84%E8%AF%86%E5%88%AB">适配决策第 7.1 条</a>）。调试时用现场最长的真实 SN 走一件，逐字符核对 PC 生产记录里的 SN 与 PLC 原值。</p>
+<p class="callout warning"><strong>长度字节异常不是请求 payload 不合法。</strong> PC 每个轮询周期都读取两段 SN：实际长度大于 50、S7 STRING 的声明长度字节不为 50，或 200 SMART 字符串的长度字节为保留值 50 时，该点位读错误，与心跳、序号等字段读失败一样直接进入视觉故障（<code>visionFault=1</code>、<code>visionReady=0</code>），与是否有 <code>partStart</code> 无关。200 SMART 字符串没有声明长度字节，整区清零后读为空串，空闲时不报错，提交请求时按不合规 SN 处理。两段的恢复责任按所有者划分：</p>
 <ul>
-<li><code>resultSn</code>（PC 区）仅声明长度字节不为 50 时，PC 在显式复位中自行恢复：满足第 8 节复位条件后，PC 先把 <code>resultSn</code> 写回空串（头 <code>32 00</code>），读回确认并记入复位审计，再继续清输出、置 <code>visionReady</code>。实际长度大于 50 等其他读错误不在此列，仍须 PLC 恢复。</li>
-<li><code>partSn</code>（PLC 区）长度头异常时 PC 不写该区，显式复位无法完成；必须由 PLC 恢复起始值（按 <code>32 00</code> 写回头字节），再按第 8 节复位。</li>
+<li><code>resultSn</code>（PC 区）头字节异常时，PC 在显式复位中自行恢复：满足第 8 节复位条件后，PC 先把 <code>resultSn</code> 写回空串（S7 STRING 头为 <code>32 00</code>，200 SMART 字符串为 <code>00</code>），读回确认并记入复位审计，再继续清输出、置 <code>visionReady</code>。两种编码的头字节异常都在此列。</li>
+<li><code>partSn</code>（PLC 区）头字节异常时 PC 不写该区，显式复位无法完成；必须由 PLC 恢复起始值（S7 STRING 按 <code>32 00</code>、200 SMART 字符串按 <code>00</code> 写回头字节），再按第 8 节复位。</li>
 </ul>
 <p>PC 的自恢复只是兜底，不改变 PLC 职责：禁止整区清零。</p>
 <p>SN 规则：</p>
 <ul>
-<li>长度 1–50 个字符，每个字符为 ASCII 可打印字符 0x20–0x7E；去掉首尾空白后不能为空。</li>
+<li>200 SMART 字符串编码长度 1–49 个字符，S7 STRING 编码长度 1–50 个字符；每个字符为 ASCII 可打印字符 0x20–0x7E；去掉首尾空白后不能为空。</li>
 <li>SN 原样保存与回显，PC 不做 trim 或大小写变换。PLC 侧要求 <code>resultSn</code> 与 <code>partSn</code> 的实际长度及每个字符相等（S7 STRING 另含声明长度）；PC 写入时未用字节补 0，PLC 比较时不要依赖 <code>partSn</code> 的未用字节，建议用 <code>S==</code> 比较整个字符串。</li>
 <li>SN 不替代 <code>requestSeq</code>；同一 SN 复检仍须新的 <code>requestSeq</code>。</li>
 <li>离线产线（仿真）为每件分配形如 <code>OFFLINE-0001234567</code>（<code>OFFLINE-</code> 加 10 位数字）的 SN，同一离线运行内唯一，样本件按 SN 字符串认领。</li>
@@ -882,7 +883,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <td><code>partSn</code></td>
 <td>DBB38.24，<code>STRING[24]</code>，占 38–63</td>
 <td>DBB160，string，未给长度；备注仍写“数值 SN”</td>
-<td>DBB160.50，最大 50 字符字符串，默认 200 SMART 编码</td>
+<td>DBB160.50，50 字符区域的字符串，默认 200 SMART 编码（SN 最多 49 字符）</td>
 </tr>
 <tr>
 <td><code>resultSn</code></td>

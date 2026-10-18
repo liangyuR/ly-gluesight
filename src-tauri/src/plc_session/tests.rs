@@ -856,23 +856,30 @@ async fn s7_wire_idle_db_reinit_restores_outputs_without_reset() {
 
 #[tokio::test]
 #[ignore = "requires Python and local loopback S7 fixture"]
-async fn s7_wire_zeroed_sn_headers_reset_heals_result_sn_only_after_part_sn_restored() {
-    let mut rig = Rig::with_sn("sn-header-reset", DataType::String).await;
-    let header = |rig: &mut Rig, byte: u16| rig.plc.control(json!({"op":"read_db", "db":1, "byte":byte, "size":2}))["data"].clone();
-    rig.plc.control(json!({"op":"write_db", "db":1, "byte":100, "data":[0, 0]}));
-    rig.plc.control(json!({"op":"write_db", "db":1, "byte":160, "data":[0, 0]}));
-    rig.fresh().await;
-    assert!(matches!(rig.session.poll(&rig.engine, false, true).await, SessionEvent::Fault(_)));
-    rig.session.poll(&rig.engine, true, true).await;
-    assert_eq!(rig.session.phase(), SessionPhase::Fault);
-    assert!(rig.session.view().message.unwrap().contains("partSn"), "{:?}", rig.session.view());
-    assert_eq!(header(&mut rig, 100), json!([0, 0]));
-    rig.plc.control(json!({"op":"write_db", "db":1, "byte":160, "data":[50, 0]}));
-    rig.fresh().await;
-    assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready), "{:?}", rig.session.view());
-    assert_eq!(header(&mut rig, 100), json!([50, 0]));
-    assert_idle_outputs(&rig.plc.fields(), true);
-    rig.finish().await;
+async fn s7_wire_broken_sn_headers_reset_heals_result_sn_only_after_part_sn_restored() {
+    for (sn_type, broken, empty) in [
+        (DataType::String, json!([0, 0]), json!([50, 0])),
+        (DataType::SmartString, json!([60]), json!([0])),
+        (DataType::SmartString, json!([50]), json!([0])),
+    ] {
+        let mut rig = Rig::with_sn("sn-header-reset", sn_type).await;
+        let size = empty.as_array().unwrap().len();
+        let header = |rig: &mut Rig, byte: u16| rig.plc.control(json!({"op":"read_db", "db":1, "byte":byte, "size":size}))["data"].clone();
+        rig.plc.control(json!({"op":"write_db", "db":1, "byte":100, "data":broken}));
+        rig.plc.control(json!({"op":"write_db", "db":1, "byte":160, "data":broken}));
+        rig.fresh().await;
+        assert!(matches!(rig.session.poll(&rig.engine, false, true).await, SessionEvent::Fault(_)), "{sn_type:?} {broken}");
+        rig.session.poll(&rig.engine, true, true).await;
+        assert_eq!(rig.session.phase(), SessionPhase::Fault);
+        assert!(rig.session.view().message.unwrap().contains("partSn"), "{sn_type:?} {broken} {:?}", rig.session.view());
+        assert_eq!(header(&mut rig, 100), broken);
+        rig.plc.control(json!({"op":"write_db", "db":1, "byte":160, "data":empty}));
+        rig.fresh().await;
+        assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready), "{sn_type:?} {broken} {:?}", rig.session.view());
+        assert_eq!(header(&mut rig, 100), empty);
+        assert_idle_outputs(&rig.plc.fields(), true);
+        rig.finish().await;
+    }
 }
 
 #[tokio::test]

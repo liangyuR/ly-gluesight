@@ -251,20 +251,21 @@ class S7SerialNumberTests(unittest.TestCase):
                 self.assertEqual(self.read(state, 160, size), declared + "00" * (size - len(declared) // 2))
                 self.assertEqual(self.read(state, 100, size), declared + "00" * (size - len(declared) // 2))
 
-    def test_shorter_part_sn_after_50_char_sn_writes_new_length_and_zero_padding(self):
+    def test_shorter_part_sn_after_longest_sn_writes_new_length_and_zero_padding(self):
         for kind, declared in self.HEADERS.items():
             with self.subTest(kind=kind):
                 state = PLC.PlcState(sn_kind=kind)
                 size = PLC.FIELD_SIZES[kind]
-                full = "ABCDEFGHIJKLMNOPQRSTUVWXY-abcdefghijklmnopqrstuvwx"
+                full = "ABCDEFGHIJKLMNOPQRSTUVWXY-abcdefghijklmnopqrstuvwx"[:PLC.SN_MAX_LENGTHS[kind]]
                 state.control({"op": "plc_request", "values": {"partSn": full}})
-                self.assertEqual(self.read(state, 160, size), declared + "32" + full.encode().hex())
+                padding = "00" * (PLC.SN_CAPACITY - len(full))
+                self.assertEqual(self.read(state, 160, size), declared + f"{len(full):02x}" + full.encode().hex() + padding)
                 state.control({"op": "plc_values", "values": {"partSn": "SN-1"}})
                 self.assertEqual(self.read(state, 160, size), declared + "04" + b"SN-1".hex() + "00" * 46)
                 self.assertEqual(state.field_values()["partSn"], "SN-1")
 
     def test_invalid_part_sn_rejects_whole_request_and_keeps_memory(self):
-        for value in ("", "A" * 51, "   ", "SN\t1", "SN-é", 12345):
+        for value in ("", "A" * 50, "   ", "SN\t1", "SN-é", 12345):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     self.state.control({"op": "plc_request", "values": {"requestSeq": 5, "partSn": value}})

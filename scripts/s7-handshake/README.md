@@ -25,7 +25,7 @@ python -u scripts/s7-handshake/s7_test_plc.py --port 0
 
 协议 4 固定对应一个 SDK 相机设备，该设备的一帧包含图 1/2/3 三个视角。`deviceShots` 是本件计划触发数，与 `shotCount` 相等；`deviceTriggers` 是本件该设备实际已发脉冲数。视角不单独计数。旧协议的六个 `camera1/2/3Shots`、`camera1/2/3Triggers` 标签已删除，控制 API 及自定义映射均直接拒绝，不读取兼容；区域至少 211 字节（S7 STRING 为 212），字节 8–11、26–31、38–63、72–75、88–99、152–159 为保留（保持 0，不配置点位）。当前点表共 28 个字段。协议 4 与协议 2、3 的布局不兼容。
 
-工件 SN 最大 50 字符。200 SMART 编码共 51 字节：首字节为实际长度，随后 50 字节为字符；S7 STRING 编码共 52 字节：首字节为声明最大长度 50，第二字节为实际长度，随后 50 字节为字符。未用字符均补 0。SN 为 1–50 个 ASCII 可打印字符（0x20–0x7E），去首尾空白后不能为空；原样保存与回显，不做 trim 或大小写变换。PLC 只在 `resultSn` 与 `partSn` 的头字节及每个字符逐字节相等时接受结果。
+工件 SN 区域 50 字符。200 SMART 编码共 51 字节：首字节为实际长度，随后 50 字节为字符；S7 STRING 编码共 52 字节：首字节为声明最大长度 50，第二字节为实际长度，随后 50 字节为字符。未用字符均补 0。SN 为 ASCII 可打印字符（0x20–0x7E），200 SMART 编码 1–49 个（长度字节 50 与 S7 STRING 声明长度相同，保留用于识别格式错配），S7 STRING 编码 1–50 个，去首尾空白后不能为空；原样保存与回显，不做 trim 或大小写变换。PLC 只在 `resultSn` 与 `partSn` 的头字节及每个字符逐字节相等时接受结果。
 
 | 方向 | 地址 | 字段 |
 | --- | --- | --- |
@@ -67,7 +67,7 @@ python -u scripts/s7-handshake/s7_test_plc.py --port 0
 {"id":13,"op":"plc_release"}
 ```
 
-请求序号、计划版本和设备计数的匹配由被测握手逻辑验收；控制 API 不替客户端过滤这些故障输入。不合规 SN 只能用 `write_db` 直接构造原始 STRING 字节。要覆盖其他点表，可用 `configure_handshake` 完整替换字段映射，但不能恢复已删除的六个 camera 标签。字段类型为 `bool/u8/u16/u32/i32/string/smart_string`，bool 必须有 `bit`；`string` 固定为 S7 STRING[50]，须从偶数字节开始，`smart_string` 固定为最大 50 字符的 200 SMART 字符串；头字节不合规时配置会写入空串：
+请求序号、计划版本和设备计数的匹配由被测握手逻辑验收；控制 API 不替客户端过滤这些故障输入。不合规 SN 只能用 `write_db` 直接构造原始 STRING 字节。要覆盖其他点表，可用 `configure_handshake` 完整替换字段映射，但不能恢复已删除的六个 camera 标签。字段类型为 `bool/u8/u16/u32/i32/string/smart_string`，bool 必须有 `bit`；`string` 固定为 S7 STRING[50]，须从偶数字节开始，`smart_string` 固定为 50 字符区域、SN 最多 49 字符的 200 SMART 字符串；头字节不合规时配置会写入空串：
 
 ```json
 {"id":20,"op":"configure_handshake","fields":{"partStart":{"db":200,"byte":0,"bit":0},"requestSeq":{"db":200,"byte":4,"type":"i32"},"resultAck":{"db":200,"byte":0,"bit":2}}}

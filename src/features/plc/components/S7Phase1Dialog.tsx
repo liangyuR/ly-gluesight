@@ -81,7 +81,7 @@ export default function S7Phase1Dialog({ config, dirty, blockedReason, onApply, 
       </select></label>
     </fieldset>
     {smart
-      ? <p className="muted hint">S7-200 SMART 的 V 区固定按 DB1 访问（VB100 即 DB1.DBB100），本地 / 远端 TSAP 0x0102 / 0x0201，PDU 240。SN 默认按 200 SMART 原生字符串编码；PLC 若按 STRING[50] 自行写两个头字节，改选 S7 STRING。</p>
+      ? <p className="muted hint">S7-200 SMART 的 V 区固定按 DB1 访问（VB100 即 DB1.DBB100），本地 / 远端 TSAP 0x0102 / 0x0201，PDU 240。SN 默认按 200 SMART 原生字符串编码，最多 49 个字符；PLC 若按 STRING[50] 自行写两个头字节，改选 S7 STRING。</p>
       : <p className="muted hint">S7-1200 / 1500 采用机架 0 / 插槽 1。请在 PLC 中启用 PUT/GET，并关闭所选 DB 的优化访问；按点表建立数据块，SN 声明为 String[50]。</p>}
     <p className="muted hint">应用将替换地址表、心跳和 S7 连接预设。IP / 主机名、超时、轮询、重连、日志和自动连接设置保留；之后仍需保存配置。</p>
     {invalid && <p className="c-ng" role="alert">DB 号需为 1–65535 的整数</p>}

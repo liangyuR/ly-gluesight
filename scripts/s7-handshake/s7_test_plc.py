@@ -22,13 +22,15 @@ def integer(value, name, minimum=0, maximum=65535):
 PROTOCOL_VERSION = 4
 SN_CAPACITY = 50
 SN_HEADERS = {"string": 2, "smart_string": 1}
+SN_MAX_LENGTHS = {"string": SN_CAPACITY, "smart_string": SN_CAPACITY - 1}
 FIELD_SIZES = {"bool": 1, "u8": 1, "u16": 2, "u32": 4, "i32": 4, **{kind: SN_CAPACITY + header for kind, header in SN_HEADERS.items()}}
 INTEGER_RANGES = {"u8": (0, 0xFF), "u16": (0, 0xFFFF), "u32": (0, 0xFFFFFFFF), "i32": (-(1 << 31), (1 << 31) - 1)}
 
 
-def serial_number(value, name):
-    if not isinstance(value, str) or not 1 <= len(value) <= SN_CAPACITY or not all(" " <= char <= "~" for char in value) or not value.strip():
-        raise ValueError(f"{name} must be 1..{SN_CAPACITY} printable ASCII characters and not blank")
+def serial_number(value, name, kind):
+    limit = SN_MAX_LENGTHS[kind]
+    if not isinstance(value, str) or not 1 <= len(value) <= limit or not all(" " <= char <= "~" for char in value) or not value.strip():
+        raise ValueError(f"{name} must be 1..{limit} printable ASCII characters and not blank")
     return value
 
 
@@ -270,7 +272,7 @@ class PlcState:
                 else:
                     size = FIELD_SIZES[field["type"]]
                     if field["type"] in SN_HEADERS:
-                        data = encode_sn(field["type"], serial_number(value, name))
+                        data = encode_sn(field["type"], serial_number(value, name, field["type"]))
                     else:
                         minimum, maximum = INTEGER_RANGES[field["type"]]
                         data = integer(value, name, minimum, maximum).to_bytes(size, "big", signed=minimum < 0)
