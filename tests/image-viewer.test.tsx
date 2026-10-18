@@ -199,6 +199,16 @@ describe("图像查看与加载", () => {
     }
   });
 
+  it("放大原图 → 中线编辑点在屏幕上保持原大小，不随倍率放大遮住胶路", () => {
+    render(<GrayViewer image={image} label="编辑点图像" overlay={{ path: [[20, 20], [60, 30]] }} onEdit={{ add: vi.fn(), move: vi.fn(), select: vi.fn() }} />);
+    const radius = () => Number(screen.getByLabelText("中线点 1").getAttribute("r"));
+    const before = radius();
+    fireEvent.keyDown(screen.getByRole("img", { name: "编辑点图像" }), { key: "+" });
+    fireEvent.keyDown(screen.getByRole("img", { name: "编辑点图像" }), { key: "+" });
+    expect(screen.getByText("156%")).toBeVisible();
+    expect(radius() * 1.5625).toBeCloseTo(before);
+  });
+
   it.each([false, true])("中键平移（框选模式 %s）不修改示教，取消拖动和换图后不残留视角", (regionMode) => {
     const previous = globalThis.DOMPoint;
     class TestPoint {

@@ -116,6 +116,19 @@ export function GrayViewer({ image, loading = false, error = "", label, tools, s
   const [viewport, setViewport] = useState({ zoom: 1, x: 0, y: 0 });
   const { zoom, x, y } = viewport;
   const svg = useRef<SVGSVGElement>(null);
+  const [fit, setFit] = useState(1);
+  useEffect(() => {
+    const element = svg.current;
+    if (!element || !image || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const scale = Math.min(element.clientWidth / image.width, element.clientHeight / image.height);
+      if (scale > 0 && Number.isFinite(scale)) setFit(scale);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [image?.url, image?.width, image?.height]);
   const pan = useRef<{ start: DOMPoint; x: number; y: number; inverse: DOMMatrix } | null>(null);
   const [panning, setPanning] = useState(false);
   const reset = () => { setViewport({ zoom: 1, x: 0, y: 0 }); };
@@ -166,14 +179,14 @@ export function GrayViewer({ image, loading = false, error = "", label, tools, s
     const p = point(e, inverse);
     return p && image ? [Math.min(p[0], image.width - 1), Math.min(p[1], image.height - 1)] : null;
   };
-  const size = image ? Math.max(image.width, image.height) : 1;
-  const handle = size / 120, dot = size / 320;
+  const screenPx = (px: number) => px / (fit * zoom);
+  const handle = screenPx(7), dot = screenPx(3);
   const editing = !!onEdit && shown && !editDisabled;
   const path = overlay?.path ?? [];
   const band = searchBand(path, overlay?.searchHalfPx);
-  const hint = error || (emptyHint ?? "取样后在这张图上点出胶路中线。机器人应停在当前拍照点。");
+  const hint = error || emptyHint;
   return <div className="wp-viewport"><div className="wp-image-tools">{tools ?? <span>{label}</span>}<div><button className="icon-btn" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></button><span>{Math.round(zoom * 100)}%</span><button className="icon-btn" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></button><button className="icon-btn" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></button>{overlay && <button className={"btn small" + (shown ? " active" : "")} aria-pressed={shown} onClick={() => setShown(v => !v)}>中线叠加</button>}{band && <button className={"btn small" + (bandShown ? " active" : "")} aria-pressed={bandShown} onClick={() => setBandShown(v => !v)}>搜索带</button>}{onEdit && overlay && <button className={"btn small" + (allHandles ? " active" : "")} aria-pressed={allHandles} disabled={!shown || editDisabled} onClick={() => setAllHandles(v => !v)}>编辑点</button>}</div></div>{subtools}
-    {!image ? <div className="wp-image-empty"><Camera size={32} /><strong>{loading ? "正在读取原图…" : error ? "原图不可用" : emptyTitle ?? "尚未冻结本帧图像"}</strong>{hint && <span>{hint}</span>}</div> :
+    {!image ? <div className="wp-image-empty"><Camera size={32} /><strong>{loading ? "正在读取原图…" : error ? "原图不可用" : emptyTitle ?? "暂无图像"}</strong>{hint && <span>{hint}</span>}</div> :
       <svg ref={svg} role="img" tabIndex={0} style={{ aspectRatio: `${image.width} / ${image.height}` }} className={"wp-gray-image" + (editing ? " editable" : "") + (panning ? " panning" : "")} viewBox={"0 0 " + image.width + " " + image.height} aria-label={label} aria-description="Ctrl 加滚轮缩放，中键拖动平移；聚焦后加减键缩放，0 适应窗口" onKeyDown={e => {
         if (e.altKey || e.metaKey || drag.current || regionStart.current || brushStroke.current || pan.current) return;
         if (["+", "=", "-", "0"].includes(e.key)) {
@@ -241,12 +254,12 @@ export function GrayViewer({ image, loading = false, error = "", label, tools, s
           {brush && brush.points.length > 0 && <g aria-label="刷选胶路区域" pointerEvents="none">
             <polyline points={brush.points.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeOpacity={.22} strokeWidth={brush.radiusPx * 2} strokeLinecap="round" strokeLinejoin="round" />
             <polyline points={brush.points.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeWidth={1} strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />
-            {[brush.points[0], brush.points[brush.points.length - 1]].map(([px, py], i) => <g key={i}><circle cx={px} cy={py} r={handle / zoom} fill={i === 0 ? "var(--ok)" : "var(--primary)"} /><text x={px} y={py} dx={14 / zoom} dy={-10 / zoom} fontSize={14 / zoom} fill="var(--primary)">{i === 0 ? "起点" : "终点"}</text></g>)}
+            {[brush.points[0], brush.points[brush.points.length - 1]].map(([px, py], i) => <g key={i}><circle cx={px} cy={py} r={handle} fill={i === 0 ? "var(--ok)" : "var(--primary)"} /><text x={px} y={py} dx={screenPx(10)} dy={screenPx(-8)} fontSize={screenPx(13)} fill="var(--primary)" stroke="var(--surface-lowest)" strokeWidth={3} paintOrder="stroke" vectorEffect="non-scaling-stroke">{i === 0 ? "起点" : "终点"}</text></g>)}
           </g>}
           {extractionFailure && <g aria-label="中线提取失败位置" pointerEvents="none" transform={`translate(${extractionFailure.point[0]} ${extractionFailure.point[1]})`}>
             <title>{extractionFailure.message}</title>
-            <circle r={18 / zoom} fill="var(--surface-lowest)" fillOpacity={.8} stroke="var(--ng)" strokeWidth={3} vectorEffect="non-scaling-stroke" />
-            <text textAnchor="middle" dy={6 / zoom} fontSize={20 / zoom} fontWeight="bold" fill="var(--ng)">!</text>
+            <circle r={screenPx(13)} fill="var(--surface-lowest)" fillOpacity={.8} stroke="var(--ng)" strokeWidth={3} vectorEffect="non-scaling-stroke" />
+            <text textAnchor="middle" dy={screenPx(5.5)} fontSize={screenPx(16)} fontWeight="bold" fill="var(--ng)">!</text>
           </g>}
           {region && <rect x={region[0]} y={region[1]} width={region[2]} height={region[3]} fill="var(--primary)" fillOpacity={.12} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
           {overlay && shown && <g aria-label="中线叠加">
@@ -256,7 +269,7 @@ export function GrayViewer({ image, loading = false, error = "", label, tools, s
             {overlay.segments && <g aria-label="测量横线" pointerEvents="none">
               {overlay.segments.map((segment, i) => <g key={i}>
                 <line x1={segment.from[0]} y1={segment.from[1]} x2={segment.to[0]} y2={segment.to[1]} stroke={segment.color} strokeWidth={2} vectorEffect="non-scaling-stroke" />
-                {segment.label && <text x={segment.to[0]} y={segment.to[1]} dx={4 / zoom} dy={-4 / zoom} fontSize={12 / zoom} fill={segment.color} stroke="var(--surface-lowest)" strokeWidth={3} paintOrder="stroke" vectorEffect="non-scaling-stroke">{segment.label}</text>}
+                {segment.label && <text x={segment.to[0]} y={segment.to[1]} dx={screenPx(4)} dy={screenPx(-4)} fontSize={screenPx(12)} fill={segment.color} stroke="var(--surface-lowest)" strokeWidth={3} paintOrder="stroke" vectorEffect="non-scaling-stroke">{segment.label}</text>}
               </g>)}
             </g>}
           </g>}
