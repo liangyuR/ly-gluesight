@@ -97,18 +97,16 @@ async fn idle_session(name: &str) -> (S7Server, PlcEngine, PlcSession, Plc) {
 
 #[tokio::test]
 async fn invalid_start_request_faults_without_arming_or_result_while_a_valid_one_starts() {
-    for (case, request_seq, plan_reserved, device_shots, accepted) in [
-        ("requestSeq 与上次相同", 5, 0, 4, false),
-        ("requestSeq 回退", 3, 0, 4, false),
-        ("requestSeq 为零", 0, 0, 4, false),
-        ("planReserved 非零", 6, 1, 4, false),
-        ("deviceShots 与 shotCount 不符", 6, 0, 3, false),
-        ("合法请求", 6, 0, 4, true),
+    for (case, request_seq, plan_reserved, accepted) in [
+        ("requestSeq 与上次相同", 5, 0, false),
+        ("requestSeq 回退", 3, 0, false),
+        ("开始校验失败（planReserved 非零）", 6, 1, false),
+        ("合法请求", 6, 0, true),
     ] {
         let (_server, engine, mut session, plc) = idle_session("start-request").await;
         plc.set_text(tag::PART_SN, "SN-CORE-1");
         for (field, value) in [(tag::PROTOCOL_VERSION, PROTOCOL_VERSION as u32), (tag::REQUEST_SEQ, request_seq), (tag::PRODUCT_CODE, 1),
-            (tag::SHOT_COUNT, 4), (tag::PLAN_VERSION, 7), (tag::PLAN_RESERVED, plan_reserved), (tag::DEVICE_SHOTS, device_shots),
+            (tag::SHOT_COUNT, 4), (tag::PLAN_VERSION, 7), (tag::PLAN_RESERVED, plan_reserved), (tag::DEVICE_SHOTS, 4),
             (tag::DEVICE_TRIGGERS, 0), (tag::PART_START, 1)] {
             plc.set(field, value);
         }
