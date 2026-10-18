@@ -70,7 +70,10 @@ try {
         $taskUiState | ConvertTo-Json | Set-Content -LiteralPath $taskUiManifest -Encoding utf8
         $taskUiReady = $false
         for ($taskUiAttempt = 0; $taskUiAttempt -lt 40; $taskUiAttempt++) {
-            try { $taskUiVersion = Invoke-RestMethod -Uri "http://127.0.0.1:$DebugPort/json/version" -TimeoutSec 1; $taskUiReady = [bool]$taskUiVersion.webSocketDebuggerUrl } catch { }
+            foreach ($taskUiCdpHost in '127.0.0.1', '[::1]') {
+                try { $taskUiVersion = Invoke-RestMethod -Uri "http://${taskUiCdpHost}:$DebugPort/json/version" -TimeoutSec 1; $taskUiReady = [bool]$taskUiVersion.webSocketDebuggerUrl } catch { }
+                if ($taskUiReady) { break }
+            }
             if ($taskUiReady) { break }
             if ($taskUiProcess.HasExited) { throw '隔离 UI 程序在浏览器初始化前退出' }
             Start-Sleep -Milliseconds 250
