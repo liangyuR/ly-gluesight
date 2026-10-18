@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import Modal from "./Modal";
 import { plcApi } from "../api";
-import { dataTypeLabels, edgeLabels, isMultiWord, s7Protocol } from "../meta";
+import { dataTypeLabels, edgeLabels, isMultiWord, isText, s7Protocol } from "../meta";
 import type { Access, ConnectionConfig, DataType, EdgeMode, PlcPoint, TagPreset, WordOrder } from "../types";
 
 interface PointEditorProps {
@@ -122,7 +122,7 @@ export default function PointEditor({ initial, isNew, existingIds, connection, t
         </label>
         <label className="field">
           <span>数据类型</span>
-          <select className="input" value={p.dataType} onChange={(e) => update({ dataType: e.target.value as DataType, wordOrder: e.target.value === "bool" || e.target.value === "string" ? null : p.wordOrder })}>
+          <select className="input" value={p.dataType} onChange={(e) => update({ dataType: e.target.value as DataType, wordOrder: e.target.value === "bool" || isText(e.target.value as DataType) ? null : p.wordOrder })}>
             {Object.entries(dataTypeLabels).map(([k, v]) => (
               <option key={k} value={k}>
                 {v}

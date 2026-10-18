@@ -14,6 +14,7 @@ import { WorkpieceOverview } from "../features/workspace/OverviewPage";
 import { usePublishedOverview } from "../features/workspace/RuntimeFrame";
 import type { Comparison, RecordImages, WorkspaceView } from "../features/workspace/types";
 import Modal from "../features/plc/components/Modal";
+import { CycleTimeline } from "../features/logs";
 import { errorText } from "../lib/errors";
 
 const candidateTaught=(v:WorkspaceView,sampleReplay=false)=>{
@@ -188,6 +189,7 @@ export default function HistoryDetailPage() {
       </Panel>
       {switching&&layout&&<SwitchCandidate from={ws.data?.workspace.doc.id??null} to={layout.id} unsaved={ws.dirty||ws.frameDirty} saveFailed={ws.saveState==="failed"} busy={ws.busy} error={ws.error} onCancel={()=>setSwitching(false)} onConfirm={()=>void confirmSwitch()}/>}
       <PartTrace detail={detail} layout={layout} raw={raw} selected={selected} selectedView={selectedView} onSelect={(k,view)=>{setSelected(k);setViewSelection({k,view});}}/>
+      <CycleTimeline historyId={s.id} cycleId={s.cycleId} ts={s.ts} selected={selected} onSelectShot={k=>{setSelected(k);setViewSelection(null);}}/>
     </div>
   </div>;
 }
