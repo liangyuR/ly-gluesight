@@ -375,8 +375,14 @@ pub struct Recipe {
 
 impl Recipe {
     pub(crate) fn candidate_revision(&self) -> Option<u64> {
-        self.revision_id.strip_prefix(&format!("candidate-{}-r", self.id))
-            .and_then(|value| value.parse::<u64>().ok().filter(|revision| *revision > 0 && value == revision.to_string()))
+        let suffix = self.revision_id.strip_prefix(&format!("candidate-{}-", self.id))?;
+        let revision = if let Some(legacy) = suffix.strip_prefix('r') { legacy } else {
+            let (instance, revision) = suffix.strip_prefix('i')?.split_once("-r")?;
+            let parsed = instance.parse::<u64>().ok()?;
+            if parsed == 0 || instance != parsed.to_string() { return None; }
+            revision
+        };
+        revision.parse::<u64>().ok().filter(|value| *value > 0 && revision == value.to_string())
     }
 
     pub(crate) fn from_snapshot(value: serde_json::Value) -> Result<Self, String> {

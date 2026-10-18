@@ -234,6 +234,8 @@ pub struct Release {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Workspace {
     pub doc: RecipeDoc,
+    #[serde(default)]
+    pub instance_id: u64,
     pub base_revision: Option<String>,
     pub revision: u64,
     pub frames: Vec<Teaching>,
@@ -290,6 +292,7 @@ impl Workspace {
         let count = doc.shots.len();
         Self {
             doc,
+            instance_id: 0,
             base_revision,
             revision: 1,
             frames: (0..count).map(Teaching::empty).collect(),
@@ -304,6 +307,16 @@ impl Workspace {
             capture_id: None,
             unbound_imaging: BTreeMap::new(),
         }
+    }
+
+    fn ensure_instance(&mut self, store: &Store) -> Result<(), String> {
+        self.instance_id = store.workspace_instance(&self.doc.id, self.instance_id)?;
+        Ok(())
+    }
+
+    fn debug_revision(&self) -> Result<String, String> {
+        if self.instance_id == 0 { return Err("候选尚未分配持久实例 ID".into()); }
+        Ok(format!("candidate-{}-i{}-r{}", self.doc.id, self.instance_id, self.revision))
     }
 
     fn expect(&self, revision: u64) -> Result<(), String> {
@@ -462,10 +475,15 @@ impl WorkspaceHost {
             if !file.is_file() { continue; }
             let loaded = crate::fsio::read_text(&file).map_err(|e| e.to_string())
                 .and_then(|text| serde_json::from_str::<Workspace>(&text).map_err(|e| e.to_string()))
-                .and_then(|w| {
+                .and_then(|mut w| {
                     safe_id(&w.doc.id)?;
                     if w.doc.id != entry.file_name().to_string_lossy() { return Err("候选编号与目录不一致".into()); }
                     w.doc.build()?;
+                    let legacy = w.instance_id == 0;
+                    w.ensure_instance(&app.state::<Store>())?;
+                    if legacy {
+                        crate::fsio::write_atomic(&file, &serde_json::to_string_pretty(&w).map_err(|e| e.to_string())?)?;
+                    }
                     Ok(w)
                 });
             match loaded {
@@ -640,7 +658,8 @@ pub fn workspace_get(app: AppHandle, id: String) -> Result<WorkspaceView, String
         let base = cycle.recipe(&id).map(|r| r.revision_id.clone());
         doc.version = cycle.recipes.next_version(&id)?;
         if base.is_some() { doc.version -= 1; }
-        let w = Workspace::new(doc, base);
+        let mut w = Workspace::new(doc, base);
+        w.ensure_instance(&app.state::<Store>())?;
         host.save(&w)?;
         items.insert(id.clone(), w);
     }
@@ -661,7 +680,8 @@ pub fn workspace_create(app: AppHandle, mut doc: RecipeDoc) -> Result<WorkspaceV
     // Windows 路径不区分大小写，未登记的旧目录也不能被新候选覆盖。
     if host.dir(&doc.id).exists() { return Err("配方目录已经存在，请换一个编号".into()); }
     doc.version = app.state::<CycleHost>().recipes.next_version(&doc.id)?.max(doc.version.max(1));
-    let w = Workspace::new(doc, None);
+    let mut w = Workspace::new(doc, None);
+    w.ensure_instance(&app.state::<Store>())?;
     host.save(&w)?;
     items.insert(w.doc.id.clone(), w.clone());
     view(&app, w)
@@ -2292,6 +2312,63 @@ mod tests {
     }
     impl Drop for ImportTestDir { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
 
+    #[test]
+    fn deleting_and_recreating_candidate_keeps_old_snapshots_and_rejects_same_identity_conflicts() {
+        let dir = ImportTestDir::new();
+        let database = dir.0.join("inspection.db");
+        let store = Store::open(&database).unwrap();
+        let save = |store: &Store, recipe: &Recipe, cycle: &str| {
+            let shots: Vec<_> = recipe.shots.iter().enumerate().map(|(k, shot)| store::PartShot {
+                k, shot_id: shot.id.clone(), camera: shot.camera.clone(), view: shot.view,
+                session: None, ordinal: None, frame_counter: None, trigger_counter: None,
+                status: cycle::FrameStatus::Done, error: None, score: None, ms: None, raw_files: Vec::new(),
+            }).collect();
+            store.insert(&store::PartRecord {
+                ts: 1, sn: cycle, recipe: Some(recipe), judgement: &judge::Judgement::error(90, "调试记录"),
+                drain_ms: None, frames: &[], frames_expected: recipe.shot_count(), frames_received: recipe.shot_count(),
+                triggers: recipe.shot_count() as u64, table: None, software_version: "test", cycle_id: Some(cycle),
+                bundle_id: None, delivery: &store::PlcDelivery::default(), shots: &shots,
+                source: store::RecordSource::OfflineCandidate, sample: None,
+            })
+        };
+        let doc = crate::recipe::samples().remove(1);
+        let mut legacy = doc.build().unwrap();
+        legacy.revision_id = format!("candidate-{}-r7", doc.id);
+        save(&store, &legacy, "legacy").unwrap();
+        let mut old_workspace = serde_json::to_value(Workspace::new(doc.clone(), None)).unwrap();
+        old_workspace.as_object_mut().unwrap().remove("instanceId");
+        let mut first: Workspace = serde_json::from_value(old_workspace).unwrap();
+        first.revision = 7;
+        first.ensure_instance(&store).unwrap();
+        let candidate_dir = dir.0.join(&doc.id);
+        std::fs::create_dir(&candidate_dir).unwrap();
+        let file = candidate_dir.join("workspace.json");
+        crate::fsio::write_atomic(&file, &serde_json::to_string(&first).unwrap()).unwrap();
+        let mut first_recipe = first.doc.build().unwrap();
+        first_recipe.revision_id = first.debug_revision().unwrap();
+        save(&store, &first_recipe, "first").unwrap();
+        drop(store);
+        let store = Store::open(&database).unwrap();
+        let mut restored: Workspace = serde_json::from_str(&crate::fsio::read_text(&file).unwrap()).unwrap();
+        restored.ensure_instance(&store).unwrap();
+        assert_eq!(restored.debug_revision().unwrap(), first_recipe.revision_id);
+        std::fs::remove_dir_all(&candidate_dir).unwrap();
+        let mut recreated = Workspace::new(doc, None);
+        recreated.revision = first.revision;
+        recreated.doc.name = "重建后的候选".into();
+        recreated.ensure_instance(&store).unwrap();
+        let mut second_recipe = recreated.doc.build().unwrap();
+        second_recipe.revision_id = recreated.debug_revision().unwrap();
+        save(&store, &second_recipe, "second").unwrap();
+        for recipe in [&legacy, &first_recipe, &second_recipe] {
+            let snapshot = store.recipe_snapshot(&recipe.revision_id).unwrap().unwrap();
+            assert_eq!(snapshot.revision_id, recipe.revision_id);
+            assert_eq!(snapshot.name, recipe.name);
+        }
+        second_recipe.name = "同一身份的冲突内容".into();
+        assert!(save(&store, &second_recipe, "conflict").is_err());
+    }
+
     fn import_workspace() -> Workspace {
         let mut workspace = Workspace::new(crate::recipe::samples().remove(0), None);
         for frame in &mut workspace.frames { frame.image = None; }
@@ -2595,7 +2672,7 @@ pub async fn workspace_debug_run(app: AppHandle, id: String, revision: u64, part
                 sizes.insert((k, selected), frozen.size);
             }
         }
-        recipe.revision_id = format!("candidate-{}-r{}", id, revision);
+        recipe.revision_id = w.debug_revision()?;
         if recipe.plan_version == 0 { recipe.plan_version = 1; }
         let engine = app.state::<vision::VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
         Arc::new(crate::candidate::Candidate::new(recipe, revision, engine, sizes, w.overview.clone())?)
@@ -2607,7 +2684,7 @@ pub(crate) fn recheck_debug_candidate(app: &AppHandle, candidate: &crate::candid
     let host = app.state::<WorkspaceHost>();
     let items = host.items.lock().unwrap();
     let w = items.get(&candidate.info.recipe_id).ok_or("候选已删除")?;
-    if w.revision != candidate.info.revision || w.pending.is_some() { return Err("候选已修改或正在发布，请重新试运行".into()); }
+    if w.revision != candidate.info.revision || w.pending.is_some() || w.debug_revision()? != candidate.recipe.revision_id { return Err("候选已修改、重建或正在发布，请重新试运行".into()); }
     for (k, shot) in w.doc.shots.iter().enumerate() {
         if shot.skip { continue; }
         for view in workflow::selected_views(w, k) { workflow::check_view(app, w, k, view, false)?; }

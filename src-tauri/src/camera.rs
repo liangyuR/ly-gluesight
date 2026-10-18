@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{c_uint, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use ly_plc::now_ms;
@@ -584,13 +584,31 @@ pub struct CameraSlot {
     seq: Mutex<u64>,
     /// 已释放给海康 MVS 客户端（调焦、光圈）：关闭设备且不自动重连，直到重新连接
     released: AtomicBool,
+    supervision: CameraSupervision,
     /// 本次打开后已写进海康相机的曝光与增益；关闭、重开时清空，下次必写
     imaging: Mutex<Option<CameraImaging>>,
 }
 
-/// 后台循环是否该（重新）打开这台海康相机：释放给 MVS 期间一律不开，免得把 MVS 客户端挤掉。
-fn reconnect_due(released: bool, lost: bool, opened: bool) -> bool {
-    !released && (lost || !opened)
+#[derive(Default)]
+pub struct CameraSupervision {
+    started: AtomicBool,
+    paused: AtomicBool,
+}
+
+impl CameraSupervision {
+    pub fn start(&self, auto_connect: bool) -> bool {
+        if self.started.swap(true, Ordering::SeqCst) { return false; }
+        self.paused.store(!auto_connect, Ordering::SeqCst);
+        true
+    }
+
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::SeqCst);
+    }
+
+    pub fn reconnect_due(&self, released: bool, lost: bool, opened: bool) -> bool {
+        !self.paused.load(Ordering::SeqCst) && !released && (lost || !opened)
+    }
 }
 
 impl Drop for CameraSlot {
@@ -630,6 +648,7 @@ impl CameraSlot {
             state: Mutex::new(DeviceState::default()),
             seq: Mutex::new(0),
             released: AtomicBool::new(false),
+            supervision: CameraSupervision::default(),
             imaging: Mutex::new(None),
         };
         if let Err(e) = slot.config().validate() {
@@ -924,6 +943,7 @@ impl CameraSlot {
     }
 
     fn open(&self) -> Result<String, String> {
+        self.supervision.resume();
         self.close();
         let result = self.try_open();
         if let Err(e) = &result {
@@ -1260,7 +1280,7 @@ impl CameraRig {
         self.generation.fetch_add(1, Ordering::SeqCst);
         drop(old);
         for s in &slots {
-            supervise(app, Arc::downgrade(s));
+            supervise(app, s, true);
         }
     }
 
@@ -1271,15 +1291,17 @@ impl CameraRig {
         let _ = app.emit("camera://changed", ());
     }
 
-    pub fn start(app: &AppHandle) {
+    pub fn start(app: &AppHandle, auto_connect: bool) {
         for s in app.state::<CycleHost>().camera.slots() {
-            supervise(app, Arc::downgrade(&s));
+            supervise(app, &s, auto_connect);
         }
     }
 }
 
 /// 每台相机一个后台循环：海康相机掉线或未打开时每 2 s 重连（已释放给 MVS 的不连）。相机被移出相机组后循环自己结束。
-fn supervise(app: &AppHandle, slot: Weak<CameraSlot>) {
+fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>, auto_connect: bool) {
+    if !slot.supervision.start(auto_connect) { return; }
+    let slot = Arc::downgrade(slot);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut last_error: Option<String> = None;
@@ -1291,7 +1313,7 @@ fn supervise(app: &AppHandle, slot: Weak<CameraSlot>) {
                 next_retry = Instant::now() + Duration::from_secs(2);
                 let lost = s.shared.disconnected.load(Ordering::SeqCst);
                 let opened = s.device.lock().unwrap().is_some();
-                if reconnect_due(s.released.load(Ordering::SeqCst), lost, opened) && !config.serial.trim().is_empty() {
+                if s.supervision.reconnect_due(s.released.load(Ordering::SeqCst), lost, opened) && !config.serial.trim().is_empty() {
                     if lost {
                         cycle::log(&app, "err", "相机断线", format!("{}：尝试重新连接", config.name));
                     }
@@ -1598,11 +1620,27 @@ mod rig_file_tests {
 
     #[test]
     fn released_camera_is_never_reopened_by_the_supervisor() {
+        let supervision = CameraSupervision::default();
+        supervision.start(true);
         for (lost, opened) in [(false, false), (true, false), (true, true)] {
-            assert!(!reconnect_due(true, lost, opened), "lost={lost} opened={opened}");
-            assert!(reconnect_due(false, lost, opened), "lost={lost} opened={opened}");
+            assert!(!supervision.reconnect_due(true, lost, opened), "lost={lost} opened={opened}");
+            assert!(supervision.reconnect_due(false, lost, opened), "lost={lost} opened={opened}");
         }
-        assert!(!reconnect_due(false, false, true));
+        assert!(!supervision.reconnect_due(false, false, true));
+    }
+
+    #[test]
+    fn migrated_camera_waits_for_manual_connection_then_resumes_supervision_without_duplicates() {
+        let supervision = CameraSupervision::default();
+        assert!(supervision.start(false));
+        assert!(!supervision.reconnect_due(false, false, false));
+        assert!(!supervision.start(true));
+        assert!(!supervision.reconnect_due(false, false, false));
+        supervision.resume();
+        assert!(supervision.reconnect_due(false, false, false));
+        assert!(supervision.reconnect_due(false, true, true));
+        assert!(!supervision.start(false));
+        assert!(supervision.reconnect_due(false, true, true));
     }
 
     #[test]

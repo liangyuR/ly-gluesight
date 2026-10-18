@@ -522,6 +522,10 @@ impl Store {
                  id TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(16)))),
                  created_at INTEGER NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS workspace_instances (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 recipe_id TEXT NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS parts (
                  id INTEGER PRIMARY KEY,
                  ts INTEGER NOT NULL,
@@ -618,6 +622,19 @@ impl Store {
 
     pub fn reserve_cycle_id(&self) -> Result<String, String> {
         Ok(self.reserve_cycle_ids(1)?.remove(0))
+    }
+
+    pub(crate) fn workspace_instance(&self, recipe_id: &str, instance_id: u64) -> Result<u64, String> {
+        let conn = self.conn.lock().unwrap();
+        if instance_id == 0 {
+            let allocated: i64 = conn.query_row("INSERT INTO workspace_instances (recipe_id) VALUES (?1) RETURNING id", [recipe_id], |row| row.get(0)).map_err(db_err)?;
+            return u64::try_from(allocated).map_err(|_| "候选实例 ID 无效".into());
+        }
+        let stored = i64::try_from(instance_id).map_err(|_| "候选实例 ID 超出范围")?;
+        conn.execute("INSERT OR IGNORE INTO workspace_instances (id, recipe_id) VALUES (?1, ?2)", params![stored, recipe_id]).map_err(db_err)?;
+        let original: String = conn.query_row("SELECT recipe_id FROM workspace_instances WHERE id = ?1", [stored], |row| row.get(0)).map_err(db_err)?;
+        if original != recipe_id { return Err("候选实例 ID 已属于其他配方".into()); }
+        Ok(instance_id)
     }
 
     pub fn reserve_cycle_ids(&self, count: usize) -> Result<Vec<String>, String> {

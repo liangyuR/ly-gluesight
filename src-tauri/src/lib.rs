@@ -238,7 +238,7 @@ fn start_services(app: &tauri::AppHandle, root: std::path::PathBuf) -> Result<()
     if let Some(window) = app.get_webview_window("storage-startup") { window.close()?; }
     if !storage::migrated_this_launch(app) { plc::PlcHost::start_if_configured(app); }
     cycle::CycleHost::start(app);
-    if !storage::migrated_this_launch(app) { camera::CameraRig::start(app); }
+    camera::CameraRig::start(app, !storage::migrated_this_launch(app));
     measure::apply_settings(app);
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || cycle::purge_history(&handle));

@@ -170,7 +170,7 @@ export default function HistoryPage() {
         {scope === "debug" && <div className="notice">候选配方离线调试结果，未发布，不作为生产验收或生产统计。</div>}
         {scope === "offline" && <div className="notice">离线件来自离线验证（合成图或样本集），与真机件分开统计，不计入真机产量与良率。</div>}
         <div className="hist-counts">
-          <span>{scope === "offline" ? "离线" : "真机"}共 <b>{page?.total ?? 0}</b> 件</span>
+          <span>{scope === "debug" ? "候选调试" : scope === "offline" ? "离线" : "真机"}共 <b>{page?.total ?? 0}</b> 件</span>
           <span>OK <b className="c-ok">{c?.ok ?? 0}</b></span>
           <span>局部超差 <b className="c-warn">{c?.excursion ?? 0}</b></span>
           <span>NG <b className="c-ng">{c?.ng ?? 0}</b></span>

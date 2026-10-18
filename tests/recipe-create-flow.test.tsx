@@ -21,8 +21,14 @@ describe("创建配方流程", () => {
       limits: { position: null, width: null, maxGapLen: .5, minPresent: .8 }, shots: [], cameras: {},
     };
     let created: WorkspaceView | null = null;
+    let preferences: Record<string, unknown> = { legacyImported: true };
     vi.mocked(invoke).mockImplementation(async (command, args) => {
       switch (command) {
+        case "storage_preferences_get": return { ...preferences };
+        case "storage_preferences_update": {
+          preferences = { ...preferences, ...(args as { patch: Record<string, unknown> }).patch };
+          return { ...preferences };
+        }
         case "recipe_list": return { recipes: [], errors: [] };
         case "recipe_template": return structuredClone(template);
         case "workspace_list": return created ? [structuredClone(created.workspace)] : [];
@@ -79,7 +85,7 @@ describe("创建配方流程", () => {
     expect(invoke).toHaveBeenCalledWith("workspace_get", { id: "SHELL-2026" });
     expect(screen.getByRole("combobox", { name: "当前配方" })).toHaveValue("SHELL-2026");
     expect(screen.getByText("等待设备就绪后整圈采集并采用")).toBeVisible();
-    expect(localStorage.getItem("tujiao-last-workspace")).toBe("SHELL-2026");
+    await waitFor(() => expect(preferences.lastWorkspace).toBe("SHELL-2026"));
 
     await user.click(screen.getByRole("link", { name: "开始整圈采集" }));
     expect(await screen.findByRole("heading", { name: "设备准备与整圈采集" })).toBeVisible();
