@@ -84,7 +84,7 @@ describe("创建配方流程", () => {
     });
     expect(invoke).toHaveBeenCalledWith("workspace_get", { id: "SHELL-2026" });
     expect(screen.getByRole("combobox", { name: "当前配方" })).toHaveValue("SHELL-2026");
-    expect(within(screen.getByRole("region", { name: "整圈采集" })).getByText("等待设备就绪后整圈采集并采用")).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "整圈采集进度" })).getByText("等待设备就绪后整圈采集并采用")).toBeVisible();
     await waitFor(() => expect(preferences.lastWorkspace).toBe("SHELL-2026"));
 
     await user.click(screen.getByRole("link", { name: "开始整圈采集" }));
