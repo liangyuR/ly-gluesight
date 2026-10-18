@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronLeft, ChevronRight, Download, RefreshCw, Scale } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, History, RefreshCw, Scale } from "lucide-react";
 import { subscribe } from "../features/plc";
 import { useRecipes } from "../features/cycle";
 import { errorText } from "../lib/errors";
@@ -19,6 +19,10 @@ const ranges: [string, string, number | null][] = [
   ["30d", "30 天", 30],
   ["all", "全部", null],
 ];
+
+function rowTone(verdict: Page["items"][number]["verdict"]) {
+  return verdict === "OK" ? "" : verdict === "OK_WITH_EXCURSION" ? "r-exc" : verdict === "ERR_INSPECT" ? "r-err" : "r-ng";
+}
 
 function rangeStart(days: number | null) {
   if (days === null) return null;
@@ -122,8 +126,8 @@ export default function HistoryPage() {
 
   const c = page?.counts;
   return (
-    <div className="stack">
-      <div className="panel">
+    <div className="hist-page">
+      <div className="panel hist-filters">
         <div className="filter-row">
           <SelectionTrack className="segmented" activeKey={scope} role="group" aria-label="记录来源">
             {scopes.map(([key, label]) => (
@@ -144,9 +148,10 @@ export default function HistoryPage() {
             <button
               key={g.key}
               aria-pressed={groups.includes(g.key)}
-              className={`chip${groups.includes(g.key) ? " on" : ""}`}
+              className={`qs-chip action hist-chip g-${g.key}${groups.includes(g.key) ? " selected" : " outlined"}`}
               onClick={() => { setGroups(groups.includes(g.key) ? groups.filter((x) => x !== g.key) : [...groups, g.key]); setOffset(0); }}
             >
+              <span className="hist-dot" aria-hidden="true" />
               {g.label}
             </button>
           ))}
@@ -168,8 +173,8 @@ export default function HistoryPage() {
             {exporting ? "导出中…" : "导出 CSV"}
           </button>
         </div>
-        {scope === "debug" && <div className="notice">候选配方离线调试结果，未发布，不作为生产验收或生产统计。</div>}
-        {scope === "offline" && <div className="notice">离线件来自离线验证（合成图或样本集），与真机件分开统计，不计入真机产量与良率。</div>}
+        {scope === "debug" && <div className="qs-banner tertiary">候选配方离线调试结果，未发布，不作为生产验收或生产统计。</div>}
+        {scope === "offline" && <div className="qs-banner tertiary">离线件来自离线验证（合成图或样本集），与真机件分开统计，不计入真机产量与良率。</div>}
         <div className="hist-counts">
           <span>{scope === "debug" ? "候选调试" : scope === "offline" ? "离线" : "真机"}共 <b>{page?.total ?? 0}</b> 件</span>
           <span>OK <b className="c-ok">{c?.ok ?? 0}</b></span>
@@ -177,21 +182,21 @@ export default function HistoryPage() {
           <span>NG <b className="c-ng">{c?.ng ?? 0}</b></span>
           <span>ERR <b className="c-err">{c?.err ?? 0}</b></span>
           {page && page.total > 0 && <span>良率 <b>{(((c!.ok + c!.excursion) / page.total) * 100).toFixed(1)}%</b></span>}
+          <span className="hist-loading muted" role="status">{loading ? "正在加载历史记录…" : ""}</span>
         </div>
         {exported && (
-          <div className="notice ok">
-            已导出：<span className="mono">{exported}</span>{" "}
-            <button className="link" disabled={revealing} onClick={() => void reveal()}>{revealing ? "正在打开…" : "打开所在文件夹"}</button>
+          <div className="qs-banner ok">
+            <span>已导出：<span className="mono">{exported}</span>{" "}
+            <button className="link" disabled={revealing} onClick={() => void reveal()}>{revealing ? "正在打开…" : "打开所在文件夹"}</button></span>
           </div>
         )}
-        {error && <div className="notice error">{error}</div>}
-        {operationError && <div className="notice error">{operationError}</div>}
-        {loading && <p role="status" className="muted">正在加载历史记录…</p>}
+        {error && <div className="qs-banner ng" role="alert">{error}</div>}
+        {operationError && <div className="qs-banner ng" role="alert">{operationError}</div>}
       </div>
 
-      <div className="panel">
+      <div className="panel hist-results">
         <div className="table-wrap">
-          <table className="table hist-table">
+          <table className={`table hist-table${loading ? " is-loading" : ""}`} aria-busy={loading}>
             <thead>
               <tr>
                 <th>时间</th>
@@ -206,7 +211,7 @@ export default function HistoryPage() {
             </thead>
             <tbody>
               {page?.items.map((p) => (
-                <tr key={p.id} tabIndex={0} aria-label={`查看 SN ${p.sn} 的记录`} onClick={() => navigate(`/history/${p.id}`)} onKeyDown={(e) => {
+                <tr key={p.id} className={rowTone(p.verdict)} tabIndex={0} aria-label={`查看 SN ${p.sn} 的记录`} onClick={() => navigate(`/history/${p.id}`)} onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") { e.preventDefault(); navigate(`/history/${p.id}`); }
                 }}>
                   <td className="mono nowrap">{formatTime(p.ts)}</td>
@@ -231,8 +236,14 @@ export default function HistoryPage() {
                 </tr>
               ))}
               {page && page.items.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="muted center">没有符合条件的记录</td>
+                <tr className="hist-empty">
+                  <td colSpan={8}>
+                    <div className="qs-empty">
+                      <History />
+                      <b>没有符合条件的记录</b>
+                      <small>调整来源、日期范围、结果或配方筛选后再查。</small>
+                    </div>
+                  </td>
                 </tr>
               )}
             </tbody>
