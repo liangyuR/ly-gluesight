@@ -37,5 +37,5 @@ switch ($PSCmdlet.ParameterSetName) {
     }
 }
 
-Write-Host '请重开终端；从 IDE 启动时请重启 IDE，然后运行 pnpm dev。已运行的 GlueSight 也需要重启。'
+Write-Host '下次 pnpm dev 会自动读取保存的配置，无需重开终端或 IDE。已运行的 GlueSight 需要重启。'
 Write-Host '仅开发构建生效；dev:joint -LyFlowRuntime 的显式目录仍优先于此配置。'
