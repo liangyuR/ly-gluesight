@@ -1332,8 +1332,10 @@ impl Machine {
                 Ok(crate::audit::AuditReadiness::Ready) => true,
                 Ok(crate::audit::AuditReadiness::WaitingRecording | crate::audit::AuditReadiness::WaitingStore) => false,
                 Err(error) => {
-                    self.s7.fault(plc(&app), format!("持久追溯故障：{error}")).await;
-                    return self.enter_fault(format!("持久追溯故障：{error}"));
+                    let reason = format!("持久追溯故障：{error}");
+                    self.s7.fault(plc(&app), reason.clone()).await;
+                    if self.phase != Phase::Fault || self.fault.as_ref() != Some(&reason) { self.enter_fault(reason); }
+                    return;
                 }
             };
             let devices_ready = if matches!(self.phase, Phase::Report | Phase::Release) {
@@ -1624,7 +1626,7 @@ impl Machine {
             log(&self.app, "err", "在途件中断", format!("SN {sn} 记 ERR 98，需人工处理该件"));
             self.result = Some(ResultView { candidate_debug: self.part.as_ref().and_then(|p| p.candidate.as_ref()).map(|c| c.info.clone()).or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())), cycle_id: self.current_cycle_id.clone(), sn, recipe_id: self.part.as_ref().map(|p| p.recipe.id.clone()), ts: now_ms(), drain_ms: None, judgement });
         }
-        if !in_flight && self.result.is_some() {
+        if fault_fails_delivery(self.phase) && self.result.is_some() {
             if let Err(error) = self.delivery(PlcDeliveryState::Failed, Some(reason.clone())) {
                 log(&self.app, "err", "故障交付审计持久化失败", error);
             }
@@ -1633,6 +1635,11 @@ impl Machine {
         self.fault = Some(reason);
         self.set_phase(Phase::Fault);
     }
+}
+
+/// 故障时只有已回写结果、仍在等 PLC 确认的工件改记交付失败；已确认、已释放或早已故障的工件不再改写。
+fn fault_fails_delivery(phase: Phase) -> bool {
+    phase == Phase::Report
 }
 
 /// 今日统计只算当前站点的范围：真机只算真机件，离线只算离线件。

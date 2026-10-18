@@ -353,3 +353,11 @@ fn reset_during_recipe_capture_still_requires_service_readiness() {
         assert_eq!(result.is_ok(), ready, "{service:?} {device_ok}");
     }
 }
+
+/// 已确认、已释放或早已故障的工件，之后的故障不能把它改记为交付失败；持续故障每拍重写交付会刷满追溯 spool。
+#[test]
+fn only_a_result_awaiting_plc_ack_is_marked_failed_by_a_later_fault() {
+    for (phase, fails) in [(Phase::Report, true), (Phase::Release, false), (Phase::Idle, false), (Phase::Fault, false)] {
+        assert_eq!(fault_fails_delivery(phase), fails, "{phase:?}");
+    }
+}
