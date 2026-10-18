@@ -154,8 +154,8 @@
 .shot-strip { overflow-x: auto; padding: 2px; }
 
 /* 逐拍照点视图：每个拍照点一格，显示示教中线与各站状态 */
-.shot-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); grid-auto-rows: minmax(132px, auto); gap: 8px; flex: 1; min-height: 0; overflow: auto; padding: 2px; }
-.shot-tile { display: grid; grid-template-rows: auto minmax(70px, 1fr) auto; min-width: 0; overflow: hidden; border: 1px solid transparent; border-radius: var(--r-md); background: var(--surface-mid); font: inherit; color: inherit; text-align: left; padding: 0; }
+.shot-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); grid-auto-rows: 192px; align-content: start; gap: 8px; flex: 1; min-height: 0; overflow: auto; padding: 2px; }
+.shot-tile { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; overflow: hidden; border: 1px solid transparent; border-radius: var(--r-md); background: var(--surface-mid); font: inherit; color: inherit; text-align: left; padding: 0; }
 button.shot-tile { cursor: pointer; }
 .shot-tile.selected { outline: 2px solid var(--primary); outline-offset: -2px; }
 .shot-tile.current { border-color: var(--primary); }
@@ -167,7 +167,7 @@ button.shot-tile { cursor: pointer; }
 .shot-tile-head { display: flex; justify-content: space-between; gap: 6px; padding: 4px 8px; font-size: 11.5px; }
 .shot-tile-head b { font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .shot-tile-head span { flex-shrink: 0; }
-.shot-tile-img { width: 100%; height: 100%; min-height: 70px; display: block; background: var(--surface-lowest); }
+.shot-tile-img { width: 100%; height: 100%; min-height: 0; display: block; background: var(--surface-lowest); }
 .shot-tile-empty { display: grid; place-items: center; min-height: 70px; padding: 6px; background: var(--surface-lowest); color: var(--on-surface-variant); font-size: 11.5px; text-align: center; }
 .shot-tile-foot { display: flex; flex-wrap: wrap; gap: 2px 8px; padding: 3px 8px 5px; font-size: 11px; color: var(--on-surface-variant); }
 
@@ -300,3 +300,6 @@ button.shot-tile { cursor: pointer; }
   .readiness-embedded .readiness-item { grid-template-columns: 40px minmax(0, 1fr); }
   .readiness-embedded .readiness-detail, .readiness-embedded .readiness-item > a { grid-column: 2; }
 }
+
+.offline-published-controls { width: 100%; }
+.offline-published-controls > summary { cursor: pointer; color: var(--on-surface-variant); padding: 8px 0; }

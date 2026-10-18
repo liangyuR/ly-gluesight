@@ -96,6 +96,40 @@ describe("图像查看与加载", () => {
       Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: previous });
     }
   });
+  it("刷选固定按下时图像坐标 → 不修改中线，中键和取消后的移动不继续刷选", () => {
+    let offset = 20;
+    const previous = globalThis.DOMPoint;
+    class TestPoint {
+      constructor(public x: number, public y: number) {}
+      matrixTransform(matrix: { offset: number }) { return new TestPoint(this.x, this.y - matrix.offset); }
+    }
+    Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: TestPoint });
+    const onBrush = vi.fn(), edit = { add: vi.fn(), move: vi.fn(), select: vi.fn() };
+    try {
+      render(<GrayViewer image={image} label="刷选图像" overlay={{ path: [[50, 30]] }} onEdit={edit} onBrush={onBrush} />);
+      const svg = screen.getByRole("img", { name: "刷选图像" });
+      Object.defineProperty(svg.querySelector("g")!, "getScreenCTM", { value: () => ({ inverse: () => ({ offset }) }) });
+      Object.defineProperty(svg, "getScreenCTM", { value: () => ({ inverse: () => ({ offset }) }) });
+      fireEvent.pointerDown(svg, { clientX: 10, clientY: 30, pointerId: 1 });
+      offset = 60;
+      fireEvent.pointerMove(svg, { clientX: 50, clientY: 65, pointerId: 1 });
+      expect(onBrush).toHaveBeenLastCalledWith([[10, 10], [50, 45]]);
+      fireEvent.pointerMove(svg, { clientX: 500, clientY: 500, pointerId: 1 });
+      expect(onBrush).toHaveBeenLastCalledWith([[10, 10], [50, 45], [99, 59]]);
+      expect(edit.add).not.toHaveBeenCalled();
+      expect(edit.move).not.toHaveBeenCalled();
+      fireEvent.pointerCancel(svg, { pointerId: 1 });
+      fireEvent.pointerMove(svg, { clientX: 80, clientY: 75, pointerId: 1 });
+      fireEvent.pointerDown(svg, { button: 1, clientX: 10, clientY: 30, pointerId: 2 });
+      fireEvent.pointerMove(svg, { clientX: 20, clientY: 40, pointerId: 2 });
+      expect(onBrush).toHaveBeenCalledTimes(3);
+      fireEvent.pointerUp(svg, { pointerId: 2 });
+      fireEvent.pointerDown(svg, { clientX: 30, clientY: 80, pointerId: 3 });
+      expect(onBrush).toHaveBeenLastCalledWith([[30, 20]]);
+    } finally {
+      Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: previous });
+    }
+  });
   it("密集中线隐藏内部编辑圆点，展开后可拖动且测量横线始终位于上层", () => {
     const previous = globalThis.DOMPoint;
     class TestPoint {

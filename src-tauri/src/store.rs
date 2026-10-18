@@ -41,6 +41,7 @@ pub enum RecordSource {
     Real,
     OfflineSynthetic,
     OfflineSample,
+    OfflineCandidate,
 }
 
 impl RecordSource {
@@ -53,6 +54,7 @@ impl RecordSource {
             Self::Real => "真机",
             Self::OfflineSynthetic => "离线·合成图",
             Self::OfflineSample => "离线·样本集",
+            Self::OfflineCandidate => "候选离线调试",
         }
     }
 }
@@ -64,16 +66,18 @@ pub enum HistoryScope {
     #[default]
     Real,
     Offline,
+    Debug,
 }
 
 impl HistoryScope {
     pub fn of(source: RecordSource) -> Self {
-        if source.offline() { Self::Offline } else { Self::Real }
+        if source == RecordSource::OfflineCandidate { Self::Debug } else if source.offline() { Self::Offline } else { Self::Real }
     }
 
     fn clause(self, prefix: &str) -> String {
         match self {
             Self::Real => format!("{prefix}source = 'real'"),
+            Self::Debug => format!("{prefix}source = 'offlineCandidate'"),
             Self::Offline => format!("{prefix}source IN ('offlineSynthetic','offlineSample')"),
         }
     }
@@ -227,7 +231,7 @@ pub struct PartSummary {
     pub bundle_id: Option<String>,
     pub delivery: PlcDelivery,
     pub source: RecordSource,
-    /// 离线样本集运行的样本件引用（只用于展示与追溯，不参与判定）
+    /// 离线样本集运行的样本件引用，用于追溯和读取对应原图。
     pub sample: Option<SampleRef>,
 }
 
@@ -461,6 +465,29 @@ fn fail_interrupted_recordings(conn: &mut Connection) -> Result<usize, String> {
     Ok(interrupted)
 }
 
+fn extend_candidate_source(conn: &Connection, path: &Path) -> Result<(), String> {
+    let sql: Option<String> = conn.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='parts'", [], |r| r.get(0)).optional().map_err(db_err)?;
+    let Some(sql) = sql else { return Ok(()); };
+    const OLD: &str = "CHECK(source IN ('real','offlineSynthetic','offlineSample'))";
+    if !sql.contains(OLD) { return Ok(()); }
+    let indexes = conn.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='parts' AND sql IS NOT NULL").map_err(db_err)?
+        .query_map([], |r| r.get::<_, String>(0)).map_err(db_err)?.collect::<Result<Vec<_>, _>>().map_err(db_err)?;
+    let backup = path.with_extension(format!("before-candidate-{}.sqlite3", ly_plc::now_ms()));
+    conn.execute("VACUUM INTO ?1", [backup.to_string_lossy().as_ref()]).map_err(|e| format!("调试记录格式升级前备份失败：{e}"))?;
+    let definition = sql[sql.find('(').ok_or("记录表定义无效")?..].replace(OLD, "CHECK(source IN ('real','offlineSynthetic','offlineSample','offlineCandidate'))");
+    conn.execute_batch("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE;").map_err(db_err)?;
+    let migrated = conn.execute_batch(&format!("CREATE TABLE parts_candidate_upgrade {definition}; INSERT INTO parts_candidate_upgrade SELECT * FROM parts; DROP TABLE parts; ALTER TABLE parts_candidate_upgrade RENAME TO parts;"))
+        .and_then(|_| {
+            for index in &indexes { conn.execute_batch(index)?; }
+            let violations: i64 = conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?;
+            if violations != 0 { return Err(rusqlite::Error::InvalidQuery); }
+            conn.execute_batch("COMMIT;")
+        });
+    if migrated.is_err() { let _ = conn.execute_batch("ROLLBACK;"); }
+    conn.execute_batch("PRAGMA foreign_keys=ON;").map_err(db_err)?;
+    migrated.map_err(|e| format!("调试记录格式升级失败，旧记录保持原样，备份 {}：{e}", backup.display()))
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self, String> {
         Self::open_inner(path, false)
@@ -486,6 +513,7 @@ impl Store {
         } else {
             None
         };
+        extend_candidate_source(&conn, path)?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
@@ -524,7 +552,7 @@ impl Store {
                  recording_directory TEXT,
                  recording_errors TEXT NOT NULL DEFAULT '[]',
                  sample TEXT,
-                 source TEXT NOT NULL CHECK(source IN ('real','offlineSynthetic','offlineSample'))
+                 source TEXT NOT NULL CHECK(source IN ('real','offlineSynthetic','offlineSample','offlineCandidate'))
              );
              CREATE INDEX IF NOT EXISTS parts_ts ON parts(ts);
              CREATE INDEX IF NOT EXISTS parts_source_ts ON parts(source, ts);
@@ -580,8 +608,10 @@ impl Store {
     pub fn recipe_version_floors(&self) -> Result<std::collections::BTreeMap<String, u32>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT recipe_id,MAX(version) FROM (
-            SELECT recipe_id,recipe_version AS version FROM parts WHERE recipe_id IS NOT NULL AND recipe_version IS NOT NULL
-            UNION ALL SELECT recipe_id,version FROM recipe_snapshots) GROUP BY recipe_id").map_err(db_err)?;
+            SELECT recipe_id,recipe_version AS version FROM parts WHERE recipe_id IS NOT NULL AND recipe_version IS NOT NULL AND source != 'offlineCandidate'
+            UNION ALL SELECT recipe_id,version FROM recipe_snapshots s WHERE revision_id = recipe_id || '-v' || version
+                AND (NOT EXISTS (SELECT 1 FROM parts p WHERE p.recipe_revision=s.revision_id AND p.source='offlineCandidate')
+                    OR EXISTS (SELECT 1 FROM parts p WHERE p.recipe_revision=s.revision_id AND p.source!='offlineCandidate'))) GROUP BY recipe_id").map_err(db_err)?;
         let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))).map_err(db_err)?;
         rows.collect::<Result<std::collections::BTreeMap<_, _>, _>>().map_err(db_err)
     }
@@ -607,7 +637,9 @@ impl Store {
             return Err("检测记录的 cycleId 或发布包 ID 为空".into());
         }
         if let Some(recipe) = r.recipe {
-            if recipe.revision_id != format!("{}-v{}", recipe.id, recipe.version) || recipe.version == 0 {
+            let valid_revision = if r.source == RecordSource::OfflineCandidate { recipe.candidate_revision().is_some() }
+                else { recipe.revision_id == format!("{}-v{}", recipe.id, recipe.version) };
+            if !valid_revision || recipe.version == 0 {
                 return Err("配方修订号与实际 ID、版本不一致".into());
             }
             if r.shots.len() != recipe.shot_count() || r.frames_expected != recipe.shot_count() {
@@ -626,7 +658,7 @@ impl Store {
         } else if !r.shots.is_empty() || r.table.is_some() {
             return Err("缺少原配方，不能保存无身份的拍照点或测量点".into());
         }
-        if r.sample.is_some() && r.source != RecordSource::OfflineSample {
+        if r.sample.is_some() && !matches!(r.source, RecordSource::OfflineSample | RecordSource::OfflineCandidate) {
             return Err("只有离线·样本集的记录可以关联样本件".into());
         }
         for shot in r.shots {
@@ -647,7 +679,7 @@ impl Store {
                 if id != recipe.id || version != recipe.version {
                     return Err("原配方快照 ID 或版本损坏，拒绝追加记录".into());
                 }
-                let previous: Recipe = serde_json::from_str(&previous).map_err(|e| e.to_string())?;
+                let previous = Recipe::from_snapshot(serde_json::from_str(&previous).map_err(|e| e.to_string())?)?;
                 if serde_json::to_value(&previous).map_err(|e| e.to_string())? != serde_json::to_value(recipe).map_err(|e| e.to_string())? {
                     return Err("相同配方修订号对应了不同快照，拒绝覆盖原记录".into());
                 }
@@ -1071,7 +1103,7 @@ impl Store {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         ).optional().map_err(db_err)?;
         snapshot.map(|(id, version, json)| {
-            let recipe: Recipe = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+            let recipe = Recipe::from_snapshot(serde_json::from_str(&json).map_err(|e| e.to_string())?)?;
             if recipe.revision_id != revision_id || recipe.id != id || recipe.version != version {
                 return Err("原配方快照身份或版本损坏".into());
             }

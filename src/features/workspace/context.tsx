@@ -1,3 +1,4 @@
+import { storageApi } from "../../lib/storage";
 import { errorText } from "../../lib/errors";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { cameraApi, type CameraConfig } from "../camera";
@@ -40,6 +41,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [previewError, setPreviewError] = useState("");
   const [frameDrafts, setFrameDrafts] = useState<Record<number, ShotTeach>>({});
   const [error, setError] = useState("");
+  const [preferenceError, setPreferenceError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "failed" | "pending">("saved");
@@ -106,7 +108,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       if (serial === requestSerial.current) {
         if(next.workspace.doc.id!==id)throw new Error("候选响应与所选配方不一致，请重试选择");
         accept(next);
-        try { localStorage.setItem("tujiao-last-workspace", id); } catch { /* view preference only */ }
+        void storageApi.updatePreferences({ lastWorkspace: id }).then(() => { if (serial === requestSerial.current) setPreferenceError(""); }).catch(e => { if (serial === requestSerial.current) setPreferenceError(`工作区偏好未保存：${errorText(e)}`); });
         return next;
       }
     } catch (e) { if (serial === requestSerial.current) setError(errorText(e)); }
@@ -120,7 +122,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       const records = await recipeApi.list();
       const drafts = await workspaceApi.list();
       let preferred: string | null = null;
-      try { preferred = localStorage.getItem("tujiao-last-workspace"); } catch { /* view preference only */ }
+      try { preferred = (await storageApi.preferences()).lastWorkspace ?? null; }
+      catch (e) { if (alive) setPreferenceError(`工作区偏好读取失败：${errorText(e)}`); }
       const ids = [...records.recipes.map(r => r.id), ...drafts.map(w => w.doc.id)];
       if (alive && !selected.current && ids.length) await select(preferred && ids.includes(preferred) ? preferred : ids[0]);
     }).catch(e => setError(errorText(e)));
@@ -214,7 +217,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(timer);
   }, [doc, data, frameDrafts, dirty, busy, saveRetry, saveDoc, act]);
 
-  return <Context.Provider value={{ list, drafts, cameras, unavailable, selectedId, data, doc, preview, previewError, error: error || recipeErrors, busy, dirty, frameDirty,
+  return <Context.Provider value={{ list, drafts, cameras, unavailable, selectedId, data, doc, preview, previewError, error: error || preferenceError || recipeErrors, busy, dirty, frameDirty,
     clearSelection:()=>{pendingRefresh.current=null;requestSerial.current++;selected.current=null;setSelectedId(null);setData(null);setDoc(null);setPreview(null);setFrameDrafts({});setError("");setNotice("");},
     frameDrafts, rememberPosition, select, reloadList, setDoc, setFrameDraft:(k, teach) => setFrameDrafts(previous => ({ ...previous, [k]:teach })),
     act, saveDoc, saveState, retrySave: () => setSaveRetry(v => v + 1), notice, setError }}>{children}</Context.Provider>;

@@ -270,7 +270,7 @@ fn csv_row(p: &PartSummary) -> String {
 /// 按筛选条件导出 CSV（带 BOM，Excel 可直接打开），返回文件路径。
 #[tauri::command]
 pub async fn history_export(app: AppHandle, query: HistoryQuery) -> Result<String, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("exports");
+    let dir = crate::storage::root(&app).join("exports");
     tauri::async_runtime::spawn_blocking(move || {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join(format!("检测记录_{}.csv", Local::now().format("%Y%m%d_%H%M%S")));

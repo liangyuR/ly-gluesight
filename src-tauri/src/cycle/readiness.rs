@@ -58,6 +58,7 @@ pub struct RecipeOption {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Readiness {
+    pub candidate_debug: Option<crate::candidate::DebugInfo>,
     pub ready: bool,
     pub items: Vec<ReadinessItem>,
     pub recipes: Vec<RecipeOption>,
@@ -73,6 +74,7 @@ pub enum Product { Plc, Manual(Option<String>) }
 pub enum Check { Ok, Waiting(String), Blocked(String) }
 
 pub struct Facts {
+    pub candidate_debug: Option<crate::candidate::DebugInfo>,
     pub site: Site,
     pub plc_connected: bool,
     pub session: Option<SessionPhase>,
@@ -126,6 +128,18 @@ fn plc_item(f: &Facts) -> ReadinessItem {
 pub const MANUAL_ONLY: &str = "人工选型号模式下只能运行所选配方";
 
 fn recipe_item(f: &Facts) -> ReadinessItem {
+    if let Some(candidate) = &f.candidate_debug {
+        let recipe = f.recipes.iter().find(|r| r.id == candidate.recipe_id);
+        let (state, detail) = match recipe {
+            Some(r) if r.runnable => (ItemState::Ok, format!("{} · 候选修订 {}，当前冻结候选可用于离线试运行", r.id, candidate.revision)),
+            Some(r) => (ItemState::Blocked, r.reason.clone().unwrap_or_else(|| "候选暂不能试运行".into())),
+            None => (ItemState::Blocked, "候选调试快照不可用".into()),
+        };
+        return item(ItemKey::Recipe, "候选调试检查", state, detail,
+            Some("仅检查当前离线试运行；不代表已发布或可用于真机生产".into()),
+            (state == ItemState::Blocked).then_some(Target::Workspace));
+    }
+
     const TITLE: &str = "可开工配方";
     const CREATE: &str = "去配方工作台新建并发布配方；整圈采集不受影响";
     let blocked = |detail: String, hint: Option<String>, target| item(ItemKey::Recipe, TITLE, ItemState::Blocked, detail, hint, target);
@@ -216,7 +230,7 @@ pub fn evaluate(mut f: Facts) -> Readiness {
         }
     }
     let items = vec![plc_item(&f), camera_item(&f), recipe_item(&f), engine_item(&f), audit_item(&f), site_item(&f)];
-    Readiness { ready: items.iter().all(|i| i.state != ItemState::Blocked), items, recipes: f.recipes }
+    Readiness { candidate_debug: f.candidate_debug, ready: items.iter().all(|i| i.state != ItemState::Blocked), items, recipes: f.recipes }
 }
 
 /// 样本集按相机编号 + 相机内序号取图（见 [`Manifest::recipe_shots`]），且要提供该相机配置的全部视角
@@ -260,6 +274,7 @@ static BUNDLE_CHECKS: LazyLock<BundleChecks> = LazyLock::new(BundleChecks::defau
 
 /// 已发布版本能否在当前站点运行，以及生产预热进度（只读查询，不触发预热）。
 fn production_state(app: &AppHandle, recipe: &Recipe) -> Result<Option<String>, (String, Target)> {
+    if crate::offline::candidate(app).is_some_and(|c| c.matches(recipe)) { return Ok(None); }
     use crate::production::Warmup;
     let workspace = |e: String| (e, Target::Workspace);
     let key = (recipe.id.clone(), recipe.revision_id.clone());
@@ -306,12 +321,13 @@ pub fn gather(app: &AppHandle) -> Readiness {
         Some(SourceKind::Synthetic) => Site::Synthetic,
     };
     let image = crate::site::image_measurement(app);
-    let library: Vec<Arc<Recipe>> = host.recipes.list();
+    let debug = crate::offline::candidate(app);
+    let library: Vec<Arc<Recipe>> = debug.as_ref().map_or_else(|| host.recipes.list(), |c| vec![c.recipe.clone()]);
     let checked: Vec<(RecipeOption, Option<Vec<u8>>)> = library.iter().map(|recipe| match recipe_problem(app, host, recipe, image, set.as_deref()) {
         Ok((cams, waiting)) => (option(recipe, None, waiting), Some(cams)),
         Err(problem) => (option(recipe, Some(problem), None), None),
     }).collect();
-    let mut recipes: Vec<RecipeOption> = checked.iter().map(|(o, _)| o.clone()).collect();
+    let mut recipes: Vec<RecipeOption> = checked.iter().map(|(o, _)| { let mut o = o.clone(); if debug.is_some() { o.published = false; } o }).collect();
     let mut drafts = crate::workspace::draft_summaries(app);
     drafts.sort_by(|a, b| a.id.cmp(&b.id));
     for draft in drafts {
@@ -322,10 +338,10 @@ pub fn gather(app: &AppHandle) -> Readiness {
             reason: Some("未发布：在配方工作台验证并发布后才能运行".into()), target: Some(Target::Workspace), waiting: None,
         });
     }
-    let product = match settings.product_source {
+    let product = if debug.is_some() { Product::Plc } else { match settings.product_source {
         ProductSource::Plc => Product::Plc,
         ProductSource::Manual => Product::Manual(settings.manual_recipe_id.clone()),
-    };
+    } };
     let groups: Vec<(String, Result<(), String>)> = checked.iter()
         .filter(|(o, _)| match &product { Product::Manual(selected) => selected.as_ref() == Some(&o.id), Product::Plc => true })
         .filter_map(|(o, cams)| cams.as_ref().map(|cams| (o.id.clone(), host.camera.check_ready_at(cams))))
@@ -350,6 +366,7 @@ pub fn gather(app: &AppHandle) -> Readiness {
         Err(error) => Check::Blocked(format!("持久追溯故障：{error}")),
     };
     evaluate(Facts {
+        candidate_debug: debug.as_ref().map(|c| c.info.clone()),
         site,
         plc_connected: plc(app).status().state == LinkState::Connected,
         session: snapshot.as_ref().and_then(|s| s.plc_handshake.as_ref()).map(|v| v.phase),

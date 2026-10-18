@@ -23,6 +23,7 @@ beforeEach(() => {
       case "cycle_save_settings": saved = structuredClone((args as { settings: CycleSettings }).settings); return;
       case "cycle_recipes": return [];
       case "engine_status": return { backend: "LyFlow", ready: false, message: "" };
+      case "storage_status": return { environment: "development", root: "C:/ProgramData/ly/GlueSight-dev", migrationStatus: "completed" };
       case "app_info": return { name: "GlueSight", version: "test" };
       default: throw new Error(`Unexpected command: ${command}`);
     }

@@ -42,6 +42,7 @@ pub enum Input {
     Measured(Measured),
     Reset,
     Refresh,
+    SiteChanged,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -153,6 +154,7 @@ fn recorded_shots(recipe: Option<&Recipe>, frames: &[FrameView], reason: &str) -
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PartView {
+    pub candidate_debug: Option<crate::candidate::DebugInfo>,
     pub cycle_id: String,
     pub bundle_id: Option<String>,
     pub sn: String,
@@ -174,6 +176,7 @@ pub struct PartView {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResultView {
+    pub candidate_debug: Option<crate::candidate::DebugInfo>,
     pub cycle_id: Option<String>,
     pub sn: String,
     pub recipe_id: Option<String>,
@@ -201,6 +204,8 @@ impl From<VerdictCounts> for Stats {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
+    pub stats_scope: HistoryScope,
+    pub candidate_debug: Option<crate::candidate::DebugInfo>,
     pub measurement_workers: measure::WorkerHealthSnapshot,
     pub phase: Phase,
     pub plc_locked: bool,
@@ -284,8 +289,8 @@ pub struct CycleHost {
 
 impl CycleHost {
     pub fn init(app: &AppHandle) -> Result<Self, String> {
-        let settings_path = app.path().app_config_dir().map_err(|e| e.to_string())?.join("cycle.json");
-        let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let settings_path = crate::storage::config(app).join("cycle.json");
+        let data = crate::storage::root(app);
         let (tx, rx) = unbounded_channel();
         let (frame_tx, frame_rx) = channel(FRAME_QUEUE);
         let (settings, settings_note) = CycleSettings::load(&settings_path);
@@ -450,6 +455,7 @@ struct Part {
     cycle_id: String,
     bundle_id: Option<String>,
     production: Option<Arc<crate::production::Prepared>>,
+    candidate: Option<Arc<crate::candidate::Candidate>>,
     sn: String,
     recipe: Arc<Recipe>,
     scenario: Scenario,
@@ -622,6 +628,7 @@ impl Part {
 
     fn view(&self) -> PartView {
         PartView {
+            candidate_debug: self.candidate.as_ref().map(|c| c.info.clone()),
             cycle_id: self.cycle_id.clone(),
             bundle_id: self.bundle_id.clone(),
             sn: self.sn.clone(),
@@ -719,7 +726,7 @@ struct Machine {
 impl Machine {
     fn new(app: AppHandle, measure_tx: Sender<Job>, workers: Arc<WorkerHealth>) -> Self {
         let stats = today_stats(&app, HistoryScope::Real);
-        let s7 = PlcSession::open(app.path().app_data_dir().expect("app data directory").join("plc-handshake.json"));
+        let s7 = PlcSession::open(crate::storage::state(&app).join("plc-handshake.json"));
         let recovery = match app.state::<Store>().unresolved_delivery_cycles() {
             Ok(unresolved) => s7.recover_acknowledgements(&unresolved),
             Err(error) => crate::plc_session::AckRecovery { receipts: Vec::new(), errors: vec![format!("读取未决 PLC 交付失败，跳过 ACK 恢复：{error}")] },
@@ -791,6 +798,7 @@ impl Machine {
 
     /// 当前配方（人工选择或上一件 PLC 下发的）。
     fn current_recipe(&self) -> Option<Arc<Recipe>> {
+        if let Some(c) = crate::offline::candidate(&self.app) { return Some(c.recipe.clone()); }
         let host = host(&self.app);
         let settings = host.settings();
         match settings.product_source {
@@ -800,6 +808,9 @@ impl Machine {
     }
 
     fn compute_required(&self) -> Required {
+        if let Some(c) = crate::offline::candidate(&self.app) {
+            return Required { rig_gen: host(&self.app).camera.generation(), cams: runnable_cams(&self.app, &c.recipe), watch: Vec::new(), warnings: Vec::new() };
+        }
         let host = host(&self.app);
         let rig_gen = host.camera.generation();
         let settings = host.settings();
@@ -899,6 +910,8 @@ impl Machine {
         let host = host(&self.app);
         let active = self.current_recipe();
         let snapshot = Snapshot {
+            stats_scope: self.stats_scope,
+            candidate_debug: crate::offline::candidate(&self.app).map(|c| c.info.clone()),
             measurement_workers: self.workers.snapshot(),
             phase: self.phase,
             plc_locked: host.busy(),
@@ -924,6 +937,32 @@ impl Machine {
             Input::Measured(m) => self.on_measured(m),
             Input::Reset => self.s7_reset_requested = true,
             Input::Refresh => self.required = None,
+            Input::SiteChanged => {
+                self.required = None;
+                if !host(&self.app).busy() && matches!(self.phase, Phase::Idle | Phase::Fault) {
+                    self.part = None;
+                    self.result = None;
+                    self.active_recipe = None;
+                    self.current_cycle_id = None;
+                    self.done_at = None;
+                    self.ack_alarmed = false;
+                    self.alarms.clear();
+                    self.fault = (self.phase == Phase::Fault).then(|| "站点模式已切换，等待当前 PLC 连接与复位".into());
+                    self.stats_day = history::local_day();
+                    self.stats_scope = HistoryScope::of(crate::site::record_source(&self.app));
+                    self.stats = today_stats(&self.app, self.stats_scope);
+                    self.stray = 0;
+                    self.stray_times.clear();
+                    self.camera_down.clear();
+                    self.camera_warnings.clear();
+                    self.config_warnings.clear();
+                    let mut shared = host(&self.app).shared.lock().unwrap();
+                    shared.part_recipe = None;
+                    shared.measured.clear();
+                    drop(shared);
+                    crate::workspace::clear_live(&self.app);
+                }
+            },
         }
     }
 
@@ -936,13 +975,15 @@ impl Machine {
             self.enter_fault(format!("审计尚未就绪，拒绝布防：{error}"));
             return;
         }
-        if crate::workspace::apply_pending(&self.app) { self.required = None; }
+        if crate::offline::candidate(&self.app).is_none() && crate::workspace::apply_pending(&self.app) { self.required = None; }
         if crate::workspace::activation_uncertain(&self.app) {
             self.enter_fault("生产生效版本尚未确认，禁止启动下一件".into());
             return;
         }
         self.set_phase(Phase::Validate);
         self.part = None;
+        let scope = HistoryScope::of(crate::site::record_source(&self.app));
+        if scope != self.stats_scope { self.stats_scope = scope; self.stats = today_stats(&self.app, scope); }
         self.current_cycle_id = None;
         self.result = None;
         crate::workspace::clear_live(&self.app);
@@ -966,10 +1007,10 @@ impl Machine {
         if !self.workers.can_arm() {
             return self.refuse(sn, None, fault::PROCESS_TIMEOUT, "测量工作线程全部超时且尚未返回，拒绝布防".into()).await;
         }
-        let recipe = match settings.product_source {
+        let recipe = if let Some(c) = crate::offline::candidate(&app) { Some(c.recipe.clone()) } else { match settings.product_source {
             ProductSource::Plc => host.recipes.list().into_iter().find(|r| r.product_code as u32 == code),
             ProductSource::Manual => settings.manual_recipe_id.as_deref().and_then(|id| host.recipe(id)),
-        };
+        } };
         let Some(recipe) = recipe else {
             let reason = match (settings.product_source, settings.manual_recipe_id.as_deref()) {
                 (ProductSource::Plc, _) => format!("产品代码 {code} 没有对应的配方"),
@@ -1080,6 +1121,7 @@ impl Machine {
             cycle_id,
             bundle_id,
             production,
+            candidate: crate::offline::candidate(&app),
             sn: sn.clone(),
             scenario: crate::offline::part_scenario(&app),
             frames: recipe.shots.iter().map(|shot| FrameView {
@@ -1201,7 +1243,7 @@ impl Machine {
         crate::workspace::retain_live(&self.app, part.cycle_id.clone(), &part.recipe.revision_id, k, &image);
         let job = Job { run_id: part.run_id, cycle_id: part.cycle_id.clone(), shot_id: shot.id.clone(), camera,
             bundle_id: part.bundle_id.clone(), sn: part.sn.clone(), k, cam: f.cam, recipe: part.recipe.clone(),
-            production: part.production.clone(),
+            production: part.production.clone(), candidate: part.candidate.clone(),
             scenario: part.scenario, image, images: images.as_ref().ok().cloned().unwrap_or_default(), timeout: host(&self.app).settings().timeouts.proc(), submitted_at,
             image_measurement: part.image_measurement };
         if let Err(error) = images {
@@ -1257,14 +1299,14 @@ impl Machine {
     async fn on_tick(&mut self) {
         let app = self.app.clone();
         let _gate = host(&app).plc_gate.lock().await;
-        if !host(&app).busy() && matches!(self.phase, Phase::Idle | Phase::Fault) && crate::workspace::apply_pending(&self.app) {
+        if !host(&app).busy() && matches!(self.phase, Phase::Idle | Phase::Fault) && crate::offline::candidate(&self.app).is_none() && crate::workspace::apply_pending(&self.app) {
             self.required = None;
             self.dirty = true;
         }
         let connected = plc(&self.app).status().state == LinkState::Connected;
         let capture_host = host(&app).camera.recipe_capture().clone();
         if capture_host.active() && !connected { capture_host.fail("PLC 连接中断，请整圈重采"); }
-        let scope = HistoryScope::of(crate::site::record_source(&app));
+        let scope = display_history_scope(crate::site::record_source(&app), self.part.as_ref().map(|p| p.source));
         if scope != self.stats_scope {
             self.stats_scope = scope;
             self.stats = today_stats(&app, scope);
@@ -1462,7 +1504,7 @@ impl Machine {
         let delivery = if r.is_ok() { "done 已提交" } else { "交付异常，需人工确认" };
         log(&app, level, "检测结果", format!("resultCode={}{fault} resultSn={sn} · {delivery} · {}", judgement.plc_code, judgement.reason));
         self.finish_recording(&sn, &judgement);
-        self.result = Some(ResultView { cycle_id: self.current_cycle_id.clone(), sn, recipe_id, ts: now_ms(), drain_ms, judgement });
+        self.result = Some(ResultView { candidate_debug: self.part.as_ref().and_then(|p| p.candidate.as_ref()).map(|c| c.info.clone()).or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())), cycle_id: self.current_cycle_id.clone(), sn, recipe_id, ts: now_ms(), drain_ms, judgement });
         match r {
             Ok(()) => self.set_phase(Phase::Report),
             Err(reason) => {
@@ -1514,14 +1556,14 @@ impl Machine {
             return Err("工件身份尚未持久分配，不能关联历史与原图".into());
         };
         let part = self.part.as_ref().filter(|p| p.sn == sn);
-        let recipe = part.map(|p| p.recipe.clone()).or_else(|| recipe_id.and_then(|id| host(&self.app).recipe(id)));
+        let recipe = part.map(|p| p.recipe.clone()).or_else(|| crate::offline::candidate(&self.app).filter(|c| recipe_id == Some(c.recipe.id.as_str())).map(|c| c.recipe.clone())).or_else(|| recipe_id.and_then(|id| host(&self.app).recipe(id)));
         let frames = part.map(|p| p.frames.clone()).unwrap_or_default();
         let frames_expected = recipe.as_ref().map_or(0, |r| r.shot_count());
         let table = part.map(|p| p.table.clone()).filter(|t| t.iter().any(|x| *x != PointState::Pending));
         let (received, triggers) = part.map_or((0, 0), |p| (p.received, p.triggers()));
         let shots = recorded_shots(recipe.as_deref(), &frames, &judgement.reason);
         let source = part.map_or_else(|| crate::site::record_source(&self.app), |p| p.source);
-        let sample = (source == RecordSource::OfflineSample).then(|| crate::offline::claim_sample(&self.app, sn, &cycle_id)).flatten();
+        let sample = (matches!(source, RecordSource::OfflineSample | RecordSource::OfflineCandidate)).then(|| crate::offline::claim_sample(&self.app, sn, &cycle_id)).flatten();
         Ok(RecordedPart { ts: now_ms(), sn: sn.to_owned(), recipe, judgement: judgement.clone(),
             drain_ms, frames, frames_expected, frames_received: received, triggers, table,
             software_version: self.app.package_info().version.to_string(), cycle_id: cycle_id.clone(),
@@ -1580,7 +1622,7 @@ impl Machine {
             }
             self.finish_recording(&sn, &judgement);
             log(&self.app, "err", "在途件中断", format!("SN {sn} 记 ERR 98，需人工处理该件"));
-            self.result = Some(ResultView { cycle_id: self.current_cycle_id.clone(), sn, recipe_id: self.part.as_ref().map(|p| p.recipe.id.clone()), ts: now_ms(), drain_ms: None, judgement });
+            self.result = Some(ResultView { candidate_debug: self.part.as_ref().and_then(|p| p.candidate.as_ref()).map(|c| c.info.clone()).or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())), cycle_id: self.current_cycle_id.clone(), sn, recipe_id: self.part.as_ref().map(|p| p.recipe.id.clone()), ts: now_ms(), drain_ms: None, judgement });
         }
         if !in_flight && self.result.is_some() {
             if let Err(error) = self.delivery(PlcDeliveryState::Failed, Some(reason.clone())) {
@@ -1594,6 +1636,11 @@ impl Machine {
 }
 
 /// 今日统计只算当前站点的范围：真机只算真机件，离线只算离线件。
+pub fn display_history_scope(site: RecordSource, previous: Option<RecordSource>) -> HistoryScope {
+    if site == RecordSource::OfflineSample && previous == Some(RecordSource::OfflineCandidate) { HistoryScope::Debug }
+    else { HistoryScope::of(site) }
+}
+
 fn today_stats(app: &AppHandle, scope: HistoryScope) -> Stats {
     app.state::<Store>().counts_since(history::local_midnight_ms(), scope).map(Stats::from).unwrap_or_default()
 }
@@ -1621,7 +1668,7 @@ pub fn cycle_recipes(cycle: State<'_, CycleHost>) -> Vec<RecipeSummary> {
 /// 配方的运行数据。给了 revision_id 时要的是那一版：工件用的配方刚改过，这一件仍按开工时的快照画。
 #[tauri::command]
 pub fn cycle_layout(cycle: State<'_, CycleHost>, recipe_id: String, revision_id: Option<String>) -> Result<Arc<Recipe>, String> {
-    if let Some(r) = cycle.shared.lock().unwrap().part_recipe.clone().filter(|r| revision_id.as_ref() == Some(&r.revision_id)) {
+    if let Some(r) = cycle.shared.lock().unwrap().part_recipe.clone().filter(|r| r.id == recipe_id && revision_id.as_ref() == Some(&r.revision_id)) {
         return Ok(r);
     }
     let r = cycle.recipe(&recipe_id).ok_or_else(|| format!("配方不存在：{recipe_id}"))?;

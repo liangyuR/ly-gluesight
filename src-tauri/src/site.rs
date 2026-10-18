@@ -173,6 +173,7 @@ pub fn measurement(app: &AppHandle) -> Measurement {
 
 /// 检测记录的来源：写库与录制时按当前站点模式与离线来源决定。
 pub fn record_source(app: &AppHandle) -> RecordSource {
+    if crate::offline::candidate(app).is_some() { return RecordSource::OfflineCandidate; }
     match crate::offline::source_kind(app) {
         None => RecordSource::Real,
         Some(SourceKind::Synthetic) => RecordSource::OfflineSynthetic,
@@ -186,11 +187,12 @@ pub fn image_measurement(app: &AppHandle) -> bool {
 
 /// 生效的帧录制方式：离线期间用派生值，真机用系统设置。
 pub fn record_mode(app: &AppHandle) -> RecordMode {
+    if crate::offline::candidate(app).is_some() { return RecordMode::Off; }
     crate::offline::applied_record(app).unwrap_or_else(|| app.state::<CycleHost>().settings().record)
 }
 
 fn choice_file(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app.path().app_config_dir().map_err(|e| e.to_string())?.join("site-offline.json"))
+    Ok(crate::storage::config(app).join("site-offline.json"))
 }
 
 /// 启动时读回上次的离线选择；软件启动永远是真机，读不了只记日志不阻塞。
@@ -226,8 +228,15 @@ pub fn site_status(offline: State<'_, OfflineHost>) -> SiteStatus {
 }
 
 #[tauri::command]
-pub async fn site_preview_sample_set(dir: String) -> Result<SampleSetSummary, String> {
-    load_sample_set(&dir).await.map(|set| set.summary())
+pub async fn site_preview_sample_set(app: AppHandle, dir: String) -> Result<SampleSetSummary, String> {
+    let set = load_sample_set(&dir).await?;
+    let root = crate::storage::root(&app);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut summary = set.summary();
+        summary.managed_dir = crate::managed_samples::existing_copy(&root, Path::new(dir.trim()), &summary.id)?
+            .map(|path| { let path = path.to_string_lossy().into_owned(); path.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(path) });
+        Ok(summary)
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -236,8 +245,15 @@ pub async fn site_enter_offline(app: AppHandle, source: OfflineSource) -> Result
     let previous_dir = offline.last().and_then(|choice| choice.sample_set_dir);
     let (set, choice, lyflow) = match source {
         OfflineSource::SampleSet { dir } => {
-            let set = Arc::new(load_sample_set(&dir).await?);
-            (Some(set), OfflineChoice { kind: SourceKind::SampleSet, sample_set_dir: Some(dir.trim().to_string()) }, lyflow_state(&app).await)
+            let root = crate::storage::root(&app);
+            let (set, dir) = tauri::async_runtime::spawn_blocking(move || {
+                if dir.trim().is_empty() { return Err("请选择样本集目录".to_string()); }
+                let managed = crate::managed_samples::import(&root, Path::new(dir.trim()))?;
+                let set = SampleSet::load(&managed)?;
+                let dir = set.summary().dir;
+                Ok::<_, String>((Arc::new(set), dir))
+            }).await.map_err(|e| e.to_string())??;
+            (Some(set), OfflineChoice { kind: SourceKind::SampleSet, sample_set_dir: Some(dir) }, lyflow_state(&app).await)
         }
         OfflineSource::Synthetic => (None, OfflineChoice { kind: SourceKind::Synthetic, sample_set_dir: previous_dir }, Ok(())),
     };

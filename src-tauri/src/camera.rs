@@ -1075,7 +1075,7 @@ impl CameraRig {
     pub fn recipe_capture(&self) -> &Arc<crate::recipe_capture::RecipeCaptureHost> { &self.rig.recipe_capture }
 
     pub fn new(app: &AppHandle, tx: Sender<Frame>) -> Result<Self, String> {
-        let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+        let dir = crate::storage::config(app);
         let path = dir.join("cameras.json");
         let (mut file, mut notes, retired) = load_rig_file(&path);
         if file.cameras.is_empty() {
@@ -1096,7 +1096,7 @@ impl CameraRig {
             tx,
             pool: FramePool::new(48),
             capture: AtomicBool::new(false),
-            recipe_capture: crate::recipe_capture::RecipeCaptureHost::open(app.path().app_data_dir().map_err(|e| e.to_string())?.join("recipe-capture"))?,
+            recipe_capture: crate::recipe_capture::RecipeCaptureHost::open(crate::storage::root(app).join("recipe-capture"))?,
         });
         let slots = file.cameras.into_iter().enumerate().map(|(i, c)| Arc::new(CameraSlot::new(&rig, i as u8, c))).collect();
         let mut this = Self { rig, slots: RwLock::new(slots), path, next_id: Mutex::new(file.next_id), save_lock: Mutex::new(()), generation: AtomicU64::new(0), notes };

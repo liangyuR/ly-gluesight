@@ -8,7 +8,8 @@ import ContextHelp from "./ContextHelp";
 export type DiagnosticGroup = "readiness" | "capture" | "plc" | "events";
 const groups: [DiagnosticGroup, string][] = [["readiness", "开工检查"], ["capture", "采集与测量"], ["plc", "PLC 信号"], ["events", "事件"]];
 
-export default function InspectionDiagnostics({ group, onGroup, onClose, snapshot, readiness, readinessError, layout, part, selected, logs }: {
+export default function InspectionDiagnostics({ group, onGroup, onClose, snapshot, readiness, readinessError, layout, part, selected, logs, offlineSample = false }: {
+  offlineSample?: boolean;
   group: DiagnosticGroup; onGroup: (group: DiagnosticGroup) => void; onClose: () => void;
   snapshot: Snapshot | null; readiness: Readiness | null; readinessError?: string | null;
   layout: Recipe | null; part: PartView | null; selected: number; logs: LogLine[];
@@ -19,6 +20,7 @@ export default function InspectionDiagnostics({ group, onGroup, onClose, snapsho
     <nav className="diagnostic-tabs" aria-label="诊断分组">{groups.map(([key, label]) => <button key={key} className={`btn small${group === key ? " active" : ""}`} aria-pressed={group === key} onClick={() => onGroup(key)}>{label}</button>)}</nav>
     <section className="diagnostic-content" aria-label={groups.find(([key]) => key === group)?.[1]}>
       {group === "readiness" && <>
+        {offlineSample && <p className="notice">{readiness?.candidateDebug ? `下方检查候选 ${readiness.candidateDebug.recipeId} · 修订 ${readiness.candidateDebug.revision}；通过不代表生产发布。` : "下方为已发布配方的开工报告；候选离线试运行不要求生产发布，启动时另行检查。"}</p>}
         {readinessError && <p className="c-warn">开工条件更新失败，旧报告仅供参考：{readinessError}</p>}
         {readiness ? <ReadinessChecklist readiness={readiness} /> : <p className="muted">尚未取得开工报告</p>}
         {snapshot?.fault && <p className="c-err">{snapshot.fault}</p>}

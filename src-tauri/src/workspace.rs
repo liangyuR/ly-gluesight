@@ -18,6 +18,7 @@ use crate::vision;
 
 mod comparisons;
 mod recorded;
+mod history_samples;
 mod reproduce;
 mod workflow;
 mod centerline;
@@ -449,11 +450,7 @@ impl WorkspaceHost {
     }
 
     pub fn init(app: &AppHandle) -> Result<Self, String> {
-        let root = app
-            .path()
-            .app_data_dir()
-            .map_err(|e| e.to_string())?
-            .join("workspaces");
+        let root = crate::storage::root(app).join("workspaces");
         std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         let mut items = HashMap::new();
         let mut notes = Vec::new();
@@ -1322,6 +1319,7 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
             }
             let history_id = sample.history_id.ok_or("样本来源未指定")?;
             let detail = store.detail(history_id)?;
+            if detail.summary.source == crate::store::RecordSource::OfflineCandidate { return Err("候选调试记录不能作为独立发布验证样本".into()); }
             let original = detail
                 .summary
                 .recipe_revision
@@ -1494,7 +1492,7 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
 }
 
 pub fn releases_root(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("vision").join("releases"))
+    Ok(crate::storage::root(app).join("vision").join("releases"))
 }
 
 fn read_release(path: &Path) -> Result<Release, String> {
@@ -1670,6 +1668,7 @@ pub struct RawFrame {
 #[serde(rename_all = "camelCase")]
 pub struct RecordImages {
     pub history_id: i64,
+    pub image_source: &'static str,
     pub frames: Vec<RawFrame>,
     pub complete: bool,
     pub message: String,
@@ -1684,6 +1683,9 @@ fn recorded(app: &AppHandle, history_id: i64) -> Result<(PathBuf, Vec<RawFrame>)
 }
 
 fn history_image(app: &AppHandle, detail: &store::PartDetail, k: usize, view: u8) -> Result<FrameImage, String> {
+    if detail.summary.source == store::RecordSource::OfflineCandidate {
+        return history_samples(app, detail)?.load(k, view);
+    }
     let cycle_id = detail.summary.cycle_id.as_deref().ok_or("历史记录没有 cycleId")?;
     let shot = detail.shots.iter().find(|shot| shot.k == k).ok_or("历史拍照点不存在")?;
     let raw = shot.raw_files.iter().find(|raw| raw.view == view)
@@ -1691,10 +1693,31 @@ fn history_image(app: &AppHandle, detail: &store::PartDetail, k: usize, view: u8
     recorded::load_verified(app.state::<CycleHost>().recorders.root(detail.summary.source), cycle_id, shot, raw)
 }
 
+fn history_samples(app: &AppHandle, detail: &store::PartDetail) -> Result<history_samples::HistorySamples, String> {
+    let revision = detail.summary.recipe_revision.as_deref().ok_or("历史配方快照身份缺失")?;
+    let recipe = app.state::<Store>().recipe_snapshot(revision)?.ok_or("历史配方快照缺失，不能确定离线样本原图")?;
+    history_samples::HistorySamples::open(&crate::storage::root(app), detail, &recipe)
+}
+
 #[tauri::command]
 pub fn workspace_record_images(app: AppHandle, history_id: i64) -> Result<RecordImages, String> {
     let store = app.state::<Store>();
     let detail = store.detail(history_id)?;
+    if detail.summary.source == store::RecordSource::OfflineCandidate {
+        let (frames, message) = match history_samples(&app, &detail) {
+            Ok(samples) => {
+                let frames = samples.frames();
+                let count = frames.iter().filter(|frame| frame.available).count();
+                let errors: Vec<_> = frames.iter().filter_map(|frame| frame.error.as_deref()).collect();
+                let message = format!("离线样本原图 {count} 幅{}", if errors.is_empty() { String::new() } else { format!("；{}", errors.join("；")) });
+                (frames, message)
+            }
+            Err(error) => (Vec::new(), error),
+        };
+        let complete = !detail.shots.is_empty() && detail.shots.iter().all(|shot| frames.iter()
+            .any(|frame| frame.k == shot.k && frame.view == shot.view && frame.available));
+        return Ok(RecordImages { history_id, image_source: "offlineSample", frames, complete, message });
+    }
     match recorded(&app, history_id) {
         Ok((_, frames)) => {
             let complete = detail.recording.available && !detail.shots.is_empty()
@@ -1702,6 +1725,7 @@ pub fn workspace_record_images(app: AppHandle, history_id: i64) -> Result<Record
             let count = frames.iter().filter(|f| f.available).count();
             Ok(RecordImages {
                 history_id,
+                image_source: "recording",
                 frames,
                 complete,
                 message: format!("保留 {count} 幅原始图像{}", if detail.recording.errors.is_empty() { String::new() } else { format!("；{}", detail.recording.errors.join("；")) }),
@@ -1709,6 +1733,7 @@ pub fn workspace_record_images(app: AppHandle, history_id: i64) -> Result<Record
         }
         Err(e) => Ok(RecordImages {
             history_id,
+            image_source: "recording",
             frames: Vec::new(),
             complete: false,
             message: e,
@@ -1762,7 +1787,7 @@ pub fn workspace_history_capture(
         revision,
         k,
         history_image(&app, &detail, k, selected_view)?,
-        format!("历史 SN {}", detail.summary.sn),
+        format!("{} SN {}", if detail.summary.source == store::RecordSource::OfflineCandidate { "离线样本原图" } else { "历史" }, detail.summary.sn),
         Some(history_id),
     )
 }
@@ -1817,11 +1842,19 @@ pub async fn workspace_compare(
         }
         let mut measurements = Vec::new();
         let table = if raw {
-            if !detail.recording.available { return Err("原图未完整保留，无法完成整件复测".into()); }
-            let (table, measured) = measure_images(&app, &w, recipe.shot_count(), &detail.summary.sn,
-                |k, v| history_image(&app, &detail, k, v))?;
-            measurements = measured;
-            table
+            if detail.summary.source == store::RecordSource::OfflineCandidate {
+                let samples = history_samples(&app, &detail)?;
+                let (table, measured) = measure_images_from(&app, &w, recipe.shot_count(), &detail.summary.sn,
+                    MeasurementSource::HistorySample, |k, v| samples.load(k, v))?;
+                measurements = measured;
+                table
+            } else {
+                if !detail.recording.available { return Err("原图未完整保留，无法完成整件复测".into()); }
+                let (table, measured) = measure_images(&app, &w, recipe.shot_count(), &detail.summary.sn,
+                    |k, v| history_image(&app, &detail, k, v))?;
+                measurements = measured;
+                table
+            }
         } else {
             let points = detail
                 .points
@@ -1919,11 +1952,13 @@ pub async fn workspace_compare_original(app: AppHandle, history_id: i64) -> Resu
 
 #[tauri::command]
 pub fn workspace_runtime_overview(
+    app: AppHandle,
     host: State<'_, WorkspaceHost>,
     id: String,
     revision_id: String,
 ) -> Result<Option<Overview>, String> {
     safe_id(&id)?;
+    if let Some(candidate) = crate::offline::last_candidate(&app).filter(|c| c.recipe.id == id && c.recipe.revision_id == revision_id) { return Ok(Some(candidate.overview.clone())); }
     if revision_id.is_empty() || !revision_id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')) {
         return Err("配方版本编号无效".into());
     }
@@ -2108,6 +2143,13 @@ fn measure_paths(
 }
 
 fn measure_images(app: &AppHandle, w: &Workspace, count: usize, sn: &str,
+    load: impl FnMut(usize, u8) -> Result<FrameImage, String>) -> Result<(Vec<PointState>, Vec<Value>), String> {
+    measure_images_from(app, w, count, sn, MeasurementSource::CurrentDevices, load)
+}
+
+enum MeasurementSource { CurrentDevices, HistorySample }
+
+fn measure_images_from(app: &AppHandle, w: &Workspace, count: usize, sn: &str, source: MeasurementSource,
     mut load: impl FnMut(usize, u8) -> Result<FrameImage, String>) -> Result<(Vec<PointState>, Vec<Value>), String> {
     let recipe = w.doc.build()?;
     if count != recipe.shot_count() { return Err("样本组的原图数量与拍照点不一致".into()); }
@@ -2120,7 +2162,10 @@ fn measure_images(app: &AppHandle, w: &Workspace, count: usize, sn: &str,
         if !shot.measured() { let _ = load(k, shot.view)?; continue; }
         let mut images = Vec::new();
         for selected in workflow::selected_views(w, k) {
-            workflow::check_view(app, w, k, selected, false)?;
+            match source {
+                MeasurementSource::CurrentDevices => workflow::check_view(app, w, k, selected, false)?,
+                MeasurementSource::HistorySample => workflow::check_history_sample_view(app, w, k, selected)?,
+            }
             let frozen = w.frames[k].views.iter().find(|i| i.view == selected).ok_or("示教原图缺失")?;
             let image = load(k, selected)?;
             if [image.width, image.height] != frozen.size { return Err(format!("拍照点 {} 图 {selected} 样本尺寸与示教不一致", shot.id)); }
@@ -2135,7 +2180,11 @@ fn measure_images(app: &AppHandle, w: &Workspace, count: usize, sn: &str,
                 _ => PointState::Invalid,
             };
         }
-        let cam = app.state::<CycleHost>().camera.require(&shot.camera)?;
+        let cam = match source {
+            MeasurementSource::CurrentDevices => app.state::<CycleHost>().camera.require(&shot.camera)?,
+            MeasurementSource::HistorySample => recipe.cameras().iter().position(|camera| *camera == shot.camera)
+                .and_then(|index| u8::try_from(index).ok()).ok_or("历史样本的配方相机索引无效")?,
+        };
         measurements.push(json!({"cycleId":run,"bundleId":null,"shotId":shot.id,"camera":shot.camera,
             "sn":sn,"k":k,"cam":cam,"located":true,"score":reading.coverage,"ms":reading.ms,
             "error":null,"idx":reading.idx,"d":reading.d,"w":reading.w,"st":reading.st,"px":reading.px,"views":result.views}));
@@ -2522,4 +2571,46 @@ pub async fn workspace_import_sample(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn workspace_debug_run(app: AppHandle, id: String, revision: u64, part_id: Option<String>) -> Result<(), String> {
+    if !crate::offline::enabled(&app) || crate::offline::sample_set(&app).is_none() { return Err("候选试运行仅支持离线样本集模式".into()); }
+    let set = crate::offline::sample_set(&app).ok_or("离线样本集缺失")?;
+    let candidate = {
+        let host = app.state::<WorkspaceHost>();
+        let items = host.items.lock().unwrap();
+        let w = items.get(&id).ok_or("候选配方不存在")?;
+        if w.revision != revision { return Err("候选已修改，请刷新后重试".into()); }
+        if w.pending.is_some() { return Err("候选正在等待发布，请先完成或取消发布".into()); }
+        if let Some((_, error)) = w.group_selection_errors().into_iter().next() { return Err(error); }
+        let mut recipe = w.doc.build()?;
+        recipe.ready()?;
+        let mut sizes = HashMap::new();
+        for (k, shot) in recipe.shots.iter().enumerate() {
+            if !shot.measured() { continue; }
+            for selected in workflow::selected_views(w, k) {
+                workflow::check_view(&app, w, k, selected, false)?;
+                let frozen = w.frames[k].views.iter().find(|i| i.view == selected).ok_or("示教原图缺失")?;
+                sizes.insert((k, selected), frozen.size);
+            }
+        }
+        recipe.revision_id = format!("candidate-{}-r{}", id, revision);
+        if recipe.plan_version == 0 { recipe.plan_version = 1; }
+        let engine = app.state::<vision::VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
+        Arc::new(crate::candidate::Candidate::new(recipe, revision, engine, sizes, w.overview.clone())?)
+    };
+    crate::offline::run_candidate(app, candidate, set, part_id).await
+}
+
+pub(crate) fn recheck_debug_candidate(app: &AppHandle, candidate: &crate::candidate::Candidate) -> Result<(), String> {
+    let host = app.state::<WorkspaceHost>();
+    let items = host.items.lock().unwrap();
+    let w = items.get(&candidate.info.recipe_id).ok_or("候选已删除")?;
+    if w.revision != candidate.info.revision || w.pending.is_some() { return Err("候选已修改或正在发布，请重新试运行".into()); }
+    for (k, shot) in w.doc.shots.iter().enumerate() {
+        if shot.skip { continue; }
+        for view in workflow::selected_views(w, k) { workflow::check_view(app, w, k, view, false)?; }
+    }
+    Ok(())
 }

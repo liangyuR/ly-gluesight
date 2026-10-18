@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GlueSight · 资料初始化</title>
+  <style>
+    :root { color-scheme: dark; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; background: #0e1416; color: #dce7eb; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 32px; min-height: 100vh; }
+    main { max-width: 880px; margin: auto; background: #171e21; border: 1px solid #34464e; border-radius: 20px; padding: 28px; }
+    .brand { color: #80d0df; margin: 0 0 24px; font-size: 15px; letter-spacing: .04em; }
+    h1 { font-size: 24px; line-height: 1.4; margin: 0 0 16px; }
+    #message { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; margin: 0; }
+    #progress { color: #80d0df; margin-top: 20px; }
+    #failure { white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid #b8515a; background: #42272b; padding: 14px; border-radius: 10px; margin-top: 20px; }
+    .actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 24px; }
+    button { font: inherit; font-weight: 600; background: #334951; color: #dce7eb; border: 1px solid transparent; border-radius: 24px; padding: 11px 24px; cursor: pointer; }
+    button.primary { background: #80d0df; color: #073543; }
+    button:hover { filter: brightness(1.1); }
+    button:focus-visible { outline: 3px solid #e2faff; outline-offset: 3px; }
+    button:disabled { cursor: wait; opacity: .55; }
+    [hidden] { display: none !important; }
+    .hint { color: #a9bdc7; font-size: 14px; line-height: 1.6; margin-top: 24px; }
+    @media (max-width: 600px) { body { padding: 16px; } main { padding: 20px; } }
+  </style>
+</head>
+<body>
+  <main aria-labelledby="title">
+    <p class="brand">GlueSight · 胶路智检</p>
+    <section aria-live="polite" aria-atomic="true">
+      <h1 id="title">正在初始化资料目录</h1>
+      <p id="message">正在读取存储状态，请稍候。</p>
+    </section>
+    <p id="progress" role="status">正在初始化或复制资料…</p>
+    <div id="failure" role="alert" hidden></div>
+    <div class="actions">
+      <button id="accept" type="button" class="primary" hidden>确定</button>
+      <button id="cancel" type="button" hidden>取消</button>
+      <button id="retry" type="button" hidden>重试读取状态</button>
+    </div>
+    <p class="hint">配方、示教及历史资料准备完成后，将进入软件。复制迁移会保留原资料目录。</p>
+  </main>
+  <script>
+    (() => {
+      const title = document.getElementById("title");
+      const message = document.getElementById("message");
+      const progress = document.getElementById("progress");
+      const failure = document.getElementById("failure");
+      const accept = document.getElementById("accept");
+      const cancel = document.getElementById("cancel");
+      const retry = document.getElementById("retry");
+      let state = null;
+      let polling = false;
+      let answering = false;
+      let answeredId = null;
+      let connected = false;
+
+      function invoke(command, args) {
+        if (!window.__TAURI_INTERNALS__ || typeof window.__TAURI_INTERNALS__.invoke !== "function") {
+          return Promise.reject(new Error("未连接桌面后端。请从 GlueSight 桌面程序启动。"));
+        }
+        return window.__TAURI_INTERNALS__.invoke(command, args);
+      }
+      function errorText(error) {
+        if (error instanceof Error) return error.message;
+        if (typeof error === "string") return error;
+        try { return JSON.stringify(error); } catch { return String(error); }
+      }
+      function render() {
+        const kind = state && state.kind;
+        const waiting = answering || (state && answeredId === state.requestId);
+        title.textContent = state ? state.title : "正在初始化资料目录";
+        message.textContent = state ? state.message : "正在读取存储状态，请稍候。";
+        progress.hidden = !!kind && kind !== "working" && !waiting;
+        progress.textContent = waiting ? "正在处理，请稍候…" : "正在初始化或复制资料…";
+        accept.hidden = kind !== "confirm" && kind !== "chooseSource";
+        cancel.hidden = !kind || kind === "working";
+        accept.textContent = kind === "chooseSource" ? "选择已有目录" : "确定";
+        cancel.textContent = kind === "chooseSource" ? "空白开始" : kind === "error" ? "关闭" : "取消";
+        accept.disabled = cancel.disabled = !!waiting || !connected;
+      }
+      async function poll() {
+        if (polling) return;
+        polling = true;
+        try {
+          const next = await invoke("storage_startup_status");
+          if (!next || !Number.isSafeInteger(next.requestId) || typeof next.title !== "string" || typeof next.message !== "string" || !["working", "confirm", "error", "chooseSource"].includes(next.kind)) {
+            throw new Error("启动状态格式无效，请重试或重新启动软件。");
+          }
+          state = next;
+          connected = true;
+          if (failure.dataset.source === "poll") { failure.hidden = true; failure.textContent = ""; }
+          retry.hidden = true;
+          render();
+        } catch (error) {
+          connected = false;
+          failure.textContent = "读取初始化状态失败：" + errorText(error);
+          failure.dataset.source = "poll";
+          failure.hidden = false;
+          retry.hidden = false;
+          render();
+        } finally { polling = false; }
+      }
+      async function answer(accepted) {
+        if (!state || !connected || answering || answeredId === state.requestId || state.kind === "working") return;
+        const requestId = state.requestId;
+        answering = true;
+        failure.hidden = true;
+        render();
+        try {
+          await invoke("storage_startup_answer", { requestId, accepted });
+          answeredId = requestId;
+        } catch (error) {
+          failure.textContent = "提交操作失败：" + errorText(error);
+          failure.dataset.source = "answer";
+          failure.hidden = false;
+        } finally { answering = false; render(); void poll(); }
+      }
+      accept.addEventListener("click", () => void answer(true));
+      cancel.addEventListener("click", () => void answer(false));
+      retry.addEventListener("click", () => void poll());
+      void poll();
+      const timer = window.setInterval(() => void poll(), 500);
+      window.addEventListener("pagehide", () => window.clearInterval(timer), { once: true });
+    })();
+  </script>
+</body>
+</html>

@@ -95,11 +95,12 @@ interface Props {
   idleLabel?: string;
 }
 
-/** 逐拍照点视图：每个拍照点一格，按计划顺序；显示编号 · 相机 · 胶条、不检 / 未示教、按测量点状态着色的示教中线与段内缺胶位置。 */
+/** 逐拍照点视图：检测帧按计划顺序显示示教中线与测量状态。 */
 export default function ShotTiles({ layout, vis, selected = null, current = -1, onSelect, selectedPoint = null, className = "", idleLabel }: Props) {
   return (
     <div className={`shot-tiles ${className}`} aria-label="逐拍照点视图">
       {layout.shots.map((shot, k) => {
+        if (shot.skip) return null;
         const state = shotState(layout, vis, k);
         const own = shotSegment(layout, k)?.segment;
         const gaps = shotGaps(layout, vis, k);
@@ -109,9 +110,7 @@ export default function ShotTiles({ layout, vis, selected = null, current = -1, 
               <b className="mono" title={`k${k + 1} · Pose ${shot.poseId}`}>{shotLabel(shot,k)} · {shot.bead}</b>
               <span className={shotTone[state]}>{state === "none" && idleLabel ? idleLabel : shotStateLabel[state]}</span>
             </div>
-            {state === "skip" ? (
-              <div className="shot-tile-empty">不检 · 只要求这一帧到达</div>
-            ) : state === "untaught" ? (
+            {state === "untaught" ? (
               <div className="shot-tile-empty">未示教中线，不能开工</div>
             ) : (
               <ShotLine layout={layout} k={k} vis={vis} selectedPoint={selectedPoint} className="shot-tile-img" />

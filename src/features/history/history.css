@@ -26,6 +26,9 @@
 .reason-box { margin: 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--surface-mid); font-size: 13px; }
 .ng-item { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: var(--r-md); background: var(--ng-container); color: var(--on-ng-container); }
 .ng-title { font-size: 13px; font-weight: 600; }
+.history-segment { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: var(--r-md); }
+.history-segment.vt-ng { color: var(--on-ng-container); background: var(--ng-container); font-weight: normal; }
+.hist-detail .shot-tiles { flex: none; max-height: 404px; }
 .detail-grid .kv2 a { color: var(--primary); }
 
 .rj { display: flex; flex-direction: column; gap: 14px; }

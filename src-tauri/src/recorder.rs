@@ -147,7 +147,7 @@ impl Recorders {
     pub fn get(&self, scope: HistoryScope) -> &Recorder {
         match scope {
             HistoryScope::Real => &self.real,
-            HistoryScope::Offline => &self.offline,
+            HistoryScope::Offline | HistoryScope::Debug => &self.offline,
         }
     }
 
@@ -165,7 +165,7 @@ impl Recorders {
 
     pub fn finish(&self, rec: Recording, verdict: Verdict, reason: &str, settings: &CycleSettings) {
         let (keep, max_gb) = match rec.scope {
-            HistoryScope::Offline => (settings.offline_record_keep, settings.offline_record_max_gb),
+            HistoryScope::Offline | HistoryScope::Debug => (settings.offline_record_keep, settings.offline_record_max_gb),
             HistoryScope::Real => (settings.record_keep, settings.record_max_gb),
         };
         self.get(rec.scope).finish(rec, verdict, reason, keep, (max_gb as f64 * 1e9) as u64, Vec::new())

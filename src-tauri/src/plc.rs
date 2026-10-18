@@ -22,8 +22,8 @@ pub struct PlcHost {
 
 impl PlcHost {
     pub fn init(app: &AppHandle) -> Result<Self, String> {
-        let config_path = app.path().app_config_dir().map_err(|e| e.to_string())?.join("plc.json");
-        let log_path = app.path().app_data_dir().map_err(|e| e.to_string())?.join("logs").join("plc.db");
+        let config_path = crate::storage::config(app).join("plc.json");
+        let log_path = crate::storage::root(app).join("logs").join("plc.db");
         let config = PlcConfig::load(&config_path).unwrap_or_else(inspection::default_plc_config);
         let handle = app.clone();
         let last_link = std::sync::Mutex::new(None);

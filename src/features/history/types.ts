@@ -30,8 +30,8 @@ export interface PartShot {
 }
 
 /** 记录来源：真机件与离线件分开统计。 */
-export type RecordSource = "real" | "offlineSynthetic" | "offlineSample";
-export type HistoryScope = "real" | "offline";
+export type RecordSource = "real" | "offlineSynthetic" | "offlineSample" | "offlineCandidate";
+export type HistoryScope = "real" | "offline" | "debug";
 
 export interface HistoryQuery {
   scope?: HistoryScope;

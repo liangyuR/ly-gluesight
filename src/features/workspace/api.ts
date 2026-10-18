@@ -21,6 +21,7 @@ export async function decodeGray(input: ArrayBuffer | number[]): Promise<GrayIma
 }
 
 export const workspaceApi = {
+  debugRun: (id: string, revision: number, partId: string | null) => desktopCall<void>("workspace_debug_run", { id, revision, partId }),
   selectGroupImage: (id: string, revision: number, k: number, view: number) => desktopCall<WorkspaceView>("workspace_select_group_image", { id, revision, k, view }),
   captureStart: (recipeId: string, cameraIds: string[], drainTimeoutMs: number) => desktopCall<CaptureRound>("recipe_capture_start", { recipeId, cameraIds, drainTimeoutMs }),
   captureGet: (roundId?: string) => desktopCall<CaptureRound | null>("recipe_capture_get", { roundId }),
@@ -30,7 +31,7 @@ export const workspaceApi = {
   setViews: (id: string, revision: number, k: number, views: number[], skip: boolean) => desktopCall<WorkspaceView>("workspace_set_views", { id, revision, k, views, skip }),
   saveDraft: (id: string, revision: number, k: number, params: ShotTeach) => desktopCall<WorkspaceView>("workspace_save_draft", { id, revision, k, params }),
   progress: (id: string, k: number, view: number) => desktopCall<WorkspaceView>("workspace_progress", { id, k, view }),
-  extractCenterline: (id: string, revision: number, k: number, imageId: string, roi: [number, number, number, number]) => desktopCall<{path: [number, number][]; message: string}>("workspace_extract_centerline", { id, revision, k, imageId, roi }),
+  extractCenterline: (id: string, revision: number, k: number, imageId: string, roi: [number, number, number, number], guide?: import("./teachingPath").BrushGuide, pointSpacingPx = 20) => desktopCall<{path: [number, number][]; message: string; failure?: { point: [number, number]; reason: string; message: string } | null}>("workspace_extract_centerline", { id, revision, k, imageId, roi, guide, pointSpacingPx }),
   checkCalibration: (id: string, revision: number, k: number, referenceMm: number, measuredMm: number, reuseMatching = false) => desktopCall<WorkspaceView>("workspace_check_calibration", { id, revision, k, referenceMm, measuredMm, reuseMatching }),
   list: () => desktopCall<Workspace[]>("workspace_list"),
   get: (id: string) => desktopCall<WorkspaceView>("workspace_get", { id }),

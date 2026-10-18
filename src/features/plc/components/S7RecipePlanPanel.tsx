@@ -64,11 +64,11 @@ export default function S7RecipePlanPanel() {
       {plan && <button className="btn" disabled={copying} onClick={() => void copy()}>{copied ? "已复制 JSON" : "复制计划 JSON"}</button>}
       <button className="btn" disabled={loading} onClick={() => void load()}>{recipes ? "刷新配方计划" : "读取配方计划"}</button>
     </div></div>
-    <p className="muted hint top">读取已保存的生产配方，供 PLC 程序核对协议版本、计划版本和设备触发数。读取和复制不会更改 PLC；候选草稿不在此处生效。</p>
-    {recipes && <label className="field"><span>生产配方</span><select className="input" value={selected} onChange={event => void readPlan(event.target.value)}>
-      <option value="">请选择生产配方</option>{recipes.map(recipe => <option key={recipe.id} value={recipe.id}>{recipe.name} · {recipe.id} · v{recipe.version}</option>)}
+    <p className="muted hint top">读取已发布配方，供 PLC 程序核对协议版本、计划版本和设备触发数。读取和复制不会更改 PLC；候选试运行的临时计划不在此处显示；离线发布版本不代表真机可用。</p>
+    {recipes && <label className="field"><span>已发布配方</span><select className="input" value={selected} onChange={event => void readPlan(event.target.value)}>
+      <option value="">请选择已发布配方</option>{recipes.map(recipe => <option key={recipe.id} value={recipe.id}>{recipe.name} · {recipe.id} · v{recipe.version}</option>)}
     </select></label>}
-    {recipes?.length === 0 && <p className="muted hint">暂无可读取的生产配方</p>}
+    {recipes?.length === 0 && <p className="muted hint">暂无可读取的已发布配方</p>}
     {loading && <p role="status">正在读取配方计划…</p>}
     {error && <p role="alert" className="notice error">{error}</p>}
     {plan && <>

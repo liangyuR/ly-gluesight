@@ -1,3 +1,4 @@
+import CandidateDebugControls from "../features/cycle/components/CandidateDebugControls";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { RotateCcw } from "lucide-react";
 import RuntimeFrame, { usePublishedOverview } from "../features/workspace/RuntimeFrame";
@@ -146,12 +147,17 @@ export default function InspectPage() {
     }
   };
 
+  const offlineSample = site?.mode === "offline" && site.source === "sampleSet";
+  const activeDebug = snapshot?.candidateDebug;
+  const debug = activeDebug ?? part?.candidateDebug ?? result?.candidateDebug;
   return (
     <div className="fly inspect-operator">
+      {debug && <div className="notice" role="status"><strong>候选配方调试结果</strong> · {debug.recipeId} · 修订 {debug.revision} · 未发布，仅用于离线测试，不作为生产验收。</div>}
+      <CandidateDebugControls site={site} snapshot={snapshot} />
       <div className="fly-bar inspect-toolbar">
         <span className="fly-chip">{triggerModeLabel(trigger)}</span>
         <span className="fly-chip">{site?.mode === "offline" ? "离线" : site ? "真机" : "模式确认中"}</span>
-        {snapshot?.productSource === "manual" ? (
+        {!activeDebug && snapshot?.productSource === "manual" ? (
           <span className="fly-chip">
             配方
             <select
@@ -172,7 +178,7 @@ export default function InspectPage() {
           </span>
         ) : (
           <span className="fly-chip" title="型号由 PLC 下发的产品代码匹配">
-            {layout ? `${layout.id} · v${layout.version}` : "等待 PLC 下发型号"}
+            {debug ? `${debug.recipeId} · 候选修订 ${debug.revision}` : layout ? `${layout.id} · v${layout.version}` : "等待 PLC 下发型号"}
           </span>
         )}
         <span className="fly-chip">
@@ -181,7 +187,7 @@ export default function InspectPage() {
         <span className="spacer" />
         <span className="phase-label">{snapshot ? phaseLabels[phase] : "状态确认中"}</span>
         <button className="btn" onClick={() => setDiagnostics("readiness")}>诊断</button>
-        <OfflineControls readiness={readiness} refresh={refreshReadiness} />
+        <OfflineControls readiness={readiness} refresh={refreshReadiness} publishedSection={offlineSample} candidateRunning={!!snapshot?.candidateDebug} />
         {phase === "FAULT" && (
           <>
             <ContextHelp label="复位条件">{site?.mode === "offline" ? "离线：由离线产线自动复位" : "真机：由 PLC 发 faultReset 复位；PLC 已连接、心跳正常且设备就绪时也可点此复位"}</ContextHelp>
@@ -198,7 +204,7 @@ export default function InspectPage() {
         {snapshot.measurementWorkers.timedOut>=snapshot.measurementWorkers.capacity&&"全部测量容量被占用，当前不可布防。"}
       </div>}
 
-      <InspectionReadiness snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} />
+      <InspectionReadiness offlineSample={offlineSample} snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} />
 
       <div className="fly-body">
         <div className="fly-main">
@@ -250,7 +256,7 @@ export default function InspectPage() {
         </div>
       </div>
 
-      {diagnostics && <InspectionDiagnostics group={diagnostics} onGroup={setDiagnostics} onClose={() => setDiagnostics(null)} snapshot={snapshot} readiness={readiness} readinessError={readinessError} layout={layout} part={ownLayout ? part : null} selected={selected} logs={logs} />}
+      {diagnostics && <InspectionDiagnostics offlineSample={offlineSample} group={diagnostics} onGroup={setDiagnostics} onClose={() => setDiagnostics(null)} snapshot={snapshot} readiness={readiness} readinessError={readinessError} layout={layout} part={ownLayout ? part : null} selected={selected} logs={logs} />}
       {pendingRecipe && (
         <Modal
           title="切换配方"
@@ -371,11 +377,11 @@ function SegmentPanel({ layout, measured, result }: { layout: Recipe | null; mea
 function Stats({ snapshot }: { snapshot: Snapshot | null }) {
   const s = snapshot?.stats ?? { total: 0, ok: 0, ng: 0, err: 0 };
   const items: [string, string | number, string][] = [
-    ["今日", s.total, ""],
+    [snapshot?.statsScope === "debug" ? "今日调试" : "今日", s.total, ""],
     ["OK", s.ok, "c-ok"],
     ["NG", s.ng, "c-ng"],
     ["ERR", s.err, "c-err"],
-    ["良率", s.total ? `${((s.ok / s.total) * 100).toFixed(1)}%` : "--", ""],
+    [snapshot?.statsScope === "debug" ? "调试符合率" : "良率", s.total ? `${((s.ok / s.total) * 100).toFixed(1)}%` : "--", ""],
   ];
   return (
     <div className="stats5">

@@ -115,7 +115,7 @@ pub(super) fn selected_views(w: &Workspace, k: usize) -> Vec<u8> {
     shot.views.iter().filter(|v| v.enabled).map(|v| v.view).collect()
 }
 
-pub(super) fn check_view(app: &AppHandle, w: &Workspace, k: usize, selected: u8, calibration: bool) -> Result<(), String> {
+fn checked_view(app: &AppHandle, w: &Workspace, k: usize, selected: u8) -> Result<(Recipe, Teaching), String> {
     let r = w.doc.build()?.for_view(k, selected)?;
     let frame = projected_frame(w, k, selected)?;
     if !frame.saved { return Err(format!("拍照点 {} 图 {selected} 尚未完成示教", k + 1)); }
@@ -123,6 +123,19 @@ pub(super) fn check_view(app: &AppHandle, w: &Workspace, k: usize, selected: u8,
     frame.checked(&image, &params)?;
     let engine = app.state::<vision::VisionHost>().engine().ok_or("图像核心库未加载")?;
     frame.checked_engine(&engine_state(&engine))?;
+    Ok((r, frame))
+}
+
+pub(super) fn check_history_sample_view(app: &AppHandle, w: &Workspace, k: usize, selected: u8) -> Result<(), String> {
+    let (recipe, frame) = checked_view(app, w, k, selected)?;
+    let current = calibration_state(&vision::shot_calib_path(app, &recipe, k)?)?;
+    let frozen = frame.image.as_ref().ok_or("示教原图缺失")?;
+    if frozen.calib_tag != current { return Err("标定变化，请重新确认示教后再复测离线样本原图".into()); }
+    Ok(())
+}
+
+pub(super) fn check_view(app: &AppHandle, w: &Workspace, k: usize, selected: u8, calibration: bool) -> Result<(), String> {
+    let (r, frame) = checked_view(app, w, k, selected)?;
     let (ct, cal) = tags(app, &r, k)?;
     let frozen = frame.image.as_ref().ok_or("示教原图缺失")?;
     if frozen.camera_tag != ct || frozen.calib_tag != cal { return Err("设备或标定变化，请重新确认示教".into()); }
@@ -287,10 +300,15 @@ pub fn workspace_check_calibration(app: AppHandle, id: String, revision: u64, k:
 }
 
 #[derive(Serialize)]
-pub struct CenterlineResult { pub path: Vec<[f32; 2]>, pub message: String }
+pub struct CenterlineResult {
+    pub path: Vec<[f32; 2]>,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<super::centerline::ExtractionFailure>,
+}
 
 #[tauri::command]
-pub async fn workspace_extract_centerline(app: AppHandle, id: String, revision: u64, k: usize, image_id: String, roi: [u32; 4]) -> Result<CenterlineResult, String> {
+pub async fn workspace_extract_centerline(app: AppHandle, id: String, revision: u64, k: usize, image_id: String, roi: [u32; 4], guide: Option<super::centerline::BrushGuide>, point_spacing_px: Option<f32>) -> Result<CenterlineResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let host = app.state::<WorkspaceHost>();
         let (path, polarity) = {
@@ -301,10 +319,14 @@ pub async fn workspace_extract_centerline(app: AppHandle, id: String, revision: 
             (image_file(&host, &id, &image_id)?, r.shot_detect(k).polarity)
         };
         let image = crate::image_file::load(&path)?;
-        let points = super::centerline::extract(&image, roi, polarity)?;
+        let result = super::centerline::extract(&image, roi, polarity, guide.as_ref(), point_spacing_px.unwrap_or(20.0));
         let items = host.items.lock().unwrap(); let current = items.get(&id).ok_or("候选不存在")?; current.expect(revision)?;
         if current.frames[k].image.as_ref().is_none_or(|i| i.id != image_id) { return Err("提取期间图像已变化".into()); }
-        Ok(CenterlineResult { path: points, message: "中线已提取，请检查并人工修正后试测".into() })
+        match result {
+            Ok(points) => Ok(CenterlineResult { path: points, message: "中线已提取，请检查并人工修正后试测".into(), failure: None }),
+            Err(super::centerline::ExtractionError::Failed(failure)) => Ok(CenterlineResult { path: Vec::new(), message: failure.message.clone(), failure: Some(failure) }),
+            Err(super::centerline::ExtractionError::Invalid(message)) => Err(message),
+        }
     }).await.map_err(|e| e.to_string())?
 }
 

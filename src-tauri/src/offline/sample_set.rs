@@ -87,6 +87,8 @@ pub struct SampleSetSummary {
     pub name: String,
     pub source: String,
     pub dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub managed_dir: Option<String>,
     pub shot_count: usize,
     pub cameras: Vec<SampleCamera>,
     pub mm_per_px: Option<f32>,
@@ -290,16 +292,24 @@ impl SampleSet {
         self.manifest.cameras.iter().any(|c| c.id == camera_id)
     }
 
+    pub fn image_path(&self, part_id: &str, shot_id: &str, camera_id: &str, view: u8) -> Result<&Path, String> {
+        self.images.get(&(part_id.to_string(), shot_id.to_string(), camera_id.to_string(), view))
+            .map(PathBuf::as_path).ok_or_else(|| format!("样本集缺图或图片无效：{part_id}/{shot_id}_{camera_id}_v{view}"))
+    }
+
+    pub fn load_view(&self, part_id: &str, shot_id: &str, camera_id: &str, view: u8) -> Result<FrameImage, String> {
+        let path = self.image_path(part_id, shot_id, camera_id, view)?;
+        let image = crate::image_file::load(path)?;
+        if let Some(size) = self.manifest.image_size.filter(|size| *size != [image.width, image.height]) {
+            return Err(format!("样本图 {} 尺寸 {}×{} 与样本集 imageSize {}×{} 不符", path.display(), image.width, image.height, size[0], size[1]));
+        }
+        Ok(image)
+    }
+
     /// 某件某点某相机的 1..=view_count 视角；任何一幅缺失、解码失败或尺寸不符都按本帧缺失处理，不拿别的图顶替。
     pub fn load_views(&self, part_id: &str, shot_id: &str, camera_id: &str, view_count: u8) -> Result<Vec<Arc<FrameImage>>, String> {
         (1..=view_count).map(|view| {
-            let path = self.images.get(&(part_id.to_string(), shot_id.to_string(), camera_id.to_string(), view))
-                .ok_or_else(|| format!("样本集缺图：{part_id}/{shot_id}_{camera_id}_v{view}"))?;
-            let image = crate::image_file::load(path)?;
-            if let Some(size) = self.manifest.image_size.filter(|size| *size != [image.width, image.height]) {
-                return Err(format!("样本图 {} 尺寸 {}×{} 与样本集 imageSize {}×{} 不符", path.display(), image.width, image.height, size[0], size[1]));
-            }
-            Ok(Arc::new(image))
+            self.load_view(part_id, shot_id, camera_id, view).map(Arc::new)
         }).collect()
     }
 
@@ -307,7 +317,7 @@ impl SampleSet {
         let m = &self.manifest;
         SampleSetSummary {
             id: m.id.clone(), name: m.name.clone(), source: m.source.clone(), dir: { let dir = self.root.display().to_string(); dir.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(dir) },
-            shot_count: m.shots.len(), cameras: m.cameras.clone(), mm_per_px: m.mm_per_px,
+            managed_dir: None, shot_count: m.shots.len(), cameras: m.cameras.clone(), mm_per_px: m.mm_per_px,
             parts: m.parts.iter().map(|p| PartSummary { part_id: p.part_id.clone(), sn: p.sn.clone(), label: p.label }).collect(),
             missing: self.missing.iter().take(MISSING_SHOWN).cloned().collect(),
             missing_count: self.missing.len(),

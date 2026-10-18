@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,7 +16,7 @@ vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
 } }));
 let ws: ReturnType<typeof workspaceState>;
 let detail: ReturnType<typeof partDetail>;
-const raw: RecordImages = { historyId: 1, complete: true, message: "原图完整", frames: [0, 1].map(k => ({ k, camera: "CAM-1", view: 1, file: `${k}.png`, ts: 1, available: true, error: null })) };
+const raw: RecordImages = { imageSource: "recording", historyId: 1, complete: true, message: "原图完整", frames: [0, 1].map(k => ({ k, camera: "CAM-1", view: 1, file: `${k}.png`, ts: 1, available: true, error: null })) };
 function element(){return <MemoryRouter initialEntries={["/history/1"]}><Routes><Route path="/history/:id" element={<HistoryDetailPage />} /></Routes></MemoryRouter>;}
 function show() { return render(element()); }
 function comparison():Comparison{return {id:"compare-1",historyId:1,source:"rules",cycleId:"cycle-1",bundleId:"bundle-A",candidateId:"A",candidateRevision:7,candidateRecipe:ws.data!.layout,
@@ -34,6 +34,50 @@ beforeEach(() => {
 });
 
 describe("历史工件复测", () => {
+  it("分段判定不同 → 结果卡片使用对应的合格、超差、NG和错误颜色", async () => {
+    detail.judgement.segments = (["OK", "OK_WITH_EXCURSION", "NG_WIDTH", "ERR_INSPECT"] as const).map(verdict => ({ verdict, min: 0, max: 0, excursionLen: 0, wMin: null, wMax: null, wExcursionLen: 0 }));
+    const page = show();
+    await screen.findByText(/上方为中线示意/);
+    const cards = page.container.querySelectorAll(".history-segment");
+    expect(cards).toHaveLength(4);
+    ["vt-ok", "vt-exc", "vt-ng", "vt-err"].forEach((tone, i) => {
+      expect(cards[i]).toHaveClass(tone);
+      expect(cards[i]).not.toHaveClass("ng-item");
+    });
+  });
+
+  it("候选历史关闭录图但关联样本原图 → 可查看与复测并标明来源", async () => {
+    detail.summary.source = "offlineCandidate";
+    detail.summary.bundleId = null;
+    detail.summary.recipeRevision = "candidate-A-r7";
+    detail.recording = { state: "off", available: false, directory: null, errors: [] };
+    ws.data!.progress.shots.forEach(shot => { shot.state = "recapture"; });
+    detail.shots.forEach(shot => { shot.rawFiles = []; });
+    vi.mocked(workspaceApi.recordImages).mockResolvedValue({ ...raw, imageSource: "offlineSample", message: "离线样本原图：2 幅可用" });
+    show();
+    expect(await screen.findByText("候选离线调试记录")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "按原发布包重现" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "从原图复测整件" })).toBeEnabled();
+    expect(screen.getByText(/此记录没有生产发布包/)).toBeVisible();
+    expect(await screen.findByRole("button", { name: "查看 k1 视角 1" })).toBeEnabled();
+    expect(screen.getByText("受管样本完整可用")).toBeVisible();
+    expect(screen.queryByText("录制关闭")).not.toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /离线样本原图 · 样本 SN/ })).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "从原图复测整件" }));
+    await waitFor(() => expect(workspaceApi.compare).toHaveBeenCalledWith("A", ws.data!.workspace.revision, 1, true));
+  });
+
+  it("历史关联的离线样本缺图 → 显示样本缺失原因并禁止整件复测", async () => {
+    detail.summary.source = "offlineCandidate";
+    vi.mocked(workspaceApi.recordImages).mockResolvedValue({ ...raw, imageSource: "offlineSample", complete: false, frames: raw.frames.map(frame => ({ ...frame, available: false, error: "历史样本集缺少所选视角" })), message: "历史样本集缺少所选视角" });
+    show();
+    expect(await screen.findByText("受管样本不完整或不可用")).toBeVisible();
+    expect(screen.getByRole("button", { name: "从原图复测整件" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "查看 k1 视角 1" })).toBeDisabled();
+    expect(screen.getAllByText("历史样本集缺少所选视角").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/本帧原图未保存或已按保留策略清理/)).not.toBeInTheDocument();
+  });
+
   it("录制失败明确显示原因，保留规则重判但禁止原图复测与示教", async () => {
     detail.recording = { state: "failed", available: false, directory: null, errors: ["原图写入失败：磁盘空间不足"] };
     vi.mocked(workspaceApi.recordImages).mockResolvedValue({ ...raw, complete: false, frames: [], message: "原图写入失败：磁盘空间不足" });

@@ -45,3 +45,14 @@ it("设备连接成功但没有已发布配方 → 保留开工检查入口，�
     expect(within(screen.getByRole("region", { name: title })).getByRole("link", { name: label })).toHaveAttribute("href", path);
   }
 });
+
+it.each(["sampleSet", "synthetic"])("离线来源 %s → 标明模拟范围并提供对应调试入口", async source => {
+  api.site.mockResolvedValue({ mode: "offline", source });
+  render(<MemoryRouter><OperationGuidePage /></MemoryRouter>);
+  const title = source === "sampleSet" ? "候选离线试运行" : "合成流程演练";
+  const workflow = within(await screen.findByRole("region", { name: title }));
+  expect(screen.queryByRole("region", { name: "日常生产" })).not.toBeInTheDocument();
+  expect(screen.getByText(/非真实 PLC/)).toBeVisible();
+  expect(workflow.getByRole("link", { name: source === "sampleSet" ? "打开候选试运行" : "打开离线演练" })).toHaveAttribute("href", source === "sampleSet" ? "/inspect" : "/offline");
+  if (source === "sampleSet") expect(workflow.getByText(/无需发布.*结果标记为调试/)).toBeVisible();
+});

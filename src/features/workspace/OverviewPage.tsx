@@ -9,12 +9,23 @@ import { useWorkspace } from "./context";
 import { Badge, GrayViewer, KV, Notice, Panel, shotOverlay, Steps, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { Overview } from "./types";
 
-/** 默认显示位置：拍照点按计划顺序排成均匀网格（归一化到 0–1）。工件坐标里没有拍照点位置，显示位置由人工拖到背景图上。 */
+function overviewGroups(layout: Pick<Recipe, "shots">) {
+  const groups = new Map<string, number[]>();
+  layout.shots.forEach((shot, k) => { const members = groups.get(shot.poseId) ?? []; members.push(k); groups.set(shot.poseId, members); });
+  return [...groups.values()].map(members => {
+    const enabled = members.filter(k => !layout.shots[k].skip);
+    return { members, k: enabled.length === 1 ? enabled[0] : members[0], selected: enabled.length === 1 };
+  });
+}
+
 export function defaultPositions(layout: Pick<Recipe, "shots">): [number,number][] {
-  const n = layout.shots.length;
-  const cols = Math.max(1, Math.min(n, Math.ceil(Math.sqrt(n * 520 / 230))));
+  const groups = overviewGroups(layout);
+  const n = groups.length;
+  const cols = Math.max(1, Math.min(4, n, Math.ceil(Math.sqrt(n * 520 / 230))));
   const rows = Math.max(1, Math.ceil(n / cols));
-  return layout.shots.map((_, i) => [(i % cols + .5) / cols, (Math.floor(i / cols) + .5) / rows]);
+  const positions: [number, number][] = new Array(layout.shots.length);
+  groups.forEach(({members}, i) => members.forEach(k => { positions[k] = [(i % cols + .5) / cols, (Math.floor(i / cols) + .5) / rows]; }));
+  return positions;
 }
 export function WorkpieceOverview({layout,overview,selected=0,onSelect,onMove,vis}:{
   layout:Recipe; overview:Overview|null; selected?:number; onSelect?:(k:number)=>void;
@@ -32,11 +43,12 @@ export function WorkpieceOverview({layout,overview,selected=0,onSelect,onMove,vi
   return <svg ref={svg} className={"wp-overview " + (onMove ? "editable" : "")} viewBox="0 0 800 420" aria-label="工件总览，选择帧查看原图">
     <rect width={800} height={420} fill="var(--surface-lowest)" />
     {overview?.background && <image href={overview.background} x={110} y={46} width={580} height={292} preserveAspectRatio="xMidYMid meet" opacity={.85} />}
-    {positions.map(([x,y],k) => {
+    {overviewGroups(layout).map(({k, members, selected: hasSelection}) => {
+      const [x,y] = positions[k];
       const shot = layout.shots[k];
       const state = vis ? shotState(layout, vis, k) : null;
       const tone = state && state !== "skip" && state !== "untaught" && state !== "none" ? visColor[state] : null;
-      const on = selected === k;
+      const on = members.includes(selected);
       return <g key={k} role="button" tabIndex={0} aria-label={"总览选择帧 k" + (k+1)} aria-pressed={on} data-state={state ?? undefined}
       onPointerDown={e => {onSelect?.(k);const p=point(e);if(onMove&&p){e.currentTarget.setPointerCapture(e.pointerId);drag.current={k,start:p,position:[x,y]};}}} onPointerMove={e => {
         const p=point(e),d=drag.current;if(!p||!d||!onMove)return;
@@ -46,8 +58,8 @@ export function WorkpieceOverview({layout,overview,selected=0,onSelect,onMove,vi
         if(onMove&&e.key.startsWith("Arrow")){e.preventDefault();const step=e.shiftKey ? 0.04 : 0.01;onMove(k,[Math.min(1,Math.max(0,x+(e.key==="ArrowRight"?step:e.key==="ArrowLeft"?-step:0))),Math.min(1,Math.max(0,y+(e.key==="ArrowDown"?step:e.key==="ArrowUp"?-step:0)))]);}
       }}>
       <rect x={140+x*520-57} y={74+y*230-38} width={114} height={76} rx={10} fill={on ? "var(--primary-container)" : "var(--surface-low)"} fillOpacity={.84} stroke={on?"var(--primary)":tone ?? "var(--outline)"} strokeWidth={on||tone?2:1} strokeDasharray={shot?.skip||state==="untaught"?"5 4":undefined} />
-      <text x={140+x*520} y={74+y*230-6} textAnchor="middle" fill={on?"var(--primary)":"var(--on-surface-variant)"} fontSize={15}>k{k+1}</text>
-      <text x={140+x*520} y={74+y*230+14} textAnchor="middle" fill="var(--on-surface-variant)" fontSize={11} className="mono">{shotLabel(shot,k)}</text>
+      <text x={140+x*520} y={74+y*230-6} textAnchor="middle" fill={on?"var(--primary)":"var(--on-surface-variant)"} fontSize={15}>{shot.poseId}</text>
+      <text x={140+x*520} y={74+y*230+14} textAnchor="middle" fill="var(--on-surface-variant)" fontSize={11} className="mono">{hasSelection ? `${shot.camera} · 视角 ${shot.view}` : "待选检测图"}</text>
       {state && <text x={140+x*520} y={74+y*230+30} textAnchor="middle" fill={tone ?? "var(--on-surface-variant)"} fontSize={11}>{shotStateLabel[state]}</text>}
     </g>;})}
     <text x={400} y={373} textAnchor="middle" fill="var(--on-surface-variant)" fontSize={12}>{onMove ? "拖动帧框或用方向键微调显示位置；拍照与测量不受影响" : "显示布置与生产配方快照绑定"}</text>
@@ -66,7 +78,7 @@ export default function OverviewPage() {
   useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;importSerial.current++;saveSerial.current++;};},[]);
   useEffect(() => {
     importSerial.current++;saveSerial.current++;readingRef.current=false;savingRef.current=false;setReading(false);setSaving(false);
-    if (data) {const matches=data.workspace.overview.positions.length===data.layout.shots.length;setOverview({...data.workspace.overview,saved:matches&&data.workspace.overview.saved,positions:matches ? data.workspace.overview.positions : defaultPositions(data.layout)});setSelected(0);}
+    if (data) {const matches=data.workspace.overview.positions.length===data.layout.shots.length;setOverview({...data.workspace.overview,saved:matches&&data.workspace.overview.saved,positions:matches ? data.workspace.overview.positions : defaultPositions(data.layout)});setSelected(overviewGroups(data.layout)[0]?.k ?? 0);}
   },[data?.workspace.revision,data?.workspace.doc.id]);
   const frame = data?.workspace.frames[selected];
   const {image,error,loading} = useGrayImage(doc?.id ?? null,frame?.image?.id ?? null);
@@ -102,8 +114,8 @@ export default function OverviewPage() {
     catch(e){if(valid())setError(errorText(e));}
     finally{if(valid()){savingRef.current=false;setSaving(false);}}
   };
-  return <div className="wp-page"><WorkspaceBar /><Steps /><div className="wp-actions"><Badge tone={data.workspace.overview.saved&&!displayDirty?"ok":"warn"}>{data.workspace.overview.saved&&!displayDirty?"总览已保存":"总览待保存"}</Badge><span className="spacer" /><Link className="btn" to="/recipe/validation">验证与发布</Link></div><div className="wp-columns"><Panel title="工件总览" detail="在背景图上布置各拍照点的显示框；点击帧框查看绑定原图" actions={<button className="btn primary" disabled={!unlocked} onClick={()=>void save()}><Save size={15}/>保存总览</button>}>
-      <WorkpieceOverview layout={data.layout} overview={overview} selected={selected} onSelect={setSelected} onMove={unlocked ? (k,p)=>setOverview(v=>({...v,saved:false,positions:v.positions.map((previous,i)=>i===k?p:previous)})) : undefined}/>
+  return <div className="wp-page"><WorkspaceBar /><Steps /><div className="wp-actions"><Badge tone={data.workspace.overview.saved&&!displayDirty?"ok":"warn"}>{data.workspace.overview.saved&&!displayDirty?"总览已保存":"总览待保存"}</Badge><span className="spacer" /><Link className="btn" to="/recipe/validation">验证与发布</Link></div><div className="wp-columns"><Panel title="工件总览" detail="每个拍照位置一个框，绑定本组检测图；点击查看原图" actions={<button className="btn primary" disabled={!unlocked} onClick={()=>void save()}><Save size={15}/>保存总览</button>}>
+      <WorkpieceOverview layout={data.layout} overview={overview} selected={selected} onSelect={setSelected} onMove={unlocked ? (k,p)=>setOverview(v=>({...v,saved:false,positions:v.positions.map((previous,i)=>data.layout.shots[i].poseId===data.layout.shots[k].poseId?p:previous)})) : undefined}/>
       <div className="wp-actions" style={{marginTop:14}}><label className="btn"><Upload size={15}/>{reading?"正在读取总览图…":"导入总览图"}<input type="file" aria-label="导入总览图" hidden accept="image/png,image/jpeg,image/webp" disabled={!unlocked} onChange={e=>{if(e.target.files?.[0])void importFile(e.target.files[0]);e.target.value="";}}/></label><button className="btn" disabled={!unlocked} onClick={()=>setOverview(v=>({...v,saved:false,positions:defaultPositions(data.layout)}))}>自动布置</button>{overview.background&&<button className="btn" disabled={!unlocked} onClick={()=>setOverview(v=>({...v,background:null,saved:false}))}>移除背景</button>}</div>
-    </Panel><div className="wp-stack"><Panel title={"选中 k"+(selected+1)+" · 原图"}><GrayViewer image={image} loading={loading} error={error} label={frame?.image?.id??"尚未取样"} overlay={shotOverlay(data.layout,selected)}/></Panel><Panel title="拍照点"><KV label="胶路示教">{data.coverage.toFixed(0)}%</KV><KV label="拍照点">{data.layout.shots.length} 个</KV><KV label="编号 · 相机">{shotLabel(data.layout.shots[selected],selected)}</KV><KV label="胶条">{data.layout.shots[selected]?.bead ?? "—"}</KV><KV label="Pose">{data.layout.shots[selected]?.poseId ?? "—"}</KV><KV label="示教状态">{data.layout.shots[selected] ? teachStatus(data.layout.shots[selected]) : "—"}</KV></Panel><Notice title="显示布置独立保存">拖动帧框只改变显示位置，不影响机器人拍照位置和示教中线。</Notice></div></div></div>;
+    </Panel><div className="wp-stack"><Panel title={(data.layout.shots[selected]?.poseId ?? "未选择位置")+" · 检测原图"}><GrayViewer image={image} loading={loading} error={error} label={frame?.image?.id??"尚未取样"} overlay={shotOverlay(data.layout,selected)}/></Panel><Panel title="拍照点"><KV label="胶路示教">{data.coverage.toFixed(0)}%</KV><KV label="拍照位置">{overviewGroups(data.layout).length} 个</KV><KV label="编号 · 相机">{shotLabel(data.layout.shots[selected],selected)}</KV><KV label="胶条">{data.layout.shots[selected]?.bead ?? "—"}</KV><KV label="Pose">{data.layout.shots[selected]?.poseId ?? "—"}</KV><KV label="示教状态">{data.layout.shots[selected] ? teachStatus(data.layout.shots[selected]) : "—"}</KV></Panel><Notice title="显示布置独立保存">拖动帧框只改变显示位置，不影响机器人拍照位置和示教中线。</Notice></div></div></div>;
 }

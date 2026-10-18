@@ -696,3 +696,41 @@ fn durable_legacy_recording_only_restart_archives_exact_events_and_protects_raw(
     assert_eq!(spool.protected_directories(&records).unwrap(), vec![raw.canonicalize().unwrap()]);
     assert_eq!(std::fs::read(raw.join("k000_P1_cam1_v2.pgm")).unwrap(), b"P5\n1 1\n255\nX");
 }
+
+#[test]
+fn candidate_revisions_survive_durable_spool_replay_without_sharing_production_snapshot() {
+    let dir = TestDir::new();
+    let mut sink = dir.sink();
+    let spool_path = dir.0.join("candidate-spool");
+    let mut spool = spool::Spool::open(spool_path.clone()).unwrap();
+    let baseline = part("production-baseline", 1);
+    let production = baseline.recipe.as_ref().unwrap().clone();
+    sink.store.insert(&baseline.borrowed()).unwrap();
+    let mut expected = Vec::new();
+    for revision in [355, 356] {
+        let cycle = format!("candidate-{revision}");
+        let mut record = part(&cycle, revision);
+        record.source = RecordSource::OfflineCandidate;
+        record.bundle_id = None;
+        let mut recipe = record.recipe.as_deref().unwrap().clone();
+        recipe.version = 99;
+        recipe.revision_id = format!("candidate-{}-r{revision}", recipe.id);
+        recipe.name = format!("候选修订 {revision}");
+        expected.push((cycle.clone(), recipe.revision_id.clone(), recipe.name.clone()));
+        record.recipe = Some(Arc::new(recipe));
+        spool.append(&Event::Insert(Box::new(record))).unwrap();
+    }
+    drop(spool);
+    let mut spool = spool::Spool::open(spool_path).unwrap();
+    for (cycle, revision, name) in expected {
+        let (complete, notices) = replay_cycle(&mut spool, &cycle, &mut sink, 1).unwrap();
+        assert!(complete, "{notices:?}");
+        let detail = sink.store.detail_by_cycle(&cycle).unwrap().unwrap();
+        assert_eq!(detail.summary.recipe_revision.as_deref(), Some(revision.as_str()));
+        assert_eq!(detail.summary.source, RecordSource::OfflineCandidate);
+        let frozen = sink.store.recipe_snapshot(&revision).unwrap().unwrap();
+        assert_eq!(frozen.revision_id, revision);
+        assert_eq!(frozen.name, name);
+        assert_eq!(sink.store.recipe_version_floors().unwrap().get(&production.id), Some(&production.version));
+    }
+}
