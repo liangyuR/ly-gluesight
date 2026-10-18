@@ -161,6 +161,7 @@ pub fn run() {
             teach::records_list,
             history::history_query,
             history::history_detail,
+            history::history_neighbors,
             history::history_recipe,
             history::history_rejudge,
             history::history_export,
