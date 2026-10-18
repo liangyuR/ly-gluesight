@@ -1,5 +1,6 @@
 import type {
   DataType,
+  SnDataType,
   EdgeMode,
   LinkState,
   LogCategory,
@@ -14,8 +15,8 @@ export const s7Protocol = {
   label: "西门子 S7",
   defaultPort: 102,
   defaultOrder: "ABCD" as WordOrder,
-  examples: ["DB1.DBW0", "DB1.DBX2.3", "DB1.8", "DB100.DBB38.24", "M10.0", "MW20", "I0.1", "QD4", "VW100"],
-  hint: "字节寻址，Bool 需带位号 (.0-.7)；String 写成 DB100.DBB38.24（起始字节.最大长度）；V 区等价 DB1；1200/1500 需启用 PUT/GET 并取消 DB 优化访问",
+  examples: ["DB1.DBW0", "DB1.DBX2.3", "DB1.8", "DB1.DBB100.50", "M10.0", "MW20", "I0.1", "QD4", "VW100"],
+  hint: "字节寻址，Bool 需带位号 (.0-.7)；字符串写成 DB1.DBB100.50（起始字节.最大长度）；V 区等价 DB1（200 SMART）；1200/1500 需启用 PUT/GET 并取消 DB 优化访问",
 };
 
 export const s7CpuPresets = [
@@ -37,7 +38,16 @@ export const dataTypeLabels: Record<DataType, string> = {
   f32: "Float32 (Real)",
   f64: "Float64 (LReal)",
   string: "String (S7 STRING)",
+  smartString: "String (200 SMART)",
 };
+
+export function isText(dataType: DataType) {
+  return dataType === "string" || dataType === "smartString";
+}
+
+export function snTypeForCpu(cpu: string): SnDataType {
+  return cpu === "s7200smart" ? "smartString" : "string";
+}
 
 export const edgeLabels: Record<EdgeMode, string> = {
   none: "无",

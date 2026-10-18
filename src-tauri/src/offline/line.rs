@@ -27,7 +27,8 @@ struct Slot {
     byte: u32,
     bit: Option<u8>,
     len: u32,
-    text: bool,
+    /// 字符串字段的头字节数：200 SMART 字符串 1（实际长度），S7 STRING 2（声明长度 + 实际长度）
+    text_header: Option<usize>,
 }
 
 /// 握手字段在 DB 中的位置，全部从 PLC 配置的握手契约解析。
@@ -43,8 +44,8 @@ impl Layout {
             let id = contract.point_id(field)?;
             let point = config.points.iter().find(|p| p.id == id).ok_or_else(|| format!("握手点位 {id} 不存在"))?;
             let location = ly_plc::resolve(&config.connection, &point.address, point.data_type)?;
-            slots.insert(field, Slot { db: location.area.index, byte: location.start, bit: location.bit, len: location.len,
-                text: point.data_type == DataType::String });
+            let text_header = match point.data_type { DataType::SmartString => Some(1), DataType::String => Some(2), _ => None };
+            slots.insert(field, Slot { db: location.area.index, byte: location.start, bit: location.bit, len: location.len, text_header });
         }
         Ok(Self { slots })
     }
@@ -54,7 +55,7 @@ impl Layout {
         BitAddr { db: slot.db, byte: slot.byte, bit: slot.bit.unwrap_or(0) }
     }
 
-    /// 按点表分配 DB（至少 1024 字节），PLC 协议版本预置为当前版本，STRING 字段预置为声明长度正确的空串。
+    /// 按点表分配 DB（至少 1024 字节），PLC 协议版本预置为当前版本，字符串字段预置为空串（S7 STRING 带正确的声明长度）。
     pub fn memory(&self) -> SharedMemory {
         let mut extents = BTreeMap::<u16, usize>::new();
         for slot in self.slots.values() {
@@ -65,7 +66,7 @@ impl Layout {
         for (db, end) in extents { memory.create(db, end.max(1024)); }
         self.set(&mut memory, tag::PROTOCOL_VERSION, PROTOCOL_VERSION as u32);
         for (field, slot) in &self.slots {
-            if slot.text { self.set_text(&mut memory, field, ""); }
+            if slot.text_header.is_some() { self.set_text(&mut memory, field, ""); }
         }
         Arc::new(Mutex::new(memory))
     }
@@ -81,17 +82,19 @@ impl Layout {
 
     fn get_text(&self, memory: &Memory, field: &str) -> String {
         let slot = self.slots[field];
+        let header = slot.text_header.unwrap_or(2);
         memory.read(slot.db, slot.byte, slot.len as usize).ok()
-            .and_then(|bytes| bytes.get(2..2 + bytes[1] as usize).map(|chars| chars.iter().map(|&b| b as char).collect()))
+            .and_then(|bytes| bytes.get(header..header + bytes[header - 1] as usize).map(|chars| chars.iter().map(|&b| b as char).collect()))
             .unwrap_or_default()
     }
 
     fn set_text(&self, memory: &mut Memory, field: &str, value: &str) {
         let slot = self.slots[field];
+        let header = slot.text_header.unwrap_or(2);
         let mut bytes = vec![0u8; slot.len as usize];
-        bytes[0] = (slot.len - 2) as u8;
-        bytes[1] = value.len() as u8;
-        bytes[2..2 + value.len()].copy_from_slice(value.as_bytes());
+        if header == 2 { bytes[0] = (slot.len - 2) as u8; }
+        bytes[header - 1] = value.len() as u8;
+        bytes[header..header + value.len()].copy_from_slice(value.as_bytes());
         let _ = memory.write(slot.db, slot.byte, &bytes);
     }
 
@@ -238,7 +241,7 @@ impl Line {
 
     async fn drive(&self, timing: &Timing, order: &PartOrder, scenario: Scenario,
         mut trigger: impl FnMut(usize, bool), abort: &AtomicBool) -> Result<Outcome, String> {
-        let seq = self.read(tag::REQUEST_SEQ).wrapping_add(1).max(1);
+        let seq = self.read(tag::REQUEST_SEQ) % i32::MAX as u32 + 1;
         self.write_request(&order.sn, &[
             (tag::PROTOCOL_VERSION, PROTOCOL_VERSION as u32), (tag::REQUEST_SEQ, seq),
             (tag::PRODUCT_CODE, order.product_code as u32), (tag::SHOT_COUNT, order.shot_count as u32),
