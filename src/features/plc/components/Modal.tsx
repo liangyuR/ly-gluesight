@@ -9,9 +9,10 @@ interface ModalProps {
   width?: number;
   children: ReactNode;
   className?: string;
+  side?: boolean;
 }
 
-export default function Modal({ title, onClose, closeDisabled = false, footer, width = 520, children, className = "" }: ModalProps) {
+export default function Modal({ title, onClose, closeDisabled = false, footer, width = 520, children, className = "", side = false }: ModalProps) {
   const ref = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
   close.current = () => { if (!closeDisabled) onClose(); };
@@ -33,16 +34,16 @@ export default function Modal({ title, onClose, closeDisabled = false, footer, w
     return () => { cancelAnimationFrame(frame); document.removeEventListener("keydown",key); if (previous?.isConnected) previous.focus(); };
   },[]);
   return (
-    <div className={`modal-mask ${className}`} onMouseDown={(e) => e.target === e.currentTarget && close.current()}>
-      <div ref={ref} className="modal" style={{ width, maxWidth:"calc(100vw - 40px)" }} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
-        <div className="modal-header">
+    <div className={`modal-mask qs-scrim${side ? " side" : ""} ${className}`} onMouseDown={(e) => e.target === e.currentTarget && close.current()}>
+      <div ref={ref} className="modal qs-dialog" style={{ width, maxWidth:"calc(100vw - 40px)" }} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+        <div className="modal-header hd">
           <h3 id={titleId}>{title}</h3>
           <button className="icon-btn" disabled={closeDisabled} onClick={() => close.current()} aria-label="关闭">
             <X size={18} />
           </button>
         </div>
-        <div className="modal-body">{children}</div>
-        {footer && <div className="modal-footer">{footer}</div>}
+        <div className="modal-body bd">{children}</div>
+        {footer && <div className="modal-footer ft">{footer}</div>}
       </div>
     </div>
   );

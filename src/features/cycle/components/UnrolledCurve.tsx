@@ -14,6 +14,15 @@ interface Props {
   onSelect?: (index: number | null) => void;
   compact?: boolean;
 }
+const labelWidth = (text: string) => [...text].reduce((width, char) => width + (char.charCodeAt(0) > 0x2e80 ? 10.5 : 6.2), 0);
+
+function fitLabel(name: string, room: number) {
+  if (labelWidth(name) <= room) return name;
+  const chars = [...name];
+  while (chars.length > 1 && labelWidth(chars.join("") + "…") > room) chars.pop();
+  return chars.length > 1 ? chars.join("") + "…" : "";
+}
+
 const pointLabels: Record<PointVis, string> = { none: "待测", ok: "合格", exc: "超公差", ng: "NG", gap: "断胶", inv: "未测成", miss: "缺帧" };
 
 function niceTicks(lo: number, hi: number): number[] {
@@ -181,11 +190,15 @@ export default function UnrolledCurve({ layout, measured, vis, quantity = "d", s
               )}
               <line x1={x0} x2={x0} y1={PAD.t} y2={plotB + 8} stroke="var(--outline)" />
               <rect x={x0} width={Math.max(1, x1 - x0)} y={plotB + 3} height={4} fill={CAM_COLORS[g.shot % CAM_COLORS.length]} opacity={0.7} />
-              {x1 - x0 > 36 && (
-                <text x={(x0 + x1) / 2} y={h - 6} textAnchor="middle" fontSize={10.5} fill="var(--on-surface-variant)">
-                  {g.name}
-                </text>
-              )}
+              {(() => {
+                const label = fitLabel(g.name, x1 - x0 - 8);
+                return label && (
+                  <text x={(x0 + x1) / 2} y={h - 6} textAnchor="middle" fontSize={10.5} fill="var(--on-surface-variant)">
+                    {label}
+                    {label !== g.name && <title>{g.name}</title>}
+                  </text>
+                );
+              })()}
             </g>
           );
         })}

@@ -57,7 +57,7 @@ try {
     & node --input-type=module -e "await import('playwright-core');"
     if ($LASTEXITCODE -ne 0) { throw '请使用 Node 24.15+ 并先执行 pnpm install --frozen-lockfile。' }
     $env:GLUESIGHT_LYFLOW_RUNTIME = $e2eLyflow
-    $e2eCdp = "http://127.0.0.1:$DebugPort"
+    $e2eCdp = "http://localhost:$DebugPort"
     $e2eResult = Join-Path $e2eOutput 'result.json'
     Start-E2EInstance -Fresh -Prebuilt:$SkipBuild
     & node (Join-Path $e2eProjectRoot 'tests\native\offline-e2e.mjs') `

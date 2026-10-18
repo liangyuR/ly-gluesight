@@ -205,6 +205,7 @@ struct QueuedFrame { round_id: String, frame: Frame, original: Option<Arc<FrameI
 pub struct RecipeCaptureHost {
     root: PathBuf,
     current: Mutex<Option<Running>>,
+    /// 设备会话编号每次启动从 1 重新分配，只封锁本进程内失败轮次的会话，重启后不沿用
     uncertain_sessions: Mutex<std::collections::HashSet<(String, u64)>>,
     /// 按本轮相机顺序，每台相机一个写盘线程
     writers: Vec<mpsc::SyncSender<QueuedFrame>>,
@@ -293,7 +294,6 @@ impl RecipeCaptureHost {
     pub fn open(root: PathBuf) -> Result<Arc<Self>, String> {
         std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         let mut latest: Option<CaptureRound> = None;
-        let mut uncertain_sessions = std::collections::HashSet::new();
         let canonical_root = std::fs::canonicalize(&root).map_err(|e| e.to_string())?;
         for entry in std::fs::read_dir(&root).map_err(|e| e.to_string())? {
             let path = entry.map_err(|e| e.to_string())?.path().join("round.json");
@@ -312,14 +312,11 @@ impl RecipeCaptureHost {
                 round.error = Some("应用退出导致本轮采集中断，请整圈重采".into());
                 crate::fsio::write_atomic(&path, &serde_json::to_string_pretty(&round).map_err(|e| e.to_string())?)?;
             }
-            if round.state == CaptureState::Failed {
-                uncertain_sessions.extend(round.cameras.iter().map(|c| (c.camera_id.clone(), c.device_session)));
-            }
             if latest.as_ref().is_none_or(|last| round.created_at >= last.created_at) { latest = Some(round); }
         }
         let (writers, receivers): (Vec<_>, Vec<_>) = (0..MAX_CAMERAS).map(|_| mpsc::sync_channel::<QueuedFrame>(MAX_TRIGGERS)).unzip();
         let current = latest.map(|round| Running { round, cams: Vec::new(), drain_timeout: Duration::from_secs(1), deadline: Instant::now(), write_deadline: None });
-        let host = Arc::new(Self { root, current: Mutex::new(current), uncertain_sessions: Mutex::new(uncertain_sessions), writers });
+        let host = Arc::new(Self { root, current: Mutex::new(current), uncertain_sessions: Mutex::new(std::collections::HashSet::new()), writers });
         for (i, rx) in receivers.into_iter().enumerate() {
             let weak = Arc::downgrade(&host);
             std::thread::spawn(move || loop {
@@ -1092,6 +1089,18 @@ mod tests {
         assert_eq!(reopened.current().unwrap().round_id, round.round_id);
         assert_eq!(reopened.current().unwrap().state, CaptureState::Failed);
         assert!(!reopened.active());
+    }
+
+    /// 设备会话编号每次启动从 1 分配：退出时中断的轮次不能封锁新进程里同编号的会话。
+    #[test]
+    fn interrupted_round_does_not_block_the_same_session_number_after_restart() {
+        let host = host();
+        let interrupted = start(&host);
+        let session = interrupted.cameras[0].device_session;
+        let reopened = RecipeCaptureHost::open(host.root.clone()).unwrap();
+        assert_eq!(reopened.current().unwrap().state, CaptureState::Failed);
+        let next = reopened.start("recipe-a".into(), vec![device(0, "cam1", serde_json::json!({"source":"sim"}), session, Some(CounterSource::Synthetic), Some(0))], TEST_DRAIN_MS, true);
+        assert_eq!(next.map(|round| round.state), Ok(CaptureState::WaitingStart));
     }
 
     #[test]
