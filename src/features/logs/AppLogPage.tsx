@@ -80,15 +80,23 @@ export default function AppLogPage() {
   runRef.current = run;
   useEffect(() => { void run(); return () => { serial.current++; }; }, [run]);
 
-  const following = live && rangeKey !== "custom" && page === 0;
+  const following = live && rangeKey !== "custom" && page === 0 && !cycleId;
   useEffect(() => {
     if (!following) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const stop = subscribe("cycle://log", () => {
-      if (timer) return;
-      timer = setTimeout(() => { timer = null; void runRef.current(); }, 1000);
-    });
-    return () => { stop(); if (timer) clearTimeout(timer); };
+    let running = false, again = false, stopped = false;
+    const refresh = async () => {
+      timer = null;
+      running = true;
+      try { await runRef.current(); } finally { running = false; }
+      if (again && !stopped) { again = false; schedule(); }
+    };
+    const schedule = () => {
+      if (running) { again = true; return; }
+      if (!timer) timer = setTimeout(() => void refresh(), 1000);
+    };
+    const stop = subscribe("cycle://log", schedule);
+    return () => { stopped = true; stop(); if (timer) clearTimeout(timer); };
   }, [following]);
 
   const current = data?.key === key ? data.page : null;
@@ -112,7 +120,7 @@ export default function AppLogPage() {
           <input className="input mono" aria-label="结束时间" type="datetime-local" step={1} value={customEnd} onChange={e => { setCustomEnd(e.target.value); reset(); }} />
         </div>}
         <div className="spacer" />
-        <button className={`btn ${following ? "live" : ""}`} disabled={rangeKey === "custom"} onClick={() => { setLive(v => !v); reset(); }}><Radio size={16} />{following ? "实时跟随中" : "实时跟随"}</button>
+        <button className={`btn ${following ? "live" : ""}`} disabled={rangeKey === "custom" || !!cycleId} title={cycleId ? "按工件筛选时不实时跟随" : undefined} onClick={() => { setLive(v => !v); reset(); }}><Radio size={16} />{following ? "实时跟随中" : "实时跟随"}</button>
         <button className="btn" onClick={() => void run()}><RefreshCw size={16} className={loading ? "spin" : ""} />刷新</button>
         <button className="btn primary" onClick={() => setExporting(true)}><PackageOpen size={16} />导出诊断包</button>
       </div>

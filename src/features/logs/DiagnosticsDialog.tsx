@@ -8,7 +8,7 @@ import type { DiagnosticsResult, ImageMode } from "./types";
 
 const presets = [["1 小时", 3_600_000], ["24 小时", 86_400_000], ["7 天", 7 * 86_400_000]] as const;
 const scopes: [HistoryScope | "all", string][] = [["all", "全部记录"], ["real", "真机件"], ["offline", "离线件"], ["debug", "候选调试"]];
-const imageModes: [ImageMode, string][] = [["abnormal", "仅异常件（NG / ERR / 局部超差）"], ["all", "全部工件"], ["none", "不含原图"]];
+const imageModes: [ImageMode, string][] = [["abnormal", "仅异常件（NG / ERR）"], ["all", "全部工件"], ["none", "不含原图"]];
 
 export default function DiagnosticsDialog({ from, to, historyIds, title = "导出诊断包", onClose }: {
   from?: number; to?: number; historyIds?: number[]; title?: string; onClose: () => void;

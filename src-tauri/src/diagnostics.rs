@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn image_parts_take_abnormal_newest_first_unless_records_are_named() {
         let parts = [(1, Verdict::Ok), (2, Verdict::NgGap), (3, Verdict::OkWithExcursion), (4, Verdict::ErrInspect), (5, Verdict::NgWidth)];
-        assert_eq!(image_parts(&parts, false, ImageMode::Abnormal, 2), [5, 4]);
+        assert_eq!(image_parts(&parts, false, ImageMode::Abnormal, 20), [5, 4, 2], "局部超差仍是合格件，不算异常件");
         assert_eq!(image_parts(&parts, false, ImageMode::All, 3), [5, 4, 3]);
         assert_eq!(image_parts(&parts[..1], true, ImageMode::Abnormal, 20), [1]);
         assert!(image_parts(&parts, true, ImageMode::None, 20).is_empty());

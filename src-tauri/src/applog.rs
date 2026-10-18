@@ -269,7 +269,8 @@ pub fn emit(level: Level, ev: &str, msg: &str, fields: Fields) -> Record {
 pub struct Query {
     pub from: Option<i64>,
     pub to: Option<i64>,
-    pub levels: Vec<Level>,
+    /// 缺省为不按级别筛选；空数组表示一个级别都没选
+    pub levels: Option<Vec<Level>>,
     pub keyword: Option<String>,
     pub cycle_id: Option<String>,
     pub sn: Option<String>,
@@ -287,10 +288,12 @@ pub struct Page {
 }
 
 impl Query {
+    fn admits(&self, ts: i64, level: Level) -> bool {
+        self.from.is_none_or(|from| ts >= from) && self.to.is_none_or(|to| ts <= to) && self.levels.as_ref().is_none_or(|levels| levels.contains(&level))
+    }
+
     fn accepts(&self, record: &Record) -> bool {
-        self.from.is_none_or(|from| record.ts >= from)
-            && self.to.is_none_or(|to| record.ts <= to)
-            && (self.levels.is_empty() || self.levels.contains(&record.level))
+        self.admits(record.ts, record.level)
             && self.cycle_id.as_deref().filter(|s| !s.is_empty()).is_none_or(|id| record.fields.cycle_id.as_deref() == Some(id))
             && self.sn.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_none_or(|sn| record.fields.sn.as_deref().is_some_and(|v| v.contains(sn)))
             && self.keyword.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_none_or(|word| {
@@ -303,11 +306,64 @@ impl Query {
 
     fn quick_reject(&self, line: &str) -> bool {
         self.cycle_id.as_deref().filter(|s| !s.is_empty()).is_some_and(|id| !line.contains(id))
+            || head(line).is_some_and(|(ts, level)| !self.admits(ts, level))
     }
+}
+
+/// 记录行按 Record 字段顺序以 {"ts":…,"level":"…" 开头，按时间和级别排除时不必整行解析。
+fn head(line: &str) -> Option<(i64, Level)> {
+    let (ts, rest) = line.strip_prefix("{\"ts\":")?.split_once(',')?;
+    let level = match rest.strip_prefix("\"level\":\"")?.split('"').next()? {
+        "debug" => Level::Debug,
+        "info" => Level::Info,
+        "warn" => Level::Warn,
+        "error" => Level::Error,
+        _ => return None,
+    };
+    Some((ts.parse().ok()?, level))
 }
 
 fn local_date(ts: i64) -> Option<NaiveDate> {
     Local.timestamp_millis_opt(ts).single().map(|t| t.date_naive())
+}
+
+const ORDER_SLACK_MS: i64 = 60_000;
+
+struct Span {
+    path: PathBuf,
+    size: u64,
+    start: i64,
+    end: i64,
+}
+
+/// 非旧格式的日志分段，按时间先后。start 取首行时间；end 取最后写入时间（记录的 ts 在写入前取得，不会晚于它），
+/// 正在写入的最新分段不看修改时间，视为未结束。
+fn spans(dir: &Path, keep: impl Fn(NaiveDate) -> bool) -> Vec<Span> {
+    let files: Vec<_> = log_files(dir).into_iter().filter(|(key, ..)| !key.legacy).collect();
+    let newest = files.first().map(|(_, path, _)| path.clone());
+    let mut spans: Vec<_> = files.into_iter().filter(|(key, ..)| keep(key.date)).map(|(_, path, size)| {
+        let end = if newest.as_ref() == Some(&path) { i64::MAX } else { modified_ms(&path).unwrap_or(i64::MAX) };
+        Span { start: first_ts(&path).unwrap_or(i64::MIN), end, path, size }
+    }).collect();
+    spans.reverse();
+    spans
+}
+
+impl Span {
+    fn overlaps(&self, from: Option<i64>, to: Option<i64>) -> bool {
+        from.is_none_or(|from| self.end >= from) && to.is_none_or(|to| self.start.saturating_sub(ORDER_SLACK_MS) <= to)
+    }
+}
+
+fn modified_ms(path: &Path) -> Option<i64> {
+    let modified = fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    i64::try_from(modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis()).ok()
+}
+
+fn first_ts(path: &Path) -> Option<i64> {
+    let mut line = String::new();
+    BufReader::new(File::open(path).ok()?).read_line(&mut line).ok()?;
+    head(&line).map(|(ts, _)| ts)
 }
 
 /// 读取一个日志文件里通过筛选的记录，按写入顺序。损坏的行跳过。
@@ -320,20 +376,20 @@ fn scan(path: &Path, query: &Query, mut visit: impl FnMut(Record)) {
     }
 }
 
-/// 按时间倒序分页查询；只读取覆盖查询时间段的文件。
+/// 按时间倒序分页查询；只读取覆盖查询时间段的分段。
 pub fn query(dir: &Path, query: &Query) -> Page {
     let (from_day, to_day) = (query.from.and_then(local_date), query.to.and_then(local_date));
-    let files: Vec<_> = log_files(dir).into_iter()
-        .filter(|(key, ..)| !key.legacy && from_day.is_none_or(|d| key.date >= d) && to_day.is_none_or(|d| key.date <= d))
-        .collect();
+    let mut files = spans(dir, |date| from_day.is_none_or(|d| date >= d) && to_day.is_none_or(|d| date <= d));
+    files.retain(|span| span.overlaps(query.from, query.to));
+    files.reverse();
     let limit = if query.limit == 0 { 100 } else { query.limit.min(1000) } as usize;
     let skip = query.offset as usize;
     let mut total = 0u64;
     let mut items = Vec::new();
-    let bytes = files.iter().map(|(_, _, size)| size).sum();
-    for (_, path, _) in &files {
+    let bytes = files.iter().map(|span| span.size).sum();
+    for span in &files {
         let mut matched = Vec::new();
-        scan(path, query, |record| matched.push(record));
+        scan(&span.path, query, |record| matched.push(record));
         for record in matched.into_iter().rev() {
             let at = total as usize;
             total += 1;
@@ -352,35 +408,67 @@ pub struct CycleLog {
     pub next_start: Option<i64>,
 }
 
-/// 某件工件的全部关联记录，按时间顺序；只读该件时间附近的日期文件。
-pub fn cycle_records(dir: &Path, cycle_id: &str, around: i64, cap: usize) -> CycleLog {
-    let center = local_date(around);
-    let days: Vec<NaiveDate> = center.map(|d| vec![d - chrono::Duration::days(1), d, d + chrono::Duration::days(1)]).unwrap_or_default();
-    let mut files: Vec<_> = log_files(dir).into_iter().filter(|(key, ..)| !key.legacy && days.contains(&key.date)).collect();
-    files.reverse();
-    let mut records = Vec::new();
-    let (mut ends, mut starts) = (Vec::new(), Vec::new());
-    let mut truncated = false;
-    for (_, path, _) in files {
-        let Ok(file) = File::open(&path) else { continue };
+const CYCLE_BEFORE_MS: i64 = 10 * 60_000;
+const CYCLE_AFTER_MS: i64 = 60 * 60_000;
+
+#[derive(Default)]
+struct CycleScan {
+    records: Vec<Record>,
+    ends: Vec<i64>,
+    starts: Vec<i64>,
+    truncated: bool,
+}
+
+impl CycleScan {
+    fn read(&mut self, path: &Path, cycle_id: &str, cap: usize) {
+        let Ok(file) = File::open(path) else { return };
         for line in BufReader::new(file).lines().map_while(Result::ok) {
             let own = line.contains(cycle_id);
             let start = line.contains("\"stage\":\"partStart\"");
             if !own && !start && !line.contains("\"stage\":\"released\"") && !line.contains("\"stage\":\"reset\"") { continue; }
             let Ok(record) = serde_json::from_str::<Record>(&line) else { continue };
             if record.fields.cycle_id.as_deref() == Some(cycle_id) {
-                if records.len() < cap { records.push(record) } else { truncated = true }
+                if self.records.len() < cap { self.records.push(record) } else { self.truncated = true }
             } else if !own && start {
-                starts.push(record.ts);
+                self.starts.push(record.ts);
             } else if !own {
-                ends.push(record.ts);
+                self.ends.push(record.ts);
             }
         }
     }
+
+    fn previous_end(&self) -> Option<i64> {
+        let first = self.records.iter().map(|r| r.ts).min()?;
+        self.ends.iter().copied().filter(|ts| *ts < first).max()
+    }
+
+    fn next_start(&self) -> Option<i64> {
+        let last = self.records.iter().map(|r| r.ts).max()?;
+        self.starts.iter().copied().filter(|ts| *ts > last).min()
+    }
+}
+
+/// 某件工件的全部关联记录，按时间顺序。只读该件时间前 10 分钟、后 1 小时内有写入的分段；
+/// 前后相邻工件的边界不在其中时，再逐个向更早、更晚的分段找，不超过前后一天。
+pub fn cycle_records(dir: &Path, cycle_id: &str, around: i64, cap: usize) -> CycleLog {
+    let days: Vec<NaiveDate> = local_date(around).map(|d| vec![d - chrono::Duration::days(1), d, d + chrono::Duration::days(1)]).unwrap_or_default();
+    let files = spans(dir, |date| days.contains(&date));
+    let near: Vec<usize> = (0..files.len()).filter(|&i| files[i].overlaps(Some(around - CYCLE_BEFORE_MS), Some(around + CYCLE_AFTER_MS))).collect();
+    let mut scan = CycleScan::default();
+    if let (Some(&lo), Some(&hi)) = (near.first(), near.last()) {
+        for span in &files[lo..=hi] { scan.read(&span.path, cycle_id, cap); }
+        for span in files[..lo].iter().rev() {
+            if scan.records.is_empty() || scan.previous_end().is_some() { break; }
+            scan.read(&span.path, cycle_id, cap);
+        }
+        for span in &files[hi + 1..] {
+            if scan.records.is_empty() || scan.next_start().is_some() { break; }
+            scan.read(&span.path, cycle_id, cap);
+        }
+    }
+    let (previous_end, next_start) = (scan.previous_end(), scan.next_start());
+    let CycleScan { mut records, truncated, .. } = scan;
     records.sort_by_key(|r| r.ts);
-    let (first, last) = (records.first().map(|r| r.ts), records.last().map(|r| r.ts));
-    let previous_end = first.and_then(|first| ends.into_iter().filter(|ts| *ts < first).max());
-    let next_start = last.and_then(|last| starts.into_iter().filter(|ts| *ts > last).min());
     CycleLog { records, truncated, previous_end, next_start }
 }
 
@@ -523,7 +611,7 @@ mod tests {
         assert_eq!(page.items.iter().map(|r| r.ev.as_str()).collect::<Vec<_>>(), ["事件3", "事件1"]);
         let next = query(&dir, &Query { cycle_id: Some("c1".into()), limit: 2, offset: 2, ..Query::default() });
         assert_eq!(next.items.iter().map(|r| r.ev.as_str()).collect::<Vec<_>>(), ["事件0", "partStart↑"]);
-        let errors = query(&dir, &Query { levels: vec![Level::Error, Level::Warn], ..Query::default() });
+        let errors = query(&dir, &Query { levels: Some(vec![Level::Error, Level::Warn]), ..Query::default() });
         assert_eq!(errors.items.iter().map(|r| r.ev.as_str()).collect::<Vec<_>>(), ["事件3", "事件1"]);
         let today = query(&dir, &Query { from: Some(at("2026-10-03", "00:00:00")), keyword: Some("事件".into()), ..Query::default() });
         assert_eq!(today.total, 4);
@@ -532,6 +620,58 @@ mod tests {
         assert!(cycle.truncated);
         assert_eq!(cycle.previous_end, Some(at("2026-10-02", "23:59:57")), "上一件的事务结束是本件 PLC 信号窗口的下界");
         assert_eq!(cycle_records(&dir, "c0", at("2026-10-02", "23:59:50"), 10).next_start, Some(at("2026-10-02", "23:59:58")), "下一件的 partStart 是上界");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn segment(dir: &Path, name: &str, records: &[Record], modified: i64) {
+        let text: String = records.iter().map(|r| serde_json::to_string(r).unwrap() + "\n").collect();
+        fs::write(dir.join(name), text).unwrap();
+        let file = OpenOptions::new().write(true).open(dir.join(name)).unwrap();
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(modified as u64)).unwrap();
+    }
+
+    fn staged(ts: i64, cycle: &str, stage: &str) -> Record {
+        let mut r = record(ts, Level::Info, stage, Some(cycle));
+        r.fields.stage = Some(stage.into());
+        r
+    }
+
+    #[test]
+    fn empty_level_selection_matches_nothing_while_omitted_levels_match_all() {
+        let dir = temp_dir("levels");
+        let ts = at("2026-10-03", "08:00:00");
+        segment(&dir, "gluesight-2026-10-03.jsonl", &[record(ts, Level::Debug, "a", None), record(ts + 1, Level::Error, "b", None)], ts + 1);
+        assert_eq!(query(&dir, &Query { levels: Some(Vec::new()), ..Query::default() }).total, 0);
+        assert_eq!(query(&dir, &Query::default()).total, 2, "诊断导出不传级别，必须拿到全部级别");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn recent_query_skips_segments_last_written_before_from_but_always_reads_the_active_one() {
+        let dir = temp_dir("recent");
+        let (early, late) = (at("2026-10-03", "07:00:00"), at("2026-10-03", "08:30:00"));
+        segment(&dir, "gluesight-2026-10-03.jsonl", &[record(early, Level::Info, "早", None), record(early + 1, Level::Info, "早", None)], early + 1);
+        segment(&dir, "gluesight-2026-10-03.1.jsonl", &[record(late, Level::Info, "近", None)], late);
+        segment(&dir, "gluesight-2026-10-03.2.jsonl", &[record(late + 600_000, Level::Info, "在写", None)], early);
+        let page = query(&dir, &Query { from: Some(at("2026-10-03", "08:00:00")), ..Query::default() });
+        assert_eq!(page.items.iter().map(|r| r.ev.as_str()).collect::<Vec<_>>(), ["在写", "近"]);
+        assert_eq!(page.files, 2, "最后写入早于起点的分段不应再读");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn cycle_boundaries_outside_the_near_segments_are_found_by_walking_outward() {
+        let dir = temp_dir("walk");
+        let t = |hms| at("2026-10-03", hms);
+        segment(&dir, "gluesight-2026-10-03.jsonl", &[staged(t("06:00:00"), "c0", "released")], t("06:00:00"));
+        segment(&dir, "gluesight-2026-10-03.1.jsonl", &[record(t("07:00:00"), Level::Info, "空闲", None)], t("07:00:00"));
+        segment(&dir, "gluesight-2026-10-03.2.jsonl", &[staged(t("08:00:00"), "c1", "partStart"), staged(t("08:00:06"), "c1", "result"),
+            staged(t("08:00:07"), "c1", "released")], t("08:00:07"));
+        segment(&dir, "gluesight-2026-10-03.3.jsonl", &[record(t("10:00:00"), Level::Info, "空闲", None)], t("10:00:00"));
+        segment(&dir, "gluesight-2026-10-03.4.jsonl", &[staged(t("11:00:00"), "c2", "partStart")], t("11:00:00"));
+        let cycle = cycle_records(&dir, "c1", t("08:00:06"), 100);
+        assert_eq!(cycle.records.len(), 3);
+        assert_eq!((cycle.previous_end, cycle.next_start), (Some(t("06:00:00")), Some(t("11:00:00"))));
         fs::remove_dir_all(dir).unwrap();
     }
 

@@ -310,8 +310,11 @@ impl CycleHost {
                     log(&warning_app, "warn", "孤立录制清理失败", errors.join("；"));
                 } else { crate::applog::write("warn", "孤立录制清理失败", &errors.join("；")); }
             });
-            Recorder::guarded(root, Some(Arc::new(move |outcome| {
-                if let Err(error) = record_audit.recording(outcome) { crate::applog::write("err", "录制审计持久化失败", &error); }
+            Recorder::guarded(root, Some(Arc::new(move |outcome: crate::recorder::RecordingOutcome| {
+                let cycle_id = outcome.cycle_id.clone();
+                if let Err(error) = record_audit.recording(outcome) {
+                    applog::emit(applog::Level::Error, "录制审计持久化失败", &error, Fields { cycle_id: Some(cycle_id), ..Fields::default() });
+                }
             })), protection, warning)
         };
         let recorders = Recorders::new(recorder(data.join("records"), HistoryScope::Real),
