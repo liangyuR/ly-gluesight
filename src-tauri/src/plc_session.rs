@@ -328,7 +328,12 @@ impl PlcSession {
     }
 
     pub async fn poll_with_audit(&mut self, engine: &PlcEngine, reset_requested: bool, devices_ready: bool, audit_ready: bool) -> SessionEvent {
-        match self.poll_inner(engine, reset_requested, devices_ready, audit_ready).await {
+        self.poll_gated(engine, reset_requested, devices_ready, audit_ready, true).await
+    }
+
+    /// `intake_ready` 只决定空闲时是否接下一件（如资料盘空间不足）：在途件照常释放、复位照常完成，只是先不置 visionReady。
+    pub async fn poll_gated(&mut self, engine: &PlcEngine, reset_requested: bool, devices_ready: bool, audit_ready: bool, intake_ready: bool) -> SessionEvent {
+        match self.poll_inner(engine, reset_requested, devices_ready, audit_ready, intake_ready).await {
             Ok(event) => event,
             Err(error) => {
                 let changed = self.phase != SessionPhase::Fault || self.message.as_ref() != Some(&error);
@@ -338,7 +343,7 @@ impl PlcSession {
         }
     }
 
-    async fn poll_inner(&mut self, engine: &PlcEngine, reset_requested: bool, devices_ready: bool, audit_ready: bool) -> Result<SessionEvent, String> {
+    async fn poll_inner(&mut self, engine: &PlcEngine, reset_requested: bool, devices_ready: bool, audit_ready: bool, intake_ready: bool) -> Result<SessionEvent, String> {
         let config = engine.config();
         let key = serde_json::to_string(&config).map_err(|e| e.to_string())?;
         if key != self.config_key {
@@ -419,9 +424,11 @@ impl PlcSession {
             self.journal = next;
             let before_ready = Snapshot::capture(engine, self.contract.as_ref().unwrap(), Self::max_age(engine))?;
             baseline.verify(&before_ready)?;
-            self.write(engine, vec![WriteOp { tag: tag::VISION_READY, value: json!(true) }]).await?;
+            if intake_ready {
+                self.write(engine, vec![WriteOp { tag: tag::VISION_READY, value: json!(true) }]).await?;
+            }
             self.phase = SessionPhase::Idle;
-            self.audit_waiting = false;
+            self.audit_waiting = !intake_ready;
             self.message = None;
             self.fault_written = false;
             self.fault_attempted = None;
@@ -435,12 +442,13 @@ impl PlcSession {
         if !devices_ready && !matches!(self.phase, SessionPhase::Idle | SessionPhase::AwaitAck | SessionPhase::Releasing) {
             return Err("检测设备未就绪".into());
         }
-        if self.phase == SessionPhase::Idle && (!audit_ready || self.audit_waiting) {
+        let accepting = audit_ready && intake_ready;
+        if self.phase == SessionPhase::Idle && (!accepting || self.audit_waiting) {
             if [tag::PART_START, tag::PART_END, tag::RESULT_ACK, tag::DONE, tag::BUSY, tag::ARMED, tag::VISION_FAULT]
                 .into_iter().any(|tag| snapshot.read_bool(tag) != Ok(false)) {
-                return Err("等待追溯落盘时空闲握手信号不一致，禁止下一件".into());
+                return Err("暂停接件期间空闲握手信号不一致，禁止下一件".into());
             }
-            if !audit_ready {
+            if !accepting {
                 if !self.audit_waiting || snapshot.read_bool(tag::VISION_READY)? {
                     self.write(engine, vec![WriteOp { tag: tag::VISION_READY, value: json!(false) }]).await?;
                 }
@@ -518,13 +526,14 @@ impl PlcSession {
                         .into_iter().any(|tag| before_ready.read_bool(tag) != Ok(false)) {
                         return Err("释放落盘期间握手信号已改变，禁止提前发出下一件就绪".into());
                     }
-                    // 事务已结束；设备没就绪就先不置就绪，由空闲检查在设备恢复后补上
-                    if devices_ready {
+                    // 事务已结束；设备没就绪或暂停接件时先不置就绪，由空闲检查在恢复后补上
+                    if devices_ready && intake_ready {
                         self.write(engine, vec![WriteOp { tag: tag::VISION_READY, value: json!(true) }]).await?;
-                    } else {
+                    } else if !devices_ready {
                         self.withdrawn = true;
                         self.message = Some(Self::withdrawn_notice());
                     }
+                    self.audit_waiting = !intake_ready;
                     self.phase = SessionPhase::Idle;
                     return Ok(SessionEvent::Released(self.ack_triggers.take()));
                 }
