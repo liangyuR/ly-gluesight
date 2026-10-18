@@ -47,6 +47,14 @@ describe("单帧示教", () => {
     expect(workspaceApi.trial).not.toHaveBeenCalled();
   });
 
+  it("试测结论为局部超差 → 结果栏显示中文结论而不是结论代码", () => {
+    ws.data!.workspace.frames[0].trial!.verdict = "OK_WITH_EXCURSION";
+    show();
+    const result = screen.getByLabelText("本次算法结果");
+    expect(within(result).getByText("OK · 局部超差")).toBeVisible();
+    expect(result).not.toHaveTextContent("OK_WITH_EXCURSION");
+  });
+
   it.each([
     ["配方曝光与增益和采集时相同 → 不提示", 60, 6, false],
     ["配方曝光已改 → 提示采集时的值", 80, 6, true],
