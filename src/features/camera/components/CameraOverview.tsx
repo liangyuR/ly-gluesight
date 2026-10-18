@@ -141,7 +141,7 @@ function SyncPanel({ configs, members, sync, onOpen }: { configs: CameraConfig[]
         <tbody>{configs.map((c, i) => {
           const r = row(i), view = resultView[r.result], misses = sync.misses[i] ?? 0;
           return <tr key={c.id}>
-            <td><span className="cg-who"><span className={"dot" + (r.result === "excluded" ? " off" : "")} style={r.result === "excluded" ? undefined : { background: `var(--camera-${(i % 8) + 1})` }} />{c.name}<span className="mono">{c.id}</span></span></td>
+            <td><span className="cg-who"><span className={"dot" + (r.result === "excluded" ? " off" : "")} style={r.result === "excluded" ? undefined : { background: `var(--cam-${(i % 8) + 1})` }} />{c.name}<span className="mono">{c.id}</span></span></td>
             <td className="num">{count(r.before)}</td>
             <td className="num">{count(r.after)}</td>
             <td className="num">{r.delta == null ? "—" : `+${r.delta}`}</td>

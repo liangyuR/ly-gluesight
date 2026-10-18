@@ -10,10 +10,12 @@ import {plcApi} from "../src/features/plc/api";
 import {useCycle} from "../src/features/cycle/api";
 import type {CaptureRound} from "../src/features/workspace/types";
 import type {CameraConfig} from "../src/features/camera/types";
+import {storageApi} from "../src/lib/storage";
 import {snapshot,workspaceState} from "./fixtures";
 vi.mock("../src/features/workspace/context",()=>({useWorkspace:vi.fn()}));
 vi.mock("../src/features/workspace/api",()=>({workspaceApi:{setCameraImaging:vi.fn(),captureGet:vi.fn(),captureList:vi.fn(),captureStart:vi.fn(),captureStop:vi.fn(),adoptCapture:vi.fn(),captureSample:vi.fn(),captureImage:vi.fn()}}));
-vi.mock("../src/features/camera/api",()=>({cameraApi:{rigStatus:vi.fn()}}));
+vi.mock("../src/features/camera/api",()=>({cameraApi:{rigStatus:vi.fn(),calibInfo:vi.fn(async()=>null)}}));
+vi.mock("../src/lib/storage",()=>({storageApi:{preferences:vi.fn(async()=>({}))}}));
 vi.mock("../src/features/plc/api",()=>({plcApi:{getStatus:vi.fn()}}));
 vi.mock("../src/features/cycle/api",()=>({useCycle:vi.fn(),useSiteStatus:()=>null}));
 let ws:ReturnType<typeof workspaceState>;
@@ -120,4 +122,18 @@ it("PLC 未连接 →开始接收禁用并给出 PLC 通讯入口",async()=>{
  expect(await screen.findByText(/PLC 未连接：整圈采集依赖/)).toBeVisible();
  expect(screen.getByRole("button",{name:"开始接收"})).toBeDisabled();
  expect(screen.getByRole("link",{name:"前往 PLC 通讯"})).toHaveAttribute("href","/plc");
+});
+it("PLC 重连中且后端带连接地址 → 检查卡只显示连接中，不展示重连详情",async()=>{
+ vi.mocked(plcApi.getStatus).mockResolvedValue({state:"connecting",message:"正在连接 S7 192.168.0.10:102 (机架 0 插槽 1)"} as Awaited<ReturnType<typeof plcApi.getStatus>>);show();
+ const checks=within(await screen.findByRole("list",{name:"开始前检查"}));
+ expect(await checks.findByText("连接中")).toBeVisible();
+ expect(screen.queryByText(/192\.168\.0\.10/)).toBeNull();
+ expect(screen.getByRole("button",{name:"开始接收"})).toBeDisabled();
+});
+it("飞拍速度超过按曝光、标定当量、帧率和间距算出的上限 → 检查卡标出超速与最高速度",async()=>{
+ vi.mocked(cameraApi.rigStatus).mockResolvedValue([{id:"CAM-1",cam:0,ready:true,maxFps:50}] as Awaited<ReturnType<typeof cameraApi.rigStatus>>);
+ vi.mocked(cameraApi.calibInfo).mockResolvedValue({mmPerPx:.1});
+ vi.mocked(storageApi.preferences).mockResolvedValue({flyshotSpeedMmS:1000,flyshotSpacingMm:130});show();
+ const checks=within(await screen.findByRole("list",{name:"开始前检查"}));
+ expect(await checks.findByText("超速 · 最高 833 mm/s")).toBeVisible();
 });

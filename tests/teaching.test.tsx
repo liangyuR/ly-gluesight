@@ -41,7 +41,7 @@ describe("单帧示教", () => {
     ws.frameDrafts = { 0: { path: [[10, 10], [30, 10]], mmPerPx: .1 } }; ws.frameDirty = true;
     vi.mocked(workspaceApi.saveParams).mockRejectedValue("候选配置已更新");
     show();
-    await userEvent.click(screen.getByRole("button", { name: "运行一次算法" }));
+    await userEvent.click(screen.getByRole("button", { name: "运行试测" }));
     expect(workspaceApi.saveParams).toHaveBeenCalledWith("A", 7, 0, { path: [[10, 10], [30, 10]], mmPerPx: .1 });
     expect(ws.setError).toHaveBeenCalledWith(expect.stringContaining("保存参数未完成，未进行试测"));
     expect(workspaceApi.trial).not.toHaveBeenCalled();

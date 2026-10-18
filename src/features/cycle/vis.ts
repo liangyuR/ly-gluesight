@@ -12,7 +12,7 @@ export const visColor: Record<PointVis, string> = {
 };
 
 /** 相机在各处的代表色（曲线底部的测量归属）。 */
-export const CAM_COLORS = Array.from({ length: 8 }, (_, i) => `var(--camera-${i + 1})`);
+export const CAM_COLORS = Array.from({ length: 8 }, (_, i) => `var(--cam-${i + 1})`);
 
 /** 拍照点用到的相机编号，按第一次出现的顺序（与 Recipe.cameras() 一致）。 */
 export function shotCameras(shots: Pick<ShotSpec, "camera">[]): string[] {
@@ -38,12 +38,6 @@ export function teachStatus(shot: Pick<ShotSpec, "path" | "mmPerPx" | "skip">) {
   if (!shotTaught(shot)) return "未示教";
   const mm = pathLength(shot.path) * shot.mmPerPx!;
   return `已示教 ${shot.path.length} 点 · ${Number.isFinite(mm) ? mm.toFixed(1) : "—"} mm`;
-}
-
-/** 要检的拍照点里已示教中线的比例（%），与后端 WorkspaceView.coverage 一致。 */
-export function taughtPercent(shots: Pick<ShotSpec, "path" | "mmPerPx" | "skip">[]) {
-  const measured = shots.filter((s) => !s.skip);
-  return measured.length ? (100 * measured.filter(shotTaught).length) / measured.length : 100;
 }
 
 /** 拍照点 k 的段（不检、未示教的拍照点没有）。 */

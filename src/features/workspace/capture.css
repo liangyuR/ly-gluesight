@@ -3,7 +3,7 @@
 .wp-capture-checks > li.bad { border-color:var(--warn-container); background:color-mix(in srgb, var(--warn-container) 45%, var(--surface-mid)); }
 .wp-capture-checks > li > span { display:flex; align-items:center; gap:6px; color:var(--on-surface-variant); font-size:12px; }
 .wp-capture-checks > li.bad > span > svg { color:var(--warn); }
-.wp-capture-checks > li > strong { font-size:14px; font-weight:500; overflow-wrap:anywhere; }
+.wp-capture-checks > li > strong { font-size:14px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .wp-capture-checks > li > a { display:inline-flex; align-items:center; gap:4px; margin-top:auto; color:var(--primary); font-size:12px; text-decoration:none; }
 .wp-capture-checks > li > a:hover { text-decoration:underline; }
 .wp-capture-checks > li > .wp-field { gap:4px; }

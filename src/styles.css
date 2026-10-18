@@ -1,72 +1,5 @@
-/* 青钢：种子色 #0F819E 推导的 M3 tonal 角色；分层靠 surface 明度；语义色独立于主色 */
+/* 令牌来自 qing-steel（src/main.tsx 先引入 qing-steel/tokens.css） */
 :root {
-  --primary: #7fd4f0;
-  --on-primary: #00363f;
-  --primary-container: #004e63;
-  --on-primary-container: #b9ebff;
-  --secondary-container: #344a52;
-  --on-secondary-container: #d2e5ec;
-  --tertiary-container: #5b4315;
-  --on-tertiary-container: #ffe2b8;
-
-  --surface: #0f1417;
-  --surface-lowest: #0a0e11;
-  --surface-low: #171c1f;
-  --surface-mid: #1b2124;
-  --surface-high: #262b2f;
-  --surface-highest: #30363a;
-  --on-surface: #dee3e7;
-  --on-surface-variant: #b3bfc6;
-  --on-surface-disabled: rgba(222, 227, 231, 0.38);
-  --disabled-container: rgba(222, 227, 231, 0.12);
-  --outline: #83909a;
-  --outline-variant: #3a4750;
-  --state-hover: rgba(222, 227, 231, 0.08);
-  --state-pressed: rgba(222, 227, 231, 0.12);
-
-  --ok: #5ee19a;
-  --ok-container: #0b3b25;
-  --on-ok-container: #b5f2cf;
-  --ng: #ff5c5c;
-  --on-ng: #4a0000;
-  --ng-container: #6b1414;
-  --on-ng-container: #ffdad6;
-  --warn: #ffc247;
-  --warn-container: #4a3400;
-  --on-warn-container: #ffe2a8;
-  --fault: #e08cff;
-  --fault-container: #4a1a5e;
-  --on-fault-container: #f5d9ff;
-
-  --camera-1: #7fd4f0;
-  --camera-2: #5fb8e8;
-  --camera-3: #9fc6ff;
-  --camera-4: #b7a8ff;
-  --camera-5: #8fe3e0;
-  --camera-6: #6f9bff;
-  --camera-7: #c9d8ff;
-  --camera-8: #a7e8ff;
-
-  --r-xs: 4px;
-  --r-sm: 8px;
-  --r-md: 12px;
-  --r-lg: 16px;
-  --r-xl: 28px;
-  --r-full: 999px;
-
-  --dur-short: 120ms;
-  --dur-medium: 240ms;
-  --dur-long: 400ms;
-  --ease-spatial: cubic-bezier(0.38, 1.21, 0.22, 1);
-  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
-  --ease-decel: cubic-bezier(0.05, 0.7, 0.1, 1);
-
-  --font-sans: "Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
-  --font-mono: "Cascadia Mono", Consolas, monospace;
-
-  --sidebar-w: 220px;
-  --sidebar-w-collapsed: 88px;
-
   font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.55;
@@ -97,7 +30,7 @@ h1, h3, p { margin: 0; }
   overflow: hidden;
   transition: width var(--dur-medium) var(--ease-standard);
 }
-.sidebar.collapsed { width: var(--sidebar-w-collapsed); }
+.sidebar.collapsed { width: var(--sidebar-w-rail); }
 .sidebar :is(.brand-text, .nav-label, .nav-group-label, .status-text) { transition: opacity var(--dur-short) var(--ease-standard); }
 .sidebar.switching :is(.brand-text, .nav-label, .nav-group-label, .status-text) { opacity: 0; }
 
@@ -157,7 +90,7 @@ h1, h3, p { margin: 0; }
 .nav-label { overflow: hidden; text-overflow: ellipsis; }
 
 .sidebar.collapsed .sidebar-nav { padding: 8px 8px 12px; }
-.sidebar.collapsed .nav-indicator { left: 20px; right: 20px; height: 28px; }
+.sidebar.collapsed .nav-indicator { left: 14px; right: 14px; height: 28px; }
 .sidebar.collapsed .nav-item { flex-direction: column; justify-content: flex-start; gap: 6px; height: 56px; padding: 10px 0 0; border-radius: var(--r-lg); font-size: 11px; }
 .sidebar.collapsed .nav-item:active { transform: none; }
 .sidebar.collapsed .nav-item.active { color: var(--on-surface); }
@@ -184,7 +117,7 @@ h1, h3, p { margin: 0; }
 .sidebar.collapsed .sidebar-footer { padding: 8px 8px 12px; }
 .sidebar.collapsed .status-list { align-items: center; padding: 4px 0; }
 .sidebar.collapsed .sidebar-footer .nav-item.active { background: transparent; }
-.sidebar.collapsed .sidebar-footer .nav-item.active::before { content: ""; position: absolute; z-index: -1; top: 4px; width: 48px; height: 28px; border-radius: var(--r-full); background: var(--primary-container); }
+.sidebar.collapsed .sidebar-footer .nav-item.active::before { content: ""; position: absolute; z-index: -1; top: 4px; width: 44px; height: 28px; border-radius: var(--r-full); background: var(--primary-container); }
 .sidebar-actions { display: flex; justify-content: flex-end; flex-shrink: 0; }
 .sidebar.collapsed .sidebar-actions { justify-content: center; }
 .engine-status { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--on-surface-variant); white-space: nowrap; overflow: hidden; text-decoration: none; border-radius: var(--r-xs); }

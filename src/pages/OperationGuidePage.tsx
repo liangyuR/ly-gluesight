@@ -78,7 +78,7 @@ export default function OperationGuidePage() {
     <div className="guide-toolbar"><div><Link className="guide-text-link" to="/offline">{site.data ? siteModeText(site.data) : unavailable(site)} · 查看站点模式</Link><button className="icon-btn" aria-label="刷新总览状态" disabled={!desktopAvailable()} onClick={() => setRefresh(value => value + 1)}><RefreshCw size={17} /></button></div></div>
     <ReadError state={site} />
     <div className="guide-status-grid">
-      <StatusCard title="采集设备" icon={Camera} status={<Badge tone={cameras.data?.length && ready === cameras.data.length ? "ok" : "neutral"}>{cameraLabel}</Badge>} links={[["相机与采集", "/camera"], ["查看标定", "/camera/calibration"]]}>
+      <StatusCard title="采集设备" icon={Camera} status={<Badge tone={cameras.data?.length && ready === cameras.data.length ? "ok" : "neutral"}>{cameraLabel}</Badge>} links={[["相机", "/camera"], ["查看标定", "/camera/calibration"]]}>
         <div className="guide-camera-list">{cameras.data?.map(camera => <div className="guide-value" key={camera.id}><span>{camera.name}</span><strong>{camera.ready ? "设备就绪" : camera.released ? "已释放" : "未就绪"}</strong></div>)}</div>
         {offline && <p className="muted">当前为离线临时相机组，设备状态仅针对离线采集。</p>}
         <ReadError state={cameras} />

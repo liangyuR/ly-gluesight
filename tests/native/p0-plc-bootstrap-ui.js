@@ -3,7 +3,7 @@ async (page) => {
   const initial = { records: await read("records_list"), cameras: await read("camera_rig_config"), status: await read("plc_get_status"), offline: await read("site_status") };
   if (!initial.records.root.includes("com.xyzrobotics.tujiaovision.p0-tests") || initial.cameras.some(c => c.source !== (initial.offline.mode === "offline" ? "sim" : "mvs")) || (initial.status.state === "connected" && !(initial.offline.mode === "offline"))) throw new Error("Only the isolated offline P0 app may be configured");
   if (!(initial.offline.mode === "offline")) {
-    await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "相机与采集", exact: true }).click();
+    await page.getByRole("navigation", { name: "操作导航" }).getByRole("link", { name: "相机", exact: true }).click();
     await page.getByRole("link", { name: "离线模式", exact: true }).click();
     await page.getByRole("combobox", { name: "离线来源", exact: true }).selectOption("synthetic");
     await page.getByRole("button", { name: "进入离线", exact: true }).click();

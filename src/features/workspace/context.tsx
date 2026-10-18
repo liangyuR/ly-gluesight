@@ -20,7 +20,7 @@ interface WorkspaceContextValue {
   rememberPosition: (k: number, view: number) => void;
   select: (id: string) => Promise<WorkspaceView | null>; clearSelection:()=>void; reloadList: () => Promise<void>;
   setDoc: (doc: RecipeDoc) => void; setFrameDraft: (k: number, teach: ShotTeach) => void;
-  act: (request: () => Promise<WorkspaceView>, message?: string) => Promise<WorkspaceView | null>;
+  act: (request: () => Promise<WorkspaceView>, message?: string | ((next: WorkspaceView) => string)) => Promise<WorkspaceView | null>;
   saveDoc: (doc?: RecipeDoc) => Promise<WorkspaceView | null>;
   saveState: "saved" | "saving" | "failed" | "pending"; retrySave: () => void;
   notice: string; setError: (message: string) => void;
@@ -165,7 +165,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return () => { alive = false; clearTimeout(timer); };
   }, [doc, data?.workspace.doc]);
 
-  const act = useCallback(async (request: () => Promise<WorkspaceView>, message = "") => {
+  const act = useCallback(async (request: () => Promise<WorkspaceView>, message: string | ((next: WorkspaceView) => string) = "") => {
     if (acting.current) return null;
     acting.current = true; setBusy(true); setError(""); setNotice("");
     const originalId = selected.current;
@@ -180,7 +180,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       try { await reloadList(); }
       catch (e) { if (current()) setError(`候选操作已完成，但配方列表刷新失败：${errorText(e)}`); }
       if (!current()) return null;
-      setNotice(message);
+      setNotice(typeof message === "function" ? message(next) : message);
       return next;
     } catch (e) { if (current()) setError(errorText(e)); return null; }
     finally { acting.current = false; setBusy(false); }
