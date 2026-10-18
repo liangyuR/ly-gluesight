@@ -1,0 +1,294 @@
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { copyFile, readFile, rename, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
+import { connect, ensureOffline, LogCollector, parseArgs, RECIPE_ID, sleep, until, writeJson } from "./lib.mjs";
+
+const OK_CLASS = new Set(["OK", "OK_WITH_EXCURSION"]);
+// 这些注入不损坏本件图像与计数，本件判合格是正确结果；其余注入下本件判合格即为“错误的 OK”。
+const MAY_PASS = new Set(["plcDelayMidPart", "plcRejectWriteMidPart", "recordsDirReadOnly"]);
+const run = promisify(execFile);
+// 第 7 个 Pose 的 cam1（配方 k=18，样本 S019）已示教且必测；S020（k=19，cam2）同组未示教。
+const TAUGHT_IMAGE = "S019_cam1_v1.bmp";
+const UNTAUGHT_IMAGE = "S020_cam2_v1.bmp";
+
+function context(session, out) {
+  const { call, manifest } = session;
+  const logs = new LogCollector(call);
+  const latest = async () => (await call("history_query", { query: { recipeId: RECIPE_ID, scope: "offline", limit: 1 } })).items[0] ?? null;
+  const snapshot = () => call("cycle_snapshot");
+  const site = () => call("site_status");
+  const stopLine = async () => {
+    await call("offline_stop", { now: true });
+    await until(site, s => !s.running, "离线产线未停止", 90000, 300);
+  };
+  const start = (scenario = "normal") => call("offline_run", { recipeId: RECIPE_ID, scenario, continuous: false, partId: null });
+  /** 跑一件并等到出记录、产线停止；返回本件记录。 */
+  const runOne = async (scenario = "normal", timeout = 90000) => {
+    const before = await latest();
+    await start(scenario);
+    const record = await until(latest, r => r && r.id !== before?.id, `工况 ${scenario} 未生成检测记录`, timeout, 300);
+    const status = await until(site, s => !s.running, "离线产线未停止", timeout, 300);
+    return { record, message: status.message };
+  };
+  const waitPhase = async phases => until(snapshot, s => phases.includes(s?.phase), `节拍未进入 ${phases.join("/")}`, 30000, 50);
+  /** 故障后恢复：虚拟 PLC 像操作员一样复位，再跑正常件直到合格（最多 3 件），记下每次结果；需要人工补连接时单独记下。 */
+  const recover = async () => {
+    const startedAt = Date.now();
+    const attempts = [];
+    const stuck = (await ensureOffline(call, out)).manualReconnect;
+    if (stuck) {
+      attempts.push({ manualReconnect: "PC 已主动断开 PLC 且未自动重连，经接口补连接" });
+      await call("offline_pace", { pace: { shotIntervalMs: 400, pauseMs: 200 } });
+    }
+    for (;;) {
+      try {
+        const result = await runOne("normal");
+        const detail = await until(() => call("history_detail", { id: result.record.id }), d => d.recording.state !== "pending" && d.summary.delivery.state !== "pending" && d.summary.delivery.state !== "submitted",
+          "恢复件的录制或交付未落定", 30000, 300).catch(() => call("history_detail", { id: result.record.id }));
+        const outcome = { verdict: result.record.verdict, reason: result.record.reason, delivery: detail.summary.delivery.state, recording: detail.recording.state,
+          recordingAvailable: detail.recording.available, message: result.message };
+        attempts.push(outcome);
+        if (OK_CLASS.has(outcome.verdict) || attempts.length >= 3) return { ...outcome, recoverMs: Date.now() - startedAt, manualReconnect: Boolean(stuck), attempts };
+      } catch (error) {
+        attempts.push({ error: error.message });
+        if (attempts.length >= 3) throw new Error(`${error.message}；${JSON.stringify(attempts)}`);
+        await stopLine().catch(() => {});
+        await sleep(3000);
+      }
+    }
+  };
+  const faultView = async () => {
+    const [s, st] = await Promise.all([snapshot(), site()]);
+    return { phase: s?.phase, fault: s?.fault ?? null, alarms: s?.alarms ?? [], handshake: s?.plcHandshake ?? null, siteMessage: st.message };
+  };
+  const sampleDir = async () => path.join((await site()).sampleSet.dir, "parts", "p01");
+  return { call, logs, latest, snapshot, site, stopLine, start, runOne, waitPhase, recover, faultView, sampleDir, manifest };
+}
+
+async function icacls(target, ...args) {
+  await run("icacls", [target, ...args], { windowsHide: true });
+}
+
+async function whoami() {
+  const { stdout } = await run("whoami", [], { windowsHide: true });
+  return stdout.trim();
+}
+
+/** 在途件中途注入：等节拍进入采集再动手，结束后停掉虚拟 PLC。 */
+async function midPart(c, inject, { scenario = "normal", wait = 6000 } = {}) {
+  const before = await c.latest();
+  await c.start(scenario);
+  await c.waitPhase(["ACQUIRE", "DRAIN"]);
+  await inject();
+  const seen = await until(c.faultView, v => v.phase === "FAULT", "注入后未进入故障", wait + 30000, 200).catch(error => ({ timeout: error.message }));
+  await c.stopLine();
+  const record = await until(c.latest, r => r && r.id !== before?.id, "在途件未生成记录", 30000, 300).catch(() => null);
+  return { seen, record: record && { verdict: record.verdict, plcCode: record.plcCode, faultCode: record.faultCode, reason: record.reason, delivery: record.delivery.state } };
+}
+
+const scenarios = {
+  async plcDisconnectIdle(c) {
+    await c.call("offline_inject", { fault: "disconnect" });
+    const seen = await until(c.faultView, v => v.phase === "FAULT", "断线后未进入故障", 15000, 100);
+    await until(() => c.call("plc_get_status"), s => s.state === "connected", "断线后未自动重连", 30000, 200);
+    return { seen };
+  },
+  async plcDisconnectMidPart(c) {
+    return midPart(c, () => c.call("offline_inject", { fault: "disconnect" }));
+  },
+  async plcOutageIdle(c) {
+    await c.call("offline_inject", { fault: "outage", durationMs: 8000 });
+    const seen = await until(c.faultView, v => v.phase === "FAULT", "PLC 停机后未进入故障", 15000, 100);
+    const during = await c.call("plc_get_status");
+    await until(() => c.call("plc_get_status"), s => s.state === "connected", "PLC 恢复后未自动重连", 60000, 300);
+    return { seen, plcDuringOutage: { state: during.state, message: during.message } };
+  },
+  async plcOutageMidPart(c) {
+    return midPart(c, () => c.call("offline_inject", { fault: "outage", durationMs: 8000 }));
+  },
+  async plcDelayMidPart(c) {
+    return midPart(c, () => c.call("offline_inject", { fault: "delay" }));
+  },
+  async plcRejectWriteMidPart(c) {
+    const result = await midPart(c, async () => { await c.call("offline_inject", { fault: "rejectWrite" }); await c.call("offline_inject", { fault: "rejectWrite" }); });
+    await c.call("offline_inject", { fault: "clear" });
+    return result;
+  },
+  async heartbeatLossIdle(c) {
+    await c.call("offline_inject", { fault: "heartbeatStop" });
+    try {
+      return { seen: await until(c.faultView, v => v.phase === "FAULT", "心跳停止后未进入故障", 20000, 200) };
+    } finally { await c.call("offline_inject", { fault: "heartbeatResume" }); }
+  },
+  async heartbeatLossMidPart(c) {
+    try { return await midPart(c, () => c.call("offline_inject", { fault: "heartbeatStop" })); }
+    finally { await c.call("offline_inject", { fault: "heartbeatResume" }); }
+  },
+  async cameraLostFrame(c) {
+    const { record, message } = await c.runOne("lostFrame");
+    return { record: { verdict: record.verdict, plcCode: record.plcCode, faultCode: record.faultCode, reason: record.reason }, message };
+  },
+  async replayMissingTaughtImage(c) {
+    const file = path.join(await c.sampleDir(), TAUGHT_IMAGE);
+    await rename(file, `${file}.hidden`);
+    try {
+      const { record, message } = await c.runOne("normal");
+      return { record: { verdict: record.verdict, plcCode: record.plcCode, faultCode: record.faultCode, reason: record.reason }, message };
+    } finally { await rename(`${file}.hidden`, file); }
+  },
+  async replayMissingUntaughtImage(c) {
+    const file = path.join(await c.sampleDir(), UNTAUGHT_IMAGE);
+    await rename(file, `${file}.hidden`);
+    try {
+      const { record, message } = await c.runOne("normal");
+      return { record: { verdict: record.verdict, plcCode: record.plcCode, faultCode: record.faultCode, reason: record.reason }, message };
+    } finally { await rename(`${file}.hidden`, file); }
+  },
+  async cameraCorruptImage(c) {
+    const file = path.join(await c.sampleDir(), TAUGHT_IMAGE);
+    await copyFile(file, `${file}.orig`);
+    const bytes = await readFile(file);
+    await writeFile(file, bytes.subarray(0, 4096));
+    try {
+      const { record, message } = await c.runOne("normal");
+      return { record: { verdict: record.verdict, plcCode: record.plcCode, faultCode: record.faultCode, reason: record.reason }, message };
+    } finally { await rename(`${file}.orig`, file); }
+  },
+  async lyflowBlankImage(c) {
+    const file = path.join(await c.sampleDir(), TAUGHT_IMAGE);
+    await copyFile(file, `${file}.orig`);
+    const bytes = Buffer.from(await readFile(file));
+    const offset = bytes.readUInt32LE(10);
+    bytes.fill(128, offset);
+    await writeFile(file, bytes);
+    try {
+      const { record, message } = await c.runOne("normal");
+      return { record: { verdict: record.verdict, plcCode: record.plcCode, faultCode: record.faultCode, reason: record.reason }, message };
+    } finally { await rename(`${file}.orig`, file); }
+  },
+  async lyflowNoiseImage(c) {
+    const file = path.join(await c.sampleDir(), TAUGHT_IMAGE);
+    await copyFile(file, `${file}.orig`);
+    const bytes = Buffer.from(await readFile(file));
+    const offset = bytes.readUInt32LE(10);
+    let seed = 12345;
+    for (let i = offset; i < bytes.length; i++) { seed = (seed * 1103515245 + 12345) >>> 0; bytes[i] = seed >>> 24; }
+    await writeFile(file, bytes);
+    try {
+      const { record, message } = await c.runOne("normal");
+      return { record: { verdict: record.verdict, plcCode: record.plcCode, faultCode: record.faultCode, reason: record.reason }, message };
+    } finally { await rename(`${file}.orig`, file); }
+  },
+  async recordsDirReadOnly(c) {
+    const dir = path.join(c.manifest.dataRoot, "records-offline");
+    const user = await whoami();
+    await icacls(dir, "/deny", `${user}:(OI)(CI)(W)`);
+    try {
+      const { record, message } = await c.runOne("normal");
+      const detail = await c.call("history_detail", { id: record.id });
+      const view = await c.faultView();
+      return { record: { verdict: record.verdict, delivery: record.delivery.state, recording: detail.recording.state, errors: detail.recording.errors.slice(0, 3) }, message, after: view };
+    } finally { await icacls(dir, "/remove:d", user); }
+  },
+};
+
+/** 追溯目录不可写会进入只能重启恢复的故障，单独运行，之后由外层脚本重启实例再验证恢复。 */
+const auditScenarios = {
+  async auditSpoolReadOnly(c) {
+    const dir = path.join(c.manifest.dataRoot, "audit-spool");
+    const user = await whoami();
+    await icacls(dir, "/deny", `${user}:(OI)(CI)(W)`);
+    let result;
+    try {
+      const before = await c.latest();
+      await c.start("normal");
+      const seen = await until(c.faultView, v => v.phase === "FAULT", "追溯目录不可写后未进入故障", 60000, 200).catch(error => ({ timeout: error.message }));
+      await c.stopLine();
+      const record = await c.latest();
+      result = { seen, newRecord: record?.id !== before?.id ? { verdict: record.verdict, delivery: record.delivery.state } : null };
+    } finally { await icacls(dir, "/remove:d", user); }
+    await sleep(2000);
+    const afterRestore = await c.faultView();
+    const readiness = await c.call("cycle_readiness");
+    return { ...result, afterRestore, auditReadiness: readiness.items?.find(i => i.key === "audit") ?? null, needsRestart: true };
+  },
+};
+
+const lateScenarios = {
+  async resetWhileInFlight(c) {
+    return midPart(c, () => c.call("cycle_reset"));
+  },
+  async faultResetEdge(c) {
+    await until(c.snapshot, s => s?.phase === "IDLE" && s.plcHandshake?.phase === "idle", "复位沿验证前节拍未回到空闲", 30000, 100);
+    await c.call("offline_fault_reset", { level: true });
+    await c.call("offline_inject", { fault: "disconnect" });
+    await until(() => c.call("plc_get_status"), s => s.state === "connected", "断线后未重连", 30000, 200);
+    await sleep(4000);
+    const heldHigh = await c.faultView();
+    await c.call("offline_fault_reset", { level: false });
+    await sleep(1000);
+    await c.call("offline_fault_reset", { level: true });
+    const afterEdge = await until(c.faultView, v => v.phase === "IDLE", "先低后高的复位沿未让视觉回到就绪", 15000, 200).catch(error => ({ timeout: error.message }));
+    await c.call("offline_fault_reset", { level: false });
+    return { heldHighPhase: heldHigh.phase, heldHigh, afterEdge };
+  },
+};
+
+async function inject(c, name, scenario, recover) {
+  process.stdout.write(`[faults] ${name}\n`);
+  const startedAt = Date.now();
+  let outcome;
+  try { outcome = await scenario(c); } catch (error) { outcome = { error: error.message }; }
+  await c.call("offline_inject", { fault: "clear" }).catch(() => {});
+  await c.call("offline_inject", { fault: "heartbeatResume" }).catch(() => {});
+  await c.call("offline_fault_reset", { level: false }).catch(() => {});
+  await c.stopLine().catch(() => {});
+  let recovery = null;
+  if (recover) {
+    try { recovery = await c.recover(); } catch (error) { recovery = { error: error.message, view: await c.faultView() }; }
+  }
+  await c.logs.poll();
+  const window = c.logs.since(startedAt);
+  const logs = window.filter(l => ["err", "warn", "ng"].includes(l.level)).map(l => `${l.level} ${l.ev}：${l.msg}`).slice(0, 25);
+  const falseOk = Boolean(outcome?.record) && !MAY_PASS.has(name) && OK_CLASS.has(outcome.record.verdict);
+  return { ...outcome, recovery, falseOk, recovered: recovery ? OK_CLASS.has(recovery.verdict) : null, logLines: window.length, logs };
+}
+
+/** 依次注入：每类注入后复位并跑正常件，确认恢复生产。`audit` 组最后单独跑，进入需要重启的故障。 */
+export async function runFaults(session, out, group, only) {
+  const c = context(session, out);
+  const entry = await ensureOffline(c.call, out);
+  await c.call("offline_pace", { pace: { shotIntervalMs: 400, pauseMs: 200 } });
+  if (group === "recover") return { afterRestart: await c.recover() };
+  const results = entry.manualReconnect ? { entryManualReconnect: true } : {};
+  if (group === "run") {
+    results.baseline = await c.recover();
+    assert(OK_CLASS.has(results.baseline.verdict), `故障注入前正常件不是合格：${JSON.stringify(results.baseline)}`);
+  }
+  const selected = group === "audit" ? auditScenarios : { ...scenarios, ...lateScenarios };
+  for (const [name, scenario] of Object.entries(selected)) {
+    if (only && !only.includes(name)) continue;
+    results[name] = await inject(c, name, scenario, group !== "audit");
+  }
+  return results;
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  assert(["run", "audit", "recover"].includes(args.command), "命令为 run、audit 或 recover");
+  const out = path.resolve(args.out ?? "output/soak");
+  const session = await connect(args.cdp ?? "http://[::1]:9347", args.instance ?? "output/playwright/soak-regression/instance.json");
+  try {
+    const results = await runFaults(session, out, args.command, args.only?.split(","));
+    await writeJson(path.join(out, args.file ?? `faults-${args.command}.json`), results);
+    const summary = Object.fromEntries(Object.entries(results).map(([k, v]) => [k, v.error ? `ERROR ${v.error}` : { record: v.record?.verdict, seen: v.seen?.phase, falseOk: v.falseOk, recovered: v.recovered ?? OK_CLASS.has(v.verdict) }]));
+    process.stdout.write(JSON.stringify(summary, null, 1) + "\n");
+    if (Object.values(results).some(v => v.falseOk || v.recovered === false)) process.exitCode = 1;
+  } finally { await session.browser.close(); }
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  main().catch(error => { process.stderr.write(`${error.stack ?? error}\n`); process.exitCode = 1; });
+}

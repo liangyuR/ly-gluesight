@@ -2,7 +2,7 @@ param(
     [ValidateRange(1024, 65535)][int]$DebugPort = 9337,
     [switch]$SkipBuild,
     [switch]$ResetData,
-    [ValidateSet('ui', 'p0', 'flow', 'e2e')][string]$Profile = 'ui'
+    [ValidateSet('ui', 'p0', 'flow', 'e2e', 'soak')][string]$Profile = 'ui'
 )
 
 $ErrorActionPreference = 'Stop'

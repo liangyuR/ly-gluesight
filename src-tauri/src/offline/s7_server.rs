@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -71,6 +71,8 @@ pub enum Fault {
     Delay(Duration),
     HeartbeatStop,
     HeartbeatResume,
+    /// PLC 停机：断开当前连接，并在这段时间内拒绝新连接
+    Outage(Duration),
     Clear,
 }
 
@@ -81,11 +83,16 @@ struct Control {
     delays: AtomicU32,
     delay_ms: AtomicU64,
     heartbeat_stopped: AtomicBool,
+    outage_until: Mutex<Option<Instant>>,
 }
 
 impl Control {
     fn take(counter: &AtomicU32) -> bool {
         counter.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok()
+    }
+
+    fn in_outage(&self) -> bool {
+        self.outage_until.lock().unwrap().is_some_and(|until| Instant::now() < until)
     }
 }
 
@@ -107,6 +114,7 @@ impl S7Server {
         let (accept_memory, accept_control, accept_epoch) = (memory.clone(), control.clone(), epoch.clone());
         tasks.push(tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
+                if accept_control.in_outage() { continue; }
                 let _ = stream.set_nodelay(true);
                 tokio::spawn(serve(stream, accept_memory.clone(), accept_control.clone(), accept_epoch.subscribe()));
             }
@@ -149,8 +157,13 @@ impl S7Server {
             }
             Fault::HeartbeatStop => control.heartbeat_stopped.store(true, Ordering::SeqCst),
             Fault::HeartbeatResume => control.heartbeat_stopped.store(false, Ordering::SeqCst),
+            Fault::Outage(duration) => {
+                *control.outage_until.lock().unwrap() = Some(Instant::now() + duration);
+                self.epoch.send_modify(|epoch| *epoch += 1);
+            }
             Fault::Clear => {
                 for counter in [&control.reject_reads, &control.reject_writes, &control.delays] { counter.store(0, Ordering::SeqCst); }
+                control.outage_until.lock().unwrap().take();
             }
         }
     }

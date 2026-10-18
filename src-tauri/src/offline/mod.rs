@@ -40,7 +40,27 @@ pub enum OfflineFault {
     RejectWrite,
     RejectRead,
     Delay,
+    Outage,
     Clear,
+}
+
+const OUTAGE_DEFAULT: Duration = Duration::from_secs(5);
+const OUTAGE_MAX: Duration = Duration::from_secs(120);
+
+/// 长稳测试加快节拍：覆盖虚拟机器人相邻两次触发的间隔与连续运行时件间停顿，只在本次离线会话内有效。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pace {
+    pub shot_interval_ms: u64,
+    pub pause_ms: u64,
+}
+
+impl Pace {
+    fn validate(self) -> Result<Self, String> {
+        if !(50..=5000).contains(&self.shot_interval_ms) { return Err("触发间隔需在 50–5000 ms 之间".into()); }
+        if self.pause_ms > 10_000 { return Err("件间停顿不能超过 10000 ms".into()); }
+        Ok(self)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -97,6 +117,7 @@ pub struct OfflineHost {
     cursor: AtomicUsize,
     preview_part: Mutex<Option<String>>,
     runs: Mutex<VecDeque<SampleRun>>,
+    pace: Mutex<Option<Pace>>,
 }
 
 impl OfflineHost {
@@ -226,6 +247,7 @@ impl OfflineHost {
         self.last_candidate.lock().unwrap().take();
         self.set_samples(None);
         self.runs.lock().unwrap().clear();
+        self.pace.lock().unwrap().take();
         self.active.lock().unwrap().take()
     }
 }
@@ -578,7 +600,11 @@ pub fn offline_stop(app: AppHandle, offline: State<'_, OfflineHost>, now: bool) 
 }
 
 #[tauri::command]
-pub fn offline_inject(app: AppHandle, offline: State<'_, OfflineHost>, fault: OfflineFault) -> Result<(), String> {
+pub fn offline_inject(app: AppHandle, offline: State<'_, OfflineHost>, fault: OfflineFault, duration_ms: Option<u64>) -> Result<(), String> {
+    let outage = duration_ms.map_or(OUTAGE_DEFAULT, Duration::from_millis);
+    if fault == OfflineFault::Outage && !(Duration::from_millis(100)..=OUTAGE_MAX).contains(&outage) {
+        return Err(format!("PLC 停机时长需在 100–{} ms 之间", OUTAGE_MAX.as_millis()));
+    }
     {
         let active = offline.active.lock().unwrap();
         let active = active.as_ref().ok_or("离线模式未启用")?;
@@ -590,11 +616,33 @@ pub fn offline_inject(app: AppHandle, offline: State<'_, OfflineHost>, fault: Of
             OfflineFault::RejectWrite => Fault::RejectWrite,
             OfflineFault::RejectRead => Fault::RejectRead,
             OfflineFault::Delay => Fault::Delay(Duration::from_millis(delay)),
+            OfflineFault::Outage => Fault::Outage(outage),
             OfflineFault::Clear => Fault::Clear,
         });
     }
-    crate::cycle::log(&app, "warn", "离线故障注入", format!("{fault:?}"));
+    let what = if fault == OfflineFault::Outage { format!("{fault:?} {} ms", outage.as_millis()) } else { format!("{fault:?}") };
+    crate::cycle::log(&app, "warn", "离线故障注入", what);
     let _ = app.emit("site://status", offline.status());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn offline_pace(app: AppHandle, offline: State<'_, OfflineHost>, pace: Option<Pace>) -> Result<(), String> {
+    if !offline.enabled() { return Err("离线模式未启用".into()); }
+    let pace = pace.map(Pace::validate).transpose()?;
+    *offline.pace.lock().unwrap() = pace;
+    let what = pace.map_or("恢复配方节拍".into(), |p| format!("触发间隔 {} ms，件间停顿 {} ms", p.shot_interval_ms, p.pause_ms));
+    crate::cycle::log(&app, "warn", "离线节拍", format!("{what}；下一次运行起生效"));
+    Ok(())
+}
+
+/// 故障注入：离线产线停止时，让虚拟 PLC 保持 faultReset 电平，用来验证视觉只认“先低后高”的复位上升沿。
+#[tauri::command]
+pub fn offline_fault_reset(app: AppHandle, offline: State<'_, OfflineHost>, level: bool) -> Result<(), String> {
+    if offline.running.load(Ordering::SeqCst) { return Err("离线产线运行中，先停止再操作复位信号".into()); }
+    let line = offline.active.lock().unwrap().as_ref().map(|a| a.line.clone()).ok_or("离线模式未启用")?;
+    line.hold_fault_reset(level);
+    crate::cycle::log(&app, "warn", "离线故障注入", format!("虚拟 PLC 保持 faultReset={}", level as u8));
     Ok(())
 }
 
@@ -649,7 +697,9 @@ async fn wait_warmup(app: &AppHandle, recipe: &Recipe) -> bool {
 async fn run(app: AppHandle, line: Arc<Line>, recipe: Arc<Recipe>, order: PartOrder, scenario: Scenario, continuous: bool,
     samples: Option<(Arc<SampleSet>, Vec<String>, Option<String>)>) {
     let offline = app.state::<OfflineHost>();
-    let timing = timing(&app, recipe_interval(&recipe));
+    let pace = *offline.pace.lock().unwrap();
+    let timing = timing(&app, pace.map_or(recipe_interval(&recipe), |p| Duration::from_millis(p.shot_interval_ms)));
+    let pause = pace.map_or(Duration::from_millis(800), |p| Duration::from_millis(p.pause_ms));
     let mut seed = (now_ms() % 997) as u32;
     let (set, sample_shots, mut requested) = samples.map_or((None, Vec::new(), None), |(set, shots, part)| (Some(set), shots, part));
     let groups = match crate::plc_plan::trigger_groups(&recipe) {
@@ -692,7 +742,7 @@ async fn run(app: AppHandle, line: Arc<Line>, recipe: Arc<Recipe>, order: PartOr
                 break;
             }
         }
-        if !offline.continue_after_pause(continuous, Duration::from_millis(800)).await {
+        if !offline.continue_after_pause(continuous, pause).await {
             break;
         }
     }
