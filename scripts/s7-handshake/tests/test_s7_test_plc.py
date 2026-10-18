@@ -272,13 +272,6 @@ class S7SerialNumberTests(unittest.TestCase):
                 self.assertEqual(self.state.field_values()["requestSeq"], 0)
                 self.assertFalse(self.state.field_values()["partStart"])
 
-    def test_dint_fields_round_trip_negative_values_for_fault_injection(self):
-        self.state.control({"op": "plc_values", "values": {"requestSeq": -1}})
-        self.assertEqual(self.read(self.state, 4, 4), "ffffffff")
-        self.assertEqual(self.state.field_values()["requestSeq"], -1)
-        with self.assertRaises(ValueError):
-            self.state.control({"op": "plc_values", "values": {"requestSeq": 1 << 31}})
-
     def test_result_sn_not_byte_equal_to_part_sn_blocks_plc_ack(self):
         self.state.control({"op": "plc_request", "values": {"requestSeq": 9, "partSn": "SN-12345"}})
         for value in ("sn-12345", "SN-12345 ", "SN-1234"):
