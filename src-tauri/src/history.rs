@@ -9,7 +9,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::cycle::CycleHost;
 use crate::judge::{self, Verdict};
 use crate::recipe::{JudgeParams, Recipe};
-use crate::store::{same_measurement_layout, HistoryPage, HistoryQuery, PartDetail, PartSummary, Store, StoredMeasurement};
+use crate::store::{same_measurement_layout, HistoryPage, HistoryQuery, HistoryScope, PartDetail, PartSummary, Store, StoredMeasurement};
 
 pub fn local_midnight_ms() -> i64 {
     let today = Local::now().date_naive().and_hms_opt(0, 0, 0).unwrap();
@@ -32,6 +32,26 @@ pub async fn history_query(app: AppHandle, query: HistoryQuery) -> Result<Histor
 #[tauri::command]
 pub async fn history_detail(app: AppHandle, id: i64) -> Result<PartDetail, String> {
     tauri::async_runtime::spawn_blocking(move || app.state::<Store>().detail(id)).await.map_err(|e| e.to_string())?
+}
+
+#[derive(Serialize)]
+pub struct Neighbors {
+    pub older: Option<i64>,
+    pub newer: Option<i64>,
+}
+
+/// 逐件回看：按历史列表当时的筛选找前后一件；没有筛选时只在本件所属的真机 / 离线 / 调试范围内找。
+#[tauri::command]
+pub async fn history_neighbors(app: AppHandle, id: i64, query: Option<HistoryQuery>) -> Result<Neighbors, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app.state::<Store>();
+        let query = match query {
+            Some(query) => query,
+            None => HistoryQuery { scope: HistoryScope::of(store.detail(id)?.summary.source), ..HistoryQuery::default() },
+        };
+        let (older, newer) = store.neighbors(&query, id)?;
+        Ok(Neighbors { older, newer })
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -238,7 +258,7 @@ fn rejudge_rows(
     Ok(RejudgeResult { total, skipped, limit_hit, matrix, changes, skip_reasons })
 }
 
-fn csv_row(p: &PartSummary) -> String {
+pub(crate) fn csv_row(p: &PartSummary) -> String {
     let esc = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
     let verdict = serde_json::to_value(p.verdict).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
     let delivery = serde_json::to_value(p.delivery.state).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
@@ -267,6 +287,8 @@ fn csv_row(p: &PartSummary) -> String {
     format!("{}\r\n", cells.join(","))
 }
 
+pub(crate) const CSV_HEADER: &str = "\u{feff}时间,来源,SN,配方,版本,配方修订号,模式,结果,PLC 结果码,异常码,原因,收到帧,计划帧,收尾耗时(ms),复检自,cycleId,发布包 ID,PLC 交付状态,PLC 交付更新时间,PLC 交付说明\r\n";
+
 /// 按筛选条件导出 CSV（带 BOM，Excel 可直接打开），返回文件路径。
 #[tauri::command]
 pub async fn history_export(app: AppHandle, query: HistoryQuery) -> Result<String, String> {
@@ -275,7 +297,7 @@ pub async fn history_export(app: AppHandle, query: HistoryQuery) -> Result<Strin
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join(format!("检测记录_{}.csv", Local::now().format("%Y%m%d_%H%M%S")));
         let mut f = std::io::BufWriter::new(std::fs::File::create(&path).map_err(|e| e.to_string())?);
-        write!(f, "\u{feff}时间,来源,SN,配方,版本,配方修订号,模式,结果,PLC 结果码,异常码,原因,收到帧,计划帧,收尾耗时(ms),复检自,cycleId,发布包 ID,PLC 交付状态,PLC 交付更新时间,PLC 交付说明\r\n").map_err(|e| e.to_string())?;
+        f.write_all(CSV_HEADER.as_bytes()).map_err(|e| e.to_string())?;
         let store = app.state::<Store>();
         let mut q = HistoryQuery { limit: 500, offset: 0, ..query };
         loop {

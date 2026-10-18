@@ -1,7 +1,8 @@
 import CandidateDebugControls from "../features/cycle/components/CandidateDebugControls";
 import SelectionTrack from "../components/SelectionTrack";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { RotateCcw } from "lucide-react";
+import "./inspect.css";
 import RuntimeFrame, { usePublishedOverview } from "../features/workspace/RuntimeFrame";
 import { WorkpieceOverview } from "../features/workspace/OverviewPage";
 import Modal from "../features/plc/components/Modal";
@@ -25,6 +26,7 @@ import {
   useRecipes,
   useSiteStatus,
   type Measured,
+  type PartView,
   type Recipe,
   type ResultView,
   type Snapshot,
@@ -32,10 +34,17 @@ import {
 } from "../features/cycle";
 
 function verdictTone(v: Verdict) {
-  return v.startsWith("OK") ? "v-ok" : v === "ERR_INSPECT" ? "v-err" : "v-ng";
+  return v === "OK" ? "ok" : v === "OK_WITH_EXCURSION" ? "warn" : v === "ERR_INSPECT" ? "fault" : "ng";
+}
+
+function verdictParts(v: Verdict) {
+  const [code, detail] = verdictLabel[v].split(" · ");
+  return { code, detail: detail ?? "整件合格" };
 }
 
 const phaseLabels: Record<string, string> = { IDLE: "空闲", VALIDATE: "校验", ACQUIRE: "采集", DRAIN: "收尾", JUDGE: "判定", REPORT: "回写", RELEASE: "释放", FAULT: "故障" };
+
+const meter = (value: number, total: number) => ({ "--v": total > 0 ? Math.min(1, Math.max(0, value / total)) : 0 }) as CSSProperties;
 
 export default function InspectPage() {
   const { snapshot, logs, measured } = useCycle();
@@ -151,15 +160,16 @@ export default function InspectPage() {
   const offlineSample = site?.mode === "offline" && site.source === "sampleSet";
   const activeDebug = snapshot?.candidateDebug;
   const debug = activeDebug ?? part?.candidateDebug ?? result?.candidateDebug;
+  const busy = !!snapshot && phase !== "IDLE" && phase !== "FAULT";
   return (
-    <div className="fly inspect-operator">
-      {debug && <div className="notice" role="status"><strong>候选配方调试结果</strong> · {debug.recipeId} · 修订 {debug.revision} · 未发布，仅用于离线测试，不作为生产验收。</div>}
+    <div className="prod">
+      {debug && <div className="qs-banner tertiary" role="status"><span><strong>候选配方调试结果</strong> · {debug.recipeId} · 修订 {debug.revision} · 未发布，仅用于离线测试，不作为生产验收。</span></div>}
       <CandidateDebugControls site={site} snapshot={snapshot} />
-      <div className="fly-bar inspect-toolbar">
-        <span className="fly-chip">{triggerModeLabel(trigger)}</span>
-        <span className="fly-chip">{site?.mode === "offline" ? "离线" : site ? "真机" : "模式确认中"}</span>
+      <div className="prod-bar">
+        <span className="qs-chip">{triggerModeLabel(trigger)}</span>
+        <span className={`qs-chip${site?.mode === "offline" ? " tertiary" : ""}`}>{site?.mode === "offline" ? "离线" : site ? "真机" : "模式确认中"}</span>
         {!activeDebug && snapshot?.productSource === "manual" ? (
-          <span className="fly-chip">
+          <span className="qs-chip prod-recipe">
             配方
             <select
               id="manual-recipe"
@@ -178,15 +188,15 @@ export default function InspectPage() {
             </select>
           </span>
         ) : (
-          <span className="fly-chip" title="型号由 PLC 下发的产品代码匹配">
+          <span className="qs-chip prod-recipe" title="型号由 PLC 下发的产品代码匹配">
             {debug ? `${debug.recipeId} · 候选修订 ${debug.revision}` : layout ? `${layout.id} · v${layout.version}` : "等待 PLC 下发型号"}
           </span>
         )}
-        <span className="fly-chip">
+        <span className="qs-chip prod-sn">
           SN <b className="mono">{part?.sn || result?.sn || "—"}</b>
         </span>
         <span className="spacer" />
-        <span className="phase-label">{snapshot ? phaseLabels[phase] : "状态确认中"}</span>
+        <span className={`qs-badge prod-phase${phase === "FAULT" ? " fault" : busy ? " run" : ""}`}><span className="dot" />{snapshot ? phaseLabels[phase] : "状态确认中"}</span>
         <button className="btn" onClick={() => setDiagnostics("readiness")}>诊断</button>
         <OfflineControls readiness={readiness} refresh={refreshReadiness} publishedSection={offlineSample} candidateRunning={!!snapshot?.candidateDebug} />
         {phase === "FAULT" && (
@@ -199,62 +209,62 @@ export default function InspectPage() {
           </>
         )}
       </div>
-      {resetError && <div className="notice error" role="alert">{resetError}</div>}
-      {!!snapshot?.measurementWorkers.timedOut && <div className="notice error" role="alert">
+      {resetError && <div className="qs-banner ng" role="alert">{resetError}</div>}
+      {!!snapshot?.measurementWorkers.timedOut && <div className="qs-banner ng" role="alert"><span>
         测量线程超时未返回：{snapshot.measurementWorkers.timedOut} / {snapshot.measurementWorkers.capacity}，当前可用容量 {snapshot.measurementWorkers.availableCapacity}。
         {snapshot.measurementWorkers.timedOut>=snapshot.measurementWorkers.capacity&&"全部测量容量被占用，当前不可布防。"}
-      </div>}
+      </span></div>}
 
       <InspectionReadiness offlineSample={offlineSample} snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} />
 
-      <div className="fly-body">
-        <div className="fly-main">
-            <div className="panel inspect-view" role="region" aria-label="检测主视图">
-              <div className="panel-head">
-                <h3 className="panel-title">检测视图</h3>
-                <ContextHelp label="查看范围说明">选择拍照点或曲线测量点后进入手动查看；返回当前拍照点可恢复跟随。新工件自动恢复跟随，右侧始终保留整件判定。</ContextHelp>
-                <span className="spacer" />
-                {manualView && <><span className="view-mode">手动查看</span><button className="btn small" onClick={resumeFollowing}>返回当前拍照点</button></>}
-                <SelectionTrack className="segmented" activeKey={view} role="group" aria-label="检测视图切换">
-                  <button className={view === "image" ? "active" : ""} aria-pressed={view === "image"} onClick={() => setView("image")}>原图</button>
-                  <button className={view === "part" ? "active" : ""} aria-pressed={view === "part"} onClick={() => setView("part")}>整件布置</button>
-                  <button className={view === "frame" ? "active" : ""} aria-pressed={view === "frame"} onClick={() => setView("frame")}>逐拍照点</button>
-                </SelectionTrack>
-              </div>
-              {view === "image" ? <RuntimeFrame compact onDiagnostics={() => setDiagnostics("capture")} part={ownLayout ? part : null} layout={layout} k={selected} measured={shown} vis={vis}/> :
-                layout ? view === "frame" ? <ShotTiles layout={layout} vis={vis} current={cur} selected={selected} onSelect={selectFrame} selectedPoint={selectedPoint} /> :
-                  <WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={selectFrame} vis={vis}/> : <div className="empty">等待配方</div>}
+      <div className="prod-body">
+        <div className="prod-main">
+          <section className="panel prod-view" role="region" aria-label="检测主视图">
+            <div className="panel-head">
+              <h3 className="panel-title">检测视图</h3>
+              <ContextHelp label="查看范围说明">选择拍照点或曲线测量点后进入手动查看；返回当前拍照点可恢复跟随。新工件自动恢复跟随，右侧始终保留整件判定。</ContextHelp>
+              <span className="spacer" />
+              {manualView && <><span className="view-mode">手动查看</span><button className="btn small" onClick={resumeFollowing}>返回当前拍照点</button></>}
+              <SelectionTrack className="segmented" activeKey={view} role="group" aria-label="检测视图切换">
+                <button className={view === "image" ? "active" : ""} aria-pressed={view === "image"} onClick={() => setView("image")}>原图</button>
+                <button className={view === "part" ? "active" : ""} aria-pressed={view === "part"} onClick={() => setView("part")}>整件布置</button>
+                <button className={view === "frame" ? "active" : ""} aria-pressed={view === "frame"} onClick={() => setView("frame")}>逐拍照点</button>
+              </SelectionTrack>
             </div>
+            {view === "image" ? <RuntimeFrame compact onDiagnostics={() => setDiagnostics("capture")} part={ownLayout ? part : null} layout={layout} k={selected} measured={shown} vis={vis}/> :
+              layout ? view === "frame" ? <ShotTiles layout={layout} vis={vis} current={cur} selected={selected} onSelect={selectFrame} selectedPoint={selectedPoint} /> :
+                <WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={selectFrame} vis={vis}/> : <div className="qs-empty"><b>等待配方</b><small>PLC 下发型号或手动选择配方后显示。</small></div>}
+          </section>
 
-          <div className="panel inspect-shots">
+          <section className="panel prod-shots">
             <div className="panel-head">
               <h3 className="panel-title">拍照点</h3>
-              <ContextHelp label="拍照点匹配说明">拍照点按本件设备内触发顺序匹配；设备原始计数在采集诊断中显示。绿色为合格，黄色为允许范围内的局部超差，红色为 NG 或断胶，灰色为待测。</ContextHelp>
+              <ContextHelp label="拍照点匹配说明">拍照点按本件设备内触发顺序匹配；设备原始计数在采集诊断中显示。绿色为合格，黄色为允许范围内的局部超差，红色为 NG 或断胶，紫色为采集或测量异常，灰色为待测。</ContextHelp>
               <span className="spacer" />
               <span className="muted mono">
                 收到 {part?.received ?? 0} / {layout?.shots.length ?? 0}
               </span>
             </div>
             {layout && <ShotStrip compact layout={layout} part={part} vis={vis} selected={selected} onSelect={selectFrame}/>}
-          </div>
+          </section>
 
-          <div className="panel inspect-curve">
+          <section className="panel prod-curve">
             <div className="panel-head">
               <h3 className="panel-title">{curveQuantity === "d" ? "横向偏移" : "胶宽"} <span className="muted">mm</span></h3>
               <ContextHelp label="曲线读法">横轴按检测段展开，段内为沿示教中线的弧长，段与段之间不连接。绿色带为公差，红虚线为绝对限；点击曲线或用方向键选择测量点，可查看对应原图。横向偏移相对于示教中线。</ContextHelp>
-              <div className="legend"><span><i style={{ background: "var(--ok)" }} />公差带</span><span><i style={{ background: "var(--ng)" }} />绝对限</span></div>
+              <div className="legend"><span><i className="tol" />公差带</span><span><i className="abs" />绝对限</span></div>
               {layout?.segments.some(segment => segment.width) && <div className="segmented"><button aria-pressed={curveQuantity === "d"} className={curveQuantity === "d" ? "active" : ""} onClick={() => setQuantity("d")}>偏移</button><button aria-pressed={curveQuantity === "w"} className={curveQuantity === "w" ? "active" : ""} onClick={() => setQuantity("w")}>胶宽</button></div>}
             </div>
             {layout && <UnrolledCurve compact key={`${selectionScope}:${curveQuantity}`} quantity={curveQuantity} layout={layout} measured={shown} vis={vis} selected={selectedPoint} onSelect={selectPoint} />}
-          </div>
+          </section>
         </div>
 
-        <div className="fly-side">
-          <VerdictCard phase={phase} result={result} sn={part?.sn} />
+        <aside className="prod-side" aria-label="整件结果">
+          <VerdictCard phase={phase} result={result} part={part} />
+          <Stats snapshot={snapshot} />
           <Progress snapshot={snapshot} result={partResult} onDiagnostics={() => setDiagnostics("capture")} />
           <SegmentPanel layout={layout} measured={shown} result={partResult} />
-          <Stats snapshot={snapshot} />
-        </div>
+        </aside>
       </div>
 
       {diagnostics && <InspectionDiagnostics offlineSample={offlineSample} group={diagnostics} onGroup={setDiagnostics} onClose={() => setDiagnostics(null)} snapshot={snapshot} readiness={readiness} readinessError={readinessError} layout={layout} part={ownLayout ? part : null} selected={selected} logs={logs} />}
@@ -279,47 +289,78 @@ export default function InspectPage() {
   );
 }
 
-function VerdictCard({ phase, result, sn }: { phase: string; result: ResultView | null; sn?: string }) {
-  if (!result) {
-    const idle = phase === "IDLE" || phase === "FAULT";
-    return (
-      <div className={`panel fly-verdict ${idle ? "v-empty" : "v-run"}`}>
-        <div className="vl"><span>判定结果</span><span className="mono">PLC —</span></div>
-        <strong>{idle ? "暂无检测结果" : "检测中…"}</strong>
-        {!idle && <div className="vr">SN {sn || "—"}</div>}
-      </div>
-    );
-  }
+function VerdictCard({ phase, result, part }: { phase: string; result: ResultView | null; part: PartView | null }) {
+  const card = useRef<HTMLElement>(null);
+  const running = !result && phase !== "IDLE" && phase !== "FAULT";
+  const stateKey = result ? `${result.cycleId}:${result.ts}` : running ? `run:${part?.cycleId ?? ""}` : "idle";
+  const tone = result ? verdictTone(result.verdict) : running ? "run" : "idle";
+  const initial = useRef(stateKey);
+  const animate = useRef(false);
+  if (initial.current !== stateKey) animate.current = true;
+  const [emphasis, setEmphasis] = useState(false);
+  useEffect(() => {
+    if (animate.current && tone === "ng") setEmphasis(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stateKey]);
+  const parts = result ? verdictParts(result.verdict) : null;
+  const reason = result ? displayReason(result.reason) : "";
   return (
-    <div className={`panel fly-verdict ${verdictTone(result.verdict)}`}>
-      <div className="vl">
-        <span>判定结果 · SN {result.sn}</span>
-        <span className="mono">PLC {result.plcCode}{result.faultCode ? ` / ${result.faultCode}` : ""}</span>
+    <section ref={card} aria-label="整件判定" aria-live="polite"
+      className={`fly-verdict qs-verdict xl ${tone}${animate.current ? " in" : ""}${emphasis ? " emph" : ""}`}
+      onAnimationEnd={event => { if (event.target === card.current) setEmphasis(false); }}>
+      <div className="vh">
+        <span>{result ? `判定结果 · SN ${result.sn}` : "判定结果"}</span>
+        <span className="mono">PLC {result ? `${result.plcCode}${result.faultCode ? ` / ${result.faultCode}` : ""}` : "—"}</span>
       </div>
-      <strong>{verdictLabel[result.verdict]}</strong>
-      <div className="vr">{displayReason(result.reason)}</div>
-    </div>
+      <Fragment key={stateKey}>
+        {result && parts ? <>
+          <div className="big">{parts.code}</div>
+          <div className="t">{parts.detail}</div>
+          <div className="d" title={reason}>{reason}</div>
+        </> : running ? <>
+          <div className="big"><span className="pulse" /></div>
+          <div className="t">检测中…</div>
+          <div className="d">SN {part?.sn || "—"} · 帧 {part ? `${part.received} / ${part.n}` : "—"}</div>
+        </> : <>
+          <div className="big">—</div>
+          <div className="t">暂无检测结果</div>
+          <div className="d">{phase === "FAULT" ? "设备故障，复位后继续接收工件" : "等待工件"}</div>
+        </>}
+      </Fragment>
+    </section>
   );
 }
 
 function Progress({ snapshot, result, onDiagnostics }: { snapshot: Snapshot | null; result: ResultView | null; onDiagnostics: () => void }) {
   const part = snapshot?.part;
-  const pct = part && part.total ? (part.filled / part.total) * 100 : 0;
   return (
-    <div className="panel">
-      <h3 className="panel-title" style={{ marginBottom: 0 }}>本件进度</h3>
-      <div className="kv2">
+    <section className="panel prod-progress" aria-label="本件进度">
+      <div className="panel-head">
+        <h3 className="panel-title">本件进度</h3>
+        <span className="spacer" />
+        <button className="btn small" onClick={onDiagnostics}>采集详情{snapshot?.strayFrames ? ` · 游离帧 ${snapshot.strayFrames}` : ""}</button>
+      </div>
+      <div className="prod-meters">
         <span>帧</span>
+        <div className="qs-progress"><i style={meter(part?.received ?? 0, part?.n ?? 0)} /></div>
         <b>{part ? `${part.received} / ${part.n}` : "—"}</b>
         <span>测量点</span>
+        <div className="qs-progress"><i style={meter(part?.filled ?? 0, part?.total ?? 0)} /></div>
         <b>{part ? `${part.filled} / ${part.total}` : "—"}</b>
-        <div className="bar"><i style={{ width: `${pct}%` }} /></div>
         <span>收尾耗时</span>
+        <span />
         <b>{result?.drainMs != null ? `${result.drainMs} ms` : "—"}</b>
       </div>
-      <button className="btn small" onClick={onDiagnostics}>采集详情{snapshot?.strayFrames ? ` · 游离帧 ${snapshot.strayFrames}` : ""}</button>
-    </div>
+    </section>
   );
+}
+
+function segmentStatus(s: ResultView["segments"][number] | undefined, errored: boolean): [string, string] {
+  if (!s) return errored ? ["不可判", "fault"] : ["—", "none"];
+  if (s.verdict === "OK") return ["OK", "ok"];
+  if (s.verdict === "OK_WITH_EXCURSION") return [`局部超差 ${Math.max(s.excursionLen, s.wExcursionLen ?? 0).toFixed(1)}`, "warn"];
+  if (s.verdict === "ERR_INSPECT") return ["未测成", "fault"];
+  return [verdictParts(s.verdict).detail, "ng"];
 }
 
 function SegmentPanel({ layout, measured, result }: { layout: Recipe | null; measured: Measured[]; result: ResultView | null }) {
@@ -346,52 +387,41 @@ function SegmentPanel({ layout, measured, result }: { layout: Recipe | null; mea
   const errored = result?.verdict === "ERR_INSPECT";
   const width = layout?.segments.some((g) => g.width);
   return (
-    <div className="panel inspect-segments">
+    <section className="panel prod-segments" aria-label="检测段结果">
       <div className="panel-head">
         <h3 className="panel-title">检测段结果</h3>
         <span className="spacer" />
-        <span className="muted" style={{ fontSize: 11 }}>{width ? "偏移 d · 胶宽" : "偏移 d 最小–最大"}</span>
+        <span className="muted prod-segments-unit">{width ? "偏移 d · 胶宽 mm" : "偏移 d 最小–最大 mm"}</span>
       </div>
-      <div className="seg-list">
-        {layout?.segments.map((g, i) => {
-          const s = result?.segments[i];
-          const tone = s ? (s.verdict === "OK" ? "c-ok" : s.verdict === "OK_WITH_EXCURSION" ? "c-warn" : "c-ng") : errored ? "c-err" : "c-mut";
+      {layout?.segments.length ? <ul className="prod-seg-list">
+        {layout.segments.map((g, i) => {
+          const [label, tone] = segmentStatus(result?.segments[i], errored);
           const rg = ranges[i];
           const d = rg && rg.min <= rg.max ? `${rg.min.toFixed(2)}–${rg.max.toFixed(2)}` : "—";
           const w = rg && rg.wmin <= rg.wmax ? ` · ${rg.wmin.toFixed(2)}–${rg.wmax.toFixed(2)}` : "";
           return (
-            <div key={g.name}>
-              <span className={`dot ${tone}`} style={{ background: "currentColor" }} />
-              <span>{g.name}</span>
-              <span className="rng">{d}{w}</span>
-              <span className={`ss ${tone}`}>
-                {s ? (s.verdict === "OK_WITH_EXCURSION" ? `局部超差 ${Math.max(s.excursionLen, s.wExcursionLen ?? 0).toFixed(1)}` : s.verdict) : errored ? "不可判" : "—"}
-              </span>
-            </div>
+            <li key={`${g.name}:${i}`} className={`prod-seg s-${tone}`}>
+              <span className="nm" title={g.name}>{g.name}</span>
+              <span className={`prod-pill s-${tone}`}>{label}</span>
+              <span className="rng mono">{d}{w}</span>
+            </li>
           );
         })}
-      </div>
-    </div>
+      </ul> : <div className="qs-empty"><small>等待配方</small></div>}
+    </section>
   );
 }
 
 function Stats({ snapshot }: { snapshot: Snapshot | null }) {
   const s = snapshot?.stats ?? { total: 0, ok: 0, ng: 0, err: 0 };
-  const items: [string, string | number, string][] = [
-    [snapshot?.statsScope === "debug" ? "今日调试" : "今日", s.total, ""],
-    ["OK", s.ok, "c-ok"],
-    ["NG", s.ng, "c-ng"],
-    ["ERR", s.err, "c-err"],
-    [snapshot?.statsScope === "debug" ? "调试符合率" : "良率", s.total ? `${((s.ok / s.total) * 100).toFixed(1)}%` : "--", ""],
-  ];
+  const debug = snapshot?.statsScope === "debug";
   return (
-    <div className="stats5">
-      {items.map(([label, value, tone]) => (
-        <div key={label}>
-          <span>{label}</span>
-          <b className={tone}>{value}</b>
-        </div>
-      ))}
-    </div>
+    <section className="qs-stats prod-stats" aria-label={debug ? "今日调试统计" : "今日统计"}>
+      <div className="qs-stat wide"><small>{debug ? "今日调试" : "今日"}</small><b>{s.total}</b></div>
+      <div className="qs-stat wide"><small>{debug ? "调试符合率" : "良率"}</small><b>{s.total ? <>{((s.ok / s.total) * 100).toFixed(1)}<small>%</small></> : "--"}</b></div>
+      <div className="qs-stat ok"><small>OK</small><b>{s.ok}</b></div>
+      <div className="qs-stat ng"><small>NG</small><b>{s.ng}</b></div>
+      <div className="qs-stat fault"><small>ERR</small><b>{s.err}</b></div>
+    </section>
   );
 }
