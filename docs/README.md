@@ -18,6 +18,7 @@
 - [测试记录与复现](testing/TESTING.md)：测试命令、覆盖范围、历史验证记录和当前边界。
 - [UI 覆盖边界](testing/UI_OPERATIONS.md)：当前主流程覆盖及未覆盖范围。
 - [操作逻辑修复记录](testing/UX_FIXES_2026-10-09.md)。
+- [算法评测报告](testing/algorithm-evaluation.md)：实拍 36 张的稳定性、合成缺陷检出、耗时与剩余风险；取舍见 [算法决策记录](decisions/algorithm.md)。
 
 ## 部署（[deployment/](deployment)）
 
