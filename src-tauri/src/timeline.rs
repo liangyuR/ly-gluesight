@@ -102,14 +102,14 @@ pub async fn history_timeline(app: AppHandle, id: i64) -> Result<Timeline, Strin
     tauri::async_runtime::spawn_blocking(move || {
         let detail = app.state::<Store>().detail(id)?;
         let cycle_id = detail.summary.cycle_id.clone().ok_or("记录没有 cycleId，无法关联运行日志")?;
-        let (records, truncated) = applog::cycle_records(&applog::dir(&app)?, &cycle_id, detail.summary.ts, RECORD_CAP);
+        let applog::CycleLog { records, truncated, previous_end, next_start } = applog::cycle_records(&applog::dir(&app)?, &cycle_id, detail.summary.ts, RECORD_CAP);
         let mut notes = Vec::new();
         if records.is_empty() {
             notes.push("没有找到本件的运行日志：日志可能已按保留策略清理，或记录早于结构化日志".to_string());
         }
         if truncated { notes.push(format!("本件运行日志超过 {RECORD_CAP} 条，只显示前 {RECORD_CAP} 条")); }
-        let from = records.first().map_or(detail.summary.ts - 120_000, |r| r.ts) - PLC_MARGIN_MS;
-        let to = records.last().map_or(detail.summary.ts, |r| r.ts.max(detail.summary.ts)) + PLC_MARGIN_MS;
+        let from = (records.first().map_or(detail.summary.ts - 120_000, |r| r.ts) - PLC_MARGIN_MS).max(previous_end.map_or(i64::MIN, |end| end + 1));
+        let to = (records.last().map_or(detail.summary.ts, |r| r.ts.max(detail.summary.ts)) + PLC_MARGIN_MS).min(next_start.map_or(i64::MAX, |start| start - 1));
         let plc = match plc_entries(&app, from, to) {
             Ok((entries, plc_truncated)) => {
                 if plc_truncated { notes.push(format!("该时段 PLC 日志超过 {PLC_CAP} 条，只显示最近 {PLC_CAP} 条")); }

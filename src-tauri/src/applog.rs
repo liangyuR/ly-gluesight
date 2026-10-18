@@ -343,20 +343,45 @@ pub fn query(dir: &Path, query: &Query) -> Page {
     Page { total, items, files: files.len(), bytes }
 }
 
+pub struct CycleLog {
+    pub records: Vec<Record>,
+    pub truncated: bool,
+    /// 本件第一条记录之前，最近一次 S7 事务结束或复位的时间（上一件或示教采集的收尾）
+    pub previous_end: Option<i64>,
+    /// 本件最后一条记录之后，下一件 partStart 的时间
+    pub next_start: Option<i64>,
+}
+
 /// 某件工件的全部关联记录，按时间顺序；只读该件时间附近的日期文件。
-pub fn cycle_records(dir: &Path, cycle_id: &str, around: i64, cap: usize) -> (Vec<Record>, bool) {
+pub fn cycle_records(dir: &Path, cycle_id: &str, around: i64, cap: usize) -> CycleLog {
     let center = local_date(around);
     let days: Vec<NaiveDate> = center.map(|d| vec![d - chrono::Duration::days(1), d, d + chrono::Duration::days(1)]).unwrap_or_default();
-    let query = Query { cycle_id: Some(cycle_id.into()), ..Query::default() };
     let mut files: Vec<_> = log_files(dir).into_iter().filter(|(key, ..)| !key.legacy && days.contains(&key.date)).collect();
     files.reverse();
     let mut records = Vec::new();
+    let (mut ends, mut starts) = (Vec::new(), Vec::new());
     let mut truncated = false;
     for (_, path, _) in files {
-        scan(&path, &query, |record| if records.len() < cap { records.push(record) } else { truncated = true });
+        let Ok(file) = File::open(&path) else { continue };
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            let own = line.contains(cycle_id);
+            let start = line.contains("\"stage\":\"partStart\"");
+            if !own && !start && !line.contains("\"stage\":\"released\"") && !line.contains("\"stage\":\"reset\"") { continue; }
+            let Ok(record) = serde_json::from_str::<Record>(&line) else { continue };
+            if record.fields.cycle_id.as_deref() == Some(cycle_id) {
+                if records.len() < cap { records.push(record) } else { truncated = true }
+            } else if !own && start {
+                starts.push(record.ts);
+            } else if !own {
+                ends.push(record.ts);
+            }
+        }
     }
     records.sort_by_key(|r| r.ts);
-    (records, truncated)
+    let (first, last) = (records.first().map(|r| r.ts), records.last().map(|r| r.ts));
+    let previous_end = first.and_then(|first| ends.into_iter().filter(|ts| *ts < first).max());
+    let next_start = last.and_then(|last| starts.into_iter().filter(|ts| *ts > last).min());
+    CycleLog { records, truncated, previous_end, next_start }
 }
 
 /// 覆盖时间段的日志文件，按时间先后。
@@ -478,10 +503,17 @@ mod tests {
     }
 
     #[test]
-    fn query_pages_newest_first_across_segments_with_cycle_level_and_keyword_filters() {
+    fn query_pages_newest_first_and_cycle_records_report_previous_release() {
         let dir = temp_dir("query");
         let mut sink = Sink::open(dir.clone(), day("2026-10-02"), Limits { segment_bytes: 150, ..ROOMY });
-        sink.write(&record(at("2026-10-02", "23:59:58"), Level::Info, "partStart↑", Some("c1")));
+        for ts in [at("2026-10-02", "23:59:50"), at("2026-10-02", "23:59:57")] {
+            let mut released = record(ts, Level::Info, "S7 事务结束", Some("c0"));
+            released.fields.stage = Some("released".into());
+            sink.write(&released);
+        }
+        let mut start = record(at("2026-10-02", "23:59:58"), Level::Info, "partStart↑", Some("c1"));
+        start.fields.stage = Some("partStart".into());
+        sink.write(&start);
         for (i, (level, cycle)) in [(Level::Debug, "c1"), (Level::Error, "c1"), (Level::Info, "c2"), (Level::Warn, "c1")].into_iter().enumerate() {
             sink.write(&record(at("2026-10-03", "08:00:00") + i as i64, level, &format!("事件{i}"), Some(cycle)));
         }
@@ -495,9 +527,11 @@ mod tests {
         assert_eq!(errors.items.iter().map(|r| r.ev.as_str()).collect::<Vec<_>>(), ["事件3", "事件1"]);
         let today = query(&dir, &Query { from: Some(at("2026-10-03", "00:00:00")), keyword: Some("事件".into()), ..Query::default() });
         assert_eq!(today.total, 4);
-        let (cycle, truncated) = cycle_records(&dir, "c1", at("2026-10-03", "08:00:00"), 3);
-        assert_eq!(cycle.iter().map(|r| r.ev.as_str()).collect::<Vec<_>>(), ["partStart↑", "事件0", "事件1"]);
-        assert!(truncated);
+        let cycle = cycle_records(&dir, "c1", at("2026-10-03", "08:00:00"), 3);
+        assert_eq!(cycle.records.iter().map(|r| r.ev.as_str()).collect::<Vec<_>>(), ["partStart↑", "事件0", "事件1"]);
+        assert!(cycle.truncated);
+        assert_eq!(cycle.previous_end, Some(at("2026-10-02", "23:59:57")), "上一件的事务结束是本件 PLC 信号窗口的下界");
+        assert_eq!(cycle_records(&dir, "c0", at("2026-10-02", "23:59:50"), 10).next_start, Some(at("2026-10-02", "23:59:58")), "下一件的 partStart 是上界");
         fs::remove_dir_all(dir).unwrap();
     }
 

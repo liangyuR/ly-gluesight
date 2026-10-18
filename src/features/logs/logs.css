@@ -21,3 +21,5 @@
 .timeline-table { max-height: 420px; overflow: auto; }
 .timeline-mark td { font-weight: 600; }
 .timeline-selected td { background: var(--state-hover); }
+.app-log-table td.msg { min-width: 360px; }
+.log-msg { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }

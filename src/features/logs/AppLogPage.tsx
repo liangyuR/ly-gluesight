@@ -142,7 +142,7 @@ export default function AppLogPage() {
         </div>
       </div>
       <div className="table-wrap">
-        <table className="table log-table" aria-label="运行日志">
+        <table className="table log-table app-log-table" aria-label="运行日志">
           <thead><tr><th>时间</th><th>级别</th><th>事件</th><th>工件</th><th>拍照点</th><th>内容</th></tr></thead>
           <tbody>
             {!current?.items.length && <tr><td colSpan={6} className="muted center">{loading ? "加载中…" : "所选条件下暂无日志"}</td></tr>}
@@ -152,7 +152,7 @@ export default function AppLogPage() {
               <td className="nowrap">{r.ev}</td>
               <td className="nowrap"><Cycle record={r} onFilter={setCycle} /></td>
               <td className="nowrap mono">{r.k != null ? `k${r.k + 1}` : ""}{r.shotId ? ` · ${r.shotId}` : ""}{r.camera ? ` · ${r.camera}` : ""}</td>
-              <td className="msg">{r.msg}{r.data != null && <details className="log-data"><summary>结构化字段</summary><pre className="mono">{JSON.stringify(r.data, null, 2)}</pre></details>}</td>
+              <td className="msg"><span className="log-msg" title={r.msg}>{r.msg}</span>{r.data != null && <details className="log-data"><summary>结构化字段</summary><pre className="mono">{JSON.stringify(r.data, null, 2)}</pre></details>}</td>
             </tr>)}
           </tbody>
         </table>

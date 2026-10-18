@@ -54,7 +54,7 @@ export default function CycleTimeline({ historyId, cycleId, ts, selected, onSele
         <span className="spacer" /><span className="muted">{rows.length} / {timeline.entries.length} 条</span>
       </div>
       <div className="table-wrap timeline-table">
-        <table className="table log-table" aria-label="本件事件">
+        <table className="table log-table app-log-table" aria-label="本件事件">
           <thead><tr><th>相对</th><th>时间</th><th>来源</th><th>级别</th><th>事件</th><th>拍照点</th><th>内容</th></tr></thead>
           <tbody>{rows.map((e, i) => <tr key={i} className={(e.stage && stageTone[e.stage] ? "timeline-mark " : "") + (e.level === "error" ? "log-row-error" : "") + (e.k != null && e.k === selected ? " timeline-selected" : "")}>
             <td className="mono nowrap">{relative(e.ts - start)}</td>
@@ -63,7 +63,7 @@ export default function CycleTimeline({ historyId, cycleId, ts, selected, onSele
             <td><span className={`badge level-${e.level}`}>{levelText[e.level]}</span></td>
             <td className="nowrap">{e.ev}</td>
             <td className="nowrap">{e.k != null ? <button className="link mono" aria-label={`查看拍照点 k${e.k + 1}`} onClick={() => onSelectShot(e.k!)}>k{e.k + 1}{e.shotId ? " · " + e.shotId : ""}</button> : ""}</td>
-            <td className="msg">{e.msg}</td>
+            <td className="msg"><span className="log-msg" title={e.msg}>{e.msg}</span></td>
           </tr>)}{!rows.length && <tr><td colSpan={7} className="muted center">没有符合条件的事件</td></tr>}</tbody>
         </table>
       </div>
