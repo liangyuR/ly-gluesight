@@ -33,7 +33,7 @@
 
 ## 开发启动
 
-`pnpm dev` 就是 `tauri dev`，不恢复、不复制运行库。首次开发或锁定系列变化后先准备运行库：
+`pnpm dev` 通过 `scripts/Start-Dev.ps1` 启动 `tauri dev`，透传启动参数与退出码，不恢复、不复制运行库。Windows 下每次启动都会重新读取用户级 `GLUESIGHT_LYFLOW_RUNTIME`，覆盖继承的进程值；用户级配置为空时清除继承的残留值。首次开发或锁定系列变化后先准备运行库：
 
 ```powershell
 pnpm deps:lyflow:dev   # 恢复运行库，清空后完整复制到 src-tauri/target/debug/runtime/lyflow/
@@ -52,7 +52,9 @@ pnpm deps:lyflow:local -Clear   # 清除用户级配置
 
 命令检查目录中的 `lyflow_core.dll` 后，将绝对路径保存到当前 Windows 用户的 `GLUESIGHT_LYFLOW_RUNTIME` 环境变量。目录应保留完整的依赖 DLL；配置命令不编译、不复制、不加载运行库。无效目录不会覆盖已有配置。
 
-设置或清除后重开终端或 IDE，再启动 `pnpm dev`；子进程不能修改已打开终端的环境。该配置影响当前用户新启动的所有 GlueSight 开发实例，不写入仓库；正式构建忽略此变量。已有进程级覆盖或 `dev:joint -LyFlowRuntime` 的显式目录优先。未设置其他覆盖时，清除后恢复默认运行库目录。若要恢复正式运行库，可先执行 `pnpm deps:lyflow:dev`。
+设置或清除后直接重新运行 `pnpm dev`，无需重开终端或 IDE；已运行的 GlueSight 仍需重启。该命令以保存的用户级配置为准，不使用旧终端的进程级覆盖；配置目录缺少 `lyflow_core.dll` 时直接报错，不退回默认运行库。清除后下一次 `pnpm dev` 恢复默认运行库目录。若要准备正式运行库，可先执行 `pnpm deps:lyflow:dev`。
+
+该配置不写入仓库，作用于当前 Windows 用户；正式构建忽略此变量。需要临时指定其他目录时，使用 `pnpm dev:joint -LyFlowRuntime <目录>`，其显式目录仍优先。直接运行 `pnpm tauri dev` 或可执行文件不会经过自动刷新入口。
 
 指向编译输出目录后，每次关闭 GlueSight、重新编译 LyFlow、再启动 GlueSight 即可使用新 DLL。指向复制出的快照目录则固定使用该快照。
 

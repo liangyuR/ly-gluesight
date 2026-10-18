@@ -30,6 +30,9 @@
 | `pnpm build` | 生产前端构建 |
 | `cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib` | 默认后端回归，依赖需已缓存 |
 | `pwsh -NoProfile -File tests/packaging/Test-RuntimeBundle.ps1` | 打包版本、ABI、源码修订及运行库依赖契约 |
+| `pwsh -NoProfile -File scripts/Test-DevStartup.ps1` | Windows 旧终端在设置/清除本地运行库后启动，子进程读取最新保存值，参数与退出码保持不变 |
+
+`Test-DevStartup.ps1` 临时修改用户级 `GLUESIGHT_LYFLOW_RUNTIME`，在 `finally` 中恢复原值；验证期间不要并行修改该配置或启动 GlueSight。测试通过临时 CLI 进程观察启动环境，不启动实际 GUI，不修改配方。
 
 单文件前端测试示例：`pnpm exec vitest run tests/teaching.test.tsx`。默认测试不生成覆盖率报告。生产桌面测试已构建时可加 `-SkipBuild`，端口冲突可传 `-DebugPort 9349`。
 
