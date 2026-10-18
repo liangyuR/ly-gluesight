@@ -56,6 +56,8 @@ export default function CameraOverview({ configs, statuses, lastFrame, members, 
   </>;
 }
 
+const cardClickIgnored = "button, a, input, select, label, .cg-card-sub, .mono, .cg-stat b";
+
 function CameraCard({ index, config, status, frame, now, lagging, locked, canReconnect, onOpen, onReconnect }: { index: number; config: CameraConfig; status: CameraStatus | null; frame: Frame | undefined; now: number; lagging: boolean; locked: boolean; canReconnect: boolean; onOpen: () => void; onReconnect: () => Promise<string> }) {
   const health = cameraHealth(config, status);
   const scope = JSON.stringify([config.id, config.source, config.serial, config.viewCount]);
@@ -67,7 +69,7 @@ function CameraCard({ index, config, status, frame, now, lagging, locked, canRec
     try { await onReconnect(); } catch (e) { setError(String(e)); } finally { setBusy(false); }
   };
   const head = <div className="cg-card-head"><strong>{config.name}</strong><span className="mono">{config.id}</span>{lagging && health.tone === "ok" ? <span className="cg-badge warn"><AlertTriangle size={12} />触发落后</span> : <StateBadge {...health} />}</div>;
-  const openFromCard = (event: MouseEvent<HTMLElement>) => { if (!(event.target as Element).closest("button, a, input, select, label")) onOpen(); };
+  const openFromCard = (event: MouseEvent<HTMLElement>) => { if (!window.getSelection()?.toString() && !(event.target as Element).closest(cardClickIgnored)) onOpen(); };
   const detail = <button className="cg-link" onClick={onOpen}>{locked ? <><Lock size={12} />只读查看</> : health.label === "未绑定" ? "进入详情选择设备" : "参数详情"}<ChevronRight size={14} /></button>;
   if (health.label === "未绑定") return <article className="cg-card clickable" style={cameraColor(index)} aria-label={`${config.name} ${config.id}`} onClick={openFromCard}>
     {head}

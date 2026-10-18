@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -131,5 +131,24 @@ describe("相机组总览", () => {
     const card = await screen.findByRole("article", { name: "右相机 cam2" });
     await userEvent.click(within(card).getByText("帧计数"));
     expect(await switcher().findByRole("button", { name: "右相机 cam2" })).toHaveAttribute("aria-current", "true");
+  });
+
+  it.each([
+    ["双击设备序列号选词", async (card: HTMLElement) => { await userEvent.dblClick(within(card).getByText("cam2-SN")); }],
+    ["拖选相机名称后松开", async (card: HTMLElement) => {
+      const name = within(card).getByText("右相机");
+      const range = document.createRange();
+      range.selectNodeContents(name);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+      fireEvent.click(name);
+    }],
+  ])("%s → 停留在总览，不进入详情", async (_, select) => {
+    renderPage();
+    const card = await screen.findByRole("article", { name: "右相机 cam2" });
+    await select(card);
+    expect(screen.getByRole("article", { name: "右相机 cam2" })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "切换相机" })).not.toBeInTheDocument();
+    window.getSelection()!.removeAllRanges();
   });
 });

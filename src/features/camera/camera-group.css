@@ -27,6 +27,7 @@
 .cg-card.clickable { cursor: pointer; }
 .cg-card.clickable::after { content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--on-surface); opacity: 0; pointer-events: none; transition: opacity var(--dur-short) var(--ease-standard); }
 .cg-card.clickable:hover::after { opacity: .04; }
+.cg-card.clickable :is(.cg-card-sub, .mono, .cg-stat b) { cursor: text; }
 .cg-card::before { content: ""; position: absolute; left: 0; top: 18px; bottom: 18px; width: 3px; border-radius: 0 3px 3px 0; background: var(--cam-color, var(--cam-1)); }
 .cg-card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .cg-card-head strong { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
