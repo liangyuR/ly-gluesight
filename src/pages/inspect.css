@@ -20,7 +20,7 @@
 .prod .inspection-readiness > p { margin: 0; font-size: 12px; }
 .prod .inspection-readiness > p.muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prod .readiness-embedded .readiness-list { flex-direction: row; flex-wrap: nowrap; gap: 4px 20px; margin: 0; overflow: hidden; }
-.prod :is(.device-blocked, .device-fault) .readiness-embedded .readiness-list { flex-wrap: wrap; }
+.prod .readiness-expanded .readiness-embedded .readiness-list { flex-wrap: wrap; }
 .prod .readiness-embedded .readiness-item { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0; background: transparent; white-space: nowrap; }
 .prod .readiness-embedded .readiness-item.r-waiting .readiness-state { color: var(--warn); }
 .prod .readiness-embedded .readiness-item.r-blocked .readiness-state { color: var(--ng); }

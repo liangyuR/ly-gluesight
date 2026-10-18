@@ -24,6 +24,11 @@ export default function InspectionReadiness({ snapshot, readiness, status: loadS
   const unavailable = loadStatus === "loading" || !readiness;
   const nextAbnormal = failed || (!!readiness && (!readiness.ready || blocked > 0 || waiting));
   const readyCount = readiness?.items.filter(item => item.state === "ok").length ?? 0;
+  const pending = readiness?.items.filter(item => item.state !== "ok") ?? [];
+  const expanded = faulted || blocked > 0;
+  const inline = onDiagnostics && !expanded ? pending.slice(0, 1) : null;
+  const hidden = inline ? pending.length - inline.length : 0;
+  const entry = [hidden > 0 && `另有 ${hidden} 项未就绪`, readyCount > 0 && `已就绪 ${readyCount} 项`, alarms.length > 0 && `诊断详情 ${alarms.length} 条`].filter(Boolean).join(" · ");
   const status = faulted ? "fault" : busy ? "busy" : failed ? "waiting" : !snapshot || unavailable ? "unknown" : blocked > 0 ? "blocked" : waiting ? "waiting" : readiness?.ready ? "ready" : "blocked";
   const label = status === "unknown" ? "正在确认设备状态"
     : status === "busy" ? nextAbnormal ? "本件检测中／下一件条件异常" : "本件检测中"
@@ -33,7 +38,7 @@ export default function InspectionReadiness({ snapshot, readiness, status: loadS
     : blocked > 0 ? `${offlineSample ? "离线设备异常" : "无法开工"} · ${blocked} 项阻塞`
     : faulted ? offlineSample ? "离线设备故障" : "无法开工 · 设备故障" : "暂未就绪";
 
-  return <section className={`panel inspection-readiness device-${status}`} aria-label="设备状态">
+  return <section className={`panel inspection-readiness device-${status}${expanded ? " readiness-expanded" : ""}`} aria-label="设备状态">
     <div className="readiness-summary">
       <h2 className="panel-title">设备状态</h2>
       <strong className="readiness-summary-state">{label}</strong>
@@ -44,10 +49,8 @@ export default function InspectionReadiness({ snapshot, readiness, status: loadS
       {busy || faulted ? "开工条件更新失败；" : ""}{readiness ? "下列条件为上次报告，仅供参考" : "暂时无法确认开工条件"}
       {error && <details><summary>查看更新错误</summary><p>{error}</p></details>}
     </div>}
-    {readiness && <ReadinessChecklist readiness={readiness} embedded includeReady={!onDiagnostics} />}
-    {onDiagnostics && (readyCount > 0 || alarms.length > 0) && <button className="readiness-diagnostics-entry" onClick={onDiagnostics}>
-      {readyCount > 0 && `已就绪 ${readyCount} 项`}{readyCount > 0 && alarms.length > 0 && " · "}{alarms.length > 0 && `诊断详情 ${alarms.length} 条`}
-    </button>}
+    {readiness && <ReadinessChecklist readiness={inline ? { ...readiness, items: inline } : readiness} embedded includeReady={!onDiagnostics} />}
+    {onDiagnostics && entry && <button className="readiness-diagnostics-entry" onClick={onDiagnostics}>{entry}</button>}
     {!onDiagnostics && alarms.length > 0 && <details className="readiness-details readiness-diagnostics">
       <summary>诊断详情（{alarms.length}）</summary>
       <ul className="readiness-alarm-list">{alarms.map(alarm => <li key={alarm}>{alarm}</li>)}</ul>
