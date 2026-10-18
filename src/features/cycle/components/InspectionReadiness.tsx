@@ -24,7 +24,7 @@ export default function InspectionReadiness({ snapshot, readiness, status: loadS
   const unavailable = loadStatus === "loading" || !readiness;
   const nextAbnormal = failed || (!!readiness && (!readiness.ready || blocked > 0 || waiting));
   const readyCount = readiness?.items.filter(item => item.state === "ok").length ?? 0;
-  const status = faulted ? "blocked" : busy ? "busy" : failed ? "waiting" : !snapshot || unavailable ? "unknown" : blocked > 0 ? "blocked" : waiting ? "waiting" : readiness?.ready ? "ready" : "blocked";
+  const status = faulted ? "fault" : busy ? "busy" : failed ? "waiting" : !snapshot || unavailable ? "unknown" : blocked > 0 ? "blocked" : waiting ? "waiting" : readiness?.ready ? "ready" : "blocked";
   const label = status === "unknown" ? "正在确认设备状态"
     : status === "busy" ? nextAbnormal ? "本件检测中／下一件条件异常" : "本件检测中"
     : failed && !faulted ? offlineSample ? "离线设备状态更新失败" : "开工条件更新失败"

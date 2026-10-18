@@ -73,20 +73,6 @@
 .site-managed span { color: inherit; opacity: 0.8; }
 .site-managed a { margin-left: 6px; color: var(--primary); }
 
-/* 实时检测（飞拍） */
-.fly { display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 640px; }
-.fly-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.fly-chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border-radius: var(--r-full); background: var(--surface-low); font-size: 13px; white-space: nowrap; }
-.fly-chip .input { height: 24px; border: none; background: transparent; padding: 0 2px; }
-.alarm-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: var(--r-md); background: var(--ng-container); color: var(--on-ng-container); font-size: 13px; }
-.alarm-bar.warn { background: var(--warn-container); color: var(--on-warn-container); }
-.fly-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 12px; }
-.fly-main { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(460px, 1fr) 128px 190px; gap: 12px; min-height: 0; }
-.fly-side { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto minmax(120px, 1fr); gap: 12px; min-height: 0; }
-.fly-side > .panel:not(:last-child) { min-height: auto; }
-.fly .panel { display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; padding: 12px 14px; }
-.fly .panel-toolbar { margin-bottom: 0; }
-.fly .wp-runtime-frame .wp-panel-head { margin-bottom: 0; flex-shrink: 0; }
 .wp-runtime-frame .wp-viewport { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .wp-runtime-frame .wp-gray-image { flex: 1; min-height: 0; height: 0; }
 .wp-runtime-frame .wp-image-empty { flex: 1; min-height: 0; padding: 12px; }
@@ -101,36 +87,9 @@
 .panel-head .legend + .spacer { display: none; }
 .legend i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
 
-.fly-verdict { gap: 4px !important; }
-.fly-verdict .vl { display: flex; justify-content: space-between; font-size: 12px; color: var(--on-surface-variant); }
-.fly-verdict strong { font: 600 26px/1.2 var(--font-mono); color: var(--on-surface-variant); }
-.fly-verdict .vr { min-height: 36px; font-size: 12.5px; color: var(--on-surface); }
-.fly-verdict { transition: background-color var(--dur-medium) var(--ease-standard), color var(--dur-medium) var(--ease-standard); }
-.fly-verdict.v-ok { background: var(--ok-container); color: var(--on-ok-container); }
-.fly-verdict.v-ok :is(.vl, .vr) { color: inherit; }
-.fly-verdict.v-ok strong { color: var(--ok); }
-.fly-verdict.v-ng { background: var(--ng); color: var(--on-ng); }
-.fly-verdict.v-ng :is(.vl, .vr) { color: inherit; }
-.fly-verdict.v-ng strong { color: var(--on-ng); }
-.fly-verdict.v-err { background: var(--fault-container); color: var(--on-fault-container); }
-.fly-verdict.v-err :is(.vl, .vr) { color: inherit; }
-.fly-verdict.v-err strong { color: var(--fault); }
-.fly-verdict.v-run strong { color: var(--primary); font-size: 20px; }
-.fly-verdict.v-empty strong { font-size: 20px; }
-
 .kv2 { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; font-size: 12.5px; }
 .kv2 span { color: var(--on-surface-variant); }
 .kv2 b { font: 500 12.5px var(--font-mono); text-align: right; }
-.bar { grid-column: 1 / -1; height: 4px; border-radius: var(--r-full); background: var(--surface-high); overflow: hidden; }
-.bar i { display: block; height: 100%; border-radius: inherit; background: var(--primary); transition: width var(--dur-medium) var(--ease-decel); }
-
-.seg-list { display: grid; font-size: 12.5px; }
-.seg-list div { display: grid; grid-template-columns: 12px auto minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 3px 0; border-bottom: 1px solid var(--outline-variant); }
-.seg-list div > span:nth-child(2) { white-space: nowrap; }
-.seg-list div:last-child { border-bottom: none; }
-.seg-list .dot { width: 8px; height: 8px; }
-.seg-list .rng { font: 11px var(--font-mono); color: var(--on-surface-variant); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.seg-list .ss { font: 11px var(--font-mono); text-align: right; }
 
 .event-log { flex: 1; min-height: 0; overflow: auto; font: 11.5px/1.6 var(--font-mono); color: var(--on-surface); }
 .event-log div { padding-left: 1.2em; text-indent: -1.2em; }
@@ -141,14 +100,6 @@
 .event-log .l-ok .ev { color: var(--ok); }
 .event-log .l-warn .ev { color: var(--warn); }
 
-.stats5 { display: grid; grid-template-columns: repeat(5, 1fr); text-align: center; padding-top: 8px; border-top: 1px solid var(--outline-variant); }
-.stats5 span { display: block; font-size: 11px; color: var(--on-surface-variant); }
-.stats5 b { font: 600 15px var(--font-mono); }
-
-.inspect-view > .panel-head { flex-shrink: 0; }
-.fly .inspect-view > .wp-runtime-frame { flex: 1; padding: 0; border: 0; background: transparent; }
-.inspect-view > .wp-overview { flex: 1; min-height: 0; height: 100%; }
-.inspect-view .wp-runtime-strip { gap: 24px; }
 .shot { cursor: pointer; font: inherit; color: inherit; text-align: left; min-width: 110px; }
 .shot.selected { outline: 2px solid var(--primary); outline-offset: -2px; }
 .shot-strip { overflow-x: auto; padding: 2px; }
@@ -183,64 +134,9 @@ button.shot-tile { cursor: pointer; }
 .readiness-hint { font-size: 12px; }
 .readiness-item a, .offline-guide a, .offline-msg a, .notice a { color: var(--primary); margin-left: 6px; white-space: nowrap; }
 .offline-guide { font-size: 12.5px; color: var(--warn); }
-.reset-note { font-size: 12px; max-width: 360px; }
-.inspect-operator { min-height: 580px; gap: 8px; }
-.app-shell:has(.inspect-operator) .sidebar-brand, .app-shell:has(.inspect-operator) .sidebar-footer { flex-shrink: 0; }
-.app-shell:has(.inspect-operator) .sidebar-nav { min-height: 0; overflow-y: auto; }
-.inspect-operator .fly-body { grid-template-columns: minmax(0, 1fr) 280px; gap: 8px; }
-.inspect-operator .fly-main { grid-template-rows: minmax(240px, 1fr) 96px clamp(156px, 20vh, 210px); gap: 8px; }
-.inspect-operator .fly-side { grid-template-rows: auto auto minmax(100px, 1fr) auto; gap: 8px; }
-.inspect-operator .panel { padding: 8px 10px; gap: 6px; }
-.inspect-toolbar { flex-shrink: 0; gap: 8px; }
-.inspect-toolbar .phase-label { color: var(--on-surface-variant); font-size: 13px; }
-.inspect-toolbar .fly-chip { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
-.inspect-operator .inspection-readiness { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; }
-.inspect-operator .readiness-summary { gap: 10px; }
-.inspect-operator .readiness-summary-state { font-size: 16px; }
-.inspect-operator .readiness-fault, .inspect-operator .readiness-refresh-error, .inspect-operator .readiness-embedded { grid-column: 1 / -1; }
-.inspect-operator .readiness-embedded:empty { display: none; }
 .readiness-diagnostics-entry { grid-column: 2; grid-row: 1; border: 0; background: transparent; color: var(--primary); cursor: pointer; font: inherit; font-size: 12px; padding: 4px; }
-.inspect-operator .readiness-list { gap: 3px; }
-.inspect-operator .readiness-item { padding: 3px 0; border: 0 !important; background: transparent !important; }
-.inspect-operator .readiness-detail { display: block; }
-.readiness-item-help { display: inline-block; margin-left: 8px; font-size: 12px; }
-.readiness-item-help summary { cursor: pointer; color: var(--primary); }
-.readiness-item-help[open] { display: block; margin-left: 0; }
 .readiness-refresh-error { font-size: 12px; color: var(--warn); }
 .readiness-refresh-error p { overflow-wrap: anywhere; }
-.inspect-operator .wp-runtime-frame.compact { display: flex; flex-direction: column; min-height: 0; gap: 4px; }
-.inspect-operator .wp-runtime-frame .wp-viewport { min-height: 110px; }
-.inspect-operator .wp-runtime-frame .wp-image-tools { min-height: 32px; padding: 2px 8px; gap: 8px; flex-wrap: wrap; }
-.inspect-operator .wp-runtime-frame .wp-image-tools > span { overflow-wrap: anywhere; }
-.inspect-operator .wp-runtime-strip { gap: 10px; }
-.inspect-operator .wp-runtime-strip .wp-kv { flex-direction: row; align-items: center; justify-content: flex-start; gap: 8px; padding: 2px 0; border: 0; font-size: 12px; }
-.inspect-operator .wp-runtime-strip .wp-kv strong { font-size: 12px; }
-.runtime-view-attention { align-self: flex-start; color: var(--warn); }
-.inspect-operator .wp-runtime-frame > .c-err { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
-.view-mode { color: var(--primary); font-size: 12px; }
-.inspect-operator .shot-strip { position: relative; overflow-x: auto; overflow-y: hidden; gap: 6px; }
-.inspect-operator .shot-head { font-size: 12px; min-width: 0; }
-.inspect-operator .shot-head b { flex: 1; }
-.inspect-operator .shot-head > span { flex-shrink: 0; white-space: nowrap; }
-.inspect-operator .shot-foot { display: none; }
-.inspect-operator .shot { position: relative; }
-.inspect-operator .shot-attention { position: absolute; right: 4px; bottom: 2px; padding: 1px 6px; border-radius: var(--r-full); background: var(--surface-low); color: var(--warn); font-size: 11px; }
-.inspect-operator .inspect-curve .legend { flex: 1; }
-.inspect-operator .fly-verdict .vr { min-height: 0; overflow-wrap: anywhere; }
-.inspect-operator .fly-verdict strong { font-size: 24px; }
-.inspect-operator .fly-verdict.v-empty strong { font-size: 18px; }
-.inspect-segments { align-self: start; max-height: 100%; }
-.inspect-segments .seg-list { min-height: 0; overflow: auto; }
-.inspect-segments .seg-list > div { grid-template-columns: 12px minmax(0, 1fr) auto; gap: 2px 8px; }
-.inspect-segments .seg-list > div > span:nth-child(2) { white-space: normal; overflow-wrap: anywhere; }
-.inspect-segments .seg-list .rng { grid-column: 2 / 4; grid-row: 2; white-space: normal; overflow-wrap: anywhere; text-align: left; }
-.inspect-segments .seg-list .ss { grid-column: 3; grid-row: 1; }
-.inspect-operator .stats5 { margin: 0; padding: 8px; border: 0; border-radius: var(--r-md); background: var(--surface-mid); }
-.inspect-operator .stats5 > div { display: flex; align-items: center; justify-content: center; gap: 4px; }
-.inspect-operator .stats5 span, .inspect-operator .stats5 b { white-space: nowrap; }
-.inspect-operator .stats5 b { font-size: 12px; }
-.modal-mask.inspection-drawer { display: flex; justify-content: flex-end; }
-.inspection-drawer .modal { height: 100%; max-height: 100%; border-radius: 0; max-width: 100vw !important; }
 .inspection-drawer .modal-body { display: flex; flex-direction: column; gap: 16px; }
 .diagnostic-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
 .diagnostic-content { overflow-wrap: anywhere; }
@@ -255,24 +151,14 @@ button.shot-tile { cursor: pointer; }
 .diagnostic-content .event-log { max-height: none; overflow: visible; white-space: normal; }
 .diagnostic-alarms { padding-left: 18px; }
 .diagnostic-alarms li + li { margin-top: 8px; }
-@media (max-width: 1100px) {
-  .inspect-operator .fly-body { grid-template-columns: minmax(0, 1fr) 245px; }
-  .inspect-operator .wp-runtime-strip { display: grid; grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width: 760px) {
-  .inspect-operator { height: auto; }
-  .inspect-operator .fly-body { grid-template-columns: minmax(0, 1fr); }
-  .inspect-operator .fly-main { grid-template-rows: minmax(360px, 1fr) 100px 190px; }
-  .inspect-operator .fly-side { grid-template-rows: auto; }
-  .inspect-operator .inspection-readiness { grid-template-columns: minmax(0, 1fr); }
-  .readiness-diagnostics-entry { grid-column: 1; grid-row: auto; justify-self: start; }
-}
 .inspection-readiness { flex-shrink: 0; }
 .readiness-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; }
 .readiness-summary .panel-title { margin: 0; color: var(--on-surface-variant); font-size: 13px; }
 .readiness-summary-state { font-size: 18px; font-weight: 600; }
 .device-blocked { border-left: 3px solid var(--ng); }
 .device-blocked .readiness-summary-state { color: var(--ng); }
+.device-fault { border-left: 3px solid var(--fault); }
+.device-fault .readiness-summary-state { color: var(--fault); }
 .device-ready .readiness-summary-state { color: var(--ok); }
 .device-busy .readiness-summary-state { color: var(--primary); }
 .device-unknown .readiness-summary-state, .device-waiting .readiness-summary-state { color: var(--warn); }
@@ -289,14 +175,7 @@ button.shot-tile { cursor: pointer; }
 .readiness-details > summary:focus-visible, .readiness-diagnostics > summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
 .readiness-alarm-list { margin: 6px 0 0; padding-left: 20px; color: var(--warn); overflow-wrap: anywhere; }
 .readiness-alarm-list li + li { margin-top: 4px; }
-@media (max-width: 1100px) {
-  .fly-body { grid-template-columns: minmax(0, 1fr) 260px; }
-  .inspect-view > .panel-head .legend { flex-basis: 100%; order: 1; }
-  .inspect-view .wp-runtime-strip { gap: 10px; }
-}
 @media (max-width: 760px) {
-  .fly-body { grid-template-columns: minmax(0, 1fr); }
-  .fly-main { grid-template-rows: minmax(460px, 1fr) 128px 190px; }
   .readiness-embedded .readiness-item { grid-template-columns: 40px minmax(0, 1fr); }
   .readiness-embedded .readiness-detail, .readiness-embedded .readiness-item > a { grid-column: 2; }
 }
