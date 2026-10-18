@@ -2,6 +2,9 @@ import { errorText } from "../../lib/errors";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { cameraApi } from "../camera/api";
+import { flyshotSpeedLimits } from "../camera/flyshot";
+import type { CameraStatus } from "../camera/types";
+import { storageApi } from "../../lib/storage";
 import { plcApi } from "../plc/api";
 import { linkStateLabels } from "../plc/meta";
 import type { LinkState } from "../plc/types";
@@ -48,7 +51,8 @@ export default function CapturePage() {
   const location = useLocation();
   const captureReturn = (location.state as CaptureNavigationState | null)?.captureReturn;
   const validation = search.get("purpose") === "validation";
-  const [excluded,setExcluded] = useState<string[]>([]), [readyIds,setReadyIds] = useState<string[]>([]);
+  const [excluded,setExcluded] = useState<string[]>([]), [rig,setRig] = useState<CameraStatus[]>([]);
+  const [flyPrefs,setFlyPrefs] = useState<{speed: number | null; spacing: number | null}>({speed:null,spacing:null}), [calib,setCalib] = useState<Record<string,number | null>>({});
   const [drain,setDrain] = useState(1500);
   const [round,setRound] = useState<CaptureRound | null>(null), [working,setWorking] = useState(false);
   const [history,setHistory] = useState<Awaited<ReturnType<typeof workspaceApi.captureList>>>([]);
@@ -67,13 +71,20 @@ export default function CapturePage() {
       if(pending) return; pending=true;
       try {
         const [r,status,devices,rounds] = await Promise.all([workspaceApi.captureGet(roundId),plcApi.getStatus(),cameraApi.rigStatus(),doc ? workspaceApi.captureList(doc.id) : Promise.resolve([])]);
-        if(alive) { setHistory(rounds); setRound(r?.recipeId === doc?.id ? r : null); setPlcState(status.state); setReadyIds(devices.filter(d=>d.ready).map(d=>d.id)); }
+        if(alive) { setHistory(rounds); setRound(r?.recipeId === doc?.id ? r : null); setPlcState(status.state); setRig(devices); }
       } catch(e) { if(alive) setError(errorText(e)); } finally { pending=false; }
     };
     void refresh(); const timer=setInterval(() => void refresh(),700);
     return () => {alive=false;clearInterval(timer);};
   },[doc?.id,setError,roundId]);
   useEffect(() => { setConfirmed(false); },[round?.roundId,validation]);
+  useEffect(() => { let alive=true; void storageApi.preferences().then(p=>{ if(alive) setFlyPrefs({speed:p.flyshotSpeedMmS ?? null,spacing:p.flyshotSpacingMm ?? null}); }).catch(()=>{}); return () => {alive=false;}; },[]);
+  const rigCams = JSON.stringify(rig.map(d=>[d.id,d.cam]));
+  useEffect(() => {
+    let alive=true;
+    for(const [id,cam] of JSON.parse(rigCams) as [string,number][]) void cameraApi.calibInfo(cam,1).then(info=>{ if(alive) setCalib(c=>({...c,[id]:info?.mmPerPx ?? null})); }).catch(()=>{});
+    return () => {alive=false;};
+  },[rigCams]);
   useEffect(() => {
     const restored = captureReturn?.recipeId === doc?.id ? captureReturn : undefined;
     setRoundId(restored?.roundId); setPreviewK(restored?.previewK ?? 0); setWorking(false);
@@ -104,6 +115,7 @@ export default function CapturePage() {
   const captureState = {captureReturn:{recipeId:doc.id,search:location.search,cameraIds:chosen,excludedCameraIds:excluded,drain,roundId,previewK}};
   const navigationState: CaptureNavigationState = {...captureState, returnTo:{pathname:location.pathname,search:location.search,label:validation ? "独立样本采集" : "整圈采集",state:captureState}};
   const nameOf = (id: string) => cameras.find(c=>c.id===id)?.name ?? id;
+  const readyIds = rig.filter(d=>d.ready).map(d=>d.id);
   const notReady = chosen.filter(id=>!readyIds.includes(id));
   const plcConnected = plcState === "connected", plc = plcState ? linkStateLabels[plcState] : "读取中";
   const startBlocked = !plcConnected ? `PLC ${plcState === "connecting" ? "连接中" : "未连接"}：整圈采集依赖 PLC 的开始 / 结束信号与触发计数。` : !chosen.length ? "请至少选择一台采集相机。" : notReady.length ? `采集相机未就绪：${notReady.map(nameOf).join("、")}。` : productionBusy ? "当前工件结束后才能占用设备采集。" : "";
@@ -145,6 +157,9 @@ export default function CapturePage() {
   const toggleCamera=(id: string, on: boolean) => setExcluded(x=>on ? x.filter(c=>c!==id) : [...x.filter(c=>c!==id),id]);
   const startDisabled=locked || active || !!startBlocked || !chosen.length || !Number.isFinite(drain) || drain<200 || drain>30000;
   const drainInvalid = !Number.isFinite(drain) || drain<200 || drain>30000;
+  const speedLimits = chosen.map(id => { const mm = offlineSampleSet?.mmPerPx ?? calib[id], fps = rig.find(d=>d.id===id)?.maxFps, exposure = imagingOf(id).exposureUs; return mm && fps && exposure && flyPrefs.spacing ? flyshotSpeedLimits({exposure,mmPerPx:mm,fps,spacing:flyPrefs.spacing}).max : null; });
+  const maxSpeed = chosen.length && speedLimits.every(v=>v != null && Number.isFinite(v)) ? Math.floor(Math.min(...speedLimits as number[])) : null;
+  const tooFast = maxSpeed != null && flyPrefs.speed != null && flyPrefs.speed > maxSpeed;
   const cameraProblem = !cameras.length ? "尚未配置" : !chosen.length ? "未选择相机" : notReady.length ? `${notReady.length} 台未就绪` : "";
   const imagingProblem = chosen.some(id=>!!imagingInvalid(imagingOf(id)) || !!applyErrors[id]);
   const pendingChecks = [!!cameraProblem, !plcConnected, drainInvalid].filter(Boolean).length;
@@ -153,7 +168,7 @@ export default function CapturePage() {
     <ul className="wp-capture-checks" aria-label="开始前检查">
       <li className={cameraProblem ? "bad" : ""}><span><Camera size={14} aria-hidden="true"/>相机</span><strong>{cameraProblem || `${chosen.length} 台就绪`}</strong><Link to="/camera" state={navigationState}>配置设备<ArrowRight size={12} aria-hidden="true"/></Link></li>
       <li className={plcConnected ? "" : "bad"}><span><Cable size={14} aria-hidden="true"/>PLC</span><strong>{plc}</strong><Link to="/plc" state={navigationState}>{plcConnected ? "PLC 通讯" : "前往 PLC 通讯"}<ArrowRight size={12} aria-hidden="true"/></Link></li>
-      <li><span><Crosshair size={14} aria-hidden="true"/>飞拍标定</span><strong>按需检查</strong><Link to="/camera/calibration" state={navigationState}>飞拍标定<ArrowRight size={12} aria-hidden="true"/></Link></li>
+      <li className={tooFast ? "bad" : ""} title={maxSpeed == null ? "需要标定当量、相机帧率、曝光与飞拍最小拍照点间距后核算" : tooFast ? `当前速度 ${flyPrefs.speed} mm/s 超出允许值` : undefined}><span><Crosshair size={14} aria-hidden="true"/>飞拍</span><strong>{maxSpeed == null ? "未核算" : `${tooFast ? "超速 · " : ""}最高 ${maxSpeed} mm/s`}</strong><Link to="/camera/calibration" state={navigationState}>飞拍标定<ArrowRight size={12} aria-hidden="true"/></Link></li>
       <li className={drainInvalid ? "bad" : ""}><NumberField label="在途图像等待时间" value={drain} min={200} max={30000} unit="ms" onChange={setDrain} disabled={locked || active}/></li>
     </ul>
     <div className="wp-capture-start">

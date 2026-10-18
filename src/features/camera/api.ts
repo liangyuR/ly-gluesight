@@ -44,6 +44,7 @@ function decodePreview(buf: ArrayBuffer): PreviewImage | null {
 export const cameraApi = {
   rigStatus: () => call<CameraStatus[]>("camera_rig_status", undefined, () => []),
   rigConfig: () => call<CameraConfig[]>("camera_rig_config", undefined, () => []),
+  calibInfo: (cam: number, view: number) => call<{ mmPerPx: number | null } | null>("vision_calib_info", { cam, view }, () => null),
   saveConfig: (cam: number, config: CameraConfig) => call<string[]>("camera_save_config", { cam, config }, () => []),
   add: (config: CameraConfig) => call<number>("camera_add", { config }, () => 0),
   remove: (cam: number) => call<void>("camera_remove", { cam }, () => undefined),

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { storageApi, type StoragePreferences } from "../../../lib/storage";
 import { errorText } from "../../../lib/errors";
+import { flyshotSpeedLimits } from "../flyshot";
 
 interface Inputs {
   speed: number;
@@ -84,9 +85,7 @@ export default function FeasibilityCalc({ sources: given = {}, imageSize }: { so
   const frameMs = v.fps ? 1000 / v.fps : 0;
   const triggerMs = v.speed ? (v.spacing / v.speed) * 1000 : 0;
   const overlap = v.fov - v.spacing;
-  const vBlur = v.exposure ? (0.5 * v.mmPerPx) / (v.exposure * 1e-6) : 0;
-  const vFps = v.spacing * v.fps;
-  const vMax = Math.min(vBlur, vFps);
+  const { blur: vBlur, frame: vFps, max: vMax } = flyshotSpeedLimits(v);
   const missing = fields.filter(([k]) => !(Number.isFinite(v[k]) && v[k] > 0)).map(([, label]) => label.replace(/（.*）/, ""));
   const valid = !missing.length && [blur, blurPx, maxExposure, frameMs, triggerMs, overlap, vBlur, vFps, vMax].every(Number.isFinite);
 

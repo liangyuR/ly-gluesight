@@ -6,7 +6,6 @@ import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceState } from "./fixtures";
 
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
-vi.mock("../src/features/camera", () => ({ FeasibilityCalc: () => null }));
 vi.mock("../src/features/cycle/api", () => ({ recipeApi: { doc: vi.fn(() => new Promise(() => {})) } }));
 
 let ws: ReturnType<typeof workspaceState>;

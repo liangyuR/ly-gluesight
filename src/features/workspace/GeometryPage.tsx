@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertTriangle, ArrowRight, Check, LoaderCircle } from "lucide-react";
 import { RecipeEditor, changedFields } from "../recipe";
-import { FeasibilityCalc } from "../camera";
 import { recipeApi } from "../cycle/api";
 import { segmentLength, shotTaught } from "../cycle/vis";
 import type { RecipeDoc } from "../cycle/types";
@@ -26,8 +25,6 @@ export default function GeometryPage() {
     return () => { alive = false; };
   }, [doc?.id, productionVersion]);
   if (!data || !doc) return <WorkspaceEmpty />;
-  const camera = doc.shots[0]?.camera;
-  const exposure = camera ? doc.cameras?.[camera]?.exposureUs : undefined;
   const changed = changedFields(doc, production).size;
   const shots = preview?.shots ?? doc.shots;
   const measured = shots.filter(s => !s.skip);
@@ -41,7 +38,6 @@ export default function GeometryPage() {
             <RecipeEditor key={doc.id + ":" + data.workspace.revision} initial={doc} production={production} onDraftChange={setDoc} />
           </fieldset>
         </Panel>
-        <FeasibilityCalc sources={{ exposure: exposure != null ? { value: exposure, from: "来自配方" } : null }} />
       </div>
       <div className="wp-stack">
         <section className="panel wp-panel wp-defaults-card" aria-label="配方摘要">

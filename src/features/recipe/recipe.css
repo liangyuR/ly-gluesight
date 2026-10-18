@@ -23,7 +23,8 @@
 .rcp-limits { font-size: 12px; }
 .rcp-limits th, .rcp-limits td { padding: 6px 4px; white-space: nowrap; text-align: left; }
 .rcp-limits thead th { color: var(--on-surface-variant); font-weight: 400; }
-.rcp-limits tbody th { display: flex; align-items: center; gap: 8px; min-height: 40px; font-weight: 500; color: var(--on-surface); }
+.rcp-limits tbody th { font-weight: 500; color: var(--on-surface); }
+.rcp-rowhead { display: flex; align-items: center; gap: 8px; }
 .rcp-limits .input { width: 68px; height: 30px; padding: 0 8px; }
 .rcp-limits tr.off td { color: var(--on-surface-variant); }
 .rcp-band { color: var(--ok); font-variant-numeric: tabular-nums; }

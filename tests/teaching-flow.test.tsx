@@ -25,7 +25,7 @@ vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
 } }));
 vi.mock("../src/features/cycle/api", () => ({ recipeApi: { list: vi.fn() }, useCycle: vi.fn(), useSiteStatus: () => ({ mode: "real" }) }));
 vi.mock("../src/features/camera", () => ({ cameraApi: { rigConfig: vi.fn() } }));
-vi.mock("../src/features/camera/api", () => ({ cameraApi: { rigStatus: vi.fn() } }));
+vi.mock("../src/features/camera/api", () => ({ cameraApi: { rigStatus: vi.fn(), calibInfo: vi.fn(async () => null) } }));
 vi.mock("../src/features/plc/api", () => ({ plcApi: { getStatus: vi.fn() } }));
 vi.mock("../src/features/history/api", () => ({ historyApi: { query: vi.fn() } }));
 vi.mock("../src/features/plc", () => ({ subscribe: () => () => {} }));

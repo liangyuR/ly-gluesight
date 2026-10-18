@@ -69,10 +69,10 @@ function LimitsEditor({ value, changed, onChange }: { value: ShotLimits; changed
     const p = value[kind];
     return (
       <tr key={kind} className={p ? "" : "off"}>
-        <th scope="row">
+        <th scope="row"><span className="rcp-rowhead">
           <button type="button" role="switch" className="rcp-switch" aria-checked={!!p} aria-label={`${name}判定`} onClick={() => onChange({ ...value, [kind]: p ? null : { ...fallback } })} />
           {name}{changed.has(kind) && <i className="rcp-changed" title="与生产配方不同" />}
-        </th>
+        </span></th>
         {p ? <>
           {paramFields.map(([k, field]) => (
             <td key={k}><input aria-label={`${name} · ${field}`} className="input mono" type="number" step={0.05} value={Number.isFinite(p[k]) ? p[k] : ""} onChange={(e) => onChange({ ...value, [kind]: { ...p, [k]: parse(e.target.value) } })} /></td>
@@ -96,7 +96,7 @@ function LimitsEditor({ value, changed, onChange }: { value: ShotLimits; changed
           {row("position", "位置", defaultPosition)}
           {row("width", "胶宽", defaultWidth)}
           <tr>
-            <th scope="row" title="同一拍照点内连续缺胶超过允许断胶长度判断胶；累计缺胶超过它且有胶站占比低于最低有胶比例时也判断胶">连续性{(changed.has("maxGapLen") || changed.has("minPresent")) && <i className="rcp-changed" title="与生产配方不同" />}</th>
+            <th scope="row" title="同一拍照点内连续缺胶超过允许断胶长度判断胶；累计缺胶超过它且有胶站占比低于最低有胶比例时也判断胶"><span className="rcp-rowhead">连续性{(changed.has("maxGapLen") || changed.has("minPresent")) && <i className="rcp-changed" title="与生产配方不同" />}</span></th>
             <td colSpan={paramFields.length + 1}>
               <span className="rcp-inline">允许断胶<Num aria="允许断胶长度（mm）" unit="mm" value={value.maxGapLen} onChange={(maxGapLen) => onChange({ ...value, maxGapLen })} /></span>
               <span className="rcp-inline">最低有胶<Num aria="最低有胶比例（%）" unit="%" step={1} value={Math.round(value.minPresent * 1000) / 10} onChange={(v) => onChange({ ...value, minPresent: v / 100 })} /></span>
