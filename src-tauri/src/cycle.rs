@@ -280,6 +280,7 @@ pub struct CycleHost {
     pub recorders: Recorders,
     pub cycle_ids: crate::cycle_ids::CycleIds,
     pub audit: Audit,
+    pub disk: crate::disk_guard::DiskGuard,
     settings_path: PathBuf,
     shared: Mutex<Shared>,
     rx: Mutex<Option<(UnboundedReceiver<Input>, Receiver<Frame>)>>,
@@ -328,6 +329,7 @@ impl CycleHost {
             recorders,
             cycle_ids: crate::cycle_ids::CycleIds::default(),
             audit,
+            disk: crate::disk_guard::DiskGuard::new(data.clone()),
             shared: Mutex::new(Shared {
                 snapshot: None,
                 logs: VecDeque::new(),
@@ -811,6 +813,26 @@ impl Machine {
             log(&self.app, "err", "报警", msg.clone());
             self.alarms.push(msg);
             self.dirty = true;
+        }
+    }
+
+    /// 资料盘空间不足时按“等待追溯落盘”处理：撤销 visionReady 暂停接件，空间恢复后自动就绪，无需复位。
+    fn disk_space_ready(&mut self) -> bool {
+        const PREFIX: &str = "资料盘剩余空间";
+        let shown = self.alarms.iter().any(|m| m.starts_with(PREFIX));
+        match host(&self.app).disk.check() {
+            Err(reason) => {
+                if !shown { self.alarm(reason); }
+                false
+            }
+            Ok(()) => {
+                if shown {
+                    self.alarms.retain(|m| !m.starts_with(PREFIX));
+                    self.dirty = true;
+                    log(&self.app, "ok", "资料盘空间", "剩余空间已恢复，恢复接件");
+                }
+                true
+            }
         }
     }
 
@@ -1368,6 +1390,7 @@ impl Machine {
                     return;
                 }
             };
+            let audit_ready = self.disk_space_ready() && audit_ready;
             let devices_ready = if matches!(self.phase, Phase::Report | Phase::Release) {
                 self.check_idle_devices().is_ok()
             } else { cameras.is_ok() };
