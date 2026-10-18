@@ -1,13 +1,23 @@
 # 核心业务流程上线核对清单
 
-核对日期：2026-10-19，基于 main `1f8b2f7`。范围：新建配方 → 默认参数 → 整圈采集 → 单帧示教 → 标定验证 → 验证与发布 → 生产握手 → 历史记录。规则来源为 [配方创建与多图示教](../architecture/recipe-creation-workflow.md)、[一期 S7 握手契约](../integration/plc-s7-phase1.md)、[测试记录](TESTING.md) 与代码；取舍见 [core-flow 决策](../decisions/core-flow.md)。
+核对日期：2026-10-19。核对对象是 main `1f8b2f7` 依次合并下表 5 个 PR 后的集成状态，不是 main 本身：标“已修复”的条目、#97–#101 新增的测试、`cycle/admission.rs` 和离线端到端的实拍样本集夹具在 main 上都不存在。**本清单（PR #105）须在 #97–#101 全部合并后再合并**；其中任一 PR 被打回或改动行为，须同步修改对应条目的结果。
+
+| PR | 分支 | 核对所用提交 | 依赖它的条目 |
+| --- | --- | --- | --- |
+| #97 | `bugfix/capture-restart-session` | `d097c1f` | 2.5、6.8 |
+| #98 | `bugfix/start-refusal-code` | 实例 `8d5b0a1`，单测复核 `05f5661` | 5.4、5.5 |
+| #99 | `feat/offline-e2e-gs-sampleset` | `b7365ab` | 验证方式中的 E2E 及标 E2E 的条目（2.2、2.6、3.1、3.5、4.1、4.2、4.5–4.7、6.1–6.5） |
+| #100 | `feat/start-request-guard-tests` | `37acf70` | 5.6 |
+| #101 | `bugfix/fault-delivery-rewrite` | `c41c994` | 5.12 |
+
+范围：新建配方 → 默认参数 → 整圈采集 → 单帧示教 → 标定验证 → 验证与发布 → 生产握手 → 历史记录。规则来源为 [配方创建与多图示教](../architecture/recipe-creation-workflow.md)、[一期 S7 握手契约](../integration/plc-s7-phase1.md)、[测试记录](TESTING.md) 与代码；取舍见 [core-flow 决策](../decisions/core-flow.md)。
 
 无真机：PLC 由进程内虚拟 S7 产线（`src-tauri/src/offline`）扮演，相机为样本集回放，测量用本机 lyFlow 1.1.0。实拍样本集为 `2026-10-17-normal-sampleset`（12 点位 × 3 相机，1280×1024），副本写入模拟标定 0.112 mm/px（D-CF-1）。
 
 ## 验证方式
 
 - **实例**：隔离 e2e 实例（`scripts/Start-UiTestInstance.ps1 -Profile e2e -DebugPort 9341`）经 CDP 调后端命令逐步驱动，用实拍样本集模拟标定副本；新建配方、3 相机整圈采集、12 个拍照点组示教、独立样本验证、离线发布、投产与各类异常工况均实际跑过。
-- **E2E**：`pnpm test:e2e:offline`（含重启续测），覆盖范围见 [离线端到端](TESTING.md#离线端到端)。
+- **E2E**：`pnpm test:e2e:offline`（含重启续测），覆盖范围见 [离线端到端](TESTING.md#离线端到端)，以 #99 改写后的版本为准（main 上该节仍描述 mx11-demo 与 S004 断胶）。
 - **单测**：`cargo test --lib` 中注明的测试。
 - **代码**：只做代码核对，没有运行验证。
 
@@ -66,8 +76,8 @@
 | 5.1 | 正常一件：partStart → armed → 触发计数 → partEnd → done → resultAck → 释放 → 下一件 | 实例：连续投产多件，结果码 2，ACK 后回到空闲；单测 `offline_line_over_s7_completes_parts_with_matched_ack_and_returns_to_idle` | 通过 |
 | 5.2 | OK 与 OK_WITH_EXCURSION 都算合格（PLC 码 1/2，今日统计计为合格） | 实例：2 件 OK_WITH_EXCURSION，统计 ok=2 | 通过 |
 | 5.3 | 配方未发布就开工 | 见 1.2、1.3 | 通过 / 1.3 未运行 |
-| 5.4 | 人工选型号时 productCode 不符拒收 95 | 实例：修复前报 ERR 100「拍照计划不一致」；修复后 ERR 95「PLC 产品代码 3 与所选配方 NEW-1（产品代码 1）不一致」。单测 `product_code_mismatch_is_reported_before_count_and_count_before_plan_version` | 已修复（#98，D-CF-4） |
-| 5.5 | shotCount 与配方计划不符拒收 94；计划版本不符拒收 100 | 单测同上 | 已修复（#98） |
+| 5.4 | 人工选型号时 productCode 不符拒收 95 | 实例（#98 `8d5b0a1`）：修复前报 ERR 100「拍照计划不一致」；修复后 ERR 95「PLC 产品代码 3 与所选配方 NEW-1（产品代码 1）不一致」。单测 `cycle::admission::tests::product_code_checked_before_plan_compile_and_trigger_counts_before_plan_version` | 已修复（#98，D-CF-4） |
+| 5.5 | shotCount/deviceShots 与配方计划不符拒收 94；计划版本不符拒收 100 | 单测同上。修复前产品来源为 PLC 或人工时，数量不符都报 100，修复后改报 94 | 已修复（#98）。协议文档第 6 节仍写“设备计数不同步报 100”，待 plc-table 同步（D-CF-4） |
 | 5.6 | deviceShots≠shotCount、planReserved 非零、requestSeq 重复 / 回退 / 为零：不布防、不出结果，只置 visionFault | 单测 `invalid_start_request_faults_without_arming_or_result_while_a_valid_one_starts` | 通过（#100 新增测试） |
 | 5.7 | partEnd 时实际触发数与计划不符：视觉故障，在途件记 ERR 98 | 实例：「PLC 设备实际触发数 11 与计划 12 不符」，visionFault | 通过 |
 | 5.8 | 传输丢帧：ERR 91，结果照常确认 | 实例：缺 S004 组三台相机的帧，原因含应收与实收计数 | 通过 |
@@ -92,8 +102,8 @@
 
 ## 7. 本轮运行结果
 
-- `cargo test --lib`（合并 #97、#98、#99、#100、#101 后）：275 通过、0 失败、37 忽略（main 基线 271 通过、37 忽略；各分支单独 272 通过）。高负载下首轮出现过 1 项失败，输出被截断未定位，之后连续 11 轮全部通过。
-- `pnpm test:e2e:offline`（实拍样本集，#99 后）：全新站点首段约 73–80 s、重启续测约 8–10 s，合并各分支后仍通过；p01 OK_WITH_EXCURSION（码 2），人工断胶件 p02 NG_GAP（码 13，`S011-cam2 · 断胶 11.0 mm > 6.0 mm`），三种复测均 NG_GAP。
+- `cargo test --lib`（main `1f8b2f7` 合并 #97–#101 后，#98 为 `8d5b0a1`）：275 通过、0 失败、37 忽略（main 基线 271 通过、37 忽略；各分支单独 272 通过）。高负载下首轮出现过 1 项失败，输出被截断未定位，之后连续 11 轮全部通过。#98 更新到 `05f5661` 后按上表提交重新合并复跑：275 通过、0 失败、37 忽略，`cycle::admission` 的回归测试通过。
+- `pnpm test:e2e:offline`（实拍样本集，#99 `b7365ab` 后；#98 `05f5661` 不涉及正常投产路径，未复跑）：全新站点首段约 73–80 s、重启续测约 8–10 s，合并各分支后仍通过；p01 OK_WITH_EXCURSION（码 2），人工断胶件 p02 NG_GAP（码 13，`S011-cam2 · 断胶 11.0 mm > 6.0 mm`），三种复测均 NG_GAP。
 - `pnpm exec tsc -b` 通过；`pnpm exec vitest run` 175 项通过（本工作线未改前端）。
 
 ## 8. 本轮未覆盖
