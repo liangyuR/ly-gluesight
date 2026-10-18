@@ -1480,6 +1480,7 @@ impl Machine {
             Ok(part) => host(&app).audit.insert_durable(part, host(&app).settings().timeouts.proc()).await.and_then(|_| self.record_without_part(&sn, &judgement)),
             Err(error) => Err(error),
         };
+        let mut failure_saved = false;
         let r = match durable {
             Err(error) => Err(format!("审计记录未可靠保存，未提交 PLC 完成信号：{error}")),
             Ok(()) => {
@@ -1492,6 +1493,7 @@ impl Machine {
                     Some(id) => host(&app).audit.submission_durable(id, delivery, drain_ms).await,
                     None => Err("工件身份缺失".into()),
                 };
+                failure_saved = sent.is_err() && saved.is_ok();
                 sent.map_err(|error| format!("回写 PLC 失败：{error}")).and(saved.map_err(|error| format!("PLC 交付审计未可靠保存：{error}")))
             }
         };
@@ -1511,6 +1513,7 @@ impl Machine {
             Ok(()) => self.set_phase(Phase::Report),
             Err(reason) => {
                 self.s7.fault(plc(&app), reason.clone()).await;
+                if !failure_saved && self.current_cycle_id.is_some() { self.fail_delivery(&reason); }
                 self.fault = Some(reason.clone());
                 self.alarm(reason);
                 self.set_phase(Phase::Fault);
@@ -1595,6 +1598,12 @@ impl Machine {
         host(&self.app).audit.delivery(cycle_id, PlcDelivery { state, updated_at: now_ms(), message })
     }
 
+    fn fail_delivery(&self, reason: &str) {
+        if let Err(error) = self.delivery(PlcDeliveryState::Failed, Some(reason.to_owned())) {
+            log(&self.app, "err", "故障交付审计持久化失败", error);
+        }
+    }
+
     fn count(&mut self, v: Verdict) {
         let today = history::local_day();
         if today != self.stats_day {
@@ -1626,18 +1635,14 @@ impl Machine {
             log(&self.app, "err", "在途件中断", format!("SN {sn} 记 ERR 98，需人工处理该件"));
             self.result = Some(ResultView { candidate_debug: self.part.as_ref().and_then(|p| p.candidate.as_ref()).map(|c| c.info.clone()).or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())), cycle_id: self.current_cycle_id.clone(), sn, recipe_id: self.part.as_ref().map(|p| p.recipe.id.clone()), ts: now_ms(), drain_ms: None, judgement });
         }
-        if fault_fails_delivery(self.phase) && self.result.is_some() {
-            if let Err(error) = self.delivery(PlcDeliveryState::Failed, Some(reason.clone())) {
-                log(&self.app, "err", "故障交付审计持久化失败", error);
-            }
-        }
+        if fault_fails_delivery(self.phase) && self.result.is_some() { self.fail_delivery(&reason); }
         log(&self.app, "err", "故障", reason.clone());
         self.fault = Some(reason);
         self.set_phase(Phase::Fault);
     }
 }
 
-/// 故障时只有已回写结果、仍在等 PLC 确认的工件改记交付失败；已确认、已释放或早已故障的工件不再改写。
+/// 故障时只有已回写结果、仍在等 PLC 确认的工件改记交付失败；已确认、已释放的工件不再改写，交付失败进入故障的工件已在 report 里自行记失败。
 fn fault_fails_delivery(phase: Phase) -> bool {
     phase == Phase::Report
 }
