@@ -48,7 +48,7 @@ it("三台相机中一台未就绪 → 仍默认勾选全部，开始接收禁�
  expect(await screen.findByText("采集相机未就绪：相机2。")).toBeVisible();
  const group=screen.getByRole("group",{name:"采集相机"});
  for(const name of [/相机1/,/相机2/,/相机3/]) expect(within(group).getByRole("checkbox",{name})).toBeChecked();
- const start=screen.getByRole("button",{name:"开始接收 / 整圈重采"});
+ const start=screen.getByRole("button",{name:"开始接收"});
  expect(start).toBeDisabled();await userEvent.click(start);expect(workspaceApi.captureStart).not.toHaveBeenCalled();
 });
 it("从配置设备返回 → 保留手动取消的相机，新增相机自动勾选",async()=>{
@@ -59,7 +59,7 @@ it("从配置设备返回 → 保留手动取消的相机，新增相机自动�
  render(<MemoryRouter initialEntries={[{pathname:"/recipe/capture",state:{captureReturn}}]}><CapturePage/></MemoryRouter>);
  const group=await screen.findByRole("group",{name:"采集相机"});
  expect(within(group).getByRole("checkbox",{name:/相机2/})).not.toBeChecked();expect(within(group).getByRole("checkbox",{name:/相机3/})).toBeChecked();
- const start=screen.getByRole("button",{name:"开始接收 / 整圈重采"});
+ const start=screen.getByRole("button",{name:"开始接收"});
  await waitFor(()=>expect(start).toBeEnabled());await userEvent.click(start);
  expect(workspaceApi.captureStart).toHaveBeenCalledWith("A",["CAM-1","CAM-3"],1500);
 });
@@ -112,12 +112,12 @@ it("采集完成后设备准备收起 → 收起栏仍可直接整圈重采",asy
  vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());vi.mocked(workspaceApi.captureStart).mockResolvedValue(round("waitingStart"));show();
  const bar=await screen.findByRole("region",{name:"设备准备"});
  expect(screen.queryByRole("group",{name:"采集相机"})).toBeNull();
- await userEvent.click(within(bar).getByRole("button",{name:"开始接收 / 整圈重采"}));
+ await userEvent.click(within(bar).getByRole("button",{name:"整圈重采"}));
  expect(workspaceApi.captureStart).toHaveBeenCalledWith("A",["CAM-1"],1500);
 });
 it("PLC 未连接 →开始接收禁用并给出 PLC 通讯入口",async()=>{
  vi.mocked(plcApi.getStatus).mockResolvedValue({state:"disconnected",message:"PLC 未连接"} as Awaited<ReturnType<typeof plcApi.getStatus>>);show();
  expect(await screen.findByText(/PLC 未连接：整圈采集依赖/)).toBeVisible();
- expect(screen.getByRole("button",{name:"开始接收 / 整圈重采"})).toBeDisabled();
+ expect(screen.getByRole("button",{name:"开始接收"})).toBeDisabled();
  expect(screen.getByRole("link",{name:"前往 PLC 通讯"})).toHaveAttribute("href","/plc");
 });

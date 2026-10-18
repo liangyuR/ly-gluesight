@@ -662,7 +662,7 @@ it("示教完成后保存总览、实拍独立样本并验证 → 新样本自�
   expect(await screen.findByRole("button", { name: "发布生产配方" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "运行整套图像验证" })).toBeDisabled();
   await user.click(screen.getByRole("link", { name: "重新实拍样本" }));
-  const startCapture = await screen.findByRole("button", { name: "开始接收 / 整圈重采" });
+  const startCapture = await screen.findByRole("button", { name: "开始接收" });
   await waitFor(() => expect(startCapture).toBeEnabled());
   await user.click(startCapture);
   expect(workspaceApi.captureStart).toHaveBeenCalledWith("A", ["CAM-1"], 1500);

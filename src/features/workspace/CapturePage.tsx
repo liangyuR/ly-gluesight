@@ -7,7 +7,9 @@ import { cycleApi, useCycle, useSiteStatus } from "../cycle/api";
 import SamplePartSelect from "../cycle/components/SamplePartSelect";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
-import { Badge, KV, Notice, NumberField, Panel, Steps, WorkspaceBar, WorkspaceEmpty, GrayViewer } from "./components";
+import { AlertTriangle, ArrowRight, Cable, Camera, Crosshair, Play } from "lucide-react";
+import { Badge, Notice, NumberField, Panel, Steps, WorkspaceBar, WorkspaceEmpty, GrayViewer } from "./components";
+import "./capture.css";
 import type { CaptureRound, GrayImage } from "./types";
 import { DEFAULT_IMAGING, type CameraImaging, type Verdict } from "../cycle/types";
 import { expectedChoices } from "./progress";
@@ -87,7 +89,7 @@ export default function CapturePage() {
     return () => {alive=false;};
   },[round?.roundId,previewArrived,previewK,shownCamera]);
   const active=!!round && ["waitingStart","receiving","draining"].includes(round.state);
-  const [prepOpenFor,setPrepOpenFor] = useState<string | null>(null);
+  const [prepOpenFor,setPrepOpenFor] = useState<string | null>(null), [imagingOpen,setImagingOpen] = useState(false);
   const resultRef = useRef<HTMLDivElement>(null), wasActive = useRef(false);
   useEffect(() => {
     if(wasActive.current && !active && round) resultRef.current?.scrollIntoView?.({block:"start",behavior:"smooth"});
@@ -139,25 +141,41 @@ export default function CapturePage() {
   };
   const toggleCamera=(id: string, on: boolean) => setExcluded(x=>on ? x.filter(c=>c!==id) : [...x.filter(c=>c!==id),id]);
   const startDisabled=locked || active || !!startBlocked || !chosen.length || !Number.isFinite(drain) || drain<200 || drain>30000;
-  const prepPanel = <Panel key="prep" title={validation ? "实拍独立验证样本" : "设备准备与整圈采集"} detail="选择参与采集的相机（默认全选已配置相机）；每次 PLC 触发各相机各出一张图，共同组成一个拍照点" actions={finished && <button className="btn small" onClick={()=>setPrepOpenFor(null)}>收起</button>}>
-    <div className="wp-capture-cameras" role="group" aria-label="采集相机">{cameras.map(c=>{
-      const on=chosen.includes(c.id), imaging=imagingOf(c.id), invalid=on ? imagingInvalid(imaging) : "", ready=readyIds.includes(c.id);
-      return <div key={c.id} className={"wp-capture-camera" + (on ? "" : " off")}>
-        <div className="wp-capture-camera-head"><label className="check"><input type="checkbox" checked={on} disabled={locked || active} onChange={e=>toggleCamera(c.id,e.target.checked)}/>{c.name} · {c.serial || c.source}</label><Badge tone={ready ? "ok" : "warn"}>{ready ? "就绪" : "未就绪"}</Badge></div>
-        {on && <div className="wp-form-grid"><NumberField label={`${c.name} 曝光时间（µs）`} value={imaging.exposureUs} min={1} max={1_000_000} onChange={v=>editImaging(c.id,"exposureUs",v)} disabled={locked || active}/><NumberField label={`${c.name} 增益（dB）`} value={imaging.gainDb} min={0} step={0.5} onChange={v=>editImaging(c.id,"gainDb",v)} disabled={locked || active}/></div>}
-        {invalid ? <p className="c-ng" role="alert">{c.name}：{invalid}</p> : on && applyErrors[c.id] && <Notice title={`${c.name} 已写入候选配方，但没能下发到相机`} tone="warn">{applyErrors[c.id]}</Notice>}
-      </div>;
-    })}{!cameras.length && <p className="muted">尚未配置相机</p>}</div>
-    <div className="wp-actions"><button className="btn" disabled={locked || active || !changedImaging.length || changedImaging.some(id=>!!imagingInvalid(imagingOf(id)))} onClick={applyImaging}>应用</button><span className="muted">按相机分别写入候选配方并立即下发</span></div>
-    <KV label="PLC">{plc}</KV>
-    <div className="wp-form-grid"><NumberField label="在途图像等待时间" value={drain} min={200} max={30000} unit="ms" onChange={setDrain} disabled={locked || active}/></div>
-    <div className="wp-actions"><Link className="btn" to="/camera" state={navigationState}>配置设备</Link><Link className="btn" to="/plc" state={navigationState}>PLC 通讯</Link><Link className="btn" to="/camera/calibration" state={navigationState}>飞拍标定</Link></div>
-    <Notice title="现场启动机械臂">先确认合格涂胶工件、轨迹和触发顺序。GS 开始接收并就绪后，由现场启动机械臂；触发数量由 PLC 自动提供，每台相机都必须收到同样数量的图，拍照点数量依据实际收图生成。</Notice>
-    <div className="wp-actions"><button className="btn primary" disabled={startDisabled} onClick={() => void start()}>开始接收 / 整圈重采</button><button className="btn danger" disabled={locked || !active} onClick={() => void stop()}>中止本轮</button></div>
-    {startBlocked && !active && <Notice title="暂不能开始接收" tone="warn"><span>{startBlocked}</span>{!plcConnected ? <Link className="btn small" to="/plc" state={navigationState}>前往 PLC 通讯</Link> : notReady.length ? <Link className="btn small" to="/camera" state={navigationState}>前往相机与采集</Link> : null}</Notice>}
+  const drainInvalid = !Number.isFinite(drain) || drain<200 || drain>30000;
+  const cameraProblem = !cameras.length ? "尚未配置" : !chosen.length ? "未选择相机" : notReady.length ? `${notReady.length} 台未就绪` : "";
+  const imagingProblem = chosen.some(id=>!!imagingInvalid(imagingOf(id)) || !!applyErrors[id]);
+  const pendingChecks = [!!cameraProblem, !plcConnected, drainInvalid].filter(Boolean).length;
+  const startReason = startBlocked || (drainInvalid ? "在途图像等待时间需在 200–30000 ms 之间。" : "");
+  const prepPanel = <Panel key="prep" title={validation ? "实拍独立验证样本" : "设备准备与整圈采集"} detail="每次 PLC 触发各相机各出一张图，共同组成一个拍照点" actions={<>{!active && <Badge tone={pendingChecks ? "warn" : "ok"}>{pendingChecks ? `${pendingChecks} 项未就绪` : "可以开始"}</Badge>}{finished && <button className="btn small" onClick={()=>setPrepOpenFor(null)}>收起</button>}</>}>
+    <ul className="wp-capture-checks" aria-label="开始前检查">
+      <li className={cameraProblem ? "bad" : ""}><span><Camera size={14} aria-hidden="true"/>相机</span><strong>{cameraProblem || `${chosen.length} 台就绪`}</strong><Link to="/camera" state={navigationState}>配置设备<ArrowRight size={12} aria-hidden="true"/></Link></li>
+      <li className={plcConnected ? "" : "bad"}><span><Cable size={14} aria-hidden="true"/>PLC</span><strong>{plcConnected ? "已连接" : plc}</strong><Link to="/plc" state={navigationState}>{plcConnected ? "PLC 通讯" : "前往 PLC 通讯"}<ArrowRight size={12} aria-hidden="true"/></Link></li>
+      <li><span><Crosshair size={14} aria-hidden="true"/>飞拍标定</span><strong>按需检查</strong><Link to="/camera/calibration" state={navigationState}>飞拍标定<ArrowRight size={12} aria-hidden="true"/></Link></li>
+      <li className={drainInvalid ? "bad" : ""}><NumberField label="在途图像等待时间" value={drain} min={200} max={30000} unit="ms" onChange={setDrain} disabled={locked || active}/></li>
+    </ul>
+    <div className="wp-capture-start">
+      <button className="btn primary" disabled={startDisabled} onClick={() => void start()}><Play size={15} aria-hidden="true"/>开始接收</button>
+      {active ? <button className="btn danger" disabled={locked} onClick={() => void stop()}>中止本轮</button> : startReason && <p className="wp-capture-reason"><AlertTriangle size={14} aria-hidden="true"/><span>{startReason}</span></p>}
+    </div>
     {offlineSampleSet && <div className="wp-stack wp-offline-feed"><strong>离线样本集送一圈</strong><p className="muted">① 先点“开始接收”；② 选择样本件；③ 点“离线产线送一圈”，虚拟 PLC 发开始 / 结束边沿，图像来自所选样本件。</p><div className="wp-actions"><SamplePartSelect sampleSet={offlineSampleSet} nextPart={site?.nextPart ?? null} value={offlinePart} onChange={setOfflinePart} disabled={offlineSending || !offlineReady} label="离线样本件"/><button className="btn" disabled={offlineSending || !offlineReady} onClick={() => void sendOffline()}>离线产线送一圈</button></div>{!offlineReady && <p className="muted hint">{site?.running ? "离线产线正在连续运行，停止后再送一圈。" : "开始接收并等待现场启动后，才能送一圈。"}</p>}</div>}
+    <details className="wp-capture-more">
+      <summary>现场操作步骤</summary>
+      <ol><li>确认合格涂胶工件、轨迹和触发顺序。</li><li>点“开始接收”，等待 GS 就绪。</li><li>现场启动机械臂；触发数量由 PLC 自动提供，每台相机都必须收到同样数量的图，拍照点数量依据实际收图生成。</li></ol>
+    </details>
+    <details className="wp-capture-more" open={imagingOpen || imagingProblem} onToggle={e=>setImagingOpen(e.currentTarget.open)}>
+      <summary>采集相机与成像参数<small>{cameras.length ? `已选 ${chosen.length} / ${cameras.length} 台` : "尚未配置相机"}</small></summary>
+      <div className="wp-capture-cameras" role="group" aria-label="采集相机">{cameras.map(c=>{
+        const on=chosen.includes(c.id), imaging=imagingOf(c.id), invalid=on ? imagingInvalid(imaging) : "", ready=readyIds.includes(c.id);
+        return <div key={c.id} className={"wp-capture-camera" + (on ? "" : " off")}>
+          <div className="wp-capture-camera-head"><label className="check"><input type="checkbox" checked={on} disabled={locked || active} onChange={e=>toggleCamera(c.id,e.target.checked)}/>{c.name} · {c.serial || c.source}</label><Badge tone={ready ? "ok" : "warn"}>{ready ? "就绪" : "未就绪"}</Badge></div>
+          {on && <div className="wp-form-grid"><NumberField label={`${c.name} 曝光时间（µs）`} value={imaging.exposureUs} min={1} max={1_000_000} onChange={v=>editImaging(c.id,"exposureUs",v)} disabled={locked || active}/><NumberField label={`${c.name} 增益（dB）`} value={imaging.gainDb} min={0} step={0.5} onChange={v=>editImaging(c.id,"gainDb",v)} disabled={locked || active}/></div>}
+          {invalid ? <p className="c-ng" role="alert">{c.name}：{invalid}</p> : on && applyErrors[c.id] && <Notice title={`${c.name} 已写入候选配方，但没能下发到相机`} tone="warn">{applyErrors[c.id]}</Notice>}
+        </div>;
+      })}{!cameras.length && <p className="muted">配置相机后，可在此选择参与采集的相机并调整曝光与增益。</p>}</div>
+      {cameras.length > 0 && <div className="wp-actions"><button className="btn" disabled={locked || active || !changedImaging.length || changedImaging.some(id=>!!imagingInvalid(imagingOf(id)))} onClick={applyImaging}>应用</button><span className="muted">按相机分别写入候选配方并立即下发</span></div>}
+    </details>
   </Panel>;
-  const historyPanel = <Panel key="history" title="采集历史" detail="保留异常轮次供追溯，重新采集不会混用旧图"><select className="input" aria-label="采集历史" value={roundId ?? ""} disabled={active || working} onChange={e=>{setRoundId(e.target.value || undefined);setPreviewK(0);}}><option value="">最近轮次</option>{history.map(r=><option key={r.roundId} value={r.roundId}>{new Date(r.createdAt).toLocaleString("zh-CN")} · {stateLabels[r.state]} · {r.cameraIds.length} 台相机 · {captureCountText(r)}</option>)}</select></Panel>;
+  const historyPanel = <Panel key="history" title="采集历史" detail="保留异常轮次供追溯，重新采集不会混用旧图">{history.length ? <select className="input" aria-label="采集历史" value={roundId ?? ""} disabled={active || working} onChange={e=>{setRoundId(e.target.value || undefined);setPreviewK(0);}}><option value="">最近轮次</option>{history.map(r=><option key={r.roundId} value={r.roundId}>{new Date(r.createdAt).toLocaleString("zh-CN")} · {stateLabels[r.state]} · {r.cameraIds.length} 台相机 · {captureCountText(r)}</option>)}</select> : <p className="wp-capture-empty">暂无采集轮次。完成第一圈采集后，可在此回看各轮结果。</p>}</Panel>;
   const resultPanel = round && <div key="result" ref={resultRef} className="wp-capture-anchor"><Panel title="采集结果" actions={<Badge tone={round.state==="complete" ? "ok" : round.state==="failed" ? "warn" : "info"}>{stateLabels[round.state]}</Badge>}>
     <div className="wp-capture-summary">
       <span className="wp-capture-chip"><small>轮次</small><strong className="mono">{round.roundId}</strong></span>
@@ -194,7 +212,7 @@ export default function CapturePage() {
     <span className={"wp-capture-chip" + (notReady.length || !chosen.length ? " warn" : "")}><small>相机</small><strong>{(chosen.length ? chosen.map(nameOf).join("、") : "未选择") + " · " + (chosen.length && !notReady.length ? "就绪" : "未就绪")}</strong></span>
     <span className={"wp-capture-chip" + (plcConnected ? "" : " warn")}><small>PLC</small><strong>{plc}</strong></span>
     <span className="wp-capture-chip"><small>在途图像等待</small><strong>{drain} ms</strong></span>
-    <div className="wp-actions"><button className="btn" onClick={()=>setPrepOpenFor(round?.roundId ?? null)}>展开设备准备</button><button className="btn" disabled={startDisabled} title={startBlocked || undefined} onClick={() => void start()}>开始接收 / 整圈重采</button></div>
+    <div className="wp-actions"><button className="btn" onClick={()=>setPrepOpenFor(round?.roundId ?? null)}>展开设备准备</button><button className="btn" disabled={startDisabled} title={startReason || undefined} onClick={() => void start()}>整圈重采</button></div>
   </section>;
-  return <div className="wp-page"><WorkspaceBar/><Steps/><div className="wp-columns"><div className="wp-stack">{collapsed ? <>{prepBar}{resultPanel}{historyPanel}</> : <>{prepPanel}{historyPanel}{resultPanel}</>}</div><div className="wp-stack"><Notice title="数量相同不代表对应相同">每轮独立保存。任一相机缺帧、重复、超量、断连或无法确定归属时整圈重采；不会把下一张图补到缺失位置。</Notice><Notice title="结束条件">各相机都收齐计划数量后仍等待 PLC 结束通知，再等待在途图像；超时会写明是哪台相机缺图。PLC 实际计划和完成计数均由后端按相机核对。</Notice><Link className="btn" to="/recipe/progress">返回进度总览</Link></div></div></div>;
+  return <div className="wp-page"><WorkspaceBar/><Steps/><div className="wp-columns"><div className="wp-stack">{collapsed ? <>{prepBar}{resultPanel}{historyPanel}</> : <>{prepPanel}{historyPanel}{resultPanel}</>}</div><section className="wp-capture-rules" aria-label="采集规则"><h3>采集规则</h3><div><strong>数量相同不代表对应相同</strong><p>每轮独立保存。任一相机缺帧、重复、超量、断连或无法确定归属时整圈重采；不会把下一张图补到缺失位置。</p></div><div><strong>结束条件</strong><p>各相机都收齐计划数量后仍等待 PLC 结束通知，再等待在途图像；超时会写明是哪台相机缺图。PLC 实际计划和完成计数均由后端按相机核对。</p></div></section></div></div>;
 }
