@@ -366,13 +366,19 @@ fn perturbations() -> Vec<(&'static str, Perturb)> {
     ]
 }
 
-/// 几何扰动让胶真的偏开示教线：偏移明显超差且连续够长的应判位置 NG，明显在公差内的应判 OK，夹在中间的不计。
-fn expected_position(recipe: &Recipe, shift: &[f64]) -> Option<bool> {
-    let Some(p) = recipe.limits.position.as_ref() else { return Some(false) };
-    let longest = |limit: f64| shift.split(|v| v.abs() <= limit).map(|run| run.len() as f64 * recipe.spacing as f64).fold(0.0, f64::max);
-    let tol = p.tol_upper.min(p.tol_lower) as f64;
-    if longest(tol * 1.15) >= p.max_excursion_len as f64 + 2.0 { Some(true) }
-    else if longest(tol * 0.85) <= (p.max_excursion_len as f64 - 2.0).max(0.0) { Some(false) }
+/// 几何扰动后胶相对示教线的实际偏移（基准测得的偏移 + 扰动横移，按判定同样做中值滤波）：
+/// 明显超绝对限、或明显超差且连续够长的应判位置 NG；明显在公差和绝对限内的应判 OK；夹在中间的不计。
+fn expected_position(recipe: &Recipe, k: usize, offset: &[f64]) -> Option<bool> {
+    let limits = recipe.shots[k].limits.as_ref().unwrap_or(&recipe.limits);
+    let Some(p) = limits.position.as_ref() else { return Some(false) };
+    let half = recipe.filter_window / 2;
+    let offset: Vec<f64> = (0..offset.len()).map(|i| median(offset[i.saturating_sub(half)..(i + half + 1).min(offset.len())].to_vec())).collect();
+    let nominal = p.nominal as f64;
+    let beyond = |v: f64, lo: f32, hi: f32, m: f64| v < nominal - (nominal - lo as f64) * m || v > nominal + (hi as f64 - nominal) * m;
+    let longest = |m: f64| offset.split(|&v| !beyond(v, p.lower(), p.upper(), m)).map(|run| run.len() as f64 * recipe.spacing as f64).fold(0.0, f64::max);
+    let absolute = |m: f64| offset.iter().any(|&v| beyond(v, p.abs_min, p.abs_max, m));
+    if absolute(1.15) || longest(1.15) >= p.max_excursion_len as f64 + 2.0 { Some(true) }
+    else if !absolute(0.85) && longest(0.85) <= (p.max_excursion_len as f64 - 2.0).max(0.0) { Some(false) }
     else { None }
 }
 
@@ -401,7 +407,11 @@ fn perturb(ctx: &Ctx, base: &[Result<ShotMeasurement, String>]) -> Value {
                 let q = pert.moved(c, ctx.samples[k].image.width, ctx.samples[k].image.height);
                 ((q[0] - c[0]) * f.n[i][0] + (q[1] - c[1]) * f.n[i][1]) * mm
             })).collect();
-            match expected_position(ctx.recipe, &shift) {
+            let offset: Vec<f64> = (0..b.st.len()).map(|i| shift[i] + if b.st[i] == ST_OK { b.d[i] as f64 } else {
+                frame.as_ref().map_or(0.0, |f| 0.5 * (f.lo[i] + f.hi[i]) * mm)
+            }).collect();
+            let expected = expected_position(ctx.recipe, k, &offset);
+            match expected {
                 Some(false) => {
                     expect_ok += 1;
                     if !ok_class(j.verdict) { false_ng.push(format!("{} {:?} {}", ctx.samples[k].shot_id, j.verdict, j.reason)); }
@@ -420,7 +430,8 @@ fn perturb(ctx: &Ctx, base: &[Result<ShotMeasurement, String>]) -> Value {
                 sdw.push((r.w[i] - b.w[i]) as f64);
                 sderr.push((r.d[i] - b.d[i]) as f64 - shift[i]);
             }
-            per_shot.push(json!({"shot": ctx.samples[k].shot_id, "verdict": j.verdict, "coverageDrop": r3((b.coverage - r.coverage) as f64),
+            per_shot.push(json!({"shot": ctx.samples[k].shot_id, "expectNg": expected, "offsetAbsP95Mm": r3(pct(offset.iter().map(|v| v.abs()).collect(), 95.0)),
+                "verdict": j.verdict, "coverageDrop": r3((b.coverage - r.coverage) as f64),
                 "widthDriftMedianMm": r3(median(sdw.clone())), "offsetErrAbsP95Mm": r3(pct(sderr.iter().map(|v| v.abs()).collect(), 95.0))}));
             dw.extend(sdw);
             derr.extend(sderr);
@@ -602,7 +613,7 @@ fn markdown(report: &Value) -> String {
     }
     if report["repeat"].is_object() { s += &format!("## 重复运行\n\n{}\n\n", report["repeat"]); }
     if let Some(rows) = report["perturb"].as_array() {
-        s += "## 扰动稳定性（只看基准判 OK 的拍照点）\n\n应判 OK / 应判 NG 按扰动让胶实际偏开示教线多少算（位置公差 ±2 mm、允许连续超差 5 mm，留 15% 余量，夹在中间的不计）。\n\n| 扰动 | 应判 OK | 误判 NG | 应判 NG | 漏判 | 不计 | 出错 | 覆盖率降 均/最大 | 丢站 | 胶宽漂移 中位 / |P95| mm | 偏移误差 中位 / |P95| mm |\n|---|---|---|---|---|---|---|---|---|---|---|\n";
+        s += "## 扰动稳定性（只看基准判 OK 的拍照点）\n\n应判 OK / 应判 NG 按胶实际偏开示教线多少算：基准测得的偏移加扰动横移，中值滤波后对照位置公差 ±2 mm、允许连续超差 5 mm 和绝对限 ±5 mm，留 15% 余量，夹在中间的不计。\n\n| 扰动 | 应判 OK | 误判 NG | 应判 NG | 漏判 | 不计 | 出错 | 覆盖率降 均/最大 | 丢站 | 胶宽漂移 中位 / |P95| mm | 偏移误差 中位 / |P95| mm |\n|---|---|---|---|---|---|---|---|---|---|---|\n";
         for r in rows {
             s += &format!("| {} | {} | {} | {} | {} | {} | {} | {} / {} | {} | {} / {} | {} / {} |\n", v(&r["name"]), v(&r["expectOk"]), v(&r["falseNg"]), v(&r["expectNg"]), v(&r["missedNg"]), v(&r["ambiguous"]), r["errors"].as_array().map_or(0, Vec::len),
                 v(&r["coverageDropMean"]), v(&r["coverageDropMax"]), v(&r["lostStations"]), v(&r["widthDriftMedianMm"]), v(&r["widthDriftAbsP95Mm"]), v(&r["offsetErrMedianMm"]), v(&r["offsetErrAbsP95Mm"]));
