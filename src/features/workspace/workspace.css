@@ -144,8 +144,10 @@
 .wp-teach .wp-field input { font-size:12px; }
 .wp-teach input[type=number]::-webkit-inner-spin-button { appearance:none; margin:0; }
 .wp-viewport { border:1px solid var(--outline-variant); border-radius:var(--r-md); overflow:hidden; background:var(--surface-lowest); }
-.wp-image-tools { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:5px 10px; min-height:34px; border-bottom:1px solid var(--outline-variant); font-size:12px; color:var(--on-surface-variant); }
-.wp-image-tools > div { display:flex; align-items:center; gap:3px; }
+.wp-image-tools { display:flex; align-items:center; flex-wrap:wrap; justify-content:space-between; gap:4px 8px; padding:5px 10px; min-height:34px; border-bottom:1px solid var(--outline-variant); font-size:12px; color:var(--on-surface-variant); }
+.wp-image-tools > span { min-width:0; overflow-wrap:anywhere; }
+.wp-image-tools > div { display:flex; align-items:center; flex-wrap:wrap; gap:3px; }
+.wp-image-tools > div:last-child { margin-left:auto; }
 .wp-gray-image { display:block; width:100%; height:clamp(250px,36vh,420px); background:var(--surface-lowest); }
 .wp-gray-image.editable { cursor:crosshair; touch-action:none; }
 .wp-gray-image.panning { cursor:grabbing; }
