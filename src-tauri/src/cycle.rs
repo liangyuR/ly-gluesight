@@ -309,9 +309,13 @@ impl CycleHost {
                     log(&warning_app, "warn", "孤立录制清理失败", errors.join("；"));
                 } else { crate::applog::write("warn", "孤立录制清理失败", &errors.join("；")); }
             });
+            let release_app = app.clone();
+            let release = Arc::new(move |directories: &[PathBuf]| {
+                release_app.try_state::<Store>().ok_or("检测记录数据库尚未初始化")?.release_recordings(directories)
+            });
             Recorder::guarded(root, Some(Arc::new(move |outcome| {
                 if let Err(error) = record_audit.recording(outcome) { crate::applog::write("err", "录制审计持久化失败", &error); }
-            })), protection, warning)
+            })), crate::recorder::Cleanup { protection, warning, release })
         };
         let recorders = Recorders::new(recorder(data.join("records"), HistoryScope::Real),
             recorder(data.join("records-offline"), HistoryScope::Offline));
