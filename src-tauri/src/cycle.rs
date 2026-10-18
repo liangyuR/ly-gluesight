@@ -958,6 +958,7 @@ impl Machine {
                     self.result = None;
                     self.active_recipe = None;
                     self.current_cycle_id = None;
+                    applog::end_cycle();
                     self.done_at = None;
                     self.ack_alarmed = false;
                     self.alarms.clear();
@@ -1386,7 +1387,7 @@ impl Machine {
                     self.alarms.clear();
                     self.set_phase(Phase::Idle);
                     log_with(&app, "ok", "S7 复位完成", "输入基线已核验，视觉就绪", Fields::stage("reset"));
-                    if let Some(id) = self.current_cycle_id.as_deref() { applog::end_cycle(id); }
+                    applog::end_cycle();
                 }
                 SessionEvent::Start(request) => {
                     if capture_host.active() { self.start_capture_s7(request).await; }
@@ -1411,7 +1412,7 @@ impl Machine {
                     self.alarms.retain(|m| !m.starts_with("PLC 未确认"));
                     self.set_phase(Phase::Idle);
                     log_with(&app, "info", "S7 事务结束", "结果序号已确认，PLC 输入已释放", Fields::stage("released").with_data(json!({"plcTriggers": triggers})));
-                    if let Some(id) = self.current_cycle_id.as_deref() { applog::end_cycle(id); }
+                    applog::end_cycle();
                 }
                 SessionEvent::Fault(reason) => {
                     if self.s7.capture_id().is_some() { capture_host.fail(reason.clone()); }

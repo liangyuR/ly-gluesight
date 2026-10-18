@@ -247,11 +247,8 @@ pub fn begin_cycle(fields: Fields) {
     *ACTIVE.lock().unwrap_or_else(|p| p.into_inner()) = Some(fields);
 }
 
-pub fn end_cycle(cycle_id: &str) {
-    let mut active = ACTIVE.lock().unwrap_or_else(|p| p.into_inner());
-    if active.as_ref().is_some_and(|f| f.cycle_id.as_deref() == Some(cycle_id)) {
-        *active = None;
-    }
+pub fn end_cycle() {
+    *ACTIVE.lock().unwrap_or_else(|p| p.into_inner()) = None;
 }
 
 pub fn write(tone: &str, ev: &str, msg: &str) {
