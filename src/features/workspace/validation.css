@@ -8,8 +8,8 @@
 .wp-check-passed > summary:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; border-radius:var(--r-md); }
 .wp-check-passed > .wp-checklist { padding:0 8px 8px; }
 .wp-check-passed .wp-check-row { background:var(--surface-low); }
-.wp-sample-source { flex-direction:row; align-items:center; gap:10px; }
-.wp-sample-source > select.input { width:220px; }
+.field.wp-sample-source { flex-direction:row; align-items:center; gap:10px; }
+.field.wp-sample-source > select.input { width:220px; }
 .wp-validate-actions { display:flex; align-items:center; flex-wrap:wrap; gap:10px 16px; margin-top:4px; padding-top:14px; border-top:1px solid var(--outline-variant); }
 .wp-validate-actions > .spacer { flex:1; }
 .wp-validate-actions > .check { font-size:13px; }
