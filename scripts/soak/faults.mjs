@@ -9,6 +9,8 @@ import { connect, ensureOffline, LogCollector, parseArgs, RECIPE_ID, sleep, unti
 const OK_CLASS = new Set(["OK", "OK_WITH_EXCURSION"]);
 // 这些注入不损坏本件图像与计数，本件判合格是正确结果；其余注入下本件判合格即为“错误的 OK”。
 const MAY_PASS = new Set(["plcDelayMidPart", "plcRejectWriteMidPart", "recordsDirReadOnly"]);
+const RECOVER_ENTRIES = new Set(["baseline", "afterRestart"]);
+const OUTAGE_MS = 8000;
 const run = promisify(execFile);
 // 第 7 个 Pose 的 cam1（配方 k=18，样本 S019）已示教且必测；S020（k=19，cam2）同组未示教。
 const TAUGHT_IMAGE = "S019_cam1_v1.bmp";
@@ -62,7 +64,7 @@ function context(session, out) {
   };
   const faultView = async () => {
     const [s, st] = await Promise.all([snapshot(), site()]);
-    return { phase: s?.phase, fault: s?.fault ?? null, alarms: s?.alarms ?? [], handshake: s?.plcHandshake ?? null, siteMessage: st.message };
+    return { phase: s?.phase, fault: s?.fault ?? null, alarms: s?.alarms ?? [], handshake: s?.plcHandshake ?? null, running: st.running, siteMessage: st.message };
   };
   const sampleDir = async () => path.join((await site()).sampleSet.dir, "parts", "p01");
   return { call, logs, latest, snapshot, site, stopLine, start, runOne, waitPhase, recover, faultView, sampleDir, manifest };
@@ -77,16 +79,23 @@ async function whoami() {
   return stdout.trim();
 }
 
-/** 在途件中途注入：等节拍进入采集再动手，结束后停掉虚拟 PLC。 */
-async function midPart(c, inject, { scenario = "normal", wait = 6000 } = {}) {
+/** 在途件中途注入：等节拍进入采集再动手，结束后停掉虚拟 PLC。不该进故障的注入等到本件走完、产线自行停下或进故障为止。 */
+async function midPart(c, inject, { scenario = "normal", wait = 6000, expectFault = true } = {}) {
   const before = await c.latest();
   await c.start(scenario);
   await c.waitPhase(["ACQUIRE", "DRAIN"]);
   await inject();
-  const seen = await until(c.faultView, v => v.phase === "FAULT", "注入后未进入故障", wait + 30000, 200).catch(error => ({ timeout: error.message }));
+  const seen = await until(c.faultView, v => v.phase === "FAULT" || (!expectFault && !v.running), expectFault ? "注入后未进入故障" : "注入后本件未走完", wait + 30000, 200)
+    .catch(error => ({ timeout: error.message }));
   await c.stopLine();
   const record = await until(c.latest, r => r && r.id !== before?.id, "在途件未生成记录", 30000, 300).catch(() => null);
-  return { seen, record: record && { verdict: record.verdict, plcCode: record.plcCode, faultCode: record.faultCode, reason: record.reason, delivery: record.delivery.state } };
+  return { expectFault, seen, record: record && { verdict: record.verdict, plcCode: record.plcCode, faultCode: record.faultCode, reason: record.reason, delivery: record.delivery.state } };
+}
+
+/** PLC 停机期满后等 PC 自动重连再返回，避免外层 clear 提前结束停机；PC 主动断开（已知问题）时交给恢复步骤补连接。 */
+async function outageReconnect(c, injectedAt) {
+  const status = await until(() => c.call("plc_get_status"), s => s.state === "connected" || s.state === "disconnected", "PLC 停机结束后未自动重连", OUTAGE_MS + 60000, 300);
+  return { outageMs: OUTAGE_MS, reconnectAfterMs: status.state === "connected" ? Date.now() - injectedAt : null, pcDisconnected: status.state === "disconnected" };
 }
 
 const scenarios = {
@@ -100,20 +109,24 @@ const scenarios = {
     return midPart(c, () => c.call("offline_inject", { fault: "disconnect" }));
   },
   async plcOutageIdle(c) {
-    await c.call("offline_inject", { fault: "outage", durationMs: 8000 });
+    const injectedAt = Date.now();
+    await c.call("offline_inject", { fault: "outage", durationMs: OUTAGE_MS });
     const seen = await until(c.faultView, v => v.phase === "FAULT", "PLC 停机后未进入故障", 15000, 100);
     const during = await c.call("plc_get_status");
-    await until(() => c.call("plc_get_status"), s => s.state === "connected", "PLC 恢复后未自动重连", 60000, 300);
-    return { seen, plcDuringOutage: { state: during.state, message: during.message } };
+    await until(() => c.call("plc_get_status"), s => s.state === "connected", "PLC 恢复后未自动重连", OUTAGE_MS + 60000, 300);
+    return { seen, plcDuringOutage: { state: during.state, message: during.message }, outageMs: OUTAGE_MS, reconnectAfterMs: Date.now() - injectedAt };
   },
   async plcOutageMidPart(c) {
-    return midPart(c, () => c.call("offline_inject", { fault: "outage", durationMs: 8000 }));
+    let injectedAt;
+    const result = await midPart(c, () => { injectedAt = Date.now(); return c.call("offline_inject", { fault: "outage", durationMs: OUTAGE_MS }); });
+    return { ...result, ...(await outageReconnect(c, injectedAt)) };
   },
   async plcDelayMidPart(c) {
     return midPart(c, () => c.call("offline_inject", { fault: "delay" }));
   },
   async plcRejectWriteMidPart(c) {
-    const result = await midPart(c, async () => { await c.call("offline_inject", { fault: "rejectWrite" }); await c.call("offline_inject", { fault: "rejectWrite" }); });
+    const result = await midPart(c, async () => { await c.call("offline_inject", { fault: "rejectWrite" }); await c.call("offline_inject", { fault: "rejectWrite" }); },
+      { expectFault: false });
     await c.call("offline_inject", { fault: "clear" });
     return result;
   },
@@ -276,6 +289,35 @@ export async function runFaults(session, out, group, only) {
   return results;
 }
 
+/** 逐项判定：错误的 OK、场景出错或超时、该进故障没进（或反之）、复位沿失效、恢复不合格都是失败；
+ *  PC 主动断开后经接口补连接（报告剩余风险 2）单列为已知问题，不算通过。 */
+export function assess(results) {
+  const failures = [], knownIssues = [];
+  const manual = (name, entry) => entry?.manualReconnect && knownIssues.push(`${name}：PC 已主动断开 PLC 且未自动重连，经接口补连接（剩余风险 2）`);
+  if (results.entryManualReconnect) knownIssues.push("进入注入前：PC 已主动断开 PLC 且未自动重连，经接口补连接（剩余风险 2）");
+  for (const [name, r] of Object.entries(results)) {
+    if (!r || typeof r !== "object") continue;
+    const fail = what => failures.push(`${name}：${what}`);
+    if (RECOVER_ENTRIES.has(name)) {
+      if (!OK_CLASS.has(r.verdict)) fail(`投产未恢复合格（${r.verdict}）`);
+      manual(name, r);
+      continue;
+    }
+    if (r.error) fail(`场景出错：${r.error}`);
+    if (r.seen?.timeout) fail(r.seen.timeout);
+    else if (r.seen && (r.seen.phase === "FAULT") !== (r.expectFault ?? true)) fail(r.expectFault === false ? "不该进入故障却进入了故障" : `未进入故障（${r.seen.phase}）`);
+    if ("record" in r && !r.record) fail("在途件未生成记录");
+    if (r.heldHigh && r.heldHigh.phase !== "FAULT") fail(`复位输入一直为高电平时已离开故障（${r.heldHigh.phase}），复位沿判定回退`);
+    if (r.afterEdge?.timeout) fail(r.afterEdge.timeout);
+    if (r.reconnectAfterMs != null && r.reconnectAfterMs < r.outageMs) fail(`停机 ${r.outageMs} ms 未到就已重连（${r.reconnectAfterMs} ms）`);
+    if (r.falseOk) fail(`错误的 OK（${r.record.verdict}）`);
+    if (r.recovery?.error) fail(`恢复出错：${r.recovery.error}`);
+    else if (r.recovered === false) fail(`复位后 3 件内未恢复合格（${r.recovery.verdict}）`);
+    manual(name, r.recovery);
+  }
+  return { failures, knownIssues };
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   assert(["run", "audit", "recover"].includes(args.command), "命令为 run、audit 或 recover");
@@ -283,10 +325,12 @@ async function main() {
   const session = await connect(args.cdp ?? "http://[::1]:9347", args.instance ?? "output/playwright/soak-regression/instance.json");
   try {
     const results = await runFaults(session, out, args.command, args.only?.split(","));
-    await writeJson(path.join(out, args.file ?? `faults-${args.command}.json`), results);
+    const { failures, knownIssues } = assess(results);
+    await writeJson(path.join(out, args.file ?? `faults-${args.command}.json`), { failures, knownIssues, results });
     const summary = Object.fromEntries(Object.entries(results).map(([k, v]) => [k, v.error ? `ERROR ${v.error}` : { record: v.record?.verdict, seen: v.seen?.phase, falseOk: v.falseOk, recovered: v.recovered ?? OK_CLASS.has(v.verdict) }]));
-    process.stdout.write(JSON.stringify(summary, null, 1) + "\n");
-    if (Object.values(results).some(v => v.falseOk || v.recovered === false)) process.exitCode = 1;
+    process.stdout.write(JSON.stringify({ summary, failures, knownIssues }, null, 1) + "\n");
+    if (failures.length) process.exitCode = 1;
+    else if (knownIssues.length) process.exitCode = 2;
   } finally { await session.browser.close(); }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

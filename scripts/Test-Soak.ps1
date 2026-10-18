@@ -7,6 +7,7 @@ param(
     [ValidateRange(1, 1000000)][int]$Parts = 1000,
     [ValidateRange(50, 5000)][int]$ShotIntervalMs = 150,
     [ValidateRange(0, 10000)][int]$PauseMs = 200,
+    [ValidateRange(0.0, 1.0)][double]$MaxErrRatio = 0.2,
     [string[]]$Stages = @('soak', 'faults', 'engine', 'audit', 'restart')
 )
 
@@ -35,6 +36,8 @@ $soakNodeArgs = @('--cdp', $soakCdp, '--instance', $soakManifest, '--out', $soak
 $soakPreviousLyflow = $env:GLUESIGHT_LYFLOW_RUNTIME
 $soakExit = 0
 $script:soakOwned = $null
+$script:soakKnown = [Collections.Generic.List[string]]::new()
+$script:soakSkipped = [Collections.Generic.List[string]]::new()
 
 function Start-SoakInstance([switch]$Fresh, [switch]$Prebuilt) {
     & (Join-Path $PSScriptRoot 'Start-UiTestInstance.ps1') -Profile soak -ResetData:$Fresh -DebugPort $DebugPort -SkipBuild:$Prebuilt | Out-Host
@@ -58,6 +61,11 @@ function Stop-SoakInstance([switch]$Kill) {
 
 function Invoke-SoakNode([string]$Script, [string[]]$Arguments) {
     & node (Join-Path $PSScriptRoot "soak\$Script") @Arguments
+    if ($LASTEXITCODE -eq 2) {
+        $script:soakKnown.Add("$Script $($Arguments[0])")
+        Write-Warning "$Script $($Arguments[0]) 只出现已知问题，继续后续阶段，整次运行不算通过（退出码 2）。"
+        return
+    }
     if ($LASTEXITCODE -ne 0) { throw "$Script $($Arguments[0]) 失败（退出码 $LASTEXITCODE）" }
 }
 
@@ -68,7 +76,8 @@ try {
     Start-SoakInstance -Fresh -Prebuilt:$SkipBuild
     Invoke-SoakNode 'soak.mjs' (@('setup') + $soakNodeArgs + @('--sample-set', $soakSampleSet))
     if ($Stages -contains 'soak') {
-        Invoke-SoakNode 'soak.mjs' (@('run') + $soakNodeArgs + @('--parts', "$Parts", '--interval', "$ShotIntervalMs", '--pause', "$PauseMs"))
+        Invoke-SoakNode 'soak.mjs' (@('run') + $soakNodeArgs + @('--parts', "$Parts", '--interval', "$ShotIntervalMs", '--pause', "$PauseMs",
+            '--max-err-ratio', $MaxErrRatio.ToString([Globalization.CultureInfo]::InvariantCulture)))
     }
     if ($Stages -contains 'faults') {
         Invoke-SoakNode 'faults.mjs' (@('run') + $soakNodeArgs)
@@ -85,13 +94,20 @@ try {
         Invoke-SoakNode 'faults.mjs' (@('recover') + $soakNodeArgs + @('--file', 'engine-recovered.json'))
     }
     if ($Stages -contains 'disk') {
-        Stop-SoakInstance
-        $env:GLUESIGHT_DISK_MIN_FREE_MB = '1073741824'
-        try { Start-SoakInstance -Prebuilt } finally { Remove-Item -LiteralPath Env:\GLUESIGHT_DISK_MIN_FREE_MB -ErrorAction SilentlyContinue }
-        Invoke-SoakNode 'disk.mjs' (@('blocked') + $soakNodeArgs)
-        Stop-SoakInstance
-        Start-SoakInstance -Prebuilt
-        Invoke-SoakNode 'disk.mjs' (@('recovered') + $soakNodeArgs)
+        $soakDiskGuard = Get-ChildItem -LiteralPath (Join-Path $soakRoot 'src-tauri\src') -Recurse -Filter '*.rs' |
+            Select-String -SimpleMatch 'GLUESIGHT_DISK_MIN_FREE_MB' -List | Select-Object -First 1
+        if (!$soakDiskGuard) {
+            $script:soakSkipped.Add('disk：本构建没有资料盘守护（读取 GLUESIGHT_DISK_MIN_FREE_MB 的实现随 #111 合入）')
+            Write-Warning 'disk 阶段未运行：本构建没有资料盘守护，需 #111 先合入。'
+        } else {
+            Stop-SoakInstance
+            $env:GLUESIGHT_DISK_MIN_FREE_MB = '1073741824'
+            try { Start-SoakInstance -Prebuilt } finally { Remove-Item -LiteralPath Env:\GLUESIGHT_DISK_MIN_FREE_MB -ErrorAction SilentlyContinue }
+            Invoke-SoakNode 'disk.mjs' (@('blocked') + $soakNodeArgs)
+            Stop-SoakInstance
+            Start-SoakInstance -Prebuilt
+            Invoke-SoakNode 'disk.mjs' (@('recovered') + $soakNodeArgs)
+        }
     }
     if ($Stages -contains 'audit') {
         Invoke-SoakNode 'faults.mjs' (@('audit') + $soakNodeArgs)
@@ -113,5 +129,10 @@ try {
     $env:GLUESIGHT_LYFLOW_RUNTIME = $soakPreviousLyflow
     Stop-SoakInstance
     Pop-Location
+}
+if ($script:soakSkipped.Count) { Write-Warning "未运行的阶段（不算通过也不算失败）：$($script:soakSkipped -join '；')" }
+if ($soakExit -eq 0 -and $script:soakKnown.Count) {
+    $soakExit = 2
+    Write-Warning "仅出现已知问题，未全部通过（退出码 2）：$($script:soakKnown -join '、')。明细见 $soakOutput 中各结果文件的 knownIssues。"
 }
 exit $soakExit

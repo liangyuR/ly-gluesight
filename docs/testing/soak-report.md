@@ -31,13 +31,26 @@
 $env:GLUESIGHT_SAMPLE_SET = 'C:\Users\11601\Documents\gs\2026-10-17-normal-sampleset'
 $env:GLUESIGHT_LYFLOW_RUNTIME = '<lyflow 运行库目录>'
 pwsh -NoProfile -File scripts/Test-Soak.ps1 -Parts 1000                              # 默认阶段：soak、faults、engine、audit、restart
-pwsh -NoProfile -File scripts/Test-Soak.ps1 -SkipBuild -Stages soak,faults,engine,disk  # 不含已知会卡住的两个重启阶段
+pwsh -NoProfile -File scripts/Test-Soak.ps1 -SkipBuild -Stages soak,faults,engine,disk  # 不含已知会卡住的两个重启阶段；disk 需 #111
+pwsh -NoProfile -File scripts/Test-Soak.ps1 -SkipBuild -Stages faults                 # 单独跑一个阶段（每次都重建隔离数据、重新建配方）
 node scripts/soak/soak.mjs run --parts 300 --page /inspect                           # 在线检测页打开时的界面内存
 ```
 
-阶段：`soak` 连续生产；`faults` PLC / 相机 / lyFlow / 目录 / 复位类注入；`engine` lyFlow 运行库缺失；`disk` 资料盘不足（需资料盘守护）；`audit` 追溯目录不可写后重启；`restart` 事务中强制结束进程。`audit`、`restart` 在剩余风险 1 修复前可能停在“重启前留下的离线未结事务阻止回到离线”，脚本会如实报错。
+阶段：`soak` 连续生产；`faults` PLC / 相机 / lyFlow / 目录 / 复位类注入；`engine` lyFlow 运行库缺失；`disk` 资料盘不足（需 #111 的资料盘守护）；`audit` 追溯目录不可写后重启；`restart` 事务中强制结束进程。`audit`、`restart` 在剩余风险 1 修复前可能停在“重启前留下的离线未结事务阻止回到离线”，脚本会如实报错。
 
-结果写到 `output/soak/`（`soak-<件数>.json`、`faults-*.json`、`restart.json`、`engine-missing.json`、`disk-*.json`），不入库。
+阶段按上面顺序执行，某一阶段失败即中止后续阶段；要拿到后面阶段的数据，用 `-Stages` 分开跑。`disk` 阶段运行前检查本工作区源码里有没有读取 `GLUESIGHT_DISK_MIN_FREE_MB` 的资料盘守护：#111 未合入时该阶段记为未运行，不算失败也不算通过，结束时列出（S-15）。
+
+判定口径（S-14）：
+
+| 阶段 | 失败（退出码 1，中止后续阶段） | 已知问题（退出码 2，继续后续阶段） |
+| --- | --- | --- |
+| `soak` | 生产不足；正常样本判 NG；cycleId 重复；判定与 PLC 交付不一致（合格件未确认，或任何件交付未落定）；ERR 比例超过 `-MaxErrRatio`（默认 20%） | — |
+| `faults` | 场景出错或超时；该进故障没进，或拒写这类不该进故障的进了；在途件没有记录；复位输入保持高电平就离开故障、先低后高不回就绪；PLC 停机未到期就重连；错误的 OK；复位后 3 件内不合格；重启后投产不合格 | PC 主动断开 PLC 后不自动重连、经接口补连接（剩余风险 2） |
+| `engine`、`disk`、`restart` | 结果文件中 `passed` 为 false | — |
+
+`Test-Soak.ps1` 退出码：0 全部通过；1 有阶段失败；2 只有已知问题，未全部通过；3 输入缺失，未运行。
+
+结果写到 `output/soak/`（`soak-<件数>.json`、`faults-*.json`、`restart.json`、`engine-missing.json`、`disk-*.json`），不入库。`soak-<件数>.json` 的 `failures` 与 `faults-*.json` 的 `failures`、`knownIssues` 列出未通过的原因。
 
 ## 长稳数据
 
@@ -63,6 +76,8 @@ node scripts/soak/soak.mjs run --parts 300 --page /inspect                      
 | 自动恢复 | 95 次中止全部由虚拟 PLC 下一件前 faultReset 恢复，没有停到重启 |
 
 ERR 128 件 = 布防预算 124 + 测量超过 `proc_ms` 3000 ms 4 件。修复前，其中 20 件 `audit-health` 每一件都会让产线停到重启。
+
+按判定口径（S-14）复核留存的汇总：无 NG；1001 条记录的 cycleId 各不相同；ERR 占 12.8%，低于默认阈值 20%；交付失败 95 件对应 95 次 visionFault 中止（其中 91 次记下的故障为 `plc-arm-confirmed` 布防预算超时）。留存结果只有汇总，逐件“合格件交付已确认”需按新脚本重跑确认。这一轮原先按“全部合格”判为不通过，默认阶段会在 `soak` 后中止。
 
 资源趋势（每 6 分钟取一点）：
 
@@ -110,12 +125,14 @@ ERR 128 件 = 布防预算 124 + 测量超过 `proc_ms` 3000 ms 4 件。修复�
 
 注入节拍 400 ms。“恢复”指注入结束后由虚拟 PLC faultReset 再投产，直到合格（最多 3 件）；断线类场景首轮脚本在重连完成前就发起了一次投产（被拒“离线 S7 服务尚未连接”），脚本已改为先等重连。所有场景都没有错误的 OK。
 
+审查后脚本按 S-14 逐项判定，并修正两处：每个场景结束后的统一 `clear` 会提前结束 PLC 停机，停机类场景改为先等停机期满、PC 自动重连再返回；拒写场景不再等 36 s 的“进入故障”超时，改为等本件走完并要求不进故障。2026-10-19 用修正后的脚本重跑 `-Stages soak,faults,disk -Parts 5`（本分支构建，不含 #109–#111）：17 类注入无失败、无已知问题，退出码 0；`disk` 阶段因无资料盘守护记为未运行。之后拒写场景的结束条件从“出记录”改为“产线自行停下”，用 `faults.mjs run --only plcRejectWriteMidPart,plcOutageMidPart` 重跑这两类，均通过。
+
 | 场景 | 注入方式 | 进入的故障与提示 | 本件判定 | 恢复 |
 | --- | --- | --- | --- | --- |
 | PLC 断线（空闲） | `offline_inject disconnect` | FAULT“S7 PLC 未连接；保留未结事务，重连后需复位”，3 s 后自动重连 | — | 1 件合格 |
 | PLC 断线（采集中） | 同上 | 同上 | ERR 90/98“…结果未回写” | 自动重连后 1 件合格 |
-| PLC 停机 8 s（空闲） | `outage 8000 ms` | 同上；停机期间重连被拒，恢复后重连 | — | 1 件合格 |
-| PLC 停机 8 s（采集中） | 同上 | 同上 | ERR 90/98 | 停机结束重连后 1 件合格 |
+| PLC 停机 8 s（空闲） | `outage 8000 ms` | 同上；停机期间重连被拒，注入后约 9.2 s 自动重连 | — | 1 件合格 |
+| PLC 停机 8 s（采集中） | 同上 | 同上；注入后约 9.2–9.3 s 自动重连（重跑数据；首轮脚本在停机期满前就 `clear`，测到的是提前结束停机后的重连） | ERR 90/98 | 1 件合格 |
 | PLC 应答延迟 | `delay`（一次应答延迟 2 倍超时） | 读超时断线，FAULT“S7 PLC 未连接” | ERR 90/98 | 自动重连后 1 件合格 |
 | PLC 拒绝写入 ×2 | `rejectWrite` | 写确认重试成功，不进故障 | 合格（图像与计数完整） | 1 件合格 |
 | PLC 心跳停（空闲） | `heartbeatStop` | FAULT“PLC 心跳超过 3000 ms 未翻转” | — | 1 件合格 |

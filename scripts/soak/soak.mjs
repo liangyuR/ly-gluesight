@@ -21,6 +21,24 @@ async function metricsSample({ manifest, call, page }, cdp, startedAt, parts) {
     files: { recordsOffline: disk["records-offline"].files }, phase: snapshot?.phase ?? null };
 }
 
+/** 长稳判定：正常样本判 NG、cycleId 重复、判定与交付不一致是硬失败；布防预算等时序原因的 ERR 只拒绝本件，按比例阈值判定。 */
+export function assessSoak({ parts, produced, items, maxErrRatio }) {
+  const failures = [];
+  const count = test => items.filter(test).length;
+  const ng = count(i => i.verdict.startsWith("NG"));
+  const err = count(i => i.verdict === "ERR_INSPECT");
+  const errRatio = items.length ? err / items.length : 0;
+  const deliveryMismatch = items.filter(i => OK_CLASS.has(i.verdict) ? i.delivery.state !== "acknowledged" : !["acknowledged", "failed"].includes(i.delivery.state))
+    .map(i => ({ id: i.id, cycleId: i.cycleId, verdict: i.verdict, delivery: i.delivery.state }));
+  const cycleIds = new Set(items.map(i => i.cycleId)).size;
+  if (produced < parts) failures.push(`只生产了 ${produced}/${parts} 件`);
+  if (ng) failures.push(`正常样本判 NG ${ng} 件`);
+  if (cycleIds !== items.length) failures.push(`${items.length} 条记录只有 ${cycleIds} 个不同的 cycleId`);
+  if (deliveryMismatch.length) failures.push(`判定与 PLC 交付不一致 ${deliveryMismatch.length} 件（合格件未确认，或交付未落定）`);
+  if (errRatio > maxErrRatio) failures.push(`ERR ${err} 件，占 ${(errRatio * 100).toFixed(1)}%，超过阈值 ${(maxErrRatio * 100).toFixed(1)}%`);
+  return { failures, errRatio, maxErrRatio, uniqueCycleIds: cycleIds, deliveryMismatch: deliveryMismatch.slice(0, 20) };
+}
+
 export async function soak(session, options) {
   const { call, page } = session;
   if (options.page) {
@@ -33,6 +51,8 @@ export async function soak(session, options) {
   const pace = { shotIntervalMs: Number(options.interval ?? 150), pauseMs: Number(options.pause ?? 200) };
   const metricsEveryMs = Number(options["metrics-every"] ?? 60000);
   const maxRestarts = Number(options["max-restarts"] ?? 200);
+  const maxErrRatio = Number(options["max-err-ratio"] ?? 0.2);
+  assert(maxErrRatio >= 0 && maxErrRatio <= 1, "--max-err-ratio 需在 0–1 之间");
   const settings = await call("cycle_get_settings");
   const before = await offlineHistory(call, RECIPE_ID);
   const logs = new LogCollector(call);
@@ -81,7 +101,6 @@ export async function soak(session, options) {
   const intervals = items.slice(1).map((item, n) => item.ts - items[n].ts);
   const verdicts = items.reduce((acc, i) => ({ ...acc, [i.verdict]: (acc[i.verdict] ?? 0) + 1 }), {});
   const deliveries = items.reduce((acc, i) => ({ ...acc, [i.delivery.state]: (acc[i.delivery.state] ?? 0) + 1 }), {});
-  const cycleIds = new Set(items.map(i => i.cycleId));
   const recent = items.slice(-Math.min(20, items.length));
   const recordings = [];
   for (const item of [items[0], ...recent].filter(Boolean)) {
@@ -99,11 +118,12 @@ export async function soak(session, options) {
     auditHealthMs: percentiles(stage("audit-health")), plcArmMs: percentiles(stage("plc-arm-confirmed")),
     overBudget: arms.filter(a => a.status !== "armed").map(a => ({ status: a.status, elapsedMs: Math.round(a.trace?.elapsedMs ?? 0), last: a.trace?.stages?.at(-1)?.stage })),
   };
+  const check = assessSoak({ parts, produced, items, maxErrRatio });
   const result = {
-    passed: produced >= parts && items.every(i => OK_CLASS.has(i.verdict)) && cycleIds.size === items.length && deliveries.acknowledged === items.length,
+    passed: check.failures.length === 0, failures: check.failures, errRatio: check.errRatio, maxErrRatio: check.maxErrRatio, deliveryMismatch: check.deliveryMismatch,
     parts: produced, pace, page: options.page ?? null, settings: { offlineRecordKeep: settings.offlineRecordKeep, offlineRecordMaxGb: settings.offlineRecordMaxGb, historyDays: settings.historyDays },
     elapsedMs: Date.now() - startedAt,
-    verdicts, deliveries, uniqueCycleIds: cycleIds.size,
+    verdicts, deliveries, uniqueCycleIds: check.uniqueCycleIds,
     latencyMs: percentiles(latency), intervalMs: percentiles(intervals),
     throughputPerHour: items.length > 1 ? Math.round(3600000 * (items.length - 1) / (items.at(-1).ts - items[0].ts)) : null,
     growth: { mainPrivBytes: growth("priv"), mainWsBytes: growth("ws"), mainHandles: growth("handles"), mainThreads: growth("threads"),
