@@ -73,7 +73,8 @@ export default function SelectionTrack({ as: Tag = "div", activeKey, trackId, cl
     const tokens = getComputedStyle(element);
     const duration = tokens.getPropertyValue("--dur-medium").trim();
     const easing = tokens.getPropertyValue("--ease-standard").trim();
-    animation.current = element.animate([frame(move.from), frame(move.to)], { duration: parseFloat(duration) * (duration.endsWith("ms") ? 1 : 1000), easing });
+    const scale = `scale(${move.to.width ? move.from.width / move.to.width : 1}, ${move.to.height ? move.from.height / move.to.height : 1})`;
+    animation.current = element.animate([{ transform: `translate(${move.from.x}px, ${move.from.y}px) ${scale}` }, { transform: `translate(${move.to.x}px, ${move.to.y}px)` }], { duration: parseFloat(duration) * (duration.endsWith("ms") ? 1 : 1000), easing });
   }, [placement]);
 
   useLayoutEffect(() => {

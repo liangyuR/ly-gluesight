@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import Modal from "./Modal";
-import { dataTypeLabels, edgeLabels, newPoint } from "../meta";
+import { dataTypeLabels, edgeLabels, isText, newPoint } from "../meta";
 import type { PlcPoint } from "../types";
 
 interface PointsJsonDialogProps {
@@ -45,7 +45,7 @@ export default function PointsJsonDialog({ points, blockedReason = "", onApply, 
         if (typeof p.description !== "string") fail("说明");
         if (!Array.isArray(p.tags) || p.tags.some(tag => typeof tag !== "string")) fail("标签");
         p.tags = [...new Set(p.tags.map(tag => tag.trim()).filter(Boolean))];
-        if (p.dataType === "bool" || p.dataType === "string") p.wordOrder = null;
+        if (p.dataType === "bool" || isText(p.dataType)) p.wordOrder = null;
         return p;
       });
       onApply(next);

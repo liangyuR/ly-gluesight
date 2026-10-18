@@ -28,7 +28,8 @@ function rangeStart(days: number | null) {
 }
 
 export default function HistoryPage() {
-  const navigate = useNavigate();
+  const go = useNavigate();
+  const navigate = (to: string) => go(to, { state: { query } });
   const recipes = useRecipes();
   const [scope, setScope] = useState<HistoryScope>("real");
   const [range, setRange] = useState("today");

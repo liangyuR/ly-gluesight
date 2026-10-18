@@ -23,6 +23,7 @@ export interface Segment {
   name: string;
   /** 拍照点下标 */
   shot: number;
+  view: number;
   first: number;
   count: number;
   /** 胶条中线相对示教中线的横向偏移（mm）；null 时不判位置 */
