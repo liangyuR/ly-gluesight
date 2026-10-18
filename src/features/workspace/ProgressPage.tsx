@@ -1,21 +1,16 @@
 import { Link, useLocation } from "react-router-dom";
-import { AlertTriangle, ArrowRight, ClipboardCheck, Crosshair, Database, FileCog, Scan, Upload, type LucideIcon } from "lucide-react";
+import { AlertTriangle, ArrowRight, History, Lock } from "lucide-react";
 import { useWorkspace } from "./context";
 import { Badge, Panel, Steps, WorkspaceBar, WorkspaceEmpty } from "./components";
 import { stepStatusText, stepStatusTone, targetPath } from "./progress";
+import { stageOf, stages, stageStatus, stageStatusText, stageStatusTone } from "./stages";
 import { teachingTasks } from "./teachingTasks";
 import { returnState } from "./returnNavigation";
 import { teachingAction } from "./TeachingProgress";
 import type { StepId } from "./types";
 
-const stages: { id: StepId; title: string; icon: LucideIcon; href: string; action: string }[] = [
-  { id: "capture", title: "整圈采集", icon: Database, href: "/recipe/capture", action: "查看采集" },
-  { id: "defaults", title: "配方默认参数", icon: FileCog, href: "/recipe/geometry", action: "配置参数" },
-  { id: "teach", title: "单帧示教", icon: Scan, href: "/recipe/teach", action: "查看示教" },
-  { id: "calibration", title: "像素当量与标定", icon: Crosshair, href: "/recipe/teach", action: "去标定" },
-  { id: "validation", title: "独立样本验证", icon: ClipboardCheck, href: "/recipe/validation", action: "查看验证条件" },
-  { id: "publish", title: "发布与生效", icon: Upload, href: "/recipe/validation", action: "查看发布条件" },
-];
+const actions: Record<string, string> = { "/recipe/capture": "查看采集", "/recipe/geometry": "配置参数", "/recipe/teach": "查看示教", "/recipe/overview": "查看总览", "/recipe/validation": "查看验证与发布" };
+const subLabels: Partial<Record<StepId, string>> = { calibration: "标定", publish: "发布" };
 
 export default function ProgressPage() {
   const { data, doc } = useWorkspace();
@@ -29,30 +24,45 @@ export default function ProgressPage() {
   const next = action?.capture && progress.next?.step !== "capture" ? action : progress.next?.step === "teach" ? action : progress.next ? { href: targetPath(progress.next.target), label: progress.next.label } : action;
   const nextStep = progress.steps.find(step => step.id === (action?.capture ? "capture" : progress.next?.step ?? "teach"));
   const warning = nextStep?.status === "blocked" || action?.capture && tasks.some(task => task.phase === "recapture");
+  const reasons = [...new Set(nextStep?.blockers.map(blocker => blocker.message) ?? [])].filter(message => message !== nextStep?.detail).slice(0, 3);
   const completed = tasks.filter(task => task.phase === "done").length;
-  const currentTask = tasks.find(task => task.phase !== "done");
   const back = returnState(location, "进度总览");
+  const last = w.lastPosition && doc.shots[w.lastPosition.k];
   return <div className="wp-page"><WorkspaceBar/><Steps/><Panel title="配方进度" className="wp-progress-board">
-    {next && <div className={"wp-progress-next " + (warning ? "warn" : "info")}>
+    {next && <section className={"wp-progress-next " + (warning ? "warn" : "info")} aria-label="下一步">
       {warning ? <AlertTriangle size={22} aria-hidden="true"/> : <ArrowRight size={22} aria-hidden="true"/>}
-      <strong>{nextStep?.detail || "继续完成当前候选配置"}</strong>
+      <div className="wp-progress-next-body">
+        <small>下一步{nextStep && " · " + (stageOf(nextStep.id)?.label ?? nextStep.label)}</small>
+        <strong>{nextStep?.detail || "继续完成当前候选配置"}</strong>
+        {reasons.length > 0 && <ul>{reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>}
+      </div>
       <Link className="btn primary" to={next.href} state={back}>{next.label}<ArrowRight size={15} aria-hidden="true"/></Link>
-    </div>}
-    <div className="wp-progress-grid">{stages.map(({ id, title, icon: Icon, href, action: label }, index) => {
-      const step = progress.steps.find(item => item.id === id);
-      const status = id === "teach" && step?.status === "done" && currentTask ? currentTask.exception ? "blocked" : "inProgress" : step?.status;
-      const target = id === "teach" && action ? action.href : id === "calibration" && step?.blockers[0] ? targetPath(step.blockers[0].target) : href;
-      return <section key={id} className="wp-progress-stage" aria-label={id === "teach" ? "单帧示教进度" : title}>
-        <span className="wp-progress-number" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
-        <div className="wp-progress-stage-body">
-          <h3>{title}{step?.optional && "（可选）"}</h3>
-          <Badge tone={status ? stepStatusTone[status] : "neutral"}>{status ? stepStatusText[status] : "状态待确认"}</Badge>
-          {id === "teach" ? <output aria-label="有效示教组数">{completed} / {tasks.length} 组有效</output> : <p>{step?.detail || "尚未取得当前阶段进度"}</p>}
-          <Link className="wp-progress-link" to={target} state={back}><ArrowRight size={14} aria-hidden="true"/>{id === "teach" && action ? action.label : label}</Link>
+    </section>}
+    <div className="wp-progress-list">{stages.map((stage, index) => {
+      const status = stageStatus(progress, stage, tasks);
+      const waiting = status === "waiting";
+      const main = progress.steps.find(step => step.id === stage.ids[0]);
+      const subs = [...stage.ids.slice(1), ...stage.sub].flatMap(id => progress.steps.filter(step => step.id === id));
+      const isTeach = stage.ids.includes("teach");
+      const link = isTeach && action && !action.capture ? action : { href: stage.path, label: actions[stage.path] };
+      return <section key={stage.path} className={"wp-progress-row" + (waiting ? " waiting" : "")} aria-label={stage.label + "进度"}>
+        <span className={"wp-progress-number" + (stage.optional ? " optional" : "")} aria-hidden="true">{index + 1}</span>
+        <div className="wp-progress-row-body">
+          <h3>{stage.label}{stage.optional && <small>可选</small>}</h3>
+          <p>{waiting ? "整圈采集完成后可继续" : main?.detail && main.status !== "optional" ? main.detail : stage.hint}</p>
+          {!waiting && subs.map(step => <p key={step.id} className="wp-progress-sub"><span>{subLabels[step.id] ?? step.label}</span><Badge tone={stepStatusTone[step.status]}>{stepStatusText[step.status]}</Badge>{step.detail}</p>)}
         </div>
-        <Icon className="wp-progress-stage-icon" size={42} strokeWidth={1.25} aria-hidden="true"/>
+        <div className="wp-progress-meter">{isTeach && <>
+          <div className="wp-progress-bar" aria-hidden="true"><span style={{ width: tasks.length ? `${completed / tasks.length * 100}%` : 0 }}/></div>
+          <output aria-label="有效示教组数">{completed} / {tasks.length} 组有效</output>
+        </>}</div>
+        <output className="wp-progress-state" aria-label={stage.label + "状态"}>{waiting ? <Badge tone="neutral"><Lock size={12} aria-hidden="true"/>{stageStatusText.waiting}</Badge> : status !== "optional" && <Badge tone={status ? stageStatusTone[status] : "neutral"}>{status ? stageStatusText[status] : "状态待确认"}</Badge>}</output>
+        <Link className="wp-progress-link" to={link.href} state={back}>{link.label}<ArrowRight size={14} aria-hidden="true"/></Link>
       </section>;
     })}</div>
-    {w.lastPosition && <div className="wp-progress-last"><span>上次编辑</span><span>{doc.shots[w.lastPosition.k]?.poseId ?? ""} · {doc.shots[w.lastPosition.k]?.camera ?? ""} · 图 {w.lastPosition.view}</span></div>}
+    {w.lastPosition && last && <div className="wp-progress-last">
+      <History size={14} aria-hidden="true"/><span>上次编辑 · {last.poseId} · {last.camera} · 图 {w.lastPosition.view}</span>
+      <Link className="wp-progress-link" to={targetPath({ page: "teach", k: w.lastPosition.k })} state={back}>回到上次位置<ArrowRight size={14} aria-hidden="true"/></Link>
+    </div>}
   </Panel></div>;
 }

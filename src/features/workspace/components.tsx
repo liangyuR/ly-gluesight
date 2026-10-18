@@ -1,15 +1,16 @@
 import type { BrushGuide, ImagePoint } from "./teachingPath";
 import { useEffect, useId, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
-import { AlertTriangle, Camera, ChevronRight, Info, Minus, Plus, RotateCcw } from "lucide-react";
+import { AlertTriangle, Camera, Info, LayoutDashboard, Lock, Minus, Plus, RotateCcw } from "lucide-react";
 import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import type { PointVis, Recipe } from "../cycle/types";
 import { shotSegment, visColor } from "../cycle/vis";
-import type { GrayImage, StepId, StepStatus } from "./types";
+import type { GrayImage } from "./types";
 import { errorText } from "../../lib/errors";
-import { stepStatusText } from "./progress";
+import { stages, stageStatus, stageStatusText } from "./stages";
+import { teachingTasks } from "./teachingTasks";
 import { searchBand } from "./searchBand";
 import SelectionTrack from "../../components/SelectionTrack";
 
@@ -38,7 +39,7 @@ export function WorkspaceBar() {
   useEffect(() => () => setError(""), [pathname, setError]);
   const choices = [...list.map(r => ({ id:r.id, name:r.name })), ...drafts.filter(w => !list.some(r => r.id === w.doc.id)).map(w => ({ id:w.doc.id, name:w.doc.name }))];
   const publish = data?.workspace.publish;
-  return <><div className="wp-workbench-bar"><label className="wp-recipe-picker">当前配方<select className="input" value={selectedId ?? ""} disabled={busy || dirty || frameDirty} onChange={e => void select(e.target.value)}><option value="" disabled>选择配方</option>{choices.map(r => <option key={r.id} value={r.id}>{r.id} · {r.name}</option>)}</select></label>{data && <><Badge>候选 v{doc?.version}</Badge><Badge tone="neutral">{data.productionVersion ? "已发布 v" + data.productionVersion : "未发布"}</Badge><span className="muted">修订 {data.workspace.revision}</span>{publish?.state === "waiting" && <Badge tone="warn">v{data.workspace.pending?.doc.version} 待工件结束后生效</Badge>}</>}<Badge tone={saveState === "failed" ? "warn" : "neutral"}>{saveState === "saving" ? "保存中" : saveState === "failed" ? "保存失败" : saveState === "pending" ? "等待保存" : "草稿已保存"}</Badge>{saveState === "failed" && <button className="btn small" onClick={retrySave}>重试保存</button>}<span className="spacer" /><Link className="btn" to="/recipe">配方库</Link></div>
+  return <><div className="wp-workbench-bar"><label className="wp-recipe-picker">当前配方<select className="input" value={selectedId ?? ""} disabled={busy || dirty || frameDirty} onChange={e => void select(e.target.value)}><option value="" disabled>选择配方</option>{choices.map(r => <option key={r.id} value={r.id}>{r.id} · {r.name}</option>)}</select></label>{data && <><Badge tone={data.productionVersion ? "ok" : "warn"}>{data.productionVersion ? "已发布 v" + data.productionVersion : "未发布"}</Badge><span className="muted wp-candidate-meta">候选 v{doc?.version} · 修订 {data.workspace.revision}</span>{publish?.state === "waiting" && <Badge tone="warn">v{data.workspace.pending?.doc.version} 待工件结束后生效</Badge>}</>}<Badge tone={saveState === "failed" ? "warn" : "neutral"}>{saveState === "saving" ? "保存中" : saveState === "failed" ? "保存失败" : saveState === "pending" ? "等待保存" : "草稿已保存"}</Badge>{saveState === "failed" && <button className="btn small" onClick={retrySave}>重试保存</button>}<span className="spacer" /><Link className="btn" to="/recipe">配方库</Link></div>
     {dirty && <Notice title="候选配置尚未保存" tone="warn"><span>保存后再执行示教、验证和发布。</span><button className="btn small primary" disabled={busy || !!previewError} onClick={() => void saveDoc()}>保存候选配置</button></Notice>}
     {previewError && <Notice title="候选参数无效" tone="warn">{previewError}</Notice>}
     {error && <Notice title="操作未完成" tone="warn">{error}</Notice>}
@@ -49,25 +50,16 @@ export function WorkspaceBar() {
     {publish?.state === "active" && publish.warning && <Notice title={`v${publish.version} 已生效，但候选版本号未能更新`} tone="warn">{publish.warning}</Notice>}
   </>;
 }
-const stepPages: [string, string, StepId[], boolean][] = [
-  ["/recipe/progress", "进度总览", [], false],
-  ["/recipe/capture", "整圈采集", ["capture"], false],
-  ["/recipe/geometry", "配方默认参数", ["defaults"], true],
-  ["/recipe/teach", "单帧示教", ["teach"], false],
-  ["/recipe/overview", "工件总览", ["overview"], true],
-  ["/recipe/validation", "验证与发布", ["validation", "publish"], false],
-];
 /** 工作台步骤：侧栏只有“配方”入口，步骤间导航由此承担，状态取后端进度。 */
 export function Steps() {
-  const { data } = useWorkspace();
+  const { data, doc } = useWorkspace();
   const { pathname } = useLocation();
-  const status = (ids: StepId[]) => {
-    const steps = data?.progress.steps.filter(s => ids.includes(s.id)) ?? [];
-    if (!steps.length) return null;
-    for (const key of ["blocked", "inProgress", "notStarted", "optional"] as StepStatus[]) if (steps.some(s => s.status === key)) return key;
-    return "done" as StepStatus;
-  };
-  return <SelectionTrack as="nav" className="wp-steps" trackId="workspace-steps" activeKey={pathname} aria-label="配方配置步骤">{stepPages.map(([path, label, ids, optional], i) => { const s = status(ids); return <NavLink key={path} to={path} end className={({isActive}) => isActive ? "active" : ""}><span>{i + 1}</span>{label}{optional && <small>（可选）</small>}{s && s !== "optional" && <small className={"wp-step-status " + s}>{stepStatusText[s]}</small>}{path === "/recipe/teach" && s === "done" && data?.progress.steps.some(step => step.id === "calibration" && step.status !== "done") && <small className="wp-step-status blocked">标定待验证</small>}{i < stepPages.length - 1 && <ChevronRight size={14} />}</NavLink>; })}</SelectionTrack>;
+  const tasks = data && doc ? teachingTasks(doc.shots, data.progress) : [];
+  const calibrationPending = data?.progress.steps.some(step => step.id === "calibration" && step.status !== "done");
+  return <SelectionTrack as="nav" className="wp-steps" trackId="workspace-steps" activeKey={pathname} aria-label="配方配置步骤">
+    <NavLink to="/recipe/progress" end className={({isActive}) => "wp-step-home" + (isActive ? " active" : "")}><span className="wp-step-no"><LayoutDashboard size={13} aria-hidden="true" /></span><span className="wp-step-label">总览</span></NavLink>
+    {stages.map((stage, i) => { const s = data ? stageStatus(data.progress, stage, tasks) : null; return <NavLink key={stage.path} to={stage.path} end title={stage.optional ? stage.label + "（可选）" : undefined} className={({isActive}) => (isActive ? "active" : "") + (stage.optional ? " optional" : "")}><span className="wp-step-no">{i + 1}</span><span className="wp-step-label">{stage.label}</span>{s === "waiting" ? <small className="wp-step-status waiting"><Lock size={11} aria-hidden="true" />{stageStatusText[s]}</small> : s && s !== "optional" && <small className={"wp-step-status " + s}>{stageStatusText[s]}</small>}{stage.sub.includes("calibration") && s === "done" && calibrationPending && <small className="wp-step-status blocked">标定待验证</small>}</NavLink>; })}
+  </SelectionTrack>;
 }
 
 export function useGrayImage(id: string | null, imageId: string | null, historyId?: number | null, k = 0, view?: number) {

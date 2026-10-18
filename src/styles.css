@@ -231,6 +231,7 @@ a.engine-status:hover { color: var(--on-surface); }
   font: inherit;
   font-weight: 500;
   white-space: nowrap;
+  text-decoration: none;
   cursor: pointer;
   transition: transform var(--dur-medium) var(--ease-spatial), border-radius var(--dur-medium) var(--ease-spatial), background-color var(--dur-medium) var(--ease-standard), color var(--dur-medium) var(--ease-standard);
 }

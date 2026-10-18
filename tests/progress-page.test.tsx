@@ -20,7 +20,6 @@ it("后端下一步指向标定验证 → 主操作保留对应示教帧入口",
   ws.data!.progress.next = { step: "calibration", label: "验证拍照点 2 的像素当量", target: { page: "teach", k: 1 } };
   render(<MemoryRouter><ProgressPage /></MemoryRouter>);
   expect(screen.getByRole("link", { name: "验证拍照点 2 的像素当量" })).toHaveAttribute("href", "/recipe/teach?frame=1");
-  expect(screen.getByText("配方默认参数（可选）")).toBeVisible();
 });
 
 it("切换工作台页面 → 上一页的“操作未完成”错误从页面消失", async () => {
@@ -70,11 +69,11 @@ it.each(["unselected", "conflict", "missing", "stale"])("检测图为 %s → 不
   render(<MemoryRouter><ProgressPage/></MemoryRouter>);
   const card = within(screen.getByRole("region", { name: "单帧示教进度" }));
   expect(card.getByLabelText("有效示教组数")).toHaveTextContent("0 / 1 组有效");
-  expect(card.queryByText("完成", { exact: true })).not.toBeInTheDocument();
+  expect(card.getByLabelText("单帧示教状态")).not.toHaveTextContent("完成");
   expect(card.getByRole("link", { name: "继续示教" })).toHaveAttribute("href", "/recipe/teach?frame=0");
 });
 
-it("未选相机报告重采且后台指向其他步骤 → 主操作和示教入口均优先重新采集", () => {
+it("未选相机报告重采且后台指向其他步骤 → 只有主操作指向重新采集，示教行等待采集", () => {
   const progress = groups(3);
   progress.shots[0].views[0].state = "taught";
   progress.shots[7].state = "recapture";
@@ -82,12 +81,13 @@ it("未选相机报告重采且后台指向其他步骤 → 主操作和示教�
   Object.assign(capture, { status: "blocked", blockers: [{ message: "设备会话已变化，需要重新采集", target: { page: "capture" } }] });
   progress.next = { step: "calibration", label: "验证标定", target: { page: "teach", k: 0 } };
   render(<MemoryRouter><ProgressPage/></MemoryRouter>);
-  const card = within(screen.getByRole("region", { name: "单帧示教进度" }));
-  expect(card.getByRole("link", { name: "前往重新采集" })).toHaveAttribute("href", "/recipe/capture");
+  const next = within(screen.getByRole("region", { name: "下一步" }));
+  expect(next.getByRole("link", { name: "前往重新采集" })).toHaveAttribute("href", "/recipe/capture");
+  expect(next.getByText("设备会话已变化，需要重新采集")).toBeVisible();
   expect(screen.queryByRole("link", { name: "验证标定" })).not.toBeInTheDocument();
-  const recaptureLinks = screen.getAllByRole("link", { name: "前往重新采集" });
-  expect(recaptureLinks.length).toBeGreaterThan(1);
-  recaptureLinks.forEach(link => expect(link).toHaveAttribute("href", "/recipe/capture"));
+  expect(screen.getAllByRole("link", { name: "前往重新采集" })).toHaveLength(1);
+  const card = within(screen.getByRole("region", { name: "单帧示教进度" }));
+  expect(card.getByLabelText("单帧示教状态")).toHaveTextContent("等待采集");
 });
 
 it("所有组有效但后台仍指向未选相机 → 不再催办未选相机且保持独立发布状态", () => {
@@ -103,6 +103,17 @@ it("所有组有效但后台仍指向未选相机 → 不再催办未选相机�
   const card = within(screen.getByRole("region", { name: "单帧示教进度" }));
   expect(card.getByLabelText("有效示教组数")).toHaveTextContent("1 / 1 组有效");
   expect(card.getByRole("link", { name: "查看示教" })).toHaveAttribute("href", "/recipe/teach");
-  const publish = within(screen.getByRole("region", { name: "发布与生效" }));
-  expect(publish.getByText("未开始")).toBeVisible();
+  expect(screen.getByLabelText("验证与发布状态")).not.toHaveTextContent("完成");
+});
+
+it("整圈采集阻塞而后端仍报工件总览完成 → 依赖采集的步骤显示等待采集，默认参数不受影响", () => {
+  const capture = ws.data!.progress.steps.find(step => step.id === "capture")!;
+  Object.assign(capture, { status: "blocked", detail: "当前设备与采集时不一致，需整圈重新采集" });
+  render(<MemoryRouter><ProgressPage/></MemoryRouter>);
+  const navigation = within(screen.getByRole("navigation", { name: "配方配置步骤" }));
+  const overview = navigation.getByRole("link", { name: /工件总览/ });
+  expect(within(overview).getByText("等待采集")).toBeVisible();
+  expect(within(overview).queryByText("完成")).not.toBeInTheDocument();
+  for (const name of ["单帧示教状态", "工件总览状态", "验证与发布状态"]) expect(screen.getByLabelText(name)).toHaveTextContent("等待采集");
+  expect(screen.getByLabelText("默认参数状态")).not.toHaveTextContent("等待采集");
 });
