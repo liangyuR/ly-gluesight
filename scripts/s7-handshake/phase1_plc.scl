@@ -1,4 +1,5 @@
-// 审查参考，尚未在 TIA Portal 编译。将 GlueSightHandshake 指定为标准非优化 DB100 并核对偏移。
+// 审查参考，尚未在 TIA Portal 编译。协议 4（交互表 V1.0）。适用于 S7-1200/1500：将 GlueSightHandshake 指定为标准非优化 DB（交互表为 DB1）并核对偏移，SN 用 String[50]（SN 格式选 S7 STRING）。
+// S7-200 SMART 不支持 SCL：在 Micro/WIN SMART 中按同等逻辑实现，V 区即 DB1，SN 用 200 SMART 原生字符串（首字节实际长度）。
 DATA_BLOCK "GlueSightHandshake"
 { S7_Optimized_Access := 'FALSE' }
 VERSION : 0.1
@@ -13,17 +14,17 @@ VERSION : 0.1
       reserved0_7 : Bool;
       reserved1 : Byte;
       protocolVersion : UInt;
-      requestSeq : UDInt;
-      reserved8 : UDInt;
+      requestSeq : DInt;
+      reserved8 : DInt;
       productCode : UInt;
       shotCount : UInt;
-      planVersion : UDInt;
-      planReserved : UDInt;
+      planVersion : DInt;
+      planReserved : DInt;
       deviceShots : UInt;
       reserved26 : Array[26..31] of Byte;
-      ackSeq : UDInt;
+      ackSeq : DInt;
       deviceTriggers : UInt;
-      partSn : String[24];
+      reserved38 : Array[38..63] of Byte;
       visionReady : Bool;
       armed : Bool;
       busy : Bool;
@@ -34,16 +35,19 @@ VERSION : 0.1
       reserved64_7 : Bool;
       reserved65 : Byte;
       pcProtocolVersion : UInt;
-      resultSeq : UDInt;
-      reserved72 : UDInt;
+      resultSeq : DInt;
+      reserved72 : DInt;
       resultCode : UInt;
       faultCode : UInt;
-      acceptedSeq : UDInt;
-      acceptedPlanReserved : UDInt;
-      resultSn : String[24];
+      acceptedSeq : DInt;
+      acceptedPlanReserved : DInt;
+      reserved88 : Array[88..99] of Byte;
+      resultSn : String[50];
+      reserved152 : Array[152..159] of Byte;
+      partSn : String[50];
    END_VAR
 BEGIN
-   protocolVersion := UINT#3;
+   protocolVersion := UINT#4;
 END_DATA_BLOCK
 
 FUNCTION_BLOCK "GlueSightPhase1"
@@ -54,9 +58,9 @@ VERSION : 0.1
       NewPart : Bool;
       ResetRequest : Bool;
       ReconcileConfirmed : Bool;
-      PartSn : String[24];
+      PartSn : String[50];
       ProductCode : UInt;
-      PlanVersion : UDInt;
+      PlanVersion : DInt;
       DeviceShots : UInt;
       IssuedPulseCount : UDInt;
       MotionComplete : Bool;
@@ -78,8 +82,8 @@ VERSION : 0.1
       CycleComplete : Bool;
       ResetComplete : Bool;
       ResultLatched : Bool;
-      CapturedResultSeq : UDInt;
-      CapturedResultSn : String[24];
+      CapturedResultSeq : DInt;
+      CapturedResultSn : String[50];
       CapturedResultCode : UInt;
       CapturedFaultCode : UInt;
       LocalDiagnostic : UInt;
@@ -93,10 +97,10 @@ VERSION : 0.1
       PcHeartbeatSeen : Bool;
       ResetReadyLowSeen : Bool;
       TimerState : UInt;
-      FrozenSeq : UDInt;
-      FrozenSn : String[24];
+      FrozenSeq : DInt;
+      FrozenSn : String[50];
       FrozenProductCode : UInt;
-      FrozenPlanVersion : UDInt;
+      FrozenPlanVersion : DInt;
       FrozenShotCount : UInt;
       FrozenDeviceShots : UInt;
       CounterBase : UDInt;
@@ -126,7 +130,7 @@ BEGIN
    #TriggerPermit := FALSE;
    #ReadyForPart := FALSE;
    #TripCode := UINT#0;
-   "GlueSightHandshake".protocolVersion := UINT#3;
+   "GlueSightHandshake".protocolVersion := UINT#4;
 
    IF #Startup OR NOT #Initialized THEN
       #Initialized := TRUE;
@@ -221,13 +225,13 @@ BEGIN
                AND NOT "GlueSightHandshake".done AND NOT "GlueSightHandshake".visionFault
                AND NOT "GlueSightHandshake".partStart AND NOT "GlueSightHandshake".partEnd
                AND NOT "GlueSightHandshake".resultAck THEN
-               IF (#DeviceShots = UINT#0)
-                  OR #MotionComplete OR ("GlueSightHandshake".pcProtocolVersion <> UINT#3) THEN
+               IF (#DeviceShots = UINT#0) OR (#PlanVersion <= DINT#0)
+                  OR #MotionComplete OR ("GlueSightHandshake".pcProtocolVersion <> UINT#4) THEN
                   #TripCode := UINT#7004;
-               ELSIF "GlueSightHandshake".requestSeq = UDINT#4294967295 THEN
+               ELSIF ("GlueSightHandshake".requestSeq >= DINT#2147483647) OR ("GlueSightHandshake".requestSeq < DINT#0) THEN
                   #TripCode := UINT#7007;
                ELSE
-                  #FrozenSeq := "GlueSightHandshake".requestSeq + UDINT#1;
+                  #FrozenSeq := "GlueSightHandshake".requestSeq + DINT#1;
                   #FrozenSn := #PartSn;
                   #FrozenProductCode := #ProductCode;
                   #FrozenPlanVersion := #PlanVersion;
@@ -238,10 +242,10 @@ BEGIN
                   "GlueSightHandshake".productCode := #FrozenProductCode;
                   "GlueSightHandshake".shotCount := #FrozenShotCount;
                   "GlueSightHandshake".planVersion := #FrozenPlanVersion;
-                  "GlueSightHandshake".planReserved := UDInt#0;
+                  "GlueSightHandshake".planReserved := DINT#0;
                   "GlueSightHandshake".deviceShots := #FrozenDeviceShots;
                   "GlueSightHandshake".deviceTriggers := UINT#0;
-                  "GlueSightHandshake".ackSeq := UDINT#0;
+                  "GlueSightHandshake".ackSeq := DINT#0;
                   "GlueSightHandshake".partEnd := FALSE;
                   "GlueSightHandshake".resultAck := FALSE;
                   "GlueSightHandshake".faultReset := FALSE;
@@ -373,7 +377,7 @@ BEGIN
             END_IF;
             IF #ResetReadyLowSeen AND #ResetHoldTimer.Q AND #PcAlive
                AND "GlueSightHandshake".visionReady
-               AND ("GlueSightHandshake".pcProtocolVersion = UINT#3)
+               AND ("GlueSightHandshake".pcProtocolVersion = UINT#4)
                AND NOT "GlueSightHandshake".armed AND NOT "GlueSightHandshake".busy
                AND NOT "GlueSightHandshake".done AND NOT "GlueSightHandshake".visionFault THEN
                "GlueSightHandshake".faultReset := FALSE;
@@ -399,7 +403,7 @@ BEGIN
 
    #ReadyForPart := (#State = UINT#10) AND #PcAlive
       AND "GlueSightHandshake".visionReady AND NOT "GlueSightHandshake".visionFault
-      AND ("GlueSightHandshake".pcProtocolVersion = UINT#3)
+      AND ("GlueSightHandshake".pcProtocolVersion = UINT#4)
       AND NOT "GlueSightHandshake".armed AND NOT "GlueSightHandshake".busy
       AND NOT "GlueSightHandshake".done AND NOT "GlueSightHandshake".partStart
       AND NOT "GlueSightHandshake".partEnd AND NOT "GlueSightHandshake".resultAck
