@@ -40,12 +40,6 @@ export function teachStatus(shot: Pick<ShotSpec, "path" | "mmPerPx" | "skip">) {
   return `已示教 ${shot.path.length} 点 · ${Number.isFinite(mm) ? mm.toFixed(1) : "—"} mm`;
 }
 
-/** 要检的拍照点里已示教中线的比例（%），与后端 WorkspaceView.coverage 一致。 */
-export function taughtPercent(shots: Pick<ShotSpec, "path" | "mmPerPx" | "skip">[]) {
-  const measured = shots.filter((s) => !s.skip);
-  return measured.length ? (100 * measured.filter(shotTaught).length) / measured.length : 100;
-}
-
 /** 拍照点 k 的段（不检、未示教的拍照点没有）。 */
 export const shotSegment = (layout: Pick<Recipe, "segments">, k: number): { index: number; segment: Segment } | null => {
   const index = layout.segments.findIndex((g) => g.shot === k);
