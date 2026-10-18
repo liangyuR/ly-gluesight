@@ -1,4 +1,5 @@
 import CandidateDebugControls from "../features/cycle/components/CandidateDebugControls";
+import SelectionTrack from "../components/SelectionTrack";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { RotateCcw } from "lucide-react";
 import RuntimeFrame, { usePublishedOverview } from "../features/workspace/RuntimeFrame";
@@ -213,12 +214,12 @@ export default function InspectPage() {
                 <h3 className="panel-title">检测视图</h3>
                 <ContextHelp label="查看范围说明">选择拍照点或曲线测量点后进入手动查看；返回当前拍照点可恢复跟随。新工件自动恢复跟随，右侧始终保留整件判定。</ContextHelp>
                 <span className="spacer" />
-                {manualView ? <><span className="view-mode">手动查看</span><button className="btn small" onClick={resumeFollowing}>返回当前拍照点</button></> : <span className="muted">跟随当前拍照点</span>}
-                <div className="segmented" aria-label="检测视图切换">
+                {manualView && <><span className="view-mode">手动查看</span><button className="btn small" onClick={resumeFollowing}>返回当前拍照点</button></>}
+                <SelectionTrack className="segmented" activeKey={view} role="group" aria-label="检测视图切换">
                   <button className={view === "image" ? "active" : ""} aria-pressed={view === "image"} onClick={() => setView("image")}>原图</button>
                   <button className={view === "part" ? "active" : ""} aria-pressed={view === "part"} onClick={() => setView("part")}>整件布置</button>
                   <button className={view === "frame" ? "active" : ""} aria-pressed={view === "frame"} onClick={() => setView("frame")}>逐拍照点</button>
-                </div>
+                </SelectionTrack>
               </div>
               {view === "image" ? <RuntimeFrame compact onDiagnostics={() => setDiagnostics("capture")} part={ownLayout ? part : null} layout={layout} k={selected} measured={shown} vis={vis}/> :
                 layout ? view === "frame" ? <ShotTiles layout={layout} vis={vis} current={cur} selected={selected} onSelect={selectFrame} selectedPoint={selectedPoint} /> :

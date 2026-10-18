@@ -120,7 +120,7 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     expect(screen.getByText("测试样本偏移超差")).toBeVisible();
     await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith("cycle-1", "revisionId-A", 1));
     await userEvent.click(screen.getByRole("button", { name: "返回当前拍照点" }));
-    expect(screen.getByText("跟随当前拍照点")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "返回当前拍照点" })).not.toBeInTheDocument();
     expect(screen.getByText("测试样本偏移超差")).toBeVisible();
   });
 
@@ -135,7 +135,7 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     expect(screen.queryByText("测试样本偏移超差")).not.toBeInTheDocument();
     expect(screen.queryByText(/点 2 · P1 · J1 · s=1.00/)).not.toBeInTheDocument();
     expect(screen.getByText(/P1 · CAM-1 · 视角 1 · k1/)).toBeVisible();
-    expect(screen.getByText("跟随当前拍照点")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "返回当前拍照点" })).not.toBeInTheDocument();
     expect(screen.queryByText("3.00–4.50")).not.toBeInTheDocument();
     await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith("cycle-2", "revisionId-A", 0));
   });

@@ -303,3 +303,21 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 .status-list { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .dot.err { background: var(--ng); }
 .dot.off { background: var(--on-surface-disabled); }
+
+.selection-track { position: relative; isolation: isolate; }
+.selection-track > :is(button, a) { position: relative; z-index: 1; }
+.selection-track-indicator {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background: var(--secondary-container);
+  pointer-events: none;
+}
+.wp-steps > .selection-track-indicator { border-radius: var(--r-md); background: var(--primary-container); }
+.segmented.selection-track[data-selection-ready] > button.active,
+.wp-steps.selection-track[data-selection-ready] > a.active { background: transparent; }
+@media (prefers-reduced-motion: reduce) {
+  .selection-track-indicator { transition: none; }
+}

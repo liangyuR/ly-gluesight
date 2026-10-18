@@ -11,6 +11,7 @@ import type { GrayImage, StepId, StepStatus } from "./types";
 import { errorText } from "../../lib/errors";
 import { stepStatusText } from "./progress";
 import { searchBand } from "./searchBand";
+import SelectionTrack from "../../components/SelectionTrack";
 
 export function Badge({ children, tone = "info" }: { children: ReactNode; tone?: "info" | "ok" | "ng" | "warn" | "neutral" }) {
   return <span className={"wp-badge " + tone}>{children}</span>;
@@ -59,13 +60,14 @@ const stepPages: [string, string, StepId[], boolean][] = [
 /** 工作台步骤：侧栏只有“配方”入口，步骤间导航由此承担，状态取后端进度。 */
 export function Steps() {
   const { data } = useWorkspace();
+  const { pathname } = useLocation();
   const status = (ids: StepId[]) => {
     const steps = data?.progress.steps.filter(s => ids.includes(s.id)) ?? [];
     if (!steps.length) return null;
     for (const key of ["blocked", "inProgress", "notStarted", "optional"] as StepStatus[]) if (steps.some(s => s.status === key)) return key;
     return "done" as StepStatus;
   };
-  return <nav className="wp-steps" aria-label="配方配置步骤">{stepPages.map(([path, label, ids, optional], i) => { const s = status(ids); return <NavLink key={path} to={path} end className={({isActive}) => isActive ? "active" : ""}><span>{i + 1}</span>{label}{optional && <small>（可选）</small>}{s && s !== "optional" && <small className={"wp-step-status " + s}>{stepStatusText[s]}</small>}{path === "/recipe/teach" && s === "done" && data?.progress.steps.some(step => step.id === "calibration" && step.status !== "done") && <small className="wp-step-status blocked">标定待验证</small>}{i < stepPages.length - 1 && <ChevronRight size={14} />}</NavLink>; })}</nav>;
+  return <SelectionTrack as="nav" className="wp-steps" trackId="workspace-steps" activeKey={pathname} aria-label="配方配置步骤">{stepPages.map(([path, label, ids, optional], i) => { const s = status(ids); return <NavLink key={path} to={path} end className={({isActive}) => isActive ? "active" : ""}><span>{i + 1}</span>{label}{optional && <small>（可选）</small>}{s && s !== "optional" && <small className={"wp-step-status " + s}>{stepStatusText[s]}</small>}{path === "/recipe/teach" && s === "done" && data?.progress.steps.some(step => step.id === "calibration" && step.status !== "done") && <small className="wp-step-status blocked">标定待验证</small>}{i < stepPages.length - 1 && <ChevronRight size={14} />}</NavLink>; })}</SelectionTrack>;
 }
 
 export function useGrayImage(id: string | null, imageId: string | null, historyId?: number | null, k = 0, view?: number) {
