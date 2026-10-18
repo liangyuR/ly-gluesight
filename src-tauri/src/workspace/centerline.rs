@@ -17,7 +17,7 @@ pub struct ExtractionFailure {
 }
 
 #[derive(Debug)]
-pub(super) enum ExtractionError {
+pub(crate) enum ExtractionError {
     Invalid(String),
     Failed(ExtractionFailure),
 }
@@ -34,7 +34,7 @@ fn failure(point: [f32; 2], reason: &'static str, message: &str) -> ExtractionEr
     ExtractionError::Failed(ExtractionFailure { point, reason, message: message.into() })
 }
 
-pub(super) fn extract(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: Option<&BrushGuide>, point_spacing_px: f32) -> Result<Vec<[f32; 2]>, ExtractionError> {
+pub(crate) fn extract(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: Option<&BrushGuide>, point_spacing_px: f32) -> Result<Vec<[f32; 2]>, ExtractionError> {
     if !point_spacing_px.is_finite() || !(4.0..=80.0).contains(&point_spacing_px) {
         return Err("中线点间距需为 4–80 像素".into());
     }
