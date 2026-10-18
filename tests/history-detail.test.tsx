@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,7 +8,7 @@ import { workspaceApi } from "../src/features/workspace/api";
 import { useWorkspace } from "../src/features/workspace/context";
 import { deferred, partDetail, workspaceState } from "./fixtures";
 import type { Comparison, RecordImages } from "../src/features/workspace/types";
-import type { Measured } from "../src/features/cycle/types";
+import type { Measured, Recipe } from "../src/features/cycle/types";
 
 vi.mock("../src/features/history/api", () => ({ historyApi: { detail: vi.fn(), recipe: vi.fn(), neighbors: vi.fn() } }));
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
@@ -135,5 +135,24 @@ describe("历史工件复测", () => {
     expect(within(table).queryByRole("button", { name: "比对查看拍照点 k1" })).not.toBeInTheDocument();
     await userEvent.click(within(table).getByRole("button", { name: "比对查看拍照点 k2" }));
     expect(screen.getByRole("combobox", { name: "历史帧选择" })).toHaveValue("1");
+  });
+
+  it("原配方快照仍在加载 → 不提示缺失；确认缺失 → 提示原因并禁用按原发布包重现", async () => {
+    const recipe = deferred<Recipe | null>(); vi.mocked(historyApi.recipe).mockReturnValue(recipe.promise);
+    show(); await screen.findByText(/原图完整/);
+    expect(screen.queryByText("不能按原发布包重跑")).not.toBeInTheDocument();
+    await act(async () => recipe.resolve(null));
+    expect(await screen.findByText(/原配方快照 revisionId-A 缺失/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "按原发布包重现" })).toBeDisabled();
+  });
+
+  it("选中不检拍照点后按 → → 跳到其后的检测拍照点而不是回到开头", async () => {
+    const layout = ws.data!.layout;
+    layout.shots = [0, 1, 2, 3].map(k => ({ ...layout.shots[0], id: `P${k + 1}`, poseId: `P${k + 1}`, skip: k === 2 }));
+    show();
+    const frame = await screen.findByRole("combobox", { name: "历史帧选择" });
+    await userEvent.selectOptions(frame, "2");
+    fireEvent.keyDown(document.body, { key: "ArrowRight" });
+    expect(frame).toHaveValue("3");
   });
 });

@@ -38,8 +38,21 @@ describe("原图重跑逐拍照点比对", () => {
     expect(diffs[1].differs).toBe(false);
   });
 
-  it("候选改了测点布局 → 不做逐点对应", () => {
-    const changed: Recipe = { ...layout(), points: { x: [10, 20, 30], y: [10, 10, 10], seg: [0, 0, 1], k: [0, 0, 1] } };
-    expect(shotDiffs(layout(), original(), { candidateRecipe: changed, judgement: judgement(["OK", "OK"]), measurements: [] })).toBeNull();
+  it("多视角拍照点只有非首视角分段结论改变 → 该拍照点标为差异", () => {
+    const multiView = (): Recipe => {
+      const base = layout(), [p1, p2] = base.segments;
+      return { ...base, segments: [p1, { ...p1, view: 2, first: 2 }, { ...p2, first: 4 }],
+        points: { x: [10, 20, 10, 20, 30, 40], y: Array(6).fill(10), seg: [0, 0, 1, 1, 2, 2], k: [0, 0, 0, 0, 1, 1] } };
+    };
+    const detail = { ...original(), judgement: judgement(["OK", "OK", "OK"]) };
+    const diffs = shotDiffs(multiView(), detail, { candidateRecipe: multiView(), judgement: judgement(["OK", "NG_POSITION", "OK"]), measurements: [] })!;
+    expect(diffs.filter(s => s.differs).map(s => s.k)).toEqual([0]);
+  });
+
+  it.each([
+    ["测点归属改变", (r: Recipe): Recipe => ({ ...r, points: { x: [10, 20, 30], y: [10, 10, 10], seg: [0, 0, 1], k: [0, 0, 1] } })],
+    ["重新示教中线平移而测点数不变", (r: Recipe): Recipe => ({ ...r, points: { ...r.points, x: r.points.x.map(x => x + 5) } })],
+  ])("候选%s → 不做逐点对应", (_, change) => {
+    expect(shotDiffs(layout(), original(), { candidateRecipe: change(layout()), judgement: judgement(["OK", "OK"]), measurements: [] })).toBeNull();
   });
 });

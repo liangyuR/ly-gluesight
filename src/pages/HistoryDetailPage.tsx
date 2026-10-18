@@ -32,7 +32,7 @@ export default function HistoryDetailPage() {
   const {id}=useParams(), navigate=useNavigate(), ws=useWorkspace(), location=useLocation();
   const listQuery=(location.state as {query?:HistoryQuery}|null)?.query??null;
   const [neighbors,setNeighbors]=useState<{older:number|null;newer:number|null}>({older:null,newer:null});
-  const [detail,setDetail]=useState<PartDetail|null>(null),[layout,setLayout]=useState<Recipe|null>(null);
+  const [detail,setDetail]=useState<PartDetail|null>(null),[layout,setLayout]=useState<Recipe|null>(null),[recipeMissing,setRecipeMissing]=useState(false);
   const [error,setError]=useState(""),[working,setWorking]=useState(false);
   const [comparison,setComparison]=useState<Comparison|null>(null),[raw,setRaw]=useState<RecordImages|null>(null),[selected,setSelected]=useState(0);
   const [viewSelection,setViewSelection]=useState<{k:number;view:number}|null>(null);
@@ -55,11 +55,11 @@ export default function HistoryDetailPage() {
   },[detail?.summary.id,ws.doc?.id,ws.data?.workspace.revision]);
 
   useEffect(()=>{
-    let alive=true;setDetail(null);setLayout(null);setComparison(null);setRaw(null);setError("");setSelected(0);setViewSelection(null);
+    let alive=true;setDetail(null);setLayout(null);setRecipeMissing(false);setComparison(null);setRaw(null);setError("");setSelected(0);setViewSelection(null);
     void historyApi.detail(Number(id)).then(async d=>{
       if(!alive)return;setDetail(d);
       void workspaceApi.recordImages(d.summary.id).then(v=>alive&&setRaw(v)).catch(e=>alive&&setRaw({imageSource:d.summary.source==="offlineCandidate"?"offlineSample":"recording",historyId:d.summary.id,frames:[],complete:false,message:errorText(e)}));
-      const r=await historyApi.recipe(d.summary.recipeRevision,d.summary.recipeId);if(alive){setLayout(r);setSelected(Math.max(0,r?.shots.findIndex(shot=>!shot.skip)??0));}
+      const r=await historyApi.recipe(d.summary.recipeRevision,d.summary.recipeId);if(alive){setLayout(r);setRecipeMissing(!r);setSelected(Math.max(0,r?.shots.findIndex(shot=>!shot.skip)??0));}
     }).catch(e=>alive&&setError(errorText(e)));
     return()=>{alive=false;};
   },[id]);
@@ -88,7 +88,7 @@ export default function HistoryDetailPage() {
     const measured=layout.shots.flatMap((shot,k)=>shot.skip?[]:[k]);
     const order=measured.length?measured:layout.shots.map((_,k)=>k);
     const at=order.indexOf(selected);
-    const next=order[Math.min(order.length-1,Math.max(0,(at<0?0:at)+delta))];
+    const next=at>=0?order[Math.min(order.length-1,Math.max(0,at+delta))]:delta>0?order.find(k=>k>selected):order.filter(k=>k<selected).at(-1);
     if(next!=null){setSelected(next);setViewSelection(null);}
   };
   useEffect(()=>{
@@ -147,7 +147,7 @@ export default function HistoryDetailPage() {
   const unavailableMessage=sampleImages?raw?.frames.find(frame=>frame.k===selected&&frame.view===selectedView)?.error??raw?.message??"所选离线样本原图不可用":"本帧原图未保存或已按保留策略清理；完整测量数据仍可用于规则重判";
   const blockers=s.source==="offlineCandidate"?[]:[
     !s.bundleId&&"本件没有不可变发布包（布防前被拒或非生产记录），无法按原版本重跑",
-    !layout&&"原配方快照 "+(s.recipeRevision??"（未记录）")+" 缺失，不能用当前配方代替",
+    recipeMissing&&"原配方快照 "+(s.recipeRevision??"（未记录）")+" 缺失，不能用当前配方代替",
     raw&&!raw.complete&&recordingReason[detail.recording.state]+(raw.message?"："+raw.message:""),
   ].filter((v):v is string=>!!v);
   const baseOverlay=layout&&selectedView===layout.shots[selected]?.view?shotOverlay(layout,selected,result?.vis):undefined;
@@ -159,7 +159,7 @@ export default function HistoryDetailPage() {
     <Panel title="复测与候选对照" detail={s.source==="offlineCandidate"?"此记录没有生产发布包；可使用当前候选复测，结果另存，原始调试判定保留":"原包重现使用本件冻结资源；候选复测使用当前示教；所有结果另存，原始判定保留"}>
       <div className="wp-actions"><Badge tone="neutral">{s.source==="offlineCandidate"?"原始候选 "+(s.recipeRevision??"未记录"):"原始发布 v"+(s.recipeVersion??"—")}</Badge><Badge>候选 {ws.data&&ws.data.workspace.doc.id===layout?.id?"v"+ws.data.workspace.doc.version+" · 修订 "+ws.data.workspace.revision:"尚未选择此配方"}</Badge><span className="spacer"/>
         <button className="btn" disabled={working||ws.busy||!layout||(!ws.list.some(r=>r.id===layout.id)&&!ws.drafts.some(r=>r.doc.id===layout.id))} onClick={()=>{ws.setError("");setSwitching(true);}}>使用该配方候选</button>
-        {s.source!=="offlineCandidate"&&<button className="btn" disabled={working||!raw?.complete||!s.bundleId} onClick={()=>void runOriginal()}><ScanEye size={15}/>按原发布包重现</button>}
+        {s.source!=="offlineCandidate"&&<button className="btn" disabled={working||!raw?.complete||blockers.length>0} onClick={()=>void runOriginal()}><ScanEye size={15}/>按原发布包重现</button>}
         <button className="btn" disabled={disabled||!complete} onClick={()=>void runCompare(false)}><Scale size={15}/>按候选规则重判</button>
         <button className="btn primary" disabled={disabled||!raw?.complete||!(ws.data&&candidateTaught(ws.data,raw?.imageSource==="offlineSample"))} onClick={()=>void runCompare(true)}><ScanEye size={15}/>从原图复测整件</button>
       </div>

@@ -1,4 +1,3 @@
-import { shotSegment } from "../cycle/vis";
 import type { FrameStatus, Judgement, Measured, Recipe, Verdict } from "../cycle/types";
 import type { PartDetail } from "./types";
 
@@ -9,7 +8,8 @@ type PointKind = "ok" | "gap" | "inv";
 const kindOf = (st: number | undefined): PointKind => st === 0 ? "ok" : st === 1 ? "gap" : "inv";
 
 export interface ShotSide {
-  verdict: Verdict | null;
+  /** 该拍照点各视角分段的结论，按配方分段顺序 */
+  verdicts: { view: number; verdict: Verdict | null }[];
   ok: number;
   gap: number;
   inv: number;
@@ -34,17 +34,18 @@ export interface ShotDiff {
 type Replay = { candidateRecipe: Recipe; judgement: Judgement; measurements: Measured[] };
 type Original = Pick<PartDetail, "points" | "judgement" | "shots">;
 
-export function sameLayout(a: Recipe, b: Recipe) {
-  return a.shots.length === b.shots.length && a.points.k.length === b.points.k.length
-    && a.shots.every((shot, k) => shot.id === b.shots[k].id && shot.camera === b.shots[k].camera)
-    && a.points.k.every((k, j) => k === b.points.k[j]);
+const sameList = <T>(a: T[], b: T[]) => a.length === b.length && a.every((v, i) => v === b[i]);
+
+function sameLayout(a: Recipe, b: Recipe) {
+  return a.shots.length === b.shots.length && a.shots.every((shot, k) => shot.id === b.shots[k].id && shot.camera === b.shots[k].camera)
+    && a.segments.length === b.segments.length
+    && a.segments.every((g, i) => { const h = b.segments[i]; return g.shot === h.shot && g.view === h.view && g.first === h.first && g.count === h.count; })
+    && sameList(a.points.k, b.points.k) && sameList(a.points.seg, b.points.seg) && sameList(a.points.x, b.points.x) && sameList(a.points.y, b.points.y);
 }
 
 const count = (kinds: PointKind[]) => ({ ok: kinds.filter(x => x === "ok").length, gap: kinds.filter(x => x === "gap").length, inv: kinds.filter(x => x === "inv").length });
-const segmentVerdict = (layout: Recipe, judgement: Judgement, k: number) => {
-  const own = shotSegment(layout, k);
-  return own ? judgement.segments[own.index]?.verdict ?? null : null;
-};
+const segmentVerdicts = (layout: Recipe, judgement: Judgement, k: number) =>
+  layout.segments.flatMap((g, i) => g.shot === k ? [{ view: g.view, verdict: judgement.segments[i]?.verdict ?? null }] : []);
 
 /** 逐拍照点比较原结果与重跑结果；测点布局不同（候选改了拍照点或测点）时无法逐点对应，返回 null。 */
 export function shotDiffs(layout: Recipe, original: Original, replay: Replay): ShotDiff[] | null {
@@ -68,12 +69,13 @@ export function shotDiffs(layout: Recipe, original: Original, replay: Replay): S
       if (w0 != null && w1 != null && Number.isFinite(w0) && Number.isFinite(w1)) maxDw = Math.max(maxDw ?? 0, Math.abs(w0 - w1));
     });
     if (m && failed) owned.forEach((j, n) => { if (before[n] !== "inv") changed.push(j); });
-    const verdict = { before: segmentVerdict(layout, original.judgement, k), after: segmentVerdict(replay.candidateRecipe, replay.judgement, k) };
-    const differs = verdict.before !== verdict.after || (!!m && (changed.length > 0 || (maxDd ?? 0) > REPLAY_TOLERANCE_MM || (maxDw ?? 0) > REPLAY_TOLERANCE_MM));
+    const verdicts = { before: segmentVerdicts(layout, original.judgement, k), after: segmentVerdicts(replay.candidateRecipe, replay.judgement, k) };
+    const verdictChanged = !sameList(verdicts.before.map(v => v.verdict), verdicts.after.map(v => v.verdict));
+    const differs = verdictChanged || (!!m && (changed.length > 0 || (maxDd ?? 0) > REPLAY_TOLERANCE_MM || (maxDw ?? 0) > REPLAY_TOLERANCE_MM));
     return {
       k, shotId: shot.id, camera: shot.camera, skip: shot.skip, remeasured: !!m,
-      original: { verdict: verdict.before, ...count(before), status: record?.status ?? null, error: record?.error ?? null },
-      replay: { verdict: verdict.after, ...(m ? count(after) : { ok: 0, gap: 0, inv: 0 }), error: m?.error ?? (m && !m.located ? "定位失败" : null) },
+      original: { verdicts: verdicts.before, ...count(before), status: record?.status ?? null, error: record?.error ?? null },
+      replay: { verdicts: verdicts.after, ...(m ? count(after) : { ok: 0, gap: 0, inv: 0 }), error: m?.error ?? (m && !m.located ? "定位失败" : null) },
       changed, maxDd, maxDw, differs,
     };
   });

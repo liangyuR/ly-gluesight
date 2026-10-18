@@ -3,7 +3,10 @@ import { verdictClass, verdictLabel } from "../meta";
 import { REPLAY_TOLERANCE_MM, type ShotDiff, type ShotSide } from "../replay";
 import "../replay.css";
 
-const side = (s: ShotSide) => <>{s.verdict ? <span className={"vt " + verdictClass(s.verdict)}>{verdictLabel[s.verdict]}</span> : <span className="muted">—</span>}
+const verdicts = (vs: ShotSide["verdicts"], empty = "—") => vs.some(v => v.verdict)
+  ? <span className="replay-verdicts">{vs.map(({ view, verdict }) => <span key={view} className={verdict ? "vt " + verdictClass(verdict) : "muted"}>{vs.length > 1 ? `图 ${view} · ` : ""}{verdict ? verdictLabel[verdict] : "—"}</span>)}</span>
+  : <span className="muted">{empty}</span>;
+const side = (s: ShotSide) => <>{verdicts(s.verdicts)}
   <span className="muted"> · 有胶 {s.ok} · 缺胶 {s.gap}{s.inv ? ` · 未测成 ${s.inv}` : ""}</span></>;
 const mm = (v: number | null) => v == null ? "—" : v.toFixed(3);
 
@@ -32,7 +35,7 @@ export default function ReplayDiff({ diffs, source, selected, onSelect }: {
       <tbody>{rows.map(d => <tr key={d.k} className={(d.differs ? "replay-differs" : "") + (d.k === selected ? " replay-selected" : "")}>
         <td><button className="link mono" aria-label={`比对查看拍照点 k${d.k + 1}`} onClick={() => onSelect(d.k)}>k{d.k + 1} · {d.shotId}</button><div className="muted">{d.camera}</div></td>
         <td>{side(d.original)}{d.original.error && <div className="c-err">{d.original.error}</div>}</td>
-        <td>{d.remeasured ? side(d.replay) : d.replay.verdict ? <span className={"vt " + verdictClass(d.replay.verdict)}>{verdictLabel[d.replay.verdict]}</span> : <span className="muted">未重测</span>}{d.replay.error && <div className="c-err">{d.replay.error}</div>}</td>
+        <td>{d.remeasured ? side(d.replay) : verdicts(d.replay.verdicts, "未重测")}{d.replay.error && <div className="c-err">{d.replay.error}</div>}</td>
         <td className="mono">{d.remeasured ? d.changed.length : "—"}</td>
         <td className="mono">{mm(d.maxDd)}</td>
         <td className="mono">{mm(d.maxDw)}</td>
