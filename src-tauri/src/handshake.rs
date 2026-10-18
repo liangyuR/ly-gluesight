@@ -6,9 +6,9 @@ use ly_plc::{Access, DataType, EdgeMode, LinkState, PlcConfig, PlcEngine, PlcErr
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub(crate) const PROTOCOL_VERSION: u16 = 3;
-pub(crate) const SN_MAX_LEN: usize = 24;
-const SN_HEADER_MISMATCH: &str = "PLC 字符串声明长度";
+pub(crate) const PROTOCOL_VERSION: u16 = 4;
+pub(crate) const SN_MAX_LEN: usize = 50;
+const SN_HEADER_ERRORS: [&str; 2] = ["PLC 字符串声明长度", "PLC 字符串实际长度"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Direction {
@@ -26,15 +26,15 @@ struct Field {
 
 const FIELDS: &[Field] = &[
     input("protocolVersion", DataType::U16, false),
-    input("requestSeq", DataType::U32, false),
+    input("requestSeq", DataType::I32, false),
     input("partSn", DataType::String, false),
     input("productCode", DataType::U16, false),
     input("shotCount", DataType::U16, false),
-    input("planVersion", DataType::U32, false),
-    input("planReserved", DataType::U32, false),
+    input("planVersion", DataType::I32, false),
+    input("planReserved", DataType::I32, false),
     input("deviceShots", DataType::U16, false),
     input("deviceTriggers", DataType::U16, false),
-    input("ackSeq", DataType::U32, false),
+    input("ackSeq", DataType::I32, false),
     input("partStart", DataType::Bool, true),
     input("partEnd", DataType::Bool, true),
     input("resultAck", DataType::Bool, true),
@@ -47,9 +47,9 @@ const FIELDS: &[Field] = &[
     output("visionFault", DataType::Bool),
     output("pcHeartbeat", DataType::Bool),
     output("pcProtocolVersion", DataType::U16),
-    output("acceptedSeq", DataType::U32),
-    output("acceptedPlanReserved", DataType::U32),
-    output("resultSeq", DataType::U32),
+    output("acceptedSeq", DataType::I32),
+    output("acceptedPlanReserved", DataType::I32),
+    output("resultSeq", DataType::I32),
     output("resultSn", DataType::String),
     output("resultCode", DataType::U16),
     output("faultCode", DataType::U16),
@@ -71,10 +71,20 @@ const fn output(tag: &'static str, data_type: DataType) -> Field {
     Field { tag, data_type, direction: Direction::Output, edge: false }
 }
 
+/// SN 点位的 S7 字符串头字节数：200 SMART 字符串只有实际长度，S7 STRING 另有声明长度。
+fn sn_header(data_type: DataType) -> Option<usize> {
+    match data_type {
+        DataType::SmartString => Some(1),
+        DataType::String => Some(2),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Contract {
     config: PlcConfig,
     ids: HashMap<&'static str, String>,
+    sn_type: DataType,
 }
 
 impl Contract {
@@ -90,6 +100,7 @@ impl Contract {
         }
         let mut ids = HashMap::new();
         let mut locations = Vec::new();
+        let mut sn_types = Vec::new();
         for field in FIELDS {
             let matches: Vec<_> = config.points.iter().filter(|p| p.tags.iter().any(|t| t == field.tag)).collect();
             let [point] = matches.as_slice() else {
@@ -101,8 +112,10 @@ impl Contract {
             if !point.poll {
                 return Err(format!("{} 必须参与轮询，握手依赖轮询读回确认", field.tag));
             }
-            if point.data_type != field.data_type {
-                return Err(format!("{} 必须使用 {:?} 类型，请按单设备 S7 协议 {PROTOCOL_VERSION} 模板重新生成点表", field.tag, field.data_type));
+            let text = field.data_type == DataType::String;
+            if text != sn_header(point.data_type).is_some() || (!text && point.data_type != field.data_type) {
+                let expected = if text { "SmartString 或 String".to_owned() } else { format!("{:?}", field.data_type) };
+                return Err(format!("{} 必须使用 {expected} 类型，请按单设备 S7 协议 {PROTOCOL_VERSION} 模板重新生成点表", field.tag));
             }
             let access = if field.direction == Direction::Input { Access::Read } else { Access::ReadWrite };
             if point.access != access {
@@ -118,8 +131,11 @@ impl Contract {
             if location.area.code != 0x84 || !point.address.trim().to_ascii_uppercase().starts_with("DB") {
                 return Err(format!("{} 必须使用标准 S7 DB 地址", field.tag));
             }
-            if field.data_type == DataType::String && location.len as usize != SN_MAX_LEN + 2 {
-                return Err(format!("{} 必须为 S7 STRING[{SN_MAX_LEN}]，地址写成 DB{{n}}.DBB起始字节.{SN_MAX_LEN}", field.tag));
+            if let Some(header) = sn_header(point.data_type) {
+                if location.len as usize != SN_MAX_LEN + header {
+                    return Err(format!("{} 必须为最大 {SN_MAX_LEN} 字符的 S7 字符串，地址写成 DB{{n}}.DBB起始字节.{SN_MAX_LEN}", field.tag));
+                }
+                sn_types.push(point.data_type);
             }
             if field.direction == Direction::Output && !location.writable {
                 return Err(format!("{} 所在地址不可写", field.tag));
@@ -141,6 +157,10 @@ impl Contract {
             locations.push((*field, location));
             ids.insert(field.tag, point.id.clone());
         }
+        let [sn_type, result_sn_type] = sn_types[..] else { return Err("partSn 与 resultSn 必须各配置一个字符串点位".into()) };
+        if sn_type != result_sn_type {
+            return Err("partSn 与 resultSn 必须使用同一种字符串格式（SmartString 或 String），PLC 才能逐字节比较".into());
+        }
         for point in config.points.iter().filter(|p| !ids.values().any(|id| id == &p.id)) {
             let location = ly_plc::resolve(&config.connection, &point.address, point.data_type)?;
             let direction = if point.access == Access::ReadWrite { Direction::Output } else { Direction::Input };
@@ -161,7 +181,7 @@ impl Contract {
         if !(100..=1000).contains(&config.heartbeat.interval_ms) {
             return Err("PC 心跳周期必须在 100–1000 ms 之间".into());
         }
-        Ok(Self { config: config.clone(), ids })
+        Ok(Self { config: config.clone(), ids, sn_type })
     }
 
     pub(crate) fn point_id(&self, tag: &str) -> Result<&str, String> {
@@ -184,9 +204,13 @@ impl Contract {
         let field = FIELDS.iter().find(|f| f.tag == tag).ok_or_else(|| format!("未知握手标签：{tag}"))?;
         let valid = match (field.data_type, value) {
             (DataType::Bool, PlcValue::Bool(_)) => true,
-            (DataType::U16, PlcValue::Int(n)) if u16::try_from(*n).is_err() => return Err(out_of_range(tag, *n, "UInt")),
-            (DataType::U32, PlcValue::Int(n)) if u32::try_from(*n).is_err() => return Err(out_of_range(tag, *n, "UDInt")),
-            (DataType::U16 | DataType::U32, PlcValue::Int(_)) => true,
+            (DataType::U16, PlcValue::Int(n)) if u16::try_from(*n).is_err() => return Err(out_of_range(tag, *n, WORD)),
+            (DataType::I32, PlcValue::Int(n)) if !(0..=i32::MAX as i64).contains(n) => return Err(out_of_range(tag, *n, DINT)),
+            (DataType::U16 | DataType::I32, PlcValue::Int(_)) => true,
+            (DataType::String, PlcValue::Text(text)) if self.smart_length_reserved(text) => return Err(format!(
+                "{tag} 的 200 SMART 字符串长度字节为 {SN_MAX_LEN}，与 S7 STRING 的声明长度相同：PLC 可能按 S7 STRING 写入，核对两端 SN 格式（200 SMART 字符串 SN 最多 {} 个字符）",
+                SN_MAX_LEN - 1,
+            )),
             (DataType::String, PlcValue::Text(_)) => true,
             _ => false,
         };
@@ -196,9 +220,18 @@ impl Contract {
         Ok(value)
     }
 
-    fn sn_header_mismatch(&self, values: &HashMap<String, PointValue>, tag: &str) -> bool {
-        self.point_id(tag).ok().and_then(|id| values.get(id)).and_then(|point| point.error.as_ref())
-            .is_some_and(|error| matches!(error, PlcError::Decode(m) if m.starts_with(SN_HEADER_MISMATCH)))
+    /// 200 SMART 字符串的长度字节 50 与 S7 STRING 的声明长度相同，保留用于识别两端格式不一致。
+    fn smart_length_reserved(&self, text: &str) -> bool {
+        self.sn_type == DataType::SmartString && text.chars().count() == SN_MAX_LEN
+    }
+
+    fn sn_header_broken(&self, values: &HashMap<String, PointValue>, tag: &str) -> bool {
+        let Some(point) = self.point_id(tag).ok().and_then(|id| values.get(id)) else { return false };
+        match (&point.error, &point.value) {
+            (Some(PlcError::Decode(m)), _) => SN_HEADER_ERRORS.iter().any(|prefix| m.starts_with(prefix)),
+            (None, Some(PlcValue::Text(text))) => self.smart_length_reserved(text),
+            _ => false,
+        }
     }
 
     fn validate_writes(&self, writes: &[WriteOp]) -> Result<(), String> {
@@ -215,7 +248,7 @@ impl Contract {
             let valid = match field.data_type {
                 DataType::Bool => op.value.as_bool().is_some(),
                 DataType::U16 => op.value.as_u64().is_some_and(|v| u16::try_from(v).is_ok()),
-                DataType::U32 => op.value.as_u64().is_some_and(|v| u32::try_from(v).is_ok()),
+                DataType::I32 => op.value.as_u64().is_some_and(|v| v <= i32::MAX as u64),
                 DataType::String => op.value.as_str().is_some_and(|v| check_sn(v).is_ok() || (v.is_empty() && !publishes)),
                 _ => false,
             };
@@ -240,6 +273,9 @@ pub(crate) fn check_sn(sn: &str) -> Result<(), String> {
     }
     Ok(())
 }
+
+const WORD: &str = "WORD（0–65535）";
+const DINT: &str = "非负 DInt（0–2147483647）";
 
 fn out_of_range(tag: &str, value: impl std::fmt::Display, kind: &str) -> String {
     format!("PLC 字段 {tag}={value} 超出 {kind} 范围，按协议不能截断使用；核对 PLC 程序与点表类型")
@@ -293,7 +329,7 @@ impl Snapshot {
         let mut broken_outputs = Vec::new();
         for field in FIELDS {
             if tolerate_output_sn_header && field.direction == Direction::Output && field.data_type == DataType::String
-                && contract.sn_header_mismatch(raw, field.tag) {
+                && contract.sn_header_broken(raw, field.tag) {
                 broken_outputs.push(field.tag);
                 continue;
             }
@@ -344,15 +380,15 @@ impl Snapshot {
 
     pub(crate) fn read_u32(&self, tag: &str) -> Result<u32, String> {
         match self.values.get(tag) {
-            Some(PlcValue::Int(v)) => u32::try_from(*v).map_err(|_| out_of_range(tag, v, "UDInt")),
-            _ => Err(format!("{tag} 不是有效无符号整数")),
+            Some(PlcValue::Int(v)) => u32::try_from(*v).map_err(|_| out_of_range(tag, v, DINT)),
+            _ => Err(format!("{tag} 不是有效非负整数")),
         }
     }
 
-    /// UInt 字段：超出 0–65535 报错，不截断。
+    /// WORD 字段：超出 0–65535 报错，不截断。
     pub(crate) fn read_u16(&self, tag: &str) -> Result<u16, String> {
         let value = self.read_u32(tag)?;
-        u16::try_from(value).map_err(|_| out_of_range(tag, value, "UInt"))
+        u16::try_from(value).map_err(|_| out_of_range(tag, value, WORD))
     }
 
     pub(crate) fn request(&self) -> Result<Request, String> {
@@ -803,7 +839,7 @@ mod tests {
         })).collect();
         values.get_mut("partSn").unwrap().value = Some(PlcValue::Text("SN-42".into()));
         for (tag, value) in [
-            ("protocolVersion", 3), ("pcProtocolVersion", 3), ("requestSeq", 7),
+            ("protocolVersion", PROTOCOL_VERSION as i64), ("pcProtocolVersion", PROTOCOL_VERSION as i64), ("requestSeq", 7),
             ("productCode", 3), ("shotCount", 4), ("planVersion", 2), ("planReserved", 0),
             ("deviceShots", 4),
         ] {
@@ -887,28 +923,67 @@ mod tests {
     }
 
     #[test]
-    fn part_sn_outside_1_to_24_printable_ascii_cannot_arm_but_valid_sn_is_kept_verbatim() {
-        for sn in ["", "   ", "A\u{7f}B", "A\tB", "SN-\u{e9}", &"X".repeat(25)] {
+    fn part_sn_outside_1_to_50_printable_ascii_cannot_arm_but_valid_sn_is_kept_verbatim() {
+        for sn in ["", "   ", "A\u{7f}B", "A\tB", "SN-\u{e9}", &"X".repeat(51)] {
             let mut s = snapshot();
             s.values.insert("partSn", PlcValue::Text(sn.into()));
             assert!(s.start_request().is_err(), "{sn:?}");
         }
-        let mut s = snapshot();
-        s.values.insert("partSn", PlcValue::Text(" a-01 ~".into()));
-        assert_eq!(s.start_request().unwrap().sn, " a-01 ~");
+        for sn in [" a-01 ~".to_owned(), "X".repeat(50)] {
+            let mut s = snapshot();
+            s.values.insert("partSn", PlcValue::Text(sn.clone()));
+            assert_eq!(s.start_request().unwrap().sn, sn);
+        }
     }
 
     #[test]
-    fn contract_rejects_protocol_2_numeric_sn_table_and_non_string24_sn() {
-        for (tag, data_type, address) in [
-            ("partSn", DataType::U32, "DB9.DBD0"), ("resultSn", DataType::U32, "DB9.DBD0"),
-            ("partSn", DataType::String, "DB9.DBB0.20"), ("resultSn", DataType::String, "DB9.DBB0.30"),
-        ] {
-            let mut cfg = config();
+    fn contract_accepts_either_50_char_sn_format_only_when_both_sides_match() {
+        let set = |cfg: &mut PlcConfig, tag: &str, data_type: DataType, address: &str| {
             let point = cfg.points.iter_mut().find(|p| p.id == tag).unwrap();
             point.data_type = data_type;
             point.address = address.into();
-            assert!(Contract::validate(&cfg).is_err(), "{tag} {address}");
+        };
+        let mut cfg = config();
+        set(&mut cfg, "partSn", DataType::SmartString, "DB1.DBB160.50");
+        set(&mut cfg, "resultSn", DataType::SmartString, "DB2.DBB100.50");
+        assert!(Contract::validate(&cfg).is_ok());
+        for (tag, data_type, address) in [
+            ("partSn", DataType::I32, "DB1.DBD160"), ("resultSn", DataType::U32, "DB2.DBD100"),
+            ("partSn", DataType::SmartString, "DB1.DBB160.24"), ("resultSn", DataType::SmartString, "DB2.DBB100.49"),
+            ("partSn", DataType::String, "DB1.DBB160.50"),
+        ] {
+            let mut broken = cfg.clone();
+            set(&mut broken, tag, data_type, address);
+            assert!(Contract::validate(&broken).is_err(), "{tag} {data_type:?} {address}");
+        }
+    }
+
+    #[test]
+    fn smart_string_length_byte_50_from_s7_string_header_is_read_error_not_shifted_sn() {
+        let mut cfg = config();
+        for point in cfg.points.iter_mut().filter(|p| p.data_type == DataType::String) {
+            point.data_type = DataType::SmartString;
+        }
+        let contract = Contract::validate(&cfg).unwrap();
+        let (_, status, mut values) = data();
+        let sn = "9".repeat(SN_MAX_LEN - 1);
+        values.get_mut("partSn").unwrap().value = Some(PlcValue::Text(format!("1{sn}")));
+        let error = Snapshot::from_values(&contract, &status, &values, 1010, 1000).unwrap_err();
+        assert!(error.contains("partSn") && error.contains("S7 STRING"), "{error}");
+        values.get_mut("partSn").unwrap().value = Some(PlcValue::Text(sn.clone()));
+        assert_eq!(Snapshot::from_values(&contract, &status, &values, 1010, 1000).unwrap().request().unwrap().sn, sn);
+    }
+
+    #[test]
+    fn negative_dint_from_plc_is_rejected_instead_of_reinterpreted_as_unsigned() {
+        let (contract, status, mut values) = data();
+        values.get_mut("requestSeq").unwrap().value = Some(PlcValue::Int(i32::MAX as i64));
+        assert_eq!(Snapshot::from_values(&contract, &status, &values, 1010, 1000).unwrap().request().unwrap().request_seq, i32::MAX as u32);
+        for tag in ["requestSeq", "planVersion", "ackSeq"] {
+            let (contract, status, mut values) = data();
+            values.get_mut(tag).unwrap().value = Some(PlcValue::Int(-1));
+            let error = Snapshot::from_values(&contract, &status, &values, 1010, 1000).unwrap_err();
+            assert!(error.contains(tag), "{error}");
         }
     }
 

@@ -3,6 +3,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
 import type {
+  SnDataType,
   ConnectionConfig,
   DataType,
   HistorySample,
@@ -20,12 +21,12 @@ import type {
 const previewConfig: PlcConfig = {
   connection: {
     protocol: "s7",
-    host: "192.168.0.10",
+    host: "192.168.2.10",
     port: 102,
     timeoutMs: 1000,
     pollIntervalMs: 200,
     reconnectIntervalMs: 3000,
-    s7: { rack: 0, slot: 1, connectionType: "pg", localTsap: null, remoteTsap: null, pduSize: 480 },
+    s7: { rack: 0, slot: 1, connectionType: "pg", localTsap: 0x0102, remoteTsap: 0x0201, pduSize: 240 },
   },
   points: [],
   heartbeat: { pointId: null, intervalMs: 1000 },
@@ -67,8 +68,8 @@ export const plcApi = {
     call<HistorySample[]>("plc_point_history", { pointId, start, end }, () => []),
   checkAddress: (connection: ConnectionConfig, address: string, dataType: DataType) =>
     call<string>("plc_check_address", { connection, address, dataType }, () => "预览模式不校验"),
-  s7Phase1Template: (dbNumber: number) =>
-    call<PlcConfig>("plc_s7_phase1_template", { dbNumber }, () => { throw new Error("一期 S7 点表需要桌面后端生成"); }),
+  s7Phase1Template: (dbNumber: number, snType: SnDataType) =>
+    call<PlcConfig>("plc_s7_phase1_template", { dbNumber, snType }, () => { throw new Error("一期 S7 点表需要桌面后端生成"); }),
   getOperationState: () => call<PlcOperationState | null>("cycle_snapshot", undefined, () => null),
   recipeChoices: () => call<PlcRecipeChoice[]>("cycle_recipes", undefined, () => []),
   recipePlan: (recipeId: string) => call<PlcRecipePlan>("plc_recipe_plan", { recipeId }, () => { throw new Error("配方握手计划需要桌面后端读取"); }),
