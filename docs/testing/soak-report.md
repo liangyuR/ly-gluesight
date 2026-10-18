@@ -138,10 +138,10 @@ ERR 128 件 = 布防预算 124 + 测量超过 `proc_ms` 3000 ms 4 件。修复�
 
 | PR | 内容 | 新增测试 |
 | --- | --- | --- |
-| feat/soak-fault-injection | 离线节拍与注入钩子（`offline_pace`、PLC 停机、faultReset 电平保持）、`soak` 隔离实例、`scripts/soak/*` 与 `Test-Soak.ps1`、本报告与决策 | 无（脚本即系统测试） |
-| bugfix/audit-fault-lockup | 布防预算用完只拒绝本件、不标追溯故障；追溯故障期间只在原因变化时进入故障 | `arm_budget_overrun_in_audit_health_refuses_part_without_poisoning_audit` |
-| bugfix/retention-history-sync | 滚动清理先把引用目录的记录改为“按保留策略不存图”并写明原因，再删目录；改库失败本次不删 | `rolling_retention_prune_marks_history_raw_images_unavailable` |
-| feat/disk-space-guard | 资料盘剩余空间低于 2 GB 暂停接件、恢复后自动就绪 | `low_free_space_pauses_and_recovers_after_recheck_without_restart` |
+| #112 `feat/soak-fault-injection` | 离线节拍与注入钩子（`offline_pace`、PLC 停机、faultReset 电平保持）、`soak` 隔离实例、`scripts/soak/*` 与 `Test-Soak.ps1`、本报告与决策 | 无（脚本即系统测试） |
+| #110 `bugfix/audit-fault-lockup` | 布防预算用完只拒绝本件、不标追溯故障；追溯故障期间只在原因变化时进入故障 | `arm_budget_overrun_in_audit_health_refuses_part_without_poisoning_audit` |
+| #109 `bugfix/retention-history-sync` | 滚动清理先把引用目录的记录改为“按保留策略不存图”并写明原因，再删目录；改库失败本次不删 | `rolling_retention_prune_marks_history_raw_images_unavailable` |
+| #111 `feat/disk-space-guard` | 资料盘剩余空间低于 2 GB 暂停接件、恢复后自动就绪 | `low_free_space_pauses_and_recovers_after_recheck_without_restart` |
 
 ## 剩余风险
 
