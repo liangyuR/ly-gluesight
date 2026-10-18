@@ -188,20 +188,11 @@ fn gray(image: &FrameImage, point: [f32; 2]) -> Option<f32> {
     Some((pixel(x0,y0) * (1.0-tx) + pixel(x1,y0) * tx) * (1.0-ty) + (pixel(x0,y1) * (1.0-tx) + pixel(x1,y1) * tx) * ty)
 }
 
-/// 胶条中间的反光会把一条胶劈成两段：两段间的缝不宽于较宽的一段时可并成一条候选；
-/// strict 时还要求缝里没亮到接近较亮一侧的背景（否则只在逐站连不上时才拿来重试）。
-fn highlight_union(profile: &[Option<f32>], p: (f32, f32), q: (f32, f32), strict: bool) -> Option<(f32, f32)> {
+/// 胶面反光会把一条胶劈成两段：缝不宽于较宽一段时并成一条候选，只在逐站连不上时拿来重试，
+/// 否则胶旁隔着窄缝的阴影也会被并进来，与胶本身成为两条同样可信的候选。
+fn highlight_union(p: (f32, f32), q: (f32, f32)) -> Option<(f32, f32)> {
     let gap = q.0 - p.1;
-    let width = (p.1 - p.0).max(q.1 - q.0);
-    if gap <= 0.0 || gap > width { return None; }
-    if !strict { return Some((p.0, q.1)); }
-    let lowest = |a: isize, b: isize| (a..=b).filter_map(|k| usize::try_from(k).ok().and_then(|k| profile.get(k).copied().flatten())).reduce(f32::min);
-    let reach = width.ceil() as isize;
-    let (pa, qb) = (p.0.floor() as isize, q.1.ceil() as isize);
-    let outer = lowest(pa - reach, pa)?.min(lowest(qb, qb + reach)?);
-    let dip = lowest(p.1.ceil() as isize, q.0.floor() as isize).unwrap_or(f32::INFINITY);
-    let peak = (pa..=qb).filter_map(|k| usize::try_from(k).ok().and_then(|k| profile.get(k).copied().flatten())).reduce(f32::max)?;
-    (dip >= outer + 0.3 * (peak - outer)).then_some((p.0, q.1))
+    (gap > 0.0 && gap <= (p.1 - p.0).max(q.1 - q.0)).then_some((p.0, q.1))
 }
 
 fn extract_guided(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: &BrushGuide, spacing: f32) -> Result<Vec<[f32; 2]>, ExtractionError> {
@@ -271,17 +262,12 @@ fn extract_guided(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: 
             let offset = (a+b)*0.5-radius as f32;
             (offset, b-a, [center[0]+normal[0]*offset,center[1]+normal[1]*offset])
         };
-        let mut strict = spans.clone();
-        let mut loose = Vec::new();
-        for p in spans.windows(2) {
-            let Some(u) = highlight_union(&smooth, p[0], p[1], false) else { continue };
-            if spans.iter().any(|s| (s.0-u.0).abs() < 0.5 && (s.1-u.1).abs() < 0.5) { continue; }
-            if highlight_union(&smooth, p[0], p[1], true).is_some() { strict.push(u); } else { loose.push(u); }
-        }
-        let strict: Vec<_> = strict.into_iter().map(candidate).collect();
-        let loose: Vec<_> = strict.iter().copied().chain(loose.into_iter().map(candidate)).collect();
-        all.push(strict);
-        relaxed.push(loose);
+        let candidates: Vec<_> = spans.iter().copied().map(candidate).collect();
+        let unions = spans.windows(2).filter_map(|p| highlight_union(p[0], p[1]))
+            .filter(|u| !spans.iter().any(|s| (s.0-u.0).abs() < 0.5 && (s.1-u.1).abs() < 0.5))
+            .map(candidate);
+        relaxed.push(candidates.iter().copied().chain(unions).collect::<Vec<_>>());
+        all.push(candidates);
     }
     match trace(&all, &samples, guide.radius_px, spacing) {
         Err(ExtractionError::Failed(f)) if f.reason == "discontinuity" && relaxed.iter().zip(&all).any(|(r, s)| r.len() > s.len()) => {
@@ -364,17 +350,28 @@ mod tests {
 
     #[test]
     fn bead_split_by_center_highlight_in_some_rows_still_yields_bead_centerline() {
-        for highlight in [150, 230] {
-            let mut image = FrameImage::new(160, 200, vec![230; 32000]);
-            for y in 0..200 {
-                for x in 60..94 { image.pixels[y*160+x] = 25; }
-                if !(60..120).contains(&y) { for x in 74..80 { image.pixels[y*160+x] = highlight; } }
-            }
-            let guide = BrushGuide { points: vec![[77.0,10.0],[77.0,190.0]], radius_px: 60.0 };
-            let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap();
-            assert!(path.iter().all(|p| (p[0]-76.5).abs() <= 1.0), "{highlight}: {path:?}");
-            assert!(path.first().unwrap()[1] <= 12.0 && path.last().unwrap()[1] >= 188.0);
+        let mut image = FrameImage::new(160, 200, vec![230; 32000]);
+        for y in 0..200 {
+            for x in 60..94 { image.pixels[y*160+x] = 25; }
+            if !(60..120).contains(&y) { for x in 74..80 { image.pixels[y*160+x] = 150; } }
         }
+        let guide = BrushGuide { points: vec![[77.0,10.0],[77.0,190.0]], radius_px: 60.0 };
+        let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap();
+        assert!(path.iter().all(|p| (p[0]-76.5).abs() <= 1.0), "{path:?}");
+        assert!(path.first().unwrap()[1] <= 12.0 && path.last().unwrap()[1] >= 188.0);
+    }
+
+    #[test]
+    fn glue_beside_narrow_shadow_across_grey_seam_yields_glue_center_not_ambiguous() {
+        let mut image = FrameImage::new(160, 200, vec![230; 32000]);
+        for y in 0..200 {
+            for x in 60..74 { image.pixels[y*160+x] = 25; }
+            for x in 74..77 { image.pixels[y*160+x] = 150; }
+            for x in 77..83 { image.pixels[y*160+x] = 100; }
+        }
+        let guide = BrushGuide { points: vec![[67.0,10.0],[67.0,190.0]], radius_px: 60.0 };
+        let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap();
+        assert!(path.iter().all(|p| (p[0]-66.5).abs() <= 1.0), "{path:?}");
     }
 
     #[test]
