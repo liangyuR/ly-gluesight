@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight, Download, RefreshCw, Scale } from "lucide-re
 import { subscribe } from "../features/plc";
 import { useRecipes } from "../features/cycle";
 import { errorText } from "../lib/errors";
+import SelectionTrack from "../components/SelectionTrack";
 import { displayReason, formatTime, historyApi, RejudgeDialog, sampleLabelText, sourceLabel, triggerModeLabel, verdictClass, verdictGroups, verdictLabel, type HistoryPage as Page, type HistoryQuery, type HistoryScope } from "../features/history";
 
 const PAGE = 50;
@@ -124,20 +125,20 @@ export default function HistoryPage() {
     <div className="stack">
       <div className="panel">
         <div className="filter-row">
-          <div className="segmented" role="group" aria-label="记录来源">
+          <SelectionTrack className="segmented" activeKey={scope} role="group" aria-label="记录来源">
             {scopes.map(([key, label]) => (
               <button key={key} aria-pressed={scope === key} className={scope === key ? "active" : ""} onClick={() => { setScope(key); setOffset(0); }}>
                 {label}
               </button>
             ))}
-          </div>
-          <div className="segmented">
+          </SelectionTrack>
+          <SelectionTrack className="segmented" activeKey={range} role="group" aria-label="记录日期">
             {ranges.map(([key, label]) => (
               <button key={key} aria-pressed={range === key} className={range === key ? "active" : ""} onClick={() => { setRange(key); setOffset(0); }}>
                 {label}
               </button>
             ))}
-          </div>
+          </SelectionTrack>
           <span className="filter-label">结果</span>
           {verdictGroups.map((g) => (
             <button

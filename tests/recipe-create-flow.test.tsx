@@ -78,13 +78,13 @@ describe("创建配方流程", () => {
     await user.type(dialog.getByRole("spinbutton", { name: "产品代码" }), "27");
     await user.click(dialog.getByRole("button", { name: "创建候选" }));
 
-    expect(await screen.findByRole("heading", { name: "配方创建进度" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "配方进度" })).toBeVisible();
     expect(invoke).toHaveBeenCalledWith("workspace_create", {
       doc: { ...template, id: "SHELL-2026", name: "新壳体配方", productCode: 27, teachingId: null },
     });
     expect(invoke).toHaveBeenCalledWith("workspace_get", { id: "SHELL-2026" });
     expect(screen.getByRole("combobox", { name: "当前配方" })).toHaveValue("SHELL-2026");
-    expect(screen.getByText("等待设备就绪后整圈采集并采用")).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "整圈采集" })).getByText("等待设备就绪后整圈采集并采用")).toBeVisible();
     await waitFor(() => expect(preferences.lastWorkspace).toBe("SHELL-2026"));
 
     await user.click(screen.getByRole("link", { name: "开始整圈采集" }));
