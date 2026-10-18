@@ -27,6 +27,9 @@ pub struct PlcPlan {
 
 impl PlcPlan {
     pub fn compile(recipe_id: String, version: u32, device_ids: Vec<String>, shots: Vec<PlanShot>) -> Result<Self, String> {
+        if version > i32::MAX as u32 {
+            return Err(format!("计划版本 {version} 超出 PLC DInt 上限 2147483647，PLC 无法核对"));
+        }
         if shots.is_empty() || shots.len() > u16::MAX as usize {
             return Err("S7 一期拍照计划必须包含 1–65535 个拍照点".into());
         }
