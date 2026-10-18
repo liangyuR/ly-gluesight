@@ -28,7 +28,8 @@ function rangeStart(days: number | null) {
 }
 
 export default function HistoryPage() {
-  const navigate = useNavigate();
+  const go = useNavigate();
+  const navigate = (to: string) => go(to, { state: { query } });
   const recipes = useRecipes();
   const [scope, setScope] = useState<HistoryScope>("real");
   const [range, setRange] = useState("today");
@@ -206,8 +207,8 @@ export default function HistoryPage() {
             </thead>
             <tbody>
               {page?.items.map((p) => (
-                <tr key={p.id} tabIndex={0} aria-label={`查看 SN ${p.sn} 的记录`} onClick={() => navigate(`/history/${p.id}`, { state: { query } })} onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); navigate(`/history/${p.id}`, { state: { query } }); }
+                <tr key={p.id} tabIndex={0} aria-label={`查看 SN ${p.sn} 的记录`} onClick={() => navigate(`/history/${p.id}`)} onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); navigate(`/history/${p.id}`); }
                 }}>
                   <td className="mono nowrap">{formatTime(p.ts)}</td>
                   <td className="mono nowrap">
