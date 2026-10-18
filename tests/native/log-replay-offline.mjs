@@ -168,6 +168,7 @@ function zipEntries(file) {
 }
 
 export async function runLogReplay(page, options) {
+  assert(Number.isInteger(options.parts) && options.parts >= 3, `--parts 至少为 3：第 2 件用于前后件导航与界面回放，最后一件用于删除原图，需互不重叠；实际 ${options.parts}`);
   const started = Date.now();
   const call = client(page);
   const records = await call("records_list");
@@ -199,8 +200,8 @@ export async function runLogReplay(page, options) {
   for (const summary of produced) parts.push(await checkPart(call, summary));
   const middle = produced[1];
   const neighbors = await call("history_neighbors", { id: middle.id, query: null });
-  assert.deepEqual(neighbors, { older: produced[0].id, newer: produced[2]?.id ?? null }, "前后件导航与生产顺序不符");
-  const missing = produced[produced.length - 1];
+  assert.deepEqual(neighbors, { older: produced[0].id, newer: produced[2].id }, "前后件导航与生产顺序不符");
+  const missing = produced.at(-1);
   const missingDetail = await call("history_detail", { id: missing.id });
   const root = records.root.replace(/[\\/]records$/, "");
   const victim = path.join(root, "records-offline", missingDetail.shots.find(s => TEACH[s.shotId] && s.rawFiles.length).rawFiles[0].file);
