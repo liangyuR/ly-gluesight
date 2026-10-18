@@ -87,6 +87,15 @@ it("示教采集轮次不允许同时作为独立验证样本",async()=>{
  await userEvent.click(button);expect(workspaceApi.captureSample).not.toHaveBeenCalled();
 });
 
+it("本轮已采用为示教图像 → 标明已采用，主操作改为进入单帧示教，采用按钮禁用且不再提供带入草稿",async()=>{
+ ws.data!.workspace.captureId="r1";vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show();
+ expect(await screen.findByText(/已采用为示教图像/)).toBeVisible();
+ expect(screen.getByRole("link",{name:"进入单帧示教"})).toHaveClass("primary");
+ const adopt=screen.getByRole("button",{name:"采用本轮图像"});
+ expect(adopt).toBeDisabled();expect(adopt).not.toHaveClass("primary");
+ expect(screen.queryByRole("checkbox",{name:"带入旧中线与参数作为草稿"})).toBeNull();
+});
+
 it("工件进行中禁止采用完整采集轮次",async()=>{
  ws.data!.workspace.captureId="teaching-round";
  vi.mocked(useCycle).mockReturnValue({snapshot:snapshot("ACQUIRE"),logs:[],measured:[]});

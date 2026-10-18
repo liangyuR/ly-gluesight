@@ -60,7 +60,7 @@ export default function OfflineControls({ readiness, refresh, publishedSection =
         <OctagonX size={15} />
         立即停止
       </button>
-      <span className="offline-msg" role="status">{message}</span>
+      <span className="offline-msg" role="status" title={message}>{message}</span>
       {error && <span className="offline-msg c-ng" role="alert">{error.text} <TargetLink target={error.target} /></span>}
     </div>
   );

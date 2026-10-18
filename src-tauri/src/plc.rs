@@ -154,8 +154,8 @@ pub fn recipe_plan(cycle: &CycleHost, recipe: &Recipe) -> Result<PlcPlan, String
 }
 
 #[tauri::command]
-pub fn plc_s7_phase1_template(db_number: u16) -> Result<PlcConfig, String> {
-    let config = inspection::s7_phase1_config(db_number)?;
+pub fn plc_s7_phase1_template(db_number: u16, sn_type: DataType) -> Result<PlcConfig, String> {
+    let config = inspection::s7_phase1_config(db_number, sn_type)?;
     validate_config(&config)?;
     Ok(config)
 }
@@ -192,7 +192,7 @@ mod tests {
 
     #[test]
     fn retired_plan_tags_fail_validation_instead_of_being_renamed() {
-        let mut config = inspection::s7_phase1_config(100).unwrap();
+        let mut config = inspection::default_plc_config();
         for point in &mut config.points {
             for tag in &mut point.tags {
                 if tag == "planReserved" { *tag = "planHash".into(); }
@@ -202,7 +202,7 @@ mod tests {
         let error = validate_config(&config).unwrap_err();
         assert!(error.contains("planHash") && error.contains("planReserved"), "{error}");
         assert_eq!(config, original);
-        let mut config = inspection::s7_phase1_config(100).unwrap();
+        let mut config = inspection::default_plc_config();
         config.points.iter_mut().find(|point| point.tags.iter().any(|tag| tag == "acceptedPlanReserved")).unwrap()
             .tags = vec!["acceptedPlanHash".into()];
         let error = validate_config(&config).unwrap_err();
