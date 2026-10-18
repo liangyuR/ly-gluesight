@@ -121,3 +121,10 @@ it("PLC 未连接 →开始接收禁用并给出 PLC 通讯入口",async()=>{
  expect(screen.getByRole("button",{name:"开始接收"})).toBeDisabled();
  expect(screen.getByRole("link",{name:"前往 PLC 通讯"})).toHaveAttribute("href","/plc");
 });
+it("PLC 重连中且后端带连接地址 → 检查卡只显示连接中，不展示重连详情",async()=>{
+ vi.mocked(plcApi.getStatus).mockResolvedValue({state:"connecting",message:"正在连接 S7 192.168.0.10:102 (机架 0 插槽 1)"} as Awaited<ReturnType<typeof plcApi.getStatus>>);show();
+ const checks=within(await screen.findByRole("list",{name:"开始前检查"}));
+ expect(await checks.findByText("连接中")).toBeVisible();
+ expect(screen.queryByText(/192\.168\.0\.10/)).toBeNull();
+ expect(screen.getByRole("button",{name:"开始接收"})).toBeDisabled();
+});
