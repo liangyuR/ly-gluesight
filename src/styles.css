@@ -19,20 +19,22 @@ h1, h3, p { margin: 0; }
 
 .app-shell { display: flex; height: 100%; }
 
+/* 收起 / 展开：布局宽度一次切换，底板平移、主区由 Sidebar 做反向位移动画，只动 transform 与 opacity */
 .sidebar {
+  position: relative;
+  isolation: isolate;
   width: var(--sidebar-w);
   margin: 12px 0 12px 12px;
-  border-radius: var(--r-xl);
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  background: var(--surface-low);
-  overflow: hidden;
-  transition: width var(--dur-medium) var(--ease-standard);
 }
 .sidebar.collapsed { width: var(--sidebar-w-rail); }
+.sidebar-surface { position: absolute; top: 0; bottom: 0; left: 0; z-index: -1; width: var(--sidebar-w); border-radius: var(--r-xl); overflow: hidden; pointer-events: none; }
+.sidebar-surface > i { position: absolute; inset: 0; border-radius: var(--r-xl); background: var(--surface-low); transition: transform var(--dur-medium) var(--ease-standard); }
+.sidebar.collapsed .sidebar-surface > i { transform: translateX(calc(var(--sidebar-w-rail) - var(--sidebar-w))); }
 .sidebar :is(.brand-text, .nav-label, .nav-group-label, .status-text) { transition: opacity var(--dur-short) var(--ease-standard); }
-.sidebar.switching :is(.brand-text, .nav-label, .nav-group-label, .status-text) { opacity: 0; }
+.sidebar.switching :is(.brand-text, .nav-label, .nav-group-label, .status-text, .nav-indicator) { opacity: 0; }
 
 .sidebar-brand {
   display: flex;
@@ -59,9 +61,9 @@ h1, h3, p { margin: 0; }
   border-radius: var(--r-full);
   background: var(--primary-container);
   pointer-events: none;
-  transition: transform var(--dur-medium) var(--ease-spatial), left var(--dur-medium) var(--ease-standard), right var(--dur-medium) var(--ease-standard), height var(--dur-medium) var(--ease-standard);
+  transition: transform var(--dur-medium) var(--ease-spatial), opacity var(--dur-short) var(--ease-standard);
 }
-.nav-indicator.instant { transition: none; }
+.nav-indicator.instant { transition: opacity var(--dur-short) var(--ease-standard); }
 .nav-item {
   position: relative;
   flex-shrink: 0;
@@ -116,8 +118,10 @@ h1, h3, p { margin: 0; }
 .sidebar-footer .status-list { display: flex; flex-direction: column; gap: 8px; padding: 4px 14px; }
 .sidebar.collapsed .sidebar-footer { padding: 8px 8px 12px; }
 .sidebar.collapsed .status-list { align-items: center; padding: 4px 0; }
-.sidebar.collapsed .sidebar-footer .nav-item.active { background: transparent; }
-.sidebar.collapsed .sidebar-footer .nav-item.active::before { content: ""; position: absolute; z-index: -1; top: 4px; width: 44px; height: 28px; border-radius: var(--r-full); background: var(--primary-container); }
+.sidebar-footer .nav-item.active { background: transparent; }
+.sidebar-footer .nav-item.active::before { content: ""; position: absolute; z-index: -1; inset: 0; border-radius: inherit; background: var(--primary-container); transition: opacity var(--dur-short) var(--ease-standard); }
+.sidebar.collapsed .sidebar-footer .nav-item.active::before { inset: auto; top: 4px; width: 44px; height: 28px; border-radius: var(--r-full); }
+.sidebar.switching .sidebar-footer .nav-item.active::before { opacity: 0; }
 .sidebar-actions { display: flex; justify-content: flex-end; flex-shrink: 0; }
 .sidebar.collapsed .sidebar-actions { justify-content: center; }
 .engine-status { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--on-surface-variant); white-space: nowrap; overflow: hidden; text-decoration: none; border-radius: var(--r-xs); }
@@ -221,6 +225,18 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
   color: var(--on-surface-variant);
 }
 .empty.small { padding: 28px 0; border: 1px dashed var(--outline-variant); border-radius: var(--r-md); }
+.page-error { display: grid; place-items: center; min-height: 240px; }
+.page-error .qs-empty small { overflow-wrap: anywhere; }
+.native-mode { margin-bottom: var(--space-12); }
+
+.notice { margin-top: 12px; padding: 8px 12px; border-radius: var(--r-md); font-size: 13px; background: var(--surface-high); color: var(--on-surface); overflow-wrap: anywhere; animation: qs-fade-in var(--dur-short) var(--ease-standard); }
+.notice.ok { background: var(--ok-container); color: var(--on-ok-container); }
+.notice.error { background: var(--ng-container); color: var(--on-ng-container); }
+.notice.warn { background: var(--warn-container); color: var(--on-warn-container); }
+.notice.fault { background: var(--fault-container); color: var(--on-fault-container); }
+.notice.tertiary { background: var(--tertiary-container); color: var(--on-tertiary-container); }
+.qs-dialog > .hd .icon-btn { flex-shrink: 0; }
+.qs-dialog > .ft .form-error { margin-right: auto; }
 
 .form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
 .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--on-surface-variant); }
@@ -245,10 +261,12 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
   left: 0;
   top: 0;
   z-index: 0;
+  transform-origin: 0 0;
   border-radius: inherit;
   background: var(--secondary-container);
   pointer-events: none;
 }
+.segmented > .selection-track-indicator { border-radius: 0; }
 .wp-steps > .selection-track-indicator { border-radius: var(--r-md); background: var(--primary-container); }
 .segmented.selection-track[data-selection-ready] > button.active,
 .wp-steps.selection-track[data-selection-ready] > a.active { background: transparent; }

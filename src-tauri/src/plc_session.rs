@@ -404,7 +404,7 @@ impl PlcSession {
                 let tags = repair.iter().map(|op| op.tag).collect::<Vec<_>>().join("、");
                 self.write(engine, repair).await?;
                 baseline.verify(&Snapshot::capture(engine, self.contract.as_ref().unwrap(), Self::max_age(engine))?)?;
-                format!("明确复位请求；已把声明长度异常的 {tags} 重写为空 STRING；尚未清除未结事务")
+                format!("明确复位请求；已把头字节异常的 {tags} 重写为空串；尚未清除未结事务")
             };
             self.audit(engine, "resetRequested", &reason).await?;
             self.write(engine, handshake::reset_plan()).await?;

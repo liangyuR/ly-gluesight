@@ -49,7 +49,7 @@ export default function ShotStrip({ layout, part, vis, selected, onSelect, compa
   }, [compact, selected, layout.id, layout.revisionId]);
   const frames = part && part.recipeId === layout.id && part.recipeRevision === layout.revisionId ? part.frames : null;
   return (
-    <div ref={strip} className={`shot-strip${compact ? " compact" : ""}`} style={{ gridTemplateColumns: `repeat(${layout.shots.length}, minmax(${compact ? "112px" : "0"}, 1fr))` }}>
+    <div ref={strip} className={`shot-strip${compact ? " compact" : ""}`} style={{ gridTemplateColumns: `repeat(${layout.shots.length}, minmax(${compact ? "136px" : "0"}, 1fr))` }}>
       {layout.shots.map((shot, k) => {
         const f = frames?.[k];
         const [label, tone] = labels[f?.status ?? "waiting"];
@@ -58,7 +58,7 @@ export default function ShotStrip({ layout, part, vis, selected, onSelect, compa
         return (
           <button key={k} type="button" className={`shot s-${f?.status ?? "waiting"}${f?.gapPoints ? " has-gap" : ""}${selected===k ? " selected" : ""}`} aria-label={`查看帧 k${k+1}`} aria-pressed={selected===k} onClick={()=>onSelect?.(k)}>
             <div className="shot-head">
-              <b className="mono" title={`k${k + 1} · Pose ${shot.poseId}`}>{shotLabel(shot, k)}</b>
+              <b className="mono" title={`${shotLabel(shot, k)} · k${k + 1} · Pose ${shot.poseId}`}>{compact ? shot.id : shotLabel(shot, k)}</b>
               <span className={f?.gapPoints ? "c-ng" : tone}>{f?.gapPoints ? `缺胶 ${f.gapPoints}` : label}</span>
             </div>
             {shot.skip || !shotSegment(layout, k) ? (
