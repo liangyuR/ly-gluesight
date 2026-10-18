@@ -47,7 +47,7 @@ export default function FlyshotCalibrationPage() {
     {notice&&<div className="cam-notice">{notice}</div>}
     <CameraList configs={configs} statuses={statuses} selected={cam} onSelect={setCam} onRefresh={()=>void reload()} refreshing={loading}/>
     {config&&state?<main className="cam-main">
-      <header className="cam-head"><strong>{config.name}</strong><span className="mono muted">{config.id}</span><Badge tone={state.tone==="ok"?"ok":"warn"}>{state.label}</Badge><span className="muted cam-head-info">{state.label==="未绑定"?<>到<Link to="/camera" state={navigationState}>相机与采集</Link>绑定设备</>:state.text}</span></header>
+      <header className="cam-head"><strong>{config.name}</strong><span className="mono muted">{config.id}</span><Badge tone={state.tone==="ok"?"ok":"warn"}>{state.label}</Badge><span className="muted cam-head-info">{state.label==="未绑定"?<>到<Link to="/camera" state={navigationState}>相机</Link>绑定设备</>:state.text}</span></header>
       <div className="cam-body">
         <fieldset disabled={busy||!desktopAvailable()} className="cam-action-area">
           <StationCapture key={config.id+":"+calibView} cam={cam} view={calibView} sample={sample} onSample={setSample}/>
@@ -58,6 +58,6 @@ export default function FlyshotCalibrationPage() {
           <FeasibilityCalc key={"feasibility:"+config.id} sources={feasibility} imageSize={sample?.image}/>
         </fieldset>
       </div>
-    </main>:<main className="cam-main"><Notice title={loading?"正在读取相机配置":"尚未添加相机"} tone="warn">在<Link to="/camera" state={navigationState}>相机与采集</Link>页添加相机并绑定设备。</Notice></main>}
+    </main>:<main className="cam-main"><Notice title={loading?"正在读取相机配置":"尚未添加相机"} tone="warn">在<Link to="/camera" state={navigationState}>相机</Link>页添加相机并绑定设备。</Notice></main>}
   </div>;
 }

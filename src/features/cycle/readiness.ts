@@ -3,7 +3,7 @@ import type { Readiness, ReadinessTarget, RecipeOption } from "./types";
 
 export const targetLinks: Record<ReadinessTarget, { path: string; label: string }> = {
   plc: { path: "/plc", label: "去 PLC 通讯" },
-  camera: { path: "/camera", label: "去相机与采集" },
+  camera: { path: "/camera", label: "去相机" },
   workspace: { path: "/recipe", label: "去配方工作台" },
   settings: { path: "/settings", label: "去系统设置" },
   offline: { path: "/offline", label: "去离线模式" },

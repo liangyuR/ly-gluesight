@@ -52,7 +52,7 @@ export const navEntries: NavEntry[] = [
     { path:"/offline",label:"离线模式",icon:FlaskConical,element:OfflinePage },
   ] },
   { label:"设备",children:[
-    { path:"/camera",label:"相机与采集",icon:Camera,element:CameraPage },
+    { path:"/camera",label:"相机",icon:Camera,element:CameraPage },
     { path:"/camera/calibration",label:"飞拍标定",icon:Crosshair,element:FlyshotCalibrationPage },
     { path:"/plc",label:"PLC 通讯",icon:Cable,element:PlcSettingsPage },
     { path:"/plc-logs",label:"通讯日志",icon:ScrollText,element:PlcLogsPage },

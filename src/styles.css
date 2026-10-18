@@ -1,7 +1,5 @@
-/* 令牌来自 qing-steel（src/main.tsx 先引入 qing-steel/tokens.css）；这里只放本应用自有的值 */
+/* 令牌来自 qing-steel（src/main.tsx 先引入 qing-steel/tokens.css） */
 :root {
-  --sidebar-w-collapsed: 88px;
-
   font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.55;
@@ -32,7 +30,7 @@ h1, h3, p { margin: 0; }
   overflow: hidden;
   transition: width var(--dur-medium) var(--ease-standard);
 }
-.sidebar.collapsed { width: var(--sidebar-w-collapsed); }
+.sidebar.collapsed { width: var(--sidebar-w-rail); }
 .sidebar :is(.brand-text, .nav-label, .nav-group-label, .status-text) { transition: opacity var(--dur-short) var(--ease-standard); }
 .sidebar.switching :is(.brand-text, .nav-label, .nav-group-label, .status-text) { opacity: 0; }
 
@@ -92,7 +90,7 @@ h1, h3, p { margin: 0; }
 .nav-label { overflow: hidden; text-overflow: ellipsis; }
 
 .sidebar.collapsed .sidebar-nav { padding: 8px 8px 12px; }
-.sidebar.collapsed .nav-indicator { left: 20px; right: 20px; height: 28px; }
+.sidebar.collapsed .nav-indicator { left: 14px; right: 14px; height: 28px; }
 .sidebar.collapsed .nav-item { flex-direction: column; justify-content: flex-start; gap: 6px; height: 56px; padding: 10px 0 0; border-radius: var(--r-lg); font-size: 11px; }
 .sidebar.collapsed .nav-item:active { transform: none; }
 .sidebar.collapsed .nav-item.active { color: var(--on-surface); }
@@ -119,7 +117,7 @@ h1, h3, p { margin: 0; }
 .sidebar.collapsed .sidebar-footer { padding: 8px 8px 12px; }
 .sidebar.collapsed .status-list { align-items: center; padding: 4px 0; }
 .sidebar.collapsed .sidebar-footer .nav-item.active { background: transparent; }
-.sidebar.collapsed .sidebar-footer .nav-item.active::before { content: ""; position: absolute; z-index: -1; top: 4px; width: 48px; height: 28px; border-radius: var(--r-full); background: var(--primary-container); }
+.sidebar.collapsed .sidebar-footer .nav-item.active::before { content: ""; position: absolute; z-index: -1; top: 4px; width: 44px; height: 28px; border-radius: var(--r-full); background: var(--primary-container); }
 .sidebar-actions { display: flex; justify-content: flex-end; flex-shrink: 0; }
 .sidebar.collapsed .sidebar-actions { justify-content: center; }
 .engine-status { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--on-surface-variant); white-space: nowrap; overflow: hidden; text-decoration: none; border-radius: var(--r-xs); }
