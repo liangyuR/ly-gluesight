@@ -2,7 +2,8 @@ import { resampleTeachingPath, type ImagePoint } from "./teachingPath";
 import { errorText } from "../../lib/errors";
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Brush, Eraser, Play, Save, Trash2, Undo2, WandSparkles } from "lucide-react";
+import { ArrowRight, Brush, Camera, Eraser, Play, Save, Trash2, Undo2, WandSparkles } from "lucide-react";
+import { verdictLabel } from "../history";
 import { useCycle } from "../cycle/api";
 import { pathLength, shotSegment } from "../cycle/vis";
 import type { RecipeDoc } from "../cycle/types";
@@ -102,7 +103,7 @@ export default function TeachingPage() {
     });
   }, [defaultScope, doc, data, busy, dirty, frameDirty, working]);
   if (!data || !doc) return <WorkspaceEmpty />;
-  if (!frame || !shot) return <div className="wp-page"><WorkspaceBar /><Steps /><Notice title="当前配方没有拍照点" tone="warn">请先完成整圈采集并采用本轮图像。</Notice><Link className="btn" to="/recipe/capture">整圈采集</Link></div>;
+  if (!frame || !shot) return <div className="wp-page"><WorkspaceBar /><Steps /><div className="wp-empty"><Camera size={32} aria-hidden="true" /><h2>当前配方还没有拍照点</h2><p>拍照点由整圈采集生成。完成一圈采集并采用本轮图像后，在这里逐组选图并示教中线。</p><Link className="btn primary" to="/recipe/capture">前往整圈采集<ArrowRight size={15} aria-hidden="true" /></Link></div></div>;
   const saved = shotTeach(shot);
   const imagingHint = imagingMismatch(frame.image, data.workspace.doc);
   const t = frameDrafts[k] ?? saved;
@@ -242,7 +243,7 @@ export default function TeachingPage() {
     {toolHint && <p className="wp-canvas-hint" role="status">{toolHint}</p>}
   </div>;
   return <div className="wp-page"><WorkspaceBar /><Steps />
-    <div className="wp-teach-summary"><strong>单帧示教</strong><span className="muted">已完成 {completedGroups}／{groups.length} 组 · 每组示教一张图</span><span className="wp-teach-meter" aria-hidden="true"><span style={{ width: groups.length ? `${completedGroups / groups.length * 100}%` : 0 }}/></span></div>
+    <div className="wp-teach-summary"><strong>单帧示教</strong><span className="muted">已完成 {completedGroups}／{groups.length} 组 · 每组示教一张图</span><span className="wp-teach-meter" aria-hidden="true"><span style={{ transform: `scaleX(${groups.length ? completedGroups / groups.length : 0})` }}/></span></div>
     <div className="wp-teach">
       <section className="panel wp-group-panel" aria-label="拍照组"><h2>拍照组 <small>{groups.length}</small></h2><nav className="wp-group-list" aria-label="拍照组选择">{groups.map((item,index) => <button key={item.poseId} className={"wp-group-item" + (index === groupIndex ? " selected" : "")} aria-label={"选择拍照组 " + item.poseId} aria-pressed={index === groupIndex} disabled={!unlocked || editing || frameDirty} title={item.choice ? doc.shots[item.choice.k].camera + " · 图 " + item.choice.view : "未选定检测图"} onClick={() => selectGroup(index)}>
         <i className={"dot " + groupTone(item)} aria-hidden="true"/><strong>{item.poseId}</strong><span>{item.status}</span>
@@ -255,7 +256,7 @@ export default function TeachingPage() {
         {group.selected.length > 1 && <p className="c-warn" role="alert">本组原先选择了多张图，请重新选择一张作为检测图。</p>}
       </section>
       {enabled ? <Panel title={shot.camera + " · 中线示教"} className="wp-teach-panel" actions={<div className="wp-teach-flow"><ol aria-label="示教进度">{flow.map(([label, done], i) => <li key={label} className={done ? "done" : i === flowAt ? "current" : ""}>{label}</li>)}</ol><Badge tone={stateTone}>{stateText}</Badge></div>}>
-        <GrayViewer image={image} loading={loading} error={error} label={frame.image ? group.poseId + " · " + shot.camera + " · 图 " + shot.view : "等待取样"} tools={tools} subtools={params}
+        <GrayViewer image={image} loading={loading} error={error} label={frame.image ? group.poseId + " · " + shot.camera + " · 图 " + shot.view : "等待取样"} tools={tools} subtools={params} emptyTitle="本组检测图尚未就绪" emptyHint="整圈采集并采用本轮图像后，这里显示本组检测图。"
           region={selectionTool === "box" ? region : null} onRegion={regionMode && selectionTool === "box" && unlocked && enabled ? setRegion : undefined}
           brush={regionMode && selectionTool === "brush" && Number.isFinite(brushWidth) ? { points: brushPoints, radiusPx: brushWidth / 2 } : null} onBrush={regionMode && selectionTool === "brush" && unlocked && enabled ? points => { setBrushPoints(points); setExtractionFailure(null); setExtractionHint(""); } : undefined}
           extractionFailure={extractionFailure}
@@ -267,7 +268,7 @@ export default function TeachingPage() {
           editDisabled={!unlocked}
           onEdit={enabled && !regionMode ? { add: p => setPath([...t.path, p]), move: (i, p) => setPath(t.path.map((q, j) => j === i ? p : q)), select: setVertex } : undefined} />
         <div className="wp-trial-bar">
-          {trialFresh && trial ? <span className="wp-trial-result" aria-label="本次算法结果"><Badge tone={trialCurrent ? "ok" : "warn"}>{viewProgress?.trialStale ? "已过期" : trial.passed ? trial.verdict ?? "已完成" : "执行异常"}</Badge>
+          {trialFresh && trial ? <span className="wp-trial-result" aria-label="本次算法结果"><Badge tone={trialCurrent ? "ok" : "warn"}>{viewProgress?.trialStale ? "已过期" : trial.passed ? trial.verdict ? verdictLabel[trial.verdict] ?? trial.verdict : "已完成" : "执行异常"}</Badge>
             <span>量成比例 <b>{measured ? (trial.coverage * 100).toFixed(1) + "%" : "—"}</b></span><span>耗时 <b>{trial.elapsedMs} ms</b></span></span> : <Badge tone="neutral">未试测</Badge>}
           <span className="muted">中线 {t.path.length} 点 · {lengthText}{own && !editing ? " · " + own.count + " 站" : ""}</span>
           {trialFresh && <span className="wp-trial-legend muted"><i className="ok"/>有效胶宽<i className="ng"/>未通过 / 无候选</span>}

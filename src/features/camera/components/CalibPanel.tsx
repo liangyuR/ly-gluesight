@@ -74,14 +74,14 @@ export default function CalibPanel({ cam, view=1, isSim, imageId, onMmPerPx }: {
     <div className="panel">
       <div className="panel-head">
         <h3 className="panel-title">图 {view} · 工位标定（飞拍）</h3>
-        <span className="muted">将标定板放在实际胶路测量平面；各图分别标定，复用前验证代表性拍照点</span>
         <span className="spacer" />
         <button className="btn" onClick={()=>void load()} disabled={busy||loading||!isTauri()}>刷新标定</button>
-        <button className="btn primary" onClick={()=>void run()} disabled={busy || loading || isSim || !imageId||!isTauri()||!valid}>
+        <button className={"btn"+(imageId&&!isSim?" primary":"")} onClick={()=>void run()} disabled={busy || loading || isSim || !imageId||!isTauri()||!valid}>
           <Crosshair size={15} />
           {busy ? "标定中…" : "用冻结样本标定"}
         </button>
       </div>
+      <p className="muted calib-desc">将标定板放在实际胶路测量平面；各图分别标定，复用前验证代表性拍照点。</p>
       {isSim ? (
         <p className="muted">合成图相机的像素当量已知（0.08 mm/px），自动使用内置标定。</p>
       ) : (

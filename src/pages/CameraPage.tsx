@@ -84,7 +84,7 @@ export default function CameraPage() {
   };
 
   const notice=busy?<Notice title="当前工件正在检测，配置在工件结束后可修改">总览与同步触发核对继续实时刷新；添加 / 移除相机、绑定、触发接线、取一帧和释放给 MVS 暂不可用，避免打断在途采集。</Notice>:readOnly?<OfflineManagedNotice>相机组按离线来源临时生成，离线期间不能修改或增删相机。</OfflineManagedNotice>:null;
-  const calibration=<Link className="cg-link quiet" to="/camera/calibration" state={navigationState}>保存后前往飞拍标定<ChevronRight size={14}/></Link>;
+  const calibration=(text:string)=><Link className="cg-link quiet" to="/camera/calibration" state={navigationState}>{text}<ChevronRight size={14}/></Link>;
 
   if(!configs.length)return <div className="cg-page">
     <ReturnButton disabled={!!action} guard={guard} hint="配置后保存并应用，再返回继续。"/>
@@ -97,7 +97,7 @@ export default function CameraPage() {
     {notice}
     <CameraOverview configs={configs} statuses={statuses} lastFrame={lastFrame} members={members} sync={sync} lockedReason={lockedReason} canReconnect={desktop&&!readOnly} loading={loading} adding={action==="add"} error={error}
       onOpen={open} onRefresh={()=>void reload()} onAdd={readOnly?undefined:()=>void add()} onReconnect={i=>cameraApi.reconnect(i)}
-      footer={<div className="cg-row" style={{justifyContent:"flex-end"}}>{calibration}</div>}/>
+      footer={<div className="cg-row" style={{justifyContent:"flex-end"}}>{calibration("前往飞拍标定")}</div>}/>
     {dialog}
   </div>;
 
@@ -124,7 +124,7 @@ export default function CameraPage() {
     </div>
     {notice}
     <CameraConfigPanel ref={form} key={config.id+":"+config.source} cam={cam} initial={config} status={status} group={{configs,statuses}} locked={locked} saveBlocked={released?"已释放给 MVS，重新连接后再保存":""}
-      onSaved={()=>void reload()} onGroupSaved={()=>void reload()} onSavingChange={setConfigSaving} onDirtyChange={setDirty} leading={leading} footer={calibration}
+      onSaved={()=>void reload()} onGroupSaved={()=>void reload()} onSavingChange={setConfigSaving} onDirtyChange={setDirty} leading={leading} footer={calibration(locked?"前往飞拍标定":"保存后前往飞拍标定")}
       side={<>
         <FramePreview key={config.id} cam={cam} status={status} lastFrame={lastFrame[cam]} config={config} actions={handOverButton}
           blockedReason={busy?"工件检测中":!desktop?"需要桌面后端":mvs&&!config.serial?"未绑定设备":released?"已释放给 MVS，在海康 MVS 客户端调焦、调光圈，完成后关闭 MVS 再重新连接":dirty?"先保存并应用再测试":""}/>
