@@ -84,7 +84,7 @@ export interface WorkspaceView {
   progress: Progress;
 }
 export interface RawFrame { k: number; camera: string; view: number; file: string; ts: number; available: boolean; error: string | null; cam?: number | null; frameCounter?: number | null; triggerCounter?: number | null }
-export interface RecordImages { historyId: number; frames: RawFrame[]; complete: boolean; message: string }
+export interface RecordImages { imageSource: "offlineSample" | "recording"; historyId: number; frames: RawFrame[]; complete: boolean; message: string }
 export interface Comparison {
   id: string; historyId: number; source: "rules" | "raw" | "original"; cycleId: string; bundleId: string | null; candidateId: string; candidateRevision: number;
   candidateRecipe: Recipe;

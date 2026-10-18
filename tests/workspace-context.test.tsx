@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { storageApi } from "../src/lib/storage";
 import { WorkspaceProvider, useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
 import { recipeApi } from "../src/features/cycle/api";
@@ -9,6 +10,7 @@ import { subscribe } from "../src/features/plc/api";
 import type { WorkspaceView } from "../src/features/workspace/types";
 import { deferred, summary, workspaceView } from "./fixtures";
 
+vi.mock("../src/lib/storage", () => ({ storageApi: { preferences: async () => ({}), updatePreferences: vi.fn(async () => ({})) } }));
 vi.mock("../src/lib/desktop", () => ({ desktopAvailable: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(), get: vi.fn(), saveDraft: vi.fn(), saveDoc: vi.fn() } }));
 vi.mock("../src/features/cycle/api", () => ({ recipeApi: { list: vi.fn(), preview: vi.fn() } }));
@@ -68,7 +70,7 @@ describe("候选工作台的主流程保护", () => {
     await act(async()=>{const accepted=await result.current.select("B");expect(accepted?.workspace.doc.id).toBe("B");});
     await act(async()=>old.resolve(workspaceView()));expect(await oldSelection).toBeNull();
     expect(result.current.doc?.id).toBe("B");
-    expect(localStorage.getItem("tujiao-last-workspace")).toBe("B");
+    expect(storageApi.updatePreferences).toHaveBeenLastCalledWith({ lastWorkspace: "B" });
   });
 
   it("保存携带修订，等待期间阻止重复请求", async () => {

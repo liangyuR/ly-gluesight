@@ -9,6 +9,7 @@
   },
   "scripts": {
     "dev": "pwsh -NoProfile -File scripts/Start-Dev.ps1",
+    "storage:init": "pwsh -NoProfile -File scripts/Initialize-Storage.ps1",
     "dev:joint": "pwsh -NoProfile -File scripts/Start-JointDev.ps1",
     "dev:web": "vite",
     "build": "tsc -b && vite build",

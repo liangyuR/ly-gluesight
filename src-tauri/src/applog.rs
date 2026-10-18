@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use chrono::{Local, NaiveDate};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 const PREFIX: &str = "gluesight-";
 const SUFFIX: &str = ".log";
@@ -20,7 +20,7 @@ struct DailyFile {
 static SINK: OnceLock<Mutex<DailyFile>> = OnceLock::new();
 
 pub fn dir(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("logs"))
+    Ok(crate::storage::root(app).join("logs"))
 }
 
 /// 文本日志写到 logs/gluesight-YYYY-MM-DD.log，按本地日期滚动；只清理本前缀的文件，plc.db 等不受影响。

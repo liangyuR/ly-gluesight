@@ -10,6 +10,7 @@ const PAGE = 50;
 const scopes: [HistoryScope, string][] = [
   ["real", "真机件"],
   ["offline", "离线件"],
+  ["debug", "候选调试"],
 ];
 const ranges: [string, string, number | null][] = [
   ["today", "今天", 0],
@@ -166,9 +167,10 @@ export default function HistoryPage() {
             {exporting ? "导出中…" : "导出 CSV"}
           </button>
         </div>
+        {scope === "debug" && <div className="notice">候选配方离线调试结果，未发布，不作为生产验收或生产统计。</div>}
         {scope === "offline" && <div className="notice">离线件来自离线验证（合成图或样本集），与真机件分开统计，不计入真机产量与良率。</div>}
         <div className="hist-counts">
-          <span>{scope === "offline" ? "离线" : "真机"}共 <b>{page?.total ?? 0}</b> 件</span>
+          <span>{scope === "debug" ? "候选调试" : scope === "offline" ? "离线" : "真机"}共 <b>{page?.total ?? 0}</b> 件</span>
           <span>OK <b className="c-ok">{c?.ok ?? 0}</b></span>
           <span>局部超差 <b className="c-warn">{c?.excursion ?? 0}</b></span>
           <span>NG <b className="c-ng">{c?.ng ?? 0}</b></span>
@@ -215,7 +217,9 @@ export default function HistoryPage() {
                   </td>
                   <td className="nowrap">
                     {p.recipeId ?? "—"}
-                    {p.recipeVersion != null && <span className="muted"> v{p.recipeVersion}</span>}
+                    {p.source === "offlineCandidate"
+                      ? <span className="muted"> · 候选修订 {p.recipeRevision ?? "未记录"}</span>
+                      : p.recipeVersion != null && <span className="muted"> v{p.recipeVersion}</span>}
                     {p.triggerMode && <span className="muted"> · {triggerModeLabel(p.triggerMode)}</span>}
                   </td>
                   <td className="nowrap"><span className={`vt ${verdictClass(p.verdict)}`}>{verdictLabel[p.verdict]}</span></td>

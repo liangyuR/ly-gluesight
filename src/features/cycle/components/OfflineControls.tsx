@@ -9,11 +9,13 @@ import RecipeRunSelect from "./RecipeRunSelect";
 import { TargetLink } from "./ReadinessChecklist";
 
 interface Props {
+  publishedSection?: boolean;
+  candidateRunning?: boolean;
   readiness: Readiness | null;
   refresh: () => Promise<Readiness | null>;
 }
 
-export default function OfflineControls({ readiness, refresh }: Props) {
+export default function OfflineControls({ readiness, refresh, publishedSection = false, candidateRunning = false }: Props) {
   const status = useSiteStatus();
   const plc = usePlcStatus();
   const [error, setError] = useState<{ text: string; target: ReadinessTarget | null } | null>(null);
@@ -22,7 +24,7 @@ export default function OfflineControls({ readiness, refresh }: Props) {
   const alive = useRef(true);
   const offline = status?.mode === "offline";
   const running = !!status?.running;
-  const options = readiness?.recipes ?? null;
+  const options = readiness?.recipes.filter(recipe => recipe.published) ?? null;
   const [recipeId, setRecipeId] = useRunChoice(options, running);
   const message = plc?.state !== "connected" ? "等待连接离线 S7 服务…" : status?.message ?? "";
 
@@ -46,14 +48,14 @@ export default function OfflineControls({ readiness, refresh }: Props) {
   };
   const connected = plc?.state === "connected";
 
-  return (
+  const controls = (
     <div className="offline-controls compact">
-      <span className="offline-label">离线产线</span>
-      <RecipeRunSelect options={options} value={recipeId} onChange={setRecipeId} disabled={running || busy} />
-      <button className="btn primary" onClick={() => void perform(() => cycleApi.offlineRun(recipeId, "normal", false, null), recipeId)} disabled={running || busy || !connected || !recipeId}>
+      <span className="offline-label">{candidateRunning ? "候选调试运行中" : publishedSection ? "已发布配方回放" : "离线产线"}</span>
+      {!candidateRunning && <RecipeRunSelect options={options} value={recipeId} onChange={setRecipeId} disabled={running || busy} />}
+      {!candidateRunning && <button className="btn primary" onClick={() => void perform(() => cycleApi.offlineRun(recipeId, "normal", false, null), recipeId)} disabled={running || busy || !connected || !recipeId}>
         <Play size={15} />
         运行一件
-      </button>
+      </button>}
       <button className="btn danger" onClick={() => void perform(() => cycleApi.offlineStop(true))} disabled={busy || !running}>
         <OctagonX size={15} />
         立即停止
@@ -62,4 +64,7 @@ export default function OfflineControls({ readiness, refresh }: Props) {
       {error && <span className="offline-msg c-ng" role="alert">{error.text} <TargetLink target={error.target} /></span>}
     </div>
   );
+  if (!publishedSection) return controls;
+  if (candidateRunning) return controls;
+  return <details className="offline-published-controls"><summary>已发布配方离线回放（需要发布）</summary><p className="muted">此区域只运行已发布版本；上方候选试运行无需发布。</p>{controls}</details>;
 }

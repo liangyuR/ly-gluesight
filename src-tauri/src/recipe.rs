@@ -374,6 +374,27 @@ pub struct Recipe {
 }
 
 impl Recipe {
+    pub(crate) fn candidate_revision(&self) -> Option<u64> {
+        let suffix = self.revision_id.strip_prefix(&format!("candidate-{}-", self.id))?;
+        let revision = if let Some(legacy) = suffix.strip_prefix('r') { legacy } else {
+            let (instance, revision) = suffix.strip_prefix('i')?.split_once("-r")?;
+            let parsed = instance.parse::<u64>().ok()?;
+            if parsed == 0 || instance != parsed.to_string() { return None; }
+            revision
+        };
+        revision.parse::<u64>().ok().filter(|value| *value > 0 && revision == value.to_string())
+    }
+
+    pub(crate) fn from_snapshot(value: serde_json::Value) -> Result<Self, String> {
+        let revision = value.get("revisionId").and_then(serde_json::Value::as_str).ok_or("配方快照缺少修订号")?.to_owned();
+        let mut recipe: Self = serde_json::from_value(value).map_err(|error| error.to_string())?;
+        let production_revision = recipe.revision_id.clone();
+        recipe.revision_id = revision;
+        if recipe.revision_id != production_revision && recipe.candidate_revision().is_none() {
+            return Err("配方快照修订号与身份不一致".into());
+        }
+        Ok(recipe)
+    }
     pub fn imaging(&self, camera: &str) -> Option<CameraImaging> {
         self.camera_imaging.get(camera).copied()
     }

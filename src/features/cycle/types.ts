@@ -168,7 +168,10 @@ export interface FrameView {
   ms: number | null;
 }
 
+export interface CandidateDebug { recipeId: string; revision: number }
+
 export interface PartView {
+  candidateDebug?: CandidateDebug | null;
   cycleId: string;
   bundleId: string | null;
   sn: string;
@@ -215,6 +218,7 @@ export interface Judgement {
 }
 
 export interface ResultView extends Judgement {
+  candidateDebug?: CandidateDebug | null;
   cycleId: string | null;
   sn: string;
   recipeId: string | null;
@@ -223,6 +227,9 @@ export interface ResultView extends Judgement {
 }
 
 export interface Snapshot {
+  statsScope?: "real" | "offline" | "debug";
+  plcLocked?: boolean;
+  candidateDebug?: CandidateDebug | null;
   measurementWorkers: { capacity: number; running: number; timedOut: number; availableCapacity: number };
   phase: Phase;
   since: number;
@@ -323,6 +330,7 @@ export interface SamplePart {
 }
 
 export interface SampleSetSummary {
+  managedDir?: string | null;
   id: string;
   name: string;
   source: string;
@@ -341,7 +349,7 @@ export interface SampleRun {
   partId: string;
   sampleSn: string;
   label: SampleLabel;
-  purpose: "production" | "capture";
+  purpose: "production" | "capture" | "candidateDebug";
   cycleId: string | null;
   resultCode: number | null;
   faultCode: number | null;
@@ -383,6 +391,7 @@ export interface RecipeOption {
 }
 
 export interface Readiness {
+  candidateDebug?: CandidateDebug | null;
   ready: boolean;
   items: ReadinessItem[];
   recipes: RecipeOption[];

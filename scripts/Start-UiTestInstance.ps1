@@ -19,19 +19,21 @@ $taskUiOverlay = Get-Content -LiteralPath $taskUiConfig -Raw | ConvertFrom-Json
 if ($taskUiOverlay.identifier -ne "com.xyzrobotics.tujiaovision.$Profile-tests" -or $taskUiOverlay.app.windows[0].visible) {
     throw 'UI test configuration must use the isolated application identifier and a hidden window.'
 }
-if ($ResetData) {
-    $taskUiIdentifier = "com.xyzrobotics.tujiaovision.$Profile-tests"
-    foreach ($taskUiBase in @($env:APPDATA, $env:LOCALAPPDATA)) {
-        if (!$taskUiBase -or !(Test-Path -LiteralPath $taskUiBase -PathType Container)) { throw '无法定位用户数据目录，拒绝清理。' }
-        $taskUiData = Join-Path ([IO.Path]::GetFullPath($taskUiBase)) $taskUiIdentifier
-        if (!(Test-Path -LiteralPath $taskUiData)) { continue }
-        $taskUiItem = Get-Item -LiteralPath $taskUiData -Force
-        if (!$taskUiItem.PSIsContainer -or $taskUiItem.LinkType -or $taskUiItem.Name -cne $taskUiIdentifier -or
-            [IO.Path]::GetFullPath($taskUiItem.Parent.FullName) -ne [IO.Path]::GetFullPath($taskUiBase) -or $taskUiIdentifier -notmatch '^com\.xyzrobotics\.tujiaovision\.[a-z0-9]+-tests$') {
-            throw "拒绝清理非隔离测试数据目录：$taskUiData"
-        }
-        Remove-Item -LiteralPath $taskUiItem.FullName -Recurse -Force
+$taskUiIdentifier = "com.xyzrobotics.tujiaovision.$Profile-tests"
+$taskUiData = Join-Path $taskUiOutput $taskUiIdentifier
+if ($ResetData -and (Test-Path -LiteralPath $taskUiData)) {
+    $taskUiItem = Get-Item -LiteralPath $taskUiData -Force
+    if (!$taskUiItem.PSIsContainer -or ($taskUiItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        $taskUiItem.Name -cne $taskUiIdentifier -or
+        [IO.Path]::GetFullPath($taskUiItem.Parent.FullName) -ne [IO.Path]::GetFullPath($taskUiOutput)) {
+        throw "拒绝清理非隔离测试数据目录：$taskUiData"
     }
+    $taskUiAncestor = Get-Item -LiteralPath $taskUiItem.Parent.FullName
+    while ($null -ne $taskUiAncestor) {
+        if ($taskUiAncestor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '隔离测试目录的父路径包含链接，拒绝清理。' }
+        $taskUiAncestor = $taskUiAncestor.Parent
+    }
+    Remove-Item -LiteralPath $taskUiItem.FullName -Recurse -Force
 }
 New-Item -ItemType Directory -Path $taskUiOutput -Force | Out-Null
 Push-Location -LiteralPath $taskUiRoot
@@ -52,14 +54,19 @@ try {
     $taskUiProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $DebugPort)
     try { $taskUiProbe.Start() } finally { $taskUiProbe.Stop() }
     $taskUiOldArguments = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+    $taskUiOldData = $env:GLUESIGHT_DATA_DIR
     try {
         $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$DebugPort"
+        $env:GLUESIGHT_DATA_DIR = $taskUiData
         $taskUiProcess = Start-Process -FilePath $taskUiExecutable -WorkingDirectory $taskUiRoot -WindowStyle Hidden -PassThru `
             -RedirectStandardOutput (Join-Path $taskUiOutput 'stdout.log') -RedirectStandardError (Join-Path $taskUiOutput 'stderr.log')
-    } finally { $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $taskUiOldArguments }
+    } finally {
+        $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = $taskUiOldArguments
+        $env:GLUESIGHT_DATA_DIR = $taskUiOldData
+    }
     try {
         $taskUiState = @{ pid = $taskUiProcess.Id; executable = $taskUiExecutable; identifier = $taskUiOverlay.identifier;
-            debugPort = $DebugPort; startedAt = $taskUiProcess.StartTime.ToUniversalTime().ToString('o') }
+            dataRoot = $taskUiData; debugPort = $DebugPort; startedAt = $taskUiProcess.StartTime.ToUniversalTime().ToString('o') }
         $taskUiState | ConvertTo-Json | Set-Content -LiteralPath $taskUiManifest -Encoding utf8
         $taskUiReady = $false
         for ($taskUiAttempt = 0; $taskUiAttempt -lt 40; $taskUiAttempt++) {

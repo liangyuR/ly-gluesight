@@ -100,7 +100,10 @@ fn offline_parts_stay_out_of_real_history_statistics_and_rejudge_and_vice_versa(
     let real = save_as(&store, &recipe, "real-part", &shots, &delivery, None, RecordSource::Real).unwrap();
     let synthetic = save_as(&store, &recipe, "synthetic-part", &shots, &delivery, None, RecordSource::OfflineSynthetic).unwrap();
     let sample = save_as(&store, &recipe, "sample-part", &shots, &delivery, None, RecordSource::OfflineSample).unwrap();
-    for (scope, expected) in [(HistoryScope::Real, vec![real]), (HistoryScope::Offline, vec![sample, synthetic])] {
+    let mut debug_recipe = recipe.clone();
+    debug_recipe.revision_id = format!("candidate-{}-r355", recipe.id);
+    let debug = save_as(&store, &debug_recipe, "debug-part", &shots, &delivery, None, RecordSource::OfflineCandidate).unwrap();
+    for (scope, expected) in [(HistoryScope::Real, vec![real]), (HistoryScope::Offline, vec![sample, synthetic]), (HistoryScope::Debug, vec![debug])] {
         let query = HistoryQuery { scope, ..Default::default() };
         let page = store.query(&query).unwrap();
         assert_eq!(page.items.iter().map(|p| p.id).collect::<Vec<_>>(), expected, "{scope:?}");
@@ -617,4 +620,50 @@ fn durable_record_identity_checks_actual_fields_while_allowing_later_delivery_an
     changed.product_code += 1;
     record.recipe = Some(&changed);
     assert!(!store.matches_record(&record).unwrap());
+}
+
+#[test]
+fn candidate_source_upgrade_preserves_existing_records_and_relations() {
+    let db = TestDb::new();
+    let recipe = recipe();
+    let shots = shots(&recipe);
+    let delivery = PlcDelivery::default();
+    let points = table(&recipe);
+    let store = Store::open(&db.path()).unwrap();
+    let real = save_as(&store, &recipe, "before-real", &shots, &delivery, Some(&points), RecordSource::Real).unwrap();
+    let sample = save_as(&store, &recipe, "before-offline", &shots, &delivery, Some(&points), RecordSource::OfflineSample).unwrap();
+    drop(store);
+    let conn = Connection::open(db.path()).unwrap();
+    let sql: String = conn.query_row("SELECT sql FROM sqlite_master WHERE name='parts'", [], |r| r.get(0)).unwrap();
+    let definition = sql[sql.find('(').unwrap()..].replace(
+        "CHECK(source IN ('real','offlineSynthetic','offlineSample','offlineCandidate'))",
+        "CHECK(source IN ('real','offlineSynthetic','offlineSample'))");
+    conn.execute_batch(&format!("PRAGMA foreign_keys=OFF; BEGIN; CREATE TABLE old_parts {definition}; INSERT INTO old_parts SELECT * FROM parts; DROP TABLE parts; ALTER TABLE old_parts RENAME TO parts; COMMIT;")).unwrap();
+    conn.execute_batch("PRAGMA wal_autocheckpoint=0;").unwrap();
+    conn.execute("UPDATE parts SET reason='saved in WAL' WHERE id=?1", [real]).unwrap();
+    let store = Store::open(&db.path()).unwrap();
+    assert!(store.backup_path().is_none());
+    for id in [real, sample] {
+        let detail = store.detail(id).unwrap();
+        assert_eq!(detail.shots.len(), shots.len());
+        assert_eq!(store.recipe_snapshot(&recipe.revision_id).unwrap().unwrap().revision_id, recipe.revision_id);
+    }
+    let mut debug_recipe = recipe.clone();
+    debug_recipe.revision_id = format!("candidate-{}-r355", recipe.id);
+    let debug = save_as(&store, &debug_recipe, "after-debug", &shots, &delivery, None, RecordSource::OfflineCandidate).unwrap();
+    assert_eq!(store.detail(debug).unwrap().summary.source, RecordSource::OfflineCandidate);
+    let backup_path = std::fs::read_dir(&db.0).unwrap().map(|p| p.unwrap().path()).find(|p| p.file_name().unwrap().to_string_lossy().contains("before-candidate")).unwrap();
+    let backup = Connection::open(backup_path).unwrap();
+    let reason: String = backup.query_row("SELECT reason FROM parts WHERE id=?1", [real], |r| r.get(0)).unwrap();
+    assert_eq!(reason, "saved in WAL");
+    let before_points: i64 = backup.query_row("SELECT count(*) FROM part_points WHERE part_id IN (?1,?2)", [real, sample], |r| r.get(0)).unwrap();
+    assert_eq!(before_points, 2);
+    drop(conn);
+    let conn = store.conn.lock().unwrap();
+    let after_points: i64 = conn.query_row("SELECT count(*) FROM part_points WHERE part_id IN (?1,?2)", [real, sample], |r| r.get(0)).unwrap();
+    assert_eq!(after_points, 2);
+    let errors: i64 = conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0)).unwrap();
+    assert_eq!(errors, 0);
+    drop(conn);
+    assert_eq!(store.counts_since(0, HistoryScope::Real).unwrap().err, 1);
 }

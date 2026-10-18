@@ -43,7 +43,7 @@ fn part(cycle_id: &str, ledgers: &Ledgers) -> Part {
     }).collect();
     let router = ShotRouter::arm(&Plan::from_shots(&recipe.shots), ledgers, &Policy::offline(None), &identities).unwrap();
     Part {
-        run_id: 1, cycle_id: cycle_id.into(), bundle_id: Some("release-1".into()), production: None, sn: "SN-88".into(),
+        run_id: 1, cycle_id: cycle_id.into(), bundle_id: Some("release-1".into()), production: None, candidate: None, sn: "SN-88".into(),
         scenario: crate::offline::Scenario::Normal, frames: recipe.shots.iter().map(|shot| FrameView {
             shot_id: shot.id.clone(), camera: shot.camera.clone(), view: shot.view, ..FrameView::waiting()
         }).collect(), measuring_since: vec![None; recipe.shot_count()],

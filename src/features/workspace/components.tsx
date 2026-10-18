@@ -1,3 +1,4 @@
+import type { BrushGuide, ImagePoint } from "./teachingPath";
 import { useEffect, useId, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
 import { AlertTriangle, Camera, ChevronRight, Info, Minus, Plus, RotateCcw } from "lucide-react";
@@ -36,7 +37,7 @@ export function WorkspaceBar() {
   useEffect(() => () => setError(""), [pathname, setError]);
   const choices = [...list.map(r => ({ id:r.id, name:r.name })), ...drafts.filter(w => !list.some(r => r.id === w.doc.id)).map(w => ({ id:w.doc.id, name:w.doc.name }))];
   const publish = data?.workspace.publish;
-  return <><div className="wp-workbench-bar"><label className="wp-recipe-picker">当前配方<select className="input" value={selectedId ?? ""} disabled={busy || dirty || frameDirty} onChange={e => void select(e.target.value)}><option value="" disabled>选择配方</option>{choices.map(r => <option key={r.id} value={r.id}>{r.id} · {r.name}</option>)}</select></label>{data && <><Badge>候选 v{doc?.version}</Badge><Badge tone="neutral">生产 {data.productionVersion ? "v" + data.productionVersion : "未发布"}</Badge><span className="muted">修订 {data.workspace.revision}</span>{publish?.state === "waiting" && <Badge tone="warn">v{data.workspace.pending?.doc.version} 待工件结束后生效</Badge>}</>}<Badge tone={saveState === "failed" ? "warn" : "neutral"}>{saveState === "saving" ? "保存中" : saveState === "failed" ? "保存失败" : saveState === "pending" ? "等待保存" : "草稿已保存"}</Badge>{saveState === "failed" && <button className="btn small" onClick={retrySave}>重试保存</button>}<span className="spacer" /><Link className="btn" to="/recipe">配方库</Link></div>
+  return <><div className="wp-workbench-bar"><label className="wp-recipe-picker">当前配方<select className="input" value={selectedId ?? ""} disabled={busy || dirty || frameDirty} onChange={e => void select(e.target.value)}><option value="" disabled>选择配方</option>{choices.map(r => <option key={r.id} value={r.id}>{r.id} · {r.name}</option>)}</select></label>{data && <><Badge>候选 v{doc?.version}</Badge><Badge tone="neutral">{data.productionVersion ? "已发布 v" + data.productionVersion : "未发布"}</Badge><span className="muted">修订 {data.workspace.revision}</span>{publish?.state === "waiting" && <Badge tone="warn">v{data.workspace.pending?.doc.version} 待工件结束后生效</Badge>}</>}<Badge tone={saveState === "failed" ? "warn" : "neutral"}>{saveState === "saving" ? "保存中" : saveState === "failed" ? "保存失败" : saveState === "pending" ? "等待保存" : "草稿已保存"}</Badge>{saveState === "failed" && <button className="btn small" onClick={retrySave}>重试保存</button>}<span className="spacer" /><Link className="btn" to="/recipe">配方库</Link></div>
     {dirty && <Notice title="候选配置尚未保存" tone="warn"><span>保存后再执行示教、验证和发布。</span><button className="btn small primary" disabled={busy || !!previewError} onClick={() => void saveDoc()}>保存候选配置</button></Notice>}
     {previewError && <Notice title="候选参数无效" tone="warn">{previewError}</Notice>}
     {error && <Notice title="操作未完成" tone="warn">{error}</Notice>}
@@ -51,7 +52,7 @@ const stepPages: [string, string, StepId[], boolean][] = [
   ["/recipe/progress", "进度总览", [], false],
   ["/recipe/capture", "整圈采集", ["capture"], false],
   ["/recipe/geometry", "配方默认参数", ["defaults"], true],
-  ["/recipe/teach", "单帧示教", ["teach", "calibration"], false],
+  ["/recipe/teach", "单帧示教", ["teach"], false],
   ["/recipe/overview", "工件总览", ["overview"], true],
   ["/recipe/validation", "验证与发布", ["validation", "publish"], false],
 ];
@@ -64,7 +65,7 @@ export function Steps() {
     for (const key of ["blocked", "inProgress", "notStarted", "optional"] as StepStatus[]) if (steps.some(s => s.status === key)) return key;
     return "done" as StepStatus;
   };
-  return <nav className="wp-steps" aria-label="配方配置步骤">{stepPages.map(([path, label, ids, optional], i) => { const s = status(ids); return <NavLink key={path} to={path} end className={({isActive}) => isActive ? "active" : ""}><span>{i + 1}</span>{label}{optional && <small>（可选）</small>}{s && s !== "optional" && <small className={"wp-step-status " + s}>{stepStatusText[s]}</small>}{i < stepPages.length - 1 && <ChevronRight size={14} />}</NavLink>; })}</nav>;
+  return <nav className="wp-steps" aria-label="配方配置步骤">{stepPages.map(([path, label, ids, optional], i) => { const s = status(ids); return <NavLink key={path} to={path} end className={({isActive}) => isActive ? "active" : ""}><span>{i + 1}</span>{label}{optional && <small>（可选）</small>}{s && s !== "optional" && <small className={"wp-step-status " + s}>{stepStatusText[s]}</small>}{path === "/recipe/teach" && s === "done" && data?.progress.steps.some(step => step.id === "calibration" && step.status !== "done") && <small className="wp-step-status blocked">标定待验证</small>}{i < stepPages.length - 1 && <ChevronRight size={14} />}</NavLink>; })}</nav>;
 }
 
 export function useGrayImage(id: string | null, imageId: string | null, historyId?: number | null, k = 0, view?: number) {
@@ -115,8 +116,8 @@ export interface PathEditing {
   select: (index: number | null) => void;
 }
 
-export function GrayViewer({ image, loading = false, error = "", label, overlay, onEdit, editDisabled = false, region, onRegion, emptyTitle, emptyHint }: {
-  image: GrayImage | null; loading?: boolean; error?: string; label: string; overlay?: ImageOverlay; onEdit?: PathEditing; editDisabled?: boolean; region?: [number, number, number, number] | null; onRegion?: (region: [number, number, number, number]) => void; emptyTitle?: string; emptyHint?: string;
+export function GrayViewer({ image, loading = false, error = "", label, overlay, onEdit, editDisabled = false, region, onRegion, brush, onBrush, extractionFailure, emptyTitle, emptyHint }: {
+  image: GrayImage | null; loading?: boolean; error?: string; label: string; overlay?: ImageOverlay; onEdit?: PathEditing; editDisabled?: boolean; region?: [number, number, number, number] | null; onRegion?: (region: [number, number, number, number]) => void; brush?: BrushGuide | null; onBrush?: (points: ImagePoint[]) => void; extractionFailure?: { point: ImagePoint; message: string } | null; emptyTitle?: string; emptyHint?: string;
 }) {
   const [viewport, setViewport] = useState({ zoom: 1, x: 0, y: 0 });
   const { zoom, x, y } = viewport;
@@ -125,7 +126,7 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
   const [panning, setPanning] = useState(false);
   const reset = () => { setViewport({ zoom: 1, x: 0, y: 0 }); };
   const zoomBy = (factor: number, anchor?: DOMPoint) => {
-    if (!image || drag.current || regionStart.current || pan.current) return;
+    if (!image || drag.current || regionStart.current || brushStroke.current || pan.current) return;
     setViewport(previous => {
       const next = Math.min(4, Math.max(.5, previous.zoom * factor));
       const ratio = next / previous.zoom;
@@ -134,6 +135,7 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
       return { zoom: next, x: ax - (ax - previous.x) * ratio, y: ay - (ay - previous.y) * ratio };
     });
   };
+  const brushStroke = useRef<{ points: ImagePoint[]; inverse: DOMMatrix; pointerId: number } | null>(null);
   const regionStart = useRef<[number, number] | null>(null);
   const [shown, setShown] = useState(true);
   const [bandShown, setBandShown] = useState(true);
@@ -141,7 +143,7 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
   const [allHandles, setAllHandles] = useState(false);
   const group = useRef<SVGGElement>(null);
   const drag = useRef<{ index: number; inverse: DOMMatrix } | null>(null);
-  const stopGesture = () => { drag.current = null; regionStart.current = null; pan.current = null; setPanning(false); };
+  const stopGesture = () => { drag.current = null; regionStart.current = null; brushStroke.current = null; pan.current = null; setPanning(false); };
   useEffect(() => { reset(); stopGesture(); setAllHandles(false); }, [image?.url, image?.width, image?.height]);
   useEffect(() => {
     const element = svg.current;
@@ -166,6 +168,10 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
     const round = (v: number, max: number) => Math.round(Math.min(max, Math.max(0, v)) * 10) / 10;
     return [round(p.x, image.width), round(p.y, image.height)];
   };
+  const brushPoint = (e: PointerEvent<SVGSVGElement>, inverse: DOMMatrix): ImagePoint | null => {
+    const p = point(e, inverse);
+    return p && image ? [Math.min(p[0], image.width - 1), Math.min(p[1], image.height - 1)] : null;
+  };
   const size = image ? Math.max(image.width, image.height) : 1;
   const handle = size / 120, dot = size / 320;
   const editing = !!onEdit && shown && !editDisabled;
@@ -175,13 +181,13 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
   return <div className="wp-viewport"><div className="wp-image-tools"><span>{label}</span><div><button className="icon-btn" aria-label="缩小原图" disabled={!image} onClick={() => zoomBy(1/1.25)}><Minus size={15} /></button><span>{Math.round(zoom * 100)}%</span><button className="icon-btn" aria-label="放大原图" disabled={!image} onClick={() => zoomBy(1.25)}><Plus size={15} /></button><button className="icon-btn" aria-label="适应窗口" disabled={!image} onClick={reset}><RotateCcw size={15} /></button>{overlay && <button className={"btn small" + (shown ? " active" : "")} aria-pressed={shown} onClick={() => setShown(v => !v)}>中线叠加</button>}{band && <button className={"btn small" + (bandShown ? " active" : "")} aria-pressed={bandShown} onClick={() => setBandShown(v => !v)}>搜索带</button>}{onEdit && overlay && <button className={"btn small" + (allHandles ? " active" : "")} aria-pressed={allHandles} disabled={!shown || editDisabled} onClick={() => setAllHandles(v => !v)}>编辑点</button>}</div></div>
     {!image ? <div className="wp-image-empty"><Camera size={32} /><strong>{loading ? "正在读取原图…" : error ? "原图不可用" : emptyTitle ?? "尚未冻结本帧图像"}</strong>{hint && <span>{hint}</span>}</div> :
       <svg ref={svg} role="img" tabIndex={0} className={"wp-gray-image" + (editing ? " editable" : "") + (panning ? " panning" : "")} viewBox={"0 0 " + image.width + " " + image.height} aria-label={label} aria-description="Ctrl 加滚轮缩放，中键拖动平移；聚焦后加减键缩放，0 适应窗口" onKeyDown={e => {
-        if (e.altKey || e.metaKey || drag.current || regionStart.current || pan.current) return;
+        if (e.altKey || e.metaKey || drag.current || regionStart.current || brushStroke.current || pan.current) return;
         if (["+", "=", "-", "0"].includes(e.key)) {
           e.preventDefault();
           if (e.key === "0") reset(); else zoomBy(e.key === "-" ? 1/1.25 : 1.25);
         }
       }} onAuxClick={e => { if (e.button === 1) e.preventDefault(); }} onPointerDown={e => {
-        if (pan.current || drag.current || regionStart.current) return;
+        if (pan.current || drag.current || regionStart.current || brushStroke.current) return;
         if (e.button === 1) {
           const inverse = e.currentTarget.getScreenCTM()?.inverse();
           if (!inverse) return;
@@ -194,6 +200,12 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
         }
         if (e.button !== 0) return;
         e.currentTarget.focus({ preventScroll: true });
+        if (onBrush && !editDisabled) {
+          const inverse = group.current?.getScreenCTM()?.inverse();
+          const p = inverse ? brushPoint(e, inverse) : null;
+          if (p && inverse) { brushStroke.current = { points: [p], inverse, pointerId: e.pointerId }; onBrush([p]); e.currentTarget.setPointerCapture?.(e.pointerId); }
+          return;
+        }
         if (onRegion) { const p = point(e); if (p) { regionStart.current = p; onRegion([p[0], p[1], 0, 0]); e.currentTarget.setPointerCapture?.(e.pointerId); } return; }
         if (!editing || !onEdit) return;
         const inverse = group.current?.getScreenCTM()?.inverse();
@@ -213,6 +225,13 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
           setViewport(previous => ({ ...previous, x: gesture.x + p.x - gesture.start.x, y: gesture.y + p.y - gesture.start.y }));
           return;
         }
+        if (brushStroke.current && onBrush && !editDisabled) {
+          const stroke = brushStroke.current;
+          if (e.pointerId !== stroke.pointerId) return;
+          const p = brushPoint(e, stroke.inverse), last = stroke.points[stroke.points.length - 1];
+          if (p && stroke.points.length < 4096 && Math.hypot(p[0] - last[0], p[1] - last[1]) >= 2) { stroke.points.push(p); onBrush([...stroke.points]); }
+          return;
+        }
         if (onRegion && regionStart.current) { const p = point(e), a = regionStart.current; if (p) onRegion([Math.min(a[0],p[0]), Math.min(a[1],p[1]), Math.abs(p[0]-a[0]), Math.abs(p[1]-a[1])]); return; }
         const current = drag.current;
         if (!current || !onEdit || editDisabled) return;
@@ -224,6 +243,16 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
             <defs><clipPath id={bandClip}><rect width={image.width} height={image.height} /></clipPath></defs>
             {[band.left, band.right].map((edge, i) => <polyline key={i} points={edge.map(p => p.join(",")).join(" ")} strokeWidth={1} strokeDasharray="5 5" vectorEffect="non-scaling-stroke" />)}
             {band.bars.map(i => <line key={i} x1={band.left[i][0]} y1={band.left[i][1]} x2={band.right[i][0]} y2={band.right[i][1]} strokeWidth={1} strokeDasharray="2 6" vectorEffect="non-scaling-stroke" />)}
+          </g>}
+          {brush && brush.points.length > 0 && <g aria-label="刷选胶路区域" pointerEvents="none">
+            <polyline points={brush.points.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeOpacity={.22} strokeWidth={brush.radiusPx * 2} strokeLinecap="round" strokeLinejoin="round" />
+            <polyline points={brush.points.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeWidth={1} strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />
+            {[brush.points[0], brush.points[brush.points.length - 1]].map(([px, py], i) => <g key={i}><circle cx={px} cy={py} r={handle / zoom} fill={i === 0 ? "var(--ok)" : "var(--primary)"} /><text x={px} y={py} dx={14 / zoom} dy={-10 / zoom} fontSize={14 / zoom} fill="var(--primary)">{i === 0 ? "起点" : "终点"}</text></g>)}
+          </g>}
+          {extractionFailure && <g aria-label="中线提取失败位置" pointerEvents="none" transform={`translate(${extractionFailure.point[0]} ${extractionFailure.point[1]})`}>
+            <title>{extractionFailure.message}</title>
+            <circle r={18 / zoom} fill="var(--surface-lowest)" fillOpacity={.8} stroke="var(--ng)" strokeWidth={3} vectorEffect="non-scaling-stroke" />
+            <text textAnchor="middle" dy={6 / zoom} fontSize={20 / zoom} fontWeight="bold" fill="var(--ng)">!</text>
           </g>}
           {region && <rect x={region[0]} y={region[1]} width={region[2]} height={region[3]} fill="var(--primary)" fillOpacity={.12} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
           {overlay && shown && <g aria-label="中线叠加">
@@ -238,6 +267,6 @@ export function GrayViewer({ image, loading = false, error = "", label, overlay,
             </g>}
           </g>}
         </g></svg>}
-    {image && <div className="wp-image-footer"><span>{image.width} × {image.height} px · Ctrl＋滚轮缩放 · 中键拖动 · + / − / 0</span><span>{onRegion ? "拖动框选一段连续胶路区域" : onEdit ? (path.length > 24 && !allHandles ? "密集中线仅显示端点；打开“编辑点”可调整全部点" : "点击图像依次加中线点（从胶嘴一侧往外，绿圈为起点），拖动点可调整") : "原始灰度图像"}</span></div>}
+    {image && <div className="wp-image-footer"><span>{image.width} × {image.height} px · Ctrl＋滚轮缩放 · 中键拖动 · + / − / 0</span><span>{onBrush ? "按住左键沿胶路刷过；每一笔重画选区，中键拖动视图" : onRegion ? "拖动框选一段连续胶路区域" : onEdit ? (path.length > 24 && !allHandles ? "密集中线仅显示端点；打开“编辑点”可调整全部点" : "点击图像依次加中线点（从胶嘴一侧往外，绿圈为起点），拖动点可调整") : "原始灰度图像"}</span></div>}
   </div>;
 }

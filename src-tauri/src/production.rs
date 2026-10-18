@@ -329,6 +329,7 @@ pub fn site_admits(site: ValidationSite, offline: bool) -> Result<(), String> {
 }
 
 pub fn ready(app: &AppHandle, recipe: &Recipe) -> Result<Option<Arc<Prepared>>, String> {
+    if crate::offline::candidate(app).is_some_and(|c| c.matches(recipe)) { return Ok(None); }
     if !crate::site::image_measurement(app) { return Ok(None); }
     let host = app.state::<ProductionHost>();
     let site = match host.prepared(&warmup_key(recipe)) {

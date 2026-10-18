@@ -7,7 +7,8 @@
         "type": "skip"
       },
       "nsis": {
-        "installMode": "currentUser",
+        "installMode": "perMachine",
+        "installerHooks": "installer-hooks.nsh",
         "languages": ["SimpChinese", "English"],
         "displayLanguageSelector": true
       }

@@ -92,7 +92,8 @@ mod part_recipe {
         recipe.as_deref().serialize(serializer)
     }
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Arc<Recipe>>, D::Error> {
-        Option::<Recipe>::deserialize(deserializer).map(|recipe| recipe.map(Arc::new))
+        Option::<serde_json::Value>::deserialize(deserializer)?
+            .map(|value| Recipe::from_snapshot(value).map(Arc::new).map_err(serde::de::Error::custom)).transpose()
     }
 }
 

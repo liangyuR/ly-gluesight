@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { storageApi, type StoragePreferences } from "../../../lib/storage";
+import { errorText } from "../../../lib/errors";
 
 interface Inputs {
   speed: number;
@@ -23,35 +25,58 @@ const fields: [Key, string, number][] = [
 const manualHint: Record<Key, string> = {
   speed: "手填：机器人经过拍照点时的线速度",
   exposure: "手填：相机曝光时间",
-  mmPerPx: "完成工位标定后自动带入",
-  fps: "相机连接后自动带入",
+  mmPerPx: "可手填用于本页估算，不作为标定验证结果",
+  fps: "可手填估算，相机连接后自动带入",
   spacing: "手填：相邻拍照点沿路径的最小距离",
-  fov: "有标定样本和像素当量后自动计算",
+  fov: "可手填；有图像尺寸和像素当量后自动计算",
 };
-const remembered: Key[] = ["speed", "spacing"];
-const storageKey = "gluesight.feasibility.manual";
-function readStored(): Partial<Inputs> {
-  try {
-    const raw = JSON.parse(localStorage.getItem(storageKey) ?? "{}") as Partial<Record<Key, unknown>>;
-    return Object.fromEntries(remembered.filter(k => typeof raw[k] === "number" && Number.isFinite(raw[k])).map(k => [k, raw[k]]));
-  } catch { return {}; }
-}
 const format = (key: Key, value: number) => key === "mmPerPx" ? value.toFixed(4) : String(Math.round(value * 10) / 10);
 
 /** 按方案文档 2.1 / 2.3 核算：模糊 ≤ 0.5 px，相邻触发间隔 ≥ 单帧时间，相邻视野留出同框余量。 */
 export default function FeasibilityCalc({ sources: given = {}, imageSize }: { sources?: FeasibilitySources; imageSize?: { width: number; height: number } | null }) {
-  const [manual, setManual] = useState<Partial<Inputs>>(readStored);
+  const [manual, setManual] = useState<Partial<Inputs>>({});
   const [axis, setAxis] = useState<"width" | "height">("width");
-  const sourceKey = JSON.stringify([fields.map(([k]) => given[k]?.value ?? null), imageSize?.width, imageSize?.height]);
   const mm = "mmPerPx" in manual ? manual.mmPerPx! : given.mmPerPx?.value ?? NaN;
   const sources: FeasibilitySources = { ...given, fov: given.fov ?? (imageSize && Number.isFinite(mm) && mm > 0 ? { value: Math.round(imageSize[axis] * mm * 10) / 10, from: `图像${axis === "width" ? "宽" : "高"} ${imageSize[axis]} px × 当量` } : null) };
-  useEffect(() => { setManual(prev => Object.fromEntries(remembered.filter(k => k in prev).map(k => [k, prev[k]]))); }, [sourceKey]);
+  const touched = useRef(new Set<Key>());
+  const [storageError, setStorageError] = useState("");
+  const [loadingPreferences, setLoadingPreferences] = useState(true);
+  const [readRevision, setReadRevision] = useState(0);
+  const saveVersion = useRef(0);
+  const save = (patch: StoragePreferences) => {
+    const version = ++saveVersion.current;
+    void storageApi.updatePreferences(patch).then(() => {
+      if (version === saveVersion.current) setStorageError("");
+    }).catch(error => { if (version === saveVersion.current) setStorageError(`飞拍参数未保存：${errorText(error)}`); });
+  };
   useEffect(() => {
-    try { localStorage.setItem(storageKey, JSON.stringify(Object.fromEntries(remembered.filter(k => Number.isFinite(manual[k])).map(k => [k, manual[k]])))); } catch { /* 浏览器存储不可用时只是不记住手填值 */ }
-  }, [manual.speed, manual.spacing]);
+    let active = true;
+    setLoadingPreferences(true);
+    void storageApi.preferences().then(saved => {
+      if (!active) return;
+      setStorageError("");
+      setManual(previous => ({ ...previous,
+        ...(!touched.current.has("speed") && saved.flyshotSpeedMmS != null ? { speed: saved.flyshotSpeedMmS } : {}),
+        ...(!touched.current.has("spacing") && saved.flyshotSpacingMm != null ? { spacing: saved.flyshotSpacingMm } : {}),
+      }));
+    }).catch(error => { if (active) setStorageError(`飞拍参数读取失败：${errorText(error)}`); })
+      .finally(() => { if (active) setLoadingPreferences(false); });
+    return () => { active = false; };
+  }, [readRevision]);
+  const change = (key: Key, value: number) => {
+    touched.current.add(key);
+    setManual(previous => ({ ...previous, [key]: value }));
+    if (key === "speed") save({ flyshotSpeedMmS: Number.isFinite(value) ? value : null });
+    if (key === "spacing") save({ flyshotSpacingMm: Number.isFinite(value) ? value : null });
+  };
   const pick = (k: Key) => (k in manual ? manual[k] : sources[k]?.value) ?? NaN;
   const v: Inputs = { speed: pick("speed"), exposure: pick("exposure"), mmPerPx: pick("mmPerPx"), fps: pick("fps"), spacing: pick("spacing"), fov: pick("fov") };
-  const restore = (key: Key) => setManual(prev => { const next = { ...prev }; delete next[key]; return next; });
+  const restore = (key: Key) => {
+    touched.current.add(key);
+    setManual(prev => { const next = { ...prev }; delete next[key]; return next; });
+    if (key === "speed") save({ flyshotSpeedMmS: null });
+    if (key === "spacing") save({ flyshotSpacingMm: null });
+  };
 
   const blur = v.speed * v.exposure * 1e-6;
   const blurPx = v.mmPerPx ? blur / v.mmPerPx : 0;
@@ -79,13 +104,18 @@ export default function FeasibilityCalc({ sources: given = {}, imageSize }: { so
         <h3 className="panel-title">飞拍可行性</h3>
         <span className="muted">核算按这组速度、曝光和拍照点间距飞拍时，图像会不会拖影、相机来不来得及、相邻视野是否连续</span>
       </div>
+      {loadingPreferences && <p className="muted" aria-live="polite">正在读取已保存的飞拍参数…</p>}
+      {storageError && <p className="notice error" role="alert">{storageError} <button type="button" className="btn" onClick={() => { if (!touched.current.has("speed") && !touched.current.has("spacing")) { setReadRevision(v => v + 1); return; } save({
+        ...(touched.current.has("speed") ? { flyshotSpeedMmS: Number.isFinite(manual.speed) ? manual.speed! : null } : {}),
+        ...(touched.current.has("spacing") ? { flyshotSpacingMm: Number.isFinite(manual.spacing) ? manual.spacing! : null } : {}),
+      }); }}>重试保存</button></p>}
       <div className="calc-in">
         {fields.map(([key, label, step]) => {
           const source = sources[key], overridden = !!source && key in manual;
           return (
             <label key={key} className="field">
               <span>{label}</span>
-              <input id={`calc-${key}`} className="input mono" type="number" min={0} step={step} placeholder="请填写" value={Number.isFinite(v[key]) ? v[key] : ""} onChange={(e) => setManual(previous => ({ ...previous, [key]: e.target.value === "" ? NaN : Number(e.target.value) }))} />
+              <input id={`calc-${key}`} className="input mono" type="number" min={0} step={step} placeholder="请填写" value={Number.isFinite(v[key]) ? v[key] : ""} onChange={(e) => change(key, e.target.value === "" ? NaN : Number(e.target.value))} />
               <small className={"calc-src" + (overridden ? " changed" : source ? " linked" : "")}>
                 {overridden ? <>已手改，{source.from}为 {format(key, source.value)}<button type="button" className="calc-restore" onClick={() => restore(key)}>恢复</button></> : source ? source.from : manualHint[key]}
               </small>

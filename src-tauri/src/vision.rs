@@ -108,6 +108,7 @@ pub struct LyFlowMeasurer;
 
 impl Measurer for LyFlowMeasurer {
     fn measure(&self, job: &Job, image: &FrameImage) -> Result<Measured, String> {
+        if let Some(candidate) = &job.candidate { return candidate.measure(job, image); }
         let prepared = job.production.as_ref().ok_or("图像检测没有已核验并预热的发布包")?;
         if job.bundle_id.as_deref() != Some(prepared.bundle.id.as_str()) || job.recipe.revision_id != prepared.recipe.revision_id {
             return Err("测量任务与已冻结发布包不一致".into());
@@ -319,7 +320,7 @@ impl VisionHost {
 
 pub fn station_calib_path(app: &AppHandle, cam_id: &str) -> Result<PathBuf, String> {
     let name = format!("plane_calib_{cam_id}.json");
-    Ok(app.path().app_config_dir().map_err(|e| e.to_string())?.join("calib").join(name))
+    Ok(crate::storage::root(app).join("calib").join(name))
 }
 
 /// 拍照点 k 的标定文件：按它的标定引用（缺省为相机编号）找工位标定。

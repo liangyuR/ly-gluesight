@@ -1,3 +1,4 @@
+import { resampleTeachingPath, type ImagePoint } from "./teachingPath";
 import { errorText } from "../../lib/errors";
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -7,7 +8,7 @@ import { pathLength, shotSegment } from "../cycle/vis";
 import type { RecipeDoc } from "../cycle/types";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
-import { Badge, GrayViewer, KV, Notice, Panel, Steps, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
+import { Badge, GrayViewer, KV, Notice, NumberField, Panel, Steps, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { FrozenImage, ShotTeach, WorkspaceView } from "./types";
 import { sameTeach, shotTeach, teachError } from "./teach";
 import { TrialResult, trialPoints } from "./TrialResult";
@@ -46,14 +47,19 @@ export default function TeachingPage() {
   const reading=false;
   const [operation,setOperation]=useState<"extract" | "trial" | null>(null);
   const [extractionHint,setExtractionHint]=useState("");
+  const [extractionFailure,setExtractionFailure]=useState<{ point: ImagePoint; reason: string; message: string } | null>(null);
   const [vertex,setVertex]=useState<number|null>(null);
   const [region, setRegion] = useState<[number,number,number,number] | null>(null);
   const [regionMode, setRegionMode] = useState(false);
+  const [selectionTool, setSelectionTool] = useState<"brush" | "box">("brush");
+  const [brushPoints, setBrushPoints] = useState<ImagePoint[]>([]);
+  const [brushWidth, setBrushWidth] = useState(80);
+  const [pointSpacing, setPointSpacing] = useState(20);
   const pending=useRef(false),serial=useRef(0);
   const scope=JSON.stringify([doc?.id,k,data?.workspace.doc.shots[k]?.view,data?.workspace.frames[k]?.image?.id]);
   const current=useRef({scope,alive:true,revision:data?.workspace.revision});current.current.scope=scope;current.current.revision=data?.workspace.revision;
   useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;serial.current++;};},[]);
-  useEffect(()=>{serial.current++;pending.current=false;setWorking(false);setVertex(null);setRegion(null);setRegionMode(false);setOperation(null);setExtractionHint("");},[scope]);
+  useEffect(()=>{serial.current++;pending.current=false;setWorking(false);setVertex(null);setRegion(null);setBrushPoints([]);setRegionMode(false);setOperation(null);setExtractionHint("");setExtractionFailure(null);},[scope]);
   const perform=async(request:()=>Promise<WorkspaceView>,message:string)=>{
     if(pending.current||busy||dirty)return null;
     pending.current=true;setWorking(true);
@@ -114,16 +120,23 @@ export default function TeachingPage() {
   const lengthPx = pathLength(t.path);
   const trialDisabledReason = !enabled ? "请先选择本组检测图" : !frame.image ? "请先采用采集图像" : viewState === "recapture" ? "图像或设备已变化，请重新采集" : t.path.length < 2 ? "请先提取或绘制至少两个中线点" : invalid ? invalid : data.workspace.pending ? "候选版本正在等待生效" : !unlocked ? "正在处理或保存，请稍候" : "";
   const canTrial = !trialDisabledReason;
-  const roi: [number, number, number, number] | null = region && frame.image ? (() => {
-    const x = Math.max(0, Math.floor(region[0])), y = Math.max(0, Math.floor(region[1]));
-    return [x, y, Math.min(frame.image.size[0], Math.ceil(region[0] + region[2])) - x, Math.min(frame.image.size[1], Math.ceil(region[1] + region[3])) - y];
+  const strokeValid = brushPoints.length >= 2 && pathLength(brushPoints) >= 8;
+  const brushValid = Number.isFinite(brushWidth) && brushWidth >= 6 && brushWidth <= 300 && strokeValid;
+  const spacingValid = Number.isFinite(pointSpacing) && pointSpacing >= 4 && pointSpacing <= 80;
+  const selectionRegion = selectionTool === "box" ? region : brushPoints.length && Number.isFinite(brushWidth) ? (() => {
+    const xs = brushPoints.map(p => p[0]), ys = brushPoints.map(p => p[1]);
+    return [Math.min(...xs) - brushWidth / 2, Math.min(...ys) - brushWidth / 2, Math.max(...xs) - Math.min(...xs) + brushWidth, Math.max(...ys) - Math.min(...ys) + brushWidth];
   })() : null;
-  const roiValid = !!roi && roi[2] >= 5 && roi[3] >= 5 && roi[2] * roi[3] <= 4_000_000;
+  const roi: [number, number, number, number] | null = selectionRegion && frame.image ? (() => {
+    const x = Math.max(0, Math.floor(selectionRegion[0])), y = Math.max(0, Math.floor(selectionRegion[1]));
+    return [x, y, Math.min(frame.image.size[0], Math.ceil(selectionRegion[0] + selectionRegion[2])) - x, Math.min(frame.image.size[1], Math.ceil(selectionRegion[1] + selectionRegion[3])) - y];
+  })() : null;
+  const roiValid = (selectionTool === "box" || brushValid) && !!roi && roi[2] >= 5 && roi[3] >= 5 && roi[2] * roi[3] <= 4_000_000;
   const extract = async () => {
     if (!unlocked || !enabled || !frame.image || pending.current) return;
-    if (!roiValid || !roi) { setRegionMode(true); setExtractionHint("请在图像上按住左键，框选一段连续胶路（至少 5×5 像素，最多 400 万像素），再点自动提取中线。"); return; }
+    if (!roiValid || !roi || !spacingValid) { setRegionMode(true); setExtractionHint("请沿胶路刷过至少 8 px，并设置有效的笔刷宽度和中线点间距。"); return; }
     const capturedScope = scope;
-    setOperation("extract"); setExtractionHint("");
+    setOperation("extract"); setExtractionHint(""); setExtractionFailure(null);
     try {
       let candidate = data;
       if (editing) {
@@ -133,16 +146,26 @@ export default function TeachingPage() {
       }
       let extracted: Awaited<ReturnType<typeof workspaceApi.extractCenterline>> | null = null;
       const result = await perform(async () => {
-        extracted = await workspaceApi.extractCenterline(doc.id,candidate.workspace.revision,k,frame.image!.id,roi);
+        extracted = await workspaceApi.extractCenterline(doc.id,candidate.workspace.revision,k,frame.image!.id,roi,selectionTool === "brush" ? { points: brushPoints, radiusPx: brushWidth / 2 } : undefined,pointSpacing);
         return candidate;
       }, "");
       if (result && extracted && current.current.scope === capturedScope) {
         const output = extracted as Awaited<ReturnType<typeof workspaceApi.extractCenterline>>;
+        if (output.failure) {
+          setExtractionFailure(output.failure); setExtractionHint(output.failure.message); setRegionMode(true); return;
+        }
         setFrameDraft(k,{...t,path:output.path}); setRegionMode(false); setVertex(null);
         setExtractionHint(output.message || "中线已提取，请检查后运行一次算法。");
       }
     } finally { if (current.current.scope === capturedScope) setOperation(null); }
   };
+  const fromStroke = () => {
+    if (!unlocked || !enabled || !frame.image || !strokeValid || !spacingValid) return;
+    setPath(resampleTeachingPath(brushPoints, pointSpacing));
+    setRegionMode(false); setVertex(null); setExtractionFailure(null);
+    setExtractionHint("已按笔划生成中线草稿，请检查并手工修正，再运行一次算法；尚未验证胶路边缘。");
+  };
+  const changeBrushWidth = (value: number) => { setBrushWidth(value); setExtractionFailure(null); setExtractionHint(""); };
   const saveAndTrial = async () => {
     if (!canTrial || !frame.image || pending.current) return;
     const capturedScope = scope;
@@ -197,16 +220,29 @@ export default function TeachingPage() {
         {group.selected.length > 1 && <p className="c-warn" role="alert">本组原先选择了多张图，请重新选择一张作为检测图。</p>}
       </section>
       {enabled ? <><Panel title={shot.camera + " · 中线示教"}>
-        <div className="wp-actions" role="group" aria-label="单帧示教操作"><button className="btn" aria-pressed={regionMode} disabled={!unlocked || !frame.image} onClick={() => setRegionMode(v => !v)}>{regionMode ? "结束框选 / 手工修正" : "框选胶路区域"}</button>
+        <div className="wp-actions" role="group" aria-label="单帧示教操作"><button className="btn" aria-pressed={regionMode} disabled={!unlocked || !frame.image} onClick={() => setRegionMode(v => !v)}>{regionMode ? "结束选区 / 手工修正" : "刷选胶路区域"}</button>
           <button className="btn" disabled={!unlocked || !frame.image || loading || !!error} onClick={() => void extract()}><WandSparkles size={15}/>{operation === "extract" ? "提取中…" : "自动提取中线"}</button>
+          <button className="btn" disabled={!unlocked || !enabled || !frame.image || selectionTool !== "brush" || !strokeValid || !spacingValid} onClick={fromStroke}>笔划直接生成中线</button>
           <button className="btn primary" disabled={!canTrial} title={trialDisabledReason || "保存当前参数，对本图运行一次检测算法"} onClick={() => void saveAndTrial()}><Play size={15}/>{operation === "trial" ? "计算中…" : "运行一次算法"}</button>
           <button className="btn primary" disabled={!unlocked || !enabled || !trialCurrent || viewState === "taught"} onClick={() => void save()}><Save size={15} />保存本组示教</button>
           <button className="btn" disabled={!unlocked || !enabled || !trialCurrent || !nextGroup} onClick={() => void save(true)}>保存并进入下一组</button>
         </div>
-        {(regionMode || extractionHint) && <p className="muted hint" role="status">{regionMode ? roiValid ? "区域已选好，点击自动提取中线；提取结果可继续拖动修正。" : "在图像上按住左键框选一段连续胶路（至少 5×5 像素，最多 400 万像素），再点击自动提取中线。" : extractionHint}</p>}
+        <div className="wp-actions wp-teaching-tools">
+          <label className="field wp-field"><span>选区工具</span><select className="input" aria-label="选区工具" value={selectionTool} disabled={!unlocked} onChange={e => { setSelectionTool(e.target.value as "brush" | "box"); setRegionMode(true); setExtractionFailure(null); setExtractionHint(""); }}><option value="brush">沿胶路刷选</option><option value="box">矩形框选</option></select></label>
+          {selectionTool === "brush" && <div className="wp-brush-width">
+            <NumberField label="笔刷宽度" value={brushWidth} unit="px" min={6} max={300} step={2} disabled={!unlocked} onChange={changeBrushWidth} />
+            <input className="wp-brush-width-slider" type="range" aria-label="拖动调整笔刷宽度" min={6} max={300} step={2} value={Number.isFinite(brushWidth) ? Math.min(300, Math.max(6, brushWidth)) : 80} disabled={!unlocked} onChange={event => changeBrushWidth(Number(event.target.value))} />
+          </div>}
+          <NumberField label="中线点间距" value={pointSpacing} unit="px" min={4} max={80} step={2} disabled={!unlocked} onChange={setPointSpacing} />
+          <button className="btn small" disabled={!unlocked || !spacingValid || t.path.length < 2} onClick={() => { setVertex(null); setPath(resampleTeachingPath(t.path, pointSpacing)); }}>应用到当前中线</button>
+          <span className="muted">检测站距 {doc.spacing} mm · 编辑点按目标最大间距调整，转弯处保留点</span>
+        </div>
+        {(regionMode || extractionHint) && <p className="muted hint" role="status">{extractionHint || (regionMode ? selectionTool === "brush" ? "按住左键沿胶路从起点刷到终点，每笔重画选区；笔刷覆盖胶路和两侧少量背景，尽量避开阴影。选好后可自动提取，或直接按笔划生成中线草稿。" : "按住左键框选一段连续胶路，再自动提取中线。框选包含阴影时建议改用刷选。" : "")}</p>}
         {trialFresh && <div className="wp-actions" aria-label="本次算法结果"><Badge tone={trialCurrent ? "info" : "warn"}>{trial?.verdict ?? "执行异常"}</Badge><span>量成比例 {measured ? (trial!.coverage * 100).toFixed(1) + "%" : "—"}</span><span>耗时 {trial?.elapsedMs} ms</span><span className="muted">绿色：有效胶宽 · 红色：未通过候选 / 无候选</span></div>}
         <GrayViewer image={image} loading={loading} error={error} label={frame.image ? group.poseId + " · " + shot.camera + " · 图 " + shot.view : "等待取样"}
-          region={region} onRegion={regionMode && unlocked && enabled ? setRegion : undefined}
+          region={selectionTool === "box" ? region : null} onRegion={regionMode && selectionTool === "box" && unlocked && enabled ? setRegion : undefined}
+          brush={regionMode && selectionTool === "brush" && Number.isFinite(brushWidth) ? { points: brushPoints, radiusPx: brushWidth / 2 } : null} onBrush={regionMode && selectionTool === "brush" && unlocked && enabled ? points => { setBrushPoints(points); setExtractionFailure(null); setExtractionHint(""); } : undefined}
+          extractionFailure={extractionFailure}
           overlay={{ path: t.path, stations: points?.filter(p => !p.edge && !p.candidateEdge).map(p => p.px) ?? stations, stationColors: points?.filter(p => !p.edge && !p.candidateEdge).map(p => p.status === "ok" ? "var(--ok)" : "var(--ng)"), segments: points?.flatMap((p, i) => {
             const edge = p.edge ?? p.candidateEdge;
             const width = p.edge ? p.width : p.candidateWidth;
@@ -233,6 +269,6 @@ export default function TeachingPage() {
       {enabled && <div className="wp-stack wp-teach-settings"><TeachingSettings key={scope} teach={t} savedMmPerPx={saved.mmPerPx} defaults={defaults} defaultLimits={doc.limits} calibration={calibration} disabled={!unlocked} editing={editing} onChange={update}
         onRecord={async (reference, measured, reuse) => !!await perform(() => workspaceApi.checkCalibration(doc.id,data.workspace.revision,k,reference,measured,reuse), "已保存当前图的标定验证")} />
       <details className="wp-sample-details"><summary>图像采集信息</summary><Panel title="当前检测图"><KV label="拍照组">{group.poseId}</KV><KV label="相机">{shot.camera}</KV><KV label="当前编辑图">图 {shot.view}</KV><KV label="图像">{frame.image?.id ?? "未冻结"}</KV><KV label="曝光">{frame.image?.exposureUs != null ? frame.image.exposureUs + " μs" : "未记录"}</KV><KV label="增益">{frame.image?.gainDb != null ? frame.image.gainDb + " dB" : "未记录"}</KV><KV label="原图更新">仅通过整圈重新采集</KV>{imagingHint && <p className="c-warn" role="note">{imagingHint}；样本仍可用，需要时整圈重采</p>}</Panel></details>
-      <Notice title="保存与发布分开">中线保存进候选配方，生产配方不变；保存本组后，先验证代表性样本，再发布生产版本。</Notice></div>}
+      <Notice title="保存与发布分开">中线保存进候选配方，已发布版本不变。离线样本模式下可直接试运行已保存候选；用于生产前仍需完成标定、代表性样本验证与发布。</Notice></div>}
     </div></div>;
 }

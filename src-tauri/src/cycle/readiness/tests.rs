@@ -12,6 +12,7 @@ fn warming(id: &str) -> RecipeOption {
 
 fn facts() -> Facts {
     Facts {
+        candidate_debug: None,
         site: Site::Real, plc_connected: true, session: Some(SessionPhase::Idle), session_message: None, phase: Phase::Idle, fault: None,
         cameras: Check::Ok, engine: Some(Ok("1.1.0".into())), workers: Ok(()), audit: Check::Ok, record: RecordMode::Off,
         product: Product::Plc, activation_uncertain: false, recipes: vec![option("A", true, None)],
@@ -176,4 +177,26 @@ fn each_trigger_takes_the_sample_shot_of_the_same_point_for_every_camera() {
     let mapped = manifest.recipe_shots(&recipe).unwrap();
     let k = recipe.shots.iter().position(|s| s.id == "S010-cam3").unwrap();
     assert_eq!(mapped[k].shot_id, "S030");
+}
+
+#[test]
+fn candidate_debug_report_identifies_the_frozen_candidate_instead_of_production_readiness() {
+    let mut candidate = option("A", true, None);
+    candidate.published = false;
+    let report = evaluate(Facts {
+        candidate_debug: Some(crate::candidate::DebugInfo { recipe_id: "A".into(), revision: 355 }),
+        site: Site::SampleSet("samples".into()), recipes: vec![candidate], ..facts()
+    });
+    assert!(report.ready);
+    assert_eq!(report.candidate_debug.unwrap().revision, 355);
+    let item = report.items.iter().find(|item| item.key == ItemKey::Recipe).unwrap();
+    assert_eq!(item.title, "候选调试检查");
+}
+
+#[test]
+fn leaving_sample_mode_restores_site_statistics_despite_a_previous_debug_part() {
+    use crate::store::{HistoryScope, RecordSource};
+    for (site, expected) in [(RecordSource::Real, HistoryScope::Real), (RecordSource::OfflineSynthetic, HistoryScope::Offline), (RecordSource::OfflineSample, HistoryScope::Debug)] {
+        assert_eq!(crate::cycle::display_history_scope(site, Some(RecordSource::OfflineCandidate)), expected);
+    }
 }

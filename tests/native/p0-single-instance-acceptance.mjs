@@ -19,7 +19,9 @@ assert.equal(instance.identifier, 'com.xyzrobotics.tujiaovision.p0-tests');
 assert(Number.isInteger(instance.debugPort) && instance.debugPort >= 1024 && instance.debugPort <= 65535);
 assert.equal(values.cdp, 'http://127.0.0.1:' + instance.debugPort, 'CDP must match the isolated instance debug port');
 assert(typeof instance.startedAt === 'string' && Number.isFinite(new Date(instance.startedAt).getTime()), 'Instance requires its process start time');
-const profile = join(cPath(process.env.APPDATA), instance.identifier);
+assert(instance.dataRoot, '隔离实例未声明资料目录，请重新启动测试实例');
+const profile = cPath(instance.dataRoot);
+assert(profile.endsWith(instance.identifier));
 const executable = cPath(instance.executable);
 
 assert(Number.isInteger(instance.pid) && instance.pid > 0);
@@ -63,7 +65,7 @@ try {
   assert.equal(new Date(report.before.process.start).getTime(), new Date(instance.startedAt).getTime());
   assert.equal(report.before.cycle.phase, 'IDLE');
   assert.equal(report.before.cycle.fault, null);
-  const duplicate = spawn(executable, [], { cwd: resolve(executable, '..'), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const duplicate = spawn(executable, [], { cwd: resolve(executable, '..'), env: { ...process.env, GLUESIGHT_DATA_DIR: profile }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '', stderr = '', timedOut = false;
   duplicate.stdout.on('data', bytes => { stdout += bytes.toString(); });
   duplicate.stderr.on('data', bytes => { stderr += bytes.toString(); });

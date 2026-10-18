@@ -7,6 +7,30 @@ import { readiness, snapshot } from "./fixtures";
 
 describe("在线检测设备状态", () => {
   it.each([
+    { condition: "离线样本仅生产配方未发布", offlineSample: true, plcBlocked: false, expected: "离线设备条件已通过" },
+    { condition: "离线样本仍有 PLC 阻塞", offlineSample: true, plcBlocked: true, expected: "离线设备异常 · 1 项阻塞" },
+    { condition: "真机生产配方未发布", offlineSample: false, plcBlocked: false, expected: "无法开工 · 1 项阻塞" },
+  ])("$condition → 主设备报告只豁免离线候选的生产发布条件", ({ offlineSample, plcBlocked, expected }) => {
+    const report = readiness({ ready: false, items: readiness().items.map(item => item.key === "recipe"
+      ? { ...item, state: "blocked", detail: "配方未发布", target: "workspace" }
+      : item.key === "plc" && plcBlocked ? { ...item, state: "blocked", detail: "PLC 未连接", target: "plc" } : item) });
+    render(<MemoryRouter><InspectionReadiness snapshot={snapshot()} readiness={report} offlineSample={offlineSample} /></MemoryRouter>);
+    const device = within(screen.getByRole("region", { name: "设备状态" }));
+    expect(device.getByText(expected)).toBeVisible();
+    if (offlineSample) {
+      expect(device.queryByText("配方未发布")).not.toBeInTheDocument();
+      expect(device.getByText("候选示教与样本匹配在启动试运行时检查；生产发布条件不用于候选调试。")).toBeVisible();
+      expect(device.queryByText("就绪，等待工件")).not.toBeInTheDocument();
+    } else {
+      expect(device.getByText("配方未发布")).toBeVisible();
+    }
+    if (plcBlocked) {
+      expect(device.getByText("PLC 未连接")).toBeVisible();
+      expect(device.getByRole("link", { name: "去 PLC 通讯" })).toHaveAttribute("href", "/plc");
+    }
+  });
+
+  it.each([
     { condition: "没有设备快照", snapshot: null, readiness: readiness(), expected: "正在确认设备状态" },
     { condition: "尚未取得开工条件", snapshot: snapshot(), readiness: null, expected: "正在确认设备状态" },
     { condition: "开工条件通过但设备故障", snapshot: { ...snapshot("FAULT"), fault: "PLC 心跳中断" }, readiness: readiness(), expected: "无法开工 · 设备故障" },

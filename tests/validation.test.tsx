@@ -2,18 +2,21 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useSiteStatus } from "../src/features/cycle/api";
 import ValidationPage from "../src/features/workspace/ValidationPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
 import { historyApi } from "../src/features/history/api";
-import { workspaceState } from "./fixtures";
+import { siteStatus, sampleSet, workspaceState } from "./fixtures";
 
+vi.mock("../src/features/cycle/api", () => ({ useSiteStatus: vi.fn() }));
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { publish: vi.fn(), retryPublish: vi.fn(), abandonPublish: vi.fn() } }));
 vi.mock("../src/features/history/api", () => ({ historyApi: { query: vi.fn() } }));
 let ws: ReturnType<typeof workspaceState>;
 const show = () => render(<MemoryRouter><ValidationPage /></MemoryRouter>);
 beforeEach(() => {
+  vi.mocked(useSiteStatus).mockReturnValue(siteStatus());
   ws = workspaceState(); vi.mocked(useWorkspace).mockImplementation(() => ws);
   vi.mocked(historyApi.query).mockResolvedValue({ items: [], total: 0, counts: { ok: 0, ng: 0, err: 0, excursion: 0 } });
   vi.mocked(workspaceApi.publish).mockResolvedValue(ws.data!);
@@ -21,6 +24,15 @@ beforeEach(() => {
 });
 
 describe("验证与发布页面", () => {
+  it("离线验证发布 → 明确仅供离线回放且候选调试无需发布", async () => {
+    vi.mocked(useSiteStatus).mockReturnValue(siteStatus({ mode: "offline", source: "sampleSet", sampleSet: sampleSet() }));
+    show();
+    await userEvent.click(screen.getByRole("button", { name: "发布离线回放配方" }));
+    expect(screen.getByRole("dialog", { name: "发布离线回放配方" })).toHaveTextContent("该版本仅用于离线回放，不能用于真机生产");
+    expect(screen.getByRole("link", { name: "前往在线检测调试候选" })).toHaveAttribute("href", "/inspect?candidate=A");
+    expect(workspaceApi.publish).not.toHaveBeenCalled();
+  });
+
   it("发布失败后冻结样本配置并重试同一待生效版本", async () => {
     ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, baseRevision: "old", frames: [], overview: ws.data!.workspace.overview, validation: ws.data!.workspace.validation!, validationSite: "real" };
     ws.data!.workspace.publish = { state: "failed", message: "发布包缺失" };

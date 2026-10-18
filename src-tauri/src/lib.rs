@@ -1,3 +1,5 @@
+mod storage_startup;
+mod candidate;
 mod applog;
 mod arming;
 mod audit;
@@ -31,6 +33,8 @@ mod site;
 mod shot_router;
 mod simimage;
 mod store;
+mod storage;
+mod managed_samples;
 mod teach;
 mod vision;
 mod workspace;
@@ -39,33 +43,71 @@ use tauri::Manager;
 
 pub use packaging::check_packaged_runtime;
 
-fn open_store(app: &tauri::App) -> Result<store::Store, String> {
-    store::Store::open_deferred_recovery(&app.path().app_data_dir().map_err(|e| e.to_string())?.join("inspection.db"))
+fn open_store(app: &tauri::AppHandle) -> Result<store::Store, String> {
+    store::Store::open_deferred_recovery(&storage::root(app).join("inspection.db"))
 }
 
 pub fn run() {
+    let mut context = tauri::generate_context!();
+    for window in &mut context.config_mut().app.windows { window.create = false; }
     tauri::Builder::default()
         .setup(|app| {
-            if let Err(error) = applog::init(app.handle()) { eprintln!("{error}"); }
-            app.manage(instance::acquire(&app.path().app_data_dir().map_err(|error| error.to_string())?)?);
-            app.manage(open_store(app)?);
-            app.manage(vision::VisionHost::default());
-            app.manage(production::ProductionHost::default());
-            app.manage(offline::OfflineHost::default());
-            let site_note = site::restore_choice(app.handle());
-            app.manage(cycle::CycleHost::init(app.handle())?);
-            if let Some(note) = site_note { cycle::log(app.handle(), "warn", "站点模式", note); }
-            app.manage(workspace::WorkspaceHost::init(app.handle())?);
-            app.manage(plc::PlcHost::init(app.handle())?);
-            plc::PlcHost::start_if_configured(app.handle());
-            cycle::CycleHost::start(app.handle());
-            camera::CameraRig::start(app.handle());
-            measure::apply_settings(app.handle());
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn_blocking(move || cycle::purge_history(&handle));
+            app.manage(storage_startup::Startup::default());
+            let mut prepared = storage::selected_root().and_then(|root| {
+                storage::prepare(app.handle(), &root)?;
+                Ok(root)
+            });
+            if let Ok(root) = &prepared {
+                if root.join("storage-layout.json").is_file() {
+                    let loaded = storage::initialize(app.handle(), root.clone())
+                        .and_then(|_| start_services(app.handle(), root.clone()).map_err(|error| error.to_string()));
+                    match loaded {
+                        Ok(()) => return Ok(()),
+                        Err(error) => prepared = Err(error),
+                    }
+                }
+            }
+            let profile = match &prepared {
+                Ok(root) => storage::webview(&root.join("migration/bootstrap"))?,
+                Err(_) => std::env::temp_dir().join(format!("GlueSight-startup-error-{}", std::process::id())),
+            };
+            tauri::WebviewWindowBuilder::new(app, "storage-startup", tauri::WebviewUrl::App("storage-startup.html".into()))
+                .title("GlueSight · 资料准备").inner_size(720.0, 480.0).center().resizable(false)
+                .visible(app.config().app.windows.iter().any(|window| window.visible))
+                .data_directory(profile).build()?;
+            if let Err(error) = prepared {
+                storage_startup::failed(app.handle(), error);
+                return Ok(());
+            }
+            let app = app.handle().clone();
+            std::thread::spawn(move || {
+                let initialized = storage::selected_root().and_then(|root| {
+                    storage::initialize(&app, root.clone())?;
+                    Ok(root)
+                });
+                match initialized {
+                    Ok(root) => {
+                        let ready_app = app.clone();
+                        if let Err(error) = app.run_on_main_thread(move || {
+                            if let Err(error) = start_services(&ready_app, root) {
+                                startup_failed(ready_app, error.to_string());
+                            }
+                        }) {
+                            startup_failed(app, error.to_string());
+                        }
+                    }
+                    Err(error) => startup_failed(app, error),
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            storage_startup::storage_startup_status,
+            storage_startup::storage_startup_answer,
+            storage::storage_status,
+            storage::storage_open_directory,
+            storage::storage_preferences_get,
+            storage::storage_preferences_update,
             commands::app_info,
             commands::app_open_log_dir,
             commands::engine_status,
@@ -138,6 +180,7 @@ pub fn run() {
             workspace::workspace_progress,
             workspace::workspace_check_calibration,
             workspace::workspace_extract_centerline,
+            workspace::workspace_debug_run,
             workspace::workspace_retry_publish,
             workspace::workspace_abandon_publish,
             workspace::workspace_adopt_capture,
@@ -169,6 +212,35 @@ pub fn run() {
             workspace::workspace_station_import,
             workspace::workspace_station_image,
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
+}
+
+fn startup_failed(app: tauri::AppHandle, error: String) {
+    eprintln!("{error}");
+    storage_startup::failed(&app, error);
+}
+
+fn start_services(app: &tauri::AppHandle, root: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    if let Err(error) = applog::init(app) { eprintln!("{error}"); }
+    app.manage(open_store(app)?);
+    app.manage(vision::VisionHost::default());
+    app.manage(production::ProductionHost::default());
+    app.manage(offline::OfflineHost::default());
+    let site_note = site::restore_choice(app);
+    app.manage(cycle::CycleHost::init(app)?);
+    if let Some(note) = site_note { cycle::log(app, "warn", "站点模式", note); }
+    app.manage(workspace::WorkspaceHost::init(app)?);
+    app.manage(plc::PlcHost::init(app)?);
+    for config in &app.config().app.windows {
+        tauri::WebviewWindowBuilder::from_config(app, config)?.data_directory(storage::webview(&root)?).build()?;
+    }
+    if let Some(window) = app.get_webview_window("storage-startup") { window.close()?; }
+    if !storage::migrated_this_launch(app) { plc::PlcHost::start_if_configured(app); }
+    cycle::CycleHost::start(app);
+    camera::CameraRig::start(app, !storage::migrated_this_launch(app));
+    measure::apply_settings(app);
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || cycle::purge_history(&handle));
+    Ok(())
 }

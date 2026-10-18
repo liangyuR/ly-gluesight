@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getAppInfo, getEngineStatus, openLogDir, type AppInfo, type EngineStatus } from "../lib/api";
 import { cycleApi, devLyflowHint, useRecipes, type CycleSettings, type Timeouts } from "../features/cycle";
+import { storageApi } from "../lib/storage";
 import { errorText } from "../lib/errors";
 
 const timeoutFields: [keyof Timeouts, string, string][] = [
@@ -288,7 +289,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
           />
         </label>
       </fieldset>
-      <p className="muted hint">离线模式保留全部工件原图，使用独立的件数与容量上限。超出任一上限时删除最旧的离线原图；保存后在后续录制清理时生效。退出离线模式后恢复真机帧录制设置。</p>
+      <p className="muted hint">离线录制使用独立的件数与容量上限。候选样本集试运行引用样本原图，不额外复制录制；此处清理不管理已导入样本目录。超出任一上限时删除最旧的离线原图；保存后在后续录制清理时生效。退出离线模式后恢复真机帧录制设置。</p>
       {invalid && <div className="notice error" role="alert">{invalid}</div>}
       </>}
       <dl className="kv" style={{ marginTop: 12 }}>
@@ -304,11 +305,36 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
       {import.meta.env.DEV && visibleEngine && !visibleEngine.ready && <p className="notice" role="note">{devLyflowHint}</p>}
       {engineError && <div className="notice error" role="alert">引擎状态读取失败：{engineError} <button className="btn" onClick={refresh}>重试引擎状态</button></div>}
       <p className="muted hint">
-        真机检测固定使用 lyFlow 流程，沿各拍照点的示教中线量胶，需要兼容的核心库和已验证发布的配方；离线 · 合成图使用模拟测量。发布资源预热完成后才能开工。帧录制保存同次触发的全部视角，可用于历史复测。
+        真机检测固定使用 lyFlow 流程，沿各拍照点的示教中线量胶，需要兼容的核心库和已验证发布的配方；离线 · 合成图使用模拟测量；离线 · 样本集使用 lyFlow，候选试运行无需发布。已发布版本运行前需完成发布资源预热。帧录制保存同次触发的全部视角，可用于历史复测。
       </p>
       {notice && <div className={`notice ${notice.ok ? "ok" : "error"}`} role={notice.ok ? "status" : "alert"}>{notice.text}</div>}
     </div>
   );
+}
+
+function StoragePanel() {
+  const { data, error, loading, reload } = useResource(storageApi.status);
+  const [openError, setOpenError] = useState("");
+  const environment: Record<string, string> = { development: "本地开发", production: "正式版", test: "自动化测试" };
+  const migration: Record<string, string> = { fresh: "新资料目录", completed: "迁移完成", migrated: "迁移完成", none: "无需迁移", ready: "资料目录已启用", pending: "等待迁移", failed: "迁移失败" };
+  return <section className="panel" aria-label="资料存储">
+    <div className="panel-toolbar"><h3 className="panel-title">资料存储</h3>
+      <button className="btn" disabled={!data || loading || !!error} onClick={() => {
+        setOpenError(""); void storageApi.openDirectory().catch(e => setOpenError(errorText(e)));
+      }}>打开资料目录</button>
+    </div>
+    {loading && <p role="status">正在读取资料目录…</p>}
+    {error && <div className="notice error" role="alert">资料目录读取失败：{error} <button className="btn" onClick={reload}>重试</button></div>}
+    {!loading && !error && data && <>
+      <dl className="kv"><dt>当前环境</dt><dd>{environment[data.environment] ?? data.environment}</dd>
+        <dt>资料目录</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{data.root}</dd>
+        <dt>迁移状态</dt><dd>{migration[data.migrationStatus] ?? data.migrationStatus}</dd>
+      </dl>
+      {data.migrationMessage && <p role="status">{data.migrationMessage}</p>}
+    </>}
+    <p className="muted hint">配方、示教、历史原图、样本、日志和缓存统一保存在此目录。正式版与本地开发版独立，同一环境的业务资料由本机账号共享。卸载默认保留资料。</p>
+    {openError && <div className="notice error" role="alert">打开资料目录失败：{openError}</div>}
+  </section>;
 }
 
 export default function SettingsPage() {
@@ -322,6 +348,7 @@ export default function SettingsPage() {
 
   return (
     <div className="stack">
+      <StoragePanel />
       <CycleSettingsPanel savePart={savePart} />
       <MeasurePanel savePart={savePart} />
       <div className="panel">

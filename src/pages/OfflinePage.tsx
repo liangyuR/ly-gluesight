@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { FolderOpen, LogIn, LogOut, OctagonX, Play, Repeat, Square, Zap } from "lucide-react";
 import { usePlcStatus } from "../features/plc";
 import { formatTime, sampleLabelText, verdictLabel } from "../features/history/meta";
@@ -30,7 +31,7 @@ import {
 } from "../features/cycle";
 import SamplePartSelect from "../features/cycle/components/SamplePartSelect";
 
-const purposeText: Record<SampleRun["purpose"], string> = { production: "生产", capture: "整圈采集" };
+const purposeText: Record<SampleRun["purpose"], string> = { production: "已发布配方离线回放", capture: "整圈采集", candidateDebug: "候选调试" };
 const labels: SampleLabel[] = ["ok", "ng", "unknown"];
 
 function useOperation() {
@@ -77,14 +78,15 @@ function OfflineEntry({ last }: { last: OfflineChoice | null }) {
   const [previewError, setPreviewError] = useState("");
   const [loading, setLoading] = useState(false);
   const serial = useRef(0);
+  const previousChoice = useRef<{ dir: string; preview: SampleSetSummary | null }>({ dir, preview: null });
   const { busy, error, perform, alive } = useOperation();
 
   const load = async (target: string) => {
     const request = ++serial.current;
-    setDir(target); setPreview(null); setPreviewError(""); setLoading(true);
+    setPreviewError(""); setLoading(true);
     try {
       const summary = await siteApi.previewSampleSet(target);
-      if (alive.current && request === serial.current) setPreview(summary);
+      if (alive.current && request === serial.current) { setDir(target); setPreview(summary); }
     } catch (e) {
       if (alive.current && request === serial.current) setPreviewError(errorText(e));
     } finally {
@@ -99,10 +101,13 @@ function OfflineEntry({ last }: { last: OfflineChoice | null }) {
 
   const choose = () => void perform(async () => {
     const picked = await siteApi.pickDir(dir, "选择离线样本集目录");
-    if (picked !== null && alive.current) await load(picked);
+    if (picked !== null && alive.current) {
+      previousChoice.current = { dir, preview: preview?.managedDir ? null : preview };
+      await load(picked);
+    }
   });
   const enter = () => void perform(() => siteApi.enterOffline(kind === "sampleSet" ? { kind, dir } : { kind }));
-  const ready = kind === "synthetic" || (!!preview && !loading);
+  const ready = kind === "synthetic" || (!!preview && !preview.managedDir && !loading);
 
   return (
     <section className="panel offline-console">
@@ -129,6 +134,15 @@ function OfflineEntry({ last }: { last: OfflineChoice | null }) {
         {loading && <p className="muted" role="status">正在读取样本集…</p>}
         {previewError && <p className="notice error" role="alert">{previewError}</p>}
         {preview && <SampleSetView sampleSet={preview} />}
+        {preview?.managedDir && <div className="notice" role="alert">
+          <p>此样本集 ID 已导入。请选择已有副本，或取消本次选择；不会覆盖已保存的样本。</p>
+          <p className="mono">{preview.managedDir}</p>
+          <button className="btn" disabled={busy || loading} onClick={() => void load(preview.managedDir!)}>使用已有副本</button>
+          <button className="btn" disabled={busy || loading} onClick={() => {
+            serial.current++; setDir(previousChoice.current.dir); setPreview(previousChoice.current.preview); setPreviewError("");
+          }}>取消本次选择</button>
+        </div>}
+        <p className="muted hint">进入离线时会将外部样本复制到资料目录，保留源文件；之后使用已导入副本。</p>
       </>}
       <div className="offline-effects">
         <strong>进入离线会临时切换：</strong>
@@ -136,7 +150,7 @@ function OfflineEntry({ last }: { last: OfflineChoice | null }) {
           <li>PLC → 进程内 S7 服务</li>
           <li>相机组 → 按{sourceLabel[kind]}生成</li>
           <li>测量 → {kind === "sampleSet" ? "lyFlow" : "模拟测量"}</li>
-          <li>帧录制 → 保留全部</li>
+          <li>帧录制 → 保留全部；候选调试引用样本原图，不重复录制</li>
         </ul>
         <span className="muted">退出离线后全部恢复为真机配置。离线期间 PLC 与相机组配置只读。</span>
       </div>
@@ -153,7 +167,7 @@ function OfflineEntry({ last }: { last: OfflineChoice | null }) {
 
 function OfflineSession({ status }: { status: SiteStatus }) {
   const { readiness, refresh } = useReadiness(`${status.source ?? ""}:${status.sampleSet?.id ?? ""}`);
-  const options = readiness?.recipes ?? null;
+  const options = readiness?.recipes.filter(recipe => recipe.published) ?? null;
   const plc = usePlcStatus();
   const [scenario, setScenario] = useState<Scenario>("normal");
   const [fault, setFault] = useState<OfflineFault>("disconnect");
@@ -197,9 +211,15 @@ function OfflineSession({ status }: { status: SiteStatus }) {
         </dl>
         {sampleSet && <SampleSetView sampleSet={sampleSet} />}
       </section>
-      {showChecklist(readiness, running) && <ReadinessChecklist readiness={readiness} />}
-      <section className="panel" aria-label="运行控制">
-        <h3 className="panel-title">运行控制</h3>
+      {sampleSet && <section className="panel" aria-label="候选配方离线试运行">
+        <h3 className="panel-title">候选配方离线试运行 · 无需发布</h3>
+        <p className="muted">在在线检测页面选择已保存候选和样本件，测试整圈流程。结果标记为调试，不替代标定、独立样本验证或生产发布。</p>
+        <Link className="btn" to="/inspect">前往在线检测调试候选</Link>
+      </section>}
+      <section className="panel" aria-label="已发布配方离线回放">
+        <h3 className="panel-title">已发布配方离线回放</h3>
+        <p className="muted">下列检查与启动操作仅用于已发布版本的离线回放；候选调试不要求发布，启动时单独检查示教和样本匹配。</p>
+        {showChecklist(readiness, running) && <ReadinessChecklist readiness={readiness} embedded />}
         <div className="offline-controls">
           <RecipeRunSelect options={options} value={recipeId} onChange={setRecipeId} disabled={running || busy} />
           <select aria-label="离线工况" className="input" value={chosen} onChange={(e) => setScenario(e.target.value as Scenario)} disabled={running || busy}>
@@ -218,6 +238,12 @@ function OfflineSession({ status }: { status: SiteStatus }) {
             <Repeat size={15} />
             连续运行
           </button>
+        </div>
+      </section>
+      <section className="panel" aria-label="当前离线运行">
+        <h3 className="panel-title">当前离线运行</h3>
+        <p className="muted">停止当前离线任务，包括候选调试、整圈采集或已发布配方回放。</p>
+        <div className="offline-controls">
           <button className="btn" onClick={() => void perform(async () => {
             await cycleApi.offlineStop(false);
             if (alive.current) setStopRequested(true);

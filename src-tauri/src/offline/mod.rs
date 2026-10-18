@@ -48,6 +48,7 @@ pub enum OfflineFault {
 pub enum RunPurpose {
     Production,
     Capture,
+    CandidateDebug,
 }
 
 /// 离线产线跑过的一件：PLC 字符串 partSn ↔ 样本件。标签只用于展示，不参与判定。
@@ -80,6 +81,8 @@ struct Active {
 #[derive(Default)]
 pub struct OfflineHost {
     active: Mutex<Option<Active>>,
+    candidate: Mutex<Option<Arc<crate::candidate::Candidate>>>,
+    last_candidate: Mutex<Option<Arc<crate::candidate::Candidate>>>,
     enabled: AtomicBool,
     last: Mutex<Option<OfflineChoice>>,
     running: AtomicBool,
@@ -201,7 +204,7 @@ impl OfflineHost {
             Ok(outcome) => {
                 run.result_code = Some(outcome.result_code);
                 run.fault_code = Some(outcome.fault_code);
-                run.verdict = (run.purpose == RunPurpose::Production).then(|| verdict_of(outcome.result_code)).flatten();
+                run.verdict = (matches!(run.purpose, RunPurpose::Production | RunPurpose::CandidateDebug)).then(|| verdict_of(outcome.result_code)).flatten();
             }
             Err(error) => run.message = Some(error.clone()),
         }
@@ -211,7 +214,7 @@ impl OfflineHost {
     pub fn claim(&self, part_sn: &str, cycle_id: &str) -> Option<SampleRef> {
         if !self.enabled() { return None; }
         let mut runs = self.runs.lock().unwrap();
-        let run = runs.iter_mut().find(|r| r.part_sn == part_sn && r.purpose == RunPurpose::Production)?;
+        let run = runs.iter_mut().find(|r| r.part_sn == part_sn && matches!(r.purpose, RunPurpose::Production | RunPurpose::CandidateDebug))?;
         run.cycle_id = Some(cycle_id.to_string());
         Some(run.reference.clone())
     }
@@ -219,6 +222,8 @@ impl OfflineHost {
     /// 结束本次离线会话：停用、清掉样本集与本次运行的样本件记录，交回会话供恢复真实环境。
     fn deactivate(&self) -> Option<Active> {
         self.enabled.store(false, Ordering::SeqCst);
+        self.candidate.lock().unwrap().take();
+        self.last_candidate.lock().unwrap().take();
         self.set_samples(None);
         self.runs.lock().unwrap().clear();
         self.active.lock().unwrap().take()
@@ -261,6 +266,48 @@ async fn restore_real_plc(app: &AppHandle, plc: &PlcHost, cycle: &CycleHost, rea
 fn verdict_of(code: u16) -> Option<Verdict> {
     [Verdict::Ok, Verdict::OkWithExcursion, Verdict::NgPosition, Verdict::NgAbsolute, Verdict::NgGap, Verdict::NgWidth, Verdict::ErrInspect]
         .into_iter().find(|v| v.plc_code() == code)
+}
+
+pub(crate) fn candidate(app: &AppHandle) -> Option<Arc<crate::candidate::Candidate>> {
+    let offline = app.state::<OfflineHost>();
+    if !offline.enabled() { return None; }
+    let candidate = offline.candidate.lock().unwrap().clone();
+    candidate
+}
+
+pub(crate) fn last_candidate(app: &AppHandle) -> Option<Arc<crate::candidate::Candidate>> {
+    let offline = app.state::<OfflineHost>();
+    let candidate = offline.last_candidate.lock().unwrap().clone();
+    candidate
+}
+
+pub(crate) async fn run_candidate(app: AppHandle, candidate: Arc<crate::candidate::Candidate>, expected_set: Arc<SampleSet>, part_id: Option<String>) -> Result<(), String> {
+    let offline = app.state::<OfflineHost>();
+    let cycle = app.state::<CycleHost>();
+    let plc = app.state::<PlcHost>();
+    let _gate = cycle.plc_gate.lock().await;
+    crate::candidate::check_start(offline.enabled(), offline.sample_set().is_some(), cycle.busy() || !matches!(cycle.phase(), Phase::Idle | Phase::Fault), cycle.camera.recipe_capture().active(), offline.running.load(Ordering::SeqCst))?;
+    let line = connected_line(&plc, &offline)?;
+    let set = offline.sample_set().ok_or("候选试运行仅支持离线样本集")?;
+    if !Arc::ptr_eq(&set, &expected_set) { return Err("离线样本集已切换，请重新试运行".into()); }
+    crate::workspace::recheck_debug_candidate(&app, &candidate)?;
+    if let Some(id) = part_id.as_deref() { set.part(id).ok_or("样本件不存在")?; }
+    let recipe = candidate.recipe.clone();
+    let shots = set.manifest().recipe_shots(&recipe)?.into_iter().map(|s| s.shot_id.clone()).collect();
+    let plan = crate::plc::recipe_plan(&cycle, &recipe)?;
+    let cams = crate::cycle::usable_cams(&app, &recipe)?;
+    cycle.camera.check_ready_at(&cams)?;
+    start_running(&offline, false)?;
+    *offline.last_candidate.lock().unwrap() = Some(candidate.clone());
+    *offline.candidate.lock().unwrap() = Some(candidate);
+    let _ = cycle.tx.send(crate::cycle::Input::Refresh);
+    let order = PartOrder { sn: String::new(), product_code: recipe.product_code, plan_version: plan.plan_version,
+        shot_count: plan.shot_count, device_shots: plan.device_shots };
+    let run_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        run(run_app, line, recipe, order, Scenario::Normal, false, Some((set, shots, part_id))).await;
+    });
+    Ok(())
 }
 
 pub fn enabled(app: &AppHandle) -> bool {
@@ -337,6 +384,7 @@ fn switch_preconditions(cycle: &CycleHost, lyflow: Result<(), String>) -> Precon
 fn apply_environment_rest(app: &AppHandle, cycle: &CycleHost, environment: &Environment) {
     cycle.camera.replace_temporarily(app, environment.cameras.clone());
     crate::measure::apply_settings(app);
+    let _ = cycle.tx.send(crate::cycle::Input::SiteChanged);
 }
 
 /// 进入离线：起进程内 S7 服务，按来源派生 PLC / 相机组 / 测量 / 帧录制并临时应用；真实环境保存在会话里。
@@ -626,8 +674,9 @@ async fn run(app: AppHandle, line: Arc<Line>, recipe: Arc<Recipe>, order: PartOr
             break;
         }
         let number = offline.next_sn();
-        let sn = OfflineHost::sn_text(number);
-        if let (Some(set), Some(id)) = (&set, &part_id) { offline.begin_run(set, id, &sn, RunPurpose::Production); }
+        let debug = candidate(&app).is_some();
+        let sn = if debug { format!("DBG-{number:08}") } else { OfflineHost::sn_text(number) };
+        if let (Some(set), Some(id)) = (&set, &part_id) { offline.begin_run(set, id, &sn, if debug { RunPurpose::CandidateDebug } else { RunPurpose::Production }); }
         *offline.part_scenario.lock().unwrap() = Some(s);
         let order = PartOrder { sn: sn.clone(), ..order.clone() };
         let sample = set.as_ref().zip(part_id.as_deref()).map(|(set, part_id)| (set, sample_shots.as_slice(), part_id));
@@ -677,11 +726,23 @@ async fn capture(app: AppHandle, line: Arc<Line>, set: Arc<SampleSet>, requested
 }
 
 fn finish(app: &AppHandle, offline: &OfflineHost) {
+    if candidate(app).is_some() && app.state::<CycleHost>().busy() {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            while app.state::<CycleHost>().busy() { tokio::time::sleep(Duration::from_millis(50)).await; }
+            finish_idle(&app, &app.state::<OfflineHost>());
+        });
+    } else { finish_idle(app, offline); }
+}
+
+fn finish_idle(app: &AppHandle, offline: &OfflineHost) {
     offline.continuous.store(false, Ordering::SeqCst);
     {
         let mut message = offline.message.lock().unwrap();
         if message.starts_with("已请求") { *message = "离线产线已停止".into(); }
     }
+    offline.candidate.lock().unwrap().take();
+    let _ = app.state::<CycleHost>().tx.send(crate::cycle::Input::Refresh);
     offline.running.store(false, Ordering::SeqCst);
     let _ = app.emit("site://status", offline.status());
 }
