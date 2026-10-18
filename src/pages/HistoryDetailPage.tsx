@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Camera, Scale, ScanEye } from "lucide-react";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { ArrowLeft, Camera, ChevronLeft, ChevronRight, Scale, ScanEye } from "lucide-react";
 import { computeVis, shotLabel, ShotTiles, UnrolledCurve, type Measured, type PartView, type Recipe } from "../features/cycle";
-import { displayReason, formatTime, historyApi, sampleLabelText, sourceLabel, triggerModeLabel, verdictClass, verdictLabel, type PartDetail } from "../features/history";
+import { displayReason, formatTime, historyApi, sampleLabelText, sourceLabel, triggerModeLabel, verdictClass, verdictLabel, type HistoryQuery, type PartDetail } from "../features/history";
 import PartTrace from "../features/history/components/PartTrace";
+import ReplayDiff from "../features/history/components/ReplayDiff";
+import { replayEdges, shotDiffs } from "../features/history/replay";
 import { subscribe } from "../features/plc";
 import { workspaceApi } from "../features/workspace/api";
 import { useWorkspace } from "../features/workspace/context";
@@ -25,8 +27,11 @@ const candidateTaught=(v:WorkspaceView,sampleReplay=false)=>{
 };
 
 const comparisonLabel = { rules: "规则重判", raw: "候选原图复测", original: "原发布包重现" };
+const recordingReason = { off: "录制关闭，本件未保存原图", notRetained: "按录制策略本件未保存原图", pending: "原图仍在落盘", incomplete: "原图不完整", failed: "原图录制失败", complete: "原图已按保留策略清理或无法核验" };
 export default function HistoryDetailPage() {
-  const {id}=useParams(), navigate=useNavigate(), ws=useWorkspace();
+  const {id}=useParams(), navigate=useNavigate(), ws=useWorkspace(), location=useLocation();
+  const listQuery=(location.state as {query?:HistoryQuery}|null)?.query??null;
+  const [neighbors,setNeighbors]=useState<{older:number|null;newer:number|null}>({older:null,newer:null});
   const [detail,setDetail]=useState<PartDetail|null>(null),[layout,setLayout]=useState<Recipe|null>(null);
   const [error,setError]=useState(""),[working,setWorking]=useState(false);
   const [comparison,setComparison]=useState<Comparison|null>(null),[raw,setRaw]=useState<RecordImages|null>(null),[selected,setSelected]=useState(0);
@@ -70,6 +75,32 @@ export default function HistoryDetailPage() {
     const part:PartView={cycleId,bundleId:detail.summary.bundleId,sn:detail.summary.sn,recipeId:layout.id,recipeRevision:layout.revisionId,n:layout.shots.length,received:detail.summary.framesReceived,triggers:detail.triggers,queue:0,filled:idx.length,total:layout.points.k.length,frames,measuredFrames:detail.frames.length};
     return {measured,vis:computeVis(layout,part,measured,detail.judgement)};
   },[detail,layout]);
+  const diffs=useMemo(()=>comparison&&layout&&detail?shotDiffs(layout,detail,comparison):null,[comparison,layout,detail]);
+  const edges=comparison&&comparison.source!=="rules"?replayEdges(comparison,selected,selectedView,diffs?.find(d=>d.k===selected)?.changed):[];
+  useEffect(()=>{
+    let alive=true;setNeighbors({older:null,newer:null});
+    void historyApi.neighbors(Number(id),listQuery).then(v=>alive&&setNeighbors(v)).catch(()=>{});
+    return()=>{alive=false;};
+  },[id,JSON.stringify(listQuery)]);
+  const openPart=(target:number|null)=>{if(target!=null)navigate("/history/"+target,{state:location.state});};
+  const stepShot=(delta:number)=>{
+    if(!layout)return;
+    const measured=layout.shots.flatMap((shot,k)=>shot.skip?[]:[k]);
+    const order=measured.length?measured:layout.shots.map((_,k)=>k);
+    const at=order.indexOf(selected);
+    const next=order[Math.min(order.length-1,Math.max(0,(at<0?0:at)+delta))];
+    if(next!=null){setSelected(next);setViewSelection(null);}
+  };
+  useEffect(()=>{
+    const key=(e:KeyboardEvent)=>{
+      if(e.altKey||e.ctrlKey||e.metaKey||e.defaultPrevented)return;
+      if((e.target as HTMLElement|null)?.closest?.("input,select,textarea,[contenteditable='true'],[role='dialog']"))return;
+      if(e.key==="ArrowLeft"||e.key==="ArrowRight"){e.preventDefault();stepShot(e.key==="ArrowLeft"?-1:1);}
+      else if(e.key==="["||e.key==="]"){e.preventDefault();openPart(e.key==="["?neighbors.older:neighbors.newer);}
+    };
+    window.addEventListener("keydown",key);
+    return()=>window.removeEventListener("keydown",key);
+  });
 
   const runCompare=async(fromRaw:boolean)=>{
     if(pending.current||!detail||!ws.data||ws.busy||ws.dirty||ws.frameDirty||ws.data.workspace.doc.id!==layout?.id)return;
@@ -114,8 +145,15 @@ export default function HistoryDetailPage() {
   const sampleImages=raw?.imageSource==="offlineSample";
   const imageLabel=(sampleImages?"离线样本原图 · 样本 SN "+(s.sample?.sn??"—"):"原始 SN "+s.sn)+" · k"+(selected+1)+" · 视角 "+selectedView;
   const unavailableMessage=sampleImages?raw?.frames.find(frame=>frame.k===selected&&frame.view===selectedView)?.error??raw?.message??"所选离线样本原图不可用":"本帧原图未保存或已按保留策略清理；完整测量数据仍可用于规则重判";
+  const blockers=s.source==="offlineCandidate"?[]:[
+    !s.bundleId&&"本件没有不可变发布包（布防前被拒或非生产记录），无法按原版本重跑",
+    !layout&&"原配方快照 "+(s.recipeRevision??"（未记录）")+" 缺失，不能用当前配方代替",
+    raw&&!raw.complete&&recordingReason[detail.recording.state]+(raw.message?"："+raw.message:""),
+  ].filter((v):v is string=>!!v);
+  const baseOverlay=layout&&selectedView===layout.shots[selected]?.view?shotOverlay(layout,selected,result?.vis):undefined;
+  const viewOverlay=edges.length?{...(baseOverlay??{path:[]}),segments:edges}:baseOverlay;
   return <div className="stack hist-detail">
-    <div className="panel detail-head"><button className="icon-btn" onClick={()=>navigate("/history")} aria-label="返回历史列表"><ArrowLeft size={18}/></button><b className="mono">SN {s.sn||"—"}</b>{s.source!=="real"&&<span className="tag offline">{sourceLabel[s.source]}</span>}<span className="muted">{formatTime(s.ts)} · {s.recipeId??"无配方"} · {s.source==="offlineCandidate"?"候选修订 "+(s.recipeRevision??"未记录"):"v"+(s.recipeVersion??"—")+" · #"+(s.recipeRevision?.slice(0,6)??"—")} · {triggerModeLabel(s.triggerMode)} · 帧 {s.framesReceived}/{s.framesExpected}</span><span className="spacer"/><span className={"vt big "+verdictClass(s.verdict)}>{verdictLabel[s.verdict]} · PLC {s.plcCode}{s.faultCode?" / "+s.faultCode:""}</span></div>
+    <div className="panel detail-head"><button className="icon-btn" onClick={()=>navigate("/history")} aria-label="返回历史列表"><ArrowLeft size={18}/></button><span className="detail-step"><button className="icon-btn" aria-label="前一件" title="前一件（[ 键）" disabled={neighbors.older==null} onClick={()=>openPart(neighbors.older)}><ChevronLeft size={18}/></button><button className="icon-btn" aria-label="后一件" title="后一件（] 键）" disabled={neighbors.newer==null} onClick={()=>openPart(neighbors.newer)}><ChevronRight size={18}/></button></span><b className="mono">SN {s.sn||"—"}</b>{s.source!=="real"&&<span className="tag offline">{sourceLabel[s.source]}</span>}<span className="muted">{formatTime(s.ts)} · {s.recipeId??"无配方"} · {s.source==="offlineCandidate"?"候选修订 "+(s.recipeRevision??"未记录"):"v"+(s.recipeVersion??"—")+" · #"+(s.recipeRevision?.slice(0,6)??"—")} · {triggerModeLabel(s.triggerMode)} · 帧 {s.framesReceived}/{s.framesExpected}</span><span className="spacer"/><span className={"vt big "+verdictClass(s.verdict)}>{verdictLabel[s.verdict]} · PLC {s.plcCode}{s.faultCode?" / "+s.faultCode:""}</span></div>
     {s.source!=="real"&&<Notice title={s.source==="offlineCandidate"?"候选离线调试记录":"离线回放记录"}>结果来自离线环境，不作为真机生产验收；切换当前站点模式不会改变此记录的来源。</Notice>}
     {error&&<Notice title="操作未完成" tone="warn">{error}</Notice>}
     <Panel title="复测与候选对照" detail={s.source==="offlineCandidate"?"此记录没有生产发布包；可使用当前候选复测，结果另存，原始调试判定保留":"原包重现使用本件冻结资源；候选复测使用当前示教；所有结果另存，原始判定保留"}>
@@ -127,16 +165,18 @@ export default function HistoryDetailPage() {
       </div>
       {ws.dirty||ws.frameDirty?<p className="c-warn">先保存候选配置和示教中线，再执行对照。</p>:!candidateReady&&<p className="muted">选择此配方的候选后，可以调整规则并对照原始结论。</p>}
       {ws.error&&<p className="c-warn">{ws.error}</p>}<p className="muted">{raw?.message??"正在检查原图保存状态…"} · 对照结果单独保存，原始记录保留。</p>
+      {blockers.length>0&&<Notice title="不能按原发布包重跑" tone="warn">{blockers.join("；")}</Notice>}
       {!!savedComparisons.length&&<label className="field"><span>已保存的对照结果</span><select className="input" aria-label="已保存对照结果" disabled={working} value={comparison?.id??""} onChange={e=>setComparison(savedComparisons.find(c=>c.id===e.target.value)??null)}><option value="">选择记录</option>{savedComparisons.map(c=><option key={c.id} value={c.id}>{formatTime(c.createdAt)} · {comparisonLabel[c.source]} · 修订 {c.candidateRevision} · {verdictLabel[c.judgement.verdict]}</option>)}</select></label>}
     </Panel>
     {comparison&&<Panel title={comparisonLabel[comparison.source]+"结果"} detail={(comparison.source==="original"?"原发布 v"+comparison.candidateRecipe.version+" · 包 "+comparison.bundleId:"候选 v"+comparison.candidateRecipe.version+" · 修订 "+comparison.candidateRevision)+" · "+formatTime(comparison.createdAt)}>
       <div className="wp-actions"><Badge tone={comparison.originalVerdict.startsWith("OK")?"ok":"ng"}>原始 {verdictLabel[comparison.originalVerdict]}</Badge><span>→</span><Badge tone={comparison.judgement.verdict.startsWith("OK")?"ok":comparison.judgement.verdict==="ERR_INSPECT"?"warn":"ng"}>{comparison.source==="original"?"重现":"候选"} {verdictLabel[comparison.judgement.verdict]}</Badge><b>{displayReason(comparison.judgement.reason)}</b></div>
+      <ReplayDiff diffs={diffs} source={comparison.source} selected={selected} onSelect={k=>{setSelected(k);setViewSelection(null);}}/>
       <UnrolledCurve layout={comparison.candidateRecipe} measured={comparison.measurements.length?comparison.measurements:(result?.measured??[])} vis={[]}/>
     </Panel>}
     <div className="detail-grid">
       <Panel title="逐拍照点结果与原图" detail="上方为中线示意，选中帧后在下方查看原图；原始整件判定保留" actions={<div className="segmented"><button className={visual==="shots"?"active":""} aria-pressed={visual==="shots"} onClick={()=>setVisual("shots")}>逐拍照点</button><button className={visual==="part"?"active":""} aria-pressed={visual==="part"} onClick={()=>setVisual("part")}>整件</button></div>}>
         {layout&&result?visual==="part"?<WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={setSelected} vis={result.vis}/>:<ShotTiles layout={layout} vis={result.vis} selected={selected} onSelect={setSelected}/>:<p className="muted">配方快照缺失，无法绘制。</p>}
-        {layout&&<div className="wp-stack"><div className="wp-actions"><Badge>{"选中 k"+(selected+1)}</Badge>{sampleImages&&<Badge>离线样本原图</Badge>}<select className="input" aria-label="历史帧选择" disabled={working} style={{width:260}} value={selected} onChange={e=>setSelected(Number(e.target.value))}>{layout.shots.map((shot,k)=><option key={k} value={k}>k{k+1} · {shotLabel(shot,k)} · {raw?.frames.some(f=>f.k===k&&f.available)?"原图可用":"无原图"}</option>)}</select><select className="input" aria-label="历史视角选择" disabled={working} value={selectedView} onChange={e=>setViewSelection({k:selected,view:Number(e.target.value)})}>{[...new Set([layout.shots[selected]?.view??1,...(raw?.frames.filter(f=>f.k===selected).map(f=>f.view)??[])])].sort().map(view=><option key={view} value={view}>视角 {view}{view===layout.shots[selected]?.view?" · 检测所选":""}</option>)}</select><span className="spacer"/><button className="btn" disabled={disabled||!available||selectedView!==layout.shots[selected]?.view} onClick={()=>void useForTeach()}><Camera size={15}/>将此帧用于示教</button></div><GrayViewer image={image.image} loading={image.loading} error={image.error||(!available?unavailableMessage:"")} label={imageLabel} overlay={selectedView===layout.shots[selected]?.view?shotOverlay(layout,selected,result?.vis):undefined}/></div>}
+        {layout&&<div className="wp-stack"><div className="wp-actions"><Badge>{"选中 k"+(selected+1)}</Badge>{sampleImages&&<Badge>离线样本原图</Badge>}<select className="input" aria-label="历史帧选择" disabled={working} style={{width:260}} value={selected} onChange={e=>setSelected(Number(e.target.value))}>{layout.shots.map((shot,k)=><option key={k} value={k}>k{k+1} · {shotLabel(shot,k)} · {raw?.frames.some(f=>f.k===k&&f.available)?"原图可用":"无原图"}</option>)}</select><select className="input" aria-label="历史视角选择" disabled={working} value={selectedView} onChange={e=>setViewSelection({k:selected,view:Number(e.target.value)})}>{[...new Set([layout.shots[selected]?.view??1,...(raw?.frames.filter(f=>f.k===selected).map(f=>f.view)??[])])].sort().map(view=><option key={view} value={view}>视角 {view}{view===layout.shots[selected]?.view?" · 检测所选":""}</option>)}</select><span className="spacer"/><button className="btn" disabled={disabled||!available||selectedView!==layout.shots[selected]?.view} onClick={()=>void useForTeach()}><Camera size={15}/>将此帧用于示教</button></div><GrayViewer image={image.image} loading={image.loading} error={image.error||(!available?unavailableMessage:"")} label={imageLabel} overlay={viewOverlay}/>{edges.length>0&&<p className="muted">横线为{comparisonLabel[comparison!.source]}测得的胶边与胶宽；橙色为与原结果状态不同的站。站点颜色仍表示原始判定。</p>}</div>}
       </Panel>
       <Panel title="原始整件判定" className="side"><p className="reason-box">{displayReason(j.reason)}</p>
         {j.gaps.map((g,i)=><div key={i} className="ng-item"><div className="ng-title c-ng">断胶 · {layout?.segments[g.segment]?.name??"段 "+g.segment}</div><p>段内 s {g.s0.toFixed(1)} – {g.s1.toFixed(1)} mm · 长度 {g.len.toFixed(1)} mm（允许 ≤ {layout?.segments[g.segment]?.maxGapLen??"—"} mm）</p><div className="wp-actions">{g.frames.map(k=><button className="btn small" key={k} onClick={()=>setSelected(k)}>k{k+1}{layout?.shots[k]?" · "+layout.shots[k].id:""}</button>)}</div></div>)}

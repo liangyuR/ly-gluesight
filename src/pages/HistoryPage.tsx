@@ -206,8 +206,8 @@ export default function HistoryPage() {
             </thead>
             <tbody>
               {page?.items.map((p) => (
-                <tr key={p.id} tabIndex={0} aria-label={`查看 SN ${p.sn} 的记录`} onClick={() => navigate(`/history/${p.id}`)} onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); navigate(`/history/${p.id}`); }
+                <tr key={p.id} tabIndex={0} aria-label={`查看 SN ${p.sn} 的记录`} onClick={() => navigate(`/history/${p.id}`, { state: { query } })} onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); navigate(`/history/${p.id}`, { state: { query } }); }
                 }}>
                   <td className="mono nowrap">{formatTime(p.ts)}</td>
                   <td className="mono nowrap">

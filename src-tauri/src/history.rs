@@ -9,7 +9,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::cycle::CycleHost;
 use crate::judge::{self, Verdict};
 use crate::recipe::{JudgeParams, Recipe};
-use crate::store::{same_measurement_layout, HistoryPage, HistoryQuery, PartDetail, PartSummary, Store, StoredMeasurement};
+use crate::store::{same_measurement_layout, HistoryPage, HistoryQuery, HistoryScope, PartDetail, PartSummary, Store, StoredMeasurement};
 
 pub fn local_midnight_ms() -> i64 {
     let today = Local::now().date_naive().and_hms_opt(0, 0, 0).unwrap();
@@ -32,6 +32,26 @@ pub async fn history_query(app: AppHandle, query: HistoryQuery) -> Result<Histor
 #[tauri::command]
 pub async fn history_detail(app: AppHandle, id: i64) -> Result<PartDetail, String> {
     tauri::async_runtime::spawn_blocking(move || app.state::<Store>().detail(id)).await.map_err(|e| e.to_string())?
+}
+
+#[derive(Serialize)]
+pub struct Neighbors {
+    pub older: Option<i64>,
+    pub newer: Option<i64>,
+}
+
+/// 逐件回看：按历史列表当时的筛选找前后一件；没有筛选时只在本件所属的真机 / 离线 / 调试范围内找。
+#[tauri::command]
+pub async fn history_neighbors(app: AppHandle, id: i64, query: Option<HistoryQuery>) -> Result<Neighbors, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app.state::<Store>();
+        let query = match query {
+            Some(query) => query,
+            None => HistoryQuery { scope: HistoryScope::of(store.detail(id)?.summary.source), ..HistoryQuery::default() },
+        };
+        let (older, newer) = store.neighbors(&query, id)?;
+        Ok(Neighbors { older, newer })
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
