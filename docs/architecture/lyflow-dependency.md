@@ -40,7 +40,21 @@ pnpm deps:lyflow:dev   # 恢复运行库，清空后完整复制到 src-tauri/ta
 pnpm dev
 ```
 
-设置 `CARGO_TARGET_DIR` 时复制到该目录下的 `debug/runtime/lyflow/`。运行时只从程序同目录的 `runtime/lyflow/` 加载引擎，没有核心库路径设置；目录缺失或不属于锁定系列时应用照常启动，引擎状态显示原因，重新执行 `pnpm deps:lyflow:dev` 即可。
+设置 `CARGO_TARGET_DIR` 时复制到该目录下的 `debug/runtime/lyflow/`。默认从程序同目录的 `runtime/lyflow/` 加载引擎；目录缺失或不属于锁定系列时应用照常启动，引擎状态显示原因，重新执行 `pnpm deps:lyflow:dev` 即可。
+
+固定使用本地编译目录时执行：
+
+```powershell
+pnpm deps:lyflow:local "C:\work\LyFlow\build\core\bin"
+pnpm deps:lyflow:local          # 查看用户级保存值和当前进程值
+pnpm deps:lyflow:local -Clear   # 清除用户级配置
+```
+
+命令检查目录中的 `lyflow_core.dll` 后，将绝对路径保存到当前 Windows 用户的 `GLUESIGHT_LYFLOW_RUNTIME` 环境变量。目录应保留完整的依赖 DLL；配置命令不编译、不复制、不加载运行库。无效目录不会覆盖已有配置。
+
+设置或清除后重开终端或 IDE，再启动 `pnpm dev`；子进程不能修改已打开终端的环境。该配置影响当前用户新启动的所有 GlueSight 开发实例，不写入仓库；正式构建忽略此变量。已有进程级覆盖或 `dev:joint -LyFlowRuntime` 的显式目录优先。未设置其他覆盖时，清除后恢复默认运行库目录。若要恢复正式运行库，可先执行 `pnpm deps:lyflow:dev`。
+
+指向编译输出目录后，每次关闭 GlueSight、重新编译 LyFlow、再启动 GlueSight 即可使用新 DLL。指向复制出的快照目录则固定使用该快照。
 
 ## 联合开发
 
@@ -52,7 +66,7 @@ pnpm dev
 | `-LyFlowSource <lyFlow 仓库根>` | 先 `cargo update -p lyflow-client` 把锁切到本地源码，再通过 `tauri dev -- --config 'patch."https://github.com/liangyuR/lyFlow.git".lyflow-client.path=...'` 让 Cargo 使用 `<源>/crates/lyflow-client`。 |
 
 ```powershell
-pnpm dev:joint -LyFlowRuntime D:\work\lyFlow\out\runtime -LyFlowSource D:\work\lyFlow
+pnpm dev:joint -LyFlowRuntime C:\work\lyFlow\out\runtime -LyFlowSource C:\work\lyFlow
 ```
 
 两个参数都只影响本次启动；用过 `-LyFlowSource` 后执行 `git checkout -- src-tauri/Cargo.lock` 丢弃本地锁文件变化，不要提交。

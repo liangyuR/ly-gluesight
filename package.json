@@ -18,6 +18,7 @@
     "deps:lyflow:update": "pwsh -NoProfile -File scripts/Update-LyFlowDependency.ps1",
     "deps:lyflow:restore": "pwsh -NoProfile -File scripts/Restore-LyFlowRuntime.ps1",
     "deps:lyflow:dev": "pwsh -NoProfile -File scripts/Install-DevLyFlowRuntime.ps1",
+    "deps:lyflow:local": "pwsh -NoProfile -File scripts/Set-LocalLyFlowRuntime.ps1",
     "version:check": "pwsh -NoProfile -File scripts/Test-PackageVersions.ps1",
     "version:set": "pwsh -NoProfile -File scripts/Set-PackageVersion.ps1",
     "test": "vitest run",
