@@ -136,7 +136,7 @@ it("本图参数覆盖后恢复默认 → 搜索带与试测载荷使用配方�
   await user.click(screen.getByText("判定限值", { exact: true }));
   expect(screen.getByRole("checkbox", { name: "位置判定" })).not.toBeChecked();
   await user.click(screen.getByRole("button", { name: "恢复配方默认判定限值" }));
-  await user.click(screen.getByRole("button", { name: "运行一次算法" }));
+  await user.click(screen.getByRole("button", { name: "运行试测" }));
   await waitFor(() => expect(workspaceApi.saveParams).toHaveBeenLastCalledWith("A", 7, 0, { path: candidate.workspace.doc.shots[0].path, mmPerPx: .1 }));
   await waitFor(() => expect(workspaceApi.trial).toHaveBeenLastCalledWith("A", 8, 0, candidate.workspace.frames[0].image!.id));
   for (const value of ["", "0"]) {
@@ -196,8 +196,8 @@ it("手工落点并自动保存 → 不插入瞬时警告、保留缩放与中�
   expect(screen.getByRole("img", { name: "P1 · CAM-1 · 图 1" })).toBe(image);
   expect(image.querySelector("g")).toHaveAttribute("transform", transform);
   expect(screen.getByLabelText("中线点 2")).toHaveAttribute("cx", "20");
-  expect(screen.getByRole("button", { name: "运行一次算法" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "运行一次算法" })).toHaveAttribute("title", expect.stringContaining("像素当量"));
+  expect(screen.getByRole("button", { name: "运行试测" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "运行试测" })).toHaveAttribute("title", expect.stringContaining("像素当量"));
   expect(transientWarnings).toEqual([]);
 });
 
@@ -250,7 +250,7 @@ it("每组三相机图仅示教选中图 → 保存后进入下一组并沿用�
     const imageId = `A-image-${group}-cam1`;
     const image = await screen.findByRole("img", { name: `P${group + 1} · CAM-1 · 图 1` });
     expect(screen.getByRole("button", { name: "选择拍照组 P" + (group + 1) })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "运行一次算法" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "运行试测" })).toBeDisabled();
     for (const [clientX, clientY] of twoLines[group]) {
       fireEvent.pointerDown(image, { clientX, clientY });
       fireEvent.pointerUp(image);
@@ -259,7 +259,7 @@ it("每组三相机图仅示教选中图 → 保存后进入下一组并沿用�
     expect(screen.getByLabelText("中线点 2")).toBeVisible();
     const actions = within(screen.getByRole("group", { name: "单帧示教操作" }));
     expect(actions.getByRole("button", { name: "保存本组示教" })).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: "运行一次算法" }));
+    await user.click(screen.getByRole("button", { name: "运行试测" }));
     expect(workspaceApi.saveParams).toHaveBeenNthCalledWith(group + 1, "A", 7 + 2 * group, k, { path: twoLines[group], mmPerPx: .1 });
     await waitFor(() => expect(workspaceApi.trial).toHaveBeenNthCalledWith(group + 1, "A", 8 + 2 * group, k, imageId));
     expect(screen.queryByText("示教参数有未保存的修改")).not.toBeInTheDocument();
@@ -331,7 +331,7 @@ it("刷选提取后运行一次算法 → 传递原图引导与点距，重采�
   expect(screen.queryByLabelText("刷选胶路区域")).not.toBeInTheDocument();
   expect(workspaceApi.saveDraft).toHaveBeenCalledWith("A", 7, 0, { path: [], mmPerPx: .2 });
   expect(workspaceApi.extractCenterline).toHaveBeenCalledWith("A", 8, 0, "A-image-0-cam1", [0, 0, 91, 60], { points: [[10.2, 12.4], [50.8, 42.7]], radiusPx: 40 }, 10);
-  await user.click(screen.getByRole("button", { name: "运行一次算法" }));
+  await user.click(screen.getByRole("button", { name: "运行试测" }));
   const table = await screen.findByRole("table", { name: "逐点试测结果" });
   expect(workspaceApi.saveParams).toHaveBeenCalledWith("A", 8, 0, { path: extracted, mmPerPx: .2 });
   expect(workspaceApi.trial).toHaveBeenCalledWith("A", 9, 0, "A-image-0-cam1");
@@ -395,7 +395,7 @@ it("自动提取失败后按笔划生成 → 定位原因并保留原线，人�
   }
   expect(screen.queryByLabelText("中线点 4")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "保存本组示教" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "运行一次算法" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "运行试测" })).toBeEnabled();
   expect(screen.queryByLabelText("本次算法结果")).not.toBeInTheDocument();
 });
 
@@ -499,6 +499,7 @@ it.each([
   response.progress.shots[0].views[0].calibration = { state: passed ? "verified" : "failed", errorMm: passed ? .05 : .2 };
   vi.mocked(workspaceApi.checkCalibration).mockResolvedValue(response);
   const user = renderWorkspace("/recipe/teach");
+  await user.click(await screen.findByText("标定", { exact: true }));
   await user.type(await screen.findByRole("spinbutton", { name: "实测尺寸" }), "10.05");
   expect(screen.getByText("+0.050 mm")).toBeVisible();
   expect(screen.getByText("未验证", { exact: true })).toBeVisible();
@@ -553,7 +554,7 @@ it("修改样本集声明当量 → 草稿不沿用旧验证，保存试测后�
   expect(screen.getByText("需重新验证", { exact: true })).toBeVisible();
   expect(screen.getByRole("button", { name: "保存本组示教" })).toBeDisabled();
   expect(screen.queryByRole("button", { name: "记录验证" })).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "运行一次算法" }));
+  await user.click(screen.getByRole("button", { name: "运行试测" }));
   expect(await screen.findByRole("spinbutton", { name: "实测尺寸" })).toHaveValue(null);
   expect(screen.getByRole("button", { name: "记录验证" })).toBeDisabled();
   expect(screen.queryByText("已验证", { exact: true })).not.toBeInTheDocument();
