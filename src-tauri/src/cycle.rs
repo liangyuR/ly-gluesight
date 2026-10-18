@@ -13,6 +13,7 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedReceiver, UnboundedSender};
 
+use crate::applog::{self, Fields};
 use crate::arming::ArmBudget;
 use crate::camera::{CameraRig, FRAME_QUEUE};
 use crate::frame::Frame;
@@ -310,8 +311,11 @@ impl CycleHost {
                     log(&warning_app, "warn", "孤立录制清理失败", errors.join("；"));
                 } else { crate::applog::write("warn", "孤立录制清理失败", &errors.join("；")); }
             });
-            Recorder::guarded(root, Some(Arc::new(move |outcome| {
-                if let Err(error) = record_audit.recording(outcome) { crate::applog::write("err", "录制审计持久化失败", &error); }
+            Recorder::guarded(root, Some(Arc::new(move |outcome: crate::recorder::RecordingOutcome| {
+                let cycle_id = outcome.cycle_id.clone();
+                if let Err(error) = record_audit.recording(outcome) {
+                    applog::emit(applog::Level::Error, "录制审计持久化失败", &error, Fields { cycle_id: Some(cycle_id), ..Fields::default() });
+                }
             })), protection, warning)
         };
         let recorders = Recorders::new(recorder(data.join("records"), HistoryScope::Real),
@@ -439,8 +443,21 @@ fn host(app: &AppHandle) -> &CycleHost {
 }
 
 pub fn log(app: &AppHandle, level: &'static str, ev: impl Into<String>, msg: impl Into<String>) {
-    let line = LogLine { ts: now_ms(), level, ev: ev.into(), msg: msg.into() };
-    crate::applog::write(level, &line.ev, &line.msg);
+    log_with(app, level, ev, msg, Fields::default());
+}
+
+pub fn log_with(app: &AppHandle, level: &'static str, ev: impl Into<String>, msg: impl Into<String>, fields: Fields) {
+    publish_log(app, level, applog::Level::from_tone(level), ev.into(), msg.into(), fields);
+}
+
+/// 逐帧、逐拍照点的明细：界面事件流照常显示，日志文件记为 debug。
+pub fn trace(app: &AppHandle, ev: impl Into<String>, msg: impl Into<String>, fields: Fields) {
+    publish_log(app, "info", applog::Level::Debug, ev.into(), msg.into(), fields);
+}
+
+fn publish_log(app: &AppHandle, tone: &'static str, level: applog::Level, ev: String, msg: String, fields: Fields) {
+    let record = applog::emit(level, &ev, &msg, fields);
+    let line = LogLine { ts: record.ts, level: tone, ev, msg };
     {
         let mut s = host(app).shared.lock().unwrap();
         s.logs.push_back(line.clone());
@@ -945,6 +962,7 @@ impl Machine {
                     self.result = None;
                     self.active_recipe = None;
                     self.current_cycle_id = None;
+                    applog::end_cycle();
                     self.done_at = None;
                     self.ack_alarmed = false;
                     self.alarms.clear();
@@ -994,10 +1012,13 @@ impl Machine {
         let app = self.app.clone();
         let engine = plc(&app);
         let (sn, code, count) = (request.sn.clone(), request.product_code as u32, request.shot_count as usize);
-        log(&app, "info", "partStart↑", format!("SN={sn} 产品代码={code} N={count}"));
-
         let host = host(&app);
-        let cycle_id = match host.cycle_ids.take(&app) {
+        let taken = host.cycle_ids.take(&app);
+        let context = Fields { cycle_id: taken.as_ref().ok().cloned(), sn: Some(sn.clone()), request_seq: Some(request.request_seq), ..Fields::default() };
+        applog::begin_cycle(context.clone());
+        log_with(&app, "info", "partStart↑", format!("SN={sn} 产品代码={code} N={count}"),
+            Fields::stage("partStart").with_data(json!({"productCode": code, "shotCount": count})));
+        let cycle_id = match taken {
             Ok(id) => id,
             Err(reason) => return self.refuse(sn, None, fault::PROCESS_TIMEOUT, reason).await,
         };
@@ -1021,6 +1042,7 @@ impl Machine {
             return self.refuse(sn, None, fault::NO_RECIPE, reason).await;
         };
         self.active_recipe = Some(recipe.clone());
+        applog::begin_cycle(Fields { recipe_id: Some(recipe.id.clone()), ..context });
         // 从这一刻起这个配方算在检测中（不能删、不能改编号）
         host.shared.lock().unwrap().part_recipe = Some(recipe.clone());
         let id = Some(recipe.id.clone());
@@ -1173,8 +1195,10 @@ impl Machine {
         trace["elapsedMs"] = json!(elapsed.as_secs_f64() * 1000.0);
         self.part.as_mut().unwrap().armed_at = Instant::now();
         self.set_phase(Phase::Acquire);
-        log(&app, "info", "armed↑ busy↑", format!("{} · N={n} · 布防耗时 {} ms", recipe.id, elapsed.as_millis()));
-        log(&app, "info", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "armed", "trace": trace}).to_string());
+        log_with(&app, "info", "armed↑ busy↑", format!("{} · N={n} · 布防耗时 {} ms", recipe.id, elapsed.as_millis()),
+            Fields::stage("armed").with_data(json!({"armMs": elapsed.as_secs_f64() * 1000.0, "shots": n})));
+        log_with(&app, "info", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "armed", "trace": trace}).to_string(),
+            Fields::default().with_data(trace));
     }
 
     /// 校验没过，不布防，直接回写 ERR。
@@ -1252,8 +1276,11 @@ impl Machine {
         if let Err(error) = selected_image {
             return self.on_measured(Measured::failed(&job, format!("拍照点 {}：{error}", job.shot_id)));
         }
-        log(&self.app, "info", "帧到达", format!("cycle={} · {} · {} · 视角 {} · 设备触发 {} · 本件第 {} 次",
-            job.cycle_id, job.shot_id, job.camera, selected, f.trigger_counter, ordinal));
+        trace(&self.app, "帧到达", format!("cycle={} · {} · {} · 视角 {} · 设备触发 {} · 本件第 {} 次",
+            job.cycle_id, job.shot_id, job.camera, selected, f.trigger_counter, ordinal),
+            Fields { cycle_id: Some(job.cycle_id.clone()), view: Some(selected), ..Fields::shot(k, &job.shot_id, &job.camera) }
+                .with_stage("frame").with_data(json!({"triggerCounter": f.trigger_counter, "frameCounter": f.frame_counter,
+                    "session": f.session, "ordinal": ordinal, "arrivedMs": part.frames[k].arrived_ms})));
         if skip {
             let mut measured = Measured::empty(&job);
             measured.located = true;
@@ -1291,7 +1318,10 @@ impl Machine {
         } else {
             ("err", "定位失败", format!("k={} 匹配分数 {:.2} < 0.60", m.k, m.score))
         };
-        log(&self.app, level, ev, msg);
+        let fields = Fields { cycle_id: Some(m.cycle_id.clone()), ..Fields::shot(m.k, &m.shot_id, &m.camera) }.with_stage("measured")
+            .with_data(json!({"ms": m.ms, "queueMs": m.queue_ms, "engineMs": m.engine_ms, "coreMs": m.core_ms,
+                "score": m.score, "points": m.idx.len(), "gaps": gaps, "located": m.located, "error": m.error}));
+        if level == "info" { trace(&self.app, ev, msg, fields) } else { log_with(&self.app, level, ev, msg, fields) }
         let _ = self.app.emit("cycle://frame", &m);
         host(&self.app).shared.lock().unwrap().measured.push(m);
     }
@@ -1361,7 +1391,8 @@ impl Machine {
                     self.fault = None;
                     self.alarms.clear();
                     self.set_phase(Phase::Idle);
-                    log(&app, "ok", "S7 复位完成", "输入基线已核验，视觉就绪");
+                    log_with(&app, "ok", "S7 复位完成", "输入基线已核验，视觉就绪", Fields::stage("reset"));
+                    applog::end_cycle();
                 }
                 SessionEvent::Start(request) => {
                     if capture_host.active() { self.start_capture_s7(request).await; }
@@ -1378,13 +1409,15 @@ impl Machine {
                         part.issued_verified = true;
                     }
                     self.set_phase(Phase::Drain);
-                    log(&app, "info", "partEnd↑", "三路触发数量已核对，等待剩余帧");
+                    let triggers = self.part.as_ref().map(Part::triggers);
+                    log_with(&app, "info", "partEnd↑", "三路触发数量已核对，等待剩余帧", Fields::stage("partEnd").with_data(json!({"triggers": triggers})));
                 }
                 SessionEvent::Released(triggers) => {
                     self.close_routing(triggers);
                     self.alarms.retain(|m| !m.starts_with("PLC 未确认"));
                     self.set_phase(Phase::Idle);
-                    log(&app, "info", "S7 事务结束", "结果序号已确认，PLC 输入已释放");
+                    log_with(&app, "info", "S7 事务结束", "结果序号已确认，PLC 输入已释放", Fields::stage("released").with_data(json!({"plcTriggers": triggers})));
+                    applog::end_cycle();
                 }
                 SessionEvent::Fault(reason) => {
                     if self.s7.capture_id().is_some() { capture_host.fail(reason.clone()); }
@@ -1423,7 +1456,9 @@ impl Machine {
         if matches!(self.phase, Phase::Acquire | Phase::Drain) {
             if let Some(part) = self.part.as_mut() {
                 for k in part.expire(Instant::now(), timeouts.proc(), timeouts.drain()) {
-                    log(&self.app, "err", "拍照点超时", part.frames[k].error.clone().unwrap_or_default());
+                    let shot = &part.recipe.shots[k];
+                    log_with(&self.app, "err", "拍照点超时", part.frames[k].error.clone().unwrap_or_default(),
+                        Fields { cycle_id: Some(part.cycle_id.clone()), ..Fields::shot(k, &shot.id, &shot.camera) }.with_data(json!({"status": part.frames[k].status})));
                     self.dirty = true;
                 }
             }
@@ -1506,7 +1541,9 @@ impl Machine {
         };
         let fault = if judgement.fault_code > 0 { format!(" faultCode={}", judgement.fault_code) } else { String::new() };
         let delivery = if r.is_ok() { "done 已提交" } else { "交付异常，需人工确认" };
-        log(&app, level, "检测结果", format!("resultCode={}{fault} resultSn={sn} · {delivery} · {}", judgement.plc_code, judgement.reason));
+        log_with(&app, level, "检测结果", format!("resultCode={}{fault} resultSn={sn} · {delivery} · {}", judgement.plc_code, judgement.reason),
+            Fields::stage("result").with_data(json!({"verdict": judgement.verdict, "plcCode": judgement.plc_code,
+                "faultCode": judgement.fault_code, "drainMs": drain_ms, "delivered": r.is_ok()})));
         self.finish_recording(&sn, &judgement);
         self.result = Some(ResultView { candidate_debug: self.part.as_ref().and_then(|p| p.candidate.as_ref()).map(|c| c.info.clone()).or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())), cycle_id: self.current_cycle_id.clone(), sn, recipe_id, ts: now_ms(), drain_ms, judgement });
         match r {
@@ -1632,11 +1669,11 @@ impl Machine {
                 log(&self.app, "err", "中断工件审计持久化失败", error);
             }
             self.finish_recording(&sn, &judgement);
-            log(&self.app, "err", "在途件中断", format!("SN {sn} 记 ERR 98，需人工处理该件"));
+            log_with(&self.app, "err", "在途件中断", format!("SN {sn} 记 ERR 98，需人工处理该件"), Fields::stage("result"));
             self.result = Some(ResultView { candidate_debug: self.part.as_ref().and_then(|p| p.candidate.as_ref()).map(|c| c.info.clone()).or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())), cycle_id: self.current_cycle_id.clone(), sn, recipe_id: self.part.as_ref().map(|p| p.recipe.id.clone()), ts: now_ms(), drain_ms: None, judgement });
         }
         if fault_fails_delivery(self.phase) && self.result.is_some() { self.fail_delivery(&reason); }
-        log(&self.app, "err", "故障", reason.clone());
+        log_with(&self.app, "err", "故障", reason.clone(), Fields::stage("fault"));
         self.fault = Some(reason);
         self.set_phase(Phase::Fault);
     }

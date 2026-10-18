@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { BookOpen, Cable, Camera, Crosshair, FlaskConical, History, LayoutDashboard, ScanEye, ScrollText, Settings, type LucideIcon } from "lucide-react";
+import { BookOpen, Cable, Camera, Crosshair, FileClock, FlaskConical, History, LayoutDashboard, ScanEye, ScrollText, Settings, type LucideIcon } from "lucide-react";
 import InspectPage from "../pages/InspectPage";
 import CameraPage from "../pages/CameraPage";
 import FlyshotCalibrationPage from "../pages/FlyshotCalibrationPage";
@@ -15,6 +15,7 @@ import GeometryPage from "../features/workspace/GeometryPage";
 import TeachingPage from "../features/workspace/TeachingPage";
 import OverviewPage from "../features/workspace/OverviewPage";
 import ValidationPage from "../features/workspace/ValidationPage";
+import { AppLogPage } from "../features/logs";
 
 export interface PageRoute {
   path: string;
@@ -46,6 +47,7 @@ export const navEntries: NavEntry[] = [
   { label:"生产",children:[
     { path:"/inspect",label:"在线检测",icon:ScanEye,element:InspectPage },
     { path:"/history",label:"历史记录",icon:History,element:HistoryPage },
+    { path:"/logs",label:"运行日志",icon:FileClock,element:AppLogPage },
   ] },
   { label:"工艺",children:[
     recipe,
