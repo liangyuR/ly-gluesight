@@ -245,7 +245,7 @@ pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
     let mut gaps = Vec::new();
     let mut gap_kind = Vec::new();
     let mut sparse = vec![None; segments.len()];
-    let mut shifts: Vec<Option<(f32, f32, f32)>> = vec![None; segments.len()];
+    let mut shifts: Vec<Option<(f32, f32, f32, f32)>> = vec![None; segments.len()];
     for (gi, g) in recipe.segments.iter().enumerate() {
         let gap_count = (g.first..g.first + g.count).filter(|&j| table[j] == PointState::Gap).count();
         let present = (g.first..g.first + g.count).filter(|&j| matches!(table[j], PointState::Measured { .. })).count();
@@ -258,15 +258,17 @@ pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
             if gap_stations == 0 || (len <= g.max_gap_len && present > 0) {
                 continue;
             }
-            // 胶条整体横移：区间里多半是位置超差的有胶站，没找到胶的站（横跳的过渡处）加起来不超过允许断胶长度，
-            // 区间也超过允许的连续位置超差，按位置超差判（仍是 NG，区间长度照算）
+            // 胶条整体横移：区间里多半是位置超差的有胶站，没找到胶的站加起来不超过允许断胶长度，
+            // 区间也超过允许的连续位置超差，按位置超差判（仍是 NG，区间长度照算）。
+            // 只看长度分不出横跳过渡处和允许范围内的真断口，所以原因里写出没找到胶的长度。
             let shifted = run.iter().filter(|&&j| matches!(table[j], PointState::Measured { .. }) && out(&g.position, &d, j)).count();
             let beyond = g.position.as_ref().is_some_and(|p| len > p.max_excursion_len);
-            if beyond && gap_stations as f32 * sp <= g.max_gap_len && 2 * shifted > run.len() {
+            let gap_len = gap_stations as f32 * sp;
+            if beyond && gap_len <= g.max_gap_len && 2 * shifted > run.len() {
                 segments[gi].verdict = segments[gi].verdict.max(Verdict::NgPosition);
-                segments[gi].excursion_len = segments[gi].excursion_len.max(len);
-                if shifts[gi].is_none_or(|r| len > r.0) {
-                    shifts[gi] = Some((len, g.s(run[0], sp), g.s(run[run.len() - 1], sp) + sp));
+                if len > segments[gi].excursion_len {
+                    segments[gi].excursion_len = len;
+                    shifts[gi] = Some((len, gap_len, g.s(run[0], sp), g.s(run[run.len() - 1], sp) + sp));
                 }
                 continue;
             }
@@ -324,7 +326,7 @@ pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
                 Verdict::NgPosition => {
                     let p = g.position.as_ref().unwrap();
                     match shifts[gi] {
-                        Some((len, s0, s1)) => format!("{} 位置连续超差 {:.1} mm > 允许 {:.1} mm（含横移过渡处没找到胶的站，胶条可能整体横移）{}", g.name, len, p.max_excursion_len, at(Some((s0, s1)))),
+                        Some((len, gap_len, s0, s1)) => format!("{} 位置连续超差 {:.1} mm > 允许 {:.1} mm（含 {:.1} mm 没找到胶的站，胶条可能整体横移）{}", g.name, len, p.max_excursion_len, gap_len, at(Some((s0, s1)))),
                         None => format!("{} 位置连续超差 {:.1} mm > 允许 {:.1} mm{}", g.name, s.excursion_len, p.max_excursion_len, at(pos[gi].as_ref().and_then(|s| s.excursion_at))),
                     }
                 }
@@ -369,18 +371,19 @@ fn median_filter(values: &[f32], window: usize) -> Vec<f32> {
 mod tests {
     use super::*;
 
-    /// 段 0 中部：前后各 lead 站无胶，中间 shifted 站胶在、横向偏 3 mm（公差 ±2 mm、允许断胶 6 mm、允许连续位置超差 excursion mm）。
-    fn judged(lead: usize, shifted: usize, excursion: f32) -> Judgement {
+    const SHIFTED: PointState = PointState::Measured { d: 3.0, w: 4.0 };
+
+    /// 样例配方段 0（站距 1 mm、位置公差 ±2 mm、允许断胶 6 mm、允许连续位置超差 excursion mm），其余站胶在中线上；
+    /// marks 按段内站号 [from, to) 改写站状态。
+    fn judged(excursion: f32, marks: &[(usize, usize, PointState)]) -> Judgement {
         let mut recipe = crate::recipe::samples().remove(0).build().unwrap();
         recipe.filter_window = 1;
         recipe.segments[0].position.as_mut().unwrap().max_excursion_len = excursion;
         let g = recipe.segments[0].clone();
-        assert!(g.count >= 2 * lead + shifted + 20, "样例配方段 0 太短");
         let mut table = vec![PointState::Measured { d: 0.0, w: 4.0 }; recipe.point_count()];
-        let start = g.first + 10;
-        for j in start..start + 2 * lead + shifted {
-            let inside = (start + lead..start + lead + shifted).contains(&j);
-            table[j] = if inside { PointState::Measured { d: 3.0, w: 4.0 } } else { PointState::Gap };
+        for &(from, to, state) in marks {
+            assert!(to < g.count, "样例配方段 0 太短");
+            table[g.first + from..g.first + to].fill(state);
         }
         judge(&recipe, &table)
     }
@@ -393,8 +396,16 @@ mod tests {
             (4, 12, 5.0, Verdict::NgGap),
             (1, 6, 20.0, Verdict::NgGap),
         ] {
-            let j = judged(lead, shifted, excursion);
+            let (a, b) = (10 + lead, 10 + lead + shifted);
+            let j = judged(excursion, &[(10, a, PointState::Gap), (a, b, SHIFTED), (b, b + lead, PointState::Gap)]);
             assert_eq!(j.verdict, expected, "lead={lead} shifted={shifted} excursion={excursion}：{}", j.reason);
         }
+    }
+
+    #[test]
+    fn plain_position_excursion_longer_than_shift_run_is_the_reported_location() {
+        let j = judged(5.0, &[(10, 30, SHIFTED), (60, 61, PointState::Gap), (61, 69, SHIFTED), (69, 70, PointState::Gap)]);
+        assert_eq!(j.verdict, Verdict::NgPosition);
+        assert!(j.reason.ends_with("s=10.0–30.0"), "{}", j.reason);
     }
 }
