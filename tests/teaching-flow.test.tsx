@@ -330,7 +330,7 @@ it("刷选提取后运行一次算法 → 传递原图引导与点距，重采�
   expect(await screen.findByLabelText("中线点 5")).toBeVisible();
   expect(screen.queryByLabelText("刷选胶路区域")).not.toBeInTheDocument();
   expect(workspaceApi.saveDraft).toHaveBeenCalledWith("A", 7, 0, { path: [], mmPerPx: .2 });
-  expect(workspaceApi.extractCenterline).toHaveBeenCalledWith("A", 8, 0, "A-image-0-cam1", [0, 0, 91, 60], { points: [[10.2, 12.4], [50.8, 42.7]], radiusPx: 40 }, 10);
+  expect(workspaceApi.extractCenterline).toHaveBeenCalledWith("A", 8, 0, "A-image-0-cam1", [0, 0, 100, 60], { points: [[10.2, 12.4], [50.8, 42.7]], radiusPx: 60 }, 10);
   await user.click(screen.getByRole("button", { name: "运行试测" }));
   const table = await screen.findByRole("table", { name: "逐点试测结果" });
   expect(workspaceApi.saveParams).toHaveBeenCalledWith("A", 8, 0, { path: extracted, mmPerPx: .2 });
@@ -397,6 +397,37 @@ it("自动提取失败后按笔划生成 → 定位原因并保留原线，人�
   expect(screen.getByRole("button", { name: "保存本组示教" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "运行试测" })).toBeEnabled();
   expect(screen.queryByLabelText("本次算法结果")).not.toBeInTheDocument();
+});
+
+it("刷选提取连续两次找不到连续边缘 → 先提示加大笔刷重刷，再引导改用笔划直接生成中线", async () => {
+  vi.stubGlobal("DOMPoint", class {
+    constructor(public x: number, public y: number) {}
+    matrixTransform() { return this; }
+  });
+  vi.stubGlobal("PointerEvent", MouseEvent);
+  Object.defineProperty(SVGElement.prototype, "getScreenCTM", { configurable: true, value: () => ({ inverse: () => ({}) }) });
+  Object.defineProperty(SVGElement.prototype, "setPointerCapture", { configurable: true, value: vi.fn() });
+  const candidate = groupedCandidate();
+  mockSite(candidate);
+  const failure = { point: [40, 20] as [number, number], reason: "discontinuity", message: "标记处候选边缘无法连续连接。" };
+  vi.mocked(workspaceApi.extractCenterline).mockResolvedValue({ path: [], message: failure.message, failure });
+  const user = renderWorkspace("/recipe/teach");
+  const image = await screen.findByRole("img", { name: "P1 · CAM-1 · 图 1" });
+  await user.click(screen.getByRole("button", { name: "刷选胶路区域" }));
+  fireEvent.pointerDown(image, { clientX: 10, clientY: 20 });
+  fireEvent.pointerMove(image, { clientX: 40, clientY: 20 });
+  fireEvent.pointerUp(image);
+  const extract = screen.getByRole("button", { name: "自动提取中线" }), stroke = screen.getByRole("button", { name: "笔划直接生成中线" });
+  await user.click(extract);
+  await screen.findByLabelText("中线提取失败位置");
+  expect(screen.getByText(/可加大笔刷宽度（当前 120 px/)).toBeVisible();
+  expect(stroke).not.toHaveClass("primary");
+  fireEvent.change(screen.getByRole("slider", { name: "拖动调整笔刷宽度" }), { target: { value: "180" } });
+  await user.click(extract);
+  await screen.findByLabelText("中线提取失败位置");
+  expect(screen.getByText(/请点「笔划直接生成中线」/)).toBeVisible();
+  expect(stroke).toHaveClass("primary");
+  expect(extract).not.toHaveClass("primary");
 });
 
 it("同组切换检测相机 → 原图取消选中且编辑切到新图，其他组保持原选择", async () => {
