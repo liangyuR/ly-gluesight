@@ -24,10 +24,10 @@ const badgeLevel = { error: "error", warn: "warn", info: "info", debug: "debug" 
 
 function Cycle({ record, onFilter }: { record: AppLogRecord; onFilter: (cycleId: string) => void }) {
   const [target, setTarget] = useState<number | null | undefined>(undefined);
-  if (!record.cycleId) return record.sn ? <span className="mono">SN {record.sn}</span> : <span className="muted">—</span>;
+  if (!record.cycleId) return record.sn ? <span className="log-cycle"><span className="sn">SN{"\u00a0"}{record.sn}</span></span> : <span className="muted">—</span>;
   const cycleId = record.cycleId;
   return <span className="log-cycle">
-    {record.sn && <span className="mono muted">SN {record.sn}</span>}
+    {record.sn && <span className="sn muted">SN{"\u00a0"}{record.sn}</span>}
     <span>
       <button className="link mono" title={`只看工件 ${cycleId}`} onClick={() => onFilter(cycleId)}>{cycleId.slice(0, 8)}</button>
       {target === undefined ? <button className="link" onClick={() => void logsApi.findCycle(cycleId).then(setTarget).catch(() => setTarget(null))}>记录</button>

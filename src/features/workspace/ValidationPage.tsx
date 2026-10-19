@@ -119,7 +119,7 @@ export default function ValidationPage() {
       })}
       {records.map(r=>{
         const selected=samples.find(s=>s.historyId===r.id);
-        return <tr key={r.id}><td><input type="checkbox" aria-label={"选用历史 SN "+r.sn} checked={!!selected} disabled={samplesLocked} onChange={e=>choose({historyId:r.id,sampleId:null,expected:expectedValue(r.verdict)},e.target.checked)}/></td><td><Link to={"/history/"+r.id}>SN {r.sn}</Link></td><td>历史整圈 · {r.recipeId} · v{r.recipeVersion}</td><td><select className="input" aria-label={"SN "+r.sn+"期望结论"} value={expectedValue(selected?.expected??r.verdict)} disabled={!selected||samplesLocked} onChange={e=>choose({historyId:r.id,sampleId:null,expected:e.target.value as Verdict},true)}>{expectedOptions}</select></td></tr>;
+        return <tr key={r.id}><td><input type="checkbox" aria-label={"选用历史 SN "+r.sn} checked={!!selected} disabled={samplesLocked} onChange={e=>choose({historyId:r.id,sampleId:null,expected:expectedValue(r.verdict)},e.target.checked)}/></td><td><Link className="sn" to={"/history/"+r.id}>SN{"\u00a0"}{r.sn}</Link></td><td>历史整圈 · {r.recipeId} · v{r.recipeVersion}</td><td><select className="input" aria-label={"SN "+r.sn+"期望结论"} value={expectedValue(selected?.expected??r.verdict)} disabled={!selected||samplesLocked} onChange={e=>choose({historyId:r.id,sampleId:null,expected:e.target.value as Verdict},true)}>{expectedOptions}</select></td></tr>;
       })}
       {!records.length&&!data.workspace.sampleBank.length&&<tr><td colSpan={4} className="muted center">尚无代表性样本；请重新实拍独立整圈，或选择完整历史原图。</td></tr>}
       </tbody></table></div><p className="muted hint">建议覆盖良品、断胶、偏位、胶宽异常和无法测量等现场情况。期望“合格”时，候选结论 OK 或 OK · 局部超差都算符合。修改人工期望后，需要重新验证。</p>

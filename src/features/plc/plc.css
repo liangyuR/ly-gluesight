@@ -36,7 +36,7 @@ select.input { padding-right: 6px; }
 .table-wrap { overflow-x: auto; }
 .table td { font-size: 13px; }
 .table tbody tr:hover { background: var(--state-hover); }
-.table td.value { font-weight: 600; }
+.table td.value { font-weight: 600; overflow-wrap: anywhere; }
 .cell-title { font-weight: 500; }
 .cell-sub { font-size: 12px; color: var(--on-surface-variant); }
 .log-table td.msg { width: 100%; }

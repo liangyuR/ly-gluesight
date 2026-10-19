@@ -287,8 +287,8 @@ function OfflineSession({ status }: { status: SiteStatus }) {
                 <tr key={`${r.ts}:${r.partSn}:${r.partId}`}>
                   <td className="mono nowrap">{formatTime(r.ts)}</td>
                   <td className="mono">{r.partId}</td>
-                  <td className="mono">{r.sampleSn}</td>
-                  <td className="mono">{r.partSn}</td>
+                  <td className="sn">{r.sampleSn}</td>
+                  <td className="sn">{r.partSn}</td>
                   <td>{purposeText[r.purpose]}</td>
                   <td>{sampleLabelText[r.label]}</td>
                   <td>{r.verdict ? verdictLabel[r.verdict] : r.message || "—"}</td>
