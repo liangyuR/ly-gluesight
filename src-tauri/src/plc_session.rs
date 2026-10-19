@@ -209,7 +209,7 @@ impl PlcSession {
                         let contract = self.contract.as_ref().ok_or("S7 点表未校验")?;
                         let snapshot = Snapshot::capture(engine, contract, Self::max_age(engine))?;
                         if Some(snapshot.connection_since) != self.connection { return Err("握手日志保存期间 PLC 已重连，需明确复位".into()); }
-                        self.heartbeat.lock().unwrap().observe(snapshot.read_bool(tag::PLC_HEARTBEAT)?, now_ms())
+                        self.heartbeat.lock().unwrap().observe(snapshot.read_bool(tag::PLC_HEARTBEAT)?, snapshot.heartbeat_changed_at, now_ms())
                     };
                     observation_error = observe().err();
                     if observation_error.is_some() { let _ = self.stop_outputs(engine).await; }
@@ -378,11 +378,11 @@ impl PlcSession {
         };
         let now = now_ms();
         let heartbeat = snapshot.read_bool(tag::PLC_HEARTBEAT)?;
-        let observation = self.heartbeat.lock().unwrap().observe(heartbeat, now);
+        let observation = self.heartbeat.lock().unwrap().observe(heartbeat, snapshot.heartbeat_changed_at, now);
         if let Err(error) = observation {
             let mut watch = self.heartbeat.lock().unwrap();
             watch.reset();
-            watch.observe(heartbeat, now)?;
+            watch.observe(heartbeat, snapshot.heartbeat_changed_at, now)?;
             return Err(error);
         }
         let reset_level = snapshot.read_bool(tag::FAULT_RESET)?;

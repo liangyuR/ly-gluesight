@@ -20,6 +20,8 @@ const FIELDS: &[&str] = &[
 ];
 const FAULTED: &str = "视觉置位 visionFault（握手故障），PLC 撤销本件请求";
 const ABORTED: &str = "已立即停止，PLC 撤销本件请求";
+/// 虚拟 PLC 按住 faultReset 等视觉就绪的时长，超过就松开再按一次
+const RESET_RETRY: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy)]
 struct Slot {
@@ -225,15 +227,21 @@ impl Line {
             Wait::Faulted => {}
         }
         self.release();
-        self.write(&[(tag::FAULT_RESET, 0)]);
-        sleep(timing.settle).await;
-        self.write(&[(tag::FAULT_RESET, 1)]);
-        let ready = self.wait(timing, timing.ready_timeout, abort, false, Self::ready).await;
-        self.write(&[(tag::FAULT_RESET, 0)]);
-        match ready {
-            Wait::Done => Ok(()),
-            Wait::Aborted => Err(ABORTED.into()),
-            _ => Err("PLC 已发 faultReset，视觉仍未就绪：查看在线检测页的故障原因".into()),
+        // 复位被拒（如心跳故障后视觉尚未观察到新的心跳翻转）时像操作员一样松开再按，直到就绪或超时
+        let deadline = Instant::now() + timing.ready_timeout;
+        loop {
+            self.write(&[(tag::FAULT_RESET, 0)]);
+            sleep(timing.settle).await;
+            self.write(&[(tag::FAULT_RESET, 1)]);
+            let window = RESET_RETRY.min(deadline.saturating_duration_since(Instant::now()));
+            let ready = self.wait(timing, window, abort, false, Self::ready).await;
+            self.write(&[(tag::FAULT_RESET, 0)]);
+            match ready {
+                Wait::Done => return Ok(()),
+                Wait::Aborted => return Err(ABORTED.into()),
+                _ if Instant::now() >= deadline => return Err("PLC 已发 faultReset，视觉仍未就绪：查看在线检测页的故障原因".into()),
+                _ => {}
+            }
         }
     }
 
