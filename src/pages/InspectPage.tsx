@@ -192,8 +192,8 @@ export default function InspectPage() {
             {debug ? `${debug.recipeId} · 候选修订 ${debug.revision}` : layout ? `${layout.id} · v${layout.version}` : "等待 PLC 下发型号"}
           </span>
         )}
-        <span className="qs-chip prod-sn">
-          SN <b className="mono">{part?.sn || result?.sn || "—"}</b>
+        <span className="qs-chip prod-sn" title={part?.sn || result?.sn || undefined}>
+          SN <b className="sn">{part?.sn || result?.sn || "—"}</b>
         </span>
         <span className="spacer" />
         <span className={`qs-badge prod-phase${phase === "FAULT" ? " fault" : busy ? " run" : ""}`}><span className="dot" />{snapshot ? phaseLabels[phase] : "状态确认中"}</span>
@@ -312,7 +312,7 @@ function VerdictCard({ phase, result, part }: { phase: string; result: ResultVie
       className={`fly-verdict qs-verdict xl ${tone}${animate.current ? " in" : ""}${emphasis ? " emph" : ""}`}
       onAnimationEnd={event => { if (event.target === card.current) setEmphasis(false); }}>
       <div className="vh">
-        <span>{result ? `判定结果 · SN ${result.sn}` : "判定结果"}</span>
+        <span title={result ? `SN ${result.sn}` : undefined}>{result ? <>判定结果 · SN <span className="sn">{result.sn}</span></> : "判定结果"}</span>
         <span className="mono">PLC {result ? `${result.plcCode}${result.faultCode ? ` / ${result.faultCode}` : ""}` : "—"}</span>
       </div>
       <Fragment key={stateKey}>
@@ -323,7 +323,7 @@ function VerdictCard({ phase, result, part }: { phase: string; result: ResultVie
         </> : running ? <>
           <div className="big"><span className="pulse" /></div>
           <div className="t">检测中…</div>
-          <div className="d">SN {part?.sn || "—"} · 帧 {part ? `${part.received} / ${part.n}` : "—"}</div>
+          <div className="d">SN <span className="sn">{part?.sn || "—"}</span> · 帧 {part ? `${part.received} / ${part.n}` : "—"}</div>
         </> : <>
           <div className="big">—</div>
           <div className="t">暂无检测结果</div>

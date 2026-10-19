@@ -11,6 +11,7 @@ import { plcApi, usePlcOperationState, usePlcStatus, usePlcValues } from "../api
 import { inspectionHandshakeTags } from "../../../business/plcTags";
 import { asS7, dataTypeLabels, edgeLabels, effectiveOrder, formatValue, isMultiWord, newPoint, s7Protocol } from "../meta";
 import { formatClock } from "../time";
+import { useSnackbar } from "../../../components/Snackbar";
 import type { PlcConfig, PlcHandshakeState, PlcPoint, TagPreset } from "../types";
 
 type Editing = { point: PlcPoint; isNew: boolean } | null;
@@ -43,7 +44,8 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
   const [jsonOpen, setJsonOpen] = useState(false);
   const [s7Open, setS7Open] = useState(false);
   const [cpuPreset, setCpuPreset] = useState({ revision: 0, key: "" });
-  const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [actionError, setActionError] = useState("");
+  const snack = useSnackbar();
   const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState(false);
   const acting = useRef(false);
@@ -66,10 +68,10 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
   }, []);
 
   useEffect(() => {
-    if (!notice) return;
-    const t = setTimeout(() => setNotice(null), 4000);
+    if (!actionError) return;
+    const t = setTimeout(() => setActionError(""), 4000);
     return () => clearTimeout(t);
-  }, [notice]);
+  }, [actionError]);
 
   const dirty = useMemo(() => configText(saved) !== configText(draft), [saved, draft]);
   const connected = status?.state === "connected";
@@ -82,11 +84,11 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
   const perform = async (action: () => Promise<unknown>, allowReconnect = false) => {
     if (acting.current) return;
     if (operationLock.current && !(allowReconnect && canReconnect())) {
-      setNotice({ kind: "error", text: operationLock.current }); return;
+      setActionError(operationLock.current); return;
     }
-    acting.current = true; setBusy(true); setNotice(null);
+    acting.current = true; setBusy(true); setActionError("");
     try { await action(); }
-    catch (e) { if (alive.current) setNotice({ kind: "error", text: String(e) }); }
+    catch (e) { if (alive.current) setActionError(String(e)); }
     finally { acting.current = false; if (alive.current) setBusy(false); }
   };
 
@@ -95,16 +97,16 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
     || (!Number.isInteger(draft.logRetentionDays) || draft.logRetentionDays < 0 || draft.logRetentionDays > 0xffffffff ? "日志保留天数需为 0–4294967295 的整数" : "");
 
   const save = async () => {
-    if (operationLock.current) { setNotice({ kind: "error", text: operationLock.current }); return false; }
-    if (invalid) { setNotice({ kind: "error", text: invalid }); return false; }
+    if (operationLock.current) { setActionError(operationLock.current); return false; }
+    if (invalid) { setActionError(invalid); return false; }
     try {
       await plcApi.saveConfig(draft);
       if (!alive.current) return false;
       setSaved(structuredClone(draft));
-      setNotice({ kind: "ok", text: "配置已保存" });
+      snack("配置已保存");
       return true;
     } catch (e) {
-      if (alive.current) setNotice({ kind: "error", text: String(e) });
+      if (alive.current) setActionError(String(e));
       return false;
     }
   };
@@ -119,7 +121,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
   };
 
   const upsertPoint = (point: PlcPoint) => {
-    if (operationLock.current) { setNotice({ kind: "error", text: operationLock.current }); return; }
+    if (operationLock.current) { setActionError(operationLock.current); return; }
     const points = editing?.isNew
       ? [...draft.points, point]
       : draft.points.map((p) => (p.id === editing?.point.id ? point : p));
@@ -242,7 +244,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
           </div>
         </div>
         </fieldset>
-        {notice && <div className={`notice ${notice.kind}`}>{notice.text}</div>}
+        {actionError && <div className="notice error" role="alert">{actionError}</div>}
         {invalid && !connectionError(draft.connection) && <p role="alert" className="c-ng">{invalid}</p>}
       </div>
 
@@ -391,7 +393,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
         setDraft(config);
         setCpuPreset(previous => ({ revision: previous.revision + 1, key: cpu }));
         setS7Open(false);
-        setNotice({ kind: "ok", text: "一期 S7 点表已载入草稿，请核对地址后保存配置" });
+        snack({ text: "一期 S7 点表已载入草稿，请核对地址后保存配置", tone: "info" });
       }} />}
     </div>
   );
