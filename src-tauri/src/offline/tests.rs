@@ -208,6 +208,40 @@ async fn pc_initiated_disconnect_reconnects_after_the_heartbeat_loss_window_and_
     bench.engine.disconnect().await;
 }
 
+/// PR #134 审查：PLC 能读不能写时，自动重连只做一次，重连后仍确认不了置故障就停在断开，不再反复占用 PLC 连接；确认置故障后，下一次主动断开仍会自动重连。
+#[tokio::test]
+async fn persistent_write_rejection_reconnects_once_then_stays_disconnected_until_stop_is_confirmed() {
+    let mut bench = Bench::new("reconnect-once").await;
+    poll_until(&mut bench, true, &Ok(()), "首次复位", |event, _| matches!(event, SessionEvent::Ready)).await;
+    for _ in 0..100_000 { bench._server.inject(s7_server::Fault::RejectWrite); }
+    poll_until(&mut bench, true, &Ok(()), "置故障输出失败后应断开", |_, _| true).await;
+    assert_eq!(bench.engine.status().state, LinkState::Disconnected, "{:?}", bench.session.view());
+    let (mut reconnects, mut since, watch) = (0, bench.engine.status().since, Instant::now());
+    while watch.elapsed() < Duration::from_secs(9) {
+        bench.session.poll_with_devices(&bench.engine, false, &Ok(()), true, true).await;
+        let status = bench.engine.status();
+        if status.state == LinkState::Disconnected && status.since != since { reconnects += 1; since = status.since; }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(reconnects, 1, "持续拒写时应只自动重连一次：{:?}", bench.session.view());
+    assert_eq!(bench.engine.status().state, LinkState::Disconnected, "{:?}", bench.session.view());
+
+    bench._server.inject(s7_server::Fault::Clear);
+    bench.engine.connect().await;
+    poll_until(&mut bench, true, &Ok(()), "人工连接后明确复位", |event, _| matches!(event, SessionEvent::Ready)).await;
+    for _ in 0..60 { bench._server.inject(s7_server::Fault::RejectWrite); }
+    poll_until(&mut bench, true, &Ok(()), "再次置故障输出失败后应断开", |_, _| true).await;
+    assert_eq!(bench.engine.status().state, LinkState::Disconnected, "{:?}", bench.session.view());
+    bench._server.inject(s7_server::Fault::Clear);
+    let until = Instant::now() + Duration::from_secs(6);
+    while bench.engine.status().state == LinkState::Disconnected {
+        assert!(Instant::now() < until, "确认置故障后再次主动断开没有自动重连：{:?}", bench.session.view());
+        bench.session.poll_with_devices(&bench.engine, false, &Ok(()), true, true).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    bench.engine.disconnect().await;
+}
+
 /// D-CF-9：设备未就绪时复位被拒，提示要带上具体原因（如没有可开工配方）。
 #[tokio::test]
 async fn reset_refused_for_unready_devices_names_the_reason() {
