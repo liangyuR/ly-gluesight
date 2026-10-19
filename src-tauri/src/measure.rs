@@ -511,8 +511,14 @@ mod tests {
         assert_eq!(health.snapshot(), WorkerHealthSnapshot { capacity: 1, running: 1, timed_out: 1, available_capacity: 0 });
         assert!(!health.can_arm());
 
+        let watchdog = release.0.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            watchdog.release();
+        });
         tx.send(job(1, Duration::from_millis(30))).await.unwrap();
         tx.send(job(2, Duration::from_millis(30))).await.unwrap();
+        tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_millis(30)).await;
         for k in [1, 2] {
             let result = next_result(&mut results).await;
