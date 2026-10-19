@@ -84,7 +84,7 @@ textarea.input.code { width: 100%; height: 360px; padding: 10px; resize: vertica
   padding: 6px 10px;
   border-radius: var(--r-sm);
   background: var(--surface-high);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-2);
   font-size: 12px;
   pointer-events: none;
   white-space: nowrap;
