@@ -24,7 +24,7 @@ use crate::inspection::{read_tag_u32, tag};
 use crate::judge::{self, fault, Judgement, PointState, Verdict};
 use crate::measure::{self, Job, Measured, WorkerHealth};
 use crate::plc::PlcHost;
-use crate::plc_session::{PartSite, PlcSession, SessionEvent, SessionPhase, SessionView};
+use crate::plc_session::{Origin, PartSite, PendingKind, PlcSession, SessionEvent, SessionPhase, SessionView};
 use crate::recipe::{Recipe, RecipeStore, TriggerMode};
 use crate::recorder::{Recorder, Recorders, Recording};
 use crate::recording_health::{AlarmChange, RecordingAlarm, RecordingHealth};
@@ -290,6 +290,8 @@ pub struct CycleHost {
     rx: Mutex<Option<(UnboundedReceiver<Input>, Receiver<Frame>)>>,
     /// 节拍不在空闲或故障（开工那一刻就置上，比发布的快照早）
     busy: AtomicBool,
+    /// 检测侧不允许切换站点模式的原因：有在途工件，或有只能在真机 PLC 上复位的未结事务
+    switch_block: Mutex<Option<String>>,
     settings_note: Option<String>,
     interrupted_recordings: usize,
 }
@@ -352,6 +354,7 @@ impl CycleHost {
             settings_path,
             rx: Mutex::new(Some((rx, frame_rx))),
             busy: AtomicBool::new(false),
+            switch_block: Mutex::new(None),
             settings_note,
             interrupted_recordings,
         })
@@ -404,6 +407,20 @@ impl CycleHost {
 
     pub fn busy(&self) -> bool {
         self.busy.load(Ordering::SeqCst)
+    }
+
+    pub fn switch_block(&self) -> Option<String> {
+        self.switch_block.lock().unwrap().clone()
+    }
+
+    fn store_busy(&self, phase: Phase, s7: &PlcSession) {
+        let in_flight = !matches!(phase, Phase::Idle | Phase::Fault);
+        self.busy.store(in_flight || s7.pending(), Ordering::SeqCst);
+        *self.switch_block.lock().unwrap() = if in_flight {
+            Some("检测仍有在途工件，完成握手或复位故障后再切换站点模式".into())
+        } else if s7.pending_kind() == PendingKind::Blocking {
+            Some(format!("检测仍有未结 S7 事务（{}），需连接真机 PLC 复位后再切换站点模式", s7.pending_summary().unwrap_or_default()))
+        } else { None };
     }
 
     /// 检测中的配方：人工选型号时选中的，或在途工件用的。
@@ -863,7 +880,12 @@ impl Machine {
         if recovered > 0 { log(&app, "ok", "PLC 确认恢复", format!("已从持久握手记录恢复 {recovered} 件 PLC 确认，原检测结论保留")); }
         if failed > 10 { log(&app, "err", "PLC 确认恢复", format!("另有 {} 条收据未能关联或保存，请核对握手审计与检测记录", failed - 10)); }
         record_interrupted_part(&app, &s7, &mut stats, HistoryScope::Real);
-        host(&app).busy.store(s7.pending(), Ordering::SeqCst);
+        match (s7.pending_kind(), s7.pending_summary()) {
+            (PendingKind::Offline, Some(summary)) => log(&app, "warn", "S7 未结事务", format!("上次离线运行留下{summary}：进入离线由虚拟 PLC 复位清除，或连接真机 PLC 后复位")),
+            (PendingKind::Blocking, Some(summary)) => log(&app, "warn", "S7 未结事务", format!("留有{summary}：连接真机 PLC 核对该件后复位；复位前不能切换站点模式")),
+            _ => {}
+        }
+        host(&app).store_busy(Phase::Fault, &s7);
         Self {
             app,
             measure_tx,
@@ -910,7 +932,7 @@ impl Machine {
 
     fn set_phase(&mut self, phase: Phase) {
         self.phase = phase;
-        host(&self.app).busy.store(!matches!(phase, Phase::Idle | Phase::Fault) || self.s7.pending(), Ordering::SeqCst);
+        host(&self.app).store_busy(phase, &self.s7);
         self.since = now_ms();
         self.dirty = true;
     }
@@ -1092,7 +1114,7 @@ impl Machine {
             Input::Refresh => self.required = None,
             Input::SiteChanged => {
                 self.required = None;
-                if !host(&self.app).busy() && matches!(self.phase, Phase::Idle | Phase::Fault) {
+                if matches!(self.phase, Phase::Idle | Phase::Fault) && self.s7.pending_kind() != PendingKind::Blocking {
                     self.part = None;
                     self.result = None;
                     self.active_recipe = None;
@@ -1462,6 +1484,8 @@ impl Machine {
     async fn on_tick(&mut self) {
         let app = self.app.clone();
         let _gate = host(&app).plc_gate.lock().await;
+        // 持有 PLC 闸门期间站点模式不会切换：新事务按当前站点记来源
+        self.s7.set_origin(if crate::offline::enabled(&app) { Origin::Offline } else { Origin::Real });
         if !host(&app).busy() && matches!(self.phase, Phase::Idle | Phase::Fault) && crate::offline::candidate(&self.app).is_none() && crate::workspace::apply_pending(&self.app) {
             self.required = None;
             self.dirty = true;
@@ -1584,7 +1608,7 @@ impl Machine {
                 if self.phase != Phase::Fault || self.fault.as_ref() != Some(&reason) { self.enter_fault(reason); }
             }
             if previous != self.s7.phase() { self.dirty = true; }
-            host(&app).busy.store(!matches!(self.phase, Phase::Idle | Phase::Fault) || self.s7.pending(), Ordering::SeqCst);
+            host(&app).store_busy(self.phase, &self.s7);
         }
         if self.s7.capture_id().is_some() { self.finish_capture_s7().await; }
         let timeouts = host(&self.app).settings().timeouts;
