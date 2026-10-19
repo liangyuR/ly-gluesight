@@ -664,6 +664,25 @@ impl Part {
     }
 }
 
+/// 布防阶段的追溯健康检查。探针自身失败时 `Audit::health` 已标记追溯故障；只是布防总预算用完时只拒绝本件，
+/// 不能把一次偶发超时变成需要重启才能恢复的追溯故障。探针线程异常无法确认结果，按追溯故障处理。
+pub(crate) async fn arm_health_check(budget: &mut ArmBudget, probe: impl FnOnce() -> Result<(), String> + Send + 'static,
+    poison: impl FnOnce(String)) -> Result<(), String> {
+    let mut panicked = None;
+    let result = budget.run("audit-health", async {
+        match tauri::async_runtime::spawn_blocking(probe).await {
+            Ok(result) => result,
+            Err(error) => {
+                let error = format!("追溯健康检查线程异常：{error}");
+                panicked = Some(error.clone());
+                Err(error)
+            }
+        }
+    }).await;
+    if let Some(error) = panicked { poison(error); }
+    result
+}
+
 fn missing_recipe(id: &str) -> String {
     format!("选中的配方 {id} 不存在或没能加载（见配方页）")
 }
@@ -1174,11 +1193,8 @@ impl Machine {
         budget.mark("recording-begin");
         arm_remaining!("before-audit-health");
         let audit = host.audit.clone();
-        let health = budget.run("audit-health", async move {
-            tauri::async_runtime::spawn_blocking(move || audit.health()).await.map_err(|error| error.to_string())?
-        }).await;
+        let health = arm_health_check(&mut budget, move || audit.health(), |error| host.audit.fail(error)).await;
         if let Err(reason) = health {
-            host.audit.fail(reason.clone());
             log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "refused", "trace": budget.trace()}).to_string());
             return self.refuse(sn, id, fault::PROCESS_TIMEOUT, format!("录制开始后追溯健康检查失败，未启动相机：{reason}")).await;
         }
