@@ -444,13 +444,13 @@ fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: 
                 notify(&callback, outcome);
             }
             Msg::Prune { keep, max_bytes } => {
-                let errors = match cleanup.as_ref().map(|(protection, _)| protection()).transpose() {
-                    Ok(protected) => prune(&root, keep as usize, max_bytes, &protected.unwrap_or_default()),
+                let errors = match cleanup.as_ref().map(|c| (c.protection)()).transpose() {
+                    Ok(protected) => prune(&root, keep as usize, max_bytes, &protected.unwrap_or_default(), cleanup.as_ref().map(|c| &c.release)),
                     Err(error) => vec![format!("无法确认待入库原图保护，跳过滚动清理：{error}")],
                 };
                 if !errors.is_empty() {
                     match &cleanup {
-                        Some((_, warning)) => warning(&errors),
+                        Some(cleanup) => (cleanup.warning)(&errors),
                         None => crate::applog::write("warn", "原图滚动清理失败", &errors.join("；")),
                     }
                 }
