@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::applog;
 use crate::cycle::{self, FrameView};
 use crate::judge::{Judgement, PointState};
 use crate::offline::sample_set::SampleRef;
@@ -284,8 +285,12 @@ impl Audit {
     }
 
     pub(crate) fn fail(&self, error: String) {
+        self.fail_for(None, error);
+    }
+
+    fn fail_for(&self, cycle: Option<&str>, error: String) {
         let _ = set_failure(&self.failure, error.clone());
-        app_log(&self.app, "err", "持久追溯故障", error);
+        app_log(&self.app, "err", "持久追溯故障", cycle, error);
     }
 
     fn persist(&self, event: Event) -> Result<(), String> {
@@ -293,35 +298,36 @@ impl Audit {
         let result = persist_event(&self.spool, &self.failure, &self.pending_recordings, &event);
         if let Err(error) = result {
             let message = format!("cycleId={cycle}：{error}；原检测结论保留，禁止继续生产");
-            self.fail(message.clone());
+            self.fail_for(Some(&cycle), message.clone());
             return Err(message);
         }
         if matches!(self.tx.try_send(()), Err(TrySendError::Disconnected(()))) {
             let error = format!("cycleId={cycle}：事件已持久保存，但追溯线程已停止");
-            self.fail(error.clone());
+            self.fail_for(Some(&cycle), error.clone());
             return Err(error);
         }
         Ok(())
     }
 
     async fn persist_async(&self, event: Event, timeout: Duration) -> Result<(), String> {
+        let cycle = event.cycle_id().to_string();
         let audit = self.clone();
         let task = tauri::async_runtime::spawn_blocking(move || audit.persist(event));
         if timeout.is_zero() {
             let message = "持久追溯接收已无剩余处理预算，仍保留落盘尝试但禁止 done".to_string();
-            self.fail(message.clone());
+            self.fail_for(Some(&cycle), message.clone());
             return Err(message);
         }
         match tokio::time::timeout(timeout, task).await {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => {
                 let message = format!("持久追溯接收线程异常：{error}");
-                self.fail(message.clone());
+                self.fail_for(Some(&cycle), message.clone());
                 Err(message)
             }
             Err(_) => {
                 let message = format!("持久追溯接收超过剩余预算 {} ms，迟到落盘也不能发布本件 done，需排查并重启恢复", timeout.as_millis());
-                self.fail(message.clone());
+                self.fail_for(Some(&cycle), message.clone());
                 Err(message)
             }
         }
@@ -409,11 +415,11 @@ impl Sink for AppSink<'_> {
 enum Notice {
     Inserted(i64),
     Updated(String),
-    Log { level: &'static str, event: &'static str, message: String },
+    Log { level: &'static str, event: &'static str, cycle: String, message: String },
 }
 
 fn log(notices: &mut Vec<Notice>, level: &'static str, event: &'static str, cycle: &str, message: impl AsRef<str>) {
-    notices.push(Notice::Log { level, event, message: format!("cycleId={cycle}：{}；原检测结论不变", message.as_ref()) });
+    notices.push(Notice::Log { level, event, cycle: cycle.into(), message: format!("cycleId={cycle}：{}；原检测结论不变", message.as_ref()) });
 }
 
 #[derive(Default)]
@@ -863,25 +869,27 @@ fn publish(app: &AppHandle, notices: Vec<Notice>) {
         match notice {
             Notice::Inserted(id) => {
                 if let Err(error) = app.emit("history://inserted", id) {
-                    app_log(app, "err", "历史通知失败", error.to_string());
+                    app_log(app, "err", "历史通知失败", None, error.to_string());
                 }
             }
             Notice::Updated(cycle) => {
-                if let Err(error) = app.emit("history://updated", cycle) {
-                    app_log(app, "err", "历史通知失败", error.to_string());
+                if let Err(error) = app.emit("history://updated", &cycle) {
+                    app_log(app, "err", "历史通知失败", Some(&cycle), error.to_string());
                 }
             }
-            Notice::Log { level, event, message } => app_log(app, level, event, message),
+            Notice::Log { level, event, cycle, message } => app_log(app, level, event, Some(&cycle), message),
         }
     }
 }
 
-fn app_log(app: &AppHandle, level: &'static str, event: &'static str, message: impl Into<String>) {
+/// 审计线程常在下一件已开始后才回报上一件的结果，属于某件的记录必须显式带上它的 cycleId，不能按在途工件补齐。
+fn app_log(app: &AppHandle, level: &'static str, event: &'static str, cycle: Option<&str>, message: impl Into<String>) {
     let message = message.into();
+    let fields = applog::Fields { cycle_id: cycle.map(Into::into), ..applog::Fields::default() };
     if app.try_state::<cycle::CycleHost>().is_some() {
-        cycle::log(app, level, event, message);
+        cycle::log_with(app, level, event, message, fields);
     } else {
-        crate::applog::write(level, event, &message);
+        applog::emit(applog::Level::from_tone(level), event, &message, fields);
     }
 }
 
@@ -995,14 +1003,14 @@ fn writer(audit: Audit, rx: Receiver<()>) {
             if retries.get(&cycle).is_some_and(|(_, due)| now < *due) { continue; }
             let events = match spool_io(&audit.spool, &audit.failure, |spool| spool.events(&cycle)) {
                 Ok(events) => events,
-                Err(error) => { audit.fail(error); continue; }
+                Err(error) => { audit.fail_for(Some(&cycle), error); continue; }
             };
             let (complete, receipts, notices) = apply_spooled(events, &cycle, &mut sink, now);
             publish(&audit.app, notices);
             if complete {
                 match spool_io(&audit.spool, &audit.failure, |spool| spool.remove(&receipts)) {
                     Ok(()) => { retries.remove(&cycle); }
-                    Err(error) => audit.fail(error),
+                    Err(error) => audit.fail_for(Some(&cycle), error),
                 }
             } else {
                 let (failures, due) = retries.entry(cycle).or_default();

@@ -69,6 +69,16 @@ describe("验证与发布页面", () => {
     expect(screen.getByRole("link", { name: "查看 PLC 配方握手计划" })).toHaveAttribute("href", "/plc?panel=s7-plan");
   });
 
+  it.each([
+    ["未选用任何样本", () => { ws.data!.workspace.samples = []; }, "先选用至少一组代表性样本"],
+    ["已选样本但未确认适用", () => {}, "勾选上方确认后才能运行"],
+  ])("%s → 运行验证不可用并在按钮旁说明原因", (_, arrange, reason) => {
+    arrange();
+    show();
+    expect(screen.getByRole("button", { name: "运行整套图像验证" })).toBeDisabled();
+    expect(screen.getByRole("note")).toHaveTextContent(reason);
+  });
+
   it("验证未通过时不能发布", () => {
     ws.data!.workspace.validation!.passed = false;
     show();

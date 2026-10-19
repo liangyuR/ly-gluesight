@@ -7,6 +7,8 @@ mod camera;
 mod commands;
 mod cycle;
 mod cycle_ids;
+mod diagnostics;
+mod disk_guard;
 mod frame;
 mod fsio;
 mod history;
@@ -36,8 +38,10 @@ mod store;
 mod storage;
 mod managed_samples;
 mod teach;
+mod timeline;
 mod vision;
 mod workspace;
+mod ziparchive;
 
 use tauri::Manager;
 
@@ -110,6 +114,11 @@ pub fn run() {
             storage::storage_preferences_update,
             commands::app_info,
             commands::app_open_log_dir,
+            applog::applog_query,
+            applog::applog_usage,
+            diagnostics::diagnostics_export,
+            timeline::history_timeline,
+            timeline::history_find_cycle,
             commands::engine_status,
             plc::plc_get_config,
             plc::plc_save_config,
@@ -153,6 +162,7 @@ pub fn run() {
             teach::records_list,
             history::history_query,
             history::history_detail,
+            history::history_neighbors,
             history::history_recipe,
             history::history_rejudge,
             history::history_export,

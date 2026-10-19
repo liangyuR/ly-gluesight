@@ -561,6 +561,7 @@ impl Store {
              CREATE INDEX IF NOT EXISTS parts_ts ON parts(ts);
              CREATE INDEX IF NOT EXISTS parts_source_ts ON parts(source, ts);
              CREATE INDEX IF NOT EXISTS parts_sn ON parts(sn);
+             CREATE INDEX IF NOT EXISTS parts_recording_directory ON parts(recording_directory);
              CREATE UNIQUE INDEX IF NOT EXISTS parts_cycle ON parts(cycle_id) WHERE cycle_id IS NOT NULL;
              CREATE INDEX IF NOT EXISTS parts_unresolved_delivery ON parts(cycle_id)
                  WHERE cycle_id IS NOT NULL AND delivery_state IN ('pending','submitted','failed');
@@ -1023,6 +1024,18 @@ impl Store {
         Ok(paths)
     }
 
+    /// 滚动清理即将删除这些录制目录：引用它们的记录改为“按保留策略不存图”并写明原因，不再显示“已核验落盘”。
+    pub fn release_recordings(&self, directories: &[PathBuf]) -> Result<(), String> {
+        let note = "原图已按录制保留件数或容量上限滚动清理";
+        let directories: Vec<_> = directories.iter().map(|directory| directory.to_string_lossy()).collect();
+        let directories = serde_json::to_string(&directories).map_err(|e| e.to_string())?;
+        let conn = self.conn.lock().map_err(|_| "数据库锁异常，暂停滚动清理".to_string())?;
+        conn.execute("UPDATE parts SET recording_state=?3, recording_available=0, recording_errors=json_insert(recording_errors,'$[#]',?2) \
+            WHERE recording_directory IN (SELECT value FROM json_each(?1)) AND recording_state IN ('complete','incomplete')",
+            params![directories, note, enum_name(RecordingState::NotRetained)]).map_err(db_err)?;
+        Ok(())
+    }
+
     pub fn query(&self, q: &HistoryQuery) -> Result<HistoryPage, String> {
         let conn = self.conn.lock().unwrap();
         let (filter, args) = Self::filter(q, "");
@@ -1040,6 +1053,19 @@ impl Store {
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
         let items = stmt.query_map(params_from_iter(args.iter()), summary).map_err(db_err)?.collect::<Result<_, _>>().map_err(db_err)?;
         Ok(HistoryPage { total, counts, items })
+    }
+
+    /// 同一筛选条件下与 id 相邻的记录：(较早一件, 较晚一件)。
+    pub fn neighbors(&self, q: &HistoryQuery, id: i64) -> Result<(Option<i64>, Option<i64>), String> {
+        let conn = self.conn.lock().unwrap();
+        let (filter, args) = Self::filter(q, "");
+        let one = |cmp: &str, order: &str| -> Result<Option<i64>, String> {
+            let mut values = args.clone();
+            values.push(SqlValue::Integer(id));
+            conn.query_row(&format!("SELECT id FROM parts{filter} AND id {cmp} ? ORDER BY id {order} LIMIT 1"),
+                params_from_iter(values.iter()), |row| row.get(0)).optional().map_err(db_err)
+        };
+        Ok((one("<", "DESC")?, one(">", "ASC")?))
     }
 
     pub fn detail(&self, id: i64) -> Result<PartDetail, String> {

@@ -21,7 +21,7 @@ mod recorded;
 mod history_samples;
 mod reproduce;
 mod workflow;
-mod centerline;
+pub(crate) mod centerline;
 pub mod progress;
 #[cfg(test)]
 mod workflow_tests;

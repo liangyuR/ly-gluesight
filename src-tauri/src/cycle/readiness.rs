@@ -360,7 +360,7 @@ pub fn gather(app: &AppHandle) -> Readiness {
         _ => Ok(()),
     };
     let audit = match host.audit.readiness() {
-        Ok(crate::audit::AuditReadiness::Ready) => Check::Ok,
+        Ok(crate::audit::AuditReadiness::Ready) => host.disk.check().map_or_else(Check::Waiting, |()| Check::Ok),
         Ok(crate::audit::AuditReadiness::WaitingRecording) => Check::Waiting("原图录制尚未完成耐久接受，完成后自动就绪".into()),
         Ok(crate::audit::AuditReadiness::WaitingStore) => Check::Waiting("持久追溯仍有待入库事件，入库后自动就绪".into()),
         Err(error) => Check::Blocked(format!("持久追溯故障：{error}")),
