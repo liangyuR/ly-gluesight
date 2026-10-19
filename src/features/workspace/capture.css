@@ -7,8 +7,8 @@
 .wp-capture-checks > li > a { display:inline-flex; align-items:center; gap:4px; margin-top:auto; color:var(--primary); font-size:12px; text-decoration:none; }
 .wp-capture-checks > li > a:hover { text-decoration:underline; }
 .wp-capture-checks > li > .wp-field { gap:4px; }
-.wp-capture-checks > li > .wp-field > span { color:var(--on-surface-variant); font-size:12px; }
-.wp-capture-checks > li > .wp-field .input { height:32px; }
+.wp-capture-checks > li > .wp-field > label { color:var(--on-surface-variant); font-size:12px; }
+.wp-capture-checks > li > .wp-field .qs-input { height:32px; }
 .wp-capture-start { display:flex; align-items:center; flex-wrap:wrap; gap:12px; margin-top:16px; padding-top:16px; border-top:1px solid var(--outline-variant); }
 .wp-capture-reason { display:inline-flex; align-items:center; gap:6px; margin:0; color:var(--warn); font-size:13px; line-height:1.5; }
 .wp-capture-reason > svg { flex-shrink:0; }

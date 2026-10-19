@@ -141,10 +141,7 @@ a.engine-status:hover { color: var(--on-surface); }
   padding: 16px;
 }
 .panel .panel { background: var(--surface-mid); }
-.panel.grow { flex: 1; }
 .panel-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
-.panel-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-.panel-toolbar .panel-title { margin-bottom: 0; }
 .stack { display: flex; flex-direction: column; gap: 16px; }
 
 .muted { color: var(--on-surface-variant); }
@@ -174,31 +171,11 @@ a.engine-status:hover { color: var(--on-surface); }
   cursor: pointer;
   transition: transform var(--dur-medium) var(--ease-spatial), border-radius var(--dur-medium) var(--ease-spatial), background-color var(--dur-medium) var(--ease-standard), color var(--dur-medium) var(--ease-standard);
 }
-.btn::after, .icon-btn::after { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: currentColor; opacity: 0; pointer-events: none; transition: opacity var(--dur-short) var(--ease-standard); }
-.btn:hover:not(:disabled)::after, .icon-btn:hover:not(:disabled)::after { opacity: 0.08; }
-.btn:active:not(:disabled)::after, .icon-btn:active:not(:disabled)::after { opacity: 0.12; }
-.btn:active:not(:disabled) { transform: scale(0.97); border-radius: var(--r-md); transition-duration: var(--dur-short); transition-timing-function: var(--ease-standard); }
+.btn::after { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: currentColor; opacity: 0; pointer-events: none; transition: opacity var(--dur-short) var(--ease-standard); }
+.btn:hover::after { opacity: 0.08; }
+.btn:active::after { opacity: 0.12; }
+.btn:active { transform: scale(0.97); border-radius: var(--r-md); transition-duration: var(--dur-short); transition-timing-function: var(--ease-standard); }
 .btn.primary { background: var(--primary); color: var(--on-primary); }
-.btn.danger { background: var(--ng-container); color: var(--on-ng-container); }
-.btn:disabled, .icon-btn:disabled { cursor: not-allowed; color: var(--on-surface-disabled); }
-.btn:disabled { background: var(--disabled-container); border-color: transparent; }
-
-.icon-btn {
-  position: relative;
-  isolation: isolate;
-  display: inline-grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  border: none;
-  border-radius: var(--r-full);
-  background: transparent;
-  color: var(--on-surface-variant);
-  cursor: pointer;
-  transition: color var(--dur-short) var(--ease-standard), transform var(--dur-medium) var(--ease-spatial);
-}
-.icon-btn:hover:not(:disabled) { color: var(--on-surface); }
-.icon-btn:active:not(:disabled) { transform: scale(0.92); transition-duration: var(--dur-short); transition-timing-function: var(--ease-standard); }
 
 .input {
   height: 36px;
@@ -211,18 +188,8 @@ a.engine-status:hover { color: var(--on-surface); }
 }
 .input:focus { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
 .input:disabled { color: var(--on-surface-disabled); background: var(--surface-mid); }
-.input[aria-invalid="true"] { border-color: var(--ng); }
 input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 
-.empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  color: var(--on-surface-variant);
-}
-.empty.small { padding: 28px 0; border: 1px dashed var(--outline-variant); border-radius: var(--r-md); }
 .page-error { display: grid; place-items: center; min-height: 240px; }
 .page-error .qs-empty small { overflow-wrap: anywhere; }
 .native-mode { margin-bottom: var(--space-12); }
@@ -230,21 +197,13 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 .app-shell ~ .qs-snackbars { --snack-from: -12px; top: calc(12px + var(--space-16)); bottom: auto; left: calc(var(--sidebar-w) + 24px); right: 12px; }
 .app-shell:has(> .sidebar.collapsed) ~ .qs-snackbars { left: calc(var(--sidebar-w-rail) + 24px); }
 
-.notice { margin-top: 12px; padding: 8px 12px; border-radius: var(--r-md); font-size: 13px; background: var(--surface-high); color: var(--on-surface); overflow-wrap: anywhere; animation: qs-fade-in var(--dur-short) var(--ease-standard); }
-.notice.ok { background: var(--ok-container); color: var(--on-ok-container); }
-.notice.error { background: var(--ng-container); color: var(--on-ng-container); }
-.notice.warn { background: var(--warn-container); color: var(--on-warn-container); }
-.notice.fault { background: var(--fault-container); color: var(--on-fault-container); }
-.notice.tertiary { background: var(--tertiary-container); color: var(--on-tertiary-container); }
 .qs-dialog > .ft .form-error { margin-right: auto; }
 .gs-modal.qs-modal-content { width: min(var(--modal-w, 520px), calc(100vw - 32px)); }
-.gs-modal.qs-drawer-content { width: min(var(--modal-w, 440px), calc(100vw - 24px)); }
-.qs-alert-copy :is(.btn, .qs-btn) { margin-left: 12px; }
+.qs-alert-copy .qs-btn { margin-left: 12px; }
 .wp-panel > .qs-card-heading { align-items: flex-start; font-weight: inherit; }
 .wp-panel > .qs-card-heading h2 { margin: 0; font-size: 14px; font-weight: 600; }
 .wp-panel > .qs-card-heading p { margin: 5px 0 0; font-size: 12px; line-height: 1.6; }
 
-.form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
 .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--on-surface-variant); }
 
 .table { width: 100%; border-collapse: collapse; }
@@ -272,9 +231,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
   background: var(--secondary-container);
   pointer-events: none;
 }
-.segmented > .selection-track-indicator { border-radius: 0; }
 .wp-steps > .selection-track-indicator { border-radius: var(--r-md); background: var(--primary-container); }
-.segmented.selection-track[data-selection-ready] > button.active,
 .wp-steps.selection-track[data-selection-ready] > a.active { background: transparent; }
 @media (prefers-reduced-motion: reduce) {
   .selection-track-indicator { transition: none; }

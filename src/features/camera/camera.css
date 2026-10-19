@@ -1,6 +1,4 @@
 .cam-page { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 16px; align-items: start; }
-.cam-page .panel { display: flex; flex-direction: column; gap: 10px; }
-.cam-page .panel-toolbar { margin-bottom: 0; }
 .cam-notice { grid-column: 1 / -1; }
 .dev-bar { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
