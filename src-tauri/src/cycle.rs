@@ -1230,16 +1230,24 @@ impl Machine {
             return self.refuse(sn, id, fault::PROCESS_TIMEOUT, format!("录制开始后追溯健康检查失败，未启动相机：{reason}")).await;
         }
         arm_remaining!("before-plc-arm");
-        let r = budget.run_serial("plc-arm-confirmed", self.s7.arm(engine, &plan)).await;
-        if let Err(e) = r {
-            let reason = format!("布防写入失败或总预算超时：{e}");
-            log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "fault", "trace": budget.trace()}).to_string());
+        let r = budget.run_serial("plc-arm-confirmed", self.s7.arm_outputs(engine, &plan)).await;
+        let elapsed = budget.elapsed();
+        let committed = match r {
+            Ok(()) => {
+                let committed = self.s7.commit_arm(engine).await.map_err(|e| format!("布防后握手日志落盘失败：{e}"));
+                budget.mark("plc-arm-journal");
+                committed
+            }
+            Err(e) => Err(format!("布防写入失败或总预算超时：{e}")),
+        };
+        let mut trace = budget.trace();
+        trace["elapsedMs"] = json!(elapsed.as_secs_f64() * 1000.0);
+        trace["plcArm"] = json!(self.s7.arm_timing());
+        if let Err(reason) = committed {
+            log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "fault", "trace": trace}).to_string());
             self.s7.fault(engine, reason.clone()).await;
             return self.enter_fault(reason);
         }
-        let elapsed = budget.elapsed();
-        let mut trace = budget.trace();
-        trace["elapsedMs"] = json!(elapsed.as_secs_f64() * 1000.0);
         self.part.as_mut().unwrap().armed_at = Instant::now();
         self.set_phase(Phase::Acquire);
         log_with(&app, "info", "armed↑ busy↑", format!("{} · N={n} · 布防耗时 {} ms", recipe.id, elapsed.as_millis()),

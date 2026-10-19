@@ -801,3 +801,5 @@ fn finish_idle(app: &AppHandle, offline: &OfflineHost) {
 mod tests;
 #[cfg(test)]
 mod start_request_tests;
+#[cfg(test)]
+mod arm_bench;

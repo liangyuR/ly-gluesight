@@ -117,6 +117,53 @@ async fn offline_line_over_s7_completes_parts_with_matched_ack_and_returns_to_id
     bench.engine.disconnect().await;
 }
 
+/// S-12：计入布防预算的布防输出确认既不等下一个轮询周期，也不等握手日志落盘（落盘在 commit_arm）。
+#[test]
+fn arm_outputs_confirm_without_waiting_for_a_poll_period_or_the_journal() {
+    tokio::runtime::Builder::new_current_thread().enable_all().max_blocking_threads(1).build().unwrap().block_on(async {
+        let mut bench = Bench::new("arm-latency").await;
+        let mut config = bench.engine.config();
+        config.connection.poll_interval_ms = 300;
+        bench.engine.apply_config(config).await.unwrap();
+        let Bench { line, engine, session, plan, .. } = &mut bench;
+        let until = Instant::now() + Duration::from_secs(15);
+        while !matches!(session.poll(engine, true, true).await, SessionEvent::Ready) {
+            assert!(Instant::now() < until, "复位未完成：{:?}", session.view());
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let abort = AtomicBool::new(false);
+        let order = PartOrder { sn: "SN-ARM".into(), product_code: 3, plan_version: plan.plan_version,
+            shot_count: plan.shot_count, device_shots: plan.device_shots };
+        let plc = async { line.ensure_ready(&TIMING, &abort).await?; line.run_part(&TIMING, &order, Scenario::Normal, |_, _| {}, &abort).await };
+        let pc = async {
+            let until = Instant::now() + Duration::from_secs(15);
+            while !matches!(session.poll(engine, false, true).await, SessionEvent::Start(_)) {
+                assert!(Instant::now() < until, "未收到开始请求：{:?}", session.view());
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let (release, wait) = std::sync::mpsc::channel::<()>();
+            let (started, started_wait) = tokio::sync::oneshot::channel();
+            let journal_blocker = tokio::task::spawn_blocking(move || {
+                started.send(()).unwrap();
+                let _ = wait.recv_timeout(Duration::from_secs(10));
+            });
+            started_wait.await.unwrap();
+            let begun = Instant::now();
+            session.arm_outputs(engine, plan).await.unwrap();
+            let elapsed = begun.elapsed();
+            release.send(()).unwrap();
+            journal_blocker.await.unwrap();
+            session.commit_arm(engine).await.unwrap();
+            assert_eq!(session.phase(), SessionPhase::Acquiring);
+            abort.store(true, Ordering::SeqCst);
+            elapsed
+        };
+        let (_, elapsed) = tokio::join!(plc, pc);
+        assert!(elapsed < Duration::from_millis(250), "布防输出确认用了 {elapsed:?}，轮询周期 300 ms");
+        bench.engine.disconnect().await;
+    });
+}
+
 #[tokio::test]
 async fn low_disk_during_part_still_releases_then_withholds_ready_until_space_recovers() {
     let mut bench = Bench::new("low-disk").await;

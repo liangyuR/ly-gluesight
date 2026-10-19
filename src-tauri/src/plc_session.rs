@@ -67,6 +67,18 @@ fn validate_pending(pending: &Pending, last_request_seq: u32) -> Result<(), Stri
     Ok(())
 }
 
+/// 布防回写的耗时构成：逐点写入（含等驱动锁）、读回确认（及用了几次轮询）、握手日志落盘（不计入布防预算）。
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArmTiming {
+    pub write_ms: f64,
+    pub confirm_ms: f64,
+    pub confirm_polls: u64,
+    pub journal_ms: Option<f64>,
+}
+
+fn millis(duration: Duration) -> f64 { duration.as_secs_f64() * 1000.0 }
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionView {
@@ -97,6 +109,9 @@ pub struct PlcSession {
     load_error: Option<String>,
     phase: SessionPhase,
     contract: Option<Contract>,
+    arm_timing: Option<ArmTiming>,
+    /// 布防输出已读回确认、尚未落盘采集阶段
+    outputs_armed: bool,
     config_key: String,
     connection: Option<i64>,
     audit_waiting: bool,
@@ -133,7 +148,7 @@ impl PlcSession {
         if path.with_extension("pending.tmp").exists() {
             load_error = Some("发现未提交的握手事务文件，保留现场信号并核对日志后重启".into());
         }
-        Self { path, journal, load_error, phase: SessionPhase::ResetRequired, contract: None,
+        Self { path, journal, load_error, phase: SessionPhase::ResetRequired, contract: None, arm_timing: None, outputs_armed: false,
             config_key: String::new(), connection: None, audit_waiting: false, reset_low_seen: false,
             reset_level: false, heartbeat: Mutex::new(HeartbeatWatch::new(3000).expect("valid heartbeat timeout")),
             fault_written: false, fault_attempted: None, message: Some("S7 启动后需确认空闲输入并复位握手".into()),
@@ -274,6 +289,10 @@ impl PlcSession {
     }
 
     async fn write(&self, engine: &PlcEngine, operations: Vec<WriteOp>) -> Result<(), String> {
+        self.write_timed(engine, operations).await.map(|_| ())
+    }
+
+    async fn write_timed(&self, engine: &PlcEngine, operations: Vec<WriteOp>) -> Result<handshake::WriteTiming, String> {
         let contract = self.contract.as_ref().ok_or("S7 握手点表尚未校验")?;
         if self.connection != Some(engine.status().since) {
             return Err("PLC 连接已更换，禁止提交握手输出，需明确复位".into());
@@ -308,7 +327,7 @@ impl PlcSession {
         for operation in handshake::fault_plan() {
             let tag = operation.tag;
             let result = match self.contract.as_ref() {
-                Some(contract) => handshake::write_confirmed(engine, contract, &[operation], Self::timeout(engine), Self::max_age(engine)).await,
+                Some(contract) => handshake::write_confirmed(engine, contract, &[operation], Self::timeout(engine), Self::max_age(engine)).await.map(|_| ()),
                 None => Err("S7 握手点表尚未校验".into()),
             };
             match result {
@@ -610,24 +629,52 @@ impl PlcSession {
         Ok(())
     }
 
+    /// 最近一次布防的耗时构成；失败时只含已完成的部分。
+    pub fn arm_timing(&self) -> Option<ArmTiming> { self.arm_timing }
+
+    /// 布防并把事务推进到采集阶段：[`arm_outputs`](Self::arm_outputs) + [`commit_arm`](Self::commit_arm)。
     pub async fn arm(&mut self, engine: &PlcEngine, plan: &PlcPlan) -> Result<(), String> {
+        self.arm_outputs(engine, plan).await?;
+        self.commit_arm(engine).await
+    }
+
+    /// 写布防输出并读回确认（布防预算只计到这里）；之后必须 [`commit_arm`](Self::commit_arm) 落盘才进入采集阶段。
+    pub async fn arm_outputs(&mut self, engine: &PlcEngine, plan: &PlcPlan) -> Result<(), String> {
+        self.arm_timing = None;
+        self.outputs_armed = false;
         self.validate_plan(plan)?;
-        let attempt = async {
+        let attempt: Result<(), String> = async {
             let snapshot = Snapshot::capture(engine, self.contract.as_ref().ok_or("S7 点表未校验")?, Self::max_age(engine))?;
-            let request = self.request().ok_or("缺少 S7 请求")?;
-            if snapshot.request()? != *request || !snapshot.read_bool(tag::PART_START)?
+            let request = self.request().ok_or("缺少 S7 请求")?.clone();
+            if snapshot.request()? != request || !snapshot.read_bool(tag::PART_START)?
                 || snapshot.read_bool(tag::PART_END)? || snapshot.read_bool(tag::RESULT_ACK)? || snapshot.trigger_count()? != 0 {
                 return Err("布防前请求或触发边界已改变".into());
             }
-            self.write(engine, handshake::arm_plan(request)).await?;
+            let written = self.write_timed(engine, handshake::arm_plan(&request)).await?;
+            self.arm_timing = Some(ArmTiming { write_ms: millis(written.write), confirm_ms: millis(written.confirm), confirm_polls: written.polls, journal_ms: None });
             let after = Snapshot::capture(engine, self.contract.as_ref().unwrap(), Self::max_age(engine))?;
-            if after.request()? != *request || !after.read_bool(tag::PART_START)? || after.read_bool(tag::RESULT_ACK)? {
+            if after.request()? != request || !after.read_bool(tag::PART_START)? || after.read_bool(tag::RESULT_ACK)? {
                 return Err("布防提交期间请求身份或确认边界已改变".into());
             }
-            self.set_pending_phase(engine, SessionPhase::Acquiring).await
+            Ok(())
         }.await;
-        if let Err(error) = &attempt { self.fault(engine, error.clone()).await; }
+        match &attempt {
+            Ok(()) => self.outputs_armed = true,
+            Err(error) => self.fault(engine, error.clone()).await,
+        }
         attempt
+    }
+
+    /// 布防输出已确认后把事务阶段落盘为采集中。
+    pub async fn commit_arm(&mut self, engine: &PlcEngine) -> Result<(), String> {
+        if self.phase != SessionPhase::Validating || !std::mem::take(&mut self.outputs_armed) {
+            return Err("布防输出尚未确认，不能进入采集阶段".into());
+        }
+        let started = Instant::now();
+        let persisted = self.set_pending_phase(engine, SessionPhase::Acquiring).await;
+        if let Some(timing) = self.arm_timing.as_mut() { timing.journal_ms = Some(millis(started.elapsed())); }
+        if let Err(error) = &persisted { self.fault(engine, error.clone()).await; }
+        persisted
     }
 
     pub async fn report(&mut self, engine: &PlcEngine, result_code: u16, fault_code: u16) -> Result<(), String> {

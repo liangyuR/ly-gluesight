@@ -33,9 +33,12 @@ pub struct Timeouts {
 
 impl Default for Timeouts {
     fn default() -> Self {
-        Self { arm_ms: 200, motion_ms: 30_000, drain_ms: 1000, proc_ms: 3000, ack_ms: 5000 }
+        Self { arm_ms: 500, motion_ms: 30_000, drain_ms: 1000, proc_ms: 3000, ack_ms: 5000 }
     }
 }
+
+/// 布防预算范围：上限远小于 PLC 等待布防的 ArmTimeout（10 s），PC 必须先于 PLC 超时给出布防或拒收；默认值依据见 docs/decisions/r2-plc.md。
+const ARM_MS_RANGE: std::ops::RangeInclusive<u64> = 100..=5000;
 
 impl Timeouts {
     pub fn arm(&self) -> Duration {
@@ -110,6 +113,9 @@ impl CycleSettings {
         if t.motion_ms < 1000 || t.proc_ms < 200 || t.ack_ms < 500 {
             return Err("超时参数过小".into());
         }
+        if !ARM_MS_RANGE.contains(&t.arm_ms) {
+            return Err(format!("布防预算需在 {}–{} ms 之间：须明显小于 PLC 布防等待（10 s）", ARM_MS_RANGE.start(), ARM_MS_RANGE.end()));
+        }
         if !(1..=100_000).contains(&self.record_keep) {
             return Err("帧录制保留件数需在 1–100000 之间".into());
         }
@@ -140,6 +146,14 @@ mod tests {
         ] {
             let settings = CycleSettings { offline_record_keep: keep, offline_record_max_gb: max_gb, ..CycleSettings::default() };
             assert_eq!(settings.validate().is_ok(), valid, "keep={keep}, max_gb={max_gb}");
+        }
+    }
+
+    #[test]
+    fn arm_budget_outside_100_to_5000_ms_is_rejected_so_pc_gives_up_before_plc_arm_timeout() {
+        for (arm_ms, valid) in [(99, false), (100, true), (5000, true), (5001, false), (10_000, false)] {
+            let settings = CycleSettings { timeouts: Timeouts { arm_ms, ..Timeouts::default() }, ..CycleSettings::default() };
+            assert_eq!(settings.validate().is_ok(), valid, "arm_ms={arm_ms}");
         }
     }
 }
