@@ -72,7 +72,7 @@ mod tests {
     }
 
     #[test]
-    fn consecutive_failures_count_per_scope_and_clear_after_a_clean_part() {
+    fn consecutive_failures_accumulate_per_recording_directory_keeping_first_time_and_latest_cause() {
         let health = RecordingHealth::default();
         health.observe(HistoryScope::Real, &outcome("c1", RecordingState::Failed, &["k000_P1_cam1_v1.pgm：创建原图失败：拒绝访问"]), 100);
         health.observe(HistoryScope::Real, &outcome("c2", RecordingState::NotRetained, &["k000_P1_cam1_v1.pgm：创建原图失败：拒绝访问", "本件没有已确认写入的原图"]), 200);
@@ -82,9 +82,16 @@ mod tests {
         assert_eq!(health.alarm(HistoryScope::Offline), None, "真机录制失败不能在离线场景报警");
         health.observe(HistoryScope::Debug, &outcome("c3", RecordingState::Incomplete, &[]), 300);
         assert_eq!(health.alarm(HistoryScope::Offline).map(|a| a.consecutive), Some(1), "候选调试与离线共用离线录制目录");
-        health.observe(HistoryScope::Real, &outcome("c4", RecordingState::Complete, &[]), 400);
-        assert_eq!(health.alarm(HistoryScope::Real), None);
-        health.observe(HistoryScope::Offline, &outcome("c5", RecordingState::Off, &[]), 500);
-        assert_eq!(health.alarm(HistoryScope::Offline), None, "录制关闭后不再报录制失败");
+    }
+
+    #[test]
+    fn alarm_clears_once_a_part_is_recorded_unneeded_or_recording_is_off() {
+        for state in [RecordingState::Complete, RecordingState::NotRetained, RecordingState::Off] {
+            let health = RecordingHealth::default();
+            health.observe(HistoryScope::Real, &outcome("bad", RecordingState::Failed, &["创建原图失败：磁盘已满"]), 100);
+            assert!(health.alarm(HistoryScope::Real).is_some());
+            health.observe(HistoryScope::Real, &outcome("next", state, &[]), 200);
+            assert_eq!(health.alarm(HistoryScope::Real), None, "{state:?}");
+        }
     }
 }
