@@ -10,6 +10,8 @@ use serde_json::json;
 use crate::handshake::{self, Contract, HeartbeatWatch, Request, ResultEnvelope, Snapshot, WriteOp};
 use crate::inspection::tag;
 use crate::plc_plan::PlcPlan;
+use crate::settings::RecordMode;
+use crate::store::RecordSource;
 
 mod recovery;
 pub use recovery::AckRecovery;
@@ -18,9 +20,28 @@ pub use recovery::AckRecovery;
 #[serde(rename_all = "camelCase")]
 pub enum SessionPhase { ResetRequired, Idle, Validating, Acquiring, Draining, AwaitAck, Releasing, Fault }
 
+/// 事务来自哪台 PLC：真机，或离线会话的进程内虚拟 PLC。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Origin { Real, Offline }
+
+/// 未结事务对切换站点模式的影响：离线来源的事务切换后由新连上的 PLC 复位，真机或来源不明的事务必须先处理。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PendingKind { None, Offline, Blocking }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartSite {
+    pub source: RecordSource,
+    pub record: RecordMode,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Pending {
+    /// 旧版本日志没有此字段：来源不明按真机事务处理，只能在真机 PLC 上复位（D-0，不推断来源）。
+    #[serde(default)]
+    origin: Option<Origin>,
     request: Request,
     result: Option<ResultEnvelope>,
     phase: SessionPhase,
@@ -32,6 +53,8 @@ struct Pending {
     acknowledged: bool,
     #[serde(default)]
     started_at: i64,
+    #[serde(default)]
+    site: Option<PartSite>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -121,6 +144,8 @@ pub struct PlcSession {
     config_key: String,
     connection: Option<i64>,
     audit_waiting: bool,
+    /// 当前连接的是真机还是离线虚拟 PLC：新事务按此记录来源
+    origin: Origin,
     reset_low_seen: bool,
     reset_level: bool,
     heartbeat: Mutex<HeartbeatWatch>,
@@ -158,7 +183,7 @@ impl PlcSession {
         }
         Self { path, journal, load_error, phase: SessionPhase::ResetRequired, contract: None,
             config_key: String::new(), connection: None, audit_waiting: false, reset_low_seen: false,
-            reset_level: false, heartbeat: Mutex::new(HeartbeatWatch::new(3000).expect("valid heartbeat timeout")),
+            reset_level: false, heartbeat: Mutex::new(HeartbeatWatch::new(3000).expect("valid heartbeat timeout")), origin: Origin::Real,
             fault_written: false, fault_attempted: None, message: Some("S7 启动后需确认空闲输入并复位握手".into()),
             withdrawn: false, restores: Vec::new(), ack_triggers: None, reconnect: Mutex::default() }
     }
@@ -170,9 +195,28 @@ impl PlcSession {
 
     pub fn pending(&self) -> bool { self.journal.pending.is_some() || self.load_error.is_some() }
 
+    /// 之后开始的事务记为该来源；由节拍按当前站点模式设置。
+    pub fn set_origin(&mut self, origin: Origin) { self.origin = origin; }
+
+    pub fn pending_kind(&self) -> PendingKind {
+        match (&self.journal.pending, &self.load_error) {
+            (None, None) => PendingKind::None,
+            (Some(pending), None) if pending.origin == Some(Origin::Offline) => PendingKind::Offline,
+            _ => PendingKind::Blocking,
+        }
+    }
+
+    /// 未结事务的身份与来源，用于提示处置路径。
+    pub fn pending_summary(&self) -> Option<String> {
+        if let Some(error) = &self.load_error { return Some(format!("握手日志不可用（{error}）")); }
+        let pending = self.journal.pending.as_ref()?;
+        let origin = match pending.origin { Some(Origin::Offline) => "离线", Some(Origin::Real) => "真机", None => "来源未记录" };
+        Some(format!("{origin}事务 requestSeq={} SN={}", pending.request.request_seq, pending.request.sn))
+    }
+
     pub fn acknowledged(&self) -> bool { self.journal.pending.as_ref().is_some_and(|pending| pending.acknowledged) }
 
-    pub fn bind_cycle_id(&mut self, id: &str) -> Result<(), String> {
+    pub fn bind_cycle_id(&mut self, id: &str, site: PartSite) -> Result<(), String> {
         if !valid_cycle_id(id) { return Err("S7 握手 cycleId 必须是 32 位十六进制持久身份".into()); }
         if let Some(error) = &self.load_error { return Err(error.clone()); }
         let pending = self.journal.pending.as_mut().ok_or("缺少可关联的 S7 请求事务")?;
@@ -180,7 +224,7 @@ impl PlcSession {
         match pending.cycle_id.as_deref() {
             Some(bound) if bound != id => Err("S7 事务已绑定其他 cycleId，禁止更换工件身份".into()),
             Some(_) => Ok(()),
-            None => { pending.cycle_id = Some(id.into()); Ok(()) }
+            None => { pending.cycle_id = Some(id.into()); pending.site = Some(site); Ok(()) }
         }
     }
 
@@ -197,13 +241,20 @@ impl PlcSession {
 
     pub fn cycle_id(&self) -> Option<&str> { self.journal.pending.as_ref().and_then(|pending| pending.cycle_id.as_deref()) }
 
+    pub fn site(&self) -> Option<PartSite> { self.journal.pending.as_ref().and_then(|pending| pending.site) }
+
     pub fn recover_acknowledgements(&self, unresolved: &std::collections::BTreeSet<String>) -> AckRecovery { recovery::read(self, unresolved) }
 
     pub fn request(&self) -> Option<&Request> { self.journal.pending.as_ref().map(|p| &p.request) }
 
     pub fn result(&self) -> Option<&ResultEnvelope> { self.journal.pending.as_ref().and_then(|p| p.result.as_ref()) }
 
+    pub fn started_at(&self) -> Option<i64> { self.journal.pending.as_ref().map(|p| p.started_at).filter(|ts| *ts > 0) }
+
     pub fn phase(&self) -> SessionPhase { self.phase }
+
+    #[cfg(test)]
+    pub(crate) fn heartbeat_live(&self) -> bool { self.heartbeat.lock().unwrap().is_live(now_ms()) }
 
     pub fn view(&self) -> SessionView {
         SessionView { phase: self.phase, request_seq: self.request().map(|r| r.request_seq),
@@ -269,12 +320,7 @@ impl PlcSession {
             "pending": self.journal.pending,
         })).map_err(|e| e.to_string())?;
         record.push(b'\n');
-        self.blocking_io(engine, move || {
-            if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
-            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)
-                .map_err(|e| format!("无法保存握手审计：{e}"))?;
-            file.write_all(&record).and_then(|_| file.sync_all()).map_err(|e| format!("握手审计写入失败：{e}"))
-        }).await
+        self.blocking_io(engine, move || crate::handshake_audit::append(&path, &record)).await
     }
 
     async fn set_pending_phase(&mut self, engine: &PlcEngine, phase: SessionPhase) -> Result<(), String> {
@@ -460,6 +506,9 @@ impl PlcSession {
             if let Err(reason) = devices { return Err(format!("设备尚未就绪，不能复位并置视觉就绪：{reason}")); }
             if !self.heartbeat.lock().unwrap().is_live(now) { return Err("尚未观察到 PLC 心跳翻转，不能复位".into()); }
             if !audit_ready { return Ok(SessionEvent::None); }
+            if self.origin == Origin::Offline && self.journal.pending.as_ref().is_some_and(|pending| pending.origin != Some(Origin::Offline)) {
+                return Err(format!("{}不能由离线虚拟 PLC 复位：退出离线，连接真机 PLC 后复位", self.pending_summary().unwrap_or_default()));
+            }
             let baseline = handshake::ResetBaseline::capture(&snapshot)?;
             let repair = snapshot.sn_repair_plan();
             let reason = if repair.is_empty() { "明确复位请求；尚未清除未结事务".to_owned() } else {
@@ -523,8 +572,8 @@ impl PlcSession {
                 if request.request_seq == 0 || request.request_seq <= self.journal.last_request_seq {
                     return Err("请求事务序号必须非零且递增；PLC 清零或回绕需先执行空闲复位".into());
                 }
-                self.journal.pending = Some(Pending { capture_id: None, request: request.clone(), result: None, phase: SessionPhase::Validating,
-                    cycle_id: None, acknowledged: false, started_at: now_ms() });
+                self.journal.pending = Some(Pending { origin: Some(self.origin), capture_id: None, request: request.clone(), result: None, phase: SessionPhase::Validating,
+                    cycle_id: None, acknowledged: false, started_at: now_ms(), site: None });
                 self.journal.last_request_seq = request.request_seq;
                 self.persist(engine).await?;
                 self.phase = SessionPhase::Validating;

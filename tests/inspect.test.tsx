@@ -57,6 +57,20 @@ describe("在线检测切型锁定", () => {
   });
 });
 
+describe("在线检测原图录制失败告警", () => {
+  it("快照带 recordingAlarm → 报警栏写明连续件数、最近件与原因，告警清除后撤掉", () => {
+    state = { ...state, recordingAlarm: { consecutive: 3, cycleId: "cycle-9", reason: "创建原图失败：拒绝访问", since: 1 } };
+    const page = render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    const banner = screen.getByText(/原图录制失败/).closest("[role='alert']");
+    expect(banner).toHaveTextContent("连续 3 件原图未完整保存");
+    expect(banner).toHaveTextContent("cycle-9");
+    expect(banner).toHaveTextContent("拒绝访问");
+    state = { ...state, recordingAlarm: null };
+    page.rerender(<MemoryRouter><InspectPage /></MemoryRouter>);
+    expect(screen.queryByText(/原图录制失败/)).not.toBeInTheDocument();
+  });
+});
+
 describe("在线检测离线产线控件", () => {
   it("真机模式 → 不显示离线运行控件", () => {
     render(<MemoryRouter><InspectPage /></MemoryRouter>);

@@ -395,9 +395,10 @@ fn recipe_interval(recipe: &Recipe) -> Duration {
     Duration::from_millis(match recipe.trigger_mode { TriggerMode::Fly => 450, TriggerMode::Stop => 1100 })
 }
 
+/// 离线来源的未结事务不阻止切换：进入离线由虚拟 PLC 复位，回到真机由真机 PLC 复位；真机事务只能在真机 PLC 上复位。
 fn switch_preconditions(cycle: &CycleHost, lyflow: Result<(), String>) -> Preconditions {
     Preconditions {
-        busy: cycle.busy() || !matches!(cycle.phase(), Phase::Idle | Phase::Fault),
+        busy: cycle.switch_block().is_some() || !matches!(cycle.phase(), Phase::Idle | Phase::Fault),
         capturing: cycle.camera.recipe_capture().active(),
         lyflow,
     }
@@ -416,6 +417,7 @@ pub(crate) async fn enter(app: &AppHandle, set: Option<Arc<SampleSet>>, lyflow: 
     let offline = app.state::<OfflineHost>();
     let _gate = cycle.plc_gate.lock().await;
     if offline.enabled() { return Err("已处于离线模式；切换来源请先退出离线".into()); }
+    if let Some(reason) = cycle.switch_block() { return Err(reason); }
     let early = switch_preconditions(&cycle, Ok(()));
     crate::site::check_switch(early.busy, early.capturing)?;
     let real = Environment { plc: plc.engine().config(), cameras: cycle.camera.configs(), record: cycle.settings().record };
@@ -464,6 +466,7 @@ pub(crate) async fn leave(app: &AppHandle) -> Result<(), String> {
     let _gate = cycle.plc_gate.lock().await;
     if !offline.enabled() { return Ok(()); }
     if offline.running.load(Ordering::SeqCst) { return Err("离线产线仍在运行，先停止".into()); }
+    if let Some(reason) = cycle.switch_block() { return Err(reason); }
     let pre = switch_preconditions(&cycle, Ok(()));
     crate::site::check_switch(pre.busy, pre.capturing)?;
     let Some(active) = offline.deactivate() else { return Ok(()) };
