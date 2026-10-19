@@ -3,18 +3,21 @@ import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { client, gateRetries, identifier, produce, until } from "./offline-e2e.mjs";
+import { client, gateRetries, identifier, produce, uiPage, until } from "./offline-e2e.mjs";
 
 export async function runOfflineRestart(page, options) {
   const startedAt = Date.now();
   const previous = JSON.parse(await readFile(options.previous, "utf8"));
   assert(previous.passed, "重启续测需要先通过的离线端到端结果");
   const recipeId = previous.recipe.id;
-  const before = previous.production.p02;
-  assert(before?.bundleId && before.recipeRevision, "离线端到端结果缺少 p02 的发布包与配方修订");
+  const partId = previous.replayPart;
+  const before = previous.production[partId];
+  assert(before?.bundleId && before.recipeRevision, `离线端到端结果缺少 ${partId} 的发布包与配方修订`);
   const call = client(page);
   assert((await call("records_list")).root.includes(identifier), "数据目录不属于隔离实例");
-  assert.equal((await call("site_status")).mode, "real", "重启后必须回到真机模式");
+  const site = await call("site_status");
+  assert.equal(site.mode, "real", "重启后必须回到真机模式");
+  assert.equal(site.last?.kind, "sampleSet", "重启后应记住上次的离线样本集");
   assert.equal((await call("history_query", { query: { recipeId, scope: "offline", limit: 1 } })).total, Object.keys(previous.production).length, "重启后历史记录与重启前不一致");
   const layout = await call("cycle_layout", { recipeId });
   assert.equal(layout.revisionId, previous.recipe.revisionId, "重启后生产配方修订改变");
@@ -26,17 +29,17 @@ export async function runOfflineRestart(page, options) {
   assert(realOption.reason?.includes("离线环境验证发布"), `真机拒绝原因不符：${realOption.reason}`);
   assert.equal(realOption.target, "workspace", "真机拒绝应引导到工作台重新验证发布");
 
-  const entered = await call("site_enter_offline", { source: { kind: "sampleSet", dir: previous.inputs.offlineSampleSet } });
+  const entered = await call("site_enter_offline", { source: { kind: "sampleSet", dir: site.last.sampleSetDir } });
   assert.equal(entered.source, "sampleSet");
   await until(() => call("plc_get_status"), s => s.state === "connected", "离线 S7 服务未连接");
   const prewarm = await until(async () => (await call("cycle_logs")).find(l => l.ev === "生产预热" && l.msg.includes(`发布包 ${before.bundleId} 已就绪`)),
     Boolean, `重启后发布包 ${before.bundleId} 未预热就绪`, 60000);
   await until(recipeOption, r => r?.runnable === true, `离线后配方 ${recipeId} 仍不可运行`, 60000);
-  const { summary } = await produce(call, recipeId, "p02");
+  const { summary } = await produce(call, recipeId, partId);
   assert.equal(summary.bundleId, before.bundleId, "重启后投产未使用原发布包");
   assert.equal(summary.recipeRevision, before.recipeRevision);
   assert.equal(summary.verdict, before.verdict, `重启后同一样本件结论改变：${summary.reason}`);
-  assert.equal(summary.sample?.partId, "p02");
+  assert.equal(summary.sample?.partId, partId);
   assert.equal((await call("site_leave_offline")).mode, "real", "未退出离线模式");
 
   const result = {
@@ -67,10 +70,7 @@ async function main() {
   assert.equal(Number(url.port), manifest.debugPort);
   const browser = await chromium.connectOverCDP(args.cdp);
   try {
-    const page = browser.contexts().flatMap(context => context.pages()).find(p => /tauri\.localhost|localhost:1420|^tauri:\/\//.test(p.url()));
-    assert(page, "未找到 Tauri UI 页面");
-    page.setDefaultTimeout(30000);
-    await page.waitForFunction(() => !!window.__TAURI_INTERNALS__);
+    const page = await uiPage(browser);
     const result = await runOfflineRestart(page, { previous: args.previous, output: args.output });
     process.stdout.write(JSON.stringify({ passed: result.passed, elapsedMs: result.elapsedMs, verdict: result.after.verdict, bundleId: result.after.bundleId }) + "\n");
   } finally { await browser.close(); }

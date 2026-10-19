@@ -20,6 +20,8 @@ use crate::recipe::Recipe;
 
 mod taught;
 pub use taught::{build_taught_graph, measure_shot, measure_shot_with_graph, ShotMeasurement, MultiViewMeasurement, ViewMeasurement, measure_views, measure_views_with};
+#[cfg(test)]
+use taught::measure_shot_patched;
 
 unsafe extern "C" fn ignore_event(_: *const c_char, _: *mut c_void) {}
 
@@ -443,6 +445,9 @@ pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, ca
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod eval;
 
 #[cfg(test)]
 mod run_identity_tests {

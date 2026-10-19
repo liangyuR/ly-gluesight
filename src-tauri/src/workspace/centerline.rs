@@ -17,7 +17,7 @@ pub struct ExtractionFailure {
 }
 
 #[derive(Debug)]
-pub(super) enum ExtractionError {
+pub(crate) enum ExtractionError {
     Invalid(String),
     Failed(ExtractionFailure),
 }
@@ -34,7 +34,7 @@ fn failure(point: [f32; 2], reason: &'static str, message: &str) -> ExtractionEr
     ExtractionError::Failed(ExtractionFailure { point, reason, message: message.into() })
 }
 
-pub(super) fn extract(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: Option<&BrushGuide>, point_spacing_px: f32) -> Result<Vec<[f32; 2]>, ExtractionError> {
+pub(crate) fn extract(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: Option<&BrushGuide>, point_spacing_px: f32) -> Result<Vec<[f32; 2]>, ExtractionError> {
     if !point_spacing_px.is_finite() || !(4.0..=80.0).contains(&point_spacing_px) {
         return Err("中线点间距需为 4–80 像素".into());
     }
@@ -188,6 +188,13 @@ fn gray(image: &FrameImage, point: [f32; 2]) -> Option<f32> {
     Some((pixel(x0,y0) * (1.0-tx) + pixel(x1,y0) * tx) * (1.0-ty) + (pixel(x0,y1) * (1.0-tx) + pixel(x1,y1) * tx) * ty)
 }
 
+/// 胶面反光会把一条胶劈成两段：缝不宽于较宽一段时并成一条候选，只在逐站连不上时拿来重试，
+/// 否则胶旁隔着窄缝的阴影也会被并进来，与胶本身成为两条同样可信的候选。
+fn highlight_union(p: (f32, f32), q: (f32, f32)) -> Option<(f32, f32)> {
+    let gap = q.0 - p.1;
+    (gap > 0.0 && gap <= (p.1 - p.0).max(q.1 - q.0)).then_some((p.0, q.1))
+}
+
 fn extract_guided(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: &BrushGuide, spacing: f32) -> Result<Vec<[f32; 2]>, ExtractionError> {
     if !guide.radius_px.is_finite() || !(3.0..=150.0).contains(&guide.radius_px) || !(2..=4096).contains(&guide.points.len()) {
         return Err("请沿胶路绘制笔划，笔刷半径需为 3–150 像素".into());
@@ -201,6 +208,7 @@ fn extract_guided(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: 
     let samples = resample(&guide.points, 3.0);
     let radius = guide.radius_px.floor() as i32;
     let mut all = Vec::new();
+    let mut relaxed = Vec::new();
     for (i, &center) in samples.iter().enumerate() {
         let before = samples[i.saturating_sub(2)];
         let after = samples[(i+2).min(samples.len()-1)];
@@ -215,7 +223,7 @@ fn extract_guided(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: 
                 match (profile[j-1], profile[j], profile[j+1]) { (Some(a),Some(b),Some(c)) => Some((a+2.0*b+c)/4.0), _ => None }
             }
         }).collect();
-        let mut candidates = Vec::new();
+        let mut spans: Vec<(f32, f32)> = Vec::new();
         let mut j = 1;
         while j+1 < smooth.len() {
             let Some(peak) = smooth[j] else { j+=1; continue; };
@@ -240,8 +248,7 @@ fn extract_guided(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: 
                             if lv < half && rv < half {
                                 let a = l as f32 - (smooth[l].unwrap()-half)/(smooth[l].unwrap()-lv);
                                 let b = r as f32 + (smooth[r].unwrap()-half)/(smooth[r].unwrap()-rv);
-                                let offset = (a+b)*0.5-radius as f32;
-                                if b-a >= 2.0 { candidates.push((offset, b-a, [center[0]+normal[0]*offset,center[1]+normal[1]*offset])); }
+                                if b-a >= 2.0 { spans.push((a, b)); }
                             }
                         }
                     }
@@ -249,10 +256,31 @@ fn extract_guided(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: 
             }
             j=end+1;
         }
-        if candidates.is_empty() { return Err(failure(center, "missing_edges", "标记处未找到完整的两侧胶路边缘。请检查笔刷是否覆盖两侧边缘及少量背景、图像对比度是否足够，或用笔划生成中线后手工修正。")); }
+        if spans.is_empty() { return Err(failure(center, "missing_edges", "标记处未找到完整的两侧胶路边缘。请检查笔刷是否覆盖两侧边缘及少量背景、图像对比度是否足够，或用笔划生成中线后手工修正。")); }
+        spans.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let candidate = |(a, b): (f32, f32)| {
+            let offset = (a+b)*0.5-radius as f32;
+            (offset, b-a, [center[0]+normal[0]*offset,center[1]+normal[1]*offset])
+        };
+        let candidates: Vec<_> = spans.iter().copied().map(candidate).collect();
+        let unions = spans.windows(2).filter_map(|p| highlight_union(p[0], p[1]))
+            .filter(|u| !spans.iter().any(|s| (s.0-u.0).abs() < 0.5 && (s.1-u.1).abs() < 0.5))
+            .map(candidate);
+        relaxed.push(candidates.iter().copied().chain(unions).collect::<Vec<_>>());
         all.push(candidates);
     }
-    let mut costs: Vec<f32> = all[0].iter().map(|c| 8.0*(c.0/guide.radius_px).powi(2)).collect();
+    match trace(&all, &samples, guide.radius_px, spacing) {
+        Err(ExtractionError::Failed(f)) if f.reason == "discontinuity" && relaxed.iter().zip(&all).any(|(r, s)| r.len() > s.len()) => {
+            trace(&relaxed, &samples, guide.radius_px, spacing).map_err(|_| ExtractionError::Failed(f))
+        }
+        result => result,
+    }
+}
+
+type Candidate = (f32, f32, [f32; 2]);
+
+fn trace(all: &[Vec<Candidate>], samples: &[[f32; 2]], radius: f32, spacing: f32) -> Result<Vec<[f32; 2]>, ExtractionError> {
+    let mut costs: Vec<f32> = all[0].iter().map(|c| 8.0*(c.0/radius).powi(2)).collect();
     let mut parents = vec![vec![0; all[0].len()]];
     for i in 1..all.len() {
         let mut next = vec![f32::INFINITY; all[i].len()];
@@ -261,7 +289,7 @@ fn extract_guided(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: 
             for (k, previous) in all[i-1].iter().enumerate() {
                 let move_px = distance(c.2,previous.2);
                 if move_px > 9.0 || (c.1-previous.1).abs() > previous.1.max(8.0)*0.6 { continue; }
-                let cost = costs[k] + 8.0*(c.0/guide.radius_px).powi(2) + ((c.0-previous.0)/3.0).powi(2) + ((c.1-previous.1)/previous.1.max(3.0)).powi(2);
+                let cost = costs[k] + 8.0*(c.0/radius).powi(2) + ((c.0-previous.0)/3.0).powi(2) + ((c.1-previous.1)/previous.1.max(3.0)).powi(2);
                 if cost < next[j] { next[j]=cost; parent[j]=k; }
             }
         }
@@ -318,6 +346,32 @@ mod tests {
                 assert!(gray(&corner,point).unwrap() < 100.0, "稀疏中线不能切角离开胶路");
             }
         }
+    }
+
+    #[test]
+    fn bead_split_by_center_highlight_in_some_rows_still_yields_bead_centerline() {
+        let mut image = FrameImage::new(160, 200, vec![230; 32000]);
+        for y in 0..200 {
+            for x in 60..94 { image.pixels[y*160+x] = 25; }
+            if !(60..120).contains(&y) { for x in 74..80 { image.pixels[y*160+x] = 150; } }
+        }
+        let guide = BrushGuide { points: vec![[77.0,10.0],[77.0,190.0]], radius_px: 60.0 };
+        let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap();
+        assert!(path.iter().all(|p| (p[0]-76.5).abs() <= 1.0), "{path:?}");
+        assert!(path.first().unwrap()[1] <= 12.0 && path.last().unwrap()[1] >= 188.0);
+    }
+
+    #[test]
+    fn glue_beside_narrow_shadow_across_grey_seam_yields_glue_center_not_ambiguous() {
+        let mut image = FrameImage::new(160, 200, vec![230; 32000]);
+        for y in 0..200 {
+            for x in 60..74 { image.pixels[y*160+x] = 25; }
+            for x in 74..77 { image.pixels[y*160+x] = 150; }
+            for x in 77..83 { image.pixels[y*160+x] = 100; }
+        }
+        let guide = BrushGuide { points: vec![[67.0,10.0],[67.0,190.0]], radius_px: 60.0 };
+        let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap();
+        assert!(path.iter().all(|p| (p[0]-66.5).abs() <= 1.0), "{path:?}");
     }
 
     #[test]

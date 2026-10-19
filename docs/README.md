@@ -11,6 +11,7 @@
 
 - [PLC 通讯协议 HTML 与时序图](integration/plc-communication-protocol.html)：可离线阅读，含单设备完整点表搜索及打印样式；三张时序图保持旧版，待协议检查完成后统一更新；另附 [Markdown 原文](integration/plc-communication-protocol.md)。
 - [一期 S7 握手契约与现场接入](integration/plc-s7-phase1.md)：DB 点表、事务与结果确认、故障恢复、计划导出与参考程序限制。
+- [PLC 交互表 V1.0 适配决策](decisions/plc-table.md)：S7-200 SMART、DB1、DInt 序号与 50 字符 SN 的取舍、回退方式及待 PLC 工程师确认的问题清单。
 - [PLC SCL 参考程序](../scripts/s7-handshake/phase1_plc.scl)与 [S7 测试 PLC](../scripts/s7-handshake/README.md)：可审查的 PLC 侧实现及回环报文测试服务。
 
 ## 测试（[testing/](testing)）
@@ -18,6 +19,7 @@
 - [测试记录与复现](testing/TESTING.md)：测试命令、覆盖范围、历史验证记录和当前边界。
 - [UI 覆盖边界](testing/UI_OPERATIONS.md)：当前主流程覆盖及未覆盖范围。
 - [操作逻辑修复记录](testing/UX_FIXES_2026-10-09.md)。
+- [算法评测报告](testing/algorithm-evaluation.md)：实拍 36 张的稳定性、合成缺陷检出、耗时与剩余风险；取舍见 [算法决策记录](decisions/algorithm.md)。
 
 ## 部署（[deployment/](deployment)）
 

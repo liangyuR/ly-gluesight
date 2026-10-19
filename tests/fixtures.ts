@@ -29,7 +29,7 @@ export function workspaceView(id = "A"): WorkspaceView {
   };
   const layout: Recipe = {
     ...structuredClone(doc), revisionId: `revisionId-${id}`,
-    segments: [0, 1].map(k => ({ name: `P${k + 1} · J1`, shot: k, first: 2 * k, count: 2, position: structuredClone(position), width: null, maxGapLen: .5, minPresent: .8 })),
+    segments: [0, 1].map(k => ({ name: `P${k + 1} · J1`, shot: k, view: 1, first: 2 * k, count: 2, position: structuredClone(position), width: null, maxGapLen: .5, minPresent: .8 })),
     points: { x: [10, 20, 30, 40], y: [10, 10, 10, 10], seg: [0, 0, 1, 1], k: [0, 0, 1, 1] },
   };
   return {

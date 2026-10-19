@@ -67,16 +67,24 @@ describe("在线检测设备状态", () => {
     for (const alarm of new Set(alarms)) expect(screen.getByText(alarm)).toBeVisible();
   });
 
-  it("本件采集中下一件出现阻塞和等待 → 保留检测状态并显示全部未就绪原因及入口", () => {
-    const report = readiness({ ready: false, items: readiness().items.map(item => item.key === "plc"
-      ? { ...item, state: "blocked", detail: "PLC 未连接", target: "plc" }
-      : item.key === "audit" ? { ...item, state: "waiting", detail: "等待追溯写入", target: "settings" } : item) });
-    render(<MemoryRouter><InspectionReadiness snapshot={snapshot("ACQUIRE")} readiness={report} /></MemoryRouter>);
-    expect(screen.getByText("本件检测中／下一件条件异常")).toBeVisible();
-    expect(screen.getByText("PLC 未连接")).toBeVisible();
-    expect(screen.getByText("等待追溯写入")).toBeVisible();
-    expect(screen.getByRole("link", { name: "去 PLC 通讯" })).toHaveAttribute("href", "/plc");
-    expect(screen.getByRole("link", { name: "去系统设置" })).toHaveAttribute("href", "/settings");
+  it.each([
+    { condition: "出现阻塞和等待", plc: "blocked", inline: ["PLC 未连接", "等待追溯写入"], links: ["去 PLC 通讯", "去系统设置"], entry: "已就绪 4 项" },
+    { condition: "只有多项等待", plc: "waiting", inline: ["PLC 未连接"], links: ["去 PLC 通讯"], entry: "另有 1 项未就绪 · 已就绪 4 项" },
+  ])("本件采集中下一件$condition → 阻塞时全部原因与入口内联，只有等待时单行只放第一项、其余计入诊断入口", async ({ plc, inline, links, entry }) => {
+    const openDiagnostics = vi.fn();
+    const report = readiness({ ready: plc !== "blocked", items: readiness().items.map(item => item.key === "plc"
+      ? { ...item, state: plc as "blocked" | "waiting", detail: "PLC 未连接", target: "plc" as const }
+      : item.key === "audit" ? { ...item, state: "waiting" as const, detail: "等待追溯写入", target: "settings" as const } : item) });
+    render(<MemoryRouter><InspectionReadiness snapshot={snapshot("ACQUIRE")} readiness={report} onDiagnostics={openDiagnostics} /></MemoryRouter>);
+    const device = within(screen.getByRole("region", { name: "设备状态" }));
+    expect(device.getByText("本件检测中／下一件条件异常")).toBeVisible();
+    for (const detail of ["PLC 未连接", "等待追溯写入"]) {
+      if (inline.includes(detail)) expect(device.getByText(detail)).toBeVisible();
+      else expect(device.queryByText(detail)).not.toBeInTheDocument();
+    }
+    expect(device.getAllByRole("link").map(link => link.textContent)).toEqual(links);
+    await userEvent.click(device.getByRole("button", { name: entry }));
+    expect(openDiagnostics).toHaveBeenCalledOnce();
   });
 
   it("提供统一诊断入口 → 主区只留入口，提示展开后可见且不重复已就绪和告警明细", async () => {
