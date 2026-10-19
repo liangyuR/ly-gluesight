@@ -373,7 +373,7 @@ fn recording_records(outcome: &RecordingOutcome) -> Vec<RecordingRecord> {
     let mut records = Vec::new();
     let own = || applog::Fields { cycle_id: Some(outcome.cycle_id.clone()), ..applog::Fields::default() };
     if !outcome.retention_errors.is_empty() {
-        records.push(RecordingRecord { level: Some("warn"), event: "录制保留清理失败", message: outcome.retention_errors.join("；"), fields: own() });
+        records.push(RecordingRecord { level: Some("warn"), event: "录制保留清理失败", message: format!("cycleId={}：{}", outcome.cycle_id, outcome.retention_errors.join("；")), fields: own() });
     }
     if outcome.state == RecorderState::Off { return records; }
     let failed = !outcome.errors.is_empty() || matches!(outcome.state, RecorderState::Failed | RecorderState::Incomplete)
@@ -393,8 +393,8 @@ fn recording_records(outcome: &RecordingOutcome) -> Vec<RecordingRecord> {
         RecordingRecord { level: Some("err"), event: "原图录制未完成", message, fields }
     } else {
         let message = match outcome.state {
-            RecorderState::NotRetained => "按录制策略不保留本件原图".to_string(),
-            _ => format!("{} 张原图已核验落盘", outcome.files.len()),
+            RecorderState::NotRetained => format!("cycleId={}：按录制策略不保留本件原图", outcome.cycle_id),
+            _ => format!("cycleId={}：{} 张原图已核验落盘", outcome.cycle_id, outcome.files.len()),
         };
         RecordingRecord { level: None, event: "原图录制完成", message, fields }
     });

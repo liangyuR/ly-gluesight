@@ -750,4 +750,7 @@ fn recording_logs_carry_the_parts_own_cycle_id_and_only_unfinished_recordings_ar
     let mut cleanup = outcome("late", &[(0, 1)], RecorderState::Complete);
     cleanup.retention_errors = vec!["清理旧目录失败：被占用".into()];
     assert_eq!(summarize(&cleanup), [own(Some("warn"), "录制保留清理失败", None), finished]);
+    for outcome in [outcome("late", &[], RecorderState::Failed), outcome("late", &[(0, 1)], RecorderState::Complete), outcome("late", &[], RecorderState::NotRetained), cleanup] {
+        assert!(recording_records(&outcome).iter().all(|record| record.message.contains("cycleId=late")), "界面事件流没有 cycle 字段，消息必须自带 cycleId");
+    }
 }
