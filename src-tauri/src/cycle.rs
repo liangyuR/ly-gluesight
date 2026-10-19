@@ -439,6 +439,21 @@ pub fn purge_history(app: &AppHandle) {
         }
         Err(e) => log(app, "err", "记录清理", e),
     }
+    purge_handshake_audit(app);
+}
+
+/// 握手审计分段与检测记录同时清理：未结交付（PLC 尚未确认的件）读不到时整次跳过，不冒险删掉 ACK 恢复要读的记录。
+fn purge_handshake_audit(app: &AppHandle) {
+    let unresolved = match app.state::<Store>().unresolved_delivery_cycles() {
+        Ok(unresolved) => unresolved,
+        Err(error) => return log(app, "warn", "握手审计清理", format!("读取未结 PLC 交付失败，本次不清理：{error}")),
+    };
+    let active = crate::storage::state(app).join("plc-handshake.audit.jsonl");
+    let pruned = crate::handshake_audit::prune(&active, &unresolved, crate::handshake_audit::LIMITS, now_ms());
+    if pruned.removed > 0 || pruned.kept_unresolved > 0 {
+        log(app, "info", "握手审计清理", format!("删除 {} 个过期分段；{} 个分段仍有未结交付，保留", pruned.removed, pruned.kept_unresolved));
+    }
+    for error in pruned.errors { log(app, "warn", "握手审计清理", error); }
 }
 
 fn plc(app: &AppHandle) -> &PlcEngine {

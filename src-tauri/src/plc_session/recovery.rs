@@ -105,8 +105,14 @@ pub(super) fn read(session: &PlcSession, unresolved: &BTreeSet<String>) -> AckRe
         }
     }
     if unresolved.is_empty() { return recovery.finish(); }
-    let path = session.path.with_extension("audit.jsonl");
-    match std::fs::File::open(&path) {
+    for path in crate::handshake_audit::files(&session.path.with_extension("audit.jsonl")) {
+        read_audit(&mut recovery, &path);
+    }
+    recovery.finish()
+}
+
+fn read_audit(recovery: &mut Recovery, path: &std::path::Path) {
+    match std::fs::File::open(path) {
         Ok(file) => {
             let mut reader = BufReader::new(file);
             let mut bytes = Vec::new();
@@ -152,7 +158,6 @@ pub(super) fn read(session: &PlcSession, unresolved: &BTreeSet<String>) -> AckRe
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => recovery.error(format!("无法读取 ACK 审计 {}：{error}", path.display())),
     }
-    recovery.finish()
 }
 
 #[cfg(test)]
@@ -290,6 +295,18 @@ mod tests {
         assert_eq!(recovered.receipts, vec![receipt(CYCLE_A, 7, 50, 3000)]);
         assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
         assert_eq!(reopened.recover_acknowledgements(&targets()), recovered);
+    }
+
+    #[test]
+    fn ack_rolled_into_an_audit_segment_is_still_recovered() {
+        let files = Files::new();
+        let active = files.path.with_extension("audit.jsonl");
+        files.audit(record(&pending(CYCLE_A, 7, 50), 2000));
+        crate::handshake_audit::roll(&active, 2500).unwrap();
+        files.audit(record(&pending(CYCLE_B, 8, 51), 3000));
+        let recovered = files.open().recover_acknowledgements(&targets());
+        assert_eq!(recovered.receipts, vec![receipt(CYCLE_A, 7, 50, 2000), receipt(CYCLE_B, 8, 51, 3000)]);
+        assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
     }
 
     #[test]
