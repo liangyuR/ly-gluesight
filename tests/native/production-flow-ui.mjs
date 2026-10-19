@@ -174,7 +174,7 @@ export async function runProductionFlow(page, options = {}) {
     await until(page, () => invokeRead("cycle_snapshot"), snapshot => snapshot.phase !== "FAULT", "复位故障后检测仍处于故障", 5000).catch(() => {});
     await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
   }
-  await page.getByRole("combobox", { name: "离线配方", exact: true }).selectOption(recipeId);
+  await page.locator('select[aria-label="离线配方"]').selectOption(recipeId);
   await page.getByRole("combobox", { name: "离线工况", exact: true }).click();
   await page.getByRole("option", { name: "正常件", exact: true }).click();
   const recipe = await invokeRead("cycle_layout", { recipeId });
@@ -207,11 +207,12 @@ export async function runProductionFlow(page, options = {}) {
   const disk = await verifyDisk(path.join(path.dirname(root), "records-offline"), detail, recipe);
   await navigation.getByRole("link", { name: "历史记录", exact: true }).click();
   await page.getByRole("group", { name: "记录来源", exact: true }).getByRole("button", { name: "离线件", exact: true }).click();
-  await page.getByRole("combobox", { name: "历史配方", exact: true }).selectOption(recipeId);
-  await page.getByRole("row", { name: `查看 SN ${summary.sn} 的记录`, exact: true }).click();
+  await page.getByRole("combobox", { name: "历史配方", exact: true }).click();
+  await page.getByRole("option", { name: recipeId, exact: true }).click();
+  await page.getByRole("button", { name: `查看 SN ${summary.sn} 的记录`, exact: true }).click();
   await page.getByRole("heading", { name: "逐拍照点结果与原图", exact: true }).waitFor();
   for (let k = 0; k < recipe.shots.length; k++) {
-    await page.getByRole("combobox", { name: "历史帧选择", exact: true }).selectOption(String(k));
+    await page.locator('select[aria-label="历史帧选择"]').selectOption(String(k));
     await page.getByText(`原始 SN ${summary.sn} · k${k + 1} · 视角 ${recipe.shots[k].view}`, { exact: true }).waitFor();
     await page.locator("svg.wp-gray-image").waitFor();
     const preview = await page.evaluate(async ({ id, k, view }) => {

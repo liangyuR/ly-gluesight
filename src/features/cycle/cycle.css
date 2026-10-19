@@ -3,7 +3,6 @@
 .c-warn { color: var(--warn); }
 .c-err { color: var(--fault); }
 .c-mut { color: var(--on-surface-variant); }
-.c-acc { color: var(--primary); }
 
 .lamps { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .lamp {
@@ -27,17 +26,12 @@
 .curve-box { flex: 1; min-height: 0; overflow: hidden; }
 .curve-box svg { display: block; font-family: inherit; }
 
-.offline-stack { display: flex; flex-direction: column; gap: 8px; }
-.offline-stack caption { text-align: left; font-size: 12px; padding-bottom: 4px; }
 .offline-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .sample-part-select { max-width: 100%; }
 .offline-controls.compact { padding: 4px 8px; border: 1px dashed var(--outline-variant); border-radius: var(--r-md); }
 .offline-label { font-size: 12px; color: var(--warn); }
 .offline-msg { font-size: 12px; color: var(--on-surface-variant); }
-.offline-console { display: flex; flex-direction: column; gap: 12px; }
 .offline-summary { margin: 0; }
-.offline-effects { font-size: 13px; }
-.offline-effects ul { margin: 6px 0; padding-left: 20px; }
 
 .wp-runtime-frame .wp-viewport { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .wp-runtime-frame .wp-gray-image { flex: 1; min-height: 0; height: 0; }
@@ -90,7 +84,7 @@ button.shot-tile { cursor: pointer; }
 .readiness-item.r-waiting { background: var(--warn-container); }
 .readiness-detail { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
 .readiness-hint { font-size: 12px; }
-.readiness-item a, .offline-guide a, .offline-msg a, .notice a { color: var(--primary); margin-left: 6px; white-space: nowrap; }
+.readiness-item a, .offline-guide a, .offline-msg a { color: var(--primary); margin-left: 6px; white-space: nowrap; }
 .offline-guide { font-size: 12.5px; color: var(--warn); }
 .readiness-diagnostics-entry { grid-column: 2; grid-row: 1; }
 .inspection-drawer > .bd { display: flex; flex-direction: column; gap: 16px; }

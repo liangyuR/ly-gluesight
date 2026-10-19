@@ -42,7 +42,8 @@
 .prod .wp-runtime-strip .wp-kv { flex-direction: row; align-items: center; justify-content: flex-start; gap: 8px; padding: 2px 0; border: 0; font-size: 12px; }
 .prod .wp-runtime-strip .wp-kv strong { font-size: 12px; }
 .frame-state.qs-chip { height: 24px; padding: 0 10px; font-size: 12px; }
-.runtime-view-attention { align-self: flex-start; color: var(--warn); }
+.runtime-view-attention { align-self: flex-start; }
+.prod .qs-btn.runtime-view-attention { --btn-fg: var(--warn); }
 .prod .runtime-view-attention { position: absolute; right: 0; bottom: 0; }
 .view-mode { color: var(--primary); font-size: 12px; }
 
