@@ -8,6 +8,7 @@ mod commands;
 mod cycle;
 mod cycle_ids;
 mod diagnostics;
+mod disk_guard;
 mod frame;
 mod fsio;
 mod history;

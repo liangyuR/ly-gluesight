@@ -113,6 +113,7 @@ struct FinishJob {
 enum Msg {
     Frames(FrameGroup),
     Finish(FinishJob),
+    Prune { keep: u32, max_bytes: u64 },
 }
 
 pub struct Recording {
@@ -173,12 +174,25 @@ impl Recorders {
     }
 
     pub fn finish(&self, rec: Recording, verdict: Verdict, reason: &str, settings: &CycleSettings) {
-        let (keep, max_gb) = match rec.scope {
-            HistoryScope::Offline | HistoryScope::Debug => (settings.offline_record_keep, settings.offline_record_max_gb),
-            HistoryScope::Real => (settings.record_keep, settings.record_max_gb),
-        };
-        self.get(rec.scope).finish(rec, verdict, reason, keep, (max_gb as f64 * 1e9) as u64, Vec::new())
+        let (keep, max_bytes) = retention(rec.scope, settings);
+        self.get(rec.scope).finish(rec, verdict, reason, keep, max_bytes, Vec::new())
     }
+
+    /// 按当前保留上限立即滚动清理两个录制根目录，不等下一件收尾（资料盘不足暂停接件时没有下一件）。
+    pub fn apply_retention(&self, settings: &CycleSettings) {
+        for scope in [HistoryScope::Real, HistoryScope::Offline] {
+            let (keep, max_bytes) = retention(scope, settings);
+            let _ = self.get(scope).tx.send(Msg::Prune { keep, max_bytes });
+        }
+    }
+}
+
+fn retention(scope: HistoryScope, settings: &CycleSettings) -> (u32, u64) {
+    let (keep, max_gb) = match scope {
+        HistoryScope::Offline | HistoryScope::Debug => (settings.offline_record_keep, settings.offline_record_max_gb),
+        HistoryScope::Real => (settings.record_keep, settings.record_max_gb),
+    };
+    (keep, (max_gb as f64 * 1e9) as u64)
 }
 
 impl Recorder {
@@ -428,6 +442,18 @@ fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: 
                 let outcome = finish_recording(&root, job, state, cleanup.as_ref().map(|c| &c.release));
                 if !pending.exists() { active.lock().unwrap().remove(&pending); }
                 notify(&callback, outcome);
+            }
+            Msg::Prune { keep, max_bytes } => {
+                let errors = match cleanup.as_ref().map(|c| (c.protection)()).transpose() {
+                    Ok(protected) => prune(&root, keep as usize, max_bytes, &protected.unwrap_or_default(), cleanup.as_ref().map(|c| &c.release)),
+                    Err(error) => vec![format!("无法确认待入库原图保护，跳过滚动清理：{error}")],
+                };
+                if !errors.is_empty() {
+                    match &cleanup {
+                        Some(cleanup) => (cleanup.warning)(&errors),
+                        None => crate::applog::write("warn", "原图滚动清理失败", &errors.join("；")),
+                    }
+                }
             }
         }
     }

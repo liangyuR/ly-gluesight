@@ -280,6 +280,7 @@ pub struct CycleHost {
     pub recorders: Recorders,
     pub cycle_ids: crate::cycle_ids::CycleIds,
     pub audit: Audit,
+    pub disk: crate::disk_guard::DiskGuard,
     settings_path: PathBuf,
     shared: Mutex<Shared>,
     rx: Mutex<Option<(UnboundedReceiver<Input>, Receiver<Frame>)>>,
@@ -308,8 +309,8 @@ impl CycleHost {
             });
             let warning = Arc::new(move |errors: &[String]| {
                 if warning_app.try_state::<CycleHost>().is_some() {
-                    log(&warning_app, "warn", "孤立录制清理失败", errors.join("；"));
-                } else { crate::applog::write("warn", "孤立录制清理失败", &errors.join("；")); }
+                    log(&warning_app, "warn", "录制清理失败", errors.join("；"));
+                } else { crate::applog::write("warn", "录制清理失败", &errors.join("；")); }
             });
             let release_app = app.clone();
             let release = Arc::new(move |directories: &[PathBuf]| {
@@ -332,6 +333,7 @@ impl CycleHost {
             recorders,
             cycle_ids: crate::cycle_ids::CycleIds::default(),
             audit,
+            disk: crate::disk_guard::DiskGuard::new(data.clone()),
             shared: Mutex::new(Shared {
                 snapshot: None,
                 logs: VecDeque::new(),
@@ -420,6 +422,7 @@ impl CycleHost {
         if self.busy() { return Err("在途事务结束或故障复位后才能修改检测设置".into()); }
         settings.validate()?;
         settings.save(&self.settings_path)?;
+        self.recorders.apply_retention(&settings);
         self.shared.lock().unwrap().settings = settings;
         let _ = self.tx.send(Input::Refresh);
         Ok(())
@@ -834,6 +837,30 @@ impl Machine {
             log(&self.app, "err", "报警", msg.clone());
             self.alarms.push(msg);
             self.dirty = true;
+        }
+    }
+
+    /// 资料盘空间不足时暂停接件：在途件照常完成释放，回到空闲后撤销 visionReady；空间恢复后自动就绪，无需复位。
+    fn disk_space_ready(&mut self) -> bool {
+        const PREFIX: &str = "资料盘剩余空间";
+        let shown = self.alarms.iter().any(|m| m.starts_with(PREFIX));
+        match host(&self.app).disk.check() {
+            Err(reason) => {
+                match self.alarms.iter_mut().find(|m| m.starts_with(PREFIX)) {
+                    Some(m) if *m == reason => {}
+                    Some(m) => { *m = reason; self.dirty = true; }
+                    None => self.alarm(reason),
+                }
+                false
+            }
+            Ok(()) => {
+                if shown {
+                    self.alarms.retain(|m| !m.starts_with(PREFIX));
+                    self.dirty = true;
+                    log(&self.app, "ok", "资料盘空间", "剩余空间已恢复，恢复接件");
+                }
+                true
+            }
         }
     }
 
@@ -1388,13 +1415,14 @@ impl Machine {
                     return;
                 }
             };
+            let intake_ready = self.disk_space_ready();
             let devices_ready = if matches!(self.phase, Phase::Report | Phase::Release) {
                 self.check_idle_devices().is_ok()
             } else { cameras.is_ok() };
             let reset = std::mem::take(&mut self.s7_reset_requested);
             let previous = self.s7.phase();
             let had_ack = self.s7.acknowledged();
-            let event = self.s7.poll_with_audit(plc(&app), reset, devices_ready, audit_ready).await;
+            let event = self.s7.poll_gated(plc(&app), reset, devices_ready, audit_ready, intake_ready).await;
             if let Some(delivery) = s7_ack_delivery(had_ack, &self.s7).filter(|_| self.s7.capture_id().is_none()) {
                 let result = match self.current_cycle_id.as_deref() {
                     Some(cycle_id) => host(&app).audit.delivery_durable(cycle_id, delivery).await,
