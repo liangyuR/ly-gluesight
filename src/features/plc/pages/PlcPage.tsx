@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FileJson, Pencil, PenLine, Plug, PlugZap, Plus, Save, Trash2, Undo2 } from "lucide-react";
+import { Alert, Button, Card, Checkbox, Chip, EmptyState, Grid, Heading, IconButton, NumberField, Select, Stack, StatusBadge, Table, Text, type TableColumn } from "qing-steel";
 import ConnectionForm, { connectionError } from "../components/ConnectionForm";
 import PlcStatusBadge from "../components/PlcStatusBadge";
 import PointEditor from "../components/PointEditor";
@@ -78,7 +79,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
   const reconnectSaved = !!blockedReason && !!status && !connected;
   const tagLabel = useMemo(() => new Map(tagPresets.map((t) => [t.value, t.label])), [tagPresets]);
 
-  if (!draft) return <div className="panel"><p role={loadError ? "alert" : "status"}>{loadError || "正在加载 PLC 配置…"}</p>{loadError && <button className="btn" onClick={loadConfig}>重新加载</button>}</div>;
+  if (!draft) return <Card><p role={loadError ? "alert" : "status"}>{loadError || "正在加载 PLC 配置…"}</p>{loadError && <Button onClick={loadConfig}>重新加载</Button>}</Card>;
 
   const canReconnect = () => !!linkState.current && linkState.current !== "connected";
   const perform = async (action: () => Promise<unknown>, allowReconnect = false) => {
@@ -147,95 +148,92 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
     && (point.id === saved.heartbeat.pointId || point.tags.some(tag => inspectionHandshakeTags.has(tag)))
     ? "S7 握手和心跳由检测流程管理，不能手动写入" : "";
 
+  const columns: TableColumn<PlcPoint>[] = [
+    { key: "name", header: "名称", render: (p) => <>
+      <div className="cell-title">
+        {p.name}
+        {draft.heartbeat.pointId === p.id && <span className="plc-heartbeat"><Chip>心跳</Chip></span>}
+      </div>
+      {p.description && <div className="cell-sub">{p.description}</div>}
+    </> },
+    { key: "address", header: "地址", render: (p) => <Text mono>{p.address}</Text> },
+    { key: "dataType", header: "类型", render: (p) => <span className="nowrap">
+      {dataTypeLabels[p.dataType].split(" ")[0]}
+      {isMultiWord(p.dataType) && <span className="cell-sub"> {effectiveOrder(p)}</span>}
+    </span> },
+    { key: "access", header: "读写", render: (p) => p.access === "readWrite" ? "读写" : "只读" },
+    { key: "edge", header: "边沿", render: (p) => p.edge === "none" ? <span className="muted">—</span> : edgeLabels[p.edge] },
+    { key: "tags", header: "标签", render: (p) => p.tags.length === 0 ? <span className="muted">—</span> : <Stack gap={4}>{p.tags.map((t) => <Chip key={t}>{tagLabel.get(t) ?? t}</Chip>)}</Stack> },
+    { key: "logChanges", header: "记录", render: (p) => p.logChanges ? "是" : <span className="muted">否</span> },
+    { key: "value", header: "当前值", render: (p) => {
+      const v = values[p.id];
+      const live = savedPoints.get(p.id) === JSON.stringify(p) && !dirty;
+      return <span className={`mono plc-value ${live && status?.state === "connected" && v?.error ? "ng" : ""}`}>
+        {!live ? <span className="muted">待保存</span> : status?.state === "connected" ? formatValue(v) : <span className="muted">未连接</span>}
+      </span>;
+    } },
+    { key: "actions", header: "操作", align: "right", render: (p) => {
+      const live = savedPoints.get(p.id) === JSON.stringify(p) && !dirty;
+      return <span className="nowrap">
+        <IconButton variant="text" title={protectedWrite(p) || "写入"} aria-label="写入"
+          disabled={p.access !== "readWrite" || status?.state !== "connected" || !live || !!protectedWrite(p)} onClick={() => setWriting(p)}>
+          <PenLine size={16} />
+        </IconButton>
+        <IconButton variant="text" title="编辑" aria-label="编辑" onClick={() => setEditing({ point: p, isNew: false })}>
+          <Pencil size={16} />
+        </IconButton>
+        <IconButton variant="text" danger title="删除" aria-label="删除" onClick={() => removePoint(p.id)}>
+          <Trash2 size={16} />
+        </IconButton>
+      </span>;
+    } },
+  ];
+
   return (
     <div className="stack plc">
-      {blockedReason && <p className="notice error" role="status">{blockedReason}</p>}
-      {handshake && <section className="panel" aria-label="S7 握手状态">
-        <h3 className="panel-title">S7 握手状态</h3>
-        <div className="row">
+      {blockedReason && <Alert tone="warn">{blockedReason}</Alert>}
+      {handshake && <Card role="region" aria-label="S7 握手状态" title={<Heading level={3}>S7 握手状态</Heading>}>
+        <Stack gap={16}>
           <span>当前阶段：<b>{handshakePhaseLabels[handshake.phase]} <span className="mono">({handshake.phase})</span></b></span>
           <span>请求序号：<b className="mono">{handshake.requestSeq ?? "—"}</b></span>
           <span>结果序号：<b className="mono">{handshake.resultSeq ?? "—"}</b></span>
-        </div>
-        {handshake.message && <p className="muted hint">{handshake.message}</p>}
-      </section>}
+        </Stack>
+        {handshake.message && <Text as="p" variant="label" muted>{handshake.message}</Text>}
+      </Card>}
       <fieldset disabled={busy || readOnly} className="stack" style={fieldsetStyle}>
-      <div className="panel">
-        <div className="panel-toolbar">
-          <div className="row">
-            <h3 className="panel-title">连接</h3>
-            <PlcStatusBadge state={status?.state} />
-            <span className="muted ellipsis" title={status?.message}>
-              {status?.message}
-            </span>
-          </div>
-          <div className="row">
-            {dirty && <span className="badge warn">未保存</span>}
-            <button className="btn" disabled={!dirty || !!blockedReason} onClick={() => saved && setDraft(structuredClone(saved))}>
-              <Undo2 size={16} />
-              还原
-            </button>
-            <button className="btn" disabled={!dirty || !!invalid || !!blockedReason} onClick={() => void perform(save)}>
-              <Save size={16} />
-              保存配置
-            </button>
-            <button className={`btn ${connected ? "danger" : "primary"}`} disabled={!status || (connected ? !!blockedReason : !reconnectSaved && !!invalid)} onClick={toggleConnection}>
-              {connected ? <PlugZap size={16} /> : <Plug size={16} />}
-              {connected ? "断开" : reconnectSaved ? "使用已保存配置重连" : status?.state === "error" || status?.state === "connecting" ? "重连" : "连接"}
-            </button>
-          </div>
-        </div>
-
-        {reconnectSaved && <p className="muted hint">重连使用后端已保存的配置，当前草稿不会保存或应用。</p>}
+      <Card title={<Stack gap={10}>
+          <Heading level={3}>连接</Heading>
+          <PlcStatusBadge state={status?.state} />
+          <span className="muted ellipsis" title={status?.message}>{status?.message}</span>
+        </Stack>} actions={<Stack gap={8}>
+          {dirty && <StatusBadge tone="warn">未保存</StatusBadge>}
+          <Button leadingIcon={<Undo2 size={16} />} disabled={!dirty || !!blockedReason} onClick={() => saved && setDraft(structuredClone(saved))}>还原</Button>
+          <Button leadingIcon={<Save size={16} />} disabled={!dirty || !!invalid || !!blockedReason} onClick={() => void perform(save)}>保存配置</Button>
+          <Button variant={connected ? "tonal" : "filled"} danger={connected} leadingIcon={connected ? <PlugZap size={16} /> : <Plug size={16} />}
+            disabled={!status || (connected ? !!blockedReason : !reconnectSaved && !!invalid)} onClick={toggleConnection}>
+            {connected ? "断开" : reconnectSaved ? "使用已保存配置重连" : status?.state === "error" || status?.state === "connecting" ? "重连" : "连接"}
+          </Button>
+        </Stack>}>
+        <Stack direction="column" align="stretch" gap={14}>
+        {reconnectSaved && <Text as="p" variant="label" muted>重连使用后端已保存的配置，当前草稿不会保存或应用。</Text>}
         <fieldset disabled={!!blockedReason} style={fieldsetStyle}>
+        <Stack direction="column" align="stretch" gap={14}>
         <ConnectionForm key={cpuPreset.revision} initialCpuPreset={cpuPreset.key} value={draft.connection} onChange={(connection) => setDraft({ ...draft, connection })} />
 
-        <div className="form-grid section">
-          <label className="field">
-            <span>心跳点位</span>
-            <select
-              className="input"
-              value={draft.heartbeat.pointId ?? ""}
-              onChange={(e) => setDraft({ ...draft, heartbeat: { ...draft.heartbeat, pointId: e.target.value || null } })}
-            >
-              <option value="">不启用</option>
-              {writablePoints.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}（{p.address}）
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field">
-            <span>心跳周期 (ms)</span>
-            <input
-              className="input mono"
-              type="number"
-              min={100}
-              step={1}
-              disabled={!draft.heartbeat.pointId}
-              value={Number.isFinite(draft.heartbeat.intervalMs) ? draft.heartbeat.intervalMs : ""}
-              onChange={(e) => setDraft({ ...draft, heartbeat: { ...draft.heartbeat, intervalMs: e.target.value ? Number(e.target.value) : NaN } })}
-            />
-          </label>
-          <label className="field">
-            <span>日志保留天数（0 为永久）</span>
-            <input
-              className="input mono"
-              type="number"
-              min={0}
-              step={1}
-              value={Number.isFinite(draft.logRetentionDays) ? draft.logRetentionDays : ""}
-              onChange={(e) => setDraft({ ...draft, logRetentionDays: e.target.value ? Number(e.target.value) : NaN })}
-            />
-          </label>
-        </div>
+        <Grid minWidth={220} gap={14}>
+          <Select label="心跳点位" value={draft.heartbeat.pointId ?? ""}
+            onValueChange={(v) => setDraft({ ...draft, heartbeat: { ...draft.heartbeat, pointId: v || null } })}
+            options={[{ value: "", label: "不启用" }, ...writablePoints.map((p) => ({ value: p.id, label: `${p.name}（${p.address}）` }))]} />
+          <NumberField label="心跳周期 (ms)" min={100} step={1} disabled={!draft.heartbeat.pointId}
+            value={Number.isFinite(draft.heartbeat.intervalMs) ? draft.heartbeat.intervalMs : ""}
+            onValueChange={(v) => setDraft({ ...draft, heartbeat: { ...draft.heartbeat, intervalMs: v === "" ? NaN : v } })} />
+          <NumberField label="日志保留天数（0 为永久）" min={0} step={1}
+            value={Number.isFinite(draft.logRetentionDays) ? draft.logRetentionDays : ""}
+            onValueChange={(v) => setDraft({ ...draft, logRetentionDays: v === "" ? NaN : v })} />
+        </Grid>
 
         <div className="conn-footer">
-          <label className="check">
-            <input type="checkbox" checked={draft.autoConnect} onChange={(e) => setDraft({ ...draft, autoConnect: e.target.checked })} />
-            <span>启动时自动连接</span>
-          </label>
+          <Checkbox label="启动时自动连接" checked={draft.autoConnect} onCheckedChange={(checked) => setDraft({ ...draft, autoConnect: checked })} />
           <div className="stats-inline">
             <span>周期 <b className="mono">{status?.cycleMs ?? "--"} ms</b></span>
             <span>轮询 <b className="mono">{status?.pollCount ?? 0}</b></span>
@@ -243,113 +241,28 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
             <span>最近 <b className="mono">{status?.lastPoll ? formatClock(status.lastPoll) : "--"}</b></span>
           </div>
         </div>
+        </Stack>
         </fieldset>
-        {actionError && <div className="notice error" role="alert">{actionError}</div>}
-        {invalid && !connectionError(draft.connection) && <p role="alert" className="c-ng">{invalid}</p>}
-      </div>
+        {actionError && <Alert tone="ng">{actionError}</Alert>}
+        {invalid && !connectionError(draft.connection) && <Alert tone="ng">{invalid}</Alert>}
+        </Stack>
+      </Card>
 
       <fieldset disabled={!!blockedReason} style={fieldsetStyle}>
-      <div className="panel">
-        <div className="panel-toolbar">
-          <div className="row">
-            <h3 className="panel-title">地址表</h3>
-            <span className="muted">{draft.points.length} 个点位</span>
-          </div>
-          <div className="row">
-            <button className="btn" onClick={() => setS7Open(true)}>载入一期 S7 点表</button>
-            <button className="btn" onClick={() => setJsonOpen(true)}>
-              <FileJson size={16} />
-              导入/导出
-            </button>
-            <button className="btn primary" onClick={() => setEditing({ point: newPoint(), isNew: true })}>
-              <Plus size={16} />
-              新增点位
-            </button>
-          </div>
-        </div>
-        <p className="muted hint top">
+      <Card title={<Stack gap={10}>
+          <Heading level={3}>地址表</Heading>
+          <span className="muted">{draft.points.length} 个点位</span>
+        </Stack>} actions={<Stack gap={8}>
+          <Button onClick={() => setS7Open(true)}>载入一期 S7 点表</Button>
+          <Button leadingIcon={<FileJson size={16} />} onClick={() => setJsonOpen(true)}>导入/导出</Button>
+          <Button variant="filled" leadingIcon={<Plus size={16} />} onClick={() => setEditing({ point: newPoint(), isNew: true })}>新增点位</Button>
+        </Stack>}>
+        <Text as="p" variant="label" muted style={{ marginBottom: 10 }}>
           {meta.label} 地址示例：<span className="mono">{meta.examples.join("  ")}</span>
-        </p>
-        <div className="table-wrap">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>名称</th>
-                <th>地址</th>
-                <th>类型</th>
-                <th>读写</th>
-                <th>边沿</th>
-                <th>标签</th>
-                <th>记录</th>
-                <th>当前值</th>
-                <th className="right">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {draft.points.length === 0 && (
-                <tr>
-                  <td colSpan={9} className="muted center">
-                    暂无点位，点击「新增点位」开始配置
-                  </td>
-                </tr>
-              )}
-              {draft.points.map((p) => {
-                const v = values[p.id];
-                const live = savedPoints.get(p.id) === JSON.stringify(p) && !dirty;
-                return (
-                  <tr key={p.id}>
-                    <td>
-                      <div className="cell-title">
-                        {p.name}
-                        {draft.heartbeat.pointId === p.id && <span className="tag subtle">心跳</span>}
-                      </div>
-                      {p.description && <div className="cell-sub">{p.description}</div>}
-                    </td>
-                    <td className="mono">{p.address}</td>
-                    <td className="nowrap">
-                      {dataTypeLabels[p.dataType].split(" ")[0]}
-                      {isMultiWord(p.dataType) && <span className="cell-sub"> {effectiveOrder(p)}</span>}
-                    </td>
-                    <td>{p.access === "readWrite" ? "读写" : "只读"}</td>
-                    <td>{p.edge === "none" ? <span className="muted">—</span> : edgeLabels[p.edge]}</td>
-                    <td>
-                      <div className="tags">
-                        {p.tags.length === 0 && <span className="muted">—</span>}
-                        {p.tags.map((t) => (
-                          <span key={t} className="tag">
-                            {tagLabel.get(t) ?? t}
-                          </span>
-                        ))}
-                      </div>
-                    </td>
-                    <td>{p.logChanges ? "是" : <span className="muted">否</span>}</td>
-                    <td className={`mono value ${live && status?.state === "connected" && v?.error ? "ng" : ""}`}>
-                      {!live ? <span className="muted">待保存</span> : status?.state === "connected" ? formatValue(v) : <span className="muted">未连接</span>}
-                    </td>
-                    <td className="right nowrap">
-                      <button
-                        className="icon-btn"
-                        title={protectedWrite(p) || "写入"}
-                        aria-label="写入"
-                        disabled={p.access !== "readWrite" || status?.state !== "connected" || !live || !!protectedWrite(p)}
-                        onClick={() => setWriting(p)}
-                      >
-                        <PenLine size={16} />
-                      </button>
-                      <button className="icon-btn" title="编辑" onClick={() => setEditing({ point: p, isNew: false })}>
-                        <Pencil size={16} />
-                      </button>
-                      <button className="icon-btn danger" title="删除" onClick={() => removePoint(p.id)}>
-                        <Trash2 size={16} />
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
+        </Text>
+        <Table<PlcPoint> caption="地址表" rows={draft.points} columns={columns} rowKey={(p) => p.id}
+          emptyState={<EmptyState title="暂无点位，点击「新增点位」开始配置" />} />
+      </Card>
       </fieldset>
       </fieldset>
       <S7RecipePlanPanel />

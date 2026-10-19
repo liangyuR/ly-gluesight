@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Alert, Button, TextArea } from "qing-steel";
 import Modal from "./Modal";
 import { dataTypeLabels, edgeLabels, isText, newPoint } from "../meta";
 import type { PlcPoint } from "../types";
@@ -75,22 +76,16 @@ export default function PointsJsonDialog({ points, blockedReason = "", onApply, 
       width={720}
       footer={
         <>
-          {error && <span className="form-error" role="alert">{error}</span>}
-          <button className="btn" disabled={copying} onClick={copy}>
-            {copied ? "已复制" : "复制"}
-          </button>
-          <button className="btn" onClick={onClose}>
-            取消
-          </button>
-          <button className="btn primary" disabled={!!blockedReason} onClick={apply}>
-            应用到地址表
-          </button>
+          <Button disabled={copying} onClick={copy}>{copied ? "已复制" : "复制"}</Button>
+          <Button onClick={onClose}>取消</Button>
+          <Button variant="filled" disabled={!!blockedReason} onClick={apply}>应用到地址表</Button>
         </>
       }
     >
-      {blockedReason && <p className="notice error" role="status">{blockedReason}</p>}
+      {blockedReason && <Alert tone="warn">{blockedReason}</Alert>}
       <p className="muted hint">复制下方 JSON 可备份或在设备间共享；粘贴 JSON 后点击应用将替换当前地址表（需再保存配置）。</p>
-      <textarea className="input code" aria-label="地址表 JSON" readOnly={!!blockedReason} spellCheck={false} value={text} onChange={(e) => { setText(e.target.value); setError(""); setCopied(false); }} />
+      <TextArea className="plc-json" aria-label="地址表 JSON" readOnly={!!blockedReason} spellCheck={false} value={text} onChange={(e) => { setText(e.target.value); setError(""); setCopied(false); }} />
+      {error && <Alert tone="ng">{error}</Alert>}
     </Modal>
   );
 }

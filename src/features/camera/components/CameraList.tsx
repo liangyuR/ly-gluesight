@@ -1,4 +1,5 @@
 import { RefreshCw } from "lucide-react";
+import { IconButton, List, ListItem } from "qing-steel";
 import type { CameraConfig, CameraStatus } from "../types";
 
 const sourceText = { mvs:"海康 MVS",sim:"合成图（离线）",sampleSet:"样本集（离线）" } as const;
@@ -20,13 +21,15 @@ export default function CameraList({ configs, statuses, selected, disabled, onSe
   refreshing?: boolean;
 }) {
   return <aside className="cam-list" aria-label="相机列表">
-    <div className="cam-list-head"><span>相机 {configs.length}/8</span>{onRefresh&&<button className="icon-btn" onClick={onRefresh} disabled={refreshing||disabled} aria-label="刷新相机配置" title="刷新相机配置"><RefreshCw size={14}/></button>}</div>
-    {configs.map((config,i)=>{
-      const state=cameraState(config,statuses.find(s=>s.cam===i)??null);
-      return <button key={config.id} className={"cam-list-item"+(i===selected?" active":"")} aria-current={i===selected?"true":undefined} aria-label={`${config.name} ${config.id}`} disabled={disabled} onClick={()=>onSelect(i)}>
-        <span className={"dot "+state.tone}/>
-        <span className="cam-list-text"><span><strong>{config.name}</strong> <span className="mono muted">{config.id}</span></span><small>{state.text}</small></span>
-      </button>;
-    })}
+    <div className="cam-list-head"><span>相机 {configs.length}/8</span>{onRefresh&&<IconButton size="sm" onClick={onRefresh} disabled={refreshing||disabled} aria-label="刷新相机配置" title="刷新相机配置"><RefreshCw size={14}/></IconButton>}</div>
+    <List>
+      {configs.map((config,i)=>{
+        const state=cameraState(config,statuses.find(s=>s.cam===i)??null);
+        return <ListItem key={config.id} selected={i===selected} disabled={disabled} onClick={()=>onSelect(i)}
+          leading={<span className={"dot "+state.tone}/>}
+          title={<><strong>{config.name}</strong> <span className="mono muted">{config.id}</span></>}
+          description={state.text}/>;
+      })}
+    </List>
   </aside>;
 }

@@ -1,5 +1,6 @@
 import { useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
-import { AlertTriangle, Check, ChevronRight, Copy, Database, Info, Link2Off, Lock, Minus, Radio, RefreshCw, SlidersHorizontal } from "lucide-react";
+import { AlertTriangle, Copy, Lock, RefreshCw, SlidersHorizontal } from "lucide-react";
+import { Accordion, Alert, Button, Card, Checkbox, FormField, Heading, IconButton, NumberField, Select, Stack, StatusBadge, Surface, TextField } from "qing-steel";
 import { cameraApi } from "../api";
 import type { CameraConfig, CameraStatus, DeviceSummary } from "../types";
 import { errorText } from "../../../lib/errors";
@@ -86,11 +87,14 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
   const set = <K extends keyof CameraConfig>(key: K, value: CameraConfig[K]) => {setNotice(null);setConfig(c=>({ ...c, [key]: value }));};
   const warnings = status?.warnings ?? [];
   const fieldWarnings = (key: keyof CameraConfig) => { const re = nodes.find(([k]) => k === key)?.[1]; return re ? warnings.filter(w => re.test(w)) : []; };
-  const label = (text: string, key?: keyof CameraConfig) => <span className="lbl">{text}{key && fieldWarnings(key).length > 0 && <AlertTriangle size={13} aria-label="相机未接受" />}</span>;
-  const rejected = (key: keyof CameraConfig) => fieldWarnings(key).map(w => <span key={w} className="hint warn"><AlertTriangle size={12} /><span>相机未接受：{w}。相机保持写入前的值。</span></span>);
+  const label = (text: string, key?: keyof CameraConfig) => <span>{text}{key && fieldWarnings(key).length > 0 && <AlertTriangle size={13} aria-label="相机未接受" />}</span>;
+  const note = (hint?: ReactNode, key?: keyof CameraConfig) => {
+    const items = key ? fieldWarnings(key) : [];
+    return hint || items.length ? <>{hint}{items.map(w => <span key={w} className="cg-rejected">相机未接受：{w}。相机保持写入前的值。</span>)}</> : undefined;
+  };
   const numberLabels={triggerDelayUs:"触发延时（µs）",debouncerUs:"输入滤波（µs）"};
-  const num = (key: keyof typeof numberLabels) => (
-    <span className="cg-unit"><input id={`cam-${key}`} aria-label={numberLabels[key]} className={"input mono"+(fieldWarnings(key).length?" invalid":"")} type="number" step={1} value={Number.isFinite(config[key])?config[key]:""} onChange={(e) => set(key, e.target.value===""?NaN:Number(e.target.value))} /><small>µs</small></span>
+  const num = (key: keyof typeof numberLabels, text: string, hint?: ReactNode) => (
+    <NumberField id={`cam-${key}`} label={label(text, key)} aria-label={numberLabels[key]} unit="µs" step={1} value={Number.isFinite(config[key])?config[key]:""} onValueChange={v => set(key, v===""?NaN:v)} description={note(hint, key)} />
   );
   const mvs = config.source === "mvs";
   const line0 = config.triggerSource === "Line0";
@@ -173,132 +177,112 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
     finally { if (mounted.current) setImagingBusy(false); }
   };
 
-  const saveState = invalid ? <span className="cg-save-state ng" role="alert">{invalid}</span>
-    : saveBlocked && dirty ? <span className="cg-save-state warn">{saveBlocked}</span>
-    : dirty ? <span className="cg-save-state warn">● 有未保存修改<span className="muted cg-small">离开前会提示保存或放弃</span></span>
-    : notice ? <span className={"cg-save-state " + notice.tone}>{notice.tone === "ok" ? <Check size={14} /> : <AlertTriangle size={14} />}{notice.text}</span>
-    : <span className="cg-save-state muted">参数与相机一致</span>;
+  const batchOk = batch?.items.every(i => i.tone === "ok" || i.tone === "off");
+  const saveState = invalid ? <StatusBadge tone="ng" role="alert">{invalid}</StatusBadge>
+    : saveBlocked && dirty ? <StatusBadge tone="warn">{saveBlocked}</StatusBadge>
+    : dirty ? <Stack gap={8}><StatusBadge tone="warn">有未保存修改</StatusBadge><span className="muted cg-small">离开前会提示保存或放弃</span></Stack>
+    : notice ? <StatusBadge tone={notice.tone}>{notice.text}</StatusBadge>
+    : <span className="muted">参数与相机一致</span>;
 
   return <>
     <div className="cg-detail">
       <div className="cg-col">
         <fieldset disabled={saving||locked} className="cg-fields">
-          <section className="panel" aria-label="基础信息">
-            <div className="cg-panel-head"><h2 className="panel-title">基础信息</h2>{!mvs && <span className="cg-note"><Lock size={12} /> 由离线来源生成，只读</span>}</div>
-            <div className="cg-form">
-              {label("名称")}
-              <input id="cam-name" aria-label="名称" className="input" value={config.name} onChange={(e) => set("name", e.target.value)} disabled={!mvs} />
-              {label("相机编号")}
-              <span className="val"><span className="mono">{config.id}</span><span className="muted cg-small">配方用它引用相机，建相机时分配，不可改</span></span>
-              {label("图像源")}
-              <span className="val">{sourceText[config.source]}</span>
-              {label("设备视角")}
-              <select aria-label="设备视角" className="input" value={config.viewCount} onChange={e => set("viewCount", Number(e.target.value))} disabled={!mvs}>
-                <option value={1}>单视角</option>
-                <option value={3}>三目（一次触发三幅图）</option>
-              </select>
-              {config.viewCount === 3 && mvs && <>{label("SDK 拼接布局")}<select className="input" aria-label="SDK 拼接布局" value={config.compositeLayout?.kind ?? ""} onChange={e => set("compositeLayout", e.target.value ? {kind:e.target.value as "horizontal" | "vertical"} : null)}><option value="">请选择实际交付布局</option><option value="horizontal">横向三等分</option><option value="vertical">纵向三等分</option>{config.compositeLayout?.kind === "rects" && <option value="rects">已配置矩形区域</option>}</select></>}
-              {config.viewCount === 3 && <span className="hint">每个拍照点可多选图 1／2／3 分别示教，三幅图共用一次设备触发。</span>}
-              {config.source === "sampleSet" && <span className="hint">图像来自离线模式所选样本集，相机与视角按样本集生成，不可在此更改。</span>}
-              {config.source === "sim" && <span className="hint">合成图相机收到触发后约 180 ms 交付一帧，用于没有硬件时跑通节拍。</span>}
-            </div>
-          </section>
+          <Card role="region" aria-label="基础信息" title={<Heading level={3}>基础信息</Heading>} actions={!mvs && <span className="cg-note"><Lock size={12} /> 由离线来源生成，只读</span>}>
+            <Stack direction="column" align="stretch" gap={12}>
+              <TextField id="cam-name" label="名称" value={config.name} onChange={(e) => set("name", e.target.value)} disabled={!mvs} />
+              <TextField label="相机编号" readOnly value={config.id} description="配方用它引用相机，建相机时分配，不可改" />
+              <TextField label="图像源" readOnly value={sourceText[config.source]} />
+              <Select label="设备视角" value={String(config.viewCount)} onValueChange={v => set("viewCount", Number(v))} disabled={!mvs}
+                options={[{ value: "1", label: "单视角" }, { value: "3", label: "三目（一次触发三幅图）" }]}
+                description={config.viewCount === 3 ? "每个拍照点可多选图 1／2／3 分别示教，三幅图共用一次设备触发。" : undefined} />
+              {config.viewCount === 3 && mvs && <Select label="SDK 拼接布局" value={config.compositeLayout?.kind ?? ""} onValueChange={v => set("compositeLayout", v ? {kind:v as "horizontal" | "vertical"} : null)}
+                options={[{ value: "", label: "请选择实际交付布局" }, { value: "horizontal", label: "横向三等分" }, { value: "vertical", label: "纵向三等分" }, ...(config.compositeLayout?.kind === "rects" ? [{ value: "rects", label: "已配置矩形区域" }] : [])]} />}
+              {config.source === "sampleSet" && <span className="cg-small muted">图像来自离线模式所选样本集，相机与视角按样本集生成，不可在此更改。</span>}
+              {config.source === "sim" && <span className="cg-small muted">合成图相机收到触发后约 180 ms 交付一帧，用于没有硬件时跑通节拍。</span>}
+            </Stack>
+          </Card>
 
-          {mvs ? <section className="panel" aria-label="绑定设备">
-            <div className="cg-panel-head"><h2 className="panel-title">绑定设备</h2>{enumerated && <span className="cg-note">枚举到 {devices.length} 台 · {clock(enumerated)}</span>}</div>
-            <div className="cg-form">
-              {label("相机设备")}
-              <div className="row">
-                <select id="cam-serial" aria-label="相机设备" className="input" value={config.serial} onChange={(e) => set("serial", e.target.value)}>
-                  <option value="" disabled>请选择设备</option>
-                  {config.serial && !devices.some((d) => d.serial === config.serial) && <option value={config.serial}>{config.serial}（未发现）</option>}
-                  {devices.map((d) => <option key={d.serial} value={d.serial}>{d.model} · {d.serial} · {d.ip ?? d.transport}</option>)}
-                </select>
-                <button type="button" className="icon-btn" onClick={refreshDevices} title="重新枚举设备" aria-label="重新枚举设备"><RefreshCw size={16} /></button>
-              </div>
-              <span className="hint">只列出当前枚举到的设备，不自动推荐；换相机时在此改选，保存并应用后生效。</span>
-              {deviceError && <span className="hint ng">{deviceError}</span>}
-              {config.serial && enumerated && !devices.some((d) => d.serial === config.serial) && !deviceError && <span className="hint warn"><AlertTriangle size={12} /><span>已绑定的设备当前未发现，检查网线与供电后重新枚举。</span></span>}
-              {device && <div className="cg-devinfo full">
+          {mvs ? <Card role="region" aria-label="绑定设备" title={<Heading level={3}>绑定设备</Heading>} actions={enumerated && <span className="cg-note">枚举到 {devices.length} 台 · {clock(enumerated)}</span>}>
+            <Stack direction="column" align="stretch" gap={12}>
+              <FormField id="cam-serial" label="相机设备" error={deviceError || undefined} description="只列出当前枚举到的设备，不自动推荐；换相机时在此改选，保存并应用后生效。">
+                <Stack wrap={false} className="cg-serial">
+                  <Select id="cam-serial" aria-label="相机设备" value={config.serial} placeholder="请选择设备" onValueChange={v => set("serial", v)}
+                    options={[
+                      ...(config.serial && !devices.some((d) => d.serial === config.serial) ? [{ value: config.serial, label: `${config.serial}（未发现）` }] : []),
+                      ...devices.map((d) => ({ value: d.serial, label: `${d.model} · ${d.serial} · ${d.ip ?? d.transport}` })),
+                    ]} />
+                  <IconButton onClick={refreshDevices} title="重新枚举设备" aria-label="重新枚举设备"><RefreshCw size={16} /></IconButton>
+                </Stack>
+              </FormField>
+              {config.serial && enumerated && !devices.some((d) => d.serial === config.serial) && !deviceError && <Alert tone="warn">已绑定的设备当前未发现，检查网线与供电后重新枚举。</Alert>}
+              {device && <Surface level="mid" className="cg-devinfo">
                 <span>型号</span><span>{device.model}</span><span>序列号</span><span className="mono">{device.serial}</span>
                 <span>IP</span><span className="mono">{device.ip ?? "—"}</span><span>传输</span><span>{device.transport}</span>
                 {device.userName && <><span>用户名</span><span>{device.userName}</span></>}{status?.sdkVersion && <><span>SDK</span><span className="mono">{status.sdkVersion}</span></>}
-              </div>}
-            </div>
-          </section> : <section className="panel" aria-label="绑定设备">
-            <h2 className="panel-title">绑定设备</h2>
-            <div className="cg-na"><Link2Off size={16} /><div><strong>不适用：离线图像源没有物理设备</strong>离线期间不枚举、不绑定海康设备；原相机组的绑定关系已保留，退出离线后恢复。</div></div>
-          </section>}
+              </Surface>}
+            </Stack>
+          </Card> : <Card role="region" aria-label="绑定设备" title={<Heading level={3}>绑定设备</Heading>}>
+            <Alert title="不适用：离线图像源没有物理设备">离线期间不枚举、不绑定海康设备；原相机组的绑定关系已保留，退出离线后恢复。</Alert>
+          </Card>}
 
-          {mvs ? <section className="panel" aria-label="触发接线">
-            <div className="cg-panel-head"><h2 className="panel-title">触发接线</h2>{warnings.length > 0 && <span className="cg-badge warn"><AlertTriangle size={12} />{warnings.length} 项相机未接受</span>}<span className="cg-note">保存后由设备确认，未接受项列在右侧“参数生效情况”</span></div>
-            <div className="cg-form">
-              {label("触发源", "triggerSource")}
-              <select id="cam-trigger" aria-label="触发源" className="input" value={config.triggerSource} onChange={(e) => set("triggerSource", e.target.value as CameraConfig["triggerSource"])}>
-                <option value="Line0">Line0（机器人位置比较输出）</option>
-                <option value="Software">Software（台架调试、模拟节拍）</option>
-              </select>
-              {rejected("triggerSource")}
+          {mvs ? <Card role="region" aria-label="触发接线" title={<Heading level={3}>触发接线</Heading>} actions={<>{warnings.length > 0 && <StatusBadge tone="warn">{warnings.length} 项相机未接受</StatusBadge>}<span className="cg-note">保存后由设备确认，未接受项列在右侧“参数生效情况”</span></>}>
+            <Stack direction="column" align="stretch" gap={12}>
+              <Select id="cam-trigger" label={label("触发源", "triggerSource")} aria-label="触发源" value={config.triggerSource} onValueChange={v => set("triggerSource", v as CameraConfig["triggerSource"])}
+                options={[{ value: "Line0", label: "Line0（机器人位置比较输出）" }, { value: "Software", label: "Software（台架调试、模拟节拍）" }]} description={note(undefined, "triggerSource")} />
               {line0 && <>
-                {label("触发沿", "triggerActivation")}
-                <select id="cam-activation" aria-label="触发沿" className="input" value={config.triggerActivation} onChange={(e) => set("triggerActivation", e.target.value as CameraConfig["triggerActivation"])}>
-                  <option value="RisingEdge">上升沿</option>
-                  <option value="FallingEdge">下降沿</option>
-                </select>
-                {rejected("triggerActivation")}
-                {label("输入滤波", "debouncerUs")}
-                {num("debouncerUs")}
-                <span className="hint">滤掉 Line0 毛刺，避免一次触发出多帧；仅 Line0 触发时有效。</span>
-                {rejected("debouncerUs")}
+                <Select id="cam-activation" label={label("触发沿", "triggerActivation")} aria-label="触发沿" value={config.triggerActivation} onValueChange={v => set("triggerActivation", v as CameraConfig["triggerActivation"])}
+                  options={[{ value: "RisingEdge", label: "上升沿" }, { value: "FallingEdge", label: "下降沿" }]} description={note(undefined, "triggerActivation")} />
+                {num("debouncerUs", "输入滤波", "滤掉 Line0 毛刺，避免一次触发出多帧；仅 Line0 触发时有效。")}
               </>}
-              {label("触发延时", "triggerDelayUs")}
-              {num("triggerDelayUs")}
-              {rejected("triggerDelayUs")}
-              {label("Line1 输出", "strobe")}
-              <label className="check"><input type="checkbox" checked={config.strobe} onChange={(e) => set("strobe", e.target.checked)} />曝光信号驱动频闪</label>
-              {rejected("strobe")}
-              {label("Chunk 数据", "chunk")}
-              <label className="check"><input type="checkbox" checked={config.chunk} onChange={(e) => set("chunk", e.target.checked)} />帧计数、触发计数、时间戳</label>
-              <span className="hint">同步触发核对依赖 Chunk 里的触发计数；关闭后这台相机不能核对。</span>
-              {rejected("chunk")}
-              {label("开流前触发计数")}
-              <span className="cg-unit"><input aria-label="开流前触发计数" className="input mono" type="number" min={0} max={Number.MAX_SAFE_INTEGER} step={1} placeholder="未知" value={config.counterAfterOpen??""} onChange={e=>set("counterAfterOpen",e.target.value===""?null:Number(e.target.value))}/><small>次</small></span>
-              <span className="hint">仅填写台架确认的开流前触发计数；未知时留空，不能假定为 0。</span>
-              <div className="cg-batch full" aria-label="应用到全部相机">
+              {num("triggerDelayUs", "触发延时")}
+              <Stack direction="column" align="stretch" gap={4}>
+                <span className="cg-group-label">{label("Line1 输出", "strobe")}</span>
+                <Checkbox label="曝光信号驱动频闪" checked={config.strobe} onCheckedChange={v => set("strobe", v)} />
+                {note(undefined, "strobe") && <small className="muted">{note(undefined, "strobe")}</small>}
+              </Stack>
+              <Stack direction="column" align="stretch" gap={4}>
+                <span className="cg-group-label">{label("Chunk 数据", "chunk")}</span>
+                <Checkbox label="帧计数、触发计数、时间戳" checked={config.chunk} onCheckedChange={v => set("chunk", v)} />
+                <small className="muted">同步触发核对依赖 Chunk 里的触发计数；关闭后这台相机不能核对。{note(undefined, "chunk")}</small>
+              </Stack>
+              <NumberField label="开流前触发计数" unit="次" min={0} max={Number.MAX_SAFE_INTEGER} step={1} placeholder="未知" value={config.counterAfterOpen??""} onValueChange={v => set("counterAfterOpen", v===""?null:v)}
+                description="仅填写台架确认的开流前触发计数；未知时留空，不能假定为 0。" />
+              <Surface level="mid" className="cg-batch" aria-label="应用到全部相机">
                 <div className="cg-row">
                   <p>把以上触发源、触发沿、滤波、延时、频闪、Chunk 复制到其他已绑定的海康相机并保存应用；开流前触发计数、视角数不复制。</p>
-                  <button type="button" className="btn small" onClick={() => void applyAll()} disabled={batching || !!batchBlocked} title={batchBlocked || undefined}><Copy size={13} />{batching ? "应用中…" : batch ? "再次应用到全部相机" : "应用到全部相机"}</button>
+                  <Button size="sm" leadingIcon={<Copy size={13} />} onClick={() => void applyAll()} disabled={batching || !!batchBlocked} title={batchBlocked || undefined}>{batching ? "应用中…" : batch ? "再次应用到全部相机" : "应用到全部相机"}</Button>
                 </div>
                 {batchBlocked && !locked && <span className="muted cg-small">{batchBlocked}</span>}
                 {batch && <>
-                  <span className={"cg-state " + (batch.items.every(i => i.tone === "ok" || i.tone === "off") ? "ok" : "warn")}>{batch.items.every(i => i.tone === "ok" || i.tone === "off") ? <Check size={13} /> : <AlertTriangle size={13} />}{clock(batch.at)} 应用到全部相机：{batch.items.filter(i => i.tone === "ok").length} 台已应用{batch.items.some(i => i.tone === "warn" || i.tone === "ng") && `，${batch.items.filter(i => i.tone === "warn" || i.tone === "ng").length} 台需处理`}</span>
-                  <ul>{batch.items.map(i => <li key={i.id || i.name}><span className="cg-who">{i.name}<span className="mono">{i.id}</span></span><div><span className={"cg-state " + (i.tone === "ng" ? "fault" : i.tone)}>{i.tone === "ok" ? <Check size={13} /> : i.tone === "off" ? <Minus size={13} /> : <AlertTriangle size={13} />}{i.text}</span>{i.list && <ul>{i.list.map(w => <li key={w}>{w}</li>)}</ul>}</div></li>)}</ul>
+                  <StatusBadge tone={batchOk ? "ok" : "warn"}>{clock(batch.at)} 应用到全部相机：{batch.items.filter(i => i.tone === "ok").length} 台已应用{batch.items.some(i => i.tone === "warn" || i.tone === "ng") && `，${batch.items.filter(i => i.tone === "warn" || i.tone === "ng").length} 台需处理`}</StatusBadge>
+                  <ul>{batch.items.map(i => <li key={i.id || i.name}><span className="cg-who">{i.name}<span className="mono">{i.id}</span></span><div><StatusBadge tone={i.tone === "ng" ? "fault" : i.tone}>{i.text}</StatusBadge>{i.list && <ul>{i.list.map(w => <li key={w}>{w}</li>)}</ul>}</div></li>)}</ul>
                 </>}
-              </div>
-            </div>
-          </section> : <section className="panel" aria-label="触发接线">
-            <h2 className="panel-title">触发接线</h2>
-            <div className="cg-na"><Radio size={16} /><div><strong>不适用：离线图像源按节拍自动出图</strong>不接触发线，没有触发沿、滤波、延时、频闪和 Chunk 设置；触发计数即样本序号。</div></div>
-          </section>}
+              </Surface>
+            </Stack>
+          </Card> : <Card role="region" aria-label="触发接线" title={<Heading level={3}>触发接线</Heading>}>
+            <Alert title="不适用：离线图像源按节拍自动出图">不接触发线，没有触发沿、滤波、延时、频闪和 Chunk 设置；触发计数即样本序号。</Alert>
+          </Card>}
 
-          <section className="panel">
-            <details className="cg-adv">
-              <summary><ChevronRight size={16} />高级参数（调试）<span className="cg-badge off">{mvs ? "曝光 / 增益 · 不写入配方" : "离线不适用"}</span></summary>
-              {mvs ? <div className="cg-adv-body">
-                <div className="cg-adv-note"><Info size={15} /><span>曝光和增益<b>归配方管</b>（每个配方、每台相机各一份，在配方工作台“整圈采集”里设置）。这里的值<b>只临时下发到设备用于调试，不写进配方</b>；开始采集或生产时会被配方的值覆盖。设备当前实际值读不回来，下方只显示本次调试下发过的值。</span></div>
+          <Card>
+            <Accordion collapsible items={[{
+              value: "debug",
+              title: <>高级参数（调试）<StatusBadge tone="off">{mvs ? "曝光 / 增益 · 不写入配方" : "离线不适用"}</StatusBadge></>,
+              content: mvs ? <Stack direction="column" align="stretch" gap={12}>
+                <Alert>曝光和增益<b>归配方管</b>（每个配方、每台相机各一份，在配方工作台“整圈采集”里设置）。这里的值<b>只临时下发到设备用于调试，不写进配方</b>；开始采集或生产时会被配方的值覆盖。设备当前实际值读不回来，下方只显示本次调试下发过的值。</Alert>
                 <div className="cg-adv-grid">
-                  <label>曝光时间<span className="cg-unit"><input aria-label="调试曝光（µs）" className="input mono" type="number" min={1} step={1} value={exposure} onChange={e => setExposure(e.target.value)} placeholder="例如 8000" /><small>µs</small></span></label>
-                  <label>增益<span className="cg-unit"><input aria-label="调试增益（dB）" className="input mono" type="number" min={0} step={0.1} value={gain} onChange={e => setGain(e.target.value)} placeholder="例如 6.0" /><small>dB</small></span></label>
+                  <NumberField label="曝光时间" aria-label="调试曝光（µs）" unit="µs" min={1} step={1} value={exposure===""?"":Number(exposure)} onValueChange={v => setExposure(v===""?"":String(v))} placeholder="例如 8000" />
+                  <NumberField label="增益" aria-label="调试增益（dB）" unit="dB" min={0} step={0.1} value={gain===""?"":Number(gain)} onValueChange={v => setGain(v===""?"":String(v))} placeholder="例如 6.0" />
                 </div>
                 <div className="cg-adv-sent">
-                  <button type="button" className="btn small" onClick={() => void sendImaging()} disabled={imagingBusy || !!imagingInvalid || !!imagingBlocked} title={imagingBlocked || imagingInvalid || undefined}><SlidersHorizontal size={13} />{imagingBusy ? "下发中…" : "临时下发到设备"}</button>
+                  <Button size="sm" leadingIcon={<SlidersHorizontal size={13} />} onClick={() => void sendImaging()} disabled={imagingBusy || !!imagingInvalid || !!imagingBlocked} title={imagingBlocked || imagingInvalid || undefined}>{imagingBusy ? "下发中…" : "临时下发到设备"}</Button>
                   {sent ? <span>本次调试已下发：曝光 <b>{sent.exposureUs} µs</b> · 增益 <b>{sent.gainDb} dB</b>（{clock(sent.at).slice(0, 5)}）</span> : <span>{imagingBlocked || imagingInvalid}</span>}
                 </div>
-                {imagingError && <span className="cg-err">{imagingError}</span>}
+                {imagingError && <Alert tone="ng">{imagingError}</Alert>}
                 <span className="muted cg-small">固定写入：ExposureAuto / GainAuto = Off、PixelFormat = Mono8、TriggerMode = On；GigE 相机自动设置最佳包长。{status?.sdkVersion && ` SDK ${status.sdkVersion}。`}</span>
-              </div> : <div className="cg-adv-body"><div className="cg-na"><Database size={16} /><div>样本集与合成图没有曝光和增益可下发。</div></div></div>}
-            </details>
-          </section>
+              </Stack> : <Alert>样本集与合成图没有曝光和增益可下发。</Alert>,
+            }]} />
+          </Card>
         </fieldset>
         {footer}
       </div>
@@ -308,8 +292,8 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
       {leading}
       <span className="spacer" />
       {saveState}
-      <button className="btn" onClick={discard} disabled={saving||!dirty}>放弃</button>
-      <button className="btn primary" onClick={()=>void save()} disabled={saving||!dirty||!!invalid||!!saveBlocked} title={saveBlocked||undefined}>{saving ? "写入中…" : "保存并应用"}</button>
+      <Button onClick={discard} disabled={saving||!dirty}>放弃</Button>
+      <Button variant="filled" onClick={()=>void save()} disabled={saving||!dirty||!!invalid||!!saveBlocked} title={saveBlocked||undefined}>{saving ? "写入中…" : "保存并应用"}</Button>
     </div>}
   </>;
 }

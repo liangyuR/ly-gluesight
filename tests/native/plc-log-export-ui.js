@@ -2,7 +2,8 @@ async (page) => {
   const startedAt = new Date().toISOString();
   await page.getByRole("navigation",{name:"操作导航"}).getByRole("link",{name:"通讯日志",exact:true}).click();
   await page.getByRole("button",{name:"清空筛选",exact:true}).click();
-  await page.getByRole("combobox",{name:"日志点位",exact:true}).selectOption("p_result_code");
+  await page.getByRole("combobox",{name:"日志点位",exact:true}).click();
+  await page.getByRole("option",{name:"结果码",exact:true}).click();
   await page.getByRole("heading",{name:"点位趋势 · 结果码",exact:true}).waitFor();
   await page.getByRole("button",{name:"实时跟随中",exact:true}).click();
   await page.getByRole("button",{name:"导出 CSV",exact:true}).click();

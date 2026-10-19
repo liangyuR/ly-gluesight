@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { Crosshair } from "lucide-react";
-import { useSnackbar } from "qing-steel";
+import { Alert, Button, Card, Grid, Heading, NumberField, Stack, useSnackbar } from "qing-steel";
 
 interface CalibInfo {
   path: string;
@@ -73,40 +73,26 @@ export default function CalibPanel({ cam, view=1, isSim, imageId, onMmPerPx }: {
   };
 
   return (
-    <div className="panel">
-      <div className="panel-head">
-        <h3 className="panel-title">图 {view} · 工位标定（飞拍）</h3>
-        <span className="spacer" />
-        <button className="btn" onClick={()=>void load()} disabled={busy||loading||!isTauri()}>刷新标定</button>
-        <button className={"btn"+(imageId&&!isSim?" primary":"")} onClick={()=>void run()} disabled={busy || loading || isSim || !imageId||!isTauri()||!valid}>
-          <Crosshair size={15} />
-          {busy ? "标定中…" : "用冻结样本标定"}
-        </button>
-      </div>
+    <Card title={<Heading level={3}>图 {view} · 工位标定（飞拍）</Heading>} actions={<>
+      <Button onClick={()=>void load()} disabled={busy||loading||!isTauri()}>刷新标定</Button>
+      <Button variant={imageId&&!isSim?"filled":"tonal"} leadingIcon={<Crosshair size={15} />} onClick={()=>void run()} disabled={busy || loading || isSim || !imageId||!isTauri()||!valid}>{busy ? "标定中…" : "用冻结样本标定"}</Button>
+    </>}>
+      <Stack direction="column" align="stretch" gap={10}>
       <p className="muted calib-desc">将标定板放在实际胶路测量平面；各图分别标定，复用前验证代表性拍照点。</p>
       {isSim ? (
         <p className="muted">合成图相机的像素当量已知（0.08 mm/px），自动使用内置标定。</p>
       ) : (
-        <fieldset disabled={busy||loading||!isTauri()} style={{border:0,padding:0,margin:0,minWidth:0}}><div className="calib-row">
-          <label className="field">
-            <span>内角点（列）</span>
-            <input id="calib-cols" className="input mono" type="number" min={2} max={100} step={1} value={Number.isFinite(cols)?cols:""} onChange={(e) => {setRunError("");setCols(e.target.value===""?NaN:Number(e.target.value));}} />
-          </label>
-          <label className="field">
-            <span>内角点（行）</span>
-            <input id="calib-rows" className="input mono" type="number" min={2} max={100} step={1} value={Number.isFinite(rows)?rows:""} onChange={(e) => {setRunError("");setRows(e.target.value===""?NaN:Number(e.target.value));}} />
-          </label>
-          <label className="field">
-            <span>格长（mm）</span>
-            <input id="calib-square" className="input mono" type="number" step={0.5} min={0} value={Number.isFinite(square)?square:""} onChange={(e) => {setRunError("");setSquare(e.target.value===""?NaN:Number(e.target.value));}} />
-          </label>
-        </div></fieldset>
+        <fieldset disabled={busy||loading||!isTauri()} style={{border:0,padding:0,margin:0,minWidth:0}}><Grid minWidth={140} gap={10}>
+          <NumberField id="calib-cols" label="内角点（列）" min={2} max={100} step={1} value={Number.isFinite(cols)?cols:""} onValueChange={value => {setRunError("");setCols(value===""?NaN:value);}} />
+          <NumberField id="calib-rows" label="内角点（行）" min={2} max={100} step={1} value={Number.isFinite(rows)?rows:""} onValueChange={value => {setRunError("");setRows(value===""?NaN:value);}} />
+          <NumberField id="calib-square" label="格长（mm）" min={0} step={0.5} value={Number.isFinite(square)?square:""} onValueChange={value => {setRunError("");setSquare(value===""?NaN:value);}} />
+        </Grid></fieldset>
       )}
       {!isTauri()&&<p className="muted">请在桌面软件中读取并执行工位标定。</p>}
       {!isSim&&!imageId&&<p className="muted">先获取或导入冻结样本，再执行工位标定。</p>}
       {loading&&<p className="muted">正在读取标定…</p>}
-      {loadError&&<div className="notice error" role="alert">读取标定失败：{loadError}。请刷新标定后重试。</div>}
-      {!isSim&&!valid&&<div className="notice error" role="alert">{invalid}</div>}
+      {loadError&&<Alert tone="ng">读取标定失败：{loadError}。请刷新标定后重试。</Alert>}
+      {!isSim&&!valid&&<Alert tone="ng">{invalid}</Alert>}
       <dl className="kv">
         <dt>当前标定</dt>
         <dd>
@@ -115,7 +101,8 @@ export default function CalibPanel({ cam, view=1, isSim, imageId, onMmPerPx }: {
             : isSim?"使用内置标定（0.08 mm/px）":loaded?"未标定":"尚未读取标定"}
         </dd>
       </dl>
-      {runError && <div className="notice error" role="alert">{runError}</div>}
-    </div>
+      {runError && <Alert tone="ng">{runError}</Alert>}
+      </Stack>
+    </Card>
   );
 }

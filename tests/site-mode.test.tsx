@@ -64,7 +64,7 @@ describe("离线模式工况", () => {
     site = siteStatus({ mode: "offline", source, measurement: source === "sampleSet" ? "lyFlow" : "simulated" });
     render(<MemoryRouter><OfflinePage /></MemoryRouter>);
     const select = await screen.findByRole("combobox", { name: "离线工况" });
-    expect(within(select).getAllByRole("option").map(o => (o as HTMLOptionElement).value)).toEqual(expected);
+    expect(Array.from(select.closest(".qs-select")!.querySelector("select")!.options).map(o => o.value)).toEqual(expected);
   });
 });
 

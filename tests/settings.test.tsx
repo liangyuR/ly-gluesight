@@ -32,7 +32,7 @@ beforeEach(() => {
 });
 
 function recordSaveButton() {
-  return within(screen.getByRole("heading", { name: "lyFlow 与帧录制" }).parentElement!).getByRole("button", { name: "保存" });
+  return within(screen.getByRole("region", { name: "lyFlow 与帧录制" })).getByRole("button", { name: "保存" });
 }
 
 describe("离线原图保留设置", () => {
@@ -51,7 +51,7 @@ describe("离线原图保留设置", () => {
     expect(screen.getByRole("spinbutton", { name: "记录保留（天）" })).toHaveValue(90);
     expect(screen.getByRole("spinbutton", { name: "真机录制最多保留（件）" })).toHaveValue(100);
     expect(screen.getByRole("spinbutton", { name: "真机录制总大小上限（GB）" })).toHaveValue(20);
-    expect(screen.getByRole("combobox", { name: "真机帧录制" })).toHaveValue("failed");
+    expect(screen.getByRole("combobox", { name: "真机帧录制" }).closest(".qs-select")!.querySelector("select")!).toHaveValue("failed");
   });
 
   it.each([

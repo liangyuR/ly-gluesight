@@ -1,6 +1,18 @@
 import { useEffect, useRef, useState } from "react";
+import { Accordion, Alert, Button, Card, Heading, Select, Stack, Table, Text, type TableColumn } from "qing-steel";
 import { plcApi } from "../api";
 import type { PlcRecipeChoice, PlcRecipePlan } from "../types";
+
+type Shot = PlcRecipePlan["shots"][number];
+const shotColumns: TableColumn<Shot>[] = [
+  { key: "shotId", header: "拍照点", render: shot => <span className="mono">{shot.shotId}</span> },
+  { key: "poseId", header: "Pose", render: shot => <span className="mono">{shot.poseId}</span> },
+  { key: "cameraIds", header: "相机设备 ID", render: shot => <span className="mono">{shot.cameraIds.join("、")}</span> },
+];
+const deviceColumns: TableColumn<PlcRecipePlan>[] = [
+  { key: "deviceIds", header: "相机设备 ID", render: plan => <span className="mono">{plan.deviceIds.join("、")}</span> },
+  { key: "deviceShots", header: "每台计划触发数", render: plan => plan.deviceShots },
+];
 
 export default function S7RecipePlanPanel() {
   const [recipes, setRecipes] = useState<PlcRecipeChoice[] | null>(null);
@@ -59,28 +71,26 @@ export default function S7RecipePlanPanel() {
     } finally { copyPending.current = false; if (mounted.current) setCopying(false); }
   };
 
-  return <div className="panel" id="s7-plan" ref={root}>
-    <div className="panel-toolbar"><h3 className="panel-title">配方握手计划 · 只读</h3><div className="row">
-      {plan && <button className="btn" disabled={copying} onClick={() => void copy()}>{copied ? "已复制 JSON" : "复制计划 JSON"}</button>}
-      <button className="btn" disabled={loading} onClick={() => void load()}>{recipes ? "刷新配方计划" : "读取配方计划"}</button>
-    </div></div>
-    <p className="muted hint top">读取已发布配方，供 PLC 程序核对协议版本、计划版本和设备触发数。读取和复制不会更改 PLC；候选试运行的临时计划不在此处显示；离线发布版本不代表真机可用。</p>
-    {recipes && <label className="field"><span>已发布配方</span><select className="input" value={selected} onChange={event => void readPlan(event.target.value)}>
-      <option value="">请选择已发布配方</option>{recipes.map(recipe => <option key={recipe.id} value={recipe.id}>{recipe.name} · {recipe.id} · v{recipe.version}</option>)}
-    </select></label>}
-    {recipes?.length === 0 && <p className="muted hint">暂无可读取的已发布配方</p>}
-    {loading && <p role="status">正在读取配方计划…</p>}
-    {error && <p role="alert" className="notice error">{error}</p>}
-    {plan && <>
-      <p className="hint">协议 {plan.protocolVersion} · 计划版本 {plan.planVersion} · 共 {plan.shotCount} 个拍照点</p>
-      <div className="table-wrap"><table className="table" aria-label="触发线相机"><thead><tr><th>相机设备 ID</th><th>每台计划触发数</th></tr></thead><tbody>
-        <tr><td className="mono">{plan.deviceIds.join("、")}</td><td>{plan.deviceShots}</td></tr>
-      </tbody></table></div>
-      <div className="table-wrap"><table className="table" aria-label="拍照点计划"><thead><tr><th>拍照点</th><th>Pose</th><th>相机设备 ID</th></tr></thead><tbody>
-        {plan.shots.map(shot => <tr key={shot.shotId}><td className="mono">{shot.shotId}</td><td className="mono">{shot.poseId}</td><td className="mono">{shot.cameraIds.join("、")}</td></tr>)}
-      </tbody></table></div>
-      <p className="muted hint">PLC 每次触发同时触发上表全部相机，每台各出一帧；同一 Pose 的各相机拍照点算一次触发，拼接相机的三个视角也不分别计数，计划触发数等于触发次数。</p>
-      <details><summary>查看完整计划 JSON</summary><pre className="mono" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{JSON.stringify(plan, null, 2)}</pre></details>
-    </>}
+  return <div id="s7-plan" ref={root}>
+    <Card title={<Heading level={3}>配方握手计划 · 只读</Heading>} actions={<>
+      {plan && <Button disabled={copying} onClick={() => void copy()}>{copied ? "已复制 JSON" : "复制计划 JSON"}</Button>}
+      <Button disabled={loading} onClick={() => void load()}>{recipes ? "刷新配方计划" : "读取配方计划"}</Button>
+    </>}>
+      <Stack direction="column" align="stretch" gap={12}>
+        <Text as="p" variant="label" muted>读取已发布配方，供 PLC 程序核对协议版本、计划版本和设备触发数。读取和复制不会更改 PLC；候选试运行的临时计划不在此处显示；离线发布版本不代表真机可用。</Text>
+        {recipes && <Select label="已发布配方" value={selected} onValueChange={value => void readPlan(value)}
+          options={[{ value: "", label: "请选择已发布配方" }, ...recipes.map(recipe => ({ value: recipe.id, label: `${recipe.name} · ${recipe.id} · v${recipe.version}` }))]} />}
+        {recipes?.length === 0 && <Text as="p" variant="label" muted>暂无可读取的已发布配方</Text>}
+        {loading && <p role="status">正在读取配方计划…</p>}
+        {error && <Alert tone="ng">{error}</Alert>}
+        {plan && <>
+          <Text as="p" variant="label">协议 {plan.protocolVersion} · 计划版本 {plan.planVersion} · 共 {plan.shotCount} 个拍照点</Text>
+          <Table<PlcRecipePlan> caption="触发线相机" rows={[plan]} columns={deviceColumns} rowKey={() => "devices"} />
+          <Table<Shot> caption="拍照点计划" rows={plan.shots} columns={shotColumns} rowKey={shot => shot.shotId} />
+          <Text as="p" variant="label" muted>PLC 每次触发同时触发上表全部相机，每台各出一帧；同一 Pose 的各相机拍照点算一次触发，拼接相机的三个视角也不分别计数，计划触发数等于触发次数。</Text>
+          <Accordion items={[{ value: "json", title: "查看完整计划 JSON", content: <pre className="mono" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{JSON.stringify(plan, null, 2)}</pre> }]} />
+        </>}
+      </Stack>
+    </Card>
   </div>;
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Alert, Button, Card, Grid, Heading, NumberField, Select, Stack, StatusBadge } from "qing-steel";
 import { storageApi, type StoragePreferences } from "../../../lib/storage";
 import { errorText } from "../../../lib/errors";
 import { flyshotSpeedLimits } from "../flyshot";
@@ -98,41 +99,39 @@ export default function FeasibilityCalc({ sources: given = {}, imageSize }: { so
   const status = missing.length ? `还缺：${missing.join("、")}` : !valid ? "数值过大，请降低数量级后再核算" : rows.every(row => row[2]) ? "按当前数值满足飞拍条件" : "按当前数值存在未满足项";
 
   return (
-    <div className="panel">
-      <div className="panel-head">
-        <h3 className="panel-title">飞拍可行性</h3>
-        <span className="muted">核算按这组速度、曝光和拍照点间距飞拍时，图像会不会拖影、相机来不来得及、相邻视野是否连续</span>
-      </div>
-      {loadingPreferences && <p className="muted" aria-live="polite">正在读取已保存的飞拍参数…</p>}
-      {storageError && <p className="notice error" role="alert">{storageError} <button type="button" className="btn" onClick={() => { if (!touched.current.has("speed") && !touched.current.has("spacing")) { setReadRevision(v => v + 1); return; } save({
-        ...(touched.current.has("speed") ? { flyshotSpeedMmS: Number.isFinite(manual.speed) ? manual.speed! : null } : {}),
-        ...(touched.current.has("spacing") ? { flyshotSpacingMm: Number.isFinite(manual.spacing) ? manual.spacing! : null } : {}),
-      }); }}>重试保存</button></p>}
-      <div className="calc-in">
-        {fields.map(([key, label, step]) => {
-          const source = sources[key], overridden = !!source && key in manual;
-          return (
-            <label key={key} className="field">
+    <Card title={<Heading level={3}>飞拍可行性</Heading>}>
+      <Stack direction="column" align="stretch" gap={12}>
+        <span className="muted cg-small">核算按这组速度、曝光和拍照点间距飞拍时，图像会不会拖影、相机来不来得及、相邻视野是否连续</span>
+        {loadingPreferences && <p className="muted" aria-live="polite">正在读取已保存的飞拍参数…</p>}
+        {storageError && <Alert tone="ng" action={<Button size="sm" onClick={() => { if (!touched.current.has("speed") && !touched.current.has("spacing")) { setReadRevision(v => v + 1); return; } save({
+          ...(touched.current.has("speed") ? { flyshotSpeedMmS: Number.isFinite(manual.speed) ? manual.speed! : null } : {}),
+          ...(touched.current.has("spacing") ? { flyshotSpacingMm: Number.isFinite(manual.spacing) ? manual.spacing! : null } : {}),
+        }); }}>重试保存</Button>}>{storageError}</Alert>}
+        <Grid minWidth={180} gap={10}>
+          {fields.map(([key, label, step]) => {
+            const source = sources[key], overridden = !!source && key in manual;
+            return (
+              <div key={key} className="calc-cell">
+                <NumberField id={`calc-${key}`} label={label} min={0} step={step} placeholder="请填写" value={Number.isFinite(v[key]) ? v[key] : ""} onValueChange={value => change(key, value === "" ? NaN : value)}
+                  description={<span className={"calc-src" + (overridden ? " changed" : source ? " linked" : "")}>
+                    {overridden ? <>已手改，{source.from}为 {format(key, source.value)}<Button variant="text" size="sm" onClick={() => restore(key)}>恢复</Button></> : source ? source.from : manualHint[key]}
+                  </span>} />
+                {key === "fov" && imageSize && !given.fov && <Select aria-label="运动方向" value={axis} onValueChange={value => setAxis(value as "width" | "height")} options={[{ value: "width", label: "工件沿图像宽度方向运动" }, { value: "height", label: "工件沿图像高度方向运动" }]} />}
+              </div>
+            );
+          })}
+        </Grid>
+        <Alert tone={valid && rows.every(row => row[2]) ? "ok" : missing.length ? "info" : "warn"}>{status}</Alert>
+        <div className="calc-out">
+          {rows.map(([label, value, ok], i) => (
+            <div key={label} className={i === rows.length - 1 ? "big" : ""}>
               <span>{label}</span>
-              <input id={`calc-${key}`} className="input mono" type="number" min={0} step={step} placeholder="请填写" value={Number.isFinite(v[key]) ? v[key] : ""} onChange={(e) => change(key, e.target.value === "" ? NaN : Number(e.target.value))} />
-              <small className={"calc-src" + (overridden ? " changed" : source ? " linked" : "")}>
-                {overridden ? <>已手改，{source.from}为 {format(key, source.value)}<button type="button" className="calc-restore" onClick={() => restore(key)}>恢复</button></> : source ? source.from : manualHint[key]}
-              </small>
-              {key === "fov" && imageSize && !given.fov && <select className="input calc-axis" aria-label="运动方向" value={axis} onChange={e => setAxis(e.target.value as "width" | "height")}><option value="width">工件沿图像宽度方向运动</option><option value="height">工件沿图像高度方向运动</option></select>}
-            </label>
-          );
-        })}
-      </div>
-      <div className="calc-out">
-        <p className={valid && rows.every(row => row[2]) ? "c-ok" : missing.length ? "muted" : "c-ng"} role="status">{status}</p>
-        {rows.map(([label, value, ok], i) => (
-          <div key={label} className={i === rows.length - 1 ? "big" : ""}>
-            <span>{label}</span>
-            <b className="mono">{valid ? value : "—"}</b>
-            <span className={!valid ? "muted" : ok ? "c-ok" : "c-ng"}>{!valid ? "待核算" : ok ? "满足" : "不满足"}</span>
-          </div>
-        ))}
-      </div>
-    </div>
+              <b className="mono">{valid ? value : "—"}</b>
+              <StatusBadge tone={!valid ? "off" : ok ? "ok" : "ng"}>{!valid ? "待核算" : ok ? "满足" : "不满足"}</StatusBadge>
+            </div>
+          ))}
+        </div>
+      </Stack>
+    </Card>
   );
 }

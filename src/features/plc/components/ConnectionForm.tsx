@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Alert, Grid, NumberField, Select, Stack, TextField } from "qing-steel";
 import { s7CpuPresets, s7Protocol } from "../meta";
 import type { ConnectionConfig, S7ConnectionType, S7Options } from "../types";
 
@@ -9,7 +10,7 @@ interface ConnectionFormProps {
 }
 
 const hex = (n: number | null) => (n === null || !Number.isFinite(n) ? "" : `0x${n.toString(16).toUpperCase().padStart(4, "0")}`);
-const numeric = (text: string) => text.trim() ? Number(text) : NaN;
+const numeric = (value: number | "") => value === "" ? NaN : value;
 const numberValue = (n: number) => Number.isFinite(n) ? n : "";
 const integerIn = (n: number, min: number, max = Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(n) && n >= min && n <= max;
 
@@ -21,8 +22,8 @@ function parseHex(text: string, optional: boolean): number | null {
   return integerIn(n, 0, 0xffff) ? n : NaN;
 }
 
-function HexInput({ value, optional = false, placeholder, onChange }: {
-  value: number | null; optional?: boolean; placeholder?: string; onChange: (n: number | null) => void;
+function HexInput({ label, value, optional = false, placeholder, onChange }: {
+  label: string; value: number | null; optional?: boolean; placeholder?: string; onChange: (n: number | null) => void;
 }) {
   const [text, setText] = useState(() => hex(value));
   const emitted = useRef(value);
@@ -37,13 +38,10 @@ function HexInput({ value, optional = false, placeholder, onChange }: {
     emitted.current = n;
     onChange(n);
   };
-  return <>
-    <input className="input mono" value={text} placeholder={placeholder} aria-invalid={invalid} onChange={e => change(e.target.value)} onBlur={e => {
-      const n = parseHex(e.target.value, optional);
-      if (n === null || Number.isFinite(n)) { emitted.current = n; onChange(n); setText(hex(n)); }
-    }} />
-    {invalid && <span className="c-ng">请输入 0x0000–0xFFFF 的完整十六进制值{optional ? "，或留空自动" : ""}</span>}
-  </>;
+  return <TextField label={label} value={text} placeholder={placeholder} error={invalid ? `请输入 0x0000–0xFFFF 的完整十六进制值${optional ? "，或留空自动" : ""}` : undefined} onChange={e => change(e.target.value)} onBlur={e => {
+    const n = parseHex(e.target.value, optional);
+    if (n === null || Number.isFinite(n)) { emitted.current = n; onChange(n); setText(hex(n)); }
+  }} />;
 }
 
 export function connectionError(c: ConnectionConfig) {
@@ -67,90 +65,34 @@ export default function ConnectionForm({ value: c, initialCpuPreset, onChange }:
   const matchesCpu = (p: (typeof s7CpuPresets)[number]) => p.rack === c.s7.rack && p.slot === c.s7.slot && p.localTsap === c.s7.localTsap && p.remoteTsap === c.s7.remoteTsap;
   const cpu = s7CpuPresets.find(p => p.key === cpuChoice && matchesCpu(p)) ?? s7CpuPresets.find(matchesCpu);
 
+  const error = connectionError(c);
   return (
-    <div className="form-grid">
-      <label className="field">
-        <span>协议</span>
-        <input className="input" readOnly value={s7Protocol.label} />
-      </label>
-      <label className="field">
-        <span>IP / 主机名</span>
-        <input className="input mono" value={c.host} onChange={(e) => set({ host: e.target.value })} />
-      </label>
-      <label className="field">
-        <span>端口</span>
-        <input className="input mono" type="number" min={1} max={65535} step={1} value={numberValue(c.port)} aria-invalid={!integerIn(c.port, 1, 65535)} onChange={(e) => set({ port: num(e.target.value) })} />
-      </label>
+    <Stack direction="column" align="stretch" gap={14}>
+      <Grid minWidth={220} gap={14}>
+        <TextField label="协议" readOnly value={s7Protocol.label} />
+        <TextField label="IP / 主机名" value={c.host} onChange={(e) => set({ host: e.target.value })} />
+        <NumberField label="端口" min={1} max={65535} step={1} value={numberValue(c.port)} aria-invalid={!integerIn(c.port, 1, 65535)} onValueChange={(v) => set({ port: num(v) })} />
 
-      <label className="field">
-        <span>CPU 型号</span>
-        <select
-          className="input"
-          value={cpu?.key ?? "custom"}
-          onChange={(e) => {
-            const p = s7CpuPresets.find((x) => x.key === e.target.value);
+        <Select label="CPU 型号" value={cpu?.key ?? "custom"}
+          options={[...s7CpuPresets.map((p) => ({ value: p.key, label: p.label })), { value: "custom", label: "自定义", disabled: true }]}
+          onValueChange={(key) => {
+            const p = s7CpuPresets.find((x) => x.key === key);
             if (p) { setCpuChoice(p.key); setS7({ rack: p.rack, slot: p.slot, localTsap: p.localTsap, remoteTsap: p.remoteTsap }); }
-          }}
-        >
-          {s7CpuPresets.map((p) => (
-            <option key={p.key} value={p.key}>
-              {p.label}
-            </option>
-          ))}
-          <option value="custom" disabled>
-            自定义
-          </option>
-        </select>
-      </label>
-      <label className="field">
-        <span>机架 (Rack)</span>
-        <input className="input mono" type="number" min={0} max={7} value={numberValue(c.s7.rack)} onChange={(e) => setS7({ rack: num(e.target.value) })} />
-      </label>
-      <label className="field">
-        <span>插槽 (Slot)</span>
-        <input className="input mono" type="number" min={0} max={31} value={numberValue(c.s7.slot)} onChange={(e) => setS7({ slot: num(e.target.value) })} />
-      </label>
-      <label className="field">
-        <span>连接类型</span>
-        <select className="input" value={c.s7.connectionType} onChange={(e) => setS7({ connectionType: e.target.value as S7ConnectionType })}>
-          <option value="pg">PG</option>
-          <option value="op">OP</option>
-          <option value="basic">S7 Basic</option>
-        </select>
-      </label>
-      <label className="field">
-        <span>PDU 长度</span>
-        <select className="input" value={c.s7.pduSize} onChange={(e) => setS7({ pduSize: num(e.target.value) })}>
-          {[240, 480, 960].map((n) => (
-            <option key={n} value={n}>
-              {n}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="field">
-        <span>本地 TSAP（留空自动）</span>
-        <HexInput value={c.s7.localTsap} optional placeholder="0x0100" onChange={localTsap => setS7({ localTsap })} />
-      </label>
-      <label className="field">
-        <span>远端 TSAP（留空按机架/插槽）</span>
-        <HexInput value={c.s7.remoteTsap} optional placeholder="自动" onChange={remoteTsap => setS7({ remoteTsap })} />
-      </label>
+          }} />
+        <NumberField label="机架 (Rack)" min={0} max={7} value={numberValue(c.s7.rack)} onValueChange={(v) => setS7({ rack: num(v) })} />
+        <NumberField label="插槽 (Slot)" min={0} max={31} value={numberValue(c.s7.slot)} onValueChange={(v) => setS7({ slot: num(v) })} />
+        <Select label="连接类型" value={c.s7.connectionType} onValueChange={(v) => setS7({ connectionType: v as S7ConnectionType })}
+          options={[{ value: "pg", label: "PG" }, { value: "op", label: "OP" }, { value: "basic", label: "S7 Basic" }]} />
+        <Select label="PDU 长度" value={String(c.s7.pduSize)} onValueChange={(v) => setS7({ pduSize: Number(v) })}
+          options={[240, 480, 960].map((n) => ({ value: String(n), label: String(n) }))} />
+        <HexInput label="本地 TSAP（留空自动）" value={c.s7.localTsap} optional placeholder="0x0100" onChange={localTsap => setS7({ localTsap })} />
+        <HexInput label="远端 TSAP（留空按机架/插槽）" value={c.s7.remoteTsap} optional placeholder="自动" onChange={remoteTsap => setS7({ remoteTsap })} />
 
-      <label className="field">
-        <span>通讯超时 (ms)</span>
-        <input className="input mono" type="number" min={100} value={numberValue(c.timeoutMs)} onChange={(e) => set({ timeoutMs: num(e.target.value) })} />
-      </label>
-      <label className="field">
-        <span>轮询周期 (ms)</span>
-        <input className="input mono" type="number" min={20} value={numberValue(c.pollIntervalMs)} onChange={(e) => set({ pollIntervalMs: num(e.target.value) })} />
-      </label>
-      <label className="field">
-        <span>重连间隔 (ms)</span>
-        <input className="input mono" type="number" min={0} value={numberValue(c.reconnectIntervalMs)} onChange={(e) => set({ reconnectIntervalMs: num(e.target.value) })} />
-      </label>
-
-      {connectionError(c) && <p role="alert" className="c-ng">{connectionError(c)}</p>}
-    </div>
+        <NumberField label="通讯超时 (ms)" min={100} value={numberValue(c.timeoutMs)} onValueChange={(v) => set({ timeoutMs: num(v) })} />
+        <NumberField label="轮询周期 (ms)" min={20} value={numberValue(c.pollIntervalMs)} onValueChange={(v) => set({ pollIntervalMs: num(v) })} />
+        <NumberField label="重连间隔 (ms)" min={0} value={numberValue(c.reconnectIntervalMs)} onValueChange={(v) => set({ reconnectIntervalMs: num(v) })} />
+      </Grid>
+      {error && <Alert tone="ng">{error}</Alert>}
+    </Stack>
   );
 }

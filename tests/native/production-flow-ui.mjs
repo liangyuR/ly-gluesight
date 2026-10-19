@@ -146,14 +146,16 @@ export async function runProductionFlow(page, options = {}) {
   const navigation = page.getByRole("navigation", { name: "操作导航" });
   if (guard.settings.productSource !== "plc") {
     await page.getByRole("link", { name: "系统设置", exact: true }).click();
-    await page.getByRole("combobox", { name: "型号来源", exact: true }).selectOption("plc");
-    const cyclePanel = page.locator(".panel").filter({ has: page.getByRole("heading", { name: "检测节拍", exact: true }) });
+    await page.getByRole("combobox", { name: "型号来源", exact: true }).click();
+    await page.getByRole("option", { name: "PLC 下发产品代码", exact: true }).click();
+    const cyclePanel = page.getByRole("region", { name: "检测节拍", exact: true });
     await cyclePanel.getByRole("button", { name: "保存", exact: true }).click();
     await until(page, () => invokeRead("cycle_get_settings"), settings => settings.productSource === "plc", "UI 保存型号来源失败");
   }
   await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
   await page.getByRole("heading", { name: "当前：真机", exact: true }).waitFor();
-  await page.getByRole("combobox", { name: "离线来源", exact: true }).selectOption("synthetic");
+  await page.getByRole("combobox", { name: "离线来源", exact: true }).click();
+  await page.getByRole("option", { name: "合成图", exact: true }).click();
   await page.getByRole("button", { name: "进入离线", exact: true }).click();
   const offline = await until(page, () => invokeRead("site_status"), status => status.mode === "offline" && Number.isInteger(status.port), "UI 未进入离线模式");
   assert.equal(offline.source, "synthetic");
@@ -173,7 +175,8 @@ export async function runProductionFlow(page, options = {}) {
     await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
   }
   await page.getByRole("combobox", { name: "离线配方", exact: true }).selectOption(recipeId);
-  await page.getByRole("combobox", { name: "离线工况", exact: true }).selectOption("normal");
+  await page.getByRole("combobox", { name: "离线工况", exact: true }).click();
+  await page.getByRole("option", { name: "正常件", exact: true }).click();
   const recipe = await invokeRead("cycle_layout", { recipeId });
   const previous = await invokeRead("history_query", { query: { recipeId, scope: "offline", limit: 1 } });
   const observations = [];

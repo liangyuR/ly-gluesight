@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { plcApi } from "../api";
 import { dataTypeLabels, s7CpuPresets, snTypeForCpu } from "../meta";
-import type { PlcConfig, SnDataType } from "../types";
+import type { PlcConfig, PlcPoint, SnDataType } from "../types";
+import { Alert, Button, Checkbox, Grid, NumberField, Select, Table, type TableColumn } from "qing-steel";
 import Modal from "./Modal";
 
 interface S7Phase1DialogProps {
@@ -13,6 +14,12 @@ interface S7Phase1DialogProps {
 }
 
 const cpuChoices = ["s7200smart", "s71200", "s71500"] as const;
+const previewColumns: TableColumn<PlcPoint>[] = [
+  { key: "name", header: "名称 / 标签", render: point => <>{point.name}<div className="cell-sub">{point.tags.join(" · ")}</div></> },
+  { key: "address", header: "地址", render: point => <span className="mono">{point.address}</span> },
+  { key: "dataType", header: "类型", render: point => dataTypeLabels[point.dataType] },
+  { key: "access", header: "权限", render: point => point.access === "read" ? "PLC→PC 只读" : "PC→PLC 读写" },
+];
 const smartDb = 1;
 
 export default function S7Phase1Dialog({ config, dirty, blockedReason, onApply, onClose }: S7Phase1DialogProps) {
@@ -63,38 +70,34 @@ export default function S7Phase1Dialog({ config, dirty, blockedReason, onApply, 
   };
 
   return <Modal title="载入一期 S7 点表" width={800} onClose={onClose} footer={<>
-    <button className="btn" onClick={onClose}>取消</button>
-    <button className="btn primary" disabled={!!blockedReason || !ready || (replaces && !confirmed)} onClick={apply}>应用到草稿</button>
+    <Button onClick={onClose}>取消</Button>
+    <Button variant="filled" disabled={!!blockedReason || !ready || (replaces && !confirmed)} onClick={apply}>应用到草稿</Button>
   </>}>
-    {blockedReason && <p className="notice error" role="status">{blockedReason}</p>}
-    <fieldset className="form-grid two" disabled={!!blockedReason} style={{ border: 0, padding: 0, margin: 0 }}>
-      <label className="field"><span>一期 CPU 预设</span><select className="input" value={cpu} onChange={event => {
-        setCpu(event.target.value); setSnType(snTypeForCpu(event.target.value)); setConfirmed(false);
-      }}>
-        {cpuChoices.map(key => <option key={key} value={key}>{s7CpuPresets.find(item => item.key === key)!.label}</option>)}
-      </select></label>
-      <label className="field"><span>DB 号</span><input className="input mono" type="number" min={1} max={65535} step={1} value={smart ? smartDb : dbText}
-        disabled={smart} aria-invalid={invalid} onChange={event => { setDbText(event.target.value); setConfirmed(false); }} /></label>
-      <label className="field"><span>工件 SN 字符串格式</span><select className="input" value={snType} onChange={event => { setSnType(event.target.value as SnDataType); setConfirmed(false); }}>
-        <option value="smartString">200 SMART 字符串（1 字节实际长度）</option>
-        <option value="string">S7 STRING（声明长度 + 实际长度）</option>
-      </select></label>
+    {blockedReason && <Alert tone="warn">{blockedReason}</Alert>}
+    <fieldset disabled={!!blockedReason} style={{ border: 0, padding: 0, margin: 0 }}>
+      <Grid minWidth={260} gap={14}>
+        <Select label="一期 CPU 预设" value={cpu} onValueChange={value => {
+          setCpu(value); setSnType(snTypeForCpu(value)); setConfirmed(false);
+        }} options={cpuChoices.map(key => ({ value: key, label: s7CpuPresets.find(item => item.key === key)!.label }))} />
+        <NumberField label="DB 号" min={1} max={65535} step={1} value={smart ? smartDb : dbText === "" ? "" : Number(dbText)}
+          disabled={smart} aria-invalid={invalid} onValueChange={value => { setDbText(value === "" ? "" : String(value)); setConfirmed(false); }} />
+        <Select label="工件 SN 字符串格式" value={snType} onValueChange={value => { setSnType(value as SnDataType); setConfirmed(false); }} options={[
+          { value: "smartString", label: "200 SMART 字符串（1 字节实际长度）" },
+          { value: "string", label: "S7 STRING（声明长度 + 实际长度）" },
+        ]} />
+      </Grid>
     </fieldset>
     {smart
       ? <p className="muted hint">S7-200 SMART 的 V 区固定按 DB1 访问（VB100 即 DB1.DBB100），本地 / 远端 TSAP 0x0102 / 0x0201，PDU 240。SN 默认按 200 SMART 原生字符串编码，最多 49 个字符；PLC 若按 STRING[50] 自行写两个头字节，改选 S7 STRING。</p>
       : <p className="muted hint">S7-1200 / 1500 采用机架 0 / 插槽 1。请在 PLC 中启用 PUT/GET，并关闭所选 DB 的优化访问；按点表建立数据块，SN 声明为 String[50]。</p>}
     <p className="muted hint">应用将替换地址表、心跳和 S7 连接预设。IP / 主机名、超时、轮询、重连、日志和自动连接设置保留；之后仍需保存配置。</p>
-    {invalid && <p className="c-ng" role="alert">DB 号需为 1–65535 的整数</p>}
+    {invalid && <Alert tone="ng">DB 号需为 1–65535 的整数</Alert>}
     {loading && <p role="status">正在生成点表预览…</p>}
-    {error && <p className="c-ng" role="alert">{error} <button className="btn" onClick={() => setRetry(value => value + 1)}>重试</button></p>}
+    {error && <Alert tone="ng" action={<Button size="sm" onClick={() => setRetry(value => value + 1)}>重试</Button>}>{error}</Alert>}
     {ready && preview && <>
       <p className="hint">DB{db} · {preview.config.points.length} 个点位 · {s7CpuPresets.find(item => item.key === cpu)?.label} · SN {dataTypeLabels[snType]}</p>
-      <div className="table-wrap"><table className="table"><thead><tr><th>名称 / 标签</th><th>地址</th><th>类型</th><th>权限</th></tr></thead><tbody>
-        {preview.config.points.map(point => <tr key={point.id}><td>{point.name}<div className="cell-sub">{point.tags.join(" · ")}</div></td><td className="mono">{point.address}</td><td>{dataTypeLabels[point.dataType]}</td><td>{point.access === "read" ? "PLC→PC 只读" : "PC→PLC 读写"}</td></tr>)}
-      </tbody></table></div>
+      <Table<PlcPoint> caption="点表预览" rows={preview.config.points} columns={previewColumns} rowKey={point => point.id} />
     </>}
-    {replaces && <label className="check" style={{ marginTop: 16 }}><input type="checkbox" checked={confirmed} disabled={!!blockedReason} onChange={event => setConfirmed(event.target.checked)} />
-      <span>确认替换当前 {config.points.length} 个点位和心跳{dirty ? "（当前草稿尚未保存）" : ""}，并应用 S7 连接预设</span>
-    </label>}
+    {replaces && <div style={{ marginTop: 16 }}><Checkbox label={`确认替换当前 ${config.points.length} 个点位和心跳${dirty ? "（当前草稿尚未保存）" : ""}，并应用 S7 连接预设`} checked={confirmed} disabled={!!blockedReason} onCheckedChange={setConfirmed} /></div>}
   </Modal>;
 }

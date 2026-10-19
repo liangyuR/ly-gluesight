@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import { Check, Link2Off, Lock, Unplug, ExternalLink } from "lucide-react";
+import { StatusBadge } from "qing-steel";
 import type { CameraConfig, CameraStatus } from "../types";
 
 export type Tone = "ok" | "warn" | "fault" | "off";
@@ -15,11 +15,8 @@ export function cameraHealth(config: CameraConfig, status: CameraStatus | null):
   return { tone: "fault", label: status.frames > 0 ? "断连" : "未连接" };
 }
 
-const icons = { ok: Check, warn: Link2Off, fault: Unplug, off: Lock } as const;
-
 export function StateBadge({ tone, label }: { tone: Tone; label: string }) {
-  const Icon = label === "已释放给 MVS" ? ExternalLink : icons[tone];
-  return <span className={"cg-badge " + tone}><Icon size={12} />{label}</span>;
+  return <StatusBadge tone={tone}>{label}</StatusBadge>;
 }
 
 export function cameraColor(i: number) {
