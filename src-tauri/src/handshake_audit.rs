@@ -15,7 +15,7 @@ pub struct Limits {
     pub max_total_bytes: u64,
 }
 
-/// 分段 4 MB（约 7000 件）保证当前文件能进诊断包（单文件上限 8 MB）；保留天数与运行日志一致；
+/// 分段 4 MB（约 7000 件）保证当前文件和单个分段都能进诊断包（单文件上限 8 MB）；保留天数与运行日志一致；
 /// 256 MB 约是每天 1 万件时 45 天的量。
 pub const LIMITS: Limits = Limits { segment_bytes: 4 * 1024 * 1024, keep_days: crate::applog::LIMITS.keep_days, max_total_bytes: 256 * 1024 * 1024 };
 
@@ -68,6 +68,19 @@ fn segments(active: &Path) -> Vec<(i64, PathBuf, u64)> {
 /// 读取顺序：已滚动的分段在前，当前文件最后。
 pub fn files(active: &Path) -> Vec<PathBuf> {
     segments(active).into_iter().map(|(_, path, _)| path).chain(std::iter::once(active.to_path_buf())).collect()
+}
+
+/// 与导出时间段有交集的已滚动分段（分段覆盖上一次滚动到本次滚动之间的记录），及未选中的分段数。
+pub fn overlapping(active: &Path, from_ms: i64, to_ms: i64) -> (Vec<PathBuf>, usize) {
+    let all = segments(active);
+    let mut previous = i64::MIN;
+    let mut chosen = Vec::new();
+    for (rolled, path, _) in &all {
+        if *rolled >= from_ms && previous <= to_ms { chosen.push(path.clone()); }
+        previous = *rolled;
+    }
+    let skipped = all.len() - chosen.len();
+    (chosen, skipped)
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -139,11 +152,13 @@ mod tests {
         fs::write(segment_dir(active).join(name), line(cycle)).unwrap();
     }
 
-    fn cycles_left(active: &Path) -> Vec<String> {
-        files(active).iter().filter_map(|path| fs::read_to_string(path).ok()).flat_map(|text| {
+    fn cycles_in(paths: &[PathBuf]) -> Vec<String> {
+        paths.iter().filter_map(|path| fs::read_to_string(path).ok()).flat_map(|text| {
             text.lines().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok()?["pending"]["cycleId"].as_str().map(String::from)).collect::<Vec<_>>()
         }).collect()
     }
+
+    fn cycles_left(active: &Path) -> Vec<String> { cycles_in(&files(active)) }
 
     #[test]
     fn active_file_rolls_into_a_segment_before_the_write_that_would_pass_the_segment_size_and_reads_oldest_first() {
@@ -157,6 +172,21 @@ mod tests {
         assert_eq!(fs::read(&active).unwrap(), line("second"));
         assert_eq!(files(&active).last(), Some(&active), "当前文件最后读");
         assert_eq!(cycles_left(&active), ["first", "second"], "按时间顺序读取");
+    }
+
+    #[test]
+    fn segments_overlapping_the_export_window_are_chosen_and_the_rest_are_only_counted() {
+        let dir = Dir::new();
+        let active = dir.active();
+        let base = Local.with_ymd_and_hms(2026, 10, 19, 12, 0, 0).unwrap().timestamp_millis();
+        for (day, cycle) in [(1, "a"), (2, "b"), (3, "c")] { write_segment(&active, base + day * DAY, cycle); }
+        let chosen = |from_day: i64, to_day: i64| {
+            let (paths, skipped) = overlapping(&active, base + from_day * DAY, base + to_day * DAY);
+            (cycles_in(&paths), skipped)
+        };
+        assert_eq!(chosen(2, 3), (["b", "c"].map(String::from).to_vec(), 1), "滚动早于开始时间的分段不选");
+        assert_eq!(chosen(-5, 0), (["a"].map(String::from).to_vec(), 2), "后面的分段从结束时间之后才开始记录，不选");
+        assert_eq!(chosen(4, 6), (Vec::new(), 3), "导出时间段在所有分段滚动之后，只剩当前文件");
     }
 
     #[test]
