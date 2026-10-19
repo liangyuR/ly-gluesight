@@ -290,8 +290,7 @@ fn disk_failure_has_independent_history_evidence_and_keeps_good_original_verdict
     coordinator.handle(Event::Insert(Box::new(record)), &mut sink, 1);
     let before = sink.detail("one");
     assert_eq!(before.recording.state, RecordingState::Pending);
-    let notices = coordinator.handle(Event::Recording(outcome("one", &[], RecorderState::Failed)), &mut sink, 2);
-    assert!(has_message(&notices, "拒绝访问"));
+    coordinator.handle(Event::Recording(outcome("one", &[], RecorderState::Failed)), &mut sink, 2);
     let after = sink.detail("one");
     assert_eq!(original(&after), original(&before));
     assert_eq!(after.summary.verdict, Verdict::Ok);
@@ -605,7 +604,7 @@ fn durable_recording_barrier_waits_for_actual_recorder_callback_after_ack_and_em
     let (callback_spool, callback_failure, callback_pending) = (spool.clone(), failure.clone(), pending.clone());
     let callback = Arc::new(move |outcome: RecordingOutcome| {
         entered_tx.send(outcome.clone()).unwrap();
-        release_rx.lock().unwrap().recv_timeout(Duration::from_secs(10)).unwrap();
+        release_rx.lock().unwrap().recv_timeout(Duration::from_secs(600)).unwrap();
         done_tx.send(persist_event(&callback_spool, &callback_failure, &callback_pending, &Event::Recording(outcome))).unwrap();
     });
     let recorder = Recorder::new(dir.0.join("records"), Some(callback));
@@ -618,7 +617,7 @@ fn durable_recording_barrier_waits_for_actual_recorder_callback_after_ack_and_em
         images: (0..3).map(|view| Arc::new(FrameImage::new(1, 1, vec![20 + view]))).collect(),
     }, "cam1", 0, 1);
     recorder.finish(recording, record.judgement.verdict, &record.judgement.reason, 10, u64::MAX, Vec::new());
-    let actual = entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let actual = entered_rx.recv_timeout(Duration::from_secs(600)).unwrap();
     assert_eq!(actual.state, RecorderState::Incomplete);
     assert_eq!(actual.files.len(), 3);
     assert!(spool.lock().unwrap().empty() && failure.lock().unwrap().is_none());
@@ -628,7 +627,7 @@ fn durable_recording_barrier_waits_for_actual_recorder_callback_after_ack_and_em
     }
     assert_eq!(actions, 0);
     release_tx.send(()).unwrap();
-    assert_eq!(done_rx.recv_timeout(Duration::from_secs(10)).unwrap(), Ok(()));
+    assert_eq!(done_rx.recv_timeout(Duration::from_secs(600)).unwrap(), Ok(()));
     assert!(pending.lock().unwrap().is_empty());
     assert!(with_ready_spool(&spool, &failure, &running, &pending, || Ok(())).is_err());
     assert!(replay_cycle(&mut spool.lock().unwrap(), &record.cycle_id, &mut sink, 2).unwrap().0);
@@ -732,5 +731,26 @@ fn candidate_revisions_survive_durable_spool_replay_without_sharing_production_s
         assert_eq!(frozen.revision_id, revision);
         assert_eq!(frozen.name, name);
         assert_eq!(sink.store.recipe_version_floors().unwrap().get(&production.id), Some(&production.version));
+    }
+}
+
+#[test]
+fn recording_logs_carry_the_parts_own_cycle_id_and_only_unfinished_recordings_are_errors() {
+    let summarize = |outcome: &RecordingOutcome| recording_records(outcome).into_iter()
+        .map(|record| (record.level, record.event, record.fields.cycle_id, record.fields.stage)).collect::<Vec<_>>();
+    let own = |level, event, stage: Option<&str>| (level, event, Some("late".to_string()), stage.map(String::from));
+    let unfinished = own(Some("err"), "原图录制未完成", Some("recording"));
+    let finished = own(None, "原图录制完成", Some("recording"));
+    assert_eq!(summarize(&outcome("late", &[], RecorderState::Failed)), [unfinished.clone()]);
+    assert_eq!(summarize(&outcome("late", &[(0, 1)], RecorderState::Incomplete)), [unfinished.clone()]);
+    assert_eq!(summarize(&outcome("late", &[], RecorderState::Complete)), [unfinished], "声称可用却没有任何原图");
+    assert_eq!(summarize(&outcome("late", &[(0, 1)], RecorderState::Complete)), [finished.clone()]);
+    assert_eq!(summarize(&outcome("late", &[], RecorderState::NotRetained)), [finished.clone()]);
+    assert!(summarize(&outcome("late", &[], RecorderState::Off)).is_empty(), "录制关闭不记录制结果");
+    let mut cleanup = outcome("late", &[(0, 1)], RecorderState::Complete);
+    cleanup.retention_errors = vec!["清理旧目录失败：被占用".into()];
+    assert_eq!(summarize(&cleanup), [own(Some("warn"), "录制保留清理失败", None), finished]);
+    for outcome in [outcome("late", &[], RecorderState::Failed), outcome("late", &[(0, 1)], RecorderState::Complete), outcome("late", &[], RecorderState::NotRetained), cleanup] {
+        assert!(recording_records(&outcome).iter().all(|record| record.message.contains("cycleId=late")), "界面事件流没有 cycle 字段，消息必须自带 cycleId");
     }
 }

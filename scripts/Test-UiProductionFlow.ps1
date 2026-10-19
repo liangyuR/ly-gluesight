@@ -1,7 +1,8 @@
 #Requires -Version 7.0
 param(
     [ValidateRange(1024, 65535)][int]$DebugPort = 9339,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$DataRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,14 +11,15 @@ $flowProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $flowOutput = Join-Path $flowProjectRoot 'output/playwright/flow-regression'
 $flowManifestPath = Join-Path $flowOutput 'instance.json'
 $flowOwnedInstance = $null
+$flowWatch = [Diagnostics.Stopwatch]::StartNew()
 Push-Location -LiteralPath $flowProjectRoot
 try {
     & node --input-type=module -e "await import('playwright-core'); await import('node:sqlite');"
     if ($LASTEXITCODE -ne 0) { throw '请使用 Node 24.15+ 并先执行 pnpm install --frozen-lockfile。' }
-    & (Join-Path $PSScriptRoot 'Start-UiTestInstance.ps1') -Profile flow -DebugPort $DebugPort -SkipBuild:$SkipBuild | Out-Host
+    & (Join-Path $PSScriptRoot 'Start-UiTestInstance.ps1') -Profile flow -DebugPort $DebugPort -SkipBuild:$SkipBuild -DataRoot $DataRoot | Out-Host
     $flowOwnedInstance = Get-Content -LiteralPath $flowManifestPath -Raw | ConvertFrom-Json
     & node (Join-Path $flowProjectRoot 'tests/native/production-flow-ui.mjs') `
-        --cdp "http://localhost:$DebugPort" --instance $flowManifestPath --output (Join-Path $flowOutput 'result.json')
+        --instance $flowManifestPath --output (Join-Path $flowOutput 'result.json')
     if ($LASTEXITCODE -ne 0) { throw "生产落盘测试失败（退出码 $LASTEXITCODE）。日志见 $flowOutput。" }
 } finally {
     if ($flowOwnedInstance) {
@@ -32,4 +34,5 @@ try {
         }
     }
     Pop-Location
+    Write-Host "生产落盘总耗时 $([math]::Round($flowWatch.Elapsed.TotalSeconds, 1)) s"
 }

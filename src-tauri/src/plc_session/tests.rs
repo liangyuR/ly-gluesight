@@ -306,11 +306,11 @@ async fn s7_wire_end_extra_count_rejects_completion_and_requires_neutral_reset()
     let mut rig = Rig::new("end-extra-count").await;
     assert_eq!(rig.plan.device_shots, 4);
     rig.request(1, "SN-50").await;
-    rig.session.bind_cycle_id("00000000000000000000000000000001").unwrap();
+    rig.session.bind_cycle_id("00000000000000000000000000000001", PartSite::default()).unwrap();
     rig.arm().await;
     rig.reject_end_and_reset(5).await;
     rig.request(2, "SN-50").await;
-    rig.session.bind_cycle_id("00000000000000000000000000000002").unwrap();
+    rig.session.bind_cycle_id("00000000000000000000000000000002", PartSite::default()).unwrap();
     rig.arm().await;
     rig.end().await;
     rig.report().await;
@@ -323,11 +323,11 @@ async fn s7_wire_end_extra_count_rejects_completion_and_requires_neutral_reset()
 async fn s7_wire_end_missing_count_rejects_completion_and_requires_neutral_reset() {
     let mut rig = Rig::new("end-missing-count").await;
     rig.request(1, "SN-50").await;
-    rig.session.bind_cycle_id("00000000000000000000000000000001").unwrap();
+    rig.session.bind_cycle_id("00000000000000000000000000000001", PartSite::default()).unwrap();
     rig.arm().await;
     rig.reject_end_and_reset(3).await;
     rig.request(2, "SN-50").await;
-    rig.session.bind_cycle_id("00000000000000000000000000000002").unwrap();
+    rig.session.bind_cycle_id("00000000000000000000000000000002", PartSite::default()).unwrap();
     rig.arm().await;
     rig.end_counts(4).await;
     rig.report().await;
@@ -631,7 +631,7 @@ async fn s7_wire_restart_after_persisted_ack_recovers_exact_cycle_before_and_aft
     let mut rig = Rig::new("restart-ack-cycle").await;
     let cycle_id = "0123456789abcdef0123456789abcdef";
     rig.request(7, "SN-50").await;
-    rig.session.bind_cycle_id(cycle_id).unwrap();
+    rig.session.bind_cycle_id(cycle_id, PartSite::default()).unwrap();
     rig.arm().await;
     rig.end().await;
     rig.report().await;
@@ -1181,7 +1181,7 @@ async fn s7_wire_released_does_not_create_second_ack_delivery_after_ready() {
     let mut rig = Rig::new("released-single-delivery").await;
     let cycle = "1123456789abcdef0123456789abcdef";
     rig.request(1, "SN-12345").await;
-    rig.session.bind_cycle_id(cycle).unwrap();
+    rig.session.bind_cycle_id(cycle, PartSite::default()).unwrap();
     rig.arm().await;
     rig.end().await;
     let judgement = crate::judge::Judgement::error(crate::judge::fault::MISSING_FRAME, "协议专项保留原判定");
@@ -1234,7 +1234,7 @@ fn s7_wire_arm_deadline_settles_original_journal_before_fault_without_late_overw
         let mut rig = Rig::new("arm-deadline-journal-settlement").await;
         rig.request(1, "SN-12345").await;
         let cycle = "223456789abcdef0123456789abcdef0";
-        rig.session.bind_cycle_id(cycle).unwrap();
+        rig.session.bind_cycle_id(cycle, PartSite::default()).unwrap();
         let path = rig.session.path.clone();
         let temporary = path.with_extension("pending.tmp");
         let (release, wait) = mpsc::channel();
@@ -1300,7 +1300,7 @@ async fn s7_wire_teaching_capture_uses_single_device_and_holds_until_release() {
         (1..=20).map(|i| PlanShot { shot_id: format!("S{i:03}"), pose_id: format!("capture-{i}"), camera_ids: vec!["device1".into()] }).collect()).unwrap();
     rig.request(1, "SN-777").await;
     rig.session.bind_capture_id("capture-round-1").unwrap();
-    assert!(rig.session.bind_cycle_id("00000000000000000000000000000001").is_err());
+    assert!(rig.session.bind_cycle_id("00000000000000000000000000000001", PartSite::default()).is_err());
     rig.arm().await;
     assert_eq!(rig.session.capture_id(), Some("capture-round-1"));
     let persisted: Journal = serde_json::from_str(&std::fs::read_to_string(&rig.session.path).unwrap()).unwrap();

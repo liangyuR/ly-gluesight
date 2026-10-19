@@ -105,6 +105,15 @@ it("本轮已采用为示教图像 → 标明已采用，主操作改为进入�
  expect(screen.queryByRole("checkbox",{name:"带入旧中线与参数作为草稿"})).toBeNull();
 });
 
+it("普通采集模式下本轮已作为独立验证样本入库 → 采用按钮禁用并提示整圈重采",async()=>{
+ ws.data!.workspace.captureId="teaching-round";
+ ws.data!.workspace.sampleBank=[{id:"r1",name:"独立采集",geometryTag:null,expected:"OK",createdAt:1,captureId:"r1"}];
+ vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show();
+ expect(await screen.findByText(/本轮已作为独立验证样本加入样本库/)).toBeVisible();
+ const button=screen.getByRole("button",{name:"采用本轮图像"});
+ expect(button).toBeDisabled();await userEvent.click(button);expect(workspaceApi.adoptCapture).not.toHaveBeenCalled();
+});
+
 it("工件进行中禁止采用完整采集轮次",async()=>{
  ws.data!.workspace.captureId="teaching-round";
  vi.mocked(useCycle).mockReturnValue({snapshot:snapshot("ACQUIRE"),logs:[],measured:[]});

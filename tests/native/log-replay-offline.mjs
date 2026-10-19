@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { cp, mkdir, readFile, realpath, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { client, monotoneCenterline, produce, until } from "./offline-e2e.mjs";
+import { client, instanceCdp, produce, uiPage, until } from "./offline-e2e.mjs";
 
 // 演示夹具：2026-10-17 单圈样本集（12 点位 × 3 相机）没有标定，像素当量 0.1 mm/px 是模拟标定（胶条在图中约 35 px，按 3–4 mm 常见胶宽推定）；
 // ROI 只为让回放链路跑通而手工选定，不代表算法调优结果或现场标定。
@@ -57,7 +57,8 @@ async function teach(call, id) {
     if (!roi) continue;
     const imageId = (await call("workspace_get", { id })).workspace.frames[k].image.id;
     const extracted = await edit("workspace_extract_centerline", { k, imageId, roi });
-    await edit("workspace_save_params", { k, params: { path: monotoneCenterline(extracted.path), mmPerPx: MM_PER_PX, detect: DETECT } });
+    assert(extracted.path.length >= 3, `${shot.id} 中线提取失败：${extracted.message}`);
+    await edit("workspace_save_params", { k, params: { path: extracted.path, mmPerPx: MM_PER_PX, detect: DETECT } });
     const trial = (await edit("workspace_trial", { k, imageId })).workspace.frames[k].trial;
     assert(trial?.passed, `${shot.id} 试测未通过：${trial?.reason}`);
     await edit("workspace_save_teach", { k, imageId });
@@ -228,24 +229,15 @@ export async function runLogReplay(page, options) {
 async function main() {
   const args = {};
   for (let i = 2; i < process.argv.length; i += 2) args[process.argv[i].slice(2)] = process.argv[i + 1];
-  const cdp = new URL(args.cdp ?? "http://127.0.0.1:9346");
-  assert(["127.0.0.1", "localhost"].includes(cdp.hostname), "仅允许本机 CDP");
   const sampleSet = args["sample-set"] ?? process.env.GLUESIGHT_SAMPLE_SET;
   assert(sampleSet && existsSync(path.join(sampleSet, "sample-set.json")), "需要 --sample-set 指向 2026-10-17 单圈样本集");
   const output = path.resolve(args.output ?? "output/playwright/log-replay");
   await mkdir(output, { recursive: true });
-  const main = browser => browser.contexts().flatMap(c => c.pages()).find(p => /tauri\.localhost\/(index\.html)?#\//.test(p.url()));
-  let browser = await chromium.connectOverCDP(cdp.href);
-  for (const deadline = Date.now() + 60000; !main(browser) && Date.now() < deadline;) {
-    await browser.close();
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    browser = await chromium.connectOverCDP(cdp.href);
-  }
+  const instance = args.instance ?? "output/playwright/e2e-regression/instance.json";
+  const cdp = await instanceCdp(instance, args.cdp, id => /^com\.xyzrobotics\.tujiaovision\.[a-z0-9]+-tests$/.test(id));
+  const browser = await chromium.connectOverCDP(cdp);
   try {
-    const page = main(browser);
-    assert(page, "未找到主界面页面（资料准备页尚未关闭）");
-    page.setDefaultTimeout(30000);
-    await page.waitForFunction(() => !!window.__TAURI_INTERNALS__);
+    const page = await uiPage(browser);
     const result = await runLogReplay(page, { sampleSet, output, parts: Number(args.parts ?? 3) });
     await writeFile(path.join(output, "result.json"), JSON.stringify(result, null, 2) + "\n");
     process.stdout.write(JSON.stringify({ passed: result.passed, parts: result.parts.map(p => [p.id, p.verdict, p.replay.verdict, p.stages.total]) }) + "\n");

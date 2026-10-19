@@ -17,8 +17,8 @@ export const FIXTURES = {
     // 样本集未标定（mmPerPx=null）。模拟标定沿用 docs/architecture/p0-plan.md 记录的同分辨率现场相机假设当量 0.112 mm/px，写进副本清单。
     mmPerPx: 0.112,
     normalPart: "p01",
-    // 样本集只有正常件：在副本里由 p01 复制出 p02，把 S011 组所选图（样本 S032）的一段胶路换成左侧 50 px 处的板面像素，作为人工断胶件。
-    defect: { partId: "p02", from: "p01", sampleShot: "S032", camera: "cam2", box: [880, 140, 80, 100], shift: [-50, 0], pose: "S011", expected: "NG_GAP" },
+    // 样本集只有正常件：在副本里由 p01 复制出 p02，把 S011 组所选图（样本 S032）的一段胶路逐行抹成两侧板面像素的渐变，作为人工断胶件。
+    defect: { partId: "p02", from: "p01", sampleShot: "S032", camera: "cam2", box: [880, 140, 80, 100], pose: "S011", expected: "NG_GAP" },
     groups: {
       S001: { camera: "cam2", guide: [[745, 60], [740, 85], [735, 110], [734, 135], [740, 160], [746, 185], [743, 210], [736, 235], [735, 260], [734, 285], [740, 310], [739, 335], [738, 360], [731, 385], [724, 410], [723, 435]] },
       S002: { camera: "cam2", guide: [[615, 250], [633, 275], [649, 300], [662, 325], [676, 350], [690, 375], [701, 400], [708, 425], [712, 450], [714, 475], [710, 500], [705, 525], [700, 550], [707, 575], [706, 600], [705, 625], [703, 650], [708, 675], [714, 700], [708, 725], [696, 750]], detect: NARROW },
@@ -55,17 +55,23 @@ function within(parent, child) {
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }
 
-/** 把 24/8 位未压缩 BMP 里 box 区域的像素换成平移 shift 后位置的像素（同一幅图内）。 */
-export function eraseBmp(bytes, [x0, y0, w, h], [dx, dy]) {
+/** 把 24/8 位未压缩 BMP 里 box 区域逐行换成左右紧邻像素之间的线性渐变，抹掉区域内的胶条。 */
+export function eraseBmp(bytes, [x0, y0, w, h]) {
   assert.equal(bytes.toString("ascii", 0, 2), "BM", "人工断胶只支持 BMP 原图");
   const offset = bytes.readUInt32LE(10), width = bytes.readInt32LE(18), height = bytes.readInt32LE(22);
   const bpp = bytes.readUInt16LE(28);
   assert(bytes.readUInt32LE(30) === 0 && [8, 24].includes(bpp), "人工断胶只支持未压缩的 8/24 位 BMP");
   const pixel = bpp / 8, stride = Math.ceil((width * pixel) / 4) * 4, rows = Math.abs(height);
   const at = (x, y) => offset + (height > 0 ? rows - 1 - y : y) * stride + x * pixel;
-  assert(x0 + dx >= 0 && x0 + w + dx <= width && y0 + dy >= 0 && y0 + h + dy <= rows && x0 + w <= width && y0 + h <= rows, "人工断胶区域越界");
+  assert(x0 >= 1 && x0 + w < width && y0 >= 0 && y0 + h <= rows, "人工断胶区域越界");
   const out = Buffer.from(bytes);
-  for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) bytes.copy(out, at(x, y), at(x + dx, y + dy), at(x + dx, y + dy) + pixel);
+  for (let y = y0; y < y0 + h; y++) {
+    const left = at(x0 - 1, y), right = at(x0 + w, y);
+    for (let x = x0; x < x0 + w; x++) {
+      const t = (x - x0 + 1) / (w + 1);
+      for (let c = 0; c < pixel; c++) out[at(x, y) + c] = Math.round(bytes[left + c] * (1 - t) + bytes[right + c] * t);
+    }
+  }
   return out;
 }
 
@@ -96,7 +102,7 @@ export async function prepareSampleSet(source, outputDir) {
     await cp(path.join(target, "parts", defect.from), dir, { recursive: true });
     const file = (await readdir(dir)).find(name => name.toLowerCase().startsWith(`${defect.sampleShot}_${defect.camera}_v1.`.toLowerCase()));
     assert(file, `样本件 ${defect.from} 缺少 ${defect.sampleShot}_${defect.camera}_v1`);
-    await writeFile(path.join(dir, file), eraseBmp(await readFile(path.join(dir, file)), defect.box, defect.shift));
+    await writeFile(path.join(dir, file), eraseBmp(await readFile(path.join(dir, file)), defect.box));
     manifest.parts = [...manifest.parts, { ...from, partId: defect.partId, label: "ng", shotLabels: { [defect.sampleShot]: "gap" },
       origin: `${from.origin ?? from.partId}（端到端人工断胶：${defect.sampleShot} 区域 ${defect.box.join(",")}）` }];
   }
@@ -115,7 +121,7 @@ export async function until(read, accepts, message, timeout = 30000, interval = 
   throw new Error(`${message}：${JSON.stringify(value)?.slice(0, 1500)}`);
 }
 
-const GATE_BUSY = /正在处理 PLC 事务|检测仍有在途事务|设备配置正在变化|尚未回到空闲|正在预热|PLC 事务 3 秒内仍未结束/;
+const GATE_BUSY = /正在处理 PLC 事务|检测仍有在途事务|设备配置正在变化|尚未回到空闲|正在预热|PLC 事务 3 秒内仍未结束|离线 S7 服务尚未连接/;
 export const gateRetries = [];
 
 export function client(page) {
@@ -207,7 +213,8 @@ export async function produce(call, recipeId, partId) {
   const site = await until(() => call("site_status"), s => !s.running, `样本件 ${partId} 握手未结束`, 30000);
   const run = site.recent.find(r => r.purpose === "production" && r.partId === partId && r.cycleId === summary.cycleId);
   assert(run, `最近样本件里没有 ${partId}（cycleId ${summary.cycleId}）`);
-  await until(() => call("workspace_record_images", { historyId: summary.id }), v => v.complete, `样本件 ${partId} 原图录制未完成`, 30000);
+  await until(() => call("workspace_record_images", { historyId: summary.id }), v => v.complete,
+    `样本件 ${partId} 原图录制未完成（本件结论 ${summary.verdict}：${summary.reason}）`, 30000);
   return { summary, run };
 }
 
@@ -275,8 +282,9 @@ export async function runOfflineE2E(page, options) {
   assert((await call("workspace_list")).every(w => !w.captureId), "全新站点不应已有采集建立的候选");
   const before = { plc: await call("plc_get_config"), cameras: await call("camera_rig_config") };
   const settings = await call("cycle_get_settings");
-  if (settings.productSource !== "plc") {
-    await call("cycle_save_settings", { settings: { ...settings, productSource: "plc" } });
+  if (settings.productSource !== "plc" || options.armMs) {
+    const timeouts = options.armMs ? { ...settings.timeouts, armMs: options.armMs } : settings.timeouts;
+    await call("cycle_save_settings", { settings: { ...settings, productSource: "plc", timeouts } });
   }
   const engine = await until(() => call("engine_status"), e => e.ready, "lyFlow 引擎未就绪", 30000);
   step("lyFlow 就绪", { version: engine.version ?? null });
@@ -402,7 +410,7 @@ export async function runOfflineE2E(page, options) {
   const result = {
     passed: true,
     identifier,
-    inputs: { sampleSet: options.sampleSet, offlineSampleSet: prepared.dir, sampleSetId: prepared.manifest.id, mmPerPx: fixture.mmPerPx, lyflow: options.lyflow, lyflowVersion: engine.version ?? null },
+    inputs: { sampleSet: options.sampleSet, offlineSampleSet: prepared.dir, sampleSetId: prepared.manifest.id, mmPerPx: fixture.mmPerPx, lyflow: options.lyflow, lyflowVersion: engine.version ?? null, armBudgetMs: options.armMs ?? null },
     elapsedMs: Date.now() - startedAt,
     recipe: { id, revisionId: recipe.revisionId, teachingId: recipe.teachingId ?? null },
     taught,
@@ -419,6 +427,18 @@ export async function runOfflineE2E(page, options) {
   };
   if (options.output) await writeFile(options.output, JSON.stringify(result, null, 2) + "\n");
   return result;
+}
+
+/** 读取隔离实例清单，返回主窗口所在的 CDP 地址（显式 --cdp 优先）。 */
+export async function instanceCdp(instancePath, override, acceptsIdentifier) {
+  const manifest = JSON.parse(await readFile(instancePath, "utf8"));
+  assert(acceptsIdentifier(manifest.identifier), `实例 ${manifest.identifier} 不是允许的隔离测试实例`);
+  const cdp = override ?? manifest.cdp;
+  assert(cdp, `实例清单缺少 cdp：${instancePath}，请用 scripts/Start-UiTestInstance.ps1 重新启动实例`);
+  const url = new URL(cdp);
+  assert(["127.0.0.1", "localhost", "[::1]"].includes(url.hostname), "仅允许本机 CDP");
+  assert.equal(Number(url.port), manifest.debugPort);
+  return cdp;
 }
 
 /** 实例刚启动时先显示资料准备窗口，等到主窗口的 Tauri UI 页面出现。 */
@@ -447,18 +467,15 @@ async function main() {
     process.exitCode = MISSING_INPUT_EXIT;
     return;
   }
-  const cdp = args.cdp ?? "http://localhost:9341";
-  const url = new URL(cdp);
-  assert(["127.0.0.1", "localhost", "[::1]"].includes(url.hostname), "仅允许本机 CDP");
   const instance = args.instance ?? "output/playwright/e2e-regression/instance.json";
-  const manifest = JSON.parse(await readFile(instance, "utf8"));
-  assert.equal(manifest.identifier, identifier, "仅允许隔离端到端实例");
-  assert.equal(Number(url.port), manifest.debugPort);
+  const cdp = await instanceCdp(instance, args.cdp, id => id === identifier);
   const browser = await chromium.connectOverCDP(cdp);
   try {
     const page = await uiPage(browser);
     const output = args.output ?? "output/playwright/e2e-regression/result.json";
-    const result = await runOfflineE2E(page, { ...inputs, output, workDir: path.dirname(output) });
+    const armMs = args["arm-ms"] === undefined ? undefined : Number(args["arm-ms"]);
+    assert(armMs === undefined || (Number.isInteger(armMs) && armMs > 0), `--arm-ms 必须是正整数：${args["arm-ms"]}`);
+    const result = await runOfflineE2E(page, { ...inputs, armMs, output, workDir: path.dirname(output) });
     process.stdout.write(JSON.stringify({ passed: result.passed, elapsedMs: result.elapsedMs, branches: result.branches,
       production: Object.fromEntries(Object.entries(result.production).map(([k, v]) => [k, v.verdict])), replay: Object.fromEntries(["original", "rules", "raw"].map(k => [k, `${result.replay[k].verdict} via ${result.replay[k].via}`])) }) + "\n");
   } finally { await browser.close(); }
