@@ -16,6 +16,7 @@ import { TrialResult, trialPoints } from "./TrialResult";
 import { teachingGroups } from "./teachingGroups";
 import { productionBusy as isProductionBusy } from "../cycle/phase";
 import { TeachingSettings } from "./TeachingSettings";
+import type { SnackMessage } from "../../components/Snackbar";
 
 function FrozenViewOption({ id, metadata, selected, disabled, onSelect }: { id: string; metadata: FrozenImage; selected: boolean; disabled: boolean; onSelect: () => void }) {
   const { image, loading, error } = useGrayImage(id, metadata.id);
@@ -34,9 +35,9 @@ function imagingMismatch(image: FrozenImage | null | undefined, doc: RecipeDoc) 
 }
 
 /** 记录标定验证后的提示：勾选复用时说明实际复用到几个拍照点。 */
-function calibrationNotice(next: WorkspaceView, k: number, view: number, reuse: boolean) {
+function calibrationNotice(next: WorkspaceView, k: number, view: number, reuse: boolean): SnackMessage {
   const check = next.workspace.frames[k]?.viewStates?.find(s => s.view === view)?.calibrationCheck;
-  if (!check?.passed) return "已记录标定验证：误差超出 ±0.1 mm，未通过";
+  if (!check?.passed) return { text: "已记录标定验证：误差超出 ±0.1 mm，未通过", tone: "warn" };
   if (!reuse) return "已记录当前图的标定验证";
   const reused = next.workspace.frames.filter((frame, other) => other !== k && frame.viewStates?.some(s => s.view === view && s.calibrationCheck?.verificationId === check.verificationId)).length;
   return reused ? `已记录标定验证，并把当量与验证复用到 ${reused} 个拍照点` : "已记录当前图的标定验证；没有可复用的拍照点（需同一相机、同一图号、设备与标定一致，且未单独设置其他当量）";
@@ -70,7 +71,7 @@ export default function TeachingPage() {
   const current=useRef({scope,alive:true,revision:data?.workspace.revision});current.current.scope=scope;current.current.revision=data?.workspace.revision;
   useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;serial.current++;};},[]);
   useEffect(()=>{serial.current++;pending.current=false;setWorking(false);setVertex(null);setRegion(null);setBrushPoints([]);setRegionMode(false);setOperation(null);setExtractionHint("");setExtractionFailure(null);},[scope]);
-  const perform=async(request:()=>Promise<WorkspaceView>,message:string | ((next: WorkspaceView) => string))=>{
+  const perform=async(request:()=>Promise<WorkspaceView>,message:SnackMessage | ((next: WorkspaceView) => SnackMessage))=>{
     if(pending.current||busy||dirty)return null;
     pending.current=true;setWorking(true);
     const action=++serial.current;

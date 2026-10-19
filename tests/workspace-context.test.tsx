@@ -1,7 +1,9 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, screen, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { storageApi } from "../src/lib/storage";
 import { WorkspaceProvider, useWorkspace } from "../src/features/workspace/context";
+import { SnackbarHost, SnackbarProvider } from "../src/components/Snackbar";
 import { workspaceApi } from "../src/features/workspace/api";
 import { recipeApi } from "../src/features/cycle/api";
 import { cameraApi } from "../src/features/camera/api";
@@ -35,7 +37,8 @@ beforeEach(() => {
   });
 });
 async function open() {
-  const hook = renderHook(() => useWorkspace(), { wrapper: WorkspaceProvider });
+  const wrapper = ({ children }: { children: ReactNode }) => <SnackbarProvider><SnackbarHost /><WorkspaceProvider>{children}</WorkspaceProvider></SnackbarProvider>;
+  const hook = renderHook(() => useWorkspace(), { wrapper });
   await waitFor(() => expect(hook.result.current.data?.workspace.doc.id).toBe("A"));
   return hook;
 }
@@ -86,7 +89,18 @@ describe("候选工作台的主流程保护", () => {
     const saved = workspaceView(); saved.workspace.doc = draft;
     await act(async () => saving.resolve(saved));
     expect(result.current.busy).toBe(false); expect(result.current.dirty).toBe(false);
-    expect(result.current.notice).toContain("候选配置已保存");
+    expect(screen.getByRole("status")).toHaveTextContent("候选配置已保存");
+  });
+
+  it("候选配置自动保存成功 → 不弹出全局提示，保存状态只看顶栏徽章", async () => {
+    const { result } = await open();
+    const draft = { ...result.current.doc!, name: "自动保存" };
+    const saved = workspaceView(); saved.workspace.doc = draft;
+    vi.mocked(workspaceApi.saveDoc).mockResolvedValue(saved);
+    act(() => result.current.setDoc(draft));
+    await waitFor(() => expect(workspaceApi.saveDoc).toHaveBeenCalledWith("A", 7, draft), { timeout: 2500 });
+    await waitFor(() => expect(result.current.saveState).toBe("saved"));
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
   });
 
   it("刷新请求发出后用户开始编辑，也不能覆盖草稿", async () => {
@@ -112,10 +126,10 @@ describe("候选工作台的主流程保护", () => {
   it("操作响应配方不一致时保留当前候选并允许重试", async () => {
     const { result } = await open();
     await act(async () => expect(await result.current.act(async () => workspaceView("B"), "已保存")).toBeNull());
-    expect(result.current.doc?.id).toBe("A"); expect(result.current.notice).toBe("");
+    expect(result.current.doc?.id).toBe("A"); expect(screen.getByRole("status")).toBeEmptyDOMElement();
     expect(result.current.error).toContain("候选响应与当前配方不一致");
     await act(async () => expect((await result.current.act(async () => workspaceView(), "当前配方已保存"))?.workspace.doc.id).toBe("A"));
-    expect(result.current.error).toBe(""); expect(result.current.notice).toBe("当前配方已保存");
+    expect(result.current.error).toBe(""); expect(screen.getByRole("status")).toHaveTextContent("当前配方已保存");
   });
 
   it("拍照点视角变化只清除该点的旧中线草稿",async()=>{

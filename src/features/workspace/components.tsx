@@ -34,7 +34,7 @@ export function WorkspaceEmpty() {
   return <div className="wp-page">{error && <Notice title="无法加载候选配置" tone="warn">{error}</Notice>}<div className="wp-empty"><Camera size={32} /><h2>{desktopAvailable() ? "尚未选择配方" : "当前为浏览器查看模式"}</h2><p>{desktopAvailable() ? "在配方库选择或新建配方，再开始规划拍照点与示教中线。" : "请在桌面软件中连接实际数据。"}</p>{desktopAvailable() && <Link className="btn primary" to="/recipe">打开配方库</Link>}</div></div>;
 }
 export function WorkspaceBar() {
-  const { list, drafts, selectedId, select, data, doc, dirty, frameDirty, busy, previewError, error, notice, saveDoc, saveState, retrySave, setError } = useWorkspace();
+  const { list, drafts, selectedId, select, data, doc, dirty, frameDirty, busy, previewError, error, saveDoc, saveState, retrySave, setError } = useWorkspace();
   const { pathname } = useLocation();
   useEffect(() => () => setError(""), [pathname, setError]);
   const choices = [...list.map(r => ({ id:r.id, name:r.name })), ...drafts.filter(w => !list.some(r => r.id === w.doc.id)).map(w => ({ id:w.doc.id, name:w.doc.name }))];
@@ -43,7 +43,6 @@ export function WorkspaceBar() {
     {dirty && <Notice title="候选配置尚未保存" tone="warn"><span>保存后再执行示教、验证和发布。</span><button className="btn small primary" disabled={busy || !!previewError} onClick={() => void saveDoc()}>保存候选配置</button></Notice>}
     {previewError && <Notice title="候选参数无效" tone="warn">{previewError}</Notice>}
     {error && <Notice title="操作未完成" tone="warn">{error}</Notice>}
-    {notice && <Notice title={notice} tone="ok" />}
     {publish?.state === "waiting" && <Notice title="待生效，候选已冻结">等待当前工件结束后切换；生效失败可在验证与发布页重试同一版本。</Notice>}
     {publish?.state === "failed" && <Notice title="生效失败，可重试同一版本" tone="warn">{publish.message}</Notice>}
     {publish?.state === "uncertain" && <Notice title="生效状态不确定，请先核实发布状态" tone="ng">{publish.message}</Notice>}
