@@ -1,4 +1,4 @@
-/* 令牌来自 qing-steel（src/main.tsx 先引入 qing-steel/tokens.css） */
+/* 令牌与组件样式来自 qing-steel（src/main.tsx 先引入 qing-steel/react.css） */
 :root {
   font-family: var(--font-sans);
   font-size: 14px;
