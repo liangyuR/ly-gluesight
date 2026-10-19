@@ -74,7 +74,7 @@ export default function ValidationPage() {
   const checks=validation&&validation.revision===data.workspace.revision?validation.checks:(["capture","teach","calibration","validation"] as const).map(id=>{const step=stepOf(data.progress,id);return {name:step.label,passed:step.status==="done",detail:step.blockers.length?`${step.detail}；${step.blockers[0].message}`:step.detail};});
   const failedChecks=checks.filter(c=>!c.passed),passedChecks=checks.filter(c=>c.passed);
   const checkRow=(c:typeof checks[number])=><div key={c.name} className={"wp-check-row "+(c.passed?"passed":"")}>{c.passed?<CheckCircle2 size={20}/>:<AlertTriangle size={20}/>}<div><strong>{c.name}</strong><p>{c.detail}</p></div></div>;
-  const runBlocked=!samples.length?"先选用至少一组代表性样本":!sourceConfirmed?"勾选上方确认后才能运行":data.workspace.pending?"候选版本正在等待生效，生效或放弃后再验证":dirty||frameDirty?"候选配置有未保存修改，保存后再验证":locked?"正在处理，请稍候":"";
+  const runBlocked=data.workspace.pending?"候选版本正在等待生效，生效或放弃后再验证":locked?"正在处理，请稍候":!samples.length?"先选用至少一组代表性样本":!sourceConfirmed?"勾选上方确认后才能运行":dirty||frameDirty?"候选配置有未保存修改，保存后再验证":"";
   const publishBlocked=data.workspace.pending?"":!validationCurrent?validation&&validation.revision===data.workspace.revision&&!selectionDirty?"验证未通过，修正后重新验证":"运行整套图像验证并通过后才能发布":dirty||frameDirty?"候选配置有未保存修改，保存后再发布":"";
   const expectedOptions=expectedChoices.map(([v,l])=><option key={v} value={v}>{l}</option>);
   const choose=(key:Sample,enabled:boolean)=>{setSourceConfirmed(false);setSelection(previous=>({candidate,samples:enabled?[...previous.samples.filter(s=>!(s.historyId===key.historyId&&s.sampleId===key.sampleId)),key]:previous.samples.filter(s=>!(s.historyId===key.historyId&&s.sampleId===key.sampleId))}));};
