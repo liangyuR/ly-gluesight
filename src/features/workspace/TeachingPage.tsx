@@ -173,7 +173,7 @@ export default function TeachingPage() {
       if (result && extracted && current.current.scope === capturedScope) {
         const output = extracted as Awaited<ReturnType<typeof workspaceApi.extractCenterline>>;
         if (output.failure) {
-          const failures = selectionTool === "brush" && WIDEN_BRUSH_REASONS.has(output.failure.reason) ? brushFailures + 1 : brushFailures;
+          const failures = selectionTool === "brush" && WIDEN_BRUSH_REASONS.has(output.failure.reason) ? brushFailures + 1 : 0;
           const advice = selectionTool === "brush" ? extractionAdvice(output.failure.reason, failures, brushWidth) : "";
           setBrushFailures(failures);
           setExtractionFailure(output.failure); setExtractionHint(advice ? output.failure.message + " " + advice : output.failure.message); setRegionMode(true); return;
@@ -236,16 +236,16 @@ export default function TeachingPage() {
   const flowAt = flow.findIndex(([, done]) => !done);
   const [stateText, stateTone]: [string, "ok" | "warn" | "info" | "neutral"] = editing ? ["中线已修改 · 需试测", "warn"] : taught ? ["已保存", "ok"] : trialCurrent ? ["试测通过 · 未保存", "warn"]
     : viewState === "trialFailed" ? ["试测异常", "warn"] : viewState === "recapture" ? ["需重新采集", "warn"] : viewProgress?.trialStale ? ["试测已过期", "warn"] : hasPath ? ["待试测", "info"] : ["待示教", "neutral"];
-  const primary = !hasPath ? "extract" : !trialCurrent ? "trial" : "save";
+  const strokeAdvised = selectionTool === "brush" && brushFailures >= 2 && !!extractionFailure;
+  const primary = strokeAdvised ? "stroke" : !hasPath ? "extract" : !trialCurrent ? "trial" : "save";
   const lengthText = t.mmPerPx != null && Number.isFinite(t.mmPerPx) && t.mmPerPx > 0 ? (lengthPx * t.mmPerPx).toFixed(1) + " mm" : lengthPx.toFixed(0) + " px";
   const groupTone = (item: typeof groups[number]) => item.complete ? "ok" : item.choice ? "warn" : "off";
-  const strokeAdvised = selectionTool === "brush" && brushFailures >= 2 && !!extractionFailure;
   const toolHint = extractionHint || (regionMode ? selectionTool === "brush" ? "按住左键沿胶路从起点刷到终点，每笔重画选区；笔刷覆盖胶路和两侧少量背景，尽量避开阴影。" : "按住左键框选一段连续胶路，再自动提取中线；框选包含阴影时建议改用刷选。" : "");
   const tools = <div className="wp-canvas-tools" role="group" aria-label="示教工具">
     <button className={"btn small" + (regionMode ? " active" : "")} aria-pressed={regionMode} disabled={!unlocked || !frame.image} onClick={() => setRegionMode(v => !v)}><Brush size={14}/>{regionMode ? "结束选区 / 手工修正" : "刷选胶路区域"}</button>
     <select className="input" aria-label="选区工具" value={selectionTool} disabled={!unlocked} onChange={e => { setSelectionTool(e.target.value as "brush" | "box"); setRegionMode(true); setExtractionFailure(null); setExtractionHint(""); setBrushFailures(0); }}><option value="brush">沿胶路刷选</option><option value="box">矩形框选</option></select>
-    <button className={"btn small" + (primary === "extract" && !strokeAdvised ? " primary" : "")} disabled={!unlocked || !frame.image || loading || !!error} onClick={() => void extract()}><WandSparkles size={14}/>{operation === "extract" ? "提取中…" : "自动提取中线"}</button>
-    <button className={"btn small" + (strokeAdvised ? " primary" : "")} title={selectionTool !== "brush" ? "仅刷选时可用" : !strokeValid ? "先沿胶路刷过至少 8 px" : "按笔划生成中线草稿"} disabled={!unlocked || !enabled || !frame.image || selectionTool !== "brush" || !strokeValid || !spacingValid} onClick={fromStroke}>笔划直接生成中线</button>
+    <button className={"btn small" + (primary === "extract" ? " primary" : "")} disabled={!unlocked || !frame.image || loading || !!error} onClick={() => void extract()}><WandSparkles size={14}/>{operation === "extract" ? "提取中…" : "自动提取中线"}</button>
+    <button className={"btn small" + (primary === "stroke" ? " primary" : "")} title={selectionTool !== "brush" ? "仅刷选时可用" : !strokeValid ? "先沿胶路刷过至少 8 px" : "按笔划生成中线草稿"} disabled={!unlocked || !enabled || !frame.image || selectionTool !== "brush" || !strokeValid || !spacingValid} onClick={fromStroke}>笔划直接生成中线</button>
     <span className="wp-canvas-sep" aria-hidden="true"/>
     <button className="icon-btn" aria-label="删除末点" title="删除末点" disabled={!unlocked || !enabled || !t.path.length} onClick={() => { setVertex(null); setPath(t.path.slice(0, -1)); }}><Undo2 size={15}/></button>
     <button className="icon-btn" aria-label="删除选中点" title="删除选中点" disabled={!unlocked || !enabled || vertex === null || vertex >= t.path.length} onClick={() => { const i = vertex; setVertex(null); setPath(t.path.filter((_, j) => j !== i)); }}><Trash2 size={15}/></button>

@@ -399,7 +399,12 @@ it("自动提取失败后按笔划生成 → 定位原因并保留原线，人�
   expect(screen.queryByLabelText("本次算法结果")).not.toBeInTheDocument();
 });
 
-it("刷选提取连续两次找不到连续边缘 → 先提示加大笔刷重刷，再引导改用笔划直接生成中线", async () => {
+function extractionFailure(reason: string) {
+  const failure = { point: [40, 20] as [number, number], reason, message: `提取失败：${reason}` };
+  return { path: [], message: failure.message, failure };
+}
+
+async function brushOnTaughtGroup() {
   vi.stubGlobal("DOMPoint", class {
     constructor(public x: number, public y: number) {}
     matrixTransform() { return this; }
@@ -407,10 +412,7 @@ it("刷选提取连续两次找不到连续边缘 → 先提示加大笔刷重�
   vi.stubGlobal("PointerEvent", MouseEvent);
   Object.defineProperty(SVGElement.prototype, "getScreenCTM", { configurable: true, value: () => ({ inverse: () => ({}) }) });
   Object.defineProperty(SVGElement.prototype, "setPointerCapture", { configurable: true, value: vi.fn() });
-  const candidate = groupedCandidate();
-  mockSite(candidate);
-  const failure = { point: [40, 20] as [number, number], reason: "discontinuity", message: "标记处候选边缘无法连续连接。" };
-  vi.mocked(workspaceApi.extractCenterline).mockResolvedValue({ path: [], message: failure.message, failure });
+  mockSite(groupedCandidate());
   const user = renderWorkspace("/recipe/teach");
   const image = await screen.findByRole("img", { name: "P1 · CAM-1 · 图 1" });
   await user.click(screen.getByRole("button", { name: "刷选胶路区域" }));
@@ -418,16 +420,37 @@ it("刷选提取连续两次找不到连续边缘 → 先提示加大笔刷重�
   fireEvent.pointerMove(image, { clientX: 40, clientY: 20 });
   fireEvent.pointerUp(image);
   const extract = screen.getByRole("button", { name: "自动提取中线" }), stroke = screen.getByRole("button", { name: "笔划直接生成中线" });
-  await user.click(extract);
-  await screen.findByLabelText("中线提取失败位置");
+  const failOnce = async () => { await user.click(extract); await screen.findByLabelText("中线提取失败位置"); };
+  const primaries = () => ["自动提取中线", "笔划直接生成中线", "运行试测", "保存本组示教", "保存并进入下一组"]
+    .map(name => screen.getByRole("button", { name })).filter(button => button.classList.contains("primary"));
+  return { stroke, failOnce, primaries };
+}
+
+it("已有中线的组刷选提取连续两次找不到连续边缘 → 先提示加大笔刷，再把笔划直接生成中线设为唯一主操作", async () => {
+  vi.mocked(workspaceApi.extractCenterline).mockResolvedValue(extractionFailure("discontinuity"));
+  const { stroke, failOnce, primaries } = await brushOnTaughtGroup();
+  expect(primaries()).toEqual([screen.getByRole("button", { name: "保存并进入下一组" })]);
+  await failOnce();
   expect(screen.getByText(/可加大笔刷宽度（当前 120 px/)).toBeVisible();
   expect(stroke).not.toHaveClass("primary");
   fireEvent.change(screen.getByRole("slider", { name: "拖动调整笔刷宽度" }), { target: { value: "180" } });
-  await user.click(extract);
-  await screen.findByLabelText("中线提取失败位置");
+  await failOnce();
   expect(screen.getByText(/请点「笔划直接生成中线」/)).toBeVisible();
-  expect(stroke).toHaveClass("primary");
-  expect(extract).not.toHaveClass("primary");
+  expect(primaries()).toEqual([stroke]);
+});
+
+it("两次找不到连续边缘之间夹一次多条候选失败 → 不算连续，第二次仍只提示加大笔刷", async () => {
+  vi.mocked(workspaceApi.extractCenterline)
+    .mockResolvedValueOnce(extractionFailure("discontinuity"))
+    .mockResolvedValueOnce(extractionFailure("ambiguous"))
+    .mockResolvedValueOnce(extractionFailure("missing_edges"));
+  const { stroke, failOnce } = await brushOnTaughtGroup();
+  await failOnce();
+  await failOnce();
+  await failOnce();
+  expect(screen.getByText(/可加大笔刷宽度/)).toBeVisible();
+  expect(screen.queryByText(/请点「笔划直接生成中线」/)).not.toBeInTheDocument();
+  expect(stroke).not.toHaveClass("primary");
 });
 
 it("同组切换检测相机 → 原图取消选中且编辑切到新图，其他组保持原选择", async () => {
