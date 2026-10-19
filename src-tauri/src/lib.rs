@@ -29,6 +29,7 @@ mod recipe_capture;
 mod recipe_api;
 mod release;
 mod recorder;
+mod recording_health;
 mod image_file;
 mod settings;
 mod site;
