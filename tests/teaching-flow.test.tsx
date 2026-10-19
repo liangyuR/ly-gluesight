@@ -8,6 +8,7 @@ import OverviewPage from "../src/features/workspace/OverviewPage";
 import ValidationPage from "../src/features/workspace/ValidationPage";
 import CapturePage from "../src/features/workspace/CapturePage";
 import { WorkspaceProvider } from "../src/features/workspace/context";
+import { SnackbarHost, SnackbarProvider } from "../src/components/Snackbar";
 import { workspaceApi } from "../src/features/workspace/api";
 import { recipeApi, useCycle } from "../src/features/cycle/api";
 import { cameraApi } from "../src/features/camera";
@@ -100,12 +101,12 @@ function mockSite(candidate: WorkspaceView) {
 }
 
 function renderWorkspace(path: string, strict = false) {
-  const workspace = <MemoryRouter initialEntries={[path]}><WorkspaceProvider><Routes>
+  const workspace = <MemoryRouter initialEntries={[path]}><SnackbarProvider><SnackbarHost /><WorkspaceProvider><Routes>
     <Route path="/recipe/teach" element={<TeachingPage />} />
     <Route path="/recipe/overview" element={<OverviewPage />} />
     <Route path="/recipe/validation" element={<ValidationPage />} />
     <Route path="/recipe/capture" element={<CapturePage />} />
-  </Routes></WorkspaceProvider></MemoryRouter>;
+  </Routes></WorkspaceProvider></SnackbarProvider></MemoryRouter>;
   render(strict ? <StrictMode>{workspace}</StrictMode> : workspace);
   return userEvent.setup();
 }
@@ -330,7 +331,7 @@ it("刷选提取后运行一次算法 → 传递原图引导与点距，重采�
   expect(await screen.findByLabelText("中线点 5")).toBeVisible();
   expect(screen.queryByLabelText("刷选胶路区域")).not.toBeInTheDocument();
   expect(workspaceApi.saveDraft).toHaveBeenCalledWith("A", 7, 0, { path: [], mmPerPx: .2 });
-  expect(workspaceApi.extractCenterline).toHaveBeenCalledWith("A", 8, 0, "A-image-0-cam1", [0, 0, 91, 60], { points: [[10.2, 12.4], [50.8, 42.7]], radiusPx: 40 }, 10);
+  expect(workspaceApi.extractCenterline).toHaveBeenCalledWith("A", 8, 0, "A-image-0-cam1", [0, 0, 100, 60], { points: [[10.2, 12.4], [50.8, 42.7]], radiusPx: 60 }, 10);
   await user.click(screen.getByRole("button", { name: "运行试测" }));
   const table = await screen.findByRole("table", { name: "逐点试测结果" });
   expect(workspaceApi.saveParams).toHaveBeenCalledWith("A", 8, 0, { path: extracted, mmPerPx: .2 });
@@ -397,6 +398,60 @@ it("自动提取失败后按笔划生成 → 定位原因并保留原线，人�
   expect(screen.getByRole("button", { name: "保存本组示教" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "运行试测" })).toBeEnabled();
   expect(screen.queryByLabelText("本次算法结果")).not.toBeInTheDocument();
+});
+
+function extractionFailure(reason: string) {
+  const failure = { point: [40, 20] as [number, number], reason, message: `提取失败：${reason}` };
+  return { path: [], message: failure.message, failure };
+}
+
+async function brushOnTaughtGroup() {
+  vi.stubGlobal("DOMPoint", class {
+    constructor(public x: number, public y: number) {}
+    matrixTransform() { return this; }
+  });
+  vi.stubGlobal("PointerEvent", MouseEvent);
+  Object.defineProperty(SVGElement.prototype, "getScreenCTM", { configurable: true, value: () => ({ inverse: () => ({}) }) });
+  Object.defineProperty(SVGElement.prototype, "setPointerCapture", { configurable: true, value: vi.fn() });
+  mockSite(groupedCandidate());
+  const user = renderWorkspace("/recipe/teach");
+  const image = await screen.findByRole("img", { name: "P1 · CAM-1 · 图 1" });
+  await user.click(screen.getByRole("button", { name: "刷选胶路区域" }));
+  fireEvent.pointerDown(image, { clientX: 10, clientY: 20 });
+  fireEvent.pointerMove(image, { clientX: 40, clientY: 20 });
+  fireEvent.pointerUp(image);
+  const extract = screen.getByRole("button", { name: "自动提取中线" }), stroke = screen.getByRole("button", { name: "笔划直接生成中线" });
+  const failOnce = async () => { await user.click(extract); await screen.findByLabelText("中线提取失败位置"); };
+  const primaries = () => ["自动提取中线", "笔划直接生成中线", "运行试测", "保存本组示教", "保存并进入下一组"]
+    .map(name => screen.getByRole("button", { name })).filter(button => button.classList.contains("primary"));
+  return { stroke, failOnce, primaries };
+}
+
+it("已有中线的组刷选提取连续两次找不到连续边缘 → 先提示加大笔刷，再把笔划直接生成中线设为唯一主操作", async () => {
+  vi.mocked(workspaceApi.extractCenterline).mockResolvedValue(extractionFailure("discontinuity"));
+  const { stroke, failOnce, primaries } = await brushOnTaughtGroup();
+  expect(primaries()).toEqual([screen.getByRole("button", { name: "保存并进入下一组" })]);
+  await failOnce();
+  expect(screen.getByText(/可加大笔刷宽度（当前 120 px/)).toBeVisible();
+  expect(stroke).not.toHaveClass("primary");
+  fireEvent.change(screen.getByRole("slider", { name: "拖动调整笔刷宽度" }), { target: { value: "180" } });
+  await failOnce();
+  expect(screen.getByText(/请点「笔划直接生成中线」/)).toBeVisible();
+  expect(primaries()).toEqual([stroke]);
+});
+
+it("两次找不到连续边缘之间夹一次多条候选失败 → 不算连续，第二次仍只提示加大笔刷", async () => {
+  vi.mocked(workspaceApi.extractCenterline)
+    .mockResolvedValueOnce(extractionFailure("discontinuity"))
+    .mockResolvedValueOnce(extractionFailure("ambiguous"))
+    .mockResolvedValueOnce(extractionFailure("missing_edges"));
+  const { stroke, failOnce } = await brushOnTaughtGroup();
+  await failOnce();
+  await failOnce();
+  await failOnce();
+  expect(screen.getByText(/可加大笔刷宽度/)).toBeVisible();
+  expect(screen.queryByText(/请点「笔划直接生成中线」/)).not.toBeInTheDocument();
+  expect(stroke).not.toHaveClass("primary");
 });
 
 it("同组切换检测相机 → 原图取消选中且编辑切到新图，其他组保持原选择", async () => {
@@ -588,7 +643,8 @@ it("同位置三相机已选择检测图 → 总览每组一框绑定检测原�
   await user.click(screen.getByRole("button", { name: "自动布置" }));
   fireEvent.keyDown(first, { key: "ArrowRight" });
   await user.click(screen.getByRole("button", { name: "保存总览" }));
-  await screen.findByText("总览布置已保存，拍照与测量不受影响");
+  const saved = await screen.findByText("总览布置已保存，拍照与测量不受影响");
+  expect(saved.closest(".wp-page")).toBeNull();
   expect(workspaceApi.saveOverview).toHaveBeenCalledWith("A", 7, {
     background: null, positions: [[.26, .5], [.26, .5], [.26, .5], [.75, .5], [.75, .5], [.75, .5]], saved: false,
   });
@@ -657,7 +713,8 @@ it("示教完成后保存总览、实拍独立样本并验证 → 新样本自�
   await waitFor(() => expect(screen.getByRole("button", { name: "保存总览" })).toBeEnabled());
   fireEvent.keyDown(firstPosition, { key: "ArrowRight" });
   await user.click(screen.getByRole("button", { name: "保存总览" }));
-  await screen.findByText("总览布置已保存，拍照与测量不受影响");
+  const saved = await screen.findByText("总览布置已保存，拍照与测量不受影响");
+  expect(saved.closest(".wp-page")).toBeNull();
   expect(workspaceApi.saveOverview).toHaveBeenCalledWith("A", 7, { background: null, positions: [[.26, .5], [.75, .5]], saved: false });
   await user.click(screen.getByRole("link", { name: "验证与发布" }));
   expect(await screen.findByRole("button", { name: "发布生产配方" })).toBeDisabled();
