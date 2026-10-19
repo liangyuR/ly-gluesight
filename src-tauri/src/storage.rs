@@ -127,6 +127,31 @@ pub fn state(app: &AppHandle) -> PathBuf {
 pub fn webview(root: &Path) -> Result<PathBuf, String> {
     Ok(root.join("webview").join(user_key()?))
 }
+pub fn bootstrap_root(root: &Path) -> PathBuf {
+    root.join("migration").join("bootstrap")
+}
+pub fn initialized(root: &Path) -> bool {
+    root.join("storage-layout.json").is_file()
+}
+
+const MAIN_PROFILE_MAX: usize = 247 - r"\EBWebView\Default".len();
+const STARTUP_PROFILE_MAX: usize = 247 - r"\EBWebView".len();
+
+fn check_webview_profiles(root: &Path, user: &str, startup_window: bool) -> Result<(), String> {
+    let main = ("主窗口", root.join("webview").join(user), MAIN_PROFILE_MAX);
+    let startup = ("资料准备窗口", bootstrap_root(root).join("webview").join(user), STARTUP_PROFILE_MAX);
+    for (window, profile, max) in std::iter::once(main).chain(startup_window.then_some(startup)) {
+        let length = profile.to_string_lossy().encode_utf16().count();
+        if length > max {
+            return Err(format!(
+                "资料目录路径过长：{window}的 WebView2 资料目录 {} 共 {length} 个字符，超过上限 {max}，WebView2 无法创建{window}。请把资料目录 {} 移到更短的路径。",
+                profile.display(),
+                root.display()
+            ));
+        }
+    }
+    Ok(())
+}
 
 fn environment() -> &'static str {
     if std::env::var_os("GLUESIGHT_DATA_DIR").is_some() {
@@ -369,6 +394,7 @@ pub fn prepare(app: &AppHandle, target: &Path) -> Result<(), String> {
         }
     }
     reject_link_ancestors(&target)?;
+    check_webview_profiles(target, &user_key()?, !initialized(target))?;
     if std::env::var_os("GLUESIGHT_DATA_DIR").is_none() && !target.is_dir() {
         return Err(format!(
             "资料目录尚未初始化：{}。开发版请运行 pnpm storage:init，安装版请重新运行安装器。",
@@ -764,6 +790,27 @@ mod tests {
             fs::read(staging.join("vision/releases/r/b/recipe.json")).unwrap(),
             bytes
         );
+    }
+    #[test]
+    fn webview_profile_beyond_measured_limit_rejects_data_directory() {
+        let user = "S-1-5-21-1-2-3-1001";
+        let units = |path: &Path| path.to_string_lossy().encode_utf16().count();
+        let probe = Path::new("x");
+        for (profile_length, startup_window, accepted) in [
+            (229, false, true),
+            (230, false, false),
+            (237, true, true),
+            (238, true, false),
+        ] {
+            let base = if startup_window { bootstrap_root(probe) } else { probe.to_path_buf() };
+            let suffix = units(&base.join("webview").join(user)) - units(probe);
+            let root = PathBuf::from("资".repeat(profile_length - suffix));
+            assert_eq!(
+                check_webview_profiles(&root, user, startup_window).is_ok(),
+                accepted,
+                "WebView2 资料目录 {profile_length} 个字符，需建资料准备窗口：{startup_window}"
+            );
+        }
     }
     #[test]
     fn interrupted_commit_resumes_existing_entries_without_overwriting() {
