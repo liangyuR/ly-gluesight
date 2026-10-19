@@ -264,12 +264,7 @@ impl PlcSession {
             "pending": self.journal.pending,
         })).map_err(|e| e.to_string())?;
         record.push(b'\n');
-        self.blocking_io(engine, move || {
-            if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
-            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)
-                .map_err(|e| format!("无法保存握手审计：{e}"))?;
-            file.write_all(&record).and_then(|_| file.sync_all()).map_err(|e| format!("握手审计写入失败：{e}"))
-        }).await
+        self.blocking_io(engine, move || crate::handshake_audit::append(&path, &record)).await
     }
 
     async fn set_pending_phase(&mut self, engine: &PlcEngine, phase: SessionPhase) -> Result<(), String> {

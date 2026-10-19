@@ -13,6 +13,7 @@ mod frame;
 mod fsio;
 mod history;
 mod handshake;
+mod handshake_audit;
 mod inspection;
 mod instance;
 mod judge;

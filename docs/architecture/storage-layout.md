@@ -11,7 +11,7 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 | 位置 | 用途 |
 | --- | --- |
 | `config/` | 相机、PLC、检测配置、离线选择、飞拍估算参数和用户偏好 |
-| `state/` | PLC 握手状态与审计 |
+| `state/` | PLC 握手状态与审计。握手审计 `plc-handshake.audit.jsonl` 超过 4 MB 滚动到 `plc-handshake-audit/`，分段早于 30 天或总量超过 256 MB 时随检测记录清理删除，仍有未结 PLC 交付引用的分段保留；诊断包带上当前文件和与导出时间段有交集的分段，其余分段在清单 notes 中计数 |
 | `recipes/`、`workspaces/` | 生产配方、候选配方及示教资料 |
 | `calib/`、`vision/releases/` | 标定、发布资源 |
 | `recipe-capture/` | 整圈采集原图 |
