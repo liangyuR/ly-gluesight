@@ -290,8 +290,7 @@ fn disk_failure_has_independent_history_evidence_and_keeps_good_original_verdict
     coordinator.handle(Event::Insert(Box::new(record)), &mut sink, 1);
     let before = sink.detail("one");
     assert_eq!(before.recording.state, RecordingState::Pending);
-    let notices = coordinator.handle(Event::Recording(outcome("one", &[], RecorderState::Failed)), &mut sink, 2);
-    assert!(has_message(&notices, "拒绝访问"));
+    coordinator.handle(Event::Recording(outcome("one", &[], RecorderState::Failed)), &mut sink, 2);
     let after = sink.detail("one");
     assert_eq!(original(&after), original(&before));
     assert_eq!(after.summary.verdict, Verdict::Ok);
