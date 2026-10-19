@@ -355,36 +355,50 @@ impl Audit {
     }
 }
 
+struct RecordingRecord {
+    level: Option<&'static str>,
+    event: &'static str,
+    message: String,
+    fields: applog::Fields,
+}
+
 /// 录制结果常在下一件开工后才到，按本件 cycleId 显式记一条带结构化状态的结果，迟到也进本件时间线。
 fn log_recording(app: &AppHandle, outcome: &RecordingOutcome) {
-    let cycle = Some(outcome.cycle_id.as_str());
-    if !outcome.retention_errors.is_empty() {
-        app_log(app, "warn", "录制保留清理失败", cycle, outcome.retention_errors.join("；"));
+    for record in recording_records(outcome) {
+        app_record(app, record.level, record.event, record.message, record.fields);
     }
-    if outcome.state == RecorderState::Off { return; }
+}
+
+fn recording_records(outcome: &RecordingOutcome) -> Vec<RecordingRecord> {
+    let mut records = Vec::new();
+    let own = || applog::Fields { cycle_id: Some(outcome.cycle_id.clone()), ..applog::Fields::default() };
+    if !outcome.retention_errors.is_empty() {
+        records.push(RecordingRecord { level: Some("warn"), event: "录制保留清理失败", message: outcome.retention_errors.join("；"), fields: own() });
+    }
+    if outcome.state == RecorderState::Off { return records; }
     let failed = !outcome.errors.is_empty() || matches!(outcome.state, RecorderState::Failed | RecorderState::Incomplete)
         || (outcome.available && outcome.files.is_empty());
     let directory = outcome.directory.as_ref().map(|path| path.display().to_string());
     let fields = applog::Fields {
-        cycle_id: Some(outcome.cycle_id.clone()),
         stage: Some("recording".into()),
         data: Some(serde_json::json!({
             "state": outcome.state, "available": outcome.available, "files": outcome.files.len(),
             "directory": directory, "errors": outcome.errors,
         })),
-        ..applog::Fields::default()
+        ..own()
     };
-    if failed {
+    records.push(if failed {
         let message = format!("cycleId={}：状态 {:?}，目录 {}，实际原图 {} 张，可用={}，{}；原检测结论不变", outcome.cycle_id, outcome.state,
             directory.as_deref().unwrap_or("无目录"), outcome.files.len(), outcome.available, outcome.errors.join("；"));
-        app_record(app, Some("err"), "原图录制未完成", message, fields);
+        RecordingRecord { level: Some("err"), event: "原图录制未完成", message, fields }
     } else {
         let message = match outcome.state {
             RecorderState::NotRetained => "按录制策略不保留本件原图".to_string(),
             _ => format!("{} 张原图已核验落盘：{}", outcome.files.len(), directory.as_deref().unwrap_or("无目录")),
         };
-        app_record(app, None, "原图录制完成", message, fields);
-    }
+        RecordingRecord { level: None, event: "原图录制完成", message, fields }
+    });
+    records
 }
 
 enum InsertResult {
