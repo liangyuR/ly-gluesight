@@ -1,7 +1,7 @@
 //! 配置文件读写：写临时文件再改名，写到一半断电也不会留下半个文件；读不了时先把原文件备份，不悄悄覆盖。
 
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::Local;
 use serde::de::DeserializeOwned;
@@ -33,11 +33,17 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> 
             Err(e) => e.to_string(),
         },
     };
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("config");
-    let backup = path.with_file_name(format!("{stem}.broken-{}.json", Local::now().format("%Y%m%d-%H%M%S")));
-    let kept = match std::fs::copy(path, &backup) {
-        Ok(_) => format!("原文件已备份为 {}", backup.display()),
+    let kept = match backup(path, "broken") {
+        Ok(backup) => format!("原文件已备份为 {}", backup.display()),
         Err(e) => format!("备份也失败了（{e}）"),
     };
     Err(format!("{} 读不了（{why}），{kept}，先按默认值运行", path.display()))
+}
+
+/// 把配置文件复制成 `<名>.<kind>-<时间>.json`，返回备份路径。
+pub fn backup(path: &Path, kind: &str) -> std::io::Result<PathBuf> {
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("config");
+    let backup = path.with_file_name(format!("{stem}.{kind}-{}.json", Local::now().format("%Y%m%d-%H%M%S")));
+    std::fs::copy(path, &backup)?;
+    Ok(backup)
 }

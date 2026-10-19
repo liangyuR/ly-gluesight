@@ -6,13 +6,13 @@ import { errorText } from "../lib/errors";
 import { useSnackbar } from "../components/Snackbar";
 
 const timeoutFields: [keyof Timeouts, string, string][] = [
-  ["armMs", "布防目标 T_arm（ms）", "partStart↑ → armed↑，超出仅报警"],
+  ["armMs", "布防预算 T_arm（ms）", "确认 partStart 后到 armed 读回确认，100–5000；回写前超出拒收本件（90/99），回写确认后超出进入视觉故障"],
   ["motionMs", "运动超时 T_motion（ms）", "armed↑ 后等待 partEnd↑"],
   ["drainMs", "收尾等待 T_drain（ms）", "partEnd↑ 后等待剩余帧"],
   ["procMs", "单帧处理 T_proc（ms）", "单帧入队到测量完成"],
   ["ackMs", "结果确认 T_ack（ms）", "done↑ 后等待 resultAck↑"],
 ];
-const timeoutMinimums: Record<keyof Timeouts, number> = { armMs: 0, motionMs: 1000, drainMs: 200, procMs: 200, ackMs: 500 };
+const timeoutMinimums: Record<keyof Timeouts, number> = { armMs: 100, motionMs: 1000, drainMs: 200, procMs: 200, ackMs: 500 };
 
 type SavePart = (part: Partial<CycleSettings>) => Promise<boolean>;
 

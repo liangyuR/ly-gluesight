@@ -97,6 +97,8 @@ export interface LogEntry {
   message: string;
   oldValue: string | null;
   newValue: string | null;
+  /** 记录时的关联上下文，如 requestSeq=12 */
+  context: string | null;
 }
 
 export interface LogQuery {
@@ -105,6 +107,8 @@ export interface LogQuery {
   levels?: LogLevel[];
   categories?: LogCategory[];
   pointId?: string | null;
+  /** 按关联上下文精确匹配，如 requestSeq=12 */
+  context?: string | null;
   keyword?: string | null;
   limit?: number;
   offset?: number;

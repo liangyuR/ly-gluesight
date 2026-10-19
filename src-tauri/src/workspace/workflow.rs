@@ -407,6 +407,9 @@ pub(super) fn capture_for(app: &AppHandle, id: &str, round_id: &str) -> Result<c
 
 /// 按采集轮次重建候选的拍照点与相机曝光增益。全部拍照点加完才校验：多相机时只加了第一台相机的点就校验会误判其余相机未被使用。
 pub(super) fn adopt_shots(w: &mut Workspace, round: &crate::recipe_capture::CaptureRound, reuse_teaching: bool) -> Result<(), String> {
+    if w.sample_bank.iter().any(|sample| sample.capture_id.as_deref() == Some(round.round_id.as_str())) {
+        return Err("本轮已作为独立验证样本加入样本库，不能再采用为示教图像：示教与验证样本必须来自不同的采集轮次，请重新采集一圈用于示教".into());
+    }
     let expanded = round.recipe_shots()?;
     let old = std::mem::take(&mut w.doc.shots);
     if reuse_teaching && old.len() != expanded.len() { return Err("继承示教前必须确认点数、相机、轨迹及触发顺序对应一致".into()); }

@@ -163,12 +163,14 @@ impl WarmupFailure {
 #[derive(Clone, Copy)]
 enum WarmupPhase { Waiting, Started { execution_deadline: Instant }, Expired }
 
+fn clock() -> Instant { tokio::time::Instant::now().into_std() }
+
 async fn run_warmup<T, F>(slot: Arc<Semaphore>, timeout: Duration, operation: F) -> Result<T, WarmupFailure>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, String> + Send + 'static,
 {
-    let queue_deadline = Instant::now().checked_add(timeout).ok_or_else(|| WarmupFailure::Failed("图像引擎排队截止时间溢出".into()))?;
+    let queue_deadline = clock().checked_add(timeout).ok_or_else(|| WarmupFailure::Failed("图像引擎排队截止时间溢出".into()))?;
     let queued = format!("图像引擎预热排队超过 {} ms；引擎尚未开始，稍后重试", timeout.as_millis());
     let running = format!("图像引擎预热执行超过 {} ms；尚未返回的引擎继续占用预热线程，请排查核心库或重启", timeout.as_millis());
     let phase = Arc::new(Mutex::new(WarmupPhase::Waiting));
@@ -181,7 +183,7 @@ where
             let _permit = permit;
             let execution_deadline = {
                 let mut phase = worker_phase.lock().unwrap();
-                let started = Instant::now();
+                let started = clock();
                 if !matches!(*phase, WarmupPhase::Waiting) || started >= queue_deadline {
                     *phase = WarmupPhase::Expired;
                     return Err(WarmupFailure::QueueTimeout(queued_error));
@@ -191,7 +193,7 @@ where
                 execution_deadline
             };
             let result = operation().map_err(WarmupFailure::Failed);
-            if Instant::now() > execution_deadline { Err(WarmupFailure::Failed(running_error)) } else { result }
+            if clock() > execution_deadline { Err(WarmupFailure::Failed(running_error)) } else { result }
         }).await.map_err(|error| WarmupFailure::Failed(format!("图像引擎预热异常：{error}")))?
     };
     tokio::pin!(task);

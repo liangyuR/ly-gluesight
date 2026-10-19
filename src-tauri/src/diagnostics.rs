@@ -96,20 +96,37 @@ impl<W: std::io::Write> Package<W> {
         self.zip.add(name, data, compressible(name)).map_err(|e| e.to_string())
     }
 
+    fn copy_file(&mut self, path: &Path, name: &str) -> Result<(), String> {
+        if fs::metadata(path).map(|m| m.len()).unwrap_or(u64::MAX) > MAX_CONFIG_FILE {
+            self.notes.push(format!("{name} 超过 8 MB，未打包"));
+            return Ok(());
+        }
+        match fs::read(path) {
+            Ok(bytes) => self.add(name, &bytes),
+            Err(error) => {
+                self.notes.push(format!("{name} 读取失败：{error}"));
+                Ok(())
+            }
+        }
+    }
+
     fn copy_dir(&mut self, dir: &Path, prefix: &str) -> Result<(), String> {
         let Ok(entries) = fs::read_dir(dir) else { return Ok(()) };
         let mut files: Vec<_> = entries.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_file())).collect();
         files.sort_by_key(|e| e.file_name());
         for entry in files {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if entry.metadata().map(|m| m.len()).unwrap_or(u64::MAX) > MAX_CONFIG_FILE {
-                self.notes.push(format!("{prefix}/{name} 超过 8 MB，未打包"));
-                continue;
-            }
-            match fs::read(entry.path()) {
-                Ok(bytes) => self.add(&format!("{prefix}/{name}"), &bytes)?,
-                Err(error) => self.notes.push(format!("{prefix}/{name} 读取失败：{error}")),
-            }
+            self.copy_file(&entry.path(), &format!("{prefix}/{}", entry.file_name().to_string_lossy()))?;
+        }
+        Ok(())
+    }
+
+    fn copy_handshake_audit_segments(&mut self, active: &Path, from: i64, to: i64) -> Result<(), String> {
+        let (chosen, skipped) = crate::handshake_audit::overlapping(active, from, to);
+        for path in &chosen {
+            self.copy_file(path, &format!("state/plc-handshake-audit/{}", file_name(path)))?;
+        }
+        if skipped > 0 {
+            self.notes.push(format!("握手审计另有 {skipped} 个分段不在导出时间段内，未打包（现场 state/plc-handshake-audit/）"));
         }
         Ok(())
     }
@@ -150,7 +167,7 @@ fn plc_logs(app: &AppHandle, from: i64, to: i64, out: &mut Vec<u8>, notes: &mut 
     let mut offset = 0u32;
     let mut count = 0u64;
     loop {
-        let query = ly_plc::LogQuery { start: Some(from), end: Some(to), levels: Vec::new(), categories: Vec::new(), point_id: None,
+        let query = ly_plc::LogQuery { start: Some(from), end: Some(to), levels: Vec::new(), categories: Vec::new(), point_id: None, context: None,
             keyword: None, limit: Some(1000), offset: Some(offset) };
         match host.engine().logbook().query(&query) {
             Ok(page) => {
@@ -270,7 +287,9 @@ fn build<W: std::io::Write>(app: &AppHandle, request: &ExportRequest, package: &
     let plc_logs = plc_logs(app, request.from, request.to, &mut out, &mut package.notes);
     package.add("logs/plc.jsonl", &out)?;
     package.copy_dir(&crate::storage::config(app), "config")?;
-    package.copy_dir(&crate::storage::state(app), "state")?;
+    let state = crate::storage::state(app);
+    package.copy_dir(&state, "state")?;
+    package.copy_handshake_audit_segments(&state.join("plc-handshake.audit.jsonl"), request.from, request.to)?;
     let store = app.state::<Store>();
     let parts = collect_parts(&store, request, &mut package.notes)?;
     let mut csv = crate::history::CSV_HEADER.as_bytes().to_vec();
