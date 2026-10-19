@@ -7,7 +7,7 @@ import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import type { PointVis, Recipe } from "../cycle/types";
 import { shotSegment, visColor } from "../cycle/vis";
-import type { GrayImage } from "./types";
+import type { GrayImage, GrayPixels } from "./types";
 import { errorText } from "../../lib/errors";
 import { stages, stageStatus, stageStatusText } from "./stages";
 import { teachingTasks } from "./teachingTasks";
@@ -103,6 +103,24 @@ export function shotOverlay(layout: Recipe | null | undefined, k: number, vis?: 
     stationColors: vis ? index.map(j => visColor[vis[j] ?? "none"]) : undefined,
   };
 }
+/** 灰度像素直接画进同一块 canvas：换帧只重画，不产生新的图片资源。 */
+function GrayCanvas({ image, pixels }: { image: GrayImage; pixels: GrayPixels }) {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const rgba = useRef<ImageData | null>(null);
+  useEffect(() => {
+    const element = canvas.current;
+    const context = element?.getContext("2d");
+    if (!element || !context) return;
+    const { data, width, height } = pixels;
+    if (element.width !== width || element.height !== height) { element.width = width; element.height = height; }
+    if (rgba.current?.width !== width || rgba.current.height !== height) rgba.current = new ImageData(width, height);
+    const out = new Uint32Array(rgba.current.data.buffer);
+    for (let i = 0; i < data.length; i++) out[i] = 0xff000000 | data[i] * 0x010101;
+    context.putImageData(rgba.current, 0, 0);
+  }, [pixels]);
+  return <foreignObject width={image.width} height={image.height} pointerEvents="none"><canvas ref={canvas} className="wp-gray-canvas" /></foreignObject>;
+}
+
 /** 在原图上编辑中线：点空白处在末尾加点，拖动点调整位置，点一下选中。 */
 export interface PathEditing {
   add: (p: [number, number]) => void;
@@ -248,7 +266,7 @@ export function GrayViewer({ image, loading = false, error = "", label, tools, s
         const p = point(e, current.inverse);
         if (p) onEdit.move(current.index, p);
       }} onPointerUp={stopGesture} onPointerCancel={stopGesture} onLostPointerCapture={stopGesture}>
-        <g ref={group} transform={"translate(" + (image.width/2 + x) + " " + (image.height/2 + y) + ") scale(" + zoom + ") translate(" + -image.width/2 + " " + -image.height/2 + ")"}><image href={image.url} width={image.width} height={image.height} />
+        <g ref={group} transform={"translate(" + (image.width/2 + x) + " " + (image.height/2 + y) + ") scale(" + zoom + ") translate(" + -image.width/2 + " " + -image.height/2 + ")"}>{image.pixels ? <GrayCanvas image={image} pixels={image.pixels} /> : <image href={image.url} width={image.width} height={image.height} />}
           {band && bandShown && <g aria-label="搜索带边界" pointerEvents="none" clipPath={`url(#${bandClip})`} fill="none" stroke="var(--primary)" opacity={.45}>
             <defs><clipPath id={bandClip}><rect width={image.width} height={image.height} /></clipPath></defs>
             {[band.left, band.right].map((edge, i) => <polyline key={i} points={edge.map(p => p.join(",")).join(" ")} strokeWidth={1} strokeDasharray="5 5" vectorEffect="non-scaling-stroke" />)}
