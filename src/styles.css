@@ -228,6 +228,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 .page-error { display: grid; place-items: center; min-height: 240px; }
 .page-error .qs-empty small { overflow-wrap: anywhere; }
 .native-mode { margin-bottom: var(--space-12); }
+.snackbar-anchor { position: relative; flex: none; height: 0; }
+.snackbar-anchor > .qs-snackbars { position: absolute; }
 
 .notice { margin-top: 12px; padding: 8px 12px; border-radius: var(--r-md); font-size: 13px; background: var(--surface-high); color: var(--on-surface); overflow-wrap: anywhere; animation: qs-fade-in var(--dur-short) var(--ease-standard); }
 .notice.ok { background: var(--ok-container); color: var(--on-ok-container); }
