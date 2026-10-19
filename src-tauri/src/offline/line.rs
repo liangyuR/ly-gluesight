@@ -20,6 +20,8 @@ const FIELDS: &[&str] = &[
 ];
 const FAULTED: &str = "视觉置位 visionFault（握手故障），PLC 撤销本件请求";
 const ABORTED: &str = "已立即停止，PLC 撤销本件请求";
+/// 虚拟 PLC 按住 faultReset 等视觉就绪的时长，超过就松开再按一次
+const RESET_RETRY: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy)]
 struct Slot {
@@ -188,6 +190,15 @@ impl Line {
         self.read(tag::VISION_READY) == 1 && self.read(tag::VISION_FAULT) == 0
     }
 
+    /// 视觉已就绪或别的驱动已发出 partStart 时不再按；判断与按下在同一把锁内，不会落在刚发出的 partStart 之后
+    fn press_reset(&self) -> bool {
+        let mut memory = self.memory.lock().unwrap();
+        let get = |field| self.layout.get(&memory, field);
+        let settled = get(tag::PART_START) == 1 || (get(tag::VISION_READY) == 1 && get(tag::VISION_FAULT) == 0);
+        if !settled { self.layout.set(&mut memory, tag::FAULT_RESET, 1); }
+        !settled
+    }
+
     async fn wait(&self, timing: &Timing, timeout: Duration, abort: &AtomicBool, fault_stops: bool, done: impl Fn(&Self) -> bool) -> Wait {
         let deadline = Instant::now() + timeout;
         loop {
@@ -225,15 +236,22 @@ impl Line {
             Wait::Faulted => {}
         }
         self.release();
-        self.write(&[(tag::FAULT_RESET, 0)]);
-        sleep(timing.settle).await;
-        self.write(&[(tag::FAULT_RESET, 1)]);
-        let ready = self.wait(timing, timing.ready_timeout, abort, false, Self::ready).await;
-        self.write(&[(tag::FAULT_RESET, 0)]);
-        match ready {
-            Wait::Done => Ok(()),
-            Wait::Aborted => Err(ABORTED.into()),
-            _ => Err("PLC 已发 faultReset，视觉仍未就绪：查看在线检测页的故障原因".into()),
+        // 复位被拒（如心跳故障后视觉尚未观察到新的心跳翻转）时像操作员一样松开再按，直到就绪或超时；
+        // 进入离线的自动复位与运行、整圈采集可能同时在按，别的驱动已发出 partStart 就让出，不在在途件上再按
+        let deadline = Instant::now() + timing.ready_timeout;
+        loop {
+            self.write(&[(tag::FAULT_RESET, 0)]);
+            sleep(timing.settle).await;
+            if !self.press_reset() { return Ok(()); }
+            let window = RESET_RETRY.min(deadline.saturating_duration_since(Instant::now()));
+            let ready = self.wait(timing, window, abort, false, |line| line.ready() || line.read(tag::PART_START) == 1).await;
+            self.write(&[(tag::FAULT_RESET, 0)]);
+            match ready {
+                Wait::Done => return Ok(()),
+                Wait::Aborted => return Err(ABORTED.into()),
+                _ if Instant::now() >= deadline => return Err("PLC 已发 faultReset，视觉仍未就绪：查看在线检测页的故障原因".into()),
+                _ => {}
+            }
         }
     }
 
@@ -281,5 +299,42 @@ impl Line {
             |line| line.read(tag::DONE) == 0 && line.read(tag::BUSY) == 0).await?;
         self.release();
         Ok(outcome)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 进入离线的自动复位还在重按时，运行或整圈采集见到就绪发出 partStart（落在它松开等待或按住等待期间），
+    /// 这一件结束、视觉还没置回就绪；自动复位此后再按，会把在途件或件间的视觉打成“在途工件不能直接复位”。
+    #[tokio::test]
+    async fn reset_retry_once_another_driver_started_a_part_never_presses_fault_reset_again() {
+        let timing = Timing {
+            poll: Duration::from_millis(2), settle: Duration::from_millis(60), ready_timeout: Duration::from_secs(5),
+            shot_interval: Duration::ZERO, end_delay: Duration::ZERO, ack_delay: Duration::ZERO,
+            arm_timeout: Duration::ZERO, result_timeout: Duration::ZERO, release_timeout: Duration::ZERO,
+        };
+        for during_settle in [true, false] {
+            let layout = Layout::from_config(&crate::inspection::default_plc_config()).unwrap();
+            let line = Line::new(layout.memory(), layout);
+            line.write(&[(tag::VISION_FAULT, 1)]);
+            let abort = AtomicBool::new(false);
+            let other = async {
+                while line.read(tag::FAULT_RESET) == 0 { sleep(timing.poll).await; }
+                if during_settle {
+                    while line.read(tag::FAULT_RESET) == 1 { sleep(timing.poll).await; }
+                }
+                line.write(&[(tag::VISION_FAULT, 0), (tag::FAULT_RESET, 0), (tag::PART_START, 1)]);
+                let started = Instant::now();
+                while started.elapsed() < timing.settle * 2 + RESET_RETRY {
+                    if started.elapsed() >= Duration::from_millis(100) { line.write(&[(tag::PART_START, 0)]); }
+                    assert_eq!(line.read(tag::FAULT_RESET), 0, "during_settle={during_settle}：别的驱动发出 partStart 后不能再按 faultReset");
+                    sleep(timing.poll).await;
+                }
+            };
+            let (ready, ()) = tokio::join!(line.ensure_ready(&timing, &abort), other);
+            assert!(ready.is_ok(), "during_settle={during_settle}: {ready:?}");
+        }
     }
 }

@@ -2,13 +2,25 @@ import { desktopCall } from "../../lib/desktop";
 import type { CameraImaging, RecipeDoc } from "../cycle/types";
 import type { CaptureRound, CaptureSummary, Comparison, FrozenImage, GrayImage, ImagingSaved, Overview, RecordImages, Sample, ShotTeach, Workspace, WorkspaceView } from "./types";
 
-export async function decodeGray(input: ArrayBuffer | number[]): Promise<GrayImage> {
+function grayPreview(input: ArrayBuffer | number[]) {
   const buf=input instanceof ArrayBuffer?input:Uint8Array.from(input).buffer;
   if (buf.byteLength < 16) throw new Error("原图预览数据为空");
   const view = new DataView(buf);
   const [w, h, width, height] = [0, 4, 8, 12].map(o => view.getUint32(o, true));
   if (!w || !h || w * h > 40_000_000 || buf.byteLength < 16 + w * h) throw new Error("原图预览数据不完整");
-  const bytes = new Uint8Array(buf, 16);
+  return { w, h, width, height, bytes: new Uint8Array(buf, 16, w * h) };
+}
+
+let liveSeq = 0;
+
+/** 实时帧：保留灰度像素直接画到 canvas，不生成图片地址，避免浏览器把每一帧当作图片资源缓存与解码。 */
+export function liveGray(input: ArrayBuffer | number[]): GrayImage {
+  const { w, h, width, height, bytes } = grayPreview(input);
+  return { url: `live:${++liveSeq}`, width, height, pixels: { data: bytes, width: w, height: h } };
+}
+
+export async function decodeGray(input: ArrayBuffer | number[]): Promise<GrayImage> {
+  const { w, h, width, height, bytes } = grayPreview(input);
   const data = new ImageData(w, h);
   for (let j = 0; j < w * h; j++) {
     data.data[j * 4] = data.data[j * 4 + 1] = data.data[j * 4 + 2] = bytes[j];
@@ -68,7 +80,7 @@ export const workspaceApi = {
   compareOriginal: (historyId: number) => desktopCall<Comparison>("workspace_compare_original", { historyId }),
   comparisons: (id:string,historyId:number)=>desktopCall<Comparison[]>("workspace_comparisons",{id,historyId}),
   runtimeOverview: (id: string, revisionId: string) => desktopCall<Overview | null>("workspace_runtime_overview", { id, revisionId }),
-  liveImage: (cycleId:string, revisionId:string, k:number) => desktopCall<ArrayBuffer>("workspace_live_image", {cycleId,revisionId,k}).then(decodeGray),
+  liveImage: (cycleId:string, revisionId:string, k:number) => desktopCall<ArrayBuffer>("workspace_live_image", {cycleId,revisionId,k}).then(liveGray),
   stationCapture: (cam:number,view=1)=>desktopCall<FrozenImage>("workspace_station_capture",{cam,view}),
   stationImport: (cam:number,bytes:number[],view=1)=>desktopCall<FrozenImage>("workspace_station_import",{cam,bytes,view}),
   stationImage: (cam:number,imageId:string,view=1)=>desktopCall<ArrayBuffer>("workspace_station_image",{cam,imageId,view}).then(decodeGray),

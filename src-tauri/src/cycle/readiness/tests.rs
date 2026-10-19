@@ -13,7 +13,7 @@ fn warming(id: &str) -> RecipeOption {
 fn facts() -> Facts {
     Facts {
         candidate_debug: None,
-        site: Site::Real, plc_connected: true, session: Some(SessionPhase::Idle), session_message: None, phase: Phase::Idle, fault: None,
+        site: Site::Real, plc_connected: true, session_behind: false, session: Some(SessionPhase::Idle), session_message: None, phase: Phase::Idle, fault: None,
         cameras: Check::Ok, engine: Some(Ok("1.1.0".into())), workers: Ok(()), audit: Check::Ok, record: RecordMode::Off,
         product: Product::Plc, activation_uncertain: false, recipes: vec![option("A", true, None)],
     }
@@ -69,6 +69,16 @@ fn readiness_blocks_only_on_blocked_items_and_points_waiting_or_blocked_items_to
             assert_eq!(item.hint.is_some(), case.hint, "{}", case.name);
         }
     }
+}
+
+#[test]
+fn reconnected_plc_before_the_session_checks_it_does_not_show_the_stale_disconnect_reason() {
+    let stale = "S7 PLC 未连接；保留未结事务，重连后需复位".to_string();
+    let report = evaluate(Facts { session_behind: true, session: Some(SessionPhase::Fault), phase: Phase::Fault,
+        session_message: Some(stale.clone()), fault: Some(stale), ..facts() });
+    let plc = report.items.iter().find(|i| i.key == ItemKey::Plc).unwrap();
+    assert_eq!(plc.state, ItemState::Blocked);
+    assert!(!plc.detail.contains("未连接") && plc.detail.contains("重新连接"), "{}", plc.detail);
 }
 
 #[test]
