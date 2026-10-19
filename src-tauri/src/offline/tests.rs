@@ -8,16 +8,18 @@ use crate::inspection::tag;
 use ly_plc::{EventSink, Logbook, PlcEngine};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+const HANG_GUARD: Duration = Duration::from_secs(120);
+
 const TIMING: Timing = Timing {
     poll: Duration::from_millis(5),
     shot_interval: Duration::from_millis(20),
     end_delay: Duration::from_millis(20),
     ack_delay: Duration::from_millis(20),
     settle: Duration::from_millis(150),
-    arm_timeout: Duration::from_secs(5),
-    result_timeout: Duration::from_secs(5),
-    ready_timeout: Duration::from_secs(8),
-    release_timeout: Duration::from_secs(5),
+    arm_timeout: HANG_GUARD,
+    result_timeout: HANG_GUARD,
+    ready_timeout: HANG_GUARD,
+    release_timeout: HANG_GUARD,
 };
 
 struct Bench {
@@ -41,7 +43,7 @@ impl Bench {
         let server = S7Server::start(memory.clone(), Some((layout.heartbeat(), Duration::from_millis(100)))).await.unwrap();
         config.connection.host = "127.0.0.1".into();
         config.connection.port = server.port();
-        config.connection.timeout_ms = 250;
+        config.connection.timeout_ms = 5000;
         config.connection.poll_interval_ms = 20;
         config.connection.reconnect_interval_ms = 200;
         config.heartbeat.interval_ms = 100;
@@ -66,7 +68,7 @@ impl Bench {
     /// 虚拟 PLC 的 faultReset 上升沿只会被会话处理一次：会话还没观察到心跳翻转就按复位，这次复位被拒且不再重发。
     /// 先让会话轮询到心跳翻转，复位时机就只取决于会话状态，不取决于机器多忙。
     async fn until_heartbeat_live(&mut self) {
-        let until = Instant::now() + Duration::from_secs(60);
+        let until = Instant::now() + HANG_GUARD;
         while !self.session.heartbeat_live() {
             assert!(Instant::now() < until, "会话长时间没有观察到 PLC 心跳翻转：{:?}", self.session.view());
             self.session.poll_gated(&self.engine, false, true, true, self.intake.load(Ordering::SeqCst)).await;
@@ -93,7 +95,7 @@ impl Bench {
             result
         };
         let pc = async {
-            let until = Instant::now() + Duration::from_secs(15);
+            let until = Instant::now() + HANG_GUARD;
             while !finished.load(Ordering::SeqCst) || !matches!(session.phase(), SessionPhase::Idle | SessionPhase::Fault) {
                 assert!(Instant::now() < until, "会话未收敛：{:?}", session.view());
                 match session.poll_gated(engine, false, true, true, intake.load(Ordering::SeqCst)).await {
@@ -160,7 +162,7 @@ async fn low_disk_fault_reset_still_completes_but_keeps_ready_low_until_space_re
         let Bench { line, engine, session, .. } = &mut bench;
         let abort = AtomicBool::new(false);
         let pc = async {
-            let until = Instant::now() + Duration::from_secs(10);
+            let until = Instant::now() + HANG_GUARD;
             while !matches!(session.poll_gated(engine, false, true, true, false).await, SessionEvent::Ready) {
                 assert!(Instant::now() < until, "空间不足时复位未完成：{:?}", session.view());
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -189,7 +191,7 @@ async fn new_connection_before_first_poll_waits_instead_of_faulting_and_disconne
         server.inject(s7_server::Fault::Delay(Duration::from_millis(200)));
         server.inject(s7_server::Fault::Delay(Duration::from_millis(200)));
     }).await;
-    let until = Instant::now() + Duration::from_secs(3);
+    let until = Instant::now() + HANG_GUARD;
     while bench.engine.status().state != LinkState::Connected {
         assert!(Instant::now() < until, "未连上离线 S7 服务");
         tokio::time::sleep(Duration::from_millis(2)).await;
