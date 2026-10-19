@@ -1,19 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Camera, ChevronLeft, ChevronRight, Scale, ScanEye } from "lucide-react";
+import { Alert, Button, Card, Chip, Dialog, IconButton, SegmentedControl, Select, Stack, StatusBadge, Text } from "qing-steel";
 import { computeVis, shotLabel, ShotTiles, UnrolledCurve, type Measured, type PartView, type Recipe } from "../features/cycle";
-import { displayReason, formatTime, historyApi, sampleLabelText, sourceLabel, triggerModeLabel, verdictClass, verdictLabel, type HistoryQuery, type PartDetail } from "../features/history";
+import { displayReason, formatTime, historyApi, sampleLabelText, sourceLabel, triggerModeLabel, verdictLabel, verdictTone, type HistoryQuery, type PartDetail } from "../features/history";
 import PartTrace from "../features/history/components/PartTrace";
 import ReplayDiff from "../features/history/components/ReplayDiff";
 import { replayEdges, shotDiffs } from "../features/history/replay";
 import { subscribe } from "../features/plc";
 import { workspaceApi } from "../features/workspace/api";
 import { useWorkspace } from "../features/workspace/context";
-import { Badge, GrayViewer, Notice, Panel, shotOverlay, useGrayImage } from "../features/workspace/components";
+import { GrayViewer, Panel, shotOverlay, useGrayImage } from "../features/workspace/components";
 import { WorkpieceOverview } from "../features/workspace/OverviewPage";
 import { usePublishedOverview } from "../features/workspace/RuntimeFrame";
 import type { Comparison, RecordImages, WorkspaceView } from "../features/workspace/types";
-import Modal from "../features/plc/components/Modal";
 import { CycleTimeline } from "../features/logs";
 import { errorText } from "../lib/errors";
 
@@ -95,7 +95,7 @@ export default function HistoryDetailPage() {
   useEffect(()=>{
     const key=(e:KeyboardEvent)=>{
       if(e.altKey||e.ctrlKey||e.metaKey||e.defaultPrevented)return;
-      if((e.target as HTMLElement|null)?.closest?.("input,select,textarea,[contenteditable='true'],[role='dialog']"))return;
+      if((e.target as HTMLElement|null)?.closest?.("input,select,textarea,[contenteditable='true'],[role='dialog'],[role='combobox'],[role='listbox']"))return;
       if(e.key==="ArrowLeft"||e.key==="ArrowRight"){e.preventDefault();stepShot(e.key==="ArrowLeft"?-1:1);}
       else if(e.key==="["||e.key==="]"){e.preventDefault();openPart(e.key==="["?neighbors.older:neighbors.newer);}
     };
@@ -138,7 +138,7 @@ export default function HistoryDetailPage() {
     }catch(e){if(valid())setError(errorText(e));}finally{pending.current=false;if(current.current.alive)setWorking(false);}
   };
   const confirmSwitch=async()=>{if(!layout||ws.dirty||ws.frameDirty)return;const next=await ws.select(layout.id);if(next&&current.current.alive)setSwitching(false);};
-  if(!detail)return <div className={error?"notice error":"muted"}>{error||"加载中…"}</div>;
+  if(!detail)return error?<Alert tone="ng">{error}</Alert>:<Text muted>加载中…</Text>;
   const s=detail.summary,j=detail.judgement;
   const candidateReady=!!ws.data&&ws.data.workspace.doc.id===layout?.id&&!ws.dirty&&!ws.frameDirty;
   const disabled=working||ws.busy||!candidateReady;
@@ -157,34 +157,48 @@ export default function HistoryDetailPage() {
   const baseOverlay=layout&&selectedView===layout.shots[selected]?.view?shotOverlay(layout,selected,result?.vis):undefined;
   const viewOverlay=edges.length?{...(baseOverlay??{path:[]}),segments:edges}:baseOverlay;
   return <div className="stack hist-detail">
-    <div className="panel detail-head"><button className="icon-btn" onClick={()=>navigate("/history")} aria-label="返回历史列表"><ArrowLeft size={18}/></button><span className="detail-step"><button className="icon-btn" aria-label="前一件" title="前一件（[ 键）" disabled={neighbors.older==null} onClick={()=>openPart(neighbors.older)}><ChevronLeft size={18}/></button><button className="icon-btn" aria-label="后一件" title="后一件（] 键）" disabled={neighbors.newer==null} onClick={()=>openPart(neighbors.newer)}><ChevronRight size={18}/></button></span><b className="sn" title={s.sn||undefined}>SN {s.sn||"—"}</b>{s.source!=="real"&&<span className="tag offline">{sourceLabel[s.source]}</span>}<span className="muted">{formatTime(s.ts)} · {s.recipeId??"无配方"} · {s.source==="offlineCandidate"?"候选修订 "+(s.recipeRevision??"未记录"):"v"+(s.recipeVersion??"—")+" · #"+(s.recipeRevision?.slice(0,6)??"—")} · {triggerModeLabel(s.triggerMode)} · 帧 {s.framesReceived}/{s.framesExpected}</span><span className="spacer"/><span className={"vt big "+verdictClass(s.verdict)}>{verdictLabel[s.verdict]} · PLC {s.plcCode}{s.faultCode?" / "+s.faultCode:""}</span></div>
-    {s.source!=="real"&&<Notice title={s.source==="offlineCandidate"?"候选离线调试记录":"离线回放记录"}>结果来自离线环境，不作为真机生产验收；切换当前站点模式不会改变此记录的来源。</Notice>}
-    {error&&<Notice title="操作未完成" tone="warn">{error}</Notice>}
+    <Card className="detail-head">
+      <Stack gap={12} justify="space-between">
+        <Stack gap={12}>
+          <IconButton onClick={()=>navigate("/history")} aria-label="返回历史列表"><ArrowLeft size={18}/></IconButton>
+          <span className="detail-step">
+            <IconButton aria-label="前一件" title="前一件（[ 键）" disabled={neighbors.older==null} onClick={()=>openPart(neighbors.older)}><ChevronLeft size={18}/></IconButton>
+            <IconButton aria-label="后一件" title="后一件（] 键）" disabled={neighbors.newer==null} onClick={()=>openPart(neighbors.newer)}><ChevronRight size={18}/></IconButton>
+          </span>
+          <b className="sn" title={s.sn||undefined}>SN {s.sn||"—"}</b>
+          {s.source!=="real"&&<StatusBadge tone="off">{sourceLabel[s.source]}</StatusBadge>}
+          <Text muted>{formatTime(s.ts)} · {s.recipeId??"无配方"} · {s.source==="offlineCandidate"?"候选修订 "+(s.recipeRevision??"未记录"):"v"+(s.recipeVersion??"—")+" · #"+(s.recipeRevision?.slice(0,6)??"—")} · {triggerModeLabel(s.triggerMode)} · 帧 {s.framesReceived}/{s.framesExpected}</Text>
+        </Stack>
+        <StatusBadge tone={verdictTone(s.verdict)}>{verdictLabel[s.verdict]} · PLC {s.plcCode}{s.faultCode?" / "+s.faultCode:""}</StatusBadge>
+      </Stack>
+    </Card>
+    {s.source!=="real"&&<Alert title={s.source==="offlineCandidate"?"候选离线调试记录":"离线回放记录"}>结果来自离线环境，不作为真机生产验收；切换当前站点模式不会改变此记录的来源。</Alert>}
+    {error&&<Alert tone="warn" title="操作未完成">{error}</Alert>}
     <Panel title="复测与候选对照" detail={s.source==="offlineCandidate"?"此记录没有生产发布包；可使用当前候选复测，结果另存，原始调试判定保留":"原包重现使用本件冻结资源；候选复测使用当前示教；所有结果另存，原始判定保留"}>
-      <div className="wp-actions"><Badge tone="neutral">{s.source==="offlineCandidate"?"原始候选 "+(s.recipeRevision??"未记录"):"原始发布 v"+(s.recipeVersion??"—")}</Badge><Badge>候选 {ws.data&&ws.data.workspace.doc.id===layout?.id?"v"+ws.data.workspace.doc.version+" · 修订 "+ws.data.workspace.revision:"尚未选择此配方"}</Badge><span className="spacer"/>
-        <button className="btn" disabled={working||ws.busy||!layout||(!ws.list.some(r=>r.id===layout.id)&&!ws.drafts.some(r=>r.doc.id===layout.id))} onClick={()=>{ws.setError("");setSwitching(true);}}>使用该配方候选</button>
-        {s.source!=="offlineCandidate"&&<button className="btn" disabled={working||!raw?.complete||blockers.length>0} onClick={()=>void runOriginal()}><ScanEye size={15}/>按原发布包重现</button>}
-        <button className="btn" disabled={disabled||!complete} onClick={()=>void runCompare(false)}><Scale size={15}/>按候选规则重判</button>
-        <button className="btn primary" disabled={disabled||!raw?.complete||!(ws.data&&candidateTaught(ws.data,raw?.imageSource==="offlineSample"))} onClick={()=>void runCompare(true)}><ScanEye size={15}/>从原图复测整件</button>
+      <div className="wp-actions"><Chip>{s.source==="offlineCandidate"?"原始候选 "+(s.recipeRevision??"未记录"):"原始发布 v"+(s.recipeVersion??"—")}</Chip><StatusBadge>候选 {ws.data&&ws.data.workspace.doc.id===layout?.id?"v"+ws.data.workspace.doc.version+" · 修订 "+ws.data.workspace.revision:"尚未选择此配方"}</StatusBadge><span className="spacer"/>
+        <Button disabled={working||ws.busy||!layout||(!ws.list.some(r=>r.id===layout.id)&&!ws.drafts.some(r=>r.doc.id===layout.id))} onClick={()=>{ws.setError("");setSwitching(true);}}>使用该配方候选</Button>
+        {s.source!=="offlineCandidate"&&<Button leadingIcon={<ScanEye size={15}/>} disabled={working||!raw?.complete||blockers.length>0} onClick={()=>void runOriginal()}>按原发布包重现</Button>}
+        <Button leadingIcon={<Scale size={15}/>} disabled={disabled||!complete} onClick={()=>void runCompare(false)}>按候选规则重判</Button>
+        <Button variant="filled" leadingIcon={<ScanEye size={15}/>} disabled={disabled||!raw?.complete||!(ws.data&&candidateTaught(ws.data,raw?.imageSource==="offlineSample"))} onClick={()=>void runCompare(true)}>从原图复测整件</Button>
       </div>
-      {ws.dirty||ws.frameDirty?<p className="c-warn">先保存候选配置和示教中线，再执行对照。</p>:!candidateReady&&<p className="muted">选择此配方的候选后，可以调整规则并对照原始结论。</p>}
-      {ws.error&&<p className="c-warn">{ws.error}</p>}<p className="muted">{raw?.message??"正在检查原图保存状态…"} · 对照结果单独保存，原始记录保留。</p>
-      {blockers.length>0&&<Notice title="不能按原发布包重跑" tone="warn">{blockers.join("；")}</Notice>}
-      {!!savedComparisons.length&&<label className="field"><span>已保存的对照结果</span><select className="input" aria-label="已保存对照结果" disabled={working} value={comparison?.id??""} onChange={e=>setComparison(savedComparisons.find(c=>c.id===e.target.value)??null)}><option value="">选择记录</option>{savedComparisons.map(c=><option key={c.id} value={c.id}>{formatTime(c.createdAt)} · {comparisonLabel[c.source]} · 修订 {c.candidateRevision} · {verdictLabel[c.judgement.verdict]}</option>)}</select></label>}
+      {ws.dirty||ws.frameDirty?<Alert tone="warn">先保存候选配置和示教中线，再执行对照。</Alert>:!candidateReady&&<Text as="p" muted>选择此配方的候选后，可以调整规则并对照原始结论。</Text>}
+      {ws.error&&<Alert tone="warn">{ws.error}</Alert>}<Text as="p" muted>{raw?.message??"正在检查原图保存状态…"} · 对照结果单独保存，原始记录保留。</Text>
+      {blockers.length>0&&<Alert tone="warn" title="不能按原发布包重跑">{blockers.join("；")}</Alert>}
+      {!!savedComparisons.length&&<Select label="已保存的对照结果" aria-label="已保存对照结果" disabled={working} value={comparison?.id??""} onValueChange={id=>setComparison(savedComparisons.find(c=>c.id===id)??null)} options={[{value:"",label:"选择记录"},...savedComparisons.map(c=>({value:c.id,label:formatTime(c.createdAt)+" · "+comparisonLabel[c.source]+" · 修订 "+c.candidateRevision+" · "+verdictLabel[c.judgement.verdict]}))]}/>}
     </Panel>
     {comparison&&<Panel title={comparisonLabel[comparison.source]+"结果"} detail={(comparison.source==="original"?"原发布 v"+comparison.candidateRecipe.version+" · 包 "+comparison.bundleId:"候选 v"+comparison.candidateRecipe.version+" · 修订 "+comparison.candidateRevision)+" · "+formatTime(comparison.createdAt)}>
-      <div className="wp-actions"><Badge tone={comparison.originalVerdict.startsWith("OK")?"ok":"ng"}>原始 {verdictLabel[comparison.originalVerdict]}</Badge><span>→</span><Badge tone={comparison.judgement.verdict.startsWith("OK")?"ok":comparison.judgement.verdict==="ERR_INSPECT"?"warn":"ng"}>{comparison.source==="original"?"重现":"候选"} {verdictLabel[comparison.judgement.verdict]}</Badge><b>{displayReason(comparison.judgement.reason)}</b></div>
+      <div className="wp-actions"><StatusBadge tone={comparison.originalVerdict.startsWith("OK")?"ok":"ng"}>原始 {verdictLabel[comparison.originalVerdict]}</StatusBadge><span>→</span><StatusBadge tone={comparison.judgement.verdict.startsWith("OK")?"ok":comparison.judgement.verdict==="ERR_INSPECT"?"warn":"ng"}>{comparison.source==="original"?"重现":"候选"} {verdictLabel[comparison.judgement.verdict]}</StatusBadge><b>{displayReason(comparison.judgement.reason)}</b></div>
       <ReplayDiff diffs={diffs} source={comparison.source} selected={selected} onSelect={k=>{setSelected(k);setViewSelection(null);}}/>
       <UnrolledCurve layout={comparison.candidateRecipe} measured={comparison.measurements.length?comparison.measurements:(result?.measured??[])} vis={[]}/>
     </Panel>}
     <div className="detail-grid">
-      <Panel title="逐拍照点结果与原图" detail="上方为中线示意，选中帧后在下方查看原图；原始整件判定保留" actions={<div className="segmented"><button className={visual==="shots"?"active":""} aria-pressed={visual==="shots"} onClick={()=>setVisual("shots")}>逐拍照点</button><button className={visual==="part"?"active":""} aria-pressed={visual==="part"} onClick={()=>setVisual("part")}>整件</button></div>}>
-        {layout&&result?visual==="part"?<WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={setSelected} vis={result.vis}/>:<ShotTiles layout={layout} vis={result.vis} selected={selected} onSelect={setSelected}/>:<p className="muted">配方快照缺失，无法绘制。</p>}
-        {layout&&<div className="wp-stack"><div className="wp-actions"><Badge>{"选中 k"+(selected+1)}</Badge>{sampleImages&&<Badge>离线样本原图</Badge>}<select className="input" aria-label="历史帧选择" disabled={working} style={{width:260}} value={selected} onChange={e=>setSelected(Number(e.target.value))}>{layout.shots.map((shot,k)=><option key={k} value={k}>k{k+1} · {shotLabel(shot,k)} · {raw?.frames.some(f=>f.k===k&&f.available)?"原图可用":"无原图"}</option>)}</select><select className="input" aria-label="历史视角选择" disabled={working} value={selectedView} onChange={e=>setViewSelection({k:selected,view:Number(e.target.value)})}>{[...new Set([layout.shots[selected]?.view??1,...(raw?.frames.filter(f=>f.k===selected).map(f=>f.view)??[])])].sort().map(view=><option key={view} value={view}>视角 {view}{view===layout.shots[selected]?.view?" · 检测所选":""}</option>)}</select><span className="spacer"/><button className="btn" disabled={disabled||!available||selectedView!==layout.shots[selected]?.view} onClick={()=>void useForTeach()}><Camera size={15}/>将此帧用于示教</button></div><GrayViewer image={image.image} loading={image.loading} error={image.error||(!available?unavailableMessage:"")} label={imageLabel} caption={imageCaption} overlay={viewOverlay}/>{edges.length>0&&<p className="muted">横线为{comparisonLabel[comparison!.source]}测得的胶边与胶宽；橙色为与原结果状态不同的站。站点颜色仍表示原始判定。</p>}</div>}
+      <Panel title="逐拍照点结果与原图" detail="上方为中线示意，选中帧后在下方查看原图；原始整件判定保留" actions={<SegmentedControl label="结果视图" size="sm" options={[{value:"shots",label:"逐拍照点"},{value:"part",label:"整件"}]} value={visual} onValueChange={value=>setVisual(value as "shots"|"part")}/>}>
+        {layout&&result?visual==="part"?<WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={setSelected} vis={result.vis}/>:<ShotTiles layout={layout} vis={result.vis} selected={selected} onSelect={setSelected}/>:<Text as="p" muted>配方快照缺失，无法绘制。</Text>}
+        {layout&&<div className="wp-stack"><div className="wp-actions"><StatusBadge>{"选中 k"+(selected+1)}</StatusBadge>{sampleImages&&<StatusBadge>离线样本原图</StatusBadge>}<Select aria-label="历史帧选择" className="detail-frame-select" disabled={working} value={String(selected)} onValueChange={value=>setSelected(Number(value))} options={layout.shots.map((shot,k)=>({value:String(k),label:"k"+(k+1)+" · "+shotLabel(shot,k)+" · "+(raw?.frames.some(f=>f.k===k&&f.available)?"原图可用":"无原图")}))}/><Select aria-label="历史视角选择" disabled={working} value={String(selectedView)} onValueChange={value=>setViewSelection({k:selected,view:Number(value)})} options={[...new Set([layout.shots[selected]?.view??1,...(raw?.frames.filter(f=>f.k===selected).map(f=>f.view)??[])])].sort().map(view=>({value:String(view),label:"视角 "+view+(view===layout.shots[selected]?.view?" · 检测所选":"")}))}/><span className="spacer"/><Button leadingIcon={<Camera size={15}/>} disabled={disabled||!available||selectedView!==layout.shots[selected]?.view} onClick={()=>void useForTeach()}>将此帧用于示教</Button></div><GrayViewer image={image.image} loading={image.loading} error={image.error||(!available?unavailableMessage:"")} label={imageLabel} caption={imageCaption} overlay={viewOverlay}/>{edges.length>0&&<Text as="p" muted>横线为{comparisonLabel[comparison!.source]}测得的胶边与胶宽；橙色为与原结果状态不同的站。站点颜色仍表示原始判定。</Text>}</div>}
       </Panel>
       <Panel title="原始整件判定" className="side"><p className="reason-box">{displayReason(j.reason)}</p>
-        {j.gaps.map((g,i)=><div key={i} className="ng-item"><div className="ng-title c-ng">断胶 · {layout?.segments[g.segment]?.name??"段 "+g.segment}</div><p>段内 s {g.s0.toFixed(1)} – {g.s1.toFixed(1)} mm · 长度 {g.len.toFixed(1)} mm（允许 ≤ {layout?.segments[g.segment]?.maxGapLen??"—"} mm）</p><div className="wp-actions">{g.frames.map(k=><button className="btn small" key={k} onClick={()=>setSelected(k)}>k{k+1}{layout?.shots[k]?" · "+layout.shots[k].id:""}</button>)}</div></div>)}
-        {j.segments.map((r,i)=><div key={i} className={"history-segment "+verdictClass(r.verdict)}><div className="ng-title">{verdictLabel[r.verdict]} · {layout?.segments[i]?.name??"段 "+i}</div><div className="kv2"><span>横向偏移</span><b>{r.min?.toFixed(2)??"—"} – {r.max?.toFixed(2)??"—"} mm</b><span>连续超差</span><b>{r.excursionLen.toFixed(1)} mm</b>{r.wMin!=null&&<><span>胶宽</span><b>{r.wMin.toFixed(2)} – {r.wMax?.toFixed(2)} mm</b><span>胶宽连续超差</span><b>{(r.wExcursionLen??0).toFixed(1)} mm</b></>}</div></div>)}
+        {j.gaps.map((g,i)=><div key={i} className="ng-item"><div className="ng-title c-ng">断胶 · {layout?.segments[g.segment]?.name??"段 "+g.segment}</div><p>段内 s {g.s0.toFixed(1)} – {g.s1.toFixed(1)} mm · 长度 {g.len.toFixed(1)} mm（允许 ≤ {layout?.segments[g.segment]?.maxGapLen??"—"} mm）</p><div className="wp-actions">{g.frames.map(k=><Button size="sm" key={k} onClick={()=>setSelected(k)}>k{k+1}{layout?.shots[k]?" · "+layout.shots[k].id:""}</Button>)}</div></div>)}
+        {j.segments.map((r,i)=><div key={i} className="history-segment" data-tone={verdictTone(r.verdict)}><div className="ng-title">{verdictLabel[r.verdict]} · {layout?.segments[i]?.name??"段 "+i}</div><div className="kv2"><span>横向偏移</span><b>{r.min?.toFixed(2)??"—"} – {r.max?.toFixed(2)??"—"} mm</b><span>连续超差</span><b>{r.excursionLen.toFixed(1)} mm</b>{r.wMin!=null&&<><span>胶宽</span><b>{r.wMin.toFixed(2)} – {r.wMax?.toFixed(2)} mm</b><span>胶宽连续超差</span><b>{(r.wExcursionLen??0).toFixed(1)} mm</b></>}</div></div>)}
         <div className="kv2"><span>记录号</span><b>#{s.id}</b>{s.sample&&<><span>离线样本</span><b>{s.sample.partId} · SN <span className="sn">{s.sample.sn}</span> · 期望 {sampleLabelText[s.sample.label]}</b></>}<span>配方修订</span><b>{s.recipeRevision??"—"}</b><span>软件版本</span><b>{detail.softwareVersion}</b><span>收尾耗时</span><b>{s.drainMs??"—"} ms</b><span>触发计数</span><b>{detail.triggers}</b><span>复检自</span><b>{s.retestOf?<Link to={"/history/"+s.retestOf}>#{s.retestOf}</Link>:"—"}</b><span>后续复检</span><b>{detail.retests.length?detail.retests.map(r=><Link key={r} to={"/history/"+r}>#{r} </Link>):"—"}</b></div>
       </Panel>
       <Panel title="原始测量曲线" className="curve-panel" detail="原始横向偏移、胶宽和原版公差，按拍照点分段">
@@ -199,14 +213,14 @@ export default function HistoryDetailPage() {
 
 function SwitchCandidate({from,to,unsaved,saveFailed,busy,error,onCancel,onConfirm}:{from:string|null;to:string;unsaved:boolean;saveFailed:boolean;busy:boolean;error:string;onCancel:()=>void;onConfirm:()=>void}){
   const same=from===to;
-  return <Modal title="切换配方工作台的当前配方" onClose={onCancel} closeDisabled={busy} footer={<>
-    {error&&!same&&<span className="form-error" role="alert">{error}</span>}
-    <button className="btn" disabled={busy} onClick={onCancel}>取消</button>
-    <button className="btn primary" disabled={busy||unsaved||same} aria-busy={busy} onClick={onConfirm}>{busy?"切换中…":"切换到 "+to}</button>
+  return <Dialog open onOpenChange={open=>{if(!open)onCancel();}} title="切换配方工作台的当前配方" closeDisabled={busy} footer={<>
+    <Button disabled={busy} onClick={onCancel}>取消</Button>
+    <Button variant="filled" loading={busy} disabled={unsaved||same} onClick={onConfirm}>{busy?"切换中…":"切换到 "+to}</Button>
   </>}>
+    {error&&!same&&<Alert tone="ng">{error}</Alert>}
     {same?<p>配方工作台当前已是 <b>{to}</b> 的候选，可以直接对照。</p>:<>
       <p>配方工作台是全局的：确认后，工作台当前配方{from?<>从 <b>{from}</b> </>:""}切换为 <b>{to}</b>，示教、验证与发布等各页随之显示 <b>{to}</b> 的候选。{from&&<> <b>{from}</b> 已保存的内容不受影响。</>}</p>
-      {unsaved&&<p className="c-warn" role="alert"><b>{from}</b> 还有未保存的修改，{saveFailed?"自动保存失败；请回到配方工作台重试保存":"正在自动保存"}，保存完成前不能切换，以免丢失这些修改。</p>}
+      {unsaved&&<Alert tone="warn"><b>{from}</b> 还有未保存的修改，{saveFailed?"自动保存失败；请回到配方工作台重试保存":"正在自动保存"}，保存完成前不能切换，以免丢失这些修改。</Alert>}
     </>}
-  </Modal>;
+  </Dialog>;
 }

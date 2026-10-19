@@ -24,7 +24,7 @@ it("翻页结果未返回 → 保留上一页日志与总条数并标为加载�
   await userEvent.click(screen.getByRole("button", { name: "下一页" }));
   expect(screen.getByText("共 250 条")).toBeVisible();
   expect(screen.getByRole("button", { name: "cycle-a" })).toBeVisible();
-  expect(screen.getByRole("table", { name: "运行日志" })).toHaveAttribute("aria-busy", "true");
+  expect(screen.getByRole("table", { name: "运行日志" }).closest("[aria-busy]")).toHaveAttribute("aria-busy", "true");
   await act(async () => next.resolve({ total: 250, items: [record(900, "cycle-z")], files: 1, bytes: 1 }));
   expect(await screen.findByRole("button", { name: "cycle-z" })).toBeVisible();
   expect(screen.queryByRole("button", { name: "cycle-a" })).not.toBeInTheDocument();
