@@ -3,7 +3,9 @@ param(
     [ValidateRange(1024, 65535)][int]$DebugPort = 9341,
     [switch]$SkipBuild,
     [string]$SampleSet,
-    [string]$LyFlowRuntime
+    [string]$LyFlowRuntime,
+    [string]$DataRoot,
+    [ValidateRange(0, 10000)][int]$ArmBudgetMs = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,7 +37,7 @@ $e2eExpectedExecutable = Join-Path $e2eOutput 'gluesight-ui-tests.exe'
 $script:e2eOwnedInstance = $null
 
 function Start-E2EInstance([switch]$Fresh, [switch]$Prebuilt) {
-    & (Join-Path $PSScriptRoot 'Start-UiTestInstance.ps1') -Profile e2e -ResetData:$Fresh -DebugPort $DebugPort -SkipBuild:$Prebuilt | Out-Host
+    & (Join-Path $PSScriptRoot 'Start-UiTestInstance.ps1') -Profile e2e -ResetData:$Fresh -DebugPort $DebugPort -SkipBuild:$Prebuilt -DataRoot $DataRoot | Out-Host
     $script:e2eOwnedInstance = Get-Content -LiteralPath $e2eManifestPath -Raw | ConvertFrom-Json
 }
 
@@ -57,18 +59,18 @@ try {
     & node --input-type=module -e "await import('playwright-core');"
     if ($LASTEXITCODE -ne 0) { throw '请使用 Node 24.15+ 并先执行 pnpm install --frozen-lockfile。' }
     $env:GLUESIGHT_LYFLOW_RUNTIME = $e2eLyflow
-    $e2eCdp = "http://localhost:$DebugPort"
     $e2eResult = Join-Path $e2eOutput 'result.json'
+    $e2eArmArgs = if ($ArmBudgetMs -gt 0) { @('--arm-ms', $ArmBudgetMs) } else { @() }
     Start-E2EInstance -Fresh -Prebuilt:$SkipBuild
     & node (Join-Path $e2eProjectRoot 'tests\native\offline-e2e.mjs') `
-        --cdp $e2eCdp --instance $e2eManifestPath --output $e2eResult --sample-set $e2eSampleSet --lyflow-runtime $e2eLyflow
+        --instance $e2eManifestPath --output $e2eResult --sample-set $e2eSampleSet --lyflow-runtime $e2eLyflow @e2eArmArgs
     $e2eExit = $LASTEXITCODE
     if ($e2eExit -eq 0) {
         Stop-E2EInstance
         Start-Sleep -Seconds 2
         Start-E2EInstance -Prebuilt
         & node (Join-Path $e2eProjectRoot 'tests\native\offline-restart.mjs') `
-            --cdp $e2eCdp --instance $e2eManifestPath --previous $e2eResult --output (Join-Path $e2eOutput 'restart.json')
+            --instance $e2eManifestPath --previous $e2eResult --output (Join-Path $e2eOutput 'restart.json')
         $e2eExit = $LASTEXITCODE
     }
     if ($e2eExit -ne 0 -and $e2eExit -ne $e2eMissingInputExit) { Write-Error "离线端到端测试失败（退出码 $e2eExit）。日志见 $e2eOutput。" -ErrorAction Continue }

@@ -127,6 +127,26 @@ pub fn state(app: &AppHandle) -> PathBuf {
 pub fn webview(root: &Path) -> Result<PathBuf, String> {
     Ok(root.join("webview").join(user_key()?))
 }
+pub fn bootstrap_root(root: &Path) -> PathBuf {
+    root.join("migration").join("bootstrap")
+}
+
+const WEBVIEW_PROFILE_MAX: usize = 247 - r"\EBWebView\Default".len();
+
+fn check_webview_profiles(root: &Path, user: &str) -> Result<(), String> {
+    for base in [bootstrap_root(root), root.to_path_buf()] {
+        let profile = base.join("webview").join(user);
+        let length = profile.to_string_lossy().encode_utf16().count();
+        if length > WEBVIEW_PROFILE_MAX {
+            return Err(format!(
+                "资料目录路径过长：WebView2 资料目录 {} 共 {length} 个字符，超过上限 {WEBVIEW_PROFILE_MAX}，窗口无法创建。请把资料目录 {} 移到更短的路径。",
+                profile.display(),
+                root.display()
+            ));
+        }
+    }
+    Ok(())
+}
 
 fn environment() -> &'static str {
     if std::env::var_os("GLUESIGHT_DATA_DIR").is_some() {
@@ -369,6 +389,7 @@ pub fn prepare(app: &AppHandle, target: &Path) -> Result<(), String> {
         }
     }
     reject_link_ancestors(&target)?;
+    check_webview_profiles(target, &user_key()?)?;
     if std::env::var_os("GLUESIGHT_DATA_DIR").is_none() && !target.is_dir() {
         return Err(format!(
             "资料目录尚未初始化：{}。开发版请运行 pnpm storage:init，安装版请重新运行安装器。",
@@ -764,6 +785,17 @@ mod tests {
             fs::read(staging.join("vision/releases/r/b/recipe.json")).unwrap(),
             bytes
         );
+    }
+    #[test]
+    fn startup_window_profile_beyond_limit_rejects_data_directory() {
+        let user = "S-1-5-21-1-2-3-1001";
+        let units = |path: &Path| path.to_string_lossy().encode_utf16().count();
+        let probe = Path::new("x");
+        let fixed = units(&bootstrap_root(probe).join("webview").join(user)) - units(probe);
+        for (length, accepted) in [(WEBVIEW_PROFILE_MAX - fixed, true), (WEBVIEW_PROFILE_MAX - fixed + 1, false)] {
+            let root = PathBuf::from("资".repeat(length));
+            assert_eq!(check_webview_profiles(&root, user).is_ok(), accepted, "资料目录 {length} 个字符");
+        }
     }
     #[test]
     fn interrupted_commit_resumes_existing_entries_without_overwriting() {

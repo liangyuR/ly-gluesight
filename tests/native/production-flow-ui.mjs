@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile, mkdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { instanceCdp, uiPage } from "./offline-e2e.mjs";
 
 const identifier = "com.xyzrobotics.tujiaovision.flow-tests";
 const recipeId = "MTR-HSG-A";
@@ -150,13 +151,14 @@ export async function runProductionFlow(page, options = {}) {
     await cyclePanel.getByRole("button", { name: "保存", exact: true }).click();
     await until(page, () => invokeRead("cycle_get_settings"), settings => settings.productSource === "plc", "UI 保存型号来源失败");
   }
-  await page.getByRole("link", { name: "站点模式：真机", exact: true }).click();
+  await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
+  await page.getByRole("heading", { name: "当前：真机", exact: true }).waitFor();
   await page.getByRole("combobox", { name: "离线来源", exact: true }).selectOption("synthetic");
   await page.getByRole("button", { name: "进入离线", exact: true }).click();
   const offline = await until(page, () => invokeRead("site_status"), status => status.mode === "offline" && Number.isInteger(status.port), "UI 未进入离线模式");
   assert.equal(offline.source, "synthetic");
   assert.equal(offline.measurement, "simulated");
-  await page.getByRole("link", { name: "站点模式：离线 · 合成图", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "当前：离线 · 合成图", exact: true }).waitFor();
   await until(page, () => invokeRead("plc_get_status"), status => status.state === "connected", "离线 S7 服务未连接");
   const offlineConfig = await invokeRead("plc_get_config");
   assert.equal(offlineConfig.connection.protocol, "s7");
@@ -221,7 +223,7 @@ export async function runProductionFlow(page, options = {}) {
   await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
   await page.getByRole("button", { name: "退出离线", exact: true }).click();
   await until(page, () => invokeRead("site_status"), status => status.mode === "real", "UI 未退出离线模式");
-  await page.getByRole("link", { name: "站点模式：真机", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "当前：真机", exact: true }).waitFor();
   assert.deepEqual(await invokeRead("plc_get_config"), guard.config, "退出离线后 PLC 配置未恢复");
   assert.deepEqual(await invokeRead("camera_rig_config"), guard.cameras, "退出离线后相机组未恢复");
   assert.deepEqual(await invokeRead("cycle_get_settings"), (({ productSource, ...rest }) => ({ ...rest, productSource: "plc" }))(guard.settings), "退出离线后系统设置被改动");
@@ -240,19 +242,11 @@ async function main() {
     assert(process.argv[i].startsWith("--") && process.argv[i + 1], "参数必须为 --name value");
     args[process.argv[i].slice(2)] = process.argv[i + 1];
   }
-  const cdp = args.cdp ?? "http://127.0.0.1:9339";
-  const url = new URL(cdp);
-  assert(["127.0.0.1", "localhost", "[::1]"].includes(url.hostname), "仅允许本机 CDP");
   const instance = args.instance ?? "output/playwright/flow-regression/instance.json";
-  const manifest = JSON.parse(await readFile(instance, "utf8"));
-  assert.equal(manifest.identifier, identifier);
-  assert.equal(Number(url.port), manifest.debugPort);
+  const cdp = await instanceCdp(instance, args.cdp, id => id === identifier);
   const browser = await chromium.connectOverCDP(cdp);
   try {
-    const pages = browser.contexts().flatMap(context => context.pages());
-    const page = pages.find(page => /tauri\.localhost|localhost:1420|^tauri:\/\//.test(page.url()));
-    assert(page, "未找到 Tauri UI 页面");
-    page.setDefaultTimeout(30000);
+    const page = await uiPage(browser);
     const result = await runProductionFlow(page, { instance, output: args.output ?? "output/playwright/flow-regression/result.json" });
     process.stdout.write(JSON.stringify({ passed: result.passed, cycleId: result.summary.cycleId, historyId: result.summary.id, files: result.disk.files.length }) + "\n");
   } finally { await browser.close(); }

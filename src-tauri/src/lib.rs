@@ -71,13 +71,17 @@ pub fn run() {
                     }
                 }
             }
+            if let Err(error) = &prepared {
+                eprintln!("{error}");
+                if headless(app.handle()) { std::process::exit(1); }
+            }
             let profile = match &prepared {
-                Ok(root) => storage::webview(&root.join("migration/bootstrap"))?,
+                Ok(root) => storage::webview(&storage::bootstrap_root(root))?,
                 Err(_) => std::env::temp_dir().join(format!("GlueSight-startup-error-{}", std::process::id())),
             };
             tauri::WebviewWindowBuilder::new(app, "storage-startup", tauri::WebviewUrl::App("storage-startup.html".into()))
                 .title("GlueSight · 资料准备").inner_size(720.0, 480.0).center().resizable(false)
-                .visible(app.config().app.windows.iter().any(|window| window.visible))
+                .visible(!headless(app.handle()))
                 .data_directory(profile).build()?;
             if let Err(error) = prepared {
                 storage_startup::failed(app.handle(), error);
@@ -228,8 +232,16 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
+fn headless(app: &tauri::AppHandle) -> bool {
+    !app.config().app.windows.iter().any(|window| window.visible)
+}
+
 fn startup_failed(app: tauri::AppHandle, error: String) {
     eprintln!("{error}");
+    if headless(&app) {
+        app.exit(1);
+        return;
+    }
     storage_startup::failed(&app, error);
 }
 
