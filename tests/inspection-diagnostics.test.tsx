@@ -23,8 +23,9 @@ it("本点完成但另一检测图异常 → 主区可发现且诊断保留独�
       {group && <InspectionDiagnostics group={group} onGroup={setGroup} onClose={() => setGroup(null)} snapshot={{ ...snapshot(), part }} readiness={null} layout={workspaceView().layout} part={part} selected={selected} logs={[]} />}</>;
   }
   render(<Screen />);
-  expect(within(screen.getByRole("button", { name: "查看帧 k1" })).getByText("检测图注意 1")).toBeVisible();
-  await userEvent.click(screen.getByRole("button", { name: "查看帧 k1" }));
+  const shot = within(screen.getByRole("group", { name: "拍照点" })).getByRole("button", { name: /^P1 · / });
+  expect(within(shot).getByText("检测图注意 1")).toBeVisible();
+  await userEvent.click(shot);
   const trigger = screen.getByRole("button", { name: "检测图异常 / 注意 1" });
   await userEvent.click(trigger);
   const drawer = within(screen.getByRole("dialog", { name: "检测诊断" }));

@@ -1,7 +1,10 @@
+import { Alert, Button, Card, StatusBadge } from "qing-steel";
 import { productionBusy } from "../phase";
 import type { ReadinessLoadStatus } from "../api";
 import type { Readiness, Snapshot } from "../types";
 import ReadinessChecklist from "./ReadinessChecklist";
+
+const statusTone = { fault: "fault", busy: "info", waiting: "warn", unknown: "warn", blocked: "ng", ready: "ok" } as const;
 
 export default function InspectionReadiness({ snapshot, readiness, status: loadStatus, error, onDiagnostics, offlineSample = false }: {
   offlineSample?: boolean;
@@ -38,22 +41,22 @@ export default function InspectionReadiness({ snapshot, readiness, status: loadS
     : blocked > 0 ? `${offlineSample ? "离线设备异常" : "无法开工"} · ${blocked} 项阻塞`
     : faulted ? offlineSample ? "离线设备故障" : "无法开工 · 设备故障" : "暂未就绪";
 
-  return <section className={`panel inspection-readiness device-${status}${expanded ? " readiness-expanded" : ""}`} aria-label="设备状态">
+  return <Card className={`inspection-readiness device-${status}${expanded ? " readiness-expanded" : ""}`} role="region" aria-label="设备状态">
     <div className="readiness-summary">
       <h2 className="panel-title">设备状态</h2>
-      <strong className="readiness-summary-state">{label}</strong>
+      <StatusBadge tone={statusTone[status]}>{label}</StatusBadge>
     </div>
     {offlineSample && <p className="muted">候选示教与样本匹配在启动试运行时检查；生产发布条件不用于候选调试。</p>}
-    {faulted && <p className="readiness-fault">{snapshot.fault || "设备故障，请检查设备并复位"}</p>}
-    {failed && <div className="readiness-refresh-error" role="status">
+    {faulted && <Alert tone="fault">{snapshot.fault || "设备故障，请检查设备并复位"}</Alert>}
+    {failed && <Alert tone="warn">
       {busy || faulted ? "开工条件更新失败；" : ""}{readiness ? "下列条件为上次报告，仅供参考" : "暂时无法确认开工条件"}
       {error && <details><summary>查看更新错误</summary><p>{error}</p></details>}
-    </div>}
+    </Alert>}
     {readiness && <ReadinessChecklist readiness={inline ? { ...readiness, items: inline } : readiness} embedded includeReady={!onDiagnostics} />}
-    {onDiagnostics && entry && <button className="readiness-diagnostics-entry" onClick={onDiagnostics}>{entry}</button>}
+    {onDiagnostics && entry && <Button variant="text" size="sm" className="readiness-diagnostics-entry" onClick={onDiagnostics}>{entry}</Button>}
     {!onDiagnostics && alarms.length > 0 && <details className="readiness-details readiness-diagnostics">
       <summary>诊断详情（{alarms.length}）</summary>
       <ul className="readiness-alarm-list">{alarms.map(alarm => <li key={alarm}>{alarm}</li>)}</ul>
     </details>}
-  </section>;
+  </Card>;
 }

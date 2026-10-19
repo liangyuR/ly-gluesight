@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { Crosshair } from "lucide-react";
-import { useSnackbar } from "../../../components/Snackbar";
+import { useSnackbar } from "qing-steel";
 
 interface CalibInfo {
   path: string;
@@ -21,7 +21,7 @@ export default function CalibPanel({ cam, view=1, isSim, imageId, onMmPerPx }: {
   const [square, setSquare] = useState(5);
   const [busy, setBusy] = useState(false);
   const [runError, setRunError] = useState("");
-  const snack = useSnackbar();
+  const { show: snack } = useSnackbar();
   const [loading,setLoading]=useState(isTauri()),[loaded,setLoaded]=useState(false),[loadError,setLoadError]=useState("");
   const mounted=useRef(true),loadSerial=useRef(0),runSerial=useRef(0),pending=useRef(false);
   const scope=JSON.stringify([cam,view,imageId,isSim]),current=useRef({cam,view,scope});current.current={cam,view,scope};

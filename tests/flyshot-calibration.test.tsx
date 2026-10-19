@@ -2,6 +2,7 @@ import {render,screen} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import {beforeEach,expect,it,vi} from "vitest";
+import { SnackbarProvider } from "qing-steel";
 import FlyshotCalibrationPage from "../src/pages/FlyshotCalibrationPage";
 import FeasibilityCalc from "../src/features/camera/components/FeasibilityCalc";
 import {cameraApi,defaultCameraConfig,useRigStatus} from "../src/features/camera/api";
@@ -20,7 +21,7 @@ beforeEach(()=>{
 });
 
 it("相机状态轮询多次刷新 → 飞拍可行性只渲染一个面板",async()=>{
- const page=()=><MemoryRouter><FlyshotCalibrationPage/></MemoryRouter>;
+ const page=()=><SnackbarProvider><MemoryRouter><FlyshotCalibrationPage/></MemoryRouter></SnackbarProvider>;
  const view=render(page());
  await screen.findByRole("heading",{name:"飞拍可行性"});
  for(let i=2;i<7;i++){vi.mocked(useRigStatus).mockReturnValue({statuses:[status(i)],lastFrame:{}} as ReturnType<typeof useRigStatus>);view.rerender(page());}
