@@ -3,6 +3,7 @@ import { getAppInfo, getEngineStatus, openLogDir, type AppInfo, type EngineStatu
 import { cycleApi, devLyflowHint, useRecipes, type CycleSettings, type Timeouts } from "../features/cycle";
 import { storageApi } from "../lib/storage";
 import { errorText } from "../lib/errors";
+import { useSnackbar } from "../components/Snackbar";
 
 const timeoutFields: [keyof Timeouts, string, string][] = [
   ["armMs", "布防目标 T_arm（ms）", "partStart↑ → armed↑，超出仅报警"],
@@ -87,24 +88,25 @@ function numberInput(value: number) { return Number.isNaN(value) ? "" : value; }
 function CycleSettingsPanel({ savePart }: { savePart: SavePart }) {
   const recipes = useRecipes();
   const { data: settings, setData: setSettings, error, loading, reload } = useResource(cycleApi.getSettings);
-  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const [saveError, setSaveError] = useState("");
+  const snack = useSnackbar();
   const [saving, setSaving] = useState(false);
   const pending = useRef(false);
   const mounted = useMounted();
   const invalid = settings ? timingError(settings) : null;
-  const update = (next: CycleSettings) => { setSettings(next); setNotice(null); };
+  const update = (next: CycleSettings) => { setSettings(next); setSaveError(""); };
 
   const save = async () => {
     if (!settings || pending.current || invalid) return;
     pending.current = true;
     setSaving(true);
-    setNotice(null);
+    setSaveError("");
     try {
       const { productSource, manualRecipeId, historyDays, timeouts } = settings;
       const saved = await savePart({ productSource, manualRecipeId, historyDays, timeouts });
-      if (saved && mounted.current) setNotice({ ok: true, text: "已保存，从下一个工件开始生效" });
+      if (saved && mounted.current) snack("检测节拍已保存，从下一个工件开始生效");
     } catch (e) {
-      if (mounted.current) setNotice({ ok: false, text: errorText(e) });
+      if (mounted.current) setSaveError(errorText(e));
     } finally {
       pending.current = false;
       if (mounted.current) setSaving(false);
@@ -183,7 +185,7 @@ function CycleSettingsPanel({ savePart }: { savePart: SavePart }) {
       </p>
       {invalid && <div className="notice error" role="alert">{invalid}</div>}
       </>}
-      {notice && <div className={`notice ${notice.ok ? "ok" : "error"}`} role={notice.ok ? "status" : "alert"}>{notice.text}</div>}
+      {saveError && <div className="notice error" role="alert">{saveError}</div>}
     </div>
   );
 }
@@ -191,28 +193,29 @@ function CycleSettingsPanel({ savePart }: { savePart: SavePart }) {
 function MeasurePanel({ savePart }: { savePart: SavePart }) {
   const { data: settings, setData: setSettings, error, loading, reload } = useResource(cycleApi.getSettings);
   const { data: engine, error: engineError, loading: engineLoading, reload: refresh } = useResource<EngineStatus>(getEngineStatus);
-  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const [saveError, setSaveError] = useState("");
+  const snack = useSnackbar();
   const [saving, setSaving] = useState(false);
   const pending = useRef(false);
   const mounted = useMounted();
   const invalid = settings ? measureError(settings) : null;
   const visibleEngine = !engineLoading && !engineError ? engine : null;
-  const update = (next: CycleSettings) => { setSettings(next); setNotice(null); };
+  const update = (next: CycleSettings) => { setSettings(next); setSaveError(""); };
 
   const save = async () => {
     if (!settings || pending.current || invalid) return;
     pending.current = true;
     setSaving(true);
-    setNotice(null);
+    setSaveError("");
     try {
       const { record, recordKeep, recordMaxGb, offlineRecordKeep, offlineRecordMaxGb } = settings;
       const saved = await savePart({ record, recordKeep, recordMaxGb, offlineRecordKeep, offlineRecordMaxGb });
       if (saved && mounted.current) {
-        setNotice({ ok: true, text: "已保存" });
+        snack("lyFlow 与帧录制设置已保存");
         refresh();
       }
     } catch (e) {
-      if (mounted.current) setNotice({ ok: false, text: errorText(e) });
+      if (mounted.current) setSaveError(errorText(e));
     } finally {
       pending.current = false;
       if (mounted.current) setSaving(false);
@@ -307,7 +310,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
       <p className="muted hint">
         真机检测固定使用 lyFlow 流程，沿各拍照点的示教中线量胶，需要兼容的核心库和已验证发布的配方；离线 · 合成图使用模拟测量；离线 · 样本集使用 lyFlow，候选试运行无需发布。已发布版本运行前需完成发布资源预热。帧录制保存同次触发的全部视角，可用于历史复测。
       </p>
-      {notice && <div className={`notice ${notice.ok ? "ok" : "error"}`} role={notice.ok ? "status" : "alert"}>{notice.text}</div>}
+      {saveError && <div className="notice error" role="alert">{saveError}</div>}
     </div>
   );
 }

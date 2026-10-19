@@ -6,6 +6,8 @@
 .prod-bar { display: flex; align-items: center; gap: var(--space-8); flex-wrap: wrap; flex-shrink: 0; }
 .prod-bar .qs-chip { height: var(--ctl-h-sm); max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
 .prod-bar .qs-chip b { font-weight: 600; color: var(--on-surface); }
+.prod-bar .qs-chip.prod-sn { max-width: min(100%, 480px); }
+.prod-bar .prod-sn b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prod-recipe .input { height: 24px; border: 0; background: transparent; padding: 0 2px; color: var(--on-surface); }
 .prod-phase.run .dot { background: var(--primary); }
 .prod-bar .offline-msg[role="status"] { width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

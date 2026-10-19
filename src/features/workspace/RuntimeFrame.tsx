@@ -67,7 +67,7 @@ export default function RuntimeFrame({part,layout,k,measured,vis,compact=false,o
   };
   const shownK=image?.k??k;
   const contents=<>
-    <GrayViewer image={image?.image??null} loading={live.loading} error={live.current?.error??""} label={labelOf(shownK)} overlay={shotOverlay(layout,shownK,vis)} emptyTitle={compact?"等待本拍照点图像":undefined} emptyHint={compact?"":"本拍照点采集完成后显示原图；可在下方切换拍照点查看。"}/>
+    <GrayViewer image={image?.image??null} loading={live.loading} error={live.current?.error??""} label={labelOf(shownK)} caption={compact?undefined:<>SN <span className="sn">{part?.sn||"—"}</span> · k{shownK+1}</>} overlay={shotOverlay(layout,shownK,vis)} emptyTitle={compact?"等待本拍照点图像":undefined} emptyHint={compact?"":"本拍照点采集完成后显示原图；可在下方切换拍照点查看。"}/>
     <div className="wp-runtime-strip"><KV label="帧状态"><span className={"qs-chip frame-state "+frameState[1]}>{frameState[0]}</span></KV><KV label="得分">{m?.score.toFixed(3)??"—"}</KV><KV label="测量点 / 缺胶">{frame ? frame.points+" / "+frame.gapPoints : "—"}</KV><KV label="处理耗时">{m?m.ms+" ms":"—"}</KV></div>
     {!compact&&<div className="wp-runtime-strip"><KV label="本件设备内顺序">{frame?.ordinal??"—"}</KV><KV label="设备帧计数">{frame?.frameCounter??"—"}</KV><KV label="设备触发计数">{frame?.triggerCounter??"—"}</KV></div>}
     {compact&&attention>0&&onDiagnostics&&<button className="btn small runtime-view-attention" onClick={onDiagnostics}>检测图异常 / 注意 {attention}</button>}

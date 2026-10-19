@@ -42,7 +42,7 @@ describe("离线原图保留设置", () => {
     fireEvent.change(screen.getByRole("spinbutton", { name: "离线原图总大小上限（GB）" }), { target: { value: "12.5" } });
     saved.historyDays = 90;
     await userEvent.click(recordSaveButton());
-    await screen.findByText("已保存");
+    await waitFor(() => expect(saved.offlineRecordKeep).toBe(450));
     page.unmount();
     render(<SettingsPage />);
     expect(await screen.findByRole("spinbutton", { name: "离线原图最多保留（件）" })).toHaveValue(450);
