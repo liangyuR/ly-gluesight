@@ -3,7 +3,7 @@ use super::s7_server::S7Server;
 use super::*;
 use crate::judge::fault;
 use crate::plc_plan::{PlanShot, PlcPlan};
-use crate::plc_session::{PlcSession, SessionEvent, SessionPhase};
+use crate::plc_session::{Origin, PendingKind, PlcSession, SessionEvent, SessionPhase};
 use crate::inspection::tag;
 use ly_plc::{EventSink, Logbook, PlcEngine};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -27,6 +27,7 @@ struct Bench {
     session: PlcSession,
     plan: PlcPlan,
     intake: Arc<AtomicBool>,
+    directory: std::path::PathBuf,
 }
 
 impl Bench {
@@ -56,7 +57,7 @@ impl Bench {
             shot_id: format!("P{i}"), pose_id: format!("P{i}"), camera_ids: vec!["cam1".into()],
         }).collect()).unwrap();
         Self { _server: server, line: Line::new(memory, layout), engine, session: PlcSession::open(directory.join("session.json")), plan,
-            intake: Arc::new(AtomicBool::new(true)) }
+            intake: Arc::new(AtomicBool::new(true)), directory }
     }
 
     async fn run(&mut self, scenario: Scenario) -> Result<Outcome, String> {
@@ -200,6 +201,69 @@ async fn offline_line_scenarios_end_in_err_result_or_handshake_fault() {
         assert_eq!(result.as_ref().ok().map(|o| (o.result_code, o.fault_code)), expected, "{scenario:?}: {result:?}");
         assert_eq!(bench.session.phase(), phase, "{scenario:?}: {:?}", bench.session.view());
         assert_eq!(bench.line.read(tag::PART_START), 0, "{scenario:?}");
+        bench.engine.disconnect().await;
+    }
+}
+
+/// 采集中途崩溃后重启：握手日志按事务来源决定能否由离线虚拟 PLC 复位（S-13）。
+#[tokio::test]
+async fn crash_left_pending_is_reset_by_the_virtual_plc_only_when_it_came_from_offline() {
+    for origin in [Origin::Offline, Origin::Real] {
+        let mut bench = Bench::new(&format!("crash-{origin:?}")).await;
+        bench.session.set_origin(origin);
+        {
+            let Bench { line, engine, session, plan, .. } = &mut bench;
+            let abort = AtomicBool::new(false);
+            let order = PartOrder { sn: "SN-CRASH".into(), product_code: 3, plan_version: plan.plan_version,
+                shot_count: plan.shot_count, device_shots: plan.device_shots };
+            let plc = async { line.ensure_ready(&TIMING, &abort).await?; line.run_part(&TIMING, &order, Scenario::Normal, |_, _| {}, &abort).await };
+            let pc = async {
+                let until = Instant::now() + Duration::from_secs(10);
+                while !matches!(session.poll_gated(engine, false, true, true, true).await, SessionEvent::Start(_)) {
+                    assert!(Instant::now() < until, "未收到开始请求：{:?}", session.view());
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                session.arm(engine, plan).await.unwrap();
+                abort.store(true, Ordering::SeqCst);
+            };
+            let (aborted, ()) = tokio::join!(plc, pc);
+            assert!(aborted.is_err());
+        }
+        let journal = bench.directory.join("session.json");
+        let mut restarted = PlcSession::open(journal.clone());
+        let expected = if origin == Origin::Offline { PendingKind::Offline } else { PendingKind::Blocking };
+        assert_eq!(restarted.pending_kind(), expected, "{origin:?}");
+        if origin == Origin::Real {
+            let mut legacy: serde_json::Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+            legacy["pending"].as_object_mut().unwrap().remove("origin");
+            let path = bench.directory.join("legacy.json");
+            std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+            assert_eq!(PlcSession::open(path).pending_kind(), PendingKind::Blocking, "未记来源的旧日志不能当离线事务处理");
+        }
+        restarted.set_origin(Origin::Offline);
+        let Bench { line, engine, .. } = &bench;
+        let abort = AtomicBool::new(false);
+        let pc = async {
+            let until = Instant::now() + Duration::from_secs(10);
+            loop {
+                if matches!(restarted.poll_gated(engine, false, true, true, true).await, SessionEvent::Ready) { break; }
+                if restarted.view().message.is_some_and(|m| m.contains("不能由离线虚拟 PLC 复位")) { break; }
+                assert!(Instant::now() < until, "{origin:?}：复位未收敛：{:?}", restarted.view());
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            abort.store(true, Ordering::SeqCst);
+        };
+        let _ = tokio::join!(line.ensure_ready(&TIMING, &abort), pc);
+        if origin == Origin::Offline {
+            assert_eq!(restarted.phase(), SessionPhase::Idle);
+            assert!(!restarted.pending());
+            let audit = std::fs::read_to_string(journal.with_extension("audit.jsonl")).unwrap();
+            assert!(audit.lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+                .any(|r| r["action"] == "resetCompleted" && r["pending"]["origin"] == "offline" && r["pending"]["request"]["sn"] == "SN-CRASH"));
+        } else {
+            assert_eq!(restarted.phase(), SessionPhase::Fault);
+            assert!(restarted.pending(), "真机事务不能被离线复位清掉");
+        }
         bench.engine.disconnect().await;
     }
 }
