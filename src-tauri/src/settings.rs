@@ -90,12 +90,27 @@ impl Default for CycleSettings {
 }
 
 impl CycleSettings {
-    /// 读不了的文件先备份，返回说明（节拍启动后写日志）。
+    /// 读不了的文件先备份，返回说明（节拍启动后写日志）。取值不符合当前范围的旧设置备份后按默认值重建。
     pub fn load(path: &Path) -> (Self, Option<String>) {
-        match crate::fsio::read_json(path) {
-            Ok(s) => (s.unwrap_or_default(), None),
+        match crate::fsio::read_json::<Self>(path) {
+            Ok(None) => (Self::default(), None),
+            Ok(Some(s)) => match s.validate() {
+                Ok(()) => (s, None),
+                Err(why) => (Self::default(), Some(Self::rebuild(path, &why))),
+            },
             Err(note) => (Self::default(), Some(note)),
         }
+    }
+
+    fn rebuild(path: &Path, why: &str) -> String {
+        let done = match crate::fsio::backup(path, "invalid") {
+            Ok(backup) => match Self::default().save(path) {
+                Ok(()) => format!("原文件已备份为 {}，已按默认值重建", backup.display()),
+                Err(e) => format!("原文件已备份为 {}，重建失败（{e}），先按默认值运行", backup.display()),
+            },
+            Err(e) => format!("备份失败（{e}），原文件未改，先按默认值运行"),
+        };
+        format!("{} 的检测设置不符合当前取值范围（{why}），{done}", path.display())
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -155,5 +170,23 @@ mod tests {
             let settings = CycleSettings { timeouts: Timeouts { arm_ms, ..Timeouts::default() }, ..CycleSettings::default() };
             assert_eq!(settings.validate().is_ok(), valid, "arm_ms={arm_ms}");
         }
+    }
+
+    #[test]
+    fn saved_settings_with_arm_budget_out_of_range_are_backed_up_and_rebuilt_with_defaults_on_load() {
+        let dir = std::env::temp_dir().join(format!("gluesight-settings-{}-{}", std::process::id(), ly_plc::now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cycle.json");
+        let old = CycleSettings { record: RecordMode::All, timeouts: Timeouts { arm_ms: 10_000, ..Timeouts::default() }, ..CycleSettings::default() };
+        old.save(&path).unwrap();
+
+        let (loaded, note) = CycleSettings::load(&path);
+        assert_eq!(loaded, CycleSettings::default());
+        assert!(note.is_some());
+        let backups: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| *p != path).collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(crate::fsio::read_json::<CycleSettings>(&backups[0]).unwrap(), Some(old));
+        assert_eq!(CycleSettings::load(&path), (CycleSettings::default(), None));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

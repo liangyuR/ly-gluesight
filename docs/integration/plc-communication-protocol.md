@@ -209,13 +209,13 @@ PLC 参考 FB 的 `LocalDiagnostic` 只在本地使用，不写 DBW78：7000 启
 | proc_ms | 3000 ms | 等待测量完成 |
 | ack_ms | 5000 ms | 等待 ACK 与释放的告警阈值 |
 
-布防回写或读回确认失败、超时时，PC 进入 visionFault 并保留事务，不保证还有 done/99，PLC 应按故障处置。PLC 的 ArmTimeout 从 partStart↑ 计时，须覆盖 PC 开始双读确认（约 2 个轮询周期）、请求落盘、rm_ms 与布防落盘，即约 rm_ms + 0.5 s；默认 10 s 远大于 PC 上限 5000 ms，PC 总是先于 PLC 给出布防或拒收。ACK 或释放等待超过 PC 阈值只告警并保持事务，不自动丢弃 done 或开始下一件。PC S7 模板心跳默认 500 ms，契约允许配置 100–1000 ms；两端失活阈值均为 3 s。
+布防回写或读回确认失败、超时时，PC 进入 visionFault 并保留事务，不保证还有 done/99，PLC 应按故障处置。PLC 的 ArmTimeout 从 partStart↑ 计时，须覆盖 PC 开始双读确认（约 2 个轮询周期）、请求落盘、`arm_ms` 与布防落盘。两次落盘在磁盘繁忙时实测各可达约 0.65 s，合计最坏约 `arm_ms` + 1.4 s，因此 ArmTimeout 不得小于 `arm_ms` + 2 s，建议保持默认 10 s（覆盖 PC 上限 5000 ms 及上述开销）。PC 负载很高时发现 partStart 还会再滞后，不要把 ArmTimeout 压到下限。ACK 或释放等待超过 PC 阈值只告警并保持事务，不自动丢弃 done 或开始下一件。PC S7 模板心跳默认 500 ms，契约允许配置 100–1000 ms；两端失活阈值均为 3 s。
 
 示教采集不使用生产 `arm_ms/motion_ms/proc_ms` 预算：PC 启动采集后等待 start 最长 120 s，接受 start 后重新计时，接收至 partEnd 最长 120 s。partEnd 后使用独立 `drainTimeoutMs`，默认 1000 ms、范围 200–30000 ms；即使提前收齐，也等完整窗口结束才确认完成。PLC `ResultTimeout` 必须覆盖该窗口和保存、通讯耗时，默认 10 s 不适用于例如 30 s 采集收尾。采集 ACK/释放仍使用上述 `ack_ms` 告警与事务保持规则。
 
 | PLC 参考 FB 输入 | 默认 | 作用 |
 | --- | --- | --- |
-| ArmTimeout | 10 s | 等待 PC 布防 |
+| ArmTimeout | 10 s | 等待 PC 布防；不得小于 `arm_ms` + 2 s |
 | MotionTimeout | 30 s | 等待本件运动与触发结束 |
 | ResultTimeout | 10 s | 等待 PC 结果，包括提前终止后的结果 |
 | ReleaseTimeout | 10 s | 等待 PC 释放及下一次就绪，各阶段分别计时 |
