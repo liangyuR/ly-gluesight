@@ -33,7 +33,6 @@ function rangeStart(days: number | null) {
 
 export default function HistoryPage() {
   const go = useNavigate();
-  const navigate = (to: string) => go(to, { state: { query } });
   const recipes = useRecipes();
   const [scope, setScope] = useState<HistoryScope>("real");
   const [range, setRange] = useState("today");
@@ -66,7 +65,11 @@ export default function HistoryPage() {
   );
   const currentQuery = useRef(query);
   currentQuery.current = query;
-  const page = result?.query === query && result.offset === offset ? result.page : null;
+  const stale = result?.query !== query || result.offset !== offset;
+  const page = result && !(stale && error) ? result.page : null;
+  const pending = stale && !!page;
+  const shownScope = page ? result!.query.scope : scope;
+  const navigate = (to: string) => go(to, { state: { query: result?.query ?? query } });
 
   useEffect(() => {
     alive.current = true;
@@ -165,25 +168,25 @@ export default function HistoryPage() {
           </select>
           <span className="spacer" />
           <button className="icon-btn" onClick={load} disabled={loading} title="刷新"><RefreshCw size={16} /></button>
-          <button className="btn" onClick={() => page && setRejudge({ query, total: page.total })} disabled={loading || !page?.total}>
+          <button className="btn" onClick={() => page && setRejudge({ query, total: page.total })} disabled={loading || stale || !page?.total}>
             <Scale size={15} />
             批量重判
           </button>
-          <button className="btn" onClick={() => void exportCsv()} disabled={exporting || loading || !page?.total}>
+          <button className="btn" onClick={() => void exportCsv()} disabled={exporting || loading || stale || !page?.total}>
             <Download size={15} />
             {exporting ? "导出中…" : "导出 CSV"}
           </button>
         </div>
         {scope === "debug" && <div className="qs-banner tertiary">候选配方离线调试结果，未发布，不作为生产验收或生产统计。</div>}
         {scope === "offline" && <div className="qs-banner tertiary">离线件来自离线验证（合成图或样本集），与真机件分开统计，不计入真机产量与良率。</div>}
-        <div className="hist-counts">
-          <span>{scope === "debug" ? "候选调试" : scope === "offline" ? "离线" : "真机"}共 <b>{page?.total ?? 0}</b> 件</span>
+        <div className={`hist-counts${pending ? " is-loading" : ""}`} aria-busy={pending}>
+          <span>{shownScope === "debug" ? "候选调试" : shownScope === "offline" ? "离线" : "真机"}共 <b>{page?.total ?? 0}</b> 件</span>
           <span>OK <b className="c-ok">{c?.ok ?? 0}</b></span>
           <span>局部超差 <b className="c-warn">{c?.excursion ?? 0}</b></span>
           <span>NG <b className="c-ng">{c?.ng ?? 0}</b></span>
           <span>ERR <b className="c-err">{c?.err ?? 0}</b></span>
           {page && page.total > 0 && <span>良率 <b>{(((c!.ok + c!.excursion) / page.total) * 100).toFixed(1)}%</b></span>}
-          <span className="hist-loading muted" role="status">{loading ? "正在加载历史记录…" : ""}</span>
+          <span className="hist-loading muted" role="status">{loading && stale ? "正在加载历史记录…" : ""}</span>
         </div>
         {exported && (
           <div className="qs-banner ok">
@@ -197,7 +200,7 @@ export default function HistoryPage() {
 
       <div className="panel hist-results">
         <div className="table-wrap">
-          <table className={`table hist-table${loading ? " is-loading" : ""}`} aria-busy={loading}>
+          <table className={`table hist-table${pending ? " is-loading" : ""}`} aria-busy={loading}>
             <thead>
               <tr>
                 <th>时间</th>
@@ -253,7 +256,7 @@ export default function HistoryPage() {
         {page && page.total > PAGE && (
           <div className="pager">
             <button className="icon-btn" aria-label="上一页" disabled={loading || offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}><ChevronLeft size={16} /></button>
-            <span className="muted">{offset + 1}–{Math.min(offset + PAGE, page.total)} / {page.total}</span>
+            <span className="muted pager-range">{offset + 1}–{Math.min(offset + PAGE, page.total)} / {page.total}</span>
             <button className="icon-btn" aria-label="下一页" disabled={loading || offset + PAGE >= page.total} onClick={() => setOffset(offset + PAGE)}><ChevronRight size={16} /></button>
           </div>
         )}

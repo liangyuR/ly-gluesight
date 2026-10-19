@@ -23,5 +23,7 @@
 .timeline-table { max-height: 420px; overflow: auto; }
 .timeline-mark td { font-weight: 600; }
 .timeline-selected td { background: var(--state-hover); }
+.app-log-table { transition: opacity var(--dur-short) var(--ease-standard); }
+.app-log-table.is-loading { opacity: .6; }
 .app-log-table td.msg { min-width: 300px; }
 .log-msg { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
