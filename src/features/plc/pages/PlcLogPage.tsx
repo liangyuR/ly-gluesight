@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Download, Radio, RefreshCw, Search, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, Hash, Radio, RefreshCw, Search, X } from "lucide-react";
 import StepChart from "../components/StepChart";
 import { plcApi, subscribe } from "../api";
 import { categoryLabels, levelLabels } from "../meta";
@@ -37,6 +37,8 @@ export default function PlcLogPage() {
   const [pointId, setPointId] = useState("");
   const [keywordInput, setKeywordInput] = useState("");
   const [keyword, setKeyword] = useState("");
+  const [contextInput, setContextInput] = useState("");
+  const [context, setContext] = useState("");
   const [page, setPage] = useState(0);
   const [live, setLive] = useState(true);
   const [data, setData] = useState<LogPage>({ total: 0, items: [] });
@@ -52,7 +54,7 @@ export default function PlcLogPage() {
   const requestSerial = useRef(0);
   const configSerial = useRef(0);
   const alive = useRef(true);
-  const filterKey = JSON.stringify([rangeKey, customStart, customEnd, levels, categories, pointId, keyword]);
+  const filterKey = JSON.stringify([rangeKey, customStart, customEnd, levels, categories, pointId, context, keyword]);
   const scope = useRef({ key: filterKey, generation: 0 });
   if (scope.current.key !== filterKey) scope.current = { key: filterKey, generation: scope.current.generation + 1 };
   const generation = scope.current.generation;
@@ -80,11 +82,11 @@ export default function PlcLogPage() {
       const start = fromLocalInput(customStart);
       const end = fromLocalInput(customEnd);
       if (start === null || end === null || start > end) throw new Error("请选择有效时间段，开始时间不得晚于结束时间");
-      return { query: { start, end, levels, categories, pointId: pointId || null, keyword: keyword || null }, start, end };
+      return { query: { start, end, levels, categories, pointId: pointId || null, context: context || null, keyword: keyword || null }, start, end };
     }
     const start = now - ranges.find((r) => r.key === rangeKey)!.ms;
-    return { query: { start, end: null, levels, categories, pointId: pointId || null, keyword: keyword || null }, start, end: now };
-  }, [rangeKey, customStart, customEnd, levels, categories, pointId, keyword]);
+    return { query: { start, end: null, levels, categories, pointId: pointId || null, context: context || null, keyword: keyword || null }, start, end: now };
+  }, [rangeKey, customStart, customEnd, levels, categories, pointId, context, keyword]);
 
   const run = useCallback(async () => {
     const serial = ++requestSerial.current;
@@ -234,7 +236,7 @@ export default function PlcLogPage() {
           <button className="btn" onClick={() => {
             const now = Date.now();
             setRangeKey("1h"); setCustomStart(toLocalInput(now - 3_600_000)); setCustomEnd(toLocalInput(now));
-            setLevels([]); setCategories([]); setPointId(""); setKeywordInput(""); setKeyword(""); setPage(0); setLive(true);
+            setLevels([]); setCategories([]); setPointId(""); setContextInput(""); setContext(""); setKeywordInput(""); setKeyword(""); setPage(0); setLive(true);
           }}>清空筛选</button>
         </div>
 
@@ -264,6 +266,27 @@ export default function PlcLogPage() {
               </option>
             ))}
           </select>
+          <div className="search">
+            <Hash size={16} />
+            <input
+              className="input mono"
+              aria-label="事务"
+              placeholder="事务精确匹配，如 requestSeq=12，回车确认"
+              value={contextInput}
+              onChange={(e) => setContextInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  setContext(contextInput.trim());
+                  resetPage();
+                }
+              }}
+            />
+            {contextInput && (
+              <button className="icon-btn" aria-label="清空事务" onClick={() => { setContextInput(""); setContext(""); resetPage(); }}>
+                <X size={14} />
+              </button>
+            )}
+          </div>
           <div className="search">
             <Search size={16} />
             <input
@@ -356,7 +379,15 @@ export default function PlcLogPage() {
                     )}
                   </td>
                   <td className="msg">{e.message}</td>
-                  <td className="mono nowrap muted">{e.context ?? "—"}</td>
+                  <td className="mono nowrap">
+                    {e.context ? (
+                      <button className="link" onClick={() => { setContextInput(e.context!); setContext(e.context!); resetPage(); }}>
+                        {e.context}
+                      </button>
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
