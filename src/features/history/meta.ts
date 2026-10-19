@@ -20,8 +20,8 @@ export function triggerModeLabel(mode: string | null | undefined) {
   return mode === "stop" ? "停稳拍" : "飞拍";
 }
 
-export function verdictClass(v: Verdict) {
-  return v === "OK" ? "vt-ok" : v === "OK_WITH_EXCURSION" ? "vt-exc" : v === "ERR_INSPECT" ? "vt-err" : "vt-ng";
+export function verdictTone(v: Verdict): "ok" | "warn" | "ng" | "fault" {
+  return v === "OK" ? "ok" : v === "OK_WITH_EXCURSION" ? "warn" : v === "ERR_INSPECT" ? "fault" : "ng";
 }
 
 export const verdictGroups: { key: string; label: string; verdicts: Verdict[] }[] = [

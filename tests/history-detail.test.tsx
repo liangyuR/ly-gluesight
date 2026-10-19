@@ -18,6 +18,7 @@ vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
 let ws: ReturnType<typeof workspaceState>;
 let detail: ReturnType<typeof partDetail>;
 const raw: RecordImages = { imageSource: "recording", historyId: 1, complete: true, message: "原图完整", frames: [0, 1].map(k => ({ k, camera: "CAM-1", view: 1, file: `${k}.png`, ts: 1, available: true, error: null })) };
+const frameSelect = () => screen.findByLabelText("历史帧选择", { selector: "select" }) as Promise<HTMLSelectElement>;
 function element(){return <MemoryRouter initialEntries={["/history/1"]}><Routes><Route path="/history/:id" element={<HistoryDetailPage />} /></Routes></MemoryRouter>;}
 function show() { return render(element()); }
 function comparison():Comparison{return {id:"compare-1",historyId:1,source:"rules",cycleId:"cycle-1",bundleId:"bundle-A",candidateId:"A",candidateRevision:7,candidateRecipe:ws.data!.layout,
@@ -42,8 +43,8 @@ describe("历史工件复测", () => {
     await screen.findByText(/上方为中线示意/);
     const cards = page.container.querySelectorAll(".history-segment");
     expect(cards).toHaveLength(4);
-    ["vt-ok", "vt-exc", "vt-ng", "vt-err"].forEach((tone, i) => {
-      expect(cards[i]).toHaveClass(tone);
+    ["ok", "warn", "ng", "fault"].forEach((tone, i) => {
+      expect(cards[i]).toHaveAttribute("data-tone", tone);
       expect(cards[i]).not.toHaveClass("ng-item");
     });
   });
@@ -134,7 +135,7 @@ describe("历史工件复测", () => {
     const table = screen.getByRole("table", { name: "逐拍照点比对" });
     expect(within(table).queryByRole("button", { name: "比对查看拍照点 k1" })).not.toBeInTheDocument();
     await userEvent.click(within(table).getByRole("button", { name: "比对查看拍照点 k2" }));
-    expect(screen.getByRole("combobox", { name: "历史帧选择" })).toHaveValue("1");
+    expect(await frameSelect()).toHaveValue("1");
   });
 
   it("原配方快照仍在加载 → 不提示缺失；确认缺失 → 提示原因并禁用按原发布包重现", async () => {
@@ -150,7 +151,7 @@ describe("历史工件复测", () => {
     const layout = ws.data!.layout;
     layout.shots = [0, 1, 2, 3].map(k => ({ ...layout.shots[0], id: `P${k + 1}`, poseId: `P${k + 1}`, skip: k === 2 }));
     show();
-    const frame = await screen.findByRole("combobox", { name: "历史帧选择" });
+    const frame = await frameSelect();
     await userEvent.selectOptions(frame, "2");
     fireEvent.keyDown(document.body, { key: "ArrowRight" });
     expect(frame).toHaveValue("3");

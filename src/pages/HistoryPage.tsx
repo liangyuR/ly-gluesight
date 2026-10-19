@@ -1,17 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronLeft, ChevronRight, Download, History, RefreshCw, Scale } from "lucide-react";
+import { Download, History, RefreshCw, Scale } from "lucide-react";
+import { Alert, Button, Card, Chip, EmptyState, IconButton, Pagination, SegmentedControl, Select, Stack, StatusBadge, Table, Text, TextField, type TableColumn } from "qing-steel";
 import { subscribe } from "../features/plc";
 import { useRecipes } from "../features/cycle";
 import { errorText } from "../lib/errors";
-import SelectionTrack from "../components/SelectionTrack";
-import { displayReason, formatTime, historyApi, RejudgeDialog, sampleLabelText, sourceLabel, triggerModeLabel, verdictClass, verdictGroups, verdictLabel, type HistoryPage as Page, type HistoryQuery, type HistoryScope } from "../features/history";
+import { displayReason, formatTime, historyApi, RejudgeDialog, sampleLabelText, sourceLabel, triggerModeLabel, verdictGroups, verdictLabel, verdictTone, type HistoryPage as Page, type HistoryQuery, type HistoryScope } from "../features/history";
+
+type Item = Page["items"][number];
 
 const PAGE = 50;
-const scopes: [HistoryScope, string][] = [
-  ["real", "真机件"],
-  ["offline", "离线件"],
-  ["debug", "候选调试"],
+const scopeOptions: { value: HistoryScope; label: string }[] = [
+  { value: "real", label: "真机件" },
+  { value: "offline", label: "离线件" },
+  { value: "debug", label: "候选调试" },
 ];
 const ranges: [string, string, number | null][] = [
   ["today", "今天", 0],
@@ -19,10 +21,7 @@ const ranges: [string, string, number | null][] = [
   ["30d", "30 天", 30],
   ["all", "全部", null],
 ];
-
-function rowTone(verdict: Page["items"][number]["verdict"]) {
-  return verdict === "OK" ? "" : verdict === "OK_WITH_EXCURSION" ? "r-exc" : verdict === "ERR_INSPECT" ? "r-err" : "r-ng";
-}
+const rangeOptions = ranges.map(([value, label]) => ({ value, label }));
 
 function rangeStart(days: number | null) {
   if (days === null) return null;
@@ -128,139 +127,141 @@ export default function HistoryPage() {
     }
   };
 
+  const openRow = (e: MouseEvent<HTMLElement>) => {
+    const target = e.target as HTMLElement;
+    if (target.closest("button, a")) return;
+    const id = target.closest("tbody tr")?.querySelector<HTMLElement>("[data-history-id]")?.dataset.historyId;
+    if (id) navigate(`/history/${id}`);
+  };
+
+  const columns: TableColumn<Item>[] = [
+    {
+      key: "ts",
+      header: "时间",
+      render: (p) => (
+        <Button variant="text" size="sm" className="hist-open mono" data-history-id={p.id} data-tone={verdictTone(p.verdict)} aria-label={`查看 SN ${p.sn} 的记录`} onClick={() => navigate(`/history/${p.id}`)}>
+          {formatTime(p.ts)}
+        </Button>
+      ),
+    },
+    {
+      key: "sn",
+      header: "SN",
+      render: (p) => (
+        <div className="hist-sn">
+          <span className="sn" title={p.sn || undefined}>{p.sn || "—"}</span>
+          {p.retestOf && <StatusBadge tone="warn" title={`复检，上一次记录 #${p.retestOf}`}>复检</StatusBadge>}
+          {p.source !== "real" && <StatusBadge tone="off">{sourceLabel[p.source]}</StatusBadge>}
+          {p.sample && <span title={`样本集 ${p.sample.setId} · 样本 SN ${p.sample.sn}`}><Chip>样本 {p.sample.partId}（{sampleLabelText[p.sample.label]}）</Chip></span>}
+        </div>
+      ),
+    },
+    {
+      key: "recipe",
+      header: "配方",
+      render: (p) => (
+        <span className="nowrap">
+          {p.recipeId ?? "—"}
+          {p.source === "offlineCandidate"
+            ? <span className="muted"> · 候选修订 {p.recipeRevision ?? "未记录"}</span>
+            : p.recipeVersion != null && <span className="muted"> v{p.recipeVersion}</span>}
+          {p.triggerMode && <span className="muted"> · {triggerModeLabel(p.triggerMode)}</span>}
+        </span>
+      ),
+    },
+    { key: "verdict", header: "结果", render: (p) => <StatusBadge tone={verdictTone(p.verdict)}>{verdictLabel[p.verdict]}</StatusBadge> },
+    { key: "plc", header: "PLC 码", render: (p) => <span className="mono">{p.plcCode}{p.faultCode ? ` / ${p.faultCode}` : ""}</span> },
+    { key: "reason", header: "原因", render: (p) => <span className="hist-reason">{displayReason(p.reason)}</span> },
+    { key: "frames", header: "帧", render: (p) => <span className="mono nowrap">{p.framesExpected ? `${p.framesReceived}/${p.framesExpected}` : "—"}</span> },
+    { key: "drain", header: "收尾", render: (p) => <span className="mono nowrap">{p.drainMs != null ? `${p.drainMs} ms` : "—"}</span> },
+  ];
+
   const c = page?.counts;
   return (
     <div className="hist-page">
-      <div className="panel hist-filters">
-        <div className="filter-row">
-          <SelectionTrack className="segmented" activeKey={scope} role="group" aria-label="记录来源">
-            {scopes.map(([key, label]) => (
-              <button key={key} aria-pressed={scope === key} className={scope === key ? "active" : ""} onClick={() => { setScope(key); setOffset(0); }}>
-                {label}
-              </button>
-            ))}
-          </SelectionTrack>
-          <SelectionTrack className="segmented" activeKey={range} role="group" aria-label="记录日期">
-            {ranges.map(([key, label]) => (
-              <button key={key} aria-pressed={range === key} className={range === key ? "active" : ""} onClick={() => { setRange(key); setOffset(0); }}>
-                {label}
-              </button>
-            ))}
-          </SelectionTrack>
-          <span className="filter-label">结果</span>
-          {verdictGroups.map((g) => (
-            <button
-              key={g.key}
-              aria-pressed={groups.includes(g.key)}
-              className={`qs-chip action hist-chip g-${g.key}${groups.includes(g.key) ? " selected" : " outlined"}`}
-              onClick={() => { setGroups(groups.includes(g.key) ? groups.filter((x) => x !== g.key) : [...groups, g.key]); setOffset(0); }}
-            >
-              <span className="hist-dot" aria-hidden="true" />
-              {g.label}
-            </button>
-          ))}
-          <input id="history-sn" aria-label="历史 SN" className="input" placeholder="SN" value={sn} onChange={(e) => { setSn(e.target.value); setOffset(0); }} style={{ width: 140 }} />
-          <select id="history-recipe" aria-label="历史配方" className="input" value={recipeId} onChange={(e) => { setRecipeId(e.target.value); setOffset(0); }}>
-            <option value="">全部配方</option>
-            {recipes.map((r) => (
-              <option key={r.id} value={r.id}>{r.id}</option>
-            ))}
-          </select>
-          <span className="spacer" />
-          <button className="icon-btn" onClick={load} disabled={loading} title="刷新"><RefreshCw size={16} /></button>
-          <button className="btn" onClick={() => page && setRejudge({ query, total: page.total })} disabled={loading || stale || !page?.total}>
-            <Scale size={15} />
-            批量重判
-          </button>
-          <button className="btn" onClick={() => void exportCsv()} disabled={exporting || loading || stale || !page?.total}>
-            <Download size={15} />
-            {exporting ? "导出中…" : "导出 CSV"}
-          </button>
-        </div>
-        {scope === "debug" && <div className="qs-banner tertiary">候选配方离线调试结果，未发布，不作为生产验收或生产统计。</div>}
-        {scope === "offline" && <div className="qs-banner tertiary">离线件来自离线验证（合成图或样本集），与真机件分开统计，不计入真机产量与良率。</div>}
-        <div className={`hist-counts${pending ? " is-loading" : ""}`} aria-busy={pending}>
-          <span>{shownScope === "debug" ? "候选调试" : shownScope === "offline" ? "离线" : "真机"}共 <b>{page?.total ?? 0}</b> 件</span>
-          <span>OK <b className="c-ok">{c?.ok ?? 0}</b></span>
-          <span>局部超差 <b className="c-warn">{c?.excursion ?? 0}</b></span>
-          <span>NG <b className="c-ng">{c?.ng ?? 0}</b></span>
-          <span>ERR <b className="c-err">{c?.err ?? 0}</b></span>
-          {page && page.total > 0 && <span>良率 <b>{(((c!.ok + c!.excursion) / page.total) * 100).toFixed(1)}%</b></span>}
-          <span className="hist-loading muted" role="status">{loading && stale ? "正在加载历史记录…" : ""}</span>
-        </div>
-        {exported && (
-          <div className="qs-banner ok">
-            <span>已导出：<span className="mono">{exported}</span>{" "}
-            <button className="link" disabled={revealing} onClick={() => void reveal()}>{revealing ? "正在打开…" : "打开所在文件夹"}</button></span>
+      <Card className="hist-filters">
+        <Stack direction="column" align="stretch" gap={10}>
+          <Stack justify="space-between" gap={12}>
+            <Stack gap={12}>
+              <SegmentedControl label="记录来源" options={scopeOptions} value={scope} onValueChange={(value) => { setScope(value as HistoryScope); setOffset(0); }} />
+              <SegmentedControl label="记录日期" options={rangeOptions} value={range} onValueChange={(value) => { setRange(value); setOffset(0); }} />
+              <Stack gap={8}>
+                <Text variant="label" muted>结果</Text>
+                {verdictGroups.map((g) => (
+                  <Chip
+                    key={g.key}
+                    selected={groups.includes(g.key)}
+                    className={`hist-chip g-${g.key}`}
+                    onClick={() => { setGroups(groups.includes(g.key) ? groups.filter((x) => x !== g.key) : [...groups, g.key]); setOffset(0); }}
+                  >
+                    <span className="hist-dot" aria-hidden="true" />
+                    {g.label}
+                  </Chip>
+                ))}
+              </Stack>
+              <TextField id="history-sn" aria-label="历史 SN" className="hist-sn-input" placeholder="SN" value={sn} onChange={(e) => { setSn(e.target.value); setOffset(0); }} />
+              <Select
+                id="history-recipe"
+                aria-label="历史配方"
+                className="hist-recipe"
+                value={recipeId}
+                options={[{ value: "", label: "全部配方" }, ...recipes.map((r) => ({ value: r.id, label: r.id }))]}
+                onValueChange={(value) => { setRecipeId(value); setOffset(0); }}
+              />
+            </Stack>
+            <Stack gap={8}>
+              <IconButton aria-label="刷新" title="刷新" onClick={load} disabled={loading}><RefreshCw size={16} /></IconButton>
+              <Button leadingIcon={<Scale size={15} />} onClick={() => page && setRejudge({ query, total: page.total })} disabled={loading || stale || !page?.total}>批量重判</Button>
+              <Button leadingIcon={<Download size={15} />} onClick={() => void exportCsv()} disabled={exporting || loading || stale || !page?.total}>
+                {exporting ? "导出中…" : "导出 CSV"}
+              </Button>
+            </Stack>
+          </Stack>
+          {scope === "debug" && <Alert>候选配方离线调试结果，未发布，不作为生产验收或生产统计。</Alert>}
+          {scope === "offline" && <Alert>离线件来自离线验证（合成图或样本集），与真机件分开统计，不计入真机产量与良率。</Alert>}
+          <div className={`hist-counts${pending ? " is-loading" : ""}`} aria-busy={pending}>
+            <span>{shownScope === "debug" ? "候选调试" : shownScope === "offline" ? "离线" : "真机"}共 <b>{page?.total ?? 0}</b> 件</span>
+            <span>OK <b className="c-ok">{c?.ok ?? 0}</b></span>
+            <span>局部超差 <b className="c-warn">{c?.excursion ?? 0}</b></span>
+            <span>NG <b className="c-ng">{c?.ng ?? 0}</b></span>
+            <span>ERR <b className="c-err">{c?.err ?? 0}</b></span>
+            {page && page.total > 0 && <span>良率 <b>{(((c!.ok + c!.excursion) / page.total) * 100).toFixed(1)}%</b></span>}
+            <span className="hist-loading muted" role="status">{loading && stale ? "正在加载历史记录…" : ""}</span>
           </div>
-        )}
-        {error && <div className="qs-banner ng" role="alert">{error}</div>}
-        {operationError && <div className="qs-banner ng" role="alert">{operationError}</div>}
-      </div>
+          {exported && (
+            <Alert tone="ok" action={<Button variant="text" size="sm" disabled={revealing} onClick={() => void reveal()}>{revealing ? "正在打开…" : "打开所在文件夹"}</Button>}>
+              已导出：<span className="mono">{exported}</span>
+            </Alert>
+          )}
+          {error && <Alert tone="ng">{error}</Alert>}
+          {operationError && <Alert tone="ng">{operationError}</Alert>}
+        </Stack>
+      </Card>
 
-      <div className="panel hist-results">
-        <div className="table-wrap">
-          <table className={`table hist-table${pending ? " is-loading" : ""}`} aria-busy={loading}>
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>SN</th>
-                <th>配方</th>
-                <th>结果</th>
-                <th>PLC 码</th>
-                <th>原因</th>
-                <th>帧</th>
-                <th>收尾</th>
-              </tr>
-            </thead>
-            <tbody>
-              {page?.items.map((p) => (
-                <tr key={p.id} className={rowTone(p.verdict)} tabIndex={0} aria-label={`查看 SN ${p.sn} 的记录`} onClick={() => navigate(`/history/${p.id}`)} onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); navigate(`/history/${p.id}`); }
-                }}>
-                  <td className="mono nowrap">{formatTime(p.ts)}</td>
-                  <td className="hist-sn">
-                    <span className="sn" title={p.sn || undefined}>{p.sn || "—"}</span>
-                    {p.retestOf && <span className="tag retest" title={`复检，上一次记录 #${p.retestOf}`}>复检</span>}
-                    {p.source !== "real" && <span className="tag offline">{sourceLabel[p.source]}</span>}
-                    {p.sample && <span className="tag subtle" title={`样本集 ${p.sample.setId} · 样本 SN ${p.sample.sn}`}>样本 {p.sample.partId}（{sampleLabelText[p.sample.label]}）</span>}
-                  </td>
-                  <td className="nowrap">
-                    {p.recipeId ?? "—"}
-                    {p.source === "offlineCandidate"
-                      ? <span className="muted"> · 候选修订 {p.recipeRevision ?? "未记录"}</span>
-                      : p.recipeVersion != null && <span className="muted"> v{p.recipeVersion}</span>}
-                    {p.triggerMode && <span className="muted"> · {triggerModeLabel(p.triggerMode)}</span>}
-                  </td>
-                  <td className="nowrap"><span className={`vt ${verdictClass(p.verdict)}`}>{verdictLabel[p.verdict]}</span></td>
-                  <td className="mono">{p.plcCode}{p.faultCode ? ` / ${p.faultCode}` : ""}</td>
-                  <td className="reason">{displayReason(p.reason)}</td>
-                  <td className="mono nowrap">{p.framesExpected ? `${p.framesReceived}/${p.framesExpected}` : "—"}</td>
-                  <td className="mono nowrap">{p.drainMs != null ? `${p.drainMs} ms` : "—"}</td>
-                </tr>
-              ))}
-              {page && page.items.length === 0 && (
-                <tr className="hist-empty">
-                  <td colSpan={8}>
-                    <div className="qs-empty">
-                      <History />
-                      <b>没有符合条件的记录</b>
-                      <small>调整来源、日期范围、结果或配方筛选后再查。</small>
-                    </div>
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+      <Card className="hist-results">
+        <div className={`hist-results-body${pending ? " is-loading" : ""}`} aria-busy={loading} onClick={openRow}>
+          <Table<Item>
+            className="hist-table"
+            caption="历史记录"
+            rows={page?.items ?? []}
+            columns={columns}
+            rowKey={(p) => String(p.id)}
+            loading={!page && loading}
+            emptyState={page ? <EmptyState icon={<History />} title="没有符合条件的记录" description="调整来源、日期范围、结果或配方筛选后再查。" /> : <></>}
+          />
         </div>
         {page && page.total > PAGE && (
-          <div className="pager">
-            <button className="icon-btn" aria-label="上一页" disabled={loading || offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE))}><ChevronLeft size={16} /></button>
-            <span className="muted pager-range">{offset + 1}–{Math.min(offset + PAGE, page.total)} / {page.total}</span>
-            <button className="icon-btn" aria-label="下一页" disabled={loading || offset + PAGE >= page.total} onClick={() => setOffset(offset + PAGE)}><ChevronRight size={16} /></button>
-          </div>
+          <Pagination
+            className="hist-pager"
+            total={page.total}
+            page={offset / PAGE + 1}
+            pageSize={PAGE}
+            pageSizeOptions={[PAGE]}
+            disabled={loading}
+            onPageChange={(next) => setOffset((next - 1) * PAGE)}
+          />
         )}
-      </div>
+      </Card>
       {rejudge && <RejudgeDialog query={rejudge.query} total={rejudge.total} onClose={() => setRejudge(null)} />}
     </div>
   );

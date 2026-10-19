@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { ChevronLeft, ChevronRight, FolderOpen, PackageOpen, Radio, RefreshCw, Search, X } from "lucide-react";
+import { FolderOpen, PackageOpen, Radio, RefreshCw, Search, X } from "lucide-react";
+import { Alert, Button, Card, Chip, EmptyState, IconButton, Pagination, SegmentedControl, Stack, StatusBadge, Table, Text, TextField, type TableColumn } from "qing-steel";
 import { subscribe } from "../plc";
 import { formatTs, fromLocalInput, toLocalInput } from "../plc/time";
 import { openLogDir } from "../../lib/api";
 import { errorText } from "../../lib/errors";
 import { formatBytes, levelText, logsApi } from "./api";
+import DateTimeField from "./DateTimeField";
 import DiagnosticsDialog from "./DiagnosticsDialog";
 import type { AppLogLevel, AppLogPage as Page, AppLogQuery, AppLogRecord, LogUsage } from "./types";
 
@@ -18,11 +20,14 @@ const ranges = [
   { key: "custom", label: "自定义", ms: 0 },
 ] as const;
 type RangeKey = (typeof ranges)[number]["key"];
+const rangeOptions = ranges.map(r => ({ value: r.key, label: r.label }));
 const levels: AppLogLevel[] = ["error", "warn", "info", "debug"];
 const DEFAULT_LEVELS: AppLogLevel[] = ["error", "warn", "info"];
-const badgeLevel = { error: "error", warn: "warn", info: "info", debug: "debug" } as const;
+const levelTone = { error: "ng", warn: "warn", info: "info", debug: "off" } as const;
 
-function rowKeys(items: AppLogRecord[]): [string, AppLogRecord][] {
+type Row = [string, AppLogRecord];
+
+function rowKeys(items: AppLogRecord[]): Row[] {
   const seen = new Map<string, number>();
   return items.map(r => {
     const base = `${r.ts}|${r.level}|${r.ev}|${r.cycleId ?? ""}|${r.k ?? ""}|${r.msg.slice(0, 160)}`;
@@ -34,15 +39,15 @@ function rowKeys(items: AppLogRecord[]): [string, AppLogRecord][] {
 
 function Cycle({ record, onFilter }: { record: AppLogRecord; onFilter: (cycleId: string) => void }) {
   const [target, setTarget] = useState<number | null | undefined>(undefined);
-  if (!record.cycleId) return record.sn ? <span className="log-cycle"><span className="sn">SN{"\u00a0"}{record.sn}</span></span> : <span className="muted">—</span>;
+  if (!record.cycleId) return record.sn ? <span className="log-cycle"><span className="sn">SN{" "}{record.sn}</span></span> : <span className="muted">—</span>;
   const cycleId = record.cycleId;
   const lookup = () => void logsApi.findCycle(cycleId).then(setTarget).catch(() => setTarget(null));
   return <span className="log-cycle">
-    {record.sn && <span className="sn muted">SN{"\u00a0"}{record.sn}</span>}
+    {record.sn && <span className="sn muted">SN{" "}{record.sn}</span>}
     <span>
-      <button className="link mono" title={`只看工件 ${cycleId}`} onClick={() => onFilter(cycleId)}>{cycleId.slice(0, 8)}</button>
+      <Button variant="text" size="sm" className="mono" title={`只看工件 ${cycleId}`} onClick={() => onFilter(cycleId)}>{cycleId.slice(0, 8)}</Button>
       {typeof target === "number" ? <Link to={`/history/${target}`}>#{target}</Link>
-        : <button className="link" onClick={lookup}>{target === null ? "无记录，重查" : "记录"}</button>}
+        : <Button variant="text" size="sm" onClick={lookup}>{target === null ? "无记录，重查" : "记录"}</Button>}
     </span>
   </span>;
 }
@@ -114,7 +119,6 @@ export default function AppLogPage() {
   const current = data && !(stale && error) ? data.page : null;
   const pending = stale && !!current;
   const rows = useMemo(() => rowKeys(current?.items ?? []), [current]);
-  const pageCount = Math.max(1, Math.ceil((current?.total ?? 0) / PAGE_SIZE));
   const reset = () => setPage(0);
   const setCycle = (id: string) => { const next = new URLSearchParams(params); if (id) next.set("cycleId", id); else next.delete("cycleId"); setParams(next); reset(); };
   const toggle = (level: AppLogLevel) => { setChosen(chosen.includes(level) ? chosen.filter(l => l !== level) : [...chosen, level]); reset(); };
@@ -122,66 +126,83 @@ export default function AppLogPage() {
     try { const q = query(); return { from: q.from ?? Date.now() - 3_600_000, to: q.to ?? Date.now() }; } catch { return { from: Date.now() - 3_600_000, to: Date.now() }; }
   }, [query, exporting]);
 
-  return <div className="stack">
-    <div className="panel filters">
-      <div className="filter-row">
-        <div className="segmented" role="group" aria-label="日志时间范围">
-          {ranges.map(r => <button key={r.key} aria-pressed={rangeKey === r.key} className={rangeKey === r.key ? "active" : ""} onClick={() => { setRangeKey(r.key); reset(); }}>{r.label}</button>)}
-        </div>
-        {rangeKey === "custom" && <div className="row">
-          <input className="input mono" aria-label="开始时间" type="datetime-local" step={1} value={customStart} onChange={e => { setCustomStart(e.target.value); reset(); }} />
-          <span className="muted">至</span>
-          <input className="input mono" aria-label="结束时间" type="datetime-local" step={1} value={customEnd} onChange={e => { setCustomEnd(e.target.value); reset(); }} />
-        </div>}
-        <div className="spacer" />
-        <button className={`btn ${following ? "live" : ""}`} disabled={rangeKey === "custom" || !!cycleId} title={cycleId ? "按工件筛选时不实时跟随" : undefined} onClick={() => { setLive(v => !v); reset(); }}><Radio size={16} />{following ? "实时跟随中" : "实时跟随"}</button>
-        <button className="btn" onClick={() => void run()}><RefreshCw size={16} className={loading ? "spin" : ""} />刷新</button>
-        <button className="btn primary" onClick={() => setExporting(true)}><PackageOpen size={16} />导出诊断包</button>
+  const columns: TableColumn<Row>[] = [
+    { key: "ts", header: "时间", render: ([, r]) => <span className="mono nowrap" data-level={r.level}>{formatTs(r.ts)}</span> },
+    { key: "level", header: "级别", render: ([, r]) => <StatusBadge tone={levelTone[r.level]}>{levelText[r.level]}</StatusBadge> },
+    { key: "ev", header: "事件", render: ([, r]) => <span className="nowrap">{r.ev}</span> },
+    { key: "cycle", header: "工件", render: ([, r]) => <Cycle record={r} onFilter={setCycle} /> },
+    { key: "shot", header: "拍照点", render: ([, r]) => <span className="nowrap mono">{r.k != null ? `k${r.k + 1}` : ""}{r.shotId ? ` · ${r.shotId}` : ""}{r.camera ? ` · ${r.camera}` : ""}</span> },
+    {
+      key: "msg",
+      header: "内容",
+      render: ([, r]) => <div className="log-content"><span className="log-msg" title={r.msg}>{r.msg}</span>{r.data != null && <details className="log-data"><summary>结构化字段</summary><pre className="mono">{JSON.stringify(r.data, null, 2)}</pre></details>}</div>,
+    },
+  ];
+
+  return <Stack direction="column" align="stretch" gap={16}>
+    <Card>
+      <Stack direction="column" align="stretch" gap={12}>
+        <Stack gap={8} justify="space-between">
+          <Stack gap={8}>
+            <SegmentedControl label="日志时间范围" options={rangeOptions} value={rangeKey} onValueChange={value => { setRangeKey(value as RangeKey); reset(); }} />
+            {rangeKey === "custom" && <Stack gap={8}>
+              <DateTimeField label="开始" value={customStart} onChange={value => { setCustomStart(value); reset(); }} />
+              <Text muted>至</Text>
+              <DateTimeField label="结束" value={customEnd} onChange={value => { setCustomEnd(value); reset(); }} />
+            </Stack>}
+          </Stack>
+          <Stack gap={8}>
+            <Button variant={following ? "filled" : "tonal"} leadingIcon={<Radio size={16} />} disabled={rangeKey === "custom" || !!cycleId} title={cycleId ? "按工件筛选时不实时跟随" : undefined} onClick={() => { setLive(v => !v); reset(); }}>{following ? "实时跟随中" : "实时跟随"}</Button>
+            <Button leadingIcon={<RefreshCw size={16} className={loading ? "spin" : ""} />} onClick={() => void run()}>刷新</Button>
+            <Button variant="filled" leadingIcon={<PackageOpen size={16} />} onClick={() => setExporting(true)}>导出诊断包</Button>
+          </Stack>
+        </Stack>
+        <Stack gap={8}>
+          <Text variant="label" muted>级别</Text>
+          {levels.map(l => <Chip key={l} selected={chosen.includes(l)} onClick={() => toggle(l)}>{levelText[l]}</Chip>)}
+          <Text variant="label" muted>SN</Text>
+          <TextField className="log-sn-input" aria-label="按 SN 筛选" placeholder="SN" value={sn} onChange={e => { setSn(e.target.value); reset(); }} />
+          <TextField
+            className="log-search"
+            aria-label="搜索日志"
+            placeholder="搜索事件、内容、cycleId 或拍照点，回车确认"
+            value={keywordInput}
+            leading={<Search size={16} />}
+            trailing={keywordInput ? <IconButton size="sm" variant="text" aria-label="清空搜索" onClick={() => { setKeywordInput(""); setKeyword(""); reset(); }}><X size={14} /></IconButton> : undefined}
+            onChange={e => setKeywordInput(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") { setKeyword(keywordInput.trim()); reset(); } }}
+          />
+          {cycleId && <Chip onRemove={() => setCycle("")} removeLabel="取消工件筛选">工件 <span className="mono">{cycleId}</span></Chip>}
+        </Stack>
+        <Stack gap={12} className="log-usage">
+          <Text variant="label" muted>{usage ? <>日志占用 {formatBytes(usage.bytes)} / 上限 {formatBytes(usage.maxTotalBytes)} · {usage.files} 个文件 · 保留 {usage.keepDays} 天 · 单文件 {formatBytes(usage.segmentBytes)} 滚动</> : "日志占用读取中…"}</Text>
+          <Button variant="text" size="sm" leadingIcon={<FolderOpen size={13} />} onClick={() => void openLogDir().catch(e => setError(errorText(e)))}>打开日志目录</Button>
+        </Stack>
+      </Stack>
+    </Card>
+    <Card title="运行日志" actions={<Text muted>共 {current?.total ?? 0} 条</Text>}>
+      {error && <Alert tone="ng">{error}</Alert>}
+      <div className={`app-log-body${pending ? " is-loading" : ""}`} aria-busy={loading}>
+        <Table<Row>
+          caption="运行日志"
+          className="log-table"
+          rows={rows}
+          columns={columns}
+          rowKey={([rowKey]) => rowKey}
+          loading={!current && loading}
+          emptyState={<EmptyState title="所选条件下暂无日志" />}
+        />
       </div>
-      <div className="filter-row">
-        <span className="filter-label">级别</span>
-        {levels.map(l => <button key={l} aria-pressed={chosen.includes(l)} className={`chip level-${l} ${chosen.includes(l) ? "on" : ""}`} onClick={() => toggle(l)}>{levelText[l]}</button>)}
-        <span className="filter-label">SN</span>
-        <input className="input mono" aria-label="按 SN 筛选" placeholder="SN" value={sn} style={{ width: 150 }} onChange={e => { setSn(e.target.value); reset(); }} />
-        <div className="search">
-          <Search size={16} />
-          <input className="input" aria-label="搜索日志" placeholder="搜索事件、内容、cycleId 或拍照点，回车确认" value={keywordInput} onChange={e => setKeywordInput(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") { setKeyword(keywordInput.trim()); reset(); } }} />
-          {keywordInput && <button className="icon-btn" aria-label="清空搜索" onClick={() => { setKeywordInput(""); setKeyword(""); reset(); }}><X size={14} /></button>}
-        </div>
-        {cycleId && <span className="tag">工件 <span className="mono">{cycleId}</span> <button className="icon-btn" aria-label="取消工件筛选" onClick={() => setCycle("")}><X size={12} /></button></span>}
-      </div>
-      <div className="filter-row muted log-usage">
-        {usage ? <>日志占用 {formatBytes(usage.bytes)} / 上限 {formatBytes(usage.maxTotalBytes)} · {usage.files} 个文件 · 保留 {usage.keepDays} 天 · 单文件 {formatBytes(usage.segmentBytes)} 滚动</> : "日志占用读取中…"}
-        <button className="link" onClick={() => void openLogDir().catch(e => setError(errorText(e)))}><FolderOpen size={13} /> 打开日志目录</button>
-      </div>
-    </div>
-    <div className="panel">
-      <div className="panel-toolbar">
-        <div className="row"><h3 className="panel-title">运行日志</h3><span className="muted">共 {current?.total ?? 0} 条</span>{error && <span className="ng" role="alert">{error}</span>}</div>
-        <div className="row">
-          <button className="icon-btn" aria-label="上一页" disabled={loading || page === 0} onClick={() => setPage(page - 1)}><ChevronLeft size={18} /></button>
-          <span className="mono muted">{page + 1} / {pageCount}</span>
-          <button className="icon-btn" aria-label="下一页" disabled={loading || page + 1 >= pageCount} onClick={() => setPage(page + 1)}><ChevronRight size={18} /></button>
-        </div>
-      </div>
-      <div className="table-wrap">
-        <table className={`table log-table app-log-table${pending ? " is-loading" : ""}`} aria-label="运行日志" aria-busy={loading}>
-          <thead><tr><th>时间</th><th>级别</th><th>事件</th><th>工件</th><th>拍照点</th><th>内容</th></tr></thead>
-          <tbody>
-            {!current?.items.length && <tr><td colSpan={6} className="muted center">{loading ? "加载中…" : "所选条件下暂无日志"}</td></tr>}
-            {rows.map(([rowKey, r]) => <tr key={rowKey} className={r.level === "error" ? "log-row-error" : undefined}>
-              <td className="mono nowrap">{formatTs(r.ts)}</td>
-              <td><span className={`badge level-${badgeLevel[r.level]}`}>{levelText[r.level]}</span></td>
-              <td className="nowrap">{r.ev}</td>
-              <td><Cycle record={r} onFilter={setCycle} /></td>
-              <td className="nowrap mono">{r.k != null ? `k${r.k + 1}` : ""}{r.shotId ? ` · ${r.shotId}` : ""}{r.camera ? ` · ${r.camera}` : ""}</td>
-              <td className="msg"><span className="log-msg" title={r.msg}>{r.msg}</span>{r.data != null && <details className="log-data"><summary>结构化字段</summary><pre className="mono">{JSON.stringify(r.data, null, 2)}</pre></details>}</td>
-            </tr>)}
-          </tbody>
-        </table>
-      </div>
-    </div>
+      <Pagination
+        className="log-pager"
+        total={current?.total ?? 0}
+        page={page + 1}
+        pageSize={PAGE_SIZE}
+        pageSizeOptions={[PAGE_SIZE]}
+        disabled={loading}
+        onPageChange={next => setPage(next - 1)}
+      />
+    </Card>
     {exporting && <DiagnosticsDialog from={span.from} to={span.to} onClose={() => setExporting(false)} />}
-  </div>;
+  </Stack>;
 }
