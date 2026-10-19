@@ -174,6 +174,42 @@ fn disk_failure_does_not_claim_originals_exist() {
 }
 
 #[test]
+fn only_disk_write_failures_are_classified_as_write_errors() {
+    let blocked = TestDir::new();
+    std::fs::write(blocked.root(), "blocked-root").unwrap();
+    let (disk_callback, disk_outcomes) = callback();
+    let recorder = Recorder::new(blocked.root(), Some(disk_callback));
+    let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "cycle-disk", None).unwrap();
+    recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
+    recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
+    let outcome = wait(&disk_outcomes);
+    assert!(outcome.errors.iter().any(|error| is_write_error(error)), "{:?}", outcome.errors);
+
+    let dir = TestDir::new();
+    let (capture_callback, capture_outcomes) = callback();
+    let recorder = Recorder::new(dir.root(), Some(capture_callback));
+    let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "cycle-capture", None).unwrap();
+    let mut one_view = frame(10);
+    one_view.images.truncate(1);
+    recorder.frame(&mut rec, &one_view, "cam1", 0, 1);
+    recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
+    recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
+    let outcome = wait(&capture_outcomes);
+    assert!(outcome.errors.iter().any(|error| error.contains("原图不完整")) && outcome.errors.iter().any(|error| error.contains("拒绝覆盖原图")), "{:?}", outcome.errors);
+    assert!(!outcome.errors.iter().any(|error| is_write_error(error)), "{:?}", outcome.errors);
+
+    let (recorder, rx, _) = controlled(dir.root());
+    recorder.queued.store(QUEUE, Ordering::Relaxed);
+    let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "cycle-full", None).unwrap();
+    recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
+    recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
+    let Msg::Finish(job) = rx.try_recv().unwrap() else { panic!("需要收尾消息") };
+    let outcome = finish_recording(recorder.root(), job, WriteState::default(), None);
+    assert!(outcome.errors.iter().any(|error| error.contains("录制队列已满")), "{:?}", outcome.errors);
+    assert!(!outcome.errors.iter().any(|error| is_write_error(error)), "{:?}", outcome.errors);
+}
+
+#[test]
 fn metadata_write_failure_is_reported_even_when_images_were_written() {
     let dir = TestDir::new();
     let (callback, outcomes) = callback();
