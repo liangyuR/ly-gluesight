@@ -1416,13 +1416,13 @@ impl Machine {
                 }
             };
             let intake_ready = self.disk_space_ready();
-            let devices_ready = if matches!(self.phase, Phase::Report | Phase::Release) {
-                self.check_idle_devices().is_ok()
-            } else { cameras.is_ok() };
+            let devices = if matches!(self.phase, Phase::Report | Phase::Release) {
+                self.check_idle_devices()
+            } else { cameras.clone() };
             let reset = std::mem::take(&mut self.s7_reset_requested);
             let previous = self.s7.phase();
             let had_ack = self.s7.acknowledged();
-            let event = self.s7.poll_gated(plc(&app), reset, devices_ready, audit_ready, intake_ready).await;
+            let event = self.s7.poll_with_devices(plc(&app), reset, &devices, audit_ready, intake_ready).await;
             if let Some(delivery) = s7_ack_delivery(had_ack, &self.s7).filter(|_| self.s7.capture_id().is_none()) {
                 let result = match self.current_cycle_id.as_deref() {
                     Some(cycle_id) => host(&app).audit.delivery_durable(cycle_id, delivery).await,
