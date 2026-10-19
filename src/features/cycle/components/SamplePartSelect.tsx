@@ -12,7 +12,7 @@ interface Props {
 
 export default function SamplePartSelect({ sampleSet, nextPart, value, onChange, disabled, label = "样本件" }: Props) {
   return (
-    <select aria-label={label} className="input" value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}>
+    <select aria-label={label} className="input sample-part-select" value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}>
       <option value="">按顺序（下一件 {nextPart ?? "—"}）</option>
       {sampleSet.parts.map((p) => (
         <option key={p.partId} value={p.partId}>
