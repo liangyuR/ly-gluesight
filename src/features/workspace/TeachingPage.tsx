@@ -34,6 +34,15 @@ function imagingMismatch(image: FrozenImage | null | undefined, doc: RecipeDoc) 
   return `采集时曝光 ${image.exposureUs} µs / 增益 ${image.gainDb} dB，与配方当前值（${current.exposureUs} µs / ${current.gainDb} dB）不同`;
 }
 
+const DEFAULT_BRUSH_PX = 120;
+const WIDEN_BRUSH_REASONS = new Set(["discontinuity", "missing_edges"]);
+
+/** 刷选提取找不到连续两侧边缘时的下一步：先加大笔刷重刷，同一组再失败改用笔划生成中线。 */
+function extractionAdvice(reason: string, failures: number, brushWidth: number) {
+  if (!WIDEN_BRUSH_REASONS.has(reason)) return "";
+  return failures >= 2 ? "加大笔刷后仍无法连续提取（常见于胶堆、断胶等局部异常）：请点「笔划直接生成中线」，再手工修正。" : `可加大笔刷宽度（当前 ${brushWidth} px，约为胶宽的 3 倍较稳）后沿胶路重刷，再自动提取。`;
+}
+
 /** 记录标定验证后的提示：勾选复用时说明实际复用到几个拍照点。 */
 function calibrationNotice(next: WorkspaceView, k: number, view: number, reuse: boolean): SnackMessage {
   const check = next.workspace.frames[k]?.viewStates?.find(s => s.view === view)?.calibrationCheck;
@@ -64,10 +73,12 @@ export default function TeachingPage() {
   const [regionMode, setRegionMode] = useState(false);
   const [selectionTool, setSelectionTool] = useState<"brush" | "box">("brush");
   const [brushPoints, setBrushPoints] = useState<ImagePoint[]>([]);
-  const [brushWidth, setBrushWidth] = useState(80);
+  const [brushWidth, setBrushWidth] = useState(DEFAULT_BRUSH_PX);
+  const [brushFailures, setBrushFailures] = useState(0);
   const [pointSpacing, setPointSpacing] = useState(20);
   const pending=useRef(false),serial=useRef(0);
   const scope=JSON.stringify([doc?.id,k,data?.workspace.doc.shots[k]?.view,data?.workspace.frames[k]?.image?.id]);
+  useEffect(()=>setBrushFailures(0),[scope]);
   const current=useRef({scope,alive:true,revision:data?.workspace.revision});current.current.scope=scope;current.current.revision=data?.workspace.revision;
   useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;serial.current++;};},[]);
   useEffect(()=>{serial.current++;pending.current=false;setWorking(false);setVertex(null);setRegion(null);setBrushPoints([]);setRegionMode(false);setOperation(null);setExtractionHint("");setExtractionFailure(null);},[scope]);
@@ -163,8 +174,12 @@ export default function TeachingPage() {
       if (result && extracted && current.current.scope === capturedScope) {
         const output = extracted as Awaited<ReturnType<typeof workspaceApi.extractCenterline>>;
         if (output.failure) {
-          setExtractionFailure(output.failure); setExtractionHint(output.failure.message); setRegionMode(true); return;
+          const failures = selectionTool === "brush" && WIDEN_BRUSH_REASONS.has(output.failure.reason) ? brushFailures + 1 : 0;
+          const advice = selectionTool === "brush" ? extractionAdvice(output.failure.reason, failures, brushWidth) : "";
+          setBrushFailures(failures);
+          setExtractionFailure(output.failure); setExtractionHint(advice ? output.failure.message + " " + advice : output.failure.message); setRegionMode(true); return;
         }
+        setBrushFailures(0);
         setFrameDraft(k,{...t,path:output.path}); setRegionMode(false); setVertex(null);
         setExtractionHint(output.message || "中线已提取，请检查后运行试测。");
       }
@@ -222,15 +237,16 @@ export default function TeachingPage() {
   const flowAt = flow.findIndex(([, done]) => !done);
   const [stateText, stateTone]: [string, "ok" | "warn" | "info" | "neutral"] = editing ? ["中线已修改 · 需试测", "warn"] : taught ? ["已保存", "ok"] : trialCurrent ? ["试测通过 · 未保存", "warn"]
     : viewState === "trialFailed" ? ["试测异常", "warn"] : viewState === "recapture" ? ["需重新采集", "warn"] : viewProgress?.trialStale ? ["试测已过期", "warn"] : hasPath ? ["待试测", "info"] : ["待示教", "neutral"];
-  const primary = !hasPath ? "extract" : !trialCurrent ? "trial" : "save";
+  const strokeAdvised = selectionTool === "brush" && brushFailures >= 2 && !!extractionFailure;
+  const primary = strokeAdvised ? "stroke" : !hasPath ? "extract" : !trialCurrent ? "trial" : "save";
   const lengthText = t.mmPerPx != null && Number.isFinite(t.mmPerPx) && t.mmPerPx > 0 ? (lengthPx * t.mmPerPx).toFixed(1) + " mm" : lengthPx.toFixed(0) + " px";
   const groupTone = (item: typeof groups[number]) => item.complete ? "ok" : item.choice ? "warn" : "off";
   const toolHint = extractionHint || (regionMode ? selectionTool === "brush" ? "按住左键沿胶路从起点刷到终点，每笔重画选区；笔刷覆盖胶路和两侧少量背景，尽量避开阴影。" : "按住左键框选一段连续胶路，再自动提取中线；框选包含阴影时建议改用刷选。" : "");
   const tools = <div className="wp-canvas-tools" role="group" aria-label="示教工具">
     <button className={"btn small" + (regionMode ? " active" : "")} aria-pressed={regionMode} disabled={!unlocked || !frame.image} onClick={() => setRegionMode(v => !v)}><Brush size={14}/>{regionMode ? "结束选区 / 手工修正" : "刷选胶路区域"}</button>
-    <select className="input" aria-label="选区工具" value={selectionTool} disabled={!unlocked} onChange={e => { setSelectionTool(e.target.value as "brush" | "box"); setRegionMode(true); setExtractionFailure(null); setExtractionHint(""); }}><option value="brush">沿胶路刷选</option><option value="box">矩形框选</option></select>
+    <select className="input" aria-label="选区工具" value={selectionTool} disabled={!unlocked} onChange={e => { setSelectionTool(e.target.value as "brush" | "box"); setRegionMode(true); setExtractionFailure(null); setExtractionHint(""); setBrushFailures(0); }}><option value="brush">沿胶路刷选</option><option value="box">矩形框选</option></select>
     <button className={"btn small" + (primary === "extract" ? " primary" : "")} disabled={!unlocked || !frame.image || loading || !!error} onClick={() => void extract()}><WandSparkles size={14}/>{operation === "extract" ? "提取中…" : "自动提取中线"}</button>
-    <button className="btn small" title={selectionTool !== "brush" ? "仅刷选时可用" : !strokeValid ? "先沿胶路刷过至少 8 px" : "按笔划生成中线草稿"} disabled={!unlocked || !enabled || !frame.image || selectionTool !== "brush" || !strokeValid || !spacingValid} onClick={fromStroke}>笔划直接生成中线</button>
+    <button className={"btn small" + (primary === "stroke" ? " primary" : "")} title={selectionTool !== "brush" ? "仅刷选时可用" : !strokeValid ? "先沿胶路刷过至少 8 px" : "按笔划生成中线草稿"} disabled={!unlocked || !enabled || !frame.image || selectionTool !== "brush" || !strokeValid || !spacingValid} onClick={fromStroke}>笔划直接生成中线</button>
     <span className="wp-canvas-sep" aria-hidden="true"/>
     <button className="icon-btn" aria-label="删除末点" title="删除末点" disabled={!unlocked || !enabled || !t.path.length} onClick={() => { setVertex(null); setPath(t.path.slice(0, -1)); }}><Undo2 size={15}/></button>
     <button className="icon-btn" aria-label="删除选中点" title="删除选中点" disabled={!unlocked || !enabled || vertex === null || vertex >= t.path.length} onClick={() => { const i = vertex; setVertex(null); setPath(t.path.filter((_, j) => j !== i)); }}><Trash2 size={15}/></button>
@@ -238,7 +254,7 @@ export default function TeachingPage() {
   </div>;
   const params = <div className="wp-canvas-params">
     {selectionTool === "brush" && <label className="wp-inline-num">笔刷<input className="input mono" type="number" aria-label="笔刷宽度" min={6} max={300} step={2} value={Number.isFinite(brushWidth) ? brushWidth : ""} disabled={!unlocked} onChange={e => changeBrushWidth(e.target.value === "" ? NaN : Number(e.target.value))}/><small>px</small>
-      <input className="wp-brush-width-slider" type="range" aria-label="拖动调整笔刷宽度" min={6} max={300} step={2} value={Number.isFinite(brushWidth) ? Math.min(300, Math.max(6, brushWidth)) : 80} disabled={!unlocked} onChange={event => changeBrushWidth(Number(event.target.value))}/></label>}
+      <input className="wp-brush-width-slider" type="range" aria-label="拖动调整笔刷宽度" min={6} max={300} step={2} value={Number.isFinite(brushWidth) ? Math.min(300, Math.max(6, brushWidth)) : DEFAULT_BRUSH_PX} disabled={!unlocked} onChange={event => changeBrushWidth(Number(event.target.value))}/></label>}
     <label className="wp-inline-num" title={`检测站距 ${doc.spacing} mm；编辑点按目标最大间距调整，转弯处保留点`}>点间距<input className="input mono" type="number" aria-label="中线点间距" min={4} max={80} step={2} value={Number.isFinite(pointSpacing) ? pointSpacing : ""} disabled={!unlocked} onChange={e => setPointSpacing(e.target.value === "" ? NaN : Number(e.target.value))}/><small>px</small></label>
     <button className="btn small" disabled={!unlocked || !spacingValid || t.path.length < 2} onClick={() => { setVertex(null); setPath(resampleTeachingPath(t.path, pointSpacing)); }}>应用到当前中线</button>
     {toolHint && <p className="wp-canvas-hint" role="status">{toolHint}</p>}
