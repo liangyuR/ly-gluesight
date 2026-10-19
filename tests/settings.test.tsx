@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { SnackbarProvider } from "qing-steel";
 import SettingsPage from "../src/pages/SettingsPage";
 import type { CycleSettings } from "../src/features/cycle/types";
 
@@ -36,7 +37,7 @@ function recordSaveButton() {
 
 describe("离线原图保留设置", () => {
   it("修改离线保留上限并保存 → 重新打开显示新值且保留其他分区设置", async () => {
-    const page = render(<SettingsPage />);
+    const page = render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
     const keep = await screen.findByRole("spinbutton", { name: "离线原图最多保留（件）" });
     fireEvent.change(keep, { target: { value: "450" } });
     fireEvent.change(screen.getByRole("spinbutton", { name: "离线原图总大小上限（GB）" }), { target: { value: "12.5" } });
@@ -44,7 +45,7 @@ describe("离线原图保留设置", () => {
     await userEvent.click(recordSaveButton());
     await waitFor(() => expect(saved.offlineRecordKeep).toBe(450));
     page.unmount();
-    render(<SettingsPage />);
+    render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
     expect(await screen.findByRole("spinbutton", { name: "离线原图最多保留（件）" })).toHaveValue(450);
     expect(screen.getByRole("spinbutton", { name: "离线原图总大小上限（GB）" })).toHaveValue(12.5);
     expect(screen.getByRole("spinbutton", { name: "记录保留（天）" })).toHaveValue(90);
@@ -62,7 +63,7 @@ describe("离线原图保留设置", () => {
     ["离线原图总大小上限（GB）", "0.4", "0.5"],
     ["离线原图总大小上限（GB）", "10001", "10000"],
   ])("%s 输入 %s → 阻止保存，改为 %s 后可保存", async (label, invalid, valid) => {
-    render(<SettingsPage />);
+    render(<SnackbarProvider><SettingsPage /></SnackbarProvider>);
     const field = await screen.findByRole("spinbutton", { name: label });
     fireEvent.change(field, { target: { value: invalid } });
     expect(recordSaveButton()).toBeDisabled();

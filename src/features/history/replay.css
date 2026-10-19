@@ -1,10 +1,3 @@
 .replay-diff { display: flex; flex-direction: column; gap: 8px; }
-.replay-summary { padding: 3px 10px; border-radius: var(--r-full); font-size: 13px; }
-.replay-summary.same { background: var(--ok-container); color: var(--on-ok-container); }
-.replay-summary.differs { background: var(--warn-container); color: var(--on-warn-container); font-weight: 600; }
-.replay-table { max-height: 320px; overflow: auto; }
-.replay-differs td { background: color-mix(in srgb, var(--warn-container) 45%, transparent); }
-.replay-selected td { box-shadow: inset 0 0 0 9999px var(--state-hover); }
+.replay-table { max-height: 320px; }
 .replay-verdicts { display: inline-flex; flex-wrap: wrap; gap: 4px; }
-.replay-blockers { margin: 0; padding-left: 18px; font-size: 13px; }
-.detail-step { display: inline-flex; gap: 4px; }

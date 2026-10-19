@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import Modal from "../../plc/components/Modal";
+import { Alert, Button, Dialog, List, ListItem, NumberField, SegmentedControl, Stack, StatusBadge, Table, Text, type TableColumn } from "qing-steel";
 import type { Verdict } from "../../cycle/types";
 import { historyApi } from "../api";
-import { formatTime, verdictClass, verdictGroups, verdictLabel } from "../meta";
+import { formatTime, verdictGroups, verdictLabel, verdictTone } from "../meta";
 import type { HistoryQuery, KindOverride, Overrides, RejudgeResult } from "../types";
 import { errorText } from "../../../lib/errors";
 
@@ -15,13 +15,14 @@ const kindFields: [keyof KindOverride, string][] = [
   ["absMin", "绝对限下"],
   ["absMax", "绝对限上"],
 ];
+const recipeOptions = [
+  { value: "recorded", label: "记录当时的配方版本" },
+  { value: "current", label: "当前配方" },
+];
 
 const isNg = (v: Verdict) => v.startsWith("NG");
 const isOk = (v: Verdict) => v.startsWith("OK");
-
-function numOrUndef(s: string) {
-  return s.trim() === "" ? undefined : Number(s);
-}
+const orDefault = (value: number | "") => (value === "" ? undefined : value);
 
 /** 用存储的测量表批量重判：可选当前配方与试算参数，输出判定变化矩阵。 */
 export default function RejudgeDialog({ query, total, onClose }: { query: HistoryQuery; total: number; onClose: () => void }) {
@@ -63,112 +64,96 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
   };
 
   const kind = (k: "position" | "width", f: keyof KindOverride) => (
-    <input
+    <NumberField
       id={`rj-${k}-${f}`}
-      className="input mono"
-      type="number"
       step={0.05}
       placeholder="不变"
       aria-label={`${k==="position"?"位置":"胶宽"}${kindFields.find(([key])=>key===f)?.[1]}`}
       disabled={running}
       value={overrides[k]?.[f] ?? ""}
-      onChange={(e) => edit({ ...overrides, [k]: { ...overrides[k], [f]: numOrUndef(e.target.value) } })}
+      onValueChange={(value) => edit({ ...overrides, [k]: { ...overrides[k], [f]: orDefault(value) } })}
     />
   );
 
   const cell = (from: Verdict, to: Verdict) => result?.matrix.find((m) => m.from === from && m.to === to)?.count ?? 0;
   const released = result ? result.matrix.filter((m) => isNg(m.from) && isOk(m.to)).reduce((a, m) => a + m.count, 0) : 0;
+  const matrixColumns: TableColumn<Verdict>[] = [
+    { key: "from", header: "原结果 ＼ 新结果", render: (from) => <StatusBadge tone={verdictTone(from)}>{verdictLabel[from]}</StatusBadge> },
+    ...order.map((to): TableColumn<Verdict> => ({
+      key: to,
+      header: verdictLabel[to],
+      align: "center",
+      render: (from) => {
+        const n = cell(from, to);
+        const cls = n === 0 ? "zero" : from === to ? "same" : isNg(from) && isOk(to) ? "release" : "changed";
+        return <span className={`rj-cell mono ${cls}`}>{n}</span>;
+      },
+    })),
+  ];
 
   return (
-    <Modal
+    <Dialog
+      open
+      onOpenChange={(open) => { if (!open) onClose(); }}
       title="批量重判"
-      width={820}
-      onClose={onClose}
+      className="rj-dialog"
+      description="用已存储的测量表重新判定，不需要重新拍照；ERR 件和缺少测量数据的记录会跳过。试算参数只用于本次重判，不会保存到配方。"
       footer={
         <>
-          {error && <span className="form-error">{error}</span>}
-          <button className="btn" onClick={onClose}>关闭</button>
-          <button className="btn primary" onClick={run} disabled={running||invalid||total<=0}>{running ? "重判中…" : `重判当前筛选（${total} 件）`}</button>
+          <Button onClick={onClose}>关闭</Button>
+          <Button variant="filled" onClick={run} disabled={running||invalid||total<=0}>{running ? "重判中…" : `重判当前筛选（${total} 件）`}</Button>
         </>
       }
     >
-      <div className="rj">
-        <p className="muted">用已存储的测量表重新判定，不需要重新拍照；ERR 件和缺少测量数据的记录会跳过。试算参数只用于本次重判，不会保存到配方。</p>
-        <div className="segmented">
-          <button className={!useCurrent ? "active" : ""} disabled={running} onClick={() => {setUseCurrent(false);setResult(null);}}>记录当时的配方版本</button>
-          <button className={useCurrent ? "active" : ""} disabled={running} onClick={() => {setUseCurrent(true);setResult(null);}}>当前配方</button>
-        </div>
+      <Stack direction="column" align="stretch" gap={14}>
+        <SegmentedControl label="重判使用的配方" options={recipeOptions} disabled={running} value={useCurrent ? "current" : "recorded"} onValueChange={(value) => { setUseCurrent(value === "current"); setResult(null); }} />
         <div className="rj-params">
           <span />
           {kindFields.map(([, label]) => (
-            <span key={label} className="muted">{label}（mm）</span>
+            <Text key={label} variant="label" muted>{label}（mm）</Text>
           ))}
           <span title="只作用于判位置的拍照点：胶条中线相对示教中线的横向偏移">位置</span>
           {kindFields.map(([f]) => <div key={f}>{kind("position", f)}</div>)}
           <span title="只作用于判胶宽的拍照点">胶宽</span>
           {kindFields.map(([f]) => <div key={f}>{kind("width", f)}</div>)}
         </div>
-        <div className="row">
-          <label className="field">
-            <span>允许断胶长度（mm，每个拍照点）</span>
-            <input id="rj-gap" className="input mono" aria-label="允许断胶长度（mm）" disabled={running} type="number" min={0} step={0.1} placeholder="不变" value={overrides.maxGapLen ?? ""} onChange={(e) => edit({ ...overrides, maxGapLen: numOrUndef(e.target.value) })} />
-          </label>
-          <label className="field">
-            <span>滤波窗口（奇数）</span>
-            <input id="rj-filter" className="input mono" aria-label="滤波窗口（奇数）" disabled={running} type="number" step={2} min={1} max={31} placeholder="不变" value={overrides.filterWindow ?? ""} onChange={(e) => edit({ ...overrides, filterWindow: numOrUndef(e.target.value) })} />
-          </label>
+        <div className="rj-pair">
+          <NumberField id="rj-gap" label="允许断胶长度（mm，每个拍照点）" aria-label="允许断胶长度（mm）" disabled={running} min={0} step={0.1} placeholder="不变" value={overrides.maxGapLen ?? ""} onValueChange={(value) => edit({ ...overrides, maxGapLen: orDefault(value) })} />
+          <NumberField id="rj-filter" label="滤波窗口（奇数）" aria-label="滤波窗口（奇数）" disabled={running} step={2} min={1} max={31} placeholder="不变" value={overrides.filterWindow ?? ""} onValueChange={(value) => edit({ ...overrides, filterWindow: orDefault(value) })} />
         </div>
 
-        {invalid&&<p className="form-error" role="alert">试算参数需为有限数，公差与允许长度不能为负，绝对限下需不大于上限；滤波窗口需为 1–31 的奇数。</p>}
+        {invalid&&<Alert tone="ng">试算参数需为有限数，公差与允许长度不能为负，绝对限下需不大于上限；滤波窗口需为 1–31 的奇数。</Alert>}
+        {error && <Alert tone="ng">{error}</Alert>}
 
         {result && (
           <>
-            <div className="rj-summary">
-              重判 <b>{result.total}</b> 件，跳过 <b>{result.skipped}</b> 件{result.limitHit && "（超过 5000 件，只取最近 5000 件）"}
-              {released > 0 && <span className="rj-alert">NG→OK {released} 件：放宽后可能放过真实缺陷，请逐件复核</span>}
-            </div>
-            {!!result.skipReasons.length && <div className="rj-changes" aria-label="跳过原因">
-              {result.skipReasons.map(item => <button key={item.id} className="rj-change" onClick={() => navigate(`/history/${item.id}`)}>
-                <span className="sn">SN {item.sn}</span><span className="rj-reason">{item.reason}</span>
-              </button>)}
-            </div>}
-            <div className="table-wrap">
-              <table className="table rj-matrix">
-                <thead>
-                  <tr>
-                    <th>原结果 ＼ 新结果</th>
-                    {order.map((v) => <th key={v}>{verdictLabel[v]}</th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {order.map((from) => (
-                    <tr key={from}>
-                      <td><span className={`vt ${verdictClass(from)}`}>{verdictLabel[from]}</span></td>
-                      {order.map((to) => {
-                        const n = cell(from, to);
-                        const cls = n === 0 ? "zero" : from === to ? "same" : isNg(from) && isOk(to) ? "release" : "changed";
-                        return <td key={to} className={`mono ${cls}`}>{n}</td>;
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <Stack gap={14}>
+              <span>重判 <b>{result.total}</b> 件，跳过 <b>{result.skipped}</b> 件{result.limitHit && "（超过 5000 件，只取最近 5000 件）"}</span>
+              {released > 0 && <StatusBadge tone="ng">NG→OK {released} 件：放宽后可能放过真实缺陷，请逐件复核</StatusBadge>}
+            </Stack>
+            {!!result.skipReasons.length && <List className="rj-changes" aria-label="跳过原因">
+              {result.skipReasons.map(item => <ListItem key={item.id} title={<span className="sn">SN {item.sn}</span>} description={item.reason} onClick={() => navigate(`/history/${item.id}`)} />)}
+            </List>}
+            <Table<Verdict> caption="判定变化矩阵" rows={order} columns={matrixColumns} rowKey={(v) => v} />
             {result.changes.length > 0 && (
-              <div className="rj-changes">
+              <List className="rj-changes" aria-label="判定变化记录">
                 {result.changes.map((c) => (
-                  <button key={c.id} className="rj-change" onClick={() => navigate(`/history/${c.id}`)}>
-                    <span className="mono">{formatTime(c.ts)}</span>
-                    <span className="sn">SN {c.sn}</span>
-                    <span className="rj-transition"><span className={`vt ${verdictClass(c.from)}`}>{verdictLabel[c.from]}</span>→<span className={`vt ${verdictClass(c.to)}`}>{verdictLabel[c.to]}</span></span>
-                    <span className="muted ellipsis rj-reason">{c.reason}</span>
-                  </button>
+                  <ListItem
+                    key={c.id}
+                    leading={<span className="mono">{formatTime(c.ts)}</span>}
+                    title={<>
+                      <span className="sn">SN {c.sn}</span>{" "}
+                      <StatusBadge tone={verdictTone(c.from)}>{verdictLabel[c.from]}</StatusBadge>→<StatusBadge tone={verdictTone(c.to)}>{verdictLabel[c.to]}</StatusBadge>
+                    </>}
+                    description={c.reason}
+                    onClick={() => navigate(`/history/${c.id}`)}
+                  />
                 ))}
-              </div>
+              </List>
             )}
           </>
         )}
-      </div>
-    </Modal>
+      </Stack>
+    </Dialog>
   );
 }

@@ -4,7 +4,7 @@ import { getAppInfo, getEngineStatus, openLogDir, type AppInfo, type EngineStatu
 import { cycleApi, devLyflowHint, useRecipes, type CycleSettings, type Timeouts } from "../features/cycle";
 import { storageApi } from "../lib/storage";
 import { errorText } from "../lib/errors";
-import { useSnackbar } from "../components/Snackbar";
+import { useSnackbar } from "qing-steel";
 
 const timeoutFields: [keyof Timeouts, string, string][] = [
   ["armMs", "布防预算 T_arm（ms）", "确认 partStart 后到 armed 读回确认，100–5000；回写前超出拒收本件（90/99），回写确认后超出进入视觉故障"],
@@ -90,7 +90,7 @@ function CycleSettingsPanel({ savePart }: { savePart: SavePart }) {
   const recipes = useRecipes();
   const { data: settings, setData: setSettings, error, loading, reload } = useResource(cycleApi.getSettings);
   const [saveError, setSaveError] = useState("");
-  const snack = useSnackbar();
+  const { show: snack } = useSnackbar();
   const [saving, setSaving] = useState(false);
   const pending = useRef(false);
   const mounted = useMounted();
@@ -177,7 +177,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
   const { data: settings, setData: setSettings, error, loading, reload } = useResource(cycleApi.getSettings);
   const { data: engine, error: engineError, loading: engineLoading, reload: refresh } = useResource<EngineStatus>(getEngineStatus);
   const [saveError, setSaveError] = useState("");
-  const snack = useSnackbar();
+  const { show: snack } = useSnackbar();
   const [saving, setSaving] = useState(false);
   const pending = useRef(false);
   const mounted = useMounted();

@@ -1,11 +1,10 @@
 import CandidateDebugControls from "../features/cycle/components/CandidateDebugControls";
-import SelectionTrack from "../components/SelectionTrack";
-import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { RotateCcw } from "lucide-react";
+import { Alert, Button, Card, Chip, Dialog, EmptyState, Progress as ProgressBar, SegmentedControl, Select, StatusBadge } from "qing-steel";
 import "./inspect.css";
 import RuntimeFrame, { usePublishedOverview } from "../features/workspace/RuntimeFrame";
 import { WorkpieceOverview } from "../features/workspace/OverviewPage";
-import Modal from "../features/plc/components/Modal";
 import { displayReason, triggerModeLabel, verdictLabel } from "../features/history";
 import { matchesPart } from "../features/cycle/identity";
 import InspectionReadiness from "../features/cycle/components/InspectionReadiness";
@@ -44,7 +43,8 @@ function verdictParts(v: Verdict) {
 
 const phaseLabels: Record<string, string> = { IDLE: "空闲", VALIDATE: "校验", ACQUIRE: "采集", DRAIN: "收尾", JUDGE: "判定", REPORT: "回写", RELEASE: "释放", FAULT: "故障" };
 
-const meter = (value: number, total: number) => ({ "--v": total > 0 ? Math.min(1, Math.max(0, value / total)) : 0 }) as CSSProperties;
+const viewOptions = [{ value: "image", label: "原图" }, { value: "part", label: "整件布置" }, { value: "frame", label: "逐拍照点" }];
+const quantityOptions = [{ value: "d", label: "偏移" }, { value: "w", label: "胶宽" }];
 
 export default function InspectPage() {
   const { snapshot, logs, measured } = useCycle();
@@ -166,80 +166,67 @@ export default function InspectPage() {
       {debug && <div className="qs-banner tertiary" role="status"><span><strong>候选配方调试结果</strong> · {debug.recipeId} · 修订 {debug.revision} · 未发布，仅用于离线测试，不作为生产验收。</span></div>}
       <CandidateDebugControls site={site} snapshot={snapshot} />
       <div className="prod-bar">
-        <span className="qs-chip">{triggerModeLabel(trigger)}</span>
-        <span className={`qs-chip${site?.mode === "offline" ? " tertiary" : ""}`}>{site?.mode === "offline" ? "离线" : site ? "真机" : "模式确认中"}</span>
+        <Chip>{triggerModeLabel(trigger)}</Chip>
+        <Chip className={site?.mode === "offline" ? "tertiary" : undefined}>{site?.mode === "offline" ? "离线" : site ? "真机" : "模式确认中"}</Chip>
         {!activeDebug && snapshot?.productSource === "manual" ? (
-          <span className="qs-chip prod-recipe">
-            配方
-            <select
-              id="manual-recipe"
-              aria-label="当前检测配方"
-              className="input"
-              value={snapshot.activeRecipeId ?? ""}
-              onChange={(e) => requestSwitch(e.target.value)}
-              disabled={!canSwitch || action !== null}
-            >
-              {!snapshot.activeRecipeId && <option value="">请选择</option>}
-              {recipes.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.id} · {r.name}
-                </option>
-              ))}
-            </select>
-          </span>
+          <Select
+            id="manual-recipe"
+            aria-label="当前检测配方"
+            className="prod-recipe"
+            value={snapshot.activeRecipeId ?? ""}
+            onValueChange={requestSwitch}
+            disabled={!canSwitch || action !== null}
+            placeholder={snapshot.activeRecipeId ? undefined : "请选择"}
+            options={recipes.map((r) => ({ value: r.id, label: `${r.id} · ${r.name}` }))}
+          />
         ) : (
-          <span className="qs-chip prod-recipe" title="型号由 PLC 下发的产品代码匹配">
+          <Chip className="prod-recipe" title="型号由 PLC 下发的产品代码匹配">
             {debug ? `${debug.recipeId} · 候选修订 ${debug.revision}` : layout ? `${layout.id} · v${layout.version}` : "等待 PLC 下发型号"}
-          </span>
+          </Chip>
         )}
-        <span className="qs-chip prod-sn" title={part?.sn || result?.sn || undefined}>
+        <Chip className="prod-sn" title={part?.sn || result?.sn || undefined}>
           SN <b className="sn">{part?.sn || result?.sn || "—"}</b>
-        </span>
+        </Chip>
         <span className="spacer" />
         <span className={`qs-badge prod-phase${phase === "FAULT" ? " fault" : busy ? " run" : ""}`}><span className="dot" />{snapshot ? phaseLabels[phase] : "状态确认中"}</span>
-        <button className="btn" onClick={() => setDiagnostics("readiness")}>诊断</button>
+        <Button onClick={() => setDiagnostics("readiness")}>诊断</Button>
         <OfflineControls readiness={readiness} refresh={refreshReadiness} publishedSection={offlineSample} candidateRunning={!!snapshot?.candidateDebug} />
         {phase === "FAULT" && (
           <>
             <ContextHelp label="复位条件">{site?.mode === "offline" ? "离线：由离线产线自动复位" : "真机：由 PLC 发 faultReset 复位；PLC 已连接、心跳正常且设备就绪时也可点此复位"}</ContextHelp>
-            <button className="btn" onClick={resetFault} disabled={action !== null} aria-busy={action === "reset"}>
-              <RotateCcw size={15} />
+            <Button onClick={resetFault} disabled={action !== null} loading={action === "reset"} leadingIcon={<RotateCcw size={15} />}>
               {action === "reset" ? "复位中…" : "复位故障"}
-            </button>
+            </Button>
           </>
         )}
       </div>
-      {resetError && <div className="qs-banner ng" role="alert">{resetError}</div>}
-      {!!snapshot?.measurementWorkers.timedOut && <div className="qs-banner ng" role="alert"><span>
+      {resetError && <Alert tone="ng">{resetError}</Alert>}
+      {!!snapshot?.measurementWorkers.timedOut && <Alert tone="ng">
         测量线程超时未返回：{snapshot.measurementWorkers.timedOut} / {snapshot.measurementWorkers.capacity}，当前可用容量 {snapshot.measurementWorkers.availableCapacity}。
         {snapshot.measurementWorkers.timedOut>=snapshot.measurementWorkers.capacity&&"全部测量容量被占用，当前不可布防。"}
-      </span></div>}
-      {snapshot?.recordingAlarm && <div className="qs-banner warn" role="alert"><span>
+      </Alert>}
+      {snapshot?.recordingAlarm && <Alert tone="warn">
         原图录制失败：连续 {snapshot.recordingAlarm.consecutive} 件原图未完整保存（最近 <span className="mono">{snapshot.recordingAlarm.cycleId}</span>：{snapshot.recordingAlarm.reason}）。检测与判定照常；请检查资料盘空间与录制目录写权限，下一件完整保存后自动消除。
-      </span></div>}
+      </Alert>}
 
       <InspectionReadiness offlineSample={offlineSample} snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} />
 
       <div className="prod-body">
         <div className="prod-main">
-          <section className="panel prod-view" role="region" aria-label="检测主视图">
+          <Card className="prod-view" role="region" aria-label="检测主视图">
             <div className="panel-head">
               <h3 className="panel-title">检测视图</h3>
               <ContextHelp label="查看范围说明">选择拍照点或曲线测量点后进入手动查看；返回当前拍照点可恢复跟随。新工件自动恢复跟随，右侧始终保留整件判定。</ContextHelp>
               <span className="spacer" />
-              {manualView && <><span className="view-mode">手动查看</span><button className="btn small" onClick={resumeFollowing}>返回当前拍照点</button></>}
-              <SelectionTrack className="segmented" activeKey={view} role="group" aria-label="检测视图切换">
-                <button className={view === "image" ? "active" : ""} aria-pressed={view === "image"} onClick={() => setView("image")}>原图</button>
-                <button className={view === "part" ? "active" : ""} aria-pressed={view === "part"} onClick={() => setView("part")}>整件布置</button>
-                <button className={view === "frame" ? "active" : ""} aria-pressed={view === "frame"} onClick={() => setView("frame")}>逐拍照点</button>
-              </SelectionTrack>
+              {manualView && <><span className="view-mode">手动查看</span><Button size="sm" onClick={resumeFollowing}>返回当前拍照点</Button></>}
+              <SegmentedControl size="sm" label="检测视图切换" value={view} onValueChange={next => setView(next as typeof view)} options={viewOptions} />
             </div>
             {view === "image" ? <RuntimeFrame compact onDiagnostics={() => setDiagnostics("capture")} part={ownLayout ? part : null} layout={layout} k={selected} measured={shown} vis={vis}/> :
               layout ? view === "frame" ? <ShotTiles layout={layout} vis={vis} current={cur} selected={selected} onSelect={selectFrame} selectedPoint={selectedPoint} /> :
-                <WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={selectFrame} vis={vis}/> : <div className="qs-empty"><b>等待配方</b><small>PLC 下发型号或手动选择配方后显示。</small></div>}
-          </section>
+                <WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={selectFrame} vis={vis}/> : <EmptyState title="等待配方" description="PLC 下发型号或手动选择配方后显示。" />}
+          </Card>
 
-          <section className="panel prod-shots">
+          <Card className="prod-shots">
             <div className="panel-head">
               <h3 className="panel-title">拍照点</h3>
               <ContextHelp label="拍照点匹配说明">拍照点按本件设备内触发顺序匹配；设备原始计数在采集诊断中显示。绿色为合格，黄色为允许范围内的局部超差，红色为 NG 或断胶，紫色为采集或测量异常，灰色为待测。</ContextHelp>
@@ -249,17 +236,17 @@ export default function InspectPage() {
               </span>
             </div>
             {layout && <ShotStrip compact layout={layout} part={part} vis={vis} selected={selected} onSelect={selectFrame}/>}
-          </section>
+          </Card>
 
-          <section className="panel prod-curve">
+          <Card className="prod-curve">
             <div className="panel-head">
               <h3 className="panel-title">{curveQuantity === "d" ? "横向偏移" : "胶宽"} <span className="muted">mm</span></h3>
               <ContextHelp label="曲线读法">横轴按检测段展开，段内为沿示教中线的弧长，段与段之间不连接。绿色带为公差，红虚线为绝对限；点击曲线或用方向键选择测量点，可查看对应原图。横向偏移相对于示教中线。</ContextHelp>
               <div className="legend"><span><i className="tol" />公差带</span><span><i className="abs" />绝对限</span></div>
-              {layout?.segments.some(segment => segment.width) && <div className="segmented"><button aria-pressed={curveQuantity === "d"} className={curveQuantity === "d" ? "active" : ""} onClick={() => setQuantity("d")}>偏移</button><button aria-pressed={curveQuantity === "w"} className={curveQuantity === "w" ? "active" : ""} onClick={() => setQuantity("w")}>胶宽</button></div>}
+              {layout?.segments.some(segment => segment.width) && <SegmentedControl size="sm" label="曲线数据切换" value={curveQuantity} onValueChange={next => setQuantity(next as typeof quantity)} options={quantityOptions} />}
             </div>
             {layout && <UnrolledCurve compact key={`${selectionScope}:${curveQuantity}`} quantity={curveQuantity} layout={layout} measured={shown} vis={vis} selected={selectedPoint} onSelect={selectPoint} />}
-          </section>
+          </Card>
         </div>
 
         <aside className="prod-side" aria-label="整件结果">
@@ -272,21 +259,23 @@ export default function InspectPage() {
 
       {diagnostics && <InspectionDiagnostics offlineSample={offlineSample} group={diagnostics} onGroup={setDiagnostics} onClose={() => setDiagnostics(null)} snapshot={snapshot} readiness={readiness} readinessError={readinessError} layout={layout} part={ownLayout ? part : null} selected={selected} logs={logs} />}
       {pendingRecipe && (
-        <Modal
+        <Dialog
+          open
           title="切换配方"
-          onClose={closeSwitch}
+          closeDisabled={action === "switch"}
+          onOpenChange={open => { if (!open) closeSwitch(); }}
           footer={
             <>
               {(switchError || switchProblem) && <span className="form-error" role="alert">{switchError || switchProblem}</span>}
-              <button className="btn" disabled={action === "switch"} onClick={closeSwitch}>取消</button>
-              <button className="btn primary" disabled={action !== null || !!switchProblem} aria-busy={action === "switch"} onClick={confirmSwitch}>{action === "switch" ? "切换中…" : "确认切换"}</button>
+              <Button disabled={action === "switch"} onClick={closeSwitch}>取消</Button>
+              <Button variant="filled" disabled={action !== null || !!switchProblem} loading={action === "switch"} onClick={confirmSwitch}>{action === "switch" ? "切换中…" : "确认切换"}</Button>
             </>
           }
         >
           <p>
             切换到 <b>{pendingRecipe}</b>，从下一个工件开始生效。请确认现场上料的型号与之一致。
           </p>
-        </Modal>
+        </Dialog>
       )}
     </div>
   );
@@ -337,28 +326,28 @@ function VerdictCard({ phase, result, part }: { phase: string; result: ResultVie
 function Progress({ snapshot, result, onDiagnostics }: { snapshot: Snapshot | null; result: ResultView | null; onDiagnostics: () => void }) {
   const part = snapshot?.part;
   return (
-    <section className="panel prod-progress" aria-label="本件进度">
+    <Card className="prod-progress" role="region" aria-label="本件进度">
       <div className="panel-head">
         <h3 className="panel-title">本件进度</h3>
         <span className="spacer" />
-        <button className="btn small" onClick={onDiagnostics}>采集详情{snapshot?.strayFrames ? ` · 游离帧 ${snapshot.strayFrames}` : ""}</button>
+        <Button size="sm" onClick={onDiagnostics}>采集详情{snapshot?.strayFrames ? ` · 游离帧 ${snapshot.strayFrames}` : ""}</Button>
       </div>
       <div className="prod-meters">
         <span>帧</span>
-        <div className="qs-progress"><i style={meter(part?.received ?? 0, part?.n ?? 0)} /></div>
+        <ProgressBar label="帧进度" value={part?.received ?? 0} max={part?.n || 1} />
         <b>{part ? `${part.received} / ${part.n}` : "—"}</b>
         <span>测量点</span>
-        <div className="qs-progress"><i style={meter(part?.filled ?? 0, part?.total ?? 0)} /></div>
+        <ProgressBar label="测量点进度" value={part?.filled ?? 0} max={part?.total || 1} />
         <b>{part ? `${part.filled} / ${part.total}` : "—"}</b>
         <span>收尾耗时</span>
         <span />
         <b>{result?.drainMs != null ? `${result.drainMs} ms` : "—"}</b>
       </div>
-    </section>
+    </Card>
   );
 }
 
-function segmentStatus(s: ResultView["segments"][number] | undefined, errored: boolean): [string, string] {
+function segmentStatus(s: ResultView["segments"][number] | undefined, errored: boolean): [string, "ok" | "warn" | "ng" | "fault" | "none"] {
   if (!s) return errored ? ["不可判", "fault"] : ["—", "none"];
   if (s.verdict === "OK") return ["OK", "ok"];
   if (s.verdict === "OK_WITH_EXCURSION") return [`局部超差 ${Math.max(s.excursionLen, s.wExcursionLen ?? 0).toFixed(1)}`, "warn"];
@@ -390,7 +379,7 @@ function SegmentPanel({ layout, measured, result }: { layout: Recipe | null; mea
   const errored = result?.verdict === "ERR_INSPECT";
   const width = layout?.segments.some((g) => g.width);
   return (
-    <section className="panel prod-segments" aria-label="检测段结果">
+    <Card className="prod-segments" role="region" aria-label="检测段结果">
       <div className="panel-head">
         <h3 className="panel-title">检测段结果</h3>
         <span className="spacer" />
@@ -405,13 +394,13 @@ function SegmentPanel({ layout, measured, result }: { layout: Recipe | null; mea
           return (
             <li key={`${g.name}:${i}`} className={`prod-seg s-${tone}`}>
               <span className="nm" title={g.name}>{g.name}</span>
-              <span className={`prod-pill s-${tone}`}>{label}</span>
+              {tone === "none" ? <span className="muted">{label}</span> : <StatusBadge tone={tone}>{label}</StatusBadge>}
               <span className="rng mono">{d}{w}</span>
             </li>
           );
         })}
-      </ul> : <div className="qs-empty"><small>等待配方</small></div>}
-    </section>
+      </ul> : <EmptyState title="等待配方" />}
+    </Card>
   );
 }
 

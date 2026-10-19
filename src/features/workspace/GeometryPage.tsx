@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertTriangle, ArrowRight, Check, LoaderCircle } from "lucide-react";
+import { Button, Surface } from "qing-steel";
 import { RecipeEditor, changedFields } from "../recipe";
 import { recipeApi } from "../cycle/api";
 import { segmentLength, shotTaught } from "../cycle/vis";
 import type { RecipeDoc } from "../cycle/types";
 import { useWorkspace } from "./context";
-import { Panel, Steps, WorkspaceBar, WorkspaceEmpty } from "./components";
+import { Badge, Panel, Steps, WorkspaceBar, WorkspaceEmpty } from "./components";
 import { targetPath } from "./progress";
 import { stageOf } from "./stages";
 
@@ -35,12 +36,12 @@ export default function GeometryPage() {
       <div className="wp-stack">
         <Panel title="默认检测与判定参数" detail="拍照点没单独设置时使用这里的值">
           <fieldset disabled={busy || !!data.workspace.pending} className="wp-plain-fieldset">
-            <RecipeEditor key={doc.id + ":" + data.workspace.revision} initial={doc} production={production} onDraftChange={setDoc} />
+            <RecipeEditor key={doc.id + ":" + data.workspace.revision} initial={doc} production={production} onDraftChange={setDoc} disabled={busy || !!data.workspace.pending} />
           </fieldset>
         </Panel>
       </div>
       <div className="wp-stack">
-        <section className="panel wp-panel wp-defaults-card" aria-label="配方摘要">
+        <Surface role="region" aria-label="配方摘要" className="wp-panel wp-defaults-card">
           <h3>配方摘要</h3>
           {shots.length ? <dl>
             <dt>拍照点</dt><dd>{shots.length}{shots.length > measured.length && <small> · 不检 {shots.length - measured.length}</small>}</dd>
@@ -48,7 +49,7 @@ export default function GeometryPage() {
             <dt>中线总长</dt><dd>{length == null ? "—" : length.toFixed(1) + " mm"}</dd>
             <dt>测量点</dt><dd>{preview ? preview.points.x.length : "—"}</dd>
           </dl> : <p className="muted">尚无拍照点，整圈采集后生成。</p>}
-        </section>
+        </Surface>
         {next && <section className="wp-defaults-next" aria-label="下一步">
           <small>下一步 · {stageOf(next.step)?.label ?? "配方进度"}</small>
           <strong>{next.label}</strong>
@@ -57,11 +58,11 @@ export default function GeometryPage() {
       </div>
     </div>
     <div className="wp-defaults-savebar" role="status" aria-label="候选保存状态">
-      {productionVersion != null ? <span className={"wp-badge " + (changed ? "info" : "neutral")}>{changed ? `${changed} 项与生产 v${productionVersion} 不同` : `与生产 v${productionVersion} 一致`}</span> : <span className="wp-badge neutral">尚未发布</span>}
+      {productionVersion != null ? <Badge tone={changed ? "info" : "neutral"}>{changed ? `${changed} 项与生产 v${productionVersion} 不同` : `与生产 v${productionVersion} 一致`}</Badge> : <Badge tone="neutral">尚未发布</Badge>}
       <span className="muted">修改自动保存为候选配置，不影响在线生产配方</span>
       <span className="spacer" />
       {previewError ? <span className="wp-defaults-save warn"><AlertTriangle size={14} aria-hidden="true" />参数无效：{previewError}</span> : <span className={"wp-defaults-save " + saveState}>{saveState === "saved" ? <Check size={14} aria-hidden="true" /> : saveState === "failed" ? <AlertTriangle size={14} aria-hidden="true" /> : <LoaderCircle size={14} aria-hidden="true" />}{saveText[saveState]}</span>}
-      {saveState === "failed" && <button className="btn small" onClick={retrySave}>重试保存</button>}
+      {saveState === "failed" && <Button size="sm" onClick={retrySave}>重试保存</Button>}
     </div>
   </div>;
 }

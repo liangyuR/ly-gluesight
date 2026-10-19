@@ -9,8 +9,10 @@ import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import type { ShotTeach, Workspace, WorkspaceView } from "./types";
 import { sameTeach, shotTeach } from "./teach";
-import { useClearSnackbar, useSnackbar, type SnackMessage } from "../../components/Snackbar";
+import { useSnackbar, type SnackbarMessage } from "qing-steel";
 import "./workspace.css";
+
+export type SnackMessage = string | SnackbarMessage;
 
 interface WorkspaceContextValue {
   list: RecipeSummary[]; drafts: Workspace[]; cameras: CameraConfig[]; unavailable: UnavailableRecipe[];
@@ -53,8 +55,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const dirtyRef = useRef(false);
   const pendingRefresh = useRef<string | null>(null);
   const [refreshRevision, setRefreshRevision] = useState(0);
-  const snack = useSnackbar();
-  const clearSnack = useClearSnackbar();
+  const { show: snack, clear: clearSnack } = useSnackbar();
   const shotList=useRef("");
   const shotSources=useRef<string[]>([]);
   const dirty = !!doc && !!data && !equal(doc, data.workspace.doc);

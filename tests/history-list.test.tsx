@@ -11,7 +11,7 @@ import type { HistoryPage as Page } from "../src/features/history";
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
 
-const row = (id: number) => screen.findByRole("row", { name: `查看 SN SN-${100 + id} 的记录` });
+const row = (id: number) => screen.findByRole("button", { name: `查看 SN SN-${100 + id} 的记录` });
 
 it("记录判定决定行语义色 → NG 整行标红、未测成用故障色、局部超差用警告色、OK 不标记", async () => {
   const verdicts: Verdict[] = ["NG_GAP", "ERR_INSPECT", "OK_WITH_EXCURSION", "OK"];
@@ -21,11 +21,10 @@ it("记录判定决定行语义色 → NG 整行标红、未测成用故障色�
     throw new Error(`Unexpected command: ${command}`);
   });
   render(<MemoryRouter><HistoryPage /></MemoryRouter>);
-  expect(await row(1)).toHaveClass("r-ng");
-  expect(await row(2)).toHaveClass("r-err");
-  expect(await row(3)).toHaveClass("r-exc");
-  const ok = await row(4);
-  for (const tone of ["r-ng", "r-err", "r-exc"]) expect(ok).not.toHaveClass(tone);
+  expect(await row(1)).toHaveAttribute("data-tone", "ng");
+  expect(await row(2)).toHaveAttribute("data-tone", "fault");
+  expect(await row(3)).toHaveAttribute("data-tone", "warn");
+  expect(await row(4)).toHaveAttribute("data-tone", "ok");
 });
 
 it("翻页结果未返回 → 保留上一页的统计、行与分页并标为加载中，返回后换成新页", async () => {
@@ -41,12 +40,12 @@ it("翻页结果未返回 → 保留上一页的统计、行与分页并标为�
   await userEvent.click(screen.getByRole("button", { name: "下一页" }));
   expect(screen.getByText(/真机共/)).toHaveTextContent("真机共 120 件");
   expect(await row(1)).toBeVisible();
-  expect(screen.getByRole("table")).toHaveAttribute("aria-busy", "true");
+  expect(screen.getByRole("table").closest("[aria-busy]")).toHaveAttribute("aria-busy", "true");
   expect(screen.getByRole("button", { name: "上一页" })).toBeInTheDocument();
   await act(async () => next.resolve(page([51])));
   expect(await row(51)).toBeVisible();
-  expect(screen.queryByRole("row", { name: "查看 SN SN-101 的记录" })).not.toBeInTheDocument();
-  expect(screen.getByRole("table")).toHaveAttribute("aria-busy", "false");
+  expect(screen.queryByRole("button", { name: "查看 SN SN-101 的记录" })).not.toBeInTheDocument();
+  expect(screen.getByRole("table").closest("[aria-busy]")).toHaveAttribute("aria-busy", "false");
 });
 
 it("换筛选后查询失败 → 不把上一次条件的记录当成新条件的结果", async () => {
@@ -62,6 +61,6 @@ it("换筛选后查询失败 → 不把上一次条件的记录当成新条件�
   await row(1);
   await userEvent.click(screen.getByRole("button", { name: "离线件" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("记录库忙");
-  expect(screen.queryByRole("row", { name: "查看 SN SN-101 的记录" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "查看 SN SN-101 的记录" })).not.toBeInTheDocument();
   expect(screen.getByText(/共/, { selector: ".hist-counts span" })).toHaveTextContent("离线共 0 件");
 });

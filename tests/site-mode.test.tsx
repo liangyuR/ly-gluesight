@@ -95,9 +95,9 @@ describe("离线模式配方下拉", () => {
     site = siteStatus({ mode: "offline", source: "sampleSet", sampleSet: sampleSet() });
     report = readiness({ recipes: [recipeOption("candidate", true, { published: false }), recipeOption("A", false), recipeOption("B"), recipeOption("C")] });
     render(<MemoryRouter><OfflinePage /></MemoryRouter>);
-    const select = await screen.findByRole("combobox", { name: "离线配方" });
+    const select = await screen.findByLabelText("离线配方", { selector: "select" }) as HTMLSelectElement;
     await waitFor(() => expect(select).toHaveValue("B"));
-    const options = within(select).getAllByRole("option") as HTMLOptionElement[];
+    const options = Array.from(select.options);
     expect(options.some(o => o.value === "candidate")).toBe(false);
     expect(options.filter(o => !o.disabled).map(o => o.value)).toEqual(["B", "C"]);
   });
@@ -106,7 +106,7 @@ describe("离线模式配方下拉", () => {
     site = siteStatus({ mode: "offline", source: "sampleSet", sampleSet: sampleSet() });
     report = readiness({ recipes: [recipeOption("A"), recipeOption("B")] });
     render(<MemoryRouter><OfflinePage /></MemoryRouter>);
-    const select = await screen.findByRole("combobox", { name: "离线配方" });
+    const select = await screen.findByLabelText("离线配方", { selector: "select" });
     await waitFor(() => expect(select).toHaveValue("A"));
     await userEvent.selectOptions(select, "B");
     report = readiness({ recipes: [recipeOption("A"), recipeOption("B", false)] });

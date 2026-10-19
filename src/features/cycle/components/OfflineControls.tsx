@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { OctagonX, Play } from "lucide-react";
+import { Button } from "qing-steel";
 import { errorText } from "../../../lib/errors";
 import { usePlcStatus } from "../../plc";
 import { cycleApi, useSiteStatus } from "../api";
@@ -52,14 +53,12 @@ export default function OfflineControls({ readiness, refresh, publishedSection =
     <div className="offline-controls compact">
       <span className="offline-label">{candidateRunning ? "候选调试运行中" : publishedSection ? "已发布配方回放" : "离线产线"}</span>
       {!candidateRunning && <RecipeRunSelect options={options} value={recipeId} onChange={setRecipeId} disabled={running || busy} />}
-      {!candidateRunning && <button className="btn primary" onClick={() => void perform(() => cycleApi.offlineRun(recipeId, "normal", false, null), recipeId)} disabled={running || busy || !connected || !recipeId}>
-        <Play size={15} />
+      {!candidateRunning && <Button variant="filled" size="sm" leadingIcon={<Play size={15} />} onClick={() => void perform(() => cycleApi.offlineRun(recipeId, "normal", false, null), recipeId)} disabled={running || busy || !connected || !recipeId}>
         运行一件
-      </button>}
-      <button className="btn danger" onClick={() => void perform(() => cycleApi.offlineStop(true))} disabled={busy || !running}>
-        <OctagonX size={15} />
+      </Button>}
+      <Button danger size="sm" leadingIcon={<OctagonX size={15} />} onClick={() => void perform(() => cycleApi.offlineStop(true))} disabled={busy || !running}>
         立即停止
-      </button>
+      </Button>
       <span className="offline-msg" role="status" title={message}>{message}</span>
       {error && <span className="offline-msg c-ng" role="alert">{error.text} <TargetLink target={error.target} /></span>}
     </div>
