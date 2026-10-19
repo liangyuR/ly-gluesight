@@ -147,7 +147,7 @@ export default function PlcLogPage() {
     try {
     const { query, end } = buildQuery();
     query.end = end;
-    const rows: string[] = ["时间,级别,类别,点位,内容,旧值,新值"];
+    const rows: string[] = ["时间,级别,类别,点位,内容,旧值,新值,事务"];
     let offset = 0;
     let total: number | null = null;
     while (true) {
@@ -157,7 +157,7 @@ export default function PlcLogPage() {
       if (!Number.isSafeInteger(total) || total < 0) throw new Error("日志数量无效，请刷新后重试");
       for (const e of batch.items) {
         rows.push(
-          [formatTs(e.ts), levelLabels[e.level], categoryLabels[e.category], e.pointName, e.message, e.oldValue, e.newValue]
+          [formatTs(e.ts), levelLabels[e.level], categoryLabels[e.category], e.pointName, e.message, e.oldValue, e.newValue, e.context]
             .map(csvCell)
             .join(","),
         );
@@ -328,12 +328,13 @@ export default function PlcLogPage() {
                 <th>类别</th>
                 <th>点位</th>
                 <th>内容</th>
+                <th>事务</th>
               </tr>
             </thead>
             <tbody>
               {currentData.items.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="muted center">
+                  <td colSpan={6} className="muted center">
                     {loading ? "加载中…" : "所选条件下暂无日志"}
                   </td>
                 </tr>
@@ -355,6 +356,7 @@ export default function PlcLogPage() {
                     )}
                   </td>
                   <td className="msg">{e.message}</td>
+                  <td className="mono nowrap muted">{e.context ?? "—"}</td>
                 </tr>
               ))}
             </tbody>

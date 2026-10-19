@@ -150,7 +150,7 @@ fn plc_logs(app: &AppHandle, from: i64, to: i64, out: &mut Vec<u8>, notes: &mut 
     let mut offset = 0u32;
     let mut count = 0u64;
     loop {
-        let query = ly_plc::LogQuery { start: Some(from), end: Some(to), levels: Vec::new(), categories: Vec::new(), point_id: None,
+        let query = ly_plc::LogQuery { start: Some(from), end: Some(to), levels: Vec::new(), categories: Vec::new(), point_id: None, context: None,
             keyword: None, limit: Some(1000), offset: Some(offset) };
         match host.engine().logbook().query(&query) {
             Ok(page) => {

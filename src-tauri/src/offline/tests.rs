@@ -289,3 +289,28 @@ fn restoring_the_real_plc_reconnects_only_after_a_valid_config_was_applied_and_p
         assert_eq!(restore_plan(applied, reconnect, valid), expected, "{applied:?} {reconnect} {valid}");
     }
 }
+
+/// plc.db 的握手信号变化带上当时的 requestSeq，按件追溯 PLC 日志（日志库本身没有 cycleId）。
+#[tokio::test]
+async fn plc_log_value_changes_carry_the_request_seq_of_their_part() {
+    let mut bench = Bench::new("log-context").await;
+    let until = Instant::now() + Duration::from_secs(8);
+    while !matches!(bench.session.poll(&bench.engine, true, true).await, SessionEvent::Ready) {
+        assert!(Instant::now() < until, "复位未完成：{:?}", bench.session.view());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    for seq in [1, 2] { assert_eq!(bench.run(Scenario::Normal).await.unwrap().request_seq, seq); }
+    let armed = crate::handshake::Contract::validate(&bench.engine.config()).unwrap().point_id(tag::ARMED).unwrap().to_owned();
+    let until = Instant::now() + Duration::from_secs(5);
+    for seq in [1, 2] {
+        let query = ly_plc::LogQuery { point_id: Some(armed.clone()), context: Some(format!("requestSeq={seq}")), ..Default::default() };
+        loop {
+            let page = bench.engine.logbook().query(&query).unwrap();
+            let changed = |to: &str| page.items.iter().any(|e| e.new_value.as_deref() == Some(to));
+            if changed("true") && changed("false") { break; }
+            assert!(Instant::now() < until, "requestSeq={seq} 的 armed 置位与撤销没有带上该件的上下文：{:?}", page.items);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    bench.engine.disconnect().await;
+}

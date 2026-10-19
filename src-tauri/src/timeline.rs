@@ -82,7 +82,7 @@ fn plc_entries(app: &AppHandle, from: i64, to: i64) -> Result<(Vec<Entry>, bool)
     let quiet: Vec<String> = engine.config().points.iter()
         .filter(|p| p.tags.iter().any(|t| t == "plcHeartbeat" || t == "pcHeartbeat")).map(|p| p.id.clone()).collect();
     let page = engine.logbook().query(&ly_plc::LogQuery { start: Some(from), end: Some(to), levels: Vec::new(), categories: Vec::new(),
-        point_id: None, keyword: None, limit: Some(PLC_CAP), offset: Some(0) })?;
+        point_id: None, context: None, keyword: None, limit: Some(PLC_CAP), offset: Some(0) })?;
     let truncated = page.total > i64::from(PLC_CAP);
     let entries = page.items.into_iter().filter(|e| e.point_id.as_ref().is_none_or(|id| !quiet.contains(id))).map(|e| {
         let change = match (&e.old_value, &e.new_value) {

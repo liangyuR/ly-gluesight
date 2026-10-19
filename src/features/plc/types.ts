@@ -97,6 +97,8 @@ export interface LogEntry {
   message: string;
   oldValue: string | null;
   newValue: string | null;
+  /** 记录时的关联上下文，如 requestSeq=12 */
+  context: string | null;
 }
 
 export interface LogQuery {
