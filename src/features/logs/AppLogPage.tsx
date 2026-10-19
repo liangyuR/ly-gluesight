@@ -24,7 +24,7 @@ const badgeLevel = { error: "error", warn: "warn", info: "info", debug: "debug" 
 
 function Cycle({ record, onFilter }: { record: AppLogRecord; onFilter: (cycleId: string) => void }) {
   const [target, setTarget] = useState<number | null | undefined>(undefined);
-  if (!record.cycleId) return record.sn ? <span className="sn">SN{"\u00a0"}{record.sn}</span> : <span className="muted">—</span>;
+  if (!record.cycleId) return record.sn ? <span className="log-cycle"><span className="sn">SN{"\u00a0"}{record.sn}</span></span> : <span className="muted">—</span>;
   const cycleId = record.cycleId;
   return <span className="log-cycle">
     {record.sn && <span className="sn muted">SN{"\u00a0"}{record.sn}</span>}
