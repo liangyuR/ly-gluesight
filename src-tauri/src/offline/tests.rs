@@ -390,6 +390,31 @@ async fn stop_during_inter_part_pause_does_not_start_another_part() {
     assert!(!start_next, "stop accepted between parts must prevent the next part");
 }
 
+/// 心跳故障后视觉还没观察到新的心跳翻转时第一次 faultReset 会被拒；虚拟 PLC 要再按复位，不能一直等到超时。
+#[tokio::test]
+async fn virtual_plc_presses_reset_again_after_a_reset_refused_before_the_heartbeat_recovered() {
+    let mut bench = Bench::new_with("reset-retry", |server| server.inject(s7_server::Fault::HeartbeatStop)).await;
+    let Bench { line, engine, session, _server: server, .. } = &mut bench;
+    let abort = AtomicBool::new(false);
+    let refused = AtomicBool::new(false);
+    let pc = async {
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            let event = session.poll(engine, false, true).await;
+            if matches!(event, SessionEvent::Ready) { return; }
+            if matches!(&event, SessionEvent::Fault(m) if m.contains("尚未观察到 PLC 心跳翻转")) && !refused.swap(true, Ordering::SeqCst) {
+                server.inject(s7_server::Fault::HeartbeatResume);
+            }
+            assert!(Instant::now() < until, "复位未完成：{:?}", session.view());
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    let (ready, ()) = tokio::join!(line.ensure_ready(&TIMING, &abort), pc);
+    assert!(refused.load(Ordering::SeqCst), "第一次复位应因心跳未翻转被拒");
+    assert!(ready.is_ok(), "{ready:?}");
+    bench.engine.disconnect().await;
+}
+
 #[tokio::test]
 async fn sample_set_line_fetches_each_trigger_by_part_shot_and_view_and_claims_the_sample_by_part_sn() {
     use super::sample_set::{fixture::Fixture, SampleLabel, SampleSet};

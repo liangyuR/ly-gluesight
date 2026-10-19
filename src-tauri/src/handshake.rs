@@ -286,6 +286,8 @@ pub(crate) struct Snapshot {
     pub(crate) connection_since: i64,
     pub(crate) poll_count: u64,
     pub(crate) last_poll: i64,
+    /// plcHeartbeat 在 ly-plc 轮询缓存里的时间戳：值或读错误变化时更新，读错误恢复为原电平也会前进。
+    pub(crate) heartbeat_changed_at: i64,
     values: HashMap<&'static str, PlcValue>,
     broken_outputs: Vec<&'static str>,
 }
@@ -335,7 +337,8 @@ impl Snapshot {
             }
             values.insert(field.tag, contract.value(raw, field.tag)?.clone());
         }
-        Ok(Self { connection_since: status.since, poll_count: status.poll_count, last_poll, values, broken_outputs })
+        let heartbeat_changed_at = raw.get(contract.point_id("plcHeartbeat")?).map_or(last_poll, |point| point.ts);
+        Ok(Self { connection_since: status.since, poll_count: status.poll_count, last_poll, heartbeat_changed_at, values, broken_outputs })
     }
 
     pub(crate) fn capture(engine: &PlcEngine, contract: &Contract, max_age_ms: u64) -> Result<Self, String> {
@@ -748,6 +751,7 @@ pub(crate) struct HeartbeatWatch {
     first_seen: Option<i64>,
     last_seen: Option<i64>,
     level: Option<bool>,
+    changed_at: Option<i64>,
     last_change: Option<i64>,
 }
 
@@ -756,30 +760,35 @@ impl HeartbeatWatch {
         if timeout_ms < 3000 {
             return Err("PLC 心跳超时不能小于 3000 ms".into());
         }
-        Ok(Self { timeout_ms, first_seen: None, last_seen: None, level: None, last_change: None })
+        Ok(Self { timeout_ms, first_seen: None, last_seen: None, level: None, changed_at: None, last_change: None })
     }
 
     pub(crate) fn reset(&mut self) {
-        self.first_seen = None;
-        self.last_seen = None;
-        self.level = None;
-        self.last_change = None;
+        *self = Self { timeout_ms: self.timeout_ms, first_seen: None, last_seen: None, level: None, changed_at: None, last_change: None };
     }
 
-    pub(crate) fn observe(&mut self, level: bool, now: i64) -> Result<(), String> {
-        if self.first_seen.is_some() {
-            self.check(now)?;
-        }
+    /// `changed_at` 取轮询缓存里心跳点位的时间戳（[`Snapshot::heartbeat_changed_at`]）。
+    ///
+    /// 连续观察时先按上次翻转判超时，再记这次读数：翻转间隔超过阈值即判失活，此后的翻转不能抵消。
+    /// 观察出现空档（节拍被长操作阻塞超过 1/3 阈值）时，空档里 PLC 是否翻转只能看轮询缓存：
+    /// 时间戳前进或电平变了就认其最近一次变化的时刻，再判超时，不把 PC 自己没来观察当成 PLC 心跳停止。
+    /// 缓存不区分值变化与读错误恢复：空档里心跳所在读块出错又恢复也算一次翻转，PLC 心跳若恰在空档里停止，空档结束后最多再过一个超时周期才判失活。
+    pub(crate) fn observe(&mut self, level: bool, changed_at: i64, now: i64) -> Result<(), String> {
         if self.last_seen.is_some_and(|last| now < last) {
             return Err("PLC 心跳时钟倒退，必须重新同步".into());
         }
-        if self.level.is_some_and(|old| old != level) {
-            self.last_change = Some(now);
+        let blind = self.last_seen.is_some_and(|last| (now - last) as u64 > self.timeout_ms / 3);
+        if self.first_seen.is_some() && !blind {
+            self.check(now)?;
+        }
+        if self.level.is_some_and(|old| old != level) || self.changed_at.is_some_and(|old| changed_at > old) {
+            self.last_change = Some(changed_at.min(now));
         }
         self.first_seen.get_or_insert(now);
         self.last_seen = Some(now);
         self.level = Some(level);
-        Ok(())
+        self.changed_at = Some(changed_at);
+        if blind { self.check(now) } else { Ok(()) }
     }
 
     pub(crate) fn check(&self, now: i64) -> Result<(), String> {
@@ -1132,17 +1141,29 @@ mod tests {
     fn heartbeat_requires_a_transition_and_constant_reads_do_not_extend_deadline() {
         assert!(HeartbeatWatch::new(2999).is_err());
         let mut watch = HeartbeatWatch::new(3000).unwrap();
-        watch.observe(false, 100).unwrap();
+        watch.observe(false, 100, 100).unwrap();
         assert!(!watch.is_live(100));
         assert!(watch.check(1000).is_ok());
-        watch.observe(true, 1100).unwrap();
+        watch.observe(true, 1100, 1100).unwrap();
         assert!(watch.is_live(1100));
-        watch.observe(true, 4000).unwrap();
+        watch.observe(true, 1100, 4000).unwrap();
         assert!(watch.check(4101).is_err());
-        assert!(watch.observe(false, 4101).is_err());
+        assert!(watch.observe(false, 4101, 4101).is_err());
         watch.reset();
-        watch.observe(false, 5000).unwrap();
+        watch.observe(false, 4101, 5000).unwrap();
         assert!(!watch.is_live(5000));
         assert!(watch.check(8001).is_err());
+    }
+
+    #[test]
+    fn blocked_tick_is_judged_by_the_last_polled_change_not_mistaken_for_heartbeat_loss() {
+        let mut watch = HeartbeatWatch::new(3000).unwrap();
+        watch.observe(false, 0, 0).unwrap();
+        watch.observe(true, 500, 500).unwrap();
+        // 节拍被长操作阻塞 5 s，其间 PLC 照常翻转：轮询缓存里最近一次变化在 5400
+        assert!(watch.observe(true, 5400, 5500).is_ok());
+        assert!(watch.is_live(5500));
+        // 心跳真的停了：空档后缓存里的变化时刻不再前进，仍判失活
+        assert!(watch.observe(true, 5400, 9000).is_err());
     }
 }
