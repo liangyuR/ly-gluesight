@@ -40,7 +40,7 @@ function calibrationNotice(next: WorkspaceView, k: number, view: number, reuse: 
   if (!check?.passed) return { text: "已记录标定验证：误差超出 ±0.1 mm，未通过", tone: "warn" };
   if (!reuse) return "已记录当前图的标定验证";
   const reused = next.workspace.frames.filter((frame, other) => other !== k && frame.viewStates?.some(s => s.view === view && s.calibrationCheck?.verificationId === check.verificationId)).length;
-  return reused ? `已记录标定验证，并把当量与验证复用到 ${reused} 个拍照点` : "已记录当前图的标定验证；没有可复用的拍照点（需同一相机、同一图号、设备与标定一致，且未单独设置其他当量）";
+  return reused ? `已记录标定验证，并把当量与验证复用到 ${reused} 个拍照点` : { text: "未复用：没有同相机、同图号、设备与标定一致且未单独设当量的拍照点", tone: "warn" };
 }
 
 export default function TeachingPage() {

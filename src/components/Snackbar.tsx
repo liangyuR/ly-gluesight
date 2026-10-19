@@ -1,13 +1,13 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, CheckCircle2, Info, X } from "lucide-react";
 
 export type SnackTone = "ok" | "info" | "warn";
 /** 瞬时操作结果；错误与需要用户处理的提示仍放在页面内。 */
 export type SnackMessage = string | { text: string; tone?: SnackTone };
 interface Item { id: number; text: string; tone: SnackTone; leaving: boolean }
-type Show = (message: SnackMessage) => void;
+interface Channel { show: (message: SnackMessage) => void; clear: () => void }
 
-const ShowContext = createContext<Show | null>(null);
+const ChannelContext = createContext<Channel | null>(null);
 const ItemsContext = createContext<{ items: Item[]; dismiss: (id: number) => void } | null>(null);
 const icons = { ok: CheckCircle2, info: Info, warn: AlertTriangle };
 
@@ -23,25 +23,30 @@ export function snackDuration(text: string) {
 
 export function SnackbarProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<Item[]>([]);
+  const list = useRef<Item[]>([]);
   const serial = useRef(0);
-  const removals = useRef<number[]>([]);
+  const removals = useRef(new Set<number>());
   useEffect(() => () => removals.current.forEach(clearTimeout), []);
+  const commit = useCallback((next: Item[]) => { list.current = next; setItems(next); }, []);
   const retire = useCallback((ids: number[]) => {
     if (!ids.length) return;
-    setItems(list => list.map(item => ids.includes(item.id) ? { ...item, leaving: true } : item));
-    removals.current.push(window.setTimeout(() => setItems(list => list.filter(item => !ids.includes(item.id))), motionMs("--dur-short")));
-  }, []);
-  const itemsRef = useRef(items);
-  itemsRef.current = items;
+    commit(list.current.map(item => ids.includes(item.id) ? { ...item, leaving: true } : item));
+    const timer = window.setTimeout(() => {
+      removals.current.delete(timer);
+      commit(list.current.filter(item => !ids.includes(item.id)));
+    }, motionMs("--dur-short"));
+    removals.current.add(timer);
+  }, [commit]);
+  const clear = useCallback(() => retire(list.current.filter(item => !item.leaving).map(item => item.id)), [retire]);
   const dismiss = useCallback((id: number) => retire([id]), [retire]);
   const show = useCallback((message: SnackMessage) => {
     const { text, tone = "ok" } = typeof message === "string" ? { text: message } : message;
     if (!text) return;
-    retire(itemsRef.current.filter(item => !item.leaving).map(item => item.id));
-    const id = ++serial.current;
-    setItems(list => [...list, { id, text, tone, leaving: false }]);
-  }, [retire]);
-  return <ShowContext.Provider value={show}><ItemsContext.Provider value={{ items, dismiss }}>{children}</ItemsContext.Provider></ShowContext.Provider>;
+    clear();
+    commit([...list.current, { id: ++serial.current, text, tone, leaving: false }]);
+  }, [clear, commit]);
+  const channel = useMemo(() => ({ show, clear }), [show, clear]);
+  return <ChannelContext.Provider value={channel}><ItemsContext.Provider value={{ items, dismiss }}>{children}</ItemsContext.Provider></ChannelContext.Provider>;
 }
 
 function Snackbar({ item, onDismiss }: { item: Item; onDismiss: (id: number) => void }) {
@@ -84,6 +89,10 @@ export function SnackbarHost() {
 
 /** 没有挂载 SnackbarProvider 时提示不显示（单元测试按需挂载）。 */
 export function useSnackbar() {
-  return useContext(ShowContext) ?? ignore;
+  return useContext(ChannelContext)?.show ?? ignore;
+}
+/** 收起当前提示：换配方、开始新操作时，上一次的结果不再适用。 */
+export function useClearSnackbar() {
+  return useContext(ChannelContext)?.clear ?? ignore;
 }
 function ignore() {}

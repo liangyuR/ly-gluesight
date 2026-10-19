@@ -103,6 +103,18 @@ describe("候选工作台的主流程保护", () => {
     expect(screen.getByRole("status")).toBeEmptyDOMElement();
   });
 
+  it.each([
+    ["切换到其他配方", (workspace: ReturnType<typeof useWorkspace>) => workspace.select("B")],
+    ["清空当前选择", (workspace: ReturnType<typeof useWorkspace>) => workspace.clearSelection()],
+    ["开始下一次操作并失败", (workspace: ReturnType<typeof useWorkspace>) => workspace.act(async () => { throw new Error("试测未完成"); })],
+  ])("上一次操作的成功提示 → %s时收起，不留在新的上下文里", async (_label, next) => {
+    const { result } = await open();
+    await act(() => result.current.act(async () => workspaceView(), "已提交发布，将在工件边界生效"));
+    expect(screen.getByRole("status")).toHaveTextContent("已提交发布，将在工件边界生效");
+    await act(async () => { await next(result.current); });
+    await waitFor(() => expect(screen.getByRole("status")).toBeEmptyDOMElement());
+  });
+
   it("刷新请求发出后用户开始编辑，也不能覆盖草稿", async () => {
     const { result } = await open(), refresh = deferred<WorkspaceView>();
     vi.mocked(workspaceApi.get).mockReturnValue(refresh.promise);
