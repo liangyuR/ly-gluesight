@@ -1,4 +1,5 @@
 import { useLocation, useNavigate, type Location } from "react-router-dom";
+import { Button } from "qing-steel";
 
 /** 从工作台跳到相机、工位标定、PLC 等页面时带上的返回上下文。 */
 export interface ReturnTarget { pathname: string; search: string; label: string; state?: unknown }
@@ -13,5 +14,5 @@ export function ReturnButton({ disabled, hint, guard }: { disabled?: boolean; hi
   const target = (location.state as ReturnNavigationState | null)?.returnTo;
   if (!target) return null;
   const go = () => navigate({ pathname: target.pathname, search: target.search }, { state: target.state });
-  return <div className="dev-bar"><button className="btn primary" disabled={disabled} onClick={() => guard ? guard(go) : go()}>返回{target.label}</button>{hint && <span className="muted">{hint}</span>}</div>;
+  return <div className="dev-bar"><Button variant="filled" disabled={disabled} onClick={() => guard ? guard(go) : go()}>返回{target.label}</Button>{hint && <span className="muted">{hint}</span>}</div>;
 }

@@ -1,6 +1,7 @@
 import { errorText } from "../../lib/errors";
 import { useEffect, useRef, useState } from "react";
 import { Upload } from "lucide-react";
+import { Button } from "qing-steel";
 
 export function validateImageFile(file: File): void {
   if (!/\.(png|jpe?g|pgm|bmp|tiff?)$/i.test(file.name)) throw new Error("请选择 PNG、JPEG、PGM、BMP 或 TIFF 原图");
@@ -48,7 +49,7 @@ export default function ImageImportButton({ scope, disabled, onImport, onError, 
     finally { if(request===serial.current){pending.current = false;report(false);if (current.current.alive) setReading(false);} }
   };
   return <>
-    <button type="button" className="btn" disabled={disabled || reading} onClick={() => input.current?.click()}><Upload size={15}/>{reading ? "正在导入…" : label}</button>
+    <Button leadingIcon={<Upload size={15}/>} disabled={disabled || reading} onClick={() => input.current?.click()}>{reading ? "正在导入…" : label}</Button>
     <input ref={input} aria-label={label} type="file" hidden accept=".png,.jpg,.jpeg,.pgm,.bmp,.tif,.tiff" disabled={disabled || reading}
       onChange={e => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void importFile(file); }}/>
   </>;

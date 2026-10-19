@@ -1,5 +1,6 @@
 import { Link, useLocation } from "react-router-dom";
 import { AlertTriangle, ArrowRight, History, Lock } from "lucide-react";
+import { Progress } from "qing-steel";
 import { useWorkspace } from "./context";
 import { Badge, Panel, Steps, WorkspaceBar, WorkspaceEmpty } from "./components";
 import { stepStatusText, stepStatusTone, targetPath } from "./progress";
@@ -36,7 +37,7 @@ export default function ProgressPage() {
         <strong>{nextStep?.detail || "继续完成当前候选配置"}</strong>
         {reasons.length > 0 && <ul>{reasons.map(reason => <li key={reason}>{reason}</li>)}</ul>}
       </div>
-      <Link className="btn primary" to={next.href} state={back}>{next.label}<ArrowRight size={15} aria-hidden="true"/></Link>
+      <Link className="qs-btn" to={next.href} state={back}>{next.label}<ArrowRight size={15} aria-hidden="true"/></Link>
     </section>}
     <div className="wp-progress-list">{stages.map((stage, index) => {
       const status = stageStatus(progress, stage, tasks);
@@ -53,7 +54,7 @@ export default function ProgressPage() {
           {!waiting && subs.map(step => <p key={step.id} className="wp-progress-sub"><span>{subLabels[step.id] ?? step.label}</span><Badge tone={stepStatusTone[step.status]}>{stepStatusText[step.status]}</Badge>{step.detail}</p>)}
         </div>
         <div className="wp-progress-meter">{isTeach && <>
-          <div className="wp-progress-bar" aria-hidden="true"><span style={{ transform: `scaleX(${tasks.length ? completed / tasks.length : 0})` }}/></div>
+          <Progress label="示教进度" value={completed} max={Math.max(1, tasks.length)} />
           <output aria-label="有效示教组数">{completed} / {tasks.length} 组有效</output>
         </>}</div>
         <output className="wp-progress-state" aria-label={stage.label + "状态"}>{waiting ? <Badge tone="neutral"><Lock size={12} aria-hidden="true"/>{stageStatusText.waiting}</Badge> : status !== "optional" && <Badge tone={status ? stageStatusTone[status] : "neutral"}>{status ? stageStatusText[status] : "状态待确认"}</Badge>}</output>
