@@ -180,6 +180,8 @@ impl PlcSession {
 
     pub fn result(&self) -> Option<&ResultEnvelope> { self.journal.pending.as_ref().and_then(|p| p.result.as_ref()) }
 
+    pub fn started_at(&self) -> Option<i64> { self.journal.pending.as_ref().map(|p| p.started_at).filter(|ts| *ts > 0) }
+
     pub fn phase(&self) -> SessionPhase { self.phase }
 
     pub fn view(&self) -> SessionView {
