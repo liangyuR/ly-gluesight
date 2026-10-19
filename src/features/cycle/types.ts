@@ -243,6 +243,14 @@ export interface Snapshot {
   stats: { total: number; ok: number; ng: number; err: number };
   strayFrames: number;
   alarms: string[];
+  recordingAlarm?: RecordingAlarm | null;
+}
+
+export interface RecordingAlarm {
+  consecutive: number;
+  cycleId: string;
+  reason: string;
+  since: number;
 }
 
 export interface LogLine {

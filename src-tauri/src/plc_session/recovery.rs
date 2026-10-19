@@ -170,7 +170,9 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::*;
-    use crate::plc_session::{Journal, SessionPhase};
+    use crate::plc_session::{Journal, PartSite, SessionPhase};
+    use crate::settings::RecordMode;
+    use crate::store::RecordSource;
 
     const CYCLE_A: &str = "11111111111111111111111111111111";
     const CYCLE_B: &str = "22222222222222222222222222222222";
@@ -222,7 +224,7 @@ mod tests {
         Pending { capture_id: None, request: Request { protocol_version: crate::handshake::PROTOCOL_VERSION, request_seq, sn: format!("SN-{sn}"), product_code: 1,
             shot_count: 4, plan_version: 7, device_shots: 4 },
             result: Some(ResultEnvelope { request_seq, sn: format!("SN-{sn}"), result_code: 1, fault_code: 0 }),
-            phase: SessionPhase::Releasing, cycle_id: Some(cycle_id.into()), acknowledged: true, started_at: 1000 }
+            phase: SessionPhase::Releasing, cycle_id: Some(cycle_id.into()), acknowledged: true, started_at: 1000, site: None }
     }
 
     fn record(pending: &Pending, ts: i64) -> Value {
@@ -263,18 +265,20 @@ mod tests {
         request.phase = SessionPhase::Validating;
         files.journal(Some(request));
         let original = std::fs::read(&files.path).unwrap();
+        let site = PartSite { source: RecordSource::OfflineSample, record: RecordMode::All };
         let mut session = files.open();
-        assert!(session.bind_cycle_id("bad-id").is_err());
-        session.bind_cycle_id(CYCLE_A).unwrap();
-        session.bind_cycle_id(CYCLE_A).unwrap();
-        assert!(session.bind_cycle_id(CYCLE_B).is_err());
-        assert_eq!(session.cycle_id(), Some(CYCLE_A));
+        assert!(session.bind_cycle_id("bad-id", site).is_err());
+        session.bind_cycle_id(CYCLE_A, site).unwrap();
+        session.bind_cycle_id(CYCLE_A, PartSite::default()).unwrap();
+        assert!(session.bind_cycle_id(CYCLE_B, site).is_err());
+        assert_eq!((session.cycle_id(), session.site()), (Some(CYCLE_A), Some(site)));
         assert_eq!(std::fs::read(&files.path).unwrap(), original);
         files.write(&serde_json::to_vec(&session.journal).unwrap());
         drop(session);
-        assert_eq!(files.open().cycle_id(), Some(CYCLE_A));
+        let reopened = files.open();
+        assert_eq!((reopened.cycle_id(), reopened.site()), (Some(CYCLE_A), Some(site)), "重启后补记录要靠握手日志里的开工场景，不能依赖不落盘的运行日志");
         files.journal(None);
-        assert!(files.open().bind_cycle_id(CYCLE_A).is_err());
+        assert!(files.open().bind_cycle_id(CYCLE_A, site).is_err());
     }
 
     #[test]
