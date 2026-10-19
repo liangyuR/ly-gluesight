@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
+import { FormField, NumberField, Select, Switch, TextField } from "qing-steel";
 import type { DetectParams, JudgeParams, Polarity, RecipeDoc, ShotLimits } from "../../cycle/types";
 
 interface Props {
@@ -6,6 +7,7 @@ interface Props {
   /** 已发布的生产配方；给出时标出与它不同的字段 */
   production?: RecipeDoc | null;
   onDraftChange?: (doc: RecipeDoc) => void;
+  disabled?: boolean;
 }
 
 const paramFields: [keyof JudgeParams, string, string][] = [
@@ -22,7 +24,6 @@ export const defaultPosition: JudgeParams = { nominal: 0, tolUpper: 2, tolLower:
 export const defaultWidth: JudgeParams = { nominal: 4, tolUpper: 1.5, tolLower: 1.5, absMin: 1, absMax: 8, maxExcursionLen: 5 };
 
 const polarityLabel: Record<Polarity, string> = { dark: "暗胶条（比背景暗）", light: "亮胶条（比背景亮）" };
-const parse = (value: string) => (value === "" ? NaN : Number(value));
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const fixed = (v: number) => Number.isFinite(v) ? String(Math.round(v * 100) / 100) : "—";
 
@@ -37,22 +38,16 @@ export function changedFields(doc: RecipeDoc, production: RecipeDoc | null | und
   return new Set(compared.filter(([, get]) => !same(get(doc), get(production))).map(([key]) => key));
 }
 
-function Field({ label, changed, hint, wide, children }: { label: string; changed?: boolean; hint?: string; wide?: boolean; children: ReactNode }) {
+function Field({ id, label, changed, hint, wide, children }: { id?: string; label: string; changed?: boolean; hint?: string; wide?: boolean; children: ReactNode }) {
   return (
-    <label className={"rcp-field" + (wide ? " wide" : "") + (changed ? " changed" : "")} title={hint}>
-      <span>{label}{changed && <i className="rcp-changed" title="与生产配方不同" />}</span>
+    <FormField id={id} className={"rcp-field" + (wide ? " wide" : "") + (changed ? " changed" : "")} label={<span title={hint}>{label}{changed && <i className="rcp-changed" title="与生产配方不同" />}</span>}>
       {children}
-    </label>
+    </FormField>
   );
 }
 
-function Num({ value, onChange, unit, step = 0.1, aria }: { value: number; onChange: (v: number) => void; unit?: string; step?: number; aria: string }) {
-  return (
-    <span className="rcp-num">
-      <input className="input mono" aria-label={aria} type="number" step={step} value={Number.isFinite(value) ? value : ""} onChange={(e) => onChange(parse(e.target.value))} />
-      {unit && <small>{unit}</small>}
-    </span>
-  );
+function Num({ id, value, onChange, unit, step = 0.1, aria }: { id?: string; value: number; onChange: (v: number) => void; unit?: string; step?: number; aria: string }) {
+  return <NumberField id={id} aria-label={aria} unit={unit} step={step} value={Number.isFinite(value) ? value : ""} onValueChange={(v) => onChange(v === "" ? NaN : v)} />;
 }
 
 function Section({ title, children, extra }: { title: string; children: ReactNode; extra?: ReactNode }) {
@@ -70,12 +65,12 @@ function LimitsEditor({ value, changed, onChange }: { value: ShotLimits; changed
     return (
       <tr key={kind} className={p ? "" : "off"}>
         <th scope="row"><span className="rcp-rowhead">
-          <button type="button" role="switch" className="rcp-switch" aria-checked={!!p} aria-label={`${name}判定`} onClick={() => onChange({ ...value, [kind]: p ? null : { ...fallback } })} />
-          {name}{changed.has(kind) && <i className="rcp-changed" title="与生产配方不同" />}
+          <Switch label={name} aria-label={`${name}判定`} checked={!!p} onCheckedChange={(on) => onChange({ ...value, [kind]: on ? { ...fallback } : null })} />
+          {changed.has(kind) && <i className="rcp-changed" title="与生产配方不同" />}
         </span></th>
         {p ? <>
           {paramFields.map(([k, field]) => (
-            <td key={k}><input aria-label={`${name} · ${field}`} className="input mono" type="number" step={0.05} value={Number.isFinite(p[k]) ? p[k] : ""} onChange={(e) => onChange({ ...value, [kind]: { ...p, [k]: parse(e.target.value) } })} /></td>
+            <td key={k}><Num aria={`${name} · ${field}`} step={0.05} value={p[k]} onChange={(v) => onChange({ ...value, [kind]: { ...p, [k]: v } })} /></td>
           ))}
           <td className="rcp-band">{fixed(p.nominal - p.tolLower)} ~ {fixed(p.nominal + p.tolUpper)}</td>
         </> : <td colSpan={paramFields.length + 1} className="muted">不判{name}</td>}
@@ -108,25 +103,24 @@ function LimitsEditor({ value, changed, onChange }: { value: ShotLimits; changed
   );
 }
 
-function DetectEditor({ value, changed, onChange }: { value: DetectParams; changed: Set<string>; onChange: (v: DetectParams) => void }) {
+function DetectEditor({ value, changed, disabled, onChange }: { value: DetectParams; changed: Set<string>; disabled?: boolean; onChange: (v: DetectParams) => void }) {
   const [lo, hi] = value.widthRange;
+  const loId = useId(), hiId = useId();
   return (
     <div className="rcp-grid">
       <Field label="搜索半宽" changed={changed.has("searchMm")} hint="沿中线法向找胶的半宽，要盖住机器人与工件带来的偏差"><Num aria="搜索半宽（mm）" unit="mm" value={value.searchMm} onChange={(searchMm) => onChange({ ...value, searchMm })} /></Field>
       <Field label="极性" changed={changed.has("polarity")}>
-        <select className="input" aria-label="极性" value={value.polarity} onChange={(e) => onChange({ ...value, polarity: e.target.value as Polarity })}>
-          {(Object.keys(polarityLabel) as Polarity[]).map((p) => <option key={p} value={p}>{polarityLabel[p]}</option>)}
-        </select>
+        <Select aria-label="极性" disabled={disabled} value={value.polarity} options={(Object.keys(polarityLabel) as Polarity[]).map((p) => ({ value: p, label: polarityLabel[p] }))} onValueChange={(polarity) => onChange({ ...value, polarity: polarity as Polarity })} />
       </Field>
-      <Field label="胶宽范围" wide changed={changed.has("widthRange")} hint="范围外的不当作胶；上限要小于搜索宽度（搜索半宽的两倍）">
-        <span className="rcp-range"><Num aria="胶宽下限（mm）" value={lo} onChange={(v) => onChange({ ...value, widthRange: [v, hi] })} /><small>–</small><Num aria="胶宽上限（mm）" unit="mm" value={hi} onChange={(v) => onChange({ ...value, widthRange: [lo, v] })} /></span>
+      <Field id={loId} label="胶宽范围" wide changed={changed.has("widthRange")} hint="范围外的不当作胶；上限要小于搜索宽度（搜索半宽的两倍）">
+        <span className="rcp-range"><Num id={loId} aria="胶宽下限（mm）" value={lo} onChange={(v) => onChange({ ...value, widthRange: [v, hi] })} /><small>–</small><Num id={hiId} aria="胶宽上限（mm）" unit="mm" value={hi} onChange={(v) => onChange({ ...value, widthRange: [lo, v] })} /></span>
       </Field>
     </div>
   );
 }
 
 /** 配方默认检测与判定参数；修改即时交给 onDraftChange，由工作台自动保存为候选配置。 */
-export default function RecipeEditor({ initial, production, onDraftChange }: Props) {
+export default function RecipeEditor({ initial, production, onDraftChange, disabled }: Props) {
   const [doc, setDoc] = useState<RecipeDoc>(initial);
   useEffect(() => { onDraftChange?.(doc); }, [doc, onDraftChange]);
   const set = <K extends keyof RecipeDoc>(k: K, v: RecipeDoc[K]) => setDoc((previous) => ({ ...previous, [k]: v }));
@@ -138,8 +132,8 @@ export default function RecipeEditor({ initial, production, onDraftChange }: Pro
       <details className="rcp-section rcp-identity" open={identityChanged || undefined}>
         <summary><h4 className="sub-title">配方信息{identityChanged && <i className="rcp-changed" title="与生产配方不同" />}</h4><span className="muted">{doc.id} · {doc.name} · 产品代码 {doc.productCode}</span></summary>
         <div className="rcp-grid">
-          <Field label="配方编号"><input className="input mono" aria-label="配方编号" value={doc.id} readOnly disabled /></Field>
-          <Field label="名称" changed={changed.has("name")}><input className="input" aria-label="名称" value={doc.name} onChange={(e) => set("name", e.target.value)} /></Field>
+          <Field label="配方编号"><TextField className="mono" aria-label="配方编号" value={doc.id} readOnly disabled /></Field>
+          <Field label="名称" changed={changed.has("name")}><TextField aria-label="名称" value={doc.name} onChange={(e) => set("name", e.target.value)} /></Field>
           <Field label="产品代码（PLC 下发）" changed={changed.has("productCode")}><Num aria="产品代码（PLC 下发）" step={1} value={doc.productCode} onChange={(v) => set("productCode", v)} /></Field>
         </div>
       </details>
@@ -147,10 +141,7 @@ export default function RecipeEditor({ initial, production, onDraftChange }: Pro
       <Section title="采样">
         <div className="rcp-grid">
           <Field label="触发方式" wide changed={changed.has("triggerMode")}>
-            <select className="input" aria-label="触发方式" value={doc.triggerMode} onChange={(e) => set("triggerMode", e.target.value as RecipeDoc["triggerMode"])}>
-              <option value="fly">飞拍（位置比较触发）</option>
-              <option value="stop">停稳拍</option>
-            </select>
+            <Select aria-label="触发方式" disabled={disabled} value={doc.triggerMode} options={[{ value: "fly", label: "飞拍（位置比较触发）" }, { value: "stop", label: "停稳拍" }]} onValueChange={(mode) => set("triggerMode", mode as RecipeDoc["triggerMode"])} />
           </Field>
           <Field label="站距" changed={changed.has("spacing")} hint="沿示教中线每隔这个距离量一站"><Num aria="站距（mm）" unit="mm" value={doc.spacing} onChange={(v) => set("spacing", v)} /></Field>
           <Field label="中值滤波窗口" changed={changed.has("filterWindow")} hint="1–31 的奇数"><Num aria="中值滤波窗口（点，奇数）" unit="点" step={2} value={doc.filterWindow} onChange={(v) => set("filterWindow", v)} /></Field>
@@ -158,7 +149,7 @@ export default function RecipeEditor({ initial, production, onDraftChange }: Pro
       </Section>
 
       <Section title="检测" extra="拍照点没单独设置时使用；改检测参数后需重新试测">
-        <DetectEditor value={doc.detect} changed={changed} onChange={(v) => set("detect", v)} />
+        <DetectEditor value={doc.detect} changed={changed} disabled={disabled} onChange={(v) => set("detect", v)} />
       </Section>
 
       <Section title="判定" extra="单位 mm；连续超出公差带超过允许超差长度判 NG，超出绝对限直接 NG">

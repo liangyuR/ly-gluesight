@@ -3,6 +3,7 @@ import { errorText } from "../../lib/errors";
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ArrowRight, Brush, Camera, Eraser, Play, Save, Trash2, Undo2, WandSparkles } from "lucide-react";
+import { Button, Divider, EmptyState, IconButton, NumberField, Progress, SegmentedControl, Slider, Surface } from "qing-steel";
 import { verdictLabel } from "../history";
 import { useCycle } from "../cycle/api";
 import { pathLength, shotSegment } from "../cycle/vis";
@@ -115,7 +116,7 @@ export default function TeachingPage() {
     });
   }, [defaultScope, doc, data, busy, dirty, frameDirty, working]);
   if (!data || !doc) return <WorkspaceEmpty />;
-  if (!frame || !shot) return <div className="wp-page"><WorkspaceBar /><Steps /><div className="wp-empty"><Camera size={32} aria-hidden="true" /><h2>当前配方还没有拍照点</h2><p>拍照点由整圈采集生成。完成一圈采集并采用本轮图像后，在这里逐组选图并示教中线。</p><Link className="btn primary" to="/recipe/capture">前往整圈采集<ArrowRight size={15} aria-hidden="true" /></Link></div></div>;
+  if (!frame || !shot) return <div className="wp-page"><WorkspaceBar /><Steps /><Surface><EmptyState icon={<Camera size={32} aria-hidden="true" />} title="当前配方还没有拍照点" description="拍照点由整圈采集生成。完成一圈采集并采用本轮图像后，在这里逐组选图并示教中线。" action={<Link className="qs-btn" to="/recipe/capture">前往整圈采集<ArrowRight size={15} aria-hidden="true" /></Link>} /></Surface></div>;
   const saved = shotTeach(shot);
   const imagingHint = imagingMismatch(frame.image, data.workspace.doc);
   const t = frameDrafts[k] ?? saved;
@@ -243,35 +244,35 @@ export default function TeachingPage() {
   const groupTone = (item: typeof groups[number]) => item.complete ? "ok" : item.choice ? "warn" : "off";
   const toolHint = extractionHint || (regionMode ? selectionTool === "brush" ? "按住左键沿胶路从起点刷到终点，每笔重画选区；笔刷覆盖胶路和两侧少量背景，尽量避开阴影。" : "按住左键框选一段连续胶路，再自动提取中线；框选包含阴影时建议改用刷选。" : "");
   const tools = <div className="wp-canvas-tools" role="group" aria-label="示教工具">
-    <button className={"btn small" + (regionMode ? " active" : "")} aria-pressed={regionMode} disabled={!unlocked || !frame.image} onClick={() => setRegionMode(v => !v)}><Brush size={14}/>{regionMode ? "结束选区 / 手工修正" : "刷选胶路区域"}</button>
-    <select className="input" aria-label="选区工具" value={selectionTool} disabled={!unlocked} onChange={e => { setSelectionTool(e.target.value as "brush" | "box"); setRegionMode(true); setExtractionFailure(null); setExtractionHint(""); setBrushFailures(0); }}><option value="brush">沿胶路刷选</option><option value="box">矩形框选</option></select>
-    <button className={"btn small" + (primary === "extract" ? " primary" : "")} disabled={!unlocked || !frame.image || loading || !!error} onClick={() => void extract()}><WandSparkles size={14}/>{operation === "extract" ? "提取中…" : "自动提取中线"}</button>
-    <button className={"btn small" + (primary === "stroke" ? " primary" : "")} title={selectionTool !== "brush" ? "仅刷选时可用" : !strokeValid ? "先沿胶路刷过至少 8 px" : "按笔划生成中线草稿"} disabled={!unlocked || !enabled || !frame.image || selectionTool !== "brush" || !strokeValid || !spacingValid} onClick={fromStroke}>笔划直接生成中线</button>
-    <span className="wp-canvas-sep" aria-hidden="true"/>
-    <button className="icon-btn" aria-label="删除末点" title="删除末点" disabled={!unlocked || !enabled || !t.path.length} onClick={() => { setVertex(null); setPath(t.path.slice(0, -1)); }}><Undo2 size={15}/></button>
-    <button className="icon-btn" aria-label="删除选中点" title="删除选中点" disabled={!unlocked || !enabled || vertex === null || vertex >= t.path.length} onClick={() => { const i = vertex; setVertex(null); setPath(t.path.filter((_, j) => j !== i)); }}><Trash2 size={15}/></button>
-    <button className="icon-btn" aria-label="清空中线" title="清空中线" disabled={!unlocked || !enabled || !t.path.length} onClick={() => { setVertex(null); setPath([]); }}><Eraser size={15}/></button>
+    <Button size="sm" aria-pressed={regionMode} leadingIcon={<Brush size={14}/>} disabled={!unlocked || !frame.image} onClick={() => setRegionMode(v => !v)}>{regionMode ? "结束选区 / 手工修正" : "刷选胶路区域"}</Button>
+    <SegmentedControl size="sm" label="选区工具" value={selectionTool} disabled={!unlocked} options={[{ value: "brush", label: "沿胶路刷选" }, { value: "box", label: "矩形框选" }]} onValueChange={value => { if (value === selectionTool) return; setSelectionTool(value as "brush" | "box"); setRegionMode(true); setExtractionFailure(null); setExtractionHint(""); setBrushFailures(0); }}/>
+    <Button size="sm" variant={primary === "extract" ? "filled" : "tonal"} leadingIcon={<WandSparkles size={14}/>} disabled={!unlocked || !frame.image || loading || !!error} onClick={() => void extract()}>{operation === "extract" ? "提取中…" : "自动提取中线"}</Button>
+    <Button size="sm" variant={primary === "stroke" ? "filled" : "tonal"} title={selectionTool !== "brush" ? "仅刷选时可用" : !strokeValid ? "先沿胶路刷过至少 8 px" : "按笔划生成中线草稿"} disabled={!unlocked || !enabled || !frame.image || selectionTool !== "brush" || !strokeValid || !spacingValid} onClick={fromStroke}>笔划直接生成中线</Button>
+    <Divider vertical/>
+    <IconButton aria-label="删除末点" title="删除末点" disabled={!unlocked || !enabled || !t.path.length} onClick={() => { setVertex(null); setPath(t.path.slice(0, -1)); }}><Undo2 size={15}/></IconButton>
+    <IconButton aria-label="删除选中点" title="删除选中点" disabled={!unlocked || !enabled || vertex === null || vertex >= t.path.length} onClick={() => { const i = vertex; setVertex(null); setPath(t.path.filter((_, j) => j !== i)); }}><Trash2 size={15}/></IconButton>
+    <IconButton aria-label="清空中线" title="清空中线" disabled={!unlocked || !enabled || !t.path.length} onClick={() => { setVertex(null); setPath([]); }}><Eraser size={15}/></IconButton>
   </div>;
   const params = <div className="wp-canvas-params">
-    {selectionTool === "brush" && <label className="wp-inline-num">笔刷<input className="input mono" type="number" aria-label="笔刷宽度" min={6} max={300} step={2} value={Number.isFinite(brushWidth) ? brushWidth : ""} disabled={!unlocked} onChange={e => changeBrushWidth(e.target.value === "" ? NaN : Number(e.target.value))}/><small>px</small>
-      <input className="wp-brush-width-slider" type="range" aria-label="拖动调整笔刷宽度" min={6} max={300} step={2} value={Number.isFinite(brushWidth) ? Math.min(300, Math.max(6, brushWidth)) : DEFAULT_BRUSH_PX} disabled={!unlocked} onChange={event => changeBrushWidth(Number(event.target.value))}/></label>}
-    <label className="wp-inline-num" title={`检测站距 ${doc.spacing} mm；编辑点按目标最大间距调整，转弯处保留点`}>点间距<input className="input mono" type="number" aria-label="中线点间距" min={4} max={80} step={2} value={Number.isFinite(pointSpacing) ? pointSpacing : ""} disabled={!unlocked} onChange={e => setPointSpacing(e.target.value === "" ? NaN : Number(e.target.value))}/><small>px</small></label>
-    <button className="btn small" disabled={!unlocked || !spacingValid || t.path.length < 2} onClick={() => { setVertex(null); setPath(resampleTeachingPath(t.path, pointSpacing)); }}>应用到当前中线</button>
+    {selectionTool === "brush" && <span className="wp-inline-num">笔刷<NumberField aria-label="笔刷宽度" unit="px" min={6} max={300} step={2} value={Number.isFinite(brushWidth) ? brushWidth : ""} disabled={!unlocked} onValueChange={value => changeBrushWidth(value === "" ? NaN : value)}/>
+      <Slider className="wp-brush-width" label="拖动调整笔刷宽度" min={6} max={300} step={2} value={Number.isFinite(brushWidth) ? Math.min(300, Math.max(6, brushWidth)) : DEFAULT_BRUSH_PX} disabled={!unlocked} formatValue={value => value + " px"} onValueChange={changeBrushWidth}/></span>}
+    <span className="wp-inline-num" title={`检测站距 ${doc.spacing} mm；编辑点按目标最大间距调整，转弯处保留点`}>点间距<NumberField aria-label="中线点间距" unit="px" min={4} max={80} step={2} value={Number.isFinite(pointSpacing) ? pointSpacing : ""} disabled={!unlocked} onValueChange={value => setPointSpacing(value === "" ? NaN : value)}/></span>
+    <Button size="sm" disabled={!unlocked || !spacingValid || t.path.length < 2} onClick={() => { setVertex(null); setPath(resampleTeachingPath(t.path, pointSpacing)); }}>应用到当前中线</Button>
     {toolHint && <p className="wp-canvas-hint" role="status">{toolHint}</p>}
   </div>;
   return <div className="wp-page"><WorkspaceBar /><Steps />
-    <div className="wp-teach-summary"><strong>单帧示教</strong><span className="muted">已完成 {completedGroups}／{groups.length} 组 · 每组示教一张图</span><span className="wp-teach-meter" aria-hidden="true"><span style={{ transform: `scaleX(${groups.length ? completedGroups / groups.length : 0})` }}/></span></div>
+    <div className="wp-teach-summary"><strong>单帧示教</strong><span className="muted">已完成 {completedGroups}／{groups.length} 组 · 每组示教一张图</span><Progress label="示教完成组数" value={completedGroups} max={Math.max(1, groups.length)}/></div>
     <div className="wp-teach">
-      <section className="panel wp-group-panel" aria-label="拍照组"><h2>拍照组 <small>{groups.length}</small></h2><nav className="wp-group-list" aria-label="拍照组选择">{groups.map((item,index) => <button key={item.poseId} className={"wp-group-item" + (index === groupIndex ? " selected" : "")} aria-label={"选择拍照组 " + item.poseId} aria-pressed={index === groupIndex} disabled={!unlocked || editing || frameDirty} title={item.choice ? doc.shots[item.choice.k].camera + " · 图 " + item.choice.view : "未选定检测图"} onClick={() => selectGroup(index)}>
+      <Surface role="region" className="wp-group-panel" aria-label="拍照组"><h2>拍照组 <small>{groups.length}</small></h2><nav className="wp-group-list" aria-label="拍照组选择">{groups.map((item,index) => <button key={item.poseId} className={"wp-group-item" + (index === groupIndex ? " selected" : "")} aria-label={"选择拍照组 " + item.poseId} aria-pressed={index === groupIndex} disabled={!unlocked || editing || frameDirty} title={item.choice ? doc.shots[item.choice.k].camera + " · 图 " + item.choice.view : "未选定检测图"} onClick={() => selectGroup(index)}>
         <i className={"dot " + groupTone(item)} aria-hidden="true"/><strong>{item.poseId}</strong><span>{item.status}</span>
-      </button>)}</nav></section>
-      <div className="wp-stack"><section className="panel wp-image-picker" aria-label="本组检测图选择">
+      </button>)}</nav></Surface>
+      <div className="wp-stack"><Surface role="region" className="wp-image-picker" aria-label="本组检测图选择">
         <div className="wp-image-picker-bar"><h2>{group.poseId}<span>检测图</span></h2>
           <div className="wp-group-images" role="group" aria-label="本组图像">{group.members.flatMap(member => data.workspace.frames[member].views.map(view => <FrozenViewOption key={view.id} id={doc.id} metadata={view} selected={group.choice?.k === member && group.choice.view === view.view} disabled={!unlocked || editing || frameDirty} onSelect={() => void selectImage(member,view.view)} />))}</div>
-          <Link className={viewState === "recapture" ? "btn small" : "wp-text-link"} to="/recipe/capture">重新采集</Link>
+          <Link className={viewState === "recapture" ? "qs-btn tonal sm" : "wp-text-link"} to="/recipe/capture">重新采集</Link>
         </div>
         {group.selected.length > 1 && <p className="c-warn" role="alert">本组原先选择了多张图，请重新选择一张作为检测图。</p>}
-      </section>
+      </Surface>
       {enabled ? <Panel title={shot.camera + " · 中线示教"} className="wp-teach-panel" actions={<div className="wp-teach-flow"><ol aria-label="示教进度">{flow.map(([label, done], i) => <li key={label} className={done ? "done" : i === flowAt ? "current" : ""}>{label}</li>)}</ol><Badge tone={stateTone}>{stateText}</Badge></div>}>
         <GrayViewer image={image} loading={loading} error={error} label={frame.image ? group.poseId + " · " + shot.camera + " · 图 " + shot.view : "等待取样"} tools={tools} subtools={params} emptyTitle="本组检测图尚未就绪" emptyHint="整圈采集并采用本轮图像后，这里显示本组检测图。"
           region={selectionTool === "box" ? region : null} onRegion={regionMode && selectionTool === "box" && unlocked && enabled ? setRegion : undefined}
@@ -291,15 +292,15 @@ export default function TeachingPage() {
           {trialFresh && <span className="wp-trial-legend muted"><i className="ok"/>有效胶宽<i className="ng"/>未通过 / 无候选</span>}
         </div>
         {viewState === "trialFailed" && !editing && <Notice title="试测异常" tone="warn">{trial?.reason}</Notice>}
-        {viewState === "recapture" && <Notice title="需重新采集" tone="warn">{viewProgress?.hint} <Link className="btn small" to="/recipe/capture">整圈重新采集</Link></Notice>}
+        {viewState === "recapture" && <Notice title="需重新采集" tone="warn">{viewProgress?.hint} <Link className="qs-btn tonal sm" to="/recipe/capture">整圈重新采集</Link></Notice>}
         {productionBusy && <p className="muted hint">工件正在检测，当前可编辑已保存图像；重采需等待工件结束。</p>}
         {points && <TrialResult points={points} />}
         <div className="wp-teach-actions" role="group" aria-label="单帧示教操作">
-          <button className={"btn" + (primary === "trial" ? " primary" : "")} disabled={!canTrial} title={trialDisabledReason || "保存当前参数，对本图运行一次检测算法"} onClick={() => void saveAndTrial()}><Play size={15}/>{operation === "trial" ? "计算中…" : "运行试测"}</button>
+          <Button variant={primary === "trial" ? "filled" : "tonal"} leadingIcon={<Play size={15}/>} disabled={!canTrial} title={trialDisabledReason || "保存当前参数，对本图运行一次检测算法"} onClick={() => void saveAndTrial()}>{operation === "trial" ? "计算中…" : "运行试测"}</Button>
           {hint && <span className="muted">{hint}</span>}
           <span className="spacer"/>
-          <button className={"btn" + (primary === "save" && !nextGroup ? " primary" : "")} disabled={!unlocked || !enabled || !trialCurrent || viewState === "taught"} onClick={() => void save()}><Save size={15}/>保存本组示教</button>
-          <button className={"btn" + (primary === "save" && nextGroup ? " primary" : "")} disabled={!unlocked || !enabled || !trialCurrent || !nextGroup} onClick={() => void save(true)}>保存并进入下一组</button>
+          <Button variant={primary === "save" && !nextGroup ? "filled" : "tonal"} leadingIcon={<Save size={15}/>} disabled={!unlocked || !enabled || !trialCurrent || viewState === "taught"} onClick={() => void save()}>保存本组示教</Button>
+          <Button variant={primary === "save" && nextGroup ? "filled" : "tonal"} disabled={!unlocked || !enabled || !trialCurrent || !nextGroup} onClick={() => void save(true)}>保存并进入下一组</Button>
         </div>
       </Panel> : <Notice title="选择本组检测图">点击上方一张图开始示教，每组只需完成这一张。</Notice>}</div>
       {enabled && <div className="wp-stack wp-teach-settings"><TeachingSettings key={scope} teach={t} savedMmPerPx={saved.mmPerPx} defaults={defaults} defaultLimits={doc.limits} calibration={calibration} disabled={!unlocked} editing={editing} onChange={update}

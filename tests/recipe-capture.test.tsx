@@ -92,16 +92,17 @@ it.each([
 ])("%s",async(_,captureId,primary,secondary)=>{
  ws.data!.workspace.captureId=captureId;vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show("/recipe/capture?purpose=validation");
  await screen.findByRole("region",{name:"设备准备"});
- expect(screen.getByRole("button",{name:primary})).toHaveClass("primary");
- expect(screen.getByRole("button",{name:secondary})).not.toHaveClass("primary");
+ expect(screen.getByRole("button",{name:primary})).not.toHaveClass("tonal");
+ expect(screen.getByRole("button",{name:secondary})).toHaveClass("tonal");
 });
 
 it("本轮已采用为示教图像 → 标明已采用，主操作改为进入单帧示教，采用按钮禁用且不再提供带入草稿",async()=>{
  ws.data!.workspace.captureId="r1";vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show();
  expect(await screen.findByText(/已采用为示教图像/)).toBeVisible();
- expect(screen.getByRole("link",{name:"进入单帧示教"})).toHaveClass("primary");
+ const enter=screen.getByRole("link",{name:"进入单帧示教"});
+ expect(enter).toHaveClass("qs-btn");expect(enter).not.toHaveClass("tonal");
  const adopt=screen.getByRole("button",{name:"采用本轮图像"});
- expect(adopt).toBeDisabled();expect(adopt).not.toHaveClass("primary");
+ expect(adopt).toBeDisabled();expect(adopt).toHaveClass("tonal");
  expect(screen.queryByRole("checkbox",{name:"带入旧中线与参数作为草稿"})).toBeNull();
 });
 

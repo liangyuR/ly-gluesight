@@ -384,7 +384,9 @@ it("自动提取失败后按笔划生成 → 定位原因并保留原线，人�
   expect(screen.getByText(failure.message, { selector: '[role="status"]' })).toBeVisible();
   expect(image.querySelector(`polyline[points="${originalPoints}"]`)).not.toBeNull();
   expect(screen.getByLabelText("刷选胶路区域").querySelector("polyline")).toHaveAttribute("points", "10,20 40,20 40,50");
-  fireEvent.change(screen.getByRole("slider", { name: "拖动调整笔刷宽度" }), { target: { value: "60" } });
+  const slider = screen.getByRole("slider", { name: "拖动调整笔刷宽度" });
+  for (let i = 0; i < 3; i++) fireEvent.keyDown(slider, { key: "PageDown" });
+  expect(slider).toHaveAttribute("aria-valuenow", "60");
   expect(screen.queryByLabelText("中线提取失败位置")).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "自动提取中线" }));
   await screen.findByLabelText("中线提取失败位置");
@@ -423,7 +425,7 @@ async function brushOnTaughtGroup() {
   const extract = screen.getByRole("button", { name: "自动提取中线" }), stroke = screen.getByRole("button", { name: "笔划直接生成中线" });
   const failOnce = async () => { await user.click(extract); await screen.findByLabelText("中线提取失败位置"); };
   const primaries = () => ["自动提取中线", "笔划直接生成中线", "运行试测", "保存本组示教", "保存并进入下一组"]
-    .map(name => screen.getByRole("button", { name })).filter(button => button.classList.contains("primary"));
+    .map(name => screen.getByRole("button", { name })).filter(button => !button.classList.contains("tonal"));
   return { stroke, failOnce, primaries };
 }
 
@@ -433,8 +435,10 @@ it("已有中线的组刷选提取连续两次找不到连续边缘 → 先提�
   expect(primaries()).toEqual([screen.getByRole("button", { name: "保存并进入下一组" })]);
   await failOnce();
   expect(screen.getByText(/可加大笔刷宽度（当前 120 px/)).toBeVisible();
-  expect(stroke).not.toHaveClass("primary");
-  fireEvent.change(screen.getByRole("slider", { name: "拖动调整笔刷宽度" }), { target: { value: "180" } });
+  expect(stroke).toHaveClass("tonal");
+  const slider = screen.getByRole("slider", { name: "拖动调整笔刷宽度" });
+  for (let i = 0; i < 3; i++) fireEvent.keyDown(slider, { key: "PageUp" });
+  expect(slider).toHaveAttribute("aria-valuenow", "180");
   await failOnce();
   expect(screen.getByText(/请点「笔划直接生成中线」/)).toBeVisible();
   expect(primaries()).toEqual([stroke]);
@@ -451,7 +455,7 @@ it("两次找不到连续边缘之间夹一次多条候选失败 → 不算连�
   await failOnce();
   expect(screen.getByText(/可加大笔刷宽度/)).toBeVisible();
   expect(screen.queryByText(/请点「笔划直接生成中线」/)).not.toBeInTheDocument();
-  expect(stroke).not.toHaveClass("primary");
+  expect(stroke).toHaveClass("tonal");
 });
 
 it("同组切换检测相机 → 原图取消选中且编辑切到新图，其他组保持原选择", async () => {

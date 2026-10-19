@@ -1,3 +1,5 @@
+import { Table, type TableColumn } from "qing-steel";
+
 export interface TrialPoint {
   id: number;
   status: "ok" | "no_bead";
@@ -38,16 +40,20 @@ export function trialPoints(measurement: unknown): TrialPoint[] | null {
   return points;
 }
 
+const value = (number: number | null) => number === null ? "未测" : number.toFixed(3);
+type TrialRow = { key: string; point: TrialPoint };
+const columns: TableColumn<TrialRow>[] = [
+  { key: "id", header: "测量站", align: "right", render: ({ point }) => point.id },
+  { key: "status", header: "状态", render: ({ point }) => <span className={point.status === "ok" ? "c-ok" : "c-ng"}>{point.status === "ok" ? "测得" : "缺胶"}</span> },
+  { key: "offset", header: "偏移 mm", align: "right", render: ({ point }) => value(point.offset) },
+  { key: "width", header: "胶宽 mm", align: "right", render: ({ point }) => point.candidateWidth != null ? <span className="c-ng">{value(point.candidateWidth)}（候选，未通过）</span> : value(point.width) },
+];
+
 export function TrialResult({ points }: { points: TrialPoint[] }) {
   const measured = points.filter(point => point.status === "ok" && point.offset !== null && point.width !== null).length;
-  const value = (number: number | null) => number === null ? "未测" : number.toFixed(3);
   return <details open>
     <summary>逐点试测结果 · 测得 {measured} / {points.length} · 未测 {points.length - measured}</summary>
     <p className="muted hint">绿色横线为有效胶宽，红色横线为未通过的候选胶宽，仅供参考，不改变 NG 判定；无候选胶边时保留红点。</p>
-    <div className="table-wrap" style={{ maxHeight: 280, overflow: "auto" }}>
-      <table className="table wp-trial-table" aria-label="逐点试测结果"><thead><tr><th className="num">测量站</th><th>状态</th><th className="num">偏移 mm</th><th className="num">胶宽 mm</th></tr></thead>
-        <tbody>{points.map((point, index) => <tr key={index}><td className="num">{point.id}</td><td className={point.status === "ok" ? "c-ok" : "c-ng"}>{point.status === "ok" ? "测得" : "缺胶"}</td><td className="num">{value(point.offset)}</td><td className={"num" + (point.candidateWidth != null ? " c-ng" : "")}>{point.candidateWidth != null ? `${value(point.candidateWidth)}（候选，未通过）` : value(point.width)}</td></tr>)}</tbody>
-      </table>
-    </div>
+    <Table className="wp-trial-table" caption="逐点试测结果" columns={columns} rows={points.map((point, index) => ({ key: String(index), point }))} rowKey={row => row.key} />
   </details>;
 }
