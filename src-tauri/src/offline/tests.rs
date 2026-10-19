@@ -63,9 +63,21 @@ impl Bench {
         self.run_with(" a-4242 ~".into(), scenario, |_, lost| !lost).await
     }
 
+    /// 虚拟 PLC 的 faultReset 上升沿只会被会话处理一次：会话还没观察到心跳翻转就按复位，这次复位被拒且不再重发。
+    /// 先让会话轮询到心跳翻转，复位时机就只取决于会话状态，不取决于机器多忙。
+    async fn until_heartbeat_live(&mut self) {
+        let until = Instant::now() + Duration::from_secs(60);
+        while !self.session.heartbeat_live() {
+            assert!(Instant::now() < until, "会话长时间没有观察到 PLC 心跳翻转：{:?}", self.session.view());
+            self.session.poll_gated(&self.engine, false, true, true, self.intake.load(Ordering::SeqCst)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     /// 虚拟 PLC 跑一件，PC 侧按生产节拍的顺序驱动 S7 会话：开始 → 布防 → partEnd 后按实收帧判定回写。
     /// `deliver(k, lost)` 模拟相机侧：返回这次触发是否真的交付了一帧。
     async fn run_with(&mut self, sn: String, scenario: Scenario, mut deliver: impl FnMut(usize, bool) -> bool) -> Result<Outcome, String> {
+        self.until_heartbeat_live().await;
         let Self { line, engine, session, plan, intake, .. } = self;
         let delivered = Mutex::new(Vec::new());
         let finished = AtomicBool::new(false);
@@ -143,6 +155,7 @@ async fn low_disk_during_part_still_releases_then_withholds_ready_until_space_re
 #[tokio::test]
 async fn low_disk_fault_reset_still_completes_but_keeps_ready_low_until_space_recovers() {
     let mut bench = Bench::new("low-disk-reset").await;
+    bench.until_heartbeat_live().await;
     {
         let Bench { line, engine, session, .. } = &mut bench;
         let abort = AtomicBool::new(false);
