@@ -175,7 +175,7 @@ fn teach(sample: &Sample, shot: &ShotFixture, fx: &Fixture) -> Result<Vec<[f32; 
     let y1 = (fold(f32::max, 1, f32::MIN) + r).min(h - 1.0).ceil();
     let roi = [x0 as u32, y0 as u32, (x1 - x0) as u32 + 1, (y1 - y0) as u32 + 1];
     match extract(&sample.image, roi, Polarity::Dark, Some(&BrushGuide { points: shot.stroke.clone(), radius_px: r }), fx.point_spacing_px) {
-        Ok(path) => Ok(path),
+        Ok(extracted) => Ok(extracted.path),
         Err(ExtractionError::Invalid(m)) => Err(m),
         Err(ExtractionError::Failed(f)) => Err(format!("{}（{}，{:?}）", f.message, f.reason, f.point)),
     }

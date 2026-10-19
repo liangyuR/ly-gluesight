@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use crate::frame::FrameImage;
 use crate::recipe::Polarity;
 
@@ -34,7 +34,22 @@ fn failure(point: [f32; 2], reason: &'static str, message: &str) -> ExtractionEr
     ExtractionError::Failed(ExtractionFailure { point, reason, message: message.into() })
 }
 
-pub(crate) fn extract(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: Option<&BrushGuide>, point_spacing_px: f32) -> Result<Vec<[f32; 2]>, ExtractionError> {
+#[derive(Debug)]
+pub(crate) struct Extraction {
+    pub path: Vec<[f32; 2]>,
+    pub notice: Option<String>,
+}
+
+/// 中线起点前、终点后截去的胶路超过这个长度时提示操作员核对。
+const TRIM_NOTICE_PX: f32 = 10.0;
+
+fn trim_notice(lost: [f32; 2]) -> Option<String> {
+    let parts: Vec<String> = [("起点前", lost[0]), ("终点后", lost[1])].into_iter()
+        .filter(|(_, px)| *px >= TRIM_NOTICE_PX).map(|(end, px)| format!("{end}约 {px:.0} px")).collect();
+    (!parts.is_empty()).then(|| format!("中线已提取，但{} 未能连续找到胶边，已截去。请核对中线是否覆盖整条胶路，再运行试测。", parts.join("、")))
+}
+
+pub(crate) fn extract(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: Option<&BrushGuide>, point_spacing_px: f32) -> Result<Extraction, ExtractionError> {
     if !point_spacing_px.is_finite() || !(4.0..=80.0).contains(&point_spacing_px) {
         return Err("中线点间距需为 4–80 像素".into());
     }
@@ -44,7 +59,8 @@ pub(crate) fn extract(image: &FrameImage, roi: [u32; 4], polarity: Polarity, gui
         return Err("请在原图内框选 5×5 以上、400 万像素以内的胶路区域".into());
     }
     if let Some(guide) = guide {
-        return extract_guided(image, roi, polarity, guide, point_spacing_px);
+        let (path, trimmed) = extract_guided(image, roi, polarity, guide, point_spacing_px)?;
+        return Ok(Extraction { path, notice: trim_notice(trimmed) });
     }
     extract_box(image, roi, polarity, point_spacing_px)
 }
@@ -114,7 +130,8 @@ fn top_hat(image: &FrameImage, polarity: Polarity, [x0, y0, x1, y1]: [usize; 4],
 
 /// 框选：顶帽（结构元取框的短边）突出比它窄的胶条、压掉框里成片的暗区，Otsu 二值化后取骨架最长的一条，
 /// 去掉两端被框角拉弯的半个胶宽、再顺着端点切向伸出一个胶宽（不出框），当作笔划交给笔刷提取对中（伸出胶外的头尾由它截掉）；笔刷提取断开时从断处分开、留长的一段重试。
-fn extract_box(image: &FrameImage, roi: [u32; 4], polarity: Polarity, spacing: f32) -> Result<Vec<[f32; 2]>, ExtractionError> {
+/// 骨架首尾相连（落在笔刷外的一段从两头接回骨架）时报错；笔刷提取截掉的、超出伸出段的胶路写进提示。
+fn extract_box(image: &FrameImage, roi: [u32; 4], polarity: Polarity, spacing: f32) -> Result<Extraction, ExtractionError> {
     let [x, y, width, height] = roi;
     let size = (width.min(height).clamp(31, 161) | 1) as usize;
     let pad = [x as usize, y as usize].map(|v| v.saturating_sub(size));
@@ -212,30 +229,80 @@ fn extract_box(image: &FrameImage, roi: [u32; 4], polarity: Polarity, spacing: f
         [p[0].clamp(x as f32, (x + width - 1) as f32), p[1].clamp(y as f32, (y + height - 1) as f32)]
     };
     let (head, tail) = (reach(stroke[inner], stroke[0]), reach(stroke[stroke.len() - 1 - inner], stroke[stroke.len() - 1]));
+    let extension = [distance(head, stroke[0]), distance(tail, stroke[stroke.len() - 1])];
     stroke.insert(0, head);
     stroke.push(tail);
     stroke = resample(&stroke, 6.0);
-    let full: f32 = stroke.windows(2).map(|p| distance(p[0], p[1])).sum();
     let radius = (1.5 * bead).clamp(3.0, 150.0);
+    let skeleton: Vec<usize> = (0..mask.len()).filter(|&i| mask[i] && label[i] == id).collect();
+    let place: HashMap<usize, (f32, f32)> = skeleton.iter().map(|&i| (i, project([(i % w - 1) as f32 + x as f32, (i / w - 1) as f32 + y as f32], &stroke))).collect();
+    let mut visited = HashSet::new();
+    let closed = skeleton.iter().any(|&seed| {
+        if place[&seed].0 <= radius || !visited.insert(seed) { return false; }
+        let (mut low, mut high) = (f32::INFINITY, f32::NEG_INFINITY);
+        let mut queue = VecDeque::from([seed]);
+        while let Some(i) = queue.pop_front() {
+            for j in neighbors(i) {
+                let Some(&(gap, arc)) = place.get(&j) else { continue };
+                if gap <= radius { low = low.min(arc); high = high.max(arc); } else if visited.insert(j) { queue.push_back(j); }
+            }
+        }
+        high - low > 2.0 * radius
+    });
+    if closed { return Err("框内胶路首尾相连，一条中线只能覆盖其中一段。请只框选其中一段胶路，或改用笔刷".into()); }
+    let span = |s: &[[f32; 2]]| s.windows(2).map(|p| distance(p[0], p[1])).sum::<f32>();
+    let full = span(&stroke);
+    let mut dropped = [0.0f32; 2];
     let mut retries = 0;
     loop {
         match extract_guided(image, roi, polarity, &BrushGuide { points: stroke.clone(), radius_px: radius }, spacing) {
+            Ok((path, trimmed)) => {
+                let lost = [0, 1].map(|end| (dropped[end] + trimmed[end] - extension[end]).max(0.0));
+                return Ok(Extraction { path, notice: trim_notice(lost) });
+            }
             Err(ExtractionError::Failed(f)) if retries < 2 && f.reason != "reversal" => {
                 let j = (0..stroke.len()).min_by(|a, b| distance(stroke[*a], f.point).total_cmp(&distance(stroke[*b], f.point))).unwrap();
-                let (head, tail) = (&stroke[..j.saturating_sub(1)], &stroke[(j + 2).min(stroke.len())..]);
-                let span = |s: &[[f32; 2]]| s.windows(2).map(|p| distance(p[0], p[1])).sum::<f32>();
-                let longer = if span(head) >= span(tail) { head } else { tail };
-                if longer.len() < 2 || span(longer) < 0.5 * full { return Err(ExtractionError::Failed(f)); }
-                stroke = longer.to_vec();
+                let (head_end, tail_start) = (j.saturating_sub(1), (j + 2).min(stroke.len()));
+                let keep = if span(&stroke[..head_end]) >= span(&stroke[tail_start..]) { 0..head_end } else { tail_start..stroke.len() };
+                if keep.len() < 2 || span(&stroke[keep.clone()]) < (0.5 * full).max(8.0) { return Err(box_failure(f)); }
+                dropped[0] += span(&stroke[..=keep.start]);
+                dropped[1] += span(&stroke[keep.end - 1..]);
+                stroke = stroke[keep].to_vec();
                 retries += 1;
             }
-            result => return result,
+            Err(ExtractionError::Failed(f)) => return Err(box_failure(f)),
+            Err(e) => return Err(e),
         }
     }
 }
 
+/// 笔刷提取的失败文案指向笔划和"笔划生成中线"，框选时没有笔划，改成框选能照做的建议。
+fn box_failure(f: ExtractionFailure) -> ExtractionError {
+    let message = match f.reason {
+        "missing_edges" => "标记处未找到完整的两侧胶路边缘。请调整框选范围避开对比度不足处，或改用笔刷沿胶路刷选。",
+        "discontinuity" => "标记处胶路边缘无法连续连接，局部中心位置或宽度变化过大。请缩小框选范围避开弯折、亮边或阴影，或改用笔刷沿胶路刷选。",
+        "ambiguous" => "标记处有多条同样可信的胶路候选。请缩小框选范围排除邻近阴影，或改用笔刷沿目标胶路刷选。",
+        _ => "标记处胶路折返，无法确定方向。请只框选单向的一段胶路，或改用笔刷沿胶路刷选。",
+    };
+    ExtractionError::Failed(ExtractionFailure { message: message.into(), ..f })
+}
+
 fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
     (a[0] - b[0]).hypot(a[1] - b[1])
+}
+
+/// 点到折线的距离，以及最近点沿折线的弧长。
+fn project(p: [f32; 2], line: &[[f32; 2]]) -> (f32, f32) {
+    let (mut best, mut arc) = ((f32::INFINITY, 0.0), 0.0);
+    for s in line.windows(2) {
+        let d = [s[1][0] - s[0][0], s[1][1] - s[0][1]];
+        let length = d[0].hypot(d[1]);
+        let t = if length > 0.0 { (((p[0] - s[0][0]) * d[0] + (p[1] - s[0][1]) * d[1]) / (length * length)).clamp(0.0, 1.0) } else { 0.0 };
+        let gap = distance(p, [s[0][0] + d[0] * t, s[0][1] + d[1] * t]);
+        if gap < best.0 { best = (gap, arc + t * length); }
+        arc += length;
+    }
+    best
 }
 
 fn resample(points: &[[f32; 2]], spacing: f32) -> Vec<[f32; 2]> {
@@ -308,7 +375,8 @@ fn highlight_union(p: (f32, f32), q: (f32, f32)) -> Option<(f32, f32)> {
 /// 法向取前后各 NORMAL_REACH 个采样点（3 px 一个）连线的垂线，笔划上的小折角不会把剖面拧斜。
 const NORMAL_REACH: usize = 4;
 
-fn extract_guided(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: &BrushGuide, spacing: f32) -> Result<Vec<[f32; 2]>, ExtractionError> {
+/// 返回中线及笔划起点前、终点后截去的长度（px）。
+fn extract_guided(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: &BrushGuide, spacing: f32) -> Result<(Vec<[f32; 2]>, [f32; 2]), ExtractionError> {
     if !guide.radius_px.is_finite() || !(3.0..=150.0).contains(&guide.radius_px) || !(2..=4096).contains(&guide.points.len()) {
         return Err("请沿胶路绘制笔划，笔刷半径需为 3–150 像素".into());
     }
@@ -393,8 +461,7 @@ fn extract_guided(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: 
         widest.push(candidates.iter().copied().chain(wide.into_iter().map(candidate)).collect::<Vec<_>>());
         all.push(candidates);
     }
-    // 笔划两头伸出胶路（喷嘴、图像边缘）时，两头各至多四分之一的采样点找不到胶边就截掉
-    let missing = |i: usize| Err(failure(samples[i], "missing_edges", "标记处未找到完整的两侧胶路边缘。请检查笔刷是否覆盖两侧边缘及少量背景、图像对比度是否足够，或用笔划生成中线后手工修正。"));
+    // 笔划两头伸出胶路（喷嘴、图像边缘）时，两头各至多四分之一的采样点找不到胶边就截掉，截去的长度交给调用方提示
     let mut longest = 0..0;
     let mut start = 0;
     for i in 0..=all.len() {
@@ -404,7 +471,10 @@ fn extract_guided(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: 
     }
     let trim = samples.len() / 4;
     if longest.len() < 3 || longest.start > trim || samples.len() - longest.end > trim {
-        return missing(all.iter().position(Vec::is_empty).unwrap_or(0));
+        // 标在挡住最长一段的那个缺口的起点，而不是头尾可截范围里的第一个空站
+        let gap = if longest.start > trim { (0..longest.start).rev().take_while(|&i| all[i].is_empty()).last() } else { (longest.end..all.len()).find(|&i| all[i].is_empty()) };
+        let point = samples[gap.or_else(|| all.iter().position(Vec::is_empty)).unwrap_or(0)];
+        return Err(failure(point, "missing_edges", "标记处未找到完整的两侧胶路边缘。请检查笔刷是否覆盖两侧边缘及少量背景、图像对比度是否足够，或用笔划生成中线后手工修正。"));
     }
     // 并集只在逐站连不上时重试：先只并相邻两段；仍连不上，再并隔着一段（高光里的小暗点）的两段
     let solve = |keep: std::ops::Range<usize>| {
@@ -422,15 +492,17 @@ fn extract_guided(image: &FrameImage, roi: [u32; 4], polarity: Polarity, guide: 
         result
     };
     // 连不上的地方落在笔划头尾四分之一以内（笔划拐出胶路）：截掉那一头再连一次
-    match solve(longest.clone()) {
+    let (path, kept) = match solve(longest.clone()) {
         Err(ExtractionError::Failed(f)) if f.reason == "discontinuity" => {
             let at = (longest.clone()).find(|&i| samples[i] == f.point).unwrap_or(longest.start);
             let rest = if at + trim >= samples.len() { longest.start..at } else if at <= trim { at..longest.end } else { 0..0 };
             if rest.len() < 3 { return Err(ExtractionError::Failed(f)); }
-            solve(rest).map_err(|_| ExtractionError::Failed(f))
+            (solve(rest.clone()).map_err(|_| ExtractionError::Failed(f))?, rest)
         }
-        result => result,
-    }
+        result => (result?, longest),
+    };
+    let arc = |s: &[[f32; 2]]| s.windows(2).map(|p| distance(p[0], p[1])).sum::<f32>();
+    Ok((path, [arc(&samples[..=kept.start]), arc(&samples[kept.end - 1..])]))
 }
 
 type Candidate = (f32, f32, [f32; 2]);
@@ -481,8 +553,8 @@ mod tests {
         for y in 0..140 { for x in 24..60 { image.pixels[y*160+x]=55; } for x in 80..94 { image.pixels[y*160+x]=25 + ((x*17+y*11)%7) as u8; } }
         let guide = BrushGuide { points: vec![[85.0,10.0],[88.0,70.0],[85.0,130.0]], radius_px: 65.0 };
         for polarity in [Polarity::Dark, Polarity::Light] {
-            let dense = extract(&image,[0,0,160,140],polarity,Some(&guide),4.0).unwrap();
-            let sparse = extract(&image,[0,0,160,140],polarity,Some(&guide),30.0).unwrap();
+            let dense = extract(&image,[0,0,160,140],polarity,Some(&guide),4.0).unwrap().path;
+            let sparse = extract(&image,[0,0,160,140],polarity,Some(&guide),30.0).unwrap().path;
             assert!(dense.iter().all(|p| (85.0..=88.0).contains(&p[0])));
             assert!(dense.windows(2).all(|p| p[1][1] > p[0][1]));
             assert!(sparse.len() < dense.len()/3);
@@ -493,7 +565,7 @@ mod tests {
         let mut corner = FrameImage::new(120,120,vec![230;14400]);
         for y in 10..105 { for x in 20..31 { corner.pixels[y*120+x]=25; } }
         for y in 94..105 { for x in 20..105 { corner.pixels[y*120+x]=25; } }
-        let path = extract(&corner,[0,0,120,120],Polarity::Dark,None,80.0).unwrap();
+        let path = extract(&corner,[0,0,120,120],Polarity::Dark,None,80.0).unwrap().path;
         assert!(path.windows(2).all(|p| distance(p[0],p[1]) <= 80.01));
         for pair in path.windows(2) {
             for step in 0..=20 {
@@ -510,7 +582,7 @@ mod tests {
         for y in 0..200 { for x in 60..94 { image.pixels[y*160+x] = 25; } }
         for x in [95.0, 59.0] {
             let guide = BrushGuide { points: vec![[x,10.0],[x,190.0]], radius_px: 30.0 };
-            let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap();
+            let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap().path;
             assert!(path.iter().all(|p| (p[0]-76.5).abs() <= 1.0), "{x}: {path:?}");
         }
     }
@@ -520,7 +592,7 @@ mod tests {
         let mut image = FrameImage::new(160, 200, vec![230; 32000]);
         for y in 0..150 { for x in 60..94 { image.pixels[y*160+x] = 25; } }
         let guide = BrushGuide { points: vec![[77.0,10.0],[77.0,190.0]], radius_px: 40.0 };
-        let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap();
+        let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap().path;
         assert!(path.iter().all(|p| (p[0]-76.5).abs() <= 1.0), "{path:?}");
         assert!((135.0..=152.0).contains(&path.last().unwrap()[1]), "{path:?}");
     }
@@ -532,7 +604,7 @@ mod tests {
             for x in 0..140 { image.pixels[y*320+x] = 60; }
             for x in 160..194 { image.pixels[y*320+x] = 30; }
         }
-        let path = extract(&image,[90,20,120,160],Polarity::Dark,None,20.0).unwrap();
+        let path = extract(&image,[90,20,120,160],Polarity::Dark,None,20.0).unwrap().path;
         assert!(path.iter().all(|p| (p[0]-176.5).abs() <= 1.5), "{path:?}");
         assert!(path.first().unwrap()[1].min(path.last().unwrap()[1]) <= 50.0 && path.first().unwrap()[1].max(path.last().unwrap()[1]) >= 150.0, "{path:?}");
     }
@@ -545,7 +617,7 @@ mod tests {
             if !(60..120).contains(&y) { for x in 74..80 { image.pixels[y*160+x] = 150; } }
         }
         let guide = BrushGuide { points: vec![[77.0,10.0],[77.0,190.0]], radius_px: 60.0 };
-        let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap();
+        let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap().path;
         assert!(path.iter().all(|p| (p[0]-76.5).abs() <= 1.0), "{path:?}");
         assert!(path.first().unwrap()[1] <= 12.0 && path.last().unwrap()[1] >= 188.0);
     }
@@ -558,7 +630,7 @@ mod tests {
             if y >= 120 { for x in 77..81 { image.pixels[y*160+x] = 150; } }
         }
         let guide = BrushGuide { points: vec![[77.0,10.0],[77.0,190.0]], radius_px: 60.0 };
-        let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap();
+        let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap().path;
         assert!(path.iter().all(|p| (p[0]-76.5).abs() <= 1.0), "{path:?}");
         assert!(path.last().unwrap()[1] >= 188.0, "{path:?}");
     }
@@ -572,8 +644,43 @@ mod tests {
             for x in 77..83 { image.pixels[y*160+x] = 100; }
         }
         let guide = BrushGuide { points: vec![[67.0,10.0],[67.0,190.0]], radius_px: 60.0 };
-        let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap();
+        let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap().path;
         assert!(path.iter().all(|p| (p[0]-66.5).abs() <= 1.0), "{path:?}");
+    }
+
+    #[test]
+    fn box_around_closed_loop_bead_is_rejected_as_loop_instead_of_returning_part_of_it() {
+        let mut ring = FrameImage::new(300, 300, vec![230; 90000]);
+        for y in 0..300 { for x in 0..300 {
+            if (90.0..110.0).contains(&(x as f32-150.0).hypot(y as f32-150.0)) { ring.pixels[y*300+x] = 25; }
+        } }
+        let result = extract(&ring,[20,20,260,260],Polarity::Dark,None,20.0);
+        assert!(matches!(result, Err(ExtractionError::Invalid(_))), "{result:?}");
+    }
+
+    #[test]
+    fn brush_gap_beyond_tolerated_head_overhang_marks_the_gap_not_the_stroke_start() {
+        let mut image = FrameImage::new(160, 240, vec![230; 38400]);
+        for y in (12..240).filter(|y| !(100..116).contains(y)) { for x in 60..94 { image.pixels[y*160+x] = 25; } }
+        let guide = BrushGuide { points: vec![[77.0,2.0],[77.0,215.0]], radius_px: 40.0 };
+        let ExtractionError::Failed(detail) = extract(&image,[0,0,160,240],Polarity::Dark,Some(&guide),20.0).unwrap_err() else { panic!("缺边必须给出可定位诊断") };
+        assert_eq!(detail.reason, "missing_edges");
+        assert!((97.0..=118.0).contains(&detail.point[1]), "{:?}", detail.point);
+    }
+
+    #[test]
+    fn glue_cut_off_beyond_centerline_ends_yields_notice_but_box_own_extension_does_not() {
+        let mut image = FrameImage::new(160, 240, vec![230; 38400]);
+        for y in (0..221).filter(|y| !(30..46).contains(y)) { for x in 60..94 { image.pixels[y*160+x] = 25; } }
+        let cut = extract(&image,[0,0,160,240],Polarity::Dark,Some(&BrushGuide { points: vec![[77.0,5.0],[77.0,215.0]], radius_px: 40.0 }),20.0).unwrap();
+        assert!(cut.path[0][1] >= 45.0 && cut.notice.is_some(), "{cut:?}");
+        let whole = extract(&image,[0,0,160,240],Polarity::Dark,Some(&BrushGuide { points: vec![[77.0,50.0],[77.0,215.0]], radius_px: 40.0 }),20.0).unwrap();
+        assert!(whole.notice.is_none(), "{whole:?}");
+        let mut bar = FrameImage::new(200, 240, vec![230; 48000]);
+        for y in 40..200 { for x in 80..114 { bar.pixels[y*200+x] = 25; } }
+        for y in 20..40 { for x in 94..100 { bar.pixels[y*200+x] = 25; } }
+        let boxed = extract(&bar,[20,10,160,220],Polarity::Dark,None,20.0).unwrap();
+        assert!(boxed.notice.is_none(), "{boxed:?}");
     }
 
     #[test]

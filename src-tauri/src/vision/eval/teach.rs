@@ -8,7 +8,7 @@ use super::{median, pct, r3, Ctx, ExtractCase, Fixture};
 use crate::measure::ST_OK;
 use crate::recipe::Polarity;
 use crate::vision::{FrameImage, ShotMeasurement};
-use crate::workspace::centerline::{extract, BrushGuide, ExtractionError};
+use crate::workspace::centerline::{extract, BrushGuide, Extraction, ExtractionError};
 
 const RADII: [f32; 3] = [30.0, 40.0, 60.0];
 const OFFSETS: [f32; 5] = [0.0, 8.0, -8.0, 15.0, -15.0];
@@ -167,7 +167,7 @@ pub(super) fn evaluate(ctx: &Ctx, base: &[Result<ShotMeasurement, String>], fx: 
                 let Some(reference) = &refs[k] else { continue };
                 let stroke = inside(&operator_stroke(reference, o, (k as u64) << 16 | (r as u64) << 8 | (o + 32.0) as u64), &s.image);
                 let roi = stroke_roi(&stroke, r, &s.image);
-                let g = grade(extract(&s.image, roi, Polarity::Dark, Some(&BrushGuide { points: stroke.clone(), radius_px: r }), spacing), reference, length(reference));
+                let g = grade(extract(&s.image, roi, Polarity::Dark, Some(&BrushGuide { points: stroke.clone(), radius_px: r }), spacing).map(|e| e.path), reference, length(reference));
                 record(&mut t, &s.shot_id, &format!("r{r} o{o:+}"), json!({"stroke": stroke, "radiusPx": r}), g);
             }
             brush.push(t.json(&format!("笔刷半径 {r} px · 偏 {o:+} px")));
@@ -190,7 +190,7 @@ pub(super) fn evaluate(ctx: &Ctx, base: &[Result<ShotMeasurement, String>], fx: 
                 }
                 if section.len() < 2 { continue; }
                 let roi = stroke_roi(&section, m, &s.image);
-                let g = grade(extract(&s.image, roi, Polarity::Dark, None, spacing), reference, length(&section));
+                let g = grade(extract(&s.image, roi, Polarity::Dark, None, spacing).map(|e| e.path), reference, length(&section));
                 record(&mut t, &s.shot_id, &format!("框选 {si} 边距 {m}"), json!({"roi": roi}), g);
             }
         }
@@ -203,7 +203,7 @@ pub(super) fn evaluate(ctx: &Ctx, base: &[Result<ShotMeasurement, String>], fx: 
         let result = match extract(&s.image, roi, Polarity::Dark, Some(&BrushGuide { points: c.stroke.clone(), radius_px: c.radius_px }), spacing) {
             Err(ExtractionError::Failed(f)) => format!("提取失败 {}@{:.0},{:.0}", f.reason, f.point[0], f.point[1]),
             Err(ExtractionError::Invalid(m)) => format!("提取失败：{m}"),
-            Ok(path) => {
+            Ok(Extraction { path, .. }) => {
                 let paths: Vec<Vec<[f32; 2]>> = (0..ctx.samples.len()).map(|j| if j == k { path.clone() } else { Vec::new() }).collect();
                 let detect = ctx.cfg.detect.clone().unwrap_or_else(crate::recipe::default_detect);
                 let measured = super::build_recipe(ctx.samples, &paths, ctx.mm, &detect).and_then(|recipe| super::run(ctx.engine, &recipe, k, &s.image));
