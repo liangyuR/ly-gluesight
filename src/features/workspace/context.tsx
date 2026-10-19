@@ -9,6 +9,7 @@ import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import type { ShotTeach, Workspace, WorkspaceView } from "./types";
 import { sameTeach, shotTeach } from "./teach";
+import { useClearSnackbar, useSnackbar, type SnackMessage } from "../../components/Snackbar";
 import "./workspace.css";
 
 interface WorkspaceContextValue {
@@ -20,10 +21,10 @@ interface WorkspaceContextValue {
   rememberPosition: (k: number, view: number) => void;
   select: (id: string) => Promise<WorkspaceView | null>; clearSelection:()=>void; reloadList: () => Promise<void>;
   setDoc: (doc: RecipeDoc) => void; setFrameDraft: (k: number, teach: ShotTeach) => void;
-  act: (request: () => Promise<WorkspaceView>, message?: string | ((next: WorkspaceView) => string)) => Promise<WorkspaceView | null>;
+  act: (request: () => Promise<WorkspaceView>, message?: SnackMessage | ((next: WorkspaceView) => SnackMessage)) => Promise<WorkspaceView | null>;
   saveDoc: (doc?: RecipeDoc) => Promise<WorkspaceView | null>;
   saveState: "saved" | "saving" | "failed" | "pending"; retrySave: () => void;
-  notice: string; setError: (message: string) => void;
+  setError: (message: string) => void;
 }
 const Context = createContext<WorkspaceContextValue | null>(null);
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -42,7 +43,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [frameDrafts, setFrameDrafts] = useState<Record<number, ShotTeach>>({});
   const [error, setError] = useState("");
   const [preferenceError, setPreferenceError] = useState("");
-  const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "failed" | "pending">("saved");
   const [saveRetry, setSaveRetry] = useState(0);
@@ -53,6 +53,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const dirtyRef = useRef(false);
   const pendingRefresh = useRef<string | null>(null);
   const [refreshRevision, setRefreshRevision] = useState(0);
+  const snack = useSnackbar();
+  const clearSnack = useClearSnackbar();
   const shotList=useRef("");
   const shotSources=useRef<string[]>([]);
   const dirty = !!doc && !!data && !equal(doc, data.workspace.doc);
@@ -102,7 +104,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const serial = ++requestSerial.current;
     selected.current = id;
     setSelectedId(id);
-    setError(""); setNotice(""); setData(null); setDoc(null); setPreview(null); setFrameDrafts({});
+    setError(""); clearSnack(); setData(null); setDoc(null); setPreview(null); setFrameDrafts({});
     try {
       const next = await workspaceApi.get(id);
       if (serial === requestSerial.current) {
@@ -113,7 +115,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       }
     } catch (e) { if (serial === requestSerial.current) setError(errorText(e)); }
     return null;
-  }, [accept]);
+  }, [accept, clearSnack]);
 
   useEffect(() => {
     if (!desktopAvailable()) return;
@@ -165,9 +167,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return () => { alive = false; clearTimeout(timer); };
   }, [doc, data?.workspace.doc]);
 
-  const act = useCallback(async (request: () => Promise<WorkspaceView>, message: string | ((next: WorkspaceView) => string) = "") => {
+  const act = useCallback(async (request: () => Promise<WorkspaceView>, message: SnackMessage | ((next: WorkspaceView) => SnackMessage) = "") => {
     if (acting.current) return null;
-    acting.current = true; setBusy(true); setError(""); setNotice("");
+    acting.current = true; setBusy(true); setError(""); clearSnack();
     const originalId = selected.current;
     const serial = ++requestSerial.current;
     const current = () => originalId === selected.current && serial === requestSerial.current;
@@ -180,11 +182,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       try { await reloadList(); }
       catch (e) { if (current()) setError(`候选操作已完成，但配方列表刷新失败：${errorText(e)}`); }
       if (!current()) return null;
-      setNotice(typeof message === "function" ? message(next) : message);
+      snack(typeof message === "function" ? message(next) : message);
       return next;
     } catch (e) { if (current()) setError(errorText(e)); return null; }
     finally { acting.current = false; setBusy(false); }
-  }, [accept, reloadList]);
+  }, [accept, reloadList, snack, clearSnack]);
 
   const rememberPosition = useCallback((k: number, view: number) => {
     const id = selected.current;
@@ -210,17 +212,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setSaveState("pending");
     const timer = setTimeout(async () => {
       setSaveState("saving");
-      const result = dirty ? await saveDoc() : await act(() => workspaceApi.saveDraft(doc.id, data.workspace.revision, Number(entry![0]), entry![1]));
+      const result = dirty ? await act(() => workspaceApi.saveDoc(doc.id, data.workspace.revision, doc)) : await act(() => workspaceApi.saveDraft(doc.id, data.workspace.revision, Number(entry![0]), entry![1]));
       if (!result) { failedSave.current = signature; setSaveState("failed"); }
       else { failedSave.current = ""; setSaveState("saved"); }
     }, 900);
     return () => clearTimeout(timer);
-  }, [doc, data, frameDrafts, dirty, busy, saveRetry, saveDoc, act]);
+  }, [doc, data, frameDrafts, dirty, busy, saveRetry, act]);
 
   return <Context.Provider value={{ list, drafts, cameras, unavailable, selectedId, data, doc, preview, previewError, error: error || preferenceError || recipeErrors, busy, dirty, frameDirty,
-    clearSelection:()=>{pendingRefresh.current=null;requestSerial.current++;selected.current=null;setSelectedId(null);setData(null);setDoc(null);setPreview(null);setFrameDrafts({});setError("");setNotice("");},
+    clearSelection:()=>{pendingRefresh.current=null;requestSerial.current++;selected.current=null;setSelectedId(null);setData(null);setDoc(null);setPreview(null);setFrameDrafts({});setError("");clearSnack();},
     frameDrafts, rememberPosition, select, reloadList, setDoc, setFrameDraft:(k, teach) => setFrameDrafts(previous => ({ ...previous, [k]:teach })),
-    act, saveDoc, saveState, retrySave: () => setSaveRetry(v => v + 1), notice, setError }}>{children}</Context.Provider>;
+    act, saveDoc, saveState, retrySave: () => setSaveRetry(v => v + 1), setError }}>{children}</Context.Provider>;
 }
 
 export function useWorkspace() {

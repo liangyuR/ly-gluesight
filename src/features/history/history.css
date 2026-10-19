@@ -37,6 +37,9 @@
 .hist-table tbody tr.hist-empty { cursor: default; }
 .hist-table tbody tr.hist-empty:hover { background: transparent; }
 .hist-table td.reason { max-width: 520px; color: var(--on-surface-variant); font-size: 12.5px; }
+.hist-table td.hist-sn .sn { display: inline-block; margin-right: 8px; white-space: nowrap; }
+.hist-table td.hist-sn .tag { display: inline-block; margin: 2px 6px 2px 0; }
+@media (max-width: 1599px) { .hist-table td.hist-sn .sn { white-space: normal; } }
 .pager { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 10px; font-size: 13px; }
 .hist-results .pager { flex-shrink: 0; margin: 0; padding: 6px 12px; border-top: 1px solid var(--outline-variant); }
 
@@ -70,3 +73,7 @@
 .rj-changes { display: flex; flex-direction: column; max-height: 220px; overflow: auto; border-radius: var(--r-md); background: var(--surface-mid); }
 .rj-change { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border: none; border-bottom: 1px solid var(--outline-variant); background: transparent; color: var(--on-surface); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
 .rj-change:hover { background: var(--state-hover); }
+.rj-change { flex-wrap: wrap; }
+.rj-change .sn { flex: none; white-space: nowrap; }
+.rj-transition { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.rj-change .rj-reason { flex: 1 1 160px; min-width: 0; }
