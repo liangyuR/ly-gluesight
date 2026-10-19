@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Alert, Button, Stack, TextField } from "qing-steel";
 import Modal from "./Modal";
 import { dataTypeLabels, formatValue, isText } from "../meta";
 import type { PlcPoint, PointValue } from "../types";
@@ -53,19 +54,12 @@ export default function WriteDialog({ point, current, blockedReason = "", onWrit
       width={420}
       footer={
         <>
-          {error && <span className="form-error">{error}</span>}
-          <button className="btn" disabled={busy} onClick={onClose}>
-            取消
-          </button>
-          {!isBool && (
-            <button className="btn primary" disabled={busy || !!blockedReason} onClick={submitValue}>
-              写入
-            </button>
-          )}
+          <Button disabled={busy} onClick={onClose}>取消</Button>
+          {!isBool && <Button variant="filled" disabled={busy || !!blockedReason} onClick={submitValue}>写入</Button>}
         </>
       }
     >
-      {blockedReason && <p className="notice error" role="status">{blockedReason}</p>}
+      {blockedReason && <Alert tone="warn">{blockedReason}</Alert>}
       <dl className="kv">
         <dt>地址</dt>
         <dd className="mono">{point.address}</dd>
@@ -76,17 +70,13 @@ export default function WriteDialog({ point, current, blockedReason = "", onWrit
       </dl>
       <div className="write-input">
         {isBool ? (
-          <div className="row">
-            <button className="btn primary" disabled={busy || !!blockedReason} onClick={() => write(true)}>
-              置 1 (ON)
-            </button>
-            <button className="btn" disabled={busy || !!blockedReason} onClick={() => write(false)}>
-              置 0 (OFF)
-            </button>
-          </div>
+          <Stack>
+            <Button variant="filled" disabled={busy || !!blockedReason} onClick={() => write(true)}>置 1 (ON)</Button>
+            <Button disabled={busy || !!blockedReason} onClick={() => write(false)}>置 0 (OFF)</Button>
+          </Stack>
         ) : (
-          <input
-            className="input mono"
+          <TextField
+            aria-label="写入值"
             autoFocus
             disabled={busy || !!blockedReason}
             value={text}
@@ -95,6 +85,7 @@ export default function WriteDialog({ point, current, blockedReason = "", onWrit
           />
         )}
       </div>
+      {error && <Alert tone="ng">{error}</Alert>}
     </Modal>
   );
 }

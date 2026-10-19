@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Alert, Button, Checkbox, Chip, Grid, Select, Stack, TextField } from "qing-steel";
 import Modal from "./Modal";
 import { plcApi } from "../api";
 import { dataTypeLabels, edgeLabels, isMultiWord, isText, s7Protocol } from "../meta";
@@ -88,116 +89,76 @@ export default function PointEditor({ initial, isNew, existingIds, connection, t
       width={660}
       footer={
         <>
-          {error && <span className="form-error">{error}</span>}
-          <button className="btn" disabled={saving} onClick={onClose}>
-            取消
-          </button>
-          <button className="btn primary" disabled={saving || !!blockedReason} onClick={() => void submit()}>
-            确定
-          </button>
+          <Button disabled={saving} onClick={onClose}>取消</Button>
+          <Button variant="filled" disabled={saving || !!blockedReason} onClick={() => void submit()}>确定</Button>
         </>
       }
     >
-      {blockedReason && <p className="notice error" role="status">{blockedReason}</p>}
-      <fieldset className="form-grid two" disabled={saving || !!blockedReason} style={{ border: 0, padding: 0, margin: 0 }}>
-        <label className="field">
-          <span>名称</span>
-          <input className="input" value={p.name} autoFocus onChange={(e) => update({ name: e.target.value })} />
-        </label>
-        <label className="field">
-          <span>ID</span>
-          <input className="input mono" value={p.id} onChange={(e) => update({ id: e.target.value })} />
-        </label>
-        <label className="field span-2">
-          <span>地址（{meta.label}）</span>
-          <input
-            className="input mono"
-            placeholder={meta.examples.slice(0, 4).join("  ")}
-            value={p.address}
-            onChange={(e) => update({ address: e.target.value })}
-          />
-          <span className={`addr-check ${check ? (check.ok ? "ok" : "ng") : "muted"}`}>
-            {check ? check.text : meta.hint}
-          </span>
-        </label>
-        <label className="field">
-          <span>数据类型</span>
-          <select className="input" value={p.dataType} onChange={(e) => update({ dataType: e.target.value as DataType, wordOrder: e.target.value === "bool" || isText(e.target.value as DataType) ? null : p.wordOrder })}>
-            {Object.entries(dataTypeLabels).map(([k, v]) => (
-              <option key={k} value={k}>
-                {v}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field">
-          <span>字节序</span>
-          <select
-            className="input"
-            value={p.wordOrder ?? ""}
-            disabled={!isMultiWord(p.dataType) && p.dataType !== "u16" && p.dataType !== "i16"}
-            onChange={(e) => update({ wordOrder: (e.target.value || null) as WordOrder | null })}
-          >
-            <option value="">协议默认（{meta.defaultOrder}）</option>
-            <option value="ABCD">ABCD 大端</option>
-            <option value="CDAB">CDAB 字交换</option>
-            <option value="BADC">BADC 字节交换</option>
-            <option value="DCBA">DCBA 小端</option>
-          </select>
-        </label>
-        <label className="field">
-          <span>读写</span>
-          <select className="input" value={p.access} onChange={(e) => update({ access: e.target.value as Access })}>
-            <option value="read">只读</option>
-            <option value="readWrite">读写</option>
-          </select>
-        </label>
-        <label className="field">
-          <span>边沿事件</span>
-          <select className="input" value={p.edge} onChange={(e) => update({ edge: e.target.value as EdgeMode })}>
-            {Object.entries(edgeLabels).map(([k, v]) => (
-              <option key={k} value={k}>
-                {v}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="field span-2">
-          <span>标签</span>
-          <div className="tag-editor">
-            {tagPresets.map((t) => (
-              <button key={t.value} type="button" className={`chip ${p.tags.includes(t.value) ? "on" : ""}`} onClick={() => toggleTag(t.value)}>
-                {t.label}
-              </button>
-            ))}
-            {customTags.map((t) => (
-              <button key={t} type="button" className="chip on" onClick={() => toggleTag(t)} title="点击移除">
-                {t} ×
-              </button>
-            ))}
-            <input
-              className="input tag-input"
-              placeholder="自定义标签，回车添加"
-              value={tagInput}
-              onChange={(e) => setTagInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  addTag();
-                }
-              }}
+      {blockedReason && <Alert tone="warn">{blockedReason}</Alert>}
+      <fieldset disabled={saving || !!blockedReason} style={{ border: 0, padding: 0, margin: 0 }}>
+        <Grid minWidth={260} gap={14}>
+          <TextField label="名称" value={p.name} autoFocus onChange={(e) => update({ name: e.target.value })} />
+          <TextField label="ID" value={p.id} onChange={(e) => update({ id: e.target.value })} />
+          <div className="plc-wide">
+            <TextField
+              label={`地址（${meta.label}）`}
+              placeholder={meta.examples.slice(0, 4).join("  ")}
+              value={p.address}
+              onChange={(e) => update({ address: e.target.value })}
+              error={check && !check.ok ? check.text : undefined}
+              description={check?.ok ? <span className="addr-check ok">{check.text}</span> : meta.hint}
             />
           </div>
-        </div>
-        <label className="field span-2">
-          <span>描述</span>
-          <input className="input" value={p.description} onChange={(e) => update({ description: e.target.value })} />
-        </label>
-        <label className="check span-2">
-          <input type="checkbox" checked={p.logChanges} onChange={(e) => update({ logChanges: e.target.checked })} />
-          <span>记录值变化到 PLC 日志（高频变化的点位建议关闭）</span>
-        </label>
+          <Select label="数据类型" value={p.dataType} onValueChange={(v) => update({ dataType: v as DataType, wordOrder: v === "bool" || isText(v as DataType) ? null : p.wordOrder })}
+            options={Object.entries(dataTypeLabels).map(([k, v]) => ({ value: k, label: v }))} />
+          <Select label="字节序" value={p.wordOrder ?? ""} disabled={!isMultiWord(p.dataType) && p.dataType !== "u16" && p.dataType !== "i16"}
+            onValueChange={(v) => update({ wordOrder: (v || null) as WordOrder | null })}
+            options={[
+              { value: "", label: `协议默认（${meta.defaultOrder}）` },
+              { value: "ABCD", label: "ABCD 大端" },
+              { value: "CDAB", label: "CDAB 字交换" },
+              { value: "BADC", label: "BADC 字节交换" },
+              { value: "DCBA", label: "DCBA 小端" },
+            ]} />
+          <Select label="读写" value={p.access} onValueChange={(v) => update({ access: v as Access })}
+            options={[{ value: "read", label: "只读" }, { value: "readWrite", label: "读写" }]} />
+          <Select label="边沿事件" value={p.edge} onValueChange={(v) => update({ edge: v as EdgeMode })}
+            options={Object.entries(edgeLabels).map(([k, v]) => ({ value: k, label: v }))} />
+          <div className="plc-wide">
+            <Stack direction="column" align="stretch" gap={6}>
+              <span className="plc-group-label">标签</span>
+              <Stack gap={6}>
+                {tagPresets.map((t) => (
+                  <Chip key={t.value} selected={p.tags.includes(t.value)} onClick={() => toggleTag(t.value)}>{t.label}</Chip>
+                ))}
+                {customTags.map((t) => (
+                  <Chip key={t} onRemove={() => toggleTag(t)} removeLabel={`移除标签 ${t}`}>{t}</Chip>
+                ))}
+                <TextField
+                  className="plc-tag-input"
+                  aria-label="自定义标签"
+                  placeholder="自定义标签，回车添加"
+                  value={tagInput}
+                  onChange={(e) => setTagInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addTag();
+                    }
+                  }}
+                />
+              </Stack>
+            </Stack>
+          </div>
+          <div className="plc-wide">
+            <TextField label="描述" value={p.description} onChange={(e) => update({ description: e.target.value })} />
+          </div>
+          <div className="plc-wide">
+            <Checkbox label="记录值变化到 PLC 日志（高频变化的点位建议关闭）" checked={p.logChanges} onCheckedChange={(checked) => update({ logChanges: checked })} />
+          </div>
+        </Grid>
       </fieldset>
+      {error && <Alert tone="ng">{error}</Alert>}
     </Modal>
   );
 }

@@ -1,4 +1,4 @@
-import {render,screen} from "@testing-library/react";
+import {fireEvent,render,screen} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import {beforeEach,expect,it,vi} from "vitest";
@@ -37,7 +37,7 @@ it("有图像尺寸和当量 → 视野取所选运动方向的像素数乘当�
  render(<FeasibilityCalc sources={{mmPerPx:{value:0.05,from:"来自工位标定"}}} imageSize={{width:1280,height:1024}}/>);
  const fov=screen.getByRole("spinbutton",{name:/视野沿运动方向/});
  expect(fov).toHaveValue(64);
- await userEvent.selectOptions(screen.getByRole("combobox",{name:"运动方向"}),"height");
+ fireEvent.change(screen.getByRole("combobox",{name:"运动方向"}).closest(".qs-select")!.querySelector("select")!,{target:{value:"height"}});
  expect(fov).toHaveValue(51.2);
 });
 

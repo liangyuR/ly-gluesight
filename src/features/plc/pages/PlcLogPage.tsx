@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Download, Hash, Radio, RefreshCw, Search, X } from "lucide-react";
+import { Download, Hash, Radio, RefreshCw, Search, X } from "lucide-react";
+import { Alert, Button, Card, Chip, EmptyState, Heading, IconButton, Pagination, SegmentedControl, Select, Stack, StatusBadge, Table, TextField, type TableColumn } from "qing-steel";
 import StepChart from "../components/StepChart";
 import { plcApi, subscribe } from "../api";
 import { categoryLabels, levelLabels } from "../meta";
-import type { HistorySample, LogCategory, LogLevel, LogPage, LogQuery, PlcPoint } from "../types";
+import type { HistorySample, LogCategory, LogEntry, LogLevel, LogPage, LogQuery, PlcPoint } from "../types";
 import { formatTs, fromLocalInput, toLocalInput } from "../time";
 
 const PAGE_SIZE = 100;
@@ -26,6 +27,8 @@ function csvCell(v: string | null | undefined) {
   const s = v ?? "";
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
+
+const levelTone = { info: "info", warn: "warn", error: "ng" } as const;
 
 export default function PlcLogPage() {
   const [points, setPoints] = useState<PlcPoint[]>([]);
@@ -183,38 +186,38 @@ export default function PlcLogPage() {
     }
   };
 
-  const pageCount = Math.max(1, Math.ceil(currentData.total / PAGE_SIZE));
   const selectedPoint = points.find((p) => p.id === pointId);
+
+  const logColumns: TableColumn<LogEntry>[] = [
+    { key: "ts", header: "时间", render: (e) => <span className="mono nowrap">{formatTs(e.ts)}</span> },
+    { key: "level", header: "级别", render: (e) => <StatusBadge tone={levelTone[e.level]}>{levelLabels[e.level]}</StatusBadge> },
+    { key: "category", header: "类别", render: (e) => <span className="nowrap">{categoryLabels[e.category] ?? e.category}</span> },
+    { key: "point", header: "点位", render: (e) => e.pointId
+      ? <Button variant="text" size="sm" onClick={() => { setPointId(e.pointId!); resetPage(); }}>{e.pointName ?? e.pointId}</Button>
+      : <span className="muted">—</span> },
+    { key: "message", header: "内容", render: (e) => e.message },
+    { key: "context", header: "事务", render: (e) => e.context
+      ? <Button variant="text" size="sm" onClick={() => { setContextInput(e.context!); setContext(e.context!); resetPage(); }}><span className="mono">{e.context}</span></Button>
+      : <span className="muted">—</span> },
+  ];
 
   return (
     <div className="stack">
-      <div className="panel filters">
-        <div className="filter-row">
-          <div className="segmented">
-            {ranges.map((r) => (
-              <button
-                key={r.key}
-                aria-pressed={rangeKey === r.key}
-                className={rangeKey === r.key ? "active" : ""}
-                onClick={() => {
-                  setRangeKey(r.key);
-                  resetPage();
-                }}
-              >
-                {r.label}
-              </button>
-            ))}
-          </div>
+      <Card>
+        <Stack direction="column" align="stretch" gap={12}>
+        <Stack gap={8}>
+          <SegmentedControl label="时间范围" value={rangeKey} options={ranges.map((r) => ({ value: r.key, label: r.label }))} onValueChange={(value) => { setRangeKey(value as RangeKey); resetPage(); }} />
           {rangeKey === "custom" && (
-            <div className="row">
-              <input className="input mono" aria-label="开始时间" type="datetime-local" step={1} value={customStart} onChange={(e) => { setCustomStart(e.target.value); resetPage(); }} />
+            <Stack gap={8}>
+              <TextField aria-label="开始时间" type="datetime-local" step={1} value={customStart} onChange={(e) => { setCustomStart(e.target.value); resetPage(); }} />
               <span className="muted">至</span>
-              <input className="input mono" aria-label="结束时间" type="datetime-local" step={1} value={customEnd} onChange={(e) => { setCustomEnd(e.target.value); resetPage(); }} />
-            </div>
+              <TextField aria-label="结束时间" type="datetime-local" step={1} value={customEnd} onChange={(e) => { setCustomEnd(e.target.value); resetPage(); }} />
+            </Stack>
           )}
           <div className="spacer" />
-          <button
-            className={`btn ${following ? "live" : ""}`}
+          <Button
+            variant={following ? "filled" : "tonal"}
+            leadingIcon={<Radio size={16} />}
             disabled={rangeKey === "custom"}
             title={rangeKey === "custom" ? "自定义时间段不支持实时跟随" : ""}
             onClick={() => {
@@ -222,55 +225,41 @@ export default function PlcLogPage() {
               resetPage();
             }}
           >
-            <Radio size={16} />
             {following ? "实时跟随中" : "实时跟随"}
-          </button>
-          <button className="btn" onClick={run}>
-            <RefreshCw size={16} className={loading ? "spin" : ""} />
-            刷新
-          </button>
-          <button className="btn" disabled={exporting} onClick={() => void exportCsv()}>
-            <Download size={16} />
-            {exporting ? "导出中…" : "导出 CSV"}
-          </button>
-          <button className="btn" onClick={() => {
+          </Button>
+          <Button leadingIcon={<RefreshCw size={16} className={loading ? "spin" : ""} />} onClick={run}>刷新</Button>
+          <Button leadingIcon={<Download size={16} />} disabled={exporting} onClick={() => void exportCsv()}>{exporting ? "导出中…" : "导出 CSV"}</Button>
+          <Button onClick={() => {
             const now = Date.now();
             setRangeKey("1h"); setCustomStart(toLocalInput(now - 3_600_000)); setCustomEnd(toLocalInput(now));
             setLevels([]); setCategories([]); setPointId(""); setContextInput(""); setContext(""); setKeywordInput(""); setKeyword(""); setPage(0); setLive(true);
-          }}>清空筛选</button>
-        </div>
+          }}>清空筛选</Button>
+        </Stack>
 
-        <div className="filter-row">
-          <span className="filter-label">级别</span>
+        <Stack gap={8}>
+          <span className="plc-filter-label">级别</span>
           {(Object.keys(levelLabels) as LogLevel[]).map((l) => (
-            <button key={l} aria-pressed={levels.includes(l)} className={`chip level-${l} ${levels.includes(l) ? "on" : ""}`} onClick={() => { setLevels(toggle(levels, l)); resetPage(); }}>
-              {levelLabels[l]}
-            </button>
+            <Chip key={l} selected={levels.includes(l)} onClick={() => { setLevels(toggle(levels, l)); resetPage(); }}>{levelLabels[l]}</Chip>
           ))}
-          <span className="filter-label">类别</span>
+          <span className="plc-filter-label">类别</span>
           {(Object.keys(categoryLabels) as LogCategory[]).map((c) => (
-            <button key={c} aria-pressed={categories.includes(c)} className={`chip ${categories.includes(c) ? "on" : ""}`} onClick={() => { setCategories(toggle(categories, c)); resetPage(); }}>
-              {categoryLabels[c]}
-            </button>
+            <Chip key={c} selected={categories.includes(c)} onClick={() => { setCategories(toggle(categories, c)); resetPage(); }}>{categoryLabels[c]}</Chip>
           ))}
-        </div>
+        </Stack>
 
-        <div className="filter-row">
-          <span className="filter-label">点位</span>
-          <select className="input" aria-label="日志点位" value={pointId} onChange={(e) => { setPointId(e.target.value); resetPage(); }}>
-            <option value="">全部点位</option>
-            {pointId && !points.some(p => p.id === pointId) && <option value={pointId}>{pointId}（已移除）</option>}
-            {points.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-          <div className="search">
-            <Hash size={16} />
-            <input
-              className="input mono"
+        <Stack gap={8}>
+          <span className="plc-filter-label">点位</span>
+          <Select aria-label="日志点位" value={pointId} onValueChange={(value) => { setPointId(value); resetPage(); }}
+            options={[
+              { value: "", label: "全部点位" },
+              ...(pointId && !points.some(p => p.id === pointId) ? [{ value: pointId, label: `${pointId}（已移除）` }] : []),
+              ...points.map((p) => ({ value: p.id, label: p.name })),
+            ]} />
+          <div className="plc-search">
+            <TextField
               aria-label="事务"
+              leading={<Hash size={16} />}
+              trailing={contextInput ? <IconButton variant="text" size="sm" aria-label="清空事务" onClick={() => { setContextInput(""); setContext(""); resetPage(); }}><X size={14} /></IconButton> : undefined}
               placeholder="事务精确匹配，如 requestSeq=12，回车确认"
               value={contextInput}
               onChange={(e) => setContextInput(e.target.value)}
@@ -281,16 +270,12 @@ export default function PlcLogPage() {
                 }
               }}
             />
-            {contextInput && (
-              <button className="icon-btn" aria-label="清空事务" onClick={() => { setContextInput(""); setContext(""); resetPage(); }}>
-                <X size={14} />
-              </button>
-            )}
           </div>
-          <div className="search">
-            <Search size={16} />
-            <input
-              className="input"
+          <div className="plc-search">
+            <TextField
+              aria-label="搜索内容或点位名称"
+              leading={<Search size={16} />}
+              trailing={keywordInput ? <IconButton variant="text" size="sm" aria-label="清空搜索" onClick={() => { setKeywordInput(""); setKeyword(""); resetPage(); }}><X size={14} /></IconButton> : undefined}
               placeholder="搜索内容或点位名称，回车确认"
               value={keywordInput}
               onChange={(e) => setKeywordInput(e.target.value)}
@@ -301,99 +286,30 @@ export default function PlcLogPage() {
                 }
               }}
             />
-            {keywordInput && (
-              <button className="icon-btn" aria-label="清空搜索" onClick={() => { setKeywordInput(""); setKeyword(""); resetPage(); }}>
-                <X size={14} />
-              </button>
-            )}
           </div>
-        </div>
-      </div>
+        </Stack>
+        </Stack>
+      </Card>
 
-      {configError && <div className="notice error" role="alert">点位配置：{configError} <button className="btn" onClick={loadPoints}>重新加载点位</button></div>}
-      {exportError && <div className="notice error" role="alert">{exportError}</div>}
+      {configError && <Alert tone="ng" action={<Button size="sm" onClick={loadPoints}>重新加载点位</Button>}>点位配置：{configError}</Alert>}
+      {exportError && <Alert tone="ng">{exportError}</Alert>}
 
       {history && dataScope === generation && dataPage === page && (
-        <div className="panel">
-          <div className="panel-toolbar">
-            <h3 className="panel-title">点位趋势 · {selectedPoint?.name ?? pointId}</h3>
-            <span className="muted">{history.samples.length} 个采样点 · 基于值变化记录</span>
-          </div>
+        <Card title={<Heading level={3}>点位趋势 · {selectedPoint?.name ?? pointId}</Heading>} actions={<span className="muted">{history.samples.length} 个采样点 · 基于值变化记录</span>}>
           <StepChart samples={history.samples} start={history.start} end={history.end} />
-        </div>
+        </Card>
       )}
 
-      <div className="panel">
-        <div className="panel-toolbar">
-          <div className="row">
-            <h3 className="panel-title">日志</h3>
-            <span className="muted">共 {currentData.total} 条</span>
-            {error && <span className="ng">{error}</span>}
-          </div>
-          <div className="row">
-            <button className="icon-btn" aria-label="上一页" disabled={loading || page === 0} onClick={() => setPage(page - 1)}>
-              <ChevronLeft size={18} />
-            </button>
-            <span className="mono muted">
-              {page + 1} / {pageCount}
-            </span>
-            <button className="icon-btn" aria-label="下一页" disabled={loading || page + 1 >= pageCount} onClick={() => setPage(page + 1)}>
-              <ChevronRight size={18} />
-            </button>
-          </div>
-        </div>
-        <div className="table-wrap">
-          <table className="table log-table">
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>级别</th>
-                <th>类别</th>
-                <th>点位</th>
-                <th>内容</th>
-                <th>事务</th>
-              </tr>
-            </thead>
-            <tbody>
-              {currentData.items.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="muted center">
-                    {loading ? "加载中…" : "所选条件下暂无日志"}
-                  </td>
-                </tr>
-              )}
-              {currentData.items.map((e) => (
-                <tr key={e.id}>
-                  <td className="mono nowrap">{formatTs(e.ts)}</td>
-                  <td>
-                    <span className={`badge level-${e.level}`}>{levelLabels[e.level]}</span>
-                  </td>
-                  <td className="nowrap">{categoryLabels[e.category] ?? e.category}</td>
-                  <td className="nowrap">
-                    {e.pointId ? (
-                      <button className="link" onClick={() => { setPointId(e.pointId!); resetPage(); }}>
-                        {e.pointName ?? e.pointId}
-                      </button>
-                    ) : (
-                      <span className="muted">—</span>
-                    )}
-                  </td>
-                  <td className="msg">{e.message}</td>
-                  <td className="mono nowrap">
-                    {e.context ? (
-                      <button className="link" onClick={() => { setContextInput(e.context!); setContext(e.context!); resetPage(); }}>
-                        {e.context}
-                      </button>
-                    ) : (
-                      <span className="muted">—</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <Card title={<Stack gap={10}>
+          <Heading level={3}>日志</Heading>
+          <span className="muted">共 {currentData.total} 条</span>
+        </Stack>} actions={<Pagination label="日志分页" total={currentData.total} page={page + 1} pageSize={PAGE_SIZE} pageSizeOptions={[PAGE_SIZE]} disabled={loading} onPageChange={(value) => setPage(value - 1)} />}>
+        <Stack direction="column" align="stretch" gap={12}>
+          {error && <Alert tone="ng">{error}</Alert>}
+          <Table<LogEntry> caption="PLC 日志" rows={currentData.items} columns={logColumns} rowKey={(e) => String(e.id)}
+            emptyState={<EmptyState title={loading ? "加载中…" : "所选条件下暂无日志"} />} />
+        </Stack>
+      </Card>
     </div>
   );
 }

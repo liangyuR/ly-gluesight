@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { AlertTriangle, Camera, ChevronLeft, ChevronRight, ExternalLink, Lock, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Camera, ChevronLeft, ChevronRight, ExternalLink, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Alert, Button, EmptyState, StatusBadge } from "qing-steel";
 import { cameraApi, CameraConfigPanel, defaultCameraConfig, FramePreview, useRigStatus } from "../features/camera";
 import CameraOverview from "../features/camera/components/CameraOverview";
 import { AppliedPanel } from "../features/camera/components/FramePreview";
@@ -89,7 +90,8 @@ export default function CameraPage() {
   if(!configs.length)return <div className="cg-page">
     <ReturnButton disabled={!!action} guard={guard} hint="配置后保存并应用，再返回继续。"/>
     {notice}
-    <div className="wp-empty"><Camera size={32}/><h2>{loading?"正在读取相机配置":"尚未添加相机"}</h2><p>{desktop?"添加相机后绑定具体设备，配置触发接线并测试出图。":"请在桌面软件中添加或连接相机。"}</p>{error&&<p className="cg-err">{error}</p>}{desktop&&!readOnly&&!loading&&<button className="btn primary" onClick={()=>void add()} disabled={locked}><Plus size={15}/>添加相机</button>}</div>
+    <EmptyState icon={<Camera size={32}/>} title={loading?"正在读取相机配置":"尚未添加相机"} description={desktop?"添加相机后绑定具体设备，配置触发接线并测试出图。":"请在桌面软件中添加或连接相机。"}
+      action={<>{error&&<Alert tone="ng">{error}</Alert>}{desktop&&!readOnly&&!loading&&<Button variant="filled" leadingIcon={<Plus size={15}/>} onClick={()=>void add()} disabled={locked}>添加相机</Button>}</>}/>
   </div>;
 
   if(!config)return <div className="cg-page">
@@ -104,20 +106,20 @@ export default function CameraPage() {
   const health=cameraHealth(config,status);
   const warnings=status?.warnings??[];
   const mvs=config.source==="mvs";
-  const handOverButton=!readOnly&&mvs&&!!config.serial&&<button className="btn" onClick={()=>void handOver()} disabled={!desktop||!!action||configSaving||(!released&&busy)} title={released?"收回相机并重新打开":"关闭相机，供海康 MVS 客户端连接调焦"}>{released?<RefreshCw size={15}/>:<ExternalLink size={15}/>}{action==="release"?"释放中…":action==="reconnect"?"连接中…":released?"重新连接":"释放给 MVS"}</button>;
+  const handOverButton=!readOnly&&mvs&&!!config.serial&&<Button leadingIcon={released?<RefreshCw size={15}/>:<ExternalLink size={15}/>} onClick={()=>void handOver()} disabled={!desktop||!!action||configSaving||(!released&&busy)} title={released?"收回相机并重新打开":"关闭相机，供海康 MVS 客户端连接调焦"}>{action==="release"?"释放中…":action==="reconnect"?"连接中…":released?"重新连接":"释放给 MVS"}</Button>;
   const leading=!readOnly&&<div className="cg-remove">
-    <button className="btn small" onClick={()=>void remove()} disabled={locked||loading||configSaving||!!removeBlocked}><Trash2 size={13}/>{action==="remove"?"移除中…":"移除相机"}</button>
+    <Button size="sm" leadingIcon={<Trash2 size={13}/>} onClick={()=>void remove()} disabled={locked||loading||configSaving||!!removeBlocked}>{action==="remove"?"移除中…":"移除相机"}</Button>
     <small className={removeError?"cg-err":undefined}>{removeError||removeBlocked||(referencedBy.length?"":"未被任何配方引用，可移除。")}{!referencesReady&&referenceError&&<> <Link className="cg-link" to="/recipe">在配方库处理</Link></>}</small>
   </div>;
 
   return <div className="cg-page">
     <div className="cg-crumb-row">
-      <button className="cg-crumb" onClick={back} disabled={configSaving||!!action}><ChevronLeft size={16}/>相机组总览</button>
+      <Button variant="text" leadingIcon={<ChevronLeft size={16}/>} onClick={back} disabled={configSaving||!!action}>相机组总览</Button>
       <span className="muted">/</span>
       <strong>{config.name}</strong><span className="mono">{config.id}</span>
       <StateBadge {...health}/>
-      {warnings.length>0&&<span className="cg-badge warn"><AlertTriangle size={12}/>{warnings.length} 项参数未接受</span>}
-      {locked&&lockedReason&&<span className="cg-badge off"><Lock size={12}/>只读</span>}
+      {warnings.length>0&&<StatusBadge tone="warn">{warnings.length} 项参数未接受</StatusBadge>}
+      {locked&&lockedReason&&<StatusBadge tone="off">只读</StatusBadge>}
       {configs.length>1&&<div className="cg-switch" role="group" aria-label="切换相机">{configs.map((c,i)=><button key={c.id} aria-current={i===cam?"true":undefined} aria-label={`${c.name} ${c.id}`} disabled={configSaving||!!action} onClick={()=>open(i)}><span className={"dot "+cameraHealth(c,statusOf(i)).tone}/>{c.id}</button>)}</div>}
       <span className="spacer"/>
       <ReturnButton disabled={configSaving||!!action} guard={guard} hint="配置后保存并应用，再返回继续。"/>
@@ -128,7 +130,7 @@ export default function CameraPage() {
       side={<>
         <FramePreview key={config.id} cam={cam} status={status} lastFrame={lastFrame[cam]} config={config} actions={handOverButton}
           blockedReason={busy?"工件检测中":!desktop?"需要桌面后端":mvs&&!config.serial?"未绑定设备":released?"已释放给 MVS，在海康 MVS 客户端调焦、调光圈，完成后关闭 MVS 再重新连接":dirty?"先保存并应用再测试":""}/>
-        {handError&&<p className="cg-err">{handError}</p>}
+        {handError&&<Alert tone="ng">{handError}</Alert>}
         <AppliedPanel config={config} status={status}/>
       </>}/>
     {dialog}

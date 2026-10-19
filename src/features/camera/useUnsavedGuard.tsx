@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Button } from "qing-steel";
 import Modal from "../plc/components/Modal";
 
 /** 有未保存修改时，切换相机、点链接离开、返回前先确认：保存并应用 / 放弃 / 取消。 */
@@ -26,9 +27,9 @@ export function useUnsavedGuard({ dirty, save, discard }: { dirty: boolean; save
   const proceed = (action: () => void) => { setPending(null); action(); };
 
   const dialog = pending && <Modal title="有未保存的相机参数" onClose={close} closeDisabled={saving} width={420} footer={<>
-    <button className="btn" disabled={saving} onClick={close}>取消</button>
-    <button className="btn" disabled={saving} onClick={() => { discard(); proceed(pending); }}>放弃修改</button>
-    <button className="btn primary" disabled={saving} onClick={async () => { setSaving(true); const ok = await save().finally(() => setSaving(false)); if (ok) proceed(pending); else setPending(null); }}>{saving ? "写入中…" : "保存并应用"}</button>
+    <Button disabled={saving} onClick={close}>取消</Button>
+    <Button disabled={saving} onClick={() => { discard(); proceed(pending); }}>放弃修改</Button>
+    <Button variant="filled" disabled={saving} onClick={async () => { setSaving(true); const ok = await save().finally(() => setSaving(false)); if (ok) proceed(pending); else setPending(null); }}>{saving ? "写入中…" : "保存并应用"}</Button>
   </>}><p>当前相机的参数修改还没有写入相机。</p></Modal>;
 
   return { guard, dialog };

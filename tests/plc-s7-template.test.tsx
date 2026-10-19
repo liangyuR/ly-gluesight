@@ -33,7 +33,7 @@ describe("载入一期 S7 点表", () => {
     expect(onApply.mock.calls[0][0].connection.s7).toMatchObject({ localTsap: 0x0102, remoteTsap: 0x0201, pduSize: 240 });
     expect(onApply.mock.calls[0][1]).toBe("s7200smart");
 
-    fireEvent.change(screen.getByRole("combobox", { name: "一期 CPU 预设" }), { target: { value: "s71200" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "一期 CPU 预设" }).closest(".qs-select")!.querySelector("select")!, { target: { value: "s71200" } });
     expect(screen.getByRole("spinbutton")).toBeEnabled();
     await waitFor(() => expect(invoke).toHaveBeenLastCalledWith("plc_s7_phase1_template", { dbNumber: 100, snType: "string" }));
     fireEvent.click(await screen.findByRole("checkbox"));

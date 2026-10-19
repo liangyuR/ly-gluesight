@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Alert, Button, Card, Grid, Heading, NumberField, Select, Stack, Text } from "qing-steel";
 import { getAppInfo, getEngineStatus, openLogDir, type AppInfo, type EngineStatus } from "../lib/api";
 import { cycleApi, devLyflowHint, useRecipes, type CycleSettings, type Timeouts } from "../features/cycle";
 import { storageApi } from "../lib/storage";
@@ -82,7 +83,7 @@ function measureError(settings: CycleSettings) {
   return null;
 }
 
-function numberValue(value: string) { return value === "" ? Number.NaN : Number(value); }
+function numberValue(value: number | "") { return value === "" ? Number.NaN : value; }
 function numberInput(value: number) { return Number.isNaN(value) ? "" : value; }
 
 function CycleSettingsPanel({ savePart }: { savePart: SavePart }) {
@@ -114,79 +115,61 @@ function CycleSettingsPanel({ savePart }: { savePart: SavePart }) {
   };
 
   return (
-    <div className="panel">
-      <div className="panel-toolbar">
-        <h3 className="panel-title">检测节拍</h3>
-        <button className="btn primary" disabled={!settings || saving || !!invalid} aria-busy={saving} onClick={save}>{saving ? "保存中…" : "保存"}</button>
-      </div>
+    <Card role="region" aria-label="检测节拍" title={<Heading level={3}>检测节拍</Heading>}
+      actions={<Button variant="filled" disabled={!settings || saving || !!invalid} aria-busy={saving} onClick={save}>{saving ? "保存中…" : "保存"}</Button>}>
+      <Stack direction="column" align="stretch" gap={12}>
       {loading && !settings && <p role="status">正在读取检测节拍设置…</p>}
-      {error && <div className="notice error" role="alert">{error} <button className="btn" onClick={reload}>重试</button></div>}
+      {error && <Alert tone="ng" action={<Button size="sm" onClick={reload}>重试</Button>}>{error}</Alert>}
       {settings && <>
-      <fieldset className="form-grid" disabled={saving} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
-        <label className="field">
-          <span>型号来源</span>
-          <select
+      <fieldset disabled={saving} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+        <Grid minWidth={220} gap={14}>
+          <Select
             id="product-source"
-            className="input"
+            label="型号来源"
             value={settings.productSource}
-            onChange={(e) => update({ ...settings, productSource: e.target.value as CycleSettings["productSource"] })}
-          >
-            <option value="plc">PLC 下发产品代码</option>
-            <option value="manual">人工选择配方</option>
-          </select>
-        </label>
-        {settings.productSource === "manual" && (
-          <label className="field">
-            <span>当前配方</span>
-            <select
+            onValueChange={(value) => update({ ...settings, productSource: value as CycleSettings["productSource"] })}
+            options={[{ value: "plc", label: "PLC 下发产品代码" }, { value: "manual", label: "人工选择配方" }]}
+          />
+          {settings.productSource === "manual" && (
+            <Select
               id="manual-recipe-setting"
-              className="input"
+              label="当前配方"
               value={settings.manualRecipeId ?? ""}
-              onChange={(e) => update({ ...settings, manualRecipeId: e.target.value || null })}
-            >
-              <option value="">未选择</option>
-              {recipes.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.id} · {r.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        <label className="field" title="超过天数的检测记录每天自动删除">
-          <span>记录保留（天）</span>
-          <input
+              onValueChange={(value) => update({ ...settings, manualRecipeId: value || null })}
+              options={[{ value: "", label: "未选择" }, ...recipes.map((r) => ({ value: r.id, label: `${r.id} · ${r.name}` }))]}
+            />
+          )}
+          <NumberField
             id="history-days"
-            className="input mono"
-            type="number"
+            label="记录保留（天）"
+            description="超过天数的检测记录每天自动删除"
             min={1}
             max={3650}
             value={numberInput(settings.historyDays)}
-            onChange={(e) => update({ ...settings, historyDays: numberValue(e.target.value) })}
+            onValueChange={(value) => update({ ...settings, historyDays: numberValue(value) })}
           />
-        </label>
-        {timeoutFields.map(([key, label, hint]) => (
-          <label key={key} className="field" title={hint}>
-            <span>{label}</span>
-            <input
+          {timeoutFields.map(([key, label, hint]) => (
+            <NumberField
+              key={key}
               id={`timeout-${key}`}
-              className="input mono"
-              type="number"
+              label={label}
+              description={hint}
               min={timeoutMinimums[key]}
               step={1}
               value={numberInput(settings.timeouts[key])}
-              onChange={(e) => update({ ...settings, timeouts: { ...settings.timeouts, [key]: numberValue(e.target.value) } })}
+              onValueChange={(value) => update({ ...settings, timeouts: { ...settings.timeouts, [key]: numberValue(value) } })}
             />
-          </label>
-        ))}
+          ))}
+        </Grid>
       </fieldset>
-      <p className="muted hint">
+      <Text as="p" variant="label" muted>
         PLC 下发：按产品代码匹配配方，匹配不到判 ERR 95。人工选择：操作员在实时检测页切换配方，仅空闲时可切换，不读取产品代码。
-      </p>
-      {invalid && <div className="notice error" role="alert">{invalid}</div>}
+      </Text>
+      {invalid && <Alert tone="ng">{invalid}</Alert>}
       </>}
-      {saveError && <div className="notice error" role="alert">{saveError}</div>}
-    </div>
+      {saveError && <Alert tone="ng">{saveError}</Alert>}
+      </Stack>
+    </Card>
   );
 }
 
@@ -223,79 +206,57 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
   };
 
   return (
-    <div className="panel">
-      <div className="panel-toolbar">
-        <h3 className="panel-title">lyFlow 与帧录制</h3>
-        <button className="btn primary" disabled={!settings || saving || !!invalid} aria-busy={saving} onClick={save}>{saving ? "保存中…" : "保存"}</button>
-      </div>
+    <Card role="region" aria-label="lyFlow 与帧录制" title={<Heading level={3}>lyFlow 与帧录制</Heading>}
+      actions={<Button variant="filled" disabled={!settings || saving || !!invalid} aria-busy={saving} onClick={save}>{saving ? "保存中…" : "保存"}</Button>}>
+      <Stack direction="column" align="stretch" gap={12}>
       {loading && !settings && <p role="status">正在读取 lyFlow 与帧录制设置…</p>}
-      {error && <div className="notice error" role="alert">{error} <button className="btn" onClick={reload}>重试</button></div>}
+      {error && <Alert tone="ng" action={<Button size="sm" onClick={reload}>重试</Button>}>{error}</Alert>}
       {settings && <>
-      <fieldset className="form-grid" disabled={saving} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
-        <label className="field">
-          <span>真机帧录制</span>
-          <select id="record-mode" className="input" value={settings.record} onChange={(e) => update({ ...settings, record: e.target.value as CycleSettings["record"] })}>
-            <option value="off">关闭</option>
-            <option value="failed">只留 NG / ERR 件</option>
-            <option value="all">全部</option>
-          </select>
-        </label>
-        <label className="field">
-          <span>真机录制最多保留（件）</span>
-          <input
+      <fieldset disabled={saving} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+        <Grid minWidth={220} gap={14}>
+          <Select id="record-mode" label="真机帧录制" value={settings.record} onValueChange={(value) => update({ ...settings, record: value as CycleSettings["record"] })}
+            options={[{ value: "off", label: "关闭" }, { value: "failed", label: "只留 NG / ERR 件" }, { value: "all", label: "全部" }]} />
+          <NumberField
             id="record-keep"
-            className="input mono"
-            type="number"
+            label="真机录制最多保留（件）"
             min={1}
             max={100000}
             value={numberInput(settings.recordKeep)}
-            onChange={(e) => update({ ...settings, recordKeep: numberValue(e.target.value) })}
+            onValueChange={(value) => update({ ...settings, recordKeep: numberValue(value) })}
           />
-        </label>
-        <label className="field">
-          <span>真机录制总大小上限（GB）</span>
-          <input
+          <NumberField
             id="record-max-gb"
-            className="input mono"
-            type="number"
+            label="真机录制总大小上限（GB）"
             min={0.5}
             max={10000}
-            step="any"
+            step={0.5}
             value={numberInput(settings.recordMaxGb)}
-            onChange={(e) => update({ ...settings, recordMaxGb: numberValue(e.target.value) })}
+            onValueChange={(value) => update({ ...settings, recordMaxGb: numberValue(value) })}
           />
-        </label>
-        <label className="field">
-          <span>离线原图最多保留（件）</span>
-          <input
+          <NumberField
             id="offline-record-keep"
-            className="input mono"
-            type="number"
+            label="离线原图最多保留（件）"
             min={1}
             max={100000}
             step={1}
             value={numberInput(settings.offlineRecordKeep)}
-            onChange={(e) => update({ ...settings, offlineRecordKeep: numberValue(e.target.value) })}
+            onValueChange={(value) => update({ ...settings, offlineRecordKeep: numberValue(value) })}
           />
-        </label>
-        <label className="field">
-          <span>离线原图总大小上限（GB）</span>
-          <input
+          <NumberField
             id="offline-record-max-gb"
-            className="input mono"
-            type="number"
+            label="离线原图总大小上限（GB）"
             min={0.5}
             max={10000}
-            step="any"
+            step={0.5}
             value={numberInput(settings.offlineRecordMaxGb)}
-            onChange={(e) => update({ ...settings, offlineRecordMaxGb: numberValue(e.target.value) })}
+            onValueChange={(value) => update({ ...settings, offlineRecordMaxGb: numberValue(value) })}
           />
-        </label>
+        </Grid>
       </fieldset>
-      <p className="muted hint">离线录制使用独立的件数与容量上限。候选样本集试运行引用样本原图，不额外复制录制；此处清理不管理已导入样本目录。超出任一上限时删除最旧的离线原图；保存后在后续录制清理时生效。退出离线模式后恢复真机帧录制设置。</p>
-      {invalid && <div className="notice error" role="alert">{invalid}</div>}
+      <Text as="p" variant="label" muted>离线录制使用独立的件数与容量上限。候选样本集试运行引用样本原图，不额外复制录制；此处清理不管理已导入样本目录。超出任一上限时删除最旧的离线原图；保存后在后续录制清理时生效。退出离线模式后恢复真机帧录制设置。</Text>
+      {invalid && <Alert tone="ng">{invalid}</Alert>}
       </>}
-      <dl className="kv" style={{ marginTop: 12 }}>
+      <dl className="kv">
         <dt>引擎</dt>
         <dd className={visibleEngine?.ready ? "ok" : "muted"}>
           {engineLoading ? "正在读取…" : visibleEngine ? `${visibleEngine.backend} · ${visibleEngine.ready ? "就绪" : "未就绪"}${visibleEngine.version ? ` · ${visibleEngine.version}` : ""}` : "--"}
@@ -305,13 +266,14 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
         <dt>运行库目录</dt>
         <dd className="mono">{visibleEngine?.path ?? "--"}</dd>
       </dl>
-      {import.meta.env.DEV && visibleEngine && !visibleEngine.ready && <p className="notice" role="note">{devLyflowHint}</p>}
-      {engineError && <div className="notice error" role="alert">引擎状态读取失败：{engineError} <button className="btn" onClick={refresh}>重试引擎状态</button></div>}
-      <p className="muted hint">
+      {import.meta.env.DEV && visibleEngine && !visibleEngine.ready && <Alert tone="info">{devLyflowHint}</Alert>}
+      {engineError && <Alert tone="ng" action={<Button size="sm" onClick={refresh}>重试引擎状态</Button>}>引擎状态读取失败：{engineError}</Alert>}
+      <Text as="p" variant="label" muted>
         真机检测固定使用 lyFlow 流程，沿各拍照点的示教中线量胶，需要兼容的核心库和已验证发布的配方；离线 · 合成图使用模拟测量；离线 · 样本集使用 lyFlow，候选试运行无需发布。已发布版本运行前需完成发布资源预热。帧录制保存同次触发的全部视角，可用于历史复测。
-      </p>
-      {saveError && <div className="notice error" role="alert">{saveError}</div>}
-    </div>
+      </Text>
+      {saveError && <Alert tone="ng">{saveError}</Alert>}
+      </Stack>
+    </Card>
   );
 }
 
@@ -320,14 +282,13 @@ function StoragePanel() {
   const [openError, setOpenError] = useState("");
   const environment: Record<string, string> = { development: "本地开发", production: "正式版", test: "自动化测试" };
   const migration: Record<string, string> = { fresh: "新资料目录", completed: "迁移完成", migrated: "迁移完成", none: "无需迁移", ready: "资料目录已启用", pending: "等待迁移", failed: "迁移失败" };
-  return <section className="panel" aria-label="资料存储">
-    <div className="panel-toolbar"><h3 className="panel-title">资料存储</h3>
-      <button className="btn" disabled={!data || loading || !!error} onClick={() => {
-        setOpenError(""); void storageApi.openDirectory().catch(e => setOpenError(errorText(e)));
-      }}>打开资料目录</button>
-    </div>
+  return <Card role="region" aria-label="资料存储" title={<Heading level={3}>资料存储</Heading>}
+    actions={<Button disabled={!data || loading || !!error} onClick={() => {
+      setOpenError(""); void storageApi.openDirectory().catch(e => setOpenError(errorText(e)));
+    }}>打开资料目录</Button>}>
+    <Stack direction="column" align="stretch" gap={12}>
     {loading && <p role="status">正在读取资料目录…</p>}
-    {error && <div className="notice error" role="alert">资料目录读取失败：{error} <button className="btn" onClick={reload}>重试</button></div>}
+    {error && <Alert tone="ng" action={<Button size="sm" onClick={reload}>重试</Button>}>资料目录读取失败：{error}</Alert>}
     {!loading && !error && data && <>
       <dl className="kv"><dt>当前环境</dt><dd>{environment[data.environment] ?? data.environment}</dd>
         <dt>资料目录</dt><dd className="mono" style={{ overflowWrap: "anywhere" }}>{data.root}</dd>
@@ -335,9 +296,10 @@ function StoragePanel() {
       </dl>
       {data.migrationMessage && <p role="status">{data.migrationMessage}</p>}
     </>}
-    <p className="muted hint">配方、示教、历史原图、样本、日志和缓存统一保存在此目录。正式版与本地开发版独立，同一环境的业务资料由本机账号共享。卸载默认保留资料。</p>
-    {openError && <div className="notice error" role="alert">打开资料目录失败：{openError}</div>}
-  </section>;
+    <Text as="p" variant="label" muted>配方、示教、历史原图、样本、日志和缓存统一保存在此目录。正式版与本地开发版独立，同一环境的业务资料由本机账号共享。卸载默认保留资料。</Text>
+    {openError && <Alert tone="ng">打开资料目录失败：{openError}</Alert>}
+    </Stack>
+  </Card>;
 }
 
 export default function SettingsPage() {
@@ -350,14 +312,14 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="stack">
+    <Stack direction="column" align="stretch" gap={16}>
       <StoragePanel />
       <CycleSettingsPanel savePart={savePart} />
       <MeasurePanel savePart={savePart} />
-      <div className="panel">
-        <h3 className="panel-title">关于</h3>
+      <Card role="region" aria-label="关于" title={<Heading level={3}>关于</Heading>}>
+        <Stack direction="column" align="stretch" gap={12}>
         {loading && <p role="status">正在读取应用信息…</p>}
-        {error && <div className="notice error" role="alert">{error} <button className="btn" onClick={reload}>重试应用信息</button></div>}
+        {error && <Alert tone="ng" action={<Button size="sm" onClick={reload}>重试应用信息</Button>}>{error}</Alert>}
         <dl className="kv">
           <dt>应用</dt>
           <dd>{info?.name ?? "--"}</dd>
@@ -366,9 +328,10 @@ export default function SettingsPage() {
           <dt>日志目录</dt>
           <dd className="mono">{info?.logDir ?? "--"}</dd>
         </dl>
-        <button className="btn" style={{ marginTop: 12 }} onClick={openLogs}>打开日志目录</button>
-        {logError && <div className="notice error" role="alert">打开日志目录失败：{logError}</div>}
-      </div>
-    </div>
+        <div><Button onClick={openLogs}>打开日志目录</Button></div>
+        {logError && <Alert tone="ng">打开日志目录失败：{logError}</Alert>}
+        </Stack>
+      </Card>
+    </Stack>
   );
 }
