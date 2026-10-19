@@ -58,11 +58,15 @@ mod tests {
         Record { ts, level: Level::Info, ev: "事件".into(), msg: String::new(), fields: Fields { cycle_id: Some(cycle.into()), ..fields } }
     }
 
+    fn interrupted() -> Interrupted<'static> {
+        Interrupted { cycle_id: CYCLE, sn: "OFFLINE-0000000007", request_seq: 7, started_at: Some(900) }
+    }
+
     #[test]
-    fn interrupted_part_keeps_its_logged_site_and_recipe_and_falls_back_to_real_without_start_log() {
+    fn interrupted_part_keeps_the_site_and_recipe_logged_by_its_own_start_and_is_a_failed_delivery_err() {
         let recipe = Arc::new(crate::recipe::samples().remove(1).build().unwrap());
         let lookup = |id: &str| (id == recipe.id).then(|| recipe.clone());
-        let interrupted = Interrupted { cycle_id: CYCLE, sn: "OFFLINE-0000000007", request_seq: 7, started_at: Some(900) };
+        let interrupted = interrupted();
         let logs = [
             record(1000, CYCLE, Fields::stage("partStart").with_data(serde_json::json!({"source": "offlineSample"}))),
             record(1010, "fedcba9876543210fedcba9876543210", Fields { recipe_id: Some("其他件的配方".into()), ..Fields::default() }),
@@ -75,9 +79,12 @@ mod tests {
         assert_eq!(part.recipe.as_ref().map(|r| r.id.as_str()), Some(recipe.id.as_str()));
         assert_eq!(part.shots.len(), recipe.shot_count());
         assert_eq!(part.delivery.state, PlcDeliveryState::Failed, "补记录的交付不能留在待确认，否则启动 ACK 恢复会把它当未结件");
+    }
 
-        let unknown = super::part(&interrupted, &[], |_| None, "1.0".into(), 5000);
-        assert_eq!((unknown.source, unknown.ts), (RecordSource::Real, 900));
-        assert!(unknown.judgement.reason.contains("场景按真机记录"), "{}", unknown.judgement.reason);
+    #[test]
+    fn interrupted_part_without_a_start_log_is_recorded_as_real_and_says_so() {
+        let part = part(&interrupted(), &[], |_| None, "1.0".into(), 5000);
+        assert_eq!((part.source, part.ts), (RecordSource::Real, 900));
+        assert!(part.judgement.reason.contains("场景按真机记录"), "{}", part.judgement.reason);
     }
 }
