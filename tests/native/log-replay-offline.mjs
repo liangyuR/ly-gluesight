@@ -129,7 +129,7 @@ async function checkUi(page, call, parts, output) {
   await page.getByRole("heading", { name: "原发布包重现结果", exact: true }).waitFor({ timeout: 90000 });
   await page.getByText(/个拍照点全部与原结果一致/).waitFor();
   await page.getByRole("checkbox", { name: "只看差异" }).uncheck();
-  const panel = name => page.locator("section.wp-panel").filter({ has: page.getByRole("heading", { name, exact: true }) });
+  const panel = name => page.locator(".wp-panel").filter({ has: page.getByRole("heading", { name, exact: true }) });
   await panel("原发布包重现结果").scrollIntoViewIfNeeded();
   await page.screenshot({ path: path.join(output, "history-replay.png") });
   const measuredShot = Object.keys(TEACH)[1];

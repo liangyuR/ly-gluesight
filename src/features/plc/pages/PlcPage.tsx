@@ -11,7 +11,7 @@ import { plcApi, usePlcOperationState, usePlcStatus, usePlcValues } from "../api
 import { inspectionHandshakeTags } from "../../../business/plcTags";
 import { asS7, dataTypeLabels, edgeLabels, effectiveOrder, formatValue, isMultiWord, newPoint, s7Protocol } from "../meta";
 import { formatClock } from "../time";
-import { useSnackbar } from "../../../components/Snackbar";
+import { useSnackbar } from "qing-steel";
 import type { PlcConfig, PlcHandshakeState, PlcPoint, TagPreset } from "../types";
 
 type Editing = { point: PlcPoint; isNew: boolean } | null;
@@ -45,7 +45,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
   const [s7Open, setS7Open] = useState(false);
   const [cpuPreset, setCpuPreset] = useState({ revision: 0, key: "" });
   const [actionError, setActionError] = useState("");
-  const snack = useSnackbar();
+  const { show: snack } = useSnackbar();
   const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState(false);
   const acting = useRef(false);

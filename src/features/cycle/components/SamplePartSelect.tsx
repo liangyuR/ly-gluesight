@@ -1,3 +1,4 @@
+import { Select } from "qing-steel";
 import { sampleLabelText } from "../../history/meta";
 import type { SampleSetSummary } from "../types";
 
@@ -11,14 +12,9 @@ interface Props {
 }
 
 export default function SamplePartSelect({ sampleSet, nextPart, value, onChange, disabled, label = "样本件" }: Props) {
-  return (
-    <select aria-label={label} className="input sample-part-select" value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}>
-      <option value="">按顺序（下一件 {nextPart ?? "—"}）</option>
-      {sampleSet.parts.map((p) => (
-        <option key={p.partId} value={p.partId}>
-          {p.partId} · {p.sn} · 期望 {sampleLabelText[p.label]}
-        </option>
-      ))}
-    </select>
-  );
+  const options = [
+    { value: "", label: `按顺序（下一件 ${nextPart ?? "—"}）` },
+    ...sampleSet.parts.map((p) => ({ value: p.partId, label: `${p.partId} · ${p.sn} · 期望 ${sampleLabelText[p.label]}` })),
+  ];
+  return <Select aria-label={label} className="sample-part-select" value={value} onValueChange={onChange} disabled={disabled} options={options} />;
 }

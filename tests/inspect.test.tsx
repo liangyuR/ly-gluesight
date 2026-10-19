@@ -42,7 +42,8 @@ beforeEach(() => {
   vi.mocked(workspaceApi.liveImage).mockReset().mockResolvedValue({ url: "data:,", width: 100, height: 60 });
   vi.mocked(plcApi.getConfig).mockReset().mockResolvedValue(plcConfig());
 });
-const manual = () => screen.getByRole("combobox", { name: "当前检测配方" });
+const nativeSelect = (name: string, root: Pick<typeof screen, "getByLabelText"> = screen) => root.getByLabelText(name, { selector: "select" });
+const manual = () => nativeSelect("当前检测配方");
 
 describe("在线检测切型锁定", () => {
   it("切型确认期间开始接收工件，禁止切换并允许取消", async () => {
@@ -61,7 +62,7 @@ describe("在线检测原图录制失败告警", () => {
   it("快照带 recordingAlarm → 报警栏写明连续件数、最近件与原因，告警清除后撤掉", () => {
     state = { ...state, recordingAlarm: { consecutive: 3, cycleId: "cycle-9", reason: "创建原图失败：拒绝访问", since: 1 } };
     const page = render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    const banner = screen.getByText(/原图录制失败/).closest("[role='alert']");
+    const banner = screen.getByText(/原图录制失败/).closest("[role='status']");
     expect(banner).toHaveTextContent("连续 3 件原图未完整保存");
     expect(banner).toHaveTextContent("cycle-9");
     expect(banner).toHaveTextContent("拒绝访问");
@@ -82,7 +83,7 @@ describe("在线检测离线产线控件", () => {
   it("离线模式运行一件 → 按所选配方请求正常件单件运行", async () => {
     site = siteStatus({ mode: "offline", source: "synthetic", measurement: "simulated", port: 50102 });
     render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "离线配方" }), "B");
+    await userEvent.selectOptions(nativeSelect("离线配方"), "B");
     await userEvent.click(screen.getByRole("button", { name: "运行一件" }));
     expect(cycleApi.offlineRun).toHaveBeenCalledWith("B", "normal", false, null);
   });
@@ -141,7 +142,7 @@ describe("在线检测选帧、曲线与快照绑定", () => {
   it("同 SN 重检的新周期清除旧选帧、选点、测量值和结论", async () => {
     state = { ...state, phase: "REPORT", part: cyclePart(), result: cycleResult() }; measured = [cycleMeasurement()];
     const page = render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    fireEvent.change(screen.getByRole("slider", { name: "位置曲线选点" }), { target: { value: "1" } });
+    fireEvent.keyDown(screen.getByRole("slider", { name: "位置曲线选点" }), { key: "ArrowRight" });
     expect(screen.getByText(/点 2 · P1 · J1 · s=1.00/)).toBeVisible();
     state = { ...state, phase: "FAULT", fault: "新件相机错误", part: { ...cyclePart("1", "cycle-2"), frames: [cyclePart().frames[0], { ...cyclePart().frames[1], status: "waiting" }] } };
     page.rerender(<MemoryRouter><InspectPage /></MemoryRouter>);
@@ -158,7 +159,7 @@ describe("在线检测选帧、曲线与快照绑定", () => {
     state.part = cyclePart(); state.part.recipeRevision = "new-revisionId"; measured = [cycleMeasurement()];
     render(<MemoryRouter><InspectPage /></MemoryRouter>);
     expect(screen.queryByText("3.00–4.50")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "查看帧 k1" })).toHaveClass("s-waiting");
+    expect(within(screen.getByRole("group", { name: "拍照点" })).getByRole("button", { name: "P1 · 等待采集" })).toBeInTheDocument();
     expect(workspaceApi.liveImage).not.toHaveBeenCalled();
     expect(screen.queryByText(/点 2 ·/)).not.toBeInTheDocument();
   });
@@ -198,8 +199,8 @@ describe("候选配方离线试运行", () => {
     const panel = within(screen.getByRole("region", { name: "候选配方离线试运行" }));
     const run = panel.getByRole("button", { name: "候选试运行一圈" });
     await waitFor(() => expect(run).toBeEnabled());
-    expect(panel.getByRole("combobox", { name: "调试候选配方" })).toHaveValue("B");
-    await userEvent.selectOptions(panel.getByRole("combobox", { name: "调试样本件" }), "part-1");
+    expect(nativeSelect("调试候选配方", panel)).toHaveValue("B");
+    await userEvent.selectOptions(nativeSelect("调试样本件", panel), "part-1");
     fireEvent.click(run);
     fireEvent.click(run);
     expect(workspaceApi.debugRun).toHaveBeenCalledTimes(1);
@@ -219,7 +220,7 @@ describe("候选配方离线试运行", () => {
     state = snapshot(running === "cycle" ? "ACQUIRE" : "IDLE");
     render(<MemoryRouter initialEntries={["/inspect?candidate=A"]}><InspectPage /></MemoryRouter>);
     const panel = within(screen.getByRole("region", { name: "候选配方离线试运行" }));
-    await waitFor(() => expect(panel.getByRole("combobox", { name: "调试候选配方" })).toHaveValue("A"));
+    await waitFor(() => expect(nativeSelect("调试候选配方", panel)).toHaveValue("A"));
     expect(panel.getByRole("button", { name: "候选试运行一圈" })).toBeDisabled();
   });
 

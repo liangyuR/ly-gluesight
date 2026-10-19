@@ -29,7 +29,7 @@ describe("验证与发布页面", () => {
     show();
     await userEvent.click(screen.getByRole("button", { name: "发布离线回放配方" }));
     expect(screen.getByRole("dialog", { name: "发布离线回放配方" })).toHaveTextContent("该版本仅用于离线回放，不能用于真机生产");
-    expect(screen.getByRole("link", { name: "前往在线检测调试候选" })).toHaveAttribute("href", "/inspect?candidate=A");
+    expect(screen.getByRole("link", { name: "前往在线检测调试候选", hidden: true })).toHaveAttribute("href", "/inspect?candidate=A");
     expect(workspaceApi.publish).not.toHaveBeenCalled();
   });
 

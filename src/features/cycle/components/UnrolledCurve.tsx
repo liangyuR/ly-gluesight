@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Button, Slider } from "qing-steel";
 import type { JudgeParams, Measured, PointVis, Recipe } from "../types";
 import { CAM_COLORS, segmentLength } from "../vis";
 
@@ -221,10 +222,11 @@ export default function UnrolledCurve({ layout, measured, vis, quantity = "d", s
       </svg>
     </div>
     {n > 0 && <div className="curve-selection" style={{ display: "flex", alignItems: "center", flexWrap: "wrap", flexShrink: 0, gap: 8, paddingTop: 6, fontSize: 12 }}>
-      <input type="range" style={{ width: 160 }} min={0} max={n - 1} step={1} value={point ?? 0} aria-label={`${curveName}曲线选点`}
-        aria-valuetext={`点 ${(point ?? 0) + 1}`} onFocus={() => { if (point === null) select(0); }} onChange={event => select(Number(event.target.value))} />
+      <div style={{ width: 200 }} onFocus={() => { if (point === null) select(0); }}>
+        <Slider label={`${curveName}曲线选点`} min={0} max={Math.max(1, n - 1)} step={1} value={point ?? 0} formatValue={v => `点 ${v + 1}`} onValueChange={select} />
+      </div>
       <span role="status">{point === null ? compact ? "" : "点击曲线或用方向键选择测量点" : `点 ${point + 1}${sel ? ` · ${sel.g.name} · s=${sel.s.toFixed(2)} mm` : ""} · ${quantity === "w" ? "胶宽" : "d"}=${Number.isNaN(values[point]) ? "—" : values[point].toFixed(2)} mm · ${pointLabels[vis[point] ?? "none"]}`}</span>
-      {point !== null && <button type="button" className="btn small" aria-label={`清除${curveName}曲线选点`} onClick={() => select(null)}>清除选点</button>}
+      {point !== null && <Button size="sm" aria-label={`清除${curveName}曲线选点`} onClick={() => select(null)}>清除选点</Button>}
     </div>}
     </div>
   );

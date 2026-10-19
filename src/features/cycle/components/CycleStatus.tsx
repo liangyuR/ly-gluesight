@@ -1,33 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
+import { InspectionStages } from "qing-steel";
 import { plcApi, usePlcValues, type PlcConfig } from "../../plc";
 import type { Phase, Snapshot } from "../types";
 
-const steps: [Phase, string][] = [
-  ["IDLE", "空闲"],
-  ["VALIDATE", "校验"],
-  ["ACQUIRE", "采集"],
-  ["DRAIN", "收尾"],
-  ["JUDGE", "判定"],
-  ["REPORT", "回写"],
-  ["RELEASE", "释放"],
+const steps: { id: Phase; label: string }[] = [
+  { id: "IDLE", label: "空闲" },
+  { id: "VALIDATE", label: "校验" },
+  { id: "ACQUIRE", label: "采集" },
+  { id: "DRAIN", label: "收尾" },
+  { id: "JUDGE", label: "判定" },
+  { id: "REPORT", label: "回写" },
+  { id: "RELEASE", label: "释放" },
 ];
 
 export function CycleStepper({ snapshot }: { snapshot: Snapshot | null }) {
   const phase = snapshot?.phase ?? "IDLE";
-  if (phase === "FAULT") {
-    return <span className="step-fault">故障 · {snapshot?.fault}</span>;
-  }
-  const at = steps.findIndex(([p]) => p === phase);
+  const at = steps.findIndex(step => step.id === phase);
   const err = snapshot?.result?.verdict === "ERR_INSPECT" && (!snapshot.part || snapshot.result.cycleId === snapshot.part.cycleId);
-  return (
-    <div className="stepper">
-      {steps.map(([p, label], i) => (
-        <span key={p} className={i < at ? "done" : i === at && phase !== "IDLE" ? `act${err && i >= 4 ? " err" : ""}` : ""}>
-          {label}
-        </span>
-      ))}
-    </div>
-  );
+  const fault = phase === "FAULT" ? { message: `故障 · ${snapshot?.fault ?? ""}` } : err && at >= 4 ? { stepId: phase, message: "本件未测成" } : null;
+  return <InspectionStages steps={steps} currentStepId={phase === "IDLE" ? null : phase} completedStepIds={steps.slice(0, Math.max(0, at)).map(step => step.id)} fault={fault} />;
 }
 
 const plcToPc = ["partStart", "partEnd", "resultAck"];
