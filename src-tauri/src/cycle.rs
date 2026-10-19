@@ -24,7 +24,7 @@ use crate::inspection::{read_tag_u32, tag};
 use crate::judge::{self, fault, Judgement, PointState, Verdict};
 use crate::measure::{self, Job, Measured, WorkerHealth};
 use crate::plc::PlcHost;
-use crate::plc_session::{PlcSession, SessionEvent, SessionPhase, SessionView};
+use crate::plc_session::{PartSite, PlcSession, SessionEvent, SessionPhase, SessionView};
 use crate::recipe::{Recipe, RecipeStore, TriggerMode};
 use crate::recorder::{Recorder, Recorders, Recording};
 use crate::settings::{CycleSettings, ProductSource};
@@ -444,9 +444,12 @@ pub fn purge_history(app: &AppHandle) {
 
 /// 启动时握手日志里有已绑定工件、尚无结果的在途事务，而历史与追溯暂存里都没有它：进程在事务中退出，补一条 ERR 记录。
 /// 只补记录，不动握手事务；事务仍由 PLC 复位处置。
-pub(crate) fn record_interrupted_part(app: &AppHandle, s7: &PlcSession) {
+pub(crate) fn record_interrupted_part(app: &AppHandle, s7: &PlcSession, stats: &mut Stats, scope: HistoryScope) {
     let (Some(cycle_id), Some(request)) = (s7.cycle_id(), s7.request()) else { return };
     if s7.result().is_some() { return; }
+    let Some(site) = s7.site() else {
+        return log(app, "err", "中断工件补记录", format!("cycleId={cycle_id}：握手日志缺少开工时的场景与录制方式，未补记录"));
+    };
     let host = host(app);
     let known = host.audit.protected_cycle_ids().map(|ids| ids.contains(cycle_id))
         .and_then(|spooled| Ok(spooled || app.state::<Store>().detail_by_cycle(cycle_id)?.is_some()));
@@ -457,13 +460,17 @@ pub(crate) fn record_interrupted_part(app: &AppHandle, s7: &PlcSession) {
     }
     let started_at = s7.started_at();
     let records = applog::dir(app).map(|dir| applog::cycle_records(&dir, cycle_id, started_at.unwrap_or_else(now_ms), 200).records).unwrap_or_default();
-    let interrupted = interrupted::Interrupted { cycle_id, sn: &request.sn, request_seq: request.request_seq, started_at };
+    let interrupted = interrupted::Interrupted { cycle_id, sn: &request.sn, request_seq: request.request_seq, started_at, site };
     let part = interrupted::part(&interrupted, &records, |id| host.recipe(id), app.package_info().version.to_string(), now_ms());
-    let label = part.source.label();
-    let outcome = crate::recorder::RecordingOutcome { cycle_id: cycle_id.into(), directory: None, files: Vec::new(),
-        errors: vec!["检测进程在事务中中断，本件原图未收尾".into()], retention_errors: Vec::new(), available: false,
-        state: crate::recorder::RecordingState::Failed };
-    match host.audit.insert(part).and_then(|()| host.audit.recording(outcome)) {
+    let label = site.source.label();
+    let counted = interrupted::counts_in_stats(part.source, part.ts, scope, history::local_midnight_ms());
+    let outcome = interrupted::recording(cycle_id, site.record);
+    let inserted = host.audit.insert(part);
+    if inserted.is_ok() && counted {
+        stats.total += 1;
+        stats.err += 1;
+    }
+    match inserted.and_then(|()| host.audit.recording(outcome)) {
         Ok(()) => log_with(app, "warn", "中断工件补记录", format!("SN={} 请求序号 {}：进程在事务中中断，已按 ERR 补入历史（{label}）；PLC 事务仍需复位处置", request.sn, request.request_seq),
             Fields { cycle_id: Some(cycle_id.into()), sn: Some(request.sn.clone()), request_seq: Some(request.request_seq), ..Fields::default() }),
         Err(error) => log(app, "err", "中断工件补记录", format!("cycleId={cycle_id}：{error}")),
@@ -798,7 +805,7 @@ struct Machine {
 
 impl Machine {
     fn new(app: AppHandle, measure_tx: Sender<Job>, workers: Arc<WorkerHealth>) -> Self {
-        let stats = today_stats(&app, HistoryScope::Real);
+        let mut stats = today_stats(&app, HistoryScope::Real);
         let s7 = PlcSession::open(crate::storage::state(&app).join("plc-handshake.json"));
         let recovery = match app.state::<Store>().unresolved_delivery_cycles() {
             Ok(unresolved) => s7.recover_acknowledgements(&unresolved),
@@ -819,7 +826,7 @@ impl Machine {
         }
         if recovered > 0 { log(&app, "ok", "PLC 确认恢复", format!("已从持久握手记录恢复 {recovered} 件 PLC 确认，原检测结论保留")); }
         if failed > 10 { log(&app, "err", "PLC 确认恢复", format!("另有 {} 条收据未能关联或保存，请核对握手审计与检测记录", failed - 10)); }
-        record_interrupted_part(&app, &s7);
+        record_interrupted_part(&app, &s7, &mut stats, HistoryScope::Real);
         host(&app).busy.store(s7.pending(), Ordering::SeqCst);
         Self {
             app,
@@ -1097,13 +1104,14 @@ impl Machine {
         let context = Fields { cycle_id: taken.as_ref().ok().cloned(), sn: Some(sn.clone()), request_seq: Some(request.request_seq), ..Fields::default() };
         applog::begin_cycle(context.clone());
         log_with(&app, "info", "partStart↑", format!("SN={sn} 产品代码={code} N={count}"),
-            Fields::stage("partStart").with_data(json!({"productCode": code, "shotCount": count, "source": crate::site::record_source(&app)})));
+            Fields::stage("partStart").with_data(json!({"productCode": code, "shotCount": count})));
         let cycle_id = match taken {
             Ok(id) => id,
             Err(reason) => return self.refuse(sn, None, fault::PROCESS_TIMEOUT, reason).await,
         };
         self.current_cycle_id = Some(cycle_id.clone());
-        if let Err(error) = self.s7.bind_cycle_id(&cycle_id) {
+        let site = PartSite { source: crate::site::record_source(&app), record: crate::site::record_mode(&app) };
+        if let Err(error) = self.s7.bind_cycle_id(&cycle_id, site) {
             return self.refuse(sn, None, fault::PROCESS_TIMEOUT, format!("S7 事务无法绑定工件身份：{error}")).await;
         }
         if !self.workers.can_arm() {

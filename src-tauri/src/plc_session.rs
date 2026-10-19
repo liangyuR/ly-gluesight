@@ -10,6 +10,8 @@ use serde_json::json;
 use crate::handshake::{self, Contract, HeartbeatWatch, Request, ResultEnvelope, Snapshot, WriteOp};
 use crate::inspection::tag;
 use crate::plc_plan::PlcPlan;
+use crate::settings::RecordMode;
+use crate::store::RecordSource;
 
 mod recovery;
 pub use recovery::AckRecovery;
@@ -17,6 +19,13 @@ pub use recovery::AckRecovery;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SessionPhase { ResetRequired, Idle, Validating, Acquiring, Draining, AwaitAck, Releasing, Fault }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartSite {
+    pub source: RecordSource,
+    pub record: RecordMode,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,6 +41,8 @@ struct Pending {
     acknowledged: bool,
     #[serde(default)]
     started_at: i64,
+    #[serde(default)]
+    site: Option<PartSite>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -149,7 +160,7 @@ impl PlcSession {
 
     pub fn acknowledged(&self) -> bool { self.journal.pending.as_ref().is_some_and(|pending| pending.acknowledged) }
 
-    pub fn bind_cycle_id(&mut self, id: &str) -> Result<(), String> {
+    pub fn bind_cycle_id(&mut self, id: &str, site: PartSite) -> Result<(), String> {
         if !valid_cycle_id(id) { return Err("S7 握手 cycleId 必须是 32 位十六进制持久身份".into()); }
         if let Some(error) = &self.load_error { return Err(error.clone()); }
         let pending = self.journal.pending.as_mut().ok_or("缺少可关联的 S7 请求事务")?;
@@ -157,7 +168,7 @@ impl PlcSession {
         match pending.cycle_id.as_deref() {
             Some(bound) if bound != id => Err("S7 事务已绑定其他 cycleId，禁止更换工件身份".into()),
             Some(_) => Ok(()),
-            None => { pending.cycle_id = Some(id.into()); Ok(()) }
+            None => { pending.cycle_id = Some(id.into()); pending.site = Some(site); Ok(()) }
         }
     }
 
@@ -173,6 +184,8 @@ impl PlcSession {
     pub fn capture_id(&self) -> Option<&str> { self.journal.pending.as_ref().and_then(|p| p.capture_id.as_deref()) }
 
     pub fn cycle_id(&self) -> Option<&str> { self.journal.pending.as_ref().and_then(|pending| pending.cycle_id.as_deref()) }
+
+    pub fn site(&self) -> Option<PartSite> { self.journal.pending.as_ref().and_then(|pending| pending.site) }
 
     pub fn recover_acknowledgements(&self, unresolved: &std::collections::BTreeSet<String>) -> AckRecovery { recovery::read(self, unresolved) }
 
@@ -469,7 +482,7 @@ impl PlcSession {
                     return Err("请求事务序号必须非零且递增；PLC 清零或回绕需先执行空闲复位".into());
                 }
                 self.journal.pending = Some(Pending { capture_id: None, request: request.clone(), result: None, phase: SessionPhase::Validating,
-                    cycle_id: None, acknowledged: false, started_at: now_ms() });
+                    cycle_id: None, acknowledged: false, started_at: now_ms(), site: None });
                 self.journal.last_request_seq = request.request_seq;
                 self.persist(engine).await?;
                 self.phase = SessionPhase::Validating;
