@@ -36,12 +36,13 @@ function Cycle({ record, onFilter }: { record: AppLogRecord; onFilter: (cycleId:
   const [target, setTarget] = useState<number | null | undefined>(undefined);
   if (!record.cycleId) return record.sn ? <span className="log-cycle"><span className="sn">SN{"\u00a0"}{record.sn}</span></span> : <span className="muted">—</span>;
   const cycleId = record.cycleId;
+  const lookup = () => void logsApi.findCycle(cycleId).then(setTarget).catch(() => setTarget(null));
   return <span className="log-cycle">
     {record.sn && <span className="sn muted">SN{"\u00a0"}{record.sn}</span>}
     <span>
       <button className="link mono" title={`只看工件 ${cycleId}`} onClick={() => onFilter(cycleId)}>{cycleId.slice(0, 8)}</button>
-      {target === undefined ? <button className="link" onClick={() => void logsApi.findCycle(cycleId).then(setTarget).catch(() => setTarget(null))}>记录</button>
-        : target === null ? <span className="muted">无记录</span> : <Link to={`/history/${target}`}>#{target}</Link>}
+      {typeof target === "number" ? <Link to={`/history/${target}`}>#{target}</Link>
+        : <button className="link" onClick={lookup}>{target === null ? "无记录，重查" : "记录"}</button>}
     </span>
   </span>;
 }

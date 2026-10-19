@@ -47,3 +47,24 @@ it("刷新后新日志插到最前 → 已查到的工件记录链接保留在�
   await rowOf("cycle-b");
   expect(within(await rowOf("cycle-a")).getByRole("link", { name: "#7" })).toBeVisible();
 });
+
+it("查无记录后工件入库、新日志插到最前 → 该行可点“无记录，重查”得到历史链接", async () => {
+  let items = [record(1000, "cycle-a")];
+  let stored: number | null = null;
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "applog_query") return { total: items.length, items, files: 1, bytes: 1 };
+    if (command === "applog_usage") return { dir: "logs", files: 1, bytes: 1, keepDays: 30, maxTotalBytes: 1, segmentBytes: 1 };
+    if (command === "history_find_cycle") return stored;
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  render(<MemoryRouter><AppLogPage /></MemoryRouter>);
+  const rowOf = async (cycleId: string) => (await screen.findByRole("button", { name: cycleId.slice(0, 8) })).closest("tr")!;
+  await userEvent.click(within(await rowOf("cycle-a")).getByRole("button", { name: "记录" }));
+  expect(await within(await rowOf("cycle-a")).findByRole("button", { name: "无记录，重查" })).toBeVisible();
+  stored = 7;
+  items = [record(2000, "cycle-b"), ...items];
+  await userEvent.click(screen.getByRole("button", { name: "刷新" }));
+  await rowOf("cycle-b");
+  await userEvent.click(within(await rowOf("cycle-a")).getByRole("button", { name: "无记录，重查" }));
+  expect(await within(await rowOf("cycle-a")).findByRole("link", { name: "#7" })).toBeVisible();
+});
