@@ -147,6 +147,7 @@ a.engine-status:hover { color: var(--on-surface); }
 .stack { display: flex; flex-direction: column; gap: 16px; }
 
 .muted { color: var(--on-surface-variant); }
+.sn { font-family: var(--font-mono); font-variant-numeric: tabular-nums; word-break: break-all; }
 .center { text-align: center; }
 .ok { color: var(--ok); }
 .ng { color: var(--ng); }
