@@ -394,7 +394,7 @@ fn recording_records(outcome: &RecordingOutcome) -> Vec<RecordingRecord> {
     } else {
         let message = match outcome.state {
             RecorderState::NotRetained => "按录制策略不保留本件原图".to_string(),
-            _ => format!("{} 张原图已核验落盘：{}", outcome.files.len(), directory.as_deref().unwrap_or("无目录")),
+            _ => format!("{} 张原图已核验落盘", outcome.files.len()),
         };
         RecordingRecord { level: None, event: "原图录制完成", message, fields }
     });
