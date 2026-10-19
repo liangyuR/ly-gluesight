@@ -90,7 +90,10 @@ export interface Comparison {
   candidateRecipe: Recipe;
   originalVerdict: Verdict; judgement: Judgement; measurements: Measured[]; createdAt: number;
 }
-export interface GrayImage { url: string; width: number; height: number }
+/** 预览像素（8 位灰度，可能是降采样后的尺寸）。 */
+export interface GrayPixels { data: Uint8Array; width: number; height: number }
+/** width / height 为原图尺寸；带 pixels 时直接画到 canvas，url 只作为这张图的标识。 */
+export interface GrayImage { url: string; width: number; height: number; pixels?: GrayPixels }
 export interface ImagingSaved { view: WorkspaceView; applyErrors: Record<string, string> }
 
 export interface CaptureCamera { cameraId: string; deviceSession: number; receivedCount: number; imaging?: CameraImaging }
