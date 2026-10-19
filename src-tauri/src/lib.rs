@@ -8,6 +8,7 @@ mod commands;
 mod cycle;
 mod cycle_ids;
 mod diagnostics;
+mod disk_guard;
 mod frame;
 mod fsio;
 mod history;
@@ -178,6 +179,8 @@ pub fn run() {
             offline::offline_stop,
             offline::offline_inject,
             workspace::workspace_list,
+            offline::offline_pace,
+            offline::offline_fault_reset,
             recipe_capture::recipe_capture_start,
             recipe_capture::recipe_capture_get,
             recipe_capture::recipe_capture_stop,

@@ -26,6 +26,7 @@ struct Bench {
     engine: PlcEngine,
     session: PlcSession,
     plan: PlcPlan,
+    intake: Arc<AtomicBool>,
 }
 
 impl Bench {
@@ -54,7 +55,8 @@ impl Bench {
         let plan = PlcPlan::compile("part-A".into(), 7, vec!["cam1".into()], (1..=4).map(|i| PlanShot {
             shot_id: format!("P{i}"), pose_id: format!("P{i}"), camera_ids: vec!["cam1".into()],
         }).collect()).unwrap();
-        Self { _server: server, line: Line::new(memory, layout), engine, session: PlcSession::open(directory.join("session.json")), plan }
+        Self { _server: server, line: Line::new(memory, layout), engine, session: PlcSession::open(directory.join("session.json")), plan,
+            intake: Arc::new(AtomicBool::new(true)) }
     }
 
     async fn run(&mut self, scenario: Scenario) -> Result<Outcome, String> {
@@ -64,7 +66,7 @@ impl Bench {
     /// 虚拟 PLC 跑一件，PC 侧按生产节拍的顺序驱动 S7 会话：开始 → 布防 → partEnd 后按实收帧判定回写。
     /// `deliver(k, lost)` 模拟相机侧：返回这次触发是否真的交付了一帧。
     async fn run_with(&mut self, sn: String, scenario: Scenario, mut deliver: impl FnMut(usize, bool) -> bool) -> Result<Outcome, String> {
-        let Self { line, engine, session, plan, .. } = self;
+        let Self { line, engine, session, plan, intake, .. } = self;
         let delivered = Mutex::new(Vec::new());
         let finished = AtomicBool::new(false);
         let abort = AtomicBool::new(false);
@@ -82,7 +84,7 @@ impl Bench {
             let until = Instant::now() + Duration::from_secs(15);
             while !finished.load(Ordering::SeqCst) || !matches!(session.phase(), SessionPhase::Idle | SessionPhase::Fault) {
                 assert!(Instant::now() < until, "会话未收敛：{:?}", session.view());
-                match session.poll(engine, false, true).await {
+                match session.poll_gated(engine, false, true, true, intake.load(Ordering::SeqCst)).await {
                     SessionEvent::Start(_) => session.arm(engine, plan).await.unwrap(),
                     SessionEvent::End(_) => {
                         let judgement = crate::cycle::tests::judge_delivered(&delivered.lock().unwrap());
@@ -112,6 +114,59 @@ async fn offline_line_over_s7_completes_parts_with_matched_ack_and_returns_to_id
             assert_eq!(bench.line.read(field), 0, "{field}");
         }
     }
+    bench.engine.disconnect().await;
+}
+
+#[tokio::test]
+async fn low_disk_during_part_still_releases_then_withholds_ready_until_space_recovers() {
+    let mut bench = Bench::new("low-disk").await;
+    let intake = bench.intake.clone();
+    let outcome = bench.run_with(" a-4242 ~".into(), Scenario::Normal, |_, lost| { intake.store(false, Ordering::SeqCst); !lost }).await.unwrap();
+    assert_eq!((outcome.request_seq, outcome.result_code), (1, 1));
+    assert_eq!(bench.session.phase(), SessionPhase::Idle);
+    assert!(!bench.session.pending());
+    assert_eq!(bench.line.read(tag::VISION_READY), 0, "释放时空间不足不能先置就绪再撤销");
+    for _ in 0..3 {
+        let event = bench.session.poll_gated(&bench.engine, false, true, true, false).await;
+        assert!(matches!(event, SessionEvent::None), "{event:?}");
+        assert_eq!(bench.line.read(tag::VISION_READY), 0);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    bench.intake.store(true, Ordering::SeqCst);
+    let event = bench.session.poll_gated(&bench.engine, false, true, true, true).await;
+    assert!(matches!(event, SessionEvent::None), "{event:?}");
+    assert_eq!(bench.line.read(tag::VISION_READY), 1);
+    assert_eq!(bench.run(Scenario::Normal).await.unwrap().request_seq, 2);
+    bench.engine.disconnect().await;
+}
+
+#[tokio::test]
+async fn low_disk_fault_reset_still_completes_but_keeps_ready_low_until_space_recovers() {
+    let mut bench = Bench::new("low-disk-reset").await;
+    {
+        let Bench { line, engine, session, .. } = &mut bench;
+        let abort = AtomicBool::new(false);
+        let pc = async {
+            let until = Instant::now() + Duration::from_secs(10);
+            while !matches!(session.poll_gated(engine, false, true, true, false).await, SessionEvent::Ready) {
+                assert!(Instant::now() < until, "空间不足时复位未完成：{:?}", session.view());
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            abort.store(true, Ordering::SeqCst);
+        };
+        let (ready, ()) = tokio::join!(line.ensure_ready(&TIMING, &abort), pc);
+        assert!(ready.is_err(), "空间不足时复位后不能置 visionReady");
+    }
+    assert_eq!(bench.session.phase(), SessionPhase::Idle);
+    assert!(!bench.session.pending());
+    assert_eq!(bench.line.read(tag::VISION_READY), 0);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert!(matches!(bench.session.poll_gated(&bench.engine, false, true, true, false).await, SessionEvent::None));
+    assert_eq!(bench.line.read(tag::VISION_READY), 0);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert!(matches!(bench.session.poll_gated(&bench.engine, false, true, true, true).await, SessionEvent::None));
+    assert_eq!(bench.line.read(tag::VISION_READY), 1);
+    assert_eq!(bench.run(Scenario::Normal).await.unwrap().request_seq, 1);
     bench.engine.disconnect().await;
 }
 

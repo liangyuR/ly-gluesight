@@ -441,3 +441,28 @@ fn changed_offline_retention_prunes_next_recording_without_removing_real_raw_ima
     assert!(offline[3].join("part.json").is_file());
     assert!(real.join("part.json").is_file());
 }
+
+#[test]
+fn applying_lower_retention_prunes_both_roots_without_next_part_and_keeps_protected_recording() {
+    let dir = TestDir::new();
+    let offline_root = dir.0.join("records-offline");
+    let part = |root: &Path, i: u32| {
+        let path = root.join(format!("20000101/20000101_00000{i}_000_cycle_p{i}"));
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("image.pgm"), b"raw").unwrap();
+        path
+    };
+    let real: Vec<_> = (0..3).map(|i| part(&dir.root(), i)).collect();
+    let offline: Vec<_> = (0..3).map(|i| part(&offline_root, i)).collect();
+    let guarded = real[0].clone();
+    let recorders = Recorders::new(
+        Recorder::guarded(dir.root(), None, cleanup(Arc::new(move || Ok(vec![guarded.clone()])), Arc::new(|_| {}))),
+        Recorder::new(offline_root, None));
+    recorders.apply_retention(&CycleSettings { record_keep: 1, offline_record_keep: 2, ..CycleSettings::default() });
+    let present = |paths: &[PathBuf]| paths.iter().map(|p| p.is_dir()).collect::<Vec<_>>();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while (present(&real), present(&offline)) != (vec![true, false, true], vec![false, true, true]) {
+        assert!(std::time::Instant::now() < deadline, "保存保留设置后未按新上限清理：real={:?} offline={:?}", present(&real), present(&offline));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}

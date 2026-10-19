@@ -179,6 +179,11 @@ impl Line {
         self.write(&[(tag::PART_START, 0), (tag::PART_END, 0), (tag::RESULT_ACK, 0)]);
     }
 
+    /// 故障注入：像操作员按住或松开复位按钮一样直接保持 faultReset 电平。
+    pub fn hold_fault_reset(&self, level: bool) {
+        self.write(&[(tag::FAULT_RESET, level as u32)]);
+    }
+
     fn ready(&self) -> bool {
         self.read(tag::VISION_READY) == 1 && self.read(tag::VISION_FAULT) == 0
     }
