@@ -120,7 +120,7 @@ async function checkUi(page, call, parts, output) {
   await nav.getByRole("link", { name: "历史记录", exact: true }).click();
   await page.getByRole("group", { name: "记录来源", exact: true }).getByRole("button", { name: "离线件", exact: true }).click();
   const [first, second] = parts;
-  await page.getByRole("row", { name: `查看 SN ${second.sn} 的记录`, exact: true }).click();
+  await page.getByRole("button", { name: `查看 SN ${second.sn} 的记录`, exact: true }).click();
   await page.getByRole("heading", { name: "本件事件时间线", exact: true }).waitFor();
   await page.getByRole("table", { name: "本件事件", exact: true }).getByRole("cell", { name: "partStart↑", exact: true }).first().waitFor();
   await page.getByRole("region", { name: "本件事件时间线" }).scrollIntoViewIfNeeded();
@@ -154,7 +154,8 @@ async function checkUi(page, call, parts, output) {
   await page.screenshot({ path: path.join(output, "app-logs.png") });
   await page.getByRole("button", { name: "导出诊断包", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "导出诊断包", exact: true });
-  await dialog.getByRole("combobox", { name: "诊断包记录范围" }).selectOption("offline");
+  await dialog.getByRole("combobox", { name: "诊断包记录范围" }).click();
+  await page.getByRole("option", { name: "离线件", exact: true }).click();
   await dialog.getByRole("button", { name: "导出", exact: true }).click();
   await dialog.getByText(/^已导出/).waitFor({ timeout: 120000 });
   await page.screenshot({ path: path.join(output, "diagnostics-dialog.png") });

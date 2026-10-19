@@ -231,7 +231,7 @@ async function exportHistory(page, call, recipeId) {
 
 async function replayInHistory(page, call, recipeId, summary) {
   const before = { detail: await call("history_detail", { id: summary.id }), workspace: (await call("workspace_get", { id: recipeId })).workspace };
-  await page.getByRole("row", { name: `查看 SN ${summary.sn} 的记录`, exact: true }).click();
+  await page.getByRole("button", { name: `查看 SN ${summary.sn} 的记录`, exact: true }).click();
   await page.getByRole("button", { name: "使用该配方候选", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "切换配方工作台的当前配方", exact: true });
   await dialog.waitFor();
@@ -259,7 +259,7 @@ async function replayInHistory(page, call, recipeId, summary) {
     results[source] = { id: result.id, verdict: result.judgement.verdict, reason: result.judgement.reason, via: "ui" };
   }
   for (const [source, { id }] of Object.entries(results)) {
-    await page.getByRole("combobox", { name: "已保存对照结果", exact: true }).selectOption(id);
+    await page.locator('select[aria-label="已保存对照结果"]').selectOption(id);
     await page.getByRole("heading", { name: titles[source], exact: true }).waitFor();
   }
   assert.deepEqual(await call("history_detail", { id: summary.id }), before.detail, "复测对照改动了原始生产记录");
@@ -347,7 +347,7 @@ export async function runOfflineE2E(page, options) {
   assert.equal(active.workspace.publish.validationSite, "offline", "离线发布的版本必须标记离线验证");
   const recipe = await call("cycle_layout", { recipeId: id });
   await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
-  const runSelect = page.getByRole("combobox", { name: "离线配方", exact: true });
+  const runSelect = page.locator('select[aria-label="离线配方"]');
   await until(() => runSelect.inputValue(), value => value === id, "发布后离线配方未默认选中新配方", 15000);
   step("发布生效", { recipeId: id, publish: active.workspace.publish });
 
@@ -383,9 +383,10 @@ export async function runOfflineE2E(page, options) {
   assert.equal((await call("history_query", { query: { limit: 1 } })).total, 0, "离线件不得进入真机历史与统计");
   await navigation.getByRole("link", { name: "历史记录", exact: true }).click();
   await page.getByRole("group", { name: "记录来源", exact: true }).getByRole("button", { name: "离线件", exact: true }).click();
-  await page.getByRole("combobox", { name: "历史配方", exact: true }).selectOption(id);
+  await page.getByRole("combobox", { name: "历史配方", exact: true }).click();
+  await page.getByRole("option", { name: id, exact: true }).click();
   for (const { summary } of Object.values(produced)) {
-    const row = page.getByRole("row", { name: `查看 SN ${summary.sn} 的记录`, exact: true });
+    const row = page.getByRole("row").filter({ has: page.getByRole("button", { name: `查看 SN ${summary.sn} 的记录`, exact: true }) });
     await row.getByText(`样本 ${summary.sample.partId}（${sampleLabelText[summary.sample.label]}）`, { exact: true }).waitFor();
     await row.getByText(verdictLabel[summary.verdict], { exact: true }).waitFor();
   }
