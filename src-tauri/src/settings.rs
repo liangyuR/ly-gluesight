@@ -33,9 +33,12 @@ pub struct Timeouts {
 
 impl Default for Timeouts {
     fn default() -> Self {
-        Self { arm_ms: 200, motion_ms: 30_000, drain_ms: 1000, proc_ms: 3000, ack_ms: 5000 }
+        Self { arm_ms: 500, motion_ms: 30_000, drain_ms: 1000, proc_ms: 3000, ack_ms: 5000 }
     }
 }
+
+/// 布防预算范围：上限远小于 PLC 等待布防的 ArmTimeout（10 s），PC 必须先于 PLC 超时给出布防或拒收；默认值依据见 docs/decisions/r2-plc.md。
+const ARM_MS_RANGE: std::ops::RangeInclusive<u64> = 100..=5000;
 
 impl Timeouts {
     pub fn arm(&self) -> Duration {
@@ -87,12 +90,27 @@ impl Default for CycleSettings {
 }
 
 impl CycleSettings {
-    /// 读不了的文件先备份，返回说明（节拍启动后写日志）。
+    /// 读不了的文件先备份，返回说明（节拍启动后写日志）。取值不符合当前范围的旧设置备份后按默认值重建。
     pub fn load(path: &Path) -> (Self, Option<String>) {
-        match crate::fsio::read_json(path) {
-            Ok(s) => (s.unwrap_or_default(), None),
+        match crate::fsio::read_json::<Self>(path) {
+            Ok(None) => (Self::default(), None),
+            Ok(Some(s)) => match s.validate() {
+                Ok(()) => (s, None),
+                Err(why) => (Self::default(), Some(Self::rebuild(path, &why))),
+            },
             Err(note) => (Self::default(), Some(note)),
         }
+    }
+
+    fn rebuild(path: &Path, why: &str) -> String {
+        let done = match crate::fsio::backup(path, "invalid") {
+            Ok(backup) => match Self::default().save(path) {
+                Ok(()) => format!("原文件已备份为 {}，已按默认值重建", backup.display()),
+                Err(e) => format!("原文件已备份为 {}，重建失败（{e}），先按默认值运行", backup.display()),
+            },
+            Err(e) => format!("备份失败（{e}），原文件未改，先按默认值运行"),
+        };
+        format!("{} 的检测设置不符合当前取值范围（{why}），{done}", path.display())
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -109,6 +127,9 @@ impl CycleSettings {
         }
         if t.motion_ms < 1000 || t.proc_ms < 200 || t.ack_ms < 500 {
             return Err("超时参数过小".into());
+        }
+        if !ARM_MS_RANGE.contains(&t.arm_ms) {
+            return Err(format!("布防预算需在 {}–{} ms 之间：须明显小于 PLC 布防等待（10 s）", ARM_MS_RANGE.start(), ARM_MS_RANGE.end()));
         }
         if !(1..=100_000).contains(&self.record_keep) {
             return Err("帧录制保留件数需在 1–100000 之间".into());
@@ -141,5 +162,31 @@ mod tests {
             let settings = CycleSettings { offline_record_keep: keep, offline_record_max_gb: max_gb, ..CycleSettings::default() };
             assert_eq!(settings.validate().is_ok(), valid, "keep={keep}, max_gb={max_gb}");
         }
+    }
+
+    #[test]
+    fn arm_budget_outside_100_to_5000_ms_is_rejected_so_pc_gives_up_before_plc_arm_timeout() {
+        for (arm_ms, valid) in [(99, false), (100, true), (5000, true), (5001, false), (10_000, false)] {
+            let settings = CycleSettings { timeouts: Timeouts { arm_ms, ..Timeouts::default() }, ..CycleSettings::default() };
+            assert_eq!(settings.validate().is_ok(), valid, "arm_ms={arm_ms}");
+        }
+    }
+
+    #[test]
+    fn saved_settings_with_arm_budget_out_of_range_are_backed_up_and_rebuilt_with_defaults_on_load() {
+        let dir = std::env::temp_dir().join(format!("gluesight-settings-{}-{}", std::process::id(), ly_plc::now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cycle.json");
+        let old = CycleSettings { record: RecordMode::All, timeouts: Timeouts { arm_ms: 10_000, ..Timeouts::default() }, ..CycleSettings::default() };
+        old.save(&path).unwrap();
+
+        let (loaded, note) = CycleSettings::load(&path);
+        assert_eq!(loaded, CycleSettings::default());
+        assert!(note.is_some());
+        let backups: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| *p != path).collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(crate::fsio::read_json::<CycleSettings>(&backups[0]).unwrap(), Some(old));
+        assert_eq!(CycleSettings::load(&path), (CycleSettings::default(), None));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -488,7 +488,7 @@ pub(crate) fn confirm_start(first: &Snapshot, second: &Snapshot) -> Result<Reque
     if first.connection_since != second.connection_since {
         return Err("开始校验期间 PLC 已重新连接，必须复位".into());
     }
-    // ly-plc 先发布值再递增 poll_count，相隔两次可排除同一次轮询被读两遍。
+    // 相隔两次后续轮询：请求字段须在约两个轮询周期内保持不变，才认作 PLC 已写完整的一件。
     if second.poll_count < first.poll_count.saturating_add(2) {
         return Err("开始快照必须跨两个后续完成的轮询".into());
     }
@@ -695,16 +695,24 @@ fn connection_stamp(engine: &PlcEngine, contract: &Contract, max_age_ms: u64) ->
     Ok(status)
 }
 
+/// 一次写后确认的耗时：逐点写入（含等驱动锁）与读回确认，以及确认用了几次轮询。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct WriteTiming {
+    pub(crate) write: Duration,
+    pub(crate) confirm: Duration,
+    pub(crate) polls: u64,
+}
+
 pub(crate) async fn write_confirmed(
     engine: &PlcEngine,
     contract: &Contract,
     writes: &[WriteOp],
     timeout: Duration,
     max_age_ms: u64,
-) -> Result<(), String> {
+) -> Result<WriteTiming, String> {
     contract.validate_writes(writes)?;
     if writes.is_empty() {
-        return Ok(());
+        return Ok(WriteTiming::default());
     }
     let initial = connection_stamp(engine, contract, max_age_ms)?;
     let started = Instant::now();
@@ -721,13 +729,17 @@ pub(crate) async fn write_confirmed(
     if written.since != initial.since {
         return Err("PLC 写入期间已重新连接，必须复位".into());
     }
+    let write = started.elapsed();
+    // ly-plc 在持有驱动锁期间发布轮询值并计数：written 之后计入的轮询一定读于写入之后，立即补一次轮询即可核对。
+    engine.poll_now().await.map_err(|error| format!("PLC 写入后立即读回失败：{error}"))?;
+    let mut first = true;
     while started.elapsed() < timeout {
-        tokio::time::sleep(poll_wait(contract)).await;
+        if !std::mem::take(&mut first) { tokio::time::sleep(poll_wait(contract)).await; }
         let before = connection_stamp(engine, contract, max_age_ms)?;
         if before.since != initial.since {
             return Err("PLC 读回确认期间已重新连接，必须复位".into());
         }
-        if before.poll_count < written.poll_count.saturating_add(2) {
+        if before.poll_count <= written.poll_count {
             continue;
         }
         let values = engine.values();
@@ -739,7 +751,7 @@ pub(crate) async fn write_confirmed(
             continue;
         }
         if verify_writes(contract, &values, writes)? {
-            return Ok(());
+            return Ok(WriteTiming { write, confirm: started.elapsed() - write, polls: after.poll_count - written.poll_count });
         }
     }
     Err("PLC 写入后的新轮询读回未确认，保持当前握手状态".into())
