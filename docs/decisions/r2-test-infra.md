@@ -16,7 +16,7 @@
 - 采用：(d)。只改测试设施，产品启动流程不变。`offline-e2e.mjs`、`offline-restart.mjs`、`production-flow-ui.mjs`、`log-replay-offline.mjs` 默认从清单读 `cdp`（`--cdp` 仍可显式覆盖），并核对端口与清单一致。就绪等待改为 120 s 截止时间；程序提前退出或超时都会附带 `stderr.log` 末尾 20 行。端口检查同时覆盖 IPv4 与 IPv6 回环。
 - 回退：脚本里去掉 `cdp` 字段，各 Node 脚本恢复 `--cdp http://localhost:<端口>` 默认值。
 
-## 3. 产品在启动时校验 WebView2 资料目录长度，上限 229 字符
+## 3. 产品在启动时按实测临界值校验 WebView2 资料目录长度
 
 - 问题：`GLUESIGHT_DATA_DIR` 较长时 WebView2 不创建窗口，wry 在等待 WebView2 控制器回调时一直阻塞主线程，进程挂起且没有任何日志。
 - 实测（WebView2 Runtime 155.0.4283.62，用户 SID 46 字符，资料目录末级为 38 字符的测试标识）：
@@ -26,10 +26,10 @@
   | 已初始化目录，只建主窗口（资料目录 `webview/<SID>`） | 主窗口资料目录 229 字符 | 230 字符 |
   | 全新目录，先建准备窗口（资料目录 `migration/bootstrap/webview/<SID>`） | 准备窗口资料目录 237 字符 | 238 字符 |
 
-  两个临界点分别对应 Windows CreateDirectory 默认 248 字符上限下 `<资料目录>\EBWebView\Default`（主窗口需要建出浏览器 Default 配置目录）和 `<资料目录>\EBWebView`（准备窗口页面只需 EBWebView 根目录）能否建出。按资料目录（`GLUESIGHT_DATA_DIR`）换算，实测全新启动 ≤ 162 字符、已初始化目录 ≤ 174 字符可用；采用下面的统一上限后，资料目录须 ≤ 154 字符（SID 46 字符时）。
-- 可选项：(a) 只在测试脚本里检查；(b) 产品在 `storage::prepare` 阶段检查准备窗口与主窗口两个 WebView2 资料目录；(c) 缩短 `migration/bootstrap` 或 `webview/<SID>` 的资料布局（改资料目录结构，影响迁移与其他工作线）。
-- 采用：(b)。上限取 `247 - len("\EBWebView\Default") = 229`（UTF-16 字符数，中文路径同样按一个字符计），两个资料目录用同一上限：主窗口恰好到实测可用的最大值；准备窗口比实测可用值少 8 字符，换来规则单一。超限时 `prepare` 返回错误（含资料目录路径、实际长度与上限），走现有的启动失败路径：可见窗口显示资料准备错误页，隐藏窗口见第 4 条。正式版 `%ProgramData%\ly\GlueSight` 的准备窗口资料目录约 102 字符，远低于上限。
-- 边界：只检查启动必需的目录。229 字符以内时，`EBWebView\Default\Network`、`Code Cache` 等更深的缓存目录仍可能建不出来，WebView2 将其视为非致命错误（实测可正常运行），不影响功能。WebView2 版本更新若改变临界值，测试启动脚本的 120 s 就绪超时会暴露。
+  两个临界点分别对应 Windows CreateDirectory 默认 248 字符上限下 `<资料目录>\EBWebView\Default`（主窗口需要建出浏览器 Default 配置目录）和 `<资料目录>\EBWebView`（准备窗口页面只需 EBWebView 根目录）能否建出。按资料目录（`GLUESIGHT_DATA_DIR`）换算，实测全新启动 ≤ 162 字符、已初始化目录 ≤ 174 字符可用（SID 46 字符时）。
+- 可选项：(a) 只在测试脚本里检查；(b) 产品在 `storage::prepare` 阶段对两个 WebView2 资料目录统一用 229 上限；(c) 产品在 `storage::prepare` 阶段按窗口分别用实测临界值，且只检查本次启动会建的窗口；(d) 缩短 `migration/bootstrap` 或 `webview/<SID>` 的资料布局（改资料目录结构，影响迁移与其他工作线）。
+- 采用：(c)。主窗口资料目录上限 `247 - len("\EBWebView\Default") = 229`，准备窗口资料目录上限 `247 - len("\EBWebView") = 237`，都按 UTF-16 字符数计（中文路径同样按一个字符计），各自恰好到实测可用的最大值。主窗口每次启动都建，总是检查；准备窗口只在资料目录尚未初始化（没有 `storage-layout.json`）时建，也只在这时检查，判断条件与 `lib.rs` 决定是否建准备窗口共用 `storage::initialized`。(b) 规则更单一，但会把准备窗口资料目录 230–237 字符这类实际能用的目录也拒绝掉，已初始化的目录重启时根本不建准备窗口，却同样被这条规则拒绝，错误信息“窗口无法创建”也与事实不符，所以不用。超限时 `prepare` 返回错误（含是哪个窗口、资料目录路径、实际长度与上限），走现有的启动失败路径：可见窗口显示资料准备错误页，隐藏窗口见第 4 条。正式版 `%ProgramData%\ly\GlueSight` 的准备窗口资料目录约 102 字符，远低于上限。
+- 边界：只检查启动必需的目录。未超上限时，`EBWebView\Default\Network`、`Code Cache` 等更深的缓存目录仍可能建不出来，WebView2 将其视为非致命错误（实测可正常运行），不影响功能。WebView2 版本更新若改变临界值，测试启动脚本的 120 s 就绪超时会暴露。
 - 回退：删除 `storage::check_webview_profiles` 及其在 `prepare` 中的调用。
 
 ## 4. 隐藏窗口（测试实例）启动失败时写 stderr 并以退出码 1 结束

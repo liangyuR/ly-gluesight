@@ -62,7 +62,7 @@ pub fn run() {
                 Ok(root)
             });
             if let Ok(root) = &prepared {
-                if root.join("storage-layout.json").is_file() {
+                if storage::initialized(root) {
                     let loaded = storage::initialize(app.handle(), root.clone())
                         .and_then(|_| start_services(app.handle(), root.clone()).map_err(|error| error.to_string()));
                     match loaded {
