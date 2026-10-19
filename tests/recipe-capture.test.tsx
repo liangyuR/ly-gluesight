@@ -86,6 +86,15 @@ it("示教采集轮次不允许同时作为独立验证样本",async()=>{
  expect(button).toBeDisabled();expect(screen.getByText("需要独立于示教的采集轮次")).toBeVisible();
  await userEvent.click(button);expect(workspaceApi.captureSample).not.toHaveBeenCalled();
 });
+it.each([
+ ["独立样本模式下本轮独立于示教且未入库 → 主操作是保存为独立验证样本，收起栏采集新一圈样本降为次操作","teach","保存为独立验证样本","采集新一圈样本"],
+ ["独立样本模式下本轮就是示教采集轮次 → 主操作是采集新一圈样本","r1","采集新一圈样本","保存为独立验证样本"],
+])("%s",async(_,captureId,primary,secondary)=>{
+ ws.data!.workspace.captureId=captureId;vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show("/recipe/capture?purpose=validation");
+ await screen.findByRole("region",{name:"设备准备"});
+ expect(screen.getByRole("button",{name:primary})).toHaveClass("primary");
+ expect(screen.getByRole("button",{name:secondary})).not.toHaveClass("primary");
+});
 
 it("本轮已采用为示教图像 → 标明已采用，主操作改为进入单帧示教，采用按钮禁用且不再提供带入草稿",async()=>{
  ws.data!.workspace.captureId="r1";vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show();

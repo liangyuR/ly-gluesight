@@ -114,6 +114,7 @@ export default function CapturePage() {
   const locked=busy || working || dirty || frameDirty || !!data.workspace.pending;
   const productionBusy=isProductionBusy(snapshot);
   const sampleSourceInvalid=validation && (!data.workspace.captureId || data.workspace.captureId===round?.roundId);
+  const recaptureNext=validation && (round?.state!=="complete" || sampleSourceInvalid);
   const captureState = {captureReturn:{recipeId:doc.id,search:location.search,cameraIds:chosen,excludedCameraIds:excluded,drain,roundId,previewK}};
   const navigationState: CaptureNavigationState = {...captureState, returnTo:{pathname:location.pathname,search:location.search,label:validation ? "独立样本采集" : "整圈采集",state:captureState}};
   const nameOf = (id: string) => cameras.find(c=>c.id===id)?.name ?? id;
@@ -227,7 +228,7 @@ export default function CapturePage() {
       {validation && <label className="check"><input type="checkbox" checked={confirmed} disabled={locked} onChange={e=>setConfirmed(e.target.checked)}/>已确认本轮样本与示教轨迹、触发顺序及拍摄条件一致</label>}
       {validation && <label className="field"><span>样本人工期望</span><select className="input" aria-label="样本人工期望" value={sampleExpected} disabled={locked} onChange={e=>setSampleExpected(e.target.value as Verdict)}>{expectedChoices.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>}
       {sampleSourceInvalid && <Notice title="需要独立于示教的采集轮次" tone="warn">{data.workspace.captureId ? "当前轮次已用于示教，请重新采集一圈作为验证样本。" : "请先采用示教采集轮次，再采集独立验证样本。"}</Notice>}
-      <button className={"btn" + (adopted || savedSample ? "" : " primary")} disabled={locked || productionBusy || sampleSourceInvalid || adopted || savedSample || ((validation || reuse) && !confirmed)} title={adopted ? "本轮已采用为示教图像" : savedSample ? "本轮已加入验证样本库" : undefined} onClick={() => void act(() => validation ? workspaceApi.captureSample(doc.id,data.workspace.revision,round.roundId,sampleExpected,confirmed) : workspaceApi.adoptCapture(doc.id,data.workspace.revision,round.roundId,reuse,confirmed),validation ? "独立验证样本已加入样本库" : "已采用本轮图像，请逐点选择检测图并示教")}>{validation ? "保存为独立验证样本" : "采用本轮图像"}</button>
+      <button className={"btn" + (adopted || savedSample || sampleSourceInvalid ? "" : " primary")} disabled={locked || productionBusy || sampleSourceInvalid || adopted || savedSample || ((validation || reuse) && !confirmed)} title={adopted ? "本轮已采用为示教图像" : savedSample ? "本轮已加入验证样本库" : undefined} onClick={() => void act(() => validation ? workspaceApi.captureSample(doc.id,data.workspace.revision,round.roundId,sampleExpected,confirmed) : workspaceApi.adoptCapture(doc.id,data.workspace.revision,round.roundId,reuse,confirmed),validation ? "独立验证样本已加入样本库" : "已采用本轮图像，请逐点选择检测图并示教")}>{validation ? "保存为独立验证样本" : "采用本轮图像"}</button>
       <Link className={"btn" + (adopted || savedSample ? " primary" : "")} to={validation ? "/recipe/validation" : "/recipe/teach"}>{validation ? "进入验证" : "进入单帧示教"}<ArrowRight size={15} aria-hidden="true"/></Link>
     </div>}
     </div></div>
@@ -237,7 +238,7 @@ export default function CapturePage() {
     <span className={"wp-capture-chip" + (notReady.length || !chosen.length ? " warn" : "")}><small>相机</small><strong>{(chosen.length ? chosen.map(nameOf).join("、") : "未选择") + " · " + (chosen.length && !notReady.length ? "就绪" : "未就绪")}</strong></span>
     <span className={"wp-capture-chip" + (plcConnected ? "" : " warn")}><small>PLC</small><strong>{plc}</strong></span>
     <span className="wp-capture-chip"><small>在途图像等待</small><strong>{drain} ms</strong></span>
-    <div className="wp-actions"><button className="btn" onClick={()=>setPrepOpenFor(round?.roundId ?? null)}>展开设备准备</button><button className={"btn" + (validation && !savedSample ? " primary" : "")} disabled={startDisabled} title={startReason || undefined} onClick={() => void start()}>{validation ? "采集新一圈样本" : "整圈重采"}</button></div>
+    <div className="wp-actions"><button className="btn" onClick={()=>setPrepOpenFor(round?.roundId ?? null)}>展开设备准备</button><button className={"btn" + (recaptureNext ? " primary" : "")} disabled={startDisabled} title={startReason || undefined} onClick={() => void start()}>{validation ? "采集新一圈样本" : "整圈重采"}</button></div>
   </section>;
   return <div className="wp-page"><WorkspaceBar/><Steps/><div className="wp-columns"><div className="wp-stack">{collapsed ? <>{prepBar}{resultPanel}{historyPanel}</> : <>{prepPanel}{resultPanel}{historyPanel}</>}</div><section className="wp-capture-rules" aria-label="采集规则"><h3>采集规则</h3><div><strong>数量相同不代表对应相同</strong><p>每轮独立保存。任一相机缺帧、重复、超量、断连或无法确定归属时整圈重采；不会把下一张图补到缺失位置。</p></div><div><strong>结束条件</strong><p>各相机都收齐计划数量后仍等待 PLC 结束通知，再等待在途图像；超时会写明是哪台相机缺图。PLC 实际计划和完成计数均由后端按相机核对。</p></div></section></div></div>;
 }

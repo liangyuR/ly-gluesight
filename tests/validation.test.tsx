@@ -72,6 +72,10 @@ describe("验证与发布页面", () => {
   it.each([
     ["未选用任何样本", () => { ws.data!.workspace.samples = []; }, "先选用至少一组代表性样本"],
     ["已选样本但未确认适用", () => {}, "勾选上方确认后才能运行"],
+    ["候选版本待生效且确认勾选被冻结", () => {
+      ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, baseRevision: "old", frames: [], overview: ws.data!.workspace.overview, validation: ws.data!.workspace.validation!, validationSite: "real" };
+      ws.data!.workspace.publish = { state: "failed", message: "发布包缺失" };
+    }, "候选版本正在等待生效，生效或放弃后再验证"],
   ])("%s → 运行验证不可用并在按钮旁说明原因", (_, arrange, reason) => {
     arrange();
     show();
