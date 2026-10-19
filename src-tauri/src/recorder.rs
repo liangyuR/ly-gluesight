@@ -377,11 +377,16 @@ impl Recorder {
     }
 }
 
-const MISSING_SHOTS: &str = "个计划拍照点没有录制原图";
-const NO_CONFIRMED_ORIGINALS: &str = "本件没有已确认写入的原图";
+const WRITE_FAILURES: &[&str] = &[
+    "创建录制目录失败", "创建原图失败", "写入原图失败", "创建 part.json 失败", "写入 part.json 失败", "提交 part.json 失败",
+    "创建收尾目录失败", "录制目录收尾失败", "录制目标目录已存在", "NG-only 合格件临时录制清理失败",
+    "录制线程启动失败", "录制写入线程已停止",
+    "原图未取得写入成功确认", "已写入原图不可用", "原图路径不能是 reparse point", "原图路径不是普通文件或文件长度与录制尺寸不符",
+    "原图解码失败", "原图解码尺寸与录制尺寸不符",
+];
 
-pub fn is_absence_error(error: &str) -> bool {
-    error.ends_with(MISSING_SHOTS) || error == NO_CONFIRMED_ORIGINALS
+pub fn is_write_error(error: &str) -> bool {
+    WRITE_FAILURES.iter().any(|marker| error.contains(marker))
 }
 
 fn safe_cycle_id(id: &str) -> bool {
@@ -519,7 +524,7 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
         .map(|(k, shot)| json!({"k": k, "shotId": shot.id}))
         .collect();
     if !missing.is_empty() {
-        rec.errors.push(format!("{} {MISSING_SHOTS}", missing.len()));
+        rec.errors.push(format!("{} 个计划拍照点没有录制原图", missing.len()));
     }
     let mut meta = json!({
         "cycleId": rec.cycle_id, "bundleId": rec.bundle_id, "recipeRevision": rec.recipe.revision_id,
@@ -603,7 +608,7 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
         }
     }
     if files.is_empty() {
-        rec.errors.push(NO_CONFIRMED_ORIGINALS.into());
+        rec.errors.push("本件没有已确认写入的原图".into());
     }
     let mut protected = in_use;
     protected.push(actual_dir.clone());

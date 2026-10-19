@@ -26,7 +26,7 @@ use crate::plc::PlcHost;
 use crate::plc_session::{PlcSession, SessionEvent, SessionPhase, SessionView};
 use crate::recipe::{Recipe, RecipeStore, TriggerMode};
 use crate::recorder::{Recorder, Recorders, Recording};
-use crate::recording_health::{RecordingAlarm, RecordingHealth};
+use crate::recording_health::{AlarmChange, RecordingAlarm, RecordingHealth};
 use crate::settings::{CycleSettings, ProductSource};
 use crate::shot_router::{ArmCam, Floor, FrameMeta, Ledgers, Plan, Policy, Route, ShotRouter};
 use crate::offline::Scenario;
@@ -306,7 +306,7 @@ impl CycleHost {
         let recording_health = Arc::new(RecordingHealth::default());
         let recorder = |root: PathBuf, scope: HistoryScope| {
             let (guarded_root, guard_app, protection_audit, warning_app, record_audit) = (root.clone(), app.clone(), audit.clone(), app.clone(), audit.clone());
-            let health = recording_health.clone();
+            let (health, alarm_app) = (recording_health.clone(), app.clone());
             let protection = Arc::new(move || {
                 let mut paths = guard_app.try_state::<Store>().ok_or("检测记录数据库尚未初始化")?.pending_recording_directories(&guarded_root, scope)?;
                 paths.extend(protection_audit.protected_recording_directories(&guarded_root)?);
@@ -323,7 +323,7 @@ impl CycleHost {
             });
             Recorder::guarded(root, Some(Arc::new(move |outcome: crate::recorder::RecordingOutcome| {
                 let cycle_id = outcome.cycle_id.clone();
-                health.observe(scope, &outcome, now_ms());
+                if let Some(change) = health.observe(scope, &outcome, now_ms()) { log_recording_alarm(&alarm_app, change); }
                 if let Err(error) = record_audit.recording(outcome) {
                     applog::emit(applog::Level::Error, "录制审计持久化失败", &error, Fields { cycle_id: Some(cycle_id), ..Fields::default() });
                 }
@@ -454,6 +454,19 @@ fn plc(app: &AppHandle) -> &PlcEngine {
 
 fn host(app: &AppHandle) -> &CycleHost {
     app.state::<CycleHost>().inner()
+}
+
+fn log_recording_alarm(app: &AppHandle, change: AlarmChange) {
+    let (tone, ev, msg, cycle_id) = match change {
+        AlarmChange::Raised(alarm) => ("err", "原图录制失败", alarm.message(), Some(alarm.cycle_id)),
+        AlarmChange::Cleared => ("ok", "原图录制恢复", "录制失败告警已清除".to_string(), None),
+    };
+    let fields = Fields { cycle_id, ..Fields::default() };
+    if app.try_state::<CycleHost>().is_some() {
+        log_with(app, tone, ev, msg, fields);
+    } else {
+        applog::emit(applog::Level::from_tone(tone), ev, &msg, fields);
+    }
 }
 
 pub fn log(app: &AppHandle, level: &'static str, ev: impl Into<String>, msg: impl Into<String>) {
@@ -837,15 +850,10 @@ impl Machine {
     /// 原图录制失败不停产，告警独立于每件清空的 alarms，跟着当前场景的录制结果走。
     fn sync_recording_alarm(&mut self) {
         let alarm = host(&self.app).recording_health.alarm(self.stats_scope);
-        if alarm == self.recording_alarm { return; }
-        match (&self.recording_alarm, &alarm) {
-            (None, Some(now)) => log_with(&self.app, "err", "原图录制失败", now.message(),
-                Fields { cycle_id: Some(now.cycle_id.clone()), ..Fields::default() }),
-            (Some(_), None) => log(&self.app, "ok", "原图录制恢复", "录制失败告警已清除"),
-            _ => {}
+        if alarm != self.recording_alarm {
+            self.recording_alarm = alarm;
+            self.dirty = true;
         }
-        self.recording_alarm = alarm;
-        self.dirty = true;
     }
 
     fn set_phase(&mut self, phase: Phase) {
