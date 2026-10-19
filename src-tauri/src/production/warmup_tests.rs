@@ -36,7 +36,7 @@ async fn wait_permits(slot: &Semaphore, expected: usize) {
     }).await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn timed_out_warmup_keeps_the_permit_and_late_success_cannot_replace_failure() {
     let host = ProductionHost::default();
     let slot = host.slot.clone();
@@ -57,8 +57,9 @@ async fn timed_out_warmup_keeps_the_permit_and_late_success_cannot_replace_failu
         }).await;
         saved.lock().unwrap().push(result);
     });
-    tokio::time::timeout(Duration::from_secs(2), started).await.unwrap().unwrap();
-    tokio::time::timeout(Duration::from_secs(2), worker).await.unwrap().unwrap();
+    started.await.unwrap();
+    tokio::time::advance(Duration::from_millis(200)).await;
+    worker.await.unwrap();
     let failure = outcomes.lock().unwrap()[0].as_ref().unwrap_err().clone();
     assert!(matches!(&failure, WarmupFailure::Failed(_)));
     assert!(failure.message().contains("预热执行超过 200 ms"));
@@ -69,10 +70,13 @@ async fn timed_out_warmup_keeps_the_permit_and_late_success_cannot_replace_failu
     assert!(!completed.load(Ordering::SeqCst));
     let calls = Arc::new(AtomicUsize::new(0));
     let entered = calls.clone();
-    assert!(run_warmup(slot.clone(), Duration::from_millis(30), move || {
+    let queued = tokio::spawn(run_warmup(slot.clone(), Duration::from_millis(30), move || {
         entered.fetch_add(1, Ordering::SeqCst);
         Ok(43)
-    }).await.is_err());
+    }));
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(30)).await;
+    assert!(matches!(queued.await.unwrap(), Err(WarmupFailure::QueueTimeout(_))));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     release.0.release();
     wait_permits(&slot, 1).await;

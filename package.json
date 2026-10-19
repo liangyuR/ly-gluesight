@@ -27,6 +27,7 @@
     "samples:test": "python -m unittest discover -s scripts/sample-set/tests -v",
     "test:ui:production": "pwsh -NoProfile -File scripts/Test-UiProductionFlow.ps1",
     "test:e2e:offline": "pwsh -NoProfile -File scripts/Test-OfflineE2E.ps1",
+    "test:e2e:log-replay": "pwsh -NoProfile -File scripts/Test-LogReplayOffline.ps1",
     "guide:build": "node scripts/user-guide/build-guide.mjs",
     "guide:serve": "python -m http.server 8772 --bind 127.0.0.1 --directory docs/user-guide",
     "guide:pdf": "pwsh -NoProfile -File scripts/user-guide/Export-Guide.ps1",
