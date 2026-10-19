@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { storageApi } from "../src/lib/storage";
 import { WorkspaceProvider, useWorkspace } from "../src/features/workspace/context";
-import { SnackbarHost, SnackbarProvider } from "../src/components/Snackbar";
+import { SnackbarProvider } from "qing-steel";
 import { workspaceApi } from "../src/features/workspace/api";
 import { recipeApi } from "../src/features/cycle/api";
 import { cameraApi } from "../src/features/camera/api";
@@ -37,7 +37,7 @@ beforeEach(() => {
   });
 });
 async function open() {
-  const wrapper = ({ children }: { children: ReactNode }) => <SnackbarProvider><SnackbarHost /><WorkspaceProvider>{children}</WorkspaceProvider></SnackbarProvider>;
+  const wrapper = ({ children }: { children: ReactNode }) => <SnackbarProvider><WorkspaceProvider>{children}</WorkspaceProvider></SnackbarProvider>;
   const hook = renderHook(() => useWorkspace(), { wrapper });
   await waitFor(() => expect(hook.result.current.data?.workspace.doc.id).toBe("A"));
   return hook;
@@ -100,7 +100,7 @@ describe("候选工作台的主流程保护", () => {
     act(() => result.current.setDoc(draft));
     await waitFor(() => expect(workspaceApi.saveDoc).toHaveBeenCalledWith("A", 7, draft), { timeout: 2500 });
     await waitFor(() => expect(result.current.saveState).toBe("saved"));
-    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
   it.each([
@@ -112,7 +112,7 @@ describe("候选工作台的主流程保护", () => {
     await act(() => result.current.act(async () => workspaceView(), "已提交发布，将在工件边界生效"));
     expect(screen.getByRole("status")).toHaveTextContent("已提交发布，将在工件边界生效");
     await act(async () => { await next(result.current); });
-    await waitFor(() => expect(screen.getByRole("status")).toBeEmptyDOMElement());
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
   });
 
   it("刷新请求发出后用户开始编辑，也不能覆盖草稿", async () => {
@@ -138,7 +138,7 @@ describe("候选工作台的主流程保护", () => {
   it("操作响应配方不一致时保留当前候选并允许重试", async () => {
     const { result } = await open();
     await act(async () => expect(await result.current.act(async () => workspaceView("B"), "已保存")).toBeNull());
-    expect(result.current.doc?.id).toBe("A"); expect(screen.getByRole("status")).toBeEmptyDOMElement();
+    expect(result.current.doc?.id).toBe("A"); expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(result.current.error).toContain("候选响应与当前配方不一致");
     await act(async () => expect((await result.current.act(async () => workspaceView(), "当前配方已保存"))?.workspace.doc.id).toBe("A"));
     expect(result.current.error).toBe(""); expect(screen.getByRole("status")).toHaveTextContent("当前配方已保存");

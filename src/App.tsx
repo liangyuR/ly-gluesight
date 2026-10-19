@@ -1,9 +1,9 @@
 import { Navigate, Route, Routes } from "react-router-dom";
+import { SnackbarProvider } from "qing-steel";
 import AppLayout from "./layout/AppLayout";
 import { navItems, pageRoutes } from "./layout/nav";
 import HistoryDetailPage from "./pages/HistoryDetailPage";
 import { WorkspaceProvider } from "./features/workspace/context";
-import { SnackbarProvider } from "./components/Snackbar";
 
 export default function App() {
   return (

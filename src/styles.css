@@ -14,6 +14,7 @@
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
+.app-theme { height: 100%; background: var(--surface-lowest); font: inherit; }
 body { background: var(--surface-lowest); overflow: hidden; }
 h1, h3, p { margin: 0; }
 
@@ -181,10 +182,6 @@ a.engine-status:hover { color: var(--on-surface); }
 .btn.danger { background: var(--ng-container); color: var(--on-ng-container); }
 .btn:disabled, .icon-btn:disabled { cursor: not-allowed; color: var(--on-surface-disabled); }
 .btn:disabled { background: var(--disabled-container); border-color: transparent; }
-button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
-}
 
 .icon-btn {
   position: relative;
@@ -229,8 +226,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 .page-error { display: grid; place-items: center; min-height: 240px; }
 .page-error .qs-empty small { overflow-wrap: anywhere; }
 .native-mode { margin-bottom: var(--space-12); }
-.snackbar-anchor { position: relative; flex: none; height: 0; }
-.snackbar-anchor > .qs-snackbars { position: absolute; }
+/* 全局提示放在主区顶部居中（r2-ui U-1）：qing-steel 0.8.0 的提示层固定在视口，这里按侧栏宽度把它限定在主区内 */
+.app-shell ~ .qs-snackbars { --snack-from: -12px; top: calc(12px + var(--space-16)); bottom: auto; left: calc(var(--sidebar-w) + 24px); right: 12px; }
+.app-shell:has(> .sidebar.collapsed) ~ .qs-snackbars { left: calc(var(--sidebar-w-rail) + 24px); }
 
 .notice { margin-top: 12px; padding: 8px 12px; border-radius: var(--r-md); font-size: 13px; background: var(--surface-high); color: var(--on-surface); overflow-wrap: anywhere; animation: qs-fade-in var(--dur-short) var(--ease-standard); }
 .notice.ok { background: var(--ok-container); color: var(--on-ok-container); }
@@ -238,8 +236,13 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 .notice.warn { background: var(--warn-container); color: var(--on-warn-container); }
 .notice.fault { background: var(--fault-container); color: var(--on-fault-container); }
 .notice.tertiary { background: var(--tertiary-container); color: var(--on-tertiary-container); }
-.qs-dialog > .hd .icon-btn { flex-shrink: 0; }
 .qs-dialog > .ft .form-error { margin-right: auto; }
+.gs-modal.qs-modal-content { width: min(var(--modal-w, 520px), calc(100vw - 32px)); }
+.gs-modal.qs-drawer-content { width: min(var(--modal-w, 440px), calc(100vw - 24px)); }
+.qs-alert-copy :is(.btn, .qs-btn) { margin-left: 12px; }
+.wp-panel > .qs-card-heading { align-items: flex-start; font-weight: inherit; }
+.wp-panel > .qs-card-heading h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.wp-panel > .qs-card-heading p { margin: 5px 0 0; font-size: 12px; line-height: 1.6; }
 
 .form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
 .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--on-surface-variant); }

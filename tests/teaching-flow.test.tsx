@@ -8,7 +8,7 @@ import OverviewPage from "../src/features/workspace/OverviewPage";
 import ValidationPage from "../src/features/workspace/ValidationPage";
 import CapturePage from "../src/features/workspace/CapturePage";
 import { WorkspaceProvider } from "../src/features/workspace/context";
-import { SnackbarHost, SnackbarProvider } from "../src/components/Snackbar";
+import { SnackbarProvider } from "qing-steel";
 import { workspaceApi } from "../src/features/workspace/api";
 import { recipeApi, useCycle } from "../src/features/cycle/api";
 import { cameraApi } from "../src/features/camera";
@@ -101,7 +101,7 @@ function mockSite(candidate: WorkspaceView) {
 }
 
 function renderWorkspace(path: string, strict = false) {
-  const workspace = <MemoryRouter initialEntries={[path]}><SnackbarProvider><SnackbarHost /><WorkspaceProvider><Routes>
+  const workspace = <MemoryRouter initialEntries={[path]}><SnackbarProvider><WorkspaceProvider><Routes>
     <Route path="/recipe/teach" element={<TeachingPage />} />
     <Route path="/recipe/overview" element={<OverviewPage />} />
     <Route path="/recipe/validation" element={<ValidationPage />} />
