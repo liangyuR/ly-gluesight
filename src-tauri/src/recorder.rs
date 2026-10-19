@@ -394,12 +394,13 @@ fn safe_cycle_id(id: &str) -> bool {
 }
 
 fn notify(callback: &Option<RecordingCallback>, outcome: RecordingOutcome) {
+    let fields = crate::applog::Fields { cycle_id: Some(outcome.cycle_id.clone()), stage: Some("recording".into()), ..Default::default() };
     if let Some(callback) = callback {
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(outcome))).is_err() {
-            crate::applog::write("err", "录制", "录制结果回调发生异常");
+            crate::applog::emit(crate::applog::Level::Error, "录制", "录制结果回调发生异常", fields);
         }
     } else if !outcome.errors.is_empty() {
-        crate::applog::write("err", "录制", &format!("{} 失败：{}", outcome.cycle_id, outcome.errors.join("；")));
+        crate::applog::emit(crate::applog::Level::Error, "录制", &format!("{} 失败：{}", outcome.cycle_id, outcome.errors.join("；")), fields);
     }
 }
 
