@@ -37,7 +37,7 @@
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
     "lucide-react": "^1.48.0",
-    "qing-steel": "github:liangyuR/qing-steel#8d5701a1681c9f13fa3470344a1a0536705950e3",
+    "qing-steel": "github:liangyuR/qing-steel#v0.4.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-router-dom": "^7.18.4"
