@@ -2182,8 +2182,8 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "ly-plc"
-version = "0.3.0"
-source = "git+https://github.com/liangyuR/ly-plc.git?rev=d482e4b1f6c0568fdd2b26f782cb15a93572f9bd#d482e4b1f6c0568fdd2b26f782cb15a93572f9bd"
+version = "0.4.0"
+source = "git+https://github.com/liangyuR/ly-plc.git?rev=fe6c2105209ba87d6b4abfe58a1fe0dad290f6e0#fe6c2105209ba87d6b4abfe58a1fe0dad290f6e0"
 dependencies = [
  "async-trait",
  "rusqlite",
@@ -2294,7 +2294,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.21",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3473,7 +3473,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4313,7 +4313,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.21",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4342,7 +4342,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

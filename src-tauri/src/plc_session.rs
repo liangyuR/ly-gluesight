@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use ly_plc::{now_ms, LinkState, PlcEngine};
+use ly_plc::{now_ms, LinkState, LogContext, PlcEngine};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -433,7 +433,10 @@ impl PlcSession {
         let config = engine.config();
         let key = serde_json::to_string(&config).map_err(|e| e.to_string())?;
         if key != self.config_key {
-            self.contract = Some(Contract::validate(&config)?);
+            let contract = Contract::validate(&config)?;
+            // plc.db 每条日志带上当时的 requestSeq，按件追溯握手信号变化
+            engine.set_log_context(Some(LogContext { point_id: contract.point_id(tag::REQUEST_SEQ)?.to_owned(), label: tag::REQUEST_SEQ.into() }));
+            self.contract = Some(contract);
             self.config_key = key;
             self.connection = None;
             *self.reconnect.lock().unwrap() = Reconnect::default();

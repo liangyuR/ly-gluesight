@@ -36,7 +36,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # tag 必须属于 packaging/runtime.json 的 lyflow.series；升级用 pnpm deps:lyflow:update。
 lyflow-client = { git = "https://github.com/liangyuR/lyFlow.git", tag = "v1.1.4" }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "pnm", "bmp", "tiff"] }
-ly-plc = { git = "https://github.com/liangyuR/ly-plc.git", rev = "d482e4b1f6c0568fdd2b26f782cb15a93572f9bd", version = "0.3.0" }
+ly-plc = { git = "https://github.com/liangyuR/ly-plc.git", rev = "fe6c2105209ba87d6b4abfe58a1fe0dad290f6e0", version = "0.4.0" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
