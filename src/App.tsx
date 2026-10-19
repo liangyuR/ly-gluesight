@@ -3,11 +3,12 @@ import AppLayout from "./layout/AppLayout";
 import { navItems, pageRoutes } from "./layout/nav";
 import HistoryDetailPage from "./pages/HistoryDetailPage";
 import { WorkspaceProvider } from "./features/workspace/context";
+import { SnackbarProvider } from "./components/Snackbar";
 
 export default function App() {
   return (
     <Routes>
-      <Route element={<WorkspaceProvider><AppLayout /></WorkspaceProvider>}>
+      <Route element={<SnackbarProvider><WorkspaceProvider><AppLayout /></WorkspaceProvider></SnackbarProvider>}>
         <Route index element={<Navigate to={navItems[0].path} replace />} />
         {pageRoutes.map(({ path, element: Page }) => (
           <Route key={path} path={path} element={<Page />} />

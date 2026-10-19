@@ -61,6 +61,7 @@
 .offline-stack { display: flex; flex-direction: column; gap: 8px; }
 .offline-stack caption { text-align: left; font-size: 12px; padding-bottom: 4px; }
 .offline-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sample-part-select { max-width: 100%; }
 .offline-controls.compact { padding: 4px 8px; border: 1px dashed var(--outline-variant); border-radius: var(--r-md); }
 .offline-controls.compact .input, .offline-controls.compact .btn { height: 28px; font-size: 12.5px; }
 .offline-label { font-size: 12px; color: var(--warn); }

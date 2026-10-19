@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { Crosshair } from "lucide-react";
+import { useSnackbar } from "../../../components/Snackbar";
 
 interface CalibInfo {
   path: string;
@@ -19,7 +20,8 @@ export default function CalibPanel({ cam, view=1, isSim, imageId, onMmPerPx }: {
   const [rows, setRows] = useState(8);
   const [square, setSquare] = useState(5);
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const [runError, setRunError] = useState("");
+  const snack = useSnackbar();
   const [loading,setLoading]=useState(isTauri()),[loaded,setLoaded]=useState(false),[loadError,setLoadError]=useState("");
   const mounted=useRef(true),loadSerial=useRef(0),runSerial=useRef(0),pending=useRef(false);
   const scope=JSON.stringify([cam,view,imageId,isSim]),current=useRef({cam,view,scope});current.current={cam,view,scope};
@@ -43,7 +45,7 @@ export default function CalibPanel({ cam, view=1, isSim, imageId, onMmPerPx }: {
     void load();
     return()=>{loadSerial.current++;};
   }, [cam,view]);
-  useEffect(()=>{runSerial.current++;pending.current=false;setBusy(false);setNotice(null);},[scope]);
+  useEffect(()=>{runSerial.current++;pending.current=false;setBusy(false);setRunError("");},[scope]);
   const mmPerPx = isSim ? 0.08 : info?.mmPerPx ?? null;
   useEffect(()=>{onMmPerPx?.(mmPerPx);},[mmPerPx,onMmPerPx]);
   const valid=Number.isInteger(cols)&&cols>=2&&cols<=100&&Number.isInteger(rows)&&rows>=2&&rows<=100&&Number.isFinite(square)&&square>0;
@@ -54,7 +56,7 @@ export default function CalibPanel({ cam, view=1, isSim, imageId, onMmPerPx }: {
     if(pending.current||loading||isSim||!imageId||!isTauri()||!valid)return;
     const serial=++runSerial.current;pending.current=true;
     setBusy(true);
-    setNotice(null);
+    setRunError("");
     try {
       const r = await invoke<CalibInfo>("vision_calibrate", { pattern: [cols, rows], square, cam, view, imageId });
       if(!mounted.current||serial!==runSerial.current||current.current.scope!==scope)return;
@@ -62,9 +64,9 @@ export default function CalibPanel({ cam, view=1, isSim, imageId, onMmPerPx }: {
       setInfo(r);
       setLoaded(true);
       setLoadError("");
-      setNotice({ ok: true, text: `标定完成：残差 RMS ${format(r.rms)} mm，约 ${format(r.mmPerPx)} mm/px` });
+      snack(`图 ${view} 标定完成：残差 RMS ${format(r.rms)} mm，约 ${format(r.mmPerPx)} mm/px`);
     } catch (e) {
-      if(mounted.current&&serial===runSerial.current&&current.current.scope===scope)setNotice({ ok: false, text: String(e) });
+      if(mounted.current&&serial===runSerial.current&&current.current.scope===scope)setRunError(String(e));
     } finally {
       if(mounted.current&&serial===runSerial.current&&current.current.scope===scope){pending.current=false;setBusy(false);}
     }
@@ -88,15 +90,15 @@ export default function CalibPanel({ cam, view=1, isSim, imageId, onMmPerPx }: {
         <fieldset disabled={busy||loading||!isTauri()} style={{border:0,padding:0,margin:0,minWidth:0}}><div className="calib-row">
           <label className="field">
             <span>内角点（列）</span>
-            <input id="calib-cols" className="input mono" type="number" min={2} max={100} step={1} value={Number.isFinite(cols)?cols:""} onChange={(e) => {setNotice(null);setCols(e.target.value===""?NaN:Number(e.target.value));}} />
+            <input id="calib-cols" className="input mono" type="number" min={2} max={100} step={1} value={Number.isFinite(cols)?cols:""} onChange={(e) => {setRunError("");setCols(e.target.value===""?NaN:Number(e.target.value));}} />
           </label>
           <label className="field">
             <span>内角点（行）</span>
-            <input id="calib-rows" className="input mono" type="number" min={2} max={100} step={1} value={Number.isFinite(rows)?rows:""} onChange={(e) => {setNotice(null);setRows(e.target.value===""?NaN:Number(e.target.value));}} />
+            <input id="calib-rows" className="input mono" type="number" min={2} max={100} step={1} value={Number.isFinite(rows)?rows:""} onChange={(e) => {setRunError("");setRows(e.target.value===""?NaN:Number(e.target.value));}} />
           </label>
           <label className="field">
             <span>格长（mm）</span>
-            <input id="calib-square" className="input mono" type="number" step={0.5} min={0} value={Number.isFinite(square)?square:""} onChange={(e) => {setNotice(null);setSquare(e.target.value===""?NaN:Number(e.target.value));}} />
+            <input id="calib-square" className="input mono" type="number" step={0.5} min={0} value={Number.isFinite(square)?square:""} onChange={(e) => {setRunError("");setSquare(e.target.value===""?NaN:Number(e.target.value));}} />
           </label>
         </div></fieldset>
       )}
@@ -113,7 +115,7 @@ export default function CalibPanel({ cam, view=1, isSim, imageId, onMmPerPx }: {
             : isSim?"使用内置标定（0.08 mm/px）":loaded?"未标定":"尚未读取标定"}
         </dd>
       </dl>
-      {notice && <div className={`notice ${notice.ok ? "ok" : "error"}`}>{notice.text}</div>}
+      {runError && <div className="notice error" role="alert">{runError}</div>}
     </div>
   );
 }

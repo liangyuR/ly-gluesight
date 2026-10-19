@@ -49,7 +49,7 @@
 .cg-thumb.dim canvas { opacity: .28; filter: grayscale(1); }
 .cg-thumb.fresh, .cg-preview.fresh { box-shadow: inset 0 0 0 2px var(--primary); }
 .cg-thumb-empty { padding: 12px; font-size: 12.5px; color: var(--on-surface-variant); text-align: center; }
-.cg-tag { position: absolute; display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: var(--r-full); background: rgba(10, 14, 17, .72); font-size: 11px; white-space: nowrap; }
+.cg-tag { position: absolute; display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: var(--r-full); background: color-mix(in srgb, var(--surface-lowest) 72%, transparent); font-size: 11px; white-space: nowrap; }
 .cg-tag.size { left: 10px; bottom: 8px; color: var(--on-surface-variant); font-family: var(--font-mono); }
 .cg-tag.views { left: 10px; top: 8px; color: var(--on-surface-variant); }
 .cg-tag.fresh { right: 10px; top: 8px; color: var(--ok); }
