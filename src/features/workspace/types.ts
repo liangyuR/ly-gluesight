@@ -73,14 +73,14 @@ export interface Progress {
   steps: ProgressStep[]; shots: ShotProgress[];
   next: { step: StepId; label: string; target: ProgressTarget } | null;
 }
-/** coverage：要检的拍照点里已示教中线的比例（%）。 */
+/** coverage：要检的拍照点里已示教中线的比例（%）；没有要检的拍照点时为 null。 */
 export interface WorkspaceView {
   workspace: Workspace; layout: Recipe; productionVersion: number | null;
   /** 生产配方的 PLC 计划版本 */
   productionPlanVersion: number | null;
   /** 候选的拍照计划（产品代码、拍照点顺序 / Pose / 相机）与生产不同：生效后 PLC 要同步新的计划版本 */
   planChanged: boolean;
-  coverage: number;
+  coverage: number | null;
   progress: Progress;
 }
 export interface RawFrame { k: number; camera: string; view: number; file: string; ts: number; available: boolean; error: string | null; cam?: number | null; frameCounter?: number | null; triggerCounter?: number | null }
