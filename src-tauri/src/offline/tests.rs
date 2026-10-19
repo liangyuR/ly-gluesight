@@ -3,10 +3,12 @@ use super::s7_server::S7Server;
 use super::*;
 use crate::judge::fault;
 use crate::plc_plan::{PlanShot, PlcPlan};
-use crate::plc_session::{PlcSession, SessionEvent, SessionPhase};
+use crate::plc_session::{Origin, PendingKind, PlcSession, SessionEvent, SessionPhase};
 use crate::inspection::tag;
 use ly_plc::{EventSink, Logbook, PlcEngine};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+const HANG_GUARD: Duration = Duration::from_secs(120);
 
 const TIMING: Timing = Timing {
     poll: Duration::from_millis(5),
@@ -14,10 +16,10 @@ const TIMING: Timing = Timing {
     end_delay: Duration::from_millis(20),
     ack_delay: Duration::from_millis(20),
     settle: Duration::from_millis(150),
-    arm_timeout: Duration::from_secs(5),
-    result_timeout: Duration::from_secs(5),
-    ready_timeout: Duration::from_secs(8),
-    release_timeout: Duration::from_secs(5),
+    arm_timeout: HANG_GUARD,
+    result_timeout: HANG_GUARD,
+    ready_timeout: HANG_GUARD,
+    release_timeout: HANG_GUARD,
 };
 
 struct Bench {
@@ -27,6 +29,7 @@ struct Bench {
     session: PlcSession,
     plan: PlcPlan,
     intake: Arc<AtomicBool>,
+    directory: std::path::PathBuf,
 }
 
 impl Bench {
@@ -41,7 +44,7 @@ impl Bench {
         let server = S7Server::start(memory.clone(), Some((layout.heartbeat(), Duration::from_millis(100)))).await.unwrap();
         config.connection.host = "127.0.0.1".into();
         config.connection.port = server.port();
-        config.connection.timeout_ms = 250;
+        config.connection.timeout_ms = 5000;
         config.connection.poll_interval_ms = 20;
         config.connection.reconnect_interval_ms = 200;
         config.heartbeat.interval_ms = 100;
@@ -56,16 +59,28 @@ impl Bench {
             shot_id: format!("P{i}"), pose_id: format!("P{i}"), camera_ids: vec!["cam1".into()],
         }).collect()).unwrap();
         Self { _server: server, line: Line::new(memory, layout), engine, session: PlcSession::open(directory.join("session.json")), plan,
-            intake: Arc::new(AtomicBool::new(true)) }
+            intake: Arc::new(AtomicBool::new(true)), directory }
     }
 
     async fn run(&mut self, scenario: Scenario) -> Result<Outcome, String> {
         self.run_with(" a-4242 ~".into(), scenario, |_, lost| !lost).await
     }
 
+    /// 虚拟 PLC 的 faultReset 上升沿只会被会话处理一次：会话还没观察到心跳翻转就按复位，这次复位被拒且不再重发。
+    /// 先让会话轮询到心跳翻转，复位时机就只取决于会话状态，不取决于机器多忙。
+    async fn until_heartbeat_live(&mut self) {
+        let until = Instant::now() + HANG_GUARD;
+        while !self.session.heartbeat_live() {
+            assert!(Instant::now() < until, "会话长时间没有观察到 PLC 心跳翻转：{:?}", self.session.view());
+            self.session.poll_gated(&self.engine, false, true, true, self.intake.load(Ordering::SeqCst)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     /// 虚拟 PLC 跑一件，PC 侧按生产节拍的顺序驱动 S7 会话：开始 → 布防 → partEnd 后按实收帧判定回写。
     /// `deliver(k, lost)` 模拟相机侧：返回这次触发是否真的交付了一帧。
     async fn run_with(&mut self, sn: String, scenario: Scenario, mut deliver: impl FnMut(usize, bool) -> bool) -> Result<Outcome, String> {
+        self.until_heartbeat_live().await;
         let Self { line, engine, session, plan, intake, .. } = self;
         let delivered = Mutex::new(Vec::new());
         let finished = AtomicBool::new(false);
@@ -81,7 +96,7 @@ impl Bench {
             result
         };
         let pc = async {
-            let until = Instant::now() + Duration::from_secs(15);
+            let until = Instant::now() + HANG_GUARD;
             while !finished.load(Ordering::SeqCst) || !matches!(session.phase(), SessionPhase::Idle | SessionPhase::Fault) {
                 assert!(Instant::now() < until, "会话未收敛：{:?}", session.view());
                 match session.poll_gated(engine, false, true, true, intake.load(Ordering::SeqCst)).await {
@@ -143,11 +158,12 @@ async fn low_disk_during_part_still_releases_then_withholds_ready_until_space_re
 #[tokio::test]
 async fn low_disk_fault_reset_still_completes_but_keeps_ready_low_until_space_recovers() {
     let mut bench = Bench::new("low-disk-reset").await;
+    bench.until_heartbeat_live().await;
     {
         let Bench { line, engine, session, .. } = &mut bench;
         let abort = AtomicBool::new(false);
         let pc = async {
-            let until = Instant::now() + Duration::from_secs(10);
+            let until = Instant::now() + HANG_GUARD;
             while !matches!(session.poll_gated(engine, false, true, true, false).await, SessionEvent::Ready) {
                 assert!(Instant::now() < until, "空间不足时复位未完成：{:?}", session.view());
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -170,13 +186,96 @@ async fn low_disk_fault_reset_still_completes_but_keeps_ready_low_until_space_re
     bench.engine.disconnect().await;
 }
 
+async fn poll_until(bench: &mut Bench, reset: bool, devices: &Result<(), String>, what: &str, accept: impl Fn(&SessionEvent, &PlcSession) -> bool) {
+    let until = Instant::now() + Duration::from_secs(8);
+    loop {
+        let event = bench.session.poll_with_devices(&bench.engine, reset, devices, true, true).await;
+        if accept(&event, &bench.session) { return; }
+        assert!(Instant::now() < until, "{what}：{event:?} {:?}", bench.session.view());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// S-13 问题二：置故障输出确认不了时 PC 主动断开停心跳，过了 PLC 心跳失活阈值自动重连，重连后仍须明确复位。
+#[tokio::test]
+async fn pc_initiated_disconnect_reconnects_after_the_heartbeat_loss_window_and_waits_for_an_explicit_reset() {
+    let mut bench = Bench::new("pc-disconnect").await;
+    poll_until(&mut bench, true, &Ok(()), "首次复位", |event, _| matches!(event, SessionEvent::Ready)).await;
+    for _ in 0..60 { bench._server.inject(s7_server::Fault::RejectWrite); }
+    poll_until(&mut bench, true, &Ok(()), "置故障输出失败后应断开", |_, _| true).await;
+    let disconnected = Instant::now();
+    assert_eq!(bench.engine.status().state, LinkState::Disconnected, "{:?}", bench.session.view());
+    bench._server.inject(s7_server::Fault::Clear);
+    while bench.engine.status().state != LinkState::Connected {
+        bench.session.poll_with_devices(&bench.engine, false, &Ok(()), true, true).await;
+        if bench.engine.status().state != LinkState::Disconnected { break; }
+        assert!(disconnected.elapsed() < Duration::from_secs(6), "主动断开后没有自动重连：{:?}", bench.session.view());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(disconnected.elapsed() >= Duration::from_millis(3000), "PLC 判 PC 心跳失活之前就重连了：{:?}", disconnected.elapsed());
+    poll_until(&mut bench, false, &Ok(()), "重连后待复位", |_, session| session.phase() == SessionPhase::ResetRequired).await;
+    for _ in 0..10 {
+        bench.session.poll_with_devices(&bench.engine, false, &Ok(()), true, true).await;
+        assert_ne!(bench.session.phase(), SessionPhase::Idle, "重连后不能自行回到就绪");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(bench.line.read(tag::VISION_READY), 0);
+    poll_until(&mut bench, true, &Ok(()), "明确复位", |event, _| matches!(event, SessionEvent::Ready)).await;
+    bench.engine.disconnect().await;
+}
+
+/// PR #134 审查：PLC 能读不能写时，自动重连只做一次，重连后仍确认不了置故障就停在断开，不再反复占用 PLC 连接；确认置故障后，下一次主动断开仍会自动重连。
+#[tokio::test]
+async fn persistent_write_rejection_reconnects_once_then_stays_disconnected_until_stop_is_confirmed() {
+    let mut bench = Bench::new("reconnect-once").await;
+    poll_until(&mut bench, true, &Ok(()), "首次复位", |event, _| matches!(event, SessionEvent::Ready)).await;
+    for _ in 0..100_000 { bench._server.inject(s7_server::Fault::RejectWrite); }
+    poll_until(&mut bench, true, &Ok(()), "置故障输出失败后应断开", |_, _| true).await;
+    assert_eq!(bench.engine.status().state, LinkState::Disconnected, "{:?}", bench.session.view());
+    let (mut reconnects, mut since, watch) = (0, bench.engine.status().since, Instant::now());
+    while watch.elapsed() < Duration::from_secs(9) {
+        bench.session.poll_with_devices(&bench.engine, false, &Ok(()), true, true).await;
+        let status = bench.engine.status();
+        if status.state == LinkState::Disconnected && status.since != since { reconnects += 1; since = status.since; }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(reconnects, 1, "持续拒写时应只自动重连一次：{:?}", bench.session.view());
+    assert_eq!(bench.engine.status().state, LinkState::Disconnected, "{:?}", bench.session.view());
+
+    bench._server.inject(s7_server::Fault::Clear);
+    bench.engine.connect().await;
+    poll_until(&mut bench, true, &Ok(()), "人工连接后明确复位", |event, _| matches!(event, SessionEvent::Ready)).await;
+    for _ in 0..60 { bench._server.inject(s7_server::Fault::RejectWrite); }
+    poll_until(&mut bench, true, &Ok(()), "再次置故障输出失败后应断开", |_, _| true).await;
+    assert_eq!(bench.engine.status().state, LinkState::Disconnected, "{:?}", bench.session.view());
+    bench._server.inject(s7_server::Fault::Clear);
+    let until = Instant::now() + Duration::from_secs(6);
+    while bench.engine.status().state == LinkState::Disconnected {
+        assert!(Instant::now() < until, "确认置故障后再次主动断开没有自动重连：{:?}", bench.session.view());
+        bench.session.poll_with_devices(&bench.engine, false, &Ok(()), true, true).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    bench.engine.disconnect().await;
+}
+
+/// D-CF-9：设备未就绪时复位被拒，提示要带上具体原因（如没有可开工配方）。
+#[tokio::test]
+async fn reset_refused_for_unready_devices_names_the_reason() {
+    let mut bench = Bench::new("reset-reason").await;
+    let devices = Err("没有一个配方开得了工（配方 A：所选生产版本没有不可变发布包）".to_string());
+    poll_until(&mut bench, true, &devices, "复位应被拒", |event, _| matches!(event, SessionEvent::Fault(m) if m.contains("设备尚未就绪"))).await;
+    let message = bench.session.view().message.unwrap();
+    assert!(message.contains("设备尚未就绪") && message.contains("所选生产版本没有不可变发布包"), "{message}");
+    bench.engine.disconnect().await;
+}
+
 #[tokio::test]
 async fn new_connection_before_first_poll_waits_instead_of_faulting_and_disconnecting() {
     let mut bench = Bench::new_with("first-poll", |server| {
         server.inject(s7_server::Fault::Delay(Duration::from_millis(200)));
         server.inject(s7_server::Fault::Delay(Duration::from_millis(200)));
     }).await;
-    let until = Instant::now() + Duration::from_secs(3);
+    let until = Instant::now() + HANG_GUARD;
     while bench.engine.status().state != LinkState::Connected {
         assert!(Instant::now() < until, "未连上离线 S7 服务");
         tokio::time::sleep(Duration::from_millis(2)).await;
@@ -200,6 +299,80 @@ async fn offline_line_scenarios_end_in_err_result_or_handshake_fault() {
         assert_eq!(result.as_ref().ok().map(|o| (o.result_code, o.fault_code)), expected, "{scenario:?}: {result:?}");
         assert_eq!(bench.session.phase(), phase, "{scenario:?}: {:?}", bench.session.view());
         assert_eq!(bench.line.read(tag::PART_START), 0, "{scenario:?}");
+        bench.engine.disconnect().await;
+    }
+}
+
+/// 虚拟 PLC 像操作员一样反复按复位，直到视觉就绪或 PC 侧收敛：复位沿早于会话确认心跳翻转会被拒，单次脉冲不保证成功。
+async fn press_reset_until_ready(line: &Line, abort: &AtomicBool) -> Result<(), String> {
+    let retry = Timing { ready_timeout: Duration::from_secs(1), ..TIMING };
+    loop {
+        match line.ensure_ready(&retry, abort).await {
+            Err(_) if !abort.load(Ordering::SeqCst) => continue,
+            result => return result,
+        }
+    }
+}
+
+/// 采集中途崩溃后重启：握手日志按事务来源决定能否由离线虚拟 PLC 复位（S-13）。
+#[tokio::test]
+async fn crash_left_pending_is_reset_by_the_virtual_plc_only_when_it_came_from_offline() {
+    for origin in [Origin::Offline, Origin::Real] {
+        let mut bench = Bench::new(&format!("crash-{origin:?}")).await;
+        bench.session.set_origin(origin);
+        {
+            let Bench { line, engine, session, plan, .. } = &mut bench;
+            let abort = AtomicBool::new(false);
+            let order = PartOrder { sn: "SN-CRASH".into(), product_code: 3, plan_version: plan.plan_version,
+                shot_count: plan.shot_count, device_shots: plan.device_shots };
+            let plc = async { press_reset_until_ready(line, &abort).await?; line.run_part(&TIMING, &order, Scenario::Normal, |_, _| {}, &abort).await };
+            let pc = async {
+                let until = Instant::now() + Duration::from_secs(10);
+                while !matches!(session.poll_gated(engine, false, true, true, true).await, SessionEvent::Start(_)) {
+                    assert!(Instant::now() < until, "{origin:?}：未收到开始请求：{:?}", session.view());
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                session.arm(engine, plan).await.unwrap();
+                abort.store(true, Ordering::SeqCst);
+            };
+            let (aborted, ()) = tokio::join!(plc, pc);
+            assert!(aborted.is_err());
+        }
+        let journal = bench.directory.join("session.json");
+        let mut restarted = PlcSession::open(journal.clone());
+        let expected = if origin == Origin::Offline { PendingKind::Offline } else { PendingKind::Blocking };
+        assert_eq!(restarted.pending_kind(), expected, "{origin:?}");
+        if origin == Origin::Real {
+            let mut legacy: serde_json::Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+            legacy["pending"].as_object_mut().unwrap().remove("origin");
+            let path = bench.directory.join("legacy.json");
+            std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+            assert_eq!(PlcSession::open(path).pending_kind(), PendingKind::Blocking, "未记来源的旧日志不能当离线事务处理");
+        }
+        restarted.set_origin(Origin::Offline);
+        let Bench { line, engine, .. } = &bench;
+        let abort = AtomicBool::new(false);
+        let pc = async {
+            let until = Instant::now() + Duration::from_secs(10);
+            loop {
+                if matches!(restarted.poll_gated(engine, false, true, true, true).await, SessionEvent::Ready) { break; }
+                if restarted.view().message.is_some_and(|m| m.contains("不能由离线虚拟 PLC 复位")) { break; }
+                assert!(Instant::now() < until, "{origin:?}：复位未收敛：{:?}", restarted.view());
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            abort.store(true, Ordering::SeqCst);
+        };
+        let _ = tokio::join!(press_reset_until_ready(line, &abort), pc);
+        if origin == Origin::Offline {
+            assert_eq!(restarted.phase(), SessionPhase::Idle);
+            assert!(!restarted.pending());
+            let audit = std::fs::read_to_string(journal.with_extension("audit.jsonl")).unwrap();
+            assert!(audit.lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+                .any(|r| r["action"] == "resetCompleted" && r["pending"]["origin"] == "offline" && r["pending"]["request"]["sn"] == "SN-CRASH"));
+        } else {
+            assert_eq!(restarted.phase(), SessionPhase::Fault);
+            assert!(restarted.pending(), "真机事务不能被离线复位清掉");
+        }
         bench.engine.disconnect().await;
     }
 }

@@ -176,4 +176,10 @@ mod tests {
         ]);
         assert!(crate::plc::validate_config(&config).is_ok());
     }
+
+    #[test]
+    fn default_template_never_logs_value_changes_of_the_two_heartbeats_but_logs_every_other_signal() {
+        let quiet: Vec<_> = default_plc_config().points.iter().filter(|p| !p.log_changes).map(|p| p.tags[0].clone()).collect();
+        assert_eq!(quiet, [tag::PLC_HEARTBEAT, tag::PC_HEARTBEAT]);
+    }
 }

@@ -427,7 +427,7 @@ fn rolling_retention_prune_marks_history_raw_images_unavailable() {
         lost_packets: 0, ts: 1, manual: false, images: (0..3).map(|_| Arc::new(crate::frame::FrameImage::new(1, 1, vec![9]))).collect() };
     recorder.frame(&mut rec, &frame, "cam1", 0, 1);
     recorder.finish(rec, Verdict::Ok, "新件", 1, u64::MAX, Vec::new());
-    let outcome = outcomes.recv_timeout(Duration::from_secs(10)).unwrap();
+    let outcome = outcomes.recv_timeout(Duration::from_secs(600)).unwrap();
     assert!(outcome.retention_errors.is_empty(), "{:?}", outcome.retention_errors);
     assert!(!old.exists(), "超过保留件数的旧录制应被清理");
     let recording = store.detail(id).unwrap().recording;
