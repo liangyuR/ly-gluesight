@@ -22,9 +22,11 @@
 .hist-counts b.c-ng { color: var(--ng); }
 .hist-counts b.c-err { color: var(--fault); }
 .hist-loading { margin-left: auto; font-size: 12px; }
+.hist-counts b { transition: opacity var(--dur-short) var(--ease-standard); }
+.hist-counts.is-loading b { opacity: .6; }
 .panel.hist-results { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0; overflow: hidden; }
 .hist-results .table-wrap { flex: 1; min-height: 0; overflow: auto; }
-.hist-table { transition: opacity var(--dur-short) var(--ease-standard); }
+.table.hist-table { border-collapse: separate; border-spacing: 0; transition: opacity var(--dur-short) var(--ease-standard); }
 .hist-table.is-loading { opacity: .6; }
 .hist-table thead th { position: sticky; top: 0; z-index: 1; background: var(--surface-mid); }
 .hist-table tbody tr { cursor: pointer; transition: background-color var(--dur-short) var(--ease-standard); }
@@ -39,6 +41,7 @@
 .hist-table td.reason { max-width: 520px; color: var(--on-surface-variant); font-size: 12.5px; }
 .pager { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 10px; font-size: 13px; }
 .hist-results .pager { flex-shrink: 0; margin: 0; padding: 6px 12px; border-top: 1px solid var(--outline-variant); }
+.pager-range { min-width: 18ch; text-align: center; font-variant-numeric: tabular-nums; }
 
 .detail-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 14px; }
 .detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 360px; grid-template-rows: auto 220px auto; gap: 16px; }
