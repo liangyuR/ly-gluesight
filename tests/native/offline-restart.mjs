@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { client, gateRetries, identifier, produce, uiPage, until } from "./offline-e2e.mjs";
+import { client, gateRetries, identifier, instanceCdp, produce, uiPage, until } from "./offline-e2e.mjs";
 
 export async function runOfflineRestart(page, options) {
   const startedAt = Date.now();
@@ -62,13 +62,9 @@ async function main() {
     assert(process.argv[i].startsWith("--") && process.argv[i + 1], "参数必须为 --name value");
     args[process.argv[i].slice(2)] = process.argv[i + 1];
   }
-  for (const key of ["cdp", "instance", "previous", "output"]) assert(args[key], `缺少 --${key}`);
-  const url = new URL(args.cdp);
-  assert(["127.0.0.1", "localhost", "[::1]"].includes(url.hostname), "仅允许本机 CDP");
-  const manifest = JSON.parse(await readFile(args.instance, "utf8"));
-  assert.equal(manifest.identifier, identifier, "仅允许隔离端到端实例");
-  assert.equal(Number(url.port), manifest.debugPort);
-  const browser = await chromium.connectOverCDP(args.cdp);
+  for (const key of ["instance", "previous", "output"]) assert(args[key], `缺少 --${key}`);
+  const cdp = await instanceCdp(args.instance, args.cdp, id => id === identifier);
+  const browser = await chromium.connectOverCDP(cdp);
   try {
     const page = await uiPage(browser);
     const result = await runOfflineRestart(page, { previous: args.previous, output: args.output });

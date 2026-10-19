@@ -274,20 +274,40 @@ fn editing_one_view_invalidates_only_that_trial_and_restoring_defaults_requires_
     assert!(projected_frame(&w, 0, 2).unwrap().trial.is_none());
 }
 
-/// 回归：三相机整圈采集采用时，只加了 S001-cam1 就校验配方会误判 cam2 未被使用而失败。
-#[test]
-fn three_camera_round_adopts_every_camera_shot_into_a_recipe_that_builds() {
+const THREE_CAMERAS: [&str; 3] = ["cam1", "cam2", "cam3"];
+
+fn three_camera_round(round_id: &str) -> crate::recipe_capture::CaptureRound {
     use crate::recipe_capture::{CaptureCamera, CaptureFrame, CaptureRound, CaptureShot, CaptureState, CaptureView};
-    let cameras = ["cam1", "cam2", "cam3"];
-    let round = CaptureRound {
-        round_id: "round-3cam".into(), recipe_id: "MTR-HSG-B".into(),
+    let cameras = THREE_CAMERAS;
+    CaptureRound {
+        round_id: round_id.into(), recipe_id: "MTR-HSG-B".into(),
         cameras: cameras.iter().map(|c| CaptureCamera { camera_id: (*c).into(), camera_config: json!({}), imaging: crate::recipe::DEFAULT_IMAGING, device_session: 1, received_count: 2 }).collect(),
         planned_count: Some(2), plc_planned_count: Some(2), plc_actual_count: Some(2), plc_plan_version: Some(1), state: CaptureState::Complete,
         created_at: 1, ended_at: Some(2), error: None, simulated: true,
         frames: (1..=2u64).map(|n| CaptureShot { shot_id: format!("S{n:03}"), ordinal: n as u32, cameras: cameras.iter().map(|c| CaptureFrame {
             camera_id: (*c).into(), frame_counter: n, trigger_counter: Some(n), original_path: String::new(),
             views: vec![CaptureView { view: 1, path: String::new(), width: 4, height: 4 }] }).collect() }).collect(),
-    };
+    }
+}
+
+/// 回归：普通采集模式下能把已入库的独立验证样本轮次再采用为示教，到验证时才报“示教采集不能作为独立验证样本”。
+#[test]
+fn round_already_banked_as_validation_sample_is_rejected_for_teaching() {
+    let mut w = Workspace::new(crate::recipe::samples().remove(1), None);
+    w.sample_bank.push(BankSample { id: "round-sample".into(), name: "独立采集".into(), geometry_tag: Value::Null, expected: crate::judge::Verdict::Ok,
+        created_at: 1, capture_id: Some("round-sample".into()), camera_state: Value::Null });
+    let before = w.doc.shots.clone();
+    let error = super::workflow::adopt_shots(&mut w, &three_camera_round("round-sample"), false).unwrap_err();
+    assert!(error.contains("独立验证样本"), "{error}");
+    assert_eq!(w.doc.shots.len(), before.len(), "拒绝采用时不能改动候选拍照点");
+    super::workflow::adopt_shots(&mut w, &three_camera_round("round-teach"), false).unwrap();
+}
+
+/// 回归：三相机整圈采集采用时，只加了 S001-cam1 就校验配方会误判 cam2 未被使用而失败。
+#[test]
+fn three_camera_round_adopts_every_camera_shot_into_a_recipe_that_builds() {
+    let cameras = THREE_CAMERAS;
+    let round = three_camera_round("round-3cam");
     let mut w = Workspace::new(crate::recipe::samples().remove(1), None);
     super::workflow::adopt_shots(&mut w, &round, false).unwrap();
     assert_eq!(w.doc.shots.iter().map(|s| (s.id.as_str(), s.pose_id.as_str(), s.camera.as_str())).collect::<Vec<_>>(), [

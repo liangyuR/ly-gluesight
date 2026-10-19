@@ -114,7 +114,8 @@ export default function CapturePage() {
   const locked=busy || working || dirty || frameDirty || !!data.workspace.pending;
   const productionBusy=isProductionBusy(snapshot);
   const sampleSourceInvalid=validation && (!data.workspace.captureId || data.workspace.captureId===round?.roundId);
-  const recaptureNext=validation && (round?.state!=="complete" || sampleSourceInvalid);
+  const teachingSourceInvalid=!validation && !!round && data.workspace.sampleBank.some(sample => sample.captureId===round.roundId);
+  const recaptureNext=(validation && (round?.state!=="complete" || sampleSourceInvalid)) || teachingSourceInvalid;
   const captureState = {captureReturn:{recipeId:doc.id,search:location.search,cameraIds:chosen,excludedCameraIds:excluded,drain,roundId,previewK}};
   const navigationState: CaptureNavigationState = {...captureState, returnTo:{pathname:location.pathname,search:location.search,label:validation ? "独立样本采集" : "整圈采集",state:captureState}};
   const nameOf = (id: string) => cameras.find(c=>c.id===id)?.name ?? id;
@@ -228,7 +229,8 @@ export default function CapturePage() {
       {validation && <label className="check"><input type="checkbox" checked={confirmed} disabled={locked} onChange={e=>setConfirmed(e.target.checked)}/>已确认本轮样本与示教轨迹、触发顺序及拍摄条件一致</label>}
       {validation && <label className="field"><span>样本人工期望</span><select className="input" aria-label="样本人工期望" value={sampleExpected} disabled={locked} onChange={e=>setSampleExpected(e.target.value as Verdict)}>{expectedChoices.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>}
       {sampleSourceInvalid && <Notice title="需要独立于示教的采集轮次" tone="warn">{data.workspace.captureId ? "当前轮次已用于示教，请重新采集一圈作为验证样本。" : "请先采用示教采集轮次，再采集独立验证样本。"}</Notice>}
-      <button className={"btn" + (adopted || savedSample || sampleSourceInvalid ? "" : " primary")} disabled={locked || productionBusy || sampleSourceInvalid || adopted || savedSample || ((validation || reuse) && !confirmed)} title={adopted ? "本轮已采用为示教图像" : savedSample ? "本轮已加入验证样本库" : undefined} onClick={() => void act(() => validation ? workspaceApi.captureSample(doc.id,data.workspace.revision,round.roundId,sampleExpected,confirmed) : workspaceApi.adoptCapture(doc.id,data.workspace.revision,round.roundId,reuse,confirmed),validation ? "独立验证样本已加入样本库" : "已采用本轮图像，请逐点选择检测图并示教")}>{validation ? "保存为独立验证样本" : "采用本轮图像"}</button>
+      {teachingSourceInvalid && <Notice title="需要独立于验证样本的采集轮次" tone="warn">本轮已作为独立验证样本加入样本库，不能再采用为示教图像，请整圈重采一圈用于示教。</Notice>}
+      <button className={"btn" + (adopted || savedSample || sampleSourceInvalid || teachingSourceInvalid ? "" : " primary")} disabled={locked || productionBusy || sampleSourceInvalid || teachingSourceInvalid || adopted || savedSample || ((validation || reuse) && !confirmed)} title={adopted ? "本轮已采用为示教图像" : savedSample ? "本轮已加入验证样本库" : teachingSourceInvalid ? "本轮已作为独立验证样本入库" : undefined} onClick={() => void act(() => validation ? workspaceApi.captureSample(doc.id,data.workspace.revision,round.roundId,sampleExpected,confirmed) : workspaceApi.adoptCapture(doc.id,data.workspace.revision,round.roundId,reuse,confirmed),validation ? "独立验证样本已加入样本库" : "已采用本轮图像，请逐点选择检测图并示教")}>{validation ? "保存为独立验证样本" : "采用本轮图像"}</button>
       <Link className={"btn" + (adopted || savedSample ? " primary" : "")} to={validation ? "/recipe/validation" : "/recipe/teach"}>{validation ? "进入验证" : "进入单帧示教"}<ArrowRight size={15} aria-hidden="true"/></Link>
     </div>}
     </div></div>
