@@ -5,6 +5,7 @@ param(
   [string]$Stages,
   [string]$Detect,
   [string]$Graph,
+  [string]$Limits,
   [string]$Fixture
 )
 $ErrorActionPreference = 'Stop'
@@ -20,6 +21,7 @@ $vars = [ordered]@{
   GLUESIGHT_EVAL_STAGES = $Stages
   GLUESIGHT_EVAL_DETECT = $Detect
   GLUESIGHT_EVAL_GRAPH = $Graph
+  GLUESIGHT_EVAL_LIMITS = $Limits
   GLUESIGHT_EVAL_FIXTURE = if ($Fixture) { (Resolve-Path -LiteralPath $Fixture).Path }
 }
 $saved = @{}
