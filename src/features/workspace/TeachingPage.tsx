@@ -16,7 +16,7 @@ import { TrialResult, trialPoints } from "./TrialResult";
 import { teachingGroups } from "./teachingGroups";
 import { productionBusy as isProductionBusy } from "../cycle/phase";
 import { TeachingSettings } from "./TeachingSettings";
-import type { SnackMessage } from "../../components/Snackbar";
+import type { SnackMessage } from "./context";
 
 function FrozenViewOption({ id, metadata, selected, disabled, onSelect }: { id: string; metadata: FrozenImage; selected: boolean; disabled: boolean; onSelect: () => void }) {
   const { image, loading, error } = useGrayImage(id, metadata.id);
