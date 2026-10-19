@@ -286,7 +286,7 @@ pub(crate) struct Snapshot {
     pub(crate) connection_since: i64,
     pub(crate) poll_count: u64,
     pub(crate) last_poll: i64,
-    /// plcHeartbeat 最近一次变化的轮询时刻：ly-plc 只在点位值变化时更新时间戳。
+    /// plcHeartbeat 在 ly-plc 轮询缓存里的时间戳：值或读错误变化时更新，读错误恢复为原电平也会前进。
     pub(crate) heartbeat_changed_at: i64,
     values: HashMap<&'static str, PlcValue>,
     broken_outputs: Vec<&'static str>,
@@ -767,11 +767,12 @@ impl HeartbeatWatch {
         *self = Self { timeout_ms: self.timeout_ms, first_seen: None, last_seen: None, level: None, changed_at: None, last_change: None };
     }
 
-    /// `changed_at` 取轮询缓存里心跳点位最近一次变化的轮询时刻（[`Snapshot::heartbeat_changed_at`]）。
+    /// `changed_at` 取轮询缓存里心跳点位的时间戳（[`Snapshot::heartbeat_changed_at`]）。
     ///
     /// 连续观察时先按上次翻转判超时，再记这次读数：翻转间隔超过阈值即判失活，此后的翻转不能抵消。
     /// 观察出现空档（节拍被长操作阻塞超过 1/3 阈值）时，空档里 PLC 是否翻转只能看轮询缓存：
     /// 时间戳前进或电平变了就认其最近一次变化的时刻，再判超时，不把 PC 自己没来观察当成 PLC 心跳停止。
+    /// 缓存不区分值变化与读错误恢复：空档里心跳所在读块出错又恢复也算一次翻转，PLC 心跳若恰在空档里停止，空档结束后最多再过一个超时周期才判失活。
     pub(crate) fn observe(&mut self, level: bool, changed_at: i64, now: i64) -> Result<(), String> {
         if self.last_seen.is_some_and(|last| now < last) {
             return Err("PLC 心跳时钟倒退，必须重新同步".into());
