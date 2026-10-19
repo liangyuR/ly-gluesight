@@ -129,7 +129,7 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
             </div>
             {!!result.skipReasons.length && <div className="rj-changes" aria-label="跳过原因">
               {result.skipReasons.map(item => <button key={item.id} className="rj-change" onClick={() => navigate(`/history/${item.id}`)}>
-                <span className="mono">SN {item.sn}</span><span>{item.reason}</span>
+                <span className="sn">SN {item.sn}</span><span className="rj-reason">{item.reason}</span>
               </button>)}
             </div>}
             <div className="table-wrap">
@@ -159,10 +159,9 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
                 {result.changes.map((c) => (
                   <button key={c.id} className="rj-change" onClick={() => navigate(`/history/${c.id}`)}>
                     <span className="mono">{formatTime(c.ts)}</span>
-                    <span className="mono">SN {c.sn}</span>
-                    <span className={`vt ${verdictClass(c.from)}`}>{verdictLabel[c.from]}</span>→
-                    <span className={`vt ${verdictClass(c.to)}`}>{verdictLabel[c.to]}</span>
-                    <span className="muted ellipsis">{c.reason}</span>
+                    <span className="sn">SN {c.sn}</span>
+                    <span className="rj-transition"><span className={`vt ${verdictClass(c.from)}`}>{verdictLabel[c.from]}</span>→<span className={`vt ${verdictClass(c.to)}`}>{verdictLabel[c.to]}</span></span>
+                    <span className="muted ellipsis rj-reason">{c.reason}</span>
                   </button>
                 ))}
               </div>
