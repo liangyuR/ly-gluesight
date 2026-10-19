@@ -191,12 +191,16 @@ struct Execution {
     status: Mutex<ExecutionStatus>,
 }
 
+fn clock() -> Instant {
+    tokio::time::Instant::now().into_std()
+}
+
 impl Execution {
     fn start(&self, deadline: Instant) -> bool {
-        let entered_at = Instant::now();
+        let entered_at = clock();
         let mut status = self.status.lock().unwrap();
         status.entered_at = Some(entered_at);
-        if status.timed_out || Instant::now() >= deadline {
+        if status.timed_out || clock() >= deadline {
             status.finished = true;
             return false;
         }
@@ -253,7 +257,7 @@ fn duration_ms(duration: Duration) -> u32 {
 }
 
 fn report(out: &UnboundedSender<Input>, job: &Job, mut measured: Measured) {
-    measured.ms = duration_ms(job.submitted_at.elapsed());
+    measured.ms = duration_ms(clock().saturating_duration_since(job.submitted_at));
     let _ = out.send(Input::Measured(measured));
 }
 
@@ -287,12 +291,12 @@ async fn dispatch(mut rx: Receiver<Job>, health: Arc<WorkerHealth>, runner: JobR
         let (worker_job, worker_execution, runner) = (job.clone(), execution.clone(), runner.clone());
         let task = tokio::task::spawn_blocking(move || {
             if !worker_execution.start(deadline.into_std()) {
-                return (timeout_result(&worker_job), Instant::now());
+                return (timeout_result(&worker_job), clock());
             }
             let entered_at = worker_execution.entered_at().unwrap();
             let _running = RunningJob { execution: worker_execution, _permit: permit };
             let mut measured = runner(&worker_job);
-            let completed = Instant::now();
+            let completed = clock();
             measured.engine_ms = Some(duration_ms(completed.saturating_duration_since(entered_at)));
             measured.core_ms = if worker_job.image_measurement && worker_job.image.is_some() && measured.error.is_none() {
                 Some(measured.ms)
@@ -414,7 +418,7 @@ mod tests {
             camera: "cam1".into(),
             bundle_id: Some("bundle-7".into()),
             production: None, candidate: None,
-            submitted_at: Instant::now(),
+            submitted_at: clock(),
             timeout,
             image_measurement: false,
             sn: "SN-123".into(),
@@ -469,16 +473,18 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn timed_out_blocking_job_keeps_capacity_and_late_completion_is_not_reported_twice() {
         let gate = Arc::new(Gate::default());
         let release = ReleaseOnDrop(gate.clone());
         let entered = Arc::new(AtomicUsize::new(0));
         let calls = entered.clone();
+        let (blocked_tx, mut blocked) = unbounded_channel();
         let (tx, health, mut results, dispatcher) = worker(1, Arc::new(move |job| {
             let core_started = Instant::now();
             calls.fetch_add(1, Ordering::SeqCst);
             if job.k == 0 {
+                let _ = blocked_tx.send(());
                 gate.wait();
             }
             let mut measured = Measured::empty(job);
@@ -491,8 +497,10 @@ mod tests {
         image_job.image_measurement = true;
         image_job.image = Some(Arc::new(FrameImage::new(2, 2, vec![128; 4])));
         tx.send(image_job).await.unwrap();
-        wait_health(&health, WorkerHealthSnapshot { capacity: 1, running: 1, timed_out: 0, available_capacity: 0 }).await;
+        blocked.recv().await.unwrap();
+        assert_eq!(health.snapshot(), WorkerHealthSnapshot { capacity: 1, running: 1, timed_out: 0, available_capacity: 0 });
         assert!(health.can_arm());
+        tokio::time::advance(Duration::from_millis(200)).await;
         let result = next_result(&mut results).await;
         assert!(result.error.unwrap().starts_with(MEASURE_TIMEOUT));
         assert_eq!((result.cycle_id.as_str(), result.shot_id.as_str()), ("cycle-7", "P1"));
@@ -503,8 +511,15 @@ mod tests {
         assert_eq!(health.snapshot(), WorkerHealthSnapshot { capacity: 1, running: 1, timed_out: 1, available_capacity: 0 });
         assert!(!health.can_arm());
 
+        let watchdog = release.0.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            watchdog.release();
+        });
         tx.send(job(1, Duration::from_millis(30))).await.unwrap();
         tx.send(job(2, Duration::from_millis(30))).await.unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(30)).await;
         for k in [1, 2] {
             let result = next_result(&mut results).await;
             assert_eq!(result.k, k);

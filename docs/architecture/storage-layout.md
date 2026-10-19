@@ -11,7 +11,7 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 | 位置 | 用途 |
 | --- | --- |
 | `config/` | 相机、PLC、检测配置、离线选择、飞拍估算参数和用户偏好 |
-| `state/` | PLC 握手状态与审计 |
+| `state/` | PLC 握手状态与审计。握手审计 `plc-handshake.audit.jsonl` 超过 4 MB 滚动到 `plc-handshake-audit/`，分段早于 30 天或总量超过 256 MB 时随检测记录清理删除，仍有未结 PLC 交付引用的分段保留；诊断包带上当前文件和与导出时间段有交集的分段，其余分段在清单 notes 中计数 |
 | `recipes/`、`workspaces/` | 生产配方、候选配方及示教资料 |
 | `calib/`、`vision/releases/` | 标定、发布资源 |
 | `recipe-capture/` | 整圈采集原图 |
@@ -40,8 +40,10 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 
 ## 自动化测试
 
-`Start-UiTestInstance.ps1` 显式设置隔离 `GLUESIGHT_DATA_DIR`，目录位于对应 `output/playwright/<profile>-regression/<test-identifier>`，并写入 `instance.json.dataRoot`。重置只允许清理这一已验证目录，不接触正式、开发或旧 AppData 资料。安装版不接受该覆盖变量。
+`Start-UiTestInstance.ps1` 显式设置隔离 `GLUESIGHT_DATA_DIR`，目录默认位于对应 `output/playwright/<profile>-regression/<test-identifier>`，可用 `-DataRoot` 或 `GLUESIGHT_TEST_DATA_ROOT` 改为 `<DataRoot>/<test-identifier>`，并写入 `instance.json.dataRoot`。重置只允许清理这一已验证目录，不接触正式、开发或旧 AppData 资料。安装版不接受该覆盖变量。
 
-首次启动通过软件内资料准备页确认来源和目标。目录不可用时，只为展示错误页使用临时 WebView 配置，不回退读取或写入 AppData 业务资料；正常启动的 WebView 配置仍位于 ProgramData。
+启动时校验主窗口的 WebView2 资料目录（`webview/<SID>`）不超过 229 个字符，否则 WebView2 建不出 `EBWebView\Default` 目录；资料目录尚未初始化、需要先建资料准备窗口时，还校验准备窗口的资料目录（`migration/bootstrap/webview/<SID>`）不超过 237 个字符，否则建不出 `EBWebView` 目录。两种情况下窗口都不出现且进程挂起，所以超限按启动失败处理。
+
+首次启动通过软件内资料准备页确认来源和目标。目录不可用时，只为展示错误页使用临时 WebView 配置，不回退读取或写入 AppData 业务资料；正常启动的 WebView 配置仍位于 ProgramData。窗口全部配置为隐藏的测试实例没有人能看到错误页，启动失败时把原因写到标准错误并以退出码 1 结束。
 
 候选离线调试历史通过历史中冻结的样本集 ID、工件 ID 和配方拍照点身份读取 samples/ 中的原图，界面标为“离线样本原图”。查看与原图复测不依赖当前站点模式或当前选择的样本集，也不把复用样本标成已录制。样本缺失、身份不匹配或同 ID 多副本会阻止原图复测；原始调试判定保留，对照结果另存。
