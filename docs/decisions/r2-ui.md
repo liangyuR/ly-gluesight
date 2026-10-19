@@ -42,19 +42,20 @@
 
 - 问题：qing-steel 与 Material 3 的 snackbar 默认在视口底部；GlueSight 的单帧示教、默认参数、相机配置都有吸底操作栏，底部提示会盖住“运行试测”“保存本组示教”等按钮。
 - 可选项：底部居中；底部右侧；主区顶部居中；视口右上角。
-- 采用：主区顶部居中（距主区上沿 16 px）。原先的成功提示也出现在这一带，操作员的视线不用换位置；浮层不占布局。qing-steel 组件默认仍是底部，`.top` 为顶部变体；GlueSight 把定位层放在主区内一个零高度锚点里，随主区居中，不随页面滚动。
+- 采用：主区顶部居中（距主区上沿 16 px）。原先的成功提示也出现在这一带，操作员的视线不用换位置；浮层不占布局。
+- 当前实现（qing-steel 0.8.0）：`src/App.tsx` 用 qing-steel 的 `SnackbarProvider` 包住 `AppLayout`，提示层 `.qs-snackbars` 渲染在 `.app-shell` 之后；组件默认固定在视口底部居中，`SnackbarProvider` 没有位置或容器参数，GlueSight 只能靠 `src/styles.css` 的两条规则把它限定在主区顶部：`.app-shell ~ .qs-snackbars` 取 `top: calc(12px + var(--space-16))`、`left: calc(var(--sidebar-w) + 24px)`、`right: 12px`，`.app-shell:has(> .sidebar.collapsed) ~ .qs-snackbars` 在侧栏收起时把 `left` 换成窄栏宽度。提示在主区内居中，不随页面滚动。页面里用 `useSnackbar()` 取 `{ show, clear }`，没有挂 Provider 时会抛错，所以单元测试要自己挂 `SnackbarProvider`。
 - 审查后修订：“工作台顶栏中段是空白”只在 1920 宽且没有待生效徽章时成立。隔离实例实测（提示宽 294–546 px）：原顶栏在 1920×1080 有“待生效”徽章与“保存失败”时，提示盖住“保存失败”徽章和“重试保存”按钮，指针移上去还会暂停计时；1440×900 下平时就盖住候选修订文字与保存状态徽章，最长的提示还压到配方选择框。改为顶栏左侧只放配方选择与发布版本，候选修订、待生效、保存状态、重试保存移到右侧“配方库”之前，提示仍在主区顶部居中。改后：1920×1080 各状态、各提示都不压顶栏任何元素；1440×900 平时 14–17 字的提示不压任何元素，更长的提示压住“已发布”徽章，有待生效 + 保存失败时压住候选修订文字（较长提示还压住部分待生效徽章）；“保存失败”与“重试保存”在两种分辨率下都不被遮挡，被压住的只有文字和徽章，没有可点的控件。
 - 另比较过：顶部右侧（压住系统设置“打开资料目录”、相机页“刷新相机配置 / 添加相机”）；底部居中或左下（压住示教页“保存本组示教 / 保存并进入下一组 / 运行试测”和验证页的样本选用）。仍取顶部居中。
 - 提示文字控制在一行内（约 32 字以内，最宽 560 px）：两行的提示会压到步骤条上沿。
-- 回退：去掉 `SnackbarHost` 的 `top` 类即回到视口底部居中；顶栏恢复原顺序只需把 `spacer` 移回“配方库”之前。
+- 回退：删除 `src/styles.css` 中 `.app-shell ~ .qs-snackbars` 与 `.app-shell:has(> .sidebar.collapsed) ~ .qs-snackbars` 两条规则，提示回到 qing-steel 默认的视口底部居中；顶栏恢复原顺序只需把 `spacer` 移回“配方库”之前。
 
 ### U-2 同一时刻一条，按文字长度自动消失，悬停暂停
 
-- 采用：新提示替换旧提示（旧提示 120 ms 淡出，与新提示叠在同一格，不上下推挤）；时长 `clamp(3000 + 字数 × 70, 4000, 10000)` ms；指针悬停或焦点在提示内时暂停计时，离开后按剩余时间（至少 1.5 s）继续；带关闭按钮。提示层 `role="status"`、`aria-live="polite"`。只动 transform 与 opacity；减少动态效果时动画关闭，离开立即移除。
-- 同一次处理里连续发出两条时也只留最新一条：通道按自己维护的当前列表让旧提示退场，不读上一次渲染的结果。
-- 换配方、清空当前选择、工作台操作开始时收起当前提示，与原页面内提示的清除时机一致，上一配方或上一次操作的结果不会留到新上下文里。
+- 采用：新提示替换旧提示（旧提示 120 ms 淡出，与新提示叠在同一格，不上下推挤）；时长 `clamp(3000 + 字数 × 70, 4000, 10000)` ms；指针悬停或焦点在提示内时暂停计时，离开后按剩余时间继续；带关闭按钮。提示层 `role="status"`、`aria-live="polite"`。只动 transform 与 opacity；减少动态效果时动画关闭，离开立即移除。
+- 当前实现：以上行为都由 qing-steel 0.8.0 的 `SnackbarProvider` 提供，GlueSight 不再保留本地的 `Snackbar.tsx` 与 `SnackbarHost`。同一次处理里连续 `show` 两条时，Provider 只保留最后一条。离开计时没有“至少 1.5 s”的下限，按剩余时间继续。
+- 换配方、清空当前选择、工作台操作开始时调用 `useSnackbar()` 的 `clear()` 收起当前提示（`src/features/workspace/context.tsx`），与原页面内提示的清除时机一致，上一配方或上一次操作的结果不会留到新上下文里。
 - 理由：瞬时结果多为一句话；连续操作时堆叠多条会遮挡顶栏且没有新信息。
-- 回退：`src/components/Snackbar.tsx` 中 `show` 不再 `retire` 旧条目即可改为堆叠。
+- 回退：`SnackbarProvider` 一次只显示一条，没有堆叠选项。要改为堆叠，需要向 qing-steel 提需求（见 [qing-steel-080.md](qing-steel-080.md) 的缺口清单），或在 GlueSight 自行封装一个提示通道替换 `App.tsx` 中的 Provider。
 
 ### U-3 哪些提示进全局提示
 
@@ -72,14 +73,15 @@
 
 ### U-5 GlueSight 不引入 qs-motion.js
 
-- 问题：qing-steel 的 `QingSteel.snackbar()` 直接操作 DOM；GlueSight 其余动效（侧栏、选择轨道）都是 React 自行实现，没有引入 qs-motion.js。
-- 采用：GlueSight 用 React 实现同样的时序与时长规则（`snackDuration` 两边一致），只复用 qing-steel 的样式类。qs-motion 的实现给非 React 页面和演示页使用。
+- 问题：qing-steel 的 `QingSteel.snackbar()` 直接操作 DOM；GlueSight 是 React 应用，不引入面向非 React 页面的 qs-motion.js。
+- 采用：不引入 qs-motion.js。全局提示使用 qing-steel 0.8.0 提供的 React 组件 `SnackbarProvider` / `useSnackbar`，时序与时长规则与 DOM 版一致。qs-motion 的实现给非 React 页面和演示页使用。侧栏、工作台步骤条的选择轨道仍是 GlueSight 本地的 React 实现。
 - 回退：无。
 
 ### U-6 qing-steel 依赖固定到 PR 提交
 
 - 采用：只有 `feat/ui-global-snackbar` 修改 `package.json` / `pnpm-lock.yaml`，固定到 qing-steel PR 提交 `8d5701a`。qing-steel PR 合并并打 `v0.4.0` 标签后，依赖改为 `github:liangyuR/qing-steel#v0.4.0`。其余 GlueSight PR 只用 0.3.0 已有的令牌。
 - 回退：依赖改回 `#v0.3.0`（全局提示会失去样式）。
+- 现状：依赖已升级到 v0.8.0 发布包，提示层改用其 `SnackbarProvider`，见 [qing-steel-080.md](qing-steel-080.md)。
 
 ### U-7 SN 显示：列表与详情完整显示，固定高度处单行
 
