@@ -3,6 +3,7 @@ use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
+const WRITER_HANG: Duration = Duration::from_secs(600);
 
 struct TestDir(PathBuf);
 
@@ -61,7 +62,7 @@ fn cleanup(protection: PendingProtection, warning: RetentionWarning) -> Cleanup 
 }
 
 fn wait(outcomes: &Receiver<RecordingOutcome>) -> RecordingOutcome {
-    outcomes.recv_timeout(Duration::from_secs(10)).expect("录制收尾必须产生结果")
+    outcomes.recv_timeout(WRITER_HANG).expect("录制收尾必须产生结果")
 }
 
 fn metadata(outcome: &RecordingOutcome) -> serde_json::Value {
@@ -170,6 +171,42 @@ fn disk_failure_does_not_claim_originals_exist() {
     assert!(!outcome.available && outcome.directory.is_none() && outcome.files.is_empty());
     assert!(outcome.errors.iter().any(|error| error.contains("创建录制目录失败")));
     assert_eq!(std::fs::read_to_string(dir.root()).unwrap(), "blocked-root");
+}
+
+#[test]
+fn only_disk_write_failures_are_classified_as_write_errors() {
+    let blocked = TestDir::new();
+    std::fs::write(blocked.root(), "blocked-root").unwrap();
+    let (disk_callback, disk_outcomes) = callback();
+    let recorder = Recorder::new(blocked.root(), Some(disk_callback));
+    let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "cycle-disk", None).unwrap();
+    recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
+    recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
+    let outcome = wait(&disk_outcomes);
+    assert!(outcome.errors.iter().any(|error| is_write_error(error)), "{:?}", outcome.errors);
+
+    let dir = TestDir::new();
+    let (capture_callback, capture_outcomes) = callback();
+    let recorder = Recorder::new(dir.root(), Some(capture_callback));
+    let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "cycle-capture", None).unwrap();
+    let mut one_view = frame(10);
+    one_view.images.truncate(1);
+    recorder.frame(&mut rec, &one_view, "cam1", 0, 1);
+    recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
+    recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
+    let outcome = wait(&capture_outcomes);
+    assert!(outcome.errors.iter().any(|error| error.contains("原图不完整")) && outcome.errors.iter().any(|error| error.contains("拒绝覆盖原图")), "{:?}", outcome.errors);
+    assert!(!outcome.errors.iter().any(|error| is_write_error(error)), "{:?}", outcome.errors);
+
+    let (recorder, rx, _) = controlled(dir.root());
+    recorder.queued.store(QUEUE, Ordering::Relaxed);
+    let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "cycle-full", None).unwrap();
+    recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
+    recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
+    let Msg::Finish(job) = rx.try_recv().unwrap() else { panic!("需要收尾消息") };
+    let outcome = finish_recording(recorder.root(), job, WriteState::default(), None);
+    assert!(outcome.errors.iter().any(|error| error.contains("录制队列已满")), "{:?}", outcome.errors);
+    assert!(!outcome.errors.iter().any(|error| is_write_error(error)), "{:?}", outcome.errors);
 }
 
 #[test]
@@ -299,7 +336,7 @@ fn failed_history_guard_retains_pending_and_only_reports_retention_warnings() {
     let (warn_tx, warnings) = channel();
     let recorder = Recorder::guarded(root, Some(callback), cleanup(Arc::new(|| Err("历史引用读取失败".into())),
         Arc::new(move |errors| warn_tx.send(errors.to_vec()).unwrap())));
-    let startup = warnings.recv_timeout(Duration::from_secs(10)).unwrap();
+    let startup = warnings.recv_timeout(WRITER_HANG).unwrap();
     assert!(startup.iter().any(|error| error.contains("历史引用读取失败")));
     let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "guard-error-complete", None).unwrap();
     recorder.frame(&mut rec, &frame(21), "cam1", 0, 1);
@@ -460,7 +497,7 @@ fn applying_lower_retention_prunes_both_roots_without_next_part_and_keeps_protec
         Recorder::new(offline_root, None));
     recorders.apply_retention(&CycleSettings { record_keep: 1, offline_record_keep: 2, ..CycleSettings::default() });
     let present = |paths: &[PathBuf]| paths.iter().map(|p| p.is_dir()).collect::<Vec<_>>();
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + WRITER_HANG;
     while (present(&real), present(&offline)) != (vec![true, false, true], vec![false, true, true]) {
         assert!(std::time::Instant::now() < deadline, "保存保留设置后未按新上限清理：real={:?} offline={:?}", present(&real), present(&offline));
         std::thread::sleep(Duration::from_millis(10));

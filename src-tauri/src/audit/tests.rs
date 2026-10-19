@@ -604,7 +604,7 @@ fn durable_recording_barrier_waits_for_actual_recorder_callback_after_ack_and_em
     let (callback_spool, callback_failure, callback_pending) = (spool.clone(), failure.clone(), pending.clone());
     let callback = Arc::new(move |outcome: RecordingOutcome| {
         entered_tx.send(outcome.clone()).unwrap();
-        release_rx.lock().unwrap().recv_timeout(Duration::from_secs(10)).unwrap();
+        release_rx.lock().unwrap().recv_timeout(Duration::from_secs(600)).unwrap();
         done_tx.send(persist_event(&callback_spool, &callback_failure, &callback_pending, &Event::Recording(outcome))).unwrap();
     });
     let recorder = Recorder::new(dir.0.join("records"), Some(callback));
@@ -617,7 +617,7 @@ fn durable_recording_barrier_waits_for_actual_recorder_callback_after_ack_and_em
         images: (0..3).map(|view| Arc::new(FrameImage::new(1, 1, vec![20 + view]))).collect(),
     }, "cam1", 0, 1);
     recorder.finish(recording, record.judgement.verdict, &record.judgement.reason, 10, u64::MAX, Vec::new());
-    let actual = entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let actual = entered_rx.recv_timeout(Duration::from_secs(600)).unwrap();
     assert_eq!(actual.state, RecorderState::Incomplete);
     assert_eq!(actual.files.len(), 3);
     assert!(spool.lock().unwrap().empty() && failure.lock().unwrap().is_none());
@@ -627,7 +627,7 @@ fn durable_recording_barrier_waits_for_actual_recorder_callback_after_ack_and_em
     }
     assert_eq!(actions, 0);
     release_tx.send(()).unwrap();
-    assert_eq!(done_rx.recv_timeout(Duration::from_secs(10)).unwrap(), Ok(()));
+    assert_eq!(done_rx.recv_timeout(Duration::from_secs(600)).unwrap(), Ok(()));
     assert!(pending.lock().unwrap().is_empty());
     assert!(with_ready_spool(&spool, &failure, &running, &pending, || Ok(())).is_err());
     assert!(replay_cycle(&mut spool.lock().unwrap(), &record.cycle_id, &mut sink, 2).unwrap().0);

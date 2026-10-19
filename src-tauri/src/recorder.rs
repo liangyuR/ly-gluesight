@@ -377,6 +377,18 @@ impl Recorder {
     }
 }
 
+const WRITE_FAILURES: &[&str] = &[
+    "创建录制目录失败", "创建原图失败", "写入原图失败", "创建 part.json 失败", "写入 part.json 失败", "提交 part.json 失败",
+    "创建收尾目录失败", "录制目录收尾失败", "录制目标目录已存在", "NG-only 合格件临时录制清理失败",
+    "录制线程启动失败", "录制写入线程已停止",
+    "原图未取得写入成功确认", "已写入原图不可用", "原图路径不能是 reparse point", "原图路径不是普通文件或文件长度与录制尺寸不符",
+    "原图解码失败", "原图解码尺寸与录制尺寸不符",
+];
+
+pub fn is_write_error(error: &str) -> bool {
+    WRITE_FAILURES.iter().any(|marker| error.contains(marker))
+}
+
 fn safe_cycle_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
