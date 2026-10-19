@@ -1,5 +1,6 @@
 mod admission;
 mod capture;
+mod interrupted;
 pub mod readiness;
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -23,9 +24,10 @@ use crate::inspection::{read_tag_u32, tag};
 use crate::judge::{self, fault, Judgement, PointState, Verdict};
 use crate::measure::{self, Job, Measured, WorkerHealth};
 use crate::plc::PlcHost;
-use crate::plc_session::{PlcSession, SessionEvent, SessionPhase, SessionView};
+use crate::plc_session::{PartSite, PlcSession, SessionEvent, SessionPhase, SessionView};
 use crate::recipe::{Recipe, RecipeStore, TriggerMode};
 use crate::recorder::{Recorder, Recorders, Recording};
+use crate::recording_health::{AlarmChange, RecordingAlarm, RecordingHealth};
 use crate::settings::{CycleSettings, ProductSource};
 use crate::shot_router::{ArmCam, Floor, FrameMeta, Ledgers, Plan, Policy, Route, ShotRouter};
 use crate::offline::Scenario;
@@ -222,6 +224,7 @@ pub struct Snapshot {
     pub stats: Stats,
     pub stray_frames: u64,
     pub alarms: Vec<String>,
+    pub recording_alarm: Option<RecordingAlarm>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -281,6 +284,7 @@ pub struct CycleHost {
     pub cycle_ids: crate::cycle_ids::CycleIds,
     pub audit: Audit,
     pub disk: crate::disk_guard::DiskGuard,
+    pub recording_health: Arc<RecordingHealth>,
     settings_path: PathBuf,
     shared: Mutex<Shared>,
     rx: Mutex<Option<(UnboundedReceiver<Input>, Receiver<Frame>)>>,
@@ -300,8 +304,10 @@ impl CycleHost {
         let audit = Audit::new(app, data.join("audit-spool"))?;
         let interrupted_recordings = app.state::<Store>().finish_interrupted_recordings()?;
         let camera = CameraRig::new(app, frame_tx)?;
+        let recording_health = Arc::new(RecordingHealth::default());
         let recorder = |root: PathBuf, scope: HistoryScope| {
             let (guarded_root, guard_app, protection_audit, warning_app, record_audit) = (root.clone(), app.clone(), audit.clone(), app.clone(), audit.clone());
+            let (health, alarm_app) = (recording_health.clone(), app.clone());
             let protection = Arc::new(move || {
                 let mut paths = guard_app.try_state::<Store>().ok_or("检测记录数据库尚未初始化")?.pending_recording_directories(&guarded_root, scope)?;
                 paths.extend(protection_audit.protected_recording_directories(&guarded_root)?);
@@ -318,6 +324,7 @@ impl CycleHost {
             });
             Recorder::guarded(root, Some(Arc::new(move |outcome: crate::recorder::RecordingOutcome| {
                 let cycle_id = outcome.cycle_id.clone();
+                if let Some(change) = health.observe(scope, &outcome, now_ms()) { log_recording_alarm(&alarm_app, change); }
                 if let Err(error) = record_audit.recording(outcome) {
                     applog::emit(applog::Level::Error, "录制审计持久化失败", &error, Fields { cycle_id: Some(cycle_id), ..Fields::default() });
                 }
@@ -334,6 +341,7 @@ impl CycleHost {
             cycle_ids: crate::cycle_ids::CycleIds::default(),
             audit,
             disk: crate::disk_guard::DiskGuard::new(data.clone()),
+            recording_health,
             shared: Mutex::new(Shared {
                 snapshot: None,
                 logs: VecDeque::new(),
@@ -439,6 +447,56 @@ pub fn purge_history(app: &AppHandle) {
         }
         Err(e) => log(app, "err", "记录清理", e),
     }
+    purge_handshake_audit(app);
+}
+
+/// 握手审计分段与检测记录同时清理：未结交付（PLC 尚未确认的件）读不到时整次跳过，不冒险删掉 ACK 恢复要读的记录。
+fn purge_handshake_audit(app: &AppHandle) {
+    let unresolved = match app.state::<Store>().unresolved_delivery_cycles() {
+        Ok(unresolved) => unresolved,
+        Err(error) => return log(app, "warn", "握手审计清理", format!("读取未结 PLC 交付失败，本次不清理：{error}")),
+    };
+    let active = crate::storage::state(app).join("plc-handshake.audit.jsonl");
+    let pruned = crate::handshake_audit::prune(&active, &unresolved, crate::handshake_audit::LIMITS, now_ms());
+    if pruned.removed > 0 || pruned.kept_unresolved > 0 {
+        log(app, "info", "握手审计清理", format!("删除 {} 个过期分段；{} 个分段仍有未结交付，保留", pruned.removed, pruned.kept_unresolved));
+    }
+    for error in pruned.errors { log(app, "warn", "握手审计清理", error); }
+}
+
+/// 启动时握手日志里有已绑定工件、尚无结果的在途事务，而历史与追溯暂存里都没有它：进程在事务中退出，补一条 ERR 记录。
+/// 只补记录，不动握手事务；事务仍由 PLC 复位处置。
+pub(crate) fn record_interrupted_part(app: &AppHandle, s7: &PlcSession, stats: &mut Stats, scope: HistoryScope) {
+    let (Some(cycle_id), Some(request)) = (s7.cycle_id(), s7.request()) else { return };
+    if s7.result().is_some() { return; }
+    let Some(site) = s7.site() else {
+        return log(app, "err", "中断工件补记录", format!("cycleId={cycle_id}：握手日志缺少开工时的场景与录制方式，未补记录"));
+    };
+    let host = host(app);
+    let known = host.audit.protected_cycle_ids().map(|ids| ids.contains(cycle_id))
+        .and_then(|spooled| Ok(spooled || app.state::<Store>().detail_by_cycle(cycle_id)?.is_some()));
+    match known {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => return log(app, "err", "中断工件补记录", format!("cycleId={cycle_id}：核对历史失败，未补记录：{error}")),
+    }
+    let started_at = s7.started_at();
+    let records = applog::dir(app).map(|dir| applog::cycle_records(&dir, cycle_id, started_at.unwrap_or_else(now_ms), 200).records).unwrap_or_default();
+    let interrupted = interrupted::Interrupted { cycle_id, sn: &request.sn, request_seq: request.request_seq, started_at, site };
+    let part = interrupted::part(&interrupted, &records, |id| host.recipe(id), app.package_info().version.to_string(), now_ms());
+    let label = site.source.label();
+    let counted = interrupted::counts_in_stats(part.source, part.ts, scope, history::local_midnight_ms());
+    let outcome = interrupted::recording(cycle_id, site.record);
+    let inserted = host.audit.insert(part);
+    if inserted.is_ok() && counted {
+        stats.total += 1;
+        stats.err += 1;
+    }
+    match inserted.and_then(|()| host.audit.recording(outcome)) {
+        Ok(()) => log_with(app, "warn", "中断工件补记录", format!("SN={} 请求序号 {}：进程在事务中中断，已按 ERR 补入历史（{label}）；PLC 事务仍需复位处置", request.sn, request.request_seq),
+            Fields { cycle_id: Some(cycle_id.into()), sn: Some(request.sn.clone()), request_seq: Some(request.request_seq), ..Fields::default() }),
+        Err(error) => log(app, "err", "中断工件补记录", format!("cycleId={cycle_id}：{error}")),
+    }
 }
 
 fn plc(app: &AppHandle) -> &PlcEngine {
@@ -447,6 +505,19 @@ fn plc(app: &AppHandle) -> &PlcEngine {
 
 fn host(app: &AppHandle) -> &CycleHost {
     app.state::<CycleHost>().inner()
+}
+
+fn log_recording_alarm(app: &AppHandle, change: AlarmChange) {
+    let (tone, ev, msg, cycle_id) = match change {
+        AlarmChange::Raised(alarm) => ("err", "原图录制失败", alarm.message(), Some(alarm.cycle_id)),
+        AlarmChange::Cleared => ("ok", "原图录制恢复", "录制失败告警已清除".to_string(), None),
+    };
+    let fields = Fields { cycle_id, ..Fields::default() };
+    if app.try_state::<CycleHost>().is_some() {
+        log_with(app, tone, ev, msg, fields);
+    } else {
+        applog::emit(applog::Level::from_tone(tone), ev, &msg, fields);
+    }
 }
 
 pub fn log(app: &AppHandle, level: &'static str, ev: impl Into<String>, msg: impl Into<String>) {
@@ -765,11 +836,12 @@ struct Machine {
     s7_reset_requested: bool,
     run_id: u64,
     current_cycle_id: Option<String>,
+    recording_alarm: Option<RecordingAlarm>,
 }
 
 impl Machine {
     fn new(app: AppHandle, measure_tx: Sender<Job>, workers: Arc<WorkerHealth>) -> Self {
-        let stats = today_stats(&app, HistoryScope::Real);
+        let mut stats = today_stats(&app, HistoryScope::Real);
         let s7 = PlcSession::open(crate::storage::state(&app).join("plc-handshake.json"));
         let recovery = match app.state::<Store>().unresolved_delivery_cycles() {
             Ok(unresolved) => s7.recover_acknowledgements(&unresolved),
@@ -790,6 +862,7 @@ impl Machine {
         }
         if recovered > 0 { log(&app, "ok", "PLC 确认恢复", format!("已从持久握手记录恢复 {recovered} 件 PLC 确认，原检测结论保留")); }
         if failed > 10 { log(&app, "err", "PLC 确认恢复", format!("另有 {} 条收据未能关联或保存，请核对握手审计与检测记录", failed - 10)); }
+        record_interrupted_part(&app, &s7, &mut stats, HistoryScope::Real);
         host(&app).busy.store(s7.pending(), Ordering::SeqCst);
         Self {
             app,
@@ -822,6 +895,16 @@ impl Machine {
             s7_reset_requested: false,
             run_id: 0,
             current_cycle_id: None,
+            recording_alarm: None,
+        }
+    }
+
+    /// 原图录制失败不停产，告警独立于每件清空的 alarms，跟着当前场景的录制结果走。
+    fn sync_recording_alarm(&mut self) {
+        let alarm = host(&self.app).recording_health.alarm(self.stats_scope);
+        if alarm != self.recording_alarm {
+            self.recording_alarm = alarm;
+            self.dirty = true;
         }
     }
 
@@ -993,7 +1076,9 @@ impl Machine {
             result: self.result.clone(),
             stats: self.stats.clone(),
             stray_frames: self.stray,
-            alarms: self.alarms.iter().chain(&self.config_warnings).chain(&self.camera_warnings).cloned().collect(),
+            alarms: self.alarms.iter().chain(&self.config_warnings).chain(&self.camera_warnings).cloned()
+                .chain(self.recording_alarm.as_ref().map(RecordingAlarm::message)).collect(),
+            recording_alarm: self.recording_alarm.clone(),
         };
         host.shared.lock().unwrap().snapshot = Some(snapshot.clone());
         let _ = self.app.emit("cycle://snapshot", snapshot);
@@ -1073,7 +1158,8 @@ impl Machine {
             Err(reason) => return self.refuse(sn, None, fault::PROCESS_TIMEOUT, reason).await,
         };
         self.current_cycle_id = Some(cycle_id.clone());
-        if let Err(error) = self.s7.bind_cycle_id(&cycle_id) {
+        let site = PartSite { source: crate::site::record_source(&app), record: crate::site::record_mode(&app) };
+        if let Err(error) = self.s7.bind_cycle_id(&cycle_id, site) {
             return self.refuse(sn, None, fault::PROCESS_TIMEOUT, format!("S7 事务无法绑定工件身份：{error}")).await;
         }
         if !self.workers.can_arm() {
@@ -1389,6 +1475,7 @@ impl Machine {
             self.stats = today_stats(&app, scope);
             self.dirty = true;
         }
+        self.sync_recording_alarm();
         let cameras = if capture_host.active() { capture::capture_readiness(self.service_ready(), || self.capture_devices_ready()) } else { match self.phase {
             // 在途的件只看它自己用的相机；等 PLC 确认结果时相机掉线不打断握手，回到空闲再查
             Phase::Acquire | Phase::Drain => match self.part.as_ref() {
