@@ -8,6 +8,7 @@ import OverviewPage from "../src/features/workspace/OverviewPage";
 import ValidationPage from "../src/features/workspace/ValidationPage";
 import CapturePage from "../src/features/workspace/CapturePage";
 import { WorkspaceProvider } from "../src/features/workspace/context";
+import { SnackbarHost, SnackbarProvider } from "../src/components/Snackbar";
 import { workspaceApi } from "../src/features/workspace/api";
 import { recipeApi, useCycle } from "../src/features/cycle/api";
 import { cameraApi } from "../src/features/camera";
@@ -100,12 +101,12 @@ function mockSite(candidate: WorkspaceView) {
 }
 
 function renderWorkspace(path: string, strict = false) {
-  const workspace = <MemoryRouter initialEntries={[path]}><WorkspaceProvider><Routes>
+  const workspace = <MemoryRouter initialEntries={[path]}><SnackbarProvider><SnackbarHost /><WorkspaceProvider><Routes>
     <Route path="/recipe/teach" element={<TeachingPage />} />
     <Route path="/recipe/overview" element={<OverviewPage />} />
     <Route path="/recipe/validation" element={<ValidationPage />} />
     <Route path="/recipe/capture" element={<CapturePage />} />
-  </Routes></WorkspaceProvider></MemoryRouter>;
+  </Routes></WorkspaceProvider></SnackbarProvider></MemoryRouter>;
   render(strict ? <StrictMode>{workspace}</StrictMode> : workspace);
   return userEvent.setup();
 }
@@ -642,7 +643,8 @@ it("同位置三相机已选择检测图 → 总览每组一框绑定检测原�
   await user.click(screen.getByRole("button", { name: "自动布置" }));
   fireEvent.keyDown(first, { key: "ArrowRight" });
   await user.click(screen.getByRole("button", { name: "保存总览" }));
-  await screen.findByText("总览布置已保存，拍照与测量不受影响");
+  const saved = await screen.findByText("总览布置已保存，拍照与测量不受影响");
+  expect(saved.closest(".wp-page")).toBeNull();
   expect(workspaceApi.saveOverview).toHaveBeenCalledWith("A", 7, {
     background: null, positions: [[.26, .5], [.26, .5], [.26, .5], [.75, .5], [.75, .5], [.75, .5]], saved: false,
   });
@@ -711,7 +713,8 @@ it("示教完成后保存总览、实拍独立样本并验证 → 新样本自�
   await waitFor(() => expect(screen.getByRole("button", { name: "保存总览" })).toBeEnabled());
   fireEvent.keyDown(firstPosition, { key: "ArrowRight" });
   await user.click(screen.getByRole("button", { name: "保存总览" }));
-  await screen.findByText("总览布置已保存，拍照与测量不受影响");
+  const saved = await screen.findByText("总览布置已保存，拍照与测量不受影响");
+  expect(saved.closest(".wp-page")).toBeNull();
   expect(workspaceApi.saveOverview).toHaveBeenCalledWith("A", 7, { background: null, positions: [[.26, .5], [.75, .5]], saved: false });
   await user.click(screen.getByRole("link", { name: "验证与发布" }));
   expect(await screen.findByRole("button", { name: "发布生产配方" })).toBeDisabled();
