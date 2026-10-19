@@ -121,7 +121,7 @@ export async function until(read, accepts, message, timeout = 30000, interval = 
   throw new Error(`${message}：${JSON.stringify(value)?.slice(0, 1500)}`);
 }
 
-const GATE_BUSY = /正在处理 PLC 事务|检测仍有在途事务|设备配置正在变化|尚未回到空闲|正在预热|PLC 事务 3 秒内仍未结束/;
+const GATE_BUSY = /正在处理 PLC 事务|检测仍有在途事务|设备配置正在变化|尚未回到空闲|正在预热|PLC 事务 3 秒内仍未结束|离线 S7 服务尚未连接/;
 export const gateRetries = [];
 
 export function client(page) {
@@ -213,7 +213,8 @@ export async function produce(call, recipeId, partId) {
   const site = await until(() => call("site_status"), s => !s.running, `样本件 ${partId} 握手未结束`, 30000);
   const run = site.recent.find(r => r.purpose === "production" && r.partId === partId && r.cycleId === summary.cycleId);
   assert(run, `最近样本件里没有 ${partId}（cycleId ${summary.cycleId}）`);
-  await until(() => call("workspace_record_images", { historyId: summary.id }), v => v.complete, `样本件 ${partId} 原图录制未完成`, 30000);
+  await until(() => call("workspace_record_images", { historyId: summary.id }), v => v.complete,
+    `样本件 ${partId} 原图录制未完成（本件结论 ${summary.verdict}：${summary.reason}）`, 30000);
   return { summary, run };
 }
 
@@ -281,8 +282,9 @@ export async function runOfflineE2E(page, options) {
   assert((await call("workspace_list")).every(w => !w.captureId), "全新站点不应已有采集建立的候选");
   const before = { plc: await call("plc_get_config"), cameras: await call("camera_rig_config") };
   const settings = await call("cycle_get_settings");
-  if (settings.productSource !== "plc") {
-    await call("cycle_save_settings", { settings: { ...settings, productSource: "plc" } });
+  if (settings.productSource !== "plc" || options.armMs) {
+    const timeouts = options.armMs ? { ...settings.timeouts, armMs: options.armMs } : settings.timeouts;
+    await call("cycle_save_settings", { settings: { ...settings, productSource: "plc", timeouts } });
   }
   const engine = await until(() => call("engine_status"), e => e.ready, "lyFlow 引擎未就绪", 30000);
   step("lyFlow 就绪", { version: engine.version ?? null });
@@ -408,7 +410,7 @@ export async function runOfflineE2E(page, options) {
   const result = {
     passed: true,
     identifier,
-    inputs: { sampleSet: options.sampleSet, offlineSampleSet: prepared.dir, sampleSetId: prepared.manifest.id, mmPerPx: fixture.mmPerPx, lyflow: options.lyflow, lyflowVersion: engine.version ?? null },
+    inputs: { sampleSet: options.sampleSet, offlineSampleSet: prepared.dir, sampleSetId: prepared.manifest.id, mmPerPx: fixture.mmPerPx, lyflow: options.lyflow, lyflowVersion: engine.version ?? null, armBudgetMs: options.armMs ?? null },
     elapsedMs: Date.now() - startedAt,
     recipe: { id, revisionId: recipe.revisionId, teachingId: recipe.teachingId ?? null },
     taught,
@@ -425,6 +427,18 @@ export async function runOfflineE2E(page, options) {
   };
   if (options.output) await writeFile(options.output, JSON.stringify(result, null, 2) + "\n");
   return result;
+}
+
+/** 读取隔离实例清单，返回主窗口所在的 CDP 地址（显式 --cdp 优先）。 */
+export async function instanceCdp(instancePath, override, acceptsIdentifier) {
+  const manifest = JSON.parse(await readFile(instancePath, "utf8"));
+  assert(acceptsIdentifier(manifest.identifier), `实例 ${manifest.identifier} 不是允许的隔离测试实例`);
+  const cdp = override ?? manifest.cdp;
+  assert(cdp, `实例清单缺少 cdp：${instancePath}，请用 scripts/Start-UiTestInstance.ps1 重新启动实例`);
+  const url = new URL(cdp);
+  assert(["127.0.0.1", "localhost", "[::1]"].includes(url.hostname), "仅允许本机 CDP");
+  assert.equal(Number(url.port), manifest.debugPort);
+  return cdp;
 }
 
 /** 实例刚启动时先显示资料准备窗口，等到主窗口的 Tauri UI 页面出现。 */
@@ -453,18 +467,15 @@ async function main() {
     process.exitCode = MISSING_INPUT_EXIT;
     return;
   }
-  const cdp = args.cdp ?? "http://localhost:9341";
-  const url = new URL(cdp);
-  assert(["127.0.0.1", "localhost", "[::1]"].includes(url.hostname), "仅允许本机 CDP");
   const instance = args.instance ?? "output/playwright/e2e-regression/instance.json";
-  const manifest = JSON.parse(await readFile(instance, "utf8"));
-  assert.equal(manifest.identifier, identifier, "仅允许隔离端到端实例");
-  assert.equal(Number(url.port), manifest.debugPort);
+  const cdp = await instanceCdp(instance, args.cdp, id => id === identifier);
   const browser = await chromium.connectOverCDP(cdp);
   try {
     const page = await uiPage(browser);
     const output = args.output ?? "output/playwright/e2e-regression/result.json";
-    const result = await runOfflineE2E(page, { ...inputs, output, workDir: path.dirname(output) });
+    const armMs = args["arm-ms"] === undefined ? undefined : Number(args["arm-ms"]);
+    assert(armMs === undefined || (Number.isInteger(armMs) && armMs > 0), `--arm-ms 必须是正整数：${args["arm-ms"]}`);
+    const result = await runOfflineE2E(page, { ...inputs, armMs, output, workDir: path.dirname(output) });
     process.stdout.write(JSON.stringify({ passed: result.passed, elapsedMs: result.elapsedMs, branches: result.branches,
       production: Object.fromEntries(Object.entries(result.production).map(([k, v]) => [k, v.verdict])), replay: Object.fromEntries(["original", "rules", "raw"].map(k => [k, `${result.replay[k].verdict} via ${result.replay[k].via}`])) }) + "\n");
   } finally { await browser.close(); }
