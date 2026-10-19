@@ -395,7 +395,7 @@ pub struct WorkspaceView {
     pub production_plan_version: Option<u32>,
     /// 候选的拍照计划与生产配方不同（或还没发布过）：生效后 PLC 侧要同步新的计划版本
     pub plan_changed: bool,
-    pub coverage: f32,
+    pub coverage: Option<f32>,
     pub progress: progress::Progress,
 }
 
@@ -517,13 +517,10 @@ impl WorkspaceHost {
     }
 }
 
-/// 要检的拍照点里已示教中线的比例（%）。
-fn coverage(recipe: &Recipe) -> f32 {
+/// 要检的拍照点里已示教中线的比例（%）；没有要检的拍照点时为空。
+fn coverage(recipe: &Recipe) -> Option<f32> {
     let measured = recipe.shots.iter().filter(|s| s.measured()).count();
-    if measured == 0 {
-        return 100.0;
-    }
-    100.0 * recipe.shots.iter().filter(|s| s.measured() && s.taught()).count() as f32 / measured as f32
+    (measured > 0).then(|| 100.0 * recipe.shots.iter().filter(|s| s.measured() && s.taught()).count() as f32 / measured as f32)
 }
 
 /// 拍照点 k 的两组实际字段：原图要对上编号、相机与标定引用；试测要对上中线、像素当量、检测参数与站距。
@@ -1297,7 +1294,7 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
     checks.push(Check {
         name: "胶路示教".into(),
         passed: ready.is_ok(),
-        detail: ready.err().unwrap_or_else(|| format!("要检的拍照点都已示教中线（{:.0}%）", coverage(&r))),
+        detail: ready.err().unwrap_or_else(|| "要检的拍照点都已示教中线".into()),
     });
     let teaching = w.frames.len() == r.shot_count()
         && (0..r.shot_count()).all(|k| workflow::selected_views(w, k).into_iter().all(|v| workflow::check_view(app, w, k, v, true).is_ok()));
@@ -2302,11 +2299,21 @@ impl Drop for SampleImportFiles {
 mod tests {
     use super::*;
 
+    #[test]
+    fn recipe_without_shots_to_inspect_reports_no_teaching_coverage_instead_of_full() {
+        let mut recipe = crate::recipe::samples().remove(0).build().unwrap();
+        assert!(coverage(&recipe).is_some());
+        recipe.shots.clear();
+        assert_eq!(coverage(&recipe), None);
+    }
+
     pub(super) struct ImportTestDir(pub(super) PathBuf);
     impl ImportTestDir {
         pub(super) fn new() -> Self {
-            let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-            let path = std::env::temp_dir().join(format!("tujiao-sample-import-{}-{nonce}", std::process::id()));
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!("tujiao-sample-import-{}-{sequence}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir(&path).unwrap(); Self(path)
         }
     }
