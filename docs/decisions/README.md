@@ -8,13 +8,14 @@
 | 核心业务流程 | [core-flow.md](core-flow.md)、[核对清单](../testing/launch-core-flow-checklist.md) | #97–#101、#105 |
 | 外壳与生产页 UI | [ui-shell.md](ui-shell.md) | #90–#92，qing-steel#2（v0.3.0） |
 | 配方工作流 UI | [ui-recipe.md](ui-recipe.md) | #93–#96、#113（合并后补审发现的修复） |
-| 算法 | [algorithm.md](algorithm.md)、[评测报告](../testing/algorithm-evaluation.md) | #106、#107，LyFlow#29 |
+| 算法 | [algorithm.md](algorithm.md)、[评测报告](../testing/algorithm-evaluation.md) | #106、#107，LyFlow#29、LyFlow#30（1.1.4） |
+| lyFlow 1.1.4 升级 | [r2-lyflow-upgrade.md](r2-lyflow-upgrade.md) | 第二轮：依赖升级、离线端到端人工断胶件调整 |
 | 日志与回放 | [log-replay.md](log-replay.md) | #102–#104 |
 | 长稳与故障注入 | [soak.md](soak.md)、[长稳报告](../testing/soak-report.md) | #109–#112、#114 |
 
 ## 一、上线阻塞项
 
-1. **发布 lyFlow 1.1.4**（[algorithm.md](algorithm.md) A-9）。GlueSight 打包时取 1.1 系列的最新正式版 1.1.3。它的 glue 代码与 1.1.0 相同，在 36 张正常实拍图里有 16 张误判 NG。修复（LyFlow#26–#29）都已合入 LyFlow main，但还没发版。发版流程：提升版本号 → 推送 `v1.1.4` tag → 等 CI 生成草稿 Release → 核对后正式发布 → GlueSight 执行 `pnpm deps:lyflow:update`。正式发布是对外动作，需要用户明确同意。
+1. **发布 lyFlow 1.1.4**（[algorithm.md](algorithm.md) A-9，已完成）。1.1.3 的 glue 代码与 1.1.0 相同，在 36 张正常实拍图里有 16 张误判 NG。1.1.4 包含 LyFlow#26–#29，已于 2026-10-19 正式发布；GlueSight 的 `lyflow-client` 已升到 v1.1.4，打包取 1.1.4 运行库，复测误判 0 张。开发机需要执行一次 `pnpm deps:lyflow:dev` 刷新本地运行库（[r2-lyflow-upgrade.md](r2-lyflow-upgrade.md) L-3）。
 2. **PLC 工程师确认问题清单**（[plc-table.md](plc-table.md) 末尾，Q1–Q13）。其中会直接影响通讯的几项：
    - 协议版本写 4（Q1）；
    - `resultCode`、`faultCode` 是 VW76、VW78（Q2）；

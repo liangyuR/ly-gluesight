@@ -10,6 +10,8 @@ use serde_json::json;
 use crate::handshake::{self, Contract, HeartbeatWatch, Request, ResultEnvelope, Snapshot, WriteOp};
 use crate::inspection::tag;
 use crate::plc_plan::PlcPlan;
+use crate::settings::RecordMode;
+use crate::store::RecordSource;
 
 mod recovery;
 pub use recovery::AckRecovery;
@@ -26,6 +28,13 @@ pub enum Origin { Real, Offline }
 /// 未结事务对切换站点模式的影响：离线来源的事务切换后由新连上的 PLC 复位，真机或来源不明的事务必须先处理。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PendingKind { None, Offline, Blocking }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartSite {
+    pub source: RecordSource,
+    pub record: RecordMode,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,6 +53,8 @@ struct Pending {
     acknowledged: bool,
     #[serde(default)]
     started_at: i64,
+    #[serde(default)]
+    site: Option<PartSite>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -182,7 +193,7 @@ impl PlcSession {
 
     pub fn acknowledged(&self) -> bool { self.journal.pending.as_ref().is_some_and(|pending| pending.acknowledged) }
 
-    pub fn bind_cycle_id(&mut self, id: &str) -> Result<(), String> {
+    pub fn bind_cycle_id(&mut self, id: &str, site: PartSite) -> Result<(), String> {
         if !valid_cycle_id(id) { return Err("S7 握手 cycleId 必须是 32 位十六进制持久身份".into()); }
         if let Some(error) = &self.load_error { return Err(error.clone()); }
         let pending = self.journal.pending.as_mut().ok_or("缺少可关联的 S7 请求事务")?;
@@ -190,7 +201,7 @@ impl PlcSession {
         match pending.cycle_id.as_deref() {
             Some(bound) if bound != id => Err("S7 事务已绑定其他 cycleId，禁止更换工件身份".into()),
             Some(_) => Ok(()),
-            None => { pending.cycle_id = Some(id.into()); Ok(()) }
+            None => { pending.cycle_id = Some(id.into()); pending.site = Some(site); Ok(()) }
         }
     }
 
@@ -207,13 +218,20 @@ impl PlcSession {
 
     pub fn cycle_id(&self) -> Option<&str> { self.journal.pending.as_ref().and_then(|pending| pending.cycle_id.as_deref()) }
 
+    pub fn site(&self) -> Option<PartSite> { self.journal.pending.as_ref().and_then(|pending| pending.site) }
+
     pub fn recover_acknowledgements(&self, unresolved: &std::collections::BTreeSet<String>) -> AckRecovery { recovery::read(self, unresolved) }
 
     pub fn request(&self) -> Option<&Request> { self.journal.pending.as_ref().map(|p| &p.request) }
 
     pub fn result(&self) -> Option<&ResultEnvelope> { self.journal.pending.as_ref().and_then(|p| p.result.as_ref()) }
 
+    pub fn started_at(&self) -> Option<i64> { self.journal.pending.as_ref().map(|p| p.started_at).filter(|ts| *ts > 0) }
+
     pub fn phase(&self) -> SessionPhase { self.phase }
+
+    #[cfg(test)]
+    pub(crate) fn heartbeat_live(&self) -> bool { self.heartbeat.lock().unwrap().is_live(now_ms()) }
 
     pub fn view(&self) -> SessionView {
         SessionView { phase: self.phase, request_seq: self.request().map(|r| r.request_seq),
@@ -279,12 +297,7 @@ impl PlcSession {
             "pending": self.journal.pending,
         })).map_err(|e| e.to_string())?;
         record.push(b'\n');
-        self.blocking_io(engine, move || {
-            if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
-            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)
-                .map_err(|e| format!("无法保存握手审计：{e}"))?;
-            file.write_all(&record).and_then(|_| file.sync_all()).map_err(|e| format!("握手审计写入失败：{e}"))
-        }).await
+        self.blocking_io(engine, move || crate::handshake_audit::append(&path, &record)).await
     }
 
     async fn set_pending_phase(&mut self, engine: &PlcEngine, phase: SessionPhase) -> Result<(), String> {
@@ -503,7 +516,7 @@ impl PlcSession {
                     return Err("请求事务序号必须非零且递增；PLC 清零或回绕需先执行空闲复位".into());
                 }
                 self.journal.pending = Some(Pending { origin: Some(self.origin), capture_id: None, request: request.clone(), result: None, phase: SessionPhase::Validating,
-                    cycle_id: None, acknowledged: false, started_at: now_ms() });
+                    cycle_id: None, acknowledged: false, started_at: now_ms(), site: None });
                 self.journal.last_request_seq = request.request_seq;
                 self.persist(engine).await?;
                 self.phase = SessionPhase::Validating;

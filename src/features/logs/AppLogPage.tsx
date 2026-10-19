@@ -22,16 +22,27 @@ const levels: AppLogLevel[] = ["error", "warn", "info", "debug"];
 const DEFAULT_LEVELS: AppLogLevel[] = ["error", "warn", "info"];
 const badgeLevel = { error: "error", warn: "warn", info: "info", debug: "debug" } as const;
 
+function rowKeys(items: AppLogRecord[]): [string, AppLogRecord][] {
+  const seen = new Map<string, number>();
+  return items.map(r => {
+    const base = `${r.ts}|${r.level}|${r.ev}|${r.cycleId ?? ""}|${r.k ?? ""}|${r.msg.slice(0, 160)}`;
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    return [`${base}#${n}`, r];
+  });
+}
+
 function Cycle({ record, onFilter }: { record: AppLogRecord; onFilter: (cycleId: string) => void }) {
   const [target, setTarget] = useState<number | null | undefined>(undefined);
   if (!record.cycleId) return record.sn ? <span className="log-cycle"><span className="sn">SN{"\u00a0"}{record.sn}</span></span> : <span className="muted">—</span>;
   const cycleId = record.cycleId;
+  const lookup = () => void logsApi.findCycle(cycleId).then(setTarget).catch(() => setTarget(null));
   return <span className="log-cycle">
     {record.sn && <span className="sn muted">SN{"\u00a0"}{record.sn}</span>}
     <span>
       <button className="link mono" title={`只看工件 ${cycleId}`} onClick={() => onFilter(cycleId)}>{cycleId.slice(0, 8)}</button>
-      {target === undefined ? <button className="link" onClick={() => void logsApi.findCycle(cycleId).then(setTarget).catch(() => setTarget(null))}>记录</button>
-        : target === null ? <span className="muted">无记录</span> : <Link to={`/history/${target}`}>#{target}</Link>}
+      {typeof target === "number" ? <Link to={`/history/${target}`}>#{target}</Link>
+        : <button className="link" onClick={lookup}>{target === null ? "无记录，重查" : "记录"}</button>}
     </span>
   </span>;
 }
@@ -99,7 +110,10 @@ export default function AppLogPage() {
     return () => { stopped = true; stop(); if (timer) clearTimeout(timer); };
   }, [following]);
 
-  const current = data?.key === key ? data.page : null;
+  const stale = data?.key !== key;
+  const current = data && !(stale && error) ? data.page : null;
+  const pending = stale && !!current;
+  const rows = useMemo(() => rowKeys(current?.items ?? []), [current]);
   const pageCount = Math.max(1, Math.ceil((current?.total ?? 0) / PAGE_SIZE));
   const reset = () => setPage(0);
   const setCycle = (id: string) => { const next = new URLSearchParams(params); if (id) next.set("cycleId", id); else next.delete("cycleId"); setParams(next); reset(); };
@@ -152,11 +166,11 @@ export default function AppLogPage() {
         </div>
       </div>
       <div className="table-wrap">
-        <table className="table log-table app-log-table" aria-label="运行日志">
+        <table className={`table log-table app-log-table${pending ? " is-loading" : ""}`} aria-label="运行日志" aria-busy={loading}>
           <thead><tr><th>时间</th><th>级别</th><th>事件</th><th>工件</th><th>拍照点</th><th>内容</th></tr></thead>
           <tbody>
             {!current?.items.length && <tr><td colSpan={6} className="muted center">{loading ? "加载中…" : "所选条件下暂无日志"}</td></tr>}
-            {current?.items.map((r, i) => <tr key={`${r.ts}-${i}`} className={r.level === "error" ? "log-row-error" : undefined}>
+            {rows.map(([rowKey, r]) => <tr key={rowKey} className={r.level === "error" ? "log-row-error" : undefined}>
               <td className="mono nowrap">{formatTs(r.ts)}</td>
               <td><span className={`badge level-${badgeLevel[r.level]}`}>{levelText[r.level]}</span></td>
               <td className="nowrap">{r.ev}</td>
