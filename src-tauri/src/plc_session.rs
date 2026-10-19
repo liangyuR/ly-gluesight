@@ -182,6 +182,9 @@ impl PlcSession {
 
     pub fn phase(&self) -> SessionPhase { self.phase }
 
+    #[cfg(test)]
+    pub(crate) fn heartbeat_live(&self) -> bool { self.heartbeat.lock().unwrap().is_live(now_ms()) }
+
     pub fn view(&self) -> SessionView {
         SessionView { phase: self.phase, request_seq: self.request().map(|r| r.request_seq),
             result_seq: self.result().map(|r| r.request_seq), message: self.message.clone() }
