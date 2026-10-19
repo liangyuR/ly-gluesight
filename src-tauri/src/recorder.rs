@@ -377,6 +377,13 @@ impl Recorder {
     }
 }
 
+const MISSING_SHOTS: &str = "个计划拍照点没有录制原图";
+const NO_CONFIRMED_ORIGINALS: &str = "本件没有已确认写入的原图";
+
+pub fn is_absence_error(error: &str) -> bool {
+    error.ends_with(MISSING_SHOTS) || error == NO_CONFIRMED_ORIGINALS
+}
+
 fn safe_cycle_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
@@ -512,7 +519,7 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
         .map(|(k, shot)| json!({"k": k, "shotId": shot.id}))
         .collect();
     if !missing.is_empty() {
-        rec.errors.push(format!("{} 个计划拍照点没有录制原图", missing.len()));
+        rec.errors.push(format!("{} {MISSING_SHOTS}", missing.len()));
     }
     let mut meta = json!({
         "cycleId": rec.cycle_id, "bundleId": rec.bundle_id, "recipeRevision": rec.recipe.revision_id,
@@ -596,7 +603,7 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
         }
     }
     if files.is_empty() {
-        rec.errors.push("本件没有已确认写入的原图".into());
+        rec.errors.push(NO_CONFIRMED_ORIGINALS.into());
     }
     let mut protected = in_use;
     protected.push(actual_dir.clone());
