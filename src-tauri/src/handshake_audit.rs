@@ -105,11 +105,25 @@ pub fn prune(active: &Path, unresolved: &BTreeSet<String>, limits: Limits, now_m
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
 
     const DAY: i64 = 86_400_000;
 
     struct Dir(PathBuf);
+
+    impl Dir {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let dir = std::env::temp_dir().join(format!("gluesight-handshake-audit-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn active(&self) -> PathBuf { self.0.join("plc-handshake.audit.jsonl") }
+    }
 
     impl Drop for Dir {
         fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
@@ -119,29 +133,45 @@ mod tests {
         format!("{{\"version\":1,\"action\":\"acknowledged\",\"pending\":{{\"cycleId\":\"{cycle}\"}},\"pad\":\"{}\"}}\n", "x".repeat(60)).into_bytes()
     }
 
+    fn write_segment(active: &Path, rolled_at: i64, cycle: &str) {
+        let name = format!("{PREFIX}{}{SUFFIX}", Local.timestamp_millis_opt(rolled_at).unwrap().format(STAMP));
+        fs::create_dir_all(segment_dir(active)).unwrap();
+        fs::write(segment_dir(active).join(name), line(cycle)).unwrap();
+    }
+
+    fn cycles_left(active: &Path) -> Vec<String> {
+        files(active).iter().filter_map(|path| fs::read_to_string(path).ok()).flat_map(|text| {
+            text.lines().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok()?["pending"]["cycleId"].as_str().map(String::from)).collect::<Vec<_>>()
+        }).collect()
+    }
+
+    #[test]
+    fn active_file_rolls_into_a_segment_before_the_write_that_would_pass_the_segment_size_and_reads_oldest_first() {
+        let dir = Dir::new();
+        let active = dir.active();
+        let size = line("first").len() as u64;
+        append_with(&active, &line("first"), 1_000, size).unwrap();
+        assert!(segments(&active).is_empty());
+        append_with(&active, &line("second"), 2_000, size).unwrap();
+        assert_eq!(segments(&active).len(), 1, "当前文件达到分段大小，下一条写入前滚动");
+        assert_eq!(fs::read(&active).unwrap(), line("second"));
+        assert_eq!(files(&active).last(), Some(&active), "当前文件最后读");
+        assert_eq!(cycles_left(&active), ["first", "second"], "按时间顺序读取");
+    }
+
     #[test]
     fn rolled_segments_expire_by_age_and_cap_except_those_still_needed_by_unresolved_deliveries() {
-        let dir = Dir(std::env::temp_dir().join(format!("gluesight-handshake-audit-{}-{}", std::process::id(), ly_plc::now_ms())));
-        let active = dir.0.join("plc-handshake.audit.jsonl");
+        let dir = Dir::new();
+        let active = dir.active();
         let now = Local.with_ymd_and_hms(2026, 10, 19, 12, 0, 0).unwrap().timestamp_millis();
-        fs::create_dir_all(segment_dir(&active)).unwrap();
-        for (stamp, cycle) in [(now - 40 * DAY, "old-unresolved"), (now - 35 * DAY, "old-done"), (now - 3 * DAY, "cap-done"), (now - 2 * DAY, "recent-a")] {
-            let name = format!("{PREFIX}{}{SUFFIX}", Local.timestamp_millis_opt(stamp).unwrap().format(STAMP));
-            fs::write(segment_dir(&active).join(name), line(cycle)).unwrap();
+        for (rolled_at, cycle) in [(now - 40 * DAY, "old-unresolved"), (now - 35 * DAY, "old-done"), (now - 3 * DAY, "cap-done"), (now - 2 * DAY, "recent-a"), (now - DAY, "recent-b")] {
+            write_segment(&active, rolled_at, cycle);
         }
-        let size = line("recent-b").len() as u64;
-        append_with(&active, &line("recent-b"), now - DAY, size).unwrap();
-        assert_eq!(segments(&active).len(), 4);
-        append_with(&active, &line("active"), now - DAY, size).unwrap();
-        assert_eq!(segments(&active).len(), 5, "当前文件达到分段大小，下一条写入前滚动");
-        assert_eq!(fs::read(&active).unwrap(), line("active"));
-        assert_eq!(files(&active).last(), Some(&active), "当前文件最后读");
+        fs::write(&active, line("active")).unwrap();
+        let newest_three: u64 = ["active", "recent-b", "recent-a"].iter().map(|cycle| line(cycle).len() as u64).sum();
         let unresolved: BTreeSet<String> = ["old-unresolved".to_string()].into();
-        let pruned = prune(&active, &unresolved, Limits { segment_bytes: 1, keep_days: 30, max_total_bytes: size * 3 }, now);
+        let pruned = prune(&active, &unresolved, Limits { segment_bytes: 1, keep_days: 30, max_total_bytes: newest_three }, now);
         assert_eq!(pruned, Pruned { removed: 2, kept_unresolved: 1, errors: Vec::new() });
-        let left: Vec<String> = files(&active).iter().map(|p| String::from_utf8(fs::read(p).unwrap()).unwrap()).collect();
-        for (cycle, kept) in [("old-unresolved", true), ("old-done", false), ("cap-done", false), ("recent-a", true), ("recent-b", true), ("active", true)] {
-            assert_eq!(left.iter().any(|text| text.contains(&format!("\"cycleId\":\"{cycle}\""))), kept, "{cycle}");
-        }
+        assert_eq!(cycles_left(&active), ["old-unresolved", "recent-a", "recent-b", "active"], "过期删、超总量删、未结交付引用的保留");
     }
 }
