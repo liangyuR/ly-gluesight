@@ -17,8 +17,8 @@ export const FIXTURES = {
     // 样本集未标定（mmPerPx=null）。模拟标定沿用 docs/architecture/p0-plan.md 记录的同分辨率现场相机假设当量 0.112 mm/px，写进副本清单。
     mmPerPx: 0.112,
     normalPart: "p01",
-    // 样本集只有正常件：在副本里由 p01 复制出 p02，把 S011 组所选图（样本 S032）的一段胶路换成左侧 50 px 处的板面像素，作为人工断胶件。
-    defect: { partId: "p02", from: "p01", sampleShot: "S032", camera: "cam2", box: [880, 140, 80, 100], shift: [-50, 0], pose: "S011", expected: "NG_GAP" },
+    // 样本集只有正常件：在副本里由 p01 复制出 p02，把 S011 组所选图（样本 S032）的一段胶路逐行抹成两侧板面像素的渐变，作为人工断胶件。
+    defect: { partId: "p02", from: "p01", sampleShot: "S032", camera: "cam2", box: [880, 140, 80, 100], pose: "S011", expected: "NG_GAP" },
     groups: {
       S001: { camera: "cam2", guide: [[745, 60], [740, 85], [735, 110], [734, 135], [740, 160], [746, 185], [743, 210], [736, 235], [735, 260], [734, 285], [740, 310], [739, 335], [738, 360], [731, 385], [724, 410], [723, 435]] },
       S002: { camera: "cam2", guide: [[615, 250], [633, 275], [649, 300], [662, 325], [676, 350], [690, 375], [701, 400], [708, 425], [712, 450], [714, 475], [710, 500], [705, 525], [700, 550], [707, 575], [706, 600], [705, 625], [703, 650], [708, 675], [714, 700], [708, 725], [696, 750]], detect: NARROW },
@@ -55,17 +55,23 @@ function within(parent, child) {
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }
 
-/** 把 24/8 位未压缩 BMP 里 box 区域的像素换成平移 shift 后位置的像素（同一幅图内）。 */
-export function eraseBmp(bytes, [x0, y0, w, h], [dx, dy]) {
+/** 把 24/8 位未压缩 BMP 里 box 区域逐行换成左右紧邻像素之间的线性渐变，抹掉区域内的胶条。 */
+export function eraseBmp(bytes, [x0, y0, w, h]) {
   assert.equal(bytes.toString("ascii", 0, 2), "BM", "人工断胶只支持 BMP 原图");
   const offset = bytes.readUInt32LE(10), width = bytes.readInt32LE(18), height = bytes.readInt32LE(22);
   const bpp = bytes.readUInt16LE(28);
   assert(bytes.readUInt32LE(30) === 0 && [8, 24].includes(bpp), "人工断胶只支持未压缩的 8/24 位 BMP");
   const pixel = bpp / 8, stride = Math.ceil((width * pixel) / 4) * 4, rows = Math.abs(height);
   const at = (x, y) => offset + (height > 0 ? rows - 1 - y : y) * stride + x * pixel;
-  assert(x0 + dx >= 0 && x0 + w + dx <= width && y0 + dy >= 0 && y0 + h + dy <= rows && x0 + w <= width && y0 + h <= rows, "人工断胶区域越界");
+  assert(x0 >= 1 && x0 + w < width && y0 >= 0 && y0 + h <= rows, "人工断胶区域越界");
   const out = Buffer.from(bytes);
-  for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) bytes.copy(out, at(x, y), at(x + dx, y + dy), at(x + dx, y + dy) + pixel);
+  for (let y = y0; y < y0 + h; y++) {
+    const left = at(x0 - 1, y), right = at(x0 + w, y);
+    for (let x = x0; x < x0 + w; x++) {
+      const t = (x - x0 + 1) / (w + 1);
+      for (let c = 0; c < pixel; c++) out[at(x, y) + c] = Math.round(bytes[left + c] * (1 - t) + bytes[right + c] * t);
+    }
+  }
   return out;
 }
 
@@ -96,7 +102,7 @@ export async function prepareSampleSet(source, outputDir) {
     await cp(path.join(target, "parts", defect.from), dir, { recursive: true });
     const file = (await readdir(dir)).find(name => name.toLowerCase().startsWith(`${defect.sampleShot}_${defect.camera}_v1.`.toLowerCase()));
     assert(file, `样本件 ${defect.from} 缺少 ${defect.sampleShot}_${defect.camera}_v1`);
-    await writeFile(path.join(dir, file), eraseBmp(await readFile(path.join(dir, file)), defect.box, defect.shift));
+    await writeFile(path.join(dir, file), eraseBmp(await readFile(path.join(dir, file)), defect.box));
     manifest.parts = [...manifest.parts, { ...from, partId: defect.partId, label: "ng", shotLabels: { [defect.sampleShot]: "gap" },
       origin: `${from.origin ?? from.partId}（端到端人工断胶：${defect.sampleShot} 区域 ${defect.box.join(",")}）` }];
   }
