@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import LibraryPage from "../src/features/workspace/LibraryPage";
 import ProgressPage from "../src/features/workspace/ProgressPage";
 import CapturePage from "../src/features/workspace/CapturePage";
+import { SnackbarProvider } from "qing-steel";
 import { WorkspaceProvider } from "../src/features/workspace/context";
 import type { RecipeDoc } from "../src/features/cycle/types";
 import type { WorkspaceView } from "../src/features/workspace/types";
@@ -62,11 +63,11 @@ describe("创建配方流程", () => {
     });
 
     const user = userEvent.setup();
-    render(<MemoryRouter initialEntries={["/recipe"]}><WorkspaceProvider><Routes>
+    render(<MemoryRouter initialEntries={["/recipe"]}><SnackbarProvider><WorkspaceProvider><Routes>
       <Route path="/recipe" element={<LibraryPage />} />
       <Route path="/recipe/progress" element={<ProgressPage />} />
       <Route path="/recipe/capture" element={<CapturePage />} />
-    </Routes></WorkspaceProvider></MemoryRouter>);
+    </Routes></WorkspaceProvider></SnackbarProvider></MemoryRouter>);
 
     await user.click(screen.getByRole("button", { name: "新建配方" }));
     const dialog = within(await screen.findByRole("dialog", { name: "建立候选配方" }));
