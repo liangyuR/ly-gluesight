@@ -1029,7 +1029,7 @@ impl Machine {
             Input::Refresh => self.required = None,
             Input::SiteChanged => {
                 self.required = None;
-                if !host(&self.app).busy() && matches!(self.phase, Phase::Idle | Phase::Fault) {
+                if matches!(self.phase, Phase::Idle | Phase::Fault) && self.s7.pending_kind() != PendingKind::Blocking {
                     self.part = None;
                     self.result = None;
                     self.active_recipe = None;

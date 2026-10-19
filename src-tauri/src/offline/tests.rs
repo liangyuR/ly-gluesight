@@ -205,6 +205,17 @@ async fn offline_line_scenarios_end_in_err_result_or_handshake_fault() {
     }
 }
 
+/// 虚拟 PLC 像操作员一样反复按复位，直到视觉就绪或 PC 侧收敛：复位沿早于会话确认心跳翻转会被拒，单次脉冲不保证成功。
+async fn press_reset_until_ready(line: &Line, abort: &AtomicBool) -> Result<(), String> {
+    let retry = Timing { ready_timeout: Duration::from_secs(1), ..TIMING };
+    loop {
+        match line.ensure_ready(&retry, abort).await {
+            Err(_) if !abort.load(Ordering::SeqCst) => continue,
+            result => return result,
+        }
+    }
+}
+
 /// 采集中途崩溃后重启：握手日志按事务来源决定能否由离线虚拟 PLC 复位（S-13）。
 #[tokio::test]
 async fn crash_left_pending_is_reset_by_the_virtual_plc_only_when_it_came_from_offline() {
@@ -216,11 +227,11 @@ async fn crash_left_pending_is_reset_by_the_virtual_plc_only_when_it_came_from_o
             let abort = AtomicBool::new(false);
             let order = PartOrder { sn: "SN-CRASH".into(), product_code: 3, plan_version: plan.plan_version,
                 shot_count: plan.shot_count, device_shots: plan.device_shots };
-            let plc = async { line.ensure_ready(&TIMING, &abort).await?; line.run_part(&TIMING, &order, Scenario::Normal, |_, _| {}, &abort).await };
+            let plc = async { press_reset_until_ready(line, &abort).await?; line.run_part(&TIMING, &order, Scenario::Normal, |_, _| {}, &abort).await };
             let pc = async {
                 let until = Instant::now() + Duration::from_secs(10);
                 while !matches!(session.poll_gated(engine, false, true, true, true).await, SessionEvent::Start(_)) {
-                    assert!(Instant::now() < until, "未收到开始请求：{:?}", session.view());
+                    assert!(Instant::now() < until, "{origin:?}：未收到开始请求：{:?}", session.view());
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
                 session.arm(engine, plan).await.unwrap();
@@ -253,7 +264,7 @@ async fn crash_left_pending_is_reset_by_the_virtual_plc_only_when_it_came_from_o
             }
             abort.store(true, Ordering::SeqCst);
         };
-        let _ = tokio::join!(line.ensure_ready(&TIMING, &abort), pc);
+        let _ = tokio::join!(press_reset_until_ready(line, &abort), pc);
         if origin == Origin::Offline {
             assert_eq!(restarted.phase(), SessionPhase::Idle);
             assert!(!restarted.pending());
