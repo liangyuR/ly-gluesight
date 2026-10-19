@@ -353,3 +353,12 @@ fn reset_during_recipe_capture_still_requires_service_readiness() {
         assert_eq!(result.is_ok(), ready, "{service:?} {device_ok}");
     }
 }
+
+#[tokio::test]
+async fn arm_budget_overrun_in_audit_health_refuses_part_without_poisoning_audit() {
+    let mut budget = ArmBudget::with_start(Instant::now(), Duration::from_millis(30));
+    let poisoned = std::cell::Cell::new(false);
+    let result = arm_health_check(&mut budget, || { std::thread::sleep(Duration::from_millis(80)); Ok(()) }, |_| poisoned.set(true)).await;
+    assert!(result.is_err_and(|e| e.contains("audit-health")), "超过布防预算应拒绝本件");
+    assert!(!poisoned.get(), "布防预算偶发超时不能把追溯判成需重启恢复的故障");
+}

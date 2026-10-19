@@ -400,6 +400,42 @@ fn pending_history_protection_includes_partial_directory_and_raw_only_references
     assert!(store.pending_recording_directories(&root, HistoryScope::Real).is_err());
 }
 
+#[test]
+fn rolling_retention_prune_marks_history_raw_images_unavailable() {
+    use crate::recorder::{Cleanup, Recorder, RecordingOutcome};
+    use std::sync::Arc;
+    let db = TestDb::new();
+    let store = Arc::new(Store::open(&db.path()).unwrap());
+    let root = db.0.join("Özil").join("records-offline");
+    let old = root.join("20000101").join("20000101_000000_000_OK_cycle_old");
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(old.join("k000_P1_cam1_v1.pgm"), b"P5\n1 1\n255\n\0").unwrap();
+    let recipe = recipe();
+    let id = save(&store, &recipe, "old", &shots(&recipe), &PlcDelivery::default(), None).unwrap();
+    store.update_shot_raw_files("old", 0, &[ShotRawFile { view: 1, file: "20000101/20000101_000000_000_OK_cycle_old/k000_P1_cam1_v1.pgm".into(), width: None, height: None }]).unwrap();
+    let evidence = RecordingEvidence { state: RecordingState::Complete, available: true, directory: Some(old.to_string_lossy().into_owned()), errors: Vec::new() };
+    assert!(store.update_recording("old", &evidence).unwrap());
+    let (tx, outcomes) = std::sync::mpsc::channel::<RecordingOutcome>();
+    let released = store.clone();
+    let recorder = Recorder::guarded(root, Some(Arc::new(move |outcome| tx.send(outcome).unwrap())), Cleanup {
+        protection: Arc::new(|| Ok(Vec::new())), warning: Arc::new(|_| {}),
+        release: Arc::new(move |directories| released.release_recordings(directories)),
+    });
+    let recipe = Arc::new(recipe);
+    let mut rec = recorder.begin(crate::settings::RecordMode::All, "SN-43", recipe.clone(), "new", None).unwrap();
+    let frame = crate::frame::Frame { cam: 0, session: 1, counter: crate::frame::CounterSource::Synthetic, frame_counter: 1, trigger_counter: 1,
+        lost_packets: 0, ts: 1, manual: false, images: (0..3).map(|_| Arc::new(crate::frame::FrameImage::new(1, 1, vec![9]))).collect() };
+    recorder.frame(&mut rec, &frame, "cam1", 0, 1);
+    recorder.finish(rec, Verdict::Ok, "新件", 1, u64::MAX, Vec::new());
+    let outcome = outcomes.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(outcome.retention_errors.is_empty(), "{:?}", outcome.retention_errors);
+    assert!(!old.exists(), "超过保留件数的旧录制应被清理");
+    let recording = store.detail(id).unwrap().recording;
+    assert!(!recording.available, "原图目录已删除，历史记录不能再标为原图可用");
+    assert_eq!(recording.state, RecordingState::NotRetained);
+    assert!(recording.errors.iter().any(|e| e.contains("滚动清理")), "{:?}", recording.errors);
+}
+
 fn pre_identity_v2(db: &TestDb) -> Connection {
     let conn = Connection::open(db.path()).unwrap();
     conn.execute_batch(r#"PRAGMA foreign_keys=ON;
