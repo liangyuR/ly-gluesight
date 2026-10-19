@@ -186,6 +186,89 @@ async fn low_disk_fault_reset_still_completes_but_keeps_ready_low_until_space_re
     bench.engine.disconnect().await;
 }
 
+async fn poll_until(bench: &mut Bench, reset: bool, devices: &Result<(), String>, what: &str, accept: impl Fn(&SessionEvent, &PlcSession) -> bool) {
+    let until = Instant::now() + Duration::from_secs(8);
+    loop {
+        let event = bench.session.poll_with_devices(&bench.engine, reset, devices, true, true).await;
+        if accept(&event, &bench.session) { return; }
+        assert!(Instant::now() < until, "{what}：{event:?} {:?}", bench.session.view());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// S-13 问题二：置故障输出确认不了时 PC 主动断开停心跳，过了 PLC 心跳失活阈值自动重连，重连后仍须明确复位。
+#[tokio::test]
+async fn pc_initiated_disconnect_reconnects_after_the_heartbeat_loss_window_and_waits_for_an_explicit_reset() {
+    let mut bench = Bench::new("pc-disconnect").await;
+    poll_until(&mut bench, true, &Ok(()), "首次复位", |event, _| matches!(event, SessionEvent::Ready)).await;
+    for _ in 0..60 { bench._server.inject(s7_server::Fault::RejectWrite); }
+    poll_until(&mut bench, true, &Ok(()), "置故障输出失败后应断开", |_, _| true).await;
+    let disconnected = Instant::now();
+    assert_eq!(bench.engine.status().state, LinkState::Disconnected, "{:?}", bench.session.view());
+    bench._server.inject(s7_server::Fault::Clear);
+    while bench.engine.status().state != LinkState::Connected {
+        bench.session.poll_with_devices(&bench.engine, false, &Ok(()), true, true).await;
+        if bench.engine.status().state != LinkState::Disconnected { break; }
+        assert!(disconnected.elapsed() < Duration::from_secs(6), "主动断开后没有自动重连：{:?}", bench.session.view());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(disconnected.elapsed() >= Duration::from_millis(3000), "PLC 判 PC 心跳失活之前就重连了：{:?}", disconnected.elapsed());
+    poll_until(&mut bench, false, &Ok(()), "重连后待复位", |_, session| session.phase() == SessionPhase::ResetRequired).await;
+    for _ in 0..10 {
+        bench.session.poll_with_devices(&bench.engine, false, &Ok(()), true, true).await;
+        assert_ne!(bench.session.phase(), SessionPhase::Idle, "重连后不能自行回到就绪");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(bench.line.read(tag::VISION_READY), 0);
+    poll_until(&mut bench, true, &Ok(()), "明确复位", |event, _| matches!(event, SessionEvent::Ready)).await;
+    bench.engine.disconnect().await;
+}
+
+/// PR #134 审查：PLC 能读不能写时，自动重连只做一次，重连后仍确认不了置故障就停在断开，不再反复占用 PLC 连接；确认置故障后，下一次主动断开仍会自动重连。
+#[tokio::test]
+async fn persistent_write_rejection_reconnects_once_then_stays_disconnected_until_stop_is_confirmed() {
+    let mut bench = Bench::new("reconnect-once").await;
+    poll_until(&mut bench, true, &Ok(()), "首次复位", |event, _| matches!(event, SessionEvent::Ready)).await;
+    for _ in 0..100_000 { bench._server.inject(s7_server::Fault::RejectWrite); }
+    poll_until(&mut bench, true, &Ok(()), "置故障输出失败后应断开", |_, _| true).await;
+    assert_eq!(bench.engine.status().state, LinkState::Disconnected, "{:?}", bench.session.view());
+    let (mut reconnects, mut since, watch) = (0, bench.engine.status().since, Instant::now());
+    while watch.elapsed() < Duration::from_secs(9) {
+        bench.session.poll_with_devices(&bench.engine, false, &Ok(()), true, true).await;
+        let status = bench.engine.status();
+        if status.state == LinkState::Disconnected && status.since != since { reconnects += 1; since = status.since; }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(reconnects, 1, "持续拒写时应只自动重连一次：{:?}", bench.session.view());
+    assert_eq!(bench.engine.status().state, LinkState::Disconnected, "{:?}", bench.session.view());
+
+    bench._server.inject(s7_server::Fault::Clear);
+    bench.engine.connect().await;
+    poll_until(&mut bench, true, &Ok(()), "人工连接后明确复位", |event, _| matches!(event, SessionEvent::Ready)).await;
+    for _ in 0..60 { bench._server.inject(s7_server::Fault::RejectWrite); }
+    poll_until(&mut bench, true, &Ok(()), "再次置故障输出失败后应断开", |_, _| true).await;
+    assert_eq!(bench.engine.status().state, LinkState::Disconnected, "{:?}", bench.session.view());
+    bench._server.inject(s7_server::Fault::Clear);
+    let until = Instant::now() + Duration::from_secs(6);
+    while bench.engine.status().state == LinkState::Disconnected {
+        assert!(Instant::now() < until, "确认置故障后再次主动断开没有自动重连：{:?}", bench.session.view());
+        bench.session.poll_with_devices(&bench.engine, false, &Ok(()), true, true).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    bench.engine.disconnect().await;
+}
+
+/// D-CF-9：设备未就绪时复位被拒，提示要带上具体原因（如没有可开工配方）。
+#[tokio::test]
+async fn reset_refused_for_unready_devices_names_the_reason() {
+    let mut bench = Bench::new("reset-reason").await;
+    let devices = Err("没有一个配方开得了工（配方 A：所选生产版本没有不可变发布包）".to_string());
+    poll_until(&mut bench, true, &devices, "复位应被拒", |event, _| matches!(event, SessionEvent::Fault(m) if m.contains("设备尚未就绪"))).await;
+    let message = bench.session.view().message.unwrap();
+    assert!(message.contains("设备尚未就绪") && message.contains("所选生产版本没有不可变发布包"), "{message}");
+    bench.engine.disconnect().await;
+}
+
 #[tokio::test]
 async fn new_connection_before_first_poll_waits_instead_of_faulting_and_disconnecting() {
     let mut bench = Bench::new_with("first-poll", |server| {

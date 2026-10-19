@@ -77,6 +77,8 @@ pub struct Facts {
     pub candidate_debug: Option<crate::candidate::DebugInfo>,
     pub site: Site,
     pub plc_connected: bool,
+    /// 已发布的 S7 会话还没处理当前这次 PLC 连接（刚重连，会话原因仍是断线时的）
+    pub session_behind: bool,
     pub session: Option<SessionPhase>,
     pub session_message: Option<String>,
     pub phase: Phase,
@@ -111,6 +113,9 @@ fn plc_item(f: &Facts) -> ReadinessItem {
     if !f.plc_connected {
         let detail = if offline { "离线 S7 服务尚未连接" } else { "PLC 未连接" };
         return item(ItemKey::Plc, TITLE, ItemState::Blocked, detail, None, home);
+    }
+    if f.session_behind {
+        return item(ItemKey::Plc, TITLE, ItemState::Blocked, "PLC 已重新连接，S7 会话正在核对新连接（核对后需复位）", Some(reset_hint(offline)), home);
     }
     let pending = f.session == Some(SessionPhase::ResetRequired);
     if pending || f.session == Some(SessionPhase::Fault) || f.phase == Phase::Fault {
@@ -365,10 +370,13 @@ pub fn gather(app: &AppHandle) -> Readiness {
         Ok(crate::audit::AuditReadiness::WaitingStore) => Check::Waiting("持久追溯仍有待入库事件，入库后自动就绪".into()),
         Err(error) => Check::Blocked(format!("持久追溯故障：{error}")),
     };
+    let link = plc(app).status();
+    let handshake = snapshot.as_ref().and_then(|s| s.plc_handshake.as_ref());
     evaluate(Facts {
         candidate_debug: debug.as_ref().map(|c| c.info.clone()),
         site,
-        plc_connected: plc(app).status().state == LinkState::Connected,
+        plc_connected: link.state == LinkState::Connected,
+        session_behind: link.state == LinkState::Connected && handshake.is_some_and(|v| v.connection != Some(link.since)),
         session: snapshot.as_ref().and_then(|s| s.plc_handshake.as_ref()).map(|v| v.phase),
         session_message: snapshot.as_ref().and_then(|s| s.plc_handshake.as_ref()).and_then(|v| v.message.clone()),
         phase: snapshot.as_ref().map_or(Phase::Idle, |s| s.phase),
