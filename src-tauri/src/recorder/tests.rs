@@ -456,7 +456,7 @@ fn applying_lower_retention_prunes_both_roots_without_next_part_and_keeps_protec
     let offline: Vec<_> = (0..3).map(|i| part(&offline_root, i)).collect();
     let guarded = real[0].clone();
     let recorders = Recorders::new(
-        Recorder::guarded(dir.root(), None, Arc::new(move || Ok(vec![guarded.clone()])), Arc::new(|_| {})),
+        Recorder::guarded(dir.root(), None, cleanup(Arc::new(move || Ok(vec![guarded.clone()])), Arc::new(|_| {}))),
         Recorder::new(offline_root, None));
     recorders.apply_retention(&CycleSettings { record_keep: 1, offline_record_keep: 2, ..CycleSettings::default() });
     let present = |paths: &[PathBuf]| paths.iter().map(|p| p.is_dir()).collect::<Vec<_>>();
