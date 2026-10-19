@@ -2,6 +2,7 @@
 //! 入口 scripts/Test-AlgorithmEval.ps1；结果写到 GLUESIGHT_EVAL_OUT（缺省 output/algorithm-eval）。
 
 mod synth;
+mod teach;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -15,7 +16,7 @@ use serde_json::{json, Value};
 use super::{measure_shot, Engine, FrameImage, ShotMeasurement};
 use crate::judge::{judge, PointState, Verdict};
 use crate::measure::{ST_GAP, ST_OK};
-use crate::recipe::{default_limits, DetectParams, Polarity, Recipe, RecipeDoc, ShotSpec, TriggerMode, RECIPE_SCHEMA};
+use crate::recipe::{default_limits, DetectParams, Polarity, Recipe, RecipeDoc, ShotLimits, ShotSpec, TriggerMode, RECIPE_SCHEMA};
 use crate::workspace::centerline::{extract, BrushGuide, ExtractionError};
 use synth::{BeadFrame, Defect, Perturb};
 
@@ -29,6 +30,18 @@ struct Fixture {
     point_spacing_px: f32,
     cameras: BTreeMap<String, CameraFixture>,
     shots: Vec<ShotFixture>,
+    /// 现场反馈过的提取失败笔划，评测时逐条复核
+    #[serde(default)]
+    extract_cases: Vec<ExtractCase>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtractCase {
+    shot_id: String,
+    stroke: Vec<[f32; 2]>,
+    radius_px: f32,
+    note: String,
 }
 
 #[derive(Deserialize)]
@@ -87,7 +100,7 @@ impl Config {
             core: var("LYFLOW_CORE_DLL").map(PathBuf::from).ok_or("缺少 LYFLOW_CORE_DLL")?,
             fixture: var("GLUESIGHT_EVAL_FIXTURE").map(PathBuf::from).unwrap_or_else(|| root.join("tests/algorithm/gs-20261017-normal.json")),
             out: var("GLUESIGHT_EVAL_OUT").map(PathBuf::from).unwrap_or_else(|| root.join("output/algorithm-eval")),
-            stages: var("GLUESIGHT_EVAL_STAGES").unwrap_or_else(|| "baseline,repeat,perturb,defect,timing,edge".into())
+            stages: var("GLUESIGHT_EVAL_STAGES").unwrap_or_else(|| "baseline,repeat,perturb,defect,timing,edge,extract".into())
                 .split(',').map(|s| s.trim().to_string()).collect(),
             detect: var("GLUESIGHT_EVAL_DETECT").map(|s| serde_json::from_str(&s).map_err(|e| format!("GLUESIGHT_EVAL_DETECT 无效：{e}"))).transpose()?,
             workers: var("GLUESIGHT_EVAL_WORKERS").and_then(|v| v.parse().ok()).unwrap_or(8).max(1),
@@ -162,7 +175,7 @@ fn teach(sample: &Sample, shot: &ShotFixture, fx: &Fixture) -> Result<Vec<[f32; 
     let y1 = (fold(f32::max, 1, f32::MIN) + r).min(h - 1.0).ceil();
     let roi = [x0 as u32, y0 as u32, (x1 - x0) as u32 + 1, (y1 - y0) as u32 + 1];
     match extract(&sample.image, roi, Polarity::Dark, Some(&BrushGuide { points: shot.stroke.clone(), radius_px: r }), fx.point_spacing_px) {
-        Ok(path) => Ok(path),
+        Ok(extracted) => Ok(extracted.path),
         Err(ExtractionError::Invalid(m)) => Err(m),
         Err(ExtractionError::Failed(f)) => Err(format!("{}（{}，{:?}）", f.message, f.reason, f.point)),
     }
@@ -176,13 +189,15 @@ fn build_recipe(samples: &[Sample], paths: &[Vec<[f32; 2]>], mm: &BTreeMap<Strin
     let mut doc = RecipeDoc {
         id: "EVAL-GS".into(), name: "算法评测".into(), version: 1, plan_version: 1, teaching_id: None, product_code: 1,
         trigger_mode: TriggerMode::Fly, schema_version: RECIPE_SCHEMA, spacing: 1.0, filter_window: 5,
-        detect: detect.clone(), limits: default_limits(), shots, cameras: BTreeMap::new(),
+        detect: detect.clone(), limits: LIMITS.get().cloned().flatten().unwrap_or_else(default_limits), shots, cameras: BTreeMap::new(),
     };
     doc.sync_imaging();
     doc.build()
 }
 
 static GRAPH_PATCH: std::sync::OnceLock<Option<Value>> = std::sync::OnceLock::new();
+/// GLUESIGHT_EVAL_LIMITS：整份判定限值（ShotLimits JSON），比较限值取值用
+static LIMITS: std::sync::OnceLock<Option<ShotLimits>> = std::sync::OnceLock::new();
 
 fn run(engine: &Engine, recipe: &Recipe, k: usize, image: &FrameImage) -> Result<ShotMeasurement, String> {
     if recipe.shots[k].skip { return Err("未示教".into()); }
@@ -522,6 +537,8 @@ fn defects(ctx: &Ctx, base: &[Result<ShotMeasurement, String>]) -> Value {
     for (d, spec) in specs.iter().enumerate() {
         let (mut placed, mut detected, mut correct, mut errors, mut loc, mut spill) = (0usize, 0usize, 0usize, Vec::new(), Vec::new(), 0usize);
         let mut misses = Vec::new();
+        let mut classes: BTreeMap<String, usize> = BTreeMap::new();
+        let mut detail = Vec::new();
         for (&(dd, k), r) in jobs.iter().zip(&results) {
             if dd != d { continue; }
             let Some((a, b, r)) = r else { continue };
@@ -531,7 +548,10 @@ fn defects(ctx: &Ctx, base: &[Result<ShotMeasurement, String>]) -> Value {
             let ng = !ok_class(j.verdict);
             if ng == spec.ng { detected += 1; } else { misses.push(format!("{} {:?} {}", ctx.samples[k].shot_id, j.verdict, j.reason)); }
             if spec.ng && spec.expect.contains(&j.verdict) { correct += 1; }
+            *classes.entry(format!("{:?}", j.verdict)).or_default() += 1;
             if spec.ng {
+                let states: String = r.st.iter().enumerate().filter(|(i, _)| i + 8 >= *a && *i <= b + 8).map(|(_, s)| match *s { ST_OK => '.', ST_GAP => 'x', _ => '?' }).collect();
+                detail.push(json!({"shot": ctx.samples[k].shot_id, "verdict": j.verdict, "reason": j.reason, "states": states}));
                 let f = flagged(ctx.recipe, k, r);
                 let ramp = (spec.ramp_mm / spacing).round() as usize + 3;
                 let hits: Vec<usize> = (0..f.len()).filter(|&i| f[i] && i + ramp >= *a && i <= b + ramp).collect();
@@ -542,7 +562,7 @@ fn defects(ctx: &Ctx, base: &[Result<ShotMeasurement, String>]) -> Value {
             }
         }
         rows.push(json!({"name": spec.name, "ng": spec.ng, "placed": placed, "asExpected": detected, "rate": r3(detected as f64 / placed.max(1) as f64),
-            "correctClass": if spec.ng { json!(correct) } else { Value::Null }, "errors": errors, "misses": misses,
+            "correctClass": if spec.ng { json!(correct) } else { Value::Null }, "classes": classes, "detail": detail, "errors": errors, "misses": misses,
             "locErrMedianMm": r3(median(loc.clone())), "locErrMaxMm": r3(loc.iter().copied().fold(f64::NAN, f64::max)), "spillStations": spill}));
     }
     json!({"shots": shots.len(), "rows": rows})
@@ -595,7 +615,7 @@ fn edge_cases(ctx: &Ctx) -> Value {
 fn markdown(report: &Value) -> String {
     let mut s = String::new();
     let v = |x: &Value| match x { Value::Null => "—".to_string(), Value::String(t) => t.clone(), other => other.to_string() };
-    s += &format!("# 算法评测结果\n\n- 样本集：{}\n- 核心库：{}（{}）\n- 检测参数：{}\n- 算法图参数覆盖：{}\n- 像素当量：{}\n\n", v(&report["sampleSet"]), v(&report["engine"]["version"]), v(&report["engine"]["path"]), report["detect"], report["graphPatch"], report["mmPerPx"]);
+    s += &format!("# 算法评测结果\n\n- 样本集：{}\n- 核心库：{}（{}）\n- 检测参数：{}\n- 判定限值：{}\n- 算法图参数覆盖：{}\n- 像素当量：{}\n\n", v(&report["sampleSet"]), v(&report["engine"]["version"]), v(&report["engine"]["path"]), report["detect"], report["limits"], report["graphPatch"], report["mmPerPx"]);
     if let Some(teach) = report["teach"].as_array() {
         let failed: Vec<_> = teach.iter().filter(|t| t["error"].is_string()).collect();
         s += &format!("## 示教提取\n\n{} 个拍照点，提取失败 {} 个。\n\n", teach.len(), failed.len());
@@ -626,10 +646,11 @@ fn markdown(report: &Value) -> String {
         s += "\n";
     }
     if let Some(rows) = report["defect"]["rows"].as_array() {
-        s += &format!("## 合成缺陷（{} 个基准 OK 的拍照点）\n\n| 缺陷 | 应判 | 放置 | 符合预期 | 比例 | 类别正确 | 定位误差 中位 / 最大 mm | 溢出站 |\n|---|---|---|---|---|---|---|---|\n", v(&report["defect"]["shots"]));
+        s += &format!("## 合成缺陷（{} 个基准 OK 的拍照点）\n\n| 缺陷 | 应判 | 放置 | 符合预期 | 比例 | 类别正确 | 判定类别 | 定位误差 中位 / 最大 mm | 溢出站 |\n|---|---|---|---|---|---|---|---|---|\n", v(&report["defect"]["shots"]));
         for r in rows {
-            s += &format!("| {} | {} | {} | {} | {} | {} | {} / {} | {} |\n", v(&r["name"]), if r["ng"] == true { "NG" } else { "OK" }, v(&r["placed"]), v(&r["asExpected"]), v(&r["rate"]),
-                v(&r["correctClass"]), v(&r["locErrMedianMm"]), v(&r["locErrMaxMm"]), v(&r["spillStations"]));
+            let classes: Vec<String> = r["classes"].as_object().into_iter().flatten().map(|(k, n)| format!("{k} {n}")).collect();
+            s += &format!("| {} | {} | {} | {} | {} | {} | {} | {} / {} | {} |\n", v(&r["name"]), if r["ng"] == true { "NG" } else { "OK" }, v(&r["placed"]), v(&r["asExpected"]), v(&r["rate"]),
+                v(&r["correctClass"]), classes.join("，"), v(&r["locErrMedianMm"]), v(&r["locErrMaxMm"]), v(&r["spillStations"]));
         }
         s += "\n";
         for r in rows {
@@ -637,6 +658,7 @@ fn markdown(report: &Value) -> String {
         }
         s += "\n";
     }
+    if report["extract"].is_object() { s += &teach::markdown(&report["extract"]); }
     if report["timing"].is_object() { s += &format!("## 耗时\n\n{}\n\n", report["timing"]); }
     if let Some(rows) = report["edge"].as_array() {
         s += "## 边界输入\n\n";
@@ -656,6 +678,7 @@ fn algorithm_eval() {
     let detect = cfg.detect.clone().unwrap_or_else(crate::recipe::default_detect);
     let patch: Option<Value> = std::env::var("GLUESIGHT_EVAL_GRAPH").ok().filter(|v| !v.trim().is_empty()).map(|v| serde_json::from_str(&v).expect("GLUESIGHT_EVAL_GRAPH 无效"));
     GRAPH_PATCH.set(patch.clone()).unwrap();
+    LIMITS.set(std::env::var("GLUESIGHT_EVAL_LIMITS").ok().filter(|v| !v.trim().is_empty()).map(|v| serde_json::from_str(&v).expect("GLUESIGHT_EVAL_LIMITS 无效"))).unwrap();
 
     let taught: Vec<Result<Vec<[f32; 2]>, String>> = samples.iter().zip(&fx.shots).map(|(s, f)| teach(s, f, &fx)).collect();
     let paths: Vec<Vec<[f32; 2]>> = taught.iter().zip(&fx.shots).map(|(t, f)| match t {
@@ -694,6 +717,7 @@ fn algorithm_eval() {
     if cfg.has("defect") { report["defect"] = defects(&ctx, &base); }
     if cfg.has("timing") { report["timing"] = timing(&ctx, &base); }
     if cfg.has("edge") { report["edge"] = edge_cases(&ctx); }
+    if cfg.has("extract") { report["extract"] = teach::evaluate(&ctx, &base, &fx); }
     std::fs::write(cfg.out.join("results.json"), serde_json::to_string_pretty(&report).unwrap()).unwrap();
     std::fs::write(cfg.out.join("summary.md"), markdown(&report)).unwrap();
     println!("{}", markdown(&report));

@@ -339,7 +339,7 @@ pub async fn workspace_extract_centerline(app: AppHandle, id: String, revision: 
         let items = host.items.lock().unwrap(); let current = items.get(&id).ok_or("候选不存在")?; current.expect(revision)?;
         if current.frames[k].image.as_ref().is_none_or(|i| i.id != image_id) { return Err("提取期间图像已变化".into()); }
         match result {
-            Ok(points) => Ok(CenterlineResult { path: points, message: "中线已提取，请检查并人工修正后试测".into(), failure: None }),
+            Ok(extracted) => Ok(CenterlineResult { path: extracted.path, message: extracted.notice.unwrap_or_else(|| "中线已提取，请检查并人工修正后试测".into()), failure: None }),
             Err(super::centerline::ExtractionError::Failed(failure)) => Ok(CenterlineResult { path: Vec::new(), message: failure.message.clone(), failure: Some(failure) }),
             Err(super::centerline::ExtractionError::Invalid(message)) => Err(message),
         }
