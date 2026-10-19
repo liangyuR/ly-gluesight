@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { Alert, Button, Card, Select } from "qing-steel";
 import { errorText } from "../../../lib/errors";
 import { workspaceApi } from "../../workspace/api";
 import type { Workspace } from "../../workspace/types";
@@ -44,20 +45,18 @@ export default function CandidateDebugControls({ site, snapshot }: { site: SiteS
     catch(e) { if (generation.current === request) setError(errorText(e)); }
     finally { if (generation.current === request) { pending.current = false; setStarting(false); } }
   };
-  return <section className="panel" aria-label="候选配方离线试运行">
+  return <Card role="region" aria-label="候选配方离线试运行">
     <details open={search.has("candidate")}>
       <summary>候选配方离线试运行 · 无需发布</summary>
       <p className="muted">使用已保存的候选跑一圈。结果单独标记为调试，不替代标定、独立样本验证或生产发布。</p>
       <div className="wp-actions">
-        <select className="input" aria-label="调试候选配方" value={selected} disabled={locked} onChange={e => setSelected(e.target.value)}>
-          {!items.length && <option value="">{loading ? "读取候选中…" : "没有可用候选"}</option>}
-          {items.map(w => <option key={w.doc.id} value={w.doc.id}>{w.doc.id} · {w.doc.name} · 修订 {w.revision}</option>)}
-        </select>
+        <Select aria-label="调试候选配方" value={selected} disabled={locked} onValueChange={setSelected} placeholder={loading ? "读取候选中…" : "没有可用候选"}
+          options={items.map(w => ({ value: w.doc.id, label: `${w.doc.id} · ${w.doc.name} · 修订 ${w.revision}` }))} />
         <SamplePartSelect sampleSet={site.sampleSet} nextPart={site.nextPart} value={partId} onChange={setPartId} disabled={locked} label="调试样本件" />
-        <button className="btn" disabled={locked} onClick={() => setRefresh(v => v + 1)}>刷新候选</button>
-        <button className="btn primary" disabled={locked || !candidate || !!candidate.pending} onClick={() => void run()}>{starting ? "准备试运行…" : "候选试运行一圈"}</button>
+        <Button disabled={locked} onClick={() => setRefresh(v => v + 1)}>刷新候选</Button>
+        <Button variant="filled" disabled={locked || !candidate || !!candidate.pending} onClick={() => void run()}>{starting ? "准备试运行…" : "候选试运行一圈"}</Button>
       </div>
-      {error && <p className="c-ng" role="alert">{error}</p>}
+      {error && <Alert tone="ng">{error}</Alert>}
     </details>
-  </section>;
+  </Card>;
 }

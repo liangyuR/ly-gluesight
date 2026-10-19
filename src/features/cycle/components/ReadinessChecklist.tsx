@@ -1,21 +1,28 @@
 import { Link } from "react-router-dom";
+import { Card, StatusBadge } from "qing-steel";
 import { devLyflowHint, targetLinks } from "../readiness";
 import type { Readiness, ReadinessItem, ReadinessState, ReadinessTarget } from "../types";
 import ContextHelp from "./ContextHelp";
 
 const stateText: Record<ReadinessState, string> = { ok: "就绪", waiting: "等待", blocked: "阻塞" };
+const stateTone = { ok: "ok", waiting: "warn", blocked: "ng" } as const satisfies Record<ReadinessState, string>;
 
 export default function ReadinessChecklist({ readiness, embedded = false, includeReady = true }: { readiness: Readiness; embedded?: boolean; includeReady?: boolean }) {
   const visibleItems = embedded ? readiness.items.filter(item => item.state !== "ok") : readiness.items;
   const readyItems = readiness.items.filter(item => item.state === "ok");
-  return (
-    <section className={embedded ? "readiness readiness-embedded" : "panel readiness"} aria-label="开工检查清单">
-      {!embedded && <div className="panel-head">
+  if (!embedded) return (
+    <Card className="readiness" role="region" aria-label="开工检查清单">
+      <div className="panel-head">
         <h3 className="panel-title">开工检查清单</h3>
-        {!embedded && <span className="muted">{readiness.ready ? "可以接收工件；等待项完成后自动就绪" : "阻塞项解决后才能接收工件"}</span>}
-      </div>}
-      {visibleItems.length > 0 && <ReadinessItems items={visibleItems} compact={embedded} />}
-      {embedded && includeReady && readyItems.length > 0 && <details className="readiness-details">
+        <span className="muted">{readiness.ready ? "可以接收工件；等待项完成后自动就绪" : "阻塞项解决后才能接收工件"}</span>
+      </div>
+      {visibleItems.length > 0 && <ReadinessItems items={visibleItems} />}
+    </Card>
+  );
+  return (
+    <section className="readiness readiness-embedded" aria-label="开工检查清单">
+      {visibleItems.length > 0 && <ReadinessItems items={visibleItems} compact />}
+      {includeReady && readyItems.length > 0 && <details className="readiness-details">
         <summary>已就绪项目（{readyItems.length}）</summary>
         <ReadinessItems items={readyItems} />
       </details>}
@@ -27,7 +34,7 @@ function ReadinessItems({ items, compact = false }: { items: ReadinessItem[]; co
   return <ul className="readiness-list">
     {items.map((item) => (
       <li key={item.key} className={`readiness-item r-${item.state}`}>
-        <span className="readiness-state">{stateText[item.state]}</span>
+        <StatusBadge tone={stateTone[item.state]}>{stateText[item.state]}</StatusBadge>
         <b>{item.title}</b>
         <div className="readiness-detail">
           {item.detail}

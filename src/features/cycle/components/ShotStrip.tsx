@@ -1,16 +1,7 @@
-import { useEffect, useRef } from "react";
+import { CameraStrip, type CameraFrame, type CameraFrameState } from "qing-steel";
 import type { FrameView, PartView, PointVis, Recipe } from "../types";
-import { shotLabel, shotSegment } from "../vis";
+import { shotCameras, shotLabel, shotSegment, shotState } from "../vis";
 import { ShotLine } from "./ShotTiles";
-
-const labels: Record<FrameView["status"], [string, string]> = {
-  waiting: ["等待", "c-mut"],
-  measuring: ["测量", "c-acc"],
-  done: ["完成", "c-ok"],
-  locateFailed: ["定位失败", "c-err"],
-  error: ["测量出错", "c-err"],
-  missing: ["未收到", "c-err"],
-};
 
 function footer(f: FrameView) {
   if (f.error) return f.error;
@@ -30,47 +21,39 @@ function footer(f: FrameView) {
   }
 }
 
+function frameState(layout: Recipe, vis: PointVis[], k: number, f: FrameView | undefined): CameraFrameState {
+  if (layout.shots[k].skip) return "skipped";
+  switch (f?.status ?? "waiting") {
+    case "waiting": return "waiting";
+    case "measuring": return "capturing";
+    case "missing": return "missing";
+    case "locateFailed":
+    case "error": return "fault";
+  }
+  if (f?.gapPoints) return "ng";
+  const state = shotState(layout, vis, k);
+  return state === "ng" || state === "gap" ? "ng" : state === "inv" ? "fault" : state === "miss" ? "missing" : "ok";
+}
+
 export default function ShotStrip({ layout, part, vis, selected, onSelect, compact = false }: { layout: Recipe; part: PartView | null; vis: PointVis[]; selected?:number; onSelect?:(k:number)=>void; compact?: boolean }) {
-  const strip = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!compact || selected == null) return;
-    const container = strip.current;
-    const item = container?.children[selected] as HTMLElement | undefined;
-    if (!container || !item) return;
-    const reveal = () => {
-      const left = item.getBoundingClientRect().left - container.getBoundingClientRect().left + container.scrollLeft;
-      if (left < container.scrollLeft) container.scrollLeft = left;
-      else if (left + item.offsetWidth > container.scrollLeft + container.clientWidth) container.scrollLeft = left + item.offsetWidth - container.clientWidth;
+  const own = part && part.recipeId === layout.id && part.recipeRevision === layout.revisionId ? part : null;
+  const cameras = shotCameras(layout.shots);
+  const frames: CameraFrame[] = layout.shots.map((shot, k) => {
+    const f = own?.frames[k];
+    const state = frameState(layout, vis, k, f);
+    const attention = f?.viewResults?.filter(view => view.verdict !== "OK" || !!view.error).length ?? 0;
+    const bad = state === "fault" || state === "missing";
+    const detail = [f?.gapPoints && `缺胶 ${f.gapPoints}`, f && (bad || !compact) && footer(f), compact && attention > 0 && `检测图注意 ${attention}`].filter(Boolean).join(" · ");
+    return {
+      id: `k${k + 1}`,
+      cameraId: shot.camera,
+      label: compact ? shot.id : shotLabel(shot, k),
+      cycleId: own?.cycleId,
+      state,
+      preview: shotSegment(layout, k) ? <ShotLine layout={layout} k={k} vis={vis} compact /> : <span>未示教</span>,
+      detail: detail || undefined,
+      channel: ((cameras.indexOf(shot.camera) % 8) + 1) as CameraFrame["channel"],
     };
-    reveal();
-    const observer = new ResizeObserver(reveal);
-    observer.observe(container);
-    return () => observer.disconnect();
-  }, [compact, selected, layout.id, layout.revisionId]);
-  const frames = part && part.recipeId === layout.id && part.recipeRevision === layout.revisionId ? part.frames : null;
-  return (
-    <div ref={strip} className={`shot-strip${compact ? " compact" : ""}`} style={{ gridTemplateColumns: `repeat(${layout.shots.length}, minmax(${compact ? "136px" : "0"}, 1fr))` }}>
-      {layout.shots.map((shot, k) => {
-        const f = frames?.[k];
-        const [label, tone] = labels[f?.status ?? "waiting"];
-        const bad = f && (f.status === "locateFailed" || f.status === "error" || f.status === "missing");
-        const attention = f?.viewResults?.filter(view => view.verdict !== "OK" || !!view.error).length ?? 0;
-        return (
-          <button key={k} type="button" className={`shot s-${f?.status ?? "waiting"}${f?.gapPoints ? " has-gap" : ""}${selected===k ? " selected" : ""}`} aria-label={`查看帧 k${k+1}`} aria-pressed={selected===k} onClick={()=>onSelect?.(k)}>
-            <div className="shot-head">
-              <b className="mono" title={`${shotLabel(shot, k)} · k${k + 1} · Pose ${shot.poseId}`}>{compact ? shot.id : shotLabel(shot, k)}</b>
-              <span className={f?.gapPoints ? "c-ng" : tone}>{f?.gapPoints ? `缺胶 ${f.gapPoints}` : label}</span>
-            </div>
-            {shot.skip || !shotSegment(layout, k) ? (
-              <div className="shot-img shot-img-empty">{shot.skip ? "不检" : "未示教"}</div>
-            ) : (
-              <ShotLine layout={layout} k={k} vis={vis} compact className="shot-img" />
-            )}
-            <div className={`shot-foot mono${bad ? " c-err" : ""}`} title={f?.error??undefined}>{f ? footer(f) : "—"}</div>
-            {compact && attention > 0 && <span className="shot-attention">检测图注意 {attention}</span>}
-          </button>
-        );
-      })}
-    </div>
-  );
+  });
+  return <CameraStrip label="拍照点" frames={frames} cycleId={own?.cycleId} value={selected == null ? null : `k${selected + 1}`} onValueChange={id => onSelect?.(Number(id.slice(1)) - 1)} />;
 }
