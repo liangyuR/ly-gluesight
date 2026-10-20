@@ -214,10 +214,10 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
             {connected ? "断开" : reconnectSaved ? "使用已保存配置重连" : status?.state === "error" || status?.state === "connecting" ? "重连" : "连接"}
           </Button>
         </Stack>}>
-        <Stack direction="column" align="stretch" gap={14}>
+        <Stack direction="column" align="stretch" gap={14} wrap={false}>
         {reconnectSaved && <Text as="p" variant="label" muted>重连使用后端已保存的配置，当前草稿不会保存或应用。</Text>}
         <fieldset disabled={!!blockedReason} style={fieldsetStyle}>
-        <Stack direction="column" align="stretch" gap={14}>
+        <Stack direction="column" align="stretch" gap={14} wrap={false}>
         <ConnectionForm key={cpuPreset.revision} initialCpuPreset={cpuPreset.key} value={draft.connection} onChange={(connection) => setDraft({ ...draft, connection })} />
 
         <section className="plc-config-card" aria-labelledby="plc-monitor-title">
