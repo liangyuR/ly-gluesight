@@ -59,7 +59,7 @@ const PEAK_SWEEP: [f64; 6] = [1.0, 0.95, 0.9, 0.85, 0.8, 0.7];
 const SCORE_SWEEP: [f64; 5] = [0.6, 0.7, 0.8, 0.85, 0.9];
 /// 示教时按亮像素比例筛框：离线看错锁的框会不会被筛掉，并实跑“每张图取排序最前、亮像素比例低于门限的框”
 const BRIGHT_SCREEN: [f64; 4] = [0.05, 0.1, 0.2, 0.3];
-/// 单端排除长度超过这些值的拍照点数（定稿“决定一”的 maxEndLossMm 候选）
+/// 单端排除长度超过这些值的拍照点数（定稿“待决定一”护栏的候选；护栏改按 |Δ| 判，|Δ| = 排除长度 − 1 个站距，JSON 键名沿用 maxEndLossMm）
 const END_LOSS_LIMITS: [f64; 4] = [3.0, 5.0, 6.0, 8.0];
 const REVIEW: &str ="每个选中的模板框都要人工复核：同相机 NCC 只能剔除整块随相机不动的结构，压到一角喷嘴或胶枪的框仍可能漏过；特征是否与胶同面、是否刚性也判断不了";
 
@@ -266,8 +266,8 @@ fn fixture_verdict(ctx: &Ctx, k: usize, m: &ShotMeasurement, d: &[Option<f64>]) 
     shot_judge(ctx.recipe, k, &f)
 }
 
-/// 定稿“决定一”的单端排除长度（m = 0）：两端各按位姿算切向搬移 |Δ|，排除 |Δ| + 1 个站距，取两端较大者（mm）。
-/// 只估长度、不改判定：用来核对 maxEndLossMm 的默认值会不会在正常搬移下就触发护栏。
+/// 定稿“待决定一”的单端排除长度（m = 0）：两端各按位姿算切向搬移 |Δ|，排除 |Δ| + 1 个站距，取两端较大者（mm）。
+/// 只估长度、不改判定：用来核对护栏（maxEndShiftMm，按 |Δ| 判）的默认值会不会在正常搬移下就触发。
 fn end_loss_mm(ctx: &Ctx, k: usize, frame: &BeadFrame, pose: &Pose) -> f64 {
     let c = &frame.c;
     let n = c.len();
@@ -311,13 +311,16 @@ struct Call {
     angle_err: f64,
     true_angle: f64,
     bright: f64,
+    /// 用例叠加了成像扰动（噪声、亮度、模糊）：这时看不出角度、中心偏 2…10 px 不一定是转角没补偿造成的
+    /// （亮度 +40 单独就会在看不出角度的分支上错锁 2…38 px），“转角没补偿”里这部分单独计数
+    imaging: bool,
 }
 
 impl Call {
-    fn new(group: &str, shot: &str, l: &Located, truth: [f64; 2], true_angle: f64, bright: f64) -> Self {
+    fn new(group: &str, shot: &str, l: &Located, truth: [f64; 2], true_angle: f64, bright: f64, imaging: bool) -> Self {
         let p = &l.pose;
         Self { group: group.into(), shot: shot.into(), ok: p.ok, reason: l.why.clone(), score: p.score, peak: p.peak_ratio, observable: p.angle_observable,
-            center_err: (p.center[0] - truth[0]).hypot(p.center[1] - truth[1]), angle_err: p.angle - true_angle, true_angle, bright }
+            center_err: (p.center[0] - truth[0]).hypot(p.center[1] - truth[1]), angle_err: p.angle - true_angle, true_angle, bright, imaging }
     }
 
     fn lock(&self) -> Lock {
@@ -364,7 +367,10 @@ fn gate_report(calls: &[&Call]) -> Value {
     shipped["ifRejectUnobservable"] = effect(&|c: &Call| !c.ok || c.observable == Some(false));
     json!({"calls": calls.len(), "correct": correct.len(), "wrong": wrong.len(), "wrongOver10Px": wrong.iter().filter(|c| c.center_err > 10.0).count(),
         "angleOff": angle_off.len(), "uncompensated": of(Lock::Uncompensated).len(),
-        "uncompensatedOver2Px": of(Lock::Uncompensated).iter().filter(|c| c.center_err > LOCK_TOL_PX).count(), "noPose": of(Lock::NoPose).len(),
+        "uncompensatedOver2Px": of(Lock::Uncompensated).iter().filter(|c| c.center_err > LOCK_TOL_PX).count(),
+        "uncompensatedWithImaging": of(Lock::Uncompensated).iter().filter(|c| c.imaging).count(),
+        "uncompensatedWithImagingOver2Px": of(Lock::Uncompensated).iter().filter(|c| c.imaging && c.center_err > LOCK_TOL_PX).count(),
+        "noPose": of(Lock::NoPose).len(),
         "shipped": shipped, "peakRatioSweep": peak_sweep, "minScoreSweep": score_sweep,
         "acceptedWrongPeakRatio": accepted(&wrong, &|c| c.peak), "acceptedCorrectPeakRatio": accepted(&correct, &|c| c.peak),
         "acceptedWrongScore": accepted(&wrong, &|c| Some(c.score)), "acceptedCorrectScore": accepted(&correct, &|c| Some(c.score)),
@@ -675,7 +681,7 @@ pub fn evaluate(ctx: &Ctx, base: &[Result<ShotMeasurement, String>]) -> Value {
             _ => None,
         };
         // 真转动时只找平移的用例是模型不符（转角本来就不补），不算定位门的证据
-        let call = located.as_ref().ok().filter(|_| !(*angle_range == 0.0 && deg != 0.0)).map(|l| Call::new(&list[c].name, &ctx.samples[k].shot_id, l, truth, deg, t.bright));
+        let call = located.as_ref().ok().filter(|_| !(*angle_range == 0.0 && deg != 0.0)).map(|l| Call::new(&list[c].name, &ctx.samples[k].shot_id, l, truth, deg, t.bright, imaging.is_some()));
         CaseRow { located, trans_err, angle_err, far_err, truth_shift: (truth[0] - tc[0]).hypot(truth[1] - tc[1]), call, inv }
     });
     let mut accuracy = Vec::new();
@@ -815,7 +821,7 @@ pub fn evaluate(ctx: &Ctx, base: &[Result<ShotMeasurement, String>]) -> Value {
         let m = match run(ctx.engine, ctx.recipe, ka, &ctx.samples[kb].image) { Ok(m) => m, Err(e) => return json!({"pair": [a, b], "error": e}) };
         let located: Vec<(f64, Result<Located, String>)> = [ANGLE_RANGE_DEG, 0.0].into_iter().map(|range| (range, locate(ctx.engine, &dir, t, &ctx.samples[kb].image, range))).collect();
         if let (Ok(l), Some(Ok(r))) = (&located[0].1, located.get(1).map(|x| &x.1)) {
-            if r.pose.center.iter().all(|x| x.is_finite()) { reshoot_calls.push(Call::new(&format!("{a}→{b}"), a, l, r.pose.center, 0.0, t.bright)); }
+            if r.pose.center.iter().all(|x| x.is_finite()) { reshoot_calls.push(Call::new(&format!("{a}→{b}"), a, l, r.pose.center, 0.0, t.bright, false)); }
         }
         let variants: Vec<Value> = located.into_iter().map(|(range, l)| (|| {
             let l = l?;
@@ -843,7 +849,7 @@ pub fn evaluate(ctx: &Ctx, base: &[Result<ShotMeasurement, String>]) -> Value {
     let bright_plus = |c: &Call| c.group.contains("亮度 +40");
     let beyond = |c: &Call| c.group.contains("超出");
     let gates = json!({
-        "criteria": {"centerTolPx": LOCK_TOL_PX, "angleTolDeg": LOCK_TOL_DEG, "note": "失败的调用也按 locate 给出的位姿比真值；看不出角度时只比中心，真转角 > 0.3° 记为 uncompensated"},
+        "criteria": {"centerTolPx": LOCK_TOL_PX, "angleTolDeg": LOCK_TOL_DEG, "note": "失败的调用也按 locate 给出的位姿比真值；看不出角度时只比中心，真转角 > 0.3° 记为 uncompensated；叠加了成像扰动的另计 uncompensatedWithImaging（偏移不一定来自转角，可能是错锁）"},
         "sweepNote": "评测按 maxPeakRatio = 1（不判）调用；locate 里分数门最先、歧义门最后，对 ok = true 的调用离线加门与在 locate 里设门等价",
         "subsets": [
             {"name": "E2/E3 范围内用例", "report": gate_report(&pick(&|c| !beyond(c)))},
@@ -884,7 +890,7 @@ pub fn evaluate(ctx: &Ctx, base: &[Result<ShotMeasurement, String>]) -> Value {
         let changed = s.chosen.as_ref().is_some_and(|c| c.rect != t.rect);
         let calls = bright_cases.iter().map(|(name, p)| {
             let l = locate(ctx.engine, &dir, t, &p.apply(&ctx.samples[k].image, 0), ANGLE_RANGE_DEG)?;
-            Ok(Call::new(name, &ctx.samples[k].shot_id, &l, t.teach_center(), 0.0, t.bright))
+            Ok(Call::new(name, &ctx.samples[k].shot_id, &l, t.teach_center(), 0.0, t.bright, true))
         }).collect::<Result<Vec<_>, String>>()?;
         Ok(Some((changed, calls)))
     });
@@ -1008,7 +1014,7 @@ fn unobservable_rotation_with_drifted_center_counts_as_uncompensated_not_wrong_l
     // 防的回归：中心容差先于“看不出角度”判时，转角没补偿、0° 平移偏 2…8 px 的调用被算成错锁，
     // 门效果里“另拒看不出角度”看起来拦下了错锁（fixture-p0-l1 范围内不含亮度 +40 的 26 次错锁里 18 次是这种）
     let call = |center_err: f64, observable: Option<bool>| Call { group: String::new(), shot: String::new(), ok: true, reason: String::new(),
-        score: 1.0, peak: None, observable, center_err, angle_err: -2.0, true_angle: 2.0, bright: 0.0 };
+        score: 1.0, peak: None, observable, center_err, angle_err: -2.0, true_angle: 2.0, bright: 0.0, imaging: false };
     assert!(call(5.0, Some(false)).lock() == Lock::Uncompensated);
     assert!(call(25.0, Some(false)).lock() == Lock::Wrong); // 偏过 10 px 不是转角能解释的
     assert!(call(5.0, Some(true)).lock() == Lock::Wrong);
