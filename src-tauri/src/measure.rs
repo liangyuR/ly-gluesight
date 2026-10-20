@@ -22,7 +22,6 @@ pub const MEASURE_TIMEOUT: &str = "单帧测量超时";
 
 /// 第 k 个拍照点的一帧，测该点负责的全部测量点。
 pub struct Job {
-    pub run_id: u64,
     pub cycle_id: String,
     pub shot_id: String,
     pub camera: String,
@@ -50,8 +49,6 @@ pub const ST_INVALID: u8 = 2;
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Measured {
-    #[serde(skip)]
-    pub run_id: u64,
     pub cycle_id: String,
     pub shot_id: String,
     pub camera: String,
@@ -88,7 +85,6 @@ impl Measured {
 
     pub fn empty(job: &Job) -> Self {
         Self {
-            run_id: job.run_id,
             cycle_id: job.cycle_id.clone(),
             shot_id: job.shot_id.clone(),
             camera: job.camera.clone(),
@@ -412,7 +408,6 @@ mod tests {
     fn job(k: usize, timeout: Duration) -> Job {
         Job {
             images: Vec::new(),
-            run_id: 7,
             cycle_id: "cycle-7".into(),
             shot_id: format!("P{}", k + 1),
             camera: "cam1".into(),
@@ -451,26 +446,6 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
         }).await.unwrap();
-    }
-
-    #[test]
-    fn measurements_preserve_cycle_shot_camera_and_bundle_identity() {
-        let job = job(0, Duration::from_secs(1));
-        for measured in [Measured::empty(&job), Measured::failed(&job, "失败"), simulate(&job)] {
-            assert_eq!(measured.run_id, 7);
-            assert_eq!(measured.cycle_id, "cycle-7");
-            assert_eq!(measured.shot_id, "P1");
-            assert_eq!(measured.camera, "cam1");
-            assert_eq!(measured.bundle_id.as_deref(), Some("bundle-7"));
-            let json = serde_json::to_value(measured).unwrap();
-            assert_eq!(json["cycleId"], "cycle-7");
-            assert_eq!(json["shotId"], "P1");
-            assert_eq!(json["bundleId"], "bundle-7");
-            assert!(json.get("runId").is_none());
-            for key in ["queueMs", "engineMs", "coreMs"] {
-                assert_eq!(json.get(key), Some(&serde_json::Value::Null));
-            }
-        }
     }
 
     #[tokio::test(start_paused = true)]

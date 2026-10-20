@@ -1218,10 +1218,6 @@ impl CameraRig {
         self.slot(cam as usize).is_some_and(|s| s.trigger(lose_in_transfer, payload))
     }
 
-    pub fn last_full(&self, cam: u8) -> Option<Arc<FrameImage>> {
-        self.last_view(cam, 1)
-    }
-
     pub fn last_view(&self, cam: u8, view: u8) -> Option<Arc<FrameImage>> {
         self.slot(cam as usize).and_then(|s| s.last_view(view))
     }

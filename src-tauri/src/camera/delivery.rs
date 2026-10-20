@@ -11,7 +11,7 @@ pub(super) fn observe(identity: &Mutex<Ledgers>, manual: &AtomicU32, frame: &mut
         let mut ledger = identity.lock().unwrap();
         let advanced = ledger.observe(&FrameMeta::from(&*frame));
         if frame.counter != CounterSource::Synthetic {
-            frame.manual = advanced && manual.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok();
+            frame.manual = advanced && manual.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok();
         }
     } else if frame.counter != CounterSource::Synthetic {
         frame.manual = false;

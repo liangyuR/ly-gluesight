@@ -734,6 +734,7 @@ pub struct RecipeStore {
 }
 
 impl RecipeStore {
+    #[cfg(test)]
     pub fn open(dir: PathBuf) -> Result<Self, String> {
         Self::open_with_floors(dir, &BTreeMap::new())
     }
@@ -1082,6 +1083,7 @@ impl RecipeStore {
     }
 
     /// 保存配方时版本号 +1；编号（不分大小写：Windows 上文件名不分）与产品代码都不能和别的配方重复。
+    #[cfg(test)]
     pub fn save(&self, mut doc: RecipeDoc, original_id: Option<&str>) -> Result<Arc<Recipe>, String> {
         doc.name = doc.name.trim().to_string();
         doc.build()?;

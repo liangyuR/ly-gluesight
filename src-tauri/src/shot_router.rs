@@ -82,15 +82,6 @@ impl Plan {
     pub fn shot_count(&self) -> usize {
         self.shot_ids.len()
     }
-
-    pub fn camera(&self, camera: &str) -> Option<&CameraPlan> {
-        self.cameras.iter().find(|c| c.camera == camera)
-    }
-
-    /// 这台相机本件预期的帧数（不参与的相机为 0）。
-    pub fn expected(&self, camera: &str) -> usize {
-        self.camera(camera).map_or(0, |c| c.shots.len())
-    }
 }
 
 /// 一台相机的计数账：只记当前会话。
@@ -498,6 +489,7 @@ impl ShotRouter {
         (0..self.bound.len()).filter(|&k| self.bound[k].is_none()).collect()
     }
 
+    #[cfg(test)]
     pub fn complete(&self) -> bool {
         self.bound.iter().all(Option::is_some)
     }

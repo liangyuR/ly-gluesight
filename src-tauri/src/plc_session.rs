@@ -421,21 +421,24 @@ impl PlcSession {
         if errors.is_empty() { Ok(()) } else { Err(errors.join("；")) }
     }
 
+    #[cfg(test)]
     pub async fn poll(&mut self, engine: &PlcEngine, reset_requested: bool, devices_ready: bool) -> SessionEvent {
         self.poll_with_audit(engine, reset_requested, devices_ready, true).await
     }
 
+    #[cfg(test)]
     pub async fn poll_with_audit(&mut self, engine: &PlcEngine, reset_requested: bool, devices_ready: bool, audit_ready: bool) -> SessionEvent {
         self.poll_gated(engine, reset_requested, devices_ready, audit_ready, true).await
     }
 
     /// `intake_ready` 只决定空闲时是否接下一件（如资料盘空间不足）：在途件照常释放、复位照常完成，只是先不置 visionReady。
+    #[cfg(test)]
     pub async fn poll_gated(&mut self, engine: &PlcEngine, reset_requested: bool, devices_ready: bool, audit_ready: bool, intake_ready: bool) -> SessionEvent {
         let devices = if devices_ready { Ok(()) } else { Err("检测设备未就绪".to_string()) };
         self.poll_with_devices(engine, reset_requested, &devices, audit_ready, intake_ready).await
     }
 
-    /// 同 [`poll_gated`](Self::poll_gated)，设备未就绪时带上具体原因：复位被拒时提示操作员缺什么。
+    /// 设备未就绪时带上具体原因：复位被拒时提示操作员缺什么。
     pub async fn poll_with_devices(&mut self, engine: &PlcEngine, reset_requested: bool, devices: &Result<(), String>, audit_ready: bool, intake_ready: bool) -> SessionEvent {
         match self.poll_inner(engine, reset_requested, devices, audit_ready, intake_ready).await {
             Ok(event) => event,

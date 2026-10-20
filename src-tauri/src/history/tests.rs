@@ -1,5 +1,4 @@
 use super::*;
-use crate::store::PlcDelivery;
 
 fn recipe() -> Recipe {
     let mut recipe = crate::recipe::samples().remove(1).build().unwrap();
@@ -20,9 +19,6 @@ fn row(recipe: &Recipe, id: i64) -> StoredMeasurement {
         recipe_revision: Some(recipe.revision_id.clone()),
         verdict: judge::judge(recipe, &table).verdict,
         table,
-        cycle_id: Some(format!("cycle-{id}")),
-        bundle_id: Some("bundle-id".into()),
-        delivery: PlcDelivery::default(),
     }
 }
 

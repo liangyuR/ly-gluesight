@@ -111,16 +111,9 @@ pub struct MeasurePoints {
 
 #[derive(Clone, Debug)]
 pub struct ShotResources {
-    pub k: usize,
-    pub shot: ShotSpec,
     pub size: Option<[u32; 2]>,
     pub image: Option<PathBuf>,
     pub calibration: Option<PathBuf>,
-    pub centerline: PathBuf,
-    pub points: PathBuf,
-    pub graph: PathBuf,
-    pub centerline_data: Centerline,
-    pub points_data: MeasurePoints,
 }
 
 #[derive(Clone, Debug)]
@@ -155,26 +148,19 @@ impl ReleaseBundle {
         Ok(())
     }
 
-    pub fn shot(&self, k: usize) -> Result<ShotResources, String> {
-        let shot = self.recipe.shots.get(k).ok_or("发布包内没有该拍照点")?;
-        let view = shot.enabled_views().first().copied().unwrap_or(shot.view);
-        self.view(k, view)
-    }
-
     pub fn view(&self, k: usize, view: u8) -> Result<ShotResources, String> {
         self.verify()?;
-        let shot = self.recipe.shots.get(k).ok_or("发布包内没有该拍照点")?.for_view(view)?;
+        self.recipe.shots.get(k).ok_or("发布包内没有该拍照点")?.for_view(view)?;
         let entry = self.manifest.shots.iter().find(|s| s.k == k && s.view == view).ok_or("发布清单内缺少拍照点图像")?;
         let centerline = resource_path(&self.root, &entry.centerline)?;
         let points = resource_path(&self.root, &entry.points)?;
+        let image = entry.image.as_ref().map(|p| resource_path(&self.root, p)).transpose()?;
+        let calibration = entry.calibration.as_ref().map(|p| resource_path(&self.root, p)).transpose()?;
+        read_json::<Centerline>(&centerline)?;
+        read_json::<MeasurePoints>(&points)?;
+        resource_path(&self.root, &self.manifest.graph)?;
         Ok(ShotResources {
-            k, shot, size: entry.size,
-            image: entry.image.as_ref().map(|p| resource_path(&self.root, p)).transpose()?,
-            calibration: entry.calibration.as_ref().map(|p| resource_path(&self.root, p)).transpose()?,
-            centerline_data: read_json(&centerline)?,
-            points_data: read_json(&points)?,
-            centerline, points,
-            graph: resource_path(&self.root, &self.manifest.graph)?,
+            size: entry.size, image, calibration,
         })
     }
 }

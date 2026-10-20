@@ -564,7 +564,6 @@ fn publish_log(app: &AppHandle, tone: &'static str, level: applog::Level, ev: St
 }
 
 struct Part {
-    run_id: u64,
     cycle_id: String,
     bundle_id: Option<String>,
     production: Option<Arc<crate::production::Prepared>>,
@@ -851,7 +850,6 @@ struct Machine {
     dropped_seen: u64,
     s7: PlcSession,
     s7_reset_requested: bool,
-    run_id: u64,
     current_cycle_id: Option<String>,
     recording_alarm: Option<RecordingAlarm>,
 }
@@ -915,7 +913,6 @@ impl Machine {
             dropped_seen: 0,
             s7,
             s7_reset_requested: false,
-            run_id: 0,
             current_cycle_id: None,
             recording_alarm: None,
         }
@@ -1295,9 +1292,7 @@ impl Machine {
         }
         let source = crate::site::record_source(&app);
         let recording = host.recorders.begin(source, crate::site::record_mode(&app), &sn, recipe.clone(), &cycle_id, bundle_id.as_deref());
-        self.run_id = self.run_id.wrapping_add(1);
         self.part = Some(Part {
-            run_id: self.run_id,
             cycle_id,
             bundle_id,
             production,
@@ -1428,7 +1423,7 @@ impl Machine {
         } else { Ok(Vec::new()) };
         let image = selected_image.as_ref().ok().cloned().flatten();
         crate::workspace::retain_live(&self.app, part.cycle_id.clone(), &part.recipe.revision_id, k, &image);
-        let job = Job { run_id: part.run_id, cycle_id: part.cycle_id.clone(), shot_id: shot.id.clone(), camera,
+        let job = Job { cycle_id: part.cycle_id.clone(), shot_id: shot.id.clone(), camera,
             bundle_id: part.bundle_id.clone(), sn: part.sn.clone(), k, cam: f.cam, recipe: part.recipe.clone(),
             production: part.production.clone(), candidate: part.candidate.clone(),
             scenario: part.scenario, image, images: images.as_ref().ok().cloned().unwrap_or_default(), timeout: host(&self.app).settings().timeouts.proc(), submitted_at,

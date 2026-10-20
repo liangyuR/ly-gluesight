@@ -210,7 +210,6 @@ fn run(engine: &Engine, recipe: &Recipe, k: usize, image: &FrameImage) -> Result
 struct Judged {
     verdict: Verdict,
     reason: String,
-    gaps: Vec<(f32, f32)>,
 }
 
 fn shot_judge(recipe: &Recipe, k: usize, m: &ShotMeasurement) -> Judged {
@@ -224,7 +223,7 @@ fn shot_judge(recipe: &Recipe, k: usize, m: &ShotMeasurement) -> Judged {
         };
     }
     let j = judge(&view, &table);
-    Judged { verdict: j.verdict, reason: j.reason, gaps: j.gaps.iter().map(|g| (g.s0, g.s1)).collect() }
+    Judged { verdict: j.verdict, reason: j.reason }
 }
 
 fn ok_class(v: Verdict) -> bool {

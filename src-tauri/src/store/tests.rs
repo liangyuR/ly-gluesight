@@ -180,9 +180,6 @@ fn identity_shots_and_measurements_round_trip() {
     assert_eq!(&points.w[..4], &[Some(4.5), None, None, None]);
     let rows = store.measurements(&HistoryQuery::default(), &[id], 20).unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].cycle_id, summary.cycle_id);
-    assert_eq!(rows[0].bundle_id, summary.bundle_id);
-    assert_eq!(rows[0].delivery, delivery);
     assert_eq!(rows[0].table, table);
     assert!(store.measurements(&HistoryQuery { recipe_id: Some("other".into()), ..Default::default() }, &[], 20).unwrap().is_empty());
 }
