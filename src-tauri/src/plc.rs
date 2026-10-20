@@ -161,12 +161,6 @@ pub fn plc_s7_phase1_template(db_number: u16, sn_type: DataType) -> Result<PlcCo
 }
 
 #[tauri::command]
-pub fn plc_recipe_plan(cycle: State<'_, CycleHost>, recipe_id: String) -> Result<PlcPlan, String> {
-    let recipe = cycle.recipe(&recipe_id).ok_or("生产配方不存在")?;
-    recipe_plan(&cycle, &recipe)
-}
-
-#[tauri::command]
 pub async fn plc_query_logs(plc: State<'_, PlcHost>, query: LogQuery) -> Result<LogPage, String> {
     plc.engine.logbook().query(&query)
 }

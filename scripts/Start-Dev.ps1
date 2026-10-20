@@ -17,6 +17,8 @@ if ($IsWindows) {
 
 Push-Location -LiteralPath $root
 try {
-    & node (Join-Path $root 'node_modules\@tauri-apps\cli\tauri.js') dev @args
+    # 默认 watch 模式下编译失败后 tauri dev 会继续等文件变化：窗口已消失，vite 仍占着 1420。
+    # --exit-on-panic 让编译失败或应用异常退出时整条链路（含 vite）一起退出。
+    & node (Join-Path $root 'node_modules\@tauri-apps\cli\tauri.js') dev --exit-on-panic @args
     exit $LASTEXITCODE
 } finally { Pop-Location }

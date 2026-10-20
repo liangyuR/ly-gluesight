@@ -8,6 +8,8 @@ import { stageOf, stages, stageStatus, stageStatusText, stageStatusTone } from "
 import { teachingTasks } from "./teachingTasks";
 import { returnState } from "./returnNavigation";
 import { teachingAction } from "./TeachingProgress";
+import { PlcParamsPanel } from "./PlcParams";
+import { useSiteStatus } from "../cycle/api";
 import type { StepId } from "./types";
 
 const actions: Record<string, string> = { "/recipe/capture": "查看采集", "/recipe/geometry": "配置参数", "/recipe/teach": "查看示教", "/recipe/overview": "查看总览", "/recipe/validation": "查看验证与发布" };
@@ -16,6 +18,7 @@ const subLabels: Partial<Record<StepId, string>> = { calibration: "标定", publ
 export default function ProgressPage() {
   const { data, doc } = useWorkspace();
   const location = useLocation();
+  const site = useSiteStatus();
   if (!data || !doc) return <WorkspaceEmpty/>;
   const { progress, workspace: w } = data;
   const tasks = teachingTasks(doc.shots, progress);
@@ -65,5 +68,6 @@ export default function ProgressPage() {
       <History size={14} aria-hidden="true"/><span>上次编辑 · {last.poseId} · {last.camera} · 图 {w.lastPosition.view}</span>
       <Link className="wp-progress-link" to={targetPath({ page: "teach", k: w.lastPosition.k })} state={back}>回到上次位置<ArrowRight size={14} aria-hidden="true"/></Link>
     </div>}
-  </Panel></div>;
+  </Panel>
+  <PlcParamsPanel production={data.productionPlc} version={data.productionVersion} planChanged={data.planChanged} offline={site?.mode === "offline"} /></div>;
 }

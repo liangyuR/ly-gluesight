@@ -1,2 +1,6 @@
 [net]
 git-fetch-with-cli = true
+
+# 工具链自带的 LLD，比 MSVC link.exe 链接快
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"

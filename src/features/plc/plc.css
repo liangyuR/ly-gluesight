@@ -6,7 +6,6 @@
 
 select.input { padding-right: 6px; }
 
-.conn-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .stats-inline { display: flex; gap: 18px; font-size: 12px; color: var(--on-surface-variant); }
 .stats-inline b { color: var(--on-surface); font-weight: 500; margin-left: 4px; }
 .table-wrap { overflow-x: auto; }
@@ -76,3 +75,74 @@ select.input { padding-right: 6px; }
   .plc-config-fields { grid-template-columns: minmax(0, 1fr); }
 }
 .plc .stats-inline { flex-wrap: wrap; gap: 8px 18px; }
+
+.plc-actionbar {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--r-lg);
+  background: var(--surface-high);
+  box-shadow: var(--shadow-2);
+  overflow-wrap: anywhere;
+}
+.plc-actionbar-row, .plc-actionbar-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.plc-actionbar-row { gap: 10px 16px; }
+.plc-actionbar-status { display: flex; align-items: center; gap: 10px; flex: 1 1 340px; min-width: 0; }
+.plc-brief { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
+.plc-actionbar-actions { justify-content: flex-end; }
+.plc-actionbar-actions .qs-divider { align-self: stretch; }
+.plc-notices { display: grid; gap: 8px; }
+.plc-notices-more > summary {
+  display: inline-flex; align-items: center; gap: 4px; cursor: pointer; list-style: none;
+  font: var(--text-label); color: var(--on-surface-variant);
+}
+.plc-notices-more > summary::-webkit-details-marker { display: none; }
+.plc-notices-more[open] > summary svg { transform: rotate(180deg); }
+.plc-notices-list { display: grid; gap: 8px; margin-top: 8px; }
+
+/* B 握手监视 */
+.plc-handshake { display: grid; gap: 14px; min-width: 0; }
+.plc-kv { display: grid; gap: 8px; margin: 0; min-width: 0; }
+.plc-kv > div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 12px; align-items: baseline; }
+.plc-kv dt { font: var(--text-label); color: var(--on-surface-variant); }
+.plc-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.plc-bits { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 12px; align-items: start; }
+.plc-bits-label { font: var(--text-label); color: var(--on-surface-variant); padding-top: 3px; white-space: nowrap; }
+.plc-bits-grid { display: flex; flex-wrap: wrap; gap: 8px 18px; min-width: 0; }
+.plc-bit { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.plc-stale { color: var(--warn); }
+.plc-handshake-fields {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 24px;
+  padding-top: 12px; border-top: 1px solid var(--outline-variant);
+}
+
+/* C 连接配置摘要 */
+.plc-conn-summary p { margin: 0; line-height: 1.8; font-size: 13px; }
+.plc-conn-summary span + span::before { content: " · "; color: var(--on-surface-variant); text-decoration: none; display: inline-block; white-space: pre; }
+.plc-diff { text-decoration: underline; text-decoration-color: var(--warn); text-underline-offset: 3px; cursor: help; }
+.plc-editor-locked { border: 0; padding: 0; margin: 0; min-width: 0; }
+
+/* D 地址表分组 */
+.plc-point-group { display: grid; gap: 10px; min-width: 0; }
+.plc-group-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; width: 100%; min-width: 0; }
+.plc-group-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; min-width: 0; }
+.plc-group-name { font-weight: 600; }
+.plc-group-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.plc-custom-group .qs-accordion-title { flex: 1; min-width: 0; }
+
+@media (max-width: 899px) {
+  .plc-bits { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .plc-bits-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .plc-handshake-fields { grid-template-columns: minmax(0, 1fr); }
+}

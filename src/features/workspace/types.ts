@@ -73,6 +73,8 @@ export interface Progress {
   steps: ProgressStep[]; shots: ShotProgress[];
   next: { step: StepId; label: string; target: ProgressTarget } | null;
 }
+/** PLC 开始请求要填的参数；shotCount 即触发次数，deviceShots 同值。 */
+export interface PlcParams { productCode: number; planVersion: number; shotCount: number; shots: { shotId: string; poseId: string }[] }
 /** coverage：要检的拍照点里已示教中线的比例（%）；没有要检的拍照点时为 null。 */
 export interface WorkspaceView {
   workspace: Workspace; layout: Recipe; productionVersion: number | null;
@@ -80,6 +82,11 @@ export interface WorkspaceView {
   productionPlanVersion: number | null;
   /** 候选的拍照计划（产品代码、拍照点顺序 / Pose / 相机）与生产不同：生效后 PLC 要同步新的计划版本 */
   planChanged: boolean;
+  /** 生产配方的 PLC 对接参数；未发布时为 null */
+  productionPlc: PlcParams | null;
+  /** 候选发布后的 PLC 对接参数；编不出时原因在 candidatePlcError */
+  candidatePlc: PlcParams | null;
+  candidatePlcError: string | null;
   coverage: number | null;
   progress: Progress;
 }

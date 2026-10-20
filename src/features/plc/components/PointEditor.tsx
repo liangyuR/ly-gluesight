@@ -12,11 +12,15 @@ interface PointEditorProps {
   connection: ConnectionConfig;
   tagPresets: TagPreset[];
   blockedReason?: string;
+  /** 握手点位由模板定义：只允许改描述和记录变化。 */
+  templateLocked?: boolean;
   onSave: (point: PlcPoint) => void;
   onClose: () => void;
 }
 
-export default function PointEditor({ initial, isNew, existingIds, connection, tagPresets, blockedReason = "", onSave, onClose }: PointEditorProps) {
+export const templateLockedHint = "握手点位由模板定义，改地址请重新载入一期 S7 点表";
+
+export default function PointEditor({ initial, isNew, existingIds, connection, tagPresets, blockedReason = "", templateLocked = false, onSave, onClose }: PointEditorProps) {
   const [p, setP] = useState<PlcPoint>(initial);
   const [error, setError] = useState("");
   const [check, setCheck] = useState<{ ok: boolean; text: string } | null>(null);
@@ -62,6 +66,7 @@ export default function PointEditor({ initial, isNew, existingIds, connection, t
   const submit = async () => {
     if (pending.current) return;
     if (blocked.current) return setError(blocked.current);
+    if (templateLocked) return onSave({ ...initial, description: p.description, logChanges: p.logChanges });
     const id = p.id.trim();
     if (!id) return setError("ID 不能为空");
     if (!p.name.trim()) return setError("名称不能为空");
@@ -95,9 +100,12 @@ export default function PointEditor({ initial, isNew, existingIds, connection, t
       }
     >
       {blockedReason && <Alert tone="warn">{blockedReason}</Alert>}
+      {templateLocked && <Alert tone="info">{templateLockedHint}；这里只能改描述和是否记录变化。</Alert>}
       <fieldset disabled={saving || !!blockedReason} style={{ border: 0, padding: 0, margin: 0 }}>
         <Grid minWidth={260} gap={14}>
-          <TextField label="名称" value={p.name} autoFocus onChange={(e) => update({ name: e.target.value })} />
+          <fieldset disabled={templateLocked} title={templateLocked ? templateLockedHint : undefined} className="plc-wide plc-editor-locked">
+          <Grid minWidth={260} gap={14}>
+          <TextField label="名称" value={p.name} autoFocus={!templateLocked} onChange={(e) => update({ name: e.target.value })} />
           <TextField label="ID" value={p.id} onChange={(e) => update({ id: e.target.value })} />
           <div className="plc-wide">
             <TextField
@@ -106,7 +114,8 @@ export default function PointEditor({ initial, isNew, existingIds, connection, t
               value={p.address}
               onChange={(e) => update({ address: e.target.value })}
               error={check && !check.ok ? check.text : undefined}
-              description={check?.ok ? <span className="addr-check ok">{check.text}</span> : meta.hint}
+              description={check?.ok ? <span className="addr-check ok">{check.text}</span>
+                : <>{meta.hint}<br />示例：<span className="mono">{meta.examples.join("  ")}</span></>}
             />
           </div>
           <Select label="数据类型" value={p.dataType} onValueChange={(v) => update({ dataType: v as DataType, wordOrder: v === "bool" || isText(v as DataType) ? null : p.wordOrder })}
@@ -150,8 +159,10 @@ export default function PointEditor({ initial, isNew, existingIds, connection, t
               </Stack>
             </Stack>
           </div>
+          </Grid>
+          </fieldset>
           <div className="plc-wide">
-            <TextField label="描述" value={p.description} onChange={(e) => update({ description: e.target.value })} />
+            <TextField label="描述" autoFocus={templateLocked} value={p.description} onChange={(e) => update({ description: e.target.value })} />
           </div>
           <div className="plc-wide">
             <Checkbox label="记录值变化到 PLC 日志（高频变化的点位建议关闭）" checked={p.logChanges} onCheckedChange={(checked) => update({ logChanges: checked })} />

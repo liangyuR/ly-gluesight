@@ -32,8 +32,10 @@ export function workspaceView(id = "A"): WorkspaceView {
     segments: [0, 1].map(k => ({ name: `P${k + 1} · J1`, shot: k, view: 1, first: 2 * k, count: 2, position: structuredClone(position), width: null, maxGapLen: .5, minPresent: .8 })),
     points: { x: [10, 20, 30, 40], y: [10, 10, 10, 10], seg: [0, 0, 1, 1], k: [0, 0, 1, 1] },
   };
+  const plc = { productCode: doc.productCode, planVersion: 1, shotCount: doc.shots.length, shots: doc.shots.map(shot => ({ shotId: shot.id, poseId: shot.poseId })) };
   return {
     layout, productionVersion: 1, productionPlanVersion: 1, planChanged: false, coverage: 100, progress: progress([1]),
+    productionPlc: plc, candidatePlc: structuredClone(plc), candidatePlcError: null,
     workspace: {
       doc, baseRevision: `production-${id}`, revision: 7, updatedAt: 1, publish: { state: "draft" }, pending: null,
       frames: [0, 1].map(k => {
@@ -77,7 +79,7 @@ export function progress(views: number[]): Progress {
 export function summary(view = workspaceView()): RecipeSummary {
   const { layout: r } = view;
   return { id: r.id, name: r.name, version: 1, revisionId: r.revisionId, productCode: r.productCode,
-    shotCount: r.shots.length, triggerMode: r.triggerMode, cameras: [...new Set(r.shots.map(s => s.camera))], length: 4 };
+    shotCount: r.shots.length, triggerMode: r.triggerMode, cameras: [...new Set(r.shots.map(s => s.camera))], length: 4, planVersion: 1, triggerCount: r.shots.length };
 }
 
 export function tricamWorkspaceView(id = "A"): WorkspaceView {

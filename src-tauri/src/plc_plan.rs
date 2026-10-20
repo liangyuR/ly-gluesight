@@ -61,6 +61,40 @@ impl PlcPlan {
     }
 }
 
+/// PLC 开始请求要填的参数，供工程师配置 PLC 程序；按与接件核对相同的触发分组编出。
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlcParams {
+    pub product_code: u16,
+    /// 候选还没分配新号时沿用候选文件里的值，界面不展示
+    pub plan_version: u32,
+    /// 触发次数，deviceShots 与之相同
+    pub shot_count: u16,
+    pub shots: Vec<ParamShot>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ParamShot {
+    pub shot_id: String,
+    pub pose_id: String,
+}
+
+impl PlcParams {
+    /// 不要求已分配计划版本：候选发布前也要能算出 PLC 需要改什么。
+    pub fn from_recipe(recipe: &Recipe) -> Result<Self, String> {
+        let groups = trigger_groups(recipe)?;
+        if groups.is_empty() || groups.len() > u16::MAX as usize {
+            return Err("S7 一期拍照计划必须包含 1–65535 次触发".into());
+        }
+        let shots = groups.iter().map(|group| {
+            let first = &recipe.shots[group[0]];
+            ParamShot { shot_id: first.id.clone(), pose_id: first.pose_id.clone() }
+        }).collect();
+        Ok(Self { product_code: recipe.product_code, plan_version: recipe.plan_version, shot_count: groups.len() as u16, shots })
+    }
+}
+
 /// 配方拍照点按 PLC 触发分组（拍照点下标）：相邻、同 Pose 的拍照点属于同一次触发，同一台相机再次出现时算下一次触发。
 /// PLC 每次触发同时触发配方用到的全部相机，所以每组都必须按配方相机顺序各有一个拍照点。
 pub fn trigger_groups(recipe: &Recipe) -> Result<Vec<Vec<usize>>, String> {
@@ -177,6 +211,16 @@ mod tests {
         assert_eq!((plan.shot_count, plan.device_shots), (2, 2));
         assert_eq!(plan.device_ids, ["cam1", "cam2"]);
         assert!(plan.shots.iter().all(|shot| shot.camera_ids == ["cam1", "cam2"]));
+    }
+
+    #[test]
+    fn candidate_without_plan_version_still_gets_params_counted_by_trigger() {
+        let mut doc = two_camera_doc();
+        doc.plan_version = 0;
+        let params = PlcParams::from_recipe(&doc.build().unwrap()).unwrap();
+        assert_eq!(params.shot_count, 2);
+        assert_eq!(params.shots.iter().map(|shot| (shot.shot_id.as_str(), shot.pose_id.as_str())).collect::<Vec<_>>(),
+            [(doc.shots[0].id.as_str(), "P1"), (doc.shots[2].id.as_str(), "P2")]);
     }
 
     #[test]

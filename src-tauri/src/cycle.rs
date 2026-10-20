@@ -248,6 +248,10 @@ pub struct RecipeSummary {
     pub trigger_mode: TriggerMode,
     pub cameras: Vec<String>,
     pub length: f32,
+    /// PLC 计划版本
+    pub plan_version: u32,
+    /// PLC 触发次数；拍照点编不成触发分组时为空
+    pub trigger_count: Option<usize>,
 }
 
 impl From<&Recipe> for RecipeSummary {
@@ -262,6 +266,8 @@ impl From<&Recipe> for RecipeSummary {
             trigger_mode: r.trigger_mode,
             cameras: r.cameras(),
             length: r.segments.iter().map(|g| g.length(r.spacing)).sum(),
+            plan_version: r.plan_version,
+            trigger_count: crate::plc_plan::trigger_groups(r).ok().map(|groups| groups.len()),
         }
     }
 }
@@ -1535,6 +1541,7 @@ impl Machine {
             } else { cameras.clone() };
             let reset = std::mem::take(&mut self.s7_reset_requested);
             let previous = self.s7.phase();
+            let previous_reset_blocked = self.s7.view().reset_blocked_reason;
             let had_ack = self.s7.acknowledged();
             let event = self.s7.poll_with_devices(plc(&app), reset, &devices, audit_ready, intake_ready).await;
             if let Some(delivery) = s7_ack_delivery(had_ack, &self.s7).filter(|_| self.s7.capture_id().is_none()) {
@@ -1610,7 +1617,7 @@ impl Machine {
                 let reason = self.s7.view().message.unwrap_or_else(|| "S7 需要明确复位".into());
                 if self.phase != Phase::Fault || self.fault.as_ref() != Some(&reason) { self.enter_fault(reason); }
             }
-            if previous != self.s7.phase() { self.dirty = true; }
+            if previous != self.s7.phase() || previous_reset_blocked != self.s7.view().reset_blocked_reason { self.dirty = true; }
             host(&app).store_busy(self.phase, &self.s7);
         }
         if self.s7.capture_id().is_some() { self.finish_capture_s7().await; }

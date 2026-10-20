@@ -111,6 +111,8 @@ pub struct SessionView {
     pub message: Option<String>,
     /// 会话已核对的 PLC 连接（连接时间戳）
     pub connection: Option<i64>,
+    /// 当前复位前置检查的首个阻塞原因；通过检查仍需显式发起复位。
+    pub reset_blocked_reason: Option<String>,
 }
 
 /// 空闲提示（等待 PLC 释放输入、设备未就绪）的前缀：不是故障，不需要复位，现状恢复后自动消失。
@@ -167,6 +169,7 @@ pub struct PlcSession {
     fault_written: bool,
     fault_attempted: Option<Instant>,
     message: Option<String>,
+    reset_blocked_reason: Option<String>,
     /// 设备未就绪时本侧撤销了 visionReady（不是外部改写）
     withdrawn: bool,
     /// 空闲时外部改写视觉输出后自动重写的时刻
@@ -200,6 +203,7 @@ impl PlcSession {
             config_key: String::new(), connection: None, audit_waiting: false, reset_low_seen: false,
             reset_level: false, heartbeat: Mutex::new(HeartbeatWatch::new(3000).expect("valid heartbeat timeout")), origin: Origin::Real,
             fault_written: false, fault_attempted: None, message: Some("S7 启动后需确认空闲输入并复位握手".into()),
+            reset_blocked_reason: Some("正在核对复位条件".into()),
             withdrawn: false, restores: Vec::new(), ack_triggers: None, reconnect: Mutex::default() }
     }
 
@@ -273,7 +277,8 @@ impl PlcSession {
 
     pub fn view(&self) -> SessionView {
         SessionView { phase: self.phase, request_seq: self.request().map(|r| r.request_seq),
-            result_seq: self.result().map(|r| r.request_seq), message: self.message.clone(), connection: self.connection }
+            result_seq: self.result().map(|r| r.request_seq), message: self.message.clone(), connection: self.connection,
+            reset_blocked_reason: self.reset_blocked_reason.clone() }
     }
 
     async fn blocking_io<T: Send + 'static>(&self, engine: &PlcEngine,
@@ -371,6 +376,7 @@ impl PlcSession {
 
     pub async fn fault(&mut self, engine: &PlcEngine, reason: String) {
         self.phase = SessionPhase::Fault;
+        self.reset_blocked_reason = Some(reason.clone());
         self.message = Some(reason);
         let _ = self.ensure_fault_output(engine).await;
         if self.journal.pending.as_ref().is_some_and(|pending| pending.phase != SessionPhase::Fault) {
@@ -440,14 +446,46 @@ impl PlcSession {
 
     /// 设备未就绪时带上具体原因：复位被拒时提示操作员缺什么。
     pub async fn poll_with_devices(&mut self, engine: &PlcEngine, reset_requested: bool, devices: &Result<(), String>, audit_ready: bool, intake_ready: bool) -> SessionEvent {
-        match self.poll_inner(engine, reset_requested, devices, audit_ready, intake_ready).await {
+        let event = match self.poll_inner(engine, reset_requested, devices, audit_ready, intake_ready).await {
             Ok(event) => event,
             Err(error) => {
                 let changed = self.phase != SessionPhase::Fault || self.message.as_ref() != Some(&error);
                 self.fault(engine, error.clone()).await;
                 if changed { SessionEvent::Fault(error) } else { SessionEvent::None }
             }
+        };
+        self.reset_blocked_reason = self.check_reset_ready(engine, devices, audit_ready).err();
+        event
+    }
+
+    /// 只读检查：与实际复位共用校验，不改输出、不清事务。
+    fn check_reset_ready(&self, engine: &PlcEngine, devices: &Result<(), String>, audit_ready: bool) -> Result<(), String> {
+        if !matches!(self.phase, SessionPhase::ResetRequired | SessionPhase::Fault) {
+            return Err(if self.phase == SessionPhase::Idle { "会话空闲，无需复位" } else { "在途工件不能直接复位，请先处理当前工件" }.into());
         }
+        if engine.status().state != LinkState::Connected { return Err("S7 PLC 未连接，请先连接 PLC".into()); }
+        if self.connection != Some(engine.status().since) { return Err("正在核对新的 PLC 连接会话".into()); }
+        if let Some(error) = &self.load_error { return Err(error.clone()); }
+        let contract = self.contract.as_ref().ok_or("S7 握手点表尚未校验")?;
+        let snapshot = Snapshot::capture_for_reset(engine, contract, Self::max_age(engine))?;
+        if !self.fault_written { return Err(self.message.clone().unwrap_or_else(|| "等待故障输出写入并读回确认".into())); }
+        self.reset_devices_ready(devices)?;
+        if !audit_ready { return Err("审计与录制尚未完成持久化，请等待追溯就绪".into()); }
+        self.reset_baseline(&snapshot)?;
+        Ok(())
+    }
+
+    fn reset_devices_ready(&self, devices: &Result<(), String>) -> Result<(), String> {
+        if let Err(reason) = devices { return Err(format!("设备尚未就绪，不能复位并置视觉就绪：{reason}")); }
+        if !self.heartbeat.lock().unwrap().is_live(now_ms()) { return Err("尚未观察到 PLC 心跳翻转，不能复位".into()); }
+        Ok(())
+    }
+
+    fn reset_baseline(&self, snapshot: &Snapshot) -> Result<handshake::ResetBaseline, String> {
+        if self.origin == Origin::Offline && self.journal.pending.as_ref().is_some_and(|pending| pending.origin != Some(Origin::Offline)) {
+            return Err(format!("{}不能由离线虚拟 PLC 复位：退出离线，连接真机 PLC 后复位", self.pending_summary().unwrap_or_default()));
+        }
+        handshake::ResetBaseline::capture(snapshot)
     }
 
     async fn poll_inner(&mut self, engine: &PlcEngine, reset_requested: bool, devices: &Result<(), String>, audit_ready: bool, intake_ready: bool) -> Result<SessionEvent, String> {
@@ -528,13 +566,9 @@ impl PlcSession {
         if matches!(self.phase, SessionPhase::ResetRequired | SessionPhase::Fault) {
             self.ensure_fault_output(engine).await?;
             if !(reset_requested || reset_edge) { return Ok(SessionEvent::None); }
-            if let Err(reason) = devices { return Err(format!("设备尚未就绪，不能复位并置视觉就绪：{reason}")); }
-            if !self.heartbeat.lock().unwrap().is_live(now) { return Err("尚未观察到 PLC 心跳翻转，不能复位".into()); }
+            self.reset_devices_ready(devices)?;
             if !audit_ready { return Ok(SessionEvent::None); }
-            if self.origin == Origin::Offline && self.journal.pending.as_ref().is_some_and(|pending| pending.origin != Some(Origin::Offline)) {
-                return Err(format!("{}不能由离线虚拟 PLC 复位：退出离线，连接真机 PLC 后复位", self.pending_summary().unwrap_or_default()));
-            }
-            let baseline = handshake::ResetBaseline::capture(&snapshot)?;
+            let baseline = self.reset_baseline(&snapshot)?;
             let repair = snapshot.sn_repair_plan();
             let reason = if repair.is_empty() { "明确复位请求；尚未清除未结事务".to_owned() } else {
                 let tags = repair.iter().map(|op| op.tag).collect::<Vec<_>>().join("、");

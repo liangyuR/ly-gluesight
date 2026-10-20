@@ -150,16 +150,6 @@ export interface PlcHandshakeState {
   requestSeq: number | null;
   resultSeq: number | null;
   message: string | null;
-}
-
-export interface PlcRecipeChoice { id: string; name: string; version: number }
-
-export interface PlcRecipePlan {
-  protocolVersion: number;
-  recipeId: string;
-  planVersion: number;
-  shotCount: number;
-  deviceIds: string[];
-  deviceShots: number;
-  shots: { shotId: string; poseId: string; cameraIds: string[] }[];
+  /** null 表示后端复位预检通过；缺失时复位条件未知。 */
+  resetBlockedReason?: string | null;
 }

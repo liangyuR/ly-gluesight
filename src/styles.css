@@ -232,6 +232,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
   pointer-events: none;
 }
 .wp-steps > .selection-track-indicator { border-radius: var(--r-md); background: var(--primary-container); }
+/* 分段控件的两端圆弧由轨道裁出；高亮块继承轨道的全圆角时，首末项靠里的一侧也会变成圆弧。 */
+.qs-seg > .selection-track-indicator { border-radius: 0; }
 .wp-steps.selection-track[data-selection-ready] > a.active { background: transparent; }
 @media (prefers-reduced-motion: reduce) {
   .selection-track-indicator { transition: none; }
