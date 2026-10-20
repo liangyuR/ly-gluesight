@@ -2,7 +2,7 @@
 
 ## 架构与规划（[architecture/](architecture)）
 
-- [工件边缘中心距检测方案](architecture/workpiece-edge-position.md)：待实施方案，明确算法、示教、配方、失败判定、发布与验收边界；配套 [胶偏方法与资料调研](research/glue-position-methods.md)，含综述、工件定位案例及 ISV 专利证据。
+- [工件边缘中心距检测方案](architecture/workpiece-edge-position.md)：以工件边为基准测胶条中心距的方案草案，配套 [方法与资料调研](research/glue-position-methods.md)。
 - [软件架构、一期可行性与实施路线](architecture/gluesight-software-architecture.html)：历史目标架构与实施估算、Agent 分工及 S7 实施进展；当前测试范围以测试说明为准。
 - [三相机硬件连接架构](architecture/gluesight-hardware-architecture.html)：PLC 硬件触发、三台相机、交换机、工控机与 Robot 的连接关系，可按链路高亮。注意：2026-10-10 确认现场是一台三目设备（SDK 中一个 Device、一次触发出三幅图），图中三台独立相机与三条线路待现场确认后更新，见 [P0 计划 1.2 节](architecture/p0-plan.md)。
 - [一期 P0 实施计划](architecture/p0-plan.md)：已定决策（含 D-11 三目相机）、步 0–7 与步 T 的顺序、范围与完成标准、历史问题跟踪与软件验证边界。
