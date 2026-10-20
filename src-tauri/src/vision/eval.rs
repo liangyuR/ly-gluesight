@@ -1,6 +1,7 @@
 //! 算法评测（默认忽略）：实拍样本集 + 合成扰动 / 合成 NG，走与生产相同的示教提取、测量与判定链路。
 //! 入口 scripts/Test-AlgorithmEval.ps1；结果写到 GLUESIGHT_EVAL_OUT（缺省 output/algorithm-eval）。
 
+mod locate;
 mod synth;
 mod teach;
 
@@ -658,6 +659,7 @@ fn markdown(report: &Value) -> String {
         s += "\n";
     }
     if report["extract"].is_object() { s += &teach::markdown(&report["extract"]); }
+    if report["fixture"].is_object() { s += &locate::markdown(&report["fixture"]); }
     if report["timing"].is_object() { s += &format!("## 耗时\n\n{}\n\n", report["timing"]); }
     if let Some(rows) = report["edge"].as_array() {
         s += "## 边界输入\n\n";
@@ -717,6 +719,7 @@ fn algorithm_eval() {
     if cfg.has("timing") { report["timing"] = timing(&ctx, &base); }
     if cfg.has("edge") { report["edge"] = edge_cases(&ctx); }
     if cfg.has("extract") { report["extract"] = teach::evaluate(&ctx, &base, &fx); }
+    if cfg.has("fixture") { report["fixture"] = locate::evaluate(&ctx, &base); }
     std::fs::write(cfg.out.join("results.json"), serde_json::to_string_pretty(&report).unwrap()).unwrap();
     std::fs::write(cfg.out.join("summary.md"), markdown(&report)).unwrap();
     println!("{}", markdown(&report));
