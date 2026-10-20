@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { TrialResult, trialPoints } from "../src/features/workspace/TrialResult";
 
@@ -9,7 +9,7 @@ it("试测包含缺胶站且重新计算 → 空值保持未测，明细刷新�
   };
   const points = trialPoints(measurement)!;
   const { rerender } = render(<TrialResult points={points} />);
-  expect(screen.getByText("逐点试测结果 · 测得 1 / 2 · 未测 1")).toBeVisible();
+  fireEvent.click(screen.getByText("逐点试测结果 · 测得 1 / 2 · 未测 1"));
   const missing = within(screen.getByRole("row", { name: "11 缺胶 未测 未测" }));
   expect(missing.getAllByText("未测")).toHaveLength(2);
   expect(missing.queryByText("0.000")).not.toBeInTheDocument();
