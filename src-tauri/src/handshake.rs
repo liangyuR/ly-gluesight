@@ -285,7 +285,6 @@ fn out_of_range(tag: &str, value: impl std::fmt::Display, kind: &str) -> String 
 pub(crate) struct Snapshot {
     pub(crate) connection_since: i64,
     pub(crate) poll_count: u64,
-    pub(crate) last_poll: i64,
     /// plcHeartbeat 在 ly-plc 轮询缓存里的时间戳：值或读错误变化时更新，读错误恢复为原电平也会前进。
     pub(crate) heartbeat_changed_at: i64,
     values: HashMap<&'static str, PlcValue>,
@@ -308,6 +307,7 @@ fn check_freshness(status: &PlcStatus, now: i64, max_age_ms: u64) -> Result<i64,
 }
 
 impl Snapshot {
+    #[cfg(test)]
     pub(crate) fn from_values(
         contract: &Contract,
         status: &PlcStatus,
@@ -338,7 +338,7 @@ impl Snapshot {
             values.insert(field.tag, contract.value(raw, field.tag)?.clone());
         }
         let heartbeat_changed_at = raw.get(contract.point_id("plcHeartbeat")?).map_or(last_poll, |point| point.ts);
-        Ok(Self { connection_since: status.since, poll_count: status.poll_count, last_poll, heartbeat_changed_at, values, broken_outputs })
+        Ok(Self { connection_since: status.since, poll_count: status.poll_count, heartbeat_changed_at, values, broken_outputs })
     }
 
     pub(crate) fn capture(engine: &PlcEngine, contract: &Contract, max_age_ms: u64) -> Result<Self, String> {

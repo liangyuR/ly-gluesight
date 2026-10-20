@@ -1247,20 +1247,6 @@ pub fn workspace_save_overview(
     view(&app, w.clone())
 }
 
-fn history_sample_table(original: &Recipe, candidate: &Recipe, points: &store::PartPoints) -> Result<Vec<PointState>, String> {
-    if !store::same_measurement_layout(original, candidate) {
-        return Err("样本拍照点或测点布局与候选不一致，不能用旧测量数据验证".into());
-    }
-    if points.st.len() != candidate.point_count() || points.d.len() != points.st.len() || points.w.len() != points.st.len() {
-        return Err("样本的测量点数量不一致".into());
-    }
-    points.st.iter().enumerate().map(|(j, status)| match status {
-        0 => Ok(PointState::Measured { d: points.d[j], w: points.w[j].unwrap_or(f32::NAN) }),
-        1 => Ok(PointState::Gap),
-        _ => Err("样本存在未完成或无效的测量，不能用于规则验证".into()),
-    }).collect()
-}
-
 impl SampleResult {
     /// 按候选判定结果对照人工期望：期望合格时 OK 与 OK_WITH_EXCURSION 都算符合，其余结论须完全一致。
     pub fn judged(sample: &Sample, name: String, sn: String, judgement: judge::Judgement) -> Self {
@@ -2147,16 +2133,6 @@ pub async fn workspace_station_import(app: AppHandle, cam: u8, bytes: Vec<u8>, v
         host.station.lock().unwrap().insert(cam, (meta.clone(), image));
         Ok(meta)
     }).await.map_err(|e| e.to_string())?
-}
-
-fn measure_paths(
-    app: &AppHandle,
-    w: &Workspace,
-    paths: &[PathBuf],
-    sn: &str,
-) -> Result<(Vec<PointState>, Vec<Value>), String> {
-    if (0..w.doc.shots.len()).any(|k| workflow::selected_views(w, k).len() > 1) { return Err("多图验证请采集完整拼接帧或使用历史整圈原图".into()); }
-    measure_images(app, w, paths.len(), sn, |k, _| crate::image_file::load(&paths[k]))
 }
 
 fn measure_images(app: &AppHandle, w: &Workspace, count: usize, sn: &str,

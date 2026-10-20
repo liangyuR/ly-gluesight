@@ -94,6 +94,7 @@ impl ArmBudget {
         self.started.elapsed()
     }
 
+    #[cfg(test)]
     pub fn stages(&self) -> &[ArmStage] {
         &self.stages
     }

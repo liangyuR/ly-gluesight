@@ -562,6 +562,7 @@ impl Coordinator {
         notices
     }
 
+    #[cfg(test)]
     fn retry(&mut self, sink: &mut impl Sink, now: i64) -> Vec<Notice> {
         let mut notices = Vec::new();
         self.trim(now, &mut notices);

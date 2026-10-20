@@ -53,11 +53,6 @@ fn nearest(path: &[[f32; 2]], p: [f32; 2]) -> (f32, f32, f32) {
     best
 }
 
-/// 拍照点 k 的一帧。seed 决定噪声；不检、未示教的拍照点照常出图（缺省中线）。
-pub fn render(recipe: &Recipe, k: usize, scenario: Scenario, pose: PoseError, seed: u64) -> FrameImage {
-    render_view(recipe, k, scenario, pose, seed, 1)
-}
-
 pub fn render_views(recipe: &Recipe, k: usize, scenario: Scenario, pose: PoseError, seed: u64, view_count: u8) -> Result<Vec<Arc<FrameImage>>, String> {
     if !matches!(view_count, 1 | 3) {
         return Err("视角数量只能是 1 或 3".into());

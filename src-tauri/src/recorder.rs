@@ -196,6 +196,7 @@ fn retention(scope: HistoryScope, settings: &CycleSettings) -> (u32, u64) {
 }
 
 impl Recorder {
+    #[cfg(test)]
     pub fn new(root: PathBuf, callback: Option<RecordingCallback>) -> Self {
         Self::start(root, callback, None)
     }
@@ -335,7 +336,7 @@ impl Recorder {
                 }
             })
             .collect();
-        let queue_error = if self.queued.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < QUEUE).then_some(n + 1)).is_err() {
+        let queue_error = if self.queued.try_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < QUEUE).then_some(n + 1)).is_err() {
             Some(format!("录制队列已满（{QUEUE} 组），拍照点 {} 的 {} 个视角整组未入队", shot.id, frame.images.len()))
         } else {
             let images = metadata.iter().cloned().zip(frame.images.iter().cloned()).collect();

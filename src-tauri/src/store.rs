@@ -293,15 +293,11 @@ pub struct StoredMeasurement {
     pub recipe_revision: Option<String>,
     pub verdict: Verdict,
     pub table: Vec<PointState>,
-    pub cycle_id: Option<String>,
-    pub bundle_id: Option<String>,
-    pub delivery: PlcDelivery,
 }
 
 pub struct Store {
     conn: Mutex<Connection>,
     backup_path: Option<PathBuf>,
-    pub interrupted_recordings: usize,
 }
 
 fn verdict_str(v: Verdict) -> String {
@@ -489,6 +485,7 @@ fn extend_candidate_source(conn: &Connection, path: &Path) -> Result<(), String>
 }
 
 impl Store {
+    #[cfg(test)]
     pub fn open(path: &Path) -> Result<Self, String> {
         Self::open_inner(path, false)
     }
@@ -598,8 +595,8 @@ impl Store {
              COMMIT;",
         )
         .map_err(db_err)?;
-        let interrupted_recordings = if defer_recovery { 0 } else { fail_interrupted_recordings(&mut conn)? };
-        Ok(Self { conn: Mutex::new(conn), backup_path, interrupted_recordings })
+        if !defer_recovery { fail_interrupted_recordings(&mut conn)?; }
+        Ok(Self { conn: Mutex::new(conn), backup_path })
     }
 
     pub fn finish_interrupted_recordings(&self) -> Result<usize, String> {
@@ -621,6 +618,7 @@ impl Store {
         rows.collect::<Result<std::collections::BTreeMap<_, _>, _>>().map_err(db_err)
     }
 
+    #[cfg(test)]
     pub fn reserve_cycle_id(&self) -> Result<String, String> {
         Ok(self.reserve_cycle_ids(1)?.remove(0))
     }
@@ -1164,8 +1162,7 @@ impl Store {
             (format!(" WHERE p.id IN ({})", vec!["?"; ids.len()].join(",")), ids.iter().map(|&i| SqlValue::Integer(i)).collect())
         };
         let sql = format!(
-            "SELECT p.id, p.ts, p.sn, p.recipe_id, p.recipe_revision, p.verdict, COALESCE(pp.format, {POINTS_FORMAT}), COALESCE(pp.data, x''),
-                 p.cycle_id, p.bundle_id, p.delivery_state, p.delivery_updated_at, p.delivery_message FROM parts p
+            "SELECT p.id, p.ts, p.sn, p.recipe_id, p.recipe_revision, p.verdict, COALESCE(pp.format, {POINTS_FORMAT}), COALESCE(pp.data, x'') FROM parts p
              LEFT JOIN part_points pp ON pp.part_id = p.id{filter} ORDER BY p.id DESC LIMIT {limit}"
         );
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
@@ -1179,9 +1176,6 @@ impl Store {
                     recipe_revision: row.get(4)?,
                     verdict: parse_verdict(&row.get::<_, String>(5)?),
                     table: decode(row.get(6)?, &row.get::<_, Vec<u8>>(7)?),
-                    cycle_id: row.get(8)?,
-                    bundle_id: row.get(9)?,
-                    delivery: delivery_row(row, 10)?,
                 })
             })
             .map_err(db_err)?;
