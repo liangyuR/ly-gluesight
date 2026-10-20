@@ -42,6 +42,7 @@ if ($LyFlowSource) {
 
 Push-Location -LiteralPath $root
 try {
-    & node (Join-Path $root 'node_modules\@tauri-apps\cli\tauri.js') dev @TauriArgs
+    # 编译失败或应用异常退出时整条链路（含 vite）一起退出，原因见 Start-Dev.ps1。
+    & node (Join-Path $root 'node_modules\@tauri-apps\cli\tauri.js') dev --exit-on-panic @TauriArgs
     exit $LASTEXITCODE
 } finally { Pop-Location }

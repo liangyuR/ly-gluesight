@@ -15,7 +15,7 @@
 ```powershell
 pnpm install --frozen-lockfile
 pnpm deps:lyflow:dev   # 准备 lyFlow 运行库，首次开发或锁定系列变化后执行
-pnpm dev               # tauri dev：启动 Vite 并编译运行 debug 版
+pnpm dev               # tauri dev：启动 Vite 并编译运行 debug 版；编译失败或应用异常退出时整条链路一起退出，修好后重新运行
 ```
 
 `pnpm deps:lyflow:dev` 从 `liangyuR/lyFlow` 的 GitHub Release 取 `packaging/runtime.json` 锁定系列的最新运行库，复制到 `src-tauri/target/debug/runtime/lyflow/`。不执行也能启动，但没有图像测量引擎，引擎状态会显示原因。
