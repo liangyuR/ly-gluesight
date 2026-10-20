@@ -43,6 +43,7 @@ describe("创建配方流程", () => {
             },
             layout: { ...doc, revisionId: "candidate-1", segments: [], points: { x: [], y: [], seg: [], k: [] } },
             productionVersion: null, productionPlanVersion: null, planChanged: true, coverage: 0,
+            productionPlc: null, candidatePlc: null, candidatePlcError: null,
             progress: { steps: [{ id: "capture", label: "整圈采集", optional: false, status: "notStarted", detail: "等待设备就绪后整圈采集并采用", blockers: [] }],
               shots: [], next: { step: "capture", label: "开始整圈采集", target: { page: "capture" } } },
           };

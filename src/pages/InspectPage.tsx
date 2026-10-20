@@ -31,6 +31,7 @@ import {
   type Snapshot,
   type Verdict,
 } from "../features/cycle";
+import { usePlcOperationState } from "../features/plc/api";
 
 function verdictTone(v: Verdict) {
   return v === "OK" ? "ok" : v === "OK_WITH_EXCURSION" ? "warn" : v === "ERR_INSPECT" ? "fault" : "ng";
@@ -50,6 +51,11 @@ export default function InspectPage() {
   const { snapshot, logs, measured } = useCycle();
   const recipes = useRecipes();
   const site = useSiteStatus();
+  const { handshake } = usePlcOperationState();
+  // 真机握手待复位时沿用后端的复位前置检查：string 为阻塞原因，null 为可复位，undefined 为尚未核对。
+  const s7Reset = site?.mode !== "offline" && (handshake?.phase === "fault" || handshake?.phase === "resetRequired") ? handshake : null;
+  const resetBlockedReason = s7Reset?.resetBlockedReason || "";
+  const resetPendingCheck = !!s7Reset && s7Reset.resetBlockedReason === undefined;
   const [view, setView] = useState<"image" | "part" | "frame">("image");
   const [diagnostics, setDiagnostics] = useState<DiagnosticGroup | null>(null);
   const [quantity, setQuantity] = useState<"d" | "w">("d");
@@ -145,7 +151,7 @@ export default function InspectPage() {
     }
   };
   const resetFault = async () => {
-    if (activeAction.current || phase !== "FAULT") return;
+    if (activeAction.current || phase !== "FAULT" || resetBlockedReason) return;
     const scope = operationScope;
     activeAction.current = "reset"; setAction("reset"); setResetError("");
     try { await cycleApi.reset(); }
@@ -193,10 +199,11 @@ export default function InspectPage() {
         <OfflineControls readiness={readiness} refresh={refreshReadiness} publishedSection={offlineSample} candidateRunning={!!snapshot?.candidateDebug} />
         {phase === "FAULT" && (
           <>
-            <ContextHelp label="复位条件">{site?.mode === "offline" ? "离线：由离线产线自动复位" : "真机：由 PLC 发 faultReset 复位；PLC 已连接、心跳正常且设备就绪时也可点此复位"}</ContextHelp>
-            <Button onClick={resetFault} disabled={action !== null} loading={action === "reset"} leadingIcon={<RotateCcw size={15} />}>
+            <ContextHelp label="复位条件">{site?.mode === "offline" ? "离线：由离线产线自动复位" : "真机：由 PLC 发 faultReset 复位；PLC 已连接、心跳在翻转、设备与追溯就绪且无在途工件时也可点此复位，不满足时右侧显示原因"}</ContextHelp>
+            <Button onClick={resetFault} disabled={action !== null || !!resetBlockedReason} title={resetBlockedReason || undefined} loading={action === "reset"} leadingIcon={<RotateCcw size={15} />}>
               {action === "reset" ? "复位中…" : "复位故障"}
             </Button>
+            {(resetBlockedReason || resetPendingCheck) && <span className="muted" role="note">{resetBlockedReason ? `不能复位：${resetBlockedReason}` : "复位条件核对中"}</span>}
           </>
         )}
       </div>

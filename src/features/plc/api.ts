@@ -12,8 +12,6 @@ import type {
   PlcConfig,
   PlcHandshakeState,
   PlcOperationState,
-  PlcRecipeChoice,
-  PlcRecipePlan,
   PlcStatus,
   PointValue,
 } from "./types";
@@ -71,8 +69,6 @@ export const plcApi = {
   s7Phase1Template: (dbNumber: number, snType: SnDataType) =>
     call<PlcConfig>("plc_s7_phase1_template", { dbNumber, snType }, () => { throw new Error("一期 S7 点表需要桌面后端生成"); }),
   getOperationState: () => call<PlcOperationState | null>("cycle_snapshot", undefined, () => null),
-  recipeChoices: () => call<PlcRecipeChoice[]>("cycle_recipes", undefined, () => []),
-  recipePlan: (recipeId: string) => call<PlcRecipePlan>("plc_recipe_plan", { recipeId }, () => { throw new Error("配方握手计划需要桌面后端读取"); }),
 };
 
 export function usePlcOperationState() {

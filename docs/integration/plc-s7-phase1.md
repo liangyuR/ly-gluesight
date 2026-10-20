@@ -130,7 +130,7 @@ SCL `LocalDiagnostic` 是 PLC FB 本地诊断，**不写 DBW78**，也不是 PC 
 
 ## 6. 计划 JSON、版本与实际字段
 
-在 PLC 通讯页使用“PLC 对接参数 · 只读”，选择已发布的生产配方，读取开始请求要填的 `productCode`、`planVersion`、`shotCount`（`deviceShots` 填同一值），以及拍照顺序与 Pose 对照表。候选草稿没有在此处发布；读取操作不写 PLC。将这些参数与现场机器人/PLC 路径版本一起评审并配置。所有拍照点都绑定唯一 SDK 设备；多设备配置无法生成计划。
+进入配方后在总览页的“PLC 对接参数”面板读取已发布生产配方开始请求要填的 `productCode`、`planVersion`、`shotCount`（`deviceShots` 填同一值），以及拍照顺序与 Pose 对照表。配方库卡片另有一行摘要；发布确认框列出这次发布 PLC 要同步的变化；读取操作不写 PLC。将这些参数与现场机器人/PLC 路径版本一起评审并配置。所有拍照点都绑定唯一 SDK 设备；多设备配置无法生成计划。
 
 以下是算法示例，不是现场配方。两点均属于唯一设备，因此 deviceShots=2：
 

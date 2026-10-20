@@ -147,6 +147,10 @@ export interface RecipeSummary {
   triggerMode: TriggerMode;
   cameras: string[];
   length: number;
+  /** PLC 计划版本 */
+  planVersion: number;
+  /** PLC 触发次数；拍照点编不成触发分组时为 null */
+  triggerCount: number | null;
 }
 
 export interface FrameView {

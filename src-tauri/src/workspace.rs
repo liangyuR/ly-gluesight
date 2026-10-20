@@ -395,6 +395,11 @@ pub struct WorkspaceView {
     pub production_plan_version: Option<u32>,
     /// 候选的拍照计划与生产配方不同（或还没发布过）：生效后 PLC 侧要同步新的计划版本
     pub plan_changed: bool,
+    /// 生产配方的 PLC 对接参数；未发布或编不出计划时为空
+    pub production_plc: Option<crate::plc_plan::PlcParams>,
+    /// 候选发布后的 PLC 对接参数；编不出时原因在 candidate_plc_error
+    pub candidate_plc: Option<crate::plc_plan::PlcParams>,
+    pub candidate_plc_error: Option<String>,
     pub coverage: Option<f32>,
     pub progress: progress::Progress,
 }
@@ -539,10 +544,13 @@ fn images_tag(r: &Recipe) -> Value {
 
 fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
     let layout = w.doc.build()?;
-    let production_version = app
-        .state::<CycleHost>()
-        .recipe(&w.doc.id)
-        .map(|r| r.version);
+    let production_recipe = app.state::<CycleHost>().recipe(&w.doc.id);
+    let production_version = production_recipe.as_ref().map(|r| r.version);
+    let production_plc = production_recipe.and_then(|r| crate::plc_plan::PlcParams::from_recipe(&r).ok());
+    let (candidate_plc, candidate_plc_error) = match crate::plc_plan::PlcParams::from_recipe(&layout) {
+        Ok(params) => (Some(params), None),
+        Err(reason) => (None, Some(reason)),
+    };
     let production = app.state::<CycleHost>().recipes.doc(&w.doc.id);
     let plan_changed = production.as_ref().is_none_or(|p| p.plan_version == 0 || !p.same_plan(&w.doc));
     let coverage = coverage(&layout);
@@ -553,6 +561,9 @@ fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
         production_version,
         production_plan_version: production.map(|p| p.plan_version),
         plan_changed,
+        production_plc,
+        candidate_plc,
+        candidate_plc_error,
         coverage,
         progress,
     })

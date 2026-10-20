@@ -1,4 +1,5 @@
 import type {
+  ConnectionConfig,
   DataType,
   SnDataType,
   EdgeMode,
@@ -8,6 +9,7 @@ import type {
   PlcConfig,
   PlcPoint,
   PointValue,
+  S7Options,
   WordOrder,
 } from "./types";
 
@@ -26,6 +28,13 @@ export const s7CpuPresets = [
   { key: "s7400", label: "S7-400", rack: 0, slot: 3, localTsap: null, remoteTsap: null },
   { key: "s7200smart", label: "S7-200 SMART", rack: 0, slot: 1, localTsap: 0x0102, remoteTsap: 0x0201 },
 ] as const;
+
+type CpuPreset = (typeof s7CpuPresets)[number];
+export const matchesCpu = (preset: CpuPreset, s7: S7Options) =>
+  preset.rack === s7.rack && preset.slot === s7.slot && preset.localTsap === s7.localTsap && preset.remoteTsap === s7.remoteTsap;
+/** 连接参数对应的 CPU 预设名；参数相同的预设（如 1200/1500）并列，不匹配任何预设时为“自定义”。 */
+export const cpuPresetLabel = (connection: ConnectionConfig) =>
+  s7CpuPresets.filter(preset => matchesCpu(preset, connection.s7)).map(preset => preset.label).join(" / ") || "自定义";
 
 export const dataTypeLabels: Record<DataType, string> = {
   bool: "Bool",

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Alert, NumberField, Select, TextField } from "qing-steel";
-import { s7CpuPresets, s7Protocol } from "../meta";
+import { matchesCpu, s7CpuPresets, s7Protocol } from "../meta";
 import type { ConnectionConfig, S7ConnectionType, S7Options } from "../types";
 
 interface ConnectionFormProps {
@@ -62,8 +62,7 @@ export default function ConnectionForm({ value: c, initialCpuPreset, onChange }:
   const setS7 = (patch: Partial<S7Options>) => set({ s7: { ...c.s7, ...patch } });
   const num = numeric;
 
-  const matchesCpu = (p: (typeof s7CpuPresets)[number]) => p.rack === c.s7.rack && p.slot === c.s7.slot && p.localTsap === c.s7.localTsap && p.remoteTsap === c.s7.remoteTsap;
-  const cpu = s7CpuPresets.find(p => p.key === cpuChoice && matchesCpu(p)) ?? s7CpuPresets.find(matchesCpu);
+  const cpu = s7CpuPresets.find(p => p.key === cpuChoice && matchesCpu(p, c.s7)) ?? s7CpuPresets.find(p => matchesCpu(p, c.s7));
 
   const error = connectionError(c);
   return (

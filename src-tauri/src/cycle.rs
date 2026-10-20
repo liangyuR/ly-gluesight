@@ -248,6 +248,10 @@ pub struct RecipeSummary {
     pub trigger_mode: TriggerMode,
     pub cameras: Vec<String>,
     pub length: f32,
+    /// PLC 计划版本
+    pub plan_version: u32,
+    /// PLC 触发次数；拍照点编不成触发分组时为空
+    pub trigger_count: Option<usize>,
 }
 
 impl From<&Recipe> for RecipeSummary {
@@ -262,6 +266,8 @@ impl From<&Recipe> for RecipeSummary {
             trigger_mode: r.trigger_mode,
             cameras: r.cameras(),
             length: r.segments.iter().map(|g| g.length(r.spacing)).sum(),
+            plan_version: r.plan_version,
+            trigger_count: crate::plc_plan::trigger_groups(r).ok().map(|groups| groups.len()),
         }
     }
 }

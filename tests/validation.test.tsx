@@ -62,11 +62,15 @@ describe("验证与发布页面", () => {
     expect(screen.queryByRole("button", { name: "放弃待生效版本" })).not.toBeInTheDocument();
   });
 
-  it("拍照计划变化 → 发布确认里提供 PLC 对接参数入口", async () => {
+  it("拍照点数变化 → 发布确认直接列出 PLC 要同步的触发数，未变的产品代码标不变", async () => {
     ws.data!.planChanged = true;
+    ws.data!.candidatePlc = { ...ws.data!.productionPlc!, shotCount: 3 };
     show();
     await userEvent.click(screen.getByRole("button", { name: "发布生产配方" }));
-    expect(screen.getByRole("link", { name: "查看 PLC 对接参数" })).toHaveAttribute("href", "/plc?panel=s7-plan");
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveTextContent("shotCount / deviceShots：2 → 3");
+    expect(dialog).toHaveTextContent("productCode：1（不变）");
+    expect(dialog).toHaveTextContent("planVersion：1 → 发布时分配新号");
   });
 
   it.each([

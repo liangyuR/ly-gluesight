@@ -10,7 +10,7 @@ import { deferred, readiness, sampleSet, siteStatus, snapshot, summary, workspac
 import { cycleMeasurement, cyclePart, cycleResult } from "./cycle-visual-fixtures";
 import { plcConfig } from "./plc-fixtures";
 import type { LogLine, Measured, Readiness, Recipe, RecipeSummary, SiteStatus, Snapshot } from "../src/features/cycle/types";
-import type { PointValue } from "../src/features/plc/types";
+import type { PlcHandshakeState, PointValue } from "../src/features/plc/types";
 
 vi.mock("../src/features/cycle/api", () => ({
   useCycle: vi.fn(), useRecipes: () => recipeList, useLayout: vi.fn(),
@@ -18,15 +18,17 @@ vi.mock("../src/features/cycle/api", () => ({
 }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { runtimeOverview: vi.fn(), liveImage: vi.fn(), list: vi.fn(), debugRun: vi.fn() } }));
 vi.mock("../src/features/plc/api", () => ({ plcApi: { getConfig: vi.fn() }, usePlcValues: () => values,
-  usePlcStatus: () => ({ state: "connected", since: 1 }), subscribe: () => () => {} }));
+  usePlcStatus: () => ({ state: "connected", since: 1 }), subscribe: () => () => {},
+  usePlcOperationState: () => ({ blockedReason: "", handshake: plcHandshake }) }));
 
 let state: Snapshot, layout: Recipe | null, logs: LogLine[], measured: Measured[];
 let recipeList: RecipeSummary[];
 let site: SiteStatus;
 let report: Readiness;
 let values: Record<string, PointValue>;
+let plcHandshake: PlcHandshakeState | null;
 beforeEach(() => {
-  state = snapshot(); layout = workspaceView().layout; logs = []; measured = []; values = {};
+  state = snapshot(); layout = workspaceView().layout; logs = []; measured = []; values = {}; plcHandshake = null;
   recipeList = [summary(), summary(workspaceView("B"))];
   site = siteStatus();
   report = readiness();
@@ -73,6 +75,14 @@ describe("在线检测原图录制失败告警", () => {
 });
 
 describe("在线检测离线产线控件", () => {
+  it("真机握手待复位但复位条件未满足 → 复位按钮禁用并显示后端原因", () => {
+    state = { ...state, phase: "FAULT", fault: "PLC 心跳失活" };
+    plcHandshake = { phase: "fault", requestSeq: null, resultSeq: null, message: "PLC 心跳失活", resetBlockedReason: "尚未观察到 PLC 心跳翻转，不能复位" };
+    render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    expect(screen.getByRole("button", { name: "复位故障" })).toBeDisabled();
+    expect(screen.getByText("不能复位：尚未观察到 PLC 心跳翻转，不能复位")).toBeVisible();
+  });
+
   it("真机模式 → 不显示离线运行控件", () => {
     render(<MemoryRouter><InspectPage /></MemoryRouter>);
     expect(screen.queryByRole("region", { name: "候选配方离线试运行" })).not.toBeInTheDocument();
