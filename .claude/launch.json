@@ -1,6 +1,6 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "web", "runtimeExecutable": "pnpm", "runtimeArgs": ["dev:web"], "port": 1420 }
+    { "name": "web", "runtimeExecutable": "pnpm", "runtimeArgs": ["dev:web", "--port", "1422"], "port": 1422 }
   ]
 }
