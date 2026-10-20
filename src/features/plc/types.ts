@@ -150,6 +150,8 @@ export interface PlcHandshakeState {
   requestSeq: number | null;
   resultSeq: number | null;
   message: string | null;
+  /** null 表示后端复位预检通过；缺失时复位条件未知。 */
+  resetBlockedReason?: string | null;
 }
 
 export interface PlcRecipeChoice { id: string; name: string; version: number }

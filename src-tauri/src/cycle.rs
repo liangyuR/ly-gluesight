@@ -1535,6 +1535,7 @@ impl Machine {
             } else { cameras.clone() };
             let reset = std::mem::take(&mut self.s7_reset_requested);
             let previous = self.s7.phase();
+            let previous_reset_blocked = self.s7.view().reset_blocked_reason;
             let had_ack = self.s7.acknowledged();
             let event = self.s7.poll_with_devices(plc(&app), reset, &devices, audit_ready, intake_ready).await;
             if let Some(delivery) = s7_ack_delivery(had_ack, &self.s7).filter(|_| self.s7.capture_id().is_none()) {
@@ -1610,7 +1611,7 @@ impl Machine {
                 let reason = self.s7.view().message.unwrap_or_else(|| "S7 需要明确复位".into());
                 if self.phase != Phase::Fault || self.fault.as_ref() != Some(&reason) { self.enter_fault(reason); }
             }
-            if previous != self.s7.phase() { self.dirty = true; }
+            if previous != self.s7.phase() || previous_reset_blocked != self.s7.view().reset_blocked_reason { self.dirty = true; }
             host(&app).store_busy(self.phase, &self.s7);
         }
         if self.s7.capture_id().is_some() { self.finish_capture_s7().await; }

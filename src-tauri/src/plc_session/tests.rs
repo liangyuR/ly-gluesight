@@ -599,6 +599,42 @@ async fn s7_wire_heartbeat_stop_faults_without_clearing_pending() {
 
 #[tokio::test]
 #[ignore = "requires Python and local loopback S7 fixture"]
+async fn s7_wire_reset_conditions_change_reports_live_blocker_without_clearing_pending() {
+    let mut rig = Rig::new("reset-readiness").await;
+    rig.request(1, "SN-RESET").await;
+    rig.arm().await;
+    rig.session = PlcSession::open(rig.session.path.clone());
+    rig.live().await;
+    assert!(rig.session.view().reset_blocked_reason.unwrap().contains("partStart"));
+    rig.plc.values(json!({"partStart":false,"partEnd":false,"resultAck":false}));
+    rig.fresh().await;
+
+    // 同一条复位前置契约：每个阻塞条件均须实时反映，不能靠点击后才发现。
+    for (values, devices, audit_ready, expected) in [
+        (json!({"protocolVersion":3}), Ok(()), true, Some("协议版本")),
+        (json!({"protocolVersion":crate::handshake::PROTOCOL_VERSION}), Err("cam2 未连接".to_string()), true, Some("cam2")),
+        (json!({"protocolVersion":crate::handshake::PROTOCOL_VERSION}), Ok(()), false, Some("持久化")),
+        (json!({"protocolVersion":crate::handshake::PROTOCOL_VERSION}), Ok(()), true, None),
+    ] {
+        rig.plc.values(values);
+        rig.fresh().await;
+        rig.session.poll_with_devices(&rig.engine, false, &devices, audit_ready, true).await;
+        let view = rig.session.view();
+        match expected {
+            Some(fragment) => assert!(view.reset_blocked_reason.as_deref().is_some_and(|reason| reason.contains(fragment)), "{view:?}"),
+            None => assert!(view.reset_blocked_reason.is_none(), "{view:?}"),
+        }
+        assert!(rig.session.pending(), "只读复位检查不能清除未结事务");
+        assert_eq!(view.phase, SessionPhase::ResetRequired);
+    }
+    assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready));
+    assert!(!rig.session.pending());
+    assert_eq!(rig.plc.fields()["visionFault"], false);
+    rig.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_restart_pending_requires_neutral_explicit_reset_and_audit() {
     let mut rig = Rig::new("restart-pending").await;
     rig.request(1, "SN-50").await;

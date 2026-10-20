@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FileJson, Pencil, PenLine, Plug, PlugZap, Plus, Save, Trash2, Undo2 } from "lucide-react";
+import { FileJson, Pencil, PenLine, Plug, PlugZap, Plus, RotateCcw, Save, Trash2, Undo2 } from "lucide-react";
 import { Alert, Button, Card, Checkbox, Chip, EmptyState, Heading, IconButton, NumberField, Select, Stack, StatusBadge, Table, Text, type TableColumn } from "qing-steel";
 import ConnectionForm, { connectionError } from "../components/ConnectionForm";
 import PlcStatusBadge from "../components/PlcStatusBadge";
@@ -14,6 +14,7 @@ import { asS7, dataTypeLabels, edgeLabels, effectiveOrder, formatValue, isMultiW
 import { formatClock } from "../time";
 import { useSnackbar } from "qing-steel";
 import type { PlcConfig, PlcHandshakeState, PlcPoint, TagPreset } from "../types";
+import { cycleApi } from "../../cycle/api";
 
 type Editing = { point: PlcPoint; isNew: boolean } | null;
 
@@ -26,7 +27,7 @@ const configText = (config: PlcConfig | null) => JSON.stringify(config, (_key, v
   typeof value === "number" && !Number.isFinite(value) ? String(value) : value);
 const fieldsetStyle = { border: 0, padding: 0, margin: 0, minWidth: 0 };
 const handshakePhaseLabels: Record<PlcHandshakeState["phase"], string> = {
-  resetRequired: "等待 PLC 复位", idle: "空闲", validating: "校验请求", acquiring: "采集中",
+  resetRequired: "待复位", idle: "空闲", validating: "校验请求", acquiring: "采集中",
   draining: "等待帧处理结束", awaitAck: "等待结果确认", releasing: "等待握手释放", fault: "故障",
 };
 
@@ -45,10 +46,16 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
   const [jsonOpen, setJsonOpen] = useState(false);
   const [s7Open, setS7Open] = useState(false);
   const [cpuPreset, setCpuPreset] = useState({ revision: 0, key: "" });
+  const [planActionsTarget, setPlanActionsTarget] = useState<HTMLDivElement | null>(null);
   const [actionError, setActionError] = useState("");
   const { show: snack } = useSnackbar();
   const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [resetPending, setResetPending] = useState(false);
+  const [resetSubmitted, setResetSubmitted] = useState(false);
+  const [resetError, setResetError] = useState("");
+  const resetting = useRef(false);
+  const resetStartMessage = useRef<string | null>(null);
   const acting = useRef(false);
   const loadSerial = useRef(0);
   const alive = useRef(true);
@@ -76,14 +83,45 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
 
   const dirty = useMemo(() => configText(saved) !== configText(draft), [saved, draft]);
   const connected = status?.state === "connected";
+  const resetRequired = handshake?.phase === "resetRequired" || handshake?.phase === "fault";
+  const resetBlockedReason = readOnly ? "当前页面为只读，不能复位"
+    : !connected ? "PLC 未连接，连接后才能复位"
+    : !resetRequired ? "当前无需复位"
+    : handshake.resetBlockedReason === undefined ? "复位条件尚未就绪，等待状态更新"
+    : handshake.resetBlockedReason || (busy ? "PLC 操作进行中，请稍后复位" : "");
   const reconnectSaved = !!blockedReason && !!status && !connected;
   const tagLabel = useMemo(() => new Map(tagPresets.map((t) => [t.value, t.label])), [tagPresets]);
+
+  useEffect(() => {
+    if (!resetRequired) setResetError("");
+    const executionError = resetRequired && handshake?.message !== resetStartMessage.current ? handshake?.message : null;
+    if (resetPending && (!resetRequired || !connected || handshake?.resetBlockedReason || executionError)) {
+      resetting.current = false;
+      setResetPending(false);
+      if (executionError) setResetError(executionError);
+    }
+  }, [resetPending, resetRequired, connected, handshake?.resetBlockedReason, handshake?.message]);
 
   if (!draft) return <Card><p role={loadError ? "alert" : "status"}>{loadError || "正在加载 PLC 配置…"}</p>{loadError && <Button onClick={loadConfig}>重新加载</Button>}</Card>;
 
   const canReconnect = () => !!linkState.current && linkState.current !== "connected";
+  const resetFault = async () => {
+    if (resetting.current || acting.current || resetBlockedReason) return;
+    resetting.current = true;
+    resetStartMessage.current = handshake?.message ?? null;
+    setResetPending(true);
+    setResetSubmitted(false);
+    setResetError("");
+    try {
+      await cycleApi.reset();
+      if (alive.current) setResetSubmitted(true);
+    } catch (error) {
+      resetting.current = false;
+      if (alive.current) { setResetPending(false); setResetError(String(error)); }
+    }
+  };
   const perform = async (action: () => Promise<unknown>, allowReconnect = false) => {
-    if (acting.current) return;
+    if (acting.current || resetting.current) return;
     if (operationLock.current && !(allowReconnect && canReconnect())) {
       setActionError(operationLock.current); return;
     }
@@ -191,6 +229,34 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
 
   return (
     <div className="stack plc">
+      <section className="plc-actionbar" aria-label="PLC 悬浮操作栏">
+        <div className="plc-actionbar-row">
+          <div className="plc-actionbar-group">
+            <PlcStatusBadge state={status?.state} />
+            {dirty && <StatusBadge tone="warn">未保存</StatusBadge>}
+            {handshake && <Button leadingIcon={<RotateCcw size={16} />} disabled={!!resetBlockedReason || resetPending}
+              loading={resetPending} onClick={() => void resetFault()}>复位故障</Button>}
+          </div>
+          <fieldset className="plc-actionbar-group" disabled={busy || resetPending || readOnly} style={fieldsetStyle}>
+            <Button leadingIcon={<Undo2 size={16} />} disabled={!dirty || !!blockedReason} onClick={() => saved && setDraft(structuredClone(saved))}>还原</Button>
+            <Button leadingIcon={<Save size={16} />} disabled={!dirty || !!invalid || !!blockedReason} onClick={() => void perform(save)}>保存配置</Button>
+            <Button variant={connected ? "tonal" : "filled"} danger={connected} leadingIcon={connected ? <PlugZap size={16} /> : <Plug size={16} />}
+              disabled={!status || (connected ? !!blockedReason : !reconnectSaved && !!invalid)} onClick={toggleConnection}>
+              {connected ? "断开" : reconnectSaved ? "使用已保存配置重连" : status?.state === "error" || status?.state === "connecting" ? "重连" : "连接"}
+            </Button>
+          </fieldset>
+          <fieldset className="plc-actionbar-group" disabled={busy || resetPending || readOnly || !!blockedReason} style={fieldsetStyle}>
+            <Button onClick={() => setS7Open(true)}>载入一期 S7 点表</Button>
+            <Button leadingIcon={<FileJson size={16} />} onClick={() => setJsonOpen(true)}>导入/导出</Button>
+            <Button variant="filled" leadingIcon={<Plus size={16} />} onClick={() => setEditing({ point: newPoint(), isNew: true })}>新增点位</Button>
+          </fieldset>
+          <div className="plc-actionbar-group" ref={setPlanActionsTarget} />
+        </div>
+        {resetRequired && resetBlockedReason && <Text as="p" variant="label">当前不能复位：{resetBlockedReason}</Text>}
+        {resetPending && <Text as="p" role="status">{resetSubmitted ? "复位请求已提交，等待执行结果。" : "正在提交复位请求…"}</Text>}
+        {resetError && <Alert tone="ng">复位请求失败：{resetError}</Alert>}
+        {actionError && <Alert tone="ng">{actionError}</Alert>}
+      </section>
       {blockedReason && <Alert tone="warn">{blockedReason}</Alert>}
       {handshake && <Card role="region" aria-label="S7 握手状态" title={<Heading level={3}>S7 握手状态</Heading>}>
         <Stack gap={16}>
@@ -200,19 +266,11 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
         </Stack>
         {handshake.message && <Text as="p" variant="label" muted>{handshake.message}</Text>}
       </Card>}
-      <fieldset disabled={busy || readOnly} className="stack" style={fieldsetStyle}>
+      <fieldset disabled={busy || resetPending || readOnly} className="stack" style={fieldsetStyle}>
       <Card title={<Stack gap={10}>
           <Heading level={3}>连接</Heading>
           <PlcStatusBadge state={status?.state} />
           <span className="muted ellipsis" title={status?.message}>{status?.message}</span>
-        </Stack>} actions={<Stack gap={8}>
-          {dirty && <StatusBadge tone="warn">未保存</StatusBadge>}
-          <Button leadingIcon={<Undo2 size={16} />} disabled={!dirty || !!blockedReason} onClick={() => saved && setDraft(structuredClone(saved))}>还原</Button>
-          <Button leadingIcon={<Save size={16} />} disabled={!dirty || !!invalid || !!blockedReason} onClick={() => void perform(save)}>保存配置</Button>
-          <Button variant={connected ? "tonal" : "filled"} danger={connected} leadingIcon={connected ? <PlugZap size={16} /> : <Plug size={16} />}
-            disabled={!status || (connected ? !!blockedReason : !reconnectSaved && !!invalid)} onClick={toggleConnection}>
-            {connected ? "断开" : reconnectSaved ? "使用已保存配置重连" : status?.state === "error" || status?.state === "connecting" ? "重连" : "连接"}
-          </Button>
         </Stack>}>
         <Stack direction="column" align="stretch" gap={14} wrap={false}>
         {reconnectSaved && <Text as="p" variant="label" muted>重连使用后端已保存的配置，当前草稿不会保存或应用。</Text>}
@@ -246,7 +304,6 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
         </div>
         </Stack>
         </fieldset>
-        {actionError && <Alert tone="ng">{actionError}</Alert>}
         {invalid && !connectionError(draft.connection) && <Alert tone="ng">{invalid}</Alert>}
         </Stack>
       </Card>
@@ -255,10 +312,6 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
       <Card title={<Stack gap={10}>
           <Heading level={3}>地址表</Heading>
           <span className="muted">{draft.points.length} 个点位</span>
-        </Stack>} actions={<Stack gap={8}>
-          <Button onClick={() => setS7Open(true)}>载入一期 S7 点表</Button>
-          <Button leadingIcon={<FileJson size={16} />} onClick={() => setJsonOpen(true)}>导入/导出</Button>
-          <Button variant="filled" leadingIcon={<Plus size={16} />} onClick={() => setEditing({ point: newPoint(), isNew: true })}>新增点位</Button>
         </Stack>}>
         <Text as="p" variant="label" muted style={{ marginBottom: 10 }}>
           {meta.label} 地址示例：<span className="mono">{meta.examples.join("  ")}</span>
@@ -268,7 +321,7 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
       </Card>
       </fieldset>
       </fieldset>
-      <S7RecipePlanPanel />
+      <S7RecipePlanPanel actionsTarget={planActionsTarget} />
 
       {editing && (
         <PointEditor

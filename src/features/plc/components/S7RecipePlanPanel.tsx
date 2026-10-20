@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Accordion, Alert, Button, Card, Heading, Select, Stack, Table, Text, type TableColumn } from "qing-steel";
 import { plcApi } from "../api";
 import type { PlcRecipeChoice, PlcRecipePlan } from "../types";
@@ -14,7 +15,16 @@ const deviceColumns: TableColumn<PlcRecipePlan>[] = [
   { key: "deviceShots", header: "每台计划触发数", render: plan => plan.deviceShots },
 ];
 
-export default function S7RecipePlanPanel() {
+function scrollToPlan(panel: HTMLDivElement | null, behavior: ScrollBehavior = "smooth") {
+  const scroller = panel?.closest<HTMLElement>(".main-body");
+  if (!panel || !scroller) return;
+  const toolbar = panel.closest(".plc")?.querySelector(".plc-actionbar");
+  const inset = (toolbar?.getBoundingClientRect().height ?? 0) + 16;
+  // 只移动内容区；scrollIntoView 会连同 overflow:hidden 的外层应用一起滚动。
+  scroller.scrollTo({ top: scroller.scrollTop + panel.getBoundingClientRect().top - scroller.getBoundingClientRect().top - inset, behavior });
+}
+
+export default function S7RecipePlanPanel({ actionsTarget }: { actionsTarget?: HTMLElement | null }) {
   const [recipes, setRecipes] = useState<PlcRecipeChoice[] | null>(null);
   const [selected, setSelected] = useState("");
   const [plan, setPlan] = useState<PlcRecipePlan | null>(null);
@@ -25,9 +35,19 @@ export default function S7RecipePlanPanel() {
   const mounted = useRef(true);
   const serial = useRef(0);
   const copyPending = useRef(false);
+  const scrollPending = useRef(false);
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; serial.current++; }; }, []);
-  useEffect(() => { if (window.location.hash.includes("panel=s7-plan")) root.current?.scrollIntoView?.({ block: "start" }); }, []);
+  useEffect(() => {
+    if (!window.location.hash.includes("panel=s7-plan")) return;
+    const frame = requestAnimationFrame(() => scrollToPlan(root.current, "auto"));
+    return () => cancelAnimationFrame(frame);
+  }, []);
+  useEffect(() => {
+    if (loading || !scrollPending.current) return;
+    scrollPending.current = false;
+    scrollToPlan(root.current);
+  }, [loading]);
 
   const readPlan = async (recipeId: string) => {
     const request = ++serial.current;
@@ -44,6 +64,7 @@ export default function S7RecipePlanPanel() {
 
   const load = async () => {
     if (loading) return;
+    scrollPending.current = true;
     const request = ++serial.current;
     setLoading(true); setError(""); setPlan(null); setCopied(false);
     try {
@@ -71,11 +92,14 @@ export default function S7RecipePlanPanel() {
     } finally { copyPending.current = false; if (mounted.current) setCopying(false); }
   };
 
-  return <div id="s7-plan" ref={root}>
-    <Card title={<Heading level={3}>配方握手计划 · 只读</Heading>} actions={<>
+  const actions = <>
       {plan && <Button disabled={copying} onClick={() => void copy()}>{copied ? "已复制 JSON" : "复制计划 JSON"}</Button>}
       <Button disabled={loading} onClick={() => void load()}>{recipes ? "刷新配方计划" : "读取配方计划"}</Button>
-    </>}>
+    </>;
+
+  return <div id="s7-plan" ref={root}>
+    {actionsTarget && createPortal(actions, actionsTarget)}
+    <Card title={<Heading level={3}>配方握手计划 · 只读</Heading>} actions={actionsTarget ? undefined : actions}>
       <Stack direction="column" align="stretch" gap={12}>
         <Text as="p" variant="label" muted>读取已发布配方，供 PLC 程序核对协议版本、计划版本和设备触发数。读取和复制不会更改 PLC；候选试运行的临时计划不在此处显示；离线发布版本不代表真机可用。</Text>
         {recipes && <Select label="已发布配方" value={selected} onValueChange={value => void readPlan(value)}

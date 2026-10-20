@@ -76,3 +76,27 @@ select.input { padding-right: 6px; }
   .plc-config-fields { grid-template-columns: minmax(0, 1fr); }
 }
 .plc .stats-inline { flex-wrap: wrap; gap: 8px 18px; }
+
+.plc-actionbar {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--r-lg);
+  background: var(--surface-high);
+  box-shadow: var(--shadow-2);
+  overflow-wrap: anywhere;
+}
+.plc-actionbar-row, .plc-actionbar-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.plc-actionbar-row { gap: 10px 16px; }
+.plc-actionbar-group:empty { display: none; }
