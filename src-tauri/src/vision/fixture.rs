@@ -26,11 +26,14 @@ pub struct Pose {
     pub peak_ratio: Option<f64>,
     /// locate 1.1.0 起才有：失败原因（low_score / ambiguous / at_search_edge / …）
     pub reason: Option<String>,
+    /// locate 1.1.0 起才有：false = 模板看不出角度，angle 报 0、center 是 0° 上最好的平移，
+    /// 即位姿只补了平移、转角没补偿（不等于“零件没转”）；1.0.0 的记录没有这个字段（None）
+    pub angle_observable: Option<bool>,
 }
 
 impl Pose {
     pub fn identity() -> Self {
-        Self { ok: true, score: 1.0, angle: 0.0, center: [0.0, 0.0], teach_center: [0.0, 0.0], peak_ratio: None, reason: None }
+        Self { ok: true, score: 1.0, angle: 0.0, center: [0.0, 0.0], teach_center: [0.0, 0.0], peak_ratio: None, reason: None, angle_observable: None }
     }
 
     /// 解析 glue.locate 的 `pose` Record 数据。定位失败时 LyFlow 可能把非有限坐标写成 null，
@@ -55,7 +58,9 @@ impl Pose {
             center: center.unwrap_or(nan),
             teach_center: teach_center.unwrap_or(nan),
             peak_ratio: num("peakRatio"),
-            reason: v["reason"].as_str().map(str::to_string),
+            // 1.1.0 成功时 reason 为空串
+            reason: v["reason"].as_str().filter(|r| !r.is_empty()).map(str::to_string),
+            angle_observable: v["angleObservable"].as_bool(),
         })
     }
 
