@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use super::synth::{self, BeadFrame, Defect, Perturb};
 use super::{defect_specs, frame_of, median, ok_class, par_map, pct, place, r3, run, shot_judge, Ctx};
 use crate::measure::{ST_INVALID, ST_OK};
-use crate::vision::fixture::{deviations, window, Pose};
+use crate::vision::fixture::{deviations, Pose};
 use crate::vision::{Engine, FrameImage, ShotMeasurement};
 
 const SEARCH_RADIUS_PX: f64 = 60.0;
@@ -29,8 +29,10 @@ const MIN_STD: f64 = 12.0;
 /// 每张图最多试这么多候选：按纹理取 8 个，再补杠杆臂最短的 4 个
 const BY_TEXTURE: usize = 8;
 const BY_LEVER: usize = 4;
-/// 选框时的试探扰动：平移 (+23, −17) px、旋转 +1°；定位误差超过 1 px 或 0.2° 判试探失败
-const PROBE: Perturb = Perturb::Affine { dx: 23.0, dy: -17.0, deg: 1.0, scale: 1.0 };
+/// 选框时的试探扰动：平移 (−23, +17) px、旋转 −1.5°；定位误差超过 1 px 或 0.2° 判试探失败。
+/// 取一个不在 E2 刚体扰动表里的位姿，免得选框时就把 E2 的某个用例试过一遍；
+/// 但试探与 E2 都在模板自己的原图上做，E2/E3 仍是同图内的结果，跨图证据只有 E6。
+const PROBE: Perturb = Perturb::Affine { dx: -23.0, dy: 17.0, deg: -1.5, scale: 1.0 };
 const PROBE_TOL_PX: f64 = 1.0;
 const PROBE_TOL_DEG: f64 = 0.2;
 /// 同一相机其他拍照点同一位置的 NCC 达到这个值，判为随相机不动的结构（喷嘴、胶枪），不作候选。
@@ -39,7 +41,11 @@ const CAMERA_FIXED_NCC: f64 = 0.6;
 /// 亮度余量：灰度 ≥ 215 的像素在整图 +40 时会饱和，只记录、不筛
 const BRIGHT_LEVEL: u8 = 215;
 const TIMING_REPEATS: usize = 5;
+/// E6 的复拍对
 const RESHOOT: [(&str, &str); 3] = [("S001", "S034"), ("S002", "S035"), ("S003", "S036")];
+/// 同相机两张图整图 NCC 达到这个值，视为同一点位的重复拍摄（复拍、重复上下件），不拿来判随相机不动的结构：
+/// 否则工件上的真实特征也会因为两张图内容相同被剔掉。2026-10-17 样本集复拍对 0.992–0.996，其他同相机图 ≤ 0.71。
+const SAME_VIEW_NCC: f64 = 0.9;
 const REVIEW: &str = "每个选中的模板框都要人工复核：同相机 NCC 只能剔除整块随相机不动的结构，压到一角喷嘴或胶枪的框仍可能漏过；特征是否与胶同面、是否刚性也判断不了";
 
 #[derive(Clone)]
@@ -224,9 +230,8 @@ struct Shot {
 /// 原图上按位姿算的胶偏（mm）；无胶或无基准为 None。
 fn fixture_d(ctx: &Ctx, k: usize, frame: &BeadFrame, m: &ShotMeasurement, pose: &Pose) -> Vec<Option<f64>> {
     let beads: Vec<Option<[f64; 2]>> = (0..m.st.len()).map(|i| (m.st[i] == ST_OK).then(|| [m.px[i][0] as f64, m.px[i][1] as f64])).collect();
-    let step = ctx.recipe.spacing as f64 / ctx.mm_of(k) as f64;
     let mm = ctx.mm_of(k) as f64;
-    deviations(&frame.c, &frame.n, &beads, pose, window(SEARCH_RADIUS_PX, step))
+    deviations(&frame.c, &frame.n, &beads, pose)
         .map(|d| d.into_iter().map(|v| v.map(|v| v * mm)).collect())
         .unwrap_or_else(|_| vec![None; m.st.len()])
 }
@@ -249,17 +254,22 @@ fn abs_stats(v: &[f64]) -> Value {
     json!({"p50": r3(pct(a.clone(), 50.0)), "p95": r3(pct(a.clone(), 95.0)), "max": r3(a.iter().copied().fold(f64::NAN, f64::max)), "n": a.len()})
 }
 
-fn choose(ctx: &Ctx, dir: &Path, k: usize, base: &ShotMeasurement) -> Option<Shot> {
+/// 选不出模板的拍照点也返回一行摘要（`Err`），保证 E1 表里每个示教过的拍照点都有一行。
+fn choose(ctx: &Ctx, dir: &Path, k: usize, base: &ShotMeasurement) -> Result<Shot, Value> {
     let s = &ctx.samples[k];
-    let frame = frame_of(ctx.recipe, base)?;
+    let Some(frame) = frame_of(ctx.recipe, base) else {
+        return Err(json!({"shot": s.shot_id, "camera": s.camera, "candidates": [], "error": "基准测量没有一站量到胶边，建不了 BeadFrame"}));
+    };
     let half = ctx.recipe.shot_detect(k).search_mm as f64 / ctx.mm_of(k) as f64;
-    // 同相机的其他拍照点，去掉复拍对的另一张（同一点位，内容相同）
-    let partner = RESHOOT.iter().find_map(|&(a, b)| if a == s.shot_id { Some(b) } else if b == s.shot_id { Some(a) } else { None });
-    let others: Vec<&FrameImage> = ctx.samples.iter().enumerate()
-        .filter(|(j, o)| *j != k && o.camera == s.camera && Some(o.shot_id.as_str()) != partner).map(|(_, o)| &o.image).collect();
+    // 同相机的其他拍照点，去掉整图几乎相同的重复拍摄（同一点位）
+    let (w, h) = (s.image.width, s.image.height);
+    let (mut others, mut same_view) = (Vec::new(), Vec::new());
+    for (j, o) in ctx.samples.iter().enumerate() {
+        if j == k || o.camera != s.camera || o.image.width != w || o.image.height != h { continue; }
+        if ncc_same_rect(&s.image, &o.image, [0, 0, w, h]) >= SAME_VIEW_NCC { same_view.push(o.shot_id.clone()); } else { others.push(&o.image); }
+    }
     let (mut candidates, fixed_rejected) = propose(&s.image, &others, &ctx.recipe.shots[k].path, &frame.c, half, &s.shot_id);
     let probe_img = PROBE.apply(&s.image, k as u64);
-    let (w, h) = (s.image.width, s.image.height);
     let mut rows = Vec::new();
     let mut ranked: Vec<(bool, f64, i64, f64, usize, Pose)> = Vec::new();
     for (ci, t) in candidates.iter().enumerate() {
@@ -294,13 +304,18 @@ fn choose(ctx: &Ctx, dir: &Path, k: usize, base: &ShotMeasurement) -> Option<Sho
         Some((_, _, _, _, ci, pose)) => (Some(candidates.swap_remove(ci)), Some(pose)),
         None => (None, None),
     };
-    let summary = json!({"shot": s.shot_id, "camera": s.camera, "candidates": rows, "rejectedCameraFixed": fixed_rejected, "comparedShots": others.len(),
+    let error = match (&chosen, rows.is_empty()) {
+        (Some(_), _) => Value::Null,
+        (None, true) => json!(format!("没有候选框（另有 {fixed_rejected} 个框判为随相机不动被剔除）")),
+        (None, false) => json!("没有通过试探定位的候选框"),
+    };
+    let summary = json!({"shot": s.shot_id, "camera": s.camera, "candidates": rows, "rejectedCameraFixed": fixed_rejected, "comparedShots": others.len(), "sameViewShots": same_view,
         "chosen": chosen.as_ref().map(|t| json!({"rect": t.rect, "file": t.file, "std": r3(t.std), "leverPx": r3(t.lever),
             "leverMm": r3(t.lever * ctx.mm_of(k) as f64), "score": pose0.as_ref().map(|p| r3(p.score)),
             "cameraFixedNcc": r3(t.fixed_ncc), "brightFrac": r3(t.bright),
             "peakRatio": pose0.as_ref().and_then(|p| p.peak_ratio).map(r3), "needsReview": true})),
-        "error": if chosen.is_none() { json!("没有通过试探定位的候选框") } else { Value::Null }});
-    Some(Shot { k, frame, chosen, pose0, summary })
+        "error": error});
+    Ok(Shot { k, frame, chosen, pose0, summary })
 }
 
 fn write_overlay(path: &Path, ctx: &Ctx, shot: &Shot, candidates: &[Value]) {
@@ -428,8 +443,9 @@ pub fn evaluate(ctx: &Ctx, base: &[Result<ShotMeasurement, String>]) -> Value {
     assert!(convention < 1e-6, "扰动定义与 Pose 约定不一致：{convention} px");
 
     // E1：选模板
-    let shots: Vec<Option<Shot>> = par_map(&taught, ctx.cfg.workers, |_, &k| choose(ctx, &dir, k, base[k].as_ref().unwrap()));
-    let shots: Vec<Shot> = shots.into_iter().flatten().collect();
+    let chosen: Vec<Result<Shot, Value>> = par_map(&taught, ctx.cfg.workers, |_, &k| choose(ctx, &dir, k, base[k].as_ref().unwrap()));
+    let templates: Vec<Value> = chosen.iter().map(|c| match c { Ok(s) => s.summary.clone(), Err(v) => v.clone() }).collect();
+    let shots: Vec<Shot> = chosen.into_iter().filter_map(Result::ok).collect();
     for s in &shots {
         write_overlay(&overlay_dir.join(format!("{}.png", ctx.samples[s.k].shot_id)), ctx, s, s.summary["candidates"].as_array().map_or(&[][..], Vec::as_slice));
     }
@@ -646,7 +662,7 @@ pub fn evaluate(ctx: &Ctx, base: &[Result<ShotMeasurement, String>]) -> Value {
         "peakRatioAvailable": peak_known,
         "uniqueness": if peak_known { "按 peakRatio 排序" } else { "运行库没有 peakRatio（locate < 1.1.0），唯一性未知：按试探定位是否通过、杠杆臂、试探分数排序" },
         "humanReview": REVIEW, "conventionCheckPx": convention,
-        "templates": shots.iter().map(|s| s.summary.clone()).collect::<Vec<_>>(),
+        "templates": templates,
         "shotsWithTemplate": ready.len(), "shotsTaught": taught.len(),
         "baseline": {"fixtureMinusStaticMm": abs_stats(&agree), "noRefStations": base_noref, "fixtureNgOnBaseOk": base_fixture_ng},
         "accuracy": accuracy, "invariance": invariance, "beadOffset": bead_offset, "timing": timing, "reshoot": reshoot,
