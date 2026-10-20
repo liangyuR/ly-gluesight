@@ -26,6 +26,28 @@ pnpm dev               # tauri dev：启动 Vite 并编译运行 debug 版
 
 固定使用本地编译的运行库：`pnpm deps:lyflow:local "C:\work\LyFlow\build\core\bin"`。`pnpm dev` 每次启动都会读取保存的配置，无需重开终端或 IDE；不带参数查看配置，带 `-Clear` 清除。仅开发构建生效，配置作用于当前 Windows 用户。临时指定其他目录请用 `pnpm dev:joint -LyFlowRuntime <目录>`。
 
+### lyFlow 运行库下载与更新
+
+| 用途 | 命令 | 结果 |
+| --- | --- | --- |
+| 下载或恢复运行库到缓存 | `pnpm deps:lyflow:restore` | 恢复到 `src-tauri/target/dependency-cache/lyflow/<版本>/` 并输出目录 |
+| 准备本地开发运行库 | `pnpm deps:lyflow:dev` | 恢复运行库并复制到 debug 构建的 `runtime/lyflow/`；设置 `CARGO_TARGET_DIR` 时使用该目录 |
+| 升级当前系列依赖 | `pnpm deps:lyflow:update` | 获取锁定系列最新正式 Release，并更新 `src-tauri/Cargo.toml` 的客户端 tag 与 `src-tauri/Cargo.lock` |
+
+本地开发升级后，重新安装开发运行库并启动应用：
+
+```powershell
+pnpm deps:lyflow:update
+pnpm deps:lyflow:dev
+pnpm dev
+```
+
+若此前用 `pnpm deps:lyflow:local` 固定了本地运行库目录，改用上述 Release 运行库前先执行 `pnpm deps:lyflow:local -Clear`。
+
+跨系列升级使用 `pnpm deps:lyflow:update -Series <主.次>`，升级后需重新验收。缓存回退、版本校验和联合开发说明见 [lyFlow 运行库依赖](docs/architecture/lyflow-dependency.md)。
+
+若执行 `pnpm lyflow:fetch` 提示 `Command "lyflow:fetch" not found`，原因是项目未定义该脚本；下载运行库使用 `pnpm deps:lyflow:restore`，本地开发使用 `pnpm deps:lyflow:dev`。即使前面的依赖安装已成功，也仍会因找不到命令而失败。
+
 ## 测试
 
 ```powershell
