@@ -11,7 +11,8 @@ path = "src/main.rs"
 
 [lib]
 name = "gluesight_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# 只出桌面端：staticlib/cdylib 是移动端用的，每次改动都要多链接一份含全部依赖的 .lib 和 .dll
+crate-type = ["rlib"]
 
 [features]
 default = []
@@ -40,6 +41,13 @@ ly-plc = { git = "https://github.com/liangyuR/ly-plc.git", rev = "fe6c2105209ba8
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
+
+# 只保留行号：panic 回溯可定位，.o/.pdb 小、链接快；要看局部变量时临时改回 debug = true
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 # 模拟相机逐像素合成图像，未优化时一帧要一两秒，赶不上节拍
 [profile.dev.package.gluesight]
