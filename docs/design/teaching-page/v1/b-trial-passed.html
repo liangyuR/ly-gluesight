@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>v1-b 单帧示教 · S005 试测通过，可保存并进入下一组</title>
+<link rel="stylesheet" href="../teaching-design.css">
+<script src="../shell.js"></script>
+</head>
+<body data-scroll="250">
+<div class="app-shell">
+  <main class="main">
+    <header class="main-header">
+      <h1>配方</h1>
+      <a class="site-badge" href="#">真机</a>
+    </header>
+    <div class="main-body">
+      <div class="wp-page">
+
+        <div class="wp-workbench-bar">
+          <label class="wp-recipe-picker">当前配方<span class="qs-input"><select><option>RCP-2024-018 · 后盖涂胶</option></select></span></label>
+          <span class="qs-badge ok"><span class="dot"></span>生产 v3</span>
+          <span class="qs-badge neutral"><span class="dot"></span>候选 编辑中 · 未发布</span>
+        </div>
+
+        <nav class="wp-steps" aria-label="配方配置步骤">
+          <a class="wp-step-home" href="#"><span class="wp-step-no"><i data-icon="layout-dashboard" data-size="13"></i></span>总览</a>
+          <a href="#"><span class="wp-step-no">1</span>整圈采集<span class="wp-step-status done"><i data-icon="check" data-size="12"></i>完成</span></a>
+          <a class="optional" href="#"><span class="wp-step-no">2</span>默认参数<span class="wp-step-status done"><i data-icon="check" data-size="12"></i>完成</span></a>
+          <a class="active" href="#"><span class="wp-step-no">3</span>单帧示教<span class="wp-step-status inProgress">4 / 12 组</span></a>
+          <a class="optional" href="#"><span class="wp-step-no">4</span>工件总览<span class="wp-step-status waiting">未开始</span></a>
+          <a href="#"><span class="wp-step-no">5</span>验证与发布<span class="wp-step-status waiting">未开始</span></a>
+        </nav>
+
+        <div class="wp-teach-summary"><strong>单帧示教</strong><span class="muted">已完成 4／12 组 · 每组示教一张图</span><div class="qs-progress" style="--v:33%"><i></i></div></div>
+
+        <div class="wp-teach">
+          <!-- 左栏：拍照组 -->
+          <section class="wp-group-panel" aria-label="拍照组">
+            <h2>拍照组 <small>12</small></h2>
+            <nav class="wp-group-list">
+              <button class="wp-group-item"><i class="dot ok"></i><strong>S001</strong><span>已示教</span></button>
+              <button class="wp-group-item"><i class="dot ok"></i><strong>S002</strong><span>已示教</span></button>
+              <button class="wp-group-item"><i class="dot ok"></i><strong>S003</strong><span>已示教</span></button>
+              <button class="wp-group-item"><i class="dot ok"></i><strong>S004</strong><span>已示教</span></button>
+              <button class="wp-group-item selected" aria-pressed="true"><i class="dot warn"></i><strong>S005</strong><span>试测通过</span></button>
+              <button class="wp-group-item"><i class="dot warn"></i><strong>S006</strong><span>未配置</span></button>
+              <button class="wp-group-item"><i class="dot off"></i><strong>S007</strong><span>待选检测图</span></button>
+              <button class="wp-group-item"><i class="dot off"></i><strong>S008</strong><span>待选检测图</span></button>
+              <button class="wp-group-item"><i class="dot off"></i><strong>S009</strong><span>待选检测图</span></button>
+              <button class="wp-group-item"><i class="dot off"></i><strong>S010</strong><span>待选检测图</span></button>
+              <button class="wp-group-item"><i class="dot off"></i><strong>S011</strong><span>待选检测图</span></button>
+              <button class="wp-group-item"><i class="dot off"></i><strong>S012</strong><span>待选检测图</span></button>
+            </nav>
+          </section>
+
+          <!-- 中栏 -->
+          <div class="wp-stack">
+            <section class="wp-image-picker" aria-label="本组检测图选择">
+              <div class="wp-image-picker-bar">
+                <h2>S005<span>检测图</span></h2>
+                <div class="wp-group-images">
+                  <button class="wp-view-option selected" aria-pressed="true"><span class="wp-view-thumbnail" data-bead="1"></span><span class="wp-view-caption"><strong>cam1 · 图 1</strong><span class="small">当前检测图</span></span></button>
+                  <button class="wp-view-option"><span class="wp-view-thumbnail" data-bead="2"></span><span class="wp-view-caption"><strong>cam2 · 图 1</strong><span class="small">选用此图</span></span></button>
+                  <button class="wp-view-option"><span class="wp-view-thumbnail" data-bead="3"></span><span class="wp-view-caption"><strong>cam3 · 图 1</strong><span class="small">选用此图</span></span></button>
+                </div>
+                <a class="wp-text-link" href="#">重新采集</a>
+              </div>
+            </section>
+
+            <section class="panel wp-teach-panel" aria-label="中线示教">
+              <div class="qs-card-heading"><h2>cam1 · 中线示教</h2>
+                <div class="actions wp-teach-flow"><ol aria-label="示教进度"><li class="done">选图</li><li class="done">中线</li><li class="done">试测</li><li class="current">保存</li></ol><span class="qs-badge warn"><span class="dot"></span>试测通过 · 未保存</span></div>
+              </div>
+              <div class="wp-viewport">
+                <div class="wp-image-tools">
+                  <div class="wp-canvas-tools" role="group" aria-label="示教工具">
+                    <button class="qs-btn sm with-leading"><i data-icon="brush" data-size="14"></i>刷选胶路区域</button>
+                    <div class="qs-seg" aria-label="选区工具"><button aria-pressed="true">沿胶路刷选</button><button>矩形框选</button></div>
+                    <button class="qs-btn sm with-leading"><i data-icon="wand-sparkles" data-size="14"></i>自动提取中线</button>
+                    <button class="qs-btn sm" disabled title="仅刷选时可用">笔划直接生成中线</button>
+                    <span class="qs-divider v"></span>
+                    <button class="qs-icon-btn" title="删除末点"><i data-icon="undo-2" data-size="15"></i></button>
+                    <button class="qs-icon-btn" title="删除选中点"><i data-icon="trash-2" data-size="15"></i></button>
+                    <button class="qs-icon-btn" title="清空中线"><i data-icon="eraser" data-size="15"></i></button>
+                  </div>
+                </div>
+                <div class="wp-canvas-params">
+                  <span class="wp-inline-num">笔刷<span class="qs-input sm num"><input value="120"><span class="unit">px</span></span><span class="qs-slider" style="--v:39%"><i></i><b></b></span></span>
+                  <span class="wp-inline-num">点间距<span class="qs-input sm num"><input value="20"><span class="unit">px</span></span></span>
+                  <button class="qs-btn sm">应用到当前中线</button>
+                  
+                </div>
+                <div class="wp-gray-image" data-bead="1" data-overlay="trial" data-points="14"></div>
+                <div class="wp-image-footer"><span>2448 × 2048 px · 点击图像加中线点（绿圈为起点），拖动点可调整 · Ctrl＋滚轮缩放 · 中键拖动</span><div class="wp-zoom"><button class="qs-icon-btn sm"><i data-icon="minus" data-size="15"></i></button><span class="mono">100%</span><button class="qs-icon-btn sm"><i data-icon="plus" data-size="15"></i></button><button class="qs-icon-btn sm" title="适应窗口"><i data-icon="rotate-ccw" data-size="15"></i></button><button class="qs-chip selected">中线叠加</button><button class="qs-chip selected">编辑点</button></div></div>
+              </div>
+              <div class="wp-trial-bar">
+                <span class="wp-trial-result" aria-label="本次算法结果"><span class="qs-badge ok"><span class="dot"></span>合格</span><span>量成比例 <b>97.5%</b></span><span>耗时 <b>212 ms</b></span></span>
+                <span class="muted">中线 15 点 · 182.4 mm · 15 站</span>
+                <span class="wp-trial-legend muted"><i class="ok"></i>有效胶宽<i class="ng"></i>未通过 / 无候选</span>
+              </div>
+              <details class="wp-trial-details" open>
+                <summary>逐点试测结果 · 测得 14 / 15 · 未测 1</summary>
+                <p class="hint">绿色横线为有效胶宽，红色横线为未通过的候选胶宽，仅供参考，不改变 NG 判定；无候选胶边时保留红点。</p>
+                <table class="qs-table"><thead><tr><th class="num">测量站</th><th>状态</th><th class="num">偏移 mm</th><th class="num">胶宽 mm</th></tr></thead>
+                <tbody><tr><td class="num">1</td><td class="c-ok">测得</td><td class="num">0.012</td><td class="num">3.42</td></tr><tr><td class="num">2</td><td class="c-ok">测得</td><td class="num">-0.031</td><td class="num">3.45</td></tr><tr><td class="num">3</td><td class="c-ok">测得</td><td class="num">0.004</td><td class="num">3.48</td></tr><tr><td class="num">…</td><td></td><td class="num"></td><td class="num"></td></tr><tr><td class="num">10</td><td class="c-ng">缺胶</td><td class="num">未测</td><td class="num c-ng">3.91（候选，未通过）</td></tr><tr><td class="num">15</td><td class="c-ok">测得</td><td class="num">0.018</td><td class="num">3.40</td></tr></tbody></table>
+              </details>
+            </section>
+          </div>
+
+          <!-- 右栏：设置 -->
+          <div class="wp-stack wp-teach-settings">
+            <details class="wp-settings-card" open>
+              <summary><span class="wp-settings-heading"><span class="wp-settings-title">标定</span><span class="qs-badge ok"><span class="dot"></span>已验证</span><i data-icon="chevron-down" data-size="16"></i></span>
+                <span class="wp-settings-summary">0.0421 mm/px · 误差 +0.032 mm</span></summary>
+              <div class="wp-settings-body">
+                <div class="wp-scale-field"><label class="qs-field"><span>像素当量</span><span class="qs-input num"><input value="0.0421"><span class="unit">mm/px</span></span></label><a class="wp-calibration-link" href="#">飞拍标定<i data-icon="arrow-up-right" data-size="13"></i></a></div>
+                <div class="wp-form-grid"><label class="qs-field"><span>参考尺寸</span><span class="qs-input num"><input value="10.00"><span class="unit">mm</span></span></label><label class="qs-field"><span>实测尺寸</span><span class="qs-input num"><input placeholder=""><span class="unit">mm</span></span></label></div>
+                <div class="wp-calibration-error"><div><span>已记录误差</span><strong>+0.032 mm</strong></div><span>目标 ±0.1 mm</span></div>
+                <label class="qs-check"><input type="checkbox">复用到其他适用拍照点</label>
+                <button class="qs-btn filled" disabled>记录验证</button>
+                <p class="wp-settings-hint">填写参考与实测尺寸后可记录。</p>
+              </div>
+            </details>
+            <details class="wp-settings-card">
+              <summary><span class="wp-settings-heading"><span class="wp-settings-title">检测参数</span><span class="qs-badge neutral"><span class="dot"></span>配方默认</span><i data-icon="chevron-down" data-size="16"></i></span>
+                <span class="wp-settings-summary">暗胶 · 2.0–5.0 mm</span></summary>
+            </details>
+            <details class="wp-settings-card">
+              <summary><span class="wp-settings-heading"><span class="wp-settings-title">判定限值</span><span class="qs-badge neutral"><span class="dot"></span>配方默认</span><i data-icon="chevron-down" data-size="16"></i></span>
+                <span class="wp-settings-summary">位置 · 胶宽 · 缺胶</span></summary>
+            </details>
+            <details class="wp-sample-details">
+              <summary>图像采集信息</summary>
+              <div class="body">
+                <div class="wp-kv"><span>拍照组</span><strong>S005</strong></div>
+                <div class="wp-kv"><span>相机</span><strong>cam1</strong></div>
+                <div class="wp-kv"><span>图像</span><strong class="mono">img_0f3a…</strong></div>
+                <div class="wp-kv"><span>曝光 / 增益</span><strong>1200 μs / 6 dB</strong></div>
+              </div>
+            </details>
+          </div>
+        </div>
+
+        <!-- v1：贯穿全宽、吸底的操作栏 -->
+        <div class="wp-teach-dock" role="group" aria-label="单帧示教操作">
+          <div class="wp-dock-state"><span class="qs-badge warn"><span class="dot"></span>试测通过 · 未保存</span><span class="muted">S005 · cam1 · 图 1</span></div>
+          <span class="wp-dock-hint">本组示教保存进候选配方，已发布 v3 不变；下一组 S006 尚未配置。</span>
+          <div class="wp-dock-actions">
+            <button class="qs-btn with-leading"><i data-icon="play" data-size="15"></i>重新试测</button>
+            <button class="qs-btn with-leading"><i data-icon="save" data-size="15"></i>保存本组示教</button>
+            <button class="qs-btn filled">保存并进入下一组 S006<i data-icon="arrow-right" data-size="15"></i></button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

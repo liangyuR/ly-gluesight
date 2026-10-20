@@ -1,3 +1,4 @@
+import { ChevronDown } from "lucide-react";
 import { Table, type TableColumn } from "qing-steel";
 
 export interface TrialPoint {
@@ -51,9 +52,14 @@ const columns: TableColumn<TrialRow>[] = [
 
 export function TrialResult({ points }: { points: TrialPoint[] }) {
   const measured = points.filter(point => point.status === "ok" && point.offset !== null && point.width !== null).length;
-  return <details open>
-    <summary>逐点试测结果 · 测得 {measured} / {points.length} · 未测 {points.length - measured}</summary>
-    <p className="muted hint">绿色横线为有效胶宽，红色横线为未通过的候选胶宽，仅供参考，不改变 NG 判定；无候选胶边时保留红点。</p>
-    <Table className="wp-trial-table" caption="逐点试测结果" columns={columns} rows={points.map((point, index) => ({ key: String(index), point }))} rowKey={row => row.key} />
+  const legend = <span className="wp-trial-legend muted"><i className="ok" />有效胶宽<i className="ng" />候选胶宽未通过<span className="wp-legend-note">（仅供参考，不影响判定）</span></span>;
+  // 明细默认收起，画布信息行已给出合格与量成比例；展开后中栏自己滚动
+  return <details className="wp-trial-details">
+    <summary><ChevronDown size={15} aria-hidden="true" /><span>逐点试测结果 · 测得 {measured} / {points.length} · 未测 {points.length - measured}</span>{legend}</summary>
+    <div className="wp-trial-body">
+      {legend}
+      <p className="muted hint">绿色横线为有效胶宽，红色横线为未通过的候选胶宽，仅供参考，不改变 NG 判定；无候选胶边时保留红点。</p>
+      <Table className="wp-trial-table" caption="逐点试测结果" columns={columns} rows={points.map((point, index) => ({ key: String(index), point }))} rowKey={row => row.key} />
+    </div>
   </details>;
 }

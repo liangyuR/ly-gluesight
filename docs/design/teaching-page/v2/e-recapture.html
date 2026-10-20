@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>v2-e 单帧示教 · S005 需重新采集</title>
+<link rel="stylesheet" href="../teaching-design.css">
+<script src="../shell.js"></script>
+</head>
+<body class="v2">
+<div class="app-shell">
+  <main class="main">
+    <header class="main-header"><h1>配方</h1><a class="site-badge" href="#">真机</a></header>
+    <div class="main-body">
+      <div class="wp-page">
+        <div class="wp-workbench-bar">
+          <label class="wp-recipe-picker">当前配方<span class="qs-input"><select><option>RCP-2024-018 · 后盖涂胶</option></select></span></label>
+          <span class="qs-badge ok"><span class="dot"></span>生产 v3</span>
+          <span class="qs-badge neutral"><span class="dot"></span>候选 编辑中 · 未发布</span>
+        </div>
+        <nav class="wp-steps" aria-label="配方配置步骤">
+          <a class="wp-step-home" href="#"><span class="wp-step-no"><i data-icon="layout-dashboard" data-size="13"></i></span>总览</a>
+          <a href="#"><span class="wp-step-no">1</span>整圈采集<span class="wp-step-status done"><i data-icon="check" data-size="12"></i>完成</span></a>
+          <a class="optional" href="#"><span class="wp-step-no">2</span>默认参数<span class="wp-step-status done"><i data-icon="check" data-size="12"></i>完成</span></a>
+          <a class="active" href="#"><span class="wp-step-no">3</span>单帧示教<span class="wp-step-status inProgress">4 / 12 组</span><span class="wp-step-progress" style="--v:33%"><i></i></span></a>
+          <a class="optional" href="#"><span class="wp-step-no">4</span>工件总览<span class="wp-step-status waiting">未开始</span></a>
+          <a href="#"><span class="wp-step-no">5</span>验证与发布<span class="wp-step-status waiting">未开始</span></a>
+        </nav>
+        <div class="wp-teach">
+          <section class="wp-group-panel" aria-label="拍照组"><h2>拍照组 <small>12</small></h2><nav class="wp-group-list" aria-label="拍照组选择">
+<button class="wp-group-item"><i class="dot ok"></i><strong>S001</strong><span>已示教</span></button>
+<button class="wp-group-item"><i class="dot ok"></i><strong>S002</strong><span>已示教</span></button>
+<button class="wp-group-item"><i class="dot ok"></i><strong>S003</strong><span>已示教</span></button>
+<button class="wp-group-item"><i class="dot ok"></i><strong>S004</strong><span>已示教</span></button>
+<button class="wp-group-item selected" aria-pressed="true"><i class="dot warn"></i><strong>S005</strong><span>需重采</span></button>
+<button class="wp-group-item"><i class="dot warn"></i><strong>S006</strong><span>未配置</span></button>
+<button class="wp-group-item"><i class="dot off"></i><strong>S007</strong><span>待选图</span></button>
+<button class="wp-group-item"><i class="dot off"></i><strong>S008</strong><span>待选图</span></button>
+<button class="wp-group-item"><i class="dot off"></i><strong>S009</strong><span>待选图</span></button>
+<button class="wp-group-item"><i class="dot off"></i><strong>S010</strong><span>待选图</span></button>
+<button class="wp-group-item"><i class="dot off"></i><strong>S011</strong><span>待选图</span></button>
+<button class="wp-group-item"><i class="dot off"></i><strong>S012</strong><span>待选图</span></button>
+          </nav></section>
+          <div class="wp-stack">
+            <section class="wp-picker" aria-label="本组检测图选择">
+              <h2>S005<small>检测图</small></h2>
+              <div class="wp-group-images" role="group" aria-label="本组图像"><button class="wp-view-option selected" aria-pressed="true"><span class="wp-view-thumbnail" data-bead="1"></span><span class="wp-view-caption"><strong>cam1 · 图 1</strong><span class="small">当前检测图</span></span></button><button class="wp-view-option"><span class="wp-view-thumbnail" data-bead="2"></span><span class="wp-view-caption"><strong>cam2 · 图 1</strong><span class="small">选用此图</span></span></button><button class="wp-view-option"><span class="wp-view-thumbnail" data-bead="3"></span><span class="wp-view-caption"><strong>cam3 · 图 1</strong><span class="small">选用此图</span></span></button></div>
+              <div class="wp-picker-side"><button class="qs-icon-btn sm" aria-label="图像采集信息" aria-expanded="false"><i data-icon="info" data-size="15"></i></button><a class="qs-btn sm tonal with-leading" href="#"><i data-icon="refresh-cw" data-size="14"></i>重新采集</a></div>
+            </section><div class="qs-alert warn" role="alert"><i data-icon="alert-triangle" data-size="16"></i><span><strong>需重新采集</strong>cam1 的触发接线或视角数在采集后被修改，当前检测图与设备不一致；已保存的中线保留，重采后需重新试测。</span><a class="qs-btn sm tonal" href="#">整圈重新采集</a></div><section class="wp-viewport" aria-label="中线示教"><div class="wp-image-tools">
+                <div class="wp-canvas-tools" role="group" aria-label="示教工具">
+                  <div class="qs-seg" aria-label="画布模式"><button aria-pressed="true">编辑点</button><button>沿胶路刷选</button><button>矩形框选</button></div>
+                  <button class="qs-btn sm with-leading " disabled><i data-icon="wand-sparkles" data-size="14"></i>自动提取中线</button>
+                  <button class="qs-btn sm " disabled>笔划直接生成中线</button>
+                  <span class="qs-divider v"></span>
+                  <button class="qs-icon-btn" title="删除末点" aria-label="删除末点"><i data-icon="delete" data-size="15"></i></button>
+                  <button class="qs-icon-btn" title="删除选中点" aria-label="删除选中点"><i data-icon="trash-2" data-size="15"></i></button>
+                  <button class="qs-icon-btn" title="清空中线" aria-label="清空中线"><i data-icon="eraser" data-size="15"></i></button>
+                </div>
+              </div><div class="wp-canvas-params">
+                
+                <span class="wp-inline-num">中线点间距<span class="qs-input sm num"><input value="20"><span class="unit">px</span></span></span>
+                <button class="qs-btn sm">应用到当前中线</button>
+                
+              </div><div class="wp-gray-image dim" data-bead="1" data-overlay="draft" data-points="14"><div class="wp-canvas-cover"><strong><i data-icon="alert-triangle" data-size="14"></i>图像或设备已变化</strong><span>中线可查看，不能编辑或试测；请整圈重新采集后继续</span></div></div>
+              <div class="wp-image-footer"><span><strong>S005 · cam1 · 图 1</strong> · 2448 × 2048 px · 只读 · Ctrl＋滚轮缩放 · 中键拖动</span>
+                <div class="wp-zoom"><button class="qs-icon-btn sm" aria-label="缩小"><i data-icon="minus" data-size="15"></i></button><span class="mono">100%</span><button class="qs-icon-btn sm" aria-label="放大"><i data-icon="plus" data-size="15"></i></button><button class="qs-icon-btn sm" aria-label="适应窗口"><i data-icon="rotate-ccw" data-size="15"></i></button>
+                <button class="qs-chip selected">中线叠加</button><button class="qs-chip">搜索带</button><button class="qs-chip selected">编辑点</button></div>
+              </div></section><div class="wp-trial-bar"><span class="qs-badge warn"><span class="dot"></span>试测已过期</span><span class="muted">中线 15 点 · 182.4 mm · 上次合格 2026/10/18</span></div>
+          </div>
+          <div class="wp-stack wp-teach-settings">
+            <details class="wp-settings-card">
+              <summary><span class="wp-settings-heading"><span class="wp-settings-title">标定</span><span class="qs-badge ok"><span class="dot"></span>已验证</span><i data-icon="chevron-down" data-size="16"></i></span><span class="wp-settings-summary">0.0421 mm/px · 误差 +0.032 mm</span></summary>
+              
+            </details>
+            <details class="wp-settings-card">
+              <summary><span class="wp-settings-heading"><span class="wp-settings-title">检测参数</span><span class="qs-badge neutral"><span class="dot"></span>配方默认</span><i data-icon="chevron-down" data-size="16"></i></span><span class="wp-settings-summary">暗胶 · 2.0–5.0 mm · 搜索 ±3.0 mm</span></summary>
+            </details>
+            <details class="wp-settings-card">
+              <summary><span class="wp-settings-heading"><span class="wp-settings-title">判定限值</span><span class="qs-badge neutral"><span class="dot"></span>配方默认</span><i data-icon="chevron-down" data-size="16"></i></span><span class="wp-settings-summary">位置 · 胶宽 · 缺胶</span></summary>
+            </details>
+          </div>
+        </div>
+        <div class="wp-teach-dock" role="group" aria-label="单帧示教操作">
+          <button class="qs-btn  with-leading" disabled><i data-icon="play" data-size="15"></i>运行试测</button>
+          <div class="wp-dock-mid"><span class="qs-badge warn"><span class="dot"></span>需重新采集</span><span class="wp-dock-hint warn">图像或设备已变化，请重新采集后再试测</span></div>
+          <div class="wp-dock-actions">
+            <button class="qs-btn  with-leading" disabled><i data-icon="save" data-size="15"></i>保存本组示教</button>
+            <button class="qs-btn" disabled>保存并进入下一组<i data-icon="arrow-right" data-size="15"></i></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

@@ -178,11 +178,11 @@ it("手工落点并自动保存 → 不插入瞬时警告、保留缩放与中�
     fireEvent.pointerUp(image);
   }
   const transientWarnings = ["示教参数有未保存的修改", "本组中线无效"].filter(title => screen.queryByText(title));
-  const editButton = screen.getByRole("button", { name: "编辑点" });
+  const editButton = screen.getByRole("button", { name: "点柄" });
   const point = screen.getByLabelText("中线点 2");
   fireEvent.pointerDown(point, { clientX: 20, clientY: 20 });
   await screen.findByText("保存中", {}, { timeout: 2500 });
-  expect(screen.getByRole("button", { name: "编辑点" })).toBe(editButton);
+  expect(screen.getByRole("button", { name: "点柄" })).toBe(editButton);
   expect(editButton).toBeDisabled();
   expect(screen.getByLabelText("中线点 2")).toBe(point);
   fireEvent.pointerMove(image, { clientX: 30, clientY: 30 });
@@ -198,7 +198,7 @@ it("手工落点并自动保存 → 不插入瞬时警告、保留缩放与中�
   expect(image.querySelector("g")).toHaveAttribute("transform", transform);
   expect(screen.getByLabelText("中线点 2")).toHaveAttribute("cx", "20");
   expect(screen.getByRole("button", { name: "运行试测" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "运行试测" })).toHaveAttribute("title", expect.stringContaining("像素当量"));
+  expect(screen.getByRole("button", { name: "运行试测" })).toHaveAccessibleDescription(expect.stringContaining("像素当量"));
   expect(transientWarnings).toEqual([]);
 });
 
@@ -244,7 +244,8 @@ it("每组三相机图仅示教选中图 → 保存后进入下一组并沿用�
   }
 
   const user = renderWorkspace("/recipe/teach");
-  expect(await screen.findByText(/已完成 0／2 组/)).toBeVisible();
+  const steps = within(await screen.findByRole("navigation", { name: "配方配置步骤" }));
+  expect(await steps.findByText("0 / 2 组")).toBeVisible();
 
   for (const group of [0, 1]) {
     const k = group * 3;
@@ -268,7 +269,7 @@ it("每组三相机图仅示教选中图 → 保存后进入下一组并沿用�
     await waitFor(() => expect(actions.getByRole("button", { name: saveLabel })).toBeEnabled());
     await user.click(actions.getByRole("button", { name: saveLabel }));
     expect(workspaceApi.saveTeach).toHaveBeenNthCalledWith(group + 1, "A", 8 + 2 * group, k, imageId);
-    await screen.findByText(new RegExp(`已完成 ${group + 1}／2 组`));
+    await steps.findByText(`${group + 1} / 2 组`);
   }
 
   expect(screen.getByRole("button", { name: "保存本组示教" })).toBeDisabled();
@@ -320,7 +321,7 @@ it("刷选提取后运行一次算法 → 传递原图引导与点距，重采�
   const user = renderWorkspace("/recipe/teach");
   const image = await screen.findByRole("img", { name: "P1 · CAM-1 · 图 1" });
   await user.click(screen.getByRole("button", { name: "自动提取中线" }));
-  expect(screen.getByRole("button", { name: "结束选区 / 手工修正" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "沿胶路刷选" })).toHaveAttribute("aria-pressed", "true");
   expect(workspaceApi.extractCenterline).not.toHaveBeenCalled();
   fireEvent.pointerDown(image, { clientX: 10.2, clientY: 12.4 });
   fireEvent.pointerMove(image, { clientX: 50.8, clientY: 42.7 });
@@ -333,6 +334,7 @@ it("刷选提取后运行一次算法 → 传递原图引导与点距，重采�
   expect(workspaceApi.saveDraft).toHaveBeenCalledWith("A", 7, 0, { path: [], mmPerPx: .2 });
   expect(workspaceApi.extractCenterline).toHaveBeenCalledWith("A", 8, 0, "A-image-0-cam1", [0, 0, 100, 60], { points: [[10.2, 12.4], [50.8, 42.7]], radiusPx: 60 }, 10);
   await user.click(screen.getByRole("button", { name: "运行试测" }));
+  await user.click(await screen.findByText("逐点试测结果 · 测得 1 / 2 · 未测 1"));
   const table = await screen.findByRole("table", { name: "逐点试测结果" });
   expect(workspaceApi.saveParams).toHaveBeenCalledWith("A", 8, 0, { path: extracted, mmPerPx: .2 });
   expect(workspaceApi.trial).toHaveBeenCalledWith("A", 9, 0, "A-image-0-cam1");
@@ -373,7 +375,7 @@ it("自动提取失败后按笔划生成 → 定位原因并保留原线，人�
   const image = await screen.findByRole("img", { name: "P1 · CAM-1 · 图 1" });
   const originalPoints = candidate.workspace.doc.shots[0].path.map(point => point.join(",")).join(" ");
   expect(screen.getByRole("button", { name: "保存本组示教" })).toBeEnabled();
-  await user.click(screen.getByRole("button", { name: "刷选胶路区域" }));
+  await user.click(screen.getByRole("button", { name: "沿胶路刷选" }));
   fireEvent.change(screen.getByRole("spinbutton", { name: "中线点间距" }), { target: { value: "80" } });
   fireEvent.pointerDown(image, { clientX: 10, clientY: 20 });
   fireEvent.pointerMove(image, { clientX: 40, clientY: 20 });
@@ -418,14 +420,14 @@ async function brushOnTaughtGroup() {
   mockSite(groupedCandidate());
   const user = renderWorkspace("/recipe/teach");
   const image = await screen.findByRole("img", { name: "P1 · CAM-1 · 图 1" });
-  await user.click(screen.getByRole("button", { name: "刷选胶路区域" }));
+  await user.click(screen.getByRole("button", { name: "沿胶路刷选" }));
   fireEvent.pointerDown(image, { clientX: 10, clientY: 20 });
   fireEvent.pointerMove(image, { clientX: 40, clientY: 20 });
   fireEvent.pointerUp(image);
   const extract = screen.getByRole("button", { name: "自动提取中线" }), stroke = screen.getByRole("button", { name: "笔划直接生成中线" });
   const failOnce = async () => { await user.click(extract); await screen.findByLabelText("中线提取失败位置"); };
   const primaries = () => ["自动提取中线", "笔划直接生成中线", "运行试测", "保存本组示教", "保存并进入下一组"]
-    .map(name => screen.getByRole("button", { name })).filter(button => !button.classList.contains("tonal"));
+    .map(name => screen.getByRole("button", { name })).filter(button => !button.classList.contains("tonal") && !button.classList.contains("text"));
   return { stroke, failOnce, primaries };
 }
 
@@ -442,6 +444,15 @@ it("已有中线的组刷选提取连续两次找不到连续边缘 → 先提�
   await failOnce();
   expect(screen.getByText(/请点「笔划直接生成中线」/)).toBeVisible();
   expect(primaries()).toEqual([stroke]);
+});
+
+it("刷选后切回编辑点再自动提取 → 仍用上次刷选的选区与笔刷，不要求重新刷选", async () => {
+  vi.mocked(workspaceApi.extractCenterline).mockResolvedValue({ path: [[12, 20], [38, 20]], message: "" });
+  await brushOnTaughtGroup();
+  await userEvent.click(screen.getByRole("button", { name: "编辑点" }));
+  await userEvent.click(screen.getByRole("button", { name: "自动提取中线" }));
+  await waitFor(() => expect(workspaceApi.extractCenterline).toHaveBeenCalledWith("A", 7, 0, "A-image-0-cam1", [0, 0, 100, 60], { points: [[10, 20], [40, 20]], radiusPx: 60 }, 20));
+  expect(screen.getByRole("button", { name: "编辑点" })).toHaveAttribute("aria-pressed", "true");
 });
 
 it("两次找不到连续边缘之间夹一次多条候选失败 → 不算连续，第二次仍只提示加大笔刷", async () => {
