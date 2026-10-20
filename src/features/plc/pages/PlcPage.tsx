@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FileJson, Pencil, PenLine, Plug, PlugZap, Plus, Save, Trash2, Undo2 } from "lucide-react";
-import { Alert, Button, Card, Checkbox, Chip, EmptyState, Grid, Heading, IconButton, NumberField, Select, Stack, StatusBadge, Table, Text, type TableColumn } from "qing-steel";
+import { Alert, Button, Card, Checkbox, Chip, EmptyState, Heading, IconButton, NumberField, Select, Stack, StatusBadge, Table, Text, type TableColumn } from "qing-steel";
 import ConnectionForm, { connectionError } from "../components/ConnectionForm";
 import PlcStatusBadge from "../components/PlcStatusBadge";
 import PointEditor from "../components/PointEditor";
@@ -214,13 +214,15 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
             {connected ? "断开" : reconnectSaved ? "使用已保存配置重连" : status?.state === "error" || status?.state === "connecting" ? "重连" : "连接"}
           </Button>
         </Stack>}>
-        <Stack direction="column" align="stretch" gap={14}>
+        <Stack direction="column" align="stretch" gap={14} wrap={false}>
         {reconnectSaved && <Text as="p" variant="label" muted>重连使用后端已保存的配置，当前草稿不会保存或应用。</Text>}
         <fieldset disabled={!!blockedReason} style={fieldsetStyle}>
-        <Stack direction="column" align="stretch" gap={14}>
+        <Stack direction="column" align="stretch" gap={14} wrap={false}>
         <ConnectionForm key={cpuPreset.revision} initialCpuPreset={cpuPreset.key} value={draft.connection} onChange={(connection) => setDraft({ ...draft, connection })} />
 
-        <Grid minWidth={220} gap={14}>
+        <section className="plc-config-card" aria-labelledby="plc-monitor-title">
+        <h4 id="plc-monitor-title">心跳与日志</h4>
+        <div className="plc-config-fields">
           <Select label="心跳点位" value={draft.heartbeat.pointId ?? ""}
             onValueChange={(v) => setDraft({ ...draft, heartbeat: { ...draft.heartbeat, pointId: v || null } })}
             options={[{ value: "", label: "不启用" }, ...writablePoints.map((p) => ({ value: p.id, label: `${p.name}（${p.address}）` }))]} />
@@ -230,7 +232,8 @@ export default function PlcPage({ tagPresets = [], readOnly = false }: PlcPagePr
           <NumberField label="日志保留天数（0 为永久）" min={0} step={1}
             value={Number.isFinite(draft.logRetentionDays) ? draft.logRetentionDays : ""}
             onValueChange={(v) => setDraft({ ...draft, logRetentionDays: v === "" ? NaN : v })} />
-        </Grid>
+        </div>
+        </section>
 
         <div className="conn-footer">
           <Checkbox label="启动时自动连接" checked={draft.autoConnect} onCheckedChange={(checked) => setDraft({ ...draft, autoConnect: checked })} />

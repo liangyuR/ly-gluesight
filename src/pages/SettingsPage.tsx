@@ -117,7 +117,7 @@ function CycleSettingsPanel({ savePart }: { savePart: SavePart }) {
   return (
     <Card role="region" aria-label="检测节拍" title={<Heading level={3}>检测节拍</Heading>}
       actions={<Button variant="filled" disabled={!settings || saving || !!invalid} aria-busy={saving} onClick={save}>{saving ? "保存中…" : "保存"}</Button>}>
-      <Stack direction="column" align="stretch" gap={12}>
+      <Stack direction="column" align="stretch" gap={12} wrap={false}>
       {loading && !settings && <p role="status">正在读取检测节拍设置…</p>}
       {error && <Alert tone="ng" action={<Button size="sm" onClick={reload}>重试</Button>}>{error}</Alert>}
       {settings && <>
@@ -208,7 +208,7 @@ function MeasurePanel({ savePart }: { savePart: SavePart }) {
   return (
     <Card role="region" aria-label="lyFlow 与帧录制" title={<Heading level={3}>lyFlow 与帧录制</Heading>}
       actions={<Button variant="filled" disabled={!settings || saving || !!invalid} aria-busy={saving} onClick={save}>{saving ? "保存中…" : "保存"}</Button>}>
-      <Stack direction="column" align="stretch" gap={12}>
+      <Stack direction="column" align="stretch" gap={12} wrap={false}>
       {loading && !settings && <p role="status">正在读取 lyFlow 与帧录制设置…</p>}
       {error && <Alert tone="ng" action={<Button size="sm" onClick={reload}>重试</Button>}>{error}</Alert>}
       {settings && <>
@@ -286,7 +286,7 @@ function StoragePanel() {
     actions={<Button disabled={!data || loading || !!error} onClick={() => {
       setOpenError(""); void storageApi.openDirectory().catch(e => setOpenError(errorText(e)));
     }}>打开资料目录</Button>}>
-    <Stack direction="column" align="stretch" gap={12}>
+    <Stack direction="column" align="stretch" gap={12} wrap={false}>
     {loading && <p role="status">正在读取资料目录…</p>}
     {error && <Alert tone="ng" action={<Button size="sm" onClick={reload}>重试</Button>}>资料目录读取失败：{error}</Alert>}
     {!loading && !error && data && <>
@@ -312,12 +312,12 @@ export default function SettingsPage() {
   };
 
   return (
-    <Stack direction="column" align="stretch" gap={16}>
+    <Stack direction="column" align="stretch" gap={16} wrap={false}>
       <StoragePanel />
       <CycleSettingsPanel savePart={savePart} />
       <MeasurePanel savePart={savePart} />
       <Card role="region" aria-label="关于" title={<Heading level={3}>关于</Heading>}>
-        <Stack direction="column" align="stretch" gap={12}>
+        <Stack direction="column" align="stretch" gap={12} wrap={false}>
         {loading && <p role="status">正在读取应用信息…</p>}
         {error && <Alert tone="ng" action={<Button size="sm" onClick={reload}>重试应用信息</Button>}>{error}</Alert>}
         <dl className="kv">
