@@ -62,11 +62,11 @@ describe("验证与发布页面", () => {
     expect(screen.queryByRole("button", { name: "放弃待生效版本" })).not.toBeInTheDocument();
   });
 
-  it("拍照计划变化 → 发布确认里提供 PLC 配方握手计划入口", async () => {
+  it("拍照计划变化 → 发布确认里提供 PLC 对接参数入口", async () => {
     ws.data!.planChanged = true;
     show();
     await userEvent.click(screen.getByRole("button", { name: "发布生产配方" }));
-    expect(screen.getByRole("link", { name: "查看 PLC 配方握手计划" })).toHaveAttribute("href", "/plc?panel=s7-plan");
+    expect(screen.getByRole("link", { name: "查看 PLC 对接参数" })).toHaveAttribute("href", "/plc?panel=s7-plan");
   });
 
   it.each([

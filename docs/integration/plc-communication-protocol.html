@@ -392,7 +392,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <p>长度字节正常但内容不合规的 <code>partSn</code>（实际长度为 0、含 0x20–0x7E 以外字符、去掉首尾空白后为空）在 PC 读取请求时判定，与其他请求 payload 不合法完全同样处理，见第 5 节。</p>
 </section>
 <section class="protocol-section" aria-labelledby="section-4"><h2 id="section-4">4 拍照计划与三目设备</h2>
-<p>PC 从已保存生产配方导出计划，PLC 工程师将产品代码、计划版本、拍照顺序、Pose 与实际触发输出建立对应表。当前导出 JSON 不包含 <code>productCode</code>、运动坐标或物理输出地址；产品代码从配方另外核对，运动路径由机器人/PLC 配置。</p>
+<p>PC 从已发布生产配方生成计划，PLC 通讯页的“PLC 对接参数”卡列出产品代码、计划版本、触发次数以及拍照顺序与 Pose；PLC 工程师据此与实际触发输出建立对应表。卡片不包含运动坐标或物理输出地址，运动路径由机器人/PLC 配置。</p>
 <p>必须满足：</p>
 <ul>
 <li><code>protocolVersion=pcProtocolVersion=4</code>。</li>

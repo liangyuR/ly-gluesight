@@ -1,18 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Accordion, Alert, Button, Card, Heading, Select, Stack, Table, Text, type TableColumn } from "qing-steel";
+import { Alert, Button, Card, Heading, Select, Stack, Table, Text, type TableColumn } from "qing-steel";
 import { plcApi } from "../api";
 import type { PlcRecipeChoice, PlcRecipePlan } from "../types";
 
-type Shot = PlcRecipePlan["shots"][number];
+type Param = { tag: string; value: number; note: string };
+const paramColumns: TableColumn<Param>[] = [
+  { key: "tag", header: "PLC 标签", render: param => <span className="mono">{param.tag}</span> },
+  { key: "value", header: "值", render: param => <span className="mono">{param.value}</span> },
+  { key: "note", header: "说明", render: param => param.note },
+];
+type Shot = PlcRecipePlan["shots"][number] & { order: number };
 const shotColumns: TableColumn<Shot>[] = [
+  { key: "order", header: "顺序", render: shot => shot.order },
   { key: "shotId", header: "拍照点", render: shot => <span className="mono">{shot.shotId}</span> },
   { key: "poseId", header: "Pose", render: shot => <span className="mono">{shot.poseId}</span> },
-  { key: "cameraIds", header: "相机设备 ID", render: shot => <span className="mono">{shot.cameraIds.join("、")}</span> },
-];
-const deviceColumns: TableColumn<PlcRecipePlan>[] = [
-  { key: "deviceIds", header: "相机设备 ID", render: plan => <span className="mono">{plan.deviceIds.join("、")}</span> },
-  { key: "deviceShots", header: "每台计划触发数", render: plan => plan.deviceShots },
 ];
 
 function scrollToPlan(panel: HTMLDivElement | null, behavior: ScrollBehavior = "smooth") {
@@ -30,11 +32,8 @@ export default function S7RecipePlanPanel({ actionsTarget }: { actionsTarget?: H
   const [plan, setPlan] = useState<PlcRecipePlan | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [copying, setCopying] = useState(false);
-  const [copied, setCopied] = useState(false);
   const mounted = useRef(true);
   const serial = useRef(0);
-  const copyPending = useRef(false);
   const scrollPending = useRef(false);
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; serial.current++; }; }, []);
@@ -51,7 +50,7 @@ export default function S7RecipePlanPanel({ actionsTarget }: { actionsTarget?: H
 
   const readPlan = async (recipeId: string) => {
     const request = ++serial.current;
-    setSelected(recipeId); setPlan(null); setError(""); setCopied(false);
+    setSelected(recipeId); setPlan(null); setError("");
     setLoading(!!recipeId);
     if (!recipeId) return;
     try {
@@ -66,7 +65,7 @@ export default function S7RecipePlanPanel({ actionsTarget }: { actionsTarget?: H
     if (loading) return;
     scrollPending.current = true;
     const request = ++serial.current;
-    setLoading(true); setError(""); setPlan(null); setCopied(false);
+    setLoading(true); setError(""); setPlan(null);
     try {
       const [choices, state] = await Promise.all([plcApi.recipeChoices(), plcApi.getOperationState().catch(() => null)]);
       if (!mounted.current || serial.current !== request) return;
@@ -80,39 +79,28 @@ export default function S7RecipePlanPanel({ actionsTarget }: { actionsTarget?: H
     }
   };
 
-  const copy = async () => {
-    if (!plan || copyPending.current) return;
-    const request = serial.current;
-    copyPending.current = true; setCopying(true); setError("");
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(plan, null, 2));
-      if (mounted.current && request === serial.current) setCopied(true);
-    } catch (reason) {
-      if (mounted.current && request === serial.current) setError(`复制失败：${String(reason)}`);
-    } finally { copyPending.current = false; if (mounted.current) setCopying(false); }
-  };
-
-  const actions = <>
-      {plan && <Button disabled={copying} onClick={() => void copy()}>{copied ? "已复制 JSON" : "复制计划 JSON"}</Button>}
-      <Button disabled={loading} onClick={() => void load()}>{recipes ? "刷新配方计划" : "读取配方计划"}</Button>
-    </>;
+  const recipe = recipes?.find(choice => choice.id === plan?.recipeId);
+  const params: Param[] = plan && recipe ? [
+    { tag: "productCode", value: recipe.productCode, note: "产品代码，与配方不一致时返回 95" },
+    { tag: "planVersion", value: plan.planVersion, note: "计划版本，拍照顺序或 Pose 变化后会换新号；不一致时返回 100" },
+    { tag: "shotCount", value: plan.shotCount, note: "触发次数，deviceShots 填同一值；不一致时返回 94" },
+  ] : [];
+  const actions = <Button disabled={loading} onClick={() => void load()}>{recipes ? "刷新对接参数" : "读取对接参数"}</Button>;
 
   return <div id="s7-plan" ref={root}>
     {actionsTarget && createPortal(actions, actionsTarget)}
-    <Card title={<Heading level={3}>配方握手计划 · 只读</Heading>} actions={actionsTarget ? undefined : actions}>
+    <Card title={<Heading level={3}>PLC 对接参数 · 只读</Heading>} actions={actionsTarget ? undefined : actions}>
       <Stack direction="column" align="stretch" gap={12}>
-        <Text as="p" variant="label" muted>读取已发布配方，供 PLC 程序核对协议版本、计划版本和设备触发数。读取和复制不会更改 PLC；候选试运行的临时计划不在此处显示；离线发布版本不代表真机可用。</Text>
+        <Text as="p" variant="label" muted>选择已发布配方，把下列参数配到 PLC 程序的开始请求里；PC 接件时逐项核对，不一致则拒绝布防。读取不会更改 PLC；候选试运行的临时计划不在此处显示；离线发布版本不代表真机可用。</Text>
         {recipes && <Select label="已发布配方" value={selected} onValueChange={value => void readPlan(value)}
           options={[{ value: "", label: "请选择已发布配方" }, ...recipes.map(recipe => ({ value: recipe.id, label: `${recipe.name} · ${recipe.id} · v${recipe.version}` }))]} />}
         {recipes?.length === 0 && <Text as="p" variant="label" muted>暂无可读取的已发布配方</Text>}
-        {loading && <p role="status">正在读取配方计划…</p>}
+        {loading && <p role="status">正在读取对接参数…</p>}
         {error && <Alert tone="ng">{error}</Alert>}
         {plan && <>
-          <Text as="p" variant="label">协议 {plan.protocolVersion} · 计划版本 {plan.planVersion} · 共 {plan.shotCount} 个拍照点</Text>
-          <Table<PlcRecipePlan> caption="触发线相机" rows={[plan]} columns={deviceColumns} rowKey={() => "devices"} />
-          <Table<Shot> caption="拍照点计划" rows={plan.shots} columns={shotColumns} rowKey={shot => shot.shotId} />
-          <Text as="p" variant="label" muted>PLC 每次触发同时触发上表全部相机，每台各出一帧；同一 Pose 的各相机拍照点算一次触发，拼接相机的三个视角也不分别计数，计划触发数等于触发次数。</Text>
-          <Accordion items={[{ value: "json", title: "查看完整计划 JSON", content: <pre className="mono" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{JSON.stringify(plan, null, 2)}</pre> }]} />
+          <Table<Param> caption="开始请求参数" rows={params} columns={paramColumns} rowKey={param => param.tag} />
+          <Table<Shot> caption="拍照顺序与 Pose" rows={plan.shots.map((shot, index) => ({ ...shot, order: index + 1 }))} columns={shotColumns} rowKey={shot => shot.shotId} />
+          <Text as="p" variant="label" muted>机器人按上表顺序经过各拍照点，每个拍照点发一次触发；同一 Pose 可被多个拍照点引用，三目设备的三个视角不分别计数。</Text>
         </>}
       </Stack>
     </Card>

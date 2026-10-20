@@ -154,7 +154,7 @@ export interface PlcHandshakeState {
   resetBlockedReason?: string | null;
 }
 
-export interface PlcRecipeChoice { id: string; name: string; version: number }
+export interface PlcRecipeChoice { id: string; name: string; version: number; productCode: number }
 
 export interface PlcRecipePlan {
   protocolVersion: number;
