@@ -33,6 +33,7 @@ import {
   type Verdict,
 } from "../features/cycle";
 import { ST } from "../features/cycle/types";
+import { partFrames } from "../features/cycle/pose";
 import { usePlcOperationState } from "../features/plc/api";
 
 function verdictTone(v: Verdict) {
@@ -231,7 +232,7 @@ export default function InspectPage() {
               <SegmentedControl size="sm" label="检测视图切换" value={view} onValueChange={next => setView(next as typeof view)} options={viewOptions} />
             </div>
             {view === "image" ? <RuntimeFrame compact onDiagnostics={() => setDiagnostics("capture")} part={ownLayout ? part : null} layout={layout} k={selected} measured={shown} vis={vis}/> :
-              layout ? view === "frame" ? <ShotTiles layout={layout} vis={vis} current={cur} selected={selected} onSelect={selectFrame} selectedPoint={selectedPoint} /> :
+              layout ? view === "frame" ? <ShotTiles layout={layout} vis={vis} frames={partFrames(layout, part)} current={cur} selected={selected} onSelect={selectFrame} selectedPoint={selectedPoint} /> :
                 <WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={selectFrame} vis={vis}/> : <EmptyState title="等待配方" description="PLC 下发型号或手动选择配方后显示。" />}
           </Card>
 

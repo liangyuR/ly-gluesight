@@ -4,6 +4,7 @@ import { Button, Chip, Table, type TableColumn } from "qing-steel";
 import { verdictLabel } from "../history/meta";
 import { matchesPart } from "../cycle/identity";
 import { referenceBadge } from "../cycle/vis";
+import { framePose, partFrames, poseSummary, viewSpec } from "../cycle/pose";
 import type { Measured, PartView, PointVis, Recipe } from "../cycle/types";
 import { workspaceApi } from "./api";
 import { GrayViewer, KV, Panel, shotOverlay } from "./components";
@@ -65,7 +66,8 @@ export default function RuntimeFrame({part,layout,k,measured,vis,compact=false,o
   const arrived=!!frame&&frame.status!=="waiting"&&frame.status!=="missing";
   const partScope=JSON.stringify([part?.cycleId,part?.bundleId,part?.recipeRevision,layout?.id,layout?.revisionId]);
   const scope=JSON.stringify([partScope,k,frame?.shotId,frame?.camera,frame?.view,frame?.session,frame?.ordinal,arrived]);
-  const matched=!!part&&!!layout&&part.recipeId===layout.id&&part.recipeRevision===layout.revisionId;
+  const frames=partFrames(layout,part);
+  const matched=!!part&&!!frames;
   const live=useLiveImage(matched?{scope,part:partScope,cycleId:part.cycleId,revisionId:part.recipeRevision,k}:null);
   const image=live.current?.image?live.current:live.held;
   const m=measured.find(m=>m.k===k&&matchesPart(m,part));
@@ -77,9 +79,14 @@ export default function RuntimeFrame({part,layout,k,measured,vis,compact=false,o
     return compact?[f?.shotId??s?.id,s?.poseId&&s.poseId!==s.id?"Pose "+s.poseId:null,f?.camera??s?.camera,"视角 "+(f?.view??s?.view??"—"),"k"+(i+1)].filter(Boolean).join(" · "):"SN "+(part?.sn||"—")+" · k"+(i+1);
   };
   const shownK=image?.k??k;
+  // 位姿只和测出它的快照框配对：件与布局的修订不同时不按位姿叠图
+  const shownFrame=frames?.[shownK]??null;
+  const shownShot=layout?.shots[shownK];
+  const located=!!shownShot&&!!viewSpec(shownShot,shownShot.view)?.fixture;
+  const pose=located?framePose(shownFrame,shownShot.view):null;
   const contents=<>
-    <GrayViewer image={image?.image??null} loading={live.loading} error={live.current?.error??""} label={labelOf(shownK)} caption={compact?undefined:<>SN <span className="sn">{part?.sn||"—"}</span> · k{shownK+1}</>} overlay={shotOverlay(layout,shownK,vis)} emptyTitle={compact?"等待本拍照点图像":undefined} emptyHint={compact?"":"本拍照点采集完成后显示原图；可在下方切换拍照点查看。"}/>
-    <div className="wp-runtime-strip"><KV label="帧状态"><Chip className={"frame-state "+frameState[1]}>{frameState[0]}</Chip>{reference&&<Chip className="frame-state fault" title="该视图没有位置基准：有胶站不判位置，胶宽与断胶照判">{reference}</Chip>}</KV><KV label="得分">{m?.score.toFixed(3)??"—"}</KV><KV label="测量点 / 缺胶">{frame ? frame.points+" / "+frame.gapPoints : "—"}</KV><KV label="处理耗时">{m?m.ms+" ms":"—"}</KV></div>
+    <GrayViewer image={image?.image??null} loading={live.loading} error={live.current?.error??""} label={labelOf(shownK)} caption={compact?undefined:<>SN <span className="sn">{part?.sn||"—"}</span> · k{shownK+1}</>} overlay={shotOverlay(layout,shownK,vis,shownFrame)} emptyTitle={compact?"等待本拍照点图像":undefined} emptyHint={compact?"":"本拍照点采集完成后显示原图；可在下方切换拍照点查看。"}/>
+    <div className="wp-runtime-strip"><KV label="帧状态"><Chip className={"frame-state "+frameState[1]}>{frameState[0]}</Chip>{reference&&<Chip className="frame-state fault" title="该视图没有位置基准：有胶站不判位置，胶宽与断胶照判">{reference}</Chip>}</KV>{located&&<KV label="定位"><span className={pose&&!pose.accepted?"c-err":undefined} title="特征定位：模板中心相对示教位置的平移、转角与两端排除长度">{poseSummary(pose)}</span></KV>}<KV label="得分">{m?.score.toFixed(3)??"—"}</KV><KV label="测量点 / 缺胶">{frame ? frame.points+" / "+frame.gapPoints : "—"}</KV><KV label="处理耗时">{m?m.ms+" ms":"—"}</KV></div>
     {!compact&&<div className="wp-runtime-strip"><KV label="本件设备内顺序">{frame?.ordinal??"—"}</KV><KV label="设备帧计数">{frame?.frameCounter??"—"}</KV><KV label="设备触发计数">{frame?.triggerCounter??"—"}</KV></div>}
     {compact&&attention>0&&onDiagnostics&&<Button size="sm" className="runtime-view-attention" onClick={onDiagnostics}>检测图异常 / 注意 {attention}</Button>}
     {(!compact||!onDiagnostics)&&!!frame?.viewResults?.length && <div><Table caption="检测图独立结果" columns={viewColumns} rows={frame.viewResults} rowKey={result=>String(result.view)} /><p className="muted hint">本点任意选中图 OK 则为 OK；其余图的 NG 和检测异常保留在明细中。采集异常独立处理。</p></div>}
