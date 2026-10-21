@@ -219,10 +219,15 @@ export default function InspectPage() {
         原图录制失败：连续 {snapshot.recordingAlarm.consecutive} 件原图未完整保存（最近 <span className="mono">{snapshot.recordingAlarm.cycleId}</span>：{snapshot.recordingAlarm.reason}）。检测与判定照常；请检查资料盘空间与录制目录写权限，下一件完整保存后自动消除。
       </Alert>}
       {!!snapshot?.locateAlarms?.length && <Alert tone="warn" title="特征定位连续失败" aria-label="连续定位失败告警">
-        <ul className="locate-alarms">{snapshot.locateAlarms.map(alarm => <li key={`${alarm.recipeId}:${alarm.shotId}:${alarm.view}`}>
-          拍照点 {alarm.shotId} · 图 {alarm.view} · 连续 {alarm.consecutive} 件没有位置基准 · 最近 <span className="mono">{alarm.cycleId}</span>：{alarm.reason}
-        </li>)}</ul>
-        这些件有胶站不判位置。请检查上料、定位特征是否被遮挡或污染、照明与相机；下一件定位成功后自动消除。
+        {/* 告警按配方计数，换配方后旧配方的告警还在；拍照点编号在配方间会重名，所以每条写明配方与修订，不在生产的配方排后并标出 */}
+        <ul className="locate-alarms">{[...snapshot.locateAlarms].sort((a, b) => Number(a.recipeId !== snapshot.activeRecipeId) - Number(b.recipeId !== snapshot.activeRecipeId)).map(alarm => {
+          const idle = alarm.recipeId !== snapshot.activeRecipeId;
+          return <li key={`${alarm.recipeId}:${alarm.shotId}:${alarm.view}`} className={idle ? "idle" : undefined}>
+            配方 {alarm.recipeId}（修订 <span className="mono">{alarm.revisionId}</span>）{idle && <b>（当前未在生产）</b>} · 拍照点 {alarm.shotId} · 图 {alarm.view} · 连续 {alarm.consecutive} 件没有位置基准 · 最近 <span className="mono">{alarm.cycleId}</span>：{alarm.reason}
+          </li>;
+        })}</ul>
+        这些件有胶站不判位置。请检查上料、定位特征是否被遮挡或污染、照明与相机；该配方下一件这幅图定位成功后自动消除。
+        {snapshot.locateAlarms.some(alarm => alarm.recipeId !== snapshot.activeRecipeId) && "标“当前未在生产”的是之前生产的配方留下的，换配方不会清除它：要等该配方再生产且定位成功、该配方新修订的第一件测完，或软件重启才消除。"}
       </Alert>}
 
       <InspectionReadiness offlineSample={offlineSample} snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} />

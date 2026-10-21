@@ -74,6 +74,22 @@ describe("在线检测原图录制失败告警", () => {
   });
 });
 
+describe("在线检测连续定位失败告警", () => {
+  it("换配方后旧配方的告警仍在 → 每条写明配方与修订，不在生产的配方排在后面并标“当前未在生产”", () => {
+    const alarm = { shotId: "P1", k: 0, view: 1, consecutive: 3, reason: "定位失败", since: 1 };
+    state = { ...state, activeRecipeId: "A", locateAlarms: [
+      { ...alarm, recipeId: "B", revisionId: "rev-b", cycleId: "cycle-b" },
+      { ...alarm, recipeId: "A", revisionId: "rev-a", cycleId: "cycle-a" },
+    ] };
+    render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    const rows = within(screen.getByLabelText("连续定位失败告警")).getAllByRole("listitem");
+    expect(rows.map(row => row.textContent)).toEqual([
+      expect.stringMatching(/^配方 A（修订 rev-a） · 拍照点 P1 · 图 1 · 连续 3 件/),
+      expect.stringMatching(/^配方 B（修订 rev-b）（当前未在生产） · 拍照点 P1 · 图 1 · 连续 3 件/),
+    ]);
+  });
+});
+
 describe("在线检测离线产线控件", () => {
   it("真机握手待复位但复位条件未满足 → 复位按钮禁用并显示后端原因", () => {
     state = { ...state, phase: "FAULT", fault: "PLC 心跳失活" };

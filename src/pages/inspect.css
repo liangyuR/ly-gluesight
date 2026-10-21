@@ -9,6 +9,8 @@
 .prod-bar .qs-chip.prod-sn { max-width: min(100%, 480px); }
 .prod-bar .prod-sn b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prod .locate-alarms { margin: 0 0 var(--space-4); padding-left: 1.2em; }
+.prod .locate-alarms li.idle { color: var(--on-surface-variant); }
+.prod .locate-alarms li.idle b { font-weight: 600; }
 .prod-bar .qs-select.prod-recipe { max-width: 360px; }
 .prod-phase.run .dot { background: var(--primary); }
 .prod-bar .offline-msg[role="status"] { width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

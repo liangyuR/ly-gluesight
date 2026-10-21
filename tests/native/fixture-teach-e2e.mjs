@@ -344,6 +344,8 @@ export async function runFixtureE2E(page, options) {
   await banner.waitFor({ timeout: 30000 });
   const bannerText = (await banner.innerText()).replace(/\s+/g, " ").trim();
   assert(bannerText.includes(`拍照点 ${shotSpec.id} · 图 ${shotSpec.view} · 连续 3 件没有位置基准`), `告警横幅内容不对：${bannerText}`);
+  // 拍照点编号在配方间会重名：横幅要写明配方与修订；正在生产的配方不标“当前未在生产”
+  assert(bannerText.includes(`配方 ${id}（修订 ${alarm.revisionId}）`) && !bannerText.includes("当前未在生产"), `告警横幅没写明当前配方：${bannerText}`);
   // 检测页选中这一帧：位姿没被采用，中线不搬、框标“定位未采用”，摘要为“未采用”
   await page.locator(`.qs-camera-thumbnail[data-frame-id="k${k + 1}"]`).click();
   await page.locator('svg.wp-gray-image [aria-label^="定位未采用"]').first().waitFor({ timeout: 30000 });
