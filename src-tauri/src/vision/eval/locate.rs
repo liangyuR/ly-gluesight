@@ -2,6 +2,7 @@
 //! 每张图自动提议定位模板，在同图上跑 glue.locate 选框（E1）；整图刚体 / 成像扰动下的定位精度（E2）；
 //! 共同运动下按位姿算的胶偏 d' 是否不变（E3）；合成只移胶的检出（E4）；定位耗时（E5）；复拍对比（E6）。
 //! 模板按 PGM 写到评测输出目录，作为 glue.locate 的 base_dir；样本集目录只读。
+//! 模板文件按 lyFlow#32 的约定带 TEMPLATE_PAD_PX 外圈（框 + 四周各 4 px），anchor 仍是内框左上角，调用时传 templatePad。
 //! 选出的框都要人工复核：随枪相机下喷嘴、胶枪跟相机走，框进去会让位姿恒为恒等；同相机 NCC 只能剔除整块不动的结构。
 
 use std::collections::BTreeMap;
@@ -20,6 +21,9 @@ const SEARCH_RADIUS_PX: f64 = 60.0;
 const ANGLE_RANGE_DEG: f64 = 3.0;
 const ANGLE_STEP_DEG: f64 = 0.5;
 const MIN_SCORE: f64 = 0.6;
+/// 模板外圈（glue.locate 的 templatePad，lyFlow#32）：文件是框四周各多裁这么多，locate 用真实邻域平滑后再裁回内框。
+/// 4 = 平滑核半径，也是 locate 接受的最小非零值（1–3 拒绝）；外圈出图的候选不要。
+const TEMPLATE_PAD_PX: u32 = 4;
 const SIZES: [u32; 2] = [96, 128];
 const STRIDE: u32 = 32;
 /// 模板离胶检测走廊（中线 ± 搜索半宽）至少再留这么多
@@ -92,6 +96,14 @@ fn ncc_same_rect(a: &FrameImage, b: &FrameImage, r: [u32; 4]) -> f64 {
     (sab - sa * sb / n) / (va * vb).sqrt()
 }
 
+/// 内框加 TEMPLATE_PAD_PX 外圈后的矩形；外圈出图时为 None。
+fn padded_rect(r: [u32; 4], w: u32, h: u32) -> Option<[u32; 4]> {
+    let p = TEMPLATE_PAD_PX;
+    let (x, y) = (r[0].checked_sub(p)?, r[1].checked_sub(p)?);
+    let (pw, ph) = (r[2] + 2 * p, r[3] + 2 * p);
+    (x + pw <= w && y + ph <= h).then_some([x, y, pw, ph])
+}
+
 impl Template {
     fn teach_center(&self) -> [f64; 2] {
         [self.rect[0] as f64 + (self.rect[2] as f64 - 1.0) / 2.0, self.rect[1] as f64 + (self.rect[3] as f64 - 1.0) / 2.0]
@@ -112,7 +124,7 @@ fn locate(engine: &Engine, dir: &Path, t: &Template, img: &FrameImage, angle_ran
         "nodes": [
             {"id": "n_load", "op": "io.load_image", "params": {"source": "inputs"}},
             {"id": "n_locate", "op": "glue.locate", "params": {
-                "template": t.file, "anchor": [t.rect[0] as f64, t.rect[1] as f64],
+                "template": t.file, "templatePad": TEMPLATE_PAD_PX, "anchor": [t.rect[0] as f64, t.rect[1] as f64],
                 "searchRadius": SEARCH_RADIUS_PX, "angleRange": angle_range, "angleStep": ANGLE_STEP_DEG, "minScore": MIN_SCORE
             }}
         ],
@@ -131,7 +143,9 @@ fn locate(engine: &Engine, dir: &Path, t: &Template, img: &FrameImage, angle_ran
     Ok(Located { pose, why, ms })
 }
 
-fn write_pgm(path: &Path, img: &FrameImage, r: [u32; 4]) -> Result<(), String> {
+/// 写带外圈的模板：文件是 (w + 2·pad) × (h + 2·pad)，左上角在 (x − pad, y − pad)。
+fn write_pgm(path: &Path, img: &FrameImage, inner: [u32; 4]) -> Result<(), String> {
+    let r = padded_rect(inner, img.width, img.height).ok_or_else(|| format!("框 {inner:?} 加 {TEMPLATE_PAD_PX} px 外圈出图"))?;
     let mut bytes = format!("P5\n{} {}\n255\n", r[2], r[3]).into_bytes();
     for y in r[1]..r[1] + r[3] {
         let row = (y * img.width + r[0]) as usize;
@@ -167,8 +181,8 @@ fn overlap(a: [u32; 4], b: [u32; 4]) -> f64 {
 }
 
 /// E1 候选：图内且离边 ≥ 搜索半径 + 旋转余量，不压走廊，纹理够，不是随相机不动的结构；
-/// 按纹理与杠杆臂各取几个，互相重叠过半的只留一个。返回候选与因随相机不动被剔除的框数。
-fn propose(img: &FrameImage, others: &[&FrameImage], path: &[[f32; 2]], stations: &[[f64; 2]], half_px: f64, shot: &str) -> (Vec<Template>, usize) {
+/// 按纹理与杠杆臂各取几个，互相重叠过半的只留一个。返回候选、因随相机不动被剔除的框数、因外圈出图被剔除的框数。
+fn propose(img: &FrameImage, others: &[&FrameImage], path: &[[f32; 2]], stations: &[[f64; 2]], half_px: f64, shot: &str) -> (Vec<Template>, usize, usize) {
     let (w, h) = (img.width as usize, img.height as usize);
     let mut sum = vec![0f64; (w + 1) * (h + 1)];
     let mut sq = vec![0f64; (w + 1) * (h + 1)];
@@ -188,7 +202,7 @@ fn propose(img: &FrameImage, others: &[&FrameImage], path: &[[f32; 2]], stations
     };
     let line = dense(path);
     let mut all = Vec::new();
-    let mut fixed_rejected = 0usize;
+    let (mut fixed_rejected, mut pad_rejected) = (0usize, 0usize);
     for size in SIZES {
         let margin = SEARCH_RADIUS_PX + 0.5 * (size as f64 * std::f64::consts::SQRT_2) * ANGLE_RANGE_DEG.to_radians().sin() + 2.0;
         let lo = margin.ceil() as u32;
@@ -196,6 +210,8 @@ fn propose(img: &FrameImage, others: &[&FrameImage], path: &[[f32; 2]], stations
         for y in (lo..=ymax).step_by(STRIDE as usize) {
             for x in (lo..=xmax).step_by(STRIDE as usize) {
                 let rect = [x, y, size, size];
+                // 网格离图边 ≥ 搜索半径，正常不会触发；保留以防参数改小
+                if padded_rect(rect, img.width, img.height).is_none() { pad_rejected += 1; continue; }
                 if line.iter().any(|&p| rect_distance(p, rect) <= half_px + CORRIDOR_PAD_PX) { continue; }
                 let n = (size * size) as f64;
                 let mean = area(&sum, rect) / n;
@@ -230,7 +246,7 @@ fn propose(img: &FrameImage, others: &[&FrameImage], path: &[[f32; 2]], stations
     for (i, t) in picked.iter_mut().enumerate() {
         t.file = format!("{shot}-{i:02}-{}x{}-{}-{}.pgm", t.rect[2], t.rect[3], t.rect[0], t.rect[1]);
     }
-    (picked, fixed_rejected)
+    (picked, fixed_rejected, pad_rejected)
 }
 
 struct Shot {
@@ -408,7 +424,7 @@ fn choose(ctx: &Ctx, dir: &Path, k: usize, base: &ShotMeasurement, pinned: Optio
         if j == k || o.camera != s.camera || o.image.width != w || o.image.height != h { continue; }
         if ncc_same_rect(&s.image, &o.image, [0, 0, w, h]) >= SAME_VIEW_NCC { same_view.push(o.shot_id.clone()); } else { others.push(&o.image); }
     }
-    let (mut candidates, fixed_rejected) = propose(&s.image, &others, &ctx.recipe.shots[k].path, &frame.c, half, &s.shot_id);
+    let (mut candidates, fixed_rejected, pad_rejected) = propose(&s.image, &others, &ctx.recipe.shots[k].path, &frame.c, half, &s.shot_id);
     let probe_img = PROBE.apply(&s.image, k as u64);
     let mut rows = Vec::new();
     let mut ranked: Vec<(bool, f64, i64, f64, usize, Pose)> = Vec::new();
@@ -457,11 +473,11 @@ fn choose(ctx: &Ctx, dir: &Path, k: usize, base: &ShotMeasurement, pinned: Optio
     };
     let error = match (&chosen, rows.is_empty(), pinned) {
         (Some(_), _, _) => Value::Null,
-        (None, true, _) => json!(format!("没有候选框（另有 {fixed_rejected} 个框判为随相机不动被剔除）")),
+        (None, true, _) => json!(format!("没有候选框（另有 {fixed_rejected} 个框判为随相机不动、{pad_rejected} 个框外圈出图被剔除）")),
         (None, false, Some(rect)) => json!(format!("固定框 {rect:?} 不在候选里或原图上定位失败")),
         (None, false, None) => json!("没有通过试探定位的候选框"),
     };
-    let summary = json!({"shot": s.shot_id, "camera": s.camera, "candidates": rows, "rejectedCameraFixed": fixed_rejected, "comparedShots": others.len(), "sameViewShots": same_view,
+    let summary = json!({"shot": s.shot_id, "camera": s.camera, "candidates": rows, "rejectedCameraFixed": fixed_rejected, "rejectedPadOutOfImage": pad_rejected, "comparedShots": others.len(), "sameViewShots": same_view,
         "chosen": chosen.as_ref().map(|t| json!({"rect": t.rect, "file": t.file, "std": r3(t.std), "leverPx": r3(t.lever),
             "leverMm": r3(t.lever * ctx.mm_of(k) as f64), "score": pose0.as_ref().map(|p| r3(p.score)),
             "cameraFixedNcc": r3(t.fixed_ncc), "brightFrac": r3(t.bright),
@@ -611,6 +627,7 @@ pub fn evaluate(ctx: &Ctx, base: &[Result<ShotMeasurement, String>]) -> Value {
         choose(ctx, &dir, k, base[k].as_ref().unwrap(), pin)
     });
     let templates: Vec<Value> = chosen.iter().map(|c| match c { Ok(s) => s.summary.clone(), Err(v) => v.clone() }).collect();
+    let pad_rejected: u64 = templates.iter().filter_map(|t| t["rejectedPadOutOfImage"].as_u64()).sum();
     let shots: Vec<Shot> = chosen.into_iter().filter_map(Result::ok).collect();
     for s in &shots {
         write_overlay(&overlay_dir.join(format!("{}.png", ctx.samples[s.k].shot_id)), ctx, s, s.summary["candidates"].as_array().map_or(&[][..], Vec::as_slice));
@@ -758,9 +775,11 @@ pub fn evaluate(ctx: &Ctx, base: &[Result<ShotMeasurement, String>]) -> Value {
         let (a, bb) = place(b, stations, ramp)?;
         let Defect::Offset(v) = spec.kind else { unreachable!() };
         let img = synth::defect(&ctx.samples[k].image, &s.frame, a as f64, bb as f64, Defect::Offset(v / mm_k(k)), ramp as f64);
-        let touched = (t.rect[1]..t.rect[1] + t.rect[3]).any(|y| {
-            let row = (y * img.width + t.rect[0]) as usize;
-            img.pixels[row..row + t.rect[2] as usize] != ctx.samples[k].image.pixels[row..row + t.rect[2] as usize]
+        // 外圈也参与平滑，按带外圈的范围看
+        let pr = padded_rect(t.rect, img.width, img.height).unwrap_or(t.rect);
+        let touched = (pr[1]..pr[1] + pr[3]).any(|y| {
+            let row = (y * img.width + pr[0]) as usize;
+            img.pixels[row..row + pr[2] as usize] != ctx.samples[k].image.pixels[row..row + pr[2] as usize]
         });
         Some((|| {
             let l = locate(ctx.engine, &dir, t, &img, ANGLE_RANGE_DEG)?;
@@ -916,13 +935,13 @@ pub fn evaluate(ctx: &Ctx, base: &[Result<ShotMeasurement, String>]) -> Value {
 
 
     json!({
-        "params": {"searchRadiusPx": SEARCH_RADIUS_PX, "angleRangeDeg": ANGLE_RANGE_DEG, "angleStepDeg": ANGLE_STEP_DEG, "minScore": MIN_SCORE,
+        "params": {"searchRadiusPx": SEARCH_RADIUS_PX, "angleRangeDeg": ANGLE_RANGE_DEG, "angleStepDeg": ANGLE_STEP_DEG, "minScore": MIN_SCORE, "templatePadPx": TEMPLATE_PAD_PX,
             "sizes": SIZES, "stridePx": STRIDE, "corridorPadPx": CORRIDOR_PAD_PX, "minStd": MIN_STD, "byTexture": BY_TEXTURE, "byLever": BY_LEVER,
             "probe": format!("{PROBE:?}"), "probeTolPx": PROBE_TOL_PX, "probeTolDeg": PROBE_TOL_DEG, "maxPeakRatio": "不传（1.1.0 默认 1 = 不判；门效果离线扫）"},
         "baseDir": dir.display().to_string(), "overlayDir": overlay_dir.display().to_string(),
         "peakRatioAvailable": peak_known, "angleObservableAvailable": shots.iter().any(|s| s.pose0.as_ref().is_some_and(|p| p.angle_observable.is_some())),
         "uniqueness": if templates_path().is_some() { "固定框（GLUESIGHT_EVAL_TEMPLATES），不排序" } else if peak_known { "按 peakRatio 排序" } else { "运行库没有 peakRatio（locate < 1.1.0），唯一性未知：按试探定位是否通过、杠杆臂、试探分数排序" },
-        "humanReview": REVIEW, "conventionCheckPx": convention, "pinnedTemplates": templates_path(),
+        "humanReview": REVIEW, "rejectedPadOutOfImage": pad_rejected, "conventionCheckPx": convention, "pinnedTemplates": templates_path(),
         "templates": templates,
         "shotsWithTemplate": ready.len(), "shotsTaught": taught.len(),
         "baseline": {"fixtureMinusStaticMm": abs_stats(&agree), "noRefStations": base_noref, "fixtureNgOnBaseOk": base_fixture_ng},
@@ -934,8 +953,9 @@ pub fn evaluate(ctx: &Ctx, base: &[Result<ShotMeasurement, String>]) -> Value {
 pub fn markdown(r: &Value) -> String {
     let v = |x: &Value| match x { Value::Null => "—".to_string(), Value::String(t) => t.clone(), other => other.to_string() };
     let st = |x: &Value| format!("{} / {} / {}", v(&x["p50"]), v(&x["p95"]), v(&x["max"]));
-    let mut s = format!("## 特征定位（阶段 fixture）\n\n- 模板目录（base_dir）：{}\n- 叠图：{}\n- 唯一性：{}\n- **{}**\n- 扰动定义与位姿约定核对：{} px\n- 有模板的拍照点：{} / {}\n\n",
-        v(&r["baseDir"]), v(&r["overlayDir"]), v(&r["uniqueness"]), v(&r["humanReview"]), v(&r["conventionCheckPx"]), v(&r["shotsWithTemplate"]), v(&r["shotsTaught"]));
+    let mut s = format!("## 特征定位（阶段 fixture）\n\n- 模板目录（base_dir）：{}\n- 叠图：{}\n- 唯一性：{}\n- **{}**\n- 扰动定义与位姿约定核对：{} px\n- 模板外圈 templatePad：{} px（外圈出图被剔除的候选 {} 个）\n- 有模板的拍照点：{} / {}\n\n",
+        v(&r["baseDir"]), v(&r["overlayDir"]), v(&r["uniqueness"]), v(&r["humanReview"]), v(&r["conventionCheckPx"]),
+        v(&r["params"]["templatePadPx"]), v(&r["rejectedPadOutOfImage"]), v(&r["shotsWithTemplate"]), v(&r["shotsTaught"]));
     s += "### E1 模板\n\n| 拍照点 | 候选数 | 剔除随相机 | 选中框 [x,y,w,h] | 自匹配分数 | peakRatio | 杠杆臂 mm | 纹理 σ | 同相机 NCC | 亮像素比例 |\n|---|---|---|---|---|---|---|---|---|---|\n";
     for t in r["templates"].as_array().into_iter().flatten() {
         let c = &t["chosen"];
@@ -1018,4 +1038,28 @@ fn unobservable_rotation_with_drifted_center_counts_as_uncompensated_not_wrong_l
     assert!(call(5.0, Some(false)).lock() == Lock::Uncompensated);
     assert!(call(25.0, Some(false)).lock() == Lock::Wrong); // 偏过 10 px 不是转角能解释的
     assert!(call(5.0, Some(true)).lock() == Lock::Wrong);
+}
+
+#[test]
+fn template_file_is_teach_box_plus_4px_ring_and_ring_off_image_is_rejected() {
+    // 防的回归：模板文件不带外圈（或外圈错位）时 locate 只能按 BORDER_REPLICATE 平滑模板，框边强边缘把平移峰拉偏到 0.6 px（lyFlow#32）
+    let (w, h) = (20u32, 16u32);
+    let img = FrameImage::new(w, h, (0..w * h).map(|i| (i % 251) as u8).collect());
+    let dir = std::env::temp_dir().join(format!("gs-eval-pad-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("t.pgm");
+    write_pgm(&path, &img, [5, 4, 6, 3]).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let head = b"P5\n14 11\n255\n";
+    assert_eq!(&bytes[..head.len()], head);
+    let body = &bytes[head.len()..];
+    assert_eq!(body.len(), 14 * 11);
+    for (r, row) in body.chunks(14).enumerate() {
+        let y = r as u32; // 外圈上沿 y = 4 − 4
+        assert_eq!(row, &img.pixels[(y * w + 1) as usize..(y * w + 15) as usize]);
+    }
+    assert!(padded_rect([4, 4, 6, 3], w, h).is_some());
+    assert!(padded_rect([3, 4, 6, 3], w, h).is_none());
+    assert!(padded_rect([10, 4, 7, 3], w, h).is_none()); // 右外圈越过 x = 20
 }
