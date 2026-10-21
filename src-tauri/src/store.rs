@@ -152,8 +152,9 @@ pub struct PartShot {
     pub raw_files: Vec<ShotRawFile>,
 }
 
-/// 7：帧状态去掉 locateFailed、帧加 referenceFailed、测量点 BLOB 格式 3。旧库按版本不符备份后重建（D-0）。
-pub const DB_VERSION: i64 = 7;
+/// 7：帧状态去掉 locateFailed、帧加 referenceFailed、测量点 BLOB 格式 3。
+/// 8：帧的各视图结果加特征定位位姿（viewResults[].pose）。旧库按版本不符备份后重建（D-0）。
+pub const DB_VERSION: i64 = 8;
 
 /// 测量点 BLOB 格式版本：每点 f32 位置 + f32 胶宽 + u8 状态（9 字节），没有的值写 NaN，状态说了算。
 /// 3 起新增状态 4 无基准、5 超出检测范围；只读当前格式，旧格式的库已在打开时整库备份重建。
@@ -628,7 +629,7 @@ impl Store {
                  PRIMARY KEY (part_id, k),
                  UNIQUE (part_id, shot_id)
              );
-             PRAGMA user_version = 7;
+             PRAGMA user_version = 8;
              COMMIT;",
         )
         .map_err(db_err)?;

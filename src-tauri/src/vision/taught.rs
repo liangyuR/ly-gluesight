@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::Instant;
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::fixture::{self, Pose};
@@ -11,8 +11,9 @@ use super::{Engine, FrameImage, RunResult};
 use crate::measure::{drop_reference, Job, Measured, ReferenceFailure, REFERENCE_END_SHIFT, REFERENCE_LOCATE_FAILED, ST_GAP, ST_NO_REF, ST_OK, ST_OUT_OF_RANGE};
 use crate::recipe::{FixtureSpec, Polarity, Recipe, FIXTURE_ANGLE_STEP_DEG, FIXTURE_END_MARGIN_MM, FIXTURE_TEMPLATE_PAD_PX};
 
-/// 特征定位的结果（定稿 §10）：位姿是否采用、两端切向搬移与排除长度。随单图测量与试测记录序列化。
-#[derive(Clone, Debug, PartialEq, Serialize)]
+/// 特征定位的结果（定稿 §10）：位姿是否采用、两端切向搬移与排除长度。随单图测量、试测记录与帧记录（`ViewResult.pose`）序列化；
+/// 叠图时 T 由 offset、angle 与配方快照里的 `rect` 示教中心还原。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PoseRecord {
     pub accepted: bool,
@@ -59,9 +60,11 @@ impl ShotMeasurement {
 
     pub fn into_measured(self, job: &Job) -> Measured {
         let mut m = Measured::empty(job);
+        let view = job.recipe.shots[job.k].view;
         if let Some(reason) = self.reference_failed {
-            m.reference_failed.push(ReferenceFailure { view: job.recipe.shots[job.k].view, reason });
+            m.reference_failed.push(ReferenceFailure { view, reason });
         }
+        m.poses.extend(self.pose.map(|pose| (view, pose)));
         m.score = self.coverage;
         m.ms = self.ms;
         m.idx = self.idx;
@@ -110,8 +113,10 @@ impl MultiViewMeasurement {
 
     pub fn into_measured(self, job: &Job) -> Measured {
         let reference_failed = self.reference_failed();
+        let poses = self.views.iter().filter_map(|v| Some((v.view, v.reading.as_ref()?.pose.clone()?))).collect();
         let mut measured = self.reading.into_measured(job);
         measured.reference_failed = reference_failed;
+        measured.poses = poses;
         measured.views = self.views;
         measured
     }
