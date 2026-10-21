@@ -35,7 +35,7 @@ crc32fast = "1"
 rusqlite = { version = "0.40", features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # tag 必须属于 packaging/runtime.json 的 lyflow.series；升级用 pnpm deps:lyflow:update。
-lyflow-client = { git = "https://github.com/liangyuR/lyFlow.git", tag = "v1.1.4" }
+lyflow-client = { git = "https://github.com/liangyuR/lyFlow.git", tag = "v1.1.5" }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "pnm", "bmp", "tiff"] }
 ly-plc = { git = "https://github.com/liangyuR/ly-plc.git", rev = "fe6c2105209ba87d6b4abfe58a1fe0dad290f6e0", version = "0.4.0" }
 
