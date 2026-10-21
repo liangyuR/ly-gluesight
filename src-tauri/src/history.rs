@@ -9,7 +9,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::cycle::CycleHost;
 use crate::judge::{self, Verdict};
 use crate::recipe::{JudgeParams, Recipe};
-use crate::store::{same_measurement_layout, template_identity_unknown, HistoryPage, HistoryQuery, HistoryScope, PartDetail, PartSummary, Store, StoredMeasurement};
+use crate::store::{same_measurement_layout, HistoryPage, HistoryQuery, HistoryScope, PartDetail, PartSummary, Store, StoredMeasurement};
 
 pub fn local_midnight_ms() -> i64 {
     let today = Local::now().date_naive().and_hms_opt(0, 0, 0).unwrap();
@@ -238,10 +238,6 @@ fn rejudge_rows(
                 skip("当前候选配方不存在");
                 continue;
             };
-            if template_identity_unknown(&original, &candidate) {
-                skip("原记录的定位模板身份未知（G2 时期的记录），需要使用原图复测");
-                continue;
-            }
             if !same_measurement_layout(&original, &candidate) {
                 skip("当前候选的拍照点、相机、视角、测点几何、特征定位（模板来源）或单位已改变，需要使用原图复测");
                 continue;

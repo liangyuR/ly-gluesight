@@ -417,16 +417,10 @@ fn measurement_layout(recipe: &Recipe) -> serde_json::Value {
         "fixtureTemplate": {"pad": crate::recipe::FIXTURE_TEMPLATE_PAD_PX}})
 }
 
+/// 旧测量值（含 d′）能否在候选上复用。d′ 依赖定位模板的像素，模板身份 (来源冻结图, 框, 外圈) 在测量布局里，布局相同即同一模板。
+/// `Recipe` 只能经 `RecipeDoc::build` 构造（反序列化也是），配方校验要求启用的 fixture 来源合法，不存在“来源未知”的配方。
 pub fn same_measurement_layout(original: &Recipe, candidate: &Recipe) -> bool {
     measurement_layout(original) == measurement_layout(candidate)
-}
-
-/// 旧测量值（d′）依赖定位模板的像素。模板身份 (来源冻结图, 框, 外圈) 在测量布局里，布局相同即同一模板、可以复用；
-/// 但任一侧有启用的 fixture 却说不清来源（来源不是合法的冻结图编号）时身份未知，不能复用，必须原图复测。
-/// 正常的配方快照解析时会过配方校验（`Recipe` 经 `RecipeDoc::build` 反序列化），缺来源的解析就失败；这里是纵深防御。
-pub fn template_identity_unknown(original: &Recipe, candidate: &Recipe) -> bool {
-    [original, candidate].iter().any(|r| r.shots.iter().any(|s| s.measured() && s.enabled_views().into_iter()
-        .any(|v| s.for_view(v).ok().and_then(|p| p.fixture).is_some_and(|f| !crate::recipe::valid_image_id(&f.source)))))
 }
 
 fn validate_raw_files(files: &[ShotRawFile]) -> Result<(), String> {
