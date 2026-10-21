@@ -126,7 +126,7 @@ fn checked_view(app: &AppHandle, w: &Workspace, k: usize, selected: u8) -> Resul
     let frame = projected_frame(w, k, selected)?;
     if !frame.saved { return Err(format!("拍照点 {} 图 {selected} 尚未完成示教", k + 1)); }
     let (image, params) = shot_tags(&r, k)?;
-    frame.checked(&image, &params)?;
+    frame.checked(&image, &params, r.shots[k].fixture.is_some())?;
     let engine = app.state::<vision::VisionHost>().engine().ok_or("图像核心库未加载")?;
     frame.checked_engine(&engine_state(&engine))?;
     Ok((r, frame))
@@ -253,6 +253,11 @@ pub(super) fn apply_draft(w: &mut Workspace, k: usize, mut params: DraftTeach) -
     if params.fixture.is_some() {
         let mut doc = w.doc.clone();
         doc.shots.get_mut(k).ok_or("拍照点不存在")?.fixture = params.fixture.take();
+        let selected = doc.shots[k].view;
+        let fixture = doc.shots[k].fixture.clone();
+        if let Some(v) = doc.shots[k].views.iter_mut().find(|v| v.view == selected) { v.fixture = fixture; }
+        super::fixture::reject_unconfirmed_rotation(&w.doc, &doc)?;
+        super::fixture::reject_end_param_edit(&w.doc, &doc)?;
         bind_fixture_sources(w, &mut doc, None)?;
         params.fixture = doc.shots[k].fixture.take();
     }

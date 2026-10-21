@@ -1,4 +1,4 @@
-import type { CameraImaging, DetectParams, FixtureSpec, Judgement, Measured, Recipe, RecipeDoc, ShotLimits, Verdict } from "../cycle/types";
+import type { CameraImaging, DetectParams, FixtureSpec, Judgement, Measured, PoseRecord, Recipe, RecipeDoc, ShotLimits, Verdict } from "../cycle/types";
 
 /** 一个拍照点的示教：在冻结原图上点出的中线（图像像素，从胶嘴一侧往外）、像素当量与可选的检测参数。
  * workspace_save_params 把它写进候选配方的这个拍照点；detect 不设时不发送（用配方的检测参数）。
@@ -19,7 +19,43 @@ export interface Trial {
   imageId: string; paramsTag: unknown; geometryTag: unknown; engineTag: unknown; passed: boolean;
   score: number; coverage: number; elapsedMs: number; reason: string;
   measurement: unknown; verdict?: Verdict;
+  /** 特征定位视图的示教图检查报告；没有时（G4 之前的试测）需要重新试测 */
+  fixture?: FixtureTeachReport | null;
 }
+/** 特征定位检查项编号（后端 vision::fixture_quality::CheckId）；说明文字由后端给出 */
+export type FixtureCheckId = "inside" | "corridor" | "texture" | "bright" | "lever" | "selfLocate"
+  | "locateAll" | "sigma" | "brightnessLock" | "observable" | "searchRange" | "nominal" | "brightnessReject" | "rotation" | "endParams" | "fewSamples";
+export interface FixtureCheckItem { id: FixtureCheckId; level: "block" | "warn"; passed: boolean; detail: string }
+export interface FixtureLever { from: [number, number]; to: [number, number]; px: number; mm: number | null }
+/** 画框时的只读检查（workspace_fixture_check） */
+export interface FixtureCheck {
+  passed: boolean; checks: FixtureCheckItem[]; padded: [number, number, number, number] | null;
+  search: [number, number, number, number]; lever: FixtureLever | null; textureStd: number | null; brightFraction: number | null;
+}
+/** 试测时的示教图检查报告：几何、纹理加示教图上的定位验收 */
+export interface FixtureTeachReport {
+  passed: boolean; checks: FixtureCheckItem[]; pose: PoseRecord | null; lever: FixtureLever | null; textureStd: number | null; brightFraction: number | null;
+}
+export interface FixtureEndSuggestion { p99Mm: number; maxEndShiftMm: number; endMarginMm: number; applicable: boolean; note: string }
+export interface FixtureRotationEvidence {
+  enabled: boolean; leverMm: number; leverThetaP95Mm: number | null; thresholdMm: number; exceeds: boolean;
+  frames: number; observableFrames: number; allObservable: boolean; autoConditions: boolean;
+}
+/** 一个特征定位视图在独立正常样本上的验证统计 */
+export interface FixtureViewReport {
+  k: number; view: number; shotId: string; passed: boolean; samples: number; checks: FixtureCheckItem[];
+  sigmaMm: number | null; meanMm: number | null; nominalMm: number; toleranceMm: number; searchUse: number | null;
+  suggestion: FixtureEndSuggestion | null; rotation: FixtureRotationEvidence;
+  rows: { name: string; pose: PoseRecord | null; brighter: PoseRecord | null; darker: PoseRecord | null; error: string | null }[];
+}
+/** 定位试测（workspace_fixture_trial）：只作诊断，不落盘 */
+export interface FixtureTrialRow {
+  label: string; source: "teach" | "sample"; sampleId: string | null; pose: PoseRecord | null; reason: string | null;
+  stations: { id: number; status: "ok" | "no_ref" | "out_of_range" | "no_bead"; d: number | null }[]; error: string | null;
+}
+export interface FixtureTrial { revision: number; k: number; view: number; rows: FixtureTrialRow[] }
+/** 开转角的独立证据（定稿 §10 决定二）：只记进应用日志 */
+export interface RotationConfirmation { basis: "twoTemplates" | "lowerDeviation" | "physical"; note: string }
 export interface CalibrationCheck {
   basis: { kind: "manual"; referenceMm: number; measuredMm: number; errorMm: number } | { kind: "sampleSet"; setId: string };
   passed: boolean; mmPerPx: number | null; verificationId?: string;
@@ -36,6 +72,8 @@ export interface Validation {
   revision: number; passed: boolean; checkedAt: number; environmentTag: unknown;
   checks: { name: string; passed: boolean; detail: string }[];
   samples: { historyId: number | null; sampleId:string | null; name:string; sn: string; expected: Verdict; actual: Verdict | null; passed: boolean; reason: string }[];
+  /** 每个特征定位视图的统计；G4 之前的验证没有 */
+  fixture?: FixtureViewReport[];
 }
 /** 发布时所在站点：离线验证发布的版本只能在离线运行。 */
 export type ValidationSite = "real" | "offline";

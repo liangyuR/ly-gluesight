@@ -68,7 +68,7 @@ fn document(rect: [u32; 4]) -> RecipeDoc {
     let shot = &mut doc.shots[0];
     shot.path = PATH.to_vec();
     shot.mm_per_px = Some(MM_PER_PX);
-    shot.fixture = Some(FixtureSpec { rect, source: TEACH_ID.into(), search_radius_px: 40.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None });
+    shot.fixture = Some(FixtureSpec { rect, source: TEACH_ID.into(), search_radius_px: 40.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None, end_margin_mm: 0.0 });
     doc.spacing = 1.0;
     doc.detect = DetectParams { search_mm: 3.0, polarity: Polarity::Dark, width_range: [0.8, 2.4] };
     doc.limits = ShotLimits {
@@ -293,4 +293,56 @@ fn bead_drifted_to_its_corridor_edge_beside_the_closest_publishable_template_sti
         assert!((m.d[i] - base.reading.d[i] - want).abs() < 0.02, "站 {i}：d {} 示教帧 {}", m.d[i], base.reading.d[i]);
     }
     assert_eq!(judged.verdict, Verdict::NgPosition, "{}", judged.reason);
+}
+
+/// 工作台示教试测的同一条路（G4，`workspace_trial`）：模板从这张示教图裁出、放进临时目录，在这张图上测量，
+/// 再按示教图检查出报告；`frames` 是同一模板目录上另跑的帧（如亮度 ±40），一并返回它们的位姿。
+fn teach_check(teach: &FrameImage, frames: &[&FrameImage], tag: &str) -> (super::super::fixture_quality::FixtureTeachReport, Vec<Option<PoseRecord>>) {
+    use super::super::fixture_quality::{geometry_checks, teach_acceptance, TeachInput};
+    let doc = document(RECT);
+    let recipe = doc.build().unwrap();
+    let dir = release_root(tag);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(fixture::TEMPLATE_FILE), fixture::template_pgm(teach, RECT).unwrap()).unwrap();
+    let base = dir.to_str().unwrap().to_string();
+    let measured = measure_shot(&engine(), &recipe, 0, teach, &format!("{tag}-teach"), &base).unwrap();
+    let poses = frames.iter().enumerate().map(|(i, image)| measure_shot(&engine(), &recipe, 0, image, &format!("{tag}-{i}"), &base).unwrap().pose).collect();
+    let _ = std::fs::remove_dir_all(&dir);
+    let clearances: Vec<_> = doc.fixture_clearances().unwrap().into_iter().filter(|c| c.k == 0).collect();
+    let f = recipe.shots[0].fixture.as_ref().unwrap();
+    let geometry = geometry_checks(&TeachInput { fixture: f, image: teach, clearances: &clearances, path: &recipe.shots[0].path,
+        mm_per_px: Some(f64::from(MM_PER_PX)), tolerance_mm: Some(0.5) });
+    (teach_acceptance(geometry, measured.pose.as_ref(), f.angle_range_deg, f.max_peak_ratio), poses)
+}
+
+#[test]
+#[ignore = "需要 LYFLOW_CORE_DLL（带 lyFlow#32 glue.locate），见 docs/testing/TESTING.md"]
+fn teach_check_accepts_the_identity_pose_and_brightness_probes_do_not_mislock_but_a_flattened_box_fails() {
+    // 防的回归（G4 E8）：示教图自定位的恒等容差（0.5 px）与真实 glue.locate 的输出对不上，正常框试测无效；
+    // peakRatio 没接进报告；亮度 ±40 的验证帧在合成工件上就错锁（锁定判据接错）；纹理被抹平的框仍通过示教检查
+    use super::super::fixture_quality::{brightness, validation_report, CheckId, FixtureSample, ViewContext, BRIGHTNESS_PROBE};
+    let teach = scene(RECT, 0);
+    let brighter = brightness(&teach, BRIGHTNESS_PROBE);
+    let darker = brightness(&teach, -BRIGHTNESS_PROBE);
+    let (report, poses) = teach_check(&teach, &[&brighter, &darker], "e8");
+    assert!(report.passed, "{:?}", report.checks);
+    let pose = report.pose.clone().unwrap();
+    assert!(pose.peak_ratio.is_some(), "{pose:?}");
+    let sample = FixtureSample { name: "示教图".into(), pose: Some(pose), deviations_mm: vec![0.0, 0.01],         brighter: poses[0].clone().ok_or_else(|| "没有定位结果".into()), darker: poses[1].clone().ok_or_else(|| "没有定位结果".into()), ..Default::default() };
+    let ctx = ViewContext { k: 0, view: 1, shot_id: "P1".into(), fixture: document(RECT).shots[0].fixture.clone().unwrap(), tolerance_mm: 0.5, nominal_mm: 0.0,
+        lever_mm: 30.0, spacing_mm: 1.0, stations: 31 };
+    let validation = validation_report(&ctx, &[sample]);
+    let lock = validation.checks.iter().find(|c| c.id == CheckId::BrightnessLock).unwrap();
+    assert!(lock.passed, "{}；+40 {:?}，−40 {:?}", lock.detail, poses[0], poses[1]);
+
+    // 定位框（含外圈附近）抹成 120 ± 3 的噪声：纹理不足，示教检查不过
+    let mut flat = copy(&teach);
+    let mut rng = Rng(0xF1A7);
+    let [x, y, w, h] = RECT;
+    for yy in y - 8..y + h + 8 {
+        for xx in x - 8..x + w + 8 { flat.pixels[(yy * W + xx) as usize] = (120.0 + 3.0 * rng.gauss()).round() as u8; }
+    }
+    let (report, _) = teach_check(&flat, &[], "e8-flat");
+    assert!(!report.passed);
+    assert!(report.checks.iter().any(|c| c.id == CheckId::Texture && !c.passed), "{:?}", report.checks);
 }

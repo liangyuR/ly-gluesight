@@ -143,7 +143,7 @@ export function client(page) {
   };
 }
 
-function workspaceCalls(call, id) {
+export function workspaceCalls(call, id) {
   const current = async () => (await call("workspace_get", { id })).workspace.revision;
   return {
     get: () => call("workspace_get", { id }),
@@ -151,7 +151,7 @@ function workspaceCalls(call, id) {
   };
 }
 
-async function captureRound(call, id, cameraIds, partId) {
+export async function captureRound(call, id, cameraIds, partId) {
   const round = await call("recipe_capture_start", { recipeId: id, cameraIds, drainTimeoutMs: 1000 });
   assert.equal(round.state, "waitingStart");
   await call("offline_capture", { partId });
@@ -167,7 +167,7 @@ function strokeRoi(points, [width, height], margin = 40) {
   return [x, y, Math.min(width, Math.ceil(Math.max(...xs) + margin)) - x, Math.min(height, Math.ceil(Math.max(...ys) + margin)) - y];
 }
 
-async function teach(ws, view, fixture) {
+export async function teach(ws, view, fixture) {
   const shots = view.workspace.doc.shots;
   const poses = [...new Set(shots.map(s => s.poseId))];
   assert.deepEqual(poses.filter(p => !fixture.groups[p]), [], "夹具未覆盖全部拍照点组");

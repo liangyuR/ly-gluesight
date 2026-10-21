@@ -89,6 +89,13 @@ function LimitsEditor({ value, changed, onChange }: { value: ShotLimits; changed
         </thead>
         <tbody>
           {row("position", "位置", defaultPosition)}
+          {value.position && value.position.nominal !== 0 && <tr>
+            <th scope="row" title="位置名义值不为 0 时必填：用量具确认过的确认件编号">量具确认件</th>
+            <td colSpan={paramFields.length + 1}>
+              <TextField aria-label="量具确认件编号" value={value.gaugeRef ?? ""} maxLength={64} onChange={(e) => onChange({ ...value, gaugeRef: e.target.value })} />
+              {!value.gaugeRef?.trim() && <span className="c-warn" role="alert">名义值不为 0：必须填写量具确认件编号，否则候选保存不了</span>}
+            </td>
+          </tr>}
           {row("width", "胶宽", defaultWidth)}
           <tr>
             <th scope="row" title="同一拍照点内连续缺胶超过允许断胶长度判断胶；累计缺胶超过它且有胶站占比低于最低有胶比例时也判断胶"><span className="rcp-rowhead">连续性{(changed.has("maxGapLen") || changed.has("minPresent")) && <i className="rcp-changed" title="与生产配方不同" />}</span></th>

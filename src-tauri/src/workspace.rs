@@ -21,6 +21,7 @@ mod recorded;
 mod history_samples;
 mod reproduce;
 mod workflow;
+mod fixture;
 pub(crate) mod centerline;
 pub mod progress;
 #[cfg(test)]
@@ -28,6 +29,7 @@ mod workflow_tests;
 #[cfg(test)]
 mod progress_tests;
 pub use workflow::*;
+pub use fixture::*;
 
 fn state_value(value: &impl Serialize) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
@@ -72,6 +74,9 @@ pub struct ShotTeach {
     /// 特征定位；必须显式发送（可以是 null），漏发时报错，不会悄悄清掉已保存的 fixture
     #[serde(deserialize_with = "Option::deserialize")]
     pub fixture: Option<crate::recipe::FixtureSpec>,
+    /// 开转角的人工确认（定稿 §10 决定二）：转角调大时必须带上，只记进应用日志
+    #[serde(default)]
+    pub rotation: Option<fixture::RotationConfirmation>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -106,6 +111,9 @@ pub struct Trial {
     pub measurement: Value,
     #[serde(default)]
     pub verdict: Option<Verdict>,
+    /// 特征定位视图的示教图检查报告（G4）；G4 之前的试测没有它，按需要重新试测处理
+    #[serde(default)]
+    pub fixture: Option<vision::fixture_quality::FixtureTeachReport>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -135,7 +143,8 @@ impl Teaching {
     }
 
     /// 原图要对上拍照点（image_tag），试测要对上当前的中线与检测参数（teach_tag），并且通过。
-    fn checked(&self, image_tag: &Value, teach_tag: &Value) -> Result<(), String> {
+    /// 特征定位视图（`fixture`）另要求试测带着通过的示教图检查报告：G4 之前 `passed = true` 的试测没有报告，不能绕过定位验收。
+    fn checked(&self, image_tag: &Value, teach_tag: &Value, fixture: bool) -> Result<(), String> {
         let image = self.image.as_ref().ok_or("本帧尚未冻结原图")?;
         let trial = self.trial.as_ref().ok_or("本帧尚未试测")?;
         if &image.geometry_tag != image_tag
@@ -145,6 +154,9 @@ impl Teaching {
             || &trial.params_tag != teach_tag
         {
             return Err("图像或参数已变更，需要重新试测".into());
+        }
+        if fixture && trial.fixture.as_ref().is_none_or(|report| !report.passed) {
+            return Err("特征定位的示教图检查没有通过，或试测早于这项检查，请重新试测".into());
         }
         Ok(())
     }
@@ -218,6 +230,9 @@ pub struct Validation {
     pub checks: Vec<Check>,
     pub samples: Vec<SampleResult>,
     pub environment_tag: Value,
+    /// 每个特征定位视图在独立正常样本上的统计（G4）；G4 之前的验证没有它，发布门按没通过处理
+    #[serde(default)]
+    pub fixture: Vec<vision::fixture_quality::FixtureViewReport>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -495,7 +510,7 @@ impl WorkspaceHost {
                     Ok(w)
                 });
             match loaded {
-                Ok(w) => { items.insert(w.doc.id.clone(), w); }
+                Ok(w) => { fixture::prune_fixture_dirs(&entry.path(), &w); items.insert(w.doc.id.clone(), w); }
                 Err(error) => notes.push(format!("{} 未加载：{error}。{}", file.display(), unloaded_hint(&entry.path()))),
             }
         }
@@ -521,7 +536,9 @@ impl WorkspaceHost {
         crate::fsio::write_atomic(
             &dir.join("workspace.json"),
             &serde_json::to_string_pretty(w).map_err(|e| e.to_string())?,
-        )
+        )?;
+        fixture::prune_fixture_dirs(&dir, w);
+        Ok(())
     }
 }
 
@@ -804,6 +821,8 @@ fn update_doc(w: &mut Workspace, mut doc: RecipeDoc) -> Result<(), String> {
             shot.fixture = projected.fixture;
         }
     }
+    fixture::reject_unconfirmed_rotation(&w.doc, &doc)?;
+    fixture::reject_end_param_edit(&w.doc, &doc)?;
     bind_fixture_sources(w, &mut doc, None)?;
     let mut unbound = w.unbound_imaging.clone();
     sync_doc_imaging(&mut doc, &mut unbound);
@@ -850,15 +869,16 @@ fn image_file(host: &WorkspaceHost, id: &str, image_id: &str) -> Result<PathBuf,
 /// 定位模板（glue.locate 的 base_dir）：`<workspaces>/<配方>/fixtures/<冻结图>-r<x>_<y>_<w>_<h>-p<外圈>/template.pgm`。
 /// 按来源寻址，内容只由冻结图、框与外圈决定；冻结图不会改写。每次使用都按冻结图重新裁、与磁盘上的字节比对，
 /// 缺失或不同（损坏、过期）才原子写，不复用坏文件。并发写的是同样的内容，所以不在 items 锁里做。
-/// 删除工作区时一并删掉；旧目录的清理归 G4。返回模板目录（UTF-8 绝对路径，非 UTF-8 时报错，不做有损转换）。
+/// 删除工作区时一并删掉；不再对应任何定位框的旧目录在保存与启动时清理（`fixture::prune_fixture_dirs`）。
+/// 返回模板目录（UTF-8 绝对路径，非 UTF-8 时报错，不做有损转换）。
 /// 框的模板来源必须就是这张冻结图（见 `fixture_source`）：重新冻结后旧框不会悄悄裁到新图上。
 fn ensure_template(host: &WorkspaceHost, recipe_id: &str, frozen: &FrozenImage, fixture: &crate::recipe::FixtureSpec, image: Option<&FrameImage>) -> Result<String, String> {
-    use crate::recipe::FIXTURE_TEMPLATE_PAD_PX as PAD;
     check_source(frozen, fixture)?;
     let rect = fixture.rect;
     fixture.check_image_size(frozen.size)?;
     let source = image_file(host, recipe_id, &frozen.id)?;
-    let dir = host.dir(recipe_id).join("fixtures").join(format!("{}-r{}_{}_{}_{}-p{PAD}", frozen.id, rect[0], rect[1], rect[2], rect[3]));
+    // 来源就是这张冻结图（check_source），目录名只由 (来源, 框, 外圈) 决定
+    let dir = host.dir(recipe_id).join("fixtures").join(fixture::template_dir_name(fixture));
     let loaded;
     let image = match image {
         Some(image) => image,
@@ -1141,9 +1161,10 @@ pub fn workspace_image(
     Ok(preview_response(&image))
 }
 
-/// 示教帧试测：沿拍照点 k 的示教中线量胶。返回逐站结果、得分、量成比例、是否通过与原因。
-/// `base`：用特征定位时的模板目录（见 ensure_template），否则为空串。
-fn measure_image(app: &AppHandle, r: &Recipe, k: usize, image: &FrameImage, base: &str) -> Result<(Value, f64, f64, bool, String), String> {
+/// 示教帧试测：沿拍照点 k 的示教中线量胶。返回逐站结果、得分、量成比例、是否通过、原因与特征定位的示教图检查报告。
+/// `base`：用特征定位时的模板目录（见 ensure_template），否则为空串；`clearances`：本框到同组各走廊的余量。
+type TrialOutcome = (Value, f64, f64, bool, String, Option<vision::fixture_quality::FixtureTeachReport>);
+fn measure_image(app: &AppHandle, r: &Recipe, k: usize, image: &FrameImage, base: &str, clearances: &[crate::recipe::Clearance]) -> Result<TrialOutcome, String> {
     let shot = r.shots.get(k).ok_or("拍照点不存在")?;
     if !shot.measured() {
         return Err("这个拍照点设为不检，不需要试测".into());
@@ -1160,11 +1181,18 @@ fn measure_image(app: &AppHandle, r: &Recipe, k: usize, image: &FrameImage, base
         table[j as usize] = crate::measure::point_state(measured.st[i], measured.d[i], measured.w[i]);
     }
     let verdict = judge::judge(r, &table).verdict;
-    // 示教原图上的定位验收（定位失败但胶路另判 NG 时是否算有效试测）归 G4 的定位试测与保存检查
-    let valid = verdict != Verdict::ErrInspect;
+    // 定位验收（定稿 §13）：试测有效 = 胶路判定可用且示教图检查通过。示教图上定位没被采用时，胶路另判 NG 也不算有效试测
+    let report = fixture::teach_report(r, k, image, clearances, measured.pose.as_ref());
+    let blocked = report.as_ref().and_then(|r| vision::fixture_quality::first_block(&r.checks)).map(|c| c.detail.clone());
+    let valid = verdict != Verdict::ErrInspect && blocked.is_none();
     let mut record = measured.record();
     record["verdict"] = json!(verdict);
-    Ok((record, coverage, coverage, valid, if valid { "有效试测完成，可保存示教；产品判定单独显示".into() } else { "测量无法形成有效判定，请检查配置".into() }))
+    let reason = match (verdict != Verdict::ErrInspect, blocked) {
+        (_, Some(detail)) => format!("特征定位检查没通过：{detail}"),
+        (true, None) => "有效试测完成，可保存示教；产品判定单独显示".into(),
+        (false, None) => "测量无法形成有效判定，请检查配置".into(),
+    };
+    Ok((record, coverage, coverage, valid, reason, report))
 }
 
 #[tauri::command]
@@ -1176,7 +1204,7 @@ pub async fn workspace_trial(
     image_id: String,
 ) -> Result<WorkspaceView, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let (r, frozen) = {
+        let (r, frozen, clearances) = {
             let host = app.state::<WorkspaceHost>();
             let items = host.items.lock().unwrap();
             let w = items.get(&id).ok_or("候选配置不存在")?;
@@ -1194,7 +1222,8 @@ pub async fn workspace_trial(
             if frozen.camera_tag != camera_tag || frozen.calib_tag != calib_tag || frozen.geometry_tag != shot_tags(&r, k)?.0 {
                 return Err("相机参数、工位标定或拍照点已变更，请重新冻结图像".into());
             }
-            (r, frozen.clone())
+            let clearances = fixture::clearances_of(&w.doc, k, w.doc.shots[k].view)?;
+            (r, frozen.clone(), clearances)
         };
         let (image_tag, teach_tag) = shot_tags(&r, k)?;
         let image = crate::image_file::load(&image_file(&app.state::<WorkspaceHost>(), &id, &image_id)?)?;
@@ -1205,9 +1234,9 @@ pub async fn workspace_trial(
             Some(fixture) => ensure_template(&app.state::<WorkspaceHost>(), &r.id, &frozen, fixture, Some(&image)),
             None => Ok(String::new()),
         };
-        let (measurement, score, coverage, passed, reason) = base()
-            .and_then(|base| measure_image(&app, &r, k, &image, &base))
-            .unwrap_or_else(|e| (Value::Null, 0.0, 0.0, false, e));
+        let (measurement, score, coverage, passed, reason, fixture) = base()
+            .and_then(|base| measure_image(&app, &r, k, &image, &base, &clearances))
+            .unwrap_or_else(|e| (Value::Null, 0.0, 0.0, false, e, None));
         let trial = Trial {
             image_id,
             engine_tag,
@@ -1220,6 +1249,7 @@ pub async fn workspace_trial(
             reason,
             verdict: measurement.get("verdict").and_then(|v| serde_json::from_value(v.clone()).ok()),
             measurement,
+            fixture,
         };
         let host = app.state::<WorkspaceHost>();
         let mut items = host.items.lock().unwrap();
@@ -1257,7 +1287,8 @@ pub fn workspace_save_params(
     view(&app, w.clone())
 }
 
-/// 保存示教参数：特征定位的模板来源在这里（也只在这里）强制改绑到所选视图当前的冻结原图，见 `bind_fixture_sources`。
+/// 保存示教参数：特征定位的模板来源在这里（也只在这里）强制改绑到所选视图当前的冻结原图，见 `bind_fixture_sources`；
+/// 转角也只能在这里、带着当前验证的转角证据与人工确认调大（`fixture::confirm_rotation`）；两端参数不能在这里改（`fixture::reject_end_param_edit`）。
 fn apply_params(w: &mut Workspace, k: usize, params: ShotTeach) -> Result<(), String> {
     let mut doc = w.doc.clone();
     let shot = doc.shots.get_mut(k).ok_or("拍照点不存在")?;
@@ -1275,6 +1306,8 @@ fn apply_params(w: &mut Workspace, k: usize, params: ShotTeach) -> Result<(), St
     let selected = shot.view;
     bind_fixture_sources(w, &mut doc, Some((k, selected)))?;
     doc.build()?;
+    fixture::reject_end_param_edit(&w.doc, &doc)?;
+    fixture::confirm_rotation(&w.doc, &doc, params.rotation.as_ref(), w.validation.as_ref().filter(|v| v.revision == w.revision))?;
     if doc != w.doc {
         w.doc = doc;
         let frame = w.frames.get_mut(k).ok_or("拍照点不存在")?;
@@ -1293,6 +1326,7 @@ pub fn workspace_save_teach(
     revision: u64,
     k: usize,
     image_id: String,
+    fixture_reviewed: Option<bool>,
 ) -> Result<WorkspaceView, String> {
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
@@ -1300,11 +1334,17 @@ pub fn workspace_save_teach(
     w.expect(revision)?;
     let r = w.doc.build()?.for_view(k, w.doc.shots[k].view)?;
     let (image_tag, teach_tag) = shot_tags(&r, k)?;
+    let fixture = r.shots[k].fixture.is_some();
+    // 喷嘴、胶枪是否在框里工具判断不了（定稿 §9）；走廊几何也只认同组示教中线及其直线延长，越过示教段后拐弯的胶、
+    // 其他 Pose 或其他胶路的胶进到框里没有自动门（§12 剩余风险、§13），每次保存都要人工确认
+    if fixture && fixture_reviewed != Some(true) {
+        return Err("请先确认定位框里没有胶（含越过示教段后拐弯、其他 Pose 或其他胶路的胶），也没有喷嘴、胶枪等随相机不动的结构".into());
+    }
     let frame = w.frames.get_mut(k).ok_or("拍照点不存在")?;
     if frame.image.as_ref().map(|i| &i.id) != Some(&image_id) {
         return Err("图像已变更，请重新试测".into());
     }
-    frame.checked(&image_tag, &teach_tag)?;
+    frame.checked(&image_tag, &teach_tag, fixture)?;
     let engine = app.state::<vision::VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
     frame.checked_engine(&engine_state(&engine))?;
     let (camera_tag, calib_tag) = tags(&app, &r, k)?;
@@ -1429,7 +1469,11 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
     checks.push(Check { name: "完整采集".into(), passed: captured, detail: if captured { "示教来自完整的独立采集轮次".into() } else { "请先采用完整采集轮次".into() } });
     let store = app.state::<Store>();
     let mut results = Vec::new();
+    // 独立正常样本上的特征定位统计（含亮度 ±40、±3° 探测）；缺陷样本不进统计
+    let mut fixture_probes = Vec::new();
     for sample in &w.samples {
+        let normal = matches!(sample.expected, Verdict::Ok | Verdict::OkWithExcursion);
+        let mut probes = Vec::new();
         let result = (|| -> Result<SampleResult, String> {
             if let Some(sample_id) = &sample.sample_id {
                 let bank = w
@@ -1449,12 +1493,13 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
                 }
                 if w.capture_id.as_deref() == Some(sample_id) { return Err("示教采集不能作为独立验证样本".into()); }
                 let dir = app.state::<WorkspaceHost>().dir(&r.id).join("samples").join(sample_id);
-                let (table, _) = measure_images(app, w, r.shot_count(), "", |k, v| {
+                let (table, _) = measure_images_from(app, w, r.shot_count(), "", MeasurementSource::CurrentDevices, normal.then_some(&mut probes), |k, v| {
                     let path = dir.join(format!("k{k}-v{v}.pgm"));
                     if path.is_file() { crate::image_file::load(&path) }
                     else if workflow::selected_views(w, k).len() == 1 { crate::image_file::load(&dir.join(format!("k{k}.pgm"))) }
                     else { Err(format!("样本缺少拍照点 {} 图 {v}", k + 1)) }
                 })?;
+                for probe in &mut probes { probe.sample.name = bank.name.clone(); }
                 return Ok(SampleResult::judged(sample, bank.name.clone(), String::new(), judge::judge(&r, &table)));
             }
             let history_id = sample.history_id.ok_or("样本来源未指定")?;
@@ -1473,9 +1518,11 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
                 return Err("历史样本的采集结构或 PLC 轨迹计划版本不匹配，或原图不完整".into());
             }
             if w.frames.iter().flat_map(|f| &f.views).any(|i| i.history_id == Some(history_id)) { return Err("示教原图所属工件不能同时作为独立验证样本".into()); }
-            let (table, _) = measure_images(app, w, r.shot_count(), &detail.summary.sn, |k, v| history_image(app, &detail, k, v))?;
+            let (table, _) = measure_images_from(app, w, r.shot_count(), &detail.summary.sn, MeasurementSource::CurrentDevices, normal.then_some(&mut probes), |k, v| history_image(app, &detail, k, v))?;
+            for probe in &mut probes { probe.sample.name = format!("SN {}", detail.summary.sn); }
             Ok(SampleResult::judged(sample, format!("SN {}", detail.summary.sn), detail.summary.sn.clone(), judge::judge(&r, &table)))
         })();
+        if result.is_ok() { fixture_probes.append(&mut probes); }
         results.push(result.unwrap_or_else(|e| {
             SampleResult {
                 history_id: sample.history_id,
@@ -1499,6 +1546,8 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
     let normals: Vec<_> = results.iter().filter(|r| matches!(r.expected, Verdict::Ok | Verdict::OkWithExcursion)).collect();
     checks.push(Check { name:"独立正常样本".into(), passed: have_ok && !normals.is_empty() && normals.iter().all(|r| r.passed),
         detail:"至少一套独立正常整圈样本，所选正常样本均须符合预期；缺陷样本验证结果单独保留".into() });
+    let (fixture_reports, fixture_check) = fixture::validation_reports(&r, fixture_probes)?;
+    checks.extend(fixture_check);
     let base = cycle.recipe(&r.id).map(|r| r.revision_id.clone());
     checks.push(Check {
         name: "生产版本".into(),
@@ -1517,6 +1566,7 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
         checks,
         samples: results,
         environment_tag: initial_environment,
+        fixture: fixture_reports,
     })
 }
 
@@ -1589,7 +1639,7 @@ pub fn workspace_publish(
     let mut release_doc = w.doc.clone();
     release_doc.teaching_id = Some(vision::unique_run_id(&format!("teaching-{}-v{}", release_doc.id, release_doc.version)));
     release_doc.plan_version = app.state::<CycleHost>().recipes.plan_version_for(&release_doc)?;
-    let bundle = freeze_bundle(&app, &host, &release_doc, &w.frames)?;
+    let bundle = freeze_bundle(&app, &host, &release_doc, &w.frames, validated)?;
     let mut next = w.clone();
     next.doc = release_doc.clone();
     next.pending = Some(Box::new(Release {
@@ -1698,8 +1748,10 @@ pub fn draft_summaries(app: &AppHandle) -> Vec<DraftSummary> {
         product_code: w.doc.product_code, shot_count: w.doc.shots.len() }).collect()
 }
 
-fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeDoc, teaching: &[Teaching]) -> Result<crate::release::ReleaseBundle, String> {
+/// 发布前冻结：示教图检查经 `check_view → checked` 重查；特征定位视图另要求这份验证里有通过的统计（`require_fixture_validation`）。
+fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeDoc, teaching: &[Teaching], validated: &Validation) -> Result<crate::release::ReleaseBundle, String> {
     let recipe = doc.build()?;
+    fixture::require_fixture_validation(&recipe, validated)?;
     let engine = app.state::<vision::VisionHost>().engine().ok_or("发布前必须加载兼容的图像核心库")?;
     vision::require_locate(&recipe, &engine.locate)?;
     let mut shots = Vec::new();
@@ -1989,7 +2041,7 @@ pub async fn workspace_compare(
             if detail.summary.source == store::RecordSource::OfflineCandidate {
                 let samples = history_samples(&app, &detail)?;
                 let (table, measured) = measure_images_from(&app, &w, recipe.shot_count(), &detail.summary.sn,
-                    MeasurementSource::HistorySample, |k, v| samples.load(k, v))?;
+                    MeasurementSource::HistorySample, None, |k, v| samples.load(k, v))?;
                 measurements = measured;
                 table
             } else {
@@ -2265,12 +2317,13 @@ pub async fn workspace_station_import(app: AppHandle, cam: u8, bytes: Vec<u8>, v
 
 fn measure_images(app: &AppHandle, w: &Workspace, count: usize, sn: &str,
     load: impl FnMut(usize, u8) -> Result<FrameImage, String>) -> Result<(Vec<PointState>, Vec<Value>), String> {
-    measure_images_from(app, w, count, sn, MeasurementSource::CurrentDevices, load)
+    measure_images_from(app, w, count, sn, MeasurementSource::CurrentDevices, None, load)
 }
 
 enum MeasurementSource { CurrentDevices, HistorySample }
 
-fn measure_images_from(app: &AppHandle, w: &Workspace, count: usize, sn: &str, source: MeasurementSource,
+/// `probes`：只有发布验证的独立正常样本给，按特征定位视图另跑亮度 ±40 与 ±3° 探测（`fixture::probe_sample`），比较与复测不给。
+fn measure_images_from(app: &AppHandle, w: &Workspace, count: usize, sn: &str, source: MeasurementSource, mut probes: Option<&mut Vec<fixture::ProbeEntry>>,
     mut load: impl FnMut(usize, u8) -> Result<FrameImage, String>) -> Result<(Vec<PointState>, Vec<Value>), String> {
     let recipe = w.doc.build()?;
     if count != recipe.shot_count() { return Err("样本组的原图数量与拍照点不一致".into()); }
@@ -2295,6 +2348,14 @@ fn measure_images_from(app: &AppHandle, w: &Workspace, count: usize, sn: &str, s
             images.push((selected, Arc::new(image)));
         }
         let result = vision::measure_views(&engine, &recipe, k, &images, &format!("{run}-{k}"), &bases)?;
+        if let Some(probes) = probes.as_deref_mut() {
+            for vm in &result.views {
+                let (Some(base), Some((_, image))) = (bases.get(&vm.view), images.iter().find(|(v, _)| *v == vm.view)) else { continue };
+                let projected = recipe.for_view(k, vm.view)?;
+                probes.push(fixture::ProbeEntry { k, view: vm.view, sample: fixture::probe_sample(&engine, &projected, k, image, base,
+                    &format!("{run}-{k}-v{}", vm.view), vm.reading.as_ref(), vm.error.clone()) });
+            }
+        }
         let reference_failed = result.reference_failed();
         let reading = result.reading;
         for (i, &j) in reading.idx.iter().enumerate() {
@@ -2559,6 +2620,7 @@ mod tests {
             elapsed_ms: 1,
             reason: "pass".into(),
             measurement: Value::Null,
+            fixture: None,
         };
         Teaching {
             view_states: Vec::new(),
@@ -2600,16 +2662,24 @@ mod tests {
     #[test]
     fn teach_rejects_replaced_image_parameters_geometry_and_failed_trial() {
         let original = taught();
-        assert!(original.checked(&json!("geometry"), &json!("teach")).is_ok());
+        assert!(original.checked(&json!("geometry"), &json!("teach"), false).is_ok());
         let mut frame = original.clone();
         frame.image.as_mut().unwrap().id = "image-b".into();
-        assert!(frame.checked(&json!("geometry"), &json!("teach")).is_err());
+        assert!(frame.checked(&json!("geometry"), &json!("teach"), false).is_err());
         // 中线或检测参数改了：试测作废
-        assert!(original.checked(&json!("geometry"), &json!("other-teach")).is_err());
+        assert!(original.checked(&json!("geometry"), &json!("other-teach"), false).is_err());
         let mut frame = original.clone();
         frame.trial.as_mut().unwrap().passed = false;
-        assert!(frame.checked(&json!("geometry"), &json!("teach")).is_err());
-        assert!(original.checked(&json!("other-geometry"), &json!("teach")).is_err());
+        assert!(frame.checked(&json!("geometry"), &json!("teach"), false).is_err());
+        assert!(original.checked(&json!("other-geometry"), &json!("teach"), false).is_err());
+        // 特征定位视图（G4）：G4 之前 passed = true 的试测没有示教图检查报告，或报告没过，都不能保存示教、验证、发布
+        let report = |passed| Some(vision::fixture_quality::FixtureTeachReport { passed, checks: Vec::new(), pose: None, lever: None, texture_std: None, bright_fraction: None });
+        assert!(original.checked(&json!("geometry"), &json!("teach"), true).is_err(), "缺检查报告");
+        for (passed, ok) in [(false, false), (true, true)] {
+            let mut frame = original.clone();
+            frame.trial.as_mut().unwrap().fixture = report(passed);
+            assert_eq!(frame.checked(&json!("geometry"), &json!("teach"), true).is_ok(), ok, "报告通过 = {passed}");
+        }
     }
 
     #[test]
@@ -2640,6 +2710,7 @@ mod tests {
                 checks: vec![],
                 samples: vec![],
                 environment_tag: "test".into(),
+                fixture: vec![],
             },
             validation_site: ValidationSite::Real,
         }));
@@ -2663,7 +2734,7 @@ mod tests {
         let shot = &mut doc.shots[0];
         shot.views = vec![crate::recipe::ShotViewSpec { view: 1, enabled: true, path: shot.path.clone(), mm_per_px: shot.mm_per_px,
             detect: None, limits: None, calib: None, fixture: Some(crate::recipe::FixtureSpec { rect: [100, 100, 32, 32], source: "group-0-v1".into(),
-                search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None }) }];
+                search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None, end_margin_mm: 0.0 }) }];
         let original = doc.build().unwrap();
         let cases: [(&str, fn(&mut RecipeDoc), bool); 3] = [
             ("去掉特征定位", |d| d.shots[0].views[0].fixture = None, false),
@@ -2680,7 +2751,7 @@ mod tests {
     fn archive_fixture(doc: RecipeDoc) -> Release {
         Release { doc, bundle_id: "prior-directory".into(), base_revision: None, revision: 1,
             frames: vec![taught()], overview: Overview::default(),
-            validation: Validation { revision: 1, passed: true, checked_at: 1, checks: vec![], samples: vec![], environment_tag: Value::Null },
+            validation: Validation { revision: 1, passed: true, checked_at: 1, checks: vec![], samples: vec![], environment_tag: Value::Null, fixture: vec![] },
             validation_site: ValidationSite::Real }
     }
 

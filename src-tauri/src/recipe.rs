@@ -184,8 +184,6 @@ pub const RECIPE_SCHEMA: u32 = 7;
 pub const FIXTURE_TEMPLATE_PAD_PX: u32 = 4;
 /// glue.locate 的角度扫描步长（°），只在开转角时起作用
 pub const FIXTURE_ANGLE_STEP_DEG: f32 = 0.5;
-/// 定稿 §10 决定一的示教余量 m（mm）：两端排除长度 = max(0, |Δ| − m) + 1 个站距。G4 按验证数据再定
-pub const FIXTURE_END_MARGIN_MM: f32 = 0.0;
 /// 带外圈模板离胶检测走廊（示教中线 ± 搜索半宽）至少再留这么多（px）。阶段 0 评测（P0）选框时要求内框离走廊
 /// 大于 10 px；外圈让框在角上最多近 4√2 px，所以 P0 选出的框到这里还剩约 10 − 4√2 ≈ 4.3 px（不计 P0 每 2 px
 /// 取点的采样误差），取 4。
@@ -223,7 +221,13 @@ pub struct FixtureSpec {
     /// 两端切向搬移 |Δ| 的上限（mm），超过判位置基准无效（ERR 92）；为空时用临时默认公式（见 end_shift_limit_mm）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_end_shift_mm: Option<f32>,
+    /// 示教余量 m（mm，定稿 §10 决定一第 3 条）：离胶路首、末弧长不到 m 的站永远不判（超出检测范围、不留胶宽），
+    /// 位姿搬移再从 N 端量起排除 max(m, |Δ|) + 1 个站距。只由验证建议写入（`workspace_apply_fixture_suggestion`），默认 0
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub end_margin_mm: f32,
 }
+
+fn is_zero(v: &f32) -> bool { *v == 0.0 }
 
 impl FixtureSpec {
     /// 只核对配方本身能判的：右、下边要看图像尺寸，由工作台保存示教与生成模板时核对。
@@ -251,6 +255,9 @@ impl FixtureSpec {
         if self.max_end_shift_mm.is_some_and(|m| !(m.is_finite() && m > 0.0)) {
             return Err(format!("{what}：两端搬移上限必须是正数"));
         }
+        if !(self.end_margin_mm.is_finite() && (0.0..=100.0).contains(&self.end_margin_mm)) {
+            return Err(format!("{what}：示教余量需在 0–100 mm 之间"));
+        }
         if !valid_image_id(&self.source) {
             return Err(format!("{what}：缺少模板来源（示教图编号）。G2 时期的候选需要重建，或在示教页重新保存示教参数"));
         }
@@ -270,7 +277,7 @@ impl FixtureSpec {
     ///
     /// 两端各沿末段方向延长到无穷远（对图内的框等价于延到图边，与图像尺寸无关）：枪上相机里同一条胶通常越过示教段两端
     /// 继续留在画面里，只量示教段（端点处是半圆帽）时，框放在胶的直线延长上也能通过，模板里却有胶。
-    /// 延长段弯走的胶量不到，要靠 G4 的亮度与 peakRatio 检查。
+    /// 延长段弯走的胶量不到；亮度 ±40 与 peakRatio 也看不见框里的胶，G4 只靠保存示教时的人工确认（定稿 §13）。
     fn clearance(&self, path: &[[f32; 2]]) -> f64 {
         let pad = f64::from(FIXTURE_TEMPLATE_PAD_PX);
         let [x, y, w, h] = self.rect.map(f64::from);
@@ -292,16 +299,9 @@ impl FixtureSpec {
 
     /// 模板不得含胶（定稿 §11 跨阶段约束）：带外圈模板离 `lines` 里每条示教中线（含两端切向延长线）都要大于“该线搜索半宽 + 余量”。
     /// 模板框盖住胶时位姿跟着胶走，d′ 恒约等于 0，真实胶偏会被放行。`lines`：（哪个拍照点的哪幅图，示教中线，搜索半宽 px）。
-    pub fn check_corridor(&self, what: &str, lines: &[(String, &[[f32; 2]], f64)]) -> Result<(), String> {
-        for (owner, path, half) in lines {
-            let need = half + FIXTURE_CORRIDOR_MARGIN_PX;
-            let clearance = self.clearance(path);
-            if !(clearance > need) {
-                return Err(format!("{what}：定位框（含 {FIXTURE_TEMPLATE_PAD_PX} px 外圈）压住了{owner} 的胶检测走廊——离示教中线（含两端切向延长）{clearance:.1} px，\
-                    需要大于 {need:.1} px（搜索半宽 {half:.1} px + 余量 {FIXTURE_CORRIDOR_MARGIN_PX} px）。模板里有胶时位姿跟着胶走、测不出胶偏，请把框移出走廊"));
-            }
-        }
-        Ok(())
+    /// 返回每条线的（哪幅图，实际距离，需要大于的距离）。
+    fn corridor_clearances(&self, lines: &[(String, Vec<[f32; 2]>, f64)]) -> Vec<(String, f64, f64)> {
+        lines.iter().map(|(owner, path, half)| (owner.clone(), self.clearance(path), half + FIXTURE_CORRIDOR_MARGIN_PX)).collect()
     }
 
     /// 示教框中心（px），与 glue.locate 的 teachCenter 一致：(x + (w − 1)/2, y + (h − 1)/2)。
@@ -319,6 +319,30 @@ impl FixtureSpec {
         let lever = ends_px.iter().map(|p| (p[0] - c[0]).hypot(p[1] - c[1])).fold(0.0, f64::max) * mm_per_px;
         std::f64::consts::SQRT_2 * (self.search_radius_px as f64 - 2.0) * mm_per_px
             + lever * 2.0 * (self.angle_range_deg as f64 / 2.0).to_radians().sin()
+    }
+}
+
+/// 定位框到同一场景一条胶检测走廊的余量（`RecipeDoc::fixture_clearances`）。
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Clearance {
+    /// 框所在的拍照点下标与图号
+    pub k: usize,
+    pub view: u8,
+    /// 走廊属于哪个拍照点的哪幅图（如“拍照点 P2 图 1”）
+    pub owner: String,
+    /// 带外圈模板到示教中线（含两端切向延长）的距离（px）
+    pub clearance: f64,
+    /// 需要大于的距离：该线搜索半宽 + FIXTURE_CORRIDOR_MARGIN_PX
+    pub need: f64,
+}
+
+impl Clearance {
+    pub fn passed(&self) -> bool { self.clearance > self.need }
+
+    pub fn message(&self) -> String {
+        format!("定位框（含 {FIXTURE_TEMPLATE_PAD_PX} px 外圈）压住了{} 的胶检测走廊——离示教中线（含两端切向延长）{:.1} px，\
+            需要大于 {:.1} px（搜索半宽 {:.1} px + 余量 {FIXTURE_CORRIDOR_MARGIN_PX} px）。模板里有胶时位姿跟着胶走、测不出胶偏，请把框移出走廊",
+            self.owner, self.clearance, self.need, self.need - FIXTURE_CORRIDOR_MARGIN_PX)
     }
 }
 
@@ -760,25 +784,36 @@ impl RecipeDoc {
     /// 拍照点 A 的模板可能盖住拍照点 B 的胶，所以每个框要避开组内全部已示教中线的走廊。
     /// 停用视图、“不检”拍照点上的 fixture 不查（与 `has_fixture` 同口径），它们的中线也不算走廊。
     fn check_fixture_corridors(&self) -> Result<(), String> {
-        type Group = (Vec<(String, Vec<[f32; 2]>, f64)>, Vec<(String, FixtureSpec)>);
+        match self.fixture_clearances()?.into_iter().find(|c| !c.passed()) {
+            Some(c) => Err(format!("拍照点 {} 图 {} 特征定位：{}", self.shots[c.k].id, c.view, c.message())),
+            None => Ok(()),
+        }
+    }
+
+    /// 每个启用的定位框到同组（同 Pose、同相机、同一幅图）每条已示教中线走廊的余量，见 `check_fixture_corridors`。
+    /// 配方校验与示教检查（G4 的 `workspace_fixture_check`、试测报告）共用这一份几何。
+    pub(crate) fn fixture_clearances(&self) -> Result<Vec<Clearance>, String> {
+        type Group = (Vec<(String, Vec<[f32; 2]>, f64)>, Vec<(usize, u8, FixtureSpec)>);
         let mut groups: BTreeMap<(&str, &str, u8), Group> = BTreeMap::new();
-        for shot in self.shots.iter().filter(|s| s.measured()) {
+        for (k, shot) in self.shots.iter().enumerate().filter(|(_, s)| s.measured()) {
             for v in shot.enabled_views() {
                 let projected = shot.for_view(v)?;
                 let label = format!("拍照点 {} 图 {v}", shot.id);
                 let group = groups.entry((shot.pose_id.as_str(), shot.camera.as_str(), v)).or_default();
                 if let (true, Some(mm)) = (projected.path.len() >= 2, projected.mm_per_px) {
                     let detect = projected.detect.as_ref().unwrap_or(&self.detect);
-                    group.0.push((label.clone(), projected.path.clone(), f64::from(detect.search_mm) / f64::from(mm)));
+                    group.0.push((label, projected.path.clone(), f64::from(detect.search_mm) / f64::from(mm)));
                 }
-                if let Some(f) = projected.fixture { group.1.push((label, f)); }
+                if let Some(f) = projected.fixture { group.1.push((k, v, f)); }
             }
         }
+        let mut out = Vec::new();
         for (lines, fixtures) in groups.values() {
-            let lines: Vec<(String, &[[f32; 2]], f64)> = lines.iter().map(|(owner, path, half)| (owner.clone(), path.as_slice(), *half)).collect();
-            for (label, f) in fixtures { f.check_corridor(&format!("{label} 特征定位"), &lines)?; }
+            for (k, view, f) in fixtures {
+                out.extend(f.corridor_clearances(lines).into_iter().map(|(owner, clearance, need)| Clearance { k: *k, view: *view, owner, clearance, need }));
+            }
         }
-        Ok(())
+        Ok(out)
     }
 
     pub fn build(&self) -> Result<Recipe, String> {
@@ -1749,7 +1784,7 @@ mod tests {
 
     fn fixture_spec() -> FixtureSpec {
         FixtureSpec { rect: [100, 100, 32, 32], source: "capture-1-0-v1".into(), search_radius_px: 20.0, angle_range_deg: 0.0,
-            min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None }
+            min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None, end_margin_mm: 0.0 }
     }
 
     #[test]

@@ -70,8 +70,10 @@ export interface FixtureSpec {
   minScore: number;
   /** 次峰 / 主峰上限；1 = 不判 */
   maxPeakRatio: number;
-  /** 两端切向搬移上限（mm）；不设时用临时默认公式 */
+  /** 两端切向搬移上限（mm）；不设时用临时默认公式。只由验证建议写入 */
   maxEndShiftMm?: number;
+  /** 示教余量 m（mm）：胶路首末各长 m 的一段永远不判。只由验证建议写入，不设为 0 */
+  endMarginMm?: number;
 }
 
 /** 特征定位的位姿（帧记录追溯与叠图用）：T 由 offset、angle 与配方快照里 fixture.rect 的示教中心还原。 */

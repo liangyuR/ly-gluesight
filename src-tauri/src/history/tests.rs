@@ -128,7 +128,7 @@ fn fixture_recipe_with_the_same_template_source_rejudges_a_nominal_only_change()
     // 来源换了由测量布局拦下，见 workspace 的测量布局用例
     let mut doc = crate::recipe::samples().remove(1);
     doc.shots[0].fixture = Some(crate::recipe::FixtureSpec { rect: [100, 100, 32, 32], source: "capture-1-0-v1".into(), search_radius_px: 20.0,
-        angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None });
+        angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None, end_margin_mm: 0.0 });
     let original = Arc::new(doc.build().unwrap());
     let table = vec![crate::judge::PointState::Measured { d: Some(0.0), w: 4.0 }; original.point_count()];
     let stored = StoredMeasurement { table: table.clone(), verdict: judge::judge(&original, &table).verdict, ..row(&original, 1) };

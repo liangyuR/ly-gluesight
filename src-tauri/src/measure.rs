@@ -47,7 +47,7 @@ pub const ST_GAP: u8 = 1;
 pub const ST_INVALID: u8 = 2;
 /// 有胶、无位置基准：胶宽有效，d 不用（位置判定见 judge 的基准无效规则）
 pub const ST_NO_REF: u8 = 4;
-/// 超出检测范围：落在位姿搬过去的胶路两端之外；d 不用，w 为 NaN 表示没测到胶宽
+/// 超出检测范围：落在位姿搬过去的胶路两端之外，或在特征定位的示教余量 m 内（不留胶宽）；d 不用，w 为 NaN 表示没测到胶宽
 pub const ST_OUT_OF_RANGE: u8 = 5;
 
 /// 定位失败的原因（帧徽标显示）

@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use super::fixture::{self, Pose};
 use super::{Engine, FrameImage, RunResult};
 use crate::measure::{drop_reference, Job, Measured, ReferenceFailure, REFERENCE_END_SHIFT, REFERENCE_LOCATE_FAILED, ST_GAP, ST_NO_REF, ST_OK, ST_OUT_OF_RANGE};
-use crate::recipe::{FixtureSpec, Polarity, Recipe, FIXTURE_ANGLE_STEP_DEG, FIXTURE_END_MARGIN_MM, FIXTURE_TEMPLATE_PAD_PX};
+use crate::recipe::{FixtureSpec, Polarity, Recipe, FIXTURE_ANGLE_STEP_DEG, FIXTURE_TEMPLATE_PAD_PX};
 
 /// 特征定位的结果（定稿 §10）：位姿是否采用、两端切向搬移与排除长度。随单图测量、试测记录与帧记录（`ViewResult.pose`）序列化；
 /// 叠图时 T 由 offset、angle 与配方快照里的 `rect` 示教中心还原。
@@ -26,7 +26,7 @@ pub struct PoseRecord {
     pub offset: Option<[f32; 2]>,
     /// 带符号的两端切向搬移 [Δ_起, Δ_止]（mm），沿胶路方向为正
     pub end_shift_mm: Option<[f32; 2]>,
-    /// 两端各排除的长度（mm）：max(0, |Δ| − m) + 1 个站距
+    /// 两端各排除的长度（mm，从示教线 N 的端点量起，含示教余量 m）：max(m, |Δ|) + 1 个站距
     pub excluded_mm: Option<[f32; 2]>,
     /// 护栏：|Δ| 的上限（mm）
     pub end_limit_mm: f32,
@@ -264,8 +264,10 @@ fn plan(recipe: &Recipe, k: usize) -> Result<ShotPlan, String> {
     });
     let mut end_limit_mm = 0.0;
     if let Some(f) = &shot.fixture {
-        // 恒等位姿下每端也排除 1 个站距内的站（决定一字面的“不超过”，两站），3–4 站的视图会整段超出检测范围
-        if idx.len() < 5 { return Err(fail("胶路太短：特征定位每端至少排除 2 站，剩不下可判的站")); }
+        // 恒等位姿下每端也排除示教余量 m 加 1 个站距内的站（决定一字面的“不超过”），剩不下 3 站时每帧都判不了位置
+        if judged_stations(idx.len(), recipe.spacing as f64, f.end_margin_mm as f64) < MIN_JUDGED_STATIONS {
+            return Err(fail(&format!("胶路太短或示教余量过大：特征定位两端各排除示教余量 {:.1} mm 与 1 个站距后，剩不下 {MIN_JUDGED_STATIONS} 站可判", f.end_margin_mm)));
+        }
         let end = |j: usize| [recipe.points.x[j] as f64, recipe.points.y[j] as f64];
         end_limit_mm = f.end_shift_limit_mm([end(idx[0]), end(idx[idx.len() - 1])], scale);
         graph["nodes"].as_array_mut().unwrap().push(json!({"id": "n_locate", "op": "glue.locate", "params": {
@@ -441,7 +443,21 @@ fn parse_result(recipe: &Recipe, p: &ShotPlan, result: &RunResult) -> Result<Sho
     Ok(m)
 }
 
+/// 特征定位视图在恒等位姿下至少要留下这么多站可判（两端各排除示教余量 m 与 1 个站距之后）。
+pub const MIN_JUDGED_STATIONS: usize = 3;
+
+/// n 站、站距 spacing（mm）的胶路在恒等位姿下两端各排除 m + 1 个站距（含端点上的站，与 `apply_pose` 同口径）后剩下的站数。
+/// 示教余量建议（验证页）与 `plan` 都用它判断 m 是否过大。
+pub fn judged_stations(n: usize, spacing: f64, margin_mm: f64) -> usize {
+    let length = n.saturating_sub(1) as f64 * spacing;
+    let excluded = margin_mm.max(0.0) + spacing;
+    (0..n).filter(|&i| { let s = i as f64 * spacing; s > excluded + 1e-6 && length - s > excluded + 1e-6 }).count()
+}
+
 /// 按 glue.locate 的位姿把静态胶偏改成相对工件的胶偏（定稿 §2、§10）：
+/// - 示教余量 m（决定一第 3 条，GlueSight 侧实现，见定稿 §13）：离 N 首、末弧长不到 m 的站不管定位成败一律超出检测范围，
+///   并清掉胶宽与胶边——与 `glue.taught_path` 取 zone = [m, L − m] 时这些站根本不存在等价，站表、弧长核对与偏差投影
+///   （仍用整条 N）都不用变；
 /// - 不采用（定位失败，或开了转角却看不出角度）：有胶站全部无基准，不做两端排除；
 /// - 采用：d 改为胶中心到 N' = T(N) 的有向法向距离（正向取 n' = R·n，与静态 d 同号），两端按切向搬移 |Δ| 排除，
 ///   最后 |Δ| 超过护栏上限时全部有胶站再去掉基准（先排除再护栏：排除区不进断胶区间，后沿的假断胶不会盖过 ERR 92）。
@@ -468,6 +484,18 @@ fn apply_pose(recipe: &Recipe, p: &ShotPlan, f: &FixtureSpec, record: &Value, no
         end_limit_mm: p.end_limit_mm as f32,
     };
     let n = p.idx.len();
+    let spacing = recipe.spacing as f64;
+    let length = (n - 1) as f64 * spacing;
+    let margin = f.end_margin_mm as f64;
+    for i in 0..n {
+        let s = i as f64 * spacing;
+        if margin > 0.0 && (s < margin - 1e-6 || length - s < margin - 1e-6) {
+            m.st[i] = ST_OUT_OF_RANGE;
+            m.d[i] = f32::NAN;
+            m.w[i] = f32::NAN;
+            m.edges[i] = None;
+        }
+    }
     if !accepted {
         for i in 0..n { drop_reference(&mut m.st[i], &mut m.d[i]); }
         m.reference_failed = Some(REFERENCE_LOCATE_FAILED.into());
@@ -480,13 +508,12 @@ fn apply_pose(recipe: &Recipe, p: &ShotPlan, f: &FixtureSpec, record: &Value, no
     let unit = |a: [f64; 2], b: [f64; 2]| { let (x, y) = (b[0] - a[0], b[1] - a[1]); let l = x.hypot(y); [x / l, y / l] };
     let shift = |q: [f64; 2], t: [f64; 2]| { let moved = pose.apply(q); ((moved[0] - q[0]) * t[0] + (moved[1] - q[1]) * t[1]) * p.scale };
     let delta = [shift(nominal[0], unit(nominal[0], nominal[1])), shift(nominal[n - 1], unit(nominal[n - 2], nominal[n - 1]))];
-    let spacing = recipe.spacing as f64;
-    let excluded = delta.map(|d| (d.abs() - FIXTURE_END_MARGIN_MM as f64).max(0.0) + spacing);
-    let length = (n - 1) as f64 * spacing;
+    // 从 N 端量起：示教余量 m 与搬移 |Δ| 取大者，再加 1 个站距（= 从 zone 起点量的 max(0, |Δ| − m) + 1 个站距）
+    let excluded = delta.map(|d| d.abs().max(margin) + spacing);
     for i in 0..n {
         let s = i as f64 * spacing;
         if s <= excluded[0] + 1e-6 || length - s <= excluded[1] + 1e-6 {
-            // 超出检测范围：不判胶偏、不判断胶；有胶站的胶宽与胶边留着
+            // 超出检测范围：不判胶偏、不判断胶；有胶站的胶宽与胶边留着（余量段上面已清掉）
             m.st[i] = ST_OUT_OF_RANGE;
             m.d[i] = f32::NAN;
         } else if m.st[i] == ST_OK {

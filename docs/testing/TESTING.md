@@ -27,6 +27,7 @@
 | `pnpm test:ui:production` | 自动构建、启动与关闭隔离桌面实例，验证一件生产落盘 |
 | `pnpm test:e2e:offline` | 全新隔离站点上用离线·样本集与真实 lyFlow 走完建站、示教、验证、发布、投产与复测 |
 | `pnpm test:e2e:log-replay` | 全新隔离站点上投产 3 件样本件，核对本件时间线、运行日志、原包重跑逐拍照点一致、原图缺失拒绝与诊断包 |
+| `pnpm test:e2e:fixture` | 全新隔离站点上经示教页画定位框（压胶路被拦、高光框保存被拦、好框通过）、定位试测、验证统计与采用两端参数建议，再发布、投产 |
 | `pnpm typecheck` | 应用及测试 TypeScript 类型检查 |
 | `pnpm build` | 生产前端构建 |
 | `cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib` | 默认后端回归，依赖需已缓存 |
@@ -52,7 +53,7 @@ S7 专项需要 Python 3 和本机 TCP 权限，可用 `S7_TEST_PYTHON` 指定 P
 
 ## 特征定位真引擎测试
 
-`src-tauri/src/vision/taught/engine_tests.rs` 在合成工件（定位框里两个暗孔和一个亮 L 角，暗胶条沿示教线）上跑真实 lyFlow 的 glue.locate 与 bead_width，经发布包的生产路径：临时目录里 `release::publish`（模板由包内示教原图裁出）→ `release::load` → `Prepared::load`（含预热的定位验收）→ `measure_views`，再交给 `judge`。共 4 项：整件平移（+12, +7 px 与切向 −25 px）后 d′ 不变、两端超出检测范围、判 OK（E1）；只移胶 8 px 时 d 沿法向变 0.8 mm、判 NG_POSITION（E2）；定位框被抹平时有胶站全部无基准、胶宽保留、判 ERR 92（E3）；加载后把包内模板换成同尺寸、特征被抹平的一块，下一帧位姿不再被采用、判 ERR 92，证明生产读的是发布包自己的模板（E4）；定位框逐像素挪向胶路，发布要在带外圈的框碰到漂到最远可测处（−16 px）的胶之前以走廊检查拒绝，最近一个能发布的框上胶漂过去时位姿不动、d 变 −1.6 mm、判 NG_POSITION（E5）。`src-tauri/src/packaging.rs` 另有 E6：打包自检的定位冒烟在支持带外圈模板的运行库上报 ok。默认忽略，需要带 lyFlow#32 glue.locate 的 `lyflow_core.dll`（发布前用本地构建）：
+`src-tauri/src/vision/taught/engine_tests.rs` 在合成工件（定位框里两个暗孔和一个亮 L 角，暗胶条沿示教线）上跑真实 lyFlow 的 glue.locate 与 bead_width，E1–E5 经发布包的生产路径：临时目录里 `release::publish`（模板由包内示教原图裁出）→ `release::load` → `Prepared::load`（含预热的定位验收）→ `measure_views`，再交给 `judge`：整件平移（+12, +7 px 与切向 −25 px）后 d′ 不变、两端超出检测范围、判 OK（E1）；只移胶 8 px 时 d 沿法向变 0.8 mm、判 NG_POSITION（E2）；定位框被抹平时有胶站全部无基准、胶宽保留、判 ERR 92（E3）；加载后把包内模板换成同尺寸、特征被抹平的一块，下一帧位姿不再被采用、判 ERR 92，证明生产读的是发布包自己的模板（E4）；定位框逐像素挪向胶路，发布要在带外圈的框碰到漂到最远可测处（−16 px）的胶之前以走廊检查拒绝，最近一个能发布的框上胶漂过去时位姿不动、d 变 −1.6 mm、判 NG_POSITION（E5）。E8 走工作台示教试测的同一条路（G4）：模板从示教图裁出放进临时目录、在示教图上测量，按示教图检查出报告——示教检查通过、自定位位姿恒等（本地构建上偏移 0 px、次峰比 0.279），亮度 ±40 的帧经验证统计的锁定判据不算错锁；定位框（含外圈附近）抹成噪声后纹理检查不过。合成图的亮区 +40 也不饱和，E8 只证明接线与恒等容差，±40 能否拦住真实过曝错锁要看现场样本。`src-tauri/src/packaging.rs` 另有 E6：打包自检的定位冒烟在支持带外圈模板的运行库上报 ok。默认忽略，需要带 lyFlow#32 glue.locate 的 `lyflow_core.dll`（发布前用本地构建）：
 
 ```powershell
 $env:LYFLOW_CORE_DLL = '<lyFlow 构建>\build\core\bin\lyflow_core.dll'
@@ -103,6 +104,7 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 | --- | --- | --- | --- | --- |
 | `pnpm test:e2e:offline` | `tests/native/offline-e2e.mjs` + `offline-restart.mjs` | e2e（`…e2e-tests`），每次清空资料 | 9341 | `output/playwright/e2e-regression` |
 | `pnpm test:e2e:log-replay` | `tests/native/log-replay-offline.mjs` | e2e（`…e2e-tests`），每次清空资料 | 9346 | `output/playwright/log-replay`（实例日志在 e2e-regression） |
+| `pnpm test:e2e:fixture` | `tests/native/fixture-teach-e2e.mjs` | e2e（`…e2e-tests`），每次清空资料 | 9341 | `output/playwright/e2e-regression/fixture` |
 | `pnpm test:ui:production` | `tests/native/production-flow-ui.mjs` | flow（`…flow-tests`），保留资料 | 9339 | `output/playwright/flow-regression` |
 
 参数跟在命令后，例如 `pnpm test:e2e:offline -DebugPort 9351 -SkipBuild`。
@@ -112,7 +114,7 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 | `-DebugPort` | WebView2 远程调试端口，`127.0.0.1` 与 `[::1]` 上都必须空闲，否则启动前报错 |
 | `-SkipBuild` | 复用上次构建复制到输出目录的 `gluesight-ui-tests.exe`（需同一配置构建过） |
 | `-DataRoot` / `GLUESIGHT_TEST_DATA_ROOT` | 隔离资料目录的父目录，资料目录为 `<DataRoot>\<应用标识>`；默认在输出目录下 |
-| `-SampleSet` / `GLUESIGHT_SAMPLE_SET` | 样本集目录（`test:e2e:offline` 与 `test:e2e:log-replay` 必需） |
+| `-SampleSet` / `GLUESIGHT_SAMPLE_SET` | 样本集目录（`test:e2e:offline`、`test:e2e:log-replay` 与 `test:e2e:fixture` 必需） |
 | `-LyFlowRuntime` / `GLUESIGHT_LYFLOW_RUNTIME` | lyFlow 运行库目录；未提供时按 `packaging/runtime.json` 恢复 |
 | `-Parts` | 仅 `test:e2e:log-replay`：投产件数，至少 3 |
 | `-ArmBudgetMs` | 仅 `test:e2e:offline`：把布防预算 `timeouts.armMs` 临时改为该值（毫秒），写进 `result.json` 的 `inputs.armBudgetMs`；不传时按默认 200 ms 验证 |
@@ -150,6 +152,14 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 **结果字段**：`branches.calibration` 固定为 `sampleSetDeclared`；`branches.normalExpectation` 记录合格样本的实际结论是 `ok` 还是 `okClass`（OK_WITH_EXCURSION），两者都判为符合；`replayPart` 为做历史复测与重启续测的样本件（有断胶件时为它）；`replay.*.via` 均为 `ui`，三种复测都经历史详情界面触发（“使用该配方候选”需在确认框中切换）。
 
 **边界**：每组所选相机、笔划、像素当量、窄搜索参数与人工断胶件都是让流程跑通的演示夹具，集中定义在脚本顶部；通过只说明建站到投产的业务接线、多相机拍照点组示教、样本件追溯与原图复测一致，不代表中线提取或检测算法质量、现场标定精度、真实缺陷检出、现场 PLC/SDK 或节拍。mx11-demo 在每组必须选一张检测图的规则下需示教全部 8 个点，其中 S003、S006、S007 尚无可靠笔划夹具，暂不提供其夹具。
+
+## 特征定位端到端
+
+`pnpm test:e2e:fixture` 由 `scripts/Test-FixtureE2E.ps1` 驱动 `tests/native/fixture-teach-e2e.mjs`，与离线端到端共用 e2e 配置、实例与样本集副本做法（夹具见 `offline-e2e.mjs` 的 `FIXTURES`），不能同时运行。lyFlow 运行库必须支持带外圈模板的 `glue.locate`（本地构建用 `-LyFlowRuntime` 指过去，脚本只在本进程设环境变量）。
+
+流程：12 组中线示教、p01 / p02 两圈样本进样本库走 IPC；拍照点组 S001（cam2）的定位特征步骤走界面：在示教图上拖框（屏幕取整误差用数值框改到夹具值）；压在中线上的框标“框未采用”、原因指向走廊、不进候选；高光框（≥ 215 的像素约 97%）进草稿但亮像素阻断，试测无效、不能保存；好框 `[248, 248, 96, 96]` 试测有效（示教图自定位偏移 ≤ 0.5 px），定位试测表里示教图与两帧样本都被采用；勾选喷嘴确认后保存。验证（IPC）要求“特征定位”检查与亮度 ±40 锁定通过、给出可采用的两端参数建议；在验证页面板上“采用建议…”并确认后，该视图要求重新试测、旧验证不能发布；示教页重新试测保存、再验证、发布，投产 p01 为合格类、p02 为断胶，p01 的记录带被采用的位姿。截图 `fixture-1`–`fixture-5` 与 `result.json` 在输出目录。
+
+**边界**：三个框是按 S002_cam2 手工选的演示夹具，不代表现场选框；离线副本的验证样本与示教是同一件的同一批图，σ、两端 |Δ| 与定位试测偏移都接近 0，统计好看不代表现场。
 
 ## 站点模式（真机 / 离线）
 

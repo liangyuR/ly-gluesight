@@ -200,7 +200,7 @@ fn multiview_failure_is_local_but_missing_image_is_acquisition_failure() {
 }
 
 fn fixture_spec() -> FixtureSpec {
-    FixtureSpec { rect: [60, 140, 32, 32], source: "capture-1-0-v1".into(), search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None }
+    FixtureSpec { rect: [60, 140, 32, 32], source: "capture-1-0-v1".into(), search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None, end_margin_mm: 0.0 }
 }
 
 /// document() 的拍照点 0（41 站、站距 4 px = 1 mm、法向 (0, 1)）带上特征定位。
@@ -278,26 +278,44 @@ fn rejected_pose_keeps_widths_marks_no_reference_and_reports_the_view() {
 }
 
 #[test]
-fn tangential_shift_excludes_each_end_by_shift_plus_one_spacing() {
-    // 防的回归（决定一）：两端排除长度不是 max(0, |Δ| − m) + 1 个站距；排除区里原本断胶的站还当断胶判；排除动了中段的 d
-    let f = fixture_spec();
-    let recipe = located(f.clone());
-    let p = plan(&recipe, 0).unwrap();
-    // 41 站、站距 4 px（1 mm）；位姿沿胶路切向 +10 px（Δ = 2.5 mm）：两端各排除 3.5 mm，即 4 站
-    let m = parse_result(&recipe, &p, &with_pose(result(&recipe, 0, &[2, 20, 38]), pose(&f, true, [10.0, 0.0], true))).unwrap();
-    let excluded: Vec<usize> = (0..41).filter(|&i| m.st[i] == ST_OUT_OF_RANGE).collect();
-    assert_eq!(excluded, [0, 1, 2, 3, 37, 38, 39, 40]);
-    assert!(excluded.iter().all(|&i| m.d[i].is_nan()));
-    for i in [2, 38] { assert!(m.w[i].is_nan() && m.edges[i].is_none(), "站 {i} 原本断胶"); }
-    assert!(m.w[0] == 4.0 && m.edges[0].is_some(), "有胶站的胶宽与胶边留着");
-    assert_eq!(m.st[20], ST_GAP);
-    for i in (4..=36).filter(|&i| i != 20) {
-        assert!(m.st[i] == ST_OK && (m.d[i] - 0.5).abs() < 1e-5, "站 {i}：{} {}", m.st[i], m.d[i]);
+fn ends_exclude_margin_never_judged_and_shift_measured_from_the_taught_line_ends() {
+    // 防的回归（决定一，定稿 §13 的示教余量实现）：两端排除长度不是从 N 端量起的 max(m, |Δ|) + 1 个站距；
+    // 余量段留着胶宽（胶宽照判）或只在定位成功时才排除（定位失败时余量段判 ERR/断胶）；排除区里原本断胶的站还当断胶判；排除动了中段的 d
+    // 41 站、站距 4 px（1 mm）；位姿沿胶路切向 +10 px（Δ = 2.5 mm）；站 2、20、38 原本断胶
+    // （名称，余量 m，定位是否成功，余量段（不留胶宽）的站数/端，超出检测范围的站数/端）
+    for (name, margin, ok, cleared, out) in [
+        ("m = 0", 0.0, true, 0, 4),           // 2.5 + 1 = 3.5 mm → 站 0–3
+        ("|Δ| ≤ m 只多排除 1 个站距", 3.0, true, 3, 5),  // 余量 s < 3 → 站 0–2；max(3, 2.5) + 1 = 4 mm → 站 0–4
+        ("|Δ| > m 按 |Δ|", 1.5, true, 2, 4),  // 余量 s < 1.5 → 站 0–1；max(1.5, 2.5) + 1 = 3.5 mm → 站 0–3
+        ("定位失败时余量段照样不判", 3.0, false, 3, 3),
+    ] {
+        let f = FixtureSpec { end_margin_mm: margin, ..fixture_spec() };
+        let recipe = located(f.clone());
+        let p = plan(&recipe, 0).unwrap();
+        let m = parse_result(&recipe, &p, &with_pose(result(&recipe, 0, &[2, 20, 38]), pose(&f, ok, [10.0, 0.0], true))).unwrap();
+        let end = |i: usize, count: usize| i < count || 40 - i < count;
+        for i in 0..41 {
+            if end(i, cleared) {
+                assert!(m.st[i] == ST_OUT_OF_RANGE && m.w[i].is_nan() && m.edges[i].is_none(), "{name} 站 {i}：余量段不留胶宽");
+            } else if end(i, out) {
+                assert_eq!(m.st[i], ST_OUT_OF_RANGE, "{name} 站 {i}");
+                assert_eq!(m.w[i].is_nan(), i == 2 || i == 38, "{name} 站 {i}：有胶站的胶宽留着，原本断胶的不当断胶判");
+            } else if i == 20 {
+                assert_eq!(m.st[i], ST_GAP, "{name}");
+            } else if ok {
+                assert!(m.st[i] == ST_OK && (m.d[i] - 0.5).abs() < 1e-5, "{name} 站 {i}：{} {}", m.st[i], m.d[i]);
+            } else {
+                assert_eq!(m.st[i], ST_NO_REF, "{name} 站 {i}");
+            }
+            assert!(m.st[i] == ST_OK || m.d[i].is_nan(), "{name} 站 {i}");
+        }
+        if ok {
+            let pose = m.pose.unwrap();
+            let close = |v: Option<[f32; 2]>, want: f32| v.is_some_and(|v| v.iter().all(|x| (x - want).abs() < 1e-5));
+            assert!(close(pose.end_shift_mm, 2.5) && close(pose.excluded_mm, margin.max(2.5) + 1.0), "{name} {pose:?}");
+            assert!(m.reference_failed.is_none(), "{name}");
+        }
     }
-    let pose = m.pose.unwrap();
-    let close = |v: Option<[f32; 2]>, want: f32| v.is_some_and(|v| v.iter().all(|x| (x - want).abs() < 1e-5));
-    assert!(close(pose.end_shift_mm, 2.5) && close(pose.excluded_mm, 3.5), "{pose:?}");
-    assert!(m.reference_failed.is_none());
 }
 
 #[test]
@@ -356,12 +374,16 @@ fn fixture_run_with_empty_relative_or_template_less_base_dir_is_refused() {
 }
 
 #[test]
-fn fixture_on_path_shorter_than_five_stations_is_refused() {
-    // 防的回归：胶路太短时两端排除后无站可判，恒等位姿下整段超出检测范围、每帧 ERR 92
-    let mut short = document();
-    short.shots[0].path = vec![[40.0, 80.0], [52.0, 80.0]];
-    short.shots[0].fixture = Some(fixture_spec());
-    assert!(build_taught_graph(&short.build().unwrap(), 0).unwrap_err().contains("胶路太短"));
+fn fixture_leaving_fewer_than_three_judged_stations_is_refused() {
+    // 防的回归：胶路太短或示教余量过大时两端排除后无站可判，恒等位姿下整段超出检测范围、每帧 ERR 92
+    // （名称，中线终点 x（站距 4 px），余量 mm，能否建图）；两端各排除 m + 1 站距（含端点）后要剩 3 站
+    for (name, end, margin, ok) in [("6 站", 60.0, 0.0, false), ("7 站", 64.0, 0.0, true), ("41 站、余量吃掉中段", 200.0, 18.5, false), ("41 站、余量 17", 200.0, 17.0, true)] {
+        let mut doc = document();
+        doc.shots[0].path = vec![[40.0, 80.0], [end, 80.0]];
+        doc.shots[0].fixture = Some(FixtureSpec { end_margin_mm: margin, ..fixture_spec() });
+        let built = build_taught_graph(&doc.build().unwrap(), 0);
+        assert_eq!(built.is_ok(), ok, "{name}：{:?}", built.err());
+    }
 }
 
 #[test]
