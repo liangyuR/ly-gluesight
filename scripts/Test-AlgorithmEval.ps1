@@ -6,7 +6,8 @@ param(
   [string]$Detect,
   [string]$Graph,
   [string]$Limits,
-  [string]$Fixture
+  [string]$Fixture,
+  [string]$Templates
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -23,6 +24,7 @@ $vars = [ordered]@{
   GLUESIGHT_EVAL_GRAPH = $Graph
   GLUESIGHT_EVAL_LIMITS = $Limits
   GLUESIGHT_EVAL_FIXTURE = if ($Fixture) { (Resolve-Path -LiteralPath $Fixture).Path }
+  GLUESIGHT_EVAL_TEMPLATES = if ($Templates) { (Resolve-Path -LiteralPath $Templates).Path }
 }
 $saved = @{}
 foreach ($name in $vars.Keys) { $saved[$name] = [Environment]::GetEnvironmentVariable($name) }
