@@ -18,12 +18,10 @@ pub(super) fn measure(prepared: &Prepared, count: usize, sn: &str, cycle_id: &st
             Ok(multi) => {
                 let reading = multi.reading;
                 for (i, &j) in reading.idx.iter().enumerate() {
-                    table[j as usize] = if reading.st[i] == crate::measure::ST_OK {
-                        PointState::Measured { d: reading.d[i], w: reading.w[i] }
-                    } else if reading.st[i] == crate::measure::ST_GAP { PointState::Gap } else { PointState::Invalid };
+                    table[j as usize] = crate::measure::point_state(reading.st[i], reading.d[i], reading.w[i]);
                 }
                 measurements.push(json!({"cycleId":cycle_id,"bundleId":prepared.bundle.id,
-                    "shotId":shot.id,"camera":shot.camera,"sn":sn,"k":k,"cam":0,"located":true,
+                    "shotId":shot.id,"camera":shot.camera,"sn":sn,"k":k,"cam":0,"referenceFailed":[],
                     "score":reading.coverage,"ms":reading.ms,"error":null,"idx":reading.idx,"views":multi.views,
                     "d":reading.d,"w":reading.w,"st":reading.st,"px":reading.px}));
             }
@@ -31,7 +29,7 @@ pub(super) fn measure(prepared: &Prepared, count: usize, sn: &str, cycle_id: &st
                 failures.push(format!("拍照点 {}：{error}", shot.id));
                 for j in recipe.owned_points(k) { table[j] = PointState::Invalid; }
                 measurements.push(json!({"cycleId":cycle_id,"bundleId":prepared.bundle.id,
-                    "shotId":shot.id,"camera":shot.camera,"sn":sn,"k":k,"cam":0,"located":false,
+                    "shotId":shot.id,"camera":shot.camera,"sn":sn,"k":k,"cam":0,"referenceFailed":[],
                     "score":0,"ms":0,"error":error,"idx":[],"d":[],"w":[],"st":[],"px":[]}));
             }
         }

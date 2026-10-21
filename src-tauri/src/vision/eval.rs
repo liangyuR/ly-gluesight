@@ -216,11 +216,7 @@ fn shot_judge(recipe: &Recipe, k: usize, m: &ShotMeasurement) -> Judged {
     let view = recipe.for_view(k, recipe.shots[k].view).unwrap();
     let mut table = vec![PointState::Pending; recipe.point_count()];
     for (i, &j) in m.idx.iter().enumerate() {
-        table[j as usize] = match m.st[i] {
-            ST_OK => PointState::Measured { d: m.d[i], w: m.w[i] },
-            ST_GAP => PointState::Gap,
-            _ => PointState::Invalid,
-        };
+        table[j as usize] = crate::measure::point_state(m.st[i], m.d[i], m.w[i]);
     }
     let j = judge(&view, &table);
     Judged { verdict: j.verdict, reason: j.reason }

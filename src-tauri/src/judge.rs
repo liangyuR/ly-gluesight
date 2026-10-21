@@ -31,6 +31,7 @@ impl Verdict {
 
 pub mod fault {
     pub const MISSING_FRAME: u16 = 91;
+    /// 定位失败：只因位置基准无效（见 `SegmentResult::reference_invalid`）判不了，由 judge 给出
     pub const LOCATE_FAILED: u16 = 92;
     pub const INVALID_POINTS: u16 = 93;
     pub const SHOT_COUNT_MISMATCH: u16 = 94;
@@ -45,8 +46,12 @@ pub mod fault {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PointState {
     Pending,
-    /// d：胶条中线相对示教中线的横向偏移；w：胶宽（没测时为 NaN）
-    Measured { d: f32, w: f32 },
+    /// 有胶。d：胶条中线相对位置基准的横向偏移，None 为有胶、无位置基准（ST_NO_REF，如定位失败）；
+    /// w：胶宽（没测时为 NaN）
+    Measured { d: Option<f32>, w: f32 },
+    /// 超出检测范围：位姿把示教胶路沿切向搬动后，这一站落在搬过去的胶路两端之外，几何上本来就测不了。
+    /// 不判胶偏、不判断胶、不计入有胶比例，也不计入测不了、无基准的连续长度；测到了胶宽（w 为 Some）时照常判胶宽。
+    OutOfRange { w: Option<f32> },
     /// 沿示教中线找了、没有胶
     Gap,
     /// 该点测不了（被遮挡、出了图像、胶边被截断）
@@ -66,6 +71,10 @@ pub struct SegmentResult {
     pub w_max: Option<f32>,
     #[serde(default)]
     pub w_excursion_len: f32,
+    /// 位置基准无效：有位置判定的段里无基准的站连续超过 2 mm 或有胶站全都没有基准，或整段超出检测范围。
+    /// 本段位置判不了（ERR）；本段或别处另有 NG 时取 NG。
+    #[serde(default)]
+    pub reference_invalid: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -197,19 +206,32 @@ pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
     if n != recipe.point_count() {
         return Judgement::error(fault::INVALID_POINTS, "测量点数量与配方不一致");
     }
+    let in_range = |j: usize| !matches!(table[j], PointState::OutOfRange { .. });
+    let no_ref = |j: usize| matches!(table[j], PointState::Measured { d: None, .. });
     let invalid: Vec<bool> = recipe.segments.iter().map(|g| {
+        let judged: Vec<usize> = (g.first..g.first + g.count).filter(|&j| in_range(j)).collect();
         (g.first..g.first + g.count).any(|j| table[j] == PointState::Pending)
             || runs_in(g, |j| table[j] == PointState::Invalid).iter()
                 .any(|run| run.len() as f32 * sp > MAX_INVALID_LEN)
-            || (g.first..g.first + g.count).all(|j| table[j] == PointState::Invalid)
+            || (!judged.is_empty() && judged.iter().all(|&j| table[j] == PointState::Invalid))
+    }).collect();
+    // 位置基准无效。生产方（G2）的约定：定位失败、两端切向搬移超过 maxEndShiftMm 时，把该视图全部有胶站标成
+    // 无基准（ST_NO_REF）并在帧上记 referenceFailed，judge 只按站状态判，不另设护栏逻辑。
+    let reference_invalid: Vec<bool> = recipe.segments.iter().map(|g| {
+        let stations = g.first..g.first + g.count;
+        let referenced = stations.clone().any(|j| matches!(table[j], PointState::Measured { d: Some(_), .. }));
+        let out_of_range = g.count > 0 && stations.clone().all(|j| !in_range(j));
+        out_of_range || (g.position.is_some() && (
+            runs_in(g, no_ref).iter().any(|run| run.len() as f32 * sp > MAX_INVALID_LEN)
+                || (!referenced && stations.clone().any(no_ref))))
     }).collect();
 
     let d = filtered(recipe, table, |p| match p {
-        PointState::Measured { d, .. } if d.is_finite() => Some(*d),
+        PointState::Measured { d: Some(d), .. } if d.is_finite() => Some(*d),
         _ => None,
     });
     let w = filtered(recipe, table, |p| match p {
-        PointState::Measured { w, .. } if w.is_finite() => Some(*w),
+        PointState::Measured { w, .. } | PointState::OutOfRange { w: Some(w) } if w.is_finite() => Some(*w),
         _ => None,
     });
     let pos: Vec<Option<Stat>> = recipe.segments.iter().map(|g| g.position.as_ref().map(|p| stat(recipe, g, &d, p))).collect();
@@ -236,6 +258,7 @@ pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
                 w_min: wd.and_then(|s| s.min),
                 w_max: wd.and_then(|s| s.max),
                 w_excursion_len: wd.map_or(0.0, |s| s.excursion_len),
+                reference_invalid: reference_invalid[gi],
             }
         })
         .collect();
@@ -250,7 +273,8 @@ pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
         let gap_count = (g.first..g.first + g.count).filter(|&j| table[j] == PointState::Gap).count();
         let present = (g.first..g.first + g.count).filter(|&j| matches!(table[j], PointState::Measured { .. })).count();
         let out = |p: &Option<JudgeParams>, v: &[Option<f32>], j: usize| p.as_ref().is_some_and(|p| v[j].is_some_and(|v| v < p.lower() || v > p.upper()));
-        let defect = |j: usize| matches!(table[j], PointState::Gap | PointState::Invalid) || out(&g.position, &d, j) || out(&g.width, &w, j);
+        // 超出检测范围的站不进断胶区间：后沿一端的静态走廊里本来就没有工件上的胶
+        let defect = |j: usize| in_range(j) && (matches!(table[j], PointState::Gap | PointState::Invalid) || out(&g.position, &d, j) || out(&g.width, &w, j));
         for run in runs_in(g, defect) {
             let gap_stations = run.iter().filter(|&&j| table[j] == PointState::Gap).count();
             let len = run.len() as f32 * sp;
@@ -285,10 +309,31 @@ pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
         }
     }
 
-    let shot_verdicts: Vec<_> = recipe.shots.iter().enumerate().filter(|(_, shot)| shot.measured()).map(|(k, _)| {
-        (k, aggregate_views(recipe.segments.iter().zip(&segments).filter(|(g, _)| g.shot == k).map(|(_, s)| s.verdict)))
+    // 基准无效只让本段位置判不了：本段已有 NG 时 NG 优先；未完成、测不了的 ERR 原本就是 ERR
+    for (s, &lost) in segments.iter_mut().zip(&reference_invalid) {
+        if lost && s.verdict < Verdict::NgPosition {
+            s.verdict = Verdict::ErrInspect;
+        }
+    }
+    let in_shot = move |k: usize| recipe.segments.iter().enumerate().filter(move |(_, g)| g.shot == k).map(|(gi, _)| gi);
+    let mut shot_verdicts: Vec<_> = recipe.shots.iter().enumerate().filter(|(_, shot)| shot.measured()).map(|(k, _)| {
+        (k, aggregate_views(in_shot(k).map(|gi| segments[gi].verdict)))
     }).collect();
-    let verdict = shot_verdicts.iter().map(|(_, verdict)| *verdict).max().unwrap_or(Verdict::ErrInspect);
+    let mut verdict = shot_verdicts.iter().map(|(_, verdict)| *verdict).max().unwrap_or(Verdict::ErrInspect);
+    // 合并：Verdict 全序不动。ERR 只由基准无效引起（ERR 的拍照点里没有未完成、测不了的段）且任一段有 NG 时取最重的 NG；
+    // 其他来源的 ERR 照旧优先。
+    let reference_only = |k: usize| in_shot(k).all(|gi| !invalid[gi]) && in_shot(k).any(|gi| reference_invalid[gi]);
+    let ng = |v: &Verdict| (Verdict::NgPosition..Verdict::ErrInspect).contains(v);
+    let mut reference_err = false;
+    if verdict == Verdict::ErrInspect && !shot_verdicts.is_empty() && shot_verdicts.iter().filter(|(_, v)| *v == Verdict::ErrInspect).all(|(k, _)| reference_only(*k)) {
+        for (k, v) in shot_verdicts.iter_mut().filter(|(_, v)| *v == Verdict::ErrInspect) {
+            *v = in_shot(*k).map(|gi| segments[gi].verdict).filter(ng).max().unwrap_or(Verdict::ErrInspect);
+        }
+        match shot_verdicts.iter().map(|(_, v)| *v).filter(ng).max() {
+            Some(worst) => verdict = worst,
+            None => reference_err = true,
+        }
+    }
     let contributes = |gi: usize| shot_verdicts.iter().any(|(k, value)| *k == recipe.segments[gi].shot && *value == verdict);
     let at = |r: Option<(f32, f32)>| r.map(|(a, b)| format!(" · s={a:.1}–{b:.1}")).unwrap_or_default();
     let reason = match verdict {
@@ -305,6 +350,15 @@ pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
             }
         }
         Verdict::Ok => format!("{} 个拍照点全部合格 · {n} 点", recipe.shots.iter().filter(|s| s.measured()).count()),
+        Verdict::ErrInspect if reference_err => {
+            let g = recipe.segments.iter().enumerate().find(|(gi, _)| reference_invalid[*gi] && contributes(*gi)).map(|(_, g)| g).unwrap();
+            let run = runs_in(g, no_ref).into_iter().max_by_key(Vec::len).filter(|run| run.len() as f32 * sp > MAX_INVALID_LEN);
+            match run {
+                _ if (g.first..g.first + g.count).all(|j| !in_range(j)) => format!("{} 定位失败：整段超出检测范围，没有位置基准", g.name),
+                Some(run) => format!("{} 定位失败：连续 {:.1} mm 没有位置基准 · s={:.1}", g.name, run.len() as f32 * sp, g.s(run[0], sp)),
+                None => format!("{} 定位失败：有胶站全都没有位置基准", g.name),
+            }
+        }
         Verdict::ErrInspect => {
             match recipe.segments.iter().enumerate().find(|(gi, _)| invalid[*gi] && contributes(*gi)) {
                 Some((_, g)) => {
@@ -348,7 +402,12 @@ pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
         }
     };
 
-    Judgement { verdict, plc_code: verdict.plc_code(), fault_code: if verdict == Verdict::ErrInspect { fault::INVALID_POINTS } else { 0 }, reason, segments, gaps }
+    let fault_code = match verdict {
+        Verdict::ErrInspect if reference_err => fault::LOCATE_FAILED,
+        Verdict::ErrInspect => fault::INVALID_POINTS,
+        _ => 0,
+    };
+    Judgement { verdict, plc_code: verdict.plc_code(), fault_code, reason, segments, gaps }
 }
 
 fn median_filter(values: &[f32], window: usize) -> Vec<f32> {
@@ -371,21 +430,84 @@ fn median_filter(values: &[f32], window: usize) -> Vec<f32> {
 mod tests {
     use super::*;
 
-    const SHIFTED: PointState = PointState::Measured { d: 3.0, w: 4.0 };
+    const SHIFTED: PointState = PointState::Measured { d: Some(3.0), w: 4.0 };
 
-    /// 样例配方段 0（站距 1 mm、位置公差 ±2 mm、允许断胶 6 mm、允许连续位置超差 excursion mm），其余站胶在中线上；
-    /// marks 按段内站号 [from, to) 改写站状态。
-    fn judged(excursion: f32, marks: &[(usize, usize, PointState)]) -> Judgement {
+    const NO_REF: PointState = PointState::Measured { d: None, w: 4.0 };
+
+    fn sample() -> Recipe {
         let mut recipe = crate::recipe::samples().remove(0).build().unwrap();
         recipe.filter_window = 1;
+        recipe
+    }
+
+    /// 样例配方（每个拍照点一段；站距 1 mm、位置公差 ±2 mm、胶宽 4 ± 1.5 mm、允许断胶 6 mm、允许连续胶宽超差 5 mm），
+    /// 段 0 允许连续位置超差 excursion mm，其余站胶在中线上；marks 按 (段, 段内站号 from, to) 改写 [from, to) 的站状态。
+    fn judged_with(excursion: f32, marks: &[(usize, usize, usize, PointState)]) -> Judgement {
+        let mut recipe = sample();
         recipe.segments[0].position.as_mut().unwrap().max_excursion_len = excursion;
-        let g = recipe.segments[0].clone();
-        let mut table = vec![PointState::Measured { d: 0.0, w: 4.0 }; recipe.point_count()];
-        for &(from, to, state) in marks {
-            assert!(to < g.count, "样例配方段 0 太短");
+        let mut table = vec![PointState::Measured { d: Some(0.0), w: 4.0 }; recipe.point_count()];
+        for &(seg, from, to, state) in marks {
+            let g = &recipe.segments[seg];
+            assert!(to <= g.count, "样例配方段 {seg} 太短");
             table[g.first + from..g.first + to].fill(state);
         }
         judge(&recipe, &table)
+    }
+
+    fn judged_in(marks: &[(usize, usize, usize, PointState)]) -> Judgement {
+        judged_with(5.0, marks)
+    }
+
+    /// marks 只改段 0。
+    fn judged(excursion: f32, marks: &[(usize, usize, PointState)]) -> Judgement {
+        judged_with(excursion, &marks.iter().map(|&(from, to, state)| (0, from, to, state)).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn no_reference_run_up_to_2mm_is_tolerated_and_longer_is_err92() {
+        for (run, shifted, expected, fault_code) in [
+            (2, false, Verdict::Ok, 0),
+            (2, true, Verdict::NgPosition, 0),
+            (3, false, Verdict::ErrInspect, fault::LOCATE_FAILED),
+        ] {
+            let mut marks = vec![(0, 10, 10 + run, NO_REF)];
+            if shifted { marks.push((0, 20, 30, SHIFTED)); }
+            let j = judged_in(&marks);
+            assert_eq!((j.verdict, j.fault_code), (expected, fault_code), "run={run} shifted={shifted}：{}", j.reason);
+            assert_eq!(j.segments[0].reference_invalid, run > 2);
+        }
+    }
+
+    /// 段 0 整段有胶、无基准；别的拍照点上另有 NG 时取 NG，另有未完成、测不了的 ERR 时 ERR 照旧优先。
+    #[test]
+    fn reference_loss_yields_to_ng_on_another_shot_but_not_to_other_err() {
+        let whole = sample().segments[0].count;
+        for (other, expected, fault_code) in [
+            ((1, 10, 20, PointState::Gap), Verdict::NgGap, 0),
+            ((1, 10, 20, PointState::Measured { d: Some(0.0), w: 6.0 }), Verdict::NgWidth, 0),
+            ((1, 10, 13, PointState::Invalid), Verdict::ErrInspect, fault::INVALID_POINTS),
+        ] {
+            let j = judged_in(&[(0, 0, whole, NO_REF), other]);
+            assert_eq!((j.verdict, j.fault_code), (expected, fault_code), "{other:?}：{}", j.reason);
+            assert!(j.segments[0].reference_invalid);
+        }
+    }
+
+    #[test]
+    fn out_of_range_ends_are_neither_gap_nor_no_reference_but_keep_width_judging() {
+        let n = sample().segments[0].count;
+        let out = |w| PointState::OutOfRange { w };
+        for (marks, expected) in [
+            // 后沿：走廊里没有胶的超出范围站紧挨一处允许范围内的断口，不连成长断口
+            (vec![(0, n - 14, n - 10, PointState::Gap), (0, n - 10, n, out(None))], Verdict::Ok),
+            // 前沿：有胶的超出范围站不判胶偏，也不和相邻的无基准站连成超过 2 mm 的无基准区间
+            (vec![(0, 0, 10, out(Some(4.0))), (0, 10, 12, NO_REF)], Verdict::Ok),
+            (vec![(0, 0, 10, out(Some(6.0)))], Verdict::NgWidth),
+        ] {
+            let j = judged_in(&marks);
+            assert_eq!(j.verdict, expected, "{marks:?}：{}", j.reason);
+            assert!(!j.segments[0].reference_invalid, "{marks:?}");
+        }
     }
 
     #[test]

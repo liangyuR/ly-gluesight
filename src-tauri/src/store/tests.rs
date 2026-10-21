@@ -47,7 +47,7 @@ fn shots(recipe: &Recipe) -> Vec<PartShot> {
             ordinal: (k != 1).then_some(k as u64 + 1),
             frame_counter: (k != 1).then_some(u64::MAX - 1),
             trigger_counter: (k != 1).then_some(u64::MAX - 2),
-            status: [FrameStatus::Done, FrameStatus::Missing, FrameStatus::LocateFailed, FrameStatus::Error][k],
+            status: [FrameStatus::Done, FrameStatus::Missing, FrameStatus::Error, FrameStatus::Done][k],
             error: (k != 0).then(|| format!("P{} 原因", k + 1)),
             score: (k != 1).then_some(0.75),
             ms: (k != 1).then_some(12),
@@ -57,10 +57,13 @@ fn shots(recipe: &Recipe) -> Vec<PartShot> {
 }
 
 fn table(recipe: &Recipe) -> Vec<PointState> {
-    let mut table = vec![PointState::Measured { d: 0.25, w: 4.5 }; recipe.point_count()];
+    let mut table = vec![PointState::Measured { d: Some(0.25), w: 4.5 }; recipe.point_count()];
     table[1] = PointState::Gap;
     table[2] = PointState::Invalid;
     table[3] = PointState::Pending;
+    table[4] = PointState::Measured { d: None, w: 4.25 };
+    table[5] = PointState::OutOfRange { w: Some(3.75) };
+    table[6] = PointState::OutOfRange { w: None };
     table
 }
 
@@ -176,8 +179,10 @@ fn identity_shots_and_measurements_round_trip() {
     assert_eq!(detail.shots[1].status, FrameStatus::Missing);
     assert_eq!(detail.shots[1].frame_counter, None);
     let points = detail.points.unwrap();
-    assert_eq!(&points.st[..4], &[ST_MEASURED, ST_GAP, ST_INVALID, ST_PENDING]);
-    assert_eq!(&points.w[..4], &[Some(4.5), None, None, None]);
+    assert_eq!(&points.st[..7], &[ST_MEASURED, ST_GAP, ST_INVALID, ST_PENDING, ST_NO_REF, ST_OUT_OF_RANGE, ST_OUT_OF_RANGE]);
+    assert_eq!(&points.d[..7], &[Some(0.25), None, None, None, None, None, None]);
+    assert_eq!(&points.w[..7], &[Some(4.5), None, None, None, Some(4.25), Some(3.75), None]);
+    assert_eq!(points.table(), table);
     let rows = store.measurements(&HistoryQuery::default(), &[id], 20).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].table, table);

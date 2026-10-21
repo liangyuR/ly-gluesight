@@ -67,8 +67,8 @@ pub enum Phase {
 pub enum FrameStatus {
     Waiting,
     Measuring,
+    /// 测完了。没有位置基准的视图另记在 `FrameView::reference_failed`
     Done,
-    LocateFailed,
     /// 测量本身没做成（lyFlow 运行失败、缺示教资料等）
     Error,
     Missing,
@@ -113,6 +113,9 @@ pub struct FrameView {
     pub points: usize,
     pub gap_points: usize,
     pub ms: Option<u32>,
+    /// 没有位置基准的视图与原因（帧徽标）；这些视图的有胶站已是 ST_NO_REF，判定只看站状态
+    #[serde(default)]
+    pub reference_failed: Vec<measure::ReferenceFailure>,
 }
 
 impl FrameView {
@@ -135,6 +138,7 @@ impl FrameView {
             points: 0,
             gap_points: 0,
             ms: None,
+            reference_failed: Vec::new(),
         }
     }
 }
@@ -659,17 +663,18 @@ impl Part {
             m.error.get_or_insert("测量输出含无效分数".into());
         }
         let owned: Vec<usize> = self.recipe.owned_points(m.k).collect();
-        if m.error.is_none() && m.located {
+        if m.error.is_none() {
+            let views = self.recipe.shots[m.k].enabled_views();
             let valid = m.score.is_finite() && (0.0..=1.0).contains(&m.score)
                 && (m.px.is_empty() || (m.px.len() == owned.len() && m.px.iter().flatten().all(|v| v.is_finite())))
                 && m.idx.len() == owned.len() && m.d.len() == owned.len() && m.w.len() == owned.len()
                 && m.st.len() == owned.len() && m.idx.iter().zip(&owned).all(|(&actual, &expected)| actual as usize == expected)
-                && m.st.iter().enumerate().all(|(i, &state)| state <= measure::ST_INVALID
-                    && (state != measure::ST_OK || (m.d[i].is_finite() && m.w[i].is_finite())));
+                && (0..owned.len()).all(|i| measure::valid_station(m.st[i], m.d[i], m.w[i]))
+                && m.reference_failed.iter().all(|f| views.contains(&f.view));
             if !valid { m.error = Some("测量输出与拍照点测点表不一致或含无效数值".into()); }
         }
         for (i, &j) in owned.iter().enumerate() {
-            self.table[j] = if m.error.is_some() || !m.located { PointState::Invalid } else { m.point_state(i) };
+            self.table[j] = if m.error.is_some() { PointState::Invalid } else { m.point_state(i) };
         }
         self.queue = self.queue.saturating_sub(1);
         self.measuring_since[m.k] = None;
@@ -682,19 +687,17 @@ impl Part {
         }).collect();
         let frame = &mut self.frames[m.k];
         frame.view_results = view_results;
-        frame.status = if m.error.is_some() { FrameStatus::Error }
-            else if m.located { FrameStatus::Done } else { FrameStatus::LocateFailed };
+        frame.status = if m.error.is_some() { FrameStatus::Error } else { FrameStatus::Done };
         frame.error = m.error.clone();
         frame.score = m.error.is_none().then_some(m.score);
         frame.points = owned.len();
-        frame.gap_points = if m.error.is_none() && m.located { m.st.iter().filter(|&&s| s == measure::ST_GAP).count() } else { 0 };
+        frame.gap_points = if m.error.is_none() { m.st.iter().filter(|&&s| s == measure::ST_GAP).count() } else { 0 };
         frame.ms = Some(m.ms);
         if let Some(error) = &m.error {
             self.fault.get_or_insert((fault::PROCESS_TIMEOUT, format!("拍照点 {} 测量出错：{error}", m.shot_id)));
+            m.idx.clear(); m.d.clear(); m.w.clear(); m.st.clear(); m.px.clear(); m.reference_failed.clear();
         }
-        if m.error.is_some() || !m.located {
-            m.idx.clear(); m.d.clear(); m.w.clear(); m.st.clear(); m.px.clear();
-        }
+        frame.reference_failed = m.reference_failed.clone();
         Some(m)
     }
 
@@ -735,9 +738,6 @@ impl Part {
         if self.extra > 0 {
             return Judgement::error(fault::EXTRA_FRAME, format!("多收到 {} 帧", self.extra));
         }
-        if let Some(frame) = self.frames.iter().find(|f| f.status == FrameStatus::LocateFailed) {
-            return Judgement::error(fault::LOCATE_FAILED, format!("拍照点 {} 定位失败", frame.shot_id));
-        }
         if !self.complete() {
             return Judgement::error(fault::PROCESS_TIMEOUT, "计划内拍照点尚未完成");
         }
@@ -759,7 +759,7 @@ impl Part {
             filled: self.table.iter().filter(|p| **p != PointState::Pending).count(),
             total: self.table.len(),
             frames: self.frames.clone(),
-            measured_frames: self.frames.iter().filter(|f| matches!(f.status, FrameStatus::Done | FrameStatus::LocateFailed | FrameStatus::Error)).count(),
+            measured_frames: self.frames.iter().filter(|f| matches!(f.status, FrameStatus::Done | FrameStatus::Error)).count(),
         }
     }
 }
@@ -1447,7 +1447,6 @@ impl Machine {
                     "session": f.session, "ordinal": ordinal, "arrivedMs": part.frames[k].arrived_ms})));
         if skip {
             let mut measured = Measured::empty(&job);
-            measured.located = true;
             measured.score = 1.0;
             self.on_measured(measured);
         } else {
@@ -1476,15 +1475,16 @@ impl Machine {
         let gaps = m.st.iter().filter(|&&s| s == measure::ST_GAP).count();
         let (level, ev, msg) = if let Some(e) = &m.error {
             ("err", "测量出错", format!("k={} · {e}", m.k))
-        } else if m.located {
+        } else if !m.reference_failed.is_empty() {
+            let views: Vec<_> = m.reference_failed.iter().map(|f| format!("图 {} {}", f.view, f.reason)).collect();
+            ("err", "定位失败", format!("k={} {} · 有胶站没有位置基准 · 缺胶 {gaps} 点", m.k, views.join("，")))
+        } else {
             let extra = if gaps > 0 { format!(" · 缺胶 {gaps} 点") } else { String::new() };
             (if gaps > 0 { "ng" } else { "info" }, "测量完成", format!("k={} 分数 {:.2} · {} 点 · {} ms{extra}", m.k, m.score, m.idx.len(), m.ms))
-        } else {
-            ("err", "定位失败", format!("k={} 匹配分数 {:.2} < 0.60", m.k, m.score))
         };
         let fields = Fields { cycle_id: Some(m.cycle_id.clone()), ..Fields::shot(m.k, &m.shot_id, &m.camera) }.with_stage("measured")
             .with_data(json!({"ms": m.ms, "queueMs": m.queue_ms, "engineMs": m.engine_ms, "coreMs": m.core_ms,
-                "score": m.score, "points": m.idx.len(), "gaps": gaps, "located": m.located, "error": m.error}));
+                "score": m.score, "points": m.idx.len(), "gaps": gaps, "referenceFailed": m.reference_failed, "error": m.error}));
         if level == "info" { trace(&self.app, ev, msg, fields) } else { log_with(&self.app, level, ev, msg, fields) }
         let _ = self.app.emit("cycle://frame", &m);
         host(&self.app).shared.lock().unwrap().measured.push(m);

@@ -9,8 +9,8 @@ fn interrupted_history_keeps_all_planned_shots_and_each_failure_reason() {
     part.frames[0].frame_counter = Some(81);
     part.frames[0].score = Some(0.92);
     part.frames[2].status = FrameStatus::Measuring;
-    part.frames[3].status = FrameStatus::LocateFailed;
-    part.frames[3].error = Some("定位失败".into());
+    part.frames[3].status = FrameStatus::Error;
+    part.frames[3].error = Some("lyFlow 运行失败".into());
     let shots = recorded_shots(Some(&part.recipe), &part.frames, "连接中断");
     assert_eq!(shots.len(), 4);
     assert_eq!(shots.iter().map(|shot| shot.view).collect::<Vec<_>>(), [1, 2, 3, 1]);
@@ -21,8 +21,8 @@ fn interrupted_history_keeps_all_planned_shots_and_each_failure_reason() {
     assert!(shots[1].error.as_ref().unwrap().contains("连接中断"));
     assert_eq!(shots[2].status, FrameStatus::Error);
     assert!(shots[2].error.as_ref().unwrap().contains("测量未完成"));
-    assert_eq!(shots[3].status, FrameStatus::LocateFailed);
-    assert_eq!(shots[3].error.as_deref(), Some("定位失败"));
+    assert_eq!(shots[3].status, FrameStatus::Error);
+    assert_eq!(shots[3].error.as_deref(), Some("lyFlow 运行失败"));
     assert_eq!(part.frames[1].status, FrameStatus::Waiting);
     let refused = recorded_shots(Some(&part.recipe), &[], "未布防");
     assert_eq!(refused.len(), 4);
@@ -65,7 +65,7 @@ fn measured(part: &Part, k: usize) -> Measured {
     let indices: Vec<_> = part.recipe.owned_points(k).map(|j| j as u32).collect();
     Measured { views: Vec::new(), cycle_id: part.cycle_id.clone(), shot_id: shot.id.clone(),
         camera: shot.camera.clone(), bundle_id: part.bundle_id.clone(), sn: part.sn.clone(),
-        k, cam: part.frames[k].cam, located: true, score: 0.95, ms: 15,
+        k, cam: part.frames[k].cam, reference_failed: Vec::new(), score: 0.95, ms: 15,
         queue_ms: None, engine_ms: None, core_ms: None, error: None,
         d: vec![0.0; indices.len()], w: vec![4.0; indices.len()], st: vec![measure::ST_OK; indices.len()],
         idx: indices, px: Vec::new() }
@@ -361,4 +361,32 @@ async fn arm_budget_overrun_in_audit_health_refuses_part_without_poisoning_audit
     let result = arm_health_check(&mut budget, || { std::thread::sleep(Duration::from_millis(80)); Ok(()) }, |_| poisoned.set(true)).await;
     assert!(result.is_err_and(|e| e.contains("audit-health")), "超过布防预算应拒绝本件");
     assert!(!poisoned.get(), "布防预算偶发超时不能把追溯判成需重启恢复的故障");
+}
+
+/// 离线定位失败工况经模拟测量进整件判定：定位失败那帧胶正常 → ERR 92；同一帧还断胶 → NG 优先判 NG_GAP。两种都保留帧的定位失败徽标。
+#[test]
+fn offline_locate_fail_scenarios_judge_err92_or_ng_gap_and_keep_the_reference_badge() {
+    for (scenario, expected) in [
+        (Scenario::LocateFail, (Verdict::ErrInspect, 90, fault::LOCATE_FAILED)),
+        (Scenario::LocateFailGap, (Verdict::NgGap, 13, 0)),
+    ] {
+        let mut p = part(&format!("{scenario:?}"), &Ledgers::default());
+        p.scenario = scenario;
+        for k in 0..4 {
+            p.receive_frame(&frame(0, k as u64 + 1)).unwrap();
+            let shot = &p.recipe.shots[k];
+            let job = Job { cycle_id: p.cycle_id.clone(), shot_id: shot.id.clone(), camera: shot.camera.clone(),
+                bundle_id: p.bundle_id.clone(), production: None, candidate: None, submitted_at: Instant::now(),
+                timeout: Duration::from_secs(1), image_measurement: false, sn: p.sn.clone(), k, cam: p.frames[k].cam,
+                recipe: p.recipe.clone(), scenario, image: None, images: Vec::new() };
+            assert!(p.apply_result(measure::simulate(&job)).is_some());
+        }
+        let j = p.judgement();
+        assert_eq!((j.verdict, j.plc_code, j.fault_code), expected, "{scenario:?}：{}", j.reason);
+        let failed = scenario.locate_fail_frame(p.n()).unwrap();
+        let frame = &p.frames[failed];
+        assert_eq!(frame.status, FrameStatus::Done);
+        assert_eq!(frame.reference_failed, [measure::ReferenceFailure { view: frame.view, reason: "定位失败".into() }]);
+        assert!(p.recipe.segments.iter().zip(&j.segments).filter(|(g, _)| g.shot == failed).all(|(_, s)| s.reference_invalid));
+    }
 }

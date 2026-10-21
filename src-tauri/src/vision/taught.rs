@@ -26,7 +26,6 @@ pub struct ShotMeasurement {
 impl ShotMeasurement {
     pub fn into_measured(self, job: &Job) -> Measured {
         let mut m = Measured::empty(job);
-        m.located = true;
         m.score = self.coverage;
         m.ms = self.ms;
         m.idx = self.idx;
@@ -38,7 +37,12 @@ impl ShotMeasurement {
     }
 
     pub fn record(&self) -> Value {
-        let status: Vec<_> = self.st.iter().map(|s| if *s == ST_OK { "ok" } else { "no_bead" }).collect();
+        let status: Vec<_> = self.st.iter().map(|s| match *s {
+            ST_OK => "ok",
+            crate::measure::ST_NO_REF => "no_ref",
+            crate::measure::ST_OUT_OF_RANGE => "out_of_range",
+            _ => "no_bead",
+        }).collect();
         json!({"unit": "mm", "ids": self.idx, "status": status, "innerCenter": self.d,
             "width": self.w, "px": self.px, "edges": self.edges, "candidateWidth": self.candidate_width,
             "candidateEdges": self.candidate_edges, "coverage": self.coverage, "ms": self.ms})
@@ -99,8 +103,7 @@ pub fn measure_views_with(
                 })
                 && reading.coverage.is_finite() && (0.0..=1.0).contains(&reading.coverage)
                 && reading.px.iter().flatten().all(|v| v.is_finite())
-                && reading.st.iter().enumerate().all(|(i, &state)| state <= crate::measure::ST_INVALID
-                    && (state != ST_OK || (reading.d[i].is_finite() && reading.w[i].is_finite()))) => {
+                && (0..reading.st.len()).all(|i| crate::measure::valid_station(reading.st[i], reading.d[i], reading.w[i])) => {
                 out.idx.extend(&reading.idx); out.d.extend(&reading.d); out.w.extend(&reading.w);
                 out.st.extend(&reading.st); out.px.extend(&reading.px); out.edges.extend(&reading.edges);
                 out.candidate_width.extend(&reading.candidate_width); out.candidate_edges.extend(&reading.candidate_edges);

@@ -121,7 +121,7 @@ fn part(cycle: &str, sn: u32) -> RecordedPart {
     doc.shots[0].view = 2;
     doc.shots[1].view = 3;
     let recipe = Arc::new(doc.build().unwrap());
-    let table = vec![PointState::Measured { d: 0.25, w: 4.5 }; recipe.point_count()];
+    let table = vec![PointState::Measured { d: Some(0.25), w: 4.5 }; recipe.point_count()];
     let shots = recipe
         .shots
         .iter()
@@ -753,4 +753,42 @@ fn recording_logs_carry_the_parts_own_cycle_id_and_only_unfinished_recordings_ar
     for outcome in [outcome("late", &[], RecorderState::Failed), outcome("late", &[(0, 1)], RecorderState::Complete), outcome("late", &[], RecorderState::NotRetained), cleanup] {
         assert!(recording_records(&outcome).iter().all(|record| record.message.contains("cycleId=late")), "界面事件流没有 cycle 字段，消息必须自带 cycleId");
     }
+}
+
+/// 无位置基准、超出检测范围的测点经持久 spool 重启恢复入库后仍是原状态，不变成 NaN 位置的有胶站。
+#[test]
+fn durable_spool_restart_replays_no_reference_and_out_of_range_points_as_the_same_states() {
+    let dir = TestDir::new();
+    let path = dir.0.join("spool");
+    let mut expected = part("no-ref", 42);
+    let table = expected.table.as_mut().unwrap();
+    table[0] = PointState::Measured { d: None, w: 4.25 };
+    table[1] = PointState::OutOfRange { w: Some(3.75) };
+    table[2] = PointState::OutOfRange { w: None };
+    let table = table.clone();
+    let mut spool = spool::Spool::open(path.clone()).unwrap();
+    spool.append(&Event::Insert(Box::new(expected))).unwrap();
+    spool.append(&Event::Delivery("no-ref".into(), delivery(PlcDeliveryState::Acknowledged, 88))).unwrap();
+    spool.append(&Event::Recording(outcome("no-ref", &[(0, 2)], RecorderState::Complete))).unwrap();
+    drop(spool);
+    let mut reopened = spool::Spool::open(path).unwrap();
+    let mut sink = dir.sink();
+    assert!(replay_cycle(&mut reopened, "no-ref", &mut sink, 1).unwrap().0);
+    assert!(reopened.empty());
+    let id = sink.detail("no-ref").summary.id;
+    assert_eq!(sink.store.measurements(&HistoryQuery::default(), &[id], 1).unwrap()[0].table, table);
+}
+
+/// 升级前的 spool 文件（没有 format）不读不迁（D-0）：保留原文件，拒绝就绪并提示清空目录。
+#[test]
+fn old_format_spool_file_is_kept_and_refuses_readiness_with_cleanup_hint() {
+    let dir = TestDir::new();
+    let path = dir.0.join("spool");
+    std::fs::create_dir_all(&path).unwrap();
+    let old = path.join(format!("{:020}.json", 1));
+    let legacy = serde_json::to_vec(&Event::Delivery("old".into(), delivery(PlcDeliveryState::Acknowledged, 5))).unwrap();
+    std::fs::write(&old, &legacy).unwrap();
+    let Err(error) = spool::Spool::open(path) else { panic!("旧格式 spool 不能就绪") };
+    assert!(error.contains("清空目录"), "{error}");
+    assert_eq!(std::fs::read(&old).unwrap(), legacy);
 }

@@ -125,10 +125,10 @@ fn station_output_maps_global_ids_signed_offsets_and_rejected_candidates_without
     assert!(record.get("passed").is_none());
     let baseline = parse_result(&recipe, &p, &result(&recipe, 1, &[5, 6])).unwrap();
     let judged = |reading: &ShotMeasurement| {
-        let mut table = vec![crate::judge::PointState::Measured { d: 0.0, w: 4.0 }; recipe.point_count()];
+        let mut table = vec![crate::judge::PointState::Measured { d: Some(0.0), w: 4.0 }; recipe.point_count()];
         for (i, &j) in reading.idx.iter().enumerate() {
             table[j as usize] = if reading.st[i] == ST_OK {
-                crate::judge::PointState::Measured { d: reading.d[i], w: reading.w[i] }
+                crate::judge::PointState::Measured { d: Some(reading.d[i]), w: reading.w[i] }
             } else { crate::judge::PointState::Gap };
         }
         serde_json::to_value(crate::judge::judge(&recipe, &table)).unwrap()
@@ -191,7 +191,7 @@ fn multiview_failure_is_local_but_missing_image_is_acquisition_failure() {
     assert!(result.views[0].error.is_some());
     let mut table = vec![crate::judge::PointState::Pending; recipe.point_count()];
     for (i, &j) in result.reading.idx.iter().enumerate() {
-        table[j as usize] = if result.reading.st[i] == ST_OK { crate::judge::PointState::Measured { d: 0.0, w: 4.0 } } else { crate::judge::PointState::Invalid };
+        table[j as usize] = if result.reading.st[i] == ST_OK { crate::judge::PointState::Measured { d: Some(0.0), w: 4.0 } } else { crate::judge::PointState::Invalid };
     }
     assert_eq!(crate::judge::judge(&recipe, &table).verdict, crate::judge::Verdict::Ok);
     assert!(measure_views_with(&recipe, 0, &images[..1], |_, _| panic!("must reject before measurement")).is_err());
