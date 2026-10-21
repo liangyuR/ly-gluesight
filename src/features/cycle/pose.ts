@@ -75,11 +75,12 @@ export function poseReasonText(reason: string | null | undefined) {
 
 const num = (v: number | null | undefined, digits: number) => v == null || !Number.isFinite(v) ? "—" : v.toFixed(digits);
 
-/** 一行定位摘要：采用 · 偏移 (dx, dy) px · θ° · 两端排除 a / b mm，或“未采用：原因”。 */
-export function poseSummary(pose: PoseRecord | null | undefined) {
+/** 一行定位摘要：采用 · 偏移 (dx, dy) px · θ° · 两端排除 a / b mm，或“未采用：原因”；short 只留采用与否和偏移（窄状态栏用，全文放提示）。 */
+export function poseSummary(pose: PoseRecord | null | undefined, short = false) {
   if (!pose) return "—";
-  if (!pose.accepted) return "未采用：" + poseReasonText(pose.reason);
+  if (!pose.accepted) return short ? "未采用" : "未采用：" + poseReasonText(pose.reason);
   const [dx, dy] = pose.offset ?? [NaN, NaN];
+  if (short) return `采用 (${num(dx, 1)}, ${num(dy, 1)}) px`;
   const excluded = pose.excludedMm ? ` · 两端排除 ${num(pose.excludedMm[0], 1)} / ${num(pose.excludedMm[1], 1)} mm` : "";
   return `采用 · 偏移 (${num(dx, 1)}, ${num(dy, 1)}) px · ${num(pose.angle, 2)}°${excluded}`;
 }

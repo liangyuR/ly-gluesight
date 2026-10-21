@@ -296,7 +296,7 @@ export async function runFixtureE2E(page, options) {
   await page.evaluate(() => { window.location.hash = "/inspect"; });
   await page.locator(`.qs-camera-thumbnail[data-frame-id="k${k + 1}"]`).click();
   await overlayOf(livePose, "生产页选中帧");
-  await page.getByText(livePose.accepted ? /^采用 · 偏移/ : /^未采用：/).first().waitFor();
+  await page.locator(".wp-runtime-strip .wp-kv").filter({ hasText: "定位" }).getByText(livePose.accepted ? /^采用 \(/ : /^未采用/).waitFor();
   await shot(page, shots, "fixture-6-production-overlay.png");
   const historyPose = detail.frames[k].viewResults.find(v => v.view === shotSpec.view)?.pose;
   assert(historyPose?.accepted, `投产正常件 k${k + 1} 的位姿应被采用：${JSON.stringify(historyPose)}`);

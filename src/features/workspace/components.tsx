@@ -31,8 +31,8 @@ export function Panel({ title, detail, actions, children, className = "" }: { ti
 export function Notice({ title, children, tone = "info" }: { title: string; children?: ReactNode; tone?: "info" | "ok" | "warn" | "ng" }) {
   return <Alert tone={tone} title={title}>{children}</Alert>;
 }
-export function KV({ label, children }: { label: string; children: ReactNode }) {
-  return <div className="wp-kv"><span>{label}</span><strong>{children}</strong></div>;
+export function KV({ label, children, title, className }: { label: string; children: ReactNode; title?: string; className?: string }) {
+  return <div className="wp-kv" title={title}><span>{label}</span><strong className={className}>{children}</strong></div>;
 }
 export function NumberField({ label, value, unit, onChange, min, max, step = 1, disabled }: { label: string; value: number | null; unit?: string; onChange: (value: number) => void; min?: number; max?: number; step?: number; disabled?: boolean }) {
   return <FormField label={label} className="wp-field"><TextField className="num" type="number" value={value != null && Number.isFinite(value) ? value : ""} min={min} max={max} step={step} disabled={disabled} trailing={unit && <span className="unit">{unit}</span>} onChange={e => onChange(e.target.value===""?NaN:Number(e.target.value))} /></FormField>;
