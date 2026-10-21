@@ -21,7 +21,7 @@ export default function PartTrace({ detail, layout, raw, selected, selectedView,
 }) {
   const { summary, recording } = detail;
   const sampleImages = raw?.imageSource === "offlineSample";
-  const reference = (shot: Shot) => referenceBadge(detail.frames[shot.k]?.referenceFailed, (detail.frames[shot.k]?.referenceFailed.length ?? 0) > 1);
+  const reference = (shot: Shot) => referenceBadge(detail.frames[shot.k]?.referenceFailed, (detail.frames[shot.k]?.referenceFailed?.length ?? 0) > 1);
   const columns: TableColumn<Shot>[] = [
     {
       key: "shot",

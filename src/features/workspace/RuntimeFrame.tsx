@@ -71,7 +71,7 @@ export default function RuntimeFrame({part,layout,k,measured,vis,compact=false,o
   const m=measured.find(m=>m.k===k&&matchesPart(m,part));
   const attention=frame?.viewResults?.filter(result=>result.verdict!=="OK"||!!result.error).length??0;
   const frameState:[string,string]=frame?.gapPoints?["含缺胶","ng"]:frame?.status==="done"?["测量完成","ok"]:frame?.status==="error"?["测量出错","fault"]:frame?.status==="missing"?["未到达","fault"]:frame?.status==="measuring"?["测量中",""]:["等待测量",""];
-  const reference=referenceBadge(frame?.referenceFailed,(frame?.referenceFailed.length??0)>1);
+  const reference=referenceBadge(frame?.referenceFailed,(frame?.referenceFailed?.length??0)>1);
   const labelOf=(i:number)=>{
     const f=part?.frames[i],s=layout?.shots[i];
     return compact?[f?.shotId??s?.id,s?.poseId&&s.poseId!==s.id?"Pose "+s.poseId:null,f?.camera??s?.camera,"视角 "+(f?.view??s?.view??"—"),"k"+(i+1)].filter(Boolean).join(" · "):"SN "+(part?.sn||"—")+" · k"+(i+1);
