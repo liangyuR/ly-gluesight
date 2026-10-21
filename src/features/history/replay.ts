@@ -1,4 +1,4 @@
-import { ST, type FrameStatus, type Judgement, type Measured, type Recipe, type Verdict } from "../cycle/types";
+import { ST, type FrameStatus, type Judgement, type Measured, type PoseRecord, type Recipe, type Verdict } from "../cycle/types";
 import { referenceBadge } from "../cycle/vis";
 import type { PartDetail } from "./types";
 
@@ -95,7 +95,7 @@ export function shotDiffs(layout: Recipe, original: Original, replay: Replay): S
 }
 
 type Edge = [[number, number], [number, number]] | null;
-type ViewReading = { view: number; reading: { idx: number[]; st: number[]; w: (number | null)[]; edges: Edge[] } | null; error: string | null };
+type ViewReading = { view: number; reading: { idx: number[]; st: number[]; w: (number | null)[]; edges: Edge[]; pose?: PoseRecord | null } | null; error: string | null };
 
 /** 重跑结果里选中拍照点、视角的胶边线（原图像素坐标），用于在原图上叠加胶宽测量。 */
 export function replayEdges(replay: Replay | null, k: number, view: number, changed: number[] = []) {
@@ -109,4 +109,24 @@ export function replayEdges(replay: Replay | null, k: number, view: number, chan
     const w = reading.w[i];
     return [{ from: edge[0], to: edge[1], color: changed.includes(j) ? "var(--warn)" : "var(--ok)", label: i % step === 0 && w != null ? w.toFixed(2) + " mm" : undefined }];
   });
+}
+
+/** 重跑结果里选中拍照点、视角的位姿（复测或重现时 lyFlow 重新定位得到的）。 */
+export function replayPose(replay: Replay | null, k: number, view: number): PoseRecord | null {
+  const m = replay?.measurements.find(x => x.k === k) as (Measured & { views?: ViewReading[] }) | undefined;
+  return m?.views?.find(v => v.view === view)?.reading?.pose ?? null;
+}
+
+/** 复测位姿与原记录相差超过这么多才在原图上另画复测定位框（同一张原图、同一模板应逐位一致，阈值只吸收序列化舍入）。 */
+export const REPLAY_POSE_PX = .5;
+export const REPLAY_POSE_DEG = .05;
+
+/** 复测位姿与原记录位姿是否不同：采用与否不同，或偏移差 > 0.5 px、转角差 > 0.05°。任一侧没有位姿时不比较。 */
+export function poseDiffers(original: PoseRecord | null, replay: PoseRecord | null) {
+  if (!original || !replay) return false;
+  if (original.accepted !== replay.accepted) return true;
+  if (!original.accepted) return false;
+  const [a, b] = [original.offset, replay.offset];
+  if (!a || !b) return a !== b;
+  return Math.hypot(a[0] - b[0], a[1] - b[1]) > REPLAY_POSE_PX || Math.abs((original.angle ?? 0) - (replay.angle ?? 0)) > REPLAY_POSE_DEG;
 }

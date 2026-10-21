@@ -7,6 +7,7 @@ import { historyApi } from "../src/features/history/api";
 import { workspaceApi } from "../src/features/workspace/api";
 import { useWorkspace } from "../src/features/workspace/context";
 import { deferred, partDetail, workspaceState } from "./fixtures";
+import { cycleFrame } from "./cycle-visual-fixtures";
 import type { Comparison, RecordImages } from "../src/features/workspace/types";
 import type { Measured, Recipe } from "../src/features/cycle/types";
 
@@ -162,5 +163,18 @@ describe("历史工件复测", () => {
     await userEvent.selectOptions(frame, "2");
     fireEvent.keyDown(document.body, { key: "ArrowRight" });
     expect(frame).toHaveValue("3");
+  });
+  it("记录的位姿未采用（贴边错锁 38 px）→ 原图上中线与站点不搬，框留在示教位置并标“定位未采用”", async () => {
+    ws.data!.layout.shots[0].fixture = { rect: [40, 20, 16, 16], source: "A-image-0", searchRadiusPx: 60, angleRangeDeg: 0, minScore: .6, maxPeakRatio: 1 };
+    detail.frames = [{ ...cycleFrame("done", 0), referenceFailed: [{ view: 1, reason: "定位失败" }],
+      viewResults: [{ view: 1, verdict: "ERR_INSPECT", error: null, score: 1, ms: 8, pose: { accepted: false, reason: "at_search_edge", score: .99, peakRatio: .5, angle: 0, offset: [38, 0], endShiftMm: null, excludedMm: null, endLimitMm: 9.6 } }] }, cycleFrame("done", 1)];
+    show();
+    const image = await screen.findByRole("img", { name: /原始 SN/ });
+    await waitFor(() => expect(image.querySelector('[aria-label="中线叠加"] polyline')).not.toBeNull());
+    expect(image.querySelector('[aria-label="中线叠加"] polyline')?.getAttribute("points")).toBe("10,10 20,10");
+    expect([...image.querySelectorAll('[aria-label="中线叠加"] circle')].map(c => [Number(c.getAttribute("cx")), Number(c.getAttribute("cy"))])).toEqual([[10, 10], [20, 10]]);
+    const box = image.querySelector('[aria-label^="定位未采用"]');
+    expect(box?.querySelector('[aria-label="定位框"]')?.getAttribute("points")).toBe("39.5,19.5 55.5,19.5 55.5,35.5 39.5,35.5");
+    expect(image.querySelector('[aria-label="定位框（按位姿）"]')).toBeNull();
   });
 });
