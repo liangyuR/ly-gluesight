@@ -49,6 +49,8 @@
 .view-mode { color: var(--primary); font-size: 12px; }
 
 .prod-shots .qs-camera-strip { flex: 1; min-height: 0; }
+/* 预览格子的行列按格子定高，中线 SVG 的 height:100% 才有参照；否则 SVG 按宽度撑高、从顶上溢出被裁，竖长的胶路（加上特征定位的留边）整条落在可见区外 */
+.prod-shots .qs-camera-preview { grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
 
 .prod-curve .legend { flex: 1; }
 .prod-curve .legend i.tol { background: var(--ok); }
