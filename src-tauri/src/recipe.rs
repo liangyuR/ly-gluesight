@@ -277,7 +277,7 @@ impl FixtureSpec {
     ///
     /// 两端各沿末段方向延长到无穷远（对图内的框等价于延到图边，与图像尺寸无关）：枪上相机里同一条胶通常越过示教段两端
     /// 继续留在画面里，只量示教段（端点处是半圆帽）时，框放在胶的直线延长上也能通过，模板里却有胶。
-    /// 延长段弯走的胶量不到，要靠 G4 的亮度与 peakRatio 检查。
+    /// 延长段弯走的胶量不到；亮度 ±40 与 peakRatio 也看不见框里的胶，G4 只靠保存示教时的人工确认（定稿 §13）。
     fn clearance(&self, path: &[[f32; 2]]) -> f64 {
         let pad = f64::from(FIXTURE_TEMPLATE_PAD_PX);
         let [x, y, w, h] = self.rect.map(f64::from);

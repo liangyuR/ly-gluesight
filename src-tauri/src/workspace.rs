@@ -822,6 +822,7 @@ fn update_doc(w: &mut Workspace, mut doc: RecipeDoc) -> Result<(), String> {
         }
     }
     fixture::reject_unconfirmed_rotation(&w.doc, &doc)?;
+    fixture::reject_end_param_edit(&w.doc, &doc)?;
     bind_fixture_sources(w, &mut doc, None)?;
     let mut unbound = w.unbound_imaging.clone();
     sync_doc_imaging(&mut doc, &mut unbound);
@@ -1287,7 +1288,7 @@ pub fn workspace_save_params(
 }
 
 /// 保存示教参数：特征定位的模板来源在这里（也只在这里）强制改绑到所选视图当前的冻结原图，见 `bind_fixture_sources`；
-/// 转角也只能在这里、带着人工确认调大（`fixture::confirm_rotation`）。
+/// 转角也只能在这里、带着当前验证的转角证据与人工确认调大（`fixture::confirm_rotation`）；两端参数不能在这里改（`fixture::reject_end_param_edit`）。
 fn apply_params(w: &mut Workspace, k: usize, params: ShotTeach) -> Result<(), String> {
     let mut doc = w.doc.clone();
     let shot = doc.shots.get_mut(k).ok_or("拍照点不存在")?;
@@ -1305,7 +1306,8 @@ fn apply_params(w: &mut Workspace, k: usize, params: ShotTeach) -> Result<(), St
     let selected = shot.view;
     bind_fixture_sources(w, &mut doc, Some((k, selected)))?;
     doc.build()?;
-    fixture::confirm_rotation(&w.doc, &doc, params.rotation.as_ref())?;
+    fixture::reject_end_param_edit(&w.doc, &doc)?;
+    fixture::confirm_rotation(&w.doc, &doc, params.rotation.as_ref(), w.validation.as_ref().filter(|v| v.revision == w.revision))?;
     if doc != w.doc {
         w.doc = doc;
         let frame = w.frames.get_mut(k).ok_or("拍照点不存在")?;
@@ -1333,9 +1335,10 @@ pub fn workspace_save_teach(
     let r = w.doc.build()?.for_view(k, w.doc.shots[k].view)?;
     let (image_tag, teach_tag) = shot_tags(&r, k)?;
     let fixture = r.shots[k].fixture.is_some();
-    // 喷嘴、胶枪是否在框里工具判断不了（定稿 §9），每次保存都要人工确认
+    // 喷嘴、胶枪是否在框里工具判断不了（定稿 §9）；走廊几何也只认同组示教中线及其直线延长，越过示教段后拐弯的胶、
+    // 其他 Pose 或其他胶路的胶进到框里没有自动门（§12 剩余风险、§13），每次保存都要人工确认
     if fixture && fixture_reviewed != Some(true) {
-        return Err("请先确认定位框里没有喷嘴、胶枪等随相机不动的结构".into());
+        return Err("请先确认定位框里没有胶（含越过示教段后拐弯、其他 Pose 或其他胶路的胶），也没有喷嘴、胶枪等随相机不动的结构".into());
     }
     let frame = w.frames.get_mut(k).ok_or("拍照点不存在")?;
     if frame.image.as_ref().map(|i| &i.id) != Some(&image_id) {

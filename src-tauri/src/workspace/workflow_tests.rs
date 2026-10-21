@@ -462,14 +462,19 @@ fn invalid_frozen_group_selection_rejects_activation_and_retry_even_when_current
 
 #[test]
 fn rotation_can_only_be_enabled_by_saving_params_with_an_explicit_confirmation() {
-    // 防的回归（定稿 §10 决定二）：草稿自动保存或整份保存悄悄把转角从 0 调大；保存示教参数不带独立证据与说明也能开转角；
-    // 或守卫把调小转角也拦下
+    // 防的回归（定稿 §10 决定二）：草稿自动保存或整份保存悄悄把转角从 0 调大；保存示教参数不带独立证据与说明、
+    // 没有当前修订的验证统计或转角证据不满足前两个条件也能开转角；或守卫把调小转角也拦下
     fn base(angle: f32) -> Workspace {
         let mut w = workspace();
         for image in &mut w.frames[0].views { image.size = [600, 300]; }
         w.frames[0].image = Some(w.frames[0].views[0].clone());
         w.doc.shots[0].fixture = Some(crate::recipe::FixtureSpec { angle_range_deg: angle, ..fixture_spec() });
         store_active(&mut w, 0);
+        // 当前修订的验证：转角证据满足前两个条件
+        let mut report = fixture_report(true, true);
+        report.shot_id = w.doc.shots[0].id.clone();
+        report.rotation.auto_conditions = true;
+        w.validation.as_mut().unwrap().fixture = vec![report];
         w
     }
     fn params(w: &mut Workspace, f: crate::recipe::FixtureSpec, rotation: Option<RotationConfirmation>) -> Result<(), String> {
@@ -489,21 +494,74 @@ fn rotation_can_only_be_enabled_by_saving_params_with_an_explicit_confirmation()
     }
     type Entry = fn(&mut Workspace, crate::recipe::FixtureSpec, Option<RotationConfirmation>) -> Result<(), String>;
     let confirmed = |note: &str| Some(RotationConfirmation { basis: RotationBasis::TwoTemplates, note: note.into() });
-    // （名称，原转角，入口，新转角，确认，是否接受）
-    let cases: [(&str, f32, Entry, f32, Option<RotationConfirmation>, bool); 6] = [
-        ("草稿自动保存开转角", 0.0, draft, 3.0, None, false),
-        ("整份保存开转角", 0.0, whole, 3.0, None, false),
-        ("保存示教参数、没有确认", 0.0, params, 3.0, None, false),
-        ("保存示教参数、说明为空", 0.0, params, 3.0, confirmed("  "), false),
-        ("保存示教参数、带独立证据", 0.0, params, 3.0, confirmed("同一视图两个模板估出的 θ 一致"), true),
-        ("草稿自动保存关转角", 3.0, draft, 0.0, None, true),
+    type Evidence = fn(&mut Workspace);
+    let keep: Evidence = |_| {};
+    let stale: Evidence = |w| w.validation.as_mut().unwrap().revision += 1;
+    let unmet: Evidence = |w| w.validation.as_mut().unwrap().fixture[0].rotation.auto_conditions = false;
+    // （名称，原转角，入口，新转角，确认，验证证据，是否接受）
+    let cases: [(&str, f32, Entry, f32, Option<RotationConfirmation>, Evidence, bool); 8] = [
+        ("草稿自动保存开转角", 0.0, draft, 3.0, None, keep, false),
+        ("整份保存开转角", 0.0, whole, 3.0, None, keep, false),
+        ("保存示教参数、没有确认", 0.0, params, 3.0, None, keep, false),
+        ("保存示教参数、说明为空", 0.0, params, 3.0, confirmed("  "), keep, false),
+        ("保存示教参数、验证不是当前修订的", 0.0, params, 3.0, confirmed("同一视图两个模板估出的 θ 一致"), stale, false),
+        ("保存示教参数、转角证据不满足前两个条件", 0.0, params, 3.0, confirmed("同一视图两个模板估出的 θ 一致"), unmet, false),
+        ("保存示教参数、证据满足且带独立证据", 0.0, params, 3.0, confirmed("同一视图两个模板估出的 θ 一致"), keep, true),
+        ("草稿自动保存关转角", 3.0, draft, 0.0, None, unmet, true),
     ];
-    for (name, before, entry, after, rotation, accepted) in cases {
+    for (name, before, entry, after, rotation, evidence, accepted) in cases {
         let mut w = base(before);
+        evidence(&mut w);
         let result = entry(&mut w, crate::recipe::FixtureSpec { angle_range_deg: after, ..fixture_spec() }, rotation);
         assert_eq!(result.is_ok(), accepted, "{name}：{result:?}");
         let saved = w.doc.shots[0].fixture.as_ref().unwrap().angle_range_deg;
         assert_eq!(saved, if accepted { after } else { before }, "{name}");
+    }
+}
+
+#[test]
+fn end_params_cannot_be_written_by_draft_whole_doc_or_params_saves_only_carried_or_reset() {
+    // 防的回归（定稿 §10 决定一）：示教余量 m 与两端搬移上限只该来自验证建议；前端载荷经草稿自动保存、整份保存或
+    // 保存示教参数把 m 设大、上限放宽，两端永远不判、护栏失效，验证与发布照样通过。原样带过（含改框）与回到默认不拦
+    fn draft(w: &mut Workspace, f: crate::recipe::FixtureSpec) -> Result<(), String> {
+        let shot = &w.doc.shots[0];
+        workflow::apply_draft(w, 0, workflow::DraftTeach { path: shot.path.clone(), mm_per_px: shot.mm_per_px, detect: shot.detect.clone(), limits: shot.limits.clone(), fixture: Some(f) })
+    }
+    fn whole(w: &mut Workspace, f: crate::recipe::FixtureSpec) -> Result<(), String> {
+        let mut doc = w.doc.clone();
+        doc.shots[0].fixture = Some(f.clone());
+        doc.shots[0].views[0].fixture = Some(f);
+        update_doc(w, doc)
+    }
+    fn params(w: &mut Workspace, f: crate::recipe::FixtureSpec) -> Result<(), String> {
+        let shot = &w.doc.shots[0];
+        apply_params(w, 0, ShotTeach { path: shot.path.clone(), mm_per_px: shot.mm_per_px.unwrap(), detect: shot.detect.clone(), limits: shot.limits.clone(), fixture: Some(f), rotation: None })
+    }
+    type Entry = fn(&mut Workspace, crate::recipe::FixtureSpec) -> Result<(), String>;
+    let applied = crate::recipe::FixtureSpec { max_end_shift_mm: Some(2.2), end_margin_mm: 1.3, ..fixture_spec() };
+    // （名称，入口，原参数，新参数，是否接受）
+    let cases: [(&str, Entry, (Option<f32>, f32), (Option<f32>, f32), bool); 6] = [
+        ("草稿自动保存设示教余量", draft, (None, 0.0), (None, 50.0), false),
+        ("整份保存放宽两端上限", whole, (Some(2.2), 1.3), (Some(20.0), 1.3), false),
+        ("保存示教参数改示教余量", params, (Some(2.2), 1.3), (Some(2.2), 5.0), false),
+        ("草稿自动保存、改框、原样带过", draft, (Some(2.2), 1.3), (Some(2.2), 1.3), true),
+        ("保存示教参数、改框、原样带过", params, (Some(2.2), 1.3), (Some(2.2), 1.3), true),
+        ("整份保存回到默认", whole, (Some(2.2), 1.3), (None, 0.0), true),
+    ];
+    for (name, entry, before, after, accepted) in cases {
+        let mut w = fixture_workspace();
+        let set = |f: &mut crate::recipe::FixtureSpec, (max, m): (Option<f32>, f32)| { f.max_end_shift_mm = max; f.end_margin_mm = m; };
+        let mut old = applied.clone();
+        set(&mut old, before);
+        w.doc.shots[0].fixture = Some(old);
+        store_active(&mut w, 0);
+        let mut new = applied.clone();
+        set(&mut new, after);
+        new.rect[0] += 8;
+        let result = entry(&mut w, new);
+        assert_eq!(result.is_ok(), accepted, "{name}：{result:?}");
+        let f = w.doc.shots[0].views[0].fixture.clone().unwrap();
+        assert_eq!((f.max_end_shift_mm, f.end_margin_mm), if accepted { after } else { before }, "{name}");
     }
 }
 

@@ -44,7 +44,7 @@ pub enum CheckId {
     // 示教图检查（保存门）
     Inside, Corridor, Texture, Bright, Lever, SelfLocate,
     // 验证统计（发布门）
-    LocateAll, Sigma, BrightnessLock, Observable, SearchRange, Nominal, BrightnessReject, Rotation, FewSamples,
+    LocateAll, Sigma, BrightnessLock, Observable, SearchRange, Nominal, BrightnessReject, Rotation, EndParams, FewSamples,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -269,8 +269,12 @@ pub struct ViewContext {
     pub stations: usize,
 }
 
+/// 一次 ±40 试定位：跑出了位姿（不论是否被采用），或没跑出结果的原因（测量报错、没有位姿）。
+/// 没跑出结果不能当成“被拒”：±40 是必须过的检查，没跑就没证据。
+pub type Probe = Result<PoseRecord, String>;
+
 /// 一件独立正常样本在一个特征定位视图上的结果。
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct FixtureSample {
     pub name: String,
     /// 按配方门限在原图上的定位；测量失败时为空
@@ -278,11 +282,17 @@ pub struct FixtureSample {
     /// 有基准站（ST_OK）的 d′（mm，未扣名义值）
     pub deviations_mm: Vec<f32>,
     /// 整图亮度 +40 / −40，按配方门限
-    pub brighter: Option<PoseRecord>,
-    pub darker: Option<PoseRecord>,
+    pub brighter: Probe,
+    pub darker: Probe,
     /// ±3° 离线定位：原图、+40、−40
     pub rotation: Vec<Option<PoseRecord>>,
     pub error: Option<String>,
+}
+
+impl Default for FixtureSample {
+    fn default() -> Self {
+        Self { name: String::new(), pose: None, deviations_mm: Vec::new(), brighter: Err("没有运行".into()), darker: Err("没有运行".into()), rotation: Vec::new(), error: None }
+    }
 }
 
 /// 示教两端参数的建议（定稿 §10 决定一）：只从验证统计来，用户确认后由后端写进配方。
@@ -427,29 +437,35 @@ pub fn validation_report(ctx: &ViewContext, samples: &[FixtureSample]) -> Fixtur
         }));
     }
 
-    // 亮度 ±40：错锁阻断，被拒告警；开了转角时看不出角度另算
-    let (mut wrong, mut rejected, mut unobservable) = (Vec::new(), Vec::new(), Vec::new());
+    // 亮度 ±40（必须过的检查，定稿 §9、§10）：错锁、没跑出结果、一次锁对都没有 → 阻断；部分被拒只告警；
+    // 开了转角时看不出角度另算
+    let (mut wrong, mut rejected, mut unobservable, mut missing, mut locked) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), 0usize);
     for s in samples {
         let Some(base) = accepted(&s.pose) else { continue };
         for (sign, probe) in [("+40", &s.brighter), ("−40", &s.darker)] {
             match probe {
-                Some(p) if p.accepted && !same_lock(p, base) => wrong.push(format!("{} {sign}", s.name)),
-                Some(p) if p.accepted => {}
-                Some(p) if p.reason.as_deref() == Some("angle_unobservable") => unobservable.push(format!("{} {sign}", s.name)),
-                Some(p) => rejected.push(format!("{} {sign}（{}）", s.name, reason_text(p.reason.as_deref()))),
-                None => rejected.push(format!("{} {sign}（没有定位结果）", s.name)),
+                Err(e) => missing.push(format!("{} {sign}（{e}）", s.name)),
+                Ok(p) if p.accepted && !same_lock(p, base) => wrong.push(format!("{} {sign}", s.name)),
+                Ok(p) if p.accepted => locked += 1,
+                Ok(p) if p.reason.as_deref() == Some("angle_unobservable") => unobservable.push(format!("{} {sign}", s.name)),
+                Ok(p) => rejected.push(format!("{} {sign}（{}）", s.name, reason_text(p.reason.as_deref()))),
             }
         }
     }
     let probed = samples.iter().filter(|s| accepted(&s.pose).is_some()).count();
-    checks.push(CheckItem::new(CheckId::BrightnessLock, Level::Block, probed > 0 && wrong.is_empty(), if probed == 0 {
+    let runs = 2 * probed;
+    checks.push(CheckItem::new(CheckId::BrightnessLock, Level::Block, probed > 0 && wrong.is_empty() && missing.is_empty() && locked > 0, if probed == 0 {
         "没有可做亮度 ±40 试定位的样本".into()
-    } else if wrong.is_empty() {
-        format!("亮度 ±{BRIGHTNESS_PROBE} 下 {probed} 件都没有错锁（偏离原位姿 > {LOCK_TOL_PX} px 或 > {LOCK_TOL_DEG}° 算错锁）")
-    } else {
+    } else if !wrong.is_empty() {
         format!("亮度 ±{BRIGHTNESS_PROBE} 下错锁：{}。错锁会报成功、给出错的位姿，请换框", names(wrong.clone()))
+    } else if !missing.is_empty() {
+        format!("亮度 ±{BRIGHTNESS_PROBE} 试定位没有跑出结果：{}。这是必须过的检查，没跑就没有证据，排查后重新验证", names(missing.clone()))
+    } else if locked == 0 {
+        format!("亮度 ±{BRIGHTNESS_PROBE} 下 {runs} 次试定位全部没被采用，证明不了这个框在亮度变化下锁得对：请换框或改善照明")
+    } else {
+        format!("亮度 ±{BRIGHTNESS_PROBE} 下 {runs} 次试定位里 {locked} 次锁在原位姿、没有错锁（偏离原位姿 > {LOCK_TOL_PX} px 或 > {LOCK_TOL_DEG}° 算错锁）")
     }));
-    if !rejected.is_empty() || (!rotation_on && !unobservable.is_empty()) {
+    if locked > 0 && (!rejected.is_empty() || (!rotation_on && !unobservable.is_empty())) {
         let all: Vec<String> = rejected.iter().chain(&unobservable).cloned().collect();
         checks.push(CheckItem::new(CheckId::BrightnessReject, Level::Warn, false,
             format!("亮度 ±{BRIGHTNESS_PROBE} 下没被采用：{}。现场亮度变化这么大时会判 ERR 92", names(all))));
@@ -495,6 +511,17 @@ pub fn validation_report(ctx: &ViewContext, samples: &[FixtureSample]) -> Fixtur
             format!("示教余量 {end_margin_mm:.1} mm 会让胶路剩不下 {MIN_JUDGED_STATIONS} 站可判，不能采用：请换更稳的定位框、改善夹具，或缩短搬移")
         } }
     });
+    // 两端参数是否已按建议设置（决定一第 2、3 条）：没采用时护栏还是 G4 之前的临时上限，只告警（§13）
+    let limit = samples.iter().find_map(|s| accepted(&s.pose)).map(|p| p.end_limit_mm);
+    let end_item = match (&suggestion, f.max_end_shift_mm) {
+        (_, None) => CheckItem::new(CheckId::EndParams, Level::Warn, false, format!(
+            "两端参数还没采用验证建议：两端搬移上限仍是 G4 之前的临时默认（√2·(搜索半径 − 2)·mm/px{}），示教余量 m = {} mm；每端最多约 |Δ| + 1 个站距不判也不报 ERR",
+            limit.map(|l| format!("，约 {l:.1} mm")).unwrap_or_default(), f.end_margin_mm)),
+        (Some(s), Some(max)) if s.applicable && (max != s.max_end_shift_mm || f.end_margin_mm != s.end_margin_mm) => CheckItem::new(CheckId::EndParams, Level::Warn, false, format!(
+            "两端参数与本次验证建议不同：现在两端搬移上限 {max} mm、示教余量 m {} mm，建议 {} mm、{} mm", f.end_margin_mm, s.max_end_shift_mm, s.end_margin_mm)),
+        (_, Some(max)) => CheckItem::new(CheckId::EndParams, Level::Warn, true, format!("两端搬移上限 {max} mm、示教余量 m {} mm", f.end_margin_mm)),
+    };
+    checks.push(end_item);
     if samples.len() < FEW_SAMPLES {
         checks.push(CheckItem::new(CheckId::FewSamples, Level::Warn, false,
             format!("只有 {} 件独立正常样本：P99 就是最大值，σ 也不稳；上线前至少采 {FEW_SAMPLES} 件", samples.len())));
@@ -503,7 +530,7 @@ pub fn validation_report(ctx: &ViewContext, samples: &[FixtureSample]) -> Fixtur
     FixtureViewReport {
         k: ctx.k, view: ctx.view, shot_id: ctx.shot_id.clone(), passed: first_block(&checks).is_none(), samples: samples.len(), checks,
         sigma_mm: sigma, mean_mm: mean, nominal_mm: ctx.nominal_mm, tolerance_mm: ctx.tolerance_mm, search_use, suggestion, rotation,
-        rows: samples.iter().map(|s| FixtureSampleRow { name: s.name.clone(), pose: s.pose.clone(), brighter: s.brighter.clone(), darker: s.darker.clone(), error: s.error.clone() }).collect(),
+        rows: samples.iter().map(|s| FixtureSampleRow { name: s.name.clone(), pose: s.pose.clone(), brighter: s.brighter.clone().ok(), darker: s.darker.clone().ok(), error: s.error.clone() }).collect(),
     }
 }
 

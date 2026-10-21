@@ -199,13 +199,46 @@ pub(super) fn reject_unconfirmed_rotation(old: &RecipeDoc, new: &RecipeDoc) -> R
     }
 }
 
-/// 保存示教参数时开转角：转角调大必须带上确认（独立证据与说明），确认记进应用日志。
-pub(super) fn confirm_rotation(old: &RecipeDoc, new: &RecipeDoc, rotation: Option<&RotationConfirmation>) -> Result<(), String> {
+/// 每个（拍照点，图）的两端参数（maxEndShiftMm、示教余量 m），按拍照点编号对上；拍照点级 fixture 跟随所选视图。
+fn end_params(doc: &RecipeDoc) -> BTreeMap<(String, u8), (Option<f32>, f32)> {
+    let mut out = BTreeMap::new();
+    for shot in &doc.shots {
+        if let Some(f) = &shot.fixture { out.insert((shot.id.clone(), shot.view), (f.max_end_shift_mm, f.end_margin_mm)); }
+        for v in &shot.views {
+            if let Some(f) = &v.fixture { out.insert((shot.id.clone(), v.view), (f.max_end_shift_mm, f.end_margin_mm)); }
+        }
+    }
+    out
+}
+
+/// 两端参数只由验证建议写入（`apply_fixture_suggestion`，定稿 §10 决定一）：草稿自动保存、整份保存与保存示教参数
+/// 只能原样带过，或回到默认（不设上限、m = 0，如新框）；回到默认在验证里告警（`EndParams`）。
+/// 否则前端载荷可以把 m 设到 100 mm、上限设得很大，两端永远不判、护栏失效，验证与发布却照样通过。
+pub(super) fn reject_end_param_edit(old: &RecipeDoc, new: &RecipeDoc) -> Result<(), String> {
+    let before = end_params(old);
+    match end_params(new).into_iter().find(|(key, value)| *value != (None, 0.0) && before.get(key) != Some(value)) {
+        Some(((shot, view), _)) => Err(format!("拍照点 {shot} 图 {view}：两端搬移上限与示教余量只能在验证页采用建议时写入")),
+        None => Ok(()),
+    }
+}
+
+/// 保存示教参数时开转角（定稿 §10 决定二，三个条件都要满足）：转角调大必须有当前修订的验证统计、其 ±3° 证据满足
+/// 前两个条件（L·|θ| 的 P95 超过公差/5、全部帧含 ±40 都看得出角度），并带上第三个条件的人工确认（独立证据与说明）。
+/// `validation` 是与候选同修订的验证；确认记进应用日志。
+pub(super) fn confirm_rotation(old: &RecipeDoc, new: &RecipeDoc, rotation: Option<&RotationConfirmation>, validation: Option<&Validation>) -> Result<(), String> {
     if reject_unconfirmed_rotation(old, new).is_ok() { return Ok(()); }
+    let before = angle_ranges(old);
+    let raised: Vec<((String, u8), f32)> = angle_ranges(new).into_iter().filter(|(key, angle)| *angle > before.get(key).copied().unwrap_or(0.0)).collect();
+    for ((shot, view), _) in &raised {
+        let report = validation.and_then(|v| v.fixture.iter().find(|r| r.shot_id == *shot && r.view == *view))
+            .ok_or_else(|| format!("拍照点 {shot} 图 {view}：开转角要先在验证页跑出当前修订的特征定位统计（±3° 转角证据）"))?;
+        if !report.rotation.auto_conditions {
+            return Err(format!("拍照点 {shot} 图 {view}：验证的转角证据不满足开转角的前两个条件（±3° 下 L·|θ| 的 P95 超过公差/5、全部帧含亮度 ±40 都看得出角度），保持只找平移"));
+        }
+    }
     let confirmed = rotation.filter(|r| !r.note.trim().is_empty() && r.note.chars().count() <= 200 && !r.note.chars().any(char::is_control))
         .ok_or("开启转角需要在高级设置里选一种独立证据并填写说明（最长 200 个字符）")?;
-    let changed: Vec<String> = angle_ranges(new).into_iter().filter(|(key, angle)| *angle > angle_ranges(old).get(key).copied().unwrap_or(0.0))
-        .map(|((shot, view), angle)| format!("拍照点 {shot} 图 {view} ±{angle}°")).collect();
+    let changed: Vec<String> = raised.into_iter().map(|((shot, view), angle)| format!("拍照点 {shot} 图 {view} ±{angle}°")).collect();
     crate::applog::write("warn", "特征定位开转角", &format!("配方 {}：{}；依据 {:?}：{}", new.id, changed.join("、"), confirmed.basis, confirmed.note.trim()));
     Ok(())
 }
@@ -222,7 +255,11 @@ pub(super) struct ProbeEntry {
 pub(super) fn probe_sample(engine: &vision::Engine, projected: &Recipe, k: usize, image: &FrameImage, base: &str, run: &str,
     reading: Option<&vision::ShotMeasurement>, error: Option<String>) -> fixture_quality::FixtureSample {
     use fixture_quality::{brightness, BRIGHTNESS_PROBE, ROTATION_PROBE_DEG};
-    let locate = |recipe: &Recipe, img: &FrameImage, tag: &str| vision::measure_shot(engine, recipe, k, img, &format!("{run}-{tag}"), base).ok().and_then(|m| m.pose);
+    // ±40 是必须过的检查：没跑出结果时带上原因，不当成“被拒”（`validation_report` 按阻断处理）
+    let probe = |recipe: &Recipe, img: &FrameImage, tag: &str| -> fixture_quality::Probe {
+        vision::measure_shot(engine, recipe, k, img, &format!("{run}-{tag}"), base)?.pose.ok_or_else(|| "没有定位结果".into())
+    };
+    let locate = |recipe: &Recipe, img: &FrameImage, tag: &str| probe(recipe, img, tag).ok();
     let brighter_image = brightness(image, BRIGHTNESS_PROBE);
     let darker_image = brightness(image, -BRIGHTNESS_PROBE);
     let mut rotated = projected.clone();
@@ -231,8 +268,8 @@ pub(super) fn probe_sample(engine: &vision::Engine, projected: &Recipe, k: usize
         name: String::new(),
         pose: reading.and_then(|r| r.pose.clone()),
         deviations_mm: reading.map(|r| r.st.iter().zip(&r.d).filter(|(st, _)| **st == crate::measure::ST_OK).map(|(_, d)| *d).collect()).unwrap_or_default(),
-        brighter: locate(projected, &brighter_image, "bright"),
-        darker: locate(projected, &darker_image, "dark"),
+        brighter: probe(projected, &brighter_image, "bright"),
+        darker: probe(projected, &darker_image, "dark"),
         rotation: vec![locate(&rotated, image, "rot"), locate(&rotated, &brighter_image, "rot-bright"), locate(&rotated, &darker_image, "rot-dark")],
         error,
     }

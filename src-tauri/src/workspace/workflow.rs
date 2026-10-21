@@ -257,6 +257,7 @@ pub(super) fn apply_draft(w: &mut Workspace, k: usize, mut params: DraftTeach) -
         let fixture = doc.shots[k].fixture.clone();
         if let Some(v) = doc.shots[k].views.iter_mut().find(|v| v.view == selected) { v.fixture = fixture; }
         super::fixture::reject_unconfirmed_rotation(&w.doc, &doc)?;
+        super::fixture::reject_end_param_edit(&w.doc, &doc)?;
         bind_fixture_sources(w, &mut doc, None)?;
         params.fixture = doc.shots[k].fixture.take();
     }

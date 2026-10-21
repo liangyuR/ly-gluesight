@@ -67,7 +67,8 @@ fn teach_image_failing_any_save_check_makes_the_trial_invalid_and_names_it_but_a
 }
 
 fn context(angle_range_deg: f32) -> ViewContext {
-    ViewContext { k: 0, view: 1, shot_id: "P1".into(), fixture: FixtureSpec { angle_range_deg, ..spec() }, tolerance_mm: 0.5, nominal_mm: 0.0,
+    // 两端参数已按 normal_samples 的建议采用（|Δ| P99 0.3 mm → 1.3 mm、0.8 mm）
+    ViewContext { k: 0, view: 1, shot_id: "P1".into(), fixture: FixtureSpec { angle_range_deg, max_end_shift_mm: Some(1.3), end_margin_mm: 0.8, ..spec() }, tolerance_mm: 0.5, nominal_mm: 0.0,
         lever_mm: 80.0, spacing_mm: 0.5, stations: 41 }
 }
 
@@ -77,8 +78,8 @@ fn normal_samples() -> Vec<FixtureSample> {
         name: format!("S{i:02}"),
         pose: Some(pose(true, [1.0, 0.5], 0.0)),
         deviations_mm: vec![0.02, -0.02, 0.01, -0.01],
-        brighter: Some(pose(true, [1.3, 0.5], 0.0)),
-        darker: Some(pose(true, [0.8, 0.4], 0.0)),
+        brighter: Ok(pose(true, [1.3, 0.5], 0.0)),
+        darker: Ok(pose(true, [0.8, 0.4], 0.0)),
         rotation: vec![Some(pose(true, [1.0, 0.5], 0.01)); 3],
         error: None,
     }).collect()
@@ -86,19 +87,22 @@ fn normal_samples() -> Vec<FixtureSample> {
 
 #[test]
 fn validation_blocks_failed_locate_wide_sigma_bright_mislock_and_unobservable_rotation_but_only_warns_otherwise() {
-    // 防的回归（定稿 §5“验证”、§10）：有件定位失败、σ 超公差/5、亮度 ±40 错锁、开了转角却看不出角度时还能发布；
+    // 防的回归（定稿 §5“验证”、§10）：有件定位失败、σ 超公差/5、亮度 ±40 错锁或没跑出结果或全部被拒、开了转角却看不出角度时还能发布；
     // 或位姿占搜索范围 70% 以上、μ 偏离名义值超公差/3、±40 被拒这些告警项把发布拦住
     type Edit = fn(&mut Vec<FixtureSample>);
     // （名称，转角范围，改样本，应阻断的项，应告警的项）
-    let cases: [(&str, f32, Edit, &[&str], &[&str]); 8] = [
+    let cases: [(&str, f32, Edit, &[&str], &[&str]); 10] = [
         ("全部正常", 0.0, |_| {}, &[], &[]),
         ("一件定位失败", 0.0, |s| s[3].pose = Some(pose(false, [0.0, 0.0], 0.0)), &["LocateAll"], &[]),
         ("σ 超公差/5", 0.0, |s| for x in s.iter_mut() { x.deviations_mm = vec![0.2, -0.2, 0.15, -0.15]; }, &["Sigma"], &[]),
-        ("+40 错锁", 0.0, |s| s[5].brighter = Some(pose(true, [6.0, 0.5], 0.0)), &["BrightnessLock"], &[]),
-        ("开转角、−40 看不出角度", 3.0, |s| s[2].darker = Some(PoseRecord { reason: Some("angle_unobservable".into()), ..pose(false, [0.0, 0.0], 0.0) }), &["Observable"], &[]),
-        ("位姿用到搜索半径 75%", 0.0, |s| { s[0].pose = Some(pose(true, [15.0, 0.5], 0.0)); s[0].brighter = s[0].pose.clone(); s[0].darker = s[0].pose.clone(); }, &[], &["SearchRange"]),
+        ("+40 错锁", 0.0, |s| s[5].brighter = Ok(pose(true, [6.0, 0.5], 0.0)), &["BrightnessLock"], &[]),
+        ("开转角、−40 看不出角度", 3.0, |s| s[2].darker = Ok(PoseRecord { reason: Some("angle_unobservable".into()), ..pose(false, [0.0, 0.0], 0.0) }), &["Observable"], &[]),
+        ("位姿用到搜索半径 75%", 0.0, |s| { s[0].pose = Some(pose(true, [15.0, 0.5], 0.0)); s[0].brighter = Ok(s[0].pose.clone().unwrap()); s[0].darker = s[0].brighter.clone(); }, &[], &["SearchRange"]),
         ("μ 偏名义值超公差/3", 0.0, |s| for x in s.iter_mut() { x.deviations_mm = vec![0.20, 0.21, 0.19, 0.20]; }, &[], &["Nominal"]),
-        ("−40 被拒", 0.0, |s| s[1].darker = Some(pose(false, [0.0, 0.0], 0.0)), &[], &["BrightnessReject"]),
+        ("−40 被拒", 0.0, |s| s[1].darker = Ok(pose(false, [0.0, 0.0], 0.0)), &[], &["BrightnessReject"]),
+        // ±40 是必须过的检查：没跑出结果、一次锁对都没有，都不能当“被拒”只告警
+        ("+40 没跑出结果", 0.0, |s| s[4].brighter = Err("lyFlow 运行失败".into()), &["BrightnessLock"], &[]),
+        ("±40 全部被拒", 0.0, |s| for x in s.iter_mut() { x.brighter = Ok(pose(false, [0.0, 0.0], 0.0)); x.darker = x.brighter.clone(); }, &["BrightnessLock"], &[]),
     ];
     for (name, angle_range, edit, blocks, warns) in cases {
         let mut samples = normal_samples();
@@ -154,5 +158,22 @@ fn rotation_evidence_meets_the_automatic_conditions_only_when_large_and_observab
         // 只找平移的视图转得多时告警（D3：只告警不阻断）
         assert_eq!(failed_warnings(&report.checks).contains("Rotation"), name != "转得少", "{name}");
         assert!(report.passed, "{name}");
+    }
+}
+
+#[test]
+fn end_params_not_taken_from_the_validation_suggestion_warn_that_the_temporary_guard_is_still_in_use() {
+    // 防的回归（定稿 §10 决定一第 2 条）：两端搬移上限没采用 P99 + 1 mm 的建议（仍是 G4 之前的临时公式、或与本次建议不同）时，
+    // 验证面板与发布前检查都看不出来；或已采用的参数还在告警
+    let applied = context(0.0).fixture;
+    let cases = [
+        ("没采用建议", FixtureSpec { max_end_shift_mm: None, end_margin_mm: 0.0, ..applied.clone() }, false),
+        ("与本次建议不同", FixtureSpec { max_end_shift_mm: Some(3.0), ..applied.clone() }, false),
+        ("已采用建议", applied, true),
+    ];
+    for (name, fixture, ok) in cases {
+        let report = validation_report(&ViewContext { fixture, ..context(0.0) }, &normal_samples());
+        assert_eq!(!failed_warnings(&report.checks).contains("EndParams"), ok, "{name}：{:?}", report.checks);
+        assert!(report.passed, "{name}：只告警");
     }
 }

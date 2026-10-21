@@ -328,7 +328,7 @@ fn teach_check_accepts_the_identity_pose_and_brightness_probes_do_not_mislock_bu
     assert!(report.passed, "{:?}", report.checks);
     let pose = report.pose.clone().unwrap();
     assert!(pose.peak_ratio.is_some(), "{pose:?}");
-    let sample = FixtureSample { name: "示教图".into(), pose: Some(pose), deviations_mm: vec![0.0, 0.01], brighter: poses[0].clone(), darker: poses[1].clone(), ..Default::default() };
+    let sample = FixtureSample { name: "示教图".into(), pose: Some(pose), deviations_mm: vec![0.0, 0.01],         brighter: poses[0].clone().ok_or_else(|| "没有定位结果".into()), darker: poses[1].clone().ok_or_else(|| "没有定位结果".into()), ..Default::default() };
     let ctx = ViewContext { k: 0, view: 1, shot_id: "P1".into(), fixture: document(RECT).shots[0].fixture.clone().unwrap(), tolerance_mm: 0.5, nominal_mm: 0.0,
         lever_mm: 30.0, spacing_mm: 1.0, stations: 31 };
     let validation = validation_report(&ctx, &[sample]);
