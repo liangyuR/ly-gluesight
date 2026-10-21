@@ -121,3 +121,16 @@ fn unavailable_or_inconsistent_original_inputs_are_explicitly_skipped() {
     assert_eq!(result.skip_reasons[0].reason, "原配方快照缺失，无法核对测点布局");
     assert_eq!(rejudge_rows(vec![row(&original, 6)], &RejudgeRequest::default(), |_| Err("数据库读取失败".into()), |_| None).unwrap_err(), "数据库读取失败");
 }
+
+#[test]
+fn current_recipe_with_fixture_and_unchanged_layout_is_skipped_for_raw_remeasure() {
+    // 防的回归：定位模板来自冻结示教原图、不在配方里；重新冻结后布局不变，旧 d′ 是对着别的模板量的，却被当前配方复用重判
+    let mut doc = crate::recipe::samples().remove(1);
+    doc.shots[0].fixture = Some(crate::recipe::FixtureSpec { rect: [600, 400, 32, 32], search_radius_px: 20.0, angle_range_deg: 0.0,
+        min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None });
+    let original = Arc::new(doc.build().unwrap());
+    let request = RejudgeRequest { use_current_recipe: true, ..Default::default() };
+    let result = rejudge_rows(vec![row(&original, 1)], &request, |_| Ok(Some(original.clone())), |_| Some(original.clone())).unwrap();
+    assert_eq!((result.total, result.skipped), (0, 1));
+    assert!(result.skip_reasons[0].reason.contains("特征定位"));
+}

@@ -417,6 +417,13 @@ pub fn same_measurement_layout(original: &Recipe, candidate: &Recipe) -> bool {
     measurement_layout(original) == measurement_layout(candidate)
 }
 
+/// 旧测量值（d′）依赖定位模板的像素：两边任一用了特征定位，就不能凭测量布局相同复用，必须原图重测。
+/// 模板由工作台当时冻结的示教原图裁出，配方里只有框和门限；重新冻结、导入历史或恢复示教后模板变了、布局却不变。
+/// G3 把模板身份（发布包内模板的内容哈希）纳入测量定义后，才能对同一模板放开复用。
+pub fn readings_depend_on_template(original: &Recipe, candidate: &Recipe) -> bool {
+    [original, candidate].iter().any(|r| r.shots.iter().any(|s| s.has_fixture()))
+}
+
 fn validate_raw_files(files: &[ShotRawFile]) -> Result<(), String> {
     let mut views = std::collections::HashSet::new();
     for file in files {

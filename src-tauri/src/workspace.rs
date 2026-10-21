@@ -1925,6 +1925,9 @@ pub async fn workspace_compare(
             .transpose()?
             .flatten()
             .ok_or("历史配方快照缺失")?;
+        if !raw && crate::store::readings_depend_on_template(&original, &recipe) {
+            return Err("配方使用特征定位，定位模板不在配方里，不能复用旧测量值；请从原图复测".into());
+        }
         if (raw && !same_frame_sources(&original, &recipe)) || (!raw && !crate::store::same_measurement_layout(&original, &recipe)) {
             return Err(if raw { "历史原图的 Pose、相机或视角与候选不同；请重新采集样本" }
                 else { "保存的测点布局与候选不同，不能复用旧测量值；请从原图复测" }.into());
