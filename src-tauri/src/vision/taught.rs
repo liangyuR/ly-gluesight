@@ -504,3 +504,7 @@ fn apply_pose(recipe: &Recipe, p: &ShotPlan, f: &FixtureSpec, record: &Value, no
 #[cfg(test)]
 #[path = "taught/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "taught/engine_tests.rs"]
+mod engine_tests;

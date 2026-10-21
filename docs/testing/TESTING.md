@@ -50,6 +50,17 @@ cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib plc_ses
 
 S7 专项需要 Python 3 和本机 TCP 权限，可用 `S7_TEST_PYTHON` 指定 Python。Windows 沙箱拒绝 localhost 连接（WinError 10013）时，在获准主机环境运行，不能跳过 TCP 后记为通过。日志位于 `src-tauri/target/s7-session-tests/verification.log`；各案例目录保存状态、报文、事务及 DB 快照，本机产物不提交。
 
+## 特征定位真引擎测试
+
+`src-tauri/src/vision/taught/engine_tests.rs` 在合成工件（定位框里两个暗孔和一个亮 L 角，暗胶条沿示教线）上跑真实 lyFlow 的 glue.locate 与 bead_width，经 `measure_views` 和 `judge` 走生产路径，共 3 项：整件平移（+12, +7 px 与切向 −25 px）后 d′ 不变、两端超出检测范围、判 OK；只移胶 8 px 时 d 沿法向变 0.8 mm、判 NG_POSITION；定位框被抹平时有胶站全部无基准、胶宽保留、判 ERR 92。默认忽略，需要带 lyFlow#32 glue.locate 的 `lyflow_core.dll`（发布前用本地构建）：
+
+```powershell
+$env:LYFLOW_CORE_DLL = '<lyFlow 构建>\build\core\bin\lyflow_core.dll'
+cargo test --manifest-path src-tauri/Cargo.toml --lib vision::taught::engine_tests -- --ignored --test-threads=1
+```
+
+核心库的 glue.locate 不支持带外圈模板（1.0.0）时测试直接失败，不算通过。
+
 ## 隔离桌面与证据边界
 
 `pnpm test:ui:production` 使用 `tests/native/production-flow-ui.mjs` 与 `tests/native/tauri-flow-test.json`，应用标识为 `com.xyzrobotics.tujiaovision.flow-tests`，报告输出到 `output/playwright/flow-regression`。测试通过站点模式进入“离线 · 合成图”，经生产 S7 握手运行一件；使用真实后端、SQLite、PGM 和元数据，并在历史页读回；结束时退出离线并关闭本次进程。

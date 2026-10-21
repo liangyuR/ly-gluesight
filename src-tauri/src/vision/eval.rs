@@ -2,7 +2,7 @@
 //! 入口 scripts/Test-AlgorithmEval.ps1；结果写到 GLUESIGHT_EVAL_OUT（缺省 output/algorithm-eval）。
 
 mod locate;
-mod synth;
+pub(super) mod synth;
 mod teach;
 
 use std::collections::BTreeMap;
