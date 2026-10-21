@@ -1980,8 +1980,8 @@ pub async fn workspace_compare(
             .transpose()?
             .flatten()
             .ok_or("历史配方快照缺失")?;
-        if !raw && crate::store::readings_depend_on_template(&original, &recipe) {
-            return Err("配方使用特征定位，定位模板不在配方里，不能复用旧测量值；请从原图复测".into());
+        if !raw && crate::store::template_identity_unknown(&original, &recipe) {
+            return Err("原记录的定位模板身份未知（G2 时期的记录），不能复用旧测量值；请从原图复测".into());
         }
         if (raw && !same_frame_sources(&original, &recipe)) || (!raw && !crate::store::same_measurement_layout(&original, &recipe)) {
             return Err(if raw { "历史原图的 Pose、相机或视角与候选不同；请重新采集样本" }
@@ -2658,22 +2658,26 @@ mod tests {
     }
 
     #[test]
-    fn changing_fixture_changes_measurement_layout_but_changing_nominal_keeps_it() {
-        // 防的回归（定稿 §7）：改 fixture 后历史仍按旧测量定义重判（测量布局没变）；或只改名义值也被当成测量定义变化，历史不能重判
+    fn template_source_and_fixture_are_measurement_definition_but_nominal_is_not() {
+        // 防的回归（定稿 §7）：改 fixture 或只换模板来源（重新冻结后保存）后，历史仍按旧测量定义重判、复用对着旧模板量的 d′；
+        // 或只改名义值也被当成测量定义变化，历史不能重判
         let mut doc = crate::recipe::samples().remove(1);
         doc.shots.truncate(1);
         let shot = &mut doc.shots[0];
         shot.views = vec![crate::recipe::ShotViewSpec { view: 1, enabled: true, path: shot.path.clone(), mm_per_px: shot.mm_per_px,
-            detect: None, limits: None, calib: None, fixture: None }];
+            detect: None, limits: None, calib: None, fixture: Some(crate::recipe::FixtureSpec { rect: [100, 100, 32, 32], source: "group-0-v1".into(),
+                search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None }) }];
         let original = doc.build().unwrap();
-        let mut located = doc.clone();
-        located.shots[0].views[0].fixture = Some(crate::recipe::FixtureSpec { rect: [100, 100, 32, 32], source: "group-0-v1".into(), search_radius_px: 20.0,
-            angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None });
-        assert!(!crate::store::same_measurement_layout(&original, &located.build().unwrap()));
-        let mut nominal = doc.clone();
-        nominal.limits.position.as_mut().unwrap().nominal = 0.3;
-        nominal.limits.gauge_ref = Some("GA-0315".into());
-        assert!(crate::store::same_measurement_layout(&original, &nominal.build().unwrap()));
+        let cases: [(&str, fn(&mut RecipeDoc), bool); 3] = [
+            ("去掉特征定位", |d| d.shots[0].views[0].fixture = None, false),
+            ("只换模板来源", |d| d.shots[0].views[0].fixture.as_mut().unwrap().source = "group-0-v1-retake".into(), false),
+            ("只改名义值", |d| { d.limits.position.as_mut().unwrap().nominal = 0.3; d.limits.gauge_ref = Some("GA-0315".into()); }, true),
+        ];
+        for (name, edit, same) in cases {
+            let mut candidate = doc.clone();
+            edit(&mut candidate);
+            assert_eq!(crate::store::same_measurement_layout(&original, &candidate.build().unwrap()), same, "{name}");
+        }
     }
 
     fn archive_fixture(doc: RecipeDoc) -> Release {

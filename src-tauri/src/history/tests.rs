@@ -123,14 +123,37 @@ fn unavailable_or_inconsistent_original_inputs_are_explicitly_skipped() {
 }
 
 #[test]
-fn current_recipe_with_fixture_and_unchanged_layout_is_skipped_for_raw_remeasure() {
-    // 防的回归：定位模板来自冻结示教原图、不在配方里；重新冻结后布局不变，旧 d′ 是对着别的模板量的，却被当前配方复用重判
+fn fixture_recipe_reuses_readings_only_while_the_template_source_is_known_and_unchanged() {
+    // 防的回归（定稿 §7“只改名义 → 历史可重判”）：含特征定位的配方一律拒绝复用（G2 的权宜）；
+    // 或原记录说不清模板来源时照样复用。来源换了由测量布局拦下，见 workspace 的测量布局用例
     let mut doc = crate::recipe::samples().remove(1);
-    doc.shots[0].fixture = Some(crate::recipe::FixtureSpec { rect: [100, 100, 32, 32], source: "capture-1-0-v1".into(), search_radius_px: 20.0, angle_range_deg: 0.0,
-        min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None });
-    let original = Arc::new(doc.build().unwrap());
+    doc.shots[0].fixture = Some(crate::recipe::FixtureSpec { rect: [100, 100, 32, 32], source: "capture-1-0-v1".into(), search_radius_px: 20.0,
+        angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None });
+    let built = doc.build().unwrap();
+    let table = vec![crate::judge::PointState::Measured { d: Some(0.0), w: 4.0 }; built.point_count()];
+    let row = |original: &Recipe| StoredMeasurement { table: table.clone(), verdict: judge::judge(original, &table).verdict, ..row(original, 1) };
+    let candidate = |edit: fn(&mut crate::recipe::RecipeDoc)| { let mut next = doc.clone(); next.version += 1; edit(&mut next); Arc::new(next.build().unwrap()) };
+    let renominal = candidate(|d| { d.limits.position.as_mut().unwrap().nominal = 3.0; d.limits.gauge_ref = Some("GA-0315".into()); });
+    let mut unknown = built.clone();
+    unknown.shots[0].fixture.as_mut().unwrap().source.clear();
+    let original = Arc::new(built);
     let request = RejudgeRequest { use_current_recipe: true, ..Default::default() };
-    let result = rejudge_rows(vec![row(&original, 1)], &request, |_| Ok(Some(original.clone())), |_| Some(original.clone())).unwrap();
-    assert_eq!((result.total, result.skipped), (0, 1));
-    assert!(result.skip_reasons[0].reason.contains("特征定位"));
+    // （原记录配方，当前候选，预期：Some(重判结论) 或 None = 跳过且原因含这段话）
+    let cases: [(&str, &Arc<Recipe>, &Arc<Recipe>, Result<Verdict, &str>); 2] = [
+        ("同一模板来源、只改名义", &original, &renominal, Ok(Verdict::NgPosition)),
+        ("原记录的模板来源未知", &Arc::new(unknown), &renominal, Err("身份未知")),
+    ];
+    for (name, original, current, want) in cases {
+        let result = rejudge_rows(vec![row(original)], &request, |_| Ok(Some((*original).clone())), |_| Some((*current).clone())).unwrap();
+        match want {
+            Ok(verdict) => {
+                assert_eq!((result.total, result.skipped), (1, 0), "{name}");
+                assert_eq!((result.changes[0].from, result.changes[0].to), (Verdict::Ok, verdict), "{name}");
+            }
+            Err(reason) => {
+                assert_eq!((result.total, result.skipped), (0, 1), "{name}");
+                assert!(result.skip_reasons[0].reason.contains(reason), "{name}：{}", result.skip_reasons[0].reason);
+            }
+        }
+    }
 }

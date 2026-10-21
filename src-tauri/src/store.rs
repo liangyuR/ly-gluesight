@@ -404,24 +404,28 @@ fn delivery_row(row: &rusqlite::Row, first: usize) -> rusqlite::Result<PlcDelive
 fn measurement_layout(recipe: &Recipe) -> serde_json::Value {
     let shots: Vec<_> =
         recipe.shots.iter().map(|s| {
-            // fixture 是测量定义（定位模板与 maxEndShiftMm 都会改变站状态），改了要原图重测；名义值与 gaugeRef 是判定参数，不在这里
+            // fixture 是测量定义（定位模板与 maxEndShiftMm 都会改变站状态），改了要原图重测；名义值与 gaugeRef 是判定参数，不在这里。
+            // fixture 里含模板来源 source：模板身份 = (来源冻结图, 框, 外圈)，不用内容哈希（D-0）
             let views: Vec<_> = s.views.iter().map(|v| serde_json::json!([v.view, v.enabled, v.path, v.mm_per_px, v.calib, v.detect, v.fixture])).collect();
             serde_json::json!([s.id, s.pose_id, s.camera, s.view, s.skip, s.path, s.mm_per_px, s.calib_ref(), s.detect, views, s.fixture])
         }).collect();
     let segments: Vec<_> = recipe.segments.iter().map(|s| (s.shot, s.view, s.first, s.count)).collect();
+    // 模板裁法（vision::fixture::template_pgm）也属于测量定义：裁法一改，这里必须跟着改，否则 (来源, 框, 外圈) 不变、模板像素却变了
     serde_json::json!({"unit":"mm", "schema":recipe.schema_version, "spacing":recipe.spacing,
-        "shots":shots, "segments":segments, "points":recipe.points, "detect":recipe.detect})
+        "shots":shots, "segments":segments, "points":recipe.points, "detect":recipe.detect,
+        "fixtureTemplate": {"pad": crate::recipe::FIXTURE_TEMPLATE_PAD_PX}})
 }
 
 pub fn same_measurement_layout(original: &Recipe, candidate: &Recipe) -> bool {
     measurement_layout(original) == measurement_layout(candidate)
 }
 
-/// 旧测量值（d′）依赖定位模板的像素：两边任一用了特征定位，就不能凭测量布局相同复用，必须原图重测。
-/// 模板由工作台当时冻结的示教原图裁出，配方里只有框和门限；重新冻结、导入历史或恢复示教后模板变了、布局却不变。
-/// G3 把模板身份（发布包内模板的内容哈希）纳入测量定义后，才能对同一模板放开复用。
-pub fn readings_depend_on_template(original: &Recipe, candidate: &Recipe) -> bool {
-    [original, candidate].iter().any(|r| r.shots.iter().any(|s| s.has_fixture()))
+/// 旧测量值（d′）依赖定位模板的像素。模板身份 (来源冻结图, 框, 外圈) 在测量布局里，布局相同即同一模板、可以复用；
+/// 但任一侧有启用的 fixture 却说不清来源（来源不是合法的冻结图编号）时身份未知，不能复用，必须原图复测。
+/// 正常的配方快照解析时会过配方校验（`Recipe` 经 `RecipeDoc::build` 反序列化），缺来源的解析就失败；这里是纵深防御。
+pub fn template_identity_unknown(original: &Recipe, candidate: &Recipe) -> bool {
+    [original, candidate].iter().any(|r| r.shots.iter().any(|s| s.measured() && s.enabled_views().into_iter()
+        .any(|v| s.for_view(v).ok().and_then(|p| p.fixture).is_some_and(|f| !crate::recipe::valid_image_id(&f.source)))))
 }
 
 fn validate_raw_files(files: &[ShotRawFile]) -> Result<(), String> {

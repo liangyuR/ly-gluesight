@@ -20,6 +20,9 @@ pub fn padded_rect(r: [u32; 4], w: u32, h: u32) -> Option<[u32; 4]> {
 
 /// glue.locate 的模板文件（lyFlow#32）：示教图上示教框四周各外扩 FIXTURE_TEMPLATE_PAD_PX 裁下的一块，
 /// 存成 PGM，大小 (w + 2·pad) × (h + 2·pad)，左上角在 (x − pad, y − pad)；anchor 仍是示教框左上角。
+///
+/// 裁法属于测量定义：改这里必须同时改 `store::measurement_layout` 里的 `fixtureTemplate`，否则模板身份
+/// (来源, 框, 外圈) 不变、模板像素却变了，历史重判会复用对着旧模板量的 d′。
 pub fn template_pgm(image: &FrameImage, rect: [u32; 4]) -> Result<Vec<u8>, String> {
     if image.pixels.len() as u64 != u64::from(image.width) * u64::from(image.height) {
         return Err("示教原图像素缓冲与尺寸不一致".into());
