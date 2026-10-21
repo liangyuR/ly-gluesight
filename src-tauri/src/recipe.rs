@@ -184,8 +184,6 @@ pub const RECIPE_SCHEMA: u32 = 7;
 pub const FIXTURE_TEMPLATE_PAD_PX: u32 = 4;
 /// glue.locate 的角度扫描步长（°），只在开转角时起作用
 pub const FIXTURE_ANGLE_STEP_DEG: f32 = 0.5;
-/// 定稿 §10 决定一的示教余量 m（mm）：两端排除长度 = max(0, |Δ| − m) + 1 个站距。G4 按验证数据再定
-pub const FIXTURE_END_MARGIN_MM: f32 = 0.0;
 /// 带外圈模板离胶检测走廊（示教中线 ± 搜索半宽）至少再留这么多（px）。阶段 0 评测（P0）选框时要求内框离走廊
 /// 大于 10 px；外圈让框在角上最多近 4√2 px，所以 P0 选出的框到这里还剩约 10 − 4√2 ≈ 4.3 px（不计 P0 每 2 px
 /// 取点的采样误差），取 4。
@@ -223,7 +221,13 @@ pub struct FixtureSpec {
     /// 两端切向搬移 |Δ| 的上限（mm），超过判位置基准无效（ERR 92）；为空时用临时默认公式（见 end_shift_limit_mm）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_end_shift_mm: Option<f32>,
+    /// 示教余量 m（mm，定稿 §10 决定一第 3 条）：离胶路首、末弧长不到 m 的站永远不判（超出检测范围、不留胶宽），
+    /// 位姿搬移再从 N 端量起排除 max(m, |Δ|) + 1 个站距。只由验证建议写入（`workspace_apply_fixture_suggestion`），默认 0
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub end_margin_mm: f32,
 }
+
+fn is_zero(v: &f32) -> bool { *v == 0.0 }
 
 impl FixtureSpec {
     /// 只核对配方本身能判的：右、下边要看图像尺寸，由工作台保存示教与生成模板时核对。
@@ -250,6 +254,9 @@ impl FixtureSpec {
         }
         if self.max_end_shift_mm.is_some_and(|m| !(m.is_finite() && m > 0.0)) {
             return Err(format!("{what}：两端搬移上限必须是正数"));
+        }
+        if !(self.end_margin_mm.is_finite() && (0.0..=100.0).contains(&self.end_margin_mm)) {
+            return Err(format!("{what}：示教余量需在 0–100 mm 之间"));
         }
         if !valid_image_id(&self.source) {
             return Err(format!("{what}：缺少模板来源（示教图编号）。G2 时期的候选需要重建，或在示教页重新保存示教参数"));
@@ -1749,7 +1756,7 @@ mod tests {
 
     fn fixture_spec() -> FixtureSpec {
         FixtureSpec { rect: [100, 100, 32, 32], source: "capture-1-0-v1".into(), search_radius_px: 20.0, angle_range_deg: 0.0,
-            min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None }
+            min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None, end_margin_mm: 0.0 }
     }
 
     #[test]

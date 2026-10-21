@@ -79,7 +79,7 @@ fn every_operator_in_measurement_graphs_is_a_required_operator() {
     // 样例配方原样一份、每个拍照点都带特征定位再一份，后者的图里必须真的有 n_locate，否则定位分支没被检查到
     let required: Vec<&str> = REQUIRED_OPERATORS.split(',').collect();
     let fixture = crate::recipe::FixtureSpec { rect: [100, 100, 32, 32], source: "capture-1-0-v1".into(), search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6,
-        max_peak_ratio: 1.0, max_end_shift_mm: None };
+        max_peak_ratio: 1.0, max_end_shift_mm: None, end_margin_mm: 0.0 };
     let mut located_nodes = 0;
     for sample in crate::recipe::samples() {
         let mut located = sample.clone();
@@ -108,7 +108,7 @@ fn runtime_without_padded_template_support_refuses_only_recipes_using_fixture() 
     let plain = crate::recipe::samples().remove(1).build().unwrap();
     let mut located = crate::recipe::samples().remove(1);
     located.shots[0].fixture = Some(crate::recipe::FixtureSpec { rect: [100, 100, 32, 32], source: "capture-1-0-v1".into(),
-        search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None });
+        search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None, end_margin_mm: 0.0 });
     let located = located.build().unwrap();
     assert!(require_locate(&plain, &unsupported).is_ok());
     assert!(require_locate(&located, &unsupported).unwrap_err().contains("templatePad"));

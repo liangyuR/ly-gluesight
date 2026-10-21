@@ -2663,7 +2663,7 @@ mod tests {
         let shot = &mut doc.shots[0];
         shot.views = vec![crate::recipe::ShotViewSpec { view: 1, enabled: true, path: shot.path.clone(), mm_per_px: shot.mm_per_px,
             detect: None, limits: None, calib: None, fixture: Some(crate::recipe::FixtureSpec { rect: [100, 100, 32, 32], source: "group-0-v1".into(),
-                search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None }) }];
+                search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None, end_margin_mm: 0.0 }) }];
         let original = doc.build().unwrap();
         let cases: [(&str, fn(&mut RecipeDoc), bool); 3] = [
             ("去掉特征定位", |d| d.shots[0].views[0].fixture = None, false),

@@ -153,7 +153,7 @@ fn locate_recipe() -> Result<crate::recipe::Recipe, String> {
     shot.path = vec![[40.0, 180.0], [280.0, 180.0]];
     shot.mm_per_px = Some(0.1);
     shot.fixture = Some(crate::recipe::FixtureSpec { rect: LOCATE_RECT, source: LOCATE_SMOKE_SOURCE.into(), search_radius_px: 20.0,
-        angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None });
+        angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None, end_margin_mm: 0.0 });
     document.spacing = 1.0;
     document.detect = DetectParams { search_mm: 3.0, polarity: Polarity::Dark, width_range: [0.8, 2.4] };
     document.build()

@@ -720,7 +720,7 @@ mod tests {
     /// 一个拍照点三幅图：图 1 用特征定位（框 rect），图 2 不用，图 3 停用但残留定位框
     fn fixture_recipe(rect: [u32; 4]) -> crate::recipe::RecipeDoc {
         let fixture = crate::recipe::FixtureSpec { rect, source: IMAGE_ID.into(), search_radius_px: 20.0, angle_range_deg: 0.0,
-            min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None };
+            min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None, end_margin_mm: 0.0 };
         let mut recipe = one_shot_recipe();
         let shot = &mut recipe.shots[0];
         shot.views = [1, 2, 3].into_iter().map(|v| crate::recipe::ShotViewSpec { view: v, enabled: v != 3, path: shot.path.clone(),
