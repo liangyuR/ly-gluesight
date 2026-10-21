@@ -553,14 +553,14 @@ fn log_recording_alarm(app: &AppHandle, change: AlarmChange) {
 }
 
 /// 告警的出现、消除与作废都记在触发它的这一件下（cycle_id 是当前件），本件时间线里能看到。
-fn log_locate_alarm(app: &AppHandle, change: LocateChange, cycle_id: &str, camera: &str) {
+fn log_locate_alarm(app: &AppHandle, change: LocateChange, cycle_id: &str) {
     let (tone, ev, msg, alarm) = match change {
         LocateChange::Raised(alarm) => ("err", "连续定位失败", alarm.message(), alarm),
         LocateChange::Cleared(alarm) => ("ok", "定位恢复", format!("配方 {} 拍照点 {} 图 {} 定位成功，连续定位失败告警已清除", alarm.recipe_id, alarm.shot_id, alarm.view), alarm),
         LocateChange::Superseded(alarm) => ("info", "定位告警撤销", format!("配方 {} 已换修订，旧修订 {} 拍照点 {} 图 {} 的连续定位失败告警作废，新模板重新计数",
             alarm.recipe_id, alarm.revision_id, alarm.shot_id, alarm.view), alarm),
     };
-    let fields = Fields { cycle_id: Some(cycle_id.to_string()), recipe_id: Some(alarm.recipe_id.clone()), view: Some(alarm.view), ..Fields::shot(alarm.k, &alarm.shot_id, camera) }
+    let fields = Fields { cycle_id: Some(cycle_id.to_string()), recipe_id: Some(alarm.recipe_id.clone()), view: Some(alarm.view), ..Fields::shot(alarm.k, &alarm.shot_id, &alarm.camera) }
         .with_stage("locate-alarm")
         .with_data(json!({"recipeId": alarm.recipe_id, "revisionId": alarm.revision_id, "view": alarm.view, "consecutive": alarm.consecutive, "reason": alarm.reason}));
     log_with(app, tone, ev, msg, fields);
@@ -1498,9 +1498,9 @@ impl Machine {
         let Some(m) = part.apply_result(m) else { return };
         self.dirty = true;
         // 告警与帧徽标同一来源：apply_result 写好的帧记录
-        let subject = Subject { recipe_id: &part.recipe.id, revision_id: &part.recipe.revision_id, shot_id: &m.shot_id, k: m.k };
+        let subject = Subject { recipe_id: &part.recipe.id, revision_id: &part.recipe.revision_id, shot_id: &m.shot_id, k: m.k, camera: &m.camera };
         let changes = self.locate_health.observe(HistoryScope::of(part.source), &subject, &part.frames[m.k], &m.cycle_id, now_ms());
-        for change in changes { log_locate_alarm(&self.app, change, &m.cycle_id, &m.camera); }
+        for change in changes { log_locate_alarm(&self.app, change, &m.cycle_id); }
         let gaps = m.st.iter().filter(|&&s| s == measure::ST_GAP).count();
         let (level, ev, msg) = if let Some(e) = &m.error {
             ("err", "测量出错", format!("k={} · {e}", m.k))

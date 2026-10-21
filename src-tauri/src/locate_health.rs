@@ -4,7 +4,8 @@
 //! - 证据只认帧记录 `FrameView`，与帧徽标同一来源：测完（Done）且该图在 `reference_failed` 里算失败（定位失败、两端搬移超限同样计数），
 //!   测完且不在里面算定位成功（清零并清除告警）；帧测量出错、该图单独出错、缺帧、超时都没有证据，计数不变也不清除。
 //!   没有特征定位的图在生产里不会没有基准，对它判“成功”只是空操作；离线 `LocateFail` 不带 fixture 也能演练告警与恢复。
-//! - 不同配方各自计数，别的配方的件不打断连续。同一配方的修订变了（新发布、候选修订）时，删掉该配方其他修订的条目（含已告警的），
+//! - 不同配方各自计数，别的配方的件不打断连续，换配方也不清除：换到别的配方后旧配方的告警留到它再定位成功、换修订或重启
+//!   （检测页横幅写明配方并标“当前未在生产”）。同一配方的修订变了（新发布、候选修订）时，删掉该配方其他修订的条目（含已告警的），
 //!   新模板从 0 开始计。
 //! - 只在内存：重启清零（与录制告警一致），复位、站点切换不清除；真机与离线 / 候选调试分槽，离线演练不污染真机。
 
@@ -25,6 +26,9 @@ pub struct LocateAlarm {
     pub revision_id: String,
     pub shot_id: String,
     pub k: usize,
+    /// 该拍照点的相机：日志按条目自己的拍照点记相机，不用触发这次变化的那一帧的（作废时那一帧可能是别的拍照点）
+    #[serde(skip)]
+    pub camera: String,
     pub view: u8,
     pub consecutive: u32,
     /// 最近一件的原因（帧徽标原因：定位失败 / 两端搬移超限）
@@ -37,7 +41,7 @@ pub struct LocateAlarm {
 impl LocateAlarm {
     pub fn message(&self) -> String {
         format!("特征定位连续失败：配方 {} 拍照点 {} 图 {} 连续 {} 件没有位置基准（最近 {}：{}）；这些件有胶站不判位置。\
-            请检查上料、定位特征是否被遮挡或污染、照明与相机；下一件定位成功后自动消除",
+            请检查上料、定位特征是否被遮挡或污染、照明与相机；该配方下一件这幅图定位成功后自动消除",
             self.recipe_id, self.shot_id, self.view, self.consecutive, self.cycle_id, self.reason)
     }
 
@@ -62,6 +66,7 @@ pub struct Subject<'a> {
     pub revision_id: &'a str,
     pub shot_id: &'a str,
     pub k: usize,
+    pub camera: &'a str,
 }
 
 fn slot(scope: HistoryScope) -> u8 {
@@ -93,10 +98,11 @@ impl LocateHealth {
                 Some(failure) => {
                     let entry = self.entries.entry(key).or_insert_with(|| LocateAlarm {
                         recipe_id: subject.recipe_id.into(), revision_id: subject.revision_id.into(), shot_id: subject.shot_id.into(),
-                        k: subject.k, view: result.view, consecutive: 0, reason: String::new(), cycle_id: String::new(), since: now,
+                        k: subject.k, camera: subject.camera.into(), view: result.view, consecutive: 0, reason: String::new(), cycle_id: String::new(), since: now,
                     });
                     entry.consecutive = entry.consecutive.saturating_add(1);
                     entry.k = subject.k;
+                    entry.camera = subject.camera.into();
                     entry.reason = failure.reason.clone();
                     entry.cycle_id = cycle_id.into();
                     if entry.consecutive == LOCATE_ALARM_PARTS { changes.push(LocateChange::Raised(entry.clone())); }
@@ -123,8 +129,8 @@ mod tests {
     use crate::judge::Verdict;
     use crate::measure::ReferenceFailure;
 
-    const P1: Subject = Subject { recipe_id: "A", revision_id: "rev-1", shot_id: "P1", k: 0 };
-    const P2: Subject = Subject { recipe_id: "A", revision_id: "rev-1", shot_id: "P2", k: 1 };
+    const P1: Subject = Subject { recipe_id: "A", revision_id: "rev-1", shot_id: "P1", k: 0, camera: "cam1" };
+    const P2: Subject = Subject { recipe_id: "A", revision_id: "rev-1", shot_id: "P2", k: 1, camera: "cam2" };
 
     /// 测完的帧：views 各图都有结果，failed 里的图没有位置基准
     fn done(views: &[u8], failed: &[(u8, &str)]) -> FrameView {
@@ -184,7 +190,7 @@ mod tests {
 
     #[test]
     fn parts_of_another_recipe_between_failures_then_streak_is_not_interrupted() {
-        let other = Subject { recipe_id: "B", revision_id: "rev-9", shot_id: "P1", k: 0 };
+        let other = Subject { recipe_id: "B", revision_id: "rev-9", shot_id: "P1", k: 0, camera: "cam1" };
         let mut health = LocateHealth::default();
         health.observe(HistoryScope::Real, &P1, &fail("定位失败"), "c1", 100);
         health.observe(HistoryScope::Real, &P1, &fail("定位失败"), "c2", 200);
@@ -202,6 +208,15 @@ mod tests {
         assert!(health.alarms(HistoryScope::Real).is_empty());
         assert_eq!(raised(&health.observe(HistoryScope::Real, &next, &fail("定位失败"), "n2", 500)), 0, "新修订从 0 计：第 2 件不告警");
         assert_eq!(raised(&health.observe(HistoryScope::Real, &next, &fail("定位失败"), "n3", 600)), 1);
+    }
+
+    #[test]
+    fn new_revision_seen_on_another_shot_then_superseded_alarm_keeps_its_own_shot_and_camera() {
+        // 回归：作废的日志曾用触发这一帧（P1 / cam1）的相机记 P2 的告警
+        let mut health = LocateHealth::default();
+        for cycle in ["c1", "c2", "c3"] { health.observe(HistoryScope::Real, &P2, &fail("定位失败"), cycle, 100); }
+        let changes = health.observe(HistoryScope::Real, &Subject { revision_id: "rev-2", ..P1 }, &done(&[1], &[]), "n1", 400);
+        assert!(matches!(changes.as_slice(), [LocateChange::Superseded(a)] if (a.shot_id.as_str(), a.k, a.camera.as_str()) == ("P2", 1, "cam2")), "{changes:?}");
     }
 
     #[test]
