@@ -53,13 +53,13 @@ pub const ST_OUT_OF_RANGE: u8 = 5;
 /// 定位失败的原因（帧徽标显示）
 pub const REFERENCE_LOCATE_FAILED: &str = "定位失败";
 
-/// 测站状态与数值的契约：有基准的有胶站 d、w 都有限；无基准的有胶站 w 有限；超出检测范围的站 w 为有限值或 NaN；
-/// 断胶、测不了的站数值不用。
+/// 测站状态与数值的契约：有基准的有胶站 d、w 都有限；无基准的有胶站 d 为 NaN、w 有限；超出检测范围的站 d 为 NaN、
+/// w 为有限值或 NaN；断胶、测不了的站数值不用。d 必须是 NaN，免得实时帧带着的 d 和记录库里存的（NaN）对不上。
 pub fn valid_station(st: u8, d: f32, w: f32) -> bool {
     match st {
         ST_OK => d.is_finite() && w.is_finite(),
-        ST_NO_REF => w.is_finite(),
-        ST_OUT_OF_RANGE => !w.is_infinite(),
+        ST_NO_REF => d.is_nan() && w.is_finite(),
+        ST_OUT_OF_RANGE => d.is_nan() && !w.is_infinite(),
         ST_GAP | ST_INVALID => true,
         _ => false,
     }

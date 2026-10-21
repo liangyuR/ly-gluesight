@@ -225,18 +225,25 @@ fn same_sn_reinspection_rejects_old_cycle_and_every_other_identity_mismatch() {
     assert!(next.apply_result(measured(&next, 0)).is_some());
 }
 
+/// 测点号不对、无基准站带着 d（违反“无基准站没有位置值”的契约）都按测量出错处理。
 #[test]
 fn malformed_measurement_cannot_write_another_shot_or_report_ok() {
-    let mut p = part("bad-output", &Ledgers::default());
-    p.receive_frame(&frame(0, 1)).unwrap();
-    let mut result = measured(&p, 0);
-    result.idx[0] = u32::MAX;
-    let rejected = p.apply_result(result).unwrap();
-    assert!(rejected.error.is_some());
-    assert!(rejected.idx.is_empty());
-    assert!(p.recipe.owned_points(0).all(|j| p.table[j] == PointState::Invalid));
-    assert!(p.recipe.owned_points(1).all(|j| p.table[j] == PointState::Pending));
-    assert_eq!(p.judgement().fault_code, fault::PROCESS_TIMEOUT);
+    let corruptions: [fn(&mut Measured); 2] = [
+        |m| m.idx[0] = u32::MAX,
+        |m| (m.st[0], m.d[0]) = (crate::measure::ST_NO_REF, 1.5),
+    ];
+    for (case, corrupt) in corruptions.into_iter().enumerate() {
+        let mut p = part("bad-output", &Ledgers::default());
+        p.receive_frame(&frame(0, 1)).unwrap();
+        let mut result = measured(&p, 0);
+        corrupt(&mut result);
+        let rejected = p.apply_result(result).unwrap();
+        assert!(rejected.error.is_some(), "case {case}");
+        assert!(rejected.idx.is_empty(), "case {case}");
+        assert!(p.recipe.owned_points(0).all(|j| p.table[j] == PointState::Invalid), "case {case}");
+        assert!(p.recipe.owned_points(1).all(|j| p.table[j] == PointState::Pending), "case {case}");
+        assert_eq!(p.judgement().fault_code, fault::PROCESS_TIMEOUT, "case {case}");
+    }
 }
 
 #[test]

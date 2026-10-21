@@ -193,6 +193,8 @@ fn grade(s: &Stat, p: &JudgeParams, ng: Verdict) -> Verdict {
     }
 }
 
+/// 同一拍照点多视图：有一个视图合格就按合格算（沿用原策略）。某视图位置基准无效（本段 ERR）而另一视图合格时，
+/// 这个拍照点照样合格、整件可以 OK，基准失败只体现在帧的 referenceFailed 徽标上（G5 再接连续失败报警）。
 pub fn aggregate_views(results: impl IntoIterator<Item = Verdict>) -> Verdict {
     let results: Vec<_> = results.into_iter().collect();
     results.iter().copied().filter(|v| *v <= Verdict::OkWithExcursion).min()
@@ -208,11 +210,17 @@ pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
     }
     let in_range = |j: usize| !matches!(table[j], PointState::OutOfRange { .. });
     let no_ref = |j: usize| matches!(table[j], PointState::Measured { d: None, .. });
+    // 判不了位置的连续区间：有位置公差的段里，测不了的站和无基准的站连着算长度，免得两种各自不超 2 mm
+    // 交替出现，把一大段没有位置值的胶路放过去。区间里有测不了的站按测不了（93）算，全是无基准才算基准无效（92）。
+    let blind_runs = |g: &Segment| {
+        runs_in(g, |j| table[j] == PointState::Invalid || (g.position.is_some() && no_ref(j)))
+            .into_iter()
+            .filter(|run| run.iter().any(|&j| table[j] == PointState::Invalid))
+    };
     let invalid: Vec<bool> = recipe.segments.iter().map(|g| {
         let judged: Vec<usize> = (g.first..g.first + g.count).filter(|&j| in_range(j)).collect();
         (g.first..g.first + g.count).any(|j| table[j] == PointState::Pending)
-            || runs_in(g, |j| table[j] == PointState::Invalid).iter()
-                .any(|run| run.len() as f32 * sp > MAX_INVALID_LEN)
+            || blind_runs(g).any(|run| run.len() as f32 * sp > MAX_INVALID_LEN)
             || (!judged.is_empty() && judged.iter().all(|&j| table[j] == PointState::Invalid))
     }).collect();
     // 位置基准无效。生产方（G2）的约定：定位失败、两端切向搬移超过 maxEndShiftMm 时，把该视图全部有胶站标成
@@ -362,8 +370,9 @@ pub fn judge(recipe: &Recipe, table: &[PointState]) -> Judgement {
         Verdict::ErrInspect => {
             match recipe.segments.iter().enumerate().find(|(gi, _)| invalid[*gi] && contributes(*gi)) {
                 Some((_, g)) => {
-                    if let Some(run) = runs_in(g, |j| table[j] == PointState::Invalid).into_iter().max_by_key(Vec::len) {
-                        format!("{} 胶路连续 {:.1} mm 测不了 · s={:.1}", g.name, run.len() as f32 * sp, g.s(run[0], sp))
+                    if let Some(run) = blind_runs(g).max_by_key(Vec::len) {
+                        let mixed = if run.iter().any(|&j| no_ref(j)) { "（含无位置基准的站）" } else { "" };
+                        format!("{} 胶路连续 {:.1} mm 测不了{mixed} · s={:.1}", g.name, run.len() as f32 * sp, g.s(run[0], sp))
                     } else { format!("{} 存在未完成测量点", g.name) }
                 }
                 None => "没有完成示教的有效检测图像".into(),
@@ -463,18 +472,23 @@ mod tests {
         judged_with(excursion, &marks.iter().map(|&(from, to, state)| (0, from, to, state)).collect::<Vec<_>>())
     }
 
+    /// 没有位置值的连续区间按 2 mm 容忍；测不了与无基准交替时连起来算长度（每种各自都不超 2 mm）。
     #[test]
-    fn no_reference_run_up_to_2mm_is_tolerated_and_longer_is_err92() {
-        for (run, shifted, expected, fault_code) in [
-            (2, false, Verdict::Ok, 0),
-            (2, true, Verdict::NgPosition, 0),
-            (3, false, Verdict::ErrInspect, fault::LOCATE_FAILED),
+    fn no_reference_run_up_to_2mm_is_tolerated_and_longer_is_err() {
+        // 段 0 第 10–30 站按 [测不了, 测不了, 无基准, 无基准] 循环
+        let interleaved: Vec<_> = (0..5).flat_map(|k| {
+            let at = 10 + 4 * k;
+            [(0, at, at + 2, PointState::Invalid), (0, at + 2, at + 4, NO_REF)]
+        }).collect();
+        for (marks, expected, fault_code, reference_invalid) in [
+            (vec![(0, 10, 12, NO_REF)], Verdict::Ok, 0, false),
+            (vec![(0, 10, 12, NO_REF), (0, 20, 30, SHIFTED)], Verdict::NgPosition, 0, false),
+            (vec![(0, 10, 13, NO_REF)], Verdict::ErrInspect, fault::LOCATE_FAILED, true),
+            (interleaved, Verdict::ErrInspect, fault::INVALID_POINTS, false),
         ] {
-            let mut marks = vec![(0, 10, 10 + run, NO_REF)];
-            if shifted { marks.push((0, 20, 30, SHIFTED)); }
             let j = judged_in(&marks);
-            assert_eq!((j.verdict, j.fault_code), (expected, fault_code), "run={run} shifted={shifted}：{}", j.reason);
-            assert_eq!(j.segments[0].reference_invalid, run > 2);
+            assert_eq!((j.verdict, j.fault_code), (expected, fault_code), "{marks:?}：{}", j.reason);
+            assert_eq!(j.segments[0].reference_invalid, reference_invalid, "{marks:?}");
         }
     }
 
@@ -498,8 +512,8 @@ mod tests {
         let n = sample().segments[0].count;
         let out = |w| PointState::OutOfRange { w };
         for (marks, expected) in [
-            // 后沿：走廊里没有胶的超出范围站紧挨一处允许范围内的断口，不连成长断口
-            (vec![(0, n - 14, n - 10, PointState::Gap), (0, n - 10, n, out(None))], Verdict::Ok),
+            // 后沿：超出范围站（哪怕测到超差胶宽）紧挨一处允许范围内的断口，不连成超长断口
+            (vec![(0, n - 8, n - 4, PointState::Gap), (0, n - 4, n, out(Some(6.0)))], Verdict::OkWithExcursion),
             // 前沿：有胶的超出范围站不判胶偏，也不和相邻的无基准站连成超过 2 mm 的无基准区间
             (vec![(0, 0, 10, out(Some(4.0))), (0, 10, 12, NO_REF)], Verdict::Ok),
             (vec![(0, 0, 10, out(Some(6.0)))], Verdict::NgWidth),
