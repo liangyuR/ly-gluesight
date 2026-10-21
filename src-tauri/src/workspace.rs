@@ -510,7 +510,7 @@ impl WorkspaceHost {
                     Ok(w)
                 });
             match loaded {
-                Ok(w) => { items.insert(w.doc.id.clone(), w); }
+                Ok(w) => { fixture::prune_fixture_dirs(&entry.path(), &w); items.insert(w.doc.id.clone(), w); }
                 Err(error) => notes.push(format!("{} 未加载：{error}。{}", file.display(), unloaded_hint(&entry.path()))),
             }
         }
@@ -536,7 +536,9 @@ impl WorkspaceHost {
         crate::fsio::write_atomic(
             &dir.join("workspace.json"),
             &serde_json::to_string_pretty(w).map_err(|e| e.to_string())?,
-        )
+        )?;
+        fixture::prune_fixture_dirs(&dir, w);
+        Ok(())
     }
 }
 
@@ -866,15 +868,16 @@ fn image_file(host: &WorkspaceHost, id: &str, image_id: &str) -> Result<PathBuf,
 /// 定位模板（glue.locate 的 base_dir）：`<workspaces>/<配方>/fixtures/<冻结图>-r<x>_<y>_<w>_<h>-p<外圈>/template.pgm`。
 /// 按来源寻址，内容只由冻结图、框与外圈决定；冻结图不会改写。每次使用都按冻结图重新裁、与磁盘上的字节比对，
 /// 缺失或不同（损坏、过期）才原子写，不复用坏文件。并发写的是同样的内容，所以不在 items 锁里做。
-/// 删除工作区时一并删掉；旧目录的清理归 G4。返回模板目录（UTF-8 绝对路径，非 UTF-8 时报错，不做有损转换）。
+/// 删除工作区时一并删掉；不再对应任何定位框的旧目录在保存与启动时清理（`fixture::prune_fixture_dirs`）。
+/// 返回模板目录（UTF-8 绝对路径，非 UTF-8 时报错，不做有损转换）。
 /// 框的模板来源必须就是这张冻结图（见 `fixture_source`）：重新冻结后旧框不会悄悄裁到新图上。
 fn ensure_template(host: &WorkspaceHost, recipe_id: &str, frozen: &FrozenImage, fixture: &crate::recipe::FixtureSpec, image: Option<&FrameImage>) -> Result<String, String> {
-    use crate::recipe::FIXTURE_TEMPLATE_PAD_PX as PAD;
     check_source(frozen, fixture)?;
     let rect = fixture.rect;
     fixture.check_image_size(frozen.size)?;
     let source = image_file(host, recipe_id, &frozen.id)?;
-    let dir = host.dir(recipe_id).join("fixtures").join(format!("{}-r{}_{}_{}_{}-p{PAD}", frozen.id, rect[0], rect[1], rect[2], rect[3]));
+    // 来源就是这张冻结图（check_source），目录名只由 (来源, 框, 外圈) 决定
+    let dir = host.dir(recipe_id).join("fixtures").join(fixture::template_dir_name(fixture));
     let loaded;
     let image = match image {
         Some(image) => image,

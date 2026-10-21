@@ -561,3 +561,34 @@ fn publishing_requires_a_passed_fixture_report_for_every_fixture_view_in_the_val
         assert_eq!(super::fixture::require_fixture_validation(&recipe, &validation).is_ok(), ok, "{name}");
     }
 }
+
+#[test]
+fn template_dir_cleanup_removes_old_sources_and_boxes_but_keeps_the_current_box_and_fresh_writes() {
+    // 防的回归（G4 第 7 项）：模板按 (来源, 框, 外圈) 寻址，每次换框、重新冻结都留下一个目录，工作台目录无限累积；
+    // 或清理把当前框正在用的模板、写到一半的新模板删掉
+    let root = super::tests::ImportTestDir::new();
+    let mut w = fixture_workspace();
+    let old = super::fixture::template_dir_name(w.doc.shots[0].fixture.as_ref().unwrap());
+    let mut moved = fixture_spec();
+    moved.rect[0] += 8;
+    w.doc.shots[0].fixture = Some(moved.clone());
+    store_active(&mut w, 0);
+    let current = super::fixture::template_dir_name(&moved);
+    let fixtures = root.0.join("fixtures");
+    let retake = format!("capture-retake-v1-r{}_{}_32_32-p4", moved.rect[0], moved.rect[1]);
+    for name in [&old, &current, &retake] {
+        std::fs::create_dir_all(fixtures.join(name)).unwrap();
+        std::fs::write(fixtures.join(name).join("template.pgm"), b"P5\n1 1\n255\n\0").unwrap();
+    }
+    let fresh_tmp = fixtures.join(&current).join("template.pgm.tmp-1-0");
+    let stale_tmp = fixtures.join(&current).join("template.pgm.tmp-1-1");
+    std::fs::write(&fresh_tmp, b"partial").unwrap();
+    std::fs::write(&stale_tmp, b"partial").unwrap();
+    std::fs::File::options().write(true).open(&stale_tmp).unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600)).unwrap();
+    super::fixture::prune_fixture_dirs(&root.0, &w);
+    assert!(!fixtures.join(&old).exists(), "旧框的目录");
+    assert!(!fixtures.join(&retake).exists(), "别的来源的目录");
+    assert!(fixtures.join(&current).join("template.pgm").is_file(), "当前框的模板");
+    assert!(fresh_tmp.is_file() && !stale_tmp.exists(), "只删放了很久的临时文件");
+}

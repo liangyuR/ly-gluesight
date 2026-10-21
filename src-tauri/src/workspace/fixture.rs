@@ -324,3 +324,33 @@ pub fn workspace_apply_fixture_suggestion(app: AppHandle, id: String, revision: 
     items.insert(id, w.clone());
     super::view(&app, w)
 }
+
+/// 模板目录名：`<来源冻结图>-r<x>_<y>_<w>_<h>-p<外圈>`（`ensure_template` 按来源寻址）。
+pub(super) fn template_dir_name(fixture: &crate::recipe::FixtureSpec) -> String {
+    let [x, y, w, h] = fixture.rect;
+    format!("{}-r{x}_{y}_{w}_{h}-p{}", fixture.source, crate::recipe::FIXTURE_TEMPLATE_PAD_PX)
+}
+
+/// 临时模板文件放了这么久还在，就是写到一半的残留（正常写入随即改名）。
+const STALE_TMP: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// 清理 `<候选目录>/fixtures/`：删掉不再对应候选（含待生效版本）任何定位框的模板目录，以及放了很久的临时文件。
+/// 模板按需从冻结图重裁，误删只多裁一次；删不掉（文件正被 lyFlow 打开）就留到下次保存。G2 只在删除工作区时清理。
+pub(super) fn prune_fixture_dirs(dir: &Path, w: &Workspace) {
+    let Ok(entries) = std::fs::read_dir(dir.join("fixtures")) else { return };
+    let docs = std::iter::once(&w.doc).chain(w.pending.as_ref().map(|p| &p.doc));
+    let keep: std::collections::HashSet<String> = docs.flat_map(|doc| &doc.shots)
+        .flat_map(|s| s.fixture.iter().chain(s.views.iter().filter_map(|v| v.fixture.as_ref())))
+        .map(template_dir_name).collect();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !keep.contains(&*entry.file_name().to_string_lossy()) {
+            let _ = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+            continue;
+        }
+        for file in std::fs::read_dir(&path).into_iter().flatten().flatten() {
+            let stale = file.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|age| age > STALE_TMP));
+            if stale && file.file_name().to_string_lossy().contains(".tmp-") { let _ = std::fs::remove_file(file.path()); }
+        }
+    }
+}
