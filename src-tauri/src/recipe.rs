@@ -186,16 +186,31 @@ pub const FIXTURE_TEMPLATE_PAD_PX: u32 = 4;
 pub const FIXTURE_ANGLE_STEP_DEG: f32 = 0.5;
 /// 定稿 §10 决定一的示教余量 m（mm）：两端排除长度 = max(0, |Δ| − m) + 1 个站距。G4 按验证数据再定
 pub const FIXTURE_END_MARGIN_MM: f32 = 0.0;
+/// 带外圈模板离胶检测走廊（示教中线 ± 搜索半宽）至少再留这么多（px）。阶段 0 评测（P0）选框时要求内框离走廊
+/// 大于 10 px；外圈让框在角上最多近 4√2 px，所以 P0 选出的框到这里还剩约 10 − 4√2 ≈ 4.3 px（不计 P0 每 2 px
+/// 取点的采样误差），取 4。
+pub const FIXTURE_CORRIDOR_MARGIN_PX: f64 = 4.0;
 
 fn one() -> f32 { 1.0 }
 
-/// 特征定位（定稿 §5）：示教框（内框，不含外圈）与 glue.locate 门限。模板由工作台按 rect 加
-/// FIXTURE_TEMPLATE_PAD_PX 外圈从冻结示教原图裁出；改 fixture 就是改测量定义，试测与验证都要重做。
+/// 冻结示教原图编号（模板来源）：字母、数字和 -，最长 128 个字符。工作台的冻结图编号都满足。
+pub fn valid_image_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// 特征定位（定稿 §5）：示教框（内框，不含外圈）、模板来源与 glue.locate 门限。模板按 rect 加
+/// FIXTURE_TEMPLATE_PAD_PX 外圈从来源冻结示教原图裁出；改 fixture 就是改测量定义，试测与验证都要重做。
+///
+/// 模板身份是 (source, rect, FIXTURE_TEMPLATE_PAD_PX)，不用内容哈希（D-0）。它成立的前提：冻结图按编号只写一次
+/// （`image_file::save_pgm_new`）、发布包复制的是同一份字节、工作台与发布包都用 `template_pgm(decode(字节), rect)` 裁模板。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FixtureSpec {
     /// 示教框 [x, y, w, h]（示教图像素，不含外圈）；anchor 是它的左上角
     pub rect: [u32; 4],
+    /// 模板来源：裁模板用的冻结示教原图编号。只由工作台后端写入（`bind_fixture_sources`），前端传来的一律不用
+    #[serde(default)]
+    pub source: String,
     /// 模板中心最多偏开示教位置多远（px）；峰离搜索窗边 ≤ 1 px 判 at_search_edge
     pub search_radius_px: f32,
     /// 角度扫描范围 ±（°）；v1 默认 0 = 只找平移（定稿 §10 决定二）
@@ -236,16 +251,39 @@ impl FixtureSpec {
         if self.max_end_shift_mm.is_some_and(|m| !(m.is_finite() && m > 0.0)) {
             return Err(format!("{what}：两端搬移上限必须是正数"));
         }
+        if !valid_image_id(&self.source) {
+            return Err(format!("{what}：缺少模板来源（示教图编号）。G2 时期的候选需要重建，或在示教页重新保存示教参数"));
+        }
         Ok(())
     }
 
     /// 带外圈的模板放得进 size 大小的示教图：右、下边要看图像尺寸，配方校验查不了，
-    /// 由工作台保存示教、生成模板时核对（lyFlow 在框离图边不到 templatePad 时判 out_of_image）。
+    /// 由工作台保存示教、发布与加载发布包时核对（lyFlow 在框离图边不到 templatePad 时判 out_of_image）。
     pub fn check_image_size(&self, size: [u32; 2]) -> Result<(), String> {
-        let pad = u64::from(FIXTURE_TEMPLATE_PAD_PX);
-        let [x, y, w, h] = self.rect.map(u64::from);
-        if x < pad || y < pad || x + w + pad > u64::from(size[0]) || y + h + pad > u64::from(size[1]) {
-            return Err(format!("定位框加 {pad} px 外圈超出示教原图（{}×{}），请把框从图边往里收", size[0], size[1]));
+        crate::vision::fixture::padded_rect(self.rect, size[0], size[1]).map(|_| ()).ok_or_else(|| {
+            format!("定位框加 {FIXTURE_TEMPLATE_PAD_PX} px 外圈超出示教原图（{}×{}），请把框从图边往里收", size[0], size[1])
+        })
+    }
+
+    /// 带外圈模板（按像素中心，[x − pad, x + w + pad − 1] × [y − pad, y + h + pad − 1]）到示教折线的精确距离（px），相交为 0。
+    fn clearance(&self, path: &[[f32; 2]]) -> f64 {
+        let pad = f64::from(FIXTURE_TEMPLATE_PAD_PX);
+        let [x, y, w, h] = self.rect.map(f64::from);
+        let r = [x - pad, y - pad, x + w + pad - 1.0, y + h + pad - 1.0];
+        path.windows(2).map(|s| segment_rect_distance([s[0][0] as f64, s[0][1] as f64], [s[1][0] as f64, s[1][1] as f64], r))
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    /// 模板不得含胶（定稿 §11 跨阶段约束）：带外圈模板离 `lines` 里每条示教中线都要大于“该线搜索半宽 + 余量”。
+    /// 模板框盖住胶时位姿跟着胶走，d′ 恒约等于 0，真实胶偏会被放行。`lines`：（哪个拍照点的哪幅图，示教中线，搜索半宽 px）。
+    pub fn check_corridor(&self, what: &str, lines: &[(String, &[[f32; 2]], f64)]) -> Result<(), String> {
+        for (owner, path, half) in lines {
+            let need = half + FIXTURE_CORRIDOR_MARGIN_PX;
+            let clearance = self.clearance(path);
+            if !(clearance > need) {
+                return Err(format!("{what}：定位框（含 {FIXTURE_TEMPLATE_PAD_PX} px 外圈）压住了{owner} 的胶检测走廊——离示教中线 {clearance:.1} px，\
+                    需要大于 {need:.1} px（搜索半宽 {half:.1} px + 余量 {FIXTURE_CORRIDOR_MARGIN_PX} px）。模板里有胶时位姿跟着胶走、测不出胶偏，请把框移出走廊"));
+            }
         }
         Ok(())
     }
@@ -266,6 +304,30 @@ impl FixtureSpec {
         std::f64::consts::SQRT_2 * (self.search_radius_px as f64 - 2.0) * mm_per_px
             + lever * 2.0 * (self.angle_range_deg as f64 / 2.0).to_radians().sin()
     }
+}
+
+/// 线段 ab 到轴对齐矩形 r = [x0, y0, x1, y1] 的精确距离：相交（含端点在矩形内）为 0；否则最近点对一端在线段端点、
+/// 或在矩形角上，取端点到矩形、矩形四角到线段的最小值。
+fn segment_rect_distance(a: [f64; 2], b: [f64; 2], r: [f64; 4]) -> f64 {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    // Liang–Barsky 裁剪：线段与矩形有交即距离 0
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    let mut inside = true;
+    for (p, q) in [(-d[0], a[0] - r[0]), (d[0], r[2] - a[0]), (-d[1], a[1] - r[1]), (d[1], r[3] - a[1])] {
+        if p == 0.0 {
+            if q < 0.0 { inside = false; break; }
+        } else if p < 0.0 { t0 = t0.max(q / p); } else { t1 = t1.min(q / p); }
+        if t0 > t1 { inside = false; break; }
+    }
+    if inside { return 0.0; }
+    let to_rect = |p: [f64; 2]| (r[0] - p[0]).max(p[0] - r[2]).max(0.0).hypot((r[1] - p[1]).max(p[1] - r[3]).max(0.0));
+    let len2 = d[0] * d[0] + d[1] * d[1];
+    let to_segment = |p: [f64; 2]| {
+        let t = if len2 > 0.0 { (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / len2).clamp(0.0, 1.0) } else { 0.0 };
+        (a[0] + d[0] * t - p[0]).hypot(a[1] + d[1] * t - p[1])
+    };
+    [to_rect(a), to_rect(b), to_segment([r[0], r[1]]), to_segment([r[2], r[1]]), to_segment([r[0], r[3]]), to_segment([r[2], r[3]])]
+        .into_iter().fold(f64::INFINITY, f64::min)
 }
 
 /// 一台相机在这个配方下的曝光与增益：示教采集和生产布防前下发到相机。
@@ -661,6 +723,7 @@ impl RecipeDoc {
                 }
             }
         }
+        self.check_fixture_corridors()?;
         let used = self.shot_cameras();
         if let Some(missing) = used.iter().find(|c| !self.cameras.contains_key(*c)) {
             return Err(format!("相机 {missing} 被拍照点使用，但配方没有它的曝光与增益"));
@@ -670,6 +733,34 @@ impl RecipeDoc {
                 return Err(format!("配方给了相机 {camera} 的曝光与增益，但没有拍照点使用它"));
             }
             imaging.validate(camera)?;
+        }
+        Ok(())
+    }
+
+    /// 模板与胶检测走廊不重叠（替代 G2 的“含特征定位不能发布”，定稿 §11 跨阶段约束），只查与图像无关的部分；
+    /// 带外圈模板是否在图内要看图像尺寸，由工作台保存示教、发布与加载发布包时查（`FixtureSpec::check_image_size`）。
+    ///
+    /// 同一 Pose、同一相机、同一幅图的几个拍照点拍的是同一场景、同一坐标系的不同帧（同一 Pose 可多次触发）：
+    /// 拍照点 A 的模板可能盖住拍照点 B 的胶，所以每个框要避开组内全部已示教中线的走廊。
+    /// 停用视图、“不检”拍照点上的 fixture 不查（与 `has_fixture` 同口径），它们的中线也不算走廊。
+    fn check_fixture_corridors(&self) -> Result<(), String> {
+        type Group = (Vec<(String, Vec<[f32; 2]>, f64)>, Vec<(String, FixtureSpec)>);
+        let mut groups: BTreeMap<(&str, &str, u8), Group> = BTreeMap::new();
+        for shot in self.shots.iter().filter(|s| s.measured()) {
+            for v in shot.enabled_views() {
+                let projected = shot.for_view(v)?;
+                let label = format!("拍照点 {} 图 {v}", shot.id);
+                let group = groups.entry((shot.pose_id.as_str(), shot.camera.as_str(), v)).or_default();
+                if let (true, Some(mm)) = (projected.path.len() >= 2, projected.mm_per_px) {
+                    let detect = projected.detect.as_ref().unwrap_or(&self.detect);
+                    group.0.push((label.clone(), projected.path.clone(), f64::from(detect.search_mm) / f64::from(mm)));
+                }
+                if let Some(f) = projected.fixture { group.1.push((label, f)); }
+            }
+        }
+        for (lines, fixtures) in groups.values() {
+            let lines: Vec<(String, &[[f32; 2]], f64)> = lines.iter().map(|(owner, path, half)| (owner.clone(), path.as_slice(), *half)).collect();
+            for (label, f) in fixtures { f.check_corridor(&format!("{label} 特征定位"), &lines)?; }
         }
         Ok(())
     }
@@ -1619,6 +1710,8 @@ mod tests {
         reject(&fixture(|f| f.min_score = 0.0), "最低分数");
         reject(&fixture(|f| f.max_peak_ratio = 1.5), "次峰比");
         reject(&fixture(|f| f.max_end_shift_mm = Some(0.0)), "两端搬移上限");
+        // 模板身份靠来源图编号：缺了就说不清模板是哪张图裁的（G2 时期的配方）
+        reject(&fixture(|f| f.source.clear()), "模板来源");
         // 不判位置时定位失败报不出 ERR、两端排除没有上限
         reject(&|d| { fixture(|_| {})(d); d.limits.position = None; }, "必须设置位置判定限值");
         // 名义值不为 0 要有量具确认件
@@ -1639,7 +1732,49 @@ mod tests {
     }
 
     fn fixture_spec() -> FixtureSpec {
-        FixtureSpec { rect: [100, 100, 32, 32], search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None }
+        FixtureSpec { rect: [100, 100, 32, 32], source: "capture-1-0-v1".into(), search_radius_px: 20.0, angle_range_deg: 0.0,
+            min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None }
+    }
+
+    #[test]
+    fn fixture_template_overlapping_any_bead_corridor_of_the_same_scene_is_rejected() {
+        // 防的回归（定稿 §11 跨阶段约束）：模板框盖住胶时位姿跟着胶走、d′ 恒约等于 0，真实胶偏被放行。
+        // 走廊 = 示教中线 ± 搜索半宽，外加 4 px 余量；同一 Pose、同一相机、同一幅图的其他拍照点的胶也在这一帧的场景里
+        let half = 15.0 / f64::from(SIM_MM_PER_PX); // 默认搜索半宽 15 mm
+        let need = half + FIXTURE_CORRIDOR_MARGIN_PX;
+        // 框 [600, 280, 32, 32] 的外圈下沿在 y = 280 + 32 + 4 − 1 = 315（像素中心）；中线水平，横跨框的 x 范围
+        let bottom = 315.0;
+        let line = |y: f64| vec![[300.0, y as f32], [980.0, y as f32]];
+        let at = |d: &mut RecipeDoc, k: usize, path: Vec<[f32; 2]>| { d.shots[k].path = path; d.shots[k].mm_per_px = Some(SIM_MM_PER_PX); };
+        let with_box = |d: &mut RecipeDoc, k: usize| d.shots[k].fixture = Some(FixtureSpec { rect: [600, 280, 32, 32], ..fixture_spec() });
+        let cases: [(&str, fn(&mut RecipeDoc, f64, f64), Option<&str>); 5] = [
+            ("离自己的中线差 0.5 px 不到走廊 + 余量", |d, need, bottom| { d.shots[0].path = vec![[300.0, (bottom + need - 0.5) as f32], [980.0, (bottom + need - 0.5) as f32]]; },
+                Some("拍照点 P1 图 1 的胶检测走廊")),
+            ("离自己的中线比走廊 + 余量多 0.5 px", |d, need, bottom| { d.shots[0].path = vec![[300.0, (bottom + need + 0.5) as f32], [980.0, (bottom + need + 0.5) as f32]]; }, None),
+            ("压住同 Pose、同相机、同一幅图的另一拍照点的走廊", |d, _, _| { d.shots[1].pose_id = "P1".into(); d.shots[1].view = 1;
+                d.shots[1].path = vec![[300.0, 330.0], [980.0, 330.0]]; }, Some("拍照点 P2 图 1 的胶检测走廊")),
+            ("另一拍照点同一位置但 Pose 不同：不在同一场景", |d, _, _| { d.shots[1].view = 1; d.shots[1].path = vec![[300.0, 330.0], [980.0, 330.0]]; }, None),
+            ("压走廊的框在停用视图上：不用，不查", |d, _, _| {
+                let shot = &mut d.shots[0];
+                shot.path = vec![[300.0, 330.0], [980.0, 330.0]];
+                let spec = |view: u8, enabled: bool| ShotViewSpec { view, enabled, path: shot.path.clone(), mm_per_px: shot.mm_per_px, detect: None,
+                    limits: None, calib: None, fixture: (!enabled).then(|| FixtureSpec { rect: [600, 280, 32, 32], ..fixture_spec() }) };
+                shot.views = vec![spec(1, true), spec(2, false)];
+                shot.fixture = None;
+            }, None),
+        ];
+        for (name, edit, error) in cases {
+            let mut doc = composite_recipe();
+            at(&mut doc, 0, line(bottom + 2.0 * need));
+            at(&mut doc, 1, line(bottom + 2.0 * need));
+            with_box(&mut doc, 0);
+            edit(&mut doc, need, bottom);
+            match (doc.build(), error) {
+                (Ok(_), None) => {}
+                (Err(e), Some(what)) => assert!(e.contains("走廊") && e.contains(what), "{name}：{e}"),
+                (result, _) => panic!("{name}：{:?}", result.map(|_| ())),
+            }
+        }
     }
 
     #[test]

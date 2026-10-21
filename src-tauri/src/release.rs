@@ -663,7 +663,7 @@ mod tests {
     fn fixture_on_an_enabled_view_blocks_publishing_until_bundles_carry_templates() {
         // 防的回归：G3 之前发布包不带定位模板，含特征定位的配方发布后生产找不到模板；停用视图上残留的 fixture 不该挡发布
         let root = TempDir(std::env::temp_dir().join(format!("gluesight-{}", new_bundle_id().unwrap())));
-        let fixture = crate::recipe::FixtureSpec { rect: [100, 100, 32, 32], search_radius_px: 20.0, angle_range_deg: 0.0,
+        let fixture = crate::recipe::FixtureSpec { rect: [100, 100, 32, 32], source: "capture-1-0-v1".into(), search_radius_px: 20.0, angle_range_deg: 0.0,
             min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None };
         let with_fixture_on = |view: u8| {
             let mut recipe = one_shot_recipe();

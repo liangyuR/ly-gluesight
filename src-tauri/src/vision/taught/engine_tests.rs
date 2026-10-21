@@ -63,7 +63,7 @@ fn recipe() -> Recipe {
     let shot = &mut doc.shots[0];
     shot.path = PATH.to_vec();
     shot.mm_per_px = Some(MM_PER_PX);
-    shot.fixture = Some(FixtureSpec { rect: RECT, search_radius_px: 40.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None });
+    shot.fixture = Some(FixtureSpec { rect: RECT, source: "teach-image".into(), search_radius_px: 40.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None });
     doc.spacing = 1.0;
     doc.detect = DetectParams { search_mm: 3.0, polarity: Polarity::Dark, width_range: [0.8, 2.4] };
     doc.limits = ShotLimits {

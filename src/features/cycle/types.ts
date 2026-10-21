@@ -58,10 +58,12 @@ export interface ShotLimits {
   gaugeRef?: string;
 }
 
-/** 特征定位（glue.locate）：示教框（不含外圈）与门限。模板由工作台从冻结示教原图按框加 4 px 外圈裁出。 */
+/** 特征定位（glue.locate）：示教框（不含外圈）、模板来源与门限。模板从来源冻结示教原图按框加 4 px 外圈裁出。 */
 export interface FixtureSpec {
   /** 示教框 [x, y, w, h]（示教图像素） */
   rect: [number, number, number, number];
+  /** 模板来源：裁模板用的冻结示教原图编号。由后端写入，前端原样回传，后端不采用前端的值 */
+  source: string;
   searchRadiusPx: number;
   /** 角度扫描范围 ±°；0 = 只找平移 */
   angleRangeDeg: number;

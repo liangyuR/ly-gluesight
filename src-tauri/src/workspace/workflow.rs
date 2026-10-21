@@ -244,15 +244,27 @@ pub fn workspace_save_draft(app: AppHandle, id: String, revision: u64, k: usize,
     let mut items = host.items.lock().unwrap();
     let mut w = items.get(&id).ok_or("候选不存在")?.clone();
     w.expect(revision)?;
+    apply_draft(&mut w, k, params)?;
+    host.save(&w)?; items.insert(id, w.clone()); view(&app, w)
+}
+
+/// 草稿自动保存：先按 `bind_fixture_sources` 定模板来源（没改的框沿用旧来源，不会悄悄改绑到重新冻结的新图），再判断有没有改动。
+pub(super) fn apply_draft(w: &mut Workspace, k: usize, mut params: DraftTeach) -> Result<(), String> {
+    if params.fixture.is_some() {
+        let mut doc = w.doc.clone();
+        doc.shots.get_mut(k).ok_or("拍照点不存在")?.fixture = params.fixture.take();
+        bind_fixture_sources(w, &mut doc, None)?;
+        params.fixture = doc.shots[k].fixture.take();
+    }
     let shot = w.doc.shots.get_mut(k).ok_or("拍照点不存在")?;
     if shot.path != params.path || shot.mm_per_px != params.mm_per_px || shot.detect != params.detect || shot.limits != params.limits || shot.fixture != params.fixture {
         shot.path = params.path; shot.mm_per_px = params.mm_per_px; shot.detect = params.detect; shot.limits = params.limits; shot.fixture = params.fixture;
         w.frames[k].saved = false; w.frames[k].trial = None;
-        store_active(&mut w, k);
+        store_active(w, k);
         w.doc.build()?;
         w.changed();
     }
-    host.save(&w)?; items.insert(id, w.clone()); view(&app, w)
+    Ok(())
 }
 
 #[tauri::command]
@@ -499,7 +511,7 @@ fn adopt_capture(app: AppHandle, id: String, revision: u64, round_id: String, re
             let image_id = format!("{}-{k}-v{}", round.round_id, raw.view);
             let path = image_file(&host, &w.doc.id, &image_id)?;
             std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
-            crate::image_file::save_pgm(&path, &image)?;
+            crate::image_file::save_pgm_new(&path, &image)?;
             let calibration_check = declared.as_ref().map(|(set_id, mm)| CalibrationCheck {
                 verification_id: format!("sample-set-{}-{k}-v{}", round.round_id, raw.view), source_k: k, source_image_id: image_id.clone(),
                 basis: CalibrationBasis::SampleSet { set_id: set_id.clone() }, passed: true,

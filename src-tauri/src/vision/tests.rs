@@ -78,7 +78,7 @@ fn every_operator_in_measurement_graphs_is_a_required_operator() {
     // 防的回归：测量图用了 requiredOperators（runtime.json）之外的算子，打包与加载时都查不出，换运行库后生产才失败
     // 样例配方原样一份、每个拍照点都带特征定位再一份，后者的图里必须真的有 n_locate，否则定位分支没被检查到
     let required: Vec<&str> = REQUIRED_OPERATORS.split(',').collect();
-    let fixture = crate::recipe::FixtureSpec { rect: [600, 400, 32, 32], search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6,
+    let fixture = crate::recipe::FixtureSpec { rect: [100, 100, 32, 32], source: "capture-1-0-v1".into(), search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6,
         max_peak_ratio: 1.0, max_end_shift_mm: None };
     let mut located_nodes = 0;
     for sample in crate::recipe::samples() {

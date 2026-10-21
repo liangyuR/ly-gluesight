@@ -200,7 +200,7 @@ fn multiview_failure_is_local_but_missing_image_is_acquisition_failure() {
 }
 
 fn fixture_spec() -> FixtureSpec {
-    FixtureSpec { rect: [100, 100, 32, 32], search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None }
+    FixtureSpec { rect: [60, 140, 32, 32], source: "capture-1-0-v1".into(), search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None }
 }
 
 /// document() 的拍照点 0（41 站、站距 4 px = 1 mm、法向 (0, 1)）带上特征定位。
@@ -332,7 +332,7 @@ fn fixture_graph_names_template_pad_anchor_and_feeds_image_to_locate() {
     assert_eq!(locate["op"], "glue.locate");
     assert_eq!(params["template"], "template.pgm");
     assert_eq!(params["templatePad"], 4);
-    assert_eq!(params["anchor"], json!([100.0, 100.0]));
+    assert_eq!(params["anchor"], json!([60.0, 140.0]));
     assert_eq!(params["angleRange"], 0.0);
     assert_eq!(graph["outputs"]["pose"], json!({"node": "n_locate", "port": "pose"}));
     assert!(graph["edges"].as_array().unwrap().iter().any(|e| e["from"]["node"] == "n_load" && e["to"]["node"] == "n_locate"));

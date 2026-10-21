@@ -222,7 +222,62 @@ pub(super) fn workspace() -> Workspace {
 }
 
 fn fixture_spec() -> crate::recipe::FixtureSpec {
-    crate::recipe::FixtureSpec { rect: [100, 40, 32, 32], search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None }
+    crate::recipe::FixtureSpec { rect: [380, 40, 32, 32], source: "capture-test-v1".into(), search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None }
+}
+
+#[test]
+fn fixture_source_is_owned_by_the_backend_and_only_saving_params_rebinds_it() {
+    // 防的回归：模板身份是 (来源图, 框, 外圈)。前端能改写来源、草稿或整份保存把没动过的旧框悄悄绑到重新冻结的新图上，
+    // 或重新冻结后旧框照样裁新图试测——测量定义说是同一模板，像素却变了
+    fn fresh() -> Workspace {
+        let mut w = workspace();
+        for image in &mut w.frames[0].views { image.size = [600, 100]; }
+        w.frames[0].image = Some(w.frames[0].views[0].clone());
+        w.doc.shots[0].fixture = Some(fixture_spec());
+        store_active(&mut w, 0);
+        // 重新冻结图 1：旧框的来源还是旧图
+        w.frames[0].views[0].id = "capture-retake-v1".into();
+        w.frames[0].image = Some(w.frames[0].views[0].clone());
+        w
+    }
+    let stale = fresh();
+    assert!(fixture_source(&stale.frames[0], 1, stale.doc.shots[0].fixture.as_ref().unwrap()).is_err(), "旧框不能裁重新冻结的图");
+    fn params(w: &mut Workspace, f: crate::recipe::FixtureSpec) -> Result<(), String> {
+        let shot = &w.doc.shots[0];
+        let teach = ShotTeach { path: shot.path.clone(), mm_per_px: shot.mm_per_px.unwrap(), detect: shot.detect.clone(), limits: shot.limits.clone(), fixture: Some(f) };
+        apply_params(w, 0, teach)
+    }
+    fn draft(w: &mut Workspace, f: crate::recipe::FixtureSpec) -> Result<(), String> {
+        let shot = &w.doc.shots[0];
+        let teach = workflow::DraftTeach { path: shot.path.clone(), mm_per_px: shot.mm_per_px, detect: shot.detect.clone(), limits: shot.limits.clone(), fixture: Some(f) };
+        workflow::apply_draft(w, 0, teach)
+    }
+    fn whole(w: &mut Workspace, f: crate::recipe::FixtureSpec) -> Result<(), String> {
+        let mut doc = w.doc.clone();
+        doc.shots[0].fixture = Some(f.clone());
+        doc.shots[0].views[0].fixture = Some(f);
+        update_doc(w, doc)
+    }
+    type Entry = fn(&mut Workspace, crate::recipe::FixtureSpec) -> Result<(), String>;
+    // （入口，框是否改动，保存后的来源）；前端一律传伪造的来源
+    let cases: [(&str, Entry, bool, &str); 5] = [
+        ("保存示教参数、框不变 → 改绑当前冻结图", params, false, "capture-retake-v1"),
+        ("草稿自动保存、框不变 → 沿用旧来源", draft, false, "capture-test-v1"),
+        ("整份保存、框不变 → 沿用旧来源", whole, false, "capture-test-v1"),
+        ("草稿自动保存、改了框 → 绑当前冻结图", draft, true, "capture-retake-v1"),
+        ("整份保存、改了框 → 绑当前冻结图", whole, true, "capture-retake-v1"),
+    ];
+    for (name, entry, moved, want) in cases {
+        let mut w = fresh();
+        let mut f = w.doc.shots[0].fixture.clone().unwrap();
+        if moved { f.rect[0] += 8; }
+        f.source = "forged-by-frontend".into();
+        entry(&mut w, f).unwrap_or_else(|e| panic!("{name}：{e}"));
+        let shot = &w.doc.shots[0];
+        assert_eq!(shot.fixture.as_ref().map(|f| f.source.as_str()), Some(want), "{name}");
+        assert_eq!(shot.views[0].fixture.as_ref().map(|f| f.source.as_str()), Some(want), "{name}");
+        assert_eq!(fixture_source(&w.frames[0], 1, shot.fixture.as_ref().unwrap()).is_ok(), want == "capture-retake-v1", "{name}");
+    }
 }
 
 #[test]
