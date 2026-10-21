@@ -165,9 +165,21 @@ impl ReleaseBundle {
     }
 }
 
+/// G3 之前发布包还不能携带定位模板：含特征定位（启用视图上）的配方不能发布，也不能加载到生产。
+///
+/// 跨阶段约束：G3 不能单独去掉这条拒绝。模板框盖住胶时位姿跟着胶走，d' 恒约等于 0，真实胶偏会被悄悄放行；
+/// “模板与胶检测走廊不重叠”的保存检查属于 G4。去掉的前提是 G4 的保存检查已合入，或 G3 在发布时补上同样的几何检查。
+pub fn reject_fixture(recipe: &Recipe) -> Result<(), String> {
+    match recipe.shots.iter().find(|shot| shot.has_fixture()) {
+        Some(shot) => Err(format!("拍照点 {} 使用了特征定位：当前发布包还不能携带定位模板，含特征定位的配方暂不能发布（可以在工作台试测、验证和候选试运行）", shot.id)),
+        None => Ok(()),
+    }
+}
+
 pub fn publish(releases_root: &Path, input: PublishInput) -> Result<ReleaseBundle, String> {
     let recipe = input.recipe.build()?;
     recipe.ready()?;
+    reject_fixture(&recipe)?;
     safe_id(&recipe.id)?;
     validate_versions(&input.versions)?;
     let mut inputs = BTreeMap::new();
@@ -625,9 +637,13 @@ mod tests {
     struct TempDir(PathBuf);
     impl Drop for TempDir { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
 
-    fn publish_with(root: &Path, validation_site: ValidationSite) -> ReleaseBundle {
+    fn one_shot_recipe() -> crate::recipe::RecipeDoc {
         let mut recipe = crate::recipe::samples().remove(1);
         recipe.shots.truncate(1);
+        recipe
+    }
+
+    fn try_publish(root: &Path, recipe: crate::recipe::RecipeDoc, validation_site: ValidationSite) -> Result<ReleaseBundle, String> {
         let mut image = b"P5\n1000 700\n255\n".to_vec();
         image.resize(image.len() + 1000 * 700, 128);
         publish(root, PublishInput {
@@ -636,7 +652,28 @@ mod tests {
             graph: ResourceSource::Bytes(br#"{"graph":1}"#.to_vec()),
             shots: vec![ShotInput { k: 0, view: 1, image: Some(ResourceSource::Bytes(image)),
                 calibration: Some(ResourceSource::Bytes(br#"{"mmPerPx":0.1}"#.to_vec())) }],
-        }).unwrap()
+        })
+    }
+
+    fn publish_with(root: &Path, validation_site: ValidationSite) -> ReleaseBundle {
+        try_publish(root, one_shot_recipe(), validation_site).unwrap()
+    }
+
+    #[test]
+    fn fixture_on_an_enabled_view_blocks_publishing_until_bundles_carry_templates() {
+        // 防的回归：G3 之前发布包不带定位模板，含特征定位的配方发布后生产找不到模板；停用视图上残留的 fixture 不该挡发布
+        let root = TempDir(std::env::temp_dir().join(format!("gluesight-{}", new_bundle_id().unwrap())));
+        let fixture = crate::recipe::FixtureSpec { rect: [100, 100, 32, 32], search_radius_px: 20.0, angle_range_deg: 0.0,
+            min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None };
+        let with_fixture_on = |view: u8| {
+            let mut recipe = one_shot_recipe();
+            let shot = &mut recipe.shots[0];
+            shot.views = [1, 2].into_iter().map(|v| crate::recipe::ShotViewSpec { view: v, enabled: v == 1, path: shot.path.clone(),
+                mm_per_px: shot.mm_per_px, detect: None, limits: None, calib: None, fixture: (v == view).then(|| fixture.clone()) }).collect();
+            recipe
+        };
+        assert!(try_publish(&root.0, with_fixture_on(1), ValidationSite::Real).unwrap_err().contains("特征定位"));
+        assert!(try_publish(&root.0, with_fixture_on(2), ValidationSite::Real).is_ok());
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! 入口 scripts/Test-AlgorithmEval.ps1；结果写到 GLUESIGHT_EVAL_OUT（缺省 output/algorithm-eval）。
 
 mod locate;
-mod synth;
+pub(super) mod synth;
 mod teach;
 
 use std::collections::BTreeMap;
@@ -186,6 +186,7 @@ fn build_recipe(samples: &[Sample], paths: &[Vec<[f32; 2]>], mm: &BTreeMap<Strin
     let shots = samples.iter().zip(paths).map(|(s, p)| ShotSpec {
         id: s.shot_id.clone(), pose_id: s.shot_id.clone(), camera: s.camera.clone(), view: 1, views: Vec::new(), calib: None,
         bead: "J1".into(), skip: p.is_empty(), path: p.clone(), mm_per_px: (!p.is_empty()).then(|| mm[&s.camera]), detect: None, limits: None,
+        fixture: None,
     }).collect();
     let mut doc = RecipeDoc {
         id: "EVAL-GS".into(), name: "算法评测".into(), version: 1, plan_version: 1, teaching_id: None, product_code: 1,

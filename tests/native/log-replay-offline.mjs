@@ -58,7 +58,7 @@ async function teach(call, id) {
     const imageId = (await call("workspace_get", { id })).workspace.frames[k].image.id;
     const extracted = await edit("workspace_extract_centerline", { k, imageId, roi });
     assert(extracted.path.length >= 3, `${shot.id} 中线提取失败：${extracted.message}`);
-    await edit("workspace_save_params", { k, params: { path: extracted.path, mmPerPx: MM_PER_PX, detect: DETECT } });
+    await edit("workspace_save_params", { k, params: { path: extracted.path, mmPerPx: MM_PER_PX, detect: DETECT, fixture: null } });
     const trial = (await edit("workspace_trial", { k, imageId })).workspace.frames[k].trial;
     assert(trial?.passed, `${shot.id} 试测未通过：${trial?.reason}`);
     await edit("workspace_save_teach", { k, imageId });

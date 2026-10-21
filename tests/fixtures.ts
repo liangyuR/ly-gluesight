@@ -24,7 +24,7 @@ export function workspaceView(id = "A"): WorkspaceView {
   const limits: ShotLimits = { position, width: null, maxGapLen: .5, minPresent: .8 };
   const detect: DetectParams = { searchMm: 4, polarity: "dark", widthRange: [1, 6] };
   const doc: RecipeDoc = {
-    id, name: `工件 ${id}`, version: 2, productCode: 1, triggerMode: "fly", schemaVersion: 6,
+    id, name: `工件 ${id}`, version: 2, productCode: 1, triggerMode: "fly", schemaVersion: 7,
     spacing: 1, filterWindow: 3, detect, limits, shots: shotList(twoLines), cameras: { "CAM-1": { exposureUs: 60, gainDb: 6 } },
   };
   const layout: Recipe = {

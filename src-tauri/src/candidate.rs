@@ -15,20 +15,25 @@ pub struct Candidate {
     engine: Arc<Engine>,
     graphs: HashMap<(usize, u8), Value>,
     sizes: HashMap<(usize, u8), [u32; 2]>,
+    /// 用特征定位的视图的模板目录（工作台按冻结示教原图生成，按内容寻址、不会改写）
+    bases: HashMap<(usize, u8), String>,
 }
 
 impl Candidate {
-    pub fn new(recipe: Recipe, revision: u64, engine: Arc<Engine>, sizes: HashMap<(usize, u8), [u32; 2]>, overview: crate::workspace::Overview) -> Result<Self, String> {
+    pub fn new(recipe: Recipe, revision: u64, engine: Arc<Engine>, sizes: HashMap<(usize, u8), [u32; 2]>, bases: HashMap<(usize, u8), String>, overview: crate::workspace::Overview) -> Result<Self, String> {
         recipe.ready()?;
+        if recipe.shots.iter().any(|shot| shot.has_fixture()) { engine.locate.clone()?; }
         let mut graphs = HashMap::new();
         for (k, shot) in recipe.shots.iter().enumerate() {
             if !shot.measured() { continue; }
             for view in shot.enabled_views() {
                 if !sizes.contains_key(&(k, view)) { return Err("候选示教图缺少尺寸".into()); }
-                graphs.insert((k, view), vision::build_taught_graph(&recipe.for_view(k, view)?, k)?);
+                let projected = recipe.for_view(k, view)?;
+                if projected.shots[k].fixture.is_some() && !bases.contains_key(&(k, view)) { return Err("候选示教图缺少定位模板".into()); }
+                graphs.insert((k, view), vision::build_taught_graph(&projected, k)?);
             }
         }
-        Ok(Self { info: DebugInfo { recipe_id: recipe.id.clone(), revision }, recipe: Arc::new(recipe), engine, graphs, sizes, overview })
+        Ok(Self { info: DebugInfo { recipe_id: recipe.id.clone(), revision }, recipe: Arc::new(recipe), engine, graphs, sizes, bases, overview })
     }
 
     pub fn matches(&self, recipe: &Recipe) -> bool {
@@ -43,7 +48,8 @@ impl Candidate {
         Ok(vision::measure_views_with(&self.recipe, job.k, &images, |view, image| {
             if self.sizes.get(&(job.k, view)).copied() != Some([image.width, image.height]) { return Err("调试图像尺寸与示教不一致".into()); }
             let graph = self.graphs.get(&(job.k, view)).ok_or("候选测量图缺失")?;
-            vision::measure_shot_with_graph(&self.engine, &self.recipe.for_view(job.k, view)?, job.k, image, &format!("{run_id}-v{view}"), "", graph)
+            let base = self.bases.get(&(job.k, view)).map_or("", String::as_str);
+            vision::measure_shot_with_graph(&self.engine, &self.recipe.for_view(job.k, view)?, job.k, image, &format!("{run_id}-v{view}"), base, graph)
         })?.into_measured(job))
     }
 }

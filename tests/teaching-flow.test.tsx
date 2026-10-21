@@ -138,7 +138,7 @@ it("本图参数覆盖后恢复默认 → 搜索带与试测载荷使用配方�
   expect(screen.getByRole("checkbox", { name: "位置判定" })).not.toBeChecked();
   await user.click(screen.getByRole("button", { name: "恢复配方默认判定限值" }));
   await user.click(screen.getByRole("button", { name: "运行试测" }));
-  await waitFor(() => expect(workspaceApi.saveParams).toHaveBeenLastCalledWith("A", 7, 0, { path: candidate.workspace.doc.shots[0].path, mmPerPx: .1 }));
+  await waitFor(() => expect(workspaceApi.saveParams).toHaveBeenLastCalledWith("A", 7, 0, { path: candidate.workspace.doc.shots[0].path, mmPerPx: .1, fixture: null }));
   await waitFor(() => expect(workspaceApi.trial).toHaveBeenLastCalledWith("A", 8, 0, candidate.workspace.frames[0].image!.id));
   for (const value of ["", "0"]) {
     fireEvent.change(screen.getByRole("spinbutton", { name: "像素当量" }), { target: { value } });
@@ -262,7 +262,7 @@ it("每组三相机图仅示教选中图 → 保存后进入下一组并沿用�
     const actions = within(screen.getByRole("group", { name: "单帧示教操作" }));
     expect(actions.getByRole("button", { name: "保存本组示教" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "运行试测" }));
-    expect(workspaceApi.saveParams).toHaveBeenNthCalledWith(group + 1, "A", 7 + 2 * group, k, { path: twoLines[group], mmPerPx: .1 });
+    expect(workspaceApi.saveParams).toHaveBeenNthCalledWith(group + 1, "A", 7 + 2 * group, k, { path: twoLines[group], mmPerPx: .1, fixture: null });
     await waitFor(() => expect(workspaceApi.trial).toHaveBeenNthCalledWith(group + 1, "A", 8 + 2 * group, k, imageId));
     expect(screen.queryByText("示教参数有未保存的修改")).not.toBeInTheDocument();
     const saveLabel = group === 0 ? "保存并进入下一组" : "保存本组示教";
@@ -331,12 +331,12 @@ it("刷选提取后运行一次算法 → 传递原图引导与点距，重采�
   await user.click(screen.getByRole("button", { name: "自动提取中线" }));
   expect(await screen.findByLabelText("中线点 5")).toBeVisible();
   expect(screen.queryByLabelText("刷选胶路区域")).not.toBeInTheDocument();
-  expect(workspaceApi.saveDraft).toHaveBeenCalledWith("A", 7, 0, { path: [], mmPerPx: .2 });
+  expect(workspaceApi.saveDraft).toHaveBeenCalledWith("A", 7, 0, { path: [], mmPerPx: .2, fixture: null });
   expect(workspaceApi.extractCenterline).toHaveBeenCalledWith("A", 8, 0, "A-image-0-cam1", [0, 0, 100, 60], { points: [[10.2, 12.4], [50.8, 42.7]], radiusPx: 60 }, 10);
   await user.click(screen.getByRole("button", { name: "运行试测" }));
   await user.click(await screen.findByText("逐点试测结果 · 测得 1 / 2 · 未测 1"));
   const table = await screen.findByRole("table", { name: "逐点试测结果" });
-  expect(workspaceApi.saveParams).toHaveBeenCalledWith("A", 8, 0, { path: extracted, mmPerPx: .2 });
+  expect(workspaceApi.saveParams).toHaveBeenCalledWith("A", 8, 0, { path: extracted, mmPerPx: .2, fixture: null });
   expect(workspaceApi.trial).toHaveBeenCalledWith("A", 9, 0, "A-image-0-cam1");
   expect(within(table).getByText("0.125")).toBeVisible();
   expect(within(table).getByText("2.500")).toBeVisible();

@@ -61,6 +61,9 @@ pub struct ShotLimits {
     /// 有胶站至少占这一段的比例（0–1）：短断口零散分布、每段都不超长时，靠它判断续胶
     #[serde(default = "default_min_present")]
     pub min_present: f32,
+    /// 量具确认件编号：位置名义值不为 0 时必填（定稿 §3）。只是判定参数的出处，不进测量定义
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gauge_ref: Option<String>,
 }
 
 pub fn default_min_present() -> f32 {
@@ -71,6 +74,11 @@ impl ShotLimits {
     fn validate(&self, what: &str) -> Result<(), String> {
         if let Some(p) = &self.position {
             p.validate(&format!("{what} 位置"))?;
+            let gauge = self.gauge_ref.as_deref().map(str::trim)
+                .is_some_and(|g| !g.is_empty() && g.chars().count() <= 64 && !g.chars().any(char::is_control));
+            if p.nominal != 0.0 && !gauge {
+                return Err(format!("{what}：位置名义值不为 0 时必须填写量具确认件编号（gaugeRef，最长 64 个字符）"));
+            }
         }
         if let Some(w) = &self.width {
             w.validate(&format!("{what} 胶宽"))?;
@@ -169,7 +177,96 @@ fn valid_label(s: &str) -> bool {
 }
 
 /// 配方文件格式版本。不一致的文件列为加载错误，不迁移。
-pub const RECIPE_SCHEMA: u32 = 6;
+pub const RECIPE_SCHEMA: u32 = 7;
+
+/// 定位模板外圈（glue.locate 的 templatePad，lyFlow#32）：模板文件是示教框四周各多裁这么多，
+/// locate 用真实邻域预平滑后再裁回示教框。每个新模板都取 4（平滑核半径）。
+pub const FIXTURE_TEMPLATE_PAD_PX: u32 = 4;
+/// glue.locate 的角度扫描步长（°），只在开转角时起作用
+pub const FIXTURE_ANGLE_STEP_DEG: f32 = 0.5;
+/// 定稿 §10 决定一的示教余量 m（mm）：两端排除长度 = max(0, |Δ| − m) + 1 个站距。G4 按验证数据再定
+pub const FIXTURE_END_MARGIN_MM: f32 = 0.0;
+
+fn one() -> f32 { 1.0 }
+
+/// 特征定位（定稿 §5）：示教框（内框，不含外圈）与 glue.locate 门限。模板由工作台按 rect 加
+/// FIXTURE_TEMPLATE_PAD_PX 外圈从冻结示教原图裁出；改 fixture 就是改测量定义，试测与验证都要重做。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FixtureSpec {
+    /// 示教框 [x, y, w, h]（示教图像素，不含外圈）；anchor 是它的左上角
+    pub rect: [u32; 4],
+    /// 模板中心最多偏开示教位置多远（px）；峰离搜索窗边 ≤ 1 px 判 at_search_edge
+    pub search_radius_px: f32,
+    /// 角度扫描范围 ±（°）；v1 默认 0 = 只找平移（定稿 §10 决定二）
+    #[serde(default)]
+    pub angle_range_deg: f32,
+    pub min_score: f32,
+    /// 次峰 / 主峰上限；1 = 不判
+    #[serde(default = "one")]
+    pub max_peak_ratio: f32,
+    /// 两端切向搬移 |Δ| 的上限（mm），超过判位置基准无效（ERR 92）；为空时用临时默认公式（见 end_shift_limit_mm）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_end_shift_mm: Option<f32>,
+}
+
+impl FixtureSpec {
+    /// 只核对配方本身能判的：右、下边要看图像尺寸，由工作台保存示教与生成模板时核对。
+    fn validate(&self, what: &str) -> Result<(), String> {
+        let [x, y, w, h] = self.rect;
+        let pad = FIXTURE_TEMPLATE_PAD_PX;
+        if x < pad || y < pad {
+            return Err(format!("{what}：定位框离图像左、上边至少 {pad} px（模板要带 {pad} px 外圈）"));
+        }
+        if !(16..=512).contains(&w) || !(16..=512).contains(&h) {
+            return Err(format!("{what}：定位框宽、高需在 16–512 px 之间"));
+        }
+        if !(self.search_radius_px.is_finite() && (3.0..=200.0).contains(&self.search_radius_px)) {
+            return Err(format!("{what}：定位搜索半径需在 3–200 px 之间"));
+        }
+        if !(self.angle_range_deg.is_finite() && (0.0..=10.0).contains(&self.angle_range_deg)) {
+            return Err(format!("{what}：定位角度范围需在 0–10° 之间"));
+        }
+        if !(self.min_score.is_finite() && self.min_score > 0.0 && self.min_score <= 1.0) {
+            return Err(format!("{what}：定位最低分数需在 0–1 之间（不含 0）"));
+        }
+        if !(self.max_peak_ratio.is_finite() && self.max_peak_ratio > 0.0 && self.max_peak_ratio <= 1.0) {
+            return Err(format!("{what}：定位次峰比上限需在 0–1 之间（不含 0）"));
+        }
+        if self.max_end_shift_mm.is_some_and(|m| !(m.is_finite() && m > 0.0)) {
+            return Err(format!("{what}：两端搬移上限必须是正数"));
+        }
+        Ok(())
+    }
+
+    /// 带外圈的模板放得进 size 大小的示教图：右、下边要看图像尺寸，配方校验查不了，
+    /// 由工作台保存示教、生成模板时核对（lyFlow 在框离图边不到 templatePad 时判 out_of_image）。
+    pub fn check_image_size(&self, size: [u32; 2]) -> Result<(), String> {
+        let pad = u64::from(FIXTURE_TEMPLATE_PAD_PX);
+        let [x, y, w, h] = self.rect.map(u64::from);
+        if x < pad || y < pad || x + w + pad > u64::from(size[0]) || y + h + pad > u64::from(size[1]) {
+            return Err(format!("定位框加 {pad} px 外圈超出示教原图（{}×{}），请把框从图边往里收", size[0], size[1]));
+        }
+        Ok(())
+    }
+
+    /// 示教框中心（px），与 glue.locate 的 teachCenter 一致：(x + (w − 1)/2, y + (h − 1)/2)。
+    pub fn teach_center(&self) -> [f64; 2] {
+        let [x, y, w, h] = self.rect.map(f64::from);
+        [x + (w - 1.0) / 2.0, y + (h - 1.0) / 2.0]
+    }
+
+    /// 两端切向搬移 |Δ| 的上限（mm）。配方没给时取 locate 接受的位姿能产生的最大 |Δ|（定稿 §10 决定一的临时默认）：
+    /// 方形搜索窗对角平移最多 √2·(searchRadius − 2) px，开转角时端点再绕模板中心切向移 L_端·2·sin(angleRange/2)，
+    /// L_端 是模板中心到较远端点的距离。`ends_px` 是示教胶路首末站（px）。
+    pub fn end_shift_limit_mm(&self, ends_px: [[f64; 2]; 2], mm_per_px: f64) -> f64 {
+        if let Some(limit) = self.max_end_shift_mm { return limit as f64; }
+        let c = self.teach_center();
+        let lever = ends_px.iter().map(|p| (p[0] - c[0]).hypot(p[1] - c[1])).fold(0.0, f64::max) * mm_per_px;
+        std::f64::consts::SQRT_2 * (self.search_radius_px as f64 - 2.0) * mm_per_px
+            + lever * 2.0 * (self.angle_range_deg as f64 / 2.0).to_radians().sin()
+    }
+}
 
 /// 一台相机在这个配方下的曝光与增益：示教采集和生产布防前下发到相机。
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -208,6 +305,8 @@ pub struct ShotViewSpec {
     pub detect: Option<DetectParams>,
     pub limits: Option<ShotLimits>,
     pub calib: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixture: Option<FixtureSpec>,
 }
 
 /// 一个拍照点：机器人走到 Pose 时 PLC 触发这台相机拍一帧，在这帧里沿示教中线量胶。
@@ -243,6 +342,9 @@ pub struct ShotSpec {
     /// 为空时用配方的限值
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limits: Option<ShotLimits>,
+    /// 特征定位：为空时胶偏按静态示教线量（d 相对示教中线）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixture: Option<FixtureSpec>,
 }
 
 impl ShotSpec {
@@ -261,6 +363,7 @@ impl ShotSpec {
             shot.detect = v.detect.clone();
             shot.limits = v.limits.clone();
             shot.calib = v.calib.clone();
+            shot.fixture = v.fixture.clone();
         } else if !self.views.is_empty() || view != self.view {
             return Err(format!("拍照点 {} 没有图 {view}", self.id));
         }
@@ -275,6 +378,11 @@ impl ShotSpec {
     /// 要量要判：不是"不检"。
     pub fn measured(&self) -> bool {
         !self.skip
+    }
+
+    /// 要检，且启用的视图里有用特征定位的（停用视图上残留的 fixture 不算）。
+    pub fn has_fixture(&self) -> bool {
+        self.measured() && self.enabled_views().into_iter().any(|v| self.for_view(v).is_ok_and(|s| s.fixture.is_some()))
     }
 
     /// 已示教：有中线和像素当量。
@@ -341,6 +449,9 @@ impl ShotSpec {
         }
         if let Some(l) = &self.limits {
             l.validate(&format!("拍照点 {id}"))?;
+        }
+        if let Some(f) = &self.fixture {
+            f.validate(&format!("拍照点 {id} 特征定位"))?;
         }
         Ok(())
     }
@@ -542,6 +653,13 @@ impl RecipeDoc {
             if !ids.insert(shot.id.as_str()) {
                 return Err(format!("拍照点编号 {} 重复", shot.id));
             }
+            // 用了特征定位却不判位置：定位失败、两端搬移超限都报不出 ERR，两端还会按位姿悄悄排除断胶判定
+            for v in shot.enabled_views() {
+                let projected = shot.for_view(v)?;
+                if projected.fixture.is_some() && projected.limits.as_ref().unwrap_or(&self.limits).position.is_none() {
+                    return Err(format!("拍照点 {} 图 {v} 使用了特征定位，必须设置位置判定限值", shot.id));
+                }
+            }
         }
         let used = self.shot_cameras();
         if let Some(missing) = used.iter().find(|c| !self.cameras.contains_key(*c)) {
@@ -628,6 +746,7 @@ pub fn default_limits() -> ShotLimits {
         width: Some(JudgeParams { nominal: 4.0, tol_upper: 1.5, tol_lower: 1.5, abs_min: 1.0, abs_max: 8.0, max_excursion_len: 5.0 }),
         max_gap_len: 6.0,
         min_present: default_min_present(),
+        gauge_ref: None,
     }
 }
 
@@ -656,6 +775,7 @@ pub fn shot_list(camera: &str, paths: Vec<Vec<[f32; 2]>>) -> Vec<ShotSpec> {
             path,
             detect: None,
             limits: None,
+            fixture: None,
         })
         .collect()
 }
@@ -1230,7 +1350,7 @@ mod tests {
         doc.shots.truncate(1);
         let shot = &mut doc.shots[0];
         shot.views = [1, 2, 3].into_iter().map(|view| ShotViewSpec { view, enabled: view != 2,
-            path: shot.path.clone(), mm_per_px: shot.mm_per_px, detect: None, limits: None, calib: None }).collect();
+            path: shot.path.clone(), mm_per_px: shot.mm_per_px, detect: None, limits: None, calib: None, fixture: None }).collect();
         let recipe = doc.build().unwrap();
         assert_eq!(recipe.shot_count(), 1);
         assert_eq!(recipe.segments.iter().map(|s| (s.shot, s.view)).collect::<Vec<_>>(), [(0, 1), (0, 3)]);
@@ -1490,12 +1610,52 @@ mod tests {
         reject(&|d| d.shots[1].detect = Some(DetectParams { search_mm: 3.0, polarity: Polarity::Dark, width_range: [1.0, 8.0] }), "搜索宽度");
         reject(&|d| d.limits.max_gap_len = -1.0, "断胶长度");
         reject(&|d| d.schema_version = 2, "格式版本");
+        // 特征定位：外圈出左、上边，框太小，lyFlow 门限越界，护栏被关掉
+        let fixture = |f: fn(&mut FixtureSpec)| move |d: &mut RecipeDoc| { let mut spec = fixture_spec(); f(&mut spec); d.shots[0].fixture = Some(spec); };
+        reject(&fixture(|f| f.rect[0] = 3), "左、上边");
+        reject(&fixture(|f| f.rect[2] = 8), "16–512");
+        reject(&fixture(|f| f.search_radius_px = 2.0), "搜索半径");
+        reject(&fixture(|f| f.angle_range_deg = -1.0), "角度范围");
+        reject(&fixture(|f| f.min_score = 0.0), "最低分数");
+        reject(&fixture(|f| f.max_peak_ratio = 1.5), "次峰比");
+        reject(&fixture(|f| f.max_end_shift_mm = Some(0.0)), "两端搬移上限");
+        // 不判位置时定位失败报不出 ERR、两端排除没有上限
+        reject(&|d| { fixture(|_| {})(d); d.limits.position = None; }, "必须设置位置判定限值");
+        // 名义值不为 0 要有量具确认件
+        let nominal = |d: &mut RecipeDoc| d.limits.position.as_mut().unwrap().nominal = 0.3;
+        reject(&nominal, "gaugeRef");
+        reject(&|d| { nominal(d); d.limits.gauge_ref = Some("  ".into()); }, "gaugeRef");
+        let mut accepted = composite_recipe();
+        fixture(|_| {})(&mut accepted);
+        nominal(&mut accepted);
+        accepted.limits.gauge_ref = Some("GA-0315".into());
+        assert!(accepted.build().is_ok(), "带位置限值的特征定位、名义值附量具确认件");
         let pose_shared = {
             let mut d = composite_recipe();
             d.shots[1].pose_id = "P1".into();
             d
         };
         assert!(pose_shared.build().is_ok(), "同一设备允许同一 Pose 多次触发");
+    }
+
+    fn fixture_spec() -> FixtureSpec {
+        FixtureSpec { rect: [100, 100, 32, 32], search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None }
+    }
+
+    #[test]
+    fn default_end_shift_limit_matches_the_final_design_example_numbers() {
+        // 防的回归：临时默认上限漏了方形搜索窗的 √2、贴边门的 2 px 或转角的杠杆臂项，护栏在正常件上触发或放得过宽。
+        // 数值取自定稿 §10 决定一：searchRadius 60 px、0.117 mm/px 只找平移约 9.6 mm；±3°、L_端 87 mm 再加约 4.6 mm
+        let mut f = fixture_spec();
+        f.search_radius_px = 60.0;
+        let c = f.teach_center();
+        let far = [c[0] + 87.0 / 0.117, c[1]];
+        let ends = [[c[0] - 10.0, c[1]], far];
+        let still = f.end_shift_limit_mm(ends, 0.117);
+        assert!((still - 9.597).abs() < 0.005, "{still}");
+        f.angle_range_deg = 3.0;
+        let turned = f.end_shift_limit_mm(ends, 0.117);
+        assert!((turned - still - 4.555).abs() < 0.005, "{turned}");
     }
 
     #[test]

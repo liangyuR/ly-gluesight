@@ -221,15 +221,23 @@ pub(super) fn workspace() -> Workspace {
     w
 }
 
+fn fixture_spec() -> crate::recipe::FixtureSpec {
+    crate::recipe::FixtureSpec { rect: [100, 40, 32, 32], search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None }
+}
+
 #[test]
 fn switching_views_keeps_independent_centerlines_and_valid_ng_trials() {
     let mut w = workspace();
+    // 图 1 的特征定位在切换视图来回之后仍在，不串到图 2
+    w.doc.shots[0].fixture = Some(fixture_spec());
+    store_active(&mut w, 0);
     let first = snapshot(&w, 1);
     let before = state_value(&w);
     assert!(select_view(&mut w, 0, 0).is_err());
     assert_eq!(state_value(&w), before);
     load_active(&mut w, 0, 2).unwrap();
     assert_eq!(w.doc.shots[0].path[0][1], 20.0);
+    assert_eq!(w.doc.shots[0].fixture, None);
     assert_eq!(w.frames[0].image.as_ref().unwrap().view, 2);
     assert_eq!(w.frames[0].trial.as_ref().unwrap().verdict, Some(Verdict::NgGap));
     assert!(w.frames[0].saved);
@@ -239,6 +247,7 @@ fn switching_views_keeps_independent_centerlines_and_valid_ng_trials() {
     store_active(&mut w, 0);
     load_active(&mut w, 0, 1).unwrap();
     assert_eq!(snapshot(&w, 1), first);
+    assert_eq!(w.doc.shots[0].fixture, Some(fixture_spec()));
     load_active(&mut w, 0, 2).unwrap();
     assert_eq!(w.doc.shots[0].path[0][1], 23.0);
     assert!(w.frames[0].trial.is_none());
@@ -255,13 +264,21 @@ fn switching_views_keeps_independent_centerlines_and_valid_ng_trials() {
 
 #[test]
 fn editing_one_view_invalidates_only_that_trial_and_restoring_defaults_requires_retrial() {
-    let mut w = workspace();
-    let others: Vec<_> = [1, 3].into_iter().map(|v| snapshot(&w, v)).collect();
-    let mut doc = w.doc.clone();
-    doc.shots[0].views[1].path[0][1] += 1.0;
-    update_doc(&mut w, doc).unwrap();
-    assert!(projected_frame(&w, 0, 2).unwrap().trial.is_none());
-    for (v, expected) in [1, 3].into_iter().zip(others) { assert_eq!(snapshot(&w, v), expected); }
+    // 改图 2 的中线或特征定位（测量定义）：只有图 2 的试测与已保存状态失效
+    let edits: [(&str, fn(&mut crate::recipe::ShotViewSpec)); 2] = [
+        ("中线", |v| v.path[0][1] += 1.0),
+        ("特征定位", |v| v.fixture = Some(fixture_spec())),
+    ];
+    for (name, edit) in edits {
+        let mut w = workspace();
+        let others: Vec<_> = [1, 3].into_iter().map(|v| snapshot(&w, v)).collect();
+        let mut doc = w.doc.clone();
+        edit(&mut doc.shots[0].views[1]);
+        update_doc(&mut w, doc).unwrap();
+        let edited = projected_frame(&w, 0, 2).unwrap();
+        assert!(edited.trial.is_none() && !edited.saved, "{name}");
+        for (v, expected) in [1, 3].into_iter().zip(others) { assert_eq!(snapshot(&w, v), expected, "{name}"); }
+    }
     let mut w = workspace();
     let mut doc = w.doc.clone();
     doc.detect.search_mm += 1.0;

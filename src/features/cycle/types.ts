@@ -54,11 +54,27 @@ export interface ShotLimits {
   maxGapLen: number;
   /** 有胶站的最低占比（0–1），防零散断胶 */
   minPresent: number;
+  /** 量具确认件编号：位置名义值不为 0 时必填 */
+  gaugeRef?: string;
+}
+
+/** 特征定位（glue.locate）：示教框（不含外圈）与门限。模板由工作台从冻结示教原图按框加 4 px 外圈裁出。 */
+export interface FixtureSpec {
+  /** 示教框 [x, y, w, h]（示教图像素） */
+  rect: [number, number, number, number];
+  searchRadiusPx: number;
+  /** 角度扫描范围 ±°；0 = 只找平移 */
+  angleRangeDeg: number;
+  minScore: number;
+  /** 次峰 / 主峰上限；1 = 不判 */
+  maxPeakRatio: number;
+  /** 两端切向搬移上限（mm）；不设时用临时默认公式 */
+  maxEndShiftMm?: number;
 }
 
 /** 一个拍照点：机器人走到 Pose 时 PLC 触发这台相机拍一帧，在这帧里沿示教中线量胶。可选字段不设时不发送（不发 null）。 */
 export interface ShotViewSpec {
-  view: number; enabled: boolean; path: [number, number][]; mmPerPx?: number; detect?: DetectParams; limits?: ShotLimits; calib?: string;
+  view: number; enabled: boolean; path: [number, number][]; mmPerPx?: number; detect?: DetectParams; limits?: ShotLimits; calib?: string; fixture?: FixtureSpec;
 }
 
 export interface ShotSpec {
@@ -84,6 +100,8 @@ export interface ShotSpec {
   detect?: DetectParams;
   /** 单独设的限值；不给时用配方的 */
   limits?: ShotLimits;
+  /** 特征定位；不给时胶偏按静态示教线量 */
+  fixture?: FixtureSpec;
 }
 
 export interface Recipe {

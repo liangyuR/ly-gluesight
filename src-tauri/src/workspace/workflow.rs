@@ -55,6 +55,9 @@ pub struct DraftTeach {
     pub mm_per_px: Option<f32>,
     pub detect: Option<DetectParams>,
     pub limits: Option<crate::recipe::ShotLimits>,
+    /// 必须显式发送（可以是 null），漏发时报错，不会悄悄清掉已保存的 fixture
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub fixture: Option<crate::recipe::FixtureSpec>,
 }
 
 pub(super) fn store_active(w: &mut Workspace, k: usize) {
@@ -62,6 +65,7 @@ pub(super) fn store_active(w: &mut Workspace, k: usize) {
     if let Some(v) = shot.views.iter_mut().find(|v| v.view == shot.view) {
         v.path = shot.path.clone(); v.mm_per_px = shot.mm_per_px;
         v.detect = shot.detect.clone(); v.limits = shot.limits.clone(); v.calib = shot.calib.clone();
+        v.fixture = shot.fixture.clone();
     }
     let Some(frame) = w.frames.get_mut(k) else { return };
     if let Some(state) = frame.view_states.iter_mut().find(|s| s.view == shot.view) {
@@ -76,6 +80,7 @@ pub(super) fn load_active(w: &mut Workspace, k: usize, selected: u8) -> Result<(
     let v = shot.views.iter().find(|v| v.view == selected).ok_or("本拍照点没有这幅图")?;
     shot.view = selected; shot.path = v.path.clone(); shot.mm_per_px = v.mm_per_px;
     shot.detect = v.detect.clone(); shot.limits = v.limits.clone(); shot.calib = v.calib.clone();
+    shot.fixture = v.fixture.clone();
     let frame = w.frames.get_mut(k).ok_or("拍照点不存在")?;
     frame.image = frame.views.iter().find(|i| i.view == selected).cloned();
     let state = frame.view_states.iter().find(|s| s.view == selected);
@@ -92,7 +97,8 @@ pub(super) fn initialize_views(w: &mut Workspace, k: usize) {
         let active = view == shot.view;
         shot.views.push(ShotViewSpec { view, enabled: active, path: if active { shot.path.clone() } else { Vec::new() },
             mm_per_px: if active { shot.mm_per_px } else { None }, detect: if active { shot.detect.clone() } else { None },
-            limits: if active { shot.limits.clone() } else { None }, calib: if active { shot.calib.clone() } else { None } });
+            limits: if active { shot.limits.clone() } else { None }, calib: if active { shot.calib.clone() } else { None },
+            fixture: if active { shot.fixture.clone() } else { None } });
     }
     store_active(w, k);
 }
@@ -239,8 +245,8 @@ pub fn workspace_save_draft(app: AppHandle, id: String, revision: u64, k: usize,
     let mut w = items.get(&id).ok_or("候选不存在")?.clone();
     w.expect(revision)?;
     let shot = w.doc.shots.get_mut(k).ok_or("拍照点不存在")?;
-    if shot.path != params.path || shot.mm_per_px != params.mm_per_px || shot.detect != params.detect || shot.limits != params.limits {
-        shot.path = params.path; shot.mm_per_px = params.mm_per_px; shot.detect = params.detect; shot.limits = params.limits;
+    if shot.path != params.path || shot.mm_per_px != params.mm_per_px || shot.detect != params.detect || shot.limits != params.limits || shot.fixture != params.fixture {
+        shot.path = params.path; shot.mm_per_px = params.mm_per_px; shot.detect = params.detect; shot.limits = params.limits; shot.fixture = params.fixture;
         w.frames[k].saved = false; w.frames[k].trial = None;
         store_active(&mut w, k);
         w.doc.build()?;
@@ -425,12 +431,12 @@ pub(super) fn adopt_shots(w: &mut Workspace, round: &crate::recipe_capture::Capt
         let camera_id = &captured.camera.camera_id;
         let mut shot = if reuse_teaching { old[k].clone() } else {
             crate::recipe::ShotSpec { id: captured.shot_id.clone(), pose_id: captured.pose_id.clone(), camera: camera_id.clone(), view: 1, calib: None,
-                bead: "J1".into(), skip: false, path: Vec::new(), mm_per_px: None, detect: None, limits: None, views: Vec::new() }
+                bead: "J1".into(), skip: false, path: Vec::new(), mm_per_px: None, detect: None, limits: None, views: Vec::new(), fixture: None }
         };
         if reuse_teaching && shot.camera != *camera_id { return Err("采集相机或相机顺序已改变，不能按原对应关系继承示教".into()); }
         if !reuse_teaching {
             shot.views = captured.frame.views.iter().map(|v| ShotViewSpec { view: v.view, enabled: false, path: Vec::new(), mm_per_px: None,
-                detect: None, limits: None, calib: None }).collect();
+                detect: None, limits: None, calib: None, fixture: None }).collect();
         }
         w.doc.shots.push(shot);
     }

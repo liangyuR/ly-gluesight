@@ -1,12 +1,14 @@
-import type { CameraImaging, DetectParams, Judgement, Measured, Recipe, RecipeDoc, ShotLimits, Verdict } from "../cycle/types";
+import type { CameraImaging, DetectParams, FixtureSpec, Judgement, Measured, Recipe, RecipeDoc, ShotLimits, Verdict } from "../cycle/types";
 
 /** 一个拍照点的示教：在冻结原图上点出的中线（图像像素，从胶嘴一侧往外）、像素当量与可选的检测参数。
- * workspace_save_params 把它写进候选配方的这个拍照点；detect 不设时不发送（用配方的检测参数）。 */
+ * workspace_save_params 把它写进候选配方的这个拍照点；detect 不设时不发送（用配方的检测参数）。
+ * fixture 必须发送（没有特征定位时为 null）：后端漏收会报错，不会悄悄清掉已保存的特征定位。 */
 export interface ShotTeach {
   path: [number, number][];
   mmPerPx: number | null;
   detect?: DetectParams;
   limits?: ShotLimits;
+  fixture: FixtureSpec | null;
 }
 export interface FrozenImage {
   id: string; source: string; capturedAt: number; size: [number, number];

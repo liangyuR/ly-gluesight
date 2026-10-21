@@ -1,12 +1,35 @@
+use std::collections::BTreeMap;
+use std::path::Path;
 use std::time::Instant;
 use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use super::fixture::{self, Pose};
 use super::{Engine, FrameImage, RunResult};
-use crate::measure::{Job, Measured, ST_GAP, ST_OK};
-use crate::recipe::{Polarity, Recipe};
+use crate::measure::{drop_reference, Job, Measured, ReferenceFailure, REFERENCE_END_SHIFT, REFERENCE_LOCATE_FAILED, ST_GAP, ST_NO_REF, ST_OK, ST_OUT_OF_RANGE};
+use crate::recipe::{FixtureSpec, Polarity, Recipe, FIXTURE_ANGLE_STEP_DEG, FIXTURE_END_MARGIN_MM, FIXTURE_TEMPLATE_PAD_PX};
+
+/// 特征定位的结果（定稿 §10）：位姿是否采用、两端切向搬移与排除长度。随单图测量与试测记录序列化。
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PoseRecord {
+    pub accepted: bool,
+    /// 不采用的原因：glue.locate 的 reason，或开了转角却看不出角度时的 "angle_unobservable"
+    pub reason: Option<String>,
+    pub score: Option<f32>,
+    pub peak_ratio: Option<f32>,
+    pub angle: Option<f32>,
+    /// 模板中心相对示教位置的平移 center − teachCenter（px）
+    pub offset: Option<[f32; 2]>,
+    /// 带符号的两端切向搬移 [Δ_起, Δ_止]（mm），沿胶路方向为正
+    pub end_shift_mm: Option<[f32; 2]>,
+    /// 两端各排除的长度（mm）：max(0, |Δ| − m) + 1 个站距
+    pub excluded_mm: Option<[f32; 2]>,
+    /// 护栏：|Δ| 的上限（mm）
+    pub end_limit_mm: f32,
+}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,11 +44,24 @@ pub struct ShotMeasurement {
     pub candidate_edges: Vec<Option<[[f32; 2]; 2]>>,
     pub coverage: f32,
     pub ms: u32,
+    /// 用了特征定位的视图才有
+    pub pose: Option<PoseRecord>,
+    /// 这个视图没有位置基准的原因（有胶站已是 ST_NO_REF）
+    pub reference_failed: Option<String>,
 }
 
 impl ShotMeasurement {
+    fn empty(n: usize) -> Self {
+        Self { idx: Vec::with_capacity(n), d: Vec::with_capacity(n), w: Vec::with_capacity(n), st: Vec::with_capacity(n), px: Vec::with_capacity(n),
+            edges: Vec::with_capacity(n), candidate_width: Vec::with_capacity(n), candidate_edges: Vec::with_capacity(n), coverage: 0.0, ms: 0,
+            pose: None, reference_failed: None }
+    }
+
     pub fn into_measured(self, job: &Job) -> Measured {
         let mut m = Measured::empty(job);
+        if let Some(reason) = self.reference_failed {
+            m.reference_failed.push(ReferenceFailure { view: job.recipe.shots[job.k].view, reason });
+        }
         m.score = self.coverage;
         m.ms = self.ms;
         m.idx = self.idx;
@@ -39,13 +75,14 @@ impl ShotMeasurement {
     pub fn record(&self) -> Value {
         let status: Vec<_> = self.st.iter().map(|s| match *s {
             ST_OK => "ok",
-            crate::measure::ST_NO_REF => "no_ref",
-            crate::measure::ST_OUT_OF_RANGE => "out_of_range",
+            ST_NO_REF => "no_ref",
+            ST_OUT_OF_RANGE => "out_of_range",
             _ => "no_bead",
         }).collect();
         json!({"unit": "mm", "ids": self.idx, "status": status, "innerCenter": self.d,
             "width": self.w, "px": self.px, "edges": self.edges, "candidateWidth": self.candidate_width,
-            "candidateEdges": self.candidate_edges, "coverage": self.coverage, "ms": self.ms})
+            "candidateEdges": self.candidate_edges, "coverage": self.coverage, "ms": self.ms,
+            "pose": self.pose, "referenceFailed": self.reference_failed})
     }
 }
 
@@ -63,8 +100,18 @@ pub struct MultiViewMeasurement {
 }
 
 impl MultiViewMeasurement {
+    /// 各视图没有位置基准的原因（帧徽标、测量记录用）
+    pub fn reference_failed(&self) -> Vec<ReferenceFailure> {
+        self.views.iter().filter_map(|v| {
+            let reason = v.reading.as_ref()?.reference_failed.clone()?;
+            Some(ReferenceFailure { view: v.view, reason })
+        }).collect()
+    }
+
     pub fn into_measured(self, job: &Job) -> Measured {
+        let reference_failed = self.reference_failed();
         let mut measured = self.reading.into_measured(job);
+        measured.reference_failed = reference_failed;
         measured.views = self.views;
         measured
     }
@@ -81,7 +128,7 @@ pub fn measure_views_with(
             return Err(format!("拍照点 {} 图 {view} 缺失或重复", shot.id));
         }
     }
-    let mut out = ShotMeasurement { idx: Vec::new(), d: Vec::new(), w: Vec::new(), st: Vec::new(), px: Vec::new(), edges: Vec::new(), candidate_width: Vec::new(), candidate_edges: Vec::new(), coverage: 0.0, ms: 0 };
+    let mut out = ShotMeasurement::empty(0);
     let mut views = Vec::new();
     for view in selected {
         let image = &images.iter().find(|(v, _)| *v == view).unwrap().1;
@@ -97,9 +144,10 @@ pub fn measure_views_with(
                     (None, None) => true,
                     _ => false,
                 })
-                && reading.edges.iter().enumerate().all(|(i, edge)| match edge {
-                    Some(points) => reading.st[i] == ST_OK && points.iter().flatten().all(|v| v.is_finite()),
-                    None => reading.st[i] != ST_OK,
+                // 有胶边 ⇔ 测到胶宽；测到胶的站只能是有基准、无基准或超出检测范围
+                && reading.edges.iter().enumerate().all(|(i, edge)| edge.is_some() == reading.w[i].is_finite() && match edge {
+                    Some(points) => matches!(reading.st[i], ST_OK | ST_NO_REF | ST_OUT_OF_RANGE) && points.iter().flatten().all(|v| v.is_finite()),
+                    None => true,
                 })
                 && reading.coverage.is_finite() && (0.0..=1.0).contains(&reading.coverage)
                 && reading.px.iter().flatten().all(|v| v.is_finite())
@@ -121,14 +169,16 @@ pub fn measure_views_with(
             }
         }
     }
-    out.coverage = out.st.iter().filter(|&&s| s == ST_OK).count() as f32 / out.st.len().max(1) as f32;
+    // 有胶比例，与单图 parse_result 同口径：无基准、超出检测范围但测到胶宽的站也算有胶
+    out.coverage = out.w.iter().filter(|w| w.is_finite()).count() as f32 / out.st.len().max(1) as f32;
     Ok(MultiViewMeasurement { reading: out, views })
 }
 
-pub fn measure_views(engine: &Engine, recipe: &Recipe, k: usize, images: &[(u8, Arc<FrameImage>)], run_id: &str, base_dir: &str) -> Result<MultiViewMeasurement, String> {
+/// `bases`：各视图的模板目录（glue.locate 的 base_dir），只有用特征定位的视图需要，查不到的视图给空串。
+pub fn measure_views(engine: &Engine, recipe: &Recipe, k: usize, images: &[(u8, Arc<FrameImage>)], run_id: &str, bases: &BTreeMap<u8, String>) -> Result<MultiViewMeasurement, String> {
     measure_views_with(recipe, k, images, |view, image| {
         let projected = recipe.for_view(k, view)?;
-        measure_shot(engine, &projected, k, image, &format!("{run_id}-v{view}"), base_dir)
+        measure_shot(engine, &projected, k, image, &format!("{run_id}-v{view}"), bases.get(&view).map_or("", String::as_str))
     })
 }
 
@@ -138,6 +188,9 @@ struct ShotPlan {
     scale: f64,
     step: f64,
     half: f64,
+    fixture: Option<FixtureSpec>,
+    /// 护栏：两端切向搬移 |Δ| 的上限（mm）；没有特征定位时不用
+    end_limit_mm: f64,
 }
 
 fn plan(recipe: &Recipe, k: usize) -> Result<ShotPlan, String> {
@@ -180,7 +233,7 @@ fn plan(recipe: &Recipe, k: usize) -> Result<ShotPlan, String> {
             return Err(fail("配方测点表与示教中线不一致"));
         }
     }
-    let graph = json!({
+    let mut graph = json!({
         "schemaVersion": 1, "id": "01GLUESIGHTTAUGHT00000000",
         "nodes": [
             {"id": "n_load", "op": "io.load_image", "params": {"source": "inputs"}},
@@ -204,7 +257,39 @@ fn plan(recipe: &Recipe, k: usize) -> Result<ShotPlan, String> {
             "beadInfo": {"node": "n_width", "port": "bead.info"}
         }
     });
-    Ok(ShotPlan { graph, idx, scale, step, half })
+    let mut end_limit_mm = 0.0;
+    if let Some(f) = &shot.fixture {
+        // 恒等位姿下每端也排除 1 个站距内的站（决定一字面的“不超过”，两站），3–4 站的视图会整段超出检测范围
+        if idx.len() < 5 { return Err(fail("胶路太短：特征定位每端至少排除 2 站，剩不下可判的站")); }
+        let end = |j: usize| [recipe.points.x[j] as f64, recipe.points.y[j] as f64];
+        end_limit_mm = f.end_shift_limit_mm([end(idx[0]), end(idx[idx.len() - 1])], scale);
+        graph["nodes"].as_array_mut().unwrap().push(json!({"id": "n_locate", "op": "glue.locate", "params": {
+            "template": fixture::TEMPLATE_FILE, "templatePad": FIXTURE_TEMPLATE_PAD_PX, "anchor": [f.rect[0] as f64, f.rect[1] as f64],
+            "searchRadius": f.search_radius_px, "angleRange": f.angle_range_deg, "angleStep": FIXTURE_ANGLE_STEP_DEG,
+            "minScore": f.min_score, "maxPeakRatio": f.max_peak_ratio
+        }}));
+        graph["edges"].as_array_mut().unwrap().push(json!({"id": "e_locate", "from": {"node": "n_load", "port": "image"}, "to": {"node": "n_locate", "port": "image"}}));
+        graph["outputs"]["pose"] = json!({"node": "n_locate", "port": "pose"});
+    }
+    Ok(ShotPlan { graph, idx, scale, step, half, fixture: shot.fixture.clone(), end_limit_mm })
+}
+
+/// 运行用的测量计划：用特征定位的拍照点必须给出模板目录（绝对路径，内有 template.pgm）。
+/// lyFlow 在 base_dir 为空时按进程当前目录解析相对路径，会悄悄打开别处的同名文件。
+fn plan_run(recipe: &Recipe, k: usize, base_dir: &str) -> Result<ShotPlan, String> {
+    let p = plan(recipe, k)?;
+    if p.fixture.is_some() {
+        let id = &recipe.shots[k].id;
+        let dir = Path::new(base_dir);
+        if base_dir.is_empty() || !dir.is_absolute() {
+            return Err(format!("拍照点 {id}：使用了特征定位，但没有指定模板目录（base_dir）"));
+        }
+        let template = dir.join(fixture::TEMPLATE_FILE);
+        if !template.is_file() {
+            return Err(format!("拍照点 {id}：定位模板缺失：{}", template.display()));
+        }
+    }
+    Ok(p)
 }
 
 pub fn build_taught_graph(recipe: &Recipe, k: usize) -> Result<Value, String> {
@@ -212,12 +297,12 @@ pub fn build_taught_graph(recipe: &Recipe, k: usize) -> Result<Value, String> {
 }
 
 pub fn measure_shot(engine: &Engine, recipe: &Recipe, k: usize, image: &FrameImage, run_id: &str, base_dir: &str) -> Result<ShotMeasurement, String> {
-    let p = plan(recipe, k)?;
+    let p = plan_run(recipe, k, base_dir)?;
     run_shot(engine, recipe, k, image, run_id, base_dir, p)
 }
 
 pub fn measure_shot_with_graph(engine: &Engine, recipe: &Recipe, k: usize, image: &FrameImage, run_id: &str, base_dir: &str, graph: &Value) -> Result<ShotMeasurement, String> {
-    let mut p = plan(recipe, k)?;
+    let mut p = plan_run(recipe, k, base_dir)?;
     if graph != &p.graph { return Err("发布包算法图与配方的示教测量契约不一致".into()); }
     p.graph = graph.clone();
     run_shot(engine, recipe, k, image, run_id, base_dir, p)
@@ -242,6 +327,7 @@ fn run_shot(engine: &Engine, recipe: &Recipe, k: usize, image: &FrameImage, run_
     if recipe.shots[k].path.iter().any(|xy| xy[0] < 0.0 || xy[1] < 0.0 || xy[0] as f64 > image.width as f64 - 1.0 || xy[1] as f64 > image.height as f64 - 1.0) {
         return Err("示教中线超出当前完整图像，请确认视角和图像尺寸".into());
     }
+    if p.fixture.is_some() { engine.locate.clone()?; }
     let result = engine.run(&p.graph.to_string(), run_id, base_dir, image, &json!({}))?;
     let mut measured = parse_result(recipe, &p, &result)?;
     measured.ms = start.elapsed().as_millis().min(u32::MAX as u128) as u32;
@@ -272,7 +358,10 @@ fn parse_result(recipe: &Recipe, p: &ShotPlan, result: &RunResult) -> Result<Sho
         let a = stations[key][i].as_array().filter(|a| a.len() == 2).ok_or_else(|| format!("算法第 {} 站的 {key} 不是二维坐标", i + 1))?;
         Ok([a[0].as_f64().filter(|v| v.is_finite()).ok_or("算法坐标不是有限数")?, a[1].as_f64().filter(|v| v.is_finite()).ok_or("算法坐标不是有限数")?])
     };
-    let mut m = ShotMeasurement { idx: Vec::with_capacity(n), d: Vec::with_capacity(n), w: Vec::with_capacity(n), st: Vec::with_capacity(n), px: Vec::with_capacity(n), edges: Vec::with_capacity(n), candidate_width: Vec::with_capacity(n), candidate_edges: Vec::with_capacity(n), coverage: 0.0, ms: 0 };
+    let mut m = ShotMeasurement::empty(n);
+    // 逐站的算法中线点与法向、有胶站的胶中心（px），特征定位算胶偏用
+    let mut normals = Vec::with_capacity(n);
+    let mut beads = Vec::with_capacity(n);
     let mut present = 0;
     for (i, &j) in p.idx.iter().enumerate() {
         let s = number("s", i)?;
@@ -287,6 +376,7 @@ fn parse_result(recipe: &Recipe, p: &ShotPlan, result: &RunResult) -> Result<Sho
         }
         let has_bead = stations["present"][i].as_bool().ok_or("算法有胶状态不是布尔值")?;
         m.idx.push(j as u32);
+        normals.push(normal);
         if has_candidates && candidate_keys.iter().any(|key| !stations[*key][i].is_null()) {
             let lo = number("candidateLo", i)?;
             let hi = number("candidateHi", i)?;
@@ -311,6 +401,7 @@ fn parse_result(recipe: &Recipe, p: &ShotPlan, result: &RunResult) -> Result<Sho
                 return Err(format!("算法第 {} 站胶边或胶宽超出搜索范围", i + 1));
             }
             let mid = (lo + hi) * 0.5;
+            beads.push(Some([center[0] + normal[0] * mid, center[1] + normal[1] * mid]));
             m.d.push((mid * p.scale) as f32);
             m.w.push((width * p.scale) as f32);
             m.st.push(ST_OK);
@@ -324,6 +415,7 @@ fn parse_result(recipe: &Recipe, p: &ShotPlan, result: &RunResult) -> Result<Sho
             if ["lo", "hi", "widthPx"].iter().any(|key| !stations[*key][i].is_null()) {
                 return Err("算法无胶站仍返回胶宽，输出契约不一致".into());
             }
+            beads.push(None);
             m.d.push(f32::NAN);
             m.w.push(f32::NAN);
             m.st.push(ST_GAP);
@@ -336,9 +428,83 @@ fn parse_result(recipe: &Recipe, p: &ShotPlan, result: &RunResult) -> Result<Sho
     if info["present"].as_u64() != Some(present as u64) || info["coverage"].as_f64().is_none_or(|x| !x.is_finite() || (x - m.coverage as f64).abs() > 0.00015) {
         return Err("算法逐站汇总与有胶状态不一致".into());
     }
+    match (&p.fixture, result.record("pose")) {
+        (None, None) => {}
+        (Some(f), Some(record)) => apply_pose(recipe, p, f, record, &normals, &beads, &mut m)?,
+        _ => return Err("算法的定位输出与配方特征定位不一致".into()),
+    }
     Ok(m)
+}
+
+/// 按 glue.locate 的位姿把静态胶偏改成相对工件的胶偏（定稿 §2、§10）：
+/// - 不采用（定位失败，或开了转角却看不出角度）：有胶站全部无基准，不做两端排除；
+/// - 采用：d 改为胶中心到 N' = T(N) 的有向法向距离（正向取 n' = R·n，与静态 d 同号），两端按切向搬移 |Δ| 排除，
+///   最后 |Δ| 超过护栏上限时全部有胶站再去掉基准（先排除再护栏：排除区不进断胶区间，后沿的假断胶不会盖过 ERR 92）。
+fn apply_pose(recipe: &Recipe, p: &ShotPlan, f: &FixtureSpec, record: &Value, normals: &[[f64; 2]], beads: &[Option<[f64; 2]>], m: &mut ShotMeasurement) -> Result<(), String> {
+    // lyFlow 总是输出 templateSize（内框）。1.0.0 不认外圈，会把整个文件当模板，这里报成 w + 8
+    let size = record["templateSize"].as_array().filter(|a| a.len() == 2).and_then(|a| Some([a[0].as_f64()?, a[1].as_f64()?]));
+    if size != Some([f.rect[2] as f64, f.rect[3] as f64]) {
+        return Err("定位模板与配方示教框不一致".into());
+    }
+    let pose = Pose::from_record(record)?;
+    let observable = pose.angle_observable.ok_or("定位输出缺少 angleObservable，glue.locate 版本过旧")?;
+    // angleRange = 0 时 lyFlow 恒报看得出角度；开了转角的拍照点看不出角度按定位失败处理（定稿 §10 决定二）
+    let accepted = pose.ok && observable;
+    let finite = |v: f64| v.is_finite().then_some(v as f32);
+    let mut out = PoseRecord {
+        accepted,
+        reason: if !pose.ok { Some(pose.reason.clone().unwrap_or_else(|| "unknown".into())) } else if !observable { Some("angle_unobservable".into()) } else { None },
+        score: finite(pose.score),
+        peak_ratio: pose.peak_ratio.and_then(finite),
+        angle: finite(pose.angle),
+        offset: finite(pose.center[0] - pose.teach_center[0]).zip(finite(pose.center[1] - pose.teach_center[1])).map(|(x, y)| [x, y]),
+        end_shift_mm: None,
+        excluded_mm: None,
+        end_limit_mm: p.end_limit_mm as f32,
+    };
+    let n = p.idx.len();
+    if !accepted {
+        for i in 0..n { drop_reference(&mut m.st[i], &mut m.d[i]); }
+        m.reference_failed = Some(REFERENCE_LOCATE_FAILED.into());
+        m.pose = Some(out);
+        return Ok(());
+    }
+    // 示教线 N 用配方测点（与评测一致），法向用算法法向（与静态 d 同号）
+    let nominal: Vec<[f64; 2]> = p.idx.iter().map(|&j| [recipe.points.x[j] as f64, recipe.points.y[j] as f64]).collect();
+    let deviations = fixture::deviations(&nominal, normals, beads, &pose)?;
+    let unit = |a: [f64; 2], b: [f64; 2]| { let (x, y) = (b[0] - a[0], b[1] - a[1]); let l = x.hypot(y); [x / l, y / l] };
+    let shift = |q: [f64; 2], t: [f64; 2]| { let moved = pose.apply(q); ((moved[0] - q[0]) * t[0] + (moved[1] - q[1]) * t[1]) * p.scale };
+    let delta = [shift(nominal[0], unit(nominal[0], nominal[1])), shift(nominal[n - 1], unit(nominal[n - 2], nominal[n - 1]))];
+    let spacing = recipe.spacing as f64;
+    let excluded = delta.map(|d| (d.abs() - FIXTURE_END_MARGIN_MM as f64).max(0.0) + spacing);
+    let length = (n - 1) as f64 * spacing;
+    for i in 0..n {
+        let s = i as f64 * spacing;
+        if s <= excluded[0] + 1e-6 || length - s <= excluded[1] + 1e-6 {
+            // 超出检测范围：不判胶偏、不判断胶；有胶站的胶宽与胶边留着
+            m.st[i] = ST_OUT_OF_RANGE;
+            m.d[i] = f32::NAN;
+        } else if m.st[i] == ST_OK {
+            match deviations[i] {
+                Some(v) => m.d[i] = (v * p.scale) as f32,
+                None => drop_reference(&mut m.st[i], &mut m.d[i]),
+            }
+        }
+    }
+    if delta[0].abs().max(delta[1].abs()) > p.end_limit_mm {
+        for i in 0..n { drop_reference(&mut m.st[i], &mut m.d[i]); }
+        m.reference_failed = Some(REFERENCE_END_SHIFT.into());
+    }
+    out.end_shift_mm = Some(delta.map(|d| d as f32));
+    out.excluded_mm = Some(excluded.map(|e| e as f32));
+    m.pose = Some(out);
+    Ok(())
 }
 
 #[cfg(test)]
 #[path = "taught/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "taught/engine_tests.rs"]
+mod engine_tests;

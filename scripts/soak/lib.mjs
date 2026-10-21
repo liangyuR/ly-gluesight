@@ -111,7 +111,7 @@ export async function setupRecipe(call, sampleSetDir, log = console.log) {
     const ws = (await call("workspace_get", { id })).workspace;
     const imageId = ws.frames[k].image.id;
     const extracted = await edit("workspace_extract_centerline", { k, imageId, roi });
-    await edit("workspace_save_params", { k, params: { path: monotoneCenterline(extracted.path), mmPerPx: ws.doc.shots[k].mmPerPx } });
+    await edit("workspace_save_params", { k, params: { path: monotoneCenterline(extracted.path), mmPerPx: ws.doc.shots[k].mmPerPx, fixture: null } });
     const trial = (await edit("workspace_trial", { k, imageId })).workspace.frames[k].trial;
     assert(trial?.passed, `${ws.doc.shots[k].id} 试测未通过：${trial?.reason}`);
     await edit("workspace_save_teach", { k, imageId });

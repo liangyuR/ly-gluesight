@@ -184,7 +184,7 @@ async function teach(ws, view, fixture) {
       ? await ws.edit("workspace_extract_centerline", { k, imageId, roi: strokeRoi(choice.guide, size), guide: { points: choice.guide, radiusPx: 30 } })
       : await ws.edit("workspace_extract_centerline", { k, imageId, roi: choice.roi });
     assert(extracted.path.length >= 3, `${shots[k].id} 中线提取失败：${extracted.message}`);
-    await ws.edit("workspace_save_params", { k, params: { path: extracted.path, mmPerPx: declared, ...(choice.detect ? { detect: choice.detect } : {}) } });
+    await ws.edit("workspace_save_params", { k, params: { path: extracted.path, mmPerPx: declared, fixture: null, ...(choice.detect ? { detect: choice.detect } : {}) } });
     const trial = (await ws.edit("workspace_trial", { k, imageId })).workspace.frames[k].trial;
     assert(trial?.passed, `${shots[k].id} 试测未通过：${trial?.reason}`);
     assert(OK_CLASS.includes(trial.verdict), `${shots[k].id} 正常示教图试测结论不是合格类：${trial.verdict} ${trial.reason}`);
