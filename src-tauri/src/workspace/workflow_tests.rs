@@ -245,7 +245,7 @@ fn fixture_source_is_owned_by_the_backend_and_only_saving_params_rebinds_it() {
     assert!(fixture_source(&stale.frames[0], 1, stale.doc.shots[0].fixture.as_ref().unwrap()).is_err(), "旧框不能裁重新冻结的图");
     fn params(w: &mut Workspace, f: crate::recipe::FixtureSpec) -> Result<(), String> {
         let shot = &w.doc.shots[0];
-        let teach = ShotTeach { path: shot.path.clone(), mm_per_px: shot.mm_per_px.unwrap(), detect: shot.detect.clone(), limits: shot.limits.clone(), fixture: Some(f) };
+        let teach = ShotTeach { path: shot.path.clone(), mm_per_px: shot.mm_per_px.unwrap(), detect: shot.detect.clone(), limits: shot.limits.clone(), fixture: Some(f), rotation: None };
         apply_params(w, 0, teach)
     }
     fn draft(w: &mut Workspace, f: crate::recipe::FixtureSpec) -> Result<(), String> {
@@ -457,5 +457,52 @@ fn invalid_frozen_group_selection_rejects_activation_and_retry_even_when_current
         let before = state_value(&w);
         assert_eq!(w.retry_publish(w.revision).is_ok(), selected == 1);
         if selected != 1 { assert_eq!(state_value(&w), before); }
+    }
+}
+
+#[test]
+fn rotation_can_only_be_enabled_by_saving_params_with_an_explicit_confirmation() {
+    // 防的回归（定稿 §10 决定二）：草稿自动保存或整份保存悄悄把转角从 0 调大；保存示教参数不带独立证据与说明也能开转角；
+    // 或守卫把调小转角也拦下
+    fn base(angle: f32) -> Workspace {
+        let mut w = workspace();
+        for image in &mut w.frames[0].views { image.size = [600, 300]; }
+        w.frames[0].image = Some(w.frames[0].views[0].clone());
+        w.doc.shots[0].fixture = Some(crate::recipe::FixtureSpec { angle_range_deg: angle, ..fixture_spec() });
+        store_active(&mut w, 0);
+        w
+    }
+    fn params(w: &mut Workspace, f: crate::recipe::FixtureSpec, rotation: Option<RotationConfirmation>) -> Result<(), String> {
+        let shot = &w.doc.shots[0];
+        let teach = ShotTeach { path: shot.path.clone(), mm_per_px: shot.mm_per_px.unwrap(), detect: shot.detect.clone(), limits: shot.limits.clone(), fixture: Some(f), rotation };
+        apply_params(w, 0, teach)
+    }
+    fn draft(w: &mut Workspace, f: crate::recipe::FixtureSpec, _: Option<RotationConfirmation>) -> Result<(), String> {
+        let shot = &w.doc.shots[0];
+        workflow::apply_draft(w, 0, workflow::DraftTeach { path: shot.path.clone(), mm_per_px: shot.mm_per_px, detect: shot.detect.clone(), limits: shot.limits.clone(), fixture: Some(f) })
+    }
+    fn whole(w: &mut Workspace, f: crate::recipe::FixtureSpec, _: Option<RotationConfirmation>) -> Result<(), String> {
+        let mut doc = w.doc.clone();
+        doc.shots[0].fixture = Some(f.clone());
+        doc.shots[0].views[0].fixture = Some(f);
+        update_doc(w, doc)
+    }
+    type Entry = fn(&mut Workspace, crate::recipe::FixtureSpec, Option<RotationConfirmation>) -> Result<(), String>;
+    let confirmed = |note: &str| Some(RotationConfirmation { basis: RotationBasis::TwoTemplates, note: note.into() });
+    // （名称，原转角，入口，新转角，确认，是否接受）
+    let cases: [(&str, f32, Entry, f32, Option<RotationConfirmation>, bool); 6] = [
+        ("草稿自动保存开转角", 0.0, draft, 3.0, None, false),
+        ("整份保存开转角", 0.0, whole, 3.0, None, false),
+        ("保存示教参数、没有确认", 0.0, params, 3.0, None, false),
+        ("保存示教参数、说明为空", 0.0, params, 3.0, confirmed("  "), false),
+        ("保存示教参数、带独立证据", 0.0, params, 3.0, confirmed("同一视图两个模板估出的 θ 一致"), true),
+        ("草稿自动保存关转角", 3.0, draft, 0.0, None, true),
+    ];
+    for (name, before, entry, after, rotation, accepted) in cases {
+        let mut w = base(before);
+        let result = entry(&mut w, crate::recipe::FixtureSpec { angle_range_deg: after, ..fixture_spec() }, rotation);
+        assert_eq!(result.is_ok(), accepted, "{name}：{result:?}");
+        let saved = w.doc.shots[0].fixture.as_ref().unwrap().angle_range_deg;
+        assert_eq!(saved, if accepted { after } else { before }, "{name}");
     }
 }

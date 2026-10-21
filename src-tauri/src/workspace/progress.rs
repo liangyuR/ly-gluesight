@@ -128,6 +128,10 @@ fn view_progress(w: &Workspace, recipe: Option<&Recipe>, devices: &Devices, k: u
         if shot.path.len() < 2 || shot.path_len_px() < 1.0 || shot.mm_per_px.is_none() {
             break 'state (ShotState::Draft, false, "中线至少两点、长度不为零并填好像素当量后，保存参数并试测。".into());
         }
+        // 模板来源过期（重新冻结、整圈重采、继承示教后）：试测、验证、发布都会拦下，这里给出不在示教页时也看得到的提示
+        if let Some(f) = shot.fixture.as_ref().filter(|f| f.source != image.id) {
+            break 'state (ShotState::PendingTrial, true, format!("定位框是在示教图 {} 上保存的，当前示教图是 {}：请在示教页确认定位框后重新保存参数并试测。", f.source, image.id));
+        }
         let Some(trial) = &frame.trial else { break 'state (ShotState::PendingTrial, false, "参数已保存，可以试测当前帧。".into()) };
         let current = shot_tags(r, k).ok();
         let stale = current.as_ref().is_none_or(|(image_tag, params_tag)| trial.image_id != image.id || &trial.geometry_tag != image_tag
@@ -136,6 +140,9 @@ fn view_progress(w: &Workspace, recipe: Option<&Recipe>, devices: &Devices, k: u
         if calib_changed { break 'state (ShotState::PendingTrial, true, "工位标定已变化：请重新验证像素当量后重新试测。".into()); }
         if devices.engine.as_ref().is_some_and(|engine| *engine != trial.engine_tag) {
             break 'state (ShotState::PendingTrial, true, "图像引擎已变化，请重新试测。".into());
+        }
+        if shot.fixture.is_some() && trial.fixture.is_none() {
+            break 'state (ShotState::PendingTrial, true, "这次试测早于特征定位检查，请重新试测。".into());
         }
         if !trial.passed { break 'state (ShotState::TrialFailed, false, trial.reason.clone()); }
         if frame.saved { break 'state (ShotState::Taught, false, "本帧示教已保存；发布前仍需整体验证。".into()); }

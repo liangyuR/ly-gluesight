@@ -21,6 +21,7 @@ mod recorded;
 mod history_samples;
 mod reproduce;
 mod workflow;
+mod fixture;
 pub(crate) mod centerline;
 pub mod progress;
 #[cfg(test)]
@@ -28,6 +29,7 @@ mod workflow_tests;
 #[cfg(test)]
 mod progress_tests;
 pub use workflow::*;
+pub use fixture::*;
 
 fn state_value(value: &impl Serialize) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
@@ -72,6 +74,9 @@ pub struct ShotTeach {
     /// 特征定位；必须显式发送（可以是 null），漏发时报错，不会悄悄清掉已保存的 fixture
     #[serde(deserialize_with = "Option::deserialize")]
     pub fixture: Option<crate::recipe::FixtureSpec>,
+    /// 开转角的人工确认（定稿 §10 决定二）：转角调大时必须带上，只记进应用日志
+    #[serde(default)]
+    pub rotation: Option<fixture::RotationConfirmation>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -106,6 +111,9 @@ pub struct Trial {
     pub measurement: Value,
     #[serde(default)]
     pub verdict: Option<Verdict>,
+    /// 特征定位视图的示教图检查报告（G4）；G4 之前的试测没有它，按需要重新试测处理
+    #[serde(default)]
+    pub fixture: Option<vision::fixture_quality::FixtureTeachReport>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -135,7 +143,8 @@ impl Teaching {
     }
 
     /// 原图要对上拍照点（image_tag），试测要对上当前的中线与检测参数（teach_tag），并且通过。
-    fn checked(&self, image_tag: &Value, teach_tag: &Value) -> Result<(), String> {
+    /// 特征定位视图（`fixture`）另要求试测带着通过的示教图检查报告：G4 之前 `passed = true` 的试测没有报告，不能绕过定位验收。
+    fn checked(&self, image_tag: &Value, teach_tag: &Value, fixture: bool) -> Result<(), String> {
         let image = self.image.as_ref().ok_or("本帧尚未冻结原图")?;
         let trial = self.trial.as_ref().ok_or("本帧尚未试测")?;
         if &image.geometry_tag != image_tag
@@ -145,6 +154,9 @@ impl Teaching {
             || &trial.params_tag != teach_tag
         {
             return Err("图像或参数已变更，需要重新试测".into());
+        }
+        if fixture && trial.fixture.as_ref().is_none_or(|report| !report.passed) {
+            return Err("特征定位的示教图检查没有通过，或试测早于这项检查，请重新试测".into());
         }
         Ok(())
     }
@@ -804,6 +816,7 @@ fn update_doc(w: &mut Workspace, mut doc: RecipeDoc) -> Result<(), String> {
             shot.fixture = projected.fixture;
         }
     }
+    fixture::reject_unconfirmed_rotation(&w.doc, &doc)?;
     bind_fixture_sources(w, &mut doc, None)?;
     let mut unbound = w.unbound_imaging.clone();
     sync_doc_imaging(&mut doc, &mut unbound);
@@ -1141,9 +1154,10 @@ pub fn workspace_image(
     Ok(preview_response(&image))
 }
 
-/// 示教帧试测：沿拍照点 k 的示教中线量胶。返回逐站结果、得分、量成比例、是否通过与原因。
-/// `base`：用特征定位时的模板目录（见 ensure_template），否则为空串。
-fn measure_image(app: &AppHandle, r: &Recipe, k: usize, image: &FrameImage, base: &str) -> Result<(Value, f64, f64, bool, String), String> {
+/// 示教帧试测：沿拍照点 k 的示教中线量胶。返回逐站结果、得分、量成比例、是否通过、原因与特征定位的示教图检查报告。
+/// `base`：用特征定位时的模板目录（见 ensure_template），否则为空串；`clearances`：本框到同组各走廊的余量。
+type TrialOutcome = (Value, f64, f64, bool, String, Option<vision::fixture_quality::FixtureTeachReport>);
+fn measure_image(app: &AppHandle, r: &Recipe, k: usize, image: &FrameImage, base: &str, clearances: &[crate::recipe::Clearance]) -> Result<TrialOutcome, String> {
     let shot = r.shots.get(k).ok_or("拍照点不存在")?;
     if !shot.measured() {
         return Err("这个拍照点设为不检，不需要试测".into());
@@ -1160,11 +1174,18 @@ fn measure_image(app: &AppHandle, r: &Recipe, k: usize, image: &FrameImage, base
         table[j as usize] = crate::measure::point_state(measured.st[i], measured.d[i], measured.w[i]);
     }
     let verdict = judge::judge(r, &table).verdict;
-    // 示教原图上的定位验收（定位失败但胶路另判 NG 时是否算有效试测）归 G4 的定位试测与保存检查
-    let valid = verdict != Verdict::ErrInspect;
+    // 定位验收（定稿 §13）：试测有效 = 胶路判定可用且示教图检查通过。示教图上定位没被采用时，胶路另判 NG 也不算有效试测
+    let report = fixture::teach_report(r, k, image, clearances, measured.pose.as_ref());
+    let blocked = report.as_ref().and_then(|r| vision::fixture_quality::first_block(&r.checks)).map(|c| c.detail.clone());
+    let valid = verdict != Verdict::ErrInspect && blocked.is_none();
     let mut record = measured.record();
     record["verdict"] = json!(verdict);
-    Ok((record, coverage, coverage, valid, if valid { "有效试测完成，可保存示教；产品判定单独显示".into() } else { "测量无法形成有效判定，请检查配置".into() }))
+    let reason = match (verdict != Verdict::ErrInspect, blocked) {
+        (_, Some(detail)) => format!("特征定位检查没通过：{detail}"),
+        (true, None) => "有效试测完成，可保存示教；产品判定单独显示".into(),
+        (false, None) => "测量无法形成有效判定，请检查配置".into(),
+    };
+    Ok((record, coverage, coverage, valid, reason, report))
 }
 
 #[tauri::command]
@@ -1176,7 +1197,7 @@ pub async fn workspace_trial(
     image_id: String,
 ) -> Result<WorkspaceView, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let (r, frozen) = {
+        let (r, frozen, clearances) = {
             let host = app.state::<WorkspaceHost>();
             let items = host.items.lock().unwrap();
             let w = items.get(&id).ok_or("候选配置不存在")?;
@@ -1194,7 +1215,8 @@ pub async fn workspace_trial(
             if frozen.camera_tag != camera_tag || frozen.calib_tag != calib_tag || frozen.geometry_tag != shot_tags(&r, k)?.0 {
                 return Err("相机参数、工位标定或拍照点已变更，请重新冻结图像".into());
             }
-            (r, frozen.clone())
+            let clearances = fixture::clearances_of(&w.doc, k, w.doc.shots[k].view)?;
+            (r, frozen.clone(), clearances)
         };
         let (image_tag, teach_tag) = shot_tags(&r, k)?;
         let image = crate::image_file::load(&image_file(&app.state::<WorkspaceHost>(), &id, &image_id)?)?;
@@ -1205,9 +1227,9 @@ pub async fn workspace_trial(
             Some(fixture) => ensure_template(&app.state::<WorkspaceHost>(), &r.id, &frozen, fixture, Some(&image)),
             None => Ok(String::new()),
         };
-        let (measurement, score, coverage, passed, reason) = base()
-            .and_then(|base| measure_image(&app, &r, k, &image, &base))
-            .unwrap_or_else(|e| (Value::Null, 0.0, 0.0, false, e));
+        let (measurement, score, coverage, passed, reason, fixture) = base()
+            .and_then(|base| measure_image(&app, &r, k, &image, &base, &clearances))
+            .unwrap_or_else(|e| (Value::Null, 0.0, 0.0, false, e, None));
         let trial = Trial {
             image_id,
             engine_tag,
@@ -1220,6 +1242,7 @@ pub async fn workspace_trial(
             reason,
             verdict: measurement.get("verdict").and_then(|v| serde_json::from_value(v.clone()).ok()),
             measurement,
+            fixture,
         };
         let host = app.state::<WorkspaceHost>();
         let mut items = host.items.lock().unwrap();
@@ -1257,7 +1280,8 @@ pub fn workspace_save_params(
     view(&app, w.clone())
 }
 
-/// 保存示教参数：特征定位的模板来源在这里（也只在这里）强制改绑到所选视图当前的冻结原图，见 `bind_fixture_sources`。
+/// 保存示教参数：特征定位的模板来源在这里（也只在这里）强制改绑到所选视图当前的冻结原图，见 `bind_fixture_sources`；
+/// 转角也只能在这里、带着人工确认调大（`fixture::confirm_rotation`）。
 fn apply_params(w: &mut Workspace, k: usize, params: ShotTeach) -> Result<(), String> {
     let mut doc = w.doc.clone();
     let shot = doc.shots.get_mut(k).ok_or("拍照点不存在")?;
@@ -1275,6 +1299,7 @@ fn apply_params(w: &mut Workspace, k: usize, params: ShotTeach) -> Result<(), St
     let selected = shot.view;
     bind_fixture_sources(w, &mut doc, Some((k, selected)))?;
     doc.build()?;
+    fixture::confirm_rotation(&w.doc, &doc, params.rotation.as_ref())?;
     if doc != w.doc {
         w.doc = doc;
         let frame = w.frames.get_mut(k).ok_or("拍照点不存在")?;
@@ -1293,6 +1318,7 @@ pub fn workspace_save_teach(
     revision: u64,
     k: usize,
     image_id: String,
+    fixture_reviewed: Option<bool>,
 ) -> Result<WorkspaceView, String> {
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
@@ -1300,11 +1326,16 @@ pub fn workspace_save_teach(
     w.expect(revision)?;
     let r = w.doc.build()?.for_view(k, w.doc.shots[k].view)?;
     let (image_tag, teach_tag) = shot_tags(&r, k)?;
+    let fixture = r.shots[k].fixture.is_some();
+    // 喷嘴、胶枪是否在框里工具判断不了（定稿 §9），每次保存都要人工确认
+    if fixture && fixture_reviewed != Some(true) {
+        return Err("请先确认定位框里没有喷嘴、胶枪等随相机不动的结构".into());
+    }
     let frame = w.frames.get_mut(k).ok_or("拍照点不存在")?;
     if frame.image.as_ref().map(|i| &i.id) != Some(&image_id) {
         return Err("图像已变更，请重新试测".into());
     }
-    frame.checked(&image_tag, &teach_tag)?;
+    frame.checked(&image_tag, &teach_tag, fixture)?;
     let engine = app.state::<vision::VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
     frame.checked_engine(&engine_state(&engine))?;
     let (camera_tag, calib_tag) = tags(&app, &r, k)?;
@@ -2559,6 +2590,7 @@ mod tests {
             elapsed_ms: 1,
             reason: "pass".into(),
             measurement: Value::Null,
+            fixture: None,
         };
         Teaching {
             view_states: Vec::new(),
@@ -2600,16 +2632,24 @@ mod tests {
     #[test]
     fn teach_rejects_replaced_image_parameters_geometry_and_failed_trial() {
         let original = taught();
-        assert!(original.checked(&json!("geometry"), &json!("teach")).is_ok());
+        assert!(original.checked(&json!("geometry"), &json!("teach"), false).is_ok());
         let mut frame = original.clone();
         frame.image.as_mut().unwrap().id = "image-b".into();
-        assert!(frame.checked(&json!("geometry"), &json!("teach")).is_err());
+        assert!(frame.checked(&json!("geometry"), &json!("teach"), false).is_err());
         // 中线或检测参数改了：试测作废
-        assert!(original.checked(&json!("geometry"), &json!("other-teach")).is_err());
+        assert!(original.checked(&json!("geometry"), &json!("other-teach"), false).is_err());
         let mut frame = original.clone();
         frame.trial.as_mut().unwrap().passed = false;
-        assert!(frame.checked(&json!("geometry"), &json!("teach")).is_err());
-        assert!(original.checked(&json!("other-geometry"), &json!("teach")).is_err());
+        assert!(frame.checked(&json!("geometry"), &json!("teach"), false).is_err());
+        assert!(original.checked(&json!("other-geometry"), &json!("teach"), false).is_err());
+        // 特征定位视图（G4）：G4 之前 passed = true 的试测没有示教图检查报告，或报告没过，都不能保存示教、验证、发布
+        let report = |passed| Some(vision::fixture_quality::FixtureTeachReport { passed, checks: Vec::new(), pose: None, lever: None, texture_std: None, bright_fraction: None });
+        assert!(original.checked(&json!("geometry"), &json!("teach"), true).is_err(), "缺检查报告");
+        for (passed, ok) in [(false, false), (true, true)] {
+            let mut frame = original.clone();
+            frame.trial.as_mut().unwrap().fixture = report(passed);
+            assert_eq!(frame.checked(&json!("geometry"), &json!("teach"), true).is_ok(), ok, "报告通过 = {passed}");
+        }
     }
 
     #[test]

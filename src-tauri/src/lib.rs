@@ -212,6 +212,8 @@ pub fn run() {
             workspace::workspace_trial,
             workspace::workspace_save_params,
             workspace::workspace_save_teach,
+            workspace::workspace_fixture_check,
+            workspace::workspace_fixture_trial,
             workspace::workspace_restore_teach,
             workspace::workspace_save_overview,
             workspace::workspace_validate,
