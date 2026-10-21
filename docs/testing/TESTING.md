@@ -52,14 +52,21 @@ S7 专项需要 Python 3 和本机 TCP 权限，可用 `S7_TEST_PYTHON` 指定 P
 
 ## 特征定位真引擎测试
 
-`src-tauri/src/vision/taught/engine_tests.rs` 在合成工件（定位框里两个暗孔和一个亮 L 角，暗胶条沿示教线）上跑真实 lyFlow 的 glue.locate 与 bead_width，经发布包的生产路径：临时目录里 `release::publish`（模板由包内示教原图裁出）→ `release::load` → `Prepared::load`（含预热的定位验收）→ `measure_views`，再交给 `judge`。共 4 项：整件平移（+12, +7 px 与切向 −25 px）后 d′ 不变、两端超出检测范围、判 OK（E1）；只移胶 8 px 时 d 沿法向变 0.8 mm、判 NG_POSITION（E2）；定位框被抹平时有胶站全部无基准、胶宽保留、判 ERR 92（E3）；加载后把包内模板换成同尺寸、特征被抹平的一块，下一帧位姿不再被采用、判 ERR 92，证明生产读的是发布包自己的模板（E4）。`src-tauri/src/packaging.rs` 另有 E6：打包自检的定位冒烟在支持带外圈模板的运行库上报 ok。默认忽略，需要带 lyFlow#32 glue.locate 的 `lyflow_core.dll`（发布前用本地构建）：
+`src-tauri/src/vision/taught/engine_tests.rs` 在合成工件（定位框里两个暗孔和一个亮 L 角，暗胶条沿示教线）上跑真实 lyFlow 的 glue.locate 与 bead_width，经发布包的生产路径：临时目录里 `release::publish`（模板由包内示教原图裁出）→ `release::load` → `Prepared::load`（含预热的定位验收）→ `measure_views`，再交给 `judge`。共 4 项：整件平移（+12, +7 px 与切向 −25 px）后 d′ 不变、两端超出检测范围、判 OK（E1）；只移胶 8 px 时 d 沿法向变 0.8 mm、判 NG_POSITION（E2）；定位框被抹平时有胶站全部无基准、胶宽保留、判 ERR 92（E3）；加载后把包内模板换成同尺寸、特征被抹平的一块，下一帧位姿不再被采用、判 ERR 92，证明生产读的是发布包自己的模板（E4）；定位框逐像素挪向胶路，发布要在带外圈的框碰到漂到最远可测处（−16 px）的胶之前以走廊检查拒绝，最近一个能发布的框上胶漂过去时位姿不动、d 变 −1.6 mm、判 NG_POSITION（E5）。`src-tauri/src/packaging.rs` 另有 E6：打包自检的定位冒烟在支持带外圈模板的运行库上报 ok。默认忽略，需要带 lyFlow#32 glue.locate 的 `lyflow_core.dll`（发布前用本地构建）：
 
 ```powershell
 $env:LYFLOW_CORE_DLL = '<lyFlow 构建>\build\core\bin\lyflow_core.dll'
-cargo test --manifest-path src-tauri/Cargo.toml --lib -- --ignored vision::taught::engine_tests packaging
+cargo test --manifest-path src-tauri/Cargo.toml --lib -- --ignored vision::taught::engine_tests packaging::tests::locate_smoke_passes
 ```
 
-核心库的 glue.locate 不支持带外圈模板（1.0.0）时测试直接失败，不算通过。
+核心库的 glue.locate 不支持带外圈模板（1.0.0）时测试直接失败，不算通过。发布包加载时模板被改（同尺寸改像素）的拒绝与引擎无关，由默认运行的 `release::tests::template_tampered_with_same_size_or_dropped_with_its_reference_is_rejected_on_load` 覆盖。
+
+E7 反过来验证已发布运行库（`Restore-LyFlowRuntime.ps1` 恢复的 1.1.4，glue.locate 1.0.0）：打包自检的定位冒烟报 `unsupported` 并写明原因与影响，不当作失败：
+
+```powershell
+$env:LYFLOW_RELEASED_CORE_DLL = 'src-tauri\target\dependency-cache\lyflow\1.1.4\lyflow_core.dll'
+cargo test --manifest-path src-tauri/Cargo.toml --lib -- --ignored packaging::tests::locate_smoke_reports_unsupported
+```
 
 ## 隔离桌面与证据边界
 

@@ -190,4 +190,17 @@ mod tests {
         let report = super::check_locate(&engine).unwrap();
         assert_eq!(report["status"], "ok", "{report}");
     }
+
+    #[test]
+    #[ignore = "需要 LYFLOW_RELEASED_CORE_DLL 指向不支持带外圈模板的已发布运行库（1.1.4），见 docs/testing/TESTING.md"]
+    fn locate_smoke_reports_unsupported_instead_of_failing_on_a_runtime_without_padded_templates() {
+        // 防的回归（定稿 §12 打包自检）：已发布 1.1.4（glue.locate 1.0.0）上自检把定位冒烟当成失败或跑出错，
+        // locateSmoke = optional 时也打不出没有特征定位的包；或报告里缺了原因与影响，打包脚本没法给出明确提示
+        let path = std::env::var("LYFLOW_RELEASED_CORE_DLL").expect("需要 LYFLOW_RELEASED_CORE_DLL 指向已发布运行库的 lyflow_core.dll");
+        let engine = super::Engine::load(std::path::Path::new(&path)).unwrap();
+        assert!(engine.locate.is_err(), "这个核心库支持带外圈模板，不是要验证的已发布运行库");
+        let report = super::check_locate(&engine).unwrap();
+        assert_eq!(report["status"], "unsupported", "{report}");
+        assert!(["reason", "effect"].iter().all(|k| report[k].as_str().is_some_and(|s| !s.is_empty())), "{report}");
+    }
 }

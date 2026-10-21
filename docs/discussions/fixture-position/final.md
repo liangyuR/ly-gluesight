@@ -70,7 +70,7 @@ GlueSight（Rust 纯函数）
 | L1 | LyFlow | locate 1.1.0 质量门与合成场景用例；发布运行库 | 无 | 用例通过；Release 可被 `Prepare-RuntimeDependencies` 拉取 |
 | G1 | GlueSight | 状态模型（`ST_NO_REF`、`d: Option`、`reference_invalid`、NG 优先、fault 92、删除 `LocateFailed`/`located`）、`POINTS_FORMAT` 3、audit spool、离线 `LocateFail` 场景与 CDP 断言、前端帧状态与徽标 | 无 | judge/store/audit/恢复回归测试；离线场景“全视图 `ST_NO_REF`、胶正常 → ERR 92” |
 | G2 | GlueSight | 配方 fixture、图插入 `n_locate`、base_dir、模板写出、`parse_result` 接偏差模块、`requiredOperators` 全部维护点与一致性测试、`GRAPH_VERSION`、`measurement_layout` | P0 偏差模块、L1 运行库已发布、G1（G2 先按 L1 本地构建合入，见 §11） | 合成图集成测试：共同移动 d 不变、只移胶 d 变化、定位失败 ERR 92 |
-| G3 | GlueSight | 发布包模板、`RELEASE_SCHEMA` 3、加载校验、生产 base_dir、打包自检 locate 冒烟；模板来源身份进测量定义、模板与走廊不重叠（见 §12） | G2 | **已完成（2026-10-21）**：真引擎 E1–E4 走 publish → load → `Prepared::load`（含预热定位验收）→ 生产测量，E4 证明生产读包内模板；E6 打包冒烟；`Test-PackagedRuntime.ps1` 报告 locate 能力，按 `locateSmoke` 开关警告或失败 |
+| G3 | GlueSight | 发布包模板、`RELEASE_SCHEMA` 3、加载校验、生产 base_dir、打包自检 locate 冒烟；模板来源身份进测量定义、模板与走廊不重叠（见 §12） | G2 | **已完成（2026-10-21）**：真引擎 E1–E4 走 publish → load → `Prepared::load`（含预热定位验收）→ 生产测量，E4 证明生产读包内模板；E5 走廊边缘的胶不带走位姿；E6/E7 打包冒烟（支持 / 不支持带外圈模板）；`Test-PackagedRuntime.ps1` 报告 locate 能力，按 `locateSmoke` 开关警告或失败 |
 | G4 | GlueSight | 示教页定位特征步骤、保存检查、定位试测、验证统计、`gaugeRef` | G2 | 前端流程测试；试测失效测试 |
 | G5 | GlueSight | 叠图按位姿绘制、连续定位失败告警 | G1、G2 | 生产/历史页显示测试 |
 | F | 现场 | 小批量对照 | G3、G4 | 与量具/人工判定一致率达标 |
@@ -226,7 +226,7 @@ G3 的实现细节与上文不同或上文没写的部分，G4、G5 实施前先
 - **生产 base_dir。** `Prepared` 只给启用 fixture 的视图登记 base_dir = 发布包里该视图的目录（UTF-8 绝对路径），其他视图照旧给空串，与工作台、候选试运行一致；`measure`、`measure_views`、`warm` 与重现都经 `measure_view`。
 - **预热的定位验收。** `warm()` 在发布包自己的示教原图上跑每个视图，fixture 视图位姿必须被采用，否则不布防并报出 locate 原因。这是生产接线验收，不是 G4 的质量门。
 - **位姿存储。** `ViewResult.pose`（帧记录的各视图结果）保存 `PoseRecord`（含没被采用的）；`Measured.poses` 在单图与多图两条路径都填。G5 叠图时 T 由 `offset`、`angle` 与快照里 `rect` 的示教中心还原。`DB_VERSION` 8、spool `FORMAT` 3，旧库备份后重建、旧 spool 文件拒绝就绪（D-0），开发机上的历史记录会被清掉。
-- **打包自检。** 应用自检的 `lyflow.locate` 只报告状态：运行库不支持带外圈模板 → `unsupported`（写明影响，不算失败）；支持 → 跑合成图冒烟（示教图位姿被采用且偏移 ≈ 0，整图平移 (+6, +4) 后偏移 ≈ (6, 4)、胶偏不变），失败即自检失败。放不放行由 `packaging/runtime.json` 的 `lyflow.locateSmoke` 决定（`optional` 警告、`required` 失败，只给打包脚本读）。当前为 `optional`：用已发布 1.1.4 打无特征定位的包照常通过；L1 发布、运行库升到 deps v4 的 PR 里改成 `required`，并用正式运行库重跑真引擎 E1–E6 与 §9.4。
-- **测试。** 发布—加载—生产端到端：真引擎用例（`vision::taught::engine_tests`，E1–E4）在临时目录里 `release::publish` → `release::load` → `Prepared::load` → `warm` → `measure_views`，E4 把加载后的包内模板换成被抹平的同尺寸模板，下一帧位姿不再被采用；E6（`packaging`）在支持带外圈模板的运行库上冒烟报 ok。本地 lyFlow#32 构建上 E1–E6 通过。
+- **打包自检。** 应用自检的 `lyflow.locate` 只报告状态：运行库不支持带外圈模板 → `unsupported`（写明影响，不算失败）；支持 → 跑合成图冒烟（示教图位姿被采用且偏移 ≈ 0，整图平移 (+6, +4) 后偏移 ≈ (6, 4)、胶偏不变），失败即自检失败。放不放行由 `packaging/runtime.json` 的 `lyflow.locateSmoke` 决定（`optional` 警告、`required` 失败，只给打包脚本读）。当前为 `optional`：用已发布 1.1.4 打无特征定位的包照常通过；L1 发布、运行库升到 deps v4 的 PR 里改成 `required`，并用正式运行库重跑真引擎 E1–E6 与 §9.4（E7 届时要换一个不支持带外圈模板的旧运行库，或随 1.1.4 退出一起删除）。
+- **测试。** 发布—加载—生产端到端：真引擎用例（`vision::taught::engine_tests`，E1–E4）在临时目录里 `release::publish` → `release::load` → `Prepared::load` → `warm` → `measure_views`，E4 把加载后的包内模板换成被抹平的同尺寸模板，下一帧位姿不再被采用；E5 把定位框逐像素挪向胶路，发布要在带外圈的框碰到漂到最远可测处的胶之前以走廊检查拒绝，最近一个能发布的框上胶漂过去时真实 glue.locate 的位姿不动、判 NG_POSITION（走廊余量改到约 −5 px 以下即失败）；E6（`packaging`）在支持带外圈模板的运行库上冒烟报 ok；E7 在已发布 1.1.4 上冒烟报 `unsupported`、不算失败。本地 lyFlow#32 构建上 E1–E6 通过，1.1.4 上 E7 通过，`Prepare-RuntimeDependencies.ps1`（1.1.4）的 `Test-PackagedRuntime.ps1` 按 `optional` 只警告。加载时模板被改的拒绝、发布时框压走廊的拒绝与引擎无关，由默认运行的 release / recipe 单测覆盖，不在真引擎用例里重复。
 
 **留给 G4**：带框的示教 UI 与保存检查的错误显示、来源过期的提示、纹理与亮像素、`peakRatio`、杠杆臂 L、验证统计、`maxEndShiftMm` 与示教余量 m、工作台旧 `fixtures/` 目录的清理。**留给 G5**：用 `ViewResult.pose` 加快照还原 T，画 N′ 和模板框；连续定位失败告警。
