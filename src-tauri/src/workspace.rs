@@ -1107,20 +1107,11 @@ fn measure_image(app: &AppHandle, r: &Recipe, k: usize, image: &FrameImage, base
         table[j as usize] = crate::measure::point_state(measured.st[i], measured.d[i], measured.w[i]);
     }
     let verdict = judge::judge(r, &table).verdict;
-    // 示教原图上都定位不到（或两端搬移超限），这套定位配置不能用：即使胶路另判 NG 也不算有效试测
-    let located = measured.reference_failed.as_ref().map(|failed| {
-        let why = measured.pose.as_ref().and_then(|p| p.reason.clone()).unwrap_or_else(|| failed.clone());
-        format!("特征定位失败（{why}），请检查定位框与门限")
-    });
-    let valid = verdict != Verdict::ErrInspect && located.is_none();
+    // 示教原图上的定位验收（定位失败但胶路另判 NG 时是否算有效试测）归 G4 的定位试测与保存检查
+    let valid = verdict != Verdict::ErrInspect;
     let mut record = measured.record();
     record["verdict"] = json!(verdict);
-    let reason = match located {
-        Some(reason) => reason,
-        None if valid => "有效试测完成，可保存示教；产品判定单独显示".into(),
-        None => "测量无法形成有效判定，请检查配置".into(),
-    };
-    Ok((record, coverage, coverage, valid, reason))
+    Ok((record, coverage, coverage, valid, if valid { "有效试测完成，可保存示教；产品判定单独显示".into() } else { "测量无法形成有效判定，请检查配置".into() }))
 }
 
 #[tauri::command]
