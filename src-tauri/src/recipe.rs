@@ -265,23 +265,39 @@ impl FixtureSpec {
         })
     }
 
-    /// 带外圈模板（按像素中心，[x − pad, x + w + pad − 1] × [y − pad, y + h + pad − 1]）到示教折线的精确距离（px），相交为 0。
+    /// 带外圈模板（按像素中心，[x − pad, x + w + pad − 1] × [y − pad, y + h + pad − 1]）到示教折线及其两端切向延长线的
+    /// 精确距离（px），相交为 0。
+    ///
+    /// 两端各沿末段方向延长到无穷远（对图内的框等价于延到图边，与图像尺寸无关）：枪上相机里同一条胶通常越过示教段两端
+    /// 继续留在画面里，只量示教段（端点处是半圆帽）时，框放在胶的直线延长上也能通过，模板里却有胶。
+    /// 延长段弯走的胶量不到，要靠 G4 的亮度与 peakRatio 检查。
     fn clearance(&self, path: &[[f32; 2]]) -> f64 {
         let pad = f64::from(FIXTURE_TEMPLATE_PAD_PX);
         let [x, y, w, h] = self.rect.map(f64::from);
         let r = [x - pad, y - pad, x + w + pad - 1.0, y + h + pad - 1.0];
-        path.windows(2).map(|s| segment_rect_distance([s[0][0] as f64, s[0][1] as f64], [s[1][0] as f64, s[1][1] as f64], r))
-            .fold(f64::INFINITY, f64::min)
+        let path: Vec<[f64; 2]> = path.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect();
+        let segments = path.windows(2).map(|s| segment_rect_distance(s[0], s[1], r)).fold(f64::INFINITY, f64::min);
+        // 端点沿“相邻的另一个不重合点 → 端点”的方向延长；FAR 远大于任何图像，射线截成线段不影响结果
+        const FAR: f64 = 1.0e7;
+        let ray = |end: [f64; 2], from: Option<&[f64; 2]>| from.map_or(f64::INFINITY, |p| {
+            let (dx, dy) = (end[0] - p[0], end[1] - p[1]);
+            let len = dx.hypot(dy);
+            segment_rect_distance(end, [end[0] + dx / len * FAR, end[1] + dy / len * FAR], r)
+        });
+        let (Some(first), Some(last)) = (path.first(), path.last()) else { return segments; };
+        let head = ray(*first, path.iter().find(|p| *p != first));
+        let tail = ray(*last, path.iter().rev().find(|p| *p != last));
+        segments.min(head).min(tail)
     }
 
-    /// 模板不得含胶（定稿 §11 跨阶段约束）：带外圈模板离 `lines` 里每条示教中线都要大于“该线搜索半宽 + 余量”。
+    /// 模板不得含胶（定稿 §11 跨阶段约束）：带外圈模板离 `lines` 里每条示教中线（含两端切向延长线）都要大于“该线搜索半宽 + 余量”。
     /// 模板框盖住胶时位姿跟着胶走，d′ 恒约等于 0，真实胶偏会被放行。`lines`：（哪个拍照点的哪幅图，示教中线，搜索半宽 px）。
     pub fn check_corridor(&self, what: &str, lines: &[(String, &[[f32; 2]], f64)]) -> Result<(), String> {
         for (owner, path, half) in lines {
             let need = half + FIXTURE_CORRIDOR_MARGIN_PX;
             let clearance = self.clearance(path);
             if !(clearance > need) {
-                return Err(format!("{what}：定位框（含 {FIXTURE_TEMPLATE_PAD_PX} px 外圈）压住了{owner} 的胶检测走廊——离示教中线 {clearance:.1} px，\
+                return Err(format!("{what}：定位框（含 {FIXTURE_TEMPLATE_PAD_PX} px 外圈）压住了{owner} 的胶检测走廊——离示教中线（含两端切向延长）{clearance:.1} px，\
                     需要大于 {need:.1} px（搜索半宽 {half:.1} px + 余量 {FIXTURE_CORRIDOR_MARGIN_PX} px）。模板里有胶时位姿跟着胶走、测不出胶偏，请把框移出走廊"));
             }
         }
@@ -1747,10 +1763,14 @@ mod tests {
         let line = |y: f64| vec![[300.0, y as f32], [980.0, y as f32]];
         let at = |d: &mut RecipeDoc, k: usize, path: Vec<[f32; 2]>| { d.shots[k].path = path; d.shots[k].mm_per_px = Some(SIM_MM_PER_PX); };
         let with_box = |d: &mut RecipeDoc, k: usize| d.shots[k].fixture = Some(FixtureSpec { rect: [600, 280, 32, 32], ..fixture_spec() });
-        let cases: [(&str, fn(&mut RecipeDoc, f64, f64), Option<&str>); 5] = [
+        let cases: [(&str, fn(&mut RecipeDoc, f64, f64), Option<&str>); 7] = [
             ("离自己的中线差 0.5 px 不到走廊 + 余量", |d, need, bottom| { d.shots[0].path = vec![[300.0, (bottom + need - 0.5) as f32], [980.0, (bottom + need - 0.5) as f32]]; },
                 Some("拍照点 P1 图 1 的胶检测走廊")),
             ("离自己的中线比走廊 + 余量多 0.5 px", |d, need, bottom| { d.shots[0].path = vec![[300.0, (bottom + need + 0.5) as f32], [980.0, (bottom + need + 0.5) as f32]]; }, None),
+            // 枪上相机里胶越过示教段终点继续在画面里：框在终点外的直线延长上（外圈左沿 x = 596，终点离它比走廊 + 余量还远 20 px）
+            ("框在中线终点之外的切向延长上", |d, need, _| { let x = (596.0 - need - 20.0) as f32; d.shots[0].path = vec![[300.0, 295.5], [x, 295.5]]; },
+                Some("拍照点 P1 图 1 的胶检测走廊")),
+            ("框在终点之外、侧向离延长线比走廊 + 余量多 0.5 px", |d, need, bottom| { let y = (bottom + need + 0.5) as f32; d.shots[0].path = vec![[300.0, y], [560.0, y]]; }, None),
             ("压住同 Pose、同相机、同一幅图的另一拍照点的走廊", |d, _, _| { d.shots[1].pose_id = "P1".into(); d.shots[1].view = 1;
                 d.shots[1].path = vec![[300.0, 330.0], [980.0, 330.0]]; }, Some("拍照点 P2 图 1 的胶检测走廊")),
             ("另一拍照点同一位置但 Pose 不同：不在同一场景", |d, _, _| { d.shots[1].view = 1; d.shots[1].path = vec![[300.0, 330.0], [980.0, 330.0]]; }, None),
