@@ -1,11 +1,13 @@
-import type { FrameStatus, Judgement, Measured, Recipe, Verdict } from "../cycle/types";
+import { ST, type FrameStatus, type Judgement, type Measured, type Recipe, type Verdict } from "../cycle/types";
+import { referenceBadge } from "../cycle/vis";
 import type { PartDetail } from "./types";
 
 /** 重跑与原测量的逐点偏移、胶宽差超过此值（mm）记为差异。同一发布包、同一原图应逐位一致，留 0.01 mm 只为吸收序列化舍入。 */
 export const REPLAY_TOLERANCE_MM = 0.01;
 
-type PointKind = "ok" | "gap" | "inv";
-const kindOf = (st: number | undefined): PointKind => st === 0 ? "ok" : st === 1 ? "gap" : "inv";
+/** noRef：有胶、无位置基准；out：超出检测范围。与原结果状态不同即算该站变化。 */
+type PointKind = "ok" | "gap" | "inv" | "noRef" | "out";
+const kindOf = (st: number | undefined): PointKind => st === ST.ok ? "ok" : st === ST.gap ? "gap" : st === ST.noRef ? "noRef" : st === ST.outOfRange ? "out" : "inv";
 
 export interface ShotSide {
   /** 该拍照点各视角分段的结论，按配方分段顺序 */
@@ -13,6 +15,8 @@ export interface ShotSide {
   ok: number;
   gap: number;
   inv: number;
+  noRef: number;
+  out: number;
 }
 
 export interface ShotDiff {
@@ -34,6 +38,10 @@ export interface ShotDiff {
 type Replay = { candidateRecipe: Recipe; judgement: Judgement; measurements: Measured[] };
 type Original = Pick<PartDetail, "points" | "judgement" | "shots">;
 
+/** 存储的测量点能否按候选规则重判：与后端一致，只有测不了、未测的站挡住；无基准、超出检测范围的站照常重判。 */
+export const rulesRejudgeable = (points: PartDetail["points"]) =>
+  !!points?.st.length && points.st.every(st => st !== ST.invalid && st !== ST.pending);
+
 const sameList = <T>(a: T[], b: T[]) => a.length === b.length && a.every((v, i) => v === b[i]);
 
 function sameLayout(a: Recipe, b: Recipe) {
@@ -43,7 +51,10 @@ function sameLayout(a: Recipe, b: Recipe) {
     && sameList(a.points.k, b.points.k) && sameList(a.points.seg, b.points.seg) && sameList(a.points.x, b.points.x) && sameList(a.points.y, b.points.y);
 }
 
-const count = (kinds: PointKind[]) => ({ ok: kinds.filter(x => x === "ok").length, gap: kinds.filter(x => x === "gap").length, inv: kinds.filter(x => x === "inv").length });
+const count = (kinds: PointKind[]) => {
+  const n = (kind: PointKind) => kinds.filter(x => x === kind).length;
+  return { ok: n("ok"), gap: n("gap"), inv: n("inv"), noRef: n("noRef"), out: n("out") };
+};
 const segmentVerdicts = (layout: Recipe, judgement: Judgement, k: number) =>
   layout.segments.flatMap((g, i) => g.shot === k ? [{ view: g.view, verdict: judgement.segments[i]?.verdict ?? null }] : []);
 
@@ -56,15 +67,17 @@ export function shotDiffs(layout: Recipe, original: Original, replay: Replay): S
     const record = original.shots.find(s => s.k === k);
     const m = replay.measurements.find(x => x.k === k);
     const at = new Map((m?.idx ?? []).map((j, i) => [j, i]));
-    const failed = !!m && (!!m.error || !m.located);
+    const failed = !!m && !!m.error;
     const after = owned.map(j => m && !failed && at.has(j) ? kindOf(m.st[at.get(j)!]) : "inv" as PointKind);
     const changed: number[] = [];
     let maxDd: number | null = null, maxDw: number | null = null;
     if (m && !failed) owned.forEach((j, n) => {
       if (before[n] !== after[n]) { changed.push(j); return; }
       const i = at.get(j);
-      if (before[n] !== "ok" || i === undefined || !original.points) return;
-      maxDd = Math.max(maxDd ?? 0, Math.abs(original.points.d[j] - m.d[i]));
+      if (before[n] === "gap" || before[n] === "inv" || i === undefined || !original.points) return;
+      // 位置只有有基准的站才有；胶宽在无基准、超出检测范围的站上也照样判，一并比
+      const d0 = original.points.d[j], d1 = m.d[i];
+      if (before[n] === "ok" && d0 != null && d1 != null) maxDd = Math.max(maxDd ?? 0, Math.abs(d0 - d1));
       const w0 = original.points.w?.[j], w1 = m.w[i];
       if (w0 != null && w1 != null && Number.isFinite(w0) && Number.isFinite(w1)) maxDw = Math.max(maxDw ?? 0, Math.abs(w0 - w1));
     });
@@ -75,7 +88,7 @@ export function shotDiffs(layout: Recipe, original: Original, replay: Replay): S
     return {
       k, shotId: shot.id, camera: shot.camera, skip: shot.skip, remeasured: !!m,
       original: { verdicts: verdicts.before, ...count(before), status: record?.status ?? null, error: record?.error ?? null },
-      replay: { verdicts: verdicts.after, ...(m ? count(after) : { ok: 0, gap: 0, inv: 0 }), error: m?.error ?? (m && !m.located ? "定位失败" : null) },
+      replay: { verdicts: verdicts.after, ...(m ? count(after) : { ok: 0, gap: 0, inv: 0, noRef: 0, out: 0 }), error: m?.error ?? referenceBadge(m?.referenceFailed) },
       changed, maxDd, maxDw, differs,
     };
   });

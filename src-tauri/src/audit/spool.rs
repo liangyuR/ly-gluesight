@@ -9,6 +9,25 @@ const MAX_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_EVENT_BYTES: u64 = 4 * 1024 * 1024;
 const PROBE_TEMPORARY: &str = ".health-create.tmp";
 const PROBE_COMMITTED: &str = ".health-commit";
+/// spool 文件格式。2：文件为 {"format":2,"event":…}，测点位置可空（无位置基准）、新增超出检测范围、帧去掉 locateFailed。
+/// 没有 format 的是升级前的旧文件：不兼容（D-0），拒绝就绪并提示清理，不猜测迁移。
+const FORMAT: u32 = 2;
+
+#[derive(serde::Serialize)]
+struct Envelope<'a> {
+    format: u32,
+    event: &'a Event,
+}
+
+#[derive(serde::Deserialize)]
+struct Header {
+    format: Option<u32>,
+}
+
+#[derive(serde::Deserialize)]
+struct Stored {
+    event: Event,
+}
 
 struct Receipt {
     cycle: String,
@@ -161,15 +180,21 @@ impl Spool {
         std::fs::File::open(&path).map_err(|error| error.to_string())?.take(MAX_EVENT_BYTES + 1)
             .read_to_end(&mut content).map_err(|error| error.to_string())?;
         if content.len() as u64 > MAX_EVENT_BYTES { return Err("审计事件读取超过大小限制，保留并拒绝就绪".into()); }
-        let event = serde_json::from_slice::<Event>(&content)
-            .map_err(|error| format!("审计 spool {} 无法解析，保留原文件：{error}", path.display()))?;
+        let unreadable = |error: serde_json::Error| format!("审计 spool {} 无法解析，保留原文件：{error}", path.display());
+        let header = serde_json::from_slice::<Header>(&content).map_err(unreadable)?;
+        if header.format != Some(FORMAT) {
+            return Err(format!(
+                "审计 spool {} 是旧版本软件留下的格式（format {}），当前版本不读取也不迁移；确认其中待入库的记录不再需要后，清空目录 {} 再启动",
+                path.display(), header.format.map_or("缺失".into(), |format| format.to_string()), self.root.display()));
+        }
+        let event = serde_json::from_slice::<Stored>(&content).map_err(unreadable)?.event;
         validate(&event)?;
         Ok(event)
     }
 
     pub(super) fn append(&mut self, event: &Event) -> Result<(), String> {
         validate(event)?;
-        let encoded = serde_json::to_vec(event).map_err(|error| error.to_string())?;
+        let encoded = serde_json::to_vec(&Envelope { format: FORMAT, event }).map_err(|error| error.to_string())?;
         if encoded.len() as u64 > MAX_EVENT_BYTES || self.receipts.len() >= self.limit || self.bytes.saturating_add(encoded.len() as u64) > self.byte_limit {
             return Err("审计 spool 容量不足，未丢弃任何待写证据，禁止接收下一件".into());
         }

@@ -11,7 +11,7 @@ const verdicts = (vs: ShotSide["verdicts"], empty = "—") => vs.some(v => v.ver
   })}</span>
   : <span className="muted">{empty}</span>;
 const side = (s: ShotSide) => <>{verdicts(s.verdicts)}
-  <span className="muted"> · 有胶 {s.ok} · 缺胶 {s.gap}{s.inv ? ` · 未测成 ${s.inv}` : ""}</span></>;
+  <span className="muted"> · 有胶 {s.ok} · 缺胶 {s.gap}{s.inv ? ` · 未测成 ${s.inv}` : ""}{s.noRef ? ` · 无基准 ${s.noRef}` : ""}{s.out ? ` · 超出检测范围 ${s.out}` : ""}</span></>;
 const mm = (v: number | null) => v == null ? "—" : v.toFixed(3);
 
 export default function ReplayDiff({ diffs, source, selected, onSelect }: {

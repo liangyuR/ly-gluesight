@@ -86,7 +86,8 @@ export interface PartDetail {
   frames: FrameView[];
   triggers: number;
   softwareVersion: string;
-  points: { d: number[]; w?: (number | null)[]; st: number[] } | null;
+  /** 逐站：d 只有状态 0（有基准的有胶站）有值；st 码表见 cycle/types 的 ST（3 未测） */
+  points: { d: (number | null)[]; w?: (number | null)[]; st: number[] } | null;
   retests: number[];
   shots: PartShot[];
   recording: RecordingEvidence;

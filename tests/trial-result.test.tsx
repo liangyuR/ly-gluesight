@@ -21,3 +21,14 @@ it("试测包含缺胶站且重新计算 → 空值保持未测，明细刷新�
   expect(screen.queryByText("-0.125")).not.toBeInTheDocument();
   expect(screen.getByRole("row", { name: "11 测得 0.200 2.200" })).toBeVisible();
 });
+
+it("试测含无基准、超出检测范围的站 → 明细照常显示并标出这两种状态，不整表丢弃", () => {
+  const points = trialPoints({
+    unit: "mm", ids: [10, 11, 12], status: ["ok", "no_ref", "out_of_range"], innerCenter: [0.1, null, null],
+    width: [2, 2.5, null], px: [[0, 0], [1, 1], [2, 2]],
+  });
+  expect(points).not.toBeNull();
+  render(<TrialResult points={points!} />);
+  expect(screen.getByRole("row", { name: "11 无基准 未测 2.500" })).toBeInTheDocument();
+  expect(screen.getByRole("row", { name: "12 超出检测范围 未测 未测" })).toBeInTheDocument();
+});

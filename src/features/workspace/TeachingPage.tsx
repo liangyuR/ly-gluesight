@@ -13,7 +13,7 @@ import { useWorkspace } from "./context";
 import { Badge, GrayViewer, KV, Notice, Steps, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { FrozenImage, ShotTeach, WorkspaceView } from "./types";
 import { sameTeach, shotTeach, teachError } from "./teach";
-import { TrialResult, trialPoints } from "./TrialResult";
+import { TrialResult, trialPoints, trialStationColor } from "./TrialResult";
 import { groupShortStatus, teachingGroups } from "./teachingGroups";
 import { productionBusy as isProductionBusy } from "../cycle/phase";
 import { TeachingSettings } from "./TeachingSettings";
@@ -340,7 +340,7 @@ export default function TeachingPage() {
           region={selectionTool === "box" ? region : null} onRegion={regionMode && selectionTool === "box" && unlocked && enabled ? setRegion : undefined}
           brush={regionMode && selectionTool === "brush" && Number.isFinite(brushWidth) ? { points: brushPoints, radiusPx: brushWidth / 2 } : null} onBrush={regionMode && selectionTool === "brush" && unlocked && enabled ? points => { setBrushPoints(points); setExtractionFailure(null); setExtractionHint(""); } : undefined}
           extractionFailure={extractionFailure}
-          overlay={{ path: t.path, stations: points?.filter(p => !p.edge && !p.candidateEdge).map(p => p.px) ?? stations, stationColors: points?.filter(p => !p.edge && !p.candidateEdge).map(p => p.status === "ok" ? "var(--ok)" : "var(--ng)"), segments: points?.flatMap((p, i) => {
+          overlay={{ path: t.path, stations: points?.filter(p => !p.edge && !p.candidateEdge).map(p => p.px) ?? stations, stationColors: points?.filter(p => !p.edge && !p.candidateEdge).map(p => trialStationColor(p.status)), segments: points?.flatMap((p, i) => {
             const edge = p.edge ?? p.candidateEdge;
             const width = p.edge ? p.width : p.candidateWidth;
             // 宽度标签沿横线（法向）放到胶路外侧；靠近左右边缘的站不出标签，避免被裁掉

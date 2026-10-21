@@ -1048,11 +1048,7 @@ fn measure_image(app: &AppHandle, r: &Recipe, k: usize, image: &FrameImage) -> R
     let coverage = measured.coverage as f64;
     let mut table = vec![PointState::Pending; r.point_count()];
     for (i, &j) in measured.idx.iter().enumerate() {
-        table[j as usize] = match measured.st[i] {
-            crate::measure::ST_OK => PointState::Measured { d: measured.d[i], w: measured.w[i] },
-            crate::measure::ST_GAP => PointState::Gap,
-            _ => PointState::Invalid,
-        };
+        table[j as usize] = crate::measure::point_state(measured.st[i], measured.d[i], measured.w[i]);
     }
     let verdict = judge::judge(r, &table).verdict;
     let valid = verdict != Verdict::ErrInspect;
@@ -1874,24 +1870,11 @@ pub async fn workspace_compare(
                 .points
                 .as_ref()
                 .ok_or("历史记录没有完整测量数据，不能重判")?;
-            if points.st.len() != recipe.point_count() || points.st.iter().any(|s| *s >= 2) {
+            let table = points.table();
+            if table.len() != recipe.point_count() || table.iter().any(|p| matches!(p, PointState::Invalid | PointState::Pending)) {
                 return Err("历史测量未完成；缺失的测量不能靠修改规则补齐".into());
             }
-            points
-                .st
-                .iter()
-                .enumerate()
-                .map(|(j, s)| {
-                    if *s == 0 {
-                        PointState::Measured {
-                            d: points.d[j],
-                            w: points.w.get(j).and_then(|w| *w).unwrap_or(f32::NAN),
-                        }
-                    } else {
-                        PointState::Gap
-                    }
-                })
-                .collect()
+            table.to_vec()
         };
         let comparison = Comparison {
             id: comparison_id(&app, history_id),
@@ -2178,11 +2161,7 @@ fn measure_images_from(app: &AppHandle, w: &Workspace, count: usize, sn: &str, s
         let result = vision::measure_views(&engine, &recipe, k, &images, &format!("{run}-{k}"), "")?;
         let reading = result.reading;
         for (i, &j) in reading.idx.iter().enumerate() {
-            table[j as usize] = match reading.st[i] {
-                crate::measure::ST_OK => PointState::Measured { d: reading.d[i], w: reading.w[i] },
-                crate::measure::ST_GAP => PointState::Gap,
-                _ => PointState::Invalid,
-            };
+            table[j as usize] = crate::measure::point_state(reading.st[i], reading.d[i], reading.w[i]);
         }
         let cam = match source {
             MeasurementSource::CurrentDevices => app.state::<CycleHost>().camera.require(&shot.camera)?,
@@ -2190,7 +2169,7 @@ fn measure_images_from(app: &AppHandle, w: &Workspace, count: usize, sn: &str, s
                 .and_then(|index| u8::try_from(index).ok()).ok_or("历史样本的配方相机索引无效")?,
         };
         measurements.push(json!({"cycleId":run,"bundleId":null,"shotId":shot.id,"camera":shot.camera,
-            "sn":sn,"k":k,"cam":cam,"located":true,"score":reading.coverage,"ms":reading.ms,
+            "sn":sn,"k":k,"cam":cam,"referenceFailed":[],"score":reading.coverage,"ms":reading.ms,
             "error":null,"idx":reading.idx,"d":reading.d,"w":reading.w,"st":reading.st,"px":reading.px,"views":result.views}));
     }
     Ok((table, measurements))

@@ -38,7 +38,7 @@ beforeEach(() => {
 
 describe("历史工件复测", () => {
   it("分段判定不同 → 结果卡片使用对应的合格、超差、NG和错误颜色", async () => {
-    detail.judgement.segments = (["OK", "OK_WITH_EXCURSION", "NG_WIDTH", "ERR_INSPECT"] as const).map(verdict => ({ verdict, min: 0, max: 0, excursionLen: 0, wMin: null, wMax: null, wExcursionLen: 0 }));
+    detail.judgement.segments = (["OK", "OK_WITH_EXCURSION", "NG_WIDTH", "ERR_INSPECT"] as const).map(verdict => ({ verdict, min: 0, max: 0, excursionLen: 0, wMin: null, wMax: null, wExcursionLen: 0, referenceInvalid: false }));
     const page = show();
     await screen.findByText(/上方为中线示意/);
     const cards = page.container.querySelectorAll(".history-segment");
@@ -94,6 +94,13 @@ describe("历史工件复测", () => {
     expect(screen.getByRole("button", { name: "将此帧用于示教" })).toBeDisabled();
   });
 
+  it("记录含无基准、超出检测范围的站 → 仍可按候选规则重判",async()=>{
+    detail.points={d:[3,null,null,3],st:[0,4,5,0],w:[null,4,null,null]};
+    show();await screen.findByText(/原图完整/);
+    await userEvent.click(screen.getByRole("button",{name:"按候选规则重判"}));
+    expect(workspaceApi.compare).toHaveBeenCalledWith(ws.data!.workspace.doc.id,ws.data!.workspace.revision,detail.summary.id,false);
+  });
+
   it("候选含不检拍照点 → 其余点已示教即可从原图复测整件",async()=>{
     ws.data!.workspace.doc.shots[1].skip=true;ws.data!.workspace.frames[1].saved=false;ws.data!.progress.shots[1].state="skipped";
     show();await screen.findByText(/原图完整/);
@@ -127,7 +134,7 @@ describe("历史工件复测", () => {
 
   it("按原发布包重现后有一个拍照点与原结果不同 → 比对表只列该拍照点，点击后切到该帧", async () => {
     const shot = (k: number, d: number[], st: number[]): Measured => ({ cycleId: "cycle-1", shotId: `P${k + 1}`, camera: "CAM-1", bundleId: "bundle-A", sn: "SN-101", k, cam: 0,
-      located: true, score: 1, ms: 5, queueMs: null, engineMs: null, coreMs: null, error: null, idx: [2 * k, 2 * k + 1], d, w: [null, null], st, px: [] });
+      referenceFailed: [], score: 1, ms: 5, queueMs: null, engineMs: null, coreMs: null, error: null, idx: [2 * k, 2 * k + 1], d, w: [null, null], st, px: [] });
     vi.mocked(workspaceApi.compareOriginal).mockResolvedValue({ ...comparison(), source: "original", measurements: [shot(0, [3, 3], [0, 0]), shot(1, [3, 0], [0, 1])] });
     show(); await screen.findByText(/原图完整/);
     await userEvent.click(screen.getByRole("button", { name: "按原发布包重现" }));

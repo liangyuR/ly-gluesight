@@ -10,7 +10,7 @@ fn recipe() -> Recipe {
 }
 
 fn row(recipe: &Recipe, id: i64) -> StoredMeasurement {
-    let table = vec![crate::judge::PointState::Measured { d: 0.0, w: 6.0 }; recipe.point_count()];
+    let table = vec![crate::judge::PointState::Measured { d: Some(0.0), w: 6.0 }; recipe.point_count()];
     StoredMeasurement {
         id,
         ts: 1234,

@@ -18,6 +18,7 @@ import {
   ShotStrip,
   ShotTiles,
   OfflineControls,
+  partReferenceBadge,
   UnrolledCurve,
   useCycle,
   useLayout,
@@ -31,6 +32,7 @@ import {
   type Snapshot,
   type Verdict,
 } from "../features/cycle";
+import { ST } from "../features/cycle/types";
 import { usePlcOperationState } from "../features/plc/api";
 
 function verdictTone(v: Verdict) {
@@ -303,6 +305,8 @@ function VerdictCard({ phase, result, part }: { phase: string; result: ResultVie
   }, [stateKey]);
   const parts = result ? verdictParts(result.verdict) : null;
   const reason = result ? displayReason(result.reason) : "";
+  // 本件有帧没有位置基准：不论整件 NG 还是不可判都挂徽标（NG 优先于基准无效时 PLC 码看不出定位失败）
+  const reference = result && part && result.cycleId === part.cycleId ? partReferenceBadge(part) : null;
   return (
     <section ref={card} aria-label="整件判定" aria-live="polite"
       className={`fly-verdict qs-verdict xl ${tone}${animate.current ? " in" : ""}${emphasis ? " emph" : ""}`}
@@ -316,6 +320,7 @@ function VerdictCard({ phase, result, part }: { phase: string; result: ResultVie
           <div className="big">{parts.code}</div>
           <div className="t">{parts.detail}</div>
           <div className="d" title={reason}>{reason}</div>
+          {reference && <div className="foot"><span aria-label={`位置基准：${reference}`}>{reference}</span></div>}
         </> : running ? <>
           <div className="big"><span className="pulse" /></div>
           <div className="t">检测中…</div>
@@ -358,7 +363,7 @@ function segmentStatus(s: ResultView["segments"][number] | undefined, errored: b
   if (!s) return errored ? ["不可判", "fault"] : ["—", "none"];
   if (s.verdict === "OK") return ["OK", "ok"];
   if (s.verdict === "OK_WITH_EXCURSION") return [`局部超差 ${Math.max(s.excursionLen, s.wExcursionLen ?? 0).toFixed(1)}`, "warn"];
-  if (s.verdict === "ERR_INSPECT") return ["未测成", "fault"];
+  if (s.verdict === "ERR_INSPECT") return [s.referenceInvalid ? "基准无效" : "未测成", "fault"];
   return [verdictParts(s.verdict).detail, "ng"];
 }
 
@@ -368,11 +373,16 @@ function SegmentPanel({ layout, measured, result }: { layout: Recipe | null; mea
     const r = layout.segments.map(() => ({ min: Infinity, max: -Infinity, wmin: Infinity, wmax: -Infinity }));
     measured.forEach((m) =>
       m.idx.forEach((j, i) => {
-        if (m.st[i] !== 0) return;
+        // 位置只取有基准的有胶站；胶宽另取无基准、超出检测范围里测到的
+        const st = m.st[i];
+        if (st !== ST.ok && st !== ST.noRef && st !== ST.outOfRange) return;
         const g = r[layout.points.seg[j]];
         if (!g) return;
-        g.min = Math.min(g.min, m.d[i]);
-        g.max = Math.max(g.max, m.d[i]);
+        const d = m.d[i];
+        if (st === ST.ok && d != null) {
+          g.min = Math.min(g.min, d);
+          g.max = Math.max(g.max, d);
+        }
         const w = m.w?.[i];
         if (w != null) {
           g.wmin = Math.min(g.wmin, w);

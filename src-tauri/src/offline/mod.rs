@@ -657,14 +657,8 @@ pub fn sample_payload(set: &Arc<SampleSet>, part_id: &str, shot_id: &str) -> Tri
 fn sim_payload(recipe: &Arc<Recipe>, part: u32, scenario: Scenario, k: usize) -> SimRender {
     let r = |i: u32| ((part.wrapping_mul(2_654_435_761).wrapping_add(i * 40_503) >> 8) % 1000) as f32 / 500.0 - 1.0;
     let pose = PoseError { dx: 4.0 * r(1), dy: 4.0 * r(2), deg: 0.3 * r(3) };
-    let n = recipe.shot_count();
-    SimRender {
-        recipe: recipe.clone(),
-        k,
-        scenario,
-        pose: if scenario.locate_fail_frame(n) == Some(k) { PoseError { dx: pose.dx + 130.0, dy: pose.dy + 130.0, ..pose } } else { pose },
-        seed: part as u64 * 16 + k as u64,
-    }
+    // 定位失败工况不把胶整条挪出走廊：胶照常画，定位失败由测量按位置基准约定写入（measure::apply_scenario）
+    SimRender { recipe: recipe.clone(), k, scenario, pose, seed: part as u64 * 16 + k as u64 }
 }
 
 /// 第 trigger 次 PLC 触发：同时触发这次 Pose 的全部相机，各取自己的拍照点。

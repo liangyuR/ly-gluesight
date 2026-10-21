@@ -100,12 +100,14 @@ mod part_recipe {
 
 mod part_table {
     use super::*;
+    /// 数值按位保存，NaN、负零原样往返。d_bits 为空即有胶、无位置基准；格式变动由 spool 文件的 format 拦截旧文件。
     #[derive(Serialize, Deserialize)]
-    enum Point { Pending, Measured { d_bits: u32, w_bits: u32 }, Gap, Invalid }
+    enum Point { Pending, Measured { d_bits: Option<u32>, w_bits: u32 }, OutOfRange { w_bits: Option<u32> }, Gap, Invalid }
     pub fn serialize<S: serde::Serializer>(table: &Option<Vec<PointState>>, serializer: S) -> Result<S::Ok, S::Error> {
         table.as_ref().map(|table| table.iter().map(|point| match point {
             PointState::Pending => Point::Pending,
-            PointState::Measured { d, w } => Point::Measured { d_bits: d.to_bits(), w_bits: w.to_bits() },
+            PointState::Measured { d, w } => Point::Measured { d_bits: d.map(f32::to_bits), w_bits: w.to_bits() },
+            PointState::OutOfRange { w } => Point::OutOfRange { w_bits: w.map(f32::to_bits) },
             PointState::Gap => Point::Gap,
             PointState::Invalid => Point::Invalid,
         }).collect::<Vec<_>>()).serialize(serializer)
@@ -113,7 +115,8 @@ mod part_table {
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Vec<PointState>>, D::Error> {
         Option::<Vec<Point>>::deserialize(deserializer).map(|table| table.map(|table| table.into_iter().map(|point| match point {
             Point::Pending => PointState::Pending,
-            Point::Measured { d_bits, w_bits } => PointState::Measured { d: f32::from_bits(d_bits), w: f32::from_bits(w_bits) },
+            Point::Measured { d_bits, w_bits } => PointState::Measured { d: d_bits.map(f32::from_bits), w: f32::from_bits(w_bits) },
+            Point::OutOfRange { w_bits } => PointState::OutOfRange { w: w_bits.map(f32::from_bits) },
             Point::Gap => PointState::Gap,
             Point::Invalid => PointState::Invalid,
         }).collect()))

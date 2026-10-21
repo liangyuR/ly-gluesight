@@ -152,21 +152,27 @@ pub struct PartShot {
     pub raw_files: Vec<ShotRawFile>,
 }
 
-pub const DB_VERSION: i64 = 6;
+/// 7：帧状态去掉 locateFailed、帧加 referenceFailed、测量点 BLOB 格式 3。旧库按版本不符备份后重建（D-0）。
+pub const DB_VERSION: i64 = 7;
 
-/// 测量点 BLOB 格式版本。1：每点 f32 位置 + u8 状态（5 字节）；2：f32 位置 + f32 胶宽 + u8 状态（9 字节）。
-const POINTS_FORMAT: i64 = 2;
+/// 测量点 BLOB 格式版本：每点 f32 位置 + f32 胶宽 + u8 状态（9 字节），没有的值写 NaN，状态说了算。
+/// 3 起新增状态 4 无基准、5 超出检测范围；只读当前格式，旧格式的库已在打开时整库备份重建。
+const POINTS_FORMAT: i64 = 3;
 
 const ST_MEASURED: u8 = 0;
 const ST_GAP: u8 = 1;
 const ST_INVALID: u8 = 2;
 const ST_PENDING: u8 = 3;
+const ST_NO_REF: u8 = 4;
+const ST_OUT_OF_RANGE: u8 = 5;
 
 fn encode(table: &[PointState]) -> Vec<u8> {
     let mut out = Vec::with_capacity(table.len() * 9);
     for p in table {
         let (d, w, st) = match *p {
-            PointState::Measured { d, w } => (d, w, ST_MEASURED),
+            PointState::Measured { d: Some(d), w } => (d, w, ST_MEASURED),
+            PointState::Measured { d: None, w } => (f32::NAN, w, ST_NO_REF),
+            PointState::OutOfRange { w } => (f32::NAN, w.unwrap_or(f32::NAN), ST_OUT_OF_RANGE),
             PointState::Gap => (0.0, f32::NAN, ST_GAP),
             PointState::Invalid => (0.0, f32::NAN, ST_INVALID),
             PointState::Pending => (0.0, f32::NAN, ST_PENDING),
@@ -179,21 +185,29 @@ fn encode(table: &[PointState]) -> Vec<u8> {
 }
 
 /// 每点的 (位置, 胶宽, 状态)。
-fn raw_points(format: i64, blob: &[u8]) -> impl Iterator<Item = (f32, f32, u8)> + '_ {
-    let size = if format >= 2 { 9 } else { 5 };
+fn raw_points(format: i64, blob: &[u8]) -> Result<Vec<(f32, f32, u8)>, String> {
+    if format != POINTS_FORMAT {
+        return Err(format!("测量点数据格式 {format} 不是当前格式 {POINTS_FORMAT}，不读取"));
+    }
+    if blob.len() % 9 != 0 { return Err("测量点数据长度不是整点".into()); }
     let f = |c: &[u8]| f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-    blob.chunks_exact(size).map(move |c| if size == 9 { (f(c), f(&c[4..]), c[8]) } else { (f(c), f32::NAN, c[4]) })
+    Ok(blob.chunks_exact(9).map(|c| (f(c), f(&c[4..]), c[8])).collect())
 }
 
-pub fn decode(format: i64, blob: &[u8]) -> Vec<PointState> {
-    raw_points(format, blob)
-        .map(|(d, w, st)| match st {
-            ST_MEASURED => PointState::Measured { d, w },
-            ST_GAP => PointState::Gap,
-            ST_INVALID => PointState::Invalid,
-            _ => PointState::Pending,
-        })
-        .collect()
+fn point_state(d: f32, w: f32, st: u8) -> Result<PointState, String> {
+    Ok(match st {
+        ST_MEASURED => PointState::Measured { d: Some(d), w },
+        ST_NO_REF => PointState::Measured { d: None, w },
+        ST_OUT_OF_RANGE => PointState::OutOfRange { w: w.is_finite().then_some(w) },
+        ST_GAP => PointState::Gap,
+        ST_INVALID => PointState::Invalid,
+        ST_PENDING => PointState::Pending,
+        _ => return Err(format!("测量点状态 {st} 未知")),
+    })
+}
+
+pub fn decode(format: i64, blob: &[u8]) -> Result<Vec<PointState>, String> {
+    raw_points(format, blob)?.into_iter().map(|(d, w, st)| point_state(d, w, st)).collect()
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -264,10 +278,21 @@ pub struct HistoryPage {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PartPoints {
-    pub d: Vec<f32>,
+    /// 位置；只有有基准的有胶站（状态 0）有值，其余为 null
+    pub d: Vec<Option<f32>>,
     /// 胶宽；没测胶宽的点为 null
     pub w: Vec<Option<f32>>,
+    /// 0 有胶 · 1 断胶 · 2 测不了 · 3 未测 · 4 有胶无基准 · 5 超出检测范围
     pub st: Vec<u8>,
+    #[serde(skip)]
+    table: Vec<PointState>,
+}
+
+impl PartPoints {
+    /// 判定用的点状态表（按存储状态解码，与 `measurements` 重判同一口径）。
+    pub fn table(&self) -> &[PointState] {
+        &self.table
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -591,7 +616,7 @@ impl Store {
                  PRIMARY KEY (part_id, k),
                  UNIQUE (part_id, shot_id)
              );
-             PRAGMA user_version = 6;
+             PRAGMA user_version = 7;
              COMMIT;",
         )
         .map_err(db_err)?;
@@ -1081,14 +1106,16 @@ impl Store {
             .query_row("SELECT format, data FROM part_points WHERE part_id = ?1", [id], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)))
             .optional()
             .map_err(db_err)?
-            .map(|(format, blob)| {
-                let raw: Vec<_> = raw_points(format, &blob).collect();
-                PartPoints {
-                    d: raw.iter().map(|p| p.0).collect(),
+            .map(|(format, blob)| -> Result<PartPoints, String> {
+                let raw = raw_points(format, &blob)?;
+                Ok(PartPoints {
+                    d: raw.iter().map(|p| (p.2 == ST_MEASURED).then_some(p.0)).collect(),
                     w: raw.iter().map(|p| p.1.is_finite().then_some(p.1)).collect(),
                     st: raw.iter().map(|p| p.2).collect(),
-                }
-            });
+                    table: raw.iter().map(|p| point_state(p.0, p.1, p.2)).collect::<Result<_, _>>()?,
+                })
+            })
+            .transpose()?;
         let mut stmt = conn.prepare("SELECT id FROM parts WHERE retest_of = ?1 ORDER BY id").map_err(db_err)?;
         let retests = stmt.query_map([id], |row| row.get(0)).map_err(db_err)?.collect::<Result<_, _>>().map_err(db_err)?;
         let mut stmt = conn
@@ -1175,7 +1202,9 @@ impl Store {
                     recipe_id: row.get(3)?,
                     recipe_revision: row.get(4)?,
                     verdict: parse_verdict(&row.get::<_, String>(5)?),
-                    table: decode(row.get(6)?, &row.get::<_, Vec<u8>>(7)?),
+                    table: decode(row.get(6)?, &row.get::<_, Vec<u8>>(7)?).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Blob, error.into())
+                    })?,
                 })
             })
             .map_err(db_err)?;

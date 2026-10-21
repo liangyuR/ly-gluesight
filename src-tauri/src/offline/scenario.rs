@@ -11,7 +11,10 @@ pub enum Scenario {
     Gap,
     /// 触发已发出并计数，帧在传输中丢失
     LostFrame,
+    /// 一帧定位失败、胶正常：该帧有胶站没有位置基准，整件 ERR 92
     LocateFail,
+    /// 定位失败的那一帧里还断胶：NG 优先于基准无效，整件 NG_GAP
+    LocateFailGap,
     /// 机器人少发一次触发，PLC 报的设备触发数与计划不符
     CountMismatch,
     /// 机器人不发 partEnd
@@ -32,12 +35,18 @@ impl Scenario {
     }
 
     pub fn locate_fail_frame(self, n: usize) -> Option<usize> {
-        (self == Scenario::LocateFail && n > 0).then(|| 4.min(n - 1))
+        (matches!(self, Scenario::LocateFail | Scenario::LocateFailGap) && n > 0).then(|| 4.min(n - 1))
     }
 
-    /// 断胶场景：第二段（只有一段时第一段）中部缺一段，比这段允许的断口长 2 mm。
+    /// 断胶场景：第二段（只有一段时第一段）中部缺一段，比这段允许的断口长 2 mm；
+    /// 定位失败带断胶时缺在定位失败那一帧的段上。
     pub fn gap_points(self, recipe: &Recipe) -> Vec<usize> {
-        let Some(g) = recipe.segments.get(1).or(recipe.segments.first()).filter(|_| self == Scenario::Gap) else { return Vec::new() };
+        let segment = match self {
+            Scenario::Gap => recipe.segments.get(1).or(recipe.segments.first()),
+            Scenario::LocateFailGap => self.locate_fail_frame(recipe.shot_count()).and_then(|k| recipe.shot_segment(k)),
+            _ => None,
+        };
+        let Some(g) = segment else { return Vec::new() };
         let n = (((g.max_gap_len + 2.0) / recipe.spacing).ceil() as usize).min(g.count);
         let from = g.first + (g.count - n) / 2;
         (from..from + n).collect()

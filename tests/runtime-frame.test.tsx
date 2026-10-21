@@ -36,7 +36,7 @@ it("帧从等待到到达读一次原图，之后测量状态变化不再重读"
   view.rerender(frame(partWith("cycle-1", "measuring")));
   await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenCalledTimes(2));
   view.rerender(frame(partWith("cycle-1", "done")));
-  view.rerender(frame(partWith("cycle-1", "locateFailed")));
+  view.rerender(frame(partWith("cycle-1", "error")));
   await act(async () => {});
   expect(workspaceApi.liveImage).toHaveBeenCalledTimes(2);
 });
