@@ -17,6 +17,7 @@ mod handshake_audit;
 mod inspection;
 mod instance;
 mod judge;
+mod locate_health;
 mod measure;
 mod mvs;
 mod offline;

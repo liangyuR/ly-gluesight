@@ -6,7 +6,8 @@ import { computeVis, partReferenceBadge, shotLabel, ShotTiles, UnrolledCurve, ty
 import { displayReason, formatTime, historyApi, sampleLabelText, sourceLabel, triggerModeLabel, verdictLabel, verdictTone, type HistoryQuery, type PartDetail } from "../features/history";
 import PartTrace from "../features/history/components/PartTrace";
 import ReplayDiff from "../features/history/components/ReplayDiff";
-import { replayEdges, rulesRejudgeable, shotDiffs } from "../features/history/replay";
+import { poseDiffers, replayEdges, replayPose, rulesRejudgeable, shotDiffs } from "../features/history/replay";
+import { framePose, movedBox, poseSummary, poseTransform, viewSpec } from "../features/cycle/pose";
 import { subscribe } from "../features/plc";
 import { workspaceApi } from "../features/workspace/api";
 import { useWorkspace } from "../features/workspace/context";
@@ -154,8 +155,20 @@ export default function HistoryDetailPage() {
     recipeMissing&&"原配方快照 "+(s.recipeRevision??"（未记录）")+" 缺失，不能用当前配方代替",
     raw&&!raw.complete&&recordingReason[detail.recording.state]+(raw.message?"："+raw.message:""),
   ].filter((v):v is string=>!!v);
-  const baseOverlay=layout&&selectedView===layout.shots[selected]?.view?shotOverlay(layout,selected,result?.vis):undefined;
-  const viewOverlay=edges.length?{...(baseOverlay??{path:[]}),segments:edges}:baseOverlay;
+  // 历史快照按修订读取，与记录的位姿天然配对；仍只在检测所选视角上叠图
+  const shot=layout?.shots[selected];
+  const ownView=!!shot&&selectedView===shot.view;
+  const located=ownView&&!!viewSpec(shot,shot.view)?.fixture;
+  const recordedPose=located?framePose(detail.frames[selected],selectedView):null;
+  const rerunPose=located&&comparison&&comparison.source!=="rules"?replayPose(comparison,selected,selectedView):null;
+  const rerunShot=comparison?.candidateRecipe.shots[selected];
+  const rerunRect=rerunShot?viewSpec(rerunShot,selectedView)?.fixture?.rect:undefined;
+  // 两次的 offset 各相对自己的框（从原图复测用工作台候选，框可能改过），按各自的框在图像上比
+  const rerunDiffers=poseDiffers(recordedPose,shot?viewSpec(shot,selectedView)?.fixture?.rect:undefined,rerunPose,rerunRect);
+  const rerunT=rerunDiffers&&rerunRect?poseTransform(rerunRect,rerunPose):null;
+  const baseOverlay=layout&&ownView?shotOverlay(layout,selected,result?.vis,detail.frames[selected]):undefined;
+  const rerunBox=baseOverlay?.fixture&&rerunT&&rerunRect?{...baseOverlay.fixture,replay:movedBox(rerunRect,0,rerunT)}:null;
+  const viewOverlay=edges.length||rerunBox?{...(baseOverlay??{path:[]}),...(rerunBox?{fixture:rerunBox}:{}),...(edges.length?{segments:edges}:{})}:baseOverlay;
   return <div className="stack hist-detail">
     <Card className="detail-head">
       <Stack gap={12} justify="space-between">
@@ -194,8 +207,8 @@ export default function HistoryDetailPage() {
     </Panel>}
     <div className="detail-grid">
       <Panel title="逐拍照点结果与原图" detail="上方为中线示意，选中帧后在下方查看原图；原始整件判定保留" actions={<SegmentedControl label="结果视图" size="sm" options={[{value:"shots",label:"逐拍照点"},{value:"part",label:"整件"}]} value={visual} onValueChange={value=>setVisual(value as "shots"|"part")}/>}>
-        {layout&&result?visual==="part"?<WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={setSelected} vis={result.vis}/>:<ShotTiles layout={layout} vis={result.vis} selected={selected} onSelect={setSelected}/>:<Text as="p" muted>配方快照缺失，无法绘制。</Text>}
-        {layout&&<div className="wp-stack"><div className="wp-actions"><StatusBadge>{"选中 k"+(selected+1)}</StatusBadge>{sampleImages&&<StatusBadge>离线样本原图</StatusBadge>}<Select aria-label="历史帧选择" className="detail-frame-select" disabled={working} value={String(selected)} onValueChange={value=>setSelected(Number(value))} options={layout.shots.map((shot,k)=>({value:String(k),label:"k"+(k+1)+" · "+shotLabel(shot,k)+" · "+(raw?.frames.some(f=>f.k===k&&f.available)?"原图可用":"无原图")}))}/><Select aria-label="历史视角选择" disabled={working} value={String(selectedView)} onValueChange={value=>setViewSelection({k:selected,view:Number(value)})} options={[...new Set([layout.shots[selected]?.view??1,...(raw?.frames.filter(f=>f.k===selected).map(f=>f.view)??[])])].sort().map(view=>({value:String(view),label:"视角 "+view+(view===layout.shots[selected]?.view?" · 检测所选":"")}))}/><span className="spacer"/><Button leadingIcon={<Camera size={15}/>} disabled={disabled||!available||selectedView!==layout.shots[selected]?.view} onClick={()=>void useForTeach()}>将此帧用于示教</Button></div><GrayViewer image={image.image} loading={image.loading} error={image.error||(!available?unavailableMessage:"")} label={imageLabel} caption={imageCaption} overlay={viewOverlay}/>{edges.length>0&&<Text as="p" muted>横线为{comparisonLabel[comparison!.source]}测得的胶边与胶宽；橙色为与原结果状态不同的站。站点颜色仍表示原始判定。</Text>}</div>}
+        {layout&&result?visual==="part"?<WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={setSelected} vis={result.vis}/>:<ShotTiles layout={layout} vis={result.vis} frames={detail.frames} selected={selected} onSelect={setSelected}/>:<Text as="p" muted>配方快照缺失，无法绘制。</Text>}
+        {layout&&<div className="wp-stack"><div className="wp-actions"><StatusBadge>{"选中 k"+(selected+1)}</StatusBadge>{sampleImages&&<StatusBadge>离线样本原图</StatusBadge>}<Select aria-label="历史帧选择" className="detail-frame-select" disabled={working} value={String(selected)} onValueChange={value=>setSelected(Number(value))} options={layout.shots.map((shot,k)=>({value:String(k),label:"k"+(k+1)+" · "+shotLabel(shot,k)+" · "+(raw?.frames.some(f=>f.k===k&&f.available)?"原图可用":"无原图")}))}/><Select aria-label="历史视角选择" disabled={working} value={String(selectedView)} onValueChange={value=>setViewSelection({k:selected,view:Number(value)})} options={[...new Set([layout.shots[selected]?.view??1,...(raw?.frames.filter(f=>f.k===selected).map(f=>f.view)??[])])].sort().map(view=>({value:String(view),label:"视角 "+view+(view===layout.shots[selected]?.view?" · 检测所选":"")}))}/><span className="spacer"/><Button leadingIcon={<Camera size={15}/>} disabled={disabled||!available||selectedView!==layout.shots[selected]?.view} onClick={()=>void useForTeach()}>将此帧用于示教</Button></div><GrayViewer image={image.image} loading={image.loading} error={image.error||(!available?unavailableMessage:"")} label={imageLabel} caption={imageCaption} overlay={viewOverlay}/>{located&&<Text as="p" muted aria-label="定位摘要">定位：{poseSummary(recordedPose)}{recordedPose&&" · 中线、站点与定位框按记录的位姿画；淡虚线为示教位置"}</Text>}{rerunDiffers&&<Text as="p" muted aria-label="复测定位">复测定位与原记录不同：原记录 {poseSummary(recordedPose)}；{comparisonLabel[comparison!.source]} {poseSummary(rerunPose)}{rerunT?"（橙色虚线为复测定位框）":""}。中线与站点仍按原记录位姿画。</Text>}{edges.length>0&&<Text as="p" muted>横线为{comparisonLabel[comparison!.source]}测得的胶边与胶宽；橙色为与原结果状态不同的站。站点颜色仍表示原始判定。</Text>}</div>}
       </Panel>
       <Panel title="原始整件判定" className="side"><p className="reason-box">{displayReason(j.reason)}</p>
         {j.gaps.map((g,i)=><div key={i} className="ng-item"><div className="ng-title c-ng">断胶 · {layout?.segments[g.segment]?.name??"段 "+g.segment}</div><p>段内 s {g.s0.toFixed(1)} – {g.s1.toFixed(1)} mm · 长度 {g.len.toFixed(1)} mm（允许 ≤ {layout?.segments[g.segment]?.maxGapLen??"—"} mm）</p><div className="wp-actions">{g.frames.map(k=><Button size="sm" key={k} onClick={()=>setSelected(k)}>k{k+1}{layout?.shots[k]?" · "+layout.shots[k].id:""}</Button>)}</div></div>)}

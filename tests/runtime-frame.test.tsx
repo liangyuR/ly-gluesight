@@ -4,7 +4,7 @@ import RuntimeFrame from "../src/features/workspace/RuntimeFrame";
 import { workspaceApi } from "../src/features/workspace/api";
 import { GrayViewer } from "../src/features/workspace/components";
 import type { GrayImage } from "../src/features/workspace/types";
-import type { FrameView, PartView } from "../src/features/cycle/types";
+import type { FrameView, PartView, Recipe } from "../src/features/cycle/types";
 import { cycleFrame, cyclePart } from "./cycle-visual-fixtures";
 import { deferred, workspaceView } from "./fixtures";
 
@@ -76,4 +76,20 @@ it("实时帧带灰度像素 → 画进 canvas，每个像素 R=G=B=灰度且不
   const { container } = render(<GrayViewer image={{ url: "live:1", width: 4, height: 2, pixels: { data: Uint8Array.from([0, 17, 128, 255]), width: 2, height: 2 } }} label="实时帧" />);
   expect(container.querySelector("image")).toBeNull();
   expect([...put.mock.calls[0][0].data]).toEqual([0, 0, 0, 255, 17, 17, 17, 255, 128, 128, 128, 255, 255, 255, 255, 255]);
+});
+it("生产帧带被采用的位姿 → 原图上中线、站点、内框与外圈都画在 T(·)，示教框只作淡显的示教位置", async () => {
+  // 只平移 (5, 3) px：期望坐标逐个手算；转角的符号与转心由 pose-overlay 测试守住
+  const located: Recipe = structuredClone(layout);
+  located.shots[0].fixture = { rect: [40, 20, 16, 16], source: "A-image-0", searchRadiusPx: 60, angleRangeDeg: 0, minScore: .6, maxPeakRatio: 1 };
+  const part = partWith("cycle-1");
+  part.frames[0].viewResults = [{ view: 1, verdict: "OK", error: null, score: 1, ms: 8, pose: { accepted: true, reason: null, score: .97, peakRatio: .3, angle: 0, offset: [5, 3], endShiftMm: [0, 0], excludedMm: [1, 1], endLimitMm: 9.6 } }];
+  const { container } = render(<RuntimeFrame compact part={part} layout={located} k={0} measured={[]} />);
+  await waitFor(() => expect(container.querySelector("image")).not.toBeNull());
+  const line = container.querySelector('[aria-label="中线叠加"]')!;
+  expect(line.querySelector("polyline")?.getAttribute("points")).toBe("15,13 25,13");
+  expect([...line.querySelectorAll("circle")].map(c => [Number(c.getAttribute("cx")), Number(c.getAttribute("cy"))])).toEqual([[15, 13], [25, 13]]);
+  const box = container.querySelector('[aria-label="定位框（按位姿）"]')!;
+  expect(box.querySelector('[aria-label="定位框"]')?.getAttribute("points")).toBe("44.5,22.5 60.5,22.5 60.5,38.5 44.5,38.5");
+  expect(box.querySelector('[aria-label="模板外圈"]')?.getAttribute("points")).toBe("40.5,18.5 64.5,18.5 64.5,42.5 40.5,42.5");
+  expect(box.querySelector('[aria-label="定位框示教位置"]')?.getAttribute("points")).toBe("39.5,19.5 55.5,19.5 55.5,35.5 39.5,35.5");
 });

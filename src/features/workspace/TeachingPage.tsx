@@ -12,7 +12,8 @@ import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, GrayViewer, KV, Notice, Steps, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { FixtureCheck, FixtureTrial, FrozenImage, RotationConfirmation, ShotTeach, WorkspaceView } from "./types";
-import { FIXTURE_DEFAULTS, fixtureError, fixtureOverlay, sameTeach, shotTeach, teachError } from "./teach";
+import { FIXTURE_DEFAULTS, FIXTURE_PAD_PX, fixtureError, fixtureOverlay, sameTeach, shotTeach, teachError } from "./teach";
+import { movedBox, rawPoseTransform } from "../cycle/pose";
 import { FixtureSettings, ROTATION_PROBE_DEG } from "./FixtureSettings";
 import { FixtureTrialResult } from "./FixtureTrialResult";
 import { TrialResult, trialPoints, trialStationColor } from "./TrialResult";
@@ -336,6 +337,14 @@ export default function TeachingPage() {
   const staleSource = saved.fixture?.source && frame.image && saved.fixture.source !== frame.image.id
     ? `定位框是在示教图 ${saved.fixture.source} 上保存的，当前示教图是 ${frame.image.id}：确认框位置后运行试测（会把框改绑到当前示教图）` : null;
   const shownFixture = fixtureBox ? null : pendingFixture?.fixture ?? t.fixture;
+  // 示教图自定位没通过时画出定位落点：未采用画候选框（故障色），已采用但偏移超出容差画移动后的框。
+  // 通过时不画：保存门已保证偏移 ≤ 0.5 px，叠出来与原框重合，还会盖住正在编辑的框
+  const selfLocateFailed = trialFresh && !!trial?.fixture?.checks.some(c => c.id === "selfLocate" && !c.passed);
+  const landingPose = selfLocateFailed && shownFixture && !pendingFixture ? trial?.fixture?.pose ?? null : null;
+  const landingT = landingPose && shownFixture ? rawPoseTransform(shownFixture.rect, landingPose) : null;
+  const landing = landingT && landingPose && shownFixture ? landingPose.accepted
+    ? { moved: { inner: movedBox(shownFixture.rect, 0, landingT), padded: movedBox(shownFixture.rect, FIXTURE_PAD_PX, landingT) } }
+    : { candidate: movedBox(shownFixture.rect, 0, landingT) } : {};
   const fixtureChecks = trialFresh && trial?.fixture ? { checks: trial.fixture.checks, source: "trial" as const }
     : t.fixture && liveCheck?.key === fixtureCheckKey(t) ? { checks: liveCheck.result.checks, source: "live" as const } : null;
   const validation = data.workspace.validation;
@@ -433,7 +442,7 @@ export default function TeachingPage() {
             // 宽度标签沿横线（法向）放到胶路外侧；靠近左右边缘的站不出标签，避免被裁掉
             const labeled = i % labelEvery === 0 && width != null && p.px[0] > imageWidth * .08 && p.px[0] < imageWidth * .92;
             return edge ? [{ from: edge[0], to: edge[1], color: p.edge ? "var(--ok)" : "var(--ng)", label: labeled ? width!.toFixed(2) + (p.edge ? " mm" : " mm 候选") : undefined, labelOutward: true }] : [];
-          }), searchHalfPx, stale: editing, selected: vertex, fixture: shownFixture ? fixtureOverlay(shownFixture.rect, shownFixture.searchRadiusPx, t.path, !!pendingFixture) : null }}
+          }), searchHalfPx, stale: editing, selected: vertex, fixture: shownFixture ? { ...fixtureOverlay(shownFixture.rect, shownFixture.searchRadiusPx, t.path, !!pendingFixture), ...landing } : null }}
           editDisabled={!unlocked}
           onEdit={enabled && !regionMode && !fixtureDrawing ? { add: p => setPath([...t.path, p]), move: (i, p) => setPath(t.path.map((q, j) => j === i ? p : q)), select: setVertex } : undefined} />}
         {enabled && points && <TrialResult points={points} />}

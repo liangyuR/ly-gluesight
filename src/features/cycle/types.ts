@@ -298,6 +298,21 @@ export interface Snapshot {
   strayFrames: number;
   alarms: string[];
   recordingAlarm?: RecordingAlarm | null;
+  /** 连续定位失败告警（当前站点模式的分槽）：同一配方修订、拍照点、图连续 3 件没有位置基准；定位成功后清除，重启清零 */
+  locateAlarms?: LocateAlarm[];
+}
+
+export interface LocateAlarm {
+  recipeId: string;
+  revisionId: string;
+  shotId: string;
+  k: number;
+  view: number;
+  consecutive: number;
+  /** 最近一件的原因（定位失败 / 两端搬移超限） */
+  reason: string;
+  cycleId: string;
+  since: number;
 }
 
 export interface RecordingAlarm {

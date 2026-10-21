@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Judgement, Measured, Recipe } from "../src/features/cycle/types";
-import { shotDiffs } from "../src/features/history/replay";
+import type { Judgement, Measured, PoseRecord, Recipe } from "../src/features/cycle/types";
+import { poseDiffers, shotDiffs } from "../src/features/history/replay";
 import { partDetail, workspaceView } from "./fixtures";
 
 const layout = () => workspaceView().layout;
@@ -68,5 +68,18 @@ describe("原图重跑逐拍照点比对", () => {
     ["重新示教中线平移而测点数不变", (r: Recipe): Recipe => ({ ...r, points: { ...r.points, x: r.points.x.map(x => x + 5) } })],
   ])("候选%s → 不做逐点对应", (_, change) => {
     expect(shotDiffs(layout(), original(), { candidateRecipe: change(layout()), judgement: judgement(["OK", "OK"]), measurements: [] })).toBeNull();
+  });
+});
+
+describe("复测位姿与原记录对照", () => {
+  // 回归：offset 相对各自示教框中心，从原图复测用的工作台候选把框右移了 60 px 时，曾直接相减 offset。
+  // 原记录框 [100, 100, 21, 21]（tc [110, 110]）、5°、offset [5, 0]；候选框 [160, 100, 21, 21]（tc [170, 110]）。
+  // 同一个变换在候选框下的 offset = o + (R − I)(tc′ − tc) = [5 + 60(cos 5° − 1), 60 sin 5°] = [4.77168, 5.22934]（手算）。
+  const pose = (offset: [number, number]): PoseRecord => ({ accepted: true, reason: null, score: .95, peakRatio: .4, angle: 5, offset, endShiftMm: null, excludedMm: null, endLimitMm: 9.6 });
+  it.each([
+    ["同一个锁定（图像上同一变换）、offset 因框不同而不同", [4.77168, 5.22934], false],
+    ["offset 数值相同、图像上相差约 5.2 px", [5, 0], true],
+  ] as [string, [number, number], boolean][])("候选改了框，%s → 按各自的框在图像上比", (_, rerunOffset, differs) => {
+    expect(poseDiffers(pose([5, 0]), [100, 100, 21, 21], pose(rerunOffset), [160, 100, 21, 21])).toBe(differs);
   });
 });

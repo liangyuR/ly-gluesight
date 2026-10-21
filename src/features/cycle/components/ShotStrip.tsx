@@ -2,6 +2,7 @@ import { CameraStrip, type CameraFrame, type CameraFrameState } from "qing-steel
 import type { FrameView, PartView, PointVis, Recipe } from "../types";
 import { referenceBadge, shotCameras, shotLabel, shotSegment, shotState } from "../vis";
 import { ShotLine } from "./ShotTiles";
+import { partFrames } from "../pose";
 
 function footer(f: FrameView) {
   if (f.error) return f.error;
@@ -35,7 +36,7 @@ function frameState(layout: Recipe, vis: PointVis[], k: number, f: FrameView | u
 const stateText: Partial<Record<CameraFrameState, string>> = { ok: "OK", ng: "NG" };
 
 export default function ShotStrip({ layout, part, vis, selected, onSelect, compact = false }: { layout: Recipe; part: PartView | null; vis: PointVis[]; selected?:number; onSelect?:(k:number)=>void; compact?: boolean }) {
-  const own = part && part.recipeId === layout.id && part.recipeRevision === layout.revisionId ? part : null;
+  const own = partFrames(layout, part) ? part : null;
   const cameras = shotCameras(layout.shots);
   const frames: CameraFrame[] = layout.shots.map((shot, k) => {
     const f = own?.frames[k];
@@ -53,7 +54,7 @@ export default function ShotStrip({ layout, part, vis, selected, onSelect, compa
       cycleId: own?.cycleId,
       state,
       stateLabel,
-      preview: shotSegment(layout, k) ? <ShotLine layout={layout} k={k} vis={vis} compact /> : <span>未示教</span>,
+      preview: shotSegment(layout, k) ? <ShotLine layout={layout} k={k} vis={vis} frame={f} compact /> : <span>未示教</span>,
       detail: detail || undefined,
       channel: ((cameras.indexOf(shot.camera) % 8) + 1) as CameraFrame["channel"],
     };
