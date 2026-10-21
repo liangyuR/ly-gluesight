@@ -4,8 +4,35 @@
 
 use serde_json::Value;
 
+use crate::frame::FrameImage;
+use crate::recipe::FIXTURE_TEMPLATE_PAD_PX;
+
 /// 图里 glue.locate 的模板文件名（相对 base_dir）。每个（拍照点，视图）各给一个 base_dir。
 pub const TEMPLATE_FILE: &str = "template.pgm";
+
+/// 示教框（内框）加 FIXTURE_TEMPLATE_PAD_PX 外圈后的矩形；外圈出了 w × h 的图时为 None。
+pub fn padded_rect(r: [u32; 4], w: u32, h: u32) -> Option<[u32; 4]> {
+    let p = FIXTURE_TEMPLATE_PAD_PX;
+    let (x, y) = (r[0].checked_sub(p)?, r[1].checked_sub(p)?);
+    let (pw, ph) = (r[2].checked_add(2 * p)?, r[3].checked_add(2 * p)?);
+    (x.checked_add(pw)? <= w && y.checked_add(ph)? <= h).then_some([x, y, pw, ph])
+}
+
+/// glue.locate 的模板文件（lyFlow#32）：示教图上示教框四周各外扩 FIXTURE_TEMPLATE_PAD_PX 裁下的一块，
+/// 存成 PGM，大小 (w + 2·pad) × (h + 2·pad)，左上角在 (x − pad, y − pad)；anchor 仍是示教框左上角。
+pub fn template_pgm(image: &FrameImage, rect: [u32; 4]) -> Result<Vec<u8>, String> {
+    if image.pixels.len() as u64 != u64::from(image.width) * u64::from(image.height) {
+        return Err("示教原图像素缓冲与尺寸不一致".into());
+    }
+    let r = padded_rect(rect, image.width, image.height)
+        .ok_or_else(|| format!("定位框 {rect:?} 加 {FIXTURE_TEMPLATE_PAD_PX} px 外圈超出示教原图（{}×{}）", image.width, image.height))?;
+    let mut bytes = format!("P5\n{} {}\n255\n", r[2], r[3]).into_bytes();
+    for y in r[1]..r[1] + r[3] {
+        let row = (y * image.width + r[0]) as usize;
+        bytes.extend_from_slice(&image.pixels[row..row + r[2] as usize]);
+    }
+    Ok(bytes)
+}
 
 /// 线段法向与 n'_i 的夹角上限 45°（cos 值）：拐角处不投到另一条腿上。
 /// 正好 45° 的算合格：直角拐点上的站（法向取两腿的角平分线）与两条腿都恰成 45°，严格小于会让这个站必然丢基准。
@@ -190,6 +217,25 @@ mod tests {
             normals.push([-1.0, 0.0]);
         }
         (nominal, normals)
+    }
+
+    #[test]
+    fn template_file_is_teach_box_plus_4px_ring_and_ring_off_image_is_rejected() {
+        // 防的回归：模板文件不带外圈（或外圈错位）时 locate 只能按 BORDER_REPLICATE 平滑模板，框边强边缘把平移峰拉偏到 0.6 px（lyFlow#32）
+        let (w, h) = (20u32, 16u32);
+        let img = FrameImage::new(w, h, (0..w * h).map(|i| (i % 251) as u8).collect());
+        let bytes = template_pgm(&img, [5, 4, 6, 3]).unwrap();
+        let head = b"P5\n14 11\n255\n";
+        assert_eq!(&bytes[..head.len()], head);
+        let body = &bytes[head.len()..];
+        assert_eq!(body.len(), 14 * 11);
+        for (r, row) in body.chunks(14).enumerate() {
+            let y = r as u32; // 外圈上沿 y = 4 − 4
+            assert_eq!(row, &img.pixels[(y * w + 1) as usize..(y * w + 15) as usize]);
+        }
+        assert!(padded_rect([4, 4, 6, 3], w, h).is_some());
+        assert!(template_pgm(&img, [3, 4, 6, 3]).is_err());
+        assert!(template_pgm(&img, [10, 4, 7, 3]).is_err()); // 右外圈越过 x = 20
     }
 
     #[test]

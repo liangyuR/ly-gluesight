@@ -16,12 +16,13 @@ pub(super) fn measure(prepared: &Prepared, count: usize, sn: &str, cycle_id: &st
             .collect::<Result<Vec<_>, _>>()?;
         match prepared.measure_views(k, &images, &format!("reproduce-{cycle_id}-{k}-{}", ly_plc::now_ms())) {
             Ok(multi) => {
+                let reference_failed = multi.reference_failed();
                 let reading = multi.reading;
                 for (i, &j) in reading.idx.iter().enumerate() {
                     table[j as usize] = crate::measure::point_state(reading.st[i], reading.d[i], reading.w[i]);
                 }
                 measurements.push(json!({"cycleId":cycle_id,"bundleId":prepared.bundle.id,
-                    "shotId":shot.id,"camera":shot.camera,"sn":sn,"k":k,"cam":0,"referenceFailed":[],
+                    "shotId":shot.id,"camera":shot.camera,"sn":sn,"k":k,"cam":0,"referenceFailed":reference_failed,
                     "score":reading.coverage,"ms":reading.ms,"error":null,"idx":reading.idx,"views":multi.views,
                     "d":reading.d,"w":reading.w,"st":reading.st,"px":reading.px}));
             }

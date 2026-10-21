@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Instant;
 use std::sync::Arc;
@@ -173,10 +174,11 @@ pub fn measure_views_with(
     Ok(MultiViewMeasurement { reading: out, views })
 }
 
-pub fn measure_views(engine: &Engine, recipe: &Recipe, k: usize, images: &[(u8, Arc<FrameImage>)], run_id: &str, base_dir: &str) -> Result<MultiViewMeasurement, String> {
+/// `bases`：各视图的模板目录（glue.locate 的 base_dir），只有用特征定位的视图需要，查不到的视图给空串。
+pub fn measure_views(engine: &Engine, recipe: &Recipe, k: usize, images: &[(u8, Arc<FrameImage>)], run_id: &str, bases: &BTreeMap<u8, String>) -> Result<MultiViewMeasurement, String> {
     measure_views_with(recipe, k, images, |view, image| {
         let projected = recipe.for_view(k, view)?;
-        measure_shot(engine, &projected, k, image, &format!("{run_id}-v{view}"), base_dir)
+        measure_shot(engine, &projected, k, image, &format!("{run_id}-v{view}"), bases.get(&view).map_or("", String::as_str))
     })
 }
 

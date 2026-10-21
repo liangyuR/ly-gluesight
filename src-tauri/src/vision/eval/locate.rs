@@ -2,7 +2,8 @@
 //! 每张图自动提议定位模板，在同图上跑 glue.locate 选框（E1）；整图刚体 / 成像扰动下的定位精度（E2）；
 //! 共同运动下按位姿算的胶偏 d' 是否不变（E3）；合成只移胶的检出（E4）；定位耗时（E5）；复拍对比（E6）。
 //! 模板按 PGM 写到评测输出目录，作为 glue.locate 的 base_dir；样本集目录只读。
-//! 模板文件按 lyFlow#32 的约定带 TEMPLATE_PAD_PX 外圈（框 + 四周各 4 px），anchor 仍是内框左上角，调用时传 templatePad。
+//! 模板文件按 lyFlow#32 的约定带 FIXTURE_TEMPLATE_PAD_PX 外圈（框 + 四周各 4 px），anchor 仍是内框左上角，调用时传 templatePad；
+//! 裁剪与工作台共用 fixture::template_pgm。
 //! 选出的框都要人工复核：随枪相机下喷嘴、胶枪跟相机走，框进去会让位姿恒为恒等；同相机 NCC 只能剔除整块不动的结构。
 
 use std::collections::BTreeMap;
@@ -14,16 +15,14 @@ use serde_json::{json, Value};
 use super::synth::{self, BeadFrame, Defect, Perturb};
 use super::{defect_specs, frame_of, median, ok_class, par_map, pct, place, r3, run, shot_judge, Ctx};
 use crate::measure::{ST_INVALID, ST_OK};
-use crate::vision::fixture::{deviations, Pose};
+use crate::recipe::FIXTURE_TEMPLATE_PAD_PX;
+use crate::vision::fixture::{deviations, padded_rect, template_pgm, Pose};
 use crate::vision::{Engine, FrameImage, ShotMeasurement};
 
 const SEARCH_RADIUS_PX: f64 = 60.0;
 const ANGLE_RANGE_DEG: f64 = 3.0;
 const ANGLE_STEP_DEG: f64 = 0.5;
 const MIN_SCORE: f64 = 0.6;
-/// 模板外圈（glue.locate 的 templatePad，lyFlow#32）：文件是框四周各多裁这么多，locate 用真实邻域平滑后再裁回内框。
-/// 4 = 平滑核半径，也是 locate 接受的最小非零值（1–3 拒绝）；外圈出图的候选不要。
-const TEMPLATE_PAD_PX: u32 = 4;
 const SIZES: [u32; 2] = [96, 128];
 const STRIDE: u32 = 32;
 /// 模板离胶检测走廊（中线 ± 搜索半宽）至少再留这么多
@@ -96,14 +95,6 @@ fn ncc_same_rect(a: &FrameImage, b: &FrameImage, r: [u32; 4]) -> f64 {
     (sab - sa * sb / n) / (va * vb).sqrt()
 }
 
-/// 内框加 TEMPLATE_PAD_PX 外圈后的矩形；外圈出图时为 None。
-fn padded_rect(r: [u32; 4], w: u32, h: u32) -> Option<[u32; 4]> {
-    let p = TEMPLATE_PAD_PX;
-    let (x, y) = (r[0].checked_sub(p)?, r[1].checked_sub(p)?);
-    let (pw, ph) = (r[2] + 2 * p, r[3] + 2 * p);
-    (x + pw <= w && y + ph <= h).then_some([x, y, pw, ph])
-}
-
 impl Template {
     fn teach_center(&self) -> [f64; 2] {
         [self.rect[0] as f64 + (self.rect[2] as f64 - 1.0) / 2.0, self.rect[1] as f64 + (self.rect[3] as f64 - 1.0) / 2.0]
@@ -124,7 +115,7 @@ fn locate(engine: &Engine, dir: &Path, t: &Template, img: &FrameImage, angle_ran
         "nodes": [
             {"id": "n_load", "op": "io.load_image", "params": {"source": "inputs"}},
             {"id": "n_locate", "op": "glue.locate", "params": {
-                "template": t.file, "templatePad": TEMPLATE_PAD_PX, "anchor": [t.rect[0] as f64, t.rect[1] as f64],
+                "template": t.file, "templatePad": FIXTURE_TEMPLATE_PAD_PX, "anchor": [t.rect[0] as f64, t.rect[1] as f64],
                 "searchRadius": SEARCH_RADIUS_PX, "angleRange": angle_range, "angleStep": ANGLE_STEP_DEG, "minScore": MIN_SCORE
             }}
         ],
@@ -145,13 +136,7 @@ fn locate(engine: &Engine, dir: &Path, t: &Template, img: &FrameImage, angle_ran
 
 /// 写带外圈的模板：文件是 (w + 2·pad) × (h + 2·pad)，左上角在 (x − pad, y − pad)。
 fn write_pgm(path: &Path, img: &FrameImage, inner: [u32; 4]) -> Result<(), String> {
-    let r = padded_rect(inner, img.width, img.height).ok_or_else(|| format!("框 {inner:?} 加 {TEMPLATE_PAD_PX} px 外圈出图"))?;
-    let mut bytes = format!("P5\n{} {}\n255\n", r[2], r[3]).into_bytes();
-    for y in r[1]..r[1] + r[3] {
-        let row = (y * img.width + r[0]) as usize;
-        bytes.extend_from_slice(&img.pixels[row..row + r[2] as usize]);
-    }
-    std::fs::write(path, bytes).map_err(|e| format!("写模板 {} 失败：{e}", path.display()))
+    std::fs::write(path, template_pgm(img, inner)?).map_err(|e| format!("写模板 {} 失败：{e}", path.display()))
 }
 
 /// 示教中线每 2 px 取一点，用来量模板到走廊的距离。
@@ -935,7 +920,7 @@ pub fn evaluate(ctx: &Ctx, base: &[Result<ShotMeasurement, String>]) -> Value {
 
 
     json!({
-        "params": {"searchRadiusPx": SEARCH_RADIUS_PX, "angleRangeDeg": ANGLE_RANGE_DEG, "angleStepDeg": ANGLE_STEP_DEG, "minScore": MIN_SCORE, "templatePadPx": TEMPLATE_PAD_PX,
+        "params": {"searchRadiusPx": SEARCH_RADIUS_PX, "angleRangeDeg": ANGLE_RANGE_DEG, "angleStepDeg": ANGLE_STEP_DEG, "minScore": MIN_SCORE, "templatePadPx": FIXTURE_TEMPLATE_PAD_PX,
             "sizes": SIZES, "stridePx": STRIDE, "corridorPadPx": CORRIDOR_PAD_PX, "minStd": MIN_STD, "byTexture": BY_TEXTURE, "byLever": BY_LEVER,
             "probe": format!("{PROBE:?}"), "probeTolPx": PROBE_TOL_PX, "probeTolDeg": PROBE_TOL_DEG, "maxPeakRatio": "不传（1.1.0 默认 1 = 不判；门效果离线扫）"},
         "baseDir": dir.display().to_string(), "overlayDir": overlay_dir.display().to_string(),
@@ -1038,28 +1023,4 @@ fn unobservable_rotation_with_drifted_center_counts_as_uncompensated_not_wrong_l
     assert!(call(5.0, Some(false)).lock() == Lock::Uncompensated);
     assert!(call(25.0, Some(false)).lock() == Lock::Wrong); // 偏过 10 px 不是转角能解释的
     assert!(call(5.0, Some(true)).lock() == Lock::Wrong);
-}
-
-#[test]
-fn template_file_is_teach_box_plus_4px_ring_and_ring_off_image_is_rejected() {
-    // 防的回归：模板文件不带外圈（或外圈错位）时 locate 只能按 BORDER_REPLICATE 平滑模板，框边强边缘把平移峰拉偏到 0.6 px（lyFlow#32）
-    let (w, h) = (20u32, 16u32);
-    let img = FrameImage::new(w, h, (0..w * h).map(|i| (i % 251) as u8).collect());
-    let dir = std::env::temp_dir().join(format!("gs-eval-pad-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("t.pgm");
-    write_pgm(&path, &img, [5, 4, 6, 3]).unwrap();
-    let bytes = std::fs::read(&path).unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
-    let head = b"P5\n14 11\n255\n";
-    assert_eq!(&bytes[..head.len()], head);
-    let body = &bytes[head.len()..];
-    assert_eq!(body.len(), 14 * 11);
-    for (r, row) in body.chunks(14).enumerate() {
-        let y = r as u32; // 外圈上沿 y = 4 − 4
-        assert_eq!(row, &img.pixels[(y * w + 1) as usize..(y * w + 15) as usize]);
-    }
-    assert!(padded_rect([4, 4, 6, 3], w, h).is_some());
-    assert!(padded_rect([3, 4, 6, 3], w, h).is_none());
-    assert!(padded_rect([10, 4, 7, 3], w, h).is_none()); // 右外圈越过 x = 20
 }

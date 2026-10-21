@@ -58,6 +58,7 @@ impl Prepared {
     pub fn load(bundle: ReleaseBundle, engine: Arc<Engine>, expected: &Recipe) -> Result<Self, String> {
         bundle.verify()?;
         let recipe = Arc::new(bundle.recipe.build()?);
+        crate::release::reject_fixture(&recipe)?;
         if recipe.revision_id != expected.revision_id || recipe.id != expected.id || recipe.version != expected.version
             || recipe.product_code != expected.product_code || recipe.trigger_mode != expected.trigger_mode || recipe.schema_version != expected.schema_version
             || recipe.shots != expected.shots || recipe.spacing != expected.spacing || recipe.detect != expected.detect

@@ -846,6 +846,55 @@ fn image_file(host: &WorkspaceHost, id: &str, image_id: &str) -> Result<PathBuf,
     Ok(host.dir(id).join("images").join(format!("{image_id}.pgm")))
 }
 
+/// 定位模板（glue.locate 的 base_dir）：`<workspaces>/<配方>/fixtures/<冻结图>-r<x>_<y>_<w>_<h>-p<外圈>/template.pgm`。
+/// 按来源寻址，内容只由冻结图、框与外圈决定；冻结图不会改写。每次使用都按冻结图重新裁、与磁盘上的字节比对，
+/// 缺失或不同（损坏、过期）才原子写，不复用坏文件。并发写的是同样的内容，所以不在 items 锁里做。
+/// 删除工作区时一并删掉；旧目录的清理归 G4。返回模板目录（UTF-8 绝对路径，非 UTF-8 时报错，不做有损转换）。
+fn ensure_template(host: &WorkspaceHost, recipe_id: &str, frozen: &FrozenImage, rect: [u32; 4], image: Option<&FrameImage>) -> Result<String, String> {
+    use crate::recipe::FIXTURE_TEMPLATE_PAD_PX as PAD;
+    vision::fixture::padded_rect(rect, frozen.size[0], frozen.size[1])
+        .ok_or_else(|| format!("定位框加 {PAD} px 外圈超出示教原图（{}×{}），请把框从图边往里收", frozen.size[0], frozen.size[1]))?;
+    let source = image_file(host, recipe_id, &frozen.id)?;
+    let dir = host.dir(recipe_id).join("fixtures").join(format!("{}-r{}_{}_{}_{}-p{PAD}", frozen.id, rect[0], rect[1], rect[2], rect[3]));
+    let loaded;
+    let image = match image {
+        Some(image) => image,
+        None => { loaded = crate::image_file::load(&source)?; &loaded }
+    };
+    if [image.width, image.height] != frozen.size { return Err("示教原图尺寸与冻结记录不一致".into()); }
+    let bytes = vision::fixture::template_pgm(image, rect)?;
+    let path = dir.join(vision::fixture::TEMPLATE_FILE);
+    let current = || std::fs::read(&path).is_ok_and(|on_disk| on_disk == bytes);
+    if !current() {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("创建定位模板目录失败：{e}"))?;
+        let tmp = dir.join(format!("{}.tmp-{}-{}", vision::fixture::TEMPLATE_FILE, std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        std::fs::write(&tmp, &bytes).map_err(|e| format!("写定位模板失败：{e}"))?;
+        if let Err(e) = std::fs::rename(&tmp, &path) {
+            let _ = std::fs::remove_file(&tmp);
+            // 另一处同时写了同样的内容，或文件正被 lyFlow 打开着、内容已经对：照常用
+            if !current() { return Err(format!("写定位模板失败：{e}")); }
+        }
+    }
+    dir.to_str().map(str::to_string).ok_or_else(|| format!("定位模板目录不是有效的 UTF-8 路径：{}", dir.display()))
+}
+
+/// 拍照点 k 各启用且用特征定位的视图的模板目录（按候选当前的冻结示教原图裁出）。
+/// `loaded`：调用方已读入的冻结示教原图（按视图），免得再读一遍；样本图、历史原图不能放在这里。会读图、写文件，不在 items 锁里调用。
+fn fixture_bases(host: &WorkspaceHost, w: &Workspace, recipe: &Recipe, k: usize, loaded: &[(u8, &FrameImage)]) -> Result<BTreeMap<u8, String>, String> {
+    let shot = recipe.shots.get(k).ok_or("拍照点不存在")?;
+    let frame = w.frames.get(k).ok_or("拍照点不存在")?;
+    let mut bases = BTreeMap::new();
+    for view in shot.enabled_views() {
+        let Some(fixture) = shot.for_view(view)?.fixture else { continue };
+        let frozen = frame.views.iter().chain(frame.image.as_ref()).find(|i| i.view == view)
+            .ok_or("含特征定位的图需要先冻结示教原图")?;
+        let image = loaded.iter().find(|(v, _)| *v == view).map(|(_, image)| *image);
+        bases.insert(view, ensure_template(host, &recipe.id, frozen, fixture.rect, image)?);
+    }
+    Ok(bases)
+}
+
 fn keep_image(
     app: &AppHandle,
     id: &str,
@@ -1040,7 +1089,8 @@ pub fn workspace_image(
 }
 
 /// 示教帧试测：沿拍照点 k 的示教中线量胶。返回逐站结果、得分、量成比例、是否通过与原因。
-fn measure_image(app: &AppHandle, r: &Recipe, k: usize, image: &FrameImage) -> Result<(Value, f64, f64, bool, String), String> {
+/// `base`：用特征定位时的模板目录（见 ensure_template），否则为空串。
+fn measure_image(app: &AppHandle, r: &Recipe, k: usize, image: &FrameImage, base: &str) -> Result<(Value, f64, f64, bool, String), String> {
     let shot = r.shots.get(k).ok_or("拍照点不存在")?;
     if !shot.measured() {
         return Err("这个拍照点设为不检，不需要试测".into());
@@ -1050,17 +1100,27 @@ fn measure_image(app: &AppHandle, r: &Recipe, k: usize, image: &FrameImage) -> R
     }
     let engine = app.state::<vision::VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
     let run_id = format!("trial-{}-{k}-{}", r.revision_id, ly_plc::now_ms());
-    let measured = vision::measure_shot(&engine, r, k, image, &run_id, "")?;
+    let measured = vision::measure_shot(&engine, r, k, image, &run_id, base)?;
     let coverage = measured.coverage as f64;
     let mut table = vec![PointState::Pending; r.point_count()];
     for (i, &j) in measured.idx.iter().enumerate() {
         table[j as usize] = crate::measure::point_state(measured.st[i], measured.d[i], measured.w[i]);
     }
     let verdict = judge::judge(r, &table).verdict;
-    let valid = verdict != Verdict::ErrInspect;
+    // 示教原图上都定位不到（或两端搬移超限），这套定位配置不能用：即使胶路另判 NG 也不算有效试测
+    let located = measured.reference_failed.as_ref().map(|failed| {
+        let why = measured.pose.as_ref().and_then(|p| p.reason.clone()).unwrap_or_else(|| failed.clone());
+        format!("特征定位失败（{why}），请检查定位框与门限")
+    });
+    let valid = verdict != Verdict::ErrInspect && located.is_none();
     let mut record = measured.record();
     record["verdict"] = json!(verdict);
-    Ok((record, coverage, coverage, valid, if valid { "有效试测完成，可保存示教；产品判定单独显示".into() } else { "测量无法形成有效判定，请检查配置".into() }))
+    let reason = match located {
+        Some(reason) => reason,
+        None if valid => "有效试测完成，可保存示教；产品判定单独显示".into(),
+        None => "测量无法形成有效判定，请检查配置".into(),
+    };
+    Ok((record, coverage, coverage, valid, reason))
 }
 
 #[tauri::command]
@@ -1072,7 +1132,7 @@ pub async fn workspace_trial(
     image_id: String,
 ) -> Result<WorkspaceView, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let r = {
+        let (r, frozen) = {
             let host = app.state::<WorkspaceHost>();
             let items = host.items.lock().unwrap();
             let w = items.get(&id).ok_or("候选配置不存在")?;
@@ -1090,14 +1150,20 @@ pub async fn workspace_trial(
             if frozen.camera_tag != camera_tag || frozen.calib_tag != calib_tag || frozen.geometry_tag != shot_tags(&r, k)?.0 {
                 return Err("相机参数、工位标定或拍照点已变更，请重新冻结图像".into());
             }
-            r
+            (r, frozen.clone())
         };
         let (image_tag, teach_tag) = shot_tags(&r, k)?;
         let image = crate::image_file::load(&image_file(&app.state::<WorkspaceHost>(), &id, &image_id)?)?;
         let engine_tag = app.state::<vision::VisionHost>().engine().map(|engine| engine_state(&engine)).unwrap_or_default();
         let started = Instant::now();
-        let (measurement, score, coverage, passed, reason) =
-            measure_image(&app, &r, k, &image).unwrap_or_else(|e| (Value::Null, 0.0, 0.0, false, e));
+        // 模板从试测的这张冻结原图裁出（锁外）；裁不出来与测量失败一样记成试测没通过
+        let base = || match &r.shots[k].fixture {
+            Some(fixture) => ensure_template(&app.state::<WorkspaceHost>(), &r.id, &frozen, fixture.rect, Some(&image)),
+            None => Ok(String::new()),
+        };
+        let (measurement, score, coverage, passed, reason) = base()
+            .and_then(|base| measure_image(&app, &r, k, &image, &base))
+            .unwrap_or_else(|e| (Value::Null, 0.0, 0.0, false, e));
         let trial = Trial {
             image_id,
             engine_tag,
@@ -1455,6 +1521,7 @@ pub fn workspace_publish(
         return Err("已有待生效版本，请等待工件结束".into());
     }
     if let Some((_, message)) = w.group_selection_errors().into_iter().next() { return Err(message); }
+    crate::release::reject_fixture(&w.doc.build()?)?;
     let validated = w
         .validation
         .as_ref()
@@ -2159,6 +2226,8 @@ fn measure_images_from(app: &AppHandle, w: &Workspace, count: usize, sn: &str, s
     for k in 0..count {
         let shot = &recipe.shots[k];
         if !shot.measured() { let _ = load(k, shot.view)?; continue; }
+        // 模板一律按候选当前的冻结示教原图裁（复测历史原图也一样），样本图只用来测
+        let bases = fixture_bases(&app.state::<WorkspaceHost>(), w, &recipe, k, &[])?;
         let mut images = Vec::new();
         for selected in workflow::selected_views(w, k) {
             match source {
@@ -2170,7 +2239,8 @@ fn measure_images_from(app: &AppHandle, w: &Workspace, count: usize, sn: &str, s
             if [image.width, image.height] != frozen.size { return Err(format!("拍照点 {} 图 {selected} 样本尺寸与示教不一致", shot.id)); }
             images.push((selected, Arc::new(image)));
         }
-        let result = vision::measure_views(&engine, &recipe, k, &images, &format!("{run}-{k}"), "")?;
+        let result = vision::measure_views(&engine, &recipe, k, &images, &format!("{run}-{k}"), &bases)?;
+        let reference_failed = result.reference_failed();
         let reading = result.reading;
         for (i, &j) in reading.idx.iter().enumerate() {
             table[j as usize] = crate::measure::point_state(reading.st[i], reading.d[i], reading.w[i]);
@@ -2181,7 +2251,7 @@ fn measure_images_from(app: &AppHandle, w: &Workspace, count: usize, sn: &str, s
                 .and_then(|index| u8::try_from(index).ok()).ok_or("历史样本的配方相机索引无效")?,
         };
         measurements.push(json!({"cycleId":run,"bundleId":null,"shotId":shot.id,"camera":shot.camera,
-            "sn":sn,"k":k,"cam":cam,"referenceFailed":[],"score":reading.coverage,"ms":reading.ms,
+            "sn":sn,"k":k,"cam":cam,"referenceFailed":reference_failed,"score":reading.coverage,"ms":reading.ms,
             "error":null,"idx":reading.idx,"d":reading.d,"w":reading.w,"st":reading.st,"px":reading.px,"views":result.views}));
     }
     Ok((table, measurements))
@@ -2658,7 +2728,7 @@ pub async fn workspace_import_sample(
 pub async fn workspace_debug_run(app: AppHandle, id: String, revision: u64, part_id: Option<String>) -> Result<(), String> {
     if !crate::offline::enabled(&app) || crate::offline::sample_set(&app).is_none() { return Err("候选试运行仅支持离线样本集模式".into()); }
     let set = crate::offline::sample_set(&app).ok_or("离线样本集缺失")?;
-    let candidate = {
+    let (recipe, sizes, w) = {
         let host = app.state::<WorkspaceHost>();
         let items = host.items.lock().unwrap();
         let w = items.get(&id).ok_or("候选配方不存在")?;
@@ -2678,9 +2748,16 @@ pub async fn workspace_debug_run(app: AppHandle, id: String, revision: u64, part
         }
         recipe.revision_id = w.debug_revision()?;
         if recipe.plan_version == 0 { recipe.plan_version = 1; }
-        let engine = app.state::<vision::VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
-        Arc::new(crate::candidate::Candidate::new(recipe, revision, engine, sizes, w.overview.clone())?)
+        (recipe, sizes, w.clone())
     };
+    // 定位模板在锁外按冻结示教原图生成；目录按内容寻址，之后 recheck_debug_candidate 核对冻结图即可
+    let mut bases = HashMap::new();
+    for k in 0..recipe.shot_count() {
+        if !recipe.shots[k].measured() { continue; }
+        for (view, base) in fixture_bases(&app.state::<WorkspaceHost>(), &w, &recipe, k, &[])? { bases.insert((k, view), base); }
+    }
+    let engine = app.state::<vision::VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
+    let candidate = Arc::new(crate::candidate::Candidate::new(recipe, revision, engine, sizes, bases, w.overview.clone())?);
     crate::offline::run_candidate(app, candidate, set, part_id).await
 }
 
