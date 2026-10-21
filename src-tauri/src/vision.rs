@@ -19,6 +19,7 @@ use crate::measure::{Job, Measured, Measurer};
 use crate::recipe::Recipe;
 
 pub(crate) mod fixture;
+pub(crate) mod fixture_quality;
 mod taught;
 pub use taught::{build_taught_graph, measure_shot, measure_shot_with_graph, ShotMeasurement, MultiViewMeasurement, ViewMeasurement, PoseRecord, measure_views, measure_views_with};
 #[cfg(test)]
