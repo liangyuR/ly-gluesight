@@ -4,7 +4,7 @@ import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
-  identifier, MISSING_INPUT_EXIT, captureRound, client, instanceCdp, missingInputs, prepareSampleSet, produce, teach, uiPage, until, workspaceCalls,
+  addErasedPart, identifier, MISSING_INPUT_EXIT, captureRound, client, instanceCdp, missingInputs, prepareSampleSet, produce, teach, uiPage, until, workspaceCalls,
 } from "./offline-e2e.mjs";
 
 // 特征定位示教的端到端场景（定稿 §5、§13）：真 lyFlow + 样本集副本，在离线模式里走
@@ -12,8 +12,11 @@ import {
 // 中线示教、样本采集、验证与发布走 IPC（offline-e2e 已覆盖其界面）；定位特征步骤与“采用建议”走界面。
 // 框是按样本集 S002_cam2（拍照点组 S001 选的图）手工选的演示夹具，不代表现场选框：
 //   bead 压在示教中线上；bright 在图中央高光区（≥ 215 的像素约 96%，纹理够）；good 是 G4 应用内检查扫出来的第一个全过的框。
+// locateFail：副本里由 p01 复制出的件，把 S002_cam2 上好框连同外圈与整个搜索范围（[248, 248, 96, 96] 四周各多 4 + 60 px）抹平，
+//   胶路（x ≈ 735）不动：真 glue.locate 在这一幅图上不被采用，其余拍照点照常，用来演练连续定位失败告警（样本集来源不接受合成的定位失败工况）。
 export const SCENARIOS = {
-  "gs-20261017-normal": { pose: "S001", camera: "cam2", bead: [700, 150, 80, 80], bright: [464, 416, 96, 96], good: [248, 248, 96, 96] },
+  "gs-20261017-normal": { pose: "S001", camera: "cam2", bead: [700, 150, 80, 80], bright: [464, 416, 96, 96], good: [248, 248, 96, 96],
+    locateFail: { partId: "p03", from: "p01", sampleShot: "S002", camera: "cam2", box: [180, 180, 232, 232] } },
 };
 
 const outputFiles = [];
@@ -122,6 +125,8 @@ export async function runFixtureE2E(page, options) {
   const { fixture } = prepared;
   const scenario = SCENARIOS[prepared.manifest.id.replace(/-e2e$/, "")];
   assert(scenario, `样本集 ${prepared.manifest.id} 没有特征定位场景`);
+  await addErasedPart(prepared.dir, prepared.manifest, scenario.locateFail, { label: "unknown", note: "抹平定位特征" });
+  await writeFile(path.join(prepared.dir, "sample-set.json"), JSON.stringify(prepared.manifest, null, 2) + "\n");
   const entered = await call("site_enter_offline", { source: { kind: "sampleSet", dir: prepared.dir } });
   assert.equal(entered.measurement, "lyFlow");
   await until(() => call("plc_get_status"), s => s.state === "connected", "离线 S7 服务未连接");
@@ -308,6 +313,63 @@ export async function runFixtureE2E(page, options) {
   await shot(page, shots, "fixture-7-history-overlay.png");
   step("生产与历史按位姿叠图", { live: { cycleId: live.cycleId, accepted: livePose.accepted, offset: livePose.offset }, history: { id: normal.id, offset: historyPose.offset } });
 
+  // —— 连续定位失败告警（G5，定稿 §3、§14）：定位特征被抹平的件在真 glue.locate 上连续 3 件不被采用，第 3 件才告警；
+  //    之后一件正常件定位成功，告警消除。上一件 p02 在这幅图上定位成功，计数从 0 开始。
+  const appLog = (cycleId, ev) => until(async () => (await call("applog_query", { query: { cycleId, limit: 200 } })).items.find(i => i.ev === ev),
+    Boolean, `应用日志里没有本件（${cycleId}）的“${ev}”`, 15000);
+  const banner = page.getByLabel("连续定位失败告警", { exact: true });
+  const lf = scenario.locateFail;
+  const failedParts = [];
+  for (let n = 1; n <= 3; n++) {
+    const { summary } = await produce(call, id, lf.partId);
+    assert.equal(summary.verdict, "ERR_INSPECT", `定位特征被抹平的第 ${n} 件应为 ERR（胶正常、没有位置基准）：${summary.reason}`);
+    assert.equal(summary.faultCode, 92, `定位特征被抹平的第 ${n} 件故障码应为 92：${summary.reason}`);
+    const failedDetail = await call("history_detail", { id: summary.id });
+    const failures = failedDetail.frames.flatMap((f, fk) => f.referenceFailed.map(r => ({ k: fk, ...r })));
+    assert.deepEqual(failures.map(f => [f.k, f.view]), [[k, shotSpec.view]], `只有定位框所在的这幅图应没有位置基准：${JSON.stringify(failures)}`);
+    const failedPose = failedDetail.frames[k].viewResults.find(v => v.view === shotSpec.view)?.pose;
+    assert(failedPose && !failedPose.accepted, `抹平后的位姿不应被采用：${JSON.stringify(failedPose)}`);
+    const alarms = n < 3 ? (await call("cycle_snapshot")).locateAlarms ?? []
+      : await until(async () => (await call("cycle_snapshot")).locateAlarms ?? [], a => a.length > 0, "第 3 件后快照里没有连续定位失败告警", 15000);
+    assert.equal(alarms.length, n < 3 ? 0 : 1, `第 ${n} 件后告警条数不对：${JSON.stringify(alarms)}`);
+    failedParts.push({ id: summary.id, cycleId: summary.cycleId, sn: summary.sn, verdict: summary.verdict, faultCode: summary.faultCode, reference: failures[0].reason,
+      pose: { reason: failedPose.reason, score: failedPose.score, offset: failedPose.offset } });
+  }
+  const last = failedParts[2];
+  const alarm = (await call("cycle_snapshot")).locateAlarms[0];
+  assert.deepEqual([alarm.recipeId, alarm.shotId, alarm.k, alarm.view, alarm.consecutive, alarm.cycleId], [id, shotSpec.id, k, shotSpec.view, 3, last.cycleId],
+    `告警内容不对：${JSON.stringify(alarm)}`);
+  await appLog(last.cycleId, "连续定位失败");
+  await page.evaluate(() => { window.location.hash = "/inspect"; });
+  await banner.waitFor({ timeout: 30000 });
+  const bannerText = (await banner.innerText()).replace(/\s+/g, " ").trim();
+  assert(bannerText.includes(`拍照点 ${shotSpec.id} · 图 ${shotSpec.view} · 连续 3 件没有位置基准`), `告警横幅内容不对：${bannerText}`);
+  // 检测页选中这一帧：位姿没被采用，中线不搬、框标“定位未采用”，摘要为“未采用”
+  await page.locator(`.qs-camera-thumbnail[data-frame-id="k${k + 1}"]`).click();
+  await page.locator('svg.wp-gray-image [aria-label^="定位未采用"]').first().waitFor({ timeout: 30000 });
+  await page.locator(".wp-runtime-strip .wp-kv").filter({ hasText: "定位" }).getByText(/^未采用/).waitFor();
+  // 拍照点缩略图里的中线要落在预览格子里：曾因 SVG 不随格子定高、按宽度撑高后从顶上溢出，这一帧的中线整条被裁掉
+  const thumbLine = await page.locator(`.qs-camera-thumbnail[data-frame-id="k${k + 1}"] .qs-camera-preview`).evaluate(pv => {
+    const box = e => { const r = e.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; };
+    return { preview: box(pv), lines: [...pv.querySelectorAll("svg polyline")].map(box) };
+  });
+  const [pl, pt, pr, pb] = thumbLine.preview;
+  assert(thumbLine.lines.length && thumbLine.lines.every(([l, t, r, b]) => l >= pl - 1 && t >= pt - 1 && r <= pr + 1 && b <= pb + 1),
+    `拍照点缩略图的中线应在预览格子内：${JSON.stringify(thumbLine)}`);
+  await shot(page, shots, "fixture-8-locate-alarm.png");
+  step("连续 3 件定位失败告警", { parts: failedParts, alarm: { shotId: alarm.shotId, view: alarm.view, consecutive: alarm.consecutive, reason: alarm.reason, cycleId: alarm.cycleId }, banner: bannerText });
+
+  const { summary: recovered } = await produce(call, id, fixture.normalPart);
+  assert(["OK", "OK_WITH_EXCURSION"].includes(recovered.verdict), `告警后正常件应为合格类：${recovered.verdict} ${recovered.reason}`);
+  await until(async () => (await call("cycle_snapshot")).locateAlarms ?? [], a => a.length === 0, "正常件定位成功后告警未消除", 15000);
+  await appLog(recovered.cycleId, "定位恢复");
+  await page.locator(".fly-verdict").getByText(new RegExp(`判定结果 · SN ${recovered.sn}`)).waitFor({ timeout: 30000 });
+  await banner.waitFor({ state: "detached", timeout: 15000 });
+  await page.locator(`.qs-camera-thumbnail[data-frame-id="k${k + 1}"]`).click();
+  await page.locator('svg.wp-gray-image [aria-label="定位框（按位姿）"]').first().waitFor({ timeout: 30000 });
+  await shot(page, shots, "fixture-9-locate-recovered.png");
+  step("正常件定位成功、告警消除", { id: recovered.id, cycleId: recovered.cycleId, verdict: recovered.verdict });
+
   const fixtureDirs = await readdir(path.join(records.root, "..", "workspaces", id, "fixtures")).catch(() => null);
   await call("site_leave_offline").catch(() => {});
 
@@ -315,7 +377,7 @@ export async function runFixtureE2E(page, options) {
     passed: true, identifier, elapsedMs: Date.now() - startedAt,
     inputs: { sampleSet: options.sampleSet, offlineSampleSet: prepared.dir, sampleSetId: prepared.manifest.id, mmPerPx: fixture.mmPerPx, lyflow: options.lyflow, lyflowVersion: engine.version ?? null },
     recipe: { id, k, shotId: shotSpec.id, view: shotSpec.view, boxes: { bead: scenario.bead, bright: scenario.bright, good: scenario.good } },
-    fixtureDirs, steps, screenshots: outputFiles,
+    locateAlarm: { raisedBy: last.cycleId, clearedBy: recovered.cycleId, failedParts }, fixtureDirs, steps, screenshots: outputFiles,
     boundary: "离线样本集副本的验证样本与示教是同一件的同一批图，统计偏乐观；像素当量为模拟标定，框是演示夹具，不代表现场选框或门限调优",
   };
   if (options.output) await writeFile(options.output, JSON.stringify(result, null, 2) + "\n");

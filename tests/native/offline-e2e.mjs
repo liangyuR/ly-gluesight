@@ -95,19 +95,25 @@ export async function prepareSampleSet(source, outputDir) {
   await cp(source, target, { recursive: true });
   const manifest = { ...original, id: `${original.id}-e2e`, mmPerPx: fixture.mmPerPx };
   const defect = fixture.defect;
-  if (defect) {
-    const from = manifest.parts.find(p => p.partId === defect.from);
-    assert(from && !manifest.parts.some(p => p.partId === defect.partId), `样本集无法生成人工断胶件 ${defect.partId}`);
-    const dir = path.join(target, "parts", defect.partId);
-    await cp(path.join(target, "parts", defect.from), dir, { recursive: true });
-    const file = (await readdir(dir)).find(name => name.toLowerCase().startsWith(`${defect.sampleShot}_${defect.camera}_v1.`.toLowerCase()));
-    assert(file, `样本件 ${defect.from} 缺少 ${defect.sampleShot}_${defect.camera}_v1`);
-    await writeFile(path.join(dir, file), eraseBmp(await readFile(path.join(dir, file)), defect.box));
-    manifest.parts = [...manifest.parts, { ...from, partId: defect.partId, label: "ng", shotLabels: { [defect.sampleShot]: "gap" },
-      origin: `${from.origin ?? from.partId}（端到端人工断胶：${defect.sampleShot} 区域 ${defect.box.join(",")}）` }];
-  }
+  if (defect) await addErasedPart(target, manifest, defect, { label: "ng", shotLabels: { [defect.sampleShot]: "gap" }, note: "人工断胶" });
   await writeFile(path.join(target, "sample-set.json"), JSON.stringify(manifest, null, 2) + "\n");
   return { dir: target, fixture, manifest };
+}
+
+/**
+ * 样本集副本里由 spec.from 复制出 spec.partId，把样本 spec.sampleShot / spec.camera 原图的 spec.box 逐行抹平（eraseBmp），追加进 manifest.parts。
+ * 只改副本（target 是 prepareSampleSet 给出的副本目录）；调用方负责之后重写副本的 sample-set.json。
+ */
+export async function addErasedPart(target, manifest, spec, { label, shotLabels = {}, note }) {
+  const from = manifest.parts.find(p => p.partId === spec.from);
+  assert(from && !manifest.parts.some(p => p.partId === spec.partId), `样本集无法生成${note}件 ${spec.partId}`);
+  const dir = path.join(target, "parts", spec.partId);
+  await cp(path.join(target, "parts", spec.from), dir, { recursive: true });
+  const file = (await readdir(dir)).find(name => name.toLowerCase().startsWith(`${spec.sampleShot}_${spec.camera}_v1.`.toLowerCase()));
+  assert(file, `样本件 ${spec.from} 缺少 ${spec.sampleShot}_${spec.camera}_v1`);
+  await writeFile(path.join(dir, file), eraseBmp(await readFile(path.join(dir, file)), spec.box));
+  manifest.parts = [...manifest.parts, { ...from, partId: spec.partId, label, shotLabels,
+    origin: `${from.origin ?? from.partId}（端到端${note}：${spec.sampleShot} 区域 ${spec.box.join(",")}）` }];
 }
 
 export async function until(read, accepts, message, timeout = 30000, interval = 150) {
