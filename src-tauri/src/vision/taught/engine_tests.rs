@@ -78,7 +78,10 @@ fn recipe() -> Recipe {
 
 /// 示教原图裁模板写到临时目录（绝对路径），像工作台那样作为 base_dir 交给 measure_views；返回 (测量, 判定)。
 fn run(recipe: &Recipe, teach: &FrameImage, image: FrameImage, tag: &str) -> (MultiViewMeasurement, Judgement) {
-    let dir = std::env::temp_dir().join(format!("gs-locate-engine-{tag}-{}", std::process::id()));
+    // 每次调用一个目录：并行的测试各自写、各自删，不会删掉别人还没读的模板
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("gs-locate-engine-{tag}-{}-{seq}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(fixture::TEMPLATE_FILE), fixture::template_pgm(teach, RECT).unwrap()).unwrap();
     let view = recipe.shots[0].view;

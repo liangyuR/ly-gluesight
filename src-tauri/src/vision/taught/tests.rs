@@ -323,11 +323,9 @@ fn end_shift_beyond_limit_drops_reference_after_excluding_ends() {
 }
 
 #[test]
-fn fixture_graph_follows_lyflow_template_contract_and_run_requires_template_dir() {
-    // 防的回归：base_dir 为空或相对时 lyFlow 按进程当前目录找 template.pgm，悄悄打开别处的文件；
-    // 图里的模板名、外圈、anchor 与 lyFlow#32 的契约对不上；胶路太短时恒等位姿下整段超出检测范围、每帧 ERR 92
-    let f = fixture_spec();
-    let recipe = located(f.clone());
+fn fixture_graph_names_template_pad_anchor_and_feeds_image_to_locate() {
+    // 防的回归：图里的模板名、外圈、anchor、角度范围或 pose 输出与 lyFlow#32 的 glue.locate 契约对不上
+    let recipe = located(fixture_spec());
     let graph = build_taught_graph(&recipe, 0).unwrap();
     let locate = graph["nodes"].as_array().unwrap().iter().find(|n| n["id"] == "n_locate").unwrap();
     let params = &locate["params"];
@@ -338,6 +336,12 @@ fn fixture_graph_follows_lyflow_template_contract_and_run_requires_template_dir(
     assert_eq!(params["angleRange"], 0.0);
     assert_eq!(graph["outputs"]["pose"], json!({"node": "n_locate", "port": "pose"}));
     assert!(graph["edges"].as_array().unwrap().iter().any(|e| e["from"]["node"] == "n_load" && e["to"]["node"] == "n_locate"));
+}
+
+#[test]
+fn fixture_run_with_empty_relative_or_template_less_base_dir_is_refused() {
+    // 防的回归：base_dir 为空或相对时 lyFlow 按进程当前目录找 template.pgm，悄悄打开别处的文件；模板缺失时等到引擎里才报错
+    let recipe = located(fixture_spec());
     for base in ["", "fixtures/P1"] {
         assert!(plan_run(&recipe, 0, base).err().unwrap().contains("模板目录"), "{base:?}");
     }
@@ -349,9 +353,14 @@ fn fixture_graph_follows_lyflow_template_contract_and_run_requires_template_dir(
     let _ = std::fs::remove_dir_all(&dir);
     assert!(missing.unwrap().contains("模板缺失"));
     assert!(present);
+}
+
+#[test]
+fn fixture_on_path_shorter_than_five_stations_is_refused() {
+    // 防的回归：胶路太短时两端排除后无站可判，恒等位姿下整段超出检测范围、每帧 ERR 92
     let mut short = document();
     short.shots[0].path = vec![[40.0, 80.0], [52.0, 80.0]];
-    short.shots[0].fixture = Some(f);
+    short.shots[0].fixture = Some(fixture_spec());
     assert!(build_taught_graph(&short.build().unwrap(), 0).unwrap_err().contains("胶路太短"));
 }
 
