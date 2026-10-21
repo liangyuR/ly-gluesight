@@ -38,6 +38,10 @@ export interface ShotDiff {
 type Replay = { candidateRecipe: Recipe; judgement: Judgement; measurements: Measured[] };
 type Original = Pick<PartDetail, "points" | "judgement" | "shots">;
 
+/** 存储的测量点能否按候选规则重判：与后端一致，只有测不了、未测的站挡住；无基准、超出检测范围的站照常重判。 */
+export const rulesRejudgeable = (points: PartDetail["points"]) =>
+  !!points?.st.length && points.st.every(st => st !== ST.invalid && st !== ST.pending);
+
 const sameList = <T>(a: T[], b: T[]) => a.length === b.length && a.every((v, i) => v === b[i]);
 
 function sameLayout(a: Recipe, b: Recipe) {
@@ -70,9 +74,10 @@ export function shotDiffs(layout: Recipe, original: Original, replay: Replay): S
     if (m && !failed) owned.forEach((j, n) => {
       if (before[n] !== after[n]) { changed.push(j); return; }
       const i = at.get(j);
-      if (before[n] !== "ok" || i === undefined || !original.points) return;
+      if (before[n] === "gap" || before[n] === "inv" || i === undefined || !original.points) return;
+      // 位置只有有基准的站才有；胶宽在无基准、超出检测范围的站上也照样判，一并比
       const d0 = original.points.d[j], d1 = m.d[i];
-      if (d0 != null && d1 != null) maxDd = Math.max(maxDd ?? 0, Math.abs(d0 - d1));
+      if (before[n] === "ok" && d0 != null && d1 != null) maxDd = Math.max(maxDd ?? 0, Math.abs(d0 - d1));
       const w0 = original.points.w?.[j], w1 = m.w[i];
       if (w0 != null && w1 != null && Number.isFinite(w0) && Number.isFinite(w1)) maxDw = Math.max(maxDw ?? 0, Math.abs(w0 - w1));
     });

@@ -94,6 +94,13 @@ describe("历史工件复测", () => {
     expect(screen.getByRole("button", { name: "将此帧用于示教" })).toBeDisabled();
   });
 
+  it("记录含无基准、超出检测范围的站 → 仍可按候选规则重判",async()=>{
+    detail.points={d:[3,null,null,3],st:[0,4,5,0],w:[null,4,null,null]};
+    show();await screen.findByText(/原图完整/);
+    await userEvent.click(screen.getByRole("button",{name:"按候选规则重判"}));
+    expect(workspaceApi.compare).toHaveBeenCalledWith(ws.data!.workspace.doc.id,ws.data!.workspace.revision,detail.summary.id,false);
+  });
+
   it("候选含不检拍照点 → 其余点已示教即可从原图复测整件",async()=>{
     ws.data!.workspace.doc.shots[1].skip=true;ws.data!.workspace.frames[1].saved=false;ws.data!.progress.shots[1].state="skipped";
     show();await screen.findByText(/原图完整/);

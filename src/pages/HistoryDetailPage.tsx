@@ -6,7 +6,7 @@ import { computeVis, partReferenceBadge, shotLabel, ShotTiles, UnrolledCurve, ty
 import { displayReason, formatTime, historyApi, sampleLabelText, sourceLabel, triggerModeLabel, verdictLabel, verdictTone, type HistoryQuery, type PartDetail } from "../features/history";
 import PartTrace from "../features/history/components/PartTrace";
 import ReplayDiff from "../features/history/components/ReplayDiff";
-import { replayEdges, shotDiffs } from "../features/history/replay";
+import { replayEdges, rulesRejudgeable, shotDiffs } from "../features/history/replay";
 import { subscribe } from "../features/plc";
 import { workspaceApi } from "../features/workspace/api";
 import { useWorkspace } from "../features/workspace/context";
@@ -105,7 +105,7 @@ export default function HistoryDetailPage() {
 
   const runCompare=async(fromRaw:boolean)=>{
     if(pending.current||!detail||!ws.data||ws.busy||ws.dirty||ws.frameDirty||ws.data.workspace.doc.id!==layout?.id)return;
-    if(fromRaw?(!raw?.complete||!candidateTaught(ws.data,raw?.imageSource==="offlineSample")):(!detail.points?.st.length||!detail.points.st.every(st=>st<2)))return;
+    if(fromRaw?(!raw?.complete||!candidateTaught(ws.data,raw?.imageSource==="offlineSample")):!rulesRejudgeable(detail.points))return;
     pending.current=true;savedSerial.current++;setWorking(true);setError("");
     const valid=()=>current.current.alive&&current.current.scope===scope;
     try{const result=await workspaceApi.compare(ws.data.workspace.doc.id,ws.data.workspace.revision,detail.summary.id,fromRaw);if(valid()){setComparison(result);setSavedComparisons(v=>[result,...v.filter(c=>c.id!==result.id)]);}}
@@ -142,7 +142,7 @@ export default function HistoryDetailPage() {
   const s=detail.summary,j=detail.judgement,reference=partReferenceBadge(detail);
   const candidateReady=!!ws.data&&ws.data.workspace.doc.id===layout?.id&&!ws.dirty&&!ws.frameDirty;
   const disabled=working||ws.busy||!candidateReady;
-  const complete=!!detail.points?.st.length&&detail.points.st.every(st=>st<2);
+  const complete=rulesRejudgeable(detail.points);
   const sampleImages=raw?.imageSource==="offlineSample";
   const imageSn=sampleImages?s.sample?.sn??"—":s.sn;
   const imageTail=" · k"+(selected+1)+" · 视角 "+selectedView;

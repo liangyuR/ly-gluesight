@@ -44,6 +44,14 @@ describe("原图重跑逐拍照点比对", () => {
     expect(diffs[0]).toMatchObject({ differs: true, changed: [0, 1], maxDd: null, replay: { error: "定位失败", noRef: 2, inv: 0 } });
   });
 
+  it("原结果与重跑同为无基准站、只有胶宽变了 → 记为胶宽差异", () => {
+    const detail = original();
+    detail.points = { d: [null, null, 3, 3], st: [4, 4, 0, 0], w: [2, 2, null, null] };
+    const lost = { ...measured(0, [], [4, 4]), d: [null, null], w: [2.5, 2], referenceFailed: [{ view: 1, reason: "定位失败" }] };
+    const diffs = shotDiffs(layout(), detail, { candidateRecipe: layout(), judgement: judgement(["OK", "OK"]), measurements: [lost, measured(1, [3, 3], [0, 0])] })!;
+    expect(diffs[0]).toMatchObject({ differs: true, changed: [], maxDd: null, maxDw: 0.5 });
+  });
+
   it("多视角拍照点只有非首视角分段结论改变 → 该拍照点标为差异", () => {
     const multiView = (): Recipe => {
       const base = layout(), [p1, p2] = base.segments;

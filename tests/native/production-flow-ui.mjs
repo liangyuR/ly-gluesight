@@ -132,7 +132,7 @@ async function runLocateFailScenarios(page, invokeRead, navigation) {
   const outcomes = [];
   for (const { option, verdict, plcCode, faultCode } of [
     { option: "定位失败（胶正常）", verdict: "ERR_INSPECT", plcCode: 90, faultCode: 92 },
-    { option: "定位失败 + 断胶", verdict: "NG_GAP", faultCode: 0 },
+    { option: "定位失败 + 断胶", verdict: "NG_GAP", plcCode: 13, faultCode: 0 },
   ]) {
     await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
     await page.locator('select[aria-label="离线配方"]').selectOption(recipeId);
@@ -155,7 +155,9 @@ async function runLocateFailScenarios(page, invokeRead, navigation) {
     const card = page.locator(".fly-verdict");
     await card.getByText(new RegExp(`判定结果 · SN ${summary.sn}`)).waitFor();
     await card.getByLabel("位置基准：定位失败", { exact: true }).waitFor();
-    await page.getByText(verdict === "NG_GAP" ? "NG · 定位失败" : "定位失败", { exact: true }).first().waitFor();
+    // 只看定位失败那一帧的缩略图状态，不能被判定卡上同字的徽标顶替
+    const thumbnailState = verdict === "NG_GAP" ? /^NG · 定位失败$/ : /^定位失败$/;
+    await page.locator(`.qs-camera-thumbnail[data-frame-id="k${failed[0] + 1}"] .qs-frame-state`).filter({ hasText: thumbnailState }).waitFor();
     outcomes.push({ option, id: summary.id, sn: summary.sn, verdict: summary.verdict, plcCode: summary.plcCode, faultCode: summary.faultCode, reason: summary.reason, frame: failed[0] });
   }
   return outcomes;
