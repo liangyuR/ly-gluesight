@@ -5,9 +5,9 @@ import { partDetail, workspaceView } from "./fixtures";
 
 const layout = () => workspaceView().layout;
 const judgement = (verdicts: Judgement["verdict"][]): Judgement => ({ verdict: verdicts.includes("NG_GAP") ? "NG_GAP" : "OK", plcCode: 1, faultCode: 0, reason: "",
-  gaps: [], segments: verdicts.map(verdict => ({ verdict, min: 3, max: 3, excursionLen: 0, wMin: null, wMax: null, wExcursionLen: 0 })) });
+  gaps: [], segments: verdicts.map(verdict => ({ verdict, min: 3, max: 3, excursionLen: 0, wMin: null, wMax: null, wExcursionLen: 0, referenceInvalid: false })) });
 const measured = (k: number, d: number[], st: number[]): Measured => ({ cycleId: "cycle-1", shotId: `P${k + 1}`, camera: "CAM-1", bundleId: "bundle-A", sn: "SN-101", k, cam: 0,
-  located: true, score: 1, ms: 5, queueMs: null, engineMs: null, coreMs: null, error: null, idx: [2 * k, 2 * k + 1], d, w: [null, null], st, px: [] });
+  referenceFailed: [], score: 1, ms: 5, queueMs: null, engineMs: null, coreMs: null, error: null, idx: [2 * k, 2 * k + 1], d, w: [null, null], st, px: [] });
 
 function original() {
   const detail = partDetail();
@@ -32,10 +32,16 @@ describe("原图重跑逐拍照点比对", () => {
   });
 
   it("重跑时拍照点测量失败 → 该点全部记为状态变化", () => {
-    const failed = { ...measured(0, [], []), error: "原图解码失败", idx: [], located: false };
+    const failed = { ...measured(0, [], []), error: "原图解码失败", idx: [] };
     const diffs = shotDiffs(layout(), original(), { candidateRecipe: layout(), judgement: judgement(["OK", "OK"]), measurements: [failed, measured(1, [3, 3], [0, 0])] })!;
     expect(diffs[0]).toMatchObject({ differs: true, changed: [0, 1], replay: { error: "原图解码失败", inv: 2 } });
     expect(diffs[1].differs).toBe(false);
+  });
+
+  it("重跑时拍照点定位失败 → 有胶站记为无基准的状态变化并注明原因，不当成测量失败", () => {
+    const lost = { ...measured(0, [], [4, 4]), d: [null, null], referenceFailed: [{ view: 1, reason: "定位失败" }] };
+    const diffs = shotDiffs(layout(), original(), { candidateRecipe: layout(), judgement: judgement(["OK", "OK"]), measurements: [lost, measured(1, [3, 3], [0, 0])] })!;
+    expect(diffs[0]).toMatchObject({ differs: true, changed: [0, 1], maxDd: null, replay: { error: "定位失败", noRef: 2, inv: 0 } });
   });
 
   it("多视角拍照点只有非首视角分段结论改变 → 该拍照点标为差异", () => {

@@ -1,10 +1,10 @@
 
 export type Phase = "IDLE" | "VALIDATE" | "ACQUIRE" | "DRAIN" | "JUDGE" | "REPORT" | "RELEASE" | "FAULT";
-export type FrameStatus = "waiting" | "measuring" | "done" | "locateFailed" | "error" | "missing";
+export type FrameStatus = "waiting" | "measuring" | "done" | "error" | "missing";
 export type Verdict = "OK" | "OK_WITH_EXCURSION" | "NG_POSITION" | "NG_WIDTH" | "NG_ABSOLUTE" | "NG_GAP" | "ERR_INSPECT";
 export type TriggerMode = "fly" | "stop";
 export type ProductSource = "plc" | "manual";
-export type Scenario = "normal" | "excursion" | "gap" | "lostFrame" | "locateFail" | "countMismatch" | "motionTimeout" | "ackMismatch" | "random";
+export type Scenario = "normal" | "excursion" | "gap" | "lostFrame" | "locateFail" | "locateFailGap" | "countMismatch" | "motionTimeout" | "ackMismatch" | "random";
 export type OfflineFault = "disconnect" | "heartbeatStop" | "heartbeatResume" | "rejectWrite" | "rejectRead" | "delay" | "clear";
 export type RecordMode = "off" | "failed" | "all";
 
@@ -153,6 +153,13 @@ export interface RecipeSummary {
   triggerCount: number | null;
 }
 
+/** 某个视图没有位置基准（帧徽标）：该视图的有胶站已是“有胶、无基准”（st 4），判定只看站状态。 */
+export interface ReferenceFailure {
+  view: number;
+  /** 简短原因，如“定位失败”“两端搬移超限” */
+  reason: string;
+}
+
 export interface FrameView {
   viewResults?: {view:number;verdict:Verdict;error:string|null;score:number|null;ms:number|null}[];
   status: FrameStatus;
@@ -171,6 +178,8 @@ export interface FrameView {
   points: number;
   gapPoints: number;
   ms: number | null;
+  /** 没有位置基准的视图；空表示基准正常。与本件结论无关，NG / ERR 都照样显示徽标 */
+  referenceFailed: ReferenceFailure[];
 }
 
 export interface CandidateDebug { recipeId: string; revision: number }
@@ -202,6 +211,8 @@ export interface SegmentResult {
   wMin: number | null;
   wMax: number | null;
   wExcursionLen: number;
+  /** 位置基准无效：本段无基准的站连续超过 2 mm 或有胶站全无基准，位置判不了 */
+  referenceInvalid: boolean;
 }
 
 /** 超过允许长度的连续缺胶：s0、s1 是所在拍照点中线上的段内弧长（mm）。 */
@@ -272,7 +283,8 @@ export interface Measured {
   sn: string;
   k: number;
   cam: number;
-  located: boolean;
+  /** 没有位置基准的视图（这些视图的有胶站 st 为 4） */
+  referenceFailed: ReferenceFailure[];
   score: number;
   ms: number;
   queueMs: number | null;
@@ -280,10 +292,11 @@ export interface Measured {
   coreMs: number | null;
   error: string | null;
   idx: number[];
-  /** 胶条中线相对示教中线的横向偏移（mm） */
-  d: number[];
+  /** 胶条中线相对示教中线的横向偏移（mm）；只有 st 0 有值，其余为 null */
+  d: (number | null)[];
   /** 胶宽（mm）；没测为 null */
   w: (number | null)[];
+  /** 站状态，见 ST */
   st: number[];
   /** 图像测量时各点在原图里的像素位置 */
   px: [number, number][];
@@ -370,8 +383,11 @@ export interface SampleRun {
   message: string | null;
 }
 
-/** 测量点显示状态 */
-export type PointVis = "none" | "ok" | "exc" | "ng" | "gap" | "inv" | "miss";
+/** 测站状态（与后端 measure.rs、记录库 BLOB 同一张码表；3 只出现在记录库里，表示未测）。 */
+export const ST = { ok: 0, gap: 1, invalid: 2, pending: 3, noRef: 4, outOfRange: 5 } as const;
+
+/** 测量点显示状态：noRef 有胶但没有位置基准（不判位置）；out 超出检测范围（不参与判定）。 */
+export type PointVis = "none" | "ok" | "exc" | "ng" | "gap" | "inv" | "miss" | "noRef" | "out";
 
 export type ReadinessKey = "plc" | "camera" | "recipe" | "engine" | "audit" | "site";
 export type ReadinessState = "ok" | "waiting" | "blocked";

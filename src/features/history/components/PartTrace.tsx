@@ -3,10 +3,11 @@ import type { Recipe } from "../../cycle/types";
 import { Panel } from "../../workspace/components";
 import type { RecordImages } from "../../workspace/types";
 import type { PartDetail } from "../types";
+import { referenceBadge } from "../../cycle/vis";
 
 const deliveryLabel = { notRequired: "无需交付", pending: "等待提交", submitted: "已提交，等待 PLC 确认", acknowledged: "PLC 已确认", failed: "交付失败" };
 const recordingLabel = { pending: "正在落盘", off: "录制关闭", notRetained: "本件按保留策略不存图", complete: "完整落盘", incomplete: "原图不完整", failed: "录制失败" };
-const statusLabel = { waiting: "未到达", measuring: "未完成", done: "测量完成", locateFailed: "定位失败", error: "测量出错", missing: "未收到计划帧" };
+const statusLabel = { waiting: "未到达", measuring: "未完成", done: "测量完成", error: "测量出错", missing: "未收到计划帧" };
 
 type Shot = PartDetail["shots"][number];
 
@@ -20,6 +21,7 @@ export default function PartTrace({ detail, layout, raw, selected, selectedView,
 }) {
   const { summary, recording } = detail;
   const sampleImages = raw?.imageSource === "offlineSample";
+  const reference = (shot: Shot) => referenceBadge(detail.frames[shot.k]?.referenceFailed, (detail.frames[shot.k]?.referenceFailed.length ?? 0) > 1);
   const columns: TableColumn<Shot>[] = [
     {
       key: "shot",
@@ -52,6 +54,7 @@ export default function PartTrace({ detail, layout, raw, selected, selectedView,
       header: "状态与原因",
       render: shot => <>
         <StatusBadge tone={shot.status === "done" ? "ok" : "ng"}>{statusLabel[shot.status]}</StatusBadge>
+        {reference(shot) && <StatusBadge tone="fault">{reference(shot)}</StatusBadge>}
         {shot.error && <div>{shot.error}</div>}
       </>,
     },

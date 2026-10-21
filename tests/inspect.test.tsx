@@ -190,6 +190,15 @@ describe("在线检测整件判定显示", () => {
     expect(card).toHaveClass(tone);
   });
 
+  it("整件判断胶而本件有帧定位失败 → 判定卡与该帧缩略图仍挂定位失败徽标", () => {
+    const part = cyclePart();
+    part.frames[0] = { ...part.frames[0], gapPoints: 1, referenceFailed: [{ view: 1, reason: "定位失败" }] };
+    state = { ...state, phase: "REPORT", part, result: { ...cycleResult(), verdict: "NG_GAP", plcCode: 13 } };
+    render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    expect(within(screen.getByRole("region", { name: "整件判定" })).getByLabelText("位置基准：定位失败")).toBeVisible();
+    expect(screen.getByText("NG · 定位失败")).toBeVisible();
+  });
+
   it("检测段判断胶 → 段结果显示中文判定而非枚举码", () => {
     const result = cycleResult();
     state = { ...state, phase: "REPORT", part: cyclePart(), result: { ...result, segments: [{ ...result.segments[0], verdict: "NG_GAP" }, result.segments[1]] } };

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, Slider } from "qing-steel";
-import type { JudgeParams, Measured, PointVis, Recipe } from "../types";
+import { ST, type JudgeParams, type Measured, type PointVis, type Recipe } from "../types";
 import { CAM_COLORS, segmentLength } from "../vis";
 
 const PAD = { l: 38, r: 8, t: 8, b: 30 };
@@ -24,7 +24,7 @@ function fitLabel(name: string, room: number) {
   return chars.length > 1 ? chars.join("") + "…" : "";
 }
 
-const pointLabels: Record<PointVis, string> = { none: "待测", ok: "合格", exc: "超公差", ng: "NG", gap: "断胶", inv: "未测成", miss: "缺帧" };
+const pointLabels: Record<PointVis, string> = { none: "待测", ok: "合格", exc: "超公差", ng: "NG", gap: "断胶", inv: "未测成", miss: "缺帧", noRef: "无基准", out: "超出检测范围" };
 
 function niceTicks(lo: number, hi: number): number[] {
   const span = hi - lo;
@@ -89,7 +89,9 @@ export default function UnrolledCurve({ layout, measured, vis, quantity = "d", s
     const values = new Float32Array(n).fill(NaN);
     measured.forEach((m) =>
       m.idx.forEach((j, i) => {
-        if (m.st[i] !== 0) return;
+        // 位置曲线只画有基准的有胶站；胶宽曲线另画无基准、超出检测范围里测到的胶宽（与后端照判胶宽一致）
+        const st = m.st[i];
+        if (quantity === "w" ? st !== ST.ok && st !== ST.noRef && st !== ST.outOfRange : st !== ST.ok) return;
         const v = quantity === "w" ? m.w?.[i] : m.d[i];
         if (v == null || !Number.isFinite(v) || j < 0 || j >= n) return;
         values[j] = v;

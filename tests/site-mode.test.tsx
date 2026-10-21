@@ -59,7 +59,7 @@ describe("离线模式工况", () => {
   });
   it.each([
     ["sampleSet", ["normal", "lostFrame", "countMismatch", "motionTimeout", "ackMismatch"]],
-    ["synthetic", ["normal", "excursion", "gap", "lostFrame", "locateFail", "countMismatch", "motionTimeout", "ackMismatch", "random"]],
+    ["synthetic", ["normal", "excursion", "gap", "lostFrame", "locateFail", "locateFailGap", "countMismatch", "motionTimeout", "ackMismatch", "random"]],
   ] as const)("离线来源 %s → 工况只列该来源后端接受的工况", async (source, expected) => {
     site = siteStatus({ mode: "offline", source, measurement: source === "sampleSet" ? "lyFlow" : "simulated" });
     render(<MemoryRouter><OfflinePage /></MemoryRouter>);

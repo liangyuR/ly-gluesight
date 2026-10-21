@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { PointVis, Recipe } from "../types";
-import { runs, segmentLength, shotGaps, shotLabel, shotSegment, shotState, shotStateLabel, visColor, type ShotState } from "../vis";
+import { runs, segmentLength, shotGaps, shotLabel, shotSegment, shotState, shotStateLabel, visColor, visDash, type ShotState } from "../vis";
 
 export const shotTone: Record<ShotState, string> = {
   skip: "c-mut",
@@ -12,6 +12,8 @@ export const shotTone: Record<ShotState, string> = {
   gap: "c-ng",
   inv: "c-err",
   miss: "c-err",
+  noRef: "c-err",
+  out: "c-mut",
 };
 
 const fmt = (v: number) => v.toFixed(1);
@@ -59,7 +61,7 @@ export function ShotLine({ layout, k, vis, compact = false, selectedPoint = null
             stroke={visColor[r.state]}
             strokeWidth={sw}
             strokeLinecap="round"
-            strokeDasharray={r.state === "none" ? "3 3" : r.state === "inv" || r.state === "miss" ? "4 3" : undefined}
+            strokeDasharray={visDash[r.state]}
             vectorEffect="non-scaling-stroke"
           />
         ),

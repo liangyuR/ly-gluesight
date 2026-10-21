@@ -48,7 +48,7 @@ async function verifyDisk(root, detail, recipe) {
     shots = db.prepare("SELECT * FROM part_shots WHERE part_id=? ORDER BY k").all(part.id);
     assert.equal(shots.length, recipe.shots.length);
     points = db.prepare("SELECT format,data FROM part_points WHERE part_id=?").get(part.id);
-    assert.equal(points.format, 2);
+    assert.equal(points.format, 3);
     assert.equal(points.data.byteLength, recipe.points.k.length * 9);
     const bytes = Buffer.from(points.data);
     for (let j = 0; j < recipe.points.k.length; j++) {
@@ -125,6 +125,40 @@ async function verifyDisk(root, detail, recipe) {
   }
   assert.equal(metadata.frames.length, matchedFrames.size, "本件元数据含有未关联的原图");
   return { database, independentReadOnlyConnection: true, measurementPoints: recipe.points.k.length, directory, files, metadata: metadataPath };
+}
+
+/** 定位失败工况：胶正常 → ERR 90 / 92；同一帧另有断胶 → NG 优先（断胶）。两种都要在判定卡和该帧缩略图上挂“定位失败”徽标。 */
+async function runLocateFailScenarios(page, invokeRead, navigation) {
+  const outcomes = [];
+  for (const { option, verdict, plcCode, faultCode } of [
+    { option: "定位失败（胶正常）", verdict: "ERR_INSPECT", plcCode: 90, faultCode: 92 },
+    { option: "定位失败 + 断胶", verdict: "NG_GAP", faultCode: 0 },
+  ]) {
+    await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
+    await page.locator('select[aria-label="离线配方"]').selectOption(recipeId);
+    await page.getByRole("combobox", { name: "离线工况", exact: true }).click();
+    await page.getByRole("option", { name: option, exact: true }).click();
+    const previous = await invokeRead("history_query", { query: { recipeId, scope: "offline", limit: 1 } });
+    await page.getByRole("button", { name: "运行一件", exact: true }).click();
+    const summary = await until(page, async () => (await invokeRead("history_query", { query: { recipeId, scope: "offline", limit: 1 } })).items.find(item => item.id !== previous.items[0]?.id),
+      Boolean, `工况“${option}”未生成新的工件记录`, 60000);
+    assert.equal(summary.verdict, verdict, `工况“${option}”：${summary.reason}`);
+    if (plcCode != null) assert.equal(summary.plcCode, plcCode);
+    assert.equal(summary.faultCode, faultCode, `工况“${option}”：${summary.reason}`);
+    await until(page, () => invokeRead("site_status"), status => !status.running, `工况“${option}”握手未结束`);
+    const detail = await invokeRead("history_detail", { id: summary.id });
+    const failed = detail.frames.flatMap((frame, k) => frame.referenceFailed.length ? [k] : []);
+    assert.equal(failed.length, 1, `工况“${option}”应恰有一帧没有位置基准：${JSON.stringify(failed)}`);
+    assert(detail.frames.every(frame => frame.status === "done"), "定位失败不再是帧状态，帧应照常测完");
+    assert(detail.points.st.some(state => state === 4), "定位失败帧的有胶站应为无基准（4）");
+    await navigation.getByRole("link", { name: "在线检测", exact: true }).click();
+    const card = page.locator(".fly-verdict");
+    await card.getByText(new RegExp(`判定结果 · SN ${summary.sn}`)).waitFor();
+    await card.getByLabel("位置基准：定位失败", { exact: true }).waitFor();
+    await page.getByText(verdict === "NG_GAP" ? "NG · 定位失败" : "定位失败", { exact: true }).first().waitFor();
+    outcomes.push({ option, id: summary.id, sn: summary.sn, verdict: summary.verdict, plcCode: summary.plcCode, faultCode: summary.faultCode, reason: summary.reason, frame: failed[0] });
+  }
+  return outcomes;
 }
 
 export async function runProductionFlow(page, options = {}) {
@@ -224,6 +258,7 @@ export async function runProductionFlow(page, options = {}) {
     assert.equal(preview.bytes, 16 + preview.width * preview.height);
     assert(preview.sourceWidth > 0 && preview.sourceHeight > 0);
   }
+  const locateFail = await runLocateFailScenarios(page, invokeRead, navigation);
   await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
   await page.getByRole("button", { name: "退出离线", exact: true }).click();
   await until(page, () => invokeRead("site_status"), status => status.mode === "real", "UI 未退出离线模式");
@@ -231,7 +266,7 @@ export async function runProductionFlow(page, options = {}) {
   assert.deepEqual(await invokeRead("plc_get_config"), guard.config, "退出离线后 PLC 配置未恢复");
   assert.deepEqual(await invokeRead("camera_rig_config"), guard.cameras, "退出离线后相机组未恢复");
   assert.deepEqual(await invokeRead("cycle_get_settings"), (({ productSource, ...rest }) => ({ ...rest, productSource: "plc" }))(guard.settings), "退出离线后系统设置被改动");
-  const result = { passed: true, operation: "UI 通过站点模式进入离线·合成图、工件启动、模拟测量、S7 握手结束、SQLite 与原图真实落盘并重开读取、退出离线恢复真机配置", identifier, recipeId, offlinePort: offline.port, startedAt, elapsedMs: Date.now() - startedAt, summary, observations, recorded, disk, boundary: "进程内 S7 服务、虚拟产线、模拟相机与模拟测量；不代表现场 PLC、SDK 或 lyFlow 引擎验收" };
+  const result = { passed: true, operation: "UI 通过站点模式进入离线·合成图、工件启动、模拟测量、S7 握手结束、SQLite 与原图真实落盘并重开读取、退出离线恢复真机配置", identifier, recipeId, offlinePort: offline.port, startedAt, elapsedMs: Date.now() - startedAt, summary, observations, recorded, disk, locateFail, boundary: "进程内 S7 服务、虚拟产线、模拟相机与模拟测量；不代表现场 PLC、SDK 或 lyFlow 引擎验收" };
   if (options.output) {
     await mkdir(path.dirname(options.output), { recursive: true });
     await page.screenshot({ path: path.join(path.dirname(options.output), "production-flow.png"), fullPage: true });
