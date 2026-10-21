@@ -222,7 +222,8 @@ pub(super) fn workspace() -> Workspace {
 }
 
 fn fixture_spec() -> crate::recipe::FixtureSpec {
-    crate::recipe::FixtureSpec { rect: [380, 40, 32, 32], source: "capture-test-v1".into(), search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None }
+    // 中线是 y = 10–30 的水平线、搜索半宽 150 px：框（含外圈）要在两端切向延长的走廊之外，只能放到 y > 184
+    crate::recipe::FixtureSpec { rect: [100, 200, 32, 32], source: "capture-test-v1".into(), search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None }
 }
 
 #[test]
@@ -231,7 +232,7 @@ fn fixture_source_is_owned_by_the_backend_and_only_saving_params_rebinds_it() {
     // 或重新冻结后旧框照样裁新图试测——测量定义说是同一模板，像素却变了
     fn fresh() -> Workspace {
         let mut w = workspace();
-        for image in &mut w.frames[0].views { image.size = [600, 100]; }
+        for image in &mut w.frames[0].views { image.size = [600, 300]; }
         w.frames[0].image = Some(w.frames[0].views[0].clone());
         w.doc.shots[0].fixture = Some(fixture_spec());
         store_active(&mut w, 0);
