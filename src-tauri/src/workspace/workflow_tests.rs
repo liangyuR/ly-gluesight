@@ -217,7 +217,7 @@ pub(super) fn workspace() -> Workspace {
         store_active(&mut w, 0);
     }
     load_active(&mut w, 0, 1).unwrap();
-    w.validation = Some(Validation { revision: w.revision, passed: true, checked_at: 1, checks: Vec::new(), samples: Vec::new(), environment_tag: json!({}) });
+    w.validation = Some(Validation { revision: w.revision, passed: true, checked_at: 1, checks: Vec::new(), samples: Vec::new(), environment_tag: json!({}), fixture: Vec::new() });
     w
 }
 
@@ -504,5 +504,60 @@ fn rotation_can_only_be_enabled_by_saving_params_with_an_explicit_confirmation()
         assert_eq!(result.is_ok(), accepted, "{name}：{result:?}");
         let saved = w.doc.shots[0].fixture.as_ref().unwrap().angle_range_deg;
         assert_eq!(saved, if accepted { after } else { before }, "{name}");
+    }
+}
+
+fn fixture_workspace() -> Workspace {
+    let mut w = workspace();
+    for image in &mut w.frames[0].views { image.size = [600, 300]; }
+    w.frames[0].image = Some(w.frames[0].views[0].clone());
+    w.doc.shots[0].fixture = Some(fixture_spec());
+    store_active(&mut w, 0);
+    w
+}
+
+fn fixture_report(passed: bool, applicable: bool) -> crate::vision::fixture_quality::FixtureViewReport {
+    use crate::vision::fixture_quality::{EndSuggestion, FixtureViewReport};
+    FixtureViewReport { k: 0, view: 1, shot_id: "P1".into(), passed, samples: 12, checks: Vec::new(), sigma_mm: Some(0.02), mean_mm: Some(0.0),
+        nominal_mm: 0.0, tolerance_mm: 0.5, search_use: Some(0.1), rotation: Default::default(), rows: Vec::new(),
+        suggestion: Some(EndSuggestion { p99_mm: 1.2, max_end_shift_mm: 2.2, end_margin_mm: 1.3, applicable, note: String::new() }) }
+}
+
+#[test]
+fn end_suggestion_is_applied_only_from_the_current_validation_and_invalidates_that_views_trial() {
+    // 防的回归（决定一）：拿过期验证（或不能采用）的建议写进配方；写了 maxEndShiftMm 与示教余量却不作废该视图的试测与验证
+    // （名称，验证修订是否当前，建议能否采用，是否接受）
+    for (name, current, applicable, accepted) in [("验证已过期", false, true, false), ("建议不能采用", true, false, false), ("当前验证的建议", true, true, true)] {
+        let mut w = fixture_workspace();
+        let revision = w.revision;
+        let validation = w.validation.as_mut().unwrap();
+        validation.fixture = vec![fixture_report(true, applicable)];
+        if !current { validation.revision = revision + 1; }
+        let result = super::fixture::apply_fixture_suggestion(&mut w, revision, 0, 1);
+        assert_eq!(result.is_ok(), accepted, "{name}：{result:?}");
+        let f = w.doc.shots[0].views[0].fixture.clone().unwrap();
+        let state = |view: u8| w.frames[0].view_states.iter().find(|s| s.view == view).unwrap();
+        if accepted {
+            assert_eq!((f.max_end_shift_mm, f.end_margin_mm), (Some(2.2), 1.3), "{name}");
+            assert_eq!(w.doc.shots[0].fixture, Some(f), "{name}：所选视图的拍照点级 fixture 同步");
+            assert!(state(1).trial.is_none() && !state(1).saved && w.frames[0].trial.is_none(), "{name}：该视图试测作废");
+            assert!(state(2).trial.is_some(), "{name}：其他视图试测不动");
+            assert!(w.revision > revision, "{name}：修订号前进，验证随之失效");
+        } else {
+            assert_eq!((f.max_end_shift_mm, f.end_margin_mm), (None, 0.0), "{name}");
+            assert_eq!(w.revision, revision, "{name}");
+        }
+    }
+}
+
+#[test]
+fn publishing_requires_a_passed_fixture_report_for_every_fixture_view_in_the_validation() {
+    // 防的回归（G3 留下的发布门）：G4 之前通过的验证（修订号还对得上）没有特征定位统计，或统计没通过，仍能发布
+    let w = fixture_workspace();
+    let recipe = w.doc.build().unwrap();
+    let mut validation = w.validation.clone().unwrap();
+    for (name, reports, ok) in [("缺特征定位统计", vec![], false), ("统计没通过", vec![fixture_report(false, true)], false), ("统计通过", vec![fixture_report(true, true)], true)] {
+        validation.fixture = reports;
+        assert_eq!(super::fixture::require_fixture_validation(&recipe, &validation).is_ok(), ok, "{name}");
     }
 }

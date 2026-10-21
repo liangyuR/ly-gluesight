@@ -230,6 +230,9 @@ pub struct Validation {
     pub checks: Vec<Check>,
     pub samples: Vec<SampleResult>,
     pub environment_tag: Value,
+    /// 每个特征定位视图在独立正常样本上的统计（G4）；G4 之前的验证没有它，发布门按没通过处理
+    #[serde(default)]
+    pub fixture: Vec<vision::fixture_quality::FixtureViewReport>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1460,7 +1463,11 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
     checks.push(Check { name: "完整采集".into(), passed: captured, detail: if captured { "示教来自完整的独立采集轮次".into() } else { "请先采用完整采集轮次".into() } });
     let store = app.state::<Store>();
     let mut results = Vec::new();
+    // 独立正常样本上的特征定位统计（含亮度 ±40、±3° 探测）；缺陷样本不进统计
+    let mut fixture_probes = Vec::new();
     for sample in &w.samples {
+        let normal = matches!(sample.expected, Verdict::Ok | Verdict::OkWithExcursion);
+        let mut probes = Vec::new();
         let result = (|| -> Result<SampleResult, String> {
             if let Some(sample_id) = &sample.sample_id {
                 let bank = w
@@ -1480,12 +1487,13 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
                 }
                 if w.capture_id.as_deref() == Some(sample_id) { return Err("示教采集不能作为独立验证样本".into()); }
                 let dir = app.state::<WorkspaceHost>().dir(&r.id).join("samples").join(sample_id);
-                let (table, _) = measure_images(app, w, r.shot_count(), "", |k, v| {
+                let (table, _) = measure_images_from(app, w, r.shot_count(), "", MeasurementSource::CurrentDevices, normal.then_some(&mut probes), |k, v| {
                     let path = dir.join(format!("k{k}-v{v}.pgm"));
                     if path.is_file() { crate::image_file::load(&path) }
                     else if workflow::selected_views(w, k).len() == 1 { crate::image_file::load(&dir.join(format!("k{k}.pgm"))) }
                     else { Err(format!("样本缺少拍照点 {} 图 {v}", k + 1)) }
                 })?;
+                for probe in &mut probes { probe.sample.name = bank.name.clone(); }
                 return Ok(SampleResult::judged(sample, bank.name.clone(), String::new(), judge::judge(&r, &table)));
             }
             let history_id = sample.history_id.ok_or("样本来源未指定")?;
@@ -1504,9 +1512,11 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
                 return Err("历史样本的采集结构或 PLC 轨迹计划版本不匹配，或原图不完整".into());
             }
             if w.frames.iter().flat_map(|f| &f.views).any(|i| i.history_id == Some(history_id)) { return Err("示教原图所属工件不能同时作为独立验证样本".into()); }
-            let (table, _) = measure_images(app, w, r.shot_count(), &detail.summary.sn, |k, v| history_image(app, &detail, k, v))?;
+            let (table, _) = measure_images_from(app, w, r.shot_count(), &detail.summary.sn, MeasurementSource::CurrentDevices, normal.then_some(&mut probes), |k, v| history_image(app, &detail, k, v))?;
+            for probe in &mut probes { probe.sample.name = format!("SN {}", detail.summary.sn); }
             Ok(SampleResult::judged(sample, format!("SN {}", detail.summary.sn), detail.summary.sn.clone(), judge::judge(&r, &table)))
         })();
+        if result.is_ok() { fixture_probes.append(&mut probes); }
         results.push(result.unwrap_or_else(|e| {
             SampleResult {
                 history_id: sample.history_id,
@@ -1530,6 +1540,8 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
     let normals: Vec<_> = results.iter().filter(|r| matches!(r.expected, Verdict::Ok | Verdict::OkWithExcursion)).collect();
     checks.push(Check { name:"独立正常样本".into(), passed: have_ok && !normals.is_empty() && normals.iter().all(|r| r.passed),
         detail:"至少一套独立正常整圈样本，所选正常样本均须符合预期；缺陷样本验证结果单独保留".into() });
+    let (fixture_reports, fixture_check) = fixture::validation_reports(&r, fixture_probes)?;
+    checks.extend(fixture_check);
     let base = cycle.recipe(&r.id).map(|r| r.revision_id.clone());
     checks.push(Check {
         name: "生产版本".into(),
@@ -1548,6 +1560,7 @@ fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
         checks,
         samples: results,
         environment_tag: initial_environment,
+        fixture: fixture_reports,
     })
 }
 
@@ -1620,7 +1633,7 @@ pub fn workspace_publish(
     let mut release_doc = w.doc.clone();
     release_doc.teaching_id = Some(vision::unique_run_id(&format!("teaching-{}-v{}", release_doc.id, release_doc.version)));
     release_doc.plan_version = app.state::<CycleHost>().recipes.plan_version_for(&release_doc)?;
-    let bundle = freeze_bundle(&app, &host, &release_doc, &w.frames)?;
+    let bundle = freeze_bundle(&app, &host, &release_doc, &w.frames, validated)?;
     let mut next = w.clone();
     next.doc = release_doc.clone();
     next.pending = Some(Box::new(Release {
@@ -1729,8 +1742,10 @@ pub fn draft_summaries(app: &AppHandle) -> Vec<DraftSummary> {
         product_code: w.doc.product_code, shot_count: w.doc.shots.len() }).collect()
 }
 
-fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeDoc, teaching: &[Teaching]) -> Result<crate::release::ReleaseBundle, String> {
+/// 发布前冻结：示教图检查经 `check_view → checked` 重查；特征定位视图另要求这份验证里有通过的统计（`require_fixture_validation`）。
+fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeDoc, teaching: &[Teaching], validated: &Validation) -> Result<crate::release::ReleaseBundle, String> {
     let recipe = doc.build()?;
+    fixture::require_fixture_validation(&recipe, validated)?;
     let engine = app.state::<vision::VisionHost>().engine().ok_or("发布前必须加载兼容的图像核心库")?;
     vision::require_locate(&recipe, &engine.locate)?;
     let mut shots = Vec::new();
@@ -2020,7 +2035,7 @@ pub async fn workspace_compare(
             if detail.summary.source == store::RecordSource::OfflineCandidate {
                 let samples = history_samples(&app, &detail)?;
                 let (table, measured) = measure_images_from(&app, &w, recipe.shot_count(), &detail.summary.sn,
-                    MeasurementSource::HistorySample, |k, v| samples.load(k, v))?;
+                    MeasurementSource::HistorySample, None, |k, v| samples.load(k, v))?;
                 measurements = measured;
                 table
             } else {
@@ -2296,12 +2311,13 @@ pub async fn workspace_station_import(app: AppHandle, cam: u8, bytes: Vec<u8>, v
 
 fn measure_images(app: &AppHandle, w: &Workspace, count: usize, sn: &str,
     load: impl FnMut(usize, u8) -> Result<FrameImage, String>) -> Result<(Vec<PointState>, Vec<Value>), String> {
-    measure_images_from(app, w, count, sn, MeasurementSource::CurrentDevices, load)
+    measure_images_from(app, w, count, sn, MeasurementSource::CurrentDevices, None, load)
 }
 
 enum MeasurementSource { CurrentDevices, HistorySample }
 
-fn measure_images_from(app: &AppHandle, w: &Workspace, count: usize, sn: &str, source: MeasurementSource,
+/// `probes`：只有发布验证的独立正常样本给，按特征定位视图另跑亮度 ±40 与 ±3° 探测（`fixture::probe_sample`），比较与复测不给。
+fn measure_images_from(app: &AppHandle, w: &Workspace, count: usize, sn: &str, source: MeasurementSource, mut probes: Option<&mut Vec<fixture::ProbeEntry>>,
     mut load: impl FnMut(usize, u8) -> Result<FrameImage, String>) -> Result<(Vec<PointState>, Vec<Value>), String> {
     let recipe = w.doc.build()?;
     if count != recipe.shot_count() { return Err("样本组的原图数量与拍照点不一致".into()); }
@@ -2326,6 +2342,14 @@ fn measure_images_from(app: &AppHandle, w: &Workspace, count: usize, sn: &str, s
             images.push((selected, Arc::new(image)));
         }
         let result = vision::measure_views(&engine, &recipe, k, &images, &format!("{run}-{k}"), &bases)?;
+        if let Some(probes) = probes.as_deref_mut() {
+            for vm in &result.views {
+                let (Some(base), Some((_, image))) = (bases.get(&vm.view), images.iter().find(|(v, _)| *v == vm.view)) else { continue };
+                let projected = recipe.for_view(k, vm.view)?;
+                probes.push(fixture::ProbeEntry { k, view: vm.view, sample: fixture::probe_sample(&engine, &projected, k, image, base,
+                    &format!("{run}-{k}-v{}", vm.view), vm.reading.as_ref(), vm.error.clone()) });
+            }
+        }
         let reference_failed = result.reference_failed();
         let reading = result.reading;
         for (i, &j) in reading.idx.iter().enumerate() {
@@ -2680,6 +2704,7 @@ mod tests {
                 checks: vec![],
                 samples: vec![],
                 environment_tag: "test".into(),
+                fixture: vec![],
             },
             validation_site: ValidationSite::Real,
         }));
@@ -2720,7 +2745,7 @@ mod tests {
     fn archive_fixture(doc: RecipeDoc) -> Release {
         Release { doc, bundle_id: "prior-directory".into(), base_revision: None, revision: 1,
             frames: vec![taught()], overview: Overview::default(),
-            validation: Validation { revision: 1, passed: true, checked_at: 1, checks: vec![], samples: vec![], environment_tag: Value::Null },
+            validation: Validation { revision: 1, passed: true, checked_at: 1, checks: vec![], samples: vec![], environment_tag: Value::Null, fixture: vec![] },
             validation_site: ValidationSite::Real }
     }
 
