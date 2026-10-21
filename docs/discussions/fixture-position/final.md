@@ -16,7 +16,7 @@
 ```text
 LyFlow 图（静态，发布包“图一致”校验不变）
   n_load → n_path(taught_path, 静态示教线) → n_width(bead_width) → stations、beadInfo
-  n_load → n_locate(glue.locate 1.1.0, template = "template.pgm") → pose
+  n_load → n_locate(glue.locate 1.1.0, template = "template.pgm", templatePad = 4) → pose
 
 GlueSight（Rust 纯函数）
   N' = T(N)
@@ -52,7 +52,7 @@ GlueSight（Rust 纯函数）
 ## 5. GlueSight
 
 - **配方**：`fixture: Option<FixtureSpec>`（`rect`、`searchRadiusPx`、`angleRangeDeg`、`minScore`、`maxPeakRatio`）进入 `ShotSpec` / `ShotViewSpec` / `for_view` 及其全部同步点；`gaugeRef` 进 `ShotLimits`。`RECIPE_SCHEMA` 7；`measurement_layout` 纳入 fixture。
-- **模板**：保存 fixture 时由冻结示教原图按 `rect` 裁出 `template.pgm`；发布包放 `shots/kk/vN/`，加载时按配方重算比对；复测/重现只用包内模板。
+- **模板**：保存 fixture 时由冻结示教原图裁出带 4 px 外圈的 `template.pgm`（`rect` 四周各多 4 px，文件 (w + 8) × (h + 8)），`templatePad = 4`，`anchor` 仍是 `rect` 左上角；`rect` 离图边不足 4 px 时示教保存拒绝（locate 会报 `out_of_image`）。外圈让模板与搜索区一样按真实邻域预平滑，去掉框边强边缘带来的平移偏置（lyFlow#32）；发布包放 `shots/kk/vN/`，加载时按配方重算比对；复测/重现只用包内模板。
 - **base_dir**：图内固定写 `template.pgm`；工作台指向 workspace 图目录，生产指向发布包 shot 目录，评测/离线工具指向样本目录；有 fixture 且 base_dir 为空时 `plan` 报错。
 - **走廊**：`search_mm` 逐点按阶段 0 的 σ_B 取 `max(3σ_B, 胶宽上限/2 + 2 px)`；σ_B 超阈值的点关闭位置判定。
 - **示教**：框选定位特征（叠加模板框、搜索范围、杠杆臂 L）；保存检查模板与走廊不重叠、纹理、`peakRatio`、L；优先与胶同面、刚性、不被喷嘴遮挡的孔或角点；在样本库其他图上做定位试测；试测标签与草稿比较纳入 fixture。
@@ -193,6 +193,7 @@ P0、L1、G1 可并行。
 
 **其他**
 
+- 模板带 4 px 外圈（lyFlow#32 a30885f，见 §5“模板”）去掉了框边 BORDER_REPLICATE 平滑偏置：两组框上纯平移的模板中心误差 P95 约减半（0.115 → 0.059、0.086 → 0.042 px），最远站误差 P95 最多减 0.026 mm，亮度 +40 的错锁不变（评测报告 §9.5）；两项转角问题留作已知问题（v1 只找平移）。
 - L1 发布 1.1.0 后，用发布的运行库重跑 §9.4。
 - G4 的示教保存检查加亮像素比例上限作预筛（建议 0.1），必须过的是验证时的亮度 ±40 试定位。
 - σ_B、实物偏移线性度、视差、真实转动仍然等后续采集（§9）。
