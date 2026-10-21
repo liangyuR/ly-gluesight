@@ -283,6 +283,31 @@ export async function runFixtureE2E(page, options) {
   assert(productionPoses.length >= 1 && productionPoses.every(p => p.accepted), `投产记录应带被采用的定位位姿：${JSON.stringify(productionPoses)}`);
   step("离线投产", { [fixture.normalPart]: normal.verdict, [fixture.defect.partId]: defective.verdict, poses: productionPoses.map(p => ({ offset: p.offset, score: p.score, endShiftMm: p.endShiftMm, excludedMm: p.excludedMm })) });
 
+  // —— 生产页与历史页按记录的位姿叠图（G5，定稿 §6“生产/历史页显示测试”）——
+  const overlayOf = (pose, where) => {
+    const image = page.locator("svg.wp-gray-image");
+    const box = pose.accepted ? image.locator('[aria-label="定位框（按位姿）"]') : image.locator('[aria-label^="定位未采用"]');
+    return box.first().waitFor({ timeout: 30000 }).catch(() => { throw new Error(`${where}没有按记录的位姿画定位框（位姿 ${JSON.stringify(pose)}）`); });
+  };
+  const live = (await call("cycle_snapshot")).part;
+  assert(live, "投产后检测页没有最近一件");
+  const livePose = live.frames[k].viewResults.find(v => v.view === shotSpec.view)?.pose;
+  assert(livePose, `生产帧 k${k + 1} 没有位姿记录`);
+  await page.evaluate(() => { window.location.hash = "/inspect"; });
+  await page.locator(`.qs-camera-thumbnail[data-frame-id="k${k + 1}"]`).click();
+  await overlayOf(livePose, "生产页选中帧");
+  await page.getByText(livePose.accepted ? /^采用 · 偏移/ : /^未采用：/).first().waitFor();
+  await shot(page, shots, "fixture-6-production-overlay.png");
+  const historyPose = detail.frames[k].viewResults.find(v => v.view === shotSpec.view)?.pose;
+  assert(historyPose?.accepted, `投产正常件 k${k + 1} 的位姿应被采用：${JSON.stringify(historyPose)}`);
+  await page.evaluate(id => { window.location.hash = `/history/${id}`; }, normal.id);
+  await page.getByRole("heading", { name: "逐拍照点结果与原图", exact: true }).waitFor();
+  await page.locator('select[aria-label="历史帧选择"]').selectOption(String(k));
+  await overlayOf(historyPose, "历史原图");
+  await page.getByLabel("定位摘要", { exact: true }).getByText(/采用 · 偏移/).waitFor();
+  await shot(page, shots, "fixture-7-history-overlay.png");
+  step("生产与历史按位姿叠图", { live: { cycleId: live.cycleId, accepted: livePose.accepted, offset: livePose.offset }, history: { id: normal.id, offset: historyPose.offset } });
+
   const fixtureDirs = await readdir(path.join(records.root, "..", "workspaces", id, "fixtures")).catch(() => null);
   await call("site_leave_offline").catch(() => {});
 
