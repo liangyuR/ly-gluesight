@@ -1,6 +1,7 @@
 import type { FixtureSpec, ShotSpec } from "../cycle/types";
 import type { FixtureOverlay } from "./components";
 import { pathLength } from "../cycle/vis";
+import { teachCenter } from "../cycle/pose";
 import type { ShotTeach } from "./types";
 
 /** 候选配方里拍照点已保存的示教；没有像素当量时为 NaN（输入框显示为空）。 */
@@ -58,7 +59,7 @@ export function fixtureError(f: FixtureSpec) {
 /** 叠图用的定位几何：带外圈的模板框、搜索范围（示教框四周各扩 searchRadius）与杠杆臂 L（框中心 → 最远中线顶点）。 */
 export function fixtureOverlay(rect: [number, number, number, number], searchRadiusPx: number, path: [number, number][], blocked = false): FixtureOverlay {
   const [x, y, w, h] = rect, p = FIXTURE_PAD_PX, r = Number.isFinite(searchRadiusPx) ? searchRadiusPx : 0;
-  const center: [number, number] = [x + (w - 1) / 2, y + (h - 1) / 2];
+  const center = teachCenter(rect);
   const far = path.reduce<[number, number] | null>((best, q) => !best || Math.hypot(q[0] - center[0], q[1] - center[1]) > Math.hypot(best[0] - center[0], best[1] - center[1]) ? q : best, null);
   return { rect, padded: [x - p, y - p, w + 2 * p, h + 2 * p], search: [x - r, y - r, w + 2 * r, h + 2 * r], lever: far ? [center, far] : null, blocked };
 }

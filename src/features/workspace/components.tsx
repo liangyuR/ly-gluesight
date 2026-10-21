@@ -6,7 +6,9 @@ import { Alert, Button, Card, Chip, EmptyState, FormField, IconButton, Progress,
 import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
-import type { PointVis, Recipe } from "../cycle/types";
+import type { FrameView, PointVis, Recipe } from "../cycle/types";
+import { framePose, movedBox, poseReasonText, poseTransform, viewSpec, viewStations, type Pt } from "../cycle/pose";
+import { FIXTURE_PAD_PX } from "./teach";
 import { shotSegment, visColor } from "../cycle/vis";
 import type { GrayImage, GrayPixels } from "./types";
 import { errorText } from "../../lib/errors";
@@ -83,11 +85,11 @@ export function useGrayImage(id: string | null, imageId: string | null, historyI
   return state.key===key?state:{image:null,error:"",loading:!!imageId||!!historyId};
 }
 
-/** 叠加在原图上的内容，全部是这张图的像素坐标（示教中线就在这张图里点出，不做对齐变换）。 */
+/** 叠加在原图上的内容，全部是这张图的像素坐标（示教中线就在这张图里点出；特征定位的拍照点按记录的位姿把中线与站点搬到当帧）。 */
 export interface ImageOverlay {
-  /** 示教中线（草稿或已保存的） */
+  /** 示教中线（草稿或已保存的）；按位姿叠图时为搬移后的 N′ = T(N) */
   path: [number, number][];
-  /** 各站位置（来自配方布局，中线保存后才有） */
+  /** 各站位置（来自配方布局，中线保存后才有）；按位姿叠图时为 T(N_i) */
   stations?: [number, number][];
   searchHalfPx?: number;
   /** 各站颜色；不给时统一用强调色 */
@@ -101,17 +103,46 @@ export interface ImageOverlay {
   /** 特征定位：示教框、带 4 px 外圈的模板框、搜索范围（框能移到的范围）与杠杆臂 L（模板中心 → 最远站）；blocked 时框标红 */
   fixture?: FixtureOverlay | null;
 }
+/** 四角多边形（像素中心坐标），见 cycle/pose.ts 的 movedBox */
+export type BoxPolygon = Pt[];
 export interface FixtureOverlay {
   rect: [number, number, number, number];
   padded: [number, number, number, number];
-  search: [number, number, number, number];
+  /** 搜索范围：只有示教页给 */
+  search?: [number, number, number, number];
   lever?: [[number, number], [number, number]] | null;
   blocked?: boolean;
+  /** 按位姿搬移后的内框与外圈；有它时示教位置的框淡显 */
+  moved?: { inner: BoxPolygon; padded: BoxPolygon } | null;
+  /** 位姿没被采用的原因：框留在示教位置、用故障色虚线 */
+  failed?: string | null;
+  /** 示教图自定位被拒时的候选落点（故障色虚线），只在示教页画 */
+  candidate?: BoxPolygon | null;
+  /** 复测（重跑）的位姿与原记录不同时，复测定位框（虚线） */
+  replay?: BoxPolygon | null;
 }
-/** 配方布局里拍照点 k 的示教中线与各站（图像像素），给了 vis 时各站按测量状态着色。 */
-export function shotOverlay(layout: Recipe | null | undefined, k: number, vis?: PointVis[]): ImageOverlay | undefined {
+const identityPoint = (p: Pt): Pt => p;
+/**
+ * 配方布局里拍照点 k 的示教中线与各站（图像像素），给了 vis 时各站按测量状态着色。
+ * 给了 frame 且投影视图有特征定位时按该帧记录的位姿叠图：位姿被采用 → 中线、站点、内框与外圈都画在 T(·)；
+ * 有位姿但没被采用 → 中线与站点留在示教位置、框标“定位未采用”；没有位姿（未测、测量出错）→ 只画示教中线。
+ * 没有特征定位的拍照点与原来完全相同。
+ */
+export function shotOverlay(layout: Recipe | null | undefined, k: number, vis?: PointVis[], frame?: FrameView | null): ImageOverlay | undefined {
   const shot = layout?.shots[k];
   if (!layout || !shot || shot.path.length < 2) return undefined;
+  const spec = viewSpec(shot, shot.view);
+  if (spec?.fixture && spec.path.length >= 2) {
+    const { rect } = spec.fixture, index = viewStations(layout, k, shot.view);
+    const pose = framePose(frame, shot.view), T = poseTransform(rect, pose), move = T ?? identityPoint;
+    const [x, y, w, h] = rect, p = FIXTURE_PAD_PX;
+    return {
+      path: spec.path.map(move),
+      stations: index.map(j => move([layout.points.x[j], layout.points.y[j]])),
+      stationColors: vis ? index.map(j => visColor[vis[j] ?? "none"]) : undefined,
+      fixture: pose ? { rect, padded: [x - p, y - p, w + 2 * p, h + 2 * p], moved: T ? { inner: movedBox(rect, 0, T), padded: movedBox(rect, p, T) } : null, failed: T ? null : poseReasonText(pose.reason) } : null,
+    };
+  }
   const own = shotSegment(layout, k)?.segment;
   const index = own ? Array.from({ length: own.count }, (_, i) => own.first + i) : [];
   return {
@@ -310,12 +341,21 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
           </g>}
           {region && <rect x={region[0]} y={region[1]} width={region[2]} height={region[3]} fill="var(--primary)" fillOpacity={.12} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
           {overlay?.fixture && shown && (() => {
-            const f = overlay.fixture, color = f.blocked ? "var(--ng)" : "var(--ok)";
-            const box = (r: [number, number, number, number], props: Record<string, unknown>) => <rect x={r[0]} y={r[1]} width={r[2]} height={r[3]} fill="none" vectorEffect="non-scaling-stroke" {...props} />;
-            return <g aria-label={f.blocked ? "定位框（未通过检查）" : "定位框"} pointerEvents="none">
-              {box(f.search, { stroke: "var(--primary)", strokeWidth: 1, strokeDasharray: "6 4", opacity: .7, "aria-label": "定位搜索范围" })}
-              {box(f.padded, { stroke: color, strokeWidth: 1, strokeDasharray: "3 3", "aria-label": "模板外圈" })}
-              {box(f.rect, { stroke: color, strokeWidth: 2, "aria-label": "定位框" })}
+            const f = overlay.fixture, color = f.failed ? "var(--fault)" : f.blocked ? "var(--ng)" : "var(--ok)";
+            const polygon = (corners: BoxPolygon, props: Record<string, unknown>) => <polygon points={corners.map(p => p.join(",")).join(" ")} fill="none" vectorEffect="non-scaling-stroke" {...props} />;
+            const box = (r: [number, number, number, number], props: Record<string, unknown>) => polygon(movedBox(r, 0), props);
+            return <g aria-label={f.failed ? "定位未采用：" + f.failed : f.moved ? "定位框（按位姿）" : f.blocked ? "定位框（未通过检查）" : "定位框"} pointerEvents="none">
+              {f.search && box(f.search, { stroke: "var(--primary)", strokeWidth: 1, strokeDasharray: "6 4", opacity: .7, "aria-label": "定位搜索范围" })}
+              {f.moved ? <>
+                {box(f.rect, { stroke: "var(--on-surface-variant)", strokeWidth: 1, strokeDasharray: "2 3", opacity: .6, "aria-label": "定位框示教位置" })}
+                {polygon(f.moved.padded, { stroke: color, strokeWidth: 1, strokeDasharray: "3 3", "aria-label": "模板外圈" })}
+                {polygon(f.moved.inner, { stroke: color, strokeWidth: 2, "aria-label": "定位框" })}
+              </> : <>
+                {box(f.padded, { stroke: color, strokeWidth: 1, strokeDasharray: "3 3", "aria-label": "模板外圈" })}
+                {box(f.rect, { stroke: color, strokeWidth: 2, strokeDasharray: f.failed ? "6 3" : undefined, "aria-label": "定位框" })}
+              </>}
+              {f.candidate && polygon(f.candidate, { stroke: "var(--fault)", strokeWidth: 1.5, strokeDasharray: "4 3", "aria-label": "定位候选落点（未采用）" })}
+              {f.replay && polygon(f.replay, { stroke: "var(--warn)", strokeWidth: 1.5, strokeDasharray: "5 3", "aria-label": "复测定位框" })}
               {f.lever && <line x1={f.lever[0][0]} y1={f.lever[0][1]} x2={f.lever[1][0]} y2={f.lever[1][1]} stroke="var(--primary)" strokeWidth={1} strokeDasharray="2 4" vectorEffect="non-scaling-stroke" aria-label="杠杆臂 L" />}
             </g>;
           })()}
