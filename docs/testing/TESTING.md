@@ -56,7 +56,7 @@ S7 专项需要 Python 3 和本机 TCP 权限，可用 `S7_TEST_PYTHON` 指定 P
 
 ```powershell
 $env:LYFLOW_CORE_DLL = '<lyFlow 构建>\build\core\bin\lyflow_core.dll'
-cargo test --manifest-path src-tauri/Cargo.toml --lib vision::taught::engine_tests -- --ignored --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --lib vision::taught::engine_tests -- --ignored
 ```
 
 核心库的 glue.locate 不支持带外圈模板（1.0.0）时测试直接失败，不算通过。
