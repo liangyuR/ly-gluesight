@@ -28,6 +28,7 @@ use crate::plc_session::{Origin, PartSite, PendingKind, PlcSession, SessionEvent
 use crate::recipe::{Recipe, RecipeStore, TriggerMode};
 use crate::recorder::{Recorder, Recorders, Recording};
 use crate::recording_health::{AlarmChange, RecordingAlarm, RecordingHealth};
+use crate::locate_health::{LocateAlarm, LocateChange, LocateHealth, Subject};
 use crate::settings::{CycleSettings, ProductSource};
 use crate::shot_router::{ArmCam, Floor, FrameMeta, Ledgers, Plan, Policy, Route, ShotRouter};
 use crate::offline::Scenario;
@@ -121,7 +122,7 @@ pub struct FrameView {
 }
 
 impl FrameView {
-    fn waiting() -> Self {
+    pub(crate) fn waiting() -> Self {
         Self {
             view_results: Vec::new(),
             status: FrameStatus::Waiting,
@@ -231,6 +232,8 @@ pub struct Snapshot {
     pub stray_frames: u64,
     pub alarms: Vec<String>,
     pub recording_alarm: Option<RecordingAlarm>,
+    /// 连续定位失败告警（当前分槽）；不随每件清空的 alarms 消失，定位成功后清除
+    pub locate_alarms: Vec<LocateAlarm>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -549,6 +552,20 @@ fn log_recording_alarm(app: &AppHandle, change: AlarmChange) {
     }
 }
 
+/// 告警的出现、消除与作废都记在触发它的这一件下（cycle_id 是当前件），本件时间线里能看到。
+fn log_locate_alarm(app: &AppHandle, change: LocateChange, cycle_id: &str, camera: &str) {
+    let (tone, ev, msg, alarm) = match change {
+        LocateChange::Raised(alarm) => ("err", "连续定位失败", alarm.message(), alarm),
+        LocateChange::Cleared(alarm) => ("ok", "定位恢复", format!("配方 {} 拍照点 {} 图 {} 定位成功，连续定位失败告警已清除", alarm.recipe_id, alarm.shot_id, alarm.view), alarm),
+        LocateChange::Superseded(alarm) => ("info", "定位告警撤销", format!("配方 {} 已换修订，旧修订 {} 拍照点 {} 图 {} 的连续定位失败告警作废，新模板重新计数",
+            alarm.recipe_id, alarm.revision_id, alarm.shot_id, alarm.view), alarm),
+    };
+    let fields = Fields { cycle_id: Some(cycle_id.to_string()), recipe_id: Some(alarm.recipe_id.clone()), view: Some(alarm.view), ..Fields::shot(alarm.k, &alarm.shot_id, camera) }
+        .with_stage("locate-alarm")
+        .with_data(json!({"recipeId": alarm.recipe_id, "revisionId": alarm.revision_id, "view": alarm.view, "consecutive": alarm.consecutive, "reason": alarm.reason}));
+    log_with(app, tone, ev, msg, fields);
+}
+
 pub fn log(app: &AppHandle, level: &'static str, ev: impl Into<String>, msg: impl Into<String>) {
     log_with(app, level, ev, msg, Fields::default());
 }
@@ -861,6 +878,8 @@ struct Machine {
     s7_reset_requested: bool,
     current_cycle_id: Option<String>,
     recording_alarm: Option<RecordingAlarm>,
+    /// 连续定位失败计数：只在内存，重启清零；复位、站点切换不清除（见 locate_health.rs）
+    locate_health: LocateHealth,
 }
 
 impl Machine {
@@ -924,6 +943,7 @@ impl Machine {
             s7_reset_requested: false,
             current_cycle_id: None,
             recording_alarm: None,
+            locate_health: LocateHealth::default(),
         }
     }
 
@@ -1088,6 +1108,7 @@ impl Machine {
         self.published = Instant::now();
         let host = host(&self.app);
         let active = self.current_recipe();
+        let locate_alarms = self.locate_health.alarms(self.stats_scope);
         let snapshot = Snapshot {
             stats_scope: self.stats_scope,
             candidate_debug: crate::offline::candidate(&self.app).map(|c| c.info.clone()),
@@ -1105,8 +1126,9 @@ impl Machine {
             stats: self.stats.clone(),
             stray_frames: self.stray,
             alarms: self.alarms.iter().chain(&self.config_warnings).chain(&self.camera_warnings).cloned()
-                .chain(self.recording_alarm.as_ref().map(RecordingAlarm::message)).collect(),
+                .chain(self.recording_alarm.as_ref().map(RecordingAlarm::message)).chain(locate_alarms.iter().map(LocateAlarm::message)).collect(),
             recording_alarm: self.recording_alarm.clone(),
+            locate_alarms,
         };
         host.shared.lock().unwrap().snapshot = Some(snapshot.clone());
         let _ = self.app.emit("cycle://snapshot", snapshot);
@@ -1475,6 +1497,10 @@ impl Machine {
         let Some(part) = self.part.as_mut() else { return };
         let Some(m) = part.apply_result(m) else { return };
         self.dirty = true;
+        // 告警与帧徽标同一来源：apply_result 写好的帧记录
+        let subject = Subject { recipe_id: &part.recipe.id, revision_id: &part.recipe.revision_id, shot_id: &m.shot_id, k: m.k };
+        let changes = self.locate_health.observe(HistoryScope::of(part.source), &subject, &part.frames[m.k], &m.cycle_id, now_ms());
+        for change in changes { log_locate_alarm(&self.app, change, &m.cycle_id, &m.camera); }
         let gaps = m.st.iter().filter(|&&s| s == measure::ST_GAP).count();
         let (level, ev, msg) = if let Some(e) = &m.error {
             ("err", "测量出错", format!("k={} · {e}", m.k))

@@ -218,6 +218,12 @@ export default function InspectPage() {
       {snapshot?.recordingAlarm && <Alert tone="warn">
         原图录制失败：连续 {snapshot.recordingAlarm.consecutive} 件原图未完整保存（最近 <span className="mono">{snapshot.recordingAlarm.cycleId}</span>：{snapshot.recordingAlarm.reason}）。检测与判定照常；请检查资料盘空间与录制目录写权限，下一件完整保存后自动消除。
       </Alert>}
+      {!!snapshot?.locateAlarms?.length && <Alert tone="warn" title="特征定位连续失败" aria-label="连续定位失败告警">
+        <ul className="locate-alarms">{snapshot.locateAlarms.map(alarm => <li key={`${alarm.recipeId}:${alarm.shotId}:${alarm.view}`}>
+          拍照点 {alarm.shotId} · 图 {alarm.view} · 连续 {alarm.consecutive} 件没有位置基准 · 最近 <span className="mono">{alarm.cycleId}</span>：{alarm.reason}
+        </li>)}</ul>
+        这些件有胶站不判位置。请检查上料、定位特征是否被遮挡或污染、照明与相机；下一件定位成功后自动消除。
+      </Alert>}
 
       <InspectionReadiness offlineSample={offlineSample} snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} />
 
