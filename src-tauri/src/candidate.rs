@@ -22,7 +22,7 @@ pub struct Candidate {
 impl Candidate {
     pub fn new(recipe: Recipe, revision: u64, engine: Arc<Engine>, sizes: HashMap<(usize, u8), [u32; 2]>, bases: HashMap<(usize, u8), String>, overview: crate::workspace::Overview) -> Result<Self, String> {
         recipe.ready()?;
-        if recipe.shots.iter().any(|shot| shot.has_fixture()) { engine.locate.clone()?; }
+        vision::require_locate(&recipe, &engine.locate)?;
         let mut graphs = HashMap::new();
         for (k, shot) in recipe.shots.iter().enumerate() {
             if !shot.measured() { continue; }

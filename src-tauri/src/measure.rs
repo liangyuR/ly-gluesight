@@ -124,6 +124,9 @@ pub struct Measured {
     /// 图像测量时各点在原图里的像素位置（叠加显示用）
     pub px: Vec<[f32; 2]>,
     pub views: Vec<vision::ViewMeasurement>,
+    /// 用特征定位的视图的位姿（单图与多图两条路径都填），随帧记录保存，供追溯与 G5 叠图
+    #[serde(skip)]
+    pub poses: Vec<(u8, vision::PoseRecord)>,
 }
 
 impl Measured {
@@ -166,6 +169,7 @@ impl Measured {
             st: Vec::new(),
             px: Vec::new(),
             views: Vec::new(),
+            poses: Vec::new(),
         }
     }
 

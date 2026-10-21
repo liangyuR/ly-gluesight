@@ -152,8 +152,9 @@ pub struct PartShot {
     pub raw_files: Vec<ShotRawFile>,
 }
 
-/// 7：帧状态去掉 locateFailed、帧加 referenceFailed、测量点 BLOB 格式 3。旧库按版本不符备份后重建（D-0）。
-pub const DB_VERSION: i64 = 7;
+/// 7：帧状态去掉 locateFailed、帧加 referenceFailed、测量点 BLOB 格式 3。
+/// 8：帧的各视图结果加特征定位位姿（viewResults[].pose）。旧库按版本不符备份后重建（D-0）。
+pub const DB_VERSION: i64 = 8;
 
 /// 测量点 BLOB 格式版本：每点 f32 位置 + f32 胶宽 + u8 状态（9 字节），没有的值写 NaN，状态说了算。
 /// 3 起新增状态 4 无基准、5 超出检测范围；只读当前格式，旧格式的库已在打开时整库备份重建。
@@ -404,24 +405,22 @@ fn delivery_row(row: &rusqlite::Row, first: usize) -> rusqlite::Result<PlcDelive
 fn measurement_layout(recipe: &Recipe) -> serde_json::Value {
     let shots: Vec<_> =
         recipe.shots.iter().map(|s| {
-            // fixture 是测量定义（定位模板与 maxEndShiftMm 都会改变站状态），改了要原图重测；名义值与 gaugeRef 是判定参数，不在这里
+            // fixture 是测量定义（定位模板与 maxEndShiftMm 都会改变站状态），改了要原图重测；名义值与 gaugeRef 是判定参数，不在这里。
+            // fixture 里含模板来源 source：模板身份 = (来源冻结图, 框, 外圈)，不用内容哈希（D-0）
             let views: Vec<_> = s.views.iter().map(|v| serde_json::json!([v.view, v.enabled, v.path, v.mm_per_px, v.calib, v.detect, v.fixture])).collect();
             serde_json::json!([s.id, s.pose_id, s.camera, s.view, s.skip, s.path, s.mm_per_px, s.calib_ref(), s.detect, views, s.fixture])
         }).collect();
     let segments: Vec<_> = recipe.segments.iter().map(|s| (s.shot, s.view, s.first, s.count)).collect();
+    // 模板裁法（vision::fixture::template_pgm）也属于测量定义：裁法一改，这里必须跟着改，否则 (来源, 框, 外圈) 不变、模板像素却变了
     serde_json::json!({"unit":"mm", "schema":recipe.schema_version, "spacing":recipe.spacing,
-        "shots":shots, "segments":segments, "points":recipe.points, "detect":recipe.detect})
+        "shots":shots, "segments":segments, "points":recipe.points, "detect":recipe.detect,
+        "fixtureTemplate": {"pad": crate::recipe::FIXTURE_TEMPLATE_PAD_PX}})
 }
 
+/// 旧测量值（含 d′）能否在候选上复用。d′ 依赖定位模板的像素，模板身份 (来源冻结图, 框, 外圈) 在测量布局里，布局相同即同一模板。
+/// `Recipe` 只能经 `RecipeDoc::build` 构造（反序列化也是），配方校验要求启用的 fixture 来源合法，不存在“来源未知”的配方。
 pub fn same_measurement_layout(original: &Recipe, candidate: &Recipe) -> bool {
     measurement_layout(original) == measurement_layout(candidate)
-}
-
-/// 旧测量值（d′）依赖定位模板的像素：两边任一用了特征定位，就不能凭测量布局相同复用，必须原图重测。
-/// 模板由工作台当时冻结的示教原图裁出，配方里只有框和门限；重新冻结、导入历史或恢复示教后模板变了、布局却不变。
-/// G3 把模板身份（发布包内模板的内容哈希）纳入测量定义后，才能对同一模板放开复用。
-pub fn readings_depend_on_template(original: &Recipe, candidate: &Recipe) -> bool {
-    [original, candidate].iter().any(|r| r.shots.iter().any(|s| s.has_fixture()))
 }
 
 fn validate_raw_files(files: &[ShotRawFile]) -> Result<(), String> {
@@ -624,7 +623,7 @@ impl Store {
                  PRIMARY KEY (part_id, k),
                  UNIQUE (part_id, shot_id)
              );
-             PRAGMA user_version = 7;
+             PRAGMA user_version = 8;
              COMMIT;",
         )
         .map_err(db_err)?;

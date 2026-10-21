@@ -58,10 +58,12 @@ export interface ShotLimits {
   gaugeRef?: string;
 }
 
-/** 特征定位（glue.locate）：示教框（不含外圈）与门限。模板由工作台从冻结示教原图按框加 4 px 外圈裁出。 */
+/** 特征定位（glue.locate）：示教框（不含外圈）、模板来源与门限。模板从来源冻结示教原图按框加 4 px 外圈裁出。 */
 export interface FixtureSpec {
   /** 示教框 [x, y, w, h]（示教图像素） */
   rect: [number, number, number, number];
+  /** 模板来源：裁模板用的冻结示教原图编号。由后端写入，前端原样回传，后端不采用前端的值 */
+  source: string;
   searchRadiusPx: number;
   /** 角度扫描范围 ±°；0 = 只找平移 */
   angleRangeDeg: number;
@@ -70,6 +72,23 @@ export interface FixtureSpec {
   maxPeakRatio: number;
   /** 两端切向搬移上限（mm）；不设时用临时默认公式 */
   maxEndShiftMm?: number;
+}
+
+/** 特征定位的位姿（帧记录追溯与叠图用）：T 由 offset、angle 与配方快照里 fixture.rect 的示教中心还原。 */
+export interface PoseRecord {
+  accepted: boolean;
+  /** 不采用的原因：glue.locate 的 reason，或 "angle_unobservable" */
+  reason: string | null;
+  score: number | null;
+  peakRatio: number | null;
+  angle: number | null;
+  /** 模板中心相对示教位置的平移（px） */
+  offset: [number, number] | null;
+  /** 两端切向搬移（mm） */
+  endShiftMm: [number, number] | null;
+  /** 两端各排除的长度（mm） */
+  excludedMm: [number, number] | null;
+  endLimitMm: number;
 }
 
 /** 一个拍照点：机器人走到 Pose 时 PLC 触发这台相机拍一帧，在这帧里沿示教中线量胶。可选字段不设时不发送（不发 null）。 */
@@ -179,7 +198,7 @@ export interface ReferenceFailure {
 }
 
 export interface FrameView {
-  viewResults?: {view:number;verdict:Verdict;error:string|null;score:number|null;ms:number|null}[];
+  viewResults?: {view:number;verdict:Verdict;error:string|null;score:number|null;ms:number|null;pose?:PoseRecord|null}[];
   status: FrameStatus;
   cam: number;
   camera: string;

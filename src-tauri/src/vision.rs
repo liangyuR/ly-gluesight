@@ -20,7 +20,7 @@ use crate::recipe::Recipe;
 
 pub(crate) mod fixture;
 mod taught;
-pub use taught::{build_taught_graph, measure_shot, measure_shot_with_graph, ShotMeasurement, MultiViewMeasurement, ViewMeasurement, measure_views, measure_views_with};
+pub use taught::{build_taught_graph, measure_shot, measure_shot_with_graph, ShotMeasurement, MultiViewMeasurement, ViewMeasurement, PoseRecord, measure_views, measure_views_with};
 #[cfg(test)]
 use taught::measure_shot_patched;
 
@@ -106,6 +106,15 @@ fn locate_support(manifest: &Value) -> Result<(), String> {
     let op = manifest["operators"].as_array().into_iter().flatten().find(|op| op["id"] == "glue.locate").ok_or_else(unsupported)?;
     let has = |list: &str, name: &str| op[list].as_array().is_some_and(|items| items.iter().any(|item| item["name"] == name));
     if has("params", "templatePad") && has("params", "maxPeakRatio") && has("outputs", "pose") { Ok(()) } else { Err(unsupported()) }
+}
+
+/// 运行库不支持带外圈模板时（`Engine.locate` 为 Err，如已发布的 1.1.4 带的 locate 1.0.0），只挡含特征定位的配方：
+/// 发布前、生产加载与重现时调用；没有特征定位的配方在这样的运行库上照常发布、加载。
+pub fn require_locate(recipe: &Recipe, locate: &Result<(), String>) -> Result<(), String> {
+    match (recipe.shots.iter().find(|shot| shot.has_fixture()), locate) {
+        (Some(shot), Err(why)) => Err(format!("含特征定位的拍照点（{}）：{why}", shot.id)),
+        _ => Ok(()),
+    }
 }
 
 fn image_input(image: &FrameImage) -> Result<RunImageInput, String> {

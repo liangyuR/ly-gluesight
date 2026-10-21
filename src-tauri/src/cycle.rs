@@ -82,6 +82,8 @@ pub struct ViewResult {
     pub error: Option<String>,
     pub score: Option<f32>,
     pub ms: Option<u32>,
+    /// 用特征定位的视图的位姿（含没被采用的），追溯与叠图用；没用定位或测量出错时为空
+    pub pose: Option<crate::vision::PoseRecord>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -683,7 +685,8 @@ impl Part {
             let verdict = self.recipe.for_view(m.k, view).map(|recipe| judge::judge(&recipe, &self.table).verdict).unwrap_or(Verdict::ErrInspect);
             ViewResult { view, verdict, error: details.and_then(|v| v.error.clone()).or_else(|| m.error.clone()),
                 score: details.and_then(|v| v.reading.as_ref().map(|r| r.coverage)),
-                ms: details.and_then(|v| v.reading.as_ref().map(|r| r.ms)) }
+                ms: details.and_then(|v| v.reading.as_ref().map(|r| r.ms)),
+                pose: m.error.is_none().then(|| m.poses.iter().find(|(v, _)| *v == view).map(|(_, pose)| pose.clone())).flatten() }
         }).collect();
         let frame = &mut self.frames[m.k];
         frame.view_results = view_results;

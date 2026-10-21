@@ -804,6 +804,7 @@ fn update_doc(w: &mut Workspace, mut doc: RecipeDoc) -> Result<(), String> {
             shot.fixture = projected.fixture;
         }
     }
+    bind_fixture_sources(w, &mut doc, None)?;
     let mut unbound = w.unbound_imaging.clone();
     sync_doc_imaging(&mut doc, &mut unbound);
     let recipe = doc.build()?;
@@ -850,10 +851,12 @@ fn image_file(host: &WorkspaceHost, id: &str, image_id: &str) -> Result<PathBuf,
 /// 按来源寻址，内容只由冻结图、框与外圈决定；冻结图不会改写。每次使用都按冻结图重新裁、与磁盘上的字节比对，
 /// 缺失或不同（损坏、过期）才原子写，不复用坏文件。并发写的是同样的内容，所以不在 items 锁里做。
 /// 删除工作区时一并删掉；旧目录的清理归 G4。返回模板目录（UTF-8 绝对路径，非 UTF-8 时报错，不做有损转换）。
-fn ensure_template(host: &WorkspaceHost, recipe_id: &str, frozen: &FrozenImage, rect: [u32; 4], image: Option<&FrameImage>) -> Result<String, String> {
+/// 框的模板来源必须就是这张冻结图（见 `fixture_source`）：重新冻结后旧框不会悄悄裁到新图上。
+fn ensure_template(host: &WorkspaceHost, recipe_id: &str, frozen: &FrozenImage, fixture: &crate::recipe::FixtureSpec, image: Option<&FrameImage>) -> Result<String, String> {
     use crate::recipe::FIXTURE_TEMPLATE_PAD_PX as PAD;
-    vision::fixture::padded_rect(rect, frozen.size[0], frozen.size[1])
-        .ok_or_else(|| format!("定位框加 {PAD} px 外圈超出示教原图（{}×{}），请把框从图边往里收", frozen.size[0], frozen.size[1]))?;
+    check_source(frozen, fixture)?;
+    let rect = fixture.rect;
+    fixture.check_image_size(frozen.size)?;
     let source = image_file(host, recipe_id, &frozen.id)?;
     let dir = host.dir(recipe_id).join("fixtures").join(format!("{}-r{}_{}_{}_{}-p{PAD}", frozen.id, rect[0], rect[1], rect[2], rect[3]));
     let loaded;
@@ -887,12 +890,62 @@ fn fixture_bases(host: &WorkspaceHost, w: &Workspace, recipe: &Recipe, k: usize,
     let mut bases = BTreeMap::new();
     for view in shot.enabled_views() {
         let Some(fixture) = shot.for_view(view)?.fixture else { continue };
-        let frozen = frame.views.iter().chain(frame.image.as_ref()).find(|i| i.view == view)
-            .ok_or("含特征定位的图需要先冻结示教原图")?;
+        let frozen = fixture_source(frame, view, &fixture)?;
         let image = loaded.iter().find(|(v, _)| *v == view).map(|(_, image)| *image);
-        bases.insert(view, ensure_template(host, &recipe.id, frozen, fixture.rect, image)?);
+        bases.insert(view, ensure_template(host, &recipe.id, frozen, &fixture, image)?);
     }
     Ok(bases)
+}
+
+/// 视图 view 当前的冻结示教原图。
+fn frozen_view(frame: &Teaching, view: u8) -> Option<&FrozenImage> {
+    frame.views.iter().chain(frame.image.as_ref()).find(|i| i.view == view)
+}
+
+fn check_source(frozen: &FrozenImage, fixture: &crate::recipe::FixtureSpec) -> Result<(), String> {
+    if fixture.source != frozen.id {
+        return Err(format!("定位框是在示教图 {} 上保存的，当前示教图是 {}：请确认定位框后重新保存示教参数", fixture.source, frozen.id));
+    }
+    Ok(())
+}
+
+/// 用框的模板来源找冻结图：来源必须是视图 view 当前的冻结示教原图。重新冻结、整圈采集（含继承示教）、
+/// 恢复示教都不改写来源，旧框在这里被拦下，要在示教页确认框后重新保存示教参数。
+pub(super) fn fixture_source<'a>(frame: &'a Teaching, view: u8, fixture: &crate::recipe::FixtureSpec) -> Result<&'a FrozenImage, String> {
+    let frozen = frozen_view(frame, view).ok_or("含特征定位的图需要先冻结示教原图")?;
+    check_source(frozen, fixture)?;
+    Ok(frozen)
+}
+
+/// 模板来源由后端掌管，前端传来的 source 一律不用：
+/// - `confirm` 指定的（拍照点 k, 图）：显式保存示教参数，强制改绑到这幅图当前的冻结原图（没冻结就报错）；
+/// - 其余 fixture：忽略来源后与旧候选同一拍照点、同一幅图的 fixture 相同，沿用旧来源；新增或改动的绑到这幅图当前的冻结原图。
+///
+/// 草稿自动保存、整份保存不会把没动过的旧框改绑到重新冻结的新图上，使用时的 `fixture_source` 检查才有意义。
+/// 拍照点级与视图级的 fixture 都处理（拍照点级跟随所选视图）。
+pub(super) fn bind_fixture_sources(w: &Workspace, doc: &mut RecipeDoc, confirm: Option<(usize, u8)>) -> Result<(), String> {
+    for (k, shot) in doc.shots.iter_mut().enumerate() {
+        let old_k = w.doc.shots.iter().position(|old| old.id == shot.id);
+        let old = old_k.map(|k| &w.doc.shots[k]);
+        let frame = old_k.and_then(|k| w.frames.get(k));
+        let id = shot.id.clone();
+        let mut slots: Vec<(u8, &mut Option<crate::recipe::FixtureSpec>)> = vec![(shot.view, &mut shot.fixture)];
+        slots.extend(shot.views.iter_mut().map(|v| (v.view, &mut v.fixture)));
+        for (view, slot) in slots {
+            let Some(fixture) = slot.as_mut() else { continue };
+            let same = |previous: Option<&crate::recipe::FixtureSpec>| previous
+                .filter(|p| crate::recipe::FixtureSpec { source: p.source.clone(), ..fixture.clone() } == **p).map(|p| p.source.clone());
+            let kept = old.filter(|_| confirm != Some((k, view))).and_then(|old| {
+                same(old.for_view(view).ok().and_then(|s| s.fixture).as_ref()).or_else(|| same(old.fixture.as_ref().filter(|_| old.view == view)))
+            });
+            fixture.source = match kept {
+                Some(source) => source,
+                None => frame.and_then(|f| frozen_view(f, view)).map(|i| i.id.clone())
+                    .ok_or_else(|| format!("拍照点 {id} 图 {view}：含特征定位的图需要先冻结示教原图"))?,
+            };
+        }
+    }
+    Ok(())
 }
 
 fn keep_image(
@@ -969,7 +1022,7 @@ fn keep_views(
         let image_id = format!("{captured_at}-{revision}-{k}-{seq}-v{v}");
         let path = image_file(&host, id, &image_id)?;
         std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
-        crate::image_file::save_pgm(&path, &image)?;
+        crate::image_file::save_pgm_new(&path, &image)?;
         frozen.push(FrozenImage {
             id: image_id,
             view: v,
@@ -1149,7 +1202,7 @@ pub async fn workspace_trial(
         let started = Instant::now();
         // 模板从试测的这张冻结原图裁出（锁外）；裁不出来与测量失败一样记成试测没通过
         let base = || match &r.shots[k].fixture {
-            Some(fixture) => ensure_template(&app.state::<WorkspaceHost>(), &r.id, &frozen, fixture.rect, Some(&image)),
+            Some(fixture) => ensure_template(&app.state::<WorkspaceHost>(), &r.id, &frozen, fixture, Some(&image)),
             None => Ok(String::new()),
         };
         let (measurement, score, coverage, passed, reason) = base()
@@ -1199,6 +1252,13 @@ pub fn workspace_save_params(
     let mut items = host.items.lock().unwrap();
     let w = items.get_mut(&id).ok_or("候选配置不存在")?;
     w.expect(revision)?;
+    apply_params(w, k, params)?;
+    host.save(w)?;
+    view(&app, w.clone())
+}
+
+/// 保存示教参数：特征定位的模板来源在这里（也只在这里）强制改绑到所选视图当前的冻结原图，见 `bind_fixture_sources`。
+fn apply_params(w: &mut Workspace, k: usize, params: ShotTeach) -> Result<(), String> {
     let mut doc = w.doc.clone();
     let shot = doc.shots.get_mut(k).ok_or("拍照点不存在")?;
     if let Some(fixture) = &params.fixture {
@@ -1212,6 +1272,8 @@ pub fn workspace_save_params(
     shot.limits = params.limits;
     shot.fixture = params.fixture;
     if let Some(v) = shot.views.iter_mut().find(|v| v.view == shot.view) { v.path = shot.path.clone(); v.mm_per_px = shot.mm_per_px; v.detect = shot.detect.clone(); v.limits = shot.limits.clone(); v.fixture = shot.fixture.clone(); }
+    let selected = shot.view;
+    bind_fixture_sources(w, &mut doc, Some((k, selected)))?;
     doc.build()?;
     if doc != w.doc {
         w.doc = doc;
@@ -1221,8 +1283,7 @@ pub fn workspace_save_params(
         workflow::store_active(w, k);
         w.changed();
     }
-    host.save(w)?;
-    view(&app, w.clone())
+    Ok(())
 }
 
 #[tauri::command]
@@ -1512,7 +1573,6 @@ pub fn workspace_publish(
         return Err("已有待生效版本，请等待工件结束".into());
     }
     if let Some((_, message)) = w.group_selection_errors().into_iter().next() { return Err(message); }
-    crate::release::reject_fixture(&w.doc.build()?)?;
     let validated = w
         .validation
         .as_ref()
@@ -1641,11 +1701,12 @@ pub fn draft_summaries(app: &AppHandle) -> Vec<DraftSummary> {
 fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeDoc, teaching: &[Teaching]) -> Result<crate::release::ReleaseBundle, String> {
     let recipe = doc.build()?;
     let engine = app.state::<vision::VisionHost>().engine().ok_or("发布前必须加载兼容的图像核心库")?;
+    vision::require_locate(&recipe, &engine.locate)?;
     let mut shots = Vec::new();
     let mut w = Workspace::new(doc.clone(), None); w.frames = teaching.to_vec();
     for (k, shot) in recipe.shots.iter().enumerate() {
         if !shot.measured() {
-            shots.push(crate::release::ShotInput { k, view: shot.view, image: None, calibration: None });
+            shots.push(crate::release::ShotInput { k, view: shot.view, image: None, image_id: None, calibration: None });
             continue;
         }
         for selected in workflow::selected_views(&w, k) {
@@ -1653,12 +1714,15 @@ fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeDoc, teachin
             let frame = workflow::projected_frame(&w, k, selected)?;
             let image = frame.image.as_ref().ok_or("发布示教原图缺失")?;
             let projected = recipe.for_view(k, selected)?;
+            if let Some(fixture) = &projected.shots[k].fixture {
+                fixture_source(&frame, selected, fixture).map_err(|e| format!("拍照点 {} 图 {selected}：{e}", shot.id))?;
+            }
             let external = vision::shot_calib_path(app, &projected, k)?;
             let source = if external.exists() { Some(serde_json::from_str::<Value>(&crate::fsio::read_text(&external).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?) } else { None };
             let calibration = json!({"schemaVersion":1,"camera":shot.camera,"view":selected,
                 "reference":projected.shots[k].calib_ref(),"mmPerPx":projected.shots[k].mm_per_px,"source":source});
             shots.push(crate::release::ShotInput { k, view: selected,
-                image: Some(crate::release::ResourceSource::File(image_file(host, &recipe.id, &image.id)?)),
+                image: Some(crate::release::ResourceSource::File(image_file(host, &recipe.id, &image.id)?)), image_id: Some(image.id.clone()),
                 calibration: Some(crate::release::ResourceSource::Bytes(serde_json::to_vec(&calibration).map_err(|e| e.to_string())?)) });
         }
     }
@@ -1916,9 +1980,6 @@ pub async fn workspace_compare(
             .transpose()?
             .flatten()
             .ok_or("历史配方快照缺失")?;
-        if !raw && crate::store::readings_depend_on_template(&original, &recipe) {
-            return Err("配方使用特征定位，定位模板不在配方里，不能复用旧测量值；请从原图复测".into());
-        }
         if (raw && !same_frame_sources(&original, &recipe)) || (!raw && !crate::store::same_measurement_layout(&original, &recipe)) {
             return Err(if raw { "历史原图的 Pose、相机或视角与候选不同；请重新采集样本" }
                 else { "保存的测点布局与候选不同，不能复用旧测量值；请从原图复测" }.into());
@@ -2594,22 +2655,26 @@ mod tests {
     }
 
     #[test]
-    fn changing_fixture_changes_measurement_layout_but_changing_nominal_keeps_it() {
-        // 防的回归（定稿 §7）：改 fixture 后历史仍按旧测量定义重判（测量布局没变）；或只改名义值也被当成测量定义变化，历史不能重判
+    fn template_source_and_fixture_are_measurement_definition_but_nominal_is_not() {
+        // 防的回归（定稿 §7）：改 fixture 或只换模板来源（重新冻结后保存）后，历史仍按旧测量定义重判、复用对着旧模板量的 d′；
+        // 或只改名义值也被当成测量定义变化，历史不能重判
         let mut doc = crate::recipe::samples().remove(1);
         doc.shots.truncate(1);
         let shot = &mut doc.shots[0];
         shot.views = vec![crate::recipe::ShotViewSpec { view: 1, enabled: true, path: shot.path.clone(), mm_per_px: shot.mm_per_px,
-            detect: None, limits: None, calib: None, fixture: None }];
+            detect: None, limits: None, calib: None, fixture: Some(crate::recipe::FixtureSpec { rect: [100, 100, 32, 32], source: "group-0-v1".into(),
+                search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None }) }];
         let original = doc.build().unwrap();
-        let mut located = doc.clone();
-        located.shots[0].views[0].fixture = Some(crate::recipe::FixtureSpec { rect: [100, 100, 32, 32], search_radius_px: 20.0,
-            angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None });
-        assert!(!crate::store::same_measurement_layout(&original, &located.build().unwrap()));
-        let mut nominal = doc.clone();
-        nominal.limits.position.as_mut().unwrap().nominal = 0.3;
-        nominal.limits.gauge_ref = Some("GA-0315".into());
-        assert!(crate::store::same_measurement_layout(&original, &nominal.build().unwrap()));
+        let cases: [(&str, fn(&mut RecipeDoc), bool); 3] = [
+            ("去掉特征定位", |d| d.shots[0].views[0].fixture = None, false),
+            ("只换模板来源", |d| d.shots[0].views[0].fixture.as_mut().unwrap().source = "group-0-v1-retake".into(), false),
+            ("只改名义值", |d| { d.limits.position.as_mut().unwrap().nominal = 0.3; d.limits.gauge_ref = Some("GA-0315".into()); }, true),
+        ];
+        for (name, edit, same) in cases {
+            let mut candidate = doc.clone();
+            edit(&mut candidate);
+            assert_eq!(crate::store::same_measurement_layout(&original, &candidate.build().unwrap()), same, "{name}");
+        }
     }
 
     fn archive_fixture(doc: RecipeDoc) -> Release {
