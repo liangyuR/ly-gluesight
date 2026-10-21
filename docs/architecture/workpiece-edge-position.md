@@ -190,7 +190,7 @@ d 是有向距离：胶越过工件边到另一侧时 d 为负，按超差判定
 
 按 [AGENTS.md](../../AGENTS.md) 的 D-0，软件未正式投产，新格式直接替换旧格式：
 
-- 显式升级配方 schema（当前 `RECIPE_SCHEMA = 6`）、测量契约和发布 schema（当前 `RELEASE_SCHEMA = 2`）；旧配方和发布包按项目规则提示后拒绝或备份重建。
+- 显式升级配方 schema（当前 `RECIPE_SCHEMA = 7`）、测量契约和发布 schema（当前 `RELEASE_SCHEMA = 2`）；旧配方和发布包按项目规则提示后拒绝或备份重建。
 - 保留示教中线模式，是指新格式中可以配置 `taughtPath`。
 - 发布包冻结工件边几何、定位模板、测点、标定和算法版本；资源按 ID、修订号和结构/尺寸/路径校验。
 - [store.rs](../../src-tauri/src/store.rs) 的 `measurement_layout` 纳入位置模式、工件边和定位参数，使跨模式的配方各自计算测量值。
