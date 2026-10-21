@@ -8,9 +8,17 @@ export function shotTeach(shot: Pick<ShotSpec, "path" | "mmPerPx" | "detect" | "
   return { path: shot.path.map(([x, y]) => [x, y] as [number, number]), mmPerPx: shot.mmPerPx ?? null, ...(shot.detect ? { detect: structuredClone(shot.detect) } : {}), ...(shot.limits ? { limits: structuredClone(shot.limits) } : {}), fixture: shot.fixture ? structuredClone(shot.fixture) : null };
 }
 
-/** 按 f32 比较：后端以 f32 存中线与参数，取回的值与草稿在 f32 精度内相同就算没改。 */
+const canonical = (v: unknown): unknown => Array.isArray(v) ? v.map(canonical)
+  : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map(key => [key, canonical((v as Record<string, unknown>)[key])]))
+  : typeof v === "number" ? Math.fround(v) : v;
+
+/**
+ * 按 f32 比较：后端以 f32 存中线与参数，取回的值与草稿在 f32 精度内相同就算没改。
+ * 字段顺序不计（新画的定位框是前端拼的对象，后端回来的字段顺序不同）；定位框的 source 不计：它只由后端写入、前端传的不用，
+ * 新框保存后后端改绑到当前示教图，草稿里的空来源不能让这一帧永远停在“有未试测的修改”。
+ */
 export function sameTeach(a: ShotTeach | undefined, b: ShotTeach | undefined) {
-  const norm = (t: ShotTeach | undefined) => JSON.stringify(t ?? null, (_k, v) => (typeof v === "number" ? Math.fround(v) : v));
+  const norm = (t: ShotTeach | undefined) => JSON.stringify(canonical(t ? { ...t, fixture: t.fixture && { ...t.fixture, source: "" } } : null));
   return norm(a) === norm(b);
 }
 
