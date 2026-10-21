@@ -10,6 +10,6 @@
     "repository": "liangyuR/lyFlow",
     "series": "1.1"
   },
-  "requiredOperators": ["io.load_image", "image.board_calib", "image.load_calib", "glue.taught_path", "glue.bead_width"],
+  "requiredOperators": ["io.load_image", "image.board_calib", "image.load_calib", "glue.taught_path", "glue.bead_width", "glue.locate"],
   "requiredMvsFiles": ["MvCameraControl.dll", "MvProducerGEV.cti", "MvProducerU3V.cti", "MVGigEVisionSDK.dll", "MvUsb3vTL.dll", "FormatConversion.dll", "GCBase_MD_VC120_v3_0_MV.dll", "GenApi_MD_VC120_v3_0_MV.dll", "msvcr120.dll", "msvcp120.dll", "CommonParameters.ini", "ThirdParty/avutil-60.dll", "ThirdParty/swscale-9.dll", "ThirdParty/libwinpthread-1.dll"]
 }

@@ -52,3 +52,38 @@ fn runtime_outside_the_locked_series_or_not_a_formal_build_is_refused() {
     assert_eq!(refused, [true; 4]);
     assert!(patch.is_ok());
 }
+
+#[test]
+fn operator_manifest_without_locate_or_without_template_pad_is_refused_at_the_matching_layer() {
+    // 防的回归：必需算子清单漏掉 glue.locate（加载了不能定位的核心库）；或 1.0.0 的 glue.locate 冒充带外圈模板的版本
+    let op = |id: &str, params: &[&str]| json!({"id": id, "params": params.iter().map(|n| json!({"name": n})).collect::<Vec<_>>(),
+        "outputs": [{"name": "pose"}, {"name": "score"}]});
+    let base: Vec<Value> = REQUIRED_OPERATORS.split(',').filter(|id| *id != "glue.locate").map(|id| op(id, &[])).collect();
+    let with = |locate: Option<Value>| json!({"operators": base.iter().cloned().chain(locate).collect::<Vec<_>>()});
+    let released = op("glue.locate", &["template", "anchor", "searchRadius", "angleRange", "angleStep", "minScore", "maxPeakRatio"]);
+    let pad = op("glue.locate", &["template", "anchor", "searchRadius", "angleRange", "angleStep", "minScore", "maxPeakRatio", "templatePad"]);
+    // （清单，加载是否通过，locate 是否可用）
+    for (name, manifest, loads, locates) in [
+        ("没有 glue.locate", with(None), false, false),
+        ("glue.locate 没有 templatePad", with(Some(released)), true, false),
+        ("lyFlow#32 之后的 glue.locate", with(Some(pad)), true, true),
+    ] {
+        assert_eq!(check_operators(&manifest).is_ok(), loads, "{name}");
+        assert_eq!(locate_support(&manifest).is_ok(), locates, "{name}");
+    }
+}
+
+#[test]
+fn every_operator_in_measurement_graphs_is_a_required_operator() {
+    // 防的回归：测量图用了 requiredOperators（runtime.json）之外的算子，打包与加载时都查不出，换运行库后生产才失败
+    let required: Vec<&str> = REQUIRED_OPERATORS.split(',').collect();
+    for sample in crate::recipe::samples() {
+        let recipe = sample.build().unwrap();
+        for k in 0..recipe.shot_count() {
+            let graph = build_taught_graph(&recipe, k).unwrap();
+            for node in graph["nodes"].as_array().unwrap() {
+                assert!(required.contains(&node["op"].as_str().unwrap()), "{}", node["op"]);
+            }
+        }
+    }
+}

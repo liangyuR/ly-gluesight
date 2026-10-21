@@ -48,6 +48,8 @@ pub struct Engine {
     pub modified_ms: u64,
     /// `版本:文件大小:修改时间`，写进发布包，生产加载时核对
     pub identity: String,
+    /// glue.locate 是否支持带外圈模板（lyFlow#32）。不支持不妨碍加载，只挡含特征定位的拍照点
+    pub locate: Result<(), String>,
 }
 
 impl Engine {
@@ -55,12 +57,14 @@ impl Engine {
         let resolved = std::fs::canonicalize(path).map_err(|e| format!("加载 lyFlow 失败（{}；客户端 ABI {}）：无法解析核心库路径：{e}", path.display(), lyflow_client::ABI_VERSION))?;
         let core = Core::load_from(&resolved).map_err(|e| format!("加载 lyFlow 失败（{}；客户端 ABI {}）：{e}", path.display(), lyflow_client::ABI_VERSION))?;
         core.self_check()?;
-        check_operators(&serde_json::from_str(&core.manifest_json().map_err(|e| e.to_string())?)
-            .map_err(|e| format!("核心库算子清单无效：{e}"))?)?;
+        let manifest: Value = serde_json::from_str(&core.manifest_json().map_err(|e| e.to_string())?)
+            .map_err(|e| format!("核心库算子清单无效：{e}"))?;
+        check_operators(&manifest)?;
+        let locate = locate_support(&manifest);
         let version = core.version();
         let (bytes, modified_ms) = file_identity(&resolved)?;
         let identity = format!("{version}:{bytes}:{modified_ms}");
-        Ok(Self { core: Arc::new(core), path: path.to_path_buf(), version, bytes, modified_ms, identity })
+        Ok(Self { core: Arc::new(core), path: path.to_path_buf(), version, bytes, modified_ms, identity, locate })
     }
 
     /// 跑一次图，返回 run summary 与图级命名输出（都已解析成 JSON）。
@@ -86,11 +90,22 @@ impl Engine {
     }
 }
 
+/// 必需算子：packaging/runtime.json 的 requiredOperators（build.rs 编译时带入，逗号分隔），打包与加载同一份清单。
+pub(crate) const REQUIRED_OPERATORS: &str = env!("GLUESIGHT_REQUIRED_OPERATORS");
+
 fn check_operators(manifest: &Value) -> Result<(), String> {
-    let required = ["io.load_image", "image.board_calib", "image.load_calib", "glue.taught_path", "glue.bead_width"];
     let ops = manifest["operators"].as_array().ok_or("核心库没有算子清单")?;
-    let missing: Vec<_> = required.into_iter().filter(|id| !ops.iter().any(|op| op["id"].as_str() == Some(id))).collect();
-    if missing.is_empty() { Ok(()) } else { Err(format!("核心库缺少示教胶路/标定算子：{}。请选择包含 glue.taught_path 的核心库，旧版飞拍核心库不能用于当前配方。", missing.join("、"))) }
+    let missing: Vec<_> = REQUIRED_OPERATORS.split(',').filter(|id| !ops.iter().any(|op| op["id"].as_str() == Some(id))).collect();
+    if missing.is_empty() { Ok(()) } else { Err(format!("核心库缺少必需算子：{}。请使用本版本锁定系列的 lyFlow 运行库。", missing.join("、"))) }
+}
+
+/// glue.locate 支持带外圈的模板（参数 templatePad、maxPeakRatio，输出 pose）：lyFlow#32 之后才有。
+/// 已发布的 1.1.x 带的是 1.0.0 的 glue.locate，加载照常，只有含特征定位的拍照点不能测量。
+fn locate_support(manifest: &Value) -> Result<(), String> {
+    let unsupported = || "当前 lyFlow 运行库的 glue.locate 不支持带外圈模板（templatePad，lyFlow#32 之后才有），含特征定位的拍照点不能测量".to_string();
+    let op = manifest["operators"].as_array().into_iter().flatten().find(|op| op["id"] == "glue.locate").ok_or_else(unsupported)?;
+    let has = |list: &str, name: &str| op[list].as_array().is_some_and(|items| items.iter().any(|item| item["name"] == name));
+    if has("params", "templatePad") && has("params", "maxPeakRatio") && has("outputs", "pose") { Ok(()) } else { Err(unsupported()) }
 }
 
 fn image_input(image: &FrameImage) -> Result<RunImageInput, String> {
