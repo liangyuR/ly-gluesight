@@ -108,6 +108,15 @@ fn locate_support(manifest: &Value) -> Result<(), String> {
     if has("params", "templatePad") && has("params", "maxPeakRatio") && has("outputs", "pose") { Ok(()) } else { Err(unsupported()) }
 }
 
+/// 运行库不支持带外圈模板时（`Engine.locate` 为 Err，如已发布的 1.1.4 带的 locate 1.0.0），只挡含特征定位的配方：
+/// 发布前、生产加载与重现时调用；没有特征定位的配方在这样的运行库上照常发布、加载。
+pub fn require_locate(recipe: &Recipe, locate: &Result<(), String>) -> Result<(), String> {
+    match (recipe.shots.iter().find(|shot| shot.has_fixture()), locate) {
+        (Some(shot), Err(why)) => Err(format!("含特征定位的拍照点（{}）：{why}", shot.id)),
+        _ => Ok(()),
+    }
+}
+
 fn image_input(image: &FrameImage) -> Result<RunImageInput, String> {
     let count = (image.width as usize).checked_mul(image.height as usize).filter(|&n| n > 0)
         .ok_or("图像尺寸无效")?;

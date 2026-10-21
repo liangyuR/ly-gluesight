@@ -1573,7 +1573,6 @@ pub fn workspace_publish(
         return Err("已有待生效版本，请等待工件结束".into());
     }
     if let Some((_, message)) = w.group_selection_errors().into_iter().next() { return Err(message); }
-    crate::release::reject_fixture(&w.doc.build()?)?;
     let validated = w
         .validation
         .as_ref()
@@ -1702,11 +1701,12 @@ pub fn draft_summaries(app: &AppHandle) -> Vec<DraftSummary> {
 fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeDoc, teaching: &[Teaching]) -> Result<crate::release::ReleaseBundle, String> {
     let recipe = doc.build()?;
     let engine = app.state::<vision::VisionHost>().engine().ok_or("发布前必须加载兼容的图像核心库")?;
+    vision::require_locate(&recipe, &engine.locate)?;
     let mut shots = Vec::new();
     let mut w = Workspace::new(doc.clone(), None); w.frames = teaching.to_vec();
     for (k, shot) in recipe.shots.iter().enumerate() {
         if !shot.measured() {
-            shots.push(crate::release::ShotInput { k, view: shot.view, image: None, calibration: None });
+            shots.push(crate::release::ShotInput { k, view: shot.view, image: None, image_id: None, calibration: None });
             continue;
         }
         for selected in workflow::selected_views(&w, k) {
@@ -1714,12 +1714,15 @@ fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeDoc, teachin
             let frame = workflow::projected_frame(&w, k, selected)?;
             let image = frame.image.as_ref().ok_or("发布示教原图缺失")?;
             let projected = recipe.for_view(k, selected)?;
+            if let Some(fixture) = &projected.shots[k].fixture {
+                fixture_source(&frame, selected, fixture).map_err(|e| format!("拍照点 {} 图 {selected}：{e}", shot.id))?;
+            }
             let external = vision::shot_calib_path(app, &projected, k)?;
             let source = if external.exists() { Some(serde_json::from_str::<Value>(&crate::fsio::read_text(&external).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?) } else { None };
             let calibration = json!({"schemaVersion":1,"camera":shot.camera,"view":selected,
                 "reference":projected.shots[k].calib_ref(),"mmPerPx":projected.shots[k].mm_per_px,"source":source});
             shots.push(crate::release::ShotInput { k, view: selected,
-                image: Some(crate::release::ResourceSource::File(image_file(host, &recipe.id, &image.id)?)),
+                image: Some(crate::release::ResourceSource::File(image_file(host, &recipe.id, &image.id)?)), image_id: Some(image.id.clone()),
                 calibration: Some(crate::release::ResourceSource::Bytes(serde_json::to_vec(&calibration).map_err(|e| e.to_string())?)) });
         }
     }

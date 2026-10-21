@@ -99,3 +99,18 @@ fn every_operator_in_measurement_graphs_is_a_required_operator() {
     }
     assert!(located_nodes > 0, "带 fixture 的样例图里没有 n_locate");
 }
+
+#[test]
+fn runtime_without_padded_template_support_refuses_only_recipes_using_fixture() {
+    // 防的回归：已发布的 1.1.4 运行库（locate 1.0.0）挡住了没有特征定位的配方的发布与生产加载（现场打包停摆）；
+    // 或含特征定位的配方在它上面照常发布、加载，到生产每帧才失败
+    let unsupported: Result<(), String> = Err("glue.locate 不支持 templatePad".into());
+    let plain = crate::recipe::samples().remove(1).build().unwrap();
+    let mut located = crate::recipe::samples().remove(1);
+    located.shots[0].fixture = Some(crate::recipe::FixtureSpec { rect: [100, 100, 32, 32], source: "capture-1-0-v1".into(),
+        search_radius_px: 20.0, angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None });
+    let located = located.build().unwrap();
+    assert!(require_locate(&plain, &unsupported).is_ok());
+    assert!(require_locate(&located, &unsupported).unwrap_err().contains("templatePad"));
+    assert!(require_locate(&located, &Ok(())).is_ok());
+}
