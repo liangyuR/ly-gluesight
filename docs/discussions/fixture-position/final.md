@@ -1,6 +1,6 @@
 # 定稿：特征定位 + 示教胶路判胶偏
 
-讨论 3 轮收敛（[第 1 轮](round-1.md) · [第 2 轮](round-2.md) · [第 3 轮](round-3.md)）。起草方与评审方对第 1–9 节无分歧；第 8 节第 1–6 项已由用户于 2026-10-20 拍板，第 9 节说明阶段 0 数据能证明什么、不能证明什么。第 10 节是阶段 0 之后的结论与两项决定（决定一、决定二，用户于 2026-10-21 按建议拍板，列在第 8 节第 7、8 项）。
+讨论 3 轮收敛（[第 1 轮](round-1.md) · [第 2 轮](round-2.md) · [第 3 轮](round-3.md)）。起草方与评审方对第 1–9 节无分歧；第 8 节第 1–6 项已由用户于 2026-10-20 拍板，第 9 节说明阶段 0 数据能证明什么、不能证明什么。第 10 节是阶段 0 之后的结论与两项决定（决定一、决定二，用户于 2026-10-21 按建议拍板，列在第 8 节第 7、8 项）。第 11、12 节是 G2、G3 的实施记录。
 
 ## 1. 方案
 
@@ -57,7 +57,7 @@ GlueSight（Rust 纯函数）
 - **走廊**：`search_mm` 逐点按阶段 0 的 σ_B 取 `max(3σ_B, 胶宽上限/2 + 2 px)`；σ_B 超阈值的点关闭位置判定。
 - **示教**：框选定位特征（叠加模板框、搜索范围、杠杆臂 L）；保存检查模板与走廊不重叠、纹理、`peakRatio`、L；优先与胶同面、刚性、不被喷嘴遮挡的孔或角点；在样本库其他图上做定位试测；试测标签与草稿比较纳入 fixture。
 - **验证**：独立合格样本全部定位成功；位姿超出搜索范围 70% 告警；d 的 σ ≤ 位置公差 1/5；|μ − nominal| > 公差 1/3 告警。
-- **存储/叠图**：位姿写入 `FrameView` JSON；`POINTS_FORMAT` 3；audit `d_bits` 可空，旧格式 spool 按 D-0 拒绝并提示清理；示教、生产、历史叠图按位姿画 N' 与模板框。
+- **存储/叠图**：位姿写入 `FrameView` JSON（各视图结果 `viewResults[].pose`，G3）；`POINTS_FORMAT` 3；audit `d_bits` 可空，旧格式 spool 按 D-0 拒绝并提示清理；示教、生产、历史叠图按位姿画 N' 与模板框。
 - **版本与依赖**：`RELEASE_SCHEMA` 3、`GRAPH_VERSION` 新值；`requiredOperators` 加 `glue.locate`，以 `runtime.json` 为唯一来源（§8 第 3 项，Rust 编译期读取，不再需要一致性测试，见 §11）；打包自检加 locate 冒烟。
 
 ## 6. 实施拆分
@@ -70,7 +70,7 @@ GlueSight（Rust 纯函数）
 | L1 | LyFlow | locate 1.1.0 质量门与合成场景用例；发布运行库 | 无 | 用例通过；Release 可被 `Prepare-RuntimeDependencies` 拉取 |
 | G1 | GlueSight | 状态模型（`ST_NO_REF`、`d: Option`、`reference_invalid`、NG 优先、fault 92、删除 `LocateFailed`/`located`）、`POINTS_FORMAT` 3、audit spool、离线 `LocateFail` 场景与 CDP 断言、前端帧状态与徽标 | 无 | judge/store/audit/恢复回归测试；离线场景“全视图 `ST_NO_REF`、胶正常 → ERR 92” |
 | G2 | GlueSight | 配方 fixture、图插入 `n_locate`、base_dir、模板写出、`parse_result` 接偏差模块、`requiredOperators` 全部维护点与一致性测试、`GRAPH_VERSION`、`measurement_layout` | P0 偏差模块、L1 运行库已发布、G1（G2 先按 L1 本地构建合入，见 §11） | 合成图集成测试：共同移动 d 不变、只移胶 d 变化、定位失败 ERR 92 |
-| G3 | GlueSight | 发布包模板、`RELEASE_SCHEMA` 3、加载校验、生产 base_dir、打包自检 locate 冒烟 | G2 | 发布—加载—生产测量端到端；`Test-PackagedRuntime.ps1` 断言 |
+| G3 | GlueSight | 发布包模板、`RELEASE_SCHEMA` 3、加载校验、生产 base_dir、打包自检 locate 冒烟；模板来源身份进测量定义、模板与走廊不重叠（见 §12） | G2 | **已完成（2026-10-21）**：真引擎 E1–E4 走 publish → load → `Prepared::load`（含预热定位验收）→ 生产测量，E4 证明生产读包内模板；E6 打包冒烟；`Test-PackagedRuntime.ps1` 报告 locate 能力，按 `locateSmoke` 开关警告或失败 |
 | G4 | GlueSight | 示教页定位特征步骤、保存检查、定位试测、验证统计、`gaugeRef` | G2 | 前端流程测试；试测失效测试 |
 | G5 | GlueSight | 叠图按位姿绘制、连续定位失败告警 | G1、G2 | 生产/历史页显示测试 |
 | F | 现场 | 小批量对照 | G3、G4 | 与量具/人工判定一致率达标 |
@@ -203,8 +203,30 @@ P0、L1、G1 可并行。
 与上文不同或上文没写的实现细节，G3、G4 实施前先读：
 
 - **模板生命周期。** 工作台不在保存 fixture 时裁模板，而是每次试测、验证、候选试运行时按该视图当前的冻结示教原图重新裁，写到 `<workspaces>/<配方>/fixtures/<冻结图>-r<x>_<y>_<w>_<h>-p4/template.pgm`（按来源寻址，内容不同才原子重写），base_dir 指向这个绝对目录。旧目录随工作区删除，单独清理归 G4。
-- **模板身份不在配方里。** 配方只存框和门限，`measurement_layout` 只能看出 fixture 参数变化；重新冻结、导入或恢复示教后模板像素变了，布局却相同。所以 G2 对含 fixture 的配方（原记录或候选任一侧）一律拒绝非原图重判与比较（`readings_depend_on_template`），只能从原图复测。G3 把发布包内模板的内容哈希纳入测量定义后，才能对同一模板放开复用；在此之前 §7“只改名义 → 历史可重判”对含 fixture 的配方不成立（重判覆盖值里没有名义值），改名义后要从原图复测；G2 里含 fixture 的记录只有候选试运行产生的离线候选记录，都带原图。
+- **模板身份不在配方里（G3 已改，见 §12）。** G2 的配方只存框和门限，`measurement_layout` 只能看出 fixture 参数变化；重新冻结、导入或恢复示教后模板像素变了，布局却相同，所以 G2 对含 fixture 的配方一律拒绝非原图重判与比较（`readings_depend_on_template`）。G3 改为来源身份：框记下模板来源冻结图编号（`FixtureSpec.source`），身份 = (来源, 框, 外圈) 进测量布局，**不用内容哈希**；来源、框、外圈都没变时可以复用，§7“只改名义 → 历史可重判”对含 fixture 的配方成立。
 - **requiredOperators。** 按 §8 第 3 项由编译期读 `packaging/runtime.json`，§5、§7 原来的“Rust 列表与 runtime.json 一致”测试改为：样例配方与带 fixture 的样例配方建出的测量图里，每个算子都在这份清单里。
 - **运行库依赖。** L1（lyFlow#32）已合入 lyFlow main、尚未发布。G2 用本地构建验证；已发布 1.1.x 的 `glue.locate` 不认 `templatePad`，加载时另算 locate 能力（`Engine.locate`），不支持时只拒绝含 fixture 的拍照点。
-- **G3 之前拒绝发布。** 含特征定位（启用视图上）的配方不能发布，也不能加载到生产（`release::reject_fixture`）。跨阶段约束：G3 不能单独去掉这条拒绝。模板框盖住胶时位姿跟着胶走，d′ 恒约等于 0，真实胶偏会被放行；去掉的前提是 G4 的“模板与走廊不重叠”保存检查已合入，或 G3 发布时补上同样的几何检查。
+- **G3 之前拒绝发布（G3 已替代，见 §12）。** G2 里含特征定位（启用视图上）的配方不能发布，也不能加载到生产（`release::reject_fixture`）。跨阶段约束：模板框盖住胶时位姿跟着胶走，d′ 恒约等于 0，真实胶偏会被放行。G3 去掉这条拒绝，由配方校验里的走廊检查（含同 Pose、同相机、同一幅图的其他拍照点）替代。
 - **示教试测。** 示教原图上定位失败但胶路另判 NG 时，G2 仍按原规则算有效试测；定位验收归 G4 的定位试测与保存检查。
+
+## 12. G3 实施记录（2026-10-21）
+
+G3 的实现细节与上文不同或上文没写的部分，G4、G5 实施前先读。
+
+- **模板身份 = 来源身份，不用内容哈希（D-0）。** `FixtureSpec.source` 记裁模板用的冻结示教原图编号，身份三元组是 (source, rect, `FIXTURE_TEMPLATE_PAD_PX`)，它在测量布局里（fixture 含 source；布局顶层另有 `"fixtureTemplate": {"pad": 4}`）。成立的前提，都写在代码注释里：
+  - 冻结图按编号只写一次：`image_file::save_pgm_new` 用 create_new，文件已在时逐字节比对，相同照常（同一圈重复采用）、不同报错。逐字节比对不是哈希；
+  - 发布包复制的是同一份字节；工作台与发布包都用 `template_pgm(image_file::decode(字节), rect)` 裁模板；
+  - 改 `template_pgm` 的裁法必须同时改布局里的 `fixtureTemplate`。
+  跨配方：布局比较不含配方编号，但历史重判的候选按记录的配方编号取，冻结图编号在工作区内唯一；两个配方采用同一圈时编号相同，像素也来自同一份圈原图。
+- **来源由后端掌管（`bind_fixture_sources`）。** 前端传来的 source 一律不用。只有“保存示教参数”强制把所选视图的框改绑到当前冻结图；草稿自动保存与整份保存（`workspace_save_doc`）只给新增或改动的框绑定当前冻结图，没动的沿用旧来源——否则重新冻结后任何一次自动保存都会把旧框悄悄绑到新图上。冻结、整圈采集（含继承示教）、恢复示教都不改写来源（恢复示教只回滚帧，不回滚配方）。使用时 `fixture_source` 要求来源就是该视图当前冻结图：试测、验证、候选试运行、发布前都经过它，过期的框报“定位框是在示教图 X 上保存的，当前示教图是 Y”，要在示教页确认框后重新保存示教参数。不在编辑态页面上的提示归 G4。
+- **G2 时期的数据。** 配方校验要求 source 合法，`RECIPE_SCHEMA` 不升：G2 时期带 fixture 的工作区 `build()` 失败、打不开，要删除重建（D-0，不迁移）。配方快照经 `RecipeDoc::build` 反序列化，缺来源的快照解析即失败；历史重判与候选比较另有 `template_identity_unknown` 守卫（任一侧启用的 fixture 来源不合法就拒绝复用），属纵深防御。G2 的“含 fixture 一律拒绝复用”（`readings_depend_on_template`）已去掉：来源、框、外圈都没变时，§7 的“只改名义 → 历史可重判”对含 fixture 的配方成立。
+- **走廊检查替代 `reject_fixture`（§11 跨阶段约束）。** `RecipeDoc::validate` 里，按 (Pose, 相机, 图) 分组：同一 Pose、同一相机、同一幅图的几个拍照点拍的是同一场景的不同帧（同一 Pose 可多次触发），组内每个启用的框（带外圈，按像素中心 [x − 4, x + w + 3] × [y − 4, y + h + 3]）到组内每条已示教中线的精确距离（线段到矩形）必须大于该线搜索半宽 + 4 px。余量 4 px 的来由：P0 选框时要求内框离走廊大于 10 px，外圈在角上最多近 4√2 px，P0 选出的框到这里还剩约 10 − 4√2 ≈ 4.3 px（不计 P0 每 2 px 取点的采样误差）。停用视图、不检拍照点的框与中线不参与。带外圈的框在图内（右、下边要看图像尺寸）由工作台保存示教、发布与加载时用 `check_image_size` 查。已知影响：校验也作用于草稿自动保存与配方页改 `search_mm`，压走廊的框会让这些保存失败，错误要能在前端显示；第一个带框的 UI 在 G4。只查同组示教中线：不同 Pose 或其他胶路的胶进到模板里，要靠 G4 的亮度与 `peakRatio` 检查。
+- **发布包（`RELEASE_SCHEMA` 3）。** 启用 fixture 的视图在 `shots/kk/vN/` 下带 `template.pgm`（(w + 8) × (h + 8) 的 P5），清单每个视图记 `imageId`（有图则必有）与 `template`；发布时要求来源 = 发布原图编号、带外圈的框在图内；加载时按包内原图与配方重算模板比对（与中线、测点同一机制），fixture 视图必须引用模板、非 fixture 视图不得带模板，声明集合与引用集合一致。已知局限（与原图、中线相同）：按部件 `verify` 只核对大小，同尺寸替换要到下次 `load_directory` 才发现。
+- **运行库能力。** `vision::require_locate(recipe, &engine.locate)`：运行库不支持带外圈模板时只挡含特征定位的配方，发布前（`freeze_bundle`）、生产加载与重现（`Prepared::load`）、候选试运行调用。按系列兼容运行时，本地构建发布的含 fixture 包放到已发布 1.1.4 上会在加载时被拒。
+- **生产 base_dir。** `Prepared` 只给启用 fixture 的视图登记 base_dir = 发布包里该视图的目录（UTF-8 绝对路径），其他视图照旧给空串，与工作台、候选试运行一致；`measure`、`measure_views`、`warm` 与重现都经 `measure_view`。
+- **预热的定位验收。** `warm()` 在发布包自己的示教原图上跑每个视图，fixture 视图位姿必须被采用，否则不布防并报出 locate 原因。这是生产接线验收，不是 G4 的质量门。
+- **位姿存储。** `ViewResult.pose`（帧记录的各视图结果）保存 `PoseRecord`（含没被采用的）；`Measured.poses` 在单图与多图两条路径都填。G5 叠图时 T 由 `offset`、`angle` 与快照里 `rect` 的示教中心还原。`DB_VERSION` 8、spool `FORMAT` 3，旧库备份后重建、旧 spool 文件拒绝就绪（D-0），开发机上的历史记录会被清掉。
+- **打包自检。** 应用自检的 `lyflow.locate` 只报告状态：运行库不支持带外圈模板 → `unsupported`（写明影响，不算失败）；支持 → 跑合成图冒烟（示教图位姿被采用且偏移 ≈ 0，整图平移 (+6, +4) 后偏移 ≈ (6, 4)、胶偏不变），失败即自检失败。放不放行由 `packaging/runtime.json` 的 `lyflow.locateSmoke` 决定（`optional` 警告、`required` 失败，只给打包脚本读）。当前为 `optional`：用已发布 1.1.4 打无特征定位的包照常通过；L1 发布、运行库升到 deps v4 的 PR 里改成 `required`，并用正式运行库重跑真引擎 E1–E6 与 §9.4。
+- **测试。** 发布—加载—生产端到端：真引擎用例（`vision::taught::engine_tests`，E1–E4）在临时目录里 `release::publish` → `release::load` → `Prepared::load` → `warm` → `measure_views`，E4 把加载后的包内模板换成被抹平的同尺寸模板，下一帧位姿不再被采用；E6（`packaging`）在支持带外圈模板的运行库上冒烟报 ok。本地 lyFlow#32 构建上 E1–E6 通过。
+
+**留给 G4**：带框的示教 UI 与保存检查的错误显示、来源过期的提示、纹理与亮像素、`peakRatio`、杠杆臂 L、验证统计、`maxEndShiftMm` 与示教余量 m、工作台旧 `fixtures/` 目录的清理。**留给 G5**：用 `ViewResult.pose` 加快照还原 T，画 N′ 和模板框；连续定位失败告警。
