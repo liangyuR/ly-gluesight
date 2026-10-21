@@ -52,7 +52,7 @@ S7 专项需要 Python 3 和本机 TCP 权限，可用 `S7_TEST_PYTHON` 指定 P
 
 ## 特征定位真引擎测试
 
-`src-tauri/src/vision/taught/engine_tests.rs` 在合成工件（定位框里两个暗孔和一个亮 L 角，暗胶条沿示教线）上跑真实 lyFlow 的 glue.locate 与 bead_width，经发布包的生产路径：临时目录里 `release::publish`（模板由包内示教原图裁出）→ `release::load` → `Prepared::load`（含预热的定位验收）→ `measure_views`，再交给 `judge`。共 4 项：整件平移（+12, +7 px 与切向 −25 px）后 d′ 不变、两端超出检测范围、判 OK（E1）；只移胶 8 px 时 d 沿法向变 0.8 mm、判 NG_POSITION（E2）；定位框被抹平时有胶站全部无基准、胶宽保留、判 ERR 92（E3）；加载后把包内模板换成同尺寸、特征被抹平的一块，下一帧位姿不再被采用、判 ERR 92，证明生产读的是发布包自己的模板（E4）；定位框逐像素挪向胶路，发布要在带外圈的框碰到漂到最远可测处（−16 px）的胶之前以走廊检查拒绝，最近一个能发布的框上胶漂过去时位姿不动、d 变 −1.6 mm、判 NG_POSITION（E5）。`src-tauri/src/packaging.rs` 另有 E6：打包自检的定位冒烟在支持带外圈模板的运行库上报 ok。默认忽略，需要带 lyFlow#32 glue.locate 的 `lyflow_core.dll`（发布前用本地构建）：
+`src-tauri/src/vision/taught/engine_tests.rs` 在合成工件（定位框里两个暗孔和一个亮 L 角，暗胶条沿示教线）上跑真实 lyFlow 的 glue.locate 与 bead_width，E1–E5 经发布包的生产路径：临时目录里 `release::publish`（模板由包内示教原图裁出）→ `release::load` → `Prepared::load`（含预热的定位验收）→ `measure_views`，再交给 `judge`：整件平移（+12, +7 px 与切向 −25 px）后 d′ 不变、两端超出检测范围、判 OK（E1）；只移胶 8 px 时 d 沿法向变 0.8 mm、判 NG_POSITION（E2）；定位框被抹平时有胶站全部无基准、胶宽保留、判 ERR 92（E3）；加载后把包内模板换成同尺寸、特征被抹平的一块，下一帧位姿不再被采用、判 ERR 92，证明生产读的是发布包自己的模板（E4）；定位框逐像素挪向胶路，发布要在带外圈的框碰到漂到最远可测处（−16 px）的胶之前以走廊检查拒绝，最近一个能发布的框上胶漂过去时位姿不动、d 变 −1.6 mm、判 NG_POSITION（E5）。E8 走工作台示教试测的同一条路（G4）：模板从示教图裁出放进临时目录、在示教图上测量，按示教图检查出报告——示教检查通过、自定位位姿恒等（本地构建上偏移 0 px、次峰比 0.279），亮度 ±40 的帧经验证统计的锁定判据不算错锁；定位框（含外圈附近）抹成噪声后纹理检查不过。合成图的亮区 +40 也不饱和，E8 只证明接线与恒等容差，±40 能否拦住真实过曝错锁要看现场样本。`src-tauri/src/packaging.rs` 另有 E6：打包自检的定位冒烟在支持带外圈模板的运行库上报 ok。默认忽略，需要带 lyFlow#32 glue.locate 的 `lyflow_core.dll`（发布前用本地构建）：
 
 ```powershell
 $env:LYFLOW_CORE_DLL = '<lyFlow 构建>\build\core\bin\lyflow_core.dll'
