@@ -1,6 +1,6 @@
 import { desktopCall } from "../../lib/desktop";
 import type { CameraImaging, RecipeDoc } from "../cycle/types";
-import type { CaptureRound, CaptureSummary, Comparison, FrozenImage, GrayImage, ImagingSaved, Overview, RecordImages, Sample, ShotTeach, Workspace, WorkspaceView } from "./types";
+import type { CaptureRound, CaptureSummary, Comparison, FixtureCheck, FixtureTrial, FrozenImage, GrayImage, ImagingSaved, Overview, RecordImages, RotationConfirmation, Sample, ShotTeach, Workspace, WorkspaceView } from "./types";
 
 function grayPreview(input: ArrayBuffer | number[]) {
   const buf=input instanceof ArrayBuffer?input:Uint8Array.from(input).buffer;
@@ -57,11 +57,20 @@ export const workspaceApi = {
   /** 按候选里已保存的中线试测冻结原图。 */
   trial: (id: string, revision: number, k: number, imageId: string) =>
     desktopCall<WorkspaceView>("workspace_trial", { id, revision, k, imageId }),
-  /** 把中线、像素当量与检测参数写进候选配方的拍照点 k，这一帧的试测随之作废。 */
-  saveParams: (id: string, revision: number, k: number, params: ShotTeach) =>
+  /** 把中线、像素当量与检测参数写进候选配方的拍照点 k，这一帧的试测随之作废。转角调大时必须带 rotation（高级设置里的确认）。 */
+  saveParams: (id: string, revision: number, k: number, params: ShotTeach & { rotation?: RotationConfirmation }) =>
     desktopCall<WorkspaceView>("workspace_save_params", { id, revision, k, params }),
-  saveTeach: (id: string, revision: number, k: number, imageId: string) =>
-    desktopCall<WorkspaceView>("workspace_save_teach", { id, revision, k, imageId }),
+  /** fixtureReviewed：特征定位视图须人工确认框内没有喷嘴、胶枪 */
+  saveTeach: (id: string, revision: number, k: number, imageId: string, fixtureReviewed?: boolean) =>
+    desktopCall<WorkspaceView>("workspace_save_teach", { id, revision, k, imageId, fixtureReviewed }),
+  /** 画框时的只读检查：外圈、走廊、纹理、亮像素与杠杆臂，不跑引擎、不改候选 */
+  fixtureCheck: (id: string, revision: number, k: number, params: ShotTeach) =>
+    desktopCall<FixtureCheck>("workspace_fixture_check", { id, revision, k, params }),
+  /** 定位试测：示教图与样本库同一拍照点同一幅图上跑定位与胶偏，只作诊断 */
+  fixtureTrial: (id: string, revision: number, k: number) => desktopCall<FixtureTrial>("workspace_fixture_trial", { id, revision, k }),
+  /** 采用当前验证给出的两端参数建议（数值只由后端从验证统计取） */
+  applyFixtureSuggestion: (id: string, revision: number, k: number, view: number) =>
+    desktopCall<WorkspaceView>("workspace_apply_fixture_suggestion", { id, revision, k, view }),
   saveOverview: (id: string, revision: number, overview: Overview) => desktopCall<WorkspaceView>("workspace_save_overview", { id, revision, overview }),
   validate: (id: string, revision: number, samples: Sample[], sourceConfirmed = false) => desktopCall<WorkspaceView>("workspace_validate", { id, revision, samples, sourceConfirmed }),
   importSample: (id:string, revision:number, name:string, expected:import("../cycle/types").Verdict, images:{k:number;bytes:string}[]) =>

@@ -2,17 +2,19 @@ import { resampleTeachingPath, type ImagePoint } from "./teachingPath";
 import { errorText } from "../../lib/errors";
 import { cloneElement, Fragment, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { ArrowRight, Brush, Camera, Eraser, Info, Lock, MousePointer2, Play, Save, SquareDashed, Trash2, TriangleAlert, Undo2, WandSparkles } from "lucide-react";
+import { ArrowRight, Brush, Camera, Crosshair, Eraser, Info, Lock, MousePointer2, Play, Save, SquareDashed, Trash2, TriangleAlert, Undo2, WandSparkles } from "lucide-react";
 import { Button, Divider, EmptyState, IconButton, NumberField, Popover, SegmentedControl, Slider, Surface, Tooltip } from "qing-steel";
 import { verdictLabel } from "../history";
 import { useCycle } from "../cycle/api";
 import { pathLength, shotSegment } from "../cycle/vis";
-import type { RecipeDoc } from "../cycle/types";
+import type { FixtureSpec, RecipeDoc } from "../cycle/types";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, GrayViewer, KV, Notice, Steps, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
-import type { FrozenImage, ShotTeach, WorkspaceView } from "./types";
-import { sameTeach, shotTeach, teachError } from "./teach";
+import type { FixtureCheck, FixtureTrial, FrozenImage, RotationConfirmation, ShotTeach, WorkspaceView } from "./types";
+import { FIXTURE_DEFAULTS, fixtureError, fixtureOverlay, sameTeach, shotTeach, teachError } from "./teach";
+import { FixtureSettings, ROTATION_PROBE_DEG } from "./FixtureSettings";
+import { FixtureTrialResult } from "./FixtureTrialResult";
 import { TrialResult, trialPoints, trialStationColor } from "./TrialResult";
 import { groupShortStatus, teachingGroups } from "./teachingGroups";
 import { productionBusy as isProductionBusy } from "../cycle/phase";
@@ -43,6 +45,8 @@ function imagingMismatch(image: FrozenImage | null | undefined, doc: RecipeDoc) 
 }
 
 const DEFAULT_BRUSH_PX = 120;
+/** 定位框检查结果对应的草稿：中线、当量、检测参数、限值与框都没变才沿用 */
+const fixtureCheckKey = (t: ShotTeach) => JSON.stringify([t.path, t.mmPerPx, t.detect ?? null, t.limits ?? null, t.fixture]);
 const WIDEN_BRUSH_REASONS = new Set(["discontinuity", "missing_edges"]);
 
 /** 刷选提取找不到连续两侧边缘时的下一步：先加大笔刷重刷，同一组再失败改用笔划生成中线。 */
@@ -122,6 +126,31 @@ export default function TeachingPage() {
       if (result && current.current.alive && current.current.scope === scope) setK(firstImage.k);
     });
   }, [defaultScope, doc, data, busy, dirty, frameDirty, working]);
+  // 定位特征：画框（拖动中的框先放在本页）、没通过外圈与走廊检查的框（不进草稿）、实时检查、定位试测、喷嘴确认
+  const [fixtureDrawing, setFixtureDrawing] = useState(false);
+  const [fixtureBox, setFixtureBox] = useState<[number, number, number, number] | null>(null);
+  const fixtureBoxRef = useRef<[number, number, number, number] | null>(null);
+  const [pendingFixture, setPendingFixture] = useState<{ fixture: FixtureSpec; reason: string } | null>(null);
+  const [liveCheck, setLiveCheck] = useState<{ key: string; result: FixtureCheck } | null>(null);
+  const [fixtureTrial, setFixtureTrial] = useState<FixtureTrial | null>(null);
+  const [fixtureTrialRunning, setFixtureTrialRunning] = useState(false);
+  const [reviewed, setReviewed] = useState(false);
+  const draftTeach = shot ? frameDrafts[k] ?? shotTeach(shot) : null;
+  const liveKey = draftTeach?.fixture ? fixtureCheckKey(draftTeach) : "";
+  useEffect(() => { setFixtureDrawing(false); setFixtureBox(null); fixtureBoxRef.current = null; setPendingFixture(null); }, [scope]);
+  useEffect(() => {
+    if (!liveKey || !doc || !data || !draftTeach?.fixture || liveCheck?.key === liveKey || fixtureError(draftTeach.fixture)) return;
+    let alive = true;
+    const timer = setTimeout(() => {
+      workspaceApi.fixtureCheck(doc.id, data.workspace.revision, k, draftTeach).then(result => { if (alive) setLiveCheck({ key: liveKey, result }); }).catch(() => {});
+    }, 250);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [liveKey, doc?.id, data?.workspace.revision, k]);
+  // 定位试测只对应试测时的框：换图、改框后清空
+  useEffect(() => { setFixtureTrial(null); }, [scope, liveKey]);
+  // 喷嘴确认跟着这次试测：重新试测或保存状态作废后要重新确认
+  const reviewKey = JSON.stringify([scope, frame?.trial?.paramsTag ?? null, frame?.trial?.elapsedMs ?? null]);
+  useEffect(() => { setReviewed(false); }, [reviewKey]);
   if (!data || !doc) return <WorkspaceEmpty />;
   if (!frame || !shot) return <div className="wp-page"><WorkspaceBar /><Steps /><Surface><EmptyState icon={<Camera size={32} aria-hidden="true" />} title="当前配方还没有拍照点" description="拍照点由整圈采集生成。完成一圈采集并采用本轮图像后，在这里逐组选图并示教中线。" action={<Link className="qs-btn" to="/recipe/capture">前往整圈采集<ArrowRight size={15} aria-hidden="true" /></Link>} /></Surface></div>;
   const saved = shotTeach(shot);
@@ -202,11 +231,12 @@ export default function TeachingPage() {
   const saveAndTrial = async () => {
     if (!canTrial || !frame.image || pending.current) return;
     const capturedScope = scope;
-    setOperation("trial"); setRegionMode(false);
+    setOperation("trial"); setRegionMode(false); setFixtureDrawing(false);
     try {
       const imageId = frame.image.id;
       let revision = data.workspace.revision;
-      if (editing) {
+      // 模板来源过期时也先保存参数：这就是“确认框后重新保存示教参数”，把框改绑到当前示教图
+      if (editing || staleSource) {
         const params: ShotTeach = { path: t.path, mmPerPx: t.mmPerPx, fixture: t.fixture };
         if (t.detect) params.detect = t.detect;
         if (t.limits) params.limits = t.limits;
@@ -231,7 +261,7 @@ export default function TeachingPage() {
     if (!enabled||!unlocked||!trialCurrent||!frame.image||pending.current) return;
     const advance = () => { if (nextGroup) selectGroup(groupIndex + 1); };
     if(viewState === "taught"){if(next)advance();return;}
-    const result = await perform(() => workspaceApi.saveTeach(doc.id,data.workspace.revision,k,frame.image!.id), "本组示教已保存，发布前仍需整体验证");
+    const result = await perform(() => (t.fixture ? workspaceApi.saveTeach(doc.id,data.workspace.revision,k,frame.image!.id,reviewed) : workspaceApi.saveTeach(doc.id,data.workspace.revision,k,frame.image!.id)), "本组示教已保存，发布前仍需整体验证");
     if (result?.workspace.doc.id===doc.id && next && current.current.scope===scope && current.current.alive) advance();
   };
 
@@ -251,10 +281,12 @@ export default function TeachingPage() {
   const groupsLocked = !unlocked || editing || frameDirty;
   const groupLockReason = editing || frameDirty ? "有未试测的修改，先试测或清空后再切组" : data.workspace.pending ? "候选版本正在等待生效" : "正在处理或保存，请稍候";
   const lockReason = data.workspace.pending ? "候选版本正在等待生效" : "正在处理或保存，请稍候";
-  const saveDisabled = !unlocked || !enabled || !trialCurrent || viewState === "taught";
-  const saveReason = !saveDisabled ? "" : !enabled ? "请先选择本组检测图" : viewState === "taught" && !editing ? "本组已保存，修改后需重新试测" : !trialCurrent ? "试测通过后可保存" : lockReason;
-  const nextDisabled = !unlocked || !enabled || !trialCurrent || !nextGroup;
-  const nextReason = !nextDisabled ? "" : !enabled ? "请先选择本组检测图" : !nextGroup ? "已是最后一组" : !trialCurrent ? "试测通过后可保存" : lockReason;
+  const unreviewed = !!t.fixture && !reviewed && viewState !== "taught";
+  const reviewReason = "先在定位特征里确认框内没有喷嘴、胶枪";
+  const saveDisabled = !unlocked || !enabled || !trialCurrent || viewState === "taught" || unreviewed;
+  const saveReason = !saveDisabled ? "" : !enabled ? "请先选择本组检测图" : viewState === "taught" && !editing ? "本组已保存，修改后需重新试测" : !trialCurrent ? "试测通过后可保存" : unreviewed ? reviewReason : lockReason;
+  const nextDisabled = !unlocked || !enabled || !trialCurrent || !nextGroup || unreviewed;
+  const nextReason = !nextDisabled ? "" : !enabled ? "请先选择本组检测图" : !nextGroup ? "已是最后一组" : !trialCurrent ? "试测通过后可保存" : unreviewed ? reviewReason : lockReason;
   const othersComplete = groups.every((item, index) => index === groupIndex || item.complete);
   const dockHint: ReactNode = !enabled ? conflict ? "本组选了多张图，请重新选择一张作为检测图" : "先选择本组检测图"
     : data.workspace.pending ? "等待当前工件结束后切换，期间不能修改示教"
@@ -269,6 +301,8 @@ export default function TeachingPage() {
   const editHint = "点击图像加点（绿圈为起点），拖动点可调整；密集中线打开“点柄”显示全部点，Ctrl＋滚轮缩放。";
   const regionHint = extractionHint || (selectionTool === "brush" ? "按住左键沿胶路从起点刷到终点，每笔重画选区；笔刷覆盖胶路和两侧少量背景，尽量避开阴影。" : "按住左键框选一段连续胶路，再自动提取中线；框选包含阴影时建议改用刷选。");
   const changeMode = (value: string) => {
+    if (value === "fixture") { setFixtureDrawing(true); setRegionMode(false); return; }
+    setFixtureDrawing(false);
     if (value === "edit") { setRegionMode(false); return; }
     const tool = value as "brush" | "box";
     if (tool !== selectionTool) { setSelectionTool(tool); setExtractionFailure(null); setExtractionHint(""); setBrushFailures(0); }
@@ -277,10 +311,11 @@ export default function TeachingPage() {
   const modeLabel = (icon: ReactNode, long: string, short: string) => <><span className="wp-seg-icon">{icon}</span><span className="wp-seg-long">{long}</span><span className="wp-seg-short">{short}</span></>;
   // 三态模式只是界面；selectionTool 保留上次选区工具，编辑点模式下提取仍用上次的选区
   const tools = <div className="wp-canvas-tools" role="group" aria-label="示教工具">
-    <SegmentedControl size="sm" label="画布模式" value={regionMode ? selectionTool : "edit"} disabled={!unlocked || (!frame.image && !regionMode)} options={[
+    <SegmentedControl size="sm" label="画布模式" value={fixtureDrawing ? "fixture" : regionMode ? selectionTool : "edit"} disabled={!unlocked || (!frame.image && !regionMode)} options={[
       { value: "edit", label: modeLabel(<MousePointer2 size={14} aria-hidden="true"/>, "编辑点", "编辑"), "aria-label": "编辑点" },
       { value: "brush", label: modeLabel(<Brush size={14} aria-hidden="true"/>, "沿胶路刷选", "刷选"), "aria-label": "沿胶路刷选" },
       { value: "box", label: modeLabel(<SquareDashed size={14} aria-hidden="true"/>, "矩形框选", "框选"), "aria-label": "矩形框选" },
+      { value: "fixture", label: modeLabel(<Crosshair size={14} aria-hidden="true"/>, "定位框", "定位"), "aria-label": "画定位框" },
     ]} onValueChange={changeMode}/>
     <Button size="sm" variant={primary === "extract" ? "filled" : "tonal"} leadingIcon={<WandSparkles size={14}/>} disabled={!unlocked || !frame.image || loading || !!error} onClick={() => void extract()}>{operation === "extract" ? "提取中…" : "自动提取中线"}</Button>
     <Button size="sm" variant={primary === "stroke" ? "filled" : "tonal"} title={selectionTool !== "brush" ? "仅刷选时可用" : !strokeValid ? "先沿胶路刷过至少 8 px" : "按笔划生成中线草稿"} disabled={!unlocked || !enabled || !frame.image || selectionTool !== "brush" || !strokeValid || !spacingValid} onClick={fromStroke}>笔划直接生成中线</Button>
@@ -294,9 +329,59 @@ export default function TeachingPage() {
       <Slider className="wp-brush-width" label="拖动调整笔刷宽度" min={6} max={300} step={2} value={Number.isFinite(brushWidth) ? Math.min(300, Math.max(6, brushWidth)) : DEFAULT_BRUSH_PX} disabled={!unlocked} formatValue={value => value + " px"} onValueChange={changeBrushWidth}/></span>}
     <span className="wp-inline-num" title={`检测站距 ${doc.spacing} mm；编辑点按目标最大间距调整，转弯处保留点`}>中线点间距<NumberField aria-label="中线点间距" unit="px" min={4} max={80} step={2} value={Number.isFinite(pointSpacing) ? pointSpacing : ""} disabled={!unlocked} onValueChange={value => setPointSpacing(value === "" ? NaN : value)}/></span>
     <Button size="sm" variant="text" disabled={!unlocked || !spacingValid || t.path.length < 2} onClick={() => { setVertex(null); setPath(resampleTeachingPath(t.path, pointSpacing)); }}>应用到当前中线</Button>
-    {regionMode ? <p className={"wp-canvas-hint" + (extractionFailure ? " warn" : "")} role="status">{extractionFailure && <TriangleAlert size={14} aria-hidden="true"/>}{regionHint}</p>
+    {fixtureDrawing ? <p className="wp-canvas-hint" role="status">按住左键拖出定位框：框一块与胶同面、刚性、不被喷嘴挡住的孔或角点，避开胶检测走廊与高光；松手后检查外圈与走廊。</p>
+      : regionMode ? <p className={"wp-canvas-hint" + (extractionFailure ? " warn" : "")} role="status">{extractionFailure && <TriangleAlert size={14} aria-hidden="true"/>}{regionHint}</p>
       : <p className="wp-canvas-hint" role="status">{extractionHint && <><span>{extractionHint}</span> </>}<span>{editHint}</span></p>}
   </div>;
+  const staleSource = saved.fixture?.source && frame.image && saved.fixture.source !== frame.image.id
+    ? `定位框是在示教图 ${saved.fixture.source} 上保存的，当前示教图是 ${frame.image.id}：确认框位置后运行试测（会把框改绑到当前示教图）` : null;
+  const shownFixture = fixtureBox ? null : pendingFixture?.fixture ?? t.fixture;
+  const fixtureChecks = trialFresh && trial?.fixture ? { checks: trial.fixture.checks, source: "trial" as const }
+    : t.fixture && liveCheck?.key === fixtureCheckKey(t) ? { checks: liveCheck.result.checks, source: "live" as const } : null;
+  const validation = data.workspace.validation;
+  const rotationEvidence = validation?.revision === data.workspace.revision ? validation.fixture?.find(r => r.k === k && r.view === shot.view)?.rotation ?? null : null;
+  /** 新框或改了框：先只读检查外圈与走廊，过了才写进草稿，免得草稿自动保存撞上配方校验 */
+  const proposeFixture = async (next: FixtureSpec | null) => {
+    if (!unlocked || !enabled) return;
+    if (!next) { setPendingFixture(null); update({ ...t, fixture: null }); return; }
+    const invalidBox = fixtureError(next);
+    if (invalidBox) { setPendingFixture({ fixture: next, reason: invalidBox }); return; }
+    const committed = t.fixture;
+    if (committed && next.rect.every((v, i) => v === committed.rect[i])) { setPendingFixture(null); update({ ...t, fixture: next }); return; }
+    const candidate: ShotTeach = { ...t, fixture: next };
+    const capturedScope = scope;
+    try {
+      const result = await workspaceApi.fixtureCheck(doc.id, data.workspace.revision, k, candidate);
+      if (current.current.scope !== capturedScope) return;
+      const blocked = result.checks.filter(c => (c.id === "inside" || c.id === "corridor") && !c.passed);
+      if (blocked.length) { setPendingFixture({ fixture: next, reason: blocked.map(c => c.detail).join("；") }); return; }
+      setPendingFixture(null); setLiveCheck({ key: fixtureCheckKey(candidate), result }); setFrameDraft(k, candidate);
+    } catch (e) { if (current.current.scope === capturedScope) setError(errorText(e)); }
+  };
+  const finishFixtureBox = () => {
+    const box = fixtureBoxRef.current;
+    fixtureBoxRef.current = null; setFixtureBox(null);
+    if (!box || box[2] < 1 || box[3] < 1) return;
+    setFixtureDrawing(false);
+    void proposeFixture({ ...(t.fixture ?? { ...FIXTURE_DEFAULTS, source: "" }), rect: box.map(Math.round) as FixtureSpec["rect"] });
+  };
+  const runFixtureTrial = async () => {
+    if (!unlocked || pending.current || fixtureTrialRunning) return;
+    const capturedScope = scope;
+    setFixtureTrialRunning(true);
+    try { const result = await workspaceApi.fixtureTrial(doc.id, data.workspace.revision, k); if (current.current.scope === capturedScope) setFixtureTrial(result); }
+    catch (e) { if (current.current.scope === capturedScope) setError(errorText(e)); }
+    finally { if (current.current.scope === capturedScope) setFixtureTrialRunning(false); }
+  };
+  /** 开转角只走这里：带着独立证据保存示教参数（后端记进应用日志），之后要重新试测、重新验证 */
+  const rotate = async (rotation: RotationConfirmation) => {
+    if (!t.fixture || editing) return false;
+    const params: ShotTeach & { rotation: RotationConfirmation } = { ...t, fixture: { ...t.fixture, angleRangeDeg: ROTATION_PROBE_DEG }, rotation };
+    const result = await perform(() => workspaceApi.saveParams(doc.id, data.workspace.revision, k, params), "已开启转角并记进应用日志；请重新试测并重新验证");
+    const savedShot = result?.workspace.doc.shots[k];
+    if (savedShot && frameDrafts[k]) setFrameDraft(k, shotTeach(savedShot));
+    return !!result;
+  };
   const summary = <span className="wp-trial-inline">
     {trialFresh && trial ? <span className="wp-trial-result" aria-label="本次算法结果"><Badge tone={trialCurrent ? "ok" : "warn"}>{viewProgress?.trialStale ? "已过期" : trial.passed ? trial.verdict ? verdictLabel[trial.verdict] ?? trial.verdict : "已完成" : "执行异常"}</Badge>
       <span className="muted">量成 <b>{measured ? (trial.coverage * 100).toFixed(1) + "%" : "—"}</b><span className="wp-trial-ms"> · <b>{trial.elapsedMs} ms</b></span></span></span>
@@ -337,7 +422,9 @@ export default function TeachingPage() {
         {enabled && viewState === "recapture" && <Notice title="需重新采集" tone="warn">{viewProgress?.hint} 中线仍可修改，重新采集后才能试测。 <Link className="qs-btn tonal sm" to="/recipe/capture">整圈重新采集</Link></Notice>}
         {enabled && viewState === "trialFailed" && !editing && <Notice title="试测异常" tone="warn">{trial?.reason}</Notice>}
         {enabled && <GrayViewer controlsAt="footer" summary={summary} image={image} loading={loading} error={error} label={frame.image ? group.poseId + " · " + shot.camera + " · 图 " + shot.view : "等待取样"} tools={tools} subtools={params} emptyTitle="本组检测图尚未就绪" emptyHint="整圈采集并采用本轮图像后，这里显示本组检测图。"
-          region={selectionTool === "box" ? region : null} onRegion={regionMode && selectionTool === "box" && unlocked && enabled ? setRegion : undefined}
+          region={fixtureDrawing ? fixtureBox : selectionTool === "box" ? region : null}
+          onRegion={fixtureDrawing ? unlocked && enabled ? box => { fixtureBoxRef.current = box; setFixtureBox(box); } : undefined : regionMode && selectionTool === "box" && unlocked && enabled ? setRegion : undefined}
+          onRegionDone={fixtureDrawing ? finishFixtureBox : undefined}
           brush={regionMode && selectionTool === "brush" && Number.isFinite(brushWidth) ? { points: brushPoints, radiusPx: brushWidth / 2 } : null} onBrush={regionMode && selectionTool === "brush" && unlocked && enabled ? points => { setBrushPoints(points); setExtractionFailure(null); setExtractionHint(""); } : undefined}
           extractionFailure={extractionFailure}
           overlay={{ path: t.path, stations: points?.filter(p => !p.edge && !p.candidateEdge).map(p => p.px) ?? stations, stationColors: points?.filter(p => !p.edge && !p.candidateEdge).map(p => trialStationColor(p.status)), segments: points?.flatMap((p, i) => {
@@ -346,13 +433,19 @@ export default function TeachingPage() {
             // 宽度标签沿横线（法向）放到胶路外侧；靠近左右边缘的站不出标签，避免被裁掉
             const labeled = i % labelEvery === 0 && width != null && p.px[0] > imageWidth * .08 && p.px[0] < imageWidth * .92;
             return edge ? [{ from: edge[0], to: edge[1], color: p.edge ? "var(--ok)" : "var(--ng)", label: labeled ? width!.toFixed(2) + (p.edge ? " mm" : " mm 候选") : undefined, labelOutward: true }] : [];
-          }), searchHalfPx, stale: editing, selected: vertex }}
+          }), searchHalfPx, stale: editing, selected: vertex, fixture: shownFixture ? fixtureOverlay(shownFixture.rect, shownFixture.searchRadiusPx, t.path, !!pendingFixture) : null }}
           editDisabled={!unlocked}
-          onEdit={enabled && !regionMode ? { add: p => setPath([...t.path, p]), move: (i, p) => setPath(t.path.map((q, j) => j === i ? p : q)), select: setVertex } : undefined} />}
+          onEdit={enabled && !regionMode && !fixtureDrawing ? { add: p => setPath([...t.path, p]), move: (i, p) => setPath(t.path.map((q, j) => j === i ? p : q)), select: setVertex } : undefined} />}
         {enabled && points && <TrialResult points={points} />}
+        {enabled && fixtureTrial && fixtureTrial.revision === data.workspace.revision && <FixtureTrialResult trial={fixtureTrial} />}
       </div>
       {enabled ? <div className="wp-stack wp-teach-settings"><TeachingSettings key={scope} teach={t} savedMmPerPx={saved.mmPerPx} defaults={defaults} defaultLimits={doc.limits} calibration={calibration} disabled={!unlocked} editing={editing} onChange={update}
-        onRecord={async (reference, measured, reuse) => !!await perform(() => workspaceApi.checkCalibration(doc.id,data.workspace.revision,k,reference,measured,reuse), next => calibrationNotice(next, k, shot.view, reuse))} /></div>
+        onRecord={async (reference, measured, reuse) => !!await perform(() => workspaceApi.checkCalibration(doc.id,data.workspace.revision,k,reference,measured,reuse), next => calibrationNotice(next, k, shot.view, reuse))} />
+        <FixtureSettings fixture={pendingFixture?.fixture ?? t.fixture} rejected={pendingFixture?.reason ?? null} checks={fixtureChecks?.checks ?? null} checksSource={fixtureChecks?.source ?? null}
+          staleSource={staleSource} evidence={rotationEvidence} disabled={!unlocked} editing={editing} drawing={fixtureDrawing} reviewed={reviewed}
+          canTrial={!!saved.fixture && !editing && !staleSource} trialRunning={fixtureTrialRunning}
+          onChange={next => void proposeFixture(next)} onDraw={() => { setFixtureDrawing(true); setRegionMode(false); }} onReviewed={setReviewed}
+          onTrial={() => void runFixtureTrial()} onRotate={rotate} /></div>
         : <div className="wp-teach-settings wp-rail-empty"><span>选定检测图后，这里显示<br/>标定 · 检测参数 · 判定限值</span></div>}
     </div>
     <div className="wp-teach-dock" role="group" aria-label="单帧示教操作">

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { ArrowUpRight, ChevronDown } from "lucide-react";
-import { Button, Checkbox, Select } from "qing-steel";
+import { Button, Checkbox, Select, TextField } from "qing-steel";
 import type { DetectParams, JudgeParams, ShotLimits } from "../cycle/types";
 import type { CalibrationState, ShotTeach } from "./types";
 import { Badge, NumberField } from "./components";
@@ -17,6 +17,13 @@ interface Props {
   editing: boolean;
   onChange: (next: ShotTeach) => void;
   onRecord: (reference: number, measured: number, reuse: boolean) => Promise<boolean>;
+}
+
+/** 位置名义值不为 0 时的量具确认件编号（定稿 §3）：判定参数的出处，必填。 */
+export function GaugeRef({ value, disabled, onChange }: { value?: string; disabled?: boolean; onChange: (value: string) => void }) {
+  const missing = !value?.trim();
+  return <div className="wp-gauge-ref"><TextField label="量具确认件编号" value={value ?? ""} maxLength={64} disabled={disabled} onChange={e => onChange(e.target.value)}/>
+    {missing && <p className="wp-settings-hint c-warn" role="alert">名义值不为 0：必须填写用量具确认过的确认件编号</p>}</div>;
 }
 
 const calibrationLabels = { unverified: "未验证", stale: "需重新验证", verified: "已验证", failed: "验证未通过", sampleSet: "样本集声明" };
@@ -52,6 +59,7 @@ export function TeachingSettings({ teach, savedMmPerPx, defaults, defaultLimits,
     const value = teach.limits?.[key];
     return <div key={key} className="wp-limit-group"><Checkbox label={title + "判定"} checked={!!value} disabled={disabled} onCheckedChange={checked => teach.limits && setLimits({ ...teach.limits, [key]: checked ? structuredClone(defaultLimits[key] ?? { nominal: 0, tolUpper: .1, tolLower: .1, absMin: -1, absMax: 1, maxExcursionLen: 1 }) : null })}/>
       {value && <div className="wp-form-grid">{([["nominal", "名义值"], ["tolUpper", "上公差"], ["tolLower", "下公差"], ["absMin", "绝对下限"], ["absMax", "绝对上限"], ["maxExcursionLen", "允许超差长度"]] as [keyof JudgeParams, string][]).map(([field, label]) => <NumberField key={field} label={title + label} value={value[field]} unit="mm" step={.1} disabled={disabled} onChange={v => teach.limits && setLimits({ ...teach.limits, [key]: { ...value, [field]: v } })}/>)}</div>}
+      {key === "position" && value && value.nominal !== 0 && teach.limits && <GaugeRef value={teach.limits.gaugeRef} disabled={disabled} onChange={gaugeRef => teach.limits && setLimits({ ...teach.limits, gaugeRef })}/>}
     </div>;
   };
   return <>

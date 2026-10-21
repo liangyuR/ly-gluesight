@@ -17,6 +17,7 @@ import { plcSyncItems } from "./PlcParams";
 import type { Sample } from "./types";
 import { canImportSampleGroup } from "./teach";
 import { readImageBase64, validateImageFile } from "./ImageImportButton";
+import { FixtureValidation } from "./FixtureValidation";
 
 const expectedOptions=expectedChoices.map(([value,label])=>({value,label}));
 interface SampleRow { key:string; sample:Sample; name:ReactNode; source:string; checkLabel:string; expectedLabel:string; selected:boolean; expected:Verdict }
@@ -76,6 +77,8 @@ export default function ValidationPage() {
   const samplesLocked=locked||!!data.workspace.pending;
   const ready=!dirty&&!frameDirty&&!locked;
   const canImportImages=canImportSampleGroup(doc.shots);
+  const usesFixture=doc.shots.some(shot=>!shot.skip&&(shot.fixture||shot.views?.some(v=>v.enabled&&v.fixture)));
+  const fixtureReports=validation?.fixture??[];
   const validationCurrent=!!validation?.passed&&validation.revision===data.workspace.revision&&!selectionDirty;
   const canPublish=ready&&validationCurrent&&!data.workspace.pending;
   const publish=data.workspace.publish;
@@ -142,9 +145,12 @@ export default function ValidationPage() {
         <Checkbox label="已确认所选样本的拍摄条件、轨迹和触发顺序适用于当前候选" checked={sourceConfirmed} disabled={samplesLocked} onCheckedChange={setSourceConfirmed}/>
         <span className="spacer"/>
         {runBlocked&&!operating&&<span className="wp-validate-reason" role="note">{runBlocked}</span>}
+        {usesFixture&&!runBlocked&&<span className="wp-validate-reason" role="note">含特征定位：每件每幅定位图另跑亮度 ±40 与 ±3° 试定位，验证要多花几倍时间</span>}
         <Button variant="filled" disabled={!ready||!!data.workspace.pending||!samples.length||!sourceConfirmed} onClick={()=>void action(()=>workspaceApi.validate(doc.id,data.workspace.revision,samples,sourceConfirmed),"当前候选的验证已完成").then(r=>{if(r)resultRef.current?.scrollIntoView?.({block:"start",behavior:scrollBehavior()});})}>{operating||busy?"验证中…":"运行整套图像验证"}</Button>
       </div>
-    </Panel>{validation&&<div ref={resultRef} className="wp-validate-anchor"><Panel title="验证结果" actions={<Badge tone={validationCurrent?"ok":"warn"}>{validationCurrent?"通过":"未通过或待重验"}</Badge>}><Table caption="逐样本验证结果" columns={resultColumns} rows={validation.samples.map((s,i)=>({...s,key:String(i)}))} rowKey={row=>row.key}/>{selectionDirty&&<Notice title="样本选用或期望已改变" tone="warn">请重新运行验证；现有结果不用于发布。</Notice>}</Panel></div>}</div>
+    </Panel>{validation&&<div ref={resultRef} className="wp-validate-anchor"><Panel title="验证结果" actions={<Badge tone={validationCurrent?"ok":"warn"}>{validationCurrent?"通过":"未通过或待重验"}</Badge>}><Table caption="逐样本验证结果" columns={resultColumns} rows={validation.samples.map((s,i)=>({...s,key:String(i)}))} rowKey={row=>row.key}/>{selectionDirty&&<Notice title="样本选用或期望已改变" tone="warn">请重新运行验证；现有结果不用于发布。</Notice>}</Panel></div>}
+    {fixtureReports.length>0&&<FixtureValidation reports={fixtureReports} current={validation?.revision===data.workspace.revision} disabled={!ready||!!data.workspace.pending}
+      onApply={async(k,view)=>!!await action(()=>workspaceApi.applyFixtureSuggestion(doc.id,data.workspace.revision,k,view),"已采用建议：这幅图要重新试测，整套要重新验证")}/>}</div>
     <div className="wp-stack"><Panel title="已发布版本"><KV label="当前发布">{data.productionVersion?"v"+data.productionVersion:"未发布"}</KV><KV label="待发布候选">v{doc.version}</KV><KV label="候选修订">{data.workspace.revision}</KV><KV label="PLC 计划版本">{data.workspace.pending?.doc.planVersion?data.workspace.pending.doc.planVersion+"（待生效）":!data.planChanged&&data.productionPlanVersion?data.productionPlanVersion+"（不变）":"发布时分配新号"}</KV><KV label="发布状态">{publishStep.detail}</KV>{site?.mode==="offline"&&<Notice title="当前为离线模式" tone="warn">离线验证发布的版本只能在离线运行，真机需重新验证发布。</Notice>}<Button variant="filled" className="wp-publish-button" disabled={!canPublish} onClick={()=>setConfirm(true)}>{publishLabel}</Button>{!canPublish&&publishBlocked&&<p className="wp-validate-reason" role="note">{publishBlocked}</p>}</Panel><Notice title="在工件边界生效">已开始检测的工件继续使用原配方快照。候选发布后，等待当前工件完成，再供新工件使用。</Notice>{(publish.state==="failed"||publish.state==="uncertain") && <Button disabled={!ready} onClick={() => void action(() => workspaceApi.retryPublish(doc.id,data.workspace.revision), "已重试发布 / 切换")}>重试发布 / 切换</Button>}{publish.state==="failed" && <Button disabled={!ready} onClick={()=>setAbandoning(true)}>放弃待生效版本</Button>}<Link className="qs-btn tonal" to="/inspect">查看在线检测</Link>{site?.mode === "offline" && site.source === "sampleSet" && <Notice title="候选配方离线试运行"><p>使用已保存候选跑一圈，结果标记为调试；不要求发布，也不替代独立样本验证。</p><Link className="qs-btn tonal" to={`/inspect?candidate=${encodeURIComponent(doc.id)}`}>前往在线检测调试候选</Link></Notice>}</div>
   </div>
   {confirm&&<Dialog open title={publishLabel} closeDisabled={locked} onOpenChange={open=>{if(!open)setConfirm(false);}} footer={<><Button disabled={locked} onClick={()=>setConfirm(false)}>取消</Button><Button variant="filled" disabled={!canPublish} onClick={async()=>{const r=await action(()=>workspaceApi.publish(doc.id,data.workspace.revision),"已提交发布，将在工件边界生效");if(r&&current.current.alive&&current.current.scope===scope)setConfirm(false);}}>确认发布 v{doc.version}</Button></>}><p>将发布 <b>{doc.id} · v{doc.version}</b>，替换当前发布版本。{site?.mode==="offline"&&"该版本仅用于离线回放，不能用于真机生产。"}</p><p className="muted">发布内容包含当前已验证的拍照点、示教中线、判定规则、各帧示教和总览布置。等待期间候选已冻结，生效或完成失败处理后再继续编辑。</p>{data.planChanged?<Notice tone="warn" title="拍照计划已变，生效后 PLC 要同步">{data.candidatePlc?<ul>{plcSyncItems(data.productionPlc,data.candidatePlc).map(item=><li key={item}>{item}</li>)}</ul>:<p>{data.candidatePlcError}</p>}<p>PLC 未同步前 PC 拒绝布防：planVersion 不一致返回 100，shotCount 不一致返回 94，productCode 不一致返回 95。</p></Notice>:<p className="muted">拍照计划未变，沿用计划版本 {data.productionPlanVersion}，PLC 不用改。</p>}</Dialog>}

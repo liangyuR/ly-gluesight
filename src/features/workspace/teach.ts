@@ -1,4 +1,5 @@
-import type { ShotSpec } from "../cycle/types";
+import type { FixtureSpec, ShotSpec } from "../cycle/types";
+import type { FixtureOverlay } from "./components";
 import { pathLength } from "../cycle/vis";
 import type { ShotTeach } from "./types";
 
@@ -23,7 +24,35 @@ export function teachError(t: ShotTeach) {
     if (!(Number.isFinite(searchMm) && searchMm > 0 && Number.isFinite(lo) && Number.isFinite(hi) && lo > 0 && lo < hi)) return "搜索半宽需为正，胶宽范围需满足 0 < 下限 < 上限";
     if (hi >= 2 * searchMm) return `胶宽上限要小于搜索宽度 ${(2 * searchMm).toFixed(1)} mm`;
   }
+  const position = t.limits?.position;
+  if (position && position.nominal !== 0 && !t.limits?.gaugeRef?.trim()) return "位置名义值不为 0 时必须填写量具确认件编号";
+  if (t.fixture) return fixtureError(t.fixture);
   return "";
+}
+
+/** 定位模板外圈（与 recipe.rs 的 FIXTURE_TEMPLATE_PAD_PX 一致） */
+export const FIXTURE_PAD_PX = 4;
+/** 新画的定位框的门限：与阶段 0 评测一致；v1 只找平移（定稿 §10 决定二） */
+export const FIXTURE_DEFAULTS = { searchRadiusPx: 60, angleRangeDeg: 0, minScore: .6, maxPeakRatio: 1 } as const;
+
+/** 定位框的前置校验（与 recipe.rs FixtureSpec::validate 同口径，右、下边与走廊由后端检查）。 */
+export function fixtureError(f: FixtureSpec) {
+  const [x, y, w, h] = f.rect;
+  if (!f.rect.every(Number.isInteger)) return "定位框坐标与尺寸必须是整数像素";
+  if (x < FIXTURE_PAD_PX || y < FIXTURE_PAD_PX) return `定位框离图像左、上边至少 ${FIXTURE_PAD_PX} px（模板要带 ${FIXTURE_PAD_PX} px 外圈）`;
+  if (w < 16 || w > 512 || h < 16 || h > 512) return "定位框宽、高需在 16–512 px 之间";
+  if (!(f.searchRadiusPx >= 3 && f.searchRadiusPx <= 200)) return "定位搜索半径需在 3–200 px 之间";
+  if (!(f.minScore > 0 && f.minScore <= 1)) return "定位最低分数需在 0–1 之间（不含 0）";
+  if (!(f.maxPeakRatio > 0 && f.maxPeakRatio <= 1)) return "定位次峰比上限需在 0–1 之间（不含 0）";
+  return "";
+}
+
+/** 叠图用的定位几何：带外圈的模板框、搜索范围（示教框四周各扩 searchRadius）与杠杆臂 L（框中心 → 最远中线顶点）。 */
+export function fixtureOverlay(rect: [number, number, number, number], searchRadiusPx: number, path: [number, number][], blocked = false): FixtureOverlay {
+  const [x, y, w, h] = rect, p = FIXTURE_PAD_PX, r = Number.isFinite(searchRadiusPx) ? searchRadiusPx : 0;
+  const center: [number, number] = [x + (w - 1) / 2, y + (h - 1) / 2];
+  const far = path.reduce<[number, number] | null>((best, q) => !best || Math.hypot(q[0] - center[0], q[1] - center[1]) > Math.hypot(best[0] - center[0], best[1] - center[1]) ? q : best, null);
+  return { rect, padded: [x - p, y - p, w + 2 * p, h + 2 * p], search: [x - r, y - r, w + 2 * r, h + 2 * r], lever: far ? [center, far] : null, blocked };
 }
 
 export function selectedViews(shot: ShotSpec): number[] {

@@ -108,6 +108,8 @@ pub struct FixtureTrialRow {
     pub source: &'static str,
     pub sample_id: Option<String>,
     pub pose: Option<PoseRecord>,
+    /// 位姿没被采用的中文原因（`fixture_quality::reason_text`）
+    pub reason: Option<String>,
     pub stations: Vec<TrialStation>,
     pub error: Option<String>,
 }
@@ -123,12 +125,13 @@ pub struct FixtureTrial {
 
 fn trial_row(label: String, source: &'static str, sample_id: Option<String>, result: Result<crate::vision::ShotMeasurement, String>) -> FixtureTrialRow {
     match result {
-        Ok(m) => FixtureTrialRow { label, source, sample_id, pose: m.pose.clone(), error: None, stations: m.idx.iter().enumerate().map(|(i, &id)| TrialStation {
+        Ok(m) => FixtureTrialRow { label, source, sample_id, pose: m.pose.clone(), error: None,
+            reason: m.pose.as_ref().filter(|p| !p.accepted).map(|p| fixture_quality::reason_text(p.reason.as_deref())), stations: m.idx.iter().enumerate().map(|(i, &id)| TrialStation {
             id,
             status: match m.st[i] { crate::measure::ST_OK => "ok", crate::measure::ST_NO_REF => "no_ref", crate::measure::ST_OUT_OF_RANGE => "out_of_range", _ => "no_bead" },
             d: (m.st[i] == crate::measure::ST_OK).then_some(m.d[i]),
         }).collect() },
-        Err(e) => FixtureTrialRow { label, source, sample_id, pose: None, stations: Vec::new(), error: Some(e) },
+        Err(e) => FixtureTrialRow { label, source, sample_id, pose: None, reason: None, stations: Vec::new(), error: Some(e) },
     }
 }
 

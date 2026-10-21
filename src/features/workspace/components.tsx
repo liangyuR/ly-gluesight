@@ -98,6 +98,15 @@ export interface ImageOverlay {
   stale?: boolean;
   /** 选中的中线点 */
   selected?: number | null;
+  /** 特征定位：示教框、带 4 px 外圈的模板框、搜索范围（框能移到的范围）与杠杆臂 L（模板中心 → 最远站）；blocked 时框标红 */
+  fixture?: FixtureOverlay | null;
+}
+export interface FixtureOverlay {
+  rect: [number, number, number, number];
+  padded: [number, number, number, number];
+  search: [number, number, number, number];
+  lever?: [[number, number], [number, number]] | null;
+  blocked?: boolean;
 }
 /** 配方布局里拍照点 k 的示教中线与各站（图像像素），给了 vis 时各站按测量状态着色。 */
 export function shotOverlay(layout: Recipe | null | undefined, k: number, vis?: PointVis[]): ImageOverlay | undefined {
@@ -140,8 +149,11 @@ export interface PathEditing {
  * controlsAt="footer"（仅单帧示教页）：缩放与显示开关下沉到底部信息行，左侧放 summary，
  * 开关文案为“中线 / 搜索带 / 点柄”，操作提示由页面自己给；默认 "header" 的外观与行为不变。
  */
-export function GrayViewer({ image, loading = false, error = "", label, caption, tools, subtools, overlay, onEdit, editDisabled = false, region, onRegion, brush, onBrush, extractionFailure, emptyTitle, emptyHint, controlsAt = "header", summary }: {
-  image: GrayImage | null; loading?: boolean; error?: string; label: string; caption?: ReactNode; tools?: ReactNode; subtools?: ReactNode; overlay?: ImageOverlay; onEdit?: PathEditing; editDisabled?: boolean; region?: [number, number, number, number] | null; onRegion?: (region: [number, number, number, number]) => void; brush?: BrushGuide | null; onBrush?: (points: ImagePoint[]) => void; extractionFailure?: { point: ImagePoint; message: string } | null; emptyTitle?: string; emptyHint?: string; controlsAt?: "header" | "footer"; summary?: ReactNode;
+export function GrayViewer({ image, loading = false, error = "", label, caption, tools, subtools, overlay, onEdit, editDisabled = false, region, onRegion, onRegionDone, brush, onBrush, extractionFailure, emptyTitle, emptyHint, controlsAt = "header", summary }: {
+  image: GrayImage | null; loading?: boolean; error?: string; label: string; caption?: ReactNode; tools?: ReactNode; subtools?: ReactNode; overlay?: ImageOverlay; onEdit?: PathEditing; editDisabled?: boolean; region?: [number, number, number, number] | null; onRegion?: (region: [number, number, number, number]) => void;
+  /** 框选松手：一次拖动结束（定位框据此取整并做检查） */
+  onRegionDone?: () => void;
+  brush?: BrushGuide | null; onBrush?: (points: ImagePoint[]) => void; extractionFailure?: { point: ImagePoint; message: string } | null; emptyTitle?: string; emptyHint?: string; controlsAt?: "header" | "footer"; summary?: ReactNode;
 }) {
   const [viewport, setViewport] = useState({ zoom: 1, x: 0, y: 0 });
   const { zoom, x, y } = viewport;
@@ -279,7 +291,7 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
         if (!current || !onEdit || editDisabled) return;
         const p = point(e, current.inverse);
         if (p) onEdit.move(current.index, p);
-      }} onPointerUp={stopGesture} onPointerCancel={stopGesture} onLostPointerCapture={stopGesture}>
+      }} onPointerUp={() => { const drawn = !!regionStart.current; stopGesture(); if (drawn) onRegionDone?.(); }} onPointerCancel={stopGesture} onLostPointerCapture={stopGesture}>
         <g ref={group} transform={"translate(" + (image.width/2 + x) + " " + (image.height/2 + y) + ") scale(" + zoom + ") translate(" + -image.width/2 + " " + -image.height/2 + ")"}>{image.pixels ? <GrayCanvas image={image} pixels={image.pixels} /> : <image href={image.url} width={image.width} height={image.height} />}
           {band && bandShown && <g aria-label="搜索带边界" pointerEvents="none" clipPath={`url(#${bandClip})`} fill="none" stroke="var(--primary)" opacity={.45}>
             <defs><clipPath id={bandClip}><rect width={image.width} height={image.height} /></clipPath></defs>
@@ -297,6 +309,16 @@ export function GrayViewer({ image, loading = false, error = "", label, caption,
             <text textAnchor="middle" dy={screenPx(5.5)} fontSize={screenPx(16)} fontWeight="bold" fill="var(--ng)">!</text>
           </g>}
           {region && <rect x={region[0]} y={region[1]} width={region[2]} height={region[3]} fill="var(--primary)" fillOpacity={.12} stroke="var(--primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
+          {overlay?.fixture && shown && (() => {
+            const f = overlay.fixture, color = f.blocked ? "var(--ng)" : "var(--ok)";
+            const box = (r: [number, number, number, number], props: Record<string, unknown>) => <rect x={r[0]} y={r[1]} width={r[2]} height={r[3]} fill="none" vectorEffect="non-scaling-stroke" {...props} />;
+            return <g aria-label={f.blocked ? "定位框（未通过检查）" : "定位框"} pointerEvents="none">
+              {box(f.search, { stroke: "var(--primary)", strokeWidth: 1, strokeDasharray: "6 4", opacity: .7, "aria-label": "定位搜索范围" })}
+              {box(f.padded, { stroke: color, strokeWidth: 1, strokeDasharray: "3 3", "aria-label": "模板外圈" })}
+              {box(f.rect, { stroke: color, strokeWidth: 2, "aria-label": "定位框" })}
+              {f.lever && <line x1={f.lever[0][0]} y1={f.lever[0][1]} x2={f.lever[1][0]} y2={f.lever[1][1]} stroke="var(--primary)" strokeWidth={1} strokeDasharray="2 4" vectorEffect="non-scaling-stroke" aria-label="杠杆臂 L" />}
+            </g>;
+          })()}
           {overlay && shown && <g aria-label="中线叠加">
             {stations.map(([x, y], i) => <circle key={"s" + i} cx={x} cy={y} r={dot} fill={overlay.stationColors?.[i] ?? "var(--primary)"} opacity={overlay.stale ? .35 : .9} />)}
             {path.length >= 2 && <polyline points={path.map(p => p.join(",")).join(" ")} fill="none" stroke="var(--primary)" strokeWidth={2} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
