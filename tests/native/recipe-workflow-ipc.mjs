@@ -96,7 +96,7 @@ try {
       await mutate('workspace_set_views', { k, views: selected, skip: false });
       for (const view of selected) {
         await mutate('workspace_select_view', { k, view });
-        await mutate('workspace_save_draft', { k, params: { path: [[270, 150], [30, 150]], mmPerPx: 0.1, detect: null, limits: null } });
+        await mutate('workspace_save_draft', { k, params: { path: [[270, 150], [30, 150]], mmPerPx: 0.1, detect: null, limits: null, fixture: null } });
         await mutate('workspace_check_calibration', { k, referenceMm: 10, measuredMm: 10, reuseMatching: true });
       }
     }
