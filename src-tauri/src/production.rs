@@ -52,6 +52,9 @@ pub struct Prepared {
     engine: Arc<Engine>,
     graphs: HashMap<(usize, u8), Value>,
     sizes: HashMap<(usize, u8), [u32; 2]>,
+    /// 只登记启用 fixture 的视图：glue.locate 的 base_dir = 发布包里这个视图的目录（内有 template.pgm）。
+    /// 其他视图照旧给空串，与工作台、候选试运行一致
+    bases: HashMap<(usize, u8), String>,
 }
 
 impl Prepared {
@@ -72,12 +75,19 @@ impl Prepared {
         if stored != graphs(&recipe)? { return Err("发布包算法图与配方测点不一致".into()); }
         let mut values = HashMap::new();
         let mut sizes = HashMap::new();
+        let mut bases = HashMap::new();
         for (k, shot) in recipe.shots.iter().enumerate() {
             for view in shot.enabled_views() {
                 let resource = bundle.view(k, view)?;
                 let projected = recipe.for_view(k, view)?;
                 values.insert((k, view), vision::build_taught_graph(&projected, k)?);
                 sizes.insert((k, view), resource.size.ok_or("发布原图缺少尺寸")?);
+                if projected.shots[k].fixture.is_some() {
+                    if resource.template.is_none() { return Err(format!("拍照点 {} 图 {view} 使用了特征定位，发布包缺少定位模板", shot.id)); }
+                    let dir = resource.dir.to_str().filter(|_| resource.dir.is_absolute())
+                        .ok_or_else(|| format!("发布包目录不是 UTF-8 绝对路径，不能作为定位模板目录：{}", resource.dir.display()))?;
+                    bases.insert((k, view), dir.to_string());
+                }
                 let calibration: Value = serde_json::from_str(&crate::fsio::read_text(resource.calibration.as_ref().ok_or("发布包缺少标定")?).map_err(|e| e.to_string())?)
                     .map_err(|e| format!("发布包标定无效：{e}"))?;
                 let scale = calibration["mmPerPx"].as_f64().ok_or("发布包标定没有有效像素当量")?;
@@ -87,7 +97,7 @@ impl Prepared {
             }
         }
         let engine_note = engine_file_note(&bundle.manifest.versions.engine, &engine);
-        Ok(Self { bundle, recipe, engine_note, engine, graphs: values, sizes })
+        Ok(Self { bundle, recipe, engine_note, engine, graphs: values, sizes, bases })
     }
 
     pub fn verify(&self) -> Result<(), String> {
@@ -106,7 +116,8 @@ impl Prepared {
         }
         let graph = self.graphs.get(&(k, view)).ok_or("拍照点图像没有已发布测量图")?;
         let projected = self.recipe.for_view(k, view)?;
-        vision::measure_shot_with_graph(&self.engine, &projected, k, image, run_id, "", graph)
+        let base = self.bases.get(&(k, view)).map_or("", String::as_str);
+        vision::measure_shot_with_graph(&self.engine, &projected, k, image, run_id, base, graph)
     }
 
     pub fn measure_views(&self, k: usize, images: &[(u8, Arc<FrameImage>)], run_id: &str) -> Result<vision::MultiViewMeasurement, String> {
@@ -120,17 +131,31 @@ impl Prepared {
         })
     }
 
-    fn warm(&self) -> Result<(), String> {
+    /// 在发布包自己的示教原图上把每个视图跑一遍。用特征定位的视图还要定位验收：位姿在自己的示教图上必须被采用，
+    /// 否则不布防——现场直接证明 base_dir、包内模板与运行库三者接线正确（这是生产接线，不是 G4 的质量门）。
+    pub(crate) fn warm(&self) -> Result<(), String> {
         for (k, shot) in self.recipe.shots.iter().enumerate() {
             for view in shot.enabled_views() {
                 let resource = self.bundle.view(k, view)?;
                 let image = crate::image_file::load(resource.image.as_ref().ok_or("发布包缺少示教原图")?)?;
-                self.measure_view(k, view, &image, &format!("warm-{}-{k}-v{view}-{}", self.bundle.id, ly_plc::now_ms()))?;
+                let m = self.measure_view(k, view, &image, &format!("warm-{}-{k}-v{view}-{}", self.bundle.id, ly_plc::now_ms()))?;
+                if self.bases.contains_key(&(k, view)) {
+                    warm_located(&shot.id, view, m.pose.as_ref())?;
+                }
             }
         }
         self.verify()
     }
 
+}
+
+/// 预热的定位验收：示教原图上的位姿没被采用就不布防。
+fn warm_located(shot: &str, view: u8, pose: Option<&vision::PoseRecord>) -> Result<(), String> {
+    match pose {
+        Some(pose) if pose.accepted => Ok(()),
+        _ => Err(format!("拍照点 {shot} 图 {view}：发布包定位模板在自己的示教原图上定位失败（{}），不能布防",
+            pose.and_then(|p| p.reason.as_deref()).unwrap_or("没有定位输出"))),
+    }
 }
 
 const WARMUP_RETRY_DELAY: Duration = Duration::from_secs(1);
