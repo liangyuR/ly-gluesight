@@ -1,10 +1,11 @@
 //! 特征定位判胶偏的纯几何（定稿 docs/discussions/fixture-position/final.md §2）：
 //! glue.locate 的位姿 T 把示教胶中线 N 搬到当帧 N' = T(N)，胶中心 B 到 N' 的有向法向距离就是胶偏。
 //! 只算像素，不做 IO；换算 mm、扣名义值、判定都在调用方。
-// P0 只有算法评测在用；G2 把 parse_result 接上偏差计算后去掉这一行。
-#![cfg_attr(not(test), allow(dead_code))]
 
 use serde_json::Value;
+
+/// 图里 glue.locate 的模板文件名（相对 base_dir）。每个（拍照点，视图）各给一个 base_dir。
+pub const TEMPLATE_FILE: &str = "template.pgm";
 
 /// 线段法向与 n'_i 的夹角上限 45°（cos 值）：拐角处不投到另一条腿上。
 /// 正好 45° 的算合格：直角拐点上的站（法向取两腿的角平分线）与两条腿都恰成 45°，严格小于会让这个站必然丢基准。
@@ -32,6 +33,7 @@ pub struct Pose {
 }
 
 impl Pose {
+    #[cfg(test)]
     pub fn identity() -> Self {
         Self { ok: true, score: 1.0, angle: 0.0, center: [0.0, 0.0], teach_center: [0.0, 0.0], peak_ratio: None, reason: None, angle_observable: None }
     }

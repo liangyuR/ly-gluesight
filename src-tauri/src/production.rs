@@ -12,7 +12,7 @@ use crate::recipe::Recipe;
 use crate::release::{ReleaseBundle, ValidationSite};
 use crate::vision::{self, Engine, ShotMeasurement, VisionHost};
 
-pub const GRAPH_VERSION: &str = "taught-path-2-multiview";
+pub const GRAPH_VERSION: &str = "taught-path-3-locate";
 
 pub fn graphs(recipe: &Recipe) -> Result<Value, String> {
     let mut shots = Vec::new();

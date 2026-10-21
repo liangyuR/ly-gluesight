@@ -52,6 +52,17 @@ pub const ST_OUT_OF_RANGE: u8 = 5;
 
 /// 定位失败的原因（帧徽标显示）
 pub const REFERENCE_LOCATE_FAILED: &str = "定位失败";
+/// 两端切向搬移超过配方 maxEndShiftMm（定稿 §10 决定一的护栏）
+pub const REFERENCE_END_SHIFT: &str = "两端搬移超限";
+
+/// 去掉一站的位置基准：有基准的有胶站改为 ST_NO_REF、d = NaN，胶宽保留；其余状态不动。
+/// Measured::lose_reference 与 parse_result 的定位失败、护栏共用这一条，免得两处语义分叉。
+pub fn drop_reference(st: &mut u8, d: &mut f32) {
+    if *st == ST_OK {
+        *st = ST_NO_REF;
+        *d = f32::NAN;
+    }
+}
 
 /// 测站状态与数值的契约：有基准的有胶站 d、w 都有限；无基准的有胶站 d 为 NaN、w 有限；超出检测范围的站 d 为 NaN、
 /// w 为有限值或 NaN；断胶、测不了的站数值不用。d 必须是 NaN，免得实时帧带着的 d 和记录库里存的（NaN）对不上。
@@ -126,10 +137,7 @@ impl Measured {
     pub fn lose_reference(&mut self, recipe: &Recipe, view: u8, reason: &str) {
         for (i, &j) in self.idx.iter().enumerate() {
             let in_view = recipe.points.seg.get(j as usize).and_then(|&g| recipe.segments.get(g as usize)).is_some_and(|g| g.view == view);
-            if in_view && self.st[i] == ST_OK {
-                self.st[i] = ST_NO_REF;
-                self.d[i] = f32::NAN;
-            }
+            if in_view { drop_reference(&mut self.st[i], &mut self.d[i]); }
         }
         if !self.reference_failed.iter().any(|f| f.view == view) {
             self.reference_failed.push(ReferenceFailure { view, reason: reason.into() });
