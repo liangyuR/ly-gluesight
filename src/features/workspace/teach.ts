@@ -3,8 +3,8 @@ import { pathLength } from "../cycle/vis";
 import type { ShotTeach } from "./types";
 
 /** 候选配方里拍照点已保存的示教；没有像素当量时为 NaN（输入框显示为空）。 */
-export function shotTeach(shot: Pick<ShotSpec, "path" | "mmPerPx" | "detect" | "limits">): ShotTeach {
-  return { path: shot.path.map(([x, y]) => [x, y] as [number, number]), mmPerPx: shot.mmPerPx ?? null, ...(shot.detect ? { detect: structuredClone(shot.detect) } : {}), ...(shot.limits ? { limits: structuredClone(shot.limits) } : {}) };
+export function shotTeach(shot: Pick<ShotSpec, "path" | "mmPerPx" | "detect" | "limits" | "fixture">): ShotTeach {
+  return { path: shot.path.map(([x, y]) => [x, y] as [number, number]), mmPerPx: shot.mmPerPx ?? null, ...(shot.detect ? { detect: structuredClone(shot.detect) } : {}), ...(shot.limits ? { limits: structuredClone(shot.limits) } : {}), fixture: shot.fixture ? structuredClone(shot.fixture) : null };
 }
 
 /** 按 f32 比较：后端以 f32 存中线与参数，取回的值与草稿在 f32 精度内相同就算没改。 */

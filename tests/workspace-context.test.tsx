@@ -146,18 +146,18 @@ describe("候选工作台的主流程保护", () => {
 
   it("拍照点视角变化只清除该点的旧中线草稿",async()=>{
     const {result}=await open();
-    act(()=>{result.current.setFrameDraft(0,{path:[[10,10],[24,10]],mmPerPx:.2});result.current.setFrameDraft(1,{path:[[30,10],[54,10]],mmPerPx:.3});});
+    act(()=>{result.current.setFrameDraft(0,{path:[[10,10],[24,10]],mmPerPx:.2,fixture:null});result.current.setFrameDraft(1,{path:[[30,10],[54,10]],mmPerPx:.3,fixture:null});});
     const next=workspaceView();
     next.workspace.doc.shots[0].view=3;
     next.workspace.doc.shots[0].path=[];delete next.workspace.doc.shots[0].mmPerPx;
     await act(()=>result.current.act(async()=>next));
-    expect(result.current.frameDrafts[0]).toBeUndefined();expect(result.current.frameDrafts[1]).toEqual({path:[[30,10],[54,10]],mmPerPx:.3});
+    expect(result.current.frameDrafts[0]).toBeUndefined();expect(result.current.frameDrafts[1]).toEqual({path:[[30,10],[54,10]],mmPerPx:.3,fixture:null});
     expect(result.current.frameDirty).toBe(true);
   });
 
   it("保存失败保留编辑内容，重试成功后才显示已保存",async()=>{
     const {result}=await open();
-    const draft={path:[[10,10],[20,10]] as [number,number][],mmPerPx:.2};
+    const draft={path:[[10,10],[20,10]] as [number,number][],mmPerPx:.2,fixture:null};
     vi.mocked(workspaceApi.saveDraft).mockRejectedValueOnce(new Error("磁盘不可写"));
     act(()=>result.current.setFrameDraft(0,draft));
     await waitFor(()=>expect(result.current.saveState).toBe("failed"),{timeout:2500});

@@ -177,7 +177,7 @@ fn multiview_failure_is_local_but_missing_image_is_acquisition_failure() {
     doc.shots.truncate(1);
     let shot = &mut doc.shots[0];
     shot.views = [1, 2].into_iter().map(|view| crate::recipe::ShotViewSpec { view, enabled: true,
-        path: shot.path.clone(), mm_per_px: shot.mm_per_px, detect: None, limits: None, calib: None }).collect();
+        path: shot.path.clone(), mm_per_px: shot.mm_per_px, detect: None, limits: None, calib: None, fixture: None }).collect();
     let recipe = doc.build().unwrap();
     let images = vec![(1, std::sync::Arc::new(FrameImage::new(1, 1, vec![0]))), (2, std::sync::Arc::new(FrameImage::new(1, 1, vec![0])))];
     let result = measure_views_with(&recipe, 0, &images, |view, _| {

@@ -69,6 +69,9 @@ pub struct ShotTeach {
     pub detect: Option<DetectParams>,
     #[serde(default)]
     pub limits: Option<crate::recipe::ShotLimits>,
+    /// 特征定位；必须显式发送（可以是 null），漏发时报错，不会悄悄清掉已保存的 fixture
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub fixture: Option<crate::recipe::FixtureSpec>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -528,12 +531,13 @@ fn coverage(recipe: &Recipe) -> Option<f32> {
     (measured > 0).then(|| 100.0 * recipe.shots.iter().filter(|s| s.measured() && s.taught()).count() as f32 / measured as f32)
 }
 
-/// 拍照点 k 的两组实际字段：原图要对上编号、相机与标定引用；试测要对上中线、像素当量、检测参数与站距。
+/// 拍照点 k 的两组实际字段：原图要对上编号、相机与标定引用；试测要对上中线、像素当量、检测参数、站距与特征定位。
+/// r 是按视图投影过的配方，fixture 就是这个视图的。
 fn shot_tags(r: &Recipe, k: usize) -> Result<(Value, Value), String> {
     let shot = r.shots.get(k).ok_or("拍照点不存在")?;
     Ok((
         state_value(&json!([shot.id, shot.pose_id, shot.camera, shot.view, shot.calib_ref()])),
-        state_value(&json!([shot.view, shot.path, shot.mm_per_px, r.shot_detect(k), shot.limits.as_ref().unwrap_or(&r.limits), r.spacing, r.filter_window])),
+        state_value(&json!([shot.view, shot.path, shot.mm_per_px, r.shot_detect(k), shot.limits.as_ref().unwrap_or(&r.limits), r.spacing, r.filter_window, shot.fixture])),
     ))
 }
 
@@ -792,10 +796,12 @@ fn update_doc(w: &mut Workspace, mut doc: RecipeDoc) -> Result<(), String> {
                     detect: if image.view == old.view { old.detect.clone() } else { None },
                     limits: if image.view == old.view { old.limits.clone() } else { None },
                     calib: if image.view == old.view { old.calib.clone() } else { None },
+                    fixture: if image.view == old.view { old.fixture.clone() } else { None },
                 }).collect();
             }
             let projected = shot.for_view(shot.view)?;
             shot.path = projected.path; shot.mm_per_px = projected.mm_per_px; shot.detect = projected.detect; shot.limits = projected.limits; shot.calib = projected.calib;
+            shot.fixture = projected.fixture;
         }
     }
     let mut unbound = w.unbound_imaging.clone();
@@ -1138,11 +1144,17 @@ pub fn workspace_save_params(
     w.expect(revision)?;
     let mut doc = w.doc.clone();
     let shot = doc.shots.get_mut(k).ok_or("拍照点不存在")?;
+    if let Some(fixture) = &params.fixture {
+        // 只看冻结图的尺寸元数据，不读图；模板在试测时按冻结图裁出
+        let frozen = w.frames.get(k).and_then(|f| f.image.as_ref()).ok_or("含特征定位的图需要先冻结示教原图")?;
+        fixture.check_image_size(frozen.size)?;
+    }
     shot.path = params.path;
     shot.mm_per_px = Some(params.mm_per_px);
     shot.detect = params.detect;
     shot.limits = params.limits;
-    if let Some(v) = shot.views.iter_mut().find(|v| v.view == shot.view) { v.path = shot.path.clone(); v.mm_per_px = shot.mm_per_px; v.detect = shot.detect.clone(); v.limits = shot.limits.clone(); }
+    shot.fixture = params.fixture;
+    if let Some(v) = shot.views.iter_mut().find(|v| v.view == shot.view) { v.path = shot.path.clone(); v.mm_per_px = shot.mm_per_px; v.detect = shot.detect.clone(); v.limits = shot.limits.clone(); v.fixture = shot.fixture.clone(); }
     doc.build()?;
     if doc != w.doc {
         w.doc = doc;
@@ -2515,6 +2527,25 @@ mod tests {
         assert_eq!(pending.revision, 1);
         assert_eq!(pending.frames[0].image.as_ref().unwrap().id, "image-a");
         assert_eq!(restored.base_revision, Some(old.revision_id));
+    }
+
+    #[test]
+    fn changing_fixture_changes_measurement_layout_but_changing_nominal_keeps_it() {
+        // 防的回归（定稿 §7）：改 fixture 后历史仍按旧测量定义重判（测量布局没变）；或只改名义值也被当成测量定义变化，历史不能重判
+        let mut doc = crate::recipe::samples().remove(1);
+        doc.shots.truncate(1);
+        let shot = &mut doc.shots[0];
+        shot.views = vec![crate::recipe::ShotViewSpec { view: 1, enabled: true, path: shot.path.clone(), mm_per_px: shot.mm_per_px,
+            detect: None, limits: None, calib: None, fixture: None }];
+        let original = doc.build().unwrap();
+        let mut located = doc.clone();
+        located.shots[0].views[0].fixture = Some(crate::recipe::FixtureSpec { rect: [100, 100, 32, 32], search_radius_px: 20.0,
+            angle_range_deg: 0.0, min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None });
+        assert!(!crate::store::same_measurement_layout(&original, &located.build().unwrap()));
+        let mut nominal = doc.clone();
+        nominal.limits.position.as_mut().unwrap().nominal = 0.3;
+        nominal.limits.gauge_ref = Some("GA-0315".into());
+        assert!(crate::store::same_measurement_layout(&original, &nominal.build().unwrap()));
     }
 
     fn archive_fixture(doc: RecipeDoc) -> Release {

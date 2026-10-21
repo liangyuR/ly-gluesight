@@ -207,7 +207,7 @@ export default function TeachingPage() {
       const imageId = frame.image.id;
       let revision = data.workspace.revision;
       if (editing) {
-        const params: ShotTeach = { path: t.path, mmPerPx: t.mmPerPx };
+        const params: ShotTeach = { path: t.path, mmPerPx: t.mmPerPx, fixture: t.fixture };
         if (t.detect) params.detect = t.detect;
         if (t.limits) params.limits = t.limits;
         const saved = await perform(() => workspaceApi.saveParams(doc.id,revision,k,params).catch(e => { throw new Error(`保存参数未完成，未进行试测：${errorText(e)}`); }), "");

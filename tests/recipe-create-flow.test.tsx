@@ -17,7 +17,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }))
 describe("创建配方流程", () => {
   it("在配方库填写新候选，选中创建结果并继续进入该候选的整圈采集", async () => {
     const template: RecipeDoc = {
-      id: "NEW", name: "新配方", version: 1, productCode: 1, triggerMode: "fly", schemaVersion: 6,
+      id: "NEW", name: "新配方", version: 1, productCode: 1, triggerMode: "fly", schemaVersion: 7,
       spacing: 1, filterWindow: 3, detect: { searchMm: 4, polarity: "dark", widthRange: [1, 6] },
       limits: { position: null, width: null, maxGapLen: .5, minPresent: .8 }, shots: [], cameras: {},
     };

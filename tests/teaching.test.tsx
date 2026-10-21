@@ -38,17 +38,17 @@ describe("单帧示教", () => {
   });
 
   it("保存参数并试测：保存参数失败 → 说明停在保存参数一步且不试测", async () => {
-    ws.frameDrafts = { 0: { path: [[10, 10], [30, 10]], mmPerPx: .1 } }; ws.frameDirty = true;
+    ws.frameDrafts = { 0: { path: [[10, 10], [30, 10]], mmPerPx: .1, fixture: null } }; ws.frameDirty = true;
     vi.mocked(workspaceApi.saveParams).mockRejectedValue("候选配置已更新");
     show();
     await userEvent.click(screen.getByRole("button", { name: "运行试测" }));
-    expect(workspaceApi.saveParams).toHaveBeenCalledWith("A", 7, 0, { path: [[10, 10], [30, 10]], mmPerPx: .1 });
+    expect(workspaceApi.saveParams).toHaveBeenCalledWith("A", 7, 0, { path: [[10, 10], [30, 10]], mmPerPx: .1, fixture: null });
     expect(ws.setError).toHaveBeenCalledWith(expect.stringContaining("保存参数未完成，未进行试测"));
     expect(workspaceApi.trial).not.toHaveBeenCalled();
   });
 
   it("中线有未试测的修改 → 拍照组不能切换，底栏说明先试测或清空", () => {
-    ws.frameDrafts = { 0: { path: [[10, 10], [30, 10]], mmPerPx: .1 } }; ws.frameDirty = true;
+    ws.frameDrafts = { 0: { path: [[10, 10], [30, 10]], mmPerPx: .1, fixture: null } }; ws.frameDirty = true;
     show();
     const other = screen.getByRole("button", { name: "选择拍照组 P2" });
     expect(other).toBeDisabled();
