@@ -161,9 +161,10 @@ export default function HistoryDetailPage() {
   const located=ownView&&!!viewSpec(shot,shot.view)?.fixture;
   const recordedPose=located?framePose(detail.frames[selected],selectedView):null;
   const rerunPose=located&&comparison&&comparison.source!=="rules"?replayPose(comparison,selected,selectedView):null;
-  const rerunDiffers=poseDiffers(recordedPose,rerunPose);
   const rerunShot=comparison?.candidateRecipe.shots[selected];
   const rerunRect=rerunShot?viewSpec(rerunShot,selectedView)?.fixture?.rect:undefined;
+  // 两次的 offset 各相对自己的框（从原图复测用工作台候选，框可能改过），按各自的框在图像上比
+  const rerunDiffers=poseDiffers(recordedPose,shot?viewSpec(shot,selectedView)?.fixture?.rect:undefined,rerunPose,rerunRect);
   const rerunT=rerunDiffers&&rerunRect?poseTransform(rerunRect,rerunPose):null;
   const baseOverlay=layout&&ownView?shotOverlay(layout,selected,result?.vis,detail.frames[selected]):undefined;
   const rerunBox=baseOverlay?.fixture&&rerunT&&rerunRect?{...baseOverlay.fixture,replay:movedBox(rerunRect,0,rerunT)}:null;

@@ -2,7 +2,7 @@ import type { FixtureSpec, FrameView, PartView, PoseRecord, Recipe, ShotSpec } f
 
 /** 图像像素坐标（与 lyFlow 一致：像素中心为整数，y 向下）。 */
 export type Pt = [number, number];
-type Rect = [number, number, number, number];
+export type Rect = [number, number, number, number];
 
 /** 示教框中心：(x + (w − 1)/2, y + (h − 1)/2)，与 glue.locate 的 teachCenter、recipe.rs 同一口径。 */
 export const teachCenter = ([x, y, w, h]: Rect): Pt => [x + (w - 1) / 2, y + (h - 1) / 2];

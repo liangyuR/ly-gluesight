@@ -1,5 +1,6 @@
 import { ST, type FrameStatus, type Judgement, type Measured, type PoseRecord, type Recipe, type Verdict } from "../cycle/types";
 import { referenceBadge } from "../cycle/vis";
+import { rawPoseTransform, teachCenter, type Rect } from "../cycle/pose";
 import type { PartDetail } from "./types";
 
 /** 重跑与原测量的逐点偏移、胶宽差超过此值（mm）记为差异。同一发布包、同一原图应逐位一致，留 0.01 mm 只为吸收序列化舍入。 */
@@ -121,12 +122,20 @@ export function replayPose(replay: Replay | null, k: number, view: number): Pose
 export const REPLAY_POSE_PX = .5;
 export const REPLAY_POSE_DEG = .05;
 
-/** 复测位姿与原记录位姿是否不同：采用与否不同，或偏移差 > 0.5 px、转角差 > 0.05°。任一侧没有位姿时不比较。 */
-export function poseDiffers(original: PoseRecord | null, replay: PoseRecord | null) {
+/**
+ * 复测位姿与原记录位姿是否不同：采用与否不同，或两次的变换在图像上不同（转角差 > 0.05°，或原示教框中心被搬到的位置相差 > 0.5 px）。
+ * offset 是相对各自示教框中心的（center − teachCenter），从原图复测用的工作台候选可能改过框，两次的 offset 不能直接相减，
+ * 所以各按自己的框还原 T 再在同一点上比；转角是 T 的线性部分，与转心无关，可以直接比。任一侧没有位姿时不比较。
+ */
+export function poseDiffers(original: PoseRecord | null, originalRect: Rect | null | undefined, replay: PoseRecord | null, replayRect: Rect | null | undefined) {
   if (!original || !replay) return false;
   if (original.accepted !== replay.accepted) return true;
   if (!original.accepted) return false;
-  const [a, b] = [original.offset, replay.offset];
-  if (!a || !b) return a !== b;
-  return Math.hypot(a[0] - b[0], a[1] - b[1]) > REPLAY_POSE_PX || Math.abs((original.angle ?? 0) - (replay.angle ?? 0)) > REPLAY_POSE_DEG;
+  if (Math.abs((original.angle ?? 0) - (replay.angle ?? 0)) > REPLAY_POSE_DEG) return true;
+  const rect = originalRect ?? replayRect;
+  if (!rect) return false;
+  const [Ta, Tb] = [rawPoseTransform(rect, original), rawPoseTransform(replayRect ?? rect, replay)];
+  if (!Ta || !Tb) return !Ta !== !Tb;
+  const p = teachCenter(rect), [a, b] = [Ta(p), Tb(p)];
+  return Math.hypot(a[0] - b[0], a[1] - b[1]) > REPLAY_POSE_PX;
 }
