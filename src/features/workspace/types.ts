@@ -24,7 +24,7 @@ export interface Trial {
 }
 /** 特征定位检查项编号（后端 vision::fixture_quality::CheckId）；说明文字由后端给出 */
 export type FixtureCheckId = "inside" | "corridor" | "texture" | "bright" | "lever" | "selfLocate"
-  | "locateAll" | "sigma" | "brightnessLock" | "observable" | "searchRange" | "nominal" | "brightnessReject" | "rotation" | "fewSamples";
+  | "locateAll" | "sigma" | "brightnessLock" | "observable" | "searchRange" | "nominal" | "brightnessReject" | "rotation" | "endParams" | "fewSamples";
 export interface FixtureCheckItem { id: FixtureCheckId; level: "block" | "warn"; passed: boolean; detail: string }
 export interface FixtureLever { from: [number, number]; to: [number, number]; px: number; mm: number | null }
 /** 画框时的只读检查（workspace_fixture_check） */

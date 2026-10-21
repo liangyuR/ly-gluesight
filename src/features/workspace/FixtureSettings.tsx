@@ -64,7 +64,7 @@ export function FixtureSettings({ fixture, checks, checksSource, staleSource, re
   const rotated = (fixture?.angleRangeDeg ?? 0) > 0;
   const closeRotation = () => { setRotating(false); setBasis(""); setNote(""); };
   const confirmRotation = async () => {
-    if (!basis || !note.trim() || confirming) return;
+    if (!evidence?.autoConditions || !basis || !note.trim() || confirming) return;
     setConfirming(true);
     try { if (await onRotate({ basis, note: note.trim() })) closeRotation(); } finally { setConfirming(false); }
   };
@@ -95,7 +95,7 @@ export function FixtureSettings({ fixture, checks, checksSource, staleSource, re
           {[...blocked, ...warned, ...checks.filter(c => c.passed)].map(item => <CheckRow key={item.id} item={item}/>)}
         </ul>}
         {checksSource !== "trial" && !invalid && <p className="wp-settings-hint">保存参数并试测后，示教图上的定位验收才算数。</p>}
-        <Checkbox label="已确认定位框内没有喷嘴、胶枪等随相机不动的结构" checked={reviewed} disabled={disabled || editing} onCheckedChange={onReviewed}/>
+        <Checkbox label="已确认定位框内没有胶（含越过示教段后拐弯、其他 Pose 或其他胶路的胶），也没有喷嘴、胶枪等随相机不动的结构" checked={reviewed} disabled={disabled || editing} onCheckedChange={onReviewed}/>
         <div className="wp-actions">
           <Button size="sm" variant="tonal" disabled={disabled || !canTrial || trialRunning} title={canTrial ? "在样本库里同一拍照点、同一幅图的原图上试定位，只作诊断" : "先保存参数并试测"} onClick={onTrial}>{trialRunning ? "定位试测中…" : "定位试测"}</Button>
           <Button size="sm" variant="text" disabled={disabled} onClick={onDraw}>{drawing ? "拖出新框" : "重画定位框"}</Button>
@@ -107,13 +107,13 @@ export function FixtureSettings({ fixture, checks, checksSource, staleSource, re
     </div>
     {rotating && fixture && <Dialog open title="开启转角（高级）" closeDisabled={confirming} onOpenChange={open => { if (!open) closeRotation(); }} footer={<>
       <Button disabled={confirming} onClick={closeRotation}>取消</Button>
-      <Button variant="filled" disabled={!basis || !note.trim() || confirming} onClick={() => void confirmRotation()}>确认开启 ±{ROTATION_PROBE_DEG}°</Button>
+      <Button variant="filled" disabled={!evidence?.autoConditions || !basis || !note.trim() || confirming} onClick={() => void confirmRotation()}>确认开启 ±{ROTATION_PROBE_DEG}°</Button>
     </>}>
       <p>v1 默认只找平移。只有验证数据表明转动在最远站造成的误差超过位置公差的 1/5、全部验证帧（含亮度 ±40）都看得出角度，并且有独立于单个模板的证据时，才开转角。开启后看不出角度的帧按定位失败处理（ERR 92）。</p>
       {evidence ? <ul className="wp-fixture-evidence" aria-label="转角证据">
         <li>±3° 离线定位的 L·|θ| P95：<b>{evidence.leverThetaP95Mm != null ? `${evidence.leverThetaP95Mm.toFixed(3)} mm` : "—"}</b>（门限 公差/5 = {evidence.thresholdMm.toFixed(3)} mm，L = {evidence.leverMm.toFixed(1)} mm）{evidence.exceeds ? "，超过" : "，没超过"}</li>
         <li>看得出角度的帧：<b>{evidence.observableFrames} / {evidence.frames}</b>{evidence.allObservable ? "，全部" : "，不是全部"}</li>
-        <li>前两个条件{evidence.autoConditions ? "都满足" : "没有都满足"}；第三个条件（独立证据）要在下面确认。</li>
+        <li>{evidence.autoConditions ? "前两个条件都满足；第三个条件（独立证据）要在下面确认。" : "前两个条件没有都满足，不能开转角：保持只找平移，或改夹具。"}</li>
       </ul> : <p className="c-warn">还没有当前修订的验证统计：先在验证页跑一次独立正常样本，再决定是否开转角。</p>}
       <Select label="独立证据" value={basis} options={[{ value: "", label: "请选择" }, ...bases]} disabled={confirming} onValueChange={value => setBasis(value as RotationConfirmation["basis"] | "")}/>
       <TextField label="说明（记进应用日志）" value={note} maxLength={200} disabled={confirming} onChange={e => setNote(e.target.value)}/>

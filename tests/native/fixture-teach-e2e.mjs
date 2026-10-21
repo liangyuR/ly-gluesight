@@ -212,7 +212,7 @@ export async function runFixtureE2E(page, options) {
   // 5. 喷嘴确认后才能保存
   const save = page.getByRole("button", { name: "保存本组示教", exact: true });
   assert(await save.isDisabled(), "未确认喷嘴前不应能保存");
-  await card(page).getByRole("checkbox", { name: "已确认定位框内没有喷嘴、胶枪等随相机不动的结构" }).check();
+  await card(page).getByRole("checkbox", { name: "已确认定位框内没有胶（含越过示教段后拐弯、其他 Pose 或其他胶路的胶），也没有喷嘴、胶枪等随相机不动的结构" }).check();
   await until(() => save.isEnabled(), Boolean, "确认喷嘴后保存按钮未启用", 10000);
   await save.click();
   await until(async () => (await ws.get()).progress.shots[k].views.find(v => v.view === shotSpec.view)?.state, s => s === "taught", "保存本组示教未生效", 15000);
@@ -227,6 +227,7 @@ export async function runFixtureE2E(page, options) {
   assert(report.checks.some(c => c.id === "brightnessLock" && c.passed), "亮度 ±40 锁定检查应在验证里跑过并通过");
   assert(first.checks.some(c => c.name === "特征定位" && c.passed), "发布前检查应含“特征定位”");
   assert(report.suggestion?.applicable, `应有可采用的两端参数建议：${JSON.stringify(report.suggestion)}`);
+  assert(report.checks.some(c => c.id === "endParams" && !c.passed), "没采用建议时应告警两端参数仍是临时默认");
   await openWorkbench(page, id, "#/recipe/validation");
   const panel = page.getByRole("region", { name: `拍照点 ${shotSpec.id} 图 ${shotSpec.view} 特征定位统计`, exact: true });
   await panel.waitFor({ timeout: 30000 });
@@ -255,7 +256,7 @@ export async function runFixtureE2E(page, options) {
   const retrial = await runTrial(page, call, id, k);
   assert(retrial.passed && retrial.fixture?.passed, `采用建议后重新试测应有效：${retrial.reason}`);
   await openCard(page);
-  await card(page).getByRole("checkbox", { name: "已确认定位框内没有喷嘴、胶枪等随相机不动的结构" }).check();
+  await card(page).getByRole("checkbox", { name: "已确认定位框内没有胶（含越过示教段后拐弯、其他 Pose 或其他胶路的胶），也没有喷嘴、胶枪等随相机不动的结构" }).check();
   await until(() => save.isEnabled(), Boolean, "重新试测后保存按钮未启用", 10000);
   await save.click();
   await until(async () => (await ws.get()).progress.shots[k].views.find(v => v.view === shotSpec.view)?.state, s => s === "taught", "重新保存示教未生效", 15000);
@@ -263,6 +264,7 @@ export async function runFixtureE2E(page, options) {
   assert(second.passed, `采用建议后验证未通过：${JSON.stringify(second.checks.filter(c => !c.passed))}`);
   const secondReport = second.fixture.find(r => r.k === k && r.view === shotSpec.view);
   assert(secondReport.passed);
+  assert(secondReport.checks.some(c => c.id === "endParams" && c.passed), `采用建议后两端参数告警应消失：${JSON.stringify(secondReport.checks.filter(c => !c.passed))}`);
   step("重新试测、保存并验证", { passed: second.passed, sigmaMm: secondReport.sigmaMm });
 
   // —— 发布与投产 ——

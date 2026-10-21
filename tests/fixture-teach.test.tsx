@@ -5,13 +5,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import TeachingPage from "../src/features/workspace/TeachingPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
-import { useCycle } from "../src/features/cycle/api";
 import type { FixtureSpec } from "../src/features/cycle/types";
-import type { FixtureCheck, FixtureCheckItem, FixtureTeachReport, FixtureTrial } from "../src/features/workspace/types";
-import { snapshot, workspaceState } from "./fixtures";
+import type { FixtureCheck, FixtureCheckItem, FixtureRotationEvidence, FixtureTeachReport, FixtureTrial } from "../src/features/workspace/types";
+import { workspaceState } from "./fixtures";
 
+// 只替身两个协作者：候选状态（context）与后端（workspaceApi）；产线快照不替身，非桌面环境下为空即“没在生产”
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
-vi.mock("../src/features/cycle/api", () => ({ useCycle: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn(), saveParams: vi.fn(), trial: vi.fn(), saveTeach: vi.fn(), fixtureCheck: vi.fn(), fixtureTrial: vi.fn() } }));
 
 let ws: ReturnType<typeof workspaceState>;
@@ -33,7 +32,6 @@ function withSavedFixture(checks: FixtureCheckItem[], viewState: "trialPassed" |
 beforeEach(() => {
   ws = workspaceState(); vi.mocked(useWorkspace).mockImplementation(() => ws);
   ws.data!.workspace.doc.shots.forEach(shot => { shot.views = []; });
-  vi.mocked(useCycle).mockReturnValue({ snapshot: snapshot(), logs: [], measured: [] });
   vi.mocked(workspaceApi.image).mockResolvedValue({ url: "data:image/png;base64,AA==", width: 100, height: 60 });
   for (const fn of [workspaceApi.saveParams, workspaceApi.saveTeach, workspaceApi.fixtureCheck, workspaceApi.fixtureTrial]) vi.mocked(fn).mockReset();
   vi.mocked(workspaceApi.fixtureCheck).mockResolvedValue(check([item("inside", true, "外圈在图内"), item("corridor", true, "离走廊足够远")]));
@@ -67,13 +65,12 @@ describe("示教页定位特征", () => {
     }
   });
 
-  it("试测报告有阻断项 → 列出原因，不能保存本组示教", () => {
-    // 防的回归（保存门）：示教图上定位没被采用时仍能保存示教，或阻断原因看不到
+  it("试测报告有阻断项 → 阻断原因列在示教图检查清单里", () => {
+    // 防的回归：试测无效时看不到是哪项示教图检查没过（保存门本身在后端，见 B1、B6）
     const why = "示教图上定位没被采用：有相近的次峰（次峰比超过上限，模板不唯一）";
     withSavedFixture([item("texture", true, "纹理足够"), item("selfLocate", false, why)], "trialFailed");
     show();
     expect(within(screen.getByRole("list", { name: "示教图检查（试测）" })).getByText(why)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "保存本组示教" })).toBeDisabled();
   });
 
   it("试测只有杠杆臂告警 → 勾选喷嘴确认后才能保存，载荷带 fixtureReviewed", async () => {
@@ -84,23 +81,36 @@ describe("示教页定位特征", () => {
     const save = screen.getByRole("button", { name: "保存本组示教" });
     expect(save).toBeDisabled();
     expect(save).toHaveAccessibleDescription(expect.stringContaining("喷嘴"));
-    await userEvent.click(screen.getByRole("checkbox", { name: "已确认定位框内没有喷嘴、胶枪等随相机不动的结构" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "已确认定位框内没有胶（含越过示教段后拐弯、其他 Pose 或其他胶路的胶），也没有喷嘴、胶枪等随相机不动的结构" }));
     await userEvent.click(screen.getByRole("button", { name: "保存本组示教" }));
     expect(workspaceApi.saveTeach).toHaveBeenCalledWith("A", 7, 0, "A-image-0", true);
   });
 
-  it("开启转角 → 没选独立证据与说明不能确认，确认后才带 rotation 保存，草稿不改转角", async () => {
-    // 防的回归（定稿 §10 决定二）：开转角不经显式确认，或经草稿自动保存悄悄开启
+  it.each([
+    ["没有当前修订的验证统计 → 不能确认", null],
+    ["转角证据不满足前两个条件 → 不能确认", false],
+    ["证据满足、选了独立证据并写了说明 → 带 rotation 保存", true],
+  ] as const)("开启转角：%s", async (_, autoConditions) => {
+    // 防的回归（定稿 §10 决定二，三个条件都要满足）：没有验证证据或证据不满足也能确认开转角；
+    // 开转角不经显式确认，或经草稿自动保存悄悄开启
     withSavedFixture([item("selfLocate", true, "示教图上定位被采用")], "trialPassed");
+    if (autoConditions !== null) {
+      const rotation: FixtureRotationEvidence = { enabled: false, leverMm: 80, leverThetaP95Mm: .2, thresholdMm: .1, exceeds: true, frames: 36, observableFrames: 36, allObservable: autoConditions, autoConditions };
+      ws.data!.workspace.validation!.fixture = [{ k: 0, view: 1, shotId: "P1", passed: true, samples: 12, checks: [], sigmaMm: .02, meanMm: 0, nominalMm: 0, toleranceMm: .5,
+        searchUse: .1, rows: [], suggestion: null, rotation }];
+    }
     vi.mocked(workspaceApi.saveParams).mockResolvedValue(ws.data!);
     show();
     await userEvent.click(screen.getByRole("button", { name: "高级：开启转角…" }));
     const dialog = screen.getByRole("dialog", { name: "开启转角（高级）" });
     const confirm = within(dialog).getByRole("button", { name: /确认开启/ });
-    expect(confirm).toBeDisabled();
+    expect(confirm).toBeDisabled(); // 还没选独立证据、没写说明
     fireEvent.change(within(dialog).getByRole("combobox", { name: "独立证据" }).closest(".qs-select")!.querySelector("select")!, { target: { value: "twoTemplates" } });
-    expect(confirm).toBeDisabled();
     await userEvent.type(within(dialog).getByRole("textbox", { name: "说明（记进应用日志）" }), "两个模板转角一致");
+    if (!autoConditions) {
+      expect(confirm).toBeDisabled();
+      return;
+    }
     await userEvent.click(confirm);
     expect(workspaceApi.saveParams).toHaveBeenCalledWith("A", 7, 0, expect.objectContaining({
       fixture: expect.objectContaining({ angleRangeDeg: 3 }), rotation: { basis: "twoTemplates", note: "两个模板转角一致" } }));

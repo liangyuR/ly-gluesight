@@ -282,7 +282,7 @@ export default function TeachingPage() {
   const groupLockReason = editing || frameDirty ? "有未试测的修改，先试测或清空后再切组" : data.workspace.pending ? "候选版本正在等待生效" : "正在处理或保存，请稍候";
   const lockReason = data.workspace.pending ? "候选版本正在等待生效" : "正在处理或保存，请稍候";
   const unreviewed = !!t.fixture && !reviewed && viewState !== "taught";
-  const reviewReason = "先在定位特征里确认框内没有喷嘴、胶枪";
+  const reviewReason = "先在定位特征里确认框内没有胶、喷嘴、胶枪";
   const saveDisabled = !unlocked || !enabled || !trialCurrent || viewState === "taught" || unreviewed;
   const saveReason = !saveDisabled ? "" : !enabled ? "请先选择本组检测图" : viewState === "taught" && !editing ? "本组已保存，修改后需重新试测" : !trialCurrent ? "试测通过后可保存" : unreviewed ? reviewReason : lockReason;
   const nextDisabled = !unlocked || !enabled || !trialCurrent || !nextGroup || unreviewed;
