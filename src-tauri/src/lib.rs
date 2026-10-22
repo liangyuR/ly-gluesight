@@ -256,6 +256,13 @@ pub fn run() {
             workspace::workspace_station_capture,
             workspace::workspace_station_import,
             workspace::workspace_station_image,
+            workspace::workspace_update_segments,
+            workspace::workspace_teach_camera,
+            workspace::workspace_extract_corridor,
+            workspace::workspace_calibration_add_round,
+            workspace::workspace_calibration_remove_round,
+            workspace::workspace_calibration_apply,
+            workspace::workspace_confirm_tolerance,
         ])
         .run(context)
         .expect("error while running tauri application");

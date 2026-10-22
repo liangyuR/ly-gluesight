@@ -22,14 +22,18 @@ mod history_samples;
 mod reproduce;
 mod workflow;
 mod fixture;
+mod burst;
 pub(crate) mod centerline;
 pub mod progress;
 #[cfg(test)]
 mod workflow_tests;
 #[cfg(test)]
 mod progress_tests;
+#[cfg(test)]
+mod burst_tests;
 pub use workflow::*;
 pub use fixture::*;
+pub use burst::*;
 
 fn state_value(value: &impl Serialize) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
@@ -271,6 +275,12 @@ pub struct Workspace {
     /// 还没有拍照点使用的相机在采集页调好的曝光与增益：配方只收拍照点用到的相机，用上时并入配方
     #[serde(default)]
     pub unbound_imaging: BTreeMap<String, CameraImaging>,
+    /// 段配方：每台计划相机的走廊示教帧（旧拍照点配方为空，示教在 frames）
+    #[serde(default)]
+    pub camera_teaching: Vec<burst::CameraTeaching>,
+    /// 段配方：多轮标定加入的轮次（旧拍照点配方为空）
+    #[serde(default)]
+    pub calibration: burst::Calibration,
 }
 
 /// 按拍照点用到的相机整理配方的成像参数：不再用到的挪到 unbound，新用到的优先取 unbound 里调好的，没有就用默认值。
@@ -324,6 +334,8 @@ impl Workspace {
             last_position: None,
             capture_id: None,
             unbound_imaging: BTreeMap::new(),
+            camera_teaching: Vec::new(),
+            calibration: burst::Calibration::default(),
         }
     }
 
@@ -420,6 +432,9 @@ pub struct WorkspaceView {
     pub candidate_plc_error: Option<String>,
     pub coverage: Option<f32>,
     pub progress: progress::Progress,
+    /// 段配方的计划部分（决策记录 5.1）；旧拍照点配方为空。段配方时上面的 productionPlc / candidatePlc / candidatePlcError /
+    /// coverage 为空、progress 没有步骤，进度在 plan.progress
+    pub plan: Option<burst::WorkspacePlanView>,
 }
 
 pub struct WorkspaceHost {
@@ -572,6 +587,17 @@ fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
     let layout = w.doc.build()?;
     let production_recipe = app.state::<CycleHost>().recipe(&w.doc.id);
     let production_version = production_recipe.as_ref().map(|r| r.version);
+    if w.doc.is_burst() {
+        // 段配方：旧拍照点的 PLC 参数、示教覆盖率与进度为空，计划导出与进度在 plan（D-SB-25、决策记录 5.1）
+        let production = app.state::<CycleHost>().recipes.doc(&w.doc.id);
+        let plan_changed = production.as_ref().is_none_or(|p| p.plan_version == 0 || !p.same_plan(&w.doc));
+        let plan = burst::plan_view(app, &w, &layout, production_recipe.as_deref(), production.as_ref(), production_version);
+        return Ok(WorkspaceView {
+            workspace: w, layout, production_version, production_plan_version: production.map(|p| p.plan_version), plan_changed,
+            production_plc: None, candidate_plc: None, candidate_plc_error: None, coverage: None,
+            progress: progress::Progress { steps: Vec::new(), shots: Vec::new(), next: None }, plan: Some(plan),
+        });
+    }
     let production_plc = production_recipe.and_then(|r| crate::plc_plan::PlcParams::from_recipe(&r).ok());
     let (candidate_plc, candidate_plc_error) = match crate::plc_plan::PlcParams::from_recipe(&layout) {
         Ok(params) => (Some(params), None),
@@ -592,6 +618,7 @@ fn view(app: &AppHandle, w: Workspace) -> Result<WorkspaceView, String> {
         candidate_plc_error,
         coverage,
         progress,
+        plan: None,
     })
 }
 
@@ -703,8 +730,7 @@ pub fn workspace_get(app: AppHandle, id: String) -> Result<WorkspaceView, String
 #[tauri::command]
 pub fn workspace_create(app: AppHandle, mut doc: RecipeDoc) -> Result<WorkspaceView, String> {
     safe_id(&doc.id)?;
-    doc.shots.clear();
-    doc.cameras.clear();
+    new_candidate_doc(&mut doc);
     doc.build()?;
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
@@ -719,6 +745,13 @@ pub fn workspace_create(app: AppHandle, mut doc: RecipeDoc) -> Result<WorkspaceV
     host.save(&w)?;
     items.insert(w.doc.id.clone(), w.clone());
     view(&app, w)
+}
+
+/// 新建候选的配方起点：不带拍照点与相机参数（旧拍照点配方原行为）；段配方另见 `burst::prepare_new_doc`。
+fn new_candidate_doc(doc: &mut RecipeDoc) {
+    doc.shots.clear();
+    doc.cameras.clear();
+    burst::prepare_new_doc(doc);
 }
 
 fn check_new_identity<'a>(doc: &RecipeDoc, existing: impl Iterator<Item = (&'a str, u16)>) -> Result<(), String> {
@@ -806,6 +839,8 @@ fn apply_live_imaging(app: &AppHandle, camera: &str, imaging: &CameraImaging) ->
 }
 
 fn update_doc(w: &mut Workspace, mut doc: RecipeDoc) -> Result<(), String> {
+    // 段配方：N_exp、标定统计、整件标定与 x_ref 只能由多轮标定写入，段序列或类型变化时清空（旧拍照点配方不经过）
+    burst::guard_calibration(&w.doc, &mut doc)?;
     for shot in &mut doc.shots {
         let Some(old_k) = w.doc.shots.iter().position(|old| old.id == shot.id) else { continue };
         let old = &w.doc.shots[old_k];
@@ -853,6 +888,9 @@ fn update_doc(w: &mut Workspace, mut doc: RecipeDoc) -> Result<(), String> {
     }).collect();
     w.frames = frames;
     w.doc = doc;
+    // 不再是计划相机的示教帧不保留（旧拍照点配方没有）
+    let cameras = w.doc.plan_cameras();
+    w.camera_teaching.retain(|t| cameras.contains(&t.camera));
     for k in 0..w.frames.len() {
         if !w.doc.shots[k].views.is_empty() { let selected = w.doc.shots[k].view; workflow::load_active(w, k, selected)?; }
     }

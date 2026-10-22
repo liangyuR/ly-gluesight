@@ -235,7 +235,7 @@
 ### D-SB-36 多轮标定
 
 - 问题：`Workspace.capture_id` 只有一个；规格 §2 同一程序连续采集 ≥ 10 轮（轮数可配），每段均值四舍五入作 N_exp。
-- 采用：Workspace 新增 `calibration { rounds, standard_rounds, result }`（D2）；`calibration_rounds` 默认 10，可配 10..=100。标定结果见 D-SB-21，容差建议由操作员确认后才写入。
+- 采用：Workspace 新增 `calibration { rounds }`（D2，每轮带 `standard`，标准件轮次不计入轮数；标定结果写进配方，视图由配方与轮次算出，见第九节第 11 条）；`calibration_rounds` 默认 10，可配 10..=100。标定结果见 D-SB-21，容差建议由操作员确认后才写入。
 
 ### D-SB-37 溢胶、气泡、拉丝
 
@@ -267,7 +267,7 @@
 | `PartSummary`（store.rs，C5） | `flags: Flags \| null`（TS `PartSummaryV2`） | `framesExpected = expectedTotal ?? 0`；`framesReceived` = 帧组数；`triggerMode = "fly"` |
 | `PartDetail`（store.rs，C5） | `burst: PartDetailBurst \| null` | `frames = shots = []`，`points = null`，`judgement` 同 ResultView 规则 |
 | `CaptureRound`（recipe_capture.rs） | 不变（旧轮次） | 新轮次为 `CaptureRoundV2`（`format: 2`，D1） |
-| `WorkspaceView`（workspace.rs，D3） | `plan: WorkspacePlanView \| null` | `productionPlc = candidatePlc = null`，`candidatePlcError = null`，`coverage = null`，`progress = { steps: [], shots: [], next: null }`（段配方进度在 `plan.progress`）；`planChanged` 按 D-SB-19 的身份 |
+| `WorkspaceView`（workspace.rs，D2） | `plan: WorkspacePlanView \| null` | `productionPlc = candidatePlc = null`，`candidatePlcError = null`，`coverage = null`，`progress = { steps: [], shots: [], next: null }`（段配方进度在 `plan.progress`）；`planChanged` 按 D-SB-19 的身份 |
 | `Progress`（workspace/progress.rs） | 不变（旧配方） | 段配方用 `ProgressV2` |
 | `Overrides`（history.rs，重判试算参数，C5） | `straight`、`corner`（`KindOverride`：`tolUpper`、`tolLower`、`maxExcursionLen`，绝对限不适用；TS `Overrides` 已有这两个可选字段） | 旧配方记录忽略这两个字段；段配方记录的每帧胶宽只读它们，`position` / `width` 不适用，未分段区域取两者中较宽的一档。**后端现在没有这两个字段，发出去会被静默忽略**，所以前端 `RejudgeDialog` 的直线段 / 弯道段两行输入置灰（`SEGMENT_OVERRIDES_SUPPORTED = false`）；C5 读取后改为 true 并同步测试 |
 
@@ -416,7 +416,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
   - 记录库 `part_shots`、`part_points`；
   - 前端 `cycle/pose.ts`、`cycle/vis.ts`、`WorkpieceOverview`、`teachingGroups`、`Fixture*` 等旧组件；
   - 前端旧配方的单帧示教与整圈采集页：`/recipe/teach`、`/recipe/capture` 在 `WorkspaceView.plan` 为空时挂载 `LegacyTeachingPage`、`LegacyCapturePage`（G0 之前的实现原样保留：组选图、采用本轮图像、逐点试测、特征定位、标定核对），以及 `TrialResult`、`TeachingSettings` 的旧签名和按拍照点下标的示教草稿（`frameDrafts` / `setFrameDraft`）。段配方另用 `CorridorSettings` 与按相机 id 的 `corridorDrafts` / `setCorridorDraft`。
-  - **D3 之前的分流**：页面分流以 `RecipeDoc.segments` 是否为空为准。后端 `WorkspaceView.plan` 要到 D3 才输出，所以段配方（`segments` 非空）而 `plan` 为 null 时，`/recipe/teach`、`/recipe/capture` 显示“待后端 D3 实现”占位（`PlanPending`），不落到 `LegacyTeachingPage`、`LegacyCapturePage`——那里的采用本轮图像、逐点示教提交后会被后端 `validate_burst` 拒绝（段配方不能同时有拍照点）。进度、总览、步骤条等只读页面在 D3 之前对段配方仍按 `plan` 为空显示旧配方的空内容，不提供会被拒绝的操作。
+  - **plan 为空时的分流**：页面分流以 `RecipeDoc.segments` 是否为空为准。后端 `WorkspaceView.plan` 自 D2 起对段配方输出（原定 D3）；段配方（`segments` 非空）而 `plan` 为 null 时（D2 之前的后端），`/recipe/teach`、`/recipe/capture` 显示“待后端 D3 实现”占位（`PlanPending`），不落到 `LegacyTeachingPage`、`LegacyCapturePage`——那里的采用本轮图像、逐点示教提交后会被后端 `validate_burst` 拒绝（段配方不能同时有拍照点）。进度、总览、步骤条等只读页面在 D3 之前对段配方仍按 `plan` 为空显示旧配方的空内容，不提供会被拒绝的操作。
   - **路由标题**：`/recipe/teach` 两种配方共用，标题写“单帧示教（旧配方）/ 相机走廊示教（段配方）”；总览页空态提示给段配方的写法是“相机走廊示教”（步骤条上的名称仍是“走廊示教”），不再提“单帧示教”。
   - **PLC 标签**：`shotCount`、`deviceShots`、`partEnd` 的预设标签在协议 6 的含义之后补写旧配方含义（触发次数、设备触发次数、触发计划发完）。
 - **判定结果类型**：`judge::Judgement` 保留给旧配方；段配方用 `burst_judge::BurstJudgement`，两者并列，不做类型别名。界面与记录按 `burst` 字段是否为 null 区分。
@@ -451,3 +451,13 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
     - **在线读图**：`workspace_live_frame_image` 已注册（段配方预览缓存与旧配方各一份，各 128 MB）；前端仍经 `pendingCall` 调用，命令存在时照常返回图像。
     - **胶偏未判**：直线区域去掉首尾各一帧后参考相机没有可用 x 时标 `OffsetUnjudged::NoFrames`（“胶偏未判：参考相机没有可用帧”，TS 同步 `noFrames`；A4 遗留 F0-3），不再静默不判。
     - **带宽估算**：`camera::aggregate_bandwidth` 计入 GigE 协议开销（按不开巨帧约 1.05 倍；C2 遗留 F0-4），三台 130 万像素 25 Hz 由 786 Mbps 改为约 826 Mbps，超过单口 80% 预算。
+12. D2 候选工作区（相对计划步骤的调整，旧路径一律保留）：
+    - **旧路径不动**：`adopt_shots`、组选图（`workspace_select_group_image`、`check_group_selection`）、旧 `capture_for` 的 1..=64 与计数核对、对 `recipe_shots()` / `planned_count` 的调用都保留，旧配方行为不变；计划中的“删除 / 移除组选图命令”改为在新路径旁新增。新代码在 `workspace/burst.rs`，测试在 `workspace/burst_tests.rs`（计划写的是 workflow.rs / workflow_tests.rs）。
+    - **`WorkspaceView.plan` 由 D2 输出**（5.1 原写 D3）：段配方时 productionPlc / candidatePlc / candidatePlcError / coverage 为 null、progress 没有步骤。`plan.progress`（ProgressV2）按整圈采集 → 段列表 → 走廊示教 → 多轮标定 → 验证 → 发布给出：“整圈采集”以本配方有完整采集轮次为完成；验证与发布沿用候选现有的验证记录与发布状态（段配方的验证项与发布切换仍归 D3）。
+    - **Workspace 新字段**：`cameraTeaching: [{camera, frame: FrozenImage, round, seq}]`（示教帧冻结为候选 images/ 下的 PGM）、`calibration: {rounds: [CalibrationRound]}`。计划里的 `standard_rounds` 并进 `rounds`（每轮带 `standard`）；不另存 `result`：标定结果写进配方（N_exp、calib、partCalib、x_ref），`plan.calibration`（CalibrationView）每次由配方与轮次算出。建议容差 = max(该类段默认容差, N − min, max − N)，整件取各段默认容差之和。
+    - **走廊示教**：`workspace_teach_camera` 只冻结所选帧、把草稿（走廊、当量、检测参数）写进 inspect，不在这里提取；提取用 `workspace_extract_corridor`（5.4）。当量缺省时沿用已有值，再缺省取这台相机的工位标定 `{device}`（模拟相机取模拟当量）。示教帧须来自本候选完整的新轮次、这台相机有这一帧、采集后设备配置没变。`cameraTeaching[].saved` = 走廊至少两点、不短于 1 px 且完整落在示教帧内。
+    - **加入标定**：轮次须属于本候选、已完整完成、相机集合等于计划相机，各相机采集时的设备配置与当前设备、与已加入的轮次都相同；三台相机都已选示教帧且能建走廊测量图。整轮每帧用 `vision::measure_frame` 测（缺帧记 missing、测量失败记 error），每帧特征与分段结果写在候选目录 `calibration/<轮次>/`：`features.jsonl` 一行 `{camera: 相机编号, seq, metrics: FrameMetrics}`，1..=帧组数内每台相机每个 seq 一行，按计划相机、seq 排列；`boundaries.json` 为 SegOutcome（本轮恒为 `{"kind":"unsegmented"}`）。不写进采集轮次目录（特征依赖候选的走廊）。
+    - **应用标定**：标定轮次（不含标准件轮次）不少于 `calibrationRounds`，否则报错且配方不变；写 partCalib，单段计划同时写该段 N_exp 与 calib；多段计划各段保持 null（视图 pending “分段算法未就绪”）。容差不写，由 `workspace_confirm_tolerance` 写入。
+    - **x_ref**：只给单段计划的直线段；每轮标准件取参考相机去掉首尾各一帧（seq 1 与帧组数）后测成帧的 x 均值，再用 `calibration::x_ref` 取均值与极差，只用走廊与当前相同的标准件轮次。直线段启用了胶偏但没配 offsetRef 时按 AbsoluteX、计划第一台相机补上（D-SB-18 默认）；ToEdge 不写（“测量量未实现”）；多段计划不写（“分段算法未就绪”）。每次应用按当前标准件轮次重算，没有可用轮次时 x_ref 为 null。
+    - **编辑约束**（`workspace_save_doc` 与 `workspace_update_segments` 共用 `update_doc`）：段的类型序列不变时 N_exp、calib、partCalib 不能改，x_ref 只能原样带过或清空，胶偏参考的测量量或相机变了 x_ref 清空；类型序列（段数、顺序、类型）变了清空全部 N_exp、calib、partCalib 与 x_ref，已加入的标定轮次保留（整件帧组数与分段无关）。
+    - **前端**：D2 的命令已注册，前端仍经 `pendingCall` 调用（命令存在时与 `desktopCall` 相同）；改为直接调用、删去“待后端 D2”的占位分支与用例留给前端收口。
