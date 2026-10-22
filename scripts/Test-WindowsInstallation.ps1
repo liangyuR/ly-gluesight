@@ -27,6 +27,21 @@ $report = [ordered]@{
     guiStarted = $false
     hardwareVerified = $false
 }
+# 测试安装会改写本机的卸载登记、安装位置记录与 GlueSight 快捷方式：先快照，验证完静默卸载、删测试目录，再还原快照，
+# 免得本机已装的 GlueSight 被改指到测试目录
+$snapshotDir = Join-Path ([IO.Path]::GetTempPath()) ('gluesight-install-snapshot-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $snapshotDir | Out-Null
+$registryKeys = @('HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\GlueSight', 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\GlueSight', 'HKCU\SOFTWARE\xyzrobotics\GlueSight', 'HKLM\SOFTWARE\xyzrobotics\GlueSight')
+$savedKeys = @(for ($i = 0; $i -lt $registryKeys.Count; $i++) {
+    $file = Join-Path $snapshotDir "key-$i.reg"
+    & reg.exe query $registryKeys[$i] *> $null
+    if ($LASTEXITCODE -eq 0) { & reg.exe export $registryKeys[$i] $file /y *> $null; if ($LASTEXITCODE -eq 0) { $file } }
+})
+$shortcuts = @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('CommonPrograms'), [Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('CommonDesktopDirectory')) |
+    ForEach-Object { Join-Path $_ 'GlueSight.lnk' }
+$savedShortcuts = @(for ($i = 0; $i -lt $shortcuts.Count; $i++) {
+    if (Test-Path -LiteralPath $shortcuts[$i] -PathType Leaf) { $copy = Join-Path $snapshotDir "lnk-$i.lnk"; Copy-Item -LiteralPath $shortcuts[$i] -Destination $copy; [pscustomobject]@{ path = $shortcuts[$i]; copy = $copy } }
+})
 try {
     $processInfo = [Diagnostics.ProcessStartInfo]::new()
     $processInfo.FileName = $Installer
@@ -81,5 +96,22 @@ try {
     $report.error = $_.Exception.Message
     throw
 } finally {
+    # 静默卸载：_?= 让卸载程序就地同步运行（不复制到临时目录后立即返回），之后由这里删掉测试目录
+    $uninstaller = Join-Path $InstallDir 'uninstall.exe'
+    $report.uninstalled = $false
+    if (Test-Path -LiteralPath $uninstaller -PathType Leaf) {
+        $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/S', "_?=$InstallDir" -PassThru -WindowStyle Hidden
+        if ($uninstall.WaitForExit(180000)) { $report.uninstalled = $uninstall.ExitCode -eq 0 } else { $uninstall.Kill($true) }
+        if (-not $report.uninstalled) { Write-Warning "测试安装的静默卸载未成功，请手动检查：$InstallDir" }
+    }
+    if (Test-Path -LiteralPath $InstallDir) {
+        Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction Continue
+    }
+    $report.installedDirectoryRemoved = -not (Test-Path -LiteralPath $InstallDir)
+    foreach ($key in $registryKeys) { & reg.exe delete $key /f *> $null }
+    foreach ($file in $savedKeys) { & reg.exe import $file *> $null; if ($LASTEXITCODE -ne 0) { Write-Warning "未能还原注册表快照 $file" } }
+    foreach ($path in $shortcuts) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force -ErrorAction Continue } }
+    foreach ($item in $savedShortcuts) { Copy-Item -LiteralPath $item.copy -Destination $item.path -Force -ErrorAction Continue }
+    Remove-Item -LiteralPath $snapshotDir -Recurse -Force -ErrorAction SilentlyContinue
     $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportPath -Encoding utf8NoBOM
 }
