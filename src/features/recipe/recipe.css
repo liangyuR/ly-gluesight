@@ -26,3 +26,5 @@
 .rcp-inline { display: inline-flex; align-items: center; gap: 8px; margin-right: 20px; color: var(--on-surface-variant); }
 .rcp-inline > .qs-input { width: 112px; }
 @media (max-width: 900px) { .rcp-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.rcp-kind { display: flex; flex-direction: column; gap: 10px; padding-top: 4px; }
+.rcp-kind + .rcp-kind { padding-top: 14px; border-top: 1px solid var(--outline-variant); }

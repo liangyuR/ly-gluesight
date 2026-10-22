@@ -1,4 +1,6 @@
 import type { Verdict } from "../cycle/types";
+import type { ProgressTargetV2, ProgressV2, StepIdV2 } from "../plan/types";
+import { corridorPath } from "./cameraTasks";
 import type { CalibrationState, Progress, ProgressTarget, ShotState, StepId, StepStatus, ViewProgress } from "./types";
 
 export const stepStatusText: Record<StepStatus, string> = { notStarted: "未开始", inProgress: "进行中", done: "完成", blocked: "阻塞", optional: "可选" };
@@ -33,6 +35,23 @@ export function targetPath(target: ProgressTarget) {
 
 export function stepOf(progress: Progress, id: StepId) {
   return progress.steps.find(step => step.id === id)!;
+}
+
+/** 段配方（StepIdV2）进度目标的路由；旧拍照点配方用上面的 targetPath。 */
+export function targetPathV2(target: ProgressTargetV2) {
+  switch (target.page) {
+    case "capture": return "/recipe/capture";
+    case "segments": return "/recipe/segments";
+    case "corridor": return corridorPath(target.camera);
+    case "calibration": return "/recipe/calibration";
+    case "validation": return "/recipe/validation";
+    case "camera": return "/camera";
+  }
+}
+
+/** 段配方的进度步骤；后端没输出该步骤时为 undefined。 */
+export function stepOfV2(progress: ProgressV2, id: StepIdV2) {
+  return progress.steps.find(step => step.id === id);
 }
 
 /** 人工期望只区分“合格”与具体异常类型；合格样本的实际 OK 与 OK·局部超差都算符合。 */

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import RecipeEditor from "../src/features/recipe/components/RecipeEditor";
-import { workspaceView } from "./fixtures";
+import { burstRecipe, workspaceView } from "./fixtures";
 
 it("候选与生产配方仅搜索半宽不同 → 只有搜索半宽标出与生产不同", () => {
   const production = workspaceView().workspace.doc;
@@ -21,4 +21,22 @@ it("配方默认位置名义值不为 0 → 出现量具确认件编号并提示
   fireEvent.change(screen.getByRole("textbox", { name: "量具确认件编号" }), { target: { value: "GA-0315" } });
   expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ limits: expect.objectContaining({ gaugeRef: "GA-0315" }) }));
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("段配方默认参数 → 不展示触发方式与判定，直线与弯道各一套检测项，改弯道容差只进弯道、触发方式原值保留", () => {
+  const changed = vi.fn();
+  render(<RecipeEditor initial={burstRecipe()} onDraftChange={changed} />);
+  expect(screen.queryByRole("combobox", { name: "触发方式" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: "量具确认件编号" })).not.toBeInTheDocument();
+  const straight = within(screen.getByRole("region", { name: "直线段默认检测项" }));
+  const corner = within(screen.getByRole("region", { name: "弯道段默认检测项" }));
+  expect(straight.getByRole("switch", { name: "检胶偏" })).toBeInTheDocument();
+  expect(corner.queryByRole("switch", { name: "检胶偏" })).not.toBeInTheDocument();
+
+  fireEvent.change(corner.getByRole("spinbutton", { name: "帧数容差" }), { target: { value: "2" } });
+
+  const draft = changed.mock.lastCall![0];
+  expect(draft.segmentDefaults.corner.tolerance).toBe(2);
+  expect(draft.segmentDefaults.straight.tolerance).toBe(1);
+  expect(draft.triggerMode).toBe("fly");
 });

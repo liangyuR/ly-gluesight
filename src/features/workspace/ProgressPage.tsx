@@ -9,13 +9,21 @@ import { teachingTasks } from "./teachingTasks";
 import { returnState } from "./returnNavigation";
 import { teachingAction } from "./TeachingProgress";
 import { PlcParamsPanel } from "./PlcParams";
+import PlanProgressPage from "./PlanProgress";
 import { useSiteStatus } from "../cycle/api";
 import type { StepId } from "./types";
 
 const actions: Record<string, string> = { "/recipe/capture": "查看采集", "/recipe/geometry": "配置参数", "/recipe/teach": "查看示教", "/recipe/overview": "查看总览", "/recipe/validation": "查看验证与发布" };
 const subLabels: Partial<Record<StepId, string>> = { calibration: "标定", publish: "发布" };
 
+/** 段配方（有 plan）显示新步骤与计划导出，旧拍照点配方保持原样。 */
 export default function ProgressPage() {
+  const { data } = useWorkspace();
+  return data?.plan ? <PlanProgressPage /> : <LegacyProgressPage />;
+}
+
+/** 旧拍照点模型的进度页（行为不变）。 */
+function LegacyProgressPage() {
   const { data, doc } = useWorkspace();
   const location = useLocation();
   const site = useSiteStatus();

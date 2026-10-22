@@ -5,10 +5,17 @@ import { Copy, Plus, Search, Trash2 } from "lucide-react";
 import { Button, Dialog, EmptyState, IconButton, NumberField, TextField } from "qing-steel";
 import { desktopAvailable } from "../../lib/desktop";
 import { recipeApi, type UnavailableRecipe } from "../cycle/api";
-import type { RecipeDoc } from "../cycle/types";
+import type { RecipeDoc, RecipeSummary } from "../cycle/types";
+import { planScaleText, planTotals } from "../plan/scale";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, Notice, Panel, WorkspaceBar } from "./components";
+
+/** 段配方的规模（段数、ΣN_exp ± Σtol）：有候选时取候选，否则取已发布配方的摘要；旧拍照点配方（没有段）返回 null。 */
+function burstScale(draft: RecipeDoc | undefined, production: RecipeSummary | undefined) {
+  if (draft) return draft.segments?.length ? { segmentCount: draft.segments.length, ...planTotals(draft) } : null;
+  return production?.segmentCount ? { segmentCount: production.segmentCount, expectedTotal: production.expectedTotal ?? null, toleranceTotal: production.toleranceTotal ?? 0 } : null;
+}
 
 export default function LibraryPage() {
   const {list,drafts,unavailable,selectedId,select,clearSelection,reloadList,busy,setError} = useWorkspace();
@@ -105,12 +112,12 @@ export default function LibraryPage() {
   const visible = ids.map(id => {
     const production = list.find(r => r.id === id);
     const draft = drafts.find(w => w.doc.id === id);
-    return {id,production,draft,name:draft?.doc.name ?? production?.name ?? id};
+    return {id,production,draft,name:draft?.doc.name ?? production?.name ?? id,scale:burstScale(draft?.doc,production)};
   }).filter(r => (r.id + r.name + (r.draft?.doc.productCode ?? r.production?.productCode)).toLowerCase().includes(search.trim().toLowerCase()));
   return <div className="wp-page"><WorkspaceBar /><div className="wp-actions"><TextField className="wp-library-search" aria-label="搜索配方" placeholder="编号、名称或产品代码" leading={<Search size={16} aria-hidden="true" />} value={search} onChange={e => setSearch(e.target.value)} /><span className="spacer" /><Button variant="filled" leadingIcon={<Plus size={16} />} disabled={!desktopAvailable() || busy || working} onClick={() => void prepare()}>新建配方</Button></div>
     {!desktopAvailable() && <Notice title="配方操作需要桌面后端" tone="warn">本页不会在浏览器中创建、保存或发布生产配置。</Notice>}
     <div className="wp-library-grid">{visible.map(r => <Panel key={r.id} title={r.name} detail={r.id} className={"wp-recipe-card " + (r.id === selectedId ? "selected" : "")} actions={<Badge tone="neutral">飞拍</Badge>}>
-      <div className="wp-actions"><Badge tone={r.production ? "ok" : "warn"}>{r.production ? "已发布 v" + r.production.version : "未发布"}</Badge>{r.draft && <Badge>候选 v{r.draft.doc.version}</Badge>}{r.draft?.pending && <Badge tone="warn">待生效</Badge>}</div><p className="muted mono">代码 {r.draft?.doc.productCode ?? r.production?.productCode} · {(r.draft?.doc.shots.length ?? r.production?.shotCount) + " 个拍照点"}</p>{r.production && <p className="muted mono">PLC：产品 {r.production.productCode} · 计划 {r.production.planVersion} · {r.production.triggerCount === null ? "触发数无法计算" : r.production.triggerCount + " 次触发"}</p>}
+      <div className="wp-actions"><Badge tone={r.production ? "ok" : "warn"}>{r.production ? "已发布 v" + r.production.version : "未发布"}</Badge>{r.draft && <Badge>候选 v{r.draft.doc.version}</Badge>}{r.draft?.pending && <Badge tone="warn">待生效</Badge>}</div><p className="muted mono">代码 {r.draft?.doc.productCode ?? r.production?.productCode} · {r.scale ? planScaleText(r.scale) : (r.draft?.doc.shots.length ?? r.production?.shotCount) + " 个拍照点"}</p>{r.production && <p className="muted mono">PLC：产品 {r.production.productCode} · 计划 {r.production.planVersion} · {r.scale ? (r.production.triggerCount === null ? "shotCount 待标定" : "shotCount " + r.production.triggerCount) : r.production.triggerCount === null ? "触发数无法计算" : r.production.triggerCount + " 次触发"}</p>}
       <div className="wp-actions"><Button variant="filled" disabled={blocked} onClick={()=>void open(r.id)}>继续配置</Button><IconButton title="复制配方" aria-label={"复制配方 " + r.id} disabled={blocked} onClick={() => void prepare(r.id)}><Copy size={16} /></IconButton><IconButton title="删除配方" aria-label={"删除配方 " + r.id} disabled={blocked || !!r.draft?.pending} onClick={() => {setDeleting(r.id);setRemovedId(null);setDialogError("");}}><Trash2 size={16} /></IconButton></div>
     </Panel>)}{visibleUnavailable.map(r => <Panel key={"unavailable:"+r.fileName} title={r.name || r.id || r.fileName} detail={r.fileName} className="wp-recipe-card" actions={<Badge tone="warn">不可用</Badge>}>
       <p className="muted">文件格式 {r.schemaVersion ?? "未知"} · 当前格式 {r.currentSchemaVersion}</p>

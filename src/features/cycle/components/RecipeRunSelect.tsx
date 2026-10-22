@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { Select } from "qing-steel";
+import { planScaleText } from "../../plan/scale";
 import { targetLinks } from "../readiness";
 import type { RecipeOption } from "../types";
 
@@ -15,7 +16,8 @@ export default function RecipeRunSelect({ options, value, onChange, disabled }: 
   const items = (options ?? []).map((r) => ({
     value: r.id,
     disabled: !r.runnable,
-    label: `${r.id} · 代码 ${r.productCode} · N=${r.shotCount}${r.runnable ? (r.waiting ? `（${r.waiting}）` : "") : `（不可运行：${r.reason ?? "原因未知"}）`}`,
+    // 段配方显示段数与 ΣN_exp ± Σtol（待标定显示“待标定”），旧拍照点配方显示拍照点数
+    label: `${r.id} · 代码 ${r.productCode} · ${r.segmentCount ? planScaleText({ segmentCount: r.segmentCount, expectedTotal: r.expectedTotal, toleranceTotal: r.toleranceTotal }) : `N=${r.shotCount}`}${r.runnable ? (r.waiting ? `（${r.waiting}）` : "") : `（不可运行：${r.reason ?? "原因未知"}）`}`,
   }));
   return (
     <>

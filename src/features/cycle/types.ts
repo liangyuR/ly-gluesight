@@ -490,6 +490,11 @@ export interface RecipeOption {
   version: number;
   productCode: number;
   shotCount: number;
+  /** 以下为段配方字段（后端 readiness 输出后才有；旧后端不带，旧配方 segmentCount 为 0 或缺省）：显示 ΣN_exp，不再用 shotCount */
+  segmentCount?: number;
+  /** ΣN_exp；待标定为 null */
+  expectedTotal?: number | null;
+  toleranceTotal?: number;
   published: boolean;
   runnable: boolean;
   reason: string | null;
