@@ -60,6 +60,9 @@ pub struct Fields {
     pub camera: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view: Option<u8>,
+    /// 段配方：事件所属帧组序号（与 camera 一起定位一帧）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

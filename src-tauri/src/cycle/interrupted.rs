@@ -45,6 +45,7 @@ pub(super) fn part(interrupted: &Interrupted, records: &[Record], recipe: impl F
         delivery: PlcDelivery { state: PlcDeliveryState::Failed, updated_at: now, message: Some("检测进程中断，结果未回写 PLC".into()) },
         source: interrupted.site.source,
         sample: None,
+        burst: None,
     }
 }
 

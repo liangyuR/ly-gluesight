@@ -195,6 +195,7 @@
 
 - 问题：`part_shots` PK(part_id,k)、UNIQUE(shot_id)、view 限 1–3（store.rs:558-625）；规格 §3/§4/§6 要记录每台相机每一帧、帧组、段、不完整组、未检/未分段区域。
 - 采用：C5（G3）新增 `part_frames` 表和 `parts` 新列（expected_total、tolerance_total、device_triggers、camera_frames、flags），DB_VERSION 8→9（D-0：备份后重建）。`part_shots`、`part_points`、`trigger_mode` 列保留，旧配方记录照旧写入。
+- C5 落地细节：`parts` 另加 `burst_judgement` 列存整份区域判定；`part_frames` 主键 (part_id, camera, seq)，入库时帧数不要求等于预期，但 (camera, seq) 唯一、相机属于计划相机、指标身份与帧一致，摘要结论与区域判定相同；原图引用按 (camera, seq) 只增不换。审计 spool FORMAT 3→4，原图引用 `files[].frame` 有值即段配方帧（不受 k < 64、视角 1–3 限制）。录制文件名 `{相机}_s{seq:06}.pgm`，part.json 增加 `missingFrames`（相机没出图，只追溯，录制仍可完整）与 `rawDropped`（录制队满没录，证据 Incomplete）。历史重判 `Overrides` 增加 `straight` / `corner`（按段类型覆盖胶宽上 / 下允差与帧内允许超差长度，`maxGapLen` 作用于每帧），用当前候选重判时计划身份或走廊、当量、标定、检测参数变化跳过并记 LayoutChanged，重判结果 `changes[].flags` 带出整件标记；CSV 末尾增加 ΣN_exp、Σtol、各相机帧数、deviceTriggers、标记五列；时间线 Entry 与运行日志字段增加 `seq`。
 
 ### D-SB-30 发布包与标定键
 
@@ -332,7 +333,7 @@
 | `IMAGE_BUDGET_PER_CAMERA` | 256 MiB（P1 核对后保持） | FramePool 每台相机在途图像字节上限（C2）；1280×1024 单字节灰度每帧 1,310,720 B，即 204 帧、25 Hz 下 8.2 s 积压（原写“约 190 帧、7.6 s”是估算，P1 校正）；只作用于 MVS 回调来源。预算满时回调丢弃该帧并记缺帧（不中断回调）。 |
 | `FRAME_QUEUE` | 1024 条 | 原 64；内存已由预算封顶 |
 | `MEASURE_QUEUE` | 1024 条 | 原 32；满时该帧记 Unmeasured |
-| 录制队列 | 1024 条 | 原 48；满时该帧原图不录，part.json 记 rawDropped，证据状态 Incomplete |
+| 录制队列 | 1024 条 | 段配方按帧计（C5 `BURST_QUEUE`）；满时该帧原图不录，part.json 记 rawDropped，证据状态 Incomplete。旧拍照点配方仍为 48 组（旧路径行为不变） |
 | 示教写盘 `MAX_FRAMES_PER_CAMERA` | 8192 条 | 原 `MAX_TRIGGERS = 64`；满时该帧记 QueueFull 告警，不判失败 |
 | `MEASURE_WORKERS` | 4（P1 实测；运行时取 min(4, 逻辑核 − 2)，至少 1） | 现为 `(逻辑核 / 2).clamp(2, 4)`（measure.rs:388）；C4 改用本值。现场机必须重跑 7.1 的探针后再确认 |
 

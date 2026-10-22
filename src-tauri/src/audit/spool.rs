@@ -11,8 +11,9 @@ const PROBE_TEMPORARY: &str = ".health-create.tmp";
 const PROBE_COMMITTED: &str = ".health-commit";
 /// spool 文件格式。2：文件为 {"format":2,"event":…}，测点位置可空（无位置基准）、新增超出检测范围、帧去掉 locateFailed。
 /// 3：帧的各视图结果加特征定位位姿（viewResults[].pose）。
+/// 4：检测记录加段配方的帧与区域记录（burst），原图引用加段配方帧身份（files[].frame）。
 /// 其他版本或没有 format 的是旧软件留下的文件：不兼容（D-0），拒绝就绪并提示清理，不猜测迁移。
-const FORMAT: u32 = 3;
+const FORMAT: u32 = 4;
 
 #[derive(serde::Serialize)]
 struct Envelope<'a> {

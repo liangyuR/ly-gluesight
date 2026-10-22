@@ -2499,7 +2499,7 @@ mod tests {
                 drain_ms: None, frames: &[], frames_expected: recipe.shot_count(), frames_received: recipe.shot_count(),
                 triggers: recipe.shot_count() as u64, table: None, software_version: "test", cycle_id: Some(cycle),
                 bundle_id: None, delivery: &store::PlcDelivery::default(), shots: &shots,
-                source: store::RecordSource::OfflineCandidate, sample: None,
+                source: store::RecordSource::OfflineCandidate, sample: None, burst: None,
             })
         };
         let doc = crate::recipe::samples().remove(1);

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -13,9 +13,15 @@ use crate::frame::{CounterSource, Frame, FrameImage};
 use crate::judge::Verdict;
 use crate::recipe::{valid_camera_id, Recipe};
 use crate::settings::{CycleSettings, RecordMode};
-use crate::store::{HistoryScope, RecordSource};
+use crate::store::{FrameKey, HistoryScope, RecordSource};
 
+/// 旧拍照点模型的录制队列：按组（一个拍照点的 1 或 3 个视角）计，行为不变。
 const QUEUE: usize = 48;
+/// 段配方的录制队列：按帧计（D-SB-32），只防失控；图像内存由 FramePool 的每相机字节预算封顶。
+/// 队满时该帧原图不录，part.json 记 rawDropped，证据状态 Incomplete，不影响结论。
+const BURST_QUEUE: usize = 1024;
+/// 段配方逐帧写盘错误写进录制结果的条数上限；其余只在 part.json 的 frames 里。
+const BURST_FRAME_ERRORS: usize = 8;
 const PENDING_SWEEP_LIMIT: usize = 64;
 const PENDING_FILE_LIMIT: usize = 256;
 
@@ -51,6 +57,9 @@ pub struct RecordedRawFile {
     pub file: String,
     pub width: u32,
     pub height: u32,
+    /// 段配方的帧身份 (计划相机下标, seq)；有值时 k、view 不用（为 0）。旧拍照点模型为 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<FrameKey>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -100,6 +109,49 @@ struct FrameGroup {
     images: Vec<(FrameMeta, Arc<FrameImage>)>,
 }
 
+/// 段配方一帧的录制元数据（part.json 的 frames）。camera 是计划相机下标，与 IPC 的 FrameRecord.camera 同一口径。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BurstFrameMeta {
+    cycle_id: String,
+    bundle_id: Option<String>,
+    recipe_revision: String,
+    session: u64,
+    camera: usize,
+    camera_id: String,
+    cam: u8,
+    seq: u64,
+    file: String,
+    ts: i64,
+    counter: CounterSource,
+    frame_counter: u64,
+    trigger_counter: u64,
+    lost_packets: u32,
+    manual: bool,
+    width: u32,
+    height: u32,
+    queued: bool,
+    available: bool,
+    error: Option<String>,
+}
+
+struct BurstFrameJob {
+    cycle_id: String,
+    pending: PathBuf,
+    meta: BurstFrameMeta,
+    image: Arc<FrameImage>,
+}
+
+/// 段配方录制的帧状态：按 (计划相机下标, seq) 记，缺帧在收尾时按“1..=最大 seq 内没到的帧”列出。
+struct BurstFrames {
+    cameras: Vec<String>,
+    frames: Vec<BurstFrameMeta>,
+    seen: BTreeSet<FrameKey>,
+    /// 录制队满或写入线程停止而没录的帧
+    dropped: Vec<FrameKey>,
+    drop_reason: Option<String>,
+}
+
 struct FinishJob {
     recording: Recording,
     target: Option<PathBuf>,
@@ -112,6 +164,7 @@ struct FinishJob {
 
 enum Msg {
     Frames(FrameGroup),
+    BurstFrame(BurstFrameJob),
     Finish(FinishJob),
     Prune { keep: u32, max_bytes: u64 },
 }
@@ -130,6 +183,8 @@ pub struct Recording {
     seen: HashSet<usize>,
     dropped: u32,
     errors: Vec<String>,
+    /// 段配方（配方 segments 非空）按相机帧录制；旧拍照点配方为 None
+    burst: Option<BurstFrames>,
 }
 
 pub struct Recorder {
@@ -171,6 +226,12 @@ impl Recorders {
 
     pub fn frame(&self, rec: &mut Recording, frame: &Frame, camera: &str, k: usize, ordinal: u64) {
         self.get(rec.scope).frame(rec, frame, camera, k, ordinal)
+    }
+
+    /// 段配方：按 (计划相机下标, seq) 录一帧。
+    #[allow(dead_code)] // C3 段配方生产节拍接入后去掉
+    pub fn burst_frame(&self, rec: &mut Recording, frame: &Frame, camera: usize, seq: u64) {
+        self.get(rec.scope).burst_frame(rec, frame, camera, seq)
     }
 
     pub fn finish(&self, rec: Recording, verdict: Verdict, reason: &str, settings: &CycleSettings) {
@@ -268,6 +329,13 @@ impl Recorder {
             });
             return None;
         }
+        let burst = recipe.is_burst().then(|| BurstFrames {
+            cameras: recipe.plan_cameras(),
+            frames: Vec::new(),
+            seen: BTreeSet::new(),
+            dropped: Vec::new(),
+            drop_reason: None,
+        });
         Some(Recording {
             scope: self.scope,
             started: ly_plc::now_ms(),
@@ -282,7 +350,74 @@ impl Recorder {
             seen: HashSet::new(),
             dropped: 0,
             errors: Vec::new(),
+            burst,
         })
+    }
+
+    /// 段配方：按 (计划相机下标, seq) 录一帧，文件名 `{相机}_s{seq:06}.pgm`。同一帧重复到达时保留先到的原图；
+    /// 录制队满（BURST_QUEUE 帧）或写入线程停止时该帧原图不录，记进 rawDropped，不影响检测结论。
+    pub fn burst_frame(&self, rec: &mut Recording, frame: &Frame, camera: usize, seq: u64) {
+        let Some(burst) = rec.burst.as_mut() else {
+            rec.errors.push("旧拍照点配方的录制不能按相机帧录制".into());
+            return;
+        };
+        let Some(camera_id) = burst.cameras.get(camera).filter(|id| valid_camera_id(id)).cloned() else {
+            rec.errors.push(format!("录制相机下标 {camera} 不在原配方的计划相机中"));
+            return;
+        };
+        let key = FrameKey { camera, seq };
+        if seq == 0 {
+            rec.errors.push(format!("相机 {camera_id} 的帧组序号为 0，不录制"));
+            return;
+        }
+        if !burst.seen.insert(key) {
+            rec.errors.push(format!("相机 {camera_id} 第 {seq} 帧重复录制，拒绝覆盖原图"));
+            return;
+        }
+        let Some(image) = frame.single_image() else {
+            rec.errors.push(format!("相机 {camera_id} 第 {seq} 帧原图不完整：实际 {} 幅图像", frame.images.len()));
+            return;
+        };
+        let mut meta = BurstFrameMeta {
+            cycle_id: rec.cycle_id.clone(),
+            bundle_id: rec.bundle_id.clone(),
+            recipe_revision: rec.recipe.revision_id.clone(),
+            session: frame.session,
+            camera,
+            cam: frame.cam,
+            seq,
+            file: format!("{camera_id}_s{seq:06}.pgm"),
+            camera_id,
+            ts: frame.ts,
+            counter: frame.counter,
+            frame_counter: frame.frame_counter,
+            trigger_counter: frame.trigger_counter,
+            lost_packets: frame.lost_packets,
+            manual: frame.manual,
+            width: image.width,
+            height: image.height,
+            queued: true,
+            available: false,
+            error: None,
+        };
+        let queue_error = if self.queued.try_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < BURST_QUEUE).then_some(n + 1)).is_err() {
+            Some(format!("录制队列已满（{BURST_QUEUE} 帧）"))
+        } else {
+            let job = BurstFrameJob { cycle_id: rec.cycle_id.clone(), pending: rec.dir.clone(), meta: meta.clone(), image: image.clone() };
+            if self.tx.send(Msg::BurstFrame(job)).is_err() {
+                self.queued.fetch_sub(1, Ordering::AcqRel);
+                Some("录制写入线程已停止".to_string())
+            } else {
+                None
+            }
+        };
+        if let Some(error) = queue_error {
+            meta.queued = false;
+            meta.error = Some(format!("{error}，本帧原图未录"));
+            burst.drop_reason.get_or_insert(error);
+            burst.dropped.push(key);
+        }
+        burst.frames.push(meta);
     }
 
     pub fn frame(&self, rec: &mut Recording, frame: &Frame, camera: &str, k: usize, ordinal: u64) {
@@ -408,6 +543,8 @@ fn notify(callback: &Option<RecordingCallback>, outcome: RecordingOutcome) {
 #[derive(Default)]
 struct WriteState {
     results: HashMap<(usize, u8), Result<(), String>>,
+    /// 段配方逐帧写盘结果；失败原因只在这里，收尾时汇总，不逐帧进 errors
+    frame_results: HashMap<FrameKey, Result<(), String>>,
     errors: Vec<String>,
     retention_errors: Vec<String>,
     retention_blocked: bool,
@@ -444,6 +581,12 @@ fn writer(root: PathBuf, rx: Receiver<Msg>, queued: Arc<AtomicUsize>, callback: 
                     }
                     state.results.insert((meta.k, meta.view), result);
                 }
+                queued.fetch_sub(1, Ordering::AcqRel);
+            }
+            Msg::BurstFrame(job) => {
+                let state = cycles.entry(job.cycle_id).or_default();
+                let result = save_raw(&job.pending.join(&job.meta.file), &job.image);
+                state.frame_results.insert(FrameKey { camera: job.meta.camera, seq: job.meta.seq }, result);
                 queued.fetch_sub(1, Ordering::AcqRel);
             }
             Msg::Finish(mut job) => {
@@ -496,6 +639,81 @@ fn write_metadata(path: &Path, meta: &serde_json::Value) -> Result<(), String> {
     std::fs::rename(temp, path).map_err(|e| format!("提交 part.json 失败：{e}"))
 }
 
+/// 写盘后核对一张原图：是普通文件（不是 reparse point）、长度与录制尺寸相符、能解码且解码尺寸一致。
+fn verify_raw(path: &Path, width: u32, height: u32) -> Result<(), String> {
+    std::fs::symlink_metadata(path).map_err(|e| format!("已写入原图不可用：{e}"))
+        .and_then(|meta| {
+            #[cfg(windows)]
+            { use std::os::windows::fs::MetadataExt;
+              if meta.file_attributes() & 0x400 != 0 { return Err("原图路径不能是 reparse point".into()); } }
+            let header = format!("P5\n{width} {height}\n255\n");
+            let expected = header.len() as u64 + u64::from(width) * u64::from(height);
+            if !meta.is_file() || meta.file_type().is_symlink() || meta.len() != expected {
+                Err("原图路径不是普通文件或文件长度与录制尺寸不符".into())
+            } else {
+                let image = image::open(path).map_err(|error| format!("原图解码失败：{error}"))?;
+                if image.width() != width || image.height() != height {
+                    return Err("原图解码尺寸与录制尺寸不符".into());
+                }
+                Ok(())
+            }
+        })
+}
+
+/// 段配方的 part.json：缺帧（1..=最大 seq 内某台相机没到的帧，即相机没出图）列进 missingFrames，只供追溯、不算录制错误；
+/// 录制队满没录的帧列进 rawDropped，记一条录制错误（证据 Incomplete，不影响检测结论）。
+fn burst_metadata(rec: &mut Recording, burst: &BurstFrames, verdict: Verdict, reason: &str) -> serde_json::Value {
+    let groups = burst.seen.iter().map(|key| key.seq).max().unwrap_or(0);
+    let missing: Vec<FrameKey> = (1..=groups)
+        .flat_map(|seq| (0..burst.cameras.len()).map(move |camera| FrameKey { camera, seq }))
+        .filter(|key| !burst.seen.contains(key))
+        .collect();
+    if let Some(drop_reason) = &burst.drop_reason {
+        rec.errors.push(format!("{drop_reason}：{} 帧原图未录，见 part.json 的 rawDropped", burst.dropped.len()));
+    }
+    json!({
+        "cycleId": rec.cycle_id, "bundleId": rec.bundle_id, "recipeRevision": rec.recipe.revision_id,
+        "startedTs": rec.started, "sn": rec.sn, "mode": rec.mode, "verdict": verdict, "reason": reason,
+        "recipe": &*rec.recipe, "cameras": burst.cameras, "groupCount": groups,
+        "missingFrames": missing, "rawDropped": burst.dropped, "droppedFrames": burst.dropped.len(),
+        "frames": burst.frames, "available": false, "errors": rec.errors,
+    })
+}
+
+/// 段配方逐帧核对写盘结果，写成的帧按 (camera, seq) 列进录制结果。没入队的帧已在 rawDropped 里汇总；
+/// 写盘失败的帧只把前 BURST_FRAME_ERRORS 条写进录制错误，其余汇总成一条，逐帧原因留在 part.json 的 frames。
+fn burst_files(root: &Path, actual_dir: &Path, burst: &mut BurstFrames, results: &mut HashMap<FrameKey, Result<(), String>>,
+    files: &mut Vec<RecordedRawFile>, errors: &mut Vec<String>) {
+    let mut failures = 0usize;
+    for frame in burst.frames.iter_mut().filter(|frame| frame.queued) {
+        let key = FrameKey { camera: frame.camera, seq: frame.seq };
+        let path = actual_dir.join(&frame.file);
+        let result = match results.remove(&key) {
+            Some(Ok(())) => verify_raw(&path, frame.width, frame.height).and_then(|()| {
+                path.strip_prefix(root).map(|p| p.to_string_lossy().replace('\\', "/")).map_err(|error| format!("原图路径不在录制根目录：{error}"))
+            }),
+            Some(Err(error)) => Err(error),
+            None => Err("原图未取得写入成功确认".into()),
+        };
+        match result {
+            Ok(file) => {
+                frame.available = true;
+                files.push(RecordedRawFile { k: 0, view: 0, file, width: frame.width, height: frame.height, frame: Some(key) });
+            }
+            Err(error) => {
+                failures += 1;
+                if failures <= BURST_FRAME_ERRORS {
+                    errors.push(format!("{}：{error}", frame.file));
+                }
+                frame.error = Some(error);
+            }
+        }
+    }
+    if failures > BURST_FRAME_ERRORS {
+        errors.push(format!("另有 {} 帧原图未确认写入，见 part.json 的 frames", failures - BURST_FRAME_ERRORS));
+    }
+}
+
 fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release: Option<&RecordingRelease>) -> RecordingOutcome {
     let FinishJob { recording: mut rec, target, verdict, reason, keep, max_bytes, in_use } = job;
     rec.errors.append(&mut state.errors);
@@ -515,25 +733,31 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
             state: RecordingState::NotRetained,
         };
     }
-    let planned: Vec<_> =
-        rec.recipe.shots.iter().enumerate().map(|(k, shot)| json!({"k": k, "shotId": shot.id, "camera": shot.camera, "selectedView": shot.view})).collect();
-    let missing: Vec<_> = rec
-        .recipe
-        .shots
-        .iter()
-        .enumerate()
-        .filter(|(k, _)| !rec.frames.iter().any(|frame| frame.k == *k))
-        .map(|(k, shot)| json!({"k": k, "shotId": shot.id}))
-        .collect();
-    if !missing.is_empty() {
-        rec.errors.push(format!("{} 个计划拍照点没有录制原图", missing.len()));
-    }
-    let mut meta = json!({
-        "cycleId": rec.cycle_id, "bundleId": rec.bundle_id, "recipeRevision": rec.recipe.revision_id,
-        "startedTs": rec.started, "sn": rec.sn, "mode": rec.mode, "verdict": verdict, "reason": reason,
-        "recipe": &*rec.recipe, "plannedShots": planned, "missingShots": missing,
-        "frames": rec.frames, "droppedFrames": rec.dropped, "available": false, "errors": rec.errors,
-    });
+    let mut burst = rec.burst.take();
+    let mut meta = match burst.as_ref() {
+        Some(burst) => burst_metadata(&mut rec, burst, verdict, &reason),
+        None => {
+            let planned: Vec<_> =
+                rec.recipe.shots.iter().enumerate().map(|(k, shot)| json!({"k": k, "shotId": shot.id, "camera": shot.camera, "selectedView": shot.view})).collect();
+            let missing: Vec<_> = rec
+                .recipe
+                .shots
+                .iter()
+                .enumerate()
+                .filter(|(k, _)| !rec.frames.iter().any(|frame| frame.k == *k))
+                .map(|(k, shot)| json!({"k": k, "shotId": shot.id}))
+                .collect();
+            if !missing.is_empty() {
+                rec.errors.push(format!("{} 个计划拍照点没有录制原图", missing.len()));
+            }
+            json!({
+                "cycleId": rec.cycle_id, "bundleId": rec.bundle_id, "recipeRevision": rec.recipe.revision_id,
+                "startedTs": rec.started, "sn": rec.sn, "mode": rec.mode, "verdict": verdict, "reason": reason,
+                "recipe": &*rec.recipe, "plannedShots": planned, "missingShots": missing,
+                "frames": rec.frames, "droppedFrames": rec.dropped, "available": false, "errors": rec.errors,
+            })
+        }
+    };
     match std::fs::create_dir_all(&rec.dir) {
         Ok(()) => {
             if let Err(error) = write_metadata(&rec.dir.join("part.json"), &meta) {
@@ -559,28 +783,12 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
     let actual_dir = if promoted { target } else { rec.dir.clone() };
     let directory = actual_dir.is_dir().then_some(actual_dir.clone());
     let mut files = Vec::new();
+    if let Some(burst) = burst.as_mut() {
+        burst_files(root, &actual_dir, burst, &mut state.frame_results, &mut files, &mut rec.errors);
+    }
     for frame in &mut rec.frames {
         let result = match state.results.remove(&(frame.k, frame.view)) {
-            Some(Ok(())) => {
-                let path = actual_dir.join(&frame.file);
-                std::fs::symlink_metadata(&path).map_err(|e| format!("已写入原图不可用：{e}"))
-                    .and_then(|meta| {
-                        #[cfg(windows)]
-                        { use std::os::windows::fs::MetadataExt;
-                          if meta.file_attributes() & 0x400 != 0 { return Err("原图路径不能是 reparse point".into()); } }
-                        let header = format!("P5\n{} {}\n255\n", frame.width, frame.height);
-                        let expected = header.len() as u64 + u64::from(frame.width) * u64::from(frame.height);
-                        if !meta.is_file() || meta.file_type().is_symlink() || meta.len() != expected {
-                            Err("原图路径不是普通文件或文件长度与录制尺寸不符".into())
-                        } else {
-                            let image = image::open(&path).map_err(|error| format!("原图解码失败：{error}"))?;
-                            if image.width() != frame.width || image.height() != frame.height {
-                                return Err("原图解码尺寸与录制尺寸不符".into());
-                            }
-                            Ok(())
-                        }
-                    })
-            }
+            Some(Ok(())) => verify_raw(&actual_dir.join(&frame.file), frame.width, frame.height),
             Some(Err(error)) => Err(error),
             None => Err(frame.error.clone().unwrap_or_else(|| "原图未取得写入成功确认".into())),
         };
@@ -591,7 +799,7 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
                 match relative {
                     Ok(file) => {
                         frame.available = true;
-                        files.push(RecordedRawFile { k: frame.k, view: frame.view, file, width: frame.width, height: frame.height });
+                        files.push(RecordedRawFile { k: frame.k, view: frame.view, file, width: frame.width, height: frame.height, frame: None });
                     }
                     Err(error) => {
                         frame.error = Some(format!("原图路径不在录制根目录：{error}"));
@@ -617,7 +825,10 @@ fn finish_recording(root: &Path, job: FinishJob, mut state: WriteState, release:
     let mut retention_errors = state.retention_errors;
     if !state.retention_blocked { retention_errors.extend(prune(root, keep as usize, max_bytes, &protected, release)); }
     let mut available = promoted && directory.is_some() && !files.is_empty() && rec.errors.is_empty();
-    meta["frames"] = serde_json::to_value(&rec.frames).unwrap();
+    meta["frames"] = match &burst {
+        Some(burst) => serde_json::to_value(&burst.frames).unwrap(),
+        None => serde_json::to_value(&rec.frames).unwrap(),
+    };
     meta["available"] = json!(available);
     meta["errors"] = json!(rec.errors);
     meta["retentionErrors"] = json!(retention_errors);

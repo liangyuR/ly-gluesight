@@ -36,13 +36,14 @@ mod tests {
                 verdict: Verdict::ErrInspect, plc_code: 90, fault_code: 0, reason: "测试历史".into(), drain_ms: None,
                 frames_expected: 4, frames_received: 4, retest_of: None, cycle_id: Some("offline-candidate-cycle".into()),
                 bundle_id: None, delivery: PlcDelivery::default(), source: RecordSource::OfflineCandidate,
-                sample: set.reference("p02") },
+                sample: set.reference("p02"), flags: None, burst: None },
             judgement: judge::judge(&recipe, &table), frames: Vec::new(), triggers: 4, software_version: "test".into(),
             points: None, retests: Vec::new(), shots: recipe.shots.iter().enumerate().map(|(k, shot)| PartShot {
                 k, shot_id: shot.id.clone(), camera: shot.camera.clone(), view: shot.view, session: None, ordinal: None,
                 frame_counter: None, trigger_counter: None, status: FrameStatus::Done, error: None, score: None, ms: None, raw_files: Vec::new(),
             }).collect(),
             recording: RecordingEvidence { state: RecordingState::Off, ..Default::default() },
+            burst: None,
         };
         (recipe, detail)
     }

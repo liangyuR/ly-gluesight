@@ -107,6 +107,12 @@ impl Sink for TestSink {
         self.store.update_shot_raw_files(cycle, k, files)
     }
 
+    fn frame_files(&mut self, cycle: &str, files: &BTreeMap<FrameKey, String>) -> Result<bool, String> {
+        self.raw_writes += 1;
+        fault(&mut self.fail_raw)?;
+        self.store.update_frame_raw_files(cycle, files)
+    }
+
     fn recording(&mut self, cycle: &str, evidence: &RecordingEvidence) -> Result<bool, String> {
         self.recording_writes += 1;
         fault(&mut self.fail_recording)?;
@@ -159,6 +165,7 @@ fn part(cycle: &str, sn: u32) -> RecordedPart {
         delivery: delivery(PlcDeliveryState::Pending, 10),
         shots,
         source: crate::store::RecordSource::Real, sample: None,
+        burst: None,
     }
 }
 
@@ -178,7 +185,7 @@ fn outcome(cycle: &str, files: &[(usize, u8)], state: RecorderState) -> Recordin
                 height: 60,
                 view: *view,
                 file: format!("cycle_{cycle}/k{k:03}_P{}_cam1_v{view}.pgm", k + 1),
-
+                frame: None,
             })
             .collect(),
         errors: if matches!(state, RecorderState::Failed | RecorderState::Incomplete) {
@@ -729,16 +736,55 @@ fn durable_spool_restart_replays_no_reference_and_out_of_range_points_as_the_sam
     assert_eq!(sink.store.measurements(&HistoryQuery::default(), &[id], 1).unwrap()[0].table, table);
 }
 
-/// 升级前的 spool 文件（没有 format）不读不迁（D-0）：保留原文件，拒绝就绪并提示清空目录。
+/// 迁移（D-0）：升级前的 spool 文件——没有 format 的，或段配方帧记录之前的 format 3——不读不迁，
+/// 不能悄悄丢弃：保留原文件，拒绝就绪并提示清空目录。
 #[test]
-fn old_format_spool_file_is_kept_and_refuses_readiness_with_cleanup_hint() {
+fn spool_with_old_format_refuses_readiness() {
+    let event = serde_json::to_value(Event::Delivery("old".into(), delivery(PlcDeliveryState::Acknowledged, 5))).unwrap();
+    for (case, content) in [("没有 format", event.clone()), ("format 3", serde_json::json!({ "format": 3, "event": event }))] {
+        let dir = TestDir::new();
+        let path = dir.0.join("spool");
+        std::fs::create_dir_all(&path).unwrap();
+        let old = path.join(format!("{:020}.json", 1));
+        let legacy = serde_json::to_vec(&content).unwrap();
+        std::fs::write(&old, &legacy).unwrap();
+        let Err(error) = spool::Spool::open(path) else { panic!("{case}：旧格式 spool 不能就绪") };
+        assert!(error.contains("清空目录"), "{case}: {error}");
+        assert_eq!(std::fs::read(&old).unwrap(), legacy, "{case}");
+    }
+}
+
+/// 段配方（D-SB-29）：检测记录带每相机每帧记录经持久 spool 重启后入库，原图引用按 (camera, seq) 关联，
+/// 不受旧拍照点模型 k < 64、视角 1–3 的限制（帧组数 70），录制结果才算可用。
+#[test]
+fn burst_part_replays_from_spool_and_links_raw_files_by_camera_seq_beyond_shot_limits() {
     let dir = TestDir::new();
     let path = dir.0.join("spool");
-    std::fs::create_dir_all(&path).unwrap();
-    let old = path.join(format!("{:020}.json", 1));
-    let legacy = serde_json::to_vec(&Event::Delivery("old".into(), delivery(PlcDeliveryState::Acknowledged, 5))).unwrap();
-    std::fs::write(&old, &legacy).unwrap();
-    let Err(error) = spool::Spool::open(path) else { panic!("旧格式 spool 不能就绪") };
-    assert!(error.contains("清空目录"), "{error}");
-    assert_eq!(std::fs::read(&old).unwrap(), legacy);
+    let recipe = Arc::new(crate::store::burst_fixture::recipe());
+    let (judgement, burst) = crate::store::burst_fixture::record(&recipe, crate::store::burst_fixture::frames(70, &[(1, 2)]), None, Some(70));
+    let record = RecordedPart {
+        ts: 1234, sn: "SN-B70".into(), recipe: Some(recipe), judgement, drain_ms: None, frames: Vec::new(),
+        frames_expected: 4, frames_received: 70, triggers: 70, table: None, software_version: "audit-test".into(),
+        cycle_id: "burst-70".into(), bundle_id: None, delivery: delivery(PlcDeliveryState::NotRequired, 0), shots: Vec::new(),
+        source: RecordSource::Real, sample: None, burst: Some(burst),
+    };
+    let raw = |camera: usize, seq: u64| RecordedRawFile {
+        k: 0, view: 0, file: format!("cycle_burst-70/cam{}_s{seq:06}.pgm", camera + 1), width: 2, height: 1,
+        frame: Some(FrameKey { camera, seq }),
+    };
+    let mut recording = outcome("burst-70", &[], RecorderState::Complete);
+    recording.files = vec![raw(0, 1), raw(2, 70)];
+    let mut spool = spool::Spool::open(path.clone()).unwrap();
+    spool.append(&Event::Insert(Box::new(record))).unwrap();
+    spool.append(&Event::Recording(recording)).unwrap();
+    drop(spool);
+    let mut reopened = spool::Spool::open(path).unwrap();
+    let mut sink = dir.sink();
+    let (complete, notices) = replay_cycle(&mut reopened, "burst-70", &mut sink, 1).unwrap();
+    assert!(complete, "{notices:?}");
+    assert!(reopened.empty());
+    let detail = sink.detail("burst-70");
+    let linked: Vec<_> = detail.burst.unwrap().frames.into_iter().filter_map(|frame| frame.raw_file.map(|_| (frame.camera, frame.seq))).collect();
+    assert_eq!(linked, [(0, 1), (2, 70)]);
+    assert!(detail.recording.available, "{:?}", detail.recording.errors);
 }

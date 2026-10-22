@@ -15,6 +15,8 @@ export interface AppLogRecord {
   k?: number;
   camera?: string;
   view?: number;
+  /** 段配方：事件所属帧组序号（与 camera 一起定位一帧） */
+  seq?: number;
   stage?: string;
   data?: unknown;
 }

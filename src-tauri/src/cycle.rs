@@ -1835,7 +1835,7 @@ impl Machine {
         Ok(RecordedPart { ts: now_ms(), sn: sn.to_owned(), recipe, judgement: judgement.clone(),
             drain_ms, frames, frames_expected, frames_received: received, triggers, table,
             software_version: self.app.package_info().version.to_string(), cycle_id: cycle_id.clone(),
-            bundle_id: part.and_then(|p| p.bundle_id.clone()), delivery, shots, source, sample })
+            bundle_id: part.and_then(|p| p.bundle_id.clone()), delivery, shots, source, sample, burst: None })
     }
 
     fn record_without_part(&self, sn: &str, judgement: &Judgement) -> Result<(), String> {

@@ -117,7 +117,7 @@ mod tests {
         health.observe(HistoryScope::Real, &aborted(), 300);
         assert_eq!(health.alarm(HistoryScope::Real).map(|a| (a.consecutive, a.cycle_id)), Some((1, "bad".to_string())), "中止件不是写盘成功的证据，不能清除告警");
         let mut short = outcome("short", RecordingState::Incomplete, &["1 个计划拍照点没有录制原图"]);
-        short.files = vec![RecordedRawFile { k: 0, view: 1, file: "k000.pgm".into(), width: 1, height: 1 }];
+        short.files = vec![RecordedRawFile { k: 0, view: 1, file: "k000.pgm".into(), width: 1, height: 1, frame: None }];
         health.observe(HistoryScope::Real, &short, 400);
         assert_eq!(health.alarm(HistoryScope::Real), None, "少了几帧但其余原图已写成，写盘正常");
     }

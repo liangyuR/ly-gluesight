@@ -137,6 +137,7 @@ export interface RejudgeResult {
   skipped: number;
   limitHit: boolean;
   matrix: { from: Verdict; to: Verdict; count: number }[];
-  changes: { id: number; sn: string; ts: number; from: Verdict; to: Verdict; reason: string }[];
+  /** flags：段配方记录重判后的整件标记（检测不完整等与阈值无关，照常带出）；旧记录为 null 或缺省 */
+  changes: { id: number; sn: string; ts: number; from: Verdict; to: Verdict; reason: string; flags?: Flags | null }[];
   skipReasons: { id: number; sn: string; ts: number; reason: string }[];
 }
