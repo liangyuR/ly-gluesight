@@ -12,11 +12,12 @@
 
 ## 一、本轮范围与总原则
 
-- 本轮只做并行组 G0（WP00）、G1（A1/A2/A3/A5/P1/B1/C2/FE1/DOC1）、G2（A4/C1/FE2/FE3/FE4/FE5）。G3 及之后的包不做，也不提前实现它们的内容。
+- 决策补充原定本轮只做并行组 G0（WP00）、G1（A1/A2/A3/A5/P1/B1/C2/FE1/DOC1）、G2（A4/C1/FE2/FE3/FE4/FE5）。之后 G3（C4/C5/D1）、G4（C3/D2）、G5（D3/E1）、FE-WIRE（前端接入）和 DOC2（文档同步）依次在同一分支落地，各包相对计划的调整记在第九节；尚未做的是 E2（全流程验收与 3 × 25 Hz 压测门槛）。已落地的包以 git 历史为准。
 - 计划中的 F1（后端清理）、FE6（前端清理）取消。**旧拍照点模型的代码一律保留并停用，不删除**：
   - 不删除任何现有公开函数、类型、命令、前端组件；要换掉的在新路径旁新增，旧路径标 `#[deprecated]` 或注释“旧拍照点模型”，不改其行为。
   - 存量测试只删除被规格推翻、且在当前工作包范围内的用例（计划 `tests_to_delete_or_rewrite` 所列），改写成能防住新规则的测试；不属于当前包的不动。
 - 分段算法本轮只有 `Segmenter` 接口、`Unsegmented` 实现和合成序列回归入口；算法验证前整条胶路按“未分段”处理。
+- **提交署名**：决策补充写的是 `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`。各工作包由不同模型的会话实现，提交署名按**提交时所在会话的规则写实际执行的模型**（现有提交里有 Claude Opus 5.5、Claude Sonnet 5.5 等），不统一写成 Fable 5.1，也不改写已有提交历史；这条取代决策补充里“末尾一行”的字面写法，其余提交规范（中文、`type(scope): 摘要`、正文逐条列出新增测试及其保护的规则与删改的存量测试、不用 `git add -A`）不变。
 
 ## 二、多段配方的发布与运行
 
@@ -183,7 +184,7 @@
 ### D-SB-26 SCL 参考 FB 与现场程序
 
 - 问题：`phase1_plc.scl` 运动中 Delta > FrozenDeviceShots 和结束时计数不等都判 7006；`site/gluesight_site.scl` 达到计划数就停发、按“开始拍摄”边沿逐个出脉冲；规格 §0 使能为高时连续发脉冲，§5 SCL 去掉计数相等检查。
-- 采用：`phase1_plc.scl` 两处 7006 都删，INT#5 改为 6（DOC1）。`site/gluesight_site.scl` 不改，只在其 README 增加“协议 6 需要的改动点”一节（默认做法 5）。
+- 采用：`phase1_plc.scl` 两处 7006 都删，INT#5 改为 6（DOC1）。`site/gluesight_site.scl` 不改，只在其 README 增加“协议 6 需要的改动点”一节（默认做法 5）。 参考 FB 新件前置检查里对 `DeviceShots <= 0` 判 7004 的条件保留不改：PC 本身接受示教估算值 0–32767，所以用参考 FB 做示教时估算值须填大于 0 的整数，在协议文档 4.1 节第 2 条与 plc-table P10 注明（“文档注明”与“改 FB 判定”二选一，选前者；理由与回退见 P10）。
 
 ### D-SB-27 离线仿真
 
@@ -488,3 +489,12 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
     - **重判覆盖**：`RejudgeDialog` 的直线段 / 弯道段两行可填（5.1）。
     - **离线工况**：五个段配方工况已由 E1 在下拉与样本集白名单启用（`offline.ts`），核对与后端 `Scenario` 的名字和 `handshake()` 白名单一致，未改。
     - **合成图示教采集**：段配方整圈采集页在合成图离线环境下提供“合成图送一圈”（`offline_capture`，不带样本件），对应 E1 的合成图示教采集；旧拍照点配方的采集页不变（仍只接受样本集）。
+16. DOC2 文档同步（相对计划步骤的调整，旧路径一律保留）：
+    - **“退役 / 删除 / 取代”改成“停用 / 并存”**：计划里文档写“已退役（D-SB）”“删除 `test:e2e:fixture`”“被 D-SB 取代”的地方，一律改成“段模型下停用，旧拍照点配方仍按原规则”。`docs/discussions/fixture-position/final.md` 末尾加“段模型下停用”一节；`pnpm test:e2e:fixture` 与特征定位真引擎测试在 TESTING.md 里保留，标明只服务旧配方；`docs/architecture/p0-plan.md` 的 D-7、D-10、D-11、第 1.2 节和步 1 的校验行加“段配方下被 D-SB 取代，旧拍照点配方仍按本条”。
+    - **配方创建与存储文档**：`recipe-creation-workflow.md` 最前新增“段配方流程”（多轮标定、段模型、按相机走廊示教、新步骤 `capture → segments → corridor → calibration → validation → publish`），旧拍照点配方各节整节保留并在标题标明；`recipe-creation-progress.md` 新增段配方的进度与未做事项；`storage-layout.md` 增加段配方的采集轮次（`round.json`、`frames.jsonl`、PGM）、候选的 `calibration/<轮次>/`（`features.jsonl`、`boundaries.json`）、发布包 schema 4（`cameras/`）、按帧录制与审计 spool 格式 4，并新增“升级到段模型前”一节（先清空 `audit-spool/`）。
+    - **协议文档去掉“待 D1 / 待 C3”**：D1、C3 已落地，`plc-communication-protocol.md`（修订 4.1，HTML 同步重新生成）、`plc-s7-phase1.md`、`plc-table.md` 的“待 D1 / 待 C3”标注改成现行行为，并按配方类型分写：段配方走协议 6 的新行为，旧拍照点配方的示教采集（1–64、计数相等、失败 90/94）与生产节拍（缺帧 91、多帧 96）仍是协议 5 的行为。顺带修了 4.1 第 2 条前后矛盾的时态，以及“PC 在 ACK 时读取 deviceTriggers、不用它推下一件基线”只适用于段配方（段配方在 partEnd 时读取；旧配方在确认结果时读取并用来推基线，见 D-SB-7）。`plc-s7-phase1.md` 与 `plc-table.md` 不在 DOC2 计划的文件清单里，因为它们有同样的过期标注，一并修改。
+    - **参考 FB 的 `DeviceShots <= 0` 判 7004**：采用“文档注明、不改 FB 判定”，见 D-SB-26 与 plc-table P10。
+    - **测试文档**：`TESTING.md` 的 S7 专项改为进程内 S7Server 的命令（`plc_session` 用例已进默认测试，不再 `--include-ignored`），新增“段模型专项”（离线脉冲串工况、合成图采集与标定、3 × 25 Hz 吞吐门槛、升级前清空 audit-spool）；明确 `test:e2e:offline`、`test:e2e:log-replay`、`test:e2e:fixture` 与 `test:soak` 用 `recipe_template` 建新配方，而该模板现在是段配方，这些驱动脚本仍按旧拍照点流程，没有改写也没有重跑，留给 E2。`launch-core-flow-checklist.md` 的 2.1 / 5.5 / 5.7 / 5.8 保留旧配方的原结果，另加段配方行 2.1S / 5.5S / 5.7S / 5.8S（只写单测，结果“未验证”）；`backend-lightweight-tests.md` 加段模型的保护范围。
+    - **用户指南**：`guide.json` 的各章按段配方改写（段列表、检测项与默认参数、相机走廊示教、多轮标定、独立样本与发布、在线检测、历史、PLC 点表等），旧拍照点配方的做法收进各章的说明；截图仍是旧版，图注标“旧版截图 / 待更新”，版次改为 2026-10-23。`scripts/user-guide/build-guide.mjs` 封面里写死的“拍照点规划 · 中线示教”“四点飞拍”和阅读路线里的操作顺序，改为从 `guide.json` 的 `pathway`、`example`、`orderNote` 读取，没写时沿用原来的文字（用旧 `guide.json` 构建，输出与原 `index.html` 一致）。PDF（`pnpm guide:pdf`，需要本机浏览器）没有重新导出。
+    - **决策索引与依赖版本**：`docs/decisions/README.md` 加第四批（分段连拍）一行与待确认事项，依赖版本改为 lyFlow 1.1.5（`lyflow-client` v1.1.5，2026-10-21 发布）、qing-steel 0.9.0。
+    - **提交署名**：见第一节。

@@ -4,15 +4,17 @@
 
 - [工件边缘中心距检测方案](architecture/workpiece-edge-position.md)：以工件边为基准测胶条中心距的方案草案，配套 [方法与资料调研](research/glue-position-methods.md)。
 - [软件架构、一期可行性与实施路线](architecture/gluesight-software-architecture.html)：历史目标架构与实施估算、Agent 分工及 S7 实施进展；当前测试范围以测试说明为准。
-- [三相机硬件连接架构](architecture/gluesight-hardware-architecture.html)：PLC 硬件触发、三台相机、交换机、工控机与 Robot 的连接关系，可按链路高亮。注意：2026-10-10 确认现场是一台三目设备（SDK 中一个 Device、一次触发出三幅图），图中三台独立相机与三条线路待现场确认后更新，见 [P0 计划 1.2 节](architecture/p0-plan.md)。
-- [一期 P0 实施计划](architecture/p0-plan.md)：已定决策（含 D-11 三目相机）、步 0–7 与步 T 的顺序、范围与完成标准、历史问题跟踪与软件验证边界。
+- [三相机硬件连接架构](architecture/gluesight-hardware-architecture.html)：PLC 硬件触发、三台相机、交换机、工控机与 Robot 的连接关系，可按链路高亮。图中是三台独立相机，与分段连拍的段配方一致；只有旧拍照点配方才按一台三目设备建模，见 [P0 计划 1.2 节](architecture/p0-plan.md)。
+- [一期 P0 实施计划](architecture/p0-plan.md)：已定决策（含 D-11 三目相机；段配方下 D-7、D-10、D-11 被分段连拍取代，旧拍照点配方仍按原决策）、步 0–7 与步 T 的顺序、范围与完成标准、历史问题跟踪与软件验证边界。
+- [分段连拍飞拍决策记录](decisions/segment-burst.md)：段列表取代拍照点列表、三台独立相机共用一个触发、协议 6 的冲突与决策，IPC 契约、帧数口径、内存与队列，以及旧拍照点模型并存的规则。
+- [配方创建与多图示教](architecture/recipe-creation-workflow.md)与[当前进度](architecture/recipe-creation-progress.md)：段配方（多轮标定、相机走廊示教）与旧拍照点配方的流程；[资料目录与存储布局](architecture/storage-layout.md)。
 - [历史规划与实施记录](architecture/roadmap.md)：早期飞拍与随动规划，当前一期范围以软件架构图为准。
 
 ## 现场接入（[integration/](integration)）
 
-- [PLC 通讯协议 HTML 与时序图](integration/plc-communication-protocol.html)：可离线阅读，含单设备完整点表搜索及打印样式；三张时序图保持旧版，待协议检查完成后统一更新；另附 [Markdown 原文](integration/plc-communication-protocol.md)。
+- [PLC 通讯协议 HTML 与时序图](integration/plc-communication-protocol.html)：可离线阅读，协议版本 6，含完整点表搜索及打印样式，三张时序图已随协议 6 更新；另附 [Markdown 原文](integration/plc-communication-protocol.md)。
 - [一期 S7 握手契约与现场接入](integration/plc-s7-phase1.md)：DB 点表、事务与结果确认、故障恢复、计划导出与参考程序限制。
-- [PLC 交互表适配决策](decisions/plc-table.md)：协议 4（交互表 V1.0，S7-200 SMART、DB1）与协议 5（交互表 V1.1，S7-1200、DB4/DB2）的适配取舍、回退方式及待 PLC 工程师确认的问题清单。
+- [PLC 交互表适配决策](decisions/plc-table.md)：协议 4（交互表 V1.0，S7-200 SMART、DB1）、协议 5（交互表 V1.1，S7-1200、DB4/DB2）与协议 6（分段连拍，布局同协议 5）的适配取舍、回退方式及待 PLC 工程师确认的问题清单。
 - [PLC SCL 参考程序](../scripts/s7-handshake/phase1_plc.scl)与 [S7 测试 PLC](../scripts/s7-handshake/README.md)：可审查的 PLC 侧实现及回环报文测试服务。
 
 ## 测试（[testing/](testing)）
@@ -29,7 +31,7 @@
 
 ## 使用教程
 
-- [图文使用教程](user-guide/index.html)：`npm run guide:serve` 可本地预览。
+- [图文使用教程](user-guide/index.html)：`pnpm guide:serve` 可本地预览。教程文字已按段配方改写，截图仍是旧版，图注已标“旧版截图 / 待更新”。
 
 ## 其他
 

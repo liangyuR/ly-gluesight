@@ -2,6 +2,8 @@
 
 核对日期：2026-10-19。核对对象是 main `1f8b2f7` 依次合并下表 5 个 PR 后的集成状态，不是 main 本身：标“已修复”的条目、#97–#101 新增的测试、`cycle/admission.rs` 和离线端到端的实拍样本集夹具在 main 上都不存在。**本清单（PR #105）须在 #97–#101 全部合并后再合并**；其中任一 PR 被打回或改动行为，须同步修改对应条目的结果。
 
+**2026-10-23 补充（分段连拍飞拍）：** 本清单的 2.1、5.5、5.7、5.8 四条规则在**段配方**下变了，按旧拍照点配方得到的结果原样保留（旧配方行为不变，各条前加“旧拍照点配方”），另在各条后新增段配方的 2.1S、5.5S、5.7S、5.8S。新增行的验证方式只写单测，本次没有重跑，段配方的端到端核对待 E2，所以结果统一写“未验证”；其余条目没有为段配方重新核对。规则的取舍见 [分段连拍决策记录](../decisions/segment-burst.md)。
+
 | PR | 分支 | 核对所用提交 | 依赖它的条目 |
 | --- | --- | --- | --- |
 | #97 | `bugfix/capture-restart-session` | `d097c1f` | 2.5、6.8 |
@@ -37,7 +39,8 @@
 
 | # | 规则 | 验证方式 | 结果 |
 | --- | --- | --- | --- |
-| 2.1 | PLC 开始时锁定 1–64 次触发，PLC 结束且各相机收满才完整；一次触发每台相机一帧 | 实例：3 相机 × 12 次触发 = 36 个拍照点，完整；单测 `recipe_capture::tests::plc_start_latches_only_a_valid_count_once_and_preserves_it_on_duplicate_start`、`three_cameras_one_trigger_is_one_shot_with_an_image_per_camera_and_completes_only_together` | 通过 |
+| 2.1 | 旧拍照点配方：PLC 开始时锁定 1–64 次触发，PLC 结束且各相机收满才完整；一次触发每台相机一帧 | 实例：3 相机 × 12 次触发 = 36 个拍照点，完整；单测 `recipe_capture::tests::plc_start_latches_only_a_valid_count_once_and_preserves_it_on_duplicate_start`、`three_cameras_one_trigger_is_one_shot_with_an_image_per_camera_and_completes_only_together` | 通过 |
+| 2.1S | 段配方：PLC 开始请求的 `shotCount`/`deviceShots` 只是估算值，PC 记录但不核对、不限 1–64；PLC 使能为高时连续发脉冲，三台相机同时触发各出 1 帧；收到 partEnd、收尾窗口到期、已入队的帧写完即完整；某台缺帧、丢包、写盘队满只记缺帧与丢帧告警，不判整轮失败 | 单测 `recipe_capture::burst::tests::plc_estimate_of_zero_or_above_64_is_only_recorded_and_round_completes_on_actual_frames`、`camera_short_of_frames_completes_after_plc_end_and_drain_with_loss_alarm_only`、`lost_packet_budget_dropped_or_queue_full_frame_is_missing_with_alarm_and_round_completes`；`plc_session::tests::s7_wire_teaching_plan_arms_with_any_plc_counts_only_in_a_capture_transaction` | 未验证：单测覆盖，本表未重跑；段配方端到端待 E2 |
 | 2.2 | 采集事务走完结果、ACK 与释放握手（完成码 1），不生成检测记录、不计入 OK/NG | 实例：离线产线「整圈采集 … 完成，resultCode = 1」；E2E 断言 3 轮采集（示教 1 轮、验证样本 2 轮）后离线检测记录只有投产的 2 件 | 通过 |
 | 2.3 | 示教轮次不能作为独立验证样本 | 实例：`workspace_capture_sample` 用示教轮次被拒「示教采集不能同时作为独立验证样本」 | 通过 |
 | 2.4 | 异常轮次封锁其设备会话，重连建立新会话后才能重采，迟到旧帧被拒 | 单测 `failed_round_requires_a_new_session_and_rejects_late_old_session_frames_for_all_sources` | 通过 |
@@ -77,10 +80,13 @@
 | 5.2 | OK 与 OK_WITH_EXCURSION 都算合格（PLC 码 1/2，今日统计计为合格） | 实例：2 件 OK_WITH_EXCURSION，统计 ok=2 | 通过 |
 | 5.3 | 配方未发布就开工 | 见 1.2、1.3 | 通过 / 1.3 未运行 |
 | 5.4 | 人工选型号时 productCode 不符拒收 95 | 实例（#98 `8d5b0a1`）：修复前报 ERR 100「拍照计划不一致」；修复后 ERR 95「PLC 产品代码 3 与所选配方 NEW-1（产品代码 1）不一致」。单测 `cycle::admission::tests::product_code_checked_before_plan_compile_and_trigger_counts_before_plan_version` | 已修复（#98，D-CF-4） |
-| 5.5 | shotCount/deviceShots 与配方计划不符拒收 94；计划版本不符拒收 100 | 单测同上。修复前产品来源为 PLC 或人工时，数量不符都报 100，修复后改报 94 | 已修复（#98）。协议文档第 6 节仍写“设备计数不同步报 100”，待 plc-table 同步（D-CF-4） |
+| 5.5 | 旧拍照点配方：shotCount/deviceShots 与配方计划不符拒收 94；计划版本不符拒收 100 | 单测同上。修复前产品来源为 PLC 或人工时，数量不符都报 100，修复后改报 94 | 已修复（#98）。协议文档第 6 节仍写“设备计数不同步报 100”，待 plc-table 同步（D-CF-4） |
+| 5.5S | 段配方：shotCount 与 deviceShots 都必须等于 PC 当前计划的 ΣN_exp，不符拒收 94；计划版本不符拒收 100；请求层不再校验非零与相等 | 单测 `cycle::admission::tests::admission_checks_product_then_plan_then_counts_against_sum` | 未验证：单测覆盖，本表未重跑 |
 | 5.6 | deviceShots≠shotCount、planReserved 非零、requestSeq 重复 / 回退 / 为零：不布防、不出结果，只置 visionFault | 单测 `invalid_start_request_faults_without_arming_or_result_while_a_valid_one_starts` | 通过（#100 新增测试） |
-| 5.7 | partEnd 时实际触发数与计划不符：视觉故障，在途件记 ERR 98 | 实例：「PLC 设备实际触发数 11 与计划 12 不符」，visionFault | 通过 |
-| 5.8 | 传输丢帧：ERR 91，结果照常确认 | 实例：缺 S004 组三台相机的帧，原因含应收与实收计数 | 通过 |
+| 5.7 | 旧拍照点配方：partEnd 时实际触发数与计划不符：视觉故障，在途件记 ERR 98 | 实例：「PLC 设备实际触发数 11 与计划 12 不符」，visionFault | 通过 |
+| 5.7S | 段配方：partEnd 时 PLC 报的 deviceTriggers 与 ΣN_exp 不同不是故障，PC 只核对 partEnd/partStart 有效与请求身份未变，照常完成并上报触发数；触发数只用于丢帧告警与收尾等待 | 单测 `plc_session::tests::s7_wire_part_end_with_trigger_count_unlike_plan_completes_and_reports_triggers`、`s7_wire_early_err_release_reports_plc_issued_triggers` | 未验证：单测覆盖，本表未重跑 |
+| 5.8 | 旧拍照点配方：传输丢帧：ERR 91，结果照常确认 | 实例：缺 S004 组三台相机的帧，原因含应收与实收计数 | 通过 |
+| 5.8S | 段配方：单台相机缺帧只把该帧组标“检测不完整”，OK/NG 不变；三台相机整件没有一帧测成才判 ERR 91；帧数越界只记“帧数异常”；提前 partEnd 用已收到的帧照常判并加 `short_part` | 单测 `offline::tests::single_camera_loss_yields_incomplete_ok_not_err`、`early_part_end_is_judged_with_short_part_flag_and_frame_count_anomaly`；`burst_judge::tests::missing_camera_frames_mark_incomplete_without_changing_verdict`、`region_frame_count_outside_tolerance_raises_anomaly_and_short_part_flags_only`；`cycle::tests::unmeasured_frame_marks_group_incomplete_not_err_99` | 未验证：单测覆盖，本表未重跑 |
 | 5.9 | 运动超时：ERR 97 | 实例：「布防后 30 s 内未收到 partEnd」 | 通过 |
 | 5.10 | ACK 序号不符：保持 done，视觉故障；记录保留原结论、交付记失败 | 实例：「ackSeq 与本次 resultSeq 不匹配，保持 done」 | 通过 |
 | 5.11 | 中途取消（立即停止）：PLC 撤销请求，PC 故障并记 ERR 98，faultReset 后恢复 | 实例：「在途工件的请求或计划被修改」→ 下一件经 faultReset 后正常 | 通过 |
