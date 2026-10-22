@@ -327,6 +327,8 @@ export interface LogLine {
   level: "info" | "warn" | "err" | "ok" | "ng";
   ev: string;
   msg: string;
+  /** 这一行属于哪个工件；与工件无关的记录没有 */
+  cycleId?: string;
 }
 
 export interface Measured {

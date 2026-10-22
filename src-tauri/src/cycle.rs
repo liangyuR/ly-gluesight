@@ -243,6 +243,15 @@ pub struct LogLine {
     pub level: &'static str,
     pub ev: String,
     pub msg: String,
+    /// 这一行属于哪个工件：取日志记录关联后的 cycleId，上一件迟到的结果仍标上一件，界面据此不混入当前件
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cycle_id: Option<String>,
+}
+
+impl LogLine {
+    pub(crate) fn from_record(record: applog::Record, tone: &'static str) -> Self {
+        LogLine { ts: record.ts, level: tone, ev: record.ev, msg: record.msg, cycle_id: record.fields.cycle_id }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -580,8 +589,7 @@ pub fn trace(app: &AppHandle, ev: impl Into<String>, msg: impl Into<String>, fie
 }
 
 fn publish_log(app: &AppHandle, tone: &'static str, level: applog::Level, ev: String, msg: String, fields: Fields) {
-    let record = applog::emit(level, &ev, &msg, fields);
-    let line = LogLine { ts: record.ts, level: tone, ev, msg };
+    let line = LogLine::from_record(applog::emit(level, &ev, &msg, fields), tone);
     {
         let mut s = host(app).shared.lock().unwrap();
         s.logs.push_back(line.clone());

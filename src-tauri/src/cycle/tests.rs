@@ -1,6 +1,25 @@
 use super::*;
 use crate::frame::CounterSource;
 
+/// 界面事件流 cycle://log 的行带结构化 cycleId：当前件在途时，上一件迟到的录制结果仍标上一件，
+/// 未指明工件的记录标当前件；与工件无关的记录不带该字段。防的是迟到结果混进下一件的事件里。
+#[test]
+fn event_stream_line_carries_the_cycle_its_record_belongs_to() {
+    let active = applog::Fields { cycle_id: Some("current".into()), ..applog::Fields::default() };
+    let line = |explicit: Option<&str>, active: Option<&applog::Fields>| {
+        let fields = applog::correlate(active, applog::Fields { cycle_id: explicit.map(Into::into), ..applog::Fields::default() });
+        let record = applog::Record { ts: 1, level: applog::Level::Info, ev: "原图录制完成".into(), msg: String::new(), fields };
+        serde_json::to_value(LogLine::from_record(record, "info")).unwrap()
+    };
+    for (case, explicit, active, expected) in [
+        ("上一件迟到的结果", Some("late"), Some(&active), Some("late")),
+        ("未指明工件的当前件记录", None, Some(&active), Some("current")),
+        ("没有在途工件", None, None, None),
+    ] {
+        assert_eq!(line(explicit, active).get("cycleId").and_then(|v| v.as_str()), expected, "{case}");
+    }
+}
+
 #[test]
 fn interrupted_history_keeps_all_planned_shots_and_each_failure_reason() {
     let mut part = part("cycle-audit", &Ledgers::default());
