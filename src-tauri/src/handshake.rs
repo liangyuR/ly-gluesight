@@ -74,6 +74,20 @@ const fn output(tag: &'static str, data_type: DataType) -> Field {
 /// SN 点位为 S7 STRING（TIA String[n]）：声明长度、实际长度两个头字节加字符区。
 const SN_HEADER_LEN: usize = 2;
 
+/// 与 PLC 页地址表“类型”列同一套叫法，报错能直接对上表格。
+fn type_label(data_type: DataType) -> String {
+    match data_type {
+        DataType::Bool => "Bool".into(),
+        DataType::U16 => "UInt16 (Word)".into(),
+        DataType::I16 => "Int16 (Int)".into(),
+        DataType::U32 => "UInt32 (DWord)".into(),
+        DataType::I32 => "Int32 (DInt)".into(),
+        DataType::String => "String (S7 STRING)".into(),
+        DataType::SmartString => "String (200 SMART)".into(),
+        other => format!("{other:?}"),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Contract {
     config: PlcConfig,
@@ -98,36 +112,41 @@ impl Contract {
             let [point] = matches.as_slice() else {
                 return Err(format!("握手标签 {} 必须且只能配置一个点位", field.tag));
             };
+            // 报错用地址表里看得到的名称和地址定位点位，标签放括号里备查
+            let label = format!("{}（{} · {}）", point.name, field.tag, point.address);
             if point.tags.iter().filter(|t| t.as_str() == field.tag).count() != 1 {
-                return Err(format!("握手标签 {} 重复", field.tag));
+                return Err(format!("{label} 的握手标签重复"));
             }
             if !point.poll {
-                return Err(format!("{} 必须参与轮询，握手依赖轮询读回确认", field.tag));
+                return Err(format!("{label} 必须参与轮询，握手依赖轮询读回确认"));
             }
             if point.data_type != field.data_type {
-                return Err(format!("{} 必须使用 {:?} 类型，请按单设备 S7 协议 {PROTOCOL_VERSION} 模板重新生成点表", field.tag, field.data_type));
+                return Err(format!(
+                    "{label} 的类型为 {}，协议 {PROTOCOL_VERSION} 要求 {}；请在 PLC 页“载入一期 S7 点表”重新生成点表",
+                    type_label(point.data_type), type_label(field.data_type),
+                ));
             }
             let access = if field.direction == Direction::Input { Access::Read } else { Access::ReadWrite };
             if point.access != access {
-                return Err(format!("{} 的访问方向必须为 {:?}", field.tag, access));
+                return Err(format!("{label} 的访问方向必须为 {:?}", access));
             }
             if point.word_order.is_some_and(|o| o != WordOrder::Abcd) {
-                return Err(format!("{} 必须使用 S7 ABCD 字节序", field.tag));
+                return Err(format!("{label} 必须使用 S7 ABCD 字节序"));
             }
             if field.edge && !matches!(point.edge, EdgeMode::Rising | EdgeMode::Both) {
-                return Err(format!("{} 必须启用上升沿检测", field.tag));
+                return Err(format!("{label} 必须启用上升沿检测"));
             }
             let location = ly_plc::resolve(&config.connection, &point.address, point.data_type)?;
             if location.area.code != 0x84 || !point.address.trim().to_ascii_uppercase().starts_with("DB") {
-                return Err(format!("{} 必须使用标准 S7 DB 地址", field.tag));
+                return Err(format!("{label} 必须使用标准 S7 DB 地址"));
             }
             if field.data_type == DataType::String && location.len as usize != SN_MAX_LEN + SN_HEADER_LEN {
-                return Err(format!("{} 必须为最大 {SN_MAX_LEN} 字符的 S7 字符串，地址写成 DB{{n}}.DBB起始字节.{SN_MAX_LEN}", field.tag));
+                return Err(format!("{label} 必须为最大 {SN_MAX_LEN} 字符的 S7 字符串，地址写成 DB{{n}}.DBB起始字节.{SN_MAX_LEN}"));
             }
             if field.direction == Direction::Output && !location.writable {
-                return Err(format!("{} 所在地址不可写", field.tag));
+                return Err(format!("{label} 所在地址不可写"));
             }
-            for (other, other_location) in &locations {
+            for (other, other_location, other_label) in &locations {
                 let other: &Field = other;
                 let other_location: &ly_plc::Location = other_location;
                 if location.area != other_location.area {
@@ -138,23 +157,23 @@ impl Contract {
                 let different_bits = location.start == other_location.start
                     && location.bit.zip(other_location.bit).is_some_and(|(a, b)| a != b);
                 if byte_overlap && (field.direction != other.direction || !different_bits) {
-                    return Err(format!("{} 与 {} 地址重叠，PLC 和 PC 不能共用输出字节", field.tag, other.tag));
+                    return Err(format!("{label} 与 {other_label} 地址重叠，PLC 和 PC 不能共用输出字节"));
                 }
             }
-            locations.push((*field, location));
+            locations.push((*field, location, label));
             ids.insert(field.tag, point.id.clone());
         }
         for point in config.points.iter().filter(|p| !ids.values().any(|id| id == &p.id)) {
             let location = ly_plc::resolve(&config.connection, &point.address, point.data_type)?;
             let direction = if point.access == Access::ReadWrite { Direction::Output } else { Direction::Input };
-            for (field, owned) in &locations {
+            for (field, owned, owned_label) in &locations {
                 let byte_overlap = location.area == owned.area
                     && location.start < owned.start.saturating_add(owned.len)
                     && owned.start < location.start.saturating_add(location.len);
                 let different_bits = location.start == owned.start
                     && location.bit.zip(owned.bit).is_some_and(|(a, b)| a != b);
                 if byte_overlap && (direction != field.direction || !different_bits) {
-                    return Err(format!("额外点位 {} 与握手字段 {} 共用地址或跨方向字节", point.name, field.tag));
+                    return Err(format!("额外点位 {}（{}）与握手字段 {owned_label} 共用地址或跨方向字节", point.name, point.address));
                 }
             }
         }
@@ -181,7 +200,17 @@ impl Contract {
     fn value<'a>(&self, values: &'a HashMap<String, PointValue>, tag: &str) -> Result<&'a PlcValue, String> {
         let point = values.get(self.point_id(tag)?).ok_or_else(|| format!("{tag} 尚未读到"))?;
         if let Some(error) = &point.error {
-            return Err(format!("{tag} 读取失败：{error}"));
+            // SN 头字节错误多半是 PLC 侧数据块声明或写法不对，直接告诉现场该改哪里
+            let hint = match error {
+                PlcError::Decode(m) if m.starts_with(SN_HEADER_ERRORS[0]) => format!(
+                    "；PLC 数据块中 {tag} 须声明为 String[{SN_MAX_LEN}]（TIA 里不写长度的 String 默认为 String[254]），改后重新初始化该 DB，再在在线检测页复位"
+                ),
+                PlcError::Decode(m) if m.starts_with(SN_HEADER_ERRORS[1]) => format!(
+                    "；PLC 写入的 {tag} 超过 {SN_MAX_LEN} 个字符，或头字节被块操作覆盖，核对 PLC 程序后再复位"
+                ),
+                _ => String::new(),
+            };
+            return Err(format!("{tag} 读取失败：{error}{hint}"));
         }
         let value = point.value.as_ref().ok_or_else(|| format!("{tag} 没有有效值"))?;
         let field = FIELDS.iter().find(|f| f.tag == tag).ok_or_else(|| format!("未知握手标签：{tag}"))?;

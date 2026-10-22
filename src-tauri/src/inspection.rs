@@ -125,7 +125,6 @@ pub fn s7_phase1_config(plc_db: u16, pc_db: u16) -> Result<PlcConfig, String> {
         id: format!("p_{tag}"), name: name.into(), address: format!("DB{}.{address}", if access == input { plc_db } else { pc_db }),
         data_type, access, edge, tags: vec![tag.into()],
         log_changes: !matches!(tag, tag::PLC_HEARTBEAT | tag::PC_HEARTBEAT),
-        description: if access == input { "一期 S7 · PLC 写入，上位机只读" } else { "一期 S7 · 上位机握手专用，禁止手动写入" }.into(),
         ..PlcPoint::default()
     }).collect();
     let config = PlcConfig {
