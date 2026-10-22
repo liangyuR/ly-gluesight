@@ -2,7 +2,7 @@ import { resampleTeachingPath, type ImagePoint } from "./teachingPath";
 import { errorText } from "../../lib/errors";
 import { cloneElement, Fragment, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { ArrowRight, Brush, Camera, Crosshair, Eraser, Info, Lock, MousePointer2, Play, Save, SquareDashed, Trash2, TriangleAlert, Undo2, WandSparkles } from "lucide-react";
+import { ArrowRight, Brush, Camera, Crosshair, Eraser, Info, Lock, MousePointer2, Play, Save, SquareDashed, Trash2, TriangleAlert, Undo2, WandSparkles, X } from "lucide-react";
 import { Button, Divider, EmptyState, IconButton, NumberField, Popover, SegmentedControl, Slider, Surface, Tooltip } from "qing-steel";
 import { verdictLabel } from "../history";
 import { useCycle } from "../cycle/api";
@@ -130,6 +130,7 @@ export default function TeachingPage() {
   }, [defaultScope, doc, data, busy, dirty, frameDirty, working]);
   // 定位特征：画框（拖动中的框先放在本页）、没通过外圈与走廊检查的框（不进草稿）、实时检查、定位试测、喷嘴确认
   const [fixtureDrawing, setFixtureDrawing] = useState(false);
+  const [dismissedTrialReason, setDismissedTrialReason] = useState<string | undefined>();
   const [fixtureBox, setFixtureBox] = useState<[number, number, number, number] | null>(null);
   const fixtureBoxRef = useRef<[number, number, number, number] | null>(null);
   const [pendingFixture, setPendingFixture] = useState<{ fixture: FixtureSpec; reason: string } | null>(null);
@@ -326,7 +327,10 @@ export default function TeachingPage() {
     <IconButton size="sm" aria-label="删除选中点" title="删除选中点" disabled={!unlocked || !enabled || vertex === null || vertex >= t.path.length} onClick={() => { const i = vertex; setVertex(null); setPath(t.path.filter((_, j) => j !== i)); }}><Trash2 size={15}/></IconButton>
     <IconButton size="sm" aria-label="清空中线" title="清空中线" disabled={!unlocked || !enabled || !t.path.length} onClick={() => { setVertex(null); setPath([]); }}><Eraser size={15}/></IconButton>
   </div>;
+  // 试测异常浮在画布右上角，不挤占画布；关掉后同一原因不再弹出
+  const trialFailure = enabled && viewState === "trialFailed" && !editing && trial?.reason !== dismissedTrialReason ? trial?.reason ?? "" : null;
   const params = <div className="wp-canvas-params">
+    {trialFailure !== null && <div className="wp-canvas-alert" role="alert"><TriangleAlert size={15} aria-hidden="true"/><div><strong>试测异常</strong><span>{trialFailure}</span></div><IconButton size="sm" aria-label="关闭试测异常提示" onClick={() => setDismissedTrialReason(trial?.reason)}><X size={14}/></IconButton></div>}
     {selectionTool === "brush" && <span className="wp-inline-num">笔刷宽度<NumberField aria-label="笔刷宽度" unit="px" min={6} max={300} step={2} value={Number.isFinite(brushWidth) ? brushWidth : ""} disabled={!unlocked} onValueChange={value => changeBrushWidth(value === "" ? NaN : value)}/>
       <Slider className="wp-brush-width" label="拖动调整笔刷宽度" min={6} max={300} step={2} value={Number.isFinite(brushWidth) ? Math.min(300, Math.max(6, brushWidth)) : DEFAULT_BRUSH_PX} disabled={!unlocked} formatValue={value => value + " px"} onValueChange={changeBrushWidth}/></span>}
     <span className="wp-inline-num" title={`检测站距 ${doc.spacing} mm；编辑点按目标最大间距调整，转弯处保留点`}>中线点间距<NumberField aria-label="中线点间距" unit="px" min={4} max={80} step={2} value={Number.isFinite(pointSpacing) ? pointSpacing : ""} disabled={!unlocked} onValueChange={value => setPointSpacing(value === "" ? NaN : value)}/></span>
@@ -430,7 +434,6 @@ export default function TeachingPage() {
         {conflict && <Notice title="本组原先选择了多张图" tone="warn">{conflictCameras.join(" 与 ")} 都被标为检测图（旧版本配方允许多选）。请重新点选一张作为 {group.poseId} 的检测图，其余图自动改为仅采集。</Notice>}
         {!enabled && !conflict && <Notice title="选择本组检测图">点上方一张图作为 {group.poseId} 的检测图开始示教，每组只需完成这一张；其余图仅采集、不检测。</Notice>}
         {enabled && viewState === "recapture" && <Notice title="需重新采集" tone="warn">{viewProgress?.hint} 中线仍可修改，重新采集后才能试测。 <Link className="qs-btn tonal sm" to="/recipe/capture">整圈重新采集</Link></Notice>}
-        {enabled && viewState === "trialFailed" && !editing && <Notice title="试测异常" tone="warn">{trial?.reason}</Notice>}
         {enabled && <GrayViewer controlsAt="footer" summary={summary} image={image} loading={loading} error={error} label={frame.image ? group.poseId + " · " + shot.camera + " · 图 " + shot.view : "等待取样"} tools={tools} subtools={params} emptyTitle="本组检测图尚未就绪" emptyHint="整圈采集并采用本轮图像后，这里显示本组检测图。"
           region={fixtureDrawing ? fixtureBox : selectionTool === "box" ? region : null}
           onRegion={fixtureDrawing ? unlocked && enabled ? box => { fixtureBoxRef.current = box; setFixtureBox(box); } : undefined : regionMode && selectionTool === "box" && unlocked && enabled ? setRegion : undefined}

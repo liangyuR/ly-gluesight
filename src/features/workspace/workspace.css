@@ -266,6 +266,10 @@
 .wp-inline-num > .qs-input { width:96px; }
 .wp-inline-num > .wp-brush-width { width:160px; }
 .wp-canvas-float { position:absolute; top:calc(100% + 8px); left:10px; z-index:2; display:inline-flex; align-items:center; gap:2px; padding:2px 4px 2px 10px; border-radius:var(--r-full); background:color-mix(in srgb, var(--surface-high) 88%, transparent); box-shadow:var(--shadow-2); color:var(--on-surface); font-size:12px; }
+.wp-canvas-alert { position:absolute; top:calc(100% + 8px); right:10px; z-index:3; display:flex; align-items:flex-start; gap:8px; max-width:min(520px, calc(100% - 20px)); padding:8px 6px 8px 12px; border-radius:var(--r-md); background:color-mix(in srgb, var(--warn-container, #4a3a00) 92%, transparent); color:var(--on-surface); box-shadow:var(--shadow-2); font-size:12px; line-height:1.6; }
+.wp-canvas-alert > svg { flex-shrink:0; margin-top:3px; color:var(--warn); }
+.wp-canvas-alert > div { display:grid; flex:1; }
+.wp-canvas-alert strong { color:var(--warn); }
 .wp-canvas-hint { flex-basis:100%; margin:0; font-size:12px; line-height:1.6; }
 .wp-canvas-hint.warn { display:flex; align-items:flex-start; gap:6px; color:var(--warn); }
 .wp-canvas-hint.warn svg { flex-shrink:0; margin-top:3px; }
