@@ -75,6 +75,8 @@ jobs:
           ./tests/packaging/Test-VendorDependency.ps1
       - name: Packaging workflow gate tests
         run: node --test tests/packaging/windows-workflow.test.mjs
+      - name: Soak script decision tests
+        run: node --test tests/native/throughput-gate.test.mjs tests/native/soak-faults-assess.test.mjs
       - name: Rust library regression
         working-directory: src-tauri
         run: cargo test --locked --lib
