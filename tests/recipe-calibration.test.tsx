@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,8 +25,8 @@ function withRounds(normal: number, standard = 0): CalibrationView {
   return view;
 }
 /** 只有一个直线段的计划：本轮只有单段计划能逐段标定 */
-function singleSegment(calibration: CalibrationView) {
-  const doc = burstRecipe({ id: "A", segments: [pathSegment(1, "straight", { lengthMm: 120 })] });
+function singleSegment(calibration: CalibrationView, id = "A") {
+  const doc = burstRecipe({ id, segments: [pathSegment(1, "straight", { lengthMm: 120 })] });
   const view = burstWorkspaceView(doc);
   calibration.segments = [{ index: 1, kind: "straight", outcome: { nExp: 12, calib: { rounds: 10, min: 11, max: 13, mean: 11.9 }, suggestedTolerance: 2 }, pending: null, tolerance: 1, xRef: null, xRefPending: "标准件轮次不足" }];
   view.plan!.calibration = calibration;
@@ -78,6 +78,25 @@ describe("多轮标定", () => {
     expect(ws.setError).toHaveBeenCalled();
   });
 
+  // 防的回归：键入但没确认的容差按段序号缓存，换了配方或重新应用标定后仍遮盖新的建议值，把上一个配方 / 上一次标定的数字当成这一段的
+  it.each([
+    ["换成另一个配方", (page: ReturnType<typeof show>) => {
+      ws = workspaceState(singleSegment(withRounds(10), "B"));
+      page.rerender(<MemoryRouter initialEntries={["/recipe/calibration"]}><CalibrationPage /></MemoryRouter>);
+    }],
+    ["重新应用标定", async () => { await userEvent.click(screen.getByRole("button", { name: "应用标定" })); }],
+  ])("段 1 键入了容差 3 但没确认，%s → 容差输入回到建议值 2", async (_, change) => {
+    ws.data = singleSegment(withRounds(10));
+    const page = show();
+    const input = await screen.findByRole("spinbutton", { name: "段 1 帧数容差" });
+    await userEvent.clear(input); await userEvent.type(input, "3");
+    expect(input).toHaveValue(3);
+
+    await change(page);
+
+    await waitFor(() => expect(screen.getByRole("spinbutton", { name: "段 1 帧数容差" })).toHaveValue(2));
+  });
+
   it.each([
     ["加入标定", false],
     ["设为标准件", true],
@@ -86,6 +105,8 @@ describe("多轮标定", () => {
     show();
     await userEvent.click(await screen.findByRole("button", { name: `${action} round-new` }));
     expect(workspaceApi.calibrationAddRound).toHaveBeenCalledWith("A", 3, "round-new", standard);
+    // 异常轮不能用于标定：失败轮次在列表里不提供加入按钮
+    expect(screen.queryByRole("button", { name: `${action} round-bad` })).not.toBeInTheDocument();
   });
 
   it("已加入的轮次 → 移出只移这一轮", async () => {

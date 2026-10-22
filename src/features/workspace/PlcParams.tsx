@@ -52,7 +52,11 @@ export function plcSyncItems(production: PlcParams | null, candidate: PlcParams)
 
 // ───────────── 段配方：计划导出（PlanExport）─────────────
 
-/** 计划导出 JSON 文本：与后端 recipe_plan_export 同一结构，给 PLC / 机器人工程师核对使能点位。 */
+/**
+ * 计划导出 JSON 文本，给 PLC / 机器人工程师核对使能点位；结构与后端 recipe_plan_export 相同。
+ * 界面直接用 WorkspaceView.plan 的 productionExport / candidateExport 序列化，不再单独调 recipe_plan_export：
+ * 那条命令只读配方库里已发布的配方，导不出还没发布的候选，而候选的导出正是发布前核对所需。
+ */
 export const planExportJson = (plan: PlanExport) => JSON.stringify(plan, null, 2);
 
 const rangeText = (segment: ExportSegment) => segment.inspectRange ? `${segment.inspectRange.aMm}–${segment.inspectRange.bMm} mm` : "—";

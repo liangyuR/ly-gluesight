@@ -71,9 +71,6 @@ export const recipeApi = {
   doc: (id: string) => call<RecipeDoc>("recipe_doc", { id }, () => Promise.reject("非桌面环境") as never),
   preview: (doc: RecipeDoc) => call<Recipe>("recipe_preview", { doc }, () => Promise.reject("非桌面环境") as never),
   template: () => call<RecipeDoc>("recipe_template", undefined, () => Promise.reject("非桌面环境") as never),
-  /** 段配方的计划导出（recipe_plan_export）：返回 PlanExport 的 JSON 文本，原样复制或另存给 PLC / 机器人工程师。
-   * 旧拍照点配方后端返回错误；未标定也能导出（expectedTotal 为 null）。 */
-  planExport: (id: string) => call<string>("recipe_plan_export", { id }, () => Promise.reject("非桌面环境") as never),
 };
 
 const layoutCache = new Map<string, Promise<Recipe | null>>();

@@ -11,7 +11,7 @@ import type { RecipeDoc } from "../cycle/types";
 import type { SegmentChecks, WorkspacePlanView } from "../plan/types";
 import { workspaceApi } from "./api";
 import { useWorkspace, type SnackMessage } from "./context";
-import { Badge, GrayViewer, KV, Notice, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
+import { awaitingPlan, Badge, GrayViewer, KV, Notice, PlanPending, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { CaptureSummary, FrozenImage, GrayImage, WorkspaceView } from "./types";
 import { corridorDraft, corridorError, sameCorridor, withCorridor } from "./teach";
 import { cameraTeachingTasks } from "./cameraTasks";
@@ -62,11 +62,13 @@ function useRoundFrame(round: AnyRound | null, camera: string, seq: number, enab
 /**
  * 走廊示教（段配方，路由 /recipe/teach）：三台相机各示教一条走廊，所有帧共用；每台相机从一轮采集里选一帧，
  * 在这一帧上刷选 / 框选提取走廊（边缘提取能力保留，不再与示教中线逐点比对），设像素当量与检测参数。
- * 旧拍照点配方（没有 plan）仍走 LegacyTeachingPage：按 Pose 分组选图、逐点试测、特征定位与标定核对，行为不变。
+ * 旧拍照点配方（segments 为空）仍走 LegacyTeachingPage：按 Pose 分组选图、逐点试测、特征定位与标定核对，行为不变。
+ * 段配方但后端还没输出 plan（D3 之前）显示待后端占位，不落到旧页面。
  */
 export default function TeachingPage() {
   const { data, doc } = useWorkspace();
   if (!data || !doc) return <WorkspaceEmpty />;
+  if (awaitingPlan(data, doc)) return <PlanPending title="走廊示教" />;
   if (!data.plan) return <LegacyTeachingPage />;
   return <CorridorTeaching data={data} doc={doc} plan={data.plan} />;
 }

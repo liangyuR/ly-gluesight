@@ -265,6 +265,7 @@
 | `CaptureRound`（recipe_capture.rs） | 不变（旧轮次） | 新轮次为 `CaptureRoundV2`（`format: 2`，D1） |
 | `WorkspaceView`（workspace.rs，D3） | `plan: WorkspacePlanView \| null` | `productionPlc = candidatePlc = null`，`candidatePlcError = null`，`coverage = null`，`progress = { steps: [], shots: [], next: null }`（段配方进度在 `plan.progress`）；`planChanged` 按 D-SB-19 的身份 |
 | `Progress`（workspace/progress.rs） | 不变（旧配方） | 段配方用 `ProgressV2` |
+| `Overrides`（history.rs，重判试算参数，C5） | `straight`、`corner`（`KindOverride`：`tolUpper`、`tolLower`、`maxExcursionLen`，绝对限不适用；TS `Overrides` 已有这两个可选字段） | 旧配方记录忽略这两个字段；段配方记录的每帧胶宽只读它们，`position` / `width` 不适用，未分段区域取两者中较宽的一档。**后端现在没有这两个字段，发出去会被静默忽略**，所以前端 `RejudgeDialog` 的直线段 / 弯道段两行输入置灰（`SEGMENT_OVERRIDES_SUPPORTED = false`）；C5 读取后改为 true 并同步测试 |
 
 ### 5.2 新 DTO
 
@@ -311,6 +312,9 @@
 | `workspace_record_frame_image` | `historyId, camera: usize, seq`（camera 为计划相机下标） | `Result<tauri::ipc::Response, String>`（原始字节，格式同 `workspace_record_image`）；未录制、录制队满丢弃或缺帧时报错 | D3 |
 
 新示教轮次（`CaptureRoundV2`）的读取与帧图像命令由 D1 在旧命令旁新增，旧 `recipe_capture_*` 命令保留。
+
+- **`recipe_plan_export` 前端不调用**：计划导出随 `WorkspaceView.plan.productionExport / candidateExport` 到达，界面（`PlanExportPanel`）直接序列化它们供复制或另存。该命令只读配方库里已发布的配方，导不出还没发布的候选，而候选的导出正是发布前核对所需；命令保留给脚本与工程师工具，前端不再保留未使用的 `recipeApi.planExport`。
+- **相机示教的单帧试测没有命令**：旧配方的逐点试测（`workspace_trial`）按拍照点下标，段配方没有对应命令，上表也没有登记；前端不保留没有数据来源的 `FrameTrialResult`。若以后要在相机走廊示教里做单帧试测，由后端先登记命令与 `FrameMetrics` 的返回方式，前端再新增组件。
 
 - **段配方的走廊提取**：段配方没有拍照点（`shots = []`），不复用 `workspace_extract_centerline`——它按 `w.frames[k]` / `w.doc.shots[k]` 解析，段配方会报“拍照点不存在”。D2 新增 `workspace_extract_corridor`：按 `camera`（相机 id）找到 `plan.cameraTeaching` 里这台相机冻结的示教帧，`imageId` 必须等于该帧 id（不等报“图像已变化”），检测极性取这台相机 `inspect.detect`，没有时取配方默认。旧配方仍用 `workspace_extract_centerline`，行为不变。
 - **读图命令的参数口径**：`camera` 在在线与历史命令里是计划相机下标（与 `FrameGroupView.cells`、`FrameRecord.camera` 一致）；示教轮次命令用 `cameraId`（与 `CaptureRound.cameras[].cameraId` 一致）。
@@ -407,7 +411,10 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
   - 特征定位（fixture）模块、示教中线逐点比对、组选图；
   - 记录库 `part_shots`、`part_points`；
   - 前端 `cycle/pose.ts`、`cycle/vis.ts`、`WorkpieceOverview`、`teachingGroups`、`Fixture*` 等旧组件；
-  - 前端旧配方的单帧示教与整圈采集页：`/recipe/teach`、`/recipe/capture` 在 `WorkspaceView.plan` 为空时挂载 `LegacyTeachingPage`、`LegacyCapturePage`（G0 之前的实现原样保留：组选图、采用本轮图像、逐点试测、特征定位、标定核对），以及 `TrialResult`、`TeachingSettings` 的旧签名和按拍照点下标的示教草稿（`frameDrafts` / `setFrameDraft`）。段配方另用 `FrameTrialResult`、`CorridorSettings` 与按相机 id 的 `corridorDrafts` / `setCorridorDraft`。
+  - 前端旧配方的单帧示教与整圈采集页：`/recipe/teach`、`/recipe/capture` 在 `WorkspaceView.plan` 为空时挂载 `LegacyTeachingPage`、`LegacyCapturePage`（G0 之前的实现原样保留：组选图、采用本轮图像、逐点试测、特征定位、标定核对），以及 `TrialResult`、`TeachingSettings` 的旧签名和按拍照点下标的示教草稿（`frameDrafts` / `setFrameDraft`）。段配方另用 `CorridorSettings` 与按相机 id 的 `corridorDrafts` / `setCorridorDraft`。
+  - **D3 之前的分流**：页面分流以 `RecipeDoc.segments` 是否为空为准。后端 `WorkspaceView.plan` 要到 D3 才输出，所以段配方（`segments` 非空）而 `plan` 为 null 时，`/recipe/teach`、`/recipe/capture` 显示“待后端 D3 实现”占位（`PlanPending`），不落到 `LegacyTeachingPage`、`LegacyCapturePage`——那里的采用本轮图像、逐点示教提交后会被后端 `validate_burst` 拒绝（段配方不能同时有拍照点）。进度、总览、步骤条等只读页面在 D3 之前对段配方仍按 `plan` 为空显示旧配方的空内容，不提供会被拒绝的操作。
+  - **路由标题**：`/recipe/teach` 两种配方共用，标题写“单帧示教（旧配方）/ 相机走廊示教（段配方）”；总览页空态提示给段配方的写法是“相机走廊示教”（步骤条上的名称仍是“走廊示教”），不再提“单帧示教”。
+  - **PLC 标签**：`shotCount`、`deviceShots`、`partEnd` 的预设标签在协议 6 的含义之后补写旧配方含义（触发次数、设备触发次数、触发计划发完）。
 - **判定结果类型**：`judge::Judgement` 保留给旧配方；段配方用 `burst_judge::BurstJudgement`，两者并列，不做类型别名。界面与记录按 `burst` 字段是否为 null 区分。
 
 ## 九、相对计划的调整（供后续工作包对照）

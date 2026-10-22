@@ -20,6 +20,12 @@ const recipeOptions = [
   { value: "current", label: "当前配方" },
 ];
 
+/**
+ * 后端 history::Overrides 还没有 straight / corner 字段（C5 起才读取）：现在填了会被静默忽略，所以这两行输入先置灰。
+ * C5 落地后改为 true，并同步 tests/rejudge-dialog.test.tsx；登记见 docs/decisions/segment-burst.md 5.1。
+ */
+const SEGMENT_OVERRIDES_SUPPORTED = false;
+
 const isNg = (v: Verdict) => v.startsWith("NG");
 const isOk = (v: Verdict) => v.startsWith("OK");
 const orDefault = (value: number | "") => (value === "" ? undefined : value);
@@ -70,7 +76,7 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
       step={0.05}
       placeholder="不变"
       aria-label={`${kindName[k]}${kindFields.find(([key])=>key===f)?.[1]}`}
-      disabled={running}
+      disabled={running || ((k === "straight" || k === "corner") && !SEGMENT_OVERRIDES_SUPPORTED)}
       value={overrides[k]?.[f] ?? ""}
       onValueChange={(value) => edit({ ...overrides, [k]: { ...overrides[k], [f]: orDefault(value) } })}
     />
@@ -118,11 +124,11 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
           <span title="只作用于判胶宽的拍照点">胶宽</span>
           {kindFields.map(([f]) => <div key={f}>{kind("width", f)}</div>)}
           {(["straight", "corner"] as const).map(k => <Fragment key={k}>
-            <span title={`只作用于段配方记录中${k === "straight" ? "直线" : "弯道"}区域的每帧胶宽；绝对限不适用`}>{k === "straight" ? "直线段" : "弯道段"}</span>
+            <span title={`只作用于段配方记录中${k === "straight" ? "直线" : "弯道"}区域的每帧胶宽；绝对限不适用${SEGMENT_OVERRIDES_SUPPORTED ? "" : "。后端 C5 起才读取，暂不可填"}`}>{k === "straight" ? "直线段" : "弯道段"}</span>
             {kindFields.map(([f]) => <div key={f}>{f === "absMin" || f === "absMax" ? null : kind(k, f)}</div>)}
           </Fragment>)}
         </div>
-        <Text variant="label" muted>位置、胶宽两行只作用于旧拍照点记录；直线段、弯道段两行只作用于段配方记录的胶宽（每帧独立判），未分段区域取两者中较宽的一档。</Text>
+        <Text variant="label" muted>位置、胶宽两行只作用于旧拍照点记录；直线段、弯道段两行只作用于段配方记录的胶宽（每帧独立判），未分段区域取两者中较宽的一档。{!SEGMENT_OVERRIDES_SUPPORTED && "直线段、弯道段两行要等后端 C5 读取，现在置灰：填了也不会生效。"}</Text>
         <div className="rj-pair">
           <NumberField id="rj-gap" label="允许断胶长度（mm，每个拍照点；段配方为每帧）" aria-label="允许断胶长度（mm）" disabled={running} min={0} step={0.1} placeholder="不变" value={overrides.maxGapLen ?? ""} onValueChange={(value) => edit({ ...overrides, maxGapLen: orDefault(value) })} />
           <NumberField id="rj-filter" label="滤波窗口（奇数）" aria-label="滤波窗口（奇数）" disabled={running} step={2} min={1} max={31} placeholder="不变" value={overrides.filterWindow ?? ""} onValueChange={(value) => edit({ ...overrides, filterWindow: orDefault(value) })} />

@@ -62,6 +62,18 @@ describe("验证与发布页面", () => {
     expect(screen.queryByRole("button", { name: "放弃待生效版本" })).not.toBeInTheDocument();
   });
 
+  // 旧拍照点配方（segments 为空）的发布确认：按 candidatePlc 与 productionPlc 对比，列出 PLC 要同步的项
+  it("拍照点数变化 → 发布确认直接列出 PLC 要同步的触发数，未变的产品代码标不变", async () => {
+    ws.data!.planChanged = true;
+    ws.data!.candidatePlc = { ...ws.data!.productionPlc!, shotCount: 3 };
+    show();
+    await userEvent.click(screen.getByRole("button", { name: "发布生产配方" }));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveTextContent("shotCount / deviceShots：2 → 3");
+    expect(dialog).toHaveTextContent("productCode：1（不变）");
+    expect(dialog).toHaveTextContent("planVersion：1 → 发布时分配新号");
+  });
+
   describe("段配方", () => {
     /** 验证已通过的段配方候选；partCalib 决定整件 ΣN_exp 是否已标定（各段 N_exp 都待分段算法）。 */
     const burst = (over: Parameters<typeof burstRecipe>[0] = {}) => {

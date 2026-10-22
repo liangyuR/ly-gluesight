@@ -20,9 +20,13 @@ import "./corridor.css";
 export default function CalibrationPage() {
   const { data, doc, busy, dirty, frameDirty, act, setError } = useWorkspace();
   const [available, setAvailable] = useState<CaptureSummary[]>([]);
-  const [tolerances, setTolerances] = useState<Record<number, number>>({});
+  // 键入但还没确认的容差，按段序号缓存；只在“配方 + 标定结果”不变时有效（见 resultKey）
+  const [typed, setTyped] = useState<{ key: string; values: Record<number, number> }>({ key: "", values: {} });
   const plan = data?.plan ?? null;
   const calibration = plan?.calibration ?? null;
+  // 换了配方，或标定结果（整件统计、各段类型 / 帧数统计 / 建议容差）变了，旧的键入值不再对应这一段：不沿用，输入框回到建议值
+  const resultKey = JSON.stringify([doc?.id ?? null, calibration?.part ?? null, calibration?.segments.map(segment => [segment.index, segment.kind, segment.outcome]) ?? null]);
+  const tolerances = typed.key === resultKey ? typed.values : {};
   const addedKey = (calibration?.rounds ?? []).map(round => round.roundId).join(",");
   useEffect(() => {
     if (!doc || !plan) return;
@@ -48,14 +52,15 @@ export default function CalibrationPage() {
   const multi = plan.segments.length > 1;
   const needsReference = plan.segments.some(segment => segment.kind === "straight" && segment.checks.offset?.enabled);
   const applyReason = short > 0 ? `还差 ${short} 轮：至少 ${minRounds} 轮才能标定` : locked ? "正在处理或候选待生效，请稍候" : "";
-  const run = (request: () => ReturnType<typeof workspaceApi.calibrationApply>, message: string) => void act(request, message);
-  const add = (roundId: string, isStandard: boolean) => run(() => workspaceApi.calibrationAddRound(doc.id, data.workspace.revision, roundId, isStandard), isStandard ? "已加入标定（标准件轮次）" : "已加入多轮标定");
-  const remove = (roundId: string) => run(() => workspaceApi.calibrationRemoveRound(doc.id, data.workspace.revision, roundId), "已移出多轮标定");
-  const apply = () => run(() => workspaceApi.calibrationApply(doc.id, data.workspace.revision), "标定已应用：预期帧数已写入，容差仍待确认");
+  const run = (request: () => ReturnType<typeof workspaceApi.calibrationApply>, message: string) => act(request, message);
+  const add = (roundId: string, isStandard: boolean) => void run(() => workspaceApi.calibrationAddRound(doc.id, data.workspace.revision, roundId, isStandard), isStandard ? "已加入标定（标准件轮次）" : "已加入多轮标定");
+  const remove = (roundId: string) => void run(() => workspaceApi.calibrationRemoveRound(doc.id, data.workspace.revision, roundId), "已移出多轮标定");
+  // 重新应用标定：之前键入但没确认的容差不再对应新的统计，一并丢弃，输入框回到新的建议值
+  const apply = () => void run(() => workspaceApi.calibrationApply(doc.id, data.workspace.revision), "标定已应用：预期帧数已写入，容差仍待确认").then(next => { if (next) setTyped({ key: "", values: {} }); });
   const confirm = (segment: SegmentCalibView) => {
     const value = tolerances[segment.index] ?? segment.outcome?.suggestedTolerance ?? segment.tolerance;
     if (!Number.isInteger(value) || value < 0) { setError("帧数容差需为不小于 0 的整数"); return; }
-    run(() => workspaceApi.confirmTolerance(doc.id, data.workspace.revision, segment.index, value), `段 ${segment.index} 的帧数容差已确认为 ±${value}`);
+    void run(() => workspaceApi.confirmTolerance(doc.id, data.workspace.revision, segment.index, value), `段 ${segment.index} 的帧数容差已确认为 ±${value}`);
   };
   const columns: TableColumn<SegmentCalibView>[] = [
     { key: "segment", header: "段", render: row => `段 ${row.index} · ${segmentKindLabel[row.kind]}` },
@@ -63,7 +68,7 @@ export default function CalibrationPage() {
     { key: "range", header: "各轮 min – max（均值）", align: "right", render: row => row.outcome ? `${row.outcome.calib.min} – ${row.outcome.calib.max}（${row.outcome.calib.mean.toFixed(1)}）` : "—" },
     { key: "tolerance", header: "容差", render: row => {
       const value = tolerances[row.index] ?? row.outcome?.suggestedTolerance ?? row.tolerance;
-      return <span className="wp-calib-tol"><NumberField label={`段 ${row.index} 帧数容差`} value={value} min={0} step={1} unit="帧" disabled={locked} onChange={v => setTolerances(current => ({ ...current, [row.index]: v }))}/>
+      return <span className="wp-calib-tol"><NumberField label={`段 ${row.index} 帧数容差`} value={value} min={0} step={1} unit="帧" disabled={locked} onChange={v => setTyped(current => ({ key: resultKey, values: { ...(current.key === resultKey ? current.values : {}), [row.index]: v } }))}/>
         <Button size="sm" aria-label={`确认段 ${row.index} 容差`} disabled={locked} onClick={() => confirm(row)}>确认容差</Button>
         <span className="muted">当前 ±{row.tolerance}{row.outcome ? `，建议 ±${row.outcome.suggestedTolerance}` : ""}</span></span>;
     } },

@@ -1,14 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { Link } from "react-router-dom";
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
 import { Button, IconButton, NumberField, Select, Switch } from "qing-steel";
 import { CameraSegmentOverview } from "../plan/CameraSegmentOverview";
 import { KindChecksEditor } from "../plan/KindChecksEditor";
 import type { OffsetMeasure, PathSegment, SegmentChecks, SegmentKind, WorkspacePlanView } from "../plan/types";
+import type { WorkspaceView } from "./types";
 import { expectedText, PLAN_CAMERAS, segmentKindLabel } from "../plan/vis";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, Notice, Panel, WorkspaceBar, WorkspaceEmpty } from "./components";
+import { errorText } from "../../lib/errors";
 import { addSegment, changeKind, hasCalibration, moveSegment, patchSegment, removeSegment, segmentIssues } from "./segmentEdit";
 import "./segments.css";
 
@@ -26,7 +28,10 @@ const measureOptions: { value: OffsetMeasure; label: string }[] = [
  * 预期帧数 N_exp 与标定统计只读：只能由多轮采集得出（多轮标定页）；段序列或类型一变，各段 N_exp 与标定一律清空重来。
  */
 export default function SegmentsPage() {
-  const { data, doc } = useWorkspace();
+  const { data, doc, selectedId } = useWorkspace();
+  // 编辑器卸载时据此判断：只是离开本页（仍是这个配方），还是换了配方（见 SegmentsEditor 的卸载提交）。页面本身在换配方时不卸载，先于编辑器的清理更新
+  const selected = useRef(selectedId);
+  selected.current = selectedId;
   if (!data || !doc) return <WorkspaceEmpty />;
   const plan = data.plan;
   if (!plan) return <div className="wp-page"><WorkspaceBar />
@@ -34,11 +39,11 @@ export default function SegmentsPage() {
       <Notice title="当前配方按拍照点模型配置">段列表只用于段配方；拍照点配方继续使用原有步骤。</Notice>
     </Panel>
   </div>;
-  return <SegmentsEditor key={doc.id} plan={plan} />;
+  return <SegmentsEditor key={doc.id} plan={plan} selected={selected} />;
 }
 
-function SegmentsEditor({ plan }: { plan: WorkspacePlanView }) {
-  const { data, doc, act, busy } = useWorkspace();
+function SegmentsEditor({ plan, selected }: { plan: WorkspacePlanView; selected: MutableRefObject<string | null> }) {
+  const { data, doc, act, busy, setError } = useWorkspace();
   // 未保存的本地编辑；null 时显示后端给的 plan.segments
   const [edits, setEdits] = useState<PathSegment[] | null>(null);
   const [state, setState] = useState<SaveState>("saved");
@@ -47,6 +52,8 @@ function SegmentsEditor({ plan }: { plan: WorkspacePlanView }) {
   const immediate = useRef(false);
   const failed = useRef("");
   const saved = useRef("");
+  // 正在提交的那一份（防抖到期后到保存完成之间），卸载时据此避免重复提交、并在它完成后接着提交更新的编辑
+  const saving = useRef<{ signature: string; request: Promise<WorkspaceView | null> } | null>(null);
   const segments = edits ?? plan.segments;
   const issues = edits ? segmentIssues(edits) : [];
   const blocked = issues.length > 0;
@@ -63,12 +70,33 @@ function SegmentsEditor({ plan }: { plan: WorkspacePlanView }) {
     setState("pending");
     const timer = setTimeout(async () => {
       setState("saving");
-      const result = await act(() => workspaceApi.updateSegments(docId, revision, edits), "段列表已保存");
+      const request = act(() => workspaceApi.updateSegments(docId, revision, edits), "段列表已保存");
+      saving.current = { signature, request };
+      const result = await request;
+      if (saving.current?.request === request) saving.current = null;
       if (result) { saved.current = signature; failed.current = ""; setEdits(current => current === edits ? null : current); setState("saved"); }
       else { failed.current = signature; setState("failed"); }
     }, immediate.current ? 0 : DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [edits, blocked, busy, frozen, docId, revision, retry, act]);
+
+  // 离开本页时，防抖还没到期（或上一份还在提交）的编辑立即提交，不因卸载丢掉；校验不过、被冻结、已保存或已失败的不提交
+  const latest = useRef({ edits, blocked, frozen, docId, revision, act, setError });
+  latest.current = { edits, blocked, frozen, docId, revision, act, setError };
+  useEffect(() => () => {
+    const { edits: unsaved, blocked: invalid, frozen: locked, docId: id, revision: current, act: run, setError: report } = latest.current;
+    if (!unsaved || invalid || locked || id == null || current == null) return;
+    const signature = JSON.stringify(unsaved);
+    if (saved.current === signature || failed.current === signature || saving.current?.signature === signature) return;
+    const submit = (revision: number) => {
+      // 仍是这个配方：经 act 提交，工作区拿到新修订。已经换了配方：act 会打断 select 的加载，只能直接提交到原配方
+      if (selected.current === id) void run(() => workspaceApi.updateSegments(id, revision, unsaved), "段列表已保存");
+      else void workspaceApi.updateSegments(id, revision, unsaved).catch(e => report(`配方 ${id} 的段列表未能保存：${errorText(e)}`));
+    };
+    // 上一份还在提交：等它完成，用它返回的新修订接着提交（act 同一时刻只做一件事）
+    if (saving.current) void saving.current.request.then(next => { if (next) submit(next.workspace.revision); });
+    else submit(current);
+  }, []);
 
   const edit = (next: PathSegment[]) => { immediate.current = false; setEdits(next); };
   /** 段序列或类型变了：各段 N_exp、标定、x_ref 清空，立即保存并提示。 */

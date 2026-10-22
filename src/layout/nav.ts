@@ -72,7 +72,8 @@ const recipeSteps: PageRoute[] = [
   { path:"/recipe/capture",label:"整圈采集",element:CapturePage },
   { path:"/recipe/segments",label:"段列表",element:SegmentsPage },
   { path:"/recipe/geometry",label:"配方默认参数",element:GeometryPage },
-  { path:"/recipe/teach",label:"单帧示教",element:TeachingPage },
+  // 同一路由两种配方：旧拍照点配方是单帧示教（组选图、示教中线），段配方是相机走廊示教（每台相机一条走廊）
+  { path:"/recipe/teach",label:"单帧示教（旧配方）/ 相机走廊示教（段配方）",element:TeachingPage },
   { path:"/recipe/calibration",label:"多轮标定",element:CalibrationPage },
   { path:"/recipe/overview",label:"工件总览",element:OverviewPage },
   { path:"/recipe/validation",label:"验证与发布",element:ValidationPage },

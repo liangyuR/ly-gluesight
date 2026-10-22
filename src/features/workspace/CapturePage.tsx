@@ -16,7 +16,7 @@ import { useWorkspace } from "./context";
 import { AlertTriangle, ArrowRight, Cable, Camera, CheckCircle2, ChevronLeft, ChevronRight, Crosshair, Play } from "lucide-react";
 import { scrollBehavior } from "./motion";
 import { Button, Checkbox, IconButton, SegmentedControl, Select, Surface } from "qing-steel";
-import { Badge, Notice, NumberField, Panel, WorkspaceBar, WorkspaceEmpty, GrayViewer } from "./components";
+import { awaitingPlan, Badge, Notice, NumberField, Panel, PlanPending, WorkspaceBar, WorkspaceEmpty, GrayViewer } from "./components";
 import "./capture.css";
 import type { CaptureRound, GrayImage } from "./types";
 import { frameArrived, lossAlarmText, readRoundFrame, roundView, type AnyRound } from "./captureRound";
@@ -30,9 +30,10 @@ const stateLabels: Record<CaptureRound["state"],string> = { waitingStart:"等待
 const MAX_LISTED_GROUPS = 12;
 const imagingInvalid = (imaging: CameraImaging) => !(imaging.exposureUs>=1 && imaging.exposureUs<=1_000_000) ? "曝光时间需在 1–1000000 µs 之间" : !(Number.isFinite(imaging.gainDb) && imaging.gainDb>=0) ? "增益需为不小于 0 的有限数" : "";
 
-/** 整圈采集（路由 /recipe/capture）：旧拍照点配方（WorkspaceView 没有 plan）仍走 LegacyCapturePage——按拍照点核对数量、采用本轮图像；段配方按帧组展示。 */
+/** 整圈采集（路由 /recipe/capture）：旧拍照点配方（segments 为空）仍走 LegacyCapturePage——按拍照点核对数量、采用本轮图像；段配方按帧组展示；段配方但后端还没输出 plan（D3 之前）显示待后端占位。 */
 export default function CapturePage() {
-  const { data } = useWorkspace();
+  const { data, doc } = useWorkspace();
+  if (data && doc && awaitingPlan(data, doc)) return <PlanPending title="整圈采集" />;
   return data && !data.plan ? <LegacyCapturePage/> : <BurstCapturePage/>;
 }
 

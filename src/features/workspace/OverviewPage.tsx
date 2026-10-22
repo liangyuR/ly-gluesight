@@ -133,7 +133,7 @@ function CameraFrame({ docId, task, corridor }: { docId: string; task: CameraTea
   return <>
     <div className="wp-actions"><strong>{task.camera}</strong><Badge tone={task.status === "done" ? "ok" : task.frame ? "warn" : "neutral"}>{task.label}</Badge><Link className="wp-text-link" to={task.href}>{task.frame ? "查看走廊" : "去选示教帧"}</Link></div>
     <GrayViewer image={image} loading={loading} error={error} label={task.frame ? `${task.camera} · 示教帧` : `${task.camera} · 尚未选示教帧`} overlay={corridor.length >= 2 ? { path: corridor } : undefined}
-      emptyTitle="尚未选示教帧" emptyHint="在“单帧示教”里为这台相机从采集轮次选一帧。"/>
+      emptyTitle="尚未选示教帧" emptyHint="在“相机走廊示教”里为这台相机从采集轮次选一帧。"/>
   </>;
 }
 
