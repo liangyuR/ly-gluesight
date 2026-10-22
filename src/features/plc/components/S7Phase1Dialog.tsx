@@ -104,7 +104,7 @@ export default function S7Phase1Dialog({ config, dirty, blockedReason, onApply, 
           aria-invalid={!!invalid} onValueChange={setDb("pc")} />
       </Grid>
     </fieldset>
-    <p className="muted hint">握手协议 5：S7-1200 / 1500 采用机架 0 / 插槽 1。请在 PLC 中启用 PUT/GET，并关闭两个 DB 的优化访问；按点表建立数据块，SN 声明为 String[50]。</p>
+    <p className="muted hint">握手协议 6（点表布局与协议 5 相同）：S7-1200 / 1500 采用机架 0 / 插槽 1。请在 PLC 中启用 PUT/GET，并关闭两个 DB 的优化访问；按点表建立数据块，SN 声明为 String[50]。</p>
     <p className="muted hint">应用将替换地址表、心跳和 S7 连接预设。IP / 主机名、超时、轮询、重连、日志和自动连接设置保留；之后仍需保存配置。</p>
     {invalid && <Alert tone="ng">{invalid}</Alert>}
     {loading && <p role="status">正在生成点表预览…</p>}

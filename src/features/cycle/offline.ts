@@ -7,13 +7,22 @@ export const scenarioOptions: [Scenario, string][] = [
   ["lostFrame", "传输丢帧 / 缺帧"],
   ["locateFail", "定位失败（胶正常）"],
   ["locateFailGap", "定位失败 + 断胶"],
-  ["countMismatch", "设备触发数与计划不符"],
+  ["countMismatch", "计数偏差（只告警）"],
   ["motionTimeout", "运动超时（不发 partEnd）"],
   ["ackMismatch", "ACK 序号不匹配"],
+  ["cameraLost", "单台相机缺帧（该组检测不完整）"],
+  ["pulseJitter", "脉冲数波动（首尾 ±1 帧）"],
+  ["cornerSlowdown", "弯道减速（弯道帧数波动）"],
+  ["notInspected", "本件未检（机器人未得到触发许可）"],
+  ["earlyEnd", "提前 partEnd（疑似提前终止）"],
   ["random", "随机（连续运行用）"],
 ];
 
-const handshakeScenarios = new Set<Scenario>(["normal", "lostFrame", "countMismatch", "motionTimeout", "ackMismatch"]);
+/** 只改变虚拟 PLC / 机器人握手与脉冲串、不改图像内容的工况；与后端 Scenario::handshake() 白名单一致（E1 同步）。 */
+const handshakeScenarios = new Set<Scenario>([
+  "normal", "lostFrame", "countMismatch", "motionTimeout", "ackMismatch",
+  "cameraLost", "pulseJitter", "cornerSlowdown", "notInspected", "earlyEnd",
+]);
 
 /** 样本集的图像是真实原图，只能模拟握手类工况；合成图可模拟全部工况。 */
 export function scenariosFor(source: SiteSourceKind | null): [Scenario, string][] {

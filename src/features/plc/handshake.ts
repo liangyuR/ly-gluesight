@@ -10,9 +10,9 @@ export const handshakePhaseLabels: Record<Phase, string> = {
 /** 协议 §5 阶段表与 §8 复位流程推导出的“现在在等谁”。 */
 const waitingTexts: Record<Phase, string> = {
   resetRequired: "PLC：先把 partStart/partEnd/resultAck 置 0 并保持 faultReset 低 ≥1 s，再发 faultReset 上升沿；也可在在线检测页点“复位故障”",
-  idle: "PLC：写 requestSeq、partSn、productCode、shotCount、planVersion，最后置 partStart",
+  idle: "PLC：写 requestSeq、partSn、productCode、shotCount 与 deviceShots（预期总帧数 ΣN_exp）、planVersion，最后置 partStart",
   validating: "PC：核对请求、撤 visionReady、写 acceptedSeq，置 busy，最后置 armed（PLC 此时禁止触发）",
-  acquiring: "PLC：按计划发脉冲、更新 deviceTriggers，运动结束后写最终计数并置 partEnd",
+  acquiring: "PLC：相机使能为高时连续发脉冲（deviceTriggers 只作参考，不要求等于预期总帧数），运动结束、脉冲停发后写最终计数并置 partEnd",
   draining: "PC：收尾收帧、等待测量完成，写结果码/异常码/resultSn/resultSeq，最后置 done",
   awaitAck: "PLC：核对 resultSeq=requestSeq、resultSn=partSn 与结果码，写 ackSeq，再置 resultAck",
   releasing: "PLC：看到 done=busy=0 后清 partStart/partEnd/resultAck；PLC 清完后 PC 落盘并置 visionReady",
@@ -36,7 +36,8 @@ const resultCodeNames: Record<number, string> = {
   1: "OK", 2: "OK_WITH_EXCURSION", 11: "NG_POSITION", 12: "NG_ABSOLUTE", 13: "NG_GAP", 14: "NG_WIDTH", 90: "ERR_INSPECT",
 };
 const faultCodeNames: Record<number, string> = {
-  91: "缺帧", 92: "定位失败", 93: "无效测量点", 94: "拍照计划或数量不匹配", 95: "配方不可用", 96: "多余帧",
+  // 91 / 94 / 96：协议 6 段配方的含义在前；旧拍照点配方仍按旧含义产生这三个码，括号里保留，避免现场按新含义误判。
+  91: "整件无图（旧配方：缺帧）", 92: "定位失败", 93: "无效测量点", 94: "预期总数与计划不符（旧配方：拍照点数不符）", 95: "配方不可用", 96: "保留未用（旧配方：多余帧）",
   97: "运动结束超时", 98: "设备丢失", 99: "处理异常", 100: "计划版本、设备绑定或计划内容与 PC 不一致",
 };
 

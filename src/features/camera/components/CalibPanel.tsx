@@ -13,8 +13,9 @@ interface CalibInfo {
   ts: number | null;
 }
 
-/** 工位标定：标定板放在内边所在高度，软触发一帧，用 lyFlow 的 image.board_calib 求单应，存为工位标定文件。 */
-export default function CalibPanel({ cam, view=1, isSim, imageId, onMmPerPx }: { cam: number; view?:number; isSim: boolean; imageId?:string; onMmPerPx?: (mmPerPx: number | null) => void }) {
+/** 工位标定：标定板放在内边所在高度，软触发一帧，用 lyFlow 的 image.board_calib 求单应，存为工位标定文件。
+ * 每台相机（设备）标定一次；不再有视角：后端 vision_calib_info / vision_calibrate 的 view 缺省为 1，C4 起标定键只用设备。 */
+export default function CalibPanel({ cam, isSim, imageId, onMmPerPx }: { cam: number; isSim: boolean; imageId?:string; onMmPerPx?: (mmPerPx: number | null) => void }) {
   const [info, setInfo] = useState<CalibInfo | null>(null);
   const [cols, setCols] = useState(11);
   const [rows, setRows] = useState(8);
@@ -24,27 +25,27 @@ export default function CalibPanel({ cam, view=1, isSim, imageId, onMmPerPx }: {
   const { show: snack } = useSnackbar();
   const [loading,setLoading]=useState(isTauri()),[loaded,setLoaded]=useState(false),[loadError,setLoadError]=useState("");
   const mounted=useRef(true),loadSerial=useRef(0),runSerial=useRef(0),pending=useRef(false);
-  const scope=JSON.stringify([cam,view,imageId,isSim]),current=useRef({cam,view,scope});current.current={cam,view,scope};
+  const scope=JSON.stringify([cam,imageId,isSim]),current=useRef({cam,scope});current.current={cam,scope};
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;loadSerial.current++;runSerial.current++;};},[]);
 
   const load=async()=>{
     if(!isTauri())return;
     const serial=++loadSerial.current;setLoading(true);setLoadError("");
     try{
-      const value=await invoke<CalibInfo|null>("vision_calib_info",{cam,view});
-      if(!mounted.current||serial!==loadSerial.current||(current.current.cam!==cam||current.current.view!==view))return;
+      const value=await invoke<CalibInfo|null>("vision_calib_info",{cam});
+      if(!mounted.current||serial!==loadSerial.current||current.current.cam!==cam)return;
       setInfo(value);setLoaded(true);
       if(value?.pattern?.length===2){setCols(value.pattern[0]);setRows(value.pattern[1]);}
       if(value?.square!=null)setSquare(value.square);
-    }catch(e){if(mounted.current&&serial===loadSerial.current&&current.current.cam===cam&&current.current.view===view)setLoadError(String(e));}
-    finally{if(mounted.current&&serial===loadSerial.current&&current.current.cam===cam&&current.current.view===view)setLoading(false);}
+    }catch(e){if(mounted.current&&serial===loadSerial.current&&current.current.cam===cam)setLoadError(String(e));}
+    finally{if(mounted.current&&serial===loadSerial.current&&current.current.cam===cam)setLoading(false);}
   };
 
   useEffect(() => {
     setInfo(null);setLoaded(false);setLoadError("");setCols(11);setRows(8);setSquare(5);
     void load();
     return()=>{loadSerial.current++;};
-  }, [cam,view]);
+  }, [cam]);
   useEffect(()=>{runSerial.current++;pending.current=false;setBusy(false);setRunError("");},[scope]);
   const mmPerPx = isSim ? 0.08 : info?.mmPerPx ?? null;
   useEffect(()=>{onMmPerPx?.(mmPerPx);},[mmPerPx,onMmPerPx]);
@@ -58,13 +59,13 @@ export default function CalibPanel({ cam, view=1, isSim, imageId, onMmPerPx }: {
     setBusy(true);
     setRunError("");
     try {
-      const r = await invoke<CalibInfo>("vision_calibrate", { pattern: [cols, rows], square, cam, view, imageId });
+      const r = await invoke<CalibInfo>("vision_calibrate", { pattern: [cols, rows], square, cam, imageId });
       if(!mounted.current||serial!==runSerial.current||current.current.scope!==scope)return;
       if(!r)throw new Error("标定没有返回有效结果");
       setInfo(r);
       setLoaded(true);
       setLoadError("");
-      snack(`图 ${view} 标定完成：残差 RMS ${format(r.rms)} mm，约 ${format(r.mmPerPx)} mm/px`);
+      snack(`标定完成：残差 RMS ${format(r.rms)} mm，约 ${format(r.mmPerPx)} mm/px`);
     } catch (e) {
       if(mounted.current&&serial===runSerial.current&&current.current.scope===scope)setRunError(String(e));
     } finally {
@@ -73,12 +74,12 @@ export default function CalibPanel({ cam, view=1, isSim, imageId, onMmPerPx }: {
   };
 
   return (
-    <Card title={<Heading level={3}>图 {view} · 工位标定（飞拍）</Heading>} actions={<>
+    <Card title={<Heading level={3}>工位标定（飞拍）</Heading>} actions={<>
       <Button onClick={()=>void load()} disabled={busy||loading||!isTauri()}>刷新标定</Button>
       <Button variant={imageId&&!isSim?"filled":"tonal"} leadingIcon={<Crosshair size={15} />} onClick={()=>void run()} disabled={busy || loading || isSim || !imageId||!isTauri()||!valid}>{busy ? "标定中…" : "用冻结样本标定"}</Button>
     </>}>
       <Stack direction="column" align="stretch" gap={10}>
-      <p className="muted calib-desc">将标定板放在实际胶路测量平面；各图分别标定，复用前验证代表性拍照点。</p>
+      <p className="muted calib-desc">将标定板放在实际胶路测量平面；每台相机分别标定，复用前在代表性位置验证。</p>
       {isSim ? (
         <p className="muted">合成图相机的像素当量已知（0.08 mm/px），自动使用内置标定。</p>
       ) : (

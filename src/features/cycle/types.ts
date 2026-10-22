@@ -13,7 +13,10 @@ export type FrameStatus = "waiting" | "measuring" | "done" | "error" | "missing"
 export type Verdict = "OK" | "OK_WITH_EXCURSION" | "NG_POSITION" | "NG_WIDTH" | "NG_ABSOLUTE" | "NG_GAP" | "ERR_INSPECT";
 export type TriggerMode = "fly" | "stop";
 export type ProductSource = "plc" | "manual";
-export type Scenario = "normal" | "excursion" | "gap" | "lostFrame" | "locateFail" | "locateFailGap" | "countMismatch" | "motionTimeout" | "ackMismatch" | "random";
+/** 离线工况，与后端 offline::scenario::Scenario（camelCase）同名。
+ * cameraLost / pulseJitter / cornerSlowdown / notInspected / earlyEnd 是分段连拍的新工况，后端枚举由 E1 加入。 */
+export type Scenario = "normal" | "excursion" | "gap" | "lostFrame" | "locateFail" | "locateFailGap" | "countMismatch" | "motionTimeout" | "ackMismatch" | "random"
+  | "cameraLost" | "pulseJitter" | "cornerSlowdown" | "notInspected" | "earlyEnd";
 export type OfflineFault = "disconnect" | "heartbeatStop" | "heartbeatResume" | "rejectWrite" | "rejectRead" | "delay" | "clear";
 export type RecordMode = "off" | "failed" | "all";
 
@@ -441,7 +444,8 @@ export interface SampleSetSummary {
   source: string;
   dir: string;
   shotCount: number;
-  cameras: { id: string; views: number[] }[];
+  /** frames：每件该相机的帧数（后端 E1 起输出，之前的后端不带）。views 是旧拍照点模型的视角，段配方不使用 */
+  cameras: { id: string; views: number[]; frames?: number }[];
   mmPerPx: number | null;
   parts: SamplePart[];
   missing: string[];

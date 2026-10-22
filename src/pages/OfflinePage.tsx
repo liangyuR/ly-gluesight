@@ -67,6 +67,13 @@ function useOperation() {
   return { busy, error: failure?.text ?? "", failure, perform, alive };
 }
 
+/** 帧数由后端 E1 起输出，之前只显示相机 ID；多视角是旧拍照点模型（三目拼接）的样本集，仍标出以免与段配方的单视角相机混淆。 */
+function cameraFramesText(camera: SampleSetSummary["cameras"][number]) {
+  const frames = camera.frames == null ? "" : ` ${camera.frames} 帧`;
+  const legacy = camera.views.length > 1 ? `（旧模型 ${camera.views.length} 视角）` : "";
+  return `${camera.id}${frames}${legacy}`;
+}
+
 function SampleSetView({ sampleSet }: { sampleSet: SampleSetSummary }) {
   const missingTitle = sampleSet.missingCount > 0 ? sampleSet.missing.slice(0, 10).join("\n") + (sampleSet.missingCount > 10 ? "\n…" : "") : undefined;
   return (
@@ -74,10 +81,10 @@ function SampleSetView({ sampleSet }: { sampleSet: SampleSetSummary }) {
       <dt>名称</dt><dd>{sampleSet.name}</dd>
       <dt>目录</dt><dd className="mono">{sampleSet.dir}</dd>
       <dt>件数</dt><dd>{sampleSet.parts.length}</dd>
-      <dt>拍照点</dt><dd>{sampleSet.shotCount}</dd>
+      <dt>每件帧数</dt><dd>{sampleSet.shotCount}</dd>
       <dt>缺图</dt><dd className={sampleSet.missingCount > 0 ? "c-ng" : undefined} title={missingTitle}>{sampleSet.missingCount}</dd>
       <dt>标签</dt><dd>{labels.map(l => `${sampleLabelText[l]} ${sampleSet.parts.filter(p => p.label === l).length}`).join(" · ")}</dd>
-      <dt>相机与视角</dt><dd>{sampleSet.cameras.map(c => `${c.id}（视角 ${c.views.join("/")}）`).join("、") || "—"}</dd>
+      <dt>每相机帧数</dt><dd>{sampleSet.cameras.map(cameraFramesText).join("、") || "—"}</dd>
     </dl>
   );
 }
