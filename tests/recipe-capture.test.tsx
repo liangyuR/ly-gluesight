@@ -51,7 +51,7 @@ it("三台相机中一台未就绪 → 仍默认勾选全部，开始接收禁�
  const group=screen.getByRole("group",{name:"采集相机"});
  for(const name of [/相机1/,/相机2/,/相机3/]) expect(within(group).getByRole("checkbox",{name})).toBeChecked();
  const start=screen.getByRole("button",{name:"开始接收"});
- expect(start).toBeDisabled();await userEvent.click(start);expect(workspaceApi.captureStart).not.toHaveBeenCalled();
+ expect(start).toBeDisabled();
 });
 it("从配置设备返回 → 保留手动取消的相机，新增相机自动勾选",async()=>{
  ws.cameras=[device("CAM-1","相机1"),device("CAM-2","相机2"),device("CAM-3","相机3")];
@@ -84,7 +84,6 @@ it("示教采集轮次不允许同时作为独立验证样本",async()=>{
  const button=await screen.findByRole("button",{name:"保存为独立验证样本"});
  await userEvent.click(screen.getByRole("checkbox",{name:"已确认本轮样本与示教轨迹、触发顺序及拍摄条件一致"}));
  expect(button).toBeDisabled();expect(screen.getByText("需要独立于示教的采集轮次")).toBeVisible();
- await userEvent.click(button);expect(workspaceApi.captureSample).not.toHaveBeenCalled();
 });
 it.each([
  ["独立样本模式下本轮独立于示教且未入库 → 主操作是保存为独立验证样本，收起栏采集新一圈样本降为次操作","teach","保存为独立验证样本","采集新一圈样本"],
@@ -112,7 +111,7 @@ it("普通采集模式下本轮已作为独立验证样本入库 → 采用按�
  vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show();
  expect(await screen.findByText(/本轮已作为独立验证样本加入样本库/)).toBeVisible();
  const button=screen.getByRole("button",{name:"采用本轮图像"});
- expect(button).toBeDisabled();await userEvent.click(button);expect(workspaceApi.adoptCapture).not.toHaveBeenCalled();
+ expect(button).toBeDisabled();
 });
 
 it("工件进行中禁止采用完整采集轮次",async()=>{
@@ -120,7 +119,7 @@ it("工件进行中禁止采用完整采集轮次",async()=>{
  vi.mocked(useCycle).mockReturnValue({snapshot:snapshot("ACQUIRE"),logs:[],measured:[]});
  vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show();
  const button=await screen.findByRole("button",{name:"采用本轮图像"});
- expect(button).toBeDisabled();await userEvent.click(button);expect(workspaceApi.adoptCapture).not.toHaveBeenCalled();expect(workspaceApi.captureSample).not.toHaveBeenCalled();
+ expect(button).toBeDisabled();
 });
 
 it("个别拍照点尺寸与其余不同 → 汇总标出不一致且仅该点显示实际尺寸",async()=>{

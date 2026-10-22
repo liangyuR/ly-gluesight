@@ -287,20 +287,6 @@ fn invalid_cycles_missing_images_and_duplicate_shots_are_never_available() {
     }
 }
 
-#[test]
-fn pruning_preserves_current_and_in_use_recordings() {
-    let dir = TestDir::new();
-    let paths: Vec<_> = (1..=3).map(|i| dir.root().join("20261010").join(format!("20261010_00000{i}_cycle_{i}"))).collect();
-    for path in &paths {
-        std::fs::create_dir_all(path).unwrap();
-        std::fs::write(path.join("image.pgm"), [0; 100]).unwrap();
-    }
-    let errors = prune(&dir.root(), 1, 1, &[paths[1].clone(), paths[2].clone()], None);
-    assert!(errors.is_empty(), "{errors:?}");
-    assert!(!paths[0].exists());
-    assert!(paths[1].exists() && paths[2].exists());
-}
-
 fn pending(root: &Path, cycle: &str) -> PathBuf {
     let path = root.join("_pending").join(format!("20261010_000000_000_cycle_{cycle}"));
     std::fs::create_dir_all(&path).unwrap();

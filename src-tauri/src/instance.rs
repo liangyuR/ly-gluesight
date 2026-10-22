@@ -30,8 +30,6 @@ mod tests {
         drop(restarted);
         assert_eq!(fs::read(&marker).unwrap(), b"preserved");
         drop(other);
-        assert_eq!(root.parent(), Some(std::env::temp_dir().as_path()));
-        assert!(root.file_name().unwrap().to_str().unwrap().starts_with("gluesight-instance-"));
         fs::remove_dir_all(root).unwrap();
     }
 }

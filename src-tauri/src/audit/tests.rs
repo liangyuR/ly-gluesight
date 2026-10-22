@@ -511,6 +511,7 @@ fn startup_replay_completes_durable_recording_before_interrupted_pending_is_mark
     let sink = dir.sink();
     let record = part("startup-complete", 42);
     sink.store.insert(&record.borrowed()).unwrap();
+    sink.store.insert(&part("startup-interrupted", 43).borrowed()).unwrap();
     assert_eq!(sink.detail("startup-complete").recording.state, RecordingState::Pending);
     let path = dir.0.join("spool");
     let mut spool = spool::Spool::open(path.clone()).unwrap();
@@ -520,9 +521,10 @@ fn startup_replay_completes_durable_recording_before_interrupted_pending_is_mark
     let mut sink = dir.sink_mode(true);
     let mut spool = spool::Spool::open(path).unwrap();
     assert!(replay_cycle(&mut spool, "startup-complete", &mut sink, 1).unwrap().0);
-    assert_eq!(sink.store.finish_interrupted_recordings().unwrap(), 0);
+    assert_eq!(sink.store.finish_interrupted_recordings().unwrap(), 1);
     assert_eq!(sink.detail("startup-complete").recording.state, RecordingState::Complete);
     assert!(sink.detail("startup-complete").recording.available);
+    assert_eq!(sink.detail("startup-interrupted").recording.state, RecordingState::Failed);
 }
 
 

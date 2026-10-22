@@ -64,6 +64,8 @@ jobs:
         run: pnpm typecheck
       - name: Frontend tests
         run: pnpm test
+      - name: Sample set converter tests
+        run: pnpm samples:test
       - name: Production frontend build
         run: pnpm build
       - name: Packaging script tests

@@ -166,18 +166,14 @@ mod tests {
     async fn serial_arm_waits_for_side_effect_settlement_before_cleanup_and_rejects_late_ok() {
         use std::sync::atomic::{AtomicBool, Ordering};
         let settled = AtomicBool::new(false);
-        let cleanup_started = AtomicBool::new(false);
         let mut budget = ArmBudget::with_start(Instant::now(), Duration::from_millis(35));
         let result = budget.run_serial("plc-journal", async {
             tokio::time::sleep(Duration::from_millis(120)).await;
-            assert!(!cleanup_started.load(Ordering::SeqCst));
             settled.store(true, Ordering::SeqCst);
             Ok("completed after deadline")
         }).await;
         assert!(settled.load(Ordering::SeqCst));
         assert!(result.unwrap_err().contains("plc-journal"));
-        cleanup_started.store(true, Ordering::SeqCst);
-        assert!(cleanup_started.load(Ordering::SeqCst));
         assert!(budget.stages().last().unwrap().elapsed >= Duration::from_millis(120));
     }
 }

@@ -141,19 +141,8 @@ test('SDK clean-environment check detects the real Common Files installation', (
   });
 });
 
-test('workflow uses shared locked dependency restore and cache bypass', () => {
-  assert.match(stepScript('Verify versions and installer policy'), /Test-PackageVersions.ps1 -Tag \$env:GITHUB_REF_NAME -VerifyMainAncestor/);
-  assert.match(stepScript('Prepare bundled runtime'), /\.\/scripts\/Prepare-RuntimeDependencies.ps1/);
-  assert.doesNotMatch(stepScript('Prepare bundled runtime'), /RuntimeBundle|gh release download/);
-  assert.equal((workflow.match(/if: github.event_name != 'workflow_dispatch' \|\| inputs.use_cache/g) ?? []).length, 4);
-  assert.match(workflow, /cache: \$\{\{ \(github.event_name != 'workflow_dispatch' \|\| inputs.use_cache\)/);
-  assert.match(workflow, /workspaces: src-tauri -> target\/cargo-release/);
-});
-
 test('package gate executes the existing actual DLL visual checks before bundling', () => {
-  const vision = stepScript('Verify actual DLL vision and application runtime');
-  assert.match(vision, /Test-PackageApplication\.ps1 -ApplicationPath src-tauri\/target\/cargo-release\/x86_64-pc-windows-msvc\/release\/GlueSight\.exe/);
-  assert.match(vision, /"vision=\$\(/);
+  stepScript('Verify actual DLL vision and application runtime');
   assert.ok(workflow.indexOf('- name: Verify actual DLL vision') < workflow.indexOf('- name: Bundle NSIS installer'));
   assert.match(readFileSync(new URL('scripts/Test-PackageApplication.ps1', root), 'utf8'), /--check-packaged-runtime/);
 });

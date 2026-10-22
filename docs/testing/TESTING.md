@@ -1,18 +1,19 @@
 # 测试记录与复现
 
-更新时间：2026-10-12。当前测试范围按本轮明确选择收缩，测试删除不改变产品业务规则或运行时校验。前端与后端的分组见[前端轻量测试](frontend-lightweight-tests.md)、[后端轻量测试](backend-lightweight-tests.md)。
+更新时间：2026-10-22。当前测试范围按本轮明确选择收缩，测试删除不改变产品业务规则或运行时校验。前端与后端的分组见[前端轻量测试](frontend-lightweight-tests.md)、[后端轻量测试](backend-lightweight-tests.md)。
 
 ## 当前保留范围
 
 | 测试层 | 保留验证 |
 | --- | --- |
-| 前端 | 创建配方、草稿编辑、采集、示教验证发布、生产操作锁、周期/图源隔离与历史显示，39 项 |
-| Rust 默认 | 配方版本、采集与示教流程、相机/帧关联、生产周期、PLC、调度、SQLite、原图录制、审计恢复及历史，192 项 |
-| S7 专项 | 35 项真实生产驱动与本机 Python peer 的线协议测试 |
-| 桌面主流程 | 隔离 flow 实例内启动一件到 SQLite、原图和历史读回 |
-| 保留工具 | 打包契约、Windows 发布门禁、安装包自检、S7 Python 服务与 Robot/Modbus 隔离协议 |
+| 前端 | 创建配方、草稿编辑、采集、示教验证发布、生产操作锁、周期/图源隔离与历史显示 |
+| Rust 默认 | 配方版本、采集与示教流程、相机/帧关联、生产周期、PLC、调度、SQLite、原图录制、审计恢复及历史 |
+| S7 专项 | 真实生产驱动与本机 Python peer 的线协议测试 |
+| 桌面端到端 | 隔离 flow 实例内启动一件到 SQLite、原图和历史读回；隔离 e2e 实例内离线建站到投产、日志回放与特征定位，见“端到端入口” |
+| 保留工具 | 打包契约、Windows 发布门禁、安装包自检、样本集转换脚本、S7 Python 服务与 Robot/Modbus 隔离协议 |
+| 手动专项 | 长稳测试、算法评测，需样本集与 lyFlow 运行库，不进 CI |
 
-本轮默认回归已验证前端 40 项与 Rust 192 项，S7 专项 35 项通过。另有 1 个由父测试调用的耐久性子进程夹具，默认忽略，不单独执行。
+各层用例数量随代码变化，以 CI（`.github/workflows/windows-ci.yml`）的运行结果为准，文档不记录具体数字。另有 1 个由父测试调用的耐久性子进程夹具，默认忽略，不单独执行。
 
 本轮删除真实 DLL 的 8 项专项、性能与队列压力专项、性能工具自身测试、Robot 五工况桌面联调、现场验收清单、冻结发布资源的 9 项跨平台独立测试（Windows 默认 8 项）和质量判定规则的 11 项独立测试。旧 flyshot 脚本、去哈希专项、重复的 P0 性能/联调准备入口、覆盖率报告及重复前端快捷入口同步清理。保留的主流程可能经过发布和判定，但不据此声明已覆盖被删除组的全部规则。
 
@@ -31,12 +32,18 @@
 | `pnpm typecheck` | 应用及测试 TypeScript 类型检查 |
 | `pnpm build` | 生产前端构建 |
 | `cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib` | 默认后端回归，依赖需已缓存 |
+| `pnpm samples:test` | 样本集转换脚本（`scripts/sample-set/convert.py`）测试，只需 Python 3 标准库 |
 | `pwsh -NoProfile -File tests/packaging/Test-RuntimeBundle.ps1` | 打包版本、ABI、源码修订及运行库依赖契约 |
+| `pwsh -NoProfile -File tests/packaging/Test-LyFlowDependency.ps1` | lyFlow 依赖的 Release 选择、配置与 Cargo 锁定、运行库校验、缓存与网络回退、升级回滚（网络与 DLL 探针用本地夹具） |
+| `pwsh -NoProfile -File tests/packaging/Test-VendorDependency.ps1` | 厂商运行库的包隔离、结构、尺寸、CRT 版本、固定源恢复与缓存边界 |
+| `node --test tests/packaging/windows-workflow.test.mjs` | Windows 打包工作流门禁：版本与安装方式校验、发布标签须在 main 上、版本设置、SDK 干净环境检查、视觉检查先于打包、依赖缓存标识与发布清单 |
+| `pwsh -NoProfile -File scripts/Test-Soak.ps1` | 长稳测试（隔离 soak 实例，需样本集与 lyFlow 运行库），阶段、参数与退出码见[长稳报告](soak-report.md) |
+| `pwsh -NoProfile -File scripts/Test-AlgorithmEval.ps1` | 算法评测（忽略的 cargo 评测，需样本集与 `lyflow_core.dll`），参数与读数见[算法评测](algorithm-evaluation.md) |
 | `pwsh -NoProfile -File scripts/Test-DevStartup.ps1` | Windows 旧终端在设置/清除本地运行库后启动，子进程读取最新保存值，参数与退出码保持不变 |
 
 `Test-DevStartup.ps1` 临时修改用户级 `GLUESIGHT_LYFLOW_RUNTIME`，在 `finally` 中恢复原值；验证期间不要并行修改该配置或启动 GlueSight。测试通过临时 CLI 进程观察启动环境，不启动实际 GUI，不修改配方。
 
-单文件前端测试示例：`pnpm exec vitest run tests/teaching.test.tsx`。默认测试不生成覆盖率报告。三个桌面端到端入口的参数、前置条件与已知限制见下文“端到端入口”。
+单文件前端测试示例：`pnpm exec vitest run tests/teaching.test.tsx`。默认测试不生成覆盖率报告。四个桌面端到端入口的参数、前置条件与已知限制见下文“端到端入口”。
 
 Windows 受限环境遇到 Node realpath EPERM 时，按仓库 AGENTS.md 的 Windows 指引在同一进程加载兼容脚本。需要获准的主机权限时运行相同命令，不修改应用逻辑掩盖环境失败。Cargo 首次构建需要 MSVC、Visual Studio C++ 工具及私有 Git 依赖读取权限；离线执行要求依赖已缓存。
 
@@ -73,7 +80,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib -- --ignored packaging::te
 
 `pnpm test:ui:production` 使用 `tests/native/production-flow-ui.mjs` 与 `tests/native/tauri-flow-test.json`，应用标识为 `com.xyzrobotics.tujiaovision.flow-tests`，报告输出到 `output/playwright/flow-regression`。测试通过站点模式进入“离线 · 合成图”，经生产 S7 握手运行一件；使用真实后端、SQLite、PGM 和元数据，并在历史页读回；接着跑两个定位失败工况（胶正常 → ERR 92、定位失败 + 断胶 → NG 优先），再紧接着跑第三件定位失败（中间不能插正常件，否则连续数清零）：检测页出现“特征定位连续失败”告警、应用日志有本件的“连续定位失败”，再跑一件正常件，告警消失、日志有“定位恢复”（G5 E1，定稿 §14）；结束时退出离线并关闭本次进程。
 
-其余保留的桌面测试入口及前置条件见 [原生测试目录](../../tests/native/)。恢复专项应使用独立实例和新输出目录，避免使用生产配置。Robot/Modbus 模拟服务、模拟节拍与回放目录相机已删除，由站点模式的离线产线取代。
+[`tests/native/`](../../tests/native/) 没有单独说明文件：四个端到端入口的驱动脚本与实例配置见“端到端入口”，长稳测试用其中的 `tauri-soak-test.json`，其余为下表保留的 P0 脚本及“本轮验证”中的原生脚本抽查。恢复专项应使用独立实例和新输出目录，避免使用生产配置。Robot/Modbus 模拟服务、模拟节拍与回放目录相机已删除，由站点模式的离线产线取代。
 
 **P0 原生脚本（站点模式下的处理）**
 
@@ -98,7 +105,7 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 
 ## 端到端入口
 
-三个入口都会构建（`-SkipBuild` 跳过）、启动、驱动并关闭各自的隔离桌面实例，结束时打印总耗时；失败以非零退出码结束，输入缺失为退出码 3（不算通过）。决策见 [r2-test-infra 决策记录](../decisions/r2-test-infra.md)。
+四个入口都会构建（`-SkipBuild` 跳过）、启动、驱动并关闭各自的隔离桌面实例，结束时打印总耗时；失败以非零退出码结束，三个 `test:e2e:*` 入口输入缺失时为退出码 3（不算通过）。决策见 [r2-test-infra 决策记录](../decisions/r2-test-infra.md)。
 
 | 命令 | 驱动脚本 | 实例配置（应用标识） | 默认端口 | 输出 |
 | --- | --- | --- | --- | --- |
@@ -120,9 +127,9 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 | `-ArmBudgetMs` | 仅 `test:e2e:offline`：把布防预算 `timeouts.armMs` 临时改为该值（毫秒），写进 `result.json` 的 `inputs.armBudgetMs`；不传时按默认 200 ms 验证 |
 | `CARGO_TARGET_DIR` | 共享或自定义 Cargo 构建目录时设置，脚本从这里取构建产物 |
 
-**前置条件**：Windows 与 WebView2 Runtime；Node 24.15+，已 `pnpm install --frozen-lockfile`；Rust 工具链与私有 Git 依赖读取权限（构建时）；离线样本集与 lyFlow 运行库（两个 e2e 入口）。实测的 2026-10-17 单圈样本集原件只读，脚本先复制到输出目录再写模拟当量。
+**前置条件**：Windows 与 WebView2 Runtime；Node 24.15+，已 `pnpm install --frozen-lockfile`；Rust 工具链与私有 Git 依赖读取权限（构建时）；离线样本集与 lyFlow 运行库（三个 `test:e2e:*` 入口）。实测的 2026-10-17 单圈样本集原件只读，脚本先复制到输出目录再写模拟当量。
 
-**隔离实例的启动**（`scripts/Start-UiTestInstance.ps1`，三个入口共用，也可单独启动后手动驱动）：
+**隔离实例的启动**（`scripts/Start-UiTestInstance.ps1`，四个入口共用，也可单独启动后手动驱动）：
 
 - 子进程只继承 NUL 输入与 `stdout.log`、`stderr.log` 两个文件句柄，不继承调用方的管道；后台或被捕获输出时，脚本在实例就绪后即可返回，实例继续运行。
 - 就绪标准：在 `127.0.0.1` 与 `[::1]` 两个回环地址上轮询 `/json/list`，出现且只出现主窗口页面、资料准备窗口已关闭，最长 120 s。主窗口所在地址写入 `instance.json` 的 `cdp`，各驱动脚本默认从清单读取（`--cdp` 可覆盖）。程序提前退出或超时会附带 `stderr.log` 末尾 20 行。
@@ -132,7 +139,7 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 
 - 资料目录长度：程序启动时校验主窗口的 WebView2 资料目录 `<资料目录>\webview\<SID>` 不超过 229 个字符；资料目录尚未初始化（没有 `storage-layout.json`、需要先建资料准备窗口）时，还校验准备窗口的 `<资料目录>\migration\bootstrap\webview\<SID>` 不超过 237 个字符。超限直接报错退出（隐藏窗口的测试实例写 `stderr.log` 并以退出码 1 结束）。SID 一般 46 个字符时，全新资料目录应不超过 162 个字符，已初始化的不超过 174 个字符。主检出默认约 107 个字符；`.claude/worktrees/<名称>/` 工作树约 143 个字符，仍可用，但更深的路径需要用 `-DataRoot`（例如 `C:\gs-tmp\<名称>`）。
 - 全新资料目录启动时先有资料准备窗口，它与主窗口是两个 WebView2 浏览器进程：先启动的占 `127.0.0.1:<端口>`，主窗口回落到 `[::1]:<端口>`；已初始化目录重启时主窗口在 `127.0.0.1`。不要自己拼 `localhost:<端口>` 连接，使用清单里的 `cdp`。
-- 两个 e2e 入口共用 e2e 配置、可执行文件与资料目录，不能同时运行，后跑的会清空前一个的资料。不同检出 / 工作线并行时各用不同端口与 `-DataRoot`。
+- 三个 `test:e2e:*` 入口共用 e2e 配置、可执行文件与资料目录，不能同时运行，后跑的会清空前一个的资料。不同检出 / 工作线并行时各用不同端口与 `-DataRoot`。
 - 机器满载时（实测其他进程占满 CPU），调试构建的布防会超过默认 200 ms 预算，工件判 ERR 98、没有原图，`test:e2e:offline` 失败并在报错里给出本件结论。离线端到端默认按 200 ms 验证；机器与其他任务共用、负载高时可加 `-ArmBudgetMs 1000` 再跑（满载时实测 `audit-health` 阶段可达 1 s，需要 3000），结果里会记下放宽值（`test:e2e:log-replay` 固定放宽到 1 s）。满载时 S7 轮询会停顿，虚拟 PLC 心跳超过 3 s 未观察到翻转即进入故障；若紧接着的整圈采集由离线产线发出的 faultReset 早于新的心跳翻转，复位被拒（“尚未观察到 PLC 心跳翻转，不能复位”）且不会再发，采集一直等到超时。这类失败只能等负载下降后重跑，产品侧问题已转交 r2-plc。
 - 端到端都是隐藏窗口，截图来自 WebView2 页面；结论只覆盖业务接线、落盘与界面驱动，边界见各节。
 

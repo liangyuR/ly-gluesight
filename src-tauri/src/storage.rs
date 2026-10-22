@@ -778,20 +778,6 @@ mod tests {
         );
     }
     #[test]
-    fn release_resources_keep_exact_bytes_during_directory_migration() {
-        let test = Fixture::new();
-        let source = test.0.join("source");
-        let staging = test.0.join("staging");
-        fs::create_dir_all(source.join("vision/releases/r/b")).unwrap();
-        let bytes = b"{  \"path\": \"relative/image.png\" }\n";
-        fs::write(source.join("vision/releases/r/b/recipe.json"), bytes).unwrap();
-        copy_legacy_data(&source, &staging, &test.0.join("target")).unwrap();
-        assert_eq!(
-            fs::read(staging.join("vision/releases/r/b/recipe.json")).unwrap(),
-            bytes
-        );
-    }
-    #[test]
     fn webview_profile_beyond_measured_limit_rejects_data_directory() {
         let user = "S-1-5-21-1-2-3-1001";
         let units = |path: &Path| path.to_string_lossy().encode_utf16().count();

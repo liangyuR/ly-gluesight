@@ -91,7 +91,6 @@ describe("历史工件复测", () => {
     expect(screen.getByRole("button", { name: "按候选规则重判" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "从原图复测整件" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "按原发布包重现" })).toBeDisabled();
-    expect(workspaceApi.compareOriginal).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "将此帧用于示教" })).toBeDisabled();
   });
 

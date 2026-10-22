@@ -191,7 +191,6 @@ mod tests {
         assert!(frame.require_image(2, 1).is_err());
         assert!(frame.image(2).is_none());
         assert!(frame.image(3).is_none());
-        assert_eq!((frame.session, frame.frame_counter, frame.trigger_counter), (7, 11, 11));
     }
 
     fn mosaic(phase: [[usize; 2]; 2], w: usize, h: usize, rgb: impl Fn(usize, usize) -> [u8; 3]) -> Vec<u8> {

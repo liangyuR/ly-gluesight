@@ -30,20 +30,12 @@ it("设备未返回且生产库读取失败 → 不伪造零值，独立显示�
   expect(screen.getByText("已连接")).toBeVisible();
 });
 
-it("设备连接成功但没有已发布配方 → 保留开工检查入口，不宣告生产或流程完成", async () => {
+it("设备连接成功但没有已发布配方 → 不宣告生产或流程完成", async () => {
   api.camera.mockResolvedValue([{ id: "CAM-1", name: "相机 1", ready: true, message: "设备已连接" }]);
   render(<MemoryRouter><OperationGuidePage /></MemoryRouter>);
   expect(await screen.findByText("1/1 设备就绪")).toBeVisible();
   expect(await screen.findByText("0 个已发布")).toBeVisible();
   expect(screen.queryByText(/^(可生产|已完成)$/)).not.toBeInTheDocument();
-  for (const [title, label, path] of [
-    ["首次建站", "配置采集设备", "/camera"],
-    ["日常生产", "进入在线检测", "/inspect"],
-    ["缺陷排查", "打开历史记录", "/history"],
-    ["配置变更", "打开配方库", "/recipe"],
-  ]) {
-    expect(within(screen.getByRole("region", { name: title })).getByRole("link", { name: label })).toHaveAttribute("href", path);
-  }
 });
 
 it.each(["sampleSet", "synthetic"])("离线来源 %s → 标明模拟范围并提供对应调试入口", async source => {

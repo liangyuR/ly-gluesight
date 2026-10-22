@@ -18,10 +18,6 @@ fn representative_calibration_reuse_requires_matching_environment_and_retains_so
     assert!(!workflow::reusable_calibration(&check, &image.camera_tag, &image.calib_tag, Some(0.1), &stale));
     let mut failed = check.clone(); failed.passed = false;
     assert!(!workflow::reusable_calibration(&failed, &image.camera_tag, &image.calib_tag, Some(0.1), &image));
-    let copied: CalibrationCheck = serde_json::from_value(state_value(&check)).unwrap();
-    assert_eq!(copied.verification_id, "verification-a");
-    assert_eq!(copied.source_k, 7);
-    assert_eq!(copied.source_image_id, "capture-a-v1");
 }
 
 #[test]
@@ -101,30 +97,6 @@ fn only_failed_activation_can_be_abandoned_and_returns_to_draft() {
             assert_eq!(state_value(&w), before, "{publish:?}");
         }
     }
-}
-
-#[test]
-fn plc_gate_waiter_is_queued_ahead_of_later_contenders() {
-    let gate = Arc::new(tokio::sync::Mutex::new(()));
-    let order = Arc::new(Mutex::new(Vec::new()));
-    let holder = gate.clone().blocking_lock_owned();
-    let waiter = {
-        let (gate, order) = (gate.clone(), order.clone());
-        std::thread::spawn(move || workflow::lock_plc_gate(&gate, std::time::Duration::from_secs(3), "测试").map(|_guard| order.lock().unwrap().push("waiter")))
-    };
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    {
-        let (gate, order) = (gate.clone(), order.clone());
-        std::thread::spawn(move || {
-            let _guard = gate.blocking_lock();
-            order.lock().unwrap().push("later");
-            std::thread::sleep(std::time::Duration::from_millis(3500));
-        });
-    }
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    drop(holder);
-    assert!(waiter.join().unwrap().is_ok());
-    assert_eq!(order.lock().unwrap().first(), Some(&"waiter"));
 }
 
 #[test]

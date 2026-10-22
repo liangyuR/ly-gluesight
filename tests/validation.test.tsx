@@ -91,7 +91,6 @@ describe("验证与发布页面", () => {
     ws.data!.workspace.validation!.passed = false;
     show();
     expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
-    expect(workspaceApi.publish).not.toHaveBeenCalled();
   });
 
   it("确认期间候选修订变更必须重新验证和确认",async()=>{

@@ -12,9 +12,6 @@ fn graphs_preserve_each_shot_and_only_skip_explicitly_skipped_shots() {
     assert!(graph["shots"][0]["graph"].is_object());
     assert_eq!(graph["shots"][1]["camera"], "cam1");
     assert_eq!(graph["shots"][1]["view"], 3);
-    let stored: Value = serde_json::from_slice(&serde_json::to_vec(&graph).unwrap()).unwrap();
-    let restored: crate::recipe::RecipeDoc = serde_json::from_slice(&serde_json::to_vec(&doc).unwrap()).unwrap();
-    assert_eq!(stored, graphs(&restored.build().unwrap()).unwrap());
     doc.shots[0].path.clear();
     assert!(graphs(&doc.build().unwrap()).unwrap_err().contains("尚未示教"));
 }

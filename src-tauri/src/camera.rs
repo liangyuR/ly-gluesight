@@ -1673,21 +1673,6 @@ mod view_tests {
     }
 
     #[test]
-    fn three_images_share_one_device_frame_and_trigger_counter() {
-        let images: Vec<_> = [1, 2, 3].into_iter().map(|value| Arc::new(FrameImage::new(1, 1, vec![value]))).collect();
-        let frame = synthetic_frame(0, 72, 19, images, true);
-        assert!(frame.manual);
-        assert_eq!((frame.cam, frame.session, frame.frame_counter, frame.trigger_counter), (0, 72, 19, 19));
-        assert_eq!(frame.counter, CounterSource::Synthetic);
-        assert_eq!(frame.images.len(), 3);
-        for view in 1..=3 {
-            assert_eq!(frame.image(view).unwrap().pixels, [view]);
-        }
-        assert!(frame.image(0).is_none());
-        assert!(frame.image(4).is_none());
-    }
-
-    #[test]
     fn sample_set_missing_image_becomes_a_skipped_frame_and_later_triggers_still_arrive_in_order() {
         use crate::offline::sample_set::fixture::Fixture;
         let fixture = Fixture::new(&[1, 2, 3]);

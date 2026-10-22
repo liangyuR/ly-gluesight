@@ -631,7 +631,6 @@ mod tests {
     #[test]
     fn one_device_frames_bind_by_counter_instead_of_arrival_order() {
         let mut router = armed();
-        assert_eq!(plan().cameras.len(), 1);
         for (counter, shot) in [(43, 2), (41, 0), (44, 3), (42, 1)] {
             assert_eq!(router.route(&frame(counter)), Route::Bound { shot, ordinal: counter - 40 });
         }

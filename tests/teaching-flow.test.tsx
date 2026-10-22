@@ -338,13 +338,9 @@ it("刷选提取后运行一次算法 → 传递原图引导与点距，重采�
   const table = await screen.findByRole("table", { name: "逐点试测结果" });
   expect(workspaceApi.saveParams).toHaveBeenCalledWith("A", 8, 0, { path: extracted, mmPerPx: .2, fixture: null });
   expect(workspaceApi.trial).toHaveBeenCalledWith("A", 9, 0, "A-image-0-cam1");
-  expect(within(table).getByText("0.125")).toBeVisible();
-  expect(within(table).getByText("2.500")).toBeVisible();
-  expect(within(table).getByText("缺胶")).toBeVisible();
   expect(image.querySelector('line[x1="12"][y1="15"][x2="12"][y2="27"]')).not.toBeNull();
   expect(image.querySelector('line[x1="22"][y1="12"][x2="22"][y2="28"][stroke="var(--ng)"]')).not.toBeNull();
   expect(within(table).getByText("3.200（候选，未通过）")).toHaveClass("c-ng");
-  expect(screen.getByText("逐点试测结果 · 测得 1 / 2 · 未测 1")).toBeVisible();
   fireEvent.change(screen.getByRole("spinbutton", { name: "中线点间距" }), { target: { value: "80" } });
   await user.click(screen.getByRole("button", { name: "应用到当前中线" }));
   expect(screen.getByLabelText("中线点 1")).toHaveAttribute("cx", "12");

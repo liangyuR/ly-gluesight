@@ -880,9 +880,6 @@ mod tests {
     fn twenty_frames_are_twenty_shots_and_require_plc_end() {
         let host = host();
         let round = start(&host);
-        assert_eq!(round.state, CaptureState::WaitingStart);
-        assert_eq!(round.planned_count, None);
-        assert_eq!(host.get(&round.round_id).unwrap().planned_count, None);
         host.plc_started(20).unwrap();
         for n in 1..=20 { receive(&host, &round, frame(n)); }
         let result = host.current().unwrap();

@@ -619,33 +619,6 @@ fn failed_shot_persistence_rolls_back_the_part_and_snapshot() {
 
 
 #[test]
-fn deferred_recovery_allows_durable_recording_replay_before_failing_remaining_pending() {
-    let db = TestDb::new();
-    let store = Store::open(&db.path()).unwrap();
-    let recipe = recipe();
-    let delivery = PlcDelivery { state: PlcDeliveryState::Submitted, updated_at: 9, message: None };
-    let completed = save(&store, &recipe, "durable-completed", &shots(&recipe), &delivery, None).unwrap();
-    let interrupted = save(&store, &recipe, "actually-interrupted", &shots(&recipe), &delivery, None).unwrap();
-    let original = store.detail(completed).unwrap().summary;
-    drop(store);
-    let reopened = Store::open_deferred_recovery(&db.path()).unwrap();
-    assert_eq!(reopened.detail(completed).unwrap().recording.state, RecordingState::Pending);
-    reopened.update_shot_raw_files("durable-completed", 0, &[ShotRawFile {
-        view: 1, file: "records/durable-completed/k000.pgm".into(), width: Some(2), height: Some(3),
-    }]).unwrap();
-    let evidence = RecordingEvidence { state: RecordingState::Complete, available: true,
-        directory: Some("records/durable-completed".into()), errors: Vec::new() };
-    reopened.update_recording("durable-completed", &evidence).unwrap();
-    assert_eq!(reopened.finish_interrupted_recordings().unwrap(), 1);
-    let detail = reopened.detail(completed).unwrap();
-    assert_eq!(detail.recording, evidence);
-    assert_eq!(serde_json::to_value(&detail.summary).unwrap(), serde_json::to_value(original).unwrap());
-    assert_eq!(reopened.detail(interrupted).unwrap().recording.state, RecordingState::Failed);
-    assert_eq!(reopened.finish_interrupted_recordings().unwrap(), 0);
-}
-
-
-#[test]
 fn durable_record_identity_checks_actual_fields_while_allowing_later_delivery_and_raw_evidence() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();

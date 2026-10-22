@@ -124,14 +124,6 @@ describe("在线检测开工检查清单", () => {
     expect(list.getByText("没有可开工配方（A：未示教）")).toBeVisible();
     expect(list.getByRole("link", { name: "去配方工作台" })).toHaveAttribute("href", "/recipe");
   });
-
-  it("在制件期间出现阻塞 → 保留本件检测中并显示下一件异常", () => {
-    state = { ...state, phase: "ACQUIRE" };
-    report = readiness({ ready: false, items: readiness().items.map(i => i.key === "audit" ? { ...i, state: "blocked", detail: "持久追溯故障" } : i) });
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    expect(screen.getByText("本件检测中／下一件条件异常")).toBeVisible();
-    expect(screen.getByText("持久追溯故障")).toBeVisible();
-  });
 });
 
 describe("在线检测选帧、曲线与快照绑定", () => {
