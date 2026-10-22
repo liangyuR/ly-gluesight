@@ -405,7 +405,6 @@ pub fn station_key(device: &str) -> Result<String, String> {
 }
 
 /// 段配方一台检测相机的标定文件：按它的标定引用（缺省为设备编号）找工位标定。
-#[allow(dead_code)] // D3 段配方发布接入后去掉
 pub fn camera_calib_path(app: &AppHandle, inspect: &CameraInspect) -> Result<PathBuf, String> {
     let key = match &inspect.calib { Some(reference) => reference.clone(), None => station_key(&inspect.camera)? };
     station_calib_path(app, &key)

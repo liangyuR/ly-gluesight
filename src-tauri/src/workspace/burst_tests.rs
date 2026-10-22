@@ -5,10 +5,10 @@ use crate::burst_judge::{FrameMetrics, FrameState};
 use crate::plan::{new_segment, OffsetMeasure, OffsetRef, PathSegment, SegmentCalib, SegmentKind::{self, Corner, Straight}};
 use crate::recipe_capture::CaptureRoundV2;
 
-const DEVICE: &str = "device-a";
+pub(super) const DEVICE: &str = "device-a";
 
 /// 段配方候选：三台模拟相机 cam1–cam3、走廊已示教，段按 kinds 新建（N_exp 待标定）。
-fn burst_workspace(kinds: &[SegmentKind]) -> Workspace {
+pub(super) fn burst_workspace(kinds: &[SegmentKind]) -> Workspace {
     let mut doc = crate::recipe::samples_burst();
     doc.segments = kinds.iter().enumerate().map(|(i, &kind)| new_segment(i as u32 + 1, kind, &doc.segment_defaults)).collect();
     doc.build().unwrap();
@@ -16,7 +16,7 @@ fn burst_workspace(kinds: &[SegmentKind]) -> Workspace {
 }
 
 /// 一轮完整的段配方示教采集：计划相机都在，采集时设备配置为 config；missing 为 (本轮相机下标, seq) 的缺帧。
-fn capture_round(id: &str, doc: &RecipeDoc, group_count: u64, config: &str, missing: &[(usize, u64)]) -> CaptureRoundV2 {
+pub(super) fn capture_round(id: &str, doc: &RecipeDoc, group_count: u64, config: &str, missing: &[(usize, u64)]) -> CaptureRoundV2 {
     let mut missing = missing.to_vec();
     missing.sort_by_key(|&(camera, seq)| (seq, camera));
     let frames: Vec<u64> = (0..3).map(|camera| group_count - missing.iter().filter(|m| m.0 == camera).count() as u64).collect();
@@ -33,12 +33,12 @@ fn capture_round(id: &str, doc: &RecipeDoc, group_count: u64, config: &str, miss
     })).unwrap()
 }
 
-fn configs(doc: &RecipeDoc, config: &str) -> BTreeMap<String, Value> {
+pub(super) fn configs(doc: &RecipeDoc, config: &str) -> BTreeMap<String, Value> {
     doc.plan_cameras().into_iter().map(|camera| (camera, json!(config))).collect()
 }
 
 /// 测成的一帧，胶中心偏移 x（mm）；相机下标与 seq 由 measure_round 填。
-fn measured(x: f64) -> FrameMetrics {
+pub(super) fn measured(x: f64) -> FrameMetrics {
     FrameMetrics { camera: 0, seq: 0, state: FrameState::Measured, error: None, width_min: Some(4.0), width_max: Some(4.0), width_mean: Some(4.0),
         widths: vec![Some(4.0)], spacing_mm: 1.0, gap_max_mm: 0.0, present_ratio: 1.0, x_mm: Some(x) }
 }

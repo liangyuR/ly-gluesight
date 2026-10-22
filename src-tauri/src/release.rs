@@ -372,7 +372,6 @@ pub fn publish(releases_root: &Path, input: PublishInput) -> Result<ReleaseBundl
 /// 段配方的发布（schema 4，D-SB-30）：按计划相机冻结示教帧、标定与走廊。前置 `Recipe::ready_burst`（三台相机都示教了
 /// 走廊和当量，整件预期帧组数已标定）；资源必须恰好覆盖每台计划相机一次；走廊必须落在这台相机的示教帧内。
 /// 测量图由调用方给（`production::burst_graphs`），生产加载时按配方重算比对。旧 `publish`（schema 3）不变。
-#[allow(dead_code)] // D3 发布切换接入后去掉
 pub fn publish_burst(releases_root: &Path, input: BurstPublishInput) -> Result<ReleaseBundle, String> {
     let recipe = input.recipe.build()?;
     recipe.ready_burst().map_err(|reasons| reasons.join("；"))?;

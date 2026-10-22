@@ -230,13 +230,13 @@ pub(super) fn corridor_tag(doc: &RecipeDoc, camera: &str) -> Value {
 }
 
 /// 走廊已示教且完整落在示教帧内（与 `vision::plan_corridor` 的前置相同）。
-fn corridor_saved(inspect: &CameraInspect, size: [u32; 2]) -> bool {
+pub(super) fn corridor_saved(inspect: &CameraInspect, size: [u32; 2]) -> bool {
     let length: f32 = inspect.corridor.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
     inspect.corridor.len() >= 2 && length >= 1.0 && vision::corridor_inside(&inspect.corridor, size)
 }
 
 /// 没有测量值的一帧（缺帧、测量失败）。
-fn frame_without_metrics(camera: usize, seq: u64, state: FrameState, error: Option<String>) -> FrameMetrics {
+pub(super) fn frame_without_metrics(camera: usize, seq: u64, state: FrameState, error: Option<String>) -> FrameMetrics {
     FrameMetrics { camera, seq, state, error, width_min: None, width_max: None, width_mean: None, widths: Vec::new(),
         spacing_mm: 0.0, gap_max_mm: 0.0, present_ratio: 0.0, x_mm: None }
 }
@@ -548,7 +548,7 @@ pub(super) fn add_calibration_round(w: &mut Workspace, round: CalibrationRound) 
 }
 
 /// 胶偏参考：直线段配了 offset_ref 用它；没配但启用了胶偏检测时，按 AbsoluteX、计划第一台相机（D-SB-18 默认）。
-fn offset_reference(segment: &PathSegment, cameras: &[String]) -> Option<OffsetRef> {
+pub(super) fn offset_reference(segment: &PathSegment, cameras: &[String]) -> Option<OffsetRef> {
     if segment.kind != SegmentKind::Straight { return None; }
     segment.offset_ref.clone().or_else(|| segment.checks.offset.as_ref().filter(|o| o.enabled).and(cameras.first())
         .map(|camera| OffsetRef { measure: OffsetMeasure::AbsoluteX, camera: camera.clone(), x_ref: None, spread: None }))
@@ -753,7 +753,7 @@ pub fn workspace_update_segments(app: AppHandle, id: String, revision: u64, segm
 
 // ───────────── WorkspaceView.plan ─────────────
 
-fn camera_teaching_views(w: &Workspace) -> Vec<CameraTeachingView> {
+pub(super) fn camera_teaching_views(w: &Workspace) -> Vec<CameraTeachingView> {
     w.doc.inspect.iter().map(|inspect| {
         let frame = w.camera_teaching.iter().find(|t| t.camera == inspect.camera).map(|t| t.frame.clone());
         CameraTeachingView {
@@ -765,12 +765,19 @@ fn camera_teaching_views(w: &Workspace) -> Vec<CameraTeachingView> {
     }).collect()
 }
 
-fn validation_target(name: &str) -> TargetV2 {
-    if name == "设备与采集" { TargetV2::Camera } else { TargetV2::Validation }
+/// 没通过的验证项跳到哪一页（检查项名称见 `burst_release::burst_checks`）：走廊示教跳到第一台没示教好的相机。
+fn validation_target(name: &str, teaching: &[CameraTeachingView]) -> TargetV2 {
+    match name {
+        "设备与采集" => TargetV2::Camera,
+        "走廊示教" => teaching.iter().find(|t| !(t.saved && t.mm_per_px.is_some())).or(teaching.first())
+            .map_or(TargetV2::Validation, |t| TargetV2::Corridor { camera: t.camera.clone() }),
+        "段标定" | "标准件 x_ref" => TargetV2::Calibration,
+        _ => TargetV2::Validation,
+    }
 }
 
 /// 段配方的进度：采集 → 段列表 → 走廊示教 → 多轮标定 → 验证 → 发布。只读候选与已有完整采集轮数，不访问设备。
-fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], complete_rounds: usize, production_version: Option<u32>) -> ProgressV2 {
+pub(super) fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], complete_rounds: usize, production_version: Option<u32>) -> ProgressV2 {
     let doc = &w.doc;
     let captured = complete_rounds > 0;
     let need_capture = || vec![BlockerV2 { message: "先完成一轮整圈采集".into(), target: TargetV2::Capture }];
@@ -819,7 +826,7 @@ fn progress_v2(w: &Workspace, teaching: &[CameraTeachingView], complete_rounds: 
         } else if let Some(v) = current {
             if v.passed { (StepStatus::Done, format!("当前修订验证通过（{} 件样本）", v.samples.len()), Vec::new()) }
             else { (StepStatus::Blocked, "验证未通过".into(), v.checks.iter().filter(|c| !c.passed)
-                .map(|c| BlockerV2 { message: format!("{}：{}", c.name, c.detail), target: validation_target(&c.name) }).collect()) }
+                .map(|c| BlockerV2 { message: format!("{}：{}", c.name, c.detail), target: validation_target(&c.name, teaching) }).collect()) }
         } else {
             let blockers = [&capture, &corridor, &calibration].into_iter().filter(|s| s.status != StepStatus::Done)
                 .map(|s| BlockerV2 { message: format!("先完成{}", s.label), target: s.blockers.first().map_or(TargetV2::Capture, |b| b.target.clone()) }).collect();

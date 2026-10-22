@@ -31,7 +31,7 @@ fn comparison(id: i64, cycle: &str, sequence: i64) -> Comparison {
         candidate_id: if sequence % 2 == 0 { "A" } else { "B" }.into(), candidate_revision: 1,
         candidate_recipe: crate::recipe::samples().remove(0).build().unwrap(),
         original_verdict: Verdict::ErrInspect, judgement: Judgement::error(1, "comparison"),
-        measurements: vec![serde_json::json!({"sequence": sequence})], created_at: sequence,
+        measurements: vec![serde_json::json!({"sequence": sequence})], created_at: sequence, burst: None,
     }
 }
 fn seed(root: &Path, saved: &Comparison) -> PathBuf {

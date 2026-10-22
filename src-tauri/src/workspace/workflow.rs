@@ -545,6 +545,9 @@ pub async fn workspace_capture_sample(app: AppHandle, id: String, revision: u64,
 }
 
 fn capture_sample(app: AppHandle, id: String, revision: u64, round_id: String, expected: Verdict) -> Result<WorkspaceView, String> {
+    // 段配方的样本是新采集轮次（CaptureRoundV2），规则见 burst_release（D3）；以下是旧拍照点配方，行为不变
+    let burst = app.state::<WorkspaceHost>().items.lock().unwrap().get(&id).is_some_and(|w| w.doc.is_burst());
+    if burst { return super::burst_release::capture_sample(app, id, revision, round_id, expected); }
     let cycle = app.state::<CycleHost>();
     let Some(_gate) = wait_idle_plc_gate(&cycle, "加入验证样本")? else { return Err("请等待当前工件和 PLC 事务结束后加入验证样本".into()) };
     let round = capture_for(&app, &id, &round_id)?;

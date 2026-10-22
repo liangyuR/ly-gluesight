@@ -23,6 +23,8 @@ mod reproduce;
 mod workflow;
 mod fixture;
 mod burst;
+mod burst_history;
+mod burst_release;
 pub(crate) mod centerline;
 pub mod progress;
 #[cfg(test)]
@@ -31,9 +33,12 @@ mod workflow_tests;
 mod progress_tests;
 #[cfg(test)]
 mod burst_tests;
+#[cfg(test)]
+mod burst_release_tests;
 pub use workflow::*;
 pub use fixture::*;
 pub use burst::*;
+pub use burst_history::*;
 
 fn state_value(value: &impl Serialize) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
@@ -639,6 +644,10 @@ fn environment(app: &AppHandle, recipe: &Recipe) -> Result<Value, String> {
             let projected = recipe.for_view(k, selected)?;
             values.push(calibration_state(&vision::shot_calib_path(app, &projected, k)?)?);
         }
+    }
+    // 段配方各检测相机的工位标定 {device}（旧拍照点配方没有检测相机，这一项为空）
+    for inspect in &recipe.inspect {
+        values.push(calibration_state(&vision::camera_calib_path(app, inspect)?)?);
     }
     values.push(json!([crate::site::image_measurement(app)]));
     values.push(json!(app.state::<vision::VisionHost>().engine().map(|engine| engine_state(&engine))));
@@ -1479,6 +1488,8 @@ impl SampleResult {
 }
 
 fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
+    // 段配方的验证项与样本另见 burst_release（D3）；以下是旧拍照点配方，行为不变
+    if w.doc.is_burst() { return burst_release::validation(app, w); }
     let r = w.doc.build()?;
     let initial_environment = environment(app, &r)?;
     let cycle = app.state::<CycleHost>();
@@ -1682,7 +1693,12 @@ pub fn workspace_publish(
     let mut release_doc = w.doc.clone();
     release_doc.teaching_id = Some(vision::unique_run_id(&format!("teaching-{}-v{}", release_doc.id, release_doc.version)));
     release_doc.plan_version = app.state::<CycleHost>().recipes.plan_version_for(&release_doc)?;
-    let bundle = freeze_bundle(&app, &host, &release_doc, &w.frames, validated)?;
+    // 段配方按计划相机冻结，发布包 schema 4（D3）；旧拍照点配方按拍照点与视图冻结，schema 3 不变
+    let bundle = if release_doc.is_burst() {
+        burst_release::freeze_bundle(&app, &host, &release_doc, &w.camera_teaching)?
+    } else {
+        freeze_bundle(&app, &host, &release_doc, &w.frames, validated)?
+    };
     let mut next = w.clone();
     next.doc = release_doc.clone();
     next.pending = Some(Box::new(Release {
@@ -1855,18 +1871,26 @@ pub fn apply_pending(app: &AppHandle) -> bool {
                 w.revision += 1;
                 w.publish = PublishState::Active { version: saved.version, revision: w.revision, warning: next_version.err(), validation_site: release.validation_site };
                 changed = true;
-                cycle::log(
-                    app,
-                    "info",
-                    "发布配方",
+                let message = if saved.is_burst() {
+                    // 段配方：shotCount / deviceShots = ΣN_exp（决策补充第二节）；重新标定使 ΣN_exp 变了就换计划版本（默认做法 6）
+                    let total = saved.expected_total().map_or("未标定".to_string(), |n| n.to_string());
+                    match previous_plan {
+                        Some(previous) if previous != saved.plan_version => format!(
+                            "{id} v{} 已生效；计划已变，PLC 计划版本 {previous} → {}，PLC 侧同步 planVersion 与 shotCount / deviceShots（ΣN_exp = {total}）后才能布防",
+                            saved.version, saved.plan_version),
+                        None => format!("{id} v{} 已生效；PLC 计划版本 {}，shotCount / deviceShots = ΣN_exp = {total}", saved.version, saved.plan_version),
+                        _ => format!("{id} v{} 已生效（计划未变，ΣN_exp = {total}，PLC 不用改）", saved.version),
+                    }
+                } else {
                     match previous_plan {
                         Some(previous) if previous != saved.plan_version => format!(
                             "{id} v{} 已生效；拍照计划已变，PLC 计划版本 {previous} → {}，PLC 侧同步 planVersion 与拍照点数后才能布防",
                             saved.version, saved.plan_version),
                         None => format!("{id} v{} 已生效；PLC 计划版本 {}", saved.version, saved.plan_version),
                         _ => format!("{id} v{} 已生效（拍照计划未变，PLC 不用改）", saved.version),
-                    },
-                );
+                    }
+                };
+                cycle::log(app, "info", "发布配方", message);
             }
             Err(e) => {
                 w.pending = Some(Box::new(release));
@@ -2046,6 +2070,10 @@ pub struct Comparison {
     pub judgement: judge::Judgement,
     pub measurements: Vec<Value>,
     pub created_at: i64,
+    /// 段配方记录的对照（D3）：重判所用的段、计划相机、ΣN_exp 与区域判定；旧拍照点记录为空（之前保存的对照没有这一项）。
+    /// 有值时 judgement 的 verdict / plcCode / faultCode / reason 与它相同，segments、gaps 为空
+    #[serde(default)]
+    pub burst: Option<burst_history::ComparisonBurst>,
 }
 
 #[tauri::command]
@@ -2075,6 +2103,18 @@ pub async fn workspace_compare(
             .transpose()?
             .flatten()
             .ok_or("历史配方快照缺失")?;
+        if detail.burst.is_some() || original.is_burst() || recipe.is_burst() {
+            // 段配方记录按 (计划相机下标, seq) 从原图复测或按已存每帧指标重判（D3）；以下是旧拍照点记录，行为不变
+            let (judgement, burst) = burst_history::compare(&app, &w, &recipe, &detail, &original, raw)?;
+            let comparison = Comparison {
+                id: comparison_id(&app, history_id), history_id, source: if raw { "raw".into() } else { "rules".into() },
+                cycle_id: detail.summary.cycle_id.clone().ok_or("历史记录没有工件身份")?, bundle_id: detail.summary.bundle_id.clone(),
+                candidate_id: id.clone(), candidate_revision: revision, candidate_recipe: recipe, original_verdict: detail.summary.verdict,
+                judgement, measurements: Vec::new(), created_at: ly_plc::now_ms(), burst: Some(burst),
+            };
+            save_comparison(&app, &comparison)?;
+            return Ok(comparison);
+        }
         if (raw && !same_frame_sources(&original, &recipe)) || (!raw && !crate::store::same_measurement_layout(&original, &recipe)) {
             return Err(if raw { "历史原图的 Pose、相机或视角与候选不同；请重新采集样本" }
                 else { "保存的测点布局与候选不同，不能复用旧测量值；请从原图复测" }.into());
@@ -2118,6 +2158,7 @@ pub async fn workspace_compare(
             judgement: judge::judge(&recipe, &table),
             measurements,
             created_at: ly_plc::now_ms(),
+            burst: None,
         };
         save_comparison(&app, &comparison)?;
         Ok(comparison)
@@ -2165,12 +2206,22 @@ pub async fn workspace_compare_original(app: AppHandle, history_id: i64) -> Resu
         let engine = app.state::<vision::VisionHost>().engine().ok_or("原版本兼容引擎未加载")?;
         let prepared = crate::production::Prepared::load(bundle, engine, &original)?;
         prepared.verify()?;
+        if original.is_burst() {
+            // 段配方：按 (计划相机下标, seq) 读录制原图、用原发布包的走廊逐帧重现（D3）；以下是旧拍照点记录，行为不变
+            let (judgement, burst) = burst_history::reproduce_original(&app, &detail, &prepared, &cycle_id)?;
+            let comparison = Comparison { id: comparison_id(&app, history_id), history_id, source: "original".into(),
+                cycle_id, bundle_id: Some(bundle_id.into()), candidate_id: original.id.clone(),
+                candidate_revision: 0, candidate_recipe: original, original_verdict: detail.summary.verdict,
+                judgement, measurements: Vec::new(), created_at: ly_plc::now_ms(), burst: Some(burst) };
+            save_comparison(&app, &comparison)?;
+            return Ok(comparison);
+        }
         let (judgement, measurements) = reproduce::measure(&prepared, original.shot_count(), &detail.summary.sn, &cycle_id,
             |k, selected| history_image(&app, &detail, k, selected))?;
         let comparison = Comparison { id: comparison_id(&app, history_id), history_id, source: "original".into(),
             cycle_id, bundle_id: Some(bundle_id.into()), candidate_id: original.id.clone(),
             candidate_revision: 0, candidate_recipe: original, original_verdict: detail.summary.verdict,
-            judgement, measurements, created_at: ly_plc::now_ms() };
+            judgement, measurements, created_at: ly_plc::now_ms(), burst: None };
         save_comparison(&app, &comparison)?;
         Ok(comparison)
     }).await.map_err(|error| error.to_string())?
@@ -2853,6 +2904,9 @@ pub async fn workspace_import_sample(
             w.clone()
         };
         let r = w.doc.build()?;
+        if r.is_burst() {
+            return Err("段配方的验证样本须来自独立采集轮次（保存为独立验证样本）或原图完整的生产历史，不能按拍照点导入图片".into());
+        }
         if (0..r.shot_count()).any(|k| workflow::selected_views(&w, k).len() > 1) {
             return Err("有拍照点选中了多幅图，请使用独立整圈采集或完整历史原图作为验证样本".into());
         }
