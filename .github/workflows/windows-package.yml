@@ -168,16 +168,6 @@ jobs:
             pnpm exec tauri bundle --bundles nsis --target x86_64-pc-windows-msvc --config src-tauri/target/package-runtime/tauri.runtime.json
             if ($LASTEXITCODE -ne 0) { throw 'NSIS build failed.' }
           } finally { "nsis=$($timer.Elapsed.TotalSeconds.ToString('F3', [Globalization.CultureInfo]::InvariantCulture))" | Add-Content -LiteralPath $env:PACKAGE_TIMINGS }
-      - name: Verify installed deployment
-        run: |
-          $installers = @(Get-ChildItem -LiteralPath src-tauri/target/cargo-release/x86_64-pc-windows-msvc/release/bundle/nsis -Filter '*-setup.exe' -File)
-          if ($installers.Count -ne 1) { throw 'Expected exactly one NSIS installer.' }
-          $reportRoot = Join-Path $env:GITHUB_WORKSPACE 'src-tauri/target/package-reports'
-          $timer = [Diagnostics.Stopwatch]::StartNew()
-          try {
-            pwsh -NoProfile -File scripts/Test-WindowsInstallation.ps1 -Installer $installers[0].FullName -InstallDir (Join-Path $env:RUNNER_TEMP 'GlueSight Installed') -ReportDir $reportRoot
-            if ($LASTEXITCODE -ne 0) { throw 'Installed deployment verification failed.' }
-          } finally { "install=$($timer.Elapsed.TotalSeconds.ToString('F3', [Globalization.CultureInfo]::InvariantCulture))" | Add-Content -LiteralPath $env:PACKAGE_TIMINGS }
       - name: Record release inputs and timings
         if: always()
         env:

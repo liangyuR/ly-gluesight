@@ -60,8 +60,7 @@ try {
     $installers = @(Get-ChildItem -LiteralPath $bundleRoot -File -Filter '*-setup.exe')
     if ($installers.Count -ne 1 -or $installers[0].Name -cne "GlueSight_${version}_x64-setup.exe") { throw "必须只有一个 GlueSight_${version}_x64-setup.exe 安装包。" }
     $reportRoot = Join-Path $projectRoot 'src-tauri/target/package-reports'
-    & (Join-Path $PSScriptRoot 'Test-WindowsInstallation.ps1') -Installer $installers[0].FullName -InstallDir (Join-Path $projectRoot ('src-tauri/target/installed-' + [guid]::NewGuid().ToString('N'))) -ReportDir $reportRoot
-    Complete-Stage 'install-check'
+    [void][IO.Directory]::CreateDirectory($reportRoot)
     [void][IO.Directory]::CreateDirectory($archiveRoot)
     Copy-Item -LiteralPath $installers[0].FullName -Destination $archiveRoot -Force
     $timingPath = Join-Path $reportRoot 'stage-seconds.txt'

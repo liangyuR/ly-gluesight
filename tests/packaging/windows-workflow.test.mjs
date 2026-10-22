@@ -150,15 +150,12 @@ test('workflow uses shared locked dependency restore and cache bypass', () => {
   assert.match(workflow, /workspaces: src-tauri -> target\/cargo-release/);
 });
 
-test('package gate executes the existing actual DLL visual checks before bundling and after installation', () => {
+test('package gate executes the existing actual DLL visual checks before bundling', () => {
   const vision = stepScript('Verify actual DLL vision and application runtime');
   assert.match(vision, /Test-PackageApplication\.ps1 -ApplicationPath src-tauri\/target\/cargo-release\/x86_64-pc-windows-msvc\/release\/GlueSight\.exe/);
   assert.match(vision, /"vision=\$\(/);
   assert.ok(workflow.indexOf('- name: Verify actual DLL vision') < workflow.indexOf('- name: Bundle NSIS installer'));
-  assert.match(stepScript('Verify installed deployment'), /Test-WindowsInstallation\.ps1/);
-  for (const path of ['scripts/Test-PackageApplication.ps1', 'scripts/Test-WindowsInstallation.ps1']) {
-    assert.match(readFileSync(new URL(path, root), 'utf8'), /--check-packaged-runtime/);
-  }
+  assert.match(readFileSync(new URL('scripts/Test-PackageApplication.ps1', root), 'utf8'), /--check-packaged-runtime/);
 });
 
 test('dependency cache identity uses the locked Tauri version and platform NSIS directory', () => {

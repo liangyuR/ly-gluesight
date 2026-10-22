@@ -64,7 +64,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml
 pnpm package
 ```
 
-恢复 lyFlow 与厂商运行库，完成前端、Rust 与 NSIS 安装包构建并做静默安装验证。版本管理、依赖缓存与厂商包维护见 [Windows 打包](docs/deployment/PACKAGING.md)。
+恢复 lyFlow 与厂商运行库，完成前端、Rust 与 NSIS 安装包构建。版本管理、依赖缓存与厂商包维护见 [Windows 打包](docs/deployment/PACKAGING.md)。
 
 ## 文档
 

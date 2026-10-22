@@ -31,7 +31,7 @@ pnpm install --frozen-lockfile
 pnpm package
 ```
 
-默认恢复 lyFlow 系列最新运行库和厂商包，再完成前端、Rust、NSIS 构建与静默安装验证；实际打包的 lyFlow 版本写入 `runtime/manifest.json` 与 `release-manifest.json`。不搜索相邻 lyFlow 构建目录，也不自动使用系统 MVS。诊断构建可显式提供 `-LyFlowRuntime`、`-MvsRuntime`、`-VcRuntime` 和 `-MvsLicense`，仍执行系列版本及实际组件检查。
+默认恢复 lyFlow 系列最新运行库和厂商包，再完成前端、Rust 与 NSIS 构建（不做安装验证）；实际打包的 lyFlow 版本写入 `runtime/manifest.json` 与 `release-manifest.json`。不搜索相邻 lyFlow 构建目录，也不自动使用系统 MVS。诊断构建可显式提供 `-LyFlowRuntime`、`-MvsRuntime`、`-VcRuntime` 和 `-MvsLicense`，仍执行系列版本及实际组件检查。
 
 厂商运行库变更时增加 `bundleVersion`、tag 和资产名，并从明确路径导出、验证和发布，禁止覆盖旧资产：
 
@@ -44,11 +44,11 @@ pnpm package:deps:publish -Archive 'C:\release\gluesight-vendor-runtime-win-x64-
 
 ## CI 与发布门禁
 
-普通 PR 和 main 执行类型检查、前端测试/构建、发包脚本测试及 Rust 回归。影响发包、依赖配置、锁文件、工具链或 workflow 的 PR 额外执行完整 Windows 安装验证。手动或 tag 触发完整发包，只有 tag 成功后创建草稿 Release；负责人复核后正式发布。
+普通 PR 和 main 执行类型检查、前端测试/构建、发包脚本测试及 Rust 回归。影响发包、依赖配置、锁文件、工具链或 workflow 的 PR 额外执行完整 Windows 发包门禁。手动或 tag 触发完整发包，只有 tag 成功后创建草稿 Release；负责人复核后正式发布。
 
 构建使用固定 Node `24.15.0`、pnpm `12.11.2`、Rust `1.99.0`。workflow 保留显式 pnpm、Cargo、Tauri 标准命令，版本及依赖准备脚本与本机共用。构建任务只读，创建草稿 Release 的任务单独获得内容写权限。
 
-完整门禁覆盖：干净 SDK 环境、固定包结构/架构/版本、lyFlow 系列与实际 DLL 版本、实际 DLL 算子、应用无界面自检、NSIS 静默安装及安装后的运行库和应用自检。软件约定安装在英文目录，CI 使用 `GlueSight Installed` 执行常规安装验收，不设置中英文路径专项测试。安装包产品名及默认目录名使用 `GlueSight`，应用窗口保留中文名称。
+完整门禁覆盖：干净 SDK 环境、固定包结构/架构/版本、lyFlow 系列与实际 DLL 版本、实际 DLL 算子、应用无界面自检与 NSIS 安装包生成，不做静默安装验证。软件约定安装在英文目录。安装包产品名及默认目录名使用 `GlueSight`，应用窗口保留中文名称。
 
 产物包含应用安装包、运行库清单、验证报告与 `release-manifest.json`，记录应用修订、依赖版本/来源、工具版本、缓存命中及各阶段耗时。成功与失败均保留诊断资料。GitHub 冷、热两次完整 workflow 才能证明缓存服务的实际收益；本机缓存检查不能替代该证据。
 
