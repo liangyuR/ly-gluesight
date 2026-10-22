@@ -6,7 +6,7 @@ param(
     [string]$MvsLicense,
     [string]$VendorBundle,
     [switch]$PrepareOnly,
-    # 预发布：版本编成 X.Y.Z-pre.N（N 按 output/installers 里同版本已有的最大序号自动加 1），写进程序、日志与工件记录；源码版本号不变
+    # 预发布：版本编成 X.Y.Z-pre.N（N 按 dist-installers 里同版本已有的最大序号自动加 1），写进程序、日志与工件记录；源码版本号不变
     [switch]$Pre
 )
 $ErrorActionPreference = 'Stop'
@@ -17,7 +17,7 @@ $timings = [ordered]@{}
 $clock = [Diagnostics.Stopwatch]::StartNew()
 function Complete-Stage([string]$Name) { $timings[$Name] = [math]::Round($clock.Elapsed.TotalSeconds, 1); $clock.Restart(); Write-Host "[$Name] $($timings[$Name]) s" }
 $baseVersion = (& (Join-Path $PSScriptRoot 'Test-PackageVersions.ps1') | ConvertFrom-Json).application
-$archiveRoot = Join-Path $projectRoot 'output/installers'
+$archiveRoot = Join-Path $projectRoot 'dist-installers'
 $version = $baseVersion
 if ($Pre) {
     $taken = @(Get-ChildItem -LiteralPath $archiveRoot -File -Filter "GlueSight_$baseVersion-pre.*_x64-setup.exe" -ErrorAction SilentlyContinue |
@@ -51,7 +51,7 @@ try {
     $applicationPath = Join-Path $releaseRoot 'GlueSight.exe'
     & (Join-Path $PSScriptRoot 'Test-PackageApplication.ps1') -ApplicationPath $applicationPath -StageRoot $stageRoot
     Complete-Stage 'app-check'
-    # 旧版本的安装包留在输出目录会让下面“只有一个安装包”的检查失败；历史安装包在 output/installers
+    # 旧版本的安装包留在输出目录会让下面“只有一个安装包”的检查失败；历史安装包在 dist-installers
     $bundleRoot = Join-Path $releaseRoot 'bundle/nsis'
     Get-ChildItem -LiteralPath $bundleRoot -File -Filter '*-setup.exe' -ErrorAction SilentlyContinue | Remove-Item -Force
     & pnpm exec tauri bundle --bundles nsis --target x86_64-pc-windows-msvc --config $configPath
