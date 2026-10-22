@@ -471,6 +471,21 @@ pub(crate) fn judge_burst_delivered(received: Vec<Frame>, device_triggers: Optio
     judge_burst(&mut p)
 }
 
+/// 离线产线跑完一件后的段配方判定：交付的帧都已测完，PLC 报的 device_triggers 多于各相机帧数时不再等剩余帧，
+/// 按收尾截止已过判（与生产节拍等到 drain 截止后的结论相同）。
+pub(crate) fn judge_burst_at_drain_deadline(received: Vec<Frame>, device_triggers: Option<u16>) -> BurstJudgement {
+    let mut p = burst_part("offline-burst-line", &Ledgers::default());
+    for frame in received {
+        if let Some(burst::Arrival::Accepted { camera, seq }) = p.receive_burst(&frame) {
+            let result = frame_result(&p, camera, seq, Ok(measure::simulate_frame(Scenario::Normal, camera, seq, &p.recipe)));
+            p.apply_burst(result).unwrap();
+        }
+    }
+    end(&mut p, device_triggers, true);
+    assert!(p.complete(), "收尾截止已过");
+    judge_burst(&mut p)
+}
+
 /// 规格 §3：三路帧按 SDK 帧号（减各相机基线）配组，不按到达顺序；收尾规则：partEnd 前不判，partEnd 后已接受的帧都测完
 /// 且每台相机 max_seq ≥ deviceTriggers − 1 即判，PLC 报得更多时等剩余帧或收尾截止。判定结果能按 C5 的记录约束落库。
 #[test]

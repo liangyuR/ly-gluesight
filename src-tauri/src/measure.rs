@@ -605,18 +605,22 @@ fn run_frame(job: &FrameJob) -> Result<FrameMetrics, MeasureError> {
 }
 
 /// 段配方的模拟测量（不看图像）：沿这台相机的走廊按站距取站（未示教时 40 站），胶宽约 4 mm、x 小幅摆动的合格帧。
-/// 断胶工况让第 1 台相机第 2 帧中部缺一段（比第 1 段允许的断口长 2 mm），超差工况让同一帧 3 站胶宽超上限 1 mm
-/// （超差长度在默认允许范围内）。按区段与新工况细分归 E1。
+/// 按配方名义剖面（与离线虚拟产线发脉冲用的同一剖面，`offline::line::nominal_frames`）找到这一帧所在的段：
+/// 弯道帧胶宽略宽、胶中心 x 随段内进度拱形偏出（峰值 1.5 mm），与合成图里弯道胶条绕胶嘴转动一致；PC 判定照常按未分段。
+/// 断胶工况让第 1 台相机第 2 帧中部缺一段（比该段允许的断口长 2 mm），超差工况让同一帧 3 站胶宽超上限 1 mm
+/// （超差长度在默认允许范围内）。脉冲串类工况（缺帧、波动、提前终止等）不改指标。
 pub(crate) fn simulate_frame(scenario: Scenario, camera_idx: usize, seq: u64, recipe: &Recipe) -> FrameMetrics {
     let spacing = f64::from(recipe.spacing);
     let n = recipe.inspect.get(camera_idx).and_then(|inspect| {
         let length: f64 = inspect.corridor.windows(2).map(|w| f64::from((w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))).sum();
         inspect.mm_per_px.map(|scale| (length * scale / spacing).floor() as usize + 1).filter(|&n| n >= 3)
     }).unwrap_or(40);
-    let first = recipe.path_segments.first();
-    let base = first.map_or(4.0, |s| s.checks.width.nominal_mm);
+    let profile = crate::offline::line::nominal_frames(&recipe.path_segments, recipe.expected_total(), crate::offline::line::SIM_HZ);
+    let (segment, corner, progress) = crate::offline::line::locate(&profile, seq)
+        .map_or((recipe.path_segments.first(), false, 0.0), |(i, kind, p)| (recipe.path_segments.get(i), kind == crate::plan::SegmentKind::Corner, f64::from(p)));
+    let base = segment.map_or(4.0, |s| s.checks.width.nominal_mm) + if corner { 0.3 } else { 0.0 };
     let marked = camera_idx == 0 && seq == 2;
-    let gap = match (scenario, first) {
+    let gap = match (scenario, segment) {
         (Scenario::Gap, Some(s)) if marked => (((s.checks.gap.max_gap_mm + 2.0) / spacing).ceil() as usize).min(n),
         _ => 0,
     };
@@ -626,10 +630,11 @@ pub(crate) fn simulate_frame(scenario: Scenario, camera_idx: usize, seq: u64, re
         let s = i as f64 * spacing;
         let mut w = base + 0.25 * ((s + seq as f64 * 3.1 + camera_idx as f64) / 17.0).sin();
         if scenario == Scenario::Excursion && marked && (n / 3..n / 3 + 3).contains(&i) {
-            w = first.map_or(base + 2.5, |s| s.checks.width.nominal_mm + s.checks.width.tol_upper + 1.0);
+            w = segment.map_or(base + 2.5, |s| s.checks.width.nominal_mm + s.checks.width.tol_upper + 1.0);
         }
         Some(w)
     }).collect();
+    let drift = if corner { 1.5 * (std::f64::consts::PI * progress).sin() } else { 0.0 };
     let present: Vec<f64> = widths.iter().flatten().copied().collect();
     FrameMetrics {
         camera: camera_idx,
@@ -643,7 +648,7 @@ pub(crate) fn simulate_frame(scenario: Scenario, camera_idx: usize, seq: u64, re
         spacing_mm: spacing,
         gap_max_mm: gap as f64 * spacing,
         present_ratio: present.len() as f64 / n as f64,
-        x_mm: Some(0.3 * (seq as f64 / 5.0 + camera_idx as f64).sin()),
+        x_mm: Some(0.3 * (seq as f64 / 5.0 + camera_idx as f64).sin() + drift),
     }
 }
 

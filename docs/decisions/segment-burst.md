@@ -188,7 +188,7 @@
 ### D-SB-27 离线仿真
 
 - 问题：虚拟 PLC 精确发 device_shots 次触发；CountMismatch 期望握手故障；丢帧整组相机一起丢；`offline_capture` 只接受样本集相机（offline/mod.rs:574）；规格 §6 要求使能电平、脉冲串、首尾 ±1、弯道减速波动、三台相机之一缺帧。
-- 采用：E1（G5，本轮不做）按剖面发脉冲串（每段帧数 + 种子化波动），丢帧按相机独立设置；CountMismatch 改为告警工况；新增未检、提前 partEnd 工况；`offline_capture` 支持合成图相机，使合成图离线环境能完成 10 轮标定和发布。旧配方的离线节拍保留。
+- 采用：E1 按剖面发脉冲串（每段帧数 + 种子化波动），丢帧按相机独立设置；CountMismatch 对段配方改为告警工况；新增未检、提前 partEnd 等工况；`offline_capture` 支持合成图相机，使合成图离线环境能完成 10 轮标定和发布。旧配方的离线节拍保留。落地细节见第九节第 14 条。
 
 ### D-SB-28 样本集 v1
 
@@ -471,3 +471,14 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
     - **进度**：段配方的 `ProgressV2` 由 D2 在 burst.rs 输出，D3 只把验证步骤的阻塞跳转改为按检查项：走廊示教 → 第一台没示教好的相机，段标定 / 标准件 x_ref → 多轮标定，设备与采集 → 相机。`progress.rs` 与旧 `StepId` 不变，存量 progress_tests 保护的是旧配方现行进度，未删改。
     - **历史**：新命令 `workspace_record_frame_image(historyId, camera, seq)`（5.4）读段配方历史一帧原图。生产记录读录制目录：路径在 `*_cycle_{cycleId}` 内、文件名为 `{相机}_s{seq:06}.pgm`，part.json 里这一帧的 cycleId、相机下标与编号、seq、帧号（历史记有触发计数时还有触发计数）一致且已落盘，解码尺寸等于录制尺寸。候选离线调试记录读受管样本集：每台计划相机在清单里按顺序的拍照点即它的帧序列（D-SB-28 口径，在 history_samples.rs 本地实现；E1 的 `Manifest::camera_frames` 落地后可改用）。`workspace_compare` 从原图用候选走廊逐帧复测（要求计划相机相同、原图齐全），或按已存每帧指标与记录里的区域用候选规则重判（要求 `store::same_measurement_layout`，ERR 记录不重判）；`workspace_compare_original` 按原发布包（schema 4）的走廊逐帧重现。结果写进 `Comparison.burst`（5.1）。`workspace_record_images` 只列旧记录的原图（段配方记录的原图引用在 `PartDetail.burst.frames[].rawFile`）。
     - **未做**：段配方的候选离线试运行（`workspace_debug_run` 仍只接受旧配方，`Candidate::new_burst` 未接入）与离线样本集的段配方节拍留给 E1；前端 `burstImages.ts` 仍经 `pendingCall` 调用新命令（命令已注册，行为与直接调用相同），改为直接调用留给前端收口。
+14. E1 离线仿真（相对计划步骤的调整，旧路径一律保留）：
+    - **分流**：`offline_run`、候选试运行按 `Recipe::is_burst` 分流。段配方走 `Line::run_burst`（脉冲串），旧拍照点配方仍走 `Line::run_part`（按 `device_shots` 精确触发、按拍照点组取图、触发间隔按触发方式 450 / 1100 ms），行为不变；旧配方选段配方专用工况时拒绝并说明。
+    - **脉冲剖面**：`line::PulseProfile { hz, segments, head_tail_jitter, corner_jitter, seed }`，波动取法与 `segmentation::synthetic::frame_counts` 相同（同一剖面与种子在离线产线和回归序列里帧数、真值边界一致，`PulseProfile::spec` 给出回归入口的 `SequenceSpec`）。名义帧数 `line::nominal_frames`：各段 N_exp；有段待标定时按 段长 × 频率 ÷ 50 mm/s 估算（没有段长：直线 12、弯道 4），已有整件标定时把待标定段缩放到 ΣN_exp。合成图取配方名义剖面，样本集取样本帧数最多的那台相机（一段）。默认 20 Hz；离线节拍覆盖时按 1000 ÷ 触发间隔换算。
+    - **使能与脉冲**：布防后按 1 / hz 定频发脉冲（脉冲时钟，不被轮询周期拉长），每个脉冲同时触发三台相机，deviceTriggers 写实际脉冲数，脉冲发完置 partEnd。`PartOrder` 增加 `profile`、`lost`（只丢指定相机的指定帧，相机照常计数）、`early_end_after`（PLC 提前终止前的脉冲数）；旧配方 `PartOrder::legacy` 不带剖面。
+    - **工况（与前端同名）**：`cameraLost` 第 2 台相机丢第 min(3, 总数) 帧；`pulseJitter` 首尾各 ±1；`cornerSlowdown` 每个弯道段 ±2；`notInspected` 机器人照常涂胶、PLC 不提交 partStart（`run_burst` 返回 `Ok(None)`，PC 无记录，离线运行记“本件未检”）；`earlyEnd` 发约一半、且少于 ΣN_exp − Σtol 个脉冲后置 partEnd。段配方下 `countMismatch` 为 PLC 多计 2 个脉冲（deviceTriggers 比帧数多 2，只告警），`lostFrame` 为三台相机同一帧都丢。五个新工况都只改脉冲与握手，进样本集白名单（`Scenario::handshake`）。
+    - **合成图**：段配方的模拟相机触发带 `camera::BurstRender`（计划相机下标、seq、所在段类型与段内进度、工况、种子），`simimage::render_burst` 按它出单视角图：直线段胶条沿这台相机的走廊（未示教时按相机上下错开的缺省位置），弯道段整条胶绕胶嘴转动 25°·sin(π·进度)，断胶 / 超差画在第 1 台相机第 2 帧（与模拟测量同一帧）。计划写的是在 `SimRender` 上改字段；为不改旧拍照点模型的 `SimRender` / `render_views`，另加 `TriggerPayload::Burst`。模拟测量 `measure::simulate_frame` 按名义剖面找到这一帧所在段，弯道帧胶宽略宽、x 拱形偏出（峰值 1.5 mm）；PC 判定仍按未分段。
+    - **合成图离线环境**：沿用真实相机组的编号与视角数（旧配方照常引用），单视角相机不足 3 台时补足到 3 台（编号取没用过的 camN）。计划写“固定为 3 台单视角相机”，改为补足，是为了不改旧配方在合成图下的相机。
+    - **合成图示教采集**：合成图来源的 `offline_capture` 只为段配方的新轮次送一圈：按候选配方（须能编译）的名义剖面发脉冲串，首尾 ±1、弯道 ±2，种子取该候选的轮序号，多轮标定看得到 min / max 差异；旧轮次仍只接受样本集（计划中的“删除只接受样本集来源的限制”改为在合成图一侧新增）。多轮标定加入轮次时的每帧测量仍由 D2 用 lyFlow 走廊测量（需加载 lyFlow）。
+    - **样本集**：`Manifest::camera_frames(camera)` 按清单顺序给出一台相机的帧序列（见 docs/integration/sample-set-format.md）；第 seq 个脉冲取各相机的第 seq 帧，没有这一帧的相机按缺帧（照常计数、不出帧）。`recipe_shots` 保留给旧配方（注释“旧拍照点模型”，未加 `#[deprecated]`，免得调用方模块出现新警告）。
+    - **节拍下限**：`Pace` 触发间隔下限 50 → 15 ms（66 fps）；旧拍照点配方的触发间隔仍不低于 50 ms。
+    - **测试**：旧配方的离线闭环用例（传输丢帧 / 少发触发判 ERR 90、ACK 错位进故障；按 件 / 拍照点 / 视角取样本图并认领）保护的是仍然存在的旧路径，改用旧拍照点计划的测试台保留，没有按计划改写删除；段配方的同类规则另加脉冲串闭环用例。`simimage` 三视角用例同理保留。

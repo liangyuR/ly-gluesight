@@ -219,18 +219,32 @@ pub mod synthetic {
         pub boundaries: Vec<BoundaryError>,
     }
 
-    /// 同一 spec 与 seed 生成确定的序列。
-    ///
     /// 各段实际帧数 = 名义帧数 + 波动（至少 1 帧）：首段加起头波动、末段加收尾波动（各 ±head_tail_jitter，
-    /// 单段时两者都加），弯道段加减速波动（±corner_jitter）。真值边界是各段最后一帧（[`Boundary`] 的口径）。
-    /// 每帧特征：直线段胶中心 x 贴近走廊中线、有胶比例 1；弯道段 x 沿弯道走出走廊（正弦拱形，峰值 1.5 mm）、
-    /// 胶宽略宽、有胶比例下降。三台相机各有固定的 x 偏置。`missing` 中的 (相机, seq) 记 Missing，所在组标 incomplete。
-    /// features 按 seq、相机顺序排列，每个 (相机, seq) 一条。
-    pub fn generate(spec: &SequenceSpec, seed: u64) -> SyntheticSequence {
-        let mut rng = SplitMix64(seed);
+    /// 单段时两者都加），弯道段加减速波动（±corner_jitter）。同一 spec 与 seed 结果确定。
+    ///
+    /// 离线虚拟产线（`offline::line::PulseProfile`）按同一剖面与种子发脉冲串，所以离线跑出的帧序列与
+    /// [`generate`] 的真值边界一致，可以直接拿来做分段回归。
+    pub fn frame_counts(spec: &SequenceSpec, seed: u64) -> Vec<u64> {
+        realize(spec, &mut SplitMix64(seed))
+    }
+
+    /// 真值边界：各段最后一帧（[`Boundary`] 的口径），最后一段之后没有边界。
+    pub fn truth(counts: &[u64]) -> Vec<Boundary> {
+        let mut end = 0;
+        counts
+            .iter()
+            .enumerate()
+            .take(counts.len().saturating_sub(1))
+            .map(|(k, count)| {
+                end += count;
+                Boundary { after_segment: k as u32 + 1, frame_seq: end, confidence: 1.0 }
+            })
+            .collect()
+    }
+
+    fn realize(spec: &SequenceSpec, rng: &mut SplitMix64) -> Vec<u64> {
         let last = spec.segments.len().saturating_sub(1);
-        let counts: Vec<u64> = spec
-            .segments
+        spec.segments
             .iter()
             .enumerate()
             .map(|(k, &(kind, nominal))| {
@@ -246,7 +260,18 @@ pub mod synthetic {
                 }
                 (i64::from(nominal) + jitter).max(1) as u64
             })
-            .collect();
+            .collect()
+    }
+
+    /// 同一 spec 与 seed 生成确定的序列。
+    ///
+    /// 各段实际帧数见 [`frame_counts`]，真值边界见 [`truth`]。
+    /// 每帧特征：直线段胶中心 x 贴近走廊中线、有胶比例 1；弯道段 x 沿弯道走出走廊（正弦拱形，峰值 1.5 mm）、
+    /// 胶宽略宽、有胶比例下降。三台相机各有固定的 x 偏置。`missing` 中的 (相机, seq) 记 Missing，所在组标 incomplete。
+    /// features 按 seq、相机顺序排列，每个 (相机, seq) 一条。
+    pub fn generate(spec: &SequenceSpec, seed: u64) -> SyntheticSequence {
+        let mut rng = SplitMix64(seed);
+        let counts = realize(spec, &mut rng);
 
         let defaults = KindDefaults::default();
         let segments = spec
@@ -256,14 +281,7 @@ pub mod synthetic {
             .map(|(k, &(kind, nominal))| PathSegment { expected_frames: Some(nominal), ..new_segment(k as u32 + 1, kind, &defaults) })
             .collect();
 
-        let mut truth = Vec::new();
-        let mut end = 0;
-        for (k, count) in counts.iter().enumerate() {
-            end += count;
-            if k < last {
-                truth.push(Boundary { after_segment: k as u32 + 1, frame_seq: end, confidence: 1.0 });
-            }
-        }
+        let truth = truth(&counts);
 
         let mut groups = Vec::new();
         let mut features = Vec::new();

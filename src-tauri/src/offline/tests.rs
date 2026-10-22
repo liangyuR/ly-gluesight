@@ -1,9 +1,12 @@
-use super::line::{Layout, Line, Outcome, PartOrder, Timing};
+use super::line::{Layout, Line, Outcome, PartOrder, Pulse, PulseProfile, Timing};
 use super::s7_server::S7Server;
 use super::test_dir::TestDir;
 use super::*;
+use crate::burst_judge::BurstJudgement;
+use crate::cycle::tests::{burst_frame, judge_burst_at_drain_deadline};
+use crate::frame_group::{LossAlarm, LossReason};
 use crate::judge::fault;
-use crate::plc_plan::PlcPlan;
+use crate::plc_plan::{PlanShot, PlcPlan};
 use crate::plc_session::{Origin, PendingKind, PlcSession, SessionEvent, SessionPhase};
 use crate::inspection::tag;
 use ly_plc::{EventSink, Logbook, PlcEngine};
@@ -25,6 +28,9 @@ const TIMING: Timing = Timing {
     release_timeout: HANG_GUARD,
 };
 
+/// 测试台的脉冲频率：间隔 10 ms，一件几十毫秒跑完。
+const BENCH_HZ: f64 = 100.0;
+
 struct Bench {
     _server: S7Server,
     line: Line,
@@ -33,6 +39,13 @@ struct Bench {
     plan: PlcPlan,
     intake: Arc<AtomicBool>,
     directory: TestDir,
+    /// 段配方最近一件 PC 侧的区域判定
+    judged: Option<BurstJudgement>,
+}
+
+/// 三台相机都交付了这一脉冲的帧（传输丢帧的除外）。
+fn all_cameras(pulse: &Pulse) -> Vec<usize> {
+    (0..3).filter(|camera| !pulse.lost.contains(camera)).collect()
 }
 
 impl Bench {
@@ -42,6 +55,22 @@ impl Bench {
 
     async fn new_with(name: &str, before_connect: impl FnOnce(&S7Server)) -> Self {
         Self::start(name, Duration::from_millis(20), Duration::from_millis(100), before_connect).await
+    }
+
+    /// 旧拍照点配方的测试台：单相机 cam1、4 个拍照点各一次触发。
+    async fn legacy(name: &str) -> Self {
+        let mut bench = Self::new(name).await;
+        bench.plan = PlcPlan::compile("part-A".into(), 7, vec!["cam1".into()], (1..=4).map(|i| PlanShot {
+            shot_id: format!("P{i}"), pose_id: format!("P{i}"), camera_ids: vec!["cam1".into()],
+        }).collect()).unwrap();
+        bench
+    }
+
+    /// 段计划的一件：一个直线段、名义帧数 = ΣN_exp，不波动、不丢帧。
+    fn order(&self, sn: &str) -> PartOrder {
+        let profile = PulseProfile { hz: BENCH_HZ, segments: vec![(crate::plan::SegmentKind::Straight, u32::from(self.plan.shot_count))],
+            head_tail_jitter: 0, corner_jitter: 0, seed: 0 };
+        PartOrder { profile: Some(profile), ..PartOrder::legacy(sn.into(), 3, self.plan.plan_version, self.plan.shot_count, self.plan.device_shots) }
     }
 
     /// `poll`：PC 轮询周期；`heartbeat`：虚拟 PLC 心跳翻转间隔。
@@ -64,11 +93,55 @@ impl Bench {
         // 段计划：三台相机共用一个触发，shotCount = deviceShots = ΣN_exp = 4
         let plan = PlcPlan::from_recipe(&crate::recipe::samples_burst().build().unwrap()).unwrap();
         Self { _server: server, line: Line::new(memory, layout), engine, session: PlcSession::open(directory.join("session.json")), plan,
-            intake: Arc::new(AtomicBool::new(true)), directory }
+            intake: Arc::new(AtomicBool::new(true)), directory, judged: None }
     }
 
+    /// 跑一件正常件：段计划按脉冲串，旧拍照点计划按触发。
     async fn run(&mut self, scenario: Scenario) -> Result<Outcome, String> {
+        if self.plan.is_burst() {
+            let order = self.order(" a-4242 ~");
+            return self.run_burst_with(order, scenario, all_cameras).await?.ok_or_else(|| "PLC 没有提交 partStart".into());
+        }
         self.run_with(" a-4242 ~".into(), scenario, |_, lost| !lost).await
+    }
+
+    /// 段配方：虚拟 PLC 按 `order` 的脉冲剖面跑一件，PC 侧按生产节拍驱动 S7 会话：开始 → 布防 → partEnd 后用实收帧
+    /// 走段配方节拍判定（[`judge_burst_at_drain_deadline`]）并回写，判定存进 `judged`。
+    /// `fire(pulse)` 模拟相机侧：返回这一脉冲真正交付了帧的相机（计划相机下标），帧计数 = 脉冲序号。
+    async fn run_burst_with(&mut self, order: PartOrder, scenario: Scenario, mut fire: impl FnMut(&Pulse) -> Vec<usize>) -> Result<Option<Outcome>, String> {
+        self.until_heartbeat_live().await;
+        let Self { line, engine, session, plan, intake, judged, .. } = self;
+        let delivered = Mutex::new(Vec::new());
+        let finished = AtomicBool::new(false);
+        let abort = AtomicBool::new(false);
+        let plc = async {
+            let result = match line.ensure_ready(&TIMING, &abort).await {
+                Ok(()) => line.run_burst(&TIMING, &order, scenario, |pulse| {
+                    let cameras = fire(pulse);
+                    delivered.lock().unwrap().extend(cameras.into_iter().map(|camera| burst_frame(camera as u8, pulse.seq)));
+                }, &abort).await,
+                Err(error) => Err(error),
+            };
+            finished.store(true, Ordering::SeqCst);
+            result
+        };
+        let pc = async {
+            let until = Instant::now() + HANG_GUARD;
+            while !finished.load(Ordering::SeqCst) || !matches!(session.phase(), SessionPhase::Idle | SessionPhase::Fault) {
+                assert!(Instant::now() < until, "会话未收敛：{:?}", session.view());
+                match session.poll_gated(engine, false, true, true, intake.load(Ordering::SeqCst)).await {
+                    SessionEvent::Start(_) => session.arm(engine, plan).await.unwrap(),
+                    SessionEvent::End(_, triggers) => {
+                        let judgement = judge_burst_at_drain_deadline(delivered.lock().unwrap().clone(), triggers);
+                        session.report(engine, judgement.plc_code, judgement.fault_code).await.unwrap();
+                        *judged = Some(judgement);
+                    }
+                    _ => {}
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        tokio::join!(plc, pc).0
     }
 
     /// 虚拟 PLC 的 faultReset 上升沿只会被会话处理一次：会话还没观察到心跳翻转就按复位，这次复位被拒且不再重发。
@@ -82,7 +155,7 @@ impl Bench {
         }
     }
 
-    /// 虚拟 PLC 跑一件，PC 侧按生产节拍的顺序驱动 S7 会话：开始 → 布防 → partEnd 后按实收帧判定回写。
+    /// 旧拍照点配方：虚拟 PLC 跑一件，PC 侧按生产节拍的顺序驱动 S7 会话：开始 → 布防 → partEnd 后按实收帧判定回写。
     /// `deliver(k, lost)` 模拟相机侧：返回这次触发是否真的交付了一帧。
     async fn run_with(&mut self, sn: String, scenario: Scenario, mut deliver: impl FnMut(usize, bool) -> bool) -> Result<Outcome, String> {
         self.until_heartbeat_live().await;
@@ -90,8 +163,7 @@ impl Bench {
         let delivered = Mutex::new(Vec::new());
         let finished = AtomicBool::new(false);
         let abort = AtomicBool::new(false);
-        let order = PartOrder { sn, product_code: 3, plan_version: plan.plan_version,
-            shot_count: plan.shot_count, device_shots: plan.device_shots };
+        let order = PartOrder::legacy(sn, 3, plan.plan_version, plan.shot_count, plan.device_shots);
         let plc = async {
             let result = match line.ensure_ready(&TIMING, &abort).await {
                 Ok(()) => line.run_part(&TIMING, &order, scenario, |k, lost| { let ok = deliver(k, lost); delivered.lock().unwrap().push(!ok) }, &abort).await,
@@ -146,6 +218,7 @@ fn arm_outputs_confirm_without_waiting_for_a_poll_period_or_the_journal() {
     const LIMIT: Duration = Duration::from_millis(450);
     tokio::runtime::Builder::new_current_thread().enable_all().max_blocking_threads(1).build().unwrap().block_on(async {
         let mut bench = Bench::start("arm-latency", POLL_PERIOD, Duration::from_millis(900), |_| {}).await;
+        let order = bench.order("SN-ARM");
         let Bench { line, engine, session, plan, .. } = &mut bench;
         let until = Instant::now() + Duration::from_secs(15);
         while !matches!(session.poll(engine, true, true).await, SessionEvent::Ready) {
@@ -153,9 +226,7 @@ fn arm_outputs_confirm_without_waiting_for_a_poll_period_or_the_journal() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         let abort = AtomicBool::new(false);
-        let order = PartOrder { sn: "SN-ARM".into(), product_code: 3, plan_version: plan.plan_version,
-            shot_count: plan.shot_count, device_shots: plan.device_shots };
-        let plc = async { line.ensure_ready(&TIMING, &abort).await?; line.run_part(&TIMING, &order, Scenario::Normal, |_, _| {}, &abort).await };
+        let plc = async { line.ensure_ready(&TIMING, &abort).await?; line.run_burst(&TIMING, &order, Scenario::Normal, |_| {}, &abort).await };
         let pc = async {
             let until = Instant::now() + Duration::from_secs(15);
             while !matches!(session.poll(engine, false, true).await, SessionEvent::Start(_)) {
@@ -191,7 +262,8 @@ fn arm_outputs_confirm_without_waiting_for_a_poll_period_or_the_journal() {
 async fn low_disk_during_part_still_releases_then_withholds_ready_until_space_recovers() {
     let mut bench = Bench::new("low-disk").await;
     let intake = bench.intake.clone();
-    let outcome = bench.run_with(" a-4242 ~".into(), Scenario::Normal, |_, lost| { intake.store(false, Ordering::SeqCst); !lost }).await.unwrap();
+    let order = bench.order(" a-4242 ~");
+    let outcome = bench.run_burst_with(order, Scenario::Normal, |pulse| { intake.store(false, Ordering::SeqCst); all_cameras(pulse) }).await.unwrap().unwrap();
     assert_eq!((outcome.request_seq, outcome.result_code), (1, 1));
     assert_eq!(bench.session.phase(), SessionPhase::Idle);
     assert!(!bench.session.pending());
@@ -350,20 +422,135 @@ async fn new_connection_before_first_poll_waits_instead_of_faulting_and_disconne
     bench.engine.disconnect().await;
 }
 
-/// 协议 6 起少发一次触发（CountMismatch）不再是握手故障：本件按实收帧照常判结果（缺帧 ERR）并回到空闲。
+/// 旧拍照点配方（旧节拍保留）：传输丢帧按旧判定判缺帧 ERR；协议 6 起少发一次触发（CountMismatch）不再是握手故障，
+/// 本件按实收帧照常判结果（缺帧 ERR）并回到空闲；ACK 序号不匹配是握手故障。段配方的同类工况见下方脉冲串用例。
 #[tokio::test]
-async fn offline_line_scenarios_end_in_err_result_or_handshake_fault() {
+async fn legacy_recipe_line_scenarios_end_in_err_result_or_handshake_fault() {
     for (scenario, expected, phase) in [
         (Scenario::LostFrame, Some((90, fault::MISSING_FRAME)), SessionPhase::Idle),
         (Scenario::CountMismatch, Some((90, fault::MISSING_FRAME)), SessionPhase::Idle),
         (Scenario::AckMismatch, None, SessionPhase::Fault),
     ] {
-        let mut bench = Bench::new(&format!("{scenario:?}")).await;
+        let mut bench = Bench::legacy(&format!("{scenario:?}")).await;
         let result = bench.run(scenario).await;
         assert_eq!(result.as_ref().ok().map(|o| (o.result_code, o.fault_code)), expected, "{scenario:?}: {result:?}");
         assert_eq!(bench.session.phase(), phase, "{scenario:?}: {:?}", bench.session.view());
         assert_eq!(bench.line.read(tag::PART_START), 0, "{scenario:?}");
         bench.engine.disconnect().await;
+    }
+}
+
+// ───────────── 段配方：脉冲串（S7 闭环，计划 ΣN_exp 4、Σtol 1，三台相机共用触发） ─────────────
+
+/// 规格 §2/§6：帧数在 ΣN_exp ± Σtol 内为正常，超出只记帧数异常、结论不变。虚拟 PLC 按带首尾 ±1 波动的剖面发脉冲串，
+/// deviceTriggers 写实际脉冲数；PC 只按实收帧组数比较：容差内 → OK 且无帧数异常，容差外 → 仍 OK、标帧数异常。种子覆盖两类。
+#[tokio::test]
+async fn jittered_pulse_train_within_tolerance_is_ok_and_beyond_tolerance_only_alarms() {
+    let mut bench = Bench::new("pulse-jitter").await;
+    let (expected, tolerance) = (u64::from(bench.plan.shot_count), u64::from(bench.plan.tolerance_total));
+    let mut seen = std::collections::BTreeSet::new();
+    for seed in 0..8 {
+        let mut order = bench.order(&format!("SN-JITTER-{seed}"));
+        let profile = order.profile.as_mut().unwrap();
+        (profile.head_tail_jitter, profile.seed) = (Scenario::PulseJitter.jitter().0, seed);
+        let pulses: u64 = profile.counts().iter().sum();
+        let outcome = bench.run_burst_with(order, Scenario::PulseJitter, all_cameras).await.unwrap().unwrap();
+        let judged = bench.judged.take().unwrap();
+        let beyond = pulses.abs_diff(expected) > tolerance;
+        assert_eq!((outcome.result_code, judged.verdict, u64::from(judged.group_count), judged.flags.frame_count_anomaly), (1, Verdict::Ok, pulses, beyond),
+            "种子 {seed}：{pulses} 个脉冲");
+        assert_eq!(u64::from(bench.line.read(tag::DEVICE_TRIGGERS)), pulses, "种子 {seed}：deviceTriggers 写实际脉冲数");
+        seen.insert(beyond);
+    }
+    assert_eq!(seen.len(), 2, "种子要同时覆盖容差内与容差外");
+    bench.engine.disconnect().await;
+}
+
+/// 规格 §0/§3：三台相机之一缺帧时该组按其余相机照常判，组和整件标检测不完整，不影响 OK/NG，也不判 ERR。
+/// 虚拟 PLC 按 cameraLost 工况只让第 2 台相机丢一帧。
+#[tokio::test]
+async fn single_camera_loss_yields_incomplete_ok_not_err() {
+    let mut bench = Bench::new("camera-lost").await;
+    let mut order = bench.order("SN-CAMERA-LOST");
+    order.lost = Scenario::CameraLost.lost_frames(u64::from(bench.plan.shot_count));
+    let outcome = bench.run_burst_with(order, Scenario::CameraLost, all_cameras).await.unwrap().unwrap();
+    let judged = bench.judged.take().unwrap();
+    assert_eq!((outcome.result_code, outcome.fault_code), (1, 0));
+    assert_eq!((judged.verdict, judged.flags.incomplete), (Verdict::Ok, true));
+    let region = &judged.regions[0];
+    assert_eq!((region.camera_frames.as_slice(), region.incomplete_groups.as_slice()), ([4, 3, 4].as_slice(), [3].as_slice()), "只有第 2 台相机缺第 3 帧");
+    assert_eq!(bench.session.phase(), SessionPhase::Idle);
+    bench.engine.disconnect().await;
+}
+
+/// 规格 §3/§5：deviceTriggers 只作参考，计数不符不再是故障。某台相机帧数与 deviceTriggers（或另两台）相差 > 1 才告警，
+/// 相差 1 不告警；都不改结论、不升级故障，件后会话回到空闲。
+#[tokio::test]
+async fn trigger_frame_count_gap_over_one_alarms_without_fault() {
+    let triggers = |camera: usize, count: u32, device_triggers: u32| LossAlarm { camera, count, reason: LossReason::Triggers { device_triggers } };
+    for (case, scenario, lost, alarms) in [
+        ("plc-counts-2-extra", Scenario::CountMismatch, vec![], (0..3).map(|camera| triggers(camera, 4, 6)).collect::<Vec<_>>()),
+        ("camera3-misses-last-frame", Scenario::Normal, vec![(2, 4)], vec![]),
+        ("camera3-misses-last-2-frames", Scenario::Normal, vec![(2, 3), (2, 4)], vec![triggers(2, 2, 4)]),
+    ] {
+        let mut bench = Bench::new(case).await;
+        let order = PartOrder { lost, ..bench.order("SN-GAP") };
+        let outcome = bench.run_burst_with(order, scenario, all_cameras).await.unwrap().unwrap();
+        let judged = bench.judged.take().unwrap();
+        assert_eq!(judged.alarms, alarms, "{case}");
+        assert_eq!((outcome.result_code, judged.verdict, judged.fault_code), (1, Verdict::Ok, 0), "{case}");
+        assert_eq!(bench.session.phase(), SessionPhase::Idle, "{case}：{:?}", bench.session.view());
+        bench.engine.disconnect().await;
+    }
+}
+
+/// 规格 §0、默认做法 3：PLC 提前置 partEnd（提前终止）时 PC 用已收到的帧照常判 OK/NG；帧组数 < ΣN_exp − Σtol
+/// 时标疑似提前终止，同时是帧数异常。
+#[tokio::test]
+async fn early_part_end_is_judged_with_short_part_flag_and_frame_count_anomaly() {
+    let mut bench = Bench::new("early-end").await;
+    let early = Scenario::EarlyEnd.early_end_after(u64::from(bench.plan.shot_count), bench.plan.tolerance_total);
+    let order = PartOrder { early_end_after: early, ..bench.order("SN-EARLY-END") };
+    let outcome = bench.run_burst_with(order, Scenario::EarlyEnd, all_cameras).await.unwrap().unwrap();
+    let judged = bench.judged.take().unwrap();
+    assert_eq!(bench.line.read(tag::DEVICE_TRIGGERS), 2, "PLC 只发了 2 个脉冲就结束");
+    assert_eq!((outcome.result_code, judged.verdict, judged.group_count), (1, Verdict::Ok, 2));
+    assert_eq!((judged.flags.short_part, judged.flags.frame_count_anomaly), (true, true));
+    bench.engine.disconnect().await;
+}
+
+/// D-SB-28：段配方把样本集 v1 解释为每台相机按清单顺序的帧序列——第 seq 个脉冲取各相机自己的第 seq 帧；各相机帧数可以不等，
+/// 帧数少的相机在后面的帧组缺帧（检测不完整，不判 ERR）。脉冲数取样本帧数最多的那台，按生产的取图函数取图核对像素。
+#[tokio::test]
+async fn sample_set_line_serves_each_camera_its_ordered_frames() {
+    use super::sample_set::{fixture::Fixture, SampleSet};
+    let frames = [4u8, 4, 3];
+    let fixture = Fixture::burst(&frames);
+    let set = Arc::new(SampleSet::load(&fixture.0).unwrap());
+    let recipe = crate::recipe::samples_burst().build().unwrap();
+    let feeds = sample_feeds(&recipe, &set).unwrap();
+    let mut bench = Bench::new("burst-samples").await;
+    let profile = burst_profile(&recipe, &feeds, Scenario::Normal, BENCH_HZ, 0);
+    let order = PartOrder { profile: Some(profile), ..bench.order("SN-SAMPLES") };
+    let fetched = Mutex::new(Vec::new());
+    let outcome = bench.run_burst_with(order, Scenario::Normal, |pulse| feeds.iter().filter_map(|feed| {
+        let Some(TriggerPayload::Sample(target)) = sample_frame_payload(&set, "p02", feed.frames.as_ref().unwrap(), pulse.seq) else { return None };
+        fetched.lock().unwrap().push((feed.camera_idx, pulse.seq, target.images(&feed.camera, 1).unwrap()[0].pixels[0]));
+        Some(feed.camera_idx)
+    }).collect()).await.unwrap().unwrap();
+    let expected: Vec<(usize, u64, u8)> = (1..=4u8).flat_map(|seq| (0..3).filter(move |&c| seq <= frames[c])
+        .map(move |c| (c, u64::from(seq), Fixture::burst_pixel(2, seq, c as u8 + 1)))).collect();
+    assert_eq!(fetched.into_inner().unwrap(), expected);
+    let judged = bench.judged.take().unwrap();
+    assert_eq!((outcome.result_code, judged.group_count, judged.flags.incomplete), (1, 4, true));
+    bench.engine.disconnect().await;
+}
+
+/// 规格 §0：相机上限 66 fps，离线触发间隔最短 15 ms；上限 5000 ms 不变。
+#[test]
+fn pace_interval_of_15ms_is_accepted_and_14ms_rejected() {
+    for (interval, accepted) in [(14, false), (15, true), (5000, true), (5001, false)] {
+        assert_eq!(Pace { shot_interval_ms: interval, pause_ms: 0 }.validate().is_ok(), accepted, "{interval} ms");
     }
 }
 
@@ -385,11 +572,10 @@ async fn crash_left_pending_is_reset_by_the_virtual_plc_only_when_it_came_from_o
         let mut bench = Bench::new(&format!("crash-{origin:?}")).await;
         bench.session.set_origin(origin);
         {
+            let order = bench.order("SN-CRASH");
             let Bench { line, engine, session, plan, .. } = &mut bench;
             let abort = AtomicBool::new(false);
-            let order = PartOrder { sn: "SN-CRASH".into(), product_code: 3, plan_version: plan.plan_version,
-                shot_count: plan.shot_count, device_shots: plan.device_shots };
-            let plc = async { press_reset_until_ready(line, &abort).await?; line.run_part(&TIMING, &order, Scenario::Normal, |_, _| {}, &abort).await };
+            let plc = async { press_reset_until_ready(line, &abort).await?; line.run_burst(&TIMING, &order, Scenario::Normal, |_| {}, &abort).await };
             let pc = async {
                 let until = Instant::now() + Duration::from_secs(10);
                 while !matches!(session.poll_gated(engine, false, true, true, true).await, SessionEvent::Start(_)) {
@@ -481,6 +667,7 @@ async fn virtual_plc_presses_reset_again_after_a_reset_refused_before_the_heartb
     bench.engine.disconnect().await;
 }
 
+/// 旧拍照点配方（旧节拍保留）：第 k 次触发按 件 / 拍照点 / 视角取样本图，按 partSn 认领样本件。
 #[tokio::test]
 async fn sample_set_line_fetches_each_trigger_by_part_shot_and_view_and_claims_the_sample_by_part_sn() {
     use super::sample_set::{fixture::Fixture, SampleLabel, SampleSet};
@@ -489,12 +676,12 @@ async fn sample_set_line_fetches_each_trigger_by_part_shot_and_view_and_claims_t
     let shots: Vec<String> = set.manifest().shots.iter().map(|s| s.shot_id.clone()).collect();
     let fetch = |part: &str, k: usize| match sample_payload(&set, part, &shots[k]) {
         TriggerPayload::Sample(target) => target.images("cam1", 3),
-        TriggerPayload::Sim(_) => unreachable!(),
+        TriggerPayload::Sim(_) | TriggerPayload::Burst(_) => unreachable!(),
     };
     let pixels = |images: &[Arc<crate::frame::FrameImage>]| images.iter().map(|i| i.pixels[0]).collect::<Vec<_>>();
     let offline = OfflineHost::default();
     offline.enabled.store(true, Ordering::SeqCst);
-    let mut bench = Bench::new("samples").await;
+    let mut bench = Bench::legacy("samples").await;
     for (requested, part, number, sn, expected) in [
         (Some("p02"), "p02", 2, 501, (1, 0, Verdict::Ok)),
         (None, "p01", 1, 502, (1, 0, Verdict::Ok)),

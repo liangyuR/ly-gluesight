@@ -22,17 +22,23 @@ fn ready() -> Preconditions {
     Preconditions { busy: false, capturing: false, lyflow: Ok(()) }
 }
 
+/// 按来源派生离线环境：样本集按清单的相机与视角；合成图沿用真实相机组的编号与视角数（旧配方照常引用），
+/// 单视角相机不足 3 台时补足（段配方需要三台独立单视角相机共用触发）。
 #[test]
 fn entering_offline_derives_temporary_environment_by_source() {
     let single = manifest(serde_json::json!([{"id": "cam7", "views": [1]}]));
     let triple = manifest(serde_json::json!([{"id": "cam7", "views": [3, 1, 2]}]));
-    let cases: [(&str, Derivation, SourceKind, Vec<(&str, CameraSource, u8)>); 3] = [
-        ("单视角样本集", Derivation::SampleSet(&single), SourceKind::SampleSet, vec![("cam7", CameraSource::SampleSet, 1)]),
-        ("三视角样本集", Derivation::SampleSet(&triple), SourceKind::SampleSet, vec![("cam7", CameraSource::SampleSet, 3)]),
-        ("合成图", Derivation::Synthetic, SourceKind::Synthetic, vec![("cam1", CameraSource::Sim, 1), ("cam2", CameraSource::Sim, 3)]),
+    let three_single = Environment { cameras: ["cam1", "cam2", "cam3"].map(|id| CameraConfig { id: id.into(), view_count: 1, ..real().cameras[0].clone() }).to_vec(), ..real() };
+    let cases: [(&str, Environment, Derivation, SourceKind, Vec<(&str, CameraSource, u8)>); 4] = [
+        ("单视角样本集", real(), Derivation::SampleSet(&single), SourceKind::SampleSet, vec![("cam7", CameraSource::SampleSet, 1)]),
+        ("三视角样本集", real(), Derivation::SampleSet(&triple), SourceKind::SampleSet, vec![("cam7", CameraSource::SampleSet, 3)]),
+        ("合成图：现场一台单视角、一台三视角 → 沿用并补两台单视角", real(), Derivation::Synthetic, SourceKind::Synthetic,
+            vec![("cam1", CameraSource::Sim, 1), ("cam2", CameraSource::Sim, 3), ("cam3", CameraSource::Sim, 1), ("cam4", CameraSource::Sim, 1)]),
+        ("合成图：现场已有三台单视角 → 不补", three_single, Derivation::Synthetic, SourceKind::Synthetic,
+            vec![("cam1", CameraSource::Sim, 1), ("cam2", CameraSource::Sim, 1), ("cam3", CameraSource::Sim, 1)]),
     ];
-    for (name, derivation, kind, cameras) in cases {
-        let session = OfflineSession::enter(real(), derivation, 50102, ready()).unwrap();
+    for (name, real, derivation, kind, cameras) in cases {
+        let session = OfflineSession::enter(real, derivation, 50102, ready()).unwrap();
         let applied = session.applied();
         assert_eq!(session.kind(), kind, "{name}");
         assert_eq!((applied.plc.connection.host.as_str(), applied.plc.connection.port, applied.plc.auto_connect), ("127.0.0.1", 50102, false), "{name}");

@@ -153,13 +153,23 @@ fn sample_set_cameras(manifest: &Manifest) -> Result<Vec<CameraConfig>, String> 
     }).collect()
 }
 
-/// 合成图沿用真实相机组的编号与视角数，配方照常引用。
+/// 合成图沿用真实相机组的编号与视角数，旧配方照常引用；单视角相机不足 3 台时补足到 3 台（编号取没用过的 camN），
+/// 段配方在合成图离线环境里总有三台独立单视角相机共用触发（规格 §0、D-SB-11）。
 fn synthetic_cameras(real: &[CameraConfig]) -> Vec<CameraConfig> {
-    real.iter().map(|camera| CameraConfig {
+    let mut cameras: Vec<CameraConfig> = real.iter().map(|camera| CameraConfig {
         id: camera.id.clone(), name: camera.name.clone(), source: CameraSource::Sim, view_count: camera.view_count,
         composite_layout: camera.composite_layout.clone(), trigger_source: "Software".into(),
         ..CameraConfig::default()
-    }).collect()
+    }).collect();
+    let single = |cameras: &[CameraConfig]| cameras.iter().filter(|c| c.view_count == 1 && c.composite_layout.is_none()).count();
+    let mut n = 0;
+    while single(&cameras) < crate::plan::PLAN_CAMERAS {
+        n += 1;
+        let id = format!("cam{n}");
+        if cameras.iter().any(|c| c.id == id) { continue; }
+        cameras.push(CameraConfig { name: format!("合成图 {id}"), id, source: CameraSource::Sim, view_count: 1, trigger_source: "Software".into(), ..CameraConfig::default() });
+    }
+    cameras
 }
 
 /// 真机与离线·样本集用 lyFlow 测量图像；离线·合成图用模拟测量。
