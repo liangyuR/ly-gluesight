@@ -2,10 +2,10 @@ import { chromium } from "playwright-core";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { client, monotoneCenterline, until } from "../../tests/native/offline-e2e.mjs";
+import { client, copySampleSet, until } from "../../tests/native/lib.mjs";
 
 export { until };
 export const identifier = "com.xyzrobotics.tujiaovision.soak-tests";
@@ -62,19 +62,32 @@ export async function connect(cdp, instancePath) {
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 export async function prepareSampleSet(source, outputDir) {
-  await mkdir(outputDir, { recursive: true });
-  const target = path.join(await realpath(outputDir), "sample-set");
-  const realSource = await realpath(source);
-  const rel = path.relative(realSource, target);
-  assert(rel.startsWith("..") || path.isAbsolute(rel), `样本集副本 ${target} 不能放在原件 ${realSource} 里`);
-  assert(path.relative(target, realSource).startsWith(".."), "样本集原件不能在副本目录里");
-  await rm(target, { recursive: true, force: true });
-  await cp(source, target, { recursive: true });
-  const file = path.join(target, "sample-set.json");
-  const manifest = JSON.parse((await readFile(file, "utf8")).replace(/^\uFEFF/, ""));
-  manifest.mmPerPx = SIMULATED_MM_PER_PX;
-  await writeFile(file, JSON.stringify(manifest, null, 2) + "\n");
-  return target;
+  return (await copySampleSet(source, outputDir, manifest => ({ ...manifest, mmPerPx: SIMULATED_MM_PER_PX }))).dir;
+}
+
+// 长稳夹具（TEACH）的 ROI 是按“提取中线 → 沿主方向分 12 段取均值”挑出来的。#99 从 offline-e2e.mjs 删掉了这个函数，
+// 长稳脚本的导入随之失效（见 docs/decisions/r2-records.md），这里按删除前的实现在本地恢复，只供长稳示教使用。
+const CENTERLINE_SEGMENTS = 12;
+function monotoneCenterline(points, segments = CENTERLINE_SEGMENTS) {
+  assert(points.length >= 3, `提取的中线点过少：${points.length}`);
+  const mean = points.reduce((sum, [x, y]) => [sum[0] + x / points.length, sum[1] + y / points.length], [0, 0]);
+  let xx = 0, xy = 0, yy = 0;
+  for (const [x, y] of points) {
+    const dx = x - mean[0], dy = y - mean[1];
+    xx += dx * dx; xy += dx * dy; yy += dy * dy;
+  }
+  const angle = 0.5 * Math.atan2(2 * xy, xx - yy);
+  const axis = [Math.cos(angle), Math.sin(angle)];
+  const t = points.map(([x, y]) => (x - mean[0]) * axis[0] + (y - mean[1]) * axis[1]);
+  const lo = Math.min(...t), hi = Math.max(...t);
+  const bins = Array.from({ length: segments }, () => ({ x: 0, y: 0, n: 0 }));
+  points.forEach(([x, y], i) => {
+    const bin = bins[Math.min(segments - 1, Math.floor(((t[i] - lo) / (hi - lo || 1)) * segments))];
+    bin.x += x; bin.y += y; bin.n += 1;
+  });
+  const path = bins.filter(b => b.n).map(b => [b.x / b.n, b.y / b.n]);
+  assert(path.length >= 3, "中线沿主方向分段后少于 3 个点");
+  return path;
 }
 
 /** 进入离线·样本集，建配方：整圈采集 → 采用 → 每组示教一张 → 独立采集正常样本 → 验证 → 发布。 */

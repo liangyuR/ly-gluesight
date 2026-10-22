@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile, mkdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { instanceCdp, uiPage } from "./offline-e2e.mjs";
+import { instanceCdp, uiPage } from "./lib.mjs";
 
 const identifier = "com.xyzrobotics.tujiaovision.flow-tests";
 const recipeId = "MTR-HSG-A";

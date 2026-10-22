@@ -5,7 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   addErasedPart, identifier, MISSING_INPUT_EXIT, captureRound, client, instanceCdp, missingInputs, prepareSampleSet, produce, teach, uiPage, until, workspaceCalls,
-} from "./offline-e2e.mjs";
+} from "./lib.mjs";
 
 // 特征定位示教的端到端场景（定稿 §5、§13）：真 lyFlow + 样本集副本，在离线模式里走
 // 示教页画框（压胶路被拦、高光框保存被拦、好框通过）→ 定位试测 → 验证统计与两端参数建议 → 确认采用 → 重新试测保存 → 发布 → 投产。

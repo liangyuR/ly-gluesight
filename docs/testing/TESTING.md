@@ -37,7 +37,7 @@
 | `pwsh -NoProfile -File tests/packaging/Test-LyFlowDependency.ps1` | lyFlow 依赖的 Release 选择、配置与 Cargo 锁定、运行库校验、缓存与网络回退、升级回滚（网络与 DLL 探针用本地夹具） |
 | `pwsh -NoProfile -File tests/packaging/Test-VendorDependency.ps1` | 厂商运行库的包隔离、结构、尺寸、CRT 版本、固定源恢复与缓存边界 |
 | `node --test tests/packaging/windows-workflow.test.mjs` | Windows 打包工作流门禁：版本与安装方式校验、发布标签须在 main 上、版本设置、SDK 干净环境检查、视觉检查先于打包、依赖缓存标识与发布清单 |
-| `pwsh -NoProfile -File scripts/Test-Soak.ps1` | 长稳测试（隔离 soak 实例，需样本集与 lyFlow 运行库），阶段、参数与退出码见[长稳报告](soak-report.md) |
+| `pnpm test:soak`（即 `pwsh -NoProfile -File scripts/Test-Soak.ps1`） | 长稳测试（隔离 soak 实例）。没有必填参数，但样本集与 lyFlow 运行库必须经 `-SampleSet` / `GLUESIGHT_SAMPLE_SET`、`-LyFlowRuntime` / `GLUESIGHT_LYFLOW_RUNTIME` 提供（不自动恢复运行库，缺失时退出码 3），例如 `pnpm test:soak -SampleSet <样本集目录> -LyFlowRuntime <运行库目录> -Parts 1000`；阶段、参数与退出码见[长稳报告](soak-report.md) |
 | `pwsh -NoProfile -File scripts/Test-AlgorithmEval.ps1` | 算法评测（忽略的 cargo 评测，需样本集与 `lyflow_core.dll`），参数与读数见[算法评测](algorithm-evaluation.md) |
 | `pwsh -NoProfile -File scripts/Test-DevStartup.ps1` | Windows 旧终端在设置/清除本地运行库后启动，子进程读取最新保存值，参数与退出码保持不变 |
 
@@ -78,9 +78,9 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib -- --ignored packaging::te
 
 ## 隔离桌面与证据边界
 
-`pnpm test:ui:production` 使用 `tests/native/production-flow-ui.mjs` 与 `tests/native/tauri-flow-test.json`，应用标识为 `com.xyzrobotics.tujiaovision.flow-tests`，报告输出到 `output/playwright/flow-regression`。测试通过站点模式进入“离线 · 合成图”，经生产 S7 握手运行一件；使用真实后端、SQLite、PGM 和元数据，并在历史页读回；接着跑两个定位失败工况（胶正常 → ERR 92、定位失败 + 断胶 → NG 优先），再紧接着跑第三件定位失败（中间不能插正常件，否则连续数清零）：检测页出现“特征定位连续失败”告警、应用日志有本件的“连续定位失败”，再跑一件正常件，告警消失、日志有“定位恢复”（G5 E1，定稿 §14）；结束时退出离线并关闭本次进程。
+`pnpm test:ui:production` 使用 `tests/native/production-flow-ui.mjs` 与 flow 实例配置（`Start-UiTestInstance.ps1 -Profile flow` 生成），应用标识为 `com.xyzrobotics.tujiaovision.flow-tests`，报告输出到 `output/playwright/flow-regression`。测试通过站点模式进入“离线 · 合成图”，经生产 S7 握手运行一件；使用真实后端、SQLite、PGM 和元数据，并在历史页读回；接着跑两个定位失败工况（胶正常 → ERR 92、定位失败 + 断胶 → NG 优先），再紧接着跑第三件定位失败（中间不能插正常件，否则连续数清零）：检测页出现“特征定位连续失败”告警、应用日志有本件的“连续定位失败”，再跑一件正常件，告警消失、日志有“定位恢复”（G5 E1，定稿 §14）；结束时退出离线并关闭本次进程。
 
-[`tests/native/`](../../tests/native/) 没有单独说明文件：四个端到端入口的驱动脚本与实例配置见“端到端入口”，长稳测试用其中的 `tauri-soak-test.json`，其余为下表保留的 P0 脚本及“本轮验证”中的原生脚本抽查。恢复专项应使用独立实例和新输出目录，避免使用生产配置。Robot/Modbus 模拟服务、模拟节拍与回放目录相机已删除，由站点模式的离线产线取代。
+[`tests/native/`](../../tests/native/) 没有单独说明文件：四个端到端入口的驱动脚本见“端到端入口”，它们与 `scripts/soak/` 共用的 IPC 客户端、实例连接、样本集副本、整圈采集、示教与投产函数在 `tests/native/lib.mjs`；实例配置不再放在该目录，由 `Start-UiTestInstance.ps1` 按 Profile 生成（长稳测试用 soak）。其余为下表保留的 P0 脚本及“本轮验证”中的原生脚本抽查。恢复专项应使用独立实例和新输出目录，避免使用生产配置。Robot/Modbus 模拟服务、模拟节拍与回放目录相机已删除，由站点模式的离线产线取代。
 
 **P0 原生脚本（站点模式下的处理）**
 
@@ -107,6 +107,8 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 
 四个入口都会构建（`-SkipBuild` 跳过）、启动、驱动并关闭各自的隔离桌面实例，结束时打印总耗时；失败以非零退出码结束，三个 `test:e2e:*` 入口输入缺失时为退出码 3（不算通过）。决策见 [r2-test-infra 决策记录](../decisions/r2-test-infra.md)。
 
+公共脚本：三个 `test:e2e:*` 外壳与 `Test-Soak.ps1` dot-source `scripts/E2E-Common.ps1`，共用输入检查与 lyFlow 运行库解析（长稳不自动恢复）、Node 依赖检查、隔离实例启动，以及关闭实例前的身份核对；各外壳只保留自己的参数、驱动脚本与输出位置。Node 侧共用函数在 `tests/native/lib.mjs`（`scripts/soak/lib.mjs` 也从这里导入）。
+
 | 命令 | 驱动脚本 | 实例配置（应用标识） | 默认端口 | 输出 |
 | --- | --- | --- | --- | --- |
 | `pnpm test:e2e:offline` | `tests/native/offline-e2e.mjs` + `offline-restart.mjs` | e2e（`…e2e-tests`），每次清空资料 | 9341 | `output/playwright/e2e-regression` |
@@ -131,6 +133,7 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 
 **隔离实例的启动**（`scripts/Start-UiTestInstance.ps1`，四个入口共用，也可单独启动后手动驱动）：
 
+- Tauri 覆盖配置按 `-Profile`（`ui`、`p0`、`flow`、`e2e`、`soak`）在脚本内生成：产品名与窗口标题为 `GlueSight · 胶路智检 <Profile> Tests`，应用标识 `com.xyzrobotics.tujiaovision.<Profile>-tests`，窗口隐藏，不打安装包。构建时写到输出目录的 `tauri-test-config.json` 再交给 `tauri build --config`；`-SkipBuild` 不写文件，只按生成的标识核对上次的 `instance.json`。
 - 子进程只继承 NUL 输入与 `stdout.log`、`stderr.log` 两个文件句柄，不继承调用方的管道；后台或被捕获输出时，脚本在实例就绪后即可返回，实例继续运行。
 - 就绪标准：在 `127.0.0.1` 与 `[::1]` 两个回环地址上轮询 `/json/list`，出现且只出现主窗口页面、资料准备窗口已关闭，最长 120 s。主窗口所在地址写入 `instance.json` 的 `cdp`，各驱动脚本默认从清单读取（`--cdp` 可覆盖）。程序提前退出或超时会附带 `stderr.log` 末尾 20 行。
 - `instance.json` 字段：`pid`、`executable`、`identifier`、`dataRoot`、`debugPort`、`cdp`、`stdout`、`stderr`、`startedAt`。关闭实例时脚本按 PID、可执行文件路径与启动时间三项核对身份，不一致不结束进程。
@@ -145,24 +148,24 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 
 ## 离线端到端
 
-`pnpm test:e2e:offline` 由 `scripts/Test-OfflineE2E.ps1` 驱动 `tests/native/offline-e2e.mjs`，配置为 `tests/native/tauri-e2e-test.json`，应用标识 `com.xyzrobotics.tujiaovision.e2e-tests`（隐藏窗口），报告与截图输出到 `output/playwright/e2e-regression`（`result.json`、`restart.json`、`offline-e2e-history.png`）。第一段通过后，脚本关闭实例、保留数据目录重启同一实例，再由 `tests/native/offline-restart.mjs` 做重启续测。已构建时加 `-SkipBuild` 直接跑；端口冲突传 `-DebugPort`。共享 Cargo 缓存时设置 `CARGO_TARGET_DIR`，脚本从该目录取构建产物。
+`pnpm test:e2e:offline` 由 `scripts/Test-OfflineE2E.ps1` 驱动 `tests/native/offline-e2e.mjs`，实例配置为 e2e（`Start-UiTestInstance.ps1` 生成），应用标识 `com.xyzrobotics.tujiaovision.e2e-tests`（隐藏窗口），报告与截图输出到 `output/playwright/e2e-regression`（`result.json`、`restart.json`、`offline-e2e-history.png`）。第一段通过后，脚本关闭实例、保留数据目录重启同一实例，再由 `tests/native/offline-restart.mjs` 做重启续测。已构建时加 `-SkipBuild` 直接跑；端口冲突传 `-DebugPort`。共享 Cargo 缓存时设置 `CARGO_TARGET_DIR`，脚本从该目录取构建产物。
 
 | 输入 | 环境变量 | 脚本参数（覆盖环境变量） | 默认值 |
 | --- | --- | --- | --- |
 | 样本集目录 | `GLUESIGHT_SAMPLE_SET` | `Test-OfflineE2E.ps1 -SampleSet`，`offline-e2e.mjs --sample-set` | 无，必须提供 |
 | lyFlow 运行库目录 | `GLUESIGHT_LYFLOW_RUNTIME` | `Test-OfflineE2E.ps1 -LyFlowRuntime`，`offline-e2e.mjs --lyflow-runtime` | 自动恢复 `packaging/runtime.json` 系列最新 Release |
 
-样本集目录必须通过环境变量或参数提供，脚本不内置任何本机路径；lyFlow 运行库未提供时由 `Restore-LyFlowRuntime.ps1` 恢复，并通过 `GLUESIGHT_LYFLOW_RUNTIME` 传给 debug 构建。任一输入缺失或不存在时不启动实例，打印缺失项并以退出码 3 结束，不算通过。样本集目录应放在本地非同步目录（不能是 junction、符号链接或 OneDrive 等 reparse point）。样本集原件只读：每次运行把它复制到输出目录的 `sample-set/`（复制前解析真实路径，副本目录与原件相同或互相包含时直接报错，不删除任何内容），按样本集 id 选取脚本顶部 `FIXTURES` 里的夹具，没有夹具的样本集直接报错。当前夹具为 `gs-20261017-normal`（2026-10-17 现场单圈，12 点位 × 3 相机）：副本 id 加 `-e2e` 后缀，全局 `mmPerPx` 写入模拟标定当量 0.112（样本集未标定，沿用 [P0 计划](../architecture/p0-plan.md) 记录的同分辨率现场相机假设当量，不代表真实标定）；样本集只有正常件，副本里由 p01 复制出 p02，把 S011 组所选图（样本 S032）的一段约 11 mm 胶路逐行抹成左右紧邻像素的线性渐变，作为人工断胶件（`label=ng`；早先换成旁边板面像素的做法在 lyFlow 1.1.4 下会被测成胶而漏判，见 [r2-lyflow-upgrade.md](../decisions/r2-lyflow-upgrade.md) L-2）。离线与重启续测都用这份副本；重启续测按 `site_status().last.sampleSetDir` 进入，即首次进入时导入的受管副本。每次运行前只删除资料根目录（默认为输出目录，见 `-DataRoot`）下以隔离标识命名的数据目录（`GLUESIGHT_DATA_DIR` 指向它；名称、父目录和非链接逐项校验），保证从全新站点开始，覆盖首次建站无已发布配方的场景。实例启动、CDP 地址与资料目录长度的约定见上文“端到端入口”。
+样本集目录必须通过环境变量或参数提供，脚本不内置任何本机路径；lyFlow 运行库未提供时由 `Restore-LyFlowRuntime.ps1` 恢复，并通过 `GLUESIGHT_LYFLOW_RUNTIME` 传给 debug 构建。任一输入缺失或不存在时不启动实例，打印缺失项并以退出码 3 结束，不算通过。样本集目录应放在本地非同步目录（不能是 junction、符号链接或 OneDrive 等 reparse point）。样本集原件只读：每次运行把它复制到输出目录的 `sample-set/`（复制前解析真实路径，副本目录与原件相同或互相包含时直接报错，不删除任何内容），按样本集 id 选取 `tests/native/lib.mjs` 中 `FIXTURES` 里的夹具，没有夹具的样本集直接报错。当前夹具为 `gs-20261017-normal`（2026-10-17 现场单圈，12 点位 × 3 相机）：副本 id 加 `-e2e` 后缀，全局 `mmPerPx` 写入模拟标定当量 0.112（样本集未标定，沿用 [P0 计划](../architecture/p0-plan.md) 记录的同分辨率现场相机假设当量，不代表真实标定）；样本集只有正常件，副本里由 p01 复制出 p02，把 S011 组所选图（样本 S032）的一段约 11 mm 胶路逐行抹成左右紧邻像素的线性渐变，作为人工断胶件（`label=ng`；早先换成旁边板面像素的做法在 lyFlow 1.1.4 下会被测成胶而漏判，见 [r2-lyflow-upgrade.md](../decisions/r2-lyflow-upgrade.md) L-2）。离线与重启续测都用这份副本；重启续测按 `site_status().last.sampleSetDir` 进入，即首次进入时导入的受管副本。每次运行前只删除资料根目录（默认为输出目录，见 `-DataRoot`）下以隔离标识命名的数据目录（`GLUESIGHT_DATA_DIR` 指向它；名称、父目录和非链接逐项校验），保证从全新站点开始，覆盖首次建站无已发布配方的场景。实例启动、CDP 地址与资料目录长度的约定见上文“端到端入口”。
 
 **覆盖范围**：真机模式启动 → lyFlow 引擎就绪 → 进入离线·样本集（离线控制台显示“当前：离线 · 样本集”，未发布前提示尚无可运行的生产配方；离线相机组按样本集 3 台相机生成）→ 新建候选、离线产线以全部 3 台相机送一圈 p01（12 次触发 × 3 相机 = 36 个拍照点）并采用 → 每个拍照点组（Pose）按夹具选一台相机的图作为检测图，核对候选采用了样本集声明当量，用刷选笔划（S006 组用框选）提取中线、保存参数（4 个组用 3 mm 窄搜索）、试测为合格类、保存示教 → 进度模型的标定步骤完成，所有检测图的标定依据为样本集声明当量，全程不调用人工标定验证 → 独立采集 p01（期望合格）与 p02（期望 NG_GAP）作验证样本 → 验证通过，p01 的 OK 或 OK_WITH_EXCURSION 都按合格类判为符合 → 发布生效（发布状态 active，`validationSite=offline`），离线控制台默认选中新配方 → 离线产线投产 p01、p02 → p01 为合格类，p02 为 NG_GAP 且原因指向 `S011-cam2` → 历史记录带样本件引用 → 离线控制台“最近样本件”期望/实际与历史列表样本徽标、结论的界面核对 → 历史页导出 CSV（行数与记录数一致）→ 在 p02 的历史详情界面依次按原发布包重现（发布包与配方修订为本件冻结值）、按候选规则重判、从原图复测整件，三者结论均与原结论一致，已保存对照可切换查看，原始记录与候选不变 → 界面退出离线，PLC 配置与相机组恢复 → 重启同一实例：仍为真机模式，历史与生产配方修订、示教身份不变，该配方在真机就绪检查中不可运行（原因为离线环境验证发布、需在真机重新验证并发布，引导到工作台），进入离线后原发布包预热就绪且该配方变为可运行，再投产 p02 仍按原发布包得到同一结论。业务步骤主要经 IPC 驱动；PLC 事务占用、发布资源预热、离线 S7 服务重连（界面在重连期间禁用“运行一件”）等暂时拒绝按界面重试的方式最多重试 60 s，次数记在 `result.json` 的 `gateRetries`。
 
 **结果字段**：`branches.calibration` 固定为 `sampleSetDeclared`；`branches.normalExpectation` 记录合格样本的实际结论是 `ok` 还是 `okClass`（OK_WITH_EXCURSION），两者都判为符合；`replayPart` 为做历史复测与重启续测的样本件（有断胶件时为它）；`replay.*.via` 均为 `ui`，三种复测都经历史详情界面触发（“使用该配方候选”需在确认框中切换）。
 
-**边界**：每组所选相机、笔划、像素当量、窄搜索参数与人工断胶件都是让流程跑通的演示夹具，集中定义在脚本顶部；通过只说明建站到投产的业务接线、多相机拍照点组示教、样本件追溯与原图复测一致，不代表中线提取或检测算法质量、现场标定精度、真实缺陷检出、现场 PLC/SDK 或节拍。mx11-demo 在每组必须选一张检测图的规则下需示教全部 8 个点，其中 S003、S006、S007 尚无可靠笔划夹具，暂不提供其夹具。
+**边界**：每组所选相机、笔划、像素当量、窄搜索参数与人工断胶件都是让流程跑通的演示夹具，集中定义在 `tests/native/lib.mjs` 的 `FIXTURES`；通过只说明建站到投产的业务接线、多相机拍照点组示教、样本件追溯与原图复测一致，不代表中线提取或检测算法质量、现场标定精度、真实缺陷检出、现场 PLC/SDK 或节拍。mx11-demo 在每组必须选一张检测图的规则下需示教全部 8 个点，其中 S003、S006、S007 尚无可靠笔划夹具，暂不提供其夹具。
 
 ## 特征定位端到端
 
-`pnpm test:e2e:fixture` 由 `scripts/Test-FixtureE2E.ps1` 驱动 `tests/native/fixture-teach-e2e.mjs`，与离线端到端共用 e2e 配置、实例与样本集副本做法（夹具见 `offline-e2e.mjs` 的 `FIXTURES`），不能同时运行。lyFlow 运行库必须支持带外圈模板的 `glue.locate`（本地构建用 `-LyFlowRuntime` 指过去，脚本只在本进程设环境变量）。
+`pnpm test:e2e:fixture` 由 `scripts/Test-FixtureE2E.ps1` 驱动 `tests/native/fixture-teach-e2e.mjs`，与离线端到端共用 e2e 配置、实例与样本集副本做法（夹具见 `tests/native/lib.mjs` 的 `FIXTURES`），不能同时运行。lyFlow 运行库必须支持带外圈模板的 `glue.locate`（本地构建用 `-LyFlowRuntime` 指过去，脚本只在本进程设环境变量）。
 
 流程：12 组中线示教、p01 / p02 两圈样本进样本库走 IPC；拍照点组 S001（cam2）的定位特征步骤走界面：在示教图上拖框（屏幕取整误差用数值框改到夹具值）；压在中线上的框标“框未采用”、原因指向走廊、不进候选；高光框（≥ 215 的像素约 97%）进草稿但亮像素阻断，试测无效、不能保存；好框 `[248, 248, 96, 96]` 试测有效（示教图自定位偏移 ≤ 0.5 px），定位试测表里示教图与两帧样本都被采用；勾选喷嘴确认后保存。验证（IPC）要求“特征定位”检查与亮度 ±40 锁定通过、给出可采用的两端参数建议；在验证页面板上“采用建议…”并确认后，该视图要求重新试测、旧验证不能发布；示教页重新试测保存、再验证、发布，投产 p01 为合格类、p02 为断胶，p01 的记录带被采用的位姿；投产后在检测页点开该拍照点，选中帧按该帧记录的位姿画定位框（“定位框（按位姿）”，位姿没被采用时为“定位未采用”）并显示定位摘要，历史页打开 p01 的这一帧同样按记录位姿叠图（G5 E2，定稿 §14）。接着演练连续定位失败告警（G5 E3）：副本里另有 p03（由 p01 复制，S002_cam2 上好框连同外圈与整个搜索范围 `[180, 180, 232, 232]` 被逐行抹平，胶路不动；样本集来源不接受合成的“定位失败”工况，所以用真 glue.locate 的真实失败），连续投产 3 件，每件 ERR 92、只有这一幅图没有位置基准、位姿不被采用，前两件后没有告警，第 3 件后快照与检测页出现“连续定位失败告警”（横幅写明配方与修订，当前配方不标“当前未在生产”）、应用日志有本件的“连续定位失败”，选中帧画“定位未采用”框、摘要为“未采用”，该拍照点缩略图的中线落在预览格子内；再投产一件 p01，定位成功、告警消失、日志有“定位恢复”。截图 `fixture-1`–`fixture-9` 与 `result.json` 在输出目录。
 

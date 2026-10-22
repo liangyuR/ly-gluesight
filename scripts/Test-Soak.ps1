@@ -12,52 +12,22 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'E2E-Common.ps1')
 if (!$IsWindows) { throw '长稳测试需要 Windows、WebView2 与 lyFlow。' }
 $Stages = @($Stages | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $soakUnknown = @($Stages | Where-Object { $_ -notin 'soak', 'faults', 'engine', 'disk', 'audit', 'restart' })
 if ($soakUnknown.Count) { throw "未知阶段：$($soakUnknown -join ', ')；可选 soak、faults、engine、disk、audit、restart" }
-$soakSampleSet = if ($SampleSet) { $SampleSet } else { $env:GLUESIGHT_SAMPLE_SET }
-$soakLyflow = if ($LyFlowRuntime) { [IO.Path]::GetFullPath($LyFlowRuntime) } else { $env:GLUESIGHT_LYFLOW_RUNTIME }
-$soakMissing = @()
-if (!$soakSampleSet -or !(Test-Path -LiteralPath (Join-Path $soakSampleSet 'sample-set.json') -PathType Leaf)) { $soakMissing += "样本集目录缺少 sample-set.json：$soakSampleSet（-SampleSet 或 GLUESIGHT_SAMPLE_SET）" }
-if (!$soakLyflow -or !(Test-Path -LiteralPath (Join-Path $soakLyflow 'lyflow_core.dll') -PathType Leaf)) { $soakMissing += "lyFlow 运行库目录缺少 lyflow_core.dll：$soakLyflow（-LyFlowRuntime 或 GLUESIGHT_LYFLOW_RUNTIME）" }
-if ($soakMissing.Count) {
-    [Console]::Error.WriteLine("长稳测试输入缺失，未运行（不算通过，退出码 3）：`n$($soakMissing -join "`n")")
-    exit 3
-}
+# 长稳不自动恢复 lyFlow 运行库：参数与环境变量都没有时按输入缺失处理（退出码 3）。
+$soakInputs = Resolve-E2EInputs -Title '长稳测试' -SampleSet $SampleSet -LyFlowRuntime $LyFlowRuntime -NoRestore
+$soakLyflow = $soakInputs.LyFlow
 
-$soakRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$soakInstanceDir = Join-Path $soakRoot 'output\playwright\soak-regression'
-$soakManifest = Join-Path $soakInstanceDir 'instance.json'
-$soakExecutable = Join-Path $soakInstanceDir 'gluesight-ui-tests.exe'
-$soakOutput = Join-Path $soakRoot 'output\soak'
+$soakRun = New-E2ERun -InstanceProfile soak -DebugPort $DebugPort -WarningPrefix '长稳'
+$soakOutput = Join-Path $soakRun.Root 'output\soak'
 $soakCdp = "http://[::1]:$DebugPort"
-$soakNodeArgs = @('--cdp', $soakCdp, '--instance', $soakManifest, '--out', $soakOutput)
-$soakPreviousLyflow = $env:GLUESIGHT_LYFLOW_RUNTIME
+$soakNodeArgs = @('--cdp', $soakCdp, '--instance', $soakRun.Manifest, '--out', $soakOutput)
 $soakExit = 0
-$script:soakOwned = $null
 $script:soakKnown = [Collections.Generic.List[string]]::new()
 $script:soakSkipped = [Collections.Generic.List[string]]::new()
-
-function Start-SoakInstance([switch]$Fresh, [switch]$Prebuilt) {
-    & (Join-Path $PSScriptRoot 'Start-UiTestInstance.ps1') -Profile soak -ResetData:$Fresh -DebugPort $DebugPort -SkipBuild:$Prebuilt | Out-Host
-    $script:soakOwned = Get-Content -LiteralPath $soakManifest -Raw | ConvertFrom-Json
-}
-
-function Stop-SoakInstance([switch]$Kill) {
-    $owned = $script:soakOwned
-    $script:soakOwned = $null
-    if (!$owned) { return }
-    $process = Get-Process -Id $owned.pid -ErrorAction SilentlyContinue
-    if (!$process) { return }
-    if ($owned.executable -ne $soakExecutable -or $process.Path -ne $soakExecutable -or
-        $process.StartTime.ToUniversalTime() -ne ([datetime]$owned.startedAt).ToUniversalTime()) {
-        Write-Warning '长稳测试进程身份已改变，未停止该进程。'
-        return
-    }
-    if ($Kill) { Stop-Process -InputObject $process -Force } else { Stop-Process -InputObject $process }
-    $process.WaitForExit(15000) | Out-Null
-}
 
 function Invoke-SoakNode([string]$Script, [string[]]$Arguments) {
     & node (Join-Path $PSScriptRoot "soak\$Script") @Arguments
@@ -69,12 +39,12 @@ function Invoke-SoakNode([string]$Script, [string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw "$Script $($Arguments[0]) 失败（退出码 $LASTEXITCODE）" }
 }
 
-Push-Location -LiteralPath $soakRoot
+Push-Location -LiteralPath $soakRun.Root
 try {
     New-Item -ItemType Directory -Force -Path $soakOutput | Out-Null
     $env:GLUESIGHT_LYFLOW_RUNTIME = $soakLyflow
-    Start-SoakInstance -Fresh -Prebuilt:$SkipBuild
-    Invoke-SoakNode 'soak.mjs' (@('setup') + $soakNodeArgs + @('--sample-set', $soakSampleSet))
+    Start-E2EInstance -Fresh -Prebuilt:$SkipBuild
+    Invoke-SoakNode 'soak.mjs' (@('setup') + $soakNodeArgs + @('--sample-set', $soakInputs.SampleSet))
     if ($Stages -contains 'soak') {
         Invoke-SoakNode 'soak.mjs' (@('run') + $soakNodeArgs + @('--parts', "$Parts", '--interval', "$ShotIntervalMs", '--pause', "$PauseMs",
             '--max-err-ratio', $MaxErrRatio.ToString([Globalization.CultureInfo]::InvariantCulture)))
@@ -83,51 +53,51 @@ try {
         Invoke-SoakNode 'faults.mjs' (@('run') + $soakNodeArgs)
     }
     if ($Stages -contains 'engine') {
-        Stop-SoakInstance
+        Stop-E2EInstance
         $soakEmptyRuntime = Join-Path $soakOutput 'empty-lyflow-runtime'
         New-Item -ItemType Directory -Force -Path $soakEmptyRuntime | Out-Null
         $env:GLUESIGHT_LYFLOW_RUNTIME = $soakEmptyRuntime
-        try { Start-SoakInstance -Prebuilt } finally { $env:GLUESIGHT_LYFLOW_RUNTIME = $soakLyflow }
+        try { Start-E2EInstance -Prebuilt } finally { $env:GLUESIGHT_LYFLOW_RUNTIME = $soakLyflow }
         Invoke-SoakNode 'engine.mjs' (@('missing') + $soakNodeArgs)
-        Stop-SoakInstance
-        Start-SoakInstance -Prebuilt
+        Stop-E2EInstance
+        Start-E2EInstance -Prebuilt
         Invoke-SoakNode 'faults.mjs' (@('recover') + $soakNodeArgs + @('--file', 'engine-recovered.json'))
     }
     if ($Stages -contains 'disk') {
-        $soakDiskGuard = Get-ChildItem -LiteralPath (Join-Path $soakRoot 'src-tauri\src') -Recurse -Filter '*.rs' |
+        $soakDiskGuard = Get-ChildItem -LiteralPath (Join-Path $soakRun.Root 'src-tauri\src') -Recurse -Filter '*.rs' |
             Select-String -SimpleMatch 'GLUESIGHT_DISK_MIN_FREE_MB' -List | Select-Object -First 1
         if (!$soakDiskGuard) {
             $script:soakSkipped.Add('disk：本构建没有资料盘守护（读取 GLUESIGHT_DISK_MIN_FREE_MB 的实现随 #111 合入）')
             Write-Warning 'disk 阶段未运行：本构建没有资料盘守护，需 #111 先合入。'
         } else {
-            Stop-SoakInstance
+            Stop-E2EInstance
             $env:GLUESIGHT_DISK_MIN_FREE_MB = '1073741824'
-            try { Start-SoakInstance -Prebuilt } finally { Remove-Item -LiteralPath Env:\GLUESIGHT_DISK_MIN_FREE_MB -ErrorAction SilentlyContinue }
+            try { Start-E2EInstance -Prebuilt } finally { Remove-Item -LiteralPath Env:\GLUESIGHT_DISK_MIN_FREE_MB -ErrorAction SilentlyContinue }
             Invoke-SoakNode 'disk.mjs' (@('blocked') + $soakNodeArgs)
-            Stop-SoakInstance
-            Start-SoakInstance -Prebuilt
+            Stop-E2EInstance
+            Start-E2EInstance -Prebuilt
             Invoke-SoakNode 'disk.mjs' (@('recovered') + $soakNodeArgs)
         }
     }
     if ($Stages -contains 'audit') {
         Invoke-SoakNode 'faults.mjs' (@('audit') + $soakNodeArgs)
-        Stop-SoakInstance
-        Start-SoakInstance -Prebuilt
+        Stop-E2EInstance
+        Start-E2EInstance -Prebuilt
         Invoke-SoakNode 'faults.mjs' (@('recover') + $soakNodeArgs)
     }
     if ($Stages -contains 'restart') {
         Invoke-SoakNode 'restart.mjs' (@('arm') + $soakNodeArgs)
-        Stop-SoakInstance -Kill
+        Stop-E2EInstance -Kill
         Start-Sleep -Seconds 2
-        Start-SoakInstance -Prebuilt
+        Start-E2EInstance -Prebuilt
         Invoke-SoakNode 'restart.mjs' (@('verify') + $soakNodeArgs)
     }
 } catch {
     $soakExit = 1
-    Write-Error "长稳测试失败：$_。报告与日志见 $soakOutput 与 $soakInstanceDir。" -ErrorAction Continue
+    Write-Error "长稳测试失败：$_。报告与日志见 $soakOutput 与 $($soakRun.Output)。" -ErrorAction Continue
 } finally {
-    $env:GLUESIGHT_LYFLOW_RUNTIME = $soakPreviousLyflow
-    Stop-SoakInstance
+    Restore-E2ELyFlowRuntime
+    Stop-E2EInstance
     Pop-Location
 }
 if ($script:soakSkipped.Count) { Write-Warning "未运行的阶段（不算通过也不算失败）：$($script:soakSkipped -join '；')" }

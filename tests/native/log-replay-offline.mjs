@@ -2,10 +2,10 @@ import { chromium } from "playwright-core";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, mkdir, readFile, realpath, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { client, instanceCdp, produce, uiPage, until } from "./offline-e2e.mjs";
+import { captureRound, client, copySampleSet, instanceCdp, produce, uiPage, until, workspaceCalls } from "./lib.mjs";
 
 // 演示夹具：2026-10-17 单圈样本集（12 点位 × 3 相机）没有标定，像素当量 0.1 mm/px 是模拟标定（胶条在图中约 35 px，按 3–4 mm 常见胶宽推定）；
 // ROI 只为让回放链路跑通而手工选定，不代表算法调优结果或现场标定。
@@ -23,39 +23,22 @@ const PART = "p01";
 const ARM_MS = 1000;
 const STAGES = ["partStart", "armed", "partEnd", "result", "released"];
 
+// 样本集副本：只把全局当量改为模拟标定 0.1 mm/px，不改 id、不加人工缺陷件（与 lib.mjs 的 FIXTURES 夹具不同）。
 async function prepareSampleSet(source, outputDir) {
-  await mkdir(outputDir, { recursive: true });
-  const target = path.join(await realpath(outputDir), "sample-set");
-  const realSource = await realpath(source);
-  assert(!target.startsWith(realSource) && !realSource.startsWith(target), "样本集副本不能与原件重叠");
-  await rm(target, { recursive: true, force: true });
-  await cp(source, target, { recursive: true });
-  const file = path.join(target, "sample-set.json");
-  const manifest = JSON.parse((await readFile(file, "utf8")).trim());
-  manifest.mmPerPx = MM_PER_PX;
-  await writeFile(file, JSON.stringify(manifest, null, 2) + "\n");
-  return target;
+  return (await copySampleSet(source, outputDir, manifest => ({ ...manifest, mmPerPx: MM_PER_PX }))).dir;
 }
 
-async function captureRound(call, id, cameraIds) {
-  const round = await call("recipe_capture_start", { recipeId: id, cameraIds, drainTimeoutMs: 1000 });
-  await call("offline_capture", { partId: PART });
-  const done = await until(() => call("recipe_capture_get", { roundId: round.roundId }), r => ["complete", "failed"].includes(r?.state), "整圈采集未结束", 90000);
-  assert.equal(done.state, "complete", `整圈采集失败：${done.error}`);
-  await until(() => call("site_status"), s => !s.running, "离线产线采集后未停止", 15000);
-  return done;
-}
-
+// 示教步骤与 lib.mjs 的 teach 不同，保留本地实现：按拍照点 id 的 ROI 表用 workspace_set_views 选图并跳过其余点
+// （不走 workspace_select_group_image），检测参数固定为 DETECT，试测结论在全部示教后汇总检查。
 async function teach(call, id) {
-  const revision = async () => (await call("workspace_get", { id })).workspace.revision;
-  const edit = async (command, args) => call(command, { id, revision: await revision(), ...args });
-  const shots = (await call("workspace_get", { id })).workspace.doc.shots;
+  const { get, edit } = workspaceCalls(call, id);
+  const shots = (await get()).workspace.doc.shots;
   for (const [k, shot] of shots.entries()) await edit("workspace_set_views", { k, views: TEACH[shot.id] ? [1] : [], skip: !TEACH[shot.id] });
   const taught = [];
   for (const [k, shot] of shots.entries()) {
     const roi = TEACH[shot.id];
     if (!roi) continue;
-    const imageId = (await call("workspace_get", { id })).workspace.frames[k].image.id;
+    const imageId = (await get()).workspace.frames[k].image.id;
     const extracted = await edit("workspace_extract_centerline", { k, imageId, roi });
     assert(extracted.path.length >= 3, `${shot.id} 中线提取失败：${extracted.message}`);
     await edit("workspace_save_params", { k, params: { path: extracted.path, mmPerPx: MM_PER_PX, detect: DETECT, fixture: null } });
@@ -186,16 +169,16 @@ export async function runLogReplay(page, options) {
   const cameras = await call("camera_rig_config");
   const created = await call("workspace_create", { doc: await call("recipe_template") });
   const id = created.workspace.doc.id;
-  const round = await captureRound(call, id, cameras.map(c => c.id));
-  const revision = async () => (await call("workspace_get", { id })).workspace.revision;
-  await call("workspace_adopt_capture", { id, revision: await revision(), roundId: round.roundId, reuseTeaching: false, correspondenceConfirmed: false });
+  const ws = workspaceCalls(call, id);
+  const round = await captureRound(call, id, cameras.map(c => c.id), PART);
+  await ws.edit("workspace_adopt_capture", { roundId: round.roundId, reuseTeaching: false, correspondenceConfirmed: false });
   const taught = await teach(call, id);
-  const sample = await captureRound(call, id, cameras.map(c => c.id));
-  await call("workspace_capture_sample", { id, revision: await revision(), roundId: sample.roundId, expected: "OK", correspondenceConfirmed: true });
-  const validation = (await call("workspace_validate", { id, revision: await revision(), samples: [{ historyId: null, sampleId: sample.roundId, expected: "OK" }], sourceConfirmed: true })).workspace.validation;
+  const sample = await captureRound(call, id, cameras.map(c => c.id), PART);
+  await ws.edit("workspace_capture_sample", { roundId: sample.roundId, expected: "OK", correspondenceConfirmed: true });
+  const validation = (await ws.edit("workspace_validate", { samples: [{ historyId: null, sampleId: sample.roundId, expected: "OK" }], sourceConfirmed: true })).workspace.validation;
   assert(validation.passed, `验证未通过：${JSON.stringify(validation.checks.filter(c => !c.passed))}`);
-  await call("workspace_publish", { id, revision: await revision() });
-  await until(async () => (await call("workspace_get", { id })).workspace.publish.state === "active", Boolean, "发布未生效", 60000);
+  await ws.edit("workspace_publish", {});
+  await until(async () => (await ws.get()).workspace.publish.state === "active", Boolean, "发布未生效", 60000);
   const produced = [];
   for (let i = 0; i < options.parts; i++) produced.push((await produce(call, id, PART)).summary);
   const parts = [];

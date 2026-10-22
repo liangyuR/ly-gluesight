@@ -8,8 +8,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $taskUiRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$taskUiConfig = Join-Path $taskUiRoot "tests\native\tauri-$Profile-test.json"
 $taskUiOutput = Join-Path $taskUiRoot "output\playwright\$Profile-regression"
+# 隔离实例的 Tauri 覆盖配置按 Profile 生成（各 Profile 只差名称与标识），构建时写到输出目录供 tauri build --config 读取。
+$taskUiConfig = Join-Path $taskUiOutput 'tauri-test-config.json'
 $taskUiExecutable = Join-Path $taskUiOutput 'gluesight-ui-tests.exe'
 $taskUiTarget = if ($env:CARGO_TARGET_DIR) { [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) } else { Join-Path $taskUiRoot 'src-tauri\target' }
 $taskUiBuild = Join-Path $taskUiTarget 'debug\GlueSight.exe'
@@ -18,7 +19,14 @@ $taskUiStdout = Join-Path $taskUiOutput 'stdout.log'
 $taskUiStderr = Join-Path $taskUiOutput 'stderr.log'
 $taskUiExisting = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $taskUiExecutable })
 if ($taskUiExisting.Count) { throw "隔离 UI 实例仍在运行：$($taskUiExisting.Id -join ', ')。请先完成或关闭该实例。" }
-$taskUiOverlay = Get-Content -LiteralPath $taskUiConfig -Raw | ConvertFrom-Json
+$taskUiTitle = "GlueSight · 胶路智检 $(@{ ui = 'UI'; p0 = 'P0'; flow = 'Flow'; e2e = 'E2E'; soak = 'Soak' }[$Profile]) Tests"
+$taskUiOverlay = [ordered]@{
+    productName = $taskUiTitle
+    identifier = "com.xyzrobotics.tujiaovision.$Profile-tests"
+    build = [ordered]@{ beforeBuildCommand = 'node node_modules/typescript/bin/tsc -b && node node_modules/vite/bin/vite.js build' }
+    app = [ordered]@{ windows = @([ordered]@{ label = 'main'; title = $taskUiTitle; visible = $false; width = 1440; height = 900; minWidth = 1100; minHeight = 700 }) }
+    bundle = [ordered]@{ active = $false }
+}
 if ($taskUiOverlay.identifier -ne "com.xyzrobotics.tujiaovision.$Profile-tests" -or $taskUiOverlay.app.windows[0].visible) {
     throw 'UI test configuration must use the isolated application identifier and a hidden window.'
 }
@@ -141,6 +149,7 @@ function Get-TaskUiStderr {
 Push-Location -LiteralPath $taskUiRoot
 try {
     if (!$SkipBuild) {
+        $taskUiOverlay | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $taskUiConfig -Encoding utf8NoBOM
         & node (Join-Path $taskUiRoot 'node_modules\@tauri-apps\cli\tauri.js') build --debug --no-bundle --config $taskUiConfig
         if ($LASTEXITCODE -ne 0) { throw '隔离 UI 构建失败' }
         Copy-Item -LiteralPath $taskUiBuild -Destination $taskUiExecutable -Force
