@@ -50,6 +50,26 @@ fn drain(host: &RecipeCaptureHost) {
     host.tick_burst();
 }
 
+// 写盘线程落后（写盘队列满、写盘超时）在测试里造不出来：真实写盘线程写 2×2 的图总是赶得上取图回调，没法让它停顿。
+// 只能改本轮的内部计数来模拟，改动集中在下面这几个辅助函数里；用例本身只通过 offer / burst_plc_ended / current_burst 等入口断言结果。
+
+/// 让第 cam 台相机多出 pending 帧“已入队未写完”。
+fn add_write_backlog(host: &RecipeCaptureHost, cam: usize, pending: u32) {
+    host.burst.lock().unwrap().as_mut().unwrap().cams[cam].queued += pending;
+}
+
+/// 还原 [`add_write_backlog`]，让之后的 settle / finish 不会一直等不存在的帧。
+fn clear_write_backlog(host: &RecipeCaptureHost, cam: usize, pending: u32) {
+    host.burst.lock().unwrap().as_mut().unwrap().cams[cam].queued -= pending;
+}
+
+/// PLC 已结束、仍有 1 帧没写完，写盘期限到期，再 tick 一次。
+fn expire_write_deadline_with_backlog(host: &RecipeCaptureHost) {
+    add_write_backlog(host, 0, 1);
+    host.burst.lock().unwrap().as_mut().unwrap().write_deadline = Some(Instant::now());
+    drain(host);
+}
+
 /// 写完已入队的帧，PLC 结束，drain 窗口到期。
 fn finish(host: &RecipeCaptureHost, device_triggers: Option<u16>) -> CaptureRoundV2 {
     settle(host);
@@ -63,9 +83,10 @@ fn pixel(host: &RecipeCaptureHost, round_id: &str, camera_id: &str, seq: u64) ->
 }
 
 /// 规格 §5：示教轮次 PLC 的 shotCount 可填估算值（含 0、超过 64），PC 只记录，不限 1–64、不核对，轮次照实际帧完成。
+/// 0 是下限、65 是旧上限 64 的下一个、32767 是线协议能写的最大值；65 到 32767 之间是同一类，不再列。
 #[test]
 fn plc_estimate_of_zero_or_above_64_is_only_recorded_and_round_completes_on_actual_frames() {
-    for estimate in [0u16, 65, 200, 32767] {
+    for estimate in [0u16, 65, 32767] {
         let host = host();
         start(&host);
         host.burst_plc_started(estimate, 7).unwrap();
@@ -104,61 +125,65 @@ fn camera_skipping_a_frame_counter_leaves_only_that_group_incomplete() {
     assert!(host.burst_frame_path(&round.round_id, "cam2", 3).is_err(), "缺的那一帧没有图");
 }
 
-/// 易错边界：同一相机重复的帧号丢弃并告警、保留先到的那帧；帧号回退或不大于基线说明计数不可信，整轮失败。
+/// 易错边界：同一相机重复的帧号丢弃并告警、保留先到的那帧，本轮照常继续。
 #[test]
-fn duplicate_counter_is_dropped_with_alarm_but_backward_or_stale_counter_fails_round() {
-    for (case, counters, fails) in [("重复帧号", vec![1, 2, 2], false), ("帧号回退", vec![1, 3, 2], true), ("帧号不大于基线", vec![0], true)] {
+fn duplicate_counter_is_dropped_with_alarm_and_the_first_frame_is_kept() {
+    let host = host();
+    let round = start(&host);
+    host.burst_plc_started(3, 1).unwrap();
+    offer(&host, frame(0, 1));
+    offer(&host, frame(0, 2));
+    let mut late_copy = frame(0, 2);
+    late_copy.images = vec![Arc::new(FrameImage::new(2, 2, vec![255; 4]))];
+    offer(&host, late_copy);
+    settle(&host);
+    let now = host.current_burst().unwrap();
+    assert_eq!(now.state, CaptureState::Receiving, "{:?}", now.error);
+    assert_eq!(now.alarms, [CaptureAlarm::Duplicate { camera: 0, seq: 2 }]);
+    assert_eq!(pixel(&host, &round.round_id, "cam1", 2), 2, "保留先到的那帧");
+}
+
+/// 易错边界：帧号回退或不大于基线说明计数不可信（可能是上一轮的迟到帧），整轮失败并指到该相机。
+#[test]
+fn backward_counter_or_counter_not_above_baseline_fails_round_naming_the_camera() {
+    for (case, counters) in [("帧号回退", vec![1, 3, 2]), ("帧号不大于基线", vec![0])] {
         let host = host();
-        let round = start(&host);
+        start(&host);
         host.burst_plc_started(3, 1).unwrap();
-        for (i, &n) in counters.iter().enumerate() {
-            let mut f = frame(0, n);
-            if counters[..i].contains(&n) { f.images = vec![Arc::new(FrameImage::new(2, 2, vec![255; 4]))]; }
-            offer(&host, f);
-        }
+        for &n in &counters { offer(&host, frame(0, n)); }
         settle(&host);
         let now = host.current_burst().unwrap();
-        assert_eq!(now.state == CaptureState::Failed, fails, "{case}：{:?}", now.error);
-        if fails {
-            assert_eq!(now.failure, Some(CaptureFailureV2::Camera { camera_id: "cam1".into() }), "{case}");
-        } else {
-            assert_eq!(now.alarms, [CaptureAlarm::Duplicate { camera: 0, seq: 2 }], "{case}");
-            assert_eq!(pixel(&host, &round.round_id, "cam1", 2), 2, "{case}：保留先到的那帧");
-        }
+        assert_eq!(now.state, CaptureState::Failed, "{case}：{:?}", now.error);
+        assert_eq!(now.failure, Some(CaptureFailureV2::Camera { camera_id: "cam1".into() }), "{case}");
     }
 }
 
 /// D-SB-8：丢包、图像内存预算满、写盘队列满的帧不写图，记缺帧并告警，整轮照常完成。
 #[test]
 fn lost_packet_budget_dropped_or_queue_full_frame_is_missing_with_alarm_and_round_completes() {
-    let alarm = |kind: u8| match kind {
-        0 => CaptureAlarm::Corrupt { camera: 0, seq: 2 },
-        1 => CaptureAlarm::BudgetDropped { camera: 0, seq: 2 },
-        _ => CaptureAlarm::QueueFull { camera: 0, seq: 2 },
-    };
-    for (case, kind) in [("丢包", 0u8), ("图像内存预算满", 1), ("写盘队列满", 2)] {
+    // 第 1 台相机的第 2 帧以三种方式拿不到图：丢包、图像内存预算满（camera.rs 没拷图）、写盘队列满
+    let cases: [(&str, fn(&RecipeCaptureHost, Frame), CaptureAlarm); 3] = [
+        ("丢包", |h, mut f| { f.lost_packets = 3; offer(h, f); }, CaptureAlarm::Corrupt { camera: 0, seq: 2 }),
+        ("图像内存预算满", |h, mut f| { f.images.clear(); h.offer_dropped(&f); }, CaptureAlarm::BudgetDropped { camera: 0, seq: 2 }),
+        ("写盘队列满", |h, f| {
+            add_write_backlog(h, 0, MAX_FRAMES_PER_CAMERA);
+            offer(h, f);
+            clear_write_backlog(h, 0, MAX_FRAMES_PER_CAMERA);
+        }, CaptureAlarm::QueueFull { camera: 0, seq: 2 }),
+    ];
+    for (case, lose, alarm) in cases {
         let host = host();
         start(&host);
         host.burst_plc_started(3, 1).unwrap();
         for n in 1..=3 {
             for cam in 0..3 {
-                let mut f = frame(cam, n);
-                if (cam, n) != (0, 2) { offer(&host, f); continue; }
-                match kind {
-                    0 => { f.lost_packets = 3; offer(&host, f); }
-                    1 => { f.images.clear(); host.offer_dropped(&f); }
-                    _ => {
-                        host.burst.lock().unwrap().as_mut().unwrap().cams[0].queued += MAX_FRAMES_PER_CAMERA;
-                        offer(&host, f);
-                        host.burst.lock().unwrap().as_mut().unwrap().cams[0].queued -= MAX_FRAMES_PER_CAMERA;
-                    }
-                }
+                if (cam, n) == (0, 2) { lose(&host, frame(cam, n)); } else { offer(&host, frame(cam, n)); }
             }
         }
         let done = finish(&host, Some(3));
         assert_eq!(done.state, CaptureState::Complete, "{case}：{:?}", done.error);
         assert_eq!(done.missing_frames, [MissingFrame { camera: 0, seq: 2 }], "{case}");
-        assert_eq!(done.alarms, [alarm(kind)], "{case}");
+        assert_eq!(done.alarms, [alarm], "{case}");
     }
 }
 
@@ -177,12 +202,7 @@ fn failed_round_reports_device_or_process_fault_not_count_mismatch() {
         ("写盘超时", |h| {
             h.burst_plc_started(0, 1).unwrap();
             h.burst_plc_ended(Some(1)).unwrap();
-            let mut guard = h.burst.lock().unwrap();
-            let run = guard.as_mut().unwrap();
-            run.cams[0].queued += 1;
-            run.write_deadline = Some(Instant::now());
-            drop(guard);
-            drain(h);
+            expire_write_deadline_with_backlog(h);
         }, (90, 99)),
     ];
     for (case, make, expected) in cases {
