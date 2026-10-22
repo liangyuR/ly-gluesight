@@ -200,7 +200,7 @@ fn candidate_debug_report_identifies_the_frozen_candidate_instead_of_production_
     assert!(report.ready);
     assert_eq!(report.candidate_debug.unwrap().revision, 355);
     let item = report.items.iter().find(|item| item.key == ItemKey::Recipe).unwrap();
-    assert_eq!(item.title, "候选调试检查");
+    assert_eq!(item.title, CANDIDATE_TITLE);
 }
 
 #[test]

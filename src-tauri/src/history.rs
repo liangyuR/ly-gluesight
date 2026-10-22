@@ -142,11 +142,41 @@ pub struct Change {
     pub reason: String,
 }
 
+/// 重判跳过一条记录的原因种类；`RejudgeSkip::reason` 是给界面看的说明。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SkipKind {
+    ErrResult,
+    NoTable,
+    NoRevision,
+    SnapshotMissing,
+    LayoutMismatch,
+    NoRecipeId,
+    NoCandidate,
+    LayoutChanged,
+}
+
+impl SkipKind {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::ErrResult => "原检测为 ERR，不能仅靠判定参数复原测量",
+            Self::NoTable => "原记录缺少测量点数据",
+            Self::NoRevision => "原记录缺少配方快照身份",
+            Self::SnapshotMissing => "原配方快照缺失，无法核对测点布局",
+            Self::LayoutMismatch => "存储测量点与原配方布局不一致",
+            Self::NoRecipeId => "原记录缺少配方编号",
+            Self::NoCandidate => "当前候选配方不存在",
+            Self::LayoutChanged => "当前候选的拍照点、相机、视角、测点几何、特征定位（模板来源）或单位已改变，需要使用原图复测",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct RejudgeSkip {
     pub id: i64,
     pub sn: String,
     pub ts: i64,
+    pub kind: SkipKind,
     pub reason: String,
 }
 
@@ -203,43 +233,43 @@ fn rejudge_rows(
     let mut skip_reasons = Vec::new();
     let (mut total, mut skipped) = (0, 0);
     for row in rows.into_iter().take(REJUDGE_LIMIT) {
-        let mut skip = |reason: &str| {
+        let mut skip = |kind: SkipKind| {
             skipped += 1;
             if skip_reasons.len() < 300 {
-                skip_reasons.push(RejudgeSkip { id: row.id, sn: row.sn.clone(), ts: row.ts, reason: reason.into() });
+                skip_reasons.push(RejudgeSkip { id: row.id, sn: row.sn.clone(), ts: row.ts, kind, reason: kind.reason().into() });
             }
         };
         if row.verdict == Verdict::ErrInspect {
-            skip("原检测为 ERR，不能仅靠判定参数复原测量");
+            skip(SkipKind::ErrResult);
             continue;
         }
         if row.table.is_empty() {
-            skip("原记录缺少测量点数据");
+            skip(SkipKind::NoTable);
             continue;
         }
         let Some(revision_id) = row.recipe_revision.as_deref() else {
-            skip("原记录缺少配方快照身份");
+            skip(SkipKind::NoRevision);
             continue;
         };
         let Some(original) = cached_recipe(&mut originals, revision_id, || snapshot(revision_id))? else {
-            skip("原配方快照缺失，无法核对测点布局");
+            skip(SkipKind::SnapshotMissing);
             continue;
         };
         if row.table.len() != original.point_count() || row.recipe_id.as_deref() != Some(original.id.as_str()) || revision_id != original.revision_id {
-            skip("存储测量点与原配方布局不一致");
+            skip(SkipKind::LayoutMismatch);
             continue;
         }
         let recipe = if request.use_current_recipe {
             let Some(id) = row.recipe_id.as_deref() else {
-                skip("原记录缺少配方编号");
+                skip(SkipKind::NoRecipeId);
                 continue;
             };
             let Some(candidate) = cached_recipe(&mut candidates, id, || Ok(current(id)))? else {
-                skip("当前候选配方不存在");
+                skip(SkipKind::NoCandidate);
                 continue;
             };
             if !same_measurement_layout(&original, &candidate) {
-                skip("当前候选的拍照点、相机、视角、测点几何、特征定位（模板来源）或单位已改变，需要使用原图复测");
+                skip(SkipKind::LayoutChanged);
                 continue;
             }
             candidate

@@ -71,7 +71,7 @@ fn current_recipe_with_same_point_count_requires_same_complete_layout() {
         assert_eq!(candidate.point_count(), original.point_count());
         let result = rejudge_rows(vec![row(&original, 1)], &request, |_| Ok(Some(original.clone())), |_| Some(Arc::new(candidate.clone()))).unwrap();
         assert_eq!((result.total, result.skipped), (0, 1));
-        assert!(result.skip_reasons[0].reason.contains("需要使用原图复测"));
+        assert_eq!(result.skip_reasons[0].kind, SkipKind::LayoutChanged);
         assert!(result.changes.is_empty());
     }
     let mut other_revision = (*original).clone();
@@ -116,9 +116,11 @@ fn unavailable_or_inconsistent_original_inputs_are_explicitly_skipped() {
     let mut bad_layout = row(&original, 4);
     bad_layout.table.pop();
     let result = rejudge_rows(vec![no_table, err, no_revision, bad_layout], &RejudgeRequest::default(), |_| Ok(Some(original.clone())), |_| None).unwrap();
-    assert_eq!((result.total, result.skipped, result.skip_reasons.len()), (0, 4, 4));
+    assert_eq!((result.total, result.skipped), (0, 4));
+    assert_eq!(result.skip_reasons.iter().map(|skip| (skip.id, skip.kind)).collect::<Vec<_>>(),
+        [(1, SkipKind::NoTable), (2, SkipKind::ErrResult), (3, SkipKind::NoRevision), (4, SkipKind::LayoutMismatch)]);
     let result = rejudge_rows(vec![row(&original, 5)], &RejudgeRequest { use_current_recipe: true, ..Default::default() }, |_| Ok(None), |_| Some(original.clone())).unwrap();
-    assert_eq!(result.skip_reasons[0].reason, "原配方快照缺失，无法核对测点布局");
+    assert_eq!(result.skip_reasons[0].kind, SkipKind::SnapshotMissing, "快照缺失不能退回当前配方");
     assert_eq!(rejudge_rows(vec![row(&original, 6)], &RejudgeRequest::default(), |_| Err("数据库读取失败".into()), |_| None).unwrap_err(), "数据库读取失败");
 }
 

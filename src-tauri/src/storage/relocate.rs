@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn migration_created_missing_reference_blocks_activation_but_preexisting_missing_is_reported() {
-        let fixture = Fixture::new(&[1]);
+        let fixture = Fixture::new();
         let source = fixture.0.join("old");
         let target = fixture.0.join("new");
         let staging = fixture.0.join("stage");
@@ -326,12 +326,12 @@ mod tests {
             .unwrap()
             .is_empty());
     }
-    use crate::offline::sample_set::fixture::Fixture;
+    use crate::storage::tests::Fixture;
     use serde_json::json;
 
     #[test]
     fn moving_teaching_rebases_calibration_but_preserves_engine_identity_and_arbitrary_strings() {
-        let fixture = Fixture::new(&[1]);
+        let fixture = Fixture::new();
         let source = fixture.0.join("old");
         let target = fixture.0.join("new");
         let old = source
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn published_resources_and_unchanged_json_keep_original_bytes() {
-        let fixture = Fixture::new(&[1]);
+        let fixture = Fixture::new();
         let text = b"{ \"path\": \"old\", \"frames\": [] }\n";
         let file = fixture.0.join("file.json");
         for relative in [
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn history_relocation_changes_recording_location_without_rewriting_snapshot_identity() {
-        let fixture = Fixture::new(&[1]);
+        let fixture = Fixture::new();
         let file = fixture.0.join("inspection.db");
         let source = fixture.0.join("old");
         let target = fixture.0.join("new");

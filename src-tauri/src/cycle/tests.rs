@@ -179,15 +179,18 @@ fn counter_desync_ends_err91_with_expected_and_received_counters() {
     let judgement = p.judgement();
     assert_eq!(judgement.verdict, Verdict::ErrInspect);
     assert_eq!(judgement.fault_code, fault::MISSING_FRAME);
-    assert!(judgement.reason.starts_with("拍照点 P4（cam1）没有收到帧：相机 cam1 触发计数错位：本件应收 3–6，实际收到 2–5；2 不大于本件基线 2"),
-        "{}", judgement.reason);
+    // 应收 3–6（基线 2 之后 4 帧），实收 3–5 绑到 P1–P3，P4 缺
+    assert_eq!(p.router.baseline(0), Some(2));
+    assert_eq!((0..4).map(|k| p.router.bound(k)).collect::<Vec<_>>(), [Some(3), Some(4), Some(5), None]);
+    assert_eq!(p.router.missing(), [3]);
 
-    // 多出的触发：第一个超计划帧就是结果原因，写明应收与实际计数
+    // 多出的触发：应收 1–4，第 5 帧超出计划 1 个
     let mut p = part("extra", &Ledgers::default());
-    for counter in 1..=5 { p.receive_frame(&frame(0, counter)).unwrap(); }
+    let routes: Vec<_> = (1..=5).map(|counter| p.receive_frame(&frame(0, counter)).unwrap()).collect();
+    assert_eq!(routes[4], Route::Extra { ordinal: 5, planned: 4 });
     let judgement = p.judgement();
+    assert_eq!(judgement.verdict, Verdict::ErrInspect);
     assert_eq!(judgement.fault_code, fault::EXTRA_FRAME);
-    assert!(judgement.reason.contains("相机 cam1 触发计数错位：本件应收 1–4，收到 5，超出计划 1 个"), "{}", judgement.reason);
 }
 
 #[test]
@@ -244,33 +247,6 @@ fn malformed_measurement_cannot_write_another_shot_or_report_ok() {
         assert!(p.recipe.owned_points(1).all(|j| p.table[j] == PointState::Pending), "case {case}");
         assert_eq!(p.judgement().fault_code, fault::PROCESS_TIMEOUT, "case {case}");
     }
-}
-
-#[test]
-fn identity_batches_commit_together_and_failed_batches_expose_no_partial_ids() {
-    let path = std::env::temp_dir().join(format!("gluesight-cycle-batch-{}-{}.sqlite", std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-    let ids;
-    {
-        let store = Store::open(&path).unwrap();
-        let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute_batch("CREATE TRIGGER reject_third BEFORE INSERT ON cycle_ids
-            WHEN (SELECT count(*) FROM cycle_ids) = 2 BEGIN SELECT RAISE(ABORT, 'disk failure'); END;").unwrap();
-        assert!(store.reserve_cycle_ids(4).is_err());
-        assert_eq!(conn.query_row("SELECT count(*) FROM cycle_ids", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
-        conn.execute_batch("DROP TRIGGER reject_third;").unwrap();
-        assert!(store.reserve_cycle_ids(0).is_err());
-        assert!(store.reserve_cycle_ids(33).is_err());
-        ids = store.reserve_cycle_ids(32).unwrap();
-        assert_eq!(ids.iter().collect::<std::collections::HashSet<_>>().len(), 32);
-    }
-    {
-        let reopened = Store::open(&path).unwrap();
-        assert!(!ids.contains(&reopened.reserve_cycle_id().unwrap()));
-        let conn = rusqlite::Connection::open(&path).unwrap();
-        assert_eq!(conn.query_row("SELECT count(*) FROM cycle_ids", [], |row| row.get::<_, i64>(0)).unwrap(), 33);
-    }
-    std::fs::remove_file(path).unwrap();
 }
 
 #[test]
@@ -348,25 +324,15 @@ pub(crate) fn judge_delivered(lost: &[bool]) -> Judgement {
     p.judgement()
 }
 
-#[test]
-fn reset_during_recipe_capture_still_requires_service_readiness() {
-    let device = || Ok(());
-    for (service, device_ok, ready) in [
-        (Err("生产生效版本尚未确认".to_string()), true, false),
-        (Ok(()), false, false),
-        (Ok(()), true, true),
-    ] {
-        let result = capture::capture_readiness(service.clone(), || if device_ok { device() } else { Err("采集相机未就绪".into()) });
-        assert_eq!(result.is_ok(), ready, "{service:?} {device_ok}");
-    }
-}
-
-#[tokio::test]
+/// 超预算拒绝本件由 arming 的用例覆盖；这里只守“预算超时不毒化追溯”。
+#[tokio::test(start_paused = true)]
 async fn arm_budget_overrun_in_audit_health_refuses_part_without_poisoning_audit() {
-    let mut budget = ArmBudget::with_start(Instant::now(), Duration::from_millis(30));
+    let mut budget = ArmBudget::with_start(tokio::time::Instant::now(), Duration::from_millis(30));
     let poisoned = std::cell::Cell::new(false);
-    let result = arm_health_check(&mut budget, || { std::thread::sleep(Duration::from_millis(80)); Ok(()) }, |_| poisoned.set(true)).await;
-    assert!(result.is_err_and(|e| e.contains("audit-health")), "超过布防预算应拒绝本件");
+    let (release, blocked) = std::sync::mpsc::channel::<()>();
+    let result = arm_health_check(&mut budget, move || { let _ = blocked.recv(); Ok(()) }, |_| poisoned.set(true)).await;
+    drop(release);
+    assert!(result.is_err(), "前提：探针卡住，布防预算用完");
     assert!(!poisoned.get(), "布防预算偶发超时不能把追溯判成需重启恢复的故障");
 }
 

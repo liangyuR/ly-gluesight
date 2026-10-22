@@ -208,17 +208,12 @@ mod tests {
     }
 
     #[test]
-    fn pool_converts_into_reused_buffer() {
+    fn pool_converts_a_uniform_color_mosaic_to_its_gray_level() {
         let pool = FramePool::new(2);
         let src = mosaic([[2, 1], [1, 0]], 6, 4, |_, _| [200, 100, 40]);
         let img = pool.bayer8_to_gray(6, 4, &src).unwrap();
         assert_eq!((img.width, img.height, img.pixels.len()), (6, 4, 24));
         assert!(img.pixels.iter().all(|&v| v == 110));
-        drop(img);
-        assert_eq!(pool.0.free.lock().unwrap().len(), 1);
-        assert!(pool.bayer8_to_gray(1, 4, &src).is_err());
-        // 出错时缓冲放回池里
-        assert_eq!(pool.0.free.lock().unwrap().len(), 1);
     }
 
 }

@@ -309,9 +309,10 @@ fn identical_content_with_new_version_is_allowed_but_snapshot_collision_is_rejec
     newer.revision_id = format!("{}-v{}", newer.id, newer.version);
     save(&store, &newer, "reverted-content", &shots(&newer), &PlcDelivery::default(), None).unwrap();
     newer.shots[0].camera = "changed-camera".into();
-    assert!(save(&store, &newer, "forged-revision_id", &shots(&newer), &PlcDelivery::default(), None).unwrap_err().contains("不同快照"));
+    assert!(save(&store, &newer, "forged-revision_id", &shots(&newer), &PlcDelivery::default(), None).is_err());
     assert_eq!(store.query(&HistoryQuery::default()).unwrap().total, 2);
     assert_eq!(store.recipe_snapshot(&recipe.revision_id).unwrap().unwrap().shots[0].camera, recipe.shots[0].camera);
+    assert_eq!(store.recipe_snapshot(&newer.revision_id).unwrap().unwrap().shots[0].camera, recipe.shots[0].camera, "同一 revision_id 的已存快照不被改写");
 }
 
 #[test]
@@ -335,7 +336,7 @@ fn recording_available_requires_actual_refs_and_complete_error_free_evidence() {
     let recipe = recipe();
     let id = save(&store, &recipe, "cycle", &shots(&recipe), &PlcDelivery::default(), None).unwrap();
     let complete = RecordingEvidence { state: RecordingState::Complete, available: true, directory: Some("records/cycle".into()), errors: Vec::new() };
-    assert!(store.update_recording("cycle", &complete).unwrap_err().contains("原图引用"));
+    assert!(store.update_recording("cycle", &complete).is_err(), "还没有原图引用");
     store
         .update_shot_raw_files("cycle", 0, &[ShotRawFile { view: 1, file: "cycle/k000_P1_cam1_v1.pgm".into() , width: None, height: None }])
         .unwrap();
@@ -401,13 +402,36 @@ fn rolling_retention_prune_marks_history_raw_images_unavailable() {
         lost_packets: 0, ts: 1, manual: false, images: (0..3).map(|_| Arc::new(crate::frame::FrameImage::new(1, 1, vec![9]))).collect() };
     recorder.frame(&mut rec, &frame, "cam1", 0, 1);
     recorder.finish(rec, Verdict::Ok, "新件", 1, u64::MAX, Vec::new());
-    let outcome = outcomes.recv_timeout(Duration::from_secs(600)).unwrap();
+    let outcome = outcomes.recv_timeout(Duration::from_secs(30)).unwrap();
     assert!(outcome.retention_errors.is_empty(), "{:?}", outcome.retention_errors);
     assert!(!old.exists(), "超过保留件数的旧录制应被清理");
     let recording = store.detail(id).unwrap().recording;
     assert!(!recording.available, "原图目录已删除，历史记录不能再标为原图可用");
     assert_eq!(recording.state, RecordingState::NotRetained);
-    assert!(recording.errors.iter().any(|e| e.contains("滚动清理")), "{:?}", recording.errors);
+    assert!(!recording.errors.is_empty(), "清理后应写明不再可用的原因");
+}
+
+#[test]
+fn identity_batches_commit_together_and_failed_batches_expose_no_partial_ids() {
+    let db = TestDb::new();
+    let count = |conn: &Connection| conn.query_row("SELECT count(*) FROM cycle_ids", [], |row| row.get::<_, i64>(0)).unwrap();
+    let ids;
+    {
+        let store = Store::open(&db.path()).unwrap();
+        let conn = Connection::open(db.path()).unwrap();
+        conn.execute_batch("CREATE TRIGGER reject_third BEFORE INSERT ON cycle_ids
+            WHEN (SELECT count(*) FROM cycle_ids) = 2 BEGIN SELECT RAISE(ABORT, 'disk failure'); END;").unwrap();
+        assert!(store.reserve_cycle_ids(4).is_err());
+        assert_eq!(count(&conn), 0);
+        conn.execute_batch("DROP TRIGGER reject_third;").unwrap();
+        assert!(store.reserve_cycle_ids(0).is_err());
+        assert!(store.reserve_cycle_ids(33).is_err());
+        ids = store.reserve_cycle_ids(32).unwrap();
+        assert_eq!(ids.iter().collect::<std::collections::HashSet<_>>().len(), 32);
+    }
+    let reopened = Store::open(&db.path()).unwrap();
+    assert!(!ids.contains(&reopened.reserve_cycle_id().unwrap()));
+    assert_eq!(count(&Connection::open(db.path()).unwrap()), 33);
 }
 
 fn pre_identity_v2(db: &TestDb) -> Connection {

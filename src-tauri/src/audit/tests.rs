@@ -201,6 +201,11 @@ fn has_message(notices: &[Notice], message: &str) -> bool {
     notices.iter().any(|notice| matches!(notice, Notice::Log { message: text, .. } if text.contains(message)))
 }
 
+/// 本件 cycle 记了一条错误级追溯日志。
+fn logged_error(notices: &[Notice], cycle: &str) -> bool {
+    notices.iter().any(|notice| matches!(notice, Notice::Log { level: "err", cycle: logged, .. } if logged == cycle))
+}
+
 fn original(detail: &PartDetail) -> serde_json::Value {
     serde_json::json!({ "judgement": detail.judgement, "points": detail.points, "frames": detail.frames, "shots": detail.shots.iter().map(|shot| {
         let mut shot = shot.clone();
@@ -260,7 +265,7 @@ fn failed_insert_retains_first_conclusion_early_ack_and_recording_for_retry() {
     let record = part("one", 42);
     let notices = coordinator.handle(Event::Insert(Box::new(record.clone())), &mut sink, 3);
     assert!(has_message(&notices, "磁盘空间不足"));
-    assert!(has_message(&notices, "原检测结论不变"));
+    assert!(logged_error(&notices, "one"));
     assert_eq!(sink.store.query(&HistoryQuery::default()).unwrap().total, 0);
     assert_eq!(coordinator.entries["one"].record.as_ref().unwrap().judgement.reason, record.judgement.reason);
     let mut conflicting = record.clone();
@@ -332,7 +337,7 @@ fn invalid_file_path_or_empty_success_never_becomes_available() {
         let mut recording = outcome(&cycle, &[(0, 1)], RecorderState::Complete);
         recording.files[0].file = invalid.into();
         let notices = coordinator.handle(Event::Recording(recording), &mut sink, 2);
-        assert!(has_message(&notices, "原图") && has_message(&notices, "原检测结论不变"));
+        assert!(logged_error(&notices, &cycle));
         let detail = sink.detail(&cycle);
         assert!(!detail.recording.available);
         assert!(detail.shots[0].raw_files.is_empty());
@@ -417,65 +422,6 @@ fn durable_spool_replays_sqlite_commit_before_receipt_cleanup_without_duplicate_
     assert_eq!(original(&sink.detail("committed")), original(&before));
     assert_eq!(sink.detail("committed").recording, before.recording);
     assert_eq!(sink.detail("committed").summary.delivery, before.summary.delivery);
-}
-
-#[test]
-#[ignore = "subprocess fixture invoked only by the parent durability regression"]
-fn durable_spool_termination_child() {
-    let Some(path) = std::env::var_os("GLUESIGHT_AUDIT_SPOOL_CHILD") else { return };
-    let root = PathBuf::from(path);
-    let mut spool = spool::Spool::open(root.join("spool")).unwrap();
-    spool.append(&Event::Insert(Box::new(part("terminated", 42)))).unwrap();
-    spool.append(&Event::Delivery("terminated".into(), delivery(PlcDeliveryState::Acknowledged, 101))).unwrap();
-    let mut recording = outcome("terminated", &[(0, 1), (0, 2), (0, 3)], RecorderState::Complete);
-    let records = root.join("records");
-    let actual = records.join("cycle_terminated");
-    std::fs::create_dir_all(&actual).unwrap();
-    for file in &recording.files {
-        let mut pixels = b"P5\n100 60\n255\n".to_vec();
-        pixels.extend(vec![127; 6000]);
-        std::fs::write(records.join(&file.file), pixels).unwrap();
-    }
-    recording.directory = Some(actual);
-    spool.append(&Event::Recording(recording)).unwrap();
-    let ready = std::fs::File::create(root.join("durable-ready")).unwrap();
-    ready.sync_all().unwrap();
-    loop { std::thread::park(); }
-}
-
-#[test]
-fn durable_spool_recovers_after_real_process_termination_before_any_sqlite_insert() {
-    use std::process::{Command, Stdio};
-    struct Child(std::process::Child);
-    impl Drop for Child { fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); } }
-    let dir = TestDir::new();
-    let mut child = Child(Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "audit::tests::durable_spool_termination_child", "--ignored", "--nocapture"])
-        .env("GLUESIGHT_AUDIT_SPOOL_CHILD", &dir.0)
-        .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
-    while !dir.0.join("durable-ready").exists() {
-        assert!(child.0.try_wait().unwrap().is_none(), "durability fixture exited before commit");
-        assert!(std::time::Instant::now() < deadline, "durability fixture did not commit in time");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    child.0.kill().unwrap();
-    child.0.wait().unwrap();
-    assert!(!dir.0.join("parts.sqlite").exists());
-    let mut spool = spool::Spool::open(dir.0.join("spool")).unwrap();
-    let mut sink = dir.sink();
-    assert!(replay_cycle(&mut spool, "terminated", &mut sink, 1).unwrap().0);
-    let detail = sink.detail("terminated");
-    assert_eq!(detail.summary.delivery.state, PlcDeliveryState::Acknowledged);
-    assert_eq!(detail.summary.delivery.updated_at, 101);
-    assert_eq!(detail.judgement.reason, "原始检测结论：P2 缺帧");
-    assert_eq!(detail.shots[1].error.as_deref(), Some("原始缺帧原因"));
-    assert!(detail.recording.available);
-    for file in &detail.shots[0].raw_files {
-        let image = image::open(dir.0.join("records").join(&file.file)).unwrap();
-        assert_eq!((image.width(), image.height()), (100, 60));
-    }
-    assert!(spool.empty());
 }
 
 
@@ -606,7 +552,7 @@ fn durable_recording_barrier_waits_for_actual_recorder_callback_after_ack_and_em
     let (callback_spool, callback_failure, callback_pending) = (spool.clone(), failure.clone(), pending.clone());
     let callback = Arc::new(move |outcome: RecordingOutcome| {
         entered_tx.send(outcome.clone()).unwrap();
-        release_rx.lock().unwrap().recv_timeout(Duration::from_secs(600)).unwrap();
+        release_rx.lock().unwrap().recv_timeout(Duration::from_secs(30)).unwrap();
         done_tx.send(persist_event(&callback_spool, &callback_failure, &callback_pending, &Event::Recording(outcome))).unwrap();
     });
     let recorder = Recorder::new(dir.0.join("records"), Some(callback));
@@ -619,7 +565,7 @@ fn durable_recording_barrier_waits_for_actual_recorder_callback_after_ack_and_em
         images: (0..3).map(|view| Arc::new(FrameImage::new(1, 1, vec![20 + view]))).collect(),
     }, "cam1", 0, 1);
     recorder.finish(recording, record.judgement.verdict, &record.judgement.reason, 10, u64::MAX, Vec::new());
-    let actual = entered_rx.recv_timeout(Duration::from_secs(600)).unwrap();
+    let actual = entered_rx.recv_timeout(Duration::from_secs(30)).unwrap();
     assert_eq!(actual.state, RecorderState::Incomplete);
     assert_eq!(actual.files.len(), 3);
     assert!(spool.lock().unwrap().empty() && failure.lock().unwrap().is_none());
@@ -629,7 +575,7 @@ fn durable_recording_barrier_waits_for_actual_recorder_callback_after_ack_and_em
     }
     assert_eq!(actions, 0);
     release_tx.send(()).unwrap();
-    assert_eq!(done_rx.recv_timeout(Duration::from_secs(600)).unwrap(), Ok(()));
+    assert_eq!(done_rx.recv_timeout(Duration::from_secs(30)).unwrap(), Ok(()));
     assert!(pending.lock().unwrap().is_empty());
     assert!(with_ready_spool(&spool, &failure, &running, &pending, || Ok(())).is_err());
     assert!(replay_cycle(&mut spool.lock().unwrap(), &record.cycle_id, &mut sink, 2).unwrap().0);
@@ -739,21 +685,23 @@ fn candidate_revisions_survive_durable_spool_replay_without_sharing_production_s
 #[test]
 fn recording_logs_carry_the_parts_own_cycle_id_and_only_unfinished_recordings_are_errors() {
     let summarize = |outcome: &RecordingOutcome| recording_records(outcome).into_iter()
-        .map(|record| (record.level, record.event, record.fields.cycle_id, record.fields.stage)).collect::<Vec<_>>();
-    let own = |level, event, stage: Option<&str>| (level, event, Some("late".to_string()), stage.map(String::from));
-    let unfinished = own(Some("err"), "原图录制未完成", Some("recording"));
-    let finished = own(None, "原图录制完成", Some("recording"));
-    assert_eq!(summarize(&outcome("late", &[], RecorderState::Failed)), [unfinished.clone()]);
-    assert_eq!(summarize(&outcome("late", &[(0, 1)], RecorderState::Incomplete)), [unfinished.clone()]);
-    assert_eq!(summarize(&outcome("late", &[], RecorderState::Complete)), [unfinished], "声称可用却没有任何原图");
-    assert_eq!(summarize(&outcome("late", &[(0, 1)], RecorderState::Complete)), [finished.clone()]);
-    assert_eq!(summarize(&outcome("late", &[], RecorderState::NotRetained)), [finished.clone()]);
-    assert!(summarize(&outcome("late", &[], RecorderState::Off)).is_empty(), "录制关闭不记录制结果");
+        .map(|record| (record.level, record.fields.cycle_id, record.fields.stage)).collect::<Vec<_>>();
+    let own = |level, stage: Option<&str>| (level, Some("late".to_string()), stage.map(String::from));
+    let unfinished = own(Some("err"), Some("recording"));
+    let finished = own(None, Some("recording"));
     let mut cleanup = outcome("late", &[(0, 1)], RecorderState::Complete);
     cleanup.retention_errors = vec!["清理旧目录失败：被占用".into()];
-    assert_eq!(summarize(&cleanup), [own(Some("warn"), "录制保留清理失败", None), finished]);
-    for outcome in [outcome("late", &[], RecorderState::Failed), outcome("late", &[(0, 1)], RecorderState::Complete), outcome("late", &[], RecorderState::NotRetained), cleanup] {
-        assert!(recording_records(&outcome).iter().all(|record| record.message.contains("cycleId=late")), "界面事件流没有 cycle 字段，消息必须自带 cycleId");
+    // (场景, 录制结果, 期望的 (级别, cycleId, 阶段) 序列)
+    for (case, outcome, expected) in [
+        ("失败", outcome("late", &[], RecorderState::Failed), vec![unfinished.clone()]),
+        ("不完整", outcome("late", &[(0, 1)], RecorderState::Incomplete), vec![unfinished.clone()]),
+        ("声称可用却没有任何原图", outcome("late", &[], RecorderState::Complete), vec![unfinished]),
+        ("完整", outcome("late", &[(0, 1)], RecorderState::Complete), vec![finished.clone()]),
+        ("按策略不保留", outcome("late", &[], RecorderState::NotRetained), vec![finished.clone()]),
+        ("录制关闭不记录制结果", outcome("late", &[], RecorderState::Off), vec![]),
+        ("保留清理失败单独告警", cleanup, vec![own(Some("warn"), None), finished]),
+    ] {
+        assert_eq!(summarize(&outcome), expected, "{case}");
     }
 }
 

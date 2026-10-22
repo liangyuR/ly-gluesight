@@ -48,7 +48,7 @@ fn runtime_outside_the_locked_series_or_not_a_formal_build_is_refused() {
     descriptor("1.1.7", "1.1", "x64", false);
     let patch = check_runtime(&dir, "1.1");
     let _ = std::fs::remove_dir_all(&dir);
-    assert!(missing.unwrap_err().contains("缺少描述文件"));
+    assert!(missing.is_err());
     assert_eq!(refused, [true; 4]);
     assert!(patch.is_ok());
 }

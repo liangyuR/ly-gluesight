@@ -120,33 +120,52 @@ fn historical_sample_requires_the_teaching_plc_plan_even_with_identical_shot_fie
 }
 
 #[test]
-fn failed_activation_retains_the_same_frozen_release_and_requires_explicit_retry() {
-    let mut before = pending_workspace();
-    before.capture_id = Some("whole-round".into());
-    let unchanged = state_value(&before);
-    assert!(before.require_single_frame_source().is_err());
-    assert_eq!(state_value(&before), unchanged);
-    let release = state_value(&before.pending);
+fn whole_round_candidate_refuses_replacing_a_single_frame() {
+    let mut w = pending_workspace();
+    assert!(w.require_single_frame_source().is_ok());
+    w.capture_id = Some("whole-round".into());
+    assert!(w.require_single_frame_source().is_err());
+}
+
+/// 生效前的候选（带冻结的待生效版本）与生效写盘失败后保留下来的候选。
+fn failed_activation() -> (Workspace, Workspace) {
+    let before = pending_workspace();
     let mut after = before.clone();
     after.pending = None;
     after.doc.version += 1;
     after.base_revision = Some("already-active-v2".into());
     after.changed();
     after.retain_failed_activation(before.clone(), "disk write denied");
+    (before, after)
+}
+
+#[test]
+fn failed_activation_retains_the_same_frozen_release_and_blocks_editing() {
+    let (before, after) = failed_activation();
     assert!(after.activation_uncertain());
-    assert_eq!(state_value(&after.pending), release);
+    assert_eq!(state_value(&after.pending), state_value(&before.pending));
     assert_eq!(after.doc, before.doc);
     assert_eq!(after.revision, before.revision);
     assert_eq!(after.base_revision, before.base_revision);
     assert!(after.expect(after.revision).is_err());
+}
+
+#[test]
+fn retrying_a_failed_activation_with_a_stale_revision_is_rejected_without_changing_state() {
+    let (_, mut after) = failed_activation();
     let failed = state_value(&after);
     assert!(after.retry_publish(after.revision + 1).is_err());
     assert_eq!(state_value(&after), failed);
-    let mut restored: Workspace = serde_json::from_value(failed).unwrap();
+}
+
+#[test]
+fn restored_failed_activation_retries_the_same_frozen_release_only_once() {
+    let (before, after) = failed_activation();
+    let mut restored: Workspace = serde_json::from_value(state_value(&after)).unwrap();
     assert!(restored.activation_uncertain());
     restored.retry_publish(restored.revision).unwrap();
     assert!(!restored.activation_uncertain());
-    assert_eq!(state_value(&restored.pending), release);
+    assert_eq!(state_value(&restored.pending), state_value(&before.pending));
     assert_eq!(restored.revision, before.revision);
     assert!(restored.expect(restored.revision).is_err());
     assert!(restored.retry_publish(restored.revision).is_err());
@@ -281,6 +300,11 @@ fn switching_views_keeps_independent_centerlines_and_valid_ng_trials() {
     assert!(w.frames[0].trial.is_none());
     assert!(!w.frames[0].saved);
     assert!(projected_frame(&w, 0, 3).unwrap().saved);
+}
+
+#[test]
+fn skipping_a_shot_deselects_its_views_but_keeps_images_and_saved_trials() {
+    let mut w = workspace();
     let images = state_value(&w.frames[0].views);
     let mut doc = w.doc.clone();
     doc.shots[0].skip = true;
@@ -291,7 +315,7 @@ fn switching_views_keeps_independent_centerlines_and_valid_ng_trials() {
 }
 
 #[test]
-fn editing_one_view_invalidates_only_that_trial_and_restoring_defaults_requires_retrial() {
+fn editing_one_view_invalidates_only_that_trial() {
     // 改图 2 的中线或特征定位（测量定义）：只有图 2 的试测与已保存状态失效
     let edits: [(&str, fn(&mut crate::recipe::ShotViewSpec)); 2] = [
         ("中线", |v| v.path[0][1] += 1.0),
@@ -307,11 +331,25 @@ fn editing_one_view_invalidates_only_that_trial_and_restoring_defaults_requires_
         assert!(edited.trial.is_none() && !edited.saved, "{name}");
         for (v, expected) in [1, 3].into_iter().zip(others) { assert_eq!(snapshot(&w, v), expected, "{name}"); }
     }
+}
+
+#[test]
+fn changing_default_detect_keeps_the_trial_of_a_view_with_its_own_detect() {
+    // 图 2 有自己的检测参数：改配方默认检测参数不影响它的试测
     let mut w = workspace();
     let mut doc = w.doc.clone();
     doc.detect.search_mm += 1.0;
     update_doc(&mut w, doc).unwrap();
     assert!(projected_frame(&w, 0, 2).unwrap().saved);
+}
+
+#[test]
+fn view_falling_back_to_changed_default_detect_requires_retrial() {
+    // 默认检测参数已改，图 2 去掉自己的参数改用默认：实际参数变了，原试测作废
+    let mut w = workspace();
+    let mut doc = w.doc.clone();
+    doc.detect.search_mm += 1.0;
+    update_doc(&mut w, doc).unwrap();
     let mut doc = w.doc.clone();
     doc.shots[0].views[1].detect = None;
     update_doc(&mut w, doc).unwrap();
@@ -328,7 +366,7 @@ fn three_camera_round(round_id: &str) -> crate::recipe_capture::CaptureRound {
         round_id: round_id.into(), recipe_id: "MTR-HSG-B".into(),
         cameras: cameras.iter().map(|c| CaptureCamera { camera_id: (*c).into(), camera_config: json!({}), imaging: crate::recipe::DEFAULT_IMAGING, device_session: 1, received_count: 2 }).collect(),
         planned_count: Some(2), plc_planned_count: Some(2), plc_actual_count: Some(2), plc_plan_version: Some(1), state: CaptureState::Complete,
-        created_at: 1, ended_at: Some(2), error: None, simulated: true,
+        created_at: 1, ended_at: Some(2), error: None, failure: None, simulated: true,
         frames: (1..=2u64).map(|n| CaptureShot { shot_id: format!("S{n:03}"), ordinal: n as u32, cameras: cameras.iter().map(|c| CaptureFrame {
             camera_id: (*c).into(), frame_counter: n, trigger_counter: Some(n), original_path: String::new(),
             views: vec![CaptureView { view: 1, path: String::new(), width: 4, height: 4 }] }).collect() }).collect(),

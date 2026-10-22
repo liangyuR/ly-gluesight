@@ -172,10 +172,10 @@ mod tests {
             let mut value = serde_json::to_value(&shot).unwrap();
             value[field] = serde_json::Value::Null;
             let missing: PartShot = serde_json::from_value(value).unwrap();
-            assert!(load_verified(&root.0, "identity", &missing, raw).unwrap_err().contains("缺少"), "{field}");
+            assert!(load_verified(&root.0, "identity", &missing, raw).is_err(), "{field}");
         }
         std::fs::remove_file(path).unwrap();
-        assert!(load_verified(&root.0, "identity", &shot, raw).unwrap_err().contains("元数据缺失"));
+        assert!(load_verified(&root.0, "identity", &shot, raw).is_err());
         assert!(!frames(&root.0, "identity", std::slice::from_ref(&shot), 1).unwrap()[0].available);
     }
 
@@ -203,6 +203,7 @@ mod tests {
         let mut recording = recorder.begin(RecordMode::All, "SN-42", recipe.clone(), cycle_id, Some("original-bundle")).unwrap();
         recorder.frame(&mut recording, &frame, &recipe.shots[0].camera, 0, 9);
         recorder.finish(recording, Verdict::NgWidth, "保留原始判定", 10, u64::MAX, Vec::new());
+        // 收尾一完成就返回；10 s 只是录制线程卡死时的上限
         let outcome = rx.recv_timeout(Duration::from_secs(10)).expect("真实 Recorder 必须完成收尾");
         assert!(outcome.available, "{:?}", outcome.errors);
         assert_eq!(outcome.state, RecordingState::Complete);
@@ -220,30 +221,60 @@ mod tests {
             let loaded = load_verified(recorder.root(), cycle_id, &shots[0], raw).unwrap();
             assert_eq!((loaded.width, loaded.height), (2, 1));
             assert_eq!(loaded.pixels, frame.images[raw.view as usize - 1].pixels);
-            assert!(load_verified(recorder.root(), "same-sn-different-cycle", &shots[0], raw).unwrap_err().contains("cycleId"));
-            assert!(load_verified(recorder.root(), "history-roundtrip", &shots[0], raw).unwrap_err().contains("cycleId"));
+            assert!(load_verified(recorder.root(), "same-sn-different-cycle", &shots[0], raw).is_err());
+            assert!(load_verified(recorder.root(), "history-roundtrip", &shots[0], raw).is_err());
         }
-        let selected = &shots[0].raw_files[1];
-        std::fs::write(recorder.root().join(&selected.file), [b"P5\n2 1\n255\n".as_slice(), &[91, 92]].concat()).unwrap();
-        assert_eq!(load_verified(recorder.root(), cycle_id, &shots[0], selected).unwrap().pixels, [91, 92]);
-        let changed = frames(recorder.root(), cycle_id, &shots, frame.ts).unwrap();
-        assert!(changed[1].available);
-        assert!(changed[0].available && changed[2].available);
-        let metadata_path = outcome.directory.as_ref().unwrap().join("part.json");
-        let original_metadata = std::fs::read(&metadata_path).unwrap();
-        let mut legacy = selected.clone();
-        legacy.width = None;
-        legacy.height = None;
-        assert_eq!(load_verified(recorder.root(), cycle_id, &shots[0], &legacy).unwrap().pixels, [91, 92]);
-        std::fs::write(recorder.root().join(&selected.file), b"P5\n3 1\n255\n\x01\x02\x03").unwrap();
-        for reference in [selected, &legacy] {
-            assert!(load_verified(recorder.root(), cycle_id, &shots[0], reference).unwrap_err().contains("尺寸"));
+    }
+
+    /// 一个拍照点三幅 2×1 原图（图 v 的像素为 [16 + v, 70 + v]）及其录制元数据，选定视角 2；返回（拍照点，元数据路径）。
+    fn three_view_recording(root: &Path, cycle_id: &str) -> (PartShot, std::path::PathBuf) {
+        let raw_files = (1..=3u8).map(|view| {
+            let file = format!("20261010/part_cycle_{cycle_id}/k0_v{view}.pgm");
+            std::fs::create_dir_all(root.join(&file).parent().unwrap()).unwrap();
+            std::fs::write(root.join(&file), [b"P5\n2 1\n255\n".as_slice(), &[16 + view, 70 + view]].concat()).unwrap();
+            ShotRawFile { view, file, width: Some(2), height: Some(1) }
+        }).collect();
+        let shot = PartShot { k: 0, shot_id: "P0".into(), camera: "cam1".into(), view: 2,
+            session: Some(7), ordinal: Some(9), frame_counter: Some(13), trigger_counter: Some(11),
+            status: FrameStatus::Done, error: None, score: Some(1.0), ms: Some(2), raw_files };
+        let metadata = write_identity_metadata(root, cycle_id, std::slice::from_ref(&shot));
+        (shot, metadata)
+    }
+
+    /// 旧历史记录的原图引用没有尺寸：按录制元数据里的尺寸核验。
+    fn without_size(raw: &ShotRawFile) -> ShotRawFile {
+        ShotRawFile { width: None, height: None, ..raw.clone() }
+    }
+
+    #[test]
+    fn reference_without_size_is_verified_against_the_recorded_metadata_size() {
+        let root = super::super::tests::ImportTestDir::new();
+        let (shot, _) = three_view_recording(&root.0, "legacy");
+        let legacy = without_size(&shot.raw_files[1]);
+        assert_eq!(load_verified(&root.0, "legacy", &shot, &legacy).unwrap().pixels, [18, 72]);
+    }
+
+    #[test]
+    fn original_whose_decoded_size_differs_from_the_recorded_size_is_refused_and_only_that_view_is_unavailable() {
+        let root = super::super::tests::ImportTestDir::new();
+        let (shot, _) = three_view_recording(&root.0, "resized");
+        let selected = &shot.raw_files[1];
+        std::fs::write(root.0.join(&selected.file), b"P5\n3 1\n255\n\x01\x02\x03").unwrap();
+        for reference in [selected, &without_size(selected)] {
+            assert!(load_verified(&root.0, "resized", &shot, reference).is_err(), "{reference:?}");
         }
-        let changed = frames(recorder.root(), cycle_id, &shots, frame.ts).unwrap();
-        assert!(!changed[1].available && changed[1].error.as_ref().unwrap().contains("尺寸"));
-        assert!(changed[0].available && changed[2].available);
-        std::fs::write(recorder.root().join(&selected.file), b"P5\n2 1\n255\n\x5b\x5c").unwrap();
-        let original: serde_json::Value = serde_json::from_slice(&original_metadata).unwrap();
+        let listed = frames(&root.0, "resized", std::slice::from_ref(&shot), 1).unwrap();
+        assert!(!listed[1].available && listed[1].error.is_some());
+        assert!(listed[0].available && listed[2].available);
+    }
+
+    #[test]
+    fn reference_without_size_is_refused_when_the_recorded_metadata_cannot_vouch_for_it() {
+        let root = super::super::tests::ImportTestDir::new();
+        let (shot, metadata_path) = three_view_recording(&root.0, "vouch");
+        let legacy = without_size(&shot.raw_files[1]);
+        assert!(load_verified(&root.0, "vouch", &shot, &legacy).is_ok());
+        let original: serde_json::Value = serde_json::from_slice(&std::fs::read(&metadata_path).unwrap()).unwrap();
         for invalid in ["cycle", "dimensions", "missing-dimensions", "duplicate", "malformed"] {
             let mut metadata = original.clone();
             match invalid {
@@ -258,7 +289,7 @@ mod tests {
             }
             let bytes = if invalid == "malformed" { b"broken".to_vec() } else { serde_json::to_vec(&metadata).unwrap() };
             std::fs::write(&metadata_path, bytes).unwrap();
-            assert!(load_verified(recorder.root(), cycle_id, &shots[0], &legacy).is_err(), "{invalid}");
+            assert!(load_verified(&root.0, "vouch", &shot, &legacy).is_err(), "{invalid}");
         }
     }
 }

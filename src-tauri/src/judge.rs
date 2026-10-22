@@ -540,8 +540,9 @@ mod tests {
 
     #[test]
     fn plain_position_excursion_longer_than_shift_run_is_the_reported_location() {
+        // 纯位置超差 s=10–30 共 20 mm；横移区间 s=60–70 只有 10 mm，不能顶替它成为报告的超差区间
         let j = judged(5.0, &[(10, 30, SHIFTED), (60, 61, PointState::Gap), (61, 69, SHIFTED), (69, 70, PointState::Gap)]);
         assert_eq!(j.verdict, Verdict::NgPosition);
-        assert!(j.reason.ends_with("s=10.0–30.0"), "{}", j.reason);
+        assert_eq!(j.segments[0].excursion_len, 20.0, "{}", j.reason);
     }
 }

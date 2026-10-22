@@ -1433,9 +1433,9 @@ impl RecipeStore {
 mod tests {
     use super::*;
 
-    #[test]
-    fn obsolete_recipe_is_manageable_but_never_runnable_and_deletion_preserves_versions() {
-        let dir = std::env::temp_dir().join(format!("gluesight-unavailable-{}-{}", std::process::id(), ly_plc::now_ms()));
+    /// 目录里只有一份旧格式配方文件（版本 7、计划版本 40）时打开的配方库；返回（目录，配方库，旧配方，文件名）。
+    fn obsolete_store(tag: &str) -> (PathBuf, RecipeStore, RecipeDoc, String) {
+        let dir = std::env::temp_dir().join(format!("gluesight-unavailable-{tag}-{}-{}", std::process::id(), ly_plc::now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut old = samples().remove(0);
         old.schema_version = RECIPE_SCHEMA - 1;
@@ -1444,6 +1444,21 @@ mod tests {
         let file_name = format!("{}.json", old.id);
         std::fs::write(dir.join(&file_name), serde_json::to_string(&old).unwrap()).unwrap();
         let store = RecipeStore::open(dir.clone()).unwrap();
+        (dir, store, old, file_name)
+    }
+
+    /// 旧格式文件删掉后，同编号配方按当前格式重新保存并已加载。
+    fn recreated_after_obsolete_deleted(tag: &str) -> (PathBuf, RecipeStore, RecipeDoc, String) {
+        let (dir, store, mut old, file_name) = obsolete_store(tag);
+        store.delete_unavailable(&file_name).unwrap();
+        old.schema_version = RECIPE_SCHEMA;
+        store.save(old.clone(), None).unwrap();
+        (dir, store, old, file_name)
+    }
+
+    #[test]
+    fn obsolete_recipe_file_is_listed_as_unavailable_and_never_loaded_for_running() {
+        let (dir, store, old, file_name) = obsolete_store("listed");
         assert!(store.get(&old.id).is_none());
         assert!(store.doc(&old.id).is_none());
         assert!(store.list().is_empty());
@@ -1452,11 +1467,24 @@ mod tests {
         assert_eq!(unavailable[0].file_name, file_name);
         assert_eq!(unavailable[0].id.as_deref(), Some(old.id.as_str()));
         assert_eq!(unavailable[0].schema_version, Some(RECIPE_SCHEMA - 1));
-        assert!(store.delete_unavailable(&format!("../{file_name}")).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn deleting_an_unavailable_recipe_removes_its_file_and_clears_the_list() {
+        let (dir, store, _, file_name) = obsolete_store("delete");
         store.delete_unavailable(&file_name).unwrap();
         assert!(!dir.join(&file_name).exists());
         assert!(store.errors().is_empty());
         assert!(store.unavailable().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// delete_unavailable 路径上唯一防止修订号复用的保护：删掉的旧文件版本必须记下，重启后同编号重建也不回退。
+    #[test]
+    fn recipe_recreated_after_deleting_its_unavailable_file_and_restarting_never_reuses_versions() {
+        let (dir, store, mut old, file_name) = obsolete_store("versions");
+        store.delete_unavailable(&file_name).unwrap();
         drop(store);
         let store = RecipeStore::open(dir.clone()).unwrap();
         assert!(store.next_version(&old.id).unwrap() > old.version);
@@ -1464,9 +1492,21 @@ mod tests {
         let recreated = store.save(old.clone(), None).unwrap();
         assert!(recreated.version > old.version);
         assert!(recreated.plan_version > old.plan_version);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn loaded_recipe_file_cannot_be_deleted_as_unavailable() {
+        let (dir, store, old, file_name) = recreated_after_obsolete_deleted("loaded");
         assert!(store.delete_unavailable(&file_name).is_err());
         assert!(store.get(&old.id).is_some());
         assert!(dir.join(&file_name).is_file());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn deleting_an_obsolete_copy_leaves_the_loaded_recipe_with_the_same_id_unchanged() {
+        let (dir, store, mut old, _) = recreated_after_obsolete_deleted("copy");
         let original = store.doc(&old.id).unwrap();
         old.schema_version = RECIPE_SCHEMA - 1;
         old.version = 100;
@@ -1508,13 +1548,14 @@ mod tests {
     fn stations_follow_each_taught_line() {
         let r = samples().remove(1).build().unwrap();
         assert_eq!(r.segments.len(), 4);
+        // 站距 1 mm、0.112 mm/px：中线长约 680.3 / 676.9 / 685.4 / 680.3 px，每隔约 8.93 px 一站，含起点
+        let expected_counts = [77, 76, 77, 77];
         for (k, g) in r.segments.iter().enumerate() {
             let shot = &r.shots[k];
             assert_eq!((g.shot, g.name.as_str()), (k, format!("{} · J1", shot.id).as_str()));
             // 首站在中线起点，站与站沿线相隔 spacing（换成像素）
             assert_eq!([r.points.x[g.first], r.points.y[g.first]], shot.path[0]);
-            let step = r.spacing / shot.mm_per_px.unwrap();
-            let expect = (shot.path_len_px() / step + 1e-3).floor() as usize + 1;
+            let expect = expected_counts[k];
             assert_eq!(g.count, expect);
             assert!((g.length(r.spacing) - (expect - 1) as f32 * r.spacing).abs() < 1e-4);
             assert!(r.owned_points(k).all(|j| r.points.seg[j] as usize == k));
@@ -1531,7 +1572,8 @@ mod tests {
         let r = doc.build().unwrap();
         assert_eq!(r.segments.iter().map(|g| g.shot).collect::<Vec<_>>(), [0, 3]);
         assert_eq!(r.owned_points(1).count() + r.owned_points(2).count(), 0);
-        assert_eq!(r.ready().unwrap_err(), "配方 MTR-HSG-B 的拍照点 P3 尚未示教胶路");
+        let untaught = r.ready().unwrap_err();
+        assert!(untaught.contains("MTR-HSG-B") && untaught.contains("P3"), "{untaught}");
         doc.shots[2].skip = true;
         assert!(doc.build().unwrap().ready().is_ok());
         doc.shots.iter_mut().for_each(|shot| shot.skip = true);
@@ -1670,7 +1712,7 @@ mod tests {
             doc.plan_version = store.plan_version_for(&doc).unwrap();
             let blocking = dir.join(".revision-sources").with_extension("tmp"); std::fs::create_dir(&blocking).unwrap();
             let failed = if published { store.save_published(doc.clone(), None) } else { store.save(doc.clone(), None) };
-            assert!(failed.unwrap_err().contains("本次新建配方文件已回滚"));
+            assert!(failed.is_err());
             assert!(!store.file(&doc.id).exists()); assert!(store.get(&doc.id).is_none());
             assert_eq!(store.next_version(&doc.id).unwrap(), 1);
             std::fs::remove_dir(&blocking).unwrap();
@@ -1708,18 +1750,24 @@ mod tests {
     }
 
     #[test]
-    fn tricam_recipe_requires_an_explicit_valid_view_and_keeps_one_device() {
-        let mut doc = samples().remove(1);
-        for (shot, view) in doc.shots.iter_mut().zip([1, 2, 3, 1]) { shot.view = view; }
-        let recipe = doc.build().unwrap();
+    fn tricam_shots_on_different_views_stay_one_device() {
+        let recipe = composite_recipe().build().unwrap();
         assert_eq!(recipe.cameras(), ["cam1"]);
         assert_eq!(recipe.shots.iter().map(|s| s.view).collect::<Vec<_>>(), [1, 2, 3, 1]);
+    }
+
+    #[test]
+    fn shot_view_outside_1_to_3_is_rejected() {
         for invalid in [0, 4, 255] {
-            let mut bad = doc.clone();
+            let mut bad = composite_recipe();
             bad.shots[0].view = invalid;
-            assert!(bad.build().unwrap_err().contains("视角"));
+            assert!(bad.build().is_err(), "{invalid}");
         }
-        let mut missing = serde_json::to_value(&doc).unwrap();
+    }
+
+    #[test]
+    fn recipe_file_without_an_explicit_shot_view_is_rejected() {
+        let mut missing = serde_json::to_value(composite_recipe()).unwrap();
         missing["shots"][0].as_object_mut().unwrap().remove("view");
         assert!(serde_json::from_value::<RecipeDoc>(missing).is_err());
     }

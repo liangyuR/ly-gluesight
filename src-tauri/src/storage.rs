@@ -717,9 +717,10 @@ pub fn storage_preferences_update(app: AppHandle, patch: Value) -> Result<Value,
 #[cfg(test)]
 mod tests {
     use super::*;
-    struct Fixture(PathBuf);
+    /// 测试用临时目录，`relocate` 的用例也用它。
+    pub(super) struct Fixture(pub(super) PathBuf);
     impl Fixture {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let root = std::env::temp_dir().join(format!(
                 "gluesight-storage-{}-{}-{}",

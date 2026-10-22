@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
-const WRITER_HANG: Duration = Duration::from_secs(600);
+const WRITER_HANG: Duration = Duration::from_secs(30);
 
 struct TestDir(PathBuf);
 
@@ -407,55 +407,45 @@ fn rolling_prune_preserves_durable_pending_recording_and_removes_unprotected_old
     assert!(!disposable.exists());
 }
 
-#[test]
-fn changed_offline_retention_prunes_next_recording_without_removing_real_raw_images() {
-    let dir = TestDir::new();
-    let (real_callback, real_outcomes) = callback();
-    let (offline_callback, offline_outcomes) = callback();
-    let recorders = Recorders::new(Recorder::new(dir.root(), Some(real_callback)), Recorder::new(dir.0.join("records-offline"), Some(offline_callback)));
-    let settings_path = dir.0.join("cycle.json");
-    let mut settings = CycleSettings { record_keep: 1, offline_record_keep: 3, ..CycleSettings::default() };
-    let mut rec = recorders.begin(RecordSource::Real, RecordMode::All, "SN-1", recipe(), "real-cycle", None).unwrap();
-    recorders.frame(&mut rec, &frame(1), "cam1", 0, 1);
-    recorders.finish(rec, Verdict::Ok, "真机件", &settings);
-    let real = wait(&real_outcomes).directory.unwrap();
-    let mut offline = Vec::new();
-    for (i, source) in [RecordSource::OfflineSample, RecordSource::OfflineSynthetic, RecordSource::OfflineSample, RecordSource::OfflineSample].into_iter().enumerate() {
-        if i == 3 {
-            assert!(offline.iter().all(|d: &PathBuf| d.is_dir()));
-            settings.offline_record_keep = 2;
-            settings.validate().unwrap();
-            settings.save(&settings_path).unwrap();
-            let (saved, note) = CycleSettings::load(&settings_path);
-            assert!(note.is_none());
-            settings = saved;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-        let mut rec = recorders.begin(source, RecordMode::All, "SN-2", recipe(), &format!("offline-{i}"), None).unwrap();
-        recorders.frame(&mut rec, &frame(10), "cam1", 0, 1);
-        recorders.finish(rec, Verdict::Ok, "离线件", &settings);
-        offline.push(wait(&offline_outcomes).directory.unwrap());
-    }
-    assert!(real.join("part.json").is_file(), "离线录制超过保留数后真机原图被清理");
-    assert!(real.starts_with(recorders.root(RecordSource::Real)));
-    assert_eq!(offline.iter().map(|d| d.is_dir()).collect::<Vec<_>>(), [false, false, true, true]);
-    assert!(offline.iter().all(|d| d.starts_with(recorders.root(RecordSource::OfflineSample))));
+/// 按名字排在今天之前的一件旧录制（滚动清理按目录名的时间戳排新旧），内含一个 `bytes` 字节的文件。
+fn old_recording(root: &Path, i: u32, bytes: u64) -> PathBuf {
+    let path = root.join(format!("20000101/20000101_00000{i}_000_OK_cycle_old-{i}"));
+    std::fs::create_dir_all(&path).unwrap();
+    std::fs::File::create(path.join("image.pgm")).unwrap().set_len(bytes).unwrap();
+    path
+}
 
-    std::fs::File::create(offline[2].join("capacity-fixture.pgm")).unwrap().set_len(500_000_000).unwrap();
-    settings.offline_record_keep = 100;
-    settings.offline_record_max_gb = 0.5;
-    settings.validate().unwrap();
-    settings.save(&settings_path).unwrap();
-    let (settings, note) = CycleSettings::load(&settings_path);
-    assert!(note.is_none());
-    let mut rec = recorders.begin(RecordSource::OfflineSynthetic, RecordMode::All, "SN-3", recipe(), "offline-capacity", None).unwrap();
-    recorders.frame(&mut rec, &frame(20), "cam1", 0, 1);
-    recorders.finish(rec, Verdict::Ok, "离线容量限制", &settings);
-    let latest = wait(&offline_outcomes);
-    assert!(latest.available);
-    assert!(!offline[2].exists());
-    assert!(offline[3].join("part.json").is_file());
-    assert!(real.join("part.json").is_file());
+#[test]
+fn offline_retention_prunes_only_offline_recordings_and_never_real_raw_images() {
+    let dir = TestDir::new();
+    let offline_root = dir.0.join("records-offline");
+    let (offline_callback, offline_outcomes) = callback();
+    let recorders = Recorders::new(Recorder::new(dir.root(), None), Recorder::new(offline_root.clone(), Some(offline_callback)));
+    // 真机 3 件：离线清理若误用到真机目录，无论按真机还是离线的保留数都会删掉最旧的
+    let real: Vec<_> = (0..3).map(|i| old_recording(&dir.root(), i, 10)).collect();
+    let offline: Vec<_> = (0..3).map(|i| old_recording(&offline_root, i, 10)).collect();
+    let settings = CycleSettings { record_keep: 1, offline_record_keep: 2, ..CycleSettings::default() };
+    let mut rec = recorders.begin(RecordSource::OfflineSynthetic, RecordMode::All, "SN-2", recipe(), "offline-new", None).unwrap();
+    recorders.frame(&mut rec, &frame(10), "cam1", 0, 1);
+    recorders.finish(rec, Verdict::Ok, "离线件", &settings);
+    assert!(wait(&offline_outcomes).directory.unwrap().starts_with(&offline_root));
+    assert_eq!(offline.iter().map(|d| d.is_dir()).collect::<Vec<_>>(), [false, false, true], "离线按离线保留数 2 清理");
+    assert!(real.iter().all(|d| d.is_dir()), "离线录制超过保留数后真机原图被清理");
+}
+
+#[test]
+fn byte_budget_prunes_older_recordings_even_below_the_count_limit() {
+    let dir = TestDir::new();
+    let (callback, outcomes) = callback();
+    let recorder = Recorder::new(dir.root(), Some(callback));
+    let large = old_recording(&dir.root(), 0, 100_000);
+    let small = old_recording(&dir.root(), 1, 10);
+    let mut rec = recorder.begin(RecordMode::All, "SN-3", recipe(), "capacity", None).unwrap();
+    recorder.frame(&mut rec, &frame(20), "cam1", 0, 1);
+    recorder.finish(rec, Verdict::Ok, "容量限制", 100, 50_000, Vec::new());
+    assert!(wait(&outcomes).available);
+    assert!(!large.exists(), "从新到旧累计超过容量上限的旧录制被清理");
+    assert!(small.is_dir(), "容量内的较新录制保留");
 }
 
 #[test]

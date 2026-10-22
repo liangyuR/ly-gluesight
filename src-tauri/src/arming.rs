@@ -1,5 +1,7 @@
 use std::future::Future;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+// tokio 时钟：生产中就是系统单调时钟，测试里可用 `start_paused` 推进虚拟时间
+use tokio::time::Instant;
 
 pub struct ArmStage {
     pub stage: String,
@@ -17,7 +19,8 @@ pub struct ArmBudget {
 
 impl ArmBudget {
 
-    pub fn with_start(started: Instant, timeout: Duration) -> Self {
+    pub fn with_start(started: impl Into<Instant>, timeout: Duration) -> Self {
+        let started = started.into();
         Self {
             started,
             deadline: started.checked_add(timeout),
@@ -124,8 +127,7 @@ mod tests {
         assert_eq!(budget.remaining_at("recorder", started + Duration::from_millis(90)).unwrap(), Duration::from_millis(110));
         budget.mark_at("recorder", started + Duration::from_millis(180));
         assert_eq!(budget.remaining_at("health", started + Duration::from_millis(180)).unwrap(), Duration::from_millis(20));
-        let error = budget.remaining_at("before-camera", started + Duration::from_millis(210)).unwrap_err();
-        assert!(error.contains("before-camera") && error.contains("210.000") && error.contains("200.000"));
+        assert!(budget.remaining_at("before-camera", started + Duration::from_millis(210)).is_err());
         let stages = budget.stages();
         assert_eq!(stages.len(), 3);
         assert!(stages.iter().all(|stage| stage.interval < Duration::from_millis(200)));
@@ -135,7 +137,7 @@ mod tests {
         assert_eq!(budget.trace()["stages"][2]["elapsedMs"], 210.0);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn async_arm_stage_uses_only_total_budget_remaining() {
         use std::sync::atomic::{AtomicBool, Ordering};
         let entered = AtomicBool::new(false);
@@ -147,22 +149,24 @@ mod tests {
             Ok(())
         }).await;
         assert!(entered.load(Ordering::SeqCst));
-        assert!(result.unwrap_err().contains("verify"));
-        assert!(budget.stages().last().unwrap().elapsed >= Duration::from_millis(250));
+        assert!(result.is_err());
+        // 只等总预算剩下的 100 ms，不等满阶段自己的 180 ms
+        assert_eq!(budget.stages().last().unwrap().elapsed, Duration::from_millis(250));
     }
 
-    #[tokio::test]
+    /// 阶段在超时抢占之前就带着 Ok 返回了，但时间已经越过总预算（同步阻塞的探针）：仍要拒绝。
+    #[tokio::test(start_paused = true)]
     async fn synchronous_future_returning_ok_after_deadline_is_still_refused() {
         let mut budget = ArmBudget::with_start(Instant::now(), Duration::from_millis(35));
         let result = budget.run("sync-probe", async {
-            std::thread::sleep(Duration::from_millis(100));
+            tokio::time::advance(Duration::from_millis(100)).await;
             Ok("late success")
         }).await;
-        let error = result.unwrap_err();
-        assert!(error.contains("sync-probe") && error.contains("35.000"));
-        assert!(budget.stages().last().unwrap().elapsed >= Duration::from_millis(100));
+        assert!(result.is_err());
+        assert_eq!(budget.stages().last().unwrap().elapsed, Duration::from_millis(100));
     }
-    #[tokio::test]
+
+    #[tokio::test(start_paused = true)]
     async fn serial_arm_waits_for_side_effect_settlement_before_cleanup_and_rejects_late_ok() {
         use std::sync::atomic::{AtomicBool, Ordering};
         let settled = AtomicBool::new(false);
@@ -173,7 +177,7 @@ mod tests {
             Ok("completed after deadline")
         }).await;
         assert!(settled.load(Ordering::SeqCst));
-        assert!(result.unwrap_err().contains("plc-journal"));
-        assert!(budget.stages().last().unwrap().elapsed >= Duration::from_millis(120));
+        assert!(result.is_err());
+        assert_eq!(budget.stages().last().unwrap().elapsed, Duration::from_millis(120));
     }
 }

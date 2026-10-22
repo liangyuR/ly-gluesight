@@ -129,7 +129,71 @@ pub struct CaptureRound {
     pub ended_at: Option<i64>,
     pub frames: Vec<CaptureShot>,
     pub error: Option<String>,
+    /// 失败种类与涉及的相机、计数；error 是据此给操作员看的文案。旧记录没有这一项。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<CaptureFailure>,
     pub simulated: bool,
+}
+
+/// 采集轮次为什么失败。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum CaptureFailure {
+    /// 这台相机的帧、写盘或设备出错
+    Camera { camera_id: String },
+    /// PLC 开始/结束信号顺序或数量异常
+    Plc,
+    /// 超时仍未收到 PLC 开始请求
+    StartTimeout,
+    /// 超时时到达数量与计划不符的相机，按本轮相机顺序
+    ShortCameras { planned: u32, cameras: Vec<CameraArrival> },
+    /// PLC 已结束、各相机图像都已到达，但写盘未在时限内完成
+    WriteTimeout { planned: u32, written: u32 },
+    /// 各相机已收满计划数，但没收到 PLC 结束
+    PlcEndMissing { planned: u32 },
+    /// 应用退出导致本轮中断
+    Interrupted,
+    /// 外部中止（操作员停止、PLC 断连、布防失败）或采集记录保存失败
+    Other,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraArrival {
+    pub camera_id: String,
+    /// 已到达（进入写盘队列）的帧数
+    pub received: u32,
+}
+
+/// 开始整圈采集被拒的原因；Display 是给操作员看的文案。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CaptureStartRejected {
+    DrainTimeout,
+    CameraCount,
+    InvalidCameraId(String),
+    Duplicate(String),
+    SessionNotReady(String),
+    MissingBaseline(String),
+    Busy,
+    /// 上一轮失败后可能仍有在途旧帧、须重新连接的相机，按选择顺序
+    UncertainSessions(Vec<String>),
+    Io(String),
+}
+
+impl std::fmt::Display for CaptureStartRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DrainTimeout => write!(f, "等待在途帧时间须为 200–30000 ms"),
+            Self::CameraCount => write!(f, "整圈采集须选择 1–{MAX_CAMERAS} 台相机"),
+            Self::InvalidCameraId(id) => write!(f, "相机编号 {id:?} 无效；多相机采集时相机编号最长 {MAX_MULTI_CAMERA_ID} 个字符"),
+            Self::Duplicate(id) => write!(f, "相机 {id} 被重复选择"),
+            Self::SessionNotReady(id) => write!(f, "相机 {id}：设备会话尚未就绪"),
+            Self::MissingBaseline(id) => write!(f, "相机 {id}：没有可验证的开流计数基线，请先配置计数起点或取得当前会话计数"),
+            Self::Busy => write!(f, "已有示教采集正在占用设备"),
+            Self::UncertainSessions(ids) => write!(f, "相机 {}：上一轮采集异常，当前设备会话可能仍有在途旧帧；请重新连接这些相机后整圈重采", ids.join("、")),
+            Self::Io(e) => write!(f, "{e}"),
+        }
+    }
 }
 
 /// 采用到候选配方时的一个拍照点：第 k 次触发里某台相机的帧。
@@ -257,7 +321,7 @@ impl RecipeCaptureHost {
             && (round.planned_count.is_none() || round.plc_planned_count != round.planned_count) {
             return Err("采集记录缺少有效的 PLC 开始计划数量".into());
         }
-        if round.state == CaptureState::Complete && (round.error.is_some() || round.ended_at.is_none()
+        if round.state == CaptureState::Complete && (round.error.is_some() || round.failure.is_some() || round.ended_at.is_none()
             || round.plc_actual_count != round.planned_count
             || cameras.iter().any(|c| Some(c.received_count) != round.planned_count)
             || Some(round.frames.len() as u32) != round.planned_count || round.complete_shots() as usize != round.frames.len()) {
@@ -310,6 +374,7 @@ impl RecipeCaptureHost {
             if round.state.active() {
                 round.state = CaptureState::Failed;
                 round.error = Some("应用退出导致本轮采集中断，请整圈重采".into());
+                round.failure = Some(CaptureFailure::Interrupted);
                 crate::fsio::write_atomic(&path, &serde_json::to_string_pretty(&round).map_err(|e| e.to_string())?)?;
             }
             if latest.as_ref().is_none_or(|last| round.created_at >= last.created_at) { latest = Some(round); }
@@ -354,25 +419,26 @@ impl RecipeCaptureHost {
         Ok(round)
     }
 
-    pub fn start(&self, recipe_id: String, devices: Vec<CaptureDevice>, drain_timeout_ms: u64, simulated: bool) -> Result<CaptureRound, String> {
+    pub fn start(&self, recipe_id: String, devices: Vec<CaptureDevice>, drain_timeout_ms: u64, simulated: bool) -> Result<CaptureRound, CaptureStartRejected> {
+        use CaptureStartRejected as Rejected;
         if !(200..=30000).contains(&drain_timeout_ms) {
-            return Err("等待在途帧时间须为 200–30000 ms".into());
+            return Err(Rejected::DrainTimeout);
         }
-        if devices.is_empty() || devices.len() > MAX_CAMERAS { return Err(format!("整圈采集须选择 1–{MAX_CAMERAS} 台相机")); }
+        if devices.is_empty() || devices.len() > MAX_CAMERAS { return Err(Rejected::CameraCount); }
         for (i, d) in devices.iter().enumerate() {
             let id = &d.camera_id;
             if !crate::recipe::valid_camera_id(id) || (devices.len() > 1 && id.len() > MAX_MULTI_CAMERA_ID) {
-                return Err(format!("相机编号 {id:?} 无效；多相机采集时相机编号最长 {MAX_MULTI_CAMERA_ID} 个字符"));
+                return Err(Rejected::InvalidCameraId(id.clone()));
             }
-            if devices[..i].iter().any(|o| o.camera_id == *id || o.cam == d.cam) { return Err(format!("相机 {id} 被重复选择")); }
-            if d.session == 0 { return Err(format!("相机 {id}：设备会话尚未就绪")); }
-            if d.trigger_baseline.is_none() { return Err(format!("相机 {id}：没有可验证的开流计数基线，请先配置计数起点或取得当前会话计数")); }
+            if devices[..i].iter().any(|o| o.camera_id == *id || o.cam == d.cam) { return Err(Rejected::Duplicate(id.clone())); }
+            if d.session == 0 { return Err(Rejected::SessionNotReady(id.clone())); }
+            if d.trigger_baseline.is_none() { return Err(Rejected::MissingBaseline(id.clone())); }
         }
         let mut guard = self.current.lock().unwrap();
-        if guard.as_ref().is_some_and(|r| r.round.state.active()) { return Err("已有示教采集正在占用设备".into()); }
-        let uncertain: Vec<_> = devices.iter().filter(|d| self.uncertain_sessions.lock().unwrap().contains(&(d.camera_id.clone(), d.session))).map(|d| d.camera_id.as_str()).collect();
+        if guard.as_ref().is_some_and(|r| r.round.state.active()) { return Err(Rejected::Busy); }
+        let uncertain: Vec<_> = devices.iter().filter(|d| self.uncertain_sessions.lock().unwrap().contains(&(d.camera_id.clone(), d.session))).map(|d| d.camera_id.clone()).collect();
         if !uncertain.is_empty() {
-            return Err(format!("相机 {}：上一轮采集异常，当前设备会话可能仍有在途旧帧；请重新连接这些相机后整圈重采", uncertain.join("、")));
+            return Err(Rejected::UncertainSessions(uncertain));
         }
         let created_at = ly_plc::now_ms();
         let mut suffix = 0u32;
@@ -381,7 +447,7 @@ impl RecipeCaptureHost {
             match std::fs::create_dir(self.root.join(&id)) {
                 Ok(()) => break id,
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => suffix += 1,
-                Err(e) => return Err(e.to_string()),
+                Err(e) => return Err(Rejected::Io(e.to_string())),
             }
         };
         let cams = devices.iter().map(|d| RunCam {
@@ -389,15 +455,15 @@ impl RecipeCaptureHost {
             last_frame: matches!(d.source, Some(CounterSource::SdkFrame | CounterSource::ChunkFrame)).then_some(d.trigger_baseline).flatten(),
         }).collect();
         let cameras = devices.into_iter().map(|d| CaptureCamera { camera_id: d.camera_id, camera_config: d.camera_config, imaging: d.imaging, device_session: d.session, received_count: 0 }).collect();
-        let round = CaptureRound { round_id, recipe_id, cameras, planned_count: None, plc_planned_count: None, plc_actual_count: None, plc_plan_version: None, state: CaptureState::WaitingStart, created_at, ended_at: None, frames: Vec::new(), error: None, simulated };
-        self.save(&round)?;
+        let round = CaptureRound { round_id, recipe_id, cameras, planned_count: None, plc_planned_count: None, plc_actual_count: None, plc_plan_version: None, state: CaptureState::WaitingStart, created_at, ended_at: None, frames: Vec::new(), error: None, failure: None, simulated };
+        self.save(&round).map_err(Rejected::Io)?;
         *guard = Some(Running { round: round.clone(), cams, drain_timeout: Duration::from_millis(drain_timeout_ms), deadline: Instant::now() + ROUND_TIMEOUT, write_deadline: None });
         Ok(round)
     }
 
     /// 失败后，可能还有本轮在途帧的相机要换新会话才能再采：PLC 已报完且与计划一致、这台相机收满计划数且本身没出错时，
     /// 它不会再有本轮的帧，可以直接用当前会话；其余相机（含收图未满、PLC 未报完或报数不符）都记为可疑。
-    fn fail_running(&self, run: &mut Running, error: String) {
+    fn fail_running(&self, run: &mut Running, failure: CaptureFailure, error: String) {
         run.round.state = CaptureState::Failed;
         let round = &run.round;
         let plc_done = round.planned_count.is_some() && round.plc_actual_count == round.planned_count;
@@ -406,11 +472,12 @@ impl RecipeCaptureHost {
             .map(|(_, c)| (c.camera_id.clone(), c.device_session));
         self.uncertain_sessions.lock().unwrap().extend(unsettled);
         run.round.error = Some(error);
+        run.round.failure = Some(failure);
         if let Err(error) = self.save(&run.round) { run.round.error = Some(format!("{}；异常记录保存失败：{error}", run.round.error.as_deref().unwrap_or_default())); }
     }
 
     pub fn fail(&self, error: impl Into<String>) {
-        if let Some(run) = self.current.lock().unwrap().as_mut().filter(|r| r.round.state.active()) { self.fail_running(run, error.into()); }
+        if let Some(run) = self.current.lock().unwrap().as_mut().filter(|r| r.round.state.active()) { self.fail_running(run, CaptureFailure::Other, error.into()); }
     }
 
     pub fn disconnected(&self, cam: u8) {
@@ -418,8 +485,9 @@ impl RecipeCaptureHost {
         let Some(run) = guard.as_mut().filter(|r| r.round.state.active()) else { return };
         if let Some(j) = run.camera_of(cam) {
             run.cams[j].faulted = true;
-            let error = format!("相机 {} 断连，请整圈重采", run.round.cameras[j].camera_id);
-            self.fail_running(run, error);
+            let camera_id = run.round.cameras[j].camera_id.clone();
+            let error = format!("相机 {camera_id} 断连，请整圈重采");
+            self.fail_running(run, CaptureFailure::Camera { camera_id }, error);
         }
     }
 
@@ -427,18 +495,18 @@ impl RecipeCaptureHost {
         let mut guard = self.current.lock().unwrap();
         let run = guard.as_mut().ok_or("没有等待开始的示教采集")?;
         if run.round.state != CaptureState::WaitingStart {
-            self.fail_running(run, "PLC 开始信号重复或顺序异常".into());
+            self.fail_running(run, CaptureFailure::Plc, "PLC 开始信号重复或顺序异常".into());
             return Err(run.round.error.clone().unwrap());
         }
         run.round.plc_planned_count = Some(planned_count);
         if !(1..=64).contains(&planned_count) {
-            self.fail_running(run, "PLC 计划触发数量须为 1–64".into());
+            self.fail_running(run, CaptureFailure::Plc, "PLC 计划触发数量须为 1–64".into());
             return Err(run.round.error.clone().unwrap());
         }
         run.round.planned_count = Some(planned_count);
         run.round.state = CaptureState::Receiving;
         run.deadline = Instant::now() + ROUND_TIMEOUT;
-        if let Err(e) = self.save(&run.round) { self.fail_running(run, e.clone()); return Err(e); }
+        if let Err(e) = self.save(&run.round) { self.fail_running(run, CaptureFailure::Other, e.clone()); return Err(e); }
         Ok(())
     }
 
@@ -447,7 +515,7 @@ impl RecipeCaptureHost {
         let run = guard.as_mut().ok_or("没有等待开始的示教采集")?;
         if version == 0 || run.round.state != CaptureState::WaitingStart { return Err("计划版本须为正数，且只能在 PLC 开始前记录".into()); }
         run.round.plc_plan_version = Some(version);
-        if let Err(e) = self.save(&run.round) { self.fail_running(run, e.clone()); return Err(e); }
+        if let Err(e) = self.save(&run.round) { self.fail_running(run, CaptureFailure::Other, e.clone()); return Err(e); }
         Ok(())
     }
 
@@ -456,14 +524,14 @@ impl RecipeCaptureHost {
         let run = guard.as_mut().ok_or("没有正在进行的示教采集")?;
         run.round.plc_actual_count = Some(actual_count);
         if run.round.state != CaptureState::Receiving || Some(actual_count) != run.round.planned_count {
-            self.fail_running(run, "PLC 结束顺序异常或实际触发数量与计划不一致".into());
+            self.fail_running(run, CaptureFailure::Plc, "PLC 结束顺序异常或实际触发数量与计划不一致".into());
             return Err(run.round.error.clone().unwrap());
         }
         run.round.state = CaptureState::Draining;
         run.round.ended_at = Some(ly_plc::now_ms());
         run.deadline = Instant::now() + run.drain_timeout;
         run.write_deadline = Some(Instant::now() + ROUND_TIMEOUT);
-        if let Err(e) = self.save(&run.round) { self.fail_running(run, e.clone()); return Err(e); }
+        if let Err(e) = self.save(&run.round) { self.fail_running(run, CaptureFailure::Other, e.clone()); return Err(e); }
         Ok(())
     }
 
@@ -473,14 +541,16 @@ impl RecipeCaptureHost {
         let Some(j) = run.camera_of(frame.cam) else { return true; };
         if run.round.state == CaptureState::WaitingStart {
             run.cams[j].faulted = true;
-            let error = format!("相机 {}：PLC 开始前收到帧，无法确定本轮归属", run.round.cameras[j].camera_id);
-            self.fail_running(run, error);
+            let camera_id = run.round.cameras[j].camera_id.clone();
+            let error = format!("相机 {camera_id}：PLC 开始前收到帧，无法确定本轮归属");
+            self.fail_running(run, CaptureFailure::Camera { camera_id }, error);
             return true;
         }
         if self.writers[j].try_send(QueuedFrame { round_id: run.round.round_id.clone(), frame: frame.clone(), original }).is_err() {
             run.cams[j].faulted = true;
-            let error = format!("相机 {}：示教采集写盘队列已满或关闭，不能保证完整收图，请整圈重采", run.round.cameras[j].camera_id);
-            self.fail_running(run, error);
+            let camera_id = run.round.cameras[j].camera_id.clone();
+            let error = format!("相机 {camera_id}：示教采集写盘队列已满或关闭，不能保证完整收图，请整圈重采");
+            self.fail_running(run, CaptureFailure::Camera { camera_id }, error);
         } else {
             run.cams[j].queued += 1;
         }
@@ -512,9 +582,10 @@ impl RecipeCaptureHost {
             else if matches!(f.counter, CounterSource::ChunkTrigger | CounterSource::Synthetic) && state.last_trigger.is_some_and(|last| last.checked_add(1) != Some(f.trigger_counter)) { Some("触发计数重复、跳号或顺序异常") }
             else { None };
         if let Some(error) = error {
-            let error = format!("相机 {}：{error}", camera.camera_id);
+            let camera_id = camera.camera_id.clone();
+            let error = format!("相机 {camera_id}：{error}");
             run.cams[j].faulted = true;
-            self.fail_running(run, error);
+            self.fail_running(run, CaptureFailure::Camera { camera_id }, error);
             return;
         }
         let camera_id = camera.camera_id.clone();
@@ -549,14 +620,14 @@ impl RecipeCaptureHost {
                 let order = |id: &str| run.round.cameras.iter().position(|c| c.camera_id == id);
                 let Some(shot) = run.round.frames.get_mut(index) else {
                     run.cams[j].faulted = true;
-                    self.fail_running(run, format!("相机 {camera_id}：前一次触发的图像缺失，无法确定拍照点归属"));
+                    self.fail_running(run, CaptureFailure::Camera { camera_id: camera_id.clone() }, format!("相机 {camera_id}：前一次触发的图像缺失，无法确定拍照点归属"));
                     return;
                 };
                 let at = shot.cameras.iter().position(|c| order(&c.camera_id) > Some(j)).unwrap_or(shot.cameras.len());
                 shot.cameras.insert(at, frame);
-                if let Err(e) = self.save(&run.round) { self.fail_running(run, e); }
+                if let Err(e) = self.save(&run.round) { self.fail_running(run, CaptureFailure::Other, e); }
             }
-            Err(e) => { run.cams[j].faulted = true; self.fail_running(run, format!("相机 {camera_id}：保存采集图像失败：{e}")) }
+            Err(e) => { run.cams[j].faulted = true; self.fail_running(run, CaptureFailure::Camera { camera_id: camera_id.clone() }, format!("相机 {camera_id}：保存采集图像失败：{e}")) }
         }
     }
 
@@ -570,21 +641,26 @@ impl RecipeCaptureHost {
             && round.cameras.iter().all(|c| c.received_count == n));
         if plc_ended && arrived && written {
             run.round.state = CaptureState::Complete;
-            if let Err(e) = self.save(&run.round) { self.fail_running(run, e); }
+            if let Err(e) = self.save(&run.round) { self.fail_running(run, CaptureFailure::Other, e); }
             return;
         }
         if plc_ended && arrived && run.write_deadline.is_some_and(|d| Instant::now() < d) { return; }
-        let error = match round.planned_count {
-            None => "采集超时：仍在等待 PLC 开始请求，请整圈重采".to_string(),
+        let (failure, error) = match round.planned_count {
+            None => (CaptureFailure::StartTimeout, "采集超时：仍在等待 PLC 开始请求，请整圈重采".to_string()),
             Some(n) => {
                 let short: Vec<_> = round.cameras.iter().zip(&run.cams).filter(|(_, r)| r.queued != n)
-                    .map(|(c, r)| format!("相机 {} 收到 {}/{n} 张", c.camera_id, r.queued)).collect();
-                if !short.is_empty() { format!("采集超时：计划触发 {n} 次，{}；必须收到 PLC 结束且各相机数量一致，请整圈重采", short.join("、")) }
-                else if plc_ended { format!("采集超时：PLC 已结束且各相机均已收到 {n} 张，但 {} s 内只写完 {}/{n} 个拍照点；请检查磁盘后整圈重采", ROUND_TIMEOUT.as_secs(), round.complete_shots()) }
-                else { format!("采集超时：各相机均已收到 {n} 张，但未收到 PLC 结束；请整圈重采") }
+                    .map(|(c, r)| CameraArrival { camera_id: c.camera_id.clone(), received: r.queued }).collect();
+                if !short.is_empty() {
+                    let named: Vec<_> = short.iter().map(|c| format!("相机 {} 收到 {}/{n} 张", c.camera_id, c.received)).collect();
+                    let error = format!("采集超时：计划触发 {n} 次，{}；必须收到 PLC 结束且各相机数量一致，请整圈重采", named.join("、"));
+                    (CaptureFailure::ShortCameras { planned: n, cameras: short }, error)
+                } else if plc_ended {
+                    let written = round.complete_shots();
+                    (CaptureFailure::WriteTimeout { planned: n, written }, format!("采集超时：PLC 已结束且各相机均已收到 {n} 张，但 {} s 内只写完 {written}/{n} 个拍照点；请检查磁盘后整圈重采", ROUND_TIMEOUT.as_secs()))
+                } else { (CaptureFailure::PlcEndMissing { planned: n }, format!("采集超时：各相机均已收到 {n} 张，但未收到 PLC 结束；请整圈重采")) }
             }
         };
-        self.fail_running(run, error);
+        self.fail_running(run, failure, error);
     }
 
     pub fn list(&self, recipe_id: &str) -> Result<Vec<CaptureSummary>, String> {
@@ -654,7 +730,7 @@ fn start_capture(app: AppHandle, recipe_id: String, camera_ids: Vec<String>, dra
                 trigger_baseline: ledger.as_ref().and_then(|l| l.last).or(arm.counter_after_open),
             });
         }
-        cycle.camera.recipe_capture().start(recipe_id.clone(), devices, drain_timeout_ms.unwrap_or(1000), simulated)
+        cycle.camera.recipe_capture().start(recipe_id.clone(), devices, drain_timeout_ms.unwrap_or(1000), simulated).map_err(|e| e.to_string())
     })
 }
 
@@ -719,7 +795,7 @@ mod tests {
         CaptureDevice { cam, camera_id: id.into(), camera_config: config, imaging: crate::recipe::DEFAULT_IMAGING, session, source, trigger_baseline: baseline }
     }
 
-    fn single(host: &RecipeCaptureHost, config: serde_json::Value, session: u64, source: Option<CounterSource>, baseline: Option<u64>, simulated: bool) -> Result<CaptureRound, String> {
+    fn single(host: &RecipeCaptureHost, config: serde_json::Value, session: u64, source: Option<CounterSource>, baseline: Option<u64>, simulated: bool) -> Result<CaptureRound, CaptureStartRejected> {
         host.start("r".into(), vec![device(0, "cam1", config, session, source, baseline)], TEST_DRAIN_MS, simulated)
     }
 
@@ -796,7 +872,7 @@ mod tests {
         for invalid in [0, 65, u32::MAX] {
             let host = host();
             let round = start(&host);
-            assert!(host.plc_started(invalid).unwrap_err().contains("1–64"));
+            assert!(host.plc_started(invalid).is_err());
             let failed = host.get(&round.round_id).unwrap();
             assert_eq!(failed.state, CaptureState::Failed);
             assert_eq!(failed.planned_count, None);
@@ -864,7 +940,7 @@ mod tests {
         host.plc_ended(20).unwrap();
         drain(&host);
         assert_eq!(host.current().unwrap().state, CaptureState::Failed);
-        assert!(single(&host, serde_json::json!({}), 9, Some(counter), Some(19), simulated).unwrap_err().contains("重新连接"));
+        assert!(matches!(single(&host, serde_json::json!({}), 9, Some(counter), Some(19), simulated), Err(CaptureStartRejected::UncertainSessions(_))));
         let next = single(&host, serde_json::json!({}), 10, Some(counter), Some(0), simulated).unwrap();
         host.plc_started(20).unwrap();
         receive(&host, &round, frame(20));
@@ -922,9 +998,7 @@ mod tests {
         drain(&host);
         let failed = host.current().unwrap();
         assert_eq!(failed.state, CaptureState::Failed);
-        let error = failed.error.unwrap();
-        assert!(error.contains("相机 cam2 收到 1/2 张"), "{error}");
-        assert!(!error.contains("cam1") && !error.contains("cam3"), "{error}");
+        assert_eq!(failed.failure, Some(CaptureFailure::ShortCameras { planned: 2, cameras: vec![CameraArrival { camera_id: "cam2".into(), received: 1 }] }));
     }
 
     /// 现场 debug 构建写 PNG 慢：PLC 已结束、各相机图像都已到达，只差写盘时，在途等待到期不能误报未收到 PLC 结束。
@@ -956,8 +1030,7 @@ mod tests {
         drain(&host);
         let failed = host.current().unwrap();
         assert_eq!(failed.state, CaptureState::Failed);
-        let error = failed.error.unwrap();
-        assert!(error.contains("写完 1/2") && !error.contains("未收到 PLC 结束"), "{error}");
+        assert_eq!(failed.failure, Some(CaptureFailure::WriteTimeout { planned: 2, written: 1 }));
     }
 
     #[test]
@@ -970,7 +1043,7 @@ mod tests {
             if let Some(cam) = gap_on { receive(&host, &round, cam_frame(cam, 4)); }
             let state = host.current().unwrap();
             assert_eq!(state.state == CaptureState::Receiving, accepted, "{:?}", state.error);
-            if !accepted { assert!(state.error.unwrap().starts_with("相机 cam2：")); }
+            if !accepted { assert_eq!(state.failure, Some(CaptureFailure::Camera { camera_id: "cam2".into() })); }
         }
     }
 
@@ -1000,14 +1073,13 @@ mod tests {
         for (cam, n) in [(0, 1), (1, 1), (2, 1), (0, 2), (2, 2)] { receive(&host, &round, cam_frame(cam, n)); }
         host.plc_ended(2).unwrap();
         drain(&host);
-        let error = restart(&host).unwrap_err();
-        assert!(error.starts_with("相机 cam2："), "{error}");
+        assert_eq!(restart(&host).unwrap_err(), CaptureStartRejected::UncertainSessions(vec!["cam2".into()]));
         let host = self::host();
         let round = start_three(&host);
         host.plc_started(2).unwrap();
         receive(&host, &round, cam_frame(0, 1));
         host.fail("操作员中止");
-        assert!(restart(&host).unwrap_err().starts_with("相机 cam1、cam2、cam3："));
+        assert_eq!(restart(&host).unwrap_err(), CaptureStartRejected::UncertainSessions(vec!["cam1".into(), "cam2".into(), "cam3".into()]));
     }
 
     #[test]
@@ -1015,11 +1087,11 @@ mod tests {
         let host = host();
         let config = serde_json::json!({"viewCount": 1});
         let twice = vec![device(0, "cam1", config.clone(), 9, None, Some(0)), device(0, "cam2", config.clone(), 9, None, Some(0))];
-        assert!(host.start("r".into(), twice, 200, false).is_err());
+        assert_eq!(host.start("r".into(), twice, 200, false).unwrap_err(), CaptureStartRejected::Duplicate("cam2".into()));
         let twice = vec![device(0, "cam1", config.clone(), 9, None, Some(0)), device(1, "cam1", config.clone(), 10, None, Some(0))];
-        assert!(host.start("r".into(), twice, 200, false).is_err());
+        assert_eq!(host.start("r".into(), twice, 200, false).unwrap_err(), CaptureStartRejected::Duplicate("cam1".into()));
         let missing = vec![device(0, "cam1", config.clone(), 9, None, Some(0)), device(1, "cam2", config, 10, None, None)];
-        assert!(host.start("r".into(), missing, 200, false).unwrap_err().starts_with("相机 cam2"));
+        assert_eq!(host.start("r".into(), missing, 200, false).unwrap_err(), CaptureStartRejected::MissingBaseline("cam2".into()));
         assert!(host.current().is_none());
     }
 

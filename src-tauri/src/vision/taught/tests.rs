@@ -324,12 +324,12 @@ fn end_shift_beyond_limit_drops_reference_after_excluding_ends() {
     explicit.max_end_shift_mm = Some(2.0);
     // 缺省上限：searchRadius 20 px、0.25 mm/px、只找平移 → √2·18·0.25 ≈ 6.36 mm
     let limit = std::f64::consts::SQRT_2 * 18.0 * 0.25;
-    // （fixture，切向搬移 mm，是否触发护栏）
-    for (f, shift, fires) in [(explicit, 2.5, true), (fixture_spec(), -(limit + 0.1), true), (fixture_spec(), limit - 0.1, false)] {
+    // （fixture，切向搬移 mm，是否触发护栏，每端排除的站数）；每端排除 |Δ| + 1 mm 以内的站，站距 1 mm、含端点：
+    // 2.5 → 3.5 mm 内 4 站；±6.46 / 6.26 → 7.46 / 7.26 mm 内 8 站
+    for (f, shift, fires, ends) in [(explicit, 2.5, true, 4), (fixture_spec(), -(limit + 0.1), true, 8), (fixture_spec(), limit - 0.1, false, 8)] {
         let recipe = located(f.clone());
         let p = plan(&recipe, 0).unwrap();
         let m = parse_result(&recipe, &p, &with_pose(result(&recipe, 0, &[]), pose(&f, true, [shift / 0.25, 0.0], true))).unwrap();
-        let ends = (shift.abs() + 1.0 + 1e-6).floor() as usize + 1;
         for i in 0..41 {
             let want = if i < ends || 40 - i < ends { ST_OUT_OF_RANGE } else if fires { ST_NO_REF } else { ST_OK };
             assert_eq!(m.st[i], want, "Δ {shift} 站 {i}");

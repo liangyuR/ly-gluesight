@@ -484,13 +484,21 @@ mod runtime_tests {
     #[test]
     fn missing_bundled_sdk_fails_even_with_system_sdk_present() {
         let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let executable = std::env::temp_dir().join(format!("gluesight-missing-mvs-{}-{nonce}", std::process::id())).join("GlueSight.exe");
-        let paths = windows_candidates(&executable, false, std::env::var_os("CommonProgramFiles(x86)").map(PathBuf::from)).unwrap();
-        let error = match Api::load_candidates(paths) {
+        let root = std::env::temp_dir().join(format!("gluesight-missing-mvs-{}-{nonce}", std::process::id()));
+        let executable = root.join("app").join("GlueSight.exe");
+        let bundled = root.join("app").join("runtime").join("mvs").join("MvCameraControl.dll");
+        // 造一个“已安装”的系统 SDK，结果不再取决于本机装没装 MVS；安装包若去试它，最后报的就是它的路径
+        let common_files = root.join("common-files");
+        let system_dll = common_files.join("MVS").join("Runtime").join("Win64_x64").join("MvCameraControl.dll");
+        std::fs::create_dir_all(system_dll.parent().unwrap()).unwrap();
+        std::fs::write(&system_dll, b"fake system MVS runtime").unwrap();
+        let paths = windows_candidates(&executable, false, Some(common_files)).unwrap();
+        let result = Api::load_candidates(paths);
+        let _ = std::fs::remove_dir_all(&root);
+        let error = match result {
             Ok(_) => panic!("missing packaged SDK must not load a system installation"),
             Err(error) => error,
         };
-        assert!(error.contains("MVS 随包运行库不存在或不可访问"));
-        assert!(error.contains("gluesight-missing-mvs-"));
+        assert!(error.contains(&bundled.display().to_string()), "{error}");
     }
 }

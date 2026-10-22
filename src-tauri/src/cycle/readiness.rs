@@ -131,6 +131,8 @@ fn plc_item(f: &Facts) -> ReadinessItem {
 }
 
 pub const MANUAL_ONLY: &str = "人工选型号模式下只能运行所选配方";
+/// 候选调试时配方项换成这一项：只检查冻结候选能否离线试运行，不是生产就绪。
+const CANDIDATE_TITLE: &str = "候选调试检查";
 
 fn recipe_item(f: &Facts) -> ReadinessItem {
     if let Some(candidate) = &f.candidate_debug {
@@ -140,7 +142,7 @@ fn recipe_item(f: &Facts) -> ReadinessItem {
             Some(r) => (ItemState::Blocked, r.reason.clone().unwrap_or_else(|| "候选暂不能试运行".into())),
             None => (ItemState::Blocked, "候选调试快照不可用".into()),
         };
-        return item(ItemKey::Recipe, "候选调试检查", state, detail,
+        return item(ItemKey::Recipe, CANDIDATE_TITLE, state, detail,
             Some("仅检查当前离线试运行；不代表已发布或可用于真机生产".into()),
             (state == ItemState::Blocked).then_some(Target::Workspace));
     }
