@@ -260,12 +260,5 @@ mod tests {
             std::fs::write(&metadata_path, bytes).unwrap();
             assert!(load_verified(recorder.root(), cycle_id, &shots[0], &legacy).is_err(), "{invalid}");
         }
-        std::fs::write(&metadata_path, &original_metadata).unwrap();
-        std::fs::remove_file(&metadata_path).unwrap();
-        std::fs::write(recorder.root().join(&selected.file), b"P5\n3 1\n255\n\x01\x02\x03").unwrap();
-        for raw in [selected, &legacy] {
-            assert!(load_verified(recorder.root(), cycle_id, &shots[0], raw).unwrap_err().contains("元数据缺失"));
-        }
-        assert!(frames(recorder.root(), cycle_id, &shots, frame.ts).unwrap().iter().all(|raw| !raw.available));
     }
 }

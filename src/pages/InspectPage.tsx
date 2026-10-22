@@ -5,7 +5,7 @@ import { Alert, Button, Card, Chip, Dialog, EmptyState, Progress as ProgressBar,
 import "./inspect.css";
 import RuntimeFrame, { usePublishedOverview } from "../features/workspace/RuntimeFrame";
 import { WorkpieceOverview } from "../features/workspace/OverviewPage";
-import { displayReason, triggerModeLabel, verdictLabel } from "../features/history";
+import { displayReason, triggerModeLabel, verdictLabel, verdictTone } from "../features/history";
 import { matchesPart } from "../features/cycle/identity";
 import InspectionReadiness from "../features/cycle/components/InspectionReadiness";
 import InspectionDiagnostics, { type DiagnosticGroup } from "../features/cycle/components/InspectionDiagnostics";
@@ -35,10 +35,6 @@ import {
 import { ST } from "../features/cycle/types";
 import { partFrames } from "../features/cycle/pose";
 import { usePlcOperationState } from "../features/plc/api";
-
-function verdictTone(v: Verdict) {
-  return v === "OK" ? "ok" : v === "OK_WITH_EXCURSION" ? "warn" : v === "ERR_INSPECT" ? "fault" : "ng";
-}
 
 function verdictParts(v: Verdict) {
   const [code, detail] = verdictLabel[v].split(" · ");

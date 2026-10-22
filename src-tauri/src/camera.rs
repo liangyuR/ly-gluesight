@@ -1713,20 +1713,9 @@ mod gray_tests {
     use super::*;
 
     #[test]
-    fn mono8_passes_through_unchanged() {
+    fn mono8_passes_through_unchanged_and_bayer8_is_converted() {
         let pool = FramePool::new(2);
-        let data: Vec<u8> = (0..12).map(|i| i * 20).collect();
-        let gray = to_gray(&pool, mvs::PIXEL_MONO8, 4, 3, &data).unwrap();
-        assert!(matches!(gray, Gray::Raw(_)));
-        assert_eq!(gray.pixels(), &data[..]);
-        let img = gray.into_image(&pool, 4, 3);
-        assert_eq!((img.width, img.height), (4, 3));
-        assert_eq!(img.pixels, data);
-    }
-
-    #[test]
-    fn bayer8_is_converted() {
-        let pool = FramePool::new(2);
+        let mono: Vec<u8> = (0..12).map(|i| i * 20).collect();
         // BG 相位、R = 200、G = 100、B = 40 的纯色块
         let (w, h) = (6, 4);
         let data: Vec<u8> = (0..w * h).map(|i| match (i / w % 2, i % w % 2) {
@@ -1734,10 +1723,18 @@ mod gray_tests {
             (1, 1) => 200,
             _ => 100,
         }).collect();
-        let gray = to_gray(&pool, mvs::PIXEL_BAYER_BG8, w as u32, h as u32, &data).unwrap();
-        assert!(gray.pixels().iter().all(|&v| v == 110));
-        let img = gray.into_image(&pool, w as u32, h as u32);
-        assert_eq!((img.width, img.height, img.pixels.len()), (6, 4, 24));
+        // (场景, 像素格式, 宽, 高, 输入, 期望灰度, 是否直接借用输入)
+        for (case, pixel_type, width, height, input, expected, raw) in [
+            ("mono8 原样透传", mvs::PIXEL_MONO8, 4, 3, &mono, mono.clone(), true),
+            ("bayer8 转灰度", mvs::PIXEL_BAYER_BG8, w as u32, h as u32, &data, vec![110; 24], false),
+        ] {
+            let gray = to_gray(&pool, pixel_type, width, height, input).unwrap();
+            assert_eq!(matches!(gray, Gray::Raw(_)), raw, "{case}");
+            assert_eq!(gray.pixels(), &expected[..], "{case}");
+            let img = gray.into_image(&pool, width, height);
+            assert_eq!((img.width, img.height), (width, height), "{case}");
+            assert_eq!(img.pixels, expected, "{case}");
+        }
         for t in [mvs::PIXEL_BAYER_GR8, mvs::PIXEL_BAYER_RG8, mvs::PIXEL_BAYER_GB8, mvs::PIXEL_BAYER_BG8] {
             assert_eq!(pixel_kind(t), Ok(PixelKind::Bayer8));
         }

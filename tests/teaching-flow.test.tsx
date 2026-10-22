@@ -17,6 +17,7 @@ import { plcApi } from "../src/features/plc/api";
 import { historyApi } from "../src/features/history/api";
 import type { CaptureRound, ShotState, WorkspaceView } from "../src/features/workspace/types";
 import { deferred, snapshot, summary, tricamWorkspaceView, twoLines } from "./fixtures";
+import { stubSvgPointer } from "./svg-pointer";
 
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: {
   get: vi.fn(), list: vi.fn(), image: vi.fn(), progress: vi.fn(),
@@ -147,13 +148,7 @@ it("本图参数覆盖后恢复默认 → 搜索带与试测载荷使用配方�
 });
 
 it("手工落点并自动保存 → 不插入瞬时警告、保留缩放与中线，缺少当量仍阻止试测", async () => {
-  vi.stubGlobal("DOMPoint", class {
-    constructor(public x: number, public y: number) {}
-    matrixTransform() { return this; }
-  });
-  vi.stubGlobal("PointerEvent", MouseEvent);
-  Object.defineProperty(SVGElement.prototype, "getScreenCTM", { configurable: true, value: () => ({ inverse: () => ({}) }) });
-  Object.defineProperty(SVGElement.prototype, "setPointerCapture", { configurable: true, value: vi.fn() });
+  stubSvgPointer({ pointerEvent: true });
   const candidate = groupedCandidate();
   candidate.workspace.doc.shots[0].path = [];
   delete candidate.workspace.doc.shots[0].mmPerPx;
@@ -203,13 +198,7 @@ it("手工落点并自动保存 → 不插入瞬时警告、保留缩放与中�
 });
 
 it("每组三相机图仅示教选中图 → 保存后进入下一组并沿用最新修订", async () => {
-  vi.stubGlobal("DOMPoint", class {
-    constructor(public x: number, public y: number) {}
-    matrixTransform() { return this; }
-  });
-  vi.stubGlobal("PointerEvent", MouseEvent);
-  Object.defineProperty(SVGElement.prototype, "getScreenCTM", { configurable: true, value: () => ({ inverse: () => ({}) }) });
-  Object.defineProperty(SVGElement.prototype, "setPointerCapture", { configurable: true, value: vi.fn() });
+  stubSvgPointer({ pointerEvent: true });
 
   const candidate = groupedCandidate();
   const taughtLayout = structuredClone(candidate.layout);
@@ -279,13 +268,7 @@ it("每组三相机图仅示教选中图 → 保存后进入下一组并沿用�
 });
 
 it("刷选提取后运行一次算法 → 传递原图引导与点距，重采样后试测失效", async () => {
-  vi.stubGlobal("DOMPoint", class {
-    constructor(public x: number, public y: number) {}
-    matrixTransform() { return this; }
-  });
-  vi.stubGlobal("PointerEvent", MouseEvent);
-  Object.defineProperty(SVGElement.prototype, "getScreenCTM", { configurable: true, value: () => ({ inverse: () => ({}) }) });
-  Object.defineProperty(SVGElement.prototype, "setPointerCapture", { configurable: true, value: vi.fn() });
+  stubSvgPointer({ pointerEvent: true });
   const candidate = groupedCandidate();
   candidate.workspace.doc.shots[0].path = [];
   delete candidate.workspace.doc.shots[0].mmPerPx;
@@ -356,13 +339,7 @@ it("刷选提取后运行一次算法 → 传递原图引导与点距，重采�
 });
 
 it("自动提取失败后按笔划生成 → 定位原因并保留原线，人工草稿保留转弯且须重新试测", async () => {
-  vi.stubGlobal("DOMPoint", class {
-    constructor(public x: number, public y: number) {}
-    matrixTransform() { return this; }
-  });
-  vi.stubGlobal("PointerEvent", MouseEvent);
-  Object.defineProperty(SVGElement.prototype, "getScreenCTM", { configurable: true, value: () => ({ inverse: () => ({}) }) });
-  Object.defineProperty(SVGElement.prototype, "setPointerCapture", { configurable: true, value: vi.fn() });
+  stubSvgPointer({ pointerEvent: true });
   const candidate = groupedCandidate();
   mockSite(candidate);
   const failure = { point: [40, 20] as [number, number], reason: "discontinuous_edges", message: "此处胶路宽度突变，请检查亮边与阴影。" };
@@ -406,13 +383,7 @@ function extractionFailure(reason: string) {
 }
 
 async function brushOnTaughtGroup() {
-  vi.stubGlobal("DOMPoint", class {
-    constructor(public x: number, public y: number) {}
-    matrixTransform() { return this; }
-  });
-  vi.stubGlobal("PointerEvent", MouseEvent);
-  Object.defineProperty(SVGElement.prototype, "getScreenCTM", { configurable: true, value: () => ({ inverse: () => ({}) }) });
-  Object.defineProperty(SVGElement.prototype, "setPointerCapture", { configurable: true, value: vi.fn() });
+  stubSvgPointer({ pointerEvent: true });
   mockSite(groupedCandidate());
   const user = renderWorkspace("/recipe/teach");
   const image = await screen.findByRole("img", { name: "P1 · CAM-1 · 图 1" });

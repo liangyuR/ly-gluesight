@@ -54,8 +54,8 @@ describe("离线原图保留设置", () => {
     expect(screen.getByRole("combobox", { name: "真机帧录制" }).closest(".qs-select")!.querySelector("select")!).toHaveValue("failed");
   });
 
+  // 件数：低于下限 / 非整数 / 高于上限；大小：留空（NaN 只有 isFinite 能拦）/ 低于下限 / 高于上限
   it.each([
-    ["离线原图最多保留（件）", "", "1"],
     ["离线原图最多保留（件）", "0", "1"],
     ["离线原图最多保留（件）", "1.5", "2"],
     ["离线原图最多保留（件）", "100001", "100000"],

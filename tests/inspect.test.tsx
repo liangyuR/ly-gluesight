@@ -185,17 +185,13 @@ describe("在线检测选帧、曲线与快照绑定", () => {
 
 
 describe("在线检测整件判定显示", () => {
-  it.each([
-    { verdict: "OK_WITH_EXCURSION", code: "OK", detail: "局部超差", tone: "warn" },
-    { verdict: "NG_GAP", code: "NG", detail: "断胶", tone: "ng" },
-    { verdict: "ERR_INSPECT", code: "ERR", detail: "未测成", tone: "fault" },
-  ] as const)("整件判 $verdict → 大字 $code 且用 $tone 语义色，合格带警告、产品 NG、检测异常三者分开", ({ verdict, code, detail, tone }) => {
-    state = { ...state, phase: "REPORT", part: cyclePart(), result: { ...cycleResult(), verdict } };
+  it("整件判局部超差 → 判定卡把标签拆成大字 OK 与说明“局部超差”", () => {
+    // 判定→语义色与中文标签的映射见 verdict-meta.test.ts；这里只防判定卡拆分“代码 · 说明”的显示
+    state = { ...state, phase: "REPORT", part: cyclePart(), result: { ...cycleResult(), verdict: "OK_WITH_EXCURSION" } };
     render(<MemoryRouter><InspectPage /></MemoryRouter>);
     const card = screen.getByRole("region", { name: "整件判定" });
-    expect(within(card).getByText(code)).toBeVisible();
-    expect(within(card).getByText(detail)).toBeVisible();
-    expect(card).toHaveClass(tone);
+    expect(within(card).getByText("OK")).toBeVisible();
+    expect(within(card).getByText("局部超差")).toBeVisible();
   });
 
   it("整件判断胶而本件有帧定位失败 → 判定卡与该帧缩略图仍挂定位失败徽标", () => {
@@ -205,15 +201,6 @@ describe("在线检测整件判定显示", () => {
     render(<MemoryRouter><InspectPage /></MemoryRouter>);
     expect(within(screen.getByRole("region", { name: "整件判定" })).getByLabelText("位置基准：定位失败")).toBeVisible();
     expect(screen.getByText("NG · 定位失败")).toBeVisible();
-  });
-
-  it("检测段判断胶 → 段结果显示中文判定而非枚举码", () => {
-    const result = cycleResult();
-    state = { ...state, phase: "REPORT", part: cyclePart(), result: { ...result, segments: [{ ...result.segments[0], verdict: "NG_GAP" }, result.segments[1]] } };
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    const segments = within(screen.getByRole("region", { name: "检测段结果" }));
-    expect(segments.getByText("断胶")).toBeVisible();
-    expect(segments.queryByText("NG_GAP")).not.toBeInTheDocument();
   });
 });
 

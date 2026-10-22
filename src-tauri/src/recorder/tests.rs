@@ -137,9 +137,23 @@ fn equal_sn_and_exposure_time_never_mix_different_cycles() {
     }
 }
 
-#[test]
-fn queue_full_rejects_all_views_and_finish_bypasses_the_frame_limit() {
-    let dir = TestDir::new();
+/// 根目录被占：创建目录失败，不能谎称原图存在，也不能动占位文件。
+fn record_into_blocked_root(dir: &TestDir) -> RecordingOutcome {
+    std::fs::write(dir.root(), "blocked-root").unwrap();
+    let (callback, outcomes) = callback();
+    let recorder = Recorder::new(dir.root(), Some(callback));
+    let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "cycle-disk-error", None).unwrap();
+    recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
+    recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
+    let outcome = wait(&outcomes);
+    assert_eq!(outcome.state, RecordingState::Failed);
+    assert!(!outcome.available && outcome.directory.is_none() && outcome.files.is_empty());
+    assert_eq!(std::fs::read_to_string(dir.root()).unwrap(), "blocked-root");
+    outcome
+}
+
+/// 队列满：一帧的所有视角都被拒，收尾消息不受帧上限限制。
+fn record_with_full_queue(dir: &TestDir) -> RecordingOutcome {
     let (recorder, rx, _) = controlled(dir.root());
     recorder.queued.store(QUEUE, Ordering::Relaxed);
     let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "cycle-full", None).unwrap();
@@ -151,62 +165,41 @@ fn queue_full_rejects_all_views_and_finish_bypasses_the_frame_limit() {
     let Msg::Finish(job) = rx.try_recv().unwrap() else { panic!("队列满也必须保留收尾消息") };
     let outcome = finish_recording(recorder.root(), job, WriteState::default(), None);
     assert!(!outcome.available && outcome.files.is_empty());
-    assert!(outcome.errors.iter().any(|error| error.contains("录制队列已满")));
     let meta = metadata(&outcome);
     assert_eq!(meta["droppedFrames"], 1);
     assert!(meta["frames"].as_array().unwrap().iter().all(|frame| frame["available"] == false));
+    outcome
 }
 
-#[test]
-fn disk_failure_does_not_claim_originals_exist() {
-    let dir = TestDir::new();
-    std::fs::write(dir.root(), "blocked-root").unwrap();
+/// 取图问题：先到一帧缺视角，同一拍再到完整一帧。
+fn record_incomplete_then_repeated_capture(dir: &TestDir) -> RecordingOutcome {
     let (callback, outcomes) = callback();
     let recorder = Recorder::new(dir.root(), Some(callback));
-    let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "cycle-disk-error", None).unwrap();
-    recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
-    recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
-    let outcome = wait(&outcomes);
-    assert_eq!(outcome.state, RecordingState::Failed);
-    assert!(!outcome.available && outcome.directory.is_none() && outcome.files.is_empty());
-    assert!(outcome.errors.iter().any(|error| error.contains("创建录制目录失败")));
-    assert_eq!(std::fs::read_to_string(dir.root()).unwrap(), "blocked-root");
-}
-
-#[test]
-fn only_disk_write_failures_are_classified_as_write_errors() {
-    let blocked = TestDir::new();
-    std::fs::write(blocked.root(), "blocked-root").unwrap();
-    let (disk_callback, disk_outcomes) = callback();
-    let recorder = Recorder::new(blocked.root(), Some(disk_callback));
-    let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "cycle-disk", None).unwrap();
-    recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
-    recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
-    let outcome = wait(&disk_outcomes);
-    assert!(outcome.errors.iter().any(|error| is_write_error(error)), "{:?}", outcome.errors);
-
-    let dir = TestDir::new();
-    let (capture_callback, capture_outcomes) = callback();
-    let recorder = Recorder::new(dir.root(), Some(capture_callback));
     let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "cycle-capture", None).unwrap();
     let mut one_view = frame(10);
     one_view.images.truncate(1);
     recorder.frame(&mut rec, &one_view, "cam1", 0, 1);
     recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
     recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
-    let outcome = wait(&capture_outcomes);
-    assert!(outcome.errors.iter().any(|error| error.contains("原图不完整")) && outcome.errors.iter().any(|error| error.contains("拒绝覆盖原图")), "{:?}", outcome.errors);
-    assert!(!outcome.errors.iter().any(|error| is_write_error(error)), "{:?}", outcome.errors);
+    wait(&outcomes)
+}
 
-    let (recorder, rx, _) = controlled(dir.root());
-    recorder.queued.store(QUEUE, Ordering::Relaxed);
-    let mut rec = recorder.begin(RecordMode::All, "SN-42", recipe(), "cycle-full", None).unwrap();
-    recorder.frame(&mut rec, &frame(10), "cam1", 0, 1);
-    recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
-    let Msg::Finish(job) = rx.try_recv().unwrap() else { panic!("需要收尾消息") };
-    let outcome = finish_recording(recorder.root(), job, WriteState::default(), None);
-    assert!(outcome.errors.iter().any(|error| error.contains("录制队列已满")), "{:?}", outcome.errors);
-    assert!(!outcome.errors.iter().any(|error| is_write_error(error)), "{:?}", outcome.errors);
+#[test]
+fn recording_failures_report_their_cause_and_only_disk_failures_are_write_errors() {
+    // (场景, 制造故障并返回录制结果, 必须出现的错误, 是否归为写盘故障)
+    let cases: [(&str, fn(&TestDir) -> RecordingOutcome, &[&str], bool); 3] = [
+        ("根目录被占", record_into_blocked_root, &["创建录制目录失败"], true),
+        ("队列满", record_with_full_queue, &["录制队列已满"], false),
+        ("缺视角且重复到达", record_incomplete_then_repeated_capture, &["原图不完整", "拒绝覆盖原图"], false),
+    ];
+    for (case, record, expected_errors, write_error) in cases {
+        let dir = TestDir::new();
+        let outcome = record(&dir);
+        for expected in expected_errors {
+            assert!(outcome.errors.iter().any(|error| error.contains(expected)), "{case}: {:?}", outcome.errors);
+        }
+        assert_eq!(outcome.errors.iter().any(|error| is_write_error(error)), write_error, "{case}: {:?}", outcome.errors);
+    }
 }
 
 #[test]

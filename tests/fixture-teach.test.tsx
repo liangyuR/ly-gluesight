@@ -8,6 +8,7 @@ import { workspaceApi } from "../src/features/workspace/api";
 import type { FixtureSpec } from "../src/features/cycle/types";
 import type { FixtureCheck, FixtureCheckItem, FixtureRotationEvidence, FixtureTeachReport, FixtureTrial } from "../src/features/workspace/types";
 import { workspaceState } from "./fixtures";
+import { stubSvgPointer } from "./svg-pointer";
 
 // 只替身两个协作者：候选状态（context）与后端（workspaceApi）；产线快照不替身，非桌面环境下为空即“没在生产”
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
@@ -43,9 +44,7 @@ describe("示教页定位特征", () => {
     ["压走廊 → 框标红、列出原因、不进草稿", false],
   ])("拖出定位框：%s", async (_, passes) => {
     // 防的回归：rect 是 [u32; 4]，小数框会让保存失败；压走廊的框进了草稿，自动保存反复撞上配方校验
-    vi.stubGlobal("DOMPoint", class { constructor(public x: number, public y: number) {} matrixTransform() { return this; } });
-    Object.defineProperty(SVGElement.prototype, "getScreenCTM", { configurable: true, value: () => ({ inverse: () => ({}) }) });
-    Object.defineProperty(SVGElement.prototype, "setPointerCapture", { configurable: true, value: vi.fn() });
+    stubSvgPointer();
     const corridor = "定位框（含 4 px 外圈）压住了拍照点 P1 图 1 的胶检测走廊";
     vi.mocked(workspaceApi.fixtureCheck).mockResolvedValue(check([item("inside", true, "外圈在图内"), item("corridor", passes, passes ? "离走廊足够远" : corridor)]));
     show();

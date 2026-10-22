@@ -660,20 +660,14 @@ mod tests {
     }
 
     #[test]
-    fn an_extra_callback_is_rejected_before_the_actor_receives_it() {
+    fn extra_or_nonconsecutive_duplicate_callbacks_are_rejected_before_the_actor_receives_them() {
         let router = armed();
-        let mut callbacks = primed();
-        callbacks.observe(&frame(45));
-        assert_eq!(router.check_observed(0, callbacks.get(0).unwrap()).unwrap_err().0, fault::EXTRA_FRAME);
+        for (case, counters) in [("超出计划的多余回调", &[45][..]), ("不相邻的重复计数", &[41, 42, 41])] {
+            let mut callbacks = primed();
+            for &counter in counters { callbacks.observe(&frame(counter)); }
+            assert_eq!(router.check_observed(0, callbacks.get(0).unwrap()).unwrap_err().0, fault::EXTRA_FRAME, "{case}");
+        }
         assert_eq!(router.bound(0), None);
-    }
-
-    #[test]
-    fn callbacks_reject_nonconsecutive_duplicates() {
-        let router = armed();
-        let mut callbacks = primed();
-        for counter in [41, 42, 41] { callbacks.observe(&frame(counter)); }
-        assert_eq!(router.check_observed(0, callbacks.get(0).unwrap()).unwrap_err().0, fault::EXTRA_FRAME);
     }
 
     #[test]

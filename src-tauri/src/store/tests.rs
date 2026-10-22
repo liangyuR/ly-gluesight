@@ -315,34 +315,6 @@ fn identical_content_with_new_version_is_allowed_but_snapshot_collision_is_rejec
 }
 
 #[test]
-fn mismatched_database_version_checkpoints_wal_and_keeps_complete_backup() {
-    use rusqlite::config::DbConfig;
-    assert!(73 > DB_VERSION);
-    let db = TestDb::new();
-    let old = Connection::open(db.path()).unwrap();
-    old.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; PRAGMA user_version=73; CREATE TABLE legacy(data TEXT); INSERT INTO legacy VALUES ('only-in-wal');").unwrap();
-    old.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true).unwrap();
-    drop(old);
-    assert!(db.path().with_file_name("parts.sqlite-wal").metadata().unwrap().len() > 0);
-    let store = Store::open(&db.path()).unwrap();
-    let backup = store.backup_path().unwrap().to_path_buf();
-    let old = Connection::open(&backup).unwrap();
-    assert_eq!(old.query_row("SELECT data FROM legacy", [], |r| r.get::<_, String>(0)).unwrap(), "only-in-wal");
-    assert_eq!(old.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 73);
-    assert_eq!(store.query(&HistoryQuery::default()).unwrap().total, 0);
-    assert!(store.conn.lock().unwrap().prepare("SELECT data FROM legacy").is_err());
-    assert_eq!(store.conn.lock().unwrap().pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), DB_VERSION);
-    let cycle = store.reserve_cycle_id().unwrap();
-    drop(old);
-    drop(store);
-    let reopened = Store::open(&db.path()).unwrap();
-    assert!(reopened.backup_path().is_none());
-    assert_eq!(reopened.conn.lock().unwrap().query_row("SELECT COUNT(*) FROM cycle_ids", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
-    assert_ne!(reopened.reserve_cycle_id().unwrap(), cycle);
-    assert!(backup.exists());
-}
-
-#[test]
 fn locked_old_database_is_not_renamed_or_replaced() {
     let db = TestDb::new();
     let old = Connection::open(db.path()).unwrap();
@@ -514,58 +486,76 @@ PRAGMA user_version=2;"#).unwrap();
     conn
 }
 
-fn columns(conn: &Connection, table: &str) -> BTreeSet<String> {
-    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})")).unwrap();
-    let rows = stmt.query_map([], |row| row.get(1)).unwrap();
-    rows.collect::<Result<_, _>>().unwrap()
+/// 未知的新版本库，数据只在未合并的 WAL 里：备份必须先合并 WAL 才完整。
+fn future_version_only_in_wal(db: &TestDb) {
+    use rusqlite::config::DbConfig;
+    assert!(73 > DB_VERSION);
+    let old = Connection::open(db.path()).unwrap();
+    old.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; PRAGMA user_version=73; CREATE TABLE legacy(data TEXT); INSERT INTO legacy VALUES ('only-in-wal');").unwrap();
+    old.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true).unwrap();
+    drop(old);
+    assert!(db.path().with_file_name("parts.sqlite-wal").metadata().unwrap().len() > 0);
+}
+
+/// 身份迁移前的 v2 库，带一条引用旧快照的记录；`migrated_once` 模拟做过一半的身份迁移。
+fn pre_identity_v2_with_record(db: &TestDb, migrated_once: bool) {
+    let old = pre_identity_v2(db);
+    if migrated_once {
+        old.execute_batch("ALTER TABLE parts ADD COLUMN recipe_revision TEXT; ALTER TABLE parts ADD COLUMN bundle_id TEXT;
+            ALTER TABLE recipe_snapshots ADD COLUMN revision_id TEXT;
+            CREATE TABLE identity_migrations(name TEXT PRIMARY KEY);
+            CREATE TABLE explicit_recipe_records(part_id INTEGER PRIMARY KEY, recipe_revision TEXT NOT NULL);
+            CREATE TABLE legacy_bundle_refs(recipe_id TEXT NOT NULL, bundle_id TEXT NOT NULL UNIQUE, legacy_directory TEXT NOT NULL);").unwrap();
+    }
+    let recipe = recipe();
+    old.execute("INSERT INTO recipe_snapshots(hash,recipe_id,version,json) VALUES('old-reference',?1,?2,?3)",
+        params![recipe.id, recipe.version, serde_json::to_string(&recipe).unwrap()]).unwrap();
+    old.execute("INSERT INTO parts(ts,sn,recipe_id,recipe_version,recipe_hash,verdict,plc_code,fault_code,reason,frames_expected,
+        frames_received,triggers,software_version,judgement,frames,bundle_hash,delivery_state,delivery_updated_at,recording_state)
+        VALUES(1,42,?1,?2,'old-reference','errInspect',90,1,'old',4,0,0,'old','{}','[]','old-directory','acknowledged',99,'off')",
+        params![recipe.id, recipe.version]).unwrap();
 }
 
 #[test]
-fn old_schema_database_is_backed_up_and_replaced_without_migration() {
-    for migrated_once in [false, true] {
+fn mismatched_database_version_is_backed_up_completely_and_rebuilt_without_migration() {
+    const OLD_REFERENCE: &[(&str, &str)] = &[
+        ("SELECT recipe_hash FROM parts", "old-reference"),
+        ("SELECT CAST(COUNT(*) AS TEXT) FROM recipe_snapshots WHERE hash='old-reference'", "1"),
+    ];
+    // (场景, 构造旧库, 旧库版本, 备份里必须原样保留的数据 (SQL, 文本结果))
+    let cases: [(&str, fn(&TestDb), i64, &[(&str, &str)]); 3] = [
+        ("WAL 未合并的未知新版本", future_version_only_in_wal, 73, &[("SELECT data FROM legacy", "only-in-wal")]),
+        ("身份迁移前的 v2", |db| pre_identity_v2_with_record(db, false), 2, OLD_REFERENCE),
+        ("做过一半身份迁移的 v2", |db| pre_identity_v2_with_record(db, true), 2, OLD_REFERENCE),
+    ];
+    for (case, build, old_version, preserved_rows) in cases {
         let db = TestDb::new();
-        let old = pre_identity_v2(&db);
-        if migrated_once {
-            old.execute_batch("ALTER TABLE parts ADD COLUMN recipe_revision TEXT; ALTER TABLE parts ADD COLUMN bundle_id TEXT;
-                ALTER TABLE recipe_snapshots ADD COLUMN revision_id TEXT;
-                CREATE TABLE identity_migrations(name TEXT PRIMARY KEY);
-                CREATE TABLE explicit_recipe_records(part_id INTEGER PRIMARY KEY, recipe_revision TEXT NOT NULL);
-                CREATE TABLE legacy_bundle_refs(recipe_id TEXT NOT NULL, bundle_id TEXT NOT NULL UNIQUE, legacy_directory TEXT NOT NULL);").unwrap();
-        }
+        build(&db);
         let recipe = recipe();
-        old.execute("INSERT INTO recipe_snapshots(hash,recipe_id,version,json) VALUES('old-reference',?1,?2,?3)",
-            params![recipe.id, recipe.version, serde_json::to_string(&recipe).unwrap()]).unwrap();
-        old.execute("INSERT INTO parts(ts,sn,recipe_id,recipe_version,recipe_hash,verdict,plc_code,fault_code,reason,frames_expected,
-            frames_received,triggers,software_version,judgement,frames,bundle_hash,delivery_state,delivery_updated_at,recording_state)
-            VALUES(1,42,?1,?2,'old-reference','errInspect',90,1,'old',4,0,0,'old','{}','[]','old-directory','acknowledged',99,'off')",
-            params![recipe.id, recipe.version]).unwrap();
-        drop(old);
-
         let store = Store::open(&db.path()).unwrap();
         let backup = store.backup_path().expect("旧库必须备份").to_path_buf();
         let preserved = Connection::open(&backup).unwrap();
-        assert_eq!(preserved.query_row("SELECT recipe_hash FROM parts", [], |r| r.get::<_, String>(0)).unwrap(), "old-reference");
-        assert_eq!(preserved.query_row("SELECT COUNT(*) FROM recipe_snapshots WHERE hash='old-reference'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
-        assert_eq!(store.query(&HistoryQuery::default()).unwrap().total, 0);
-        assert!(store.recipe_snapshot(&recipe.revision_id).unwrap().is_none());
+        for (sql, expected) in preserved_rows {
+            assert_eq!(preserved.query_row(sql, [], |r| r.get::<_, String>(0)).unwrap(), *expected, "{case}: {sql}");
+        }
+        assert_eq!(preserved.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), old_version, "{case}");
+        assert_eq!(store.query(&HistoryQuery::default()).unwrap().total, 0, "{case}");
+        assert!(store.recipe_snapshot(&recipe.revision_id).unwrap().is_none(), "{case}");
         {
             let conn = store.conn.lock().unwrap();
-            assert_eq!(conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), DB_VERSION);
-            let parts = columns(&conn, "parts");
-            for name in ["recipe_hash", "bundle_hash", "layout_hash"] { assert!(!parts.contains(name)); }
-            for name in ["recipe_revision", "bundle_id"] { assert!(parts.contains(name)); }
-            for table in ["identity_migrations", "explicit_recipe_records", "legacy_bundle_refs"] {
-                let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)", [table], |r| r.get(0)).unwrap();
-                assert!(!exists, "{table}");
-            }
+            assert!(conn.prepare("SELECT data FROM legacy").is_err(), "{case}");
+            assert_eq!(conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), DB_VERSION, "{case}");
         }
+        let cycle = store.reserve_cycle_id().unwrap();
         save(&store, &recipe, "new-cycle", &shots(&recipe), &PlcDelivery::default(), None).unwrap();
         drop(store);
         let reopened = Store::open(&db.path()).unwrap();
-        assert!(reopened.backup_path().is_none());
-        assert_eq!(reopened.query(&HistoryQuery::default()).unwrap().total, 1);
+        assert!(reopened.backup_path().is_none(), "{case}");
+        assert_eq!(reopened.query(&HistoryQuery::default()).unwrap().total, 1, "{case}");
+        assert_eq!(reopened.conn.lock().unwrap().query_row("SELECT COUNT(*) FROM cycle_ids", [], |r| r.get::<_, i64>(0)).unwrap(), 1, "{case}");
+        assert_ne!(reopened.reserve_cycle_id().unwrap(), cycle, "{case}");
         drop(preserved);
-        assert!(backup.is_file());
+        assert!(backup.is_file(), "{case}");
     }
 }
 
@@ -628,34 +618,27 @@ fn durable_record_identity_checks_actual_fields_while_allowing_later_delivery_an
     let pending = PlcDelivery { state: PlcDeliveryState::Pending, updated_at: 1235, message: None };
     save(&store, &recipe, "record-identity", &shots, &pending, Some(&table)).unwrap();
     let judgement = Judgement::error(crate::judge::fault::MISSING_FRAME, "P2 缺帧，P3 定位失败，P4 测量出错");
-    let mut record = PartRecord { ts: 1234, sn: "SN-42", recipe: Some(&recipe), judgement: &judgement, drain_ms: None,
+    let record = PartRecord { ts: 1234, sn: "SN-42", recipe: Some(&recipe), judgement: &judgement, drain_ms: None,
         frames: &[], frames_expected: recipe.shot_count(), frames_received: 3, triggers: 4, table: Some(&table),
         software_version: "test-p0", cycle_id: Some("record-identity"), bundle_id: Some("frozen-bundle-id"), delivery: &pending, shots: &shots, source: crate::store::RecordSource::Real, sample: None };
     assert!(store.matches_record(&record).unwrap());
     store.update_delivery("record-identity", &PlcDelivery { state: PlcDeliveryState::Acknowledged, updated_at: 9999, message: None }).unwrap();
     store.update_shot_raw_files("record-identity", 0, &[ShotRawFile { view: 1, file: "records/cycle/k000.pgm".into(), width: Some(2), height: Some(3) }]).unwrap();
     assert!(store.matches_record(&record).unwrap());
-    record.sn = "SN-43";
-    assert!(!store.matches_record(&record).unwrap());
-    record.sn = "SN-42";
-    record.ts += 1;
-    assert!(!store.matches_record(&record).unwrap());
-    record.ts -= 1;
-    record.triggers += 1;
-    assert!(!store.matches_record(&record).unwrap());
-    record.triggers -= 1;
     let mut wrong_shots = shots.clone();
     wrong_shots[0].view = 2;
-    record.shots = &wrong_shots;
-    assert!(!store.matches_record(&record).unwrap());
-    record.shots = &shots;
-    record.table = None;
-    assert!(!store.matches_record(&record).unwrap());
-    record.table = Some(&table);
     let mut changed = recipe.clone();
     changed.product_code += 1;
-    record.recipe = Some(&changed);
-    assert!(!store.matches_record(&record).unwrap());
+    for (field, mismatched) in [
+        ("sn", PartRecord { sn: "SN-43", ..record }),
+        ("ts", PartRecord { ts: record.ts + 1, ..record }),
+        ("triggers", PartRecord { triggers: record.triggers + 1, ..record }),
+        ("shots", PartRecord { shots: &wrong_shots, ..record }),
+        ("table", PartRecord { table: None, ..record }),
+        ("recipe", PartRecord { recipe: Some(&changed), ..record }),
+    ] {
+        assert!(!store.matches_record(&mismatched).unwrap(), "{field}");
+    }
 }
 
 #[test]

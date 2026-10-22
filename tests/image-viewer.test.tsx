@@ -5,6 +5,7 @@ import { GrayViewer, useGrayImage } from "../src/features/workspace/components";
 import { workspaceApi } from "../src/features/workspace/api";
 import type { GrayImage } from "../src/features/workspace/types";
 import { deferred } from "./fixtures";
+import { stubScreenCTM, withDOMPoint } from "./svg-pointer";
 
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { image: vi.fn(), recordImage: vi.fn() } }));
 const image: GrayImage = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
@@ -59,18 +60,11 @@ describe("图像查看与加载", () => {
 
   it("点空白处在末尾加点并可接着拖动，按中线点只拖动不加点；整次拖动使用按下时的原图坐标", () => {
     let offset = 20;
-    const previous = globalThis.DOMPoint;
-    class TestPoint {
-      constructor(public x: number, public y: number) {}
-      matrixTransform(matrix: { offset: number }) { return new TestPoint(this.x, this.y - matrix.offset); }
-    }
-    Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: TestPoint });
     const edit = { add: vi.fn(), move: vi.fn(), select: vi.fn() };
-    try {
+    withDOMPoint<{ offset: number }>((x, y, matrix) => [x, y - matrix.offset], () => {
       render(<GrayViewer image={image} label="示教图像" overlay={{ path: [[50, 30]] }} onEdit={edit} />);
       const svg = screen.getByRole("img", { name: "示教图像" });
-      const group = svg.querySelector("g")!;
-      Object.defineProperty(group, "getScreenCTM", { value: () => ({ inverse: () => ({ offset }) }) });
+      stubScreenCTM(svg.querySelector("g")!, () => ({ offset }));
       Object.defineProperty(svg, "setPointerCapture", { value: vi.fn() });
       fireEvent.pointerDown(svg, { clientX: 10.04, clientY: 30, pointerId: 1 });
       expect(edit.add).toHaveBeenLastCalledWith([10, 10]); expect(edit.select).toHaveBeenLastCalledWith(1);
@@ -92,24 +86,16 @@ describe("图像查看与加载", () => {
       fireEvent.click(screen.getByRole("button", { name: "中线叠加" }));
       fireEvent.pointerDown(svg, { clientX: 30, clientY: 70, pointerId: 3 });
       expect(edit.add).toHaveBeenCalledTimes(1);
-    } finally {
-      Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: previous });
-    }
+    });
   });
   it("刷选固定按下时图像坐标 → 不修改中线，中键和取消后的移动不继续刷选", () => {
     let offset = 20;
-    const previous = globalThis.DOMPoint;
-    class TestPoint {
-      constructor(public x: number, public y: number) {}
-      matrixTransform(matrix: { offset: number }) { return new TestPoint(this.x, this.y - matrix.offset); }
-    }
-    Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: TestPoint });
     const onBrush = vi.fn(), edit = { add: vi.fn(), move: vi.fn(), select: vi.fn() };
-    try {
+    withDOMPoint<{ offset: number }>((x, y, matrix) => [x, y - matrix.offset], () => {
       render(<GrayViewer image={image} label="刷选图像" overlay={{ path: [[50, 30]] }} onEdit={edit} onBrush={onBrush} />);
       const svg = screen.getByRole("img", { name: "刷选图像" });
-      Object.defineProperty(svg.querySelector("g")!, "getScreenCTM", { value: () => ({ inverse: () => ({ offset }) }) });
-      Object.defineProperty(svg, "getScreenCTM", { value: () => ({ inverse: () => ({ offset }) }) });
+      stubScreenCTM(svg.querySelector("g")!, () => ({ offset }));
+      stubScreenCTM(svg, () => ({ offset }));
       fireEvent.pointerDown(svg, { clientX: 10, clientY: 30, pointerId: 1 });
       offset = 60;
       fireEvent.pointerMove(svg, { clientX: 50, clientY: 65, pointerId: 1 });
@@ -126,23 +112,15 @@ describe("图像查看与加载", () => {
       fireEvent.pointerUp(svg, { pointerId: 2 });
       fireEvent.pointerDown(svg, { clientX: 30, clientY: 80, pointerId: 3 });
       expect(onBrush).toHaveBeenLastCalledWith([[30, 20]]);
-    } finally {
-      Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: previous });
-    }
+    });
   });
   it("密集中线隐藏内部编辑圆点，展开后可拖动且测量横线始终位于上层", () => {
-    const previous = globalThis.DOMPoint;
-    class TestPoint {
-      constructor(public x: number, public y: number) {}
-      matrixTransform() { return this; }
-    }
-    Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: TestPoint });
     const edit = { add: vi.fn(), move: vi.fn(), select: vi.fn() };
-    try {
+    withDOMPoint(null, () => {
       const path = Array.from({ length: 158 }, (_, i) => [50, i / 3] as [number, number]);
       render(<GrayViewer image={image} label="测量图像" onEdit={edit} overlay={{ path, segments: [{ from: [40, 30], to: [60, 30], color: "green", label: "3.5 mm" }] }} />);
       const svg = screen.getByRole("img", { name: "测量图像" });
-      Object.defineProperty(svg.querySelector("g")!, "getScreenCTM", { value: () => ({ inverse: () => ({}) }) });
+      stubScreenCTM(svg.querySelector("g")!);
       const measurement = screen.getByLabelText("测量横线");
       expect(svg.querySelectorAll("[data-vertex]")).toHaveLength(2);
       expect(measurement.querySelector("line")).toHaveAttribute("vector-effect", "non-scaling-stroke");
@@ -157,21 +135,13 @@ describe("图像查看与加载", () => {
       fireEvent.click(screen.getByRole("button", { name: "编辑点" }));
       expect(screen.queryByLabelText("中线点 80")).not.toBeInTheDocument();
       expect(screen.getByText("3.5 mm")).toBeInTheDocument();
-    } finally {
-      Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: previous });
-    }
+    });
   });
   it("Ctrl 滚轮以鼠标处缩放并限制倍率，普通滚轮仍滚动页面，键盘可复位", () => {
-    const previous = globalThis.DOMPoint;
-    class TestPoint {
-      constructor(public x: number, public y: number) {}
-      matrixTransform() { return this; }
-    }
-    Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: TestPoint });
-    try {
+    withDOMPoint(null, () => {
       render(<GrayViewer image={image} label="缩放图像" />);
       const svg = screen.getByRole("img", { name: "缩放图像" });
-      Object.defineProperty(svg, "getScreenCTM", { value: () => ({ inverse: () => ({}) }) });
+      stubScreenCTM(svg);
       const ordinary = new WheelEvent("wheel", { deltaY: -100, bubbles: true, cancelable: true });
       fireEvent(svg, ordinary);
       expect(ordinary.defaultPrevented).toBe(false);
@@ -194,9 +164,7 @@ describe("图像查看与加载", () => {
       expect(screen.getByText("125%")).toBeVisible();
       fireEvent.keyDown(svg, { key: "-" });
       expect(screen.getByText("100%")).toBeVisible();
-    } finally {
-      Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: previous });
-    }
+    });
   });
 
   it("放大原图 → 中线编辑点在屏幕上保持原大小，不随倍率放大遮住胶路", () => {
@@ -225,18 +193,12 @@ describe("图像查看与加载", () => {
   });
 
   it.each([false, true])("中键平移（框选模式 %s）不修改示教，取消拖动和换图后不残留视角", (regionMode) => {
-    const previous = globalThis.DOMPoint;
-    class TestPoint {
-      constructor(public x: number, public y: number) {}
-      matrixTransform() { return new TestPoint(this.x / 2, this.y / 2); }
-    }
-    Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: TestPoint });
     const edit = { add: vi.fn(), move: vi.fn(), select: vi.fn() };
     const onRegion = vi.fn();
-    try {
+    withDOMPoint((x, y) => [x / 2, y / 2], () => {
       const { rerender } = render(<GrayViewer image={image} label="平移图像" overlay={{ path: [[20,20]] }} onEdit={edit} onRegion={regionMode ? onRegion : undefined} />);
       const svg = screen.getByRole("img", { name: "平移图像" });
-      Object.defineProperty(svg, "getScreenCTM", { value: () => ({ inverse: () => ({}) }) });
+      stubScreenCTM(svg);
       fireEvent.pointerDown(svg, { button: 1, clientX: 20, clientY: 20, pointerId: 1 });
       fireEvent.pointerMove(svg, { clientX: 60, clientY: 40, pointerId: 1 });
       expect(svg.querySelector("g")).toHaveAttribute("transform", "translate(70 40) scale(1) translate(-50 -30)");
@@ -256,9 +218,7 @@ describe("图像查看与加载", () => {
       expect(svg.querySelector("g")).toHaveAttribute("transform", "translate(50 30) scale(1) translate(-50 -30)");
       fireEvent.pointerMove(svg, { clientX: 100, clientY: 100, pointerId: 2 });
       expect(svg.querySelector("g")).toHaveAttribute("transform", "translate(50 30) scale(1) translate(-50 -30)");
-    } finally {
-      Object.defineProperty(globalThis, "DOMPoint", { configurable: true, value: previous });
-    }
+    });
   });
 
 });

@@ -38,16 +38,14 @@ beforeEach(() => {
 });
 
 describe("历史工件复测", () => {
-  it("分段判定不同 → 结果卡片使用对应的合格、超差、NG和错误颜色", async () => {
-    detail.judgement.segments = (["OK", "OK_WITH_EXCURSION", "NG_WIDTH", "ERR_INSPECT"] as const).map(verdict => ({ verdict, min: 0, max: 0, excursionLen: 0, wMin: null, wMax: null, wExcursionLen: 0, referenceInvalid: false }));
+  it("分段判定合格 → 结果卡片按本段判定取合格色，不套用 NG 红卡样式", async () => {
+    // 判定→语义色的映射见 verdict-meta.test.ts；这里只防分段卡片不论判定一律渲染成 NG 红卡
+    detail.judgement.segments = [{ verdict: "OK", min: 0, max: 0, excursionLen: 0, wMin: null, wMax: null, wExcursionLen: 0, referenceInvalid: false }];
     const page = show();
     await screen.findByText(/上方为中线示意/);
-    const cards = page.container.querySelectorAll(".history-segment");
-    expect(cards).toHaveLength(4);
-    ["ok", "warn", "ng", "fault"].forEach((tone, i) => {
-      expect(cards[i]).toHaveAttribute("data-tone", tone);
-      expect(cards[i]).not.toHaveClass("ng-item");
-    });
+    const card = page.container.querySelector(".history-segment");
+    expect(card).toHaveAttribute("data-tone", "ok");
+    expect(card).not.toHaveClass("ng-item");
   });
 
   it("候选历史关闭录图但关联样本原图 → 可查看与复测并标明来源", async () => {

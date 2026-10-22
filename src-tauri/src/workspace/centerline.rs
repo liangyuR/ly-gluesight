@@ -577,13 +577,26 @@ mod tests {
     }
 
     #[test]
-    fn stroke_near_one_bead_edge_with_far_edge_outside_brush_yields_bead_center() {
-        let mut image = FrameImage::new(160, 200, vec![230; 32000]);
-        for y in 0..200 { for x in 60..94 { image.pixels[y*160+x] = 25; } }
-        for x in [95.0, 59.0] {
-            let guide = BrushGuide { points: vec![[x,10.0],[x,190.0]], radius_px: 30.0 };
-            let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap().path;
-            assert!(path.iter().all(|p| (p[0]-76.5).abs() <= 1.0), "{x}: {path:?}");
+    fn interference_around_bead_still_yields_centerline_at_bead_center() {
+        fn bead(x: usize, _: usize) -> u8 { if (60..94).contains(&x) { 25 } else { 230 } }
+        // (场景, 图宽（高 200）, 像素(x, y), ROI, 竖直画笔 x 与半径（None 为框选）, 胶中心 x, 容差, 端点判定)
+        let cases: [(&str, usize, fn(usize, usize) -> u8, [u32; 4], Option<(f32, f32)>, f32, f32, fn(&[[f32; 2]]) -> bool); 6] = [
+            ("画笔贴胶右边缘、左边缘在画笔外", 160, bead, [0,0,160,200], Some((95.0, 30.0)), 76.5, 1.0, |_| true),
+            ("画笔贴胶左边缘、右边缘在画笔外", 160, bead, [0,0,160,200], Some((59.0, 30.0)), 76.5, 1.0, |_| true),
+            ("框内胶旁有更宽的暗区", 320, |x, _| if x < 140 { 60 } else if (160..194).contains(&x) { 30 } else { 200 }, [90,20,120,160], None, 176.5, 1.5,
+                |p| p.first().unwrap()[1].min(p.last().unwrap()[1]) <= 50.0 && p.first().unwrap()[1].max(p.last().unwrap()[1]) >= 150.0),
+            ("部分行胶中间有高光", 160, |x, y| if !(60..120).contains(&y) && (74..80).contains(&x) { 150 } else { bead(x, y) }, [0,0,160,200], Some((77.0, 60.0)), 76.5, 1.0,
+                |p| p.first().unwrap()[1] <= 12.0 && p.last().unwrap()[1] >= 188.0),
+            ("高光偏心劈开胶直到笔画末端，不取较宽的半边", 160, |x, y| if y >= 120 && (77..81).contains(&x) { 150 } else { bead(x, y) }, [0,0,160,200], Some((77.0, 60.0)), 76.5, 1.0,
+                |p| p.last().unwrap()[1] >= 188.0),
+            ("胶旁窄阴影隔灰缝，取胶中心而非判歧义", 160, |x, _| match x { 60..=73 => 25, 74..=76 => 150, 77..=82 => 100, _ => 230 }, [0,0,160,200], Some((67.0, 60.0)), 66.5, 1.0, |_| true),
+        ];
+        for (case, width, paint, roi, brush, center, tolerance, ends_ok) in cases {
+            let image = FrameImage::new(width as u32, 200, (0..width*200).map(|i| paint(i % width, i / width)).collect());
+            let guide = brush.map(|(x, radius_px)| BrushGuide { points: vec![[x,10.0],[x,190.0]], radius_px });
+            let path = extract(&image,roi,Polarity::Dark,guide.as_ref(),20.0).unwrap().path;
+            assert!(path.iter().all(|p| (p[0]-center).abs() <= tolerance), "{case}: {path:?}");
+            assert!(ends_ok(&path), "{case}: {path:?}");
         }
     }
 
@@ -595,57 +608,6 @@ mod tests {
         let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap().path;
         assert!(path.iter().all(|p| (p[0]-76.5).abs() <= 1.0), "{path:?}");
         assert!((135.0..=152.0).contains(&path.last().unwrap()[1]), "{path:?}");
-    }
-
-    #[test]
-    fn box_with_wider_dark_area_beside_bead_yields_bead_centerline() {
-        let mut image = FrameImage::new(320, 200, vec![200; 64000]);
-        for y in 0..200 {
-            for x in 0..140 { image.pixels[y*320+x] = 60; }
-            for x in 160..194 { image.pixels[y*320+x] = 30; }
-        }
-        let path = extract(&image,[90,20,120,160],Polarity::Dark,None,20.0).unwrap().path;
-        assert!(path.iter().all(|p| (p[0]-176.5).abs() <= 1.5), "{path:?}");
-        assert!(path.first().unwrap()[1].min(path.last().unwrap()[1]) <= 50.0 && path.first().unwrap()[1].max(path.last().unwrap()[1]) >= 150.0, "{path:?}");
-    }
-
-    #[test]
-    fn bead_split_by_center_highlight_in_some_rows_still_yields_bead_centerline() {
-        let mut image = FrameImage::new(160, 200, vec![230; 32000]);
-        for y in 0..200 {
-            for x in 60..94 { image.pixels[y*160+x] = 25; }
-            if !(60..120).contains(&y) { for x in 74..80 { image.pixels[y*160+x] = 150; } }
-        }
-        let guide = BrushGuide { points: vec![[77.0,10.0],[77.0,190.0]], radius_px: 60.0 };
-        let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap().path;
-        assert!(path.iter().all(|p| (p[0]-76.5).abs() <= 1.0), "{path:?}");
-        assert!(path.first().unwrap()[1] <= 12.0 && path.last().unwrap()[1] >= 188.0);
-    }
-
-    #[test]
-    fn highlight_splitting_bead_off_center_through_stroke_end_keeps_bead_center_not_wider_half() {
-        let mut image = FrameImage::new(160, 200, vec![230; 32000]);
-        for y in 0..200 {
-            for x in 60..94 { image.pixels[y*160+x] = 25; }
-            if y >= 120 { for x in 77..81 { image.pixels[y*160+x] = 150; } }
-        }
-        let guide = BrushGuide { points: vec![[77.0,10.0],[77.0,190.0]], radius_px: 60.0 };
-        let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap().path;
-        assert!(path.iter().all(|p| (p[0]-76.5).abs() <= 1.0), "{path:?}");
-        assert!(path.last().unwrap()[1] >= 188.0, "{path:?}");
-    }
-
-    #[test]
-    fn glue_beside_narrow_shadow_across_grey_seam_yields_glue_center_not_ambiguous() {
-        let mut image = FrameImage::new(160, 200, vec![230; 32000]);
-        for y in 0..200 {
-            for x in 60..74 { image.pixels[y*160+x] = 25; }
-            for x in 74..77 { image.pixels[y*160+x] = 150; }
-            for x in 77..83 { image.pixels[y*160+x] = 100; }
-        }
-        let guide = BrushGuide { points: vec![[67.0,10.0],[67.0,190.0]], radius_px: 60.0 };
-        let path = extract(&image,[0,0,160,200],Polarity::Dark,Some(&guide),20.0).unwrap().path;
-        assert!(path.iter().all(|p| (p[0]-66.5).abs() <= 1.0), "{path:?}");
     }
 
     #[test]

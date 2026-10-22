@@ -73,16 +73,13 @@ describe("同步核对的参与相机", () => {
   const ready: CameraStatus = { cam: 0, id: "cam1", name: "相机 1", source: "mvs", ready: true, released: false, message: "", device: null, sdkVersion: null, frames: 1, fps: 0, maxFps: null, lostPackets: 0, droppedFrames: 0, warnings: [] };
   const bound: CameraConfig = { ...defaultCameraConfig, id: "cam1", serial: "SN1" };
   it.each([
-    { name: "未绑定设备", config: { serial: "" }, status: {}, reason: "未绑定" },
-    { name: "已释放给 MVS", config: {}, status: { ready: false, released: true }, reason: "已释放给 MVS" },
-    { name: "未连接", config: {}, status: { ready: false }, reason: "未连接" },
-    { name: "软触发", config: { triggerSource: "Software" as const }, status: {}, reason: "软触发，不随 PLC 触发" },
-    { name: "Chunk 关闭", config: { chunk: false }, status: {}, reason: "Chunk 关闭，没有触发计数" },
-  ])("$name → 排除在核对外", ({ config, status, reason }) => {
+    { name: "未绑定设备 → 排除在核对外", config: { serial: "" }, status: {}, reason: "未绑定" },
+    { name: "已释放给 MVS → 排除在核对外", config: {}, status: { ready: false, released: true }, reason: "已释放给 MVS" },
+    { name: "未连接 → 排除在核对外", config: {}, status: { ready: false }, reason: "未连接" },
+    { name: "软触发 → 排除在核对外", config: { triggerSource: "Software" as const }, status: {}, reason: "软触发，不随 PLC 触发" },
+    { name: "Chunk 关闭 → 排除在核对外", config: { chunk: false }, status: {}, reason: "Chunk 关闭，没有触发计数" },
+    { name: "已绑定、在线、Line0 且开 Chunk → 参与核对", config: {}, status: {}, reason: "" },
+  ])("$name", ({ config, status, reason }) => {
     expect(syncExclusion({ ...bound, ...config }, { ...ready, ...status })).toBe(reason);
-  });
-
-  it("已绑定、在线、Line0 且开 Chunk → 参与核对", () => {
-    expect(syncExclusion(bound, ready)).toBe("");
   });
 });

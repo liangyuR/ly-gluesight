@@ -5,27 +5,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { expect, it, vi } from "vitest";
 import HistoryPage from "../src/pages/HistoryPage";
 import { deferred, partSummary } from "./fixtures";
-import type { Verdict } from "../src/features/cycle/types";
 import type { HistoryPage as Page } from "../src/features/history";
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
 
 const row = (id: number) => screen.findByRole("button", { name: `查看 SN SN-${100 + id} 的记录` });
-
-it("记录判定决定行语义色 → NG 整行标红、未测成用故障色、局部超差用警告色、OK 不标记", async () => {
-  const verdicts: Verdict[] = ["NG_GAP", "ERR_INSPECT", "OK_WITH_EXCURSION", "OK"];
-  vi.mocked(invoke).mockImplementation(async command => {
-    if (command === "recipe_list") return { recipes: [], errors: [] };
-    if (command === "history_query") return { total: 4, counts: { ok: 1, excursion: 1, ng: 1, err: 1 }, items: verdicts.map((verdict, i) => ({ ...partSummary(i + 1), verdict })) };
-    throw new Error(`Unexpected command: ${command}`);
-  });
-  render(<MemoryRouter><HistoryPage /></MemoryRouter>);
-  expect(await row(1)).toHaveAttribute("data-tone", "ng");
-  expect(await row(2)).toHaveAttribute("data-tone", "fault");
-  expect(await row(3)).toHaveAttribute("data-tone", "warn");
-  expect(await row(4)).toHaveAttribute("data-tone", "ok");
-});
 
 it("翻页结果未返回 → 保留上一页的统计、行与分页并标为加载中，返回后换成新页", async () => {
   const page = (ids: number[]): Page => ({ total: 120, counts: { ok: 0, excursion: 0, ng: 120, err: 0 }, items: ids.map(partSummary) });

@@ -1078,24 +1078,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn restart_marks_interrupted_round_failed_and_restores_latest() {
-        let host = host();
-        let round = start(&host);
-        let reopened = RecipeCaptureHost::open(host.root.clone()).unwrap();
-        assert_eq!(reopened.current().unwrap().round_id, round.round_id);
-        assert_eq!(reopened.current().unwrap().state, CaptureState::Failed);
-        assert!(!reopened.active());
-    }
-
     /// 设备会话编号每次启动从 1 分配：退出时中断的轮次不能封锁新进程里同编号的会话。
     #[test]
-    fn interrupted_round_does_not_block_the_same_session_number_after_restart() {
+    fn restart_marks_interrupted_round_failed_restores_latest_and_frees_its_session_number() {
         let host = host();
         let interrupted = start(&host);
         let session = interrupted.cameras[0].device_session;
         let reopened = RecipeCaptureHost::open(host.root.clone()).unwrap();
+        assert_eq!(reopened.current().unwrap().round_id, interrupted.round_id);
         assert_eq!(reopened.current().unwrap().state, CaptureState::Failed);
+        assert!(!reopened.active());
         let next = reopened.start("recipe-a".into(), vec![device(0, "cam1", serde_json::json!({"source":"sim"}), session, Some(CounterSource::Synthetic), Some(0))], TEST_DRAIN_MS, true);
         assert_eq!(next.map(|round| round.state), Ok(CaptureState::WaitingStart));
     }

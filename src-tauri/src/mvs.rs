@@ -459,32 +459,25 @@ mod runtime_tests {
     use std::path::Path;
 
     #[test]
-    fn packaged_policy_ignores_system_installation() {
+    fn windows_candidates_follow_packaged_and_development_policy() {
         let executable = std::env::temp_dir().join("GlueSight.exe");
         let system = std::env::temp_dir().join("system-sdk");
-        let paths = windows_candidates(&executable, false, Some(system)).unwrap();
-        assert_eq!(paths, vec![executable.parent().unwrap().join("runtime").join("mvs").join("MvCameraControl.dll")]);
-    }
-
-    #[test]
-    fn development_policy_supports_absolute_system_installation() {
-        let executable = std::env::temp_dir().join("GlueSight.exe");
-        let system = std::env::temp_dir().join("system-sdk");
-        let paths = windows_candidates(&executable, true, Some(system.clone())).unwrap();
-        assert_eq!(paths[1], system.join("MVS").join("Runtime").join("Win64_x64").join("MvCameraControl.dll"));
-        assert!(!paths.contains(&PathBuf::from("MvCameraControl.dll")));
-    }
-
-    #[test]
-    fn relative_executable_is_rejected() {
-        assert!(windows_candidates(Path::new("relative/GlueSight.exe"), false, None).is_err());
-    }
-
-    #[test]
-    fn relative_system_directory_is_not_searched() {
-        let executable = std::env::temp_dir().join("GlueSight.exe");
-        let paths = windows_candidates(&executable, true, Some(PathBuf::from("relative-sdk"))).unwrap();
-        assert!(!paths.iter().any(|p| p.starts_with("relative-sdk")));
+        let bundled = executable.parent().unwrap().join("runtime").join("mvs").join("MvCameraControl.dll");
+        let system_dll = system.join("MVS").join("Runtime").join("Win64_x64").join("MvCameraControl.dll");
+        type Check<'a> = Box<dyn Fn(&Result<Vec<PathBuf>, String>) -> bool + 'a>;
+        // (场景, 程序路径, 开发模式, 系统公共目录, 结果判定)
+        let cases: [(&str, &Path, bool, Option<PathBuf>, Check<'_>); 4] = [
+            ("安装包忽略系统安装", &executable, false, Some(system.clone()), Box::new(|r| *r == Ok(vec![bundled.clone()]))),
+            ("开发模式支持绝对路径的系统安装", &executable, true, Some(system.clone()),
+                Box::new(|r| r.as_ref().is_ok_and(|p| p.get(1) == Some(&system_dll) && !p.contains(&PathBuf::from("MvCameraControl.dll"))))),
+            ("相对程序路径被拒绝", Path::new("relative/GlueSight.exe"), false, None, Box::new(|r| r.is_err())),
+            ("相对系统目录不搜索", &executable, true, Some(PathBuf::from("relative-sdk")),
+                Box::new(|r| r.as_ref().is_ok_and(|p| !p.iter().any(|p| p.starts_with("relative-sdk"))))),
+        ];
+        for (case, executable, development, system, check) in cases {
+            let result = windows_candidates(executable, development, system);
+            assert!(check(&result), "{case}: {result:?}");
+        }
     }
 
     #[cfg(windows)]
