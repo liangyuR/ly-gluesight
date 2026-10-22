@@ -5,7 +5,6 @@ use serde_json::Value;
 use crate::offline::line::Layout;
 use crate::offline::s7_server::{Fault, S7Server, SharedMemory, WriteTarget};
 use crate::offline::test_dir::TestDir;
-use crate::plc_plan::PlanShot;
 
 /// PLC 心跳超时（HeartbeatWatch 的 3 s）再留一点余量：慢落盘要超过它才能证明落盘期间仍在观察心跳。
 const OUTLAST_HEARTBEAT_TIMEOUT: Duration = Duration::from_millis(3300);
@@ -88,10 +87,8 @@ impl Rig {
         let logbook = Arc::new(Logbook::open(&directory.join("plc.db"), sink.clone(), 1).unwrap());
         let engine = PlcEngine::new(config, logbook, sink);
         let session = PlcSession::open(directory.join("session.json"));
-        let plan = PlcPlan::compile("part-A".into(), 7, vec!["cam1".into()],
-            ["cam1"; 4].into_iter().enumerate().map(|(i, camera)| PlanShot {
-                shot_id: format!("P{}", i + 1), pose_id: format!("P{}", i + 1), camera_ids: vec![camera.into()],
-            }).collect()).unwrap();
+        // 段计划：三台相机共用一个触发，shotCount = deviceShots = ΣN_exp = 4
+        let plan = PlcPlan::from_recipe(&crate::recipe::samples_burst().build().unwrap()).unwrap();
         let mut rig = Self { plc, engine, session, plan, directory };
         rig.engine.connect().await;
         rig.connected().await;
@@ -1039,11 +1036,10 @@ fn s7_wire_arm_deadline_settles_original_journal_before_fault_without_late_overw
     });
 }
 
+/// 示教采集事务绑定采集轮次而不是工件：capture_id 落盘，结果发出后仍保持，PLC 确认并释放后才解绑。
 #[tokio::test]
-async fn s7_wire_teaching_capture_uses_single_device_and_holds_until_release() {
+async fn s7_wire_teaching_capture_holds_capture_id_until_release() {
     let mut rig = Rig::new("teaching-capture").await;
-    rig.plan = PlcPlan::compile("draft-empty".into(), 91, vec!["device1".into()],
-        (1..=20).map(|i| PlanShot { shot_id: format!("S{i:03}"), pose_id: format!("capture-{i}"), camera_ids: vec!["device1".into()] }).collect()).unwrap();
     rig.request(1, "SN-777").await;
     rig.session.bind_capture_id("capture-round-1").unwrap();
     assert!(rig.session.bind_cycle_id("00000000000000000000000000000001", PartSite::default()).is_err());

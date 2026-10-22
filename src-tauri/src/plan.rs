@@ -4,9 +4,6 @@
 //! 不经过本模块；非空即段模型。`recipe::Segment`（旧模型的测量段）与这里的 `PathSegment` 同名不同义。
 //! 契约与口径见 docs/decisions/segment-burst.md。
 
-// C1 接入调用方后删掉 dead_code。
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 
 /// 段类型：直线段判胶偏，弯道段不判。
@@ -301,6 +298,7 @@ pub fn plan_identity(product_code: u16, segments: &[PathSegment], cameras: &[Str
 ///
 /// 某项只要有一段停用，合并后即停用（停用是最宽的一档：不知道哪些帧属于停用该项的段）。
 /// 胶宽名义值沿用第一段，上下允差按合并后的绝对上下限反推。`checks` 不能为空（未分段区域至少覆盖一段）。
+#[cfg_attr(not(test), allow(dead_code))] // A4 burst_judge 接入后去掉
 pub fn wider_checks(checks: &[&SegmentChecks]) -> SegmentChecks {
     let first = checks.first().expect("wider_checks：未分段区域至少覆盖一段");
     let fold = |init: f64, pick: fn(f64, f64) -> f64, value: &dyn Fn(&SegmentChecks) -> f64| {

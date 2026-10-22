@@ -1,12 +1,18 @@
 //! 配方：磁盘上存可编辑的 `RecipeDoc`，加载时生成运行用的 `Recipe`（分段、测量点、修订标识）。
 //! 一期按拍照点在图像里检测（P0 D-10）：每个拍照点示教一条胶路中线（图像像素），沿线每隔 spacing 一站；
 //! 每个拍照点自成一段，判定在段内做，段与段之间不连。`Recipe` 同时是检测记录里的配方快照。
+//!
+//! 分段连拍（schema 8，docs/decisions/segment-burst.md D-SB-1）：`segments` 非空的配方是段配方——沿胶路的段列表、
+//! 三台检测相机（`inspect`，共用一个触发）、整件标定；`segments` 为空仍是旧拍照点配方，走旧校验、旧节拍、旧发布，两套永久并存。
+//! 注意 `Recipe.segments` 是旧模型 build 出的测量段，段配方的段列表在 `Recipe.path_segments`（JSON `pathSegments`）。
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
+
+use crate::plan::{self, KindDefaults, PartCalib, PathSegment, SegmentKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -176,8 +182,15 @@ fn valid_label(s: &str) -> bool {
     !s.trim().is_empty() && s.chars().count() <= 32 && !s.chars().any(char::is_control)
 }
 
-/// 配方文件格式版本。不一致的文件列为加载错误，不迁移。
-pub const RECIPE_SCHEMA: u32 = 7;
+/// 配方文件格式版本。不一致的文件列为加载错误，不迁移。8：增加段模型字段（segments、inspect、segmentDefaults、calibrationRounds、partCalib）。
+pub const RECIPE_SCHEMA: u32 = 8;
+
+/// 段配方连续采集几轮取均值作预期帧数（规格 §2：≥ 10 轮，轮数可配）。
+pub const DEFAULT_CALIBRATION_ROUNDS: u32 = 10;
+/// 标定轮数的可配范围（D-SB-36）。
+pub const CALIBRATION_ROUNDS: std::ops::RangeInclusive<u32> = 10..=100;
+
+fn default_calibration_rounds() -> u32 { DEFAULT_CALIBRATION_ROUNDS }
 
 /// 定位模板外圈（glue.locate 的 templatePad，lyFlow#32）：模板文件是示教框四周各多裁这么多，
 /// locate 用真实邻域预平滑后再裁回示教框。每个新模板都取 4（平滑核半径）。
@@ -396,6 +409,61 @@ impl CameraImaging {
     }
 }
 
+/// 段配方里一台检测相机：按直线段几何示教的一条走廊（图像像素，所有帧共用，只决定 ROI 和测站）与像素当量（D-SB-17）。
+/// `RecipeDoc.inspect` 的顺序就是计划相机顺序（PLC 一个触发同时触发这三台）。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CameraInspect {
+    pub camera: String,
+    /// 走廊中线（图像像素）；少于 2 点为尚未示教
+    #[serde(default)]
+    pub corridor: Vec<[f32; 2]>,
+    /// 示教时的像素当量（mm/px）；为空为尚未示教
+    #[serde(default)]
+    pub mm_per_px: Option<f64>,
+    /// 标定引用；为空时用这台相机的工位标定
+    #[serde(default)]
+    pub calib: Option<String>,
+    /// 为空时用配方的检测参数
+    #[serde(default)]
+    pub detect: Option<DetectParams>,
+}
+
+impl CameraInspect {
+    fn validate(&self) -> Result<(), String> {
+        let id = &self.camera;
+        if !valid_camera_id(id) {
+            return Err(format!("检测相机编号 {id:?} 只能用字母、数字、- 和 _，最长 32 个字符"));
+        }
+        if self.corridor.iter().flatten().any(|v| !v.is_finite()) {
+            return Err(format!("相机 {id} 的走廊坐标必须是有限数"));
+        }
+        if let Some(m) = self.mm_per_px.filter(|m| !(m.is_finite() && *m > 0.0 && *m <= 10.0)) {
+            return Err(format!("相机 {id} 的像素当量 {m} 需在 0–10 mm/px 之间"));
+        }
+        if self.calib.as_deref().is_some_and(|c| !valid_camera_id(c)) {
+            return Err(format!("相机 {id} 的标定引用只能用字母、数字、- 和 _"));
+        }
+        if let Some(d) = &self.detect {
+            d.validate(&format!("相机 {id} 检测参数"))?;
+        }
+        Ok(())
+    }
+
+    /// 已示教：走廊至少 2 点、总长不短于 1 px，且有像素当量。没示教时返回缺的是什么。
+    fn untaught(&self) -> Option<String> {
+        let length: f32 = self.corridor.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
+        let id = &self.camera;
+        if self.corridor.len() < 2 || length < 1.0 {
+            Some(format!("相机 {id} 尚未示教检测走廊"))
+        } else if self.mm_per_px.is_none() {
+            Some(format!("相机 {id} 缺少像素当量"))
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ShotViewSpec {
@@ -559,8 +627,10 @@ impl ShotSpec {
     }
 }
 
+/// JSON（快照、界面 layout）里的 `segments` / `points` 是 build 生成的旧模型测量段与测点；反序列化不读它们，
+/// 把 `pathSegments` 还原成 `RecipeDoc.segments` 后重新 build（见 `TryFrom<serde_json::Value>`）。
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", try_from = "RecipeDoc")]
+#[serde(rename_all = "camelCase", try_from = "serde_json::Value")]
 pub struct Recipe {
     pub id: String,
     pub name: String,
@@ -582,11 +652,59 @@ pub struct Recipe {
     pub shots: Vec<ShotSpec>,
     #[serde(rename = "cameras")]
     pub camera_imaging: BTreeMap<String, CameraImaging>,
+    /// 旧拍照点模型的测量段（段配方为空）
     pub segments: Vec<Segment>,
+    /// 旧拍照点模型的测点（段配方为空）
     pub points: PathPoints,
+    /// 段配方的段列表（RecipeDoc.segments）；为空即旧拍照点配方
+    pub path_segments: Vec<PathSegment>,
+    /// 段配方的检测相机，顺序即计划相机顺序
+    pub inspect: Vec<CameraInspect>,
+    pub segment_defaults: KindDefaults,
+    pub calibration_rounds: u32,
+    pub part_calib: Option<PartCalib>,
 }
 
 impl Recipe {
+    /// 段配方（分段连拍）：段列表非空。否则是旧拍照点配方。
+    pub fn is_burst(&self) -> bool {
+        !self.path_segments.is_empty()
+    }
+
+    /// 段配方的计划相机（按 inspect 顺序）：PLC 一个触发同时触发它们。旧拍照点配方为空。
+    pub fn plan_cameras(&self) -> Vec<String> {
+        self.inspect.iter().map(|i| i.camera.clone()).collect()
+    }
+
+    /// 整件预期帧组数 ΣN_exp（各段都已标定取其和，否则取整件标定）；未标定为 None。
+    pub fn expected_total(&self) -> Option<u32> {
+        plan::expected_total(&self.path_segments, self.part_calib.as_ref())
+    }
+
+    /// 整件帧数容差 Σtolerance。
+    pub fn tolerance_total(&self) -> u32 {
+        plan::tolerance_total(&self.path_segments)
+    }
+
+    /// 段配方能不能发布生产（D-SB-20）：三台相机都示教了走廊和当量，且整件预期帧组数已标定
+    /// （各段 N_exp 可以为空，凭整件标定发布，决策补充第二节）。不能时逐条列出原因。
+    /// `Recipe::ready` 保留给旧拍照点配方，段配方过不了它，旧发布与旧节拍因此不会接受段配方。
+    #[cfg_attr(not(test), allow(dead_code))] // D3 发布前检查接入后去掉
+    pub fn ready_burst(&self) -> Result<(), Vec<String>> {
+        let mut reasons: Vec<String> = Vec::new();
+        if !self.is_burst() {
+            reasons.push(format!("配方 {} 没有段，是旧拍照点配方", self.id));
+        }
+        reasons.extend(self.inspect.iter().filter_map(CameraInspect::untaught));
+        if self.expected_total().is_none() {
+            reasons.extend(self.path_segments.iter().filter(|s| s.expected_frames.is_none()).map(|s| {
+                let kind = match s.kind { SegmentKind::Straight => "直线段", SegmentKind::Corner => "弯道段" };
+                format!("第 {} 段（{kind}）待标定：预期帧数要由多轮采集得出", s.index)
+            }));
+        }
+        if reasons.is_empty() { Ok(()) } else { Err(reasons) }
+    }
+
     pub(crate) fn candidate_revision(&self) -> Option<u64> {
         let suffix = self.revision_id.strip_prefix(&format!("candidate-{}-", self.id))?;
         let revision = if let Some(legacy) = suffix.strip_prefix('r') { legacy } else {
@@ -661,8 +779,9 @@ impl Recipe {
         }
     }
 
-    /// 本配方要用到的相机（编号），按第一次出现的拍照点排序。
+    /// 本配方要用到的相机（编号）：旧拍照点配方按第一次出现的拍照点排序；段配方是计划相机。
     pub fn cameras(&self) -> Vec<String> {
+        if self.is_burst() { return self.plan_cameras(); }
         let mut out: Vec<String> = Vec::new();
         for s in &self.shots {
             if !out.contains(&s.camera) {
@@ -681,13 +800,15 @@ pub struct RecipeDoc {
     pub name: String,
     #[serde(default)]
     pub version: u32,
-    /// PLC 拍照计划版本：由配方库分配、全局唯一，只在产品代码或拍照点的顺序、编号、Pose、相机变了时换新号。
-    /// 只改限值、检测参数、示教中线或"不检"时不变，PLC 侧不用跟着改。0 表示还没分配（不能布防）。
+    /// PLC 拍照计划版本：由配方库分配、全局唯一，只在计划身份变了时换新号（见 `same_plan`）：旧拍照点配方是产品代码或
+    /// 拍照点的顺序、编号、Pose、相机；段配方是产品代码、各段序号 / 类型 / N_exp、相机顺序与 ΣN_exp。
+    /// 只改限值、检测参数、示教中线、容差、x_ref 或"不检"时不变，PLC 侧不用跟着改。0 表示还没分配（不能布防）。
     #[serde(default)]
     pub plan_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teaching_id: Option<String>,
     pub product_code: u16,
+    /// 段配方固定为 Fly（D-SB-23）；Stop（停稳拍）只供旧拍照点配方
     pub trigger_mode: TriggerMode,
     /// 缺省为 0，校验时报格式版本不符
     #[serde(default)]
@@ -696,11 +817,27 @@ pub struct RecipeDoc {
     pub filter_window: usize,
     pub detect: DetectParams,
     pub limits: ShotLimits,
+    /// 旧拍照点模型的拍照点；段配方必须为空
     #[serde(default)]
     pub shots: Vec<ShotSpec>,
-    /// 各相机的曝光与增益：拍照点用到的相机各一组，不多不少
+    /// 各相机的曝光与增益：拍照点与检测相机用到的相机各一组，不多不少
     #[serde(default)]
     pub cameras: BTreeMap<String, CameraImaging>,
+    /// 沿胶路的段列表（规格 §1）；为空即旧拍照点配方，下面几项段模型字段不允许设置
+    #[serde(default)]
+    pub segments: Vec<PathSegment>,
+    /// 三台检测相机（有序，计划相机顺序取它）
+    #[serde(default)]
+    pub inspect: Vec<CameraInspect>,
+    /// 新建段时取用的直线 / 弯道默认容差与检测项
+    #[serde(default)]
+    pub segment_defaults: KindDefaults,
+    /// 标定轮数，10..=100
+    #[serde(default = "default_calibration_rounds")]
+    pub calibration_rounds: u32,
+    /// 整件帧组数标定：各段 N_exp 待分段算法时凭它得到 expected_total 并发布（决策补充第二节）；只由标定写入
+    #[serde(default)]
+    pub part_calib: Option<PartCalib>,
 }
 
 impl RecipeDoc {
@@ -712,9 +849,38 @@ impl RecipeDoc {
         out
     }
 
-    /// 拍照点新用到的相机补默认成像参数，不再用到的相机去掉，返回去掉的那些。
+    /// 段配方：段列表非空。
+    pub fn is_burst(&self) -> bool {
+        !self.segments.is_empty()
+    }
+
+    /// 段配方的计划相机（按 inspect 顺序）。
+    pub fn plan_cameras(&self) -> Vec<String> {
+        self.inspect.iter().map(|i| i.camera.clone()).collect()
+    }
+
+    /// 要成像参数的相机：拍照点用到的相机与检测相机的并集（拍照点在前）。
+    fn imaging_cameras(&self) -> Vec<String> {
+        let mut out = self.shot_cameras();
+        for camera in self.plan_cameras() {
+            if !out.contains(&camera) { out.push(camera); }
+        }
+        out
+    }
+
+    /// 整件预期帧组数 ΣN_exp（见 `plan::expected_total`）。
+    pub fn expected_total(&self) -> Option<u32> {
+        plan::expected_total(&self.segments, self.part_calib.as_ref())
+    }
+
+    /// 段计划身份（`plan::plan_identity`）；旧拍照点配方没有段和检测相机，身份恒等。
+    pub fn plan_identity(&self) -> plan::PlanIdentity {
+        plan::plan_identity(self.product_code, &self.segments, &self.plan_cameras(), self.expected_total())
+    }
+
+    /// 拍照点与检测相机新用到的相机补默认成像参数，不再用到的相机去掉，返回去掉的那些。
     pub fn sync_imaging(&mut self) -> BTreeMap<String, CameraImaging> {
-        let used = self.shot_cameras();
+        let used = self.imaging_cameras();
         let (kept, dropped): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut self.cameras).into_iter().partition(|(c, _)| used.contains(c));
         self.cameras = kept;
         for c in used { self.cameras.entry(c).or_default(); }
@@ -722,10 +888,12 @@ impl RecipeDoc {
     }
 
     /// PLC 侧要照着走的那部分：两份配方这几项逐项相同，就是同一份拍照计划（逐字段比较，不算摘要）。
+    /// 旧拍照点身份与段计划身份都相等才算同一计划（D-SB-19）：旧配方段身份恒等，段配方没有拍照点、旧身份恒等。
     pub fn same_plan(&self, other: &RecipeDoc) -> bool {
         self.product_code == other.product_code
             && self.shots.len() == other.shots.len()
             && self.shots.iter().zip(&other.shots).all(|(a, b)| a.id == b.id && a.pose_id == b.pose_id && a.camera == b.camera)
+            && self.plan_identity() == other.plan_identity()
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -746,6 +914,11 @@ impl RecipeDoc {
         }
         self.detect.validate("检测参数")?;
         self.limits.validate("限值")?;
+        if self.is_burst() {
+            self.validate_burst()?;
+        } else if !self.inspect.is_empty() || self.part_calib.is_some() {
+            return Err("没有段的配方是旧拍照点配方，不能配置检测相机（inspect）或整件标定（partCalib）".into());
+        }
         if self.shots.len() > 64 {
             return Err("配方最多允许 64 个拍照点".into());
         }
@@ -764,15 +937,40 @@ impl RecipeDoc {
             }
         }
         self.check_fixture_corridors()?;
-        let used = self.shot_cameras();
+        let used = self.imaging_cameras();
+        let user = if self.is_burst() { "检测相机" } else { "拍照点" };
         if let Some(missing) = used.iter().find(|c| !self.cameras.contains_key(*c)) {
-            return Err(format!("相机 {missing} 被拍照点使用，但配方没有它的曝光与增益"));
+            return Err(format!("相机 {missing} 被{user}使用，但配方没有它的曝光与增益"));
         }
         for (camera, imaging) in &self.cameras {
             if !used.contains(camera) {
-                return Err(format!("配方给了相机 {camera} 的曝光与增益，但没有拍照点使用它"));
+                return Err(format!("配方给了相机 {camera} 的曝光与增益，但没有{user}使用它"));
             }
             imaging.validate(camera)?;
+        }
+        Ok(())
+    }
+
+    /// 段配方的模型约束（D-SB-1）：不能再有拍照点；只支持飞拍；标定轮数 10..=100；检测相机各自合法；
+    /// 段列表与三台计划相机满足 `plan::validate_segments`；整件标定的帧组数放得进 PLC shotCount。
+    fn validate_burst(&self) -> Result<(), String> {
+        if !self.shots.is_empty() {
+            return Err("段配方不能同时有拍照点：segments 非空时 shots 必须为空，两套模型不能混用".into());
+        }
+        if self.trigger_mode != TriggerMode::Fly {
+            return Err("段配方只支持飞拍（triggerMode 必须为 fly）".into());
+        }
+        if !CALIBRATION_ROUNDS.contains(&self.calibration_rounds) {
+            return Err(format!("标定轮数 {} 需在 {}–{} 之间", self.calibration_rounds, CALIBRATION_ROUNDS.start(), CALIBRATION_ROUNDS.end()));
+        }
+        for inspect in &self.inspect {
+            inspect.validate()?;
+        }
+        plan::validate_segments(&self.segments, &self.plan_cameras())?;
+        if let Some(part) = &self.part_calib {
+            if !(1..=plan::MAX_EXPECTED_TOTAL).contains(&part.expected_total) {
+                return Err(format!("整件标定的预期帧组数 {} 需在 1–{} 之间（PLC shotCount）", part.expected_total, plan::MAX_EXPECTED_TOTAL));
+            }
         }
         Ok(())
     }
@@ -871,6 +1069,11 @@ impl RecipeDoc {
             camera_imaging: self.cameras.clone(),
             segments,
             points,
+            path_segments: self.segments.clone(),
+            inspect: self.inspect.clone(),
+            segment_defaults: self.segment_defaults.clone(),
+            calibration_rounds: self.calibration_rounds,
+            part_calib: self.part_calib.clone(),
         };
         Ok(recipe)
     }
@@ -879,6 +1082,19 @@ impl RecipeDoc {
 impl TryFrom<RecipeDoc> for Recipe {
     type Error = String;
     fn try_from(doc: RecipeDoc) -> Result<Self, Self::Error> { doc.build() }
+}
+
+impl TryFrom<serde_json::Value> for Recipe {
+    type Error = String;
+    /// Recipe 的 JSON 还原成 RecipeDoc 再 build：`segments` / `points` 是 build 生成的旧模型测量段与测点（不读），
+    /// 段配方的段列表在 `pathSegments`（与 RecipeDoc 的 `segments` 同名不同义，不能直接按 RecipeDoc 解析）。
+    fn try_from(mut value: serde_json::Value) -> Result<Self, Self::Error> {
+        let object = value.as_object_mut().ok_or("配方快照不是 JSON 对象")?;
+        object.remove("points");
+        let path_segments = object.remove("pathSegments").unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+        object.insert("segments".into(), path_segments);
+        serde_json::from_value::<RecipeDoc>(value).map_err(|e| e.to_string())?.build()
+    }
 }
 
 /// 胶宽、位置、断胶的默认限值：名义胶宽 4 mm；断口阈值取自 MX11 现场图（正常帧最长无胶 5.4 mm，断胶帧 10–22 mm）。
@@ -948,8 +1164,56 @@ pub fn samples() -> Vec<RecipeDoc> {
         limits: default_limits(),
         shots: shot_list(&legacy_camera_id(0), (0..n).map(sample_path).collect()),
         cameras: BTreeMap::new(),
+        segments: Vec::new(),
+        inspect: Vec::new(),
+        segment_defaults: KindDefaults::default(),
+        calibration_rounds: DEFAULT_CALIBRATION_ROUNDS,
+        part_calib: None,
     }; doc.sync_imaging(); doc };
     vec![doc("MTR-HSG-A", "电机壳体 A", 12, 6, TriggerMode::Fly), doc("MTR-HSG-B", "电机壳体 B", 13, 4, TriggerMode::Stop)]
+}
+
+/// 段配方的起点（D-SB-24）：飞拍、一个直线段（待标定，容差与检测项取配方默认）、按给定顺序的检测相机（走廊待示教）、
+/// 计划版本未分配。相机不足 3 台时照样返回，但过不了段配方校验。
+pub fn burst_template(id: String, name: String, product_code: u16, cameras: &[String]) -> RecipeDoc {
+    let segment_defaults = KindDefaults::default();
+    let mut doc = RecipeDoc {
+        id,
+        name,
+        version: 1,
+        plan_version: 0,
+        teaching_id: None,
+        product_code,
+        trigger_mode: TriggerMode::Fly,
+        schema_version: RECIPE_SCHEMA,
+        spacing: 1.0,
+        filter_window: 5,
+        detect: default_detect(),
+        limits: default_limits(),
+        shots: Vec::new(),
+        cameras: BTreeMap::new(),
+        segments: vec![plan::new_segment(1, SegmentKind::Straight, &segment_defaults)],
+        inspect: cameras.iter().map(|camera| CameraInspect { camera: camera.clone(), corridor: Vec::new(), mm_per_px: None, calib: None, detect: None }).collect(),
+        segment_defaults,
+        calibration_rounds: DEFAULT_CALIBRATION_ROUNDS,
+        part_calib: None,
+    };
+    doc.sync_imaging();
+    doc
+}
+
+/// 测试用的段配方：模拟相机 cam1–cam3 共用触发、走廊已示教、一个直线段 N_exp = 4（ΣN_exp = 4），计划版本已分配。
+#[cfg(test)]
+pub fn samples_burst() -> RecipeDoc {
+    let cameras: Vec<String> = (0..3).map(legacy_camera_id).collect();
+    let mut doc = burst_template("SEAM-BURST".into(), "分段连拍样例".into(), 14, &cameras);
+    doc.plan_version = 14;
+    for inspect in &mut doc.inspect {
+        inspect.corridor = sample_path(0);
+        inspect.mm_per_px = Some(f64::from(SIM_MM_PER_PX));
+    }
+    doc.segments[0].expected_frames = Some(4);
+    doc
 }
 
 /// 测试与重判里需要一份现成配方时用。
@@ -1433,18 +1697,37 @@ impl RecipeStore {
 mod tests {
     use super::*;
 
-    /// 目录里只有一份旧格式配方文件（版本 7、计划版本 40）时打开的配方库；返回（目录，配方库，旧配方，文件名）。
+    use crate::plan::SegmentCalib;
+
+    /// 目录里只有一份 schema 7 配方文件（没有段模型字段；修订版本 7、计划版本 40）时打开的配方库；返回（目录，配方库，旧配方，文件名）。
     fn obsolete_store(tag: &str) -> (PathBuf, RecipeStore, RecipeDoc, String) {
         let dir = std::env::temp_dir().join(format!("gluesight-unavailable-{tag}-{}-{}", std::process::id(), ly_plc::now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut old = samples().remove(0);
-        old.schema_version = RECIPE_SCHEMA - 1;
+        old.schema_version = 7;
         old.version = 7;
         old.plan_version = 40;
         let file_name = format!("{}.json", old.id);
-        std::fs::write(dir.join(&file_name), serde_json::to_string(&old).unwrap()).unwrap();
+        let mut file = serde_json::to_value(&old).unwrap();
+        for key in ["segments", "inspect", "segmentDefaults", "calibrationRounds", "partCalib"] {
+            file.as_object_mut().unwrap().remove(key);
+        }
+        std::fs::write(dir.join(&file_name), file.to_string()).unwrap();
         let store = RecipeStore::open(dir.clone()).unwrap();
         (dir, store, old, file_name)
+    }
+
+    /// 段配方的整件标定（各段待分段算法时凭它发布）。
+    fn part_calib(total: u32) -> PartCalib {
+        PartCalib { expected_total: total, calib: SegmentCalib { rounds: 10, min: total - 1, max: total + 1, mean: total as f64 } }
+    }
+
+    /// samples_burst（直线 N_exp = 4）后面接一个弯道段。
+    fn two_segment_burst(corner_frames: Option<u32>) -> RecipeDoc {
+        let mut doc = samples_burst();
+        doc.segments.push(plan::new_segment(2, SegmentKind::Corner, &doc.segment_defaults));
+        doc.segments[1].expected_frames = corner_frames;
+        doc
     }
 
     /// 旧格式文件删掉后，同编号配方按当前格式重新保存并已加载。
@@ -1456,8 +1739,9 @@ mod tests {
         (dir, store, old, file_name)
     }
 
+    /// 迁移 D-0：schema 7（升级到段模型前）的配方文件不迁移，列为不可用，也不加载来运行。
     #[test]
-    fn obsolete_recipe_file_is_listed_as_unavailable_and_never_loaded_for_running() {
+    fn schema_7_recipe_file_is_listed_unavailable() {
         let (dir, store, old, file_name) = obsolete_store("listed");
         assert!(store.get(&old.id).is_none());
         assert!(store.doc(&old.id).is_none());
@@ -1466,7 +1750,7 @@ mod tests {
         assert_eq!(unavailable.len(), 1);
         assert_eq!(unavailable[0].file_name, file_name);
         assert_eq!(unavailable[0].id.as_deref(), Some(old.id.as_str()));
-        assert_eq!(unavailable[0].schema_version, Some(RECIPE_SCHEMA - 1));
+        assert_eq!(unavailable[0].schema_version, Some(7));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1668,6 +1952,97 @@ mod tests {
         recreated.product_code = 62000;
         assert!(store.save(recreated, None).unwrap().plan_version > store.doc("MTR-HSG-A").unwrap().plan_version);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 规格 §1：计划版本由配方库分配——段计划身份不变（只改容差、限值）沿用原号；N_exp 变了发新号，且不与用过的号重复。
+    /// 身份由哪些字段组成见 plan::tests 的参数化用例，这里防的是配方库分配没有接上段计划身份。
+    #[test]
+    fn publish_reuses_plan_version_for_same_identity_and_issues_new_otherwise() {
+        let dir = std::env::temp_dir().join(format!("gluesight-burst-plan-version-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let store = RecipeStore::open(dir.clone()).unwrap();
+        let saved = store.save(samples_burst(), None).unwrap();
+        let used: Vec<u32> = store.list().iter().map(|r| r.plan_version).collect();
+        let cases: [(&str, fn(&mut RecipeDoc), bool); 2] = [
+            ("容差与胶宽限值", |d| { d.segments[0].tolerance = 2; d.segments[0].checks.width.tol_upper = 2.0; }, true),
+            ("重新标定后 N_exp 变了", |d| d.segments[0].expected_frames = Some(5), false),
+        ];
+        for (case, edit, reused) in cases {
+            let mut doc = store.doc(&saved.id).unwrap();
+            edit(&mut doc);
+            let assigned = store.plan_version_for(&doc).unwrap();
+            if reused {
+                assert_eq!(assigned, saved.plan_version, "{case}");
+            } else {
+                assert!(!used.contains(&assigned), "{case}：{assigned} 复用了 {used:?} 中的号");
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 规格 §1 + 决策补充第二节：整件预期帧组数没标定时不能发布，逐条点名待标定的段；有整件标定时各段 N_exp 可以为空。
+    #[test]
+    fn uncalibrated_segments_block_ready_and_name_each_segment() {
+        let mut doc = two_segment_burst(None);
+        doc.segments.push(plan::new_segment(3, SegmentKind::Straight, &doc.segment_defaults));
+        let reasons = doc.build().unwrap().ready_burst().unwrap_err();
+        assert!(reasons.len() == 2 && reasons[0].contains("第 2 段") && reasons[1].contains("第 3 段"), "{reasons:?}");
+        doc.part_calib = Some(part_calib(9));
+        assert_eq!(doc.build().unwrap().ready_burst(), Ok(()));
+    }
+
+    /// D-SB-20：三台相机都示教了走廊（至少 2 点、不短于 1 px）和像素当量才能发布，缺哪台点名哪台。
+    #[test]
+    fn untaught_camera_blocks_ready_and_names_the_camera() {
+        assert_eq!(samples_burst().build().unwrap().ready_burst(), Ok(()));
+        let cases: [(&str, fn(&mut CameraInspect)); 3] = [
+            ("走廊不到 2 点", |i| i.corridor.truncate(1)),
+            ("走廊两点重合", |i| i.corridor = vec![[10.0, 10.0], [10.0, 10.0]]),
+            ("没有像素当量", |i| i.mm_per_px = None),
+        ];
+        for (case, edit) in cases {
+            let mut doc = samples_burst();
+            edit(&mut doc.inspect[1]);
+            let reasons = doc.build().unwrap().ready_burst().unwrap_err();
+            assert!(reasons.len() == 1 && reasons[0].contains("cam2"), "{case}：{reasons:?}");
+        }
+    }
+
+    /// D-SB-1：段配方不能再有拍照点、只支持飞拍、标定轮数 10..=100、成像参数恰好覆盖检测相机、整件标定放得进 PLC shotCount；
+    /// 没有段的旧配方不能带检测相机或整件标定。
+    #[test]
+    fn recipe_mixing_shot_and_segment_models_or_out_of_range_burst_settings_is_rejected() {
+        let cases: [(&str, fn(&mut RecipeDoc), Option<&str>); 11] = [
+            ("段配方带拍照点", |d| d.shots = samples().remove(1).shots, Some("shots")),
+            ("段配方停稳拍", |d| d.trigger_mode = TriggerMode::Stop, Some("飞拍")),
+            ("标定轮数 9", |d| d.calibration_rounds = 9, Some("标定轮数")),
+            ("标定轮数 101", |d| d.calibration_rounds = 101, Some("标定轮数")),
+            ("标定轮数 100 在上限", |d| d.calibration_rounds = 100, None),
+            ("检测相机缺成像参数", |d| { d.cameras.remove("cam3"); }, Some("曝光与增益")),
+            ("成像参数多给一台不用的相机", |d| { d.cameras.insert("cam9".into(), DEFAULT_IMAGING); }, Some("曝光与增益")),
+            ("整件标定帧组数为 0", |d| d.part_calib = Some(PartCalib { expected_total: 0, calib: part_calib(4).calib }), Some("整件标定")),
+            ("整件标定帧组数 32767 在上限", |d| d.part_calib = Some(part_calib(plan::MAX_EXPECTED_TOTAL)), None),
+            ("旧配方带检测相机", |d| { let inspect = std::mem::take(&mut d.inspect); *d = samples().remove(0); d.inspect = inspect; }, Some("检测相机")),
+            ("旧配方带整件标定", |d| { *d = samples().remove(0); d.part_calib = Some(part_calib(4)); }, Some("整件标定")),
+        ];
+        for (case, edit, error) in cases {
+            let mut doc = samples_burst();
+            edit(&mut doc);
+            match (doc.build(), error) {
+                (Ok(_), None) => {}
+                (Err(e), Some(what)) => assert!(e.contains(what), "{case}：{e}"),
+                (result, _) => panic!("{case}：{:?}", result.map(|_| ())),
+            }
+        }
+    }
+
+    /// 契约：Recipe JSON 里 `segments` 是旧模型的测量段，段配方的段列表在 `pathSegments`；
+    /// 检测记录、历史按快照还原配方时不能把两者混淆。
+    #[test]
+    fn burst_recipe_snapshot_restores_its_path_segments() {
+        let doc = two_segment_burst(Some(3));
+        let restored = Recipe::from_snapshot(serde_json::to_value(doc.build().unwrap()).unwrap()).unwrap();
+        assert_eq!(restored.path_segments, doc.segments);
+        assert_eq!(restored.plan_cameras(), doc.plan_cameras());
     }
 
     #[test]

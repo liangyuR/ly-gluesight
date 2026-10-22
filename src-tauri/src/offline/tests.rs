@@ -3,7 +3,7 @@ use super::s7_server::S7Server;
 use super::test_dir::TestDir;
 use super::*;
 use crate::judge::fault;
-use crate::plc_plan::{PlanShot, PlcPlan};
+use crate::plc_plan::PlcPlan;
 use crate::plc_session::{Origin, PendingKind, PlcSession, SessionEvent, SessionPhase};
 use crate::inspection::tag;
 use ly_plc::{EventSink, Logbook, PlcEngine};
@@ -61,9 +61,8 @@ impl Bench {
         let engine = PlcEngine::new(config, Arc::new(Logbook::open(&directory.join("plc.db"), sink.clone(), 1).unwrap()), sink);
         before_connect(&server);
         engine.connect().await;
-        let plan = PlcPlan::compile("part-A".into(), 7, vec!["cam1".into()], (1..=4).map(|i| PlanShot {
-            shot_id: format!("P{i}"), pose_id: format!("P{i}"), camera_ids: vec!["cam1".into()],
-        }).collect()).unwrap();
+        // 段计划：三台相机共用一个触发，shotCount = deviceShots = ΣN_exp = 4
+        let plan = PlcPlan::from_recipe(&crate::recipe::samples_burst().build().unwrap()).unwrap();
         Self { _server: server, line: Line::new(memory, layout), engine, session: PlcSession::open(directory.join("session.json")), plan,
             intake: Arc::new(AtomicBool::new(true)), directory }
     }

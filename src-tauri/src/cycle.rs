@@ -268,12 +268,21 @@ pub struct RecipeSummary {
     pub length: f32,
     /// PLC 计划版本
     pub plan_version: u32,
-    /// PLC 触发次数；拍照点编不成触发分组时为空
+    /// PLC 触发次数；拍照点编不成触发分组时为空。段配方为 ΣN_exp（未标定为空）
     pub trigger_count: Option<usize>,
+    /// 段数；旧拍照点配方为 0
+    pub segment_count: usize,
+    /// 整件预期帧组数 ΣN_exp；旧配方与未标定的段配方为空
+    pub expected_total: Option<u32>,
+    /// 整件帧数容差 Σtolerance；旧配方为 0
+    pub tolerance_total: u32,
+    /// 段配方已标定（expected_total 非空）
+    pub calibrated: bool,
 }
 
 impl From<&Recipe> for RecipeSummary {
     fn from(r: &Recipe) -> Self {
+        let expected_total = r.expected_total();
         Self {
             id: r.id.clone(),
             name: r.name.clone(),
@@ -283,9 +292,16 @@ impl From<&Recipe> for RecipeSummary {
             shot_count: r.shot_count(),
             trigger_mode: r.trigger_mode,
             cameras: r.cameras(),
-            length: r.segments.iter().map(|g| g.length(r.spacing)).sum(),
+            // 段配方：各段段长之和，段长未知按 0
+            length: if r.is_burst() { r.path_segments.iter().map(|s| s.length_mm.unwrap_or(0.0) as f32).sum() }
+                else { r.segments.iter().map(|g| g.length(r.spacing)).sum() },
             plan_version: r.plan_version,
-            trigger_count: crate::plc_plan::trigger_groups(r).ok().map(|groups| groups.len()),
+            trigger_count: if r.is_burst() { expected_total.map(|n| n as usize) }
+                else { crate::plc_plan::trigger_groups(r).ok().map(|groups| groups.len()) },
+            segment_count: r.path_segments.len(),
+            expected_total,
+            tolerance_total: r.tolerance_total(),
+            calibrated: expected_total.is_some(),
         }
     }
 }

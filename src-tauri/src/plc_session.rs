@@ -794,7 +794,8 @@ impl PlcSession {
 
     pub fn validate_plan(&self, plan: &PlcPlan) -> Result<(), String> {
         if self.phase != SessionPhase::Validating { return Err("当前 S7 事务不能布防".into()); }
-        let rebuilt = PlcPlan::compile(plan.recipe_id.clone(), plan.plan_version, plan.device_ids.clone(), plan.shots.clone())?;
+        // 段计划核对 ΣN_exp 与段序列，旧拍照点计划另外核对拍照点
+        let rebuilt = plan.recompiled()?;
         if &rebuilt != plan { return Err("软件拍照计划内容与计数不一致".into()); }
         let request = self.request().ok_or("缺少 S7 请求")?;
         if request.protocol_version != plan.protocol_version || request.plan_version != plan.plan_version
