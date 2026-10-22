@@ -98,6 +98,8 @@ const progress = message => process.stderr.write(`· ${message}\n`);
  * 段配方记录的整件事实对照预期：帧组数、缺帧、标记（缺帧与帧数越界只告警，不改 OK/NG）。
  * expected.lost = 工况注入的缺帧 [计划相机下标, seq]；除此之外只允许最后两个帧组里的帧缺失——收尾在每台相机 max_seq ≥ deviceTriggers − 1
  * 时就判（容许一帧在途，规格 §3 丢帧 ≤ 1 视为正常），合成图逐像素渲染赶不上脉冲节拍时，末尾的帧晚于判定，记为缺帧、该组检测不完整、帧组数比脉冲数少。
+ * expected.jittered = 本件脉冲数有波动（pulseJitter）：首尾各 ±1，总数最多偏离名义 2 个，是否越出 ± Σtol 取决于标定轮次碰巧观察到的范围，
+ * 所以不要求落在容差内，只核对标记与帧组数一致（越界只告警、不改 OK/NG）；没有波动的件仍要求落在容差内、不告警。
  */
 function assertBurstPart(name, facts, { expectedTotal, toleranceTotal }, expected) {
   const lost = expected.lost ?? [];
@@ -105,8 +107,15 @@ function assertBurstPart(name, facts, { expectedTotal, toleranceTotal }, expecte
   assert.equal(facts.expectedTotal, expectedTotal, `${name} 记录的 ΣN_exp 与发布的不一致`);
   assert.equal(facts.toleranceTotal, toleranceTotal, `${name} 记录的 Σtol 与发布的不一致`);
   assert.equal(facts.framesRecorded, facts.groupCount * facts.cameraFrames.length, `${name} 每相机每帧都应有一条记录（缺帧也有）：${where}`);
-  assert(Math.abs(facts.groupCount - expectedTotal) <= toleranceTotal, `${name} 帧组数 ${facts.groupCount} 超出 ${expectedTotal} ± ${toleranceTotal}：${where}`);
-  assert.equal(facts.flags.frameCountAnomaly, false, `${name} 帧数异常标记不符：${where}`);
+  const lower = expectedTotal - toleranceTotal, outside = facts.groupCount < lower || facts.groupCount > expectedTotal + toleranceTotal;
+  if (expected.jittered) {
+    assert.equal(facts.flags.frameCountAnomaly, outside, `${name} 帧数异常标记应与帧组数是否越出 ${expectedTotal} ± ${toleranceTotal} 一致：${where}`);
+    assert.equal(facts.flags.shortPart, facts.groupCount < lower, `${name} 疑似提前终止标记应与帧组数是否低于 ${lower} 一致：${where}`);
+  } else {
+    assert(!outside, `${name} 帧组数 ${facts.groupCount} 超出 ${expectedTotal} ± ${toleranceTotal}：${where}`);
+    assert.equal(facts.flags.frameCountAnomaly, false, `${name} 帧数异常标记不符：${where}`);
+    assert.equal(facts.flags.shortPart, false, `${name} 不应标疑似提前终止：${where}`);
+  }
   const same = (a, b) => a[0] === b[0] && a[1] === b[1];
   for (const frame of lost) assert(facts.missing.some(m => same(m, frame)), `${name} 注入的缺帧 ${frame} 没有记为缺帧：${where}`);
   const extra = facts.missing.filter(m => !lost.some(frame => same(frame, m)));
@@ -114,7 +123,6 @@ function assertBurstPart(name, facts, { expectedTotal, toleranceTotal }, expecte
   assert.equal(facts.flags.incomplete, facts.missing.length > 0, `${name} 检测不完整标记应与缺帧一致：${where}`);
   assert.deepEqual(facts.incompleteGroups, [...new Set(facts.missing.map(([, seq]) => seq))].sort((a, b) => a - b), `${name} 不完整帧组应恰为有缺帧的帧组：${where}`);
   assert(facts.flags.unsegmented && facts.flags.offsetUnjudged, `${name} 本轮没有分段算法，整条胶路应按未分段处理并标胶偏未判：${where}`);
-  assert.equal(facts.flags.shortPart, false, `${name} 不应标疑似提前终止：${where}`);
   assert.deepEqual(facts.unchecked, ["bubble", "stringing"], `${name} 气泡、拉丝本轮不检，应标未检项`);
   assert([0, 1].includes(facts.deviceTriggers - facts.groupCount), `${name} deviceTriggers 是 PLC 发出的脉冲数，帧组数至多比它少 1（末帧晚于判定）：${where}`);
 }
@@ -185,8 +193,8 @@ async function syntheticFlow(page, call, navigation, options, step) {
   assert(OK_CLASS.includes(produced.cameraLost.summary.verdict), `单台相机缺帧不影响 OK/NG：${produced.cameraLost.summary.verdict} ${produced.cameraLost.summary.reason}`);
   assertBurstPart("单台相机缺帧", produced.cameraLost.facts, totals, { lost: [[1, Math.min(3, produced.cameraLost.facts.deviceTriggers)]] });
   produced.pulseJitter = await produceBurst(call, id, { scenario: "pulseJitter" });
-  assert(OK_CLASS.includes(produced.pulseJitter.summary.verdict), `首尾 ±1 帧的脉冲波动应在容差内：${produced.pulseJitter.summary.verdict} ${produced.pulseJitter.summary.reason}`);
-  assertBurstPart("脉冲数波动", produced.pulseJitter.facts, totals, {});
+  assert(OK_CLASS.includes(produced.pulseJitter.summary.verdict), `首尾 ±1 个脉冲的波动只改帧数、不改 OK/NG：${produced.pulseJitter.summary.verdict} ${produced.pulseJitter.summary.reason}`);
+  assertBurstPart("脉冲数波动", produced.pulseJitter.facts, totals, { jittered: true });
   produced.gap = await produceBurst(call, id, { scenario: "gap" });
   assert.equal(produced.gap.summary.verdict, "NG_GAP", `断胶工况应判 NG_GAP：${produced.gap.summary.reason}`);
   assert.equal(produced.gap.summary.plcCode, 13);

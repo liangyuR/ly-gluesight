@@ -4,6 +4,7 @@ import { copyFile, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { burstFacts } from "../../tests/native/lib.mjs";
 import { connect, ensureOffline, LogCollector, parseArgs, readSetup, RECIPE_ID, sleep, until, writeJson } from "./lib.mjs";
 
 const OK_CLASS = new Set(["OK", "OK_WITH_EXCURSION"]);
@@ -156,10 +157,11 @@ const scenarios = {
     const { record, message } = await c.runOne("lostFrame");
     return { record: view(record), message };
   },
-  /** 段配方：首尾各 ±1 个脉冲（样本集没有的帧按缺帧），照常判，帧数异常只告警。 */
+  /** 段配方：首尾各 ±1 个脉冲（样本集没有的帧按缺帧），照常判，帧数异常只告警。带回本件的帧组数与 ΣN_exp、Σtol，供 assess 核对标记。 */
   async pulseJitter(c) {
     const { record, message } = await c.runOne("pulseJitter");
-    return { record: view(record), message };
+    const { groupCount, expectedTotal, toleranceTotal } = burstFacts(await c.call("history_detail", { id: record.id }));
+    return { record: view(record), count: { groupCount, expectedTotal, toleranceTotal }, message };
   },
   async replayMissingTaughtImage(c) {
     const file = path.join(await c.sampleDir(), c.taughtImage);
@@ -331,7 +333,17 @@ export function assess(results, model = "burst") {
     if (r.reconnectAfterMs != null && r.reconnectAfterMs < r.outageMs) fail(`停机 ${r.outageMs} ms 未到就已重连（${r.reconnectAfterMs} ms）`);
     if (r.falseOk) fail(`错误的 OK（${r.record.verdict}）`);
     if (model !== "legacy" && EXPECT_INCOMPLETE.has(name) && r.record && !r.record.flags?.incomplete) fail("缺帧或坏帧的件应标“检测不完整”（规格 §0），没有标");
-    if (model !== "legacy" && name === "pulseJitter" && r.record?.flags?.shortPart) fail("首尾 ±1 个脉冲的波动不应标疑似提前终止");
+    if (model !== "legacy" && name === "pulseJitter" && r.record) {
+      // 首尾各 ±1 个脉冲，总数最多偏离名义 2 个；长稳用样本集标定，Σtol 只有 1，帧组数可以落到 ΣN_exp − Σtol 之下，
+      // 此时标疑似提前终止是规格要求的告警（E1），不是缺陷。所以只核对两件事：脉冲数只改帧数、不改 OK/NG（不能出 ERR 或 NG）；
+      // 帧组数没有低于下限时，不该标疑似提前终止。
+      if (!OK_CLASS.has(r.record.verdict)) fail(`脉冲数波动不该改变结论（${r.record.verdict}）`);
+      const count = r.count;
+      if (!count) fail("没有读到本件的帧组数，无法核对疑似提前终止标记");
+      else if (count.groupCount >= count.expectedTotal - count.toleranceTotal && r.record.flags?.shortPart) {
+        fail(`帧组数 ${count.groupCount} 没有低于下限 ${count.expectedTotal - count.toleranceTotal}，不应标疑似提前终止`);
+      }
+    }
     if (r.recovery?.error) fail(`恢复出错：${r.recovery.error}`);
     else if (r.recovered === false) fail(`复位后 3 件内未恢复合格（${r.recovery.verdict}）`);
     manual(name, r.recovery);
