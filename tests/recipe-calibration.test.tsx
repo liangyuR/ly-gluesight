@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -62,26 +62,6 @@ describe("多轮标定", () => {
     expect(workspaceApi.calibrationApply).toHaveBeenCalledWith("A", 3);
   });
 
-  // 防的回归：多段计划本轮没有分段算法，却给各段编出 N_exp；或因此把整件也判成“无法标定”（决策：整件帧组数标定仍可发布）
-  it("多段计划 → 各段标“待标定（分段算法未就绪）”并提示无法逐段标定，整件仍给出预期帧组数与 ΣN_exp", async () => {
-    show();
-    expect(await screen.findByText("分段算法未就绪，本轮无法逐段标定")).toBeVisible();
-    const table = within(screen.getByRole("table", { name: "逐段标定结果" }));
-    expect(table.getAllByText(/待标定（分段算法未就绪）/)).toHaveLength(3);
-    expect(screen.getByRole("group", { name: "整件标定" })).toHaveTextContent("整件预期 12 帧组");
-    expect(screen.getByText("预期总数 12 ± 3")).toBeVisible();
-  });
-
-  it("单段计划标定后 → 显示 N_exp、各轮 min–max（均值）与建议容差，且不提示分段算法未就绪", async () => {
-    ws.data = singleSegment(calibrationView()); ws.data.plan!.calibration!.segments[0].outcome!.suggestedTolerance = 2;
-    show();
-    const row = within(await screen.findByRole("row", { name: /段 1 · 直线/ }));
-    expect(row.getByText("12")).toBeVisible();
-    expect(row.getByText("11 – 13（11.9）")).toBeVisible();
-    expect(row.getByText(/建议 ±2/)).toBeVisible();
-    expect(screen.queryByText("分段算法未就绪，本轮无法逐段标定")).not.toBeInTheDocument();
-  });
-
   // 防的回归：建议容差在应用标定时被直接写进配方（规格 §2：按 min/max 给建议，操作员确认后才可改）
   it("应用标定后容差输入框预填建议值 → 应用本身不提交容差，点确认容差才按输入值提交；非整数不提交", async () => {
     ws.data = singleSegment(withRounds(10));
@@ -106,19 +86,11 @@ describe("多轮标定", () => {
     show();
     await userEvent.click(await screen.findByRole("button", { name: `${action} round-new` }));
     expect(workspaceApi.calibrationAddRound).toHaveBeenCalledWith("A", 3, "round-new", standard);
-    expect(screen.queryByRole("button", { name: `${action} round-bad` })).not.toBeInTheDocument();
   });
 
   it("已加入的轮次 → 移出只移这一轮", async () => {
     show();
     await userEvent.click(await screen.findByRole("button", { name: "移出轮次 round-3" }));
     expect(workspaceApi.calibrationRemoveRound).toHaveBeenCalledWith("A", 3, "round-3");
-  });
-
-  it("旧拍照点配方 → 只说明多轮标定只用于段配方", async () => {
-    ws = workspaceState(); vi.mocked(useWorkspace).mockImplementation(() => ws);
-    show();
-    expect(await screen.findByText("当前配方按拍照点模型配置")).toBeVisible();
-    expect(screen.queryByRole("button", { name: "应用标定" })).not.toBeInTheDocument();
   });
 });

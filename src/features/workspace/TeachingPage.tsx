@@ -1,5 +1,6 @@
 import { pathLength, resampleTeachingPath, type ImagePoint } from "./teachingPath";
 import { errorText } from "../../lib/errors";
+import { imageFailure, isPendingBackend } from "../../lib/pendingBackend";
 import { cloneElement, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ArrowRight, Brush, Camera, ChevronLeft, ChevronRight, Eraser, Info, Lock, MousePointer2, Save, SquareDashed, Trash2, TriangleAlert, Undo2, WandSparkles } from "lucide-react";
@@ -15,7 +16,8 @@ import type { CaptureSummary, FrozenImage, GrayImage, WorkspaceView } from "./ty
 import { corridorDraft, corridorError, sameCorridor, withCorridor } from "./teach";
 import { cameraTeachingTasks } from "./cameraTasks";
 import { frameArrived, readRoundFrame, roundView, type AnyRound, type RoundView } from "./captureRound";
-import { TeachingSettings } from "./TeachingSettings";
+import { CorridorSettings } from "./CorridorSettings";
+import LegacyTeachingPage from "./LegacyTeachingPage";
 import "./corridor.css";
 
 /** 禁用控件不发指针事件：Tooltip 挂在外包的可聚焦 span 上，原因同时作为控件的无障碍描述。 */
@@ -44,34 +46,33 @@ function extractionAdvice(reason: string, failures: number, brushWidth: number) 
 /** 采集轮次里某台相机某个帧组的原图（候选示教帧，还没有冻结进候选配方）。 */
 function useRoundFrame(round: AnyRound | null, camera: string, seq: number, enabled: boolean) {
   const key = JSON.stringify([round?.roundId ?? null, camera, seq, enabled]);
-  const [state, setState] = useState<{ key: string; image: GrayImage | null; error: string; loading: boolean }>({ key, image: null, error: "", loading: false });
+  const [state, setState] = useState<{ key: string; image: GrayImage | null; error: string; pending: string; loading: boolean }>({ key, image: null, error: "", pending: "", loading: false });
   useEffect(() => {
-    if (!enabled || !round) { setState({ key, image: null, error: "", loading: false }); return; }
+    if (!enabled || !round) { setState({ key, image: null, error: "", pending: "", loading: false }); return; }
     let alive = true;
-    setState({ key, image: null, error: "", loading: true });
+    setState({ key, image: null, error: "", pending: "", loading: true });
     readRoundFrame(round, camera, seq)
-      .then(image => alive && setState({ key, image, error: "", loading: false }))
-      .catch(e => alive && setState({ key, image: null, error: errorText(e), loading: false }));
+      .then(image => alive && setState({ key, image, error: "", pending: "", loading: false }))
+      .catch(e => alive && setState({ key, image: null, ...imageFailure(e), loading: false }));
     return () => { alive = false; };
   }, [key]);
-  return state.key === key ? state : { image: null, error: "", loading: enabled && !!round };
+  return state.key === key ? state : { image: null, error: "", pending: "", loading: enabled && !!round };
 }
 
 /**
  * 走廊示教（段配方，路由 /recipe/teach）：三台相机各示教一条走廊，所有帧共用；每台相机从一轮采集里选一帧，
  * 在这一帧上刷选 / 框选提取走廊（边缘提取能力保留，不再与示教中线逐点比对），设像素当量与检测参数。
- * 旧拍照点配方（没有 plan）的逐组选图与特征定位示教已停用。
+ * 旧拍照点配方（没有 plan）仍走 LegacyTeachingPage：按 Pose 分组选图、逐点试测、特征定位与标定核对，行为不变。
  */
 export default function TeachingPage() {
   const { data, doc } = useWorkspace();
   if (!data || !doc) return <WorkspaceEmpty />;
-  if (!data.plan) return <div className="wp-page"><WorkspaceBar /><Surface><EmptyState icon={<Camera size={32} aria-hidden="true" />} title="当前配方按拍照点模型配置"
-    description="逐组选图与特征定位示教已停用。请新建按段配置的配方：三台相机共用一个触发，每台相机示教一条走廊。" action={<Link className="qs-btn" to="/recipe">打开配方库<ArrowRight size={15} aria-hidden="true" /></Link>} /></Surface></div>;
+  if (!data.plan) return <LegacyTeachingPage />;
   return <CorridorTeaching data={data} doc={doc} plan={data.plan} />;
 }
 
 function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: RecipeDoc; plan: WorkspacePlanView }) {
-  const { dirty, busy, frameDirty, frameDrafts, setFrameDraft, setDoc, act, setError } = useWorkspace();
+  const { dirty, busy, frameDirty, corridorDrafts, setCorridorDraft, setDoc, act, setError } = useWorkspace();
   const { snapshot } = useCycle();
   const [search] = useSearchParams();
   const tasks = cameraTeachingTasks(plan);
@@ -142,12 +143,12 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
   const candidate = useRoundFrame(picked?.round ?? null, camera, pickSeqSafe, choosingNow && arrived);
 
   const saved = corridorDraft(data.workspace.doc.inspect?.find(item => item.camera === camera));
-  const t = frameDrafts[camera] ?? saved;
+  const t = corridorDrafts[camera] ?? saved;
   const editing = !sameCorridor(t, saved);
   const invalid = corridorError(t);
   const unlocked = !busy && !dirty && !working && !data.workspace.pending;
   const productionBusy = isProductionBusy(snapshot);
-  const update = (next: typeof t) => { if (unlocked && camera) setFrameDraft(camera, next); };
+  const update = (next: typeof t) => { if (unlocked && camera) setCorridorDraft(camera, next); };
   const setPath = (corridor: [number, number][]) => update({ ...t, corridor });
   const canEdit = unlocked && !!frame && !choosingNow;
   const lengthPx = pathLength(t.corridor);
@@ -178,14 +179,19 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
         if (!savedView) return;
         candidateView = savedView;
       }
-      let extracted: Awaited<ReturnType<typeof workspaceApi.extractCenterline>> | null = null;
-      // 提取沿用 workspace_extract_centerline：段配方没有拍照点，k 传这台相机在计划里的下标，图像是已冻结的示教帧
+      let extracted: Awaited<ReturnType<typeof workspaceApi.extractCorridor>> | null = null;
+      let pendingText = "";
+      // 段配方没有拍照点：按相机 id 在这台相机冻结的示教帧上提取（workspace_extract_corridor，D2），不复用旧命令的 k
       const result = await perform(async () => {
-        extracted = await workspaceApi.extractCenterline(doc.id, candidateView.workspace.revision, index, frame.id, roi, selectionTool === "brush" ? { points: brushPoints, radiusPx: brushWidth / 2 } : undefined, pointSpacing);
+        try { extracted = await workspaceApi.extractCorridor(doc.id, candidateView.workspace.revision, camera, frame.id, roi, selectionTool === "brush" ? { points: brushPoints, radiusPx: brushWidth / 2 } : undefined, pointSpacing); }
+        catch (e) { if (!isPendingBackend(e)) throw e; pendingText = e.message; }
         return candidateView;
       }, "");
+      if (result && pendingText && current.current.scope === capturedScope) {
+        setExtractionHint(`走廊自动提取：${pendingText}。可先用“笔划直接生成走廊”，再手工修正。`); setRegionMode(true); return;
+      }
       if (result && extracted && current.current.scope === capturedScope) {
-        const output = extracted as Awaited<ReturnType<typeof workspaceApi.extractCenterline>>;
+        const output = extracted as Awaited<ReturnType<typeof workspaceApi.extractCorridor>>;
         if (output.failure) {
           const failures = selectionTool === "brush" && WIDEN_BRUSH_REASONS.has(output.failure.reason) ? brushFailures + 1 : 0;
           const advice = selectionTool === "brush" ? extractionAdvice(output.failure.reason, failures, brushWidth) : "";
@@ -193,7 +199,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
           setExtractionFailure(output.failure); setExtractionHint(advice ? output.failure.message + " " + advice : output.failure.message); setRegionMode(true); return;
         }
         setBrushFailures(0);
-        setFrameDraft(camera, { ...t, corridor: output.path }); setRegionMode(false); setVertex(null);
+        setCorridorDraft(camera, { ...t, corridor: output.path }); setRegionMode(false); setVertex(null);
         setExtractionHint(output.message || "走廊已提取，请检查后保存。");
       }
     } finally { if (current.current.scope === capturedScope) setOperation(null); }
@@ -324,7 +330,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
         </Surface>}
         {choosingNow
           ? <GrayViewer controlsAt="footer" image={candidate.image} loading={candidate.loading} error={candidate.error || (picked && !arrived ? "该相机本帧组缺帧，请换一个帧组" : "")} label={`${camera} · 帧组 ${pickSeqSafe} · 候选示教帧`}
-            emptyTitle="选择示教帧" emptyHint="先选一轮完整的采集，再选这台相机要用的帧组；缺帧的帧组不能选。" summary={<span className="muted">选定后冻结为这台相机的示教帧，所有帧共用这一条走廊。</span>}/>
+            emptyTitle={candidate.pending ? "原图读取待后端实现" : "选择示教帧"} emptyHint={candidate.pending || "先选一轮完整的采集，再选这台相机要用的帧组；缺帧的帧组不能选。"} summary={<span className="muted">选定后冻结为这台相机的示教帧，所有帧共用这一条走廊。</span>}/>
           : <GrayViewer controlsAt="footer" summary={summary} image={image} loading={loading} error={error} label={frame ? `${camera} · 示教帧` : "等待取样"} tools={tools} subtools={params} emptyTitle="示教帧尚未就绪" emptyHint="选定示教帧后，这里显示这一帧。"
             region={selectionTool === "box" ? region : null}
             onRegion={regionMode && selectionTool === "box" && canEdit ? setRegion : undefined}
@@ -334,7 +340,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
             editDisabled={!canEdit}
             onEdit={frame && !regionMode ? { add: p => setPath([...t.corridor, p]), move: (i, p) => setPath(t.corridor.map((q, j) => j === i ? p : q)), select: setVertex } : undefined} />}
       </div>
-      {frame && !choosingNow ? <div className="wp-stack wp-teach-settings"><TeachingSettings key={scope} teach={t} defaults={defaults} segments={doc.segments ?? []} disabled={!canEdit} checksDisabled={busy || working || !!data.workspace.pending} onChange={update} onSegmentChecks={changeSegmentChecks} /></div>
+      {frame && !choosingNow ? <div className="wp-stack wp-teach-settings"><CorridorSettings key={scope} teach={t} defaults={defaults} segments={doc.segments ?? []} disabled={!canEdit} checksDisabled={busy || working || !!data.workspace.pending} onChange={update} onSegmentChecks={changeSegmentChecks} /></div>
         : <div className="wp-teach-settings wp-rail-empty"><span>选定示教帧后，这里显示<br/>像素当量 · 检测参数 · 检测项</span></div>}
     </div>
     <div className="wp-teach-dock" role="group" aria-label="走廊示教操作">

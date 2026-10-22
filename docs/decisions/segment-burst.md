@@ -304,8 +304,16 @@
 | `workspace_calibration_remove_round` | `id, revision, round` | WorkspaceView | D2 |
 | `workspace_calibration_apply` | `id, revision` | WorkspaceView（结果在 `plan.calibration`） | D2 |
 | `workspace_confirm_tolerance` | `id, revision, segment, tolerance` | WorkspaceView | D2 |
+| `workspace_extract_corridor` | `id, revision, camera: String, imageId, roi: [u32; 4], guide: BrushGuide?, pointSpacingPx: f32?` | `Result<CenterlineResult, String>`（与 `workspace_extract_centerline` 相同：`path`、`message`、`failure`） | D2 |
+| `recipe_capture_frame_image` | `roundId, cameraId: String, seq`（帧组序号，从 1 起） | `Result<tauri::ipc::Response, String>`（原始字节，格式同 `recipe_capture_image`）；该相机缺这一帧时报错 | D1 |
+| `workspace_live_frame_image` | `cycleId, revisionId, camera: usize, seq`（camera 为计划相机下标） | `Result<tauri::ipc::Response, String>`（原始字节，格式同 `workspace_live_image`）；未到或缺帧时报错 | C3 |
+| `workspace_record_frame_image` | `historyId, camera: usize, seq`（camera 为计划相机下标） | `Result<tauri::ipc::Response, String>`（原始字节，格式同 `workspace_record_image`）；未录制、录制队满丢弃或缺帧时报错 | D3 |
 
 新示教轮次（`CaptureRoundV2`）的读取与帧图像命令由 D1 在旧命令旁新增，旧 `recipe_capture_*` 命令保留。
+
+- **段配方的走廊提取**：段配方没有拍照点（`shots = []`），不复用 `workspace_extract_centerline`——它按 `w.frames[k]` / `w.doc.shots[k]` 解析，段配方会报“拍照点不存在”。D2 新增 `workspace_extract_corridor`：按 `camera`（相机 id）找到 `plan.cameraTeaching` 里这台相机冻结的示教帧，`imageId` 必须等于该帧 id（不等报“图像已变化”），检测极性取这台相机 `inspect.detect`，没有时取配方默认。旧配方仍用 `workspace_extract_centerline`，行为不变。
+- **读图命令的参数口径**：`camera` 在在线与历史命令里是计划相机下标（与 `FrameGroupView.cells`、`FrameRecord.camera` 一致）；示教轮次命令用 `cameraId`（与 `CaptureRound.cameras[].cameraId` 一致）。
+- **归属包落地前**：前端经 `src/lib/pendingBackend.ts` 的 `pendingCall` 调用上表 D1 / D2 / C3 / D3 的新命令。Tauri 对未注册的命令拒绝为 `Command <命令名> not found`，前端据此显示“该功能待后端 <包> 实现”的占位（读图区为空态说明，走廊提取为画布提示，工作区操作为操作未完成提示），不当作故障。
 
 ## 六、口径
 
@@ -397,7 +405,8 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
   - 旧 `release::publish` 与发布包 schema 3 的加载、`{device}-v{view}` 标定键；
   - 特征定位（fixture）模块、示教中线逐点比对、组选图；
   - 记录库 `part_shots`、`part_points`；
-  - 前端 `cycle/pose.ts`、`cycle/vis.ts`、`WorkpieceOverview`、`teachingGroups`、`Fixture*` 等旧组件。
+  - 前端 `cycle/pose.ts`、`cycle/vis.ts`、`WorkpieceOverview`、`teachingGroups`、`Fixture*` 等旧组件；
+  - 前端旧配方的单帧示教与整圈采集页：`/recipe/teach`、`/recipe/capture` 在 `WorkspaceView.plan` 为空时挂载 `LegacyTeachingPage`、`LegacyCapturePage`（G0 之前的实现原样保留：组选图、采用本轮图像、逐点试测、特征定位、标定核对），以及 `TrialResult`、`TeachingSettings` 的旧签名和按拍照点下标的示教草稿（`frameDrafts` / `setFrameDraft`）。段配方另用 `FrameTrialResult`、`CorridorSettings` 与按相机 id 的 `corridorDrafts` / `setCorridorDraft`。
 - **判定结果类型**：`judge::Judgement` 保留给旧配方；段配方用 `burst_judge::BurstJudgement`，两者并列，不做类型别名。界面与记录按 `burst` 字段是否为 null 区分。
 
 ## 九、相对计划的调整（供后续工作包对照）

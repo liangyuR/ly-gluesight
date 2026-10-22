@@ -1,4 +1,5 @@
 import { errorText } from "../../lib/errors";
+import { imageFailure } from "../../lib/pendingBackend";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { cameraApi } from "../camera/api";
@@ -23,11 +24,20 @@ import { DEFAULT_IMAGING, type CameraImaging, type Verdict } from "../cycle/type
 import { expectedChoices } from "./progress";
 import type { CaptureNavigationState } from "./captureNavigation";
 import { productionBusy as isProductionBusy } from "../cycle/phase";
+import LegacyCapturePage from "./LegacyCapturePage";
 
 const stateLabels: Record<CaptureRound["state"],string> = { waitingStart:"等待现场启动", receiving:"接收中", draining:"PLC 已结束，等待在途图像", complete:"采集完成", failed:"采集异常" };
 const MAX_LISTED_GROUPS = 12;
 const imagingInvalid = (imaging: CameraImaging) => !(imaging.exposureUs>=1 && imaging.exposureUs<=1_000_000) ? "曝光时间需在 1–1000000 µs 之间" : !(Number.isFinite(imaging.gainDb) && imaging.gainDb>=0) ? "增益需为不小于 0 的有限数" : "";
+
+/** 整圈采集（路由 /recipe/capture）：旧拍照点配方（WorkspaceView 没有 plan）仍走 LegacyCapturePage——按拍照点核对数量、采用本轮图像；段配方按帧组展示。 */
 export default function CapturePage() {
+  const { data } = useWorkspace();
+  return data && !data.plan ? <LegacyCapturePage/> : <BurstCapturePage/>;
+}
+
+/** 段配方的整圈采集：按帧号配组、缺帧与丢帧只告警，完成后用于走廊示教或加入多轮标定。 */
+function BurstCapturePage() {
   const {data,doc,cameras,busy,dirty,frameDirty,act,setError} = useWorkspace();
   const {snapshot} = useCycle();
   const site = useSiteStatus();
@@ -42,7 +52,7 @@ export default function CapturePage() {
   const [round,setRound] = useState<AnyRound | null>(null), [working,setWorking] = useState(false);
   const [history,setHistory] = useState<Awaited<ReturnType<typeof workspaceApi.captureList>>>([]);
   const [roundId,setRoundId] = useState<string | undefined>();
-  const [previewK,setPreviewK] = useState(0), [previewCamera,setPreviewCamera] = useState(""), [preview,setPreview] = useState<{k: number; camera: string; image: GrayImage} | null>(null), [previewError,setPreviewError] = useState("");
+  const [previewK,setPreviewK] = useState(0), [previewCamera,setPreviewCamera] = useState(""), [preview,setPreview] = useState<{k: number; camera: string; image: GrayImage} | null>(null), [previewFailure,setPreviewFailure] = useState({error:"",pending:""});
   const [plcState,setPlcState] = useState<LinkState | null>(null);
   const [sampleExpected,setSampleExpected] = useState<Verdict>("OK");
   const [confirmed,setConfirmed] = useState(false);
@@ -80,11 +90,11 @@ export default function CapturePage() {
   const shownCamera = view?.cameras.some(c=>c.cameraId===previewCamera) ? previewCamera : view?.cameras[0]?.cameraId ?? "";
   const previewArrived = !!view && frameArrived(view,shownCamera,previewK+1);
   useEffect(() => {
-    let alive=true; setPreviewError("");
+    let alive=true; setPreviewFailure({error:"",pending:""});
     if(round && previewArrived) void readRoundFrame(round,shownCamera,previewK+1).then(async image=>{
       const decoded=new Image(); decoded.src=image.url; await Promise.race([decoded.decode?.().catch(()=>{}),new Promise(r=>setTimeout(r,150))]);
       if(alive)setPreview({k:previewK,camera:shownCamera,image});
-    }).catch(e=>{if(alive){setPreview(null);setPreviewError(errorText(e));}});
+    }).catch(e=>{if(alive){setPreview(null);setPreviewFailure(imageFailure(e));}});
     return () => {alive=false;};
   },[round?.roundId,previewArrived,previewK,shownCamera]);
   const active=!!round && ["waitingStart","receiving","draining"].includes(round.state);
@@ -206,7 +216,7 @@ export default function CapturePage() {
     {!active && view.incompleteGroups.length>0 && <p className="muted hint">缺帧只告警：不完整的帧组仍会用其余相机的图检测，并标“检测不完整”；不整轮重采。</p>}
     {multi && <SegmentedControl size="sm" label="查看相机" value={shownCamera} onValueChange={setPreviewCamera} options={view.cameras.map(c=>({ value: c.cameraId, label: nameOf(c.cameraId) }))}/>}
     <div className="wp-capture-result">
-    <GrayViewer image={shown?.image ?? null} loading={previewArrived && !shown && !previewError} error={previewError || (groupCount>0 && !previewArrived ? "该相机本帧组缺帧或尚未到图" : "")} label={"帧组 " + (shownK+1) + (multi ? " · " + nameOf(shownCamera) : "") + " · 原图" + (shownK!==previewK ? " · 正在读取帧组 " + (previewK+1) : "")}/>
+    <GrayViewer image={shown?.image ?? null} loading={previewArrived && !shown && !previewFailure.error && !previewFailure.pending} error={previewFailure.error || (groupCount>0 && !previewArrived ? "该相机本帧组缺帧或尚未到图" : "")} emptyTitle={previewFailure.pending ? "原图读取待后端实现" : undefined} emptyHint={previewFailure.pending || undefined} label={"帧组 " + (shownK+1) + (multi ? " · " + nameOf(shownCamera) : "") + " · 原图" + (shownK!==previewK ? " · 正在读取帧组 " + (previewK+1) : "")}/>
     <div className="wp-capture-side">
     <div className="wp-capture-side-head"><strong>帧组 · {groupCount}</strong><small>↑↓ 切换</small></div>
     {groupCount ? <div className="wp-capture-groups" role="group" aria-label="帧组选择" tabIndex={0} onKeyDown={groupKey}>
@@ -239,7 +249,7 @@ export default function CapturePage() {
           : <><Button variant="tonal" data-variant="tonal" disabled={locked || productionBusy || bankedAsSample} onClick={() => addToCalibration(false)}>加入标定</Button>
             <Button variant="tonal" data-variant="tonal" disabled={locked || productionBusy || bankedAsSample} onClick={() => addToCalibration(true)}>加入标定（标准件）</Button></>}
         <Link className="wp-text-link" to="/recipe/calibration">前往多轮标定</Link>
-      </> : <Notice title="当前配方按拍照点模型配置">示教与多轮标定只用于段配方；请新建按段配置的配方（三台相机共用一个触发）。</Notice>}
+      </> : null}
     </div>}
     </div></div>
   </Panel></div>;

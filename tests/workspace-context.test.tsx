@@ -14,7 +14,7 @@ import { burstRecipe, burstSummary, burstWorkspaceView, deferred, summary, works
 
 vi.mock("../src/lib/storage", () => ({ storageApi: { preferences: async () => ({}), updatePreferences: vi.fn(async () => ({})) } }));
 vi.mock("../src/lib/desktop", () => ({ desktopAvailable: vi.fn() }));
-vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(), get: vi.fn(), saveDoc: vi.fn() } }));
+vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { list: vi.fn(), get: vi.fn(), saveDraft: vi.fn(), saveDoc: vi.fn() } }));
 vi.mock("../src/features/cycle/api", () => ({ recipeApi: { list: vi.fn(), preview: vi.fn() } }));
 vi.mock("../src/features/camera/api", () => ({ cameraApi: { rigConfig: vi.fn() } }));
 vi.mock("../src/features/plc/api", () => ({ subscribe: vi.fn() }));
@@ -27,6 +27,7 @@ beforeEach(() => {
   vi.mocked(workspaceApi.list).mockResolvedValue([a.workspace, b.workspace]);
   vi.mocked(workspaceApi.get).mockImplementation(async id => workspaceView(id));
   vi.mocked(workspaceApi.saveDoc).mockResolvedValue(a);
+  vi.mocked(workspaceApi.saveDraft).mockReset().mockResolvedValue(a);
   vi.mocked(recipeApi.preview).mockResolvedValue(a.layout);
   vi.mocked(cameraApi.rigConfig).mockResolvedValue([]);
   vi.mocked(subscribe).mockImplementation((event, callback) => {
@@ -157,25 +158,53 @@ describe("候选工作台的主流程保护", () => {
     expect(result.current.error).toBe(""); expect(screen.getByRole("status")).toHaveTextContent("当前配方已保存");
   });
 
+  it("拍照点视角变化只清除该点的旧中线草稿",async()=>{
+    const {result}=await open();
+    act(()=>{result.current.setFrameDraft(0,{path:[[10,10],[24,10]],mmPerPx:.2,fixture:null});result.current.setFrameDraft(1,{path:[[30,10],[54,10]],mmPerPx:.3,fixture:null});});
+    const next=workspaceView();
+    next.workspace.doc.shots[0].view=3;
+    next.workspace.doc.shots[0].path=[];delete next.workspace.doc.shots[0].mmPerPx;
+    await act(()=>result.current.act(async()=>next));
+    expect(result.current.frameDrafts[0]).toBeUndefined();expect(result.current.frameDrafts[1]).toEqual({path:[[30,10],[54,10]],mmPerPx:.3,fixture:null});
+    expect(result.current.frameDirty).toBe(true);
+  });
+
+  it("保存失败保留编辑内容，重试成功后才显示已保存",async()=>{
+    const {result}=await open();
+    const draft={path:[[10,10],[20,10]] as [number,number][],mmPerPx:.2,fixture:null};
+    vi.mocked(workspaceApi.saveDraft).mockRejectedValueOnce(new Error("磁盘不可写"));
+    vi.useFakeTimers();
+    act(()=>result.current.setFrameDraft(0,draft));
+    await act(()=>vi.advanceTimersByTimeAsync(900));
+    expect(result.current.saveState).toBe("failed");
+    expect(result.current.frameDrafts[0]).toEqual(draft);
+    const next=workspaceView();next.workspace.revision=8;next.workspace.doc.shots[0].mmPerPx=.2;
+    vi.mocked(workspaceApi.saveDraft).mockResolvedValue(next);
+    act(()=>result.current.retrySave());
+    await act(()=>vi.advanceTimersByTimeAsync(900));
+    expect(result.current.saveState).toBe("saved");
+    expect(result.current.frameDirty).toBe(false);
+  });
+
   it("某台相机换了示教帧 → 只清除这台相机的旧走廊草稿，别的相机的草稿保留且仍算未保存",async()=>{
     const {result}=await openBurst();
-    act(()=>{result.current.setFrameDraft("CAM-1",{corridor:[[10,10],[24,10]],mmPerPx:.2,detect:null});result.current.setFrameDraft("CAM-2",{corridor:[[30,10],[54,10]],mmPerPx:.3,detect:null});});
+    act(()=>{result.current.setCorridorDraft("CAM-1",{corridor:[[10,10],[24,10]],mmPerPx:.2,detect:null});result.current.setCorridorDraft("CAM-2",{corridor:[[30,10],[54,10]],mmPerPx:.3,detect:null});});
     const next=burstView();
     const teaching=next.plan!.cameraTeaching[0];
     teaching.frame={...teaching.frame!,id:"A-CAM-1-other-frame"};
     await act(()=>result.current.act(async()=>next));
-    expect(result.current.frameDrafts["CAM-1"]).toBeUndefined();expect(result.current.frameDrafts["CAM-2"]).toEqual({corridor:[[30,10],[54,10]],mmPerPx:.3,detect:null});
+    expect(result.current.corridorDrafts["CAM-1"]).toBeUndefined();expect(result.current.corridorDrafts["CAM-2"]).toEqual({corridor:[[30,10],[54,10]],mmPerPx:.3,detect:null});
     expect(result.current.frameDirty).toBe(true);
   });
 
   it("走廊草稿经后端保存后与已保存相同 → 不再算未保存，草稿随之清掉",async()=>{
     const {result}=await openBurst();
     const draft={corridor:[[10,10],[24,10]] as [number,number][],mmPerPx:.2,detect:null};
-    act(()=>result.current.setFrameDraft("CAM-2",draft));
+    act(()=>result.current.setCorridorDraft("CAM-2",draft));
     expect(result.current.frameDirty).toBe(true);
     const saved=burstView();saved.workspace.revision=4;saved.workspace.doc.inspect![1]={...saved.workspace.doc.inspect![1],...draft};
     await act(()=>result.current.act(async()=>saved));
-    expect(result.current.frameDirty).toBe(false);expect(result.current.frameDrafts["CAM-2"]).toBeUndefined();
+    expect(result.current.frameDirty).toBe(false);expect(result.current.corridorDrafts["CAM-2"]).toBeUndefined();
   });
 
   it("保存失败保留走廊草稿，重试成功后才显示已保存；草稿并入这台相机的配方项整份提交",async()=>{
@@ -183,10 +212,10 @@ describe("候选工作台的主流程保护", () => {
     const draft={corridor:[[10,10],[20,10]] as [number,number][],mmPerPx:.2,detect:null};
     vi.mocked(workspaceApi.saveDoc).mockRejectedValueOnce(new Error("磁盘不可写"));
     vi.useFakeTimers();
-    act(()=>result.current.setFrameDraft("CAM-2",draft));
+    act(()=>result.current.setCorridorDraft("CAM-2",draft));
     await act(()=>vi.advanceTimersByTimeAsync(900));
     expect(result.current.saveState).toBe("failed");
-    expect(result.current.frameDrafts["CAM-2"]).toEqual(draft);
+    expect(result.current.corridorDrafts["CAM-2"]).toEqual(draft);
     const base=burstView().workspace.doc;
     const merged={...base,inspect:base.inspect!.map(item=>item.camera==="CAM-2"?{...item,...draft}:item)};
     expect(workspaceApi.saveDoc).toHaveBeenLastCalledWith("A",3,merged);

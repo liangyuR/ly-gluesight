@@ -1,4 +1,4 @@
-import { errorText } from "../../lib/errors";
+import { imageFailure } from "../../lib/pendingBackend";
 import { useEffect, useRef, useState } from "react";
 import { Button, Chip, Table, type TableColumn } from "qing-steel";
 import { verdictLabel } from "../history/meta";
@@ -35,7 +35,7 @@ const viewColumns: TableColumn<ViewResult>[] = [
 /** 一次读图请求：scope 变了就要读新图，part 相同的上一张在新图到之前保留。 */
 interface LiveJob { scope:string; part:string }
 interface LiveRequest extends LiveJob { cycleId:string; revisionId:string; k:number }
-interface LiveResult<R extends LiveJob> { scope:string; part:string; job:R; image:GrayImage|null; error:string }
+interface LiveResult<R extends LiveJob> { scope:string; part:string; job:R; image:GrayImage|null; error:string; pending:string }
 const loadShot=(job:LiveRequest)=>workspaceApi.liveImage(job.cycleId,job.revisionId,job.k);
 
 /** 同一时间只读一张：读图期间选帧又变了，读完后只补读最新的一张，中间的跳过；新图到之前保留本件上一张。 */
@@ -52,11 +52,11 @@ function useLiveImage<R extends LiveJob>(request:R|null,load:(job:R)=>Promise<Gr
     if(busy.current||!job||!alive.current)return;
     busy.current=true;
     void load(job)
-      .then(image=>({image,error:""}),error=>({image:null,error:errorText(error)}))
-      .then(({image,error})=>{
+      .then(image=>({image,error:"",pending:""}),error=>({image:null,...imageFailure(error)}))
+      .then(({image,error,pending})=>{
         busy.current=false;
         if(!alive.current)return;
-        const done={scope:job.scope,part:job.part,job,image,error};
+        const done={scope:job.scope,part:job.part,job,image,error,pending};
         setResult(done);
         if(image)setShown(done);
         if(wanted.current&&wanted.current.scope!==job.scope)read();
@@ -120,9 +120,10 @@ function BurstCameraFrame({part,camera,name,seq,group}:{part:PartView;camera:num
   const state:GroupCellState=group?groupCellState(group,camera):"waiting";
   const shownSeq=image?.job.seq??seq;
   const missing=state==="missing";
+  const pending=live.current?.pending??"";
   return <section className="wp-burst-cam" aria-label={`${name} 帧组 ${seq}`}>
     <GrayViewer image={arrived?image?.image??null:null} loading={arrived&&live.loading} error={live.current?.error??""} label={`${name} · 帧组 ${shownSeq}`}
-      emptyTitle={missing?"缺帧":"等待本帧组图像"} emptyHint={missing?"这台相机没有出本帧组的图，本组按其余相机判（检测不完整，不影响 OK/NG）。":""}/>
+      emptyTitle={missing?"缺帧":pending?"原图读取待后端实现":"等待本帧组图像"} emptyHint={missing?"这台相机没有出本帧组的图，本组按其余相机判（检测不完整，不影响 OK/NG）。":pending}/>
     <div className="wp-runtime-strip">
       <KV label="帧状态"><Chip className={"frame-state "+(burstStateTone[state]??"")}>{groupCellText[state]}</Chip></KV>
       <KV label="单帧结论">{cell?.verdict?verdictLabel[cell.verdict]:"—"}</KV>
