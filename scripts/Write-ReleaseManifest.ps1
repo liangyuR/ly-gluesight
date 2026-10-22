@@ -5,7 +5,8 @@ param(
     [string]$TimingPath,
     [string]$CacheStatusJson = '{}',
     [string]$Status = 'unknown',
-    [string]$RuntimeManifestPath
+    [string]$RuntimeManifestPath,
+    [string]$Version
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -60,7 +61,7 @@ if ($TimingPath -and (Test-Path -LiteralPath $TimingPath)) {
 }
 $manifest = [ordered]@{
     schemaVersion = 1
-    application = [ordered]@{ version = $package.version; sourceRevision = $revision.Trim() }
+    application = [ordered]@{ version = $(if ($Version) { $Version } else { $package.version }); sourceRevision = $revision.Trim() }
     lyflow = $lyflow
     vendor = [ordered]@{ repository = $config.repository; tag = $config.tag; asset = $config.asset; bundleVersion = $config.bundleVersion; mvsVersion = $config.mvsVersion }
     tools = $tools

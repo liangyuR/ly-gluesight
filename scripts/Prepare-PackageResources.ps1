@@ -1,4 +1,6 @@
 #Requires -Version 7.0
+# Version：写进 tauri 配置的应用版本（预发布时为 X.Y.Z-pre.N），不传沿用 tauri.conf.json
+param([string]$Version)
 . (Join-Path $PSScriptRoot 'Runtime-Common.ps1')
 $stageRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../src-tauri/target/package-runtime'))
 $applicationRuntimeRoot = Join-Path $stageRoot 'application-runtime'
@@ -10,4 +12,6 @@ foreach ($name in @('vcruntime140.dll', 'vcruntime140_1.dll')) {
     Copy-Item -LiteralPath $source -Destination (Join-Path $applicationRuntimeRoot $name)
     $resources["target/package-runtime/application-runtime/$name"] = $name
 }
-@{ bundle = @{ resources = $resources } } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stageRoot 'tauri.runtime.json') -Encoding utf8NoBOM
+$config = @{ bundle = @{ resources = $resources } }
+if ($Version) { $config.version = $Version }
+$config | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stageRoot 'tauri.runtime.json') -Encoding utf8NoBOM
