@@ -550,7 +550,7 @@ pub(crate) fn matching_ack(snapshot: &Snapshot, result: &ResultEnvelope) -> Resu
 }
 
 /// 运动结束核对：partEnd / partStart 有效、请求身份未变。返回此刻 PLC 报的设备触发数；
-/// 协议 6 不再要求它等于 deviceShots，只作参考（丢帧告警、收尾等待、下一件基线）。
+/// 协议 6 不再要求它等于 deviceShots，只作参考（丢帧告警、收尾等待），不参与下一件基线（D-SB-7）。
 pub(crate) fn verify_part_end(snapshot: &Snapshot, request: &Request) -> Result<u16, String> {
     if !snapshot.read_bool("partEnd")? || !snapshot.read_bool("partStart")? {
         return Err("运动结束要求 partEnd 和 partStart 保持有效".into());

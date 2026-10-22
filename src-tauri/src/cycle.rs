@@ -631,9 +631,9 @@ struct Part {
     extra: usize,
     queue: usize,
     router: ShotRouter,
-    /// 接在 PLC 触发线上的相机（S7 计划）；收尾时按 PLC 报的触发数给它们推下一件基线
-    issued: Option<Vec<String>>,
-    /// partEnd 时 PLC 报的设备触发数（协议 6 只作参考，可与计划数不同）；partEnd 前为空
+    /// partEnd 时 PLC 报的设备触发数（协议 6 只作参考，可与计划数不同）；partEnd 前为空。
+    /// 只用于丢帧告警和收尾等待，不参与下一件基线（D-SB-4、D-SB-7）
+    #[allow(dead_code)] // C3 丢帧告警与收尾等待接入后去掉
     device_triggers: Option<u16>,
     routing_closed: bool,
     image_measurement: bool,
@@ -660,14 +660,11 @@ impl Part {
         self.router.triggers()
     }
 
-    /// 本件收尾（只做一次）：推算触发线上各相机下一件的基线下限，记进计数账。
-    /// 用 PLC 报的实际触发数——确认结果时报的（`plc_triggers`），否则 partEnd 时报的——不用计划数：
-    /// 协议 6 不再核对两者相等，计划数可能与实发数不同。两者都没有时（故障中断等）由路由按计划数假定；见到的更高计数总是优先。
-    fn close_routing(&mut self, ledgers: &mut Ledgers, plc_triggers: Option<u16>) {
+    /// 本件收尾（只做一次）：每台相机下一件的基线下限 = max(原基线, 本件见到的最高计数)，记进计数账（D-SB-7）。
+    /// PLC 报的触发数（partEnd 时或确认结果时）和计划数都不参与。
+    fn close_routing(&mut self, ledgers: &mut Ledgers) {
         if self.routing_closed { return; }
-        let issued = self.issued.as_ref().zip(plc_triggers.or(self.device_triggers))
-            .map(|(ids, n)| ids.iter().map(|id| (id.as_str(), u64::from(n))).collect::<Vec<_>>());
-        self.router.close(ledgers, issued.as_deref());
+        self.router.close(ledgers);
         self.routing_closed = true;
     }
 
@@ -1352,7 +1349,6 @@ impl Machine {
             self.ledgers.set_floor(&Floor { cam: camera.cam, camera: camera.camera.clone(), session: camera.session,
                 baseline: router.baseline(camera.cam).unwrap_or(0) });
         }
-        let issued = Some(plan.device_ids.clone());
         let bundle_id = production.as_ref().map(|prepared| prepared.bundle.id.clone());
         budget.mark("camera-router");
         arm_remaining!("before-recording");
@@ -1377,7 +1373,6 @@ impl Machine {
             extra: 0,
             queue: 0,
             router,
-            issued,
             device_triggers: None,
             routing_closed: false,
             image_measurement: crate::site::image_measurement(&app),
@@ -1650,7 +1645,7 @@ impl Machine {
                         Fields::stage("partEnd").with_data(json!({"triggers": triggers, "deviceTriggers": device_triggers})));
                 }
                 SessionEvent::Released(triggers) => {
-                    self.close_routing(triggers);
+                    self.close_routing();
                     self.alarms.retain(|m| !m.starts_with("PLC 未确认"));
                     self.set_phase(Phase::Idle);
                     log_with(&app, "info", "S7 事务结束", "结果序号已确认，PLC 输入已释放", Fields::stage("released").with_data(json!({"plcTriggers": triggers})));
@@ -1742,9 +1737,7 @@ impl Machine {
     }
 
     async fn report(&mut self, sn: String, recipe_id: Option<String>, judgement: Judgement) {
-        // S7 没等到 partEnd 就判了 ERR（运动超时等）：手里还没有 PLC 报的触发数，等 PLC 确认结果时报的实际已发触发数再推下一件基线，
-        // 按计划数假定会让下一件基线偏高、每件都缺帧
-        if !self.part.as_ref().is_some_and(|p| p.issued.is_some() && p.device_triggers.is_none()) { self.close_routing(None); }
+        self.close_routing();
         let app = self.app.clone();
         let mut drain_ms = None;
         let pending = PlcDelivery { state: PlcDeliveryState::Pending, updated_at: now_ms(), message: None };
@@ -1795,8 +1788,8 @@ impl Machine {
         }
     }
 
-    fn close_routing(&mut self, plc_triggers: Option<u16>) {
-        if let Some(part) = self.part.as_mut() { part.close_routing(&mut self.ledgers, plc_triggers); }
+    fn close_routing(&mut self) {
+        if let Some(part) = self.part.as_mut() { part.close_routing(&mut self.ledgers); }
     }
 
     fn check_part_cams(&self, part: &Part) -> Result<(), String> {
@@ -1891,7 +1884,7 @@ impl Machine {
     }
 
     fn enter_fault(&mut self, reason: String) {
-        self.close_routing(None);
+        self.close_routing();
         let in_flight = matches!(self.phase, Phase::Validate | Phase::Acquire | Phase::Drain | Phase::Judge);
         if in_flight {
             let sn = self.part.as_ref().map(|p| p.sn.clone()).or_else(|| self.s7.request().map(|r| r.sn.clone())).unwrap_or_default();

@@ -78,8 +78,8 @@
 ### D-SB-7 下一件基线：每台相机各取自己见到的最高 frame_counter
 
 - 问题：End 时标 `issued_verified`，`close_routing` 按计划 device_shots 推下一件基线（cycle.rs:1325、1612-1620、1767-1773）；规格 §5 deviceTriggers 只作参考，§3 帧序号取 SDK 帧号。
-- 采用：段配方每台相机的下限 = max(该相机原基线, 该相机本件见到的最高 frame_counter)（`Grouper::max_counter`）。deviceTriggers 不参与，只用于丢帧告警和收尾等待（等每台相机 max_seq ≥ end_triggers − 1，或到 drain 截止）。旧配方节拍不改。
-- 理由：某台相机漏收一个脉冲时帧号不增，用“基线 + deviceTriggers”会让它下一件的首帧被判为游离，而且每件都丢。
+- 采用：段配方每台相机的下限 = max(该相机原基线, 该相机本件见到的最高 frame_counter)（`Grouper::max_counter`，C3 接入）。旧拍照点配方的收尾（`Part::close_routing` → `ShotRouter::close`）同样取 max(原基线, 该相机本件见到的最高触发计数)，不再按计划 device_shots 推。deviceTriggers 不参与，只用于丢帧告警和收尾等待（等每台相机 max_seq ≥ end_triggers − 1，或到 drain 截止）。旧配方其余节拍不改。
+- 理由：某台相机漏收一个脉冲时帧号不增，用“基线 + deviceTriggers”会让它下一件的首帧被判为游离，而且每件都丢。PLC 在使能边沿可能多数或少数一个脉冲，用它推基线会系统性地让下一件首帧被判游离；相机偶发丢末帧（已计数、帧没送到）只会让下一件出现两个不完整帧组，且下一件后自动对齐。旧拍照点配方下同一情况是下一件第一个拍照点缺帧、最后一帧超计划（判 ERR），再下一件对齐。
 
 ### D-SB-8 示教采集数量与内存
 

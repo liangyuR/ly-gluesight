@@ -208,32 +208,46 @@ async fn s7_wire_part_end_with_trigger_count_unlike_plan_completes_and_reports_t
     rig.finish().await;
 }
 
+/// 升级前（协议 5）写下的在途事务。
+fn protocol_5_pending(cycle: &str) -> Pending {
+    Pending { origin: Some(Origin::Real), capture_id: None, request: Request { protocol_version: 5, request_seq: 9,
+        sn: "SN-V5".into(), product_code: 1, shot_count: 4, plan_version: 7, device_shots: 4 }, result: None,
+        phase: SessionPhase::Acquiring, cycle_id: Some(cycle.into()), acknowledged: false, started_at: 1000, site: None }
+}
+
 /// 升级到协议 6 后，握手日志里协议 5 的在途事务过不了当前协议的校验：原样归档为 `.v5.bak`，会话以空事务启动并照常要求明确复位，
-/// 复位不被它挡住；ACK 恢复也不把审计里的协议 5 事务报成日志错误。
+/// 复位不被它挡住（D-0）。
 #[tokio::test]
 async fn journal_pending_from_protocol_5_is_archived_and_requires_reset() {
     let mut rig = Rig::new("protocol-5-journal").await;
-    let cycle = "00000000000000000000000000000005";
-    let pending = Pending { origin: Some(Origin::Real), capture_id: None, request: Request { protocol_version: 5, request_seq: 9,
-        sn: "SN-V5".into(), product_code: 1, shot_count: 4, plan_version: 7, device_shots: 4 }, result: None,
-        phase: SessionPhase::Acquiring, cycle_id: Some(cycle.into()), acknowledged: false, started_at: 1000, site: None };
-    let original = serde_json::to_vec(&Journal { version: 1, last_request_seq: 9, pending: Some(pending.clone()), last_resolution: None }).unwrap();
+    let pending = protocol_5_pending("00000000000000000000000000000005");
+    let original = serde_json::to_vec(&Journal { version: 1, last_request_seq: 9, pending: Some(pending), last_resolution: None }).unwrap();
     std::fs::write(&rig.session.path, &original).unwrap();
-    let mut audit = serde_json::to_vec(&json!({"version": 1, "ts": 2000, "action": "resetRequested", "lastRequestSeq": 9, "pending": pending})).unwrap();
-    audit.push(b'\n');
-    crate::handshake_audit::append(&rig.session.path.with_extension("audit.jsonl"), &audit).unwrap();
 
     rig.session = PlcSession::open(rig.session.path.clone());
     assert!(!rig.session.pending(), "{:?}", rig.session.pending_summary());
     assert_eq!(std::fs::read(rig.session.path.with_extension("v5.bak")).unwrap(), original);
-    let recovered = rig.session.recover_acknowledgements(&[cycle.to_owned()].into_iter().collect());
-    assert!(recovered.errors.is_empty() && recovered.receipts.is_empty(), "{recovered:?}");
 
     rig.live().await;
     assert_eq!(rig.session.phase(), SessionPhase::ResetRequired, "未复位前不能接件");
     assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready), "{:?}", rig.session.view());
     assert_eq!(rig.session.phase(), SessionPhase::Idle);
     rig.finish().await;
+}
+
+/// 审计里升级前（协议 5）的事务对应未决工件：ACK 恢复跳过它，不当作日志错误，也不恢复出确认（D-0）。
+#[test]
+fn audit_transaction_from_protocol_5_is_skipped_by_ack_recovery_without_error() {
+    let directory = TestDir::new("s7-session-tests", "protocol-5-audit");
+    let path = directory.join("session.json");
+    let cycle = "00000000000000000000000000000005";
+    let mut audit = serde_json::to_vec(&json!({"version": 1, "ts": 2000, "action": "resetRequested", "lastRequestSeq": 9,
+        "pending": protocol_5_pending(cycle)})).unwrap();
+    audit.push(b'\n');
+    crate::handshake_audit::append(&path.with_extension("audit.jsonl"), &audit).unwrap();
+
+    let recovered = PlcSession::open(path).recover_acknowledgements(&[cycle.to_owned()].into_iter().collect());
+    assert!(recovered.errors.is_empty() && recovered.receipts.is_empty(), "{recovered:?}");
 }
 
 #[tokio::test]

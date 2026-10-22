@@ -6,15 +6,14 @@
 //! - 布防（[`ShotRouter::arm`]）：基线 = max(本会话见到的最大计数, 上一件收尾推算的下限)；本会话还没见过帧时
 //!   用开流后的计数起点（模拟 / 样本集为 0，海康按 [`Policy::counter_after_open`]，未经台架确认就拒绝布防）；
 //! - 路由（[`ShotRouter::route`]）：本机序号 = 触发计数 − 基线，对应这台相机的第几个拍照点；
-//! - 收尾（[`ShotRouter::close`]）：下一件的基线下限 = 基线 + PLC 报的本件已发触发数（S7 `cameraNTriggers`：
-//!   partEnd 核对过的，或提前判 ERR 的件在 PLC 确认结果时读到的），上一件迟到的帧就落在基线以内，成了旧帧；
-//!   没有 PLC 计数时按计划数假定。
+//! - 收尾（[`ShotRouter::close`]）：下一件的基线下限 = max(本件基线, 这台相机本件见到的最高触发计数)（D-SB-7）。
+//!   PLC 报的设备触发数（deviceTriggers）和计划数都不参与：PLC 在使能边沿可能多数或少数一个脉冲，相机也可能漏收
+//!   一个脉冲，按它们推会让下一件第一帧被当成上一件的迟到帧。
 //!
 //! 只靠计数分不出来的情况（都会让这件判 ERR，不会判 OK）：本件中途 Line0 上多一个干扰触发，后面的帧整体后移，
-//! 最后一帧成了超计划帧（96）；相机漏收一个触发脉冲，最后一个拍照点等不到帧（91），之后每件的基线都偏高一格：
-//! 第一帧被当成上一件的迟到帧、最后一个拍照点等不到帧（91，原因写明"触发计数错位"）。这与"上一件最后一帧
-//! 迟到到下一件"在计数上一模一样，自动下调基线会在后一种情况下把帧整体错绑、凑齐一件，所以不自动改，
-//! 等故障复位清掉下限（[`Ledgers::clear_floors`]）后按实际见到的计数重新对齐。
+//! 最后一帧成了超计划帧（96）；相机漏收一个触发脉冲，最后一个拍照点等不到帧（91），下一件按见到的计数照常对齐；
+//! 最后一帧丢在传输里（相机已计数、帧没送到），本件最后一个拍照点等不到帧（91），下一件整体后移一格（第一个拍照点
+//! 缺帧、最后一帧超计划，判 ERR），再下一件自动对齐。故障复位清掉下限（[`Ledgers::clear_floors`]）后只按实际见到的计数布防。
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -561,7 +560,7 @@ impl ShotRouter {
         let (camera, expected) = (&a.camera, a.expected());
         if !a.stale.is_empty() {
             return Some(format!(
-                "相机 {camera} 触发计数错位：本件应收 {expected}，实际收到 {received}；{} 不大于本件基线 {}，被当作上一件的迟到帧。多为上一件相机漏收了触发脉冲，之后每件都会这样判 ERR；检查触发线路后执行故障复位，按实际计数重新对齐",
+                "相机 {camera} 触发计数错位：本件应收 {expected}，实际收到 {received}；{} 不大于本件基线 {}，被当作上一件的迟到帧（上一件的帧在收尾后才到，或触发计数乱序）；持续出现时检查触发线路后执行故障复位，按实际计数重新对齐",
                 runs(&a.stale), a.baseline));
         }
         if !a.extra.is_empty() {
@@ -577,22 +576,18 @@ impl ShotRouter {
             note += &format!("；{} 相机已计数但帧没送到（传输丢帧或帧通道满）", runs(&skipped));
         }
         if !trailing.is_empty() {
-            note += &format!("；{} 未到（帧丢在传输里，或相机漏收了触发脉冲，后者下一件会报触发计数错位）", runs(&trailing));
+            note += &format!("；{} 未到（相机漏收了触发脉冲，或帧丢在传输里，后者下一件会整体后移一格）", runs(&trailing));
         }
         Some(note)
     }
 
     /// 本件结束：推算各相机下一件的基线下限，记进计数账，并返回给日志。
-    /// `issued`：PLC 报的本件各相机已发触发数（S7 `cameraNTriggers`，按相机编号）。没有时按计划数假定
-    /// （离线产线按计划触发，丢在传输里的帧也占了计数）；见到的更高计数优先。
-    pub fn close(&self, ledgers: &mut Ledgers, issued: Option<&[(&str, u64)]>) -> Vec<Floor> {
+    /// 下限 = max(本件基线, 这台相机本件见到的最高触发计数)（D-SB-7）；PLC 报的触发数和计划数都不参与。
+    pub fn close(&self, ledgers: &mut Ledgers) -> Vec<Floor> {
         let floors: Vec<Floor> = self
             .cams
             .iter()
-            .map(|a| {
-                let n = issued.and_then(|list| list.iter().find(|(c, _)| *c == a.camera)).map_or(a.shots.len() as u64, |(_, n)| *n);
-                Floor { cam: a.cam, camera: a.camera.clone(), session: a.session, baseline: a.baseline.saturating_add(n).max(a.high) }
-            })
+            .map(|a| Floor { cam: a.cam, camera: a.camera.clone(), session: a.session, baseline: a.baseline.max(a.high) })
             .collect();
         for floor in &floors {
             ledgers.set_floor(floor);
@@ -684,19 +679,6 @@ mod tests {
         let mut next = ShotRouter::arm(&plan(), &ledgers, &Policy::production(None), &[next_camera]).unwrap();
         assert_eq!(next.route(&frame(43)), Route::Stale { counter: 43, baseline: None });
         assert_eq!(next.route(&FrameMeta { session: 12, trigger: 43, ..frame(43) }), Route::Bound { shot: 0, ordinal: 1 });
-    }
-
-    #[test]
-    fn late_frames_of_the_previous_part_cannot_satisfy_the_next_part() {
-        let mut ledgers = primed();
-        let mut first = armed();
-        first.route(&frame(41));
-        ledgers.observe(&frame(41));
-        first.close(&mut ledgers, Some(&[("device1", 4)]));
-        let mut next = ShotRouter::arm(&plan(), &ledgers, &Policy::production(None), &[camera()]).unwrap();
-        assert_eq!(next.baseline(0), Some(44));
-        assert_eq!(next.route(&frame(44)), Route::Stale { counter: 44, baseline: Some(44) });
-        assert_eq!(next.route(&frame(45)), Route::Bound { shot: 0, ordinal: 1 });
     }
 
     #[test]

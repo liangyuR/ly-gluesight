@@ -67,7 +67,7 @@ fn part(cycle_id: &str, ledgers: &Ledgers) -> Part {
             shot_id: shot.id.clone(), camera: shot.camera.clone(), view: shot.view, ..FrameView::waiting()
         }).collect(), measuring_since: vec![None; recipe.shot_count()],
         table: vec![PointState::Pending; recipe.point_count()], received: 0, extra: 0, queue: 0,
-        router, issued: None, device_triggers: None, routing_closed: false, image_measurement: false, proc_timeout: Duration::from_secs(1), drain_timeout: Duration::from_secs(2),
+        router, device_triggers: None, routing_closed: false, image_measurement: false, proc_timeout: Duration::from_secs(1), drain_timeout: Duration::from_secs(2),
         armed_at: Instant::now(), end_at: None, fault: None, cams: (0..cameras.len() as u8).collect(),
         camera_ids: cameras, rig_gen: 1, source: RecordSource::Real, recording: None, recipe,
     }
@@ -182,7 +182,7 @@ fn first_missing_frame_keeps_later_shots_and_expires_err91() {
 
 #[test]
 fn counter_desync_ends_err91_with_expected_and_received_counters() {
-    // 上一件按触发数推的下限比相机实际计数高一格（相机漏收过一个脉冲）：本件第一帧被当成迟到帧，最后一个拍照点缺帧
+    // 基线下限比相机实际计数高一格：本件第一帧被当成迟到帧，最后一个拍照点缺帧
     let mut ledgers = Ledgers::default();
     ledgers.observe(&FrameMeta::from(&frame(0, 1)));
     ledgers.set_floor(&Floor { cam: 0, camera: "cam1".into(), session: 1, baseline: 2 });
@@ -231,10 +231,10 @@ fn same_sn_reinspection_rejects_old_cycle_and_every_other_identity_mismatch() {
     first.receive_frame(&frame(0, 1)).unwrap();
     let old = measured(&first, 0);
     let mut ledgers = Ledgers::default();
-    first.router.close(&mut ledgers, None);
+    first.router.close(&mut ledgers);
     let mut next = part("next", &ledgers);
-    assert!(matches!(next.receive_frame(&frame(0, 2)).unwrap(), Route::Stale { .. }));
-    assert_eq!(next.receive_frame(&frame(0, 5)).unwrap(), Route::Bound { shot: 0, ordinal: 1 });
+    assert!(matches!(next.receive_frame(&frame(0, 1)).unwrap(), Route::Stale { .. }));
+    assert_eq!(next.receive_frame(&frame(0, 2)).unwrap(), Route::Bound { shot: 0, ordinal: 1 });
     assert_eq!(next.sn, old.sn);
     assert!(next.apply_result(old).is_none());
     for variant in 0..4 {
@@ -247,23 +247,17 @@ fn same_sn_reinspection_rejects_old_cycle_and_every_other_identity_mismatch() {
     assert!(next.apply_result(measured(&next, 0)).is_some());
 }
 
-/// 协议 6 不再核对 partEnd 时 PLC 报的触发数等于计划：下一件基线按 PLC 报的实发数推。
-/// 按计划数推（实发 3、计划 4）会把下一件第一帧当成上一件的迟到帧；只按见到的帧推（第 4 帧丢在传输里）会让下一件错位一帧。
+/// D-SB-7：下一件基线 = max(原基线, 该相机本件见到的最高计数)，PLC 报的 deviceTriggers 和计划数（4）都不参与。
+/// 见到 1–3、PLC 报 4（使能边沿多数一个脉冲，或相机漏收一个）：按 PLC 报数或计划数推，下一件第一帧（计数 4）会被当成上一件的迟到帧。
 #[test]
-fn next_part_baseline_follows_plc_reported_triggers_not_plan_or_frames_seen() {
-    for (case, reported, delivered, next_first) in [
-        ("实发少于计划", 3, 3, 4),
-        ("实发等于计划、末帧丢在传输里", 4, 3, 5),
-    ] {
-        let mut p = part(case, &Ledgers::default());
-        p.issued = Some(vec!["cam1".into()]);
-        for counter in 1..=delivered { p.receive_frame(&frame(0, counter)).unwrap(); }
-        p.device_triggers = Some(reported);
-        let mut ledgers = Ledgers::default();
-        p.close_routing(&mut ledgers, None);
-        let mut next = part("next", &ledgers);
-        assert_eq!(next.receive_frame(&frame(0, next_first)), Some(Route::Bound { shot: 0, ordinal: 1 }), "{case}");
-    }
+fn three_frames_seen_plc_reports_four_next_part_first_frame_is_counter_4() {
+    let mut p = part("plc-reports-more", &Ledgers::default());
+    for counter in 1..=3 { p.receive_frame(&frame(0, counter)).unwrap(); }
+    p.device_triggers = Some(4);
+    let mut ledgers = Ledgers::default();
+    p.close_routing(&mut ledgers);
+    let mut next = part("next", &ledgers);
+    assert_eq!(next.receive_frame(&frame(0, 4)), Some(Route::Bound { shot: 0, ordinal: 1 }));
 }
 
 /// 测点号不对、无基准站带着 d（违反“无基准站没有位置值”的契约）都按测量出错处理。
