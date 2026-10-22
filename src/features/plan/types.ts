@@ -467,6 +467,15 @@ export interface CameraTeachingView {
   mmPerPx: number | null;
 }
 
+/** workspace_teach_camera 的 draft：在选中帧上定出的走廊（图像像素，按直线段几何）、当量与检测参数，
+ * 后端写进 RecipeDoc.inspect 中这台相机的一项（与 CameraInspect 的可编辑部分一一对应）。 */
+export interface CameraTeachDraft {
+  corridor: [number, number][];
+  mmPerPx: number | null;
+  /** null = 用配方的检测参数 */
+  detect: DetectParams | null;
+}
+
 /** 候选工作区：段配方的计划部分（WorkspaceView.plan，D3）。旧配方为 null。 */
 export interface WorkspacePlanView {
   segments: PathSegment[];

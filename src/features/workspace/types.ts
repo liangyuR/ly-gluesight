@@ -1,4 +1,12 @@
 import type { CameraImaging, DetectParams, FixtureSpec, Judgement, Measured, PoseRecord, Recipe, RecipeDoc, ShotLimits, Verdict } from "../cycle/types";
+import type { WorkspacePlanView } from "../plan/types";
+
+/** 段模型（分段连拍飞拍）的候选工作区类型，定义在 plan/types.ts；这里转出供工作台页面使用。
+ * 段配方的进度用 StepIdV2 / ProgressV2（在 WorkspaceView.plan.progress），旧配方的 StepId / Progress 不变。 */
+export type {
+  CalibOutcome, CalibrationRoundView, CalibrationView, CameraTeachDraft, CameraTeachingView, CaptureFailureV2, CaptureRoundV2, MissingFrame,
+  ProgressStepV2, ProgressTargetV2, ProgressV2, SegmentCalibView, StepIdV2, WorkspacePlanView,
+} from "../plan/types";
 
 /** 一个拍照点的示教：在冻结原图上点出的中线（图像像素，从胶嘴一侧往外）、像素当量与可选的检测参数。
  * workspace_save_params 把它写进候选配方的这个拍照点；detect 不设时不发送（用配方的检测参数）。
@@ -129,6 +137,9 @@ export interface WorkspaceView {
   candidatePlcError: string | null;
   coverage: number | null;
   progress: Progress;
+  /** 段配方的计划部分（D3 起输出）；旧配方为 null 或缺省。
+   * 段配方时 productionPlc / candidatePlc / candidatePlcError / coverage 为 null，progress 为空，进度在 plan.progress */
+  plan?: WorkspacePlanView | null;
 }
 export interface RawFrame { k: number; camera: string; view: number; file: string; ts: number; available: boolean; error: string | null; cam?: number | null; frameCounter?: number | null; triggerCounter?: number | null }
 export interface RecordImages { imageSource: "offlineSample" | "recording"; historyId: number; frames: RawFrame[]; complete: boolean; message: string }

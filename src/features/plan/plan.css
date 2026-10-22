@@ -1,0 +1,28 @@
+/* 段模型共享组件：KindChecksEditor、CameraSegmentOverview */
+.plan-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.plan-warn { color: var(--warn); }
+
+/* 检测项编辑 */
+.plan-checks { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.plan-check { display: flex; flex-direction: column; gap: 10px; padding-top: 10px; border-top: 1px solid var(--outline-variant); }
+.plan-check-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: end; }
+.plan-check.off .plan-check-fields { opacity: .64; }
+.plan-check-note { margin: 0; padding-top: 10px; border-top: 1px solid var(--outline-variant); font-size: 13px; }
+@media (max-width: 720px) { .plan-check-fields { grid-template-columns: minmax(0, 1fr); } }
+
+/* 相机与段总览 */
+.plan-overview { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.plan-overview-cams { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 13px; }
+.plan-cams { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.plan-cam { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--surface-low); border: 1px solid var(--outline-variant); }
+.plan-cam i { width: 8px; height: 8px; border-radius: 50%; }
+.plan-segbar, .plan-regions { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.plan-seg { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--outline-variant); background: var(--surface-low); overflow: hidden; }
+.plan-seg.corner { background: repeating-linear-gradient(135deg, var(--surface-low) 0 6px, var(--surface-mid) 6px 12px); }
+.plan-seg strong { font-size: 13px; white-space: nowrap; }
+.plan-seg small, .plan-region small { color: var(--on-surface-variant); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.plan-seg.pending .plan-seg-n { color: var(--warn); }
+.plan-region { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 6px 10px; border-radius: 6px; background: var(--surface-lowest); border-top: 3px solid var(--outline-variant); font-size: 13px; overflow: hidden; }
+.plan-region.ok { border-top-color: var(--ok); }
+.plan-region.warn { border-top-color: var(--warn); }
+.plan-region.ng { border-top-color: var(--ng); }

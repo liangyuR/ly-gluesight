@@ -1,4 +1,8 @@
 import type { FrameView, Judgement, SampleLabel, Verdict } from "../cycle/types";
+import type { Flags, PartDetailBurst } from "../plan/types";
+
+/** 段模型（分段连拍飞拍）的历史记录类型，定义在 plan/types.ts；这里转出供历史页面使用。 */
+export type { BurstJudgement, Flags, FrameRecord, PartDetailBurst, PartSummaryV2, RegionResult, Uninspected } from "../plan/types";
 
 export interface PlcDelivery {
   state: "notRequired" | "pending" | "submitted" | "acknowledged" | "failed";
@@ -65,6 +69,9 @@ export interface PartSummary {
   delivery: PlcDelivery;
   source: RecordSource;
   sample: { setId: string; partId: string; sn: string; label: SampleLabel } | null;
+  /** 段配方记录的整件标记（C5 起输出，疑似提前终止等单独显示）；旧记录为 null 或缺省。
+   * 段配方时 framesExpected = expectedTotal（待标定为 0），framesReceived = 帧组数 */
+  flags?: Flags | null;
 }
 
 export interface VerdictCounts {
@@ -91,6 +98,8 @@ export interface PartDetail {
   retests: number[];
   shots: PartShot[];
   recording: RecordingEvidence;
+  /** 段配方记录（C5 起输出）；旧记录为 null 或缺省。有值时 frames、shots 为空，points 为 null */
+  burst?: PartDetailBurst | null;
 }
 
 export interface KindOverride {

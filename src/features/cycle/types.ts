@@ -1,4 +1,13 @@
 
+import type { BurstJudgement, PartViewBurst, RecipeDocSegmentFields } from "../plan/types";
+
+/** 段模型（分段连拍飞拍）的契约类型，定义在 plan/types.ts；这里转出供 cycle 相关页面使用。 */
+export type {
+  BurstJudgement, CameraInspect, CountStatus, Flags, FrameCellStatus, FrameCellView, FrameGroupView, FrameMetrics, FrameState,
+  KindDefault, KindDefaults, LossAlarm, PartCalib, PartViewBurst, PathSegment, PlanExport, Region, RegionKind, RegionResult,
+  RecipeDocSegmentFields, RecipeSummaryV2, SegmentChecks, SegmentKind, Uninspected,
+} from "../plan/types";
+
 export type Phase = "IDLE" | "VALIDATE" | "ACQUIRE" | "DRAIN" | "JUDGE" | "REPORT" | "RELEASE" | "FAULT";
 export type FrameStatus = "waiting" | "measuring" | "done" | "error" | "missing";
 export type Verdict = "OK" | "OK_WITH_EXCURSION" | "NG_POSITION" | "NG_WIDTH" | "NG_ABSOLUTE" | "NG_GAP" | "ERR_INSPECT";
@@ -133,7 +142,7 @@ export interface Recipe {
   teachingId?: string | null;
   productCode: number;
   triggerMode: TriggerMode;
-  /** 配方文件格式版本，当前为 6 */
+  /** 配方文件格式版本（后端 recipe::RECIPE_SCHEMA） */
   schemaVersion: number;
   /** 站距（mm） */
   spacing: number;
@@ -146,17 +155,20 @@ export interface Recipe {
   points: { x: number[]; y: number[]; seg: number[]; k: number[] };
 }
 
-/** 配方文件内容，配方页编辑它。 */
-export interface RecipeDoc {
+/** 配方文件内容，配方页编辑它。
+ * 段模型字段（segments、inspect、segmentDefaults、calibrationRounds、partCalib）由后端 schema 8 起输出（C1），
+ * 之前的后端不带，所以这里可缺省；segments 为空或缺省 = 旧拍照点配方，非空 = 段配方（此时 shots 为空、triggerMode 为 fly）。 */
+export interface RecipeDoc extends Partial<RecipeDocSegmentFields> {
   id: string;
   name: string;
   version: number;
-  /** PLC 拍照计划版本：配方库分配，只在产品代码或拍照点顺序 / Pose / 相机变化时换新号；0 或缺省为未分配 */
+  /** PLC 拍照计划版本：配方库分配，只在计划身份变化时换新号；0 或缺省为未分配。
+   * 旧拍照点配方的身份是产品代码与拍照点顺序 / Pose / 相机；段配方是产品代码、各段序号 / 类型 / N_exp、相机顺序与 ΣN_exp */
   planVersion?: number;
   teachingId?: string | null;
   productCode: number;
   triggerMode: TriggerMode;
-  /** 配方文件格式版本，当前为 6；不符的文件后端拒绝 */
+  /** 配方文件格式版本（后端 recipe::RECIPE_SCHEMA）；不符的文件后端拒绝 */
   schemaVersion: number;
   /** 站距（mm） */
   spacing: number;
@@ -188,8 +200,15 @@ export interface RecipeSummary {
   length: number;
   /** PLC 计划版本 */
   planVersion: number;
-  /** PLC 触发次数；拍照点编不成触发分组时为 null */
+  /** PLC 触发次数；拍照点编不成触发分组时为 null。段配方为 expectedTotal */
   triggerCount: number | null;
+  /** 以下为段模型字段（C1 起输出，旧后端不带）；旧配方 segmentCount = 0。完整形状见 plan/types 的 RecipeSummaryV2 */
+  segmentCount?: number;
+  /** ΣN_exp；待标定为 null */
+  expectedTotal?: number | null;
+  toleranceTotal?: number;
+  /** expectedTotal 非空 */
+  calibrated?: boolean;
 }
 
 /** 某个视图没有位置基准（帧徽标）：该视图的有胶站已是“有胶、无基准”（st 4），判定只看站状态。 */
@@ -240,6 +259,8 @@ export interface PartView {
   /** 各拍照点的帧 */
   frames: FrameView[];
   measuredFrames: number;
+  /** 段配方在途件（C3 起输出）；旧配方为 null 或缺省 */
+  burst?: PartViewBurst | null;
 }
 
 export interface SegmentResult {
@@ -273,6 +294,8 @@ export interface Judgement {
 }
 
 export interface ResultView extends Judgement {
+  /** 段配方的判定（C3 起输出）；旧配方为 null 或缺省。有值时 verdict / plcCode / faultCode / reason 与它相同，segments、gaps 为空 */
+  burst?: BurstJudgement | null;
   candidateDebug?: CandidateDebug | null;
   cycleId: string | null;
   sn: string;
