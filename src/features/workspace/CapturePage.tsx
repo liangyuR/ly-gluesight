@@ -15,7 +15,7 @@ import { useWorkspace } from "./context";
 import { AlertTriangle, ArrowRight, Cable, Camera, CheckCircle2, Crosshair, Play } from "lucide-react";
 import { scrollBehavior } from "./motion";
 import { Button, Checkbox, Progress, SegmentedControl, Select, Surface } from "qing-steel";
-import { Badge, Notice, NumberField, Panel, Steps, WorkspaceBar, WorkspaceEmpty, GrayViewer } from "./components";
+import { Badge, Notice, NumberField, Panel, WorkspaceBar, WorkspaceEmpty, GrayViewer } from "./components";
 import "./capture.css";
 import type { CaptureRound, GrayImage } from "./types";
 import { DEFAULT_IMAGING, type CameraImaging, type Verdict } from "../cycle/types";
@@ -242,5 +242,5 @@ export default function CapturePage() {
     <span className="wp-capture-chip"><small>在途图像等待</small><strong>{drain} ms</strong></span>
     <div className="wp-actions"><Button onClick={()=>setPrepOpenFor(round?.roundId ?? null)}>展开设备准备</Button><Button variant={recaptureNext ? "filled" : "tonal"} disabled={startDisabled} title={startReason || undefined} onClick={() => void start()}>{validation ? "采集新一圈样本" : "整圈重采"}</Button></div>
   </Surface>;
-  return <div className="wp-page"><WorkspaceBar/><Steps/><div className="wp-columns"><div className="wp-stack">{collapsed ? <>{prepBar}{resultPanel}{historyPanel}</> : <>{prepPanel}{resultPanel}{historyPanel}</>}</div><section className="wp-capture-rules" aria-label="采集规则"><h3>采集规则</h3><div><strong>数量相同不代表对应相同</strong><p>每轮独立保存。任一相机缺帧、重复、超量、断连或无法确定归属时整圈重采；不会把下一张图补到缺失位置。</p></div><div><strong>结束条件</strong><p>各相机都收齐计划数量后仍等待 PLC 结束通知，再等待在途图像；超时会写明是哪台相机缺图。PLC 实际计划和完成计数均由后端按相机核对。</p></div></section></div></div>;
+  return <div className="wp-page"><WorkspaceBar /><div className="wp-columns"><div className="wp-stack">{collapsed ? <>{prepBar}{resultPanel}{historyPanel}</> : <>{prepPanel}{resultPanel}{historyPanel}</>}</div><section className="wp-capture-rules" aria-label="采集规则"><h3>采集规则</h3><div><strong>数量相同不代表对应相同</strong><p>每轮独立保存。任一相机缺帧、重复、超量、断连或无法确定归属时整圈重采；不会把下一张图补到缺失位置。</p></div><div><strong>结束条件</strong><p>各相机都收齐计划数量后仍等待 PLC 结束通知，再等待在途图像；超时会写明是哪台相机缺图。PLC 实际计划和完成计数均由后端按相机核对。</p></div></section></div></div>;
 }

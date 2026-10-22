@@ -12,7 +12,7 @@ import type { PartSummary } from "../history/types";
 import type { Verdict } from "../cycle/types";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
-import { Badge, KV, Notice, Panel, Steps, WorkspaceBar, WorkspaceEmpty } from "./components";
+import { Badge, KV, Notice, Panel, WorkspaceBar, WorkspaceEmpty } from "./components";
 import { plcSyncItems } from "./PlcParams";
 import type { Sample } from "./types";
 import { canImportSampleGroup } from "./teach";
@@ -134,7 +134,7 @@ export default function ValidationPage() {
       if(result&&valid()){setImporting(false);setFiles({});}
     }catch(e){if(valid())setError(errorText(e));}finally{if(valid()){pending.current=null;setReading(false);}}
   };
-  return <div className="wp-page"><WorkspaceBar/><Steps/><div className="wp-columns"><div className="wp-stack"><Panel title="发布前检查" detail="设备、胶路示教、单帧示教和独立正常样本都需满足" actions={<Badge tone={failedChecks.length?"warn":"ok"}>{failedChecks.length?`${failedChecks.length} 项未满足`:`${checks.length} 项全部满足`}</Badge>}>
+  return <div className="wp-page"><WorkspaceBar /><div className="wp-columns"><div className="wp-stack"><Panel title="发布前检查" detail="设备、胶路示教、单帧示教和独立正常样本都需满足" actions={<Badge tone={failedChecks.length?"warn":"ok"}>{failedChecks.length?`${failedChecks.length} 项未满足`:`${checks.length} 项全部满足`}</Badge>}>
     <div className="wp-checklist">{failedChecks.map(checkRow)}{passedChecks.length>0&&<details className="wp-check-passed"><summary><CheckCircle2 size={16} aria-hidden="true"/><span>已满足 {passedChecks.length} 项：{passedChecks.map(c=>c.name).join("、")}</span><ChevronDown size={16} aria-hidden="true"/></summary><div className="wp-checklist">{passedChecks.map(checkRow)}</div></details>}</div>
     </Panel><Panel title="代表性验证样本" detail="使用完整原图重新运行当前候选检测；正常样本必须独立于示教采集" actions={<div className="wp-actions"><Link className="qs-btn tonal" to="/recipe/capture?purpose=validation">重新实拍样本</Link><Button leadingIcon={<Upload size={15}/>} disabled={!ready || !!data.workspace.pending || !canImportImages} title={canImportImages?undefined:"有拍照点选中了多幅图，请改用独立整圈采集或历史原图"} onClick={()=>{setFiles({});setImporting(true);}}>导入原图样本组</Button></div>}>
       <Select className="wp-sample-source" label="历史样本来源" value={historyScope} disabled={samplesLocked} options={[{value:"current",label:"当前配方"},{value:"all",label:"全部配方"}]} onValueChange={value=>setHistoryScope(value as "current"|"all")}/>

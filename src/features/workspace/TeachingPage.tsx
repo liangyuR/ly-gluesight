@@ -10,7 +10,7 @@ import { pathLength, shotSegment } from "../cycle/vis";
 import type { FixtureSpec, RecipeDoc } from "../cycle/types";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
-import { Badge, GrayViewer, KV, Notice, Steps, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
+import { Badge, GrayViewer, KV, Notice, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { FixtureCheck, FixtureTrial, FrozenImage, RotationConfirmation, ShotTeach, WorkspaceView } from "./types";
 import { FIXTURE_DEFAULTS, FIXTURE_PAD_PX, fixtureError, fixtureOverlay, sameTeach, shotTeach, teachError } from "./teach";
 import { movedBox, rawPoseTransform } from "../cycle/pose";
@@ -153,7 +153,7 @@ export default function TeachingPage() {
   const reviewKey = JSON.stringify([scope, frame?.trial?.paramsTag ?? null, frame?.trial?.elapsedMs ?? null]);
   useEffect(() => { setReviewed(false); }, [reviewKey]);
   if (!data || !doc) return <WorkspaceEmpty />;
-  if (!frame || !shot) return <div className="wp-page"><WorkspaceBar /><Steps /><Surface><EmptyState icon={<Camera size={32} aria-hidden="true" />} title="当前配方还没有拍照点" description="拍照点由整圈采集生成。完成一圈采集并采用本轮图像后，在这里逐组选图并示教中线。" action={<Link className="qs-btn" to="/recipe/capture">前往整圈采集<ArrowRight size={15} aria-hidden="true" /></Link>} /></Surface></div>;
+  if (!frame || !shot) return <div className="wp-page"><WorkspaceBar /><Surface><EmptyState icon={<Camera size={32} aria-hidden="true" />} title="当前配方还没有拍照点" description="拍照点由整圈采集生成。完成一圈采集并采用本轮图像后，在这里逐组选图并示教中线。" action={<Link className="qs-btn" to="/recipe/capture">前往整圈采集<ArrowRight size={15} aria-hidden="true" /></Link>} /></Surface></div>;
   const saved = shotTeach(shot);
   const imagingHint = imagingMismatch(frame.image, data.workspace.doc);
   const t = frameDrafts[k] ?? saved;
@@ -411,7 +411,7 @@ export default function TeachingPage() {
     <p className="muted hint">中线保存进候选配方，已发布版本不变。用于生产前仍需完成标定、代表性样本验证与发布。</p>
   </Popover>;
   const conflictCameras = group.selected.map(item => doc.shots[item.k].camera);
-  return <div className="wp-page wp-teach-page"><WorkspaceBar /><Steps />
+  return <div className="wp-page wp-teach-page"><WorkspaceBar />
     <div className="wp-teach">
       <Surface role="region" className="wp-group-panel" aria-label="拍照组"><h2>拍照组 <small>{groups.length}</small></h2><nav className="wp-group-list" aria-label="拍照组选择">{groups.map((item,index) => {
         const button = <button className={"wp-group-item" + (index === groupIndex ? " selected" : "")} aria-label={"选择拍照组 " + item.poseId} aria-pressed={index === groupIndex} disabled={groupsLocked} title={item.choice ? doc.shots[item.choice.k].camera + " · 图 " + item.choice.view : "未选定检测图"} onClick={() => selectGroup(index)}>

@@ -7,7 +7,7 @@ import { recipeApi } from "../cycle/api";
 import { segmentLength, shotTaught } from "../cycle/vis";
 import type { RecipeDoc } from "../cycle/types";
 import { useWorkspace } from "./context";
-import { Badge, Panel, Steps, WorkspaceBar, WorkspaceEmpty } from "./components";
+import { Badge, Panel, WorkspaceBar, WorkspaceEmpty } from "./components";
 import { targetPath } from "./progress";
 import { stageOf } from "./stages";
 
@@ -31,7 +31,7 @@ export default function GeometryPage() {
   const measured = shots.filter(s => !s.skip);
   const length = preview ? preview.segments.reduce((sum, g) => sum + segmentLength(g, preview.spacing), 0) : null;
   const next = data.progress.next;
-  return <div className="wp-page"><WorkspaceBar /><Steps />
+  return <div className="wp-page"><WorkspaceBar />
     <div className="wp-columns wp-defaults">
       <div className="wp-stack">
         <Panel title="默认检测与判定参数" detail="拍照点没单独设置时使用这里的值">

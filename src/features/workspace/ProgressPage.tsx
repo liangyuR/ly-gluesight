@@ -2,7 +2,7 @@ import { Link, useLocation } from "react-router-dom";
 import { AlertTriangle, ArrowRight, History, Lock } from "lucide-react";
 import { Progress } from "qing-steel";
 import { useWorkspace } from "./context";
-import { Badge, Panel, Steps, WorkspaceBar, WorkspaceEmpty } from "./components";
+import { Badge, Panel, WorkspaceBar, WorkspaceEmpty } from "./components";
 import { stepStatusText, stepStatusTone, targetPath } from "./progress";
 import { stageOf, stages, stageStatus, stageStatusText, stageStatusTone } from "./stages";
 import { teachingTasks } from "./teachingTasks";
@@ -32,7 +32,7 @@ export default function ProgressPage() {
   const completed = tasks.filter(task => task.phase === "done").length;
   const back = returnState(location, "进度总览");
   const last = w.lastPosition && doc.shots[w.lastPosition.k];
-  return <div className="wp-page"><WorkspaceBar/><Steps/><Panel title="配方进度" className="wp-progress-board">
+  return <div className="wp-page"><WorkspaceBar /><Panel title="配方进度" className="wp-progress-board">
     {next && <section className={"wp-progress-next " + (warning ? "warn" : "info")} aria-label="下一步">
       {warning ? <AlertTriangle size={22} aria-hidden="true"/> : <ArrowRight size={22} aria-hidden="true"/>}
       <div className="wp-progress-next-body">
