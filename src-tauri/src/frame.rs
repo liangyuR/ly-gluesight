@@ -212,7 +212,6 @@ pub struct Frame {
 
 impl Frame {
     /// 单视角独立相机的那幅图（段模型用，D-SB-11）：恰好一幅时才有；只有元数据或三目拼接的帧没有。
-    #[allow(dead_code)] // C3/C4 段模型的帧归属与测量接入后去掉
     pub fn single_image(&self) -> Option<&Arc<FrameImage>> {
         match self.images.as_slice() {
             [image] => Some(image),

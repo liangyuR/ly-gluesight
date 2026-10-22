@@ -54,6 +54,7 @@ export const offsetUnjudgedText: Record<OffsetUnjudged, string> = {
   lowConfidence: "胶偏未判：分段不确定",
   measureNotImplemented: "胶偏未判：测量量未实现",
   noReference: "胶偏未判：未标定参考值",
+  noFrames: "胶偏未判：参考相机没有可用帧",
 };
 
 export const uncheckedText: Record<UncheckedItem, string> = { bubble: "气泡", stringing: "拉丝" };

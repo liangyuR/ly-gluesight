@@ -252,6 +252,7 @@ pub fn run() {
             workspace::workspace_comparisons,
             workspace::workspace_runtime_overview,
             workspace::workspace_live_image,
+            workspace::workspace_live_frame_image,
             workspace::workspace_station_capture,
             workspace::workspace_station_import,
             workspace::workspace_station_image,

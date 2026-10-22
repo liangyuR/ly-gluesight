@@ -39,6 +39,11 @@ pub const PORT_BUDGET_MBPS: f64 = 1000.0 * 0.8;
 /// 链路上每像素字节数：取图只支持 Mono8 与 8 位 Bayer（见 pixel_kind），都是 1 字节。
 const LINK_BYTES_PER_PIXEL: f64 = 1.0;
 
+/// GigE Vision 链路开销：图像按标准 1500 字节包（不开巨帧）传输，每包 1464 B 图像数据，外加 IP / UDP / GVSP 头 36 B
+/// 和以太网帧头、校验、前导码与帧间隔 38 B，线上字节约为图像字节的 1538 / 1464 ≈ 1.05 倍。开巨帧（9000 B）时约 1.008 倍；
+/// 估算按不开巨帧取保守值。
+const GIGE_OVERHEAD: f64 = 1538.0 / 1464.0;
+
 /// 相机组在某个触发频率下的链路带宽估算。
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,10 +57,10 @@ pub struct BandwidthEstimate {
     pub over_budget: bool,
 }
 
-/// 各相机 宽 × 高 × 每像素字节 × 8 × hz 求和，超过一个千兆口的 80% 即超预算。
+/// 各相机 宽 × 高 × 每像素字节 × 8 × hz × 链路开销（[`GIGE_OVERHEAD`]）求和，超过一个千兆口的 80% 即超预算。
 pub fn aggregate_bandwidth(sizes: &[Option<(u32, u32)>], hz: f64) -> BandwidthEstimate {
     let per_camera: Vec<Option<f64>> = sizes.iter()
-        .map(|size| size.map(|(w, h)| w as f64 * h as f64 * LINK_BYTES_PER_PIXEL * 8.0 * hz / 1e6))
+        .map(|size| size.map(|(w, h)| w as f64 * h as f64 * LINK_BYTES_PER_PIXEL * 8.0 * hz * GIGE_OVERHEAD / 1e6))
         .collect();
     let mbps_total = per_camera.iter().flatten().sum::<f64>();
     BandwidthEstimate { hz, mbps_total, per_camera, budget_mbps: PORT_BUDGET_MBPS, over_budget: mbps_total > PORT_BUDGET_MBPS }
@@ -188,7 +193,6 @@ impl CameraConfig {
 
 /// 段配方的计划相机在相机组里都是单视角独立设备（D-SB-11）；缺相机或是三目拼接时返回原因。
 /// 台数与重复由 plan::validate_segments 校验。
-#[allow(dead_code)] // C1 段配方校验与 C3 布防接入后去掉
 pub fn check_burst_cameras(rig: &[CameraConfig], cameras: &[String]) -> Result<(), String> {
     for id in cameras {
         rig.iter().find(|c| &c.id == id).ok_or_else(|| format!("相机组里没有计划相机 {id}"))?.require_single_view()?;
@@ -1797,14 +1801,16 @@ mod view_tests {
         }
     }
 
+    /// 规格 §6 带宽按三路之和，且计入 GigE 协议开销（C2 遗留 F0-4：只算像素时三台 130 万像素 25 Hz 为 786 Mbps，
+    /// 判为不超预算，实际线上约 826 Mbps，已超过一个千兆口的 80%）。
     #[test]
     fn aggregate_bandwidth_over_one_port_budget_is_flagged() {
         let three = |w, h| vec![Some((w, h)); 3];
         // (场景, 各相机分辨率, 触发频率, 期望合计 Mbps, 是否超预算)
         let cases: [(&str, Vec<Option<(u32, u32)>>, f64, f64, bool); 3] = [
-            ("三台 130 万像素 30 Hz 超过 800 Mbps", three(1280, 1024), 30.0, 943.7, true),
-            ("三台 130 万像素 25 Hz 未到 800 Mbps", three(1280, 1024), 25.0, 786.4, false),
-            ("还没出图的相机不计入合计", vec![Some((1280, 1024)), None, None], 25.0, 262.1, false),
+            ("三台 130 万像素 25 Hz 计入协议开销后超过 800 Mbps", three(1280, 1024), 25.0, 826.2, true),
+            ("三台 130 万像素 20 Hz 未到 800 Mbps", three(1280, 1024), 20.0, 660.9, false),
+            ("还没出图的相机不计入合计", vec![Some((1280, 1024)), None, None], 25.0, 275.4, false),
         ];
         for (name, sizes, hz, total, over) in cases {
             let estimate = aggregate_bandwidth(&sizes, hz);

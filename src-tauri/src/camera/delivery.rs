@@ -227,4 +227,36 @@ mod tests {
         assert!(shots.iter().all(|shot| shot.status == crate::cycle::FrameStatus::Done));
     }
 
+    /// 规格 §3 丢帧只告警（段配方）：回调通道满或图像内存预算满时这一帧不交给节拍，该组标检测不完整，
+    /// 其余相机照常判，整件不判 ERR（旧拍照点配方同样情况判 91，见上面的用例）。
+    #[test]
+    fn dropped_callback_frame_becomes_incomplete_group_not_err() {
+        use crate::cycle::tests::{burst_frame, judge_burst_delivered};
+        for (case, budget_full) in [("回调通道满", false), ("图像内存预算满", true)] {
+            let (tx, mut rx) = channel::<Frame>(1);
+            let identity = Mutex::new(Ledgers::default());
+            let (manual, dropped, budget_dropped) = (AtomicU32::new(0), AtomicU64::new(0), AtomicU64::new(0));
+            let mut received = Vec::new();
+            for counter in 1..=4 {
+                for cam in 0..3u8 {
+                    let mut frame = burst_frame(cam, counter);
+                    if (cam, counter) != (1, 2) {
+                        callback(&identity, &manual, &tx, &dropped, frame).unwrap();
+                        received.push(rx.try_recv().unwrap());
+                    } else if budget_full {
+                        discard_over_budget(&identity, &manual, &budget_dropped, &mut frame, true);
+                    } else {
+                        // 节拍来不及取走上一帧，通道占满
+                        tx.try_send(burst_frame(0, 999)).unwrap();
+                        assert!(matches!(callback(&identity, &manual, &tx, &dropped, frame), Err(TrySendError::Full(_))), "{case}");
+                        rx.try_recv().unwrap();
+                    }
+                }
+            }
+            let judgement = judge_burst_delivered(received, Some(4));
+            assert_eq!((judgement.verdict, judgement.fault_code), (crate::judge::Verdict::Ok, 0), "{case}");
+            assert!(judgement.flags.incomplete, "{case}");
+            assert_eq!(judgement.regions[0].incomplete_groups, vec![2], "{case}");
+        }
+    }
 }

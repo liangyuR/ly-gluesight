@@ -505,7 +505,6 @@ impl MeasureError {
 /// 一帧的测量结果。Ok 的帧指标可能是 Measured 或 OutOfCorridor（胶条走出走廊）。
 #[derive(Clone, Debug)]
 pub struct FrameMeasured {
-    #[allow(dead_code)] // C3 按它丢弃上一件迟到的结果，接入后去掉
     pub cycle_id: String,
     pub camera_idx: usize,
     pub seq: u64,
@@ -522,7 +521,6 @@ impl FrameMeasured {
     }
 
     /// 写进整件的帧指标：没测成的帧按原因记 Unmeasured 或 Error，原因放 `error`，数值为空。
-    #[allow(dead_code)] // C3 节拍接入后去掉
     pub fn metrics(&self) -> FrameMetrics {
         match &self.result {
             Ok(metrics) => metrics.clone(),
@@ -555,7 +553,7 @@ impl Task for FrameJob {
     fn set_total_ms(measured: &mut FrameMeasured, ms: u32) { measured.ms = ms; }
 }
 
-/// 帧测量结果的去处（C3 接到节拍的输入通道）。
+/// 帧测量结果的去处（节拍的输入通道 `cycle::Input::FrameMeasured`）。
 pub type FrameSink = Sink<FrameMeasured>;
 
 /// 段配方的测量池：与旧路径同一套排队与超时处理，线程数取 `frame_workers`，队列 `FRAME_MEASURE_QUEUE`。
@@ -568,7 +566,6 @@ pub struct FramePool {
 impl FramePool {
     /// 提交一帧，不阻塞相机回调。每个提交的帧恰好得到一个 `FrameMeasured`：队满时当场交出 QueueFull（记 Unmeasured），
     /// 不裁帧、不静默丢帧（D-SB-32）。
-    #[allow(dead_code)] // C3 节拍接入后去掉
     pub fn submit(&self, job: FrameJob) {
         match self.tx.try_send(job) {
             Ok(()) => {}
@@ -577,7 +574,6 @@ impl FramePool {
         }
     }
 
-    #[allow(dead_code)] // C3 布防就绪检查接入后去掉
     pub fn health(&self) -> &Arc<WorkerHealth> {
         &self.health
     }
@@ -589,7 +585,6 @@ fn frame_workers(logical: usize) -> usize {
 }
 
 /// 启动段配方的测量池。
-#[allow(dead_code)] // C3 节拍接入后去掉
 pub fn spawn_frame_worker(sink: FrameSink) -> FramePool {
     let (tx, rx) = channel::<FrameJob>(FRAME_MEASURE_QUEUE);
     let health = Arc::new(WorkerHealth::new(frame_workers(std::thread::available_parallelism().map_or(1, |n| n.get()))));

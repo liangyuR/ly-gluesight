@@ -67,7 +67,7 @@ fn part(cycle_id: &str, ledgers: &Ledgers) -> Part {
             shot_id: shot.id.clone(), camera: shot.camera.clone(), view: shot.view, ..FrameView::waiting()
         }).collect(), measuring_since: vec![None; recipe.shot_count()],
         table: vec![PointState::Pending; recipe.point_count()], received: 0, extra: 0, queue: 0,
-        router, device_triggers: None, routing_closed: false, image_measurement: false, proc_timeout: Duration::from_secs(1), drain_timeout: Duration::from_secs(2),
+        router, burst: None, issued: None, device_triggers: None, routing_closed: false, image_measurement: false, proc_timeout: Duration::from_secs(1), drain_timeout: Duration::from_secs(2),
         armed_at: Instant::now(), end_at: None, fault: None, cams: (0..cameras.len() as u8).collect(),
         camera_ids: cameras, rig_gen: 1, source: RecordSource::Real, recording: None, recipe,
     }
@@ -182,7 +182,7 @@ fn first_missing_frame_keeps_later_shots_and_expires_err91() {
 
 #[test]
 fn counter_desync_ends_err91_with_expected_and_received_counters() {
-    // 基线下限比相机实际计数高一格：本件第一帧被当成迟到帧，最后一个拍照点缺帧
+    // 上一件按触发数推的下限比相机实际计数高一格（相机漏收过一个脉冲）：本件第一帧被当成迟到帧，最后一个拍照点缺帧
     let mut ledgers = Ledgers::default();
     ledgers.observe(&FrameMeta::from(&frame(0, 1)));
     ledgers.set_floor(&Floor { cam: 0, camera: "cam1".into(), session: 1, baseline: 2 });
@@ -231,10 +231,10 @@ fn same_sn_reinspection_rejects_old_cycle_and_every_other_identity_mismatch() {
     first.receive_frame(&frame(0, 1)).unwrap();
     let old = measured(&first, 0);
     let mut ledgers = Ledgers::default();
-    first.router.close(&mut ledgers);
+    first.router.close(&mut ledgers, None);
     let mut next = part("next", &ledgers);
-    assert!(matches!(next.receive_frame(&frame(0, 1)).unwrap(), Route::Stale { .. }));
-    assert_eq!(next.receive_frame(&frame(0, 2)).unwrap(), Route::Bound { shot: 0, ordinal: 1 });
+    assert!(matches!(next.receive_frame(&frame(0, 2)).unwrap(), Route::Stale { .. }));
+    assert_eq!(next.receive_frame(&frame(0, 5)).unwrap(), Route::Bound { shot: 0, ordinal: 1 });
     assert_eq!(next.sn, old.sn);
     assert!(next.apply_result(old).is_none());
     for variant in 0..4 {
@@ -247,17 +247,23 @@ fn same_sn_reinspection_rejects_old_cycle_and_every_other_identity_mismatch() {
     assert!(next.apply_result(measured(&next, 0)).is_some());
 }
 
-/// D-SB-7：下一件基线 = max(原基线, 该相机本件见到的最高计数)，PLC 报的 deviceTriggers 和计划数（4）都不参与。
-/// 见到 1–3、PLC 报 4（使能边沿多数一个脉冲，或相机漏收一个）：按 PLC 报数或计划数推，下一件第一帧（计数 4）会被当成上一件的迟到帧。
+/// 协议 6 不再核对 partEnd 时 PLC 报的触发数等于计划：下一件基线按 PLC 报的实发数推。
+/// 按计划数推（实发 3、计划 4）会把下一件第一帧当成上一件的迟到帧；只按见到的帧推（第 4 帧丢在传输里）会让下一件错位一帧。
 #[test]
-fn three_frames_seen_plc_reports_four_next_part_first_frame_is_counter_4() {
-    let mut p = part("plc-reports-more", &Ledgers::default());
-    for counter in 1..=3 { p.receive_frame(&frame(0, counter)).unwrap(); }
-    p.device_triggers = Some(4);
-    let mut ledgers = Ledgers::default();
-    p.close_routing(&mut ledgers);
-    let mut next = part("next", &ledgers);
-    assert_eq!(next.receive_frame(&frame(0, 4)), Some(Route::Bound { shot: 0, ordinal: 1 }));
+fn next_part_baseline_follows_plc_reported_triggers_not_plan_or_frames_seen() {
+    for (case, reported, delivered, next_first) in [
+        ("实发少于计划", 3, 3, 4),
+        ("实发等于计划、末帧丢在传输里", 4, 3, 5),
+    ] {
+        let mut p = part(case, &Ledgers::default());
+        p.issued = Some(vec!["cam1".into()]);
+        for counter in 1..=delivered { p.receive_frame(&frame(0, counter)).unwrap(); }
+        p.device_triggers = Some(reported);
+        let mut ledgers = Ledgers::default();
+        p.close_routing(&mut ledgers, None);
+        let mut next = part("next", &ledgers);
+        assert_eq!(next.receive_frame(&frame(0, next_first)), Some(Route::Bound { shot: 0, ordinal: 1 }), "{case}");
+    }
 }
 
 /// 测点号不对、无基准站带着 d（违反“无基准站没有位置值”的契约）都按测量出错处理。
@@ -393,5 +399,221 @@ fn offline_locate_fail_scenarios_judge_err92_or_ng_gap_and_keep_the_reference_ba
         assert_eq!(frame.status, FrameStatus::Done);
         assert_eq!(frame.reference_failed, [measure::ReferenceFailure { view: frame.view, reason: "定位失败".into() }]);
         assert!(p.recipe.segments.iter().zip(&j.segments).filter(|(g, _)| g.shot == failed).all(|(_, s)| s.reference_invalid));
+    }
+}
+
+// ───────────── 段配方：三路按帧号配组、每帧送测、收尾规则、未分段判定（旧拍照点配方的用例见上） ─────────────
+
+/// 段配方在途件：samples_burst（cam1–cam3 共用触发、一个直线段 N_exp = 4、容差 1），相机组序号 0–2、会话 11–13，
+/// 按计数账定帧计数基线（模拟相机本会话没见过帧时从 0 起）。
+fn burst_part(cycle_id: &str, ledgers: &Ledgers) -> Part {
+    let recipe = Arc::new(crate::recipe::samples_burst().build().unwrap());
+    let cameras = recipe.plan_cameras();
+    let identities: Vec<ArmCam> = cameras.iter().enumerate().map(|(cam, id)| ArmCam {
+        cam: cam as u8, camera: id.clone(), session: cam as u64 + 11, source: Some(CounterSource::Synthetic), counter_after_open: None,
+    }).collect();
+    let policy = Policy::burst_offline(None);
+    let baselines = arm_frames(&cameras, ledgers, &policy, &identities).unwrap();
+    Part {
+        cycle_id: cycle_id.into(), bundle_id: None, production: None, candidate: None, sn: "SN-88".into(), scenario: Scenario::Normal,
+        frames: Vec::new(), measuring_since: Vec::new(), table: Vec::new(), received: 0, extra: 0, queue: 0, router: unrouted(),
+        burst: Some(Box::new(burst::BurstPart::arm(&recipe, baselines, policy.trusted))), issued: None, device_triggers: None,
+        routing_closed: false, image_measurement: false, proc_timeout: Duration::from_secs(1), drain_timeout: Duration::from_secs(2),
+        armed_at: Instant::now(), end_at: None, fault: None, cams: vec![0, 1, 2], camera_ids: cameras, rig_gen: 1,
+        source: RecordSource::Real, recording: None, recipe,
+    }
+}
+
+/// 相机组序号 cam（会话 11 + cam）帧计数为 counter 的一帧。
+pub(crate) fn burst_frame(cam: u8, counter: u64) -> Frame {
+    Frame { cam, session: cam as u64 + 11, counter: CounterSource::Synthetic, frame_counter: counter, trigger_counter: counter,
+        lost_packets: 0, ts: 1, manual: false, images: Vec::new() }
+}
+
+/// 测量池交回的一帧结果。
+fn frame_result(part: &Part, camera: usize, seq: u64, result: Result<crate::burst_judge::FrameMetrics, measure::MeasureError>) -> FrameMeasured {
+    FrameMeasured { cycle_id: part.cycle_id.clone(), camera_idx: camera, seq, result, ms: 5, queue_ms: None, engine_ms: None }
+}
+
+/// 收一帧；被接受时交回合格的模拟测量结果。
+fn deliver(part: &mut Part, cam: u8, counter: u64) -> burst::Arrival {
+    let arrival = part.receive_burst(&burst_frame(cam, counter)).unwrap();
+    if let burst::Arrival::Accepted { camera, seq } = arrival {
+        let result = frame_result(part, camera, seq, Ok(measure::simulate_frame(Scenario::Normal, camera, seq, &part.recipe)));
+        part.apply_burst(result).unwrap();
+    }
+    arrival
+}
+
+/// partEnd：PLC 报 device_triggers；expired 为真时收尾截止已过。
+fn end(part: &mut Part, device_triggers: Option<u16>, expired: bool) {
+    part.end_at = Some(Instant::now() - if expired { part.drain_timeout } else { Duration::ZERO });
+    part.device_triggers = device_triggers;
+}
+
+fn judge_burst(part: &mut Part) -> BurstJudgement {
+    let judgement = part.burst_judgement().unwrap();
+    part.burst.as_mut().unwrap().judgement = Some(judgement.clone());
+    judgement
+}
+
+/// 回调交付的帧（丢掉的帧不在其中）走段配方节拍；partEnd 时 PLC 报 device_triggers，判完返回结论。
+pub(crate) fn judge_burst_delivered(received: Vec<Frame>, device_triggers: Option<u16>) -> BurstJudgement {
+    let mut p = burst_part("callback-dropped", &Ledgers::default());
+    for frame in received {
+        if let Some(burst::Arrival::Accepted { camera, seq }) = p.receive_burst(&frame) {
+            let result = frame_result(&p, camera, seq, Ok(measure::simulate_frame(Scenario::Normal, camera, seq, &p.recipe)));
+            p.apply_burst(result).unwrap();
+        }
+    }
+    end(&mut p, device_triggers, false);
+    assert!(p.complete(), "已接受的帧都测完、各相机 max_seq ≥ deviceTriggers − 1");
+    judge_burst(&mut p)
+}
+
+/// 规格 §3：三路帧按 SDK 帧号（减各相机基线）配组，不按到达顺序；收尾规则：partEnd 前不判，partEnd 后已接受的帧都测完
+/// 且每台相机 max_seq ≥ deviceTriggers − 1 即判，PLC 报得更多时等剩余帧或收尾截止。判定结果能按 C5 的记录约束落库。
+#[test]
+fn three_camera_frames_out_of_arrival_order_are_grouped_and_part_judged_after_end() {
+    let mut ledgers = Ledgers::default();
+    for (cam, base) in [(0u8, 100u64), (1, 200), (2, 300)] {
+        ledgers.observe(&FrameMeta::from(&burst_frame(cam, base)));
+    }
+    let mut p = burst_part("burst-order", &ledgers);
+    // cam1 倒序到达，三台交错
+    for (cam, counter) in [(0, 104), (1, 201), (0, 103), (2, 302), (1, 202), (0, 102), (2, 301), (1, 204), (0, 101), (2, 304), (1, 203), (2, 303)] {
+        assert!(matches!(deliver(&mut p, cam, counter), burst::Arrival::Accepted { .. }), "相机 {cam} 帧计数 {counter}");
+    }
+    assert!(!p.complete(), "partEnd 前不判");
+    end(&mut p, Some(6), false);
+    assert!(!p.complete(), "PLC 报 6、各相机只到第 4 帧：等剩余帧或收尾截止");
+    end(&mut p, Some(5), false);
+    assert!(p.complete(), "各相机 max_seq 4 ≥ deviceTriggers 5 − 1");
+    let judgement = judge_burst(&mut p);
+    assert_eq!((judgement.verdict, judgement.group_count, judgement.flags.incomplete), (Verdict::Ok, 4, false));
+    let summary = burst::summary(&judgement);
+    let record = p.burst_record(&summary).unwrap();
+    let identities: Vec<(usize, u64, Option<u64>)> = record.frames.iter().map(|f| (f.camera, f.seq, f.frame_counter)).collect();
+    let expected: Vec<(usize, u64, Option<u64>)> = (1..=4u64).flat_map(|seq| (0..3usize).map(move |camera| (camera, seq, Some([100, 200, 300][camera] + seq)))).collect();
+    assert_eq!(identities, expected);
+    let directory = crate::offline::test_dir::TestDir::new("cycle-burst-tests", "store");
+    let store = Store::open(&directory.join("inspection.db")).unwrap();
+    let delivery = PlcDelivery { state: PlcDeliveryState::Pending, updated_at: 1, message: None };
+    store.insert(&crate::store::PartRecord { ts: 1, sn: &p.sn, recipe: Some(&p.recipe), judgement: &summary, drain_ms: None, frames: &[],
+        frames_expected: 4, frames_received: 4, triggers: 5, table: None, software_version: "test", cycle_id: Some(&p.cycle_id), bundle_id: None,
+        delivery: &delivery, shots: &[], source: RecordSource::Real, sample: None, burst: Some(&record) }).unwrap();
+}
+
+/// 规格 §0 不裁帧、§2 帧数超出 N_exp ± tol 只告警：ΣN_exp 4 ± 1 时到了 7 组，超出的帧照常测、照常判（第 7 组的断胶判 NG），
+/// 整件标帧数异常。
+#[test]
+fn frames_beyond_expected_total_are_all_measured_and_only_alarm() {
+    let mut p = burst_part("burst-extra", &Ledgers::default());
+    for counter in 1..=7u64 {
+        for cam in 0..3u8 {
+            let arrival = p.receive_burst(&burst_frame(cam, counter)).unwrap();
+            let burst::Arrival::Accepted { camera, seq } = arrival else { panic!("相机 {cam} 第 {counter} 帧没被接受：{arrival:?}") };
+            let mut metrics = measure::simulate_frame(Scenario::Normal, camera, seq, &p.recipe);
+            if (camera, seq) == (2, 7) { metrics.gap_max_mm = 100.0; }
+            let result = frame_result(&p, camera, seq, Ok(metrics));
+            p.apply_burst(result).unwrap();
+        }
+    }
+    end(&mut p, Some(7), false);
+    assert!(p.complete());
+    let judgement = judge_burst(&mut p);
+    assert_eq!((judgement.verdict, judgement.group_count, judgement.flags.frame_count_anomaly), (Verdict::NgGap, 7, true));
+    let record = p.burst_record(&burst::summary(&judgement)).unwrap();
+    assert_eq!(record.frames.iter().filter(|f| f.status == FrameState::Measured).count(), 21);
+}
+
+/// D-SB-7：下一件每台相机的帧计数基线 = max(原基线, 本件见到的最高帧计数)，PLC 报的 deviceTriggers 与计划数都不参与。
+/// 上一件的帧在收尾后才到（帧计数不高于见到的最高值）不能计入下一件；某台相机漏收一个脉冲（PLC 报 4、它只到 3 帧）时，
+/// 它下一件的首帧仍算第 1 帧——按“基线 + deviceTriggers”推会把它判成迟到帧，而且每件都丢。
+#[test]
+fn next_part_baseline_is_each_camera_highest_frame_counter_seen() {
+    for (case, cam, delivered, late, next_first) in [
+        ("上一件帧计数 3 在收尾后才到", 0u8, [1, 2, 4], Some(3), 5),
+        ("漏收一个脉冲的相机", 2u8, [1, 2, 3], None, 4),
+    ] {
+        let mut first = burst_part("first", &Ledgers::default());
+        for counter in delivered { deliver(&mut first, cam, counter); }
+        first.device_triggers = Some(4);
+        let mut ledgers = Ledgers::default();
+        first.close_routing(&mut ledgers, None);
+        let mut next = burst_part("next", &ledgers);
+        if let Some(late) = late {
+            assert!(matches!(next.receive_burst(&burst_frame(cam, late)), Some(burst::Arrival::Stale { .. })), "{case}");
+        }
+        assert_eq!(next.receive_burst(&burst_frame(cam, next_first)), Some(burst::Arrival::Accepted { camera: cam as usize, seq: 1 }), "{case}");
+    }
+}
+
+/// 会话变化仍是设备故障：布防后相机重连过，之后的帧号对不上本件，整件判 ERR 98——重连后又来帧，或重连后没再来帧（收尾时核对会话）。
+#[test]
+fn camera_reconnect_during_part_is_err_98() {
+    for case in ["重连后又来一帧", "重连后没再来帧"] {
+        let mut p = burst_part(case, &Ledgers::default());
+        for counter in 1..=4 {
+            for cam in 0..3 { deliver(&mut p, cam, counter); }
+        }
+        if case == "重连后又来一帧" {
+            assert!(matches!(p.receive_burst(&Frame { session: 99, ..burst_frame(1, 5) }), Some(burst::Arrival::Fault(_))));
+        } else {
+            let cameras: Vec<ArmCam> = (0..3u8).map(|cam| ArmCam { cam, camera: p.camera_ids[cam as usize].clone(),
+                session: if cam == 1 { 99 } else { cam as u64 + 11 }, source: Some(CounterSource::Synthetic), counter_after_open: None }).collect();
+            let reason = p.burst.as_ref().unwrap().check_sessions(&cameras).unwrap_err();
+            p.fault = Some((fault::DEVICE_LOST, reason));
+        }
+        end(&mut p, Some(4), false);
+        let judgement = judge_burst(&mut p);
+        assert_eq!((judgement.verdict, judgement.fault_code), (Verdict::ErrInspect, fault::DEVICE_LOST), "{case}");
+    }
+}
+
+/// 决策（默认做法 7）：三台相机整件一帧都没有时判 ERR 91；PLC 照常报了触发数时等到收尾截止再判。
+#[test]
+fn no_frame_from_any_camera_is_err_91() {
+    let mut p = burst_part("burst-empty", &Ledgers::default());
+    end(&mut p, Some(4), false);
+    assert!(!p.complete(), "PLC 报 4、一帧没到：等到收尾截止");
+    end(&mut p, Some(4), true);
+    assert!(p.complete());
+    let judgement = judge_burst(&mut p);
+    assert_eq!((judgement.verdict, judgement.plc_code, judgement.fault_code), (Verdict::ErrInspect, 90, fault::MISSING_FRAME));
+}
+
+/// D-SB-13（不裁帧时的背压）：一帧没测成——测量队满、单帧超时、测量失败、到收尾截止仍没结果——只记该组与整件检测不完整，
+/// 其余帧照常判，不像旧拍照点配方那样判 ERR 99。
+#[test]
+fn unmeasured_frame_marks_group_incomplete_not_err_99() {
+    use measure::MeasureError;
+    for (case, error) in [
+        ("测量队满", Some(MeasureError::QueueFull)),
+        ("单帧超时", Some(MeasureError::Timeout)),
+        ("测量失败", Some(MeasureError::Failed("lyFlow 运行失败".into()))),
+        ("到收尾截止仍没结果", None),
+    ] {
+        let mut p = burst_part(case, &Ledgers::default());
+        for counter in 1..=4 {
+            for cam in 0..3u8 {
+                if (cam, counter) != (1, 2) {
+                    deliver(&mut p, cam, counter);
+                    continue;
+                }
+                p.receive_burst(&burst_frame(cam, counter)).unwrap();
+                if let Some(error) = error.clone() {
+                    let result = frame_result(&p, 1, 2, Err(error));
+                    p.apply_burst(result).unwrap();
+                }
+            }
+        }
+        end(&mut p, Some(4), error.is_none());
+        p.expire_burst(Instant::now(), p.proc_timeout, p.drain_timeout);
+        assert!(p.complete(), "{case}");
+        let judgement = judge_burst(&mut p);
+        assert_eq!((judgement.verdict, judgement.fault_code), (Verdict::Ok, 0), "{case}");
+        assert!(judgement.flags.incomplete, "{case}");
+        assert_eq!(judgement.regions[0].incomplete_groups, vec![2], "{case}");
     }
 }

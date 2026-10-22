@@ -550,7 +550,8 @@ pub(crate) fn matching_ack(snapshot: &Snapshot, result: &ResultEnvelope) -> Resu
 }
 
 /// 运动结束核对：partEnd / partStart 有效、请求身份未变。返回此刻 PLC 报的设备触发数；
-/// 协议 6 不再要求它等于 deviceShots，只作参考（丢帧告警、收尾等待），不参与下一件基线（D-SB-7）。
+/// 协议 6 不再要求它等于 deviceShots，只作参考：段配方用于丢帧告警与收尾等待，不参与下一件基线；
+/// 旧拍照点配方仍按它推下一件基线（D-SB-7）。
 pub(crate) fn verify_part_end(snapshot: &Snapshot, request: &Request) -> Result<u16, String> {
     if !snapshot.read_bool("partEnd")? || !snapshot.read_bool("partStart")? {
         return Err("运动结束要求 partEnd 和 partStart 保持有效".into());
@@ -941,9 +942,11 @@ mod tests {
         }
     }
 
+    /// 只接受 PC 当前的协议版本：PLC 仍写上一版（协议 5）不能布防；参数表由 PROTOCOL_VERSION 派生，升版时随之移动。
     #[test]
     fn plc_writing_protocol_5_cannot_arm() {
-        for (version, accepted) in [(5, false), (6, true)] {
+        let current = i64::from(PROTOCOL_VERSION);
+        for (version, accepted) in [(current - 1, false), (current, true)] {
             let mut s = snapshot();
             s.values.insert("protocolVersion", PlcValue::Int(version));
             assert_eq!(s.start_request().is_ok(), accepted, "protocolVersion={version}");

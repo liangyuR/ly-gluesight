@@ -447,7 +447,8 @@ impl RecipeCaptureHost {
                 run.alarm(CaptureAlarm::Duplicate { camera: j, seq });
                 return true;
             }
-            Offer::Stale => return true,
+            // seq 已按 MAX_SEQ 先行核对（上面判整轮失败），默认上限与它相同，OutOfRange 在这里到不了
+            Offer::Stale | Offer::OutOfRange { .. } => return true,
         };
         if run.cams[j].last.is_some_and(|last| f.frame_counter < last) {
             run.cams[j].faulted = true;

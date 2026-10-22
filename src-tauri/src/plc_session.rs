@@ -158,7 +158,8 @@ pub enum SessionEvent {
     /// 运动结束（partEnd 已核对请求身份）；附此刻 PLC 报的设备触发数，协议 6 只作参考，不再要求等于 deviceShots
     End(Instant, Option<u16>),
     Fault(String),
-    /// 结果已确认、双方已释放；附 PLC 确认结果时设备的已发触发数（只记日志，不参与下一件基线，D-SB-7）
+    /// 结果已确认、双方已释放；附 PLC 确认结果时设备的已发触发数（旧拍照点配方提前判 ERR 的件据此推下一件基线；
+    /// 段配方只记日志，不参与下一件基线，D-SB-7）
     Released(Option<u16>),
     /// 空闲时视觉输出被改写，已重写空闲输出并继续（附原因）
     Restored(String),

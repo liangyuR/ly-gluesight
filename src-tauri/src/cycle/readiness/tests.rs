@@ -170,6 +170,24 @@ fn sample_set_matches_recipe_shots_by_camera_and_in_camera_order_not_by_shot_id(
     }
 }
 
+/// 规格 §1 Plan.cameras：段配方没有拍照点，按计划相机核对样本集——三台计划相机都要在样本集里，且有单视角图（视角 1）。
+#[test]
+fn readiness_requires_sample_set_cameras_to_match_plan_cameras() {
+    let recipe = crate::recipe::samples_burst().build().unwrap();
+    let cases: [(&str, &[&str], &[u8], Option<&str>); 3] = [
+        ("三台计划相机都在", &["cam1", "cam2", "cam3"], &[1], None),
+        ("样本集缺计划相机 cam3", &["cam1", "cam2", "cam9"], &[1], Some("计划相机 cam3 不在样本集里")),
+        ("样本集只有三目拼接的视角 2、3", &["cam1", "cam2", "cam3"], &[2, 3], Some("没有单视角图")),
+    ];
+    for (name, cameras, views, expected) in cases {
+        let mismatch = sample_set_mismatch(&recipe, &sample_manifest(cameras, &[], views), |_| Some(1));
+        match expected {
+            None => assert_eq!(mismatch, None, "{name}"),
+            Some(text) => assert!(mismatch.as_deref().is_some_and(|m| m.contains(text)), "{name}：{mismatch:?}"),
+        }
+    }
+}
+
 #[test]
 fn each_trigger_takes_the_sample_shot_of_the_same_point_for_every_camera() {
     let cameras = ["cam1", "cam2", "cam3"];

@@ -3,9 +3,6 @@
 //!
 //! 与旧拍照点模型的 `judge::Judgement` 并存：旧配方仍用 `judge`，段配方用这里的 `BurstJudgement`。
 
-// C3 接入调用方后删掉 dead_code。
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -89,6 +86,8 @@ pub enum OffsetUnjudged {
     MeasureNotImplemented,
     /// 启用了胶偏但标准件 x_ref 未标定
     NoReference,
+    /// 去掉区域首尾各一帧后，参考相机没有测成、带 x 的帧（缺帧、测量失败或区域太短）
+    NoFrames,
 }
 
 /// 一个区域的判定。
@@ -342,6 +341,11 @@ fn judge_frame(frame: &FrameMetrics, checks: &SegmentChecks) -> BTreeSet<Finding
     found
 }
 
+/// 一帧单独的结论（在线帧格显示用）：只看这一帧的独立指标，不含区域级的均匀性与胶偏。
+pub fn frame_verdict(frame: &FrameMetrics, checks: &SegmentChecks) -> Verdict {
+    judge_frame(frame, checks).iter().map(|f| f.verdict()).max().unwrap_or(Verdict::Ok)
+}
+
 /// 直线段胶偏（xs 已去掉区域首尾各一帧，非空）：x 均值 − x_ref 判整段偏移，各帧 x 与均值的最大偏差判局部跑偏。
 fn straight_offset(xs: &[f64], x_ref: f64, check: &OffsetCheck) -> (OffsetStat, BTreeSet<Finding>) {
     let mean = xs.iter().sum::<f64>() / xs.len() as f64;
@@ -459,7 +463,7 @@ fn judge_region(part: &PartInput, region: &Region) -> RegionResult {
 
 /// 直线区域的胶偏：只用 `offset_ref.camera` 那台相机的 Measured 帧，去掉区域首尾各一帧（按 seq）。
 /// 没启用胶偏不判也不标；ToEdge 标测量量未实现；没有参考值（或参考相机不在计划内）标未标定；
-/// 去掉首尾后没有可用的 x 时不判（缺帧已记检测不完整）。
+/// 去掉首尾后没有可用的 x 时标没有可用帧（不静默放过）。
 fn region_offset(
     segment: &PathSegment,
     checks: &SegmentChecks,
@@ -482,7 +486,7 @@ fn region_offset(
         .filter_map(|m| m.x_mm)
         .collect();
     if xs.is_empty() {
-        return (None, None, BTreeSet::new());
+        return unjudged(OffsetUnjudged::NoFrames);
     }
     let (stat, found) = straight_offset(&xs, x_ref, check);
     (Some(stat), None, found)
@@ -692,18 +696,29 @@ mod tests {
         }
     }
 
-    /// 默认做法 2：ToEdge 标“测量量未实现”；没有标准件参考值标“未标定参考值”。都不判 NG，也不悄悄放过。
+    /// 默认做法 2：ToEdge 标“测量量未实现”；没有标准件参考值标“未标定参考值”；去掉首尾各一帧后参考相机没有测成的帧
+    /// 标“没有可用帧”（A4 遗留 F0-3：原先静默不判也不标）。都不判 NG，也不悄悄放过。
     #[test]
-    fn straight_offset_with_to_edge_or_without_reference_is_unjudged_not_ng() {
-        for (case, offset_ref, unjudged) in [
-            ("ToEdge", reference(None, OffsetMeasure::ToEdge), OffsetUnjudged::MeasureNotImplemented),
-            ("AbsoluteX 未标定 x_ref", reference(None, OffsetMeasure::AbsoluteX), OffsetUnjudged::NoReference),
-            ("没有胶偏参考", None, OffsetUnjudged::NoReference),
-        ] {
+    fn straight_offset_with_to_edge_without_reference_or_without_usable_frames_is_unjudged_not_ng() {
+        let reference_middle_failed = |metrics: &mut Vec<FrameMetrics>| {
+            for seq in 2..=5 {
+                *at(metrics, 0, seq) = failed(0, seq, FrameState::Error);
+            }
+        };
+        let keep = |_: &mut Vec<FrameMetrics>| {};
+        type Edit = fn(&mut Vec<FrameMetrics>);
+        let cases: [(&str, Option<OffsetRef>, Edit, OffsetUnjudged); 4] = [
+            ("ToEdge", reference(None, OffsetMeasure::ToEdge), keep, OffsetUnjudged::MeasureNotImplemented),
+            ("AbsoluteX 未标定 x_ref", reference(None, OffsetMeasure::AbsoluteX), keep, OffsetUnjudged::NoReference),
+            ("没有胶偏参考", None, keep, OffsetUnjudged::NoReference),
+            ("参考相机中间帧都没测成，只剩首尾帧", reference(Some(0.0), OffsetMeasure::AbsoluteX), reference_middle_failed, OffsetUnjudged::NoFrames),
+        ];
+        for (case, offset_ref, edit, unjudged) in cases {
             let mut segments = plan(&[Straight]);
             segments[0].offset_ref = offset_ref;
             let mut metrics = frames(6);
             metrics.iter_mut().for_each(|m| m.x_mm = Some(5.0));
+            edit(&mut metrics);
             let result = run(&segments, None, &[region(RegionKind::Straight { segment: 1 }, 1, 6)], &metrics);
             assert_eq!(result.verdict, Verdict::Ok, "{case}");
             assert_eq!((&result.regions[0].offset, result.regions[0].offset_unjudged), (&None, Some(unjudged)), "{case}");

@@ -6,7 +6,7 @@ use ly_plc::LinkState;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-use super::{host, plc, usable_cams, CycleHost, Phase};
+use super::{host, plc, ready_to_run, usable_cams, CycleHost, Phase};
 use crate::offline::sample_set::{Manifest, SampleSet};
 use crate::plc_session::{SessionPhase, NOTICE};
 use crate::recipe::Recipe;
@@ -241,8 +241,15 @@ pub fn evaluate(mut f: Facts) -> Readiness {
 }
 
 /// 样本集按相机编号 + 相机内序号取图（见 [`Manifest::recipe_shots`]），且要提供该相机配置的全部视角
-/// （样本集相机每次取 1..=视角数）。
+/// （样本集相机每次取 1..=视角数）。段配方（规格 §1 Plan.cameras）只核对三台计划相机都在样本集里、且有单视角图（视角 1）。
 pub fn sample_set_mismatch(recipe: &Recipe, manifest: &Manifest, view_count: impl Fn(&str) -> Option<u8>) -> Option<String> {
+    if recipe.is_burst() {
+        return recipe.plan_cameras().iter().find_map(|id| match manifest.cameras.iter().find(|c| &c.id == id) {
+            None => Some(format!("计划相机 {id} 不在样本集里（样本集相机：{}）", manifest.cameras.iter().map(|c| c.id.as_str()).collect::<Vec<_>>().join("、"))),
+            Some(camera) if !camera.views.contains(&1) => Some(format!("计划相机 {id} 在样本集里没有单视角图（视角 1），只有视角 {:?}", camera.views)),
+            Some(_) => None,
+        });
+    }
     let samples = match manifest.recipe_shots(recipe) {
         Ok(samples) => samples,
         Err(reason) => return Some(reason),
@@ -298,7 +305,7 @@ fn production_state(app: &AppHandle, recipe: &Recipe) -> Result<Option<String>, 
 
 fn recipe_problem(app: &AppHandle, host: &CycleHost, recipe: &Recipe, image: bool, set: Option<&SampleSet>) -> Result<(Vec<u8>, Option<String>), (String, Target)> {
     let workspace = |e: String| (e, Target::Workspace);
-    recipe.ready().map_err(workspace)?;
+    ready_to_run(recipe).map_err(workspace)?;
     let waiting = if image { production_state(app, recipe)? } else { None };
     let view_count = |id: &str| host.camera.require(id).ok().and_then(|c| host.camera.slot(c as usize)).map(|slot| slot.config().view_count);
     if let Some(reason) = set.and_then(|set| sample_set_mismatch(recipe, set.manifest(), view_count)) {

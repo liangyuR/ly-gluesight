@@ -689,7 +689,6 @@ impl Recipe {
     /// 段配方能不能发布生产（D-SB-20）：三台相机都示教了走廊和当量，且整件预期帧组数已标定
     /// （各段 N_exp 可以为空，凭整件标定发布，决策补充第二节）。不能时逐条列出原因。
     /// `Recipe::ready` 保留给旧拍照点配方，段配方过不了它，旧发布与旧节拍因此不会接受段配方。
-    #[cfg_attr(not(test), allow(dead_code))] // D3 发布前检查接入后去掉
     pub fn ready_burst(&self) -> Result<(), Vec<String>> {
         let mut reasons: Vec<String> = Vec::new();
         if !self.is_burst() {

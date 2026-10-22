@@ -221,7 +221,7 @@ export interface OffsetStat {
 }
 
 /** 胶偏未判的原因；弯道区域本来就不判，不标。 */
-export type OffsetUnjudged = "unsegmented" | "lowConfidence" | "measureNotImplemented" | "noReference";
+export type OffsetUnjudged = "unsegmented" | "lowConfidence" | "measureNotImplemented" | "noReference" | "noFrames";
 
 export interface RegionResult {
   region: Region;

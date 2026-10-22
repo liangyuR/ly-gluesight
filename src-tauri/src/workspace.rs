@@ -426,21 +426,25 @@ pub struct WorkspaceHost {
     root: PathBuf,
     items: Mutex<HashMap<String, Workspace>>,
     pub notes: Vec<String>,
-    live: Mutex<LiveFrames>,
+    live: Mutex<LiveFrames<usize>>,
+    /// 段配方在途件的实时原图，按 (计划相机下标, seq)
+    live_burst: Mutex<LiveFrames<(usize, u64)>>,
     station: Mutex<HashMap<u8, (FrozenImage, Arc<FrameImage>)>>,
     capture_seq: std::sync::atomic::AtomicU64,
     comparisons: comparisons::Comparisons,
 }
 
+/// 在途件的实时原图：按工件与配方修订成组，换件即清空；总量超过上限时丢最早的。
+/// 旧拍照点配方按拍照点 k，段配方按 (计划相机下标, seq)。
 #[derive(Default)]
-struct LiveFrames {
+struct LiveFrames<K> {
     key: Option<(String, String)>,
-    frames: VecDeque<(usize, Arc<FrameImage>)>,
+    frames: VecDeque<(K, Arc<FrameImage>)>,
     bytes: usize,
 }
 
-impl LiveFrames {
-    fn insert(&mut self, cycle_id: &str, revision_id: &str, k: usize, image: Arc<FrameImage>) {
+impl<K: PartialEq + Default> LiveFrames<K> {
+    fn insert(&mut self, cycle_id: &str, revision_id: &str, k: K, image: Arc<FrameImage>) {
         if self
             .key
             .as_ref()
@@ -519,6 +523,7 @@ impl WorkspaceHost {
             items: Mutex::new(items),
             notes,
             live: Mutex::new(LiveFrames::default()),
+            live_burst: Mutex::new(LiveFrames::default()),
             station: Mutex::new(HashMap::new()),
             capture_seq: std::sync::atomic::AtomicU64::new(0),
             comparisons: comparisons::Comparisons::default(),
@@ -2164,7 +2169,38 @@ pub fn workspace_comparisons(
 pub fn clear_live(app: &AppHandle) {
     if let Some(host) = app.try_state::<WorkspaceHost>() {
         *host.live.lock().unwrap() = LiveFrames::default();
+        *host.live_burst.lock().unwrap() = LiveFrames::default();
     }
+}
+
+/// 段配方在途件一帧的原图（计划相机 camera 的第 seq 帧），供 `workspace_live_frame_image` 读。
+pub fn retain_live_frame(app: &AppHandle, cycle_id: &str, revision_id: &str, camera: usize, seq: u64, image: &Option<Arc<FrameImage>>) {
+    if let (Some(host), Some(image)) = (app.try_state::<WorkspaceHost>(), image) {
+        host.live_burst.lock().unwrap().insert(cycle_id, revision_id, (camera, seq), image.clone());
+    }
+}
+
+/// 段配方在途件某台相机第 seq 帧的实时原图（决策记录 5.4，camera 为计划相机下标）；未到、缺帧或已超出预览缓存时报错。
+#[tauri::command]
+pub fn workspace_live_frame_image(
+    host: State<'_, WorkspaceHost>,
+    cycle_id: String,
+    revision_id: String,
+    camera: usize,
+    seq: u64,
+) -> Result<tauri::ipc::Response, String> {
+    let image = {
+        let live = host.live_burst.lock().unwrap();
+        if live.key.as_ref().is_none_or(|key| key.0 != cycle_id || key.1 != revision_id) {
+            return Err("本件尚未收到整帧图像".into());
+        }
+        live.frames
+            .iter()
+            .find(|(key, _)| *key == (camera, seq))
+            .map(|(_, image)| image.clone())
+            .ok_or("这一帧原图未到达（缺帧）或已超出预览缓存；请开启图像测量或帧录制")?
+    };
+    Ok(preview_response(&image))
 }
 
 pub fn retain_live(

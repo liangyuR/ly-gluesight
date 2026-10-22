@@ -3,7 +3,7 @@
 //! 本轮没有真实弯道图像，只交付接口、`Unsegmented`（整条胶路一个未分段区域）和合成序列回归入口；
 //! 算法验证前整条胶路按未分段处理：只跑每帧独立检测，不判胶偏。
 
-// C3/D2 接入调用方后删掉 dead_code。
+// SegInput 的数据、搜索窗口与合成序列回归入口留给后续分段算法（D2）使用，本轮只有 Unsegmented 与测试读它们。
 #![allow(dead_code)]
 
 use std::ops::RangeInclusive;

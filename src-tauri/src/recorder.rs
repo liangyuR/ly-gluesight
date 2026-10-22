@@ -229,7 +229,6 @@ impl Recorders {
     }
 
     /// 段配方：按 (计划相机下标, seq) 录一帧。
-    #[allow(dead_code)] // C3 段配方生产节拍接入后去掉
     pub fn burst_frame(&self, rec: &mut Recording, frame: &Frame, camera: usize, seq: u64) {
         self.get(rec.scope).burst_frame(rec, frame, camera, seq)
     }

@@ -55,7 +55,7 @@
 ### D-SB-3 区域帧数口径：帧数 = 帧组数
 
 - 问题：规格 §2 每段取各轮帧数均值作 N_exp，运行时每段帧数与 N_exp ± tol 比较，但没说三台相机各自的帧数怎么合成一个“帧数”。
-- 采用：标定和运行同一口径——帧数 = 帧组数，即区域内 seq 的个数（`last_seq − first_seq + 1`）；整件或整轮的帧组数 = 各相机最大 seq 的最大值。单台相机的帧数只用于丢帧告警，不参与容差比较。详见第六节。
+- 采用：标定和运行同一口径——帧数 = 帧组数，即区域内 seq 的个数（`last_seq − first_seq + 1`）；整件或整轮的帧组数 = 各相机最大 seq 的最大值。单台相机的帧数只用于丢帧告警（与 deviceTriggers 相差 > 1，或与另外每一台相机都相差 > 1），不参与容差比较。详见第六节。
 - 理由：某台相机缺帧时帧组数不变，结论与告警分开；标定与运行用同一个量，N_exp 才可比。
 
 ### D-SB-4 partEnd 不再核对计数
@@ -78,8 +78,12 @@
 ### D-SB-7 下一件基线：每台相机各取自己见到的最高 frame_counter
 
 - 问题：End 时标 `issued_verified`，`close_routing` 按计划 device_shots 推下一件基线（cycle.rs:1325、1612-1620、1767-1773）；规格 §5 deviceTriggers 只作参考，§3 帧序号取 SDK 帧号。
-- 采用：段配方每台相机的下限 = max(该相机原基线, 该相机本件见到的最高 frame_counter)（`Grouper::max_counter`，C3 接入）。旧拍照点配方的收尾（`Part::close_routing` → `ShotRouter::close`）同样取 max(原基线, 该相机本件见到的最高触发计数)，不再按计划 device_shots 推。deviceTriggers 不参与，只用于丢帧告警和收尾等待（等每台相机 max_seq ≥ end_triggers − 1，或到 drain 截止）。旧配方其余节拍不改。
-- 理由：某台相机漏收一个脉冲时帧号不增，用“基线 + deviceTriggers”会让它下一件的首帧被判为游离，而且每件都丢。PLC 在使能边沿可能多数或少数一个脉冲，用它推基线会系统性地让下一件首帧被判游离；相机偶发丢末帧（已计数、帧没送到）只会让下一件出现两个不完整帧组，且下一件后自动对齐。旧拍照点配方下同一情况是下一件第一个拍照点缺帧、最后一帧超计划（判 ERR），再下一件对齐。
+- 采用：两套规则按配方类型分开，永久并存（第八节）：
+  - **段配方**（`segments` 非空，C3）：每台相机下一件的帧计数下限 = max(该相机原基线, 该相机本件见到的最高 frame_counter)（`Grouper::max_counter` → `Ledgers::set_frame_floor`，记在 `Ledger.frame_floor`，布防时由 `shot_router::arm_frames` 与本会话最高帧计数取大）。deviceTriggers 与计划数都不参与，deviceTriggers 只用于丢帧告警和收尾等待（等每台相机 max_seq ≥ end_triggers − 1，或到 drain 截止）。
+  - **旧拍照点配方**（`segments` 为空，规则不变）：`Part::close_routing` → `ShotRouter::close(ledgers, issued)`，每台相机的下限 = max(原基线 + PLC 报的本件已发触发数（确认结果时报的，否则 partEnd 时报的；都没有时按计划 device_shots）, 该相机本件见到的最高触发计数)，记在 `Ledger.floor`；没等到 partEnd 就判 ERR 的件（运动超时等）延到 PLC 确认结果（`SessionEvent::Released`）时用那时报的触发数收尾。
+  - 故障复位（`Ledgers::clear_floors`）两种下限都清掉，之后只按实际见到的计数布防。
+- 理由：段配方——某台相机漏收一个脉冲时帧号不增，用“基线 + deviceTriggers”会让它下一件的首帧被判为游离，而且每件都丢；PLC 在使能边沿可能多数或少数一个脉冲，用它推基线会系统性地让下一件首帧被判游离；相机偶发丢末帧（已计数、帧没送到）只会让下一件出现两个不完整帧组，且下一件后自动对齐。旧拍照点配方——决策补充要求旧路径不改其行为；原规则防的是上一件末帧在收尾和下一件布防之后才到、被绑成下一件第 1 帧使整件错位，代价是相机漏收脉冲后每件判 ERR（91，原因写明“触发计数错位”），直到故障复位（见 `shot_router.rs` 模块说明）。FIX-B1 曾把旧配方也改成 max(原基线, 最高触发计数)，未经用户确认，C3 已恢复旧规则与对应用例。
+- 回退：段配方若要防末帧迟到，可改为 max(原基线 + deviceTriggers, 最高帧计数)，代价是漏收脉冲的相机下一件首帧判游离；不计划。
 
 ### D-SB-8 示教采集数量与内存
 
@@ -323,8 +327,8 @@
 ## 六、口径
 
 - **seq**：`frame_counter − 该相机基线`，从 1 起；frame_counter ≤ 基线为 Stale（上一件迟到帧，不计入本件）；同一相机重复的 seq 为 Duplicate，保留先到的那帧。
-- **帧数 = 帧组数**：区域帧数 = `last_seq − first_seq + 1`；整件或整轮帧组数 = 各相机最大 seq 的最大值。标定与运行同一口径。单台相机的帧数只用于丢帧告警（与 deviceTriggers 相差 > 1，或与另一台相机相差 > 1）。
-- **每相机基线**：布防时取各相机当前 frame_counter；下一件基线 = max(原基线, 该相机本件见到的最高 frame_counter)（`Grouper::max_counter`），deviceTriggers 不参与。
+- **帧数 = 帧组数**：区域帧数 = `last_seq − first_seq + 1`；整件或整轮帧组数 = 各相机最大 seq 的最大值。标定与运行同一口径。单台相机的帧数只用于丢帧告警：与 deviceTriggers 相差 > 1，或与另外每一台相机都相差 > 1（`frame_group::loss_alarms`；[10, 10, 8] 只有第 3 台告警，前两台彼此一致，不因第 3 台少帧被连带告警），每台相机至多一条，两条依据都成立时报 deviceTriggers。
+- **每相机基线**（段配方）：布防时取各相机本会话见到的最高 frame_counter 与上一件推算的下限中较大者；下一件基线 = max(原基线, 该相机本件见到的最高 frame_counter)（`Grouper::max_counter`），deviceTriggers 不参与。旧拍照点配方的下一件基线规则不变，见 D-SB-7。
 - **帧数越界只告警**：区域帧组数 ∉ [N_exp − tol, N_exp + tol] 记 `frame_count_anomaly`，该区域照常检测，不改 OK/NG。本轮只有覆盖全部段的未分段区域，与 `expected_total ± tolerance_total` 比较；各段 N_exp 为 null 时不逐段核对。
 - **short_part**：整件帧组数 < `expected_total − tolerance_total`（`expected_total` 为 null 时不判）。
 - **expected_total**：各段 N_exp 都非空时为其和，否则取 `part_calib.expected_total`，都没有为 null。**tolerance_total** = Σ 各段 tolerance。
@@ -437,3 +441,13 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
     - **seq 上限**：新轮次 seq > 32767（PLC Int，ΣN_exp 上限）按计数异常判整轮失败，防止异常帧号生成海量帧组（A2 遗留 F0-5 在 D1 消费侧的边界；`Grouper::offer` 本身未改）。
     - **整轮失败的情形**：PLC 开始前收到帧、会话变化（98）、手动帧、实拍轮次收到模拟计数、计数来源变化、帧计数不大于基线或比本轮已见的小、写图失败、PLC 开始/结束顺序异常。重复帧号丢弃并记 `duplicate`；丢包或无图、写盘队列满、图像内存预算满（`camera.rs` 预算满时把未拷图的帧交给本轮记缺帧）记缺帧并告警。接收中不设超时（D-SB-9），操作员中止记 `interrupted`（90/99）。
     - **新命令** `recipe_capture_frame_image(roundId, cameraId, seq)` 已注册，前端改为直接调用；图像路径由相机与 seq 推出（`{相机}/{seq:06}.pgm`），记录里写的路径只用于核对。
+11. C3 段配方生产节拍（相对计划步骤的调整，旧路径一律保留）：
+    - **分流**：布防时按 `Recipe::is_burst` 决定，段配方的件带 `Part.burst`（`cycle/burst.rs`），旧拍照点配方仍走 `ShotRouter` 与 `Part::judgement`，行为不变。计划中“删除 shot_router 按拍照点路由”“测试辅助 judge_delivered / judge_last_frame_during_end / judge_callback_channel 改返回 BurstJudgement”改为旧辅助原样保留（服务旧配方的存量用例），段配方另加 `judge_burst_delivered`；`tests_to_delete_or_rewrite` 里 cycle/tests、delivery、plc_session/tests、offline/tests、shot_router、measure 队满的用例保护的都是旧配方现行行为，未删改。`locate_health` 只由旧配方喂数据，段配方不经过。
+    - **布防**：`shot_router::arm_frames` 按 SDK 帧计数定基线（D-SB-7），本会话没见过帧时取开流后计数起点；`Policy::burst_production` 认 ChunkTrigger / ChunkFrame / SdkFrame，`Policy::burst_offline` 另认 Synthetic，旧 `Policy::production` / `offline` 不改。会话或计数来源不可信拒绝布防报 98；段配方测量池全部超时未返回也拒绝布防。
+    - **帧**：Grouper 的 seq 上限 = ΣN_exp + Σtol + 64，超出判 `Offer::OutOfRange`（不计入本件、不抬基线），丢弃并告警（A2 遗留 F0-5）；`Grouper::new` 的默认上限为 32767，与 D1 的 MAX_SEQ 相同，D1 行为不变。重复帧号丢弃，每台相机每件告警一次；上一件迟到帧记游离帧；布防后的手动帧丢弃并告警（不判 ERR，告警写明该相机此后帧组可能错开一格）；检测中会话变化或计数来源变为不可信判 ERR 98。回调通道满、图像内存预算满的帧不交给节拍，即缺帧。
+    - **测量**：每帧经 `FramePool` 送测，结果经 `cycle::Input::FrameMeasured` 回节拍；QueueFull / Timeout 记 Unmeasured，Failed 记 Error；超过 T_proc 或到 drain 截止仍没结果记 Unmeasured；测量输出的帧身份与送测帧不符或含非有限数改记 Error（否则 C5 落库会拒绝整件记录）。都只记检测不完整，不判 99。
+    - **收尾与判定**：partEnd 后已接受的帧都测完，且每台相机 max_seq ≥ deviceTriggers − 1（PLC 没报时不等）或到 drain 截止即判。故障（98、97）优先；否则 `Unsegmented` → `resolve_regions` → `loss_alarms(各相机帧数, deviceTriggers)` → `burst_judge::judge`。丢帧、帧数异常、疑似提前终止写运行日志（warn），结论不变。
+    - **结果与记录**：`ResultView.burst` 带区域判定，`PartView.burst` 按 5.2 输出（帧格的 verdict 只看这一帧的独立指标，允差取覆盖全部段的较宽一档）。`BurstRecord.frames` 在 1..=帧组数内每台相机每帧一条、缺帧也有，`rawFile` 入库时为空（录制结果事后补）；`frames_expected` = ΣN_exp，`frames_received` = 帧组数，`triggers` = deviceTriggers。拒绝布防、在途中断、进程中断补记录的段配方件也带 `BurstRecord`（各相机帧数为 0 或已收到的帧，判定按结论摘要给出，结论字段与摘要相同）。诊断包按帧记录的 `rawFile` 打包段配方原图。
+    - **在线读图**：`workspace_live_frame_image` 已注册（段配方预览缓存与旧配方各一份，各 128 MB）；前端仍经 `pendingCall` 调用，命令存在时照常返回图像。
+    - **胶偏未判**：直线区域去掉首尾各一帧后参考相机没有可用 x 时标 `OffsetUnjudged::NoFrames`（“胶偏未判：参考相机没有可用帧”，TS 同步 `noFrames`；A4 遗留 F0-3），不再静默不判。
+    - **带宽估算**：`camera::aggregate_bandwidth` 计入 GigE 协议开销（按不开巨帧约 1.05 倍；C2 遗留 F0-4），三台 130 万像素 25 Hz 由 786 Mbps 改为约 826 Mbps，超过单口 80% 预算。

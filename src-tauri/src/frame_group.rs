@@ -3,9 +3,6 @@
 //! 口径（docs/decisions/segment-burst.md）：seq = frame_counter − 该相机基线（从 1 起）；帧组数 = 各相机最大 seq 的最大值；
 //! 单台相机的帧数只用于丢帧告警，不参与容差比较；下一件每台相机的基线 = max(原基线, 本件见到的最高 frame_counter)。
 
-// C3/D1 接入调用方后删掉 dead_code。
-#![allow(dead_code)]
-
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
@@ -17,9 +14,14 @@ pub struct Grouper {
     baselines: Vec<u64>,
     /// 每台相机已接受的 seq
     seqs: Vec<BTreeSet<u64>>,
-    /// 每台相机见到的最高 frame_counter（含 Duplicate，不含 Stale）
+    /// 每台相机见到的最高 frame_counter（含 Duplicate，不含 Stale 与 OutOfRange）
     max_counters: Vec<u64>,
+    /// 可接受的最大 seq：异常帧号（计数跳变）不能生成海量帧组
+    max_seq: u64,
 }
+
+/// 默认的 seq 上限：ΣN_exp 的上限（PLC Int，D-SB-31）。生产按本件预期另设更紧的上限（[`Grouper::with_limit`]）。
+pub const MAX_SEQ: u64 = crate::plan::MAX_EXPECTED_TOTAL as u64;
 
 /// 收到一帧后的归属。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +31,8 @@ pub enum Offer {
     Duplicate,
     /// frame_counter 不大于基线：上一件的迟到帧，不计入本件
     Stale,
+    /// seq 超过上限（帧号跳变等计数异常）：与 Stale 一样不计入本件、不抬高下一件基线，调用方另记告警
+    OutOfRange { seq: u64 },
 }
 
 /// 一个帧组：同一 seq 下三台相机是否都到了。
@@ -73,28 +77,45 @@ pub struct LossAlarm {
 }
 
 impl Grouper {
-    /// baselines 按计划相机顺序，取布防时各相机的 frame_counter 基线。
+    /// baselines 按计划相机顺序，取布防时各相机的 frame_counter 基线；seq 上限取 [`MAX_SEQ`]。
     pub fn new(baselines: Vec<u64>) -> Self {
-        let cams = baselines.len();
-        Self { max_counters: baselines.clone(), baselines, seqs: vec![BTreeSet::new(); cams] }
+        Self::with_limit(baselines, MAX_SEQ)
     }
 
-    /// seq = frame_counter − 该相机基线。不大于基线为 Stale（不改 max_counter）；同一相机重复的 seq 为 Duplicate，保留先到的那帧。
-    /// 相机下标越界（不是计划相机）按 Stale 丢弃。
+    /// 同 [`new`](Self::new)，seq 超过 `max_seq` 的帧判 OutOfRange（上限不超过 [`MAX_SEQ`]）。
+    pub fn with_limit(baselines: Vec<u64>, max_seq: u64) -> Self {
+        let cams = baselines.len();
+        Self { max_counters: baselines.clone(), baselines, seqs: vec![BTreeSet::new(); cams], max_seq: max_seq.min(MAX_SEQ) }
+    }
+
+    /// seq = frame_counter − 该相机基线。不大于基线为 Stale；超过上限为 OutOfRange（两者都不改 max_counter）；
+    /// 同一相机重复的 seq 为 Duplicate，保留先到的那帧。相机下标越界（不是计划相机）按 Stale 丢弃。
     pub fn offer(&mut self, cam: usize, frame_counter: u64) -> Offer {
         let Some(&baseline) = self.baselines.get(cam) else { return Offer::Stale };
         if frame_counter <= baseline {
             return Offer::Stale;
         }
-        self.max_counters[cam] = self.max_counters[cam].max(frame_counter);
         let seq = frame_counter - baseline;
+        if seq > self.max_seq {
+            return Offer::OutOfRange { seq };
+        }
+        self.max_counters[cam] = self.max_counters[cam].max(frame_counter);
         if self.seqs[cam].insert(seq) { Offer::Accepted { seq } } else { Offer::Duplicate }
+    }
+
+    /// 帧组数 = 各相机已接受的最大 seq 的最大值。
+    pub fn group_count(&self) -> u64 {
+        self.seqs.iter().filter_map(|seqs| seqs.last().copied()).max().unwrap_or(0)
+    }
+
+    /// 该相机已接受的最大 seq；没有帧为 0。
+    pub fn last_seq(&self, cam: usize) -> u64 {
+        self.seqs.get(cam).and_then(|seqs| seqs.last().copied()).unwrap_or(0)
     }
 
     /// seq 取 1..=各相机最大 seq 的最大值；长度即帧组数。末尾缺帧的相机同样标 incomplete。
     pub fn groups(&self) -> Vec<FrameGroup> {
-        let total = self.seqs.iter().filter_map(|seqs| seqs.last().copied()).max().unwrap_or(0);
-        (1..=total)
+        (1..=self.group_count())
             .map(|seq| {
                 let present: Vec<bool> = self.seqs.iter().map(|seqs| seqs.contains(&seq)).collect();
                 let incomplete = present.contains(&false);
@@ -197,6 +218,19 @@ mod tests {
         assert_eq!(grouper.camera_counts(), vec![2, 0, 0]);
         let mut next = Grouper::new(vec![grouper.max_counter(0), 20, 30]);
         assert_eq!(next.offer(0, 12), Offer::Stale, "上一件最后一帧迟到，不计入下一件");
+    }
+
+    /// 易错边界（A2 遗留 F0-5）：帧号跳变使 seq 超过上限时判 OutOfRange——不建帧组（否则帧组数随帧号跳到上亿）、
+    /// 不抬高下一件基线；上限以内照常接受。不另设上限时取 ΣN_exp 的上限。
+    #[test]
+    fn frame_counter_jump_beyond_seq_limit_is_out_of_range_and_creates_no_groups() {
+        let mut grouper = Grouper::with_limit(vec![100, 200, 300], 10);
+        assert_eq!(grouper.offer(0, 110), Offer::Accepted { seq: 10 }, "恰好等于上限");
+        assert_eq!(grouper.offer(1, 200 + 4_000_000_000), Offer::OutOfRange { seq: 4_000_000_000 }, "帧号跳变");
+        assert_eq!(grouper.offer(2, 311), Offer::OutOfRange { seq: 11 }, "超出上限一帧");
+        assert_eq!(grouper.groups().len(), 10);
+        assert_eq!((grouper.max_counter(1), grouper.max_counter(2)), (200, 300));
+        assert_eq!(Grouper::new(vec![0]).offer(0, MAX_SEQ + 1), Offer::OutOfRange { seq: MAX_SEQ + 1 });
     }
 
     /// 规格 §3：某台帧数与 deviceTriggers 相差 > 1，或与另外两台都相差 > 1 → 该相机丢帧告警；≤ 1 正常。

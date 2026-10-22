@@ -48,7 +48,7 @@ export interface CameraStatus {
   warnings: string[];
 }
 
-/** 相机组链路带宽估算（camera_bandwidth）：各海康相机最近一帧的 宽 × 高 × 8 bit × 触发频率之和 */
+/** 相机组链路带宽估算（camera_bandwidth）：各海康相机最近一帧的 宽 × 高 × 8 bit × 触发频率之和，计入 GigE 协议开销（按不开巨帧约 5%） */
 export interface BandwidthEstimate {
   hz: number;
   mbpsTotal: number;
