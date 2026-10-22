@@ -20,6 +20,7 @@ import { TrialResult, trialPoints, trialStationColor } from "./TrialResult";
 import { groupShortStatus, teachingGroups } from "./teachingGroups";
 import { productionBusy as isProductionBusy } from "../cycle/phase";
 import { TeachingSettings } from "./TeachingSettings";
+import ContextHelp from "../cycle/components/ContextHelp";
 import type { SnackMessage } from "./context";
 
 function FrozenViewOption({ id, metadata, selected, conflict, disabled, onSelect }: { id: string; metadata: FrozenImage; selected: boolean; conflict: boolean; disabled: boolean; onSelect: () => void }) {
@@ -330,7 +331,7 @@ export default function TeachingPage() {
       <Slider className="wp-brush-width" label="拖动调整笔刷宽度" min={6} max={300} step={2} value={Number.isFinite(brushWidth) ? Math.min(300, Math.max(6, brushWidth)) : DEFAULT_BRUSH_PX} disabled={!unlocked} formatValue={value => value + " px"} onValueChange={changeBrushWidth}/></span>}
     <span className="wp-inline-num" title={`检测站距 ${doc.spacing} mm；编辑点按目标最大间距调整，转弯处保留点`}>中线点间距<NumberField aria-label="中线点间距" unit="px" min={4} max={80} step={2} value={Number.isFinite(pointSpacing) ? pointSpacing : ""} disabled={!unlocked} onValueChange={value => setPointSpacing(value === "" ? NaN : value)}/></span>
     <Button size="sm" variant="text" disabled={!unlocked || !spacingValid || t.path.length < 2} onClick={() => { setVertex(null); setPath(resampleTeachingPath(t.path, pointSpacing)); }}>应用到当前中线</Button>
-    {fixtureDrawing ? <p className="wp-canvas-hint" role="status">按住左键拖出定位框：框一块与胶同面、刚性、不被喷嘴挡住的孔或角点，避开胶检测走廊与高光；松手后检查外圈与走廊。</p>
+    {fixtureDrawing ? <span className="wp-canvas-float">拖出定位框<ContextHelp label="定位框画法">按住左键拖出定位框：框一块与胶同面、刚性、不被喷嘴挡住的孔或角点，避开胶检测走廊与高光；松手后检查外圈与走廊。</ContextHelp></span>
       : regionMode ? <p className={"wp-canvas-hint" + (extractionFailure ? " warn" : "")} role="status">{extractionFailure && <TriangleAlert size={14} aria-hidden="true"/>}{regionHint}</p>
       : <p className="wp-canvas-hint" role="status">{extractionHint && <><span>{extractionHint}</span> </>}<span>{editHint}</span></p>}
   </div>;

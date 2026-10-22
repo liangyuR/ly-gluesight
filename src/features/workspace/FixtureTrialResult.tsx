@@ -1,5 +1,6 @@
 import type { FixtureTrial, FixtureTrialRow } from "./types";
 import { Badge } from "./components";
+import ContextHelp from "../cycle/components/ContextHelp";
 
 const fmt = (v: number | null | undefined, digits = 2) => v != null && Number.isFinite(v) ? v.toFixed(digits) : "—";
 
@@ -17,9 +18,8 @@ export function FixtureTrialResult({ trial }: { trial: FixtureTrial }) {
   const teach = trial.rows.find(row => row.source === "teach");
   const invalid = !teach?.pose?.accepted;
   return <section className="panel wp-fixture-trial" aria-label="定位试测结果">
-    <h3>定位试测 <small>示教图与样本库同一拍照点、同一幅图；只作诊断，不保存</small></h3>
+    <h3>定位试测 <ContextHelp label="定位试测说明"><p>示教图与样本库同一拍照点、同一幅图；只作诊断，不保存。</p>{trial.rows.length === 1 && <p>样本库里还没有这个拍照点、这幅图的其他原图；验证页实拍或导入独立样本后可在这里试定位。</p>}</ContextHelp></h3>
     {invalid && <p className="c-warn" role="alert">示教图上定位没被采用，这次定位试测无效：{teach?.reason ?? teach?.error ?? "没有定位结果"}</p>}
-    {trial.rows.length === 1 && <p className="muted">样本库里还没有这个拍照点、这幅图的其他原图；验证页实拍或导入独立样本后可在这里试定位。</p>}
     <div className="table-wrap"><table className="table" aria-label="定位试测逐帧结果">
       <thead><tr><th>帧</th><th>位姿</th><th>分数</th><th>次峰比</th><th>偏移 px</th><th>角度 °</th><th>两端搬移 mm</th><th>d′ 最小 / 平均 / 最大 mm</th></tr></thead>
       <tbody>{trial.rows.map((row, i) => <tr key={i}>
