@@ -20,9 +20,11 @@ export default function FlyshotCalibrationPage() {
   const site=useSiteStatus();
   const offline=site?.mode==="offline";
   const {configs,cam,setCam,error,loading,reload}=useRigConfig({withReferences:false,preferredId:captureReturn?.cameraIds[0],reloadKey:offline});
+  const [calibView,setCalibView]=useState(1);
   const [sample,setSample]=useState<StationView|null>(null);
   const [calibMm,setCalibMm]=useState<number|null>(null);
-  useEffect(()=>setSample(null),[cam,configs[cam]]);
+  useEffect(()=>setSample(null),[cam,configs[cam],calibView]);
+  useEffect(()=>setCalibView(1),[cam]);
   const config=configs[cam]??null;
   const status=statuses.find(s=>s.cam===cam)??null;
   const busy=productionBusy(snapshot);
@@ -48,10 +50,11 @@ export default function FlyshotCalibrationPage() {
       <header className="cam-head"><strong>{config.name}</strong><span className="mono muted">{config.id}</span><Badge tone={state.tone==="ok"?"ok":"warn"}>{state.label}</Badge><span className="muted cam-head-info">{state.label==="未绑定"?<>到<Link to="/camera" state={navigationState}>相机</Link>绑定设备</>:state.text}</span></header>
       <div className="cam-body">
         <fieldset disabled={busy||!desktopAvailable()} className="cam-action-area">
-          <StationCapture key={config.id} cam={cam} sample={sample} onSample={setSample}/>
+          <StationCapture key={config.id+":"+calibView} cam={cam} view={calibView} multiView={config.viewCount===3} sample={sample} onSample={setSample}/>
         </fieldset>
         <fieldset disabled={busy||!desktopAvailable()} className="cam-action-area">
-          <CalibPanel key={config.id} cam={cam} isSim={config.source==="sim"&&sample?.metadata.source!=="import"} imageId={sample?.metadata.id} onMmPerPx={setCalibMm}/>
+          {config.viewCount===3&&<label className="field"><span>标定图像</span><select className="input" aria-label="标定图像" value={calibView} onChange={e=>{setSample(null);setCalibView(Number(e.target.value));}}>{[1,2,3].map(v=><option key={v} value={v}>图 {v}</option>)}</select></label>}
+          <CalibPanel key={config.id+":"+calibView} cam={cam} view={calibView} multiView={config.viewCount===3} isSim={config.source==="sim"&&sample?.metadata.source!=="import"} imageId={sample?.metadata.id} onMmPerPx={setCalibMm}/>
           <FeasibilityCalc key={"feasibility:"+config.id} sources={feasibility} imageSize={sample?.image}/>
         </fieldset>
       </div>

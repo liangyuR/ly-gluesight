@@ -14,7 +14,8 @@ export type Verdict = "OK" | "OK_WITH_EXCURSION" | "NG_POSITION" | "NG_WIDTH" | 
 export type TriggerMode = "fly" | "stop";
 export type ProductSource = "plc" | "manual";
 /** 离线工况，与后端 offline::scenario::Scenario（camelCase）同名。
- * cameraLost / pulseJitter / cornerSlowdown / notInspected / earlyEnd 是分段连拍的新工况，后端枚举由 E1 加入。 */
+ * cameraLost / pulseJitter / cornerSlowdown / notInspected / earlyEnd 是分段连拍的新工况，后端枚举由 E1 加入，
+ * E1 后端落地后启用：在此之前不进下拉（offline.ts scenarioOptions）也不进样本集白名单。 */
 export type Scenario = "normal" | "excursion" | "gap" | "lostFrame" | "locateFail" | "locateFailGap" | "countMismatch" | "motionTimeout" | "ackMismatch" | "random"
   | "cameraLost" | "pulseJitter" | "cornerSlowdown" | "notInspected" | "earlyEnd";
 export type OfflineFault = "disconnect" | "heartbeatStop" | "heartbeatResume" | "rejectWrite" | "rejectRead" | "delay" | "clear";
