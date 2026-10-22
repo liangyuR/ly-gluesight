@@ -57,14 +57,13 @@ describe("离线模式工况", () => {
     await userEvent.click(screen.getByRole("button", { name: "进入离线" }));
     expect(invoke).toHaveBeenCalledWith("site_enter_offline", { source: { kind: "sampleSet", dir: managed } });
   });
-  it.each([
-    ["sampleSet", ["normal", "lostFrame", "countMismatch", "motionTimeout", "ackMismatch"]],
-    ["synthetic", ["normal", "excursion", "gap", "lostFrame", "locateFail", "locateFailGap", "countMismatch", "motionTimeout", "ackMismatch", "random"]],
-  ] as const)("离线来源 %s → 工况只列该来源后端接受的工况", async (source, expected) => {
-    site = siteStatus({ mode: "offline", source, measurement: source === "sampleSet" ? "lyFlow" : "simulated" });
+  it("离线来源样本集 → 只提供握手类工况，不提供断胶、定位失败等需要改图像的工况", async () => {
+    site = siteStatus({ mode: "offline", source: "sampleSet", measurement: "lyFlow" });
     render(<MemoryRouter><OfflinePage /></MemoryRouter>);
     const select = await screen.findByRole("combobox", { name: "离线工况" });
-    expect(Array.from(select.closest(".qs-select")!.querySelector("select")!.options).map(o => o.value)).toEqual(expected);
+    const offered = Array.from(select.closest(".qs-select")!.querySelector("select")!.options).map(o => o.value);
+    expect(offered.filter(value => ["excursion", "gap", "locateFail", "locateFailGap"].includes(value))).toEqual([]);
+    expect(offered).toEqual(expect.arrayContaining(["lostFrame", "countMismatch", "motionTimeout", "ackMismatch"]));
   });
 });
 

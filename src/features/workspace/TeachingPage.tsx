@@ -320,8 +320,8 @@ export default function TeachingPage() {
       { value: "box", label: modeLabel(<SquareDashed size={14} aria-hidden="true"/>, "矩形框选", "框选"), "aria-label": "矩形框选" },
       { value: "fixture", label: modeLabel(<Crosshair size={14} aria-hidden="true"/>, "定位框", "定位"), "aria-label": "画定位框" },
     ]} onValueChange={changeMode}/>
-    <Button size="sm" variant={primary === "extract" ? "filled" : "tonal"} leadingIcon={<WandSparkles size={14}/>} disabled={!unlocked || !frame.image || loading || !!error} onClick={() => void extract()}>{operation === "extract" ? "提取中…" : "自动提取中线"}</Button>
-    <Button size="sm" variant={primary === "stroke" ? "filled" : "tonal"} title={selectionTool !== "brush" ? "仅刷选时可用" : !strokeValid ? "先沿胶路刷过至少 8 px" : "按笔划生成中线草稿"} disabled={!unlocked || !enabled || !frame.image || selectionTool !== "brush" || !strokeValid || !spacingValid} onClick={fromStroke}>笔划直接生成中线</Button>
+    <Button size="sm" variant={primary === "extract" ? "filled" : "tonal"} data-variant={primary === "extract" ? "filled" : "tonal"} leadingIcon={<WandSparkles size={14}/>} disabled={!unlocked || !frame.image || loading || !!error} onClick={() => void extract()}>{operation === "extract" ? "提取中…" : "自动提取中线"}</Button>
+    <Button size="sm" variant={primary === "stroke" ? "filled" : "tonal"} data-variant={primary === "stroke" ? "filled" : "tonal"} title={selectionTool !== "brush" ? "仅刷选时可用" : !strokeValid ? "先沿胶路刷过至少 8 px" : "按笔划生成中线草稿"} disabled={!unlocked || !enabled || !frame.image || selectionTool !== "brush" || !strokeValid || !spacingValid} onClick={fromStroke}>笔划直接生成中线</Button>
     <Divider vertical/>
     <IconButton size="sm" aria-label="删除末点" title="删除末点" disabled={!unlocked || !enabled || !t.path.length} onClick={() => { setVertex(null); setPath(t.path.slice(0, -1)); }}><Undo2 size={15}/></IconButton>
     <IconButton size="sm" aria-label="删除选中点" title="删除选中点" disabled={!unlocked || !enabled || vertex === null || vertex >= t.path.length} onClick={() => { const i = vertex; setVertex(null); setPath(t.path.filter((_, j) => j !== i)); }}><Trash2 size={15}/></IconButton>
@@ -462,11 +462,11 @@ export default function TeachingPage() {
         : <div className="wp-teach-settings wp-rail-empty"><span>选定检测图后，这里显示<br/>标定 · 检测参数 · 判定限值</span></div>}
     </div>
     <div className="wp-teach-dock" role="group" aria-label="单帧示教操作">
-      <WithReason reason={trialDisabledReason}><Button aria-label="运行试测" variant={primary === "trial" ? "filled" : "tonal"} leadingIcon={<Play size={15}/>} disabled={!canTrial} title={canTrial ? "保存当前参数，对本图运行一次检测算法" : undefined} onClick={() => void saveAndTrial()}>{operation === "trial" ? "计算中…" : trialFresh ? "重新试测" : "运行试测"}</Button></WithReason>
+      <WithReason reason={trialDisabledReason}><Button aria-label="运行试测" variant={primary === "trial" ? "filled" : "tonal"} data-variant={primary === "trial" ? "filled" : "tonal"} leadingIcon={<Play size={15}/>} disabled={!canTrial} title={canTrial ? "保存当前参数，对本图运行一次检测算法" : undefined} onClick={() => void saveAndTrial()}>{operation === "trial" ? "计算中…" : trialFresh ? "重新试测" : "运行试测"}</Button></WithReason>
       <span className="wp-dock-mid"><Badge tone={stateTone}>{stateText}</Badge><span className="wp-dock-hint">{dockHint}</span></span>
       <span className="wp-dock-actions">
-        <WithReason reason={saveReason}><Button variant={primary === "save" && !nextGroup ? "filled" : "text"} leadingIcon={<Save size={15}/>} disabled={saveDisabled} onClick={() => void save()}>保存本组示教</Button></WithReason>
-        <WithReason reason={nextReason}><Button aria-label="保存并进入下一组" variant={primary === "save" && nextGroup ? "filled" : "tonal"} trailingIcon={<ArrowRight size={15}/>} disabled={nextDisabled} onClick={() => void save(true)}>{nextGroup ? (taught ? "进入下一组 " : "保存并进入下一组 ") + nextGroup.poseId : "保存并进入下一组"}</Button></WithReason>
+        <WithReason reason={saveReason}><Button variant={primary === "save" && !nextGroup ? "filled" : "text"} data-variant={primary === "save" && !nextGroup ? "filled" : "text"} leadingIcon={<Save size={15}/>} disabled={saveDisabled} onClick={() => void save()}>保存本组示教</Button></WithReason>
+        <WithReason reason={nextReason}><Button aria-label="保存并进入下一组" variant={primary === "save" && nextGroup ? "filled" : "tonal"} data-variant={primary === "save" && nextGroup ? "filled" : "tonal"} trailingIcon={<ArrowRight size={15}/>} disabled={nextDisabled} onClick={() => void save(true)}>{nextGroup ? (taught ? "进入下一组 " : "保存并进入下一组 ") + nextGroup.poseId : "保存并进入下一组"}</Button></WithReason>
       </span>
     </div>
   </div>;

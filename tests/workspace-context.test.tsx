@@ -1,6 +1,6 @@
 import { act, renderHook, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { storageApi } from "../src/lib/storage";
 import { WorkspaceProvider, useWorkspace } from "../src/features/workspace/context";
 import { SnackbarProvider } from "qing-steel";
@@ -36,6 +36,7 @@ beforeEach(() => {
     return () => {};
   });
 });
+afterEach(() => { vi.useRealTimers(); });
 async function open() {
   const wrapper = ({ children }: { children: ReactNode }) => <SnackbarProvider><WorkspaceProvider>{children}</WorkspaceProvider></SnackbarProvider>;
   const hook = renderHook(() => useWorkspace(), { wrapper });
@@ -97,9 +98,11 @@ describe("候选工作台的主流程保护", () => {
     const draft = { ...result.current.doc!, name: "自动保存" };
     const saved = workspaceView(); saved.workspace.doc = draft;
     vi.mocked(workspaceApi.saveDoc).mockResolvedValue(saved);
+    vi.useFakeTimers();
     act(() => result.current.setDoc(draft));
-    await waitFor(() => expect(workspaceApi.saveDoc).toHaveBeenCalledWith("A", 7, draft), { timeout: 2500 });
-    await waitFor(() => expect(result.current.saveState).toBe("saved"));
+    await act(() => vi.advanceTimersByTimeAsync(900));
+    expect(workspaceApi.saveDoc).toHaveBeenCalledWith("A", 7, draft);
+    expect(result.current.saveState).toBe("saved");
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
@@ -159,13 +162,16 @@ describe("候选工作台的主流程保护", () => {
     const {result}=await open();
     const draft={path:[[10,10],[20,10]] as [number,number][],mmPerPx:.2,fixture:null};
     vi.mocked(workspaceApi.saveDraft).mockRejectedValueOnce(new Error("磁盘不可写"));
+    vi.useFakeTimers();
     act(()=>result.current.setFrameDraft(0,draft));
-    await waitFor(()=>expect(result.current.saveState).toBe("failed"),{timeout:2500});
+    await act(()=>vi.advanceTimersByTimeAsync(900));
+    expect(result.current.saveState).toBe("failed");
     expect(result.current.frameDrafts[0]).toEqual(draft);
     const next=workspaceView();next.workspace.revision=8;next.workspace.doc.shots[0].mmPerPx=.2;
     vi.mocked(workspaceApi.saveDraft).mockResolvedValue(next);
     act(()=>result.current.retrySave());
-    await waitFor(()=>expect(result.current.saveState).toBe("saved"),{timeout:2500});
+    await act(()=>vi.advanceTimersByTimeAsync(900));
+    expect(result.current.saveState).toBe("saved");
     expect(result.current.frameDirty).toBe(false);
   });
 });

@@ -39,29 +39,32 @@ beforeEach(() => {
 });
 
 describe("示教页定位特征", () => {
-  it.each([
-    ["外圈与走廊检查通过 → 整数像素的框进草稿", true],
-    ["压走廊 → 框标红、列出原因、不进草稿", false],
-  ])("拖出定位框：%s", async (_, passes) => {
-    // 防的回归：rect 是 [u32; 4]，小数框会让保存失败；压走廊的框进了草稿，自动保存反复撞上配方校验
+  // 防的回归：rect 是 [u32; 4]，小数框会让保存失败；压走廊的框进了草稿，自动保存反复撞上配方校验
+  const corridor = "定位框（含 4 px 外圈）压住了拍照点 P1 图 1 的胶检测走廊";
+  const proposed = { ...fixture({ rect: [20, 11, 32, 30] }), source: "" };
+  async function dragFixtureBox(corridorPassed: boolean) {
     stubSvgPointer();
-    const corridor = "定位框（含 4 px 外圈）压住了拍照点 P1 图 1 的胶检测走廊";
-    vi.mocked(workspaceApi.fixtureCheck).mockResolvedValue(check([item("inside", true, "外圈在图内"), item("corridor", passes, passes ? "离走廊足够远" : corridor)]));
+    vi.mocked(workspaceApi.fixtureCheck).mockResolvedValue(check([item("inside", true, "外圈在图内"), item("corridor", corridorPassed, corridorPassed ? "离走廊足够远" : corridor)]));
     show();
     const image = await screen.findByRole("img", { name: /P1/ });
     await userEvent.click(screen.getByRole("button", { name: "画定位框" }));
     fireEvent.pointerDown(image, { clientX: 20.4, clientY: 10.6 });
     fireEvent.pointerMove(image, { clientX: 52.2, clientY: 40.8 });
     fireEvent.pointerUp(image);
-    const proposed = { ...fixture({ rect: [20, 11, 32, 30] }), source: "" };
     await waitFor(() => expect(workspaceApi.fixtureCheck).toHaveBeenCalledWith("A", 7, 0, expect.objectContaining({ fixture: proposed })));
-    if (passes) {
-      await waitFor(() => expect(ws.setFrameDraft).toHaveBeenCalledWith(0, expect.objectContaining({ fixture: proposed })));
-    } else {
-      expect(await screen.findByText(new RegExp(corridor))).toBeVisible();
-      expect(image.querySelector('[aria-label="定位框（未通过检查）"]')).not.toBeNull();
-      expect(ws.setFrameDraft).not.toHaveBeenCalled();
-    }
+    return image;
+  }
+
+  it("拖出定位框且外圈与走廊检查通过 → 取整到像素的框进草稿", async () => {
+    await dragFixtureBox(true);
+    await waitFor(() => expect(ws.setFrameDraft).toHaveBeenCalledWith(0, expect.objectContaining({ fixture: proposed })));
+  });
+
+  it("拖出定位框但压住走廊 → 框标红、列出原因、不进草稿", async () => {
+    const image = await dragFixtureBox(false);
+    expect(await screen.findByText(new RegExp(corridor))).toBeVisible();
+    expect(image.querySelector('[aria-label="定位框（未通过检查）"]')).not.toBeNull();
+    expect(ws.setFrameDraft).not.toHaveBeenCalled();
   });
 
   it("试测报告有阻断项 → 阻断原因列在示教图检查清单里", () => {
@@ -85,31 +88,42 @@ describe("示教页定位特征", () => {
     expect(workspaceApi.saveTeach).toHaveBeenCalledWith("A", 7, 0, "A-image-0", true);
   });
 
-  it.each([
-    ["没有当前修订的验证统计 → 不能确认", null],
-    ["转角证据不满足前两个条件 → 不能确认", false],
-    ["证据满足、选了独立证据并写了说明 → 带 rotation 保存", true],
-  ] as const)("开启转角：%s", async (_, autoConditions) => {
-    // 防的回归（定稿 §10 决定二，三个条件都要满足）：没有验证证据或证据不满足也能确认开转角；
-    // 开转角不经显式确认，或经草稿自动保存悄悄开启
+  // 防的回归（定稿 §10 决定二，三个条件都要满足）：没有验证证据或证据不满足也能确认开转角；
+  // 开转角不经显式确认，或经草稿自动保存悄悄开启
+  function withRotationEvidence(autoConditions: boolean) {
+    const rotation: FixtureRotationEvidence = { enabled: false, leverMm: 80, leverThetaP95Mm: .2, thresholdMm: .1, exceeds: true, frames: 36, observableFrames: 36, allObservable: autoConditions, autoConditions };
+    ws.data!.workspace.validation!.fixture = [{ k: 0, view: 1, shotId: "P1", passed: true, samples: 12, checks: [], sigmaMm: .02, meanMm: 0, nominalMm: 0, toleranceMm: .5,
+      searchUse: .1, rows: [], suggestion: null, rotation }];
+  }
+  async function openRotationDialog() {
     withSavedFixture([item("selfLocate", true, "示教图上定位被采用")], "trialPassed");
-    if (autoConditions !== null) {
-      const rotation: FixtureRotationEvidence = { enabled: false, leverMm: 80, leverThetaP95Mm: .2, thresholdMm: .1, exceeds: true, frames: 36, observableFrames: 36, allObservable: autoConditions, autoConditions };
-      ws.data!.workspace.validation!.fixture = [{ k: 0, view: 1, shotId: "P1", passed: true, samples: 12, checks: [], sigmaMm: .02, meanMm: 0, nominalMm: 0, toleranceMm: .5,
-        searchUse: .1, rows: [], suggestion: null, rotation }];
-    }
     vi.mocked(workspaceApi.saveParams).mockResolvedValue(ws.data!);
     show();
     await userEvent.click(screen.getByRole("button", { name: "高级：开启转角…" }));
     const dialog = screen.getByRole("dialog", { name: "开启转角（高级）" });
     const confirm = within(dialog).getByRole("button", { name: /确认开启/ });
+    const fillBasisAndNote = async () => {
+      fireEvent.change(within(dialog).getByRole("combobox", { name: "独立证据" }).closest(".qs-select")!.querySelector("select")!, { target: { value: "twoTemplates" } });
+      await userEvent.type(within(dialog).getByRole("textbox", { name: "说明（记进应用日志）" }), "两个模板转角一致");
+    };
+    return { confirm, fillBasisAndNote };
+  }
+
+  it.each([
+    ["没有当前修订的验证统计", () => {}],
+    ["转角证据不满足前两个条件", () => withRotationEvidence(false)],
+  ])("开启转角时%s → 选了独立证据并写了说明也不能确认", async (_, arrange) => {
+    arrange();
+    const { confirm, fillBasisAndNote } = await openRotationDialog();
+    await fillBasisAndNote();
+    expect(confirm).toBeDisabled();
+  });
+
+  it("开启转角时证据满足、选了独立证据并写了说明 → 带 rotation 显式保存，不经草稿", async () => {
+    withRotationEvidence(true);
+    const { confirm, fillBasisAndNote } = await openRotationDialog();
     expect(confirm).toBeDisabled(); // 还没选独立证据、没写说明
-    fireEvent.change(within(dialog).getByRole("combobox", { name: "独立证据" }).closest(".qs-select")!.querySelector("select")!, { target: { value: "twoTemplates" } });
-    await userEvent.type(within(dialog).getByRole("textbox", { name: "说明（记进应用日志）" }), "两个模板转角一致");
-    if (!autoConditions) {
-      expect(confirm).toBeDisabled();
-      return;
-    }
+    await fillBasisAndNote();
     await userEvent.click(confirm);
     expect(workspaceApi.saveParams).toHaveBeenCalledWith("A", 7, 0, expect.objectContaining({
       fixture: expect.objectContaining({ angleRangeDeg: 3 }), rotation: { basis: "twoTemplates", note: "两个模板转角一致" } }));

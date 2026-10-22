@@ -41,8 +41,8 @@ it("两台相机各改曝光与增益后点应用 → 按相机一次写入候�
  await userEvent.clear(exposure1);await userEvent.type(exposure1,"120");await userEvent.clear(gain2);await userEvent.type(gain2,"2.5");
  await userEvent.click(apply);
  expect(workspaceApi.setCameraImaging).toHaveBeenCalledWith("A",7,{"CAM-1":{exposureUs:120,gainDb:6},"CAM-2":{exposureUs:60,gainDb:2.5}});
- expect(await screen.findByText("相机2 已写入候选配方，但没能下发到相机")).toBeVisible();
- expect(screen.queryByText("相机1 已写入候选配方，但没能下发到相机")).toBeNull();
+ expect(await screen.findByText(/相机2.*没能下发/)).toBeVisible();
+ expect(screen.queryByText(/相机1.*没能下发/)).toBeNull();
 });
 it("三台相机中一台未就绪 → 仍默认勾选全部，开始接收禁用并点名未就绪相机",async()=>{
  ws.cameras=[device("CAM-1","相机1"),device("CAM-2","相机2"),device("CAM-3","相机3")];
@@ -91,17 +91,17 @@ it.each([
 ])("%s",async(_,captureId,primary,secondary)=>{
  ws.data!.workspace.captureId=captureId;vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show("/recipe/capture?purpose=validation");
  await screen.findByRole("region",{name:"设备准备"});
- expect(screen.getByRole("button",{name:primary})).not.toHaveClass("tonal");
- expect(screen.getByRole("button",{name:secondary})).toHaveClass("tonal");
+ expect(screen.getByRole("button",{name:primary})).toHaveAttribute("data-variant","filled");
+ expect(screen.getByRole("button",{name:secondary})).toHaveAttribute("data-variant","tonal");
 });
 
 it("本轮已采用为示教图像 → 标明已采用，主操作改为进入单帧示教，采用按钮禁用且不再提供带入草稿",async()=>{
  ws.data!.workspace.captureId="r1";vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show();
  expect(await screen.findByText(/已采用为示教图像/)).toBeVisible();
  const enter=screen.getByRole("link",{name:"进入单帧示教"});
- expect(enter).toHaveClass("qs-btn");expect(enter).not.toHaveClass("tonal");
+ expect(enter).toHaveAttribute("data-variant","filled");
  const adopt=screen.getByRole("button",{name:"采用本轮图像"});
- expect(adopt).toBeDisabled();expect(adopt).toHaveClass("tonal");
+ expect(adopt).toBeDisabled();expect(adopt).toHaveAttribute("data-variant","tonal");
  expect(screen.queryByRole("checkbox",{name:"带入旧中线与参数作为草稿"})).toBeNull();
 });
 

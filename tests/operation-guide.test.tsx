@@ -38,13 +38,21 @@ it("设备连接成功但没有已发布配方 → 不宣告生产或流程完�
   expect(screen.queryByText(/^(可生产|已完成)$/)).not.toBeInTheDocument();
 });
 
-it.each(["sampleSet", "synthetic"])("离线来源 %s → 标明模拟范围并提供对应调试入口", async source => {
+it.each([
+  { source: "sampleSet", title: "候选离线试运行", link: "打开候选试运行", href: "/inspect" },
+  { source: "synthetic", title: "合成流程演练", link: "打开离线演练", href: "/offline" },
+])("离线来源 $source → 标明模拟范围并提供对应调试入口", async ({ source, title, link, href }) => {
   api.site.mockResolvedValue({ mode: "offline", source });
   render(<MemoryRouter><OperationGuidePage /></MemoryRouter>);
-  const title = source === "sampleSet" ? "候选离线试运行" : "合成流程演练";
   const workflow = within(await screen.findByRole("region", { name: title }));
   expect(screen.queryByRole("region", { name: "日常生产" })).not.toBeInTheDocument();
   expect(screen.getByText(/非真实 PLC/)).toBeVisible();
-  expect(workflow.getByRole("link", { name: source === "sampleSet" ? "打开候选试运行" : "打开离线演练" })).toHaveAttribute("href", source === "sampleSet" ? "/inspect" : "/offline");
-  if (source === "sampleSet") expect(workflow.getByText(/无需发布.*结果标记为调试/)).toBeVisible();
+  expect(workflow.getByRole("link", { name: link })).toHaveAttribute("href", href);
+});
+
+it("离线来源样本集 → 说明候选无需发布即可试运行，结果标记为调试", async () => {
+  api.site.mockResolvedValue({ mode: "offline", source: "sampleSet" });
+  render(<MemoryRouter><OperationGuidePage /></MemoryRouter>);
+  const workflow = within(await screen.findByRole("region", { name: "候选离线试运行" }));
+  expect(workflow.getByText(/无需发布.*结果标记为调试/)).toBeVisible();
 });

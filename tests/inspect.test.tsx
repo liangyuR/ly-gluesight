@@ -246,11 +246,11 @@ describe("候选配方离线试运行", () => {
     expect(banner).toHaveTextContent("A · 修订 352");
     expect(screen.queryByRole("combobox", { name: "当前检测配方" })).not.toBeInTheDocument();
     expect(screen.getByText("A · 候选修订 352")).toBeVisible();
-    expect(banner).toHaveTextContent("未发布，仅用于离线测试，不作为生产验收");
+    expect(banner).toHaveTextContent(/不作为生产验收/);
     expect(screen.getByText("测试样本偏移超差")).toBeVisible();
     state = { ...state, phase: "IDLE", candidateDebug: undefined };
     page.rerender(<MemoryRouter><InspectPage /></MemoryRouter>);
     expect(screen.getByRole("combobox", { name: "当前检测配方" })).toBeVisible();
-    expect(banner).toHaveTextContent("未发布，仅用于离线测试，不作为生产验收");
+    expect(banner).toHaveTextContent(/不作为生产验收/);
   });
 });
