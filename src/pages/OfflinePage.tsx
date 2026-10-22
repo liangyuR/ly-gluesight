@@ -18,6 +18,7 @@ import {
   sourceLabel,
   TargetLink,
   useReadiness,
+  useRecipes,
   useRunChoice,
   useSiteStatus,
   type OfflineChoice,
@@ -172,6 +173,7 @@ function OfflineEntry({ last }: { last: OfflineChoice | null }) {
 function OfflineSession({ status }: { status: SiteStatus }) {
   const { readiness, refresh } = useReadiness(`${status.source ?? ""}:${status.sampleSet?.id ?? ""}`);
   const options = readiness?.recipes.filter(recipe => recipe.published) ?? null;
+  const summaries = useRecipes();
   const plc = usePlcStatus();
   const [scenario, setScenario] = useState<Scenario>("normal");
   const [fault, setFault] = useState<OfflineFault>("disconnect");
@@ -220,7 +222,7 @@ function OfflineSession({ status }: { status: SiteStatus }) {
           <p className="muted">下列检查与启动操作仅用于已发布版本的离线回放；候选调试不要求发布，启动时单独检查示教和样本匹配。</p>
           {showChecklist(readiness, running) && <ReadinessChecklist readiness={readiness} embedded />}
           <Stack gap={8}>
-            <RecipeRunSelect options={options} value={recipeId} onChange={setRecipeId} disabled={running || busy} />
+            <RecipeRunSelect options={options} summaries={summaries} value={recipeId} onChange={setRecipeId} disabled={running || busy} />
             <Select aria-label="离线工况" value={chosen} onValueChange={(value) => setScenario(value as Scenario)} disabled={running || busy}
               options={scenarios.map(([v, label]) => ({ value: v, label }))} />
             {sampleSet && <SamplePartSelect sampleSet={sampleSet} nextPart={status.nextPart} value={partId} onChange={setPartId} disabled={running || busy} />}

@@ -494,12 +494,8 @@ export interface RecipeOption {
   name: string;
   version: number;
   productCode: number;
+  /** 旧拍照点配方的拍照点数；段配方恒为 0，段数与 ΣN_exp 见 RecipeSummary */
   shotCount: number;
-  /** 以下为段配方字段（后端 readiness 输出后才有；旧后端不带，旧配方 segmentCount 为 0 或缺省）：显示 ΣN_exp，不再用 shotCount */
-  segmentCount?: number;
-  /** ΣN_exp；待标定为 null */
-  expectedTotal?: number | null;
-  toleranceTotal?: number;
   published: boolean;
   runnable: boolean;
   reason: string | null;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PathSegment } from "../src/features/plan/types";
-import { addSegment, changeKind, moveSegment, patchSegment, removeSegment, segmentIssues } from "../src/features/workspace/segmentEdit";
+import { addSegment, changeKind, moveSegment, removeSegment, segmentIssues } from "../src/features/workspace/segmentEdit";
 import { kindDefaults, pathSegment } from "./fixtures";
 
 const stats = { rounds: 10, min: 4, max: 6, mean: 5 };
@@ -38,13 +38,6 @@ describe("段列表编辑规则", () => {
     const [straight] = changeKind([pathSegment(1, "corner", { expectedFrames: 4 })], 0, "straight", kindDefaults());
     expect(straight).toMatchObject({ kind: "straight", expectedFrames: null });
     expect(straight.checks.offset).toMatchObject({ enabled: true });
-  });
-
-  it("只改长度、容差或检测项 → 标定保留（它们不进计划身份）", () => {
-    const next = patchSegment(patchSegment(calibrated(), 0, { tolerance: 2 }), 1, { lengthMm: 35 });
-    expect(next.map(segment => segment.expectedFrames)).toEqual([5, 4, 3]);
-    expect(next[0].offsetRef?.xRef).toBe(0.1);
-    expect(next[0].tolerance).toBe(2);
   });
 });
 

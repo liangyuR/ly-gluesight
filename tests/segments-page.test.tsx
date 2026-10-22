@@ -1,10 +1,11 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SegmentsPage from "../src/features/workspace/SegmentsPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
+import type { PathSegment } from "../src/features/plan/types";
 import { burstRecipe, burstWorkspaceView, deferred, pathSegment, workspaceState } from "./fixtures";
 
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
@@ -12,7 +13,11 @@ vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { updateSegments
 
 let ws: ReturnType<typeof workspaceState>;
 const show = () => render(<MemoryRouter><SegmentsPage /></MemoryRouter>);
-beforeEach(() => { vi.mocked(useWorkspace).mockImplementation(() => ws); });
+beforeEach(() => {
+  vi.mocked(useWorkspace).mockImplementation(() => ws);
+  vi.mocked(workspaceApi.updateSegments).mockReset().mockReturnValue(deferred<never>().promise);
+});
+afterEach(() => { vi.useRealTimers(); });
 
 it("新建段配方尚未标定 → 各段预期帧数显示待标定且没有可编辑的输入，整件预期总帧数待标定", () => {
   ws = workspaceState(burstWorkspaceView(burstRecipe({ partCalib: null })));
@@ -22,32 +27,71 @@ it("新建段配方尚未标定 → 各段预期帧数显示待标定且没有�
   expect(screen.getByLabelText("整件预期总帧数")).toHaveTextContent("待标定");
 });
 
-it("直线段改成弯道 → 各段预期帧数清空、弯道不再有胶偏检测，保存的段列表带清空后的值", async () => {
-  const doc = burstRecipe({
+/** 三段都已标定：直线（带 x_ref）、弯道、直线；返回第 1 段的区域，检测项已展开。 */
+async function openCalibrated() {
+  ws = workspaceState(burstWorkspaceView(burstRecipe({
     partCalib: null,
     segments: [
       pathSegment(1, "straight", { expectedFrames: 5, offsetRef: { measure: "absoluteX", camera: "CAM-1", xRef: 0.1, spread: 0.02 } }),
       pathSegment(2, "corner", { expectedFrames: 4 }), pathSegment(3, "straight", { expectedFrames: 3 }),
     ],
-  });
-  ws = workspaceState(burstWorkspaceView(doc));
-  vi.mocked(workspaceApi.updateSegments).mockReturnValue(deferred<never>().promise);
+  })));
   const user = userEvent.setup();
   show();
-  expect(screen.getByLabelText("段 2 预期帧数")).toHaveTextContent("4");
   const first = within(screen.getByRole("region", { name: "段 1" }));
   await user.click(first.getByText(/检测项/));
-  expect(first.getByRole("switch", { name: "检胶偏" })).toBeInTheDocument();
+  return { user, first };
+}
 
-  await user.selectOptions(first.getByLabelText("段 1 类型", { selector: "select" }), "corner");
+// 改段类型走 restructure：清空标定并立即保存
+describe("直线段改成弯道", () => {
+  it("已标定的配方 → 各段预期帧数清空为待标定，并提示标定已清空", async () => {
+    const { user, first } = await openCalibrated();
+    expect(screen.getByLabelText("段 2 预期帧数")).toHaveTextContent("4");
 
-  for (const index of [1, 2, 3]) expect(screen.getByLabelText(`段 ${index} 预期帧数`)).toHaveTextContent("待标定");
-  expect(first.queryByRole("switch", { name: "检胶偏" })).not.toBeInTheDocument();
-  expect(screen.getByText("各段预期帧数与标定已清空")).toBeVisible();
-  await waitFor(() => expect(workspaceApi.updateSegments).toHaveBeenCalledTimes(1));
-  const [id, revision, sent] = vi.mocked(workspaceApi.updateSegments).mock.calls[0];
-  expect([id, revision]).toEqual(["S", 3]);
-  expect(sent.map(segment => [segment.kind, segment.expectedFrames])).toEqual([["corner", null], ["corner", null], ["straight", null]]);
-  expect(sent[0].checks.offset).toBeNull();
-  expect(sent[0].offsetRef).toBeNull();
+    await user.selectOptions(first.getByLabelText("段 1 类型", { selector: "select" }), "corner");
+
+    for (const index of [1, 2, 3]) expect(screen.getByLabelText(`段 ${index} 预期帧数`)).toHaveTextContent("待标定");
+    expect(screen.getByText("各段预期帧数与标定已清空")).toBeVisible();
+  });
+
+  it("该段检测项展开着 → 换成弯道的一套，说明弯道不判胶偏", async () => {
+    const { user, first } = await openCalibrated();
+    expect(first.getByRole("switch", { name: "检胶偏" })).toBeInTheDocument();
+
+    await user.selectOptions(first.getByLabelText("段 1 类型", { selector: "select" }), "corner");
+
+    expect(first.getByText(/弯道段不判胶偏/)).toBeVisible();
+  });
+
+  it("已标定的配方 → 立即保存清空后的段列表，弯道段不带胶偏检测与胶偏参考", async () => {
+    const { user, first } = await openCalibrated();
+
+    await user.selectOptions(first.getByLabelText("段 1 类型", { selector: "select" }), "corner");
+
+    await waitFor(() => expect(workspaceApi.updateSegments).toHaveBeenCalledTimes(1));
+    const [id, revision, sent] = vi.mocked(workspaceApi.updateSegments).mock.calls[0];
+    expect([id, revision]).toEqual(["S", 3]);
+    expect(sent.map(segment => [segment.kind, segment.expectedFrames])).toEqual([["corner", null], ["corner", null], ["straight", null]]);
+    expect([sent[0].checks.offset, sent[0].offsetRef]).toEqual([null, null]);
+  });
+});
+
+// 改长度、容差、检测项走 patch：标定保留，防抖后保存
+it.each<[string, (first: ReturnType<typeof within>) => void, (segment: PathSegment) => unknown, unknown]>([
+  ["帧数容差改为 2", first => fireEvent.change(first.getByRole("spinbutton", { name: "段 1 帧数容差" }), { target: { value: "2" } }), segment => segment.tolerance, 2],
+  ["长度改为 130 mm", first => fireEvent.change(first.getByRole("spinbutton", { name: "段 1 长度" }), { target: { value: "130" } }), segment => segment.lengthMm, 130],
+  ["关掉溢胶检测", first => fireEvent.click(first.getByRole("switch", { name: "检溢胶" })), segment => segment.checks.overflow.enabled, false],
+])("已标定的配方，%s → 各段预期帧数与胶偏参考保留，保存的段列表带这项改动", async (_, edit, field, expected) => {
+  const { first } = await openCalibrated();
+  vi.useFakeTimers();
+
+  edit(first);
+  await act(() => vi.advanceTimersByTimeAsync(1000)); // 越过自动保存的防抖
+
+  expect(workspaceApi.updateSegments).toHaveBeenCalledTimes(1);
+  const sent = vi.mocked(workspaceApi.updateSegments).mock.calls[0][2];
+  expect(sent.map(segment => segment.expectedFrames)).toEqual([5, 4, 3]);
+  expect(sent[0].offsetRef?.xRef).toBe(0.1);
+  expect(field(sent[0])).toBe(expected);
 });
