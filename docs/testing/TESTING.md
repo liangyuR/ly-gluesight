@@ -68,7 +68,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 | `pwsh -NoProfile -File tests/packaging/Test-LyFlowDependency.ps1` | lyFlow 依赖的 Release 选择、配置与 Cargo 锁定、运行库校验、缓存与网络回退、升级回滚（网络与 DLL 探针用本地夹具） |
 | `pwsh -NoProfile -File tests/packaging/Test-VendorDependency.ps1` | 厂商运行库的包隔离、结构、尺寸、CRT 版本、固定源恢复与缓存边界 |
 | `node --test tests/packaging/windows-workflow.test.mjs` | Windows 打包工作流门禁：版本与安装方式校验、发布标签须在 main 上、版本设置、SDK 干净环境检查、视觉检查先于打包、依赖缓存标识与发布清单 |
-| `pnpm test:soak:throughput`（即 `Test-Soak.ps1 -Stages throughput`） | 3 × 25 Hz 吞吐门槛（段配方、离线·样本集 lyFlow 测量，`-ThroughputSource synthetic` 压合成图帧管线）：连续跑 `-ThroughputSeconds`（默认 60 s），核对 Unmeasured = 0、图像内存预算丢帧 = 0、测量队列峰值低于容量的 50%，达不到时退出码 1，实测值写进 `output/soak/throughput-*.json`；判定函数的边界由 `node --test tests/native/throughput-gate.test.mjs` 保护 |
+| `pnpm test:soak:throughput`（即 `Test-Soak.ps1 -Stages throughput`） | 3 × 25 Hz 吞吐门槛（段配方、离线·样本集 lyFlow 测量，`-ThroughputSource synthetic` 压合成图帧管线）：连续跑 `-ThroughputSeconds`（默认 60 s），核对 Unmeasured = 0、图像内存预算丢帧 = 0、测量队列峰值低于容量的 50%，并要求产线跑满时长、实际帧率达到 3 × Hz 的 90%（分项只在满负载下才有意义）；达不到时退出码 1，实测值写进 `output/soak/throughput-*.json`。样本集每件只有 12 个脉冲、帧率天然只有需求的三分之一左右，默认判不达标；只想看突发下的分项时加 `-AllowBurstOnly` 放行，报告里 `sustainedVerified` 仍为 false，不是持续门槛的结论。判定函数的规则由 `node --test tests/native/throughput-gate.test.mjs` 保护 |
 | `pnpm test:soak`（即 `pwsh -NoProfile -File scripts/Test-Soak.ps1`） | 长稳测试（隔离 soak 实例）。没有必填参数，但样本集与 lyFlow 运行库必须经 `-SampleSet` / `GLUESIGHT_SAMPLE_SET`、`-LyFlowRuntime` / `GLUESIGHT_LYFLOW_RUNTIME` 提供（不自动恢复运行库，缺失时退出码 3），例如 `pnpm test:soak -SampleSet <样本集目录> -LyFlowRuntime <运行库目录> -Parts 1000`；阶段、参数与退出码见[长稳报告](soak-report.md) |
 | `pwsh -NoProfile -File scripts/Test-AlgorithmEval.ps1` | 算法评测（忽略的 cargo 评测，需样本集与 `lyflow_core.dll`），参数与读数见[算法评测](algorithm-evaluation.md) |
 | `pwsh -NoProfile -File scripts/Test-DevStartup.ps1` | Windows 旧终端在设置/清除本地运行库后启动，子进程读取最新保存值，参数与退出码保持不变 |
@@ -203,7 +203,7 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 | `pnpm test:e2e:log-replay -Model legacy …` | 通过，117 s：3 件逐拍照点比对一致 |
 | `pnpm test:e2e:fixture …`（旧拍照点配方，特征定位专项） | 通过，165 s：首次运行卡在第二个框，页面停在画框状态、按钮写“在原图上拖出定位框”，脚本改为已在画框状态时不再点按钮后通过；产品行为没有改 |
 | `pnpm test:soak -Parts 30`（burst，默认阶段 soak、faults、engine、audit、restart） | 通过，约 8 分钟：见[长稳报告](soak-report.md)“2026-10-23 更新”。没有跑 1000 件与 `disk` 阶段 |
-| `node --test tests/native/throughput-gate.test.mjs` | 通过：1 个参数化用例（8 组输入）；把队列峰值判定从 `>=` 改成 `>`、或去掉 Unmeasured 判定，用例都会失败 |
+| `node --test tests/native/throughput-gate.test.mjs` | 通过：12 个用例（每条规则一个：Unmeasured、预算丢帧、队列峰值一半的边界、测量失败、帧通道满、没有出件、产线中途停、帧率不到需求 90%，另有基线、边界下侧、显式放行突发两条）；把队列峰值判定从 `>=` 改成 `>`、去掉中途停或持续帧率判定、去掉 Unmeasured 判定，用例都会失败（审查修复补上中途停与持续帧率两条，原来空转或只有突发的运行也能判达标） |
 
 3 × 25 Hz 吞吐（`pnpm test:soak:throughput -SampleSet … -LyFlowRuntime …`，25 Hz、60 s）：
 

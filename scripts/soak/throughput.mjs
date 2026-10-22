@@ -7,6 +7,10 @@ import { connect, ensureOffline, offlineHistory, parseArgs, percentiles, process
 // 3 × 25 Hz 吞吐门槛（规格 §0：不裁帧、所有帧都测；决策记录 7.1 与 TESTING.md“3 × 25 Hz 吞吐门槛”）：
 // 三台相机按给定频率同时出帧，连续跑给定秒数，核对没有帧没测成（Unmeasured）、没有因图像内存预算被丢的帧、测量队列峰值不到容量的一半。
 // 达不到时本脚本退出码 1 并把实测值写进报告，由用户决定降 PLC 脉冲频率（决策记录 7.1 的降级方案）还是加测量并发；PC 不自行降频。
+// “连续 60 s 满负载”本身也是判定条件：产线中途停了（stoppedEarly），或实际帧率不到需求 3 × hz 的 90%，都不算达标，
+// 否则空转或只有突发的运行会把队列峰值判成“余量充足”。样本集每件只有 12 个脉冲、件间有握手开销，帧率天然只有需求的三分之一左右，
+// 默认判不达标；只想看突发下三条分项时显式传 `--burst true`（Test-Soak.ps1 的 -AllowBurstOnly）放行，此时报告里 sustainedVerified 仍为 false，
+// 结论只是“突发下分项满足”，不能当作持续 3 × 25 Hz 门槛的结论。
 //
 // 两种图像来源，结果里都写明（boundary），不能互相替代：
 //   sampleSet  离线·样本集：帧从现场原图读出，生产路径用真实 lyFlow 测量——这是唯一能在离线下压 lyFlow 的来源。样本集每件只有 12 个点位，
@@ -18,18 +22,33 @@ import { connect, ensureOffline, offlineHistory, parseArgs, percentiles, process
 
 /** 段配方测量队列容量（src-tauri/src/measure.rs 的 FRAME_MEASURE_QUEUE）。 */
 export const MEASURE_QUEUE_CAPACITY = 1024;
-export const GATE = { unmeasured: 0, budgetDropped: 0, queuePeakRatio: 0.5 };
+/** 持续负载的判定：实际帧率至少达到需求 3 × hz 的这个比例，且产线没有中途停。 */
+export const SUSTAINED_RATIO = 0.9;
+export const GATE = { unmeasured: 0, budgetDropped: 0, queuePeakRatio: 0.5, sustainedRatio: SUSTAINED_RATIO };
 
-/** 判门槛：Unmeasured = 0、预算丢帧 = 0、测量队列峰值 < 容量的 50%；另把帧通道满丢帧和测量失败也作为失败列出（都是“不裁帧”被破坏）。 */
-export function assessThroughput({ parts, frames, camera, queue }) {
-  const failures = [];
-  if (!parts) failures.push("没有生产出任何件");
-  if (frames.unmeasured > GATE.unmeasured) failures.push(`Unmeasured ${frames.unmeasured} 帧（要求 ${GATE.unmeasured}）：测量队满或超时没测`);
-  if (frames.error > 0) failures.push(`测量失败 ${frames.error} 帧：lyFlow 报错，检测不完整`);
-  if (camera.budgetDropped > GATE.budgetDropped) failures.push(`图像内存预算丢帧 ${camera.budgetDropped} 帧（要求 ${GATE.budgetDropped}）`);
-  if (camera.channelDropped > 0) failures.push(`帧通道满丢帧 ${camera.channelDropped} 帧：检测节拍来不及取走`);
-  if (queue.peakRatio >= GATE.queuePeakRatio) failures.push(`测量队列峰值 ${queue.peak} / ${queue.capacity}（${(queue.peakRatio * 100).toFixed(1)}%），要求低于 ${GATE.queuePeakRatio * 100}%`);
-  return { failures, passed: failures.length === 0 };
+/**
+ * 判门槛：Unmeasured = 0、预算丢帧 = 0、测量队列峰值 < 容量的 50%；另把帧通道满丢帧和测量失败也作为失败列出（都是“不裁帧”被破坏）。
+ * 这些分项只在满负载下才有意义，所以还要求 run：产线没有中途停（stoppedEarly）、实际帧率 ≥ 需求的 90%（sustainedVerified）。
+ * 帧率不够时默认判不达标；allowBurstOnly（--burst true）显式放行，此时 passed 只代表突发下分项满足，sustainedVerified 仍为 false。
+ * 返回的 failureKinds 与 failures 一一对应，供测试按规则种类断言，不依赖文案。
+ */
+export function assessThroughput({ parts, frames, camera, queue, run, allowBurstOnly = false }) {
+  const failures = [], failureKinds = [];
+  const fail = (kind, message) => { failureKinds.push(kind); failures.push(message); };
+  if (!parts) fail("noParts", "没有生产出任何件");
+  if (run.stoppedEarly) fail("stoppedEarly", "产线在跑满设定时长前就停了（site_status.running 变 false）：没有持续满负载，各分项不能算数");
+  const fps = Number.isFinite(run.framesPerSecond) ? run.framesPerSecond : null;
+  const sustainedVerified = !run.stoppedEarly && fps !== null && fps >= SUSTAINED_RATIO * run.demandFps;
+  if (!sustainedVerified && !run.stoppedEarly && !allowBurstOnly) {
+    fail("notSustained", `持续负载未验证：实际 ${fps === null ? "无数据" : `${fps} 帧/s`}，需求 ${run.demandFps} 帧/s 的 ${SUSTAINED_RATIO * 100}% 是 ${SUSTAINED_RATIO * run.demandFps} 帧/s；`
+      + "样本集每件只有 12 个脉冲，只能做突发，只想看突发下的分项时显式传 --burst true（Test-Soak.ps1 -AllowBurstOnly），该结果不是持续门槛的结论");
+  }
+  if (frames.unmeasured > GATE.unmeasured) fail("unmeasured", `Unmeasured ${frames.unmeasured} 帧（要求 ${GATE.unmeasured}）：测量队满或超时没测`);
+  if (frames.error > 0) fail("measureError", `测量失败 ${frames.error} 帧：lyFlow 报错，检测不完整`);
+  if (camera.budgetDropped > GATE.budgetDropped) fail("budgetDropped", `图像内存预算丢帧 ${camera.budgetDropped} 帧（要求 ${GATE.budgetDropped}）`);
+  if (camera.channelDropped > 0) fail("channelDropped", `帧通道满丢帧 ${camera.channelDropped} 帧：检测节拍来不及取走`);
+  if (queue.peakRatio >= GATE.queuePeakRatio) fail("queuePeak", `测量队列峰值 ${queue.peak} / ${queue.capacity}（${(queue.peakRatio * 100).toFixed(1)}%），要求低于 ${GATE.queuePeakRatio * 100}%`);
+  return { failures, failureKinds, passed: failures.length === 0, sustainedVerified };
 }
 
 /** 运行日志里某类事件（关键字）的全部记录，分页读出。 */
@@ -90,6 +109,9 @@ export async function throughput(session, out, options) {
   assert(["sampleSet", "synthetic"].includes(source), "--source 只能是 sampleSet 或 synthetic");
   assert(hz >= 1 && hz <= 66, "--hz 需在 1–66 之间（相机上限 66 fps）");
   assert(seconds >= 5, "--seconds 至少 5");
+  // 显式放行“只有突发、没有持续满负载”的运行（样本集就是这样）：passed 只代表突发下分项满足，sustainedVerified 仍如实写 false
+  assert([undefined, "true", "false"].includes(options.burst), "--burst 只能是 true 或 false");
+  const allowBurstOnly = options.burst === "true";
   const settings = await call("cycle_get_settings");
   // 调试构建下布防实测约 250 ms，超过默认 200 ms 预算会判 ERR 98，整件不测；压测放宽到 1 s（与离线回放验证相同）
   await call("cycle_save_settings", { settings: { ...settings, productSource: "plc", timeouts: { ...settings.timeouts, armMs: 1000 } } });
@@ -123,14 +145,17 @@ export async function throughput(session, out, options) {
   const totals = { total: 0, measured: 0, unmeasured: 0, error: 0, missing: 0, outOfCorridor: 0 };
   const verdicts = {};
   const flags = { incomplete: 0, frameCountAnomaly: 0, shortPart: 0 };
-  let groups = 0;
-  for (const item of items) {
+  let groups = 0, firstFrames = 0;
+  for (const [index, item] of items.entries()) {
     verdicts[item.verdict] = (verdicts[item.verdict] ?? 0) + 1;
     const detail = await call("history_detail", { id: item.id });
     if (!detail.burst) continue;
     const facts = burstFacts(detail);
     groups += facts.groupCount;
-    for (const [state, n] of Object.entries(facts.frameStates)) { totals.total += n; totals[state] = (totals[state] ?? 0) + n; }
+    for (const [state, n] of Object.entries(facts.frameStates)) {
+      totals.total += n; totals[state] = (totals[state] ?? 0) + n;
+      if (index === 0) firstFrames += n;
+    }
     for (const flag of Object.keys(flags)) if (facts.flags[flag]) flags[flag]++;
   }
   // 测量耗时与排队耗时：运行日志里每帧一条“测量完成”；每件第一帧到达 → 最后一帧测完给出突发排空速率
@@ -162,13 +187,17 @@ export async function throughput(session, out, options) {
   const queue = { capacity: MEASURE_QUEUE_CAPACITY, peak: queuePeak, peakRatio: queuePeak / MEASURE_QUEUE_CAPACITY, polls, note: "运行中每 50 ms 读一次在途件的 pendingMeasure 取最大值，是采样下界" };
   const span = items.length > 1 ? items.at(-1).ts - items[0].ts : endedAt - startedAt;
   const main = metrics.map(m => m.main).filter(Boolean);
-  const verdict = assessThroughput({ parts: items.length, frames: totals, camera, queue });
+  // 实际帧率按第一件结束到最后一件结束这段时间里的整件算：第一件的帧在这段之前，不计入
+  const spanFrames = items.length > 1 ? totals.total - firstFrames : totals.total;
+  const achieved = { framesPerSecond: span > 0 ? Number((spanFrames / (span / 1000)).toFixed(1)) : null, partsPerMinute: span > 0 ? Number(((items.length - 1) * 60000 / span).toFixed(1)) : null,
+    target: Number((3 * hz).toFixed(1)), note: "样本集每件只有 12 个脉冲、件间有握手开销，实际帧率低于目标；脉冲串内的瞬时帧率 = 3 × hz" };
+  const verdict = assessThroughput({ parts: items.length, frames: totals, camera, queue, run: { stoppedEarly: stopped, framesPerSecond: achieved.framesPerSecond, demandFps: achieved.target }, allowBurstOnly });
   return {
-    passed: verdict.passed, failures: verdict.failures, gate: GATE,
+    passed: verdict.passed, sustainedVerified: verdict.sustainedVerified, burstOnlyAccepted: allowBurstOnly && !verdict.sustainedVerified,
+    failures: verdict.failures, failureKinds: verdict.failureKinds, gate: GATE,
     source, measurement: site.measurement, recipeId, hz, intervalMs, seconds, elapsedMs: endedAt - startedAt, stoppedEarly: stopped,
     parts: items.length, groups, verdicts, flags, frames: totals, camera, queue,
-    achieved: { framesPerSecond: span > 0 ? Number((totals.total / (span / 1000)).toFixed(1)) : null, partsPerMinute: span > 0 ? Number(((items.length - 1) * 60000 / span).toFixed(1)) : null,
-      target: Number((3 * hz).toFixed(1)), note: "样本集每件只有 12 个脉冲、件间有握手开销，实际帧率低于目标；脉冲串内的瞬时帧率 = 3 × hz" },
+    achieved,
     latencyMs: { total: percentiles(latency.ms), queue: percentiles(latency.queueMs), engine: percentiles(latency.engineMs) },
     projection,
     process: { startPrivBytes: main[0]?.priv ?? null, peakPrivBytes: main.length ? Math.max(...main.map(m => m.priv)) : null, endPrivBytes: main.at(-1)?.priv ?? null,
@@ -187,8 +216,9 @@ async function main() {
   try {
     const result = await throughput(session, out, args);
     await writeJson(path.join(out, `throughput-${result.source}-${result.hz}hz.json`), result);
-    process.stdout.write(JSON.stringify({ passed: result.passed, failures: result.failures, source: result.source, measurement: result.measurement, hz: result.hz, parts: result.parts, frames: result.frames,
+    process.stdout.write(JSON.stringify({ passed: result.passed, sustainedVerified: result.sustainedVerified, burstOnlyAccepted: result.burstOnlyAccepted, failures: result.failures, source: result.source, measurement: result.measurement, hz: result.hz, parts: result.parts, frames: result.frames,
       camera: { channelDropped: result.camera.channelDropped, budgetDropped: result.camera.budgetDropped }, queue: result.queue, achieved: result.achieved, latencyMs: result.latencyMs, projection: result.projection }, null, 1) + "\n");
+    if (result.passed && !result.sustainedVerified) process.stderr.write("按突发放行（--burst true）：持续满负载没有验证，这不是持续 3 × 25 Hz 门槛的结论。\n");
     if (!result.passed) process.exitCode = 1;
   } finally { await session.browser.close(); }
 }

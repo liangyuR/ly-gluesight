@@ -14,7 +14,10 @@ param(
     # throughput 阶段（默认不跑，pnpm test:soak:throughput 单独跑）：3 × 25 Hz 吞吐门槛，见 scripts/soak/throughput.mjs
     [ValidateRange(1, 66)][int]$ThroughputHz = 25,
     [ValidateRange(5, 3600)][int]$ThroughputSeconds = 60,
-    [ValidateSet('sampleSet', 'synthetic')][string]$ThroughputSource = 'sampleSet'
+    [ValidateSet('sampleSet', 'synthetic')][string]$ThroughputSource = 'sampleSet',
+    # 默认要求实际帧率达到 3 × Hz 的 90% 且产线跑满时长，样本集每件只有 12 个脉冲、只能做突发，所以默认判不达标；
+    # 只想看突发下的分项时显式加本开关放行（报告里 sustainedVerified 仍为 false，不是持续门槛的结论）
+    [switch]$AllowBurstOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -57,7 +60,9 @@ try {
     }
     if ($Stages -contains 'throughput') {
         # 退出码 1 = 门槛没达到（实测值在 output/soak/throughput-*.json），由用户决定降 PLC 脉冲频率或加测量并发
-        Invoke-SoakNode 'throughput.mjs' (@('run') + $soakNodeArgs + @('--source', $ThroughputSource, '--hz', "$ThroughputHz", '--seconds', "$ThroughputSeconds"))
+        $throughputArgs = @('run') + $soakNodeArgs + @('--source', $ThroughputSource, '--hz', "$ThroughputHz", '--seconds', "$ThroughputSeconds")
+        if ($AllowBurstOnly) { $throughputArgs += @('--burst', 'true') }
+        Invoke-SoakNode 'throughput.mjs' $throughputArgs
     }
     if ($Stages -contains 'faults') {
         Invoke-SoakNode 'faults.mjs' (@('run') + $soakNodeArgs)
