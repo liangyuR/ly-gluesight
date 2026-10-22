@@ -371,7 +371,7 @@ export default function TeachingPage() {
     const box = fixtureBoxRef.current;
     fixtureBoxRef.current = null; setFixtureBox(null);
     if (!box || box[2] < 1 || box[3] < 1) return;
-    setFixtureDrawing(false);
+    // 松手后留在定位框模式：可以直接重画，误点也不会给中线加点；回编辑点由用户自己切
     void proposeFixture({ ...(t.fixture ?? { ...FIXTURE_DEFAULTS, source: "" }), rect: box.map(Math.round) as FixtureSpec["rect"] });
   };
   const runFixtureTrial = async () => {
