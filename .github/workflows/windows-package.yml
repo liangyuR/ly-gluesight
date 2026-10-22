@@ -231,7 +231,7 @@ jobs:
           @"
           Windows x64 安装包，携带 lyFlow 与 MVS 运行库。
 
-          目标电脑需预装 WebView2 和匹配的 MVS 设备驱动；本次构建已完成软件运行库自检及静默安装验证，真机收图与现场验收另行执行。
+          目标电脑需预装 WebView2 和匹配的 MVS 设备驱动；本次构建已完成软件运行库自检，真机收图与现场验收另行执行。
           "@ | Set-Content -LiteralPath $notes -Encoding utf8NoBOM
           gh release create $env:RELEASE_TAG @assets --repo $env:RELEASE_REPOSITORY --verify-tag --draft --title "GlueSight $env:RELEASE_TAG" --notes-file $notes
           if ($LASTEXITCODE -ne 0) { throw 'Draft release creation failed.' }
