@@ -105,6 +105,27 @@ fn corridor_check(w: &Workspace, current: &BTreeMap<String, Value>) -> Check {
     }
 }
 
+/// 当前设备的相机标签（`camera_state`，与示教帧冻结时同一口径：样本集相机带样本集编号），按相机编号。
+pub(super) fn current_camera_tags(app: &AppHandle) -> BTreeMap<String, Value> {
+    let sample_set = crate::offline::sample_set(app).map(|set| set.manifest().id.clone());
+    app.state::<CycleHost>().camera.configs().iter().map(|c| (c.id.clone(), camera_state(c, sample_set.as_deref()))).collect()
+}
+
+/// 段配方候选试运行（`workspace_debug_run`）用的各计划相机示教帧尺寸（计划相机顺序，交给 `Candidate::new_burst`）：
+/// 每台都选了示教帧，且示教帧采集后这台相机的设备标签（`current`）没变——与走廊示教验证项同一口径。开跑前
+/// `recheck_debug_candidate` 再核对一次。
+pub(super) fn debug_sizes(w: &Workspace, current: &BTreeMap<String, Value>) -> Result<Vec<[u32; 2]>, String> {
+    w.doc.inspect.iter().map(|inspect| {
+        let camera = &inspect.camera;
+        let teaching = w.camera_teaching.iter().find(|t| &t.camera == camera)
+            .ok_or_else(|| format!("相机 {camera} 还没有选示教帧：先完成走廊示教"))?;
+        if current.get(camera) != Some(&teaching.frame.camera_tag) {
+            return Err(format!("相机 {camera}：示教帧采集后设备参数或样本集已改变，请重新采集并选示教帧"));
+        }
+        Ok(teaching.frame.size)
+    }).collect()
+}
+
 /// 段标定（规格 §1 未标定不能发布；决策补充“多段配方的发布与运行”）：整件 ΣN_exp 已由多轮标定得出即通过，
 /// 各段 N_exp 可以为空（待分段算法）；逐段列出 N_exp 或待定原因。
 fn segment_check(w: &Workspace) -> Check {
@@ -268,8 +289,7 @@ pub(super) fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, S
     let cycle = app.state::<CycleHost>();
     let device = cycle::usable_cams(app, &recipe).and_then(|cams| cycle.camera.check_ready_at(&cams));
     let configs = cycle.camera.configs();
-    let sample_set = crate::offline::sample_set(app).map(|set| set.manifest().id.clone());
-    let tags: BTreeMap<String, Value> = configs.iter().map(|c| (c.id.clone(), camera_state(c, sample_set.as_deref()))).collect();
+    let tags = current_camera_tags(app);
     let current: BTreeMap<String, Value> = configs.iter().map(|c| (c.id.clone(), state_value(c))).collect();
     let measurer = CandidateMeasurer::new(app, w, &recipe);
     let samples: Vec<SampleResult> = w.samples.iter()

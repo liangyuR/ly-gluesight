@@ -22,8 +22,7 @@ pub struct Candidate {
 }
 
 impl Candidate {
-    /// 段配方的候选试运行：按各相机示教帧尺寸（计划相机顺序）建走廊测量图；前置 `Recipe::ready_burst`。
-    #[allow(dead_code)] // D2/D3 候选流程接入后去掉
+    /// 段配方的候选试运行（`workspace_debug_run` 对段配方调用）：按各相机示教帧尺寸（计划相机顺序）建走廊测量图；前置 `Recipe::ready_burst`。
     pub fn new_burst(recipe: Recipe, revision: u64, engine: Arc<Engine>, sizes: &[[u32; 2]], overview: crate::workspace::Overview) -> Result<Self, String> {
         recipe.ready_burst().map_err(|reasons| reasons.join("；"))?;
         if sizes.len() != recipe.inspect.len() { return Err("候选示教帧尺寸与检测相机数量不一致".into()); }

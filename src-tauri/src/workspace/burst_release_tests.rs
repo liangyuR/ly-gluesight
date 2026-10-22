@@ -155,3 +155,18 @@ fn progress_reports_calibration_blocker_before_validation() {
         assert!(progress.next.as_ref().is_some_and(|next| next.step != StepIdV2::Validation && next.step != StepIdV2::Publish), "{name}：{:?}", progress.next);
     }
 }
+
+#[test]
+fn ready_burst_candidate_yields_debug_run_inputs_in_plan_camera_order() {
+    // 防的回归（决策记录第九节第 13、14 条；规格 §6 离线仿真）：候选试运行不分配方类型、一律过旧拍照点的 Recipe::ready，
+    // 走廊与整件 ΣN_exp 都已就绪的段配方候选被拒，“候选试运行一圈”对段配方必然报错；或示教帧尺寸不按计划相机顺序
+    // 交给 Candidate::new_burst（它按 inspect 顺序逐台配对），走廊测量图套错相机的帧尺寸
+    let mut w = taught(&[Straight, Corner, Straight], DEVICE);
+    calibrate(&mut w, 30);
+    w.instance_id = 1;
+    for (teaching, width) in w.camera_teaching.iter_mut().zip([1000, 1100, 1200]) { teaching.frame.size = [width, 700]; }
+    w.camera_teaching.reverse();
+    let recipe = debug_recipe(&w).unwrap();
+    assert!(recipe.is_burst());
+    assert_eq!(burst_release::debug_sizes(&w, &configs(&w.doc, DEVICE)).unwrap(), [[1000, 700], [1100, 700], [1200, 700]]);
+}

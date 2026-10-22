@@ -2951,48 +2951,81 @@ pub async fn workspace_import_sample(
     .map_err(|e| e.to_string())?
 }
 
+/// 候选试运行冻结的配方，按配方类型分流（决策记录第九节第 14 条）：段配方过 `Recipe::ready_burst`（三台相机走廊与当量、
+/// 整件 ΣN_exp）；旧拍照点配方过组选图与 `Recipe::ready`，行为不变。修订号为候选调试修订，计划版本至少为 1。
+fn debug_recipe(w: &Workspace) -> Result<Recipe, String> {
+    if let Some((_, error)) = w.group_selection_errors().into_iter().next() { return Err(error); }
+    let mut recipe = w.doc.build()?;
+    if recipe.is_burst() {
+        recipe.ready_burst().map_err(|reasons| reasons.join("；"))?;
+    } else {
+        recipe.ready()?;
+    }
+    recipe.revision_id = w.debug_revision()?;
+    if recipe.plan_version == 0 { recipe.plan_version = 1; }
+    Ok(recipe)
+}
+
+/// 候选试运行的示教图尺寸：旧拍照点配方按 (拍照点, 图)，段配方按计划相机顺序。
+enum DebugSizes {
+    Legacy(HashMap<(usize, u8), [u32; 2]>),
+    Burst(Vec<[u32; 2]>),
+}
+
 #[tauri::command]
 pub async fn workspace_debug_run(app: AppHandle, id: String, revision: u64, part_id: Option<String>) -> Result<(), String> {
     if !crate::offline::enabled(&app) || crate::offline::sample_set(&app).is_none() { return Err("候选试运行仅支持离线样本集模式".into()); }
     let set = crate::offline::sample_set(&app).ok_or("离线样本集缺失")?;
+    let current = burst_release::current_camera_tags(&app);
     let (recipe, sizes, w) = {
         let host = app.state::<WorkspaceHost>();
         let items = host.items.lock().unwrap();
         let w = items.get(&id).ok_or("候选配方不存在")?;
         if w.revision != revision { return Err("候选已修改，请刷新后重试".into()); }
         if w.pending.is_some() { return Err("候选正在等待发布，请先完成或取消发布".into()); }
-        if let Some((_, error)) = w.group_selection_errors().into_iter().next() { return Err(error); }
-        let mut recipe = w.doc.build()?;
-        recipe.ready()?;
-        let mut sizes = HashMap::new();
-        for (k, shot) in recipe.shots.iter().enumerate() {
-            if !shot.measured() { continue; }
-            for selected in workflow::selected_views(w, k) {
-                workflow::check_view(&app, w, k, selected, false)?;
-                let frozen = w.frames[k].views.iter().find(|i| i.view == selected).ok_or("示教原图缺失")?;
-                sizes.insert((k, selected), frozen.size);
+        let recipe = debug_recipe(w)?;
+        let sizes = if recipe.is_burst() { DebugSizes::Burst(burst_release::debug_sizes(w, &current)?) } else {
+            let mut sizes = HashMap::new();
+            for (k, shot) in recipe.shots.iter().enumerate() {
+                if !shot.measured() { continue; }
+                for selected in workflow::selected_views(w, k) {
+                    workflow::check_view(&app, w, k, selected, false)?;
+                    let frozen = w.frames[k].views.iter().find(|i| i.view == selected).ok_or("示教原图缺失")?;
+                    sizes.insert((k, selected), frozen.size);
+                }
             }
-        }
-        recipe.revision_id = w.debug_revision()?;
-        if recipe.plan_version == 0 { recipe.plan_version = 1; }
+            DebugSizes::Legacy(sizes)
+        };
         (recipe, sizes, w.clone())
     };
-    // 定位模板在锁外按冻结示教原图生成；目录按内容寻址，之后 recheck_debug_candidate 核对冻结图即可
-    let mut bases = HashMap::new();
-    for k in 0..recipe.shot_count() {
-        if !recipe.shots[k].measured() { continue; }
-        for (view, base) in fixture_bases(&app.state::<WorkspaceHost>(), &w, &recipe, k, &[])? { bases.insert((k, view), base); }
-    }
-    let engine = app.state::<vision::VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
-    let candidate = Arc::new(crate::candidate::Candidate::new(recipe, revision, engine, sizes, bases, w.overview.clone())?);
-    crate::offline::run_candidate(app, candidate, set, part_id).await
+    let candidate = match sizes {
+        // 段配方：每台计划相机按示教帧尺寸建走廊测量图，结果只量不判（D3 的候选调试记录按样本集读原图）
+        DebugSizes::Burst(sizes) => {
+            let engine = app.state::<vision::VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
+            crate::candidate::Candidate::new_burst(recipe, revision, engine, &sizes, w.overview.clone())?
+        }
+        DebugSizes::Legacy(sizes) => {
+            // 定位模板在锁外按冻结示教原图生成；目录按内容寻址，之后 recheck_debug_candidate 核对冻结图即可
+            let mut bases = HashMap::new();
+            for k in 0..recipe.shot_count() {
+                if !recipe.shots[k].measured() { continue; }
+                for (view, base) in fixture_bases(&app.state::<WorkspaceHost>(), &w, &recipe, k, &[])? { bases.insert((k, view), base); }
+            }
+            let engine = app.state::<vision::VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;
+            crate::candidate::Candidate::new(recipe, revision, engine, sizes, bases, w.overview.clone())?
+        }
+    };
+    crate::offline::run_candidate(app, Arc::new(candidate), set, part_id).await
 }
 
 pub(crate) fn recheck_debug_candidate(app: &AppHandle, candidate: &crate::candidate::Candidate) -> Result<(), String> {
+    let current = candidate.recipe.is_burst().then(|| burst_release::current_camera_tags(app));
     let host = app.state::<WorkspaceHost>();
     let items = host.items.lock().unwrap();
     let w = items.get(&candidate.info.recipe_id).ok_or("候选已删除")?;
     if w.revision != candidate.info.revision || w.pending.is_some() || w.debug_revision()? != candidate.recipe.revision_id { return Err("候选已修改、重建或正在发布，请重新试运行".into()); }
+    // 段配方：修订号不变即示教帧与走廊没变，只需再核对示教后设备标签没变；没有拍照点，下面的循环不执行
+    if let Some(current) = &current { burst_release::debug_sizes(w, current)?; }
     for (k, shot) in w.doc.shots.iter().enumerate() {
         if shot.skip { continue; }
         for view in workflow::selected_views(w, k) { workflow::check_view(app, w, k, view, false)?; }
