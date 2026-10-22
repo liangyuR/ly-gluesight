@@ -346,3 +346,213 @@ fn teach_check_accepts_the_identity_pose_and_brightness_probes_do_not_mislock_bu
     assert!(!report.passed);
     assert!(report.checks.iter().any(|c| c.id == CheckId::Texture && !c.passed), "{:?}", report.checks);
 }
+
+// ---- P1 吞吐摸底（docs/decisions/segment-burst.md 第七节）----
+// 探针，不是回归测试：量 1280×1024 单帧在发布加载路径上的测量耗时（p50/p95/max，串行与并发）和 PGM 连续写盘速率，
+// 数值回填 MEASURE_WORKERS 与 IMAGE_BUDGET_PER_CAMERA。断言只保证量的是正常路径（胶测得到、文件写满），数值本身不设门槛。
+// 只用中线测量的算子（glue.taught_path + glue.bead_width），没有特征定位，与段模型走廊测量是同一组算子；
+// 不要求带 lyFlow#32 的构建，已发布的运行库即可：
+//   $env:LYFLOW_CORE_DLL = 'src-tauri\target\dependency-cache\lyflow\1.1.5\lyflow_core.dll'
+//   cargo test --manifest-path src-tauri/Cargo.toml --lib -- --ignored throughput_probe --nocapture
+
+const PROBE_W: u32 = 1280;
+const PROBE_H: u32 = 1024;
+/// 与离线端到端的模拟标定当量一致（同分辨率现场相机的假设当量），走廊约 121 mm、122 站
+const PROBE_MM_PER_PX: f32 = 0.112;
+const PROBE_PATH: [[f32; 2]; 2] = [[100.0, 512.0], [1180.0, 512.0]];
+const PROBE_MEASURES: usize = 300;
+const PROBE_PGMS: usize = 3000;
+/// 每张 sync_data 的写盘变体只写这么多张：量不经系统缓存的盘速
+const PROBE_SYNCED_PGMS: usize = 300;
+/// 三台相机各写自己的目录
+const PROBE_WRITERS: usize = 3;
+
+/// 已发布的运行库即可（不要求 glue.locate 带外圈模板）。
+fn probe_engine() -> Arc<Engine> {
+    static ENGINE: OnceLock<Arc<Engine>> = OnceLock::new();
+    ENGINE.get_or_init(|| {
+        let path = std::env::var("LYFLOW_CORE_DLL").expect("需要 LYFLOW_CORE_DLL 指向 lyflow_core.dll（已发布的运行库即可）");
+        Arc::new(Engine::load(Path::new(&path)).unwrap())
+    }).clone()
+}
+
+/// 1280×1024：灰 120 ± 3 噪声底，一条 16 px 宽的暗胶条沿 y = 512 横穿示教走廊。
+fn probe_scene() -> FrameImage {
+    let mut rng = Rng(0x5EED);
+    let mut px: Vec<u8> = (0..PROBE_W * PROBE_H).map(|_| (120.0 + 3.0 * rng.gauss()).round() as u8).collect();
+    for y in 504..520 {
+        for x in 100..=1180 { px[(y * PROBE_W + x) as usize] = 40; }
+    }
+    FrameImage::new(PROBE_W, PROBE_H, px)
+}
+
+/// 单拍照点、无特征定位、走廊横穿整幅图的配方。
+fn probe_document() -> RecipeDoc {
+    let mut doc = document(RECT);
+    let shot = &mut doc.shots[0];
+    shot.path = PROBE_PATH.to_vec();
+    shot.mm_per_px = Some(PROBE_MM_PER_PX);
+    shot.fixture = None;
+    doc
+}
+
+/// 与生产同一条加载路径：publish → release::load → Prepared::load → warm。
+fn probe_production(teach: &FrameImage) -> Production {
+    let root = release_root("probe");
+    let doc = probe_document();
+    let view = doc.shots[0].view;
+    let recipe = doc.build().unwrap();
+    let mut pgm = format!("P5\n{} {}\n255\n", teach.width, teach.height).into_bytes();
+    pgm.extend_from_slice(&teach.pixels);
+    let graph = serde_json::to_vec(&crate::production::graphs(&recipe).unwrap()).unwrap();
+    let published = crate::release::publish(&root, PublishInput {
+        recipe: doc, validation_site: ValidationSite::Offline,
+        versions: Versions { engine: probe_engine().identity.clone(), graph: crate::production::GRAPH_VERSION.into() },
+        graph: ResourceSource::Bytes(graph),
+        shots: vec![ShotInput { k: 0, view, image: Some(ResourceSource::Bytes(pgm)), image_id: Some(TEACH_ID.into()),
+            calibration: Some(ResourceSource::Bytes(serde_json::to_vec(&json!({"mmPerPx": PROBE_MM_PER_PX as f64})).unwrap())) }],
+    }).unwrap();
+    let bundle = crate::release::load(&root, &recipe.id, &published.id).unwrap();
+    let prepared = Prepared::load(bundle, probe_engine(), &recipe).unwrap();
+    prepared.warm().unwrap();
+    Production { prepared, root }
+}
+
+struct Dist { n: usize, mean: f64, p50: f64, p95: f64, max: f64 }
+
+impl Dist {
+    /// 最近秩百分位。
+    fn of(mut ms: Vec<f64>) -> Self {
+        ms.sort_by(f64::total_cmp);
+        let n = ms.len();
+        let rank = |pct: usize| ms[(n * pct).div_ceil(100) - 1];
+        Self { n, mean: ms.iter().sum::<f64>() / n as f64, p50: rank(50), p95: rank(95), max: ms[n - 1] }
+    }
+
+    fn line(&self) -> String {
+        format!("n={} mean={:.2} p50={:.2} p95={:.2} max={:.2} ms", self.n, self.mean, self.p50, self.p95, self.max)
+    }
+}
+
+/// workers 个线程共同测 PROBE_MEASURES 帧：返回每帧耗时（ms）与墙钟（s）。
+fn probe_measure(prepared: &Prepared, image: &FrameImage, workers: usize) -> (Vec<f64>, f64) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let wall = Instant::now();
+    let per_worker: Vec<Vec<f64>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers).map(|w| {
+            let next = &next;
+            scope.spawn(move || {
+                let mut ms = Vec::new();
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= PROBE_MEASURES { break ms; }
+                    let start = Instant::now();
+                    let m = prepared.measure(0, image, &format!("probe-w{workers}-{w}-{i}")).unwrap();
+                    ms.push(start.elapsed().as_secs_f64() * 1e3);
+                    assert!(m.st.len() > 100 && m.coverage > 0.95, "量到的不是正常路径：站数 {}，有胶比例 {}", m.st.len(), m.coverage);
+                }
+            })
+        }).collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    (per_worker.concat(), wall.elapsed().as_secs_f64())
+}
+
+/// 探针写盘的临时目录，随它删除。
+struct ProbeDir(std::path::PathBuf);
+
+impl ProbeDir {
+    fn new(tag: &str) -> Self {
+        let dir = release_root(tag);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+}
+
+impl Drop for ProbeDir {
+    fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+}
+
+/// 生产录制用的 image_file::save_pgm 连续写 count 张（文件名从 first 起），返回每张耗时（ms）。
+/// 每张改首行 8 个字节（在胶条之外），免得各张内容完全相同。
+fn probe_write(dir: &Path, base: &FrameImage, first: usize, count: usize, synced: bool) -> Vec<f64> {
+    use std::io::Write;
+    let mut image = copy(base);
+    (first..first + count).map(|i| {
+        image.pixels[..8].copy_from_slice(&(i as u64).to_le_bytes());
+        let path = dir.join(format!("{i:05}.pgm"));
+        let start = Instant::now();
+        if synced {
+            let mut file = std::fs::File::create(&path).unwrap();
+            file.write_all(format!("P5\n{} {}\n255\n", image.width, image.height).as_bytes()).unwrap();
+            file.write_all(&image.pixels).unwrap();
+            file.sync_data().unwrap();
+        } else {
+            crate::image_file::save_pgm(&path, &image).unwrap();
+        }
+        start.elapsed().as_secs_f64() * 1e3
+    }).collect()
+}
+
+#[test]
+#[ignore = "吞吐摸底探针：需要 LYFLOW_CORE_DLL，写约 4 GB 临时文件；--ignored throughput_probe --nocapture，见 docs/decisions/segment-burst.md 第七节"]
+fn throughput_probe() {
+    let teach = probe_scene();
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let engine = probe_engine();
+    println!("[probe] lyFlow {}（{}），逻辑核 {cores}，图像 {PROBE_W}×{PROBE_H}（{} 字节/帧）", engine.version, engine.identity, teach.pixels.len());
+
+    // 一、测量耗时：串行是 p50/p95/max 的依据；并发看 MEASURE_WORKERS 的线性外推是否成立
+    let production = probe_production(&teach);
+    let stations = production.prepared.measure(0, &teach, "probe-stations").unwrap().st.len();
+    println!("[probe] 测点 {stations} 个（间距 1 mm，走廊约 121 mm）");
+    let mut levels = vec![1, 2, 3, 4, cores.saturating_sub(2).max(1)];
+    levels.sort_unstable();
+    levels.dedup();
+    let mut serial_p95_ms = 0.0;
+    for workers in levels {
+        let (ms, wall) = probe_measure(&production.prepared, &teach, workers);
+        let dist = Dist::of(ms);
+        if workers == 1 { serial_p95_ms = dist.p95; }
+        println!("[probe] 测量 并发 {workers}：{}；墙钟 {wall:.2} s，吞吐 {:.1} fps", dist.line(), PROBE_MEASURES as f64 / wall);
+    }
+    let needed = (75.0 * serial_p95_ms / 1000.0 / 0.7).ceil();
+    println!("[probe] MEASURE_WORKERS = ceil(75 fps × 串行 p95 {serial_p95_ms:.2} ms / 0.7) = {needed}；上限 逻辑核 {cores} − 2 = {}", cores.saturating_sub(2));
+
+    // 二、PGM 写盘：生产录制的 save_pgm
+    let bytes_per_file = (teach.pixels.len() + format!("P5\n{PROBE_W} {PROBE_H}\n255\n").len()) as f64;
+    let report = |label: &str, ms: Vec<f64>, wall: f64| {
+        let files = ms.len();
+        println!("[probe] 写盘 {label}：{files} 张 × {:.2} MB，{wall:.2} s，{:.1} MB/s（{:.1} 张/s）；单张 {}",
+            bytes_per_file / 1e6, files as f64 * bytes_per_file / 1e6 / wall, files as f64 / wall, Dist::of(ms).line());
+    };
+    {
+        let dir = ProbeDir::new("probe-pgm-seq");
+        let start = Instant::now();
+        let ms = probe_write(&dir.0, &teach, 0, PROBE_PGMS, false);
+        report("串行（save_pgm，不 sync）", ms, start.elapsed().as_secs_f64());
+        let on_disk = std::fs::metadata(dir.0.join("00000.pgm")).unwrap().len() as f64;
+        assert_eq!(on_disk, bytes_per_file, "PGM 文件大小不是头 + 全部像素");
+    }
+    {
+        let dir = ProbeDir::new("probe-pgm-par");
+        for cam in 0..PROBE_WRITERS { std::fs::create_dir_all(dir.0.join(format!("cam{cam}"))).unwrap(); }
+        let each = PROBE_PGMS / PROBE_WRITERS;
+        let start = Instant::now();
+        let per_cam: Vec<Vec<f64>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..PROBE_WRITERS).map(|cam| {
+                let (dir, teach) = (&dir.0, &teach);
+                scope.spawn(move || probe_write(&dir.join(format!("cam{cam}")), teach, 0, each, false))
+            }).collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        report(&format!("{PROBE_WRITERS} 路并行（每路 {each} 张）"), per_cam.concat(), start.elapsed().as_secs_f64());
+    }
+    {
+        let dir = ProbeDir::new("probe-pgm-sync");
+        let start = Instant::now();
+        let ms = probe_write(&dir.0, &teach, 0, PROBE_SYNCED_PGMS, true);
+        report("串行（每张 sync_data，不经系统缓存）", ms, start.elapsed().as_secs_f64());
+    }
+}
