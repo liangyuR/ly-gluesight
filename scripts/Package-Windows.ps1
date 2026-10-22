@@ -38,6 +38,8 @@ $configPath = Join-Path $stageRoot 'tauri.runtime.json'
 & (Join-Path $PSScriptRoot 'Prepare-PackageResources.ps1') -Version $version
 Push-Location -LiteralPath $projectRoot
 try {
+    # 预发布开 release 增量编译：改动后重编从约 4 分钟降到 1 分钟内，优化略弱；正式版显式关闭，不受外部环境变量影响
+    $env:CARGO_PROFILE_RELEASE_INCREMENTAL = if ($Pre) { 'true' } else { 'false' }
     & pnpm exec tauri build --no-bundle --target x86_64-pc-windows-msvc --config $configPath -- --locked
     if ($LASTEXITCODE -ne 0) { throw "Windows 应用构建失败（退出码 $LASTEXITCODE）" }
     Complete-Stage 'build'
