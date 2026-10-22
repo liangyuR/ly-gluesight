@@ -5,6 +5,7 @@ import { Alert, Button, Card, Chip, EmptyState, IconButton, Pagination, Segmente
 import { subscribe } from "../features/plc";
 import { useRecipes } from "../features/cycle";
 import { errorText } from "../lib/errors";
+import { flagBadges } from "../features/plan/vis";
 import { displayReason, formatTime, historyApi, RejudgeDialog, sampleLabelText, sourceLabel, triggerModeLabel, verdictGroups, verdictLabel, verdictTone, type HistoryPage as Page, type HistoryQuery, type HistoryScope } from "../features/history";
 
 type Item = Page["items"][number];
@@ -172,7 +173,19 @@ export default function HistoryPage() {
     { key: "verdict", header: "结果", render: (p) => <StatusBadge tone={verdictTone(p.verdict)}>{verdictLabel[p.verdict]}</StatusBadge> },
     { key: "plc", header: "PLC 码", render: (p) => <span className="mono">{p.plcCode}{p.faultCode ? ` / ${p.faultCode}` : ""}</span> },
     { key: "reason", header: "原因", render: (p) => <span className="hist-reason">{displayReason(p.reason)}</span> },
-    { key: "frames", header: "帧", render: (p) => <span className="mono nowrap">{p.framesExpected ? `${p.framesReceived}/${p.framesExpected}` : "—"}</span> },
+    {
+      key: "frames",
+      header: "帧",
+      render: (p) => {
+        // 段配方记录：帧组数 / 预期总数 ΣN_exp（待标定为 0），整件标记（检测不完整、帧数异常、疑似提前终止…）单独显示；旧拍照点记录仍是 收到/计划
+        if (!p.flags) return <span className="mono nowrap">{p.framesExpected ? `${p.framesReceived}/${p.framesExpected}` : "—"}</span>;
+        const badges = flagBadges(p.flags);
+        return <div className="hist-frames">
+          <span className="mono nowrap" title="帧组数 / 预期总数 ΣN_exp">{p.framesReceived}/{p.framesExpected || "—"}</span>
+          {badges.map((b) => <StatusBadge key={b.key} tone={b.tone} data-flag={b.key}>{b.label}</StatusBadge>)}
+        </div>;
+      },
+    },
     { key: "drain", header: "收尾", render: (p) => <span className="mono nowrap">{p.drainMs != null ? `${p.drainMs} ms` : "—"}</span> },
   ];
 

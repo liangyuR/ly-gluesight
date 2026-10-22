@@ -1,5 +1,5 @@
 import type { CameraImaging, DetectParams, FixtureSpec, Judgement, Measured, PoseRecord, Recipe, RecipeDoc, ShotLimits, Verdict } from "../cycle/types";
-import type { WorkspacePlanView } from "../plan/types";
+import type { BurstJudgement, PathSegment, WorkspacePlanView } from "../plan/types";
 
 /** 段模型（分段连拍飞拍）的候选工作区类型，定义在 plan/types.ts；这里转出供工作台页面使用。
  * 段配方的进度用 StepIdV2 / ProgressV2（在 WorkspaceView.plan.progress），旧配方的 StepId / Progress 不变。 */
@@ -147,6 +147,9 @@ export interface Comparison {
   id: string; historyId: number; source: "rules" | "raw" | "original"; cycleId: string; bundleId: string | null; candidateId: string; candidateRevision: number;
   candidateRecipe: Recipe;
   originalVerdict: Verdict; judgement: Judgement; measurements: Measured[]; createdAt: number;
+  /** 段配方的复测结果（D3 起输出，命令清单见 decisions/segment-burst.md；形状为前端按 PartDetailBurst 对齐的约定）：重判所用的候选段、相机、预期总数与区域判定。
+   * 旧拍照点配方为 null 或缺省；有值时 judgement 的 verdict / plcCode / faultCode / reason 与 burst.judgement 相同，segments、gaps 为空 */
+  burst?: { segments: PathSegment[]; cameras: string[]; expectedTotal: number | null; judgement: BurstJudgement } | null;
 }
 /** 预览像素（8 位灰度，可能是降采样后的尺寸）。 */
 export interface GrayPixels { data: Uint8Array; width: number; height: number }

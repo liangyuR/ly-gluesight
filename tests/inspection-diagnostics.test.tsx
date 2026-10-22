@@ -6,8 +6,16 @@ import InspectionDiagnostics, { type DiagnosticGroup } from "../src/features/cyc
 import RuntimeFrame from "../src/features/workspace/RuntimeFrame";
 import ShotStrip from "../src/features/cycle/components/ShotStrip";
 import { workspaceApi } from "../src/features/workspace/api";
-import { cyclePart } from "./cycle-visual-fixtures";
+import { burstPartView, cyclePart } from "./cycle-visual-fixtures";
 import { snapshot, workspaceView } from "./fixtures";
+
+it("段配方选中的帧组缺一台相机 → 采集与测量按帧组列出每台相机，缺帧的相机写缺帧而不是被略过", () => {
+  const part = burstPartView();
+  render(<InspectionDiagnostics group="capture" onGroup={() => {}} onClose={() => {}} snapshot={{ ...snapshot(), part }} readiness={null} layout={null} part={part} selected={0} selectedSeq={5} logs={[]} />);
+  const rows = within(screen.getByRole("table", { name: "本帧组各相机" })).getAllByRole("row").slice(1);
+  expect(rows.map(row => row.textContent)).toEqual(["CAM-1OKOK1005", "CAM-2缺帧——", "CAM-3OKOK3005"]);
+  expect(screen.getByText("各相机帧数").nextElementSibling).toHaveTextContent("CAM-1 12 · CAM-2 11 · CAM-3 12");
+});
 
 it("本点完成但另一检测图异常 → 主区可发现且诊断保留独立结果并恢复焦点", async () => {
   vi.spyOn(workspaceApi, "liveImage").mockResolvedValue({ url: "data:,", width: 100, height: 60 });

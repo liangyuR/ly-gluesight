@@ -4,6 +4,7 @@ import { ArrowLeft, Camera, ChevronLeft, ChevronRight, Scale, ScanEye } from "lu
 import { Alert, Button, Card, Chip, Dialog, IconButton, SegmentedControl, Select, Stack, StatusBadge, Text } from "qing-steel";
 import { computeVis, partReferenceBadge, shotLabel, ShotTiles, UnrolledCurve, type Measured, type PartView, type Recipe } from "../features/cycle";
 import { displayReason, formatTime, historyApi, sampleLabelText, sourceLabel, triggerModeLabel, verdictLabel, verdictTone, type HistoryQuery, type PartDetail } from "../features/history";
+import BurstHistoryDetail from "../features/history/components/BurstDetail";
 import PartTrace from "../features/history/components/PartTrace";
 import ReplayDiff from "../features/history/components/ReplayDiff";
 import { poseDiffers, replayEdges, replayPose, rulesRejudgeable, shotDiffs } from "../features/history/replay";
@@ -52,7 +53,8 @@ export default function HistoryDetailPage() {
   const image=useGrayImage(null,null,available?detail?.summary.id:null,selected,selectedView);
   useEffect(()=>{
     let alive=true;const serial=++savedSerial.current;setSavedComparisons([]);setComparison(null);
-    if(detail?.summary.recipeId)void workspaceApi.comparisons(detail.summary.recipeId,detail.summary.id).then(v=>alive&&serial===savedSerial.current&&setSavedComparisons(v)).catch(e=>alive&&serial===savedSerial.current&&setError(errorText(e)));
+    // 段配方记录（detail.burst）的对照结果由 BurstHistoryDetail 自己读
+    if(detail?.summary.recipeId&&!detail.burst)void workspaceApi.comparisons(detail.summary.recipeId,detail.summary.id).then(v=>alive&&serial===savedSerial.current&&setSavedComparisons(v)).catch(e=>alive&&serial===savedSerial.current&&setError(errorText(e)));
     return()=>{alive=false;};
   },[detail?.summary.id,ws.doc?.id,ws.data?.workspace.revision]);
 
@@ -60,6 +62,7 @@ export default function HistoryDetailPage() {
     let alive=true;setDetail(null);setLayout(null);setRecipeMissing(false);setComparison(null);setRaw(null);setError("");setSelected(0);setViewSelection(null);
     void historyApi.detail(Number(id)).then(async d=>{
       if(!alive)return;setDetail(d);
+      if(d.burst)return;
       void workspaceApi.recordImages(d.summary.id).then(v=>alive&&setRaw(v)).catch(e=>alive&&setRaw({imageSource:d.summary.source==="offlineCandidate"?"offlineSample":"recording",historyId:d.summary.id,frames:[],complete:false,message:errorText(e)}));
       const r=await historyApi.recipe(d.summary.recipeRevision,d.summary.recipeId);if(alive){setLayout(r);setRecipeMissing(!r);setSelected(Math.max(0,r?.shots.findIndex(shot=>!shot.skip)??0));}
     }).catch(e=>alive&&setError(errorText(e)));
@@ -95,7 +98,7 @@ export default function HistoryDetailPage() {
   };
   useEffect(()=>{
     const key=(e:KeyboardEvent)=>{
-      if(e.altKey||e.ctrlKey||e.metaKey||e.defaultPrevented)return;
+      if(detail?.burst||e.altKey||e.ctrlKey||e.metaKey||e.defaultPrevented)return;
       if((e.target as HTMLElement|null)?.closest?.("input,select,textarea,[contenteditable='true'],[role='dialog'],[role='combobox'],[role='listbox']"))return;
       if(e.key==="ArrowLeft"||e.key==="ArrowRight"){e.preventDefault();stepShot(e.key==="ArrowLeft"?-1:1);}
       else if(e.key==="["||e.key==="]"){e.preventDefault();openPart(e.key==="["?neighbors.older:neighbors.newer);}
@@ -124,6 +127,7 @@ export default function HistoryDetailPage() {
     const stop=subscribe<string>("history://updated",cycleId=>{
       if(!detail||cycleId!==detail.summary.cycleId)return;
       void historyApi.detail(detail.summary.id).then(next=>alive&&setDetail(next)).catch(error=>alive&&setError(errorText(error)));
+      if(detail.burst)return;
       void workspaceApi.recordImages(detail.summary.id).then(next=>alive&&setRaw(next)).catch(error=>alive&&setError(errorText(error)));
     });
     return()=>{alive=false;stop();};
@@ -140,6 +144,8 @@ export default function HistoryDetailPage() {
   };
   const confirmSwitch=async()=>{if(!layout||ws.dirty||ws.frameDirty)return;const next=await ws.select(layout.id);if(next&&current.current.alive)setSwitching(false);};
   if(!detail)return error?<Alert tone="ng">{error}</Alert>:<Text muted>加载中…</Text>;
+  // 段配方记录按区域与帧组展示（复测、原图、逐帧追溯都在 BurstHistoryDetail）；旧拍照点记录继续走下面原有的展示
+  if(detail.burst)return <BurstHistoryDetail detail={detail} burst={detail.burst} neighbors={neighbors} onOpen={openPart} onBack={()=>navigate("/history")}/>;
   const s=detail.summary,j=detail.judgement,reference=partReferenceBadge(detail);
   const candidateReady=!!ws.data&&ws.data.workspace.doc.id===layout?.id&&!ws.dirty&&!ws.frameDirty;
   const disabled=working||ws.busy||!candidateReady;

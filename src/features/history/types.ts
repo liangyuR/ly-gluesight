@@ -112,13 +112,17 @@ export interface KindOverride {
 
 /** 重判的试算参数：只用于这次重判，不改配方。 */
 export interface Overrides {
-  /** 允许断胶长度（作用于每个拍照点） */
+  /** 允许断胶长度（作用于每个拍照点；段配方记录作用于每帧） */
   maxGapLen?: number;
   filterWindow?: number;
   /** 位置限值（只作用于判位置的拍照点） */
   position: KindOverride;
   /** 胶宽限值（只作用于判胶宽的拍照点） */
   width: KindOverride;
+  /** 段配方记录：直线段的胶宽允差（上 / 下公差、帧内允许超差长度）；绝对限不适用。C5 起后端读取，旧记录忽略 */
+  straight?: KindOverride;
+  /** 段配方记录：弯道段的胶宽允差，字段同 straight；未分段区域取直线、弯道中较宽的一档 */
+  corner?: KindOverride;
 }
 
 export interface RejudgeRequest {

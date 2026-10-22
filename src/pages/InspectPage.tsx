@@ -3,8 +3,11 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { RotateCcw } from "lucide-react";
 import { Alert, Button, Card, Chip, Dialog, EmptyState, Progress as ProgressBar, SegmentedControl, Select, StatusBadge } from "qing-steel";
 import "./inspect.css";
-import RuntimeFrame, { usePublishedOverview } from "../features/workspace/RuntimeFrame";
+import RuntimeFrame, { BurstRuntimeFrame, usePublishedOverview } from "../features/workspace/RuntimeFrame";
 import { WorkpieceOverview } from "../features/workspace/OverviewPage";
+import { CameraSegmentOverview } from "../features/plan/CameraSegmentOverview";
+import { expectedText, flagBadges } from "../features/plan/vis";
+import type { PartViewBurst } from "../features/plan/types";
 import { displayReason, triggerModeLabel, verdictLabel, verdictTone } from "../features/history";
 import { matchesPart } from "../features/cycle/identity";
 import InspectionReadiness from "../features/cycle/components/InspectionReadiness";
@@ -15,11 +18,14 @@ import {
   computeVis,
   currentFrame,
   cycleApi,
+  FrameGroupStrip,
+  RegionResultPanel,
   ShotStrip,
   ShotTiles,
   OfflineControls,
   partReferenceBadge,
   UnrolledCurve,
+  useBurstSegments,
   useCycle,
   useLayout,
   useReadiness,
@@ -44,6 +50,8 @@ function verdictParts(v: Verdict) {
 const phaseLabels: Record<string, string> = { IDLE: "空闲", VALIDATE: "校验", ACQUIRE: "采集", DRAIN: "收尾", JUDGE: "判定", REPORT: "回写", RELEASE: "释放", FAULT: "故障" };
 
 const viewOptions = [{ value: "image", label: "原图" }, { value: "part", label: "整件布置" }, { value: "frame", label: "逐拍照点" }];
+// 段配方（分段连拍飞拍）：没有拍照点，只看选中帧组的三台相机原图与整件的段布置
+const burstViewOptions = [{ value: "image", label: "原图" }, { value: "part", label: "整件布置" }];
 const quantityOptions = [{ value: "d", label: "偏移" }, { value: "w", label: "胶宽" }];
 
 export default function InspectPage() {
@@ -60,6 +68,7 @@ export default function InspectPage() {
   const [quantity, setQuantity] = useState<"d" | "w">("d");
   const [frameSelection, setFrameSelection] = useState<{ scope: string; k: number } | null>(null);
   const [pointSelection, setPointSelection] = useState<{ scope: string; j: number } | null>(null);
+  const [seqSelection, setSeqSelection] = useState<{ scope: string; seq: number } | null>(null);
   const [pendingRecipe, setPendingRecipe] = useState<string | null>(null);
   const [switchError, setSwitchError] = useState("");
   const [action, setAction] = useState<"switch" | "reset" | null>(null);
@@ -80,6 +89,15 @@ export default function InspectPage() {
   const ownLayout = !!layout && !!part && layout.id === part.recipeId && layout.revisionId === part.recipeRevision;
   const shown = useMemo(() => (ownLayout ? measured.filter(m => matchesPart(m, part)) : []), [ownLayout, measured, part]);
   const overview=usePublishedOverview(layout);
+  // 段配方（segments 非空，旧拍照点配方没有这些字段）：在途件与结果带 burst，按帧组与区域展示；旧配方走下面原有的拍照点展示
+  const burst = part?.burst ?? null;
+  const burstJudgement = result?.burst ?? null;
+  const burstMode = !!burst || !!burstJudgement || (summary?.segmentCount ?? 0) > 0;
+  const burstSegments = useBurstSegments(layoutId, part?.recipeRevision ?? summary?.revisionId, burstMode);
+  const burstScope = `${part?.cycleId ?? "idle"}:${part?.bundleId ?? ""}:${part?.recipeRevision ?? ""}`;
+  const latestSeq = burst?.groups.reduce<number | null>((latest, group) => latest == null || group.seq > latest ? group.seq : latest, null) ?? null;
+  const burstManual = seqSelection?.scope === burstScope && !!burst?.groups.some(group => group.seq === seqSelection.seq);
+  const burstSeq = burstManual ? seqSelection!.seq : latestSeq;
   const selectionScope = `${part?.cycleId ?? "idle"}:${part?.bundleId ?? ""}:${part?.recipeRevision ?? layout?.revisionId}:${layout?.id}:${layout?.shots.length}`;
   const operationScope = `${part?.cycleId ?? "idle"}:${snapshot?.since}:${snapshot?.fault ?? ""}`;
   const { readiness, status: readinessStatus, error: readinessError, refresh: refreshReadiness } = useReadiness(`${phase}:${snapshot?.fault ?? ""}:${snapshot?.activeRecipeId ?? ""}:${snapshot?.productSource ?? ""}:${snapshot?.alarms.length ?? 0}`);
@@ -102,8 +120,13 @@ export default function InspectPage() {
   const lastShot = Math.max(0, (layout?.shots.length ?? 1) - 1);
   const selected = frameSelection?.scope === selectionScope ? Math.min(lastShot, Math.max(0, frameSelection.k)) : Math.min(lastShot, Math.max(0, currentFrame(ownLayout ? part : null)));
   const selectedPoint = pointSelection?.scope === selectionScope && pointSelection.j < (layout?.points.k.length ?? 0) ? pointSelection.j : null;
-  const manualView = frameSelection?.scope === selectionScope;
-  const resumeFollowing = () => { setFrameSelection(null); setPointSelection(null); };
+  const manualView = burstMode ? burstManual : frameSelection?.scope === selectionScope;
+  const resumeFollowing = () => { setFrameSelection(null); setPointSelection(null); setSeqSelection(null); };
+  const selectGroup = (seq: number) => {
+    if (!burst?.groups.some(group => group.seq === seq)) return;
+    setSeqSelection({ scope: burstScope, seq });
+    setView("image");
+  };
   const selectFrame = (k: number) => {
     if (!Number.isInteger(k) || k < 0 || k > lastShot) return;
     setFrameSelection({ scope: selectionScope, k });
@@ -229,20 +252,34 @@ export default function InspectPage() {
       <InspectionReadiness offlineSample={offlineSample} snapshot={snapshot} readiness={readiness} status={readinessStatus} error={readinessError} onDiagnostics={() => setDiagnostics("readiness")} />
 
       <div className="prod-body">
-        <div className="prod-main">
+        <div className={"prod-main" + (burstMode ? " burst" : "")}>
           <Card className="prod-view" role="region" aria-label="检测主视图">
             <div className="panel-head">
               <h3 className="panel-title">检测视图</h3>
-              <ContextHelp label="查看范围说明">选择拍照点或曲线测量点后进入手动查看；返回当前拍照点可恢复跟随。新工件自动恢复跟随，右侧始终保留整件判定。</ContextHelp>
+              <ContextHelp label="查看范围说明">{burstMode
+                ? "选择帧组后进入手动查看；返回当前帧组可恢复跟随。新工件自动恢复跟随，右侧始终保留整件判定。"
+                : "选择拍照点或曲线测量点后进入手动查看；返回当前拍照点可恢复跟随。新工件自动恢复跟随，右侧始终保留整件判定。"}</ContextHelp>
               <span className="spacer" />
-              {manualView && <><span className="view-mode">手动查看</span><Button size="sm" onClick={resumeFollowing}>返回当前拍照点</Button></>}
-              <SegmentedControl size="sm" label="检测视图切换" value={view} onValueChange={next => setView(next as typeof view)} options={viewOptions} />
+              {manualView && <><span className="view-mode">手动查看</span><Button size="sm" onClick={resumeFollowing}>{burstMode ? "返回当前帧组" : "返回当前拍照点"}</Button></>}
+              <SegmentedControl size="sm" label="检测视图切换" value={burstMode && view === "frame" ? "image" : view} onValueChange={next => setView(next as typeof view)} options={burstMode ? burstViewOptions : viewOptions} />
             </div>
-            {view === "image" ? <RuntimeFrame compact onDiagnostics={() => setDiagnostics("capture")} part={ownLayout ? part : null} layout={layout} k={selected} measured={shown} vis={vis}/> :
+            {burstMode ? (view === "part"
+              ? <CameraSegmentOverview cameras={burst?.cameras ?? summary?.cameras ?? []} segments={burstSegments} regions={burstJudgement?.regions} />
+              : <BurstRuntimeFrame part={part} seq={burstSeq} />)
+              : view === "image" ? <RuntimeFrame compact onDiagnostics={() => setDiagnostics("capture")} part={ownLayout ? part : null} layout={layout} k={selected} measured={shown} vis={vis}/> :
               layout ? view === "frame" ? <ShotTiles layout={layout} vis={vis} frames={partFrames(layout, part)} current={cur} selected={selected} onSelect={selectFrame} selectedPoint={selectedPoint} /> :
                 <WorkpieceOverview layout={layout} overview={overview} selected={selected} onSelect={selectFrame} vis={vis}/> : <EmptyState title="等待配方" description="PLC 下发型号或手动选择配方后显示。" />}
           </Card>
 
+          {burstMode ? <Card className="prod-shots">
+            <div className="panel-head">
+              <h3 className="panel-title">帧组</h3>
+              <ContextHelp label="帧组说明">同一触发序号（相机 SDK 帧号）的三台相机各出一帧，配成一个帧组；每格是一台相机的一帧。绿色为合格，黄色为允许范围内的局部超差，红色为 NG，紫色为测量失败，蓝色为测量中；灰色为缺帧、未测或走出走廊，只算检测不完整，不影响 OK/NG。</ContextHelp>
+              <span className="spacer" />
+              <span className="muted mono">{burst ? `收到 ${burst.groupCount} 帧组 / 预期 ${expectedText(burst.expectedTotal, burst.toleranceTotal)}` : "—"}</span>
+            </div>
+            {burst ? <FrameGroupStrip groups={burst.groups} cameras={burst.cameras} selected={burstSeq} onSelect={selectGroup} /> : <EmptyState title="等待工件" description="新工件开始后按帧组显示三台相机的帧。" />}
+          </Card> : <>
           <Card className="prod-shots">
             <div className="panel-head">
               <h3 className="panel-title">拍照点</h3>
@@ -264,17 +301,25 @@ export default function InspectPage() {
             </div>
             {layout && <UnrolledCurve compact key={`${selectionScope}:${curveQuantity}`} quantity={curveQuantity} layout={layout} measured={shown} vis={vis} selected={selectedPoint} onSelect={selectPoint} />}
           </Card>
+          </>}
         </div>
 
         <aside className="prod-side" aria-label="整件结果">
           <VerdictCard phase={phase} result={result} part={part} />
           <Stats snapshot={snapshot} />
           <Progress snapshot={snapshot} result={partResult} onDiagnostics={() => setDiagnostics("capture")} />
-          <SegmentPanel layout={layout} measured={shown} result={partResult} />
+          {burstMode ? <Card className="prod-segments" role="region" aria-label="检测区域结果">
+            <div className="panel-head">
+              <h3 className="panel-title">检测区域结果</h3>
+              <ContextHelp label="区域结果说明">整件按区域（直线、弯道、未分段）分别判；每个区域写帧数是否在预期容差内、胶宽范围、胶偏或未判原因。未分段区域只跑每帧独立检测、不判胶偏。缺帧只标检测不完整，帧数异常只告警，都不改 OK/NG。</ContextHelp>
+            </div>
+            <RegionResultPanel judgement={burstJudgement} segments={burstSegments} cameras={burst?.cameras ?? summary?.cameras}
+              expectedTotal={burst ? burst.expectedTotal : undefined} toleranceTotal={burst?.toleranceTotal} onSelectGroup={burst ? selectGroup : undefined} />
+          </Card> : <SegmentPanel layout={layout} measured={shown} result={partResult} />}
         </aside>
       </div>
 
-      {diagnostics && <InspectionDiagnostics offlineSample={offlineSample} group={diagnostics} onGroup={setDiagnostics} onClose={() => setDiagnostics(null)} snapshot={snapshot} readiness={readiness} readinessError={readinessError} layout={layout} part={ownLayout ? part : null} selected={selected} logs={logs} />}
+      {diagnostics && <InspectionDiagnostics offlineSample={offlineSample} group={diagnostics} onGroup={setDiagnostics} onClose={() => setDiagnostics(null)} snapshot={snapshot} readiness={readiness} readinessError={readinessError} layout={layout} part={burst || ownLayout ? part : null} selected={selected} selectedSeq={burstSeq} logs={logs} />}
       {pendingRecipe && (
         <Dialog
           open
@@ -315,6 +360,9 @@ function VerdictCard({ phase, result, part }: { phase: string; result: ResultVie
   const reason = result ? displayReason(result.reason) : "";
   // 本件有帧没有位置基准：不论整件 NG 还是不可判都挂徽标（NG 优先于基准无效时 PLC 码看不出定位失败）
   const reference = result && part && result.cycleId === part.cycleId ? partReferenceBadge(part) : null;
+  // 段配方的整件标记：检测不完整、帧数异常、胶偏未判、含未分段、疑似提前终止。只告警，不改上面的结论
+  const flags = flagBadges(result?.burst?.flags);
+  const progress = part?.burst ? burstProgressText(part.burst) : part ? `${part.received} / ${part.n}` : "—";
   return (
     <section ref={card} aria-label="整件判定" aria-live="polite"
       className={`fly-verdict qs-verdict xl ${tone}${animate.current ? " in" : ""}${emphasis ? " emph" : ""}`}
@@ -328,11 +376,14 @@ function VerdictCard({ phase, result, part }: { phase: string; result: ResultVie
           <div className="big">{parts.code}</div>
           <div className="t">{parts.detail}</div>
           <div className="d" title={reason}>{reason}</div>
-          {reference && <div className="foot"><span aria-label={`位置基准：${reference}`}>{reference}</span></div>}
+          {(reference || flags.length > 0) && <div className="foot">
+            {reference && <span aria-label={`位置基准：${reference}`}>{reference}</span>}
+            {flags.map(flag => <span key={flag.key} data-flag={flag.key}>{flag.label}</span>)}
+          </div>}
         </> : running ? <>
           <div className="big"><span className="pulse" /></div>
           <div className="t">检测中…</div>
-          <div className="d">SN <span className="sn">{part?.sn || "—"}</span> · 帧 {part ? `${part.received} / ${part.n}` : "—"}</div>
+          <div className="d">SN <span className="sn">{part?.sn || "—"}</span> · {part?.burst ? "帧组" : "帧"} {progress}</div>
         </> : <>
           <div className="big">—</div>
           <div className="t">暂无检测结果</div>
@@ -343,8 +394,45 @@ function VerdictCard({ phase, result, part }: { phase: string; result: ResultVie
   );
 }
 
+/** 段配方在途件的进度：帧组数 / 预期总数 ± 容差；预期待标定时只写已收到的帧组数。 */
+function burstProgressText(burst: PartViewBurst) {
+  return burst.expectedTotal == null ? String(burst.groupCount) : `${burst.groupCount} / ${expectedText(burst.expectedTotal, burst.toleranceTotal)}`;
+}
+
+/** 段配方的本件进度：帧组数对预期总数，已测帧数对已收帧数，各台相机收到的帧数分别列出（缺帧的相机一眼可见）。 */
+function BurstProgress({ burst, result, strayFrames, onDiagnostics }: { burst: PartViewBurst | null; result: ResultView | null; strayFrames: number; onDiagnostics: () => void }) {
+  const received = burst?.cameraFrames.reduce((sum, n) => sum + n, 0) ?? 0;
+  return (
+    <Card className="prod-progress" role="region" aria-label="本件进度">
+      <div className="panel-head">
+        <h3 className="panel-title">本件进度</h3>
+        <span className="spacer" />
+        <Button size="sm" onClick={onDiagnostics}>采集详情{strayFrames ? ` · 游离帧 ${strayFrames}` : ""}</Button>
+      </div>
+      <div className="prod-meters">
+        <span>帧组</span>
+        <ProgressBar label="帧组进度" value={burst?.groupCount ?? 0} max={burst?.expectedTotal || burst?.groupCount || 1} />
+        <b>{burst ? burstProgressText(burst) : "—"}</b>
+        <span>已测帧</span>
+        <ProgressBar label="已测帧进度" value={burst?.measuredFrames ?? 0} max={received || 1} />
+        <b>{burst ? `${burst.measuredFrames} / ${received}` : "—"}</b>
+        {burst && <>
+          <span>各相机帧数</span>
+          <span />
+          <b title={burst.cameras.map((camera, c) => `${camera} ${burst.cameraFrames[c] ?? 0}`).join(" · ")}>{burst.cameraFrames.join(" / ")}</b>
+        </>}
+        {burst?.deviceTriggers != null && <><span>触发计数（参考）</span><span /><b>{burst.deviceTriggers}</b></>}
+        <span>收尾耗时</span>
+        <span />
+        <b>{result?.drainMs != null ? `${result.drainMs} ms` : "—"}</b>
+      </div>
+    </Card>
+  );
+}
+
 function Progress({ snapshot, result, onDiagnostics }: { snapshot: Snapshot | null; result: ResultView | null; onDiagnostics: () => void }) {
   const part = snapshot?.part;
+  if (part?.burst || result?.burst) return <BurstProgress burst={part?.burst ?? null} result={result} strayFrames={snapshot?.strayFrames ?? 0} onDiagnostics={onDiagnostics} />;
   return (
     <Card className="prod-progress" role="region" aria-label="本件进度">
       <div className="panel-head">

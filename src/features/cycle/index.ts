@@ -9,6 +9,9 @@ export { CAM_COLORS, computeVis, currentFrame, partReferenceBadge, referenceBadg
 export { default as ShotTiles } from "./components/ShotTiles";
 export { default as ShotStrip } from "./components/ShotStrip";
 export { default as UnrolledCurve } from "./components/UnrolledCurve";
+export { default as FrameGroupStrip } from "./components/FrameGroupStrip";
+export { default as RegionResultPanel } from "./components/RegionResultPanel";
+export { useBurstSegments } from "./burst";
 export { default as OfflineControls } from "./components/OfflineControls";
 export { default as OfflineManagedNotice } from "./components/OfflineManagedNotice";
 export { CycleStepper, SignalLamps } from "./components/CycleStatus";

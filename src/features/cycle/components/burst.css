@@ -1,0 +1,45 @@
+/* 段模型（分段连拍飞拍）的结果展示：帧组条、区域结果；在线检测与历史详情共用 */
+
+/* 帧组条：每个 seq 一列，列里每台计划相机一格；灰色格 = 缺帧 / 未测 / 走出走廊 */
+.fg-strip { display: flex; gap: 8px; align-items: flex-start; min-width: 0; }
+.fg-cams { display: flex; flex-direction: column; gap: 3px; flex: none; padding-top: 21px; font-size: 12px; color: var(--on-surface-variant); }
+.fg-cams span { height: 22px; max-width: 96px; line-height: 22px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fg-groups { display: flex; flex: 1; gap: 4px; min-width: 0; margin: 0; padding: 0 0 6px; list-style: none; overflow-x: auto; }
+.fg-groups > li { flex: none; }
+.fg-group { display: flex; flex-direction: column; align-items: stretch; gap: 3px; width: 30px; padding: 0; border: 0; border-radius: var(--r-sm); background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.fg-seq { height: 18px; font: 500 11px/18px var(--font-mono); text-align: center; color: var(--on-surface-variant); }
+.fg-cell { display: block; height: 22px; border-radius: 3px; }
+.fg-group.selected { outline: 2px solid var(--primary); outline-offset: 1px; }
+.fg-group.incomplete .fg-seq { color: var(--warn); font-weight: 700; }
+
+/* 选中帧组的三台相机原图 */
+.wp-burst-cams { display: grid; gap: 8px; flex: 1; min-height: 0; }
+.wp-burst-cam { display: flex; flex-direction: column; gap: 4px; min-width: 0; min-height: 0; }
+.wp-burst-cam > .wp-viewport { flex: 1; min-height: 110px; }
+.wp-burst-cam h4 { margin: 0; font-size: 13px; font-weight: 600; }
+.wp-burst-cam .wp-runtime-strip { flex-wrap: wrap; }
+.wp-burst-cam .wp-kv, .wp-burst-cam .wp-kv > * { white-space: nowrap; }
+
+/* 区域结果 */
+.region-panel { display: flex; flex-direction: column; gap: 10px; min-width: 0; font-size: 13px; }
+.region-sum { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.region-list { display: grid; align-content: start; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.region-item { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: var(--r-md); background: var(--surface-mid); border-left: 3px solid var(--outline-variant); }
+.region-item[data-tone="ok"] { border-left-color: var(--ok); }
+.region-item[data-tone="warn"] { border-left-color: var(--warn); }
+.region-item[data-tone="ng"] { border-left-color: var(--ng); }
+.region-item[data-tone="fault"] { border-left-color: var(--fault); }
+.region-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; }
+.region-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.region-kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; margin: 0; font-size: 12px; }
+.region-kv dt { color: var(--on-surface-variant); }
+.region-kv dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.region-groups { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 12px; }
+.region-reason { margin: 0; font-size: 12px; color: var(--on-surface-variant); overflow-wrap: anywhere; }
+.region-extra { display: flex; flex-direction: column; gap: 4px; }
+.region-extra h4 { margin: 0; font-size: 12px; font-weight: 600; color: var(--on-surface-variant); }
+.region-extra ul { margin: 0; padding-left: 1.2em; font-size: 12px; }
+
+/* 历史：每相机帧表 */
+.burst-trace-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.burst-trace .mono { white-space: nowrap; }

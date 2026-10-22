@@ -31,6 +31,9 @@
 
 .prod-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: var(--space-8); }
 .prod-main { display: grid; grid-template-rows: minmax(260px, 1fr) 256px clamp(180px, 22vh, 236px); gap: var(--space-8); min-width: 0; min-height: 0; }
+/* 段配方：没有曲线卡，原图区与帧组条两行 */
+.prod-main.burst { grid-template-rows: minmax(260px, 1fr) clamp(140px, 18vh, 190px); }
+.prod-segments .region-panel { flex: 1; min-height: 0; overflow: auto; }
 .prod-side { display: grid; grid-template-rows: 232px auto auto minmax(120px, 1fr); gap: var(--space-8); min-width: 0; min-height: 0; }
 
 .prod-view > .panel-head { flex-shrink: 0; }
