@@ -360,7 +360,7 @@ class S7ProcessApiTests(unittest.TestCase):
         self.assertEqual(fields["requestSeq"], 0)
         self.assertFalse(fields["partStart"])
 
-    def test_single_device_counts_use_the_protocol5_wire_offsets(self):
+    def test_shared_trigger_counts_sit_at_their_fixed_wire_offsets(self):
         response = self.fixture.command("plc_request", values={"shotCount": 4, "deviceShots": 4})
         self.assertTrue(response["ok"])
         self.assertTrue(self.fixture.command("plc_values", values={"deviceTriggers": 3})["ok"])
