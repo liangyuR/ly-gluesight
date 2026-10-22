@@ -952,7 +952,8 @@ impl RecipeDoc {
     }
 
     /// 段配方的模型约束（D-SB-1）：不能再有拍照点；只支持飞拍；标定轮数 10..=100；检测相机各自合法；
-    /// 段列表与三台计划相机满足 `plan::validate_segments`；整件标定的帧组数放得进 PLC shotCount。
+    /// 段列表与三台计划相机满足 `plan::validate_segments`；直线 / 弯道默认参数满足 `plan::validate_defaults`（新建段取用它）；
+    /// 整件标定的帧组数放得进 PLC shotCount。
     fn validate_burst(&self) -> Result<(), String> {
         if !self.shots.is_empty() {
             return Err("段配方不能同时有拍照点：segments 非空时 shots 必须为空，两套模型不能混用".into());
@@ -967,6 +968,7 @@ impl RecipeDoc {
             inspect.validate()?;
         }
         plan::validate_segments(&self.segments, &self.plan_cameras())?;
+        plan::validate_defaults(&self.segment_defaults)?;
         if let Some(part) = &self.part_calib {
             if !(1..=plan::MAX_EXPECTED_TOTAL).contains(&part.expected_total) {
                 return Err(format!("整件标定的预期帧组数 {} 需在 1–{} 之间（PLC shotCount）", part.expected_total, plan::MAX_EXPECTED_TOTAL));
@@ -2032,6 +2034,23 @@ mod tests {
                 (Err(e), Some(what)) => assert!(e.contains(what), "{case}：{e}"),
                 (result, _) => panic!("{case}：{:?}", result.map(|_| ())),
             }
+        }
+    }
+
+    /// 新建段从 segment_defaults 取容差与检测项：弯道默认带胶偏、默认容差超上限或默认限值非法时，validate_burst 拒绝，
+    /// 否则 new_segment 会生成过不了段校验的段。
+    #[test]
+    fn corner_default_with_offset_or_default_tolerance_or_limits_out_of_range_is_rejected() {
+        assert_eq!(samples_burst().validate(), Ok(()));
+        let cases: [(&str, fn(&mut KindDefaults)); 3] = [
+            ("弯道默认带胶偏检测", |d| d.corner.checks.offset = d.straight.checks.offset.clone()),
+            ("弯道默认容差超过 1000", |d| d.corner.tolerance = plan::MAX_TOLERANCE + 1),
+            ("直线默认有胶比例超过 1", |d| d.straight.checks.gap.min_present = 1.2),
+        ];
+        for (case, edit) in cases {
+            let mut doc = samples_burst();
+            edit(&mut doc.segment_defaults);
+            assert!(doc.validate().is_err(), "{case}");
         }
     }
 

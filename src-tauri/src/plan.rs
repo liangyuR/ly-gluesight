@@ -228,8 +228,66 @@ pub const MAX_TOLERANCE: u32 = 1000;
 /// ΣN_exp 上限：PLC shotCount 为 Int（D-SB-31）。
 pub const MAX_EXPECTED_TOTAL: u32 = i16::MAX as u32;
 
+fn positive(value: f64) -> bool {
+    value.is_finite() && value > 0.0
+}
+
+fn non_negative(value: f64) -> bool {
+    value.is_finite() && value >= 0.0
+}
+
+/// 启用的检测项限值合法（停用项不校验）：胶宽名义值 > 0，上下允差、允许超差长度、均匀性极差上限 ≥ 0；
+/// 断胶长度 ≥ 0、有胶比例 ∈ [0, 1]；溢胶上限 > 0；胶偏两个限值 ≥ 0。`what` 是报错主语。
+fn validate_checks(checks: &SegmentChecks, what: &str) -> Result<(), String> {
+    let width = &checks.width;
+    if width.enabled {
+        if !positive(width.nominal_mm) {
+            return Err(format!("{what}：胶宽名义值 {} mm 需为正数", width.nominal_mm));
+        }
+        let tolerances = [width.tol_upper, width.tol_lower, width.max_excursion_mm];
+        if !(tolerances.into_iter().all(non_negative) && width.max_range_mm.is_none_or(non_negative)) {
+            return Err(format!("{what}：胶宽上下允差、允许超差长度与均匀性极差上限需为不小于 0 的有限数"));
+        }
+    }
+    if checks.gap.enabled {
+        if !non_negative(checks.gap.max_gap_mm) {
+            return Err(format!("{what}：允许断胶长度需为不小于 0 的有限数"));
+        }
+        if !(0.0..=1.0).contains(&checks.gap.min_present) {
+            return Err(format!("{what}：最低有胶比例需在 0–100% 之间"));
+        }
+    }
+    if checks.overflow.enabled && !positive(checks.overflow.max_width_mm) {
+        return Err(format!("{what}：溢胶胶宽上限 {} mm 需为正数", checks.overflow.max_width_mm));
+    }
+    if let Some(offset) = checks.offset.as_ref().filter(|offset| offset.enabled) {
+        if !(non_negative(offset.max_mean_shift_mm) && non_negative(offset.max_local_dev_mm)) {
+            return Err(format!("{what}：胶偏整段偏移与局部跑偏限值需为不小于 0 的有限数"));
+        }
+    }
+    Ok(())
+}
+
+/// 一段或一种段类型默认参数共用的约束：tolerance ≤ 1000；Corner 不得带 offset 检测；启用的检测项限值合法。
+fn validate_kind_settings(kind: SegmentKind, tolerance: u32, checks: &SegmentChecks, what: &str) -> Result<(), String> {
+    if tolerance > MAX_TOLERANCE {
+        return Err(format!("{what}的帧数容差 {tolerance} 超过上限 {MAX_TOLERANCE}"));
+    }
+    if kind == SegmentKind::Corner && checks.offset.is_some() {
+        return Err(format!("{what}：弯道段不判胶偏，不能配置胶偏检测"));
+    }
+    validate_checks(checks, what)
+}
+
+/// 配方的直线 / 弯道默认参数：`new_segment` 从这里取值，默认非法就会生成非法段，按段的同一套约束校验。
+pub fn validate_defaults(defaults: &KindDefaults) -> Result<(), String> {
+    validate_kind_settings(SegmentKind::Straight, defaults.straight.tolerance, &defaults.straight.checks, "直线段默认参数")?;
+    validate_kind_settings(SegmentKind::Corner, defaults.corner.tolerance, &defaults.corner.checks, "弯道段默认参数")
+}
+
 /// 段列表的模型约束（规格 §1/§5）：至少一段（空段列表是旧拍照点配方，不经过本函数）；index 从 1 连续；cameras 恰好 3 个且不重复；Corner 段不得带 offset / offset_ref；
-/// offset_ref.camera 属于 cameras；inspect_range 满足 0 ≤ a < b；tolerance ≤ 1000；ΣN_exp ≤ 32767。
+/// offset_ref.camera 属于 cameras；启用的检测项限值合法（见 `validate_checks`）；length_mm 有值时 > 0；
+/// inspect_range 满足 0 ≤ a < b，有段长时 b ≤ length_mm；tolerance ≤ 1000；ΣN_exp ≤ 32767。
 pub fn validate_segments(segments: &[PathSegment], cameras: &[String]) -> Result<(), String> {
     if cameras.len() != PLAN_CAMERAS {
         return Err(format!("段配方需要恰好 {PLAN_CAMERAS} 台相机共用一个触发，当前 {} 台", cameras.len()));
@@ -246,20 +304,26 @@ pub fn validate_segments(segments: &[PathSegment], cameras: &[String]) -> Result
         if index as usize != k + 1 {
             return Err(format!("第 {} 段的序号为 {index}：段序号必须从 1 起沿胶路连续递增", k + 1));
         }
-        if segment.tolerance > MAX_TOLERANCE {
-            return Err(format!("第 {index} 段帧数容差 {} 超过上限 {MAX_TOLERANCE}", segment.tolerance));
+        if segment.kind == SegmentKind::Corner && segment.offset_ref.is_some() {
+            return Err(format!("第 {index} 段是弯道段，不判胶偏，不能配置胶偏参考"));
         }
-        if segment.kind == SegmentKind::Corner && (segment.checks.offset.is_some() || segment.offset_ref.is_some()) {
-            return Err(format!("第 {index} 段是弯道段，不判胶偏，不能配置胶偏检测或胶偏参考"));
-        }
+        validate_kind_settings(segment.kind, segment.tolerance, &segment.checks, &format!("第 {index} 段"))?;
         if let Some(offset_ref) = &segment.offset_ref {
             if !cameras.contains(&offset_ref.camera) {
                 return Err(format!("第 {index} 段胶偏参考相机 {} 不在计划相机 {cameras:?} 中", offset_ref.camera));
             }
         }
+        if let Some(length) = segment.length_mm {
+            if !positive(length) {
+                return Err(format!("第 {index} 段段长 {length} mm 无效：需为正数"));
+            }
+        }
         if let Some(range) = &segment.inspect_range {
             if !(range.a_mm.is_finite() && range.b_mm.is_finite() && 0.0 <= range.a_mm && range.a_mm < range.b_mm) {
                 return Err(format!("第 {index} 段检测区间 [{}, {}] mm 无效：要求 0 ≤ a < b", range.a_mm, range.b_mm));
+            }
+            if let Some(length) = segment.length_mm.filter(|&length| range.b_mm > length) {
+                return Err(format!("第 {index} 段检测区间终点 {} mm 超出段长 {length} mm", range.b_mm));
             }
         }
         frames += u64::from(segment.expected_frames.unwrap_or(0));
@@ -477,19 +541,32 @@ mod tests {
         assert_eq!(expected_total(&p.segments, None), None, "有段待标定且没有整件标定");
     }
 
+    /// 规格 §1 段模型约束；检测限值按旧 ShotLimits 的范围规则校验（D-SB-1 新路径不丢旧约束），停用的检测项不校验限值。
     #[test]
     fn invalid_segment_plans_are_rejected() {
         let check = |p: &Plan| validate_segments(&p.segments, &p.cameras);
         assert_eq!(check(&plan()), Ok(()));
-        assert_eq!(
-            check(&edited(|p| {
+        let accepted: [(&str, Edit); 3] = [
+            ("容差 1000、ΣN_exp 32767 恰在上限", |p| {
                 p.segments[0].tolerance = MAX_TOLERANCE;
                 p.segments[0].expected_frames = Some(MAX_EXPECTED_TOTAL - 4 - 9);
-            })),
-            Ok(()),
-            "容差 1000、ΣN_exp 32767 恰在上限"
-        );
-        let cases: [(&str, Edit); 15] = [
+            }),
+            ("检测区间终点恰为段长", |p| {
+                p.segments[0].length_mm = Some(100.0);
+                p.segments[0].inspect_range = Some(InspectRange { a_mm: 10.0, b_mm: 100.0 });
+            }),
+            ("停用的检测项不校验限值", |p| {
+                let checks = &mut p.segments[0].checks;
+                checks.width = WidthCheck { enabled: false, nominal_mm: 0.0, tol_upper: -1.0, tol_lower: -1.0, max_excursion_mm: -1.0, max_range_mm: Some(-1.0) };
+                checks.gap = BreakCheck { enabled: false, max_gap_mm: -1.0, min_present: 1.2 };
+                checks.overflow = OverflowCheck { enabled: false, max_width_mm: 0.0 };
+                checks.offset = Some(OffsetCheck { enabled: false, max_mean_shift_mm: -1.0, max_local_dev_mm: -1.0 });
+            }),
+        ];
+        for (case, edit) in accepted {
+            assert_eq!(check(&edited(edit)), Ok(()), "{case}");
+        }
+        let cases: [(&str, Edit); 29] = [
             ("没有段", |p| p.segments.clear()),
             ("序号不从 1 起", |p| p.segments.iter_mut().for_each(|segment| segment.index += 1)),
             ("序号跳号", |p| p.segments[2].index = 4),
@@ -507,6 +584,23 @@ mod tests {
             ("检测区间不是有限值", |p| p.segments[0].inspect_range = Some(InspectRange { a_mm: 0.0, b_mm: f64::NAN })),
             ("容差超过 1000", |p| p.segments[1].tolerance = MAX_TOLERANCE + 1),
             ("ΣN_exp 超过 32767", |p| p.segments[0].expected_frames = Some(MAX_EXPECTED_TOTAL - 4 - 9 + 1)),
+            ("胶宽名义值为 0", |p| p.segments[1].checks.width.nominal_mm = 0.0),
+            ("胶宽上允差为负", |p| p.segments[1].checks.width.tol_upper = -0.1),
+            ("胶宽下允差为负", |p| p.segments[1].checks.width.tol_lower = -0.1),
+            ("胶宽允许超差长度为负", |p| p.segments[1].checks.width.max_excursion_mm = -1.0),
+            ("胶宽均匀性极差上限为负", |p| p.segments[0].checks.width.max_range_mm = Some(-0.1)),
+            ("胶宽限值不是有限值", |p| p.segments[0].checks.width.tol_upper = f64::INFINITY),
+            ("允许断胶长度为负", |p| p.segments[1].checks.gap.max_gap_mm = -1.0),
+            ("有胶比例大于 1", |p| p.segments[1].checks.gap.min_present = 1.2),
+            ("有胶比例小于 0", |p| p.segments[1].checks.gap.min_present = -0.1),
+            ("溢胶上限为 0", |p| p.segments[1].checks.overflow.max_width_mm = 0.0),
+            ("胶偏整段偏移限值为负", |p| p.segments[0].checks.offset.as_mut().unwrap().max_mean_shift_mm = -1.0),
+            ("胶偏局部跑偏限值为负", |p| p.segments[0].checks.offset.as_mut().unwrap().max_local_dev_mm = -1.0),
+            ("段长为 0", |p| p.segments[2].length_mm = Some(0.0)),
+            ("检测区间终点超出段长", |p| {
+                p.segments[2].length_mm = Some(100.0);
+                p.segments[2].inspect_range = Some(InspectRange { a_mm: 10.0, b_mm: 100.5 });
+            }),
         ];
         for (case, edit) in cases {
             assert!(check(&edited(edit)).is_err(), "{case}");
