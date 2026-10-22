@@ -155,6 +155,7 @@ pub fn run() {
             cycle::cycle_readiness,
             camera::camera_rig_status,
             camera::camera_rig_config,
+            camera::camera_bandwidth,
             camera::camera_save_config,
             camera::camera_add,
             camera::camera_remove,

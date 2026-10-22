@@ -2,7 +2,7 @@ import { useEffect, useImperativeHandle, useRef, useState, type ReactNode, type 
 import { AlertTriangle, Copy, Lock, RefreshCw, SlidersHorizontal } from "lucide-react";
 import { Accordion, Alert, Button, Card, Checkbox, FormField, Heading, IconButton, NumberField, Select, Stack, StatusBadge, Surface, TextField } from "qing-steel";
 import { cameraApi } from "../api";
-import type { CameraConfig, CameraStatus, DeviceSummary } from "../types";
+import type { BandwidthEstimate, CameraConfig, CameraStatus, DeviceSummary } from "../types";
 import { errorText } from "../../../lib/errors";
 import { clock, sourceText } from "./health";
 
@@ -45,6 +45,24 @@ const nodes: [keyof CameraConfig, RegExp][] = [
   ["strobe", /Line(Selector|Mode|Source|Inverter)|Strobe/],
   ["chunk", /Chunk/],
 ];
+
+/** 带宽估算用的触发频率（规格 §0：按视野约 10～25 Hz，取上限）。 */
+const BANDWIDTH_HZ = 25;
+const isEstimate = (b: unknown): b is BandwidthEstimate =>
+  typeof b === "object" && b !== null && typeof (b as BandwidthEstimate).mbpsTotal === "number" && Array.isArray((b as BandwidthEstimate).perCamera);
+
+/** 相机组按 25 Hz 触发时的链路带宽：分辨率取各相机最近一帧，相机出图后才计入。 */
+function useBandwidth() {
+  const [estimate, setEstimate] = useState<BandwidthEstimate | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = () => cameraApi.bandwidth(BANDWIDTH_HZ).then(b => { if (alive) setEstimate(isEstimate(b) ? b : null); }).catch(() => { if (alive) setEstimate(null); });
+    load();
+    const timer = setInterval(load, 2000);
+    return () => { alive = false; clearInterval(timer); };
+  }, []);
+  return estimate;
+}
 
 /** 调试下发过的曝光与增益：不写配方，离开页面或重连后也保留显示（用户要求不清理）。 */
 const sentImaging = new Map<string, { exposureUs: number; gainDb: number; at: number }>();
@@ -155,6 +173,8 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
     }
   };
   const batchBlocked = dirty ? "当前相机有未保存修改，先保存并应用" : (!others.some(c => c.source === "mvs" && c.serial) ? "没有其他已绑定的海康相机" : "");
+  const bandwidth = useBandwidth();
+  const unestimated = bandwidth ? group.configs.filter((_, i) => bandwidth.perCamera[i] == null).map(c => c.name) : [];
 
   const device = devices.find(d => d.serial === config.serial) ?? (status?.device?.serial === config.serial ? status.device : null);
   const sent = sentImaging.get(config.id);
@@ -194,8 +214,8 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
               <TextField label="相机编号" readOnly value={config.id} description="配方用它引用相机，建相机时分配，不可改" />
               <TextField label="图像源" readOnly value={sourceText[config.source]} />
               <Select label="设备视角" value={String(config.viewCount)} onValueChange={v => set("viewCount", Number(v))} disabled={!mvs}
-                options={[{ value: "1", label: "单视角" }, { value: "3", label: "三目（一次触发三幅图）" }]}
-                description={config.viewCount === 3 ? "每个拍照点可多选图 1／2／3 分别示教，三幅图共用一次设备触发。" : undefined} />
+                options={[{ value: "1", label: "单视角" }, { value: "3", label: "三目拼接（仅旧拍照点配方）" }]}
+                description={config.viewCount === 3 ? "每个拍照点可多选图 1／2／3 分别示教，三幅图共用一次设备触发。分段连拍配方不能用三目拼接，需要三台独立的单视角相机。" : undefined} />
               {config.viewCount === 3 && mvs && <Select label="SDK 拼接布局" value={config.compositeLayout?.kind ?? ""} onValueChange={v => set("compositeLayout", v ? {kind:v as "horizontal" | "vertical"} : null)}
                 options={[{ value: "", label: "请选择实际交付布局" }, { value: "horizontal", label: "横向三等分" }, { value: "vertical", label: "纵向三等分" }, ...(config.compositeLayout?.kind === "rects" ? [{ value: "rects", label: "已配置矩形区域" }] : [])]} />}
               {config.source === "sampleSet" && <span className="cg-small muted">图像来自离线模式所选样本集，相机与视角按样本集生成，不可在此更改。</span>}
@@ -224,6 +244,14 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
             </Stack>
           </Card> : <Card role="region" aria-label="绑定设备" title={<Heading level={3}>绑定设备</Heading>}>
             <Alert title="不适用：离线图像源没有物理设备">离线期间不枚举、不绑定海康设备；原相机组的绑定关系已保留，退出离线后恢复。</Alert>
+          </Card>}
+
+          {mvs && <Card role="region" aria-label="链路带宽" title={<Heading level={3}>链路带宽</Heading>} actions={<span className="cg-note">按 {BANDWIDTH_HZ} Hz 触发估算</span>}>
+            {bandwidth ? <Stack direction="column" align="stretch" gap={8}>
+              <span>相机组 {group.configs.length} 台同时出图合计 <b>{Math.round(bandwidth.mbpsTotal)} Mbps</b>，单个千兆口按 80% 计 {Math.round(bandwidth.budgetMbps)} Mbps。</span>
+              {unestimated.length > 0 && <span className="muted cg-small">{unestimated.join("、")} 还没出过图，分辨率未知，未计入合计。</span>}
+              {bandwidth.overBudget && <Alert tone="warn" title="带宽超预算">各相机共用一个触发、同时出图，合计超过单个千兆口的 80%，可能丢帧；降低触发频率、缩小图像区域或分口接入。</Alert>}
+            </Stack> : <span className="muted">带宽估算不可用。</span>}
           </Card>}
 
           {mvs ? <Card role="region" aria-label="触发接线" title={<Heading level={3}>触发接线</Heading>} actions={<>{warnings.length > 0 && <StatusBadge tone="warn">{warnings.length} 项相机未接受</StatusBadge>}<span className="cg-note">保存后由设备确认，未接受项列在右侧“参数生效情况”</span></>}>

@@ -2,7 +2,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 import { subscribe } from "../plc";
 import type { CameraImaging } from "../cycle/types";
-import type { CameraConfig, CameraStatus, DeviceSummary, Frame, PreviewImage } from "./types";
+import type { BandwidthEstimate, CameraConfig, CameraStatus, DeviceSummary, Frame, PreviewImage } from "./types";
 
 function call<T>(cmd: string, args: Record<string, unknown> | undefined, fallback: () => T): Promise<T> {
   if (!isTauri() && ["camera_save_config","camera_add","camera_remove","camera_soft_trigger","camera_release","camera_reconnect","camera_set_imaging"].includes(cmd))
@@ -44,6 +44,7 @@ function decodePreview(buf: ArrayBuffer): PreviewImage | null {
 export const cameraApi = {
   rigStatus: () => call<CameraStatus[]>("camera_rig_status", undefined, () => []),
   rigConfig: () => call<CameraConfig[]>("camera_rig_config", undefined, () => []),
+  bandwidth: (hz: number) => call<BandwidthEstimate | null>("camera_bandwidth", { hz }, () => null),
   calibInfo: (cam: number, view: number) => call<{ mmPerPx: number | null } | null>("vision_calib_info", { cam, view }, () => null),
   saveConfig: (cam: number, config: CameraConfig) => call<string[]>("camera_save_config", { cam, config }, () => []),
   add: (config: CameraConfig) => call<number>("camera_add", { config }, () => 0),
