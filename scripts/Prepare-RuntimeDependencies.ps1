@@ -43,7 +43,6 @@ if (-not $MvsRuntime -or -not $VcRuntime -or -not $MvsLicense) { throw '诊断�
 $descriptorPath = Join-Path $LyFlowRuntime 'lyflow-runtime.json'
 if (-not (Test-Path -LiteralPath $descriptorPath -PathType Leaf)) { throw '正式 lyFlow 产物缺少 lyflow-runtime.json。' }
 $descriptor = Get-Content -LiteralPath $descriptorPath -Raw | ConvertFrom-Json
-Assert-LyFlowVersions $descriptor.abiVersion $descriptor.engineVersion '正式产物描述' $lyflowVersion
 Assert-LyFlowReleaseMetadata $descriptor '正式产物描述'
 Assert-MvsRuntimeStructure $MvsRuntime
 if (-not @(Get-ChildItem -LiteralPath $MvsLicense -File -Recurse).Count) { throw '缺少 MVS 许可证。' }

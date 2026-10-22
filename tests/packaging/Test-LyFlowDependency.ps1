@@ -105,10 +105,10 @@ try {
         Expect-Failure '系列无 Release' { Select-LyFlowRelease @((New-Release 'v1.2.0'), (New-Release 'v1.1.1' -Prerelease)) $config } '没有'
     }
 
-    Invoke-Case 'lyflow 段含旧 NuGet 字段或系列格式错误 → 拒绝' {
+    Invoke-Case 'lyflow 段系列、仓库或定位冒烟开关格式错误 → 拒绝' {
         Assert-LyFlowRuntimeConfig $config
         foreach ($case in @(
-            @{ packageId = 'LyFlow.Runtime.win-x64' }, @{ minimumVersion = '1.1.0' }, @{ series = '1' }, @{ series = '1.1.0' }, @{ series = '01.1' }, @{ repository = 'lyFlow' }, @{ locateSmoke = 'maybe' }
+            @{ series = '1' }, @{ series = '1.1.0' }, @{ series = '01.1' }, @{ repository = 'lyFlow' }, @{ locateSmoke = 'maybe' }
         )) {
             $broken = $config | ConvertTo-Json -Depth 5 | ConvertFrom-Json
             foreach ($key in $case.Keys) { $broken.lyflow | Add-Member -NotePropertyName $key -NotePropertyValue $case[$key] -Force }

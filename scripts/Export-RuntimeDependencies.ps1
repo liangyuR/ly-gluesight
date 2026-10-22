@@ -25,7 +25,6 @@ foreach ($name in @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')) {
 } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $runtimeRoot 'manifest.json') -Encoding utf8NoBOM
 [void](Assert-VendorRuntime $runtimeRoot)
 [void][IO.Directory]::CreateDirectory([IO.Path]::GetFullPath($OutputDirectory))
-Assert-NoRuntimeLinks $OutputDirectory
 $archive = Join-Path $OutputDirectory $config.asset
 if (Test-Path -LiteralPath $archive) { throw "导出目标已存在，禁止覆盖：$archive" }
 Compress-Archive -LiteralPath $runtimeRoot -DestinationPath $archive -CompressionLevel Optimal

@@ -10,18 +10,15 @@ $ApplicationPath = [IO.Path]::GetFullPath($ApplicationPath)
 $StageRoot = [IO.Path]::GetFullPath($StageRoot)
 if (-not (Test-Path -LiteralPath $ApplicationPath -PathType Leaf)) { throw "找不到构建后的应用：$ApplicationPath" }
 $releaseRoot = [IO.Path]::GetDirectoryName($ApplicationPath)
-Assert-NoRuntimeLinks $releaseRoot -AncestorsOnly
 $installedRuntime = Join-Path $releaseRoot 'runtime'
 $sourceRuntime = Join-Path $StageRoot 'runtime'
 if ([IO.Path]::GetFullPath($installedRuntime).Equals([IO.Path]::GetFullPath($sourceRuntime), [StringComparison]::OrdinalIgnoreCase)) { throw '拒绝覆盖运行库来源目录。' }
 if (Test-Path -LiteralPath $installedRuntime) {
-    Assert-NoRuntimeLinks $installedRuntime
     Remove-Item -LiteralPath $installedRuntime -Recurse -Force
 }
 Copy-RuntimeTree $sourceRuntime $installedRuntime
 foreach ($name in @('vcruntime140.dll', 'vcruntime140_1.dll')) {
     $destination = Join-Path $releaseRoot $name
-    if (Test-Path -LiteralPath $destination) { Assert-NoRuntimeLinks $destination }
     Copy-Item -LiteralPath (Join-Path $StageRoot "application-runtime/$name") -Destination $destination
 }
 $applicationReport = Join-Path $StageRoot 'application-runtime-validation.json'

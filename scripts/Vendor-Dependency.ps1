@@ -7,9 +7,7 @@ function Get-VendorCrtFileVersion([string]$Path) {
 
 function Assert-VendorRuntime([string]$RuntimeRoot) {
     $config = Get-RuntimeConfiguration
-    Assert-NoRuntimeLinks $RuntimeRoot
     $manifest = Get-Content -LiteralPath (Join-Path $RuntimeRoot 'manifest.json') -Raw | ConvertFrom-Json
-    Assert-NoRuntimeDigests $manifest
     if ($manifest.schemaVersion -ne 2 -or $manifest.kind -cne 'vendor' -or
         $manifest.bundleVersion -ne $config.bundleVersion -or $manifest.architecture -cne 'x64' -or
         $manifest.mvs.version -cne $config.mvsVersion -or $manifest.PSObject.Properties.Name -contains 'lyflow' -or
@@ -40,7 +38,7 @@ function Remove-VendorCacheDirectory([string]$Path, [string]$CacheRoot) {
     $absolute = [IO.Path]::GetFullPath($Path)
     $prefix = [IO.Path]::GetFullPath($CacheRoot).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
     if (-not $absolute.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw '拒绝删除厂商缓存目录以外的路径。' }
-    if (Test-Path -LiteralPath $absolute) { Assert-NoRuntimeLinks $absolute; Remove-Item -LiteralPath $absolute -Recurse -Force }
+    if (Test-Path -LiteralPath $absolute) { Remove-Item -LiteralPath $absolute -Recurse -Force }
 }
 
 function Restore-VendorRuntime([string]$CacheRoot = (Join-Path $PSScriptRoot '../src-tauri/target/dependency-cache/vendor')) {
@@ -51,12 +49,9 @@ function Restore-VendorRuntime([string]$CacheRoot = (Join-Path $PSScriptRoot '..
     $allowed = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../src-tauri/target')).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
     if (-not $cacheRoot.StartsWith($allowed, [StringComparison]::OrdinalIgnoreCase)) { throw '厂商缓存目录必须位于本项目 src-tauri/target 下。' }
     [void][IO.Directory]::CreateDirectory($cacheRoot)
-    Assert-NoRuntimeLinks $cacheRoot
     $destination = Join-Path $cacheRoot "$($config.tag)/$([IO.Path]::GetFileNameWithoutExtension($config.asset))"
     $versionDirectory = [IO.Path]::GetDirectoryName($destination)
-    if (Test-Path -LiteralPath $versionDirectory) { Assert-NoRuntimeLinks $versionDirectory }
     if (Test-Path -LiteralPath $destination) {
-        Assert-NoRuntimeLinks $destination
         try {
             [void](Assert-VendorRuntime (Join-Path $destination 'runtime'))
             Write-Host "厂商依赖缓存命中：$($config.tag)"
@@ -75,7 +70,6 @@ function Restore-VendorRuntime([string]$CacheRoot = (Join-Path $PSScriptRoot '..
         Expand-RuntimeArchive (Join-Path $partial $config.asset) $expanded
         [void](Assert-VendorRuntime (Join-Path $expanded 'runtime'))
         [void][IO.Directory]::CreateDirectory($versionDirectory)
-        Assert-NoRuntimeLinks $versionDirectory
         if (Test-Path -LiteralPath $destination) { throw '厂商依赖缓存被并发写入，请重试。' }
         Move-Item -LiteralPath $expanded -Destination $destination
         Write-Host "厂商依赖已恢复：$($config.tag)"

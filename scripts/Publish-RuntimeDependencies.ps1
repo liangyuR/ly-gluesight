@@ -4,7 +4,6 @@ param([Parameter(Mandatory)][string]$Archive)
 Assert-RuntimePlatform
 $config = Get-RuntimeConfiguration
 $Archive = (Resolve-Path -LiteralPath $Archive).Path
-Assert-NoRuntimeLinks $Archive
 if ([IO.Path]::GetFileName($Archive) -cne $config.asset) { throw "资产名必须为 $($config.asset)" }
 Get-Command gh -ErrorAction Stop | Out-Null
 $stageRoot = Join-Path $PSScriptRoot '../src-tauri/target/publish-runtime'

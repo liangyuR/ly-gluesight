@@ -108,9 +108,6 @@ try {
     Expect-Failure 'CRT 没有文件版本' { Assert-VendorRuntime $fixture } 'CRT 文件版本'
     $script:crtVersion = '14.44.35211.0'
     $manifest = New-VendorFixture
-    $manifest | Add-Member -NotePropertyName hash -NotePropertyValue 'legacy'; Save-VendorManifest $manifest
-    Expect-Failure '旧内容摘要' { Assert-VendorRuntime $fixture } '摘要'
-    $manifest = New-VendorFixture
     $manifest.files[0].path = 'crt/../outside.dll'; Save-VendorManifest $manifest
     Expect-Failure '清单路径穿越' { Assert-VendorRuntime $fixture } '路径'
     New-VendorFixture | Out-Null

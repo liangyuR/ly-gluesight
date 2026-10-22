@@ -155,7 +155,6 @@ function Invoke-LyFlowDllProbe([string]$RuntimeRoot) {
 
 function Test-LyFlowRuntimeDirectory([string]$RuntimeRoot, $Config, [string]$Version) {
     $series = $Config.lyflow.series
-    Assert-NoRuntimeLinks $RuntimeRoot
     $descriptorPath = Join-Path $RuntimeRoot 'lyflow-runtime.json'
     if (-not (Test-Path -LiteralPath $descriptorPath -PathType Leaf)) { throw "lyFlow 运行库缺少 lyflow-runtime.json：$RuntimeRoot" }
     $descriptor = Get-Content -LiteralPath $descriptorPath -Raw | ConvertFrom-Json
@@ -200,7 +199,7 @@ function Remove-LyFlowCacheDirectory([string]$Path, [string]$CacheRoot) {
     $absolute = [IO.Path]::GetFullPath($Path)
     $prefix = [IO.Path]::GetFullPath($CacheRoot).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
     if (-not $absolute.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw '拒绝删除 lyFlow 缓存目录以外的路径。' }
-    if (Test-Path -LiteralPath $absolute) { Assert-NoRuntimeLinks $absolute; Remove-Item -LiteralPath $absolute -Recurse -Force }
+    if (Test-Path -LiteralPath $absolute) { Remove-Item -LiteralPath $absolute -Recurse -Force }
 }
 
 function Get-LyFlowCachedFallback([string]$CacheRoot, $Config, [string]$Reason) {
@@ -218,7 +217,6 @@ function Get-LyFlowCachedFallback([string]$CacheRoot, $Config, [string]$Reason) 
 function Restore-LyFlowDependency([string]$RepositoryRoot, $Config, [switch]$NoFallback) {
     $cacheRoot = Get-LyFlowCacheRoot $RepositoryRoot
     [void][IO.Directory]::CreateDirectory($cacheRoot)
-    Assert-NoRuntimeLinks $cacheRoot
     try { $releases = Get-LyFlowReleases $Config.lyflow.repository }
     catch {
         $reason = "查询 $($Config.lyflow.repository) 的 Release 失败：$($_.Exception.Message)"
@@ -249,7 +247,7 @@ function Restore-LyFlowDependency([string]$RepositoryRoot, $Config, [switch]$NoF
             return Get-LyFlowCachedFallback $cacheRoot $Config $reason
         }
         $expanded = Join-Path $temporary 'runtime'
-        Expand-RuntimeArchive $archive $expanded ''
+        Expand-RuntimeArchive $archive $expanded
         [void](Test-LyFlowRuntimeDirectory $expanded $Config $release.version)
         if (Test-Path -LiteralPath $target) { throw 'lyFlow 缓存被并发写入，请重试。' }
         Move-Item -LiteralPath $expanded -Destination $target

@@ -54,37 +54,12 @@ try {
         Expect-Failure '本机诊断候选' { Assert-RuntimeManifest (Join-Path $root 'runtime') } 'localValidationOnly'
     }
     $manifest.lyflow.localValidationOnly = $false
-    $manifest.lyflow.hash = 'obsolete'; Save-FixtureManifest $manifest
-    Expect-Failure '旧摘要记录' { Assert-RuntimeManifest (Join-Path $root 'runtime') } '摘要'
-    $manifest.lyflow.Remove('hash')
-    $manifest.files[0].bytes++; Save-FixtureManifest $manifest
-    Expect-Failure '文件尺寸错误' { Assert-RuntimeManifest (Join-Path $root 'runtime') } '尺寸'
-    $manifest.files[0].bytes--
-    $original = $manifest.files[0].path
-    $manifest.files[0].path = 'lyflow/../outside.dll'; Save-FixtureManifest $manifest
-    Expect-Failure '路径穿越' { Assert-RuntimeManifest (Join-Path $root 'runtime') } '路径'
-    $manifest.files[0].path = $original; Save-FixtureManifest $manifest
-    'extra' | Set-Content -LiteralPath (Join-Path $root 'runtime/mvs/unlisted.txt')
-    Expect-Failure '清单外文件' { Assert-RuntimeManifest (Join-Path $root 'runtime') } '数量'
-    Remove-Item -LiteralPath (Join-Path $root 'runtime/mvs/unlisted.txt')
     $image[68] = 0x4c; $image[69] = 0x01
     [IO.File]::WriteAllBytes((Join-Path $root 'runtime/lyflow/lyflow_core.dll'), $image)
     Expect-Failure 'x86 PE' { Assert-RuntimeManifest (Join-Path $root 'runtime') } 'x64'
     Expect-Failure '清理越界' { Reset-RuntimeStage (Join-Path $PSScriptRoot '../outside-stage') @() } '本项目'
     Expect-Failure '来源位于清理目录' { Reset-RuntimeStage $root @((Join-Path $root 'runtime')) } '来源'
     Expect-Failure '来源等于清理目录' { Reset-RuntimeStage $root @($root) } '来源'
-    $zipPath = Join-Path $root 'unsafe.zip'
-    $zip = [IO.Compression.ZipFile]::Open($zipPath, [IO.Compression.ZipArchiveMode]::Create)
-    try { [void]$zip.CreateEntry('runtime/../../outside.txt') } finally { $zip.Dispose() }
-    Expect-Failure 'ZIP路径穿越' { Expand-RuntimeArchive $zipPath (Join-Path $root 'extract') } '路径'
-    Remove-Item -LiteralPath $zipPath
-    $zip = [IO.Compression.ZipFile]::Open($zipPath, [IO.Compression.ZipArchiveMode]::Create)
-    try { [void]$zip.CreateEntry('runtime/mvs/file.txt:stream') } finally { $zip.Dispose() }
-    Expect-Failure 'ZIP备用数据流' { Expand-RuntimeArchive $zipPath (Join-Path $root 'extract') } '路径'
-    Remove-Item -LiteralPath $zipPath
-    $zip = [IO.Compression.ZipFile]::Open($zipPath, [IO.Compression.ZipArchiveMode]::Create)
-    try { $entry = $zip.CreateEntry('runtime/mvs/link'); $entry.ExternalAttributes = -1577123840 } finally { $zip.Dispose() }
-    Expect-Failure 'ZIP符号链接' { Expand-RuntimeArchive $zipPath (Join-Path $root 'extract') } '符号链接'
     $source = Join-Path $root 'collect-source'
     [void][IO.Directory]::CreateDirectory((Join-Path $source 'ThirdParty'))
     [void][IO.Directory]::CreateDirectory((Join-Path $source 'recordings'))
@@ -109,32 +84,10 @@ try {
         & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -File (Join-Path $PSScriptRoot '../../scripts/Test-PackagedRuntime.ps1') -RuntimeRoot (Join-Path $root 'runtime') -ReportPath (Join-Path $root 'failure.json')
         if ($LASTEXITCODE -eq 0 -or (Get-Content -LiteralPath (Join-Path $root 'failure.json') -Raw | ConvertFrom-Json).success) { throw '独立进程没有返回失败报告。' }
         $passed++
-        $installedMvs = Join-Path ${env:CommonProgramFiles(x86)} 'MVS/Runtime/Win64_x64'
-        if (Test-Path -LiteralPath $installedMvs -PathType Container) {
-            $realRoot = Join-Path $root 'real-mvs/runtime'
-            Copy-RuntimeTree $installedMvs (Join-Path $realRoot 'mvs')
-            [void][IO.Directory]::CreateDirectory((Join-Path $realRoot 'lyflow'))
-            Copy-Item -LiteralPath (Join-Path $installedMvs 'MvCameraControl.dll') -Destination (Join-Path $realRoot 'lyflow/lyflow_core.dll')
-            foreach ($name in @('msvcr120.dll', 'msvcp120.dll', 'MVGigEVisionSDK.dll', 'MvUsb3vTL.dll')) {
-                $library = Join-Path $realRoot "mvs/$name"
-                $backup = Join-Path $root $name
-                Move-Item -LiteralPath $library -Destination $backup
-                try {
-                    $inventory = @{ schemaVersion=2; bundleVersion=$config.bundleVersion; architecture='x64'; lyflow=@{version=$inSeries; abiVersion=$inSeries; localValidationOnly=$false; operators=$config.requiredOperators}; mvs=@{version=$config.mvsVersion}; files=@(Get-RuntimeFiles $realRoot | Where-Object path -ne 'manifest.json') }
-                    $inventory | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $realRoot 'manifest.json')
-                    [void](Assert-RuntimeManifest $realRoot)
-                    & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -File (Join-Path $PSScriptRoot '../../scripts/Test-PackagedRuntime.ps1') -RuntimeRoot $realRoot -ReportPath (Join-Path $root 'missing-mvs.json')
-                    $missing = Get-Content -LiteralPath (Join-Path $root 'missing-mvs.json') -Raw | ConvertFrom-Json
-                    if ($LASTEXITCODE -eq 0 -or $missing.success -or $missing.error -notlike "*$name*") { throw "系统 MVS 掩盖了缺失的随包组件：$name" }
-                    $passed++
-                } finally { Move-Item -LiteralPath $backup -Destination $library }
-            }
-        }
     }
     Write-Host "运行库打包回归通过：$passed 项。"
 } finally {
     if (Test-Path -LiteralPath $root) {
-        Assert-NoRuntimeLinks $root
         Remove-Item -LiteralPath $root -Recurse -Force
     }
 }

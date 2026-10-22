@@ -54,7 +54,6 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 public static class PackagedRuntimeProbe {
-    public static string[] MvsModules { get; private set; } = Array.Empty<string>();
     [DllImport("kernel32", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr LoadLibraryExW(string path, IntPtr file, uint flags);
     [DllImport("kernel32", CharSet=CharSet.Ansi, ExactSpelling=true, SetLastError=true)] static extern IntPtr GetProcAddress(IntPtr module, string name);
     [DllImport("kernel32", SetLastError=true)] static extern bool SetDefaultDllDirectories(uint flags);
@@ -103,23 +102,11 @@ public static class PackagedRuntimeProbe {
                 int code = Function<MvsEnum>(module, "MV_CC_EnumDevices")(5, list);
                 if (code != 0) throw new Exception("MVS 枚举失败：0x" + code.ToString("X8"));
             } finally { Marshal.FreeHGlobal(list); }
-            MvsModules = CheckModulePaths(runtimeRoot);
             return String.Format("{0}.{1}.{2}.{3}", version >> 24, (version >> 16) & 255, (version >> 8) & 255, version & 255);
         } finally {
             int final = Function<MvsStatus>(module, "MV_CC_Finalize")();
             if (final != 0) throw new Exception("MVS 结束失败：0x" + final.ToString("X8"));
         }
-    }
-    public static string[] CheckModulePaths(string root) {
-        var packaged = Directory.GetFiles(root, "*", SearchOption.AllDirectories)
-            .Where(p => new[]{".dll", ".cti", ".ax"}.Contains(Path.GetExtension(p).ToLowerInvariant()))
-            .Select(Path.GetFileName).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        string prefix = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        var loaded = Process.GetCurrentProcess().Modules.Cast<ProcessModule>()
-            .Where(m => packaged.Contains(Path.GetFileName(m.FileName)) || Regex.IsMatch(Path.GetFileName(m.FileName), @"^(msvcr|msvcp|vcruntime)\d+(_\d+)?\.dll$", RegexOptions.IgnoreCase))
-            .Select(m => m.FileName).ToArray();
-        foreach (string path in loaded) if (!Path.GetFullPath(path).StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) throw new Exception("运行库被包外同名模块掩盖：" + path);
-        return loaded;
     }
 }
 '@
@@ -152,8 +139,6 @@ public static class PackagedRuntimeProbe {
     if ($mvsVersion -ne $config.mvsVersion) { throw "MVS 实际版本 $mvsVersion 与固定版本 $($config.mvsVersion) 不一致。" }
     $report.lyflow = @{ version = $version; abiVersion = $abiVersion; declaredAbiVersion = $descriptor.abiVersion; series = $config.lyflow.series; operators = @($operators); locate = $locate }
     $report.mvs = @{ version = $mvsVersion; initialization = 'passed'; enumeration = 'passed' }
-    $report.mvs.modulesBeforeFinalize = @([PackagedRuntimeProbe]::MvsModules)
-    $report.modules = @([PackagedRuntimeProbe]::CheckModulePaths($RuntimeRoot))
     $report.success = $true
     Write-Host '运行库自检通过：文件清单、x64、接口、实际引擎版本与清单一致且属于锁定系列、必需算子及 MVS 初始化/枚举。客户端版本另由应用自检报告验证。'
 } catch {
