@@ -6,7 +6,9 @@ use ly_plc::{Access, DataType, EdgeMode, LinkState, PlcConfig, PlcEngine, PlcErr
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub(crate) const PROTOCOL_VERSION: u16 = 5;
+/// 协议 6（分段连拍）：DB4/DB2 布局与协议 5 相同；partEnd 不再核对 deviceTriggers 等于 deviceShots，
+/// 请求层不再约束 shotCount / deviceShots，计数核对只在生产接件时按配方做。
+pub(crate) const PROTOCOL_VERSION: u16 = 6;
 pub(crate) const SN_MAX_LEN: usize = 50;
 const SN_HEADER_ERRORS: [&str; 2] = ["PLC 字符串声明长度", "PLC 字符串实际长度"];
 
@@ -102,7 +104,7 @@ impl Contract {
         config.validate()?;
         for point in &config.points {
             if let Some((old, new)) = RETIRED_TAGS.iter().find(|(old, _)| point.tags.iter().any(|t| t == old)) {
-                return Err(format!("点位 {} 使用已停用的握手标签 {old}（{new}），请按单设备 S7 协议 {PROTOCOL_VERSION} 模板重新生成点表", point.name));
+                return Err(format!("点位 {} 使用已停用的握手标签 {old}（{new}），请按 S7 协议 {PROTOCOL_VERSION} 模板（三台设备共用一个触发、只配一个计数）重新生成点表", point.name));
             }
         }
         let mut ids = HashMap::new();
@@ -468,6 +470,8 @@ pub(crate) struct Request {
 }
 
 impl Request {
+    /// 请求层只校验协议版本、序号与 SN。shotCount / deviceShots 在协议 6 是预期总数：
+    /// 示教采集轮次可填估算值（含 0、两者不等），生产接件时由 admission 按配方核对。
     pub(crate) fn validate(&self) -> Result<(), String> {
         if self.protocol_version != PROTOCOL_VERSION {
             return Err(format!("PLC 协议版本 {} 与 PC {} 不一致", self.protocol_version, PROTOCOL_VERSION));
@@ -476,9 +480,6 @@ impl Request {
             return Err("requestSeq 不能为零".into());
         }
         check_sn(&self.sn)?;
-        if self.shot_count == 0 || self.device_shots != self.shot_count {
-            return Err("设备计划触发数 deviceShots 必须等于非零 shotCount".into());
-        }
         Ok(())
     }
 }
@@ -548,17 +549,16 @@ pub(crate) fn matching_ack(snapshot: &Snapshot, result: &ResultEnvelope) -> Resu
     Ok(true)
 }
 
-pub(crate) fn verify_part_end(snapshot: &Snapshot, request: &Request) -> Result<(), String> {
+/// 运动结束核对：partEnd / partStart 有效、请求身份未变。返回此刻 PLC 报的设备触发数；
+/// 协议 6 不再要求它等于 deviceShots，只作参考（丢帧告警、收尾等待、下一件基线）。
+pub(crate) fn verify_part_end(snapshot: &Snapshot, request: &Request) -> Result<u16, String> {
     if !snapshot.read_bool("partEnd")? || !snapshot.read_bool("partStart")? {
         return Err("运动结束要求 partEnd 和 partStart 保持有效".into());
     }
     if snapshot.request()? != *request {
         return Err("运动结束时请求身份或拍照计划已改变".into());
     }
-    if snapshot.trigger_count()? != request.device_shots {
-        return Err(format!("PLC 设备实际触发数 {} 与计划 {} 不符", snapshot.trigger_count()?, request.device_shots));
-    }
-    Ok(())
+    snapshot.trigger_count()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -932,13 +932,31 @@ mod tests {
     #[test]
     fn malformed_or_unreleased_request_cannot_arm() {
         for (tag, value) in [
-            ("requestSeq", PlcValue::Int(0)), ("protocolVersion", PlcValue::Int(2)),
-            ("deviceShots", PlcValue::Int(3)), ("resultAck", PlcValue::Bool(true)),
+            ("requestSeq", PlcValue::Int(0)), ("resultAck", PlcValue::Bool(true)),
             ("deviceTriggers", PlcValue::Int(1)), ("done", PlcValue::Bool(true)),
         ] {
             let mut s = snapshot();
             s.values.insert(tag, value);
             assert!(s.start_request().is_err(), "{tag}");
+        }
+    }
+
+    #[test]
+    fn plc_writing_protocol_5_cannot_arm() {
+        for (version, accepted) in [(5, false), (6, true)] {
+            let mut s = snapshot();
+            s.values.insert("protocolVersion", PlcValue::Int(version));
+            assert_eq!(s.start_request().is_ok(), accepted, "protocolVersion={version}");
+        }
+    }
+
+    #[test]
+    fn start_request_with_unequal_or_zero_counts_is_not_rejected_at_request_level() {
+        // 协议 6：示教轮次的 shotCount 可填估算值，生产计数由 admission 按配方核对
+        for (tag, value) in [("shotCount", 0), ("deviceShots", 3)] {
+            let mut s = snapshot();
+            s.values.insert(tag, PlcValue::Int(value));
+            if let Err(error) = s.start_request() { panic!("{tag}={value}: {error}"); }
         }
     }
 
@@ -1013,17 +1031,17 @@ mod tests {
     }
 
     #[test]
-    fn part_end_compares_device_count_and_frozen_request() {
-        let mut s = snapshot();
-        let request = s.request().unwrap();
-        s.values.insert("partEnd", PlcValue::Bool(true));
-        s.values.insert("deviceTriggers", PlcValue::Int(4));
-        assert!(verify_part_end(&s, &request).is_ok());
-        s.values.insert("deviceTriggers", PlcValue::Int(12));
-        assert!(verify_part_end(&s, &request).is_err());
-        s.values.insert("deviceTriggers", PlcValue::Int(4));
-        s.values.insert("requestSeq", PlcValue::Int(8));
-        assert!(verify_part_end(&s, &request).is_err());
+    fn part_end_with_changed_request_identity_is_rejected() {
+        let mut ended = snapshot();
+        let request = ended.request().unwrap();
+        ended.values.insert("partEnd", PlcValue::Bool(true));
+        assert!(verify_part_end(&ended, &request).is_ok());
+        // 计数不再核对相等，但 deviceShots 仍属冻结的请求身份
+        for (tag, value) in [("requestSeq", 8), ("deviceShots", 5)] {
+            let mut s = ended.clone();
+            s.values.insert(tag, PlcValue::Int(value));
+            assert!(verify_part_end(&s, &request).is_err(), "{tag}");
+        }
     }
 
     #[test]

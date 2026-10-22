@@ -615,8 +615,10 @@ struct Part {
     extra: usize,
     queue: usize,
     router: ShotRouter,
-    issued: Option<(Vec<String>, u64)>,
-    issued_verified: bool,
+    /// 接在 PLC 触发线上的相机（S7 计划）；收尾时按 PLC 报的触发数给它们推下一件基线
+    issued: Option<Vec<String>>,
+    /// partEnd 时 PLC 报的设备触发数（协议 6 只作参考，可与计划数不同）；partEnd 前为空
+    device_triggers: Option<u16>,
     routing_closed: bool,
     image_measurement: bool,
     proc_timeout: Duration,
@@ -640,6 +642,17 @@ impl Part {
 
     fn triggers(&self) -> u64 {
         self.router.triggers()
+    }
+
+    /// 本件收尾（只做一次）：推算触发线上各相机下一件的基线下限，记进计数账。
+    /// 用 PLC 报的实际触发数——确认结果时报的（`plc_triggers`），否则 partEnd 时报的——不用计划数：
+    /// 协议 6 不再核对两者相等，计划数可能与实发数不同。两者都没有时（故障中断等）由路由按计划数假定；见到的更高计数总是优先。
+    fn close_routing(&mut self, ledgers: &mut Ledgers, plc_triggers: Option<u16>) {
+        if self.routing_closed { return; }
+        let issued = self.issued.as_ref().zip(plc_triggers.or(self.device_triggers))
+            .map(|(ids, n)| ids.iter().map(|id| (id.as_str(), u64::from(n))).collect::<Vec<_>>());
+        self.router.close(ledgers, issued.as_deref());
+        self.routing_closed = true;
     }
 
     fn camera_id(&self, cam: u8) -> String {
@@ -894,6 +907,7 @@ impl Machine {
     fn new(app: AppHandle, measure_tx: Sender<Job>, workers: Arc<WorkerHealth>) -> Self {
         let mut stats = today_stats(&app, HistoryScope::Real);
         let s7 = PlcSession::open(crate::storage::state(&app).join("plc-handshake.json"));
+        if let Some(notice) = s7.archived() { log(&app, "warn", "S7 握手日志归档", notice.to_owned()); }
         let recovery = match app.state::<Store>().unresolved_delivery_cycles() {
             Ok(unresolved) => s7.recover_acknowledgements(&unresolved),
             Err(error) => crate::plc_session::AckRecovery { receipts: Vec::new(), errors: vec![format!("读取未决 PLC 交付失败，跳过 ACK 恢复：{error}")] },
@@ -1322,7 +1336,7 @@ impl Machine {
             self.ledgers.set_floor(&Floor { cam: camera.cam, camera: camera.camera.clone(), session: camera.session,
                 baseline: router.baseline(camera.cam).unwrap_or(0) });
         }
-        let issued = Some((plan.device_ids.clone(), u64::from(plan.device_shots)));
+        let issued = Some(plan.device_ids.clone());
         let bundle_id = production.as_ref().map(|prepared| prepared.bundle.id.clone());
         budget.mark("camera-router");
         arm_remaining!("before-recording");
@@ -1348,7 +1362,7 @@ impl Machine {
             queue: 0,
             router,
             issued,
-            issued_verified: false,
+            device_triggers: None,
             routing_closed: false,
             image_measurement: crate::site::image_measurement(&app),
             proc_timeout: settings.timeouts.proc(),
@@ -1604,19 +1618,20 @@ impl Machine {
                     if capture_host.active() { self.start_capture_s7(request).await; }
                     else { self.start_part(request).await; }
                 },
-                SessionEvent::End(ended_at) if self.s7.capture_id().is_some() => {
-                    let _ = ended_at;
+                SessionEvent::End(_, _) if self.s7.capture_id().is_some() => {
                     self.end_capture();
                     self.set_phase(Phase::Drain);
                 },
-                SessionEvent::End(ended_at) => {
+                SessionEvent::End(ended_at, device_triggers) => {
                     if let Some(part) = self.part.as_mut() {
                         part.end_at = Some(ended_at);
-                        part.issued_verified = true;
+                        part.device_triggers = device_triggers;
                     }
                     self.set_phase(Phase::Drain);
                     let triggers = self.part.as_ref().map(Part::triggers);
-                    log_with(&app, "info", "partEnd↑", "三路触发数量已核对，等待剩余帧", Fields::stage("partEnd").with_data(json!({"triggers": triggers})));
+                    let reported = device_triggers.map_or_else(|| "未报".to_owned(), |n| n.to_string());
+                    log_with(&app, "info", "partEnd↑", format!("PLC 报本件设备触发数 {reported}（只作参考），等待剩余帧"),
+                        Fields::stage("partEnd").with_data(json!({"triggers": triggers, "deviceTriggers": device_triggers})));
                 }
                 SessionEvent::Released(triggers) => {
                     self.close_routing(triggers);
@@ -1711,9 +1726,9 @@ impl Machine {
     }
 
     async fn report(&mut self, sn: String, recipe_id: Option<String>, judgement: Judgement) {
-        // S7 未经 partEnd 核对触发数就判了 ERR（运动超时等）：等 PLC 确认结果时报的实际已发触发数再推下一件基线，
+        // S7 没等到 partEnd 就判了 ERR（运动超时等）：手里还没有 PLC 报的触发数，等 PLC 确认结果时报的实际已发触发数再推下一件基线，
         // 按计划数假定会让下一件基线偏高、每件都缺帧
-        if !self.part.as_ref().is_some_and(|p| p.issued.is_some() && !p.issued_verified) { self.close_routing(None); }
+        if !self.part.as_ref().is_some_and(|p| p.issued.is_some() && p.device_triggers.is_none()) { self.close_routing(None); }
         let app = self.app.clone();
         let mut drain_ms = None;
         let pending = PlcDelivery { state: PlcDeliveryState::Pending, updated_at: now_ms(), message: None };
@@ -1765,11 +1780,7 @@ impl Machine {
     }
 
     fn close_routing(&mut self, plc_triggers: Option<u16>) {
-        let Some(part) = self.part.as_mut().filter(|part| !part.routing_closed) else { return };
-        let issued = part.issued.as_ref().filter(|_| part.issued_verified || plc_triggers.is_some())
-            .map(|(ids, planned)| ids.iter().map(|id| (id.as_str(), plc_triggers.map_or(*planned, u64::from))).collect::<Vec<_>>());
-        part.router.close(&mut self.ledgers, issued.as_ref().map(|counts| counts.as_slice()));
-        part.routing_closed = true;
+        if let Some(part) = self.part.as_mut() { part.close_routing(&mut self.ledgers, plc_triggers); }
     }
 
     fn check_part_cams(&self, part: &Part) -> Result<(), String> {

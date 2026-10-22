@@ -154,69 +154,16 @@ impl Rig {
         assert_eq!(self.session.phase(), SessionPhase::Acquiring);
     }
 
-    async fn end(&mut self) -> Instant { self.end_counts(self.plan.device_shots).await }
+    async fn end(&mut self) -> Instant { self.end_counts(self.plan.device_shots).await.0 }
 
-    async fn end_counts(&mut self, counts: u16) -> Instant {
+    /// PLC 置 partEnd 并报设备触发数；返回 End 事件的时刻与其带出的触发数。
+    async fn end_counts(&mut self, counts: u16) -> (Instant, Option<u16>) {
         self.plc.set(&[("partEnd", 1), ("deviceTriggers", counts as u32)]);
         self.fresh().await;
         let event = self.session.poll(&self.engine, false, true).await;
-        let SessionEvent::End(ended_at) = event else { panic!("expected partEnd, got {event:?}") };
+        let SessionEvent::End(ended_at, triggers) = event else { panic!("expected partEnd, got {event:?}") };
         assert_eq!(self.session.phase(), SessionPhase::Draining);
-        ended_at
-    }
-
-    async fn reject_end_and_reset(&mut self, counts: u16) {
-        assert_eq!(self.session.phase(), SessionPhase::Acquiring);
-        let request = self.session.request().unwrap().clone();
-        let cycle_id = self.session.cycle_id().map(str::to_owned);
-        let result_fields = |plc: &TestPlc| (plc.get("resultCode"), plc.get("faultCode"), plc.text("resultSn"), plc.get("resultSeq"));
-        let before = result_fields(&self.plc);
-        self.plc.set(&[("partEnd", 1), ("deviceTriggers", counts as u32)]);
-        self.fresh().await;
-        let event = self.session.poll(&self.engine, false, true).await;
-        assert!(matches!(event, SessionEvent::Fault(_)), "{event:?}");
-        assert_eq!(self.session.phase(), SessionPhase::Fault);
-        assert!(self.session.pending());
-        assert_eq!(self.session.request(), Some(&request));
-        assert_eq!(self.session.cycle_id(), cycle_id.as_deref());
-        assert!(self.session.result().is_none());
-        assert!(!self.session.acknowledged());
-        let durable: Journal = serde_json::from_slice(&std::fs::read(&self.session.path).unwrap()).unwrap();
-        let pending = durable.pending.unwrap();
-        assert_eq!(pending.phase, SessionPhase::Fault);
-        assert_eq!(pending.request, request);
-        assert_eq!(pending.cycle_id, cycle_id);
-        assert!(pending.result.is_none());
-        assert!(!pending.acknowledged);
-        assert!(!self.plc.on("armed"));
-        assert!(!self.plc.on("visionReady"));
-        assert!(self.plc.on("visionFault"));
-        assert!(self.plc.on("busy"));
-        assert!(!self.plc.on("done"));
-        assert_eq!(result_fields(&self.plc), before);
-        assert!(self.session.report(&self.engine, 1, 0).await.is_err());
-        assert!(self.session.result().is_none());
-        assert!(!self.plc.on("done"));
-        let active_reset = self.session.poll(&self.engine, true, true).await;
-        assert!(matches!(active_reset, SessionEvent::Fault(_)), "{active_reset:?}");
-        assert!(self.session.pending());
-        assert_eq!(self.session.request(), Some(&request));
-        assert!(self.plc.on("busy"));
-        self.plc.neutral();
-        self.fresh().await;
-        assert!(matches!(self.session.poll(&self.engine, false, true).await, SessionEvent::None));
-        assert_eq!(self.session.phase(), SessionPhase::Fault);
-        assert!(self.session.pending());
-        assert!(matches!(self.session.poll(&self.engine, true, true).await, SessionEvent::Ready));
-        assert_eq!(self.session.phase(), SessionPhase::Idle);
-        assert!(!self.session.pending());
-        let durable: Journal = serde_json::from_slice(&std::fs::read(&self.session.path).unwrap()).unwrap();
-        assert!(durable.pending.is_none());
-        assert!(self.plc.on("visionReady"));
-        for tag in ["armed", "busy", "done", "visionFault"] { assert!(!self.plc.on(tag), "{tag}"); }
-        assert!(self.audit().iter().any(|record| record["action"] == "resetCompleted"
-            && record["pending"]["request"] == json!(request) && record["pending"]["cycleId"] == json!(cycle_id)
-            && record["pending"]["result"].is_null() && record["pending"]["acknowledged"] == false));
+        (ended_at, triggers)
     }
 
     async fn report(&mut self) {
@@ -248,23 +195,47 @@ impl Rig {
     }
 }
 
-/// partEnd 时设备实际触发数多于或少于计划：拒绝完成、保留事务，PLC 释放后才能明确复位，之后照常接下一件。
+/// 协议 6：partEnd 时设备触发数少于或多于计划不再拒绝完成（只作参考），End 带出 PLC 报的触发数，照常发布结果、确认并释放。
 #[tokio::test]
-async fn s7_wire_end_trigger_count_mismatch_rejects_completion_and_requires_neutral_reset() {
-    let mut rig = Rig::new("end-count-mismatch").await;
+async fn s7_wire_part_end_with_trigger_count_unlike_plan_completes_and_reports_triggers() {
+    let mut rig = Rig::new("end-count-unlike-plan").await;
     assert_eq!(rig.plan.device_shots, 4);
-    for (seq, counts) in [(1, 5), (2, 3)] {
+    for (seq, counts) in [(1, 3), (2, 5)] {
         rig.request(seq, "SN-50").await;
-        rig.session.bind_cycle_id(&format!("{seq:032x}"), PartSite::default()).unwrap();
         rig.arm().await;
-        rig.reject_end_and_reset(counts).await;
+        let (_, reported) = rig.end_counts(counts).await;
+        assert_eq!(reported, Some(counts), "deviceTriggers={counts}");
+        rig.report().await;
+        rig.ack_release().await;
     }
-    rig.request(3, "SN-50").await;
-    rig.session.bind_cycle_id(&format!("{:032x}", 3), PartSite::default()).unwrap();
-    rig.arm().await;
-    rig.end().await;
-    rig.report().await;
-    rig.ack_release().await;
+    rig.finish().await;
+}
+
+/// 升级到协议 6 后，握手日志里协议 5 的在途事务过不了当前协议的校验：原样归档为 `.v5.bak`，会话以空事务启动并照常要求明确复位，
+/// 复位不被它挡住；ACK 恢复也不把审计里的协议 5 事务报成日志错误。
+#[tokio::test]
+async fn journal_pending_from_protocol_5_is_archived_and_requires_reset() {
+    let mut rig = Rig::new("protocol-5-journal").await;
+    let cycle = "00000000000000000000000000000005";
+    let pending = Pending { origin: Some(Origin::Real), capture_id: None, request: Request { protocol_version: 5, request_seq: 9,
+        sn: "SN-V5".into(), product_code: 1, shot_count: 4, plan_version: 7, device_shots: 4 }, result: None,
+        phase: SessionPhase::Acquiring, cycle_id: Some(cycle.into()), acknowledged: false, started_at: 1000, site: None };
+    let original = serde_json::to_vec(&Journal { version: 1, last_request_seq: 9, pending: Some(pending.clone()), last_resolution: None }).unwrap();
+    std::fs::write(&rig.session.path, &original).unwrap();
+    let mut audit = serde_json::to_vec(&json!({"version": 1, "ts": 2000, "action": "resetRequested", "lastRequestSeq": 9, "pending": pending})).unwrap();
+    audit.push(b'\n');
+    crate::handshake_audit::append(&rig.session.path.with_extension("audit.jsonl"), &audit).unwrap();
+
+    rig.session = PlcSession::open(rig.session.path.clone());
+    assert!(!rig.session.pending(), "{:?}", rig.session.pending_summary());
+    assert_eq!(std::fs::read(rig.session.path.with_extension("v5.bak")).unwrap(), original);
+    let recovered = rig.session.recover_acknowledgements(&[cycle.to_owned()].into_iter().collect());
+    assert!(recovered.errors.is_empty() && recovered.receipts.is_empty(), "{recovered:?}");
+
+    rig.live().await;
+    assert_eq!(rig.session.phase(), SessionPhase::ResetRequired, "未复位前不能接件");
+    assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready), "{:?}", rig.session.view());
+    assert_eq!(rig.session.phase(), SessionPhase::Idle);
     rig.finish().await;
 }
 

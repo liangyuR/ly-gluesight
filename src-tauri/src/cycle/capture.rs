@@ -22,9 +22,7 @@ impl Machine {
         let attempt = async {
             let round = capture.current().ok_or("没有正在执行的示教采集")?;
             let device_ids = capture_device_ids(&rig.configs(), &round.camera_ids())?;
-            if request.device_shots != request.shot_count {
-                return Err("示教采集设备触发数量必须等于计划总数".into());
-            }
+            // 协议 6 不在请求层核对 deviceShots 与 shotCount；旧采集轮次（按 shotCount 编计划）的数量约束仍由计划核对与采集记录负责
             self.capture_devices_ready()?;
             let shots = (0..request.shot_count).map(|k| PlanShot {
                 shot_id: format!("S{:03}", k + 1), pose_id: format!("采集序号{}", k + 1), camera_ids: device_ids.clone(),

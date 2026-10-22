@@ -67,7 +67,7 @@ fn part(cycle_id: &str, ledgers: &Ledgers) -> Part {
             shot_id: shot.id.clone(), camera: shot.camera.clone(), view: shot.view, ..FrameView::waiting()
         }).collect(), measuring_since: vec![None; recipe.shot_count()],
         table: vec![PointState::Pending; recipe.point_count()], received: 0, extra: 0, queue: 0,
-        router, issued: None, issued_verified: false, routing_closed: false, image_measurement: false, proc_timeout: Duration::from_secs(1), drain_timeout: Duration::from_secs(2),
+        router, issued: None, device_triggers: None, routing_closed: false, image_measurement: false, proc_timeout: Duration::from_secs(1), drain_timeout: Duration::from_secs(2),
         armed_at: Instant::now(), end_at: None, fault: None, cams: (0..cameras.len() as u8).collect(),
         camera_ids: cameras, rig_gen: 1, source: RecordSource::Real, recording: None, recipe,
     }
@@ -111,7 +111,7 @@ pub(crate) async fn judge_last_frame_during_end(
         p.apply_result(measured(&p, k)).unwrap();
     }
     let (event, frame) = tokio::join!(end, last_frame);
-    let SessionEvent::End(ended_at) = event else { panic!("expected partEnd, got {event:?}") };
+    let SessionEvent::End(ended_at, _) = event else { panic!("expected partEnd, got {event:?}") };
     p.end_at = Some(ended_at);
     if let Some(Route::Bound { shot, .. }) = p.receive_frame(&frame) {
         p.apply_result(measured(&p, shot));
@@ -245,6 +245,25 @@ fn same_sn_reinspection_rejects_old_cycle_and_every_other_identity_mismatch() {
     }
     assert_eq!(next.queue, 1);
     assert!(next.apply_result(measured(&next, 0)).is_some());
+}
+
+/// 协议 6 不再核对 partEnd 时 PLC 报的触发数等于计划：下一件基线按 PLC 报的实发数推。
+/// 按计划数推（实发 3、计划 4）会把下一件第一帧当成上一件的迟到帧；只按见到的帧推（第 4 帧丢在传输里）会让下一件错位一帧。
+#[test]
+fn next_part_baseline_follows_plc_reported_triggers_not_plan_or_frames_seen() {
+    for (case, reported, delivered, next_first) in [
+        ("实发少于计划", 3, 3, 4),
+        ("实发等于计划、末帧丢在传输里", 4, 3, 5),
+    ] {
+        let mut p = part(case, &Ledgers::default());
+        p.issued = Some(vec!["cam1".into()]);
+        for counter in 1..=delivered { p.receive_frame(&frame(0, counter)).unwrap(); }
+        p.device_triggers = Some(reported);
+        let mut ledgers = Ledgers::default();
+        p.close_routing(&mut ledgers, None);
+        let mut next = part("next", &ledgers);
+        assert_eq!(next.receive_frame(&frame(0, next_first)), Some(Route::Bound { shot: 0, ordinal: 1 }), "{case}");
+    }
 }
 
 /// 测点号不对、无基准站带着 d（违反“无基准站没有位置值”的契约）都按测量出错处理。

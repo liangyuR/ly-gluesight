@@ -107,7 +107,7 @@ impl Bench {
                 assert!(Instant::now() < until, "会话未收敛：{:?}", session.view());
                 match session.poll_gated(engine, false, true, true, intake.load(Ordering::SeqCst)).await {
                     SessionEvent::Start(_) => session.arm(engine, plan).await.unwrap(),
-                    SessionEvent::End(_) => {
+                    SessionEvent::End(_, _) => {
                         let judgement = crate::cycle::tests::judge_delivered(&delivered.lock().unwrap());
                         session.report(engine, judgement.plc_code, judgement.fault_code).await.unwrap();
                     }
@@ -351,11 +351,12 @@ async fn new_connection_before_first_poll_waits_instead_of_faulting_and_disconne
     bench.engine.disconnect().await;
 }
 
+/// 协议 6 起少发一次触发（CountMismatch）不再是握手故障：本件按实收帧照常判结果（缺帧 ERR）并回到空闲。
 #[tokio::test]
 async fn offline_line_scenarios_end_in_err_result_or_handshake_fault() {
     for (scenario, expected, phase) in [
         (Scenario::LostFrame, Some((90, fault::MISSING_FRAME)), SessionPhase::Idle),
-        (Scenario::CountMismatch, None, SessionPhase::Fault),
+        (Scenario::CountMismatch, Some((90, fault::MISSING_FRAME)), SessionPhase::Idle),
         (Scenario::AckMismatch, None, SessionPhase::Fault),
     ] {
         let mut bench = Bench::new(&format!("{scenario:?}")).await;
