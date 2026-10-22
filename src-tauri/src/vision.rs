@@ -15,13 +15,16 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::camera::CameraSource;
 use crate::cycle::CycleHost;
 pub use crate::frame::FrameImage;
-use crate::measure::{Job, Measured, Measurer};
-use crate::recipe::Recipe;
+use crate::measure::{FrameJob, Job, Measured, Measurer};
+use crate::recipe::{CameraInspect, Recipe};
 
 pub(crate) mod fixture;
 pub(crate) mod fixture_quality;
 mod taught;
 pub use taught::{build_taught_graph, measure_shot, measure_shot_with_graph, ShotMeasurement, MultiViewMeasurement, ViewMeasurement, PoseRecord, measure_views, measure_views_with};
+pub use taught::{corridor_inside, measure_frame, plan_corridor, CorridorGraph, FrameMeasurement};
+#[allow(unused_imports)] // D2 标定轮次逐帧测量接入后去掉
+pub use taught::measure_frame_with;
 #[cfg(test)]
 use taught::measure_shot_patched;
 
@@ -147,6 +150,21 @@ impl Measurer for LyFlowMeasurer {
         } else {
             Ok(prepared.measure_views(job.k, &job.images, &run_id)?.into_measured(job))
         }
+    }
+}
+
+impl LyFlowMeasurer {
+    /// 段配方一台相机一帧：候选试运行用候选的走廊测量图，生产用已核验并预热的发布包。
+    pub fn measure_frame(&self, job: &FrameJob, image: &FrameImage) -> Result<FrameMeasurement, String> {
+        if let Some(candidate) = &job.candidate { return candidate.measure_frame(job, image); }
+        let prepared = job.production.as_ref().ok_or("图像检测没有已核验并预热的发布包")?;
+        if job.bundle_id.as_deref() != Some(prepared.bundle.id.as_str()) || job.recipe.revision_id != prepared.recipe.revision_id {
+            return Err("测量任务与已冻结发布包不一致".into());
+        }
+        if prepared.recipe.inspect.get(job.camera_idx).map(|i| i.camera.as_str()) != Some(job.camera.as_str()) {
+            return Err(format!("测量任务的相机 {} 不是发布包的第 {} 台计划相机", job.camera, job.camera_idx + 1));
+        }
+        prepared.measure_frame(job.camera_idx, job.seq, image, &format!("frame-{}-{}-{}", job.cycle_id, job.camera_idx, job.seq))
     }
 }
 
@@ -373,13 +391,40 @@ pub fn recipe_source(app: &AppHandle, recipe: &Recipe) -> Result<CameraSource, S
     found.map(|(s, _)| s).ok_or_else(|| format!("配方 {} 没有拍照点", recipe.id))
 }
 
+/// 旧拍照点配方的工位标定键：设备 + 图编号（三目拼接相机每幅图各一份标定）。
 fn station_view_key(device: &str, view: u8) -> Result<String, String> {
     if !(1..=3).contains(&view) { return Err("标定图编号必须为 1、2 或 3".into()); }
     Ok(format!("{device}-v{view}"))
 }
 
+/// 段配方的工位标定键：设备编号本身（D-SB-30，三台独立单视角相机，没有图编号）。
+/// 与旧配方的 `{device}-v{view}` 并存、永不相同：给段配方标定不会覆盖旧配方的标定文件。
+pub fn station_key(device: &str) -> Result<String, String> {
+    if !crate::recipe::valid_camera_id(device) { return Err(format!("相机编号 {device:?} 只能用字母、数字、- 和 _")); }
+    Ok(device.to_string())
+}
+
+/// 段配方一台检测相机的标定文件：按它的标定引用（缺省为设备编号）找工位标定。
+#[allow(dead_code)] // D3 段配方发布接入后去掉
+pub fn camera_calib_path(app: &AppHandle, inspect: &CameraInspect) -> Result<PathBuf, String> {
+    let key = match &inspect.calib { Some(reference) => reference.clone(), None => station_key(&inspect.camera)? };
+    station_calib_path(app, &key)
+}
+
 fn camera_id(app: &AppHandle, cam: u8) -> Result<String, String> {
     Ok(app.state::<CycleHost>().camera.slot(cam as usize).ok_or("相机不存在")?.config().id)
+}
+
+/// 标定命令的键：给了图编号是旧配方的 `{device}-v{view}`；没给是段配方的 `{device}`，这台相机必须是单视角（D-SB-11）。
+fn calib_key(app: &AppHandle, cam: u8, view: Option<u8>) -> Result<String, String> {
+    let config = app.state::<CycleHost>().camera.slot(cam as usize).ok_or("相机不存在")?.config();
+    match view {
+        Some(view) => station_view_key(&config.id, view),
+        None => {
+            crate::camera::check_burst_cameras(std::slice::from_ref(&config), std::slice::from_ref(&config.id))?;
+            station_key(&config.id)
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -409,18 +454,20 @@ pub fn calib_info(path: &Path) -> Option<CalibInfo> {
     })
 }
 
+/// `view` 给了读旧配方的 `{device}-v{view}`，没给读段配方的 `{device}`（见 `calib_key`）。
 #[tauri::command]
 pub fn vision_calib_info(app: AppHandle, cam: Option<u8>, view: Option<u8>) -> Result<Option<CalibInfo>, String> {
-    let key = station_view_key(&camera_id(&app, cam.unwrap_or(0))?, view.unwrap_or(1))?;
+    let key = calib_key(&app, cam.unwrap_or(0), view)?;
     Ok(calib_info(&station_calib_path(&app, &key)?))
 }
 
 /// 工位标定：用飞拍相机最近一帧整图跑 image.board_calib，结果存成工位标定文件。
+/// `view` 给了存旧配方的 `{device}-v{view}`，没给存段配方的 `{device}`（单视角相机，样本与最近一帧都是图 1）；两份文件并存。
 #[tauri::command]
 pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, cam: Option<u8>, view: Option<u8>, image_id: Option<String>) -> Result<CalibInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let key = calib_key(&app, cam.unwrap_or(0), view)?;
         let view = view.unwrap_or(1);
-        let key = station_view_key(&camera_id(&app, cam.unwrap_or(0))?, view)?;
         if app.state::<CycleHost>().busy() || app.state::<CycleHost>().camera.recipe_capture().active() { return Err("设备正在采集或检测，结束后再标定".into()); }
         if pattern.iter().any(|n|!n.is_finite()||*n<2.0||*n>100.0||n.fract()!=0.0)||!square.is_finite()||square<=0.0 { return Err("棋盘格内角点与格长无效".into()); }
         let engine = app.state::<VisionHost>().engine().ok_or("lyFlow 核心库未加载")?;

@@ -6,10 +6,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::recipe::{Recipe, RecipeDoc, ShotSpec};
+use crate::recipe::{CameraInspect, Recipe, RecipeDoc, ShotSpec};
 
-/// 3：启用 fixture 的视图带定位模板 template.pgm，清单记示教图编号（imageId）与模板引用。旧包按版本不符拒绝（D-0）。
+/// 3：旧拍照点配方的发布包，按（拍照点，视图）组织；启用 fixture 的视图带定位模板 template.pgm，清单记示教图编号（imageId）
+/// 与模板引用。更早的包按版本不符拒绝（D-0）。
 pub const RELEASE_SCHEMA: u32 = 3;
+/// 4：段配方的发布包，按计划相机组织（D-SB-30）：每台相机一张示教帧、一份标定与一条走廊。与 3 并存，`load` 两种都接受。
+pub const RELEASE_SCHEMA_BURST: u32 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -48,6 +51,26 @@ pub struct PublishInput {
     pub shots: Vec<ShotInput>,
 }
 
+/// 段配方一台检测相机的发布资源。
+#[derive(Clone, Debug)]
+pub struct CameraInput {
+    pub camera: String,
+    /// 示教走廊所在的冻结帧（预热在它上面量一次）
+    pub image: ResourceSource,
+    pub image_id: String,
+    pub calibration: ResourceSource,
+}
+
+/// 段配方的发布输入（schema 4）。`graph` 是 `production::burst_graphs` 的结果，生产加载时按配方重算比对。
+#[derive(Clone, Debug)]
+pub struct BurstPublishInput {
+    pub recipe: RecipeDoc,
+    pub versions: Versions,
+    pub validation_site: ValidationSite,
+    pub graph: ResourceSource,
+    pub cameras: Vec<CameraInput>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FileEntry {
@@ -74,6 +97,21 @@ pub struct ShotManifest {
     pub points: String,
 }
 
+/// 段配方发布包里一台计划相机（schema 4）：资源都在 `cameras/{index:02}/` 下。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CameraManifest {
+    /// 计划相机下标（配方 inspect 的顺序）
+    pub index: usize,
+    pub camera: String,
+    /// 示教帧尺寸：生产每帧必须同尺寸
+    pub size: [u32; 2],
+    pub image: String,
+    pub image_id: String,
+    pub calibration: String,
+    pub corridor: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReleaseManifest {
@@ -86,8 +124,24 @@ pub struct ReleaseManifest {
     pub validation_site: ValidationSite,
     pub recipe: String,
     pub graph: String,
+    /// schema 3（旧拍照点配方）；schema 4 为空
     pub shots: Vec<ShotManifest>,
+    /// schema 4（段配方）；schema 3 没有这一项
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cameras: Vec<CameraManifest>,
     pub files: Vec<FileEntry>,
+}
+
+/// 段配方一台相机的走廊资源：冻结的走廊几何、当量与站距，加载时按配方重算比对。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CorridorResource {
+    pub schema_version: u32,
+    pub camera: String,
+    pub size: [u32; 2],
+    pub spacing: f32,
+    pub mm_per_px: Option<f64>,
+    pub corridor: Vec<[f32; 2]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -124,6 +178,17 @@ pub struct ShotResources {
     pub image: Option<PathBuf>,
     pub template: Option<PathBuf>,
     pub calibration: Option<PathBuf>,
+}
+
+/// 段配方一台计划相机的资源（绝对路径）。
+#[derive(Clone, Debug)]
+pub struct CameraResources {
+    pub dir: PathBuf,
+    pub camera: String,
+    pub size: [u32; 2],
+    pub image: PathBuf,
+    pub image_id: String,
+    pub calibration: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -175,11 +240,45 @@ impl ReleaseBundle {
             dir, size: entry.size, image, template, calibration,
         })
     }
+
+    /// 段配方第 index 台计划相机的资源（schema 4）。
+    pub fn camera(&self, index: usize) -> Result<CameraResources, String> {
+        self.verify()?;
+        let inspect = self.recipe.inspect.get(index).ok_or("发布包内没有该计划相机")?;
+        let entry = self.manifest.cameras.get(index).filter(|c| c.index == index && c.camera == inspect.camera)
+            .ok_or("发布清单内缺少该计划相机或与配方顺序不一致")?;
+        read_json::<CorridorResource>(&resource_path(&self.root, &entry.corridor)?)?;
+        Ok(CameraResources {
+            dir: resource_path(&self.root, &camera_prefix(index))?,
+            camera: entry.camera.clone(),
+            size: entry.size,
+            image: resource_path(&self.root, &entry.image)?,
+            image_id: entry.image_id.clone(),
+            calibration: resource_path(&self.root, &entry.calibration)?,
+        })
+    }
 }
 
 /// 一个（拍照点，视图）的资源目录（相对发布包根）。
 fn view_prefix(k: usize, view: u8) -> String {
     format!("shots/{k:02}/v{view}")
+}
+
+/// 段配方一台计划相机的资源目录（相对发布包根）。
+fn camera_prefix(index: usize) -> String {
+    format!("cameras/{index:02}")
+}
+
+fn corridor_data(recipe: &Recipe, inspect: &CameraInspect, size: [u32; 2]) -> CorridorResource {
+    CorridorResource { schema_version: RELEASE_SCHEMA_BURST, camera: inspect.camera.clone(), size, spacing: recipe.spacing,
+        mm_per_px: inspect.mm_per_px, corridor: inspect.corridor.clone() }
+}
+
+fn check_corridor(inspect: &CameraInspect, size: [u32; 2]) -> Result<(), String> {
+    if !crate::vision::corridor_inside(&inspect.corridor, size) {
+        return Err(format!("相机 {} 的检测走廊超出示教帧 {}×{}", inspect.camera, size[0], size[1]));
+    }
+    Ok(())
 }
 
 /// 含特征定位的配方可以发布：模板与胶检测走廊不重叠由配方校验保证（`RecipeDoc::validate`，定稿 §11 跨阶段约束），
@@ -223,7 +322,7 @@ pub fn publish(releases_root: &Path, input: PublishInput) -> Result<ReleaseBundl
             let image_id = source.image_id.as_deref().filter(|id| crate::recipe::valid_image_id(id))
                 .ok_or_else(|| format!("拍照点 {} 图 {} 的发布原图缺少有效的示教图编号", shot.id, shot.view))?;
             let bytes = source_bytes(image_source)?;
-            let (size, extension, decoded) = image_details(&bytes, &shot.id)?;
+            let (size, extension, decoded) = image_details(&bytes, &format!("拍照点 {}", shot.id))?;
             check_coordinates(shot, size)?;
             let template = match fixture {
                 Some(f) => {
@@ -264,30 +363,95 @@ pub fn publish(releases_root: &Path, input: PublishInput) -> Result<ReleaseBundl
         schema_version: RELEASE_SCHEMA,
         recipe_id: recipe.id.clone(), recipe_revision: recipe.revision_id.clone(), recipe_version: recipe.version, bundle_id: bundle_id.clone(),
         versions: input.versions, validation_site: input.validation_site, recipe: "recipe.json".into(), graph: "graph.json".into(), shots,
+        cameras: Vec::new(),
         files: files.iter().map(|(path, bytes)| FileEntry { path: path.clone(), bytes: bytes.len() as u64 }).collect(),
     };
-    let manifest_bytes = json_bytes(&manifest)?;
+    write_bundle(releases_root, &recipe.id, &bundle_id, &files, &manifest)
+}
+
+/// 段配方的发布（schema 4，D-SB-30）：按计划相机冻结示教帧、标定与走廊。前置 `Recipe::ready_burst`（三台相机都示教了
+/// 走廊和当量，整件预期帧组数已标定）；资源必须恰好覆盖每台计划相机一次；走廊必须落在这台相机的示教帧内。
+/// 测量图由调用方给（`production::burst_graphs`），生产加载时按配方重算比对。旧 `publish`（schema 3）不变。
+#[allow(dead_code)] // D3 发布切换接入后去掉
+pub fn publish_burst(releases_root: &Path, input: BurstPublishInput) -> Result<ReleaseBundle, String> {
+    let recipe = input.recipe.build()?;
+    recipe.ready_burst().map_err(|reasons| reasons.join("；"))?;
+    safe_id(&recipe.id)?;
+    validate_versions(&input.versions)?;
+    let mut inputs = BTreeMap::new();
+    for camera in input.cameras {
+        if !recipe.inspect.iter().any(|i| i.camera == camera.camera) {
+            return Err(format!("发布资源引用了不是检测相机的 {}", camera.camera));
+        }
+        let id = camera.camera.clone();
+        if inputs.insert(id.clone(), camera).is_some() {
+            return Err(format!("相机 {id} 的发布资源重复"));
+        }
+    }
+    if inputs.len() != recipe.inspect.len() {
+        return Err("发布资源未覆盖全部检测相机".into());
+    }
+    let mut files = BTreeMap::new();
+    add_file(&mut files, "recipe.json".into(), json_bytes(&input.recipe)?)?;
+    let graph = source_bytes(input.graph)?;
+    json_object(&graph, "测量图")?;
+    add_file(&mut files, "graph.json".into(), graph)?;
+    let mut cameras = Vec::new();
+    for (index, inspect) in recipe.inspect.iter().enumerate() {
+        let source = inputs.remove(&inspect.camera).ok_or("发布资源缺少检测相机")?;
+        let label = format!("相机 {}", inspect.camera);
+        if !crate::recipe::valid_image_id(&source.image_id) {
+            return Err(format!("{label} 的发布示教帧缺少有效的示教图编号"));
+        }
+        let prefix = camera_prefix(index);
+        let bytes = source_bytes(source.image)?;
+        let (size, extension, _) = image_details(&bytes, &label)?;
+        check_corridor(inspect, size)?;
+        let image = format!("{prefix}/image.{extension}");
+        add_file(&mut files, image.clone(), bytes)?;
+        let calibration_bytes = source_bytes(source.calibration)?;
+        json_object(&calibration_bytes, &format!("{label} 标定"))?;
+        let calibration = format!("{prefix}/calibration.json");
+        add_file(&mut files, calibration.clone(), calibration_bytes)?;
+        let corridor = format!("{prefix}/corridor.json");
+        add_file(&mut files, corridor.clone(), json_bytes(&corridor_data(&recipe, inspect, size))?)?;
+        cameras.push(CameraManifest { index, camera: inspect.camera.clone(), size, image, image_id: source.image_id, calibration, corridor });
+    }
+    let bundle_id = new_bundle_id()?;
+    let manifest = ReleaseManifest {
+        schema_version: RELEASE_SCHEMA_BURST,
+        recipe_id: recipe.id.clone(), recipe_revision: recipe.revision_id.clone(), recipe_version: recipe.version, bundle_id: bundle_id.clone(),
+        versions: input.versions, validation_site: input.validation_site, recipe: "recipe.json".into(), graph: "graph.json".into(),
+        shots: Vec::new(), cameras,
+        files: files.iter().map(|(path, bytes)| FileEntry { path: path.clone(), bytes: bytes.len() as u64 }).collect(),
+    };
+    write_bundle(releases_root, &recipe.id, &bundle_id, &files, &manifest)
+}
+
+/// 先写进同目录的临时目录、按加载规则核对一遍，再原子改名成发布包目录；已有的发布包不会被改写。
+fn write_bundle(releases_root: &Path, recipe_id: &str, bundle_id: &str, files: &BTreeMap<String, Vec<u8>>, manifest: &ReleaseManifest) -> Result<ReleaseBundle, String> {
+    let manifest_bytes = json_bytes(manifest)?;
     let root = absolute_path(releases_root)?;
     ensure_directory(&root)?;
-    let recipe_root = root.join(&recipe.id);
+    let recipe_root = root.join(recipe_id);
     ensure_directory(&recipe_root)?;
-    let target = recipe_root.join(&bundle_id);
+    let target = recipe_root.join(bundle_id);
     if path_exists(&target)? {
         return Err("发布 ID 已存在，已有发布包不会被改写".into());
     }
     let stage = Staging::new(&recipe_root)?;
-    for (name, bytes) in &files {
+    for (name, bytes) in files {
         let path = resource_path(&stage.path, name)?;
         ensure_directory(path.parent().ok_or("发布资源没有父目录")?)?;
         write_new(&path, bytes)?;
     }
     write_new(&stage.path.join("manifest.json"), &manifest_bytes)?;
-    load_directory(&stage.path, &recipe.id, &bundle_id)?;
+    load_directory(&stage.path, recipe_id, bundle_id)?;
     if path_exists(&target)? {
         return Err("发布 ID 已存在，已有发布包不会被改写".into());
     }
     match fs::rename(&stage.path, &target) {
-        Ok(()) => load(&root, &recipe.id, &bundle_id),
+        Ok(()) => load(&root, recipe_id, bundle_id),
         Err(_) if path_exists(&target)? => Err("发布 ID 已存在，已有发布包不会被改写".into()),
         Err(e) => Err(format!("原子发布目录 {} 失败：{e}", target.display())),
     }
@@ -307,9 +471,7 @@ pub fn peek(releases_root: &Path, recipe_id: &str, bundle_id: &str) -> Result<Re
     let root = absolute_path(releases_root)?.join(recipe_id).join(bundle_id);
     reject_links(&root, false)?;
     let manifest = read_manifest(&root, bundle_id)?;
-    if manifest.schema_version != RELEASE_SCHEMA {
-        return Err(format!("发布包格式版本 {}，当前为 {RELEASE_SCHEMA}，需要重新发布", manifest.schema_version));
-    }
+    supported_schema(manifest.schema_version)?;
     if manifest.recipe_id != recipe_id { return Err("发布清单的配方身份无效".into()); }
     for entry in &manifest.files {
         validate_relative(&entry.path)?;
@@ -321,14 +483,20 @@ pub fn peek(releases_root: &Path, recipe_id: &str, bundle_id: &str) -> Result<Re
     Ok(manifest)
 }
 
+/// 两种格式并存：3 = 旧拍照点配方，4 = 段配方。
+fn supported_schema(version: u32) -> Result<(), String> {
+    if version != RELEASE_SCHEMA && version != RELEASE_SCHEMA_BURST {
+        return Err(format!("发布包格式版本 {version}，当前为 {RELEASE_SCHEMA}（旧拍照点配方）或 {RELEASE_SCHEMA_BURST}（段配方），需要重新发布"));
+    }
+    Ok(())
+}
+
 fn load_directory(root: &Path, recipe_id: &str, bundle_id: &str) -> Result<ReleaseBundle, String> {
     safe_id(recipe_id)?;
     valid_bundle_id(bundle_id)?;
     reject_links(root, false)?;
     let manifest = read_manifest(root, bundle_id)?;
-    if manifest.schema_version != RELEASE_SCHEMA {
-        return Err(format!("发布包格式版本 {}，当前为 {RELEASE_SCHEMA}，需要重新发布", manifest.schema_version));
-    }
+    supported_schema(manifest.schema_version)?;
     if manifest.recipe_id != recipe_id || manifest.recipe != "recipe.json" || manifest.graph != "graph.json" {
         return Err("发布清单的配方身份或资源引用无效".into());
     }
@@ -348,13 +516,80 @@ fn load_directory(root: &Path, recipe_id: &str, bundle_id: &str) -> Result<Relea
     }
     let recipe: RecipeDoc = parse_resource(&files, &manifest.recipe)?;
     let built = recipe.build()?;
+    if built.is_burst() != (manifest.schema_version == RELEASE_SCHEMA_BURST) {
+        return Err(format!("发布包格式版本 {} 与配方类型不一致：段配方用 {RELEASE_SCHEMA_BURST}，旧拍照点配方用 {RELEASE_SCHEMA}", manifest.schema_version));
+    }
+    let referenced = if built.is_burst() {
+        camera_resources(&manifest, &files, &recipe, &built)?
+    } else {
+        shot_resources(&manifest, &files, &recipe, &built)?
+    };
+    let declared: BTreeSet<_> = manifest.files.iter().map(|f| f.path.clone()).collect();
+    if referenced != declared {
+        return Err("发布清单存在未声明、未引用或重复资源".into());
+    }
+    let mut actual = BTreeMap::new();
+    inventory(root, root, &mut actual)?;
+    let mut expected = declared;
+    expected.insert("manifest.json".into());
+    if actual.into_keys().collect::<BTreeSet<_>>() != expected {
+        return Err("发布目录存在清单以外的文件或缺失文件".into());
+    }
+    Ok(ReleaseBundle { id: bundle_id.into(), root: root.to_path_buf(), manifest, recipe })
+}
+
+/// 段配方（schema 4）的资源核对，返回引用到的资源：清单按配方 inspect 顺序列出每台计划相机，资源在 `cameras/{index:02}/`；
+/// 示教帧解码后的尺寸与清单一致、走廊落在帧内；标定是非空 JSON 对象；走廊资源按配方重算比对（与旧包的中线、测点同一机制）。
+fn camera_resources(manifest: &ReleaseManifest, files: &BTreeMap<&str, Vec<u8>>, recipe: &RecipeDoc, built: &Recipe) -> Result<BTreeSet<String>, String> {
+    built.ready_burst().map_err(|reasons| reasons.join("；"))?;
+    if recipe.id != manifest.recipe_id || built.revision_id != manifest.recipe_revision || built.version != manifest.recipe_version
+        || !manifest.shots.is_empty() || manifest.cameras.len() != built.inspect.len() {
+        return Err("发布清单与配方快照的身份、版本或检测相机数量不一致".into());
+    }
+    json_object(file_bytes(files, &manifest.graph)?, "发布测量图")?;
+    let mut referenced = BTreeSet::from([manifest.recipe.clone(), manifest.graph.clone()]);
+    for ((index, inspect), entry) in built.inspect.iter().enumerate().zip(&manifest.cameras) {
+        let label = format!("相机 {}", inspect.camera);
+        if entry.index != index || entry.camera != inspect.camera {
+            return Err(format!("发布清单第 {} 台相机的身份与配方不一致", index + 1));
+        }
+        let prefix = camera_prefix(index);
+        if entry.calibration != format!("{prefix}/calibration.json") || entry.corridor != format!("{prefix}/corridor.json") {
+            return Err(format!("{label} 的标定或走廊资源引用无效"));
+        }
+        if !crate::recipe::valid_image_id(&entry.image_id) {
+            return Err(format!("{label} 的示教图编号格式无效"));
+        }
+        for name in [&entry.image, &entry.calibration, &entry.corridor] {
+            validate_relative(name)?;
+            if !referenced.insert(name.clone()) {
+                return Err(format!("相机资源被重复引用：{name}"));
+            }
+        }
+        let (size, extension, _) = image_details(file_bytes(files, &entry.image)?, &label)?;
+        if entry.size != size || entry.image != format!("{prefix}/image.{extension}") {
+            return Err(format!("{label} 的示教帧尺寸或引用与清单不一致"));
+        }
+        check_corridor(inspect, size)?;
+        json_object(file_bytes(files, &entry.calibration)?, &format!("{label} 标定"))?;
+        let corridor: CorridorResource = parse_resource(files, &entry.corridor)?;
+        if corridor != corridor_data(built, inspect, size) {
+            return Err(format!("{label} 的走廊与配方快照不一致"));
+        }
+    }
+    Ok(referenced)
+}
+
+/// 旧拍照点配方（schema 3）的资源核对，返回引用到的资源。
+fn shot_resources(manifest: &ReleaseManifest, files: &BTreeMap<&str, Vec<u8>>, recipe: &RecipeDoc, built: &Recipe) -> Result<BTreeSet<String>, String> {
     built.ready()?;
-    if recipe.id != manifest.recipe_id || built.revision_id != manifest.recipe_revision || built.version != manifest.recipe_version || manifest.shots.len() != resource_views(&built).len() {
+    if recipe.id != manifest.recipe_id || built.revision_id != manifest.recipe_revision || built.version != manifest.recipe_version || manifest.shots.len() != resource_views(built).len()
+        || !manifest.cameras.is_empty() {
         return Err("发布清单与配方快照的身份、版本或拍照点数量不一致".into());
     }
-    json_object(file_bytes(&files, &manifest.graph)?, "发布测量图")?;
+    json_object(file_bytes(files, &manifest.graph)?, "发布测量图")?;
     let mut referenced = BTreeSet::from([manifest.recipe.clone(), manifest.graph.clone()]);
-    for ((k, view), entry) in resource_views(&built).into_iter().zip(&manifest.shots) {
+    for ((k, view), entry) in resource_views(built).into_iter().zip(&manifest.shots) {
         let projected = built.for_view(k, view)?;
         let shot = &projected.shots[k];
         if entry.k != k || entry.shot_id != shot.id || entry.camera != shot.camera || entry.view != shot.view || entry.skip != shot.skip {
@@ -385,7 +620,7 @@ fn load_directory(root: &Path, recipe_id: &str, bundle_id: &str) -> Result<Relea
             }
         }
         if let Some(image) = &entry.image {
-            let (size, extension, decoded) = image_details(file_bytes(&files, image)?, &shot.id)?;
+            let (size, extension, decoded) = image_details(file_bytes(files, image)?, &format!("拍照点 {}", shot.id))?;
             if entry.size != Some(size) || image != &format!("{prefix}/image.{extension}") {
                 return Err(format!("拍照点 {} 的原图尺寸或引用与清单不一致", shot.id));
             }
@@ -393,7 +628,7 @@ fn load_directory(root: &Path, recipe_id: &str, bundle_id: &str) -> Result<Relea
             // 模板按包内示教原图与配方重算比对（与中线、测点同一机制，不用内容哈希）
             if let (Some(f), Some(template)) = (fixture, &entry.template) {
                 f.check_image_size(size).map_err(|e| format!("拍照点 {} 图 {}：{e}", shot.id, shot.view))?;
-                if crate::vision::fixture::template_pgm(&decoded, f.rect)?.as_slice() != file_bytes(&files, template)? {
+                if crate::vision::fixture::template_pgm(&decoded, f.rect)?.as_slice() != file_bytes(files, template)? {
                     return Err(format!("拍照点 {} 图 {} 的定位模板与示教原图和配方不一致", shot.id, shot.view));
                 }
             }
@@ -404,26 +639,15 @@ fn load_directory(root: &Path, recipe_id: &str, bundle_id: &str) -> Result<Relea
             if calibration != &format!("{prefix}/calibration.json") {
                 return Err(format!("拍照点 {} 的标定资源引用无效", shot.id));
             }
-            json_object(file_bytes(&files, calibration)?, &format!("拍照点 {} 标定", shot.id))?;
+            json_object(file_bytes(files, calibration)?, &format!("拍照点 {} 标定", shot.id))?;
         }
-        let centerline: Centerline = parse_resource(&files, &entry.centerline)?;
-        let points: MeasurePoints = parse_resource(&files, &entry.points)?;
+        let centerline: Centerline = parse_resource(files, &entry.centerline)?;
+        let points: MeasurePoints = parse_resource(files, &entry.points)?;
         if centerline != centerline_data(&projected, k, entry.size) || points != points_data(&projected, k, entry.size) {
             return Err(format!("拍照点 {} 的中线或测点与配方快照不一致", shot.id));
         }
     }
-    let declared: BTreeSet<_> = manifest.files.iter().map(|f| f.path.clone()).collect();
-    if referenced != declared {
-        return Err("发布清单存在未声明、未引用或重复资源".into());
-    }
-    let mut actual = BTreeMap::new();
-    inventory(root, root, &mut actual)?;
-    let mut expected = declared;
-    expected.insert("manifest.json".into());
-    if actual.into_keys().collect::<BTreeSet<_>>() != expected {
-        return Err("发布目录存在清单以外的文件或缺失文件".into());
-    }
-    Ok(ReleaseBundle { id: bundle_id.into(), root: root.to_path_buf(), manifest, recipe })
+    Ok(referenced)
 }
 
 fn resource_views(recipe: &Recipe) -> Vec<(usize, u8)> {
@@ -452,20 +676,20 @@ fn check_coordinates(shot: &ShotSpec, size: [u32; 2]) -> Result<(), String> {
     Ok(())
 }
 
-/// 原图尺寸、扩展名与解码后的灰度像素（`image_file::decode`，与工作台裁模板同一条路径）。
-fn image_details(bytes: &[u8], shot: &str) -> Result<([u32; 2], &'static str, crate::frame::FrameImage), String> {
-    let format = image::guess_format(bytes).map_err(|e| format!("拍照点 {shot} 原图格式无效：{e}"))?;
+/// 原图尺寸、扩展名与解码后的灰度像素（`image_file::decode`，与工作台裁模板同一条路径）。`label` 是报错主语（如“拍照点 P1”“相机 camA”）。
+fn image_details(bytes: &[u8], label: &str) -> Result<([u32; 2], &'static str, crate::frame::FrameImage), String> {
+    let format = image::guess_format(bytes).map_err(|e| format!("{label} 原图格式无效：{e}"))?;
     let extension = match format {
         image::ImageFormat::Pnm => "pgm",
         image::ImageFormat::Jpeg => "jpg",
         image::ImageFormat::Png => "png",
         image::ImageFormat::Bmp => "bmp",
         image::ImageFormat::Tiff => "tiff",
-        _ => return Err(format!("拍照点 {shot} 原图格式不支持")),
+        _ => return Err(format!("{label} 原图格式不支持")),
     };
-    let image = crate::image_file::decode(bytes).map_err(|e| format!("拍照点 {shot} 原图解码失败：{e}"))?;
+    let image = crate::image_file::decode(bytes).map_err(|e| format!("{label} 原图解码失败：{e}"))?;
     if image.width == 0 || image.height == 0 {
-        return Err(format!("拍照点 {shot} 原图尺寸无效"));
+        return Err(format!("{label} 原图尺寸无效"));
     }
     Ok(([image.width, image.height], extension, image))
 }
@@ -808,6 +1032,69 @@ mod tests {
         manifest.as_object_mut().unwrap().remove("validationSite");
         fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         assert!(load(&root.0, &bundle.manifest.recipe_id, &bundle.id).is_err());
+    }
+
+    /// 段配方样例（三台相机走廊 (980, 480)–(300, 460)，0.112 mm/px）按相机发布，三台都用 1000×700 的渐变图作示教帧。
+    fn publish_burst_bundle(root: &Path) -> ReleaseBundle {
+        let recipe = crate::recipe::samples_burst();
+        let cameras = recipe.inspect.iter().map(|i| CameraInput { camera: i.camera.clone(), image: ResourceSource::Bytes(image_bytes()),
+            image_id: format!("capture-1-0-{}", i.camera), calibration: ResourceSource::Bytes(br#"{"mmPerPx":0.112}"#.to_vec()) }).collect();
+        publish_burst(root, BurstPublishInput {
+            recipe, validation_site: ValidationSite::Offline,
+            versions: Versions { engine: "1.1.0".into(), graph: "corridor-1".into() },
+            graph: ResourceSource::Bytes(br#"{"graph":1}"#.to_vec()),
+            cameras,
+        }).unwrap()
+    }
+
+    /// 改写包内一个资源，并把清单里它的大小同步改掉（只留下按配方重算才查得出的不一致）。
+    fn rewrite(dir: &Path, name: &str, bytes: Vec<u8>) {
+        fs::write(dir.join(name), &bytes).unwrap();
+        let path = dir.join("manifest.json");
+        let mut manifest: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for file in manifest["files"].as_array_mut().unwrap() {
+            if file["path"] == name { file["bytes"] = bytes.len().into(); }
+        }
+        fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    }
+
+    fn edit_manifest(dir: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+        let path = dir.join("manifest.json");
+        let mut manifest: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        edit(&mut manifest);
+        fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn tampered_burst_bundle_is_rejected_on_load() {
+        // 防的回归（发布包不可变契约，作用于按相机组织的 schema 4）：加载只核对文件大小与清单集合，走廊几何被改、
+        // 相机顺序被换、示教帧换成别的尺寸、多出或少了文件，生产仍照着加载；或段配方包改成 schema 3 冒充旧拍照点包
+        let root = TempDir(std::env::temp_dir().join(format!("gluesight-{}", new_bundle_id().unwrap())));
+        let bundle = publish_burst_bundle(&root.0);
+        let loaded = load(&root.0, &bundle.manifest.recipe_id, &bundle.id).unwrap();
+        assert_eq!((0..3).map(|i| loaded.camera(i).unwrap().size).collect::<Vec<_>>(), [[1000, 700]; 3]);
+        let tamperings: [(&str, fn(&Path)); 6] = [
+            ("走廊几何改了（清单大小同步）", |dir| {
+                let name = "cameras/00/corridor.json";
+                let mut corridor: CorridorResource = serde_json::from_slice(&fs::read(dir.join(name)).unwrap()).unwrap();
+                corridor.corridor[0][0] -= 100.0;
+                rewrite(dir, name, serde_json::to_vec(&corridor).unwrap());
+            }),
+            ("清单里两台相机互换", |dir| edit_manifest(dir, |m| m["cameras"].as_array_mut().unwrap().swap(0, 1))),
+            ("格式版本改成 3", |dir| edit_manifest(dir, |m| m["schemaVersion"] = 3.into())),
+            ("示教帧换成 900×700（清单大小同步）", |dir| {
+                let mut image = b"P5\n900 700\n255\n".to_vec();
+                image.resize(image.len() + 900 * 700, 128);
+                rewrite(dir, "cameras/01/image.pgm", image);
+            }),
+            ("多出清单以外的文件", |dir| fs::write(dir.join("cameras").join("extra.json"), b"{}").unwrap()),
+            ("一台相机的标定没了", |dir| fs::remove_file(dir.join("cameras/02/calibration.json")).unwrap()),
+        ];
+        for (case, tamper) in tamperings {
+            let bundle = publish_burst_bundle(&root.0);
+            tamper(&bundle.root);
+            assert!(load(&root.0, &bundle.manifest.recipe_id, &bundle.id).is_err(), "{case}");
+        }
     }
 
     #[test]

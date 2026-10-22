@@ -8,11 +8,18 @@ fn invalid_frame_is_rejected_before_ffi() {
 }
 
 #[test]
-fn calibration_keys_are_distinct_for_each_view_of_one_device() {
-    assert_eq!(station_view_key("device1", 1).unwrap(), "device1-v1");
-    assert_eq!(station_view_key("device1", 3).unwrap(), "device1-v3");
+fn device_key_and_each_view_key_of_one_device_never_collide() {
+    // 防的回归：段配方的设备标定键 {device}（D-SB-30）与旧配方的 {device}-v{view} 落到同一个文件，标定一方就改掉另一方；
+    // 或图编号越界、设备编号能拼出路径（标定文件名 plane_calib_{键}.json）
+    let device = station_key("device1").unwrap();
+    let views: Vec<String> = (1..=3).map(|v| station_view_key("device1", v).unwrap()).collect();
+    assert_eq!(views, ["device1-v1", "device1-v2", "device1-v3"]);
+    assert!(!views.contains(&device));
     assert!(station_view_key("device1", 0).is_err());
     assert!(station_view_key("device1", 4).is_err());
+    for bad in ["", "../device1", "device 1"] {
+        assert!(station_key(bad).is_err(), "{bad:?}");
+    }
 }
 
 #[test]
