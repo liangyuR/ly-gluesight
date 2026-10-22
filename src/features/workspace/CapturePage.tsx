@@ -1,5 +1,4 @@
 import { errorText } from "../../lib/errors";
-import { imageFailure } from "../../lib/pendingBackend";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { cameraApi } from "../camera/api";
@@ -16,7 +15,7 @@ import { useWorkspace } from "./context";
 import { AlertTriangle, ArrowRight, Cable, Camera, CheckCircle2, ChevronLeft, ChevronRight, Crosshair, Play } from "lucide-react";
 import { scrollBehavior } from "./motion";
 import { Button, Checkbox, IconButton, SegmentedControl, Select, Surface } from "qing-steel";
-import { awaitingPlan, Badge, Notice, NumberField, Panel, PlanPending, WorkspaceBar, WorkspaceEmpty, GrayViewer } from "./components";
+import { Badge, Notice, NumberField, Panel, WorkspaceBar, WorkspaceEmpty, GrayViewer } from "./components";
 import "./capture.css";
 import type { CaptureRound, GrayImage } from "./types";
 import { frameArrived, lossAlarmText, readRoundFrame, roundView, type AnyRound } from "./captureRound";
@@ -30,10 +29,12 @@ const stateLabels: Record<CaptureRound["state"],string> = { waitingStart:"等待
 const MAX_LISTED_GROUPS = 12;
 const imagingInvalid = (imaging: CameraImaging) => !(imaging.exposureUs>=1 && imaging.exposureUs<=1_000_000) ? "曝光时间需在 1–1000000 µs 之间" : !(Number.isFinite(imaging.gainDb) && imaging.gainDb>=0) ? "增益需为不小于 0 的有限数" : "";
 
-/** 整圈采集（路由 /recipe/capture）：旧拍照点配方（segments 为空）仍走 LegacyCapturePage——按拍照点核对数量、采用本轮图像；段配方按帧组展示；段配方但后端还没输出 plan（D3 之前）显示待后端占位。 */
+/**
+ * 整圈采集（路由 /recipe/capture）：旧拍照点配方仍走 LegacyCapturePage——按拍照点核对数量、采用本轮图像；段配方（WorkspaceView.plan 非空）按帧组展示。
+ * 后端只对 doc.segments 非空的候选输出 plan，按 plan 分流就是按 segments 分流（决策记录第八节）。
+ */
 export default function CapturePage() {
-  const { data, doc } = useWorkspace();
-  if (data && doc && awaitingPlan(data, doc)) return <PlanPending title="整圈采集" />;
+  const { data } = useWorkspace();
   return data && !data.plan ? <LegacyCapturePage/> : <BurstCapturePage/>;
 }
 
@@ -53,7 +54,7 @@ function BurstCapturePage() {
   const [round,setRound] = useState<AnyRound | null>(null), [working,setWorking] = useState(false);
   const [history,setHistory] = useState<Awaited<ReturnType<typeof workspaceApi.captureList>>>([]);
   const [roundId,setRoundId] = useState<string | undefined>();
-  const [previewK,setPreviewK] = useState(0), [previewCamera,setPreviewCamera] = useState(""), [preview,setPreview] = useState<{k: number; camera: string; image: GrayImage} | null>(null), [previewFailure,setPreviewFailure] = useState({error:"",pending:""});
+  const [previewK,setPreviewK] = useState(0), [previewCamera,setPreviewCamera] = useState(""), [preview,setPreview] = useState<{k: number; camera: string; image: GrayImage} | null>(null), [previewError,setPreviewError] = useState("");
   const [plcState,setPlcState] = useState<LinkState | null>(null);
   const [sampleExpected,setSampleExpected] = useState<Verdict>("OK");
   const [confirmed,setConfirmed] = useState(false);
@@ -91,11 +92,11 @@ function BurstCapturePage() {
   const shownCamera = view?.cameras.some(c=>c.cameraId===previewCamera) ? previewCamera : view?.cameras[0]?.cameraId ?? "";
   const previewArrived = !!view && frameArrived(view,shownCamera,previewK+1);
   useEffect(() => {
-    let alive=true; setPreviewFailure({error:"",pending:""});
+    let alive=true; setPreviewError("");
     if(round && previewArrived) void readRoundFrame(round,shownCamera,previewK+1).then(async image=>{
       const decoded=new Image(); decoded.src=image.url; await Promise.race([decoded.decode?.().catch(()=>{}),new Promise(r=>setTimeout(r,150))]);
       if(alive)setPreview({k:previewK,camera:shownCamera,image});
-    }).catch(e=>{if(alive){setPreview(null);setPreviewFailure(imageFailure(e));}});
+    }).catch(e=>{if(alive){setPreview(null);setPreviewError(errorText(e));}});
     return () => {alive=false;};
   },[round?.roundId,previewArrived,previewK,shownCamera]);
   const active=!!round && ["waitingStart","receiving","draining"].includes(round.state);
@@ -130,7 +131,10 @@ function BurstCapturePage() {
     catch(e) {if(current.current.alive && current.current.id===doc.id)setError(errorText(e));} finally {if(current.current.alive && current.current.id===doc.id)setWorking(false);}
   };
   const offlineSampleSet = site?.mode==="offline" && site.source==="sampleSet" ? site.sampleSet : null;
-  const offlineReady = !!offlineSampleSet && !site?.running && round?.state==="waitingStart";
+  /** 合成图离线环境也能为段配方的新轮次送一圈（E1：按候选配方的名义帧数发脉冲串、按段出合成图）；旧拍照点配方的轮次仍只接受样本集 */
+  const offlineSynthetic = site?.mode==="offline" && site.source==="synthetic";
+  const offlineReady = (!!offlineSampleSet || offlineSynthetic) && !site?.running && round?.state==="waitingStart";
+  const offlineHint = !offlineReady && <p className="muted hint">{site?.running ? "离线产线正在连续运行，停止后再送一圈。" : "开始接收并等待现场启动后，才能送一圈。"}</p>;
   const sendOffline=async () => {
     if(offlineSending) return; setOfflineSending(true);
     try { await cycleApi.offlineCapture(offlinePart && offlineSampleSet?.parts.some(p=>p.partId===offlinePart) ? offlinePart : null); }
@@ -180,7 +184,8 @@ function BurstCapturePage() {
       <Button variant="filled" leadingIcon={<Play size={15} aria-hidden="true"/>} disabled={startDisabled} onClick={() => void start()}>开始接收</Button>
       {active ? <Button danger disabled={locked} onClick={() => void stop()}>中止本轮</Button> : startReason && <p className="wp-capture-reason"><AlertTriangle size={14} aria-hidden="true"/><span>{startReason}</span></p>}
     </div>
-    {offlineSampleSet && <div className="wp-stack wp-offline-feed"><strong>离线样本集送一圈</strong><p className="muted">① 先点“开始接收”；② 选择样本件；③ 点“离线产线送一圈”，虚拟 PLC 发开始 / 结束边沿，图像来自所选样本件。</p><div className="wp-actions"><SamplePartSelect sampleSet={offlineSampleSet} nextPart={site?.nextPart ?? null} value={offlinePart} onChange={setOfflinePart} disabled={offlineSending || !offlineReady} label="离线样本件"/><Button disabled={offlineSending || !offlineReady} onClick={() => void sendOffline()}>离线产线送一圈</Button></div>{!offlineReady && <p className="muted hint">{site?.running ? "离线产线正在连续运行，停止后再送一圈。" : "开始接收并等待现场启动后，才能送一圈。"}</p>}</div>}
+    {offlineSampleSet && <div className="wp-stack wp-offline-feed"><strong>离线样本集送一圈</strong><p className="muted">① 先点“开始接收”；② 选择样本件；③ 点“离线产线送一圈”，虚拟 PLC 发开始 / 结束边沿，图像来自所选样本件。</p><div className="wp-actions"><SamplePartSelect sampleSet={offlineSampleSet} nextPart={site?.nextPart ?? null} value={offlinePart} onChange={setOfflinePart} disabled={offlineSending || !offlineReady} label="离线样本件"/><Button disabled={offlineSending || !offlineReady} onClick={() => void sendOffline()}>离线产线送一圈</Button></div>{offlineHint}</div>}
+    {offlineSynthetic && <div className="wp-stack wp-offline-feed"><strong>合成图送一圈</strong><p className="muted">① 先点“开始接收”；② 点“离线产线送一圈”，虚拟 PLC 按已保存候选的名义帧数发脉冲串（首尾 ±1、弯道 ±2 帧波动），三台相机按段出合成图；每轮帧数略有不同，可用于多轮标定。</p><div className="wp-actions"><Button disabled={offlineSending || !offlineReady} onClick={() => void sendOffline()}>离线产线送一圈</Button></div>{offlineHint}</div>}
     <details className="wp-capture-more">
       <summary>现场操作步骤</summary>
       <ol><li>确认合格涂胶工件、轨迹和触发顺序。</li><li>点“开始接收”，等待 GS 就绪。</li><li>现场启动机械臂；帧数由实际触发决定，不预先给定。PLC 写来的预期总数只作参考，不核对。</li></ol>
@@ -217,7 +222,7 @@ function BurstCapturePage() {
     {!active && view.incompleteGroups.length>0 && <p className="muted hint">缺帧只告警：不完整的帧组仍会用其余相机的图检测，并标“检测不完整”；不整轮重采。</p>}
     {multi && <SegmentedControl size="sm" label="查看相机" value={shownCamera} onValueChange={setPreviewCamera} options={view.cameras.map(c=>({ value: c.cameraId, label: nameOf(c.cameraId) }))}/>}
     <div className="wp-capture-result">
-    <GrayViewer image={shown?.image ?? null} loading={previewArrived && !shown && !previewFailure.error && !previewFailure.pending} error={previewFailure.error || (groupCount>0 && !previewArrived ? "该相机本帧组缺帧或尚未到图" : "")} emptyTitle={previewFailure.pending ? "原图读取待后端实现" : undefined} emptyHint={previewFailure.pending || undefined} label={"帧组 " + (shownK+1) + (multi ? " · " + nameOf(shownCamera) : "") + " · 原图" + (shownK!==previewK ? " · 正在读取帧组 " + (previewK+1) : "")}/>
+    <GrayViewer image={shown?.image ?? null} loading={previewArrived && !shown && !previewError} error={previewError || (groupCount>0 && !previewArrived ? "该相机本帧组缺帧或尚未到图" : "")} label={"帧组 " + (shownK+1) + (multi ? " · " + nameOf(shownCamera) : "") + " · 原图" + (shownK!==previewK ? " · 正在读取帧组 " + (previewK+1) : "")}/>
     <div className="wp-capture-side">
     <div className="wp-capture-side-head"><strong>帧组 · {groupCount}</strong><small>↑↓ 切换</small></div>
     {groupCount ? <div className="wp-capture-groups" role="group" aria-label="帧组选择" tabIndex={0} onKeyDown={groupKey}>

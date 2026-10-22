@@ -32,16 +32,17 @@ export function workspaceView(id = "A"): WorkspaceView {
     spacing: 1, filterWindow: 3, detect, limits, shots: shotList(twoLines), cameras: { "CAM-1": { exposureUs: 60, gainDb: 6 } },
   };
   const layout: Recipe = {
-    ...structuredClone(doc), revisionId: `revisionId-${id}`,
+    ...structuredClone(doc), planVersion: 1, revisionId: `revisionId-${id}`,
     segments: [0, 1].map(k => ({ name: `P${k + 1} · J1`, shot: k, view: 1, first: 2 * k, count: 2, position: structuredClone(position), width: null, maxGapLen: .5, minPresent: .8 })),
     points: { x: [10, 20, 30, 40], y: [10, 10, 10, 10], seg: [0, 0, 1, 1], k: [0, 0, 1, 1] },
+    pathSegments: [], inspect: [], segmentDefaults: kindDefaults(), calibrationRounds: 10, partCalib: null,
   };
   const plc = { productCode: doc.productCode, planVersion: 1, shotCount: doc.shots.length, shots: doc.shots.map(shot => ({ shotId: shot.id, poseId: shot.poseId })) };
   return {
     layout, productionVersion: 1, productionPlanVersion: 1, planChanged: false, coverage: 100, progress: progress([1]),
-    productionPlc: plc, candidatePlc: structuredClone(plc), candidatePlcError: null,
+    productionPlc: plc, candidatePlc: structuredClone(plc), candidatePlcError: null, plan: null,
     workspace: {
-      doc, baseRevision: `production-${id}`, revision: 7, updatedAt: 1, publish: { state: "draft" }, pending: null,
+      doc, baseRevision: `production-${id}`, revision: 7, updatedAt: 1, publish: { state: "draft" }, pending: null, cameraTeaching: [], calibration: { rounds: [] },
       frames: [0, 1].map(k => {
         const image: FrozenImage = { id: `${id}-image-${k}`, source: "camera", capturedAt: 1, size: [100, 60], camera: "CAM-1", view: 1,
           cameraTag: { id: "CAM-1", source: "sim", viewCount: 1, acquisition: "triggered" }, calibTag: { path: "C:/test/calib/plane_calib.json", value: null }, geometryTag: [`P${k + 1}`, `P${k + 1}`, "CAM-1", 1, "CAM-1-v1"], exposureUs: 60, gainDb: 6, historyId: null };
@@ -83,7 +84,8 @@ export function progress(views: number[]): Progress {
 export function summary(view = workspaceView()): RecipeSummary {
   const { layout: r } = view;
   return { id: r.id, name: r.name, version: 1, revisionId: r.revisionId, productCode: r.productCode,
-    shotCount: r.shots.length, triggerMode: r.triggerMode, cameras: [...new Set(r.shots.map(s => s.camera))], length: 4, planVersion: 1, triggerCount: r.shots.length };
+    shotCount: r.shots.length, triggerMode: r.triggerMode, cameras: [...new Set(r.shots.map(s => s.camera))], length: 4, planVersion: 1, triggerCount: r.shots.length,
+    segmentCount: 0, expectedTotal: null, toleranceTotal: 0, calibrated: false };
 }
 
 export function tricamWorkspaceView(id = "A"): WorkspaceView {
@@ -127,7 +129,7 @@ export function sampleSet(name = "壳体样本"): SampleSetSummary {
 
 export function partSummary(id = 1): PartSummary {
   return { id, sn: `SN-${100 + id}`, ts: 1, recipeId: "A", recipeVersion: 1, recipeRevision: "revisionId-A", triggerMode: "fly",
-    verdict: "NG_GAP", plcCode: 2, faultCode: 0, reason: "断胶", drainMs: 20, framesExpected: 2, framesReceived: 2, retestOf: null, cycleId: `cycle-${id}`, bundleId: "bundle-A", delivery: { state: "acknowledged", updatedAt: 1, message: null }, source: "real", sample: null };
+    verdict: "NG_GAP", plcCode: 2, faultCode: 0, reason: "断胶", drainMs: 20, framesExpected: 2, framesReceived: 2, retestOf: null, cycleId: `cycle-${id}`, bundleId: "bundle-A", delivery: { state: "acknowledged", updatedAt: 1, message: null }, source: "real", sample: null, flags: null };
 }
 
 export function partDetail(): PartDetail {
@@ -135,7 +137,7 @@ export function partDetail(): PartDetail {
     summary: partSummary(), judgement: { verdict: "NG_GAP", plcCode: 2, faultCode: 0, reason: "断胶", segments: [], gaps: [] },
     shots: [0,1].map(k=>({k,shotId:`P${k+1}`,camera:"CAM-1",view:1,session:1,ordinal:k+1,frameCounter:k+1,triggerCounter:k+1,status:"done",error:null,score:.9,ms:5,rawFiles:[]})),
     recording: {state:"complete",available:true,directory:"recorded",errors:[]},
-    frames: [], triggers: 2, softwareVersion: "test", points: { d: [3, 3, 3, 3], st: [0, 0, 0, 0], w: [null, null, null, null] }, retests: [],
+    frames: [], triggers: 2, softwareVersion: "test", points: { d: [3, 3, 3, 3], st: [0, 0, 0, 0], w: [null, null, null, null] }, retests: [], burst: null,
   };
 }
 
@@ -256,7 +258,7 @@ export function captureRoundV2(over: Partial<CaptureRoundV2> = {}): CaptureRound
     format: 2, roundId: "round-1", recipeId: "S", state: "complete", simulated: false,
     cameras: burstCameras.map((cameraId, c) => ({ cameraId, deviceSession: 1, receivedCount: cameraFrames[c] })),
     plcShotCount: 12, plcPlanVersion: 3, deviceTriggers: 12, groupCount: burstGroups, cameraFrames,
-    incompleteGroups: [burstMissing.seq], missingFrames: [{ ...burstMissing }], lossAlarms: [],
+    incompleteGroups: [burstMissing.seq], missingFrames: [{ ...burstMissing }], lossAlarms: [], alarms: [],
     createdAt: 1, endedAt: 2, error: null, failure: null, ...over,
   };
 }
@@ -279,12 +281,15 @@ export function burstWorkspaceView(doc = burstRecipe()): WorkspaceView {
     ],
     calibration: calibrationView(), productionExport: null, candidateExport: planExport(doc), candidateExportError: null, shotCountChanged: false, progress: progressV2(),
   };
-  const layout: Recipe = { ...structuredClone(doc), revisionId: `revisionId-${doc.id}`, segments: [], points: { x: [], y: [], seg: [], k: [] } };
+  const layout: Recipe = { ...structuredClone(doc), planVersion: doc.planVersion ?? 0, revisionId: `revisionId-${doc.id}`, segments: [], points: { x: [], y: [], seg: [], k: [] }, pathSegments: structuredClone(doc.segments) };
+  const cameraTeaching = plan.cameraTeaching.flatMap(({ camera, frame }) => frame ? [{ camera, frame, round: "round-1", seq: 1 }] : []);
+  const rounds = roundGroups.map((groupCount, i) => ({ roundId: `round-${i + 1}`, standard: false, createdAt: i + 1, cameras: plan.cameras, cameraConfig: plan.cameras.map(() => null),
+    groupCount, cameraFrames: plan.cameras.map(() => groupCount), incompleteGroups: 0, lossAlarms: 0, corridors: plan.cameras.map(() => null), xMeans: plan.cameras.map(() => null) }));
   return {
     layout, productionVersion: null, productionPlanVersion: null, planChanged: false, productionPlc: null, candidatePlc: null, candidatePlcError: null, coverage: null,
     progress: { steps: [], shots: [], next: null }, plan,
     workspace: { doc, baseRevision: null, revision: 3, updatedAt: 1, publish: { state: "draft" }, pending: null, frames: [], overview: { background: null, positions: [], saved: false },
-      samples: [], sampleBank: [], validation: null },
+      samples: [], sampleBank: [], validation: null, cameraTeaching, calibration: { rounds } },
   };
 }
 

@@ -1,6 +1,5 @@
 import { pathLength, resampleTeachingPath, type ImagePoint } from "./teachingPath";
 import { errorText } from "../../lib/errors";
-import { imageFailure, isPendingBackend } from "../../lib/pendingBackend";
 import { cloneElement, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ArrowRight, Brush, Camera, ChevronLeft, ChevronRight, Eraser, Info, Lock, MousePointer2, Save, SquareDashed, Trash2, TriangleAlert, Undo2, WandSparkles } from "lucide-react";
@@ -11,7 +10,7 @@ import type { RecipeDoc } from "../cycle/types";
 import type { SegmentChecks, WorkspacePlanView } from "../plan/types";
 import { workspaceApi } from "./api";
 import { useWorkspace, type SnackMessage } from "./context";
-import { awaitingPlan, Badge, GrayViewer, KV, Notice, PlanPending, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
+import { Badge, GrayViewer, KV, Notice, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
 import type { CaptureSummary, FrozenImage, GrayImage, WorkspaceView } from "./types";
 import { corridorDraft, corridorError, sameCorridor, withCorridor } from "./teach";
 import { cameraTeachingTasks } from "./cameraTasks";
@@ -46,29 +45,28 @@ function extractionAdvice(reason: string, failures: number, brushWidth: number) 
 /** 采集轮次里某台相机某个帧组的原图（候选示教帧，还没有冻结进候选配方）。 */
 function useRoundFrame(round: AnyRound | null, camera: string, seq: number, enabled: boolean) {
   const key = JSON.stringify([round?.roundId ?? null, camera, seq, enabled]);
-  const [state, setState] = useState<{ key: string; image: GrayImage | null; error: string; pending: string; loading: boolean }>({ key, image: null, error: "", pending: "", loading: false });
+  const [state, setState] = useState<{ key: string; image: GrayImage | null; error: string; loading: boolean }>({ key, image: null, error: "", loading: false });
   useEffect(() => {
-    if (!enabled || !round) { setState({ key, image: null, error: "", pending: "", loading: false }); return; }
+    if (!enabled || !round) { setState({ key, image: null, error: "", loading: false }); return; }
     let alive = true;
-    setState({ key, image: null, error: "", pending: "", loading: true });
+    setState({ key, image: null, error: "", loading: true });
     readRoundFrame(round, camera, seq)
-      .then(image => alive && setState({ key, image, error: "", pending: "", loading: false }))
-      .catch(e => alive && setState({ key, image: null, ...imageFailure(e), loading: false }));
+      .then(image => alive && setState({ key, image, error: "", loading: false }))
+      .catch(e => alive && setState({ key, image: null, error: errorText(e), loading: false }));
     return () => { alive = false; };
   }, [key]);
-  return state.key === key ? state : { image: null, error: "", pending: "", loading: enabled && !!round };
+  return state.key === key ? state : { image: null, error: "", loading: enabled && !!round };
 }
 
 /**
  * 走廊示教（段配方，路由 /recipe/teach）：三台相机各示教一条走廊，所有帧共用；每台相机从一轮采集里选一帧，
  * 在这一帧上刷选 / 框选提取走廊（边缘提取能力保留，不再与示教中线逐点比对），设像素当量与检测参数。
- * 旧拍照点配方（segments 为空）仍走 LegacyTeachingPage：按 Pose 分组选图、逐点试测、特征定位与标定核对，行为不变。
- * 段配方但后端还没输出 plan（D3 之前）显示待后端占位，不落到旧页面。
+ * 旧拍照点配方（WorkspaceView.plan 为空）仍走 LegacyTeachingPage：按 Pose 分组选图、逐点试测、特征定位与标定核对，行为不变。
+ * 后端只对 doc.segments 非空的候选输出 plan，按 plan 分流就是按 segments 分流（决策记录第八节）。
  */
 export default function TeachingPage() {
   const { data, doc } = useWorkspace();
   if (!data || !doc) return <WorkspaceEmpty />;
-  if (awaitingPlan(data, doc)) return <PlanPending title="走廊示教" />;
   if (!data.plan) return <LegacyTeachingPage />;
   return <CorridorTeaching data={data} doc={doc} plan={data.plan} />;
 }
@@ -182,16 +180,11 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
         candidateView = savedView;
       }
       let extracted: Awaited<ReturnType<typeof workspaceApi.extractCorridor>> | null = null;
-      let pendingText = "";
-      // 段配方没有拍照点：按相机 id 在这台相机冻结的示教帧上提取（workspace_extract_corridor，D2），不复用旧命令的 k
+      // 段配方没有拍照点：按相机 id 在这台相机冻结的示教帧上提取（workspace_extract_corridor），不复用旧命令的 k
       const result = await perform(async () => {
-        try { extracted = await workspaceApi.extractCorridor(doc.id, candidateView.workspace.revision, camera, frame.id, roi, selectionTool === "brush" ? { points: brushPoints, radiusPx: brushWidth / 2 } : undefined, pointSpacing); }
-        catch (e) { if (!isPendingBackend(e)) throw e; pendingText = e.message; }
+        extracted = await workspaceApi.extractCorridor(doc.id, candidateView.workspace.revision, camera, frame.id, roi, selectionTool === "brush" ? { points: brushPoints, radiusPx: brushWidth / 2 } : undefined, pointSpacing);
         return candidateView;
       }, "");
-      if (result && pendingText && current.current.scope === capturedScope) {
-        setExtractionHint(`走廊自动提取：${pendingText}。可先用“笔划直接生成走廊”，再手工修正。`); setRegionMode(true); return;
-      }
       if (result && extracted && current.current.scope === capturedScope) {
         const output = extracted as Awaited<ReturnType<typeof workspaceApi.extractCorridor>>;
         if (output.failure) {
@@ -332,7 +325,7 @@ function CorridorTeaching({ data, doc, plan }: { data: WorkspaceView; doc: Recip
         </Surface>}
         {choosingNow
           ? <GrayViewer controlsAt="footer" image={candidate.image} loading={candidate.loading} error={candidate.error || (picked && !arrived ? "该相机本帧组缺帧，请换一个帧组" : "")} label={`${camera} · 帧组 ${pickSeqSafe} · 候选示教帧`}
-            emptyTitle={candidate.pending ? "原图读取待后端实现" : "选择示教帧"} emptyHint={candidate.pending || "先选一轮完整的采集，再选这台相机要用的帧组；缺帧的帧组不能选。"} summary={<span className="muted">选定后冻结为这台相机的示教帧，所有帧共用这一条走廊。</span>}/>
+            emptyTitle="选择示教帧" emptyHint="先选一轮完整的采集，再选这台相机要用的帧组；缺帧的帧组不能选。" summary={<span className="muted">选定后冻结为这台相机的示教帧，所有帧共用这一条走廊。</span>}/>
           : <GrayViewer controlsAt="footer" summary={summary} image={image} loading={loading} error={error} label={frame ? `${camera} · 示教帧` : "等待取样"} tools={tools} subtools={params} emptyTitle="示教帧尚未就绪" emptyHint="选定示教帧后，这里显示这一帧。"
             region={selectionTool === "box" ? region : null}
             onRegion={regionMode && selectionTool === "box" && canEdit ? setRegion : undefined}

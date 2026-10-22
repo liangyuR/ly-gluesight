@@ -20,7 +20,7 @@ vi.mock("../src/features/plc/api",()=>({plcApi:{getStatus:vi.fn()}}));
 vi.mock("../src/features/cycle/api",()=>({useCycle:vi.fn(),useSiteStatus:()=>null}));
 let ws:ReturnType<typeof workspaceState>;
 const picture={url:"data:image/png;base64,",width:1280,height:1024};
-/** 旧后端仍给的旧轮次：每次触发一项 */
+/** 按拍照点采的旧轮次（旧拍照点配方）：每次触发一项 */
 const round=(state:CaptureRound["state"]="complete"):CaptureRound=>({roundId:"r1",recipeId:"A",cameras:[{cameraId:"CAM-1",deviceSession:7,receivedCount:20}],plannedCount:20,state,createdAt:1,endedAt:2,error:null,simulated:true,frames:[]});
 const shot=(i:number,cameras:string[]=["CAM-1"],width=1280)=>({shotId:"s"+i,ordinal:i,cameras:cameras.map(cameraId=>({cameraId,frameCounter:i,triggerCounter:i,originalPath:"",views:[{view:1,path:"",width,height:1024}]}))});
 const device=(id:string,name:string):CameraConfig=>({id,name,source:"sim",viewCount:1,serial:id,triggerSource:"Line0",triggerActivation:"RisingEdge",triggerDelayUs:0,debouncerUs:0,strobe:false,chunk:true});
@@ -99,7 +99,7 @@ it("新轮次有缺帧和丢帧告警 → 显示帧组数、各相机帧数、�
  expect(screen.queryByText("本轮异常，需要重新采集")).toBeNull();
 });
 it.each([
- ["旧格式轮次（D1 前后端仍给，按触发序号读图）",false,"r1",0],
+ ["旧格式轮次（按拍照点采的历史轮次，按触发序号读图）",false,"r1",0],
  ["新轮次（按帧号读图）",true,"round-1",1],
 ])("段配方多相机%s切换相机 → 按相机读取同一帧组的原图",async(_,v2,roundId,seq)=>{
  useBurst();

@@ -14,7 +14,6 @@ import { useWorkspace } from "../../workspace/context";
 import type { Comparison, GrayImage } from "../../workspace/types";
 import { CycleTimeline } from "../../logs";
 import { errorText } from "../../../lib/errors";
-import { imageFailure } from "../../../lib/pendingBackend";
 import { displayReason, formatTime, sampleLabelText, sourceLabel, triggerModeLabel, verdictLabel, verdictTone } from "../meta";
 import { burstSideOf, regionDiffs } from "../replay";
 import type { PartDetail } from "../types";
@@ -45,17 +44,17 @@ export function historyGroups(burst: PartDetailBurst): FrameGroupView[] {
 /** 一帧录制原图：没有原图（缺帧、未录制、录制队满丢弃）时不读，按钮与说明由页面给。 */
 function useFrameImage(historyId: number, camera: number, seq: number, enabled: boolean) {
   const key = JSON.stringify([historyId, camera, seq, enabled]);
-  const [state, setState] = useState<{ key: string; image: GrayImage | null; error: string; pending: string; loading: boolean }>({ key, image: null, error: "", pending: "", loading: false });
+  const [state, setState] = useState<{ key: string; image: GrayImage | null; error: string; loading: boolean }>({ key, image: null, error: "", loading: false });
   useEffect(() => {
     let alive = true;
-    setState({ key, image: null, error: "", pending: "", loading: enabled });
+    setState({ key, image: null, error: "", loading: enabled });
     if (!enabled) return;
     burstImageApi.record(historyId, camera, seq)
-      .then(image => alive && setState({ key, image, error: "", pending: "", loading: false }))
-      .catch(e => alive && setState({ key, image: null, ...imageFailure(e), loading: false }));
+      .then(image => alive && setState({ key, image, error: "", loading: false }))
+      .catch(e => alive && setState({ key, image: null, error: errorText(e), loading: false }));
     return () => { alive = false; };
   }, [key]);
-  return state.key === key ? state : { key, image: null, error: "", pending: "", loading: enabled };
+  return state.key === key ? state : { key, image: null, error: "", loading: enabled };
 }
 
 /**
@@ -198,8 +197,7 @@ export default function BurstHistoryDetail({ detail, burst, neighbors, onOpen, o
         <FrameGroupStrip groups={groups} cameras={burst.cameras} selected={selection.seq} onSelect={seq => setSelection(prev => ({ ...prev, seq }))} />
         <p className="muted">格子颜色是该帧所在区域的结论（历史没有逐帧结论）；灰色为缺帧、未测或走出走廊，只算检测不完整。左右方向键切换帧组。</p>
         <div className="wp-stack">
-          <GrayViewer image={image.image} loading={image.loading} error={image.error || unavailable} label={imageLabel} caption={<>原始 SN <span className="sn">{s.sn}</span> · {cameraName} · 帧组 {selection.seq}</>}
-            emptyTitle={image.pending ? "原图读取待后端实现" : undefined} emptyHint={image.pending || undefined} />
+          <GrayViewer image={image.image} loading={image.loading} error={image.error || unavailable} label={imageLabel} caption={<>原始 SN <span className="sn">{s.sn}</span> · {cameraName} · 帧组 {selection.seq}</>} />
           <div className="wp-runtime-strip">
             <KV label="帧状态">{frame ? frameStateName[frame.status] : "—"}</KV>
             <KV label="帧号 / 触发计数">{frame?.frameCounter ?? "—"} / {frame?.triggerCounter ?? "—"}</KV>

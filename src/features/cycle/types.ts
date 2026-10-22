@@ -1,5 +1,5 @@
 
-import type { BurstJudgement, PartViewBurst, RecipeDocSegmentFields } from "../plan/types";
+import type { BurstJudgement, CameraInspect, KindDefaults, PartCalib, PartViewBurst, PathSegment, RecipeDocSegmentFields } from "../plan/types";
 
 /** 段模型（分段连拍飞拍）的契约类型，定义在 plan/types.ts；这里转出供 cycle 相关页面使用。 */
 export type {
@@ -138,10 +138,13 @@ export interface ShotSpec {
   fixture?: FixtureSpec;
 }
 
+/** 编译后的配方（后端 recipe::Recipe）：WorkspaceView.layout、配方快照、Comparison.candidateRecipe。 */
 export interface Recipe {
   id: string;
   name: string;
   version: number;
+  /** PLC 计划版本（见 RecipeDoc.planVersion） */
+  planVersion: number;
   revisionId: string;
   teachingId?: string | null;
   productCode: number;
@@ -154,14 +157,24 @@ export interface Recipe {
   detect: DetectParams;
   limits: ShotLimits;
   shots: ShotSpec[];
+  /** 各相机的曝光与增益 */
+  cameras: Record<string, CameraImaging>;
+  /** 旧拍照点模型的测量段（段配方为空） */
   segments: Segment[];
-  /** 各站：所在拍照点图像里的像素位置、所属段与拍照点 */
+  /** 各站：所在拍照点图像里的像素位置、所属段与拍照点（旧拍照点模型，段配方为空） */
   points: { x: number[]; y: number[]; seg: number[]; k: number[] };
+  /** 段配方的段列表（即 RecipeDoc.segments，编译后改名，避免与旧模型的 segments 重名）；为空即旧拍照点配方 */
+  pathSegments: PathSegment[];
+  /** 段配方的检测相机，顺序即计划相机顺序 */
+  inspect: CameraInspect[];
+  segmentDefaults: KindDefaults;
+  calibrationRounds: number;
+  partCalib: PartCalib | null;
 }
 
 /** 配方文件内容，配方页编辑它。
- * 段模型字段（segments、inspect、segmentDefaults、calibrationRounds、partCalib）由后端 schema 8 起输出（C1），
- * 之前的后端不带，所以这里可缺省；segments 为空或缺省 = 旧拍照点配方，非空 = 段配方（此时 shots 为空、triggerMode 为 fly）。 */
+ * 段模型字段（segments、inspect、segmentDefaults、calibrationRounds、partCalib）后端 schema 8 起总是输出；前端提交时可缺省（后端按默认值补齐），
+ * 所以这里可缺省。segments 为空或缺省 = 旧拍照点配方，非空 = 段配方（此时 shots 为空、triggerMode 为 fly）。 */
 export interface RecipeDoc extends Partial<RecipeDocSegmentFields> {
   id: string;
   name: string;
@@ -206,13 +219,13 @@ export interface RecipeSummary {
   planVersion: number;
   /** PLC 触发次数；拍照点编不成触发分组时为 null。段配方为 expectedTotal */
   triggerCount: number | null;
-  /** 以下为段模型字段（C1 起输出，旧后端不带）；旧配方 segmentCount = 0。完整形状见 plan/types 的 RecipeSummaryV2 */
-  segmentCount?: number;
+  /** 以下为段模型字段；旧配方 segmentCount = 0、expectedTotal = null、toleranceTotal = 0、calibrated = false */
+  segmentCount: number;
   /** ΣN_exp；待标定为 null */
-  expectedTotal?: number | null;
-  toleranceTotal?: number;
+  expectedTotal: number | null;
+  toleranceTotal: number;
   /** expectedTotal 非空 */
-  calibrated?: boolean;
+  calibrated: boolean;
 }
 
 /** 某个视图没有位置基准（帧徽标）：该视图的有胶站已是“有胶、无基准”（st 4），判定只看站状态。 */
@@ -263,8 +276,8 @@ export interface PartView {
   /** 各拍照点的帧 */
   frames: FrameView[];
   measuredFrames: number;
-  /** 段配方在途件（C3 起输出）；旧配方为 null 或缺省 */
-  burst?: PartViewBurst | null;
+  /** 段配方在途件；旧配方为 null */
+  burst: PartViewBurst | null;
 }
 
 export interface SegmentResult {
@@ -298,8 +311,8 @@ export interface Judgement {
 }
 
 export interface ResultView extends Judgement {
-  /** 段配方的判定（C3 起输出）；旧配方为 null 或缺省。有值时 verdict / plcCode / faultCode / reason 与它相同，segments、gaps 为空 */
-  burst?: BurstJudgement | null;
+  /** 段配方的判定；旧配方为 null。有值时 verdict / plcCode / faultCode / reason 与它相同，segments、gaps 为空 */
+  burst: BurstJudgement | null;
   candidateDebug?: CandidateDebug | null;
   cycleId: string | null;
   sn: string;
@@ -445,8 +458,8 @@ export interface SampleSetSummary {
   source: string;
   dir: string;
   shotCount: number;
-  /** frames：每件该相机的帧数（后端 E1 起输出，之前的后端不带）。views 是旧拍照点模型的视角，段配方不使用 */
-  cameras: { id: string; views: number[]; frames?: number }[];
+  /** 清单里的相机；views 是旧拍照点模型的视角，段配方不使用。后端摘要不带每台相机的帧数 */
+  cameras: { id: string; views: number[] }[];
   mmPerPx: number | null;
   parts: SamplePart[];
   missing: string[];

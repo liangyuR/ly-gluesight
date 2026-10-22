@@ -269,7 +269,7 @@
 | `CaptureRound`（recipe_capture.rs） | 不变（旧轮次） | 新轮次为 `CaptureRoundV2`（`format: 2`，D1） |
 | `WorkspaceView`（workspace.rs，D2） | `plan: WorkspacePlanView \| null` | `productionPlc = candidatePlc = null`，`candidatePlcError = null`，`coverage = null`，`progress = { steps: [], shots: [], next: null }`（段配方进度在 `plan.progress`）；`planChanged` 按 D-SB-19 的身份 |
 | `Progress`（workspace/progress.rs） | 不变（旧配方） | 段配方用 `ProgressV2` |
-| `Overrides`（history.rs，重判试算参数，C5） | `straight`、`corner`（`KindOverride`：`tolUpper`、`tolLower`、`maxExcursionLen`，绝对限不适用；TS `Overrides` 已有这两个可选字段） | 旧配方记录忽略这两个字段；段配方记录的每帧胶宽只读它们，`position` / `width` 不适用，未分段区域取两者中较宽的一档。**后端现在没有这两个字段，发出去会被静默忽略**，所以前端 `RejudgeDialog` 的直线段 / 弯道段两行输入置灰（`SEGMENT_OVERRIDES_SUPPORTED = false`）；C5 读取后改为 true 并同步测试 |
+| `Overrides`（history.rs，重判试算参数，C5） | `straight`、`corner`（`KindOverride`：`tolUpper`、`tolLower`、`maxExcursionLen`，绝对限不适用；TS `Overrides` 已有这两个可选字段） | 旧配方记录忽略这两个字段；段配方记录的每帧胶宽只读它们，`position` / `width` 不适用，未分段区域取两者中较宽的一档。C5 已读取这两个字段（`Overrides::apply_segments`），前端 `RejudgeDialog` 的直线段 / 弯道段两行可填，请求带 `straight` / `corner`（FE-WIRE 去掉了 C5 之前的置灰） |
 | `Comparison`（workspace.rs，候选 / 原包对照，D3） | `burst: {segments, cameras, expectedTotal, judgement} \| null`（TS `Comparison.burst`） | `judgement` 为结论摘要（verdict / plcCode / faultCode / reason 与 `burst.judgement` 相同，segments、gaps 为空），`measurements = []`；旧拍照点记录的对照与之前保存的对照文件 `burst` 为 null |
 
 ### 5.2 新 DTO
@@ -323,7 +323,7 @@
 
 - **段配方的走廊提取**：段配方没有拍照点（`shots = []`），不复用 `workspace_extract_centerline`——它按 `w.frames[k]` / `w.doc.shots[k]` 解析，段配方会报“拍照点不存在”。D2 新增 `workspace_extract_corridor`：按 `camera`（相机 id）找到 `plan.cameraTeaching` 里这台相机冻结的示教帧，`imageId` 必须等于该帧 id（不等报“图像已变化”），检测极性取这台相机 `inspect.detect`，没有时取配方默认。旧配方仍用 `workspace_extract_centerline`，行为不变。
 - **读图命令的参数口径**：`camera` 在在线与历史命令里是计划相机下标（与 `FrameGroupView.cells`、`FrameRecord.camera` 一致）；示教轮次命令用 `cameraId`（与 `CaptureRound.cameras[].cameraId` 一致）。
-- **归属包落地前**：前端经 `src/lib/pendingBackend.ts` 的 `pendingCall` 调用上表 D1 / D2 / C3 / D3 的新命令。Tauri 对未注册的命令拒绝为 `Command <命令名> not found`，前端据此显示“该功能待后端 <包> 实现”的占位（读图区为空态说明，走廊提取为画布提示，工作区操作为操作未完成提示），不当作故障。
+- **前端调用**：上表 D1 / D2 / C3 / D3 的新命令都已注册，前端直接调用（`desktopCall`）。后端落地前为缺命令加的 `src/lib/pendingBackend.ts`（`pendingCall` 把 `Command <命令名> not found` 转成“该功能待后端 <包> 实现”占位）已在 FE-WIRE 删除，命令失败按普通错误显示（读图区为读图失败，走廊提取与工作区操作为操作未完成提示）。
 
 ## 六、口径
 
@@ -417,7 +417,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
   - 记录库 `part_shots`、`part_points`；
   - 前端 `cycle/pose.ts`、`cycle/vis.ts`、`WorkpieceOverview`、`teachingGroups`、`Fixture*` 等旧组件；
   - 前端旧配方的单帧示教与整圈采集页：`/recipe/teach`、`/recipe/capture` 在 `WorkspaceView.plan` 为空时挂载 `LegacyTeachingPage`、`LegacyCapturePage`（G0 之前的实现原样保留：组选图、采用本轮图像、逐点试测、特征定位、标定核对），以及 `TrialResult`、`TeachingSettings` 的旧签名和按拍照点下标的示教草稿（`frameDrafts` / `setFrameDraft`）。段配方另用 `CorridorSettings` 与按相机 id 的 `corridorDrafts` / `setCorridorDraft`。
-  - **plan 为空时的分流**：页面分流以 `RecipeDoc.segments` 是否为空为准。后端 `WorkspaceView.plan` 自 D2 起对段配方输出（原定 D3）；段配方（`segments` 非空）而 `plan` 为 null 时（D2 之前的后端），`/recipe/teach`、`/recipe/capture` 显示“待后端 D3 实现”占位（`PlanPending`），不落到 `LegacyTeachingPage`、`LegacyCapturePage`——那里的采用本轮图像、逐点示教提交后会被后端 `validate_burst` 拒绝（段配方不能同时有拍照点）。进度、总览、步骤条等只读页面在 D3 之前对段配方仍按 `plan` 为空显示旧配方的空内容，不提供会被拒绝的操作。
+  - **页面分流**：判别仍是 `RecipeDoc.segments` 是否为空。后端 `WorkspaceView.plan` 自 D2 起只对 `doc.segments` 非空的候选输出、旧拍照点配方为 null（`workspace.rs` 的 `view`），所以前端各页按 `plan` 是否为空分流，与按 segments 分流等价：`/recipe/teach`、`/recipe/capture`、进度、总览与步骤条在 `plan` 非空时挂载段配方页面，为空时挂载旧页面。D3 之前“段配方（`segments` 非空、`plan` 为 null）落到旧页面”的问题随后端输出 `plan` 消失，FE-POLISH 为它加的“待后端 D3 实现”占位（`PlanPending` / `awaitingPlan`）已在 FE-WIRE 删除；进度、总览、步骤条对段配方显示段配方内容，不再是旧配方的空内容。
   - **路由标题**：`/recipe/teach` 两种配方共用，标题写“单帧示教（旧配方）/ 相机走廊示教（段配方）”；总览页空态提示给段配方的写法是“相机走廊示教”（步骤条上的名称仍是“走廊示教”），不再提“单帧示教”。
   - **PLC 标签**：`shotCount`、`deviceShots`、`partEnd` 的预设标签在协议 6 的含义之后补写旧配方含义（触发次数、设备触发次数、触发计划发完）。
 - **判定结果类型**：`judge::Judgement` 保留给旧配方；段配方用 `burst_judge::BurstJudgement`，两者并列，不做类型别名。界面与记录按 `burst` 字段是否为 null 区分。
@@ -449,7 +449,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
     - **测量**：每帧经 `FramePool` 送测，结果经 `cycle::Input::FrameMeasured` 回节拍；QueueFull / Timeout 记 Unmeasured，Failed 记 Error；超过 T_proc 或到 drain 截止仍没结果记 Unmeasured；测量输出的帧身份与送测帧不符或含非有限数改记 Error（否则 C5 落库会拒绝整件记录）。都只记检测不完整，不判 99。
     - **收尾与判定**：partEnd 后已接受的帧都测完，且每台相机 max_seq ≥ deviceTriggers − 1（PLC 没报时不等）或到 drain 截止即判。故障（98、97）优先；否则 `Unsegmented` → `resolve_regions` → `loss_alarms(各相机帧数, deviceTriggers)` → `burst_judge::judge`。丢帧、帧数异常、疑似提前终止写运行日志（warn），结论不变。
     - **结果与记录**：`ResultView.burst` 带区域判定，`PartView.burst` 按 5.2 输出（帧格的 verdict 只看这一帧的独立指标，允差取覆盖全部段的较宽一档）。`BurstRecord.frames` 在 1..=帧组数内每台相机每帧一条、缺帧也有，`rawFile` 入库时为空（录制结果事后补）；`frames_expected` = ΣN_exp，`frames_received` = 帧组数，`triggers` = deviceTriggers。拒绝布防、在途中断、进程中断补记录的段配方件也带 `BurstRecord`（各相机帧数为 0 或已收到的帧，判定按结论摘要给出，结论字段与摘要相同）。诊断包按帧记录的 `rawFile` 打包段配方原图。
-    - **在线读图**：`workspace_live_frame_image` 已注册（段配方预览缓存与旧配方各一份，各 128 MB）；前端仍经 `pendingCall` 调用，命令存在时照常返回图像。
+    - **在线读图**：`workspace_live_frame_image` 已注册（段配方预览缓存与旧配方各一份，各 128 MB）；前端仍经 `pendingCall` 调用，命令存在时照常返回图像（FE-WIRE 已改为直接调用，见第 15 条）。
     - **胶偏未判**：直线区域去掉首尾各一帧后参考相机没有可用 x 时标 `OffsetUnjudged::NoFrames`（“胶偏未判：参考相机没有可用帧”，TS 同步 `noFrames`；A4 遗留 F0-3），不再静默不判。
     - **带宽估算**：`camera::aggregate_bandwidth` 计入 GigE 协议开销（按不开巨帧约 1.05 倍；C2 遗留 F0-4），三台 130 万像素 25 Hz 由 786 Mbps 改为约 826 Mbps，超过单口 80% 预算。
 12. D2 候选工作区（相对计划步骤的调整，旧路径一律保留）：
@@ -461,7 +461,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
     - **应用标定**：标定轮次（不含标准件轮次）不少于 `calibrationRounds`，否则报错且配方不变；写 partCalib，单段计划同时写该段 N_exp 与 calib；多段计划各段保持 null（视图 pending “分段算法未就绪”）。容差不写，由 `workspace_confirm_tolerance` 写入。
     - **x_ref**：只给单段计划的直线段；每轮标准件取参考相机去掉首尾各一帧（seq 1 与帧组数）后测成帧的 x 均值，再用 `calibration::x_ref` 取均值与极差，只用走廊与当前相同的标准件轮次。直线段启用了胶偏但没配 offsetRef 时按 AbsoluteX、计划第一台相机补上（D-SB-18 默认）；ToEdge 不写（“测量量未实现”）；多段计划不写（“分段算法未就绪”）。每次应用按当前标准件轮次重算，没有可用轮次时 x_ref 为 null。
     - **编辑约束**（`workspace_save_doc` 与 `workspace_update_segments` 共用 `update_doc`）：段的类型序列不变时 N_exp、calib、partCalib 不能改，x_ref 只能原样带过或清空，胶偏参考的测量量或相机变了 x_ref 清空；类型序列（段数、顺序、类型）变了清空全部 N_exp、calib、partCalib 与 x_ref，已加入的标定轮次保留（整件帧组数与分段无关）。
-    - **前端**：D2 的命令已注册，前端仍经 `pendingCall` 调用（命令存在时与 `desktopCall` 相同）；改为直接调用、删去“待后端 D2”的占位分支与用例留给前端收口。
+    - **前端**：D2 的命令已注册，前端仍经 `pendingCall` 调用（命令存在时与 `desktopCall` 相同）；改为直接调用、删去“待后端 D2”的占位分支与用例留给前端收口（已由第 15 条 FE-WIRE 完成）。
 
 13. D3 候选验证、发布、进度与历史（相对计划步骤的调整，旧路径一律保留）：
     - **分流**：`workspace_validate`、`workspace_publish`、`workspace_capture_sample`、`workspace_import_sample` 按候选 `doc.segments` 分流，`workspace_compare`、`workspace_compare_original` 按 `PartDetail.burst` 与原配方快照分流。旧拍照点配方的验证项（拍照点组选图、胶路示教、示教与标定、完整采集、特征定位统计）、`freeze_bundle` → `release::publish`（schema 3）、组选图与特征定位（`workspace/fixture.rs` 及其命令）、按 (拍照点, 视角) 的历史读图与复测原样保留。计划中的“删除组选图 / 特征定位 / 旧 publish、load 拒绝 schema 3、删除 workspace/fixture.rs”改为并存；段配方配上 schema 3 包仍由 `release::load` 按“格式版本与配方类型一致”拒绝（C4 的 `tampered_burst_bundle_is_rejected_on_load` 已覆盖，D3 不再另写 `legacy_schema_3_bundle_cannot_load_for_production`）。
@@ -470,7 +470,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
     - **发布**：`workspace_publish` 对段配方调用 `burst_release::freeze_bundle` → `release::publish_burst`（schema 4）：每台计划相机的示教帧、标定 JSON（`mmPerPx` = 示教当量，`reference` = 标定引用或 `{device}`，`source` = 工位标定文件内容）与走廊；测量图为 `production::burst_graphs`，`versions.graph` = `GRAPH_VERSION_BURST`。发布门槛 = 当前修订验证通过 + `ready_burst`（三台相机走廊与当量 + expected_total）。计划版本照旧由 `plan_version_for` 按 `same_plan`（含各段 N_exp 与 expected_total）分配，重新标定使 ΣN_exp 变化即换新号；生效日志写明 PLC 要同步的 shotCount / deviceShots = ΣN_exp。`commit`、`apply_pending`、重试与放弃不分流（`release::load` 两种格式都认）。验证环境标签（`environment`）增加各检测相机的工位标定 `{device}`；旧配方没有检测相机，标签不变。
     - **进度**：段配方的 `ProgressV2` 由 D2 在 burst.rs 输出，D3 只把验证步骤的阻塞跳转改为按检查项：走廊示教 → 第一台没示教好的相机，段标定 / 标准件 x_ref → 多轮标定，设备与采集 → 相机。`progress.rs` 与旧 `StepId` 不变，存量 progress_tests 保护的是旧配方现行进度，未删改。
     - **历史**：新命令 `workspace_record_frame_image(historyId, camera, seq)`（5.4）读段配方历史一帧原图。生产记录读录制目录：路径在 `*_cycle_{cycleId}` 内、文件名为 `{相机}_s{seq:06}.pgm`，part.json 里这一帧的 cycleId、相机下标与编号、seq、帧号（历史记有触发计数时还有触发计数）一致且已落盘，解码尺寸等于录制尺寸。候选离线调试记录读受管样本集：每台计划相机在清单里按顺序的拍照点即它的帧序列（D-SB-28 口径，在 history_samples.rs 本地实现；E1 的 `Manifest::camera_frames` 落地后可改用）。`workspace_compare` 从原图用候选走廊逐帧复测（要求计划相机相同、原图齐全），或按已存每帧指标与记录里的区域用候选规则重判（要求 `store::same_measurement_layout`，ERR 记录不重判）；`workspace_compare_original` 按原发布包（schema 4）的走廊逐帧重现。结果写进 `Comparison.burst`（5.1）。`workspace_record_images` 只列旧记录的原图（段配方记录的原图引用在 `PartDetail.burst.frames[].rawFile`）。
-    - **未做**：段配方的候选离线试运行（`workspace_debug_run` 仍只接受旧配方，`Candidate::new_burst` 未接入）与离线样本集的段配方节拍留给 E1；前端 `burstImages.ts` 仍经 `pendingCall` 调用新命令（命令已注册，行为与直接调用相同），改为直接调用留给前端收口。
+    - **未做**：段配方的候选离线试运行（`workspace_debug_run` 仍只接受旧配方，`Candidate::new_burst` 未接入）与离线样本集的段配方节拍留给 E1；前端 `burstImages.ts` 仍经 `pendingCall` 调用新命令（命令已注册，行为与直接调用相同），改为直接调用留给前端收口（已由第 15 条 FE-WIRE 完成）。
 14. E1 离线仿真（相对计划步骤的调整，旧路径一律保留）：
     - **分流**：`offline_run`、候选试运行按 `Recipe::is_burst` 分流。段配方走 `Line::run_burst`（脉冲串），旧拍照点配方仍走 `Line::run_part`（按 `device_shots` 精确触发、按拍照点组取图、触发间隔按触发方式 450 / 1100 ms），行为不变；旧配方选段配方专用工况时拒绝并说明。
     - **脉冲剖面**：`line::PulseProfile { hz, segments, head_tail_jitter, corner_jitter, seed }`，波动取法与 `segmentation::synthetic::frame_counts` 相同（同一剖面与种子在离线产线和回归序列里帧数、真值边界一致，`PulseProfile::spec` 给出回归入口的 `SequenceSpec`）。名义帧数 `line::nominal_frames`：各段 N_exp；有段待标定时按 段长 × 频率 ÷ 50 mm/s 估算（没有段长：直线 12、弯道 4），已有整件标定时把待标定段缩放到 ΣN_exp。合成图取配方名义剖面，样本集取样本帧数最多的那台相机（一段）。默认 20 Hz；离线节拍覆盖时按 1000 ÷ 触发间隔换算。
@@ -482,3 +482,9 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
     - **样本集**：`Manifest::camera_frames(camera)` 按清单顺序给出一台相机的帧序列（见 docs/integration/sample-set-format.md）；第 seq 个脉冲取各相机的第 seq 帧，没有这一帧的相机按缺帧（照常计数、不出帧）。`recipe_shots` 保留给旧配方（注释“旧拍照点模型”，未加 `#[deprecated]`，免得调用方模块出现新警告）。
     - **节拍下限**：`Pace` 触发间隔下限 50 → 15 ms（66 fps）；旧拍照点配方的触发间隔仍不低于 50 ms。
     - **测试**：旧配方的离线闭环用例（传输丢帧 / 少发触发判 ERR 90、ACK 错位进故障；按 件 / 拍照点 / 视角取样本图并认领）保护的是仍然存在的旧路径，改用旧拍照点计划的测试台保留，没有按计划改写删除；段配方的同类规则另加脉冲串闭环用例。`simimage` 三视角用例同理保留。
+15. FE-WIRE 前端接入真实命令与 DTO（相对计划步骤的调整，旧路径一律保留）：
+    - **直接调用**：`workspaceApi` 的 D2 六条工作区命令与 `workspace_extract_corridor`、`burstImageApi` 的在线 / 历史读图改为 `desktopCall`；删除 `src/lib/pendingBackend.ts`、读图区“原图读取待后端实现”空态、走廊提取“待后端 D2”画布提示与 `PlanPending` 占位（5.4、第八节）。
+    - **契约核对**（`src/features/plan/types.ts` 及挂载它的旧 DTO 与 Rust serde 输出逐字段）：补 D2 的 `Workspace.cameraTeaching`、`Workspace.calibration`（TS `CameraTeaching`、`CalibrationRound`）与编译后 `Recipe` 的 `planVersion`、`cameras`、`pathSegments`、`inspect`、`segmentDefaults`、`calibrationRounds`、`partCalib`；后端总是输出的字段由可缺省改为必有：`RecipeSummary` 的段字段、`PartView.burst`、`ResultView.burst`、`PartSummary.flags`、`PartDetail.burst`、`RejudgeResult.changes[].flags`、`WorkspaceView.plan`、`Comparison.burst`、`CaptureRoundV2.alarms`、`TimelineEntry.seq`。`RecipeDoc` 的段字段仍可缺省（前端提交时由后端补默认值）。`SampleSetSummary.cameras[].frames` 后端没有输出（E1 只加了 `Manifest::camera_frames`，摘要仍是 `SampleCamera {id, views}`），前端去掉该字段，离线页样本集摘要的“每相机帧数”改为“相机”。
+    - **重判覆盖**：`RejudgeDialog` 的直线段 / 弯道段两行可填（5.1）。
+    - **离线工况**：五个段配方工况已由 E1 在下拉与样本集白名单启用（`offline.ts`），核对与后端 `Scenario` 的名字和 `handshake()` 白名单一致，未改。
+    - **合成图示教采集**：段配方整圈采集页在合成图离线环境下提供“合成图送一圈”（`offline_capture`，不带样本件），对应 E1 的合成图示教采集；旧拍照点配方的采集页不变（仍只接受样本集）。

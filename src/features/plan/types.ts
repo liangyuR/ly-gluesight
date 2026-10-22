@@ -2,8 +2,8 @@
  * 段模型（分段连拍飞拍）的前后端契约。
  *
  * 前半部分镜像 src-tauri/src/{plan,frame_group,segmentation,burst_judge,calibration}.rs 的可序列化类型
- * （serde camelCase，Option 一律序列化为 null）；后半部分是各 IPC 新增的 DTO，后端由 C1/C3/C5/D1/D2/D3 实现。
- * 字段口径与命令清单见 docs/decisions/segment-burst.md。
+ * （serde camelCase，Option 一律序列化为 null）；后半部分是各 IPC 新增的 DTO（cycle.rs、store.rs、recipe_capture/burst.rs、
+ * workspace/burst.rs、workspace/burst_history.rs），字段与 Rust serde 输出逐一对应。字段口径与命令清单见 docs/decisions/segment-burst.md。
  *
  * 与旧拍照点模型并存：配方 segments 为空即旧模型，cycle/workspace/history 的旧类型不动；
  * 段配方的数据都挂在旧 DTO 新增的可空字段上（PartView.burst、ResultView.burst、PartDetail.burst、WorkspaceView.plan…）。
@@ -421,7 +421,7 @@ export interface CaptureRoundV2 {
   missingFrames: MissingFrame[];
   lossAlarms: LossAlarm[];
   /** 逐帧告警，最多 1024 条（缺帧本身见 missingFrames，不受此限） */
-  alarms?: CaptureAlarm[];
+  alarms: CaptureAlarm[];
   createdAt: number;
   endedAt: number | null;
   error: string | null;
@@ -477,6 +477,35 @@ export interface CameraTeachingView {
   mmPerPx: number | null;
 }
 
+/** 候选里一台计划相机的示教帧（Workspace.cameraTeaching，D2）：从完整的新采集轮次冻结的一帧，走廊在这一帧上示教。 */
+export interface CameraTeaching {
+  camera: string;
+  frame: FrozenImage;
+  /** 来源采集轮次与帧组序号 */
+  round: string;
+  seq: number;
+}
+
+/** 加入多轮标定的一轮（Workspace.calibration.rounds，D2）；界面读 plan.calibration（CalibrationView），这里是候选里存的原始记录。 */
+export interface CalibrationRound {
+  roundId: string;
+  /** 标准件轮次：只用于 xRef，不计入 N_exp 的轮数 */
+  standard: boolean;
+  createdAt: number;
+  /** 加入时的计划相机顺序；下面几项按它排列 */
+  cameras: string[];
+  /** 各相机采集时的设备配置（后端原样保存，前端不解读） */
+  cameraConfig: unknown[];
+  groupCount: number;
+  cameraFrames: number[];
+  incompleteGroups: number;
+  lossAlarms: number;
+  /** 测每帧特征时各相机的走廊身份（前端不解读） */
+  corridors: unknown[];
+  /** 各相机去掉首尾各一帧后测成的帧的胶中心 x 均值（mm）；没有可用帧为 null */
+  xMeans: (number | null)[];
+}
+
 /** workspace_teach_camera 的 draft：在选中帧上定出的走廊（图像像素，按直线段几何）、当量与检测参数，
  * 后端写进 RecipeDoc.inspect 中这台相机的一项（与 CameraInspect 的可编辑部分一一对应）。 */
 export interface CameraTeachDraft {
@@ -486,7 +515,7 @@ export interface CameraTeachDraft {
   detect: DetectParams | null;
 }
 
-/** 候选工作区：段配方的计划部分（WorkspaceView.plan，D3）。旧配方为 null。 */
+/** 候选工作区：段配方的计划部分（WorkspaceView.plan，D2）。旧配方为 null。 */
 export interface WorkspacePlanView {
   segments: PathSegment[];
   cameras: string[];

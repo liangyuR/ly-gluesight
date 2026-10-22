@@ -1,6 +1,6 @@
 /**
- * 示教采集轮次的统一读取：段配方的新轮次（CaptureRoundV2，按帧号配组、不核对计数）与旧后端仍给的旧轮次（CaptureRound）
- * 都先整理成 RoundView，页面只看帧组数、各相机帧数、缺帧的帧组与丢帧告警，不再按 PLC 计划数核对。
+ * 示教采集轮次的统一读取：段配方的新轮次（CaptureRoundV2，按帧号配组、不核对计数）与按拍照点采的旧轮次（CaptureRound，
+ * 后端对旧拍照点配方仍开旧轮次；同一配方编号下的历史轮次两种都可能列出）都先整理成 RoundView，页面只看帧组数、各相机帧数、缺帧的帧组与丢帧告警，不再按 PLC 计划数核对。
  * 帧组 = 同一触发序号的各相机帧；seq 从 1 起，页面上的“帧组序号”就是它。
  */
 import type { CaptureRoundV2, LossAlarm } from "../plan/types";

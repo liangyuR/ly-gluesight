@@ -25,7 +25,7 @@ const frameSelect = () => screen.findByLabelText("历史帧选择", { selector: 
 function element(){return <MemoryRouter initialEntries={["/history/1"]}><Routes><Route path="/history/:id" element={<HistoryDetailPage />} /></Routes></MemoryRouter>;}
 function show() { return render(element()); }
 function comparison():Comparison{return {id:"compare-1",historyId:1,source:"rules",cycleId:"cycle-1",bundleId:"bundle-A",candidateId:"A",candidateRevision:7,candidateRecipe:ws.data!.layout,
-  originalVerdict:"NG_GAP",judgement:{...detail.judgement,verdict:"OK",reason:"候选合格"},measurements:[],createdAt:1};}
+  originalVerdict:"NG_GAP",judgement:{...detail.judgement,verdict:"OK",reason:"候选合格"},measurements:[],createdAt:1,burst:null};}
 beforeEach(() => {
   ws = workspaceState(); ws.data!.workspace.frames.forEach(f => f.saved = true); ws.data!.progress.shots.forEach(s => s.state = "taught");
   detail = partDetail(); vi.mocked(useWorkspace).mockImplementation(() => ws);

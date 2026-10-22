@@ -69,9 +69,9 @@ export interface PartSummary {
   delivery: PlcDelivery;
   source: RecordSource;
   sample: { setId: string; partId: string; sn: string; label: SampleLabel } | null;
-  /** 段配方记录的整件标记（C5 起输出，疑似提前终止等单独显示）；旧记录为 null 或缺省。
+  /** 段配方记录的整件标记（疑似提前终止等单独显示）；旧记录为 null。
    * 段配方时 framesExpected = expectedTotal（待标定为 0），framesReceived = 帧组数 */
-  flags?: Flags | null;
+  flags: Flags | null;
 }
 
 export interface VerdictCounts {
@@ -98,8 +98,8 @@ export interface PartDetail {
   retests: number[];
   shots: PartShot[];
   recording: RecordingEvidence;
-  /** 段配方记录（C5 起输出）；旧记录为 null 或缺省。有值时 frames、shots 为空，points 为 null */
-  burst?: PartDetailBurst | null;
+  /** 段配方记录；旧记录为 null。有值时 frames、shots 为空，points 为 null */
+  burst: PartDetailBurst | null;
 }
 
 export interface KindOverride {
@@ -119,7 +119,7 @@ export interface Overrides {
   position: KindOverride;
   /** 胶宽限值（只作用于判胶宽的拍照点） */
   width: KindOverride;
-  /** 段配方记录：直线段的胶宽允差（上 / 下公差、帧内允许超差长度）；绝对限不适用。C5 起后端读取，旧记录忽略 */
+  /** 段配方记录：直线段的胶宽允差（上 / 下公差、帧内允许超差长度）；绝对限不适用，旧记录忽略。不填时后端按全空处理 */
   straight?: KindOverride;
   /** 段配方记录：弯道段的胶宽允差，字段同 straight；未分段区域取直线、弯道中较宽的一档 */
   corner?: KindOverride;
@@ -137,7 +137,7 @@ export interface RejudgeResult {
   skipped: number;
   limitHit: boolean;
   matrix: { from: Verdict; to: Verdict; count: number }[];
-  /** flags：段配方记录重判后的整件标记（检测不完整等与阈值无关，照常带出）；旧记录为 null 或缺省 */
-  changes: { id: number; sn: string; ts: number; from: Verdict; to: Verdict; reason: string; flags?: Flags | null }[];
+  /** flags：段配方记录重判后的整件标记（检测不完整等与阈值无关，照常带出）；旧记录为 null */
+  changes: { id: number; sn: string; ts: number; from: Verdict; to: Verdict; reason: string; flags: Flags | null }[];
   skipReasons: { id: number; sn: string; ts: number; reason: string }[];
 }

@@ -850,13 +850,6 @@ it("刷选后切回编辑点再自动提取 → 仍用上次刷选的选区与�
   expect(screen.getByRole("button", { name: "编辑点" })).toHaveAttribute("aria-pressed", "true");
 });
 
-// 防的回归：D2 落地前点“自动提取走廊”只报出原始的 “Command … not found”，或退回旧命令按拍照点下标解析（段配方没有拍照点）
-it("后端还没有走廊提取命令 → 画布提示该功能待后端 D2 实现，并建议改用笔划生成走廊", async () => {
-  const { user } = await brushOnTaughtCamera(() => { throw "Command workspace_extract_corridor not found"; });
-  await user.click(screen.getByRole("button", { name: "自动提取走廊" }));
-  expect(await screen.findByText(/^走廊自动提取：该功能待后端 D2 实现。可先用“笔划直接生成走廊”/, { selector: '[role="status"]' })).toBeVisible();
-});
-
 it("两次找不到连续边缘之间夹一次多条候选失败 → 不算连续，第二次仍只提示加大笔刷", async () => {
   const { stroke, failOnce } = await brushOnTaughtCamera(replies(extractionFailure("discontinuity"), extractionFailure("ambiguous"), extractionFailure("missing_edges")));
   await failOnce();

@@ -6,11 +6,11 @@ import { Alert, Button, Card, Chip, EmptyState, FormField, IconButton, Progress,
 import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
-import type { FrameView, PointVis, Recipe, RecipeDoc } from "../cycle/types";
+import type { FrameView, PointVis, Recipe } from "../cycle/types";
 import { framePose, movedBox, poseReasonText, poseTransform, viewSpec, viewStations, type Pt } from "../cycle/pose";
 import { FIXTURE_PAD_PX } from "./teach";
 import { shotSegment, visColor } from "../cycle/vis";
-import type { GrayImage, GrayPixels, WorkspaceView } from "./types";
+import type { GrayImage, GrayPixels } from "./types";
 import { errorText } from "../../lib/errors";
 import { stages, stageStatus, stageStatusText } from "./stages";
 import { teachingTasks } from "./teachingTasks";
@@ -41,14 +41,6 @@ export function NumberField({ label, value, unit, onChange, min, max, step = 1, 
 export function WorkspaceEmpty() {
   const { error } = useWorkspace();
   return <div className="wp-page">{error && <Notice title="无法加载候选配置" tone="warn">{error}</Notice>}<div className="wp-empty"><EmptyState icon={<Camera size={32} aria-hidden="true" />} title={desktopAvailable() ? "尚未选择配方" : "当前为浏览器查看模式"} description={desktopAvailable() ? "在配方库选择或新建配方，再开始规划拍照点与示教中线。" : "请在桌面软件中连接实际数据。"} action={desktopAvailable() && <Link className="btn primary" to="/recipe">打开配方库</Link>} /></div></div>;
-}
-/**
- * 段配方（doc.segments 非空）而后端还没输出 WorkspaceView.plan（D3 之前）：旧 / 新分流以 segments 为准，
- * 这种配方不落到旧拍照点页面——那里的采用本轮图像、逐点示教提交后会被后端 validate_burst 拒绝（段配方不能同时有拍照点）。
- */
-export const awaitingPlan = (data: Pick<WorkspaceView, "plan">, doc: Pick<RecipeDoc, "segments">) => !data.plan && !!doc.segments?.length;
-export function PlanPending({ title }: { title: string }) {
-  return <div className="wp-page"><WorkspaceBar /><Notice title={`${title}待后端 D3 实现`}>这是段配方（有段、没有拍照点）：后端工作区还没有输出段配方的数据，暂时不能在这里操作；拍照点配方的页面不适用于它。</Notice></div>;
 }
 export function WorkspaceBar() {
   const { list, drafts, selectedId, select, data, doc, dirty, frameDirty, busy, previewError, error, saveDoc, saveState, retrySave, setError } = useWorkspace();
