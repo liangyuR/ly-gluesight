@@ -81,7 +81,13 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <p class="callout warning"><strong>本修订在协议 5（《涂胶检测通信交互表 20261022 V1.1》，PLC 为 S7-1200，16 位字段统一为 Int）的点表布局上升为协议 6，对应分段连拍飞拍方案：DB4 / DB2 布局、字段名、类型、保留字节、握手顺序、心跳与复位全部不变，改变的只有计数字段的语义（第 13 节）。仓库 S7 模板（点表不变）、测试 PLC 与 PLC 参考程序随协议 6 更新；PC 握手校验以本文第 5 节为准。</strong></p>
 <p>适用于 GlueSight 一期分段连拍飞拍的 PLC 与视觉工控机对接。PLC 负责机器人运动配合下的脉冲串触发，PC 负责接件、相机布防、收图、检测及整件结果回传。一件只有一个在途事务，完成结果确认和双方释放后才能开始下一件。</p>
 <p class="callout warning"><strong>三台独立相机共用一个触发。</strong> 固定胶枪，机器人抓工件从胶嘴下走过，三台相机固定在胶嘴周围边涂边拍；PLC 发出的每个脉冲同时触发三台相机，各出 1 帧（不再是“一台设备一帧内三个视角”）。点表仍只保留一组 <code>deviceShots</code> 与 <code>deviceTriggers</code>，不设按相机的分别计数，PLC 只需一个脉冲计数；标签名沿用，含义见第 2 节。协议不接受旧多通道点表（<code>camera1/2/3Shots</code>、<code>camera1/2/3Triggers</code>）或计划，须按模板重新生成点表并重新导出计划；协议 5 的点表布局与协议 6 相同，不需要重建。现场触发模型、PLC 不参与分段、本件未检与提前终止见第 4.2 节。</p>
-<p class="callout warning"><strong>协议版本 6 与协议 5 的 DB4 / DB2 布局完全相同，不需要重新生成点表，但两者线上语义不兼容。</strong> <code>protocolVersion</code>/<code>pcProtocolVersion</code> 由 5 升为 6；<code>shotCount</code>/<code>deviceShots</code> 由“精确计划拍照点数”改为预期总数 ΣN_exp，生产请求时核对身份，示教采集不核对；<code>deviceTriggers</code> 只作参考，结束时不再要求等于 <code>deviceShots</code>；示教采集取消 1–64 数量上限。协议 5 的 PLC 程序（<code>protocolVersion</code> 写 5）会被 PC 在版本校验处直接拒绝，不做兼容读取；协议 4 及更早的点表与程序同样拒绝。与协议 5 的逐项差异见第 13 节，协议 5 相对协议 4 的历史差异见第 12 节，取舍理由与待 PLC 确认的问题见 <a href="../decisions/plc-table.md#%E5%8D%8F%E8%AE%AE-6-%E9%80%82%E9%85%8D%E5%88%86%E6%AE%B5%E8%BF%9E%E6%8B%8D">交互表适配决策 · 协议 6</a> 与 <a href="../decisions/segment-burst.md">分段连拍决策记录</a>。</p>
+<p class="callout warning"><strong>协议版本 6 与协议 5 的 DB4 / DB2 布局完全相同，不需要重新生成点表，但两者线上语义不兼容。</strong> <code>protocolVersion</code>/<code>pcProtocolVersion</code> 由 5 升为 6；<code>shotCount</code>/<code>deviceShots</code> 由“精确计划拍照点数”改为预期总数 ΣN_exp，生产请求时核对身份，示教采集不核对（待 D1）；<code>deviceTriggers</code> 只作参考，结束时不再要求等于 <code>deviceShots</code>（生产事务；示教采集待 D1）；示教采集取消 1–64 数量上限（待 D1）。协议 5 的 PLC 程序（<code>protocolVersion</code> 写 5）会被 PC 在版本校验处直接拒绝，不做兼容读取；协议 4 及更早的点表与程序同样拒绝。与协议 5 的逐项差异见第 13 节，协议 5 相对协议 4 的历史差异见第 12 节，取舍理由与待 PLC 确认的问题见 <a href="../decisions/plc-table.md#%E5%8D%8F%E8%AE%AE-6-%E9%80%82%E9%85%8D%E5%88%86%E6%AE%B5%E8%BF%9E%E6%8B%8D">交互表适配决策 · 协议 6</a> 与 <a href="../decisions/segment-burst.md">分段连拍决策记录</a>。</p>
+<p class="callout warning"><strong>实现状态（2026-10-23）：本文按协议 6 的目标行为编写，下列规则尚未在 PC 实现，分别随后续工作包 D1（示教采集）和 C3（生产节拍与判定）落地。在此之前，PC 对这些路径仍按协议 5 的现行行为处理，PLC 不得依赖新行为；正文相应处标“（待 D1）”“（待 C3）”。</strong></p>
+<ul>
+<li><strong>示教采集（待 D1）：</strong> 取消 1–64 数量上限、不核对 <code>shotCount</code>/<code>deviceShots</code> 与计数、结束时不核对实发数/收图数/保存数相等、采集失败码改为 90 配 98/99。现行行为同协议 5：<code>shotCount</code> 须为 1–64 且 <code>deviceShots</code> 等于 <code>shotCount</code>，不符时 PC 在布防阶段拒绝并进入视觉故障（没有 done）；PLC 须在发满 <code>shotCount</code> 个脉冲后停发，partEnd 时 <code>deviceTriggers</code>、各相机收图数与保存数都须等于 <code>shotCount</code>，缺帧、多帧、丢包均判本轮采集失败；采集失败在握手仍可报告时返回 <code>90/94</code>（相机断连、写盘超时、操作员中止也是 94）。</li>
+<li><strong>生产运行时判定（待 C3）：</strong> 丢帧告警（相机帧数与 <code>deviceTriggers</code> 相差 &gt; 1）、“检测不完整”与“帧数异常”标记、<code>short_part</code> 标记、partEnd 后整件帧组数与 ΣN_exp ± Σtol 的比较、91 仅在三台相机整件无帧时返回、96 对段模型退役。现行行为：生产节拍的缺帧（91）与多帧（96）仍按旧拍照点节拍判定，PC 不产生丢帧告警，也不产生 <code>short_part</code>；段模型的区域判定（溢胶、胶宽不均、未检项）同样尚未接入生产节拍。</li>
+<li><strong>已实现的协议 6 部分：</strong> 版本 6 校验；生产请求的 <code>shotCount</code>/<code>deviceShots</code> 须等于 PC 计划的 ΣN_exp（否则 90/94）；生产事务的 partEnd 不再核对 <code>deviceTriggers</code> 等于 <code>deviceShots</code>；段计划导出与计划版本规则。</li>
+</ul>
 <p class="callout warning"><strong>同一组 DB 也承载示教采集，线上没有生产/采集模式字段。采集成功同样返回 <code>1/0</code>，只表示采集完成，不表示产品合格。</strong> PLC 必须在外部维护并锁定本次用途，示教期间禁止生产自动发件和良品放行；不能仅凭 ready 或 resultCode=1 判断生产模式。示教执行条件和当前限制见第 4.1 节。</p>
 <p>本协议以仓库 S7 模板和双方握手实现为依据。PLC SCL 参考 FB 可在 S7-1200 上作为接入参考（随协议 6 更新版本号并去掉计数相等检查），仍需现场编程、真实 CPU、触发线路与相机联调验收。实现说明见 <a href="plc-s7-phase1.md">S7 握手契约与现场接入</a>。</p>
 </div>
@@ -174,7 +180,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <td>0.1</td>
 <td>Bool</td>
 <td><code>partEnd</code></td>
-<td>本件运动结束且脉冲串已停发；最终 deviceTriggers 写完后置 1。PC 不据此比较计数</td>
+<td>本件运动结束且脉冲串已停发；最终 deviceTriggers 写完后置 1。生产事务 PC 不据此比较计数；示教采集待 D1，现仍核对</td>
 </tr>
 <tr>
 <td>DB4.DBX0.2</td>
@@ -237,7 +243,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <td>10.0</td>
 <td>Int</td>
 <td><code>shotCount</code></td>
-<td>预期总数 ΣN_exp（PC 导出计划的 <code>expectedTotal</code>），0–32767。生产请求须精确等于 PC 当前计划的 ΣN_exp，否则 PC 返回 90/94；示教采集不核对，PLC 可填估算值，不再限 1–64</td>
+<td>预期总数 ΣN_exp（PC 导出计划的 <code>expectedTotal</code>），0–32767。生产请求须精确等于 PC 当前计划的 ΣN_exp，否则 PC 返回 90/94；示教采集不核对，PLC 可填估算值，不再限 1–64（待 D1：现行示教须为 1–64，且与 <code>deviceShots</code> 相等）</td>
 </tr>
 <tr>
 <td>DB4.DBD12</td>
@@ -258,7 +264,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <td>20.0</td>
 <td>Int</td>
 <td><code>deviceShots</code></td>
-<td>共用触发的预期总数，与 <code>shotCount</code> 填同一值（ΣN_exp）；生产请求同样须等于 PC 当前计划的 ΣN_exp，示教不核对</td>
+<td>共用触发的预期总数，与 <code>shotCount</code> 填同一值（ΣN_exp）；生产请求同样须等于 PC 当前计划的 ΣN_exp，示教不核对（待 D1：现行示教须等于 <code>shotCount</code>）</td>
 </tr>
 <tr>
 <td>DB4.DBB22–27</td>
@@ -279,7 +285,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <td>32.0</td>
 <td>Int</td>
 <td><code>deviceTriggers</code></td>
-<td>共用触发本件已发脉冲数，布防前为 0。只作参考与日志：结束时不要求等于 <code>deviceShots</code>；与相机帧数相差 &gt; 1 时 PC 记丢帧告警，不升级故障、不拦停</td>
+<td>共用触发本件已发脉冲数，布防前为 0。只作参考与日志：结束时不要求等于 <code>deviceShots</code>（示教采集待 D1，现仍须等于 <code>shotCount</code>）；与相机帧数相差 &gt; 1 时 PC 记丢帧告警，不升级故障、不拦停（待 C3）</td>
 </tr>
 <tr>
 <td>DB4.DBB34–37</td>
@@ -464,20 +470,20 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <p>必须满足：</p>
 <ul>
 <li><code>protocolVersion=pcProtocolVersion=6</code>。</li>
-<li>生产请求的 <code>shotCount</code> 与 <code>deviceShots</code> 都等于 PC 当前计划的 ΣN_exp（非零）；不一致由 PC 在接件核对时返回 90/94。示教采集不核对这两个值，见第 4.1 节。</li>
+<li>生产请求的 <code>shotCount</code> 与 <code>deviceShots</code> 都等于 PC 当前计划的 ΣN_exp（非零）；不一致由 PC 在接件核对时返回 90/94。示教采集不核对这两个值（待 D1，现行示教须为 1–64 且两者相等），见第 4.1 节。</li>
 <li><code>planVersion</code> 与 PC 当前计划一致（不一致 90/100）。<strong>未标定的配方不能发布生产</strong>：整件 ΣN_exp 由多轮采集得出之后才有可核对的计划；各段 N_exp 在分段算法就绪前允许为空（导出为 <code>null</code>），PLC 只使用 ΣN_exp。</li>
 <li>计划的三台相机是三个互不相同的独立设备，共用一个触发；导出计划的 <code>cameras</code> 就是这三台设备的 id，顺序固定。请求 payload 从 <code>partStart=1</code> 起冻结，保持至本件 start/end/ACK 已清且 PC 再次 ready；下一件仅在 ready 后更新。期间只更新触发计数、结束位和 ACK。</li>
 </ul>
-<p>三台相机按“一个触发、三台各出 1 帧”建模：一次触发，三台独立相机各输出一帧，不是一台设备帧内含三个视角。PC 按相机 SDK 帧号（不按到达顺序）把三台相机的帧配成帧组；某台缺帧，该组标“检测不完整”，其余相机照常判，不影响 OK/NG。PLC 的脉冲数证明输出了触发，PC 以相机实际帧为准，两者相差 &gt; 1 记丢帧告警（第 4.2 节）。真实触发线路、三台相机各自的 Line0 接线与曝光仍须联调验收。</p>
+<p>三台相机按“一个触发、三台各出 1 帧”建模：一次触发，三台独立相机各输出一帧，不是一台设备帧内含三个视角。PC 按相机 SDK 帧号（不按到达顺序）把三台相机的帧配成帧组；某台缺帧，该组标“检测不完整”，其余相机照常判，不影响 OK/NG。PLC 的脉冲数证明输出了触发，PC 以相机实际帧为准，两者相差 &gt; 1 记丢帧告警（第 4.2 节；检测不完整、丢帧告警待 C3）。真实触发线路、三台相机各自的 Line0 接线与曝光仍须联调验收。</p>
 <p>计划版本由 PC 配方库分配，不手工猜测或复用。改变产品代码、段序列（序号、类型）、各段预期帧数 N_exp、整件预期总数 ΣN_exp 或相机绑定会分配新版本；只改检测限值、容差、胶偏参考 x_ref、检测区间或段长沿用原版本。因此<strong>重新标定使 N_exp 或 ΣN_exp 变化时会分配新的 planVersion，PLC 必须同步新的 <code>shotCount</code>/<code>deviceShots</code></strong>，PC 在界面提示。更换相机或改变设备配置必须暂停接件，核对三台相机绑定，重新导出并人工评审相机与现场触发输出的对应关系，完成复位后再生产。拍照计划不使用内容哈希匹配；旧 <code>planHash</code>、<code>acceptedPlanHash</code> 标签直接拒绝，须按新模板重建点表，<code>planReserved</code>（DB4.DBD16）与 <code>acceptedPlanReserved</code>（DB2.DBD16）固定为零值保留字段。</p>
 <p>尚未迁移的旧拍照点配方（没有段列表）继续可用：其 <code>shotCount</code>/<code>deviceShots</code> 仍是该配方的触发次数，PC 仍按此精确核对；协议 6 对结束时不再比较计数、<code>deviceTriggers</code> 只作参考这两条对旧配方同样适用。</p>
 <h3 id="section-4-1">4.1 示教采集</h3>
 <ol>
 <li>现场先切到示教用途并关闭自动生产请求与良品放行。确认双方上一事务已释放，PC 空闲后，由操作员在 PC 为候选草稿启动采集，使用候选配方的三台相机，PC 不手填触发数量；真实设备要求 Line0 硬触发（三台共用触发线）。PC 等待开始后，PLC 才能提交新 requestSeq，仍按第 5 节等待 armed。</li>
-<li>PLC 在开始请求中填 <code>shotCount</code>/<code>deviceShots</code>，<strong>PC 不核对这两个值，也不再限 1–64</strong>：PLC 可填估算值（建议填预计每轮帧数），一轮采集的帧数由实际脉冲串决定。结束时不核对 <code>deviceTriggers</code>、实际接收数与保存数是否相等：PC 按 SDK 帧号把三台相机的帧配组，记录帧组数、各相机帧数、不完整组与丢帧告警；某台缺帧只告警，不判采集失败。PC 内部的写盘队列与内存有上限，超限的帧按缺帧记录并告警，也不判采集失败。</li>
+<li><strong>（待 D1）</strong> PLC 在开始请求中填 <code>shotCount</code>/<code>deviceShots</code>，<strong>PC 不核对这两个值，也不再限 1–64</strong>：PLC 可填估算值（建议填预计每轮帧数），一轮采集的帧数由实际脉冲串决定。<strong>D1 落地之前</strong>，PC 仍按协议 5 处理：<code>shotCount</code> 须为 1–64 且 <code>deviceShots</code> 等于 <code>shotCount</code>，不符时布防失败并进入视觉故障（没有 done）；PLC 须在发满 <code>shotCount</code> 个脉冲后停发，partEnd 时 <code>deviceTriggers</code>、各相机收图数与保存数都须等于 <code>shotCount</code>，缺帧、多帧或丢包均判本轮采集失败，不能使用连续脉冲串。结束时不核对 <code>deviceTriggers</code>、实际接收数与保存数是否相等：PC 按 SDK 帧号把三台相机的帧配组，记录帧组数、各相机帧数、不完整组与丢帧告警；某台缺帧只告警，不判采集失败。PC 内部的写盘队列与内存有上限，超限的帧按缺帧记录并告警，也不判采集失败。</li>
 <li>同一程序须连续采集多轮（默认 10 轮，可配）：PC 取各轮整件帧组数的均值四舍五入作预期总数 ΣN_exp，并给出容差建议；标记为标准件的轮次用于计算胶偏参考 x_ref。多轮采集不会自动发布生产配方，之后仍需示教、验证、发布并重新导出生产计划，再把导出的 ΣN_exp 填入 PLC 的 <code>shotCount</code>/<code>deviceShots</code>。</li>
 <li>当前采集路径记录 PLC 请求的非零 <code>planVersion</code> 与 <code>shotCount</code>（估算值），不与已发布生产计划比较；<code>productCode</code> 不参与候选匹配，候选来自 PC 操作员选择。因此现场须事先核对候选、三台相机、运动路径及版本并留记录；收到 armed 不证明这些业务身份已被 PC 在线核验。</li>
-<li>正常收尾：PLC 写最终 <code>deviceTriggers</code>（参考值）、置 partEnd，PC 等完整采集收尾窗口结束并确认已入队的帧全部保存完成后，提交 <code>resultCode=1/faultCode=0</code>。该值仅为采集完成，需锁存、ACK、释放，不计入生产 OK/NG。采集失败在握手仍可报告时返回 90 配 98/99：相机断连或会话变化为 98，写盘超时、等待开始超时或操作员中止为 99；采集布防失败或通信故障可能直接进入 visionFault，没有 done。</li>
+<li>正常收尾：PLC 写最终 <code>deviceTriggers</code>（参考值；D1 之前须等于 <code>shotCount</code>）、置 partEnd，PC 等完整采集收尾窗口结束并确认已入队的帧全部保存完成后，提交 <code>resultCode=1/faultCode=0</code>。该值仅为采集完成，需锁存、ACK、释放，不计入生产 OK/NG。采集失败在握手仍可报告时返回 90 配 98/99（待 D1）：相机断连或会话变化为 98，写盘超时、等待开始超时或操作员中止为 99；D1 之前一律返回 <code>90/94</code>。采集布防失败或通信故障可能直接进入 visionFault，没有 done。</li>
 <li>失败轮次不能继续补拍。处置未结事务并复位；PC 对失败的相机会话禁止再次采集，需重连该相机后整圈重采。正常完成或失败都会结束 PC 的采集占用，后续 start 可能转入生产路径；PLC 必须保持外部示教互锁，逐轮重新在 PC 启动采集。完成释放、确认 PC 无活动采集并核对生产配方/计划后，才可解除示教互锁。</li>
 </ol>
 <p class="callout warning"><strong>当前模式互锁缺口：</strong> DB 和参考 FB 均没有模式确认；PC 按收到 start 时是否存在活动采集轮次分流。PC 等待开始超时或操作员取消后，迟到的 start 可能按生产请求处理。上述人工流程不能消除此竞态；现场自动示教接入前需补齐可验证的双方模式互锁，期间不得把采集完成码接到良品放行。</p>
@@ -489,8 +495,8 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <li><strong>PLC 不参与分段</strong>，协议 6 不增加、不预留任何分段字段。直线段 / 弯道段由 PC 图像算法在配方预期边界附近划分；算法验证前整条胶路按“未分段”处理，只做每帧独立检测并核对整件帧组数。起头、收尾不拍，不在检测范围内，结果中标“未检区域”。</li>
 </ul>
 <p>本件未检的表达方式：机器人等不到 PLC 的触发许可时，超时后照常涂胶并置“本件未检”DO。PLC 对该件不提交 <code>partStart</code>（或提前终止），PC 对该件没有请求，也就没有检测记录；整件按未检处置（隔离、复检）由现场决定。PC 看不到“本件未检”DO。</p>
-<p>提前 partEnd（提前终止）的表达方式：PLC 在脉冲串未发完时提前置 <code>partEnd</code>，PC 不据此判故障，也不比较计数：用已收到的帧照常判 OK/NG，整件帧组数小于 ΣN_exp − Σtol 时在结果上加 <code>short_part</code>（疑似提前终止）标记，历史中单独显示，<strong>不改变 OK/NG 与 <code>resultCode</code></strong>。因此可能出现机器人已标“本件未检”而 PC 记录为 OK 的情况：是否按未检处置由 PLC 根据自己的“本件未检”DO 决定，不能仅凭 <code>resultCode=1</code> 放行。已布防后撤销 <code>partStart</code> 仍按握手故障处理（第 5、9.2 节）。</p>
-<p>PC 侧的标记与告警均只告警，不改 OK/NG：</p>
+<p>提前 partEnd（提前终止）的表达方式：PLC 在脉冲串未发完时提前置 <code>partEnd</code>，PC 不据此判故障，也不比较计数：用已收到的帧照常判 OK/NG，整件帧组数小于 ΣN_exp − Σtol 时在结果上加 <code>short_part</code>（疑似提前终止）标记，历史中单独显示（照常判与 <code>short_part</code> 均待 C3，现行节拍按旧拍照点判定，缺帧返回 90/91），<strong>不改变 OK/NG 与 <code>resultCode</code></strong>。因此可能出现机器人已标“本件未检”而 PC 记录为 OK 的情况：是否按未检处置由 PLC 根据自己的“本件未检”DO 决定，不能仅凭 <code>resultCode=1</code> 放行。已布防后撤销 <code>partStart</code> 仍按握手故障处理（第 5、9.2 节）。</p>
+<p>PC 侧的标记与告警均只告警，不改 OK/NG（待 C3：下列标记与告警尚未在 PC 运行时接线）：</p>
 <div class="table-scroll" tabindex="0"><table>
 <thead>
 <tr>
@@ -517,7 +523,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 </tr>
 </tbody>
 </table></div>
-<p>三台相机整件一帧都没有时才判不了：返回 <code>resultCode=90</code>、<code>faultCode=91</code>。</p>
+<p>三台相机整件一帧都没有时才判不了：返回 <code>resultCode=90</code>、<code>faultCode=91</code>（待 C3，现行节拍任一相机缺帧都可能返回 91）。</p>
 </section>
 <section class="protocol-section" aria-labelledby="section-5"><h2 id="section-5">5 单件握手流程</h2>
 <div class="table-scroll" tabindex="0"><table>
@@ -551,7 +557,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 </tr>
 <tr>
 <td>提交结束</td>
-<td>运动结束、脉冲串停发后，写最终 deviceTriggers，再置 partEnd；start 仍为 1。不要求等于 shotCount</td>
+<td>运动结束、脉冲串停发后，写最终 deviceTriggers，再置 partEnd；start 仍为 1。不要求等于 shotCount（生产事务；示教采集待 D1，此前须等于）</td>
 <td>核对 partEnd/partStart 有效且请求身份未变，不比较计数；等待收尾窗口、本件收帧及测量完成</td>
 </tr>
 <tr>
@@ -572,7 +578,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 </tbody>
 </table></div>
 <p class="callout warning"><strong>请求 payload 不合法：</strong> <code>requestSeq=0</code>、<code>planReserved≠0</code>、协议版本不符，以及 <code>partSn</code> 不合规（见第 2.1 节），均按同一方式处理：PC 不布防、不生成结果、不写 <code>resultCode</code>，进入视觉故障（<code>visionFault=1</code>、<code>visionReady=0</code>），没有可提交的 done。PLC 须释放 <code>partStart</code>，并执行故障复位（<code>faultReset</code> 上升沿，见第 8 节）后重新开始，不能等待 armed 或结果。协议 5 曾把 <code>deviceShots≠shotCount</code> 也列入此类；协议 6 不再在请求层校验 <code>shotCount</code>/<code>deviceShots</code>，生产请求中二者与 PC 计划 ΣN_exp 不一致属于接件核对，PC 返回 <code>resultCode=90</code>、<code>faultCode=94</code>，并按正常结果握手确认释放。</p>
-<p class="callout requirement"><strong>发脉冲的必要条件：</strong> <code>armed=1</code>、<code>busy=1</code>、<code>done=0</code>、<code>partEnd=0</code>、<code>visionReady=0</code>、<code>visionFault=0</code>、<code>acceptedSeq=requestSeq</code>、<code>planReserved=acceptedPlanReserved=0</code>，双方心跳活跃且现场用途、设备互锁满足，同时机器人相机使能为高。任一条件失效立即禁止新脉冲；使能为高而本条件不满足时，PLC 同样不得发脉冲。协议 6 不再以“已发数达到 <code>shotCount</code>”作为停发条件：预期总数只是核对用的名义值，脉冲串在使能期间持续发出，实际帧数允许在 N_exp ± 容差内波动。</p>
+<p class="callout requirement"><strong>发脉冲的必要条件：</strong> <code>armed=1</code>、<code>busy=1</code>、<code>done=0</code>、<code>partEnd=0</code>、<code>visionReady=0</code>、<code>visionFault=0</code>、<code>acceptedSeq=requestSeq</code>、<code>planReserved=acceptedPlanReserved=0</code>，双方心跳活跃且现场用途、设备互锁满足，同时机器人相机使能为高。任一条件失效立即禁止新脉冲；使能为高而本条件不满足时，PLC 同样不得发脉冲。协议 6 的生产事务不再以“已发数达到 <code>shotCount</code>”作为停发条件（示教采集待 D1，此前须发满 <code>shotCount</code> 个后停发）：预期总数只是核对用的名义值，脉冲串在使能期间持续发出，实际帧数允许在 N_exp ± 容差内波动。</p>
 <p class="callout warning"><strong>参考程序接入限制：</strong> 当前 SCL 的 <code>AcceptedMatches</code> 仅核对序号，<code>TriggerPermit</code> 未完整检查 ready、done 和两处零值保留字段；PC 对非零保留字段的轮询故障不能替代 PLC 本扫描的输出互锁。现场接入须补齐上述检查并验证异常注入，不能将现有 FB 直接视为已实现完整条件。</p>
 <p>已发脉冲数应来自可靠输出计数源；普通扫描采样高速布尔脉冲可能漏计。参考 FB 在布防时冻结共用触发线的累计 <code>IssuedPulseCount</code> 基线，以差值写 <code>deviceTriggers</code>；累计计数在本件内不得清零、回退或回绕（回退判 7006）。<code>deviceTriggers</code> 为 Int，只用 0–32767：差值超过 32767 时参考 FB 保持 32767，不回绕为负数，也不判故障。该值只作参考：PLC 脉冲数证明输出了触发，PC 以相机 SDK 帧号为准，二者相差 &gt; 1 只记丢帧告警。</p>
 <p>提前撤 armed 后，PLC 还须在停止触发并计入最后已发脉冲后刷新 DB 触发数，再 ACK；PC 在 ACK 时读取这些数用于丢帧告警与收尾等待，不用它推算下一件的帧号基线（每台相机的下一件基线取本件见到的最高 SDK 帧号）。当前 SCL 在发现 armed 低时直接转等结果，未再从累计计数刷新 DB，可能遗漏前一扫描后发出的末脉冲；协议 6 下这只会使参考值偏小 1 左右，不影响帧归属，但现场仍应补齐并验证此路径。</p>
@@ -581,7 +587,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <p><code>resultAck</code> 只表示 PLC 已接收该件结论。NG 和检测异常都可以有效确认，不能把 ACK 作为良品信号。同一 SN 复检也必须使用新的 requestSeq。序号为 DInt，最大 2147483647，不能溢出成负数：到达上限前先处置未结件，在中性基线下把 requestSeq 与 ackSeq 清零并显式复位，不能直接回绕生产。PC 读到负数的 Int 或 DInt 字段按读错误进入视觉故障，读到不递增的 requestSeq 拒绝接件。PLC 对 Int 字段运算时不得写出负值。</p>
 </section>
 <section class="protocol-section" aria-labelledby="section-6"><h2 id="section-6">6 结果与异常码</h2>
-<p>下表的质量语义仅适用于外部已锁定为生产的事务。示教采集只用 <code>1/0</code> 表示采集完成、<code>90/94</code> 表示可报告的采集失败，详见第 4.1 节；线上结果本身不能区分两种用途。</p>
+<p>下表的质量语义仅适用于外部已锁定为生产的事务。示教采集只用 <code>1/0</code> 表示采集完成、<code>90</code> 配 <code>98/99</code> 表示可报告的采集失败（待 D1，现行为 <code>90/94</code>），详见第 4.1 节；线上结果本身不能区分两种用途。</p>
 <div class="table-scroll" tabindex="0"><table>
 <thead>
 <tr>
@@ -643,7 +649,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 </tr>
 <tr>
 <td>91</td>
-<td>缺帧。段模型下只有三台相机整件一帧都没有才返回；单台相机缺帧只标“检测不完整”，不改 OK/NG。旧拍照点配方的缺帧判定不变</td>
+<td>缺帧。段模型下只有三台相机整件一帧都没有才返回；单台相机缺帧只标“检测不完整”，不改 OK/NG（待 C3，现行节拍仍按旧拍照点判定）。旧拍照点配方的缺帧判定不变</td>
 </tr>
 <tr>
 <td>92</td>
@@ -663,7 +669,7 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 </tr>
 <tr>
 <td>96</td>
-<td>多余帧。协议 6 起段模型不再使用：帧数超出 N_exp ± 容差只记“帧数异常”告警；常量与本表保留，旧拍照点配方的判定不变</td>
+<td>多余帧。协议 6 起段模型不再使用：帧数超出 N_exp ± 容差只记“帧数异常”告警（待 C3，现行节拍仍可能返回 96）；常量与本表保留，旧拍照点配方的判定不变</td>
 </tr>
 <tr>
 <td>97</td>
@@ -671,11 +677,11 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 </tr>
 <tr>
 <td>98</td>
-<td>设备丢失（含示教采集时相机断连、会话变化）</td>
+<td>设备丢失（含示教采集时相机断连、会话变化；示教采集的 98 待 D1，现行为 94）</td>
 </tr>
 <tr>
 <td>99</td>
-<td>布防或处理超时、测量执行失败等处理异常（含示教采集写盘超时、操作员中止），结合 PC 原因查看</td>
+<td>布防或处理超时、测量执行失败等处理异常（含示教采集写盘超时、操作员中止；示教采集的 99 待 D1，现行为 94），结合 PC 原因查看</td>
 </tr>
 <tr>
 <td>100</td>
@@ -1125,22 +1131,22 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <tr>
 <td><code>shotCount</code> / <code>deviceShots</code></td>
 <td>精确的计划拍照点数，必须相等且非零，结束时 <code>deviceTriggers</code> 必须等于它</td>
-<td>预期总数 ΣN_exp；生产请求须精确等于 PC 计划，否则 90/94；示教不核对，PLC 可填估算值；请求层不再校验非零与相等</td>
+<td>预期总数 ΣN_exp；生产请求须精确等于 PC 计划，否则 90/94；示教不核对，PLC 可填估算值（待 D1）；请求层不再校验非零与相等</td>
 </tr>
 <tr>
 <td><code>deviceTriggers</code></td>
 <td>结束时必须等于 <code>deviceShots</code></td>
-<td>只作参考与日志，不要求等于 <code>deviceShots</code>；与相机帧数相差 &gt; 1 记丢帧告警，不升级故障、不拦停</td>
+<td>只作参考与日志，不要求等于 <code>deviceShots</code>（示教采集待 D1）；与相机帧数相差 &gt; 1 记丢帧告警，不升级故障、不拦停（待 C3）</td>
 </tr>
 <tr>
 <td><code>partEnd</code></td>
 <td>PLC 核对实发数等于计划数后才置；PC 校验计数相等</td>
-<td>运动结束、脉冲串停发后置；PC 只核对 partEnd/partStart 有效与请求身份不变；结束后用整件帧组数与 ΣN_exp ± Σtol 比较，越界只告警</td>
+<td>运动结束、脉冲串停发后置；PC 只核对 partEnd/partStart 有效与请求身份不变；结束后用整件帧组数与 ΣN_exp ± Σtol 比较，越界只告警（比较与告警待 C3）</td>
 </tr>
 <tr>
 <td>示教采集数量</td>
 <td>PLC 提供 1–64，实发数、收图数、保存数须全部等于它</td>
-<td>无 1–64 上限，不核对计数，PLC 可填估算值；采集失败码为 90 配 98/99（原 90/94）</td>
+<td>无 1–64 上限，不核对计数，PLC 可填估算值；采集失败码为 90 配 98/99（原 90/94）。<strong>待 D1</strong>，在此之前仍按协议 5</td>
 </tr>
 <tr>
 <td>帧归属</td>
@@ -1150,12 +1156,12 @@ html{scroll-behavior:auto}body{background:white;color:#16242d;font-size:10pt;lin
 <tr>
 <td>缺帧 / 多帧</td>
 <td>缺帧 91、多帧或超计划 96</td>
-<td>单台缺帧只标“检测不完整”，不改 OK/NG；帧数越界只告警；96 不再使用；91 仅在三台相机整件无帧时返回</td>
+<td>单台缺帧只标“检测不完整”，不改 OK/NG；帧数越界只告警；96 不再使用；91 仅在三台相机整件无帧时返回（待 C3）</td>
 </tr>
 <tr>
 <td>提前 partEnd</td>
 <td>计数不等判故障</td>
-<td>用已收到的帧照常判，整件帧组数 &lt; ΣN_exp − Σtol 加 <code>short_part</code> 标记，不改 OK/NG（第 4.2 节）</td>
+<td>用已收到的帧照常判，整件帧组数 &lt; ΣN_exp − Σtol 加 <code>short_part</code> 标记，不改 OK/NG（第 4.2 节；照常判与 <code>short_part</code> 均待 C3）</td>
 </tr>
 <tr>
 <td>本件未检</td>
