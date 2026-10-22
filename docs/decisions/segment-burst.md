@@ -206,6 +206,7 @@
 
 - 问题：发布包按 (k, view) 组织，RELEASE_SCHEMA = 3；标定键 `{device}-v{view}`；规格 §0 三台独立设备，没有视角。
 - 采用：C4（G3）新增 `publish_burst`，按相机组织，写 schema 4；段配方的标定键为 `{device}`。旧 `publish`、schema 3 的加载、`{device}-v{view}` 标定键保留给旧配方，load 同时接受 3 和 4。
+- 前后端契约（审查修复）：标定页（`CalibPanel`、飞拍标定页）对任何相机都带图编号，单视角相机为 1。`vision_calibrate` 对单视角相机的图 1 同时写 `{device}-v1`（旧配方读）与 `{device}`（段配方读），两份内容相同；三目拼接相机的图 N 只写 `{device}-v{N}`；不带图编号只写 `{device}`。`vision_calib_info` 带图编号读 `{device}-v{view}`，不带读 `{device}`。没有回退读取：本修复之前只存了 `{device}-v1` 的单视角相机，要在标定页重新标定一次才会生成 `{device}`。
 
 ### D-SB-31 隐藏上限
 

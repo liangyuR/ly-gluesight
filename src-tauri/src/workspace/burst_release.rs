@@ -361,7 +361,7 @@ pub(super) fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeD
         let source = if external.exists() {
             Some(serde_json::from_str::<Value>(&crate::fsio::read_text(&external).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?)
         } else { None };
-        let reference = match &inspect.calib { Some(reference) => reference.clone(), None => vision::station_key(&inspect.camera)? };
+        let reference = vision::camera_calib_key(inspect)?;
         let calibration = json!({"schemaVersion": 1, "camera": inspect.camera, "reference": reference, "mmPerPx": inspect.mm_per_px, "source": source});
         sizes.push(taught.frame.size);
         cameras.push(crate::release::CameraInput {

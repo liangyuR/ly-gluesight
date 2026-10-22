@@ -398,32 +398,47 @@ fn station_view_key(device: &str, view: u8) -> Result<String, String> {
 }
 
 /// 段配方的工位标定键：设备编号本身（D-SB-30，三台独立单视角相机，没有图编号）。
-/// 与旧配方的 `{device}-v{view}` 并存、永不相同：给段配方标定不会覆盖旧配方的标定文件。
+/// 与旧配方的 `{device}-v{view}` 并存、永不相同（文件各自独立）；标定页对单视角相机的图 1 同时写两份，见 `calib_keys`。
 pub fn station_key(device: &str) -> Result<String, String> {
     if !crate::recipe::valid_camera_id(device) { return Err(format!("相机编号 {device:?} 只能用字母、数字、- 和 _")); }
     Ok(device.to_string())
 }
 
+/// 段配方一台检测相机的工位标定键：它的标定引用，缺省为设备编号 `{device}`。
+pub fn camera_calib_key(inspect: &CameraInspect) -> Result<String, String> {
+    match &inspect.calib { Some(reference) => Ok(reference.clone()), None => station_key(&inspect.camera) }
+}
+
 /// 段配方一台检测相机的标定文件：按它的标定引用（缺省为设备编号）找工位标定。
 pub fn camera_calib_path(app: &AppHandle, inspect: &CameraInspect) -> Result<PathBuf, String> {
-    let key = match &inspect.calib { Some(reference) => reference.clone(), None => station_key(&inspect.camera)? };
-    station_calib_path(app, &key)
+    station_calib_path(app, &camera_calib_key(inspect)?)
 }
 
 fn camera_id(app: &AppHandle, cam: u8) -> Result<String, String> {
     Ok(app.state::<CycleHost>().camera.slot(cam as usize).ok_or("相机不存在")?.config().id)
 }
 
-/// 标定命令的键：给了图编号是旧配方的 `{device}-v{view}`；没给是段配方的 `{device}`，这台相机必须是单视角（D-SB-11）。
-fn calib_key(app: &AppHandle, cam: u8, view: Option<u8>) -> Result<String, String> {
-    let config = app.state::<CycleHost>().camera.slot(cam as usize).ok_or("相机不存在")?.config();
+/// 标定命令的键：第一个是 `vision_calib_info` 读的键，全部是 `vision_calibrate` 写的键。
+/// - 给了图编号（标定页总会给，单视角相机为 1）：旧配方的 `{device}-v{view}`。单视角相机的图 1 就是这台设备的整幅图，
+///   同时写段配方读的 `{device}`（D-SB-30），标定页做的标定段配方才用得上；三目拼接相机的各图只写 `{device}-v{view}`。
+/// - 没给：只写段配方的 `{device}`，这台相机必须是单视角（D-SB-11）。
+fn calib_keys(config: &crate::camera::CameraConfig, view: Option<u8>) -> Result<Vec<String>, String> {
+    let single_view = || crate::camera::check_burst_cameras(std::slice::from_ref(config), std::slice::from_ref(&config.id));
     match view {
-        Some(view) => station_view_key(&config.id, view),
+        Some(view) => {
+            let mut keys = vec![station_view_key(&config.id, view)?];
+            if view == 1 && single_view().is_ok() { keys.push(station_key(&config.id)?); }
+            Ok(keys)
+        }
         None => {
-            crate::camera::check_burst_cameras(std::slice::from_ref(&config), std::slice::from_ref(&config.id))?;
-            station_key(&config.id)
+            single_view()?;
+            Ok(vec![station_key(&config.id)?])
         }
     }
+}
+
+fn camera_calib_keys(app: &AppHandle, cam: u8, view: Option<u8>) -> Result<Vec<String>, String> {
+    calib_keys(&app.state::<CycleHost>().camera.slot(cam as usize).ok_or("相机不存在")?.config(), view)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -453,19 +468,20 @@ pub fn calib_info(path: &Path) -> Option<CalibInfo> {
     })
 }
 
-/// `view` 给了读旧配方的 `{device}-v{view}`，没给读段配方的 `{device}`（见 `calib_key`）。
+/// `view` 给了读旧配方的 `{device}-v{view}`，没给读段配方的 `{device}`（见 `calib_keys`，单视角相机的图 1 两份同时写）。
 #[tauri::command]
 pub fn vision_calib_info(app: AppHandle, cam: Option<u8>, view: Option<u8>) -> Result<Option<CalibInfo>, String> {
-    let key = calib_key(&app, cam.unwrap_or(0), view)?;
-    Ok(calib_info(&station_calib_path(&app, &key)?))
+    let keys = camera_calib_keys(&app, cam.unwrap_or(0), view)?;
+    Ok(calib_info(&station_calib_path(&app, &keys[0])?))
 }
 
 /// 工位标定：用飞拍相机最近一帧整图跑 image.board_calib，结果存成工位标定文件。
-/// `view` 给了存旧配方的 `{device}-v{view}`，没给存段配方的 `{device}`（单视角相机，样本与最近一帧都是图 1）；两份文件并存。
+/// `view` 给了存旧配方的 `{device}-v{view}`，单视角相机的图 1 还同时存段配方的 `{device}`；没给只存 `{device}`
+/// （单视角相机，样本与最近一帧都是图 1）。键见 `calib_keys`。
 #[tauri::command]
 pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, cam: Option<u8>, view: Option<u8>, image_id: Option<String>) -> Result<CalibInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let key = calib_key(&app, cam.unwrap_or(0), view)?;
+        let keys = camera_calib_keys(&app, cam.unwrap_or(0), view)?;
         let view = view.unwrap_or(1);
         if app.state::<CycleHost>().busy() || app.state::<CycleHost>().camera.recipe_capture().active() { return Err("设备正在采集或检测，结束后再标定".into()); }
         if pattern.iter().any(|n|!n.is_finite()||*n<2.0||*n>100.0||n.fract()!=0.0)||!square.is_finite()||square<=0.0 { return Err("棋盘格内角点与格长无效".into()); }
@@ -498,8 +514,8 @@ pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, ca
             });
         }
         let data = r.record("calib").cloned().ok_or("标定没有输出")?;
-        let path = station_calib_path(&app, &key)?;
-        if let Some(dir) = path.parent() {
+        let paths = keys.iter().map(|key| station_calib_path(&app, key)).collect::<Result<Vec<_>, _>>()?;
+        for dir in paths.iter().filter_map(|path| path.parent()) {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
         if let Some(id)=image_id.as_deref() {
@@ -507,9 +523,11 @@ pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, ca
             crate::workspace::station_image_ref(&app,cam.unwrap_or(0),id)?;
         }
         let doc = json!({"kind": "Record", "type": "image.PlaneCalib", "data": data, "ts": ly_plc::now_ms(), "sampleId":image_id,"cameraId":camera_id(&app,cam.unwrap_or(0))?,"view":view});
-        crate::fsio::write_atomic(&path, &serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?)?;
+        let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+        let written = paths.iter().try_for_each(|path| crate::fsio::write_atomic(path, &text));
         let _ = app.emit("calibration://changed", ());
-        calib_info(&path).ok_or_else(|| "标定文件写入后读不回来".into())
+        written?;
+        calib_info(&paths[0]).ok_or_else(|| "标定文件写入后读不回来".into())
     })
     .await
     .map_err(|e| e.to_string())?
