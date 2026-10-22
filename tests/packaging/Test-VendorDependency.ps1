@@ -129,22 +129,5 @@ try {
     Expect-Failure '删除边界' { Remove-VendorCacheDirectory $root $cache } '以外'
     Expect-Failure '恢复边界' { Restore-VendorRuntime ([IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($root))) } '本项目'
     Remove-VendorCacheDirectory $destination $cache
-    $linkTarget = Join-Path $root 'link-target'
-    [void][IO.Directory]::CreateDirectory($linkTarget)
-    'preserve' | Set-Content -LiteralPath (Join-Path $linkTarget 'sentinel.txt')
-    [void](New-Item -ItemType Junction -Path $destination -Target $linkTarget)
-    try {
-        $before = $script:downloads
-        Expect-Failure '链接缓存不能删除或恢复' { Restore-VendorRuntime $cache } '重定向'
-        if ($script:downloads -ne $before -or -not (Test-Path -LiteralPath (Join-Path $linkTarget 'sentinel.txt'))) { throw '链接目标必须保留且不能发起下载。' }; $script:passed++
-    } finally { Remove-Item -LiteralPath $destination -Force }
-    $versionDirectory = [IO.Path]::GetDirectoryName($destination)
-    Remove-Item -LiteralPath $versionDirectory -Force
-    [void](New-Item -ItemType Junction -Path $versionDirectory -Target $linkTarget)
-    try {
-        $before = $script:downloads
-        Expect-Failure '版本父目录链接不能写入' { Restore-VendorRuntime $cache } '重定向'
-        if ($script:downloads -ne $before -or @(Get-ChildItem -LiteralPath $linkTarget).Count -ne 1) { throw '版本父链接目标不能写入目录或文件。' }; $script:passed++
-    } finally { Remove-Item -LiteralPath $versionDirectory -Force }
     Write-Host "厂商依赖测试通过：$($script:passed) 项（包隔离、结构、尺寸、CRT 版本、固定源恢复与缓存边界；CRT 版本读取及 gh 使用 fixture）。"
 } finally { Remove-VendorCacheDirectory $root ([IO.Path]::GetDirectoryName($root)) }

@@ -53,7 +53,7 @@ try {
         $manifest.lyflow.localValidationOnly = $localOnly; Save-FixtureManifest $manifest
         Expect-Failure '本机诊断候选' { Assert-RuntimeManifest (Join-Path $root 'runtime') } 'localValidationOnly'
     }
-    $manifest.lyflow.localValidationOnly = $false
+    $manifest.lyflow.localValidationOnly = $false; Save-FixtureManifest $manifest
     $image[68] = 0x4c; $image[69] = 0x01
     [IO.File]::WriteAllBytes((Join-Path $root 'runtime/lyflow/lyflow_core.dll'), $image)
     Expect-Failure 'x86 PE' { Assert-RuntimeManifest (Join-Path $root 'runtime') } 'x64'
