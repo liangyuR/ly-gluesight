@@ -1,10 +1,11 @@
 //! PLC 开始请求不合法时的处置：不布防、不生成结果，进入视觉故障，等 PLC 释放后明确复位。
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use ly_plc::{DataType, EventSink, Logbook, PlcConfig, PlcEngine};
 
 use super::line::Layout;
 use super::s7_server::{S7Server, SharedMemory};
+use super::test_dir::TestDir;
 use super::*;
 use crate::handshake::{Contract, PROTOCOL_VERSION};
 use crate::inspection::tag;
@@ -63,8 +64,17 @@ async fn poll_until(session: &mut PlcSession, engine: &PlcEngine, what: &str, mu
     }
 }
 
-/// 复位后的空闲会话；复位时 PLC 的 requestSeq 为 5，即本会话已用过的最大事务序号。
-async fn idle_session(name: &str) -> (S7Server, PlcEngine, PlcSession, Plc) {
+/// PLC 释放输入、requestSeq 置回 5 后按复位：会话回到空闲，已用过的最大事务序号以 5 为基线。
+async fn reset_to_idle(session: &mut PlcSession, engine: &PlcEngine, plc: &Plc) {
+    for (field, value) in [(tag::PART_START, 0), (tag::PART_END, 0), (tag::RESULT_ACK, 0), (tag::REQUEST_SEQ, 5), (tag::FAULT_RESET, 1)] {
+        plc.set(field, value);
+    }
+    poll_until(session, engine, "复位未完成", |event| matches!(event, SessionEvent::Ready)).await;
+    plc.set(tag::FAULT_RESET, 0);
+}
+
+/// 复位后的空闲会话，见 [`reset_to_idle`]。
+async fn idle_session(name: &str) -> (S7Server, PlcEngine, PlcSession, Plc, TestDir) {
     let mut config = crate::inspection::default_plc_config();
     let layout = Layout::from_config(&config).unwrap();
     let memory = layout.memory();
@@ -75,35 +85,31 @@ async fn idle_session(name: &str) -> (S7Server, PlcEngine, PlcSession, Plc) {
     config.connection.poll_interval_ms = 20;
     config.connection.reconnect_interval_ms = 200;
     config.heartbeat.interval_ms = 100;
-    let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/offline-tests")
-        .join(format!("{name}-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
-    std::fs::create_dir_all(&directory).unwrap();
+    let directory = TestDir::new("offline-tests", name);
     let sink: EventSink = Arc::new(|_| {});
     let engine = PlcEngine::new(config.clone(), Arc::new(Logbook::open(&directory.join("plc.db"), sink.clone(), 1).unwrap()), sink);
     engine.connect().await;
     let plc = Plc { config, memory };
-    plc.set(tag::REQUEST_SEQ, 5);
     let mut session = PlcSession::open(directory.join("session.json"));
     let settle = Instant::now() + Duration::from_millis(400);
     while Instant::now() < settle {
         session.poll(&engine, false, true).await;
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    plc.set(tag::FAULT_RESET, 1);
-    poll_until(&mut session, &engine, "复位未完成", |event| matches!(event, SessionEvent::Ready)).await;
-    plc.set(tag::FAULT_RESET, 0);
-    (server, engine, session, plc)
+    reset_to_idle(&mut session, &engine, &plc).await;
+    (server, engine, session, plc, directory)
 }
 
 #[tokio::test]
 async fn invalid_start_request_faults_without_arming_or_result_while_a_valid_one_starts() {
+    // 各 case 共用一个 S7 服务与会话：拒收的请求不布防、不写结果、不推进事务序号，复位后状态与新会话相同
+    let (_server, engine, mut session, plc, _directory) = idle_session("start-request").await;
     for (case, request_seq, plan_reserved, accepted) in [
         ("requestSeq 与上次相同", 5, 0, false),
         ("requestSeq 回退", 3, 0, false),
         ("开始校验失败（planReserved 非零）", 6, 1, false),
         ("合法请求", 6, 0, true),
     ] {
-        let (_server, engine, mut session, plc) = idle_session("start-request").await;
         plc.set_text(tag::PART_SN, "SN-CORE-1");
         for (field, value) in [(tag::PROTOCOL_VERSION, PROTOCOL_VERSION as u32), (tag::REQUEST_SEQ, request_seq), (tag::PRODUCT_CODE, 1),
             (tag::SHOT_COUNT, 4), (tag::PLAN_VERSION, 7), (tag::PLAN_RESERVED, plan_reserved), (tag::DEVICE_SHOTS, 4),
@@ -118,7 +124,8 @@ async fn invalid_start_request_faults_without_arming_or_result_while_a_valid_one
             let outputs: Vec<_> = [tag::VISION_FAULT, tag::VISION_READY, tag::ARMED, tag::BUSY, tag::DONE, tag::RESULT_CODE, tag::ACCEPTED_SEQ]
                 .into_iter().map(|field| plc.get(field)).collect();
             assert_eq!(outputs, [1, 0, 0, 0, 0, 0, 0], "{case}：visionFault/visionReady/armed/busy/done/resultCode/acceptedSeq");
+            reset_to_idle(&mut session, &engine, &plc).await;
         }
-        engine.disconnect().await;
     }
+    engine.disconnect().await;
 }

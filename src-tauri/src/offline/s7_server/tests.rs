@@ -1,6 +1,7 @@
 use super::*;
 use ly_plc::{Access, ConnectionConfig, DataType, EventSink, LinkState, Logbook, PlcConfig, PlcEngine, PlcPoint, PlcValue, ProtocolKind};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
+use crate::offline::test_dir::TestDir;
 
 fn point(id: &str, address: &str, data_type: DataType, access: Access) -> PlcPoint {
     PlcPoint { id: id.into(), name: id.into(), address: address.into(), data_type, access, ..PlcPoint::default() }
@@ -31,9 +32,7 @@ async fn ly_plc_s7_client_reads_and_writes_bit_word_dword_and_recovers_after_dis
         ],
         ..PlcConfig::default()
     };
-    let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/offline-tests")
-        .join(format!("s7-server-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
-    std::fs::create_dir_all(&directory).unwrap();
+    let directory = TestDir::new("offline-tests", "s7-server");
     let sink: EventSink = Arc::new(|_| {});
     let engine = PlcEngine::new(config, Arc::new(Logbook::open(&directory.join("plc.db"), sink.clone(), 1).unwrap()), sink);
     engine.connect().await;

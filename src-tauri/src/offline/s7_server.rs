@@ -75,6 +75,31 @@ pub enum Fault {
     /// PLC 停机：断开当前连接，并在这段时间内拒绝新连接
     Outage(Duration),
     Clear,
+    /// 测试用：拒绝下一次写到该地址的那一项（同一请求里的其它项照常写入）
+    #[cfg(test)]
+    RejectWriteTo(WriteTarget),
+    /// 测试用：下一次写到该地址的请求照常写入，但不应答并断开连接，PC 无法确认写入结果
+    #[cfg(test)]
+    DisconnectAfterWriteTo(WriteTarget),
+}
+
+/// 定点写故障的目标；不带位号时匹配覆盖该字节的字节项，带位号时只匹配该位的位写入。
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriteTarget {
+    pub db: u16,
+    pub byte: u32,
+    pub bit: Option<u8>,
+}
+
+#[cfg(test)]
+impl WriteTarget {
+    fn covers(&self, item: &Item) -> bool {
+        item.db == self.db && match self.bit {
+            Some(bit) => item.transport == 1 && item.byte() == self.byte && item.bit() == bit,
+            None => (item.byte()..item.byte() + item.size() as u32).contains(&self.byte),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -85,6 +110,9 @@ struct Control {
     delay_ms: AtomicU64,
     heartbeat_stopped: AtomicBool,
     outage_until: Mutex<Option<Instant>>,
+    /// 定点写故障：(目标, 写完后是否断开)，各生效一次
+    #[cfg(test)]
+    targets: Mutex<Vec<(WriteTarget, bool)>>,
 }
 
 impl Control {
@@ -94,6 +122,20 @@ impl Control {
 
     fn in_outage(&self) -> bool {
         self.outage_until.lock().unwrap().is_some_and(|until| Instant::now() < until)
+    }
+
+    /// 取出这次写请求命中的第一个定点写故障：(某项是否被拒, 写完后是否断开)
+    #[cfg(test)]
+    fn take_target(&self, items: &[Item]) -> (impl Fn(&Item) -> bool, bool) {
+        let mut targets = self.targets.lock().unwrap();
+        let taken = targets.iter().position(|(target, _)| items.iter().any(|item| target.covers(item))).map(|index| targets.remove(index));
+        let rejected = taken.filter(|(_, disconnect)| !disconnect).map(|(target, _)| target);
+        (move |item: &Item| rejected.is_some_and(|target| target.covers(item)), taken.is_some_and(|(_, disconnect)| disconnect))
+    }
+
+    #[cfg(not(test))]
+    fn take_target(&self, _items: &[Item]) -> (impl Fn(&Item) -> bool, bool) {
+        (|_: &Item| false, false)
     }
 }
 
@@ -146,6 +188,12 @@ impl S7Server {
         self.control.heartbeat_stopped.load(Ordering::SeqCst)
     }
 
+    /// 还没有被写请求命中的定点写故障数
+    #[cfg(test)]
+    pub fn armed_write_faults(&self) -> usize {
+        self.control.targets.lock().unwrap().len()
+    }
+
     pub fn inject(&self, fault: Fault) {
         let control = &self.control;
         match fault {
@@ -165,7 +213,13 @@ impl S7Server {
             Fault::Clear => {
                 for counter in [&control.reject_reads, &control.reject_writes, &control.delays] { counter.store(0, Ordering::SeqCst); }
                 control.outage_until.lock().unwrap().take();
+                #[cfg(test)]
+                control.targets.lock().unwrap().clear();
             }
+            #[cfg(test)]
+            Fault::RejectWriteTo(target) => control.targets.lock().unwrap().push((target, false)),
+            #[cfg(test)]
+            Fault::DisconnectAfterWriteTo(target) => control.targets.lock().unwrap().push((target, true)),
         }
     }
 }
@@ -370,13 +424,15 @@ fn exchange(s7: &[u8], pdu: &mut Option<u16>, memory: &SharedMemory, control: &C
     } else {
         let Some(values) = parse_write_data(&items, data) else { return Some(ack(reference, &[], &[], REJECTED)) };
         let rejected = Control::take(&control.reject_writes);
+        let (targeted, disconnect) = control.take_target(&items);
         let mut memory = memory.lock().unwrap();
         for (item, (transport, bits, value)) in items.iter().zip(values) {
-            output.push(match if rejected { Err(0x03) } else { write_item(&mut memory, item, transport, bits, value) } {
+            output.push(match if rejected || targeted(item) { Err(0x03) } else { write_item(&mut memory, item, transport, bits, value) } {
                 Ok(()) => 0xFF,
                 Err(code) => code,
             });
         }
+        if disconnect { return None; }
     }
     let response = ack(reference, &[function, items.len() as u8], &output, [0, 0]);
     Some(if response.len() - 7 > limit { ack(reference, &[], &[], TOO_LARGE) } else { response })

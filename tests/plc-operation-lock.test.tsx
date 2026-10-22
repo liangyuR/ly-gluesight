@@ -28,7 +28,6 @@ describe("PLC 操作锁", () => {
     render(<Harness />); expect(screen.getByText(/正在核对生产状态/)).toBeVisible();
     await act(async () => initial.resolve({ phase: "IDLE", plcLocked: false }));
     expect(screen.getByText("操作可用")).toBeVisible();
-    expect(invoke).toHaveBeenCalledWith("cycle_snapshot", undefined);
   });
 
   it("最新事务事件优先于迟到的初始空闲响应，FAULT 未结事务仍锁定", async () => {

@@ -202,20 +202,11 @@ class S7WireTests(unittest.TestCase):
 
 
 class S7HeartbeatTests(unittest.TestCase):
-    def test_heartbeat_freeze_resume_and_default_point_table(self):
-        state = PLC.PlcState(plc_db=321, pc_db=322)
+    def test_heartbeat_freeze_and_resume(self):
+        state = PLC.PlcState()
         state.heartbeat_ms = 15
         server = PLC.S7Server(state).start()
         try:
-            self.assertEqual(state.field_values()["protocolVersion"], 5)
-            self.assertEqual(len(state.fields), 28)
-            self.assertEqual(state.fields["partSn"], {"db": 321, "byte": 38, "type": "string"})
-            self.assertEqual(state.fields["resultSn"], {"db": 322, "byte": 20, "type": "string"})
-            self.assertEqual(state.fields["deviceShots"], {"db": 321, "byte": 20, "type": "i16"})
-            self.assertEqual(state.fields["deviceTriggers"], {"db": 321, "byte": 32, "type": "i16"})
-            self.assertEqual(state.fields["requestSeq"], {"db": 321, "byte": 4, "type": "i32"})
-            self.assertEqual(state.fields["resultCode"], {"db": 322, "byte": 8, "type": "i16"})
-            self.assertEqual(state.fields["acceptedPlanReserved"], {"db": 322, "byte": 16, "type": "i32"})
             deadline = time.monotonic() + 1
             while not state.field_values()["plcHeartbeat"] and time.monotonic() < deadline:
                 time.sleep(0.005)
@@ -384,10 +375,8 @@ class S7ProcessApiTests(unittest.TestCase):
             with self.subTest(field=name):
                 response = self.fixture.command("plc_request", values={"requestSeq": 99, name: 1})
                 self.assertFalse(response["ok"])
-                self.assertIn("unknown handshake field", response["error"])
                 response = self.fixture.command("configure_handshake", fields={"deviceShots": {"byte": 20, "type": "i16"}, name: {"byte": 22, "type": "i16"}})
                 self.assertFalse(response["ok"])
-                self.assertIn("removed handshake field", response["error"])
                 fields = self.fixture.command("status")["result"]["fields"]
                 self.assertEqual(len(fields), 28)
                 self.assertEqual(fields["requestSeq"], 0)

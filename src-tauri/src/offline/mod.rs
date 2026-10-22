@@ -795,6 +795,8 @@ fn finish_idle(app: &AppHandle, offline: &OfflineHost) {
 }
 
 #[cfg(test)]
+pub(crate) mod test_dir;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod start_request_tests;

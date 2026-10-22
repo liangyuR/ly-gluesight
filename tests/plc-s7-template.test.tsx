@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import S7Phase1Dialog from "../src/features/plc/components/S7Phase1Dialog";
 import type { PlcConfig } from "../src/features/plc/types";
 import { plcConfig } from "./plc-fixtures";
@@ -20,6 +20,7 @@ function template({ plcDb, pcDb }: { plcDb: number; pcDb: number }): PlcConfig {
 beforeEach(() => {
   vi.mocked(invoke).mockImplementation(async (_command, args) => template(args as { plcDb: number; pcDb: number }));
 });
+afterEach(() => vi.useRealTimers());
 
 describe("载入一期 S7 点表", () => {
   it("协议 4 的单 DB 旧点表 → 默认 PLC 区 DB4、PC 区 DB2，并应用 S7-1200 连接参数", async () => {
@@ -39,10 +40,11 @@ describe("载入一期 S7 点表", () => {
     render(<S7Phase1Dialog config={plcConfig()} dirty={false} blockedReason="" onApply={vi.fn()} onClose={() => {}} />);
     await waitFor(() => expect(invoke).toHaveBeenCalled());
     vi.mocked(invoke).mockClear();
+    vi.useFakeTimers();
     fireEvent.change(screen.getByRole("spinbutton", { name: "PC 区 DB（PC 写）" }), { target: { value: "4" } });
-    expect(await screen.findByText("PLC 区与 PC 区必须使用两个不同的 DB")).toBeInTheDocument();
+    expect(screen.getByText("PLC 区与 PC 区必须使用两个不同的 DB")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "应用到草稿" })).toBeDisabled();
-    await new Promise(resolve => setTimeout(resolve, 300));
+    vi.runAllTimers();
     expect(invoke).not.toHaveBeenCalled();
   });
 });

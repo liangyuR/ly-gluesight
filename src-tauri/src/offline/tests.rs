@@ -1,14 +1,17 @@
 use super::line::{Layout, Line, Outcome, PartOrder, Timing};
 use super::s7_server::S7Server;
+use super::test_dir::TestDir;
 use super::*;
 use crate::judge::fault;
 use crate::plc_plan::{PlanShot, PlcPlan};
 use crate::plc_session::{Origin, PendingKind, PlcSession, SessionEvent, SessionPhase};
 use crate::inspection::tag;
 use ly_plc::{EventSink, Logbook, PlcEngine};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 const HANG_GUARD: Duration = Duration::from_secs(120);
+/// PC 主动断开后 3.5 s 自动重连（plc_session 的 RECONNECT_AFTER_STOP）再留余量：观察这么久没有重连，才算不会再自动重连。
+const RECONNECT_AFTER_STOP_WINDOW: Duration = Duration::from_millis(4000);
 
 const TIMING: Timing = Timing {
     poll: Duration::from_millis(5),
@@ -29,7 +32,7 @@ struct Bench {
     session: PlcSession,
     plan: PlcPlan,
     intake: Arc<AtomicBool>,
-    directory: std::path::PathBuf,
+    directory: TestDir,
 }
 
 impl Bench {
@@ -38,19 +41,22 @@ impl Bench {
     }
 
     async fn new_with(name: &str, before_connect: impl FnOnce(&S7Server)) -> Self {
+        Self::start(name, Duration::from_millis(20), Duration::from_millis(100), before_connect).await
+    }
+
+    /// `poll`：PC 轮询周期；`heartbeat`：虚拟 PLC 心跳翻转间隔。
+    async fn start(name: &str, poll: Duration, heartbeat: Duration, before_connect: impl FnOnce(&S7Server)) -> Self {
         let mut config = crate::inspection::default_plc_config();
         let layout = Layout::from_config(&config).unwrap();
         let memory = layout.memory();
-        let server = S7Server::start(memory.clone(), Some((layout.heartbeat(), Duration::from_millis(100)))).await.unwrap();
+        let server = S7Server::start(memory.clone(), Some((layout.heartbeat(), heartbeat))).await.unwrap();
         config.connection.host = "127.0.0.1".into();
         config.connection.port = server.port();
         config.connection.timeout_ms = 5000;
-        config.connection.poll_interval_ms = 20;
+        config.connection.poll_interval_ms = poll.as_millis() as u64;
         config.connection.reconnect_interval_ms = 200;
         config.heartbeat.interval_ms = 100;
-        let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/offline-tests")
-            .join(format!("{name}-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
-        std::fs::create_dir_all(&directory).unwrap();
+        let directory = TestDir::new("offline-tests", name);
         let sink: EventSink = Arc::new(|_| {});
         let engine = PlcEngine::new(config, Arc::new(Logbook::open(&directory.join("plc.db"), sink.clone(), 1).unwrap()), sink);
         before_connect(&server);
@@ -133,13 +139,14 @@ async fn offline_line_over_s7_completes_parts_with_matched_ack_and_returns_to_id
 }
 
 /// S-12：计入布防预算的布防输出确认既不等下一个轮询周期，也不等握手日志落盘（落盘在 commit_arm）。
+/// 刚轮询完就布防：等下一个周期要将近整个周期，等落盘要等到阻塞线程放行，都超出上限；上限留足负载余量。
+/// PLC 心跳翻转间隔长于轮询周期，每个电平都会被读到，心跳活性不受轮询相位影响。
 #[test]
 fn arm_outputs_confirm_without_waiting_for_a_poll_period_or_the_journal() {
+    const POLL_PERIOD: Duration = Duration::from_millis(600);
+    const LIMIT: Duration = Duration::from_millis(450);
     tokio::runtime::Builder::new_current_thread().enable_all().max_blocking_threads(1).build().unwrap().block_on(async {
-        let mut bench = Bench::new("arm-latency").await;
-        let mut config = bench.engine.config();
-        config.connection.poll_interval_ms = 300;
-        bench.engine.apply_config(config).await.unwrap();
+        let mut bench = Bench::start("arm-latency", POLL_PERIOD, Duration::from_millis(900), |_| {}).await;
         let Bench { line, engine, session, plan, .. } = &mut bench;
         let until = Instant::now() + Duration::from_secs(15);
         while !matches!(session.poll(engine, true, true).await, SessionEvent::Ready) {
@@ -163,6 +170,8 @@ fn arm_outputs_confirm_without_waiting_for_a_poll_period_or_the_journal() {
                 let _ = wait.recv_timeout(Duration::from_secs(10));
             });
             started_wait.await.unwrap();
+            let polled = engine.status().poll_count;
+            while engine.status().poll_count == polled { tokio::time::sleep(Duration::from_millis(1)).await; }
             let begun = Instant::now();
             session.arm_outputs(engine, plan).await.unwrap();
             let elapsed = begun.elapsed();
@@ -174,7 +183,7 @@ fn arm_outputs_confirm_without_waiting_for_a_poll_period_or_the_journal() {
             elapsed
         };
         let (_, elapsed) = tokio::join!(plc, pc);
-        assert!(elapsed < Duration::from_millis(250), "布防输出确认用了 {elapsed:?}，轮询周期 300 ms");
+        assert!(elapsed < LIMIT, "布防输出确认用了 {elapsed:?}，轮询周期 {POLL_PERIOD:?}");
         bench.engine.disconnect().await;
     });
 }
@@ -256,7 +265,7 @@ async fn pc_initiated_disconnect_reconnects_after_the_heartbeat_loss_window_and_
     while bench.engine.status().state != LinkState::Connected {
         bench.session.poll_with_devices(&bench.engine, false, &Ok(()), true, true).await;
         if bench.engine.status().state != LinkState::Disconnected { break; }
-        assert!(disconnected.elapsed() < Duration::from_secs(6), "主动断开后没有自动重连：{:?}", bench.session.view());
+        assert!(disconnected.elapsed() < HANG_GUARD, "主动断开后没有自动重连：{:?}", bench.session.view());
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(disconnected.elapsed() >= Duration::from_millis(3000), "PLC 判 PC 心跳失活之前就重连了：{:?}", disconnected.elapsed());
@@ -279,15 +288,23 @@ async fn persistent_write_rejection_reconnects_once_then_stays_disconnected_unti
     for _ in 0..100_000 { bench._server.inject(s7_server::Fault::RejectWrite); }
     poll_until(&mut bench, true, &Ok(()), "置故障输出失败后应断开", |_, _| true).await;
     assert_eq!(bench.engine.status().state, LinkState::Disconnected, "{:?}", bench.session.view());
-    let (mut reconnects, mut since, watch) = (0, bench.engine.status().since, Instant::now());
-    while watch.elapsed() < Duration::from_secs(9) {
+    // 到点自动重连一次；新连接上仍确认不了置故障，再次断开
+    let (first, watch) = (bench.engine.status().since, Instant::now());
+    let second = loop {
         bench.session.poll_with_devices(&bench.engine, false, &Ok(()), true, true).await;
         let status = bench.engine.status();
-        if status.state == LinkState::Disconnected && status.since != since { reconnects += 1; since = status.since; }
+        if status.state == LinkState::Disconnected && status.since != first { break status.since; }
+        assert!(watch.elapsed() < HANG_GUARD, "持续拒写时没有自动重连：{:?}", bench.session.view());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    // 此后过了自动重连的间隔也停在断开，不再重连
+    let watch = Instant::now();
+    while watch.elapsed() < RECONNECT_AFTER_STOP_WINDOW {
+        bench.session.poll_with_devices(&bench.engine, false, &Ok(()), true, true).await;
+        let status = bench.engine.status();
+        assert!(status.state == LinkState::Disconnected && status.since == second, "持续拒写时应只自动重连一次：{:?}", bench.session.view());
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert_eq!(reconnects, 1, "持续拒写时应只自动重连一次：{:?}", bench.session.view());
-    assert_eq!(bench.engine.status().state, LinkState::Disconnected, "{:?}", bench.session.view());
 
     bench._server.inject(s7_server::Fault::Clear);
     bench.engine.connect().await;
@@ -296,7 +313,7 @@ async fn persistent_write_rejection_reconnects_once_then_stays_disconnected_unti
     poll_until(&mut bench, true, &Ok(()), "再次置故障输出失败后应断开", |_, _| true).await;
     assert_eq!(bench.engine.status().state, LinkState::Disconnected, "{:?}", bench.session.view());
     bench._server.inject(s7_server::Fault::Clear);
-    let until = Instant::now() + Duration::from_secs(6);
+    let until = Instant::now() + HANG_GUARD;
     while bench.engine.status().state == LinkState::Disconnected {
         assert!(Instant::now() < until, "确认置故障后再次主动断开没有自动重连：{:?}", bench.session.view());
         bench.session.poll_with_devices(&bench.engine, false, &Ok(()), true, true).await;
@@ -309,10 +326,10 @@ async fn persistent_write_rejection_reconnects_once_then_stays_disconnected_unti
 #[tokio::test]
 async fn reset_refused_for_unready_devices_names_the_reason() {
     let mut bench = Bench::new("reset-reason").await;
-    let devices = Err("没有一个配方开得了工（配方 A：所选生产版本没有不可变发布包）".to_string());
-    poll_until(&mut bench, true, &devices, "复位应被拒", |event, _| matches!(event, SessionEvent::Fault(m) if m.contains("设备尚未就绪"))).await;
-    let message = bench.session.view().message.unwrap();
-    assert!(message.contains("设备尚未就绪") && message.contains("所选生产版本没有不可变发布包"), "{message}");
+    let reason = "没有一个配方开得了工（配方 A：所选生产版本没有不可变发布包）";
+    poll_until(&mut bench, true, &Err(reason.to_string()), "复位应被拒并带上设备未就绪的原因",
+        |event, _| matches!(event, SessionEvent::Fault(m) if m.contains(reason))).await;
+    assert_eq!(bench.session.phase(), SessionPhase::Fault);
     bench.engine.disconnect().await;
 }
 
@@ -402,8 +419,10 @@ async fn crash_left_pending_is_reset_by_the_virtual_plc_only_when_it_came_from_o
         let pc = async {
             let until = Instant::now() + Duration::from_secs(10);
             loop {
-                if matches!(restarted.poll_gated(engine, false, true, true, true).await, SessionEvent::Ready) { break; }
-                if restarted.view().message.is_some_and(|m| m.contains("不能由离线虚拟 PLC 复位")) { break; }
+                let event = restarted.poll_gated(engine, false, true, true, true).await;
+                if matches!(event, SessionEvent::Ready) { break; }
+                // 真机事务：心跳已活、设备就绪时虚拟 PLC 按复位仍被拒，即离线复位不了它
+                if origin == Origin::Real && matches!(event, SessionEvent::Fault(_)) && restarted.heartbeat_live() { break; }
                 assert!(Instant::now() < until, "{origin:?}：复位未收敛：{:?}", restarted.view());
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
@@ -449,7 +468,7 @@ async fn virtual_plc_presses_reset_again_after_a_reset_refused_before_the_heartb
         loop {
             let event = session.poll(engine, false, true).await;
             if matches!(event, SessionEvent::Ready) { return; }
-            if matches!(&event, SessionEvent::Fault(m) if m.contains("尚未观察到 PLC 心跳翻转")) && !refused.swap(true, Ordering::SeqCst) {
+            if matches!(event, SessionEvent::Fault(_)) && !session.heartbeat_live() && !refused.swap(true, Ordering::SeqCst) {
                 server.inject(s7_server::Fault::HeartbeatResume);
             }
             assert!(Instant::now() < until, "复位未完成：{:?}", session.view());

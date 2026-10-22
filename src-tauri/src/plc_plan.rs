@@ -150,23 +150,43 @@ mod tests {
         }).collect()
     }
 
+    fn triggers(cameras: &[String], n: usize) -> Vec<PlanShot> {
+        (0..n).map(|k| PlanShot { shot_id: format!("S{:03}", k + 1), pose_id: format!("S{:03}", k + 1), camera_ids: cameras.to_vec() }).collect()
+    }
+
+    /// 每行一种非法计划：都必须在发布前被拒，不能编出 PLC 计划。配方行在触发分组就要被拒（PlcParams 同样依赖分组）。
     #[test]
-    fn invalid_bindings_and_duplicate_shots_cannot_publish_a_plan() {
-        let device = vec!["cam1".to_owned()];
-        let mut duplicate = shots();
-        duplicate[1].shot_id = duplicate[0].shot_id.clone();
-        assert!(PlcPlan::compile("p".into(), 1, device.clone(), duplicate).is_err());
-        let mut unknown = shots();
-        unknown[0].camera_ids = vec!["cam4".into()];
-        assert!(PlcPlan::compile("p".into(), 1, device.clone(), unknown).is_err());
-        let mut no_pose = shots();
-        no_pose[0].pose_id = " ".into();
-        assert!(PlcPlan::compile("p".into(), 1, device, no_pose).is_err());
+    fn invalid_plan_inputs_cannot_form_a_plan() {
+        let device = || vec!["cam1".to_owned()];
+        let cameras = || ["cam1", "cam2", "cam3"].map(String::from).to_vec();
+        let compile = |devices: Vec<String>, edit: fn(&mut Vec<PlanShot>)| {
+            let mut shots = triggers(&devices, 4);
+            edit(&mut shots);
+            PlcPlan::compile("p".into(), 1, devices, shots).map(|_| ())
+        };
+        let recipe = |edit: fn(&mut crate::recipe::RecipeDoc)| {
+            let mut doc = two_camera_doc();
+            edit(&mut doc);
+            trigger_groups(&doc.build().unwrap()).map(|_| ())
+        };
+        let mut twice = cameras();
+        twice[2] = "cam1".into();
+        for (case, result) in [
+            ("拍照点 ID 重复", compile(device(), |s| s[1].shot_id = s[0].shot_id.clone())),
+            ("拍照点绑定未知相机", compile(device(), |s| s[0].camera_ids = vec!["cam4".into()])),
+            ("Pose 标识为空", compile(device(), |s| s[0].pose_id = " ".into())),
+            ("相机设备 ID 为空", compile(vec![" ".into()], |_| {})),
+            ("设备列表重复相机", compile(twice, |_| {})),
+            ("某次触发漏一台相机", compile(cameras(), |s| { s[3].camera_ids.pop(); })),
+            ("配方某 Pose 缺一台相机", recipe(|doc| doc.shots[3].pose_id = "P3".into())),
+            ("配方 Pose 内相机顺序与配方不同", recipe(|doc| doc.shots.swap(2, 3))),
+        ] {
+            assert!(result.is_err(), "{case}");
+        }
     }
 
     #[test]
-    fn empty_device_and_legacy_multidevice_plan_are_rejected() {
-        assert!(PlcPlan::compile("part".into(), 1, vec![" ".into()], shots()).is_err());
+    fn legacy_multidevice_plan_json_is_rejected() {
         let plan = PlcPlan::compile("part".into(), 1, vec!["cam1".into()], shots()).unwrap();
         let mut legacy = serde_json::to_value(&plan).unwrap();
         let object = legacy.as_object_mut().unwrap();
@@ -184,15 +204,8 @@ mod tests {
     #[test]
     fn every_trigger_fires_all_cameras_on_the_line_so_device_shots_counts_triggers() {
         let cameras: Vec<String> = ["cam1", "cam2", "cam3"].map(String::from).to_vec();
-        let triggers = |n: usize| (0..n).map(|k| PlanShot { shot_id: format!("S{:03}", k + 1), pose_id: format!("S{:03}", k + 1), camera_ids: cameras.clone() }).collect::<Vec<_>>();
-        let plan = PlcPlan::compile("p".into(), 1, cameras.clone(), triggers(20)).unwrap();
+        let plan = PlcPlan::compile("p".into(), 1, cameras.clone(), triggers(&cameras, 20)).unwrap();
         assert_eq!((plan.shot_count, plan.device_shots), (20, 20));
-        let mut partial = triggers(20);
-        partial[3].camera_ids.pop();
-        assert!(PlcPlan::compile("p".into(), 1, cameras.clone(), partial).is_err());
-        let mut twice = cameras.clone();
-        twice[2] = "cam1".into();
-        assert!(PlcPlan::compile("p".into(), 1, twice, triggers(1)).is_err());
     }
 
     /// 两个 Pose × 两台相机：P1 拍 cam1、cam2，P2 拍 cam1、cam2。
@@ -224,18 +237,5 @@ mod tests {
         assert_eq!(params.shot_count, 2);
         assert_eq!(params.shots.iter().map(|shot| (shot.shot_id.as_str(), shot.pose_id.as_str())).collect::<Vec<_>>(),
             [(doc.shots[0].id.as_str(), "P1"), (doc.shots[2].id.as_str(), "P2")]);
-    }
-
-    #[test]
-    fn a_pose_missing_a_camera_or_in_another_camera_order_cannot_form_a_plan() {
-        let mut missing = two_camera_doc();
-        missing.shots[3].pose_id = "P3".into();
-        let mut swapped = two_camera_doc();
-        swapped.shots.swap(2, 3);
-        for doc in [missing, swapped] {
-            let recipe = doc.build().unwrap();
-            assert!(trigger_groups(&recipe).is_err());
-            assert!(PlcPlan::from_recipe(&recipe).is_err());
-        }
     }
 }

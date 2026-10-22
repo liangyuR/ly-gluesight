@@ -73,7 +73,7 @@ impl Layout {
         Arc::new(Mutex::new(memory))
     }
 
-    fn get(&self, memory: &Memory, field: &str) -> u32 {
+    pub(crate) fn get(&self, memory: &Memory, field: &str) -> u32 {
         let slot = self.slots[field];
         match slot.bit {
             Some(bit) => memory.bit(slot.db, slot.byte, bit).unwrap_or(false) as u32,
@@ -82,7 +82,7 @@ impl Layout {
         }
     }
 
-    fn get_text(&self, memory: &Memory, field: &str) -> String {
+    pub(crate) fn get_text(&self, memory: &Memory, field: &str) -> String {
         let slot = self.slots[field];
         let header = slot.text_header.unwrap_or(2);
         memory.read(slot.db, slot.byte, slot.len as usize).ok()
@@ -90,7 +90,7 @@ impl Layout {
             .unwrap_or_default()
     }
 
-    fn set_text(&self, memory: &mut Memory, field: &str, value: &str) {
+    pub(crate) fn set_text(&self, memory: &mut Memory, field: &str, value: &str) {
         let slot = self.slots[field];
         let header = slot.text_header.unwrap_or(2);
         let mut bytes = vec![0u8; slot.len as usize];
@@ -100,7 +100,7 @@ impl Layout {
         let _ = memory.write(slot.db, slot.byte, &bytes);
     }
 
-    fn set(&self, memory: &mut Memory, field: &str, value: u32) {
+    pub(crate) fn set(&self, memory: &mut Memory, field: &str, value: u32) {
         let slot = self.slots[field];
         let _ = match slot.bit {
             Some(bit) => memory.set_bit(slot.db, slot.byte, bit, value != 0),
