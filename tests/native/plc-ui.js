@@ -20,7 +20,8 @@ async (page) => {
   await page.getByRole("button", { name: "断开", exact: true }).waitFor();
   const config = await read("plc_get_config");
   const version = config.points.find(p => p.tags.includes("protocolVersion"));
-  const protocolVersion = 5;
+  // 协议 6（handshake::PROTOCOL_VERSION）：PC 只接受 6；点表模板与 DB4 / DB2 布局相对协议 5 不变，只有 shotCount / deviceTriggers 的含义变了
+  const protocolVersion = 6;
   await page.waitForFunction(async ({ id, expected }) => (await window.__TAURI_INTERNALS__.invoke("plc_get_values"))[id]?.value === expected, { id: version.id, expected: protocolVersion });
   const rows = ["已布防", "计划拍照总数"].map(name => page.locator("tr").filter({ has: page.locator(".cell-title").getByText(name, { exact: true }) }));
   for (const row of rows) if (await row.getByRole("button", { name: "写入", exact: true }).isEnabled()) throw new Error("S7 handshake points must not be manually writable");

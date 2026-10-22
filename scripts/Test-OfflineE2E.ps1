@@ -5,7 +5,9 @@ param(
     [string]$SampleSet,
     [string]$LyFlowRuntime,
     [string]$DataRoot,
-    [ValidateRange(0, 10000)][int]$ArmBudgetMs = 0
+    [ValidateRange(0, 10000)][int]$ArmBudgetMs = 0,
+    # burst = 段配方（分段连拍，默认）：合成图三相机主流程 + 样本集冒烟；legacy = 旧拍照点配方（只停用不删除，行为不变）
+    [ValidateSet('burst', 'legacy')][string]$Model = 'burst'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,7 +25,7 @@ try {
     $e2eArmArgs = if ($ArmBudgetMs -gt 0) { @('--arm-ms', $ArmBudgetMs) } else { @() }
     Start-E2EInstance -Fresh -Prebuilt:$SkipBuild
     & node (Join-Path $e2eRun.Root 'tests\native\offline-e2e.mjs') `
-        --instance $e2eRun.Manifest --output $e2eResult --sample-set $e2eInputs.SampleSet --lyflow-runtime $e2eInputs.LyFlow @e2eArmArgs
+        --instance $e2eRun.Manifest --output $e2eResult --sample-set $e2eInputs.SampleSet --lyflow-runtime $e2eInputs.LyFlow --model $Model @e2eArmArgs
     $e2eExit = $LASTEXITCODE
     if ($e2eExit -eq 0) {
         Stop-E2EInstance

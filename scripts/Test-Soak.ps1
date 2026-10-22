@@ -8,15 +8,21 @@ param(
     [ValidateRange(50, 5000)][int]$ShotIntervalMs = 150,
     [ValidateRange(0, 10000)][int]$PauseMs = 200,
     [ValidateRange(0.0, 1.0)][double]$MaxErrRatio = 0.2,
-    [string[]]$Stages = @('soak', 'faults', 'engine', 'audit', 'restart')
+    [string[]]$Stages = @('soak', 'faults', 'engine', 'audit', 'restart'),
+    # burst = 段配方（分段连拍，默认；检测项全关，长稳验证稳定性与恢复而不是判胶质量）；legacy = 旧拍照点配方（只停用不删除，行为不变）
+    [ValidateSet('burst', 'legacy')][string]$Model = 'burst',
+    # throughput 阶段（默认不跑，pnpm test:soak:throughput 单独跑）：3 × 25 Hz 吞吐门槛，见 scripts/soak/throughput.mjs
+    [ValidateRange(1, 66)][int]$ThroughputHz = 25,
+    [ValidateRange(5, 3600)][int]$ThroughputSeconds = 60,
+    [ValidateSet('sampleSet', 'synthetic')][string]$ThroughputSource = 'sampleSet'
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'E2E-Common.ps1')
 if (!$IsWindows) { throw '长稳测试需要 Windows、WebView2 与 lyFlow。' }
 $Stages = @($Stages | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-$soakUnknown = @($Stages | Where-Object { $_ -notin 'soak', 'faults', 'engine', 'disk', 'audit', 'restart' })
-if ($soakUnknown.Count) { throw "未知阶段：$($soakUnknown -join ', ')；可选 soak、faults、engine、disk、audit、restart" }
+$soakUnknown = @($Stages | Where-Object { $_ -notin 'soak', 'faults', 'engine', 'disk', 'audit', 'restart', 'throughput' })
+if ($soakUnknown.Count) { throw "未知阶段：$($soakUnknown -join ', ')；可选 soak、faults、engine、disk、audit、restart、throughput" }
 # 长稳不自动恢复 lyFlow 运行库：参数与环境变量都没有时按输入缺失处理（退出码 3）。
 $soakInputs = Resolve-E2EInputs -Title '长稳测试' -SampleSet $SampleSet -LyFlowRuntime $LyFlowRuntime -NoRestore
 $soakLyflow = $soakInputs.LyFlow
@@ -44,10 +50,14 @@ try {
     New-Item -ItemType Directory -Force -Path $soakOutput | Out-Null
     $env:GLUESIGHT_LYFLOW_RUNTIME = $soakLyflow
     Start-E2EInstance -Fresh -Prebuilt:$SkipBuild
-    Invoke-SoakNode 'soak.mjs' (@('setup') + $soakNodeArgs + @('--sample-set', $soakInputs.SampleSet))
+    Invoke-SoakNode 'soak.mjs' (@('setup') + $soakNodeArgs + @('--sample-set', $soakInputs.SampleSet, '--model', $Model))
     if ($Stages -contains 'soak') {
         Invoke-SoakNode 'soak.mjs' (@('run') + $soakNodeArgs + @('--parts', "$Parts", '--interval', "$ShotIntervalMs", '--pause', "$PauseMs",
             '--max-err-ratio', $MaxErrRatio.ToString([Globalization.CultureInfo]::InvariantCulture)))
+    }
+    if ($Stages -contains 'throughput') {
+        # 退出码 1 = 门槛没达到（实测值在 output/soak/throughput-*.json），由用户决定降 PLC 脉冲频率或加测量并发
+        Invoke-SoakNode 'throughput.mjs' (@('run') + $soakNodeArgs + @('--source', $ThroughputSource, '--hz', "$ThroughputHz", '--seconds', "$ThroughputSeconds"))
     }
     if ($Stages -contains 'faults') {
         Invoke-SoakNode 'faults.mjs' (@('run') + $soakNodeArgs)

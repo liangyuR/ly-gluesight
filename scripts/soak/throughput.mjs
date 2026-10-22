@@ -1,0 +1,198 @@
+import assert from "node:assert/strict";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { buildBurstRecipe, burstFacts } from "../../tests/native/lib.mjs";
+import { connect, ensureOffline, offlineHistory, parseArgs, percentiles, processMetrics, RECIPE_ID, sleep, until, writeJson } from "./lib.mjs";
+
+// 3 × 25 Hz 吞吐门槛（规格 §0：不裁帧、所有帧都测；决策记录 7.1 与 TESTING.md“3 × 25 Hz 吞吐门槛”）：
+// 三台相机按给定频率同时出帧，连续跑给定秒数，核对没有帧没测成（Unmeasured）、没有因图像内存预算被丢的帧、测量队列峰值不到容量的一半。
+// 达不到时本脚本退出码 1 并把实测值写进报告，由用户决定降 PLC 脉冲频率（决策记录 7.1 的降级方案）还是加测量并发；PC 不自行降频。
+//
+// 两种图像来源，结果里都写明（boundary），不能互相替代：
+//   sampleSet  离线·样本集：帧从现场原图读出，生产路径用真实 lyFlow 测量——这是唯一能在离线下压 lyFlow 的来源。样本集每件只有 12 个点位，
+//              脉冲串按 12 个脉冲一件，件间有握手开销，峰值是 3 × 25 Hz 的突发、平均低于 75 帧/s（achieved 里给出实际帧率）。
+//   synthetic  离线·合成图：每帧逐像素渲染，生产路径用模拟测量，所以这里测的是帧管线（节拍、落库、录制、界面）与渲染能力，lyFlow 没有参与；
+//              渲染赶不上脉冲时末尾的帧会晚于 partEnd，记缺帧。
+// “图像内存预算”只作用于海康回调来源（camera.rs 的 IMAGE_BUDGET_PER_CAMERA），两种离线来源按节拍生成、不受它约束，
+// 所以离线下预算丢帧恒为 0，现场机要看真机来源的相机状态 budgetDroppedFrames；这里仍如实读出并核对。
+
+/** 段配方测量队列容量（src-tauri/src/measure.rs 的 FRAME_MEASURE_QUEUE）。 */
+export const MEASURE_QUEUE_CAPACITY = 1024;
+export const GATE = { unmeasured: 0, budgetDropped: 0, queuePeakRatio: 0.5 };
+
+/** 判门槛：Unmeasured = 0、预算丢帧 = 0、测量队列峰值 < 容量的 50%；另把帧通道满丢帧和测量失败也作为失败列出（都是“不裁帧”被破坏）。 */
+export function assessThroughput({ parts, frames, camera, queue }) {
+  const failures = [];
+  if (!parts) failures.push("没有生产出任何件");
+  if (frames.unmeasured > GATE.unmeasured) failures.push(`Unmeasured ${frames.unmeasured} 帧（要求 ${GATE.unmeasured}）：测量队满或超时没测`);
+  if (frames.error > 0) failures.push(`测量失败 ${frames.error} 帧：lyFlow 报错，检测不完整`);
+  if (camera.budgetDropped > GATE.budgetDropped) failures.push(`图像内存预算丢帧 ${camera.budgetDropped} 帧（要求 ${GATE.budgetDropped}）`);
+  if (camera.channelDropped > 0) failures.push(`帧通道满丢帧 ${camera.channelDropped} 帧：检测节拍来不及取走`);
+  if (queue.peakRatio >= GATE.queuePeakRatio) failures.push(`测量队列峰值 ${queue.peak} / ${queue.capacity}（${(queue.peakRatio * 100).toFixed(1)}%），要求低于 ${GATE.queuePeakRatio * 100}%`);
+  return { failures, passed: failures.length === 0 };
+}
+
+/** 运行日志里某类事件（关键字）的全部记录，分页读出。 */
+async function eventLogs(call, keyword, from, to) {
+  const records = [];
+  for (let offset = 0; offset < 20000; offset += 1000) {
+    const page = await call("applog_query", { query: { from, to, keyword, offset, limit: 1000 } });
+    records.push(...page.items);
+    if (offset + 1000 >= page.total) break;
+  }
+  return records;
+}
+
+const median = values => values.length ? [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)] : null;
+
+/**
+ * 突发排空速率与持续压力下的外推：每件的脉冲串是一次突发（样本集每件 12 个脉冲），取该件第一帧到达到最后一帧测完的时间，
+ * 得到测量排空速率；与 3 × hz 的需求相比，需求更大时按“排队深度 = (需求 − 排空) × 秒数”外推队列多久装满。
+ * 只是估算：突发里前几帧到达时测量线程还没排满，所以排空速率是下界；持续压力下的真实余量以现场机连续跑的结果为准。
+ */
+export function projectSustained({ hz, capacity, parts }) {
+  const demand = 3 * hz;
+  const drain = median(parts.map(p => p.drainFps));
+  const arrival = median(parts.map(p => p.arrivalFps));
+  const deficit = drain === null ? null : Math.max(0, demand - drain);
+  return { demandFps: demand, burstArrivalFps: arrival, drainFps: drain, deficitFps: deficit,
+    secondsToFillQueue: deficit ? Number((capacity / deficit).toFixed(1)) : null, parts: parts.length };
+}
+
+async function cameraCounters(call) {
+  const status = await call("camera_rig_status");
+  return status.map(c => ({ frames: c.frames ?? 0, channelDropped: c.droppedFrames ?? 0, budgetDropped: c.budgetDroppedFrames ?? 0 }));
+}
+
+/** 合成图来源：进入离线·合成图并保证压测配方（THRU-SYN）已发布；段配方建站需要 lyFlow（走廊测量、标定、验证）。 */
+async function ensureSynthetic(call) {
+  const site = await call("site_status");
+  if (site.mode === "offline" && site.source !== "synthetic") await call("site_leave_offline");
+  if ((await call("site_status")).mode !== "offline") await call("site_enter_offline", { source: { kind: "synthetic" } });
+  await until(() => call("plc_get_status"), s => s.state === "connected", "离线 S7 服务未连接");
+  const id = "THRU-SYN";
+  if (!(await call("cycle_recipes")).some(r => r.id === id)) {
+    // 建站（采集、标定、验证）用 5 Hz：合成图逐像素渲染赶不上更快的脉冲，帧会晚于 partEnd 才画完；压测频率在建站后再设
+    await call("offline_pace", { pace: { shotIntervalMs: 200, pauseMs: 200 } });
+    const template = await call("recipe_template");
+    const built = await buildBurstRecipe(call, { sourceId: "synthetic", doc: { ...template, id, name: "吞吐压测" }, log: message => process.stdout.write(`[throughput] ${message}\n`) });
+    assert(built.validation.passed, `压测配方验证未通过：${JSON.stringify(built.validation.checks.filter(c => !c.passed))}`);
+  }
+  await until(async () => (await call("cycle_readiness")).recipes.find(r => r.id === id)?.runnable === true, Boolean, `配方 ${id} 不可运行`, 90000, 500);
+  return id;
+}
+
+export async function throughput(session, out, options) {
+  const { call, manifest } = session;
+  const hz = Number(options.hz ?? 25);
+  const seconds = Number(options.seconds ?? 60);
+  const source = options.source ?? "sampleSet";
+  assert(["sampleSet", "synthetic"].includes(source), "--source 只能是 sampleSet 或 synthetic");
+  assert(hz >= 1 && hz <= 66, "--hz 需在 1–66 之间（相机上限 66 fps）");
+  assert(seconds >= 5, "--seconds 至少 5");
+  const settings = await call("cycle_get_settings");
+  // 调试构建下布防实测约 250 ms，超过默认 200 ms 预算会判 ERR 98，整件不测；压测放宽到 1 s（与离线回放验证相同）
+  await call("cycle_save_settings", { settings: { ...settings, productSource: "plc", timeouts: { ...settings.timeouts, armMs: 1000 } } });
+  const recipeId = source === "synthetic" ? await ensureSynthetic(call) : (await ensureOffline(call, out), RECIPE_ID);
+  const site = await call("site_status");
+  const intervalMs = Math.round(1000 / hz);
+  await call("offline_pace", { pace: { shotIntervalMs: intervalMs, pauseMs: 0 } });
+  const before = { history: await offlineHistory(call, recipeId), cameras: await cameraCounters(call) };
+  const known = new Set(before.history.items.map(i => i.id));
+  const metrics = [await processMetrics(manifest.pid)];
+  const startedAt = Date.now();
+  let queuePeak = 0, peakGroups = 0, polls = 0;
+  await call("offline_run", { recipeId, scenario: "normal", continuous: true, partId: null });
+  let lastMetrics = Date.now();
+  let stopped = false;
+  while (Date.now() - startedAt < seconds * 1000) {
+    await sleep(50);
+    const snapshot = await call("cycle_snapshot");
+    polls++;
+    const burst = snapshot?.part?.burst;
+    if (burst) { queuePeak = Math.max(queuePeak, burst.pendingMeasure ?? 0); peakGroups = Math.max(peakGroups, burst.groupCount ?? 0); }
+    if (Date.now() - lastMetrics >= 10000) { metrics.push(await processMetrics(manifest.pid)); lastMetrics = Date.now(); }
+    if (!(await call("site_status")).running) { stopped = true; break; }
+  }
+  await call("offline_stop", { now: false });
+  await until(() => call("site_status"), s => !s.running, "离线产线未停止", 60000, 300);
+  const endedAt = Date.now();
+  metrics.push(await processMetrics(manifest.pid));
+  const history = await offlineHistory(call, recipeId);
+  const items = history.items.filter(i => !known.has(i.id)).sort((a, b) => a.ts - b.ts);
+  const totals = { total: 0, measured: 0, unmeasured: 0, error: 0, missing: 0, outOfCorridor: 0 };
+  const verdicts = {};
+  const flags = { incomplete: 0, frameCountAnomaly: 0, shortPart: 0 };
+  let groups = 0;
+  for (const item of items) {
+    verdicts[item.verdict] = (verdicts[item.verdict] ?? 0) + 1;
+    const detail = await call("history_detail", { id: item.id });
+    if (!detail.burst) continue;
+    const facts = burstFacts(detail);
+    groups += facts.groupCount;
+    for (const [state, n] of Object.entries(facts.frameStates)) { totals.total += n; totals[state] = (totals[state] ?? 0) + n; }
+    for (const flag of Object.keys(flags)) if (facts.flags[flag]) flags[flag]++;
+  }
+  // 测量耗时与排队耗时：运行日志里每帧一条“测量完成”；每件第一帧到达 → 最后一帧测完给出突发排空速率
+  const latency = { ms: [], queueMs: [], engineMs: [] };
+  const done = await eventLogs(call, "测量完成", startedAt, endedAt + 5000);
+  const arrived = await eventLogs(call, "帧到达", startedAt, endedAt + 5000);
+  for (const record of done) for (const key of Object.keys(latency)) if (Number.isFinite(record.data?.[key])) latency[key].push(record.data[key]);
+  const byCycle = new Map();
+  for (const [kind, records] of [["arrived", arrived], ["done", done]]) {
+    for (const record of records) {
+      if (!record.cycleId) continue;
+      const entry = byCycle.get(record.cycleId) ?? { arrived: [], done: [] };
+      entry[kind].push(record.ts);
+      byCycle.set(record.cycleId, entry);
+    }
+  }
+  const perPart = [...byCycle.values()].filter(e => e.arrived.length > 3 && e.done.length === e.arrived.length).map(e => {
+    const first = Math.min(...e.arrived);
+    const arrivalSpan = Math.max(...e.arrived) - first, drainSpan = Math.max(...e.done) - first;
+    return { frames: e.arrived.length, arrivalFps: arrivalSpan > 0 ? e.arrived.length / (arrivalSpan / 1000) : null, drainFps: drainSpan > 0 ? e.done.length / (drainSpan / 1000) : null };
+  }).filter(p => p.arrivalFps && p.drainFps);
+  const projection = projectSustained({ hz, capacity: MEASURE_QUEUE_CAPACITY, parts: perPart });
+  const after = await cameraCounters(call);
+  const camera = {
+    channelDropped: after.reduce((n, c, i) => n + c.channelDropped - before.cameras[i].channelDropped, 0),
+    budgetDropped: after.reduce((n, c, i) => n + c.budgetDropped - before.cameras[i].budgetDropped, 0),
+    perCamera: after.map((c, i) => ({ frames: c.frames - before.cameras[i].frames, channelDropped: c.channelDropped - before.cameras[i].channelDropped, budgetDropped: c.budgetDropped - before.cameras[i].budgetDropped })),
+  };
+  const queue = { capacity: MEASURE_QUEUE_CAPACITY, peak: queuePeak, peakRatio: queuePeak / MEASURE_QUEUE_CAPACITY, polls, note: "运行中每 50 ms 读一次在途件的 pendingMeasure 取最大值，是采样下界" };
+  const span = items.length > 1 ? items.at(-1).ts - items[0].ts : endedAt - startedAt;
+  const main = metrics.map(m => m.main).filter(Boolean);
+  const verdict = assessThroughput({ parts: items.length, frames: totals, camera, queue });
+  return {
+    passed: verdict.passed, failures: verdict.failures, gate: GATE,
+    source, measurement: site.measurement, recipeId, hz, intervalMs, seconds, elapsedMs: endedAt - startedAt, stoppedEarly: stopped,
+    parts: items.length, groups, verdicts, flags, frames: totals, camera, queue,
+    achieved: { framesPerSecond: span > 0 ? Number((totals.total / (span / 1000)).toFixed(1)) : null, partsPerMinute: span > 0 ? Number(((items.length - 1) * 60000 / span).toFixed(1)) : null,
+      target: Number((3 * hz).toFixed(1)), note: "样本集每件只有 12 个脉冲、件间有握手开销，实际帧率低于目标；脉冲串内的瞬时帧率 = 3 × hz" },
+    latencyMs: { total: percentiles(latency.ms), queue: percentiles(latency.queueMs), engine: percentiles(latency.engineMs) },
+    projection,
+    process: { startPrivBytes: main[0]?.priv ?? null, peakPrivBytes: main.length ? Math.max(...main.map(m => m.priv)) : null, endPrivBytes: main.at(-1)?.priv ?? null,
+      peakSystemLoad: Math.max(...metrics.map(m => m.systemLoad ?? 0)) },
+    boundary: source === "sampleSet"
+      ? "离线·样本集：现场原图（停稳拍，每件 12 点位）经真实 lyFlow 测量；突发峰值为 3 × 25 Hz，平均帧率见 achieved；检测项全关（长稳配方）；预算丢帧只作用于海康回调来源，离线恒为 0；开发笔记本调试构建，不能外推现场工控机"
+      : "离线·合成图：每帧逐像素渲染、生产路径用模拟测量，lyFlow 没有参与测量；渲染能力限制帧率，末尾帧可能缺；预算丢帧只作用于海康回调来源，离线恒为 0；开发笔记本调试构建，不能外推现场工控机",
+  };
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  assert(args.command === "run", "命令为 run");
+  const out = path.resolve(args.out ?? "output/soak");
+  const session = await connect(args.cdp ?? "http://[::1]:9347", args.instance ?? "output/playwright/soak-regression/instance.json");
+  try {
+    const result = await throughput(session, out, args);
+    await writeJson(path.join(out, `throughput-${result.source}-${result.hz}hz.json`), result);
+    process.stdout.write(JSON.stringify({ passed: result.passed, failures: result.failures, source: result.source, measurement: result.measurement, hz: result.hz, parts: result.parts, frames: result.frames,
+      camera: { channelDropped: result.camera.channelDropped, budgetDropped: result.camera.budgetDropped }, queue: result.queue, achieved: result.achieved, latencyMs: result.latencyMs, projection: result.projection }, null, 1) + "\n");
+    if (!result.passed) process.exitCode = 1;
+  } finally { await session.browser.close(); }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  main().catch(error => { process.stderr.write(`${error.stack ?? error}\n`); process.exitCode = 1; });
+}

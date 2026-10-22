@@ -1,4 +1,6 @@
 #Requires -Version 7.0
+# 【仅旧拍照点配方】特征定位在段模型（分段连拍）下停用，本入口只服务 RecipeDoc.segments 为空的旧配方；旧模型只停用不删除，入口保留。
+# 段配方的端到端见 Test-OfflineE2E.ps1（默认 -Model burst）。
 # 特征定位示教端到端（tests/native/fixture-teach-e2e.mjs）：隔离 e2e 实例 + 真 lyFlow + 样本集副本，
 # 示教页画框（压胶路、高光、好框）→ 定位试测 → 验证统计与建议 → 采用 → 发布 → 离线投产。
 param(

@@ -3,7 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   connect, diskUsage, LogCollector, offlineHistory, parseArgs, percentiles, prepareSampleSet, processMetrics,
-  RECIPE_ID, setupRecipe, sleep, until, writeJson,
+  RECIPE_ID, setupLegacyRecipe, setupRecipe, sleep, until, writeJson,
 } from "./lib.mjs";
 
 const OK_CLASS = new Set(["OK", "OK_WITH_EXCURSION"]);
@@ -147,9 +147,11 @@ async function main() {
     if (args.command === "setup") {
       assert(args["sample-set"], "缺少 --sample-set");
       const copy = await prepareSampleSet(args["sample-set"], out);
-      const setup = await setupRecipe(session.call, copy);
+      const model = args.model ?? "burst";
+      assert(["burst", "legacy"].includes(model), `--model 只能是 burst 或 legacy：${model}`);
+      const setup = await (model === "legacy" ? setupLegacyRecipe : setupRecipe)(session.call, copy);
       await writeJson(path.join(out, "setup.json"), { sampleSetCopy: copy, ...setup });
-      process.stdout.write(JSON.stringify({ recipeId: setup.recipeId, taught: setup.taught?.length ?? "reused" }) + "\n");
+      process.stdout.write(JSON.stringify({ model, recipeId: setup.recipeId, taught: setup.taught?.length ?? "reused", expectedTotal: setup.expectedTotal ?? null }) + "\n");
     } else if (args.command === "run") {
       const result = await soak(session, args);
       await writeJson(path.join(out, `soak-${result.parts}.json`), result);

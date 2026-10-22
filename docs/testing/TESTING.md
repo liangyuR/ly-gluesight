@@ -42,7 +42,7 @@ $env:LYFLOW_CORE_DLL = 'src-tauri\target\dependency-cache\lyflow\1.1.5\lyflow_co
 cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 ```
 
-门槛：现场机用探针得到串行 p95，代入 `ceil(75 fps × p95 / 0.7)` 得到所需测量线程数，不得超过 `min(4, 逻辑核 − 2)`（`MEASURE_WORKERS`）；压测中不得出现图像内存预算满或测量队列满（出现时该帧记缺帧或未测，该组标检测不完整，不会静默丢帧）。不满足时先降 PLC 脉冲频率（PC 不自行降频），各段 N_exp 随之变化，须重新标定并分配新的计划版本。开发笔记本上的实测只是参考，不能外推到现场工控机；测量与写盘是分开测的，二者与界面、SQLite 同时运行的 3 × 25 Hz 压测属于 E2，**尚未做**。完整数据与降级方案见决策记录 7.1。
+门槛：现场机用探针得到串行 p95，代入 `ceil(75 fps × p95 / 0.7)` 得到所需测量线程数，不得超过 `min(4, 逻辑核 − 2)`（`MEASURE_WORKERS`）；压测中不得出现图像内存预算满或测量队列满（出现时该帧记缺帧或未测，该组标检测不完整，不会静默丢帧）。不满足时先降 PLC 脉冲频率（PC 不自行降频），各段 N_exp 随之变化，须重新标定并分配新的计划版本。开发笔记本上的实测只是参考，不能外推到现场工控机；测量与写盘是分开测的，二者与界面、SQLite 同时运行的 3 × 25 Hz 压测由 E2 的 `pnpm test:soak:throughput`（`scripts/soak/throughput.mjs`）做，实测与能证明的范围见“段配方端到端验证（2026-10-23，E2）”。完整数据与降级方案见决策记录 7.1。
 
 **升级前检查。** 升级到协议 6 / 段模型之前，先确认 `audit-spool/` 已清空（审计 spool 格式 3 → 4，残留的旧格式文件会让就绪检查失败、拒绝接件），记录库 8 → 9 会备份后重建；其余升级项见[存储布局](../architecture/storage-layout.md#升级到段模型协议-6前)。
 
@@ -56,10 +56,10 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 | --- | --- |
 | `pnpm test` | 全部前端测试，包含创建配方与完整示教发布流程 |
 | `pnpm test:watch` | 开发时持续运行相关前端测试 |
-| `pnpm test:ui:production` | 自动构建、启动与关闭隔离桌面实例，验证一件生产落盘 |
-| `pnpm test:e2e:offline` | 全新隔离站点上用离线·样本集与真实 lyFlow 走完建站、示教、验证、发布、投产与复测 |
-| `pnpm test:e2e:log-replay` | 全新隔离站点上投产 3 件样本件，核对本件时间线、运行日志、原包重跑逐拍照点一致、原图缺失拒绝与诊断包 |
-| `pnpm test:e2e:fixture` | 特征定位专项（只用于旧拍照点配方，段模型下停用）：全新隔离站点上经示教页画定位框（压胶路被拦、高光框保存被拦、好框通过）、定位试测、验证统计与采用两端参数建议，再发布、投产。入口保留；驱动脚本还没有改写，见“端到端入口”的现状说明 |
+| `pnpm test:ui:production` | 自动构建、启动与关闭隔离桌面实例，验证一件生产落盘：旧拍照点配方（首启样例，不需要 lyFlow）与段配方（合成图三相机，需 `-LyFlowRuntime`，没有时该段跳过并写明原因） |
+| `pnpm test:e2e:offline` | 全新隔离站点上走完段配方（分段连拍）的建站、走廊示教、10 轮标定、验证、发布、投产与历史：合成图三相机主流程加样本集冒烟，需要样本集与真实 lyFlow；`-Model legacy` 跑旧拍照点配方的原流程 |
+| `pnpm test:e2e:log-replay` | 全新隔离站点上投产 3 件样本件，核对本件时间线、运行日志、原包重跑按区域逐一一致、缺一张原图时的处理与诊断包；`-Model legacy` 跑旧拍照点配方的逐拍照点比对 |
+| `pnpm test:e2e:fixture` | 特征定位专项（只用于旧拍照点配方，段模型下停用）：全新隔离站点上经示教页画定位框（压胶路被拦、高光框保存被拦、好框通过）、定位试测、验证统计与采用两端参数建议，再发布、投产。入口与驱动脚本保留，行为不变（新建起点用 `legacyTemplate`，因为 `recipe_template` 现在给段配方） |
 | `pnpm typecheck` | 应用及测试 TypeScript 类型检查 |
 | `pnpm build` | 生产前端构建 |
 | `cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib` | 默认后端回归，依赖需已缓存 |
@@ -68,6 +68,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 | `pwsh -NoProfile -File tests/packaging/Test-LyFlowDependency.ps1` | lyFlow 依赖的 Release 选择、配置与 Cargo 锁定、运行库校验、缓存与网络回退、升级回滚（网络与 DLL 探针用本地夹具） |
 | `pwsh -NoProfile -File tests/packaging/Test-VendorDependency.ps1` | 厂商运行库的包隔离、结构、尺寸、CRT 版本、固定源恢复与缓存边界 |
 | `node --test tests/packaging/windows-workflow.test.mjs` | Windows 打包工作流门禁：版本与安装方式校验、发布标签须在 main 上、版本设置、SDK 干净环境检查、视觉检查先于打包、依赖缓存标识与发布清单 |
+| `pnpm test:soak:throughput`（即 `Test-Soak.ps1 -Stages throughput`） | 3 × 25 Hz 吞吐门槛（段配方、离线·样本集 lyFlow 测量，`-ThroughputSource synthetic` 压合成图帧管线）：连续跑 `-ThroughputSeconds`（默认 60 s），核对 Unmeasured = 0、图像内存预算丢帧 = 0、测量队列峰值低于容量的 50%，达不到时退出码 1，实测值写进 `output/soak/throughput-*.json`；判定函数的边界由 `node --test tests/native/throughput-gate.test.mjs` 保护 |
 | `pnpm test:soak`（即 `pwsh -NoProfile -File scripts/Test-Soak.ps1`） | 长稳测试（隔离 soak 实例）。没有必填参数，但样本集与 lyFlow 运行库必须经 `-SampleSet` / `GLUESIGHT_SAMPLE_SET`、`-LyFlowRuntime` / `GLUESIGHT_LYFLOW_RUNTIME` 提供（不自动恢复运行库，缺失时退出码 3），例如 `pnpm test:soak -SampleSet <样本集目录> -LyFlowRuntime <运行库目录> -Parts 1000`；阶段、参数与退出码见[长稳报告](soak-report.md) |
 | `pwsh -NoProfile -File scripts/Test-AlgorithmEval.ps1` | 算法评测（忽略的 cargo 评测，需样本集与 `lyflow_core.dll`），参数与读数见[算法评测](algorithm-evaluation.md) |
 | `pwsh -NoProfile -File scripts/Test-DevStartup.ps1` | Windows 旧终端在设置/清除本地运行库后启动，子进程读取最新保存值，参数与退出码保持不变 |
@@ -111,7 +112,12 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib -- --ignored packaging::te
 
 ## 隔离桌面与证据边界
 
-`pnpm test:ui:production` 使用 `tests/native/production-flow-ui.mjs` 与 flow 实例配置（`Start-UiTestInstance.ps1 -Profile flow` 生成），应用标识为 `com.xyzrobotics.tujiaovision.flow-tests`，报告输出到 `output/playwright/flow-regression`。测试通过站点模式进入“离线 · 合成图”，经生产 S7 握手运行一件；使用真实后端、SQLite、PGM 和元数据，并在历史页读回；接着跑两个定位失败工况（胶正常 → ERR 92、定位失败 + 断胶 → NG 优先），再紧接着跑第三件定位失败（中间不能插正常件，否则连续数清零）：检测页出现“特征定位连续失败”告警、应用日志有本件的“连续定位失败”，再跑一件正常件，告警消失、日志有“定位恢复”（G5 E1，定稿 §14）；结束时退出离线并关闭本次进程。
+`pnpm test:ui:production` 使用 `tests/native/production-flow-ui.mjs` 与 flow 实例配置（`Start-UiTestInstance.ps1 -Profile flow` 生成），应用标识为 `com.xyzrobotics.tujiaovision.flow-tests`，报告输出到 `output/playwright/flow-regression`。测试通过站点模式进入“离线 · 合成图”，分两段经生产 S7 握手各运行一件，使用真实后端、SQLite、PGM 和元数据，并在历史页读回：
+
+- **旧拍照点配方**（首启样例配方 MTR-HSG-A，`segments` 为空，只停用不删除，行为不变，不需要 lyFlow）：接着跑两个定位失败工况（胶正常 → ERR 92、定位失败 + 断胶 → NG 优先），再紧接着跑第三件定位失败（中间不能插正常件，否则连续数清零）：检测页出现“特征定位连续失败”告警、应用日志有本件的“连续定位失败”，再跑一件正常件，告警消失、日志有“定位恢复”（G5 E1，定稿 §14）。
+- **段配方**（分段连拍，合成图三相机共用触发，E2）：用真实 lyFlow 测量合成图完成走廊示教、10 轮标定（另加 2 轮标准件）、独立样本验证与发布（配方 `FLOW-BURST`，重跑时先删旧的），投产一件（离线·合成图的生产测量是模拟测量），核对 `parts` 行的段配方列（ΣN_exp、Σtol、deviceTriggers、各相机帧数、整件标记）、`part_frames` 每相机每帧一行、没有旧的逐拍照点表、按帧命名的原图 `{相机}_s{seq:06}.pgm` 与 `part.json`（缺帧与丢弃为空），历史详情读回每台相机的帧。**这一段需要 lyFlow**：`pnpm test:ui:production -LyFlowRuntime <运行库目录>`（或环境变量 `GLUESIGHT_LYFLOW_RUNTIME`）；两者都没有时跳过，结果里写 `burst.skipped`，旧配方一段照常运行。合成图离线环境会把相机补足到 3 台单视角相机（真机相机组只有 1 台时补 `cam2`、`cam3`），段配方用它们，旧配方仍用原来的相机。
+
+结束时退出离线并关闭本次进程。
 
 [`tests/native/`](../../tests/native/) 没有单独说明文件：四个端到端入口的驱动脚本见“端到端入口”，它们与 `scripts/soak/` 共用的 IPC 客户端、实例连接、样本集副本、整圈采集、示教与投产函数在 `tests/native/lib.mjs`；实例配置不再放在该目录，由 `Start-UiTestInstance.ps1` 按 Profile 生成（长稳测试用 soak）。其余为下表保留的 P0 脚本及“本轮验证”中的原生脚本抽查。恢复专项应使用独立实例和新输出目录，避免使用生产配置。Robot/Modbus 模拟服务、模拟节拍与回放目录相机已删除，由站点模式的离线产线取代。
 
@@ -140,7 +146,7 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 
 四个入口都会构建（`-SkipBuild` 跳过）、启动、驱动并关闭各自的隔离桌面实例，结束时打印总耗时；失败以非零退出码结束，三个 `test:e2e:*` 入口输入缺失时为退出码 3（不算通过）。决策见 [r2-test-infra 决策记录](../decisions/r2-test-infra.md)。
 
-**现状（2026-10-23）：** `test:ui:production` 用首启样例配方（旧拍照点配方，行为不变）运行一件。另三个入口 `test:e2e:offline`、`test:e2e:log-replay`、`test:e2e:fixture`，以及长稳测试 `test:soak`，用 `recipe_template` 建新配方；该模板现在是段配方（三台相机、一个直线段），其后“采用整圈采集、按 Pose 示教拍照点、逐拍照点重跑”等按旧拍照点流程驱动的步骤会被后端拒绝。这些驱动脚本还没有改写为段配方（合成直线 / 弯道三相机的建站到投产，属 E2），本次也没有重跑，所以本节的命令与下文的覆盖范围描述保留的是旧拍照点流程，下文“端到端验证（2026-10-19）”等运行记录是旧模型的结果，都不能作为段模型的通过依据。
+**现状（2026-10-23，E2）：** 四个入口与长稳测试都已改为按段配方（分段连拍）驱动：合成图三相机建站、每台相机一条走廊示教、10 轮多轮标定（另加标准件轮次给胶偏参考）、独立样本验证、发布、投产与历史；协议 6、未分段。旧拍照点配方的驱动脚本只停用不删除：`test:e2e:offline`、`test:e2e:log-replay` 用 `-Model legacy` 跑原流程，长稳用 `-Model legacy`，`test:e2e:fixture` 入口与驱动脚本原样保留（标注“仅旧配方”，新建起点改用 `legacyTemplate`，因为 `recipe_template` 现在给段配方）。下文“端到端验证（2026-10-19）”等运行记录是旧模型的结果，不能作为段模型的通过依据；段模型的实测记录见本节末“段配方端到端验证（2026-10-23）”。
 
 公共脚本：三个 `test:e2e:*` 外壳与 `Test-Soak.ps1` dot-source `scripts/E2E-Common.ps1`，共用输入检查与 lyFlow 运行库解析（长稳不自动恢复）、Node 依赖检查、隔离实例启动，以及关闭实例前的身份核对；各外壳只保留自己的参数、驱动脚本与输出位置。Node 侧共用函数在 `tests/native/lib.mjs`（`scripts/soak/lib.mjs` 也从这里导入）。
 
@@ -161,6 +167,8 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 | `-SampleSet` / `GLUESIGHT_SAMPLE_SET` | 样本集目录（`test:e2e:offline`、`test:e2e:log-replay` 与 `test:e2e:fixture` 必需） |
 | `-LyFlowRuntime` / `GLUESIGHT_LYFLOW_RUNTIME` | lyFlow 运行库目录；未提供时按 `packaging/runtime.json` 恢复 |
 | `-Parts` | 仅 `test:e2e:log-replay`：投产件数，至少 3 |
+| `-Model burst\|legacy` | `test:e2e:offline`、`test:e2e:log-replay` 与长稳测试：`burst`（默认）按段配方（分段连拍）驱动，`legacy` 按旧拍照点配方的原流程驱动（只停用不删除） |
+| `-LyFlowRuntime` | `test:ui:production` 也认：段配方一段需要 lyFlow（不自动恢复，没有时该段跳过） |
 | `-ArmBudgetMs` | 仅 `test:e2e:offline`：把布防预算 `timeouts.armMs` 临时改为该值（毫秒），写进 `result.json` 的 `inputs.armBudgetMs`；不传时按默认 200 ms 验证 |
 | `CARGO_TARGET_DIR` | 共享或自定义 Cargo 构建目录时设置，脚本从这里取构建产物 |
 
@@ -181,7 +189,47 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 - 机器满载时（实测其他进程占满 CPU），调试构建的布防会超过默认 200 ms 预算，工件判 ERR 98、没有原图，`test:e2e:offline` 失败并在报错里给出本件结论。离线端到端默认按 200 ms 验证；机器与其他任务共用、负载高时可加 `-ArmBudgetMs 1000` 再跑（满载时实测 `audit-health` 阶段可达 1 s，需要 3000），结果里会记下放宽值（`test:e2e:log-replay` 固定放宽到 1 s）。满载时 S7 轮询会停顿，虚拟 PLC 心跳超过 3 s 未观察到翻转即进入故障；若紧接着的整圈采集由离线产线发出的 faultReset 早于新的心跳翻转，复位被拒（“尚未观察到 PLC 心跳翻转，不能复位”）且不会再发，采集一直等到超时。这类失败只能等负载下降后重跑，产品侧问题已转交 r2-plc。
 - 端到端都是隐藏窗口，截图来自 WebView2 页面；结论只覆盖业务接线、落盘与界面驱动，边界见各节。
 
+### 段配方端到端验证（2026-10-23，E2）
+
+环境：Windows 11、i5-1135G7（4 核 8 线程）、15.7 GB，调试构建（gluesight opt-level 2），lyFlow 1.1.5（`src-tauri/target/dependency-cache/lyflow/1.1.5`），样本集 `2026-10-17-normal-sampleset`。各项顺序独立运行，不并行。
+
+| 入口 | 结果 |
+| --- | --- |
+| `pnpm test:ui:production`（无 lyFlow） | 通过，35.7 s：旧拍照点配方一段通过，段配方一段跳过（`burst.skipped` 写明需要 lyFlow） |
+| `pnpm test:ui:production -LyFlowRuntime …` | 通过，99.8 s：旧配方一段 + 段配方一段（`FLOW-BURST`，12 个帧组 × 3 台相机 = 36 行 part_frames 与 36 张按帧命名的原图逐一核对） |
+| `pnpm test:e2e:offline -SampleSet … -LyFlowRuntime …`（burst） | 通过，220 s（含重启续测 7.8 s）：合成图 10 轮标定帧组数 13、10、12、13、14、10、13、12、13、11 → ΣN_exp 12、建议容差 ±2；样本集冒烟验证通过并发布，帧状态 36 帧全部测成、27 帧沿走廊找不到胶（75%）、0 个不完整组，原包重现与原结论一致 |
+| `pnpm test:e2e:log-replay …`（burst） | 通过，133 s：3 件的时间线与运行日志一致、原包重跑按区域逐一一致、删一张原图后原包重跑把该帧组标检测不完整（结论不变）、界面回放与诊断包 |
+| `pnpm test:e2e:offline -Model legacy …`（旧拍照点配方） | 通过，139 s（含重启续测 9.2 s）：原流程不变，新建起点改用 `legacyTemplate` |
+| `pnpm test:e2e:log-replay -Model legacy …` | 通过，117 s：3 件逐拍照点比对一致 |
+| `pnpm test:e2e:fixture …`（旧拍照点配方，特征定位专项） | 通过，165 s：首次运行卡在第二个框，页面停在画框状态、按钮写“在原图上拖出定位框”，脚本改为已在画框状态时不再点按钮后通过；产品行为没有改 |
+| `pnpm test:soak -Parts 30`（burst，默认阶段 soak、faults、engine、audit、restart） | 通过，约 8 分钟：见[长稳报告](soak-report.md)“2026-10-23 更新”。没有跑 1000 件与 `disk` 阶段 |
+| `node --test tests/native/throughput-gate.test.mjs` | 通过：1 个参数化用例（8 组输入）；把队列峰值判定从 `>=` 改成 `>`、或去掉 Unmeasured 判定，用例都会失败 |
+
+3 × 25 Hz 吞吐（`pnpm test:soak:throughput -SampleSet … -LyFlowRuntime …`，25 Hz、60 s）：
+
+| 来源 | 结果 |
+| --- | --- |
+| 样本集（真实 lyFlow 测量） | 门槛三条满足：43 件 1548 帧全部测成（Unmeasured 0、测量失败 0、缺帧 0），图像内存预算丢帧 0（离线恒为 0，见下）、帧通道满丢帧 0，测量队列峰值 29 / 1024（2.8%，采样下界）；平均 25.9 帧/s、脉冲串内瞬时 78 帧/s；引擎耗时 p50 62 ms / p99 254 ms，排队 p50 129 ms / p99 705 ms；主进程私有内存 100 → 195 MB。**但这是突发不是持续**：样本集每件只有 12 个脉冲、件间有握手开销，占空比约 1/3。按每件第一帧到达到最后一帧测完得出的突发排空速率中位数 49 帧/s，低于需求 75 帧/s，外推持续 3 × 25 Hz 约 40 s 装满 1024 的测量队列 |
+| 合成图（模拟测量） | 不达标，但不是产品管线的结论：26 件 885 帧，Unmeasured 12、缺帧 46（逐像素渲染赶不上脉冲，帧晚于 partEnd 才到），13 件标检测不完整、4 件帧数异常并标疑似提前终止；帧到达速率约 34 帧/s（渲染上限），测量队列峰值 7，CPU 100%。合成图的生产测量恒为模拟测量，lyFlow 没有参与，这一项量的是合成图渲染能力 |
+
+结论：
+- 按计划原文“合成图 3 × 25 Hz 在线连续 60 s（且 lyFlow 测量）”做不到——合成图出的帧不经 lyFlow；离线下能压 lyFlow 的只有样本集，而它只能做突发。样本集上三条门槛满足，持续压力下**没有直接验证**，外推显示本机（i5-1135G7、调试构建）持续 75 帧/s 不可达：测量排空约 49 帧/s（P1 探针单测量在 4 线程下 101–112 帧/s，应用里与读图、录制写盘、SQLite、界面同时跑时低一半）。按决策记录 7.1 的降级公式，可持续帧率 = 0.7 × 49 ≈ 34 帧/s，即约 11 Hz；是否降 PLC 脉冲频率或加测量并发由用户决定，现场工控机必须重跑本压测。
+- 图像内存预算（`IMAGE_BUDGET_PER_CAMERA`）只作用于海康回调来源，合成图与样本集来源不经它，所以离线下“预算丢帧 = 0”恒成立、证明不了预算够用；这一项只能在真机相机来源上核对（相机状态 `budgetDroppedFrames`）。
+- 测量队列峰值是运行中每 50 ms 读一次在途件 `pendingMeasure` 的最大值，是采样下界。
+- 实测值：`output/soak/throughput-sampleSet-25hz.json`、`output/soak/throughput-synthetic-25hz.json`。
+
 ## 离线端到端
+
+**段配方（`-Model burst`，默认，E2）。** 先合成图主流程，再样本集冒烟，两段共用 `tests/native/lib.mjs` 的 `buildBurstRecipe`（走廊示教 `teachCorridors`、多轮标定 `calibrate`、独立样本验证、发布）：
+
+1. 合成图三相机（进入离线·合成图，脉冲 5 Hz）：新建段配方（`recipe_template`：三台相机、一个直线段）→ 一轮整圈采集选示教帧 → 每台相机一条走廊（`workspace_teach_camera` 冻结示教帧、`workspace_extract_corridor` 刷选提取、再保存当量与检测参数）→ 10 轮多轮标定（合成图每轮首尾 ±1、弯道 ±2 帧的波动，所以 min / max 不同；另加 2 轮标准件给胶偏参考 x_ref）→ 应用标定并确认建议容差（`max(默认, N − min, max − N)`）→ 新采一轮作独立验证样本 → 发布（`validationSite = offline`）。断言：N_exp 等于各轮帧组数均值四舍五入、标定统计只含 10 轮、建议容差 ≥ 1 且已写入配方、x_ref 已得出、导出给 PLC 的 shotCount = ΣN_exp 且协议版本为 6。
+2. 投产 4 件：正常件、单台相机缺帧（`cameraLost`：该组标检测不完整、OK/NG 不变）、首尾 ±1 脉冲波动（`pulseJitter`：帧组数在 ΣN_exp ± Σtol 内）、断胶（`gap` → NG_GAP，PLC 码 13）。每件断言帧组数、各相机帧数、缺帧、整件标记（未分段、胶偏未判、检测不完整、无疑似提前终止）与未检项（气泡、拉丝），再核对历史列表行、CSV 导出末尾五列（ΣN_exp、Σtol、各相机帧数、deviceTriggers、标记）与历史详情。
+3. 退出离线并核对 PLC 与相机组配置恢复，关闭实例后保留数据目录重启，`offline-restart.mjs` 核对：合成图配方从磁盘恢复且真机仍拒绝离线验证发布的版本、再跑一件、修订与 ΣN_exp 不变。
+4. 样本集冒烟（2026-10-17 停稳拍数据，`lyFlow` 测量）：同一流程走一遍。每台相机一条走廊对不上其他点位，帧里多半找不到胶，检测项开着只会判 NG_GAP、验证过不了发布，所以建站时把各段检测项全关（`checksOff`），只断言流程不崩、记录自洽、原包重现与原结论一致（`workspace_compare_original`，区域级），并把帧状态比例（测成、找到胶、缺帧）写进 `result.json` 的 `smoke`，不作门槛；重启续测里发布包按原身份预热、同一样本件的结论、发布包与帧状态分布不变。
+
+合成图每帧逐像素渲染，实测本机三台相机合计只能出约 20 帧/s，所以功能验收固定用 5 Hz 脉冲；脉冲再快，帧会晚于 partEnd 才画完（收尾在每台相机 `max_seq ≥ deviceTriggers − 1` 时就判），末尾几帧记缺帧、帧组数比脉冲数少。脚本对正常件容许最后两个帧组里的帧缺失（只告警，不改 OK/NG），其余缺帧必须是工况注入的。
+
+**旧拍照点配方（`-Model legacy`，只停用不删除，行为不变）。** 下面各段描述的就是它。
 
 `pnpm test:e2e:offline` 由 `scripts/Test-OfflineE2E.ps1` 驱动 `tests/native/offline-e2e.mjs`，实例配置为 e2e（`Start-UiTestInstance.ps1` 生成），应用标识 `com.xyzrobotics.tujiaovision.e2e-tests`（隐藏窗口），报告与截图输出到 `output/playwright/e2e-regression`（`result.json`、`restart.json`、`offline-e2e-history.png`）。第一段通过后，脚本关闭实例、保留数据目录重启同一实例，再由 `tests/native/offline-restart.mjs` 做重启续测。已构建时加 `-SkipBuild` 直接跑；端口冲突传 `-DebugPort`。共享 Cargo 缓存时设置 `CARGO_TARGET_DIR`，脚本从该目录取构建产物。
 

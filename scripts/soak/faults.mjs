@@ -4,20 +4,32 @@ import { copyFile, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { connect, ensureOffline, LogCollector, parseArgs, RECIPE_ID, sleep, until, writeJson } from "./lib.mjs";
+import { connect, ensureOffline, LogCollector, parseArgs, readSetup, RECIPE_ID, sleep, until, writeJson } from "./lib.mjs";
 
 const OK_CLASS = new Set(["OK", "OK_WITH_EXCURSION"]);
-// 这些注入不损坏本件图像与计数，本件判合格是正确结果；其余注入下本件判合格即为“错误的 OK”。
+// 这些注入不损坏本件图像与计数，本件判合格是正确结果；其余注入下本件判合格即为“错误的 OK”。（旧拍照点配方）
 const MAY_PASS = new Set(["plcDelayMidPart", "plcRejectWriteMidPart", "recordsDirReadOnly"]);
+// 段配方（规格 §0）：缺帧、坏帧只把所在帧组标“检测不完整”，不影响 OK/NG，所以缺帧判 OK 不算错误的 OK；
+// 长稳的段配方检测项全关（见 lib.mjs），空白图 / 噪声图本身也判 OK。这类场景改为核对“检测不完整”标记（EXPECT_INCOMPLETE）。
+const MAY_PASS_BURST = new Set([...MAY_PASS, "cameraLostFrame", "pulseJitter", "replayMissingTaughtImage", "replayMissingUntaughtImage", "cameraCorruptImage", "lyflowBlankImage", "lyflowNoiseImage"]);
+// 段配方里这些注入让某帧缺失或读不出，本件必须标检测不完整
+const EXPECT_INCOMPLETE = new Set(["cameraLostFrame", "replayMissingTaughtImage", "replayMissingUntaughtImage", "cameraCorruptImage"]);
 const RECOVER_ENTRIES = new Set(["baseline", "afterRestart"]);
 const OUTAGE_MS = 8000;
 const run = promisify(execFile);
-// 第 7 个 Pose 的 cam1（配方 k=18，样本 S019）已示教且必测；S020（k=19，cam2）同组未示教。
+// 旧拍照点配方：第 7 个 Pose 的 cam1（配方 k=18，样本 S019）已示教且必测；S020（k=19，cam2）同组未示教。
 const TAUGHT_IMAGE = "S019_cam1_v1.bmp";
 const UNTAUGHT_IMAGE = "S020_cam2_v1.bmp";
+// 段配方：样本集按“每台相机的帧序列”解释。cam1 的第 3 帧（S007）是它走廊的示教帧，cam2 的第 2 帧（S005）不是任何相机的示教帧。
+const BURST_TAUGHT_IMAGE = "S007_cam1_v1.bmp";
+const BURST_UNTAUGHT_IMAGE = "S005_cam2_v1.bmp";
 
-function context(session, out) {
+/** 记录摘要：结论加整件标记（段配方记录有 flags，旧记录为 null）。 */
+const view = record => ({ verdict: record.verdict, plcCode: record.plcCode, faultCode: record.faultCode, reason: record.reason, flags: record.flags ?? null });
+
+function context(session, out, model) {
   const { call, manifest } = session;
+  const taughtImage = model === "legacy" ? TAUGHT_IMAGE : BURST_TAUGHT_IMAGE, untaughtImage = model === "legacy" ? UNTAUGHT_IMAGE : BURST_UNTAUGHT_IMAGE;
   const logs = new LogCollector(call);
   const latest = async () => (await call("history_query", { query: { recipeId: RECIPE_ID, scope: "offline", limit: 1 } })).items[0] ?? null;
   const snapshot = () => call("cycle_snapshot");
@@ -67,7 +79,7 @@ function context(session, out) {
     return { phase: s?.phase, fault: s?.fault ?? null, alarms: s?.alarms ?? [], handshake: s?.plcHandshake ?? null, running: st.running, siteMessage: st.message };
   };
   const sampleDir = async () => path.join((await site()).sampleSet.dir, "parts", "p01");
-  return { call, logs, latest, snapshot, site, stopLine, start, runOne, waitPhase, recover, faultView, sampleDir, manifest };
+  return { call, logs, latest, snapshot, site, stopLine, start, runOne, waitPhase, recover, faultView, sampleDir, manifest, model, taughtImage, untaughtImage };
 }
 
 async function icacls(target, ...args) {
@@ -142,36 +154,41 @@ const scenarios = {
   },
   async cameraLostFrame(c) {
     const { record, message } = await c.runOne("lostFrame");
-    return { record: { verdict: record.verdict, plcCode: record.plcCode, faultCode: record.faultCode, reason: record.reason }, message };
+    return { record: view(record), message };
+  },
+  /** 段配方：首尾各 ±1 个脉冲（样本集没有的帧按缺帧），照常判，帧数异常只告警。 */
+  async pulseJitter(c) {
+    const { record, message } = await c.runOne("pulseJitter");
+    return { record: view(record), message };
   },
   async replayMissingTaughtImage(c) {
-    const file = path.join(await c.sampleDir(), TAUGHT_IMAGE);
+    const file = path.join(await c.sampleDir(), c.taughtImage);
     await rename(file, `${file}.hidden`);
     try {
       const { record, message } = await c.runOne("normal");
-      return { record: { verdict: record.verdict, plcCode: record.plcCode, faultCode: record.faultCode, reason: record.reason }, message };
+      return { record: view(record), message };
     } finally { await rename(`${file}.hidden`, file); }
   },
   async replayMissingUntaughtImage(c) {
-    const file = path.join(await c.sampleDir(), UNTAUGHT_IMAGE);
+    const file = path.join(await c.sampleDir(), c.untaughtImage);
     await rename(file, `${file}.hidden`);
     try {
       const { record, message } = await c.runOne("normal");
-      return { record: { verdict: record.verdict, plcCode: record.plcCode, faultCode: record.faultCode, reason: record.reason }, message };
+      return { record: view(record), message };
     } finally { await rename(`${file}.hidden`, file); }
   },
   async cameraCorruptImage(c) {
-    const file = path.join(await c.sampleDir(), TAUGHT_IMAGE);
+    const file = path.join(await c.sampleDir(), c.taughtImage);
     await copyFile(file, `${file}.orig`);
     const bytes = await readFile(file);
     await writeFile(file, bytes.subarray(0, 4096));
     try {
       const { record, message } = await c.runOne("normal");
-      return { record: { verdict: record.verdict, plcCode: record.plcCode, faultCode: record.faultCode, reason: record.reason }, message };
+      return { record: view(record), message };
     } finally { await rename(`${file}.orig`, file); }
   },
   async lyflowBlankImage(c) {
-    const file = path.join(await c.sampleDir(), TAUGHT_IMAGE);
+    const file = path.join(await c.sampleDir(), c.taughtImage);
     await copyFile(file, `${file}.orig`);
     const bytes = Buffer.from(await readFile(file));
     const offset = bytes.readUInt32LE(10);
@@ -179,11 +196,11 @@ const scenarios = {
     await writeFile(file, bytes);
     try {
       const { record, message } = await c.runOne("normal");
-      return { record: { verdict: record.verdict, plcCode: record.plcCode, faultCode: record.faultCode, reason: record.reason }, message };
+      return { record: view(record), message };
     } finally { await rename(`${file}.orig`, file); }
   },
   async lyflowNoiseImage(c) {
-    const file = path.join(await c.sampleDir(), TAUGHT_IMAGE);
+    const file = path.join(await c.sampleDir(), c.taughtImage);
     await copyFile(file, `${file}.orig`);
     const bytes = Buffer.from(await readFile(file));
     const offset = bytes.readUInt32LE(10);
@@ -192,7 +209,7 @@ const scenarios = {
     await writeFile(file, bytes);
     try {
       const { record, message } = await c.runOne("normal");
-      return { record: { verdict: record.verdict, plcCode: record.plcCode, faultCode: record.faultCode, reason: record.reason }, message };
+      return { record: view(record), message };
     } finally { await rename(`${file}.orig`, file); }
   },
   async recordsDirReadOnly(c) {
@@ -266,13 +283,14 @@ async function inject(c, name, scenario, recover) {
   await c.logs.poll();
   const window = c.logs.since(startedAt);
   const logs = window.filter(l => ["err", "warn", "ng"].includes(l.level)).map(l => `${l.level} ${l.ev}：${l.msg}`).slice(0, 25);
-  const falseOk = Boolean(outcome?.record) && !MAY_PASS.has(name) && OK_CLASS.has(outcome.record.verdict);
+  const falseOk = Boolean(outcome?.record) && !(c.model === "legacy" ? MAY_PASS : MAY_PASS_BURST).has(name) && OK_CLASS.has(outcome.record.verdict);
   return { ...outcome, recovery, falseOk, recovered: recovery ? OK_CLASS.has(recovery.verdict) : null, logLines: window.length, logs };
 }
 
 /** 依次注入：每类注入后复位并跑正常件，确认恢复生产。`audit` 组最后单独跑，进入需要重启的故障。 */
 export async function runFaults(session, out, group, only) {
-  const c = context(session, out);
+  const setup = await readSetup(out);
+  const c = context(session, out, setup.model ?? "burst");
   const entry = await ensureOffline(c.call, out);
   await c.call("offline_pace", { pace: { shotIntervalMs: 400, pauseMs: 200 } });
   if (group === "recover") return { afterRestart: await c.recover() };
@@ -284,6 +302,7 @@ export async function runFaults(session, out, group, only) {
   const selected = group === "audit" ? auditScenarios : { ...scenarios, ...lateScenarios };
   for (const [name, scenario] of Object.entries(selected)) {
     if (only && !only.includes(name)) continue;
+    if (name === "pulseJitter" && c.model === "legacy") continue; // 脉冲串工况只适用于段配方
     results[name] = await inject(c, name, scenario, group !== "audit");
   }
   return results;
@@ -291,7 +310,7 @@ export async function runFaults(session, out, group, only) {
 
 /** 逐项判定：错误的 OK、场景出错或超时、该进故障没进（或反之）、复位沿失效、恢复不合格都是失败；
  *  PC 主动断开后经接口补连接（报告剩余风险 2）单列为已知问题，不算通过。 */
-export function assess(results) {
+export function assess(results, model = "burst") {
   const failures = [], knownIssues = [];
   const manual = (name, entry) => entry?.manualReconnect && knownIssues.push(`${name}：PC 已主动断开 PLC 且未自动重连，经接口补连接（剩余风险 2）`);
   if (results.entryManualReconnect) knownIssues.push("进入注入前：PC 已主动断开 PLC 且未自动重连，经接口补连接（剩余风险 2）");
@@ -311,6 +330,8 @@ export function assess(results) {
     if (r.afterEdge?.timeout) fail(r.afterEdge.timeout);
     if (r.reconnectAfterMs != null && r.reconnectAfterMs < r.outageMs) fail(`停机 ${r.outageMs} ms 未到就已重连（${r.reconnectAfterMs} ms）`);
     if (r.falseOk) fail(`错误的 OK（${r.record.verdict}）`);
+    if (model !== "legacy" && EXPECT_INCOMPLETE.has(name) && r.record && !r.record.flags?.incomplete) fail("缺帧或坏帧的件应标“检测不完整”（规格 §0），没有标");
+    if (model !== "legacy" && name === "pulseJitter" && r.record?.flags?.shortPart) fail("首尾 ±1 个脉冲的波动不应标疑似提前终止");
     if (r.recovery?.error) fail(`恢复出错：${r.recovery.error}`);
     else if (r.recovered === false) fail(`复位后 3 件内未恢复合格（${r.recovery.verdict}）`);
     manual(name, r.recovery);
@@ -325,7 +346,7 @@ async function main() {
   const session = await connect(args.cdp ?? "http://[::1]:9347", args.instance ?? "output/playwright/soak-regression/instance.json");
   try {
     const results = await runFaults(session, out, args.command, args.only?.split(","));
-    const { failures, knownIssues } = assess(results);
+    const { failures, knownIssues } = assess(results, (await readSetup(out)).model ?? "burst");
     await writeJson(path.join(out, args.file ?? `faults-${args.command}.json`), { failures, knownIssues, results });
     const summary = Object.fromEntries(Object.entries(results).map(([k, v]) => [k, v.error ? `ERROR ${v.error}` : { record: v.record?.verdict, seen: v.seen?.phase, falseOk: v.falseOk, recovered: v.recovered ?? OK_CLASS.has(v.verdict) }]));
     process.stdout.write(JSON.stringify({ summary, failures, knownIssues }, null, 1) + "\n");
