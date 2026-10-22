@@ -653,10 +653,14 @@ mod tests {
     }
 
     /// 规格 §4：弯道不检胶偏，也不标“胶偏未判”。
+    /// validate_segments 不允许弯道段带 offset，所以这里绕过校验直接把直线段的胶偏检测与参考值塞给弯道段：
+    /// 弯道区域若被当作直线区域去判胶偏（x 偏 5 mm 超限）会出 NG_POSITION，而不是 Ok。
     #[test]
-    fn corner_region_never_judges_offset_and_does_not_flag_it() {
+    fn corner_region_does_not_flag_offset_unjudged() {
         let mut segments = plan(&[Straight, Corner]);
         segments[0].offset_ref = reference(Some(0.0), OffsetMeasure::AbsoluteX);
+        segments[1].checks.offset = Some(OffsetCheck { enabled: true, max_mean_shift_mm: 2.0, max_local_dev_mm: 2.0 });
+        segments[1].offset_ref = reference(Some(0.0), OffsetMeasure::AbsoluteX);
         let mut metrics = frames(8);
         metrics.iter_mut().filter(|m| m.seq >= 5).for_each(|m| m.x_mm = Some(5.0));
         let regions = [region(RegionKind::Straight { segment: 1 }, 1, 4), region(RegionKind::Corner { segment: 2 }, 5, 8)];

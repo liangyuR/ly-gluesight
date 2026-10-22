@@ -55,6 +55,21 @@ use tauri::Manager;
 
 pub use packaging::check_packaged_runtime;
 
+/// 吞吐探针（examples/throughput_probe.rs）走生产加载路径所需的内部接口，只为 example 暴露；不是稳定 API，应用本身不用。
+#[doc(hidden)]
+pub mod probe_api {
+    pub use crate::image_file::save_pgm;
+    pub use crate::production::{graphs, Prepared, GRAPH_VERSION};
+    pub use crate::recipe::{samples, DetectParams, JudgeParams, Polarity, Recipe, RecipeDoc, ShotLimits};
+    pub use crate::release::{load as load_release, publish as publish_release, PublishInput, ResourceSource, ShotInput, ValidationSite, Versions};
+    pub use crate::vision::{Engine, FrameImage};
+
+    /// 发布包加载后的预热：在自己的示教原图上跑一遍（`Prepared::warm` 是 crate 内可见）。
+    pub fn warm(prepared: &Prepared) -> Result<(), String> {
+        prepared.warm()
+    }
+}
+
 fn open_store(app: &tauri::AppHandle) -> Result<store::Store, String> {
     store::Store::open_deferred_recovery(&storage::root(app).join("inspection.db"))
 }

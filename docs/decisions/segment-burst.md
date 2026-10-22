@@ -332,11 +332,11 @@
 
 ### 7.1 P1 吞吐摸底（实测，2026-10-22）
 
-**怎么跑**（探针是 `src-tauri/src/vision/taught/engine_tests.rs` 的 `throughput_probe`，默认忽略；写约 4 GB 临时文件、结束后自动删除，约 1 分钟；已发布的运行库即可，不要求带 lyFlow#32 的构建）：
+**怎么跑**（探针是 `src-tauri/examples/throughput_probe.rs`，不是测试，不在 `cargo test` 里；写约 4 GB 临时文件、结束后自动删除，约 1 分钟；已发布的运行库即可，不要求带 lyFlow#32 的构建；dev profile 构建，与下面记录的数值同一配置）：
 
 ```powershell
 $env:LYFLOW_CORE_DLL = 'src-tauri\target\dependency-cache\lyflow\1.1.5\lyflow_core.dll'
-cargo test --manifest-path src-tauri/Cargo.toml --lib -- --ignored throughput_probe --nocapture
+cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 ```
 
 **量的是什么**：1280×1024 灰度图、一条横穿的暗胶条；走廊 121 mm、121 个测点（间距 1 mm），只用中线测量的算子（glue.taught_path + glue.bead_width），不带特征定位，与段模型的走廊测量是同一组算子。经生产加载路径（`release::publish` → `release::load` → `Prepared::load` → `warm`）后用 `Prepared::measure` 计时，包含 `Engine::run` 里的像素拷贝、lyFlow 运行与结果解析。每个并发度测 300 帧（串行即计划里的“连续测 300 次”）。写盘用生产录制的 `image_file::save_pgm`，每张 1,310,720 B 像素 + 17 B 头。
