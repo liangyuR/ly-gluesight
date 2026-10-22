@@ -394,6 +394,14 @@ export interface MissingFrame {
   seq: number;
 }
 
+/** 新示教采集轮次的逐帧告警（D1）：这些帧都不判整轮失败。duplicate 丢弃重复帧号、保留先到的；其余三种不写图，另记在 missingFrames。 */
+export interface CaptureAlarm {
+  kind: "duplicate" | "queueFull" | "budgetDropped" | "corrupt";
+  /** 本轮相机下标 */
+  camera: number;
+  seq: number;
+}
+
 /** 新示教采集轮次（D1）：按帧号配组，不核对计数；帧元数据在 frames.jsonl，这里只给统计。 */
 export interface CaptureRoundV2 {
   format: 2;
@@ -412,6 +420,8 @@ export interface CaptureRoundV2 {
   incompleteGroups: number[];
   missingFrames: MissingFrame[];
   lossAlarms: LossAlarm[];
+  /** 逐帧告警，最多 1024 条（缺帧本身见 missingFrames，不受此限） */
+  alarms?: CaptureAlarm[];
   createdAt: number;
   endedAt: number | null;
   error: string | null;

@@ -34,11 +34,13 @@ pub struct FrameMeta {
     pub source: CounterSource,
     /// 触发计数（来源不是触发计数时是帧计数，不可信）
     pub trigger: u64,
+    /// SDK 帧计数（`Frame::frame_counter`）：段模型按它配组（D-SB-10），只记账，不参与旧拍照点路由
+    pub frame: u64,
 }
 
 impl From<&Frame> for FrameMeta {
     fn from(f: &Frame) -> Self {
-        Self { cam: f.cam, session: f.session, source: f.counter, trigger: f.trigger_counter }
+        Self { cam: f.cam, session: f.session, source: f.counter, trigger: f.trigger_counter, frame: f.frame_counter }
     }
 }
 
@@ -92,6 +94,8 @@ pub struct Ledger {
     pub sources: Vec<CounterSource>,
     /// 本会话见到的最大触发计数
     pub last: Option<u64>,
+    /// 本会话见到的最大 SDK 帧计数：段模型示教采集的配组基线（D-SB-10），旧拍照点路由不读
+    pub last_frame: Option<u64>,
     pub frames: u64,
     /// 本会话里触发计数第一次回退：(之前的最大值, 回退到的值)
     pub backwards: Option<(u64, u64)>,
@@ -103,12 +107,13 @@ pub struct Ledger {
 
 impl Ledger {
     fn new(session: u64) -> Self {
-        Self { session, source: None, sources: Vec::new(), last: None, frames: 0,
+        Self { session, source: None, sources: Vec::new(), last: None, last_frame: None, frames: 0,
             backwards: None, duplicate: None, floor: None, seen: 0 }
     }
 
+    /// 模拟 / 样本集相机的现状：帧计数与触发计数相同。
     pub fn snapshot(session: u64, source: CounterSource, trigger: u64) -> Self {
-        Self { source: Some(source), sources: vec![source], last: Some(trigger), seen: 1, ..Self::new(session) }
+        Self { source: Some(source), sources: vec![source], last: Some(trigger), last_frame: Some(trigger), seen: 1, ..Self::new(session) }
     }
 
     fn note_backwards(&mut self, from: u64, to: u64) {
@@ -141,6 +146,7 @@ impl Ledgers {
             *l = Ledger::new(f.session);
         }
         l.frames += 1;
+        l.last_frame = l.last_frame.max(Some(f.frame));
         l.source = Some(f.source);
         if !l.sources.contains(&f.source) { l.sources.push(f.source); }
         let advanced = l.last.is_none_or(|last| f.trigger > last);
@@ -175,6 +181,7 @@ impl Ledgers {
         let last = current.last.max(observed.last);
         current.seen = last.map_or(0, |last| current.seen_at(last) | observed.seen_at(last));
         current.last = last;
+        current.last_frame = current.last_frame.max(observed.last_frame);
         current.source = observed.source.or(current.source);
         for source in observed.sources.iter().copied().chain(observed.source) {
             if !current.sources.contains(&source) { current.sources.push(source); }
@@ -610,7 +617,7 @@ mod tests {
     }
 
     fn frame(trigger: u64) -> FrameMeta {
-        FrameMeta { cam: 0, session: 11, source: ChunkTrigger, trigger }
+        FrameMeta { cam: 0, session: 11, source: ChunkTrigger, trigger, frame: trigger }
     }
 
     fn primed() -> Ledgers {
@@ -717,5 +724,18 @@ mod tests {
         ledgers.clear_floors();
         let reset = ShotRouter::arm(&plan(), &ledgers, &Policy::production(None), &[camera()]).unwrap();
         assert_eq!(reset.baseline(0), Some(40));
+    }
+
+    /// D-SB-10：段配方示教采集的 seq = frame_counter − 基线，基线必须按帧计数记——Chunk 触发计数与帧计数起点不同、
+    /// 中途回退的帧不压低它、换会话后重新计。
+    #[test]
+    fn frame_baseline_follows_highest_sdk_frame_counter_of_the_session_not_trigger_counter() {
+        let mut ledgers = Ledgers::default();
+        for (trigger, sdk) in [(40, 1040), (41, 1041), (39, 1039)] {
+            ledgers.observe(&FrameMeta { trigger, frame: sdk, ..frame(0) });
+        }
+        assert_eq!((ledgers.get(0).unwrap().last, ledgers.get(0).unwrap().last_frame), (Some(41), Some(1041)));
+        ledgers.observe(&FrameMeta { session: 12, trigger: 1, frame: 5, ..frame(0) });
+        assert_eq!(ledgers.get(0).unwrap().last_frame, Some(5));
     }
 }

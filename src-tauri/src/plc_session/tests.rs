@@ -1050,6 +1050,26 @@ fn s7_wire_arm_deadline_settles_original_journal_before_fault_without_late_overw
     });
 }
 
+/// 规格 §5：段配方的示教采集事务不核对 shotCount / deviceShots（可为 0、两者不等、超过 64），绑定采集轮次后照常布防；
+/// 同一示教采集计划用于没有绑定采集轮次的事务（生产）被拒绝。
+#[tokio::test]
+async fn s7_wire_teaching_plan_arms_with_any_plc_counts_only_in_a_capture_transaction() {
+    let mut rig = Rig::new("teaching-plan-counts").await;
+    let cameras = ["cam1", "cam2", "cam3"].map(String::from).to_vec();
+    let teaching = PlcPlan::teaching("recipe-a".into(), rig.plan.plan_version, cameras).unwrap();
+    for (seq, (shot_count, device_shots)) in [(1, (0, 0)), (2, (65, 200)), (3, (i16::MAX as u16, 1))] {
+        rig.plc.request(&PlcPlan { shot_count, device_shots, ..teaching.clone() }, seq, "SN-TEACH");
+        rig.phase(SessionPhase::Validating).await;
+        assert!(rig.session.validate_plan(&teaching).is_err(), "shotCount={shot_count}：未绑定采集轮次");
+        rig.session.bind_capture_id(&format!("capture-round-{seq}")).unwrap();
+        rig.session.arm(&rig.engine, &teaching).await.unwrap_or_else(|e| panic!("shotCount={shot_count} deviceShots={device_shots}：{e}"));
+        rig.end_counts(device_shots).await;
+        rig.report().await;
+        rig.ack_release().await;
+    }
+    rig.finish().await;
+}
+
 /// 示教采集事务绑定采集轮次而不是工件：capture_id 落盘，结果发出后仍保持，PLC 确认并释放后才解绑。
 #[tokio::test]
 async fn s7_wire_teaching_capture_holds_capture_id_until_release() {

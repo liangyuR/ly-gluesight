@@ -1629,8 +1629,8 @@ impl Machine {
                     if capture_host.active() { self.start_capture_s7(request).await; }
                     else { self.start_part(request).await; }
                 },
-                SessionEvent::End(_, _) if self.s7.capture_id().is_some() => {
-                    self.end_capture();
+                SessionEvent::End(_, device_triggers) if self.s7.capture_id().is_some() => {
+                    self.end_capture(device_triggers);
                     self.set_phase(Phase::Drain);
                 },
                 SessionEvent::End(ended_at, device_triggers) => {

@@ -11,7 +11,6 @@ import {useCycle} from "../src/features/cycle/api";
 import type {CaptureRound} from "../src/features/workspace/types";
 import type {CameraConfig} from "../src/features/camera/types";
 import {storageApi} from "../src/lib/storage";
-import {PendingBackendError} from "../src/lib/pendingBackend";
 import {burstRecipe,burstWorkspaceView,captureRoundV2,snapshot,workspaceState} from "./fixtures";
 vi.mock("../src/features/workspace/context",()=>({useWorkspace:vi.fn()}));
 vi.mock("../src/features/workspace/api",()=>({workspaceApi:{setCameraImaging:vi.fn(),captureGet:vi.fn(),captureList:vi.fn(),captureStart:vi.fn(),captureStop:vi.fn(),adoptCapture:vi.fn(),captureSample:vi.fn(),captureImage:vi.fn(),captureFrameImage:vi.fn(),calibrationAddRound:vi.fn(),calibrationRemoveRound:vi.fn()}}));
@@ -109,14 +108,6 @@ it.each([
  await userEvent.click(within(screen.getByRole("group",{name:"查看相机"})).getByRole("button",{name:"相机2"}));
  expect(await screen.findByRole("img",{name:"帧组 1 · 相机2 · 原图"})).toBeVisible();
  if(v2) expect(workspaceApi.captureFrameImage).toHaveBeenLastCalledWith(roundId,"CAM-2",seq); else expect(workspaceApi.captureImage).toHaveBeenLastCalledWith(roundId,seq,"CAM-2");
-});
-// 防的回归：D1 落地前新轮次的读图命令不存在，预览只报“原图不可用”，像是设备故障（命令归属见决策记录 5.4）
-it("新轮次的读图命令后端还没有 → 预览显示该功能待后端 D1 实现的占位",async()=>{
- useBurst();
- vi.mocked(workspaceApi.captureFrameImage).mockRejectedValue(new PendingBackendError("recipe_capture_frame_image","D1"));
- vi.mocked(workspaceApi.captureGet).mockResolvedValue(captureRoundV2({recipeId:"A"}));show();
- expect(await screen.findByText("原图读取待后端实现")).toBeVisible();
- expect(screen.getByText("该功能待后端 D1 实现")).toBeVisible();
 });
 it("异常轮保留原因，不能用于示教或标定",async()=>{
  useBurst();

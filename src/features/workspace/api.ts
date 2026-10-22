@@ -82,7 +82,7 @@ export const workspaceApi = {
   abandonPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_abandon_publish", { id, revision }),
   captureImage: (roundId: string, k: number, cameraId: string, view?: number) => desktopCall<ArrayBuffer>("recipe_capture_image", { roundId, k, cameraId, view }).then(decodeGray),
   /** 新采集轮次（CaptureRoundV2）里某台相机第 seq 帧（帧组序号，从 1 起）的原图；D1 在 recipe_capture_image 旁新增（决策记录 5.4），缺帧时后端报错。 */
-  captureFrameImage: (roundId: string, cameraId: string, seq: number) => pendingCall<ArrayBuffer>("recipe_capture_frame_image", "D1", { roundId, cameraId, seq }).then(decodeGray),
+  captureFrameImage: (roundId: string, cameraId: string, seq: number) => desktopCall<ArrayBuffer>("recipe_capture_frame_image", { roundId, cameraId, seq }).then(decodeGray),
   captureList: (recipeId: string) => desktopCall<CaptureSummary[]>("recipe_capture_list", { recipeId }),
   publish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish", { id, revision }),
   recordImages: (historyId: number) => desktopCall<RecordImages>("workspace_record_images", { historyId }),

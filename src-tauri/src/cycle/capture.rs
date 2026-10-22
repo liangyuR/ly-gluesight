@@ -1,11 +1,11 @@
 use super::*;
 use crate::plc_plan::{PlanShot, PlcPlan};
-use crate::recipe_capture::CaptureState;
+use crate::recipe_capture::AnyRound;
 
 impl Machine {
     pub(super) fn capture_devices_ready(&self) -> Result<(), String> {
         let rig = &host(&self.app).camera;
-        let round = rig.recipe_capture().current().ok_or("没有正在执行的示教采集")?;
+        let round = rig.recipe_capture().current_any().ok_or("没有正在执行的示教采集")?;
         let ids = capture_device_ids(&rig.configs(), &round.camera_ids())?;
         let cams = ids.iter().map(|id| rig.index_of(id).ok_or_else(|| format!("采集相机 {id} 已从设备配置移除"))).collect::<Result<Vec<_>, String>>()?;
         rig.check_ready_at(&cams)
@@ -20,18 +20,31 @@ impl Machine {
         let rig = &host(&app).camera;
         let capture = rig.recipe_capture().clone();
         let attempt = async {
-            let round = capture.current().ok_or("没有正在执行的示教采集")?;
+            let round = capture.current_any().ok_or("没有正在执行的示教采集")?;
             let device_ids = capture_device_ids(&rig.configs(), &round.camera_ids())?;
-            // 协议 6 不在请求层核对 deviceShots 与 shotCount；旧采集轮次（按 shotCount 编计划）的数量约束仍由计划核对与采集记录负责
             self.capture_devices_ready()?;
-            let shots = (0..request.shot_count).map(|k| PlanShot {
-                shot_id: format!("S{:03}", k + 1), pose_id: format!("采集序号{}", k + 1), camera_ids: device_ids.clone(),
-            }).collect();
-            let plan = PlcPlan::compile(round.recipe_id.clone(), request.plan_version, device_ids, shots)?;
-            self.s7.bind_capture_id(&round.round_id)?;
-            self.s7.validate_plan(&plan)?;
-            capture.set_plan_version(request.plan_version)?;
-            capture.plc_started(u32::from(request.shot_count))?;
+            let plan = match &round {
+                // 段配方的新轮次：PLC 的 shotCount / deviceShots 是估算值，只记进轮次，不限 1–64、不核对（规格 §5）
+                AnyRound::Burst(round) => {
+                    let plan = PlcPlan::teaching(round.recipe_id.clone(), request.plan_version, device_ids)?;
+                    self.s7.bind_capture_id(&round.round_id)?;
+                    self.s7.validate_plan(&plan)?;
+                    capture.burst_plc_started(request.shot_count, request.plan_version)?;
+                    plan
+                }
+                // 旧拍照点配方的旧轮次：按 shotCount 编计划，计数约束由计划核对与采集记录负责（行为不变）
+                AnyRound::Legacy(round) => {
+                    let shots = (0..request.shot_count).map(|k| PlanShot {
+                        shot_id: format!("S{:03}", k + 1), pose_id: format!("采集序号{}", k + 1), camera_ids: device_ids.clone(),
+                    }).collect();
+                    let plan = PlcPlan::compile(round.recipe_id.clone(), request.plan_version, device_ids, shots)?;
+                    self.s7.bind_capture_id(&round.round_id)?;
+                    self.s7.validate_plan(&plan)?;
+                    capture.set_plan_version(request.plan_version)?;
+                    capture.plc_started(u32::from(request.shot_count))?;
+                    plan
+                }
+            };
             self.s7.arm(plc(&app), &plan).await
         }.await;
         match attempt {
@@ -47,14 +60,20 @@ impl Machine {
         }
     }
 
-    pub(super) fn end_capture(&self) {
+    /// PLC partEnd：新轮次记下 End 带出的 deviceTriggers（只作参考）；旧轮次照旧读点表并核对计数。
+    pub(super) fn end_capture(&self, device_triggers: Option<u16>) {
         let rig = &host(&self.app).camera;
         let capture = rig.recipe_capture();
         let result = (|| {
-            let round = capture.current().ok_or("采集轮次不存在")?;
+            let round = capture.current_any().ok_or("采集轮次不存在")?;
             capture_device_ids(&rig.configs(), &round.camera_ids())?;
-            let count = read_tag_u32(plc(&self.app), tag::DEVICE_TRIGGERS).ok_or("PLC 缺少设备实际触发计数")?;
-            capture.plc_ended(count)
+            match round {
+                AnyRound::Burst(_) => capture.burst_plc_ended(device_triggers),
+                AnyRound::Legacy(_) => {
+                    let count = read_tag_u32(plc(&self.app), tag::DEVICE_TRIGGERS).ok_or("PLC 缺少设备实际触发计数")?;
+                    capture.plc_ended(count)
+                }
+            }
         })();
         if let Err(error) = result { capture.fail(error); }
     }
@@ -63,17 +82,13 @@ impl Machine {
         if !matches!(self.s7.phase(), SessionPhase::Acquiring | SessionPhase::Draining) { return; }
         let app = self.app.clone();
         let capture = host(&app).camera.recipe_capture();
-        let Some(round) = capture.current().filter(|round| Some(round.round_id.as_str()) == self.s7.capture_id()) else { return; };
-        let (result, code) = match round.state {
-            CaptureState::Complete => (1, 0),
-            CaptureState::Failed => (90, fault::SHOT_COUNT_MISMATCH),
-            _ => return,
-        };
+        let Some(round) = capture.current_any().filter(|round| Some(round.round_id()) == self.s7.capture_id()) else { return; };
+        let Some((result, code)) = round.plc_report() else { return; };
         match self.s7.report(plc(&app), result, code).await {
             Ok(()) => {
                 self.done_at = Some(Instant::now());
                 self.set_phase(Phase::Report);
-                log(&app, if result == 1 { "ok" } else { "err" }, "示教采集交付", format!("采集轮次 {} 完成码 {result}；等待 PLC 确认，不计入生产 OK/NG", round.round_id));
+                log(&app, if result == 1 { "ok" } else { "err" }, "示教采集交付", format!("采集轮次 {} 完成码 {result}/{code}；等待 PLC 确认，不计入生产 OK/NG", round.round_id()));
             }
             Err(error) => self.enter_fault(error),
         }

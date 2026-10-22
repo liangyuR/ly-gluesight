@@ -559,17 +559,20 @@ pub fn offline_run(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, Cyc
 }
 
 /// 为正在等待 PLC 开始的整圈采集轮次跑一圈样本件：每次触发同时发往本轮全部相机，第 k 次触发取各相机在样本集里的第 k 个拍照点。
+/// 旧拍照点配方的旧轮次要求各相机拍照点数相同且不超过 64；段配方的新轮次不限 1–64、各相机可以不等
+/// （帧数少的相机在后面的帧组缺帧），虚拟 PLC 按最多的那台发脉冲，shotCount 填同一估算值。
 #[tauri::command]
 pub fn offline_capture(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>, offline: State<'_, OfflineHost>,
     part_id: Option<String>) -> Result<(), String> {
     let line = connected_line(&plc, &offline)?;
     let set = offline.sample_set().ok_or("未选择离线样本集")?;
-    let round = cycle.camera.recipe_capture().current()
-        .filter(|r| r.state == crate::recipe_capture::CaptureState::WaitingStart)
+    let round = cycle.camera.recipe_capture().current_any()
+        .filter(|r| *r.state() == crate::recipe_capture::CaptureState::WaitingStart)
         .ok_or("没有等待 PLC 开始的整圈采集：先在整圈采集页点“开始接收”")?;
-    let mut feeds = Vec::with_capacity(round.cameras.len());
-    for camera in &round.cameras {
-        let cam = cycle.camera.require(&camera.camera_id)?;
+    let burst = matches!(round, crate::recipe_capture::AnyRound::Burst(_));
+    let mut feeds = Vec::with_capacity(round.camera_ids().len());
+    for camera_id in &round.camera_ids() {
+        let cam = cycle.camera.require(camera_id)?;
         let config = cycle.camera.slot(cam as usize).ok_or("采集设备不存在")?.config();
         if config.source != CameraSource::SampleSet { return Err(format!("采集相机 {} 不是样本集来源", config.id)); }
         let shots: Vec<_> = set.manifest().shots.iter().filter(|s| s.camera_id == config.id).collect();
@@ -578,11 +581,19 @@ pub fn offline_capture(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_,
         }
         feeds.push((cam, config.id, shots.iter().map(|s| s.shot_id.clone()).collect::<Vec<_>>()));
     }
-    let n = feeds[0].2.len();
-    if let Some((_, id, shots)) = feeds.iter().find(|(_, _, shots)| shots.len() != n || shots.is_empty()) {
-        return Err(format!("样本集里相机 {id} 有 {} 个拍照点，与其他采集相机（{n} 个）不一致或为空", shots.len()));
-    }
-    if n > 64 { return Err(format!("整圈采集最多 64 次触发，样本集每台相机有 {n} 个拍照点；请用 --shots 子集生成样本集")); }
+    let n = if burst {
+        if let Some((_, id, _)) = feeds.iter().find(|(_, _, shots)| shots.is_empty()) { return Err(format!("样本集里没有相机 {id} 的图像")); }
+        let n = feeds.iter().map(|(_, _, shots)| shots.len()).max().unwrap_or(0);
+        if n > i16::MAX as usize { return Err(format!("样本集每台相机最多 {} 帧（PLC Int），相机最多有 {n} 帧", i16::MAX)); }
+        n
+    } else {
+        let n = feeds[0].2.len();
+        if let Some((_, id, shots)) = feeds.iter().find(|(_, _, shots)| shots.len() != n || shots.is_empty()) {
+            return Err(format!("样本集里相机 {id} 有 {} 个拍照点，与其他采集相机（{n} 个）不一致或为空", shots.len()));
+        }
+        if n > 64 { return Err(format!("整圈采集最多 64 次触发，样本集每台相机有 {n} 个拍照点；请用 --shots 子集生成样本集")); }
+        n
+    };
     if let Some(id) = part_id.as_deref() { set.part(id).ok_or_else(|| format!("样本集里没有样本件 {id}"))?; }
     start_running(&offline, false)?;
     let n = n as u16;

@@ -470,10 +470,12 @@ impl Shared {
     }
 
     /// 图像内存预算满、没拷图的帧：台账照记、计入帧数，但不交付（节拍按缺帧处理），不中断回调。
+    /// 段配方的示教采集轮次按帧号把它记为缺帧并告警（D-SB-8）。
     fn discard_over_budget(&self, mut frame: Frame) {
         let current_session = frame.session == self.session.load(Ordering::SeqCst);
         delivery::discard_over_budget(&self.identity, &self.manual, &self.budget_dropped, &mut frame, current_session);
         self.count_arrival(&frame);
+        self.rig.recipe_capture.offer_dropped(&frame);
     }
 
     /// 帧数、丢包、帧率与界面事件：交付与否都算相机出了这一帧。

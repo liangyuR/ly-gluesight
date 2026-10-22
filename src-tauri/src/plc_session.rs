@@ -792,14 +792,17 @@ impl PlcSession {
         Ok(if own { SessionEvent::None } else { SessionEvent::Restored(reason) })
     }
 
+    /// 布防前核对软件计划与 PLC 请求。段配方的示教采集计划（[`PlcPlan::is_teaching`]）只能用于已绑定采集轮次的事务，
+    /// 且不比较 shotCount / deviceShots（规格 §5：示教轮次不核对，PLC 可填估算值）；生产计划与旧拍照点采集计划照旧逐项核对。
     pub fn validate_plan(&self, plan: &PlcPlan) -> Result<(), String> {
         if self.phase != SessionPhase::Validating { return Err("当前 S7 事务不能布防".into()); }
+        if plan.is_teaching() && self.capture_id().is_none() { return Err("示教采集计划不能用于生产事务".into()); }
         // 段计划核对 ΣN_exp 与段序列，旧拍照点计划另外核对拍照点
         let rebuilt = plan.recompiled()?;
         if &rebuilt != plan { return Err("软件拍照计划内容与计数不一致".into()); }
         let request = self.request().ok_or("缺少 S7 请求")?;
-        if request.protocol_version != plan.protocol_version || request.plan_version != plan.plan_version
-            || request.shot_count != plan.shot_count || request.device_shots != plan.device_shots {
+        let counts_differ = !plan.is_teaching() && (request.shot_count != plan.shot_count || request.device_shots != plan.device_shots);
+        if request.protocol_version != plan.protocol_version || request.plan_version != plan.plan_version || counts_differ {
             return Err(format!("拍照计划不一致：需 version={} shots={} deviceShots={}",
                 plan.plan_version, plan.shot_count, plan.device_shots));
         }

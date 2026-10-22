@@ -42,6 +42,24 @@ impl PlcPlan {
         !self.segments.is_empty()
     }
 
+    /// 段配方的示教采集计划：既没有拍照点也没有段，计数为 0。只能用于已绑定采集轮次的 S7 事务，
+    /// 会话核对时不比较 shotCount / deviceShots（规格 §5：示教轮次不核对，PLC 可填估算值，见 PlcSession::validate_plan）。
+    pub fn is_teaching(&self) -> bool {
+        self.shots.is_empty() && self.segments.is_empty()
+    }
+
+    /// 段配方的示教采集计划：本轮相机共用一个触发；PLC 写来的计数只由采集轮次记录（CaptureRoundV2.plcShotCount）。
+    pub fn teaching(recipe_id: String, version: u32, device_ids: Vec<String>) -> Result<Self, String> {
+        if version > i32::MAX as u32 {
+            return Err(format!("计划版本 {version} 超出 PLC DInt 上限 2147483647，PLC 无法核对"));
+        }
+        if device_ids.is_empty() || device_ids.iter().enumerate().any(|(i, id)| id.trim().is_empty() || device_ids[..i].contains(id)) {
+            return Err("示教采集必须指定不重复、非空的相机设备 ID".into());
+        }
+        Ok(Self { protocol_version: crate::handshake::PROTOCOL_VERSION, recipe_id, plan_version: version,
+            shot_count: 0, device_ids, device_shots: 0, shots: Vec::new(), tolerance_total: 0, segments: Vec::new() })
+    }
+
     /// 段计划（规格 §5）：PLC 的 shotCount 与 deviceShots 都等于 ΣN_exp（1–32767）；三台不重复的相机共用一个触发；
     /// 整件容差取各段容差之和。
     pub fn compile_burst(recipe_id: String, version: u32, device_ids: Vec<String>, segments: Vec<ExportSegment>, expected_total: u32) -> Result<Self, String> {
@@ -62,10 +80,13 @@ impl PlcPlan {
             shot_count: expected_total as u16, device_ids, device_shots: expected_total as u16, shots: Vec::new(), tolerance_total, segments })
     }
 
-    /// 按计划自身的字段重编一次：内容与计数自洽时与原计划相等（段计划走 compile_burst，旧计划走 compile 并核对拍照点）。
+    /// 按计划自身的字段重编一次：内容与计数自洽时与原计划相等（段计划走 compile_burst，示教采集计划走 teaching，
+    /// 旧计划走 compile 并核对拍照点）。
     pub fn recompiled(&self) -> Result<Self, String> {
         if self.is_burst() {
             Self::compile_burst(self.recipe_id.clone(), self.plan_version, self.device_ids.clone(), self.segments.clone(), u32::from(self.shot_count))
+        } else if self.is_teaching() {
+            Self::teaching(self.recipe_id.clone(), self.plan_version, self.device_ids.clone())
         } else {
             Self::compile(self.recipe_id.clone(), self.plan_version, self.device_ids.clone(), self.shots.clone())
         }

@@ -214,6 +214,7 @@ pub fn run() {
             recipe_capture::recipe_capture_stop,
             recipe_capture::recipe_capture_list,
             recipe_capture::recipe_capture_image,
+            recipe_capture::recipe_capture_frame_image,
             workspace::workspace_set_views,
             workspace::workspace_select_group_image,
             workspace::workspace_save_draft,
