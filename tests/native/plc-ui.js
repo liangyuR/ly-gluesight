@@ -20,7 +20,7 @@ async (page) => {
   await page.getByRole("button", { name: "断开", exact: true }).waitFor();
   const config = await read("plc_get_config");
   const version = config.points.find(p => p.tags.includes("protocolVersion"));
-  await page.waitForFunction(async id => (await window.__TAURI_INTERNALS__.invoke("plc_get_values"))[id]?.value === 4, version.id);
+  await page.waitForFunction(async id => (await window.__TAURI_INTERNALS__.invoke("plc_get_values"))[id]?.value === 5, version.id);
   const rows = ["已布防", "计划拍照总数"].map(name => page.locator("tr").filter({ has: page.locator(".cell-title").getByText(name, { exact: true }) }));
   for (const row of rows) if (await row.getByRole("button", { name: "写入", exact: true }).isEnabled()) throw new Error("S7 handshake points must not be manually writable");
   await read("plc_write_point", { id: config.points.find(p => p.tags.includes("armed")).id, value: true }).then(() => { throw new Error("Backend accepted a manual handshake write"); }, error => { if (!String(error).includes("禁止手动写入")) throw error; });

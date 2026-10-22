@@ -1,106 +1,115 @@
 # GlueSight PLC 通讯协议
 
-文档修订：2.0；审核日期：2026-10-19；线上握手协议版本：4。
+文档修订：3.0；审核日期：2026-10-22；线上握手协议版本：5。
+
+**本修订按《涂胶检测通信交互表 20261022 V1.1》及现场确认（PLC 已更换为 S7-1200，16 位字段统一为 Int）编写；仓库 S7 模板、握手校验、测试 PLC 与 PLC 参考程序已同步为协议 5。**
 
 适用于 GlueSight 一期连续点胶飞拍的 PLC 与视觉工控机对接。PLC 负责机器人运动和位置同步硬触发，PC 负责接件、相机布防、收图、检测及整件结果回传。一件只有一个在途事务，完成结果确认和双方释放后才能开始下一件。
 
 **设备数量固定为一台 SDK 三目相机设备。** 全文统一称“设备通道 1”，图 1、图 2、图 3 是该设备帧内的视角。点表只保留唯一设备的 `deviceShots` 与 `deviceTriggers`，直接删除额外设备通道。协议不接受旧多通道点表或计划，须重新生成点表并重新导出计划。
 
-**协议版本 4 按《涂胶检测通信交互表 20261018 V1.0》调整，与协议 3 布局不兼容。** PLC 为西门子 S7-200 SMART，共享区为 V 区（S7 协议中的 DB1，原默认 DB100）；序号、计划版本与保留字段由 UDInt 改为 DInt；`partSn` 迁至 DBB160、`resultSn` 迁至 DBB100，均为 50 字符区域的字符串（200 SMART 字符串编码的 SN 最多 49 字符）；`protocolVersion`/`pcProtocolVersion` 由 3 升为 4。旧点表（DB100、`STRING[24]`、UDInt）和旧 PLC 程序（`protocolVersion` 不为 4）直接被 PC 拒绝，不做兼容读取；须按协议 4 模板重新生成点表。与交互表的逐项差异见第 12 节，取舍理由与待 PLC 确认的问题见 [交互表适配决策](../decisions/plc-table.md)。
+**协议版本 5 按交互表 V1.1 调整，与协议 4 布局不兼容。** PLC 由 S7-200 SMART 更换为西门子 S7-1200；共享区由单个 V 区（DB1）拆为两个标准 DB：DB4 由 PLC 写、PC 只读，DB2 由 PC 写、PLC 只读，两个 DB 都从字节 0 起紧凑排列；16 位字段统一为 Int（只用 0–32767）；`partSn`、`resultSn` 均为 TIA `String[50]`；`protocolVersion`/`pcProtocolVersion` 由 4 升为 5。协议 4 点表（DB1、WORD、200 SMART 字符串）和协议 4 的 PLC 程序直接被 PC 拒绝，不做兼容读取；须按协议 5 模板重新生成点表。与协议 4 及交互表的逐项差异见第 12 节，取舍理由与待 PLC 确认的问题见 [交互表适配决策 · 协议 5](../decisions/plc-table.md#协议-5-适配交互表-v11)。
 
-**同一 DB 也承载示教整圈采集，线上没有生产/采集模式字段。采集成功同样返回 `1/0`，只表示采集完成，不表示产品合格。** PLC 必须在外部维护并锁定本次用途，示教期间禁止生产自动发件和良品放行；不能仅凭 ready 或 resultCode=1 判断生产模式。示教执行条件和当前限制见第 4.1 节。
+**同一组 DB 也承载示教整圈采集，线上没有生产/采集模式字段。采集成功同样返回 `1/0`，只表示采集完成，不表示产品合格。** PLC 必须在外部维护并锁定本次用途，示教期间禁止生产自动发件和良品放行；不能仅凭 ready 或 resultCode=1 判断生产模式。示教执行条件和当前限制见第 4.1 节。
 
-本协议以仓库 S7 模板和双方握手实现为依据。PLC SCL 为 S7-1200/1500 接入参考和 S7-200 SMART 的逻辑参考（200 SMART 不支持 SCL），仍需现场编程、真实 CPU、触发线路与相机联调验收。实现说明见 [S7 握手契约与现场接入](plc-s7-phase1.md)。
+本协议以仓库 S7 模板和双方握手实现为依据。PLC SCL 参考 FB 可在 S7-1200 上作为接入参考（随协议 5 一并更新布局），仍需现场编程、真实 CPU、触发线路与相机联调验收。实现说明见 [S7 握手契约与现场接入](plc-s7-phase1.md)。
 
 ## 1 通讯参数与分工
 
 | 项目 | 约定 |
 | --- | --- |
 | 连接方式 | PC 作为 S7 ISO-on-TCP 客户端，读写 PLC 共享区 |
-| PLC | 西门子 S7-200 SMART（交互表 V1.0）；具体型号与固件现场确认 |
+| PLC | 西门子 S7-1200（现场已由 S7-200 SMART 更换）；CPU 订货号与固件版本现场补填 |
 | PLC IP / 端口 | 默认 192.168.2.10 / 102；工控机连接 PLC 的网口须在同一网段 |
-| 连接参数 | 本地 / 远端 TSAP 0x0102 / 0x0201（OP 连接，不占用 Micro/WIN SMART 的 PG 编程连接），PDU 240；连接被拒时按 [适配决策第 2 条](../decisions/plc-table.md#2-s7-200-smart-连接参数) 核对 |
-| 共享区 | 200 SMART 的 V 区，S7 协议中按 DB1 访问（`DB1.DBW2` 即 VW2）；S7-1200/1500 接入时为关闭优化块访问的标准 DB，可改号 |
-| 区域长度 | 至少使用到 VB210；SN 采用 S7 STRING 时至少到 VB211 |
-| 数值字节序 | 大端 ABCD；WORD 为 16 位无符号（0–65535）；DInt 为 32 位有符号，本协议只使用 0–2147483647，负数一律拒绝 |
-| 字符串 | 工件 SN 区域 50 字符；默认 200 SMART 字符串（首字节为实际长度，SN 最多 49 字符），可选 S7 `STRING[50]`（SN 最多 50 字符），见第 2.1 节 |
-| PC 轮询周期 | 一期 S7 模板默认 50 ms；每次分两段读取字节 0–37 与 64–210（S7 STRING 为 64–211） |
+| 连接参数 | 机架 0 / 插槽 1，TSAP 按机架/插槽自动生成；PC 请求 PDU 480，以 CPU 协商结果为准。CPU 须在“防护与安全 → 连接机制”中允许来自远程对象的 PUT/GET 访问 |
+| 共享区 | 两个标准 DB，均取消“优化的块访问”：DB4 为 PLC → PC，DB2 为 PC → PLC |
+| 区域长度 | DB4 至少 90 字节（0–89）；DB2 至少 72 字节（0–71） |
+| 数值字节序 | 大端 ABCD；Int 为 16 位有符号，本协议只使用 0–32767；DInt 为 32 位有符号，本协议只使用 0–2147483647；读到负数一律按字段越界拒绝 |
+| 字符串 | 工件 SN 为 TIA `String[50]`（S7 STRING：声明长度 + 实际长度 + 字符），SN 1–50 个字符，见第 2.1 节 |
+| PC 轮询周期 | 一期 S7 模板默认 50 ms；每次分两段读取 DB4 字节 0–89 与 DB2 字节 0–71 |
 | 心跳 | 双方默认每 500 ms 翻转一次；观察变化，3 s 不变化判失活 |
 | 自动连接 | 一期模板默认关闭；连接成功后仍必须显式复位 |
-| 写入所有权 | PLC 只写字节 0–63 与 160–210（S7 STRING 为 160–211）；PC 只写字节 64–150（S7 STRING 为 64–151） |
+| 写入所有权 | PLC 只写 DB4；PC 只写 DB2 |
 
-PLC 区在 PC 点表中必须设为只读，PC 区设为读写。禁止整区清零（含 `FILL_N` 块填充）或块复制覆盖对方区域；同一字节不能由双方分别写不同 bit。PC 的 50 ms 轮询不承担拍照位置或曝光时刻控制。
+DB4 点位在 PC 点表中必须设为只读，DB2 点位设为读写。PLC 程序不得写 DB2，禁止整块清零、`FILL_BLK`/`MOVE_BLK` 等块操作覆盖 DB2；DB4 内保留字节保持 0。PC 的 50 ms 轮询不承担拍照位置或曝光时刻控制。
 
-现场触发程序须同时满足 `TriggerPermit=1` 和第 5 节的完整发脉冲条件。该信号是参考 FB 的本地输出，不是共享区点位；当前参考程序的放行表达式缺少部分保护，见第 5 节接入限制。实际输出接线、脉冲宽度、极性和运动停止策略由 PLC/机器人程序负责。S7-200 SMART 不支持 SCL，参考 FB 只作逻辑参考，须在 Micro/WIN SMART 中按本协议实现同等状态机。
+现场触发程序须同时满足 `TriggerPermit=1` 和第 5 节的完整发脉冲条件。该信号是参考 FB 的本地输出，不是共享区点位；当前参考程序的放行表达式缺少部分保护，见第 5 节接入限制。实际输出接线、脉冲宽度、极性和运动停止策略由 PLC/机器人程序负责。
 
-## 2 PLC 写入 PC 读取点表
+**在 TIA 中建立 DB4 / DB2：** 取消“优化的块访问”后，按第 2、3 节表格自上而下的顺序声明变量，保留位与保留字节也要声明（Bool 占位、Byte 或 Array of Byte），使编辑器“偏移量”列与表中“偏移”列逐行一致；Int、DInt、String 只能落在偶数字节，顺序或类型不同会让后续字段整体错位。建好后导出或截图偏移量列，与本表核对后再联调。
 
-以下地址按 DB1（即 200 SMART 的 V 区）。标签名称区分大小写，PC 严格握手要求每个标签只配置一次。
+## 2 PLC 写入 PC 读取点表（DB4）
 
-| 地址 | 类型 | 标签 | 含义及要求 |
-| --- | --- | --- | --- |
-| DB1.DBX0.0 | Bool | `partStart` | 请求提交标志；payload 写完后最后置 1，保持至结果释放 |
-| DB1.DBX0.1 | Bool | `partEnd` | 本件运动及全部计划触发结束；最终计数写完后置 1 |
-| DB1.DBX0.2 | Bool | `resultAck` | 结果确认标志；锁存有效结果并写 ackSeq 后置 1 |
-| DB1.DBX0.3 | Bool | `faultReset` | 明确复位请求；必须先观察低电平，再有新上升沿 |
-| DB1.DBX0.4 | Bool | `plcHeartbeat` | PLC 心跳，每 500 ms 翻转 |
-| DB1.DBW2 | WORD | `protocolVersion` | 固定 4；2、3 及其他值拒绝 |
-| DB1.DBD4 | DInt | `requestSeq` | 本件事务序号，1–2147483647，非零且递增 |
-| DB1.DBW12 | WORD | `productCode` | 生产配方产品代码；PC 手动选配方时也必须匹配。示教采集不据此选择候选 |
-| DB1.DBW14 | WORD | `shotCount` | 协议总数为 1–65535；示教采集接受 PLC 提供的 1–64 |
-| DB1.DBD16 | DInt | `planVersion` | 生产使用 PC 分配并导出的计划版本；示教见第 4.1 节，均不得为 0 或负数 |
-| DB1.DBD20 | DInt | `planReserved` | 固定 0，非零拒绝处理 |
-| DB1.DBW24 | WORD | `deviceShots` | 设备通道 1 计划触发数，等于 shotCount |
-| DB1.DBD32 | DInt | `ackSeq` | 确认时回显本件 resultSeq，新件开始前清为 0 |
-| DB1.DBW36 | WORD | `deviceTriggers` | 设备通道 1 本件已发脉冲数，布防前为 0，结束时等于 deviceShots |
-| DB1.DBB160.50 | 字符串（50） | `partSn` | 工件 SN 字符串，从 DBB160 起；不替代事务序号，规则见第 2.1 节 |
+标签名称区分大小写，PC 严格握手要求每个标签只配置一次。
 
-PLC 区保留空间：DBX0.5–0.7、DBB1、DBB8–11（协议 2 的数值 SN 位置）、DBB26–31、DBB38–63（协议 3 的 `partSn` 位置，交互表列出其中 DBB38–41）。保留字节保持 0，不定义设备通道或计数字段，不新增跨方向写入字段。
+| 地址 | 偏移 | 类型 | 标签 | 含义及要求 |
+| --- | --- | --- | --- | --- |
+| DB4.DBX0.0 | 0.0 | Bool | `partStart` | 请求提交标志；payload 写完后最后置 1，保持至结果释放 |
+| DB4.DBX0.1 | 0.1 | Bool | `partEnd` | 本件运动及全部计划触发结束；最终计数写完后置 1 |
+| DB4.DBX0.2 | 0.2 | Bool | `resultAck` | 结果确认标志；锁存有效结果并写 ackSeq 后置 1 |
+| DB4.DBX0.3 | 0.3 | Bool | `faultReset` | 明确复位请求；必须先观察低电平，再有新上升沿 |
+| DB4.DBX0.4 | 0.4 | Bool | `plcHeartbeat` | PLC 心跳，每 500 ms 翻转 |
+| DB4.DBX0.5–0.7 | 0.5 | Bool ×3 | 保留 | 保持 0 |
+| DB4.DBB1 | 1.0 | Byte | 保留 | 保持 0 |
+| DB4.DBW2 | 2.0 | Int | `protocolVersion` | 固定 5；其他值拒绝 |
+| DB4.DBD4 | 4.0 | DInt | `requestSeq` | 本件事务序号，1–2147483647，非零且递增 |
+| DB4.DBW8 | 8.0 | Int | `productCode` | 生产配方产品代码，1–32767；PC 手动选配方时也必须匹配。示教采集不据此选择候选 |
+| DB4.DBW10 | 10.0 | Int | `shotCount` | 计划拍照总数，1–32767；示教采集接受 PLC 提供的 1–64 |
+| DB4.DBD12 | 12.0 | DInt | `planVersion` | 生产使用 PC 分配并导出的计划版本；示教见第 4.1 节，均不得为 0 或负数 |
+| DB4.DBD16 | 16.0 | DInt | `planReserved` | 固定 0，非零拒绝处理 |
+| DB4.DBW20 | 20.0 | Int | `deviceShots` | 设备通道 1 计划触发数，等于 shotCount |
+| DB4.DBB22–27 | 22.0 | Byte ×6 | 保留 | 保持 0 |
+| DB4.DBD28 | 28.0 | DInt | `ackSeq` | 确认时回显本件 resultSeq，新件开始前清为 0 |
+| DB4.DBW32 | 32.0 | Int | `deviceTriggers` | 设备通道 1 本件已发脉冲数，布防前为 0，结束时等于 deviceShots |
+| DB4.DBB34–37 | 34.0 | Byte ×4 | 保留 | 保持 0 |
+| DB4.DBB38.50 | 38.0 | String[50] | `partSn` | 工件 SN 字符串，占 38–89；不替代事务序号，规则见第 2.1 节 |
 
-## 3 PC 写入 PLC 读取点表
+保留空间：DBX0.5–0.7、DBB1、DBB22–27、DBB34–37。保留字节保持 0，不定义设备通道或计数字段，不新增跨方向写入字段。
 
-| 地址 | 类型 | 标签 | 含义及要求 |
-| --- | --- | --- | --- |
-| DB1.DBX64.0 | Bool | `visionReady` | 可以接收下一件；连接成功不等于就绪 |
-| DB1.DBX64.1 | Bool | `armed` | 本件相机布防完成，必须结合 acceptedSeq 判断 |
-| DB1.DBX64.2 | Bool | `busy` | 事务处理中，包含等待结果确认阶段 |
-| DB1.DBX64.3 | Bool | `done` | 结果有效；PC 写完结果 payload 后最后置 1 |
-| DB1.DBX64.4 | Bool | `visionFault` | 协议或设备故障，停止新触发并处置 |
-| DB1.DBX64.5 | Bool | `pcHeartbeat` | PC 通讯心跳，默认每 500 ms 翻转 |
-| DB1.DBW66 | WORD | `pcProtocolVersion` | 成功复位后为 4 |
-| DB1.DBD68 | DInt | `resultSeq` | 本件结果事务序号，应等于 requestSeq |
-| DB1.DBW76 | WORD | `resultCode` | 生产整件结果或示教采集完成码，须结合外部锁定的用途，见第 6 节（交互表误写为 DBD76） |
-| DB1.DBW78 | WORD | `faultCode` | 检测异常码，正常质量结果为 0（交互表误写为 DBD78） |
-| DB1.DBD80 | DInt | `acceptedSeq` | 已接受并布防的 requestSeq |
-| DB1.DBD84 | DInt | `acceptedPlanReserved` | 布防时写 0，核对接受状态时应为 0 |
-| DB1.DBB100.50 | 字符串（50） | `resultSn` | 本件结果 SN，与 partSn 同格式，实际长度与字符须相等 |
+## 3 PC 写入 PLC 读取点表（DB2）
 
-PC 区保留空间：DBX64.6–64.7、DBB65、DBB72–75（协议 3 前的数值 `resultSn` 位置）、DBB88–99、DBB152–159。PLC 不写此区域。`done=0` 时结果字段可能保留上件数值，不能作为新件结论。
+| 地址 | 偏移 | 类型 | 标签 | 含义及要求 |
+| --- | --- | --- | --- | --- |
+| DB2.DBX0.0 | 0.0 | Bool | `visionReady` | 可以接收下一件；连接成功不等于就绪 |
+| DB2.DBX0.1 | 0.1 | Bool | `armed` | 本件相机布防完成，必须结合 acceptedSeq 判断 |
+| DB2.DBX0.2 | 0.2 | Bool | `busy` | 事务处理中，包含等待结果确认阶段 |
+| DB2.DBX0.3 | 0.3 | Bool | `done` | 结果有效；PC 写完结果 payload 后最后置 1 |
+| DB2.DBX0.4 | 0.4 | Bool | `visionFault` | 协议或设备故障，停止新触发并处置 |
+| DB2.DBX0.5 | 0.5 | Bool | `pcHeartbeat` | PC 通讯心跳，默认每 500 ms 翻转 |
+| DB2.DBX0.6–0.7 | 0.6 | Bool ×2 | 保留 | PC 写 0 |
+| DB2.DBB1 | 1.0 | Byte | 保留 | PC 写 0 |
+| DB2.DBW2 | 2.0 | Int | `pcProtocolVersion` | 成功复位后为 5 |
+| DB2.DBD4 | 4.0 | DInt | `resultSeq` | 本件结果事务序号，应等于 requestSeq |
+| DB2.DBW8 | 8.0 | Int | `resultCode` | 生产整件结果或示教采集完成码，须结合外部锁定的用途，见第 6 节 |
+| DB2.DBW10 | 10.0 | Int | `faultCode` | 检测异常码，正常质量结果为 0 |
+| DB2.DBD12 | 12.0 | DInt | `acceptedSeq` | 已接受并布防的 requestSeq |
+| DB2.DBD16 | 16.0 | DInt | `acceptedPlanReserved` | 布防时写 0，核对接受状态时应为 0 |
+| DB2.DBB20.50 | 20.0 | String[50] | `resultSn` | 本件结果 SN，占 20–71；实际长度与字符须与 partSn 相等 |
+
+保留空间：DBX0.6–0.7、DBB1。PLC 不写 DB2。`done=0` 时结果字段可能保留上件数值，不能作为新件结论。
 
 ### 2.1 工件 SN 字符串
 
-`partSn`（`DB1.DBB160.50`）与 `resultSn`（`DB1.DBB100.50`）按 50 字符分配区域，支持两种编码，两段必须相同，PC 校验点表时拒绝混用：
+`partSn`（`DB4.DBB38`）与 `resultSn`（`DB2.DBB20`）均为 TIA `String[50]`，各占 52 字节，PC 点表类型为 `string`：
 
-| 编码 | 点位类型 | `partSn` 占用 | `resultSn` 占用 | 字节布局 |
-| --- | --- | --- | --- | --- |
-| 200 SMART 字符串（默认） | `smartString` | DBB160–210 | DBB100–150 | +0 实际长度 0–49（50 保留，见下文）；+1 起为字符；未用字节补 0 |
-| S7 `STRING[50]` | `string` | DBB160–211 | DBB100–151 | +0 声明最大长度 50（0x32）；+1 实际长度 0–50；+2 起为字符；未用字节补 0 |
+| 字节 | 内容 |
+| --- | --- |
+| +0 | 声明最大长度，固定 50（0x32），由 TIA 按声明自动维护 |
+| +1 | 实际长度 0–50 |
+| +2 起 | 字符；未用字节 PC 写入时补 0 |
 
-200 SMART 字符串与 `STR_CPY`、`S==` 等 200 SMART 字符串指令格式一致，是 S7-200 SMART 的默认选择；PLC 若按 `STRING[50]` 自行维护两个头字节，在 PLC 页“载入一期 S7 点表”中把“工件 SN 字符串格式”改为 S7 STRING。
+PLC 用字符串赋值或 `S_MOVE` 写 `partSn`，不要按字节拼写头字节；禁止用块操作覆盖 SN 区。
 
-**两种编码的头字节并不总能区分。** 200 SMART 字符串的长度字节 50 与 S7 STRING 的声明长度相同，因此 200 SMART 字符串编码的 SN 最多 49 字符，长度字节 50 保留：PC 按 200 SMART 字符串读到长度字节 50 时按读错误处理，提示核对两端 SN 格式。PLC 按 S7 STRING 写入时声明长度字节恒为 50，PC 若误选 200 SMART 字符串，在 PLC 写入 `partSn` 后的首个轮询即报错；PLC 按 200 SMART 字符串写入且遵守 49 字符上限时，PC 若误选 S7 STRING，声明长度字节不为 50，同样报错。PLC 写出 50 字符的 200 SMART 字符串、同时 PC 误选 S7 STRING 时，首字符为 0x20–0x32 的 SN 会被错读成另一个合规 SN（详见[适配决策第 7.1 条](../decisions/plc-table.md#71-格式选错时的识别)）。调试时用现场最长的真实 SN 走一件，逐字符核对 PC 生产记录里的 SN 与 PLC 原值。
+**长度字节异常不是请求 payload 不合法。** PC 每个轮询周期都读取两段 SN：声明长度不为 50 或实际长度大于 50 时，该点位读错误，与心跳、序号等字段读失败一样直接进入视觉故障（`visionFault=1`、`visionReady=0`），与是否有 `partStart` 无关。两段的恢复责任按所有者划分：
 
-**长度字节异常不是请求 payload 不合法。** PC 每个轮询周期都读取两段 SN：实际长度大于 50、S7 STRING 的声明长度字节不为 50，或 200 SMART 字符串的长度字节为保留值 50 时，该点位读错误，与心跳、序号等字段读失败一样直接进入视觉故障（`visionFault=1`、`visionReady=0`），与是否有 `partStart` 无关。200 SMART 字符串没有声明长度字节，整区清零后读为空串，空闲时不报错，提交请求时按不合规 SN 处理。两段的恢复责任按所有者划分：
+- `resultSn`（DB2）头字节异常时，PC 在显式复位中自行恢复：满足第 8 节复位条件后，PC 先把 `resultSn` 写回空串（头为 `32 00`），读回确认并记入复位审计，再继续清输出、置 `visionReady`。
+- `partSn`（DB4）头字节异常时 PC 不写该区，显式复位无法完成；必须由 PLC 写回空串（头为 `32 00`），再按第 8 节复位。
 
-- `resultSn`（PC 区）头字节异常时，PC 在显式复位中自行恢复：满足第 8 节复位条件后，PC 先把 `resultSn` 写回空串（S7 STRING 头为 `32 00`，200 SMART 字符串为 `00`），读回确认并记入复位审计，再继续清输出、置 `visionReady`。两种编码的头字节异常都在此列。
-- `partSn`（PLC 区）头字节异常时 PC 不写该区，显式复位无法完成；必须由 PLC 恢复起始值（S7 STRING 按 `32 00`、200 SMART 字符串按 `00` 写回头字节），再按第 8 节复位。
-
-PC 的自恢复只是兜底，不改变 PLC 职责：禁止整区清零。
+PC 的自恢复只是兜底，不改变 PLC 职责：禁止整块覆盖。
 
 SN 规则：
 
-- 200 SMART 字符串编码长度 1–49 个字符，S7 STRING 编码长度 1–50 个字符；每个字符为 ASCII 可打印字符 0x20–0x7E；去掉首尾空白后不能为空。
-- SN 原样保存与回显，PC 不做 trim 或大小写变换。PLC 侧要求 `resultSn` 与 `partSn` 的实际长度及每个字符相等（S7 STRING 另含声明长度）；PC 写入时未用字节补 0，PLC 比较时不要依赖 `partSn` 的未用字节，建议用 `S==` 比较整个字符串。
+- 长度 1–50 个字符；每个字符为 ASCII 可打印字符 0x20–0x7E；去掉首尾空白后不能为空。
+- SN 原样保存与回显，PC 不做 trim 或大小写变换。PLC 侧要求 `resultSn` 与 `partSn` 的实际长度及每个字符相等；PLC 比较时不要依赖未用字节，建议直接用字符串比较（`==`）整个字符串。
 - SN 不替代 `requestSeq`；同一 SN 复检仍须新的 `requestSeq`。
 - 离线产线（仿真）为每件分配形如 `OFFLINE-0001234567`（`OFFLINE-` 加 10 位数字）的 SN，同一离线运行内唯一，样本件按 SN 字符串认领。
 
@@ -112,7 +121,7 @@ PC 从已发布生产配方生成计划，配方总览的“PLC 对接参数”�
 
 必须满足：
 
-- `protocolVersion=pcProtocolVersion=4`。
+- `protocolVersion=pcProtocolVersion=5`。
 - `deviceShots=shotCount`，总数非零。
 - `planVersion`、总数及设备计划触发数与 PC 当前计划一致。
 - PC 只配置一台设备，导出计划的 `deviceId` 必须对应此设备；所有拍照点的 `cameraId` 都指向该设备。
@@ -122,7 +131,7 @@ PC 从已发布生产配方生成计划，配方总览的“PLC 对接参数”�
 
 `shotId` 标识拍照点且必须唯一；`poseId` 标识现场位置，可被多个拍照点引用；`cameraId` 标识设备；`view` 标识帧内视角，由 PC 配方管理，当前 PLC 计划 JSON 的 shots 不携带 view。
 
-计划版本由 PC 配方库分配，不手工猜测或复用。改变产品代码、拍照点顺序、ID、Pose 或设备绑定会分配新版本；只改检测限值、检测参数、示教中线、不检设置或视角选择沿用原版本。更换设备或改变设备配置必须暂停接件，核对拍照点绑定，重新导出并人工评审设备与现场触发输出的对应关系，完成复位后再生产。拍照计划不使用内容哈希匹配；旧 `planHash`、`acceptedPlanHash` 标签直接拒绝，须按新模板重建点表，DBD20/84 固定为零值保留字段。
+计划版本由 PC 配方库分配，不手工猜测或复用。改变产品代码、拍照点顺序、ID、Pose 或设备绑定会分配新版本；只改检测限值、检测参数、示教中线、不检设置或视角选择沿用原版本。更换设备或改变设备配置必须暂停接件，核对拍照点绑定，重新导出并人工评审设备与现场触发输出的对应关系，完成复位后再生产。拍照计划不使用内容哈希匹配；旧 `planHash`、`acceptedPlanHash` 标签直接拒绝，须按新模板重建点表，`planReserved`（DB4.DBD16）与 `acceptedPlanReserved`（DB2.DBD16）固定为零值保留字段。
 
 ### 4.1 示教整圈采集
 
@@ -138,7 +147,7 @@ PC 从已发布生产配方生成计划，配方总览的“PLC 对接参数”�
 
 | 阶段 | PLC 动作 | PC 动作与放行条件 |
 | --- | --- | --- |
-| 等待就绪 | 保持 start/end/ACK 为 0，确认心跳活跃 | `visionReady=1`，`armed/busy/done/visionFault=0`，协议版本为 4 |
+| 等待就绪 | 保持 start/end/ACK 为 0，确认心跳活跃 | `visionReady=1`，`armed/busy/done/visionFault=0`，协议版本为 5 |
 | 提交请求 | 递增 requestSeq；写 SN（字符串）、产品代码、计划和零触发数，最后置 partStart | 稳定读取请求，核对 SN 格式、身份、配方、设备及计划 |
 | 等待布防 | 保持请求，禁止发触发 | 先撤 ready，写 acceptedSeq 和零保留位，置 busy，最后置 armed |
 | 连续运动与触发 | 核对布防条件后，按计划向唯一设备发硬脉冲并更新 deviceTriggers | 收图并按设备会话、触发计数和拍照点关联，异步检测 |
@@ -161,7 +170,7 @@ PC 从已发布生产配方生成计划，配方总览的“PLC 对接参数”�
 
 计划拒收或提前终止可直接返回 `resultCode=90`、`faultCode=91–100`，无需等 partEnd。等待布防时也可能收到这种结果；已布防后 armed 撤下时，PLC 停止新脉冲并限时等待结果。身份与结果组合有效后仍需锁存、ACK 和释放。提前出现 OK/NG、未知组合或身份不匹配均不得确认放行。
 
-`resultAck` 只表示 PLC 已接收该件结论。NG 和检测异常都可以有效确认，不能把 ACK 作为良品信号。同一 SN 复检也必须使用新的 requestSeq。序号为 DInt，最大 2147483647，不能溢出成负数：到达上限前先处置未结件，在中性基线下把 requestSeq 与 ackSeq 清零并显式复位，不能直接回绕生产。PC 读到负数的 DInt 字段按读错误进入视觉故障，读到不递增的 requestSeq 拒绝接件。
+`resultAck` 只表示 PLC 已接收该件结论。NG 和检测异常都可以有效确认，不能把 ACK 作为良品信号。同一 SN 复检也必须使用新的 requestSeq。序号为 DInt，最大 2147483647，不能溢出成负数：到达上限前先处置未结件，在中性基线下把 requestSeq 与 ackSeq 清零并显式复位，不能直接回绕生产。PC 读到负数的 Int 或 DInt 字段按读错误进入视觉故障，读到不递增的 requestSeq 拒绝接件。PLC 对 Int 字段运算时不得写出负值。
 
 ## 6 结果与异常码
 
@@ -195,7 +204,7 @@ PC 从已发布生产配方生成计划，配方总览的“PLC 对接参数”�
 
 `visionFault` 是握手层故障信号，与 `faultCode` 不同。心跳失活、请求身份变化或回写失败可能只有 visionFault 和 PC 错误原因，没有可提交的 done；此时保留未结事务，不能拿残留结果 ACK。
 
-PLC 参考 FB 的 `LocalDiagnostic` 只在本地使用，不写 DBW78：7000 启动或未知状态需复位，7001 PC 心跳超时，7002 PC 协议故障，7003 阶段超时，7004 新件计划或前置条件错误，7005 布防或结果身份/状态不符，7006 触发计数不符，7007 序号耗尽，7008 在途 payload 改变，7009 外部互锁故障。
+PLC 参考 FB 的 `LocalDiagnostic` 只在本地使用，不写 `faultCode`（DB2.DBW10）：7000 启动或未知状态需复位，7001 PC 心跳超时，7002 PC 协议故障，7003 阶段超时，7004 新件计划或前置条件错误，7005 布防或结果身份/状态不符，7006 触发计数不符，7007 序号耗尽，7008 在途 payload 改变，7009 外部互锁故障。
 
 ## 7 心跳与时间参数
 
@@ -234,7 +243,7 @@ PC 写入或读取遇到断开、通讯超时或应答帧异常时，立即关�
 3. 对参考 FB 的本地 `ResetRequest` 先置低，再发新上升沿；PLC 释放 partStart/partEnd/resultAck。运行中的未结件不能直接清输入强切下一件。
 4. 保持 faultReset 为低至少 1 s，保持 requestSeq、ackSeq 基线不变，随后置 faultReset 高至少 500 ms，形成 PC 可观察的新边沿。
 5. PC 在设备就绪、PLC 心跳有变化且输入中性时清输出、记录复位审计并结束原 pending，最后置 visionReady。
-6. PLC 必须看到 ready 低状态后再到高状态，且 pcProtocolVersion=4、armed/busy/done/visionFault 全为 0，才认定复位成功。超时则重新处置并发新低→高复位请求。
+6. PLC 必须看到 ready 低状态后再到高状态，且 pcProtocolVersion=5、armed/busy/done/visionFault 全为 0，才认定复位成功。超时则重新处置并发新低→高复位请求。
 
 计数错位时 PC 不自动修改基线去猜测帧归属。相机漏脉冲与上件迟到帧可能无法仅靠计数区分；出现持续缺帧时按错误原因排查并复位重新对齐。
 
@@ -254,7 +263,7 @@ sequenceDiagram
     participant DEV as 三目设备<br/>一个 Device · 帧内三个视角
     participant PC as 视觉 PC<br/>S7 握手、异步检测与追溯
 
-    PC->>PLC: 1. 等待就绪：外部用途已锁定为生产<br/>visionReady=1；armed=busy=done=visionFault=0；版本均为 4
+    PC->>PLC: 1. 等待就绪：外部用途已锁定为生产<br/>visionReady=1；armed=busy=done=visionFault=0；版本均为 5
     Note over PLC,PC: PLC 保持 partStart / partEnd / resultAck=0；双方心跳持续变化。
     PLC->>PC: 2. 提交并冻结本件请求<br/>先写 requestSeq、SN、产品、计划、零触发数及 ackSeq=0<br/>payload 写完后，最后置 partStart=1
     Note over PLC,PC: 请求 payload 冻结至双方释放且 PC 再次 ready；一个时刻仅一件在途。
@@ -332,9 +341,9 @@ sequenceDiagram
     PLC->>PC: 4. PLC 建立中性输入，并保持复位低电平<br/>partStart=partEnd=resultAck=0<br/>faultReset=0 持续至少 1 s
     Note over OP,PC: 复位期间保持 requestSeq、ackSeq 及连接会话基线稳定；PLC 须确认 PC 心跳活跃。
     PLC->>PC: 5. PLC 产生 PC 可观察的新 faultReset 上升沿<br/>faultReset=1，保持至少 500 ms
-    PC->>PC: 6. PC 核验复位条件，再清本侧输出<br/>设备就绪、PLC 心跳有变化、审计可用<br/>输入中性且基线稳定；清 armed / done / busy / visionFault<br/>pcProtocolVersion=4；visionReady 仍为 0
+    PC->>PC: 6. PC 核验复位条件，再清本侧输出<br/>设备就绪、PLC 心跳有变化、审计可用<br/>输入中性且基线稳定；清 armed / done / busy / visionFault<br/>pcProtocolVersion=5；visionReady 仍为 0
     PC->>PLC: 7. PC 完成复位审计与持久化，再提交 ready<br/>记录原事务与复位审计，结束原 pending<br/>再次核验中性输入、连接与序号基线稳定<br/>最后置 visionReady=1
-    PLC->>PLC: 8. PLC 观察 ready 从低到高，完成放行核验<br/>必须已见 visionReady=0，然后观察到 1<br/>pcProtocolVersion=4；armed=busy=done=visionFault=0<br/>PC 心跳活跃，faultReset 高保持已满 500 ms
+    PLC->>PLC: 8. PLC 观察 ready 从低到高，完成放行核验<br/>必须已见 visionReady=0，然后观察到 1<br/>pcProtocolVersion=5；armed=busy=done=visionFault=0<br/>PC 心跳活跃，faultReset 高保持已满 500 ms
     Note over OP,PC: PLC 清 faultReset，结束本地 pending，复位成功后才允许接收下一件。
     Note over OP,PC: 复位超时、条件未满足或 ready 未形成低→高：仍禁止生产。<br/>重新核对实物与未结事务处置，再发新的低→高复位请求；不要重复使用旧高电平。<br/>计数错位不得自动修改基线猜测归属；复位过程与真实触发、设备会话的重新对齐仍须现场验收。
 ```
@@ -346,7 +355,7 @@ sequenceDiagram
 | 项目 | 示例值 |
 | --- | --- |
 | requestSeq / partSn / productCode | 17 / `"A24-000123"` / 7 |
-| protocolVersion / planVersion / planReserved | 4 / 41 / 0 |
+| protocolVersion / planVersion / planReserved | 5 / 41 / 0 |
 | shotCount / deviceShots | 4 / 4 |
 | 本件开始时 deviceTriggers | 0 |
 | 布防确认 | acceptedSeq=17，armed=busy=1，ready=0 |
@@ -355,18 +364,16 @@ sequenceDiagram
 | PLC 确认 | 锁存结果 → ackSeq=17 → resultAck=1 |
 | 释放 | PC 清 done/busy → PLC 清 start/end/ACK → PC 再置 ready |
 
-序号 17 写入 DBD4（VD4）的原始字节为 `00 00 00 11`；计划版本 41 写入 DBD16 为 `00 00 00 29`；shotCount=4 写入 DBW14 为 `00 04`。DInt 与 WORD 均为大端，本协议只用非负值。
+序号 17 写入 DB4.DBD4 的原始字节为 `00 00 00 11`；计划版本 41 写入 DB4.DBD12 为 `00 00 00 29`；shotCount=4 写入 DB4.DBW10 为 `00 04`。Int 与 DInt 均为大端，本协议只用非负值。
 
-`partSn="A24-000123"`（10 个字符）按默认的 200 SMART 字符串写入 DBB160 起 51 字节：
+`partSn="A24-000123"`（10 个字符）在 DB4.DBB38 起 52 字节：
 
 ```text
-DBB160  DBB161 ........................... DBB170  DBB171 ... DBB210
-0A      41 32 34 2D 30 30 30 31 32 33             00 x 40
+DBB38  DBB39  DBB40 .......................... DBB49  DBB50 ... DBB89
+32     0A     41 32 34 2D 30 30 30 31 32 33            00 x 40
 ```
 
-`0x0A=10` 为实际长度，`41 32 34 2D 30 30 30 31 32 33` 是 `A24-000123` 的 ASCII，其后 40 个字节补 0。PC 回写的 `resultSn` 在 DBB100 起为同样的 51 字节。
-
-若选用 S7 `STRING[50]`，同一 SN 在 DBB160 起 52 字节为 `32 0A 41 32 34 2D 30 30 30 31 32 33` 加 40 个 0：`0x32=50` 为声明最大长度，`0x0A` 为实际长度；空串头为 `32 00`。两种编码中实际长度为 0 的空串都属于不合规 SN。
+`0x32=50` 为声明最大长度，`0x0A=10` 为实际长度，`41 32 34 2D 30 30 30 31 32 33` 是 `A24-000123` 的 ASCII，其后 40 个字节为 0。PC 回写的 `resultSn` 在 DB2.DBB20 起为同样的 52 字节（占 20–71）。空串头为 `32 00`，实际长度为 0 的空串属于不合规 SN。
 
 ## 11 实现依据与验证边界
 
@@ -374,29 +381,33 @@ DBB160  DBB161 ........................... DBB170  DBB171 ... DBB210
 
 实现依据：[交互表适配决策](../decisions/plc-table.md)、[S7 点表模板](../../src-tauri/src/inspection.rs)、[握手校验与提交顺序](../../src-tauri/src/handshake.rs)、[PC 会话](../../src-tauri/src/plc_session.rs)、[计划导出](../../src-tauri/src/plc_plan.rs)、[PC 时间设置](../../src-tauri/src/settings.rs)、[示教采集握手](../../src-tauri/src/cycle/capture.rs)、[采集状态与时间](../../src-tauri/src/recipe_capture.rs)、[设备配置与拼接图拆分](../../src-tauri/src/camera.rs)、[PLC 参考 FB](../../scripts/s7-handshake/phase1_plc.scl)。
 
-## 12 协议 4 与交互表 V1.0 差异
+## 12 协议 5 与协议 4、交互表 V1.1 差异
 
-对照对象：协议文档 1.3（握手协议 3）及当时代码中的点表模板；《涂胶检测通信交互表20261018_V1.0》中“200SMART实际PLC地址 / 实际对应类型”两列。交互表“PC 设计地址”列仍是协议 2 的布局（`partSn` 为 DBD8、`resultSn` 为 DBD72），不作为依据。
+对照对象：协议文档修订 2.0（握手协议 4）及当前代码中的点表模板；《涂胶检测通信交互表20261022_V1.1》中“实际 PLC 地址 / 实际对应类型”两列及现场确认（PLC 已更换为 S7-1200，16 位字段统一为 Int、地址不变）。
 
-| 项目 | 协议 3（文档 1.3） | 交互表 V1.0 | 协议 4 采用 |
+| 项目 | 协议 4（修订 2.0） | 交互表 V1.1 | 协议 5 采用 |
 | --- | --- | --- | --- |
-| PLC 型号 | 现场填写，参考程序为 TIA SCL | S7-200 SMART | S7-200 SMART；SCL 仅作逻辑参考 |
-| PLC IP / 端口 | 现场填写 / 102 | 192.168.2.10 / 102 | 默认 192.168.2.10 / 102 |
-| 共享区 | 默认 DB100，可改号 | DB1 | 默认 DB1（200 SMART 的 V 区固定为 DB1；1200/1500 可改号） |
-| 连接参数 | 机架 0 / 插槽 1 | 未给出 | TSAP 0x0102 / 0x0201，PDU 240（待确认） |
-| 16 位字段类型名 | UInt | WORD | WORD，16 位无符号，字节与 UInt 相同 |
-| 32 位字段类型 | UDInt | DInt | DInt，只用 0–2147483647，负数拒绝 |
-| `requestSeq` 上限 | 4294967295 | 未说明 | 2147483647，到上限前清零并显式复位 |
-| `protocolVersion` / `pcProtocolVersion` | 3 | 备注写“固定 2” | 4（2 为旧数值 SN 布局，3 为 STRING[24] 布局） |
-| `partSn` | DBB38.24，`STRING[24]`，占 38–63 | DBB160，string，未给长度；备注仍写“数值 SN” | DBB160.50，50 字符区域的字符串，默认 200 SMART 编码（SN 最多 49 字符） |
-| `resultSn` | DBB88.24，`STRING[24]`，占 88–113 | DBB100，`STRING[50]` | DBB100.50，与 `partSn` 同编码 |
-| SN 编码 | S7 STRING（声明长度 + 实际长度） | 未说明 | 默认 200 SMART 字符串（仅实际长度），可选 S7 STRING |
-| `resultCode` | DBW76，UInt | DBD76，WORD | DBW76，WORD（DBD 为笔误，会与 DBD78、DBD80 重叠） |
-| `faultCode` | DBW78，UInt | DBD78，WORD | DBW78，WORD（同上） |
-| 其余 22 个字段 | 见第 2、3 节 | 偏移不变，DB 号改为 1 | 偏移不变 |
-| PLC 区保留 | DBX0.5–0.7、DBB1、DBB8–11、DBB26–31 | DBX0.5–0.7、DBB1、DBB26–31、DBB38–41（“BTYE”应为 BYTE） | DBX0.5–0.7、DBB1、DBB8–11、DBB26–31、DBB38–63 |
-| PC 区保留 | DBX64.6–64.7、DBB65、DBB72–75 | DBX64.6–64.7、DBB65 | DBX64.6–64.7、DBB65、DBB72–75、DBB88–99、DBB152–159 |
-| 写入所有权 | PLC 0–63；PC 64–113 | 按两张表划分 | PLC 0–63 与 160–210；PC 64–150（S7 STRING 各多 1 字节） |
-| 最小区域长度 | 114 字节 | 未说明 | 211 字节（S7 STRING 为 212） |
-| PC 每次轮询读取 | 字节 0–113 一段 | — | 字节 0–37 与 64–210 两段（PDU 240 单段上限 222 字节） |
-| IP 汇总 | — | 仅 PLC 一行有值，机器人、触摸屏、2D 引导相机、工控机各网口为空 | 待现场补齐 |
+| PLC 型号 | S7-200 SMART | 表头仍写“200SMART” | S7-1200（现场确认已更换） |
+| 连接参数 | TSAP 0x0102 / 0x0201，PDU 240 | 未给出 | 机架 0 / 插槽 1，TSAP 自动；PDU 请求 480，按 CPU 协商；须启用 PUT/GET |
+| 共享区 | DB1（V 区），双方共用一个 DB | DB4：PLC → 视觉；DB2：视觉 → PLC（IP 页仍写 DB1） | DB4 / DB2，均取消优化的块访问 |
+| PLC 区字段偏移 | productCode W12、shotCount W14、planVersion D16、planReserved D20、deviceShots W24、ackSeq D32、deviceTriggers W36、partSn B160 | 紧凑排列：W8、W10、D12、D16、W20、D28、W32、B38 | 按交互表 |
+| PC 区字段偏移 | 位 DBX64.x，pcProtocolVersion W66、resultSeq D68、resultCode W76、faultCode W78、acceptedSeq D80、acceptedPlanReserved D84、resultSn B100 | 从 0 起：位 DBX0.x，W2、D4、W8、W10、D12、D16、B20 | 按交互表 |
+| 其余字段 | partStart 等 Bool 位、protocolVersion W2、requestSeq D4 | 偏移不变，改在 DB4 | 按交互表 |
+| 16 位字段类型 | WORD，0–65535 | UINT 与 INT 混写 | Int，只用 0–32767，负数拒绝（现场确认统一 Int，地址不变） |
+| `productCode` 范围 | 1–65535 | 未说明 | 1–32767 |
+| `shotCount` 范围 | 1–65535（示教 1–64） | 备注写 1–65535 | 1–32767（示教 1–64） |
+| 32 位字段类型 | DInt，0–2147483647 | DInt | 不变 |
+| `protocolVersion` / `pcProtocolVersion` | 4 | 备注仍写“固定 2”“复位后为 2” | 5 |
+| `partSn` | DBB160.50，默认 200 SMART 字符串，可选 S7 STRING | DB4.DBB38，string，未给长度；备注仍写“数值 SN，不是字符串条码” | DB4.DBB38，`String[50]`，占 38–89；字符串条码，旧备注作废 |
+| `resultSn` | DBB100.50，与 `partSn` 同编码 | DB2.DBB20，`STRING[50]` | DB2.DBB20，`String[50]`，占 20–71 |
+| SN 编码与长度 | 200 SMART 字符串 1–49 字符；S7 STRING 1–50 字符 | 未说明 | 只用 S7 STRING，1–50 字符 |
+| `resultCode` / `faultCode` | DBW76 / DBW78，WORD | DB2.DBW8 / DB2.DBW10，UINT（V1.0 的 DBD 笔误已改正） | DB2.DBW8 / DB2.DBW10，Int |
+| PLC 区保留 | DBX0.5–0.7、DBB1、DBB8–11、DBB26–31、DBB38–63 | DBX0.5–0.7、DBB1、DBB22–27、DBB34–37（“BTYE”应为 BYTE） | 按交互表 |
+| PC 区保留 | DBX64.6–64.7、DBB65、DBB72–75、DBB88–99、DBB152–159 | DBX0.6–0.7、DBB1 | 按交互表 |
+| 写入所有权 | 同一 DB 内按字节划分：PLC 0–63 与 160–210，PC 64–150 | 按两个 DB 划分 | PLC 只写 DB4，PC 只写 DB2 |
+| 最小区域长度 | 211 字节（S7 STRING 为 212） | 未说明 | DB4 90 字节；DB2 72 字节 |
+| PC 每次轮询读取 | 字节 0–37 与 64–210 两段 | — | DB4 0–89 与 DB2 0–71 两段 |
+| PLC 参考程序 | SCL 仅作 200 SMART 逻辑参考 | — | SCL 可在 S7-1200 上直接作参考 FB，随本协议更新布局 |
+| IP 汇总 | 仅 PLC 一行 | 仅 PLC 一行 | 待现场补齐 CPU 订货号、固件及其余网口 |
+
+**协议版本升为 5 的理由：** 版本号用于识别线上布局。S7-1200 的 DB 号可以任意填写，若沿用 4，用协议 4 模板生成、只把 DB 号改成 4 的点表会读到 `protocolVersion=4` 而通过校验，随后 `productCode`、`shotCount` 等按旧偏移读出错位数值，表现为难以定位的计划或身份不符；升为 5 后在版本校验处直接报“PLC 协议版本 x 与 PC 5 不一致”。16 位字段由无符号改为有符号、SN 只保留 S7 STRING，也属于线上语义变化。PLC 只需把 `protocolVersion` 写为 5。

@@ -19,32 +19,29 @@ def integer(value, name, minimum=0, maximum=65535):
     return value
 
 
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 SN_CAPACITY = 50
-SN_HEADERS = {"string": 2, "smart_string": 1}
-SN_MAX_LENGTHS = {"string": SN_CAPACITY, "smart_string": SN_CAPACITY - 1}
-FIELD_SIZES = {"bool": 1, "u8": 1, "u16": 2, "u32": 4, "i32": 4, **{kind: SN_CAPACITY + header for kind, header in SN_HEADERS.items()}}
-INTEGER_RANGES = {"u8": (0, 0xFF), "u16": (0, 0xFFFF), "u32": (0, 0xFFFFFFFF), "i32": (-(1 << 31), (1 << 31) - 1)}
+# S7 STRING[50]：+0 声明长度 50，+1 实际长度，+2 起字符。
+SN_HEADER = 2
+FIELD_SIZES = {"bool": 1, "u8": 1, "u16": 2, "i16": 2, "u32": 4, "i32": 4, "string": SN_HEADER + SN_CAPACITY}
+INTEGER_RANGES = {"u8": (0, 0xFF), "u16": (0, 0xFFFF), "i16": (-(1 << 15), (1 << 15) - 1), "u32": (0, 0xFFFFFFFF), "i32": (-(1 << 31), (1 << 31) - 1)}
 
 
-def serial_number(value, name, kind):
-    limit = SN_MAX_LENGTHS[kind]
-    if not isinstance(value, str) or not 1 <= len(value) <= limit or not all(" " <= char <= "~" for char in value) or not value.strip():
-        raise ValueError(f"{name} must be 1..{limit} printable ASCII characters and not blank")
+def serial_number(value, name):
+    if not isinstance(value, str) or not 1 <= len(value) <= SN_CAPACITY or not all(" " <= char <= "~" for char in value) or not value.strip():
+        raise ValueError(f"{name} must be 1..{SN_CAPACITY} printable ASCII characters and not blank")
     return value
 
 
-def encode_sn(kind, text):
+def encode_sn(text):
     data = text.encode("ascii")
-    header = bytes([SN_CAPACITY, len(data)]) if kind == "string" else bytes([len(data)])
-    return header + data + bytes(SN_CAPACITY - len(data))
+    return bytes([SN_CAPACITY, len(data)]) + data + bytes(SN_CAPACITY - len(data))
 
 
-def decode_sn(kind, raw):
-    header = SN_HEADERS[kind]
-    if (kind == "string" and raw[0] != SN_CAPACITY) or raw[header - 1] > SN_CAPACITY:
+def decode_sn(raw):
+    if raw[0] != SN_CAPACITY or raw[1] > SN_CAPACITY:
         return None
-    return bytes(raw[header:header + raw[header - 1]]).decode("latin-1")
+    return bytes(raw[SN_HEADER:SN_HEADER + raw[1]]).decode("latin-1")
 
 
 class ItemError(Exception):
@@ -77,26 +74,34 @@ class Item:
             raise ItemError(0x05)
 
 
-def handshake_fields(db, sn_kind="smart_string"):
+def handshake_fields(plc_db=4, pc_db=2):
+    # 协议 5：PLC 区（PLC 写、PC 读）与 PC 区（PC 写、PLC 读）是两个 DB，均从字节 0 起。
+    layout = (
+        (plc_db, ("partStart", "partEnd", "resultAck", "faultReset", "plcHeartbeat"),
+         {"protocolVersion": 2, "productCode": 8, "shotCount": 10, "deviceShots": 20, "deviceTriggers": 32},
+         {"requestSeq": 4, "planVersion": 12, "planReserved": 16, "ackSeq": 28}, {"partSn": 38}),
+        (pc_db, ("visionReady", "armed", "busy", "done", "visionFault", "pcHeartbeat"),
+         {"pcProtocolVersion": 2, "resultCode": 8, "faultCode": 10},
+         {"resultSeq": 4, "acceptedSeq": 12, "acceptedPlanReserved": 16}, {"resultSn": 20}),
+    )
     fields = {}
-    for byte, names in ((0, ("partStart", "partEnd", "resultAck", "faultReset", "plcHeartbeat")), (64, ("visionReady", "armed", "busy", "done", "visionFault", "pcHeartbeat"))):
-        for bit, name in enumerate(names):
-            fields[name] = {"db": db, "byte": byte, "bit": bit, "type": "bool"}
-    words = {"protocolVersion": 2, "productCode": 12, "shotCount": 14, "deviceShots": 24, "deviceTriggers": 36, "pcProtocolVersion": 66, "resultCode": 76, "faultCode": 78}
-    dwords = {"requestSeq": 4, "planVersion": 16, "planReserved": 20, "ackSeq": 32, "resultSeq": 68, "acceptedSeq": 80, "acceptedPlanReserved": 84}
-    strings = {"resultSn": 100, "partSn": 160}
-    for kind, addresses in (("u16", words), ("i32", dwords), (sn_kind, strings)):
-        for name, byte in addresses.items():
-            fields[name] = {"db": db, "byte": byte, "type": kind}
+    for db, bits, words, dwords, strings in layout:
+        for bit, name in enumerate(bits):
+            fields[name] = {"db": db, "byte": 0, "bit": bit, "type": "bool"}
+        for kind, addresses in (("i16", words), ("i32", dwords), ("string", strings)):
+            for name, byte in addresses.items():
+                fields[name] = {"db": db, "byte": byte, "type": kind}
     return fields
 
 
 class PlcState:
-    def __init__(self, db_size=1024, pdu_size=240, db=1, sn_kind="smart_string"):
+    def __init__(self, db_size=1024, pdu_size=240, plc_db=4, pc_db=2):
+        if plc_db == pc_db:
+            raise ValueError("PLC and PC area DBs must differ")
         self.lock = threading.RLock()
         self.stopping = threading.Event()
-        self.default_db = db
-        self.dbs = {db: bytearray(db_size)}
+        self.default_db = plc_db
+        self.dbs = {plc_db: bytearray(db_size), pc_db: bytearray(db_size)}
         self.pdu_size = pdu_size
         self.faults = deque()
         self.events = deque(maxlen=512)
@@ -104,7 +109,7 @@ class PlcState:
         self.counts = dict(connections=0, active_connections=0, requests=0, reads=0, writes=0, faults=0)
         self.heartbeat_enabled = True
         self.heartbeat_ms = 500
-        self.configure_fields(handshake_fields(db, sn_kind))
+        self.configure_fields(handshake_fields(plc_db, pc_db))
         self.plc_values({"protocolVersion": PROTOCOL_VERSION}, None)
 
     def event(self, event_kind, **details):
@@ -211,7 +216,7 @@ class PlcState:
             field = {"db": integer(source.get("db", self.default_db), "db", 1), "byte": integer(source.get("byte"), "byte")}
             field["type"] = source.get("type", "bool" if "bit" in source else "u8")
             if field["type"] not in FIELD_SIZES:
-                raise ValueError("field type must be bool, u8, u16, u32, i32, string or smart_string")
+                raise ValueError("field type must be bool, u8, u16, i16, u32, i32 or string")
             if field["type"] == "bool":
                 field["bit"] = integer(source.get("bit"), "bit", 0, 7)
             if field["type"] == "string" and field["byte"] % 2:
@@ -224,8 +229,8 @@ class PlcState:
             for field in parsed.values():
                 buf = self.dbs[field["db"]]
                 kind, byte = field["type"], field["byte"]
-                if kind in SN_HEADERS and decode_sn(kind, buf[byte:byte + FIELD_SIZES[kind]]) is None:
-                    buf[byte:byte + FIELD_SIZES[kind]] = encode_sn(kind, "")
+                if kind == "string" and decode_sn(buf[byte:byte + FIELD_SIZES[kind]]) is None:
+                    buf[byte:byte + FIELD_SIZES[kind]] = encode_sn("")
         return parsed
 
     def field_values(self):
@@ -236,19 +241,18 @@ class PlcState:
                 byte = field["byte"]
                 if field["type"] == "bool":
                     result[name] = bool((buf[byte] >> field["bit"]) & 1)
-                elif field["type"] in SN_HEADERS:
-                    result[name] = decode_sn(field["type"], buf[byte:byte + FIELD_SIZES[field["type"]]])
+                elif field["type"] == "string":
+                    result[name] = decode_sn(buf[byte:byte + FIELD_SIZES["string"]])
                 else:
-                    result[name] = int.from_bytes(buf[byte:byte + FIELD_SIZES[field["type"]]], "big", signed=field["type"] == "i32")
+                    result[name] = int.from_bytes(buf[byte:byte + FIELD_SIZES[field["type"]]], "big", signed=INTEGER_RANGES[field["type"]][0] < 0)
             return result
 
     def string_bytes(self, name):
         with self.lock:
             field = self.fields[name]
             buf = self.dbs[field["db"]]
-            header = SN_HEADERS[field["type"]]
             byte = field["byte"]
-            return bytes(buf[byte:byte + header + min(buf[byte + header - 1], SN_CAPACITY)])
+            return bytes(buf[byte:byte + SN_HEADER + min(buf[byte + 1], SN_CAPACITY)])
 
     def plc_values(self, values, default_signal):
         if not isinstance(values, dict):
@@ -271,8 +275,8 @@ class PlcState:
                     encoded.append((item, 3, 1, bytes([value])))
                 else:
                     size = FIELD_SIZES[field["type"]]
-                    if field["type"] in SN_HEADERS:
-                        data = encode_sn(field["type"], serial_number(value, name, field["type"]))
+                    if field["type"] == "string":
+                        data = encode_sn(serial_number(value, name))
                     else:
                         minimum, maximum = INTEGER_RANGES[field["type"]]
                         data = integer(value, name, minimum, maximum).to_bytes(size, "big", signed=minimum < 0)
@@ -606,28 +610,32 @@ class S7Server(socketserver.ThreadingTCPServer):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Loopback-only S7 ISO-on-TCP test PLC with JSON stdin/stdout control")
+    # 禁止前缀缩写：已删除的 --db 不能被当作 --db-size 静默接受。
+    parser = argparse.ArgumentParser(description="Loopback-only S7 ISO-on-TCP test PLC with JSON stdin/stdout control", allow_abbrev=False)
     parser.add_argument("--port", type=int, choices=[0], default=0)
     parser.add_argument("--db-size", type=int, default=1024)
-    parser.add_argument("--db", type=int, default=1)
+    parser.add_argument("--plc-db", type=int, default=4)
+    parser.add_argument("--pc-db", type=int, default=2)
     parser.add_argument("--pdu-size", type=int, default=240)
-    parser.add_argument("--sn-format", choices=sorted(SN_HEADERS), default="smart_string")
     args = parser.parse_args()
     try:
-        integer(args.db_size, "db-size", 212, 65536)
-        integer(args.db, "db", 1, 65535)
+        integer(args.db_size, "db-size", 90, 65536)
+        integer(args.plc_db, "plc-db", 1, 65535)
+        integer(args.pc_db, "pc-db", 1, 65535)
         integer(args.pdu_size, "pdu-size", 240, 960)
+        if args.plc_db == args.pc_db:
+            raise ValueError("plc-db and pc-db must differ")
     except ValueError as error:
         parser.error(str(error))
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8")
-    state = PlcState(args.db_size, args.pdu_size, args.db, args.sn_format)
+    state = PlcState(args.db_size, args.pdu_size, args.plc_db, args.pc_db)
     server = S7Server(state).start()
 
     def emit(value):
         print(json.dumps(value, ensure_ascii=False, separators=(",", ":")), flush=True)
 
-    emit({"event": "ready", "protocol": "s7", "host": "127.0.0.1", "port": server.server_address[1], "pid": os.getpid(), "control": "stdio-json", "db": args.db, "db_size": args.db_size, "sn_format": args.sn_format})
+    emit({"event": "ready", "protocol": "s7", "host": "127.0.0.1", "port": server.server_address[1], "pid": os.getpid(), "control": "stdio-json", "plc_db": args.plc_db, "pc_db": args.pc_db, "db_size": args.db_size})
     try:
         while True:
             line = sys.stdin.readline(1048577)

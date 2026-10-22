@@ -35,7 +35,7 @@ impl Plc {
 
     fn set_text(&self, field: &str, value: &str) {
         let (db, byte, _, len, data_type) = self.location(field);
-        let header = match data_type { DataType::SmartString => 1, DataType::String => 2, other => panic!("{field} 不是字符串点位：{other:?}") };
+        let header = match data_type { DataType::String => 2, other => panic!("{field} 不是 S7 STRING 点位：{other:?}") };
         let mut bytes = vec![0u8; len as usize];
         if header == 2 { bytes[0] = (len - 2) as u8; }
         bytes[header - 1] = value.len() as u8;

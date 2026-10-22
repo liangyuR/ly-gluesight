@@ -71,23 +71,23 @@ pub fn read_tag_u32(engine: &PlcEngine, tag: &str) -> Option<u32> {
     }
 }
 
-/// 涂胶检测通信交互表 V1.0：S7-200 SMART，V 区即 DB1。
+/// 涂胶检测通信交互表 V1.1（握手协议 5）：S7-1200，PLC 写 DB4、PC 写 DB2，两个 DB 都从字节 0 起。
 pub const DEFAULT_PLC_HOST: &str = "192.168.2.10";
-pub const DEFAULT_DB: u16 = 1;
-pub const DEFAULT_SN_TYPE: DataType = DataType::SmartString;
+pub const DEFAULT_PLC_DB: u16 = 4;
+pub const DEFAULT_PC_DB: u16 = 2;
 
 pub fn default_plc_config() -> PlcConfig {
-    s7_phase1_config(DEFAULT_DB, DEFAULT_SN_TYPE).expect("DB1 is a valid S7 data block")
+    s7_phase1_config(DEFAULT_PLC_DB, DEFAULT_PC_DB).expect("DB4 / DB2 are valid S7 data blocks")
 }
 
-pub fn s7_phase1_config(db_number: u16, sn_type: DataType) -> Result<PlcConfig, String> {
-    if db_number == 0 {
+pub fn s7_phase1_config(plc_db: u16, pc_db: u16) -> Result<PlcConfig, String> {
+    if plc_db == 0 || pc_db == 0 {
         return Err("S7 DB 号必须在 1–65535 之间".into());
     }
-    if !matches!(sn_type, DataType::SmartString | DataType::String) {
-        return Err("工件 SN 只能用 SmartString（200 SMART 字符串）或 String（S7 STRING）".into());
+    if plc_db == pc_db {
+        return Err("PLC 区与 PC 区必须使用两个不同的 DB".into());
     }
-    use DataType::{Bool, I32, U16};
+    use DataType::{Bool, I16, I32, String as Text};
     use EdgeMode::{None as NoEdge, Rising};
     let input = Access::Read;
     let output = Access::ReadWrite;
@@ -97,32 +97,32 @@ pub fn s7_phase1_config(db_number: u16, sn_type: DataType) -> Result<PlcConfig, 
         (tag::RESULT_ACK, "结果确认", "DBX0.2", Bool, input, Rising),
         (tag::FAULT_RESET, "故障复位", "DBX0.3", Bool, input, Rising),
         (tag::PLC_HEARTBEAT, "PLC 心跳", "DBX0.4", Bool, input, NoEdge),
-        (tag::PROTOCOL_VERSION, "握手协议版本", "DBW2", U16, input, NoEdge),
+        (tag::PROTOCOL_VERSION, "握手协议版本", "DBW2", I16, input, NoEdge),
         (tag::REQUEST_SEQ, "请求事务序号", "DBD4", I32, input, NoEdge),
-        (tag::PRODUCT_CODE, "产品代码", "DBW12", U16, input, NoEdge),
-        (tag::SHOT_COUNT, "计划拍照总数", "DBW14", U16, input, NoEdge),
-        (tag::PLAN_VERSION, "拍照计划版本", "DBD16", I32, input, NoEdge),
-        (tag::PLAN_RESERVED, "拍照计划保留位", "DBD20", I32, input, NoEdge),
-        (tag::DEVICE_SHOTS, "设备计划触发数", "DBW24", U16, input, NoEdge),
-        (tag::ACK_SEQ, "确认事务序号", "DBD32", I32, input, NoEdge),
-        (tag::DEVICE_TRIGGERS, "设备已发触发数", "DBW36", U16, input, NoEdge),
-        (tag::PART_SN, "工件 SN", "DBB160.50", sn_type, input, NoEdge),
-        (tag::VISION_READY, "视觉就绪", "DBX64.0", Bool, output, NoEdge),
-        (tag::ARMED, "已布防", "DBX64.1", Bool, output, NoEdge),
-        (tag::BUSY, "检测中", "DBX64.2", Bool, output, NoEdge),
-        (tag::DONE, "结果有效", "DBX64.3", Bool, output, NoEdge),
-        (tag::VISION_FAULT, "视觉故障", "DBX64.4", Bool, output, NoEdge),
-        (tag::PC_HEARTBEAT, "上位机心跳", "DBX64.5", Bool, output, NoEdge),
-        (tag::PC_PROTOCOL_VERSION, "上位机协议版本", "DBW66", U16, output, NoEdge),
-        (tag::RESULT_SEQ, "结果事务序号", "DBD68", I32, output, NoEdge),
-        (tag::RESULT_CODE, "结果码", "DBW76", U16, output, NoEdge),
-        (tag::FAULT_CODE, "异常码", "DBW78", U16, output, NoEdge),
-        (tag::ACCEPTED_SEQ, "布防事务序号", "DBD80", I32, output, NoEdge),
-        (tag::ACCEPTED_PLAN_RESERVED, "布防计划保留位", "DBD84", I32, output, NoEdge),
-        (tag::RESULT_SN, "结果 SN", "DBB100.50", sn_type, output, NoEdge),
+        (tag::PRODUCT_CODE, "产品代码", "DBW8", I16, input, NoEdge),
+        (tag::SHOT_COUNT, "计划拍照总数", "DBW10", I16, input, NoEdge),
+        (tag::PLAN_VERSION, "拍照计划版本", "DBD12", I32, input, NoEdge),
+        (tag::PLAN_RESERVED, "拍照计划保留位", "DBD16", I32, input, NoEdge),
+        (tag::DEVICE_SHOTS, "设备计划触发数", "DBW20", I16, input, NoEdge),
+        (tag::ACK_SEQ, "确认事务序号", "DBD28", I32, input, NoEdge),
+        (tag::DEVICE_TRIGGERS, "设备已发触发数", "DBW32", I16, input, NoEdge),
+        (tag::PART_SN, "工件 SN", "DBB38.50", Text, input, NoEdge),
+        (tag::VISION_READY, "视觉就绪", "DBX0.0", Bool, output, NoEdge),
+        (tag::ARMED, "已布防", "DBX0.1", Bool, output, NoEdge),
+        (tag::BUSY, "检测中", "DBX0.2", Bool, output, NoEdge),
+        (tag::DONE, "结果有效", "DBX0.3", Bool, output, NoEdge),
+        (tag::VISION_FAULT, "视觉故障", "DBX0.4", Bool, output, NoEdge),
+        (tag::PC_HEARTBEAT, "上位机心跳", "DBX0.5", Bool, output, NoEdge),
+        (tag::PC_PROTOCOL_VERSION, "上位机协议版本", "DBW2", I16, output, NoEdge),
+        (tag::RESULT_SEQ, "结果事务序号", "DBD4", I32, output, NoEdge),
+        (tag::RESULT_CODE, "结果码", "DBW8", I16, output, NoEdge),
+        (tag::FAULT_CODE, "异常码", "DBW10", I16, output, NoEdge),
+        (tag::ACCEPTED_SEQ, "布防事务序号", "DBD12", I32, output, NoEdge),
+        (tag::ACCEPTED_PLAN_RESERVED, "布防计划保留位", "DBD16", I32, output, NoEdge),
+        (tag::RESULT_SN, "结果 SN", "DBB20.50", Text, output, NoEdge),
     ];
     let points = definitions.into_iter().map(|(tag, name, address, data_type, access, edge)| PlcPoint {
-        id: format!("p_{tag}"), name: name.into(), address: format!("DB{db_number}.{address}"),
+        id: format!("p_{tag}"), name: name.into(), address: format!("DB{}.{address}", if access == input { plc_db } else { pc_db }),
         data_type, access, edge, tags: vec![tag.into()],
         log_changes: !matches!(tag, tag::PLC_HEARTBEAT | tag::PC_HEARTBEAT),
         description: if access == input { "一期 S7 · PLC 写入，上位机只读" } else { "一期 S7 · 上位机握手专用，禁止手动写入" }.into(),
@@ -131,7 +131,7 @@ pub fn s7_phase1_config(db_number: u16, sn_type: DataType) -> Result<PlcConfig, 
     let config = PlcConfig {
         connection: ConnectionConfig {
             protocol: ProtocolKind::S7, host: DEFAULT_PLC_HOST.into(), port: 102, poll_interval_ms: 50,
-            s7: S7Options { rack: 0, slot: 1, local_tsap: Some(0x0102), remote_tsap: Some(0x0201), pdu_size: 240, ..S7Options::default() },
+            s7: S7Options { rack: 0, slot: 1, local_tsap: None, remote_tsap: None, pdu_size: 480, ..S7Options::default() },
             ..ConnectionConfig::default()
         },
         points,
@@ -147,32 +147,32 @@ pub fn reserved_s7_point(config: &PlcConfig, id: &str) -> bool {
     if config.connection.protocol != ProtocolKind::S7 { return false; }
     if config.heartbeat.point_id.as_deref() == Some(id) { return true; }
     let Some(point) = config.points.iter().find(|p| p.id == id) else { return false; };
-    s7_phase1_config(DEFAULT_DB, DEFAULT_SN_TYPE).is_ok_and(|template| template.points.iter().any(|preset|
+    s7_phase1_config(DEFAULT_PLC_DB, DEFAULT_PC_DB).is_ok_and(|template| template.points.iter().any(|preset|
         preset.tags.iter().any(|tag| point.tags.contains(tag))))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use DataType::{Bool, SmartString, I32, U16};
+    use DataType::{Bool, I16, I32, String as Text};
 
     #[test]
-    fn default_template_matches_plc_interaction_table_v1_0() {
+    fn default_template_matches_plc_interaction_table_v1_1() {
         let config = default_plc_config();
         assert_eq!((config.connection.host.as_str(), config.connection.port), ("192.168.2.10", 102));
         let table: Vec<_> = config.points.iter().map(|p| (p.tags[0].as_str(), p.address.as_str(), p.data_type, p.access)).collect();
         let (r, w) = (Access::Read, Access::ReadWrite);
         assert_eq!(table, [
-            ("partStart", "DB1.DBX0.0", Bool, r), ("partEnd", "DB1.DBX0.1", Bool, r), ("resultAck", "DB1.DBX0.2", Bool, r),
-            ("faultReset", "DB1.DBX0.3", Bool, r), ("plcHeartbeat", "DB1.DBX0.4", Bool, r), ("protocolVersion", "DB1.DBW2", U16, r),
-            ("requestSeq", "DB1.DBD4", I32, r), ("productCode", "DB1.DBW12", U16, r), ("shotCount", "DB1.DBW14", U16, r),
-            ("planVersion", "DB1.DBD16", I32, r), ("planReserved", "DB1.DBD20", I32, r), ("deviceShots", "DB1.DBW24", U16, r),
-            ("ackSeq", "DB1.DBD32", I32, r), ("deviceTriggers", "DB1.DBW36", U16, r), ("partSn", "DB1.DBB160.50", SmartString, r),
-            ("visionReady", "DB1.DBX64.0", Bool, w), ("armed", "DB1.DBX64.1", Bool, w), ("busy", "DB1.DBX64.2", Bool, w),
-            ("done", "DB1.DBX64.3", Bool, w), ("visionFault", "DB1.DBX64.4", Bool, w), ("pcHeartbeat", "DB1.DBX64.5", Bool, w),
-            ("pcProtocolVersion", "DB1.DBW66", U16, w), ("resultSeq", "DB1.DBD68", I32, w), ("resultCode", "DB1.DBW76", U16, w),
-            ("faultCode", "DB1.DBW78", U16, w), ("acceptedSeq", "DB1.DBD80", I32, w), ("acceptedPlanReserved", "DB1.DBD84", I32, w),
-            ("resultSn", "DB1.DBB100.50", SmartString, w),
+            ("partStart", "DB4.DBX0.0", Bool, r), ("partEnd", "DB4.DBX0.1", Bool, r), ("resultAck", "DB4.DBX0.2", Bool, r),
+            ("faultReset", "DB4.DBX0.3", Bool, r), ("plcHeartbeat", "DB4.DBX0.4", Bool, r), ("protocolVersion", "DB4.DBW2", I16, r),
+            ("requestSeq", "DB4.DBD4", I32, r), ("productCode", "DB4.DBW8", I16, r), ("shotCount", "DB4.DBW10", I16, r),
+            ("planVersion", "DB4.DBD12", I32, r), ("planReserved", "DB4.DBD16", I32, r), ("deviceShots", "DB4.DBW20", I16, r),
+            ("ackSeq", "DB4.DBD28", I32, r), ("deviceTriggers", "DB4.DBW32", I16, r), ("partSn", "DB4.DBB38.50", Text, r),
+            ("visionReady", "DB2.DBX0.0", Bool, w), ("armed", "DB2.DBX0.1", Bool, w), ("busy", "DB2.DBX0.2", Bool, w),
+            ("done", "DB2.DBX0.3", Bool, w), ("visionFault", "DB2.DBX0.4", Bool, w), ("pcHeartbeat", "DB2.DBX0.5", Bool, w),
+            ("pcProtocolVersion", "DB2.DBW2", I16, w), ("resultSeq", "DB2.DBD4", I32, w), ("resultCode", "DB2.DBW8", I16, w),
+            ("faultCode", "DB2.DBW10", I16, w), ("acceptedSeq", "DB2.DBD12", I32, w), ("acceptedPlanReserved", "DB2.DBD16", I32, w),
+            ("resultSn", "DB2.DBB20.50", Text, w),
         ]);
         assert!(crate::plc::validate_config(&config).is_ok());
     }

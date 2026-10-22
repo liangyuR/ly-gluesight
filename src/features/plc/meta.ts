@@ -1,7 +1,6 @@
 import type {
   ConnectionConfig,
   DataType,
-  SnDataType,
   EdgeMode,
   LinkState,
   LogCategory,
@@ -52,10 +51,6 @@ export const dataTypeLabels: Record<DataType, string> = {
 
 export function isText(dataType: DataType) {
   return dataType === "string" || dataType === "smartString";
-}
-
-export function snTypeForCpu(cpu: string): SnDataType {
-  return cpu === "s7200smart" ? "smartString" : "string";
 }
 
 export const edgeLabels: Record<EdgeMode, string> = {

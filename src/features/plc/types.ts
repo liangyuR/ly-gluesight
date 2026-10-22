@@ -1,6 +1,5 @@
 export type ProtocolKind = "s7";
 export type DataType = "bool" | "u8" | "i8" | "u16" | "i16" | "u32" | "i32" | "f32" | "f64" | "string" | "smartString";
-export type SnDataType = Extract<DataType, "string" | "smartString">;
 export type WordOrder = "ABCD" | "CDAB" | "BADC" | "DCBA";
 export type Access = "read" | "readWrite";
 export type EdgeMode = "none" | "rising" | "falling" | "both";

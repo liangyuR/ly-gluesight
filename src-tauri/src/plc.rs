@@ -154,8 +154,8 @@ pub fn recipe_plan(cycle: &CycleHost, recipe: &Recipe) -> Result<PlcPlan, String
 }
 
 #[tauri::command]
-pub fn plc_s7_phase1_template(db_number: u16, sn_type: DataType) -> Result<PlcConfig, String> {
-    let config = inspection::s7_phase1_config(db_number, sn_type)?;
+pub fn plc_s7_phase1_template(plc_db: u16, pc_db: u16) -> Result<PlcConfig, String> {
+    let config = inspection::s7_phase1_config(plc_db, pc_db)?;
     validate_config(&config)?;
     Ok(config)
 }

@@ -717,7 +717,7 @@ pub fn workspace_create(app: AppHandle, mut doc: RecipeDoc) -> Result<WorkspaceV
 }
 
 fn check_new_identity<'a>(doc: &RecipeDoc, existing: impl Iterator<Item = (&'a str, u16)>) -> Result<(), String> {
-    if doc.product_code == 0 { return Err("产品代码需在 1–65535 之间".into()); }
+    if !(1..=i16::MAX as u16).contains(&doc.product_code) { return Err("产品代码需在 1–32767 之间".into()); }
     for (id, code) in existing {
         if id.eq_ignore_ascii_case(&doc.id) { return Err("配方编号已经存在（不区分大小写）".into()); }
         if code == doc.product_code { return Err(format!("产品代码 {} 已被配方 {} 使用", code, id)); }

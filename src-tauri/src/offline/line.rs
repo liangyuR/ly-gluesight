@@ -29,7 +29,7 @@ struct Slot {
     byte: u32,
     bit: Option<u8>,
     len: u32,
-    /// 字符串字段的头字节数：200 SMART 字符串 1（实际长度），S7 STRING 2（声明长度 + 实际长度）
+    /// 字符串字段（S7 STRING）的头字节数：声明长度 + 实际长度
     text_header: Option<usize>,
 }
 
@@ -46,7 +46,7 @@ impl Layout {
             let id = contract.point_id(field)?;
             let point = config.points.iter().find(|p| p.id == id).ok_or_else(|| format!("握手点位 {id} 不存在"))?;
             let location = ly_plc::resolve(&config.connection, &point.address, point.data_type)?;
-            let text_header = match point.data_type { DataType::SmartString => Some(1), DataType::String => Some(2), _ => None };
+            let text_header = (point.data_type == DataType::String).then_some(2);
             slots.insert(field, Slot { db: location.area.index, byte: location.start, bit: location.bit, len: location.len, text_header });
         }
         Ok(Self { slots })

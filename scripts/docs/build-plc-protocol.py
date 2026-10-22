@@ -80,7 +80,7 @@ def render_document():
 def build():
     source = SOURCE.read_text(encoding="utf-8")
     revision, reviewed, version = re.search(r"文档修订：([\d.]+)；审核日期：([\d-]+)；线上握手协议版本：(\d+)", source).groups()
-    field_count = len(re.findall(r"^\| DB\d+\.", source, re.M))
+    field_count = len(re.findall(r"^\| DB\d+\..*\| `\w+` \|", source, re.M))
     overview, sections, nav = render_document()
     mermaid_version, mermaid = load_mermaid()
     css = (HERE / "plc-protocol.css").read_text(encoding="utf-8")
@@ -91,7 +91,7 @@ def build():
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'">
-<meta name="description" content="GlueSight PLC 通讯协议 {revision}：S7-200 SMART 单设备点表、三目飞拍、生产与示教采集和故障复位。">
+<meta name="description" content="GlueSight PLC 通讯协议 {revision}：S7-1200 单设备点表、三目飞拍、生产与示教采集和故障复位。">
 <title>GlueSight PLC 通讯协议 {revision}</title>
 <style>{css}</style>
 </head>
@@ -109,7 +109,7 @@ def build():
 <div class="hero-top"><p class="eyebrow">现场接入 / S7 ISO-on-TCP</p><button id="print-protocol" class="print-button" type="button">打印 / 保存 PDF</button></div>
 <h1>PLC 通讯协议</h1>
 <p class="subtitle">连续点胶飞拍 · 单件事务 · 结果确认与故障恢复</p>
-<div class="facts"><div><span>共享数据区</span><strong>DB1 <small>200 SMART V 区</small></strong></div><div><span>最小区域长度</span><strong>211 <small>字节</small></strong></div><div><span>双向点表</span><strong>{field_count} <small>字段</small></strong></div><div><span>网络服务</span><strong>TCP 102</strong></div></div>
+<div class="facts"><div><span>共享数据区</span><strong>DB4 / DB2 <small>PLC 写 / PC 写</small></strong></div><div><span>最小区域长度</span><strong>90 / 72 <small>字节</small></strong></div><div><span>双向点表</span><strong>{field_count} <small>字段</small></strong></div><div><span>网络服务</span><strong>TCP 102</strong></div></div>
 <div class="overview-text">{overview}</div>
 </header>
 {sections}

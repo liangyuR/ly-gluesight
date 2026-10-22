@@ -30,8 +30,8 @@ impl PlcPlan {
         if version > i32::MAX as u32 {
             return Err(format!("计划版本 {version} 超出 PLC DInt 上限 2147483647，PLC 无法核对"));
         }
-        if shots.is_empty() || shots.len() > u16::MAX as usize {
-            return Err("S7 一期拍照计划必须包含 1–65535 个拍照点".into());
+        if shots.is_empty() || shots.len() > i16::MAX as usize {
+            return Err("S7 一期拍照计划必须包含 1–32767 个拍照点".into());
         }
         if device_ids.is_empty() || device_ids.iter().enumerate().any(|(i, id)| id.trim().is_empty() || device_ids[..i].contains(id)) {
             return Err("PLC 拍照计划必须指定不重复、非空的相机设备 ID".into());
@@ -83,9 +83,12 @@ pub struct ParamShot {
 impl PlcParams {
     /// 不要求已分配计划版本：候选发布前也要能算出 PLC 需要改什么。
     pub fn from_recipe(recipe: &Recipe) -> Result<Self, String> {
+        if !(1..=i16::MAX as u16).contains(&recipe.product_code) {
+            return Err(format!("产品代码 {} 超出 PLC Int 范围 1–32767", recipe.product_code));
+        }
         let groups = trigger_groups(recipe)?;
-        if groups.is_empty() || groups.len() > u16::MAX as usize {
-            return Err("S7 一期拍照计划必须包含 1–65535 次触发".into());
+        if groups.is_empty() || groups.len() > i16::MAX as usize {
+            return Err("S7 一期拍照计划必须包含 1–32767 次触发".into());
         }
         let shots = groups.iter().map(|group| {
             let first = &recipe.shots[group[0]];

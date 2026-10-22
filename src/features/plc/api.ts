@@ -3,7 +3,6 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
 import type {
-  SnDataType,
   ConnectionConfig,
   DataType,
   HistorySample,
@@ -66,8 +65,8 @@ export const plcApi = {
     call<HistorySample[]>("plc_point_history", { pointId, start, end }, () => []),
   checkAddress: (connection: ConnectionConfig, address: string, dataType: DataType) =>
     call<string>("plc_check_address", { connection, address, dataType }, () => "预览模式不校验"),
-  s7Phase1Template: (dbNumber: number, snType: SnDataType) =>
-    call<PlcConfig>("plc_s7_phase1_template", { dbNumber, snType }, () => { throw new Error("一期 S7 点表需要桌面后端生成"); }),
+  s7Phase1Template: (plcDb: number, pcDb: number) =>
+    call<PlcConfig>("plc_s7_phase1_template", { plcDb, pcDb }, () => { throw new Error("一期 S7 点表需要桌面后端生成"); }),
   getOperationState: () => call<PlcOperationState | null>("cycle_snapshot", undefined, () => null),
 };
 

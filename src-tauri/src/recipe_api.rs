@@ -50,7 +50,7 @@ pub fn recipe_preview(mut doc: RecipeDoc) -> Result<Recipe, String> {
 pub fn recipe_template(cycle: State<'_, CycleHost>) -> RecipeDoc {
     let mut doc = recipe::samples().remove(0);
     let used: Vec<u16> = cycle.recipes.list().iter().map(|r| r.product_code).collect();
-    doc.product_code = (1..u16::MAX).find(|c| !used.contains(c)).unwrap_or(0);
+    doc.product_code = (1..=i16::MAX as u16).find(|c| !used.contains(c)).unwrap_or(0);
     doc.id = format!("NEW-{}", doc.product_code);
     doc.name = "新配方".into();
     doc.version = 1;

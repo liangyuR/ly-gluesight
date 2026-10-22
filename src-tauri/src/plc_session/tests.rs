@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{mpsc, Arc};
 use std::time::{SystemTime, UNIX_EPOCH};
-use ly_plc::{DataType, EventSink, Logbook};
+use ly_plc::{EventSink, Logbook};
 use serde_json::Value;
 use crate::plc_plan::PlanShot;
 
@@ -17,14 +17,14 @@ struct TestPlc {
 }
 
 impl TestPlc {
-    fn start(name: &str, sn_format: &str) -> Self {
+    fn start(name: &str) -> Self {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let directory = root.join("target/s7-session-tests").join(format!("{name}-{}-{}", std::process::id(),
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&directory).unwrap();
         let mut command = Command::new(std::env::var("S7_TEST_PYTHON").unwrap_or_else(|_| "python".into()));
         command.arg(root.join("../scripts/s7-handshake/s7_test_plc.py"))
-            .args(["--port", "0", "--db", "1", "--sn-format", sn_format]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+            .args(["--port", "0", "--plc-db", "4", "--pc-db", "2"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
         #[cfg(windows)] {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x08000000);
@@ -63,8 +63,9 @@ impl TestPlc {
 
     fn values(&mut self, values: Value) { self.control(json!({"op":"plc_values", "values":values})); }
 
+    /// 对 PC 区（DB2）的写入注入故障。
     fn fault(&mut self, byte: u16, bit: Option<u8>, kind: &str, after_apply: bool) {
-        let mut command = json!({"op":"fault", "function":"write", "kind":kind, "db":1, "byte":byte});
+        let mut command = json!({"op":"fault", "function":"write", "kind":kind, "db":2, "byte":byte});
         if let Some(bit) = bit { command["bit"] = json!(bit); }
         if kind == "disconnect" { command["after_apply"] = json!(after_apply); }
         self.control(command);
@@ -88,11 +89,9 @@ impl Drop for TestPlc {
 struct Rig { plc: TestPlc, engine: PlcEngine, session: PlcSession, plan: PlcPlan }
 
 impl Rig {
-    async fn new(name: &str) -> Self { Self::with_sn(name, DataType::SmartString).await }
-
-    async fn with_sn(name: &str, sn_type: DataType) -> Self {
-        let plc = TestPlc::start(name, if sn_type == DataType::String { "string" } else { "smart_string" });
-        let mut config = crate::inspection::s7_phase1_config(1, sn_type).unwrap();
+    async fn new(name: &str) -> Self {
+        let plc = TestPlc::start(name);
+        let mut config = crate::inspection::default_plc_config();
         config.connection.host = "127.0.0.1".into();
         config.connection.port = plc.port;
         config.connection.timeout_ms = 250;
@@ -405,7 +404,7 @@ async fn s7_wire_result_write_rejection_retains_envelope_and_fault_is_not_repeat
     rig.request(1, "SN-50").await;
     rig.arm().await;
     rig.end().await;
-    rig.plc.fault(68, None, "reject", false);
+    rig.plc.fault(4, None, "reject", false);
     assert!(rig.session.report(&rig.engine, 1, 0).await.is_err());
     assert_eq!(rig.session.phase(), SessionPhase::Fault);
     assert_eq!(rig.session.result().unwrap().result_code, 1);
@@ -429,7 +428,7 @@ async fn s7_wire_fault_best_effort_continues_after_ready_rejection() {
     let mut rig = Rig::new("fault-best-effort").await;
     rig.request(1, "SN-50").await;
     rig.arm().await;
-    rig.plc.fault(64, Some(0), "reject", false);
+    rig.plc.fault(0, Some(0), "reject", false);
     rig.session.fault(&rig.engine, "injected fault".into()).await;
     let fields = rig.plc.fields();
     assert_eq!(fields["armed"], false);
@@ -446,7 +445,7 @@ async fn s7_wire_disconnect_after_done_applied_never_commits_success() {
     rig.request(1, "SN-50").await;
     rig.arm().await;
     rig.end().await;
-    rig.plc.fault(64, Some(3), "disconnect", true);
+    rig.plc.fault(0, Some(3), "disconnect", true);
     assert!(rig.session.report(&rig.engine, 1, 0).await.is_err());
     assert_eq!(rig.session.phase(), SessionPhase::Fault);
     assert_eq!(rig.plc.fields()["done"], true);
@@ -474,7 +473,7 @@ async fn s7_wire_release_write_failure_does_not_finish_transaction() {
     rig.arm().await;
     rig.end().await;
     rig.report().await;
-    rig.plc.fault(64, Some(2), "reject", false);
+    rig.plc.fault(0, Some(2), "reject", false);
     rig.plc.control(json!({"op":"plc_ack"}));
     rig.phase(SessionPhase::Fault).await;
     assert_eq!(rig.plc.fields()["done"], false);
@@ -830,7 +829,7 @@ async fn s7_wire_unconfirmable_fault_stops_pc_heartbeat() {
     let mut rig = Rig::new("unconfirmable-fault").await;
     rig.request(1, "SN-50").await;
     rig.arm().await;
-    for bit in [0, 1, 4] { rig.plc.fault(64, Some(bit), "reject", false); }
+    for bit in [0, 1, 4] { rig.plc.fault(0, Some(bit), "reject", false); }
     rig.session.fault(&rig.engine, "stop outputs rejected".into()).await;
     assert_eq!(rig.engine.status().state, LinkState::Disconnected);
     assert!(rig.session.pending());
@@ -871,8 +870,8 @@ fn assert_idle_outputs(fields: &Value, ready: bool) {
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_idle_db_reinit_restores_outputs_without_reset() {
     let mut rig = Rig::new("idle-db-reinit").await;
-    // PLC 重启或 DB 重新初始化：PC 区（DBB64–87）读回全 0，visionReady=0
-    rig.plc.control(json!({"op":"write_db", "db":1, "byte":64, "data":vec![0u8; 24]}));
+    // PLC 重启或 DB 重新初始化：PC 区（DB2 字节 0–19）读回全 0，visionReady=0
+    rig.plc.control(json!({"op":"write_db", "db":2, "byte":0, "data":vec![0u8; 20]}));
     rig.fresh().await;
     let event = rig.session.poll(&rig.engine, false, true).await;
     assert!(matches!(event, SessionEvent::Restored(ref reason)
@@ -893,29 +892,23 @@ async fn s7_wire_idle_db_reinit_restores_outputs_without_reset() {
 #[tokio::test]
 #[ignore = "requires Python and local loopback S7 fixture"]
 async fn s7_wire_broken_sn_headers_reset_heals_result_sn_only_after_part_sn_restored() {
-    for (sn_type, broken, empty) in [
-        (DataType::String, json!([0, 0]), json!([50, 0])),
-        (DataType::SmartString, json!([60]), json!([0])),
-        (DataType::SmartString, json!([50]), json!([0])),
-    ] {
-        let mut rig = Rig::with_sn("sn-header-reset", sn_type).await;
-        let size = empty.as_array().unwrap().len();
-        let header = |rig: &mut Rig, byte: u16| rig.plc.control(json!({"op":"read_db", "db":1, "byte":byte, "size":size}))["data"].clone();
-        rig.plc.control(json!({"op":"write_db", "db":1, "byte":100, "data":broken}));
-        rig.plc.control(json!({"op":"write_db", "db":1, "byte":160, "data":broken}));
-        rig.fresh().await;
-        assert!(matches!(rig.session.poll(&rig.engine, false, true).await, SessionEvent::Fault(_)), "{sn_type:?} {broken}");
-        rig.session.poll(&rig.engine, true, true).await;
-        assert_eq!(rig.session.phase(), SessionPhase::Fault);
-        assert!(rig.session.view().message.unwrap().contains("partSn"), "{sn_type:?} {broken} {:?}", rig.session.view());
-        assert_eq!(header(&mut rig, 100), broken);
-        rig.plc.control(json!({"op":"write_db", "db":1, "byte":160, "data":empty}));
-        rig.fresh().await;
-        assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready), "{sn_type:?} {broken} {:?}", rig.session.view());
-        assert_eq!(header(&mut rig, 100), empty);
-        assert_idle_outputs(&rig.plc.fields(), true);
-        rig.finish().await;
-    }
+    let (broken, empty) = (json!([0, 0]), json!([50, 0]));
+    let mut rig = Rig::new("sn-header-reset").await;
+    let header = |rig: &mut Rig, db: u16, byte: u16| rig.plc.control(json!({"op":"read_db", "db":db, "byte":byte, "size":2}))["data"].clone();
+    rig.plc.control(json!({"op":"write_db", "db":2, "byte":20, "data":broken}));
+    rig.plc.control(json!({"op":"write_db", "db":4, "byte":38, "data":broken}));
+    rig.fresh().await;
+    assert!(matches!(rig.session.poll(&rig.engine, false, true).await, SessionEvent::Fault(_)));
+    rig.session.poll(&rig.engine, true, true).await;
+    assert_eq!(rig.session.phase(), SessionPhase::Fault);
+    assert!(rig.session.view().message.unwrap().contains("partSn"), "{:?}", rig.session.view());
+    assert_eq!(header(&mut rig, 2, 20), broken);
+    rig.plc.control(json!({"op":"write_db", "db":4, "byte":38, "data":empty}));
+    rig.fresh().await;
+    assert!(matches!(rig.session.poll(&rig.engine, true, true).await, SessionEvent::Ready), "{:?}", rig.session.view());
+    assert_eq!(header(&mut rig, 2, 20), empty);
+    assert_idle_outputs(&rig.plc.fields(), true);
+    rig.finish().await;
 }
 
 #[tokio::test]
