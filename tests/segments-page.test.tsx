@@ -97,38 +97,28 @@ it.each<[string, (first: ReturnType<typeof within>) => void, (segment: PathSegme
   expect(field(sent[0])).toBe(expected);
 });
 
-// 防抖（700 ms）还没到期就离开页面：编辑不能随卸载丢掉
+// 防抖（700 ms）还没到期就离开页面：编辑不能随卸载丢掉。换了配方再离开、离开后工作区拿到新修订，
+// 这两条要经真实的 WorkspaceProvider 才观察得到（act 在这里是 mock），见 segments-page-leave.test.tsx
 describe("离开段列表页", () => {
-  it.each([
-    { edit: "改了帧数容差", value: "2", calls: 1 },
-    { edit: "帧数容差清空成空值（校验不过）", value: "", calls: 0 },
-  ])("$edit、防抖没到期就离开 → 提交 $calls 次", async ({ value, calls }) => {
+  it("改了帧数容差、防抖没到期就离开 → 提交改动后的段列表，带当前配方与修订", async () => {
     const { first, page } = await openCalibrated();
-    fireEvent.change(first.getByRole("spinbutton", { name: "段 1 帧数容差" }), { target: { value } });
+    fireEvent.change(first.getByRole("spinbutton", { name: "段 1 帧数容差" }), { target: { value: "2" } });
     expect(workspaceApi.updateSegments).not.toHaveBeenCalled();
 
     page.unmount();
 
-    expect(workspaceApi.updateSegments).toHaveBeenCalledTimes(calls);
-    if (calls) {
-      const [id, revision, sent] = vi.mocked(workspaceApi.updateSegments).mock.calls[0];
-      expect([id, revision, sent[0].tolerance]).toEqual(["S", 3, 2]);
-      expect(ws.act).toHaveBeenCalledTimes(1); // 经 act 提交，工作区才拿到新修订
-    }
+    expect(workspaceApi.updateSegments).toHaveBeenCalledTimes(1);
+    const [id, revision, sent] = vi.mocked(workspaceApi.updateSegments).mock.calls[0];
+    expect([id, revision, sent[0].tolerance]).toEqual(["S", 3, 2]);
   });
 
-  // 防的回归：换配方时经 act 提交会让 act 抬高请求序号，打断 select 对新配方的加载，工作区停在空白
-  it("换了配方、防抖没到期 → 不经 act，直接提交到原配方", async () => {
+  it("帧数容差清空成空值（校验不过）、防抖没到期就离开 → 不提交", async () => {
     const { first, page } = await openCalibrated();
-    fireEvent.change(first.getByRole("spinbutton", { name: "段 1 帧数容差" }), { target: { value: "2" } });
-    ws = { ...ws, selectedId: "T" };
-    page.rerender(<MemoryRouter><SegmentsPage /></MemoryRouter>);
+    fireEvent.change(first.getByRole("spinbutton", { name: "段 1 帧数容差" }), { target: { value: "" } });
 
     page.unmount();
 
-    expect(ws.act).not.toHaveBeenCalled();
-    expect(workspaceApi.updateSegments).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(workspaceApi.updateSegments).mock.calls[0].slice(0, 2)).toEqual(["S", 3]);
+    expect(workspaceApi.updateSegments).not.toHaveBeenCalled();
   });
 
   // 防的回归：上一份还在提交时离开，新编辑直接丢掉，或仍用旧修订提交而被后端按修订冲突拒绝
