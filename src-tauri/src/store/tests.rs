@@ -727,7 +727,7 @@ fn burst_part<'a>(recipe: &'a Recipe, cycle: &'a str, judgement: &'a Judgement, 
 }
 
 /// 规格 §3/§6、决策 D-SB-29：段配方按每相机每帧落库，详情原样带回帧（含缺帧）、区域判定、标记与 deviceTriggers，
-/// 列表带整件标记；同一检测内容可被审计重放认出，任一帧内容不同则认不出。
+/// 列表带整件标记。
 #[test]
 fn burst_record_round_trips_frames_flags_regions_and_device_triggers() {
     let db = TestDb::new();
@@ -753,7 +753,17 @@ fn burst_record_round_trips_frames_flags_regions_and_device_triggers() {
     assert_eq!(summary.flags.as_ref(), Some(&burst.judgement.flags));
     assert_eq!((summary.frames_expected, summary.frames_received), (4, 5));
     assert_eq!(store.measurements(&HistoryQuery::default(), &[id], 1).unwrap()[0].burst.as_ref(), Some(&burst.judgement));
+}
 
+/// 审计重放身份（决策 D-SB-29）：已落库的段配方记录再次重放时，帧内容相同即认出（不重复落库），任一帧指标不同则认不出。
+#[test]
+fn burst_record_replay_is_recognised_only_when_every_frame_matches() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, mut burst) = burst_fixture::record(&recipe, burst_fixture::frames(5, &[(1, 2)]), None, Some(7));
+    burst.frames.reverse();
+    save_burst(&store, &recipe, "burst-cycle", &judgement, &burst).unwrap();
     assert!(store.matches_record(&burst_part(&recipe, "burst-cycle", &judgement, &burst)).unwrap());
     let mut changed = burst.clone();
     changed.frames[0].metrics.as_mut().unwrap().gap_max_mm = 1.0;

@@ -486,10 +486,16 @@ pub(crate) fn judge_burst_at_drain_deadline(received: Vec<Frame>, device_trigger
     judge_burst(&mut p)
 }
 
-/// 规格 §3：三路帧按 SDK 帧号（减各相机基线）配组，不按到达顺序；收尾规则：partEnd 前不判，partEnd 后已接受的帧都测完
-/// 且每台相机 max_seq ≥ deviceTriggers − 1 即判，PLC 报得更多时等剩余帧或收尾截止。判定结果能按 C5 的记录约束落库。
+/// 三台相机按帧计数 1..=groups 依次到齐，每帧都测完（帧计数基线为 0）。
+fn deliver_groups(part: &mut Part, groups: u64) {
+    for counter in 1..=groups {
+        for cam in 0..3u8 { deliver(part, cam, counter); }
+    }
+}
+
+/// 规格 §3：三路帧按 SDK 帧号（减各相机基线）配组，不按到达顺序。
 #[test]
-fn three_camera_frames_out_of_arrival_order_are_grouped_and_part_judged_after_end() {
+fn three_camera_frames_out_of_arrival_order_are_grouped_by_frame_counter_minus_baseline() {
     let mut ledgers = Ledgers::default();
     for (cam, base) in [(0u8, 100u64), (1, 200), (2, 300)] {
         ledgers.observe(&FrameMeta::from(&burst_frame(cam, base)));
@@ -499,23 +505,41 @@ fn three_camera_frames_out_of_arrival_order_are_grouped_and_part_judged_after_en
     for (cam, counter) in [(0, 104), (1, 201), (0, 103), (2, 302), (1, 202), (0, 102), (2, 301), (1, 204), (0, 101), (2, 304), (1, 203), (2, 303)] {
         assert!(matches!(deliver(&mut p, cam, counter), burst::Arrival::Accepted { .. }), "相机 {cam} 帧计数 {counter}");
     }
+    end(&mut p, Some(4), false);
+    let judgement = judge_burst(&mut p);
+    assert_eq!((judgement.verdict, judgement.group_count, judgement.flags.incomplete), (Verdict::Ok, 4, false));
+    let record = p.burst_record(&burst::summary(&judgement)).unwrap();
+    let identities: Vec<(usize, u64, Option<u64>)> = record.frames.iter().map(|f| (f.camera, f.seq, f.frame_counter)).collect();
+    let expected: Vec<(usize, u64, Option<u64>)> = (1..=4u64).flat_map(|seq| (0..3usize).map(move |camera| (camera, seq, Some([100, 200, 300][camera] + seq)))).collect();
+    assert_eq!(identities, expected);
+}
+
+/// 规格 §3 收尾规则：partEnd 前不判；partEnd 后已接受的帧都测完且每台相机 max_seq ≥ deviceTriggers − 1 即判，
+/// PLC 报得更多时等剩余帧（收尾截止见 no_frame_from_any_camera_is_err_91）。
+#[test]
+fn part_completes_only_after_end_once_every_camera_reaches_device_triggers_minus_one() {
+    let mut p = burst_part("burst-end", &Ledgers::default());
+    deliver_groups(&mut p, 4);
     assert!(!p.complete(), "partEnd 前不判");
     end(&mut p, Some(6), false);
     assert!(!p.complete(), "PLC 报 6、各相机只到第 4 帧：等剩余帧或收尾截止");
     end(&mut p, Some(5), false);
     assert!(p.complete(), "各相机 max_seq 4 ≥ deviceTriggers 5 − 1");
-    let judgement = judge_burst(&mut p);
-    assert_eq!((judgement.verdict, judgement.group_count, judgement.flags.incomplete), (Verdict::Ok, 4, false));
-    let summary = burst::summary(&judgement);
+}
+
+/// C5 记录约束（D-SB-29）：节拍判完生成的段配方记录（每相机每帧、帧身份 (camera, seq) 唯一、相机属于计划相机）能原样落库。
+#[test]
+fn judged_burst_part_record_is_accepted_by_store() {
+    let mut p = burst_part("burst-store", &Ledgers::default());
+    deliver_groups(&mut p, 4);
+    end(&mut p, Some(4), false);
+    let summary = burst::summary(&judge_burst(&mut p));
     let record = p.burst_record(&summary).unwrap();
-    let identities: Vec<(usize, u64, Option<u64>)> = record.frames.iter().map(|f| (f.camera, f.seq, f.frame_counter)).collect();
-    let expected: Vec<(usize, u64, Option<u64>)> = (1..=4u64).flat_map(|seq| (0..3usize).map(move |camera| (camera, seq, Some([100, 200, 300][camera] + seq)))).collect();
-    assert_eq!(identities, expected);
     let directory = crate::offline::test_dir::TestDir::new("cycle-burst-tests", "store");
     let store = Store::open(&directory.join("inspection.db")).unwrap();
     let delivery = PlcDelivery { state: PlcDeliveryState::Pending, updated_at: 1, message: None };
     store.insert(&crate::store::PartRecord { ts: 1, sn: &p.sn, recipe: Some(&p.recipe), judgement: &summary, drain_ms: None, frames: &[],
-        frames_expected: 4, frames_received: 4, triggers: 5, table: None, software_version: "test", cycle_id: Some(&p.cycle_id), bundle_id: None,
+        frames_expected: 4, frames_received: 4, triggers: 4, table: None, software_version: "test", cycle_id: Some(&p.cycle_id), bundle_id: None,
         delivery: &delivery, shots: &[], source: RecordSource::Real, sample: None, burst: Some(&record) }).unwrap();
 }
 

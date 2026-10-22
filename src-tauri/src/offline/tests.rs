@@ -483,25 +483,20 @@ async fn single_camera_loss_yields_incomplete_ok_not_err() {
     bench.engine.disconnect().await;
 }
 
-/// 规格 §3/§5：deviceTriggers 只作参考，计数不符不再是故障。某台相机帧数与 deviceTriggers（或另两台）相差 > 1 才告警，
-/// 相差 1 不告警；都不改结论、不升级故障，件后会话回到空闲。
+/// 规格 §3/§5：deviceTriggers 只作参考，计数不符不再是故障。countMismatch 工况下虚拟 PLC 多计 2 个脉冲（deviceTriggers
+/// 比各相机帧数多 2）：三台相机都告警，不改结论、不升级故障，件后会话回到空闲。相差 1 不告警、相差 2 告警的阈值由
+/// frame_group::tests::camera_count_differing_by_more_than_one_raises_loss_alarm 保护，这里不重复。
 #[tokio::test]
-async fn trigger_frame_count_gap_over_one_alarms_without_fault() {
-    let triggers = |camera: usize, count: u32, device_triggers: u32| LossAlarm { camera, count, reason: LossReason::Triggers { device_triggers } };
-    for (case, scenario, lost, alarms) in [
-        ("plc-counts-2-extra", Scenario::CountMismatch, vec![], (0..3).map(|camera| triggers(camera, 4, 6)).collect::<Vec<_>>()),
-        ("camera3-misses-last-frame", Scenario::Normal, vec![(2, 4)], vec![]),
-        ("camera3-misses-last-2-frames", Scenario::Normal, vec![(2, 3), (2, 4)], vec![triggers(2, 2, 4)]),
-    ] {
-        let mut bench = Bench::new(case).await;
-        let order = PartOrder { lost, ..bench.order("SN-GAP") };
-        let outcome = bench.run_burst_with(order, scenario, all_cameras).await.unwrap().unwrap();
-        let judged = bench.judged.take().unwrap();
-        assert_eq!(judged.alarms, alarms, "{case}");
-        assert_eq!((outcome.result_code, judged.verdict, judged.fault_code), (1, Verdict::Ok, 0), "{case}");
-        assert_eq!(bench.session.phase(), SessionPhase::Idle, "{case}：{:?}", bench.session.view());
-        bench.engine.disconnect().await;
-    }
+async fn plc_counting_two_extra_pulses_alarms_every_camera_without_fault() {
+    let mut bench = Bench::new("plc-counts-2-extra").await;
+    let order = bench.order("SN-GAP");
+    let outcome = bench.run_burst_with(order, Scenario::CountMismatch, all_cameras).await.unwrap().unwrap();
+    let judged = bench.judged.take().unwrap();
+    let alarms: Vec<LossAlarm> = (0..3).map(|camera| LossAlarm { camera, count: 4, reason: LossReason::Triggers { device_triggers: 6 } }).collect();
+    assert_eq!(judged.alarms, alarms);
+    assert_eq!((outcome.result_code, judged.verdict, judged.fault_code), (1, Verdict::Ok, 0));
+    assert_eq!(bench.session.phase(), SessionPhase::Idle, "{:?}", bench.session.view());
+    bench.engine.disconnect().await;
 }
 
 /// 规格 §0、默认做法 3：PLC 提前置 partEnd（提前终止）时 PC 用已收到的帧照常判 OK/NG；帧组数 < ΣN_exp − Σtol

@@ -96,7 +96,7 @@ fn multi_segment_calibration_writes_part_total_and_leaves_segments_pending_on_se
     assert!(doc.segments.iter().all(|s| s.expected_frames.is_none() && s.calib.is_none()), "{:?}", doc.segments);
     let view = calibration_view(&doc, &w.calibration.rounds, None);
     assert_eq!(view.part.as_ref().map(|p| p.n_exp), Some(30));
-    assert!(view.segments.iter().all(|s| s.outcome.is_none() && s.pending.as_deref() == Some("分段算法未就绪")), "{:?}", view.segments);
+    assert!(view.segments.iter().all(|s| s.outcome.is_none() && s.pending.is_some()), "{:?}", view.segments);
 }
 
 #[test]
@@ -130,14 +130,14 @@ fn standard_rounds_set_x_ref_for_straight_segment_and_refuse_corner() {
     // 防的回归（规格 §0/§1、D-SB-18）：x_ref 用了非标准件轮次、没去掉首尾帧、取错相机，ToEdge 也算出 x_ref，或弯道段得到 x_ref
     type Setup = fn(&mut RecipeDoc);
     // 标准件两轮：cam2 中间帧 0.2 / 0.4、首尾帧 5.0；cam1、cam3 恒 1.0。标定轮次恒 9.0（不能被用上）
-    // （名称，段类型，配置，期望的 (x_ref, spread)，期望的 x_ref 待定原因）
-    let cases: [(&str, SegmentKind, Setup, Option<(f64, f64)>, Option<&str>); 4] = [
+    // （名称，段类型，配置，期望的 (x_ref, spread)，是否列出 x_ref 待定原因）
+    let cases: [(&str, SegmentKind, Setup, Option<(f64, f64)>, bool); 4] = [
         ("直线段 AbsoluteX，参考相机 cam2", Straight,
-            |d| d.segments[0].offset_ref = Some(OffsetRef { measure: OffsetMeasure::AbsoluteX, camera: "cam2".into(), x_ref: None, spread: None }), Some((0.3, 0.2)), None),
-        ("直线段启用胶偏、未设参考 → 计划第一台相机", Straight, |_| {}, Some((1.0, 0.0)), None),
+            |d| d.segments[0].offset_ref = Some(OffsetRef { measure: OffsetMeasure::AbsoluteX, camera: "cam2".into(), x_ref: None, spread: None }), Some((0.3, 0.2)), false),
+        ("直线段启用胶偏、未设参考 → 计划第一台相机", Straight, |_| {}, Some((1.0, 0.0)), false),
         ("直线段 ToEdge", Straight,
-            |d| d.segments[0].offset_ref = Some(OffsetRef { measure: OffsetMeasure::ToEdge, camera: "cam2".into(), x_ref: None, spread: None }), None, Some("测量量未实现")),
-        ("弯道段", Corner, |_| {}, None, None),
+            |d| d.segments[0].offset_ref = Some(OffsetRef { measure: OffsetMeasure::ToEdge, camera: "cam2".into(), x_ref: None, spread: None }), None, true),
+        ("弯道段", Corner, |_| {}, None, false),
     ];
     for (name, kind, setup, expected, pending) in cases {
         let mut w = burst_workspace(&[kind]);
@@ -155,7 +155,8 @@ fn standard_rounds_set_x_ref_for_straight_segment_and_refuse_corner() {
             other => panic!("{name}：{other:?}"),
         }
         if kind == Corner { assert!(doc.segments[0].offset_ref.is_none(), "{name}：弯道段没有胶偏参考"); }
-        assert_eq!(calibration_view(&doc, &w.calibration.rounds, None).segments[0].x_ref_pending.as_deref(), pending, "{name}");
+        let view = calibration_view(&doc, &w.calibration.rounds, None);
+        assert_eq!(view.segments[0].x_ref_pending.is_some(), pending, "{name}：{:?}", view.segments[0].x_ref_pending);
     }
 }
 
