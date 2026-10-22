@@ -3,12 +3,17 @@ import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { Link } from "react-router-dom";
 import { Save, Upload } from "lucide-react";
 import { Button } from "qing-steel";
-import type { PointVis, Recipe } from "../cycle/types";
+import type { PointVis, Recipe, RecipeDoc } from "../cycle/types";
+import { CameraSegmentOverview } from "../plan/CameraSegmentOverview";
+import type { WorkspacePlanView } from "../plan/types";
+import { expectedText } from "../plan/vis";
 import { shotLabel, shotState, shotStateLabel, teachStatus, visColor } from "../cycle/vis";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
 import { Badge, GrayViewer, KV, Notice, Panel, shotOverlay, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
+import { cameraTeachingTasks, type CameraTeachingTask } from "./cameraTasks";
 import type { Overview } from "./types";
+import "./corridor.css";
 
 function overviewGroups(layout: Pick<Recipe, "shots">) {
   const groups = new Map<string, number[]>();
@@ -67,7 +72,8 @@ export function WorkpieceOverview({layout,overview,selected=0,onSelect,onMove,vi
   </svg>;
 }
 
-export default function OverviewPage() {
+/** 旧拍照点模型的工件总览（按拍照点摆位置、绑定检测原图）：只给旧配方用，段配方走 SegmentOverview。 */
+function LegacyOverviewPage() {
   const {data,doc,dirty,busy,act,setError} = useWorkspace();
   const [overview,setOverview] = useState<Overview>({background:null,positions:[],saved:false});
   const [selected,setSelected] = useState(0);
@@ -119,4 +125,37 @@ export default function OverviewPage() {
       <WorkpieceOverview layout={data.layout} overview={overview} selected={selected} onSelect={setSelected} onMove={unlocked ? (k,p)=>setOverview(v=>({...v,saved:false,positions:v.positions.map((previous,i)=>data.layout.shots[i].poseId===data.layout.shots[k].poseId?p:previous)})) : undefined}/>
       <div className="wp-actions" style={{marginTop:14}}><label className="qs-btn tonal"><Upload size={15}/>{reading?"正在读取总览图…":"导入总览图"}<input type="file" aria-label="导入总览图" hidden accept="image/png,image/jpeg,image/webp" disabled={!unlocked} onChange={e=>{if(e.target.files?.[0])void importFile(e.target.files[0]);e.target.value="";}}/></label><Button disabled={!unlocked} onClick={()=>setOverview(v=>({...v,saved:false,positions:defaultPositions(data.layout)}))}>自动布置</Button>{overview.background&&<Button disabled={!unlocked} onClick={()=>setOverview(v=>({...v,background:null,saved:false}))}>移除背景</Button>}</div>
     </Panel><div className="wp-stack"><Panel title={(data.layout.shots[selected]?.poseId ?? "未选择位置")+" · 检测原图"}><GrayViewer image={image} loading={loading} error={error} label={frame?.image?.id??"尚未取样"} overlay={shotOverlay(data.layout,selected)} emptyHint={data.layout.shots.length ? "" : "整圈采集并采用本轮图像后，点击帧框查看各组检测图。"}/></Panel><Panel title="拍照点"><KV label="胶路示教">{data.coverage == null ? "—" : data.coverage.toFixed(0) + "%"}</KV><KV label="拍照位置">{overviewGroups(data.layout).length} 个</KV><KV label="编号 · 相机">{shotLabel(data.layout.shots[selected],selected)}</KV><KV label="胶条">{data.layout.shots[selected]?.bead ?? "—"}</KV><KV label="Pose">{data.layout.shots[selected]?.poseId ?? "—"}</KV><KV label="示教状态">{data.layout.shots[selected] ? teachStatus(data.layout.shots[selected]) : "—"}</KV></Panel><Notice title="显示布置独立保存">拖动帧框只改变显示位置，不影响机器人拍照位置和示教中线。</Notice></div></div></div>;
+}
+
+/** 一台相机的示教帧与走廊（只读）：点“去示教”进入这台相机的走廊示教。 */
+function CameraFrame({ docId, task, corridor }: { docId: string; task: CameraTeachingTask; corridor: [number, number][] }) {
+  const { image, error, loading } = useGrayImage(docId, task.frame?.id ?? null);
+  return <>
+    <div className="wp-actions"><strong>{task.camera}</strong><Badge tone={task.status === "done" ? "ok" : task.frame ? "warn" : "neutral"}>{task.label}</Badge><Link className="wp-text-link" to={task.href}>{task.frame ? "查看走廊" : "去选示教帧"}</Link></div>
+    <GrayViewer image={image} loading={loading} error={error} label={task.frame ? `${task.camera} · 示教帧` : `${task.camera} · 尚未选示教帧`} overlay={corridor.length >= 2 ? { path: corridor } : undefined}
+      emptyTitle="尚未选示教帧" emptyHint="在“单帧示教”里为这台相机从采集轮次选一帧。"/>
+  </>;
+}
+
+/** 段配方的总览：三台相机与沿胶路的段条（N_exp 或“待标定”），以及每台相机的示教帧和走廊。 */
+function SegmentOverview({ plan, doc }: { plan: WorkspacePlanView; doc: RecipeDoc }) {
+  const tasks = cameraTeachingTasks(plan);
+  return <div className="wp-page"><WorkspaceBar />
+    <Panel title="相机与段" detail="三台相机共用一个触发；段沿胶路顺序排列，预期帧数由多轮标定得出">
+      <CameraSegmentOverview cameras={plan.cameras} segments={plan.segments} />
+      <div className="wp-actions" style={{ marginTop: 12 }}>
+        <Badge tone={plan.calibrated ? "ok" : "warn"}>{plan.calibrated ? `预期总数 ${expectedText(plan.expectedTotal, plan.toleranceTotal)}` : "预期总数待标定"}</Badge>
+        <Link className="wp-text-link" to="/recipe/segments">段列表</Link><Link className="wp-text-link" to="/recipe/calibration">多轮标定</Link>
+      </div>
+    </Panel>
+    <Panel title="示教帧与走廊" detail="每台相机一条走廊，按直线段几何，所有帧共用">
+      <ul className="wp-segment-teach" aria-label="各相机示教帧">{tasks.map(task => <li key={task.camera}><CameraFrame docId={doc.id} task={task} corridor={doc.inspect?.find(item => item.camera === task.camera)?.corridor ?? []} /></li>)}</ul>
+    </Panel>
+    <Notice title="总览只读">段配方的总览由计划自动给出，不再摆放拍照点框。</Notice>
+  </div>;
+}
+
+export default function OverviewPage() {
+  const { data, doc } = useWorkspace();
+  return data?.plan && doc ? <SegmentOverview plan={data.plan} doc={doc} /> : <LegacyOverviewPage />;
 }

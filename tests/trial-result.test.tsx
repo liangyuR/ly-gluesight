@@ -1,33 +1,27 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { expect, it } from "vitest";
-import { TrialResult, trialPoints } from "../src/features/workspace/TrialResult";
+import { TrialResult } from "../src/features/workspace/TrialResult";
+import type { FrameState } from "../src/features/plan/types";
+import { frameMetrics } from "./fixtures";
 
-it("试测包含缺胶站且重新计算 → 空值保持未测，明细刷新为本次结果", () => {
-  const measurement = {
-    unit: "mm", ids: [10, 11], status: ["ok", "no_bead"], innerCenter: [-0.125, null],
-    width: [2.375, null], px: [[20, 30], [40, 50]], coverage: 0.5, ms: 12, verdict: "NG",
-  };
-  const points = trialPoints(measurement)!;
-  const { rerender } = render(<TrialResult points={points} />);
-  fireEvent.click(screen.getByText("逐点试测结果 · 测得 1 / 2 · 未测 1"));
-  const missing = within(screen.getByRole("row", { name: "11 缺胶 未测 未测" }));
-  expect(missing.getAllByText("未测")).toHaveLength(2);
+// 防的回归：缺胶站的胶宽是 null，被当成 0 画进表里，既不像缺胶，也会把胶宽均值拉偏；
+// 以及偷偷把已停用的“相对示教中线偏移”列加回来（规格 §4：胶偏只按整段的 x 均值与最大偏差判）
+it("一帧有缺胶站 → 该站标缺胶且胶宽显示未测而不是 0，摘要给出断胶与 x，不再有偏移列", () => {
+  render(<TrialResult metrics={frameMetrics(0, 3, { widths: [3.9, null, 4.1], widthMin: 3.9, widthMax: 4.1, widthMean: 4, gapMaxMm: 1, presentRatio: 2 / 3, xMm: -0.125 })} />);
+  fireEvent.click(screen.getByText(/逐站胶宽 · 有胶 2 \/ 3 站/));
+  expect(screen.getByText(/最长断胶 1\.0 mm · x -0\.125 mm/)).toBeVisible();
+  const missing = within(screen.getByRole("row", { name: "2 缺胶 未测" }));
   expect(missing.queryByText("0.000")).not.toBeInTheDocument();
-  expect(screen.getByText("-0.125")).toBeVisible();
-
-  rerender(<TrialResult points={trialPoints({ ...measurement, status: ["ok", "ok"], innerCenter: [0.1, 0.2], width: [2.1, 2.2], coverage: 1, verdict: "OK" })!} />);
-  expect(screen.getByText("逐点试测结果 · 测得 2 / 2 · 未测 0")).toBeVisible();
-  expect(screen.queryByText("-0.125")).not.toBeInTheDocument();
-  expect(screen.getByRole("row", { name: "11 测得 0.200 2.200" })).toBeVisible();
+  expect(screen.getByRole("row", { name: "3 有胶 4.100" })).toBeVisible();
+  expect(screen.queryByRole("columnheader", { name: /偏移/ })).not.toBeInTheDocument();
 });
 
-it("试测含无基准、超出检测范围的站 → 明细照常显示并标出这两种状态，不整表丢弃", () => {
-  const points = trialPoints({
-    unit: "mm", ids: [10, 11, 12], status: ["ok", "no_ref", "out_of_range"], innerCenter: [0.1, null, null],
-    width: [2, 2.5, null], px: [[0, 0], [1, 1], [2, 2]],
-  });
-  expect(points).not.toBeNull();
-  render(<TrialResult points={points!} />);
-  expect(screen.getByRole("row", { name: "11 无基准 未测 2.500" })).toBeInTheDocument();
-  expect(screen.getByRole("row", { name: "12 超出检测范围 未测 未测" })).toBeInTheDocument();
+// 防的回归：缺帧、测量失败、出走廊的帧没有数值，却被画成一张空表或当 NG 对待（规格 §3：只算检测不完整）
+it.each<[FrameState, string]>([
+  ["missing", "缺帧"], ["error", "测量失败"], ["unmeasured", "未测"], ["outOfCorridor", "胶条走出走廊"],
+])("帧状态为 %s → 不画逐站表，只说明本帧检测不完整、不判 NG", (state, text) => {
+  render(<TrialResult metrics={frameMetrics(1, 5, { state, error: state === "error" ? "无有效边缘" : null, widths: [], widthMean: null, xMm: null })} />);
+  expect(screen.getByRole("status")).toHaveTextContent(text);
+  expect(screen.getByRole("status")).toHaveTextContent("不判 NG");
+  expect(screen.queryByRole("table")).not.toBeInTheDocument();
 });
