@@ -645,7 +645,7 @@ fn environment(app: &AppHandle, recipe: &Recipe) -> Result<Value, String> {
             values.push(calibration_state(&vision::shot_calib_path(app, &projected, k)?)?);
         }
     }
-    // 段配方各检测相机的工位标定 {device}（旧拍照点配方没有检测相机，这一项为空）
+    // 段配方各检测相机的工位标定（缺省为设备标定 device/{device}；旧拍照点配方没有检测相机，这一项为空）
     for inspect in &recipe.inspect {
         values.push(calibration_state(&vision::camera_calib_path(app, inspect)?)?);
     }

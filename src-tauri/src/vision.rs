@@ -364,9 +364,48 @@ impl VisionHost {
 }
 
 
+/// 工位标定文件 `calib/plane_calib_{键}.json`：旧拍照点配方的 `{device}-v{view}` 与显式标定引用（段配方的显式引用也在这里）。
 pub fn station_calib_path(app: &AppHandle, cam_id: &str) -> Result<PathBuf, String> {
-    let name = format!("plane_calib_{cam_id}.json");
-    Ok(crate::storage::root(app).join("calib").join(name))
+    calib_key_path(app, &CalibKey::Station(cam_id.to_string()))
+}
+
+/// 段配方缺省设备标定所在的子目录（相对 `calib/`）。
+const DEVICE_CALIB_DIR: &str = "device";
+
+/// 工位标定的键。
+/// - `Station`：旧拍照点配方的 `{device}-v{view}` 与显式标定引用，文件 `calib/plane_calib_{键}.json`；
+/// - `Device`：段配方缺省的设备标定（D-SB-30），文件在单独子目录 `calib/device/plane_calib_{device}.json`。
+///
+/// 两者不能共用扁平文件名：相机编号允许 '-'，相机 "cam1-v1" 的设备键会等于相机 "cam1" 图 1 的旧键，一方标定就覆盖另一方；
+/// 加前缀也不够（相机 "dev_cam1" 的图 1 = "dev_cam1-v1" = 相机 "cam1-v1" 加前缀 "dev_"）。分目录后永不同名：
+/// Station 键是相机编号或标定引用，只含字母、数字、- 和 _，不带路径分隔符。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CalibKey {
+    Station(String),
+    Device(String),
+}
+
+impl CalibKey {
+    /// 标定根目录 `calib_root`（数据根目录下的 `calib/`）里这个键的文件。
+    fn file(&self, calib_root: &Path) -> PathBuf {
+        match self {
+            Self::Station(key) => calib_root.join(format!("plane_calib_{key}.json")),
+            Self::Device(device) => calib_root.join(DEVICE_CALIB_DIR).join(format!("plane_calib_{device}.json")),
+        }
+    }
+
+    /// 发布包 `calibration.json` 里记的标定引用：Station 为键本身，Device 为 `device/{device}`。
+    pub fn reference(&self) -> String {
+        match self {
+            Self::Station(key) => key.clone(),
+            Self::Device(device) => format!("{DEVICE_CALIB_DIR}/{device}"),
+        }
+    }
+}
+
+/// 标定键对应的文件（`calib/` 在数据根目录下）。
+pub fn calib_key_path(app: &AppHandle, key: &CalibKey) -> Result<PathBuf, String> {
+    Ok(key.file(&crate::storage::root(app).join("calib")))
 }
 
 /// 拍照点 k 的标定文件：按它的标定引用（缺省为相机编号）找工位标定。
@@ -397,21 +436,21 @@ fn station_view_key(device: &str, view: u8) -> Result<String, String> {
     Ok(format!("{device}-v{view}"))
 }
 
-/// 段配方的工位标定键：设备编号本身（D-SB-30，三台独立单视角相机，没有图编号）。
-/// 与旧配方的 `{device}-v{view}` 并存、永不相同（文件各自独立）；标定页对单视角相机的图 1 同时写两份，见 `calib_keys`。
-pub fn station_key(device: &str) -> Result<String, String> {
+/// 段配方的设备标定键 `CalibKey::Device`（D-SB-30，三台独立单视角相机，没有图编号）。
+/// 与旧配方的 `{device}-v{view}` 并存、文件在不同目录、永不同名（见 `CalibKey`）；标定页对单视角相机的图 1 同时写两份，见 `calib_keys`。
+pub fn station_key(device: &str) -> Result<CalibKey, String> {
     if !crate::recipe::valid_camera_id(device) { return Err(format!("相机编号 {device:?} 只能用字母、数字、- 和 _")); }
-    Ok(device.to_string())
+    Ok(CalibKey::Device(device.to_string()))
 }
 
-/// 段配方一台检测相机的工位标定键：它的标定引用，缺省为设备编号 `{device}`。
-pub fn camera_calib_key(inspect: &CameraInspect) -> Result<String, String> {
-    match &inspect.calib { Some(reference) => Ok(reference.clone()), None => station_key(&inspect.camera) }
+/// 段配方一台检测相机的工位标定键：它的标定引用（`Station`），缺省为设备标定 `Device(device)`。
+pub fn camera_calib_key(inspect: &CameraInspect) -> Result<CalibKey, String> {
+    match &inspect.calib { Some(reference) => Ok(CalibKey::Station(reference.clone())), None => station_key(&inspect.camera) }
 }
 
-/// 段配方一台检测相机的标定文件：按它的标定引用（缺省为设备编号）找工位标定。
+/// 段配方一台检测相机的标定文件：按它的标定引用（缺省为设备标定）找工位标定。
 pub fn camera_calib_path(app: &AppHandle, inspect: &CameraInspect) -> Result<PathBuf, String> {
-    station_calib_path(app, &camera_calib_key(inspect)?)
+    calib_key_path(app, &camera_calib_key(inspect)?)
 }
 
 fn camera_id(app: &AppHandle, cam: u8) -> Result<String, String> {
@@ -420,13 +459,13 @@ fn camera_id(app: &AppHandle, cam: u8) -> Result<String, String> {
 
 /// 标定命令的键：第一个是 `vision_calib_info` 读的键，全部是 `vision_calibrate` 写的键。
 /// - 给了图编号（标定页总会给，单视角相机为 1）：旧配方的 `{device}-v{view}`。单视角相机的图 1 就是这台设备的整幅图，
-///   同时写段配方读的 `{device}`（D-SB-30），标定页做的标定段配方才用得上；三目拼接相机的各图只写 `{device}-v{view}`。
-/// - 没给：只写段配方的 `{device}`，这台相机必须是单视角（D-SB-11）。
-fn calib_keys(config: &crate::camera::CameraConfig, view: Option<u8>) -> Result<Vec<String>, String> {
+///   同时写段配方读的设备标定 `device/{device}`（D-SB-30），标定页做的标定段配方才用得上；三目拼接相机的各图只写 `{device}-v{view}`。
+/// - 没给：只写段配方的设备标定，这台相机必须是单视角（D-SB-11）。
+fn calib_keys(config: &crate::camera::CameraConfig, view: Option<u8>) -> Result<Vec<CalibKey>, String> {
     let single_view = || crate::camera::check_burst_cameras(std::slice::from_ref(config), std::slice::from_ref(&config.id));
     match view {
         Some(view) => {
-            let mut keys = vec![station_view_key(&config.id, view)?];
+            let mut keys = vec![CalibKey::Station(station_view_key(&config.id, view)?)];
             if view == 1 && single_view().is_ok() { keys.push(station_key(&config.id)?); }
             Ok(keys)
         }
@@ -437,7 +476,7 @@ fn calib_keys(config: &crate::camera::CameraConfig, view: Option<u8>) -> Result<
     }
 }
 
-fn camera_calib_keys(app: &AppHandle, cam: u8, view: Option<u8>) -> Result<Vec<String>, String> {
+fn camera_calib_keys(app: &AppHandle, cam: u8, view: Option<u8>) -> Result<Vec<CalibKey>, String> {
     calib_keys(&app.state::<CycleHost>().camera.slot(cam as usize).ok_or("相机不存在")?.config(), view)
 }
 
@@ -468,15 +507,15 @@ pub fn calib_info(path: &Path) -> Option<CalibInfo> {
     })
 }
 
-/// `view` 给了读旧配方的 `{device}-v{view}`，没给读段配方的 `{device}`（见 `calib_keys`，单视角相机的图 1 两份同时写）。
+/// `view` 给了读旧配方的 `{device}-v{view}`，没给读段配方的设备标定 `device/{device}`（见 `calib_keys`，单视角相机的图 1 两份同时写）。
 #[tauri::command]
 pub fn vision_calib_info(app: AppHandle, cam: Option<u8>, view: Option<u8>) -> Result<Option<CalibInfo>, String> {
     let keys = camera_calib_keys(&app, cam.unwrap_or(0), view)?;
-    Ok(calib_info(&station_calib_path(&app, &keys[0])?))
+    Ok(calib_info(&calib_key_path(&app, &keys[0])?))
 }
 
 /// 工位标定：用飞拍相机最近一帧整图跑 image.board_calib，结果存成工位标定文件。
-/// `view` 给了存旧配方的 `{device}-v{view}`，单视角相机的图 1 还同时存段配方的 `{device}`；没给只存 `{device}`
+/// `view` 给了存旧配方的 `{device}-v{view}`，单视角相机的图 1 还同时存段配方的设备标定 `device/{device}`；没给只存设备标定
 /// （单视角相机，样本与最近一帧都是图 1）。键见 `calib_keys`。
 #[tauri::command]
 pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, cam: Option<u8>, view: Option<u8>, image_id: Option<String>) -> Result<CalibInfo, String> {
@@ -514,7 +553,7 @@ pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, ca
             });
         }
         let data = r.record("calib").cloned().ok_or("标定没有输出")?;
-        let paths = keys.iter().map(|key| station_calib_path(&app, key)).collect::<Result<Vec<_>, _>>()?;
+        let paths = keys.iter().map(|key| calib_key_path(&app, key)).collect::<Result<Vec<_>, _>>()?;
         for dir in paths.iter().filter_map(|path| path.parent()) {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }

@@ -11,7 +11,7 @@
 | 领域模块与契约 | `plan`（段校验、计划身份、ΣN_exp、较宽允差、导出）、`frame_group`（按 SDK 帧号三路配组、缺帧、丢帧告警）、`segmentation`（`Segmenter` 接口、`Unsegmented` 实现、合成序列回归入口）、`burst_judge`（按区域类型判定与标记）、`calibration`（多轮统计、容差建议、x_ref）；IPC 契约与前端类型 | WP00、A1–A5 |
 | 握手协议 6 | partEnd 不核对计数，End 带出 PLC 报的 `deviceTriggers`；协议文档、参考 FB、测试 PLC 升到 6 | B1、DOC1 |
 | 配方与设备 | 配方 schema 8（段列表、每相机检测、默认参数、标定轮数）；每相机图像内存预算、帧通道 1024、三路带宽估算、段配方单视角相机约束 | C1、C2 |
-| 视觉测量与发布包 | 每相机每帧走廊测量、按相机组织的发布包 schema 4、生产预热、设备标定键 `{device}` | C4 |
+| 视觉测量与发布包 | 每相机每帧走廊测量、按相机组织的发布包 schema 4、生产预热、设备标定键 `device/{device}`（文件 `calib/device/plane_calib_{device}.json`） | C4 |
 | 示教采集 | 段配方的新轮次：不设上限、不核对计数、按帧号三路配组、增量持久化（`round.json` + `frames.jsonl` + PGM） | D1 |
 | 候选工作区 | 相机走廊示教、多轮标定、容差确认、标准件 x_ref、`WorkspaceView.plan` | D2 |
 | 验证与发布 | ΣN_exp 发布门槛、schema 4 发布、按相机帧的历史读图与复测 | D3 |

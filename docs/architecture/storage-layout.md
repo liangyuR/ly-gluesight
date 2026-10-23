@@ -13,7 +13,7 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 | `config/` | 相机、PLC、检测配置、离线选择、飞拍估算参数和用户偏好 |
 | `state/` | PLC 握手状态与审计。握手审计 `plc-handshake.audit.jsonl` 超过 4 MB 滚动到 `plc-handshake-audit/`，分段早于 30 天或总量超过 256 MB 时随检测记录清理删除，仍有未结 PLC 交付引用的分段保留；诊断包带上当前文件和与导出时间段有交集的分段，其余分段在清单 notes 中计数 |
 | `recipes/`、`workspaces/` | 生产配方、候选配方及示教资料。段配方的候选目录 `workspaces/<配方>/` 另有 `calibration/<轮次>/`：每轮标定的 `features.jsonl`（一行一帧 `{camera, seq, metrics}`，1..=帧组数内每台相机每个 seq 一行，缺帧也有）与 `boundaries.json`（分段结果，本轮恒为 `{"kind":"unsegmented"}`，供以后的分段算法和重新标定使用）；各相机的示教帧冻结为 `images/` 下的 PGM |
-| `calib/`、`vision/releases/` | 标定、发布资源。发布包在 `vision/releases/<配方>/<发布 ID>/`，按配方类型分两种格式，加载时格式必须与配方类型一致。**旧拍照点配方（schema 3）：** `manifest.json`、`recipe.json`、`graph.json`，每个（拍照点 kk，图 N）一个 `shots/kk/vN/`，内有 `image.<扩展名>`（示教原图）、`calibration.json`、`centerline.json`、`points.json`，用特征定位的视图另有 `template.pgm`（生产 glue.locate 的 base_dir 就是这个目录）。**段配方（schema 4）：** 同样有 `manifest.json`、`recipe.json`、`graph.json`，每台计划相机一个 `cameras/NN/`（NN 为计划相机下标，从 00 起），内有 `image.<扩展名>`（示教帧）、`calibration.json`（像素当量与标定引用）、`corridor.json`（走廊）。工位标定文件的键：段配方为 `{device}`，旧拍照点配方为 `{device}-v{view}`，两者并存、互不读取 |
+| `calib/`、`vision/releases/` | 标定、发布资源。发布包在 `vision/releases/<配方>/<发布 ID>/`，按配方类型分两种格式，加载时格式必须与配方类型一致。**旧拍照点配方（schema 3）：** `manifest.json`、`recipe.json`、`graph.json`，每个（拍照点 kk，图 N）一个 `shots/kk/vN/`，内有 `image.<扩展名>`（示教原图）、`calibration.json`、`centerline.json`、`points.json`，用特征定位的视图另有 `template.pgm`（生产 glue.locate 的 base_dir 就是这个目录）。**段配方（schema 4）：** 同样有 `manifest.json`、`recipe.json`、`graph.json`，每台计划相机一个 `cameras/NN/`（NN 为计划相机下标，从 00 起），内有 `image.<扩展名>`（示教帧）、`calibration.json`（像素当量与标定引用）、`corridor.json`（走廊）。工位标定文件：旧拍照点配方为 `calib/plane_calib_{device}-v{view}.json`（显式标定引用 `{引用}` 为 `calib/plane_calib_{引用}.json`，段配方的显式引用同此）；段配方缺省为设备标定 `calib/device/plane_calib_{device}.json`（发布包 `calibration.json` 的 `reference` 记 `device/{device}`），两者并存、互不读取。设备标定单独放子目录：相机编号允许 `-`，与旧配方共用扁平文件名时相机 `cam1-v1` 的设备标定就是相机 `cam1` 图 1 的旧配方标定文件，一方覆盖另一方 |
 | `recipe-capture/` | 整圈采集原图。旧拍照点配方的轮次：`<轮次>/shot-NNNN/<相机>/`。段配方的轮次：`<轮次>/round.json`（只在状态变化时原子重写）、`frames.jsonl`（每写完一帧追加一行，重启后据此恢复统计）和 `<相机>/<seq:06>.pgm`（无压缩 PGM，一帧一个文件，seq 为相机帧号减该相机基线） |
 | `inspection.db` | 检测历史数据库（版本 9）。旧拍照点配方的 `part_shots`、`part_points` 保留；段配方按每台相机每一帧写 `part_frames` 表，`parts` 另存整份区域判定与整件标记。库版本不符（含更高版本）时先备份为 `.v<版本>.*.bak` 再新建空库 |
 | `records/`、`records-offline/` | 真机、离线历史原图。段配方每件目录 `*_cycle_<cycleId>` 内的原图为 `{相机}_s{seq:06}.pgm`，`part.json` 另列 `missingFrames`（相机没出图，只追溯）与 `rawDropped`（录制队列满没录，证据标不完整）；旧拍照点配方的命名与结构不变 |
@@ -34,7 +34,7 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 - **记录库：** 版本 8 升到 9，启动时把旧库备份为 `.v8.*.bak` 后新建空库；历史记录不迁移，需要保留就保留备份文件。
 - **配方：** 配方文件格式 7 升到 8，旧文件加载时列为不可用，需按新格式重建（重建的可以是旧拍照点配方，也可以是段配方）；`.plan-version` 保留，计划号继续单调递增，PLC 不会收到用过的版本号。
 - **发布包：** 旧拍照点配方的 schema 3 包照常加载；段配方用 schema 4，需要在新模型下重新验证并发布。
-- **标定：** 段配方的标定键是 `{device}`，旧 `{device}-v{view}` 文件不读，段配方的三台相机要重新做飞拍标定。标定页对单视角相机（图 1）的标定同时写 `{device}-v1` 和 `{device}`，三目拼接相机的各图只写 `{device}-v{view}`。
+- **标定：** 段配方缺省读设备标定 `calib/device/plane_calib_{device}.json`，旧 `{device}-v{view}` 文件不读，段配方的三台相机要重新做飞拍标定。标定页对单视角相机（图 1）的标定同时写 `calib/plane_calib_{device}-v1.json` 和设备标定，三目拼接相机的各图只写 `{device}-v{view}`。此前写在 `calib/plane_calib_{device}.json` 的段配方设备标定不再读取，也不回退读取（回退会重新引入与旧配方 `{device}-v{view}` 同名的冲突），要在标定页重新标定一次。
 - **PLC：** 协议版本由 5 升到 6，PLC 写 `protocolVersion=6`，并把 `shotCount`/`deviceShots` 改填导出计划的 ΣN_exp；`state/plc-handshake.json` 里协议版本不是 6 的未结事务改名为 `plc-handshake.v5.bak`，以空事务启动并要求人工复位，两边上线后做一次 faultReset。
 - **相机组：** 段配方要求三台互不相同的单视角相机；三目拼接的相机配置仍可用于旧拍照点配方。
 
