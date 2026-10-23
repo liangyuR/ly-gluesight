@@ -1,8 +1,8 @@
 // 原生端到端脚本共用：IPC 客户端与重试、隔离实例连接、样本集副本、整圈采集、离线投产，以及两套配方流程的建站函数：
 //   - 段配方（分段连拍，RecipeDoc.segments 非空，本文件“段配方”一节）：每台相机一条走廊示教 → 多轮标定 → 独立样本验证 → 发布 → 投产；
 //   - 旧拍照点配方（segments 为空，只停用不删除）：采用整圈采集 → 按拍照点组示教 → 验证 → 发布。FIXTURES、teach、addErasedPart、
-//     prepareSampleSet、legacyTemplate 与 produce 只服务旧配方，fixture-teach-e2e 与各脚本的 --model legacy 使用。
-// 使用方：offline-e2e、offline-restart、fixture-teach-e2e、log-replay-offline、production-flow-ui、scripts/soak 与 scripts/soak/throughput。
+//     prepareSampleSet、legacyTemplate 与 produce 只服务旧配方，由长稳等专项脚本使用。
+// 使用方：production-flow-ui、scripts/soak 与 scripts/soak/throughput。
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { cp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
@@ -138,8 +138,6 @@ export async function until(read, accepts, message, timeout = 30000, interval = 
 }
 
 const GATE_BUSY = /正在处理 PLC 事务|检测仍有在途事务|设备配置正在变化|尚未回到空闲|正在预热|PLC 事务 3 秒内仍未结束|离线 S7 服务尚未连接/;
-export const gateRetries = [];
-
 export function client(page) {
   const once = async (command, args) => {
     const result = await page.evaluate(({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args)
@@ -152,7 +150,6 @@ export function client(page) {
     for (;;) {
       try { return await once(command, args); } catch (error) {
         if (!GATE_BUSY.test(error.message) || Date.now() > deadline) throw error;
-        gateRetries.push({ command, error: error.message.replace(/^.*失败：/, "") });
         await new Promise(resolve => setTimeout(resolve, 250));
       }
     }

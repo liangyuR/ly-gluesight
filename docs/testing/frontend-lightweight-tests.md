@@ -1,6 +1,6 @@
 # 前端主业务测试（2026-10-12）
 
-> 2026-10-23 现状：本文是 2026-10-12 的快照，描述的是旧拍照点模型（保留、停用）的前端主流程（逐帧点中线、每组选一张检测图）。分段连拍加入后前端测试文件已增至 50 余个，新增段列表、多轮标定、相机走廊示教、发布确认、按区域与帧组的在线 / 历史展示等用例，`tests/teaching-flow.test.tsx` 同时含旧配方单帧示教与段配方走廊示教；下文的用例数量与“39 / 40 项”不代表当前。当前范围见 [测试记录](TESTING.md#当前保留范围)，段模型逐条用例见 [分段连拍测试清单](segment-burst-test-inventory.md)；`pnpm test:ui:production` 现分旧配方与段配方两段，见 [测试记录](TESTING.md#隔离桌面与证据边界)。
+> 2026-10-23 现状：本文是 2026-10-12 的快照，描述的是旧拍照点模型（保留、停用）的前端主流程（逐帧点中线、每组选一张检测图）。分段连拍加入后前端测试文件已增至 50 余个，新增段列表、多轮标定、相机走廊示教、发布确认、按区域与帧组的在线 / 历史展示等用例，`tests/teaching-flow.test.tsx` 同时含旧配方单帧示教与段配方走廊示教；下文的用例数量与“39 / 40 项”不代表当前。当前范围见 [测试记录](TESTING.md#当前保留范围)，段模型逐条用例见 [分段连拍测试清单](segment-burst-test-inventory.md)；`pnpm test:ui:production` 现由 Playwright Test 分旧配方与段配方两个独立用例执行，见 [测试记录](TESTING.md#隔离桌面与证据边界)。
 
 默认前端回归只保留创建配方、示教到验证发布，以及少量关键失败保护。工件启动到落盘由独立桌面集成测试验证。本轮保留 40 项前端测试，生产落盘继续使用独立桌面测试；覆盖率报告及重复快捷入口已删除。后端收缩范围见[后端轻量测试](backend-lightweight-tests.md)。
 
@@ -31,7 +31,7 @@
 
 ## 运行与换机
 
-使用 Node 24.15+、pnpm 11.1.3。桌面流程还需 Windows、PowerShell 7、Rust MSVC、Visual Studio C++ 构建工具和 WebView2；首次 Cargo 构建需要读取 `Cargo.toml` 中的私有 Git 依赖。Playwright Core 1.64.0 已作为项目依赖锁定，连接应用 WebView2，无需本机模块绝对路径、外部测量 DLL 或 Playwright 浏览器下载。
+当前工具版本以 `package.json` 和锁文件为准。桌面流程还需 Windows、PowerShell 7、Rust MSVC、Visual Studio C++ 构建工具和 WebView2；首次 Cargo 构建需要读取 `Cargo.toml` 中的私有 Git 依赖。Playwright Test 与 Playwright Core 以相同版本作为项目依赖锁定，连接应用 WebView2，无需本机模块绝对路径、Playwright 浏览器下载；旧配方生产冒烟不需要外部测量 DLL，段配方需要 lyFlow。
 
 ```powershell
 pnpm install --frozen-lockfile
@@ -39,7 +39,7 @@ pnpm test
 pnpm test:ui:production
 ```
 
-`pnpm test` 运行全部 39 项前端测试，包含创建配方及示教发布两个主流程；`pnpm test:ui:production` 运行真实桌面生产落盘流程。生产测试自动构建、启动和关闭隔离实例；已构建时可用 `pnpm test:ui:production -SkipBuild`，端口冲突可传 `-DebugPort 9349`。
+`pnpm test` 运行全部 39 项前端测试，包含创建配方及示教发布两个主流程；`pnpm test:ui:production` 运行真实桌面生产落盘流程（默认 all，无 lyFlow 时段配方显示跳过）。Windows PR CI 使用 `pnpm test:ui:production -Suite legacy -ResetData`。生产测试自动构建、启动和关闭隔离实例；已构建时可用 `pnpm test:ui:production -SkipBuild`，端口冲突可传 `-DebugPort 9349`；生产落盘入口支持 `-Grep`。`-SkipBuild` 不检查源码是否变化，须先确保产物最新。框架 HTML / JUnit 报告和失败证据在 `output/playwright/flow-regression/runner/`，业务 JSON 位置不变。
 
 `pnpm typecheck` 检查应用与测试类型；`pnpm build` 检查生产前端构建。
 

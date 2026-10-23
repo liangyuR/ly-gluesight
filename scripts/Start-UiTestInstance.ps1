@@ -3,34 +3,25 @@ param(
     [switch]$SkipBuild,
     [switch]$ResetData,
     [ValidateSet('ui', 'p0', 'flow', 'e2e', 'soak')][string]$Profile = 'ui',
-    [string]$DataRoot
+    [string]$DataRoot,
+    [string]$RunId
 )
 
 $ErrorActionPreference = 'Stop'
-$taskUiRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$taskUiOutput = Join-Path $taskUiRoot "output\playwright\$Profile-regression"
-# 隔离实例的 Tauri 覆盖配置按 Profile 生成（各 Profile 只差名称与标识），构建时写到输出目录供 tauri build --config 读取。
-$taskUiConfig = Join-Path $taskUiOutput 'tauri-test-config.json'
-$taskUiExecutable = Join-Path $taskUiOutput 'gluesight-ui-tests.exe'
-$taskUiTarget = if ($env:CARGO_TARGET_DIR) { [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) } else { Join-Path $taskUiRoot 'src-tauri\target' }
-$taskUiBuild = Join-Path $taskUiTarget 'debug\GlueSight.exe'
-$taskUiManifest = Join-Path $taskUiOutput 'instance.json'
+. (Join-Path $PSScriptRoot 'UiTest-Common.ps1')
+$taskUiLayout = Get-UiTestLayout -Profile $Profile
+$taskUiRunLock = if (!$RunId) { Enter-UiTestLock -Path (Join-Path $taskUiLayout.Output '.run.lock') }
+if (!$RunId) { $RunId = [guid]::NewGuid().ToString('N') }
+try {
+$taskUiRoot = $taskUiLayout.Root
+$taskUiOutput = $taskUiLayout.Output
+$taskUiExecutable = $taskUiLayout.Executable
+$taskUiManifest = $taskUiLayout.Manifest
 $taskUiStdout = Join-Path $taskUiOutput 'stdout.log'
 $taskUiStderr = Join-Path $taskUiOutput 'stderr.log'
 $taskUiExisting = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $taskUiExecutable })
 if ($taskUiExisting.Count) { throw "隔离 UI 实例仍在运行：$($taskUiExisting.Id -join ', ')。请先完成或关闭该实例。" }
-$taskUiTitle = "GlueSight · 胶路智检 $(@{ ui = 'UI'; p0 = 'P0'; flow = 'Flow'; e2e = 'E2E'; soak = 'Soak' }[$Profile]) Tests"
-$taskUiOverlay = [ordered]@{
-    productName = $taskUiTitle
-    identifier = "com.xyzrobotics.tujiaovision.$Profile-tests"
-    build = [ordered]@{ beforeBuildCommand = 'node node_modules/typescript/bin/tsc -b && node node_modules/vite/bin/vite.js build' }
-    app = [ordered]@{ windows = @([ordered]@{ label = 'main'; title = $taskUiTitle; visible = $false; width = 1440; height = 900; minWidth = 1100; minHeight = 700 }) }
-    bundle = [ordered]@{ active = $false }
-}
-if ($taskUiOverlay.identifier -ne "com.xyzrobotics.tujiaovision.$Profile-tests" -or $taskUiOverlay.app.windows[0].visible) {
-    throw 'UI test configuration must use the isolated application identifier and a hidden window.'
-}
-$taskUiIdentifier = "com.xyzrobotics.tujiaovision.$Profile-tests"
+$taskUiIdentifier = $taskUiLayout.Identifier
 $taskUiDataParent = if ($DataRoot) { $DataRoot } elseif ($env:GLUESIGHT_TEST_DATA_ROOT) { $env:GLUESIGHT_TEST_DATA_ROOT } else { $taskUiOutput }
 if (![IO.Path]::IsPathRooted($taskUiDataParent)) { throw "测试资料根目录必须是绝对路径：$taskUiDataParent" }
 $taskUiDataParent = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($taskUiDataParent))
@@ -148,20 +139,8 @@ function Get-TaskUiStderr {
 
 Push-Location -LiteralPath $taskUiRoot
 try {
-    if (!$SkipBuild) {
-        $taskUiOverlay | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $taskUiConfig -Encoding utf8NoBOM
-        & node (Join-Path $taskUiRoot 'node_modules\@tauri-apps\cli\tauri.js') build --debug --no-bundle --config $taskUiConfig
-        if ($LASTEXITCODE -ne 0) { throw '隔离 UI 构建失败' }
-        Copy-Item -LiteralPath $taskUiBuild -Destination $taskUiExecutable -Force
-    } elseif (!(Test-Path -LiteralPath $taskUiExecutable -PathType Leaf)) {
-        throw 'SkipBuild 需要已有的隔离测试可执行文件。'
-    }
-    if ($SkipBuild) {
-        $taskUiPrevious = Get-Content -LiteralPath $taskUiManifest -Raw | ConvertFrom-Json
-        if ($taskUiPrevious.identifier -ne $taskUiOverlay.identifier -or $taskUiPrevious.executable -ne $taskUiExecutable) {
-            throw '隔离测试实例标识或路径不匹配，请重新构建。'
-        }
-    }
+    if (!$SkipBuild) { & (Join-Path $PSScriptRoot 'Build-UiTestInstance.ps1') -Profile $Profile -RunId $RunId }
+    Assert-UiTestBuild -Layout $taskUiLayout
     foreach ($taskUiAddress in [Net.IPAddress]::Loopback, [Net.IPAddress]::IPv6Loopback) {
         $taskUiProbe = [Net.Sockets.TcpListener]::new($taskUiAddress, $DebugPort)
         try { $taskUiProbe.Start() } catch [Net.Sockets.SocketException] {
@@ -181,10 +160,11 @@ try {
     $taskUiProcess = Get-Process -Id $taskUiPid -ErrorAction SilentlyContinue
     if (!$taskUiProcess) { throw "隔离 UI 程序启动后立即退出。`n$(Get-TaskUiStderr)" }
     $null = $taskUiProcess.Handle
+    $taskUiStartedAt = $taskUiProcess.StartTime.ToUniversalTime()
     try {
-        $taskUiState = [ordered]@{ pid = $taskUiProcess.Id; executable = $taskUiExecutable; identifier = $taskUiOverlay.identifier;
+        $taskUiState = [ordered]@{ pid = $taskUiProcess.Id; executable = $taskUiExecutable; identifier = $taskUiIdentifier;
             dataRoot = $taskUiData; debugPort = $DebugPort; cdp = $null; stdout = $taskUiStdout; stderr = $taskUiStderr;
-            startedAt = $taskUiProcess.StartTime.ToUniversalTime().ToString('o') }
+            startedAt = $taskUiStartedAt.ToString('o'); runId = $RunId }
         $taskUiState | ConvertTo-Json | Set-Content -LiteralPath $taskUiManifest -Encoding utf8
         $taskUiDeadline = [DateTime]::UtcNow.AddSeconds(120)
         while (!$taskUiState.cdp) {
@@ -203,8 +183,11 @@ try {
         $taskUiState | ConvertTo-Json | Set-Content -LiteralPath $taskUiManifest -Encoding utf8
     } catch {
         $taskUiOwnedProcess = Get-Process -Id $taskUiProcess.Id -ErrorAction SilentlyContinue
-        if ($taskUiOwnedProcess -and $taskUiOwnedProcess.Path -eq $taskUiExecutable) { Stop-Process -InputObject $taskUiOwnedProcess }
+        if ($taskUiOwnedProcess -and $taskUiOwnedProcess.Path -eq $taskUiExecutable -and
+            $taskUiOwnedProcess.StartTime.ToUniversalTime() -eq $taskUiStartedAt) { Stop-Process -InputObject $taskUiOwnedProcess }
         throw
     }
     $taskUiState | ConvertTo-Json -Compress
 } finally { Pop-Location }
+
+} finally { if ($taskUiRunLock) { $taskUiRunLock.Dispose() } }
