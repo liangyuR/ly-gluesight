@@ -157,16 +157,27 @@ fn progress_reports_calibration_blocker_before_validation() {
 }
 
 #[test]
-fn ready_burst_candidate_yields_debug_run_inputs_in_plan_camera_order() {
-    // 防的回归（决策记录第九节第 13、14 条；规格 §6 离线仿真）：候选试运行不分配方类型、一律过旧拍照点的 Recipe::ready，
-    // 走廊与整件 ΣN_exp 都已就绪的段配方候选被拒，“候选试运行一圈”对段配方必然报错；或示教帧尺寸不按计划相机顺序
-    // 交给 Candidate::new_burst（它按 inspect 顺序逐台配对），走廊测量图套错相机的帧尺寸
+fn ready_burst_candidate_is_frozen_for_debug_run_by_burst_readiness() {
+    // 防的回归（决策记录第九节第 14 条；规格 §6 离线仿真）：候选试运行不分配方类型、一律过旧拍照点的 Recipe::ready，
+    // 走廊与整件 ΣN_exp 都已就绪的段配方候选被拒，“候选试运行一圈”对段配方必然报错
     let mut w = taught(&[Straight, Corner, Straight], DEVICE);
     calibrate(&mut w, 30);
     w.instance_id = 1;
+    assert!(debug_recipe(&w).unwrap().is_burst());
+}
+
+#[test]
+fn burst_candidate_debug_run_gets_teaching_frame_sizes_in_plan_camera_order() {
+    // 防的回归（决策记录第九节第 13、14 条）：workspace_debug_run 的分派把段配方当旧拍照点配方，按 (拍照点, 图) 取尺寸
+    // （段配方没有拍照点，得到空表，Candidate::new_burst 拿不到尺寸）；或示教帧尺寸按示教登记顺序而不是计划相机顺序
+    // 交给 Candidate::new_burst（它按 inspect 顺序逐台配对），走廊测量图套错相机的帧尺寸。
+    // 走 workspace_debug_run 锁内调用的同一个分派函数 debug_run_sizes（旧配方的视图检查在这里放行，它只服务旧配方）。
+    let mut w = taught(&[Straight, Corner, Straight], DEVICE);
+    calibrate(&mut w, 30);
     for (teaching, width) in w.camera_teaching.iter_mut().zip([1000, 1100, 1200]) { teaching.frame.size = [width, 700]; }
     w.camera_teaching.reverse();
-    let recipe = debug_recipe(&w).unwrap();
-    assert!(recipe.is_burst());
-    assert_eq!(burst_release::debug_sizes(&w, &configs(&w.doc, DEVICE)).unwrap(), [[1000, 700], [1100, 700], [1200, 700]]);
+    let recipe = w.doc.build().unwrap();
+    let sizes = debug_run_sizes(&w, &recipe, &configs(&w.doc, DEVICE), |_, _| Ok(())).unwrap();
+    let DebugSizes::Burst(sizes) = sizes else { panic!("段配方候选的试运行没有按段配方分派示教帧尺寸") };
+    assert_eq!(sizes, [[1000, 700], [1100, 700], [1200, 700]]);
 }

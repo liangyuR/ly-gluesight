@@ -2966,10 +2966,29 @@ fn debug_recipe(w: &Workspace) -> Result<Recipe, String> {
     Ok(recipe)
 }
 
-/// 候选试运行的示教图尺寸：旧拍照点配方按 (拍照点, 图)，段配方按计划相机顺序。
+/// 候选试运行的示教图尺寸：旧拍照点配方按 (拍照点, 图)，交给 `Candidate::new`；段配方按计划相机顺序，交给
+/// `Candidate::new_burst`（载荷类型不同，两种尺寸不会交错传给另一种构造）。
 enum DebugSizes {
     Legacy(HashMap<(usize, u8), [u32; 2]>),
     Burst(Vec<[u32; 2]>),
+}
+
+/// 候选试运行按配方类型分派示教图尺寸（`workspace_debug_run` 在锁内调用）：段配方按计划相机顺序取各相机示教帧尺寸
+/// （`burst_release::debug_sizes`，含示教后设备标签核对）；旧拍照点配方按 (拍照点, 图) 取冻结示教原图尺寸，每个选中视图先过
+/// `check_view`（旧配方的视图检查），行为不变。
+fn debug_run_sizes(w: &Workspace, recipe: &Recipe, current: &BTreeMap<String, Value>,
+    mut check_view: impl FnMut(usize, u8) -> Result<(), String>) -> Result<DebugSizes, String> {
+    if recipe.is_burst() { return Ok(DebugSizes::Burst(burst_release::debug_sizes(w, current)?)); }
+    let mut sizes = HashMap::new();
+    for (k, shot) in recipe.shots.iter().enumerate() {
+        if !shot.measured() { continue; }
+        for selected in workflow::selected_views(w, k) {
+            check_view(k, selected)?;
+            let frozen = w.frames[k].views.iter().find(|i| i.view == selected).ok_or("示教原图缺失")?;
+            sizes.insert((k, selected), frozen.size);
+        }
+    }
+    Ok(DebugSizes::Legacy(sizes))
 }
 
 #[tauri::command]
@@ -2984,18 +3003,7 @@ pub async fn workspace_debug_run(app: AppHandle, id: String, revision: u64, part
         if w.revision != revision { return Err("候选已修改，请刷新后重试".into()); }
         if w.pending.is_some() { return Err("候选正在等待发布，请先完成或取消发布".into()); }
         let recipe = debug_recipe(w)?;
-        let sizes = if recipe.is_burst() { DebugSizes::Burst(burst_release::debug_sizes(w, &current)?) } else {
-            let mut sizes = HashMap::new();
-            for (k, shot) in recipe.shots.iter().enumerate() {
-                if !shot.measured() { continue; }
-                for selected in workflow::selected_views(w, k) {
-                    workflow::check_view(&app, w, k, selected, false)?;
-                    let frozen = w.frames[k].views.iter().find(|i| i.view == selected).ok_or("示教原图缺失")?;
-                    sizes.insert((k, selected), frozen.size);
-                }
-            }
-            DebugSizes::Legacy(sizes)
-        };
+        let sizes = debug_run_sizes(w, &recipe, &current, |k, selected| workflow::check_view(&app, w, k, selected, false))?;
         (recipe, sizes, w.clone())
     };
     let candidate = match sizes {
