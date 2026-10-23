@@ -21,10 +21,27 @@ MvSDKLog/
 /.playwright-cli/
 __pycache__/
 *.py[cod]
+.pytest_cache/
+/playwright-report/
+/test-results/
+
+# 本机环境与 agent 工作树；共享启动配置仍纳入版本控制
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+/.claude/settings.local.json
+/.claude/worktrees/
+
+# 本机录屏辅助，不属于应用开发、测试或交付入口
+/scripts/obs-local-control.py
 
 # 本机运行产物
 /output/
 /outputs/
+/tmp/
+/temp/
 
 # 外部保密参考手册仅在本机保留
 /docs/在线涂胶检测V4.3软件操作指导书.pdf
