@@ -55,7 +55,6 @@ export async function until(read, accepts, message, timeout = 30000, interval = 
 }
 
 const GATE_BUSY = /正在处理采集或设备事务|正在处理 PLC 事务|检测进行中，工件结束后再操作相机|检测仍有在途事务|设备配置正在变化|尚未回到空闲|正在预热|PLC 事务 3 秒内仍未结束|离线 S7 服务尚未连接/;
-export const gateRetries = [];
 
 export function client(page) {
   const once = async (command, args) => {
@@ -69,7 +68,6 @@ export function client(page) {
     for (;;) {
       try { return await once(command, args); } catch (error) {
         if (!GATE_BUSY.test(error.message) || Date.now() > deadline) throw error;
-        gateRetries.push({ command, error: error.message.replace(/^.*失败：/, "") });
         await new Promise(resolve => setTimeout(resolve, 250));
       }
     }

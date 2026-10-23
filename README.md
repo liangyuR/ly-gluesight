@@ -56,7 +56,15 @@ pnpm test                                   # 前端单元测试
 cargo test --lib --manifest-path src-tauri/Cargo.toml
 ```
 
-离线端到端、生产流程 UI 测试等见 [测试记录与复现](docs/testing/TESTING.md)。
+桌面 E2E 使用 Playwright Test 连接应用 WebView2，无需下载 Playwright 浏览器。Windows PR CI 恢复 lyFlow 运行库并执行合成图段配方生产验证，无需现场样本集：
+
+```powershell
+pnpm test:ui:production -Suite burst -ResetData
+```
+
+生产落盘入口保留原命令并支持 `-Grep` 筛选，默认构建一次，再由夹具管理实例和失败证据。单独准备构建使用 `pnpm test:desktop:build -Profile flow`；测试加 `-SkipBuild` 可复用该 profile 的产物，但不会检查源码是否更新。HTML、JUnit 和失败截图、trace 位于 `output/playwright/<profile>-regression/runner/`；原业务 JSON 位置保持不变。
+
+依赖现场样本集的离线建站及重启、日志回放、特征定位桌面测试和对应入口已删除。生产落盘的段配方使用合成图，需要 lyFlow；长稳、硬件联调与底层业务验证保留。参数、报告和证据边界见 [测试记录与复现](docs/testing/TESTING.md)。
 
 ## 打包
 

@@ -64,3 +64,14 @@
 - 可选项：(a) 离线端到端像 log-replay 一样固定把 `armMs` 放宽到 1 s；(b) 保持默认，只在 TESTING.md 写明负载限制；(c) 默认按 200 ms 验证，`Test-OfflineE2E.ps1 -ArmBudgetMs <毫秒>`（`offline-e2e.mjs --arm-ms`）显式放宽，放宽值写进 `result.json` 的 `inputs.armBudgetMs`。
 - 采用：(c)。默认仍验证出厂节拍设置，不掩盖真实的节拍问题；在多任务共用的机器上又能显式放宽跑通业务链路，结果里看得到是否放宽。布防预算的默认值由 r2-plc 按长稳数据决定（见 [soak.md](soak.md) S-12），本线不改。`produce` 的原图等待超时现在带上本件结论与原因，不再只报“原图录制未完成”。满载时虚拟 PLC 心跳也会超过 3 s 未翻转，整圈采集随之失败，这不是预算能解决的，只能等负载下降后重跑。高负载下离线 S7 轮询结果过期（实测 2.7 s）会断开重连，期间 `offline_run` 报“离线 S7 服务尚未连接”；界面此时禁用“运行一件”并提示等待连接，驱动脚本把这条拒绝与其他暂时拒绝一样最多重试 60 s。
 - 回退：去掉 `-ArmBudgetMs` / `--arm-ms`，恢复只在 `productSource` 不是 plc 时保存设置。
+
+
+## 9. 生产落盘接入 Playwright Test，删除现场样本集桌面 E2E（2026-10-23）
+
+- 问题：普通 Node CLI 自行组织生命周期、超时和证据，失败阶段不易定位；现场样本集桌面 E2E 需要独立输入和运行库维护。
+- 用户决策：本次删除离线建站及重启、日志回放、特征定位的桌面测试与 pnpm / PowerShell 入口，仅生产落盘迁移 Playwright Test。第 1–8 条中的原脚本名称及实测结果保留为历史事实，不再提供现场样本集 E2E 的手动入口；此删除不涉及产品功能、长稳、硬件联调和底层业务测试。
+- 采用：保留生产落盘命令和业务结果格式，用独立配置管理用例及报告，固定单 worker、无整条自动重跑、单用例 15 分钟。PowerShell 负责预检、公共构建及同 profile 执行期互斥；夹具复用原启动设施和身份核对，管理 CDP context、失败截图、trace 及最终关闭。构建与启动分离为 `Build-UiTestInstance.ps1` / `Start-UiTestInstance.ps1`，后者保持独立使用兼容。
+- 用例：旧配方与合成图段配方分别初始化并恢复配置；`-Suite` 默认 all，无运行库时段配方明确跳过，显式坏库在构建前失败，legacy 清除测试子进程 lyFlow 环境且不下载运行库。生产落盘旧 Node CLI 暂保留供迁移对照；长稳保持既有入口和退出码。
+- 证据：业务 JSON 和实例日志路径不变；框架只管理 `flow-regression/runner/{html,junit.xml,test-results}`，不清理业务目录，取证失败不得覆盖业务错误。此前实测数据不等同于迁移后验证结果。
+- CI：Windows PR 必跑 `pnpm test:ui:production -Suite legacy -ResetData`，不下载样本集或运行库；Tauri 前置构建已做相同生产前端构建，移除独立 `pnpm build`。保留其他检查，增加无效显式运行库预检、互斥及进程身份保护的集成测试。无论结果上传 HTML / JUnit / 构建及启动日志，失败附加截图与 trace，不上传整个资料目录。
+- 回退：生产落盘外壳可恢复调用保留的 Node CLI；框架报告与业务数据独立，无资料迁移。已删除的现场样本集桌面测试仅可从 Git 历史查看。

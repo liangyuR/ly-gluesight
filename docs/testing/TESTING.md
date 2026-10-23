@@ -16,6 +16,15 @@
 
 SDK 枚举成功但本机发现 0 台设备；Jinghang JHEM131GC-XS 的门控节点、Software 一命令一帧、低电平停止新曝光、触发切换、重连与多相机行为仍待实机验证。SCL 尚未在 TIA Portal 编译或下载至 PLC。
 
+## PR #169 CI 修复与 main 同步（2026-10-23）
+
+- 原 Windows CI 在前端测试失败：删除页面后遗留的旧拍照点示教 17 项专属用例仍被执行。删除 `tests/fixture-teach.test.tsx` 的 9 项及 `tests/teaching.test.tsx` 的 8 项旧单帧用例，保留后者 10 项段配方与通用采集信息用例；不恢复已停用产品入口。
+- 同步 main 的 PR #168 Playwright 桌面测试框架，保留实例锁、清理和失败证据，改为仅运行段配方；CI 恢复 lyFlow 后执行 burst，不再运行 legacy 或因缺运行库全部跳过。
+- 修正存储往返用例的丢帧夹具：同一相机缺两帧，符合当前相机间帧差告警阈值，继续覆盖告警、缺帧与预留字段的落库读回。
+- 合并后前端全量 50 个文件、332 项通过；类型检查通过。Playwright 实例复用未修改的产品构建，1 项段配方完整流程通过、0 跳过，62 秒；工作流、桌面基础设施及长稳判断脚本共 32 项通过。
+
+本机曾出现沙箱临时文件缺失、临时 Git 元数据写入受限，以及自定义 TEMP 导致受管样本拒绝访问；对应检查在正常环境、系统默认 TEMP 下重跑，不修改产品代码来绕过限制。远端 CI 结果以本 PR 最新提交为准。
+
 ## 当前保留范围
 
 | 测试层 | 保留验证 |
@@ -23,7 +32,7 @@ SDK 枚举成功但本机发现 0 台设备；Jinghang JHEM131GC-XS 的门控节
 | 前端 | 创建配方、草稿编辑、采集、示教验证发布、生产操作锁、周期/图源隔离与历史显示；段配方的段列表、多轮标定、相机走廊示教、发布确认与按区域和帧组的历史展示；旧拍照点页面及专属用例不再维护 |
 | Rust 默认 | 配方版本、采集与示教流程、相机/帧关联、生产周期、PLC、调度、SQLite、原图录制、审计恢复及历史；段模型的 `plan`、`frame_group`、`segmentation`、`burst_judge`、`calibration` 五个纯模块，以及段配方的示教采集、生产节拍、候选工作区与发布、按帧落库和离线脉冲串仿真；不再维护旧拍照点运行路径与专属测试 |
 | S7 专项 | `plc_session` 的 S7 线协议用例（真实生产驱动 + 进程内 S7Server，已进默认 `cargo test`，不再 ignore、不依赖 Python），以及 Python 测试 PLC 自己的线报文自测 |
-| 桌面端到端 | 隔离 flow 实例内启动一件到 SQLite、原图和历史读回；隔离 e2e 实例内离线建站到投产与日志回放，见“端到端入口”。**离线端到端、日志回放、生产落盘与长稳仅按段配方驱动，不提供 `-Model legacy`；旧配方专属特征定位端到端入口已移除** |
+| 桌面端到端 | 仅合成图段配方生产落盘：flow 实例内建站、标定、发布、生产、SQLite、原图与历史读回，需要 lyFlow。现场样本集桌面入口和旧拍照点流程已删除 |
 | 保留工具 | 打包契约、Windows 发布门禁、安装包自检、样本集转换脚本、S7 Python 服务与 Robot/Modbus 隔离协议 |
 | 手动专项 | 长稳测试、算法评测，需样本集与 lyFlow 运行库，不进 CI；吞吐探针 `throughput_probe`（3 × 25 Hz 门槛的实测依据，见“段模型专项”） |
 
@@ -78,10 +87,9 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 | 命令 | 用途 |
 | --- | --- |
 | `pnpm test` | 全部前端测试，包含创建配方与完整示教发布流程 |
+| `pnpm test:desktop:build -Profile flow` | 只构建隔离桌面实例，不启动；profile 可选 ui（默认）、p0、flow、e2e、soak |
 | `pnpm test:watch` | 开发时持续运行相关前端测试 |
-| `pnpm test:ui:production` | 自动构建、启动与关闭隔离桌面实例，验证一件生产落盘：旧拍照点配方（显式测试夹具，不需要 lyFlow）与段配方（合成图三相机，需 `-LyFlowRuntime`，没有时该段跳过并写明原因） |
-| `pnpm test:e2e:offline` | 全新隔离站点上走完段配方（分段连拍）的建站、走廊示教、10 轮标定、验证、发布、投产与历史：合成图三相机主流程加样本集冒烟，需要样本集与真实 lyFlow |
-| `pnpm test:e2e:log-replay` | 全新隔离站点上投产 3 件样本件，核对本件时间线、运行日志、原包重跑按区域逐一一致、缺一张原图时的处理与诊断包 |
+| `pnpm test:ui:production` | Playwright 自动构建、启动与关闭隔离实例，验证合成图三相机段配方建站与生产落盘，需要 lyFlow |
 | `pnpm typecheck` | 应用及测试 TypeScript 类型检查 |
 | `pnpm build` | 生产前端构建 |
 | `cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib` | 默认后端回归，依赖需已缓存 |
@@ -97,7 +105,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 
 `Test-DevStartup.ps1` 临时修改用户级 `GLUESIGHT_LYFLOW_RUNTIME`，在 `finally` 中恢复原值；验证期间不要并行修改该配置或启动 GlueSight。测试通过临时 CLI 进程观察启动环境，不启动实际 GUI，不修改配方。
 
-单文件前端测试示例：`pnpm exec vitest run tests/teaching.test.tsx`。默认测试不生成覆盖率报告。四个桌面端到端入口的参数、前置条件与已知限制见下文“端到端入口”。
+单文件前端测试示例：`pnpm exec vitest run tests/teaching.test.tsx`。默认测试不生成覆盖率报告。生产落盘入口的参数、前置条件与已知限制见下文“端到端入口”。
 
 Windows 受限环境遇到 Node realpath EPERM 时，按仓库 AGENTS.md 的 Windows 指引在同一进程加载兼容脚本。需要获准的主机权限时运行相同命令，不修改应用逻辑掩盖环境失败。Cargo 首次构建需要 MSVC、Visual Studio C++ 工具及私有 Git 依赖读取权限；离线执行要求依赖已缓存。
 
@@ -134,7 +142,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib -- --ignored packaging::te
 
 ## 隔离桌面与证据边界
 
-`pnpm test:ui:production` 使用 `tests/native/production-flow-ui.mjs` 与 flow 实例配置（`Start-UiTestInstance.ps1 -Profile flow`），应用标识为 `com.xyzrobotics.tujiaovision.flow-tests`，报告输出到 `output/playwright/flow-regression`。全新实例不安装默认或旧配方夹具。
+`pnpm test:ui:production` 由 Playwright Test 驱动，使用 `tests/native/production-flow-ui.mjs` 与 flow 实例配置（`Start-UiTestInstance.ps1 -Profile flow`），应用标识为 `com.xyzrobotics.tujiaovision.flow-tests`，报告输出到 `output/playwright/flow-regression`。全新实例不安装默认或旧配方夹具。
 
 测试在“离线 · 合成图”下用真实 lyFlow 完成段配方走廊示教、多轮标定、独立样本验证与发布，经生产 S7 握手投产，核对 SQLite、逐帧原图和历史读回。使用 `-LyFlowRuntime <运行库目录>` 或 `GLUESIGHT_LYFLOW_RUNTIME` 提供运行库；缺失时明确记录跳过，不算通过。合成图来源补足三台单视角相机。`deviceTriggers` 仅保留存储字段，不作为采集计数依据。
 
@@ -145,6 +153,8 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib -- --ignored packaging::te
 **P0 原生脚本历史处理记录（不作为当前操作入口）**
 
 旧 P0 界面链路以 `p0-setup-ui.js` 在离线期间新建三视角模拟相机、`p0-create-ui.js` 在“拍照点规划”页手工编辑拍照点为起点，后续脚本都依赖它产生的 `P0-TRICAM-UI` 配方。站点模式下离线相机只由离线来源生成、离线期间相机页只读，拍照点改由整圈采集生成，“取新样本”“拍照点规划”和视觉设置也已删除，这条链路无法成立。处理如下：
+
+以下 P0 清理表记录当时替代关系；其中离线建站、回放与重启脚本本次已删除，对应覆盖不再保留。
 
 | 脚本 | 处理 | 理由 |
 | --- | --- | --- |
@@ -165,50 +175,82 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 
 ## 端到端入口
 
-以下入口都会构建（`-SkipBuild` 跳过）、启动、驱动并关闭各自的隔离桌面实例，结束时打印总耗时；失败以非零退出码结束，两个 `test:e2e:*` 入口输入缺失时为退出码 3（不算通过）。决策见 [r2-test-infra 决策记录](../decisions/r2-test-infra.md)。
+2026-10-23 按用户决策删除依赖现场样本集的离线建站及重启、日志回放、特征定位桌面测试、PowerShell 外壳和 pnpm 入口。下文历史运行记录保留当时事实，不再是可执行指引；这些场景不在当前自动回归范围。长稳、硬件联调和底层业务范围不变。
 
-**当前测试仅支持段配方。** 旧拍照点配方从未部署，旧模型分支和专属特征定位端到端入口已退出，不提供 `-Model legacy`。`test:ui:production` 不再安装默认或旧配方夹具；需要 lyFlow 完成段配方建站与落盘验证，缺失时明确记录跳过。下文旧模型实测结果仅为历史证据。
+本次删除文件与依据：用户明确要求删除依赖现场样本集的桌面测试，连同专属入口一并移除：
 
-公共脚本：两个 `test:e2e:*` 外壳与 `Test-Soak.ps1` dot-source `scripts/E2E-Common.ps1`，共用输入检查与 lyFlow 运行库解析（长稳不自动恢复）、Node 依赖检查、隔离实例启动，以及关闭实例前的身份核对；各外壳只保留自己的参数、驱动脚本与输出位置。Node 侧共用函数在 `tests/native/lib.mjs`（`scripts/soak/lib.mjs` 也从这里导入）。
+- PowerShell：`scripts/Test-OfflineE2E.ps1`、`scripts/Test-LogReplayOffline.ps1`、`scripts/Test-FixtureE2E.ps1`。
+- Node：`tests/native/offline-e2e.mjs`、`tests/native/offline-restart.mjs`、`tests/native/log-replay-offline.mjs`、`tests/native/fixture-teach-e2e.mjs`。
 
-| 命令 | 驱动脚本 | 实例配置（应用标识） | 默认端口 | 输出 |
+对应 `test:e2e:offline`、`test:e2e:log-replay`、`test:e2e:fixture` 命令已删除；`tests/native/lib.mjs`、`scripts/E2E-Common.ps1` 及 `scripts/soak/` 仍被生产落盘或长稳使用，予以保留。
+
+生产落盘入口检查参数后按 flow profile 构建一次（`-SkipBuild` 跳过），通过独立 Playwright Test 配置运行。夹具负责启动、读取清单、连接主窗口、采集证据和关闭隔离实例；成功返回 0，构建、启动或业务失败返回非零。显式提供的 lyFlow 目录无效时在构建及启动前失败。决策见 [r2-test-infra 决策记录](../decisions/r2-test-infra.md)。
+
+公共构建入口为 `pnpm test:desktop:build -Profile <profile>`（`scripts/Build-UiTestInstance.ps1`）；原 `Start-UiTestInstance.ps1` 单独使用时仍默认构建。生产落盘命令由 PowerShell 检查输入、准备构建并调用 Playwright Test，夹具复用现有实例启动和身份校验。`Test-Soak.ps1` 继续通过 `scripts/E2E-Common.ps1` 使用共享能力，长稳的入口和退出码不变。Node 业务函数仍在 `tests/native/`，与长稳共用的 IPC、采集、示教和投产函数在 `tests/native/lib.mjs`。生产落盘旧 Node CLI 暂保留，供迁移对照；现场样本集桌面 CLI 已删除。
+
+Playwright Test 固定 `workers=1`、`fullyParallel=false`、`retries=0`，每个用例最多 15 分钟；业务已有的短暂拒绝重试保持不变。段配方用例初始化和恢复配置；已移除没有消费者的模块级重试统计。
+
+业务 JSON、截图和实例日志保留原目录，框架输出独立放在 `output/playwright/<profile>-regression/runner/`：`html/` 是可浏览报告，`junit.xml` 是 CI 结果，`test-results/` 保存失败截图与 trace。CDP context 的 trace 由夹具显式管理；取证失败不会覆盖业务失败。构建、启动、断言错误分别保留原始原因和日志位置。
+
+| 命令 | 复用的业务函数模块 | 实例配置（应用标识） | 默认端口 | 输出 |
 | --- | --- | --- | --- | --- |
-| `pnpm test:e2e:offline` | `tests/native/offline-e2e.mjs` + `offline-restart.mjs` | e2e（`…e2e-tests`），每次清空资料 | 9341 | `output/playwright/e2e-regression` |
-| `pnpm test:e2e:log-replay` | `tests/native/log-replay-offline.mjs` | e2e（`…e2e-tests`），每次清空资料 | 9346 | `output/playwright/log-replay`（实例日志在 e2e-regression） |
 | `pnpm test:ui:production` | `tests/native/production-flow-ui.mjs` | flow（`…flow-tests`），保留资料 | 9339 | `output/playwright/flow-regression` |
 
-参数跟在命令后，例如 `pnpm test:e2e:offline -DebugPort 9351 -SkipBuild`。
+参数跟在命令后，例如 `pnpm test:ui:production -Suite burst -DebugPort 9351 -SkipBuild`。
 
 | 参数 / 环境变量 | 作用 |
 | --- | --- |
 | `-DebugPort` | WebView2 远程调试端口，`127.0.0.1` 与 `[::1]` 上都必须空闲，否则启动前报错 |
-| `-SkipBuild` | 复用上次构建复制到输出目录的 `gluesight-ui-tests.exe`（需同一配置构建过） |
+| `-SkipBuild` | 复用上次构建复制到输出目录的 `gluesight-ui-tests.exe`（需同一配置构建过，不保证与最新源码一致） |
+| `-Grep` | 生产落盘入口，传给 Playwright Test 的用例名筛选 |
+| `-Suite burst` | 仅段配方生产落盘，默认 burst |
+| `-ResetData` | 仅生产落盘新增可选开关，默认 false，保留资料；开启时首启重置资料 |
 | `-DataRoot` / `GLUESIGHT_TEST_DATA_ROOT` | 隔离资料目录的父目录，资料目录为 `<DataRoot>\<应用标识>`；默认在输出目录下 |
-| `-SampleSet` / `GLUESIGHT_SAMPLE_SET` | 样本集目录（`test:e2e:offline`、`test:e2e:log-replay` 必需） |
-| `-LyFlowRuntime` / `GLUESIGHT_LYFLOW_RUNTIME` | lyFlow 运行库目录；未提供时按 `packaging/runtime.json` 恢复 |
-| `-Parts` | 仅 `test:e2e:log-replay`：投产件数，至少 3 |
-| `-LyFlowRuntime` | `test:ui:production` 也认：段配方一段需要 lyFlow（不自动恢复，没有时该段跳过） |
-| `-ArmBudgetMs` | 仅 `test:e2e:offline`：把布防预算 `timeouts.armMs` 临时改为该值（毫秒），写进 `result.json` 的 `inputs.armBudgetMs`；不传时按默认 200 ms 验证 |
+| `-LyFlowRuntime` / `GLUESIGHT_LYFLOW_RUNTIME` | 生产落盘段配方的运行库；未指定时恢复锁定版本，恢复或加载失败即失败，不以跳过代替验证 |
 | `CARGO_TARGET_DIR` | 共享或自定义 Cargo 构建目录时设置，脚本从这里取构建产物 |
 
-**前置条件**：Windows 与 WebView2 Runtime；Node 24.15+，已 `pnpm install --frozen-lockfile`；Rust 工具链与私有 Git 依赖读取权限（构建时）；离线样本集与 lyFlow 运行库（两个 `test:e2e:*` 入口）。实测的 2026-10-17 单圈样本集原件只读，脚本先复制到输出目录再写模拟当量。
+**前置条件**：Windows 与 WebView2 Runtime；Node 24.15+，已 `pnpm install --frozen-lockfile`；Rust 工具链与私有 Git 依赖读取权限（构建时）。生产落盘使用合成图，无需现场样本集；段配方需要 lyFlow。
 
-**隔离实例的启动**（`scripts/Start-UiTestInstance.ps1`，当前入口共用，也可单独启动后手动驱动）：
+**隔离实例的启动**（`scripts/Start-UiTestInstance.ps1`，生产落盘夹具调用，也可单独启动后手动驱动）：
 
-- Tauri 覆盖配置按 `-Profile`（`ui`、`p0`、`flow`、`e2e`、`soak`）在脚本内生成：产品名与窗口标题为 `GlueSight · 胶路智检 <Profile> Tests`，应用标识 `com.xyzrobotics.tujiaovision.<Profile>-tests`，窗口隐藏，不打安装包。构建时写到输出目录的 `tauri-test-config.json` 再交给 `tauri build --config`；`-SkipBuild` 不写文件，只按生成的标识核对上次的 `instance.json`。
+- Tauri 覆盖配置按 `-Profile`（`ui`、`p0`、`flow`、`e2e`、`soak`）在脚本内生成：产品名与窗口标题为 `GlueSight · 胶路智检 <Profile> Tests`，应用标识 `com.xyzrobotics.tujiaovision.<Profile>-tests`，窗口隐藏，不打安装包。由公共构建入口写到输出目录的 `tauri-test-config.json` 再交给 `tauri build --config`（包含 TypeScript 与 Vite 生产前端构建）；`-SkipBuild` 不重建配置或产物，优先核对 `build.json` 的 profile 标识；兼容旧构建时回读 `instance.json`。
 - 子进程只继承 NUL 输入与 `stdout.log`、`stderr.log` 两个文件句柄，不继承调用方的管道；后台或被捕获输出时，脚本在实例就绪后即可返回，实例继续运行。
 - 就绪标准：在 `127.0.0.1` 与 `[::1]` 两个回环地址上轮询 `/json/list`，出现且只出现主窗口页面、资料准备窗口已关闭，最长 120 s。主窗口所在地址写入 `instance.json` 的 `cdp`，各驱动脚本默认从清单读取（`--cdp` 可覆盖）。程序提前退出或超时会附带 `stderr.log` 末尾 20 行。
-- `instance.json` 字段：`pid`、`executable`、`identifier`、`dataRoot`、`debugPort`、`cdp`、`stdout`、`stderr`、`startedAt`。关闭实例时脚本按 PID、可执行文件路径与启动时间三项核对身份，不一致不结束进程。
+- `instance.json` 字段：`pid`、`executable`、`identifier`、`dataRoot`、`debugPort`、`cdp`、`stdout`、`stderr`、`startedAt`，以及可选 `runId`。外壳在运行器异常退出后仅清理清单中 `runId` 属于本次运行的实例，避免清理前次或其他任务的实例；关闭实例时脚本按 PID、可执行文件路径与启动时间三项核对身份，不一致不结束进程。
 
 **已知限制**：
 
 - 资料目录长度：程序启动时校验主窗口的 WebView2 资料目录 `<资料目录>\webview\<SID>` 不超过 229 个字符；资料目录尚未初始化（没有 `storage-layout.json`、需要先建资料准备窗口）时，还校验准备窗口的 `<资料目录>\migration\bootstrap\webview\<SID>` 不超过 237 个字符。超限直接报错退出（隐藏窗口的测试实例写 `stderr.log` 并以退出码 1 结束）。SID 一般 46 个字符时，全新资料目录应不超过 162 个字符，已初始化的不超过 174 个字符。主检出默认约 107 个字符；`.claude/worktrees/<名称>/` 工作树约 143 个字符，仍可用，但更深的路径需要用 `-DataRoot`（例如 `C:\gs-tmp\<名称>`）。
 - 全新资料目录启动时先有资料准备窗口，它与主窗口是两个 WebView2 浏览器进程：先启动的占 `127.0.0.1:<端口>`，主窗口回落到 `[::1]:<端口>`；已初始化目录重启时主窗口在 `127.0.0.1`。不要自己拼 `localhost:<端口>` 连接，使用清单里的 `cdp`。
-- 两个 `test:e2e:*` 入口共用 e2e 配置、可执行文件与资料目录，不能同时运行，后跑的会清空前一个的资料。不同检出 / 工作线并行时各用不同端口与 `-DataRoot`。
-- 机器满载时（实测其他进程占满 CPU），调试构建的布防会超过默认 200 ms 预算，工件判 ERR 98、没有原图，`test:e2e:offline` 失败并在报错里给出本件结论。离线端到端默认按 200 ms 验证；机器与其他任务共用、负载高时可加 `-ArmBudgetMs 1000` 再跑（满载时实测 `audit-health` 阶段可达 1 s，需要 3000），结果里会记下放宽值（`test:e2e:log-replay` 固定放宽到 1 s）。满载时 S7 轮询会停顿，虚拟 PLC 心跳超过 3 s 未观察到翻转即进入故障；若紧接着的整圈采集由离线产线发出的 faultReset 早于新的心跳翻转，复位被拒（“尚未观察到 PLC 心跳翻转，不能复位”）且不会再发，采集一直等到超时。这类失败只能等负载下降后重跑，产品侧问题已转交 r2-plc。
+- 生产落盘入口从构建前到最终清理持有同 profile 互斥锁，冲突直接失败，防止覆盖资料和产物；不同工作线并行时仍须使用不同端口与 `-DataRoot`。
+- 机器满载时，调试构建、虚拟 PLC 心跳与布防可能超时。框架不自动重跑整条测试，也不修改产品节拍门槛；历史负载实验仍保留在下文。
 - 端到端都是隐藏窗口，截图来自 WebView2 页面；结论只覆盖业务接线、落盘与界面驱动，边界见各节。
 
-### 历史：段配方端到端验证（2026-10-23，E2，高电平改造前）
+### Windows CI 与手动验收
+
+Windows PR CI 恢复锁定的 lyFlow 运行库并运行 `pnpm test:ui:production -Suite burst -ResetData`：使用全新隔离资料与合成图，不需要现场样本集。桌面构建已包含 `pnpm build` 对应的 TypeScript / Vite 生产构建，因此 CI 不重复运行独立前端生产构建步骤；类型检查、Vitest、Rust 和脚本契约检查继续保留。
+
+CI 无论结果都上传 HTML、JUnit、构建日志及启动 stdout/stderr；失败时额外上传 `runner/test-results/` 下的截图和 trace，不上传可执行文件、资料目录或整个业务输出目录。合成图段配方通过不代表相机、PLC 和现场节拍验收。现场样本集桌面 E2E 已删除，不再列为手动入口；长稳与硬件专项保持原范围。下文历史通过记录属于当时脚本和版本，不能作为 Playwright 迁移后的通过证据。
+
+### 本次 Playwright 迁移验证（2026-10-23）
+
+以下为 Windows 本地实际运行结果，未将历史脚本证据计作迁移后的通过依据：
+
+| 检查 | 结果与保护范围 |
+| --- | --- |
+| 无 lyFlow，默认 `-Suite all` | 1 passed、1 skipped，33.9 s；旧配方生产落盘通过，段配方明确跳过 |
+| 真实 lyFlow 1.1.5，`-Suite all` | 最终重跑 2 passed，89.3 s；旧配方与合成图段配方分别执行 |
+| 无效 DLL，`-Suite burst` | 按预期失败，退出码 1；生成 `failure.png` 与 trace，未误报跳过或通过 |
+| `pnpm test:ui:production -Suite legacy -ResetData`（含构建） | 1 passed、1 skipped，40.1 s；与 CI 冒烟使用相同命令，全新资料且不需要样本集或 lyFlow |
+| 基础设施与既有长稳断言 | `node --test tests/native/desktop-infrastructure.test.mjs tests/native/throughput-gate.test.mjs tests/native/soak-faults-assess.test.mjs`：21 passed（3 条基础设施保护、18 条既有断言），涵盖显式坏库预检、同 profile 互斥及释放、进程身份不符时不终止其他进程 |
+| `pnpm typecheck` | 通过 |
+| 相关前端用例、锁文件 | `pnpm test tests/fixture-validation.test.tsx`：1 passed；`pnpm install --frozen-lockfile` 成功 |
+
+这些结果不代表完整长稳、真实相机 / PLC、打包或算法准确率验证。
+
+## 段配方端到端验证（2026-10-23，E2）
+
+> 历史记录：本节涉及的现场样本集桌面测试及入口已于 2026-10-23 删除；原命令、参数与结果仅记录当时流程，不构成当前运行指引或迁移后通过证据。
 
 环境：Windows 11、i5-1135G7（4 核 8 线程）、15.7 GB，调试构建（gluesight opt-level 2），lyFlow 1.1.5（`src-tauri/target/dependency-cache/lyflow/1.1.5`），样本集 `2026-10-17-normal-sampleset`。各项顺序独立运行，不并行。
 
@@ -239,6 +281,8 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 - 实测值：`output/soak/throughput-sampleSet-25hz.json`、`output/soak/throughput-synthetic-25hz.json`。
 
 ## 离线端到端
+
+> 历史记录：本节涉及的现场样本集桌面测试及入口已于 2026-10-23 删除；原命令、参数与结果仅记录当时流程，不构成当前运行指引或迁移后通过证据。
 
 **段配方（`-Model burst`，默认，E2）。** 先合成图主流程，再样本集冒烟，两段共用 `tests/native/lib.mjs` 的 `buildBurstRecipe`（走廊示教 `teachCorridors`、多轮标定 `calibrate`、独立样本验证、发布）：
 
@@ -308,6 +352,8 @@ jsdom 测试证明页面动作、关键接口参数及失败恢复，不证明�
 2. 历史记录切到“离线件”，打开离线跑过的件，详情显示“离线样本 partId · SN · 期望 OK/NG”；因离线期间录制为全部，可直接原图复测或与候选配方对照。
 
 ## 端到端验证（2026-10-19，r2-test-infra）
+
+> 历史记录：本节涉及的现场样本集桌面测试及入口已于 2026-10-23 删除；原命令、参数与结果仅记录当时流程，不构成当前运行指引或迁移后通过证据。
 
 本节是旧拍照点配方在协议 4 下的运行记录（协议 5 于 2026-10-22 才引入），段模型下没有重跑，不作段配方的通过依据。
 

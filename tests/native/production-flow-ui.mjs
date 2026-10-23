@@ -121,9 +121,7 @@ async function clearBurstRecipe(invokeRead, id) {
  */
 async function runBurstStage(page, invokeRead, navigation, ctx) {
   const burstId = "FLOW-BURST";
-  if (!ctx.engine?.ready) {
-    return { skipped: "lyFlow 未加载：段配方建站（走廊提取后的标定与验证每帧测量）需要 lyFlow 运行库；用 pnpm test:ui:production -LyFlowRuntime <运行库目录>（或环境变量 GLUESIGHT_LYFLOW_RUNTIME）重跑", engine: ctx.engine ?? null };
-  }
+  assert(ctx.engine?.ready, `lyFlow 引擎未就绪：${JSON.stringify(ctx.engine)}`);
   const call = client(page);
   await clearBurstRecipe(invokeRead, burstId);
   const template = await invokeRead("recipe_template");
@@ -171,6 +169,11 @@ async function runBurstStage(page, invokeRead, navigation, ctx) {
 }
 
 export async function runProductionFlow(page, options = {}) {
+  const suite = options.suite ?? "burst";
+  assert(suite === "burst", `不支持的生产落盘用例：${suite}`);
+  const startedAt = Date.now();
+  let result;
+  let failure;
   const instancePath = options.instance ?? "output/playwright/flow-regression/instance.json";
   const manifest = JSON.parse(await readFile(instancePath, "utf8"));
   assert.equal(manifest.identifier, identifier, "仅允许隔离流程测试实例");
@@ -189,49 +192,69 @@ export async function runProductionFlow(page, options = {}) {
   assert.equal(initialSite.mode, "real", "软件启动必须处于真机模式");
   assert.notEqual((await invokeRead("plc_get_status")).state, "connected", "外部 PLC 必须未连接，才可进入离线");
   const navigation = page.getByRole("navigation", { name: "操作导航" });
-  if (guard.settings.productSource !== "plc") {
-    await page.getByRole("link", { name: "系统设置", exact: true }).click();
-    await page.getByRole("combobox", { name: "型号来源", exact: true }).click();
-    await page.getByRole("option", { name: "PLC 下发产品代码", exact: true }).click();
-    const cyclePanel = page.getByRole("region", { name: "检测节拍", exact: true });
-    await cyclePanel.getByRole("button", { name: "保存", exact: true }).click();
-    await until(page, () => invokeRead("cycle_get_settings"), settings => settings.productSource === "plc", "UI 保存型号来源失败");
-  }
-  await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
-  await page.getByRole("heading", { name: "当前：真机", exact: true }).waitFor();
-  await page.getByRole("combobox", { name: "离线来源", exact: true }).click();
-  await page.getByRole("option", { name: "合成图", exact: true }).click();
-  await page.getByRole("button", { name: "进入离线", exact: true }).click();
-  const offline = await until(page, () => invokeRead("site_status"), status => status.mode === "offline" && Number.isInteger(status.port), "UI 未进入离线模式");
-  assert.equal(offline.source, "synthetic");
-  assert.equal(offline.measurement, "simulated");
-  await page.getByRole("heading", { name: "当前：离线 · 合成图", exact: true }).waitFor();
-  await until(page, () => invokeRead("plc_get_status"), status => status.state === "connected", "离线 S7 服务未连接");
-  const offlineConfig = await invokeRead("plc_get_config");
-  assert.equal(offlineConfig.connection.protocol, "s7");
-  assert.equal(offlineConfig.connection.host, "127.0.0.1");
-  assert.equal(offlineConfig.connection.port, offline.port);
-  const offlineCameras = await invokeRead("camera_rig_config");
-  const offlineRig = offlineCameras.map(camera => [camera.id, camera.source, camera.viewCount]);
-  assert.deepEqual(offlineRig.slice(0, guard.cameras.length), guard.cameras.map(camera => [camera.id, "sim", camera.viewCount]));
-  assert(offlineRig.slice(guard.cameras.length).every(([, source, views]) => source === "sim" && views === 1), `补足的相机应是单视角合成图相机：${JSON.stringify(offlineRig)}`);
-  assert(offlineCameras.filter(camera => camera.viewCount === 1 && !camera.compositeLayout).length >= 3, "合成图离线环境应至少有三台单视角相机");
-  if ((await invokeRead("cycle_snapshot")).phase === "FAULT") {
-    await navigation.getByRole("link", { name: "在线检测", exact: true }).click();
-    await page.getByRole("button", { name: "复位故障", exact: true }).click();
-    await until(page, () => invokeRead("cycle_snapshot"), snapshot => snapshot.phase !== "FAULT", "复位故障后检测仍处于故障", 5000).catch(() => {});
+  try {
+    if (guard.settings.productSource !== "plc") {
+      await page.getByRole("link", { name: "系统设置", exact: true }).click();
+      await page.getByRole("combobox", { name: "型号来源", exact: true }).click();
+      await page.getByRole("option", { name: "PLC 下发产品代码", exact: true }).click();
+      const cyclePanel = page.getByRole("region", { name: "检测节拍", exact: true });
+      await cyclePanel.getByRole("button", { name: "保存", exact: true }).click();
+      await until(page, () => invokeRead("cycle_get_settings"), settings => settings.productSource === "plc", "UI 保存型号来源失败");
+    }
     await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
+    await page.getByRole("heading", { name: "当前：真机", exact: true }).waitFor();
+    await page.getByRole("combobox", { name: "离线来源", exact: true }).click();
+    await page.getByRole("option", { name: "合成图", exact: true }).click();
+    await page.getByRole("button", { name: "进入离线", exact: true }).click();
+    const offline = await until(page, () => invokeRead("site_status"), status => status.mode === "offline" && Number.isInteger(status.port), "UI 未进入离线模式");
+    assert.equal(offline.source, "synthetic");
+    assert.equal(offline.measurement, "simulated");
+    await page.getByRole("heading", { name: "当前：离线 · 合成图", exact: true }).waitFor();
+    await until(page, () => invokeRead("plc_get_status"), status => status.state === "connected", "离线 S7 服务未连接");
+    const offlineConfig = await invokeRead("plc_get_config");
+    assert.equal(offlineConfig.connection.protocol, "s7");
+    assert.equal(offlineConfig.connection.host, "127.0.0.1");
+    assert.equal(offlineConfig.connection.port, offline.port);
+    const offlineCameras = await invokeRead("camera_rig_config");
+    const offlineRig = offlineCameras.map(camera => [camera.id, camera.source, camera.viewCount]);
+    assert.deepEqual(offlineRig.slice(0, guard.cameras.length), guard.cameras.map(camera => [camera.id, "sim", camera.viewCount]));
+    assert(offlineRig.slice(guard.cameras.length).every(([, source, views]) => source === "sim" && views === 1), `补足的相机应是单视角合成图相机：${JSON.stringify(offlineRig)}`);
+    assert(offlineCameras.filter(camera => camera.viewCount === 1 && !camera.compositeLayout).length >= 3, "合成图离线环境应至少有三台单视角相机");
+    if ((await invokeRead("cycle_snapshot")).phase === "FAULT") {
+      await navigation.getByRole("link", { name: "在线检测", exact: true }).click();
+      await page.getByRole("button", { name: "复位故障", exact: true }).click();
+      await until(page, () => invokeRead("cycle_snapshot"), snapshot => snapshot.phase !== "FAULT", "复位故障后检测仍处于故障", 5000).catch(() => {});
+      await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
+    }
+    const burst = await runBurstStage(page, invokeRead, navigation, { engine: guard.engine });
+    await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
+    await page.getByRole("button", { name: "退出离线", exact: true }).click();
+    await until(page, () => invokeRead("site_status"), status => status.mode === "real", "UI 未退出离线模式");
+    await page.getByRole("heading", { name: "当前：真机", exact: true }).waitFor();
+    assert.deepEqual(await invokeRead("plc_get_config"), guard.config, "退出离线后 PLC 配置未恢复");
+    assert.deepEqual(await invokeRead("camera_rig_config"), guard.cameras, "退出离线后相机组未恢复");
+    assert.deepEqual(await invokeRead("cycle_get_settings"), (({ productSource, ...rest }) => ({ ...rest, productSource: "plc" }))(guard.settings), "退出离线后系统设置被改动");
+    result = { passed: true, suite, operation: "段配方合成图采集、S7 握手与落盘", identifier, offlinePort: offline.port, startedAt, elapsedMs: Date.now() - startedAt, burst, boundary: "离线合成图验证，不代表现场 PLC 与相机验收" };
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    try {
+      const status = await invokeRead("site_status");
+      if (status.running) {
+        await invokeRead("offline_stop", { now: true });
+        await until(page, () => invokeRead("site_status"), value => !value.running, "清理时离线产线未停止");
+      }
+      if (status.mode === "offline") await invokeRead("site_leave_offline");
+      await invokeRead("cycle_save_settings", { settings: guard.settings });
+      assert.deepEqual(await invokeRead("plc_get_config"), guard.config, "清理后 PLC 配置未恢复");
+      assert.deepEqual(await invokeRead("camera_rig_config"), guard.cameras, "清理后相机组未恢复");
+      assert.deepEqual(await invokeRead("cycle_get_settings"), guard.settings, "清理后系统设置未恢复");
+    } catch (error) {
+      if (!failure) throw error;
+      process.stderr.write(`生产流程清理失败：${error.stack ?? error}\n`);
+    }
   }
-  const startedAt = Date.now();
-  const burst = await runBurstStage(page, invokeRead, navigation, { engine: guard.engine });
-  await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
-  await page.getByRole("button", { name: "退出离线", exact: true }).click();
-  await until(page, () => invokeRead("site_status"), status => status.mode === "real", "UI 未退出离线模式");
-  await page.getByRole("heading", { name: "当前：真机", exact: true }).waitFor();
-  assert.deepEqual(await invokeRead("plc_get_config"), guard.config, "退出离线后 PLC 配置未恢复");
-  assert.deepEqual(await invokeRead("camera_rig_config"), guard.cameras, "退出离线后相机组未恢复");
-  assert.deepEqual(await invokeRead("cycle_get_settings"), (({ productSource, ...rest }) => ({ ...rest, productSource: "plc" }))(guard.settings), "退出离线后系统设置被改动");
-  const result = { passed: !burst.skipped, operation: "段配方合成图采集、S7 握手与落盘", identifier, offlinePort: offline.port, startedAt, elapsedMs: Date.now() - startedAt, burst, boundary: "离线合成图验证，不代表现场 PLC 与相机验收" };
   if (options.output) {
     await mkdir(path.dirname(options.output), { recursive: true });
     await page.screenshot({ path: path.join(path.dirname(options.output), "production-flow.png"), fullPage: true });
@@ -251,9 +274,9 @@ async function main() {
   const browser = await chromium.connectOverCDP(cdp);
   try {
     const page = await uiPage(browser);
-    const result = await runProductionFlow(page, { instance, output: args.output ?? "output/playwright/flow-regression/result.json" });
+    const result = await runProductionFlow(page, { instance, suite: args.suite ?? "burst", lyflow: args.lyflow ?? process.env.GLUESIGHT_LYFLOW_RUNTIME, output: args.output ?? "output/playwright/flow-regression/result.json" });
     process.stdout.write(JSON.stringify({ passed: result.passed,
-      burst: result.burst.skipped ? { skipped: result.burst.skipped } : { recipeId: result.burst.recipeId, historyId: result.burst.summary.id, verdict: result.burst.summary.verdict, groupCount: result.burst.facts.groupCount, files: result.burst.disk.files.length } }) + "\n");
+      burst: { recipeId: result.burst.recipeId, historyId: result.burst.summary.id, verdict: result.burst.summary.verdict, groupCount: result.burst.facts.groupCount, files: result.burst.disk.files.length } }) + "\n");
   } finally { await browser.close(); }
 }
 
