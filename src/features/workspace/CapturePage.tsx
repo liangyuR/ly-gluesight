@@ -168,7 +168,7 @@ export default function CapturePage() {
     <ul className="wp-capture-checks" aria-label="开始前检查">
       <li className={cameraProblem ? "bad" : ""}><span><Camera size={14} aria-hidden="true"/>相机</span><strong>{cameraProblem || `${chosen.length} 台就绪`}</strong><Link to="/camera" state={navigationState}>配置设备<ArrowRight size={12} aria-hidden="true"/></Link></li>
       <li className={plcConnected ? "" : "bad"}><span><Cable size={14} aria-hidden="true"/>PLC</span><strong>{plc}</strong><Link to="/plc" state={navigationState}>{plcConnected ? "PLC 通讯" : "前往 PLC 通讯"}<ArrowRight size={12} aria-hidden="true"/></Link></li>
-      <li className={tooFast ? "bad" : ""} title={maxSpeed == null ? "需要标定当量、相机帧率、曝光与飞拍最小拍照点间距后核算" : tooFast ? `当前速度 ${flyPrefs.speed} mm/s 超出允许值` : undefined}><span><Crosshair size={14} aria-hidden="true"/>飞拍</span><strong>{maxSpeed == null ? "未核算" : `${tooFast ? "超速 · " : ""}最高 ${maxSpeed} mm/s`}</strong><Link to="/camera/calibration" state={navigationState}>飞拍标定<ArrowRight size={12} aria-hidden="true"/></Link></li>
+      <li className={tooFast ? "bad" : ""} title={maxSpeed == null ? "需要标定当量、相机帧率、曝光与飞拍最小拍照点间距后核算" : tooFast ? `当前速度 ${flyPrefs.speed} mm/s 超出允许值` : undefined}><span><Crosshair size={14} aria-hidden="true"/>飞拍</span><strong>{maxSpeed == null ? "未核算" : `${tooFast ? "超速 · " : ""}最高 ${maxSpeed} mm/s`}</strong><Link to="/camera/calibration" state={navigationState}>标定<ArrowRight size={12} aria-hidden="true"/></Link></li>
       <li className={drainInvalid ? "bad" : ""}><NumberField label="在途图像等待时间" value={drain} min={200} max={30000} unit="ms" onChange={setDrain} disabled={locked || active}/></li>
     </ul>
     <div className="wp-capture-start">

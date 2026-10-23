@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { CalibPanel, FeasibilityCalc, useRigStatus, type FeasibilitySources } from "../features/camera";
-import CameraList, { cameraState } from "../features/camera/components/CameraList";
+import CameraList from "../features/camera/components/CameraList";
 import { useRigConfig } from "../features/camera/useRigConfig";
 import { useCycle, useSiteStatus } from "../features/cycle";
 import { desktopAvailable } from "../lib/desktop";
-import { Badge, Notice } from "../features/workspace/components";
+import { Notice } from "../features/workspace/components";
 import StationCapture, { type StationView } from "../features/workspace/StationCapture";
 import type { CaptureNavigationState } from "../features/workspace/captureNavigation";
 import { ReturnButton } from "../features/workspace/returnNavigation";
@@ -34,22 +34,15 @@ export default function FlyshotCalibrationPage() {
     fps:status?.configuredFrameRate?{value:status.configuredFrameRate,from:"来自相机设定帧率回读"}:null,
     mmPerPx:sampleSet?.mmPerPx?{value:sampleSet.mmPerPx,from:"来自样本集声明"}:calibMm?{value:calibMm,from:"来自工位标定"}:null,
   };
-  const state=config?cameraState(config,status):null;
   const notice=error?<Notice title="操作未完成" tone="warn">{error}</Notice>:busy?<Notice title="当前工件正在检测">取样与标定在工件结束后可操作。</Notice>:sampleSet?<Notice title="离线样本集可跳过工位标定">{sampleSet.mmPerPx?`样本集「${sampleSet.name}」已声明像素当量 ${sampleSet.mmPerPx} mm/px，采用采集轮次时自动作为当量依据；本页的工位标定不影响离线流程。`:`样本集「${sampleSet.name}」没有声明像素当量，示教时需要用已知尺寸人工验证当量；本页的工位标定不影响离线流程。`}</Notice>:null;
 
   return <div className="cam-page">
     <ReturnButton hint="标定完成后返回继续。"/>
-    <ol className="flyshot-guide" aria-label="飞拍标定步骤">
-      <li><strong>冻结标定样本</strong><span>把标定板放在胶路所在平面，取样或导入一张原图</span></li>
-      <li><strong>工位标定</strong><span>识别棋盘格得到像素当量（mm/px），检测时据此把胶宽、偏移换算成毫米</span></li>
-      <li><strong>飞拍可行性</strong><span>用当量、曝光、帧率和手填的速度、间距，核算会不会拖影、来不来得及拍</span></li>
-    </ol>
     {notice&&<div className="cam-notice">{notice}</div>}
     <CameraList configs={configs} statuses={statuses} selected={cam} onSelect={setCam} onRefresh={()=>void reload()} refreshing={loading}/>
-    {config&&state?<main className="cam-main">
-      <header className="cam-head"><strong>{config.name}</strong><span className="mono muted">{config.id}</span><Badge tone={state.tone==="ok"?"ok":"warn"}>{state.label}</Badge><span className="muted cam-head-info">{state.label==="未绑定"?<>到<Link to="/camera" state={navigationState}>相机</Link>绑定设备</>:state.text}</span></header>
+    {config?<main className="cam-main">
       <div className="cam-body">
-        <fieldset disabled={busy||!desktopAvailable()} className="cam-action-area">
+        <fieldset disabled={busy||!desktopAvailable()} className="cam-action-area cam-image-area">
           <StationCapture key={config.id+":"+calibView} cam={cam} view={calibView} multiView={config.viewCount===3} sample={sample} onSample={setSample}/>
         </fieldset>
         <fieldset disabled={busy||!desktopAvailable()} className="cam-action-area">

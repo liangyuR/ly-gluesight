@@ -4,7 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { expect, it, vi } from "vitest";
 import HistoryPage from "../src/pages/HistoryPage";
-import { partSummary } from "./fixtures";
+import { burstPartSummary } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
@@ -14,7 +14,7 @@ it("切到候选调试历史 → 调试数量明确标注，切回真机不混�
     if (command === "recipe_list") return { recipes: [], errors: [] };
     if (command === "history_query") {
       const debug = (args as { query: { scope: string } }).query.scope === "debug";
-      return { total: debug ? 2 : 0, counts: { ok: debug ? 2 : 0, excursion: 0, ng: 0, err: 0 }, items: debug ? [1, 2].map(id => ({ ...partSummary(id), source: "offlineCandidate" })) : [] };
+      return { total: debug ? 2 : 0, counts: { ok: debug ? 2 : 0, excursion: 0, ng: 0, err: 0 }, items: debug ? [1, 2].map(id => ({ ...burstPartSummary(id), source: "offlineCandidate" })) : [] };
     }
     throw new Error(`Unexpected command: ${command}`);
   });

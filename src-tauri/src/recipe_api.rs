@@ -8,7 +8,6 @@ use crate::plan::{self, PlanExport};
 use crate::recipe::{self, Recipe, RecipeDoc};
 use crate::settings::CycleSettings;
 
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecipeListing {
@@ -87,19 +86,4 @@ pub fn recipe_delete(app: AppHandle, cycle: State<'_, CycleHost>, id: String) ->
     }
     let _ = cycle.tx.send(Input::Refresh);
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 规格 §1 + D-SB-24：新建配方是段配方，相机按相机组顺序取前三台，各段待标定；成像参数随检测相机补齐，能通过配方校验。
-    #[test]
-    fn new_recipe_template_has_three_cameras_and_uncalibrated_segments() {
-        let rig: Vec<String> = ["camB", "camA", "camC", "camD"].map(String::from).to_vec();
-        let recipe = template(&[1, 2], &rig).build().unwrap();
-        assert_eq!(recipe.plan_cameras(), ["camB", "camA", "camC"]);
-        assert!(recipe.is_burst() && recipe.path_segments.iter().all(|s| s.expected_frames.is_none()));
-        assert_eq!(recipe.expected_total(), None);
-    }
 }

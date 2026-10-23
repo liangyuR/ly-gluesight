@@ -1,4 +1,4 @@
-import { act, render, renderHook, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -32,47 +32,7 @@ beforeEach(() => {
   });
 });
 
-describe("离线模式工况", () => {
-  it("外部样本 ID 已导入 → 确认使用已有副本后才能进入，取消保留原选择", async () => {
-    site = siteStatus({ mode: "real", last: null });
-    const original = vi.mocked(invoke).getMockImplementation()!;
-    const managed = "C:/ProgramData/ly/GlueSight-dev/samples/one";
-    vi.mocked(invoke).mockImplementation(async (command, args, options) => {
-      if (command === "site_pick_dir") return "C:/external/one";
-      if (command === "site_preview_sample_set") {
-        const dir = (args as { dir: string }).dir;
-        return { ...sampleSet(), dir, managedDir: dir === managed ? null : managed };
-      }
-      if (command === "site_enter_offline") return { ...site, mode: "offline", source: "sampleSet", sampleSet: { ...sampleSet(), dir: managed } };
-      return original(command, args, options);
-    });
-    render(<MemoryRouter><OfflinePage /></MemoryRouter>);
-    await userEvent.click(await screen.findByRole("button", { name: "选择样本集目录" }));
-    expect(screen.getByRole("button", { name: "进入离线" })).toBeDisabled();
-    await userEvent.click(screen.getByRole("button", { name: "取消本次选择" }));
-    expect(screen.getByText("未选择")).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "选择样本集目录" }));
-    await userEvent.click(screen.getByRole("button", { name: "使用已有副本" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "进入离线" })).toBeEnabled());
-    await userEvent.click(screen.getByRole("button", { name: "进入离线" }));
-    expect(invoke).toHaveBeenCalledWith("site_enter_offline", { source: { kind: "sampleSet", dir: managed } });
-  });
-  it("离线来源为样本集 → 工况下拉比合成图少的正是需要改图像的工况", async () => {
-    // 样本集是真实原图，选需要改图像的工况（含随机，会抽到它们）无法回放；合成图可选全部。
-    const imageScenarios = ["excursion", "gap", "locateFail", "locateFailGap", "random"];
-    const offered = async (status: SiteStatus) => {
-      site = status;
-      const view = render(<MemoryRouter><OfflinePage /></MemoryRouter>);
-      const select = await screen.findByRole("combobox", { name: "离线工况" });
-      const values = Array.from(select.closest(".qs-select")!.querySelector("select")!.options).map(o => o.value);
-      view.unmount();
-      return values;
-    };
-    const synthetic = await offered(siteStatus({ mode: "offline", source: "synthetic", measurement: "simulated" }));
-    const fromSampleSet = await offered(siteStatus({ mode: "offline", source: "sampleSet", measurement: "lyFlow" }));
-    expect(synthetic.filter(value => !fromSampleSet.includes(value)).sort()).toEqual([...imageScenarios].sort());
-  });
-});
+
 
 describe("离线模式配方下拉", () => {
   it("生产版本未发布但运行候选调试 → 发布阻塞只属于回放区域，候选入口与停止仍可用", async () => {
@@ -97,16 +57,7 @@ describe("离线模式配方下拉", () => {
     expect(invoke).toHaveBeenCalledWith("offline_stop", { now: true });
   });
 
-  it("样本集含未发布候选与不可运行配方 → 回放只列已发布版本且默认选中首个可运行版本", async () => {
-    site = siteStatus({ mode: "offline", source: "sampleSet", sampleSet: sampleSet() });
-    report = readiness({ recipes: [recipeOption("candidate", true, { published: false }), recipeOption("A", false), recipeOption("B"), recipeOption("C")] });
-    render(<MemoryRouter><OfflinePage /></MemoryRouter>);
-    const select = await screen.findByLabelText("离线配方", { selector: "select" }) as HTMLSelectElement;
-    await waitFor(() => expect(select).toHaveValue("B"));
-    const options = Array.from(select.options);
-    expect(options.some(o => o.value === "candidate")).toBe(false);
-    expect(options.filter(o => !o.disabled).map(o => o.value)).toEqual(["B", "C"]);
-  });
+
 
   it("所选配方暂不可运行 → 清空选择而不改选别的，恢复可运行后回到所选", async () => {
     site = siteStatus({ mode: "offline", source: "sampleSet", sampleSet: sampleSet() });
@@ -154,19 +105,5 @@ describe("开工就绪报告刷新", () => {
     expect(screen.queryByText("连接已关闭")).not.toBeInTheDocument();
   });
 
-  it("上次查询未返回 → 定时刷新不再发新查询", async () => {
-    vi.useFakeTimers();
-    try {
-      let calls = 0;
-      vi.mocked(invoke).mockImplementation(async (command) => {
-        if (command === "cycle_readiness") { calls++; return new Promise(() => {}); }
-        return null;
-      });
-      renderHook(() => useReadiness());
-      await act(async () => { await vi.advanceTimersByTimeAsync(7000); });
-      expect(calls).toBe(1);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+
 });

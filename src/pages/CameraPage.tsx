@@ -96,7 +96,7 @@ export default function CameraPage() {
     {notice}
     <CameraOverview configs={configs} statuses={statuses} lastFrame={lastFrame} lockedReason={lockedReason} canReconnect={desktop&&!readOnly} loading={loading} adding={action==="add"} error={error}
       onOpen={open} onRefresh={()=>void reload()} onAdd={readOnly?undefined:()=>void add()} onReconnect={i=>cameraApi.reconnect(i)}
-      footer={<div className="cg-row" style={{justifyContent:"flex-end"}}>{calibration("前往飞拍标定")}</div>}/>
+      footer={<div className="cg-row" style={{justifyContent:"flex-end"}}>{calibration("前往标定")}</div>}/>
     {dialog}
   </div>;
 
@@ -123,7 +123,7 @@ export default function CameraPage() {
     </div>
     {notice}
     <CameraConfigPanel ref={form} key={config.id+":"+config.source} cam={cam} initial={config} status={status} group={{configs,statuses}} locked={locked} saveBlocked={released?"已释放给 MVS，重新连接后再保存":""}
-      onSaved={()=>void reload()} onGroupSaved={()=>void reload()} onSavingChange={setConfigSaving} onDirtyChange={setDirty} leading={leading} footer={calibration(locked?"前往飞拍标定":"保存后前往飞拍标定")}
+      onSaved={()=>void reload()} onGroupSaved={()=>void reload()} onSavingChange={setConfigSaving} onDirtyChange={setDirty} leading={leading} footer={calibration(locked?"前往标定":"保存后前往标定")}
       side={<>
         <FramePreview key={config.id} cam={cam} status={status} lastFrame={lastFrame[cam]} config={config} actions={handOverButton}
           blockedReason={busy?"工件检测中":!desktop?"需要桌面后端":mvs&&!config.serial?"未绑定设备":released?"已释放给 MVS，在海康 MVS 客户端调焦、调光圈，完成后关闭 MVS 再重新连接":dirty?"先保存并应用再测试":""}/>

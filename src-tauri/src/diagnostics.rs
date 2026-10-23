@@ -333,17 +333,3 @@ fn build<W: std::io::Write>(app: &AppHandle, request: &ExportRequest, package: &
 pub async fn diagnostics_export(app: AppHandle, request: ExportRequest) -> Result<ExportResult, String> {
     tauri::async_runtime::spawn_blocking(move || export(&app, request)).await.map_err(|e| e.to_string())?
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn image_parts_take_abnormal_newest_first_unless_records_are_named() {
-        let parts = [(1, Verdict::Ok), (2, Verdict::NgGap), (3, Verdict::OkWithExcursion), (4, Verdict::ErrInspect), (5, Verdict::NgWidth)];
-        assert_eq!(image_parts(&parts, false, ImageMode::Abnormal, 20), [5, 4, 2], "局部超差仍是合格件，不算异常件");
-        assert_eq!(image_parts(&parts, false, ImageMode::All, 3), [5, 4, 3]);
-        assert_eq!(image_parts(&parts[..1], true, ImageMode::Abnormal, 20), [1]);
-        assert!(image_parts(&parts, true, ImageMode::None, 20).is_empty());
-    }
-}

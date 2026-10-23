@@ -29,7 +29,7 @@
 
 - **分段算法**：本体没有开发，等现场按量产曝光拍的含弯道三相机图像（走向、帧间光流、与标定序列 DTW 对齐等线索都要在真实图像上验证）。本轮只有 `Segmenter` 接口、`Unsegmented` 实现和合成序列回归入口：整条胶路按一个未分段区域判，只跑每帧独立检测、不判胶偏；多段配方各段 N_exp 保持待标定，只按整件帧组数（ΣN_exp）发布与运行。
 - **3 × 25 Hz 吞吐门槛**：没有达标、也没有被直接验证。已定（2026-10-23）：门槛口径不改，等现场工控机用真实相机来源跑 `pnpm test:soak:throughput` 后再决定降 PLC 频率（约 11 Hz，需重新标定、换计划版本）还是加测量并发，合并前须完成该复测（决策记录第七节、第九节第 17 条）。现场机还要重跑 P1 探针核对 `MEASURE_WORKERS`；图像内存预算只能在真机相机来源上看相机状态 `budgetDroppedFrames` 核对；三路 130 万像素 25 Hz 估算约 826 Mbps，超过单个千兆口 80% 预算，需现场核对网口分配。样本集按改后的持续负载口径还没有重跑。
-- **真引擎测试默认不跑**：`src-tauri/src/vision/taught/engine_tests.rs` 的 `engine_burst_publish_load_measure_frame_round_trip`（段配方发布包 schema 4 → 加载 → 预热 → `measure_frame` 的 lyFlow 全链路）标 `#[ignore]`，需要 `LYFLOW_CORE_DLL` 指向 `lyflow_core.dll` 手动运行（不要求 lyFlow#32）；同文件其余真引擎用例只服务旧拍照点配方的特征定位。
+- **Rust 测试已精简**：当前 106 项默认回归、1 项手动算法评测，详见 [保留测试清单](../testing/rust-test-retained-inventory.md)。原 `engine_burst_publish_load_measure_frame_round_trip` 等 7 项真引擎测试及 2 项 packaging ignored 测试已删除，历史全链路实测不作为当前可运行入口。
 - **按决策记录接受、待确认的取舍**：胶偏的 `ToEdge` 测量量未实现（只有 `AbsoluteX`）；气泡、拉丝不检，结果标“未检项”；“每台相机一条按直线段几何的走廊”没有真实弯道图验证；提前 partEnd 只加 `short_part` 标记、不判 ERR（可能出现机器人标了未检、PC 记录为 OK）。
 - 现场 PLC 草稿 `gluesight_site.scl` 未改，只在其 README 列出协议 6 的改动点。
 - 真机验证（PLC、三台相机硬触发、带宽、现场节拍）全部没做，软件仿真不能替代；真实样本集 gs-20261017 是停稳拍数据，段配方上只作冒烟（检测项全关）。

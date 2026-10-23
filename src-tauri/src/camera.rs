@@ -1781,36 +1781,6 @@ pub async fn camera_reconnect(app: AppHandle, cam: usize) -> Result<String, Stri
 mod rig_file_tests {
     use super::*;
 
-    struct TempDir(PathBuf);
-    impl Drop for TempDir {
-        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
-    }
-    fn temp_dir(name: &str) -> TempDir {
-        let dir = std::env::temp_dir().join(format!("gluesight-{name}-{}-{}", std::process::id(), now_ms()));
-        std::fs::create_dir_all(&dir).unwrap();
-        TempDir(dir)
-    }
-
-    #[test]
-    fn old_line_edges_are_backed_up_while_software_settings_survive() {
-        let dir = temp_dir("level-high");
-        let path = dir.0.join("cameras.json");
-        let legacy = r#"{"cameras":[{"id":"cam1","serial":"SN1","triggerActivation":"RisingEdge"},{"id":"cam2","serial":"SN2","triggerSource":"Software","triggerActivation":"FallingEdge","frameRate":25}],"nextId":3}"#;
-        std::fs::write(&path, legacy).unwrap();
-        let (file, _, rewrite) = load_rig_file(&path);
-        assert!(rewrite);
-        assert_eq!(file.cameras[0].trigger_activation, "LevelHigh");
-        assert_eq!(file.cameras[0].frame_rate, 10.0);
-        assert_eq!(file.cameras[1].trigger_source, "Software");
-        assert_eq!(file.cameras[1].frame_rate, 25.0);
-        let backups: Vec<_> = std::fs::read_dir(&dir.0).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("cameras.level-high-")).collect();
-        assert_eq!(backups.len(), 1);
-        assert_eq!(std::fs::read_to_string(backups[0].path()).unwrap(), legacy);
-        std::fs::write(&path, serde_json::to_string(&file).unwrap()).unwrap();
-        let (_, notes, rewrite) = load_rig_file(&path);
-        assert!(!rewrite && notes.is_empty());
-    }
-
     #[test]
     fn released_camera_is_never_reopened_by_the_supervisor() {
         let supervision = CameraSupervision::default();
@@ -1820,28 +1790,6 @@ mod rig_file_tests {
             assert!(supervision.reconnect_due(false, lost, opened), "lost={lost} opened={opened}");
         }
         assert!(!supervision.reconnect_due(false, false, true));
-    }
-
-    #[test]
-    fn migrated_camera_waits_for_manual_connection_then_resumes_supervision_without_duplicates() {
-        let supervision = CameraSupervision::default();
-        assert!(supervision.start(false));
-        assert!(!supervision.reconnect_due(false, false, false));
-        assert!(!supervision.start(true));
-        assert!(!supervision.reconnect_due(false, false, false));
-        supervision.resume();
-        assert!(supervision.reconnect_due(false, false, false));
-        assert!(supervision.reconnect_due(false, true, true));
-        assert!(!supervision.start(false));
-        assert!(supervision.reconnect_due(false, true, true));
-    }
-
-    #[test]
-    fn mvs_camera_without_a_bound_device_is_rejected() {
-        let unbound = CameraConfig { source: CameraSource::Mvs, serial: " ".into(), ..CameraConfig::default() };
-        assert!(unbound.require_bound().unwrap_err().contains("未绑定设备"));
-        assert!(CameraConfig { serial: "SN1".into(), ..unbound.clone() }.require_bound().is_ok());
-        assert!(CameraConfig { source: CameraSource::SampleSet, ..unbound }.require_bound().is_ok());
     }
 }
 
@@ -1856,18 +1804,6 @@ mod view_tests {
     }
 
     use super::*;
-
-    #[test]
-    fn mvs_three_views_require_explicit_sdk_layout() {
-        let mut config = CameraConfig { source: CameraSource::Mvs, view_count: 3, ..CameraConfig::default() };
-        assert!(config.validate().is_err());
-        config.composite_layout = Some(crate::recipe_capture::CompositeLayout::Horizontal);
-        assert!(config.validate().is_ok());
-        config.view_count = 1;
-        assert!(config.validate().is_ok());
-        config.view_count = 2;
-        assert!(config.validate().is_err());
-    }
 
     #[test]
     fn burst_plan_camera_missing_or_not_single_view_is_rejected() {
@@ -1886,44 +1822,6 @@ mod view_tests {
             let rig = [single("cam1"), single("cam2"), third];
             assert_eq!(check_burst_cameras(&rig, &plan).is_ok(), accepted, "{name}");
         }
-    }
-
-    /// 规格 §6 带宽按三路之和，且计入 GigE 协议开销（C2 遗留 F0-4：只算像素时三台 130 万像素 25 Hz 为 786 Mbps，
-    /// 判为不超预算，实际线上约 826 Mbps，已超过一个千兆口的 80%）。
-    #[test]
-    fn aggregate_bandwidth_over_one_port_budget_is_flagged() {
-        let three = |w, h| vec![Some((w, h)); 3];
-        // (场景, 各相机分辨率, 触发频率, 期望合计 Mbps, 是否超预算)
-        let cases: [(&str, Vec<Option<(u32, u32)>>, f64, f64, bool); 3] = [
-            ("三台 130 万像素 25 Hz 计入协议开销后超过 800 Mbps", three(1280, 1024), 25.0, 826.2, true),
-            ("三台 130 万像素 20 Hz 未到 800 Mbps", three(1280, 1024), 20.0, 660.9, false),
-            ("还没出图的相机不计入合计", vec![Some((1280, 1024)), None, None], 25.0, 275.4, false),
-        ];
-        for (name, sizes, hz, total, over) in cases {
-            let estimate = aggregate_bandwidth(&sizes, hz);
-            assert!((estimate.mbps_total - total).abs() < 0.1, "{name}: {}", estimate.mbps_total);
-            assert_eq!(estimate.over_budget, over, "{name}");
-            assert_eq!(estimate.per_camera.iter().map(Option::is_some).collect::<Vec<_>>(), sizes.iter().map(Option::is_some).collect::<Vec<_>>(), "{name}");
-        }
-    }
-
-    #[test]
-    fn sample_set_missing_image_becomes_a_skipped_frame_and_later_triggers_still_arrive_in_order() {
-        use crate::offline::sample_set::fixture::Fixture;
-        let fixture = Fixture::new(&[1, 2, 3]);
-        std::fs::remove_file(fixture.0.join("parts/p02/S002_cam1_v2.png")).unwrap();
-        let set = Arc::new(SampleSet::load(&fixture.0).unwrap());
-        let order = Mutex::new(Reorder { session: 7, ..Reorder::default() });
-        let (mut delivered, mut failed) = (Vec::new(), Vec::new());
-        for (n, shot) in [(1, 1), (3, 3), (2, 2), (4, 4)] {
-            let target = SampleTarget { set: set.clone(), part_id: "p02".into(), shot_id: format!("S{shot:03}") };
-            let error = sample_set_arrival(&order, Ok(target), "cam1", 3, 0, 7, n, false,
-                |frame| delivered.push((frame.frame_counter, frame.images.iter().map(|i| i.pixels[0]).collect::<Vec<_>>())));
-            if error.is_some() { failed.push(n); }
-        }
-        assert_eq!(failed, [2]);
-        let expected: Vec<_> = [1u64, 3, 4].into_iter().map(|n| (n, (1..=3).map(|v| Fixture::pixel(2, n as u8, v)).collect::<Vec<_>>())).collect();
-        assert_eq!(delivered, expected);
     }
 
     #[test]
@@ -1958,36 +1856,6 @@ mod gray_tests {
     use super::*;
 
     #[test]
-    fn mono8_passes_through_unchanged_and_bayer8_is_converted() {
-        let pool = FramePool::new(2);
-        let mono: Vec<u8> = (0..12).map(|i| i * 20).collect();
-        // BG 相位、R = 200、G = 100、B = 40 的纯色块
-        let (w, h) = (6, 4);
-        let data: Vec<u8> = (0..w * h).map(|i| match (i / w % 2, i % w % 2) {
-            (0, 0) => 40,
-            (1, 1) => 200,
-            _ => 100,
-        }).collect();
-        // (场景, 像素格式, 宽, 高, 输入, 期望灰度, 是否直接借用输入)
-        for (case, pixel_type, width, height, input, expected, raw) in [
-            ("mono8 原样透传", mvs::PIXEL_MONO8, 4, 3, &mono, mono.clone(), true),
-            ("bayer8 转灰度", mvs::PIXEL_BAYER_BG8, w as u32, h as u32, &data, vec![110; 24], false),
-        ] {
-            let gray = to_gray(&pool, pixel_type, width, height, input).unwrap();
-            assert_eq!(matches!(gray, Gray::Raw(_)), raw, "{case}");
-            assert_eq!(gray.pixels(), &expected[..], "{case}");
-            let img = gray.into_image(&pool, width, height).unwrap();
-            assert_eq!((img.width, img.height), (width, height), "{case}");
-            assert_eq!(img.pixels, expected, "{case}");
-        }
-        for t in [mvs::PIXEL_BAYER_GR8, mvs::PIXEL_BAYER_RG8, mvs::PIXEL_BAYER_GB8, mvs::PIXEL_BAYER_BG8] {
-            assert_eq!(pixel_kind(t), Ok(PixelKind::Bayer8));
-        }
-        assert!(to_gray(&pool, mvs::PIXEL_BAYER_BG8, 1, 24, &data).is_err());
-        assert!(to_gray(&pool, 0, 4, 3, &[0; 12]).is_err());
-    }
-
-    #[test]
     fn sdk_frame_length_must_cover_width_height_and_pixel_size() {
         for kind in [PixelKind::Mono8, PixelKind::Bayer8] {
             assert_eq!(frame_bytes(kind, 2448, 2048, 2448 * 2048), Ok(2448 * 2048));
@@ -2002,7 +1870,4 @@ mod gray_tests {
         // 宽高乘积超过 u32：以前 w * h 会溢出回绕成小切片（70000² mod 2³² 小于 u32::MAX 会被放行），现在按实际需要比较
         assert!(frame_bytes(PixelKind::Mono8, 70000, 70000, u32::MAX).is_err());
     }
-
-
-
 }

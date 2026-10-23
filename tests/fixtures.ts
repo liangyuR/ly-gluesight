@@ -1,7 +1,7 @@
 import { vi } from "vitest";
-import type { DetectParams, Readiness, ReadinessItem, Recipe, RecipeDoc, RecipeOption, RecipeSummary, SampleSetSummary, ShotLimits, ShotSpec, SiteStatus, Snapshot } from "../src/features/cycle/types";
+import type { DetectParams, Readiness, ReadinessItem, Recipe, RecipeDoc, RecipeOption, SampleSetSummary, SiteStatus, Snapshot } from "../src/features/cycle/types";
 import type { PartDetail, PartSummary } from "../src/features/history/types";
-import type { FrozenImage, Progress, WorkspaceView } from "../src/features/workspace/types";
+import type { FrozenImage, WorkspaceView } from "../src/features/workspace/types";
 import type { useWorkspace } from "../src/features/workspace/context";
 import type {
   BurstJudgement, CalibrationView, CaptureRoundV2, FrameMetrics, FrameRecord, KindDefaults, PathSegment, PlanExport, ProgressV2,
@@ -15,92 +15,9 @@ export function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-/** 一台相机按顺序拍这些拍照点：编号 P1、P2…，Pose 同编号，胶条 J1；给了中线时像素当量 0.1 mm/px（与 recipe.rs 的 shot_list 一致）。 */
-export function shotList(paths: [number, number][][], camera = "CAM-1"): ShotSpec[] {
-  return paths.map((path, k) => ({ id: `P${k + 1}`, poseId: `P${k + 1}`, camera, view: 1, bead: "J1", skip: false, path, ...(path.length ? { mmPerPx: .1 } : {}) }));
-}
-
-/** 两个拍照点各一条 10 px（1 mm）的中线，站距 1 mm：每个拍照点两站，自成一段。 */
-export const twoLines: [number, number][][] = [[[10, 10], [20, 10]], [[30, 10], [40, 10]]];
-
-export function workspaceView(id = "A"): WorkspaceView {
-  const position = { nominal: 3, tolUpper: 1, tolLower: 1, absMin: 1, absMax: 6, maxExcursionLen: 2 };
-  const limits: ShotLimits = { position, width: null, maxGapLen: .5, minPresent: .8 };
-  const detect: DetectParams = { searchMm: 4, polarity: "dark", widthRange: [1, 6] };
-  const doc: RecipeDoc = {
-    id, name: `工件 ${id}`, version: 2, productCode: 1, triggerMode: "fly", schemaVersion: 7,
-    spacing: 1, filterWindow: 3, detect, limits, shots: shotList(twoLines), cameras: { "CAM-1": { exposureUs: 60, gainDb: 6 } },
-  };
-  const layout: Recipe = {
-    ...structuredClone(doc), planVersion: 1, revisionId: `revisionId-${id}`,
-    segments: [0, 1].map(k => ({ name: `P${k + 1} · J1`, shot: k, view: 1, first: 2 * k, count: 2, position: structuredClone(position), width: null, maxGapLen: .5, minPresent: .8 })),
-    points: { x: [10, 20, 30, 40], y: [10, 10, 10, 10], seg: [0, 0, 1, 1], k: [0, 0, 1, 1] },
-    pathSegments: [], inspect: [], segmentDefaults: kindDefaults(), calibrationRounds: 10, partCalib: null,
-  };
-  const plc = { productCode: doc.productCode, planVersion: 1, shotCount: doc.shots.length, shots: doc.shots.map(shot => ({ shotId: shot.id, poseId: shot.poseId })) };
+export function workspaceState(view = burstWorkspaceView()): ReturnType<typeof useWorkspace> {
   return {
-    layout, productionVersion: 1, productionPlanVersion: 1, planChanged: false, coverage: 100, progress: progress([1]),
-    productionPlc: plc, candidatePlc: structuredClone(plc), candidatePlcError: null, plan: null,
-    workspace: {
-      doc, baseRevision: `production-${id}`, revision: 7, updatedAt: 1, publish: { state: "draft" }, pending: null, cameraTeaching: [], calibration: { rounds: [] },
-      frames: [0, 1].map(k => {
-        const image: FrozenImage = { id: `${id}-image-${k}`, source: "camera", capturedAt: 1, size: [100, 60], camera: "CAM-1", view: 1,
-          cameraTag: { id: "CAM-1", source: "sim", viewCount: 1, acquisition: "triggered" }, calibTag: { path: "C:/test/calib/plane_calib.json", value: null }, geometryTag: [`P${k + 1}`, `P${k + 1}`, "CAM-1", 1, "CAM-1-v1"], exposureUs: 60, gainDb: 6, historyId: null };
-        return { k, saved: false, backup: null, image, views: [image],
-        trial: { imageId: `${id}-image-${k}`, paramsTag: [doc.shots[k].view, structuredClone(doc.shots[k].path), doc.shots[k].mmPerPx, structuredClone(detect), structuredClone(limits), doc.spacing, doc.filterWindow], geometryTag: [`P${k + 1}`, `P${k + 1}`, "CAM-1", 1, "CAM-1-v1"], engineTag: { path: "C:/test/lyflow_core.dll", version: "1.1.0" }, passed: true,
-          score: .94, coverage: 1, elapsedMs: 8, reason: "试测通过", measurement: { ids: [2 * k, 2 * k + 1] } },
-        };
-      }),
-      overview: { background: null, positions: [[.25, .5], [.75, .5]], saved: true },
-      samples: [{ historyId: null, sampleId: "good", expected: "OK" }, { historyId: null, sampleId: "bad", expected: "NG_GAP" }],
-      sampleBank: [
-        { id: "good", name: "良品组", geometryTag: doc.shots.map(shot => [shot.id, shot.poseId, shot.camera]), expected: "OK", createdAt: 1 },
-        { id: "bad", name: "断胶组", geometryTag: doc.shots.map(shot => [shot.id, shot.poseId, shot.camera]), expected: "NG_GAP", createdAt: 1 },
-      ],
-      validation: { revision: 7, passed: true, checkedAt: 1, environmentTag: { cameras: [{ id: "CAM-1", source: "sim", viewCount: 1 }], calibration: null, engine: { path: "C:/test/lyflow_core.dll", version: "1.1.0" } }, checks: [], samples: [] },
-    },
-  };
-}
-
-/** 后端进度的静态样例：两个拍照点都已试测通过、未保存示教，标定未验证，当前修订验证通过。 */
-export function progress(views: number[]): Progress {
-  const step = (id: Progress["steps"][number]["id"], label: string, status: Progress["steps"][number]["status"], detail: string, optional = false) => ({ id, label, optional, status, detail, blockers: [] });
-  return {
-    steps: [
-      step("capture", "整圈采集", "done", "已采用完整采集轮次，2 个拍照点"),
-      step("defaults", "配方默认参数", "optional", "可选", true),
-      step("teach", "单帧示教", "inProgress", "0 / 2 幅已示教"),
-      step("calibration", "像素当量与标定验证", "notStarted", "0 / 2 幅满足 ±0.1 mm"),
-      step("overview", "工件总览", "done", "总览布置已保存", true),
-      step("validation", "验证", "done", "当前修订验证通过"),
-      step("publish", "发布与生效", "notStarted", "可发布 v2（当前生产 v1）"),
-    ],
-    shots: [0, 1].map(k => ({ k, shotId: `P${k + 1}`, state: "trialPassed", completed: 0, total: 1,
-      views: views.map(view => ({ view, enabled: view === 1, state: view === 1 ? "trialPassed" : "unconfigured", trialStale: false, calibration: { state: "unverified" }, hint: view === 1 ? "试测通过" : "" })) })),
-    next: { step: "teach", label: "继续示教拍照点 1", target: { page: "teach", k: 0 } },
-  };
-}
-
-export function summary(view = workspaceView()): RecipeSummary {
-  const { layout: r } = view;
-  return { id: r.id, name: r.name, version: 1, revisionId: r.revisionId, productCode: r.productCode,
-    shotCount: r.shots.length, triggerMode: r.triggerMode, cameras: [...new Set(r.shots.map(s => s.camera))], length: 4, planVersion: 1, triggerCount: r.shots.length,
-    segmentCount: 0, expectedTotal: null, toleranceTotal: 0, calibrated: false };
-}
-
-export function tricamWorkspaceView(id = "A"): WorkspaceView {
-  const view = workspaceView(id);
-  view.progress = progress([1, 2, 3]);
-  view.workspace.frames.forEach(frame => {
-    frame.views = [1, 2, 3].map(value => ({ ...frame.image!, view: value, id: value === 1 ? frame.image!.id : `${frame.image!.id}-v${value}`, geometryTag: [`P${frame.k + 1}`, `P${frame.k + 1}`, "CAM-1", value, `CAM-1-v${value}`] }));
-    frame.image = frame.views[0];
-  });
-  return view;
-}
-
-export function workspaceState(view = workspaceView()): ReturnType<typeof useWorkspace> {
-  return {
-    list: [summary(view)], drafts: [view.workspace], cameras: [], unavailable: [], selectedId: view.workspace.doc.id,
+    list: [burstSummary(view.workspace.doc as BurstRecipeDoc)], drafts: [view.workspace], cameras: [], unavailable: [], selectedId: view.workspace.doc.id,
     data: view, doc: view.workspace.doc, preview: view.layout, previewError: "", error: "",
     saveState: "saved", retrySave: vi.fn(), busy: false, dirty: false, frameDirty: false, frameDrafts: {}, corridorDrafts: {},
     rememberPosition: vi.fn(), select: vi.fn(async () => view), clearSelection: vi.fn(), reloadList: vi.fn(async () => {}),
@@ -127,20 +44,6 @@ export function sampleSet(name = "壳体样本"): SampleSetSummary {
     parts: [{ partId: "part-1", sn: "SN1", label: "ok" }], missing: [], missingCount: 0 };
 }
 
-export function partSummary(id = 1): PartSummary {
-  return { id, sn: `SN-${100 + id}`, ts: 1, recipeId: "A", recipeVersion: 1, recipeRevision: "revisionId-A", triggerMode: "fly",
-    verdict: "NG_GAP", plcCode: 2, faultCode: 0, reason: "断胶", drainMs: 20, framesExpected: 2, framesReceived: 2, retestOf: null, cycleId: `cycle-${id}`, bundleId: "bundle-A", delivery: { state: "acknowledged", updatedAt: 1, message: null }, source: "real", sample: null, flags: null };
-}
-
-export function partDetail(): PartDetail {
-  return {
-    summary: partSummary(), judgement: { verdict: "NG_GAP", plcCode: 2, faultCode: 0, reason: "断胶", segments: [], gaps: [] },
-    shots: [0,1].map(k=>({k,shotId:`P${k+1}`,camera:"CAM-1",view:1,session:1,ordinal:k+1,frameCounter:k+1,triggerCounter:k+1,status:"done",error:null,score:.9,ms:5,rawFiles:[]})),
-    recording: {state:"complete",available:true,directory:"recorded",errors:[]},
-    frames: [], triggers: 2, softwareVersion: "test", points: { d: [3, 3, 3, 3], st: [0, 0, 0, 0], w: [null, null, null, null] }, retests: [], burst: null,
-  };
-}
-
 export function recipeOption(id: string, runnable = true, over: Partial<RecipeOption> = {}): RecipeOption {
   return { id, name: `工件 ${id}`, version: 1, productCode: 1, shotCount: 2, published: true, runnable,
     reason: runnable ? null : "与样本集不符", target: runnable ? null : "workspace", waiting: null, ...over };
@@ -154,7 +57,6 @@ export function readiness(over: Partial<Readiness> = {}): Readiness {
 // ───────────── 段模型（分段连拍飞拍）共用夹具 ─────────────
 // 场景：三台相机共用一个触发；段 直线 120 mm → 弯道 30 mm → 直线 80 mm，各段 N_exp 待标定（分段算法未就绪），
 // 整件凭 10 轮标定得 ΣN_exp = 12、Σtol = 3；一件 12 个帧组，CAM-2 在 seq 5 缺帧。
-// FE2–FE5 只在自己的测试文件里扩展本地夹具，不改这里。在途件与结果（PartView / ResultView）在 cycle-visual-fixtures.ts。
 
 export type BurstRecipeDoc = RecipeDoc & RecipeDocSegmentFields;
 
@@ -314,8 +216,10 @@ export function burstJudgement(over: Partial<BurstJudgement> = {}): BurstJudgeme
 }
 
 export function burstPartSummary(id = 1): PartSummary {
-  return { ...partSummary(id), recipeId: "S", recipeRevision: "revisionId-S", bundleId: "bundle-S", verdict: "OK", plcCode: 1, reason: "合格",
-    framesExpected: 12, framesReceived: burstGroups, flags: burstJudgement().flags };
+  return { id, sn: `SN-${100 + id}`, ts: 1, recipeId: "S", recipeVersion: 1, recipeRevision: "revisionId-S", triggerMode: "fly",
+    verdict: "OK", plcCode: 1, faultCode: 0, reason: "合格", drainMs: 20, framesExpected: 12, framesReceived: burstGroups,
+    retestOf: null, cycleId: `cycle-${id}`, bundleId: "bundle-S", delivery: { state: "acknowledged", updatedAt: 1, message: null },
+    source: "real", sample: null, flags: burstJudgement().flags };
 }
 
 /** 段配方一件的历史详情：每台相机每个 seq 一条帧记录（缺帧也有），旧字段按决策记录 5.1 取空。 */

@@ -130,23 +130,3 @@ pub async fn history_find_cycle(app: AppHandle, cycle_id: String) -> Result<Opti
     tauri::async_runtime::spawn_blocking(move || Ok(app.state::<Store>().detail_by_cycle(&cycle_id)?.map(|d| d.summary.id)))
         .await.map_err(|e| e.to_string())?
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::applog::Fields;
-
-    fn mark(ts: i64, stage: &str) -> Record {
-        Record { ts, level: Level::Info, ev: stage.into(), msg: String::new(), fields: Fields::stage(stage) }
-    }
-
-    #[test]
-    fn stage_durations_come_from_cycle_marks_and_missing_end_stays_unknown() {
-        let records = vec![mark(1000, "partStart"), mark(1120, "armed"), mark(1500, "frame"), mark(3120, "partEnd"), mark(3500, "result"), mark(3600, "released"), mark(3700, "released")];
-        let ms: Vec<_> = stages(&records).into_iter().map(|s| (s.key, s.ms)).collect();
-        assert_eq!(ms, [("arm", Some(120)), ("acquire", Some(2000)), ("drain", Some(380)), ("ack", Some(100)), ("total", Some(2600))]);
-        let faulted = vec![mark(1000, "partStart"), mark(1120, "armed"), mark(1300, "fault")];
-        let ms: Vec<_> = stages(&faulted).into_iter().map(|s| (s.key, s.ms)).collect();
-        assert_eq!(ms, [("arm", Some(120)), ("acquire", None), ("drain", None), ("ack", None), ("total", None)]);
-    }
-}

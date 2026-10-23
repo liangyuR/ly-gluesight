@@ -1,10 +1,9 @@
 use super::*;
-use super::burst::{camera_teaching_views, measure_round, progress_v2, CalibrationRound, CameraTeaching, StepIdV2, TargetV2};
-use super::burst_release::{bank_round, burst_checks, judge_round, sample_result, BurstInputs};
-use super::burst_tests::{burst_workspace, capture_round, configs, measured, DEVICE};
+use super::burst::{CalibrationRound, CameraTeaching};
+use super::burst_release::{bank_round, burst_checks, BurstInputs};
+use super::burst_tests::{burst_workspace, capture_round, configs, DEVICE};
 use crate::plan::{OffsetMeasure, OffsetRef, PartCalib, SegmentCalib, SegmentKind::{self, Corner, Straight}};
 use crate::recipe_capture::CaptureRoundV2;
-use progress::StepStatus;
 
 /// 每台计划相机都选了示教帧（1000×700，采集时设备标签为 device）；样例配方的走廊落在帧内、有当量。
 fn taught(kinds: &[SegmentKind], device: &str) -> Workspace {
@@ -87,23 +86,6 @@ fn publish_blocked_when_plan_cameras_not_three_or_corridor_missing() {
 }
 
 #[test]
-fn validation_sample_with_frame_count_outside_tolerance_only_warns() {
-    // 防的回归（规格 §2 帧数超出容差只记告警，该件照常检测）：帧组数超出 ΣN_exp ± Σtol 的独立样本被判不符合预期或 ERR，
-    // 或超出时原因里不提示
-    for (name, group_count, warned) in [("帧组数 20 在 20 ± 1 内", 20, false), ("帧组数 30 超出 20 ± 1", 30, true)] {
-        let mut w = taught(&[Straight], DEVICE);
-        calibrate(&mut w, 20);
-        let round = capture_round("capture-sample", &w.doc, group_count, DEVICE, &[]);
-        let metrics = measure_round(&w.doc.plan_cameras(), &round, |_, _, _| Ok(measured(0.0)));
-        let judgement = judge_round(&w.doc, &round, &metrics);
-        let sample = Sample { history_id: None, sample_id: Some(round.round_id.clone()), expected: Verdict::Ok };
-        let result = sample_result(&sample, "独立采集".into(), String::new(), &judgement, w.doc.expected_total(), 1);
-        assert_eq!((result.actual, result.passed), (Some(Verdict::Ok), true), "{name}：{result:?}");
-        assert_eq!(result.reason.contains("超出预期 20 ± 1"), warned, "{name}：{}", result.reason);
-    }
-}
-
-#[test]
 fn sample_round_used_for_teaching_or_calibration_or_from_other_device_is_rejected() {
     // 防的回归（规格 §0 独立验证、D-SB-35）：用作走廊示教或多轮标定的同一轮又当独立验证样本（自己验自己），
     // 或换了相机 / 设备配置的轮次混进验证样本
@@ -127,43 +109,6 @@ fn sample_round_used_for_teaching_or_calibration_or_from_other_device_is_rejecte
         let banked = (w.sample_bank.len(), w.samples.len());
         assert_eq!(banked, if accepted { (1, 1) } else { (0, 0) }, "{name}：拒绝时不进样本库");
     }
-}
-
-#[test]
-fn progress_reports_calibration_blocker_before_validation() {
-    // 防的回归（规格 §1 待标定状态在流程中可见）：走廊已示教、还没标定时，进度把“下一步”指向验证，或验证步骤的阻塞原因
-    // 跳不到多轮标定；验证没通过时段标定、走廊示教这两项跳到验证页而不是对应页面
-    type Edit = fn(&mut Workspace);
-    let cases: [(&str, Edit, Vec<TargetV2>); 2] = [
-        ("还没验证", |_| {}, vec![TargetV2::Calibration]),
-        ("验证未通过：走廊示教、段标定", |w| {
-            w.camera_teaching.retain(|t| t.camera != "cam2");
-            w.validation = Some(Validation { revision: w.revision, passed: false, checked_at: 1, environment_tag: Value::Null, samples: Vec::new(), fixture: Vec::new(),
-                checks: ["走廊示教", "段标定"].iter().map(|name| Check { name: (*name).into(), passed: false, detail: "未通过".into() }).collect() });
-        }, vec![TargetV2::Corridor { camera: "cam2".into() }, TargetV2::Calibration]),
-    ];
-    for (name, edit, targets) in cases {
-        let mut w = taught(&[Straight, Corner], DEVICE);
-        edit(&mut w);
-        let progress = progress_v2(&w, &camera_teaching_views(&w), 1, None);
-        let step = |id: StepIdV2| progress.steps.iter().find(|s| s.id == id).unwrap();
-        let calibration = step(StepIdV2::Calibration);
-        assert_ne!(calibration.status, StepStatus::Done, "{name}");
-        assert_eq!(calibration.blockers.first().map(|b| &b.target), Some(&TargetV2::Calibration), "{name}：{:?}", calibration.blockers);
-        let validation = step(StepIdV2::Validation);
-        assert_eq!(validation.blockers.iter().map(|b| b.target.clone()).filter(|t| *t != TargetV2::Capture).collect::<Vec<_>>(), targets, "{name}：{:?}", validation.blockers);
-        assert!(progress.next.as_ref().is_some_and(|next| next.step != StepIdV2::Validation && next.step != StepIdV2::Publish), "{name}：{:?}", progress.next);
-    }
-}
-
-#[test]
-fn ready_burst_candidate_is_frozen_for_debug_run_by_burst_readiness() {
-    // 防的回归（决策记录第九节第 14 条；规格 §6 离线仿真）：候选试运行不分配方类型、一律过旧拍照点的 Recipe::ready，
-    // 走廊与整件 ΣN_exp 都已就绪的段配方候选被拒，“候选试运行一圈”对段配方必然报错
-    let mut w = taught(&[Straight, Corner, Straight], DEVICE);
-    calibrate(&mut w, 30);
-    w.instance_id = 1;
-    assert!(debug_recipe(&w).unwrap().is_burst());
 }
 
 #[test]

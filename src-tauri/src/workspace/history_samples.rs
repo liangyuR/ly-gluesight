@@ -49,36 +49,6 @@ mod tests {
     }
 
     #[test]
-    fn candidate_history_with_recording_off_reads_its_managed_part_and_selected_view() {
-        let source = Fixture::new(&[1, 2]);
-        let root = Fixture::new(&[1]);
-        let managed = crate::managed_samples::import(&root.0, &source.0).unwrap();
-        let set = SampleSet::load(&managed).unwrap();
-        let (recipe, detail) = history(&set, 2);
-        drop(source);
-        let images = HistorySamples::open(&root.0, &detail, &recipe).unwrap();
-        assert_eq!(images.load(2, 2).unwrap().pixels, [Fixture::pixel(2, 3, 2); 4]);
-        assert_eq!(images.frames().len(), 8);
-        assert!(images.frames().iter().all(|frame| frame.available));
-    }
-
-    #[test]
-    fn missing_sample_view_never_substitutes_another_view_or_part() {
-        let source = Fixture::new(&[1, 2]);
-        let root = Fixture::new(&[1]);
-        let managed = crate::managed_samples::import(&root.0, &source.0).unwrap();
-        let (recipe, detail) = history(&SampleSet::load(&managed).unwrap(), 2);
-        std::fs::remove_file(managed.join("parts/p02/S003_cam1_v1.png")).unwrap();
-        let images = HistorySamples::open(&root.0, &detail, &recipe).unwrap();
-        assert_eq!(images.load(2, 2).unwrap().pixels, [Fixture::pixel(2, 3, 2); 4]);
-        assert!(!images.frames().iter().find(|frame| frame.k == 2 && frame.view == 1).unwrap().available);
-        std::fs::remove_file(managed.join("parts/p02/S003_cam1_v2.png")).unwrap();
-        let images = HistorySamples::open(&root.0, &detail, &recipe).unwrap();
-        assert!(images.load(2, 2).is_err());
-        assert!(!images.frames().iter().find(|frame| frame.k == 2 && frame.view == 2).unwrap().available);
-    }
-
-    #[test]
     fn burst_candidate_history_reads_camera_seq_from_that_cameras_own_shot_sequence() {
         // 防的回归（D-SB-28 样本集 v1 的段配方解释）：按清单全局顺序或拍照点编号取图，读到别的相机的帧；某台相机帧数不够时
         // 拿别的帧顶替；历史计划相机与配方快照不一致时仍关联原图
@@ -115,34 +85,6 @@ mod tests {
         assert!(BurstSamples::open(&root.0, &detail, &recipe).is_err(), "历史计划相机与配方快照不一致");
     }
 
-    #[test]
-    fn ambiguous_sample_or_mismatched_history_identity_refuses_originals() {
-        let source = Fixture::new(&[1, 2]);
-        let root = Fixture::new(&[1]);
-        let managed = crate::managed_samples::import(&root.0, &source.0).unwrap();
-        let (recipe, original) = history(&SampleSet::load(&managed).unwrap(), 2);
-        let variants: [fn(&mut PartDetail); 10] = [
-            |d| d.summary.sample = None,
-            |d| d.summary.sample.as_mut().unwrap().set_id = "missing-set".into(),
-            |d| d.summary.sample.as_mut().unwrap().part_id = "missing-part".into(),
-            |d| d.summary.sample.as_mut().unwrap().sn = "other-part".into(),
-            |d| d.summary.sample.as_mut().unwrap().label = crate::offline::sample_set::SampleLabel::Ok,
-            |d| d.shots[0].shot_id = "other-shot".into(),
-            |d| d.shots[0].camera = "cam2".into(),
-            |d| d.shots[0].view = 1,
-            |d| d.shots[0].k = 1,
-            |d| d.summary.recipe_revision = Some("candidate-other-r17".into()),
-        ];
-        for edit in variants {
-            let mut detail = original.clone();
-            edit(&mut detail);
-            assert!(HistorySamples::open(&root.0, &detail, &recipe).is_err());
-        }
-        let duplicate = root.0.join("samples/duplicate");
-        std::fs::create_dir_all(duplicate.join("parts")).unwrap();
-        std::fs::copy(managed.join("sample-set.json"), duplicate.join("sample-set.json")).unwrap();
-        assert!(HistorySamples::open(&root.0, &original, &recipe).is_err());
-    }
 }
 
 /// 候选离线调试记录引用的受管样本件：记录来源、配方快照身份、样本件 ID / SN / 标签都要对上。

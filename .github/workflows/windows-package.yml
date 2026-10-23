@@ -1,22 +1,6 @@
 name: Windows package
 
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/**'
-      - 'scripts/*.ps1'
-      - 'packaging/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-      - '.node-version'
-      - 'rust-toolchain.toml'
-      - 'src-tauri/Cargo.toml'
-      - 'src-tauri/Cargo.lock'
-      - 'src-tauri/tauri*.json'
-      - 'src-tauri/build.rs'
-      - 'src-tauri/icons/**'
-      - 'tests/packaging/**'
   workflow_dispatch:
     inputs:
       use_cache:

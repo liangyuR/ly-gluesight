@@ -3,6 +3,7 @@ import { Alert, Button, Card, Grid, Heading, NumberField, Select, Stack, StatusB
 import { storageApi, type StoragePreferences } from "../../../lib/storage";
 import { errorText } from "../../../lib/errors";
 import { flyshotSpeedLimits } from "../flyshot";
+import ContextHelp from "../../cycle/components/ContextHelp";
 
 interface Inputs {
   speed: number;
@@ -99,9 +100,8 @@ export default function FeasibilityCalc({ sources: given = {}, imageSize }: { so
   const status = missing.length ? `还缺：${missing.join("、")}` : !valid ? "数值过大，请降低数量级后再核算" : rows.every(row => row[2]) ? "按当前数值满足飞拍条件" : "按当前数值存在未满足项";
 
   return (
-    <Card title={<Heading level={3}>飞拍可行性</Heading>}>
-      <Stack direction="column" align="stretch" gap={12}>
-        <span className="muted cg-small">核算按这组速度、曝光和拍照点间距飞拍时，图像会不会拖影、相机来不来得及、相邻视野是否连续</span>
+    <Card title={<div className="calc-title"><Heading level={3}>飞拍模拟</Heading><ContextHelp label="飞拍模拟说明">核算按这组速度、曝光和拍照点间距飞拍时，图像会不会拖影、相机来不来得及、相邻视野是否连续。</ContextHelp></div>}>
+      <Stack direction="column" align="stretch" gap={12} wrap={false}>
         {loadingPreferences && <p className="muted" aria-live="polite">正在读取已保存的飞拍参数…</p>}
         {storageError && <Alert tone="ng" action={<Button size="sm" onClick={() => { if (!touched.current.has("speed") && !touched.current.has("spacing")) { setReadRevision(v => v + 1); return; } save({
           ...(touched.current.has("speed") ? { flyshotSpeedMmS: Number.isFinite(manual.speed) ? manual.speed! : null } : {}),
@@ -112,10 +112,9 @@ export default function FeasibilityCalc({ sources: given = {}, imageSize }: { so
             const source = sources[key], overridden = !!source && key in manual;
             return (
               <div key={key} className="calc-cell">
-                <NumberField id={`calc-${key}`} label={label} min={0} step={step} placeholder="请填写" value={Number.isFinite(v[key]) ? v[key] : ""} onValueChange={value => change(key, value === "" ? NaN : value)}
-                  description={<span className={"calc-src" + (overridden ? " changed" : source ? " linked" : "")}>
-                    {overridden ? <>已手改，{source.from}为 {format(key, source.value)}<Button variant="text" size="sm" onClick={() => restore(key)}>恢复</Button></> : source ? source.from : manualHint[key]}
-                  </span>} />
+                <NumberField id={`calc-${key}`} label={label} min={0} step={step} placeholder="请填写" value={Number.isFinite(v[key]) ? v[key] : ""} onValueChange={value => change(key, value === "" ? NaN : value)} />
+                <ContextHelp label={`${label.replace(/（.*）/, "")}说明`}>{manualHint[key]}{source && <p>{source.from}：{format(key, source.value)}{overridden ? "（当前已手改）" : ""}</p>}</ContextHelp>
+                {overridden && <div className="calc-src changed"><span>已手改</span><Button variant="text" size="sm" onClick={() => restore(key)}>恢复</Button></div>}
                 {key === "fov" && imageSize && !given.fov && <Select aria-label="运动方向" value={axis} onValueChange={value => setAxis(value as "width" | "height")} options={[{ value: "width", label: "工件沿图像宽度方向运动" }, { value: "height", label: "工件沿图像高度方向运动" }]} />}
               </div>
             );

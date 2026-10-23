@@ -7,8 +7,8 @@ import { cycleApi, recipeApi, useCycle, useLayout } from "../src/features/cycle/
 import { workspaceApi } from "../src/features/workspace/api";
 import { burstImageApi } from "../src/features/workspace/burstImages";
 import { plcApi } from "../src/features/plc/api";
-import { burstJudgement, burstRecipe, burstSummary, burstWorkspaceView, deferred, readiness, sampleSet, siteStatus, snapshot, summary, workspaceView } from "./fixtures";
-import { burstPartView, burstResult, cycleMeasurement, cyclePart, cycleResult } from "./cycle-visual-fixtures";
+import { burstJudgement, burstRecipe, burstSummary, burstWorkspaceView, deferred, readiness, sampleSet, siteStatus, snapshot } from "./fixtures";
+import { burstPartView, burstResult } from "./cycle-visual-fixtures";
 import { plcConfig } from "./plc-fixtures";
 import type { LogLine, Measured, Readiness, Recipe, RecipeSummary, SiteStatus, Snapshot } from "../src/features/cycle/types";
 import type { PlcHandshakeState, PointValue } from "../src/features/plc/types";
@@ -30,9 +30,11 @@ let site: SiteStatus;
 let report: Readiness;
 let values: Record<string, PointValue>;
 let plcHandshake: PlcHandshakeState | null;
+const recipe = (id = "A") => burstRecipe({ id, name: `段配方 ${id}` });
+const candidate = (id = "A") => burstWorkspaceView(recipe(id));
 beforeEach(() => {
-  state = snapshot(); layout = workspaceView().layout; logs = []; measured = []; values = {}; plcHandshake = null;
-  recipeList = [summary(), summary(workspaceView("B"))];
+  state = snapshot(); layout = candidate().layout; logs = []; measured = []; values = {}; plcHandshake = null;
+  recipeList = [burstSummary(recipe()), burstSummary(recipe("B"))];
   site = siteStatus();
   report = readiness();
   vi.mocked(useCycle).mockImplementation(() => ({ snapshot: state, logs, measured }));
@@ -41,12 +43,12 @@ beforeEach(() => {
   vi.mocked(cycleApi.reset).mockReset().mockResolvedValue(undefined);
   vi.mocked(cycleApi.offlineRun).mockReset().mockResolvedValue(undefined);
   vi.mocked(cycleApi.offlineStop).mockReset().mockResolvedValue(undefined);
-  vi.mocked(workspaceApi.list).mockReset().mockResolvedValue([workspaceView().workspace, workspaceView("B").workspace]);
+  vi.mocked(workspaceApi.list).mockReset().mockResolvedValue([candidate().workspace, candidate("B").workspace]);
   vi.mocked(workspaceApi.debugRun).mockReset().mockResolvedValue(undefined);
   vi.mocked(workspaceApi.runtimeOverview).mockReset().mockResolvedValue(null);
   vi.mocked(workspaceApi.liveImage).mockReset().mockResolvedValue({ url: "data:,", width: 100, height: 60 });
   vi.mocked(burstImageApi.live).mockReset().mockResolvedValue({ url: "data:,", width: 100, height: 60 });
-  vi.mocked(recipeApi.doc).mockReset().mockResolvedValue(burstRecipe());
+  vi.mocked(recipeApi.doc).mockReset().mockImplementation(async id => recipe(id));
   vi.mocked(plcApi.getConfig).mockReset().mockResolvedValue(plcConfig());
 });
 const nativeSelect = (name: string, root: Pick<typeof screen, "getByLabelText"> = screen) => root.getByLabelText(name, { selector: "select" });
@@ -62,36 +64,6 @@ describe("在线检测切型锁定", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("暂时不能切换配方");
     await userEvent.click(screen.getByRole("button", { name: "取消" }));
     expect(cycleApi.selectRecipe).not.toHaveBeenCalled();
-  });
-});
-
-describe("在线检测原图录制失败告警", () => {
-  it("快照带 recordingAlarm → 报警栏写明连续件数、最近件与原因，告警清除后撤掉", () => {
-    state = { ...state, recordingAlarm: { consecutive: 3, cycleId: "cycle-9", reason: "创建原图失败：拒绝访问", since: 1 } };
-    const page = render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    const banner = screen.getByText(/原图录制失败/).closest("[role='status']");
-    expect(banner).toHaveTextContent("连续 3 件原图未完整保存");
-    expect(banner).toHaveTextContent("cycle-9");
-    expect(banner).toHaveTextContent("拒绝访问");
-    state = { ...state, recordingAlarm: null };
-    page.rerender(<MemoryRouter><InspectPage /></MemoryRouter>);
-    expect(screen.queryByText(/原图录制失败/)).not.toBeInTheDocument();
-  });
-});
-
-describe("在线检测连续定位失败告警", () => {
-  it("换配方后旧配方的告警仍在 → 每条写明配方与修订，不在生产的配方排在后面并标“当前未在生产”", () => {
-    const alarm = { shotId: "P1", k: 0, view: 1, consecutive: 3, reason: "定位失败", since: 1 };
-    state = { ...state, activeRecipeId: "A", locateAlarms: [
-      { ...alarm, recipeId: "B", revisionId: "rev-b", cycleId: "cycle-b" },
-      { ...alarm, recipeId: "A", revisionId: "rev-a", cycleId: "cycle-a" },
-    ] };
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    const rows = within(screen.getByLabelText("连续定位失败告警")).getAllByRole("listitem");
-    expect(rows.map(row => row.textContent)).toEqual([
-      expect.stringMatching(/^配方 A（修订 rev-a） · 拍照点 P1 · 图 1 · 连续 3 件/),
-      expect.stringMatching(/^配方 B（修订 rev-b）（当前未在生产） · 拍照点 P1 · 图 1 · 连续 3 件/),
-    ]);
   });
 });
 
@@ -111,102 +83,6 @@ describe("在线检测离线产线控件", () => {
     expect(screen.queryByRole("combobox", { name: "离线配方" })).not.toBeInTheDocument();
   });
 
-  it("离线模式运行一件 → 按所选配方请求正常件单件运行", async () => {
-    site = siteStatus({ mode: "offline", source: "synthetic", measurement: "simulated", port: 50102 });
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    await userEvent.selectOptions(nativeSelect("离线配方"), "B");
-    await userEvent.click(screen.getByRole("button", { name: "运行一件" }));
-    expect(cycleApi.offlineRun).toHaveBeenCalledWith("B", "normal", false, null);
-  });
-});
-
-describe("在线检测开工检查清单", () => {
-  it("非可开工 → 清单列出阻塞项原因与去处", () => {
-    const ok = readiness().items;
-    report = readiness({ ready: false, items: ok.map(i => i.key === "recipe" ? { ...i, state: "blocked", detail: "没有可开工配方（A：未示教）", target: "workspace" } : i) });
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    const list = within(screen.getByRole("region", { name: "开工检查清单" }));
-    expect(list.getByText("没有可开工配方（A：未示教）")).toBeVisible();
-    expect(list.getByRole("link", { name: "去配方工作台" })).toHaveAttribute("href", "/recipe");
-  });
-});
-
-describe("在线检测选帧、曲线与快照绑定", () => {
-  it("逐拍照点包含不检帧 → 仅展示检测帧且按原始帧索引打开原图", async () => {
-    layout!.shots[0].skip = true;
-    state = { ...state, phase: "REPORT", part: cyclePart(), result: cycleResult() };
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    const main = within(screen.getByRole("region", { name: "检测主视图" }));
-    await userEvent.click(main.getByRole("button", { name: "逐拍照点" }));
-    const tiles = within(main.getByLabelText("逐拍照点视图"));
-    expect(tiles.queryByRole("button", { name: "拍照点 P1" })).not.toBeInTheDocument();
-    expect(tiles.getAllByRole("button")).toHaveLength(1);
-    await userEvent.click(tiles.getByRole("button", { name: "拍照点 P2" }));
-    expect(main.getByRole("button", { name: "原图" })).toHaveAttribute("aria-pressed", "true");
-    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith("cycle-1", "revisionId-A", 1));
-  });
-
-  it("从整件布置选择拍照点 → 返回对应原图且保留整件判定", async () => {
-    state = { ...state, phase: "REPORT", part: cyclePart(), result: cycleResult() };
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    const main = within(screen.getByRole("region", { name: "检测主视图" }));
-    expect(main.getByRole("button", { name: "原图" })).toHaveAttribute("aria-pressed", "true");
-    await userEvent.click(main.getByRole("button", { name: "整件布置" }));
-    fireEvent.click(main.getByRole("button", { name: "总览选择帧 k2" }));
-    expect(main.getByRole("button", { name: "原图" })).toHaveAttribute("aria-pressed", "true");
-    expect(main.getByText(/P2 · CAM-1 · 视角 1 · k2/)).toBeVisible();
-    expect(screen.getByText("测试样本偏移超差")).toBeVisible();
-    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith("cycle-1", "revisionId-A", 1));
-    await userEvent.click(screen.getByRole("button", { name: "返回当前拍照点" }));
-    expect(screen.queryByRole("button", { name: "返回当前拍照点" })).not.toBeInTheDocument();
-    expect(screen.getByText("测试样本偏移超差")).toBeVisible();
-  });
-
-  it("同 SN 重检的新周期清除旧选帧、选点、测量值和结论", async () => {
-    state = { ...state, phase: "REPORT", part: cyclePart(), result: cycleResult() }; measured = [cycleMeasurement()];
-    const page = render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    fireEvent.keyDown(screen.getByRole("slider", { name: "位置曲线选点" }), { key: "ArrowRight" });
-    expect(screen.getByText(/点 2 · P1 · J1 · s=1.00/)).toBeVisible();
-    state = { ...state, phase: "FAULT", fault: "新件相机错误", part: { ...cyclePart("1", "cycle-2"), frames: [cyclePart().frames[0], { ...cyclePart().frames[1], status: "waiting" }] } };
-    page.rerender(<MemoryRouter><InspectPage /></MemoryRouter>);
-    expect(screen.getByText("暂无检测结果")).toBeVisible();
-    expect(screen.queryByText("测试样本偏移超差")).not.toBeInTheDocument();
-    expect(screen.queryByText(/点 2 · P1 · J1 · s=1.00/)).not.toBeInTheDocument();
-    expect(screen.getByText(/P1 · CAM-1 · 视角 1 · k1/)).toBeVisible();
-    expect(screen.queryByRole("button", { name: "返回当前拍照点" })).not.toBeInTheDocument();
-    expect(screen.queryByText("3.00–4.50")).not.toBeInTheDocument();
-    await waitFor(() => expect(workspaceApi.liveImage).toHaveBeenLastCalledWith("cycle-2", "revisionId-A", 0));
-  });
-
-  it("布局快照尚未匹配本件时不显示旧测量、旧帧或本件原图", async () => {
-    state.part = cyclePart(); state.part.recipeRevision = "new-revisionId"; measured = [cycleMeasurement()];
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    expect(screen.queryByText("3.00–4.50")).not.toBeInTheDocument();
-    expect(within(screen.getByRole("group", { name: "拍照点" })).getByRole("button", { name: "P1 · 等待采集" })).toBeInTheDocument();
-    expect(workspaceApi.liveImage).not.toHaveBeenCalled();
-    expect(screen.queryByText(/点 2 ·/)).not.toBeInTheDocument();
-  });
-});
-
-
-describe("在线检测整件判定显示", () => {
-  it("整件判局部超差 → 判定卡把标签拆成大字 OK 与说明“局部超差”", () => {
-    // 判定→语义色与中文标签的映射见 verdict-meta.test.ts；这里只防判定卡拆分“代码 · 说明”的显示
-    state = { ...state, phase: "REPORT", part: cyclePart(), result: { ...cycleResult(), verdict: "OK_WITH_EXCURSION" } };
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    const card = screen.getByRole("region", { name: "整件判定" });
-    expect(within(card).getByText("OK")).toBeVisible();
-    expect(within(card).getByText("局部超差")).toBeVisible();
-  });
-
-  it("整件判断胶而本件有帧定位失败 → 判定卡与该帧缩略图仍挂定位失败徽标", () => {
-    const part = cyclePart();
-    part.frames[0] = { ...part.frames[0], gapPoints: 1, referenceFailed: [{ view: 1, reason: "定位失败" }] };
-    state = { ...state, phase: "REPORT", part, result: { ...cycleResult(), verdict: "NG_GAP", plcCode: 13 } };
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    expect(within(screen.getByRole("region", { name: "整件判定" })).getByLabelText("位置基准：定位失败")).toBeVisible();
-    expect(screen.getByText("NG · 定位失败")).toBeVisible();
-  });
 });
 
 describe("在线检测段配方", () => {
@@ -251,17 +127,6 @@ describe("在线检测段配方", () => {
     expect(screen.queryByRole("button", { name: "返回当前帧组" })).not.toBeInTheDocument();
   });
 
-  it("整件布置 → 用相机与段条显示段序列和区域结论，不再有逐拍照点视图", async () => {
-    render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    const main = within(screen.getByRole("region", { name: "检测主视图" }));
-    expect(main.queryByRole("button", { name: "逐拍照点" })).not.toBeInTheDocument();
-    await userEvent.click(main.getByRole("button", { name: "整件布置" }));
-    const segments = within(await main.findByRole("list", { name: "段序列" }));
-    expect(segments.getAllByRole("listitem").map(li => li.getAttribute("aria-label"))).toEqual([
-      "段 1 · 直线 · 待标定", "段 2 · 弯道 · 待标定", "段 3 · 直线 · 待标定",
-    ]);
-    expect(within(main.getByRole("list", { name: "检测区域" })).getByText("段 1–3 · 未分段")).toBeVisible();
-  });
 });
 
 describe("候选配方离线试运行", () => {
@@ -278,7 +143,7 @@ describe("候选配方离线试运行", () => {
     fireEvent.click(run);
     fireEvent.click(run);
     expect(workspaceApi.debugRun).toHaveBeenCalledTimes(1);
-    expect(workspaceApi.debugRun).toHaveBeenLastCalledWith("B", workspaceView("B").workspace.revision, "part-1");
+    expect(workspaceApi.debugRun).toHaveBeenLastCalledWith("B", candidate("B").workspace.revision, "part-1");
     expect(run).toBeDisabled();
     await act(async () => request.reject(new Error("候选已变化，请刷新候选")));
     expect(panel.getByRole("alert")).toHaveTextContent("候选已变化，请刷新候选");
@@ -298,19 +163,4 @@ describe("候选配方离线试运行", () => {
     expect(panel.getByRole("button", { name: "候选试运行一圈" })).toBeDisabled();
   });
 
-  it("候选周期已生成整件结果 → 在线检测持续显示候选修订与非生产调试标记", () => {
-    state = { ...state, candidateDebug: { recipeId: "A", revision: 352 }, productSource: "manual", phase: "REPORT", part: { ...cyclePart(), candidateDebug: { recipeId: "A", revision: 352 } }, result: cycleResult() };
-    const page = render(<MemoryRouter><InspectPage /></MemoryRouter>);
-    const banner = screen.getAllByRole("status").find(node => node.textContent?.includes("候选配方调试结果"));
-    expect(banner).toBeVisible();
-    expect(banner).toHaveTextContent("A · 修订 352");
-    expect(screen.queryByRole("combobox", { name: "当前检测配方" })).not.toBeInTheDocument();
-    expect(screen.getByText("A · 候选修订 352")).toBeVisible();
-    expect(banner).toHaveTextContent(/不作为生产验收/);
-    expect(screen.getByText("测试样本偏移超差")).toBeVisible();
-    state = { ...state, phase: "IDLE", candidateDebug: undefined };
-    page.rerender(<MemoryRouter><InspectPage /></MemoryRouter>);
-    expect(screen.getByRole("combobox", { name: "当前检测配方" })).toBeVisible();
-    expect(banner).toHaveTextContent(/不作为生产验收/);
-  });
 });

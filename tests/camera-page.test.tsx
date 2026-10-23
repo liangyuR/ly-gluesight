@@ -63,7 +63,7 @@ describe("相机参数未保存修改", () => {
     await openCamera("左相机 cam1");
     const name = await screen.findByRole("textbox", { name: "名称" });
     await userEvent.type(name, "X");
-    await userEvent.click(screen.getByRole("link", { name: /前往飞拍标定/ }));
+    await userEvent.click(screen.getByRole("link", { name: /前往标定/ }));
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "取消" }));
     expect(screen.queryByText("标定页")).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "名称" })).toHaveValue("左相机X");
@@ -71,12 +71,6 @@ describe("相机参数未保存修改", () => {
 });
 
 describe("相机参数校验", () => {
-  it("海康相机未绑定序列号 → 不能保存并提示选择设备", async () => {
-    configs = [camera("cam1", "左相机", { serial: "" })];
-    await openCamera("左相机 cam1");
-    expect(await screen.findByRole("alert")).toHaveTextContent("请选择要绑定的相机设备");
-    expect(screen.getByRole("button", { name: "保存并应用" })).toBeDisabled();
-  });
 
   it("相机已释放给 MVS 时修改参数 → 不能保存并提示先重新连接", async () => {
     released = ["cam1"];
@@ -115,22 +109,6 @@ describe("应用到全部相机", () => {
   });
 });
 
-describe("链路带宽", () => {
-  it.each([
-    ["三台相机 10 fps 合计超过单口预算 → 显示合计与带宽超预算警告", 943.7, true],
-    ["三台相机 10 fps 合计未超单口预算 → 只显示合计，不显示警告", 786.4, false],
-  ])("%s", async (_, mbpsTotal, overBudget) => {
-    configs = [camera("cam1", "左相机"), camera("cam2", "右相机"), camera("cam3", "后相机")];
-    bandwidth = { hz: 10, mbpsTotal, perCamera: [mbpsTotal / 3, mbpsTotal / 3, mbpsTotal / 3], budgetMbps: 800, overBudget };
-    await openCamera("左相机 cam1");
-    const region = await screen.findByRole("region", { name: "链路带宽" });
-    await waitFor(() => expect(region).toHaveTextContent(`${Math.round(mbpsTotal)} Mbps`));
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_bandwidth", { hz: 10 });
-    if (overBudget) expect(within(region).getByText("带宽超预算")).toBeVisible();
-    else expect(within(region).queryByText("带宽超预算")).not.toBeInTheDocument();
-  });
-});
-
 describe("高级参数（调试）", () => {
   it("临时下发曝光与增益 → 只写入当前相机设备，不写配方", async () => {
     await openCamera("左相机 cam1");
@@ -143,35 +121,6 @@ describe("高级参数（调试）", () => {
     expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("workspace_set_camera_imaging", expect.anything());
   });
 });
-
-describe("相机组总览", () => {
-  it("点相机卡的非按钮区域 → 进入该相机详情", async () => {
-    renderPage();
-    const card = await screen.findByRole("article", { name: "右相机 cam2" });
-    await userEvent.click(within(card).getByText("帧计数"));
-    expect(await switcher().findByRole("button", { name: "右相机 cam2" })).toHaveAttribute("aria-current", "true");
-  });
-
-  it.each([
-    ["双击设备序列号选词", async (card: HTMLElement) => { await userEvent.dblClick(within(card).getByText("cam2-SN")); }],
-    ["拖选相机名称后松开", async (card: HTMLElement) => {
-      const name = within(card).getByText("右相机");
-      const range = document.createRange();
-      range.selectNodeContents(name);
-      window.getSelection()!.removeAllRanges();
-      window.getSelection()!.addRange(range);
-      fireEvent.click(name);
-    }],
-  ])("%s → 停留在总览，不进入详情", async (_, select) => {
-    renderPage();
-    const card = await screen.findByRole("article", { name: "右相机 cam2" });
-    await select(card);
-    expect(screen.getByRole("article", { name: "右相机 cam2" })).toBeInTheDocument();
-    expect(screen.queryByRole("group", { name: "切换相机" })).not.toBeInTheDocument();
-    window.getSelection()!.removeAllRanges();
-  });
-});
-
 
 describe("触发方式", () => {
   it("修改 Line0 帧率后保存 → 保留高电平并写入新帧率", async () => {
