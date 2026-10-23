@@ -2,6 +2,8 @@
 
 工作线：algorithm（检测算法准确性、稳定性、耗时）。评测数据与结论见 [算法评测报告](../testing/algorithm-evaluation.md)。
 
+> **段配方下部分已被取代（2026-10-23，见 [segment-burst.md](segment-burst.md) D-SB-15）**：段配方的胶偏只在直线段按段级 AbsoluteX 判（`burst_judge`），不做示教中线逐站比对与特征定位。本文的评测工具（A-1，`vision/eval.rs` 走 `measure_shot` + `judge::judge`）以及 A-5、A-10 的逐站位置判定只针对旧拍照点配方（保留、停用），对旧配方仍有效。A-2、A-7 的中线提取仍被段配方的相机走廊提取复用（`workspace_extract_corridor` 调 `centerline::extract`）；A-8 默认检测参数、A-9 运行库版本不受影响。
+
 ## A-1 评测工具做成忽略的 cargo 测试
 
 - 问题：评测要可重复，又要和生产走同一条代码。

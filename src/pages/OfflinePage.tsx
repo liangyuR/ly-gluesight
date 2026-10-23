@@ -18,6 +18,7 @@ import {
   sourceLabel,
   TargetLink,
   useReadiness,
+  useRecipes,
   useRunChoice,
   useSiteStatus,
   type OfflineChoice,
@@ -67,6 +68,12 @@ function useOperation() {
   return { busy, error: failure?.text ?? "", failure, perform, alive };
 }
 
+/** 后端样本集摘要只有相机 ID 与视角（不带每台相机的帧数）；多视角是旧拍照点模型（三目拼接）的样本集，仍标出以免与段配方的单视角相机混淆。 */
+function cameraText(camera: SampleSetSummary["cameras"][number]) {
+  const legacy = camera.views.length > 1 ? `（旧模型 ${camera.views.length} 视角）` : "";
+  return `${camera.id}${legacy}`;
+}
+
 function SampleSetView({ sampleSet }: { sampleSet: SampleSetSummary }) {
   const missingTitle = sampleSet.missingCount > 0 ? sampleSet.missing.slice(0, 10).join("\n") + (sampleSet.missingCount > 10 ? "\n…" : "") : undefined;
   return (
@@ -74,10 +81,10 @@ function SampleSetView({ sampleSet }: { sampleSet: SampleSetSummary }) {
       <dt>名称</dt><dd>{sampleSet.name}</dd>
       <dt>目录</dt><dd className="mono">{sampleSet.dir}</dd>
       <dt>件数</dt><dd>{sampleSet.parts.length}</dd>
-      <dt>拍照点</dt><dd>{sampleSet.shotCount}</dd>
+      <dt>每件帧数</dt><dd>{sampleSet.shotCount}</dd>
       <dt>缺图</dt><dd className={sampleSet.missingCount > 0 ? "c-ng" : undefined} title={missingTitle}>{sampleSet.missingCount}</dd>
       <dt>标签</dt><dd>{labels.map(l => `${sampleLabelText[l]} ${sampleSet.parts.filter(p => p.label === l).length}`).join(" · ")}</dd>
-      <dt>相机与视角</dt><dd>{sampleSet.cameras.map(c => `${c.id}（视角 ${c.views.join("/")}）`).join("、") || "—"}</dd>
+      <dt>相机</dt><dd>{sampleSet.cameras.map(cameraText).join("、") || "—"}</dd>
     </dl>
   );
 }
@@ -165,6 +172,7 @@ function OfflineEntry({ last }: { last: OfflineChoice | null }) {
 function OfflineSession({ status }: { status: SiteStatus }) {
   const { readiness, refresh } = useReadiness(`${status.source ?? ""}:${status.sampleSet?.id ?? ""}`);
   const options = readiness?.recipes.filter(recipe => recipe.published) ?? null;
+  const summaries = useRecipes();
   const plc = usePlcStatus();
   const [scenario, setScenario] = useState<Scenario>("normal");
   const [fault, setFault] = useState<OfflineFault>("disconnect");
@@ -213,7 +221,7 @@ function OfflineSession({ status }: { status: SiteStatus }) {
           <p className="muted">下列检查与启动操作仅用于已发布版本的离线回放；候选调试不要求发布，启动时单独检查示教和样本匹配。</p>
           {showChecklist(readiness, running) && <ReadinessChecklist readiness={readiness} embedded />}
           <Stack gap={8}>
-            <RecipeRunSelect options={options} value={recipeId} onChange={setRecipeId} disabled={running || busy} />
+            <RecipeRunSelect options={options} summaries={summaries} value={recipeId} onChange={setRecipeId} disabled={running || busy} />
             <Select aria-label="离线工况" value={chosen} onValueChange={(value) => setScenario(value as Scenario)} disabled={running || busy}
               options={scenarios.map(([v, label]) => ({ value: v, label }))} />
             {sampleSet && <SamplePartSelect sampleSet={sampleSet} nextPart={status.nextPart} value={partId} onChange={setPartId} disabled={running || busy} />}

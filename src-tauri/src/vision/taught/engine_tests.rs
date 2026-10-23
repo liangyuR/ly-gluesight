@@ -346,3 +346,64 @@ fn teach_check_accepts_the_identity_pose_and_brightness_probes_do_not_mislock_bu
     assert!(!report.passed);
     assert!(report.checks.iter().any(|c| c.id == CheckId::Texture && !c.passed), "{:?}", report.checks);
 }
+
+/// 段配方的走廊测量只用 glue.taught_path + glue.bead_width，不要求核心库带 lyFlow#32 的 glue.locate。
+fn corridor_engine() -> Arc<Engine> {
+    let path = std::env::var("LYFLOW_CORE_DLL").expect("需要 LYFLOW_CORE_DLL 指向 lyflow_core.dll");
+    Arc::new(Engine::load(Path::new(&path)).unwrap())
+}
+
+/// 段配方：三台相机看同一合成场景，走廊沿示教线 PATH（31 站、站距 1 mm），检测参数与上面的拍照点配方相同。
+fn burst_document() -> RecipeDoc {
+    let mut doc = crate::recipe::samples_burst();
+    doc.spacing = 1.0;
+    doc.detect = DetectParams { search_mm: 3.0, polarity: Polarity::Dark, width_range: [0.8, 2.4] };
+    for inspect in &mut doc.inspect {
+        inspect.corridor = PATH.to_vec();
+        inspect.mm_per_px = Some(f64::from(MM_PER_PX));
+    }
+    doc
+}
+
+#[test]
+#[ignore = "需要 LYFLOW_CORE_DLL（不要求 lyFlow#32），见 docs/testing/TESTING.md"]
+fn engine_burst_publish_load_measure_frame_round_trip() {
+    // 防的回归（lyFlow 全链路）：段配方发布包（schema 4）经 release::load → Prepared::load → 预热 → measure_frame 这条
+    // 生产路径与真实 glue.taught_path / glue.bead_width 的输出对不上（站数、弧长、中线、法向、单位），预热把好包拒掉；
+    // 或胶宽当量、x 的正向换算错（胶条沿 +y 移 8 px = 0.8 mm，x 按法向跟着变）
+    use crate::release::{BurstPublishInput, CameraInput};
+    let engine = corridor_engine();
+    let teach = scene(RECT, 0);
+    let doc = burst_document();
+    let recipe = doc.build().unwrap();
+    let mut pgm = format!("P5\n{W} {H}\n255\n").into_bytes();
+    pgm.extend_from_slice(&teach.pixels);
+    let graph = crate::production::burst_graphs(&recipe, &[[W, H]; 3]).unwrap();
+    let root = release_root("burst");
+    let published = crate::release::publish_burst(&root, BurstPublishInput {
+        recipe: doc, validation_site: ValidationSite::Offline,
+        versions: Versions { engine: engine.identity.clone(), graph: crate::production::GRAPH_VERSION_BURST.into() },
+        graph: ResourceSource::Bytes(serde_json::to_vec(&graph).unwrap()),
+        cameras: recipe.inspect.iter().map(|i| CameraInput { camera: i.camera.clone(), image: ResourceSource::Bytes(pgm.clone()),
+            image_id: format!("capture-burst-{}", i.camera),
+            calibration: ResourceSource::Bytes(serde_json::to_vec(&json!({"mmPerPx": f64::from(MM_PER_PX)})).unwrap()) }).collect(),
+    });
+    let run = || -> Result<_, String> {
+        let bundle = crate::release::load(&root, &recipe.id, &published.as_ref().map_err(Clone::clone)?.id)?;
+        let prepared = Prepared::load(bundle, engine.clone(), &recipe)?;
+        prepared.warm()?;
+        Ok((prepared.measure_frame(1, 1, &copy(&teach), "burst-teach")?, prepared.measure_frame(1, 2, &scene(RECT, 8), "burst-moved")?))
+    };
+    let measured = run();
+    let _ = std::fs::remove_dir_all(&root);
+    let (base, moved) = measured.unwrap();
+    for m in [&base.metrics, &moved.metrics] {
+        assert_eq!((m.state, m.camera), (FrameState::Measured, 1), "{:?}", m.error);
+        assert!(m.present_ratio > 0.9 && m.gap_max_mm <= 1.0, "{m:?}");
+        assert!((m.width_mean.unwrap() - 1.6).abs() < 0.1, "胶宽 {:?}", m.width_mean);
+    }
+    let dy: f32 = base.edges.iter().flatten().map(|e| e[1][1] - e[0][1]).sum();
+    assert!(dy.abs() > 1.0, "测不出法向");
+    let shift = moved.metrics.x_mm.unwrap() - base.metrics.x_mm.unwrap();
+    assert!((shift - 0.8 * f64::from(dy.signum())).abs() < 0.03, "x 变化 {shift} mm");
+}

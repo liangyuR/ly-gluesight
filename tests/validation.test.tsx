@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,7 +7,7 @@ import ValidationPage from "../src/features/workspace/ValidationPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
 import { historyApi } from "../src/features/history/api";
-import { siteStatus, sampleSet, workspaceState } from "./fixtures";
+import { burstRecipe, burstWorkspaceView, planExport, siteStatus, sampleSet, workspaceState } from "./fixtures";
 
 vi.mock("../src/features/cycle/api", () => ({ useSiteStatus: vi.fn() }));
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
@@ -62,6 +62,7 @@ describe("验证与发布页面", () => {
     expect(screen.queryByRole("button", { name: "放弃待生效版本" })).not.toBeInTheDocument();
   });
 
+  // 旧拍照点配方（segments 为空）的发布确认：按 candidatePlc 与 productionPlc 对比，列出 PLC 要同步的项
   it("拍照点数变化 → 发布确认直接列出 PLC 要同步的触发数，未变的产品代码标不变", async () => {
     ws.data!.planChanged = true;
     ws.data!.candidatePlc = { ...ws.data!.productionPlc!, shotCount: 3 };
@@ -71,6 +72,45 @@ describe("验证与发布页面", () => {
     expect(dialog).toHaveTextContent("shotCount / deviceShots：2 → 3");
     expect(dialog).toHaveTextContent("productCode：1（不变）");
     expect(dialog).toHaveTextContent("planVersion：1 → 发布时分配新号");
+  });
+
+  describe("段配方", () => {
+    /** 验证已通过的段配方候选；partCalib 决定整件 ΣN_exp 是否已标定（各段 N_exp 都待分段算法）。 */
+    const burst = (over: Parameters<typeof burstRecipe>[0] = {}) => {
+      const view = burstWorkspaceView(burstRecipe(over));
+      view.workspace.validation = { revision: view.workspace.revision, passed: true, checkedAt: 1, environmentTag: {}, checks: [], samples: [] };
+      return view;
+    };
+
+    it("整件预期总帧数未标定 → 发布不可用并列出待标定的段号", () => {
+      ws = workspaceState(burst({ partCalib: null }));
+      show();
+      expect(screen.getByRole("button", { name: "发布生产配方" })).toBeDisabled();
+      expect(screen.getAllByRole("note").some(note => note.textContent?.includes("段 1、段 2、段 3 待标定"))).toBe(true);
+    });
+
+    it("整件已标定、各段预期帧数待分段算法 → 发布可用，不因段待标定而禁用", () => {
+      ws = workspaceState(burst());
+      show();
+      expect(screen.getByRole("button", { name: "发布生产配方" })).toBeEnabled();
+    });
+
+    it("整件预期总帧数 12 → 14 → 发布确认只列 planVersion 换新号和 shotCount / deviceShots 的变化", async () => {
+      const view = burst({ planVersion: 3 });
+      const plan = view.plan!;
+      plan.productionExport = planExport();
+      plan.candidateExport = { ...planExport(), expectedTotal: 14 };
+      plan.shotCountChanged = true;
+      view.planChanged = true; view.productionVersion = 1; view.productionPlanVersion = 3;
+      ws = workspaceState(view);
+      show();
+      await userEvent.click(screen.getByRole("button", { name: "发布生产配方" }));
+      const items = within(within(screen.getByRole("dialog")).getByRole("list", { name: "PLC 同步项" })).getAllByRole("listitem");
+      expect(items).toHaveLength(2);
+      expect(items[0]).toHaveTextContent("planVersion：3 → 发布时分配新号");
+      expect(items[1]).toHaveTextContent("shotCount / deviceShots（ΣN_exp）：12 → 14");
+      expect(screen.getByRole("dialog")).toHaveTextContent("预期总帧数 ΣN_exp ± Σtol：14 ± 3（生产：12 ± 3）");
+    });
   });
 
   it.each([

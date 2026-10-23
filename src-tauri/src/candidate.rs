@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use serde::Serialize;
 use serde_json::Value;
-use crate::{frame::FrameImage, recipe::Recipe, vision::{self, Engine}};
+use crate::{frame::FrameImage, recipe::Recipe, vision::{self, CorridorGraph, Engine, FrameMeasurement}};
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,9 +17,27 @@ pub struct Candidate {
     sizes: HashMap<(usize, u8), [u32; 2]>,
     /// 用特征定位的视图的模板目录（工作台按冻结示教原图生成，按内容寻址、不会改写）
     bases: HashMap<(usize, u8), String>,
+    /// 段配方：按计划相机下标的走廊测量图（旧拍照点配方为空，前面三项只服务旧配方）
+    corridors: Vec<CorridorGraph>,
 }
 
 impl Candidate {
+    /// 段配方的候选试运行（`workspace_debug_run` 对段配方调用）：按各相机示教帧尺寸（计划相机顺序）建走廊测量图；前置 `Recipe::ready_burst`。
+    pub fn new_burst(recipe: Recipe, revision: u64, engine: Arc<Engine>, sizes: &[[u32; 2]], overview: crate::workspace::Overview) -> Result<Self, String> {
+        recipe.ready_burst().map_err(|reasons| reasons.join("；"))?;
+        if sizes.len() != recipe.inspect.len() { return Err("候选示教帧尺寸与检测相机数量不一致".into()); }
+        let corridors = recipe.inspect.iter().zip(sizes).map(|(inspect, &size)| vision::plan_corridor(inspect, &recipe, size)).collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { info: DebugInfo { recipe_id: recipe.id.clone(), revision }, recipe: Arc::new(recipe), engine,
+            graphs: HashMap::new(), sizes: HashMap::new(), bases: HashMap::new(), corridors, overview })
+    }
+
+    /// 段配方一台相机一帧的候选测量（每帧独立，结果只量不判）。
+    pub fn measure_frame(&self, job: &crate::measure::FrameJob, image: &FrameImage) -> Result<FrameMeasurement, String> {
+        if job.bundle_id.is_some() || !self.matches(&job.recipe) { return Err("候选调试测量与冻结修订不一致".into()); }
+        let corridor = self.corridors.get(job.camera_idx).filter(|c| c.camera == job.camera).ok_or("候选没有这台相机的走廊测量图")?;
+        vision::measure_frame(&self.engine, corridor, image, job.seq, &format!("debug-{}-c{}-{}", job.cycle_id, job.camera_idx, job.seq))
+    }
+
     pub fn new(recipe: Recipe, revision: u64, engine: Arc<Engine>, sizes: HashMap<(usize, u8), [u32; 2]>, bases: HashMap<(usize, u8), String>, overview: crate::workspace::Overview) -> Result<Self, String> {
         recipe.ready()?;
         vision::require_locate(&recipe, &engine.locate)?;
@@ -33,7 +51,7 @@ impl Candidate {
                 graphs.insert((k, view), vision::build_taught_graph(&projected, k)?);
             }
         }
-        Ok(Self { info: DebugInfo { recipe_id: recipe.id.clone(), revision }, recipe: Arc::new(recipe), engine, graphs, sizes, bases, overview })
+        Ok(Self { info: DebugInfo { recipe_id: recipe.id.clone(), revision }, recipe: Arc::new(recipe), engine, graphs, sizes, bases, corridors: Vec::new(), overview })
     }
 
     pub fn matches(&self, recipe: &Recipe) -> bool {

@@ -12,13 +12,15 @@ import { WorkspaceProvider } from "../src/features/workspace/context";
 import { SnackbarProvider } from "qing-steel";
 import { workspaceApi } from "../src/features/workspace/api";
 import type { CaptureRound, ShotState, WorkspaceView } from "../src/features/workspace/types";
-import { deferred, siteStatus, snapshot, summary, tricamWorkspaceView, twoLines } from "./fixtures";
+import { burstRecipe, burstSummary, burstWorkspaceView, captureRoundV2, deferred, siteStatus, snapshot, summary, tricamWorkspaceView, twoLines, type BurstRecipeDoc } from "./fixtures";
 import { stubSvgPointer } from "./svg-pointer";
 
 // 只替身桌面后端：invoke 按命令名分派到 backend 夹具，其余全是真实模块。
 // 例外：原图解码要用 canvas（jsdom 没有），workspaceApi.image / captureImage 直接给出解码结果。
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
+// 整页集成：真实 Provider 加刷选交互，机器忙（并行编译、其余测试）时会超过默认的 5 s
+vi.setConfig({ testTimeout: 20_000 });
 
 type Args = Record<string, unknown>;
 type Handler = (args: Args) => unknown;
@@ -29,7 +31,7 @@ function mockSite(candidate: WorkspaceView, handlers: Record<string, Handler> = 
   backend = {
     storage_preferences_get: () => ({ legacyImported: true }),
     storage_preferences_update: ({ patch }) => ({ legacyImported: true, ...(patch as object) }),
-    recipe_list: () => ({ recipes: [summary(candidate)], errors: [], unavailable: [] }),
+    recipe_list: () => ({ recipes: [candidate.plan ? burstSummary(candidate.workspace.doc as BurstRecipeDoc) : summary(candidate)], errors: [], unavailable: [] }),
     workspace_list: () => [candidate.workspace],
     workspace_get: () => candidate,
     workspace_progress: ({ k, view }) => ({ ...candidate, workspace: { ...candidate.workspace, lastPosition: { k, view } } }),
@@ -42,6 +44,8 @@ function mockSite(candidate: WorkspaceView, handlers: Record<string, Handler> = 
     cycle_snapshot: () => snapshot(),
     cycle_logs: () => [],
     history_query: () => ({ items: [], total: 0, counts: { ok: 0, ng: 0, err: 0, excursion: 0 } }),
+    recipe_capture_list: () => [],
+    recipe_capture_get: () => null,
     ...handlers,
   };
   vi.mocked(invoke).mockImplementation(async (command, args) => {
@@ -109,17 +113,6 @@ function groupedCandidate() {
   return candidate;
 }
 
-/** 第一组 P1 还没有中线、当量与试测 */
-function untaughtCandidate() {
-  const candidate = groupedCandidate();
-  candidate.workspace.doc.shots[0].path = [];
-  delete candidate.workspace.doc.shots[0].mmPerPx;
-  candidate.workspace.frames[0].trial = null;
-  candidate.workspace.frames[0].saved = false;
-  shotState(candidate, 0, "unconfigured");
-  return candidate;
-}
-
 afterEach(() => {
   vi.useRealTimers();
   delete (globalThis as { jest?: unknown }).jest;
@@ -141,6 +134,24 @@ function renderWorkspace(path: string, strict = false) {
   return userEvent.setup({ advanceTimers: vi.advanceTimersByTime, pointerEventsCheck: PointerEventsCheckLevel.Never });
 }
 
+const searchBandEnds = () => [...screen.getByLabelText("搜索带边界").querySelectorAll("polyline")].map(edge => {
+  const points = edge.getAttribute("points")!.split(" ");
+  return `${points[0]} ${points[points.length - 1]}`;
+});
+
+// ───────────── 旧拍照点配方：按拍照组的单帧示教（G0 之前的用例原样保留；决策补充第一节：旧路径只停用不删、行为不变）─────────────
+
+/** 第一组 P1 还没有中线、当量与试测 */
+function untaughtCandidate() {
+  const candidate = groupedCandidate();
+  candidate.workspace.doc.shots[0].path = [];
+  delete candidate.workspace.doc.shots[0].mmPerPx;
+  candidate.workspace.frames[0].trial = null;
+  candidate.workspace.frames[0].saved = false;
+  shotState(candidate, 0, "unconfigured");
+  return candidate;
+}
+
 /** P1 本图覆盖了检测参数（搜索带 4 mm，配方默认 15 mm）与判定限值（关闭位置判定） */
 function overriddenCandidate() {
   const candidate = groupedCandidate();
@@ -150,11 +161,6 @@ function overriddenCandidate() {
   candidate.workspace.doc.shots[0].mmPerPx = .1;
   return candidate;
 }
-
-const searchBandEnds = () => [...screen.getByLabelText("搜索带边界").querySelectorAll("polyline")].map(edge => {
-  const points = edge.getAttribute("points")!.split(" ");
-  return `${points[0]} ${points[points.length - 1]}`;
-});
 
 it("本图检测参数覆盖后恢复默认 → 搜索带按配方默认搜索宽度重画", async () => {
   mockSite(overriddenCandidate());
@@ -426,11 +432,6 @@ it("自动提取失败后按笔划生成 → 定位原因并保留原线，人�
   expect(screen.queryByLabelText("本次算法结果")).not.toBeInTheDocument();
 });
 
-function extractionFailure(reason: string) {
-  const failure = { point: [40, 20] as [number, number], reason, message: `提取失败：${reason}` };
-  return { path: [], message: failure.message, failure };
-}
-
 async function brushOnTaughtGroup(extract: Handler) {
   stubSvgPointer({ pointerEvent: true });
   mockSite(groupedCandidate(), { workspace_extract_centerline: extract });
@@ -635,6 +636,257 @@ it("修改样本集声明当量 → 草稿不沿用旧验证，保存试测后�
   expect(screen.getByRole("button", { name: "记录验证" })).toBeDisabled();
   expect(screen.queryByText("已验证", { exact: true })).not.toBeInTheDocument();
 });
+
+
+
+// ───────────── 段配方：每台相机一条走廊 ─────────────
+
+type Inspect = NonNullable<WorkspaceView["workspace"]["doc"]["inspect"]>[number];
+const CAM2 = "CAM-2 · 示教帧";
+const FRAME2 = "S-CAM-2-frame";
+const bend: [number, number][] = [[12, 20], [32, 20], [52, 20], [52, 40], [52, 60]];
+
+/** 段配方候选：CAM-2 已选示教帧；edit 改写 CAM-2 的走廊 / 当量（默认已有一条走廊与 0.1 mm/px） */
+function corridorCandidate(edit: (inspect: Inspect, view: WorkspaceView) => void = () => {}) {
+  const candidate = burstWorkspaceView(burstRecipe({ id: "A" }));
+  edit(candidate.workspace.doc.inspect![1], candidate);
+  return candidate;
+}
+/** CAM-2 还没有走廊与当量 */
+const untaught = (inspect: Inspect) => { inspect.corridor = []; inspect.mmPerPx = null; };
+/** CAM-2 已示教：一条有转折的走廊，0.2 mm/px */
+const taught = (inspect: Inspect, view: WorkspaceView) => { inspect.corridor = structuredClone(bend); inspect.mmPerPx = .2; Object.assign(view.plan!.cameraTeaching[1], { saved: true, mmPerPx: .2 }); };
+/** workspace_save_doc 的后端替身：整份配方写回并推进修订 */
+const savingDoc = (candidate: WorkspaceView, gate?: Promise<void>): Handler => async ({ revision, doc }) => {
+  await gate;
+  const response = structuredClone(candidate);
+  response.workspace.doc = doc as WorkspaceView["workspace"]["doc"];
+  response.workspace.revision = (revision as number) + 1;
+  return response;
+};
+
+it("本相机检测参数覆盖后恢复配方默认 → 搜索带按配方默认搜索宽度重画", async () => {
+  const candidate = corridorCandidate((inspect, view) => {
+    inspect.corridor = [[10, 10], [20, 10]]; inspect.mmPerPx = .1; inspect.detect = { searchMm: 4, polarity: "dark", widthRange: [1, 5] };
+    view.workspace.doc.detect.searchMm = 15;
+  });
+  mockSite(candidate);
+  renderWorkspace("/recipe/teach?camera=CAM-2");
+  await screen.findByRole("img", { name: CAM2 });
+  expect(searchBandEnds()).toEqual(["10,50 20,50", "10,-30 20,-30"]);
+  fireEvent.click(screen.getByText("检测参数", { exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: "恢复配方默认检测参数" }));
+  expect(searchBandEnds()).toEqual(["10,160 20,160", "10,-140 20,-140"]);
+});
+
+it.each(["", "0"])("像素当量改为「%s」 → 隐藏搜索带", async value => {
+  mockSite(corridorCandidate(inspect => { inspect.corridor = [[10, 10], [20, 10]]; }));
+  renderWorkspace("/recipe/teach?camera=CAM-2");
+  await screen.findByRole("img", { name: CAM2 });
+  expect(screen.getByLabelText("搜索带边界")).toBeInTheDocument();
+  fireEvent.change(screen.getByRole("spinbutton", { name: "像素当量" }), { target: { value } });
+  expect(screen.queryByLabelText("搜索带边界")).not.toBeInTheDocument();
+});
+
+it("手工落点并自动保存 → 保存期间保留缩放与走廊、不能再改点，保存后草稿并入配方且清空", async () => {
+  stubSvgPointer({ pointerEvent: true });
+  const candidate = corridorCandidate(untaught);
+  const saving = deferred<void>();
+  mockSite(candidate, { workspace_save_doc: savingDoc(candidate, saving.promise) });
+  const user = renderWorkspace("/recipe/teach?camera=CAM-2");
+  const image = await screen.findByRole("img", { name: CAM2 });
+  await user.click(screen.getByRole("button", { name: "放大原图" }));
+  const transform = image.querySelector("g")!.getAttribute("transform");
+  for (const [clientX, clientY] of [[10, 10], [20, 20]]) {
+    fireEvent.pointerDown(image, { clientX, clientY });
+    fireEvent.pointerUp(image);
+  }
+  const editButton = screen.getByRole("button", { name: "点柄" });
+  const point = screen.getByLabelText("中线点 2");
+  fireEvent.pointerDown(point, { clientX: 20, clientY: 20 });
+  act(() => { vi.advanceTimersByTime(900); }); // 自动保存防抖到期，保存请求挂起
+  expect(screen.getByText("保存中")).toBeVisible();
+  expect(screen.getByRole("button", { name: "点柄" })).toBe(editButton);
+  expect(editButton).toBeDisabled();
+  expect(screen.getByLabelText("中线点 2")).toBe(point);
+  fireEvent.pointerMove(image, { clientX: 30, clientY: 30 });
+  expect(point).toHaveAttribute("cx", "20");
+  fireEvent.pointerUp(image);
+  fireEvent.pointerDown(image, { clientX: 30, clientY: 30 });
+  fireEvent.pointerUp(image);
+  expect(screen.queryByLabelText("中线点 3")).not.toBeInTheDocument();
+  await act(async () => saving.resolve(undefined));
+  expect(await screen.findByText("草稿已保存")).toBeVisible();
+  expect(editButton).toBeEnabled();
+  expect(screen.getByRole("img", { name: CAM2 })).toBe(image);
+  expect(image.querySelector("g")).toHaveAttribute("transform", transform);
+  expect(screen.getByLabelText("中线点 2")).toHaveAttribute("cx", "20");
+  // 整份配方只改了这台相机：别的相机的走廊原样提交
+  const [{ doc }] = calls("workspace_save_doc") as { doc: WorkspaceView["workspace"]["doc"] }[];
+  expect(doc.inspect![1].corridor).toEqual([[10, 10], [20, 20]]);
+  expect([doc.inspect![0], doc.inspect![2]]).toEqual([candidate.workspace.doc.inspect![0], candidate.workspace.doc.inspect![2]]);
+});
+
+it("沿胶路刷选后自动提取走廊 → 先保存草稿，再按刷选引导、笔刷半径与点距在示教帧上提取一次", async () => {
+  stubSvgPointer({ pointerEvent: true });
+  const candidate = corridorCandidate(untaught);
+  mockSite(candidate, {
+    workspace_save_doc: savingDoc(candidate),
+    workspace_extract_corridor: () => ({ path: bend, message: "走廊已提取" }),
+  });
+  const user = renderWorkspace("/recipe/teach?camera=CAM-2");
+  const image = await screen.findByRole("img", { name: CAM2 });
+  await user.click(screen.getByRole("button", { name: "自动提取走廊" }));
+  expect(screen.getByRole("button", { name: "沿胶路刷选" })).toHaveAttribute("aria-pressed", "true");
+  expect(calls("workspace_extract_corridor")).toEqual([]);
+  fireEvent.pointerDown(image, { clientX: 10.2, clientY: 12.4 });
+  fireEvent.pointerMove(image, { clientX: 50.8, clientY: 42.7 });
+  fireEvent.pointerUp(image);
+  fireEvent.change(screen.getByRole("spinbutton", { name: "像素当量" }), { target: { value: ".2" } });
+  fireEvent.change(screen.getByRole("spinbutton", { name: "走廊点间距" }), { target: { value: "10" } });
+  await user.click(screen.getByRole("button", { name: "自动提取走廊" }));
+  expect(await screen.findByLabelText("中线点 5")).toBeVisible();
+  expect(screen.queryByLabelText("刷选胶路区域")).not.toBeInTheDocument();
+  const [saved] = calls("workspace_save_doc") as { id: string; revision: number; doc: WorkspaceView["workspace"]["doc"] }[];
+  expect([saved.id, saved.revision, saved.doc.inspect![1]]).toEqual(["A", 3, { ...candidate.workspace.doc.inspect![1], corridor: [], mmPerPx: .2, detect: null }]);
+  // 段配方没有拍照点：按相机 id 在这台相机冻结的示教帧上提取（workspace_extract_corridor），不再借用旧命令的 k
+  expect(calls("workspace_extract_corridor")).toEqual([{ id: "A", revision: 4, camera: "CAM-2", imageId: FRAME2, roi: [0, 0, 100, 60],
+    guide: { points: [[10.2, 12.4], [50.8, 42.7]], radiusPx: 60 }, pointSpacingPx: 10 }]);
+});
+
+it("按新点距重采样当前走廊 → 只留转折点，走廊变成待保存", async () => {
+  mockSite(corridorCandidate(taught));
+  const user = renderWorkspace("/recipe/teach?camera=CAM-2");
+  await screen.findByRole("img", { name: CAM2 });
+  expect(screen.getByRole("button", { name: "保存走廊" })).toBeDisabled();
+  fireEvent.change(screen.getByRole("spinbutton", { name: "走廊点间距" }), { target: { value: "80" } });
+  await user.click(screen.getByRole("button", { name: "应用到当前走廊" }));
+  expect(screen.getByLabelText("中线点 1")).toHaveAttribute("cx", "12");
+  expect(screen.getByLabelText("中线点 2")).toHaveAttribute("cx", "52");
+  expect(screen.getByLabelText("中线点 2")).toHaveAttribute("cy", "20");
+  expect(screen.getByLabelText("中线点 3")).toHaveAttribute("cx", "52");
+  expect(screen.getByLabelText("中线点 3")).toHaveAttribute("cy", "60");
+  expect(screen.queryByLabelText("中线点 4")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "保存走廊" })).toBeEnabled();
+});
+
+it("自动提取失败后按笔划生成 → 定位原因并保留原线，人工草稿保留转弯且走廊待保存", async () => {
+  stubSvgPointer({ pointerEvent: true });
+  const candidate = corridorCandidate(taught);
+  const failure = { point: [40, 20] as [number, number], reason: "discontinuous_edges", message: "此处胶路宽度突变，请检查亮边与阴影。" };
+  mockSite(candidate, { workspace_extract_corridor: () => ({ path: [], message: failure.message, failure }) });
+  const user = renderWorkspace("/recipe/teach?camera=CAM-2");
+  const image = await screen.findByRole("img", { name: CAM2 });
+  const originalPoints = bend.map(point => point.join(",")).join(" ");
+  expect(screen.getByRole("button", { name: "保存走廊" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "沿胶路刷选" }));
+  fireEvent.change(screen.getByRole("spinbutton", { name: "走廊点间距" }), { target: { value: "80" } });
+  fireEvent.pointerDown(image, { clientX: 10, clientY: 20 });
+  fireEvent.pointerMove(image, { clientX: 40, clientY: 20 });
+  fireEvent.pointerMove(image, { clientX: 40, clientY: 50 });
+  fireEvent.pointerUp(image);
+  await user.click(screen.getByRole("button", { name: "自动提取走廊" }));
+  expect(await screen.findByLabelText("中线提取失败位置")).toBeVisible();
+  expect(screen.getByText(failure.message, { selector: '[role="status"]' })).toBeVisible();
+  expect(image.querySelector(`polyline[points="${originalPoints}"]`)).not.toBeNull();
+  expect(screen.getByLabelText("刷选胶路区域").querySelector("polyline")).toHaveAttribute("points", "10,20 40,20 40,50");
+  const slider = screen.getByRole("slider", { name: "拖动调整笔刷宽度" });
+  for (let i = 0; i < 3; i++) fireEvent.keyDown(slider, { key: "PageDown" });
+  expect(slider).toHaveAttribute("aria-valuenow", "60");
+  expect(screen.queryByLabelText("中线提取失败位置")).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "自动提取走廊" }));
+  await screen.findByLabelText("中线提取失败位置");
+  await user.click(screen.getByRole("button", { name: "笔划直接生成走廊" }));
+  expect(screen.queryByLabelText("中线提取失败位置")).not.toBeInTheDocument();
+  for (const [index, x, y] of [[1, 10, 20], [2, 40, 20], [3, 40, 50]]) {
+    expect(screen.getByLabelText(`中线点 ${index}`)).toHaveAttribute("cx", String(x));
+    expect(screen.getByLabelText(`中线点 ${index}`)).toHaveAttribute("cy", String(y));
+  }
+  expect(screen.queryByLabelText("中线点 4")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "保存走廊" })).toBeEnabled();
+});
+
+function extractionFailure(reason: string) {
+  const failure = { point: [40, 20] as [number, number], reason, message: `提取失败：${reason}` };
+  return { path: [], message: failure.message, failure };
+}
+
+async function brushOnTaughtCamera(extract: Handler) {
+  stubSvgPointer({ pointerEvent: true });
+  mockSite(corridorCandidate(taught), { workspace_extract_corridor: extract });
+  const user = renderWorkspace("/recipe/teach?camera=CAM-2");
+  const image = await screen.findByRole("img", { name: CAM2 });
+  await user.click(screen.getByRole("button", { name: "沿胶路刷选" }));
+  fireEvent.pointerDown(image, { clientX: 10, clientY: 20 });
+  fireEvent.pointerMove(image, { clientX: 40, clientY: 20 });
+  fireEvent.pointerUp(image);
+  const extractButton = screen.getByRole("button", { name: "自动提取走廊" }), stroke = screen.getByRole("button", { name: "笔划直接生成走廊" });
+  const failOnce = async () => { await user.click(extractButton); await screen.findByLabelText("中线提取失败位置"); };
+  const primaries = () => ["自动提取走廊", "笔划直接生成走廊", "保存走廊", "下一台相机"]
+    .map(name => screen.getByRole("button", { name })).filter(button => button.dataset.variant === "filled");
+  return { user, stroke, failOnce, primaries };
+}
+
+it("已示教的相机刷选提取连续两次找不到连续边缘 → 先提示加大笔刷，再把笔划直接生成走廊设为唯一主操作", async () => {
+  const { stroke, failOnce, primaries } = await brushOnTaughtCamera(() => extractionFailure("discontinuity"));
+  expect(primaries()).toEqual([screen.getByRole("button", { name: "下一台相机" })]);
+  await failOnce();
+  expect(screen.getByText(/可加大笔刷宽度（当前 120 px/)).toBeVisible();
+  expect(stroke).toHaveAttribute("data-variant", "tonal");
+  const slider = screen.getByRole("slider", { name: "拖动调整笔刷宽度" });
+  for (let i = 0; i < 3; i++) fireEvent.keyDown(slider, { key: "PageUp" });
+  expect(slider).toHaveAttribute("aria-valuenow", "180");
+  await failOnce();
+  expect(screen.getByText(/请点「笔划直接生成走廊」/)).toBeVisible();
+  expect(primaries()).toEqual([stroke]);
+});
+
+it("刷选后切回编辑点再自动提取 → 仍用上次刷选的选区与笔刷，不要求重新刷选", async () => {
+  const { user } = await brushOnTaughtCamera(() => ({ path: [[12, 20], [38, 20]], message: "" }));
+  await user.click(screen.getByRole("button", { name: "编辑点" }));
+  await user.click(screen.getByRole("button", { name: "自动提取走廊" }));
+  await waitFor(() => expect(calls("workspace_extract_corridor")).toEqual([{ id: "A", revision: 3, camera: "CAM-2", imageId: FRAME2, roi: [0, 0, 100, 60],
+    guide: { points: [[10, 20], [40, 20]], radiusPx: 60 }, pointSpacingPx: 20 }]));
+  expect(screen.getByRole("button", { name: "编辑点" })).toHaveAttribute("aria-pressed", "true");
+});
+
+it("两次找不到连续边缘之间夹一次多条候选失败 → 不算连续，第二次仍只提示加大笔刷", async () => {
+  const { stroke, failOnce } = await brushOnTaughtCamera(replies(extractionFailure("discontinuity"), extractionFailure("ambiguous"), extractionFailure("missing_edges")));
+  await failOnce();
+  await failOnce();
+  await failOnce();
+  expect(screen.getByText(/可加大笔刷宽度/)).toBeVisible();
+  expect(screen.queryByText(/请点「笔划直接生成走廊」/)).not.toBeInTheDocument();
+  expect(stroke).toHaveAttribute("data-variant", "tonal");
+});
+
+// 防的回归：选帧后后端冻结的是别的帧，或页面仍停在选帧面板、示教帧显示不出来
+it("为未选示教帧的相机从采集轮次选一帧 → 按所选轮次、帧组冻结，选帧面板收起并显示这一帧", async () => {
+  const candidate = corridorCandidate();
+  const response = structuredClone(candidate);
+  response.workspace.revision++;
+  response.plan!.cameraTeaching[2].frame = { ...candidate.plan!.cameraTeaching[1].frame!, id: "S-CAM-3-frame", camera: "CAM-3" };
+  const picture = { url: "data:image/png;base64,AA==", width: 100, height: 60 };
+  mockSite(candidate, {
+    recipe_capture_list: () => [{ roundId: "round-1", recipeId: "A", cameraIds: ["CAM-1", "CAM-2", "CAM-3"], plannedCount: 12, receivedCount: 12, state: "complete", createdAt: 1, error: null }],
+    recipe_capture_get: () => captureRoundV2({ recipeId: "A" }),
+    workspace_teach_camera: () => response,
+  });
+  const frameImage = vi.spyOn(workspaceApi, "captureFrameImage").mockResolvedValue(picture);
+  const user = renderWorkspace("/recipe/teach?camera=CAM-3&round=round-1");
+  await screen.findByRole("region", { name: "示教帧选择" });
+  fireEvent.change(await screen.findByRole("spinbutton", { name: "帧组序号" }), { target: { value: "7" } });
+  await waitFor(() => expect(frameImage).toHaveBeenLastCalledWith("round-1", "CAM-3", 7));
+  const choose = await screen.findByRole("button", { name: "用此帧示教 CAM-3" });
+  await waitFor(() => expect(choose).toBeEnabled());
+  await user.click(choose);
+  expect(calls("workspace_teach_camera")).toEqual([{ id: "A", revision: 3, camera: "CAM-3", round: "round-1", seq: 7, draft: { corridor: [[10, 30], [90, 30]], mmPerPx: .1, detect: null } }]);
+  expect(await screen.findByRole("img", { name: "CAM-3 · 示教帧" })).toBeVisible();
+  expect(screen.queryByRole("region", { name: "示教帧选择" })).not.toBeInTheDocument();
+});
+
+
+// ───────────── 旧拍照点配方：仍保留的总览、独立验证样本与步骤导航 ─────────────
 
 it("同位置三相机已选择检测图 → 总览每组一框绑定检测原图，移动保存共享坐标且保留选图", async () => {
   const candidate = groupedCandidate();

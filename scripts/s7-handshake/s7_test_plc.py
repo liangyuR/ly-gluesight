@@ -19,7 +19,7 @@ def integer(value, name, minimum=0, maximum=65535):
     return value
 
 
-PROTOCOL_VERSION = 5
+PROTOCOL_VERSION = 6
 SN_CAPACITY = 50
 # S7 STRING[50]：+0 声明长度 50，+1 实际长度，+2 起字符。
 SN_HEADER = 2
@@ -75,7 +75,7 @@ class Item:
 
 
 def handshake_fields(plc_db=4, pc_db=2):
-    # 协议 5：PLC 区（PLC 写、PC 读）与 PC 区（PC 写、PLC 读）是两个 DB，均从字节 0 起。
+    # 协议 6（布局同协议 5）：PLC 区（PLC 写、PC 读）与 PC 区（PC 写、PLC 读）是两个 DB，均从字节 0 起。
     layout = (
         (plc_db, ("partStart", "partEnd", "resultAck", "faultReset", "plcHeartbeat"),
          {"protocolVersion": 2, "productCode": 8, "shotCount": 10, "deviceShots": 20, "deviceTriggers": 32},

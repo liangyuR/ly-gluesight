@@ -7,12 +7,18 @@ use rusqlite::types::Value as SqlValue;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
+use crate::burst_judge::{BurstJudgement, Flags, FrameMetrics, FrameState};
 use crate::cycle::{FrameStatus, FrameView};
 use crate::judge::{Judgement, PointState, Verdict};
 use crate::offline::sample_set::SampleRef;
+use crate::plan::PathSegment;
 use crate::recipe::Recipe;
 
 /// 一件工件的完整结果，入库一行；测量点按弧长顺序压成一个 BLOB，格式见 POINTS_FORMAT。
+///
+/// 段配方（`burst` 有值）按每相机每帧落库到 `part_frames`，`shots` / `table` / `frames` 为空，
+/// `judgement` 是区域判定的摘要（verdict / plc_code / fault_code / reason 与 `burst.judgement` 相同，segments、gaps 为空）；
+/// `frames_expected` = expected_total（待标定为 0）。旧拍照点配方 `burst` 为 None，行为不变。
 pub struct PartRecord<'a> {
     pub ts: i64,
     pub sn: &'a str,
@@ -31,6 +37,76 @@ pub struct PartRecord<'a> {
     pub shots: &'a [PartShot],
     pub source: RecordSource,
     pub sample: Option<&'a SampleRef>,
+    /// 段配方的帧与区域记录；旧拍照点配方为 None
+    pub burst: Option<&'a BurstRecord>,
+}
+
+/// 段配方一件的帧与区域记录（D-SB-29）：每台相机每一帧一条 `FrameRecord`，缺帧也有；区域结论与标记在 `judgement`。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurstRecord {
+    /// ΣN_exp；未标定为 None
+    pub expected_total: Option<u32>,
+    pub tolerance_total: u32,
+    /// PLC partEnd 时的 deviceTriggers，只作参考；没有收到 partEnd 为 None
+    pub device_triggers: Option<u32>,
+    /// 各相机已接受的帧数，按计划相机顺序
+    pub camera_frames: Vec<u32>,
+    pub judgement: BurstJudgement,
+    pub frames: Vec<FrameRecord>,
+}
+
+/// 一台相机一帧的记录（IPC 契约见 docs/decisions/segment-burst.md 5.2）。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameRecord {
+    /// 计划相机下标
+    pub camera: usize,
+    /// 帧组序号，从 1 起
+    pub seq: u64,
+    pub status: FrameState,
+    pub frame_counter: Option<u64>,
+    pub trigger_counter: Option<u64>,
+    /// `BurstJudgement.regions` 的下标；不在任何区域为 None
+    pub region: Option<usize>,
+    /// 缺帧时为 None
+    pub metrics: Option<FrameMetrics>,
+    /// 录制根内相对路径；未录制或录制队满丢弃为 None。入库后只增不换
+    pub raw_file: Option<String>,
+}
+
+/// 段配方一帧的身份：(计划相机下标, 帧组序号)。原图引用按它关联（旧拍照点模型按 (k, view)）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameKey {
+    pub camera: usize,
+    pub seq: u64,
+}
+
+/// 历史详情里段配方的部分（IPC 契约见 docs/decisions/segment-burst.md 5.2）。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartDetailBurst {
+    /// 本件配方快照的段
+    pub segments: Vec<PathSegment>,
+    /// 本件配方快照的计划相机
+    pub cameras: Vec<String>,
+    pub expected_total: Option<u32>,
+    pub tolerance_total: u32,
+    pub device_triggers: Option<u32>,
+    pub camera_frames: Vec<u32>,
+    pub judgement: BurstJudgement,
+    /// 按 (camera, seq) 排序
+    pub frames: Vec<FrameRecord>,
+}
+
+/// 历史列表里段配方记录的帧数（只供 CSV 导出，不进 IPC：界面契约只有 `PartSummary.flags`）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BurstSummary {
+    pub expected_total: Option<u32>,
+    pub tolerance_total: u32,
+    pub device_triggers: Option<u32>,
+    pub camera_frames: Vec<u32>,
 }
 
 /// 记录来源：按写库时的站点模式与离线来源决定。真机件与离线件分开统计、分开保存原图。
@@ -153,8 +229,10 @@ pub struct PartShot {
 }
 
 /// 7：帧状态去掉 locateFailed、帧加 referenceFailed、测量点 BLOB 格式 3。
-/// 8：帧的各视图结果加特征定位位姿（viewResults[].pose）。旧库按版本不符备份后重建（D-0）。
-pub const DB_VERSION: i64 = 8;
+/// 8：帧的各视图结果加特征定位位姿（viewResults[].pose）。
+/// 9：段配方按每相机每帧落库（表 part_frames；parts 加 expected_total、tolerance_total、device_triggers、camera_frames、flags、burst_judgement）。
+/// 旧库按版本不符备份后重建（D-0）。
+pub const DB_VERSION: i64 = 9;
 
 /// 测量点 BLOB 格式版本：每点 f32 位置 + f32 胶宽 + u8 状态（9 字节），没有的值写 NaN，状态说了算。
 /// 3 起新增状态 4 无基准、5 超出检测范围；只读当前格式，旧格式的库已在打开时整库备份重建。
@@ -248,6 +326,11 @@ pub struct PartSummary {
     pub source: RecordSource,
     /// 离线样本集运行的样本件引用，用于追溯和读取对应原图。
     pub sample: Option<SampleRef>,
+    /// 段配方记录的整件标记（疑似提前终止等单独显示）；旧记录为 None
+    pub flags: Option<Flags>,
+    /// 段配方记录的帧数；旧记录为 None。只供 CSV 导出
+    #[serde(skip)]
+    pub burst: Option<BurstSummary>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -308,6 +391,8 @@ pub struct PartDetail {
     pub retests: Vec<i64>,
     pub shots: Vec<PartShot>,
     pub recording: RecordingEvidence,
+    /// 段配方记录；旧记录为 None（有值时 frames、shots 为空，points 为 None）
+    pub burst: Option<PartDetailBurst>,
 }
 
 /// 重判用：一件工件的判定输入。
@@ -319,6 +404,8 @@ pub struct StoredMeasurement {
     pub recipe_revision: Option<String>,
     pub verdict: Verdict,
     pub table: Vec<PointState>,
+    /// 段配方记录当时的区域判定（区域、丢帧告警）；旧记录为 None。逐帧指标按需用 `Store::burst_frames` 读
+    pub burst: Option<BurstJudgement>,
 }
 
 pub struct Store {
@@ -336,9 +423,23 @@ fn parse_verdict(s: &str) -> Verdict {
 
 const SUMMARY_COLS: &str = "id, ts, sn, recipe_id, recipe_version, recipe_revision, trigger_mode, verdict, plc_code, fault_code, \
                             reason, drain_ms, frames_expected, frames_received, retest_of, cycle_id, bundle_id, \
-                            delivery_state, delivery_updated_at, delivery_message, sample, source";
+                            delivery_state, delivery_updated_at, delivery_message, sample, source, \
+                            flags, expected_total, tolerance_total, device_triggers, camera_frames";
+/// SUMMARY_COLS 的列数；detail 在其后追加的列从这里起算。
+const SUMMARY_LEN: usize = 27;
 
 fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
+    let flags: Option<Flags> = row.get::<_, Option<String>>(22)?.map(|text| serde_json::from_str(&text)
+        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(22, rusqlite::types::Type::Text, Box::new(e)))).transpose()?;
+    let burst = match flags {
+        Some(_) => Some(BurstSummary {
+            expected_total: row.get(23)?,
+            tolerance_total: row.get(24)?,
+            device_triggers: row.get(25)?,
+            camera_frames: json_column(row, 26)?,
+        }),
+        None => None,
+    };
     Ok(PartSummary {
         id: row.get(0)?,
         ts: row.get(1)?,
@@ -361,6 +462,8 @@ fn summary(row: &rusqlite::Row) -> rusqlite::Result<PartSummary> {
         sample: row.get::<_, Option<String>>(20)?.map(|text| serde_json::from_str(&text)
             .map_err(|e| rusqlite::Error::FromSqlConversionFailure(20, rusqlite::types::Type::Text, Box::new(e)))).transpose()?,
         source: enum_column(row, 21)?,
+        flags,
+        burst,
     })
 }
 
@@ -412,15 +515,27 @@ fn measurement_layout(recipe: &Recipe) -> serde_json::Value {
         }).collect();
     let segments: Vec<_> = recipe.segments.iter().map(|s| (s.shot, s.view, s.first, s.count)).collect();
     // 模板裁法（vision::fixture::template_pgm）也属于测量定义：裁法一改，这里必须跟着改，否则 (来源, 框, 外圈) 不变、模板像素却变了
-    serde_json::json!({"unit":"mm", "schema":recipe.schema_version, "spacing":recipe.spacing,
+    let mut layout = serde_json::json!({"unit":"mm", "schema":recipe.schema_version, "spacing":recipe.spacing,
         "shots":shots, "segments":segments, "points":recipe.points, "detect":recipe.detect,
-        "fixtureTemplate": {"pad": crate::recipe::FIXTURE_TEMPLATE_PAD_PX}})
+        "fixtureTemplate": {"pad": crate::recipe::FIXTURE_TEMPLATE_PAD_PX}});
+    if recipe.is_burst() {
+        // 段配方：各相机的走廊、当量、标定、检测参数决定每帧指标（计划身份另见 burst_plan_identity）；
+        // 限值、容差、x_ref、检测区间不在这里，改了可以直接用已存指标重判。旧拍照点配方不加这一项，布局与原来相同。
+        layout["inspect"] = serde_json::to_value(&recipe.inspect).unwrap_or_default();
+    }
+    layout
+}
+
+/// 段配方的计划身份（规格 §1：段序列 / 类型 / N_exp、相机、ΣN_exp、产品代码）；旧拍照点配方为 None，不参与比较。
+fn burst_plan_identity(recipe: &Recipe) -> Option<crate::plan::PlanIdentity> {
+    recipe.is_burst().then(|| crate::plan::plan_identity(recipe.product_code, &recipe.path_segments, &recipe.plan_cameras(), recipe.expected_total()))
 }
 
 /// 旧测量值（含 d′）能否在候选上复用。d′ 依赖定位模板的像素，模板身份 (来源冻结图, 框, 外圈) 在测量布局里，布局相同即同一模板。
 /// `Recipe` 只能经 `RecipeDoc::build` 构造（反序列化也是），配方校验要求启用的 fixture 来源合法，不存在“来源未知”的配方。
+/// 段配方另要求计划身份相同（计划身份变了，区域与预期帧数的口径就变了，需要原图复测）。
 pub fn same_measurement_layout(original: &Recipe, candidate: &Recipe) -> bool {
-    measurement_layout(original) == measurement_layout(candidate)
+    measurement_layout(original) == measurement_layout(candidate) && burst_plan_identity(original) == burst_plan_identity(candidate)
 }
 
 fn validate_raw_files(files: &[ShotRawFile]) -> Result<(), String> {
@@ -432,16 +547,132 @@ fn validate_raw_files(files: &[ShotRawFile]) -> Result<(), String> {
         if !(1..=3).contains(&file.view) || !views.insert(file.view) {
             return Err("原图元数据的视角越界或重复".into());
         }
-        if file.file.is_empty()
-            || file.file.contains('\\')
-            || file.file.contains(':')
-            || file.file.contains('\0')
-            || Path::new(&file.file).components().any(|c| !matches!(c, Component::Normal(_)))
-        {
-            return Err("原图文件必须是录制根目录内的相对路径，使用 / 分隔".into());
+        validate_raw_path(&file.file)?;
+    }
+    Ok(())
+}
+
+fn validate_raw_path(file: &str) -> Result<(), String> {
+    if file.is_empty()
+        || file.contains('\\')
+        || file.contains(':')
+        || file.contains('\0')
+        || Path::new(file).components().any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return Err("原图文件必须是录制根目录内的相对路径，使用 / 分隔".into());
+    }
+    Ok(())
+}
+
+fn finite_metrics(m: &FrameMetrics) -> bool {
+    let finite = |value: Option<f64>| value.is_none_or(f64::is_finite);
+    finite(m.width_min) && finite(m.width_max) && finite(m.width_mean) && finite(m.x_mm)
+        && m.spacing_mm.is_finite() && m.gap_max_mm.is_finite() && m.present_ratio.is_finite()
+        && m.widths.iter().flatten().all(|w| w.is_finite())
+}
+
+/// 段配方记录的约束（D-SB-29）：帧数不要求等于计划（规格 §2），但每帧身份 (camera, seq) 唯一、相机属于计划相机（§3）；
+/// 区域下标、指标身份与原配方一致；摘要结论与区域判定相同。
+fn validate_burst(r: &PartRecord, recipe: &Recipe, burst: &BurstRecord) -> Result<(), String> {
+    if !recipe.is_burst() {
+        return Err("旧拍照点配方的记录不能带段配方帧记录".into());
+    }
+    if !r.shots.is_empty() || r.table.is_some() || !r.frames.is_empty() {
+        return Err("段配方记录按帧落库，不能带拍照点、测量点或旧帧信息".into());
+    }
+    let j = &burst.judgement;
+    if (r.judgement.verdict, r.judgement.plc_code, r.judgement.fault_code, r.judgement.reason.as_str()) != (j.verdict, j.plc_code, j.fault_code, j.reason.as_str()) {
+        return Err("段配方记录的结论摘要与区域判定不一致".into());
+    }
+    if burst.expected_total != recipe.expected_total() || burst.tolerance_total != recipe.tolerance_total()
+        || r.frames_expected != burst.expected_total.unwrap_or(0) as usize {
+        return Err("段配方记录的预期帧组数或容差与原配方不一致".into());
+    }
+    let cameras = recipe.plan_cameras().len();
+    if burst.camera_frames.len() != cameras {
+        return Err(format!("段配方记录的各相机帧数应有 {cameras} 项"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for frame in &burst.frames {
+        let (camera, seq) = (frame.camera, frame.seq);
+        if camera >= cameras {
+            return Err(format!("帧记录的相机下标 {camera} 不在计划相机中"));
+        }
+        if seq == 0 || i64::try_from(seq).is_err() {
+            return Err(format!("相机 {camera} 的帧组序号 {seq} 无效"));
+        }
+        if !seen.insert((camera, seq)) {
+            return Err(format!("相机 {camera} 第 {seq} 帧重复记录"));
+        }
+        if frame.region.is_some_and(|region| region >= j.regions.len()) {
+            return Err(format!("相机 {camera} 第 {seq} 帧引用的区域不存在"));
+        }
+        if let Some(metrics) = &frame.metrics {
+            if (metrics.camera, metrics.seq, metrics.state) != (camera, seq, frame.status) || !finite_metrics(metrics) {
+                return Err(format!("相机 {camera} 第 {seq} 帧的指标与帧身份不一致或不是有限数"));
+            }
+        }
+        if let Some(file) = &frame.raw_file {
+            validate_raw_path(file)?;
         }
     }
     Ok(())
+}
+
+/// 已入库的段配方记录与一份待入库记录是否同一检测内容；原图引用是事后补的证据，不参与比较。
+fn same_burst(actual: Option<&PartDetailBurst>, expected: Option<&BurstRecord>) -> Result<bool, String> {
+    let (actual, expected) = match (actual, expected) {
+        (None, None) => return Ok(true),
+        (Some(actual), Some(expected)) => (actual, expected),
+        _ => return Ok(false),
+    };
+    let content = |frames: &[FrameRecord]| -> Result<serde_json::Value, String> {
+        let mut frames: Vec<FrameRecord> = frames.iter().cloned().map(|frame| FrameRecord { raw_file: None, ..frame }).collect();
+        frames.sort_by_key(|frame| (frame.camera, frame.seq));
+        serde_json::to_value(frames).map_err(|error| error.to_string())
+    };
+    let judgement = |judgement: &BurstJudgement| serde_json::to_value(judgement).map_err(|error| error.to_string());
+    Ok((actual.expected_total, actual.tolerance_total, actual.device_triggers, &actual.camera_frames)
+        == (expected.expected_total, expected.tolerance_total, expected.device_triggers, &expected.camera_frames)
+        && judgement(&actual.judgement)? == judgement(&expected.judgement)?
+        && content(&actual.frames)? == content(&expected.frames)?)
+}
+
+fn frame_rows(conn: &Connection, id: i64) -> Result<Vec<FrameRecord>, String> {
+    let mut stmt = conn
+        .prepare("SELECT camera,seq,status,frame_counter,trigger_counter,region,metrics,raw_file FROM part_frames WHERE part_id=?1 ORDER BY camera, seq")
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([id], |row| {
+            Ok(FrameRecord {
+                camera: row.get::<_, i64>(0)? as usize,
+                seq: row.get::<_, i64>(1)? as u64,
+                status: enum_column(row, 2)?,
+                frame_counter: count_column(row, 3)?,
+                trigger_counter: count_column(row, 4)?,
+                region: row.get::<_, Option<i64>>(5)?.map(|n| n as usize),
+                metrics: row.get::<_, Option<String>>(6)?.map(|text| serde_json::from_str(&text)
+                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(e)))).transpose()?,
+                raw_file: row.get(7)?,
+            })
+        })
+        .map_err(db_err)?;
+    rows.collect::<Result<_, _>>().map_err(db_err)
+}
+
+fn snapshot_in(conn: &Connection, revision_id: &str) -> Result<Option<Recipe>, String> {
+    let snapshot: Option<(String, u32, String)> = conn.query_row(
+        "SELECT recipe_id,version,json FROM recipe_snapshots WHERE revision_id = ?1", [revision_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).optional().map_err(db_err)?;
+    snapshot.map(|(id, version, json)| {
+        let recipe = Recipe::from_snapshot(serde_json::from_str(&json).map_err(|e| e.to_string())?)?;
+        if recipe.revision_id != revision_id || recipe.id != id || recipe.version != version {
+            return Err("原配方快照身份或版本损坏".into());
+        }
+        Ok(recipe)
+    })
+    .transpose()
 }
 
 fn backup_old_database(conn: Connection, path: &Path, version: i64) -> Result<PathBuf, String> {
@@ -585,7 +816,13 @@ impl Store {
                  recording_directory TEXT,
                  recording_errors TEXT NOT NULL DEFAULT '[]',
                  sample TEXT,
-                 source TEXT NOT NULL CHECK(source IN ('real','offlineSynthetic','offlineSample','offlineCandidate'))
+                 source TEXT NOT NULL CHECK(source IN ('real','offlineSynthetic','offlineSample','offlineCandidate')),
+                 expected_total INTEGER,
+                 tolerance_total INTEGER,
+                 device_triggers INTEGER,
+                 camera_frames TEXT,
+                 flags TEXT,
+                 burst_judgement TEXT
              );
              CREATE INDEX IF NOT EXISTS parts_ts ON parts(ts);
              CREATE INDEX IF NOT EXISTS parts_source_ts ON parts(source, ts);
@@ -623,7 +860,19 @@ impl Store {
                  PRIMARY KEY (part_id, k),
                  UNIQUE (part_id, shot_id)
              );
-             PRAGMA user_version = 8;
+             CREATE TABLE IF NOT EXISTS part_frames (
+                 part_id INTEGER NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
+                 camera INTEGER NOT NULL CHECK(camera >= 0),
+                 seq INTEGER NOT NULL CHECK(seq >= 1),
+                 status TEXT NOT NULL,
+                 frame_counter TEXT,
+                 trigger_counter TEXT,
+                 region INTEGER,
+                 metrics TEXT,
+                 raw_file TEXT,
+                 PRIMARY KEY (part_id, camera, seq)
+             );
+             PRAGMA user_version = 9;
              COMMIT;",
         )
         .map_err(db_err)?;
@@ -690,7 +939,9 @@ impl Store {
             if !valid_revision || recipe.version == 0 {
                 return Err("配方修订号与实际 ID、版本不一致".into());
             }
-            if r.shots.len() != recipe.shot_count() || r.frames_expected != recipe.shot_count() {
+            if let Some(burst) = r.burst {
+                validate_burst(r, recipe, burst)?;
+            } else if r.shots.len() != recipe.shot_count() || r.frames_expected != recipe.shot_count() {
                 return Err("检测记录必须包含每个计划拍照点，包括缺帧拍照点".into());
             }
             let mut seen = std::collections::HashSet::new();
@@ -703,8 +954,8 @@ impl Store {
             if r.table.is_some_and(|t| t.len() != recipe.point_count()) {
                 return Err("测量点数据长度与原配方不一致".into());
             }
-        } else if !r.shots.is_empty() || r.table.is_some() {
-            return Err("缺少原配方，不能保存无身份的拍照点或测量点".into());
+        } else if !r.shots.is_empty() || r.table.is_some() || r.burst.is_some() {
+            return Err("缺少原配方，不能保存无身份的拍照点、测量点或帧记录".into());
         }
         if r.sample.is_some() && !matches!(r.source, RecordSource::OfflineSample | RecordSource::OfflineCandidate) {
             return Err("只有离线·样本集的记录可以关联样本件".into());
@@ -744,12 +995,25 @@ impl Store {
             tx.query_row("SELECT id FROM parts WHERE sn = ?1 ORDER BY id DESC LIMIT 1", [r.sn], |row| row.get(0)).optional().map_err(db_err)?
         };
         let j = r.judgement;
+        let text = |value: Result<String, serde_json::Error>| value.map_err(|e| e.to_string());
+        let burst_columns = match r.burst {
+            Some(burst) => (
+                burst.expected_total,
+                Some(burst.tolerance_total),
+                burst.device_triggers,
+                Some(text(serde_json::to_string(&burst.camera_frames))?),
+                Some(text(serde_json::to_string(&burst.judgement.flags))?),
+                Some(text(serde_json::to_string(&burst.judgement))?),
+            ),
+            None => (None, None, None, None, None, None),
+        };
         tx.execute(
             "INSERT INTO parts (ts, sn, recipe_id, recipe_version, recipe_revision, trigger_mode, verdict, plc_code, fault_code,
                  reason, drain_ms, frames_expected, frames_received, triggers, retest_of, software_version, judgement, frames,
-                 cycle_id, bundle_id, delivery_state, delivery_updated_at, delivery_message, sample, source)
+                 cycle_id, bundle_id, delivery_state, delivery_updated_at, delivery_message, sample, source,
+                 expected_total, tolerance_total, device_triggers, camera_frames, flags, burst_judgement)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                 ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+                 ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)",
             params![
                 r.ts,
                 r.sn,
@@ -776,10 +1040,35 @@ impl Store {
                 r.delivery.message,
                 r.sample.map(serde_json::to_string).transpose().map_err(|e| e.to_string())?,
                 enum_name(r.source),
+                burst_columns.0,
+                burst_columns.1,
+                burst_columns.2,
+                burst_columns.3,
+                burst_columns.4,
+                burst_columns.5,
             ],
         )
         .map_err(db_err)?;
         let id = tx.last_insert_rowid();
+        if let Some(burst) = r.burst {
+            let mut insert = tx.prepare(
+                "INSERT INTO part_frames (part_id,camera,seq,status,frame_counter,trigger_counter,region,metrics,raw_file)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            ).map_err(db_err)?;
+            for frame in &burst.frames {
+                insert.execute(params![
+                    id,
+                    frame.camera as i64,
+                    frame.seq as i64,
+                    enum_name(frame.status),
+                    frame.frame_counter.map(|n| n.to_string()),
+                    frame.trigger_counter.map(|n| n.to_string()),
+                    frame.region.map(|n| n as i64),
+                    frame.metrics.as_ref().map(serde_json::to_string).transpose().map_err(|e| e.to_string())?,
+                    frame.raw_file,
+                ]).map_err(db_err)?;
+            }
+        }
         for shot in r.shots {
             tx.execute(
                 "INSERT INTO part_shots (part_id,k,shot_id,camera,view,session,ordinal,frame_counter,trigger_counter,status,error,score,ms,raw_files)
@@ -832,7 +1121,8 @@ impl Store {
             && serde_json::to_value(&existing.judgement).map_err(|error| error.to_string())? == serde_json::to_value(record.judgement).map_err(|error| error.to_string())?
             && serde_json::to_value(&existing.frames).map_err(|error| error.to_string())? == serde_json::to_value(record.frames).map_err(|error| error.to_string())?
             && serde_json::to_value(&actual_shots).map_err(|error| error.to_string())? == serde_json::to_value(&expected_shots).map_err(|error| error.to_string())?
-            && serde_json::to_value(actual_recipe).map_err(|error| error.to_string())? == serde_json::to_value(record.recipe).map_err(|error| error.to_string())?;
+            && serde_json::to_value(actual_recipe).map_err(|error| error.to_string())? == serde_json::to_value(record.recipe).map_err(|error| error.to_string())?
+            && same_burst(existing.burst.as_ref(), record.burst)?;
         if !consistent { return Ok(false); }
         let conn = self.conn.lock().unwrap();
         let actual_points = conn.query_row("SELECT format,data FROM part_points WHERE part_id=?1", [summary.id],
@@ -946,6 +1236,39 @@ impl Store {
         Ok(true)
     }
 
+    /// 段配方记录补原图引用：按 (camera, seq) 只增不换——已保存的引用不能改成另一个文件，重复写同一文件是幂等的。
+    /// 一批里有不存在的记录或帧时整批不写，返回 false。
+    pub fn update_frame_raw_files(&self, cycle_id: &str, files: &std::collections::BTreeMap<FrameKey, String>) -> Result<bool, String> {
+        for file in files.values() {
+            validate_raw_path(file)?;
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(db_err)?;
+        let Some(id) = tx.query_row("SELECT id FROM parts WHERE cycle_id=?1", [cycle_id], |row| row.get::<_, i64>(0)).optional().map_err(db_err)? else {
+            return Ok(false);
+        };
+        for (key, file) in files {
+            let seq = i64::try_from(key.seq).map_err(|_| "帧组序号超出存储范围")?;
+            let previous: Option<Option<String>> = tx
+                .query_row("SELECT raw_file FROM part_frames WHERE part_id=?1 AND camera=?2 AND seq=?3", params![id, key.camera as i64, seq], |row| row.get(0))
+                .optional()
+                .map_err(db_err)?;
+            match previous {
+                None => return Ok(false),
+                Some(Some(previous)) if previous != *file => {
+                    return Err(format!("相机 {} 第 {} 帧的原图身份已保存，不能替换为另一个文件", key.camera, key.seq));
+                }
+                Some(Some(_)) => (),
+                Some(None) => {
+                    tx.execute("UPDATE part_frames SET raw_file=?4 WHERE part_id=?1 AND camera=?2 AND seq=?3", params![id, key.camera as i64, seq, file])
+                        .map_err(db_err)?;
+                }
+            }
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(true)
+    }
+
     pub fn update_recording(&self, cycle_id: &str, evidence: &RecordingEvidence) -> Result<bool, String> {
         if evidence.available != (evidence.state == RecordingState::Complete)
             || (evidence.available && (!evidence.errors.is_empty() || evidence.directory.as_deref().is_none_or(str::is_empty)))
@@ -973,6 +1296,9 @@ impl Store {
                 validate_raw_files(&files)?;
                 has_file |= !files.is_empty();
             }
+            has_file |= tx
+                .query_row("SELECT EXISTS(SELECT 1 FROM part_frames WHERE part_id=?1 AND raw_file IS NOT NULL)", [id], |row| row.get::<_, bool>(0))
+                .map_err(db_err)?;
             if !has_file {
                 return Err("没有成功保存的原图引用，不能标记录制可用".into());
             }
@@ -1049,6 +1375,13 @@ impl Store {
             validate_raw_files(&files)?;
             for file in files { protect(&file.file)?; }
         }
+        let mut stmt = conn.prepare(&format!("SELECT f.raw_file FROM part_frames f JOIN parts p ON p.id=f.part_id \
+            WHERE instr(lower(f.raw_file),'_pending')>0 AND {}", scope.clause("p."))).map_err(db_err)?;
+        for row in stmt.query_map([], |row| row.get::<_, String>(0)).map_err(db_err)? {
+            let file = row.map_err(db_err)?;
+            validate_raw_path(&file)?;
+            protect(&file)?;
+        }
         paths.sort();
         paths.dedup();
         Ok(paths)
@@ -1100,15 +1433,35 @@ impl Store {
 
     pub fn detail(&self, id: i64) -> Result<PartDetail, String> {
         let conn = self.conn.lock().unwrap();
-        let (summary, judgement, frames, triggers, software_version, recording) = conn
+        const N: usize = SUMMARY_LEN;
+        let (summary, judgement, frames, triggers, software_version, recording, burst_judgement) = conn
             .query_row(
-                &format!("SELECT {SUMMARY_COLS}, judgement, frames, triggers, software_version,recording_state,recording_available,recording_directory,recording_errors FROM parts WHERE id = ?1"),
+                &format!("SELECT {SUMMARY_COLS}, judgement, frames, triggers, software_version,recording_state,recording_available,recording_directory,recording_errors,burst_judgement FROM parts WHERE id = ?1"),
                 [id],
-                |row| Ok((summary(row)?, row.get::<_, String>(22)?, row.get::<_, String>(23)?, row.get::<_, i64>(24)? as u64, row.get::<_, String>(25)?, recording_row(row, 26)?)),
+                |row| Ok((summary(row)?, row.get::<_, String>(N)?, row.get::<_, String>(N + 1)?, row.get::<_, i64>(N + 2)? as u64, row.get::<_, String>(N + 3)?,
+                    recording_row(row, N + 4)?, row.get::<_, Option<String>>(N + 8)?)),
             )
             .optional()
             .map_err(db_err)?
             .ok_or_else(|| format!("记录 {id} 不存在或已过期清理"))?;
+        let burst = match (burst_judgement, &summary.burst) {
+            (Some(judgement), Some(counts)) => {
+                let revision = summary.recipe_revision.as_deref().ok_or_else(|| format!("记录 {id} 是段配方记录却没有配方快照身份"))?;
+                let recipe = snapshot_in(&conn, revision)?.ok_or_else(|| format!("记录 {id} 的原配方快照缺失"))?;
+                Some(PartDetailBurst {
+                    segments: recipe.path_segments.clone(),
+                    cameras: recipe.plan_cameras(),
+                    expected_total: counts.expected_total,
+                    tolerance_total: counts.tolerance_total,
+                    device_triggers: counts.device_triggers,
+                    camera_frames: counts.camera_frames.clone(),
+                    judgement: serde_json::from_str(&judgement).map_err(|e| format!("记录 {id} 的区域判定损坏：{e}"))?,
+                    frames: frame_rows(&conn, id)?,
+                })
+            }
+            (None, None) => None,
+            _ => return Err(format!("记录 {id} 的段配方字段不完整")),
+        };
         let points = conn
             .query_row("SELECT format, data FROM part_points WHERE part_id = ?1", [id], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)))
             .optional()
@@ -1162,6 +1515,7 @@ impl Store {
             retests,
             shots,
             recording,
+            burst,
         })
     }
 
@@ -1172,19 +1526,12 @@ impl Store {
     }
 
     pub fn recipe_snapshot(&self, revision_id: &str) -> Result<Option<Recipe>, String> {
-        let conn = self.conn.lock().unwrap();
-        let snapshot: Option<(String, u32, String)> = conn.query_row(
-            "SELECT recipe_id,version,json FROM recipe_snapshots WHERE revision_id = ?1", [revision_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ).optional().map_err(db_err)?;
-        snapshot.map(|(id, version, json)| {
-            let recipe = Recipe::from_snapshot(serde_json::from_str(&json).map_err(|e| e.to_string())?)?;
-            if recipe.revision_id != revision_id || recipe.id != id || recipe.version != version {
-                return Err("原配方快照身份或版本损坏".into());
-            }
-            Ok(recipe)
-        })
-        .transpose()
+        snapshot_in(&self.conn.lock().unwrap(), revision_id)
+    }
+
+    /// 段配方记录的逐帧记录，按 (camera, seq) 排序；旧记录为空。
+    pub fn burst_frames(&self, id: i64) -> Result<Vec<FrameRecord>, String> {
+        frame_rows(&self.conn.lock().unwrap(), id)
     }
 
     /// 取出重判候选，缺少测量数据的记录返回空表；ids 为空时按筛选条件。
@@ -1196,7 +1543,7 @@ impl Store {
             (format!(" WHERE p.id IN ({})", vec!["?"; ids.len()].join(",")), ids.iter().map(|&i| SqlValue::Integer(i)).collect())
         };
         let sql = format!(
-            "SELECT p.id, p.ts, p.sn, p.recipe_id, p.recipe_revision, p.verdict, COALESCE(pp.format, {POINTS_FORMAT}), COALESCE(pp.data, x'') FROM parts p
+            "SELECT p.id, p.ts, p.sn, p.recipe_id, p.recipe_revision, p.verdict, COALESCE(pp.format, {POINTS_FORMAT}), COALESCE(pp.data, x''), p.burst_judgement FROM parts p
              LEFT JOIN part_points pp ON pp.part_id = p.id{filter} ORDER BY p.id DESC LIMIT {limit}"
         );
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
@@ -1212,6 +1559,8 @@ impl Store {
                     table: decode(row.get(6)?, &row.get::<_, Vec<u8>>(7)?).map_err(|error| {
                         rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Blob, error.into())
                     })?,
+                    burst: row.get::<_, Option<String>>(8)?.map(|text| serde_json::from_str(&text)
+                        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(e)))).transpose()?,
                 })
             })
             .map_err(db_err)?;
@@ -1237,3 +1586,7 @@ impl Store {
 #[cfg(test)]
 #[path = "store/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "store/burst_fixture.rs"]
+pub(crate) mod burst_fixture;

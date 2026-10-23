@@ -147,7 +147,10 @@ pub(crate) fn validate_config(config: &PlcConfig) -> Result<(), String> {
 
 pub fn recipe_plan(cycle: &CycleHost, recipe: &Recipe) -> Result<PlcPlan, String> {
     let configs = cycle.camera.configs();
-    if let Some(missing) = recipe.cameras().into_iter().find(|id| !configs.iter().any(|c| &c.id == id)) {
+    if recipe.is_burst() {
+        // 段配方：三台计划相机都在相机组里，且是单视角独立设备（D-SB-11）
+        crate::camera::check_burst_cameras(&configs, &recipe.plan_cameras()).map_err(|error| format!("配方 {}：{error}", recipe.id))?;
+    } else if let Some(missing) = recipe.cameras().into_iter().find(|id| !configs.iter().any(|c| &c.id == id)) {
         return Err(format!("配方 {} 用到的相机 {missing} 不在设备配置里", recipe.id));
     }
     PlcPlan::from_recipe(recipe)

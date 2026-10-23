@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { client, copySampleSet, until } from "../../tests/native/lib.mjs";
+import { buildBurstRecipe, checksOff, client, copySampleSet, legacyTemplate, until } from "../../tests/native/lib.mjs";
 
 export { until };
 export const identifier = "com.xyzrobotics.tujiaovision.soak-tests";
@@ -14,7 +14,11 @@ export const SAMPLE_PART = "p01";
 // 模拟标定：样本集原件 mmPerPx=null。取 docs/architecture/p0-plan.md 的假设当量 0.112 mm/px，
 // 在该当量下 S019 胶宽实测约 3.9 mm，与模板胶宽名义 4 mm 吻合；理由见 docs/decisions/soak.md。
 export const SIMULATED_MM_PER_PX = 0.112;
-// 长稳夹具：每个 Pose 组示教一张图（配方要求每组恰好一张），ROI 由黑帽变换找候选后经 lyFlow 试测挑出合格的一张。
+// 长稳有两套建站，由 setup 的 --model 选择（默认 burst）：
+//   burst  段配方（分段连拍）：setupRecipe。样本集是停稳拍数据，一条走廊对不上其他点位，检测项开着样本全判 NG_GAP，
+//          所以建站时把各段检测项全关（checksOff）：长稳验证的是稳定性、资源占用与故障恢复，不是判胶质量；
+//   legacy 旧拍照点配方（只停用不删除，行为不变）：setupLegacyRecipe，下面的 TEACH / LIMITS 夹具只服务它。
+// 旧配方长稳夹具：每个 Pose 组示教一张图（配方要求每组恰好一张），ROI 由黑帽变换找候选后经 lyFlow 试测挑出合格的一张。
 // 限值比模板放宽，只为让正常样本稳定判合格；不代表算法调优结果或现场标定。
 export const TEACH = {
   1: [694, 195, 83, 280], 4: [630, 332, 119, 280], 7: [80, 410, 260, 140], 9: [382, 546, 319, 280],
@@ -61,6 +65,11 @@ export async function connect(cdp, instancePath) {
 
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+/** setup 写下的 setup.json：建站用的模型（burst / legacy）与样本集副本；没有时按段配方。 */
+export async function readSetup(out) {
+  try { return JSON.parse(await readFile(path.join(out, "setup.json"), "utf8")); } catch { return { model: "burst" }; }
+}
+
 export async function prepareSampleSet(source, outputDir) {
   return (await copySampleSet(source, outputDir, manifest => ({ ...manifest, mmPerPx: SIMULATED_MM_PER_PX }))).dir;
 }
@@ -90,15 +99,36 @@ function monotoneCenterline(points, segments = CENTERLINE_SEGMENTS) {
   return path;
 }
 
-/** 进入离线·样本集，建配方：整圈采集 → 采用 → 每组示教一张 → 独立采集正常样本 → 验证 → 发布。 */
+/**
+ * 段配方长稳建站：进入离线·样本集，走廊示教 → 10 轮标定 → 独立样本验证 → 发布（检测项全关，见文件头）。
+ * 样本集 id 取夹具（tests/native/lib.mjs 的 CAMERA_FIXTURES）；已发布时直接复用。
+ */
 export async function setupRecipe(call, sampleSetDir, log = console.log) {
   const entered = await call("site_enter_offline", { source: { kind: "sampleSet", dir: sampleSetDir } });
   assert.equal(entered.mode, "offline");
   await until(() => call("plc_get_status"), s => s.state === "connected", "离线 S7 服务未连接");
   const cameraIds = (await call("camera_rig_config")).map(c => c.id);
   const existing = (await call("cycle_recipes")).find(r => r.id === RECIPE_ID);
-  if (existing) { log(`配方 ${RECIPE_ID} 已发布，跳过建配方`); return { recipeId: RECIPE_ID, cameraIds, reused: true }; }
+  if (existing) { log(`配方 ${RECIPE_ID} 已发布，跳过建配方`); return { model: "burst", recipeId: RECIPE_ID, cameraIds, reused: true }; }
+  const manifest = JSON.parse((await readFile(path.join(sampleSetDir, "sample-set.json"), "utf8")).replace(/^\uFEFF/, "").trim());
   const template = await call("recipe_template");
+  const built = await buildBurstRecipe(call, { sourceId: manifest.id, partId: SAMPLE_PART, doc: { ...template, id: RECIPE_ID, name: "长稳测试" }, patchSegments: checksOff, log });
+  assert(built.validation.passed, `验证未通过：${JSON.stringify(built.validation.checks.filter(c => !c.passed))} ${JSON.stringify(built.validation.samples)}`);
+  await until(async () => (await call("cycle_readiness")).recipes.find(r => r.id === built.id)?.runnable === true, Boolean, `配方 ${built.id} 预热后仍不可运行`, 90000, 500);
+  log(`配方 ${built.id} 已发布：ΣN_exp ${built.calibration.expectedTotal} ± ${built.calibration.toleranceTotal}，示教 ${built.taught.length} 台相机的走廊`);
+  return { model: "burst", recipeId: built.id, cameraIds, taught: built.taught, expectedTotal: built.calibration.expectedTotal,
+    toleranceTotal: built.calibration.toleranceTotal, validation: built.validation.samples };
+}
+
+/** 旧拍照点配方长稳建站：进入离线·样本集，建配方：整圈采集 → 采用 → 每组示教一张 → 独立采集正常样本 → 验证 → 发布。 */
+export async function setupLegacyRecipe(call, sampleSetDir, log = console.log) {
+  const entered = await call("site_enter_offline", { source: { kind: "sampleSet", dir: sampleSetDir } });
+  assert.equal(entered.mode, "offline");
+  await until(() => call("plc_get_status"), s => s.state === "connected", "离线 S7 服务未连接");
+  const cameraIds = (await call("camera_rig_config")).map(c => c.id);
+  const existing = (await call("cycle_recipes")).find(r => r.id === RECIPE_ID);
+  if (existing) { log(`配方 ${RECIPE_ID} 已发布，跳过建配方`); return { model: "legacy", recipeId: RECIPE_ID, cameraIds, reused: true }; }
+  const template = await legacyTemplate(call);
   const created = await call("workspace_create", { doc: { ...template, id: RECIPE_ID, name: "长稳测试" } });
   const id = created.workspace.doc.id;
   const revision = async () => (await call("workspace_get", { id })).workspace.revision;
@@ -139,7 +169,7 @@ export async function setupRecipe(call, sampleSetDir, log = console.log) {
   await until(() => call("workspace_get", { id }), v => !v.workspace.pending && v.workspace.publish.state === "active", "待生效版本未提交", 60000);
   await until(async () => (await call("cycle_readiness")).recipes.find(r => r.id === id)?.runnable === true, Boolean, `配方 ${id} 预热后仍不可运行`, 90000, 500);
   log(`配方 ${id} 已发布：示教 ${taught.length} 个拍照点`);
-  return { recipeId: id, cameraIds, taught, validation: validation.samples };
+  return { model: "legacy", recipeId: id, cameraIds, taught, validation: validation.samples };
 }
 
 /** 回到离线·样本集并等长稳配方可运行：重启后站点模式不持久化。PC 主动断开 PLC 后不会自动重连，

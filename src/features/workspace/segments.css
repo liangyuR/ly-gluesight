@@ -1,0 +1,20 @@
+/* 段列表页（SegmentsPage） */
+.seg-list { display: flex; flex-direction: column; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.seg-card { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 14px 16px; border: 1px solid var(--outline-variant); border-radius: var(--r-lg); background: var(--surface-low); }
+.seg-card-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.seg-card-head > strong { font-size: 15px; font-weight: 600; }
+.seg-card-head > .spacer { flex: 1; }
+.seg-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px 16px; align-items: end; }
+.seg-readonly { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 13px; }
+.seg-readonly > span:first-child { color: var(--on-surface-variant); font-size: 12px; }
+.seg-readonly output { font-variant-numeric: tabular-nums; }
+.seg-readonly small { color: var(--on-surface-variant); font-size: 12px; }
+.seg-pending { color: var(--warn); }
+.seg-offset { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px 16px; align-items: end; padding-top: 10px; border-top: 1px solid var(--outline-variant); }
+.seg-offset > p { grid-column: 1 / -1; margin: 0; font-size: 13px; }
+.seg-checks > summary { cursor: pointer; width: fit-content; color: var(--primary); font-size: 13px; }
+.seg-checks[open] > summary { margin-bottom: 10px; }
+.seg-savebar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-size: 13px; color: var(--on-surface-variant); }
+.seg-savebar .warn { color: var(--warn); }
+.seg-total { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; }
+.seg-total strong { font-size: 18px; font-variant-numeric: tabular-nums; }

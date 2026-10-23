@@ -2,7 +2,7 @@ import type { TagPreset } from "../features/plc";
 
 export const inspectionTagPresets: TagPreset[] = [
   { value: "partStart", label: "工件开始（PLC→PC）" },
-  { value: "partEnd", label: "触发计划完成（PLC→PC）" },
+  { value: "partEnd", label: "运动结束、脉冲串停发（旧配方：触发计划发完）（PLC→PC）" },
   { value: "resultAck", label: "结果确认（PLC→PC）" },
   { value: "faultReset", label: "故障复位（PLC→PC）" },
   { value: "plcHeartbeat", label: "PLC 心跳（PLC→PC）" },
@@ -10,11 +10,11 @@ export const inspectionTagPresets: TagPreset[] = [
   { value: "requestSeq", label: "请求序号（PLC→PC）" },
   { value: "partSn", label: "工件序列号（PLC→PC）" },
   { value: "productCode", label: "产品代码（PLC→PC）" },
-  { value: "shotCount", label: "计划拍照点数（PLC→PC）" },
+  { value: "shotCount", label: "预期总帧数 ΣN_exp（旧配方：触发次数）（PLC→PC）" },
   { value: "planVersion", label: "拍照计划版本（PLC→PC）" },
   { value: "planReserved", label: "保留字段（PLC→PC）" },
-  { value: "deviceShots", label: "设备计划触发数（PLC→PC）" },
-  { value: "deviceTriggers", label: "设备已发触发数（PLC→PC）" },
+  { value: "deviceShots", label: "设备预期总帧数 ΣN_exp（旧配方：设备触发次数）（PLC→PC）" },
+  { value: "deviceTriggers", label: "累计脉冲（参考）（PLC→PC）" },
   { value: "ackSeq", label: "确认序号（PLC→PC）" },
   { value: "visionReady", label: "视觉就绪（PC→PLC）" },
   { value: "armed", label: "已布防（PC→PLC）" },

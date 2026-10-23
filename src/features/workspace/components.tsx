@@ -14,6 +14,7 @@ import type { GrayImage, GrayPixels } from "./types";
 import { errorText } from "../../lib/errors";
 import { stages, stageStatus, stageStatusText } from "./stages";
 import { teachingTasks } from "./teachingTasks";
+import { PlanSteps } from "./PlanSteps";
 import { searchBand } from "./searchBand";
 import SelectionTrack from "../../components/SelectionTrack";
 
@@ -58,8 +59,13 @@ export function WorkspaceBar() {
     {publish?.state === "active" && publish.warning && <Notice title={`v${publish.version} 已生效，但候选版本号未能更新`} tone="warn">{publish.warning}</Notice>}
   </>;
 }
-/** 工作台步骤：侧栏只有“配方”入口，步骤间导航由此承担，状态取后端进度。 */
+/** 工作台步骤：侧栏只有“配方”入口，步骤间导航由此承担，状态取后端进度。段配方（有 plan）用 PlanSteps，旧拍照点配方用 LegacySteps。 */
 export function Steps() {
+  const { data } = useWorkspace();
+  return data?.plan ? <PlanSteps /> : <LegacySteps />;
+}
+/** 旧拍照点模型的步骤条（行为不变）。 */
+function LegacySteps() {
   const { data, doc } = useWorkspace();
   const { pathname } = useLocation();
   const tasks = data && doc ? teachingTasks(doc.shots, data.progress) : [];

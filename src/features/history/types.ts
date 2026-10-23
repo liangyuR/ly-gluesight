@@ -1,4 +1,8 @@
 import type { FrameView, Judgement, SampleLabel, Verdict } from "../cycle/types";
+import type { Flags, PartDetailBurst } from "../plan/types";
+
+/** 段模型（分段连拍飞拍）的历史记录类型，定义在 plan/types.ts；这里转出供历史页面使用。 */
+export type { BurstJudgement, Flags, FrameRecord, PartDetailBurst, PartSummaryV2, RegionResult, Uninspected } from "../plan/types";
 
 export interface PlcDelivery {
   state: "notRequired" | "pending" | "submitted" | "acknowledged" | "failed";
@@ -65,6 +69,9 @@ export interface PartSummary {
   delivery: PlcDelivery;
   source: RecordSource;
   sample: { setId: string; partId: string; sn: string; label: SampleLabel } | null;
+  /** 段配方记录的整件标记（疑似提前终止等单独显示）；旧记录为 null。
+   * 段配方时 framesExpected = expectedTotal（待标定为 0），framesReceived = 帧组数 */
+  flags: Flags | null;
 }
 
 export interface VerdictCounts {
@@ -91,6 +98,8 @@ export interface PartDetail {
   retests: number[];
   shots: PartShot[];
   recording: RecordingEvidence;
+  /** 段配方记录；旧记录为 null。有值时 frames、shots 为空，points 为 null */
+  burst: PartDetailBurst | null;
 }
 
 export interface KindOverride {
@@ -103,13 +112,17 @@ export interface KindOverride {
 
 /** 重判的试算参数：只用于这次重判，不改配方。 */
 export interface Overrides {
-  /** 允许断胶长度（作用于每个拍照点） */
+  /** 允许断胶长度（作用于每个拍照点；段配方记录作用于每帧） */
   maxGapLen?: number;
   filterWindow?: number;
   /** 位置限值（只作用于判位置的拍照点） */
   position: KindOverride;
   /** 胶宽限值（只作用于判胶宽的拍照点） */
   width: KindOverride;
+  /** 段配方记录：直线段的胶宽允差（上 / 下公差、帧内允许超差长度）；绝对限不适用，旧记录忽略。不填时后端按全空处理 */
+  straight?: KindOverride;
+  /** 段配方记录：弯道段的胶宽允差，字段同 straight；未分段区域取直线、弯道中较宽的一档 */
+  corner?: KindOverride;
 }
 
 export interface RejudgeRequest {
@@ -124,6 +137,7 @@ export interface RejudgeResult {
   skipped: number;
   limitHit: boolean;
   matrix: { from: Verdict; to: Verdict; count: number }[];
-  changes: { id: number; sn: string; ts: number; from: Verdict; to: Verdict; reason: string }[];
+  /** flags：段配方记录重判后的整件标记（检测不完整等与阈值无关，照常带出）；旧记录为 null */
+  changes: { id: number; sn: string; ts: number; from: Verdict; to: Verdict; reason: string; flags: Flags | null }[];
   skipReasons: { id: number; sn: string; ts: number; reason: string }[];
 }

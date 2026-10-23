@@ -95,7 +95,9 @@ export default function HandshakeMonitor({ handshake, connected, tagValue }: Han
         </dl>
         <dl className="plc-kv">
           <div><dt>SN</dt><dd>partSn <span className="sn">{show(read("partSn"))}</span> · resultSn <span className="sn">{show(read("resultSn"))}</span></dd></div>
-          <div><dt>触发计数</dt><dd className="mono">deviceTriggers {show(read("deviceTriggers"))} / deviceShots {show(read("deviceShots"))}</dd></div>
+          <div><dt>脉冲计数（参考）</dt><dd className="mono">
+            deviceTriggers {show(read("deviceTriggers"))}（累计脉冲，参考） · deviceShots {show(read("deviceShots"))}（预期总帧数 ΣN_exp）
+          </dd></div>
         </dl>
       </div>
       {handshake.message && !waiting.includes(handshake.message) && <Text as="p" variant="label" muted>后端说明：{handshake.message}</Text>}

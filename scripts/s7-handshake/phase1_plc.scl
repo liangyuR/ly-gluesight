@@ -1,7 +1,9 @@
-// S7-1200/1500 接入参考，尚未在 TIA Portal 编译。握手协议 5（交互表 V1.1）。
+// S7-1200/1500 接入参考，尚未在 TIA Portal 编译。握手协议 6（分段连拍；DB4/DB2 布局沿用交互表 V1.1，与协议 5 相同）。
 // 两个标准 DB 均取消“优化的块访问”：GlueSightPlcArea 编号设为 DB4（PLC 写、PC 读，字节 0–89），
 // GlueSightPcArea 编号设为 DB2（PC 写、PLC 读，字节 0–71）。生成块后核对编辑器偏移量列与协议第 2、3 节逐行一致。
 // 16 位字段为 Int（只用 0–32767），SN 为 String[50]。本 FB 只写 DB4，不写 DB2。
+// 协议 6：shotCount/deviceShots 填 PC 导出计划的 expectedTotal（ΣN_exp）；deviceTriggers 只作参考，
+// 运动中不与计划数比较，结束时也不要求等于 deviceShots；累计脉冲计数回退仍判 7006。
 DATA_BLOCK "GlueSightPlcArea"
 { S7_Optimized_Access := 'FALSE' }
 VERSION : 0.1
@@ -29,7 +31,7 @@ VERSION : 0.1
       partSn : String[50];
    END_VAR
 BEGIN
-   protocolVersion := 5;
+   protocolVersion := 6;
 END_DATA_BLOCK
 
 DATA_BLOCK "GlueSightPcArea"
@@ -135,7 +137,7 @@ BEGIN
    #TriggerPermit := FALSE;
    #ReadyForPart := FALSE;
    #TripCode := UINT#0;
-   "GlueSightPlcArea".protocolVersion := INT#5;
+   "GlueSightPlcArea".protocolVersion := INT#6;
 
    IF #Startup OR NOT #Initialized THEN
       #Initialized := TRUE;
@@ -231,7 +233,7 @@ BEGIN
                AND NOT "GlueSightPlcArea".partStart AND NOT "GlueSightPlcArea".partEnd
                AND NOT "GlueSightPlcArea".resultAck THEN
                IF (#DeviceShots <= INT#0) OR (#PlanVersion <= DINT#0)
-                  OR #MotionComplete OR ("GlueSightPcArea".pcProtocolVersion <> INT#5) THEN
+                  OR #MotionComplete OR ("GlueSightPcArea".pcProtocolVersion <> INT#6) THEN
                   #TripCode := UINT#7004;
                ELSIF ("GlueSightPlcArea".requestSeq >= DINT#2147483647) OR ("GlueSightPlcArea".requestSeq < DINT#0) THEN
                   #TripCode := UINT#7007;
@@ -289,8 +291,9 @@ BEGIN
                   #TripCode := UINT#7006;
                ELSE
                   #Delta := #IssuedPulseCount - #CounterBase;
-                  IF #Delta > INT_TO_UDINT(#FrozenDeviceShots) THEN
-                     #TripCode := UINT#7006;
+                  // 协议 6：deviceTriggers 只作参考，不与计划数比较；Int 只用 0–32767，超出时饱和，不得回绕成负数。
+                  IF #Delta > UDINT#32767 THEN
+                     #CurrentTriggers := INT#32767;
                   ELSE
                      #CurrentTriggers := UDINT_TO_INT(#Delta);
                   END_IF;
@@ -298,13 +301,10 @@ BEGIN
                IF #TripCode = UINT#0 THEN
                   "GlueSightPlcArea".deviceTriggers := #CurrentTriggers;
                   IF #MotionComplete THEN
-                     IF #CurrentTriggers <> #FrozenDeviceShots THEN
-                        #TripCode := UINT#7006;
-                      ELSE
-                         #EndValidated := TRUE;
-                         "GlueSightPlcArea".partEnd := TRUE;
-                        #State := UINT#40;
-                     END_IF;
+                     // 运动结束、脉冲串停发后：先写最终 deviceTriggers，再置 partEnd；不要求等于 FrozenDeviceShots。
+                     #EndValidated := TRUE;
+                     "GlueSightPlcArea".partEnd := TRUE;
+                     #State := UINT#40;
                   END_IF;
                END_IF;
             END_IF;
@@ -382,7 +382,7 @@ BEGIN
             END_IF;
             IF #ResetReadyLowSeen AND #ResetHoldTimer.Q AND #PcAlive
                AND "GlueSightPcArea".visionReady
-               AND ("GlueSightPcArea".pcProtocolVersion = INT#5)
+               AND ("GlueSightPcArea".pcProtocolVersion = INT#6)
                AND NOT "GlueSightPcArea".armed AND NOT "GlueSightPcArea".busy
                AND NOT "GlueSightPcArea".done AND NOT "GlueSightPcArea".visionFault THEN
                "GlueSightPlcArea".faultReset := FALSE;
@@ -408,7 +408,7 @@ BEGIN
 
    #ReadyForPart := (#State = UINT#10) AND #PcAlive
       AND "GlueSightPcArea".visionReady AND NOT "GlueSightPcArea".visionFault
-      AND ("GlueSightPcArea".pcProtocolVersion = INT#5)
+      AND ("GlueSightPcArea".pcProtocolVersion = INT#6)
       AND NOT "GlueSightPcArea".armed AND NOT "GlueSightPcArea".busy
       AND NOT "GlueSightPcArea".done AND NOT "GlueSightPlcArea".partStart
       AND NOT "GlueSightPlcArea".partEnd AND NOT "GlueSightPlcArea".resultAck

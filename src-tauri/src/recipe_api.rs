@@ -4,6 +4,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
 use crate::cycle::{CycleHost, Input, RecipeSummary};
+use crate::plan::{self, PlanExport};
 use crate::recipe::{self, Recipe, RecipeDoc};
 use crate::settings::CycleSettings;
 
@@ -45,24 +46,28 @@ pub fn recipe_preview(mut doc: RecipeDoc) -> Result<Recipe, String> {
     doc.build()
 }
 
-/// 新建配方的起点：一份飞拍默认值。
+/// 新建配方的起点：段配方（D-SB-24），相机取相机组前三台，一个待标定的直线段。
 #[tauri::command]
 pub fn recipe_template(cycle: State<'_, CycleHost>) -> RecipeDoc {
-    let mut doc = recipe::samples().remove(0);
     let used: Vec<u16> = cycle.recipes.list().iter().map(|r| r.product_code).collect();
-    doc.product_code = (1..=i16::MAX as u16).find(|c| !used.contains(c)).unwrap_or(0);
-    doc.id = format!("NEW-{}", doc.product_code);
-    doc.name = "新配方".into();
-    doc.version = 1;
-    // 默认挑相机组第一台
-    let configs = cycle.camera.configs();
-    if let Some(c) = configs.first() {
-        for shot in &mut doc.shots {
-            shot.camera = c.id.clone();
-        }
-        doc.sync_imaging();
-    }
-    doc
+    let cameras: Vec<String> = cycle.camera.configs().iter().map(|c| c.id.clone()).collect();
+    template(&used, &cameras)
+}
+
+/// 产品代码取第一个没被占用的；相机按相机组顺序取前三台（不足 3 台照样建，但过不了段配方校验）。
+fn template(used_codes: &[u16], rig_cameras: &[String]) -> RecipeDoc {
+    let product_code = (1..=i16::MAX as u16).find(|c| !used_codes.contains(c)).unwrap_or(0);
+    let cameras = &rig_cameras[..rig_cameras.len().min(plan::PLAN_CAMERAS)];
+    recipe::burst_template(format!("NEW-{product_code}"), "新配方".into(), product_code, cameras)
+}
+
+/// 段配方的计划导出 JSON（规格 §1）：段序列、各段 N_exp、容差、ΣN_exp，给 PLC / 机器人工程师核对使能点位；
+/// PLC 的 shotCount 与 deviceShots 都填 expectedTotal。未标定时 expectedTotal 为 null。
+#[tauri::command]
+pub fn recipe_plan_export(cycle: State<'_, CycleHost>, id: String) -> Result<String, String> {
+    let recipe = cycle.recipes.get(&id).ok_or_else(|| format!("配方不存在：{id}"))?;
+    let export = PlanExport::from_recipe(&recipe)?;
+    serde_json::to_string_pretty(&export).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -82,4 +87,19 @@ pub fn recipe_delete(app: AppHandle, cycle: State<'_, CycleHost>, id: String) ->
     }
     let _ = cycle.tx.send(Input::Refresh);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 规格 §1 + D-SB-24：新建配方是段配方，相机按相机组顺序取前三台，各段待标定；成像参数随检测相机补齐，能通过配方校验。
+    #[test]
+    fn new_recipe_template_has_three_cameras_and_uncalibrated_segments() {
+        let rig: Vec<String> = ["camB", "camA", "camC", "camD"].map(String::from).to_vec();
+        let recipe = template(&[1, 2], &rig).build().unwrap();
+        assert_eq!(recipe.plan_cameras(), ["camB", "camA", "camC"]);
+        assert!(recipe.is_burst() && recipe.path_segments.iter().all(|s| s.expected_frames.is_none()));
+        assert_eq!(recipe.expected_total(), None);
+    }
 }

@@ -16,7 +16,10 @@ use crate::judge::{Judgement, PointState};
 use crate::offline::sample_set::SampleRef;
 use crate::recipe::Recipe;
 use crate::recorder::{RecordedRawFile, RecordingOutcome, RecordingState as RecorderState};
-use crate::store::{PartDetail, PartRecord, PartShot, PlcDelivery, PlcDeliveryState, RecordSource, RecordingEvidence, RecordingState, ShotRawFile, Store};
+use crate::store::{
+    BurstRecord, FrameKey, FrameRecord, PartDetail, PartRecord, PartShot, PlcDelivery, PlcDeliveryState, RecordSource, RecordingEvidence, RecordingState,
+    ShotRawFile, Store,
+};
 
 const PENDING_TTL_MS: i64 = 30 * 60 * 1000;
 const RETRY_BASE_MS: i64 = 1000;
@@ -43,6 +46,9 @@ pub struct RecordedPart {
     pub shots: Vec<PartShot>,
     pub source: RecordSource,
     pub sample: Option<SampleRef>,
+    /// 段配方的帧与区域记录；旧拍照点配方为 None
+    #[serde(default)]
+    pub burst: Option<BurstRecord>,
 }
 
 impl RecordedPart {
@@ -65,6 +71,7 @@ impl RecordedPart {
             shots: &self.shots,
             source: self.source,
             sample: self.sample.as_ref(),
+            burst: self.burst.as_ref(),
         }
     }
 }
@@ -416,6 +423,8 @@ trait Sink {
     fn delivery(&mut self, cycle: &str, delivery: &PlcDelivery) -> Result<bool, String>;
     fn submission_timing(&mut self, cycle: &str, drain_ms: u64) -> Result<bool, String>;
     fn raw_files(&mut self, cycle: &str, k: usize, files: &[ShotRawFile]) -> Result<bool, String>;
+    /// 段配方的原图引用，按 (camera, seq) 一批写入
+    fn frame_files(&mut self, cycle: &str, files: &BTreeMap<FrameKey, String>) -> Result<bool, String>;
     fn recording(&mut self, cycle: &str, evidence: &RecordingEvidence) -> Result<bool, String>;
 }
 
@@ -458,6 +467,10 @@ impl Sink for AppSink<'_> {
         self.0.try_state::<Store>().ok_or("检测记录数据库尚未初始化")?.update_shot_raw_files(cycle, k, files)
     }
 
+    fn frame_files(&mut self, cycle: &str, files: &BTreeMap<FrameKey, String>) -> Result<bool, String> {
+        self.0.try_state::<Store>().ok_or("检测记录数据库尚未初始化")?.update_frame_raw_files(cycle, files)
+    }
+
     fn recording(&mut self, cycle: &str, evidence: &RecordingEvidence) -> Result<bool, String> {
         self.0.try_state::<Store>().ok_or("检测记录数据库尚未初始化")?.update_recording(cycle, evidence)
     }
@@ -485,6 +498,10 @@ struct CycleEntry {
     raw_files: BTreeMap<usize, Vec<ShotRawFile>>,
     saved_raw_files: BTreeMap<usize, Vec<ShotRawFile>>,
     shot_keys: Option<BTreeSet<usize>>,
+    /// 段配方：每帧原图引用（录制根内相对路径）
+    frame_files: BTreeMap<FrameKey, String>,
+    saved_frame_files: BTreeMap<FrameKey, String>,
+    frame_keys: Option<BTreeSet<FrameKey>>,
     last_recording: Option<RecordingOutcome>,
     recording: Option<RecordingEvidence>,
     saved_recording: Option<RecordingEvidence>,
@@ -495,7 +512,8 @@ struct CycleEntry {
 
 impl CycleEntry {
     fn pending(&self) -> bool {
-        self.record.is_some() || self.delivery != self.saved_delivery || self.drain_ms != self.saved_drain_ms || self.raw_files != self.saved_raw_files || self.recording != self.saved_recording
+        self.record.is_some() || self.delivery != self.saved_delivery || self.drain_ms != self.saved_drain_ms || self.raw_files != self.saved_raw_files
+            || self.frame_files != self.saved_frame_files || self.recording != self.saved_recording
     }
 
     fn defer_retry(&mut self, now: i64) {
@@ -531,7 +549,7 @@ impl Coordinator {
                 self.order.push_back(cycle.clone());
                 let mut entry = CycleEntry::default();
                 match sink.find(&cycle) {
-                    Ok(Some(existing)) => restore(&cycle, &mut entry, existing.summary.delivery, existing.shots, existing.recording, existing.summary.drain_ms, &mut notices),
+                    Ok(Some(existing)) => restore_existing(&cycle, &mut entry, existing, &mut notices),
                     Ok(None) => (),
                     Err(error) => log(&mut notices, "err", "追溯原记录读取失败", &cycle, error),
                 }
@@ -574,7 +592,7 @@ impl Coordinator {
             if entry.pending() && (entry.record.is_some() || entry.inserted || entry.failures > 0) && now >= entry.retry_at {
                 if entry.record.is_none() && entry.failures > 0 {
                     match sink.find(cycle) {
-                        Ok(Some(existing)) => restore(cycle, entry, existing.summary.delivery, existing.shots, existing.recording, existing.summary.drain_ms, &mut notices),
+                        Ok(Some(existing)) => restore_existing(cycle, entry, existing, &mut notices),
                         Ok(None) => (),
                         Err(error) => {
                             entry.defer_retry(now);
@@ -618,13 +636,14 @@ impl Coordinator {
         if entry.pending() {
             let verdict =
                 entry.record.as_ref().map(|part| format!("，待入库原判定 {:?}：{}", part.judgement.verdict, part.judgement.reason)).unwrap_or_default();
+            let frames = if entry.frame_files.is_empty() { String::new() } else { format!("，帧原图数={}", entry.frame_files.len()) };
             log(
                 notices,
                 "err",
                 "追溯待写数据淘汰",
                 cycle,
                 format!(
-                    "{reason}，交付待写={}，录制状态待写={}，原图组数={}，已停止自动重试{verdict}",
+                    "{reason}，交付待写={}，录制状态待写={}，原图组数={}{frames}，已停止自动重试{verdict}",
                     entry.delivery != entry.saved_delivery,
                     entry.recording != entry.saved_recording,
                     entry.raw_files.len()
@@ -671,14 +690,50 @@ fn merge_timing(cycle: &str, current: &mut Option<u64>, incoming: Option<u64>, n
     }
 }
 
-fn raw_file(file: RecordedRawFile) -> Result<(usize, ShotRawFile), String> {
-    if file.k >= 64 || !(1..=3).contains(&file.view) || file.width == 0 || file.height == 0 {
-        return Err(format!("原图 k={} 或 view={} 越界", file.k, file.view));
+/// 一条原图引用归属到哪里：旧拍照点模型按 (k, view)，段配方按 (camera, seq)。
+enum RawRef {
+    Shot(usize, ShotRawFile),
+    Frame(FrameKey, String),
+}
+
+/// 原图引用的身份校验。旧拍照点模型 k < 64、view 1–3；段配方按 (camera, seq)，不受这两条限制（帧数远超 64，没有视角），seq 从 1 起。
+fn raw_file(file: RecordedRawFile) -> Result<RawRef, String> {
+    match file.frame {
+        Some(key) if key.seq == 0 || file.width == 0 || file.height == 0 => {
+            return Err(format!("原图 相机 {} 第 {} 帧的帧号或尺寸无效", key.camera, key.seq));
+        }
+        Some(_) => (),
+        None if file.k >= 64 || !(1..=3).contains(&file.view) || file.width == 0 || file.height == 0 => {
+            return Err(format!("原图 k={} 或 view={} 越界", file.k, file.view));
+        }
+        None => (),
     }
     if file.file.is_empty() || file.file.contains(['\\', ':', '\0']) || file.file.split('/').any(|part| matches!(part, "" | "." | "..")) {
         return Err("原图文件不是录制根目录内的相对路径".into());
     }
-    Ok((file.k, ShotRawFile { view: file.view, file: file.file, width: Some(file.width), height: Some(file.height) }))
+    Ok(match file.frame {
+        Some(key) => RawRef::Frame(key, file.file),
+        None => RawRef::Shot(file.k, ShotRawFile { view: file.view, file: file.file, width: Some(file.width), height: Some(file.height) }),
+    })
+}
+
+/// 段配方一帧的原图引用：只增不换，原记录没有这一帧时不归属。
+fn merge_frame_file(cycle: &str, entry: &mut CycleEntry, key: FrameKey, incoming: String, notices: &mut Vec<Notice>) -> bool {
+    if entry.frame_keys.as_ref().is_some_and(|keys| !keys.contains(&key)) {
+        log(notices, "err", "原图归属失败", cycle, format!("原记录没有相机 {} 第 {} 帧", key.camera, key.seq));
+        return false;
+    }
+    match entry.frame_files.get(&key) {
+        Some(previous) if *previous == incoming => false,
+        Some(_) => {
+            log(notices, "err", "原图身份冲突", cycle, format!("相机 {} 第 {} 帧已有关联文件，保留首次原图证据", key.camera, key.seq));
+            false
+        }
+        None => {
+            entry.frame_files.insert(key, incoming);
+            true
+        }
+    }
 }
 
 fn merge_files(cycle: &str, entry: &mut CycleEntry, k: usize, incoming: ShotRawFile, notices: &mut Vec<Notice>) -> bool {
@@ -712,7 +767,8 @@ fn merge_recording(cycle: &str, entry: &mut CycleEntry, outcome: RecordingOutcom
     let had_files = !outcome.files.is_empty();
     for file in outcome.files {
         match raw_file(file) {
-            Ok((k, file)) => changed |= merge_files(cycle, entry, k, file, notices),
+            Ok(RawRef::Shot(k, file)) => changed |= merge_files(cycle, entry, k, file, notices),
+            Ok(RawRef::Frame(key, file)) => changed |= merge_frame_file(cycle, entry, key, file, notices),
             Err(error) => {
                 log(notices, "err", "原图引用无效", cycle, &error);
                 errors.push(error);
@@ -750,7 +806,14 @@ fn merge_evidence(cycle: &str, current: &mut Option<RecordingEvidence>, evidence
     }
 }
 
-fn restore(cycle: &str, entry: &mut CycleEntry, delivery: PlcDelivery, shots: Vec<PartShot>, recording: RecordingEvidence, drain_ms: Option<u64>, notices: &mut Vec<Notice>) {
+fn restore_existing(cycle: &str, entry: &mut CycleEntry, existing: PartDetail, notices: &mut Vec<Notice>) {
+    let frames = existing.burst.map(|burst| burst.frames).unwrap_or_default();
+    restore(cycle, entry, existing.summary.delivery, existing.shots, frames, existing.recording, existing.summary.drain_ms, notices);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn restore(cycle: &str, entry: &mut CycleEntry, delivery: PlcDelivery, shots: Vec<PartShot>, frames: Vec<FrameRecord>, recording: RecordingEvidence,
+    drain_ms: Option<u64>, notices: &mut Vec<Notice>) {
     entry.inserted = true;
     let pending_timing = entry.drain_ms.take();
     entry.drain_ms = drain_ms;
@@ -758,6 +821,7 @@ fn restore(cycle: &str, entry: &mut CycleEntry, delivery: PlcDelivery, shots: Ve
     merge_timing(cycle, &mut entry.drain_ms, pending_timing, notices);
     entry.record = None;
     entry.shot_keys = Some(shots.iter().map(|shot| shot.k).collect());
+    entry.frame_keys = Some(frames.iter().map(|frame| FrameKey { camera: frame.camera, seq: frame.seq }).collect());
     let pending_delivery = entry.delivery.take();
     entry.saved_delivery = Some(delivery.clone());
     entry.delivery = Some(delivery);
@@ -778,6 +842,14 @@ fn restore(cycle: &str, entry: &mut CycleEntry, delivery: PlcDelivery, shots: Ve
             merge_files(cycle, entry, k, file, notices);
         }
     }
+    let pending = std::mem::take(&mut entry.frame_files);
+    entry.saved_frame_files = frames.into_iter()
+        .filter_map(|frame| frame.raw_file.map(|file| (FrameKey { camera: frame.camera, seq: frame.seq }, file)))
+        .collect();
+    entry.frame_files = entry.saved_frame_files.clone();
+    for (key, file) in pending {
+        merge_frame_file(cycle, entry, key, file, notices);
+    }
 }
 
 fn flush(cycle: &str, entry: &mut CycleEntry, sink: &mut impl Sink, now: i64, notices: &mut Vec<Notice>) {
@@ -788,11 +860,12 @@ fn flush(cycle: &str, entry: &mut CycleEntry, sink: &mut impl Sink, now: i64, no
         match sink.insert(part) {
             Ok(InsertResult::Inserted(id)) => {
                 let part = entry.record.take().unwrap();
-                restore(cycle, entry, part.delivery, part.shots, RecordingEvidence::default(), part.drain_ms, notices);
+                let frames = part.burst.map(|burst| burst.frames).unwrap_or_default();
+                restore(cycle, entry, part.delivery, part.shots, frames, RecordingEvidence::default(), part.drain_ms, notices);
                 notices.push(Notice::Inserted(id));
             }
             Ok(InsertResult::Existing(existing)) => {
-                restore(cycle, entry, existing.summary.delivery, existing.shots, existing.recording, existing.summary.drain_ms, notices);
+                restore_existing(cycle, entry, *existing, notices);
                 log(notices, "info", "重复追溯入库", cycle, "数据库已有相同 cycleId，保留原记录及原图证据");
             }
             Err(error) => {
@@ -862,9 +935,31 @@ fn flush(cycle: &str, entry: &mut CycleEntry, sink: &mut impl Sink, now: i64, no
             }
         }
     }
+    let frame_files: BTreeMap<FrameKey, String> = entry.frame_files.iter()
+        .filter(|(key, file)| entry.saved_frame_files.get(*key) != Some(*file))
+        .map(|(key, file)| (*key, file.clone()))
+        .collect();
+    if !frame_files.is_empty() {
+        match sink.frame_files(cycle, &frame_files) {
+            Ok(true) => {
+                entry.saved_frame_files.extend(frame_files);
+                entry.inserted = true;
+                changed = true;
+            }
+            Ok(false) if entry.inserted => {
+                failed = true;
+                log(notices, "err", "原图追溯未写入", cycle, format!("原记录或其中的相机帧不存在，保留待写的 {} 帧原图引用", frame_files.len()));
+            }
+            Ok(false) => (),
+            Err(error) => {
+                failed = true;
+                log(notices, "err", "原图追溯写入失败", cycle, error);
+            }
+        }
+    }
     if entry.recording != entry.saved_recording {
         if let Some(evidence) = entry.recording.as_ref() {
-            if !evidence.available || entry.raw_files == entry.saved_raw_files {
+            if !evidence.available || (entry.raw_files == entry.saved_raw_files && entry.frame_files == entry.saved_frame_files) {
                 match sink.recording(cycle, evidence) {
                     Ok(true) => {
                         entry.saved_recording = Some(evidence.clone());
@@ -935,6 +1030,10 @@ fn immutable_record(part: &RecordedPart) -> Result<serde_json::Value, String> {
     if let Some(shots) = fields.get_mut("shots").and_then(serde_json::Value::as_array_mut) {
         for shot in shots { if let Some(fields) = shot.as_object_mut() { fields.remove("rawFiles"); } }
     }
+    // 段配方的原图引用同样是事后补的证据；其余帧、区域、标记都属于不可变检测内容
+    if let Some(frames) = fields.get_mut("burst").and_then(|burst| burst.get_mut("frames")).and_then(serde_json::Value::as_array_mut) {
+        for frame in frames { if let Some(fields) = frame.as_object_mut() { fields.remove("rawFile"); } }
+    }
     Ok(value)
 }
 
@@ -997,7 +1096,7 @@ fn recover_cycle(spool: &mut spool::Spool, cycle: &str, sink: &mut impl Sink, no
         if first.available != (first.state == RecorderState::Complete)
             || (first.available && (first.directory.is_none() || first.files.is_empty() || !first.errors.is_empty()))
             || (matches!(first.state, RecorderState::Off | RecorderState::NotRetained) && (first.directory.is_some() || !first.files.is_empty()))
-            || first.files.iter().any(|file| !files.insert((file.k, file.view))) {
+            || first.files.iter().any(|file| !files.insert((file.frame, file.k, file.view))) {
             return Err(format!("cycleId={cycle} 的主记录前录制结构不一致，保留原始 spool"));
         }
         spool.archive_preinsert(&events.iter().map(|(receipt, _)| *receipt).collect::<Vec<_>>())?;

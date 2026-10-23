@@ -1,8 +1,10 @@
 mod storage_startup;
 mod candidate;
+mod calibration;
 mod applog;
 mod arming;
 mod audit;
+mod burst_judge;
 mod camera;
 mod commands;
 mod cycle;
@@ -10,6 +12,7 @@ mod cycle_ids;
 mod diagnostics;
 mod disk_guard;
 mod frame;
+mod frame_group;
 mod fsio;
 mod history;
 mod handshake;
@@ -22,6 +25,7 @@ mod measure;
 mod mvs;
 mod offline;
 mod packaging;
+mod plan;
 mod plc;
 mod plc_plan;
 mod plc_session;
@@ -36,6 +40,7 @@ mod image_file;
 mod settings;
 mod site;
 mod shot_router;
+mod segmentation;
 mod simimage;
 mod store;
 mod storage;
@@ -49,6 +54,21 @@ mod ziparchive;
 use tauri::Manager;
 
 pub use packaging::check_packaged_runtime;
+
+/// 吞吐探针（examples/throughput_probe.rs）走生产加载路径所需的内部接口，只为 example 暴露；不是稳定 API，应用本身不用。
+#[doc(hidden)]
+pub mod probe_api {
+    pub use crate::image_file::save_pgm;
+    pub use crate::production::{graphs, Prepared, GRAPH_VERSION};
+    pub use crate::recipe::{samples, DetectParams, JudgeParams, Polarity, Recipe, RecipeDoc, ShotLimits};
+    pub use crate::release::{load as load_release, publish as publish_release, PublishInput, ResourceSource, ShotInput, ValidationSite, Versions};
+    pub use crate::vision::{Engine, FrameImage};
+
+    /// 发布包加载后的预热：在自己的示教原图上跑一遍（`Prepared::warm` 是 crate 内可见）。
+    pub fn warm(prepared: &Prepared) -> Result<(), String> {
+        prepared.warm()
+    }
+}
 
 fn open_store(app: &tauri::AppHandle) -> Result<store::Store, String> {
     store::Store::open_deferred_recovery(&storage::root(app).join("inspection.db"))
@@ -150,6 +170,7 @@ pub fn run() {
             cycle::cycle_readiness,
             camera::camera_rig_status,
             camera::camera_rig_config,
+            camera::camera_bandwidth,
             camera::camera_save_config,
             camera::camera_add,
             camera::camera_remove,
@@ -165,6 +186,7 @@ pub fn run() {
             recipe_api::recipe_template,
             recipe_api::recipe_delete,
             recipe_api::recipe_delete_unavailable,
+            recipe_api::recipe_plan_export,
             teach::records_list,
             history::history_query,
             history::history_detail,
@@ -192,6 +214,7 @@ pub fn run() {
             recipe_capture::recipe_capture_stop,
             recipe_capture::recipe_capture_list,
             recipe_capture::recipe_capture_image,
+            recipe_capture::recipe_capture_frame_image,
             workspace::workspace_set_views,
             workspace::workspace_select_group_image,
             workspace::workspace_save_draft,
@@ -229,9 +252,18 @@ pub fn run() {
             workspace::workspace_comparisons,
             workspace::workspace_runtime_overview,
             workspace::workspace_live_image,
+            workspace::workspace_live_frame_image,
             workspace::workspace_station_capture,
             workspace::workspace_station_import,
             workspace::workspace_station_image,
+            workspace::workspace_update_segments,
+            workspace::workspace_teach_camera,
+            workspace::workspace_extract_corridor,
+            workspace::workspace_calibration_add_round,
+            workspace::workspace_calibration_remove_round,
+            workspace::workspace_calibration_apply,
+            workspace::workspace_confirm_tolerance,
+            workspace::workspace_record_frame_image,
         ])
         .run(context)
         .expect("error while running tauri application");

@@ -3,11 +3,12 @@ import { MemoryRouter } from "react-router-dom";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import InspectPage from "../src/pages/InspectPage";
-import { cycleApi, useCycle, useLayout } from "../src/features/cycle/api";
+import { cycleApi, recipeApi, useCycle, useLayout } from "../src/features/cycle/api";
 import { workspaceApi } from "../src/features/workspace/api";
+import { burstImageApi } from "../src/features/workspace/burstImages";
 import { plcApi } from "../src/features/plc/api";
-import { deferred, readiness, sampleSet, siteStatus, snapshot, summary, workspaceView } from "./fixtures";
-import { cycleMeasurement, cyclePart, cycleResult } from "./cycle-visual-fixtures";
+import { burstJudgement, burstRecipe, burstSummary, burstWorkspaceView, deferred, readiness, sampleSet, siteStatus, snapshot, summary, workspaceView } from "./fixtures";
+import { burstPartView, burstResult, cycleMeasurement, cyclePart, cycleResult } from "./cycle-visual-fixtures";
 import { plcConfig } from "./plc-fixtures";
 import type { LogLine, Measured, Readiness, Recipe, RecipeSummary, SiteStatus, Snapshot } from "../src/features/cycle/types";
 import type { PlcHandshakeState, PointValue } from "../src/features/plc/types";
@@ -15,8 +16,10 @@ import type { PlcHandshakeState, PointValue } from "../src/features/plc/types";
 vi.mock("../src/features/cycle/api", () => ({
   useCycle: vi.fn(), useRecipes: () => recipeList, useLayout: vi.fn(),
   useSiteStatus: () => site, useReadiness: () => ({ readiness: report, refresh: async () => report }), cycleApi: { selectRecipe: vi.fn(), reset: vi.fn(), offlineRun: vi.fn(), offlineStop: vi.fn() },
+  recipeApi: { doc: vi.fn() },
 }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { runtimeOverview: vi.fn(), liveImage: vi.fn(), list: vi.fn(), debugRun: vi.fn() } }));
+vi.mock("../src/features/workspace/burstImages", () => ({ burstImageApi: { live: vi.fn(), record: vi.fn() } }));
 vi.mock("../src/features/plc/api", () => ({ plcApi: { getConfig: vi.fn() }, usePlcValues: () => values,
   usePlcStatus: () => ({ state: "connected", since: 1 }), subscribe: () => () => {},
   usePlcOperationState: () => ({ blockedReason: "", handshake: plcHandshake }) }));
@@ -42,6 +45,8 @@ beforeEach(() => {
   vi.mocked(workspaceApi.debugRun).mockReset().mockResolvedValue(undefined);
   vi.mocked(workspaceApi.runtimeOverview).mockReset().mockResolvedValue(null);
   vi.mocked(workspaceApi.liveImage).mockReset().mockResolvedValue({ url: "data:,", width: 100, height: 60 });
+  vi.mocked(burstImageApi.live).mockReset().mockResolvedValue({ url: "data:,", width: 100, height: 60 });
+  vi.mocked(recipeApi.doc).mockReset().mockResolvedValue(burstRecipe());
   vi.mocked(plcApi.getConfig).mockReset().mockResolvedValue(plcConfig());
 });
 const nativeSelect = (name: string, root: Pick<typeof screen, "getByLabelText"> = screen) => root.getByLabelText(name, { selector: "select" });
@@ -201,6 +206,61 @@ describe("在线检测整件判定显示", () => {
     render(<MemoryRouter><InspectPage /></MemoryRouter>);
     expect(within(screen.getByRole("region", { name: "整件判定" })).getByLabelText("位置基准：定位失败")).toBeVisible();
     expect(screen.getByText("NG · 定位失败")).toBeVisible();
+  });
+});
+
+describe("在线检测段配方", () => {
+  const burstState = (over: Partial<ReturnType<typeof burstJudgement>> = {}): Snapshot => {
+    const burst = burstJudgement(over);
+    return { ...snapshot("REPORT"), activeRecipeId: "S", part: burstPartView(), result: { ...burstResult(), verdict: burst.verdict, plcCode: burst.plcCode, reason: burst.reason, burst } };
+  };
+  const live = () => vi.mocked(burstImageApi.live).mock.calls.map(([, , camera, seq]) => [camera, seq]);
+  beforeEach(() => {
+    layout = burstWorkspaceView().layout; recipeList = [burstSummary()]; state = burstState();
+  });
+
+  it.each([
+    ["检测不完整、胶偏未判、含未分段", {}, "OK", "整件合格", ["检测不完整", "胶偏未判", "含未分段"], ["帧数异常", "疑似提前终止"]],
+    ["帧数异常、疑似提前终止", { verdict: "NG_WIDTH", plcCode: 14, reason: "溢胶：帧组 3", flags: { incomplete: false, frameCountAnomaly: true, offsetUnjudged: false, unsegmented: false, shortPart: true } },
+      "NG", "胶宽超差", ["帧数异常", "疑似提前终止"], ["检测不完整", "胶偏未判", "含未分段"]],
+  ] as const)("整件结果标记为%s → 判定卡只挂对应徽标，结论标签不变", (_, over, code, detail, shown, hidden) => {
+    state = burstState(over as Partial<ReturnType<typeof burstJudgement>>);
+    render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    const card = within(screen.getByRole("region", { name: "整件判定" }));
+    expect(card.getByText(code)).toBeVisible();
+    expect(card.getByText(detail)).toBeVisible();
+    for (const label of shown) expect(card.getByText(label)).toBeVisible();
+    for (const label of hidden) expect(card.queryByText(label)).not.toBeInTheDocument();
+  });
+
+  it("默认跟随最新帧组；点帧组条 → 按 (相机, seq) 读各相机原图且缺帧的相机不读，返回当前帧组恢复跟随", async () => {
+    render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    await waitFor(() => expect(burstImageApi.live).toHaveBeenCalledTimes(3));
+    expect(live()).toEqual([[0, 12], [1, 12], [2, 12]]);
+    expect(workspaceApi.liveImage).not.toHaveBeenCalled();
+    vi.mocked(burstImageApi.live).mockClear();
+    await userEvent.click(screen.getByRole("button", { name: "帧组 5 · 不完整" }));
+    await waitFor(() => expect(burstImageApi.live).toHaveBeenCalledTimes(2));
+    expect(live()).toEqual([[0, 5], [2, 5]]);
+    expect(screen.getByText("缺帧", { selector: ".wp-image-empty strong" })).toBeVisible();
+    expect(screen.getByRole("region", { name: "整件判定" })).toHaveTextContent("整件合格");
+    vi.mocked(burstImageApi.live).mockClear();
+    await userEvent.click(screen.getByRole("button", { name: "返回当前帧组" }));
+    await waitFor(() => expect(burstImageApi.live).toHaveBeenCalledTimes(3));
+    expect(live()).toEqual([[0, 12], [1, 12], [2, 12]]);
+    expect(screen.queryByRole("button", { name: "返回当前帧组" })).not.toBeInTheDocument();
+  });
+
+  it("整件布置 → 用相机与段条显示段序列和区域结论，不再有逐拍照点视图", async () => {
+    render(<MemoryRouter><InspectPage /></MemoryRouter>);
+    const main = within(screen.getByRole("region", { name: "检测主视图" }));
+    expect(main.queryByRole("button", { name: "逐拍照点" })).not.toBeInTheDocument();
+    await userEvent.click(main.getByRole("button", { name: "整件布置" }));
+    const segments = within(await main.findByRole("list", { name: "段序列" }));
+    expect(segments.getAllByRole("listitem").map(li => li.getAttribute("aria-label"))).toEqual([
+      "段 1 · 直线 · 待标定", "段 2 · 弯道 · 待标定", "段 3 · 直线 · 待标定",
+    ]);
+    expect(within(main.getByRole("list", { name: "检测区域" })).getByText("段 1–3 · 未分段")).toBeVisible();
   });
 });
 

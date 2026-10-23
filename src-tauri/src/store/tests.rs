@@ -89,7 +89,7 @@ fn save_as(store: &Store, recipe: &Recipe, cycle: &str, shots: &[PartShot], deli
         bundle_id: Some("frozen-bundle-id"),
         delivery,
         shots,
-        source, sample: None,
+        source, sample: None, burst: None,
     })
 }
 
@@ -128,7 +128,7 @@ fn neighbors_follow_list_filters_and_never_cross_record_scope() {
         judgement.verdict = verdict;
         store.insert(&PartRecord { ts: 1234, sn: "SN-42", recipe: Some(&recipe), judgement: &judgement, drain_ms: None, frames: &[],
             frames_expected: recipe.shot_count(), frames_received: recipe.shot_count(), triggers: 4, table: None, software_version: "test",
-            cycle_id: Some(cycle), bundle_id: None, delivery: &delivery, shots: &shots, source, sample: None }).unwrap()
+            cycle_id: Some(cycle), bundle_id: None, delivery: &delivery, shots: &shots, source, sample: None, burst: None }).unwrap()
     };
     let a = insert("a", Verdict::NgGap, RecordSource::Real);
     let b = insert("b", Verdict::Ok, RecordSource::Real);
@@ -644,7 +644,7 @@ fn durable_record_identity_checks_actual_fields_while_allowing_later_delivery_an
     let judgement = Judgement::error(crate::judge::fault::MISSING_FRAME, "P2 缺帧，P3 定位失败，P4 测量出错");
     let record = PartRecord { ts: 1234, sn: "SN-42", recipe: Some(&recipe), judgement: &judgement, drain_ms: None,
         frames: &[], frames_expected: recipe.shot_count(), frames_received: 3, triggers: 4, table: Some(&table),
-        software_version: "test-p0", cycle_id: Some("record-identity"), bundle_id: Some("frozen-bundle-id"), delivery: &pending, shots: &shots, source: crate::store::RecordSource::Real, sample: None };
+        software_version: "test-p0", cycle_id: Some("record-identity"), bundle_id: Some("frozen-bundle-id"), delivery: &pending, shots: &shots, source: crate::store::RecordSource::Real, sample: None, burst: None };
     assert!(store.matches_record(&record).unwrap());
     store.update_delivery("record-identity", &PlcDelivery { state: PlcDeliveryState::Acknowledged, updated_at: 9999, message: None }).unwrap();
     store.update_shot_raw_files("record-identity", 0, &[ShotRawFile { view: 1, file: "records/cycle/k000.pgm".into(), width: Some(2), height: Some(3) }]).unwrap();
@@ -709,4 +709,116 @@ fn candidate_source_upgrade_preserves_existing_records_and_relations() {
     assert_eq!(errors, 0);
     drop(conn);
     assert_eq!(store.counts_since(0, HistoryScope::Real).unwrap().err, 1);
+}
+
+/// 段配方记录入库：结论摘要按区域判定、计划帧数取 ΣN_exp、收到帧取帧组数。
+fn save_burst(store: &Store, recipe: &Recipe, cycle: &str, judgement: &Judgement, burst: &BurstRecord) -> Result<i64, String> {
+    store.insert(&burst_part(recipe, cycle, judgement, burst))
+}
+
+fn burst_part<'a>(recipe: &'a Recipe, cycle: &'a str, judgement: &'a Judgement, burst: &'a BurstRecord) -> PartRecord<'a> {
+    PartRecord {
+        ts: 1234, sn: "SN-B1", recipe: Some(recipe), judgement, drain_ms: None, frames: &[],
+        frames_expected: burst.expected_total.unwrap_or(0) as usize, frames_received: burst.judgement.group_count as usize,
+        triggers: burst.device_triggers.unwrap_or(0).into(), table: None, software_version: "test-burst", cycle_id: Some(cycle),
+        bundle_id: None, delivery: &PlcDelivery { state: PlcDeliveryState::NotRequired, updated_at: 0, message: None }, shots: &[],
+        source: RecordSource::Real, sample: None, burst: Some(burst),
+    }
+}
+
+/// 规格 §3/§6、决策 D-SB-29：段配方按每相机每帧落库，详情原样带回帧（含缺帧）、区域判定、标记与 deviceTriggers，
+/// 列表带整件标记。
+#[test]
+fn burst_record_round_trips_frames_flags_regions_and_device_triggers() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, mut burst) = burst_fixture::record(&recipe, burst_fixture::frames(5, &[(1, 2)]), None, Some(7));
+    assert!(burst.judgement.flags.incomplete && !burst.judgement.alarms.is_empty(), "夹具要带缺帧标记和丢帧告警");
+    burst.frames.reverse();
+    let id = save_burst(&store, &recipe, "burst-cycle", &judgement, &burst).unwrap();
+
+    let detail = store.detail(id).unwrap();
+    let stored = detail.burst.as_ref().expect("段配方记录要带 burst");
+    let mut frames = burst.frames.clone();
+    frames.sort_by_key(|frame| (frame.camera, frame.seq));
+    assert_eq!(stored.frames, frames);
+    assert_eq!(stored.judgement, burst.judgement);
+    assert_eq!((stored.expected_total, stored.tolerance_total, stored.device_triggers, &stored.camera_frames),
+        (Some(4), 1, Some(7), &vec![5, 4, 5]));
+    assert_eq!((&stored.segments, &stored.cameras), (&recipe.path_segments, &recipe.plan_cameras()));
+    assert!(detail.shots.is_empty() && detail.points.is_none() && detail.frames.is_empty());
+
+    let summary = store.query(&HistoryQuery::default()).unwrap().items.remove(0);
+    assert_eq!(summary.flags.as_ref(), Some(&burst.judgement.flags));
+    assert_eq!((summary.frames_expected, summary.frames_received), (4, 5));
+    assert_eq!(store.measurements(&HistoryQuery::default(), &[id], 1).unwrap()[0].burst.as_ref(), Some(&burst.judgement));
+}
+
+/// 审计重放身份（决策 D-SB-29）：已落库的段配方记录再次重放时，帧内容相同即认出（不重复落库），任一帧指标不同则认不出。
+#[test]
+fn burst_record_replay_is_recognised_only_when_every_frame_matches() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, mut burst) = burst_fixture::record(&recipe, burst_fixture::frames(5, &[(1, 2)]), None, Some(7));
+    burst.frames.reverse();
+    save_burst(&store, &recipe, "burst-cycle", &judgement, &burst).unwrap();
+    assert!(store.matches_record(&burst_part(&recipe, "burst-cycle", &judgement, &burst)).unwrap());
+    let mut changed = burst.clone();
+    changed.frames[0].metrics.as_mut().unwrap().gap_max_mm = 1.0;
+    assert!(!store.matches_record(&burst_part(&recipe, "burst-cycle", &judgement, &changed)).unwrap());
+}
+
+/// 规格 §2：段配方帧数可以波动，不要求等于预期帧组数；§3：帧身份 (camera, seq) 唯一、相机属于计划相机；
+/// D-SB-1：帧记录只属于段配方。不合格的记录整条不落库。
+#[test]
+fn insert_accepts_any_frame_count_but_rejects_duplicate_camera_seq_or_foreign_camera() {
+    type Edit = fn(&mut Recipe, &mut Vec<FrameRecord>);
+    let cases: [(&str, u64, Edit, bool); 4] = [
+        ("帧组数 7 多于预期 4", 7, |_, _| {}, true),
+        ("同一相机同一 seq 两条", 5, |_, frames| { let duplicate = frames[1].clone(); frames.push(duplicate); }, false),
+        ("相机下标 3 不在计划相机内", 5, |_, frames| frames[0].camera = 3, false),
+        ("旧拍照点配方带帧记录", 5, |legacy, _| *legacy = recipe(), false),
+    ];
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    for (index, (case, groups, edit, accepted)) in cases.into_iter().enumerate() {
+        let mut recipe = burst_fixture::recipe();
+        let (judgement, mut burst) = burst_fixture::record(&recipe, burst_fixture::frames(groups, &[]), None, None);
+        edit(&mut recipe, &mut burst.frames);
+        let result = save_burst(&store, &recipe, &format!("cycle-{index}"), &judgement, &burst);
+        assert_eq!(result.is_ok(), accepted, "{case}: {result:?}");
+    }
+    let conn = store.conn.lock().unwrap();
+    let rows = |table: &str| conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get::<_, i64>(0)).unwrap();
+    assert_eq!((rows("parts"), rows("part_frames")), (1, 21), "被拒的记录不留任何行");
+}
+
+/// 原图证据只增不换（D-SB-29）：段配方按 (camera, seq) 补原图引用，同一文件重复写幂等，已存的不能换成别的文件；
+/// 一批里有不存在的帧时整批不写。
+#[test]
+fn raw_file_refs_are_add_only_per_camera_seq() {
+    let db = TestDb::new();
+    let store = Store::open(&db.path()).unwrap();
+    let recipe = burst_fixture::recipe();
+    let (judgement, burst) = burst_fixture::record(&recipe, burst_fixture::frames(3, &[]), None, None);
+    let id = save_burst(&store, &recipe, "raw-cycle", &judgement, &burst).unwrap();
+    let refs = |items: &[(usize, u64, &str)]| -> std::collections::BTreeMap<FrameKey, String> {
+        items.iter().map(|&(camera, seq, file)| (FrameKey { camera, seq }, file.to_string())).collect()
+    };
+    let first = (0, 1, "day/part/cam1_s000001.pgm");
+    let later = (2, 3, "day/part/cam3_s000003.pgm");
+    assert!(store.update_frame_raw_files("raw-cycle", &refs(&[first])).unwrap());
+    assert!(store.update_frame_raw_files("raw-cycle", &refs(&[first, later])).unwrap(), "重复写同一文件是幂等的");
+    assert!(store.update_frame_raw_files("raw-cycle", &refs(&[(0, 1, "day/part/other.pgm")])).is_err(), "已存的引用不能替换");
+    assert!(!store.update_frame_raw_files("raw-cycle", &refs(&[(1, 1, "day/part/cam2_s000001.pgm"), (1, 9, "day/part/x.pgm")])).unwrap(),
+        "有不存在的帧时整批不写");
+    assert!(!store.update_frame_raw_files("unknown-cycle", &refs(&[first])).unwrap());
+    for invalid in ["../escape.pgm", "C:/escape.pgm", r"day\part\x.pgm"] {
+        assert!(store.update_frame_raw_files("raw-cycle", &refs(&[(1, 1, invalid)])).is_err(), "{invalid}");
+    }
+    let linked: Vec<_> = store.detail(id).unwrap().burst.unwrap().frames.into_iter()
+        .filter_map(|frame| frame.raw_file.map(|file| (frame.camera, frame.seq, file))).collect();
+    assert_eq!(linked, [(0, 1, first.2.to_string()), (2, 3, later.2.to_string())]);
 }

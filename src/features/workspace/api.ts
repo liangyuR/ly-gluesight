@@ -1,5 +1,6 @@
 import { desktopCall } from "../../lib/desktop";
 import type { CameraImaging, RecipeDoc } from "../cycle/types";
+import type { CameraTeachDraft, CaptureRoundV2, PathSegment } from "../plan/types";
 import type { CaptureRound, CaptureSummary, Comparison, FixtureCheck, FixtureTrial, FrozenImage, GrayImage, ImagingSaved, Overview, RecordImages, RotationConfirmation, Sample, ShotTeach, Workspace, WorkspaceView } from "./types";
 
 function grayPreview(input: ArrayBuffer | number[]) {
@@ -35,9 +36,10 @@ export async function decodeGray(input: ArrayBuffer | number[]): Promise<GrayIma
 export const workspaceApi = {
   debugRun: (id: string, revision: number, partId: string | null) => desktopCall<void>("workspace_debug_run", { id, revision, partId }),
   selectGroupImage: (id: string, revision: number, k: number, view: number) => desktopCall<WorkspaceView>("workspace_select_group_image", { id, revision, k, view }),
-  captureStart: (recipeId: string, cameraIds: string[], drainTimeoutMs: number) => desktopCall<CaptureRound>("recipe_capture_start", { recipeId, cameraIds, drainTimeoutMs }),
-  captureGet: (roundId?: string) => desktopCall<CaptureRound | null>("recipe_capture_get", { roundId }),
-  captureStop: () => desktopCall<CaptureRound | null>("recipe_capture_stop"),
+  /** 采集轮次：段配方开新轮次 CaptureRoundV2（format: 2），旧拍照点配方仍是旧的 CaptureRound（后端按候选 doc.segments 分流）；页面用 captureRound.ts 的 roundView 统一读取 */
+  captureStart: (recipeId: string, cameraIds: string[], drainTimeoutMs: number) => desktopCall<CaptureRound | CaptureRoundV2>("recipe_capture_start", { recipeId, cameraIds, drainTimeoutMs }),
+  captureGet: (roundId?: string) => desktopCall<CaptureRound | CaptureRoundV2 | null>("recipe_capture_get", { roundId }),
+  captureStop: () => desktopCall<CaptureRound | CaptureRoundV2 | null>("recipe_capture_stop"),
   adoptCapture: (id: string, revision: number, roundId: string, reuseTeaching: boolean, correspondenceConfirmed: boolean) => desktopCall<WorkspaceView>("workspace_adopt_capture", { id, revision, roundId, reuseTeaching, correspondenceConfirmed }),
   captureSample: (id: string, revision: number, roundId: string, expected: import("../cycle/types").Verdict, correspondenceConfirmed: boolean) => desktopCall<WorkspaceView>("workspace_capture_sample", { id, revision, roundId, expected, correspondenceConfirmed }),
   setViews: (id: string, revision: number, k: number, views: number[], skip: boolean) => desktopCall<WorkspaceView>("workspace_set_views", { id, revision, k, views, skip }),
@@ -78,6 +80,8 @@ export const workspaceApi = {
   retryPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_retry_publish", { id, revision }),
   abandonPublish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_abandon_publish", { id, revision }),
   captureImage: (roundId: string, k: number, cameraId: string, view?: number) => desktopCall<ArrayBuffer>("recipe_capture_image", { roundId, k, cameraId, view }).then(decodeGray),
+  /** 新采集轮次（CaptureRoundV2）里某台相机第 seq 帧（帧组序号，从 1 起）的原图；D1 在 recipe_capture_image 旁新增（决策记录 5.4），缺帧时后端报错。 */
+  captureFrameImage: (roundId: string, cameraId: string, seq: number) => desktopCall<ArrayBuffer>("recipe_capture_frame_image", { roundId, cameraId, seq }).then(decodeGray),
   captureList: (recipeId: string) => desktopCall<CaptureSummary[]>("recipe_capture_list", { recipeId }),
   publish: (id: string, revision: number) => desktopCall<WorkspaceView>("workspace_publish", { id, revision }),
   recordImages: (historyId: number) => desktopCall<RecordImages>("workspace_record_images", { historyId }),
@@ -93,4 +97,26 @@ export const workspaceApi = {
   stationCapture: (cam:number,view=1)=>desktopCall<FrozenImage>("workspace_station_capture",{cam,view}),
   stationImport: (cam:number,bytes:number[],view=1)=>desktopCall<FrozenImage>("workspace_station_import",{cam,bytes,view}),
   stationImage: (cam:number,imageId:string,view=1)=>desktopCall<ArrayBuffer>("workspace_station_image",{cam,imageId,view}).then(decodeGray),
+
+  // ───── 段配方（分段连拍飞拍）：命令与参数见 docs/decisions/segment-burst.md 5.4，结果都在 WorkspaceView.plan ─────
+  /** 在这台相机冻结的示教帧 imageId 上按选区提取走廊（返回与 extractCenterline 相同）；段配方没有拍照点，不用 k */
+  extractCorridor: (id: string, revision: number, camera: string, imageId: string, roi: [number, number, number, number], guide?: import("./teachingPath").BrushGuide, pointSpacingPx = 20) =>
+    desktopCall<{path: [number, number][]; message: string; failure?: { point: [number, number]; reason: string; message: string } | null}>("workspace_extract_corridor", { id, revision, camera, imageId, roi, guide, pointSpacingPx }),
+  /** 整体替换候选的段列表。后端拒绝直接改 expectedFrames / calib；段序列或类型变化时清空全部 N_exp、标定与 xRef */
+  updateSegments: (id: string, revision: number, segments: PathSegment[]) =>
+    desktopCall<WorkspaceView>("workspace_update_segments", { id, revision, segments }),
+  /** 用采集轮次 round 里这台相机第 seq 帧示教走廊：冻结该帧，按 draft 写进候选配方的 inspect */
+  teachCamera: (id: string, revision: number, camera: string, round: string, seq: number, draft: CameraTeachDraft) =>
+    desktopCall<WorkspaceView>("workspace_teach_camera", { id, revision, camera, round, seq, draft }),
+  /** 把采集轮次加入多轮标定；standard = 标准件轮次（用于胶偏参考 xRef） */
+  calibrationAddRound: (id: string, revision: number, round: string, standard: boolean) =>
+    desktopCall<WorkspaceView>("workspace_calibration_add_round", { id, revision, round, standard }),
+  calibrationRemoveRound: (id: string, revision: number, round: string) =>
+    desktopCall<WorkspaceView>("workspace_calibration_remove_round", { id, revision, round }),
+  /** 按已加入的轮次算 N_exp / 整件 ΣN_exp 与建议容差，结果在 plan.calibration；建议容差要再经 confirmTolerance 才写入 */
+  calibrationApply: (id: string, revision: number) =>
+    desktopCall<WorkspaceView>("workspace_calibration_apply", { id, revision }),
+  /** 操作员确认第 segment 段（PathSegment.index）的帧数容差 */
+  confirmTolerance: (id: string, revision: number, segment: number, tolerance: number) =>
+    desktopCall<WorkspaceView>("workspace_confirm_tolerance", { id, revision, segment, tolerance }),
 };

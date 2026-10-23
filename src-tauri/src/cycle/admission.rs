@@ -5,6 +5,7 @@ use crate::recipe::Recipe;
 
 /// PLC 开始请求对照选中配方：先核对产品代码，再看配方能否编出拍照计划，然后核对触发数量，计划版本与内容留给 S7 会话按计划核对。
 /// 人工选型号时 PLC 下发了别的产品，报配方不可用，不让计划编译失败或计划不一致抢先。
+/// 段配方的 shotCount 与 deviceShots 都必须等于 ΣN_exp（D-SB-2）；旧配方等于触发次数。
 pub(super) fn admit(request: &Request, recipe: &Recipe, plan: Result<PlcPlan, String>) -> Result<PlcPlan, (u16, String)> {
     if request.product_code != recipe.product_code {
         return Err((fault::NO_RECIPE, format!("PLC 产品代码 {} 与所选配方 {}（产品代码 {}）不一致",
@@ -12,8 +13,9 @@ pub(super) fn admit(request: &Request, recipe: &Recipe, plan: Result<PlcPlan, St
     }
     let plan = plan.map_err(|reason| (fault::PLAN_MISMATCH, reason))?;
     if request.shot_count != plan.shot_count || request.device_shots != plan.device_shots {
-        return Err((fault::SHOT_COUNT_MISMATCH, format!("PLC 下发 shotCount={} deviceShots={}，配方 {} 需 shotCount={} deviceShots={}（{} 个拍照点）",
-            request.shot_count, request.device_shots, recipe.id, plan.shot_count, plan.device_shots, recipe.shot_count())));
+        let basis = if plan.is_burst() { "各段预期帧数之和 ΣN_exp".to_owned() } else { format!("{} 个拍照点", recipe.shot_count()) };
+        return Err((fault::SHOT_COUNT_MISMATCH, format!("PLC 下发 shotCount={} deviceShots={}，配方 {} 需 shotCount={} deviceShots={}（{basis}）",
+            request.shot_count, request.device_shots, recipe.id, plan.shot_count, plan.device_shots)));
     }
     Ok(plan)
 }
@@ -22,11 +24,16 @@ pub(super) fn admit(request: &Request, recipe: &Recipe, plan: Result<PlcPlan, St
 mod tests {
     use super::*;
 
+    /// 规格 §5：生产请求先核产品代码（95），再看配方能否编出计划（100），再核 shotCount 与 deviceShots 都等于 ΣN_exp（94）；
+    /// 计划版本留给 S7 会话核对。
     #[test]
-    fn product_code_checked_before_plan_compile_and_trigger_counts_before_plan_version() {
-        let recipe = crate::recipe::samples().remove(1).build().unwrap();
+    fn admission_checks_product_then_plan_then_counts_against_sum() {
+        let mut doc = crate::recipe::samples_burst();
+        doc.segments.push(crate::plan::new_segment(2, crate::plan::SegmentKind::Corner, &doc.segment_defaults));
+        doc.segments[1].expected_frames = Some(3);
+        let recipe = doc.build().unwrap();
         let plan = PlcPlan::from_recipe(&recipe).unwrap();
-        let (code, n, version) = (recipe.product_code, plan.shot_count, plan.plan_version);
+        let (code, n, version) = (recipe.product_code, 4 + 3, plan.plan_version);
         let request = |product_code: u16, shot_count: u16, device_shots: u16, plan_version: u32| Request {
             protocol_version: crate::handshake::PROTOCOL_VERSION, request_seq: 1, sn: "SN-1".into(),
             product_code, shot_count, plan_version, device_shots,

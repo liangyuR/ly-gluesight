@@ -1,6 +1,13 @@
 export type ImagePoint = [number, number];
 export interface BrushGuide { points: ImagePoint[]; radiusPx: number }
 
+/** 折线总长（像素）。 */
+export function pathLength(path: ImagePoint[]): number {
+  let length = 0;
+  for (let i = 1; i < path.length; i++) length += Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]);
+  return length;
+}
+
 export function resampleTeachingPath(path: ImagePoint[], spacing: number): ImagePoint[] {
   if (path.length < 2 || !Number.isFinite(spacing) || spacing < 4 || spacing > 80) return path;
   const anchors = new Set([0, path.length - 1]);

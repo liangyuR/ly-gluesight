@@ -1,5 +1,7 @@
 # 现场 PLC 程序草稿（S7-1214C · 握手协议 5）
 
+> **协议 6 提示：** 本草稿和 `gluesight_site.scl` 仍是握手协议 5（达到计划数就停发、按“开始拍摄”边沿逐个出脉冲、结束时计数不等判 7006）。PC 升到协议 6 后不能直接联调，需要先按文末“协议 6 需要的改动点”修改；本仓库本轮不改 `gluesight_site.scl`，由 PLC 工程师修改。
+
 [`gluesight_site.scl`](gluesight_site.scl) 用来替换现场工程（涂胶检测20261022，TIA Portal V17）里的 `test_vision [FB3]` / `VISION_2d [FB1]` 视觉流程。**尚未在 TIA Portal 编译，也未在真实 CPU 上运行。** 协议依据：[PLC 通讯协议](../../../docs/integration/plc-communication-protocol.md) 第 2–8 节。
 
 ## 为什么重写
@@ -110,3 +112,23 @@ OB1 调用示例（地址以现场确认为准）：
 5. 断电重启后再走一件，`requestSeq` 接着上次递增而不是从 1 开始。
 6. 异常注入，每种都要能按第 3 步复位恢复：未布防时给拍照请求（7010）；多给一个拍照点（7012）；运动中拔网线（7001）；事务中切换示教开关（7013）。
 7. PC 提前终止（如 PC 页停止相机）：PLC 收到 90/9x 并正常 ACK、释放，不进故障；机器人走完路径期间的拍照请求计入 `IgnoredShotRequests`、不发脉冲；机器人给出运动结束后 `ReadyForPart` 恢复。
+
+## 协议 6 需要的改动点
+
+协议 6（相机使能期间的固定频率脉冲串、三台相机共用一个触发、`shotCount`/`deviceShots` 为预期总数 ΣN_exp、`deviceTriggers` 只作参考）与本草稿的“逐个拍照点发脉冲”模型冲突。以下行号对应当前 `gluesight_site.scl`，参考实现见仓库的 [`phase1_plc.scl`](../phase1_plc.scl)（版本 6，已删除两处计数 7006）；协议依据见 [PLC 通讯协议](../../../docs/integration/plc-communication-protocol.md) 第 2、4.2、5、13 节。**以下只是改动点清单，草稿本身未改动，也未在 TIA Portal 编译或联调。**
+
+| # | 位置 | 现在 | 协议 6 要求 |
+| --- | --- | --- | --- |
+| 1 | `GlueSightHandshake`：:102 `protocolVersion := INT#5`；:239、:402、:430 的 `pcProtocolVersion` 判断；文件头注释 :1、:5、:7 | 版本 5 | 全部改为 6（新件 7004 条件、复位成功判断、`ReadyForPart` 都用到）；协议 5 的 PC 与程序不能混用 |
+| 2 | `GlueSightHandshake` 触发计数区 :172–:184 | 已发数超过 `FrozenDeviceShots` 置 `CountError`（7006） | 删除“超过计划数”判定，连续脉冲串下已发数允许超过 `shotCount`；`deviceTriggers` 是 Int，差值超过 32767 时饱和为 32767，不得回绕成负数；仅保留 `IssuedPulseCount < CounterBase`（累计计数回退）判 7006 |
+| 3 | `GlueSightHandshake` 结束 :302–:309 | `MotionComplete` 时 `CurrentTriggers <> FrozenDeviceShots` 判 7006 | 删除计数相等判断：运动结束、脉冲串停发后，先写最终 `deviceTriggers`，再置 `partEnd`、转状态 40；不要求等于 `shotCount` |
+| 4 | `GlueSightHandshake` :441 `TriggerPermit` | `MotionPermit AND (CurrentTriggers < FrozenDeviceShots)`，达到计划数就停发 | 去掉 `CurrentTriggers < FrozenDeviceShots`；停发条件只剩 `MotionPermit`（含相机使能为高由现场层门控）；`PlannedShots`、`TriggersIssued` 输出（:444–:445）只作显示 |
+| 5 | `GlueSightStation` 输入 `ShotRequest`（:455）、边沿检测（:522–:523）、相机硬触发区（:591–:618） | 机器人每个拍照点给一个上升沿，PLC 发一个脉冲；上一个脉冲未结束又来请求判 7011；未布防就请求判 7010；多于计划次数判 7012 | 改为机器人“相机使能”电平输入（整条胶路只拉高一次，弯道不拉低；起头稳定后拉高、收尾前拉低）；使能为高且 `TriggerPermit=1` 时，PLC 以固定频率（按视野选定，约 10–25 Hz，相机上限 66 fps）输出脉冲串，同时触发三台相机，每个实际输出脉冲使 `IssuedPulseCount` 加一；脉冲频率与 `PulseWidth` 须匹配（周期大于脉宽）；删除 7012（不再有计划拍照点数）；7010 改为“未布防就使能为高”；7011 改为“脉冲周期小于脉宽”类的配置诊断，或删除 |
+| 6 | `GlueSightStation` 输入 `DeviceShots`（:465）与 TODO-7 | “须等于机器人拍照点数” | 填 PC 计划导出的 `expectedTotal`（ΣN_exp），`shotCount` 与 `deviceShots` 仍写同一值；`PlanVersion` 同取导出值；重新标定后两者都会变，须同步 |
+| 7 | `GlueSightStation` 输入 `MotionComplete`（:456）与 TODO-3 | 机器人本件运动及全部拍照点结束 | 含义改为“相机使能已拉低、脉冲串已停发”（PC 提前终止或机器人提前终止时也要给）；其后才写最终计数并置 `partEnd` |
+| 8 | 机器人“本件未检”DO（新增） | 草稿没有 | 机器人等不到 `MotionPermit` / 视觉可接件，超时后照常涂胶并置“本件未检”；PLC 对该件不提交 `partStart`（`NewPart` 在视觉未就绪时已不提交，可复用 `NewPartIgnored`），或提前终止；该件按未检处置（隔离、复检）。PC 看不到这个 DO，PC 没有该件记录 |
+| 9 | 结果分发（`ResultBits`） | 按 `resultCode` 直接输出 | 提前 `partEnd` 时 PC 仍可能给出 `resultCode=1` 并带 `short_part` 标记（标记不在 DB 里）；已置“本件未检”的件不得仅凭 `resultCode=1` 放行 |
+| 10 | 诊断码表与 TODO-2、TODO-3、TODO-7、TODO-10 | 按协议 5 描述 | 7004 的“PC 协议版本不是 5”改为 6；7006 只保留“累计计数回退”；7010–7012 按第 5 项调整；TODO 条目的描述同步 |
+| 11 | 验收清单第 2、4、6 项 | `protocolVersion=5`；`deviceTriggers` 逐个增加；“多给一个拍照点”判 7012 | 改为 `protocolVersion=6`；使能期间 `deviceTriggers` 随脉冲串增加，结束时不要求等于 `shotCount`；删除 7012 异常注入；增加“相机使能拉低后无新脉冲”“使能为高但未布防时无脉冲”两项 |
+
+改完后需重新按本文“导入步骤”和“验收”走一遍；仓库不替 PLC 工程师改该文件，以免在没有 TIA 编译和实机验证的情况下留下看似可用的程序。

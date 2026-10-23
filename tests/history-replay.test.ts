@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Judgement, Measured, PoseRecord, Recipe } from "../src/features/cycle/types";
-import { poseDiffers, shotDiffs } from "../src/features/history/replay";
-import { partDetail, workspaceView } from "./fixtures";
+import { burstSideOf, poseDiffers, regionDiffs, shotDiffs, type BurstSide } from "../src/features/history/replay";
+import type { RegionKind, RegionResult } from "../src/features/plan/types";
+import { burstJudgement, burstPartDetail, partDetail, workspaceView } from "./fixtures";
 
 const layout = () => workspaceView().layout;
 const judgement = (verdicts: Judgement["verdict"][]): Judgement => ({ verdict: verdicts.includes("NG_GAP") ? "NG_GAP" : "OK", plcCode: 1, faultCode: 0, reason: "",
@@ -81,5 +82,44 @@ describe("复测位姿与原记录对照", () => {
     ["offset 数值相同、图像上相差约 5.2 px", [5, 0], true],
   ] as [string, [number, number], boolean][])("候选改了框，%s → 按各自的框在图像上比", (_, rerunOffset, differs) => {
     expect(poseDiffers(pose([5, 0]), [100, 100, 21, 21], pose(rerunOffset), [160, 100, 21, 21])).toBe(differs);
+  });
+});
+
+describe("段配方按区域比对", () => {
+  // 原结果：直线段 1（帧组 1–6，带胶偏统计）与弯道段 2（帧组 7–12）两个区域，其余由默认判定带出
+  const region = (kind: RegionKind, firstSeq: number, lastSeq: number, over: Partial<RegionResult> = {}): RegionResult => ({
+    ...burstJudgement().regions[0], region: { kind, firstSeq, lastSeq }, frameCount: lastSeq - firstSeq + 1, expected: null, countStatus: null, offsetUnjudged: null, incompleteGroups: [], ...over,
+  });
+  const regions = (straight: Partial<RegionResult> = {}, corner: Partial<RegionResult> = {}) => [
+    region({ type: "straight", segment: 1 }, 1, 6, { offset: { meanShift: .3, maxDev: .6 }, ...straight }),
+    region({ type: "corner", segment: 2 }, 7, 12, corner),
+  ];
+  const side = (over: Partial<BurstSide> = {}): BurstSide => ({ ...burstSideOf(burstPartDetail().burst!), judgement: burstJudgement({ regions: regions() }), ...over });
+  const changed = (replay: BurstSide) => regionDiffs(side(), replay)!.filter(d => d.differs).map(d => d.key);
+
+  it.each([
+    ["与原结果逐项一致", regions(), []],
+    ["弯道区域结论改变", regions({}, { verdict: "NG_WIDTH" }), ["corner:2-2"]],
+    ["直线区域胶偏均值差超过 0.01 mm", regions({ offset: { meanShift: .32, maxDev: .6 } }), ["straight:1-1"]],
+    ["直线区域胶偏差在 0.01 mm 容差内", regions({ offset: { meanShift: .304, maxDev: .6 } }), []],
+    ["弯道区域不完整组变化", regions({}, { incompleteGroups: [9] }), ["corner:2-2"]],
+  ] as [string, RegionResult[], string[]][])("重判结果%s → 只有实际变化的区域标为差异", (_, replayRegions, differing) => {
+    expect(changed(side({ judgement: burstJudgement({ regions: replayRegions }) }))).toEqual(differing);
+  });
+
+  const segments = () => side().segments;
+  it.each([
+    ["段类型变了", { segments: segments().map(s => s.index === 2 ? { ...s, kind: "straight" as const } : s) }],
+    ["某段预期帧数变了", { segments: segments().map(s => s.index === 1 ? { ...s, expectedFrames: 5 } : s) }],
+    ["相机顺序变了", { cameras: [...side().cameras].reverse() }],
+    ["整件预期总数变了", { expectedTotal: 13 }],
+  ] as [string, Partial<BurstSide>][])("计划身份%s → 区域无法对应，不做逐区域比对", (_, over) => {
+    expect(regionDiffs(side(), side(over))).toBeNull();
+  });
+
+  it("只改限值、容差、胶偏参考与检测区间 → 计划身份不变，仍可逐区域比对", () => {
+    const tuned = segments().map(s => ({ ...s, tolerance: s.tolerance + 2, inspectRange: { aMm: 8, bMm: 100 }, checks: { ...s.checks, width: { ...s.checks.width, nominalMm: 5 } },
+      offsetRef: s.offsetRef && { ...s.offsetRef, xRef: .2, spread: .1 } }));
+    expect(regionDiffs(side(), side({ segments: tuned }))!.some(d => d.differs)).toBe(false);
   });
 });

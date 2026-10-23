@@ -21,7 +21,7 @@ fn history(store: &Store, cycle: &str, ts: i64) -> i64 {
         ts, sn: "SN-42", recipe: None, judgement: &Judgement::error(1, "original"), drain_ms: None,
         frames: &[], frames_expected: 0, frames_received: 0, triggers: 0, table: None,
         software_version: "comparison-business-test", cycle_id: Some(cycle), bundle_id: None,
-        delivery: &PlcDelivery::default(), shots: &[], source: crate::store::RecordSource::Real, sample: None,
+        delivery: &PlcDelivery::default(), shots: &[], source: crate::store::RecordSource::Real, sample: None, burst: None,
     }).unwrap()
 }
 fn comparison(id: i64, cycle: &str, sequence: i64) -> Comparison {
@@ -31,7 +31,7 @@ fn comparison(id: i64, cycle: &str, sequence: i64) -> Comparison {
         candidate_id: if sequence % 2 == 0 { "A" } else { "B" }.into(), candidate_revision: 1,
         candidate_recipe: crate::recipe::samples().remove(0).build().unwrap(),
         original_verdict: Verdict::ErrInspect, judgement: Judgement::error(1, "comparison"),
-        measurements: vec![serde_json::json!({"sequence": sequence})], created_at: sequence,
+        measurements: vec![serde_json::json!({"sequence": sequence})], created_at: sequence, burst: None,
     }
 }
 fn seed(root: &Path, saved: &Comparison) -> PathBuf {

@@ -6,8 +6,12 @@ import { matchesPart } from "../cycle/identity";
 import { referenceBadge } from "../cycle/vis";
 import { framePose, partFrames, poseSummary, viewSpec } from "../cycle/pose";
 import type { Measured, PartView, PointVis, Recipe } from "../cycle/types";
+import type { FrameGroupView } from "../plan/types";
+import { groupCellState, groupCellText, type GroupCellState } from "../plan/vis";
 import { workspaceApi } from "./api";
+import { burstImageApi } from "./burstImages";
 import { GrayViewer, KV, Panel, shotOverlay } from "./components";
+import "../cycle/components/burst.css";
 import type { GrayImage, Overview } from "./types";
 
 export function usePublishedOverview(layout:Recipe|null) {
@@ -28,14 +32,17 @@ const viewColumns: TableColumn<ViewResult>[] = [
   { key: "error", header: "异常明细", render: result => result.error ?? "—" },
 ];
 
-interface LiveRequest { scope:string; part:string; cycleId:string; revisionId:string; k:number }
-interface LiveResult { scope:string; part:string; k:number; image:GrayImage|null; error:string }
+/** 一次读图请求：scope 变了就要读新图，part 相同的上一张在新图到之前保留。 */
+interface LiveJob { scope:string; part:string }
+interface LiveRequest extends LiveJob { cycleId:string; revisionId:string; k:number }
+interface LiveResult<R extends LiveJob> { scope:string; part:string; job:R; image:GrayImage|null; error:string }
+const loadShot=(job:LiveRequest)=>workspaceApi.liveImage(job.cycleId,job.revisionId,job.k);
 
 /** 同一时间只读一张：读图期间选帧又变了，读完后只补读最新的一张，中间的跳过；新图到之前保留本件上一张。 */
-function useLiveImage(request:LiveRequest|null) {
-  const [result,setResult]=useState<LiveResult|null>(null);
-  const [shown,setShown]=useState<LiveResult|null>(null);
-  const wanted=useRef<LiveRequest|null>(null);
+function useLiveImage<R extends LiveJob>(request:R|null,load:(job:R)=>Promise<GrayImage>) {
+  const [result,setResult]=useState<LiveResult<R>|null>(null);
+  const [shown,setShown]=useState<LiveResult<R>|null>(null);
+  const wanted=useRef<R|null>(null);
   const busy=useRef(false);
   const alive=useRef(true);
   wanted.current=request;
@@ -44,12 +51,12 @@ function useLiveImage(request:LiveRequest|null) {
     const job=wanted.current;
     if(busy.current||!job||!alive.current)return;
     busy.current=true;
-    void workspaceApi.liveImage(job.cycleId,job.revisionId,job.k)
+    void load(job)
       .then(image=>({image,error:""}),error=>({image:null,error:errorText(error)}))
       .then(({image,error})=>{
         busy.current=false;
         if(!alive.current)return;
-        const done={scope:job.scope,part:job.part,k:job.k,image,error};
+        const done={scope:job.scope,part:job.part,job,image,error};
         setResult(done);
         if(image)setShown(done);
         if(wanted.current&&wanted.current.scope!==job.scope)read();
@@ -68,7 +75,7 @@ export default function RuntimeFrame({part,layout,k,measured,vis,compact=false,o
   const scope=JSON.stringify([partScope,k,frame?.shotId,frame?.camera,frame?.view,frame?.session,frame?.ordinal,arrived]);
   const frames=partFrames(layout,part);
   const matched=!!part&&!!frames;
-  const live=useLiveImage(matched?{scope,part:partScope,cycleId:part.cycleId,revisionId:part.recipeRevision,k}:null);
+  const live=useLiveImage(matched?{scope,part:partScope,cycleId:part.cycleId,revisionId:part.recipeRevision,k}:null,loadShot);
   const image=live.current?.image?live.current:live.held;
   const m=measured.find(m=>m.k===k&&matchesPart(m,part));
   const attention=frame?.viewResults?.filter(result=>result.verdict!=="OK"||!!result.error).length??0;
@@ -78,7 +85,7 @@ export default function RuntimeFrame({part,layout,k,measured,vis,compact=false,o
     const f=part?.frames[i],s=layout?.shots[i];
     return compact?[f?.shotId??s?.id,s?.poseId&&s.poseId!==s.id?"Pose "+s.poseId:null,f?.camera??s?.camera,"视角 "+(f?.view??s?.view??"—"),"k"+(i+1)].filter(Boolean).join(" · "):"SN "+(part?.sn||"—")+" · k"+(i+1);
   };
-  const shownK=image?.k??k;
+  const shownK=image?.job.k??k;
   // 位姿只和测出它的快照框配对：件与布局的修订不同时不按位姿叠图
   const shownFrame=frames?.[shownK]??null;
   const shownShot=layout?.shots[shownK];
@@ -93,4 +100,43 @@ export default function RuntimeFrame({part,layout,k,measured,vis,compact=false,o
     {frame?.error&&<p className="c-err">{frame.error}</p>}
   </>;
   return compact?<div className="wp-runtime-frame compact">{contents}</div>:<Panel className="wp-runtime-frame" title={"选中帧 k"+(k+1)} detail="选帧只改变查看范围，右侧保留整件判定">{contents}</Panel>;
+}
+
+// ───────────── 段配方（分段连拍飞拍）：选中帧组的三台相机原图 ─────────────
+// 旧拍照点模型的 RuntimeFrame 保持原样；段配方按 (相机, seq) 读图，没有本件设备内顺序，也没有“任一图 OK 即 OK”——每台相机每帧单独判。
+
+interface BurstLiveRequest extends LiveJob { cycleId:string; revisionId:string; camera:number; seq:number }
+const loadBurstFrame=(job:BurstLiveRequest)=>burstImageApi.live(job.cycleId,job.revisionId,job.camera,job.seq);
+const burstStateTone:Partial<Record<GroupCellState,string>>={ ok:"ok", ng:"ng", error:"fault" };
+
+/** 一台相机在选中帧组里的那一帧：到达（含测量中、出错）才读图，缺帧的相机不读图，只写明本组按其余相机判。 */
+function BurstCameraFrame({part,camera,name,seq,group}:{part:PartView;camera:number;name:string;seq:number;group:FrameGroupView|null}) {
+  const cell=group?.cells[camera];
+  const arrived=!!cell&&cell.status!=="waiting"&&cell.status!=="missing";
+  const partScope=JSON.stringify([part.cycleId,part.bundleId,part.recipeRevision]);
+  const scope=JSON.stringify([partScope,camera,seq,arrived]);
+  const live=useLiveImage(arrived?{scope,part:partScope,cycleId:part.cycleId,revisionId:part.recipeRevision,camera,seq}:null,loadBurstFrame);
+  const image=live.current?.image?live.current:live.held;
+  const state:GroupCellState=group?groupCellState(group,camera):"waiting";
+  const shownSeq=image?.job.seq??seq;
+  const missing=state==="missing";
+  return <section className="wp-burst-cam" aria-label={`${name} 帧组 ${seq}`}>
+    <GrayViewer image={arrived?image?.image??null:null} loading={arrived&&live.loading} error={live.current?.error??""} label={`${name} · 帧组 ${shownSeq}`}
+      emptyTitle={missing?"缺帧":"等待本帧组图像"} emptyHint={missing?"这台相机没有出本帧组的图，本组按其余相机判（检测不完整，不影响 OK/NG）。":""}/>
+    <div className="wp-runtime-strip">
+      <KV label="帧状态"><Chip className={"frame-state "+(burstStateTone[state]??"")}>{groupCellText[state]}</Chip></KV>
+      <KV label="单帧结论">{cell?.verdict?verdictLabel[cell.verdict]:"—"}</KV>
+      <KV label="设备帧计数">{cell?.frameCounter??"—"}</KV>
+    </div>
+  </section>;
+}
+
+/** 在线检测的原图区（段配方）：选中帧组 seq 的三台计划相机各一幅，每幅附该帧的状态、单帧结论与设备帧计数。 */
+export function BurstRuntimeFrame({part,seq}:{part:PartView|null;seq:number|null}) {
+  const burst=part?.burst;
+  if(!part||!burst||seq==null)return <div className="wp-runtime-frame compact"><div className="wp-image-empty"><strong>等待本件图像</strong><span>帧组到达后显示三台相机的原图；可在下方帧组条切换。</span></div></div>;
+  const group=burst.groups.find(g=>g.seq===seq)??null;
+  return <div className="wp-runtime-frame compact burst">
+    <div className="wp-burst-cams" style={{gridTemplateColumns:`repeat(${Math.max(1,burst.cameras.length)}, minmax(0, 1fr))`}}>{burst.cameras.map((name,camera)=><BurstCameraFrame key={name} part={part} camera={camera} name={name} seq={seq} group={group}/>)}</div>
+  </div>;
 }

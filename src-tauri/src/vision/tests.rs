@@ -8,11 +8,50 @@ fn invalid_frame_is_rejected_before_ffi() {
 }
 
 #[test]
-fn calibration_keys_are_distinct_for_each_view_of_one_device() {
-    assert_eq!(station_view_key("device1", 1).unwrap(), "device1-v1");
-    assert_eq!(station_view_key("device1", 3).unwrap(), "device1-v3");
+fn view_number_out_of_range_or_device_id_that_forms_a_path_is_rejected() {
+    // 防的回归：图编号越界，或设备编号能拼出路径（标定文件名带相机编号）
     assert!(station_view_key("device1", 0).is_err());
     assert!(station_view_key("device1", 4).is_err());
+    for bad in ["", "../device1", "device 1"] {
+        assert!(station_key(bad).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn camera_id_ending_in_v1_device_calibration_never_overwrites_another_cameras_legacy_calibration() {
+    // 防的回归：段配方的设备标定（D-SB-30）与旧配方的 {device}-v{view} 共用扁平文件名 plane_calib_{键}.json 时，相机编号允许 '-'，
+    // 相机 "cam1-v1" 的设备标定就是相机 "cam1" 图 1 的旧配方标定文件，标定一方覆盖另一方；改成加前缀（plane_calib_dev_{device}）
+    // 同样会撞上相机 "dev_cam1" 的图 1。同一台相机的设备标定也不能与它自己的图键同名。
+    use crate::camera::CameraConfig;
+    let root = Path::new("calib");
+    let written = |id: &str, view: Option<u8>| calib_keys(&CameraConfig { id: id.into(), ..CameraConfig::default() }, view).unwrap();
+    // （做段配方设备标定的相机，有旧配方各图标定的相机）
+    for (device, legacy) in [("cam1-v1", "cam1"), ("cam1-v1", "dev_cam1"), ("device1", "device1")] {
+        // 段配方的设备标定：不带图编号标定、标定页图 1 都会写
+        let device_files: Vec<PathBuf> = [None, Some(1)].into_iter().flat_map(|view| written(device, view))
+            .filter(|key| matches!(key, CalibKey::Device(_))).map(|key| key.file(root)).collect();
+        let legacy_files: Vec<PathBuf> = (1..=3).flat_map(|view| written(legacy, Some(view)))
+            .filter(|key| matches!(key, CalibKey::Station(_))).map(|key| key.file(root)).collect();
+        assert_eq!((device_files.len(), legacy_files.len()), (2, 3), "{device} / {legacy}");
+        assert!(device_files.iter().all(|file| !legacy_files.contains(file)), "{device} 的设备标定 {device_files:?} 与 {legacy} 的旧配方标定 {legacy_files:?} 同名");
+    }
+}
+
+#[test]
+fn calibration_page_view_on_single_view_camera_also_writes_the_key_burst_recipe_reads() {
+    // 防的回归（D-SB-30 前后端契约）：标定页（CalibPanel / FlyshotCalibrationPage）总带图编号、单视角相机为 1，标定只存成
+    // 旧配方的 {device}-v1，段配方按设备标定读不到——走廊示教的当量缺省与发布包标定 source 恒为空；或三目拼接相机的
+    // 图 N 写进段配方的设备标定；第一个键是标定页读回的键，必须仍是 {device}-v{view}
+    use crate::camera::CameraConfig;
+    let single = CameraConfig { id: "cam1".into(), ..CameraConfig::default() };
+    let triple = CameraConfig { id: "cam2".into(), view_count: 3, ..CameraConfig::default() };
+    let burst_reads = camera_calib_key(&CameraInspect { camera: "cam1".into(), corridor: Vec::new(), mm_per_px: None, calib: None, detect: None }).unwrap();
+    let station = |key: &str| CalibKey::Station(key.into());
+    // （相机，标定页传的图编号，要写的键：第一个也是读回的键）
+    let cases = [(&single, 1, vec![station("cam1-v1"), burst_reads]), (&triple, 1, vec![station("cam2-v1")]), (&triple, 2, vec![station("cam2-v2")])];
+    for (config, view, keys) in cases {
+        assert_eq!(calib_keys(config, Some(view)).unwrap(), keys, "{} 图 {view}", config.id);
+    }
 }
 
 #[test]

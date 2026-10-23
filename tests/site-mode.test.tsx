@@ -57,13 +57,20 @@ describe("离线模式工况", () => {
     await userEvent.click(screen.getByRole("button", { name: "进入离线" }));
     expect(invoke).toHaveBeenCalledWith("site_enter_offline", { source: { kind: "sampleSet", dir: managed } });
   });
-  it("离线来源样本集 → 只提供握手类工况，不提供断胶、定位失败等需要改图像的工况", async () => {
-    site = siteStatus({ mode: "offline", source: "sampleSet", measurement: "lyFlow" });
-    render(<MemoryRouter><OfflinePage /></MemoryRouter>);
-    const select = await screen.findByRole("combobox", { name: "离线工况" });
-    const offered = Array.from(select.closest(".qs-select")!.querySelector("select")!.options).map(o => o.value);
-    expect(offered.filter(value => ["excursion", "gap", "locateFail", "locateFailGap"].includes(value))).toEqual([]);
-    expect(offered).toEqual(expect.arrayContaining(["lostFrame", "countMismatch", "motionTimeout", "ackMismatch"]));
+  it("离线来源为样本集 → 工况下拉比合成图少的正是需要改图像的工况", async () => {
+    // 样本集是真实原图，选需要改图像的工况（含随机，会抽到它们）无法回放；合成图可选全部。
+    const imageScenarios = ["excursion", "gap", "locateFail", "locateFailGap", "random"];
+    const offered = async (status: SiteStatus) => {
+      site = status;
+      const view = render(<MemoryRouter><OfflinePage /></MemoryRouter>);
+      const select = await screen.findByRole("combobox", { name: "离线工况" });
+      const values = Array.from(select.closest(".qs-select")!.querySelector("select")!.options).map(o => o.value);
+      view.unmount();
+      return values;
+    };
+    const synthetic = await offered(siteStatus({ mode: "offline", source: "synthetic", measurement: "simulated" }));
+    const fromSampleSet = await offered(siteStatus({ mode: "offline", source: "sampleSet", measurement: "lyFlow" }));
+    expect(synthetic.filter(value => !fromSampleSet.includes(value)).sort()).toEqual([...imageScenarios].sort());
   });
 });
 

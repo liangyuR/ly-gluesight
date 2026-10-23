@@ -7,7 +7,7 @@ import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
 import { recipeApi } from "../src/features/cycle/api";
 import { desktopAvailable } from "../src/lib/desktop";
-import { deferred, workspaceState, workspaceView } from "./fixtures";
+import { burstRecipe, burstSummary, burstWorkspaceView, deferred, workspaceState, workspaceView } from "./fixtures";
 
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { create: vi.fn(), remove: vi.fn() } }));
@@ -44,6 +44,19 @@ describe("配方库操作", () => {
     expect(recipeApi.removeUnavailable).toHaveBeenCalledWith("OLD.json");
     expect(workspaceApi.remove).not.toHaveBeenCalled();
     expect(screen.getByText("尚未加载配方")).toBeVisible();
+  });
+  it.each([
+    ["整件已标定", {}, "3 段 · ΣN_exp 12 ± 3", "shotCount 12"],
+    ["整件待标定", { partCalib: null }, "3 段 · ΣN_exp 待标定", "shotCount 待标定"],
+  ])("段配方%s → 卡片显示段数与 ΣN_exp ± Σtol，不再显示拍照点数", (_, over, scale, plc) => {
+    const doc = burstRecipe(over);
+    ws = workspaceState(burstWorkspaceView(doc));
+    ws.list = [{ ...burstSummary(doc), triggerCount: burstSummary(doc).expectedTotal }]; ws.drafts = [ws.data!.workspace];
+    show();
+    const card = screen.getByRole("heading", { name: "段配方 S" }).closest<HTMLElement>(".wp-recipe-card")!;
+    expect(card).toHaveTextContent(scale);
+    expect(card).toHaveTextContent(plc);
+    expect(card).not.toHaveTextContent("个拍照点");
   });
   it("创建已成功但选用失败，重试仅打开已有候选，避免二次创建",async()=>{
     vi.mocked(ws.select).mockResolvedValueOnce(null);show();await userEvent.click(screen.getByRole("button",{name:"新建配方"}));await screen.findByRole("dialog");

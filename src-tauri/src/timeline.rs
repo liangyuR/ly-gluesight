@@ -21,13 +21,15 @@ pub struct Entry {
     pub k: Option<usize>,
     pub shot_id: Option<String>,
     pub camera: Option<String>,
+    /// 段配方：事件所属帧组序号（与 camera 一起定位一帧）；旧拍照点事件为 None
+    pub seq: Option<u64>,
     pub data: Option<Value>,
 }
 
 impl From<Record> for Entry {
     fn from(r: Record) -> Self {
         Self { ts: r.ts, source: "app", level: r.level, ev: r.ev, msg: r.msg, stage: r.fields.stage, k: r.fields.k,
-            shot_id: r.fields.shot_id, camera: r.fields.camera, data: r.fields.data }
+            shot_id: r.fields.shot_id, camera: r.fields.camera, seq: r.fields.seq, data: r.fields.data }
     }
 }
 
@@ -91,7 +93,7 @@ fn plc_entries(app: &AppHandle, from: i64, to: i64) -> Result<(Vec<Entry>, bool)
             _ => String::new(),
         };
         Entry { ts: e.ts, source: "plc", level: Level::from_tone(&e.level), ev: e.point_name.clone().unwrap_or_else(|| e.category.clone()),
-            msg: format!("{}{change}", e.message), stage: None, k: None, shot_id: None, camera: None,
+            msg: format!("{}{change}", e.message), stage: None, k: None, shot_id: None, camera: None, seq: None,
             data: Some(serde_json::json!({"category": e.category, "pointId": e.point_id})) }
     }).collect();
     Ok((entries, truncated))

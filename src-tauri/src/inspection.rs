@@ -71,7 +71,7 @@ pub fn read_tag_u32(engine: &PlcEngine, tag: &str) -> Option<u32> {
     }
 }
 
-/// 涂胶检测通信交互表 V1.1（握手协议 5）：S7-1200，PLC 写 DB4、PC 写 DB2，两个 DB 都从字节 0 起。
+/// 涂胶检测通信交互表 V1.1（握手协议 6，点表布局与协议 5 相同）：S7-1200，PLC 写 DB4、PC 写 DB2，两个 DB 都从字节 0 起。
 pub const DEFAULT_PLC_HOST: &str = "192.168.2.10";
 pub const DEFAULT_PLC_DB: u16 = 4;
 pub const DEFAULT_PC_DB: u16 = 2;

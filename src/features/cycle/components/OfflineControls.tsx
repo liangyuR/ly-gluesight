@@ -3,7 +3,7 @@ import { OctagonX, Play } from "lucide-react";
 import { Button } from "qing-steel";
 import { errorText } from "../../../lib/errors";
 import { usePlcStatus } from "../../plc";
-import { cycleApi, useSiteStatus } from "../api";
+import { cycleApi, useRecipes, useSiteStatus } from "../api";
 import { rejectionTarget, useRunChoice } from "../readiness";
 import type { Readiness, ReadinessTarget } from "../types";
 import RecipeRunSelect from "./RecipeRunSelect";
@@ -18,6 +18,7 @@ interface Props {
 
 export default function OfflineControls({ readiness, refresh, publishedSection = false, candidateRunning = false }: Props) {
   const status = useSiteStatus();
+  const summaries = useRecipes();
   const plc = usePlcStatus();
   const [error, setError] = useState<{ text: string; target: ReadinessTarget | null } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -52,7 +53,7 @@ export default function OfflineControls({ readiness, refresh, publishedSection =
   const controls = (
     <div className="offline-controls compact">
       <span className="offline-label">{candidateRunning ? "候选调试运行中" : publishedSection ? "已发布配方回放" : "离线产线"}</span>
-      {!candidateRunning && <RecipeRunSelect options={options} value={recipeId} onChange={setRecipeId} disabled={running || busy} />}
+      {!candidateRunning && <RecipeRunSelect options={options} summaries={summaries} value={recipeId} onChange={setRecipeId} disabled={running || busy} />}
       {!candidateRunning && <Button variant="filled" size="sm" leadingIcon={<Play size={15} />} onClick={() => void perform(() => cycleApi.offlineRun(recipeId, "normal", false, null), recipeId)} disabled={running || busy || !connected || !recipeId}>
         运行一件
       </Button>}

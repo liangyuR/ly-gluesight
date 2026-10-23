@@ -5,7 +5,9 @@ param(
     [string]$SampleSet,
     [string]$LyFlowRuntime,
     [string]$DataRoot,
-    [ValidateRange(3, 50)][int]$Parts = 3
+    [ValidateRange(3, 50)][int]$Parts = 3,
+    # burst = 段配方（分段连拍，默认）：按区域比对；legacy = 旧拍照点配方（只停用不删除，行为不变）：按拍照点逐点比对
+    [ValidateSet('burst', 'legacy')][string]$Model = 'burst'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,7 +25,7 @@ try {
     $env:GLUESIGHT_LYFLOW_RUNTIME = $replayInputs.LyFlow
     Start-E2EInstance -Fresh -Prebuilt:$SkipBuild
     & node (Join-Path $replayRun.Root 'tests\native\log-replay-offline.mjs') `
-        --instance $replayRun.Manifest --sample-set $replayInputs.SampleSet --output $replayOutput --parts $Parts
+        --instance $replayRun.Manifest --sample-set $replayInputs.SampleSet --output $replayOutput --parts $Parts --model $Model
     $replayExit = $LASTEXITCODE
     if ($replayExit -ne 0) { Write-Error "离线回放验证失败（退出码 $replayExit）。日志见 $replayOutput 与 $($replayRun.Output)。" -ErrorAction Continue }
 } finally {

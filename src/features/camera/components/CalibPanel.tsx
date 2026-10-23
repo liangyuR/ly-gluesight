@@ -14,7 +14,7 @@ interface CalibInfo {
 }
 
 /** 工位标定：标定板放在内边所在高度，软触发一帧，用 lyFlow 的 image.board_calib 求单应，存为工位标定文件。 */
-export default function CalibPanel({ cam, view=1, isSim, imageId, onMmPerPx }: { cam: number; view?:number; isSim: boolean; imageId?:string; onMmPerPx?: (mmPerPx: number | null) => void }) {
+export default function CalibPanel({ cam, view=1, multiView=false, isSim, imageId, onMmPerPx }: { cam: number; view?:number; /** 三目拼接相机（旧配方）才标出视角；单视角相机不带“图 N”。 */ multiView?:boolean; isSim: boolean; imageId?:string; onMmPerPx?: (mmPerPx: number | null) => void }) {
   const [info, setInfo] = useState<CalibInfo | null>(null);
   const [cols, setCols] = useState(11);
   const [rows, setRows] = useState(8);
@@ -64,7 +64,7 @@ export default function CalibPanel({ cam, view=1, isSim, imageId, onMmPerPx }: {
       setInfo(r);
       setLoaded(true);
       setLoadError("");
-      snack(`图 ${view} 标定完成：残差 RMS ${format(r.rms)} mm，约 ${format(r.mmPerPx)} mm/px`);
+      snack(`${multiView?`图 ${view} `:""}标定完成：残差 RMS ${format(r.rms)} mm，约 ${format(r.mmPerPx)} mm/px`);
     } catch (e) {
       if(mounted.current&&serial===runSerial.current&&current.current.scope===scope)setRunError(String(e));
     } finally {
@@ -73,12 +73,12 @@ export default function CalibPanel({ cam, view=1, isSim, imageId, onMmPerPx }: {
   };
 
   return (
-    <Card title={<Heading level={3}>图 {view} · 工位标定（飞拍）</Heading>} actions={<>
+    <Card title={<Heading level={3}>{multiView?`图 ${view} · `:""}工位标定（飞拍）</Heading>} actions={<>
       <Button onClick={()=>void load()} disabled={busy||loading||!isTauri()}>刷新标定</Button>
       <Button variant={imageId&&!isSim?"filled":"tonal"} leadingIcon={<Crosshair size={15} />} onClick={()=>void run()} disabled={busy || loading || isSim || !imageId||!isTauri()||!valid}>{busy ? "标定中…" : "用冻结样本标定"}</Button>
     </>}>
       <Stack direction="column" align="stretch" gap={10}>
-      <p className="muted calib-desc">将标定板放在实际胶路测量平面；各图分别标定，复用前验证代表性拍照点。</p>
+      <p className="muted calib-desc">将标定板放在实际胶路测量平面；{multiView?"各图分别标定，复用前验证代表性拍照点。":"每台相机分别标定，复用前在代表性位置验证。"}</p>
       {isSim ? (
         <p className="muted">合成图相机的像素当量已知（0.08 mm/px），自动使用内置标定。</p>
       ) : (

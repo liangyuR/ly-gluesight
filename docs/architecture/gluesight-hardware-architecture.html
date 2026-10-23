@@ -83,6 +83,7 @@ h2{margin:0;font-weight:600}
   </div>
   <p class="detail" aria-live="polite">PLC 硬件输出控制拍照时刻；图像通过网线送入工控机，检测结果回传 PLC。</p>
   <p class="notes text-small">网口相机与交换机按 GigE 方案示意；PLC—Robot 接口、触发电气规格、供电和光源接线按现场确认。</p>
+  <p class="notes text-small">现场布置以分段连拍方案为准（见 <a href="../README.md">docs/README.md</a> 与 <a href="../decisions/segment-burst.md">分段连拍决策记录</a>）：固定胶枪，机器人抓工件从胶嘴下走过，三台相机固定在胶嘴周围；机器人向 PLC 给出“相机使能”DO（另有“本件未检”DO），PLC 在使能为高时按固定频率发脉冲串，同一个触发同时触发三台相机、各出 1 帧。图中“Robot 本体＋胶枪 / 涂胶”的画法是早期示意，未按此改画。</p>
   <script>
     (() => {
       const root = document.getElementById('plc-camera-architecture');

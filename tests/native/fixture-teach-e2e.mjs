@@ -4,9 +4,14 @@ import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
-  addErasedPart, identifier, MISSING_INPUT_EXIT, captureRound, client, instanceCdp, missingInputs, prepareSampleSet, produce, teach, uiPage, until, workspaceCalls,
+  addErasedPart, identifier, MISSING_INPUT_EXIT, captureRound, client, instanceCdp, legacyTemplate, missingInputs, prepareSampleSet, produce, teach, uiPage, until, workspaceCalls,
 } from "./lib.mjs";
 
+// 【仅旧拍照点配方】本场景只适用于 RecipeDoc.segments 为空的旧配方：特征定位（fixture）模块、采用整圈采集、按拍照点组示教、
+// 逐拍照点的定位试测与连续定位失败告警都属于旧模型。段模型（分段连拍）下特征定位停用，段配方的端到端见 offline-e2e.mjs（默认 --model burst）；
+// 旧模型只停用不删除，本入口（pnpm test:e2e:fixture）与它的外壳 scripts/Test-FixtureE2E.ps1 因此保留，行为不变。
+// recipe_template 现在给段配方，所以新建起点用 lib.mjs 的 legacyTemplate（由它去掉段与相机检测设置得到旧配方）。
+//
 // 特征定位示教的端到端场景（定稿 §5、§13）：真 lyFlow + 样本集副本，在离线模式里走
 // 示教页画框（压胶路被拦、高光框保存被拦、好框通过）→ 定位试测 → 验证统计与两端参数建议 → 确认采用 → 重新试测保存 → 发布 → 投产。
 // 中线示教、样本采集、验证与发布走 IPC（offline-e2e 已覆盖其界面）；定位特征步骤与“采用建议”走界面。
@@ -80,7 +85,8 @@ async function settleRect(page, target) {
 
 async function drawFixture(page, label, rect) {
   const start = card(page).getByRole("button", { name: /在原图上画定位框|重画定位框/ });
-  await start.click();
+  // 上一个框被拦后页面还停在画框状态，按钮写“在原图上拖出定位框”，不用再点
+  if (await start.first().waitFor({ timeout: 5000 }).then(() => true, () => false)) await start.click();
   await dragBox(page, label, rect);
   await until(() => cardSummary(page), s => /框 \d+, \d+, \d+, \d+/.test(s), "画框后定位特征卡片没有显示框", 15000);
   await settleRect(page, rect);
@@ -133,7 +139,7 @@ export async function runFixtureE2E(page, options) {
   const cameraIds = (await call("camera_rig_config")).map(c => c.id);
   step("lyFlow 就绪并进入离线·样本集", { version: engine.version ?? null });
 
-  const created = await call("workspace_create", { doc: await call("recipe_template") });
+  const created = await call("workspace_create", { doc: await legacyTemplate(call) });
   const id = created.workspace.doc.id;
   const ws = workspaceCalls(call, id);
   const teachRound = await captureRound(call, id, cameraIds, fixture.normalPart);

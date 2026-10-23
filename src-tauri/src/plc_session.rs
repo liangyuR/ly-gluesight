@@ -90,6 +90,18 @@ fn validate_pending(pending: &Pending, last_request_seq: u32) -> Result<(), Stri
     Ok(())
 }
 
+/// 握手日志里的在途事务来自别的协议版本（升级前的协议 5）：按 D-0 不迁移、不续做，原文件改名为
+/// `<名>.v{n}.bak` 保留证据，会话以空事务启动，照常要求明确复位；不这样做的话旧请求过不了当前协议的校验，复位会一直被挡住。
+fn archive_foreign_protocol(path: &std::path::Path, journal: &Journal) -> Result<String, String> {
+    let request = &journal.pending.as_ref().ok_or("握手日志没有在途事务")?.request;
+    let backup = path.with_extension(format!("v{}.bak", request.protocol_version));
+    std::fs::rename(path, &backup).map_err(|error| format!("握手日志中的在途事务来自协议 {}，归档为 {} 失败：{error}；保留现场信号并处理日志后重启",
+        request.protocol_version, backup.display()))?;
+    Ok(format!("握手日志中的在途事务来自协议 {}（requestSeq={} SN={}），不能在协议 {} 下续做，已归档为 {}；核对该件后明确复位",
+        request.protocol_version, request.request_seq, request.sn, handshake::PROTOCOL_VERSION,
+        backup.file_name().map_or_else(|| backup.display().to_string(), |name| name.to_string_lossy().into_owned())))
+}
+
 /// 布防回写的耗时构成：逐点写入（含等驱动锁）、读回确认（及用了几次轮询）、握手日志落盘（不计入布防预算）。
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -142,8 +154,12 @@ struct Reconnect {
 
 #[derive(Debug)]
 pub enum SessionEvent {
-    None, Ready, Start(Request), End(Instant), Fault(String),
-    /// 结果已确认、双方已释放；附 PLC 确认结果时设备的已发触发数（提前判 ERR 的件据此推下一件基线）
+    None, Ready, Start(Request),
+    /// 运动结束（partEnd 已核对请求身份）；附此刻 PLC 报的设备触发数，协议 6 只作参考，不再要求等于 deviceShots
+    End(Instant, Option<u16>),
+    Fault(String),
+    /// 结果已确认、双方已释放；附 PLC 确认结果时设备的已发触发数（旧拍照点配方提前判 ERR 的件据此推下一件基线；
+    /// 段配方只记日志，不参与下一件基线，D-SB-7）
     Released(Option<u16>),
     /// 空闲时视觉输出被改写，已重写空闲输出并继续（附原因）
     Restored(String),
@@ -153,6 +169,8 @@ pub struct PlcSession {
     path: PathBuf,
     journal: Journal,
     load_error: Option<String>,
+    /// 启动时归档了旧协议在途事务的提示
+    archived: Option<String>,
     phase: SessionPhase,
     contract: Option<Contract>,
     arm_timing: Option<ArmTiming>,
@@ -188,7 +206,16 @@ impl PlcSession {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err("发现未提交的握手事务文件，保留现场信号并核对日志后重启".into()),
             Err(error) => Err(format!("S7 握手日志无法读取：{error}")),
         };
+        let unfinished = path.with_extension("pending.tmp").exists();
+        let mut archived = None;
         let (journal, mut load_error) = match loaded {
+            Ok(journal) if journal.version == 1 && !unfinished && journal.pending.as_ref()
+                .is_some_and(|pending| pending.request.protocol_version != handshake::PROTOCOL_VERSION) => {
+                match archive_foreign_protocol(&path, &journal) {
+                    Ok(notice) => { archived = Some(notice); (Journal { version: 1, ..Journal::default() }, None) }
+                    Err(error) => (journal, Some(error)),
+                }
+            }
             Ok(journal) if journal.version == 1 => {
                 let error = journal.pending.as_ref().and_then(|pending| validate_pending(pending, journal.last_request_seq).err());
                 (journal, error)
@@ -196,16 +223,20 @@ impl PlcSession {
             Ok(journal) => (journal, Some("不支持的 S7 握手日志版本".into())),
             Err(error) => (Journal::default(), Some(error)),
         };
-        if path.with_extension("pending.tmp").exists() {
+        if unfinished {
             load_error = Some("发现未提交的握手事务文件，保留现场信号并核对日志后重启".into());
         }
-        Self { path, journal, load_error, phase: SessionPhase::ResetRequired, contract: None, arm_timing: None, outputs_armed: false,
+        let message = archived.clone().unwrap_or_else(|| "S7 启动后需确认空闲输入并复位握手".into());
+        Self { path, journal, load_error, archived, phase: SessionPhase::ResetRequired, contract: None, arm_timing: None, outputs_armed: false,
             config_key: String::new(), connection: None, audit_waiting: false, reset_low_seen: false,
             reset_level: false, heartbeat: Mutex::new(HeartbeatWatch::new(3000).expect("valid heartbeat timeout")), origin: Origin::Real,
-            fault_written: false, fault_attempted: None, message: Some("S7 启动后需确认空闲输入并复位握手".into()),
+            fault_written: false, fault_attempted: None, message: Some(message),
             reset_blocked_reason: Some("正在核对复位条件".into()),
             withdrawn: false, restores: Vec::new(), ack_triggers: None, reconnect: Mutex::default() }
     }
+
+    /// 启动时把旧协议的在途事务归档（见 [`archive_foreign_protocol`]）后的提示；没有归档为空。
+    pub fn archived(&self) -> Option<&str> { self.archived.as_deref() }
 
     /// 空闲时的等待提示（以 [`NOTICE`] 开头）；不是故障。
     pub fn notice(&self) -> Option<&str> {
@@ -657,10 +688,10 @@ impl PlcSession {
                     return Err("已布防事务的 busy、armed 或接受的计划身份被修改".into());
                 }
                 if self.phase == SessionPhase::Acquiring && snapshot.read_bool(tag::PART_END)? {
-                    handshake::verify_part_end(&snapshot, request)?;
+                    let triggers = handshake::verify_part_end(&snapshot, request)?;
                     let ended_at = Instant::now();
                     self.set_pending_phase(engine, SessionPhase::Draining).await?;
-                    return Ok(SessionEvent::End(ended_at));
+                    return Ok(SessionEvent::End(ended_at, Some(triggers)));
                 }
                 if self.phase == SessionPhase::AwaitAck {
                     let result = self.result().ok_or("S7 结果尚未生成")?;
@@ -762,13 +793,17 @@ impl PlcSession {
         Ok(if own { SessionEvent::None } else { SessionEvent::Restored(reason) })
     }
 
+    /// 布防前核对软件计划与 PLC 请求。段配方的示教采集计划（[`PlcPlan::is_teaching`]）只能用于已绑定采集轮次的事务，
+    /// 且不比较 shotCount / deviceShots（规格 §5：示教轮次不核对，PLC 可填估算值）；生产计划与旧拍照点采集计划照旧逐项核对。
     pub fn validate_plan(&self, plan: &PlcPlan) -> Result<(), String> {
         if self.phase != SessionPhase::Validating { return Err("当前 S7 事务不能布防".into()); }
-        let rebuilt = PlcPlan::compile(plan.recipe_id.clone(), plan.plan_version, plan.device_ids.clone(), plan.shots.clone())?;
+        if plan.is_teaching() && self.capture_id().is_none() { return Err("示教采集计划不能用于生产事务".into()); }
+        // 段计划核对 ΣN_exp 与段序列，旧拍照点计划另外核对拍照点
+        let rebuilt = plan.recompiled()?;
         if &rebuilt != plan { return Err("软件拍照计划内容与计数不一致".into()); }
         let request = self.request().ok_or("缺少 S7 请求")?;
-        if request.protocol_version != plan.protocol_version || request.plan_version != plan.plan_version
-            || request.shot_count != plan.shot_count || request.device_shots != plan.device_shots {
+        let counts_differ = !plan.is_teaching() && (request.shot_count != plan.shot_count || request.device_shots != plan.device_shots);
+        if request.protocol_version != plan.protocol_version || request.plan_version != plan.plan_version || counts_differ {
             return Err(format!("拍照计划不一致：需 version={} shots={} deviceShots={}",
                 plan.plan_version, plan.shot_count, plan.device_shots));
         }

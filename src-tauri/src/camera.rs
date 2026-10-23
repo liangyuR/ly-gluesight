@@ -14,7 +14,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc::Sender;
 
 use crate::cycle::{self, CycleHost, Phase};
-use crate::frame::{CounterSource, Frame, FrameImage, FramePool};
+use crate::frame::{BudgetExceeded, CounterSource, Frame, FrameImage, FramePool, GrayError};
 use crate::mvs::{self, DeviceSummary, FrameInfo};
 use crate::recipe::{legacy_camera_id, valid_camera_id, CameraImaging, Recipe};
 use crate::offline::sample_set::SampleSet;
@@ -23,8 +23,48 @@ use crate::simimage::{self, PoseError};
 
 mod delivery;
 
-/// 帧通道容量：检测节拍处理不过来时丢新帧并计数，不在内存里无限堆积。
-pub const FRAME_QUEUE: usize = 64;
+/// 帧通道容量：检测节拍处理不过来时丢新帧并计数。条数只防失控，图像内存由 IMAGE_BUDGET_PER_CAMERA 封顶（D-SB-32）。
+pub const FRAME_QUEUE: usize = 1024;
+
+/// 每台海康相机在途图像的字节上限（FramePool 预算，D-SB-32）：约 190 幅 1.3 MB 图，25 Hz 下 7.6 s 积压。
+/// 预算满时取图回调丢弃该帧、按缺帧记账，不中断回调。初值待 P1 实测后回填。合成图、样本集来源不经过这个池。
+pub const IMAGE_BUDGET_PER_CAMERA: usize = 256 * 1024 * 1024;
+
+/// 每台海康相机池里留的空闲缓冲块数。
+const POOL_KEEP_PER_CAMERA: usize = 16;
+
+/// 一个千兆口按 80% 计的可用带宽（Mbps）：三台相机共用一个触发、同时出图，按三路之和比较（规格 §6）。
+pub const PORT_BUDGET_MBPS: f64 = 1000.0 * 0.8;
+
+/// 链路上每像素字节数：取图只支持 Mono8 与 8 位 Bayer（见 pixel_kind），都是 1 字节。
+const LINK_BYTES_PER_PIXEL: f64 = 1.0;
+
+/// GigE Vision 链路开销：图像按标准 1500 字节包（不开巨帧）传输，每包 1464 B 图像数据，外加 IP / UDP / GVSP 头 36 B
+/// 和以太网帧头、校验、前导码与帧间隔 38 B，线上字节约为图像字节的 1538 / 1464 ≈ 1.05 倍。开巨帧（9000 B）时约 1.008 倍；
+/// 估算按不开巨帧取保守值。
+const GIGE_OVERHEAD: f64 = 1538.0 / 1464.0;
+
+/// 相机组在某个触发频率下的链路带宽估算。
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BandwidthEstimate {
+    pub hz: f64,
+    /// 已知分辨率的相机之和
+    pub mbps_total: f64,
+    /// 与输入顺序一致；分辨率未知（还没出过图、离线来源没有物理链路）为 None，不计入合计
+    pub per_camera: Vec<Option<f64>>,
+    pub budget_mbps: f64,
+    pub over_budget: bool,
+}
+
+/// 各相机 宽 × 高 × 每像素字节 × 8 × hz × 链路开销（[`GIGE_OVERHEAD`]）求和，超过一个千兆口的 80% 即超预算。
+pub fn aggregate_bandwidth(sizes: &[Option<(u32, u32)>], hz: f64) -> BandwidthEstimate {
+    let per_camera: Vec<Option<f64>> = sizes.iter()
+        .map(|size| size.map(|(w, h)| w as f64 * h as f64 * LINK_BYTES_PER_PIXEL * 8.0 * hz * GIGE_OVERHEAD / 1e6))
+        .collect();
+    let mbps_total = per_camera.iter().flatten().sum::<f64>();
+    BandwidthEstimate { hz, mbps_total, per_camera, budget_mbps: PORT_BUDGET_MBPS, over_budget: mbps_total > PORT_BUDGET_MBPS }
+}
 
 /// 下一个设备会话号：进程内只增不减，各相机共用，所以会话号不会重复（0 表示还没打开过）。
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
@@ -35,7 +75,7 @@ fn manual_arm_ready(source: CameraSource, pending: u32) -> Result<(), String> {
     } else { Ok(()) }
 }
 
-/// 模拟相机合成飞拍帧所需的信息：哪个配方的第几个拍照点、什么场景、机器人偏差。
+/// 模拟相机合成飞拍帧所需的信息：哪个配方的第几个拍照点、什么场景、机器人偏差。旧拍照点模型；段配方用 [`BurstRender`]。
 pub struct SimRender {
     pub recipe: Arc<Recipe>,
     pub k: usize,
@@ -58,9 +98,25 @@ impl SampleTarget {
     }
 }
 
-/// 触发携带的取图依据：模拟相机按配方合成，样本集相机按身份取原图。
+/// 段配方模拟相机合成一帧所需的信息（规格 §6）：哪台计划相机、本件第几个脉冲，以及这一帧的真值——
+/// 所在段的类型与段内进度（弯道时胶条在视野内转动），按它画直线或弯道，不依赖拍照点示教中线。
+pub struct BurstRender {
+    pub recipe: Arc<Recipe>,
+    /// 计划相机下标（`Recipe.inspect` 的顺序）
+    pub camera_idx: usize,
+    /// 本件第几个脉冲，从 1 起
+    pub seq: u64,
+    pub kind: crate::plan::SegmentKind,
+    /// 段内进度 0–1
+    pub progress: f32,
+    pub scenario: Scenario,
+    pub seed: u64,
+}
+
+/// 触发携带的取图依据：模拟相机按配方合成（旧拍照点配方 `Sim`、段配方 `Burst`），样本集相机按身份取原图。
 pub enum TriggerPayload {
     Sim(SimRender),
+    Burst(BurstRender),
     Sample(SampleTarget),
 }
 
@@ -141,6 +197,23 @@ impl CameraConfig {
         }
         Ok(())
     }
+
+    /// 段配方要求一次触发只出一幅图的独立相机（规格 §0）。三目拼接只供旧拍照点配方使用（D-SB-11）。
+    fn require_single_view(&self) -> Result<(), String> {
+        if self.view_count != 1 || self.composite_layout.is_some() {
+            return Err(format!("相机 {} 是三目拼接配置，分段连拍需要三台独立的单视角相机；三目拼接只供旧拍照点配方使用", self.id));
+        }
+        Ok(())
+    }
+}
+
+/// 段配方的计划相机在相机组里都是单视角独立设备（D-SB-11）；缺相机或是三目拼接时返回原因。
+/// 台数与重复由 plan::validate_segments 校验。
+pub fn check_burst_cameras(rig: &[CameraConfig], cameras: &[String]) -> Result<(), String> {
+    for id in cameras {
+        rig.iter().find(|c| &c.id == id).ok_or_else(|| format!("相机组里没有计划相机 {id}"))?.require_single_view()?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -204,6 +277,8 @@ pub struct CameraStatus {
     pub lost_packets: u64,
     /// 检测节拍来不及取走、被丢弃的帧
     pub dropped_frames: u64,
+    /// 本次打开以来因图像内存预算满没拷图、被丢弃的帧（按缺帧处理）
+    pub budget_dropped_frames: u64,
     pub warnings: Vec<String>,
 }
 
@@ -298,7 +373,6 @@ impl CapturedFrame {
 struct RigShared {
     app: AppHandle,
     tx: Sender<Frame>,
-    pool: FramePool,
     /// 需要整帧图像（图像测量或帧录制）；模拟测量时不必拷整帧
     capture: AtomicBool,
     recipe_capture: Arc<crate::recipe_capture::RecipeCaptureHost>,
@@ -308,9 +382,13 @@ struct RigShared {
 struct Shared {
     cam: u8,
     rig: Arc<RigShared>,
+    /// 取图回调的整帧缓冲，按 IMAGE_BUDGET_PER_CAMERA 封顶在途字节
+    pool: FramePool,
     frames: AtomicU64,
     lost_packets: AtomicU64,
     dropped: AtomicU64,
+    /// 图像内存预算满被丢弃的帧（重新打开时清零）
+    budget_dropped: AtomicU64,
     recent: Mutex<VecDeque<Instant>>,
     preview: Mutex<Vec<Preview>>,
     last_full: Mutex<Option<CapturedFrame>>,
@@ -331,6 +409,7 @@ struct Shared {
     /// 海康相机本次打开开上了的 Chunk：触发计数、帧计数
     chunk_trigger: AtomicBool,
     chunk_frame: AtomicBool,
+    /// 旧拍照点模型：三目拼接的拆分布局，段配方不经过（D-SB-11）
     composite_layout: Mutex<Option<crate::recipe_capture::CompositeLayout>>,
 }
 
@@ -347,18 +426,29 @@ impl Shared {
         *self.preview.lock().unwrap() = images.iter().map(|img| make_preview(&img.pixels, img.width as usize, img.height as usize)).collect();
     }
 
-    /// 海康相机的一帧（像素格式已认过）：缩略图与整帧用同一张灰度。
-    fn gray_image(&self, pixel_type: u32, w: u32, h: u32, data: &[u8]) -> Option<Arc<FrameImage>> {
+    /// 海康相机的一帧（像素格式已认过）：缩略图与整帧用同一张灰度。要留整帧而图像内存预算已满时返回 Err，
+    /// 这一帧按缺帧处理；不留整帧时预算满只是没有缩略图。
+    fn gray_image(&self, pixel_type: u32, w: u32, h: u32, data: &[u8]) -> Result<Option<Arc<FrameImage>>, BudgetExceeded> {
         let keep = self.capture() | self.grab.swap(false, Ordering::SeqCst);
-        let gray = match to_gray(&self.rig.pool, pixel_type, w, h, data) {
+        let gray = match to_gray(&self.pool, pixel_type, w, h, data) {
             Ok(g) => g,
-            Err(e) => {
+            Err(GrayError::Invalid(e)) => {
                 self.unusable(e);
-                return None;
+                return Ok(None);
             }
+            Err(GrayError::BudgetExceeded(full)) => return if keep { Err(full) } else { Ok(None) },
         };
         *self.preview.lock().unwrap() = vec![make_preview(gray.pixels(), w as usize, h as usize)];
-        keep.then(|| Arc::new(gray.into_image(&self.rig.pool, w, h)))
+        if !keep {
+            return Ok(None);
+        }
+        gray.into_image(&self.pool, w, h).map(|image| Some(Arc::new(image)))
+    }
+
+    /// 图像内存预算满被丢弃的帧给状态栏的说明。
+    fn budget_note(&self) -> Option<String> {
+        let n = self.budget_dropped.load(Ordering::Relaxed);
+        (n > 0).then(|| format!("图像内存预算（{} MiB）已满：{n} 帧没拷图、按缺帧处理，检测处理不过来", IMAGE_BUDGET_PER_CAMERA >> 20))
     }
 
     /// 不支持的像素格式不静默丢弃：计数并记下原因，显示在相机状态里。
@@ -394,6 +484,22 @@ impl Shared {
             *self.last_full.lock().unwrap() = Some(CapturedFrame::from_frame(&frame));
             self.full_seq.fetch_add(1, Ordering::SeqCst);
         }
+        self.count_arrival(&frame);
+        if self.rig.recipe_capture.offer(&frame, original) { return; }
+        let _ = delivery::offer(&self.rig.tx, &self.dropped, frame);
+    }
+
+    /// 图像内存预算满、没拷图的帧：台账照记、计入帧数，但不交付（节拍按缺帧处理），不中断回调。
+    /// 段配方的示教采集轮次按帧号把它记为缺帧并告警（D-SB-8）。
+    fn discard_over_budget(&self, mut frame: Frame) {
+        let current_session = frame.session == self.session.load(Ordering::SeqCst);
+        delivery::discard_over_budget(&self.identity, &self.manual, &self.budget_dropped, &mut frame, current_session);
+        self.count_arrival(&frame);
+        self.rig.recipe_capture.offer_dropped(&frame);
+    }
+
+    /// 帧数、丢包、帧率与界面事件：交付与否都算相机出了这一帧。
+    fn count_arrival(&self, frame: &Frame) {
         self.frames.fetch_add(1, Ordering::Relaxed);
         self.lost_packets.fetch_add(frame.lost_packets as u64, Ordering::Relaxed);
         let now = Instant::now();
@@ -404,9 +510,7 @@ impl Shared {
                 recent.pop_front();
             }
         }
-        let _ = self.rig.app.emit("camera://frame", &frame);
-        if self.rig.recipe_capture.offer(&frame, original) { return; }
-        let _ = delivery::offer(&self.rig.tx, &self.dropped, frame);
+        let _ = self.rig.app.emit("camera://frame", frame);
     }
 
     fn fps(&self) -> f32 {
@@ -467,17 +571,17 @@ impl Gray<'_> {
         }
     }
 
-    fn into_image(self, pool: &FramePool, w: u32, h: u32) -> FrameImage {
+    fn into_image(self, pool: &FramePool, w: u32, h: u32) -> Result<FrameImage, BudgetExceeded> {
         match self {
             Gray::Raw(p) => pool.copy(w, h, p),
-            Gray::Pooled(img) => img,
+            Gray::Pooled(img) => Ok(img),
         }
     }
 }
 
 /// 取图回调收到的像素转成 8 位灰度。
-fn to_gray<'a>(pool: &FramePool, pixel_type: u32, w: u32, h: u32, data: &'a [u8]) -> Result<Gray<'a>, String> {
-    match pixel_kind(pixel_type)? {
+fn to_gray<'a>(pool: &FramePool, pixel_type: u32, w: u32, h: u32, data: &'a [u8]) -> Result<Gray<'a>, GrayError> {
+    match pixel_kind(pixel_type).map_err(GrayError::Invalid)? {
         PixelKind::Mono8 => Ok(Gray::Raw(data)),
         PixelKind::Bayer8 => pool.bayer8_to_gray(w, h, data).map(Gray::Pooled),
     }
@@ -540,6 +644,7 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
         let session = shared.session.load(Ordering::SeqCst);
         let w = if info.extend_width != 0 { info.extend_width } else { info.width as u32 };
         let h = if info.extend_height != 0 { info.extend_height } else { info.height as u32 };
+        let frame = |images: Vec<Arc<FrameImage>>| Frame { cam: shared.cam, session, counter, frame_counter, trigger_counter, lost_packets: info.lost_packet, ts: now_ms(), manual: false, images };
         // 先认像素格式、核对 SDK 帧长，再按宽 × 高取缓冲；图像不可用时帧照常交付（触发计数照记），只是不带图
         let image = match pixel_kind(info.pixel_type).and_then(|kind| frame_bytes(kind, w, h, info.frame_len)) {
             Err(e) => {
@@ -547,8 +652,13 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
                 None
             }
             Ok(_) if data.is_null() => None,
-            Ok(len) => shared.gray_image(info.pixel_type, w, h, unsafe { std::slice::from_raw_parts(data, len) }),
+            Ok(len) => match shared.gray_image(info.pixel_type, w, h, unsafe { std::slice::from_raw_parts(data, len) }) {
+                Ok(image) => image,
+                // 图像内存预算满（D-SB-32）：这一帧不拷图、不交付，台账照记
+                Err(_) => return shared.discard_over_budget(frame(Vec::new())),
+            },
         };
+        // 旧拍照点模型：三目拼接拆成视角 1–3，段配方不经过（D-SB-11）
         let images = match (&image, shared.composite_layout.lock().unwrap().as_ref()) {
             (Some(image), Some(layout)) => match layout.split(image) {
                 Ok(images) => images,
@@ -556,7 +666,7 @@ extern "system" fn on_image(data: *mut u8, info: *mut FrameInfo, user: *mut c_vo
             },
             _ => image.iter().cloned().collect(),
         };
-        shared.deliver_original(Frame { cam: shared.cam, session, counter, frame_counter, trigger_counter, lost_packets: info.lost_packet, ts: now_ms(), manual: false, images }, image);
+        shared.deliver_original(frame(images), image);
     }));
 }
 
@@ -625,9 +735,11 @@ impl CameraSlot {
             shared: Arc::new(Shared {
                 cam,
                 rig: rig.clone(),
+                pool: FramePool::with_budget(POOL_KEEP_PER_CAMERA, IMAGE_BUDGET_PER_CAMERA),
                 frames: AtomicU64::new(0),
                 lost_packets: AtomicU64::new(0),
                 dropped: AtomicU64::new(0),
+                budget_dropped: AtomicU64::new(0),
                 recent: Mutex::new(VecDeque::new()),
                 preview: Mutex::new(Vec::new()),
                 last_full: Mutex::new(None),
@@ -690,10 +802,8 @@ impl CameraSlot {
                 None => "样本集相机只在离线·样本集模式下可用".to_string(),
             },
             CameraSource::Mvs if released => "已释放给海康 MVS 客户端，调整完点重新连接".to_string(),
-            CameraSource::Mvs => match self.shared.unusable_note() {
-                Some(note) => format!("{note} · {state_message}"),
-                None => state_message,
-            },
+            CameraSource::Mvs => [self.shared.unusable_note(), self.shared.budget_note(), Some(state_message)]
+                .into_iter().flatten().collect::<Vec<_>>().join(" · "),
         }};
         CameraStatus {
             cam: self.shared.cam,
@@ -710,8 +820,17 @@ impl CameraSlot {
             max_fps,
             lost_packets: self.shared.lost_packets.load(Ordering::Relaxed),
             dropped_frames: self.shared.dropped.load(Ordering::Relaxed),
+            budget_dropped_frames: self.shared.budget_dropped.load(Ordering::Relaxed),
             warnings,
         }
+    }
+
+    /// 估算链路带宽用的分辨率：海康相机最近一帧的原图尺寸；离线来源没有物理链路，没出过图时未知。
+    fn link_frame_size(&self) -> Option<(u32, u32)> {
+        if self.config.lock().unwrap().source != CameraSource::Mvs {
+            return None;
+        }
+        self.shared.preview.lock().unwrap().first().map(|p| (p.full_width, p.full_height))
     }
 
     pub fn last_views(&self) -> Vec<Arc<FrameImage>> {
@@ -825,7 +944,6 @@ impl CameraSlot {
         let cam = self.shared.cam;
         match config.source {
             CameraSource::Sim => {
-                let render = match payload { Some(TriggerPayload::Sim(render)) => Some(render), _ => None };
                 let (session, n) = self.next_counters();
                 let ticket = CaptureTicket { session, frame_counter: n };
                 let shared = self.shared.clone();
@@ -835,10 +953,13 @@ impl CameraSlot {
                 }
                 tauri::async_runtime::spawn(async move {
                     let started = Instant::now();
-                    let images = tauri::async_runtime::spawn_blocking(move || match render {
-                        Some(r) => simimage::render_views(&r.recipe, r.k, r.scenario, r.pose, r.seed, config.view_count),
-                        None if config.view_count == 3 => simimage::background_views(config.view_count, n),
-                        None => Ok(Vec::new()),
+                    let images = tauri::async_runtime::spawn_blocking(move || match payload {
+                        Some(TriggerPayload::Sim(r)) => simimage::render_views(&r.recipe, r.k, r.scenario, r.pose, r.seed, config.view_count),
+                        // 段配方：三台独立单视角相机各出一幅（D-SB-11）
+                        Some(TriggerPayload::Burst(r)) if config.view_count == 1 => Ok(vec![Arc::new(simimage::render_burst(&r))]),
+                        Some(TriggerPayload::Burst(_)) => Err(format!("段配方的相机必须是单视角，模拟相机 {} 配了 {} 个视角", config.id, config.view_count)),
+                        _ if config.view_count == 3 => simimage::background_views(config.view_count, n),
+                        _ => Ok(Vec::new()),
                     }).await.map_err(|e| e.to_string()).and_then(|r| r);
                     let transfer = Duration::from_millis(180);
                     if started.elapsed() < transfer {
@@ -859,7 +980,7 @@ impl CameraSlot {
             CameraSource::SampleSet => {
                 let target = match payload {
                     Some(TriggerPayload::Sample(target)) => Ok(target),
-                    Some(TriggerPayload::Sim(_)) => Err("样本集相机收到合成图触发，没有样本件身份".to_string()),
+                    Some(TriggerPayload::Sim(_) | TriggerPayload::Burst(_)) => Err("样本集相机收到合成图触发，没有样本件身份".to_string()),
                     None => crate::offline::preview_target(&self.shared.rig.app, &config.id)
                         .ok_or_else(|| format!("未选择离线样本集，或样本集里没有相机 {} 的拍照点", config.id)),
                 };
@@ -920,6 +1041,7 @@ impl CameraSlot {
         self.imaging.lock().unwrap().take();
         self.shared.disconnected.store(false, Ordering::SeqCst);
         self.shared.unusable.store(0, Ordering::Relaxed);
+        self.shared.budget_dropped.store(0, Ordering::Relaxed);
     }
 
     /// 把配方的曝光与增益写进已打开的海康相机，不重开、不换会话；与上次写入相同时不再写。模拟、样本集相机不用写。
@@ -1114,7 +1236,6 @@ impl CameraRig {
         let rig = Arc::new(RigShared {
             app: app.clone(),
             tx,
-            pool: FramePool::new(48),
             capture: AtomicBool::new(false),
             recipe_capture: crate::recipe_capture::RecipeCaptureHost::open(crate::storage::root(app).join("recipe-capture"))?,
         });
@@ -1232,7 +1353,7 @@ impl CameraRig {
         if !slot.is_ready() {
             return Err(format!("相机未就绪：{}", slot.status().message));
         }
-        let images = if config.source == CameraSource::Sim && !matches!(payload, Some(TriggerPayload::Sim(_))) {
+        let images = if config.source == CameraSource::Sim && !matches!(payload, Some(TriggerPayload::Sim(_) | TriggerPayload::Burst(_))) {
             let images = slot.last_views();
             if images.is_empty() {
                 return Err("模拟相机尚未出图，请先运行一个模拟工件".into());
@@ -1347,6 +1468,16 @@ pub fn camera_rig_status(cycle: State<'_, CycleHost>) -> Vec<CameraStatus> {
 #[tauri::command]
 pub fn camera_rig_config(cycle: State<'_, CycleHost>) -> Vec<CameraConfig> {
     cycle.camera.configs()
+}
+
+/// 相机组在 `hz` 触发频率下的链路带宽估算（规格 §6：按各路之和），按相机组顺序。
+#[tauri::command]
+pub fn camera_bandwidth(cycle: State<'_, CycleHost>, hz: f64) -> Result<BandwidthEstimate, String> {
+    if !(hz.is_finite() && hz > 0.0) {
+        return Err(format!("触发频率需为正数（实际 {hz}）"));
+    }
+    let sizes: Vec<_> = cycle.camera.slots().iter().map(|s| s.link_frame_size()).collect();
+    Ok(aggregate_bandwidth(&sizes, hz))
 }
 
 /// 保存并应用一台相机的配置。返回相机未接受的参数。
@@ -1673,6 +1804,41 @@ mod view_tests {
     }
 
     #[test]
+    fn burst_plan_camera_missing_or_not_single_view_is_rejected() {
+        let single = |id: &str| CameraConfig { id: id.into(), view_count: 1, ..CameraConfig::default() };
+        let plan: Vec<String> = ["cam1", "cam2", "cam3"].map(String::from).to_vec();
+        let cases: [(&str, CameraConfig, bool); 4] = [
+            ("单视角独立相机", single("cam3"), true),
+            ("三视角样本集相机", CameraConfig { source: CameraSource::SampleSet, view_count: 3, ..single("cam3") }, false),
+            ("配了三目拼接布局", CameraConfig { composite_layout: Some(crate::recipe_capture::CompositeLayout::Horizontal), ..single("cam3") }, false),
+            ("计划相机不在相机组", single("cam9"), false),
+        ];
+        for (name, third, accepted) in cases {
+            let rig = [single("cam1"), single("cam2"), third];
+            assert_eq!(check_burst_cameras(&rig, &plan).is_ok(), accepted, "{name}");
+        }
+    }
+
+    /// 规格 §6 带宽按三路之和，且计入 GigE 协议开销（C2 遗留 F0-4：只算像素时三台 130 万像素 25 Hz 为 786 Mbps，
+    /// 判为不超预算，实际线上约 826 Mbps，已超过一个千兆口的 80%）。
+    #[test]
+    fn aggregate_bandwidth_over_one_port_budget_is_flagged() {
+        let three = |w, h| vec![Some((w, h)); 3];
+        // (场景, 各相机分辨率, 触发频率, 期望合计 Mbps, 是否超预算)
+        let cases: [(&str, Vec<Option<(u32, u32)>>, f64, f64, bool); 3] = [
+            ("三台 130 万像素 25 Hz 计入协议开销后超过 800 Mbps", three(1280, 1024), 25.0, 826.2, true),
+            ("三台 130 万像素 20 Hz 未到 800 Mbps", three(1280, 1024), 20.0, 660.9, false),
+            ("还没出图的相机不计入合计", vec![Some((1280, 1024)), None, None], 25.0, 275.4, false),
+        ];
+        for (name, sizes, hz, total, over) in cases {
+            let estimate = aggregate_bandwidth(&sizes, hz);
+            assert!((estimate.mbps_total - total).abs() < 0.1, "{name}: {}", estimate.mbps_total);
+            assert_eq!(estimate.over_budget, over, "{name}");
+            assert_eq!(estimate.per_camera.iter().map(Option::is_some).collect::<Vec<_>>(), sizes.iter().map(Option::is_some).collect::<Vec<_>>(), "{name}");
+        }
+    }
+
+    #[test]
     fn sample_set_missing_image_becomes_a_skipped_frame_and_later_triggers_still_arrive_in_order() {
         use crate::offline::sample_set::fixture::Fixture;
         let fixture = Fixture::new(&[1, 2, 3]);
@@ -1731,7 +1897,7 @@ mod gray_tests {
             let gray = to_gray(&pool, pixel_type, width, height, input).unwrap();
             assert_eq!(matches!(gray, Gray::Raw(_)), raw, "{case}");
             assert_eq!(gray.pixels(), &expected[..], "{case}");
-            let img = gray.into_image(&pool, width, height);
+            let img = gray.into_image(&pool, width, height).unwrap();
             assert_eq!((img.width, img.height), (width, height), "{case}");
             assert_eq!(img.pixels, expected, "{case}");
         }

@@ -472,3 +472,55 @@ fn applying_lower_retention_prunes_both_roots_without_next_part_and_keeps_protec
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+
+/// 段配方一帧：单幅 1×1 图像。
+fn burst_frame(seed: u8) -> Frame {
+    Frame { images: vec![Arc::new(FrameImage::new(1, 1, vec![seed]))], ..frame(seed) }
+}
+
+/// 段配方录制：录制队列已有 `queued` 帧时依次录 `frames`（(计划相机下标, seq)），写盘后收尾。
+fn record_burst(dir: &TestDir, queued: usize, frames: &[(usize, u64)]) -> RecordingOutcome {
+    let (recorder, rx, _) = controlled(dir.root());
+    recorder.queued.store(queued, Ordering::Relaxed);
+    let recipe = Arc::new(crate::recipe::samples_burst().build().unwrap());
+    let mut rec = recorder.begin(RecordMode::All, "SN-B1", recipe, "cycle-burst", None).unwrap();
+    for &(camera, seq) in frames {
+        recorder.burst_frame(&mut rec, &burst_frame(seq as u8), camera, seq);
+    }
+    recorder.finish(rec, Verdict::Ok, "原始判定 OK", 10, u64::MAX, Vec::new());
+    let mut state = WriteState::default();
+    loop {
+        match rx.try_recv().expect("录制收尾必须有收尾消息") {
+            Msg::BurstFrame(job) => {
+                let key = FrameKey { camera: job.meta.camera, seq: job.meta.seq };
+                state.frame_results.insert(key, save_raw(&job.pending.join(&job.meta.file), &job.image));
+            }
+            Msg::Finish(job) => return finish_recording(recorder.root(), job, state, None),
+            _ => panic!("段配方录制只发帧与收尾消息"),
+        }
+    }
+}
+
+/// 规格 §3 缺帧可追溯：相机没出图的帧按 (camera, seq) 列进 part.json 的 missingFrames，录制本身仍完整；
+/// D-SB-32 录制背压不悄悄丢证据：队满没录的帧列进 rawDropped，证据标 Incomplete，写成的帧照常按 (camera, seq) 关联。
+#[test]
+fn recording_with_missing_or_queue_dropped_frames_lists_them_by_camera_seq() {
+    let all = [(0, 1), (1, 1), (2, 1), (0, 2), (1, 2), (2, 2)];
+    let key = |(camera, seq): (usize, u64)| json!({ "camera": camera, "seq": seq });
+    // (场景, 录制前队列里已有的帧数, 交给录制的帧, missingFrames, rawDropped, 证据状态)
+    let cases: [(&str, usize, Vec<(usize, u64)>, Vec<(usize, u64)>, Vec<(usize, u64)>, RecordingState); 2] = [
+        ("相机 2 第 2 帧没出图", 0, all.iter().copied().filter(|&f| f != (1, 2)).collect(), vec![(1, 2)], vec![], RecordingState::Complete),
+        ("录制队列只剩 4 帧余量", BURST_QUEUE - 4, all.to_vec(), vec![], vec![(1, 2), (2, 2)], RecordingState::Incomplete),
+    ];
+    for (case, queued, frames, missing, dropped, state) in cases {
+        let dir = TestDir::new();
+        let outcome = record_burst(&dir, queued, &frames);
+        assert_eq!(outcome.state, state, "{case}: {:?}", outcome.errors);
+        let meta = metadata(&outcome);
+        assert_eq!(meta["missingFrames"], json!(missing.into_iter().map(key).collect::<Vec<_>>()), "{case}");
+        assert_eq!(meta["rawDropped"], json!(dropped.iter().copied().map(key).collect::<Vec<_>>()), "{case}");
+        let written: Vec<_> = frames.iter().copied().filter(|frame| !dropped.contains(frame)).collect();
+        let linked: Vec<_> = outcome.files.iter().map(|file| file.frame.map(|f| (f.camera, f.seq))).collect();
+        assert_eq!(linked, written.into_iter().map(Some).collect::<Vec<_>>(), "{case}");
+    }
+}

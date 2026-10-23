@@ -7,14 +7,18 @@
 //!   用开流后的计数起点（模拟 / 样本集为 0，海康按 [`Policy::counter_after_open`]，未经台架确认就拒绝布防）；
 //! - 路由（[`ShotRouter::route`]）：本机序号 = 触发计数 − 基线，对应这台相机的第几个拍照点；
 //! - 收尾（[`ShotRouter::close`]）：下一件的基线下限 = 基线 + PLC 报的本件已发触发数（S7 `cameraNTriggers`：
-//!   partEnd 核对过的，或提前判 ERR 的件在 PLC 确认结果时读到的），上一件迟到的帧就落在基线以内，成了旧帧；
-//!   没有 PLC 计数时按计划数假定。
+//!   partEnd 时报的，或提前判 ERR 的件在 PLC 确认结果时读到的），上一件迟到的帧就落在基线以内，成了旧帧；
+//!   没有 PLC 计数时按计划数假定；见到的更高计数优先。这是旧拍照点配方的规则，D-SB-7 不改它。
 //!
 //! 只靠计数分不出来的情况（都会让这件判 ERR，不会判 OK）：本件中途 Line0 上多一个干扰触发，后面的帧整体后移，
 //! 最后一帧成了超计划帧（96）；相机漏收一个触发脉冲，最后一个拍照点等不到帧（91），之后每件的基线都偏高一格：
 //! 第一帧被当成上一件的迟到帧、最后一个拍照点等不到帧（91，原因写明"触发计数错位"）。这与"上一件最后一帧
 //! 迟到到下一件"在计数上一模一样，自动下调基线会在后一种情况下把帧整体错绑、凑齐一件，所以不自动改，
 //! 等故障复位清掉下限（[`Ledgers::clear_floors`]）后按实际见到的计数重新对齐。
+//!
+//! 段配方（`Recipe::is_burst`）不经过拍照点路由：布防用 [`arm_frames`] 按 SDK 帧计数定每台相机的基线，帧归属由
+//! `frame_group::Grouper` 按帧号配组；下一件的帧计数下限记在 [`Ledger::frame_floor`]，
+//! = max(本件基线, 这台相机本件见到的最高帧计数)，PLC 报的触发数与计划数都不参与（D-SB-7）。
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -35,11 +39,13 @@ pub struct FrameMeta {
     pub source: CounterSource,
     /// 触发计数（来源不是触发计数时是帧计数，不可信）
     pub trigger: u64,
+    /// SDK 帧计数（`Frame::frame_counter`）：段模型按它配组（D-SB-10），只记账，不参与旧拍照点路由
+    pub frame: u64,
 }
 
 impl From<&Frame> for FrameMeta {
     fn from(f: &Frame) -> Self {
-        Self { cam: f.cam, session: f.session, source: f.counter, trigger: f.trigger_counter }
+        Self { cam: f.cam, session: f.session, source: f.counter, trigger: f.trigger_counter, frame: f.frame_counter }
     }
 }
 
@@ -93,23 +99,28 @@ pub struct Ledger {
     pub sources: Vec<CounterSource>,
     /// 本会话见到的最大触发计数
     pub last: Option<u64>,
+    /// 本会话见到的最大 SDK 帧计数：段模型示教采集的配组基线（D-SB-10），旧拍照点路由不读
+    pub last_frame: Option<u64>,
     pub frames: u64,
     /// 本会话里触发计数第一次回退：(之前的最大值, 回退到的值)
     pub backwards: Option<(u64, u64)>,
     pub duplicate: Option<u64>,
-    /// 上一件收尾推算的下一件基线下限
+    /// 上一件收尾推算的下一件基线下限（旧拍照点配方，触发计数）
     pub floor: Option<u64>,
+    /// 上一件段配方收尾推算的下一件帧计数基线下限（D-SB-7）；旧拍照点路由不读
+    pub frame_floor: Option<u64>,
     seen: u128,
 }
 
 impl Ledger {
     fn new(session: u64) -> Self {
-        Self { session, source: None, sources: Vec::new(), last: None, frames: 0,
-            backwards: None, duplicate: None, floor: None, seen: 0 }
+        Self { session, source: None, sources: Vec::new(), last: None, last_frame: None, frames: 0,
+            backwards: None, duplicate: None, floor: None, frame_floor: None, seen: 0 }
     }
 
+    /// 模拟 / 样本集相机的现状：帧计数与触发计数相同。
     pub fn snapshot(session: u64, source: CounterSource, trigger: u64) -> Self {
-        Self { source: Some(source), sources: vec![source], last: Some(trigger), seen: 1, ..Self::new(session) }
+        Self { source: Some(source), sources: vec![source], last: Some(trigger), last_frame: Some(trigger), seen: 1, ..Self::new(session) }
     }
 
     fn note_backwards(&mut self, from: u64, to: u64) {
@@ -142,6 +153,7 @@ impl Ledgers {
             *l = Ledger::new(f.session);
         }
         l.frames += 1;
+        l.last_frame = l.last_frame.max(Some(f.frame));
         l.source = Some(f.source);
         if !l.sources.contains(&f.source) { l.sources.push(f.source); }
         let advanced = l.last.is_none_or(|last| f.trigger > last);
@@ -176,6 +188,7 @@ impl Ledgers {
         let last = current.last.max(observed.last);
         current.seen = last.map_or(0, |last| current.seen_at(last) | observed.seen_at(last));
         current.last = last;
+        current.last_frame = current.last_frame.max(observed.last_frame);
         current.source = observed.source.or(current.source);
         for source in observed.sources.iter().copied().chain(observed.source) {
             if !current.sources.contains(&source) { current.sources.push(source); }
@@ -198,10 +211,22 @@ impl Ledgers {
         }
     }
 
+    /// 段配方收尾：记下下一件的帧计数基线下限（`Floor::baseline` 是帧计数）；账上已是更新的会话时不记。
+    pub fn set_frame_floor(&mut self, floor: &Floor) {
+        let l = self.cams.entry(floor.cam).or_insert_with(|| Ledger::new(floor.session));
+        if floor.session > l.session {
+            *l = Ledger::new(floor.session);
+        }
+        if floor.session == l.session {
+            l.frame_floor = l.frame_floor.max(Some(floor.baseline));
+        }
+    }
+
     /// 故障复位后不再用上一件推算的下限，只按见到的计数布防（复位时线上没有在途的触发）。
     pub fn clear_floors(&mut self) {
         for l in self.cams.values_mut() {
             l.floor = None;
+            l.frame_floor = None;
         }
     }
 }
@@ -223,6 +248,16 @@ impl Policy {
     /// 离线产线（进程内 S7 服务）：模拟、样本集相机的计数也认；接真实 PLC 时不用。
     pub fn offline(counter_after_open: Option<u64>) -> Self {
         Self { trusted: vec![CounterSource::ChunkTrigger, CounterSource::Synthetic], counter_after_open }
+    }
+
+    /// 段配方生产（D-SB-10）：按 SDK 帧计数配组，海康三种来源（Chunk 触发计数、Chunk 帧计数、SDK 帧号）的帧计数都认。
+    pub fn burst_production(counter_after_open: Option<u64>) -> Self {
+        Self { trusted: vec![CounterSource::ChunkTrigger, CounterSource::ChunkFrame, CounterSource::SdkFrame], counter_after_open }
+    }
+
+    /// 段配方离线产线：另外认模拟、样本集相机的计数。
+    pub fn burst_offline(counter_after_open: Option<u64>) -> Self {
+        Self { trusted: vec![CounterSource::ChunkTrigger, CounterSource::ChunkFrame, CounterSource::SdkFrame, CounterSource::Synthetic], counter_after_open }
     }
 
     pub fn trusts(&self, source: CounterSource) -> bool {
@@ -585,6 +620,7 @@ impl ShotRouter {
     /// 本件结束：推算各相机下一件的基线下限，记进计数账，并返回给日志。
     /// `issued`：PLC 报的本件各相机已发触发数（S7 `cameraNTriggers`，按相机编号）。没有时按计划数假定
     /// （离线产线按计划触发，丢在传输里的帧也占了计数）；见到的更高计数优先。
+    /// 这是旧拍照点配方的规则；段配方的下一件基线见 [`Ledgers::set_frame_floor`]（D-SB-7）。
     pub fn close(&self, ledgers: &mut Ledgers, issued: Option<&[(&str, u64)]>) -> Vec<Floor> {
         let floors: Vec<Floor> = self
             .cams
@@ -601,6 +637,47 @@ impl ShotRouter {
     }
 }
 
+/// 段配方布防时一台计划相机的帧计数基线：frame_counter ≤ baseline 的帧属于上一件。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameBaseline {
+    /// 相机组序号（帧里的 cam）
+    pub cam: u8,
+    pub camera: String,
+    /// 布防时的会话号
+    pub session: u64,
+    pub baseline: u64,
+}
+
+/// 段配方布防（D-SB-7、D-SB-10）：按计划相机顺序给出每台相机的帧计数基线 =
+/// max(本会话见到的最大 SDK 帧计数, 上一件段配方收尾推算的帧计数下限)；本会话还没见过帧时与 [`ShotRouter::arm`]
+/// 一样取开流后的计数起点（模拟 / 样本集为 0，海康按 `counter_after_open`，未经台架确认就拒绝布防）。
+/// 本会话出现过 policy 不信任的计数来源时拒绝。
+pub fn arm_frames(cameras: &[String], ledgers: &Ledgers, policy: &Policy, cams: &[ArmCam]) -> Result<Vec<FrameBaseline>, Refusal> {
+    let mut armed: Vec<FrameBaseline> = Vec::with_capacity(cameras.len());
+    for id in cameras {
+        let camera = id.clone();
+        let Some(now) = cams.iter().find(|c| &c.camera == id) else { return Err(Refusal::NoCamera { camera }) };
+        if let Some(other) = armed.iter().find(|a| a.cam == now.cam) {
+            return Err(Refusal::SharedSlot { camera, other: other.camera.clone() });
+        }
+        let ledger = ledgers.get(now.cam).filter(|l| l.session == now.session);
+        let source = ledger.and_then(|l| l.source).or(now.source);
+        if let Some(source) = ledger.into_iter().flat_map(|l| l.sources.iter().copied()).chain(source).find(|s| !policy.trusts(*s)) {
+            return Err(Refusal::Untrusted { camera, source });
+        }
+        let baseline = match ledger.and_then(|l| l.last_frame.max(l.frame_floor)) {
+            Some(b) => b,
+            None if source == Some(CounterSource::Synthetic) => SYNTHETIC_START,
+            None => match now.counter_after_open.or(policy.counter_after_open) {
+                Some(b) => b,
+                None => return Err(Refusal::NoBaseline { camera }),
+            },
+        };
+        armed.push(FrameBaseline { cam: now.cam, camera, session: now.session, baseline });
+    }
+    Ok(armed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -615,7 +692,7 @@ mod tests {
     }
 
     fn frame(trigger: u64) -> FrameMeta {
-        FrameMeta { cam: 0, session: 11, source: ChunkTrigger, trigger }
+        FrameMeta { cam: 0, session: 11, source: ChunkTrigger, trigger, frame: trigger }
     }
 
     fn primed() -> Ledgers {
@@ -735,5 +812,18 @@ mod tests {
         ledgers.clear_floors();
         let reset = ShotRouter::arm(&plan(), &ledgers, &Policy::production(None), &[camera()]).unwrap();
         assert_eq!(reset.baseline(0), Some(40));
+    }
+
+    /// D-SB-10：段配方示教采集的 seq = frame_counter − 基线，基线必须按帧计数记——Chunk 触发计数与帧计数起点不同、
+    /// 中途回退的帧不压低它、换会话后重新计。
+    #[test]
+    fn frame_baseline_follows_highest_sdk_frame_counter_of_the_session_not_trigger_counter() {
+        let mut ledgers = Ledgers::default();
+        for (trigger, sdk) in [(40, 1040), (41, 1041), (39, 1039)] {
+            ledgers.observe(&FrameMeta { trigger, frame: sdk, ..frame(0) });
+        }
+        assert_eq!((ledgers.get(0).unwrap().last, ledgers.get(0).unwrap().last_frame), (Some(41), Some(1041)));
+        ledgers.observe(&FrameMeta { session: 12, trigger: 1, frame: 5, ..frame(0) });
+        assert_eq!(ledgers.get(0).unwrap().last_frame, Some(5));
     }
 }

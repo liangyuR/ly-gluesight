@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Alert, Button, Dialog, List, ListItem, NumberField, SegmentedControl, Stack, StatusBadge, Table, Text, type TableColumn } from "qing-steel";
 import type { Verdict } from "../../cycle/types";
@@ -39,7 +39,7 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
   useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;};},[]);
   useEffect(()=>{setResult(null);setError("");},[scope]);
   const invalid=Object.values(overrides).some(value=>typeof value==="number"&&!Number.isFinite(value))||
-    [overrides.position,overrides.width].some(value=>value&&(
+    [overrides.position,overrides.width,overrides.straight,overrides.corner].some(value=>value&&(
       Object.values(value).some(v=>v!==undefined&&!Number.isFinite(v))||
       [value.tolUpper,value.tolLower,value.maxExcursionLen].some(v=>v!==undefined&&v<0)||
       (value.absMin!==undefined&&value.absMax!==undefined&&value.absMin>value.absMax)))||
@@ -63,12 +63,13 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
     }
   };
 
-  const kind = (k: "position" | "width", f: keyof KindOverride) => (
+  const kindName = { position: "位置", width: "胶宽", straight: "直线段胶宽", corner: "弯道段胶宽" };
+  const kind = (k: keyof typeof kindName, f: keyof KindOverride) => (
     <NumberField
       id={`rj-${k}-${f}`}
       step={0.05}
       placeholder="不变"
-      aria-label={`${k==="position"?"位置":"胶宽"}${kindFields.find(([key])=>key===f)?.[1]}`}
+      aria-label={`${kindName[k]}${kindFields.find(([key])=>key===f)?.[1]}`}
       disabled={running}
       value={overrides[k]?.[f] ?? ""}
       onValueChange={(value) => edit({ ...overrides, [k]: { ...overrides[k], [f]: orDefault(value) } })}
@@ -116,9 +117,14 @@ export default function RejudgeDialog({ query, total, onClose }: { query: Histor
           {kindFields.map(([f]) => <div key={f}>{kind("position", f)}</div>)}
           <span title="只作用于判胶宽的拍照点">胶宽</span>
           {kindFields.map(([f]) => <div key={f}>{kind("width", f)}</div>)}
+          {(["straight", "corner"] as const).map(k => <Fragment key={k}>
+            <span title={`只作用于段配方记录中${k === "straight" ? "直线" : "弯道"}区域的每帧胶宽；绝对限不适用`}>{k === "straight" ? "直线段" : "弯道段"}</span>
+            {kindFields.map(([f]) => <div key={f}>{f === "absMin" || f === "absMax" ? null : kind(k, f)}</div>)}
+          </Fragment>)}
         </div>
+        <Text variant="label" muted>位置、胶宽两行只作用于旧拍照点记录；直线段、弯道段两行只作用于段配方记录的胶宽（每帧独立判），未分段区域取两者中较宽的一档。</Text>
         <div className="rj-pair">
-          <NumberField id="rj-gap" label="允许断胶长度（mm，每个拍照点）" aria-label="允许断胶长度（mm）" disabled={running} min={0} step={0.1} placeholder="不变" value={overrides.maxGapLen ?? ""} onValueChange={(value) => edit({ ...overrides, maxGapLen: orDefault(value) })} />
+          <NumberField id="rj-gap" label="允许断胶长度（mm，每个拍照点；段配方为每帧）" aria-label="允许断胶长度（mm）" disabled={running} min={0} step={0.1} placeholder="不变" value={overrides.maxGapLen ?? ""} onValueChange={(value) => edit({ ...overrides, maxGapLen: orDefault(value) })} />
           <NumberField id="rj-filter" label="滤波窗口（奇数）" aria-label="滤波窗口（奇数）" disabled={running} step={2} min={1} max={31} placeholder="不变" value={overrides.filterWindow ?? ""} onValueChange={(value) => edit({ ...overrides, filterWindow: orDefault(value) })} />
         </div>
 

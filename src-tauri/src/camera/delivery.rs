@@ -26,6 +26,13 @@ pub(super) fn offer(tx: &Sender<Frame>, dropped: &AtomicU64, frame: Frame) -> Re
     result
 }
 
+/// 图像内存预算满、回调没拷图的帧（D-SB-32）：与回调通道满一样，台账照常前进、帧不交付，节拍据台账按缺帧处理；
+/// 单独计入“内存预算满”丢帧。
+pub(super) fn discard_over_budget(identity: &Mutex<Ledgers>, manual: &AtomicU32, budget_dropped: &AtomicU64, frame: &mut Frame, current_session: bool) {
+    observe(identity, manual, frame, current_session);
+    budget_dropped.fetch_add(1, Ordering::Relaxed);
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -36,6 +43,9 @@ mod tests {
     use crate::camera::FRAME_QUEUE;
     use crate::frame::FrameImage;
     use crate::judge::fault;
+
+    /// 帧通道填满时最后一帧的计数；之后的帧从 Q + 1 起
+    const Q: u64 = FRAME_QUEUE as u64;
 
     fn frame(cam: u8, counter: u64) -> Frame {
         Frame {
@@ -60,7 +70,7 @@ mod tests {
             callback(&identity, &manual, &tx, &dropped, frame(0, counter)).unwrap();
         }
         assert_eq!(rx.len(), FRAME_QUEUE);
-        for counter in [65, 66] {
+        for counter in [Q + 1, Q + 2] {
             let Err(TrySendError::Full(rejected)) = callback(&identity, &manual, &tx, &dropped, frame(0, counter)) else {
                 panic!("满帧通道必须拒绝完整设备帧");
             };
@@ -70,8 +80,8 @@ mod tests {
         {
             let ledgers = identity.lock().unwrap();
             let ledger = ledgers.get(0).unwrap();
-            assert_eq!(ledger.last, Some(66));
-            assert_eq!(ledger.frames, 66);
+            assert_eq!(ledger.last, Some(Q + 2));
+            assert_eq!(ledger.frames, Q + 2);
         }
         assert_eq!(dropped.load(Ordering::Relaxed), 2);
         for counter in 1..=FRAME_QUEUE as u64 {
@@ -79,12 +89,12 @@ mod tests {
             assert_eq!(accepted.trigger_counter, counter);
             assert_eq!(accepted.images.len(), 3);
         }
-        callback(&identity, &manual, &tx, &dropped, frame(0, 67)).unwrap();
-        assert_eq!(rx.try_recv().unwrap().trigger_counter, 67);
+        callback(&identity, &manual, &tx, &dropped, frame(0, Q + 3)).unwrap();
+        assert_eq!(rx.try_recv().unwrap().trigger_counter, Q + 3);
         assert!(rx.try_recv().is_err());
         assert_eq!(dropped.load(Ordering::Relaxed), 2);
-        assert_eq!(identity.lock().unwrap().get(0).unwrap().last, Some(67));
-        assert_eq!(identity.lock().unwrap().get(0).unwrap().frames, 67);
+        assert_eq!(identity.lock().unwrap().get(0).unwrap().last, Some(Q + 3));
+        assert_eq!(identity.lock().unwrap().get(0).unwrap().frames, Q + 3);
     }
 
     #[test]
@@ -133,7 +143,7 @@ mod tests {
                         callback(&identity, &manual, &tx, &dropped, frame(1, counter)).unwrap();
                     }
                 }
-                let result = callback(&identity, &manual, &tx, &dropped, frame(0, 65 + shot));
+                let result = callback(&identity, &manual, &tx, &dropped, frame(0, Q + 1 + shot));
                 if shot == missing {
                     assert!(matches!(result, Err(TrySendError::Full(_))));
                 } else {
@@ -154,11 +164,11 @@ mod tests {
                 assert_eq!(shot.status, if k == missing as usize {
                     crate::cycle::FrameStatus::Missing
                 } else { crate::cycle::FrameStatus::Done });
-                assert_eq!(shot.trigger_counter, (k != missing as usize).then_some(65 + k as u64));
+                assert_eq!(shot.trigger_counter, (k != missing as usize).then_some(Q + 1 + k as u64));
             }
             let recovered_baseline = identity.lock().unwrap().clone();
             let mut recovered = Vec::new();
-            for counter in 69..=72 {
+            for counter in Q + 5..=Q + 8 {
                 callback(&identity, &manual, &tx, &dropped, frame(0, counter)).unwrap();
                 recovered.push(rx.try_recv().unwrap());
             }
@@ -183,7 +193,7 @@ mod tests {
         let baseline = identity.lock().unwrap().clone();
         while rx.try_recv().is_ok() {}
         let mut received = Vec::new();
-        for counter in 65..=68 {
+        for counter in Q + 1..=Q + 4 {
             callback(&identity, &manual, &tx, &dropped, frame(0, counter)).unwrap();
             received.push(rx.try_recv().unwrap());
         }
@@ -194,7 +204,7 @@ mod tests {
         for counter in 1..=FRAME_QUEUE as u64 {
             callback(&identity, &manual, &tx, &dropped, frame(1, counter)).unwrap();
         }
-        assert!(matches!(callback(&identity, &manual, &tx, &dropped, frame(0, 69)), Err(TrySendError::Full(_))));
+        assert!(matches!(callback(&identity, &manual, &tx, &dropped, frame(0, Q + 5)), Err(TrySendError::Full(_))));
         let (judgement, shots) = crate::cycle::tests::judge_callback_channel(
             &baseline, received, &identity.lock().unwrap());
         assert!(shots.iter().all(|shot| shot.status == crate::cycle::FrameStatus::Done));
@@ -205,7 +215,7 @@ mod tests {
         while rx.try_recv().is_ok() {}
         let recovered_baseline = identity.lock().unwrap().clone();
         let mut recovered = Vec::new();
-        for counter in 70..=73 {
+        for counter in Q + 6..=Q + 9 {
             callback(&identity, &manual, &tx, &dropped, frame(0, counter)).unwrap();
             recovered.push(rx.try_recv().unwrap());
         }
@@ -217,4 +227,36 @@ mod tests {
         assert!(shots.iter().all(|shot| shot.status == crate::cycle::FrameStatus::Done));
     }
 
+    /// 规格 §3 丢帧只告警（段配方）：回调通道满或图像内存预算满时这一帧不交给节拍，该组标检测不完整，
+    /// 其余相机照常判，整件不判 ERR（旧拍照点配方同样情况判 91，见上面的用例）。
+    #[test]
+    fn dropped_callback_frame_becomes_incomplete_group_not_err() {
+        use crate::cycle::tests::{burst_frame, judge_burst_delivered};
+        for (case, budget_full) in [("回调通道满", false), ("图像内存预算满", true)] {
+            let (tx, mut rx) = channel::<Frame>(1);
+            let identity = Mutex::new(Ledgers::default());
+            let (manual, dropped, budget_dropped) = (AtomicU32::new(0), AtomicU64::new(0), AtomicU64::new(0));
+            let mut received = Vec::new();
+            for counter in 1..=4 {
+                for cam in 0..3u8 {
+                    let mut frame = burst_frame(cam, counter);
+                    if (cam, counter) != (1, 2) {
+                        callback(&identity, &manual, &tx, &dropped, frame).unwrap();
+                        received.push(rx.try_recv().unwrap());
+                    } else if budget_full {
+                        discard_over_budget(&identity, &manual, &budget_dropped, &mut frame, true);
+                    } else {
+                        // 节拍来不及取走上一帧，通道占满
+                        tx.try_send(burst_frame(0, 999)).unwrap();
+                        assert!(matches!(callback(&identity, &manual, &tx, &dropped, frame), Err(TrySendError::Full(_))), "{case}");
+                        rx.try_recv().unwrap();
+                    }
+                }
+            }
+            let judgement = judge_burst_delivered(received, Some(4));
+            assert_eq!((judgement.verdict, judgement.fault_code), (crate::judge::Verdict::Ok, 0), "{case}");
+            assert!(judgement.flags.incomplete, "{case}");
+            assert_eq!(judgement.regions[0].incomplete_groups, vec![2], "{case}");
+        }
+    }
 }

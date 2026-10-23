@@ -56,6 +56,8 @@ impl<'a> Recovery<'a> {
 
     fn pending(&mut self, pending: &Pending, last_request_seq: u32, ts: i64, source: &str) {
         if !pending.cycle_id.as_ref().is_some_and(|cycle| self.unresolved.contains(cycle)) { return; }
+        // 与启动时归档握手日志同样处理：旧协议（升级前的协议 5）的事务按 D-0 不再用于恢复，也不当作日志错误
+        if pending.request.protocol_version != crate::handshake::PROTOCOL_VERSION { return; }
         if let Err(error) = validate_pending(pending, last_request_seq) {
             self.error(format!("{source}：{error}"));
             return;

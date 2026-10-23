@@ -1,42 +1,103 @@
-# GlueSight 文档
+# GlueSight 文档入口
 
-## 架构与规划（[architecture/](architecture)）
+本页写给接手的 agent：先读这一页建立全貌，细节按链接去看。现行设计的唯一基准是 [分段连拍决策记录 segment-burst.md](decisions/segment-burst.md)（决策 D-SB-n、IPC 契约、口径、过渡规则；第九节是各工作包相对计划的调整），代码事实以当前分支为准。本页更新于 2026-10-23，对应分支 `feat/segment-burst-flyshot`（尚未合入 main）。
 
-- [工件边缘中心距检测方案](architecture/workpiece-edge-position.md)：以工件边为基准测胶条中心距的方案草案，配套 [方法与资料调研](research/glue-position-methods.md)。
-- [软件架构、一期可行性与实施路线](architecture/gluesight-software-architecture.html)：历史目标架构与实施估算、Agent 分工及 S7 实施进展；当前测试范围以测试说明为准。
-- [三相机硬件连接架构](architecture/gluesight-hardware-architecture.html)：PLC 硬件触发、三台相机、交换机、工控机与 Robot 的连接关系，可按链路高亮。注意：2026-10-10 确认现场是一台三目设备（SDK 中一个 Device、一次触发出三幅图），图中三台独立相机与三条线路待现场确认后更新，见 [P0 计划 1.2 节](architecture/p0-plan.md)。
-- [一期 P0 实施计划](architecture/p0-plan.md)：已定决策（含 D-11 三目相机）、步 0–7 与步 T 的顺序、范围与完成标准、历史问题跟踪与软件验证边界。
-- [历史规划与实施记录](architecture/roadmap.md)：早期飞拍与随动规划，当前一期范围以软件架构图为准。
+## 一、当前设计一览
 
-## 现场接入（[integration/](integration)）
+**场景**：固定胶枪，机器人抓工件（RTCP）从胶嘴下走过，三台相机固定在胶嘴周围，边涂边拍。
 
-- [PLC 通讯协议 HTML 与时序图](integration/plc-communication-protocol.html)：可离线阅读，含单设备完整点表搜索及打印样式；三张时序图保持旧版，待协议检查完成后统一更新；另附 [Markdown 原文](integration/plc-communication-protocol.md)。
-- [一期 S7 握手契约与现场接入](integration/plc-s7-phase1.md)：DB 点表、事务与结果确认、故障恢复、计划导出与参考程序限制。
-- [PLC 交互表适配决策](decisions/plc-table.md)：协议 4（交互表 V1.0，S7-200 SMART、DB1）与协议 5（交互表 V1.1，S7-1200、DB4/DB2）的适配取舍、回退方式及待 PLC 工程师确认的问题清单。
-- [PLC SCL 参考程序](../scripts/s7-handshake/phase1_plc.scl)与 [S7 测试 PLC](../scripts/s7-handshake/README.md)：可审查的 PLC 侧实现及回环报文测试服务。
+### 两套配方模型并存
 
-## 测试（[testing/](testing)）
+| | 段配方（当前主线） | 旧拍照点配方（保留、停用） |
+| --- | --- | --- |
+| 判据 | `RecipeDoc.segments` 非空（`RecipeDoc::is_burst` / `Recipe::is_burst`） | `segments` 为空 |
+| 计划 | 段列表（直线 / 弯道），每段 N_exp 只能由多轮标定得出，整件 ΣN_exp（`expected_total`） | 拍照点列表（shotId / Pose / 相机 / 视角），触发次数精确 |
+| 设备 | 三台互不相同的单视角相机共用一个触发，按 SDK 帧号三路配组 | 按触发计数路由到拍照点；可用三目拼接相机 |
+| 检测 | 每台相机每一帧都测，按区域类型判定，胶偏只在直线段按段级判 | 组选图、示教中线逐点比对、特征定位，可用停稳拍（`trigger_mode = Stop`） |
+| 发布包 | schema 4（`release::publish_burst`） | schema 3（`release::publish`） |
 
-- [测试记录与复现](testing/TESTING.md)：测试命令、覆盖范围、历史验证记录和当前边界。
-- [UI 覆盖边界](testing/UI_OPERATIONS.md)：当前主流程覆盖及未覆盖范围。
-- [操作逻辑修复记录](testing/UX_FIXES_2026-10-09.md)。
-- [算法评测报告](testing/algorithm-evaluation.md)：实拍 36 张的稳定性、合成缺陷检出、耗时与剩余风险；取舍见 [算法决策记录](decisions/algorithm.md)。
+- 新建配方的模板（`recipe_template`）是段配方（D-SB-24）；两者同时非空时配方校验报错（D-SB-1）。
+- “保留、停用”的意思：旧模型的代码、命令、前端页面与存量测试一律不删除，`segments` 为空的旧配方继续走旧路径、行为不变；段配方不经过这些路径。保留清单见 segment-burst 第八节。
+- 前端按 `WorkspaceView.plan` 是否为 null 分流（后端只对段配方输出 `plan`，与按 `segments` 分流等价）：`/recipe/teach`、`/recipe/capture` 在 `plan` 为空时挂载 `LegacyTeachingPage` / `LegacyCapturePage`。
 
-## 部署（[deployment/](deployment)）
+### 段配方的数据流
 
-- [Windows 打包与运行库部署](deployment/PACKAGING.md)。
-- [lyFlow 运行库依赖](architecture/lyflow-dependency.md)：Release 来源、系列锁定、校验、缓存、开发启动参数与升级命令。
+1. **机器人**：整条胶路只拉高一次“相机使能”DO（弯道不拉低，起头、收尾不拍）；等不到触发许可时照常涂胶并置“本件未检”DO。两个 DO 都不进 DB4/DB2。
+2. **PLC**：使能为高时按固定频率（约 10–25 Hz）发脉冲串，同一个触发同时触发三台相机；累计脉冲数写 `deviceTriggers`，只作参考。PLC 不参与分段。
+3. **三台相机**：各出 1 帧，帧序号取 SDK `frame_counter`，不按到达顺序；图像内存按每相机字节预算封顶（`FramePool`，256 MiB），预算满或通道满的帧记缺帧。
+4. **帧配组**：seq = frame_counter − 该相机基线，同一 seq 的三帧为一个帧组；缺帧的组标 incomplete；单台相机帧数只用于丢帧告警（与 deviceTriggers 或另外每一台相机相差 > 1）。帧数 = 帧组数（第六节口径）。
+5. **分段（现为未分段）**：`Segmenter` 接口只有 `Unsegmented` 实现，整条胶路是一个未分段区域：只跑每帧检测、不判胶偏，只核对整件帧组数 ∈ ΣN_exp ± Σtol。
+6. **每帧测量**：每台相机的每一帧沿这台相机示教的走廊用 lyFlow（`glue.taught_path` + `glue.bead_width`）测胶宽、断胶与胶中心偏移 x，输出 `FrameMetrics`；测量队列满、超时记 Unmeasured，走出走廊记 OutOfCorridor，都只算检测不完整。
+7. **区域判定**（`burst_judge`）：每帧胶宽、断胶、溢胶（每帧最大胶宽超过溢胶上限，NG_WIDTH）三类区域都判；胶偏只在直线段，去首尾各一帧后用 x 均值与标准件 x_ref（只实现 AbsoluteX）判整段偏移、最大偏差判局部跑偏；三台相机取最差。结果另带 `flags`（检测不完整、帧数异常、`short_part` 疑似提前终止）、未检区域、未检项（气泡、拉丝）与“胶偏未判”原因，这些都不改 OK/NG；只有三台相机整件没有一帧测成才判 ERR 91。
+8. **落库与历史**：记录库 9 版的 `part_frames` 每台相机每帧一条（缺帧也有），`parts.burst_judgement` 存整份区域判定；原图按帧录制为 `{相机}_s{seq:06}.pgm`；审计 spool 格式 4；历史按 (计划相机, seq) 读图、复测与重判。
 
-## 使用教程
+配方的建立流程（候选工作区）：整圈采集 → 段列表 → 每台相机的走廊示教 → 多轮标定（默认 ≥ 10 轮，得 ΣN_exp、建议容差由操作员确认、标准件轮次得 x_ref）→ 独立样本验证 → 发布。见 [配方创建流程](architecture/recipe-creation-workflow.md) 的“段配方流程”。
 
-- [图文使用教程](user-guide/index.html)：`npm run guide:serve` 可本地预览。
+### 协议 6 要点
 
-## 其他
+- `protocolVersion` / `pcProtocolVersion` = 6，其他值（含 5）拒绝；DB4 / DB2 布局、28 个点位、握手顺序、心跳与复位都同协议 5。
+- `shotCount` = `deviceShots` = ΣN_exp：生产请求在接件时精确核对，不符返回 90/94；段配方的示教采集不核对、不限 1–64（参考 FB 要求估算值大于 0）。
+- `partEnd` 不再比较计数；`deviceTriggers` 只用于丢帧告警和收尾等待。段配方每台相机的下一件基线 = 本件见到的最高帧号（D-SB-7）。
+- 重新标定使 N_exp 或 ΣN_exp 变化时分配新的 `planVersion`，PLC 须同步 `shotCount` / `deviceShots`。
+- 结果码：96 对段配方不再使用；示教采集失败为 90 配 98（相机断连、会话变化）或 99（写盘超时、中止）。PLC 不提交 partStart = 本件未检，PC 无记录；提前 partEnd 照常判并加 `short_part`。
+- 旧拍照点配方在协议 6 下的示教采集与生产节拍仍按协议 5 的规则（1–64、计数相等、缺帧 91 / 多帧 96）。
 
-- `design/`：界面设计与实现契约的状态文件，以 `implementation-contract.json` 为准。
+细节见 [PLC 通讯协议](integration/plc-communication-protocol.md)（第 13 节是相对协议 5 的差异）、[一期 S7 握手契约](integration/plc-s7-phase1.md)、[交互表适配决策的协议 6 节](decisions/plc-table.md#协议-6-适配分段连拍)。
 
-两张架构图均为自包含 HTML，无外部脚本、字体或联网请求。下载仓库后，用浏览器打开 `docs/architecture/` 下的文件即可离线查看；GitHub 文件页只展示源码。软件架构图中的完整源码路径相对于仓库根目录，Rust 短文件名位于 `src-tauri/src/`，`LyFlow/` 指外部引擎仓库。
+### 关键模块与文件
 
-PLC 协议 HTML 的正文、时序图、样式、交互及 Mermaid 渲染脚本也已全部嵌入，可直接离线打开。时序图以 Mermaid 写在协议 Markdown 第 9 节，GitHub 可直接渲染。修改 Markdown 或时序图后，先在仓库根目录运行 `pnpm install`（提供锁定版本的 `mermaid`），再安装 `scripts/docs/requirements.txt` 中的依赖，运行 `python scripts/docs/build-plc-protocol.py` 重新生成；添加 `--check` 可核对生成物是否同步。
+Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.ts` 与 Rust serde 输出逐字段对应。
 
-2026-10-09：S7 软件实现与协议模拟联调已完成；真实 CPU、TIA 编译、三相机完整检测和现场验收仍待完成。架构图中的工期是带前提的规划估算，不代表现场交付承诺。
+| 职责 | 段配方 | 旧拍照点配方（保留、停用） |
+| --- | --- | --- |
+| 配方文档、校验、计划身份 | `recipe.rs`（`RecipeDoc` schema 8、`is_burst`、`same_plan`）、`plan.rs`（`PathSegment`、`PartCalib`、`KindDefaults`、`plan_identity`、`PlanExport`）、`recipe_api.rs`（`recipe_template`、`recipe_plan_export`） | `recipe.rs`（`ShotSpec`、`PathPoints`、`recipe::Segment`）、`plc_plan.rs` |
+| 握手与接件 | `handshake.rs`（`PROTOCOL_VERSION = 6`）、`plc_session.rs`、`inspection.rs`（S7 点表模板）、`cycle/admission.rs`（94 接件核对） | 同左 |
+| 生产节拍 | `cycle.rs` 布防分流、`cycle/burst.rs`（在途件、收尾与判定）、`shot_router.rs` 的 `arm_frames` | `shot_router.rs` 拍照点路由、`cycle.rs` 旧路径 |
+| 帧配组、分段、判定、标定 | `frame_group.rs`、`segmentation.rs`、`burst_judge.rs`、`calibration.rs` | `judge.rs` |
+| 相机与测量 | `camera.rs`、`frame.rs`、`measure.rs`（`FrameJob`）、`vision.rs` / `vision/taught.rs`（`measure_frame`）、`production.rs`（`burst_graphs`） | `measure.rs`（`Job`）、`vision/fixture.rs`（特征定位） |
+| 示教采集轮次 | `recipe_capture/burst.rs`（`CaptureRoundV2`） | `recipe_capture.rs`（`CaptureRound`） |
+| 候选工作区 | `workspace.rs`（`WorkspaceView.plan` 分流）、`workspace/burst.rs`（走廊示教、多轮标定、x_ref）、`workspace/burst_release.rs`（验证与发布）、`workspace/burst_history.rs`（历史读图与复测） | `workspace/workflow.rs`、`workspace/progress.rs`、`workspace/fixture.rs` |
+| 发布包 | `release.rs`（`publish_burst`，schema 4） | `release.rs`（`publish`，schema 3） |
+| 记录、录制、审计 | `store.rs`（`part_frames`，库版本 9）、`recorder.rs`、`audit/` | `part_shots`、`part_points` 表 |
+| 离线仿真 | `offline/line.rs`（脉冲串 `run_burst`）、`offline/scenario.rs`、`offline/sample_set.rs`（`camera_frames`）、`simimage.rs` | `offline/line.rs`（`run_part`） |
+| 前端 | `src/features/workspace/` 的 `SegmentsPage`、`TeachingPage`（相机走廊示教）、`CalibrationPage`、`CapturePage`、`PlanProgress`；`src/features/plan/` | `LegacyTeachingPage`、`LegacyCapturePage`、`ProgressPage` 的 `PlcParamsPanel` |
+
+## 二、已放弃的设计
+
+以下做法在方案定稿或实施中被放弃，不是现行方案；文档里出现时只作历史记录。
+
+| 已放弃 | 现行做法 | 记录 |
+| --- | --- | --- |
+| 一台三目设备“一帧内三视角”交付 | 三台独立单视角相机共用一个触发，各出 1 帧；三目拼接配置只留给旧配方 | D-SB-11，协议文档第 13 节 |
+| 协议 5 的 `deviceTriggers` 必须等于 `deviceShots`（结束时计数相等） | 只作参考，相差 > 1 记丢帧告警 | D-SB-4，plc-table P9 |
+| 示教采集 1–64 上限与计数核对 | 段配方不设上限、不核对（旧配方的示教仍保留） | D-SB-8、D-SB-9，plc-table P10 |
+| PLC 参与分段（段号、每段脉冲数字段） | PLC 不参与分段，协议 6 不加、不预留分段字段，段由 PC 图像算法划分 | 协议文档 4.2 节，plc-table 协议 6 适配节 |
+| 机器人逐点 TB 触发（每张图对应一个确定的轨迹点） | 机器人只出相机使能电平，PLC 定频发脉冲串，配方改为段列表 | D-SB-1，协议文档 4.2 节 |
+| 分段置信度不足时回退到计划边界 | 该边界两侧两段合并为未分段区域，不判胶偏，标“胶偏未判” | `segmentation.rs` 的 `resolve_regions`（`UnsegReason::LowConfidence`），见“需确认”说明 |
+| 预期帧数取多轮最小值、多出的帧裁掉 | 多轮帧组数均值四舍五入作 N_exp，所有帧都测，越界只告警 | D-SB-12、D-SB-32，segment-burst 第六节 |
+| 特征定位判胶偏、示教中线逐点比对作为段配方的方案 | 段级 AbsoluteX；特征定位与逐点比对只服务旧配方 | D-SB-15，[fixture-position 讨论](discussions/fixture-position/README.md) |
+
+“分段置信度不足时回退计划边界”与“逐点 TB 触发”没有单独的决策条目，依据是分段连拍方案规格（第 18 版）与上表所列代码 / 协议文档。
+
+## 三、未完成事项
+
+- **分段算法**：没有开发。走向、帧间光流、与标定序列 DTW 对齐等线索要等现场按量产曝光与速度拍的含弯道三相机图像；在此之前整条胶路按未分段处理，多段配方各段 N_exp 保持待标定，只凭整件 ΣN_exp 发布与运行（D-SB-21）。
+- **3 × 25 Hz 吞吐门槛**：没有达标，也没有被直接验证。已定（2026-10-23）：门槛口径不改，等现场工控机用真实相机来源跑 `pnpm test:soak:throughput`（并重跑 `throughput_probe` 探针）后，再决定降 PLC 频率还是加测量并发；合并前须完成该复测（segment-burst 7.1、第九节第 17 条）。
+- **真引擎测试**：`vision::taught::engine_tests::engine_burst_publish_load_measure_frame_round_trip`（段配方发布包 → 加载 → 预热 → `measure_frame` 的 lyFlow 全链路）标 `#[ignore]`，需设 `LYFLOW_CORE_DLL` 手动运行，见 [测试记录](testing/TESTING.md)。
+- **已接受、待确认的取舍**：胶偏的 `ToEdge` 测量量未实现；气泡、拉丝不检；“每台相机一条按直线段几何的走廊”没有真实弯道图验证；提前 partEnd 只加 `short_part`、不判 ERR；现场 PLC 草稿 `gluesight_site.scl` 未改，只列改动点。汇总见 [决策索引](decisions/README.md)。
+- **真机验证**：PLC、三台相机共用触发、带宽（三路 25 Hz 估算约 826 Mbps）、现场节拍与检测准确率都没有验证；现有样本集 gs-20261017 是停稳拍数据，段配方上只作冒烟。
+
+## 四、各子目录的用途
+
+| 目录 | 内容 | 性质 |
+| --- | --- | --- |
+| [decisions/](decisions/README.md) | 各批工作线的决策记录；[README](decisions/README.md) 标明哪些仍有效、哪些在段配方下或整体被取代 | 历史记录，正文不改写，被取代处只加标注 |
+| [architecture/](architecture) | [配方创建流程](architecture/recipe-creation-workflow.md)、[当前进度](architecture/recipe-creation-progress.md)、[存储布局](architecture/storage-layout.md)、[lyFlow 依赖](architecture/lyflow-dependency.md)描述现状；[P0 计划](architecture/p0-plan.md)、[历史规划](architecture/roadmap.md)、两张架构 HTML 与[工件边缘方案草案](architecture/workpiece-edge-position.md)是历史或草案，开头标有现状 | 现状 + 历史 |
+| [integration/](integration) | [PLC 通讯协议](integration/plc-communication-protocol.md)（另有可离线阅读的 [HTML 版](integration/plc-communication-protocol.html)）、[S7 握手契约](integration/plc-s7-phase1.md)、[离线样本集格式](integration/sample-set-format.md) | 现状契约 |
+| [testing/](testing) | [测试记录与复现](testing/TESTING.md)（现状）、[分段连拍测试清单](testing/segment-burst-test-inventory.md)（新增与删改的测试及其保护的规则）；带日期的文件（如 [UX_FIXES_2026-10-09](testing/UX_FIXES_2026-10-09.md)、[hands-on-2026-10-19](testing/hands-on-2026-10-19.md)、[soak-report](testing/soak-report.md)）是当时的记录，开头标有现状，`evidence/` 是历史证据 | 现状 + 历史 |
+| [design/](design) | 界面设计稿与早期设计状态文件：[PLC 页布局](design/plc-page-layout.md)已按协议 6 与段配方的计划导出更新；单帧示教设计稿（`teaching-page/`）、[`implementation-contract.json`](design/implementation-contract.json) 与 [`black-blue-workflow.json`](design/black-blue-workflow.json) 是旧拍照点模型时期的稿件，开头标有现状（JSON 为 `currentStatus` 字段） | 设计稿，部分为历史 |
+| [discussions/](discussions/fixture-position/README.md) | 特征定位判胶偏的讨论记录（只服务旧配方） | 讨论记录 |
+| [research/](research/glue-position-methods.md) | 胶条位置检测方法调研 | 调研 |
+| [deployment/](deployment/PACKAGING.md) | Windows 打包与运行库部署 | 现状 |
+
+PLC SCL 参考程序与 S7 测试 PLC 在 [`scripts/s7-handshake/`](../scripts/s7-handshake/README.md)。修改协议 Markdown 或其 Mermaid 时序图后，在仓库根目录 `pnpm install`、安装 `scripts/docs/requirements.txt`，运行 `python scripts/docs/build-plc-protocol.py` 重新生成 HTML，加 `--check` 核对生成物是否同步。架构 HTML 与协议 HTML 都是自包含文件，可离线打开。

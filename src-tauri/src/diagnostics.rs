@@ -205,34 +205,39 @@ fn part_images<W: std::io::Write>(app: &AppHandle, package: &mut Package<W>, det
     let folder = format!("records/{id}_{cycle_id}");
     let mut count = 0;
     let mut directory = None;
-    for shot in &detail.shots {
-        for raw in &shot.raw_files {
-            let Some(path) = relative(&raw.file) else {
-                package.notes.push(format!("记录 #{id} k{} 视角 {} 的原图路径无效，未打包", shot.k + 1, raw.view));
-                continue;
-            };
-            let source = root.join(path);
-            directory.get_or_insert_with(|| source.parent().map(Path::to_path_buf));
-            let size = fs::metadata(&source).map(|m| m.len()).unwrap_or(0);
-            if size > *budget {
-                package.notes.push(format!("原图总量超过 {} GB，记录 #{id} 起的其余原图未打包", MAX_IMAGE_BYTES >> 30));
-                *budget = 0;
-                return Ok(count);
+    // 旧拍照点配方按拍照点与视角记原图；段配方按 (相机, seq) 记在帧记录里（FrameRecord.raw_file）
+    let shot_files = detail.shots.iter().flat_map(|shot| shot.raw_files.iter().map(move |raw| (format!("k{} 视角 {}", shot.k + 1, raw.view), raw.file.as_str())));
+    let frame_files = detail.burst.iter().flat_map(|burst| burst.frames.iter().filter_map(move |frame| {
+        let camera = burst.cameras.get(frame.camera).map_or("?", String::as_str);
+        frame.raw_file.as_deref().map(|file| (format!("相机 {camera} 第 {} 帧", frame.seq), file))
+    }));
+    let files: Vec<(String, &str)> = shot_files.chain(frame_files).collect();
+    for (label, file) in &files {
+        let Some(path) = relative(file) else {
+            package.notes.push(format!("记录 #{id} {label} 的原图路径无效，未打包"));
+            continue;
+        };
+        let source = root.join(path);
+        directory.get_or_insert_with(|| source.parent().map(Path::to_path_buf));
+        let size = fs::metadata(&source).map(|m| m.len()).unwrap_or(0);
+        if size > *budget {
+            package.notes.push(format!("原图总量超过 {} GB，记录 #{id} 起的其余原图未打包", MAX_IMAGE_BYTES >> 30));
+            *budget = 0;
+            return Ok(count);
+        }
+        match fs::read(&source) {
+            Ok(bytes) => {
+                *budget -= bytes.len() as u64;
+                package.add(&format!("{folder}/{}", file_name(path)), &bytes)?;
+                count += 1;
             }
-            match fs::read(&source) {
-                Ok(bytes) => {
-                    *budget -= bytes.len() as u64;
-                    package.add(&format!("{folder}/{}", file_name(path)), &bytes)?;
-                    count += 1;
-                }
-                Err(_) => package.notes.push(format!("记录 #{id} k{} 视角 {} 的原图未保留或已清理", shot.k + 1, raw.view)),
-            }
+            Err(_) => package.notes.push(format!("记录 #{id} {label} 的原图未保留或已清理")),
         }
     }
     if let Some(Some(dir)) = directory {
         if let Ok(bytes) = fs::read(dir.join("part.json")) { package.add(&format!("{folder}/part.json"), &bytes)?; }
     }
-    if count == 0 && detail.shots.iter().all(|s| s.raw_files.is_empty()) {
+    if count == 0 && files.is_empty() {
         package.notes.push(format!("记录 #{id} 没有保留原图（录制状态：{:?}）", detail.recording.state));
     }
     let comparisons = crate::storage::root(app).join("workspaces").join("comparisons").join(id.to_string());

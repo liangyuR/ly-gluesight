@@ -5,7 +5,9 @@ export interface CameraConfig {
   id: string;
   name: string;
   source: CameraSource;
+  /** 1 = 单视角独立相机；3 = 三目拼接（旧拍照点模型，段配方要求单视角，D-SB-11） */
   viewCount: number;
+  /** 旧拍照点模型：三目拼接的 SDK 交付布局 */
   compositeLayout?: {kind:"horizontal" | "vertical"} | {kind:"rects";rects:{x:number;y:number;width:number;height:number}[]} | null;
   serial: string;
   triggerSource: "Line0" | "Software";
@@ -41,7 +43,20 @@ export interface CameraStatus {
   maxFps: number | null;
   lostPackets: number;
   droppedFrames: number;
+  /** 本次打开以来因图像内存预算满没拷图、按缺帧处理的帧 */
+  budgetDroppedFrames?: number;
   warnings: string[];
+}
+
+/** 相机组链路带宽估算（camera_bandwidth）：各海康相机最近一帧的 宽 × 高 × 8 bit × 触发频率之和，计入 GigE 协议开销（按不开巨帧约 5%） */
+export interface BandwidthEstimate {
+  hz: number;
+  mbpsTotal: number;
+  /** 按相机组顺序；还没出过图或离线来源为 null，不计入合计 */
+  perCamera: (number | null)[];
+  /** 单个千兆口按 80% 计 */
+  budgetMbps: number;
+  overBudget: boolean;
 }
 
 /** 触发计数来源：chunkTrigger 与 synthetic 才是真的触发计数，其余照填帧计数 */

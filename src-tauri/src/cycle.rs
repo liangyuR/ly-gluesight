@@ -1,4 +1,5 @@
 mod admission;
+mod burst;
 mod capture;
 mod interrupted;
 pub mod readiness;
@@ -16,13 +17,14 @@ use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedR
 
 use crate::applog::{self, Fields};
 use crate::arming::ArmBudget;
+use crate::burst_judge::{BurstJudgement, FrameState};
 use crate::camera::{CameraRig, FRAME_QUEUE};
 use crate::frame::Frame;
 use crate::history;
 use crate::handshake::Request;
 use crate::inspection::{read_tag_u32, tag};
 use crate::judge::{self, fault, Judgement, PointState, Verdict};
-use crate::measure::{self, Job, Measured, WorkerHealth};
+use crate::measure::{self, FrameJob, FrameMeasured, FramePool, Job, Measured, WorkerHealth};
 use crate::plc::PlcHost;
 use crate::plc_session::{Origin, PartSite, PendingKind, PlcSession, SessionEvent, SessionPhase, SessionView};
 use crate::recipe::{Recipe, RecipeStore, TriggerMode};
@@ -30,10 +32,10 @@ use crate::recorder::{Recorder, Recorders, Recording};
 use crate::recording_health::{AlarmChange, RecordingAlarm, RecordingHealth};
 use crate::locate_health::{LocateAlarm, LocateChange, LocateHealth, Subject};
 use crate::settings::{CycleSettings, ProductSource};
-use crate::shot_router::{ArmCam, Floor, FrameMeta, Ledgers, Plan, Policy, Route, ShotRouter};
+use crate::shot_router::{arm_frames, ArmCam, Floor, FrameMeta, Ledgers, Plan, Policy, Route, ShotRouter};
 use crate::offline::Scenario;
 use crate::audit::{Audit, RecordedPart};
-use crate::store::{HistoryScope, PartShot, PlcDelivery, PlcDeliveryState, RecordSource, Store, VerdictCounts};
+use crate::store::{BurstRecord, HistoryScope, PartShot, PlcDelivery, PlcDeliveryState, RecordSource, Store, VerdictCounts};
 
 pub(crate) fn s7_ack_delivery(had_ack: bool, session: &PlcSession) -> Option<PlcDelivery> {
     (!had_ack && session.acknowledged()).then(|| PlcDelivery {
@@ -45,6 +47,8 @@ pub(crate) fn s7_ack_delivery(had_ack: bool, session: &PlcSession) -> Option<Plc
 
 pub enum Input {
     Measured(Measured),
+    /// 段配方一台相机一帧的测量结果（FramePool 交来）
+    FrameMeasured(FrameMeasured),
     Reset,
     Refresh,
     SiteChanged,
@@ -182,6 +186,70 @@ pub struct PartView {
     /// 各拍照点的帧
     pub frames: Vec<FrameView>,
     pub measured_frames: usize,
+    /// 段配方在途件（决策记录 5.2）；旧拍照点配方为 None
+    pub burst: Option<PartViewBurst>,
+}
+
+/// 在线帧格状态：到达前 waiting，测量中 measuring，之后为帧的最终状态（`FrameState`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FrameCellStatus {
+    Waiting,
+    Measuring,
+    Measured,
+    Missing,
+    Error,
+    Unmeasured,
+    OutOfCorridor,
+}
+
+impl From<FrameState> for FrameCellStatus {
+    fn from(state: FrameState) -> Self {
+        match state {
+            FrameState::Measured => Self::Measured,
+            FrameState::Missing => Self::Missing,
+            FrameState::Error => Self::Error,
+            FrameState::Unmeasured => Self::Unmeasured,
+            FrameState::OutOfCorridor => Self::OutOfCorridor,
+        }
+    }
+}
+
+/// 一台相机一帧的在线状态。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameCellView {
+    pub status: FrameCellStatus,
+    /// 这一帧单独判的结论；没测成或未测完为 None
+    pub verdict: Option<Verdict>,
+    pub frame_counter: Option<u64>,
+}
+
+/// 一个帧组：cells 按计划相机顺序。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameGroupView {
+    pub seq: u64,
+    pub incomplete: bool,
+    pub cells: Vec<FrameCellView>,
+}
+
+/// 段配方在途件（IPC 契约见 docs/decisions/segment-burst.md 5.2）。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartViewBurst {
+    pub cameras: Vec<String>,
+    pub expected_total: Option<u32>,
+    pub tolerance_total: u32,
+    /// partEnd 时 PLC 报的 deviceTriggers，只作参考；partEnd 前为 None
+    pub device_triggers: Option<u32>,
+    /// 已见帧组数 = 各相机最大 seq 的最大值
+    pub group_count: u64,
+    /// 各相机已接受的帧数
+    pub camera_frames: Vec<u32>,
+    pub measured_frames: usize,
+    pub pending_measure: usize,
+    pub groups: Vec<FrameGroupView>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -195,6 +263,8 @@ pub struct ResultView {
     pub drain_ms: Option<u64>,
     #[serde(flatten)]
     pub judgement: Judgement,
+    /// 段配方的判定；有值时 judgement 的 verdict / plc_code / fault_code / reason 与它相同。旧拍照点配方为 None
+    pub burst: Option<BurstJudgement>,
 }
 
 /// 当日计数，跨天清零。
@@ -268,12 +338,21 @@ pub struct RecipeSummary {
     pub length: f32,
     /// PLC 计划版本
     pub plan_version: u32,
-    /// PLC 触发次数；拍照点编不成触发分组时为空
+    /// PLC 触发次数；拍照点编不成触发分组时为空。段配方为 ΣN_exp（未标定为空）
     pub trigger_count: Option<usize>,
+    /// 段数；旧拍照点配方为 0
+    pub segment_count: usize,
+    /// 整件预期帧组数 ΣN_exp；旧配方与未标定的段配方为空
+    pub expected_total: Option<u32>,
+    /// 整件帧数容差 Σtolerance；旧配方为 0
+    pub tolerance_total: u32,
+    /// 段配方已标定（expected_total 非空）
+    pub calibrated: bool,
 }
 
 impl From<&Recipe> for RecipeSummary {
     fn from(r: &Recipe) -> Self {
+        let expected_total = r.expected_total();
         Self {
             id: r.id.clone(),
             name: r.name.clone(),
@@ -283,9 +362,16 @@ impl From<&Recipe> for RecipeSummary {
             shot_count: r.shot_count(),
             trigger_mode: r.trigger_mode,
             cameras: r.cameras(),
-            length: r.segments.iter().map(|g| g.length(r.spacing)).sum(),
+            // 段配方：各段段长之和，段长未知按 0
+            length: if r.is_burst() { r.path_segments.iter().map(|s| s.length_mm.unwrap_or(0.0) as f32).sum() }
+                else { r.segments.iter().map(|g| g.length(r.spacing)).sum() },
             plan_version: r.plan_version,
-            trigger_count: crate::plc_plan::trigger_groups(r).ok().map(|groups| groups.len()),
+            trigger_count: if r.is_burst() { expected_total.map(|n| n as usize) }
+                else { crate::plc_plan::trigger_groups(r).ok().map(|groups| groups.len()) },
+            segment_count: r.path_segments.len(),
+            expected_total,
+            tolerance_total: r.tolerance_total(),
+            calibrated: expected_total.is_some(),
         }
     }
 }
@@ -388,7 +474,9 @@ impl CycleHost {
         let host = app.state::<CycleHost>();
         let Some((mut rx, mut frames)) = host.rx.lock().unwrap().take() else { return };
         let (measure_tx, workers) = measure::spawn_worker(app.clone(), host.tx.clone());
-        let mut machine = Machine::new(app.clone(), measure_tx, workers);
+        let frame_tx = host.tx.clone();
+        let frame_pool = measure::spawn_frame_worker(Arc::new(move |measured| { let _ = frame_tx.send(Input::FrameMeasured(measured)); }));
+        let mut machine = Machine::new(app.clone(), measure_tx, workers, frame_pool);
         for e in host.recipes.errors() {
             log(app, "err", "配方", e);
         }
@@ -614,9 +702,15 @@ struct Part {
     received: usize,
     extra: usize,
     queue: usize,
+    /// 旧拍照点配方的帧路由；段配方不经过（空路由）
     router: ShotRouter,
-    issued: Option<(Vec<String>, u64)>,
-    issued_verified: bool,
+    /// 段配方的帧组与每帧测量（`cycle::burst`）；旧拍照点配方为 None
+    burst: Option<Box<burst::BurstPart>>,
+    /// 旧拍照点配方：接在 PLC 触发线上的相机（S7 计划）；收尾时按 PLC 报的触发数给它们推下一件基线。段配方为 None
+    issued: Option<Vec<String>>,
+    /// partEnd 时 PLC 报的设备触发数（协议 6 只作参考，可与计划数不同）；partEnd 前为空。
+    /// 段配方只用于丢帧告警和收尾等待，不参与下一件基线（D-SB-4、D-SB-7）；旧拍照点配方仍用它推下一件基线
+    device_triggers: Option<u16>,
     routing_closed: bool,
     image_measurement: bool,
     proc_timeout: Duration,
@@ -634,12 +728,30 @@ struct Part {
 }
 
 impl Part {
+    /// 计划帧数：旧拍照点配方为拍照点数，段配方为 ΣN_exp（未标定为 0）。
     fn n(&self) -> usize {
-        self.recipe.shot_count()
+        if self.burst.is_some() { self.recipe.expected_total().map_or(0, |n| n as usize) } else { self.recipe.shot_count() }
     }
 
+    /// 旧拍照点配方：路由见到的触发数；段配方：PLC 报的 deviceTriggers（partEnd 前为 0）。
     fn triggers(&self) -> u64 {
-        self.router.triggers()
+        if self.burst.is_some() { self.device_triggers.map_or(0, u64::from) } else { self.router.triggers() }
+    }
+
+    /// 本件收尾（只做一次），推算各相机下一件的基线下限并记进计数账：
+    /// - 段配方：max(原基线, 本件见到的最高帧计数)，PLC 报的触发数与计划数都不参与（D-SB-7）；
+    /// - 旧拍照点配方（规则不变）：用 PLC 报的实际触发数——确认结果时报的（`plc_triggers`），否则 partEnd 时报的——
+    ///   两者都没有时（故障中断等）由路由按计划数假定；见到的更高计数总是优先。
+    fn close_routing(&mut self, ledgers: &mut Ledgers, plc_triggers: Option<u16>) {
+        if self.routing_closed { return; }
+        if let Some(burst) = &self.burst {
+            burst.close(ledgers);
+        } else {
+            let issued = self.issued.as_ref().zip(plc_triggers.or(self.device_triggers))
+                .map(|(ids, n)| ids.iter().map(|id| (id.as_str(), u64::from(n))).collect::<Vec<_>>());
+            self.router.close(ledgers, issued.as_deref());
+        }
+        self.routing_closed = true;
     }
 
     fn camera_id(&self, cam: u8) -> String {
@@ -647,6 +759,7 @@ impl Part {
     }
 
     fn complete(&self) -> bool {
+        if self.burst.is_some() { return self.burst_complete(Instant::now()); }
         self.frames.iter().all(|f| !matches!(f.status, FrameStatus::Waiting | FrameStatus::Measuring))
     }
 
@@ -773,6 +886,7 @@ impl Part {
     }
 
     fn view(&self) -> PartView {
+        let burst = self.burst_view();
         PartView {
             candidate_debug: self.candidate.as_ref().map(|c| c.info.clone()),
             cycle_id: self.cycle_id.clone(),
@@ -781,13 +895,14 @@ impl Part {
             recipe_id: self.recipe.id.clone(),
             recipe_revision: self.recipe.revision_id.clone(),
             n: self.n(),
-            received: self.received,
+            received: burst.as_ref().map_or(self.received, |b| b.camera_frames.iter().map(|&n| n as usize).sum()),
             triggers: self.triggers(),
-            queue: self.queue,
+            queue: burst.as_ref().map_or(self.queue, |b| b.pending_measure),
             filled: self.table.iter().filter(|p| **p != PointState::Pending).count(),
             total: self.table.len(),
             frames: self.frames.clone(),
-            measured_frames: self.frames.iter().filter(|f| matches!(f.status, FrameStatus::Done | FrameStatus::Error)).count(),
+            measured_frames: burst.as_ref().map_or_else(|| self.frames.iter().filter(|f| matches!(f.status, FrameStatus::Done | FrameStatus::Error)).count(), |b| b.measured_frames),
+            burst,
         }
     }
 }
@@ -821,10 +936,15 @@ pub fn real_parts(app: &AppHandle) -> bool {
 }
 
 /// 配方用的相机此刻在相机组里的序号。相机不在相机组里或视角不够时返回原因。
+/// 段配方的计划相机必须是单视角独立设备（D-SB-11）。
 pub fn usable_cams(app: &AppHandle, recipe: &Recipe) -> Result<Vec<u8>, String> {
     let host = host(app);
     let cams = host.camera.resolve(&recipe.cameras())?;
     crate::vision::recipe_source(app, recipe)?;
+    if recipe.is_burst() {
+        crate::camera::check_burst_cameras(&host.camera.configs(), &recipe.plan_cameras())?;
+        return Ok(cams);
+    }
     for &c in &cams {
         let cfg = host.camera.slot(c as usize).ok_or("相机组改过了")?.config();
         for shot in recipe.shots.iter().filter(|s| s.camera == cfg.id) {
@@ -836,8 +956,13 @@ pub fn usable_cams(app: &AppHandle, recipe: &Recipe) -> Result<Vec<u8>, String> 
     Ok(cams)
 }
 
+/// 配方能不能开工：旧拍照点配方要检的拍照点都示教过；段配方三台相机都示教了走廊且整件已标定（D-SB-20）。
+pub fn ready_to_run(recipe: &Recipe) -> Result<(), String> {
+    if recipe.is_burst() { recipe.ready_burst().map_err(|reasons| reasons.join("；")) } else { recipe.ready() }
+}
+
 pub fn runnable_cams(app: &AppHandle, recipe: &Recipe) -> Result<Vec<u8>, String> {
-    recipe.ready()?;
+    ready_to_run(recipe)?;
     crate::production::ready(app, recipe)?;
     usable_cams(app, recipe)
 }
@@ -857,6 +982,8 @@ struct Machine {
     app: AppHandle,
     measure_tx: Sender<Job>,
     workers: Arc<WorkerHealth>,
+    /// 段配方的测量池：每台相机每一帧独立测（D-SB-12）
+    frame_pool: FramePool,
     ledgers: Ledgers,
     phase: Phase,
     since: i64,
@@ -891,9 +1018,10 @@ struct Machine {
 }
 
 impl Machine {
-    fn new(app: AppHandle, measure_tx: Sender<Job>, workers: Arc<WorkerHealth>) -> Self {
+    fn new(app: AppHandle, measure_tx: Sender<Job>, workers: Arc<WorkerHealth>, frame_pool: FramePool) -> Self {
         let mut stats = today_stats(&app, HistoryScope::Real);
         let s7 = PlcSession::open(crate::storage::state(&app).join("plc-handshake.json"));
+        if let Some(notice) = s7.archived() { log(&app, "warn", "S7 握手日志归档", notice.to_owned()); }
         let recovery = match app.state::<Store>().unresolved_delivery_cycles() {
             Ok(unresolved) => s7.recover_acknowledgements(&unresolved),
             Err(error) => crate::plc_session::AckRecovery { receipts: Vec::new(), errors: vec![format!("读取未决 PLC 交付失败，跳过 ACK 恢复：{error}")] },
@@ -924,6 +1052,7 @@ impl Machine {
             app,
             measure_tx,
             workers,
+            frame_pool,
             ledgers: Ledgers::default(),
             phase: Phase::Fault,
             since: now_ms(),
@@ -1146,6 +1275,7 @@ impl Machine {
         self.dirty = true;
         match input {
             Input::Measured(m) => self.on_measured(m),
+            Input::FrameMeasured(m) => self.on_frame_measured(m),
             Input::Reset => self.s7_reset_requested = true,
             Input::Refresh => self.required = None,
             Input::SiteChanged => {
@@ -1252,12 +1382,17 @@ impl Machine {
             };
         }
         let n = recipe.shot_count();
+        // 日志里的计划帧数：段配方为 ΣN_exp
+        let planned = if recipe.is_burst() { recipe.expected_total().map_or(0, |n| n as usize) } else { n };
         let plan = match admission::admit(&request, &recipe, crate::plc::recipe_plan(host, &recipe)) {
             Ok(plan) => plan,
             Err((code, reason)) => return self.refuse(sn, id, code, reason).await,
         };
         if let Err(reason) = self.s7.validate_plan(&plan) {
             return self.refuse(sn, id, fault::PLAN_MISMATCH, reason).await;
+        }
+        if recipe.is_burst() && !self.frame_pool.health().can_arm() {
+            return self.refuse(sn, id, fault::PROCESS_TIMEOUT, "段配方测量线程全部超时且尚未返回，拒绝布防".into()).await;
         }
         let production = match crate::production::ready(&app, &recipe) {
             Ok(prepared) => prepared,
@@ -1313,16 +1448,29 @@ impl Machine {
             if let Some(ledger) = observed { self.ledgers.merge(cam, &ledger); }
             identities.push(identity);
         }
-        let policy = if real_parts(&app) { Policy::production(None) } else { Policy::offline(None) };
-        let router = match ShotRouter::arm(&Plan::from_shots(&recipe.shots), &self.ledgers, &policy, &identities) {
-            Ok(router) => router,
-            Err(error) => return self.refuse(sn, id, error.fault(), error.to_string()).await,
+        let (router, burst, issued) = if recipe.is_burst() {
+            // 段配方：按 SDK 帧计数定每台相机的基线（D-SB-10），会话或计数来源不可信时拒绝布防（98）
+            let policy = if real_parts(&app) { Policy::burst_production(None) } else { Policy::burst_offline(None) };
+            let baselines = match arm_frames(&recipe.plan_cameras(), &self.ledgers, &policy, &identities) {
+                Ok(baselines) => baselines,
+                Err(error) => return self.refuse(sn, id, error.fault(), error.to_string()).await,
+            };
+            for camera in &baselines {
+                self.ledgers.set_frame_floor(&Floor { cam: camera.cam, camera: camera.camera.clone(), session: camera.session, baseline: camera.baseline });
+            }
+            (unrouted(), Some(Box::new(burst::BurstPart::arm(&recipe, baselines, policy.trusted))), None)
+        } else {
+            let policy = if real_parts(&app) { Policy::production(None) } else { Policy::offline(None) };
+            let router = match ShotRouter::arm(&Plan::from_shots(&recipe.shots), &self.ledgers, &policy, &identities) {
+                Ok(router) => router,
+                Err(error) => return self.refuse(sn, id, error.fault(), error.to_string()).await,
+            };
+            for camera in &identities {
+                self.ledgers.set_floor(&Floor { cam: camera.cam, camera: camera.camera.clone(), session: camera.session,
+                    baseline: router.baseline(camera.cam).unwrap_or(0) });
+            }
+            (router, None, Some(plan.device_ids.clone()))
         };
-        for camera in &identities {
-            self.ledgers.set_floor(&Floor { cam: camera.cam, camera: camera.camera.clone(), session: camera.session,
-                baseline: router.baseline(camera.cam).unwrap_or(0) });
-        }
-        let issued = Some((plan.device_ids.clone(), u64::from(plan.device_shots)));
         let bundle_id = production.as_ref().map(|prepared| prepared.bundle.id.clone());
         budget.mark("camera-router");
         arm_remaining!("before-recording");
@@ -1347,8 +1495,9 @@ impl Machine {
             extra: 0,
             queue: 0,
             router,
+            burst,
             issued,
-            issued_verified: false,
+            device_triggers: None,
             routing_closed: false,
             image_measurement: crate::site::image_measurement(&app),
             proc_timeout: settings.timeouts.proc(),
@@ -1392,8 +1541,8 @@ impl Machine {
         }
         self.part.as_mut().unwrap().armed_at = Instant::now();
         self.set_phase(Phase::Acquire);
-        log_with(&app, "info", "armed↑ busy↑", format!("{} · N={n} · 布防耗时 {} ms", recipe.id, elapsed.as_millis()),
-            Fields::stage("armed").with_data(json!({"armMs": elapsed.as_secs_f64() * 1000.0, "shots": n})));
+        log_with(&app, "info", "armed↑ busy↑", format!("{} · N={planned} · 布防耗时 {} ms", recipe.id, elapsed.as_millis()),
+            Fields::stage("armed").with_data(json!({"armMs": elapsed.as_secs_f64() * 1000.0, "shots": planned})));
         log_with(&app, "info", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "armed", "trace": trace}).to_string(),
             Fields::default().with_data(trace));
     }
@@ -1412,8 +1561,16 @@ impl Machine {
         if f.manual {
             if accepting {
                 if let Some(part) = self.part.as_mut() {
-                    if part.router.baseline(f.cam).is_some_and(|base| f.trigger_counter > base)
-                        && slot.as_ref().is_some_and(|slot| slot.routing_state().is_ok_and(|state| state.0.session == f.session)) {
+                    let current = slot.as_ref().is_some_and(|slot| slot.routing_state().is_ok_and(|state| state.0.session == f.session));
+                    if let Some(burst) = part.burst.as_mut() {
+                        // 段配方：布防后的手动帧丢弃并告警，不判 ERR（它占了这台相机一个帧号，此后的帧组可能错开一格）
+                        if let Some(camera) = burst.baseline(f.cam).filter(|base| current && f.frame_counter > *base)
+                            .and_then(|_| part.cams.iter().position(|&c| c == f.cam)).filter(|&camera| burst.first_warning(camera, burst::Warning::Manual)) {
+                            let message = format!("生产布防后收到相机 {} 的手动触发帧（帧计数 {}），已丢弃；该相机此后的帧组可能错开一格", burst.camera_name(camera), f.frame_counter);
+                            log_with(&self.app, "warn", "手动帧", message, Fields { cycle_id: Some(part.cycle_id.clone()), ..Fields::default() });
+                            self.dirty = true;
+                        }
+                    } else if part.router.baseline(f.cam).is_some_and(|base| f.trigger_counter > base) && current {
                         part.fault.get_or_insert((fault::EXTRA_FRAME, "生产布防后收到手动触发帧，拍照计划已被打断".into()));
                         self.dirty = true;
                     }
@@ -1435,6 +1592,9 @@ impl Machine {
             return;
         }
         self.dirty = true;
+        if self.part.as_ref().is_some_and(|part| part.burst.is_some()) {
+            return self.on_burst_frame(f);
+        }
         let part = self.part.as_mut().unwrap();
         let Some(route) = part.receive_frame(&f) else {
             log(&self.app, "warn", "截止后帧", format!("工件 {} 已到收尾截止，丢弃设备帧 {}", part.cycle_id, f.frame_counter));
@@ -1527,6 +1687,75 @@ impl Machine {
         host(&self.app).shared.lock().unwrap().measured.push(m);
     }
 
+    /// 段配方的一帧（D-SB-10）：按帧号配组；接受的帧录制、留预览并送测（所有帧都测，不裁帧）。上一件的迟到帧只记游离帧；
+    /// 重复帧号、帧号越界丢弃并告警；会话变化或计数来源不可信判 ERR 98（`receive_burst` 已记进故障）。
+    fn on_burst_frame(&mut self, f: Frame) {
+        let app = self.app.clone();
+        let part = self.part.as_mut().unwrap();
+        let Some(arrival) = part.receive_burst(&f) else {
+            log(&app, "warn", "截止后帧", format!("工件 {} 已到收尾截止，丢弃相机组 #{} 的帧（帧计数 {}）", part.cycle_id, f.cam + 1, f.frame_counter));
+            return;
+        };
+        let cycle_id = part.cycle_id.clone();
+        let burst = part.burst.as_mut().unwrap();
+        let fields = |camera: &str, seq: Option<u64>| Fields { cycle_id: Some(cycle_id.clone()), camera: Some(camera.to_owned()), seq, ..Fields::default() };
+        match arrival {
+            burst::Arrival::Accepted { camera, seq } => {
+                let camera_id = burst.camera_name(camera).to_owned();
+                if let Some(rec) = part.recording.as_mut() { host(&app).recorders.burst_frame(rec, &f, camera, seq); }
+                let image = f.single_image().cloned();
+                crate::workspace::retain_live_frame(&app, &part.cycle_id, &part.recipe.revision_id, camera, seq, &image);
+                let job = FrameJob { cycle_id: part.cycle_id.clone(), bundle_id: part.bundle_id.clone(), production: part.production.clone(),
+                    candidate: part.candidate.clone(), camera_idx: camera, camera: camera_id.clone(), seq, image, image_measurement: part.image_measurement,
+                    recipe: part.recipe.clone(), scenario: part.scenario, submitted_at: Instant::now(), timeout: part.proc_timeout };
+                trace(&app, "帧到达", format!("cycle={cycle_id} · {camera_id} 第 {seq} 帧 · 帧计数 {}", f.frame_counter),
+                    fields(&camera_id, Some(seq)).with_stage("frame")
+                        .with_data(json!({"frameCounter": f.frame_counter, "triggerCounter": f.trigger_counter, "session": f.session})));
+                self.frame_pool.submit(job);
+            }
+            burst::Arrival::Duplicate { camera, seq } => {
+                if burst.first_warning(camera, burst::Warning::Duplicate) {
+                    let camera_id = burst.camera_name(camera).to_owned();
+                    log_with(&app, "warn", "重复帧号", format!("相机 {camera_id} 第 {seq} 帧重复到达，保留先到的那帧、丢弃后到的（本件同类情况不再逐条记录）"), fields(&camera_id, Some(seq)));
+                }
+            }
+            burst::Arrival::OutOfRange { camera, seq } => {
+                let camera_id = burst.camera_name(camera).to_owned();
+                if burst.first_warning(camera, burst::Warning::OutOfRange) {
+                    self.alarm(format!("相机 {camera_id} 帧号比本件基线大 {seq}，超出本件帧组上限（ΣN_exp + Σtol + 余量），按计数异常丢弃，不计入本件"));
+                }
+            }
+            burst::Arrival::Stale { camera } => {
+                let camera_id = burst.camera_name(camera).to_owned();
+                self.stray += 1;
+                log_with(&app, "warn", "迟到帧", format!("相机 {camera_id} 的帧（帧计数 {}）不属于本件：上一件的迟到帧或布防前那次打开的帧，记为游离帧", f.frame_counter), fields(&camera_id, None));
+            }
+            burst::Arrival::Fault(reason) => log(&app, "err", "帧归属", reason),
+            burst::Arrival::Unknown => log(&app, "warn", "帧归属", format!("相机组序号 {} 不在本件计划相机里", f.cam)),
+        }
+    }
+
+    /// 段配方一帧的测量结果：写进本件；没测成（队满、超时、失败）只记检测不完整，不判 ERR（D-SB-13）。
+    fn on_frame_measured(&mut self, m: FrameMeasured) {
+        if !matches!(self.phase, Phase::Acquire | Phase::Drain) { return; }
+        let Some(part) = self.part.as_mut() else { return };
+        let (ms, queue_ms, engine_ms) = (m.ms, m.queue_ms, m.engine_ms);
+        let Some(metrics) = part.apply_burst(m) else { return };
+        self.dirty = true;
+        let camera = part.burst.as_ref().map_or("?", |b| b.camera_name(metrics.camera)).to_owned();
+        let seq = metrics.seq;
+        let fields = Fields { cycle_id: Some(part.cycle_id.clone()), camera: Some(camera.clone()), seq: Some(seq), ..Fields::default() }.with_stage("measured")
+            .with_data(json!({"ms": ms, "queueMs": queue_ms, "engineMs": engine_ms, "state": metrics.state, "error": metrics.error}));
+        let why = metrics.error.clone().unwrap_or_default();
+        match metrics.state {
+            FrameState::Measured => trace(&self.app, "测量完成", format!("{camera} 第 {seq} 帧 · 最大胶宽 {} · {ms} ms",
+                metrics.width_max.map_or_else(|| "—".to_owned(), |w| format!("{w:.2} mm"))), fields),
+            FrameState::OutOfCorridor => trace(&self.app, "走出走廊", format!("{camera} 第 {seq} 帧胶条走出走廊，记检测不完整"), fields),
+            FrameState::Unmeasured => log_with(&self.app, "warn", "帧没测", format!("{camera} 第 {seq} 帧没测（{why}），记检测不完整"), fields),
+            FrameState::Error | FrameState::Missing => log_with(&self.app, "warn", "测量出错", format!("{camera} 第 {seq} 帧测量失败（{why}），记检测不完整"), fields),
+        }
+    }
+
     async fn on_tick(&mut self) {
         let app = self.app.clone();
         let _gate = host(&app).plc_gate.lock().await;
@@ -1604,19 +1833,20 @@ impl Machine {
                     if capture_host.active() { self.start_capture_s7(request).await; }
                     else { self.start_part(request).await; }
                 },
-                SessionEvent::End(ended_at) if self.s7.capture_id().is_some() => {
-                    let _ = ended_at;
-                    self.end_capture();
+                SessionEvent::End(_, device_triggers) if self.s7.capture_id().is_some() => {
+                    self.end_capture(device_triggers);
                     self.set_phase(Phase::Drain);
                 },
-                SessionEvent::End(ended_at) => {
+                SessionEvent::End(ended_at, device_triggers) => {
                     if let Some(part) = self.part.as_mut() {
                         part.end_at = Some(ended_at);
-                        part.issued_verified = true;
+                        part.device_triggers = device_triggers;
                     }
                     self.set_phase(Phase::Drain);
                     let triggers = self.part.as_ref().map(Part::triggers);
-                    log_with(&app, "info", "partEnd↑", "三路触发数量已核对，等待剩余帧", Fields::stage("partEnd").with_data(json!({"triggers": triggers})));
+                    let reported = device_triggers.map_or_else(|| "未报".to_owned(), |n| n.to_string());
+                    log_with(&app, "info", "partEnd↑", format!("PLC 报本件设备触发数 {reported}（只作参考），等待剩余帧"),
+                        Fields::stage("partEnd").with_data(json!({"triggers": triggers, "deviceTriggers": device_triggers})));
                 }
                 SessionEvent::Released(triggers) => {
                     self.close_routing(triggers);
@@ -1667,6 +1897,14 @@ impl Machine {
                         Fields { cycle_id: Some(part.cycle_id.clone()), ..Fields::shot(k, &shot.id, &shot.camera) }.with_data(json!({"status": part.frames[k].status})));
                     self.dirty = true;
                 }
+                let expired = part.expire_burst(Instant::now(), timeouts.proc(), timeouts.drain());
+                if !expired.is_empty() {
+                    let frames: Vec<String> = expired.iter().take(8).map(|(camera, seq)| format!("相机 {} 第 {seq} 帧", part.burst.as_ref().map_or("?", |b| b.camera_name(*camera)))).collect();
+                    let more = if expired.len() > frames.len() { format!(" 等 {} 帧", expired.len()) } else { String::new() };
+                    log_with(&self.app, "warn", "帧测量超时", format!("{}{more} 测量超时或到收尾截止仍未完成，记为没测（检测不完整）", frames.join("、")),
+                        Fields { cycle_id: Some(part.cycle_id.clone()), ..Fields::default() });
+                    self.dirty = true;
+                }
             }
         }
         match self.phase {
@@ -1705,19 +1943,34 @@ impl Machine {
         }
         self.set_phase(Phase::Judge);
         let Some(part) = self.part.as_mut() else { return };
-        let judgement = part.judgement();
-        let (sn, id) = (part.sn.clone(), part.recipe.id.clone());
+        let mut warnings = Vec::new();
+        let judgement = match part.burst_judgement() {
+            Some(decided) => {
+                let burst = part.burst.as_mut().unwrap();
+                warnings = burst_warnings(&decided, |camera| burst.camera_name(camera).to_owned());
+                let summary = burst::summary(&decided);
+                burst.judgement = Some(decided);
+                summary
+            }
+            None => part.judgement(),
+        };
+        let (sn, id, cycle_id) = (part.sn.clone(), part.recipe.id.clone(), part.cycle_id.clone());
+        for (ev, message) in warnings {
+            log_with(&self.app, "warn", ev, message, Fields { cycle_id: Some(cycle_id.clone()), ..Fields::default() });
+        }
         self.report(sn, Some(id), judgement).await;
     }
 
     async fn report(&mut self, sn: String, recipe_id: Option<String>, judgement: Judgement) {
-        // S7 未经 partEnd 核对触发数就判了 ERR（运动超时等）：等 PLC 确认结果时报的实际已发触发数再推下一件基线，
-        // 按计划数假定会让下一件基线偏高、每件都缺帧
-        if !self.part.as_ref().is_some_and(|p| p.issued.is_some() && !p.issued_verified) { self.close_routing(None); }
+        // 旧拍照点配方：S7 没等到 partEnd 就判了 ERR（运动超时等）时手里还没有 PLC 报的触发数，等 PLC 确认结果时报的实际已发触发数
+        // 再推下一件基线，按计划数假定会让下一件基线偏高、每件都缺帧。段配方（issued 为空）的下一件基线只看见到的帧计数，直接收尾
+        if !self.part.as_ref().is_some_and(|p| p.issued.is_some() && p.device_triggers.is_none()) { self.close_routing(None); }
         let app = self.app.clone();
         let mut drain_ms = None;
         let pending = PlcDelivery { state: PlcDeliveryState::Pending, updated_at: now_ms(), message: None };
-        let durable = match self.recorded_part(&sn, recipe_id.as_deref(), &judgement, drain_ms, pending) {
+        let record = self.recorded_part(&sn, recipe_id.as_deref(), &judgement, drain_ms, pending);
+        let burst = record.as_ref().ok().and_then(|part| part.burst.as_ref()).map(|b| b.judgement.clone());
+        let durable = match record {
             Ok(part) => host(&app).audit.insert_durable(part, host(&app).settings().timeouts.proc()).await.and_then(|_| self.record_without_part(&sn, &judgement)),
             Err(error) => Err(error),
         };
@@ -1751,7 +2004,7 @@ impl Machine {
             Fields::stage("result").with_data(json!({"verdict": judgement.verdict, "plcCode": judgement.plc_code,
                 "faultCode": judgement.fault_code, "drainMs": drain_ms, "delivered": r.is_ok()})));
         self.finish_recording(&sn, &judgement);
-        self.result = Some(ResultView { candidate_debug: self.part.as_ref().and_then(|p| p.candidate.as_ref()).map(|c| c.info.clone()).or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())), cycle_id: self.current_cycle_id.clone(), sn, recipe_id, ts: now_ms(), drain_ms, judgement });
+        self.result = Some(ResultView { candidate_debug: self.part.as_ref().and_then(|p| p.candidate.as_ref()).map(|c| c.info.clone()).or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())), cycle_id: self.current_cycle_id.clone(), sn, recipe_id, ts: now_ms(), drain_ms, judgement, burst });
         match r {
             Ok(()) => self.set_phase(Phase::Report),
             Err(reason) => {
@@ -1765,11 +2018,7 @@ impl Machine {
     }
 
     fn close_routing(&mut self, plc_triggers: Option<u16>) {
-        let Some(part) = self.part.as_mut().filter(|part| !part.routing_closed) else { return };
-        let issued = part.issued.as_ref().filter(|_| part.issued_verified || plc_triggers.is_some())
-            .map(|(ids, planned)| ids.iter().map(|id| (id.as_str(), plc_triggers.map_or(*planned, u64::from))).collect::<Vec<_>>());
-        part.router.close(&mut self.ledgers, issued.as_ref().map(|counts| counts.as_slice()));
-        part.routing_closed = true;
+        if let Some(part) = self.part.as_mut() { part.close_routing(&mut self.ledgers, plc_triggers); }
     }
 
     fn check_part_cams(&self, part: &Part) -> Result<(), String> {
@@ -1778,7 +2027,10 @@ impl Machine {
         let identities = part.cams.iter().map(|&cam| {
             rig.slot(cam as usize).ok_or_else(|| "相机组已变化".to_string())?.routing_state().map(|state| state.0)
         }).collect::<Result<Vec<_>, _>>()?;
-        part.router.check_sessions(&identities)
+        match &part.burst {
+            Some(burst) => burst.check_sessions(&identities),
+            None => part.router.check_sessions(&identities),
+        }
     }
 
     fn check_part_routing(&self, part: &Part) -> Result<(), (u16, String)> {
@@ -1787,7 +2039,12 @@ impl Machine {
         for &cam in &part.cams {
             let slot = rig.slot(cam as usize).ok_or_else(|| (fault::DEVICE_LOST, "相机组已变化".into()))?;
             let (_, observed) = slot.routing_state().map_err(|reason| (fault::DEVICE_LOST, reason))?;
-            if let Some(ledger) = observed { part.router.check_observed(cam, &ledger)?; }
+            if let Some(ledger) = observed {
+                match &part.burst {
+                    Some(burst) => burst.check_observed(cam, &ledger)?,
+                    None => part.router.check_observed(cam, &ledger)?,
+                }
+            }
         }
         Ok(())
     }
@@ -1806,16 +2063,29 @@ impl Machine {
         let part = self.part.as_ref().filter(|p| p.sn == sn);
         let recipe = part.map(|p| p.recipe.clone()).or_else(|| crate::offline::candidate(&self.app).filter(|c| recipe_id == Some(c.recipe.id.as_str())).map(|c| c.recipe.clone())).or_else(|| recipe_id.and_then(|id| host(&self.app).recipe(id)));
         let frames = part.map(|p| p.frames.clone()).unwrap_or_default();
-        let frames_expected = recipe.as_ref().map_or(0, |r| r.shot_count());
+        let burst = self.burst_outcome(sn, recipe.as_deref(), judgement);
+        // 段配方：预期帧数取 ΣN_exp（待标定为 0），收到的帧数取帧组数，触发数取 PLC 报的 deviceTriggers
+        let frames_expected = match &burst { Some(b) => b.expected_total.unwrap_or(0) as usize, None => recipe.as_ref().map_or(0, |r| r.shot_count()) };
         let table = part.map(|p| p.table.clone()).filter(|t| t.iter().any(|x| *x != PointState::Pending));
-        let (received, triggers) = part.map_or((0, 0), |p| (p.received, p.triggers()));
+        let (received, triggers) = match &burst {
+            Some(b) => (b.frames.iter().map(|f| f.seq).max().unwrap_or(0) as usize, b.device_triggers.map_or(0, u64::from)),
+            None => part.map_or((0, 0), |p| (p.received, p.triggers())),
+        };
         let shots = recorded_shots(recipe.as_deref(), &frames, &judgement.reason);
         let source = part.map_or_else(|| crate::site::record_source(&self.app), |p| p.source);
         let sample = (matches!(source, RecordSource::OfflineSample | RecordSource::OfflineCandidate)).then(|| crate::offline::claim_sample(&self.app, sn, &cycle_id)).flatten();
         Ok(RecordedPart { ts: now_ms(), sn: sn.to_owned(), recipe, judgement: judgement.clone(),
             drain_ms, frames, frames_expected, frames_received: received, triggers, table,
             software_version: self.app.package_info().version.to_string(), cycle_id: cycle_id.clone(),
-            bundle_id: part.and_then(|p| p.bundle_id.clone()), delivery, shots, source, sample })
+            bundle_id: part.and_then(|p| p.bundle_id.clone()), delivery, shots, source, sample, burst })
+    }
+
+    /// 段配方的帧与区域记录：在途件按它的帧组与判定给出；没有在途件（拒绝布防）时按配方给出没有帧的记录。旧拍照点配方为 None。
+    fn burst_outcome(&self, sn: &str, recipe: Option<&Recipe>, judgement: &Judgement) -> Option<BurstRecord> {
+        match self.part.as_ref().filter(|p| p.sn == sn) {
+            Some(part) => part.burst_record(judgement),
+            None => recipe.and_then(|recipe| burst::empty_record(recipe, judgement)),
+        }
     }
 
     fn record_without_part(&self, sn: &str, judgement: &Judgement) -> Result<(), String> {
@@ -1876,13 +2146,39 @@ impl Machine {
             }
             self.finish_recording(&sn, &judgement);
             log_with(&self.app, "err", "在途件中断", format!("SN {sn} 记 ERR 98，需人工处理该件"), Fields::stage("result"));
-            self.result = Some(ResultView { candidate_debug: self.part.as_ref().and_then(|p| p.candidate.as_ref()).map(|c| c.info.clone()).or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())), cycle_id: self.current_cycle_id.clone(), sn, recipe_id: self.part.as_ref().map(|p| p.recipe.id.clone()), ts: now_ms(), drain_ms: None, judgement });
+            let burst = self.burst_outcome(&sn, self.part.as_ref().map(|p| &*p.recipe), &judgement).map(|record| record.judgement);
+            self.result = Some(ResultView { candidate_debug: self.part.as_ref().and_then(|p| p.candidate.as_ref()).map(|c| c.info.clone()).or_else(|| crate::offline::candidate(&self.app).map(|c| c.info.clone())), cycle_id: self.current_cycle_id.clone(), sn, recipe_id: self.part.as_ref().map(|p| p.recipe.id.clone()), ts: now_ms(), drain_ms: None, judgement, burst });
         }
         if fault_fails_delivery(self.phase) && self.result.is_some() { self.fail_delivery(&reason); }
         log_with(&self.app, "err", "故障", reason.clone(), Fields::stage("fault"));
         self.fault = Some(reason);
         self.set_phase(Phase::Fault);
     }
+}
+
+/// 段配方的件不经过拍照点路由：空计划的路由（没有相机，不绑任何帧）。
+fn unrouted() -> ShotRouter {
+    ShotRouter::arm(&Plan::new(std::iter::empty::<(&str, &str)>()), &Ledgers::default(), &Policy::offline(None), &[]).expect("空计划不需要相机")
+}
+
+/// 段配方判定里只告警的项（丢帧、帧数异常、疑似提前终止），写进运行日志。
+fn burst_warnings(judgement: &BurstJudgement, camera: impl Fn(usize) -> String) -> Vec<(&'static str, String)> {
+    use crate::frame_group::{CountStatus, LossReason};
+    let mut out: Vec<(&'static str, String)> = judgement.alarms.iter().map(|alarm| {
+        let name = camera(alarm.camera);
+        let basis = match &alarm.reason {
+            LossReason::Triggers { device_triggers } => format!("PLC 报 deviceTriggers {device_triggers}"),
+            LossReason::Cameras { other, other_count } => format!("相机 {} 本件 {other_count} 帧", camera(*other)),
+        };
+        ("丢帧告警", format!("相机 {name} 本件 {} 帧，与{basis}相差超过 1：疑似丢帧（只告警，不改结论）", alarm.count))
+    }).collect();
+    if matches!(judgement.count_status, Some(CountStatus::Low | CountStatus::High)) || judgement.flags.frame_count_anomaly {
+        out.push(("帧数异常", format!("整件 {} 个帧组，有区域帧组数超出预期 ± 容差（只告警，不改结论）", judgement.group_count)));
+    }
+    if judgement.flags.short_part {
+        out.push(("疑似提前终止", format!("整件 {} 个帧组，少于 ΣN_exp − Σtol：疑似 PLC 提前置 partEnd（只告警，不改结论）", judgement.group_count)));
+    }
+    out
 }
 
 /// 故障时只有已回写结果、仍在等 PLC 确认的工件改记交付失败；已确认、已释放的工件不再改写，交付失败进入故障的工件已在 report 里自行记失败。

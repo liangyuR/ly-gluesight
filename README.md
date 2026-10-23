@@ -68,4 +68,4 @@ pnpm package
 
 ## 文档
 
-更多架构、现场接入与使用教程见 [docs/README.md](docs/README.md)。
+更多架构、现场接入与测试文档见 [docs/README.md](docs/README.md)。

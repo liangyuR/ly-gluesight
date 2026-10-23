@@ -1,4 +1,12 @@
 import type { CameraImaging, DetectParams, FixtureSpec, Judgement, Measured, PoseRecord, Recipe, RecipeDoc, ShotLimits, Verdict } from "../cycle/types";
+import type { BurstJudgement, CalibrationRound, CameraTeaching, PathSegment, WorkspacePlanView } from "../plan/types";
+
+/** 段模型（分段连拍飞拍）的候选工作区类型，定义在 plan/types.ts；这里转出供工作台页面使用。
+ * 段配方的进度用 StepIdV2 / ProgressV2（在 WorkspaceView.plan.progress），旧配方的 StepId / Progress 不变。 */
+export type {
+  CalibOutcome, CalibrationRound, CalibrationRoundView, CalibrationView, CameraTeachDraft, CameraTeaching, CameraTeachingView, CaptureFailureV2, CaptureRoundV2, MissingFrame,
+  ProgressStepV2, ProgressTargetV2, ProgressV2, SegmentCalibView, StepIdV2, WorkspacePlanView,
+} from "../plan/types";
 
 /** 一个拍照点的示教：在冻结原图上点出的中线（图像像素，从胶嘴一侧往外）、像素当量与可选的检测参数。
  * workspace_save_params 把它写进候选配方的这个拍照点；detect 不设时不发送（用配方的检测参数）。
@@ -88,6 +96,10 @@ export interface Workspace {
   lastPosition?: { k: number; view: number } | null; captureId?: string | null;
   unboundImaging?: Record<string, CameraImaging>;
   publish: PublishState; updatedAt: number;
+  /** 段配方：每台计划相机的走廊示教帧（旧拍照点配方为空，示教在 frames）；界面读 plan.cameraTeaching */
+  cameraTeaching: CameraTeaching[];
+  /** 段配方：多轮标定加入的轮次（旧拍照点配方为空）；界面读 plan.calibration */
+  calibration: { rounds: CalibrationRound[] };
 }
 /** 发布与生效状态（后端显式枚举）。 */
 export type PublishState =
@@ -129,6 +141,9 @@ export interface WorkspaceView {
   candidatePlcError: string | null;
   coverage: number | null;
   progress: Progress;
+  /** 段配方的计划部分：后端只对 doc.segments 非空的候选输出，旧配方为 null；页面按它分流新旧页面（决策记录第八节）。
+   * 段配方时 productionPlc / candidatePlc / candidatePlcError / coverage 为 null，progress 为空，进度在 plan.progress */
+  plan: WorkspacePlanView | null;
 }
 export interface RawFrame { k: number; camera: string; view: number; file: string; ts: number; available: boolean; error: string | null; cam?: number | null; frameCounter?: number | null; triggerCounter?: number | null }
 export interface RecordImages { imageSource: "offlineSample" | "recording"; historyId: number; frames: RawFrame[]; complete: boolean; message: string }
@@ -136,6 +151,9 @@ export interface Comparison {
   id: string; historyId: number; source: "rules" | "raw" | "original"; cycleId: string; bundleId: string | null; candidateId: string; candidateRevision: number;
   candidateRecipe: Recipe;
   originalVerdict: Verdict; judgement: Judgement; measurements: Measured[]; createdAt: number;
+  /** 段配方的复测结果（后端 workspace::burst_history::ComparisonBurst）：重判所用的候选段、相机、预期总数与区域判定。
+   * 旧拍照点记录（含之前保存的对照）为 null；有值时 judgement 的 verdict / plcCode / faultCode / reason 与 burst.judgement 相同，segments、gaps 为空 */
+  burst: { segments: PathSegment[]; cameras: string[]; expectedTotal: number | null; judgement: BurstJudgement } | null;
 }
 /** 预览像素（8 位灰度，可能是降采样后的尺寸）。 */
 export interface GrayPixels { data: Uint8Array; width: number; height: number }

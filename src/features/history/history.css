@@ -44,6 +44,10 @@
 .detail-grid .side { grid-row: 1 / 3; grid-column: 2; overflow: auto; }
 .detail-grid .curve-panel { grid-column: 1; grid-row: 2; }
 .detail-grid .frames-panel { grid-column: 1 / -1; }
+/* 段配方：没有曲线面板，判定栏只占第一行 */
+.detail-grid.burst { grid-template-rows: auto auto; }
+.detail-grid.burst .side { grid-row: 1; }
+.hist-frames { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
 .reason-box { margin: 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--surface-mid); font-size: 13px; }
 .ng-item { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: var(--r-md); background: var(--ng-container); color: var(--on-ng-container); }
 .ng-title { font-size: 13px; font-weight: 600; }

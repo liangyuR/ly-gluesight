@@ -1,6 +1,8 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { FormField, NumberField, Select, Switch, TextField } from "qing-steel";
 import type { DetectParams, JudgeParams, Polarity, RecipeDoc, ShotLimits } from "../../cycle/types";
+import { KindChecksEditor } from "../../plan/KindChecksEditor";
+import type { KindDefault, SegmentKind } from "../../plan/types";
 
 interface Props {
   initial: RecipeDoc;
@@ -23,6 +25,9 @@ const paramFields: [keyof JudgeParams, string, string][] = [
 export const defaultPosition: JudgeParams = { nominal: 0, tolUpper: 2, tolLower: 2, absMin: -5, absMax: 5, maxExcursionLen: 5 };
 export const defaultWidth: JudgeParams = { nominal: 4, tolUpper: 1.5, tolLower: 1.5, absMin: 1, absMax: 8, maxExcursionLen: 5 };
 
+/** 后端 RecipeDoc.calibration_rounds 的默认值（可配范围 10..=100）。 */
+const DEFAULT_CALIBRATION_ROUNDS = 10;
+const segmentKinds: [SegmentKind, string][] = [["straight", "直线"], ["corner", "弯道"]];
 const polarityLabel: Record<Polarity, string> = { dark: "暗胶条（比背景暗）", light: "亮胶条（比背景亮）" };
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const fixed = (v: number) => Number.isFinite(v) ? String(Math.round(v * 100) / 100) : "—";
@@ -32,6 +37,8 @@ const compared: [string, (d: RecipeDoc) => unknown][] = [
   ["name", d => d.name], ["productCode", d => d.productCode], ["triggerMode", d => d.triggerMode], ["spacing", d => d.spacing], ["filterWindow", d => d.filterWindow],
   ["searchMm", d => d.detect.searchMm], ["polarity", d => d.detect.polarity], ["widthRange", d => d.detect.widthRange],
   ["position", d => d.limits.position], ["width", d => d.limits.width], ["maxGapLen", d => d.limits.maxGapLen], ["minPresent", d => d.limits.minPresent],
+  // 段配方的默认参数；旧拍照点配方没有这两项，两边都缺省时视为相同
+  ["segmentDefaults", d => d.segmentDefaults], ["calibrationRounds", d => d.calibrationRounds],
 ];
 export function changedFields(doc: RecipeDoc, production: RecipeDoc | null | undefined) {
   if (!production) return new Set<string>();
@@ -133,6 +140,8 @@ export default function RecipeEditor({ initial, production, onDraftChange, disab
   const set = <K extends keyof RecipeDoc>(k: K, v: RecipeDoc[K]) => setDoc((previous) => ({ ...previous, [k]: v }));
   const changed = changedFields(doc, production);
   const identityChanged = changed.has("name") || changed.has("productCode");
+  // 有段 = 段配方：默认参数按段类型设（segmentDefaults），不再有触发方式、位置名义值与量具确认件
+  const burst = !!doc.segments?.length;
 
   return (
     <div className="rcp-editor">
@@ -147,21 +156,36 @@ export default function RecipeEditor({ initial, production, onDraftChange, disab
 
       <Section title="采样">
         <div className="rcp-grid">
-          <Field label="触发方式" wide changed={changed.has("triggerMode")}>
+          {/* 段配方固定飞拍，不展示触发方式（triggerMode 原值随草稿保留）；旧拍照点配方照旧可选 */}
+          {!burst && <Field label="触发方式" wide changed={changed.has("triggerMode")}>
             <Select aria-label="触发方式" disabled={disabled} value={doc.triggerMode} options={[{ value: "fly", label: "飞拍（位置比较触发）" }, { value: "stop", label: "停稳拍" }]} onValueChange={(mode) => set("triggerMode", mode as RecipeDoc["triggerMode"])} />
-          </Field>
+          </Field>}
           <Field label="站距" changed={changed.has("spacing")} hint="沿示教中线每隔这个距离量一站"><Num aria="站距（mm）" unit="mm" value={doc.spacing} onChange={(v) => set("spacing", v)} /></Field>
           <Field label="中值滤波窗口" changed={changed.has("filterWindow")} hint="1–31 的奇数"><Num aria="中值滤波窗口（点，奇数）" unit="点" step={2} value={doc.filterWindow} onChange={(v) => set("filterWindow", v)} /></Field>
         </div>
       </Section>
 
-      <Section title="检测" extra="拍照点没单独设置时使用；改检测参数后需重新试测">
+      <Section title="检测" extra={burst ? "各台相机的走廊没单独设置时使用；改检测参数后需重新试测" : "拍照点没单独设置时使用；改检测参数后需重新试测"}>
         <DetectEditor value={doc.detect} changed={changed} disabled={disabled} onChange={(v) => set("detect", v)} />
       </Section>
 
-      <Section title="判定" extra="单位 mm；连续超出公差带超过允许超差长度判 NG，超出绝对限直接 NG">
+      {burst ? <>
+        <Section title="标定" extra="同一工件程序连续采集多轮，取各轮帧数均值作预期帧数">
+          <div className="rcp-grid">
+            <Field label="标定轮数" changed={changed.has("calibrationRounds")} hint="至少 10 轮，最多 100 轮">
+              <Num aria="标定轮数" unit="轮" step={1} value={doc.calibrationRounds ?? DEFAULT_CALIBRATION_ROUNDS} onChange={(v) => set("calibrationRounds", v)} />
+            </Field>
+          </div>
+        </Section>
+        {doc.segmentDefaults && <Section title="按段类型的默认检测项" extra="新建段时取用；每帧独立检测，弯道段不判胶偏，帧数容差默认 1">
+          {segmentKinds.map(([kind, label]) => <section key={kind} className="rcp-kind" aria-label={`${label}段默认检测项`}>
+            <h5 className="sub-title">{label}段{changed.has("segmentDefaults") && !same(doc.segmentDefaults?.[kind], production?.segmentDefaults?.[kind]) && <i className="rcp-changed" title="与生产配方不同" />}</h5>
+            <KindChecksEditor value={doc.segmentDefaults![kind]} kind={kind} disabled={disabled} onChange={(next: KindDefault) => set("segmentDefaults", { ...doc.segmentDefaults!, [kind]: next })} />
+          </section>)}
+        </Section>}
+      </> : <Section title="判定" extra="单位 mm；连续超出公差带超过允许超差长度判 NG，超出绝对限直接 NG">
         <LimitsEditor value={doc.limits} changed={changed} onChange={(v) => set("limits", v)} />
-      </Section>
+      </Section>}
     </div>
   );
 }

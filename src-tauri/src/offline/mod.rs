@@ -13,15 +13,16 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::time::sleep;
 
-use crate::camera::{CameraSource, SampleTarget, SimRender, TriggerPayload};
+use crate::camera::{BurstRender, CameraSource, SampleTarget, SimRender, TriggerPayload};
 use crate::cycle::{CycleHost, Input, Phase};
 use crate::judge::Verdict;
+use crate::plan::SegmentKind;
 use crate::plc::PlcHost;
 use crate::recipe::{Recipe, TriggerMode};
 use crate::settings::RecordMode;
 use crate::simimage::PoseError;
 use crate::site::{Derivation, Environment, OfflineChoice, OfflineSession, Preconditions, SiteMode, SiteStatus, SourceKind};
-use line::{Layout, Line, Outcome, PartOrder, Timing};
+use line::{Layout, Line, Outcome, PartOrder, Pulse, PulseProfile, Timing};
 use s7_server::{Fault, S7Server};
 use sample_set::{SampleLabel, SampleRef, SampleSet};
 
@@ -30,6 +31,9 @@ pub use scenario::Scenario;
 const RECENT_RUNS: usize = 20;
 const CAPTURE_PLAN_VERSION: u32 = 1;
 const WARMUP_WAIT: Duration = Duration::from_secs(30);
+const NOT_INSPECTED: &str = "本件未检：机器人没等到触发许可，PLC 未提交 partStart，PC 没有这一件的记录";
+/// 合成图示教采集每轮的脉冲波动：首尾 ±1、弯道 ±2，按轮序号取种子，多轮标定看得到 min / max 差异。
+const CAPTURE_JITTER: (i32, i32) = (1, 2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +52,7 @@ const OUTAGE_DEFAULT: Duration = Duration::from_secs(5);
 const OUTAGE_MAX: Duration = Duration::from_secs(120);
 
 /// 长稳测试加快节拍：覆盖虚拟机器人相邻两次触发的间隔与连续运行时件间停顿，只在本次离线会话内有效。
+/// 段配方按它换算脉冲频率（1000 / 间隔 Hz）；旧拍照点配方的触发间隔仍不低于 [`LEGACY_MIN_INTERVAL_MS`]。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Pace {
@@ -55,11 +60,23 @@ pub struct Pace {
     pub pause_ms: u64,
 }
 
+/// 触发间隔下限：相机上限 66 fps（规格 §0），即 15 ms。
+const MIN_INTERVAL_MS: u64 = 15;
+/// 旧拍照点配方的触发间隔下限（规格之前的 Pace 下限，旧节拍不变）。
+const LEGACY_MIN_INTERVAL_MS: u64 = 50;
+
 impl Pace {
     fn validate(self) -> Result<Self, String> {
-        if !(50..=5000).contains(&self.shot_interval_ms) { return Err("触发间隔需在 50–5000 ms 之间".into()); }
+        if !(MIN_INTERVAL_MS..=5000).contains(&self.shot_interval_ms) {
+            return Err(format!("触发间隔需在 {MIN_INTERVAL_MS}–5000 ms 之间（相机上限 66 fps）"));
+        }
         if self.pause_ms > 10_000 { return Err("件间停顿不能超过 10000 ms".into()); }
         Ok(self)
+    }
+
+    /// 段配方的脉冲频率。
+    fn hz(self) -> f64 {
+        1000.0 / self.shot_interval_ms as f64
     }
 }
 
@@ -231,6 +248,12 @@ impl OfflineHost {
         }
     }
 
+    /// 本件未检：PLC 没有提交 partStart，PC 没有这一件，样本件运行记下原因。
+    fn skip_run(&self, part_sn: &str) {
+        let mut runs = self.runs.lock().unwrap();
+        if let Some(run) = runs.iter_mut().find(|r| r.part_sn == part_sn) { run.message = Some(NOT_INSPECTED.into()); }
+    }
+
     /// 生产节拍按 PLC 下发的 partSn 认领样本件，记下 cycleId。只在离线期间生效：真机件不会认领到样本件。
     pub fn claim(&self, part_sn: &str, cycle_id: &str) -> Option<SampleRef> {
         if !self.enabled() { return None; }
@@ -315,7 +338,8 @@ pub(crate) async fn run_candidate(app: AppHandle, candidate: Arc<crate::candidat
     crate::workspace::recheck_debug_candidate(&app, &candidate)?;
     if let Some(id) = part_id.as_deref() { set.part(id).ok_or("样本件不存在")?; }
     let recipe = candidate.recipe.clone();
-    let shots = set.manifest().recipe_shots(&recipe)?.into_iter().map(|s| s.shot_id.clone()).collect();
+    let burst = recipe.is_burst().then(|| sample_feeds(&recipe, &set)).transpose()?;
+    let shots = if burst.is_some() { Vec::new() } else { set.manifest().recipe_shots(&recipe)?.into_iter().map(|s| s.shot_id.clone()).collect() };
     let plan = crate::plc::recipe_plan(&cycle, &recipe)?;
     let cams = crate::cycle::usable_cams(&app, &recipe)?;
     cycle.camera.check_ready_at(&cams)?;
@@ -323,11 +347,13 @@ pub(crate) async fn run_candidate(app: AppHandle, candidate: Arc<crate::candidat
     *offline.last_candidate.lock().unwrap() = Some(candidate.clone());
     *offline.candidate.lock().unwrap() = Some(candidate);
     let _ = cycle.tx.send(crate::cycle::Input::Refresh);
-    let order = PartOrder { sn: String::new(), product_code: recipe.product_code, plan_version: plan.plan_version,
-        shot_count: plan.shot_count, device_shots: plan.device_shots };
+    let order = PartOrder::legacy(String::new(), recipe.product_code, plan.plan_version, plan.shot_count, plan.device_shots);
     let run_app = app.clone();
     tauri::async_runtime::spawn(async move {
-        run(run_app, line, recipe, order, Scenario::Normal, false, Some((set, shots, part_id))).await;
+        match burst {
+            Some(feeds) => run_burst(run_app, line, recipe, order, Scenario::Normal, false, feeds, Some((set, part_id))).await,
+            None => run(run_app, line, recipe, order, Scenario::Normal, false, Some((set, shots, part_id))).await,
+        }
     });
     Ok(())
 }
@@ -535,7 +561,10 @@ pub fn offline_run(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, Cyc
     let plan = crate::plc::recipe_plan(&cycle, &recipe)?;
     let samples = offline.sample_set();
     if samples.is_some() && !scenario.handshake() {
-        return Err("样本集图像是现场原图，只能选握手类工况（正常、传输丢帧、触发数不符、运动超时、ACK 不匹配）".into());
+        return Err("样本集图像是现场原图，只能选握手与脉冲串类工况（正常、传输丢帧、触发数不符、运动超时、ACK 不匹配，以及段配方的缺帧、波动、未检、提前终止）".into());
+    }
+    if !recipe.is_burst() && scenario.burst_only() {
+        return Err(format!("工况 {scenario:?} 只适用于段配方（分段连拍）：配方 {} 是旧拍照点配方", recipe.id));
     }
     let warming = match crate::cycle::runnable_cams(&app, &recipe) {
         Ok(_) => false,
@@ -545,12 +574,23 @@ pub fn offline_run(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, Cyc
     if let (Some(set), Some(id)) = (&samples, part_id.as_deref()) {
         set.part(id).ok_or_else(|| format!("样本集里没有样本件 {id}"))?;
     }
+    let order = PartOrder::legacy(String::new(), recipe.product_code, plan.plan_version, plan.shot_count, plan.device_shots);
+    if recipe.is_burst() {
+        let feeds = match &samples {
+            Some(set) => sample_feeds(&recipe, set).map_err(|reason| format!("样本集与配方不符：{reason}"))?,
+            None => synthetic_feeds(&recipe),
+        };
+        start_running(&offline, continuous)?;
+        tauri::async_runtime::spawn(async move {
+            if warming && !wait_warmup(&app, &recipe).await { return finish(&app, &app.state::<OfflineHost>()); }
+            run_burst(app, line, recipe, order, scenario, continuous, feeds, samples.map(|set| (set, part_id))).await
+        });
+        return Ok(());
+    }
     let sample_shots = samples.as_ref().map(|set| set.manifest().recipe_shots(&recipe)
         .map(|shots| shots.into_iter().map(|s| s.shot_id.clone()).collect::<Vec<_>>())).transpose()
         .map_err(|reason| format!("样本集与配方不符：{reason}"))?;
     start_running(&offline, continuous)?;
-    let order = PartOrder { sn: String::new(), product_code: recipe.product_code, plan_version: plan.plan_version,
-        shot_count: plan.shot_count, device_shots: plan.device_shots };
     tauri::async_runtime::spawn(async move {
         if warming && !wait_warmup(&app, &recipe).await { return finish(&app, &app.state::<OfflineHost>()); }
         run(app, line, recipe, order, scenario, continuous, samples.zip(sample_shots).map(|(set, shots)| (set, shots, part_id))).await
@@ -559,34 +599,49 @@ pub fn offline_run(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, Cyc
 }
 
 /// 为正在等待 PLC 开始的整圈采集轮次跑一圈样本件：每次触发同时发往本轮全部相机，第 k 次触发取各相机在样本集里的第 k 个拍照点。
+/// 旧拍照点配方的旧轮次要求各相机拍照点数相同且不超过 64；段配方的新轮次不限 1–64、各相机可以不等
+/// （帧数少的相机在后面的帧组缺帧），虚拟 PLC 按最多的那台发脉冲，shotCount 填同一估算值。
+/// 合成图离线环境只为段配方的新轮次送一圈（[`start_synthetic_capture`]）。
 #[tauri::command]
 pub fn offline_capture(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>, offline: State<'_, OfflineHost>,
     part_id: Option<String>) -> Result<(), String> {
     let line = connected_line(&plc, &offline)?;
+    if offline.kind() == Some(SourceKind::Synthetic) {
+        return start_synthetic_capture(&app, &cycle, &offline, line);
+    }
     let set = offline.sample_set().ok_or("未选择离线样本集")?;
-    let round = cycle.camera.recipe_capture().current()
-        .filter(|r| r.state == crate::recipe_capture::CaptureState::WaitingStart)
+    let round = cycle.camera.recipe_capture().current_any()
+        .filter(|r| *r.state() == crate::recipe_capture::CaptureState::WaitingStart)
         .ok_or("没有等待 PLC 开始的整圈采集：先在整圈采集页点“开始接收”")?;
-    let mut feeds = Vec::with_capacity(round.cameras.len());
-    for camera in &round.cameras {
-        let cam = cycle.camera.require(&camera.camera_id)?;
+    let burst = matches!(round, crate::recipe_capture::AnyRound::Burst(_));
+    let mut feeds = Vec::with_capacity(round.camera_ids().len());
+    for camera_id in &round.camera_ids() {
+        let cam = cycle.camera.require(camera_id)?;
         let config = cycle.camera.slot(cam as usize).ok_or("采集设备不存在")?.config();
         if config.source != CameraSource::SampleSet { return Err(format!("采集相机 {} 不是样本集来源", config.id)); }
-        let shots: Vec<_> = set.manifest().shots.iter().filter(|s| s.camera_id == config.id).collect();
+        let shots = set.manifest().camera_frames(&config.id);
         if let Some(shot) = shots.iter().find(|s| (1..=config.view_count).any(|v| !s.views.contains(&v))) {
             return Err(format!("样本集拍照点 {} 的视角 {:?} 与采集相机 {}（{} 个视角）不符", shot.shot_id, shot.views, config.id, config.view_count));
         }
         feeds.push((cam, config.id, shots.iter().map(|s| s.shot_id.clone()).collect::<Vec<_>>()));
     }
-    let n = feeds[0].2.len();
-    if let Some((_, id, shots)) = feeds.iter().find(|(_, _, shots)| shots.len() != n || shots.is_empty()) {
-        return Err(format!("样本集里相机 {id} 有 {} 个拍照点，与其他采集相机（{n} 个）不一致或为空", shots.len()));
-    }
-    if n > 64 { return Err(format!("整圈采集最多 64 次触发，样本集每台相机有 {n} 个拍照点；请用 --shots 子集生成样本集")); }
+    let n = if burst {
+        if let Some((_, id, _)) = feeds.iter().find(|(_, _, shots)| shots.is_empty()) { return Err(format!("样本集里没有相机 {id} 的图像")); }
+        let n = feeds.iter().map(|(_, _, shots)| shots.len()).max().unwrap_or(0);
+        if n > i16::MAX as usize { return Err(format!("样本集每台相机最多 {} 帧（PLC Int），相机最多有 {n} 帧", i16::MAX)); }
+        n
+    } else {
+        let n = feeds[0].2.len();
+        if let Some((_, id, shots)) = feeds.iter().find(|(_, _, shots)| shots.len() != n || shots.is_empty()) {
+            return Err(format!("样本集里相机 {id} 有 {} 个拍照点，与其他采集相机（{n} 个）不一致或为空", shots.len()));
+        }
+        if n > 64 { return Err(format!("整圈采集最多 64 次触发，样本集每台相机有 {n} 个拍照点；请用 --shots 子集生成样本集")); }
+        n
+    };
     if let Some(id) = part_id.as_deref() { set.part(id).ok_or_else(|| format!("样本集里没有样本件 {id}"))?; }
     start_running(&offline, false)?;
     let n = n as u16;
-    let order = PartOrder { sn: String::new(), product_code: 0, plan_version: CAPTURE_PLAN_VERSION, shot_count: n, device_shots: n };
+    let order = PartOrder::legacy(String::new(), 0, CAPTURE_PLAN_VERSION, n, n);
     let feeds = feeds.into_iter().map(|(cam, _, shots)| (cam, shots)).collect();
     tauri::async_runtime::spawn(capture(app, line, set, part_id, feeds, order));
     Ok(())
@@ -676,6 +731,186 @@ fn trigger_shot(app: &AppHandle, recipe: &Arc<Recipe>, groups: &[Vec<usize>], pa
     }
 }
 
+// ───────────── 段配方：脉冲串（规格 §0/§6） ─────────────
+
+/// 一个脉冲同时触发的一台相机：相机编号、计划相机下标（合成图按它取走廊），样本集来源时这台相机的帧序列（拍照点编号）。
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct BurstFeed {
+    pub camera: String,
+    pub camera_idx: usize,
+    pub frames: Option<Vec<String>>,
+}
+
+/// 合成图：每个脉冲触发全部计划相机，按脉冲真值出图。
+fn synthetic_feeds(recipe: &Recipe) -> Vec<BurstFeed> {
+    recipe.plan_cameras().into_iter().enumerate().map(|(camera_idx, camera)| BurstFeed { camera, camera_idx, frames: None }).collect()
+}
+
+/// 样本集按相机帧序列解释（[`sample_set::Manifest::camera_frames`]）：每台计划相机都要有帧，各相机帧数可以不等。
+fn sample_feeds(recipe: &Recipe, set: &SampleSet) -> Result<Vec<BurstFeed>, String> {
+    recipe.plan_cameras().into_iter().enumerate().map(|(camera_idx, camera)| {
+        let frames: Vec<String> = set.manifest().camera_frames(&camera).into_iter().map(|s| s.shot_id.clone()).collect();
+        if frames.is_empty() { return Err(format!("样本集里没有计划相机 {camera} 的帧")); }
+        Ok(BurstFeed { camera, camera_idx, frames: Some(frames) })
+    }).collect()
+}
+
+/// 一件的脉冲剖面：合成图取配方的名义剖面（[`line::nominal_frames`]），样本集取样本帧数（各相机最多的那台，一段）；
+/// 再按工况加首尾 / 弯道波动，种子取件号，同一件可复现。
+fn burst_profile(recipe: &Recipe, feeds: &[BurstFeed], scenario: Scenario, hz: f64, seed: u64) -> PulseProfile {
+    let samples = feeds.iter().filter_map(|f| f.frames.as_ref().map(Vec::len)).max();
+    let segments = match samples {
+        Some(n) => vec![(SegmentKind::Straight, u32::try_from(n).unwrap_or(u32::MAX))],
+        None => line::nominal_frames(&recipe.path_segments, recipe.expected_total(), hz),
+    };
+    let (head_tail_jitter, corner_jitter) = scenario.jitter();
+    PulseProfile { hz, segments, head_tail_jitter, corner_jitter, seed }
+}
+
+/// 合成图示教采集一轮的剖面：配方名义剖面加首尾 ±1、弯道 ±2 的波动，种子取轮序号——每轮帧数不同，
+/// 合成图离线环境凭它完成多轮标定并看到 min / max 差异（规格 §2）。
+fn capture_profile(recipe: &Recipe, hz: f64, round_ordinal: u64) -> PulseProfile {
+    let (head_tail_jitter, corner_jitter) = CAPTURE_JITTER;
+    PulseProfile { hz, segments: line::nominal_frames(&recipe.path_segments, recipe.expected_total(), hz), head_tail_jitter, corner_jitter, seed: round_ordinal }
+}
+
+/// 样本集相机第 seq 个脉冲（从 1 起）的取图身份：这台相机帧序列里的第 seq 帧；没有这一帧时为空（按缺帧处理）。
+pub(crate) fn sample_frame_payload(set: &Arc<SampleSet>, part_id: &str, frames: &[String], seq: u64) -> Option<TriggerPayload> {
+    let index = usize::try_from(seq.checked_sub(1)?).ok()?;
+    frames.get(index).map(|shot_id| sample_payload(set, part_id, shot_id))
+}
+
+/// 一个脉冲：同时触发各台相机。传输丢帧的相机、样本集里没有这一帧的相机照常计数但不出帧（缺帧）。
+fn fire_burst(app: &AppHandle, recipe: &Arc<Recipe>, feeds: &[BurstFeed], sample: Option<(&Arc<SampleSet>, &str)>, scenario: Scenario, seed: u64, pulse: &Pulse) {
+    let cycle = app.state::<CycleHost>();
+    for feed in feeds {
+        let Ok(cam) = cycle.camera.require(&feed.camera) else { continue };
+        let payload = match (sample, &feed.frames) {
+            (Some((set, part_id)), Some(frames)) => sample_frame_payload(set, part_id, frames, pulse.seq),
+            (None, _) => Some(TriggerPayload::Burst(BurstRender { recipe: recipe.clone(), camera_idx: feed.camera_idx, seq: pulse.seq,
+                kind: pulse.kind, progress: pulse.progress, scenario, seed })),
+            (Some(_), None) => None,
+        };
+        let lost = pulse.lost.contains(&feed.camera_idx) || payload.is_none();
+        let _ = cycle.camera.trigger(cam, lost, payload);
+    }
+}
+
+/// 合成图离线环境为段配方的新轮次送一圈：按候选配方的名义剖面发脉冲串（[`capture_profile`]），每个脉冲触发本轮全部相机。
+fn start_synthetic_capture(app: &AppHandle, cycle: &CycleHost, offline: &OfflineHost, line: Arc<Line>) -> Result<(), String> {
+    let round = cycle.camera.recipe_capture().current_any()
+        .filter(|r| *r.state() == crate::recipe_capture::CaptureState::WaitingStart)
+        .ok_or("没有等待 PLC 开始的整圈采集：先在整圈采集页点“开始接收”")?;
+    let crate::recipe_capture::AnyRound::Burst(round) = round else {
+        return Err("合成图离线环境只为段配方的采集轮次送一圈；旧拍照点配方的整圈采集请用离线样本集".into());
+    };
+    let doc = app.state::<crate::workspace::WorkspaceHost>().capture_for_candidate(&round.recipe_id, |w| Ok(w.doc.clone()))?;
+    let recipe = Arc::new(doc.build().map_err(|e| format!("候选段配方无法编译（合成图按它的段与走廊出图）：{e}"))?);
+    let plan = recipe.plan_cameras();
+    let mut feeds = Vec::new();
+    for (i, camera_id) in round.camera_ids().into_iter().enumerate() {
+        let cam = cycle.camera.require(&camera_id)?;
+        let config = cycle.camera.slot(cam as usize).ok_or("采集设备不存在")?.config();
+        if config.source != CameraSource::Sim { return Err(format!("采集相机 {} 不是合成图来源", config.id)); }
+        feeds.push(BurstFeed { camera_idx: plan.iter().position(|c| *c == camera_id).unwrap_or(i), camera: camera_id, frames: None });
+    }
+    let ordinal = cycle.camera.recipe_capture().list(&round.recipe_id)?.len() as u64;
+    let hz = offline.pace.lock().unwrap().map_or(line::SIM_HZ, Pace::hz);
+    let profile = capture_profile(&recipe, hz, ordinal);
+    let estimate = u16::try_from(profile.segments.iter().map(|&(_, n)| n).sum::<u32>().min(i16::MAX as u32)).unwrap_or(i16::MAX as u16);
+    start_running(offline, false)?;
+    let order = PartOrder { profile: Some(profile), ..PartOrder::legacy(String::new(), 0, CAPTURE_PLAN_VERSION, estimate, estimate) };
+    tauri::async_runtime::spawn(capture_synthetic(app.clone(), line, recipe, feeds, order));
+    Ok(())
+}
+
+/// 段配方的离线生产：每件按剖面发脉冲串（[`Line::run_burst`]），工况决定波动、缺帧、提前终止与本件未检。
+/// 节拍由脉冲频率决定（离线节拍覆盖时按触发间隔换算），不读配方的触发方式（D-SB-23）。
+async fn run_burst(app: AppHandle, line: Arc<Line>, recipe: Arc<Recipe>, order: PartOrder, scenario: Scenario, continuous: bool,
+    feeds: Vec<BurstFeed>, samples: Option<(Arc<SampleSet>, Option<String>)>) {
+    let offline = app.state::<OfflineHost>();
+    let pace = *offline.pace.lock().unwrap();
+    let hz = pace.map_or(line::SIM_HZ, Pace::hz);
+    let timing = timing(&app, Duration::ZERO);
+    let pause = pace.map_or(Duration::from_millis(800), |p| Duration::from_millis(p.pause_ms));
+    let mut seed = (now_ms() % 997) as u32;
+    let (set, mut requested) = samples.map_or((None, None), |(set, part)| (Some(set), part));
+    while !offline.stop.load(Ordering::SeqCst) {
+        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        let s = scenario.resolve(seed >> 8);
+        let how = if crate::site::image_measurement(&app) { "（lyFlow 测量）" } else { "（模拟测量）" };
+        let part_id = match &set {
+            Some(set) => match offline.pick_part(set, requested.take().as_deref()) {
+                Ok(id) => Some(id),
+                Err(error) => { offline.set_message(&app, format!("已中止：{error}")); break; }
+            },
+            None => None,
+        };
+        let what = part_id.as_ref().map_or(String::new(), |id| format!(" · 样本件 {id}"));
+        offline.set_message(&app, format!("运行中：{}{what}{how}", recipe.id));
+        if let Err(error) = line.ensure_ready(&timing, &offline.abort).await {
+            offline.set_message(&app, format!("已中止：{error}"));
+            break;
+        }
+        let number = offline.next_sn();
+        let debug = candidate(&app).is_some();
+        let sn = if debug { format!("DBG-{number:08}") } else { OfflineHost::sn_text(number) };
+        if let (Some(set), Some(id)) = (&set, &part_id) { offline.begin_run(set, id, &sn, if debug { RunPurpose::CandidateDebug } else { RunPurpose::Production }); }
+        *offline.part_scenario.lock().unwrap() = Some(s);
+        let profile = burst_profile(&recipe, &feeds, s, hz, u64::from(number));
+        let total: u64 = profile.counts().iter().sum();
+        let order = PartOrder { sn: sn.clone(), lost: s.lost_frames(total), early_end_after: s.early_end_after(total, recipe.tolerance_total()),
+            profile: Some(profile), ..order.clone() };
+        let sample = set.as_ref().zip(part_id.as_deref());
+        let fire = |pulse: &Pulse| fire_burst(&app, &recipe, &feeds, sample, s, u64::from(number), pulse);
+        let result = line.run_burst(&timing, &order, s, fire, &offline.abort).await;
+        *offline.part_scenario.lock().unwrap() = None;
+        offline.parts.fetch_add(1, Ordering::SeqCst);
+        match result {
+            Ok(Some(outcome)) => {
+                offline.finish_run(&sn, &Ok(outcome.clone()));
+                offline.set_message(&app, format!("SN {sn}{what} 完成（{total} 个脉冲），resultCode = {}", outcome.result_code));
+            }
+            Ok(None) => {
+                offline.skip_run(&sn);
+                offline.set_message(&app, format!("SN {sn}{what}：{NOT_INSPECTED}"));
+            }
+            Err(error) => {
+                offline.finish_run(&sn, &Err(error.clone()));
+                offline.set_message(&app, format!("SN {sn}{what} 已中止：{error}"));
+                break;
+            }
+        }
+        if !offline.continue_after_pause(continuous, pause).await {
+            break;
+        }
+    }
+    finish(&app, &offline);
+}
+
+async fn capture_synthetic(app: AppHandle, line: Arc<Line>, recipe: Arc<Recipe>, feeds: Vec<BurstFeed>, order: PartOrder) {
+    let offline = app.state::<OfflineHost>();
+    let timing = timing(&app, Duration::ZERO);
+    let total: u64 = order.profile.as_ref().map_or(0, |p| p.counts().iter().sum());
+    let result = async {
+        offline.set_message(&app, format!("整圈采集运行中：合成图，本轮 {total} 个脉冲"));
+        line.ensure_ready(&timing, &offline.abort).await?;
+        let sn = OfflineHost::sn_text(offline.next_sn());
+        let order = PartOrder { sn: sn.clone(), ..order };
+        let seed = order.profile.as_ref().map_or(0, |p| p.seed);
+        let fire = |pulse: &Pulse| fire_burst(&app, &recipe, &feeds, None, Scenario::Normal, seed, pulse);
+        let result = line.run_burst(&timing, &order, Scenario::Normal, fire, &offline.abort).await;
+        offline.parts.fetch_add(1, Ordering::SeqCst);
+        match result {
+            Ok(Some(outcome)) => Ok(format!("整圈采集 SN {sn} · 合成图 {total} 个脉冲完成，resultCode = {}", outcome.result_code)),
+            Ok(None) => Err(format!("整圈采集 SN {sn}：PLC 没有提交 partStart")),
+            Err(error) => Err(format!("整圈采集 SN {sn} · 合成图已中止：{error}")),
+        }
+    }.await;
+    offline.set_message(&app, result.unwrap_or_else(|error| error));
+    finish(&app, &offline);
+}
+
 /// 刚发布的配方先预热发布资源与图像引擎：有界等待预热完成再开工，不直接拒绝。
 async fn wait_warmup(app: &AppHandle, recipe: &Recipe) -> bool {
     let offline = app.state::<OfflineHost>();
@@ -695,7 +930,7 @@ async fn run(app: AppHandle, line: Arc<Line>, recipe: Arc<Recipe>, order: PartOr
     samples: Option<(Arc<SampleSet>, Vec<String>, Option<String>)>) {
     let offline = app.state::<OfflineHost>();
     let pace = *offline.pace.lock().unwrap();
-    let timing = timing(&app, pace.map_or(recipe_interval(&recipe), |p| Duration::from_millis(p.shot_interval_ms)));
+    let timing = timing(&app, pace.map_or(recipe_interval(&recipe), |p| Duration::from_millis(p.shot_interval_ms.max(LEGACY_MIN_INTERVAL_MS))));
     let pause = pace.map_or(Duration::from_millis(800), |p| Duration::from_millis(p.pause_ms));
     let mut seed = (now_ms() % 997) as u32;
     let (set, sample_shots, mut requested) = samples.map_or((None, Vec::new(), None), |(set, shots, part)| (Some(set), shots, part));

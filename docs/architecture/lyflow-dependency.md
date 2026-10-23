@@ -28,6 +28,8 @@
 
 ## locate 能力检查
 
+特征定位只服务旧拍照点配方（保留、停用）；段配方的每帧走廊测量只用 `glue.taught_path` 与 `glue.bead_width`，不要求下面的 locate 能力（segment-burst D-SB-15；`packaging/runtime.json` 的 `glue.locate` 与 `locateSmoke` 按该决策不改）。
+
 特征定位（`glue.locate`，定稿 `docs/discussions/fixture-position/final.md`）的模板带 4 px 外圈，需要 lyFlow#32 之后的 `glue.locate`（参数 `templatePad`、`maxPeakRatio`，输出 `pose`），即 lyFlow 1.1.5 起（2026-10-21 发布，源码修订 `148f336`）。1.1.4 及更早的 1.1.x 带的是 1.0.0 的 `glue.locate`，`requiredOperators` 只检查算子存在，因此：
 
 - 加载核心库时另算一次 locate 能力（`Engine.locate`），不支持不妨碍加载，没有特征定位的配方照常测量；

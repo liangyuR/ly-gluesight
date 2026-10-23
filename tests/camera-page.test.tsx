@@ -6,7 +6,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import CameraPage from "../src/pages/CameraPage";
 import { defaultCameraConfig } from "../src/features/camera/api";
-import type { CameraConfig, CameraStatus } from "../src/features/camera/types";
+import type { BandwidthEstimate, CameraConfig, CameraStatus } from "../src/features/camera/types";
 import { siteStatus, snapshot } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: () => true }));
@@ -18,13 +18,16 @@ const status = (cam: number, config: CameraConfig): CameraStatus => ({ cam, id: 
 
 let configs: CameraConfig[];
 let released: string[];
+let bandwidth: BandwidthEstimate;
 beforeEach(() => {
   configs = [camera("cam1", "左相机"), camera("cam2", "右相机")];
   released = [];
+  bandwidth = { hz: 25, mbpsTotal: 524.3, perCamera: [262.1, 262.1], budgetMbps: 800, overBudget: false };
   vi.mocked(listen).mockResolvedValue(() => {});
   vi.mocked(invoke).mockImplementation(async (command) => {
     switch (command) {
       case "camera_rig_config": return configs;
+      case "camera_bandwidth": return bandwidth;
       case "camera_rig_status": return configs.map((c, i) => ({ ...status(i, c), ...(released.includes(c.id) ? { ready: false, released: true, device: null } : {}) }));
       case "camera_list_devices": return configs.map(c => device(c.serial));
       case "camera_save_config": return [];
@@ -109,6 +112,22 @@ describe("应用到全部相机", () => {
     expect(batch.getByText("跳过：未绑定设备")).toBeVisible();
     const saved = vi.mocked(invoke).mock.calls.filter(([command]) => command === "camera_save_config").map(([, args]) => args as { cam: number; config: CameraConfig });
     expect(saved).toEqual([{ cam: 3, config: expect.objectContaining({ id: "cam4", name: "后相机", serial: "cam4-SN", triggerDelayUs: 30, debouncerUs: 8 }) }]);
+  });
+});
+
+describe("链路带宽", () => {
+  it.each([
+    ["三台相机 25 Hz 合计超过单口预算 → 显示合计与带宽超预算警告", 943.7, true],
+    ["三台相机 25 Hz 合计未超单口预算 → 只显示合计，不显示警告", 786.4, false],
+  ])("%s", async (_, mbpsTotal, overBudget) => {
+    configs = [camera("cam1", "左相机"), camera("cam2", "右相机"), camera("cam3", "后相机")];
+    bandwidth = { hz: 25, mbpsTotal, perCamera: [mbpsTotal / 3, mbpsTotal / 3, mbpsTotal / 3], budgetMbps: 800, overBudget };
+    await openCamera("左相机 cam1");
+    const region = await screen.findByRole("region", { name: "链路带宽" });
+    await waitFor(() => expect(region).toHaveTextContent(`${Math.round(mbpsTotal)} Mbps`));
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_bandwidth", { hz: 25 });
+    if (overBudget) expect(within(region).getByText("带宽超预算")).toBeVisible();
+    else expect(within(region).queryByText("带宽超预算")).not.toBeInTheDocument();
   });
 });
 
