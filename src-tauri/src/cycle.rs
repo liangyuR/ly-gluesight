@@ -22,7 +22,6 @@ use crate::camera::{CameraRig, FRAME_QUEUE};
 use crate::frame::Frame;
 use crate::history;
 use crate::handshake::Request;
-use crate::inspection::{read_tag_u32, tag};
 use crate::judge::{self, fault, Judgement, PointState, Verdict};
 use crate::measure::{self, FrameJob, FrameMeasured, FramePool, Job, Measured, WorkerHealth};
 use crate::plc::PlcHost;
@@ -738,18 +737,13 @@ impl Part {
         if self.burst.is_some() { self.device_triggers.map_or(0, u64::from) } else { self.router.triggers() }
     }
 
-    /// 本件收尾（只做一次），推算各相机下一件的基线下限并记进计数账：
-    /// - 段配方：max(原基线, 本件见到的最高帧计数)，PLC 报的触发数与计划数都不参与（D-SB-7）；
-    /// - 旧拍照点配方（规则不变）：用 PLC 报的实际触发数——确认结果时报的（`plc_triggers`），否则 partEnd 时报的——
-    ///   两者都没有时（故障中断等）由路由按计划数假定；见到的更高计数总是优先。
-    fn close_routing(&mut self, ledgers: &mut Ledgers, plc_triggers: Option<u16>) {
+    /// 用本件已经观察到的 SDK 帧号更新下一件基线。
+    fn close_routing(&mut self, ledgers: &mut Ledgers, _plc_triggers: Option<u16>) {
         if self.routing_closed { return; }
         if let Some(burst) = &self.burst {
             burst.close(ledgers);
         } else {
-            let issued = self.issued.as_ref().zip(plc_triggers.or(self.device_triggers))
-                .map(|(ids, n)| ids.iter().map(|id| (id.as_str(), u64::from(n))).collect::<Vec<_>>());
-            self.router.close(ledgers, issued.as_deref());
+            self.router.close(ledgers, None);
         }
         self.routing_closed = true;
     }
@@ -941,24 +935,15 @@ pub fn usable_cams(app: &AppHandle, recipe: &Recipe) -> Result<Vec<u8>, String> 
     let host = host(app);
     let cams = host.camera.resolve(&recipe.cameras())?;
     crate::vision::recipe_source(app, recipe)?;
-    if recipe.is_burst() {
-        crate::camera::check_burst_cameras(&host.camera.configs(), &recipe.plan_cameras())?;
-        return Ok(cams);
-    }
-    for &c in &cams {
-        let cfg = host.camera.slot(c as usize).ok_or("相机组改过了")?.config();
-        for shot in recipe.shots.iter().filter(|s| s.camera == cfg.id) {
-            if shot.enabled_views().iter().any(|view| *view > cfg.view_count) || shot.view > cfg.view_count {
-                return Err(format!("拍照点 {} 选择视角 {}，设备 {} 只配置了 {} 个视角", shot.id, shot.view, cfg.id, cfg.view_count));
-            }
-        }
-    }
+    if !recipe.is_burst() { return Err("旧拍照点配方已停用，请新建段配方".into()); }
+    crate::camera::check_burst_cameras(&host.camera.configs(), &recipe.plan_cameras())?;
     Ok(cams)
 }
 
 /// 配方能不能开工：旧拍照点配方要检的拍照点都示教过；段配方三台相机都示教了走廊且整件已标定（D-SB-20）。
 pub fn ready_to_run(recipe: &Recipe) -> Result<(), String> {
-    if recipe.is_burst() { recipe.ready_burst().map_err(|reasons| reasons.join("；")) } else { recipe.ready() }
+    if !recipe.is_burst() { return Err("旧拍照点配方已停用，请新建段配方".into()); }
+    recipe.ready_burst().map_err(|reasons| reasons.join("；"))
 }
 
 pub fn runnable_cams(app: &AppHandle, recipe: &Recipe) -> Result<Vec<u8>, String> {
@@ -1448,7 +1433,7 @@ impl Machine {
             if let Some(ledger) = observed { self.ledgers.merge(cam, &ledger); }
             identities.push(identity);
         }
-        let (router, burst, issued) = if recipe.is_burst() {
+        let (router, burst, issued) = {
             // 段配方：按 SDK 帧计数定每台相机的基线（D-SB-10），会话或计数来源不可信时拒绝布防（98）
             let policy = if real_parts(&app) { Policy::burst_production(None) } else { Policy::burst_offline(None) };
             let baselines = match arm_frames(&recipe.plan_cameras(), &self.ledgers, &policy, &identities) {
@@ -1459,17 +1444,6 @@ impl Machine {
                 self.ledgers.set_frame_floor(&Floor { cam: camera.cam, camera: camera.camera.clone(), session: camera.session, baseline: camera.baseline });
             }
             (unrouted(), Some(Box::new(burst::BurstPart::arm(&recipe, baselines, policy.trusted))), None)
-        } else {
-            let policy = if real_parts(&app) { Policy::production(None) } else { Policy::offline(None) };
-            let router = match ShotRouter::arm(&Plan::from_shots(&recipe.shots), &self.ledgers, &policy, &identities) {
-                Ok(router) => router,
-                Err(error) => return self.refuse(sn, id, error.fault(), error.to_string()).await,
-            };
-            for camera in &identities {
-                self.ledgers.set_floor(&Floor { cam: camera.cam, camera: camera.camera.clone(), session: camera.session,
-                    baseline: router.baseline(camera.cam).unwrap_or(0) });
-            }
-            (router, None, Some(plan.device_ids.clone()))
         };
         let bundle_id = production.as_ref().map(|prepared| prepared.bundle.id.clone());
         budget.mark("camera-router");
@@ -1897,11 +1871,11 @@ impl Machine {
                         Fields { cycle_id: Some(part.cycle_id.clone()), ..Fields::shot(k, &shot.id, &shot.camera) }.with_data(json!({"status": part.frames[k].status})));
                     self.dirty = true;
                 }
-                let expired = part.expire_burst(Instant::now(), timeouts.proc(), timeouts.drain());
+                let expired = part.expire_burst(Instant::now(), timeouts.proc());
                 if !expired.is_empty() {
                     let frames: Vec<String> = expired.iter().take(8).map(|(camera, seq)| format!("相机 {} 第 {seq} 帧", part.burst.as_ref().map_or("?", |b| b.camera_name(*camera)))).collect();
                     let more = if expired.len() > frames.len() { format!(" 等 {} 帧", expired.len()) } else { String::new() };
-                    log_with(&self.app, "warn", "帧测量超时", format!("{}{more} 测量超时或到收尾截止仍未完成，记为没测（检测不完整）", frames.join("、")),
+                    log_with(&self.app, "warn", "帧测量超时", format!("{}{more} 测量超时，记为没测（检测不完整）", frames.join("、")),
                         Fields { cycle_id: Some(part.cycle_id.clone()), ..Fields::default() });
                     self.dirty = true;
                 }
@@ -1964,7 +1938,7 @@ impl Machine {
     async fn report(&mut self, sn: String, recipe_id: Option<String>, judgement: Judgement) {
         // 旧拍照点配方：S7 没等到 partEnd 就判了 ERR（运动超时等）时手里还没有 PLC 报的触发数，等 PLC 确认结果时报的实际已发触发数
         // 再推下一件基线，按计划数假定会让下一件基线偏高、每件都缺帧。段配方（issued 为空）的下一件基线只看见到的帧计数，直接收尾
-        if !self.part.as_ref().is_some_and(|p| p.issued.is_some() && p.device_triggers.is_none()) { self.close_routing(None); }
+        self.close_routing(None);
         let app = self.app.clone();
         let mut drain_ms = None;
         let pending = PlcDelivery { state: PlcDeliveryState::Pending, updated_at: now_ms(), message: None };

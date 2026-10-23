@@ -619,18 +619,6 @@ fn end_suggestion_is_applied_only_from_the_current_validation_and_invalidates_th
 }
 
 #[test]
-fn publishing_requires_a_passed_fixture_report_for_every_fixture_view_in_the_validation() {
-    // 防的回归（G3 留下的发布门）：G4 之前通过的验证（修订号还对得上）没有特征定位统计，或统计没通过，仍能发布
-    let w = fixture_workspace();
-    let recipe = w.doc.build().unwrap();
-    let mut validation = w.validation.clone().unwrap();
-    for (name, reports, ok) in [("缺特征定位统计", vec![], false), ("统计没通过", vec![fixture_report(false, true)], false), ("统计通过", vec![fixture_report(true, true)], true)] {
-        validation.fixture = reports;
-        assert_eq!(super::fixture::require_fixture_validation(&recipe, &validation).is_ok(), ok, "{name}");
-    }
-}
-
-#[test]
 fn template_dir_cleanup_removes_old_sources_and_boxes_but_keeps_the_current_box_and_fresh_writes() {
     // 防的回归（G4 第 7 项）：模板按 (来源, 框, 外圈) 寻址，每次换框、重新冻结都留下一个目录，工作台目录无限累积；
     // 或清理把当前框正在用的模板、写到一半的新模板删掉

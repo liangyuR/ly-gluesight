@@ -1,5 +1,5 @@
 //! 段配方的在途件（规格 §0/§2/§3，D-SB-7、D-SB-10、D-SB-13）：三台计划相机按 SDK 帧号配组（`Grouper`）、每帧送测，
-//! partEnd 后按收尾规则（已接受的帧都测完，且每台相机 max_seq ≥ deviceTriggers − 1 或到收尾截止）用未分段
+//! partEnd 后按收尾规则（已接受的帧都测完，且完整收尾窗口到期）用未分段
 //! 区域 + `burst_judge` 判定。缺帧、帧数越界、丢帧只告警不改 OK/NG；三台相机整件没有一帧测成判 ERR 91；
 //! 会话变化判 ERR 98。纯逻辑，不碰 AppHandle：送测、录制与落库由 `Machine` 负责。
 //!
@@ -220,7 +220,7 @@ impl Part {
     /// 段配方收一帧（帧号配组，D-SB-10）。收尾截止后到的帧返回 None。
     pub(super) fn receive_burst(&mut self, frame: &Frame) -> Option<Arrival> {
         let now = Instant::now();
-        self.expire_burst(now, self.proc_timeout, self.drain_timeout);
+        self.expire_burst(now, self.proc_timeout);
         if self.burst_deadline(now) { return None; }
         let burst = self.burst.as_mut()?;
         let Some(camera) = burst.cams.iter().position(|c| c.cam == frame.cam) else { return Some(Arrival::Unknown) };
@@ -252,7 +252,7 @@ impl Part {
     /// 段配方的一帧测量结果。不属于本件（上一件迟到的结果）、或这一帧已不在测量中（超时后才到）时丢弃，返回 None。
     /// 没测成（队满、超时、失败）记为 Unmeasured / Error，只算检测不完整，不判 ERR（D-SB-13）。
     pub(super) fn apply_burst(&mut self, measured: FrameMeasured) -> Option<FrameMetrics> {
-        self.expire_burst(Instant::now(), self.proc_timeout, self.drain_timeout);
+        self.expire_burst(Instant::now(), self.proc_timeout);
         if measured.cycle_id != self.cycle_id { return None; }
         let burst = self.burst.as_mut()?;
         let (camera, seq) = (measured.camera_idx, measured.seq);
@@ -264,15 +264,14 @@ impl Part {
         Some(metrics)
     }
 
-    /// 测量超过 T_proc、或到收尾截止仍没结果的帧记为没测（Unmeasured），返回这些帧。
-    pub(super) fn expire_burst(&mut self, now: Instant, proc: Duration, drain: Duration) -> Vec<(usize, u64)> {
-        let deadline = self.end_at.is_some_and(|end| now.saturating_duration_since(end) >= drain);
+    /// 测量超过 T_proc 的帧记为没测（Unmeasured），返回这些帧。
+    pub(super) fn expire_burst(&mut self, now: Instant, proc: Duration) -> Vec<(usize, u64)> {
         let Some(burst) = self.burst.as_mut() else { return Vec::new() };
         let mut expired = Vec::new();
         for (&(camera, seq), frame) in burst.frames.iter_mut() {
             let Some(since) = frame.measuring_since else { continue };
-            if deadline || now.saturating_duration_since(since) >= proc {
-                let why = if deadline { "收尾截止时测量仍未完成".to_string() } else { MeasureError::Timeout.message() };
+            if now.saturating_duration_since(since) >= proc {
+                let why = MeasureError::Timeout.message();
                 frame.metrics = Some(unmeasured(camera, seq, FrameState::Unmeasured, why));
                 frame.measuring_since = None;
                 expired.push((camera, seq));
@@ -282,22 +281,19 @@ impl Part {
         expired
     }
 
-    /// 收尾规则：partEnd 后已接受的帧都测完，且每台相机 max_seq ≥ deviceTriggers − 1（PLC 没报时不等），或已到收尾截止。
+    /// partEnd 后等待完整收尾窗口，并完成所有已接受帧的测量。
     pub(super) fn burst_complete(&self, now: Instant) -> bool {
         let Some(burst) = self.burst.as_ref() else { return false };
         if self.end_at.is_none() || burst.pending > 0 { return false; }
-        let arrived = self.device_triggers.is_some_and(|n| {
-            (0..burst.cams.len()).all(|camera| burst.grouper.last_seq(camera) >= u64::from(n).saturating_sub(1))
-        });
-        arrived || self.burst_deadline(now)
+        self.burst_deadline(now)
     }
 
-    /// 段配方判定：会话变化、运动超时等故障优先（ERR）；否则未分段 → 区域 → 丢帧告警（各相机帧数对 deviceTriggers 与彼此）
+    /// 段配方判定：会话变化、运动超时等故障优先（ERR）；否则未分段 → 区域 → 丢帧告警（各相机帧数彼此比较）
     /// → burst_judge。三台相机整件没有一帧测成时 burst_judge 判 ERR 91。
     pub(super) fn burst_judgement(&self) -> Option<BurstJudgement> {
         let burst = self.burst.as_ref()?;
         let groups = burst.grouper.groups();
-        let loss = loss_alarms(&burst.grouper.camera_counts(), self.device_triggers.map(u32::from));
+        let loss = loss_alarms(&burst.grouper.camera_counts());
         if let Some((code, reason)) = &self.fault {
             let group_count = u32::try_from(burst.grouper.group_count()).unwrap_or(u32::MAX);
             return Some(BurstJudgement { group_count, alarms: loss, ..BurstJudgement::error(*code, reason.clone()) });
@@ -316,7 +312,7 @@ impl Part {
         let group_count = burst.grouper.group_count();
         let decided = burst.judgement.clone().filter(|decided| same_conclusion(decided, judgement)).unwrap_or_else(|| BurstJudgement {
             group_count: u32::try_from(group_count).unwrap_or(u32::MAX),
-            alarms: loss_alarms(&burst.grouper.camera_counts(), self.device_triggers.map(u32::from)),
+            alarms: loss_alarms(&burst.grouper.camera_counts()),
             ..from_summary(judgement)
         });
         let region = |seq: u64| decided.regions.iter().position(|r| (r.region.first_seq..=r.region.last_seq).contains(&seq));

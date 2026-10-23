@@ -11,7 +11,8 @@ export interface CameraConfig {
   compositeLayout?: {kind:"horizontal" | "vertical"} | {kind:"rects";rects:{x:number;y:number;width:number;height:number}[]} | null;
   serial: string;
   triggerSource: "Line0" | "Software";
-  triggerActivation: "RisingEdge" | "FallingEdge";
+  triggerActivation: "LevelHigh";
+  frameRate: number;
   triggerDelayUs: number;
   debouncerUs: number;
   strobe: boolean;
@@ -41,6 +42,7 @@ export interface CameraStatus {
   frames: number;
   fps: number;
   maxFps: number | null;
+  configuredFrameRate: number | null;
   lostPackets: number;
   droppedFrames: number;
   /** 本次打开以来因图像内存预算满没拷图、按缺帧处理的帧 */

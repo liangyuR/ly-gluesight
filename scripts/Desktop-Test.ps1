@@ -8,7 +8,7 @@ function Invoke-DesktopTests {
         [switch]$SkipBuild,
         [switch]$ResetData,
         [string]$LyFlowRuntime,
-        [ValidateSet('legacy', 'burst', 'all')][string]$ProductionSuite = 'all',
+        [ValidateSet('burst')][string]$ProductionSuite = 'burst',
         [string]$Grep
     )
     $layout = Get-UiTestLayout -Profile flow
@@ -21,7 +21,7 @@ function Invoke-DesktopTests {
     $resultPath = Join-Path $layout.Output 'result.json'
     Push-Location -LiteralPath $layout.Root
     try {
-        if ($ProductionSuite -eq 'legacy') { $LyFlowRuntime = '' }
+        if (!$LyFlowRuntime) { throw '段配方桌面测试需要 lyFlow 运行库。' }
         $env:GLUESIGHT_LYFLOW_RUNTIME = $LyFlowRuntime
         $options = [ordered]@{
             suite = 'production'; profile = 'flow'; debugPort = $DebugPort; dataRoot = $DataRoot
@@ -32,8 +32,6 @@ function Invoke-DesktopTests {
         $options | ConvertTo-Json | Set-Content -LiteralPath $optionsPath -Encoding utf8NoBOM
         $env:GLUESIGHT_DESKTOP_RUN = $optionsPath
         $initial = @{ passed = $false }
-        if ($ProductionSuite -eq 'legacy') { $initial.burst = @{ skipped = '仅选择旧配方，段配方未运行。' } }
-        elseif (!$LyFlowRuntime) { $initial.burst = @{ skipped = '未提供 lyFlow 运行库，段配方未运行。' } }
         $initial | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $resultPath -Encoding utf8NoBOM
         & node --input-type=module -e "await import('@playwright/test'); await import('node:sqlite');"
         if ($LASTEXITCODE -ne 0) { throw '请先执行 pnpm install --frozen-lockfile 并使用项目要求的 Node 版本。' }

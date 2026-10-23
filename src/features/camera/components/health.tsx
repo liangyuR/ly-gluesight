@@ -46,5 +46,5 @@ export const count = (n: number | null | undefined) => n == null ? "—" : n.toL
 export function triggerSummary(c: CameraConfig) {
   if (c.source !== "mvs") return sourceText[c.source];
   if (c.triggerSource === "Software") return "Software 软触发";
-  return `Line0 · ${c.triggerActivation === "RisingEdge" ? "上升沿" : "下降沿"} · 滤波 ${c.debouncerUs} µs`;
+  return `Line0 · 高电平 · ${c.frameRate} fps · 滤波 ${c.debouncerUs} µs`;
 }

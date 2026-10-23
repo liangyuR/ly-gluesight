@@ -410,10 +410,6 @@ impl Snapshot {
         Ok(request)
     }
 
-    pub(crate) fn trigger_count(&self) -> Result<u16, String> {
-        self.read_u16("deviceTriggers")
-    }
-
     fn start_request(&self) -> Result<Request, String> {
         for (tag, expected) in [
             ("partStart", true), ("partEnd", false), ("resultAck", false), ("visionReady", true),
@@ -425,9 +421,6 @@ impl Snapshot {
         }
         if self.read_u32("pcProtocolVersion")? != PROTOCOL_VERSION as u32 {
             return Err("PC 协议版本尚未确认，需复位".into());
-        }
-        if self.trigger_count()? != 0 {
-            return Err("布防前设备触发计数必须清零".into());
         }
         self.request()
     }
@@ -549,9 +542,7 @@ pub(crate) fn matching_ack(snapshot: &Snapshot, result: &ResultEnvelope) -> Resu
     Ok(true)
 }
 
-/// 运动结束核对：partEnd / partStart 有效、请求身份未变。返回此刻 PLC 报的设备触发数；
-/// 协议 6 不再要求它等于 deviceShots，只作参考：段配方用于丢帧告警与收尾等待，不参与下一件基线；
-/// 旧拍照点配方仍按它推下一件基线（D-SB-7）。
+/// 运动结束只核对握手与请求身份，返回预留计数 0。
 pub(crate) fn verify_part_end(snapshot: &Snapshot, request: &Request) -> Result<u16, String> {
     if !snapshot.read_bool("partEnd")? || !snapshot.read_bool("partStart")? {
         return Err("运动结束要求 partEnd 和 partStart 保持有效".into());
@@ -559,7 +550,7 @@ pub(crate) fn verify_part_end(snapshot: &Snapshot, request: &Request) -> Result<
     if snapshot.request()? != *request {
         return Err("运动结束时请求身份或拍照计划已改变".into());
     }
-    snapshot.trigger_count()
+    Ok(0)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -934,7 +925,7 @@ mod tests {
     fn malformed_or_unreleased_request_cannot_arm() {
         for (tag, value) in [
             ("requestSeq", PlcValue::Int(0)), ("resultAck", PlcValue::Bool(true)),
-            ("deviceTriggers", PlcValue::Int(1)), ("done", PlcValue::Bool(true)),
+            ("done", PlcValue::Bool(true)),
         ] {
             let mut s = snapshot();
             s.values.insert(tag, value);

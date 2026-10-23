@@ -696,8 +696,7 @@ impl PlcSession {
                 if self.phase == SessionPhase::AwaitAck {
                     let result = self.result().ok_or("S7 结果尚未生成")?;
                     if handshake::matching_ack(&snapshot, result)? {
-                        // PLC 已停发触发：此刻的计数就是本件实际发出的脉冲数
-                        self.ack_triggers = Some(snapshot.trigger_count()?);
+                        self.ack_triggers = Some(0);
                         self.journal.pending.as_mut().unwrap().acknowledged = true;
                         self.persist(engine).await?;
                         self.write(engine, handshake::release_plan()).await?;
@@ -828,7 +827,7 @@ impl PlcSession {
             let snapshot = Snapshot::capture(engine, self.contract.as_ref().ok_or("S7 点表未校验")?, Self::max_age(engine))?;
             let request = self.request().ok_or("缺少 S7 请求")?.clone();
             if snapshot.request()? != request || !snapshot.read_bool(tag::PART_START)?
-                || snapshot.read_bool(tag::PART_END)? || snapshot.read_bool(tag::RESULT_ACK)? || snapshot.trigger_count()? != 0 {
+                || snapshot.read_bool(tag::PART_END)? || snapshot.read_bool(tag::RESULT_ACK)? {
                 return Err("布防前请求或触发边界已改变".into());
             }
             let written = self.write_timed(engine, handshake::arm_plan(&request)).await?;

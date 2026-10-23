@@ -67,7 +67,10 @@ jobs:
       - name: Sample set converter tests
         run: pnpm samples:test
       - name: Desktop production smoke
-        run: pnpm test:ui:production -Suite legacy -ResetData
+        run: |
+          $runtime = & pwsh -NoProfile -File scripts/Restore-LyFlowRuntime.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'lyFlow runtime restore failed.' }
+          pnpm test:ui:production -Suite burst -LyFlowRuntime (@($runtime)[-1]) -ResetData
       - name: Packaging script tests
         run: |
           ./tests/packaging/Test-RuntimeBundle.ps1

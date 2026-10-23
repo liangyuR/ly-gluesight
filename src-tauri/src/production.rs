@@ -437,6 +437,21 @@ pub fn site_admits(site: ValidationSite, offline: bool) -> Result<(), String> {
     if site == ValidationSite::Offline && !offline { Err(OFFLINE_VALIDATED.into()) } else { Ok(()) }
 }
 
+pub fn acquisition_tag(config: &crate::camera::CameraConfig) -> Value {
+    serde_json::json!({ "triggerSource": config.trigger_source, "triggerActivation": config.trigger_activation, "frameRate": config.frame_rate })
+}
+
+fn check_acquisition(bundle: &ReleaseBundle, configs: &[crate::camera::CameraConfig]) -> Result<(), String> {
+    for (index, inspect) in bundle.recipe.inspect.iter().enumerate() {
+        let config = configs.iter().find(|c| c.id == inspect.camera).ok_or_else(|| format!("相机 {} 不存在", inspect.camera))?;
+        let calibration: Value = serde_json::from_str(&crate::fsio::read_text(&bundle.camera(index)?.calibration).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        if calibration.get("acquisition") != Some(&acquisition_tag(config)) {
+            return Err(format!("相机 {} 的触发方式或帧率与发布标定不一致，请恢复参数或重新标定、验证并发布", inspect.camera));
+        }
+    }
+    Ok(())
+}
+
 pub fn ready(app: &AppHandle, recipe: &Recipe) -> Result<Option<Arc<Prepared>>, String> {
     if crate::offline::candidate(app).is_some_and(|c| c.matches(recipe)) { return Ok(None); }
     if !crate::site::image_measurement(app) { return Ok(None); }
@@ -446,7 +461,9 @@ pub fn ready(app: &AppHandle, recipe: &Recipe) -> Result<Option<Arc<Prepared>>, 
         None => crate::workspace::published_manifest(app, recipe)?.validation_site,
     };
     site_admits(site, crate::offline::enabled(app))?;
-    host.ensure(app, Arc::new(recipe.clone())).map(Some)
+    let prepared = host.ensure(app, Arc::new(recipe.clone()))?;
+    check_acquisition(&prepared.bundle, &app.state::<crate::cycle::CycleHost>().camera.configs())?;
+    Ok(Some(prepared))
 }
 
 #[cfg(test)]

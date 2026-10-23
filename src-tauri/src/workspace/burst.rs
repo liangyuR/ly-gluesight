@@ -439,6 +439,19 @@ pub async fn workspace_extract_corridor(app: AppHandle, id: String, revision: u6
 
 /// 一轮能不能加入标定（规格 §2 同一工件程序、同一设备）：属于本候选、已完整完成、还没加入；相机集合等于计划相机；
 /// 每台相机采集时的设备配置与当前设备相同，也与已加入的轮次相同。`current` 为当前设备配置（按相机编号）。
+pub(super) fn check_calibration_devices(rounds: &[CalibrationRound], current: &BTreeMap<String, Value>) -> Result<(), String> {
+    for round in rounds {
+        for (index, camera) in round.cameras.iter().enumerate() {
+            let mut config = current.get(camera).cloned().unwrap_or(Value::Null);
+            if let Some(object) = config.as_object_mut() { object.remove("sampleSet"); }
+            if config.is_null() || Some(&config) != round.camera_config.get(index) {
+                return Err(format!("相机 {camera} 的参数与标定轮次 {} 不一致，请恢复采集参数或重新标定", round.round_id));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn check_round(doc: &RecipeDoc, rounds: &[CalibrationRound], round: &CaptureRoundV2, current: &BTreeMap<String, Value>) -> Result<(), String> {
     require_burst(doc)?;
     let id = &round.round_id;
@@ -662,6 +675,8 @@ fn add_round(app: AppHandle, id: String, revision: u64, round_id: String, standa
     };
     require_burst(&w.doc)?;
     let cycle = app.state::<CycleHost>();
+    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理采集或设备事务，请稍后加入标定")?;
+    crate::camera::check_idle(&cycle)?;
     let capture = cycle.camera.recipe_capture();
     let round = capture.get_burst(&round_id)?;
     let current: BTreeMap<String, Value> = cycle.camera.configs().iter().map(|c| (c.id.clone(), state_value(c))).collect();
@@ -713,10 +728,17 @@ pub fn workspace_calibration_remove_round(app: AppHandle, id: String, revision: 
 /// 应用多轮标定（结果在 `plan.calibration`）。
 #[tauri::command]
 pub fn workspace_calibration_apply(app: AppHandle, id: String, revision: u64) -> Result<WorkspaceView, String> {
+    let cycle = app.state::<CycleHost>();
+    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理采集或设备事务，请稍后应用标定")?;
+    crate::camera::check_idle(&cycle)?;
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
     let mut w = items.get(&id).ok_or("候选配置不存在")?.clone();
     w.expect(revision)?;
+    let configs = app.state::<CycleHost>().camera.configs();
+    crate::camera::check_burst_cameras(&configs, &w.doc.plan_cameras())?;
+    let current = configs.iter().map(|c| (c.id.clone(), state_value(c))).collect();
+    check_calibration_devices(&w.calibration.rounds, &current)?;
     let mut doc = w.doc.clone();
     apply_calibration(&mut doc, &w.calibration.rounds)?;
     doc.build()?;

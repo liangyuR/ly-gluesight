@@ -5,13 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { buildBurstRecipe, burstFacts, client, instanceCdp, uiPage } from "./lib.mjs";
 
-// 生产落盘流程有两段，都在离线·合成图下经 UI 与 S7 握手跑一件并核对落盘：
-//   旧拍照点配方（首启样例配方 MTR-HSG-A，segments 为空，只停用不删除，行为不变）：定位失败工况、连续定位失败告警、按拍照点读回；
-//   段配方（分段连拍，合成图三相机）：真实 lyFlow 建站与标定后投产，核对 part_frames 每相机每帧、按帧命名的原图与 part.json。
-// 段配方一段需要 lyFlow 运行库（走廊测量、标定与验证的每帧测量）。
-
 const identifier = "com.xyzrobotics.tujiaovision.flow-tests";
-const recipeId = "MTR-HSG-A";
 
 async function until(page, read, accepts, message, timeout = 30000) {
   const deadline = Date.now() + timeout;
@@ -31,109 +25,7 @@ async function verifiedPath(root, target) {
   return actual;
 }
 
-async function verifyLegacyDisk(root, detail, recipe) {
-  const { DatabaseSync } = await import("node:sqlite");
-  const dataRoot = await realpath(path.dirname(root));
-  const database = await verifiedPath(dataRoot, path.join(dataRoot, "inspection.db"));
-  const db = new DatabaseSync(database, { readOnly: true });
-  let part, shots, points;
-  try {
-    part = db.prepare("SELECT * FROM parts WHERE cycle_id=?").get(detail.summary.cycleId);
-    assert(part, "独立 SQLite 连接未找到本件");
-    assert.equal(part.id, detail.summary.id);
-    assert.equal(part.recipe_revision, recipe.revisionId);
-    assert.equal(part.verdict, detail.summary.verdict);
-    assert.equal(part.frames_received, recipe.shots.length);
-    assert.equal(part.frames_expected, recipe.shots.length);
-    assert.equal(part.triggers, recipe.shots.length);
-    assert.equal(part.source, "offlineSynthetic");
-    assert.equal(part.recording_state, "complete");
-    assert.equal(part.recording_available, 1);
-    assert.deepEqual(JSON.parse(part.recording_errors), []);
-    shots = db.prepare("SELECT * FROM part_shots WHERE part_id=? ORDER BY k").all(part.id);
-    assert.equal(shots.length, recipe.shots.length);
-    points = db.prepare("SELECT format,data FROM part_points WHERE part_id=?").get(part.id);
-    assert.equal(points.format, 3);
-    assert.equal(points.data.byteLength, recipe.points.k.length * 9);
-    const bytes = Buffer.from(points.data);
-    for (let j = 0; j < recipe.points.k.length; j++) {
-      assert.equal(bytes[j * 9 + 8], 0, `点 ${j} 未测量`);
-      assert(Number.isFinite(bytes.readFloatLE(j * 9)));
-      assert(Number.isFinite(bytes.readFloatLE(j * 9 + 4)));
-    }
-    const snapshot = db.prepare("SELECT recipe_id,json FROM recipe_snapshots WHERE revision_id=?").get(recipe.revisionId);
-    assert.equal(snapshot.recipe_id, recipeId);
-    assert.equal(JSON.parse(snapshot.json).revisionId, recipe.revisionId);
-  } finally { db.close(); }
-  const directory = await verifiedPath(root, part.recording_directory);
-  const metadataPath = await verifiedPath(directory, path.join(directory, "part.json"));
-  const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
-  assert.equal(metadata.cycleId, detail.summary.cycleId);
-  assert.equal(metadata.recipeRevision, recipe.revisionId);
-  assert.equal(metadata.bundleId, part.bundle_id);
-  assert.equal(metadata.sn, detail.summary.sn);
-  assert.equal(metadata.available, true);
-  assert.deepEqual(metadata.errors, []);
-  assert.deepEqual(metadata.missingShots, []);
-  assert.deepEqual(metadata.plannedShots, recipe.shots.map((shot, k) => ({
-    k, shotId: shot.id, camera: shot.camera, selectedView: shot.view,
-  })));
-  const files = [];
-  const matchedFrames = new Set();
-  for (const [k, shot] of shots.entries()) {
-    assert.equal(shot.k, k);
-    assert.equal(shot.shot_id, recipe.shots[k].id);
-    assert.equal(shot.camera, recipe.shots[k].camera);
-    assert.equal(shot.view, recipe.shots[k].view);
-    assert.equal(shot.status, "done");
-    assert.equal(Number(shot.ordinal), k + 1);
-    assert(shot.session !== null && shot.frame_counter !== null && shot.trigger_counter !== null);
-    const refs = JSON.parse(shot.raw_files);
-    assert(refs.some(raw => raw.view === shot.view), `k${k + 1} 缺少检测视角原图`);
-    for (const raw of refs) {
-      const file = await verifiedPath(directory, path.resolve(root, raw.file));
-      const relative = path.relative(directory, file).replaceAll("\\", "/");
-      const matches = metadata.frames.filter(frame => frame.k === k && frame.view === raw.view && frame.file === relative);
-      assert.equal(matches.length, 1, `本件元数据无法唯一关联 k${k + 1}/view${raw.view}/${relative}`);
-      const frame = matches[0];
-      assert(!matchedFrames.has(frame), `原图重复关联：${relative}`);
-      matchedFrames.add(frame);
-      assert.equal(await verifiedPath(directory, path.resolve(directory, frame.file)), file);
-      assert.equal(frame.cycleId, detail.summary.cycleId);
-      assert.equal(frame.recipeRevision, recipe.revisionId);
-      assert.equal(frame.bundleId, part.bundle_id);
-      assert.equal(frame.shotId, shot.shot_id);
-      assert.equal(frame.camera, shot.camera);
-      assert.equal(frame.selectedView, shot.view);
-      for (const [metadataField, sqliteField] of [["session", "session"], ["ordinal", "ordinal"], ["frameCounter", "frame_counter"], ["triggerCounter", "trigger_counter"]]) {
-        assert(Number.isSafeInteger(frame[metadataField]) && frame[metadataField] >= 0, `元数据 ${metadataField} 无效`);
-        assert.equal(String(frame[metadataField]), shot[sqliteField], `本件 ${metadataField} 与 SQLite 不一致`);
-      }
-      assert.equal(frame.counter, "synthetic");
-      assert.equal(frame.manual, false);
-      assert.equal(frame.lostPackets, 0);
-      assert.equal(frame.queued, true);
-      assert.equal(frame.available, true);
-      assert.equal(frame.error, null);
-      assert.equal(frame.width, raw.width);
-      assert.equal(frame.height, raw.height);
-      const bytes = await readFile(file);
-      const header = /^P5\n(\d+) (\d+)\n255\n/.exec(bytes.subarray(0, 100).toString("ascii"));
-      assert(header, `原图不是有效 PGM：${file}`);
-      const width = Number(header[1]), height = Number(header[2]);
-      assert.equal(width, raw.width);
-      assert.equal(height, raw.height);
-      assert.equal(bytes.length, Buffer.byteLength(header[0]) + width * height);
-      files.push({ k, view: raw.view, file, width, height, bytes: bytes.length,
-        session: frame.session, ordinal: frame.ordinal, frameCounter: frame.frameCounter, triggerCounter: frame.triggerCounter });
-    }
-  }
-  assert.equal(metadata.frames.length, matchedFrames.size, "本件元数据含有未关联的原图");
-  return { database, independentReadOnlyConnection: true, measurementPoints: recipe.points.k.length, directory, files, metadata: metadataPath };
-}
-
-/** 离线模式下按某个工况跑一件，等到出记录、握手结束；id 缺省为首启样例配方（旧拍照点配方）。 */
-async function runOfflinePart(page, invokeRead, navigation, option, id = recipeId) {
+async function runOfflinePart(page, invokeRead, navigation, option, id) {
   await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
   await page.locator('select[aria-label="离线配方"]').selectOption(id);
   await page.getByRole("combobox", { name: "离线工况", exact: true }).click();
@@ -146,64 +38,6 @@ async function runOfflinePart(page, invokeRead, navigation, option, id = recipeI
   return summary;
 }
 
-/**
- * 连续定位失败告警（定稿 §3、§14）：前面两个定位失败工况已让同一拍照点同一幅图连续 2 件没有位置基准（中间不能插正常件），
- * 第 3 件告警——检测页出现告警、应用日志有“连续定位失败”；再跑一件正常件，告警消失、日志有“定位恢复”。
- */
-async function runLocateAlarm(page, invokeRead, navigation, locateFail) {
-  const appLog = (cycleId, ev) => until(page, async () => (await invokeRead("applog_query", { query: { cycleId, limit: 200 } })).items.find(item => item.ev === ev),
-    Boolean, `应用日志里没有本件（${cycleId}）的“${ev}”`, 15000);
-  const failed = await runOfflinePart(page, invokeRead, navigation, "定位失败（胶正常）");
-  assert.equal(failed.faultCode, 92, failed.reason);
-  await navigation.getByRole("link", { name: "在线检测", exact: true }).click();
-  const banner = page.getByLabel("连续定位失败告警", { exact: true });
-  await banner.waitFor();
-  const raised = (await invokeRead("cycle_snapshot")).locateAlarms;
-  assert.equal(raised.length, 1, `应恰有一条连续定位失败告警：${JSON.stringify(raised)}`);
-  assert.deepEqual([raised[0].k, raised[0].consecutive, raised[0].cycleId], [locateFail[0].frame, 3, failed.cycleId]);
-  await appLog(failed.cycleId, "连续定位失败");
-  const recovered = await runOfflinePart(page, invokeRead, navigation, "正常件");
-  assert(["OK", "OK_WITH_EXCURSION"].includes(recovered.verdict), recovered.reason);
-  await navigation.getByRole("link", { name: "在线检测", exact: true }).click();
-  await page.locator(".fly-verdict").getByText(new RegExp(`判定结果 · SN ${recovered.sn}`)).waitFor();
-  await banner.waitFor({ state: "detached" });
-  assert.deepEqual((await invokeRead("cycle_snapshot")).locateAlarms, []);
-  await appLog(recovered.cycleId, "定位恢复");
-  return { raisedBy: failed.cycleId, clearedBy: recovered.cycleId, alarm: raised[0] };
-}
-
-/** 定位失败工况：胶正常 → ERR 90 / 92；同一帧另有断胶 → NG 优先（断胶）。两种都要在判定卡和该帧缩略图上挂“定位失败”徽标。 */
-async function runLocateFailScenarios(page, invokeRead, navigation) {
-  const outcomes = [];
-  for (const { option, verdict, plcCode, faultCode } of [
-    { option: "定位失败（胶正常）", verdict: "ERR_INSPECT", plcCode: 90, faultCode: 92 },
-    { option: "定位失败 + 断胶", verdict: "NG_GAP", plcCode: 13, faultCode: 0 },
-  ]) {
-    const summary = await runOfflinePart(page, invokeRead, navigation, option);
-    assert.equal(summary.verdict, verdict, `工况“${option}”：${summary.reason}`);
-    if (plcCode != null) assert.equal(summary.plcCode, plcCode);
-    assert.equal(summary.faultCode, faultCode, `工况“${option}”：${summary.reason}`);
-    const detail = await invokeRead("history_detail", { id: summary.id });
-    const failed = detail.frames.flatMap((frame, k) => frame.referenceFailed.length ? [k] : []);
-    assert.equal(failed.length, 1, `工况“${option}”应恰有一帧没有位置基准：${JSON.stringify(failed)}`);
-    assert(detail.frames.every(frame => frame.status === "done"), "定位失败不再是帧状态，帧应照常测完");
-    assert(detail.points.st.some(state => state === 4), "定位失败帧的有胶站应为无基准（4）");
-    await navigation.getByRole("link", { name: "在线检测", exact: true }).click();
-    const card = page.locator(".fly-verdict");
-    await card.getByText(new RegExp(`判定结果 · SN ${summary.sn}`)).waitFor();
-    await card.getByLabel("位置基准：定位失败", { exact: true }).waitFor();
-    // 只看定位失败那一帧的缩略图状态，不能被判定卡上同字的徽标顶替
-    const thumbnailState = verdict === "NG_GAP" ? /^NG · 定位失败$/ : /^定位失败$/;
-    await page.locator(`.qs-camera-thumbnail[data-frame-id="k${failed[0] + 1}"] .qs-frame-state`).filter({ hasText: thumbnailState }).waitFor();
-    outcomes.push({ option, id: summary.id, sn: summary.sn, verdict: summary.verdict, plcCode: summary.plcCode, faultCode: summary.faultCode, reason: summary.reason, frame: failed[0] });
-  }
-  return outcomes;
-}
-
-
-// ───────────── 段配方（分段连拍）─────────────
-
-/** 段配方一件的落盘核对：parts 行的段配方列、part_frames 每相机每帧一行、没有旧的逐拍照点表、录制目录里按帧命名的原图与 part.json。 */
 async function verifyBurstDisk(root, detail, facts) {
   const { DatabaseSync } = await import("node:sqlite");
   const dataRoot = await realpath(path.dirname(root));
@@ -287,10 +121,7 @@ async function clearBurstRecipe(invokeRead, id) {
  */
 async function runBurstStage(page, invokeRead, navigation, ctx) {
   const burstId = "FLOW-BURST";
-  if (!ctx.engine?.ready) {
-    assert(!ctx.runtimeProvided, `显式提供 lyFlow 运行库但引擎未就绪：${JSON.stringify(ctx.engine)}`);
-    return { skipped: "lyFlow 未加载：段配方建站（走廊提取后的标定与验证每帧测量）需要 lyFlow 运行库；用 pnpm test:ui:production -LyFlowRuntime <运行库目录>（或环境变量 GLUESIGHT_LYFLOW_RUNTIME）重跑", engine: ctx.engine ?? null };
-  }
+  assert(ctx.engine?.ready, `lyFlow 引擎未就绪：${JSON.stringify(ctx.engine)}`);
   const call = client(page);
   await clearBurstRecipe(invokeRead, burstId);
   const template = await invokeRead("recipe_template");
@@ -299,7 +130,7 @@ async function runBurstStage(page, invokeRead, navigation, ctx) {
   assert(built.validation.passed, `验证未通过：${JSON.stringify(built.validation.checks.filter(c => !c.passed))}`);
   assert.equal(built.active.workspace.publish.state, "active");
   const expected = { expectedTotal: built.calibration.expectedTotal, toleranceTotal: built.calibration.toleranceTotal };
-  // 合成图逐像素渲染赶不上 20 Hz 的三路脉冲，末尾的帧会晚于 partEnd；脚本只验证落盘，用 5 Hz 让每件帧数完整
+  // 合成图逐像素渲染赶不上 20 fps 的三路采集，末尾的帧会晚于 partEnd；脚本只验证落盘，用 5 Hz 让每件帧数完整
   await invokeRead("offline_pace", { pace: { shotIntervalMs: 200, pauseMs: 200 } });
   const summary = await runOfflinePart(page, invokeRead, navigation, "正常件", burstId);
   assert(["OK", "OK_WITH_EXCURSION"].includes(summary.verdict), JSON.stringify(summary));
@@ -337,64 +168,9 @@ async function runBurstStage(page, invokeRead, navigation, ctx) {
   return { recipeId: burstId, expected, calibration: { rounds: built.calibration.rounds.length, groupCounts: built.calibration.rounds.filter(r => !r.standard).map(r => r.groupCount) }, summary, facts, disk };
 }
 
-async function runLegacyStage(page, invokeRead, navigation, root) {
-  await page.locator('select[aria-label="离线配方"]').selectOption(recipeId);
-  await page.getByRole("combobox", { name: "离线工况", exact: true }).click();
-  await page.getByRole("option", { name: "正常件", exact: true }).click();
-  const recipe = await invokeRead("cycle_layout", { recipeId });
-  const previous = await invokeRead("history_query", { query: { recipeId, scope: "offline", limit: 1 } });
-  const observations = [];
-  await page.getByRole("button", { name: "运行一件", exact: true }).click();
-  const summary = await until(page, async () => {
-    const snapshot = await invokeRead("cycle_snapshot");
-    if (observations.at(-1)?.phase !== snapshot.phase || observations.at(-1)?.received !== snapshot.part?.received) {
-      observations.push({ phase: snapshot.phase, received: snapshot.part?.received, filled: snapshot.part?.filled, cycleId: snapshot.part?.cycleId });
-    }
-    const history = await invokeRead("history_query", { query: { recipeId, scope: "offline", limit: 1 } });
-    return history.items.find(item => item.id !== previous.items[0]?.id);
-  }, Boolean, "未生成新的工件记录");
-  assert(["OK", "OK_WITH_EXCURSION"].includes(summary.verdict), JSON.stringify(summary));
-  assert.equal(summary.framesExpected, recipe.shots.length);
-  assert.equal(summary.framesReceived, recipe.shots.length);
-  await until(page, () => invokeRead("site_status"), status => !status.running && status.message.includes("完成"), "离线产线单件 S7 握手未完成");
-  await page.getByText(new RegExp(`^SN ${summary.sn} 完成`)).waitFor();
-  await navigation.getByRole("link", { name: "在线检测", exact: true }).click();
-  await page.locator(".fly-verdict").getByText(new RegExp(`判定结果 · SN ${summary.sn}`)).waitFor();
-  const recorded = await until(page, () => invokeRead("workspace_record_images", { historyId: summary.id }), value => value.complete, "原图录制未完成");
-  const detail = await invokeRead("history_detail", { id: summary.id });
-  assert.equal(detail.recording.state, "complete");
-  assert.equal(detail.triggers, recipe.shots.length);
-  assert.equal(detail.points.st.length, recipe.points.k.length);
-  assert(detail.points.st.every(state => state === 0));
-  assert(detail.frames.every(frame => frame.status === "done"));
-  const disk = await verifyLegacyDisk(path.join(path.dirname(root), "records-offline"), detail, recipe);
-  await navigation.getByRole("link", { name: "历史记录", exact: true }).click();
-  await page.getByRole("group", { name: "记录来源", exact: true }).getByRole("button", { name: "离线件", exact: true }).click();
-  await page.getByRole("combobox", { name: "历史配方", exact: true }).click();
-  await page.getByRole("option", { name: recipeId, exact: true }).click();
-  await page.getByRole("button", { name: `查看 SN ${summary.sn} 的记录`, exact: true }).click();
-  await page.getByRole("heading", { name: "逐拍照点结果与原图", exact: true }).waitFor();
-  for (let k = 0; k < recipe.shots.length; k++) {
-    await page.locator('select[aria-label="历史帧选择"]').selectOption(String(k));
-    await page.getByText(`原始 SN ${summary.sn} · k${k + 1} · 视角 ${recipe.shots[k].view}`, { exact: true }).waitFor();
-    await page.locator("svg.wp-gray-image").waitFor();
-    const preview = await page.evaluate(async ({ id, k, view }) => {
-      const response = await window.__TAURI_INTERNALS__.invoke("workspace_record_image", { historyId: id, k, view });
-      const bytes = response instanceof ArrayBuffer ? new Uint8Array(response) : new Uint8Array(response);
-      const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-      return { bytes: bytes.length, width: header.getUint32(0, true), height: header.getUint32(4, true), sourceWidth: header.getUint32(8, true), sourceHeight: header.getUint32(12, true) };
-    }, { id: summary.id, k, view: recipe.shots[k].view });
-    assert.equal(preview.bytes, 16 + preview.width * preview.height);
-    assert(preview.sourceWidth > 0 && preview.sourceHeight > 0);
-  }
-  const locateFail = await runLocateFailScenarios(page, invokeRead, navigation);
-  const locateAlarm = await runLocateAlarm(page, invokeRead, navigation, locateFail);
-  return { summary, observations, recorded, disk, locateFail, locateAlarm };
-}
-
 export async function runProductionFlow(page, options = {}) {
-  const suite = options.suite ?? "all";
-  assert(["legacy", "burst", "all"].includes(suite), `不支持的生产落盘用例：${suite}`);
+  const suite = options.suite ?? "burst";
+  assert(suite === "burst", `不支持的生产落盘用例：${suite}`);
   const startedAt = Date.now();
   let result;
   let failure;
@@ -440,7 +216,6 @@ export async function runProductionFlow(page, options = {}) {
     assert.equal(offlineConfig.connection.host, "127.0.0.1");
     assert.equal(offlineConfig.connection.port, offline.port);
     const offlineCameras = await invokeRead("camera_rig_config");
-    // 合成图沿用真机相机组的编号与视角数（旧拍照点配方照常引用），单视角相机不足 3 台时补足到 3 台（段配方要三台独立单视角相机共用触发）
     const offlineRig = offlineCameras.map(camera => [camera.id, camera.source, camera.viewCount]);
     assert.deepEqual(offlineRig.slice(0, guard.cameras.length), guard.cameras.map(camera => [camera.id, "sim", camera.viewCount]));
     assert(offlineRig.slice(guard.cameras.length).every(([, source, views]) => source === "sim" && views === 1), `补足的相机应是单视角合成图相机：${JSON.stringify(offlineRig)}`);
@@ -451,8 +226,7 @@ export async function runProductionFlow(page, options = {}) {
       await until(page, () => invokeRead("cycle_snapshot"), snapshot => snapshot.phase !== "FAULT", "复位故障后检测仍处于故障", 5000).catch(() => {});
       await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
     }
-    const legacy = suite !== "burst" ? await runLegacyStage(page, invokeRead, navigation, root) : undefined;
-    const burst = suite !== "legacy" ? await runBurstStage(page, invokeRead, navigation, { engine: guard.engine, runtimeProvided: Boolean(options.lyflow) }) : undefined;
+    const burst = await runBurstStage(page, invokeRead, navigation, { engine: guard.engine });
     await navigation.getByRole("link", { name: "离线模式", exact: true }).click();
     await page.getByRole("button", { name: "退出离线", exact: true }).click();
     await until(page, () => invokeRead("site_status"), status => status.mode === "real", "UI 未退出离线模式");
@@ -460,7 +234,7 @@ export async function runProductionFlow(page, options = {}) {
     assert.deepEqual(await invokeRead("plc_get_config"), guard.config, "退出离线后 PLC 配置未恢复");
     assert.deepEqual(await invokeRead("camera_rig_config"), guard.cameras, "退出离线后相机组未恢复");
     assert.deepEqual(await invokeRead("cycle_get_settings"), (({ productSource, ...rest }) => ({ ...rest, productSource: "plc" }))(guard.settings), "退出离线后系统设置被改动");
-    result = { passed: true, suite, operation: `UI 通过站点模式进入离线·合成图、工件启动、模拟测量、S7 握手结束、SQLite 与原图真实落盘并重开读取、退出离线恢复真机配置；用例 ${suite}`, identifier, recipeId, offlinePort: offline.port, startedAt, elapsedMs: Date.now() - startedAt, legacy, burst, ...(legacy ? { summary: legacy.summary, disk: legacy.disk } : {}), boundary: "进程内 S7 服务、虚拟产线、模拟相机与模拟测量；不代表现场 PLC、SDK 或 lyFlow 引擎验收（段配方的走廊测量、标定与验证用真实 lyFlow 测量合成图，投产用模拟测量）" };
+    result = { passed: true, suite, operation: "段配方合成图采集、S7 握手与落盘", identifier, offlinePort: offline.port, startedAt, elapsedMs: Date.now() - startedAt, burst, boundary: "离线合成图验证，不代表现场 PLC 与相机验收" };
   } catch (error) {
     failure = error;
     throw error;
@@ -500,9 +274,9 @@ async function main() {
   const browser = await chromium.connectOverCDP(cdp);
   try {
     const page = await uiPage(browser);
-    const result = await runProductionFlow(page, { instance, suite: args.suite ?? "all", lyflow: args.lyflow ?? process.env.GLUESIGHT_LYFLOW_RUNTIME, output: args.output ?? "output/playwright/flow-regression/result.json" });
-    process.stdout.write(JSON.stringify({ passed: result.passed, legacy: result.legacy ? { cycleId: result.summary.cycleId, historyId: result.summary.id, files: result.disk.files.length } : undefined,
-      burst: !result.burst ? undefined : result.burst.skipped ? { skipped: result.burst.skipped } : { recipeId: result.burst.recipeId, historyId: result.burst.summary.id, verdict: result.burst.summary.verdict, groupCount: result.burst.facts.groupCount, files: result.burst.disk.files.length } }) + "\n");
+    const result = await runProductionFlow(page, { instance, suite: args.suite ?? "burst", lyflow: args.lyflow ?? process.env.GLUESIGHT_LYFLOW_RUNTIME, output: args.output ?? "output/playwright/flow-regression/result.json" });
+    process.stdout.write(JSON.stringify({ passed: result.passed,
+      burst: { recipeId: result.burst.recipeId, historyId: result.burst.summary.id, verdict: result.burst.summary.verdict, groupCount: result.burst.facts.groupCount, files: result.burst.disk.files.length } }) + "\n");
   } finally { await browser.close(); }
 }
 

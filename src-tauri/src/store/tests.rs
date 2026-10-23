@@ -733,7 +733,7 @@ fn burst_record_round_trips_frames_flags_regions_and_device_triggers() {
     let db = TestDb::new();
     let store = Store::open(&db.path()).unwrap();
     let recipe = burst_fixture::recipe();
-    let (judgement, mut burst) = burst_fixture::record(&recipe, burst_fixture::frames(5, &[(1, 2)]), None, Some(7));
+    let (judgement, mut burst) = burst_fixture::record(&recipe, burst_fixture::frames(5, &[(1, 2), (1, 3)]), None, Some(7));
     assert!(burst.judgement.flags.incomplete && !burst.judgement.alarms.is_empty(), "夹具要带缺帧标记和丢帧告警");
     burst.frames.reverse();
     let id = save_burst(&store, &recipe, "burst-cycle", &judgement, &burst).unwrap();
@@ -745,7 +745,7 @@ fn burst_record_round_trips_frames_flags_regions_and_device_triggers() {
     assert_eq!(stored.frames, frames);
     assert_eq!(stored.judgement, burst.judgement);
     assert_eq!((stored.expected_total, stored.tolerance_total, stored.device_triggers, &stored.camera_frames),
-        (Some(4), 1, Some(7), &vec![5, 4, 5]));
+        (Some(4), 1, Some(7), &vec![5, 3, 5]));
     assert_eq!((&stored.segments, &stored.cameras), (&recipe.path_segments, &recipe.plan_cameras()));
     assert!(detail.shots.is_empty() && detail.points.is_none() && detail.frames.is_empty());
 

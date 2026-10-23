@@ -68,7 +68,7 @@ pub(crate) fn record(recipe: &Recipe, mut frames: Vec<FrameRecord>, regions: Opt
         .map(|camera| frames.iter().filter(|f| f.camera == camera && f.status != FrameState::Missing).count() as u32)
         .collect();
     let metrics: Vec<FrameMetrics> = frames.iter().filter_map(|frame| frame.metrics.clone()).collect();
-    let alarms = loss_alarms(&camera_frames, device_triggers);
+    let alarms = loss_alarms(&camera_frames);
     let judgement = burst_judge::judge(&recipe.path_segments, recipe.expected_total(), &regions, &groups, &metrics, &cameras, &alarms);
     for frame in &mut frames {
         frame.region = regions.iter().position(|region| (region.first_seq..=region.last_seq).contains(&frame.seq));

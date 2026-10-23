@@ -16,7 +16,7 @@ fn device(cam: u8) -> CaptureDevice {
     let baseline = Some(cam as u64 * 100);
     CaptureDevice {
         cam, camera_id: format!("cam{}", cam + 1), camera_config: serde_json::json!({"viewCount": 1}), imaging: crate::recipe::DEFAULT_IMAGING,
-        session: 10 + cam as u64, source: Some(CounterSource::Synthetic), trigger_baseline: baseline, frame_baseline: baseline,
+        session: 10 + cam as u64, source: Some(CounterSource::Synthetic), frame_baseline: baseline,
     }
 }
 
@@ -107,7 +107,7 @@ fn camera_short_of_frames_completes_after_plc_end_and_drain_with_loss_alarm_only
     let done = finish(&host, Some(10));
     assert_eq!((done.state, done.error), (CaptureState::Complete, None));
     assert_eq!((done.group_count, done.camera_frames.clone(), done.incomplete_groups.clone()), (10, vec![10, 10, 7], vec![8, 9, 10]));
-    assert_eq!(done.loss_alarms, [LossAlarm { camera: 2, count: 7, reason: LossReason::Triggers { device_triggers: 10 } }]);
+    assert_eq!(done.loss_alarms, [LossAlarm { camera: 2, count: 7, reason: LossReason::Cameras { other: 0, other_count: 10 } }]);
 }
 
 /// 规格 §3：帧按 SDK 帧号配组，不按到达顺序——某台相机少一个帧号只让那一组缺帧，它后面的帧仍在自己的组里，不往前补位。
@@ -211,10 +211,7 @@ fn failed_round_reports_device_or_process_fault_not_count_mismatch() {
         make(&host);
         assert_eq!(host.current_any().unwrap().plc_report(), Some(expected), "{case}");
     }
-    let host = host();
-    host.start("recipe-a".into(), vec![device(0)], TEST_DRAIN_MS, true).unwrap();
-    host.fail("PLC 连接中断");
-    assert_eq!(host.current_any().unwrap().plc_report(), Some((90, crate::judge::fault::SHOT_COUNT_MISMATCH)), "旧轮次");
+
 }
 
 /// 规格 §0 连拍帧数远超 64：3 台相机各 1500 帧逐帧写盘；接收中应用退出后重启，本轮判中断，统计按 frames.jsonl 恢复且与写盘一致。

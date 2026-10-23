@@ -9,8 +9,6 @@ param(
     [ValidateRange(0, 10000)][int]$PauseMs = 200,
     [ValidateRange(0.0, 1.0)][double]$MaxErrRatio = 0.2,
     [string[]]$Stages = @('soak', 'faults', 'engine', 'audit', 'restart'),
-    # burst = 段配方（分段连拍，默认；检测项全关，长稳验证稳定性与恢复而不是判胶质量）；legacy = 旧拍照点配方（只停用不删除，行为不变）
-    [ValidateSet('burst', 'legacy')][string]$Model = 'burst',
     # throughput 阶段（默认不跑，pnpm test:soak:throughput 单独跑）：3 × 25 Hz 吞吐门槛，见 scripts/soak/throughput.mjs
     [ValidateRange(1, 66)][int]$ThroughputHz = 25,
     [ValidateRange(5, 3600)][int]$ThroughputSeconds = 60,
@@ -55,7 +53,7 @@ try {
     New-Item -ItemType Directory -Force -Path $soakOutput | Out-Null
     $env:GLUESIGHT_LYFLOW_RUNTIME = $soakLyflow
     Start-E2EInstance -Fresh -Prebuilt:$SkipBuild
-    Invoke-SoakNode 'soak.mjs' (@('setup') + $soakNodeArgs + @('--sample-set', $soakInputs.SampleSet, '--model', $Model))
+    Invoke-SoakNode 'soak.mjs' (@('setup') + $soakNodeArgs + @('--sample-set', $soakInputs.SampleSet))
     if ($Stages -contains 'soak') {
         Invoke-SoakNode 'soak.mjs' (@('run') + $soakNodeArgs + @('--parts', "$Parts", '--interval', "$ShotIntervalMs", '--pause', "$PauseMs",
             '--max-err-ratio', $MaxErrRatio.ToString([Globalization.CultureInfo]::InvariantCulture)))

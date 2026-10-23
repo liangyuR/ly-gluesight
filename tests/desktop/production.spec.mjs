@@ -11,7 +11,7 @@ async function mergeResult(output, result) {
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
-  const { legacy, burst, ...metadata } = result;
+  const { burst, ...metadata } = result;
   const suite = result.failedSuite ?? result.suite;
   const merged = {
     ...previous,
@@ -21,10 +21,7 @@ async function mergeResult(output, result) {
       ...previous.stages,
       ...(suite ? { [suite]: { passed: result.passed, ...(result.error ? { error: result.error } : {}) } } : {}),
     },
-    ...(legacy ? { legacy, summary: legacy.summary, disk: legacy.disk } : {}),
     ...(burst ? { burst } : {}),
-    ...(options.productionSuite === "legacy" ? { burst: { skipped: "仅选择旧配方" } }
-      : !options.lyflow ? { burst: { skipped: "未提供 lyFlow 运行库" } } : {}),
   };
   await mkdir(output, { recursive: true });
   await writeFile(destination, JSON.stringify(merged, null, 2) + "\n");
@@ -50,16 +47,7 @@ async function runStage(desktop, suite) {
   }
 }
 
-test.describe("生产落盘 legacy", () => {
-  test.skip(options.productionSuite === "burst", "仅选择段配方");
-  test("旧配方生产 → SQLite、原图、历史读回及定位告警一致", async ({ desktop }) => {
-    await runStage(desktop, "legacy");
-  });
-});
-
 test.describe("生产落盘 burst", () => {
-  test.skip(options.productionSuite === "legacy", "仅选择旧配方");
-  test.skip(!options.lyflow, "未提供 lyFlow 运行库：段配方建站与标定需要真实引擎");
   test("段配方生产 → 各相机帧、原图、元数据与历史结果一致", async ({ desktop }) => {
     await runStage(desktop, "burst");
   });

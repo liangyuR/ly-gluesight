@@ -1,44 +1,11 @@
-// 原生端到端脚本共用：IPC 客户端与重试、隔离实例连接、样本集副本、整圈采集、离线投产，以及两套配方流程的建站函数：
-//   - 段配方（分段连拍，RecipeDoc.segments 非空，本文件“段配方”一节）：每台相机一条走廊示教 → 多轮标定 → 独立样本验证 → 发布 → 投产；
-//   - 旧拍照点配方（segments 为空，只停用不删除）：采用整圈采集 → 按拍照点组示教 → 验证 → 发布。FIXTURES、teach、addErasedPart、
-//     prepareSampleSet、legacyTemplate 与 produce 只服务旧配方，由长稳等专项脚本使用。
-// 使用方：production-flow-ui、scripts/soak 与 scripts/soak/throughput。
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { cp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export const identifier = "com.xyzrobotics.tujiaovision.e2e-tests";
 export const MISSING_INPUT_EXIT = 3;
 export const OK_CLASS = ["OK", "OK_WITH_EXCURSION"];
-
-const NARROW = { searchMm: 3, polarity: "dark", widthRange: [1, 5] };
-
-// 旧拍照点配方的演示夹具（段配方的按相机夹具见 CAMERA_FIXTURES）：按样本集 id 选取。每个拍照点组（Pose）选一台相机的图示教；guide 是刷选笔划（原图像素），roi 是矩形框选。
-// 像素当量、笔划与检测参数只为让流程跑通而手工选定，不代表算法调优结果或现场标定。
-export const FIXTURES = {
-  "gs-20261017-normal": {
-    // 样本集未标定（mmPerPx=null）。模拟标定沿用 docs/architecture/p0-plan.md 记录的同分辨率现场相机假设当量 0.112 mm/px，写进副本清单。
-    mmPerPx: 0.112,
-    normalPart: "p01",
-    // 样本集只有正常件：在副本里由 p01 复制出 p02，把 S011 组所选图（样本 S032）的一段胶路逐行抹成两侧板面像素的渐变，作为人工断胶件。
-    defect: { partId: "p02", from: "p01", sampleShot: "S032", camera: "cam2", box: [880, 140, 80, 100], pose: "S011", expected: "NG_GAP" },
-    groups: {
-      S001: { camera: "cam2", guide: [[745, 60], [740, 85], [735, 110], [734, 135], [740, 160], [746, 185], [743, 210], [736, 235], [735, 260], [734, 285], [740, 310], [739, 335], [738, 360], [731, 385], [724, 410], [723, 435]] },
-      S002: { camera: "cam2", guide: [[615, 250], [633, 275], [649, 300], [662, 325], [676, 350], [690, 375], [701, 400], [708, 425], [712, 450], [714, 475], [710, 500], [705, 525], [700, 550], [707, 575], [706, 600], [705, 625], [703, 650], [708, 675], [714, 700], [708, 725], [696, 750]], detect: NARROW },
-      S003: { camera: "cam1", guide: [[40, 472], [65, 470], [90, 467], [115, 458], [140, 450], [165, 442], [190, 429], [215, 420], [240, 401], [265, 397], [290, 383], [315, 370], [340, 349], [365, 336], [390, 329], [415, 316], [440, 303], [465, 284], [490, 278], [515, 265], [540, 258]] },
-      S004: { camera: "cam3", guide: [[715, 380], [722, 405], [723, 430], [732, 455], [738, 480], [749, 505], [746, 530], [743, 555], [739, 580], [739, 605], [738, 630], [735, 655], [733, 680]], detect: NARROW },
-      S005: { camera: "cam2", guide: [[1000, 639], [1025, 636], [1050, 626], [1075, 617], [1100, 609], [1125, 610], [1150, 612], [1175, 622], [1200, 625], [1225, 630], [1250, 631]], detect: NARROW },
-      S006: { camera: "cam2", roi: [620, 380, 140, 380] },
-      S007: { camera: "cam2", guide: [[684, 190], [682, 215], [670, 240], [656, 265], [645, 290], [648, 315], [646, 340], [652, 365], [654, 390], [655, 415], [658, 440], [660, 465], [662, 490], [657, 515], [659, 540], [668, 565], [677, 590], [680, 615], [682, 640], [684, 665], [686, 690]] },
-      S008: { camera: "cam3", guide: [[610, 60], [614, 85], [622, 110], [625, 135], [630, 160], [626, 185], [626, 210], [622, 235], [630, 260], [632, 285], [638, 310], [639, 335], [646, 360], [646, 385], [645, 410], [643, 435], [641, 460], [632, 485], [616, 510]], detect: NARROW },
-      S009: { camera: "cam2", guide: [[486, 30], [482, 55], [480, 80], [480, 105], [475, 130], [472, 155], [476, 180], [474, 205], [477, 230], [473, 255], [470, 280], [468, 305], [473, 330]] },
-      S010: { camera: "cam1", guide: [[820, 246], [845, 256], [870, 266], [895, 275], [920, 285], [945, 296], [970, 306], [995, 312], [1020, 322], [1045, 332], [1070, 345], [1095, 353], [1120, 355], [1145, 355], [1170, 354], [1195, 349], [1220, 338]] },
-      S011: { camera: "cam2", guide: [[935, 40], [933, 65], [925, 90], [920, 115], [912, 140], [918, 165], [922, 190], [921, 215], [915, 240], [912, 265], [916, 290], [921, 315], [923, 340]] },
-      S012: { camera: "cam3", guide: [[496, 100], [502, 125], [510, 150], [517, 175], [518, 200], [515, 225], [519, 250], [526, 275], [531, 300], [535, 325], [535, 350], [538, 375], [541, 400], [544, 425], [548, 450], [546, 475], [549, 500], [558, 525], [568, 550], [577, 575], [581, 600]] },
-    },
-  },
-};
 
 export function missingInputs(inputs) {
   const problems = [];
@@ -50,26 +17,6 @@ export function missingInputs(inputs) {
 function within(parent, child) {
   const rel = path.relative(parent, child);
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
-}
-
-/** 把 24/8 位未压缩 BMP 里 box 区域逐行换成左右紧邻像素之间的线性渐变，抹掉区域内的胶条。 */
-export function eraseBmp(bytes, [x0, y0, w, h]) {
-  assert.equal(bytes.toString("ascii", 0, 2), "BM", "人工断胶只支持 BMP 原图");
-  const offset = bytes.readUInt32LE(10), width = bytes.readInt32LE(18), height = bytes.readInt32LE(22);
-  const bpp = bytes.readUInt16LE(28);
-  assert(bytes.readUInt32LE(30) === 0 && [8, 24].includes(bpp), "人工断胶只支持未压缩的 8/24 位 BMP");
-  const pixel = bpp / 8, stride = Math.ceil((width * pixel) / 4) * 4, rows = Math.abs(height);
-  const at = (x, y) => offset + (height > 0 ? rows - 1 - y : y) * stride + x * pixel;
-  assert(x0 >= 1 && x0 + w < width && y0 >= 0 && y0 + h <= rows, "人工断胶区域越界");
-  const out = Buffer.from(bytes);
-  for (let y = y0; y < y0 + h; y++) {
-    const left = at(x0 - 1, y), right = at(x0 + w, y);
-    for (let x = x0; x < x0 + w; x++) {
-      const t = (x - x0 + 1) / (w + 1);
-      for (let c = 0; c < pixel; c++) out[at(x, y) + c] = Math.round(bytes[left + c] * (1 - t) + bytes[right + c] * t);
-    }
-  }
-  return out;
 }
 
 /**
@@ -96,36 +43,6 @@ export async function copySampleSet(source, outputDir, patch) {
   return { dir: target, manifest };
 }
 
-/** 复制样本集到输出目录：原件只读；副本写入模拟标定当量，并按夹具生成人工断胶件。返回副本目录与夹具。 */
-export async function prepareSampleSet(source, outputDir) {
-  const original = JSON.parse((await readFile(path.join(source, "sample-set.json"), "utf8")).replace(/^﻿/, "").trim());
-  const fixture = FIXTURES[original.id];
-  assert(fixture, `样本集 ${original.id} 没有端到端夹具，已有：${Object.keys(FIXTURES).join("、")}`);
-  const { dir, manifest } = await copySampleSet(source, outputDir, async (read, target) => {
-    const patched = { ...read, id: `${read.id}-e2e`, mmPerPx: fixture.mmPerPx };
-    const defect = fixture.defect;
-    if (defect) await addErasedPart(target, patched, defect, { label: "ng", shotLabels: { [defect.sampleShot]: "gap" }, note: "人工断胶" });
-    return patched;
-  });
-  return { dir, fixture, manifest };
-}
-
-/**
- * 样本集副本里由 spec.from 复制出 spec.partId，把样本 spec.sampleShot / spec.camera 原图的 spec.box 逐行抹平（eraseBmp），追加进 manifest.parts。
- * 只改副本（target 是 prepareSampleSet 给出的副本目录）；调用方负责之后重写副本的 sample-set.json。
- */
-export async function addErasedPart(target, manifest, spec, { label, shotLabels = {}, note }) {
-  const from = manifest.parts.find(p => p.partId === spec.from);
-  assert(from && !manifest.parts.some(p => p.partId === spec.partId), `样本集无法生成${note}件 ${spec.partId}`);
-  const dir = path.join(target, "parts", spec.partId);
-  await cp(path.join(target, "parts", spec.from), dir, { recursive: true });
-  const file = (await readdir(dir)).find(name => name.toLowerCase().startsWith(`${spec.sampleShot}_${spec.camera}_v1.`.toLowerCase()));
-  assert(file, `样本件 ${spec.from} 缺少 ${spec.sampleShot}_${spec.camera}_v1`);
-  await writeFile(path.join(dir, file), eraseBmp(await readFile(path.join(dir, file)), spec.box));
-  manifest.parts = [...manifest.parts, { ...from, partId: spec.partId, label, shotLabels,
-    origin: `${from.origin ?? from.partId}（端到端${note}：${spec.sampleShot} 区域 ${spec.box.join(",")}）` }];
-}
-
 export async function until(read, accepts, message, timeout = 30000, interval = 150) {
   const deadline = Date.now() + timeout;
   let value;
@@ -137,7 +54,8 @@ export async function until(read, accepts, message, timeout = 30000, interval = 
   throw new Error(`${message}：${JSON.stringify(value)?.slice(0, 1500)}`);
 }
 
-const GATE_BUSY = /正在处理 PLC 事务|检测仍有在途事务|设备配置正在变化|尚未回到空闲|正在预热|PLC 事务 3 秒内仍未结束|离线 S7 服务尚未连接/;
+const GATE_BUSY = /正在处理采集或设备事务|正在处理 PLC 事务|检测进行中，工件结束后再操作相机|检测仍有在途事务|设备配置正在变化|尚未回到空闲|正在预热|PLC 事务 3 秒内仍未结束|离线 S7 服务尚未连接/;
+
 export function client(page) {
   const once = async (command, args) => {
     const result = await page.evaluate(({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args)
@@ -164,16 +82,7 @@ export function workspaceCalls(call, id) {
   };
 }
 
-/**
- * 旧拍照点配方的新建起点：recipe_template 现在给段配方（三台相机、一个直线段），旧配方由它去掉段与相机检测设置得到
- * （segments 为空即旧拍照点配方，拍照点由随后的“采用整圈采集”写入）。只服务旧配方流程。
- */
-export async function legacyTemplate(call) {
-  const template = await call("recipe_template");
-  return { ...template, segments: [], inspect: [], shots: [], cameras: {}, partCalib: null };
-}
-
-/** 开始一轮整圈采集并等它完成（旧拍照点配方与段配方通用）：partId 只对样本集来源有意义，合成图来源传 null。不核对采集的触发数或帧数。 */
+/** 开始一轮整圈采集并等它完成：partId 只对样本集来源有意义，合成图来源传 null。不核对采集的触发数或帧数。 */
 export async function captureRound(call, id, cameraIds, partId = null) {
   const round = await call("recipe_capture_start", { recipeId: id, cameraIds, drainTimeoutMs: 1000 });
   assert.equal(round.state, "waitingStart");
@@ -181,6 +90,7 @@ export async function captureRound(call, id, cameraIds, partId = null) {
   const done = await until(() => call("recipe_capture_get", { roundId: round.roundId }), r => ["complete", "failed"].includes(r?.state), `整圈采集 ${partId} 未结束`, 90000);
   assert.equal(done.state, "complete", `整圈采集 ${partId} 失败：${done.error}`);
   await until(() => call("site_status"), s => !s.running, "离线产线采集后未停止", 15000);
+  await until(() => call("cycle_snapshot"), s => s.phase === "IDLE", "采集完成后 PLC 握手未回到空闲", 15000);
   return done;
 }
 
@@ -188,47 +98,6 @@ function strokeRoi(points, [width, height], margin = 40) {
   const xs = points.map(p => p[0]), ys = points.map(p => p[1]);
   const x = Math.max(0, Math.floor(Math.min(...xs) - margin)), y = Math.max(0, Math.floor(Math.min(...ys) - margin));
   return [x, y, Math.min(width, Math.ceil(Math.max(...xs) + margin)) - x, Math.min(height, Math.ceil(Math.max(...ys) + margin)) - y];
-}
-
-/** 按夹具给每个拍照点组选一张检测图并示教：刷选笔划或框选提取中线 → 保存参数 → 试测为合格类 → 保存示教。 */
-export async function teach(ws, view, fixture) {
-  const shots = view.workspace.doc.shots;
-  const poses = [...new Set(shots.map(s => s.poseId))];
-  assert.deepEqual(poses.filter(p => !fixture.groups[p]), [], "夹具未覆盖全部拍照点组");
-  const taught = [];
-  for (const pose of poses) {
-    const choice = fixture.groups[pose];
-    const k = shots.findIndex(s => s.poseId === pose && s.camera === choice.camera);
-    assert(k >= 0, `拍照点组 ${pose} 没有相机 ${choice.camera} 的图`);
-    const selected = await ws.edit("workspace_select_group_image", { k, view: 1 });
-    const { id: imageId, size } = selected.workspace.frames[k].image;
-    const declared = selected.workspace.doc.shots[k].mmPerPx;
-    assert(Math.abs(declared - fixture.mmPerPx) < 1e-6, `${shots[k].id} 未采用样本集声明当量：${declared}`);
-    const extracted = choice.guide
-      ? await ws.edit("workspace_extract_centerline", { k, imageId, roi: strokeRoi(choice.guide, size), guide: { points: choice.guide, radiusPx: 30 } })
-      : await ws.edit("workspace_extract_centerline", { k, imageId, roi: choice.roi });
-    assert(extracted.path.length >= 3, `${shots[k].id} 中线提取失败：${extracted.message}`);
-    await ws.edit("workspace_save_params", { k, params: { path: extracted.path, mmPerPx: declared, fixture: null, ...(choice.detect ? { detect: choice.detect } : {}) } });
-    const trial = (await ws.edit("workspace_trial", { k, imageId })).workspace.frames[k].trial;
-    assert(trial?.passed, `${shots[k].id} 试测未通过：${trial?.reason}`);
-    assert(OK_CLASS.includes(trial.verdict), `${shots[k].id} 正常示教图试测结论不是合格类：${trial.verdict} ${trial.reason}`);
-    await ws.edit("workspace_save_teach", { k, imageId });
-    taught.push({ k, pose, shotId: shots[k].id, method: choice.guide ? "brush" : "roi", points: extracted.path.length, trialVerdict: trial.verdict, coverage: trial.coverage });
-  }
-  return taught;
-}
-
-export async function produce(call, recipeId, partId) {
-  const previous = await call("history_query", { query: { recipeId, scope: "offline", limit: 1 } });
-  await call("offline_run", { recipeId, scenario: "normal", continuous: false, partId });
-  const summary = await until(async () => (await call("history_query", { query: { recipeId, scope: "offline", limit: 1 } })).items.find(i => i.id !== previous.items[0]?.id),
-    Boolean, `样本件 ${partId} 未生成检测记录`, 90000);
-  const site = await until(() => call("site_status"), s => !s.running, `样本件 ${partId} 握手未结束`, 30000);
-  const run = site.recent.find(r => r.purpose === "production" && r.partId === partId && r.cycleId === summary.cycleId);
-  assert(run, `最近样本件里没有 ${partId}（cycleId ${summary.cycleId}）`);
-  await until(() => call("workspace_record_images", { historyId: summary.id }), v => v.complete,
-    `样本件 ${partId} 原图录制未完成（本件结论 ${summary.verdict}：${summary.reason}）`, 30000);
-  return { summary, run };
 }
 
 // ───────────── 段配方（分段连拍，RecipeDoc.segments 非空）─────────────
@@ -253,11 +122,11 @@ function syntheticBead(index) {
 }
 
 /**
- * 段配方的演示夹具（按相机；旧配方的按拍照点组夹具见 FIXTURES）：每台计划相机在示教采集轮次里选一帧（seq）并给刷选笔划（原图像素）。
+ * 段配方的演示夹具（按相机）：每台计划相机在示教采集轮次里选一帧（seq）并给刷选笔划（原图像素）。
  * 走廊按直线段几何，所有帧共用一条；像素当量与检测参数只为让流程跑通而选定，不代表算法调优结果或现场标定。
  *   - synthetic：合成图，胶条沿缺省位置，当量用模拟当量（mmPerPx = null 由后端取默认）。
  *   - gs-20261017-normal：2026-10-17 停稳拍样本集，每台相机 12 帧（第 n 帧是第 n 个点位）；一条走廊对不上其他点位，
- *     多数帧测成了但沿走廊找不到胶（有胶站占比 0），检测项开着会判 NG_GAP，只作冒烟（建站时检测项全关）。笔划取旧夹具里各相机胶条清晰的点位。
+ *     多数帧测成了但沿走廊找不到胶（有胶站占比 0），检测项开着会判 NG_GAP，只作冒烟（建站时检测项全关）。笔划选取各相机胶条清晰的点位。
  */
 export const CAMERA_FIXTURES = {
   synthetic: {
@@ -269,11 +138,10 @@ export const CAMERA_FIXTURES = {
   "gs-20261017-normal": {
     mmPerPx: 0.112,
     pick: camera => {
-      const groups = FIXTURES["gs-20261017-normal"].groups;
       return {
-        cam1: { seq: 3, guide: groups.S003.guide },
-        cam2: { seq: 1, guide: groups.S001.guide },
-        cam3: { seq: 4, guide: groups.S004.guide, detect: FRAME_NARROW },
+        cam1: { seq: 3, guide: [[40, 472], [65, 470], [90, 467], [115, 458], [140, 450], [165, 442], [190, 429], [215, 420], [240, 401], [265, 397], [290, 383], [315, 370], [340, 349], [365, 336], [390, 329], [415, 316], [440, 303], [465, 284], [490, 278], [515, 265], [540, 258]] },
+        cam2: { seq: 1, guide: [[745, 60], [740, 85], [735, 110], [734, 135], [740, 160], [746, 185], [743, 210], [736, 235], [735, 260], [734, 285], [740, 310], [739, 335], [738, 360], [731, 385], [724, 410], [723, 435]] },
+        cam3: { seq: 4, guide: [[715, 380], [722, 405], [723, 430], [732, 455], [738, 480], [749, 505], [746, 530], [743, 555], [739, 580], [739, 605], [738, 630], [735, 655], [733, 680]], detect: FRAME_NARROW },
       }[camera];
     },
   },

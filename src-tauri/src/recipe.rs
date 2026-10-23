@@ -1148,7 +1148,7 @@ fn sample_path(k: usize) -> Vec<[f32; 2]> {
     }
 }
 
-/// 首次启动写入的样例配方：模拟相机按示例中线就能跑；换真实相机要重新示教。
+/// 自检与回归测试用样例配方，不写入用户配方库。
 pub fn samples() -> Vec<RecipeDoc> {
     let doc = |id: &str, name: &str, code: u16, n: usize, trigger_mode| { let mut doc = RecipeDoc {
         id: id.into(),
@@ -1271,14 +1271,7 @@ impl RecipeStore {
         let store = Self { dir, inner: RwLock::new(Vec::new()), errors: RwLock::new(Vec::new()), unavailable: RwLock::new(Vec::new()) };
         store.seed_version_floor(floors)?;
         store.retire_outdated_sources()?;
-        let retired = store.retired_versions()?;
-        let sources = store.revision_sources()?;
-        let empty = retired.is_empty() && sources.is_empty() && std::fs::read_dir(&store.dir).map_err(|e| e.to_string())?.flatten().all(|e| e.path().extension().is_none_or(|x| x != "json"));
-        if empty {
-            for doc in samples() {
-                store.write(&doc)?;
-            }
-        }
+        store.revision_sources()?;
         store.reload();
         Ok(store)
     }
@@ -1700,6 +1693,18 @@ mod tests {
 
     use crate::plan::SegmentCalib;
 
+    #[test]
+    fn empty_recipe_store_stays_empty_after_first_open_and_restart() {
+        let dir = std::env::temp_dir().join(format!("gluesight-empty-recipes-{}-{}", std::process::id(), ly_plc::now_ms()));
+        for _ in 0..2 {
+            let store = RecipeStore::open(dir.clone()).unwrap();
+            assert!(store.list().is_empty());
+            assert!(store.errors().is_empty());
+            assert!(!std::fs::read_dir(&dir).unwrap().flatten().any(|entry| entry.path().extension().is_some_and(|ext| ext == "json")));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// 目录里只有一份 schema 7 配方文件（没有段模型字段；修订版本 7、计划版本 40）时打开的配方库；返回（目录，配方库，旧配方，文件名）。
     fn obsolete_store(tag: &str) -> (PathBuf, RecipeStore, RecipeDoc, String) {
         let dir = std::env::temp_dir().join(format!("gluesight-unavailable-{tag}-{}-{}", std::process::id(), ly_plc::now_ms()));
@@ -1918,6 +1923,9 @@ mod tests {
     fn plan_version_changes_only_when_the_plc_plan_changes() {
         let dir = std::env::temp_dir().join(format!("gluesight-plan-version-{}-{}", std::process::id(), ly_plc::now_ms()));
         let store = RecipeStore::open(dir.clone()).unwrap();
+        for doc in samples() {
+            store.save(doc, None).unwrap();
+        }
         let b = store.doc("MTR-HSG-B").unwrap();
         let plan = b.plan_version;
         assert_ne!(plan, 0);

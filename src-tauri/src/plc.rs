@@ -88,7 +88,6 @@ pub async fn plc_save_config(app: AppHandle, plc: State<'_, PlcHost>, cycle: Sta
     validate_config(&config)?;
     config.save(&plc.config_path)?;
     let r = plc.engine.apply_config(config).await;
-    inspection::invalidate_tags();
     let _ = cycle.tx.send(Input::Refresh);
     // 配置保存不一定改变连接状态，配置使用方不能只等 disconnected/connected。
     if r.is_ok() {

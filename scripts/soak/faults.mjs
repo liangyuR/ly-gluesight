@@ -8,7 +8,7 @@ import { burstFacts } from "../../tests/native/lib.mjs";
 import { connect, ensureOffline, LogCollector, parseArgs, readSetup, RECIPE_ID, sleep, until, writeJson } from "./lib.mjs";
 
 const OK_CLASS = new Set(["OK", "OK_WITH_EXCURSION"]);
-// 这些注入不损坏本件图像与计数，本件判合格是正确结果；其余注入下本件判合格即为“错误的 OK”。（旧拍照点配方）
+// 这些注入不损坏本件图像与计数，本件判合格是正确结果；其余注入下本件判合格即为“错误的 OK”。
 const MAY_PASS = new Set(["plcDelayMidPart", "plcRejectWriteMidPart", "recordsDirReadOnly"]);
 // 段配方（规格 §0）：缺帧、坏帧只把所在帧组标“检测不完整”，不影响 OK/NG，所以缺帧判 OK 不算错误的 OK；
 // 长稳的段配方检测项全关（见 lib.mjs），空白图 / 噪声图本身也判 OK。这类场景改为核对“检测不完整”标记（EXPECT_INCOMPLETE）。
@@ -18,9 +18,6 @@ const EXPECT_INCOMPLETE = new Set(["cameraLostFrame", "replayMissingTaughtImage"
 const RECOVER_ENTRIES = new Set(["baseline", "afterRestart"]);
 const OUTAGE_MS = 8000;
 const run = promisify(execFile);
-// 旧拍照点配方：第 7 个 Pose 的 cam1（配方 k=18，样本 S019）已示教且必测；S020（k=19，cam2）同组未示教。
-const TAUGHT_IMAGE = "S019_cam1_v1.bmp";
-const UNTAUGHT_IMAGE = "S020_cam2_v1.bmp";
 // 段配方：样本集按“每台相机的帧序列”解释。cam1 的第 3 帧（S007）是它走廊的示教帧，cam2 的第 2 帧（S005）不是任何相机的示教帧。
 const BURST_TAUGHT_IMAGE = "S007_cam1_v1.bmp";
 const BURST_UNTAUGHT_IMAGE = "S005_cam2_v1.bmp";
@@ -30,7 +27,7 @@ const view = record => ({ verdict: record.verdict, plcCode: record.plcCode, faul
 
 function context(session, out, model) {
   const { call, manifest } = session;
-  const taughtImage = model === "legacy" ? TAUGHT_IMAGE : BURST_TAUGHT_IMAGE, untaughtImage = model === "legacy" ? UNTAUGHT_IMAGE : BURST_UNTAUGHT_IMAGE;
+  const taughtImage = BURST_TAUGHT_IMAGE, untaughtImage = BURST_UNTAUGHT_IMAGE;
   const logs = new LogCollector(call);
   const latest = async () => (await call("history_query", { query: { recipeId: RECIPE_ID, scope: "offline", limit: 1 } })).items[0] ?? null;
   const snapshot = () => call("cycle_snapshot");
@@ -285,7 +282,7 @@ async function inject(c, name, scenario, recover) {
   await c.logs.poll();
   const window = c.logs.since(startedAt);
   const logs = window.filter(l => ["err", "warn", "ng"].includes(l.level)).map(l => `${l.level} ${l.ev}：${l.msg}`).slice(0, 25);
-  const falseOk = Boolean(outcome?.record) && !(c.model === "legacy" ? MAY_PASS : MAY_PASS_BURST).has(name) && OK_CLASS.has(outcome.record.verdict);
+  const falseOk = Boolean(outcome?.record) && !MAY_PASS_BURST.has(name) && OK_CLASS.has(outcome.record.verdict);
   return { ...outcome, recovery, falseOk, recovered: recovery ? OK_CLASS.has(recovery.verdict) : null, logLines: window.length, logs };
 }
 
@@ -304,7 +301,6 @@ export async function runFaults(session, out, group, only) {
   const selected = group === "audit" ? auditScenarios : { ...scenarios, ...lateScenarios };
   for (const [name, scenario] of Object.entries(selected)) {
     if (only && !only.includes(name)) continue;
-    if (name === "pulseJitter" && c.model === "legacy") continue; // 脉冲串工况只适用于段配方
     results[name] = await inject(c, name, scenario, group !== "audit");
   }
   return results;
@@ -332,8 +328,8 @@ export function assess(results, model = "burst") {
     if (r.afterEdge?.timeout) fail(r.afterEdge.timeout);
     if (r.reconnectAfterMs != null && r.reconnectAfterMs < r.outageMs) fail(`停机 ${r.outageMs} ms 未到就已重连（${r.reconnectAfterMs} ms）`);
     if (r.falseOk) fail(`错误的 OK（${r.record.verdict}）`);
-    if (model !== "legacy" && EXPECT_INCOMPLETE.has(name) && r.record && !r.record.flags?.incomplete) fail("缺帧或坏帧的件应标“检测不完整”（规格 §0），没有标");
-    if (model !== "legacy" && name === "pulseJitter" && r.record) {
+    if (EXPECT_INCOMPLETE.has(name) && r.record && !r.record.flags?.incomplete) fail("缺帧或坏帧的件应标“检测不完整”（规格 §0），没有标");
+    if (name === "pulseJitter" && r.record) {
       // 首尾各 ±1 个脉冲，总数最多偏离名义 2 个；长稳用样本集标定，Σtol 只有 1，帧组数可以落到 ΣN_exp − Σtol 之下，
       // 此时标疑似提前终止是规格要求的告警（E1），不是缺陷。所以只核对两件事：脉冲数只改帧数、不改 OK/NG（不能出 ERR 或 NG）；
       // 帧组数没有低于下限时，不该标疑似提前终止。

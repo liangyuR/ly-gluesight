@@ -1,10 +1,10 @@
-﻿// GlueSight 视觉握手 · 现场程序草稿（握手协议 5，S7-1214C，TIA Portal V17）
+﻿// GlueSight 视觉握手 · 现场程序草稿（握手协议 6，S7-1214C，TIA Portal V17）
 // 尚未在 TIA Portal 编译。导入方法、待现场确认项（TODO-n）与验收步骤见同目录 README.md。
 //
 // 两层结构：
-//   GlueSightHandshake：纯协议 5 状态机，只读写 "plc_send_vision"（DB4，PLC 写）与 "vision_send_plc"（DB2，PC 写）。
+//   GlueSightHandshake：纯协议 6 状态机，只读写 "plc_send_vision"（DB4，PLC 写）与 "vision_send_plc"（DB2，PC 写）。
 //   GlueSightStation  ：现场适配，接机器人信号、相机硬触发输出、结果分发与复位操作，内部调用握手层。
-// 本文件不含 DATA_BLOCK：现场已有的 DB4 / DB2 布局与协议 5 一致，按名字引用，不重建、不改 DB 号。
+// 本文件不含 DATA_BLOCK：现场已有的 DB4 / DB2 布局与协议 6 一致，按名字引用，不重建、不改 DB 号。
 // 生成块前确认项目里两个全局 DB 名为 "plc_send_vision"、"vision_send_plc"，均取消“优化的块访问”。
 
 FUNCTION_BLOCK "GlueSightHandshake"
@@ -20,8 +20,8 @@ VERSION : 0.1
       ProductCode : Int;
       PlanVersion : DInt;
       DeviceShots : Int;
-      IssuedPulseCount : UDInt;        // 实际已发触发脉冲的累计数，本件内不得清零或回退
-      MotionComplete : Bool;           // 本件运动及全部计划触发结束
+      MotionActive : Bool;
+      MotionComplete : Bool;           // 本件运动结束
       ExternalFault : Bool;
       ArmTimeout : Time := T#10s;      // 不得小于 PC arm_ms + 2 s
       MotionTimeout : Time := T#40s;   // 须大于 PC motion_ms + drain_ms + proc_ms，PC 的运动超时 90/97 才能先到
@@ -38,7 +38,7 @@ VERSION : 0.1
       State : UInt := UINT#90;         // 10 空闲 20 等布防 30 运动触发 40 等结果 50 等 PC 释放 60 等就绪 90 故障 91/92 复位中
       ReadyForPart : Bool;
       MotionPermit : Bool;             // 已布防且身份一致，允许运动（不含剩余触发数条件）
-      TriggerPermit : Bool;            // 允许发下一个触发脉冲
+      TriggerPermit : Bool;            // 允许相机高电平采集
       StopNewTriggers : Bool;
       PcAlive : Bool;
       Pending : Bool;
@@ -46,8 +46,6 @@ VERSION : 0.1
       CycleComplete : Bool;            // 单周期脉冲：本件已释放且 PC 再次就绪
       ResetComplete : Bool;            // 单周期脉冲
       ResultLatched : Bool;            // 已锁存并确认本件结果，保持到下一件请求
-      TriggersIssued : Int;            // 本件已发触发数
-      PlannedShots : Int;              // 本件计划触发数
       CapturedResultSeq : DInt;
       CapturedResultSn : String[50];
       CapturedResultCode : Int;
@@ -69,8 +67,6 @@ VERSION : 0.1
       FrozenProductCode : Int;
       FrozenPlanVersion : DInt;
       FrozenDeviceShots : Int;
-      CounterArmed : Bool;             // 布防时冻结计数基线，确认结果后停止刷新
-      CounterBase : UDInt;
       EndValidated : Bool;
       HeartbeatTimer : IEC_TIMER;
       PcWatchdog : IEC_TIMER;
@@ -86,9 +82,6 @@ VERSION : 0.1
       PhaseTimed : Bool;
       PhaseLimit : Time;
       TripCode : UInt;
-      Delta : UDInt;
-      CurrentTriggers : Int;
-      CountError : Bool;
       PayloadMatches : Bool;
       AcceptedMatches : Bool;
       ResultValid : Bool;
@@ -99,7 +92,7 @@ BEGIN
    #CycleComplete := FALSE;
    #ResetComplete := FALSE;
    #TripCode := UINT#0;
-   "plc_send_vision".protocolVersion := INT#5;
+   "plc_send_vision".protocolVersion := INT#6;
 
    IF #Startup OR NOT #Initialized THEN
       #Initialized := TRUE;
@@ -110,7 +103,6 @@ BEGIN
       #PcHeartbeatPrevious := "vision_send_plc".pcHeartbeat;
       #PcHeartbeatSeen := FALSE;
       #ResetReadyLowSeen := FALSE;
-      #CounterArmed := FALSE;
       #Pending := #Pending OR "plc_send_vision".partStart
          OR "plc_send_vision".partEnd OR "plc_send_vision".resultAck
          OR "vision_send_plc".armed OR "vision_send_plc".busy
@@ -155,7 +147,7 @@ BEGIN
       END_CASE;
       // 60 不计时：PC 暂缓就绪（审计未落盘、设备未就绪、暂停接件）属于空闲恢复，不是故障
       #PhaseTimed := (#State = UINT#20) OR (#State = UINT#30)
-         OR (#State = UINT#40) OR (#State = UINT#50)
+         OR (#State = UINT#40) OR (#State = UINT#60)
          OR (#State = UINT#91) OR (#State = UINT#92);
       #PhaseTimer.TON(IN := #PhaseTimed AND (#TimerState = #State), PT := #PhaseLimit);
       #TimerState := #State;
@@ -166,24 +158,7 @@ BEGIN
       #ResetHoldTimer.TON(IN := (#State = UINT#92), PT := T#500ms);
    END_REGION
 
-   REGION 触发计数
-      // 布防后每个扫描都从累计计数刷新 deviceTriggers：提前撤 armed 时，末计数在 ACK 前已写入 DB
-      #CountError := FALSE;
-      #CurrentTriggers := INT#0;
-      IF #CounterArmed THEN
-         IF #IssuedPulseCount < #CounterBase THEN
-            #CountError := TRUE;
-         ELSE
-            #Delta := #IssuedPulseCount - #CounterBase;
-            IF #Delta > INT_TO_UDINT(#FrozenDeviceShots) THEN
-               #CountError := TRUE;
-            ELSE
-               #CurrentTriggers := UDINT_TO_INT(#Delta);
-               "plc_send_vision".deviceTriggers := #CurrentTriggers;
-            END_IF;
-         END_IF;
-      END_IF;
-   END_REGION
+   "plc_send_vision".deviceTriggers := INT#0;
 
    #PayloadMatches := ("plc_send_vision".requestSeq = #FrozenSeq)
       AND ("plc_send_vision".partSn = #FrozenSn)
@@ -205,11 +180,9 @@ BEGIN
             #TripCode := UINT#7003;
          ELSIF (#State < UINT#90) AND "vision_send_plc".visionFault THEN
             #TripCode := UINT#7002;
-         ELSIF (#State >= UINT#20) AND (#State <= UINT#50)
+         ELSIF (#State >= UINT#20) AND (#State <= UINT#60)
             AND (NOT #PayloadMatches OR NOT "plc_send_vision".partStart) THEN
             #TripCode := UINT#7008;
-         ELSIF #CountError AND ((#State = UINT#30) OR (#State = UINT#40)) THEN
-            #TripCode := UINT#7006;
          END_IF;
       END_IF;
    END_REGION
@@ -236,7 +209,7 @@ BEGIN
                AND NOT "plc_send_vision".resultAck THEN
                IF (#DeviceShots <= INT#0) OR (#PlanVersion <= DINT#0) OR (#ProductCode <= INT#0)
                   OR (LEN(#PartSn) = 0) OR #MotionComplete
-                  OR ("vision_send_plc".pcProtocolVersion <> INT#5) THEN
+                  OR ("vision_send_plc".pcProtocolVersion <> INT#6) THEN
                   #TripCode := UINT#7004;
                ELSE
                   #SeqBase := MAX(IN1 := #LastSeq, IN2 := "plc_send_vision".requestSeq);
@@ -265,7 +238,6 @@ BEGIN
                      #Pending := TRUE;
                      #ResultLatched := FALSE;
                      #EndValidated := FALSE;
-                     #CounterArmed := FALSE;
                      "plc_send_vision".partStart := TRUE;
                      #State := UINT#20;
                   END_IF;
@@ -285,8 +257,6 @@ BEGIN
                   OR "vision_send_plc".visionReady THEN
                   #TripCode := UINT#7005;
                ELSE
-                  #CounterBase := #IssuedPulseCount;
-                  #CounterArmed := TRUE;
                   #State := UINT#30;
                END_IF;
             END_IF;
@@ -295,19 +265,13 @@ BEGIN
             IF NOT "vision_send_plc".busy OR NOT #AcceptedMatches OR "vision_send_plc".visionReady THEN
                #TripCode := UINT#7005;
             ELSIF NOT "vision_send_plc".armed THEN
-               // PC 提前终止：TriggerPermit 随 armed 撤销，末计数已在“触发计数”区刷新，转等 90 结果
                #State := UINT#40;
             ELSIF "vision_send_plc".done THEN
                #TripCode := UINT#7005;
             ELSIF #MotionComplete THEN
-               IF #CurrentTriggers <> #FrozenDeviceShots THEN
-                  #TripCode := UINT#7006;
-               ELSE
-                  // 最终计数已写入，再置 partEnd
-                  #EndValidated := TRUE;
-                  "plc_send_vision".partEnd := TRUE;
-                  #State := UINT#40;
-               END_IF;
+               #EndValidated := TRUE;
+               "plc_send_vision".partEnd := TRUE;
+               #State := UINT#40;
             END_IF;
 
          40:
@@ -338,10 +302,9 @@ BEGIN
                   #CapturedResultCode := "vision_send_plc".resultCode;
                   #CapturedFaultCode := "vision_send_plc".faultCode;
                   #ResultLatched := TRUE;
-                  #CounterArmed := FALSE;
                   "plc_send_vision".ackSeq := #CapturedResultSeq;
                   "plc_send_vision".resultAck := TRUE;
-                  #State := UINT#50;
+                  #State := UINT#60;
                END_IF;
             END_IF;
 
@@ -380,7 +343,6 @@ BEGIN
                "plc_send_vision".partEnd := FALSE;
                "plc_send_vision".resultAck := FALSE;
                "plc_send_vision".faultReset := FALSE;
-               #CounterArmed := FALSE;
                #ResetReadyLowSeen := FALSE;
                #State := UINT#91;
             END_IF;
@@ -399,7 +361,7 @@ BEGIN
             END_IF;
             IF #ResetReadyLowSeen AND #ResetHoldTimer.Q AND #PcAlive
                AND "vision_send_plc".visionReady
-               AND ("vision_send_plc".pcProtocolVersion = INT#5)
+               AND ("vision_send_plc".pcProtocolVersion = INT#6)
                AND NOT "vision_send_plc".armed AND NOT "vision_send_plc".busy
                AND NOT "vision_send_plc".done AND NOT "vision_send_plc".visionFault THEN
                "plc_send_vision".faultReset := FALSE;
@@ -427,22 +389,19 @@ BEGIN
    REGION 输出
       #ReadyForPart := (#State = UINT#10) AND #PcAlive
          AND "vision_send_plc".visionReady AND NOT "vision_send_plc".visionFault
-         AND ("vision_send_plc".pcProtocolVersion = INT#5)
+         AND ("vision_send_plc".pcProtocolVersion = INT#6)
          AND NOT "vision_send_plc".armed AND NOT "vision_send_plc".busy
          AND NOT "vision_send_plc".done AND NOT "plc_send_vision".partStart
          AND NOT "plc_send_vision".partEnd AND NOT "plc_send_vision".resultAck
          AND NOT #Pending AND NOT #ExternalFault;
-      // 协议第 5 节发脉冲的全部必要条件
       #MotionPermit := (#State = UINT#30) AND #PcAlive AND NOT #ExternalFault
          AND "vision_send_plc".armed AND "vision_send_plc".busy
          AND NOT "vision_send_plc".done AND NOT "vision_send_plc".visionReady
          AND NOT "vision_send_plc".visionFault AND NOT "plc_send_vision".partEnd
-         AND #AcceptedMatches AND #PayloadMatches AND #CounterArmed AND NOT #CountError;
-      #TriggerPermit := #MotionPermit AND (#CurrentTriggers < #FrozenDeviceShots);
+         AND #AcceptedMatches AND #PayloadMatches;
+      #TriggerPermit := #MotionPermit AND #MotionActive AND NOT #MotionComplete;
       #StopNewTriggers := NOT #TriggerPermit;
       #ResetRequired := #State >= UINT#90;
-      #TriggersIssued := #CurrentTriggers;
-      #PlannedShots := #FrozenDeviceShots;
    END_REGION
 END_FUNCTION_BLOCK
 
@@ -452,8 +411,8 @@ VERSION : 0.1
    VAR_INPUT
       Startup : Bool;                  // TODO-0：首个扫描周期标志，必须接
       NewPart : Bool;                  // TODO-1：新工件到位（上升沿提交请求），须在 ReadyForPart=1 时给出
-      ShotRequest : Bool;              // TODO-2：机器人每到一个拍照点给出的触发请求（上升沿发一个脉冲）
-      MotionComplete : Bool;           // TODO-3：机器人本件运动与全部拍照点结束；PC 提前终止时也要给
+      MotionActive : Bool;
+      MotionComplete : Bool;           // TODO-3：机器人本件运动结束；PC 提前终止时也要给
       ResetButton : Bool;              // TODO-4：触摸屏“视觉复位”按钮
       ReconcileConfirmed : Bool;       // TODO-4：触摸屏“已处置未结件”确认
       SeqRestart : Bool;               // TODO-4：维护用，复位时清零事务序号
@@ -462,8 +421,7 @@ VERSION : 0.1
       PartSn : String[50];             // TODO-7：工件 SN 来源，1–50 个 ASCII 可打印字符
       ProductCode : Int;               // TODO-7：与 PC 配方产品代码一致，1–32767
       PlanVersion : DInt;              // TODO-7：PC 配方总览“PLC 对接参数”里的计划版本
-      DeviceShots : Int;               // TODO-7：同上的触发次数，须等于机器人拍照点数
-      PulseWidth : Time := T#10ms;     // TODO-8：相机硬触发脉宽，实际宽度按扫描周期取整
+      DeviceShots : Int;               // TODO-7：PC 导出计划的 expectedTotal
       ArmTimeout : Time := T#10s;
       MotionTimeout : Time := T#40s;
       ResultTimeout : Time := T#10s;
@@ -486,14 +444,10 @@ VERSION : 0.1
       State : UInt;
       Diagnostic : UInt;               // 握手层诊断码 7000–7009
       StationDiagnostic : UInt;        // 现场层诊断码 7010–7013
-      IgnoredShotRequests : UDInt;     // PC 提前终止或故障处置中收到、未发脉冲的触发请求数
    END_VAR
 
    VAR
       Handshake : "GlueSightHandshake";
-      IssuedPulseCount : UDInt;        // 本 FB 实际发出的触发脉冲累计数
-      PulseTimer : IEC_TIMER;
-      ShotPrevious : Bool;
       ResetPrevious : Bool;
       NewPartPrevious : Bool;
       MotionLatch : Bool;
@@ -510,17 +464,13 @@ VERSION : 0.1
    END_VAR
 
    VAR_TEMP
-      ShotEdge : Bool;
       ResetEdge : Bool;
       NewPartEdge : Bool;
       MotionStable : Bool;
-      StartPulse : Bool;
       Index : Int;
    END_VAR
 
 BEGIN
-   #ShotEdge := #ShotRequest AND NOT #ShotPrevious;
-   #ShotPrevious := #ShotRequest;
    #ResetEdge := #ResetButton AND NOT #ResetPrevious;
    #ResetPrevious := #ResetButton;
    #NewPartEdge := #NewPart AND NOT #NewPartPrevious;
@@ -532,7 +482,7 @@ BEGIN
       #StationDiagnostic := UINT#0;
    END_IF;
 
-   // 运动结束：30 状态内锁存，再延后一个扫描交给握手层。机器人只给一个扫描的脉冲也不丢，上一周期发出的脉冲已计入计数
+   // 运动结束先拉低采集输出，再将锁存的结束信号交给握手层。
    IF #Handshake.State = UINT#30 THEN
       #MotionLatch := #MotionLatch OR #MotionComplete;
    ELSE
@@ -553,7 +503,7 @@ BEGIN
               ProductCode := #ProductCode,
               PlanVersion := #PlanVersion,
               DeviceShots := #DeviceShots,
-              IssuedPulseCount := #IssuedPulseCount,
+              MotionActive := #MotionActive,
               MotionComplete := #MotionStable,
               ExternalFault := #SafetyFault OR #StationFault,
               ArmTimeout := #ArmTimeout,
@@ -589,32 +539,8 @@ BEGIN
    END_REGION
 
    REGION 相机硬触发
-      // 同一处门控与计数：只有真正发出的脉冲才计入 deviceTriggers
-      #StartPulse := FALSE;
-      IF #ShotEdge THEN
-         IF #PulseTimer.Q THEN
-            // 上一个脉冲尚未结束又来请求：会丢帧，停线处置
-            #StationFault := TRUE;
-            #StationDiagnostic := UINT#7011;
-         ELSIF #Handshake.TriggerPermit THEN
-            #StartPulse := TRUE;
-            #IssuedPulseCount := #IssuedPulseCount + UDINT#1;
-         ELSIF (#Handshake.State = UINT#20) OR ((#Handshake.State = UINT#10) AND NOT #AwaitMotionEnd) THEN
-            // 尚未布防或没有在途件就开始拍照：机器人没有等 MotionPermit
-            #StationFault := TRUE;
-            #StationDiagnostic := UINT#7010;
-         ELSIF (#Handshake.State = UINT#30) AND #Handshake.MotionPermit
-            AND (#Handshake.TriggersIssued >= #Handshake.PlannedShots) THEN
-            // 拍照点多于计划：机器人程序与 PC 计划不一致
-            #StationFault := TRUE;
-            #StationDiagnostic := UINT#7012;
-         ELSE
-            // PC 已提前终止（机器人仍在走完本件路径）或正在故障处置：不再发脉冲，只计数备查
-            #IgnoredShotRequests := #IgnoredShotRequests + UDINT#1;
-         END_IF;
-      END_IF;
-      #PulseTimer.TP(IN := #StartPulse, PT := #PulseWidth);
-      #CameraTrigger := #PulseTimer.Q;
+      #CameraTrigger := #Handshake.TriggerPermit AND #MotionActive
+         AND NOT #MotionComplete AND NOT #StationFault AND NOT #SafetyFault;
    END_REGION
 
    REGION 结果分发
