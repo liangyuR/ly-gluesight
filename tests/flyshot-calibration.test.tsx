@@ -26,12 +26,12 @@ beforeEach(()=>{
  vi.mocked(useSiteStatus).mockReturnValue(siteStatus());
 });
 
-it("相机状态轮询多次刷新 → 飞拍可行性只渲染一个面板",async()=>{
+it("相机状态轮询多次刷新 → 飞拍模拟只渲染一个面板",async()=>{
  const page=()=><SnackbarProvider><MemoryRouter><FlyshotCalibrationPage/></MemoryRouter></SnackbarProvider>;
  const view=render(page());
- await screen.findByRole("heading",{name:"飞拍可行性"});
+ await screen.findByRole("heading",{name:"飞拍模拟"});
  for(let i=2;i<7;i++){vi.mocked(useRigStatus).mockReturnValue({statuses:[status(i)],lastFrame:{}} as ReturnType<typeof useRigStatus>);view.rerender(page());}
- expect(screen.getAllByRole("heading",{name:"飞拍可行性"})).toHaveLength(1);
+ expect(screen.getAllByRole("heading",{name:"飞拍模拟"})).toHaveLength(1);
 });
 
 it("速度和拍照点间距未填 → 不给出满足结论并列出缺项",()=>{
@@ -69,10 +69,11 @@ it("三目相机（旧配方）→ 可选图 2，取样与标定都带 view=2",a
  vi.spyOn(workspaceApi,"stationImage").mockResolvedValue({url:"data:,",width:1280,height:1024});
  render(<SnackbarProvider><MemoryRouter><FlyshotCalibrationPage/></MemoryRouter></SnackbarProvider>);
  await userEvent.selectOptions(await screen.findByRole("combobox",{name:"标定图像"}),"2");
- await userEvent.click(screen.getByRole("button",{name:"取新样本"}));
- const calibrate=await screen.findByRole("button",{name:"用冻结样本标定"});
+ await userEvent.click(screen.getByRole("button",{name:"拍照"}));
+ const calibrate=await screen.findByRole("button",{name:"标定"});
  await vi.waitFor(()=>expect(calibrate).toBeEnabled());
  await userEvent.click(calibrate);
+ await vi.waitFor(()=>expect(screen.getByRole("spinbutton",{name:/^像素当量/})).toHaveValue(0.05));
  expect(capture).toHaveBeenCalledWith(0,2);
  expect(invoke).toHaveBeenCalledWith("vision_calibrate",expect.objectContaining({cam:0,view:2,imageId:"img-2"}));
 });

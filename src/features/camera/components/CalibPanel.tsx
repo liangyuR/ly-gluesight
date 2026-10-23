@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { Crosshair } from "lucide-react";
 import { Alert, Button, Card, Grid, Heading, NumberField, Stack, useSnackbar } from "qing-steel";
+import ContextHelp from "../../cycle/components/ContextHelp";
 
 interface CalibInfo {
   path: string;
@@ -73,12 +74,10 @@ export default function CalibPanel({ cam, view=1, multiView=false, isSim, imageI
   };
 
   return (
-    <Card title={<Heading level={3}>{multiView?`图 ${view} · `:""}工位标定（飞拍）</Heading>} actions={<>
-      <Button onClick={()=>void load()} disabled={busy||loading||!isTauri()}>刷新标定</Button>
-      <Button variant={imageId&&!isSim?"filled":"tonal"} leadingIcon={<Crosshair size={15} />} onClick={()=>void run()} disabled={busy || loading || isSim || !imageId||!isTauri()||!valid}>{busy ? "标定中…" : "用冻结样本标定"}</Button>
-    </>}>
-      <Stack direction="column" align="stretch" gap={10}>
-      <p className="muted calib-desc">将标定板放在实际胶路测量平面；{multiView?"各图分别标定，复用前验证代表性拍照点。":"每台相机分别标定，复用前在代表性位置验证。"}</p>
+    <Card title={<div className="calc-title"><Heading level={3}>{multiView?`图 ${view} · `:""}标定板参数</Heading><ContextHelp label="标定板参数说明">内角点为棋盘格内部交点，格长为单个方格的边长（mm）。</ContextHelp></div>} actions={
+      <Button variant={imageId&&!isSim?"filled":"tonal"} leadingIcon={<Crosshair size={15} />} onClick={()=>void run()} disabled={busy || loading || isSim || !imageId||!isTauri()||!valid}>{busy ? "标定中…" : "标定"}</Button>
+    }>
+      <Stack direction="column" align="stretch" gap={10} wrap={false}>
       {isSim ? (
         <p className="muted">合成图相机的像素当量已知（0.08 mm/px），自动使用内置标定。</p>
       ) : (
@@ -89,9 +88,8 @@ export default function CalibPanel({ cam, view=1, multiView=false, isSim, imageI
         </Grid></fieldset>
       )}
       {!isTauri()&&<p className="muted">请在桌面软件中读取并执行工位标定。</p>}
-      {!isSim&&!imageId&&<p className="muted">先获取或导入冻结样本，再执行工位标定。</p>}
       {loading&&<p className="muted">正在读取标定…</p>}
-      {loadError&&<Alert tone="ng">读取标定失败：{loadError}。请刷新标定后重试。</Alert>}
+      {loadError&&<Alert tone="ng">读取标定失败：{loadError}。请重新进入页面后重试。</Alert>}
       {!isSim&&!valid&&<Alert tone="ng">{invalid}</Alert>}
       <dl className="kv">
         <dt>当前标定</dt>

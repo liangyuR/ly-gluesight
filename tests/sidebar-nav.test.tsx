@@ -16,7 +16,7 @@ beforeEach(() => {
 describe("侧栏当前页", () => {
   it.each([
     ["/recipe/teach", "配方"],
-    ["/camera/calibration", "飞拍标定"],
+    ["/camera/calibration", "标定"],
     ["/settings", "系统设置"],
   ])("打开 %s → 只有「%s」标为当前页", (path, current) => {
     render(<MemoryRouter initialEntries={[path]}><Routes><Route element={<AppLayout />}><Route path={path} element={<div />} /></Route></Routes></MemoryRouter>);

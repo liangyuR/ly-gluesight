@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from "react";
 import { RefreshCw } from "lucide-react";
 import { IconButton, List, ListItem } from "qing-steel";
 import type { CameraConfig, CameraStatus } from "../types";
@@ -20,7 +21,22 @@ export default function CameraList({ configs, statuses, selected, disabled, onSe
   onRefresh?: () => void;
   refreshing?: boolean;
 }) {
-  return <aside className="cam-list" aria-label="相机列表">
+  const root=useRef<HTMLElement>(null);
+  useLayoutEffect(()=>{
+    const list=root.current?.querySelector<HTMLElement>(".qs-list");
+    if(!list)return;
+    const reveal=()=>{
+      const selectedItem=list.querySelector<HTMLElement>(".qs-selected");
+      if(!selectedItem)return;
+      const item=selectedItem.getBoundingClientRect(),viewport=list.getBoundingClientRect();
+      if(item.left<viewport.left)list.scrollLeft+=item.left-viewport.left;
+      else if(item.right>viewport.right)list.scrollLeft+=item.right-viewport.right;
+    };
+    reveal();
+    const observer=new ResizeObserver(reveal);observer.observe(list);
+    return()=>observer.disconnect();
+  },[selected,configs]);
+  return <aside ref={root} className="cam-list" aria-label="相机列表">
     <div className="cam-list-head"><span>相机 {configs.length}/8</span>{onRefresh&&<IconButton size="sm" onClick={onRefresh} disabled={refreshing||disabled} aria-label="刷新相机配置" title="刷新相机配置"><RefreshCw size={14}/></IconButton>}</div>
     <List>
       {configs.map((config,i)=>{

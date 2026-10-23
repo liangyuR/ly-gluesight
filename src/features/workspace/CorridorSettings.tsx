@@ -41,9 +41,9 @@ export function CorridorSettings({ teach, defaults, segments, disabled, checksDi
       </summary>
       <div className="wp-settings-body">
         <div className="wp-scale-field"><NumberField label="像素当量" value={teach.mmPerPx} unit="mm/px" min={.0001} max={10} step={.0005} onChange={v => onChange({ ...teach, mmPerPx: Number.isFinite(v) ? v : null })} disabled={disabled}/>
-          <Link className="wp-calibration-link" to="/camera/calibration" state={returnState(location, "走廊示教")}>飞拍标定<ArrowUpRight size={13} aria-hidden="true"/></Link>
+          <Link className="wp-calibration-link" to="/camera/calibration" state={returnState(location, "走廊示教")}>标定<ArrowUpRight size={13} aria-hidden="true"/></Link>
         </div>
-        <p className="wp-settings-hint">每台相机各设一个当量，由飞拍标定得出；走廊上的测量长度、搜索带宽度都按它换算。</p>
+        <p className="wp-settings-hint">每台相机各设一个当量，由标定得出；走廊上的测量长度、搜索带宽度都按它换算。</p>
       </div>
     </details>
     <details className="panel wp-settings-card">

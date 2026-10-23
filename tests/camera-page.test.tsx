@@ -63,7 +63,7 @@ describe("相机参数未保存修改", () => {
     await openCamera("左相机 cam1");
     const name = await screen.findByRole("textbox", { name: "名称" });
     await userEvent.type(name, "X");
-    await userEvent.click(screen.getByRole("link", { name: /前往飞拍标定/ }));
+    await userEvent.click(screen.getByRole("link", { name: /前往标定/ }));
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "取消" }));
     expect(screen.queryByText("标定页")).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "名称" })).toHaveValue("左相机X");
