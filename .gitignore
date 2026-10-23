@@ -22,15 +22,9 @@ MvSDKLog/
 __pycache__/
 *.py[cod]
 
-# 本机运行产物仅保留教程 PDF 交付件
-/output/*
-!/output/pdf/
-/output/pdf/*
-!/output/pdf/GlueSight-图文使用教程.pdf
+# 本机运行产物
+/output/
 /outputs/
-
-# 教程渲染与导出中间文件
-/tmp/pdfs/
 
 # 外部保密参考手册仅在本机保留
 /docs/在线涂胶检测V4.3软件操作指导书.pdf

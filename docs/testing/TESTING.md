@@ -46,7 +46,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 
 **升级前检查。** 升级到协议 6 / 段模型之前，先确认 `audit-spool/` 已清空（审计 spool 格式 3 → 4，残留的旧格式文件会让就绪检查失败、拒绝接件），记录库 8 → 9 会备份后重建；其余升级项见[存储布局](../architecture/storage-layout.md#升级到段模型协议-6前)。
 
-**文档产物核对。** `python scripts/docs/build-plc-protocol.py --check` 核对协议 HTML 与 Markdown 同步，`pnpm guide:build` 重新生成用户指南网页。
+**文档产物核对。** `python scripts/docs/build-plc-protocol.py --check` 核对协议 HTML 与 Markdown 同步。
 
 ## 运行
 

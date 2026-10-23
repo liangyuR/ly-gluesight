@@ -96,7 +96,7 @@
 - 删除：`follow.rs`、`simfollow.rs`、`caliper.rs`；随动配方类型与 `Recipe.follow`；`cycle.rs` 的随动字段、分支与进度寄存器缓存；`measure.rs` 的随动任务与卡尺引擎；`judge.rs` 的随动起点区；系统设置、相机配置、PLC 点表（`pathProgress`）与前端里的随动部分；样例配方 `FLW-RECT`；教程随动章节。
 - 不删除：相机的触发采集 / 连续采集两种方式；飞拍的胶宽判定（`NG_WIDTH`）。
 - 完成标准：全量回归通过；飞拍的模拟闭环、S7 握手、计划导出结果与基线一致；代码中不再有随动分支。
-- 状态：完成（PR #7）。遗留：`output/pdf` 下的教程 PDF 需在有浏览器的环境运行 `pnpm guide:pdf` 重新生成，去掉随动章节。
+- 状态：完成（PR #7）。遗留：`output/pdf` 下的教程 PDF 需在有浏览器的环境运行 `pnpm guide:pdf` 重新生成，去掉随动章节（用户教程已于 2026-10-23 删除、不再维护）。
 
 ### 步 0b · 彩色相机取图（Bayer → 灰度）
 

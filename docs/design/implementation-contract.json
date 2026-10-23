@@ -2,7 +2,6 @@
   "scope": "本地 Tauri + React 黑蓝界面与配置工作流实现",
   "updatedAt": "2026-10-09",
   "documentation": {
-    "userGuide": "docs/user-guide/index.html",
     "testing": "docs/testing/TESTING.md",
     "operations": "docs/testing/UI_OPERATIONS.md",
     "verificationScope": "接口规格与验收方式保存在仓库中；历史本机运行状态、原图、日志和生成报告不随仓库分发。"

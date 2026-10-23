@@ -29,10 +29,6 @@
 - [Windows 打包与运行库部署](deployment/PACKAGING.md)。
 - [lyFlow 运行库依赖](architecture/lyflow-dependency.md)：Release 来源、系列锁定、校验、缓存、开发启动参数与升级命令。
 
-## 使用教程
-
-- [图文使用教程](user-guide/index.html)：`pnpm guide:serve` 可本地预览。教程文字已按段配方改写，截图仍是旧版，图注已标“旧版截图 / 待更新”。
-
 ## 其他
 
 - `design/`：界面设计与实现契约的状态文件，以 `implementation-contract.json` 为准。

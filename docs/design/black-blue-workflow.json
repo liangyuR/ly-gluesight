@@ -6,7 +6,6 @@
   "scope": "使用本地免费组件完成整套可交互操作流程，并将现有软件 UI 更换为青钢风格（Material 3 tonal 分层 + 工业数据密度）。",
   "documentation": {
     "purpose": "保留界面与工作流设计规格。当前操作、实现约束和验证方式以以下仓库文档为准。",
-    "userGuide": "docs/user-guide/index.html",
     "implementationContract": "docs/design/implementation-contract.json",
     "testing": "docs/testing/TESTING.md",
     "operations": "docs/testing/UI_OPERATIONS.md"
