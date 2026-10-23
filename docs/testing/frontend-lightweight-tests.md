@@ -39,7 +39,7 @@ pnpm test
 pnpm test:ui:production
 ```
 
-`pnpm test` 运行全部 39 项前端测试，包含创建配方及示教发布两个主流程；`pnpm test:ui:production` 运行真实桌面生产落盘流程（默认 all，无 lyFlow 时段配方显示跳过）。Windows PR CI 使用 `pnpm test:ui:production -Suite legacy -ResetData`。生产测试自动构建、启动和关闭隔离实例；已构建时可用 `pnpm test:ui:production -SkipBuild`，端口冲突可传 `-DebugPort 9349`；生产落盘入口支持 `-Grep`。`-SkipBuild` 不检查源码是否变化，须先确保产物最新。框架 HTML / JUnit 报告和失败证据在 `output/playwright/flow-regression/runner/`，业务 JSON 位置不变。
+`pnpm test` 运行前端单元测试，包含创建配方及示教发布主流程，数量以实际执行为准。Windows PR CI 仅执行 Rust 格式检查、`pnpm test` 与 Rust 库单元测试。`pnpm test:ui:production -Suite burst -ResetData` 保留为手动桌面生产落盘入口，需要 lyFlow。生产测试自动构建、启动和关闭隔离实例；已构建时可用 `pnpm test:ui:production -SkipBuild`，端口冲突可传 `-DebugPort 9349`；生产落盘入口支持 `-Grep`。`-SkipBuild` 不检查源码是否变化，须先确保产物最新。框架 HTML / JUnit 报告和失败证据在 `output/playwright/flow-regression/runner/`，业务 JSON 位置不变。
 
 `pnpm typecheck` 检查应用与测试类型；`pnpm build` 检查生产前端构建。
 

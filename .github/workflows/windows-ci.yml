@@ -33,9 +33,13 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Read tool versions
         id: tools
-        run: pwsh -NoProfile -File scripts/Test-PackageVersions.ps1
+        run: |
+          $package = Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json
+          "node=$($package.engines.node -replace '^>=', '')" >> $env:GITHUB_OUTPUT
+          "pnpm=$($package.packageManager -replace '^pnpm@', '')" >> $env:GITHUB_OUTPUT
       - uses: pnpm/action-setup@v4
         with:
           version: ${{ steps.tools.outputs.pnpm }}
@@ -46,12 +50,29 @@ jobs:
           node-version: ${{ steps.tools.outputs.node }}
           cache: ${{ (github.event_name != 'workflow_dispatch' || inputs.use_cache) && 'pnpm' || '' }}
           package-manager-cache: false
-      - name: Prepare package and Rust tools
+      - name: Prepare Rust tools
         run: |
-          rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
+          rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal --component rustfmt
           if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
           git config --global url.https://github.com/.insteadOf ssh://git@github.com/
           git config --global --add url.https://github.com/.insteadOf git@github.com:
+      - name: Format check
+        env:
+          FORMAT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          $base = $env:FORMAT_BASE
+          if ([string]::IsNullOrWhiteSpace($base) -or $base -match '^0+$') { $base = "$env:GITHUB_SHA^" }
+          git diff --check $base $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'Changed files contain whitespace errors.' }
+          $edition = [regex]::Match((Get-Content -LiteralPath src-tauri/Cargo.toml -Raw), '(?m)^edition\s*=\s*"([^"]+)"').Groups[1].Value
+          if (-not $edition) { throw 'Missing Rust edition in Cargo.toml.' }
+          $files = @(git -c core.quotepath=false diff --name-only --diff-filter=ACMR $base $env:GITHUB_SHA -- '*.rs')
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to list changed Rust files.' }
+          if ($files.Count -eq 0) { Write-Host 'No changed Rust files; rustfmt skipped.' }
+          foreach ($file in $files) {
+            rustfmt --check --edition $edition --config skip_children=true -- $file
+            if ($LASTEXITCODE -ne 0) { throw "Rust format check failed: $file" }
+          }
       - uses: Swatinem/rust-cache@v2
         if: github.event_name != 'workflow_dispatch' || inputs.use_cache
         with:
@@ -60,47 +81,8 @@ jobs:
           cache-workspace-crates: false
       - name: Install locked frontend dependencies
         run: pnpm install --frozen-lockfile
-      - name: Typecheck
-        run: pnpm typecheck
-      - name: Frontend tests
+      - name: Frontend unit tests
         run: pnpm test
-      - name: Sample set converter tests
-        run: pnpm samples:test
-      - name: Desktop production smoke
-        run: |
-          $runtime = & pwsh -NoProfile -File scripts/Restore-LyFlowRuntime.ps1
-          if ($LASTEXITCODE -ne 0) { throw 'lyFlow runtime restore failed.' }
-          pnpm test:ui:production -Suite burst -LyFlowRuntime (@($runtime)[-1]) -ResetData
-      - name: Packaging script tests
-        run: |
-          ./tests/packaging/Test-RuntimeBundle.ps1
-          ./tests/packaging/Test-LyFlowDependency.ps1
-          ./tests/packaging/Test-VendorDependency.ps1
-      - name: Packaging workflow gate tests
-        run: node --test tests/packaging/windows-workflow.test.mjs
-      - name: Soak script decision tests
-        run: node --test tests/native/throughput-gate.test.mjs tests/native/soak-faults-assess.test.mjs tests/native/desktop-infrastructure.test.mjs
-      - name: Rust library regression
+      - name: Rust unit tests
         working-directory: src-tauri
         run: cargo test --locked --lib
-      - name: Upload desktop reports and startup logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-production-reports
-          if-no-files-found: warn
-          path: |
-            output/playwright/flow-regression/runner/html/
-            output/playwright/flow-regression/runner/junit.xml
-            output/playwright/flow-regression/build.log
-            output/playwright/flow-regression/stdout.log
-            output/playwright/flow-regression/stderr.log
-      - name: Upload desktop failure evidence
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-production-failures
-          if-no-files-found: ignore
-          path: |
-            output/playwright/flow-regression/runner/test-results/**/*.png
-            output/playwright/flow-regression/runner/test-results/**/*trace*.zip

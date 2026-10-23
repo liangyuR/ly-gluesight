@@ -19,7 +19,7 @@ SDK 枚举成功但本机发现 0 台设备；Jinghang JHEM131GC-XS 的门控节
 ## PR #169 CI 修复与 main 同步（2026-10-23）
 
 - 原 Windows CI 在前端测试失败：删除页面后遗留的旧拍照点示教 17 项专属用例仍被执行。删除 `tests/fixture-teach.test.tsx` 的 9 项及 `tests/teaching.test.tsx` 的 8 项旧单帧用例，保留后者 10 项段配方与通用采集信息用例；不恢复已停用产品入口。
-- 同步 main 的 PR #168 Playwright 桌面测试框架，保留实例锁、清理和失败证据，改为仅运行段配方；CI 恢复 lyFlow 后执行 burst，不再运行 legacy 或因缺运行库全部跳过。
+- 同步 main 的 PR #168 Playwright 桌面测试框架，保留实例锁、清理和失败证据，改为仅运行段配方；当时 CI 恢复 lyFlow 后执行 burst。当前普通 PR CI 范围见“Windows CI 与手动验收”。
 - 修正存储往返用例的丢帧夹具：同一相机缺两帧，符合当前相机间帧差告警阈值，继续覆盖告警、缺帧与预留字段的落库读回。
 - 合并后前端全量 50 个文件、332 项通过；类型检查通过。Playwright 实例复用未修改的产品构建，1 项段配方完整流程通过、0 跳过，62 秒；工作流、桌面基础设施及长稳判断脚本共 32 项通过。
 
@@ -98,7 +98,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 | `pwsh -NoProfile -File tests/packaging/Test-LyFlowDependency.ps1` | lyFlow 依赖的 Release 选择、配置与 Cargo 锁定、运行库校验、缓存与网络回退、升级回滚（网络与 DLL 探针用本地夹具） |
 | `pwsh -NoProfile -File tests/packaging/Test-VendorDependency.ps1` | 厂商运行库的包隔离、结构、尺寸、CRT 版本、固定源恢复与缓存边界 |
 | `node --test tests/packaging/windows-workflow.test.mjs` | Windows 打包工作流门禁：版本与安装方式校验、发布标签须在 main 上、版本设置、SDK 干净环境检查、视觉检查先于打包、依赖缓存标识与发布清单 |
-| `pnpm test:soak:throughput`（即 `Test-Soak.ps1 -Stages throughput`） | 3 × 25 Hz 吞吐门槛（段配方、离线·样本集 lyFlow 测量，`-ThroughputSource synthetic` 压合成图帧管线）：连续跑 `-ThroughputSeconds`（默认 60 s），核对 Unmeasured = 0、图像内存预算丢帧 = 0、测量队列峰值低于容量的 50%，并要求产线跑满时长、持续负载已验证（分项只在满负载下才有意义）。**持续负载按相机使能为高的时间窗计**：PC 看不到使能信号，窗口取每件第一帧到达到最后一帧到达（运行日志“帧到达”，首个帧组不计入，栅栏计数），Σ窗口内帧数 ÷ Σ使能时长 ≥ 3 × Hz 的 90%，且至少连续 `-ThroughputMinParts`（默认 10）件逐件达到；件间握手间隙（使能为低，离线虚拟 PLC 每件约 0.9 s，是 PLC 握手开销而不是 PC 的测量能力）单独报告为 `achieved.handshakeGapSeconds`，不参与判定，含握手的平均帧率 `achieved.framesPerSecond` 只作参考。达不到时退出码 1，实测值写进 `output/soak/throughput-*.json`。持续负载未验证时默认判不达标；只想看分项时加 `-AllowBurstOnly` 放行，报告里 `sustainedVerified` 仍为 false、`burstOnlyAccepted` 为 true，不是持续门槛的结论（分项不达标时 `burstOnlyAccepted` 为 false）。样本集每件只有 12 个脉冲，件间握手期间测量队列排空，队列峰值只反映每件的积压，不间断 3 × Hz 下的积压看 `projection` 的外推。判定函数的规则由 `node --test tests/native/throughput-gate.test.mjs` 保护，该文件与 `soak-faults-assess.test.mjs` 由 CI（`windows-ci.yml`）的“Soak script decision tests”步骤运行 |
+| `pnpm test:soak:throughput`（即 `Test-Soak.ps1 -Stages throughput`） | 3 × 25 Hz 吞吐门槛（段配方、离线·样本集 lyFlow 测量，`-ThroughputSource synthetic` 压合成图帧管线）：连续跑 `-ThroughputSeconds`（默认 60 s），核对 Unmeasured = 0、图像内存预算丢帧 = 0、测量队列峰值低于容量的 50%，并要求产线跑满时长、持续负载已验证（分项只在满负载下才有意义）。**持续负载按相机使能为高的时间窗计**：PC 看不到使能信号，窗口取每件第一帧到达到最后一帧到达（运行日志“帧到达”，首个帧组不计入，栅栏计数），Σ窗口内帧数 ÷ Σ使能时长 ≥ 3 × Hz 的 90%，且至少连续 `-ThroughputMinParts`（默认 10）件逐件达到；件间握手间隙（使能为低，离线虚拟 PLC 每件约 0.9 s，是 PLC 握手开销而不是 PC 的测量能力）单独报告为 `achieved.handshakeGapSeconds`，不参与判定，含握手的平均帧率 `achieved.framesPerSecond` 只作参考。达不到时退出码 1，实测值写进 `output/soak/throughput-*.json`。持续负载未验证时默认判不达标；只想看分项时加 `-AllowBurstOnly` 放行，报告里 `sustainedVerified` 仍为 false、`burstOnlyAccepted` 为 true，不是持续门槛的结论（分项不达标时 `burstOnlyAccepted` 为 false）。样本集每件只有 12 个脉冲，件间握手期间测量队列排空，队列峰值只反映每件的积压，不间断 3 × Hz 下的积压看 `projection` 的外推。判定函数的规则由手动命令 `node --test tests/native/throughput-gate.test.mjs tests/native/soak-faults-assess.test.mjs` 保护，不在普通 PR CI 中执行 |
 | `pnpm test:soak`（即 `pwsh -NoProfile -File scripts/Test-Soak.ps1`） | 长稳测试（隔离 soak 实例）。没有必填参数，但样本集与 lyFlow 运行库必须经 `-SampleSet` / `GLUESIGHT_SAMPLE_SET`、`-LyFlowRuntime` / `GLUESIGHT_LYFLOW_RUNTIME` 提供（不自动恢复运行库，缺失时退出码 3），例如 `pnpm test:soak -SampleSet <样本集目录> -LyFlowRuntime <运行库目录> -Parts 1000`；阶段、参数与退出码见[长稳报告](soak-report.md) |
 | `pwsh -NoProfile -File scripts/Test-AlgorithmEval.ps1` | 算法评测（忽略的 cargo 评测，需样本集与 `lyflow_core.dll`），参数与读数见[算法评测](algorithm-evaluation.md) |
 | `pwsh -NoProfile -File scripts/Test-DevStartup.ps1` | Windows 旧终端在设置/清除本地运行库后启动，子进程读取最新保存值，参数与退出码保持不变 |
@@ -228,9 +228,11 @@ Playwright Test 固定 `workers=1`、`fullyParallel=false`、`retries=0`，每�
 
 ### Windows CI 与手动验收
 
-Windows PR CI 恢复锁定的 lyFlow 运行库并运行 `pnpm test:ui:production -Suite burst -ResetData`：使用全新隔离资料与合成图，不需要现场样本集。桌面构建已包含 `pnpm build` 对应的 TypeScript / Vite 生产构建，因此 CI 不重复运行独立前端生产构建步骤；类型检查、Vitest、Rust 和脚本契约检查继续保留。
+Windows PR CI 仅执行 Format 检测、前端单元测试（`pnpm test`）和 Rust 库单元测试（`cargo test --locked --lib`）。Format 对本次新增、修改、复制或重命名的 Rust 文件逐个执行 `rustfmt --check --edition <Cargo.toml 中的 edition> --config skip_children=true`，无 Rust 变更则跳过 rustfmt；所有变更文件另用 `git diff --check` 检查空白。PR 比较 base SHA 与当前提交，main 推送比较 before 与当前提交，手动运行比较当前提交与上一提交。存量 Rust 尚未全仓格式化，因此不执行全仓格式门禁；项目尚未配置前端格式化工具。
 
-CI 无论结果都上传 HTML、JUnit、构建日志及启动 stdout/stderr；失败时额外上传 `runner/test-results/` 下的截图和 trace，不上传可执行文件、资料目录或整个业务输出目录。合成图段配方通过不代表相机、PLC 和现场节拍验收。现场样本集桌面 E2E 已删除，不再列为手动入口；长稳与硬件专项保持原范围。下文历史通过记录属于当时脚本和版本，不能作为 Playwright 迁移后的通过证据。
+类型检查、样本转换、打包与长稳脚本检查、桌面生产冒烟及其报告上传均已从普通 PR CI 删除，不恢复 lyFlow 运行库、不构建桌面应用。推送 main 和手动运行 Windows CI 使用同样的轻量验证；Windows 发包工作流仅由手动运行或 `v*` tag 触发，保留发布门禁。
+
+桌面 E2E 保留手动命令 `pnpm test:ui:production -Suite burst -ResetData`，使用全新隔离资料与合成图，需要 lyFlow；HTML、JUnit、构建与启动日志、失败截图和 trace 保存在本地输出目录。合成图段配方通过不代表相机、PLC 和现场节拍验收。现场样本集桌面 E2E 已删除，不再列为手动入口；长稳与硬件专项保持原范围。下文历史通过记录属于当时脚本和版本，不能作为当前 CI 范围或本轮通过证据。
 
 ### 本次 Playwright 迁移验证（2026-10-23）
 

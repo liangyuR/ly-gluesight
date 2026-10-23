@@ -56,7 +56,9 @@ pnpm test                                   # 前端单元测试
 cargo test --lib --manifest-path src-tauri/Cargo.toml
 ```
 
-桌面 E2E 使用 Playwright Test 连接应用 WebView2，无需下载 Playwright 浏览器。Windows PR CI 恢复 lyFlow 运行库并执行合成图段配方生产验证，无需现场样本集：
+Windows PR CI 仅执行 Format 检测（本次变更的 Rust 文件用 `rustfmt --check` 检查，所有变更文件用 `git diff --check` 检查空白）、前端单元测试（`pnpm test`）和 Rust 库单元测试（`cargo test --locked --lib`）。类型检查、样本转换、打包与长稳脚本检查及桌面 E2E 均不在普通 PR CI 中执行。
+
+桌面 E2E 保留手动入口，使用 Playwright Test 连接应用 WebView2，无需下载 Playwright 浏览器。合成图段配方生产验证需要 lyFlow，无需现场样本集：
 
 ```powershell
 pnpm test:ui:production -Suite burst -ResetData
