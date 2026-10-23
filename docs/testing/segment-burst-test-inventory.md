@@ -1,6 +1,6 @@
 # 分段连拍（feat/segment-burst-flyshot）测试清单
 
-> 历史清单（2026-10-23 精简前）：本文保留分段连拍开发期间的测试新增、改写、删除和实测记录，不表示这些测试仍存在。当前约 100 项回归的逐项清单及删除依据见 [Rust 保留测试清单](rust-test-retained-inventory.md)。其中 7 项 `vision::taught::engine_tests` 与 2 项 `packaging` ignored 测试现已删除，本文相关名称和复现方式只作历史证据。
+> 历史清单（2026-10-23 精简前）：本文保留分段连拍开发期间的测试新增、改写、删除和实测记录，不表示这些测试仍存在。当前逐项规则及删除依据分别见[前端保留测试清单](frontend-test-retained-inventory.md)和 [Rust 保留测试清单](rust-test-retained-inventory.md)。其中 18 个前端测试文件、7 项 `vision::taught::engine_tests` 与 2 项 `packaging` ignored 测试现已删除，本文相关名称和复现方式只作历史证据。
 
 > 2026-10-23 测试范围更新：按用户决策删除依赖现场样本集的离线建站及重启、日志回放、特征定位桌面测试（原 `test:e2e:offline`、`test:e2e:log-replay`、`test:e2e:fixture` 及对应脚本）。下文相关命令、脚本和通过记录仅为历史事实，已不是可执行入口或当前覆盖声明；产品功能、长稳、硬件联调与底层业务测试不受影响。当前桌面入口仅保留生产落盘。
 

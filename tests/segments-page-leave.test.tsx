@@ -12,7 +12,6 @@ import { cameraApi } from "../src/features/camera/api";
 import { desktopAvailable } from "../src/lib/desktop";
 import type { WorkspaceView } from "../src/features/workspace/types";
 import { burstRecipe, burstSummary, burstWorkspaceView, deferred } from "./fixtures";
-
 // 段列表页的编辑有 700 ms 防抖：到期前离开页面，编辑要随卸载提交，不能丢。
 // 提交走哪条路取决于真实的 WorkspaceProvider（act 抬高请求序号、接受返回的新修订），所以这里不 mock context，
 // 断言的是工作区最终的状态，不是 act 被调了几次。页面内的编辑与提交内容见 segments-page.test.tsx。

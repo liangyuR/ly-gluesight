@@ -58,7 +58,7 @@ cargo test --lib --manifest-path src-tauri/Cargo.toml
 
 Windows PR CI 仅执行 Format 检测、前端单元测试（`pnpm test`）和 Rust 默认库回归（`cargo test --locked --lib`）。Format 用 rustfmt 解析变更的 Rust 文件，检查新增、修改行的格式，新文件全检；所有变更文件另用 `git diff --check` 检查空白。类型检查、样本转换、打包与长稳脚本检查及桌面 E2E 均不在普通 PR CI 中执行。
 
-Rust 当前保留 106 项默认回归和 1 项手动算法评测，逐项保护规则及删除依据见 [Rust 保留测试清单](docs/testing/rust-test-retained-inventory.md)。默认集合包含少量 S7 回环、SQLite 与原图落盘集成测试，不需要现场硬件或 lyFlow DLL。
+前端当前保留 103 项默认回归（32 个文件），逐项规则见[前端保留测试清单](docs/testing/frontend-test-retained-inventory.md)。Rust 保留 106 项默认回归和 1 项手动算法评测，逐项规则见 [Rust 保留测试清单](docs/testing/rust-test-retained-inventory.md)。默认集合包含少量 S7 回环、SQLite 与原图落盘集成测试，不需要现场硬件或 lyFlow DLL。
 
 桌面 E2E 保留手动入口，使用 Playwright Test 连接应用 WebView2，无需下载 Playwright 浏览器。合成图段配方生产验证需要 lyFlow，无需现场样本集：
 

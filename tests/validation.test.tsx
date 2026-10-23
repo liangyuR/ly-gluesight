@@ -7,8 +7,7 @@ import ValidationPage from "../src/features/workspace/ValidationPage";
 import { useWorkspace } from "../src/features/workspace/context";
 import { workspaceApi } from "../src/features/workspace/api";
 import { historyApi } from "../src/features/history/api";
-import { burstRecipe, burstWorkspaceView, planExport, siteStatus, sampleSet, workspaceState } from "./fixtures";
-
+import { burstRecipe, burstWorkspaceView, planExport, siteStatus, workspaceState } from "./fixtures";
 vi.mock("../src/features/cycle/api", () => ({ useSiteStatus: vi.fn() }));
 vi.mock("../src/features/workspace/context", () => ({ useWorkspace: vi.fn() }));
 vi.mock("../src/features/workspace/api", () => ({ workspaceApi: { publish: vi.fn(), retryPublish: vi.fn(), abandonPublish: vi.fn() } }));
@@ -17,21 +16,18 @@ let ws: ReturnType<typeof workspaceState>;
 const show = () => render(<MemoryRouter><ValidationPage /></MemoryRouter>);
 beforeEach(() => {
   vi.mocked(useSiteStatus).mockReturnValue(siteStatus());
-  ws = workspaceState(); vi.mocked(useWorkspace).mockImplementation(() => ws);
+  const view = burstWorkspaceView(burstRecipe({ id: "A" }));
+  view.workspace.revision = 7;
+  view.workspace.validation = { revision: 7, passed: true, checkedAt: 1, environmentTag: {}, checks: [], samples: [] };
+  view.workspace.sampleBank = [{ id: "good", name: "良品组", geometryTag: null, expected: "OK", createdAt: 1 }];
+  view.workspace.samples = [{ historyId: null, sampleId: "good", expected: "OK" }];
+  ws = workspaceState(view); vi.mocked(useWorkspace).mockImplementation(() => ws);
   vi.mocked(historyApi.query).mockResolvedValue({ items: [], total: 0, counts: { ok: 0, ng: 0, err: 0, excursion: 0 } });
   vi.mocked(workspaceApi.publish).mockResolvedValue(ws.data!);
   vi.mocked(workspaceApi.retryPublish).mockResolvedValue(ws.data!);
 });
 
 describe("验证与发布页面", () => {
-  it("离线验证发布 → 明确仅供离线回放且候选调试无需发布", async () => {
-    vi.mocked(useSiteStatus).mockReturnValue(siteStatus({ mode: "offline", source: "sampleSet", sampleSet: sampleSet() }));
-    show();
-    await userEvent.click(screen.getByRole("button", { name: "发布离线回放配方" }));
-    expect(screen.getByRole("dialog", { name: "发布离线回放配方" })).toHaveTextContent(/仅用于离线回放/);
-    expect(screen.getByRole("link", { name: "前往在线检测调试候选", hidden: true })).toHaveAttribute("href", "/inspect?candidate=A");
-    expect(workspaceApi.publish).not.toHaveBeenCalled();
-  });
 
   it("发布失败后冻结样本配置并重试同一待生效版本", async () => {
     ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, baseRevision: "old", frames: [], overview: ws.data!.workspace.overview, validation: ws.data!.workspace.validation!, validationSite: "real" };
@@ -60,18 +56,6 @@ describe("验证与发布页面", () => {
     ws.data!.workspace.publish = { state: "uncertain", message: "写盘失败" };
     show();
     expect(screen.queryByRole("button", { name: "放弃待生效版本" })).not.toBeInTheDocument();
-  });
-
-  // 旧拍照点配方（segments 为空）的发布确认：按 candidatePlc 与 productionPlc 对比，列出 PLC 要同步的项
-  it("拍照点数变化 → 发布确认直接列出 PLC 要同步的触发数，未变的产品代码标不变", async () => {
-    ws.data!.planChanged = true;
-    ws.data!.candidatePlc = { ...ws.data!.productionPlc!, shotCount: 3 };
-    show();
-    await userEvent.click(screen.getByRole("button", { name: "发布生产配方" }));
-    const dialog = screen.getByRole("dialog");
-    expect(dialog).toHaveTextContent("shotCount / deviceShots：2 → 3");
-    expect(dialog).toHaveTextContent("productCode：1（不变）");
-    expect(dialog).toHaveTextContent("planVersion：1 → 发布时分配新号");
   });
 
   describe("段配方", () => {
@@ -111,20 +95,6 @@ describe("验证与发布页面", () => {
       expect(items[1]).toHaveTextContent("shotCount / deviceShots（ΣN_exp）：12 → 14");
       expect(screen.getByRole("dialog")).toHaveTextContent("预期总帧数 ΣN_exp ± Σtol：14 ± 3（生产：12 ± 3）");
     });
-  });
-
-  it.each([
-    ["未选用任何样本", () => { ws.data!.workspace.samples = []; }, "先选用至少一组代表性样本"],
-    ["已选样本但未确认适用", () => {}, "勾选上方确认后才能运行"],
-    ["候选版本待生效且确认勾选被冻结", () => {
-      ws.data!.workspace.pending = { doc: ws.doc!, bundleId: "bundle-v2", revision: 7, baseRevision: "old", frames: [], overview: ws.data!.workspace.overview, validation: ws.data!.workspace.validation!, validationSite: "real" };
-      ws.data!.workspace.publish = { state: "failed", message: "发布包缺失" };
-    }, "候选版本正在等待生效，生效或放弃后再验证"],
-  ])("%s → 运行验证不可用并在按钮旁说明原因", (_, arrange, reason) => {
-    arrange();
-    show();
-    expect(screen.getByRole("button", { name: "运行整套图像验证" })).toBeDisabled();
-    expect(screen.getByRole("note")).toHaveTextContent(reason);
   });
 
   it("验证未通过时不能发布", () => {

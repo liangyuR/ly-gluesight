@@ -1,6 +1,12 @@
 # 测试记录与复现
 
-更新时间：2026-10-23。当前 Rust 保留 106 项默认回归与 1 项手动算法评测，逐项保护规则及删除依据见 [Rust 保留测试清单](rust-test-retained-inventory.md)。前端与后端的分组见[前端轻量测试](frontend-lightweight-tests.md)、[后端轻量测试](backend-lightweight-tests.md)。以下带日期的实测结果保留为历史证据，不代替本轮验证。
+更新时间：2026-10-23。前端当前保留 103 项默认回归（32 个文件），见[前端保留测试清单](frontend-test-retained-inventory.md)；Rust 保留 106 项默认回归与 1 项手动算法评测，见 [Rust 保留测试清单](rust-test-retained-inventory.md)。逐项保护规则与删除依据均在清单中，历史分组见[前端轻量测试](frontend-lightweight-tests.md)、[后端轻量测试](backend-lightweight-tests.md)。以下带日期的实测结果保留为历史证据，不代替本轮验证。
+
+## 前端测试精简（2026-10-23）
+
+按 Vitest 实际加载并展开参数化用例，精简前为 332 项、50 个文件；保留 103 项、32 个文件，删除 18 个测试文件及无调用的旧夹具。默认静态 `vitest list` 的 250 个收集条目不代表执行数量，包含未展开的参数化定义与同名局部调用误识别。准确统计使用 `pnpm exec vitest list --no-static-parse --json`。
+
+本轮 `pnpm test`：103 项全部通过、0 跳过，耗时 41.48 秒；`pnpm typecheck` 通过。保留用例与执行 JSON 逐项匹配，未修改产品运行逻辑或 Vitest 收集配置。本轮未重复执行 Rust、桌面集成或打包，相关历史结果保持原有日期与范围。
 
 ## 高电平门控与 Software 调试验证（2026-10-23）
 
@@ -29,7 +35,7 @@ SDK 枚举成功但本机发现 0 台设备；Jinghang JHEM131GC-XS 的门控节
 
 | 测试层 | 保留验证 |
 | --- | --- |
-| 前端 | 创建配方、草稿编辑、采集、示教验证发布、生产操作锁、周期/图源隔离与历史显示；段配方的段列表、多轮标定、相机走廊示教、发布确认与按区域和帧组的历史展示；旧拍照点页面及专属用例不再维护 |
+| 前端 | 103 项默认回归：段配方创建与草稿防丢、采集准入和独立样本、多轮标定与走廊示教、验证发布门槛、周期/帧归属隔离、历史区域重判、PLC 操作锁、单视角标定更新与配置安全；逐项见[前端保留测试清单](frontend-test-retained-inventory.md) |
 | Rust 默认 | 106 项有实际保护规则的回归：当前段配方、帧组与采集、整件标定、未分段判定、PLC、调度、发布与恢复；包含少量真实 S7 TCP 回环、SQLite 和原图录制集成测试，逐项见 [Rust 保留测试清单](rust-test-retained-inventory.md) |
 | S7 专项 | `plc_session` 的 S7 线协议用例（真实生产驱动 + 进程内 S7Server，已进默认 `cargo test`，不再 ignore、不依赖 Python），以及 Python 测试 PLC 自己的线报文自测 |
 | 桌面端到端 | 仅合成图段配方生产落盘：flow 实例内建站、标定、发布、生产、SQLite、原图与历史读回，需要 lyFlow。现场样本集桌面入口和旧拍照点流程已删除 |
@@ -81,7 +87,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 
 | 命令 | 用途 |
 | --- | --- |
-| `pnpm test` | 全部前端测试，包含创建配方与完整示教发布流程 |
+| `pnpm test` | 103 项默认前端回归，包含创建、示教保存、验证发布门槛与关键隔离流程 |
 | `pnpm test:desktop:build -Profile flow` | 只构建隔离桌面实例，不启动；profile 可选 ui（默认）、p0、flow、e2e、soak |
 | `pnpm test:watch` | 开发时持续运行相关前端测试 |
 | `pnpm test:ui:production` | Playwright 自动构建、启动与关闭隔离实例，验证合成图三相机段配方建站与生产落盘，需要 lyFlow |
@@ -245,7 +251,7 @@ Windows PR CI 仅执行 Format 检测、前端单元测试（`pnpm test`）和 R
 | `pnpm test:ui:production -Suite legacy -ResetData`（含构建） | 1 passed、1 skipped，40.1 s；与 CI 冒烟使用相同命令，全新资料且不需要样本集或 lyFlow |
 | 基础设施与既有长稳断言 | `node --test tests/native/desktop-infrastructure.test.mjs tests/native/throughput-gate.test.mjs tests/native/soak-faults-assess.test.mjs`：21 passed（3 条基础设施保护、18 条既有断言），涵盖显式坏库预检、同 profile 互斥及释放、进程身份不符时不终止其他进程 |
 | `pnpm typecheck` | 通过 |
-| 相关前端用例、锁文件 | `pnpm test tests/fixture-validation.test.tsx`：1 passed；`pnpm install --frozen-lockfile` 成功 |
+| 相关前端用例、锁文件 | 当时 `pnpm test tests/fixture-validation.test.tsx`：1 passed；该旧拍照点测试文件现已删除。`pnpm install --frozen-lockfile` 成功 |
 
 这些结果不代表完整长稳、真实相机 / PLC、打包或算法准确率验证。
 
