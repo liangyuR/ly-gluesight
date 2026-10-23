@@ -12,17 +12,6 @@ it("候选与生产配方仅搜索半宽不同 → 只有搜索半宽标出与�
   expect(screen.getAllByTitle("与生产配方不同")).toHaveLength(1);
 });
 
-it("配方默认位置名义值不为 0 → 出现量具确认件编号并提示必填，填写后进草稿", async () => {
-  // 防的回归（定稿 §3）：规则页改了名义值却没有地方填 gaugeRef，候选保存一直被后端拒绝
-  const doc = workspaceView().workspace.doc;
-  const changed = vi.fn();
-  render(<RecipeEditor initial={doc} onDraftChange={changed} />);
-  expect(screen.getByRole("alert")).toHaveTextContent("量具确认件编号");
-  fireEvent.change(screen.getByRole("textbox", { name: "量具确认件编号" }), { target: { value: "GA-0315" } });
-  expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ limits: expect.objectContaining({ gaugeRef: "GA-0315" }) }));
-  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-});
-
 // 段配方的编辑器：触发方式固定飞拍、不再有位置与胶宽判定，默认参数按段类型各设一套（规格 §4：胶偏只在直线段）
 const kindSwitches = {
   straight: ["检胶宽", "检胶宽均匀性", "检断胶", "检溢胶", "检胶偏"],

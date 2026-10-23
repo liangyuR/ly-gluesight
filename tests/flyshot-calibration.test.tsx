@@ -16,7 +16,7 @@ const desktop=vi.hoisted(()=>({on:false}));
 vi.mock("@tauri-apps/api/core",()=>({invoke:vi.fn(),isTauri:()=>desktop.on}));
 vi.mock("../src/features/camera/api",async original=>({...await original<object>(),cameraApi:{rigConfig:vi.fn()},useRigStatus:vi.fn()}));
 vi.mock("../src/features/cycle/api",async original=>({...await original<object>(),useCycle:vi.fn(),useSiteStatus:vi.fn()}));
-const status=(frames:number):CameraStatus=>({cam:0,id:"CAM-1",name:"相机 1",source:"mvs",ready:true,released:false,message:"",device:null,sdkVersion:null,frames,fps:0,maxFps:5.6,lostPackets:0,droppedFrames:0,warnings:[]});
+const status=(frames:number):CameraStatus=>({cam:0,id:"CAM-1",name:"相机 1",source:"mvs",ready:true,released:false,message:"",device:null,sdkVersion:null,frames,fps:0,configuredFrameRate:10, maxFps:5.6,lostPackets:0,droppedFrames:0,warnings:[]});
 beforeEach(()=>{
  localStorage.clear();
  desktop.on=false;

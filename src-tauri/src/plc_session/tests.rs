@@ -194,14 +194,14 @@ impl Rig {
 
 /// 协议 6：partEnd 时设备触发数少于或多于计划不再拒绝完成（只作参考），End 带出 PLC 报的触发数，照常发布结果、确认并释放。
 #[tokio::test]
-async fn s7_wire_part_end_with_trigger_count_unlike_plan_completes_and_reports_triggers() {
+async fn s7_wire_part_end_ignores_reserved_trigger_count() {
     let mut rig = Rig::new("end-count-unlike-plan").await;
     assert_eq!(rig.plan.device_shots, 4);
     for (seq, counts) in [(1, 3), (2, 5)] {
         rig.request(seq, "SN-50").await;
         rig.arm().await;
         let (_, reported) = rig.end_counts(counts).await;
-        assert_eq!(reported, Some(counts), "deviceTriggers={counts}");
+        assert_eq!(reported, Some(0), "预留字段不参与采集：deviceTriggers={counts}");
         rig.report().await;
         rig.ack_release().await;
     }
@@ -773,7 +773,7 @@ async fn s7_wire_devices_not_ready_while_idle_withdraws_ready_and_recovers() {
     rig.phase(SessionPhase::Releasing).await;
     rig.plc.release();
     rig.fresh().await;
-    assert!(matches!(rig.session.poll(&rig.engine, false, false).await, SessionEvent::Released(Some(4))));
+    assert!(matches!(rig.session.poll(&rig.engine, false, false).await, SessionEvent::Released(Some(0))));
     assert_eq!(rig.session.phase(), SessionPhase::Idle);
     assert!(!rig.session.pending());
     assert_idle_outputs(&rig.plc, false);
@@ -792,7 +792,7 @@ async fn s7_wire_devices_not_ready_while_idle_withdraws_ready_and_recovers() {
 }
 
 #[tokio::test]
-async fn s7_wire_early_err_release_reports_plc_issued_triggers() {
+async fn s7_wire_early_err_release_ignores_reserved_trigger_count() {
     let mut rig = Rig::new("early-err-triggers").await;
     rig.request(1, "SN-50").await;
     rig.arm().await;
@@ -806,7 +806,7 @@ async fn s7_wire_early_err_release_reports_plc_issued_triggers() {
     rig.plc.release();
     rig.fresh().await;
     let event = rig.session.poll(&rig.engine, false, true).await;
-    assert!(matches!(event, SessionEvent::Released(Some(1))), "{event:?}");
+    assert!(matches!(event, SessionEvent::Released(Some(0))), "{event:?}");
     // 下一件的请求清零了触发数，正常完成时报计划数
     rig.request(2, "SN-51").await;
     rig.arm().await;
@@ -817,7 +817,7 @@ async fn s7_wire_early_err_release_reports_plc_issued_triggers() {
     rig.plc.release();
     rig.fresh().await;
     let event = rig.session.poll(&rig.engine, false, true).await;
-    assert!(matches!(event, SessionEvent::Released(Some(4))), "{event:?}");
+    assert!(matches!(event, SessionEvent::Released(Some(0))), "{event:?}");
     rig.finish().await;
 }
 
@@ -871,7 +871,7 @@ async fn s7_wire_recording_audit_wait_holds_release_then_recovers_without_reset(
     }
     let durable = PlcSession::open(rig.session.path.clone());
     assert!(durable.pending() && durable.acknowledged());
-    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, true).await, SessionEvent::Released(Some(4))));
+    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, true).await, SessionEvent::Released(Some(0))));
     assert_eq!(rig.session.phase(), SessionPhase::Idle);
     assert!(!rig.session.pending());
     assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, false).await, SessionEvent::None));
@@ -971,7 +971,7 @@ async fn s7_wire_released_does_not_create_second_ack_delivery_after_ready() {
     rig.plc.release();
     rig.fresh().await;
     let had_ack = rig.session.acknowledged();
-    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, true).await, SessionEvent::Released(Some(4))));
+    assert!(matches!(rig.session.poll_with_audit(&rig.engine, false, true, true).await, SessionEvent::Released(Some(0))));
     assert!(rig.plc.on("visionReady"));
     assert!(crate::cycle::s7_ack_delivery(had_ack, &rig.session).is_none());
     assert_eq!(store.detail_by_cycle(cycle).unwrap().unwrap().summary.delivery, accepted);

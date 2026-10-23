@@ -23,23 +23,13 @@ import { DEFAULT_IMAGING, type CameraImaging, type Verdict } from "../cycle/type
 import { expectedChoices } from "./progress";
 import type { CaptureNavigationState } from "./captureNavigation";
 import { productionBusy as isProductionBusy } from "../cycle/phase";
-import LegacyCapturePage from "./LegacyCapturePage";
 
 const stateLabels: Record<CaptureRound["state"],string> = { waitingStart:"等待现场启动", receiving:"接收中", draining:"PLC 已结束，等待在途图像", complete:"采集完成", failed:"采集异常" };
 const MAX_LISTED_GROUPS = 12;
 const imagingInvalid = (imaging: CameraImaging) => !(imaging.exposureUs>=1 && imaging.exposureUs<=1_000_000) ? "曝光时间需在 1–1000000 µs 之间" : !(Number.isFinite(imaging.gainDb) && imaging.gainDb>=0) ? "增益需为不小于 0 的有限数" : "";
 
-/**
- * 整圈采集（路由 /recipe/capture）：旧拍照点配方仍走 LegacyCapturePage——按拍照点核对数量、采用本轮图像；段配方（WorkspaceView.plan 非空）按帧组展示。
- * 后端只对 doc.segments 非空的候选输出 plan，按 plan 分流就是按 segments 分流（决策记录第八节）。
- */
-export default function CapturePage() {
-  const { data } = useWorkspace();
-  return data && !data.plan ? <LegacyCapturePage/> : <BurstCapturePage/>;
-}
-
 /** 段配方的整圈采集：按帧号配组、缺帧与丢帧只告警，完成后用于走廊示教或加入多轮标定。 */
-function BurstCapturePage() {
+export default function CapturePage() {
   const {data,doc,cameras,busy,dirty,frameDirty,act,setError} = useWorkspace();
   const {snapshot} = useCycle();
   const site = useSiteStatus();
@@ -110,12 +100,12 @@ function BurstCapturePage() {
   if(!doc || !data) return <WorkspaceEmpty/>;
   const locked=busy || working || dirty || frameDirty || !!data.workspace.pending;
   const productionBusy=isProductionBusy(snapshot);
-  // 段配方：本轮已用于走廊示教或加入标定就不能再当独立验证样本；旧配方沿用“示教采集轮次”的判断
-  const plan = data.plan ?? null;
+  if (!data.plan) return <Notice title="该草稿不是段配方" tone="warn">请新建段配方后采集，旧拍照点草稿不再支持。</Notice>;
+  const plan = data.plan;
   const calibrationEntry = round ? plan?.calibration?.rounds.find(r => r.roundId===round.roundId) : undefined;
   const teachedCameras = round && plan ? plan.cameraTeaching.filter(t => t.frame?.source.includes(round.roundId)).map(t => t.camera) : [];
   const roundUsed = !!calibrationEntry || teachedCameras.length>0;
-  const sampleSourceInvalid=validation && (plan ? roundUsed : (!data.workspace.captureId || data.workspace.captureId===round?.roundId));
+  const sampleSourceInvalid=validation && roundUsed;
   const bankedAsSample=!validation && !!round && data.workspace.sampleBank.some(sample => sample.captureId===round.roundId);
   const recaptureNext=(validation && (round?.state!=="complete" || sampleSourceInvalid)) || bankedAsSample;
   const captureState = {captureReturn:{recipeId:doc.id,search:location.search,cameraIds:chosen,excludedCameraIds:excluded,drain,roundId,previewK}};
@@ -124,7 +114,8 @@ function BurstCapturePage() {
   const readyIds = rig.filter(d=>d.ready).map(d=>d.id);
   const notReady = chosen.filter(id=>!readyIds.includes(id));
   const plcConnected = plcState === "connected", plc = plcState ? linkStateLabels[plcState] : "读取中";
-  const startBlocked = !plcConnected ? `PLC ${plcState === "connecting" ? "连接中" : "未连接"}：整圈采集依赖 PLC 的开始 / 结束信号。` : !chosen.length ? "请至少选择一台采集相机。" : notReady.length ? `采集相机未就绪：${notReady.map(nameOf).join("、")}。` : productionBusy ? "当前工件结束后才能占用设备采集。" : "";
+  const modeBlocked = cameras.filter(c=>chosen.includes(c.id)&&c.source==="mvs"&&c.triggerSource!=="Line0");
+  const startBlocked = modeBlocked.length ? `请将采集相机切换为 Line0 高电平：${modeBlocked.map(c=>c.name).join("、")}。` : !plcConnected ? `PLC ${plcState === "connecting" ? "连接中" : "未连接"}：整圈采集依赖 PLC 的开始 / 结束信号。` : !chosen.length ? "请至少选择一台采集相机。" : notReady.length ? `采集相机未就绪：${notReady.map(nameOf).join("、")}。` : productionBusy ? "当前工件结束后才能占用设备采集。" : "";
   const start=async () => {
     if(locked || active) return; setWorking(true); setConfirmed(false);
     try { const next=await workspaceApi.captureStart(doc.id,chosen,drain); if(current.current.alive && current.current.id===doc.id) {setRoundId(next.roundId); setRound(next); setPreviewK(0);} }
@@ -166,7 +157,7 @@ function BurstCapturePage() {
   const toggleCamera=(id: string, on: boolean) => setExcluded(x=>on ? x.filter(c=>c!==id) : [...x.filter(c=>c!==id),id]);
   const startDisabled=locked || active || !!startBlocked || !chosen.length || !Number.isFinite(drain) || drain<200 || drain>30000;
   const drainInvalid = !Number.isFinite(drain) || drain<200 || drain>30000;
-  const speedLimits = chosen.map(id => { const mm = offlineSampleSet?.mmPerPx ?? calib[id], fps = rig.find(d=>d.id===id)?.maxFps, exposure = imagingOf(id).exposureUs; return mm && fps && exposure && flyPrefs.spacing ? flyshotSpeedLimits({exposure,mmPerPx:mm,fps,spacing:flyPrefs.spacing}).max : null; });
+  const speedLimits = chosen.map(id => { const mm = offlineSampleSet?.mmPerPx ?? calib[id], fps = rig.find(d=>d.id===id)?.configuredFrameRate, exposure = imagingOf(id).exposureUs; return mm && fps && exposure && flyPrefs.spacing ? flyshotSpeedLimits({exposure,mmPerPx:mm,fps,spacing:flyPrefs.spacing}).max : null; });
   const maxSpeed = chosen.length && speedLimits.every(v=>v != null && Number.isFinite(v)) ? Math.floor(Math.min(...speedLimits as number[])) : null;
   const tooFast = maxSpeed != null && flyPrefs.speed != null && flyPrefs.speed > maxSpeed;
   const cameraProblem = !cameras.length ? "尚未配置" : !chosen.length ? "未选择相机" : notReady.length ? `${notReady.length} 台未就绪` : "";
@@ -214,7 +205,6 @@ function BurstCapturePage() {
       {view.cameras.map(c=><span key={c.cameraId} className={"wp-capture-chip" + (!active && c.frames!==groupCount ? " warn" : "")}><small>{nameOf(c.cameraId)}</small><strong>{c.frames} 帧</strong></span>)}
       {view.incompleteGroups.length>0 && <span className="wp-capture-chip warn"><small>不完整帧组</small><strong>{view.incompleteGroups.length} 个</strong></span>}
       {view.plcEstimate != null && <span className="wp-capture-chip"><small>PLC 预期总数（仅供参考）</small><strong>{view.plcEstimate}</strong></span>}
-      {view.deviceTriggers != null && <span className="wp-capture-chip"><small>PLC 累计触发（仅供参考）</small><strong>{view.deviceTriggers}</strong></span>}
       <Badge tone={round.simulated ? "warn" : "ok"}>{round.simulated ? "离线 / 模拟（不代表现场硬件验收）" : "设备实拍"}</Badge>
     </div>
     {round.error && <Notice title="本轮异常，需要重新采集" tone="warn">{round.error}</Notice>}

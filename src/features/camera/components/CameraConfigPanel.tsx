@@ -31,8 +31,8 @@ interface Props {
   footer?: ReactNode;
 }
 
-type Wiring = Pick<CameraConfig, "triggerSource" | "triggerActivation" | "debouncerUs" | "triggerDelayUs" | "strobe" | "chunk">;
-const wiring = (c: CameraConfig): Wiring => ({ triggerSource: c.triggerSource, triggerActivation: c.triggerActivation, debouncerUs: c.debouncerUs, triggerDelayUs: c.triggerDelayUs, strobe: c.strobe, chunk: c.chunk });
+type Wiring = Pick<CameraConfig, "triggerSource" | "triggerActivation" | "frameRate" | "debouncerUs" | "triggerDelayUs" | "strobe" | "chunk">;
+const wiring = (c: CameraConfig): Wiring => ({ triggerSource: c.triggerSource, triggerActivation: c.triggerActivation, frameRate: c.frameRate, debouncerUs: c.debouncerUs, triggerDelayUs: c.triggerDelayUs, strobe: c.strobe, chunk: c.chunk });
 
 interface BatchItem { id: string; name: string; tone: "ok" | "warn" | "ng" | "off"; text: string; list?: string[] }
 
@@ -41,26 +41,24 @@ const nodes: [keyof CameraConfig, RegExp][] = [
   ["triggerDelayUs", /TriggerDelay/],
   ["debouncerUs", /Debouncer/],
   ["triggerActivation", /TriggerActivation/],
+  ["frameRate", /FrameRate/],
   ["triggerSource", /TriggerSource|TriggerMode/],
   ["strobe", /Line(Selector|Mode|Source|Inverter)|Strobe/],
   ["chunk", /Chunk/],
 ];
 
-/** 带宽估算用的触发频率（规格 §0：按视野约 10～25 Hz，取上限）。 */
-const BANDWIDTH_HZ = 25;
 const isEstimate = (b: unknown): b is BandwidthEstimate =>
   typeof b === "object" && b !== null && typeof (b as BandwidthEstimate).mbpsTotal === "number" && Array.isArray((b as BandwidthEstimate).perCamera);
 
-/** 相机组按 25 Hz 触发时的链路带宽：分辨率取各相机最近一帧，相机出图后才计入。 */
-function useBandwidth() {
+function useBandwidth(hz: number) {
   const [estimate, setEstimate] = useState<BandwidthEstimate | null>(null);
   useEffect(() => {
     let alive = true;
-    const load = () => cameraApi.bandwidth(BANDWIDTH_HZ).then(b => { if (alive) setEstimate(isEstimate(b) ? b : null); }).catch(() => { if (alive) setEstimate(null); });
+    const load = () => cameraApi.bandwidth(hz).then(b => { if (alive) setEstimate(isEstimate(b) ? b : null); }).catch(() => { if (alive) setEstimate(null); });
     load();
     const timer = setInterval(load, 2000);
     return () => { alive = false; clearInterval(timer); };
-  }, []);
+  }, [hz]);
   return estimate;
 }
 
@@ -116,14 +114,15 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
   );
   const mvs = config.source === "mvs";
   const line0 = config.triggerSource === "Line0";
-  const invalid=!config.name.trim()?"相机名称不能为空":
+  const invalid=!Number.isFinite(config.frameRate)||config.frameRate<=0?"帧率必须为正数":
+    !config.name.trim()?"相机名称不能为空":
     ![1,3].includes(config.viewCount)?"设备视角数只能为 1 或 3":
     mvs&&!config.serial?"请选择要绑定的相机设备":
     mvs&&config.counterAfterOpen!=null&&(!Number.isSafeInteger(config.counterAfterOpen)||config.counterAfterOpen<0)?"开流前触发计数需为非负安全整数，未知时请留空":
     ![config.triggerDelayUs,config.debouncerUs].every(v=>Number.isFinite(v)&&v>=0)?"触发延时与输入滤波需为非负有限数":"";
 
   const save = async () => {
-    if(pending.current||invalid||saveBlocked)return false;
+    if(pending.current||locked||invalid||saveBlocked)return false;
     pending.current=true;
     setSaving(true);
     onSavingChange?.(true);
@@ -150,7 +149,7 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
 
   const others = group.configs.filter(c => c.id !== config.id);
   const applyAll = async () => {
-    if (batching || dirty) return;
+    if (batching || dirty || locked || saveBlocked) return;
     setBatching(true); setBatch(null);
     const items: BatchItem[] = [];
     try {
@@ -173,7 +172,9 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
     }
   };
   const batchBlocked = dirty ? "当前相机有未保存修改，先保存并应用" : (!others.some(c => c.source === "mvs" && c.serial) ? "没有其他已绑定的海康相机" : "");
-  const bandwidth = useBandwidth();
+  const rates = group.configs.filter(c=>c.source==="mvs"&&c.triggerSource==="Line0").map(c=>c.frameRate);
+  const bandwidthHz = rates.length ? Math.max(...rates) : 10;
+  const bandwidth = useBandwidth(bandwidthHz);
   const unestimated = bandwidth ? group.configs.filter((_, i) => bandwidth.perCamera[i] == null).map(c => c.name) : [];
 
   const device = devices.find(d => d.serial === config.serial) ?? (status?.device?.serial === config.serial ? status.device : null);
@@ -213,11 +214,7 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
               <TextField id="cam-name" label="名称" value={config.name} onChange={(e) => set("name", e.target.value)} disabled={!mvs} />
               <TextField label="相机编号" readOnly value={config.id} description="配方用它引用相机，建相机时分配，不可改" />
               <TextField label="图像源" readOnly value={sourceText[config.source]} />
-              <Select label="设备视角" value={String(config.viewCount)} onValueChange={v => set("viewCount", Number(v))} disabled={!mvs}
-                options={[{ value: "1", label: "单视角" }, { value: "3", label: "三目拼接（仅旧拍照点配方）" }]}
-                description={config.viewCount === 3 ? "每个拍照点可多选图 1／2／3 分别示教，三幅图共用一次设备触发。分段连拍配方不能用三目拼接，需要三台独立的单视角相机。" : undefined} />
-              {config.viewCount === 3 && mvs && <Select label="SDK 拼接布局" value={config.compositeLayout?.kind ?? ""} onValueChange={v => set("compositeLayout", v ? {kind:v as "horizontal" | "vertical"} : null)}
-                options={[{ value: "", label: "请选择实际交付布局" }, { value: "horizontal", label: "横向三等分" }, { value: "vertical", label: "纵向三等分" }, ...(config.compositeLayout?.kind === "rects" ? [{ value: "rects", label: "已配置矩形区域" }] : [])]} />}
+              <TextField label="设备视角" readOnly value="单视角" />
               {config.source === "sampleSet" && <span className="cg-small muted">图像来自离线模式所选样本集，相机与视角按样本集生成，不可在此更改。</span>}
               {config.source === "sim" && <span className="cg-small muted">合成图相机收到触发后约 180 ms 交付一帧，用于没有硬件时跑通节拍。</span>}
             </Stack>
@@ -246,24 +243,24 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
             <Alert title="不适用：离线图像源没有物理设备">离线期间不枚举、不绑定海康设备；原相机组的绑定关系已保留，退出离线后恢复。</Alert>
           </Card>}
 
-          {mvs && <Card role="region" aria-label="链路带宽" title={<Heading level={3}>链路带宽</Heading>} actions={<span className="cg-note">按 {BANDWIDTH_HZ} Hz 触发估算</span>}>
+          {mvs && <Card role="region" aria-label="链路带宽" title={<Heading level={3}>链路带宽</Heading>} actions={<span className="cg-note">按组内最高设定帧率 {bandwidthHz} fps 估算</span>}>
             {bandwidth ? <Stack direction="column" align="stretch" gap={8}>
               <span>相机组 {group.configs.length} 台同时出图合计 <b>{Math.round(bandwidth.mbpsTotal)} Mbps</b>，单个千兆口按 80% 计 {Math.round(bandwidth.budgetMbps)} Mbps。</span>
               {unestimated.length > 0 && <span className="muted cg-small">{unestimated.join("、")} 还没出过图，分辨率未知，未计入合计。</span>}
-              {bandwidth.overBudget && <Alert tone="warn" title="带宽超预算">各相机共用一个触发、同时出图，合计超过单个千兆口的 80%，可能丢帧；降低触发频率、缩小图像区域或分口接入。</Alert>}
+              {bandwidth.overBudget && <Alert tone="warn" title="带宽超预算">各相机连续出图，合计超过单个千兆口的 80%，可能丢帧；降低设定帧率、缩小图像区域或分口接入。</Alert>}
             </Stack> : <span className="muted">带宽估算不可用。</span>}
           </Card>}
 
           {mvs ? <Card role="region" aria-label="触发接线" title={<Heading level={3}>触发接线</Heading>} actions={<>{warnings.length > 0 && <StatusBadge tone="warn">{warnings.length} 项相机未接受</StatusBadge>}<span className="cg-note">保存后由设备确认，未接受项列在右侧“参数生效情况”</span></>}>
             <Stack direction="column" align="stretch" gap={12}>
-              <Select id="cam-trigger" label={label("触发源", "triggerSource")} aria-label="触发源" value={config.triggerSource} onValueChange={v => set("triggerSource", v as CameraConfig["triggerSource"])}
-                options={[{ value: "Line0", label: "Line0（机器人位置比较输出）" }, { value: "Software", label: "Software（台架调试、模拟节拍）" }]} description={note(undefined, "triggerSource")} />
+              <Select id="cam-trigger" label={label("触发源", "triggerSource")} aria-label="触发源" value={config.triggerSource} onValueChange={v => { set("triggerSource", v as CameraConfig["triggerSource"]); if(v==="Line0")set("triggerActivation","LevelHigh"); }}
+                options={[{ value: "Line0", label: "Line0（高电平连续采集）" }, { value: "Software", label: "Software（标定、调试单帧）" }]} description={note(undefined, "triggerSource")} />
               {line0 && <>
-                <Select id="cam-activation" label={label("触发沿", "triggerActivation")} aria-label="触发沿" value={config.triggerActivation} onValueChange={v => set("triggerActivation", v as CameraConfig["triggerActivation"])}
-                  options={[{ value: "RisingEdge", label: "上升沿" }, { value: "FallingEdge", label: "下降沿" }]} description={note(undefined, "triggerActivation")} />
-                {num("debouncerUs", "输入滤波", "滤掉 Line0 毛刺，避免一次触发出多帧；仅 Line0 触发时有效。")}
+                <TextField label="触发方式" readOnly value="高电平（LevelHigh）" description="Line0 为高电平时按相机帧率连续采集，低电平停止新曝光。" />
+                <NumberField label={label("设定帧率", "frameRate")} aria-label="设定帧率" unit="fps" min={0.01} step={1} value={Number.isFinite(config.frameRate)?config.frameRate:""} onValueChange={v=>set("frameRate",v===""?NaN:v)} description={note("参与同轮采集的相机需设置相同帧率。", "frameRate")} />
+                {num("debouncerUs", "输入滤波", "过滤 Line0 电平毛刺。")}
+                {num("triggerDelayUs", "触发延时")}
               </>}
-              {num("triggerDelayUs", "触发延时")}
               <Stack direction="column" align="stretch" gap={4}>
                 <span className="cg-group-label">{label("Line1 输出", "strobe")}</span>
                 <Checkbox label="曝光信号驱动频闪" checked={config.strobe} onCheckedChange={v => set("strobe", v)} />
@@ -272,13 +269,11 @@ export default function CameraConfigPanel({ ref, cam, initial, status, group, lo
               <Stack direction="column" align="stretch" gap={4}>
                 <span className="cg-group-label">{label("Chunk 数据", "chunk")}</span>
                 <Checkbox label="帧计数、触发计数、时间戳" checked={config.chunk} onCheckedChange={v => set("chunk", v)} />
-                <small className="muted">同步触发核对依赖 Chunk 里的触发计数；关闭后这台相机不能核对。{note(undefined, "chunk")}</small>
+                <small className="muted">帧序号用于采集诊断，不代表各相机曝光同步。{note(undefined, "chunk")}</small>
               </Stack>
-              <NumberField label="开流前触发计数" unit="次" min={0} max={Number.MAX_SAFE_INTEGER} step={1} placeholder="未知" value={config.counterAfterOpen??""} onValueChange={v => set("counterAfterOpen", v===""?null:v)}
-                description="仅填写台架确认的开流前触发计数；未知时留空，不能假定为 0。" />
               <Surface level="mid" className="cg-batch" aria-label="应用到全部相机">
                 <div className="cg-row">
-                  <p>把以上触发源、触发沿、滤波、延时、频闪、Chunk 复制到其他已绑定的海康相机并保存应用；开流前触发计数、视角数不复制。</p>
+                  <p>把以上触发源、帧率、高电平、滤波、延时、频闪、Chunk 复制到其他已绑定的海康相机并保存应用。</p>
                   <Button size="sm" leadingIcon={<Copy size={13} />} onClick={() => void applyAll()} disabled={batching || !!batchBlocked} title={batchBlocked || undefined}>{batching ? "应用中…" : batch ? "再次应用到全部相机" : "应用到全部相机"}</Button>
                 </div>
                 {batchBlocked && !locked && <span className="muted cg-small">{batchBlocked}</span>}

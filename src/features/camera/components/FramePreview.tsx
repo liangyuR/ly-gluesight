@@ -6,7 +6,7 @@ import type { CameraConfig, CameraStatus, Frame } from "../types";
 import { ago, clock, count, useNow } from "./health";
 
 export default function FramePreview({ cam, status, lastFrame, config, blockedReason, actions }: { cam: number; status: CameraStatus | null; lastFrame: Frame | undefined; config: CameraConfig | null; blockedReason?: string; actions?: ReactNode }) {
-  const scope=JSON.stringify([cam,config?.id,config?.source,config?.serial,config?.triggerSource,config?.viewCount]);
+  const scope=JSON.stringify([cam,config?.id,config?.source,config?.serial,config?.triggerSource,config?.frameRate,lastFrame?.session,config?.viewCount]);
   const [selectedView, setSelectedView] = useState({scope, view: 1});
   const view = selectedView.scope === scope && selectedView.view <= (config?.viewCount ?? 1) ? selectedView.view : 1;
   const { img, canvas } = usePreviewCanvas(cam, lastFrame?.frameCounter,250,scope,view);
@@ -34,14 +34,14 @@ export default function FramePreview({ cam, status, lastFrame, config, blockedRe
   };
   const age = lastFrame ? now - lastFrame.ts : null;
   const fault = !unbound && !status?.ready && !status?.released;
-  const mode = !mvs ? "样本集 · 按节拍自动出图" : software ? "Software · 软触发取图" : "Line0 · 等机器人触发";
-  const hint = reason ? reason : !mvs ? "离线图像源按节拍自动出图，不需要也不能软触发" : software ? "点「取一帧」软触发一次" : "触发源为 Line0 时由机器人到位触发自动出图；改为 Software 后可在此软触发取一帧。";
+  const mode = !mvs ? "样本集 · 按节拍自动出图" : software ? "Software · 软触发取图" : "Line0 · 高电平连续采集";
+  const hint = reason ? reason : !mvs ? "离线图像源按节拍自动出图，不需要也不能软触发" : software ? "点「取一帧」软触发一次" : "Line0 为高电平期间由相机按设定帧率连续出图；改为 Software 后可在此软触发取一帧。";
 
   return (
     <Card role="region" aria-label="出图验证" title={<Heading level={3}>出图验证</Heading>} actions={<>
       <StatusBadge tone="off">{mode}</StatusBadge>
       {config?.viewCount === 3 && <SegmentedControl size="sm" label="预览视角" value={String(view)} onValueChange={value => setSelectedView({scope, view: Number(value)})} options={[1, 2, 3].map(value => ({ value: String(value), label: `视角 ${value}` }))} />}
-      {status?.ready && <span className="cg-note mono">{status.fps.toFixed(1)} fps{status.maxFps ? ` · 上限 ${status.maxFps.toFixed(1)}` : ""}</span>}
+      {status?.ready && <span className="cg-note mono">实际 {status.fps.toFixed(1)} fps{!software && ` · 设定 ${config?.frameRate} · 回读 ${status.configuredFrameRate?.toFixed(1) ?? "—"} fps`}</span>}
     </>}>
       <Stack direction="column" align="stretch" gap={12}>
       {unbound ? <Alert tone="warn" title="未绑定设备">在左侧“绑定设备”里选择设备，保存并应用后在这里验证出图。</Alert> : <>
@@ -79,6 +79,6 @@ export function AppliedPanel({ config, status }: { config: CameraConfig; status:
     : !config.serial ? <><StatusBadge tone="off">未绑定设备</StatusBadge><p>绑定并保存后由设备确认参数。</p></>
     : !status?.ready ? <><StatusBadge tone="off">{status?.released ? "已释放给 MVS" : "相机未连接"}</StatusBadge><p>重新连接时按已保存的参数写入相机，写入结果在这里显示。</p></>
     : warnings.length ? <><StatusBadge tone="warn">已应用，{warnings.length} 项参数相机未接受</StatusBadge><ul>{warnings.map(w => <li key={w}>{w}</li>)}</ul><p>其余参数已生效；这些项相机保持写入前的值。配置已按新值保存，修正后重新“保存并应用”，或在海康 MVS 客户端核对该型号支持的范围。</p></>
-    : <><StatusBadge tone="ok">已应用，相机全部接受</StatusBadge><p>设备不回读逐字段的值；是否生效以保存返回和状态里的“未接受”列表为准，列表为空即全部生效。调试曝光 / 增益不在此列表内。</p></>;
+    : <><StatusBadge tone="ok">已应用，相机全部接受</StatusBadge><p>关键触发参数及帧率已通过设备回读核验；其他参数以“未接受”列表为准。调试曝光 / 增益不在此列表内。</p></>;
   return <Card role="region" aria-label="参数生效情况" title={<Heading level={3}>参数生效情况</Heading>}><div className="cg-applied">{body}</div></Card>;
 }

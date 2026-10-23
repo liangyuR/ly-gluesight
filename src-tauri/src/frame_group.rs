@@ -108,11 +108,6 @@ impl Grouper {
         self.seqs.iter().filter_map(|seqs| seqs.last().copied()).max().unwrap_or(0)
     }
 
-    /// 该相机已接受的最大 seq；没有帧为 0。
-    pub fn last_seq(&self, cam: usize) -> u64 {
-        self.seqs.get(cam).and_then(|seqs| seqs.last().copied()).unwrap_or(0)
-    }
-
     /// seq 取 1..=各相机最大 seq 的最大值；长度即帧组数。末尾缺帧的相机同样标 incomplete。
     pub fn groups(&self) -> Vec<FrameGroup> {
         (1..=self.group_count())
@@ -135,12 +130,11 @@ impl Grouper {
     }
 }
 
-/// 丢帧判定（规格 §3）：某台相机帧数与 deviceTriggers 相差 > 1，或与另外每台相机都相差 > 1 → 告警；
-/// device_triggers 为 None 时只比较相机之间。每台相机至多一条告警，两条依据都成立时报 deviceTriggers。
+/// 某台相机帧数与另外每台相机都相差 > 1 时告警。
 ///
 /// “与另外两台相差 > 1”按“与另外每一台都相差 > 1”判：[10, 10, 8] 只有第 3 台告警，
 /// 前两台彼此一致，不因第 3 台少帧而被连带告警。
-pub fn loss_alarms(counts: &[u32], device_triggers: Option<u32>) -> Vec<LossAlarm> {
+pub fn loss_alarms(counts: &[u32]) -> Vec<LossAlarm> {
     let off = |a: u32, b: u32| a.abs_diff(b) > 1;
     counts
         .iter()
@@ -148,8 +142,7 @@ pub fn loss_alarms(counts: &[u32], device_triggers: Option<u32>) -> Vec<LossAlar
         .enumerate()
         .filter_map(|(camera, count)| {
             let others = || counts.iter().copied().enumerate().filter(move |&(other, _)| other != camera);
-            let reason = match device_triggers {
-                Some(device_triggers) if off(count, device_triggers) => Some(LossReason::Triggers { device_triggers }),
+            let reason = match () {
                 // 报相差最大的那台，并列取下标小的
                 _ if others().next().is_some() && others().all(|(_, other_count)| off(count, other_count)) => others()
                     .max_by_key(|&(other, other_count)| (count.abs_diff(other_count), std::cmp::Reverse(other)))
@@ -233,29 +226,19 @@ mod tests {
         assert_eq!(Grouper::new(vec![0]).offer(0, MAX_SEQ + 1), Offer::OutOfRange { seq: MAX_SEQ + 1 });
     }
 
-    /// 规格 §3：某台帧数与 deviceTriggers 相差 > 1，或与另外两台都相差 > 1 → 该相机丢帧告警；≤ 1 正常。
     #[test]
     fn camera_count_differing_by_more_than_one_raises_loss_alarm() {
-        for (case, counts, triggers, alarmed) in [
-            ("全部一致", [10, 10, 10], Some(10), vec![]),
-            ("相差恰好 1", [10, 10, 9], Some(10), vec![]),
-            ("第 3 台比另两台少 2", [10, 10, 8], Some(10), vec![2]),
-            ("第 3 台比 deviceTriggers 少 2", [10, 10, 9], Some(11), vec![2]),
-            ("三台都比 deviceTriggers 少 2", [10, 10, 10], Some(12), vec![0, 1, 2]),
-            ("没有 deviceTriggers：只比相机之间", [10, 10, 8], None, vec![2]),
-            ("没有一台与另两台都相差 > 1", [10, 9, 8], None, vec![]),
+        for (counts, alarmed) in [
+            ([10, 10, 10], vec![]),
+            ([10, 10, 9], vec![]),
+            ([10, 10, 8], vec![2]),
+            ([10, 9, 8], vec![]),
         ] {
-            let cameras: Vec<usize> = loss_alarms(&counts, triggers).iter().map(|alarm| alarm.camera).collect();
-            assert_eq!(cameras, alarmed, "{case}");
+            let cameras: Vec<usize> = loss_alarms(&counts).iter().map(|alarm| alarm.camera).collect();
+            assert_eq!(cameras, alarmed);
         }
-        assert_eq!(
-            loss_alarms(&[10, 10, 9], Some(11)),
-            vec![LossAlarm { camera: 2, count: 9, reason: LossReason::Triggers { device_triggers: 11 } }]
-        );
-        assert_eq!(
-            loss_alarms(&[10, 10, 8], None),
-            vec![LossAlarm { camera: 2, count: 8, reason: LossReason::Cameras { other: 0, other_count: 10 } }]
-        );
+        assert_eq!(loss_alarms(&[10, 10, 8]),
+            vec![LossAlarm { camera: 2, count: 8, reason: LossReason::Cameras { other: 0, other_count: 10 } }]);
     }
 
     /// 规格 §2：帧数 ∈ [N_exp − tol, N_exp + tol] 为正常，越界一帧即 Low / High。

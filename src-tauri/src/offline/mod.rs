@@ -396,7 +396,6 @@ pub fn claim_sample(app: &AppHandle, part_sn: &str, cycle_id: &str) -> Option<Sa
 async fn apply_plc_config(app: &AppHandle, plc: &PlcHost, cycle: &CycleHost, config: PlcConfig) -> Result<(), String> {
     plc.engine().disconnect().await;
     let result = plc.engine().apply_config(config).await;
-    crate::inspection::invalidate_tags();
     let _ = cycle.tx.send(Input::Refresh);
     let _ = app.emit("plc://config", ());
     result

@@ -5,10 +5,6 @@ import { cameraTeachingTasks } from "./cameraTasks";
 import { useWorkspace } from "./context";
 import { stagesV2, stageStatusText, stageStatusV2 } from "./stages";
 
-/**
- * 工作台步骤条（段配方）：采集 → 段列表 → 默认参数 → 走廊示教 → 多轮标定 → 验证与发布。
- * 旧拍照点配方的步骤条是 components.tsx 的 LegacySteps，两者按 WorkspaceView.plan 是否存在二选一。
- */
 export function PlanSteps() {
   const { data } = useWorkspace();
   const { pathname } = useLocation();

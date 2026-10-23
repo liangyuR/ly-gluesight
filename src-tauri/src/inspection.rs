@@ -1,7 +1,4 @@
-use std::collections::HashMap;
-use std::sync::RwLock;
-
-use ly_plc::{Access, ConnectionConfig, DataType, EdgeMode, HeartbeatConfig, PlcConfig, PlcEngine, PlcPoint, PlcValue, ProtocolKind, S7Options};
+use ly_plc::{Access, ConnectionConfig, DataType, EdgeMode, HeartbeatConfig, PlcConfig, PlcPoint, ProtocolKind, S7Options};
 
 pub mod tag {
     pub const PART_START: &str = "partStart";
@@ -32,43 +29,6 @@ pub mod tag {
     pub const ACCEPTED_PLAN_RESERVED: &str = "acceptedPlanReserved";
     pub const RESULT_SEQ: &str = "resultSeq";
     pub const VISION_FAULT: &str = "visionFault";
-}
-
-/// 标签 → 点位 id。节拍频繁按标签读写，不能每次都把整个地址表克隆一遍；地址表保存后清空重建。
-static TAG_IDS: RwLock<Option<HashMap<String, String>>> = RwLock::new(None);
-
-pub fn invalidate_tags() {
-    *TAG_IDS.write().unwrap() = None;
-}
-
-pub fn point_id(engine: &PlcEngine, tag: &str) -> Option<String> {
-    if let Some(map) = TAG_IDS.read().unwrap().as_ref() {
-        return map.get(tag).cloned();
-    }
-    let mut map = HashMap::new();
-    for p in engine.config().points {
-        for t in p.tags {
-            // 同一标签挂在多个点位上时取第一个，与原来的查找顺序一致
-            map.entry(t).or_insert_with(|| p.id.clone());
-        }
-    }
-    let id = map.get(tag).cloned();
-    *TAG_IDS.write().unwrap() = Some(map);
-    id
-}
-
-pub fn read_tag(engine: &PlcEngine, tag: &str) -> Option<PlcValue> {
-    let id = point_id(engine, tag)?;
-    engine.values().get(&id).and_then(|v| v.value.clone())
-}
-
-pub fn read_tag_u32(engine: &PlcEngine, tag: &str) -> Option<u32> {
-    match read_tag(engine, tag)? {
-        PlcValue::Int(i) => u32::try_from(i).ok(),
-        PlcValue::Float(f) => Some(f as u32),
-        PlcValue::Bool(b) => Some(b as u32),
-        PlcValue::Text(_) | PlcValue::Bytes(_) => None,
-    }
 }
 
 /// 涂胶检测通信交互表 V1.1（握手协议 6，点表布局与协议 5 相同）：S7-1200，PLC 写 DB4、PC 写 DB2，两个 DB 都从字节 0 起。
@@ -105,7 +65,7 @@ pub fn s7_phase1_config(plc_db: u16, pc_db: u16) -> Result<PlcConfig, String> {
         (tag::PLAN_RESERVED, "拍照计划保留位", "DBD16", I32, input, NoEdge),
         (tag::DEVICE_SHOTS, "设备计划触发数", "DBW20", I16, input, NoEdge),
         (tag::ACK_SEQ, "确认事务序号", "DBD28", I32, input, NoEdge),
-        (tag::DEVICE_TRIGGERS, "设备已发触发数", "DBW32", I16, input, NoEdge),
+        (tag::DEVICE_TRIGGERS, "采集预留字段（固定 0）", "DBW32", I16, input, NoEdge),
         (tag::PART_SN, "工件 SN", "DBB38.50", Text, input, NoEdge),
         (tag::VISION_READY, "视觉就绪", "DBX0.0", Bool, output, NoEdge),
         (tag::ARMED, "已布防", "DBX0.1", Bool, output, NoEdge),

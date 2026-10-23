@@ -1,5 +1,5 @@
 #Requires -Version 7.0
-# 端到端外壳共用（Test-OfflineE2E、Test-FixtureE2E、Test-LogReplayOffline、Test-Soak dot-source 本文件）：
+# 端到端外壳共用（Test-OfflineE2E、Test-LogReplayOffline、Test-Soak dot-source 本文件）：
 # 输入检查与 lyFlow 运行库解析、Node 依赖检查、隔离实例启动，以及按 PID、标识、可执行文件路径与启动时间核对身份后才结束进程。
 # 状态放在调用方脚本作用域的 $script:E2ERun 里（New-E2ERun 创建）。
 

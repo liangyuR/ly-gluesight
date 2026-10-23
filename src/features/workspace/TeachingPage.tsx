@@ -16,7 +16,6 @@ import { corridorDraft, corridorError, sameCorridor, withCorridor } from "./teac
 import { cameraTeachingTasks } from "./cameraTasks";
 import { frameArrived, readRoundFrame, roundView, type AnyRound, type RoundView } from "./captureRound";
 import { CorridorSettings } from "./CorridorSettings";
-import LegacyTeachingPage from "./LegacyTeachingPage";
 import "./corridor.css";
 
 /** 禁用控件不发指针事件：Tooltip 挂在外包的可聚焦 span 上，原因同时作为控件的无障碍描述。 */
@@ -58,16 +57,10 @@ function useRoundFrame(round: AnyRound | null, camera: string, seq: number, enab
   return state.key === key ? state : { image: null, error: "", loading: enabled && !!round };
 }
 
-/**
- * 走廊示教（段配方，路由 /recipe/teach）：三台相机各示教一条走廊，所有帧共用；每台相机从一轮采集里选一帧，
- * 在这一帧上刷选 / 框选提取走廊（边缘提取能力保留，不再与示教中线逐点比对），设像素当量与检测参数。
- * 旧拍照点配方（WorkspaceView.plan 为空）仍走 LegacyTeachingPage：按 Pose 分组选图、逐点试测、特征定位与标定核对，行为不变。
- * 后端只对 doc.segments 非空的候选输出 plan，按 plan 分流就是按 segments 分流（决策记录第八节）。
- */
 export default function TeachingPage() {
   const { data, doc } = useWorkspace();
   if (!data || !doc) return <WorkspaceEmpty />;
-  if (!data.plan) return <LegacyTeachingPage />;
+  if (!data.plan) return <Notice title="该草稿不是段配方" tone="warn">请新建段配方后配置走廊，旧拍照点草稿不再支持。</Notice>;
   return <CorridorTeaching data={data} doc={doc} plan={data.plan} />;
 }
 

@@ -61,6 +61,9 @@ pub(super) fn burst_checks(w: &Workspace, inputs: BurstInputs) -> Vec<Check> {
     }];
     checks.push(corridor_check(w, inputs.cameras));
     checks.push(segment_check(w));
+    let calibration_devices = super::burst::check_calibration_devices(&w.calibration.rounds, inputs.cameras);
+    checks.push(Check { name: "标定采集参数".into(), passed: calibration_devices.is_ok(),
+        detail: calibration_devices.err().unwrap_or_else(|| "标定轮次与当前相机采集参数一致".into()) });
     checks.extend(x_ref_check(&w.doc));
     let normals: Vec<_> = inputs.samples.iter().filter(|r| matches!(r.expected, Verdict::Ok | Verdict::OkWithExcursion)).collect();
     checks.push(Check {
@@ -202,7 +205,7 @@ fn round_loss(cameras: &[String], round: &CaptureRoundV2) -> Vec<LossAlarm> {
     let counts: Vec<u32> = cameras.iter()
         .map(|c| round.cameras.iter().position(|r| &r.camera_id == c).and_then(|j| round.camera_frames.get(j).copied()).unwrap_or(0))
         .collect();
-    loss_alarms(&counts, round.device_triggers.map(u32::from))
+    loss_alarms(&counts)
 }
 
 /// 用当前候选判一轮验证样本：每帧指标（`measure_round` 的结果，按计划相机）→ 未分段区域 → 丢帧告警 → burst_judge。
@@ -362,7 +365,7 @@ pub(super) fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeD
             Some(serde_json::from_str::<Value>(&crate::fsio::read_text(&external).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?)
         } else { None };
         let reference = vision::camera_calib_key(inspect)?.reference();
-        let calibration = json!({"schemaVersion": 1, "camera": inspect.camera, "reference": reference, "mmPerPx": inspect.mm_per_px, "source": source});
+        let calibration = json!({"schemaVersion": 1, "camera": inspect.camera, "reference": reference, "mmPerPx": inspect.mm_per_px, "source": source, "acquisition": crate::production::acquisition_tag(&app.state::<CycleHost>().camera.configs().into_iter().find(|c| c.id == inspect.camera).ok_or("发布相机不存在")?)});
         sizes.push(taught.frame.size);
         cameras.push(crate::release::CameraInput {
             camera: inspect.camera.clone(),

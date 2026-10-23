@@ -158,7 +158,7 @@ struct Summary {
 }
 
 /// 只沿各相机已写盘的 seq 找空缺（O(帧数 + 缺帧数)）：进行中的轮次每次节拍轮询都要算一次实时统计。
-fn summarize<S: std::borrow::Borrow<BTreeSet<u64>>>(group_count: u64, saved: &[S], device_triggers: Option<u16>) -> Summary {
+fn summarize<S: std::borrow::Borrow<BTreeSet<u64>>>(group_count: u64, saved: &[S]) -> Summary {
     let camera_frames: Vec<u32> = saved.iter().map(|s| u32::try_from(s.borrow().len()).unwrap_or(u32::MAX)).collect();
     let mut missing_frames = Vec::new();
     for (camera, seqs) in saved.iter().enumerate() {
@@ -172,7 +172,7 @@ fn summarize<S: std::borrow::Borrow<BTreeSet<u64>>>(group_count: u64, saved: &[S
     missing_frames.sort_unstable_by_key(|m| (m.seq, m.camera));
     let mut incomplete_groups: Vec<u64> = missing_frames.iter().map(|m| m.seq).collect();
     incomplete_groups.dedup();
-    let loss_alarms = loss_alarms(&camera_frames, device_triggers.map(u32::from));
+    let loss_alarms = loss_alarms(&camera_frames);
     Summary { group_count, camera_frames, incomplete_groups, missing_frames, loss_alarms }
 }
 
@@ -227,7 +227,7 @@ impl BurstRun {
 
     fn summary(&self) -> Summary {
         let saved: Vec<&BTreeSet<u64>> = self.cams.iter().map(|c| &c.saved).collect();
-        summarize(self.max_seq, &saved, self.round.device_triggers)
+        summarize(self.max_seq, &saved)
     }
 
     /// 进行中的轮次带上实时统计；已结束的轮次统计在结束时已定。
@@ -388,7 +388,7 @@ impl RecipeCaptureHost {
         Ok(())
     }
 
-    /// PLC 结束：deviceTriggers 只记录（丢帧告警的参考）；之后等 drain 窗口到期、已入队的帧写完即完成。
+    /// PLC 结束：deviceTriggers 为保留字段，不参与丢帧告警；之后等 drain 窗口到期、已入队的帧写完即完成。
     pub fn burst_plc_ended(&self, device_triggers: Option<u16>) -> Result<(), String> {
         let mut guard = self.burst.lock().unwrap();
         let run = guard.as_mut().filter(|r| r.round.state.active()).ok_or("没有正在进行的示教采集")?;
@@ -611,7 +611,7 @@ fn validate_record(expected_id: &str, round: &CaptureRoundV2, lines: Option<&[Fr
     if round.group_count > MAX_SEQ || round.camera_frames.len() != n || !missing_ok || incomplete != round.incomplete_groups
         || cameras.iter().zip(&round.camera_frames).any(|(c, &frames)| c.received_count != frames)
         || round.camera_frames.iter().enumerate().any(|(i, &frames)| frames as u64 + round.missing_frames.iter().filter(|m| m.camera == i).count() as u64 != round.group_count)
-        || round.loss_alarms != loss_alarms(&round.camera_frames, round.device_triggers.map(u32::from)) {
+        || round.loss_alarms != loss_alarms(&round.camera_frames) {
         return Err("采集记录的帧组、缺帧或丢帧告警统计不自洽".into());
     }
     let terminal_ok = match round.state {
@@ -636,7 +636,7 @@ fn validate_record(expected_id: &str, round: &CaptureRoundV2, lines: Option<&[Fr
         if *baselines.entry(line.camera).or_insert(baseline) != baseline { return Err(format!("相机 {} 的帧计数与帧组序号对不上", camera.camera_id)); }
     }
     if round.state == CaptureState::Complete {
-        let expected = summarize(round.group_count, &saved, round.device_triggers);
+        let expected = summarize(round.group_count, &saved);
         if saved.iter().any(|s| s.last().is_some_and(|&seq| seq > round.group_count))
             || expected.camera_frames != round.camera_frames || expected.missing_frames != round.missing_frames {
             return Err("完整采集的统计与已写盘的帧不一致".into());
@@ -655,7 +655,7 @@ pub(super) fn restore(path: &Path, mut round: CaptureRoundV2) -> Result<CaptureR
         if valid { saved[line.camera].insert(line.seq); }
     }
     let group_count = saved.iter().filter_map(|s| s.last().copied()).max().unwrap_or(0);
-    let summary = summarize(group_count, &saved, round.device_triggers);
+    let summary = summarize(group_count, &saved);
     apply(&mut round, summary);
     round.state = CaptureState::Failed;
     round.error = Some("应用退出导致本轮采集中断，请整圈重采".into());

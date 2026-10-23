@@ -14,7 +14,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 
 const device = (serial: string) => ({ serial, model: "MV-CA050", userName: "", transport: "GigE" as const, ip: "192.168.1.10" });
 const camera = (id: string, name: string, over: Partial<CameraConfig> = {}): CameraConfig => ({ ...defaultCameraConfig, id, name, serial: id + "-SN", ...over });
-const status = (cam: number, config: CameraConfig): CameraStatus => ({ cam, id: config.id, name: config.name, source: "mvs", ready: true, released: false, message: "", device: device(config.serial), sdkVersion: null, frames: 0, fps: 0, maxFps: null, lostPackets: 0, droppedFrames: 0, warnings: [] });
+const status = (cam: number, config: CameraConfig): CameraStatus => ({ cam, id: config.id, name: config.name, source: "mvs", ready: true, released: false, message: "", device: device(config.serial), sdkVersion: null, frames: 0, fps: 0, maxFps: null, configuredFrameRate: 10, lostPackets: 0, droppedFrames: 0, warnings: [] });
 
 let configs: CameraConfig[];
 let released: string[];
@@ -22,7 +22,7 @@ let bandwidth: BandwidthEstimate;
 beforeEach(() => {
   configs = [camera("cam1", "左相机"), camera("cam2", "右相机")];
   released = [];
-  bandwidth = { hz: 25, mbpsTotal: 524.3, perCamera: [262.1, 262.1], budgetMbps: 800, overBudget: false };
+  bandwidth = { hz: 10, mbpsTotal: 524.3, perCamera: [262.1, 262.1], budgetMbps: 800, overBudget: false };
   vi.mocked(listen).mockResolvedValue(() => {});
   vi.mocked(invoke).mockImplementation(async (command) => {
     switch (command) {
@@ -94,7 +94,7 @@ describe("出图验证", () => {
     await openCamera("左相机 cam1");
     const test = within(await screen.findByRole("region", { name: "出图验证" }));
     await waitFor(() => expect(test.getByRole("button", { name: "取一帧" })).toBeEnabled());
-    await userEvent.type(screen.getByRole("spinbutton", { name: "触发延时（µs）" }), "5");
+    await userEvent.type(screen.getByRole("textbox", { name: "名称" }), "A");
     expect(test.getByRole("button", { name: "取一帧" })).toBeDisabled();
     expect(test.getByText("先保存并应用再测试")).toBeVisible();
   });
@@ -102,7 +102,7 @@ describe("出图验证", () => {
 
 describe("应用到全部相机", () => {
   it("复制触发接线 → 其他已绑定相机写入同样的接线，已释放和未绑定的相机跳过并提示，不中断其余相机", async () => {
-    configs = [camera("cam1", "左相机", { triggerDelayUs: 30, debouncerUs: 8 }), camera("cam2", "右相机"), camera("cam3", "新相机", { serial: "" }), camera("cam4", "后相机")];
+    configs = [camera("cam1", "左相机", { triggerDelayUs: 30, debouncerUs: 8, frameRate: 18 }), camera("cam2", "右相机"), camera("cam3", "新相机", { serial: "" }), camera("cam4", "后相机")];
     released = ["cam2"];
     await openCamera("左相机 cam1");
     const batch = within(await screen.findByLabelText("应用到全部相机"));
@@ -111,21 +111,21 @@ describe("应用到全部相机", () => {
     expect(await batch.findByText("跳过：已释放给 MVS，重新连接后再应用")).toBeVisible();
     expect(batch.getByText("跳过：未绑定设备")).toBeVisible();
     const saved = vi.mocked(invoke).mock.calls.filter(([command]) => command === "camera_save_config").map(([, args]) => args as { cam: number; config: CameraConfig });
-    expect(saved).toEqual([{ cam: 3, config: expect.objectContaining({ id: "cam4", name: "后相机", serial: "cam4-SN", triggerDelayUs: 30, debouncerUs: 8 }) }]);
+    expect(saved).toEqual([{ cam: 3, config: expect.objectContaining({ id: "cam4", name: "后相机", serial: "cam4-SN", triggerDelayUs: 30, debouncerUs: 8, frameRate: 18 }) }]);
   });
 });
 
 describe("链路带宽", () => {
   it.each([
-    ["三台相机 25 Hz 合计超过单口预算 → 显示合计与带宽超预算警告", 943.7, true],
-    ["三台相机 25 Hz 合计未超单口预算 → 只显示合计，不显示警告", 786.4, false],
+    ["三台相机 10 fps 合计超过单口预算 → 显示合计与带宽超预算警告", 943.7, true],
+    ["三台相机 10 fps 合计未超单口预算 → 只显示合计，不显示警告", 786.4, false],
   ])("%s", async (_, mbpsTotal, overBudget) => {
     configs = [camera("cam1", "左相机"), camera("cam2", "右相机"), camera("cam3", "后相机")];
-    bandwidth = { hz: 25, mbpsTotal, perCamera: [mbpsTotal / 3, mbpsTotal / 3, mbpsTotal / 3], budgetMbps: 800, overBudget };
+    bandwidth = { hz: 10, mbpsTotal, perCamera: [mbpsTotal / 3, mbpsTotal / 3, mbpsTotal / 3], budgetMbps: 800, overBudget };
     await openCamera("左相机 cam1");
     const region = await screen.findByRole("region", { name: "链路带宽" });
     await waitFor(() => expect(region).toHaveTextContent(`${Math.round(mbpsTotal)} Mbps`));
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_bandwidth", { hz: 25 });
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_bandwidth", { hz: 10 });
     if (overBudget) expect(within(region).getByText("带宽超预算")).toBeVisible();
     else expect(within(region).queryByText("带宽超预算")).not.toBeInTheDocument();
   });
@@ -170,4 +170,35 @@ describe("相机组总览", () => {
     expect(screen.queryByRole("group", { name: "切换相机" })).not.toBeInTheDocument();
     window.getSelection()!.removeAllRanges();
   });
+});
+
+
+describe("触发方式", () => {
+  it("修改 Line0 帧率后保存 → 保留高电平并写入新帧率", async () => {
+    await openCamera("左相机 cam1");
+    const fps=screen.getByRole("spinbutton",{name:"设定帧率"});
+    fireEvent.change(fps,{target:{value:"15"}});
+    await userEvent.click(screen.getByRole("button",{name:"保存并应用"}));
+    await waitFor(()=>expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_save_config",{cam:0,config:expect.objectContaining({frameRate:15,triggerActivation:"LevelHigh"})}));
+  });
+  it("Software 调试 → 隐藏硬件触发参数且允许单帧取图", async () => {
+    configs=[camera("cam1","左相机",{triggerSource:"Software"})];
+    await openCamera("左相机 cam1");
+    expect(screen.queryByRole("spinbutton",{name:"设定帧率"})).not.toBeInTheDocument();
+    expect(screen.queryByRole("spinbutton",{name:"输入滤波（µs）"})).not.toBeInTheDocument();
+    expect(screen.queryByRole("spinbutton",{name:"触发延时（µs）"})).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button",{name:"取一帧"}));
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_soft_trigger",{cam:0});
+  });
+});
+
+it("旧 Software 边沿配置切回 Line0 → 保存为高电平", async()=>{
+ Object.defineProperty(HTMLElement.prototype,"scrollIntoView",{value:()=>{},configurable:true});
+ configs=[camera("cam1","左相机",{triggerSource:"Software",triggerActivation:"RisingEdge" as CameraConfig["triggerActivation"]})];
+ await openCamera("左相机 cam1");
+ screen.getByRole("combobox",{name:"触发源"}).focus();
+ await userEvent.keyboard("{ArrowDown}");
+ fireEvent.click(await screen.findByRole("option",{name:"Line0（高电平连续采集）"}));
+ await userEvent.click(screen.getByRole("button",{name:"保存并应用"}));
+ await waitFor(()=>expect(vi.mocked(invoke)).toHaveBeenCalledWith("camera_save_config",{cam:0,config:expect.objectContaining({triggerSource:"Line0",triggerActivation:"LevelHigh"})}));
 });

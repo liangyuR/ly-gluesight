@@ -51,7 +51,6 @@ if ($ResetData -and (Test-Path -LiteralPath $taskUiData)) {
 }
 New-Item -ItemType Directory -Path $taskUiOutput -Force | Out-Null
 New-Item -ItemType Directory -Path $taskUiDataParent -Force | Out-Null
-
 if (!('GlueSightTest.IsolatedLauncher' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;

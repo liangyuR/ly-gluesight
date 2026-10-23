@@ -2,8 +2,8 @@
 // 两个标准 DB 均取消“优化的块访问”：GlueSightPlcArea 编号设为 DB4（PLC 写、PC 读，字节 0–89），
 // GlueSightPcArea 编号设为 DB2（PC 写、PLC 读，字节 0–71）。生成块后核对编辑器偏移量列与协议第 2、3 节逐行一致。
 // 16 位字段为 Int（只用 0–32767），SN 为 String[50]。本 FB 只写 DB4，不写 DB2。
-// 协议 6：shotCount/deviceShots 填 PC 导出计划的 expectedTotal（ΣN_exp）；deviceTriggers 只作参考，
-// 运动中不与计划数比较，结束时也不要求等于 deviceShots；累计脉冲计数回退仍判 7006。
+// 协议 6：shotCount/deviceShots 填 PC 导出计划的 expectedTotal（ΣN_exp）；deviceTriggers 保留写 0，
+// 相机在 MotionActive 高电平期间自行定频曝光，PLC 不生成或计数曝光脉冲。
 DATA_BLOCK "GlueSightPlcArea"
 { S7_Optimized_Access := 'FALSE' }
 VERSION : 0.1
@@ -69,7 +69,7 @@ VERSION : 0.1
       ProductCode : Int;
       PlanVersion : DInt;
       DeviceShots : Int;
-      IssuedPulseCount : UDInt;
+      MotionActive : Bool;
       MotionComplete : Bool;
       ExternalFault : Bool;
       ArmTimeout : Time := T#10s;
@@ -81,6 +81,7 @@ VERSION : 0.1
    VAR_OUTPUT
       State : UInt := UINT#90;
       ReadyForPart : Bool;
+      MotionPermit : Bool;
       TriggerPermit : Bool;
       StopNewTriggers : Bool;
       PcAlive : Bool;
@@ -110,7 +111,6 @@ VERSION : 0.1
       FrozenPlanVersion : DInt;
       FrozenShotCount : Int;
       FrozenDeviceShots : Int;
-      CounterBase : UDInt;
       EndValidated : Bool;
       HeartbeatTimer : IEC_TIMER;
       PcWatchdog : IEC_TIMER;
@@ -125,8 +125,6 @@ VERSION : 0.1
       PhaseTimed : Bool;
       PhaseLimit : Time;
       TripCode : UInt;
-      Delta : UDInt;
-      CurrentTriggers : Int;
       PayloadMatches : Bool;
       AcceptedMatches : Bool;
       ResultValid : Bool;
@@ -200,8 +198,10 @@ BEGIN
       AND ("GlueSightPlcArea".productCode = #FrozenProductCode)
       AND ("GlueSightPlcArea".planVersion = #FrozenPlanVersion)
       AND ("GlueSightPlcArea".shotCount = #FrozenShotCount)
-      AND ("GlueSightPlcArea".deviceShots = #FrozenDeviceShots);
-   #AcceptedMatches := ("GlueSightPcArea".acceptedSeq = #FrozenSeq);
+      AND ("GlueSightPlcArea".deviceShots = #FrozenDeviceShots)
+      AND ("GlueSightPlcArea".planReserved = DINT#0);
+   #AcceptedMatches := ("GlueSightPcArea".acceptedSeq = #FrozenSeq)
+      AND ("GlueSightPcArea".acceptedPlanReserved = DINT#0);
 
    IF #State <> UINT#90 THEN
       IF #PcWatchdog.Q THEN
@@ -275,7 +275,6 @@ BEGIN
                   OR "GlueSightPcArea".visionReady THEN
                   #TripCode := UINT#7005;
                ELSE
-                  #CounterBase := #IssuedPulseCount;
                   #State := UINT#30;
                END_IF;
             END_IF;
@@ -287,25 +286,10 @@ BEGIN
              ELSIF "GlueSightPcArea".done THEN
                 #TripCode := UINT#7005;
             ELSE
-               IF #IssuedPulseCount < #CounterBase THEN
-                  #TripCode := UINT#7006;
-               ELSE
-                  #Delta := #IssuedPulseCount - #CounterBase;
-                  // 协议 6：deviceTriggers 只作参考，不与计划数比较；Int 只用 0–32767，超出时饱和，不得回绕成负数。
-                  IF #Delta > UDINT#32767 THEN
-                     #CurrentTriggers := INT#32767;
-                  ELSE
-                     #CurrentTriggers := UDINT_TO_INT(#Delta);
-                  END_IF;
-               END_IF;
-               IF #TripCode = UINT#0 THEN
-                  "GlueSightPlcArea".deviceTriggers := #CurrentTriggers;
-                  IF #MotionComplete THEN
-                     // 运动结束、脉冲串停发后：先写最终 deviceTriggers，再置 partEnd；不要求等于 FrozenDeviceShots。
-                     #EndValidated := TRUE;
-                     "GlueSightPlcArea".partEnd := TRUE;
-                     #State := UINT#40;
-                  END_IF;
+               IF #MotionComplete THEN
+                  #EndValidated := TRUE;
+                  "GlueSightPlcArea".partEnd := TRUE;
+                  #State := UINT#40;
                END_IF;
             END_IF;
          40:
@@ -413,10 +397,13 @@ BEGIN
       AND NOT "GlueSightPcArea".done AND NOT "GlueSightPlcArea".partStart
       AND NOT "GlueSightPlcArea".partEnd AND NOT "GlueSightPlcArea".resultAck
       AND NOT #Pending AND NOT #ExternalFault;
-   #TriggerPermit := (#State = UINT#30) AND #PcAlive AND NOT #ExternalFault
+   #MotionPermit := (#State = UINT#30) AND #PcAlive AND NOT #ExternalFault
       AND "GlueSightPcArea".armed AND "GlueSightPcArea".busy
-      AND #AcceptedMatches AND NOT "GlueSightPcArea".visionFault
+      AND #AcceptedMatches AND #PayloadMatches AND NOT "GlueSightPcArea".visionFault
+      AND NOT "GlueSightPcArea".done AND NOT "GlueSightPcArea".visionReady
       AND NOT "GlueSightPlcArea".partEnd;
+   #TriggerPermit := #MotionPermit AND #MotionActive AND NOT #MotionComplete;
+   "GlueSightPlcArea".deviceTriggers := INT#0;
    #StopNewTriggers := NOT #TriggerPermit;
    #ResetRequired := #State >= UINT#90;
 END_FUNCTION_BLOCK

@@ -1,16 +1,12 @@
-import { errorText } from "../../lib/errors";
-import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { useRef, type PointerEvent } from "react";
 import { Link } from "react-router-dom";
-import { Save, Upload } from "lucide-react";
-import { Button } from "qing-steel";
 import type { PointVis, Recipe, RecipeDoc } from "../cycle/types";
 import { CameraSegmentOverview } from "../plan/CameraSegmentOverview";
 import type { WorkspacePlanView } from "../plan/types";
 import { expectedText } from "../plan/vis";
-import { shotLabel, shotState, shotStateLabel, teachStatus, visColor } from "../cycle/vis";
-import { workspaceApi } from "./api";
+import { shotState, shotStateLabel, visColor } from "../cycle/vis";
 import { useWorkspace } from "./context";
-import { Badge, GrayViewer, KV, Notice, Panel, shotOverlay, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
+import { Badge, GrayViewer, Notice, Panel, useGrayImage, WorkspaceBar, WorkspaceEmpty } from "./components";
 import { cameraTeachingTasks, type CameraTeachingTask } from "./cameraTasks";
 import type { Overview } from "./types";
 import "./corridor.css";
@@ -72,62 +68,6 @@ export function WorkpieceOverview({layout,overview,selected=0,onSelect,onMove,vi
   </svg>;
 }
 
-/** 旧拍照点模型的工件总览（按拍照点摆位置、绑定检测原图）：只给旧配方用，段配方走 SegmentOverview。 */
-function LegacyOverviewPage() {
-  const {data,doc,dirty,busy,act,setError} = useWorkspace();
-  const [overview,setOverview] = useState<Overview>({background:null,positions:[],saved:false});
-  const [selected,setSelected] = useState(0);
-  const [reading,setReading] = useState(false);
-  const [saving,setSaving]=useState(false);
-  const importSerial=useRef(0),saveSerial=useRef(0),readingRef=useRef(false),savingRef=useRef(false);
-  const scope=(data?.workspace.doc.id??"")+":"+(data?.workspace.revision??0);
-  const current=useRef({scope,alive:true});current.current.scope=scope;
-  useEffect(()=>{current.current.alive=true;return()=>{current.current.alive=false;importSerial.current++;saveSerial.current++;};},[]);
-  useEffect(() => {
-    importSerial.current++;saveSerial.current++;readingRef.current=false;savingRef.current=false;setReading(false);setSaving(false);
-    if (data) {const matches=data.workspace.overview.positions.length===data.layout.shots.length;setOverview({...data.workspace.overview,saved:matches&&data.workspace.overview.saved,positions:matches ? data.workspace.overview.positions : defaultPositions(data.layout)});setSelected(overviewGroups(data.layout)[0]?.k ?? 0);}
-  },[data?.workspace.revision,data?.workspace.doc.id]);
-  const frame = data?.workspace.frames[selected];
-  const {image,error,loading} = useGrayImage(doc?.id ?? null,frame?.image?.id ?? null);
-  if(!data||!doc)return <WorkspaceEmpty />;
-  const displayDirty = JSON.stringify(overview) !== JSON.stringify({...data.workspace.overview,positions:data.workspace.overview.positions.length===data.layout.shots.length ? data.workspace.overview.positions : defaultPositions(data.layout)});
-  const unlocked=!busy&&!dirty&&!reading&&!saving;
-  const importFile = (file:File) => {
-    if(!unlocked||readingRef.current||savingRef.current)return;
-    if(!file.size || file.size>1_000_000 || !["image/png","image/jpeg","image/webp"].includes(file.type))return setError("请导入非空且 1 MB 以内的 PNG、JPEG、WebP 总览背景");
-    const serial=++importSerial.current;readingRef.current=true;setReading(true);
-    const valid=()=>current.current.alive&&current.current.scope===scope&&serial===importSerial.current;
-    const finish=(error?:string)=>{if(!valid())return;if(error)setError(error);readingRef.current=false;setReading(false);};
-    try{
-      const reader=new FileReader();
-      reader.onload=()=>{
-        if(!valid())return;
-        const background=reader.result;
-        if(typeof background!=="string"||!/^data:image\/(png|jpeg|webp);base64,.+/.test(background)){finish("总览背景不是可读取的图像");return;}
-        const decoded=new Image();
-        decoded.onload=()=>{if(!valid())return;if(!decoded.naturalWidth||!decoded.naturalHeight){finish("总览背景不是可读取的图像");return;}setOverview(v=>({...v,background,saved:false}));finish();};
-        decoded.onerror=()=>finish("总览背景不是可读取的图像");
-        decoded.src=background;
-      };
-      reader.onerror=()=>finish("总览图读取失败");reader.onabort=()=>finish("总览图读取已取消");
-      reader.readAsDataURL(file);
-    }catch{finish("总览图读取失败");}
-  };
-  const save=async()=>{
-    if(!unlocked||readingRef.current||savingRef.current)return;
-    savingRef.current=true;setSaving(true);const serial=++saveSerial.current;
-    const valid=()=>current.current.alive&&current.current.scope===scope&&serial===saveSerial.current;
-    try{await act(()=>workspaceApi.saveOverview(doc.id,data.workspace.revision,overview),"总览布置已保存，拍照与测量不受影响");}
-    catch(e){if(valid())setError(errorText(e));}
-    finally{if(valid()){savingRef.current=false;setSaving(false);}}
-  };
-  return <div className="wp-page"><WorkspaceBar /><div className="wp-actions"><Badge tone={data.workspace.overview.saved&&!displayDirty?"ok":"warn"}>{data.workspace.overview.saved&&!displayDirty?"总览已保存":"总览待保存"}</Badge><span className="spacer" /><Link className="qs-btn tonal" to="/recipe/validation">验证与发布</Link></div><div className="wp-columns"><Panel title="工件总览" detail="每个拍照位置一个框，绑定本组检测图；点击查看原图" actions={<Button variant="filled" leadingIcon={<Save size={15}/>} disabled={!unlocked} onClick={()=>void save()}>保存总览</Button>}>
-      <WorkpieceOverview layout={data.layout} overview={overview} selected={selected} onSelect={setSelected} onMove={unlocked ? (k,p)=>setOverview(v=>({...v,saved:false,positions:v.positions.map((previous,i)=>data.layout.shots[i].poseId===data.layout.shots[k].poseId?p:previous)})) : undefined}/>
-      <div className="wp-actions" style={{marginTop:14}}><label className="qs-btn tonal"><Upload size={15}/>{reading?"正在读取总览图…":"导入总览图"}<input type="file" aria-label="导入总览图" hidden accept="image/png,image/jpeg,image/webp" disabled={!unlocked} onChange={e=>{if(e.target.files?.[0])void importFile(e.target.files[0]);e.target.value="";}}/></label><Button disabled={!unlocked} onClick={()=>setOverview(v=>({...v,saved:false,positions:defaultPositions(data.layout)}))}>自动布置</Button>{overview.background&&<Button disabled={!unlocked} onClick={()=>setOverview(v=>({...v,background:null,saved:false}))}>移除背景</Button>}</div>
-    </Panel><div className="wp-stack"><Panel title={(data.layout.shots[selected]?.poseId ?? "未选择位置")+" · 检测原图"}><GrayViewer image={image} loading={loading} error={error} label={frame?.image?.id??"尚未取样"} overlay={shotOverlay(data.layout,selected)} emptyHint={data.layout.shots.length ? "" : "整圈采集并采用本轮图像后，点击帧框查看各组检测图。"}/></Panel><Panel title="拍照点"><KV label="胶路示教">{data.coverage == null ? "—" : data.coverage.toFixed(0) + "%"}</KV><KV label="拍照位置">{overviewGroups(data.layout).length} 个</KV><KV label="编号 · 相机">{shotLabel(data.layout.shots[selected],selected)}</KV><KV label="胶条">{data.layout.shots[selected]?.bead ?? "—"}</KV><KV label="Pose">{data.layout.shots[selected]?.poseId ?? "—"}</KV><KV label="示教状态">{data.layout.shots[selected] ? teachStatus(data.layout.shots[selected]) : "—"}</KV></Panel><Notice title="显示布置独立保存">拖动帧框只改变显示位置，不影响机器人拍照位置和示教中线。</Notice></div></div></div>;
-}
-
-/** 一台相机的示教帧与走廊（只读）：点“去示教”进入这台相机的走廊示教。 */
 function CameraFrame({ docId, task, corridor }: { docId: string; task: CameraTeachingTask; corridor: [number, number][] }) {
   const { image, error, loading } = useGrayImage(docId, task.frame?.id ?? null);
   return <>
@@ -141,7 +81,7 @@ function CameraFrame({ docId, task, corridor }: { docId: string; task: CameraTea
 function SegmentOverview({ plan, doc }: { plan: WorkspacePlanView; doc: RecipeDoc }) {
   const tasks = cameraTeachingTasks(plan);
   return <div className="wp-page"><WorkspaceBar />
-    <Panel title="相机与段" detail="三台相机共用一个触发；段沿胶路顺序排列，预期帧数由多轮标定得出">
+    <Panel title="相机与段" detail="相机由同一路高电平启停，各自按设定帧率采集；段沿胶路顺序排列，预期帧数由多轮标定得出">
       <CameraSegmentOverview cameras={plan.cameras} segments={plan.segments} />
       <div className="wp-actions" style={{ marginTop: 12 }}>
         <Badge tone={plan.calibrated ? "ok" : "warn"}>{plan.calibrated ? `预期总数 ${expectedText(plan.expectedTotal, plan.toleranceTotal)}` : "预期总数待标定"}</Badge>
@@ -157,5 +97,5 @@ function SegmentOverview({ plan, doc }: { plan: WorkspacePlanView; doc: RecipeDo
 
 export default function OverviewPage() {
   const { data, doc } = useWorkspace();
-  return data?.plan && doc ? <SegmentOverview plan={data.plan} doc={doc} /> : <LegacyOverviewPage />;
+  return data?.plan && doc ? <SegmentOverview plan={data.plan} doc={doc} /> : <WorkspaceEmpty />;
 }

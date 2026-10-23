@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Camera, ChevronLeft, ChevronRight, ExternalLink, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Alert, Button, EmptyState, StatusBadge } from "qing-steel";
@@ -7,7 +7,6 @@ import CameraOverview from "../features/camera/components/CameraOverview";
 import { AppliedPanel } from "../features/camera/components/FramePreview";
 import { cameraHealth, StateBadge } from "../features/camera/components/health";
 import type { CameraConfigHandle } from "../features/camera/components/CameraConfigPanel";
-import { syncExclusion, useSyncCheck } from "../features/camera/sync";
 import { useRigConfig } from "../features/camera/useRigConfig";
 import { useUnsavedGuard } from "../features/camera/useUnsavedGuard";
 import { OfflineManagedNotice, useCycle, useSiteStatus } from "../features/cycle";
@@ -40,8 +39,6 @@ export default function CameraPage() {
   const {guard,dialog}=useUnsavedGuard({dirty,save:()=>form.current?.save()??Promise.resolve(true),discard:()=>form.current?.discard()});
 
   const statusOf=(i:number)=>statuses.find(s=>s.cam===i)??null;
-  const members=useMemo(()=>configs.map((c,i)=>({cam:i,excluded:syncExclusion(c,statuses.find(s=>s.cam===i)??null)})),[configs,statuses]);
-  const sync=useSyncCheck(members);
   const cam=detailId==null?-1:configs.findIndex(c=>c.id===detailId);
   const config=configs[cam]??null;
   const status=config?statusOf(cam):null;
@@ -84,7 +81,7 @@ export default function CameraPage() {
     finally{pending.current=false;if(mounted.current)setAction("");}
   };
 
-  const notice=busy?<Notice title="当前工件正在检测，配置在工件结束后可修改">总览与同步触发核对继续实时刷新；添加 / 移除相机、绑定、触发接线、取一帧和释放给 MVS 暂不可用，避免打断在途采集。</Notice>:readOnly?<OfflineManagedNotice>相机组按离线来源临时生成，离线期间不能修改或增删相机。</OfflineManagedNotice>:null;
+  const notice=busy?<Notice title="当前工件正在检测，配置在工件结束后可修改">总览与帧计数继续实时刷新；添加 / 移除相机、绑定、触发接线、取一帧和释放给 MVS 暂不可用，避免打断在途采集。</Notice>:readOnly?<OfflineManagedNotice>相机组按离线来源临时生成，离线期间不能修改或增删相机。</OfflineManagedNotice>:null;
   const calibration=(text:string)=><Link className="cg-link quiet" to="/camera/calibration" state={navigationState}>{text}<ChevronRight size={14}/></Link>;
 
   if(!configs.length)return <div className="cg-page">
@@ -97,7 +94,7 @@ export default function CameraPage() {
   if(!config)return <div className="cg-page">
     <ReturnButton disabled={!!action} guard={guard} hint="配置后保存并应用，再返回继续。"/>
     {notice}
-    <CameraOverview configs={configs} statuses={statuses} lastFrame={lastFrame} members={members} sync={sync} lockedReason={lockedReason} canReconnect={desktop&&!readOnly} loading={loading} adding={action==="add"} error={error}
+    <CameraOverview configs={configs} statuses={statuses} lastFrame={lastFrame} lockedReason={lockedReason} canReconnect={desktop&&!readOnly} loading={loading} adding={action==="add"} error={error}
       onOpen={open} onRefresh={()=>void reload()} onAdd={readOnly?undefined:()=>void add()} onReconnect={i=>cameraApi.reconnect(i)}
       footer={<div className="cg-row" style={{justifyContent:"flex-end"}}>{calibration("前往飞拍标定")}</div>}/>
     {dialog}

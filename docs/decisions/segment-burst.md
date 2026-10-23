@@ -1,5 +1,15 @@
 # 分段连拍飞拍决策记录（segment-burst）
 
+## 2026-10-23 高电平采集修订（当前实现依据）
+
+以下修订覆盖本文历史条目中有关 PLC 脉冲、deviceTriggers、提前收尾和旧拍照点兼容的约定；历史测试与决策记录保留用于追溯。
+
+- 协议保持 6，DB 布局不变；deviceTriggers 保留写 0，不参与计数、告警、收尾或下一件基线。
+- Line0 高电平期间相机按软件设定帧率连续采集，默认 10 fps；PLC 仅门控采集使能，不产生逐帧脉冲。Software 保留给单帧标定与调试。
+- partEnd 后必须等待完整 drain 窗口，再完成测量与结果交付；下一件须等待当前件释放。相机以 SDK 帧号配组，帧数告警仅比较相机之间，不代表曝光同步。
+- 旧拍照点配方从未部署，不再保留运行、迁移或专属测试。当前协议与现场接线以 [通讯协议](../integration/plc-communication-protocol.md) 为准。
+
+
 依据：分段连拍飞拍方案第 18 版（2026-10-22，下称“规格”）、实施计划修订版第 2 版（下称“计划”）与实现决策补充（2026-10-22，用户已确认，下称“决策补充”）。三者冲突时以决策补充为准，其次规格，再次计划。基线为分支 `feat/segment-burst-flyshot` 的 `feb3a7c`。
 
 本文件记录三类内容：
@@ -396,7 +406,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 **75 fps 不可达时的降级方案**（由用户决定，PC 不自行降频）：
 
 - 触发条件（任一）：现场机探针的串行 p95 代入公式得到的线程数超过 `min(4, 逻辑核 − 2)`；E2 压测出现预算满或测量队列满（记缺帧 / Unmeasured）。
-- 第一步，降低 PLC 脉冲频率（改 PLC 点表里的频率，PC 无需改代码）。可持续帧率 = 0.7 × 该机满线程实测吞吐，Hz = ⌊可持续帧率 / 3⌋。以本机串行 p95 30.3 ms 按公式推算（推算值，未逐档实测）：25 Hz（75 fps）需 4 线程，20 Hz（60 fps）需 3，15 Hz（45 fps）需 2，10 Hz（30 fps）需 2。本机 6 线程吞吐 109–135 fps 的 70% 是 76–94 fps，即 25 Hz 刚好踩在 0.7 的线上，没有富余。
+- 第一步，在软件相机配置中降低固定帧率（重新标定、验证和发布）。可持续帧率 = 0.7 × 该机满线程实测吞吐，Hz = ⌊可持续帧率 / 3⌋。以本机串行 p95 30.3 ms 按公式推算（推算值，未逐档实测）：25 Hz（75 fps）需 4 线程，20 Hz（60 fps）需 3，15 Hz（45 fps）需 2，10 Hz（30 fps）需 2。本机 6 线程吞吐 109–135 fps 的 70% 是 76–94 fps，即 25 Hz 刚好踩在 0.7 的线上，没有富余。
 - 降频的连带影响：每段 N_exp 随频率变，必须重新标定，并按默认做法 6 分配新的 `plan_version`、提示 PLC 同步 shotCount；规格 §0 的 10～25 Hz 范围不变。
 - 第二步才考虑缩短走廊（减少测点数）等需要改算法的做法；本轮不做。
 - 在降级之前和之后，测量跟不上时都不会静默丢帧：该帧记缺帧或 Unmeasured，该组标 incomplete，整件 `flags.incomplete`，不改 OK/NG（D-SB-13）。
@@ -407,23 +417,11 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
 - 测量和写盘是分开测的，没有与 MVS 回调拷贝、界面、SQLite 同时跑；同时跑的余量本应由 E2 的 3 × 25 Hz 压测判定，E2 没有给出通过的结论（见第九节第 17 条）。
 - 只测了 1280×1024、121 个测点的合成图；更大的图、更长的走廊、真实胶条图像对耗时的影响没测。
 
-## 八、过渡规则（永久并存）
+## 八、旧模型退出规则（2026-10-23 更新）
 
-- **判别**：`RecipeDoc.segments` 为空 = 旧拍照点配方，走旧校验、旧节拍、旧发布（schema 3）；非空 = 段模型，走 `plan` / `frame_group` / `segmentation` / `burst_judge` / `calibration` 与新的发布路径（schema 4）。两套永久并存，旧路径一律保留并停用。
-- **保留并停用**（段配方不经过；旧配方行为不变；代码标 `#[deprecated]` 或注释“旧拍照点模型”）：
-  - `RecipeDoc.trigger_mode` 与 `TriggerMode::Stop`（停稳拍）；`RecipeSummary.trigger_mode`、`parts.trigger_mode` 列；
-  - `ShotSpec`、`ShotViewSpec`、`PathPoints`、`recipe::Segment`、`plc_plan::trigger_groups`、`PlcParams`、shot_router 的拍照点路由；
-  - `CaptureRound` 的 `recipe_shots()`、`planned_count` 与旧采集接口；`CompositeLayout` 与三目拼接拆分；
-  - `Manifest::recipe_shots`、`Frame::image(view)` / `require_image`（段模型用新增的 `single_image()`）；
-  - 旧 `release::publish` 与发布包 schema 3 的加载、`{device}-v{view}` 标定键；
-  - 特征定位（fixture）模块、示教中线逐点比对、组选图；
-  - 记录库 `part_shots`、`part_points`；
-  - 前端 `cycle/pose.ts`、`cycle/vis.ts`、`WorkpieceOverview`、`teachingGroups`、`Fixture*` 等旧组件；
-  - 前端旧配方的单帧示教与整圈采集页：`/recipe/teach`、`/recipe/capture` 在 `WorkspaceView.plan` 为空时挂载 `LegacyTeachingPage`、`LegacyCapturePage`（G0 之前的实现原样保留：组选图、采用本轮图像、逐点试测、特征定位、标定核对），以及 `TrialResult`、`TeachingSettings` 的旧签名和按拍照点下标的示教草稿（`frameDrafts` / `setFrameDraft`）。段配方另用 `CorridorSettings` 与按相机 id 的 `corridorDrafts` / `setCorridorDraft`。
-  - **页面分流**：判别仍是 `RecipeDoc.segments` 是否为空。后端 `WorkspaceView.plan` 自 D2 起只对 `doc.segments` 非空的候选输出、旧拍照点配方为 null（`workspace.rs` 的 `view`），所以前端各页按 `plan` 是否为空分流，与按 segments 分流等价：`/recipe/teach`、`/recipe/capture`、进度、总览与步骤条在 `plan` 非空时挂载段配方页面，为空时挂载旧页面。D3 之前“段配方（`segments` 非空、`plan` 为 null）落到旧页面”的问题随后端输出 `plan` 消失，FE-POLISH 为它加的“待后端 D3 实现”占位（`PlanPending` / `awaitingPlan`）已在 FE-WIRE 删除；进度、总览、步骤条对段配方显示段配方内容，不再是旧配方的空内容。
-  - **路由标题**：`/recipe/teach` 两种配方共用，标题写“单帧示教（旧配方）/ 相机走廊示教（段配方）”；总览页空态提示给段配方的写法是“相机走廊示教”（步骤条上的名称仍是“走廊示教”），不再提“单帧示教”。
-  - **PLC 标签**：`shotCount`、`deviceShots`、`partEnd` 的预设标签在协议 6 的含义之后补写旧配方含义（触发次数、设备触发次数、触发计划发完）。
-- **判定结果类型**：`judge::Judgement` 保留给旧配方；段配方用 `burst_judge::BurstJudgement`，两者并列，不做类型别名。界面与记录按 `burst` 字段是否为 null 区分。
+旧拍照点配方从未部署，不再维护运行入口、迁移、兼容分支和专属测试。新建、整圈采集、验证、发布与生产仅支持段配方；通用单帧标定和 Software 调试仍保留。本地草稿不自动删除。
+
+下文此前实现记录涉及旧模型的内容仅为历史记录，不再构成兼容要求。协议仍为 6，DB 布局不变；高电平采集与预留计数字段以本文最新说明和 PLC 协议文档为准。
 
 ## 九、相对计划的调整（供后续工作包对照）
 
@@ -502,7 +500,7 @@ cargo run --manifest-path src-tauri/Cargo.toml --example throughput_probe
     - **决策索引与依赖版本**：`docs/decisions/README.md` 加第四批（分段连拍）一行与待确认事项，依赖版本改为 lyFlow 1.1.5（`lyflow-client` v1.1.5，2026-10-21 发布）、qing-steel 0.9.0。
     - **提交署名**：见第一节。
 17. E2 桌面端到端、长稳脚本与吞吐门槛（相对计划步骤的调整，旧路径一律保留）：
-    - **分流**：`offline-e2e`、`log-replay` 的驱动脚本按 `--model burst|legacy` 分流（外壳 `-Model`，默认 burst）；旧拍照点配方的原流程原样保留为 `legacy`，只把新建起点换成 `legacyTemplate`（`recipe_template` 现在给段配方，旧配方由它去掉段与相机检测设置得到）。长稳 `setup --model burst|legacy`，`faults` 按 `setup.json` 的 model 选期望。`production-flow-ui` 分两段：旧拍照点配方（首启样例，行为不变）与段配方。计划中的“删除 `fixture-teach-e2e.mjs`、`Test-FixtureE2E.ps1`、`package.json` 的 `test:e2e:fixture`、production-flow-ui 的定位失败工况”改为保留（旧配方的特征定位专项仍然可跑，入口标注“仅旧配方”）。
+    - **分流**：`offline-e2e`、`log-replay` 的驱动脚本按 `--model burst|legacy` 分流（外壳 `-Model`，默认 burst）；旧拍照点配方的原流程原样保留为 `legacy`，只把新建起点换成 `legacyTemplate`（`recipe_template` 现在给段配方，旧配方由它去掉段与相机检测设置得到）。长稳 `setup --model burst|legacy`，`faults` 按 `setup.json` 的 model 选期望。`production-flow-ui` 分两段：旧拍照点配方（显式测试夹具，行为不变）与段配方。计划中的“删除 `fixture-teach-e2e.mjs`、`Test-FixtureE2E.ps1`、`package.json` 的 `test:e2e:fixture`、production-flow-ui 的定位失败工况”改为保留（旧配方的特征定位专项仍然可跑，入口标注“仅旧配方”）。
     - **段配方流程**：`tests/native/lib.mjs` 新增 `CAMERA_FIXTURES`（按相机夹具）、`teachCorridors`（每台相机一条走廊：`workspace_teach_camera` 冻结示教帧、`workspace_extract_corridor` 提取、再保存）、`calibrate`（10 轮标定加 2 轮标准件、应用、确认建议容差）、`buildBurstRecipe`（建站到发布）、`produceBurst`、`burstFacts`、`checksOff`；`captureRound` 不再核对计划数。合成图夹具把走廊折点间距取允许的最大值 80 px：合成图按走廊逐像素画胶条，折点越多每帧越慢。
     - **合成图来源恒用模拟测量**（`site::measurement_of`），所以“合成图 3 × 25 Hz 在线连续 60 s（且 lyFlow 测量）”按字面做不到：合成图出的帧不经 lyFlow。吞吐门槛改为两种来源分别测（`scripts/soak/throughput.mjs`，`pnpm test:soak:throughput`）：**样本集**（现场原图经真实 lyFlow 测量，唯一能在离线下压 lyFlow 的来源，但每件只有 12 个脉冲、件间有握手开销，是 3 × 25 Hz 的突发而不是持续）与**合成图**（只测帧管线与渲染）。脚本另按每件第一帧到达到最后一帧测完得出突发排空速率，并外推持续压力下队列多久装满，写进结果的 `projection`（估算，不是门槛）。
     - **门槛状态：没有达标，也没有被直接验证，已定（2026-10-23）：门槛口径不改，等现场工控机用真实相机来源跑 `pnpm test:soak:throughput` 后再决定降频还是加并发；复测前不能在任何文档里记成已满足。** 实测（2026-10-23，i5-1135G7、调试构建、lyFlow 1.1.5，25 Hz、60 s）：

@@ -399,10 +399,10 @@ impl Line {
     }
 
     /// 段配方的一件（规格 §0/§6）：写请求 → 布防后相机使能拉高，PLC 按剖面定频发脉冲串，每个脉冲同时触发三台相机，
-    /// deviceTriggers 写实际脉冲数 → 使能拉低后置 partEnd → 等结果、回 ACK。
+    /// deviceTriggers 正常写 0 → 使能拉低后置 partEnd → 等结果、回 ACK。
     /// - `order.lost` 只丢指定相机的指定帧（相机已计数、帧没送到）；
     /// - `order.early_end_after`：PLC 发到这么多脉冲就提前置 partEnd（提前终止）；
-    /// - countMismatch：PLC 多计 2 个脉冲（只告警的计数偏差）；motionTimeout：不发 partEnd；ackMismatch：ACK 序号错位；
+    /// - countMismatch：预留字段注入非零值，PC 必须忽略；motionTimeout：不发 partEnd；ackMismatch：ACK 序号错位；
     /// - notInspected：机器人等不到触发许可照常涂胶、置“本件未检”，PLC 不提交 partStart，返回 `Ok(None)`，PC 没有这一件。
     pub async fn run_burst(&self, timing: &Timing, order: &PartOrder, scenario: Scenario,
         fire: impl FnMut(&Pulse), abort: &AtomicBool) -> Result<Option<Outcome>, String> {
@@ -469,13 +469,11 @@ impl Line {
         let seq = self.request(order);
         if self.armed(timing, seq, abort).await? {
             let n = order.device_shots as usize;
-            let mut issued = 0;
             for k in 0..n {
                 self.hold(timing, timing.shot_interval, abort).await?;
                 if scenario == Scenario::CountMismatch && k + 1 == n { continue; }
                 trigger(k, scenario.lost_frame(n) == Some(k));
-                issued += 1;
-                self.write(&[(tag::DEVICE_TRIGGERS, issued)]);
+                self.write(&[(tag::DEVICE_TRIGGERS, 0)]);
             }
             self.end_motion(timing, scenario, abort).await?;
         }
@@ -490,12 +488,10 @@ impl Line {
             let stop = order.early_end_after.unwrap_or(u64::MAX);
             let period = profile.period();
             let start = Instant::now();
-            let mut issued = 0u32;
             for pulse in profile.pulses(&order.lost).iter().take_while(|pulse| pulse.seq <= stop) {
                 self.hold_until(timing, start + period * u32::try_from(pulse.seq).unwrap_or(u32::MAX), abort).await?;
                 fire(pulse);
-                issued += 1;
-                self.write(&[(tag::DEVICE_TRIGGERS, issued + extra)]);
+                self.write(&[(tag::DEVICE_TRIGGERS, extra)]);
             }
             self.end_motion(timing, scenario, abort).await?;
         }

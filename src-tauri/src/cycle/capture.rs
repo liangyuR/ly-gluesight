@@ -1,5 +1,5 @@
 use super::*;
-use crate::plc_plan::{PlanShot, PlcPlan};
+use crate::plc_plan::PlcPlan;
 use crate::recipe_capture::AnyRound;
 
 impl Machine {
@@ -32,18 +32,7 @@ impl Machine {
                     capture.burst_plc_started(request.shot_count, request.plan_version)?;
                     plan
                 }
-                // 旧拍照点配方的旧轮次：按 shotCount 编计划，计数约束由计划核对与采集记录负责（行为不变）
-                AnyRound::Legacy(round) => {
-                    let shots = (0..request.shot_count).map(|k| PlanShot {
-                        shot_id: format!("S{:03}", k + 1), pose_id: format!("采集序号{}", k + 1), camera_ids: device_ids.clone(),
-                    }).collect();
-                    let plan = PlcPlan::compile(round.recipe_id.clone(), request.plan_version, device_ids, shots)?;
-                    self.s7.bind_capture_id(&round.round_id)?;
-                    self.s7.validate_plan(&plan)?;
-                    capture.set_plan_version(request.plan_version)?;
-                    capture.plc_started(u32::from(request.shot_count))?;
-                    plan
-                }
+                AnyRound::Legacy(_) => return Err("旧拍照点采集已停用，请使用段配方整轮采集".into()),
             };
             self.s7.arm(plc(&app), &plan).await
         }.await;
@@ -60,7 +49,7 @@ impl Machine {
         }
     }
 
-    /// PLC partEnd：新轮次记下 End 带出的 deviceTriggers（只作参考）；旧轮次照旧读点表并核对计数。
+    /// PLC partEnd 后进入完整收尾窗口。
     pub(super) fn end_capture(&self, device_triggers: Option<u16>) {
         let rig = &host(&self.app).camera;
         let capture = rig.recipe_capture();
@@ -69,10 +58,7 @@ impl Machine {
             capture_device_ids(&rig.configs(), &round.camera_ids())?;
             match round {
                 AnyRound::Burst(_) => capture.burst_plc_ended(device_triggers),
-                AnyRound::Legacy(_) => {
-                    let count = read_tag_u32(plc(&self.app), tag::DEVICE_TRIGGERS).ok_or("PLC 缺少设备实际触发计数")?;
-                    capture.plc_ended(count)
-                }
+                AnyRound::Legacy(_) => Err("旧拍照点采集已停用".into()),
             }
         })();
         if let Err(error) = result { capture.fail(error); }

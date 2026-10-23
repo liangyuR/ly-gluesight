@@ -738,6 +738,7 @@ pub fn workspace_get(app: AppHandle, id: String) -> Result<WorkspaceView, String
 
 #[tauri::command]
 pub fn workspace_create(app: AppHandle, mut doc: RecipeDoc) -> Result<WorkspaceView, String> {
+    if !doc.is_burst() { return Err("旧拍照点配方已停用，请创建段配方".into()); }
     safe_id(&doc.id)?;
     new_candidate_doc(&mut doc);
     doc.build()?;
@@ -1488,140 +1489,8 @@ impl SampleResult {
 }
 
 fn validation(app: &AppHandle, w: &Workspace) -> Result<Validation, String> {
-    // 段配方的验证项与样本另见 burst_release（D3）；以下是旧拍照点配方，行为不变
-    if w.doc.is_burst() { return burst_release::validation(app, w); }
-    let r = w.doc.build()?;
-    let initial_environment = environment(app, &r)?;
-    let cycle = app.state::<CycleHost>();
-    let usability = cycle::usable_cams(app, &r)
-        .and_then(|cams| cycle.camera.check_ready_at(&cams));
-    let camera_ok = usability.is_ok();
-    let mut checks = vec![Check {
-        name: "设备与采集".into(),
-        passed: camera_ok,
-        detail: usability
-            .err()
-            .unwrap_or_else(|| "配方引用的相机已就绪".into()),
-    }];
-    let group_errors = w.group_selection_errors();
-    checks.push(Check { name: "拍照点组选图".into(), passed: group_errors.is_empty(),
-        detail: if group_errors.is_empty() { "每个拍照点组已选定一张示教图".into() }
-            else { group_errors.into_iter().map(|(_, message)| message).collect::<Vec<_>>().join("；") } });
-    let ready = r.ready();
-    checks.push(Check {
-        name: "胶路示教".into(),
-        passed: ready.is_ok(),
-        detail: ready.err().unwrap_or_else(|| "要检的拍照点都已示教中线".into()),
-    });
-    let teaching = w.frames.len() == r.shot_count()
-        && (0..r.shot_count()).all(|k| workflow::selected_views(w, k).into_iter().all(|v| workflow::check_view(app, w, k, v, true).is_ok()));
-    checks.push(Check { name: "示教与标定".into(), passed: teaching,
-        detail: if teaching { "所有选中图已完成有效试测和 ±0.1 mm 标定误差验证".into() }
-            else { "存在未完成的示教或标定验证，请进入对应图处理".into() } });
-    let captured = w.capture_id.as_ref().is_some_and(|id| cycle.camera.recipe_capture().get(id)
-        .is_ok_and(|round| round.recipe_id == w.doc.id && round.state == crate::recipe_capture::CaptureState::Complete && round.recipe_shots().is_ok_and(|shots| shots.len() == r.shot_count())));
-    checks.push(Check { name: "完整采集".into(), passed: captured, detail: if captured { "示教来自完整的独立采集轮次".into() } else { "请先采用完整采集轮次".into() } });
-    let store = app.state::<Store>();
-    let mut results = Vec::new();
-    // 独立正常样本上的特征定位统计（含亮度 ±40、±3° 探测）；缺陷样本不进统计
-    let mut fixture_probes = Vec::new();
-    for sample in &w.samples {
-        let normal = matches!(sample.expected, Verdict::Ok | Verdict::OkWithExcursion);
-        let mut probes = Vec::new();
-        let result = (|| -> Result<SampleResult, String> {
-            if let Some(sample_id) = &sample.sample_id {
-                let bank = w
-                    .sample_bank
-                    .iter()
-                    .find(|b| &b.id == sample_id)
-                    .ok_or("样本组不存在")?;
-                if bank.geometry_tag != images_tag(&r) {
-                    return Err("样本组来自另一版拍照点或相机，请重新导入".into());
-                }
-                if let Some(source) = &bank.capture_id {
-                    let sample_round = workflow::capture_for(app, &w.doc.id, source)?;
-                    let teaching_round = workflow::capture_for(app, &w.doc.id, w.capture_id.as_deref().ok_or("缺少示教采集")?)?;
-                    if sample_round.plc_plan_version != teaching_round.plc_plan_version { return Err("样本与示教的轨迹计划版本不一致".into()); }
-                } else if bank.camera_state != state_value(&cycle.camera.configs()) {
-                    return Err("导入样本后设备配置已改变，请重新确认样本来源并导入".into());
-                }
-                if w.capture_id.as_deref() == Some(sample_id) { return Err("示教采集不能作为独立验证样本".into()); }
-                let dir = app.state::<WorkspaceHost>().dir(&r.id).join("samples").join(sample_id);
-                let (table, _) = measure_images_from(app, w, r.shot_count(), "", MeasurementSource::CurrentDevices, normal.then_some(&mut probes), |k, v| {
-                    let path = dir.join(format!("k{k}-v{v}.pgm"));
-                    if path.is_file() { crate::image_file::load(&path) }
-                    else if workflow::selected_views(w, k).len() == 1 { crate::image_file::load(&dir.join(format!("k{k}.pgm"))) }
-                    else { Err(format!("样本缺少拍照点 {} 图 {v}", k + 1)) }
-                })?;
-                for probe in &mut probes { probe.sample.name = bank.name.clone(); }
-                return Ok(SampleResult::judged(sample, bank.name.clone(), String::new(), judge::judge(&r, &table)));
-            }
-            let history_id = sample.history_id.ok_or("样本来源未指定")?;
-            let detail = store.detail(history_id)?;
-            if detail.summary.source == crate::store::RecordSource::OfflineCandidate { return Err("候选调试记录不能作为独立发布验证样本".into()); }
-            let original = detail
-                .summary
-                .recipe_revision
-                .as_deref()
-                .map(|h| store.recipe_snapshot(h))
-                .transpose()?
-                .flatten()
-                .ok_or("原始配方快照缺失")?;
-            let teaching_round = workflow::capture_for(app, &w.doc.id, w.capture_id.as_deref().ok_or("缺少示教采集")?)?;
-            if !same_history_capture_source(&original, &r, teaching_round.plc_plan_version) || !detail.recording.available {
-                return Err("历史样本的采集结构或 PLC 轨迹计划版本不匹配，或原图不完整".into());
-            }
-            if w.frames.iter().flat_map(|f| &f.views).any(|i| i.history_id == Some(history_id)) { return Err("示教原图所属工件不能同时作为独立验证样本".into()); }
-            let (table, _) = measure_images_from(app, w, r.shot_count(), &detail.summary.sn, MeasurementSource::CurrentDevices, normal.then_some(&mut probes), |k, v| history_image(app, &detail, k, v))?;
-            for probe in &mut probes { probe.sample.name = format!("SN {}", detail.summary.sn); }
-            Ok(SampleResult::judged(sample, format!("SN {}", detail.summary.sn), detail.summary.sn.clone(), judge::judge(&r, &table)))
-        })();
-        if result.is_ok() { fixture_probes.append(&mut probes); }
-        results.push(result.unwrap_or_else(|e| {
-            SampleResult {
-                history_id: sample.history_id,
-                sample_id: sample.sample_id.clone(),
-                name: sample
-                    .sample_id
-                    .clone()
-                    .unwrap_or_else(|| format!("记录 #{}", sample.history_id.unwrap_or(0))),
-                sn: String::new(),
-                expected: sample.expected,
-                actual: None,
-                passed: false,
-                reason: e,
-            }
-        }));
-    }
-    let have_ok = w
-        .samples
-        .iter()
-        .any(|s| matches!(s.expected, Verdict::Ok | Verdict::OkWithExcursion));
-    let normals: Vec<_> = results.iter().filter(|r| matches!(r.expected, Verdict::Ok | Verdict::OkWithExcursion)).collect();
-    checks.push(Check { name:"独立正常样本".into(), passed: have_ok && !normals.is_empty() && normals.iter().all(|r| r.passed),
-        detail:"至少一套独立正常整圈样本，所选正常样本均须符合预期；缺陷样本验证结果单独保留".into() });
-    let (fixture_reports, fixture_check) = fixture::validation_reports(&r, fixture_probes)?;
-    checks.extend(fixture_check);
-    let base = cycle.recipe(&r.id).map(|r| r.revision_id.clone());
-    checks.push(Check {
-        name: "生产版本".into(),
-        passed: base == w.base_revision,
-        detail: if base == w.base_revision {
-            "候选基于当前生产版本".into()
-        } else {
-            "生产配方已被其他操作更新，请重新建立候选".into()
-        },
-    });
-    if environment(app, &r)? != initial_environment { return Err("验证期间设备、标定或引擎发生变化，请重新验证".into()); }
-    Ok(Validation {
-        revision: w.revision,
-        passed: checks.iter().all(|c| c.passed),
-        checked_at: ly_plc::now_ms(),
-        checks,
-        samples: results,
-        environment_tag: initial_environment,
-        fixture: fixture_reports,
-    })
+    if !w.doc.is_burst() { return Err("旧拍照点配方已停用，请创建段配方".into()); }
+    burst_release::validation(app, w)
 }
 
 #[tauri::command]
@@ -1693,12 +1562,7 @@ pub fn workspace_publish(
     let mut release_doc = w.doc.clone();
     release_doc.teaching_id = Some(vision::unique_run_id(&format!("teaching-{}-v{}", release_doc.id, release_doc.version)));
     release_doc.plan_version = app.state::<CycleHost>().recipes.plan_version_for(&release_doc)?;
-    // 段配方按计划相机冻结，发布包 schema 4（D3）；旧拍照点配方按拍照点与视图冻结，schema 3 不变
-    let bundle = if release_doc.is_burst() {
-        burst_release::freeze_bundle(&app, &host, &release_doc, &w.camera_teaching)?
-    } else {
-        freeze_bundle(&app, &host, &release_doc, &w.frames, validated)?
-    };
+    let bundle = burst_release::freeze_bundle(&app, &host, &release_doc, &w.camera_teaching)?;
     let mut next = w.clone();
     next.doc = release_doc.clone();
     next.pending = Some(Box::new(Release {
@@ -1805,42 +1669,6 @@ pub fn draft_summaries(app: &AppHandle) -> Vec<DraftSummary> {
     let items = host.items.lock().unwrap();
     items.values().map(|w| DraftSummary { id: w.doc.id.clone(), name: w.doc.name.clone(), version: w.doc.version,
         product_code: w.doc.product_code, shot_count: w.doc.shots.len() }).collect()
-}
-
-/// 发布前冻结：示教图检查经 `check_view → checked` 重查；特征定位视图另要求这份验证里有通过的统计（`require_fixture_validation`）。
-fn freeze_bundle(app: &AppHandle, host: &WorkspaceHost, doc: &RecipeDoc, teaching: &[Teaching], validated: &Validation) -> Result<crate::release::ReleaseBundle, String> {
-    let recipe = doc.build()?;
-    fixture::require_fixture_validation(&recipe, validated)?;
-    let engine = app.state::<vision::VisionHost>().engine().ok_or("发布前必须加载兼容的图像核心库")?;
-    vision::require_locate(&recipe, &engine.locate)?;
-    let mut shots = Vec::new();
-    let mut w = Workspace::new(doc.clone(), None); w.frames = teaching.to_vec();
-    for (k, shot) in recipe.shots.iter().enumerate() {
-        if !shot.measured() {
-            shots.push(crate::release::ShotInput { k, view: shot.view, image: None, image_id: None, calibration: None });
-            continue;
-        }
-        for selected in workflow::selected_views(&w, k) {
-            workflow::check_view(app, &w, k, selected, true)?;
-            let frame = workflow::projected_frame(&w, k, selected)?;
-            let image = frame.image.as_ref().ok_or("发布示教原图缺失")?;
-            let projected = recipe.for_view(k, selected)?;
-            if let Some(fixture) = &projected.shots[k].fixture {
-                fixture_source(&frame, selected, fixture).map_err(|e| format!("拍照点 {} 图 {selected}：{e}", shot.id))?;
-            }
-            let external = vision::shot_calib_path(app, &projected, k)?;
-            let source = if external.exists() { Some(serde_json::from_str::<Value>(&crate::fsio::read_text(&external).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?) } else { None };
-            let calibration = json!({"schemaVersion":1,"camera":shot.camera,"view":selected,
-                "reference":projected.shots[k].calib_ref(),"mmPerPx":projected.shots[k].mm_per_px,"source":source});
-            shots.push(crate::release::ShotInput { k, view: selected,
-                image: Some(crate::release::ResourceSource::File(image_file(host, &recipe.id, &image.id)?)), image_id: Some(image.id.clone()),
-                calibration: Some(crate::release::ResourceSource::Bytes(serde_json::to_vec(&calibration).map_err(|e| e.to_string())?)) });
-        }
-    }
-    crate::release::publish(&releases_root(app)?, crate::release::PublishInput { recipe: doc.clone(),
-        versions: crate::release::Versions { engine: engine.identity.clone(), graph: crate::production::GRAPH_VERSION.into() },
-        validation_site: if crate::offline::enabled(app) { crate::release::ValidationSite::Offline } else { crate::release::ValidationSite::Real },
-        graph: crate::release::ResourceSource::Bytes(serde_json::to_vec(&crate::production::graphs(&recipe)?).map_err(|e| e.to_string())?), shots })
 }
 
 pub fn apply_pending(app: &AppHandle) -> bool {
@@ -2124,7 +1952,7 @@ pub async fn workspace_compare(
             if detail.summary.source == store::RecordSource::OfflineCandidate {
                 let samples = history_samples(&app, &detail)?;
                 let (table, measured) = measure_images_from(&app, &w, recipe.shot_count(), &detail.summary.sn,
-                    MeasurementSource::HistorySample, None, |k, v| samples.load(k, v))?;
+                    MeasurementSource::HistorySample, |k, v| samples.load(k, v))?;
                 measurements = measured;
                 table
             } else {
@@ -2442,13 +2270,12 @@ pub async fn workspace_station_import(app: AppHandle, cam: u8, bytes: Vec<u8>, v
 
 fn measure_images(app: &AppHandle, w: &Workspace, count: usize, sn: &str,
     load: impl FnMut(usize, u8) -> Result<FrameImage, String>) -> Result<(Vec<PointState>, Vec<Value>), String> {
-    measure_images_from(app, w, count, sn, MeasurementSource::CurrentDevices, None, load)
+    measure_images_from(app, w, count, sn, MeasurementSource::CurrentDevices, load)
 }
 
 enum MeasurementSource { CurrentDevices, HistorySample }
 
-/// `probes`：只有发布验证的独立正常样本给，按特征定位视图另跑亮度 ±40 与 ±3° 探测（`fixture::probe_sample`），比较与复测不给。
-fn measure_images_from(app: &AppHandle, w: &Workspace, count: usize, sn: &str, source: MeasurementSource, mut probes: Option<&mut Vec<fixture::ProbeEntry>>,
+fn measure_images_from(app: &AppHandle, w: &Workspace, count: usize, sn: &str, source: MeasurementSource,
     mut load: impl FnMut(usize, u8) -> Result<FrameImage, String>) -> Result<(Vec<PointState>, Vec<Value>), String> {
     let recipe = w.doc.build()?;
     if count != recipe.shot_count() { return Err("样本组的原图数量与拍照点不一致".into()); }
@@ -2473,14 +2300,6 @@ fn measure_images_from(app: &AppHandle, w: &Workspace, count: usize, sn: &str, s
             images.push((selected, Arc::new(image)));
         }
         let result = vision::measure_views(&engine, &recipe, k, &images, &format!("{run}-{k}"), &bases)?;
-        if let Some(probes) = probes.as_deref_mut() {
-            for vm in &result.views {
-                let (Some(base), Some((_, image))) = (bases.get(&vm.view), images.iter().find(|(v, _)| *v == vm.view)) else { continue };
-                let projected = recipe.for_view(k, vm.view)?;
-                probes.push(fixture::ProbeEntry { k, view: vm.view, sample: fixture::probe_sample(&engine, &projected, k, image, base,
-                    &format!("{run}-{k}-v{}", vm.view), vm.reading.as_ref(), vm.error.clone()) });
-            }
-        }
         let reference_failed = result.reference_failed();
         let reading = result.reading;
         for (i, &j) in reading.idx.iter().enumerate() {

@@ -4,7 +4,6 @@ use super::test_dir::TestDir;
 use super::*;
 use crate::burst_judge::BurstJudgement;
 use crate::cycle::tests::{burst_frame, judge_burst_at_drain_deadline};
-use crate::frame_group::{LossAlarm, LossReason};
 use crate::judge::fault;
 use crate::plc_plan::{PlanShot, PlcPlan};
 use crate::plc_session::{Origin, PendingKind, PlcSession, SessionEvent, SessionPhase};
@@ -201,7 +200,7 @@ async fn offline_line_over_s7_completes_parts_with_matched_ack_and_returns_to_id
         assert!(!bench.session.pending());
         assert_eq!(bench.line.read(tag::RESULT_SEQ), seq);
         assert_eq!(bench.line.read(tag::ACK_SEQ), seq);
-        assert_eq!(bench.line.read(tag::DEVICE_TRIGGERS), 4);
+        assert_eq!(bench.line.read(tag::DEVICE_TRIGGERS), 0);
         for field in [tag::PART_START, tag::PART_END, tag::RESULT_ACK, tag::DONE, tag::BUSY, tag::ARMED, tag::VISION_FAULT] {
             assert_eq!(bench.line.read(field), 0, "{field}");
         }
@@ -459,7 +458,7 @@ async fn jittered_pulse_train_within_tolerance_is_ok_and_beyond_tolerance_only_a
         let beyond = pulses.abs_diff(expected) > tolerance;
         assert_eq!((outcome.result_code, judged.verdict, u64::from(judged.group_count), judged.flags.frame_count_anomaly), (1, Verdict::Ok, pulses, beyond),
             "种子 {seed}：{pulses} 个脉冲");
-        assert_eq!(u64::from(bench.line.read(tag::DEVICE_TRIGGERS)), pulses, "种子 {seed}：deviceTriggers 写实际脉冲数");
+        assert_eq!(bench.line.read(tag::DEVICE_TRIGGERS), 0, "种子 {seed}：deviceTriggers 为预留字段");
         seen.insert(beyond);
     }
     assert_eq!(seen.len(), 2, "种子要同时覆盖容差内与容差外");
@@ -483,17 +482,14 @@ async fn single_camera_loss_yields_incomplete_ok_not_err() {
     bench.engine.disconnect().await;
 }
 
-/// 规格 §3/§5：deviceTriggers 只作参考，计数不符不再是故障。countMismatch 工况下虚拟 PLC 多计 2 个脉冲（deviceTriggers
-/// 比各相机帧数多 2）：三台相机都告警，不改结论、不升级故障，件后会话回到空闲。相差 1 不告警、相差 2 告警的阈值由
-/// frame_group::tests::camera_count_differing_by_more_than_one_raises_loss_alarm 保护，这里不重复。
 #[tokio::test]
-async fn plc_counting_two_extra_pulses_alarms_every_camera_without_fault() {
+async fn reserved_plc_count_does_not_change_frame_alarms_or_result() {
     let mut bench = Bench::new("plc-counts-2-extra").await;
     let order = bench.order("SN-GAP");
     let outcome = bench.run_burst_with(order, Scenario::CountMismatch, all_cameras).await.unwrap().unwrap();
     let judged = bench.judged.take().unwrap();
-    let alarms: Vec<LossAlarm> = (0..3).map(|camera| LossAlarm { camera, count: 4, reason: LossReason::Triggers { device_triggers: 6 } }).collect();
-    assert_eq!(judged.alarms, alarms);
+    assert_eq!(bench.line.read(tag::DEVICE_TRIGGERS), 2);
+    assert!(judged.alarms.is_empty());
     assert_eq!((outcome.result_code, judged.verdict, judged.fault_code), (1, Verdict::Ok, 0));
     assert_eq!(bench.session.phase(), SessionPhase::Idle, "{:?}", bench.session.view());
     bench.engine.disconnect().await;
@@ -508,7 +504,7 @@ async fn early_part_end_is_judged_with_short_part_flag_and_frame_count_anomaly()
     let order = PartOrder { early_end_after: early, ..bench.order("SN-EARLY-END") };
     let outcome = bench.run_burst_with(order, Scenario::EarlyEnd, all_cameras).await.unwrap().unwrap();
     let judged = bench.judged.take().unwrap();
-    assert_eq!(bench.line.read(tag::DEVICE_TRIGGERS), 2, "PLC 只发了 2 个脉冲就结束");
+    assert_eq!(bench.line.read(tag::DEVICE_TRIGGERS), 0);
     assert_eq!((outcome.result_code, judged.verdict, judged.group_count), (1, Verdict::Ok, 2));
     assert_eq!((judged.flags.short_part, judged.flags.frame_count_anomaly), (true, true));
     bench.engine.disconnect().await;

@@ -181,3 +181,20 @@ fn burst_candidate_debug_run_gets_teaching_frame_sizes_in_plan_camera_order() {
     let DebugSizes::Burst(sizes) = sizes else { panic!("段配方候选的试运行没有按段配方分派示教帧尺寸") };
     assert_eq!(sizes, [[1000, 700], [1100, 700], [1200, 700]]);
 }
+
+#[test]
+fn changed_frame_rate_blocks_calibration_until_original_configuration_restored() {
+    let mut w = taught(&[Straight, Corner], DEVICE);
+    calibrate(&mut w, 20);
+    let mut round = capture_round("rate-calibration", &w.doc, 20, DEVICE, &[]);
+    for camera in &mut round.cameras {
+        camera.camera_config = json!({"triggerSource": "Line0", "triggerActivation": "LevelHigh", "frameRate": 10.0});
+    }
+    w.calibration.rounds.push(super::burst::calibration_round(&w.doc, &round, false, &[]));
+    let mut current: BTreeMap<String, Value> = round.cameras.iter().map(|c| (c.camera_id.clone(), c.camera_config.clone())).collect();
+    assert!(check(&checks(&w, &current), "标定采集参数").passed);
+    current.get_mut("cam1").unwrap()["frameRate"] = json!(20.0);
+    assert!(!check(&checks(&w, &current), "标定采集参数").passed);
+    current.get_mut("cam1").unwrap()["frameRate"] = json!(10.0);
+    assert!(check(&checks(&w, &current), "标定采集参数").passed);
+}

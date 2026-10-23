@@ -1,6 +1,6 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
-import { FormField, NumberField, Select, Switch, TextField } from "qing-steel";
-import type { DetectParams, JudgeParams, Polarity, RecipeDoc, ShotLimits } from "../../cycle/types";
+import { FormField, NumberField, Select, TextField } from "qing-steel";
+import type { DetectParams, JudgeParams, Polarity, RecipeDoc } from "../../cycle/types";
 import { KindChecksEditor } from "../../plan/KindChecksEditor";
 import type { KindDefault, SegmentKind } from "../../plan/types";
 
@@ -12,15 +12,6 @@ interface Props {
   disabled?: boolean;
 }
 
-const paramFields: [keyof JudgeParams, string, string][] = [
-  ["nominal", "名义", ""],
-  ["tolUpper", "上公差", "高于名义的允许偏差"],
-  ["tolLower", "下公差", "低于名义的允许偏差"],
-  ["absMin", "绝对下限", "低于它直接 NG"],
-  ["absMax", "绝对上限", "高于它直接 NG"],
-  ["maxExcursionLen", "允许超差长度", "连续超出公差带超过这个长度判 NG"],
-];
-
 /** 新启用位置、胶宽判定时的默认值（与 recipe.rs 的 default_limits 一致：名义胶宽 4 mm）。 */
 export const defaultPosition: JudgeParams = { nominal: 0, tolUpper: 2, tolLower: 2, absMin: -5, absMax: 5, maxExcursionLen: 5 };
 export const defaultWidth: JudgeParams = { nominal: 4, tolUpper: 1.5, tolLower: 1.5, absMin: 1, absMax: 8, maxExcursionLen: 5 };
@@ -30,7 +21,6 @@ const DEFAULT_CALIBRATION_ROUNDS = 10;
 const segmentKinds: [SegmentKind, string][] = [["straight", "直线"], ["corner", "弯道"]];
 const polarityLabel: Record<Polarity, string> = { dark: "暗胶条（比背景暗）", light: "亮胶条（比背景亮）" };
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-const fixed = (v: number) => Number.isFinite(v) ? String(Math.round(v * 100) / 100) : "—";
 
 /** 与生产配方逐项比较的字段，changedFields 与页面上的标记共用这份清单。 */
 const compared: [string, (d: RecipeDoc) => unknown][] = [
@@ -63,57 +53,6 @@ function Section({ title, children, extra }: { title: string; children: ReactNod
       <h4 className="sub-title">{title}{extra && <small>{extra}</small>}</h4>
       {children}
     </section>
-  );
-}
-
-function LimitsEditor({ value, changed, onChange }: { value: ShotLimits; changed: Set<string>; onChange: (v: ShotLimits) => void }) {
-  const row = (kind: "position" | "width", name: string, fallback: JudgeParams) => {
-    const p = value[kind];
-    return (
-      <tr key={kind} className={p ? "" : "off"}>
-        <th scope="row"><span className="rcp-rowhead">
-          <Switch label={name} aria-label={`${name}判定`} checked={!!p} onCheckedChange={(on) => onChange({ ...value, [kind]: on ? { ...fallback } : null })} />
-          {changed.has(kind) && <i className="rcp-changed" title="与生产配方不同" />}
-        </span></th>
-        {p ? <>
-          {paramFields.map(([k, field]) => (
-            <td key={k}><Num aria={`${name} · ${field}`} step={0.05} value={p[k]} onChange={(v) => onChange({ ...value, [kind]: { ...p, [k]: v } })} /></td>
-          ))}
-          <td className="rcp-band">{fixed(p.nominal - p.tolLower)} ~ {fixed(p.nominal + p.tolUpper)}</td>
-        </> : <td colSpan={paramFields.length + 1} className="muted">不判{name}</td>}
-      </tr>
-    );
-  };
-  return (
-    <div className="table-wrap">
-      <table className="table rcp-limits">
-        <thead>
-          <tr>
-            <th />
-            {paramFields.map(([k, label, hint]) => <th key={k} title={hint || undefined}>{label}</th>)}
-            <th title="名义减下公差 ~ 名义加上公差">合格区间</th>
-          </tr>
-        </thead>
-        <tbody>
-          {row("position", "位置", defaultPosition)}
-          {value.position && value.position.nominal !== 0 && <tr>
-            <th scope="row" title="位置名义值不为 0 时必填：用量具确认过的确认件编号">量具确认件</th>
-            <td colSpan={paramFields.length + 1}>
-              <TextField aria-label="量具确认件编号" value={value.gaugeRef ?? ""} maxLength={64} onChange={(e) => onChange({ ...value, gaugeRef: e.target.value })} />
-              {!value.gaugeRef?.trim() && <span className="c-warn" role="alert">名义值不为 0：必须填写量具确认件编号，否则候选保存不了</span>}
-            </td>
-          </tr>}
-          {row("width", "胶宽", defaultWidth)}
-          <tr>
-            <th scope="row" title="同一拍照点内连续缺胶超过允许断胶长度判断胶；累计缺胶超过它且有胶站占比低于最低有胶比例时也判断胶"><span className="rcp-rowhead">连续性{(changed.has("maxGapLen") || changed.has("minPresent")) && <i className="rcp-changed" title="与生产配方不同" />}</span></th>
-            <td colSpan={paramFields.length + 1}>
-              <span className="rcp-inline">允许断胶<Num aria="允许断胶长度（mm）" unit="mm" value={value.maxGapLen} onChange={(maxGapLen) => onChange({ ...value, maxGapLen })} /></span>
-              <span className="rcp-inline">最低有胶<Num aria="最低有胶比例（%）" unit="%" step={1} value={Math.round(value.minPresent * 1000) / 10} onChange={(v) => onChange({ ...value, minPresent: v / 100 })} /></span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
   );
 }
 
@@ -156,10 +95,6 @@ export default function RecipeEditor({ initial, production, onDraftChange, disab
 
       <Section title="采样">
         <div className="rcp-grid">
-          {/* 段配方固定飞拍，不展示触发方式（triggerMode 原值随草稿保留）；旧拍照点配方照旧可选 */}
-          {!burst && <Field label="触发方式" wide changed={changed.has("triggerMode")}>
-            <Select aria-label="触发方式" disabled={disabled} value={doc.triggerMode} options={[{ value: "fly", label: "飞拍（位置比较触发）" }, { value: "stop", label: "停稳拍" }]} onValueChange={(mode) => set("triggerMode", mode as RecipeDoc["triggerMode"])} />
-          </Field>}
           <Field label="站距" changed={changed.has("spacing")} hint="沿示教中线每隔这个距离量一站"><Num aria="站距（mm）" unit="mm" value={doc.spacing} onChange={(v) => set("spacing", v)} /></Field>
           <Field label="中值滤波窗口" changed={changed.has("filterWindow")} hint="1–31 的奇数"><Num aria="中值滤波窗口（点，奇数）" unit="点" step={2} value={doc.filterWindow} onChange={(v) => set("filterWindow", v)} /></Field>
         </div>
@@ -183,9 +118,7 @@ export default function RecipeEditor({ initial, production, onDraftChange, disab
             <KindChecksEditor value={doc.segmentDefaults![kind]} kind={kind} disabled={disabled} onChange={(next: KindDefault) => set("segmentDefaults", { ...doc.segmentDefaults!, [kind]: next })} />
           </section>)}
         </Section>}
-      </> : <Section title="判定" extra="单位 mm；连续超出公差带超过允许超差长度判 NG，超出绝对限直接 NG">
-        <LimitsEditor value={doc.limits} changed={changed} onChange={(v) => set("limits", v)} />
-      </Section>}
+      </> : null}
     </div>
   );
 }

@@ -31,7 +31,7 @@ export default function FlyshotCalibrationPage() {
   const sampleSet=offline&&site?.source==="sampleSet"?site.sampleSet:null;
   const feasibility:FeasibilitySources={
     exposure:null,
-    fps:status?.maxFps?{value:status.maxFps,from:"来自相机最高帧率"}:null,
+    fps:status?.configuredFrameRate?{value:status.configuredFrameRate,from:"来自相机设定帧率回读"}:null,
     mmPerPx:sampleSet?.mmPerPx?{value:sampleSet.mmPerPx,from:"来自样本集声明"}:calibMm?{value:calibMm,from:"来自工位标定"}:null,
   };
   const state=config?cameraState(config,status):null;

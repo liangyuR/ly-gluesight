@@ -148,7 +148,7 @@ fn sample_set_cameras(manifest: &Manifest) -> Result<Vec<CameraConfig>, String> 
         };
         Ok(CameraConfig {
             id: camera.id.clone(), name: format!("样本集 {}", camera.id), source: CameraSource::SampleSet, view_count,
-            trigger_source: "Software".into(), ..CameraConfig::default()
+            trigger_source: "Line0".into(), ..CameraConfig::default()
         })
     }).collect()
 }
@@ -158,7 +158,7 @@ fn sample_set_cameras(manifest: &Manifest) -> Result<Vec<CameraConfig>, String> 
 fn synthetic_cameras(real: &[CameraConfig]) -> Vec<CameraConfig> {
     let mut cameras: Vec<CameraConfig> = real.iter().map(|camera| CameraConfig {
         id: camera.id.clone(), name: camera.name.clone(), source: CameraSource::Sim, view_count: camera.view_count,
-        composite_layout: camera.composite_layout.clone(), trigger_source: "Software".into(),
+        composite_layout: camera.composite_layout.clone(), trigger_source: "Line0".into(),
         ..CameraConfig::default()
     }).collect();
     let single = |cameras: &[CameraConfig]| cameras.iter().filter(|c| c.view_count == 1 && c.composite_layout.is_none()).count();
@@ -167,7 +167,7 @@ fn synthetic_cameras(real: &[CameraConfig]) -> Vec<CameraConfig> {
         n += 1;
         let id = format!("cam{n}");
         if cameras.iter().any(|c| c.id == id) { continue; }
-        cameras.push(CameraConfig { name: format!("合成图 {id}"), id, source: CameraSource::Sim, view_count: 1, trigger_source: "Software".into(), ..CameraConfig::default() });
+        cameras.push(CameraConfig { name: format!("合成图 {id}"), id, source: CameraSource::Sim, view_count: 1, trigger_source: "Line0".into(), ..CameraConfig::default() });
     }
     cameras
 }

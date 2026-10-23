@@ -6,26 +6,20 @@
 
 **场景**：固定胶枪，机器人抓工件（RTCP）从胶嘴下走过，三台相机固定在胶嘴周围，边涂边拍。
 
-### 两套配方模型并存
+### 当前配方与触发模式
 
-| | 段配方（当前主线） | 旧拍照点配方（保留、停用） |
-| --- | --- | --- |
-| 判据 | `RecipeDoc.segments` 非空（`RecipeDoc::is_burst` / `Recipe::is_burst`） | `segments` 为空 |
-| 计划 | 段列表（直线 / 弯道），每段 N_exp 只能由多轮标定得出，整件 ΣN_exp（`expected_total`） | 拍照点列表（shotId / Pose / 相机 / 视角），触发次数精确 |
-| 设备 | 三台互不相同的单视角相机共用一个触发，按 SDK 帧号三路配组 | 按触发计数路由到拍照点；可用三目拼接相机 |
-| 检测 | 每台相机每一帧都测，按区域类型判定，胶偏只在直线段按段级判 | 组选图、示教中线逐点比对、特征定位，可用停稳拍（`trigger_mode = Stop`） |
-| 发布包 | schema 4（`release::publish_burst`） | schema 3（`release::publish`） |
+生产仅支持段配方（`RecipeDoc.segments` 非空，发布包 schema 4）。旧拍照点配方从未部署，不再维护运行入口、迁移、兼容分支和专属测试；本地草稿不自动删除。
 
-- 新建配方的模板（`recipe_template`）是段配方（D-SB-24）；两者同时非空时配方校验报错（D-SB-1）。
-- “保留、停用”的意思：旧模型的代码、命令、前端页面与存量测试一律不删除，`segments` 为空的旧配方继续走旧路径、行为不变；段配方不经过这些路径。保留清单见 segment-burst 第八节。
-- 前端按 `WorkspaceView.plan` 是否为 null 分流（后端只对段配方输出 `plan`，与按 `segments` 分流等价）：`/recipe/teach`、`/recipe/capture` 在 `plan` 为空时挂载 `LegacyTeachingPage` / `LegacyCapturePage`。
+Line0 使用高电平门控，相机按软件设置的帧率连续采集，默认 10 fps。Software 保留用于单帧标定、调试，不能进入整轮采集或生产。设定、设备回读及实测帧率分别显示。
+
+Jinghang JHEM131GC-XS 的实际节点需实机确认。当前实现要求设备提供 `FrameBurstActive` 或 `AcquisitionActive`，并接受 `LevelHigh` 与固定帧率设置；关键写入与回读失败则不就绪。Software 使用 `FrameStart`。不以未经确认的 `FrameBurstStart` 替代门控。
 
 ### 段配方的数据流
 
 1. **机器人**：整条胶路只拉高一次“相机使能”DO（弯道不拉低，起头、收尾不拍）；等不到触发许可时照常涂胶并置“本件未检”DO。两个 DO 都不进 DB4/DB2。
-2. **PLC**：使能为高时按固定频率（约 10–25 Hz）发脉冲串，同一个触发同时触发三台相机；累计脉冲数写 `deviceTriggers`，只作参考。PLC 不参与分段。
-3. **三台相机**：各出 1 帧，帧序号取 SDK `frame_counter`，不按到达顺序；图像内存按每相机字节预算封顶（`FramePool`，256 MiB），预算满或通道满的帧记缺帧。
-4. **帧配组**：seq = frame_counter − 该相机基线，同一 seq 的三帧为一个帧组；缺帧的组标 incomplete；单台相机帧数只用于丢帧告警（与 deviceTriggers 或另外每一台相机相差 > 1）。帧数 = 帧组数（第六节口径）。
+2. **PLC**：已布防且运动时向相机输出高电平，结束或故障拉低；`deviceTriggers` 为预留字段，写 0。PLC 不参与分段。
+3. **三台相机**：高电平期间按内部固定帧率曝光，帧序号取 SDK `frame_num`，不按到达顺序；图像内存按每相机字节预算封顶（`FramePool`，256 MiB），预算满或通道满的帧记缺帧。
+4. **帧配组**：seq = frame_counter − 该相机基线，同一 seq 的三帧为一个帧组；缺帧的组标 incomplete；单台相机帧数只用于丢帧告警（与另外每一台相机相差 > 1）。帧数 = 帧组数（第六节口径）。
 5. **分段（现为未分段）**：`Segmenter` 接口只有 `Unsegmented` 实现，整条胶路是一个未分段区域：只跑每帧检测、不判胶偏，只核对整件帧组数 ∈ ΣN_exp ± Σtol。
 6. **每帧测量**：每台相机的每一帧沿这台相机示教的走廊用 lyFlow（`glue.taught_path` + `glue.bead_width`）测胶宽、断胶与胶中心偏移 x，输出 `FrameMetrics`；测量队列满、超时记 Unmeasured，走出走廊记 OutOfCorridor，都只算检测不完整。
 7. **区域判定**（`burst_judge`）：每帧胶宽、断胶、溢胶（每帧最大胶宽超过溢胶上限，NG_WIDTH）三类区域都判；胶偏只在直线段，去首尾各一帧后用 x 均值与标准件 x_ref（只实现 AbsoluteX）判整段偏移、最大偏差判局部跑偏；三台相机取最差。结果另带 `flags`（检测不完整、帧数异常、`short_part` 疑似提前终止）、未检区域、未检项（气泡、拉丝）与“胶偏未判”原因，这些都不改 OK/NG；只有三台相机整件没有一帧测成才判 ERR 91。
@@ -37,30 +31,29 @@
 
 - `protocolVersion` / `pcProtocolVersion` = 6，其他值（含 5）拒绝；DB4 / DB2 布局、28 个点位、握手顺序、心跳与复位都同协议 5。
 - `shotCount` = `deviceShots` = ΣN_exp：生产请求在接件时精确核对，不符返回 90/94；段配方的示教采集不核对、不限 1–64（参考 FB 要求估算值大于 0）。
-- `partEnd` 不再比较计数；`deviceTriggers` 只用于丢帧告警和收尾等待。段配方每台相机的下一件基线 = 本件见到的最高帧号（D-SB-7）。
+- `partEnd` 不再比较计数；`deviceTriggers` 不参与丢帧告警、收尾等待或基线计算，partEnd 后等待完整 drain 窗口并完成已接受帧的测量。段配方每台相机的下一件基线 = 本件见到的最高帧号（D-SB-7）。
 - 重新标定使 N_exp 或 ΣN_exp 变化时分配新的 `planVersion`，PLC 须同步 `shotCount` / `deviceShots`。
 - 结果码：96 对段配方不再使用；示教采集失败为 90 配 98（相机断连、会话变化）或 99（写盘超时、中止）。PLC 不提交 partStart = 本件未检，PC 无记录；提前 partEnd 照常判并加 `short_part`。
-- 旧拍照点配方在协议 6 下的示教采集与生产节拍仍按协议 5 的规则（1–64、计数相等、缺帧 91 / 多帧 96）。
 
-细节见 [PLC 通讯协议](integration/plc-communication-protocol.md)（第 13 节是相对协议 5 的差异）、[一期 S7 握手契约](integration/plc-s7-phase1.md)、[交互表适配决策的协议 6 节](decisions/plc-table.md#协议-6-适配分段连拍)。
+细节见 [PLC 通讯协议](integration/plc-communication-protocol.md)、[一期 S7 握手契约](integration/plc-s7-phase1.md)、[交互表适配决策的协议 6 节](decisions/plc-table.md#协议-6-适配分段连拍)。
 
 ### 关键模块与文件
 
 Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.ts` 与 Rust serde 输出逐字段对应。
 
-| 职责 | 段配方 | 旧拍照点配方（保留、停用） |
-| --- | --- | --- |
-| 配方文档、校验、计划身份 | `recipe.rs`（`RecipeDoc` schema 8、`is_burst`、`same_plan`）、`plan.rs`（`PathSegment`、`PartCalib`、`KindDefaults`、`plan_identity`、`PlanExport`）、`recipe_api.rs`（`recipe_template`、`recipe_plan_export`） | `recipe.rs`（`ShotSpec`、`PathPoints`、`recipe::Segment`）、`plc_plan.rs` |
-| 握手与接件 | `handshake.rs`（`PROTOCOL_VERSION = 6`）、`plc_session.rs`、`inspection.rs`（S7 点表模板）、`cycle/admission.rs`（94 接件核对） | 同左 |
-| 生产节拍 | `cycle.rs` 布防分流、`cycle/burst.rs`（在途件、收尾与判定）、`shot_router.rs` 的 `arm_frames` | `shot_router.rs` 拍照点路由、`cycle.rs` 旧路径 |
-| 帧配组、分段、判定、标定 | `frame_group.rs`、`segmentation.rs`、`burst_judge.rs`、`calibration.rs` | `judge.rs` |
-| 相机与测量 | `camera.rs`、`frame.rs`、`measure.rs`（`FrameJob`）、`vision.rs` / `vision/taught.rs`（`measure_frame`）、`production.rs`（`burst_graphs`） | `measure.rs`（`Job`）、`vision/fixture.rs`（特征定位） |
-| 示教采集轮次 | `recipe_capture/burst.rs`（`CaptureRoundV2`） | `recipe_capture.rs`（`CaptureRound`） |
-| 候选工作区 | `workspace.rs`（`WorkspaceView.plan` 分流）、`workspace/burst.rs`（走廊示教、多轮标定、x_ref）、`workspace/burst_release.rs`（验证与发布）、`workspace/burst_history.rs`（历史读图与复测） | `workspace/workflow.rs`、`workspace/progress.rs`、`workspace/fixture.rs` |
-| 发布包 | `release.rs`（`publish_burst`，schema 4） | `release.rs`（`publish`，schema 3） |
-| 记录、录制、审计 | `store.rs`（`part_frames`，库版本 9）、`recorder.rs`、`audit/` | `part_shots`、`part_points` 表 |
-| 离线仿真 | `offline/line.rs`（脉冲串 `run_burst`）、`offline/scenario.rs`、`offline/sample_set.rs`（`camera_frames`）、`simimage.rs` | `offline/line.rs`（`run_part`） |
-| 前端 | `src/features/workspace/` 的 `SegmentsPage`、`TeachingPage`（相机走廊示教）、`CalibrationPage`、`CapturePage`、`PlanProgress`；`src/features/plan/` | `LegacyTeachingPage`、`LegacyCapturePage`、`ProgressPage` 的 `PlcParamsPanel` |
+| 职责 | 段配方 |
+| --- | --- |
+| 配方文档、校验、计划身份 | `recipe.rs`（`RecipeDoc` schema 8、`is_burst`、`same_plan`）、`plan.rs`（`PathSegment`、`PartCalib`、`KindDefaults`、`plan_identity`、`PlanExport`）、`recipe_api.rs`（`recipe_template`、`recipe_plan_export`） |
+| 握手与接件 | `handshake.rs`（`PROTOCOL_VERSION = 6`）、`plc_session.rs`、`inspection.rs`（S7 点表模板）、`cycle/admission.rs`（94 接件核对） |
+| 生产节拍 | `cycle.rs` 布防分流、`cycle/burst.rs`（在途件、收尾与判定）、`shot_router.rs` 的 `arm_frames` |
+| 帧配组、分段、判定、标定 | `frame_group.rs`、`segmentation.rs`、`burst_judge.rs`、`calibration.rs` |
+| 相机与测量 | `camera.rs`、`frame.rs`、`measure.rs`（`FrameJob`）、`vision.rs` / `vision/taught.rs`（`measure_frame`）、`production.rs`（`burst_graphs`） |
+| 示教采集轮次 | `recipe_capture/burst.rs`（`CaptureRoundV2`） |
+| 候选工作区 | `workspace.rs`（`WorkspaceView.plan` 分流）、`workspace/burst.rs`（走廊示教、多轮标定、x_ref）、`workspace/burst_release.rs`（验证与发布）、`workspace/burst_history.rs`（历史读图与复测） |
+| 发布包 | `release.rs`（`publish_burst`，schema 4） |
+| 记录、录制、审计 | `store.rs`（`part_frames`，库版本 9）、`recorder.rs`、`audit/` |
+| 离线仿真 | `offline/line.rs`（脉冲串 `run_burst`）、`offline/scenario.rs`、`offline/sample_set.rs`（`camera_frames`）、`simimage.rs` |
+| 前端 | `src/features/workspace/` 的 `SegmentsPage`、`TeachingPage`（相机走廊示教）、`CalibrationPage`、`CapturePage`、`PlanProgress`；`src/features/plan/` |
 
 ## 二、已放弃的设计
 
@@ -68,11 +61,11 @@ Rust 文件都在 `src-tauri/src/` 下；前端契约 `src/features/plan/types.t
 
 | 已放弃 | 现行做法 | 记录 |
 | --- | --- | --- |
-| 一台三目设备“一帧内三视角”交付 | 三台独立单视角相机共用一个触发，各出 1 帧；三目拼接配置只留给旧配方 | D-SB-11，协议文档第 13 节 |
-| 协议 5 的 `deviceTriggers` 必须等于 `deviceShots`（结束时计数相等） | 只作参考，相差 > 1 记丢帧告警 | D-SB-4，plc-table P9 |
-| 示教采集 1–64 上限与计数核对 | 段配方不设上限、不核对（旧配方的示教仍保留） | D-SB-8、D-SB-9，plc-table P10 |
+| 一台三目设备“一帧内三视角”交付 | 三台独立单视角相机共用一个触发，各出 1 帧；三目拼接配置不能参与生产 | D-SB-11，协议文档第 13 节 |
+| 协议 5 的 `deviceTriggers` 必须等于 `deviceShots`（结束时计数相等） | 预留写 0，不参与检测判断 | D-SB-4，plc-table P9 |
+| 示教采集 1–64 上限与计数核对 | 段配方不设上限、不核对 | D-SB-8、D-SB-9，plc-table P10 |
 | PLC 参与分段（段号、每段脉冲数字段） | PLC 不参与分段，协议 6 不加、不预留分段字段，段由 PC 图像算法划分 | 协议文档 4.2 节，plc-table 协议 6 适配节 |
-| 机器人逐点 TB 触发（每张图对应一个确定的轨迹点） | 机器人只出相机使能电平，PLC 定频发脉冲串，配方改为段列表 | D-SB-1，协议文档 4.2 节 |
+| 机器人逐点 TB 触发（每张图对应一个确定的轨迹点） | 机器人只出相机使能电平，相机内部固定帧率采集，配方改为段列表 | D-SB-1，协议文档 4.2 节 |
 | 分段置信度不足时回退到计划边界 | 该边界两侧两段合并为未分段区域，不判胶偏，标“胶偏未判” | `segmentation.rs` 的 `resolve_regions`（`UnsegReason::LowConfidence`），见“需确认”说明 |
 | 预期帧数取多轮最小值、多出的帧裁掉 | 多轮帧组数均值四舍五入作 N_exp，所有帧都测，越界只告警 | D-SB-12、D-SB-32，segment-burst 第六节 |
 | 特征定位判胶偏、示教中线逐点比对作为段配方的方案 | 段级 AbsoluteX；特征定位与逐点比对只服务旧配方 | D-SB-15，[fixture-position 讨论](discussions/fixture-position/README.md) |

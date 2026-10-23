@@ -1,8 +1,8 @@
 import type { BrushGuide, ImagePoint } from "./teachingPath";
 import { createContext, useContext, useEffect, useId, useRef, useState, type PointerEvent, type ReactNode } from "react";
-import { Link, NavLink, useLocation } from "react-router-dom";
-import { Camera, LayoutDashboard, Lock, Minus, Plus, RotateCcw } from "lucide-react";
-import { Alert, Button, Card, Chip, EmptyState, FormField, IconButton, Progress, StatusBadge, TextField } from "qing-steel";
+import { Link, useLocation } from "react-router-dom";
+import { Camera, Minus, Plus, RotateCcw } from "lucide-react";
+import { Alert, Button, Card, Chip, EmptyState, FormField, IconButton, StatusBadge, TextField } from "qing-steel";
 import { desktopAvailable } from "../../lib/desktop";
 import { workspaceApi } from "./api";
 import { useWorkspace } from "./context";
@@ -12,11 +12,8 @@ import { FIXTURE_PAD_PX } from "./teach";
 import { shotSegment, visColor } from "../cycle/vis";
 import type { GrayImage, GrayPixels } from "./types";
 import { errorText } from "../../lib/errors";
-import { stages, stageStatus, stageStatusText } from "./stages";
-import { teachingTasks } from "./teachingTasks";
 import { PlanSteps } from "./PlanSteps";
 import { searchBand } from "./searchBand";
-import SelectionTrack from "../../components/SelectionTrack";
 
 export function Badge({ children, tone = "info" }: { children: ReactNode; tone?: "info" | "ok" | "ng" | "warn" | "neutral" }) {
   if (tone === "neutral") return <span className="qs-badge"><span className="dot" aria-hidden="true" />{children}</span>;
@@ -40,7 +37,7 @@ export function NumberField({ label, value, unit, onChange, min, max, step = 1, 
 }
 export function WorkspaceEmpty() {
   const { error } = useWorkspace();
-  return <div className="wp-page">{error && <Notice title="无法加载候选配置" tone="warn">{error}</Notice>}<div className="wp-empty"><EmptyState icon={<Camera size={32} aria-hidden="true" />} title={desktopAvailable() ? "尚未选择配方" : "当前为浏览器查看模式"} description={desktopAvailable() ? "在配方库选择或新建配方，再开始规划拍照点与示教中线。" : "请在桌面软件中连接实际数据。"} action={desktopAvailable() && <Link className="btn primary" to="/recipe">打开配方库</Link>} /></div></div>;
+  return <div className="wp-page">{error && <Notice title="无法加载候选配置" tone="warn">{error}</Notice>}<div className="wp-empty"><EmptyState icon={<Camera size={32} aria-hidden="true" />} title={desktopAvailable() ? "尚未选择配方" : "当前为浏览器查看模式"} description={desktopAvailable() ? "在配方库选择或新建配方，再开始规划段与示教走廊。" : "请在桌面软件中连接实际数据。"} action={desktopAvailable() && <Link className="btn primary" to="/recipe">打开配方库</Link>} /></div></div>;
 }
 export function WorkspaceBar() {
   const { list, drafts, selectedId, select, data, doc, dirty, frameDirty, busy, previewError, error, saveDoc, saveState, retrySave, setError } = useWorkspace();
@@ -59,23 +56,9 @@ export function WorkspaceBar() {
     {publish?.state === "active" && publish.warning && <Notice title={`v${publish.version} 已生效，但候选版本号未能更新`} tone="warn">{publish.warning}</Notice>}
   </>;
 }
-/** 工作台步骤：侧栏只有“配方”入口，步骤间导航由此承担，状态取后端进度。段配方（有 plan）用 PlanSteps，旧拍照点配方用 LegacySteps。 */
 export function Steps() {
   const { data } = useWorkspace();
-  return data?.plan ? <PlanSteps /> : <LegacySteps />;
-}
-/** 旧拍照点模型的步骤条（行为不变）。 */
-function LegacySteps() {
-  const { data, doc } = useWorkspace();
-  const { pathname } = useLocation();
-  const tasks = data && doc ? teachingTasks(doc.shots, data.progress) : [];
-  const calibrationPending = data?.progress.steps.some(step => step.id === "calibration" && step.status !== "done");
-  // 示教页的第 3 步：进行中时以“n / m 组”代替阶段状态，并加细进度条；完成、阻塞仍显示阶段状态；其它页面不变
-  const teachingCount = pathname === "/recipe/teach" && tasks.length ? { done: tasks.filter(task => task.phase === "done").length, total: tasks.length } : null;
-  return <SelectionTrack as="nav" className="wp-steps" trackId="workspace-steps" activeKey={pathname} aria-label="配方配置步骤">
-    <NavLink to="/recipe/progress" end className={({isActive}) => "wp-step-home" + (isActive ? " active" : "")}><span className="wp-step-no"><LayoutDashboard size={13} aria-hidden="true" /></span><span className="wp-step-label">总览</span></NavLink>
-    {stages.map((stage, i) => { const s = data ? stageStatus(data.progress, stage, tasks) : null; return <NavLink key={stage.path} to={stage.path} end title={stage.optional ? stage.label + "（可选）" : undefined} className={({isActive}) => (isActive ? "active" : "") + (stage.optional ? " optional" : "")}><span className="wp-step-no">{i + 1}</span><span className="wp-step-label">{stage.label}</span>{s === "waiting" ? <small className="wp-step-status waiting"><Lock size={11} aria-hidden="true" />{stageStatusText[s]}</small> : <>{teachingCount && stage.path === pathname && (s === "inProgress" || s === "notStarted") ? <small className="wp-step-status wp-step-count">{teachingCount.done} / {teachingCount.total} 组</small> : s && s !== "optional" && <small className={"wp-step-status " + s}>{stageStatusText[s]}</small>}{teachingCount && stage.path === pathname && <span className="wp-step-progress"><Progress label="示教完成组数" value={teachingCount.done} max={Math.max(1, teachingCount.total)} /></span>}</>}{stage.sub.includes("calibration") && s === "done" && calibrationPending && <small className="wp-step-status blocked">标定待验证</small>}</NavLink>; })}
-  </SelectionTrack>;
+  return data?.plan ? <PlanSteps /> : null;
 }
 
 export function useGrayImage(id: string | null, imageId: string | null, historyId?: number | null, k = 0, view?: number) {

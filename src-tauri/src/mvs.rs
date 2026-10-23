@@ -142,6 +142,7 @@ type FnSetEnumStr = unsafe extern "system" fn(Handle, *const c_char, *const c_ch
 type FnSetFloat = unsafe extern "system" fn(Handle, *const c_char, f32) -> i32;
 type FnGetFloat = unsafe extern "system" fn(Handle, *const c_char, *mut FloatValue) -> i32;
 type FnSetInt = unsafe extern "system" fn(Handle, *const c_char, i64) -> i32;
+type FnGetBool = unsafe extern "system" fn(Handle, *const c_char, *mut bool) -> i32;
 type FnSetBool = unsafe extern "system" fn(Handle, *const c_char, bool) -> i32;
 type FnCommand = unsafe extern "system" fn(Handle, *const c_char) -> i32;
 type FnGetEnum = unsafe extern "system" fn(Handle, *const c_char, *mut EnumValue) -> i32;
@@ -169,6 +170,7 @@ pub struct Api {
     get_float: FnGetFloat,
     set_int: FnSetInt,
     set_bool: FnSetBool,
+    get_bool: FnGetBool,
     command: FnCommand,
     get_enum: FnGetEnum,
     get_enum_entry: FnGetEnumEntry,
@@ -247,6 +249,7 @@ impl Api {
             get_float: sym!("MV_CC_GetFloatValue"),
             set_int: sym!("MV_CC_SetIntValueEx"),
             set_bool: sym!("MV_CC_SetBoolValue"),
+            get_bool: sym!("MV_CC_GetBoolValue"),
             command: sym!("MV_CC_SetCommandValue"),
             get_enum: sym!("MV_CC_GetEnumValue"),
             get_enum_entry: sym!("MV_CC_GetEnumEntrySymbolic"),
@@ -409,6 +412,21 @@ impl Device {
 
     pub fn set_bool(&self, key: &str, value: bool) -> Result<(), String> {
         check(unsafe { (self.api.set_bool)(self.handle, Self::key(key).as_ptr(), value) }, &format!("{key} = {value}"))
+    }
+
+    pub fn get_bool(&self, key: &str) -> Result<bool, String> {
+        let mut value = false;
+        check(unsafe { (self.api.get_bool)(self.handle, Self::key(key).as_ptr(), &mut value) }, &format!("读取 {key}"))?;
+        Ok(value)
+    }
+
+    pub fn get_enum(&self, key: &str) -> Result<String, String> {
+        let k = Self::key(key);
+        let mut v = EnumValue { cur: 0, supported_num: 0, supported: [0; 64], reserved: [0; 4] };
+        check(unsafe { (self.api.get_enum)(self.handle, k.as_ptr(), &mut v) }, &format!("读取 {key}"))?;
+        let mut entry = EnumEntry { value: v.cur, symbolic: [0; 64], reserved: [0; 4] };
+        check(unsafe { (self.api.get_enum_entry)(self.handle, k.as_ptr(), &mut entry) }, &format!("读取 {key} 当前枚举"))?;
+        Ok(unsafe { CStr::from_ptr(entry.symbolic.as_ptr()) }.to_string_lossy().into_owned())
     }
 
     pub fn command(&self, key: &str) -> Result<(), String> {

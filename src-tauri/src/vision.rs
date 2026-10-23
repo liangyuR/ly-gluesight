@@ -520,6 +520,9 @@ pub fn vision_calib_info(app: AppHandle, cam: Option<u8>, view: Option<u8>) -> R
 #[tauri::command]
 pub async fn vision_calibrate(app: AppHandle, pattern: [f64; 2], square: f64, cam: Option<u8>, view: Option<u8>, image_id: Option<String>) -> Result<CalibInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let cycle = app.state::<CycleHost>();
+        let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在采集、标定或处理 PLC 事务，请稍后重试")?;
+        crate::camera::check_idle(&cycle)?;
         let keys = camera_calib_keys(&app, cam.unwrap_or(0), view)?;
         let view = view.unwrap_or(1);
         if app.state::<CycleHost>().busy() || app.state::<CycleHost>().camera.recipe_capture().active() { return Err("设备正在采集或检测，结束后再标定".into()); }

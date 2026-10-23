@@ -23,7 +23,7 @@ const picture={url:"data:image/png;base64,",width:1280,height:1024};
 /** 按拍照点采的旧轮次（旧拍照点配方）：每次触发一项 */
 const round=(state:CaptureRound["state"]="complete"):CaptureRound=>({roundId:"r1",recipeId:"A",cameras:[{cameraId:"CAM-1",deviceSession:7,receivedCount:20}],plannedCount:20,state,createdAt:1,endedAt:2,error:null,simulated:true,frames:[]});
 const shot=(i:number,cameras:string[]=["CAM-1"],width=1280)=>({shotId:"s"+i,ordinal:i,cameras:cameras.map(cameraId=>({cameraId,frameCounter:i,triggerCounter:i,originalPath:"",views:[{view:1,path:"",width,height:1024}]}))});
-const device=(id:string,name:string):CameraConfig=>({id,name,source:"sim",viewCount:1,serial:id,triggerSource:"Line0",triggerActivation:"RisingEdge",triggerDelayUs:0,debouncerUs:0,strobe:false,chunk:true});
+const device=(id:string,name:string):CameraConfig=>({id,name,source:"sim",viewCount:1,serial:id,triggerSource:"Line0",triggerActivation:"LevelHigh",frameRate:10,triggerDelayUs:0,debouncerUs:0,strobe:false,chunk:true});
 const triple=()=>[device("CAM-1","相机1"),device("CAM-2","相机2"),device("CAM-3","相机3")];
 const show=(url="/recipe/capture")=>render(<MemoryRouter initialEntries={[url]}><CapturePage/></MemoryRouter>);
 /** 采集结果里的汇总标签（chip）的值 */
@@ -37,9 +37,8 @@ function useBurst(){
  vi.mocked(cameraApi.rigStatus).mockResolvedValue(["CAM-1","CAM-2","CAM-3"].map(id=>({id,ready:true})) as Awaited<ReturnType<typeof cameraApi.rigStatus>>);
 }
 beforeEach(()=>{
- ws=workspaceState();ws.cameras=[{id:"CAM-1",name:"拼接设备",source:"sim",viewCount:3,serial:"DEVICE",triggerSource:"Line0",triggerActivation:"RisingEdge",triggerDelayUs:0,debouncerUs:0,strobe:false,chunk:true}];
+ useBurst();
  vi.mocked(useWorkspace).mockImplementation(()=>ws);vi.mocked(useCycle).mockReturnValue({snapshot:snapshot(),logs:[],measured:[]});
- vi.mocked(cameraApi.rigStatus).mockResolvedValue([{id:"CAM-1",ready:true}] as Awaited<ReturnType<typeof cameraApi.rigStatus>>);
  vi.mocked(plcApi.getStatus).mockResolvedValue({state:"connected",message:"PLC已连接"} as Awaited<ReturnType<typeof plcApi.getStatus>>);
  vi.mocked(workspaceApi.captureGet).mockResolvedValue(null);vi.mocked(workspaceApi.captureList).mockResolvedValue([]);
  vi.mocked(workspaceApi.captureImage).mockResolvedValue(picture);vi.mocked(workspaceApi.captureFrameImage).mockResolvedValue(picture);
@@ -55,7 +54,7 @@ it("两台相机各改曝光与增益后点应用 → 按相机一次写入候�
  expect(exposure1).toHaveValue(60);expect(apply).toBeDisabled();
  await userEvent.clear(exposure1);await userEvent.type(exposure1,"120");await userEvent.clear(gain2);await userEvent.type(gain2,"2.5");
  await userEvent.click(apply);
- expect(workspaceApi.setCameraImaging).toHaveBeenCalledWith("A",7,{"CAM-1":{exposureUs:120,gainDb:6},"CAM-2":{exposureUs:60,gainDb:2.5}});
+ expect(workspaceApi.setCameraImaging).toHaveBeenCalledWith("A",3,{"CAM-1":{exposureUs:120,gainDb:6},"CAM-2":{exposureUs:60,gainDb:2.5}});
  expect(await screen.findByText(/相机2.*没能下发/)).toBeVisible();
  expect(screen.queryByText(/相机1.*没能下发/)).toBeNull();
 });
@@ -84,7 +83,7 @@ it("从配置设备返回 → 保留手动取消的相机，新增相机自动�
 // 防的回归：采集页退回“按 PLC 计划数核对”——进度按 receivedCount/plannedCount 画、缺帧整轮判异常（规格 §5：示教轮次不核对；§3：缺帧只告警）
 it("新轮次有缺帧和丢帧告警 → 显示帧组数、各相机帧数、不完整帧组与告警，PLC 预期总数只作参考，不出现数量核对",async()=>{
  useBurst();
- vi.mocked(workspaceApi.captureGet).mockResolvedValue(captureRoundV2({recipeId:"A",deviceTriggers:14,lossAlarms:[{camera:0,count:12,reason:{type:"triggers",deviceTriggers:14}}]}));show();
+ vi.mocked(workspaceApi.captureGet).mockResolvedValue(captureRoundV2({recipeId:"A",deviceTriggers:0,lossAlarms:[{camera:0,count:12,reason:{type:"cameras",other:1,otherCount:9}}]}));show();
  await screen.findByRole("heading",{name:"采集结果"});
  expect(chip("帧组")).toHaveTextContent("12 个");
  expect(chip("相机1")).toHaveTextContent("12 帧");
@@ -92,14 +91,13 @@ it("新轮次有缺帧和丢帧告警 → 显示帧组数、各相机帧数、�
  expect(chip("相机3")).toHaveTextContent("12 帧");
  expect(chip("不完整帧组")).toHaveTextContent("1 个");
  expect(chip("PLC 预期总数（仅供参考）")).toHaveTextContent("12");
- expect(chip("PLC 累计触发（仅供参考）")).toHaveTextContent("14");
- expect(screen.getByText(/相机1 收到 12 帧，与 PLC 累计触发 14 相差超过 1/)).toBeVisible();
+ expect(screen.queryByText("PLC 累计触发（仅供参考）")).toBeNull();
+
  expect(within(screen.getByRole("group",{name:"不完整帧组"})).getByRole("button",{name:/^5/})).toHaveTextContent("缺 相机2");
  expect(screen.queryByText("数量核对")).toBeNull();expect(screen.queryByText(/ \/ 12 张/)).toBeNull();
  expect(screen.queryByText("本轮异常，需要重新采集")).toBeNull();
 });
 it.each([
- ["旧格式轮次（按拍照点采的历史轮次，按触发序号读图）",false,"r1",0],
  ["新轮次（按帧号读图）",true,"round-1",1],
 ])("段配方多相机%s切换相机 → 按相机读取同一帧组的原图",async(_,v2,roundId,seq)=>{
  useBurst();
@@ -118,7 +116,6 @@ it("异常轮保留原因，不能用于示教或标定",async()=>{
 });
 
 it.each([
- ["旧配方：本轮就是示教采集轮次",()=>{ ws.data!.workspace.captureId="round-1"; },false],
  ["段配方：本轮已有相机用作示教帧",()=>{ ws.data!.plan!.cameraTeaching[0].frame!.source="capture:round-1"; },true],
  ["段配方：本轮已加入多轮标定",()=>{ ws.data!.plan!.calibration!.rounds[0].roundId="round-1"; },true],
 ])("示教或标定用过的轮次不允许同时作为独立验证样本 · %s",async(_,setup,burst)=>{
@@ -132,7 +129,7 @@ it.each([
  ["独立样本模式下本轮独立于示教且未入库 → 主操作是保存为独立验证样本，收起栏采集新一圈样本降为次操作","teach","保存为独立验证样本","采集新一圈样本"],
  ["独立样本模式下本轮就是示教采集轮次 → 主操作是采集新一圈样本","r1","采集新一圈样本","保存为独立验证样本"],
 ])("%s",async(_,captureId,primary,secondary)=>{
- ws.data!.workspace.captureId=captureId;vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show("/recipe/capture?purpose=validation");
+ ws.data!.plan!.calibration!.rounds=[]; ws.data!.plan!.cameraTeaching[0].frame!.source="capture:"+captureId;vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show("/recipe/capture?purpose=validation");
  await screen.findByRole("region",{name:"设备准备"});
  expect(screen.getByRole("button",{name:primary})).toHaveAttribute("data-variant","filled");
  expect(screen.getByRole("button",{name:secondary})).toHaveAttribute("data-variant","tonal");
@@ -175,67 +172,6 @@ it("工件进行中 → 禁止把本轮加入标定",async()=>{
  expect(await screen.findByRole("button",{name:"加入标定"})).toBeDisabled();
 });
 
-// 旧拍照点配方（没有段计划）仍走 G0 之前的采集页：按拍照点预览、核对数量、采用本轮图像（决策补充第一节：旧路径只停用不删、行为不变）
-// 防的回归：旧配方的采集页被段配方版本替换，采集完成后无法采用本轮图像，旧配方走不到单帧示教
-it("旧拍照点配方的完整轮次尚未采用 → 点采用本轮图像按本轮提交采用",async()=>{
- vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show();
- await userEvent.click(await screen.findByRole("button",{name:"采用本轮图像"}));
- expect(workspaceApi.adoptCapture).toHaveBeenCalledWith("A",7,"r1",false,false);
-});
-it("多相机轮次切换相机 → 按相机读取同一拍照点的原图",async()=>{
- ws.cameras=[device("CAM-1","相机1"),device("CAM-2","相机2")];
- vi.mocked(workspaceApi.captureImage).mockResolvedValue({url:"data:image/png;base64,",width:1280,height:1024});
- vi.mocked(workspaceApi.captureGet).mockResolvedValue({...round(),cameras:[{cameraId:"CAM-1",deviceSession:7,receivedCount:1},{cameraId:"CAM-2",deviceSession:8,receivedCount:1}],plannedCount:1,frames:[shot(1,["CAM-1","CAM-2"])]});show();
- await screen.findByRole("img",{name:"拍照点 S001 · 相机1 · 完整拼接原图"});
- await userEvent.click(within(screen.getByRole("group",{name:"查看相机"})).getByRole("button",{name:"相机2"}));
- expect(await screen.findByRole("img",{name:"拍照点 S001 · 相机2 · 完整拼接原图"})).toBeVisible();
- expect(workspaceApi.captureImage).toHaveBeenLastCalledWith("r1",0,"CAM-2");
-});
-it("异常轮保留数量和原因，不能采用",async()=>{
- vi.mocked(workspaceApi.captureImage).mockReturnValue(new Promise(()=>{}));
- vi.mocked(workspaceApi.captureGet).mockResolvedValue({...round("failed"),frames:Array.from({length:19},(_,i)=>shot(i+1)),error:"缺少一帧"});show();
- expect(await screen.findByText("缺少一帧")).toBeVisible();expect(screen.getByText("已接收 19 / 20 张")).toBeVisible();expect(screen.queryByRole("button",{name:"采用本轮图像"})).toBeNull();
-});
-it("本轮已采用为示教图像 → 标明已采用，主操作改为进入单帧示教，采用按钮禁用且不再提供带入草稿",async()=>{
- ws.data!.workspace.captureId="r1";vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show();
- expect(await screen.findByText(/已采用为示教图像/)).toBeVisible();
- const enter=screen.getByRole("link",{name:"进入单帧示教"});
- expect(enter).toHaveAttribute("data-variant","filled");
- const adopt=screen.getByRole("button",{name:"采用本轮图像"});
- expect(adopt).toBeDisabled();expect(adopt).toHaveAttribute("data-variant","tonal");
- expect(screen.queryByRole("checkbox",{name:"带入旧中线与参数作为草稿"})).toBeNull();
-});
-it("普通采集模式下本轮已作为独立验证样本入库 → 采用按钮禁用并提示整圈重采",async()=>{
- ws.data!.workspace.captureId="teaching-round";
- ws.data!.workspace.sampleBank=[{id:"r1",name:"独立采集",geometryTag:null,expected:"OK",createdAt:1,captureId:"r1"}];
- vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show();
- expect(await screen.findByText(/本轮已作为独立验证样本加入样本库/)).toBeVisible();
- const button=screen.getByRole("button",{name:"采用本轮图像"});
- expect(button).toBeDisabled();
-});
-it("工件进行中禁止采用完整采集轮次",async()=>{
- ws.data!.workspace.captureId="teaching-round";
- vi.mocked(useCycle).mockReturnValue({snapshot:snapshot("ACQUIRE"),logs:[],measured:[]});
- vi.mocked(workspaceApi.captureGet).mockResolvedValue(round());show();
- const button=await screen.findByRole("button",{name:"采用本轮图像"});
- expect(button).toBeDisabled();
-});
-it("个别拍照点尺寸与其余不同 → 汇总标出不一致且仅该点显示实际尺寸",async()=>{
- vi.mocked(workspaceApi.captureImage).mockReturnValue(new Promise(()=>{}));
- vi.mocked(workspaceApi.captureGet).mockResolvedValue({...round(),frames:[shot(1),shot(2),shot(3,["CAM-1"],640)]});show();
- expect(await screen.findByText("尺寸不一致 · 多数为 1280×1024")).toBeVisible();
- expect(screen.getByRole("button",{name:/^S003/})).toHaveTextContent("640×1024");
- expect(screen.getByRole("button",{name:/^S001/})).not.toHaveTextContent("×");
-});
-it("切换拍照点且新图未读回 → 保留当前图像不回到读取占位",async()=>{
- vi.mocked(workspaceApi.captureImage).mockResolvedValueOnce({url:"data:image/png;base64,",width:1280,height:1024}).mockReturnValue(new Promise(()=>{}));
- vi.mocked(workspaceApi.captureGet).mockResolvedValue({...round(),frames:[shot(1),shot(2)]});show();
- await screen.findByRole("img",{name:"拍照点 S001 · 完整拼接原图"});
- await userEvent.click(screen.getByRole("button",{name:/^S002/}));
- expect(screen.getByRole("img",{name:"拍照点 S001 · 完整拼接原图 · 正在读取 S002"})).toBeVisible();
- expect(screen.queryByText("正在读取原图…")).toBeNull();
-});
-
 it("切换帧组且新图未读回 → 保留当前图像不回到读取占位",async()=>{
  useBurst();
  vi.mocked(workspaceApi.captureFrameImage).mockResolvedValueOnce(picture).mockReturnValue(new Promise(()=>{}));
@@ -250,7 +186,7 @@ it("采集完成后设备准备收起 → 收起栏仍可直接整圈重采",asy
  const bar=await screen.findByRole("region",{name:"设备准备"});
  expect(screen.queryByRole("group",{name:"采集相机"})).toBeNull();
  await userEvent.click(within(bar).getByRole("button",{name:"整圈重采"}));
- expect(workspaceApi.captureStart).toHaveBeenCalledWith("A",["CAM-1"],1500);
+ expect(workspaceApi.captureStart).toHaveBeenCalledWith("A",["CAM-1","CAM-2","CAM-3"],1500);
 });
 it("PLC 未连接 →开始接收禁用并给出 PLC 通讯入口",async()=>{
  vi.mocked(plcApi.getStatus).mockResolvedValue({state:"disconnected",message:"PLC 未连接"} as Awaited<ReturnType<typeof plcApi.getStatus>>);show();
@@ -266,9 +202,17 @@ it("PLC 重连中且后端带连接地址 → 检查卡只显示连接中，不�
  expect(screen.getByRole("button",{name:"开始接收"})).toBeDisabled();
 });
 it("飞拍速度超过按曝光、标定当量、帧率和间距算出的上限 → 检查卡标出超速与最高速度",async()=>{
- vi.mocked(cameraApi.rigStatus).mockResolvedValue([{id:"CAM-1",cam:0,ready:true,maxFps:50}] as Awaited<ReturnType<typeof cameraApi.rigStatus>>);
+ ws.cameras=[device("CAM-1","相机1")];
+ vi.mocked(cameraApi.rigStatus).mockResolvedValue([{id:"CAM-1",cam:0,ready:true,maxFps:50,configuredFrameRate:50}] as Awaited<ReturnType<typeof cameraApi.rigStatus>>);
  vi.mocked(cameraApi.calibInfo).mockResolvedValue({mmPerPx:.1});
  vi.mocked(storageApi.preferences).mockResolvedValue({flyshotSpeedMmS:1000,flyshotSpacingMm:130});show();
  const checks=within(await screen.findByRole("list",{name:"开始前检查"}));
  expect(await checks.findByText("超速 · 最高 833 mm/s")).toBeVisible();
+});
+
+it("Software 相机参与整圈采集 → 阻止启动并要求切换 Line0",async()=>{
+ ws.cameras=[{...device("CAM-1","相机1"),source:"mvs",triggerSource:"Software"}];
+ show();
+ expect(await screen.findByText("请将采集相机切换为 Line0 高电平：相机1。")).toBeVisible();
+ expect(screen.getByRole("button",{name:"开始接收"})).toBeDisabled();
 });
