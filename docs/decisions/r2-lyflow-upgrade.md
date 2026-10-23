@@ -1,5 +1,7 @@
 # r2-lyflow-upgrade 决策记录
 
+> 2026-10-23 测试范围更新：按用户决策删除依赖现场样本集的离线建站及重启、日志回放、特征定位桌面测试（原 `test:e2e:offline`、`test:e2e:log-replay`、`test:e2e:fixture` 及对应脚本）。下文相关命令、脚本和通过记录仅为历史事实，已不是可执行入口或当前覆盖声明；产品功能、长稳、硬件联调与底层业务测试不受影响。当前桌面入口仅保留生产落盘。
+
 第二轮收尾工作线：GlueSight 升级到 lyFlow 1.1.4。1.1.4 包含 LyFlow#26–#29，已于 2026-10-19 正式发布（Release、NuGet 均成功）。评测数据见 [算法评测报告](../testing/algorithm-evaluation.md) §5，A-9 的背景见 [algorithm.md](algorithm.md)。
 
 ## L-1 用 `pnpm deps:lyflow:update` 升级，系列锁不变
