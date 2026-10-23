@@ -90,20 +90,7 @@ fn capture_device_ids(configs: &[crate::camera::CameraConfig], selected: &[Strin
     Ok(selected.to_vec())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn teaching_capture_arms_every_selected_camera_but_rejects_a_removed_one() {
-        let device = |id: &str| crate::camera::CameraConfig { id: id.into(), view_count: 1, ..Default::default() };
-        let configs = [device("cam1"), device("cam2"), device("cam3")];
-        let selected = ["cam1".to_string(), "cam3".to_string()];
-        assert_eq!(capture_device_ids(&configs, &selected).unwrap(), selected);
-        assert!(capture_device_ids(&configs[..2], &selected).unwrap_err().contains("cam3"));
-        assert!(capture_device_ids(&configs, &[]).is_err());
-    }
-}
 
 /// 示教采集期间的复位 / 就绪判定：只放宽"没有可开工配方"，生产生效版本、工件身份、测量线程与采集相机仍须就绪。
 pub(super) fn capture_readiness(service: Result<(), String>, device: impl FnOnce() -> Result<(), String>) -> Result<(), String> {

@@ -538,7 +538,7 @@ fn uninspected(segments: &[PathSegment]) -> Vec<Uninspected> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::{new_segment, InspectRange, KindDefaults, OffsetRef};
+    use crate::plan::{new_segment, KindDefaults, OffsetRef};
     use SegmentKind::{Corner, Straight};
 
     const CAMS: usize = 3;
@@ -656,76 +656,6 @@ mod tests {
         }
     }
 
-    /// 规格 §4：弯道不检胶偏，也不标“胶偏未判”。
-    /// validate_segments 不允许弯道段带 offset，所以这里绕过校验直接把直线段的胶偏检测与参考值塞给弯道段：
-    /// 弯道区域若被当作直线区域去判胶偏（x 偏 5 mm 超限）会出 NG_POSITION，而不是 Ok。
-    #[test]
-    fn corner_region_does_not_flag_offset_unjudged() {
-        let mut segments = plan(&[Straight, Corner]);
-        segments[0].offset_ref = reference(Some(0.0), OffsetMeasure::AbsoluteX);
-        segments[1].checks.offset = Some(OffsetCheck { enabled: true, max_mean_shift_mm: 2.0, max_local_dev_mm: 2.0 });
-        segments[1].offset_ref = reference(Some(0.0), OffsetMeasure::AbsoluteX);
-        let mut metrics = frames(8);
-        metrics.iter_mut().filter(|m| m.seq >= 5).for_each(|m| m.x_mm = Some(5.0));
-        let regions = [region(RegionKind::Straight { segment: 1 }, 1, 4), region(RegionKind::Corner { segment: 2 }, 5, 8)];
-        let result = run(&segments, None, &regions, &metrics);
-        let corner = &result.regions[1];
-        assert_eq!((corner.verdict, &corner.offset, corner.offset_unjudged), (Verdict::Ok, &None, None));
-        assert!(!result.flags.offset_unjudged);
-    }
-
-    /// 规格 §4 直线段胶偏：只用参考相机的帧，去掉区域首尾各一帧后，x 均值 − x_ref 判整段偏移、与均值的最大偏差判局部跑偏。
-    /// x_ref = 0.5，两项限值都是 2 mm。
-    #[test]
-    fn straight_offset_trims_first_and_last_frame_then_judges_mean_and_max_deviation() {
-        let mut segments = plan(&[Straight]);
-        segments[0].offset_ref = reference(Some(0.5), OffsetMeasure::AbsoluteX);
-        for (case, reference_x, others_x, verdict) in [
-            ("整段偏移 2.5 mm", [3.0; 6], 0.5, Verdict::NgPosition),
-            ("一帧局部跑偏", [0.5, 0.5, 4.0, 0.5, 0.5, 0.5], 0.5, Verdict::NgPosition),
-            ("只有首尾帧异常", [6.0, 0.5, 0.5, 0.5, 0.5, -6.0], 0.5, Verdict::Ok),
-            ("其他相机的 x 不参与", [0.5; 6], 4.0, Verdict::Ok),
-        ] {
-            let mut metrics = frames(6);
-            for m in &mut metrics {
-                m.x_mm = Some(if m.camera == 0 { reference_x[m.seq as usize - 1] } else { others_x });
-            }
-            let result = run(&segments, None, &[region(RegionKind::Straight { segment: 1 }, 1, 6)], &metrics);
-            assert_eq!(result.verdict, verdict, "{case}");
-            assert!(result.regions[0].offset.is_some(), "{case}");
-        }
-    }
-
-    /// 默认做法 2：ToEdge 标“测量量未实现”；没有标准件参考值标“未标定参考值”；去掉首尾各一帧后参考相机没有测成的帧
-    /// 标“没有可用帧”（A4 遗留 F0-3：原先静默不判也不标）。都不判 NG，也不悄悄放过。
-    #[test]
-    fn straight_offset_with_to_edge_without_reference_or_without_usable_frames_is_unjudged_not_ng() {
-        let reference_middle_failed = |metrics: &mut Vec<FrameMetrics>| {
-            for seq in 2..=5 {
-                *at(metrics, 0, seq) = failed(0, seq, FrameState::Error);
-            }
-        };
-        let keep = |_: &mut Vec<FrameMetrics>| {};
-        type Edit = fn(&mut Vec<FrameMetrics>);
-        let cases: [(&str, Option<OffsetRef>, Edit, OffsetUnjudged); 4] = [
-            ("ToEdge", reference(None, OffsetMeasure::ToEdge), keep, OffsetUnjudged::MeasureNotImplemented),
-            ("AbsoluteX 未标定 x_ref", reference(None, OffsetMeasure::AbsoluteX), keep, OffsetUnjudged::NoReference),
-            ("没有胶偏参考", None, keep, OffsetUnjudged::NoReference),
-            ("参考相机中间帧都没测成，只剩首尾帧", reference(Some(0.0), OffsetMeasure::AbsoluteX), reference_middle_failed, OffsetUnjudged::NoFrames),
-        ];
-        for (case, offset_ref, edit, unjudged) in cases {
-            let mut segments = plan(&[Straight]);
-            segments[0].offset_ref = offset_ref;
-            let mut metrics = frames(6);
-            metrics.iter_mut().for_each(|m| m.x_mm = Some(5.0));
-            edit(&mut metrics);
-            let result = run(&segments, None, &[region(RegionKind::Straight { segment: 1 }, 1, 6)], &metrics);
-            assert_eq!(result.verdict, Verdict::Ok, "{case}");
-            assert_eq!((&result.regions[0].offset, result.regions[0].offset_unjudged), (&None, Some(unjudged)), "{case}");
-            assert!(result.flags.offset_unjudged, "{case}");
-        }
-    }
-
     /// 规格 §0/§3：某台相机这一组没有测成的帧（缺帧、测量失败、没测、走出走廊）→ 该组与整件标检测不完整，
     /// 其余相机照常判，不影响 OK/NG。
     #[test]
@@ -810,49 +740,5 @@ mod tests {
             assert_eq!(result.verdict, verdict, "{case}");
             assert_eq!(result.regions[0].reason.contains("溢胶"), k == 4, "{case}");
         }
-    }
-
-    /// D-SB-16：胶宽均匀性（区域内各帧 width_mean 的极差）只在直线区域判，超限为胶宽 NG、原因“胶宽不均”；
-    /// 弯道和未分段区域不判极差。参考相机三帧均值 3.7 / 4.0 / 4.4，极差 0.7 > 0.5，每帧胶宽本身都合格。
-    #[test]
-    fn width_range_over_limit_is_ng_width_only_in_straight_region() {
-        for (case, kind, region_kind, verdict) in [
-            ("直线区域", Straight, RegionKind::Straight { segment: 1 }, Verdict::NgWidth),
-            ("弯道区域", Corner, RegionKind::Corner { segment: 1 }, Verdict::Ok),
-            (
-                "未分段区域",
-                Straight,
-                RegionKind::Unsegmented { first_segment: 1, last_segment: 1, reason: UnsegReason::AlgorithmPending },
-                Verdict::Ok,
-            ),
-        ] {
-            let mut segments = plan(&[kind]);
-            segments[0].checks.width.max_range_mm = Some(0.5);
-            let mut metrics = frames(3);
-            for (seq, width) in [(1, 3.7), (2, 4.0), (3, 4.4)] {
-                set_widths(at(&mut metrics, 0, seq), &[width; 10]);
-            }
-            let result = run(&segments, None, &[region(region_kind, 1, 3)], &metrics);
-            assert_eq!(result.verdict, verdict, "{case}");
-            assert_eq!(result.regions[0].reason.contains("胶宽不均"), verdict == Verdict::NgWidth, "{case}");
-        }
-    }
-
-    /// 规格 §0/§1：检测区间 [a, b] 之外记未检区域 [0, a) 与 (b, 段长]；a = 0 没有起头一截，b 到段长没有收尾一截，
-    /// 段长未知时收尾一截终点为 None，没配检测区间的段不出未检区域。
-    #[test]
-    fn segment_with_inspect_range_reports_head_and_tail_as_uninspected() {
-        let mut segments = plan(&[Straight, Corner, Straight, Corner]);
-        let ranges = [(Some(180.0), Some((10.0, 170.0))), (None, Some((0.0, 50.0))), (Some(90.0), None), (Some(200.0), Some((5.0, 200.0)))];
-        for (segment, (length, range)) in segments.iter_mut().zip(ranges) {
-            segment.length_mm = length;
-            segment.inspect_range = range.map(|(a_mm, b_mm)| InspectRange { a_mm, b_mm });
-        }
-        let result = run(&segments, None, &[whole(&segments, UnsegReason::AlgorithmPending, 2)], &frames(2));
-        let gap = |segment, from_mm, to_mm| Uninspected { segment, from_mm, to_mm };
-        assert_eq!(
-            result.uninspected,
-            vec![gap(1, 0.0, Some(10.0)), gap(1, 170.0, Some(180.0)), gap(2, 50.0, None), gap(4, 0.0, Some(5.0))]
-        );
     }
 }

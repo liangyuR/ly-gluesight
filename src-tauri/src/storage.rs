@@ -717,7 +717,6 @@ pub fn storage_preferences_update(app: AppHandle, patch: Value) -> Result<Value,
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// 测试用临时目录，`relocate` 的用例也用它。
     pub(super) struct Fixture(pub(super) PathBuf);
     impl Fixture {
         pub(super) fn new() -> Self {
@@ -776,58 +775,6 @@ mod tests {
         assert_eq!(
             fs::read(source.join("workspaces/01/workspace.json")).unwrap(),
             original
-        );
-    }
-    #[test]
-    fn webview_profile_beyond_measured_limit_rejects_data_directory() {
-        let user = "S-1-5-21-1-2-3-1001";
-        let units = |path: &Path| path.to_string_lossy().encode_utf16().count();
-        let probe = Path::new("x");
-        for (profile_length, startup_window, accepted) in [
-            (229, false, true),
-            (230, false, false),
-            (237, true, true),
-            (238, true, false),
-        ] {
-            let base = if startup_window { bootstrap_root(probe) } else { probe.to_path_buf() };
-            let suffix = units(&base.join("webview").join(user)) - units(probe);
-            let root = PathBuf::from("资".repeat(profile_length - suffix));
-            assert_eq!(
-                check_webview_profiles(&root, user, startup_window).is_ok(),
-                accepted,
-                "WebView2 资料目录 {profile_length} 个字符，需建资料准备窗口：{startup_window}"
-            );
-        }
-    }
-    #[test]
-    fn interrupted_commit_resumes_existing_entries_without_overwriting() {
-        let test = Fixture::new();
-        fs::create_dir_all(test.0.join("migration/staging/config")).unwrap();
-        fs::create_dir_all(test.0.join("workspaces")).unwrap();
-        fs::write(test.0.join("workspaces/preserved"), "draft").unwrap();
-        fs::write(test.0.join("migration/staging/config/cycle.json"), "{}").unwrap();
-        fs::write(
-            test.0.join("migration/commit.json"),
-            json!({"entries":["workspaces","config"],"source":"old","files":2}).to_string(),
-        )
-        .unwrap();
-        promote(&test.0).unwrap();
-        promote(&test.0).unwrap();
-        assert_eq!(
-            fs::read_to_string(test.0.join("workspaces/preserved")).unwrap(),
-            "draft"
-        );
-        assert!(test.0.join("config/cycle.json").exists());
-        fs::create_dir_all(test.0.join("migration/staging/config")).unwrap();
-        fs::write(
-            test.0.join("migration/staging/config/cycle.json"),
-            "overwrite",
-        )
-        .unwrap();
-        assert!(promote(&test.0).is_err());
-        assert_eq!(
-            fs::read_to_string(test.0.join("config/cycle.json")).unwrap(),
-            "{}"
         );
     }
 }

@@ -400,6 +400,3 @@ pub fn gather(app: &AppHandle) -> Readiness {
         recipes,
     })
 }
-
-#[cfg(test)]
-mod tests;

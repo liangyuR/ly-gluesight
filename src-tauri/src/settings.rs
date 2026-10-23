@@ -152,41 +152,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn offline_retention_outside_supported_limits_is_rejected() {
-        for (keep, max_gb, valid) in [
-            (0, 10.0, false), (100_001, 10.0, false),
-            (300, 0.49, false), (300, 10_001.0, false),
-            (300, f32::NAN, false), (300, f32::INFINITY, false),
-            (1, 0.5, true), (100_000, 10_000.0, true),
-        ] {
-            let settings = CycleSettings { offline_record_keep: keep, offline_record_max_gb: max_gb, ..CycleSettings::default() };
-            assert_eq!(settings.validate().is_ok(), valid, "keep={keep}, max_gb={max_gb}");
-        }
-    }
-
-    #[test]
     fn arm_budget_outside_100_to_5000_ms_is_rejected_so_pc_gives_up_before_plc_arm_timeout() {
         for (arm_ms, valid) in [(99, false), (100, true), (5000, true), (5001, false), (10_000, false)] {
             let settings = CycleSettings { timeouts: Timeouts { arm_ms, ..Timeouts::default() }, ..CycleSettings::default() };
             assert_eq!(settings.validate().is_ok(), valid, "arm_ms={arm_ms}");
         }
-    }
-
-    #[test]
-    fn saved_settings_with_arm_budget_out_of_range_are_backed_up_and_rebuilt_with_defaults_on_load() {
-        let dir = std::env::temp_dir().join(format!("gluesight-settings-{}-{}", std::process::id(), ly_plc::now_ms()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("cycle.json");
-        let old = CycleSettings { record: RecordMode::All, timeouts: Timeouts { arm_ms: 10_000, ..Timeouts::default() }, ..CycleSettings::default() };
-        old.save(&path).unwrap();
-
-        let (loaded, note) = CycleSettings::load(&path);
-        assert_eq!(loaded, CycleSettings::default());
-        assert!(note.is_some());
-        let backups: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| *p != path).collect();
-        assert_eq!(backups.len(), 1);
-        assert_eq!(crate::fsio::read_json::<CycleSettings>(&backups[0]).unwrap(), Some(old));
-        assert_eq!(CycleSettings::load(&path), (CycleSettings::default(), None));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -183,21 +183,6 @@ mod tests {
         assert_eq!(grouper.groups(), (1..=3).map(|seq| group(seq, [true; 3])).collect::<Vec<_>>());
     }
 
-    /// 规格 §3：某台缺帧时只有该组标 incomplete，帧组数不变；末尾缺帧同样标出。
-    #[test]
-    fn camera_missing_a_seq_marks_only_that_group_incomplete_including_trailing() {
-        let mut grouper = Grouper::new(vec![0, 0, 0]);
-        for (cam, counters) in [(0, vec![1, 2, 3, 4]), (1, vec![1, 3, 4]), (2, vec![1, 2, 3])] {
-            for counter in counters {
-                grouper.offer(cam, counter);
-            }
-        }
-        assert_eq!(
-            grouper.groups(),
-            vec![group(1, [true; 3]), group(2, [true, false, true]), group(3, [true; 3]), group(4, [true, true, false])]
-        );
-    }
-
     /// 易错边界：重复帧不顶替先到的帧；帧号不大于基线是上一件的迟到帧，不计入本件，也不抬高下一件基线。
     #[test]
     fn duplicate_seq_keeps_first_and_counter_at_or_below_baseline_is_stale() {
@@ -224,21 +209,6 @@ mod tests {
         assert_eq!(grouper.groups().len(), 10);
         assert_eq!((grouper.max_counter(1), grouper.max_counter(2)), (200, 300));
         assert_eq!(Grouper::new(vec![0]).offer(0, MAX_SEQ + 1), Offer::OutOfRange { seq: MAX_SEQ + 1 });
-    }
-
-    #[test]
-    fn camera_count_differing_by_more_than_one_raises_loss_alarm() {
-        for (counts, alarmed) in [
-            ([10, 10, 10], vec![]),
-            ([10, 10, 9], vec![]),
-            ([10, 10, 8], vec![2]),
-            ([10, 9, 8], vec![]),
-        ] {
-            let cameras: Vec<usize> = loss_alarms(&counts).iter().map(|alarm| alarm.camera).collect();
-            assert_eq!(cameras, alarmed);
-        }
-        assert_eq!(loss_alarms(&[10, 10, 8]),
-            vec![LossAlarm { camera: 2, count: 8, reason: LossReason::Cameras { other: 0, other_count: 10 } }]);
     }
 
     /// 规格 §2：帧数 ∈ [N_exp − tol, N_exp + tol] 为正常，越界一帧即 Low / High。

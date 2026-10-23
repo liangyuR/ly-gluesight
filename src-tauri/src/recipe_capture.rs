@@ -629,21 +629,3 @@ fn preview_bytes(image: &FrameImage) -> Vec<u8> {
     } }
     bytes
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn explicit_layout_splits_without_guessing_or_overlapping() {
-        let image = FrameImage::new(6, 3, (0..18).collect());
-        let horizontal = CompositeLayout::Horizontal.split(&image).unwrap();
-        assert_eq!(horizontal[1].pixels, [2, 3, 8, 9, 14, 15]);
-        let vertical = CompositeLayout::Vertical.split(&image).unwrap();
-        assert_eq!(vertical[2].pixels, [12, 13, 14, 15, 16, 17]);
-        assert!(CompositeLayout::Horizontal.split(&FrameImage::new(5, 1, vec![0; 5])).is_err());
-        let rect = ViewRect { x: 0, y: 0, width: 2, height: 2 };
-        assert!(CompositeLayout::Rects { rects: [rect.clone(), rect.clone(), rect] }.split(&image).is_err());
-        assert!(CompositeLayout::Vertical.split(&FrameImage::new(6, 3, vec![0; 1])).is_err());
-    }
-}

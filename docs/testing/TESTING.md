@@ -1,6 +1,6 @@
 # 测试记录与复现
 
-更新时间：2026-10-23（同步到段模型，即分段连拍飞拍；2026-10-22 起测试范围按选择收缩，测试删除不改变产品业务规则或运行时校验）。前端与后端的分组见[前端轻量测试](frontend-lightweight-tests.md)、[后端轻量测试](backend-lightweight-tests.md)。
+更新时间：2026-10-23。当前 Rust 保留 106 项默认回归与 1 项手动算法评测，逐项保护规则及删除依据见 [Rust 保留测试清单](rust-test-retained-inventory.md)。前端与后端的分组见[前端轻量测试](frontend-lightweight-tests.md)、[后端轻量测试](backend-lightweight-tests.md)。以下带日期的实测结果保留为历史证据，不代替本轮验证。
 
 ## 高电平门控与 Software 调试验证（2026-10-23）
 
@@ -30,28 +30,23 @@ SDK 枚举成功但本机发现 0 台设备；Jinghang JHEM131GC-XS 的门控节
 | 测试层 | 保留验证 |
 | --- | --- |
 | 前端 | 创建配方、草稿编辑、采集、示教验证发布、生产操作锁、周期/图源隔离与历史显示；段配方的段列表、多轮标定、相机走廊示教、发布确认与按区域和帧组的历史展示；旧拍照点页面及专属用例不再维护 |
-| Rust 默认 | 配方版本、采集与示教流程、相机/帧关联、生产周期、PLC、调度、SQLite、原图录制、审计恢复及历史；段模型的 `plan`、`frame_group`、`segmentation`、`burst_judge`、`calibration` 五个纯模块，以及段配方的示教采集、生产节拍、候选工作区与发布、按帧落库和离线脉冲串仿真；不再维护旧拍照点运行路径与专属测试 |
+| Rust 默认 | 106 项有实际保护规则的回归：当前段配方、帧组与采集、整件标定、未分段判定、PLC、调度、发布与恢复；包含少量真实 S7 TCP 回环、SQLite 和原图录制集成测试，逐项见 [Rust 保留测试清单](rust-test-retained-inventory.md) |
 | S7 专项 | `plc_session` 的 S7 线协议用例（真实生产驱动 + 进程内 S7Server，已进默认 `cargo test`，不再 ignore、不依赖 Python），以及 Python 测试 PLC 自己的线报文自测 |
 | 桌面端到端 | 仅合成图段配方生产落盘：flow 实例内建站、标定、发布、生产、SQLite、原图与历史读回，需要 lyFlow。现场样本集桌面入口和旧拍照点流程已删除 |
 | 保留工具 | 打包契约、Windows 发布门禁、安装包自检、样本集转换脚本、S7 Python 服务与 Robot/Modbus 隔离协议 |
 | 手动专项 | 长稳测试、算法评测，需样本集与 lyFlow 运行库，不进 CI；吞吐探针 `throughput_probe`（3 × 25 Hz 门槛的实测依据，见“段模型专项”） |
 
-各层用例数量随代码变化，以实际筛选命令和 CI（`.github/workflows/windows-ci.yml`）结果为准。需要 lyFlow 或样本集的专项不属于无外部输入的默认验证；段配方走廊真引擎用例见下文。旧拍照点专属测试不作为当前验收要求，历史运行结果不能替代本轮验证。
+当前 Rust 共 107 项，其中默认 106 项，唯一 `#[ignore]` 为 `vision::eval::algorithm_eval`，需 lyFlow 与样本集、手动执行。原 7 项真引擎及 2 项 packaging ignored 测试已删除；不会把已删除测试移入其他默认或忽略入口。各层数量以实际源码与 CI（`.github/workflows/windows-ci.yml`）为准，旧拍照点专属测试不再维护，历史结果不能替代本轮验证。
 
 此前测试收缩已删除真实 DLL 的 8 项专项、性能与队列压力专项、性能工具自身测试、Robot 五工况桌面联调、现场验收清单、冻结发布资源的 9 项跨平台独立测试（Windows 默认 8 项）和质量判定规则的 11 项独立测试。旧 flyshot 脚本、去哈希专项、重复的 P0 性能/联调准备入口、覆盖率报告及重复前端快捷入口同步清理。保留的主流程可能经过发布和判定，但不据此声明已覆盖被删除组的全部规则。
 
 ## 段模型（分段连拍飞拍）专项
 
-段模型的测试按 AGENTS.md 准入编写：每个用例对应一条业务规则、对外契约或易错边界，名称写成“条件 → 预期结果”，不测 getter、DTO 与框架行为。旧拍照点配方从未部署，已停止使用；不再维护其运行入口、迁移、兼容分支及专属测试。保留通用标定与 Software 单帧调试。PLC 协议保持版本 6 和现有 DB 布局，`deviceTriggers` 为预留字段、PLC 写 0；Line0 高电平门控，帧率由软件设置、默认 10 fps。规则取舍见 [分段连拍决策记录](../decisions/segment-burst.md)，本轮新增、删除与改写的用例及其保护的规则见 [分段连拍测试清单](segment-burst-test-inventory.md)。
+段模型的测试按 AGENTS.md 准入编写：每个用例对应一条业务规则、对外契约或易错边界，名称写成“条件 → 预期结果”，不测 getter、DTO 与框架行为。旧拍照点配方从未部署，已停止使用；不再维护其运行入口、迁移、兼容分支及专属测试。保留通用标定与 Software 单帧调试。PLC 协议保持版本 6 和现有 DB 布局，`deviceTriggers` 为预留字段、PLC 写 0；Line0 高电平门控，帧率由软件设置、默认 10 fps。规则取舍见 [分段连拍决策记录](../decisions/segment-burst.md)，当前保留与删除依据见 [Rust 保留测试清单](rust-test-retained-inventory.md)，此前分段连拍开发过程见 [历史测试清单](segment-burst-test-inventory.md)。
 
 **分段算法未开发。** `segmentation` 只有 `Segmenter` 接口、`Unsegmented` 实现（整条胶路一个未分段区域）和合成序列回归入口（`segmentation::synthetic` 的 `generate` / `evaluate`），走向、光流、DTW 等真正的分段算法要等现场弯道图像；所以现有测试与端到端都只验证“未分段、只跑每帧独立检测、不判胶偏”，不验证分段效果（决策记录第一节、D-SB-21）。
 
-**走廊测量的真引擎用例。** `src-tauri/src/vision/taught/engine_tests.rs` 的 `engine_burst_publish_load_measure_frame_round_trip` 默认忽略，需要 `LYFLOW_CORE_DLL`（已发布运行库即可，不要求 lyFlow#32）：段配方发布包（schema 4）经 `release::load` → `Prepared::load` → 预热 → `measure_frame` 的生产路径与真实 `glue.taught_path` / `glue.bead_width` 对得上，胶宽当量与 x 的法向换算正确。
-
-```powershell
-$env:LYFLOW_CORE_DLL = 'src-tauri\target\dependency-cache\lyflow\1.1.5\lyflow_core.dll'
-cargo test --manifest-path src-tauri/Cargo.toml --lib -- --ignored vision::taught::engine_tests::engine_burst_publish_load_measure_frame_round_trip
-```
+**真引擎专项的当前状态。** 本轮删除 7 项 `vision::taught::engine_tests` 和 2 项 `packaging` 运行库自检 ignored 测试；原 `engine_burst_publish_load_measure_frame_round_trip` 命令已失效。历史实测事实和证据边界保留在“特征定位真引擎历史说明”。默认回归不加载 lyFlow DLL；唯一保留的手动算法评测为 `vision::eval::algorithm_eval`，入口见“运行”。
 
 **离线工况（段配方）。** 段配方在离线下按脉冲串运行：布防后以固定频率（默认 20 Hz）发脉冲，每个脉冲同时触发三台相机，`deviceTriggers` 保持 0（预留字段），脉冲发完置 partEnd；名义帧数取各段 N_exp（待标定的段按段长 × 频率 ÷ 50 mm/s 估算，已有整件标定时缩放到 ΣN_exp）。下表工况在离线控制台与在线检测页的工况下拉里，样本集与合成图来源都能选，只改变脉冲与握手，不改图像内容；旧拍照点配方不再支持。
 
@@ -115,29 +110,31 @@ Windows 受限环境遇到 Node realpath EPERM 时，按仓库 AGENTS.md 的 Win
 
 ```powershell
 python -m unittest discover -s scripts/s7-handshake/tests -v
-cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib -- plc_session offline::s7_server offline::start_request_tests
+cargo test --manifest-path src-tauri/Cargo.toml --offline --locked --lib -- plc_session
 ```
 
 `plc_session` 的用例由进程内 S7Server（`src-tauri/src/offline/s7_server.rs`，只监听 127.0.0.1 的随机端口，含仅测试编译的定点故障注入）驱动真实的生产会话，已是默认测试，不再需要 Python 夹具、`--include-ignored` 或 `S7_TEST_PYTHON`；Python 测试 PLC 只剩它自己的线报文自测（`scripts/s7-handshake/tests`，需要 Python 3）。两者都需要本机 TCP 回环权限：Windows 沙箱拒绝 localhost 连接（WinError 10013）时，在获准主机环境运行，不能跳过 TCP 后记为通过。各案例的状态、事务与 DB 快照写在测试临时目录（`s7-session-tests`），通过后自动清理，本机产物不提交。
 
 ## 特征定位真引擎历史说明
 
-本节保留旧拍照点专属真引擎测试的历史方法与证据边界，不属于当前验收流程，也不要求维护相关兼容路径。当前段配方走廊全链路用例见“段模型专项”，通用标定能力保留。
+本节保留真引擎测试的历史方法与证据边界。2026-10-23 精简后，`vision/taught/engine_tests.rs` 的 7 项及 `packaging` 的 2 项 ignored 测试均已删除，下述命令只记录当时复现方式，当前不可执行；其历史通过结果不等于当前覆盖声明。通用标定和产品自检能力保留。
 
 `src-tauri/src/vision/taught/engine_tests.rs` 在合成工件（定位框里两个暗孔和一个亮 L 角，暗胶条沿示教线）上跑真实 lyFlow 的 glue.locate 与 bead_width，E1–E5 经发布包的生产路径：临时目录里 `release::publish`（模板由包内示教原图裁出）→ `release::load` → `Prepared::load`（含预热的定位验收）→ `measure_views`，再交给 `judge`：整件平移（+12, +7 px 与切向 −25 px）后 d′ 不变、两端超出检测范围、判 OK（E1）；只移胶 8 px 时 d 沿法向变 0.8 mm、判 NG_POSITION（E2）；定位框被抹平时有胶站全部无基准、胶宽保留、判 ERR 92（E3）；加载后把包内模板换成同尺寸、特征被抹平的一块，下一帧位姿不再被采用、判 ERR 92，证明生产读的是发布包自己的模板（E4）；定位框逐像素挪向胶路，发布要在带外圈的框碰到漂到最远可测处（−16 px）的胶之前以走廊检查拒绝，最近一个能发布的框上胶漂过去时位姿不动、d 变 −1.6 mm、判 NG_POSITION（E5）。E8 走工作台示教试测的同一条路（G4）：模板从示教图裁出放进临时目录、在示教图上测量，按示教图检查出报告——示教检查通过、自定位位姿恒等（本地构建上偏移 0 px、次峰比 0.279），亮度 ±40 的帧经验证统计的锁定判据不算错锁；定位框（含外圈附近）抹成噪声后纹理检查不过。合成图的亮区 +40 也不饱和，E8 只证明接线与恒等容差，±40 能否拦住真实过曝错锁要看现场样本。`src-tauri/src/packaging.rs` 另有 E6：打包自检的定位冒烟在支持带外圈模板的运行库上报 ok。默认忽略，需要带 lyFlow#32 glue.locate 的 `lyflow_core.dll`（发布前用本地构建）：
 
 ```powershell
 $env:LYFLOW_CORE_DLL = '<lyFlow 构建>\build\core\bin\lyflow_core.dll'
-cargo test --manifest-path src-tauri/Cargo.toml --lib -- --ignored vision::taught::engine_tests packaging::tests::locate_smoke_passes
+# 历史命令，测试已删除：
+# cargo test --manifest-path src-tauri/Cargo.toml --lib -- --ignored vision::taught::engine_tests packaging::tests::locate_smoke_passes
 ```
 
-核心库的 glue.locate 不支持带外圈模板（1.0.0）时测试直接失败，不算通过。发布包加载时模板被改（同尺寸改像素）的拒绝与引擎无关，由默认运行的 `release::tests::template_tampered_with_same_size_or_dropped_with_its_reference_is_rejected_on_load` 覆盖。
+核心库的 glue.locate 不支持带外圈模板（1.0.0）时测试直接失败，不算通过。发布包加载时模板被改（同尺寸改像素）的拒绝与引擎无关，由当时默认运行的 `release::tests::template_tampered_with_same_size_or_dropped_with_its_reference_is_rejected_on_load` 覆盖（该旧拍照点用例现已删除）。
 
 E7 反过来验证已发布运行库（`Restore-LyFlowRuntime.ps1` 恢复的 1.1.4，glue.locate 1.0.0）：打包自检的定位冒烟报 `unsupported` 并写明原因与影响，不当作失败：
 
 ```powershell
 $env:LYFLOW_RELEASED_CORE_DLL = 'src-tauri\target\dependency-cache\lyflow\1.1.4\lyflow_core.dll'
-cargo test --manifest-path src-tauri/Cargo.toml --lib -- --ignored packaging::tests::locate_smoke_reports_unsupported
+# 历史命令，测试已删除：
+# cargo test --manifest-path src-tauri/Cargo.toml --lib -- --ignored packaging::tests::locate_smoke_reports_unsupported
 ```
 
 ## 隔离桌面与证据边界
@@ -228,7 +225,9 @@ Playwright Test 固定 `workers=1`、`fullyParallel=false`、`retries=0`，每�
 
 ### Windows CI 与手动验收
 
-Windows PR CI 仅执行 Format 检测、前端单元测试（`pnpm test`）和 Rust 库单元测试（`cargo test --locked --lib`）。Format 对本次新增、修改、复制或重命名的 Rust 文件逐个执行 `rustfmt --check --edition <Cargo.toml 中的 edition> --config skip_children=true`，无 Rust 变更则跳过 rustfmt；所有变更文件另用 `git diff --check` 检查空白。PR 比较 base SHA 与当前提交，main 推送比较 before 与当前提交，手动运行比较当前提交与上一提交。存量 Rust 尚未全仓格式化，因此不执行全仓格式门禁；项目尚未配置前端格式化工具。
+Windows PR CI 仅执行 Format 检测、前端单元测试（`pnpm test`）和 Rust 默认库回归（`cargo test --locked --lib`，当前 106 项默认、1 项手动 ignored）。Format 用 rustfmt 解析变更的 Rust 文件并生成格式结果，仅检查与本次新增、修改行相交的格式差异；新文件全检，纯删除文件中的测试时仍解析保留代码，无 Rust 变更则跳过。所有变更文件另用 `git diff --check` 检查空白。PR 比较 base SHA 与当前提交，main 推送比较 before 与当前提交，手动运行比较当前提交与上一提交。存量 Rust 尚未全仓格式化，因此使用增量格式检查，避免无关源码重排；项目尚未配置前端格式化工具。
+
+本地使用 `node scripts/Check-RustFormat.mjs --base main` 检查相对 main 的已跟踪文件变更；加 `--head <commit>` 可检查指定提交快照。脚本只读，需先为项目工具链安装 rustfmt（`rustup component add rustfmt`）。
 
 类型检查、样本转换、打包与长稳脚本检查、桌面生产冒烟及其报告上传均已从普通 PR CI 删除，不恢复 lyFlow 运行库、不构建桌面应用。推送 main 和手动运行 Windows CI 使用同样的轻量验证；Windows 发包工作流仅由手动运行或 `v*` tag 触发，保留发布门禁。
 

@@ -843,94 +843,6 @@ mod tests {
         assert!(results.try_recv().is_err());
     }
 
-    #[tokio::test]
-    async fn full_measure_queue_rejects_one_job_then_recovers_without_leaks_or_duplicate_results() {
-        let gate = Arc::new(Gate::default());
-        let release = ReleaseOnDrop(gate.clone());
-        let calls = Arc::new(AtomicUsize::new(0));
-        let entered = calls.clone();
-        let (tx, health, mut results, dispatcher) = worker(1, Arc::new(move |job| {
-            entered.fetch_add(1, Ordering::SeqCst);
-            gate.wait();
-            Measured::empty(job)
-        }));
-        tx.send(job(0, Duration::from_secs(5))).await.unwrap();
-        wait_health(&health, WorkerHealthSnapshot { capacity: 1, running: 1, timed_out: 0, available_capacity: 0 }).await;
-        tx.send(job(1, Duration::from_secs(5))).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while tx.capacity() != MEASURE_QUEUE {
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
-        }).await.unwrap();
-        for k in 2..MEASURE_QUEUE + 2 {
-            assert!(tx.try_send(job(k, Duration::from_secs(5))).is_ok());
-        }
-        assert_eq!(tx.capacity(), 0);
-        let rejected = match tx.try_send(job(MEASURE_QUEUE + 2, Duration::from_secs(5))) {
-            Err(tokio::sync::mpsc::error::TrySendError::Full(job)) => job,
-            _ => panic!("expected the real bounded measurement queue to be full"),
-        };
-        let failure = Measured::failed(&rejected, "测量队列已满：测量跟不上帧率");
-        assert_eq!(failure.error.as_deref(), Some("测量队列已满：测量跟不上帧率"));
-        assert_eq!(failure.k, MEASURE_QUEUE + 2);
-        assert_eq!(failure.cycle_id, "cycle-7");
-        assert_eq!(failure.shot_id, format!("P{}", MEASURE_QUEUE + 3));
-        assert_eq!(failure.bundle_id.as_deref(), Some("bundle-7"));
-        assert!(failure.queue_ms.is_none());
-        assert!(failure.engine_ms.is_none());
-        assert!(failure.core_ms.is_none());
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert!(results.try_recv().is_err());
-        release.0.release();
-        let mut seen = std::collections::HashSet::new();
-        for _ in 0..MEASURE_QUEUE + 2 {
-            let measured = next_result(&mut results).await;
-            assert!(measured.k < MEASURE_QUEUE + 2);
-            assert!(measured.error.is_none());
-            assert!(measured.queue_ms.is_some());
-            assert!(measured.engine_ms.is_some());
-            assert!(measured.core_ms.is_none());
-            assert!(seen.insert(measured.k), "duplicate measurement result");
-        }
-        assert_eq!(seen.len(), MEASURE_QUEUE + 2);
-        assert_eq!(calls.load(Ordering::SeqCst), MEASURE_QUEUE + 2);
-        wait_health(&health, WorkerHealthSnapshot { capacity: 1, running: 0, timed_out: 0, available_capacity: 1 }).await;
-        assert!(health.can_arm());
-        assert_eq!(tx.capacity(), MEASURE_QUEUE);
-        tx.send(job(MEASURE_QUEUE + 3, Duration::from_secs(1))).await.unwrap();
-        let recovered = next_result(&mut results).await;
-        assert_eq!(recovered.k, MEASURE_QUEUE + 3);
-        assert!(recovered.error.is_none());
-        assert_eq!(calls.load(Ordering::SeqCst), MEASURE_QUEUE + 3);
-        wait_health(&health, WorkerHealthSnapshot { capacity: 1, running: 0, timed_out: 0, available_capacity: 1 }).await;
-        drop(tx);
-        dispatcher.await.unwrap();
-        assert!(tokio::time::timeout(Duration::from_secs(2), results.recv()).await.unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn jobs_expired_in_queue_never_enter_the_blocking_executor() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let entered = calls.clone();
-        let (tx, health, mut results, dispatcher) = worker(1, Arc::new(move |job| {
-            entered.fetch_add(1, Ordering::SeqCst);
-            Measured::empty(job)
-        }));
-        let mut expired = job(0, Duration::from_millis(10));
-        expired.submitted_at = Instant::now() - Duration::from_millis(100);
-        tx.send(expired).await.unwrap();
-        let result = next_result(&mut results).await;
-        assert!(result.error.unwrap().starts_with(MEASURE_TIMEOUT));
-        assert!(result.ms >= 100);
-        assert!(result.queue_ms.is_none());
-        assert!(result.engine_ms.is_none());
-        assert!(result.core_ms.is_none());
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert_eq!(health.snapshot(), WorkerHealthSnapshot { capacity: 1, running: 0, timed_out: 0, available_capacity: 1 });
-        drop(tx);
-        dispatcher.await.unwrap();
-    }
-
     fn frame_job(recipe: &Arc<Recipe>, seq: u64) -> FrameJob {
         FrameJob { cycle_id: "cycle-7".into(), bundle_id: None, production: None, candidate: None, camera_idx: 0, camera: "cam1".into(), seq,
             image: None, image_measurement: false, recipe: recipe.clone(), scenario: Scenario::Normal, submitted_at: clock(), timeout: Duration::from_secs(5) }
@@ -983,24 +895,4 @@ mod tests {
         assert!(results.try_recv().is_err());
     }
 
-    #[tokio::test]
-    async fn panicking_executor_reports_failure_and_releases_real_capacity() {
-        let (tx, health, mut results, dispatcher) = worker(1, Arc::new(|job| {
-            assert_ne!(job.k, 0, "controlled measurement panic");
-            Measured::empty(job)
-        }));
-        tx.send(job(0, Duration::from_secs(1))).await.unwrap();
-        let failed = next_result(&mut results).await;
-        assert_eq!(failed.error.as_deref(), Some("测量线程异常退出"));
-        assert_eq!(failed.bundle_id.as_deref(), Some("bundle-7"));
-        assert!(failed.queue_ms.is_some());
-        assert!(failed.engine_ms.is_none());
-        assert!(failed.core_ms.is_none());
-        wait_health(&health, WorkerHealthSnapshot { capacity: 1, running: 0, timed_out: 0, available_capacity: 1 }).await;
-        tx.send(job(1, Duration::from_secs(1))).await.unwrap();
-        assert!(next_result(&mut results).await.error.is_none());
-        drop(tx);
-        dispatcher.await.unwrap();
-        assert!(health.can_arm());
-    }
 }

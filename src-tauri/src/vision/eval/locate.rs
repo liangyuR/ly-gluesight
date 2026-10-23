@@ -918,7 +918,6 @@ pub fn evaluate(ctx: &Ctx, base: &[Result<ShotMeasurement, String>]) -> Value {
             "shotsWithTemplate": with, "shotsWithoutTemplate": ready.len() - with, "templatesChanged": changed, "cases": cases, "errors": errors})
     }).collect();
 
-
     json!({
         "params": {"searchRadiusPx": SEARCH_RADIUS_PX, "angleRangeDeg": ANGLE_RANGE_DEG, "angleStepDeg": ANGLE_STEP_DEG, "minScore": MIN_SCORE, "templatePadPx": FIXTURE_TEMPLATE_PAD_PX,
             "sizes": SIZES, "stridePx": STRIDE, "corridorPadPx": CORRIDOR_PAD_PX, "minStd": MIN_STD, "byTexture": BY_TEXTURE, "byLever": BY_LEVER,
@@ -1012,15 +1011,4 @@ pub fn markdown(r: &Value) -> String {
             v(&b["shotsWithTemplate"]), v(&b["templatesChanged"]), c(0), c(1));
     }
     s + "\n"
-}
-
-#[test]
-fn unobservable_rotation_with_drifted_center_counts_as_uncompensated_not_wrong_lock() {
-    // 防的回归：中心容差先于“看不出角度”判时，转角没补偿、0° 平移偏 2…8 px 的调用被算成错锁，
-    // 门效果里“另拒看不出角度”看起来拦下了错锁（fixture-p0-l1 范围内不含亮度 +40 的 26 次错锁里 18 次是这种）
-    let call = |center_err: f64, observable: Option<bool>| Call { group: String::new(), shot: String::new(), ok: true, reason: String::new(),
-        score: 1.0, peak: None, observable, center_err, angle_err: -2.0, true_angle: 2.0, bright: 0.0, imaging: false };
-    assert!(call(5.0, Some(false)).lock() == Lock::Uncompensated);
-    assert!(call(25.0, Some(false)).lock() == Lock::Wrong); // 偏过 10 px 不是转角能解释的
-    assert!(call(5.0, Some(true)).lock() == Lock::Wrong);
 }

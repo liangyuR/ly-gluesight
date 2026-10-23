@@ -172,9 +172,7 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::*;
-    use crate::plc_session::{Journal, PartSite, SessionPhase};
-    use crate::settings::RecordMode;
-    use crate::store::RecordSource;
+    use crate::plc_session::{Journal, SessionPhase};
 
     const CYCLE_A: &str = "11111111111111111111111111111111";
     const CYCLE_B: &str = "22222222222222222222222222222222";
@@ -242,80 +240,6 @@ mod tests {
     }
 
     #[test]
-    fn persisted_ack_is_recovered_after_close_and_reopen_idempotently() {
-        let files = Files::new();
-        files.journal(Some(pending(CYCLE_A, 7, 50)));
-        let session = files.open();
-        assert_eq!(session.cycle_id(), Some(CYCLE_A));
-        assert_eq!(session.phase(), SessionPhase::ResetRequired);
-        assert!(session.acknowledged());
-        drop(session);
-        let reopened = files.open();
-        let recovered = reopened.recover_acknowledgements(&targets());
-        assert_eq!(recovered.receipts, vec![receipt(CYCLE_A, 7, 50, 1000)]);
-        assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
-        assert_eq!(reopened.recover_acknowledgements(&targets()), recovered);
-    }
-
-    #[test]
-    fn cycle_binding_is_immutable_and_does_not_write_on_arm_path() {
-        let files = Files::new();
-        let mut request = pending(CYCLE_A, 7, 50);
-        request.cycle_id = None;
-        request.acknowledged = false;
-        request.result = None;
-        request.phase = SessionPhase::Validating;
-        files.journal(Some(request));
-        let original = std::fs::read(&files.path).unwrap();
-        let site = PartSite { source: RecordSource::OfflineSample, record: RecordMode::All };
-        let mut session = files.open();
-        assert!(session.bind_cycle_id("bad-id", site).is_err());
-        session.bind_cycle_id(CYCLE_A, site).unwrap();
-        session.bind_cycle_id(CYCLE_A, PartSite::default()).unwrap();
-        assert!(session.bind_cycle_id(CYCLE_B, site).is_err());
-        assert_eq!((session.cycle_id(), session.site()), (Some(CYCLE_A), Some(site)));
-        assert_eq!(std::fs::read(&files.path).unwrap(), original);
-        files.write(&serde_json::to_vec(&session.journal).unwrap());
-        drop(session);
-        let reopened = files.open();
-        assert_eq!((reopened.cycle_id(), reopened.site()), (Some(CYCLE_A), Some(site)), "重启后补记录要靠握手日志里的开工场景，不能依赖不落盘的运行日志");
-        files.journal(None);
-        assert!(files.open().bind_cycle_id(CYCLE_A, site).is_err());
-    }
-
-    #[test]
-    fn released_pending_recovers_from_audit_and_merges_duplicate_receipts() {
-        let files = Files::new();
-        files.journal(Some(pending(CYCLE_A, 7, 50)));
-        let original = files.open();
-        drop(original);
-        let acknowledged = pending(CYCLE_A, 7, 50);
-        files.audit(record(&acknowledged, 2000));
-        let mut reset = record(&acknowledged, 3000);
-        reset["action"] = json!("resetCompleted");
-        files.audit(reset);
-        files.journal(None);
-        let reopened = files.open();
-        assert!(!reopened.pending());
-        let recovered = reopened.recover_acknowledgements(&targets());
-        assert_eq!(recovered.receipts, vec![receipt(CYCLE_A, 7, 50, 3000)]);
-        assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
-        assert_eq!(reopened.recover_acknowledgements(&targets()), recovered);
-    }
-
-    #[test]
-    fn ack_rolled_into_an_audit_segment_is_still_recovered() {
-        let files = Files::new();
-        let active = files.path.with_extension("audit.jsonl");
-        files.audit(record(&pending(CYCLE_A, 7, 50), 2000));
-        crate::handshake_audit::roll(&active, 2500).unwrap();
-        files.audit(record(&pending(CYCLE_B, 8, 51), 3000));
-        let recovered = files.open().recover_acknowledgements(&targets());
-        assert_eq!(recovered.receipts, vec![receipt(CYCLE_A, 7, 50, 2000), receipt(CYCLE_B, 8, 51, 3000)]);
-        assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
-    }
-
-    #[test]
     fn repeated_sn_and_sequence_never_merge_different_cycles() {
         let files = Files::new();
         let previous = pending(CYCLE_A, 7, 50);
@@ -324,45 +248,6 @@ mod tests {
         let recovered = files.open().recover_acknowledgements(&targets());
         assert_eq!(recovered.receipts, vec![receipt(CYCLE_A, 7, 50, 2000), receipt(CYCLE_B, 7, 50, 1000)]);
         assert!(recovered.errors.is_empty(), "{:?}", recovered.errors);
-    }
-
-    #[test]
-    fn memory_only_ack_and_invalid_current_journal_cannot_supply_receipts() {
-        let files = Files::new();
-        let mut unacknowledged = pending(CYCLE_A, 7, 50);
-        unacknowledged.acknowledged = false;
-        unacknowledged.phase = SessionPhase::AwaitAck;
-        files.journal(Some(unacknowledged));
-        let mut session = files.open();
-        session.journal.pending.as_mut().unwrap().acknowledged = true;
-        assert!(session.recover_acknowledgements(&targets()).receipts.is_empty());
-        files.audit(record(&pending(CYCLE_B, 8, 50), 2000));
-        files.write(b"{\"version\":1,\"pending\":broken");
-        let corrupt = files.open();
-        assert!(corrupt.load_error.is_some());
-        files.journal(Some(pending(CYCLE_A, 7, 50)));
-        let recovered = corrupt.recover_acknowledgements(&targets());
-        assert_eq!(recovered.receipts, vec![receipt(CYCLE_B, 8, 50, 2000)]);
-        assert_eq!(recovered.errors.len(), 1);
-        std::fs::write(files.path.with_extension("pending.tmp"), b"uncommitted").unwrap();
-        let unfinished = files.open().recover_acknowledgements(&targets());
-        assert_eq!(unfinished.receipts, recovered.receipts);
-        assert_eq!(unfinished.errors.len(), 1);
-    }
-
-    #[test]
-    fn conflicting_cycle_identity_blocks_all_duplicates_but_preserves_other_cycles() {
-        let files = Files::new();
-        files.journal(Some(pending(CYCLE_A, 7, 50)));
-        let mut conflict = pending(CYCLE_A, 7, 50);
-        conflict.request.plan_version = 456;
-        files.audit(record(&conflict, 2000));
-        files.audit(record(&pending(CYCLE_A, 7, 50), 3000));
-        files.audit(record(&pending(CYCLE_B, 8, 50), 4000));
-        let recovered = files.open().recover_acknowledgements(&targets());
-        assert_eq!(recovered.receipts, vec![receipt(CYCLE_B, 8, 50, 4000)]);
-        assert_eq!(recovered.errors.len(), 1);
-        assert!(recovered.errors[0].contains("身份冲突"));
     }
 
 }

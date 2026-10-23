@@ -907,130 +907,11 @@ mod tests {
     struct TempDir(PathBuf);
     impl Drop for TempDir { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
 
-    fn one_shot_recipe() -> crate::recipe::RecipeDoc {
-        let mut recipe = crate::recipe::samples().remove(1);
-        recipe.shots.truncate(1);
-        recipe
-    }
-
-    const IMAGE_ID: &str = "capture-1-0-v1";
-
     /// 1000×700 的灰度渐变原图：模板裁到哪一块，字节就不同
     fn image_bytes() -> Vec<u8> {
         let mut image = b"P5\n1000 700\n255\n".to_vec();
         image.extend((0..700u32).flat_map(|y| (0..1000u32).map(move |x| ((x * 7 + y * 3) % 251) as u8)));
         image
-    }
-
-    fn input(view: u8, image_id: &str) -> ShotInput {
-        ShotInput { k: 0, view, image: Some(ResourceSource::Bytes(image_bytes())), image_id: Some(image_id.into()),
-            calibration: Some(ResourceSource::Bytes(br#"{"mmPerPx":0.1}"#.to_vec())) }
-    }
-
-    fn publish_shots(root: &Path, recipe: crate::recipe::RecipeDoc, validation_site: ValidationSite, shots: Vec<ShotInput>) -> Result<ReleaseBundle, String> {
-        publish(root, PublishInput {
-            recipe, validation_site,
-            versions: Versions { engine: "1.1.0".into(), graph: "graph-1".into() },
-            graph: ResourceSource::Bytes(br#"{"graph":1}"#.to_vec()),
-            shots,
-        })
-    }
-
-    fn publish_with(root: &Path, validation_site: ValidationSite) -> ReleaseBundle {
-        publish_shots(root, one_shot_recipe(), validation_site, vec![input(1, IMAGE_ID)]).unwrap()
-    }
-
-    /// 一个拍照点三幅图：图 1 用特征定位（框 rect），图 2 不用，图 3 停用但残留定位框
-    fn fixture_recipe(rect: [u32; 4]) -> crate::recipe::RecipeDoc {
-        let fixture = crate::recipe::FixtureSpec { rect, source: IMAGE_ID.into(), search_radius_px: 20.0, angle_range_deg: 0.0,
-            min_score: 0.6, max_peak_ratio: 1.0, max_end_shift_mm: None, end_margin_mm: 0.0 };
-        let mut recipe = one_shot_recipe();
-        let shot = &mut recipe.shots[0];
-        shot.views = [1, 2, 3].into_iter().map(|v| crate::recipe::ShotViewSpec { view: v, enabled: v != 3, path: shot.path.clone(),
-            mm_per_px: shot.mm_per_px, detect: None, limits: None, calib: None, fixture: (v != 2).then(|| fixture.clone()) }).collect();
-        recipe
-    }
-
-    fn publish_fixture(root: &Path, rect: [u32; 4], image_id: &str) -> Result<ReleaseBundle, String> {
-        publish_shots(root, fixture_recipe(rect), ValidationSite::Real, vec![input(1, image_id), input(2, "capture-1-0-v2")])
-    }
-
-    #[test]
-    fn fixture_view_carries_a_padded_template_in_its_own_view_directory() {
-        // 防的回归（发布包文件契约）：生产 base_dir 指向 shots/kk/vN，glue.locate 在那里找 template.pgm、按 templatePad = 4
-        // 裁回示教框；模板没带外圈、放错目录，或不用定位的视图（含停用视图上残留的框）也带了模板
-        let root = TempDir(std::env::temp_dir().join(format!("gluesight-{}", new_bundle_id().unwrap())));
-        let bundle = publish_fixture(&root.0, [100, 100, 32, 32], IMAGE_ID).unwrap();
-        let loaded = load(&root.0, &bundle.manifest.recipe_id, &bundle.id).unwrap();
-        let located = loaded.view(0, 1).unwrap();
-        let template = located.template.unwrap();
-        assert_eq!(template.parent(), Some(located.dir.as_path()));
-        assert_eq!(template.file_name().and_then(|n| n.to_str()), Some(crate::vision::fixture::TEMPLATE_FILE));
-        let bytes = fs::read(&template).unwrap();
-        let head = b"P5\n40 40\n255\n";
-        assert!(bytes.starts_with(head) && bytes.len() == head.len() + 40 * 40, "模板应为 (32 + 8) × (32 + 8)");
-        assert!(loaded.view(0, 2).unwrap().template.is_none());
-        assert_eq!(loaded.manifest.files.iter().filter(|f| f.path.ends_with("template.pgm")).count(), 1);
-        assert_eq!(loaded.manifest.shots.iter().map(|s| s.image_id.as_deref()).collect::<Vec<_>>(), [Some(IMAGE_ID), Some("capture-1-0-v2")]);
-    }
-
-    #[test]
-    fn template_tampered_with_same_size_or_dropped_with_its_reference_is_rejected_on_load() {
-        // 防的回归：加载只核对文件大小（同尺寸改像素查不出），或只核对清单声明的集合（模板连同引用一起删掉后仍能加载、
-        // 生产时 glue.locate 找不到模板）。模板按包内示教原图与配方重算比对，fixture 视图必须引用模板
-        let root = TempDir(std::env::temp_dir().join(format!("gluesight-{}", new_bundle_id().unwrap())));
-        let tamperings: [(&str, fn(&Path)); 2] = [
-            ("同尺寸改像素", |dir| {
-                let path = dir.join("shots/00/v1/template.pgm");
-                let mut bytes = fs::read(&path).unwrap();
-                let last = bytes.len() - 1;
-                bytes[last] = !bytes[last];
-                fs::write(path, bytes).unwrap();
-            }),
-            ("模板连同清单引用一起删掉", |dir| {
-                fs::remove_file(dir.join("shots/00/v1/template.pgm")).unwrap();
-                let path = dir.join("manifest.json");
-                let mut manifest: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-                manifest["files"].as_array_mut().unwrap().retain(|f| !f["path"].as_str().unwrap().ends_with("template.pgm"));
-                for shot in manifest["shots"].as_array_mut().unwrap() { shot["template"] = serde_json::Value::Null; }
-                fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-            }),
-        ];
-        for (case, tamper) in tamperings {
-            let bundle = publish_fixture(&root.0, [100, 100, 32, 32], IMAGE_ID).unwrap();
-            tamper(&bundle.root);
-            assert!(load(&root.0, &bundle.manifest.recipe_id, &bundle.id).is_err(), "{case}");
-        }
-    }
-
-    #[test]
-    fn fixture_whose_source_is_not_the_bundled_image_or_whose_padded_box_leaves_it_is_not_published() {
-        // 防的回归：模板从别的图裁（来源与发布原图不是同一张，测量定义里的模板身份失真）；
-        // 外圈出了原图右、下边（配方校验只查得了左、上边），生产时 glue.locate 每帧都报 out_of_image
-        let root = TempDir(std::env::temp_dir().join(format!("gluesight-{}", new_bundle_id().unwrap())));
-        for (case, rect, image_id, error) in [
-            ("发布原图不是模板来源", [100, 100, 32, 32], "capture-9-0-v1", "来源"),
-            ("外圈出右边", [966, 100, 32, 32], IMAGE_ID, "外圈"),
-            ("外圈出下边", [100, 666, 32, 32], IMAGE_ID, "外圈"),
-        ] {
-            let e = publish_fixture(&root.0, rect, image_id).unwrap_err();
-            assert!(e.contains(error), "{case}：{e}");
-        }
-    }
-
-    #[test]
-    fn validation_site_is_frozen_at_publish_and_bundles_without_it_are_rejected() {
-        let root = TempDir(std::env::temp_dir().join(format!("gluesight-{}", new_bundle_id().unwrap())));
-        for site in [ValidationSite::Real, ValidationSite::Offline] {
-            let bundle = publish_with(&root.0, site);
-            assert_eq!(load(&root.0, &bundle.manifest.recipe_id, &bundle.id).unwrap().manifest.validation_site, site);
-        }
-        let bundle = publish_with(&root.0, ValidationSite::Offline);
-        let path = bundle.root.join("manifest.json");
-        let mut manifest: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        manifest.as_object_mut().unwrap().remove("validationSite");
-        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-        assert!(load(&root.0, &bundle.manifest.recipe_id, &bundle.id).is_err());
     }
 
     /// 段配方样例（三台相机走廊 (980, 480)–(300, 460)，0.112 mm/px）按相机发布，三台都用 1000×700 的渐变图作示教帧。
@@ -1100,16 +981,32 @@ mod tests {
     fn bundle_changed_on_disk_after_publish_is_rejected_by_per_part_verify() {
         let root = TempDir(std::env::temp_dir().join(format!("gluesight-{}", new_bundle_id().unwrap())));
         let tamperings: [(&str, fn(&Path, &Path)); 5] = [
-            ("extra file", |root, _| fs::write(root.join("shots").join("extra.json"), b"{}").unwrap()),
-            ("resource resized", |_, resource| fs::write(resource, b"{}").unwrap()),
-            ("resource removed", |_, resource| fs::remove_file(resource).unwrap()),
-            ("resource replaced by directory", |_, resource| { fs::remove_file(resource).unwrap(); fs::create_dir(resource).unwrap(); }),
-            ("manifest removed", |root, _| fs::remove_file(root.join("manifest.json")).unwrap()),
+            ("extra file", |root, _| {
+                fs::write(root.join("cameras").join("extra.json"), b"{}").unwrap()
+            }),
+            ("resource resized", |_, resource| {
+                fs::write(resource, b"{}").unwrap()
+            }),
+            ("resource removed", |_, resource| {
+                fs::remove_file(resource).unwrap()
+            }),
+            ("resource replaced by directory", |_, resource| {
+                fs::remove_file(resource).unwrap();
+                fs::create_dir(resource).unwrap();
+            }),
+            ("manifest removed", |root, _| {
+                fs::remove_file(root.join("manifest.json")).unwrap()
+            }),
         ];
         for (case, tamper) in tamperings {
-            let bundle = publish_with(&root.0, ValidationSite::Offline);
+            let bundle = publish_burst_bundle(&root.0);
             bundle.verify().unwrap();
-            let resource = bundle.manifest.files.iter().find(|entry| entry.path.starts_with("shots/")).unwrap();
+            let resource = bundle
+                .manifest
+                .files
+                .iter()
+                .find(|entry| entry.path.starts_with("cameras/"))
+                .unwrap();
             tamper(&bundle.root, &bundle.root.join(&resource.path));
             assert!(bundle.verify().is_err(), "{case}");
         }

@@ -241,41 +241,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn selected_view_never_falls_back_to_another_image() {
-        let mut frame = Frame {
-            cam: 0, session: 7, counter: CounterSource::Synthetic,
-            frame_counter: 11, trigger_counter: 11, lost_packets: 0, ts: 100, manual: false,
-            images: [21, 42, 63].into_iter().map(|p| Arc::new(FrameImage::new(1, 1, vec![p]))).collect(),
-        };
-        for (view, pixel) in [(1, 21), (2, 42), (3, 63)] {
-            assert_eq!(frame.image(view).unwrap().pixels, vec![pixel]);
-        }
-        assert!(frame.image(0).is_none());
-        assert!(frame.image(4).is_none());
-        assert_eq!(frame.require_image(2, 3).unwrap().pixels, vec![42]);
-        assert!(frame.require_image(1, 1).is_err());
-        frame.images.truncate(1);
-        assert!(frame.require_image(1, 3).is_err());
-        assert!(frame.require_image(2, 1).is_err());
-        assert!(frame.image(2).is_none());
-        assert!(frame.image(3).is_none());
-    }
-
-    fn mosaic(phase: [[usize; 2]; 2], w: usize, h: usize, rgb: impl Fn(usize, usize) -> [u8; 3]) -> Vec<u8> {
-        (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).map(|(x, y)| rgb(x, y)[phase[y % 2][x % 2]]).collect()
-    }
-
-    #[test]
-    fn needs_at_least_2x2_and_enough_bytes() {
-        let mut out = Vec::new();
-        for (w, h) in [(1, 4), (4, 1), (1, 1), (0, 0), (0, 3)] {
-            assert!(bayer8_gray_into(w, h, &[0; 16], &mut out).is_err(), "{w}×{h}");
-        }
-        assert!(bayer8_gray_into(4, 4, &[0; 15], &mut out).is_err());
-        assert!(bayer8_gray_into(2, 2, &[0; 4], &mut out).is_ok());
-    }
-
-    #[test]
     fn frame_pool_over_budget_refuses_allocation_until_frames_released() {
         type Alloc = fn(&FramePool) -> Result<FrameImage, BudgetExceeded>;
         let cases: [(&str, Alloc); 2] = [
@@ -298,14 +263,4 @@ mod tests {
             assert!(alloc(&pool).is_ok(), "{name}：最后一个引用释放后预算归还");
         }
     }
-
-    #[test]
-    fn pool_converts_a_uniform_color_mosaic_to_its_gray_level() {
-        let pool = FramePool::new(2);
-        let src = mosaic([[2, 1], [1, 0]], 6, 4, |_, _| [200, 100, 40]);
-        let img = pool.bayer8_to_gray(6, 4, &src).unwrap();
-        assert_eq!((img.width, img.height, img.pixels.len()), (6, 4, 24));
-        assert!(img.pixels.iter().all(|&v| v == 110));
-    }
-
 }

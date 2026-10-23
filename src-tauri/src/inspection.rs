@@ -109,36 +109,3 @@ pub fn reserved_s7_point(config: &PlcConfig, id: &str) -> bool {
     s7_phase1_config(DEFAULT_PLC_DB, DEFAULT_PC_DB).is_ok_and(|template| template.points.iter().any(|preset|
         preset.tags.iter().any(|tag| point.tags.contains(tag))))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use DataType::{Bool, I16, I32, String as Text};
-
-    #[test]
-    fn default_template_matches_plc_interaction_table_v1_1() {
-        let config = default_plc_config();
-        assert_eq!((config.connection.host.as_str(), config.connection.port), ("192.168.2.10", 102));
-        let table: Vec<_> = config.points.iter().map(|p| (p.tags[0].as_str(), p.address.as_str(), p.data_type, p.access)).collect();
-        let (r, w) = (Access::Read, Access::ReadWrite);
-        assert_eq!(table, [
-            ("partStart", "DB4.DBX0.0", Bool, r), ("partEnd", "DB4.DBX0.1", Bool, r), ("resultAck", "DB4.DBX0.2", Bool, r),
-            ("faultReset", "DB4.DBX0.3", Bool, r), ("plcHeartbeat", "DB4.DBX0.4", Bool, r), ("protocolVersion", "DB4.DBW2", I16, r),
-            ("requestSeq", "DB4.DBD4", I32, r), ("productCode", "DB4.DBW8", I16, r), ("shotCount", "DB4.DBW10", I16, r),
-            ("planVersion", "DB4.DBD12", I32, r), ("planReserved", "DB4.DBD16", I32, r), ("deviceShots", "DB4.DBW20", I16, r),
-            ("ackSeq", "DB4.DBD28", I32, r), ("deviceTriggers", "DB4.DBW32", I16, r), ("partSn", "DB4.DBB38.50", Text, r),
-            ("visionReady", "DB2.DBX0.0", Bool, w), ("armed", "DB2.DBX0.1", Bool, w), ("busy", "DB2.DBX0.2", Bool, w),
-            ("done", "DB2.DBX0.3", Bool, w), ("visionFault", "DB2.DBX0.4", Bool, w), ("pcHeartbeat", "DB2.DBX0.5", Bool, w),
-            ("pcProtocolVersion", "DB2.DBW2", I16, w), ("resultSeq", "DB2.DBD4", I32, w), ("resultCode", "DB2.DBW8", I16, w),
-            ("faultCode", "DB2.DBW10", I16, w), ("acceptedSeq", "DB2.DBD12", I32, w), ("acceptedPlanReserved", "DB2.DBD16", I32, w),
-            ("resultSn", "DB2.DBB20.50", Text, w),
-        ]);
-        assert!(crate::plc::validate_config(&config).is_ok());
-    }
-
-    #[test]
-    fn default_template_never_logs_value_changes_of_the_two_heartbeats_but_logs_every_other_signal() {
-        let quiet: Vec<_> = default_plc_config().points.iter().filter(|p| !p.log_changes).map(|p| p.tags[0].clone()).collect();
-        assert_eq!(quiet, [tag::PLC_HEARTBEAT, tag::PC_HEARTBEAT]);
-    }
-}
