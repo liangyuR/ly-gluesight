@@ -6,7 +6,7 @@
 
 - Windows x64
 - Node.js ≥ 24.15，pnpm 12（版本见 `package.json` 的 `engines` 与 `packageManager`）
-- Rust 1.99.0（`rust-toolchain.toml` 锁定，rustup 会自动安装）与 MSVC 生成工具、WebView2
+- Rust 1.99.1（`rust-toolchain.toml` 锁定，rustup 会自动安装）与 MSVC 生成工具、WebView2
 - PowerShell 7（`pwsh`），用于依赖与打包脚本
 - 可选：海康 MVS SDK。未安装时只能使用模拟相机
 

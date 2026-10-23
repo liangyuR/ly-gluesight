@@ -46,7 +46,7 @@ pnpm package:deps:publish -Archive 'C:\release\gluesight-vendor-runtime-win-x64-
 
 普通 PR 和 main 执行类型检查、前端测试/构建、发包脚本测试及 Rust 回归。影响发包、依赖配置、锁文件、工具链或 workflow 的 PR 额外执行完整 Windows 发包门禁。手动或 tag 触发完整发包，只有 tag 成功后创建草稿 Release；负责人复核后正式发布。
 
-构建使用固定 Node `24.15.0`、pnpm `12.11.2`、Rust `1.99.0`。workflow 保留显式 pnpm、Cargo、Tauri 标准命令，版本及依赖准备脚本与本机共用。构建任务只读，创建草稿 Release 的任务单独获得内容写权限。
+构建使用固定 Node `24.15.0`、pnpm `12.15.0`、Rust `1.99.1`。workflow 保留显式 pnpm、Cargo、Tauri 标准命令，版本及依赖准备脚本与本机共用。构建任务只读，创建草稿 Release 的任务单独获得内容写权限。
 
 完整门禁覆盖：干净 SDK 环境、固定包结构/架构/版本、lyFlow 系列与实际 DLL 版本、实际 DLL 算子、应用无界面自检与 NSIS 安装包生成，不做静默安装验证。软件约定安装在英文目录。安装包产品名及默认目录名使用 `GlueSight`，应用窗口保留中文名称。
 
