@@ -24,7 +24,7 @@ jobs:
     timeout-minutes: 60
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
-      RUSTUP_TOOLCHAIN: 1.99.0
+      RUSTUP_TOOLCHAIN: 1.99.1
       CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target/cargo-ci
     defaults:
       run:
@@ -56,7 +56,7 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || inputs.use_cache
         with:
           workspaces: src-tauri -> target/cargo-ci
-          shared-key: windows-ci-1.99.0
+          shared-key: windows-ci-1.99.1
           cache-workspace-crates: false
       - name: Install locked frontend dependencies
         run: pnpm install --frozen-lockfile

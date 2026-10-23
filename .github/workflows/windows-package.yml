@@ -39,7 +39,7 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
-      RUSTUP_TOOLCHAIN: 1.99.0
+      RUSTUP_TOOLCHAIN: 1.99.1
       CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target/cargo-release
       PACKAGE_TIMINGS: ${{ github.workspace }}/src-tauri/target/package-reports/stage-seconds.txt
     defaults:
@@ -78,7 +78,7 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || inputs.use_cache
         with:
           workspaces: src-tauri -> target/cargo-release
-          shared-key: windows-release-1.99.0
+          shared-key: windows-release-1.99.1
           cache-workspace-crates: false
       - name: Resolve lyFlow release
         id: lyflow
