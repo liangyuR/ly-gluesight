@@ -52,6 +52,8 @@
 
 ## 7. 离线回放验证脚本的修复与正式入口
 
+> **段配方下已被取代（2026-10-23，见 [segment-burst.md](segment-burst.md) 第九节第 17 条）**：`log-replay-offline.mjs` 默认 `--model burst`，每台计划相机用 `workspace_extract_corridor` 提取走廊（`tests/native/lib.mjs` 的 `teachCorridors`），不再走单帧中线示教；入口 `scripts/Test-LogReplayOffline.ps1` 与 `pnpm test:e2e:log-replay` 不变（外壳 `-Model legacy` 跑旧流程）。旧拍照点配方（保留、停用）仍按本条。
+
 - 问题：`log-replay-offline.mjs` 从 `offline-e2e.mjs` 导入的 `monotoneCenterline` 已在 #99 删除，脚本加载即报 SyntaxError；它也没有启动 / 关闭实例的入口，只能手工起实例再连固定端口。
 - 采用：中线直接使用 `workspace_extract_centerline` 的结果（中线提取修复后不再需要按主方向重排，与离线端到端一致），提取点数不足 3 时明确失败；新增 `scripts/Test-LogReplayOffline.ps1` 与 `pnpm test:e2e:log-replay`：以 e2e 配置全新启动隔离实例、运行脚本、关闭实例并打印总耗时。夹具（0.1 mm/px、ROI、布防预算 1 s）沿用 log-replay 决策第 15 条，不在本线调整。
 - 回退：删除新入口；脚本恢复手工连接方式。

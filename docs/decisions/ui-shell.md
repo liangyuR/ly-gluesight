@@ -41,6 +41,9 @@
 - 问题：设备故障时设备状态条用 NG 红；帧状态“等待测量 / 定位失败 / 未到达”统一用警告黄。
 - 采用：遵循 qing-steel 原则——产品 NG 红、系统 / 设备故障紫。整件“未测成”、设备状态条故障（新增 `device-fault`）、帧状态定位失败 / 测量出错 / 未到达用 fault；等待与测量中改为中性色。
 - 回退：`InspectionReadiness.tsx` 的 `status` 故障分支改回 `blocked`；`RuntimeFrame.tsx` 恢复 Badge。
+
+> **本条 2026-10-21 补记在段配方下已被取代（2026-10-23，见 [segment-burst.md](segment-burst.md) D-SB-15、D-SB-13）**：段配方不用特征定位，没有“定位失败”徽标与基准无效；段配方帧的状态是 `burst_judge::FrameState`（Measured / Missing / Error / Unmeasured / OutOfCorridor），非 Measured 的帧只把所在帧组标检测不完整、不改 OK/NG。旧拍照点配方（保留、停用）仍按补记；“产品 NG 红、系统 / 设备故障紫”的配色原则对两种配方都有效。
+
 - 2026-10-21 补记（特征定位 G1）：定位失败不再是帧状态。帧照常测完，没有位置基准的视图记在 `referenceFailed`，在帧缩略图、选中帧、判定卡和历史详情上挂 fault 色“定位失败”徽标，整件判 NG（NG 优先于基准无效）时也照样显示；有胶无基准的站用 fault 色实线，超出检测范围的站用灰色点线，表示不参与判定。
 
 ## 6. 判定字 80 px（`--text-verdict`）与右栏 420 px

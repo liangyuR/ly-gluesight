@@ -2,6 +2,8 @@
 
 范围：配方工作流各页（整圈采集、默认参数、单帧示教含标定验证、工件总览、验证与发布）与设备页（相机、飞拍标定）的布局、交互与动效。不改业务规则，不改 qing-steel 与应用外壳。
 
+> **段配方下部分已被取代（2026-10-23，见 [segment-burst.md](segment-burst.md) 第五节 5.3 与第八节）**：本文走查的是旧拍照点配方的页面。段配方的步骤改为整圈采集 → 段列表 → 相机走廊示教 → 多轮标定 → 验证 → 发布（`StepIdV2`），没有“采用本轮图像”、单帧示教与拍照点组；`/recipe/teach`、`/recipe/capture` 在 `WorkspaceView.plan` 为空时挂载旧页面（`LegacyTeachingPage`、`LegacyCapturePage`）。D6（采用后的主次操作）与单帧示教相关条目只适用于旧拍照点配方（保留、停用），对旧配方仍有效；D2–D5、D8、D9 与相机页各条是共用组件与设备页的做法，不受影响。
+
 ## 走查环境
 
 - 隔离实例：`tauri build --debug --no-bundle` 加覆盖配置（标识 `com.xyzrobotics.tujiaovision.uirecipe-tests`、隐藏窗口 1920×1080），CDP 端口 9344，视口按工控机最大化窗口取 1920×1010。
