@@ -15,8 +15,10 @@ param(
     [ValidateRange(1, 66)][int]$ThroughputHz = 25,
     [ValidateRange(5, 3600)][int]$ThroughputSeconds = 60,
     [ValidateSet('sampleSet', 'synthetic')][string]$ThroughputSource = 'sampleSet',
-    # 默认要求实际帧率达到 3 × Hz 的 90% 且产线跑满时长，样本集每件只有 12 个脉冲、只能做突发，所以默认判不达标；
-    # 只想看突发下的分项时显式加本开关放行（报告里 sustainedVerified 仍为 false，不是持续门槛的结论）
+    # 持续负载按相机使能为高的时间窗计帧率（件间握手间隙不计入，只报告）：默认要求窗口内帧率达到 3 × Hz 的 90%、
+    # 至少连续 ThroughputMinParts 件逐件达到，且产线跑满时长；持续负载未验证时默认判不达标
+    [ValidateRange(1, 100000)][int]$ThroughputMinParts = 10,
+    # 只想看分项时显式加本开关放行（报告里 sustainedVerified 仍为 false、burstOnlyAccepted 为 true，不是持续门槛的结论）
     [switch]$AllowBurstOnly
 )
 
@@ -60,7 +62,7 @@ try {
     }
     if ($Stages -contains 'throughput') {
         # 退出码 1 = 门槛没达到（实测值在 output/soak/throughput-*.json），由用户决定降 PLC 脉冲频率或加测量并发
-        $throughputArgs = @('run') + $soakNodeArgs + @('--source', $ThroughputSource, '--hz', "$ThroughputHz", '--seconds', "$ThroughputSeconds")
+        $throughputArgs = @('run') + $soakNodeArgs + @('--source', $ThroughputSource, '--hz', "$ThroughputHz", '--seconds', "$ThroughputSeconds", '--min-parts', "$ThroughputMinParts")
         if ($AllowBurstOnly) { $throughputArgs += @('--burst', 'true') }
         Invoke-SoakNode 'throughput.mjs' $throughputArgs
     }
