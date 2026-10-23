@@ -138,7 +138,7 @@
 - `cycle-timeline: 段配方选中一帧 → 只看选中帧后只留该相机该帧组的事件，点事件按钮回调选帧` — 时间线按 (camera, seq) 过滤与跳转
 
 **FE5**
-- `tests/site-mode.test.tsx: 离线来源样本集 → 只提供握手与脉冲串类工况（含分段连拍新增五个），不提供断胶、定位失败等需要改图像的工况（对应计划 sample_set_source_offers_only_handshake_scenarios_including_new_ones）` — 规格 §6：离线仿真工况与后端 Scenario::handshake() 白名单一致。样本集是真实原图，不能选需要改图像的工况（excursion/gap/locateFail/locateFailGap/random），新增的 cameraLost/pulseJitter/cornerSlowdown/notInspected/earlyEnd 和原有四个握手工况必须可选。已做删行检验：把 earlyEnd 从 handshakeScenarios 删掉后该用例失败，恢复后通过。
+- `tests/site-mode.test.tsx: 离线来源样本集 → 只提供握手与脉冲串类工况（含分段连拍新增五个），不提供断胶、定位失败等需要改图像的工况（对应计划 sample_set_source_offers_only_handshake_scenarios_including_new_ones）`（现名“离线来源为样本集 → 工况下拉比合成图少的正是需要改图像的工况”，断言改为合成图减去样本集恰好是 excursion/gap/locateFail/locateFailGap/random）— 规格 §6：离线仿真工况与后端 Scenario::handshake() 白名单一致。样本集是真实原图，不能选需要改图像的工况（excursion/gap/locateFail/locateFailGap/random），新增的 cameraLost/pulseJitter/cornerSlowdown/notInspected/earlyEnd 和原有四个握手工况必须可选。已做删行检验：把 earlyEnd 从 handshakeScenarios 删掉后该用例失败，恢复后通过。
 
 **FIX-B1**
 - `cycle::tests::three_frames_seen_plc_reports_four_next_part_first_frame_is_counter_4` — D-SB-7：下一件基线 = max(原基线, 本件见到的最高计数)。见到 3 帧、PLC 报 4、计划 4 时，下一件计数 4 是第 1 帧；PLC 报数和计划数都不参与。
@@ -254,14 +254,14 @@
 - `rejudge-dialog: 填写位置上公差、直线段上公差与弯道段连续超差允许长度 → 批量重判请求各自带在 position、straight、corner 里` — 对外契约：直线段 / 弯道段两行写进后端 history::Overrides 的 straight / corner（camelCase 字段），旧拍照点的 position / width 覆盖不受影响。如果再次置灰或写错分组，用例会失败。变异检查已做：把弯道段输入置灰后用例失败。
 
 **E2**
-- `tests/native/throughput-gate.test.mjs：吞吐门槛：各条件逐一不满足 → 不达标并点明原因，全部满足 → 达标（参数化 8 组）` — 3×25 Hz 合并门槛的判定规则：Unmeasured=0、预算丢帧=0、测量队列峰值低于容量 50%（恰好 50% 不达标）、测量失败/帧通道满丢帧/没有出件都不达标；已用变异验证（>= 改 >、去掉 Unmeasured 判定都会失败）
+- `tests/native/throughput-gate.test.mjs：吞吐门槛：各条件逐一不满足 → 不达标并点明原因，全部满足 → 达标（参数化 8 组）`（复核修复后改为 15 个用例，参数化部分的名称为“<条件> → 不达标，失败种类只有 <kind>”，见末节）— 3×25 Hz 合并门槛的判定规则：Unmeasured=0、预算丢帧=0、测量队列峰值低于容量 50%（恰好 50% 不达标）、测量失败/帧通道满丢帧/没有出件都不达标；已用变异验证（>= 改 >、去掉 Unmeasured 判定都会失败）
 - `offline-e2e 段配方主流程（e2e，合成图三相机 + 真实 lyFlow，另跑样本集冒烟）` — 规格 §6 顺序验收：段模型 + 未分段 + 10 轮标定（N_exp=均值四舍五入、标定统计只含 10 轮、建议容差 max(默认,N−min,max−N) 确认后写入、标准件得出 x_ref）+ 发布（导出 shotCount=ΣN_exp、协议 6）+ 投产（帧组数在 ΣN_exp±Σtol、缺帧只标检测不完整不改 OK/NG、未检项、断胶 NG_GAP）+ 历史/CSV 末五列 + 重启续测
 - `production-flow-ui 段配方段（e2e）` — D-SB-29 落库契约：parts 段配方列、part_frames 每相机每帧一行（缺帧也有）、不写 part_shots/part_points、原图按 {相机}_s{seq:06}.pgm 命名并与 part.json 一致
 - `log-replay 段配方（e2e）` — 原包重跑按区域逐一与原记录一致（划分、结论、帧数、不完整组、胶宽统计）；原图缺失时不悄悄当作完整；时间线与运行日志按 (相机, seq) 对帧
 - `soak/faults 段配方判据与 pulseJitter 场景` — 段配方下缺帧/坏帧/缺图的件必须标检测不完整（不再按错误的 OK 判），脉冲首尾 ±1 不判疑似提前终止
 
 **review-fix-segment-burst-backend**
-- `workspace::burst_release_tests::ready_burst_candidate_yields_debug_run_inputs_in_plan_camera_order` — 段配方候选试运行不能被旧拍照点的 Recipe::ready 拒绝（决策 §九-13/14、规格 §6）；示教帧尺寸必须按计划相机（inspect）顺序交给 Candidate::new_burst。做过变异检验：去掉 debug_recipe 的分流后测试失败。
+- `workspace::burst_release_tests::ready_burst_candidate_yields_debug_run_inputs_in_plan_camera_order`（eace42b 拆成两个用例，现名见末节）— 段配方候选试运行不能被旧拍照点的 Recipe::ready 拒绝（决策 §九-13/14、规格 §6）；示教帧尺寸必须按计划相机（inspect）顺序交给 Candidate::new_burst。做过变异检验：去掉 debug_recipe 的分流后测试失败。
 - `vision::tests::calibration_page_view_on_single_view_camera_also_writes_the_key_burst_recipe_reads` — D-SB-30 前后端契约：标定页对单视角相机传 view=1，写出的键必须包含段配方 camera_calib_key 读取的 {device}，读回键仍为 {device}-v1；三目拼接相机的图 N 不写进段配方的设备键。
 - `store::tests::burst_record_replay_is_recognised_only_when_every_frame_matches` — 从原落库往返用例拆出（不是新规则）：审计重放身份，帧内容相同即认出，任一帧指标不同则认不出（D-SB-29）。
 - `cycle::tests::part_completes_only_after_end_once_every_camera_reaches_device_triggers_minus_one` — 从原配组用例拆出：收尾规则，partEnd 前不判；报 6 时等待；报 5 时判定（规格 §3）。

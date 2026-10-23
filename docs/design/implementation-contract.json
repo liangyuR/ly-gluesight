@@ -1,6 +1,7 @@
 {
   "scope": "本地 Tauri + React 黑蓝界面与配置工作流实现",
   "updatedAt": "2026-10-09",
+  "currentStatus": "历史记录（2026-10-23 标注，正文未改）：本文件是 2026-10-09 时的实现契约，不再代表现行设计。其中逐帧定位模板 / anchor 的算法接口、随动（follow）模式与随动标定已不在代码中；按拍照点逐帧示教、试测与发布属于旧拍照点模型（保留、停用，segments 为空的旧配方仍按旧路径运行）。现行设计是段配方：三台独立相机共用一个触发、按 SDK 帧号配组、每帧沿相机走廊测量、按区域判定、发布包 schema 4，见 docs/README.md 与 docs/decisions/segment-burst.md（IPC 契约以 src/features/plan/types.ts 为准）。",
   "documentation": {
     "testing": "docs/testing/TESTING.md",
     "operations": "docs/testing/UI_OPERATIONS.md",

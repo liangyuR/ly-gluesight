@@ -3,6 +3,7 @@
   "product": "GlueSight · 胶路智检",
   "title": "涂胶检测操作流程 · Black / Blue",
   "status": "workflow-design-specification",
+  "currentStatus": "历史记录（2026-10-23 标注，正文未改）：本文件保留早期界面视觉系统与工作流设计。visualSystem 是当时的设计取值，现行样式以 qing-steel 与 src/styles.css 为准；工作流部分已过时：随动（follow-setup / follow-calibration）已不在代码中，source.code 里的 FlyshotTeach.tsx 已不存在，按拍照点逐帧示教属于旧拍照点模型（保留、停用）。现行配方流程是段配方：整圈采集 → 段列表 → 相机走廊示教 → 多轮标定 → 验证与发布，见 docs/README.md 与 docs/decisions/segment-burst.md 第五节 5.3。",
   "scope": "使用本地免费组件完成整套可交互操作流程，并将现有软件 UI 更换为青钢风格（Material 3 tonal 分层 + 工业数据密度）。",
   "documentation": {
     "purpose": "保留界面与工作流设计规格。当前操作、实现约束和验证方式以以下仓库文档为准。",

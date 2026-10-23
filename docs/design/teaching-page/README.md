@@ -1,5 +1,9 @@
 # 单帧示教页重设计 · 设计稿
 
+> **旧拍照点模型（保留、停用）**（2026-10-23 标注，依据 [segment-burst.md](../../decisions/segment-burst.md) 第八节、D-SB-12、D-SB-17 与第九节第 12 条）：本设计稿是旧拍照点配方的“单帧示教”页——按拍照组（Pose）选一张检测图、示教中线、逐点试测、保存本组。它已按 v3 实现，代码现为 `src/features/workspace/LegacyTeachingPage.tsx`（下文 3.6“需要改的文件”里写的 `TeachingPage.tsx` 指当时的文件，现在的同名文件是分流入口），只在 `WorkspaceView.plan` 为空（配方 `segments` 为空）时挂载，旧配方行为不变。
+>
+> 新建配方都是段配方：`/recipe/teach` 在 `plan` 非空时挂载“相机走廊示教”（`src/features/workspace/TeachingPage.tsx`）——每台计划相机从一轮完整采集里选一帧冻结为示教帧，在这一帧上提取一条按直线段几何的走廊，所有帧共用；不逐拍照点示教中线、不做逐点比对，也没有单帧试测命令。走廊示教页沿用了本设计的布局约定（底栏 `.wp-teach-dock`、选帧条 `.wp-picker`、画布模式 `SegmentedControl`、禁用原因用 Tooltip 外包可聚焦 span），但没有单独的设计稿；它的业务规则见 segment-burst.md 第九节第 12 条“走廊示教”。
+
 状态：v3（最终版）已审查并修订，已定稿进入实现。浏览入口 `index.html`；重截图 `pwsh ./shoot.ps1 v3`；v2/v3 页面由各自目录下 `build.py` 生成（改脚本 → `python v3/build.py` → 重截）。
 
 **已定（2026-10-20）**：按 v3 实现；待拍板 5 条全部采用 3.7 中审查者的推荐——1 底栏贯穿内容区三栏、不含导航栏；2 中栏内滚 + 底栏固定；3 最后一组“保存并进入下一组”禁用 + Tooltip；4 标定卡三段文案留原位；5 1280 下分段控件常显两字“编辑 / 刷选 / 框选”。

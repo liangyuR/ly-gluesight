@@ -1,6 +1,8 @@
 # PLC 通讯页重排与对接参数迁移 · 设计文档
 
-状态：设计已定（结论见第 8 节），按此实现。
+状态：设计已定（结论见第 8 节），已按此实现。
+
+> 2026-10-23 现状（分段连拍，依据 [segment-burst.md](../decisions/segment-burst.md) D-SB-6、D-SB-25 与第八节）：握手协议已升为 6（点表布局同协议 5：S7-1200/1500，PLC 区默认 DB4、PC 区默认 DB2，握手点位仍为 28 个），本文第 1–3 节的线框示例值、阶段“现在在等”文案和计数行已按协议 6 改写。第 4 节的对接参数分两套：段配方（新建配方）用计划导出 `PlanExport`（`WorkspaceView.plan.productionExport / candidateExport`，面板 `PlanExportPanel`，`shotCount` = `deviceShots` = ΣN_exp）；原文的 `PlcParams`、拍照顺序 → Pose 表只服务**旧拍照点模型（保留、停用）**，见第 4 节开头的说明。
 
 ## 0 职责与边界
 
@@ -21,29 +23,29 @@
 
 ```
 ┌─ A 顶部状态条（sticky，沿用 .plc-actionbar）──────────────────────────────────────────────┐
-│ ●已连接   S7 · S7-200 SMART · 192.168.2.10:102        周期 48 ms · 轮询 12 345 · 错误 0 · 最近 14:02:31 │
+│ ●已连接   S7 · S7-1200 · 192.168.2.10:102             周期 48 ms · 轮询 12 345 · 错误 0 · 最近 14:02:31 │
 │                                                                   [未保存] [还原] [保存配置]  │ [断开] │
 │ ⚠ 生产或结果交付尚未结束，PLC 配置和手动写入已锁定                          还有 1 条提示 ▾ │
 └──────────────────────────────────────────────────────────────────────────────────────────┘
 ┌─ B 握手监视 · 只读 ─────────────────────────────────────────────────────────────────────┐
-│ 阶段  采集中 (acquiring)          现在在等  PLC：按计划发脉冲、写 deviceTriggers，最后置 partEnd │
+│ 阶段  采集中 (acquiring)          现在在等  PLC：相机使能为高时连续发脉冲……写最终计数并置 partEnd │
 │                                                                                            │
 │ PLC → PC   partStart ●1   partEnd ○0   resultAck ○0   faultReset ○0   plcHeartbeat ◐ 0.4 s 前翻转  │
 │ PC → PLC   visionReady ○0  armed ●1   busy ●1   done ○0   visionFault ○0   pcHeartbeat ◐ 0.2 s 前翻转 │
 │ ────────────────────────────────────────────────────────────────────────────────────────── │
 │ requestSeq 17   acceptedSeq 17   resultSeq —   ackSeq 0  │ partSn A24-000123   resultSn —           │
-│ resultCode —    faultCode —                               │ deviceTriggers 2 / deviceShots 4         │
+│ resultCode —    faultCode —                               │ 脉冲计数（参考） deviceTriggers 38（累计脉冲，参考） · deviceShots 40（预期总帧数 ΣN_exp） │
 │ 后端说明：（handshake.message，没有时整行不显示）                                              │
 └──────────────────────────────────────────────────────────────────────────────────────────┘
 ┌─ C 连接配置 ────────────────────────────────────────────────────────────────── [编辑] ───┐
-│ S7-200 SMART · 192.168.2.10:102 · Rack 0 / Slot 1 · OP · TSAP 0x0102/0x0201 · PDU 240          │
-│ 轮询 50 ms · 超时 1000 ms · 重连 3000 ms · 心跳 上位机心跳 (DB1.DBX64.5) / 500 ms · 日志保留 30 天 · 启动自动连接 关 │
+│ S7-1200 · 192.168.2.10:102 · Rack 0 / Slot 1 · OP · TSAP 自动/自动 · PDU 480                    │
+│ 轮询 50 ms · 超时 1000 ms · 重连 3000 ms · 心跳 上位机心跳 (DB2.DBX0.5) / 500 ms · 日志保留 30 天 · 启动自动连接 关 │
 └──────────────────────────────────────────────────────────────────────────────────────────┘
 ┌─ D 地址表 ──────────────────────────────────────────────────────────────────────────────┐
-│ 握手点位  28 个 · 协议 4 · 🔒 模板生成，不可手动写入            [载入一期 S7 点表] [导入/导出] │
+│ 握手点位  28 个 · 协议 6 · 🔒 模板生成，不可手动写入            [载入一期 S7 点表] [导入/导出] │
 │ ┌──────────┬──────────────┬──────┬────┬────┬────────────────────┬────┬──────────┬────┐  │
 │ │ 名称     │ 地址         │ 类型 │读写│边沿│ 标签               │记录│ 当前值   │操作│  │
-│ │ 工件开始 │ DB1.DBX0.0   │ Bool │只读│上升│ 工件开始（PLC→PC） │ 是 │ 1        │ ✎  │  │
+│ │ 工件开始 │ DB4.DBX0.0   │ Bool │只读│上升│ 工件开始（PLC→PC） │ 是 │ 1        │ ✎  │  │
 │ │ …        │              │      │    │    │                    │    │          │    │  │
 │ └──────────┴──────────────┴──────┴────┴────┴────────────────────┴────┴──────────┴────┘  │
 │ ▸ 自定义点位  3 个                                                              [新增点位] │
@@ -93,7 +95,7 @@
 
 ### 2.2 B 握手监视（只读）
 
-`Card`，标题 `握手监视 · 只读`，右侧 `actions` 放一个 `Chip` 显示协议版本 `协议 4`（来源：点表中 `protocolVersion` 标签点位的当前值；未连接时显示 `协议 —`）。
+`Card`，标题 `握手监视 · 只读`，右侧 `actions` 放一个 `Chip` 显示协议版本 `协议 6`（来源：点表中 `protocolVersion` 标签点位的当前值；未连接时显示 `协议 —`）。
 
 | 行 | 内容 | 来源 |
 | --- | --- | --- |
@@ -104,8 +106,8 @@
 | PC → PLC 位 | 6 个握手位，同上 | 同上 |
 | 序号 | `requestSeq / acceptedSeq / resultSeq / ackSeq`，等宽字体；`requestSeq`、`resultSeq` 优先用 `handshake.requestSeq / resultSeq`，其余读点位 | `handshake` + `tagValue` |
 | SN | `partSn / resultSn`，`.sn` 样式 | `tagValue("partSn")`、`tagValue("resultSn")` |
-| 结果 | `resultCode / faultCode`；`done=1` 时后面加 `Chip` 显示码名（如 `1 OK`、`90 ERR_INSPECT · 94 拍照计划或数量不匹配`，表来自协议 §6，前端常量） | `tagValue` |
-| 触发计数 | `deviceTriggers {n} / deviceShots {m}` | `tagValue` |
+| 结果 | `resultCode / faultCode`；`done=1` 时后面加 `Chip` 显示码名（如 `1 OK`、`90 ERR_INSPECT · 94 预期总数与计划不符（旧配方：拍照点数不符）`，表来自协议 §6，前端常量 `src/features/plc/handshake.ts`；91 / 94 / 96 先写协议 6 段配方的含义，括号里保留旧拍照点配方的含义） | `tagValue` |
+| 脉冲计数（参考） | `deviceTriggers {n}（累计脉冲，参考） · deviceShots {m}（预期总帧数 ΣN_exp）`；协议 6 下 `deviceTriggers` 只作参考，不要求等于 `deviceShots` | `tagValue` |
 | 后端说明 | `handshake.message`，`Text variant="label" muted`；为空不渲染 | `handshake.message` |
 
 B 区在 `handshake === null`（没有 S7 会话，例如预览模式）时整卡显示 `EmptyState title="没有 S7 握手会话" description="连接 PLC 并载入一期 S7 点表后，这里显示双方握手位和当前阶段"`。
@@ -117,9 +119,9 @@ B 区在 `handshake === null`（没有 S7 会话，例如预览模式）时整�
 | phase | 中文 | 等待方 | 文案（“现在在等”） |
 | --- | --- | --- | --- |
 | `resetRequired` | 待复位 | PLC（操作员） | `PLC：先把 partStart/partEnd/resultAck 置 0 并保持 faultReset 低 ≥1 s，再发 faultReset 上升沿；也可在在线检测页点“复位故障”` |
-| `idle` | 空闲 | PLC | `PLC：写 requestSeq、partSn、productCode、shotCount、planVersion，最后置 partStart`；若 `message` 以 `S7 空闲：` 开头，直接显示该 message（PLC 仍持有 end/ACK，或 PC 设备未就绪撤了 ready） |
+| `idle` | 空闲 | PLC | `PLC：写 requestSeq、partSn、productCode、shotCount 与 deviceShots（预期总帧数 ΣN_exp）、planVersion，最后置 partStart`；若 `message` 以 `S7 空闲：` 开头，直接显示该 message（PLC 仍持有 end/ACK，或 PC 设备未就绪撤了 ready） |
 | `validating` | 校验请求 | PC | `PC：核对请求、撤 visionReady、写 acceptedSeq，置 busy，最后置 armed（PLC 此时禁止触发）` |
-| `acquiring` | 采集中 | PLC | `PLC：按计划发脉冲、更新 deviceTriggers，运动结束后写最终计数并置 partEnd` |
+| `acquiring` | 采集中 | PLC | `PLC：相机使能为高时连续发脉冲（deviceTriggers 只作参考，不要求等于预期总帧数），运动结束、脉冲停发后写最终计数并置 partEnd` |
 | `draining` | 等待帧处理结束 | PC | `PC：收尾收帧、等待测量完成，写结果码/异常码/resultSn/resultSeq，最后置 done` |
 | `awaitAck` | 等待结果确认 | PLC | `PLC：核对 resultSeq=requestSeq、resultSn=partSn 与结果码，写 ackSeq，再置 resultAck` |
 | `releasing` | 等待握手释放 | PLC → PC | `PLC：看到 done=busy=0 后清 partStart/partEnd/resultAck；PLC 清完后 PC 落盘并置 visionReady` |
@@ -184,6 +186,14 @@ B 区在 `handshake === null`（没有 S7 会话，例如预览模式）时整�
 B 区在全部状态下都是只读，没有任何按钮。
 
 ## 4 PLC 对接参数：配方总览完整面板 + 配方库摘要 + 发布页变化清单
+
+> **段配方（现行，2026-10-23）**：三处分工不变，数据与内容换成计划导出（D-SB-25；`src/features/workspace/PlcParams.tsx`）。
+>
+> - 配方总览 `/recipe/progress`：段配方挂载 `PlanProgress`，其中 `PlanExportPanel` 读 `WorkspaceView.plan.productionExport`（未发布时读 `candidateExport`，标“尚未发布，以下为候选计划”）。开始请求参数表为 productCode、planVersion（未分配时写“发布时分配”）、shotCount 与 deviceShots（都填 ΣN_exp，未标定写“待标定”）；下方是“段序列与预期帧数”表（段、类型、长度、N_exp 或“待标定”、容差、检测区间）和 ΣN_exp ± Σtol 说明；提供“复制 JSON”“另存 JSON”。没有拍照顺序 → Pose 表。已发布且 `plan.shotCountChanged` 时标题右侧显示“候选发布后将变化”。
+> - 配方库卡片：段配方写 `PLC：产品 {code} · 计划 {planVersion} · shotCount {ΣN_exp}`（未标定写“shotCount 待标定”）。
+> - 发布确认框：段配方用 `PlanPublishBody`，先列候选与生产的对比（ΣN_exp ± Σtol、段序列、共用触发的相机），计划身份变化时在“计划已变，生效后 PLC 要同步”里列 planVersion、shotCount / deviceShots（ΣN_exp）、productCode、段序列、相机顺序中变了的项（`planSyncItems`），并写明不同步时 PC 返回 100 / 94 / 95。
+>
+> 下文 4.1–4.4 的 `PlcParams`（`shotCount` = 触发次数）、`productionPlc / candidatePlc`、拍照顺序 → Pose 表与“三目设备的三个视角不分别计数”只服务**旧拍照点模型（保留、停用）**：`segments` 为空的旧配方仍由 `ProgressPage` 的 `PlcParamsPanel` 与 `plcSyncItems` 按此显示，段配方这些字段为 null。
 
 对接参数是配方的属性（已发布配方就有一组 productCode / planVersion / shotCount），所以放在配方内部；“验证与发布”只关心这次发布让 PLC 要改什么。三处分工：
 
