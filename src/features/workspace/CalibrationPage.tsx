@@ -15,7 +15,7 @@ import "./corridor.css";
 /**
  * 多轮标定（段配方，路由 /recipe/calibration）：同一工件程序连续采集多轮，每轮取帧组数，均值四舍五入作预期帧数 N_exp，
  * 记录 min / max / mean；容差只给建议，操作员确认后才写入。标准件轮次另用于胶偏参考 x_ref。
- * 本轮没有分段算法：多段计划只能标整件帧组数（ΣN_exp 取整件均值，凭它即可发布），各段保持“待标定”。
+ * 多段计划：每个标定轮次都在采集页确认了手动分段时逐段标定（ΣN_exp 取各段之和）；否则各段保持“待标定”，ΣN_exp 取整件均值，凭它即可发布。
  */
 export default function CalibrationPage() {
   const { data, doc, busy, dirty, frameDirty, act, setError } = useWorkspace();
@@ -37,7 +37,7 @@ export default function CalibrationPage() {
   if (!data || !doc) return <WorkspaceEmpty />;
   if (!plan) return <div className="wp-page"><WorkspaceBar />
     <Panel title="多轮标定" detail="同一工件程序连续采集多轮，取帧组数均值作预期帧数，再确认容差">
-      <Notice title="当前配方按拍照点模型配置">多轮标定只用于段配方；拍照点配方继续使用原有步骤。</Notice>
+      <Notice title="该草稿不是段配方" tone="warn">请新建段配方后进行多轮标定，旧拍照点草稿不再支持。</Notice>
     </Panel></div>;
 
   const minRounds = calibration?.minRounds ?? plan.calibrationRounds;
@@ -83,7 +83,7 @@ export default function CalibrationPage() {
         <Link className="wp-text-link" to="/recipe/segments">段列表</Link>
       </div>
     </Panel>
-    {multi && <Notice title="分段算法未就绪，本轮无法逐段标定">多段计划的各段预期帧数保持“待标定”；整件帧组数照常标定，ΣN_exp 取各轮整件帧组数的均值，凭它即可发布。</Notice>}
+    {multi && <Notice title="多段计划按手动分段逐段标定">每个标定轮次（不含标准件）都在整圈采集页确认分段后，应用标定按边界得出各段预期帧数与建议容差，ΣN_exp 取各段之和；有轮次未确认分段时各段保持“待标定”，ΣN_exp 取各轮整件帧组数的均值。生产仍按整件核对帧数、不分段判定。</Notice>}
     <Panel title="标定轮次" detail={`同一工件程序连续采集，至少 ${minRounds} 轮；标准件轮次另用于胶偏参考，不计入轮数`}>
       <div className="wp-calib-need">
         <Badge tone={short > 0 ? "warn" : "ok"}>{short > 0 ? `已加入 ${normal.length} / ${minRounds} 轮，还差 ${short} 轮` : `已加入 ${normal.length} 轮，轮数足够`}</Badge>

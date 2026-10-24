@@ -111,8 +111,8 @@ export default function CapturePage() {
   const productionBusy=isProductionBusy(snapshot);
   if (!data.plan) return <Notice title="该草稿不是段配方" tone="warn">请新建段配方后采集，旧拍照点草稿不再支持。</Notice>;
   const plan = data.plan;
-  const calibrationEntry = round ? plan?.calibration?.rounds.find(r => r.roundId===round.roundId) : undefined;
-  const teachedCameras = round && plan ? plan.cameraTeaching.filter(t => t.frame?.source.includes(round.roundId)).map(t => t.camera) : [];
+  const calibrationEntry = round ? plan.calibration?.rounds.find(r => r.roundId===round.roundId) : undefined;
+  const teachedCameras = round ? plan.cameraTeaching.filter(t => t.frame?.source.includes(round.roundId)).map(t => t.camera) : [];
   const roundUsed = !!calibrationEntry || teachedCameras.length>0;
   const sampleSourceInvalid=validation && roundUsed;
   const bankedAsSample=!validation && !!round && data.workspace.sampleBank.some(sample => sample.captureId===round.roundId);
@@ -240,10 +240,10 @@ export default function CapturePage() {
         {savedSample && <p className="wp-capture-done" role="status"><CheckCircle2 size={15} aria-hidden="true"/>已加入验证样本库</p>}
         <Checkbox label="已确认本轮样本与示教轨迹、触发顺序及拍摄条件一致" checked={confirmed} disabled={locked} onCheckedChange={setConfirmed}/>
         <Select label="样本人工期望" value={sampleExpected} disabled={locked} options={expectedChoices.map(([value,label])=>({value,label}))} onValueChange={value=>setSampleExpected(value as Verdict)}/>
-        {sampleSourceInvalid && <Notice title="需要独立于示教的采集轮次" tone="warn">{plan ? "本轮已用于走廊示教或加入标定，请重新采集一轮作为验证样本。" : data.workspace.captureId ? "当前轮次已用于示教，请重新采集一圈作为验证样本。" : "请先采用示教采集轮次，再采集独立验证样本。"}</Notice>}
+        {sampleSourceInvalid && <Notice title="需要独立于示教的采集轮次" tone="warn">本轮已用于走廊示教或加入标定，请重新采集一轮作为验证样本。</Notice>}
         <Button variant={savedSample || sampleSourceInvalid ? "tonal" : "filled"} data-variant={savedSample || sampleSourceInvalid ? "tonal" : "filled"} disabled={locked || productionBusy || sampleSourceInvalid || savedSample || !confirmed} title={savedSample ? "本轮已加入验证样本库" : undefined} onClick={() => void act(() => workspaceApi.captureSample(doc.id,data.workspace.revision,round.roundId,sampleExpected,confirmed),"独立验证样本已加入样本库")}>保存为独立验证样本</Button>
         <Link className={"qs-btn" + (savedSample ? "" : " tonal")} data-variant={savedSample ? "filled" : "tonal"} to="/recipe/validation">进入验证<ArrowRight size={15} aria-hidden="true"/></Link>
-      </> : plan ? <>
+      </> : <>
         {teachedCameras.length>0 && <p className="wp-capture-done" role="status"><CheckCircle2 size={15} aria-hidden="true"/>已用于 {teachedCameras.map(nameOf).join("、")} 的走廊示教</p>}
         {calibrationEntry && <p className="wp-capture-done" role="status"><CheckCircle2 size={15} aria-hidden="true"/>{calibrationEntry.standard ? "已加入标定（标准件轮次）" : "已加入多轮标定"}</p>}
         {bankedAsSample && <Notice title="需要独立于验证样本的采集轮次" tone="warn">本轮已作为独立验证样本加入样本库，不能再用于走廊示教或标定，请重新采集。</Notice>}
@@ -254,7 +254,7 @@ export default function CapturePage() {
           : <><Button variant="tonal" data-variant="tonal" disabled={locked || productionBusy || bankedAsSample} onClick={() => addToCalibration(false)}>加入标定</Button>
             <Button variant="tonal" data-variant="tonal" disabled={locked || productionBusy || bankedAsSample} onClick={() => addToCalibration(true)}>加入标定（标准件）</Button></>}
         <Link className="wp-text-link" to="/recipe/calibration">前往多轮标定</Link>
-      </> : null}
+      </>}
     </div>}
     </div></div>
   </Panel>{!validation && !active && groupCount > 0 && <CaptureReviewPanel key={`${doc.id}:${round.roundId}`} roundId={round.roundId} groupCount={groupCount} currentSeq={previewK + 1} currentFrameReady={!!shown && shownK === previewK && previewArrived && !previewError} segments={doc.segments ?? []} disabled={locked || productionBusy || round.state !== "complete" || bankedAsSample} inCalibration={!!calibrationEntry} onNavigate={seq => gotoGroup(seq - 1)}/>}</div>;

@@ -1,6 +1,5 @@
 /**
  * 段配方的走廊示教任务：计划里的每台相机示教一条走廊（按直线段几何），三台共用一个触发。
- * 取代旧拍照点模型按 Pose 分组选图的 teachingTasks / teachingGroups（两者保留给旧配方，不改）。
  */
 import type { CameraTeachingView, WorkspacePlanView } from "../plan/types";
 import { PLAN_CAMERAS } from "../plan/vis";
@@ -41,8 +40,8 @@ export function cameraTeachingTasks(plan: Pick<WorkspacePlanView, "cameras" | "c
 }
 
 /**
- * 走廊示教步骤的状态；旧拍照点配方（没有 plan）为 null。
- * 计划相机不是 3 台时阻塞；后端记为完成但仍有相机未示教完时按任务实际状态显示“进行中”（与旧模型 teachStatus 同一规则）。
+ * 走廊示教步骤的状态；没有段计划时为 null。
+ * 计划相机不是 3 台时阻塞；后端记为完成但仍有相机未示教完时按任务实际状态显示“进行中”。
  */
 export function cameraTeachStatus(view: Pick<WorkspaceView, "plan">): StepStatus | null {
   const plan = view.plan;
