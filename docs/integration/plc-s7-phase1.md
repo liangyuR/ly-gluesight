@@ -54,7 +54,7 @@ SCL 的故障分支不清请求 payload、start/end/ACK、锁存结果或 pendin
 
 ## 6. 计划导出 JSON、版本与实际字段
 
-进入配方后在总览页的“PLC 对接参数”面板读取已发布生产配方的计划导出（`PlanExport`，可复制或另存 JSON）：开始请求要填的 `productCode`、`planVersion`，以及 `shotCount` 与 `deviceShots` 都要填的预期总数 `expectedTotal`（ΣN_exp），另有三台相机、段序列、各段 N_exp 与容差、整件容差 `toleranceTotal`。配方库卡片另有一行摘要；发布确认框列出这次发布 PLC 要同步的变化；读取操作不写 PLC。将这些参数与现场机器人/PLC 路径版本一起评审并配置。计划的三台相机必须是三个互不相同的独立设备，共用一个触发；未标定（没有 ΣN_exp）的配方不能发布生产，也不能生成可核对的计划。
+开始请求要填的 `productCode`、`planVersion`，以及 `shotCount` 与 `deviceShots` 都要填的预期总数 `expectedTotal`（ΣN_exp），在配方库已发布配方的卡片摘要里读取（`PLC：产品 … · 计划 … · shotCount …`）；发布确认框列出这次发布 PLC 要同步的变化，以及候选与生产的 ΣN_exp、段序列、相机对比；读取操作不写 PLC。完整计划导出（`PlanExport`：另含三台相机、段序列、各段 N_exp 与容差、整件容差 `toleranceTotal`）由后端命令 `recipe_plan_export` 提供，界面不再提供复制或另存 JSON。将这些参数与现场机器人/PLC 路径版本一起评审并配置。计划的三台相机必须是三个互不相同的独立设备，共用一个触发；未标定（没有 ΣN_exp）的配方不能发布生产，也不能生成可核对的计划。
 
 以下是算法示例，不是现场配方。三段（直线、弯道、直线）预期帧数 20、8、22，容差各 1，因此 `expectedTotal=50`、`toleranceTotal=3`；各段 `expectedFrames` 在分段算法就绪前可以为 `null`，此时只有 `expectedTotal` 来自整件多轮采集：
 
@@ -79,7 +79,7 @@ SCL 的故障分支不清请求 payload、start/end/ACK、锁存结果或 pendin
 
 生产计划不计算或比较内容哈希。`planVersion` 由配方库在保存/发布时逐字段比较后分配：产品代码、段序列（序号、类型）、各段 N_exp、整件 ΣN_exp 或相机绑定任一项变了才换新号，新号比本库已使用的号都大（删掉重建、换产品代码也不复用旧号）；只改限值、容差、胶偏参考、检测区间或段长时沿用原号，PLC 不用跟着改。**重新标定使 N_exp 或 ΣN_exp 变化时会分配新的 `planVersion`，PLC 须同步新的 `shotCount`/`deviceShots`**，PC 在界面提示；不同步则拒绝布防（生产请求数量不符 90/94，版本不符 90/100）。复制配方文件造成计划版本重复时，复制件不加载。导出的段序列、相机与各段 N_exp 直接供现场评审，PLC 使用计划版本和 ΣN_exp 核对。`planReserved`（DB4.DBD16）与 `acceptedPlanReserved`（DB2.DBD16）为零值保留位，非零值拒绝布防/在途处理。旧现场程序若仍要求摘要相等，或仍以“已发数达到 shotCount 就停发 / 结束时数量必须相等”为逻辑，需要同步更新后再联调（见 [现场接入说明](../../scripts/s7-handshake/site/README.md)）。
 
-对接参数卡的 `productCode` 取自生产配方，写入 DB4.DBW8。`planVersion` 在 PLC 中为 DInt，PC 分配的版本超过 2147483647 时拒绝导出；ΣN_exp 必须不超过 32767（PLC Int）。一期按帧在图像里检测，计划不含工件坐标；机器人程序与物理输出映射不在 JSON 内，需保存在现场的对应表。更换相机或改变设备配置时必须暂停接件，核对三台相机绑定，重新导出并人工评审相机与现场触发输出的对应关系，完成复位后再生产。
+配方库卡片摘要的 `productCode` 取自生产配方，写入 DB4.DBW8。`planVersion` 在 PLC 中为 DInt，PC 分配的版本超过 2147483647 时拒绝导出；ΣN_exp 必须不超过 32767（PLC Int）。一期按帧在图像里检测，计划不含工件坐标；机器人程序与物理输出映射不在 JSON 内，需保存在现场的对应表。更换相机或改变设备配置时必须暂停接件，核对三台相机绑定，重新导出并人工评审相机与现场触发输出的对应关系，完成复位后再生产。
 
 
 ## 8. 历史软件证据与验证边界

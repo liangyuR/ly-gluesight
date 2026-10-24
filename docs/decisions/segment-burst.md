@@ -192,6 +192,7 @@
 - 问题：`PlcParams` 只用于界面展示拍照顺序和 Pose 表（workspace.rs:570-571）；规格 §1 导出给 PLC/机器人工程师的计划 JSON：段序列、各段 N_exp、容差、ΣN_exp。
 - 采用：新增 `plan::PlanExport` 与命令 `recipe_plan_export`。**`PlcParams` 保留**（旧配方继续用，结构不变）；段配方的导出放在 `WorkspaceView.plan.productionExport / candidateExport`，旧字段 `productionPlc / candidatePlc` 对段配方为 null。
 - 理由：计划原定 `pub type PlcParams = PlanExport`，会改掉现有公开类型的序列化形状，与“不删除、不改旧路径”冲突。
+- 2026-10-24 补充：配方总览的“PLC 对接参数”面板（`PlanExportPanel`，含复制 / 另存 JSON）按用户决定删除：现场 PLC 只需填 productCode、planVersion、shotCount / deviceShots，配方库卡片摘要与发布确认框已覆盖，JSON 内容与面板表格重复。计划导出数据与 `recipe_plan_export` 命令保留。
 
 ### D-SB-26 SCL 参考 FB 与现场程序
 
@@ -333,7 +334,7 @@
 
 新示教轮次（`CaptureRoundV2`）的读取与帧图像命令由 D1 在旧命令旁新增，旧 `recipe_capture_*` 命令保留。
 
-- **`recipe_plan_export` 前端不调用**：计划导出随 `WorkspaceView.plan.productionExport / candidateExport` 到达，界面（`PlanExportPanel`）直接序列化它们供复制或另存。该命令只读配方库里已发布的配方，导不出还没发布的候选，而候选的导出正是发布前核对所需；命令保留给脚本与工程师工具，前端不再保留未使用的 `recipeApi.planExport`。
+- **`recipe_plan_export` 前端不调用**：计划导出随 `WorkspaceView.plan.productionExport / candidateExport` 到达，发布确认框（`PlanPublishBody`）用它们列出候选与生产的对比和 PLC 同步项。命令保留给脚本与工程师工具，前端不再保留未使用的 `recipeApi.planExport`。2026-10-24 起配方总览不再有“PLC 对接参数”面板及其复制 / 另存 JSON，已发布配方的 productCode、planVersion、shotCount 看配方库卡片摘要。
 - **相机示教的单帧试测没有命令**：旧配方的逐点试测（`workspace_trial`）按拍照点下标，段配方没有对应命令，上表也没有登记；前端不保留没有数据来源的 `FrameTrialResult`。若以后要在相机走廊示教里做单帧试测，由后端先登记命令与 `FrameMetrics` 的返回方式，前端再新增组件。
 
 - **段配方的走廊提取**：段配方没有拍照点（`shots = []`），不复用 `workspace_extract_centerline`——它按 `w.frames[k]` / `w.doc.shots[k]` 解析，段配方会报“拍照点不存在”。D2 新增 `workspace_extract_corridor`：按 `camera`（相机 id）找到 `plan.cameraTeaching` 里这台相机冻结的示教帧，`imageId` 必须等于该帧 id（不等报“图像已变化”），检测极性取这台相机 `inspect.detect`，没有时取配方默认。旧配方仍用 `workspace_extract_centerline`，行为不变。

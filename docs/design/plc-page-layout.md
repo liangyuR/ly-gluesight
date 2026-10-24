@@ -2,9 +2,11 @@
 
 状态：设计已定（结论见第 8 节），已按此实现。
 
+> 2026-10-24 更新：配方总览的“PLC 对接参数”面板（含复制 / 另存 JSON）已删除，对接参数只剩配方库卡片摘要与发布确认框两处，见第 4 节开头。
+
 > 2026-10-24 更新：PLC 通讯页新增“工件流程 / 示教流程”两个独立 TAB。第 1–3 节保留工件监视的原设计细节，页面分组、心跳位置与示教数据来源以第 1.0 节为准。生产协议仍为 6，示教扩展协议为 V1，见[示教采集接口](../integration/teaching-capture-sequence.md)。
 
-> 2026-10-23 现状（分段连拍，依据 [segment-burst.md](../decisions/segment-burst.md) D-SB-6、D-SB-25 与第八节）：握手协议已升为 6（点表布局同协议 5：S7-1200/1500，PLC 区默认 DB4、PC 区默认 DB2，握手点位仍为 28 个），本文第 1–3 节的线框示例值、阶段“现在在等”文案和计数行已按协议 6 改写。第 4 节的对接参数分两套：段配方（新建配方）用计划导出 `PlanExport`（`WorkspaceView.plan.productionExport / candidateExport`，面板 `PlanExportPanel`，`shotCount` = `deviceShots` = ΣN_exp）；原文的 `PlcParams`、拍照顺序 → Pose 表只服务**旧拍照点模型（保留、停用）**，见第 4 节开头的说明。
+> 2026-10-23 现状（分段连拍，依据 [segment-burst.md](../decisions/segment-burst.md) D-SB-6、D-SB-25 与第八节）：握手协议已升为 6（点表布局同协议 5：S7-1200/1500，PLC 区默认 DB4、PC 区默认 DB2，握手点位仍为 28 个），本文第 1–3 节的线框示例值、阶段“现在在等”文案和计数行已按协议 6 改写。第 4 节的对接参数分两套：段配方（新建配方）用计划导出 `PlanExport`（`WorkspaceView.plan.productionExport / candidateExport`，`shotCount` = `deviceShots` = ΣN_exp）；原文的 `PlcParams`、拍照顺序 → Pose 表只服务**旧拍照点模型（保留、停用）**，见第 4 节开头的说明。
 
 ## 0 职责与边界
 
@@ -12,7 +14,7 @@
 | --- | --- | --- | --- |
 | PLC 通讯页 `/plc` | 现场工程师 | 建站（连接参数、点表）与联调（看握手位、看阶段、手动写自定义点位） | 不复位、不展示配方对接参数、不承载操作员日常操作 |
 | 在线检测页 `/inspect` | 操作员 | 看工件、看故障、复位 | 不改 PLC 配置 |
-| 配方总览 `/recipe/progress`、配方库 `/recipe` | 工艺 / PLC 工程师 | 查看配方的 PLC 对接参数 | 不读写 PLC |
+| 配方库 `/recipe` | 工艺 / PLC 工程师 | 查看已发布配方的 PLC 对接参数（卡片摘要） | 不读写 PLC |
 | 验证与发布页 `/recipe/validation` | 工艺工程师 | 发布配方，并列出这次发布 PLC 要同步的变化 | 不读写 PLC |
 
 生产数据来源沿用现有 hook/API；示教监视扩展 `recipe_capture_plc_status` 的只读返回数据，不通过监视页发起采集、取消、复位或写握手字段。需要前端派生的量在各节标注“派生”。
@@ -203,21 +205,20 @@ B 区在 `handshake === null`（没有 S7 会话，例如预览模式）时整�
 
 B 区在全部状态下都是只读，没有任何按钮。
 
-## 4 PLC 对接参数：配方总览完整面板 + 配方库摘要 + 发布页变化清单
+## 4 PLC 对接参数：配方库摘要 + 发布页变化清单
 
-> **段配方（现行，2026-10-23）**：三处分工不变，数据与内容换成计划导出（D-SB-25；`src/features/workspace/PlcParams.tsx`）。
+> **段配方（现行，2026-10-24）**：只剩两处，数据为计划导出（D-SB-25；`src/features/workspace/PlcParams.tsx`）。配方总览 `/recipe/progress` 原有的完整面板 `PlanExportPanel`（开始请求参数表、段序列与预期帧数表、复制 / 另存 JSON）已按用户决定删除：现场 PLC 只需填 productCode、planVersion、shotCount / deviceShots，下面两处已覆盖。
 >
-> - 配方总览 `/recipe/progress`：段配方挂载 `PlanProgress`，其中 `PlanExportPanel` 读 `WorkspaceView.plan.productionExport`（未发布时读 `candidateExport`，标“尚未发布，以下为候选计划”）。开始请求参数表为 productCode、planVersion（未分配时写“发布时分配”）、shotCount 与 deviceShots（都填 ΣN_exp，未标定写“待标定”）；下方是“段序列与预期帧数”表（段、类型、长度、N_exp 或“待标定”、容差、检测区间）和 ΣN_exp ± Σtol 说明；提供“复制 JSON”“另存 JSON”。没有拍照顺序 → Pose 表。已发布且 `plan.shotCountChanged` 时标题右侧显示“候选发布后将变化”。
 > - 配方库卡片：段配方写 `PLC：产品 {code} · 计划 {planVersion} · shotCount {ΣN_exp}`（未标定写“shotCount 待标定”）。
 > - 发布确认框：段配方用 `PlanPublishBody`，先列候选与生产的对比（ΣN_exp ± Σtol、段序列、共用触发的相机），计划身份变化时在“计划已变，生效后 PLC 要同步”里列 planVersion、shotCount / deviceShots（ΣN_exp）、productCode、段序列、相机顺序中变了的项（`planSyncItems`），并写明不同步时 PC 返回 100 / 94 / 95。
 >
-> 下文 4.1–4.4 的 `PlcParams`（`shotCount` = 触发次数）、`productionPlc / candidatePlc`、拍照顺序 → Pose 表与“三目设备的三个视角不分别计数”只服务**旧拍照点模型（保留、停用）**：`segments` 为空的旧配方仍由 `ProgressPage` 的 `PlcParamsPanel` 与 `plcSyncItems` 按此显示，段配方这些字段为 null。
+> 下文 4.1–4.4 是旧拍照点模型的原设计（`PlcParams`、`shotCount` = 触发次数、拍照顺序 → Pose 表），旧模型已停用，配方总览面板也已删除，仅作历史记录。
 
-对接参数是配方的属性（已发布配方就有一组 productCode / planVersion / shotCount），所以放在配方内部；“验证与发布”只关心这次发布让 PLC 要改什么。三处分工：
+原设计的三处分工（配方总览一处已删除）：
 
 | 位置 | 内容 |
 | --- | --- |
-| 配方总览 `/recipe/progress` | 完整面板「PLC 对接参数」（锚点 `#plc-params`）：当前生产版本的参数表 + 拍照顺序→Pose 表 |
+| ~~配方总览 `/recipe/progress`~~ | ~~完整面板「PLC 对接参数」~~（2026-10-24 删除） |
 | 配方库 `/recipe` 卡片 | 已发布配方加一行摘要，PLC 工程师不进工作台即可扫完全部产品 |
 | 验证与发布 `/recipe/validation` | 不放完整表；右栏 KV「PLC 计划版本」保留；发布确认框直接列出 PLC 要同步的变化 |
 
@@ -236,7 +237,7 @@ B 区在全部状态下都是只读，没有任何按钮。
 
 配方库用 `cycle_recipes`（`RecipeSummary`）新增的 `planVersion`、`triggerCount`（编不出时为 null）。
 
-### 4.2 配方总览面板
+### 4.2 配方总览面板（已删除，2026-10-24）
 
 ```
 ┌─ PLC 对接参数 · 当前生产 v3 ─────────────────────── [候选发布后将变化 →] ─┐
@@ -267,7 +268,7 @@ B 区在全部状态下都是只读，没有任何按钮。
 
 ```
 拍照计划已变，生效后 PLC 要同步
-  • planVersion：41 → 发布时分配新号（生效后在配方总览“PLC 对接参数”查看）
+  • planVersion：41 → 发布时分配新号（生效后在配方库卡片查看）
   • shotCount / deviceShots：4 → 5
   • productCode：7（不变）
 PLC 未同步前 PC 拒绝布防：planVersion 不一致返回 100，shotCount 不一致返回 94，productCode 不一致返回 95。
@@ -306,7 +307,7 @@ PLC 未同步前 PC 拒绝布防：planVersion 不一致返回 100，shotCount �
 
 | 元素 | 从 | 到 |
 | --- | --- | --- |
-| `S7RecipePlanPanel` | `src/features/plc/components/` | 改写为配方总览的 `PlcParamsPanel`（`src/features/workspace/`），数据改用 `WorkspaceView.productionPlc`；原组件与 `plc_recipe_plan` 删除 |
+| `S7RecipePlanPanel` | `src/features/plc/components/` | 改写为配方总览的 `PlcParamsPanel`（`src/features/workspace/`），数据改用 `WorkspaceView.productionPlc`；原组件与 `plc_recipe_plan` 删除（配方总览面板 2026-10-24 也已删除） |
 | 发布确认框「查看 PLC 对接参数」链接 | `ValidationPage` 对话框 | 改为 4.3 的同步清单 |
 | 「核对 PLC 计划」链接 | `OperationGuidePage` | `/recipe`（配方库摘要） |
 | 协议文档 §4 第一段 “PLC 通讯页的‘PLC 对接参数’卡” | `docs/integration/plc-communication-protocol.md` | 改为 “配方总览的‘PLC 对接参数’面板” |
@@ -345,5 +346,5 @@ PLC 未同步前 PC 拒绝布防：planVersion 不一致返回 100，shotCount �
 1. **保存 / 还原**放在 A 区吸顶状态条，`dirty` 时出现。
 2. **已连接时改连接参数**：本轮不改后端保存行为；C 区编辑态在已连接时显示 `已连接时保存，需断开重连后新参数才生效`。自动重连另行评估。
 3. **握手点位可改字段**：只允许改“描述”和“记录变化”，其余锁定。
-4. **对接参数位置**：配方总览完整面板 + 配方库卡片一行摘要 + 发布确认框只列变化（见第 4 节）。
+4. **对接参数位置**：配方库卡片一行摘要 + 发布确认框只列变化（见第 4 节；配方总览完整面板 2026-10-24 删除）。
 5. **不加**“复制对接参数”按钮。

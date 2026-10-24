@@ -1,11 +1,9 @@
 import { Link, useLocation } from "react-router-dom";
 import { AlertTriangle, ArrowRight, Lock } from "lucide-react";
 import { Progress } from "qing-steel";
-import { useSiteStatus } from "../cycle/api";
 import { cameraTeachingTasks } from "./cameraTasks";
 import { useWorkspace } from "./context";
 import { Badge, Panel, WorkspaceBar, WorkspaceEmpty } from "./components";
-import { PlanExportPanel } from "./PlcParams";
 import { stepOfV2, stepStatusText, stepStatusTone, targetPathV2 } from "./progress";
 import { returnState } from "./returnNavigation";
 import { stageOfV2, stagesV2, stageStatusText, stageStatusTone, stageStatusV2 } from "./stages";
@@ -15,11 +13,10 @@ const actions: Record<string, string> = {
   "/recipe/calibration": "查看多轮标定", "/recipe/validation": "查看验证与发布",
 };
 
-/** 配方进度（段配方）：采集 → 段列表 → 走廊示教 → 多轮标定 → 验证与发布，后面挂 PLC 对接参数（计划导出）。 */
+/** 配方进度（段配方）：采集 → 段列表 → 走廊示教 → 多轮标定 → 验证与发布。 */
 export default function PlanProgressPage() {
   const { data } = useWorkspace();
   const location = useLocation();
-  const site = useSiteStatus();
   const plan = data?.plan;
   if (!data || !plan) return <WorkspaceEmpty />;
   const { progress } = plan;
@@ -31,7 +28,6 @@ export default function PlanProgressPage() {
   const warning = nextStep?.status === "blocked";
   const reasons = [...new Set(nextStep?.blockers.map(blocker => blocker.message) ?? [])].filter(message => message !== nextStep?.detail).slice(0, 3);
   const back = returnState(location, "进度总览");
-  const production = plan.productionExport;
   return <div className="wp-page"><WorkspaceBar /><Panel title="配方进度" className="wp-progress-board">
     {next && <section className={"wp-progress-next " + (warning ? "warn" : "info")} aria-label="下一步">
       {warning ? <AlertTriangle size={22} aria-hidden="true" /> : <ArrowRight size={22} aria-hidden="true" />}
@@ -70,6 +66,5 @@ export default function PlanProgressPage() {
         <Link className="wp-progress-link" to={link.href} state={back}>{link.label}<ArrowRight size={14} aria-hidden="true" /></Link>
       </section>;
     })}</div>
-  </Panel>
-  <PlanExportPanel plan={production ?? plan.candidateExport} isProduction={!!production} version={data.productionVersion} shotCountChanged={plan.shotCountChanged} offline={site?.mode === "offline"} /></div>;
+  </Panel></div>;
 }

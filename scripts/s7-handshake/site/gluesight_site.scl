@@ -416,7 +416,7 @@ VERSION : 0.1
       RobotStopped : Bool;
       PartSn : String[50];             // TODO-7：工件 SN 来源，1–50 个 ASCII 可打印字符
       ProductCode : Int;               // TODO-7：与 PC 配方产品代码一致，1–32767
-      PlanVersion : DInt;              // TODO-7：PC 配方总览“PLC 对接参数”里的计划版本
+      PlanVersion : DInt;              // TODO-7：PC 配方库卡片“PLC：… 计划 …”里的计划版本
       DeviceShots : Int;               // TODO-7：PC 导出计划的 expectedTotal
       ArmTimeout : Time := T#10s;
       MotionTimeout : Time := T#40s;
