@@ -15,6 +15,8 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedReceiver, UnboundedSender};
 
+use crate::applog::codes::{self, Event};
+use crate::applog::throttle::{self, Tally, Throttle};
 use crate::applog::{self, Fields};
 use crate::arming::ArmBudget;
 use crate::burst_judge::{BurstJudgement, FrameState};
@@ -740,8 +742,27 @@ pub fn trace(app: &AppHandle, ev: impl Into<String>, msg: impl Into<String>, fie
     publish_log(app, "info", applog::Level::Debug, ev.into(), msg.into(), fields);
 }
 
+/// 按事件编码记一条（applog::codes），同时进界面事件流。
+pub fn log_event(
+    app: &AppHandle,
+    event: &applog::codes::Event,
+    msg: impl Into<String>,
+    fields: Fields,
+) {
+    let tone = match event.level {
+        applog::Level::Error => "err",
+        applog::Level::Warn => "warn",
+        applog::Level::Info | applog::Level::Debug => "info",
+    };
+    publish_record(app, tone, applog::emit_event(event, &msg.into(), fields));
+}
+
 fn publish_log(app: &AppHandle, tone: &'static str, level: applog::Level, ev: String, msg: String, fields: Fields) {
-    let line = LogLine::from_record(applog::emit(level, &ev, &msg, fields), tone);
+    publish_record(app, tone, applog::emit(level, &ev, &msg, fields));
+}
+
+fn publish_record(app: &AppHandle, tone: &'static str, record: applog::Record) {
+    let line = LogLine::from_record(record, tone);
     {
         let mut s = host(app).shared.lock().unwrap();
         s.logs.push_back(line.clone());
@@ -1028,6 +1049,22 @@ struct Required {
     warnings: Vec<String>,
 }
 
+/// 同一报警文案在这段时间内只写一次日志，其余计入 alarm.raised.summary。
+const ALARM_LOG_WINDOW: Duration = Duration::from_secs(600);
+
+/// 帧归属失败的原因，用作聚合 key 与 data.reason。
+fn route_kind(route: &Route) -> &'static str {
+    match route {
+        Route::Bound { .. } => "bound",
+        Route::Stale { .. } => "stale",
+        Route::Duplicate { .. } => "duplicate",
+        Route::Extra { .. } => "extra",
+        Route::SessionChanged { .. } => "session_changed",
+        Route::UntrustedCounter(_) => "untrusted_counter",
+        Route::UnknownCamera => "unknown_camera",
+    }
+}
+
 struct Machine {
     app: AppHandle,
     measure_tx: Sender<Job>,
@@ -1059,6 +1096,10 @@ struct Machine {
     dirty: bool,
     published: Instant,
     dropped_seen: u64,
+    /// 逐帧、逐拍重复的告警聚合（游离帧、迟到帧、丢帧等），节拍每拍写出到期摘要
+    noise: Throttle,
+    /// 报警写日志的去重：alarms 每件开工、复位都会清空，同一报警不再每件重写
+    alarm_log: Throttle,
     s7: PlcSession,
     s7_reset_requested: bool,
     current_cycle_id: Option<String>,
@@ -1126,6 +1167,8 @@ impl Machine {
             dirty: true,
             published: Instant::now(),
             dropped_seen: 0,
+            noise: Throttle::new(throttle::WINDOW),
+            alarm_log: Throttle::new(ALARM_LOG_WINDOW),
             s7,
             s7_reset_requested: false,
             current_cycle_id: None,
@@ -1152,9 +1195,80 @@ impl Machine {
 
     fn alarm(&mut self, msg: String) {
         if !self.alarms.contains(&msg) {
-            log(&self.app, "err", "报警", msg.clone());
+            let fields = Fields::default().with_data(json!({"alarm": msg}));
+            if self.alarm_log.observe(
+                &codes::ALARM_RAISED_SUMMARY,
+                &msg,
+                now_ms(),
+                Tally::None,
+                fields.clone(),
+            ) {
+                log_event(&self.app, &codes::ALARM_RAISED, msg.clone(), fields);
+            }
             self.alarms.push(msg);
             self.dirty = true;
+        }
+    }
+
+    /// 聚合一条高频告警：窗口内首次照写原事件，之后只计数，摘要由节拍写出。
+    fn noisy(
+        &mut self,
+        event: &Event,
+        summary: &'static Event,
+        key: &str,
+        tally: Tally,
+        msg: String,
+        fields: Fields,
+    ) {
+        if self
+            .noise
+            .observe(summary, key, now_ms(), tally, fields.clone())
+        {
+            log_event(&self.app, event, msg, fields);
+        }
+    }
+
+    /// 帧归属失败：判本件 ERR 的记 frame.route_fault，其余记 frame.unrouted；按相机 + 原因聚合。
+    fn unrouted(
+        &mut self,
+        camera: String,
+        cycle_id: String,
+        fault: bool,
+        data: serde_json::Value,
+        msg: String,
+        frame_counter: u64,
+    ) {
+        let key = format!("{camera}/{}", data["reason"].as_str().unwrap_or_default());
+        let fields = Fields {
+            cycle_id: Some(cycle_id),
+            camera: Some(camera),
+            ..Fields::default()
+        }
+        .with_data(data);
+        let (event, summary) = if fault {
+            (&codes::FRAME_ROUTE_FAULT, &codes::FRAME_ROUTE_FAULT_SUMMARY)
+        } else {
+            (&codes::FRAME_UNROUTED, &codes::FRAME_UNROUTED_SUMMARY)
+        };
+        self.noisy(
+            event,
+            summary,
+            &key,
+            Tally::Range("frameCounter", frame_counter as i64),
+            msg,
+            fields,
+        );
+    }
+
+    fn flush_noise(&mut self) {
+        let now = now_ms();
+        for summary in self
+            .noise
+            .flush(now)
+            .into_iter()
+            .chain(self.alarm_log.flush(now))
+        {
+            log_event(&self.app, summary.event, summary.msg, summary.fields);
         }
     }
 
@@ -1380,6 +1494,9 @@ impl Machine {
         self.result = None;
         crate::workspace::clear_live(&self.app);
         self.alarms.clear();
+        for summary in self.noise.end_all(&codes::FRAME_STRAY_SUMMARY) {
+            log_event(&self.app, summary.event, summary.msg, summary.fields);
+        }
         host(&self.app).shared.lock().unwrap().measured.clear();
         budget.mark("entry-readiness-workspace");
         let app = self.app.clone();
@@ -1631,7 +1748,23 @@ impl Machine {
             self.stray_times.push_back(now);
             self.stray_times.retain(|t| now.duration_since(*t) < Duration::from_secs(60));
             let camera = slot.map_or_else(|| format!("#{}", f.cam + 1), |s| s.config().id);
-            log(&self.app, "warn", "游离帧", format!("空闲时收到相机 {camera} 的帧（帧计数 {}），已记入设备计数账", f.frame_counter));
+            let msg = format!(
+                "空闲时收到相机 {camera} 的帧（帧计数 {}），已记入设备计数账",
+                f.frame_counter
+            );
+            let fields = Fields {
+                camera: Some(camera.clone()),
+                ..Fields::default()
+            }
+            .with_data(json!({"frameCounter": f.frame_counter, "phase": self.phase}));
+            self.noisy(
+                &codes::FRAME_STRAY,
+                &codes::FRAME_STRAY_SUMMARY,
+                &camera,
+                Tally::Range("frameCounter", f.frame_counter as i64),
+                msg,
+                fields,
+            );
             if self.stray_times.len() >= 3 {
                 self.alarm("1 分钟内游离帧 ≥ 3，检查 Line0 接线与输入滤波".into());
             }
@@ -1643,12 +1776,42 @@ impl Machine {
         }
         let part = self.part.as_mut().unwrap();
         let Some(route) = part.receive_frame(&f) else {
-            log(&self.app, "warn", "截止后帧", format!("工件 {} 已到收尾截止，丢弃设备帧 {}", part.cycle_id, f.frame_counter));
+            let (camera, cycle_id) = (part.camera_id(f.cam), part.cycle_id.clone());
+            let msg = format!(
+                "工件 {cycle_id} 已到收尾截止，丢弃设备帧 {}",
+                f.frame_counter
+            );
+            let fields = Fields {
+                cycle_id: Some(cycle_id),
+                camera: Some(camera.clone()),
+                ..Fields::default()
+            }
+            .with_data(json!({"frameCounter": f.frame_counter}));
+            self.noisy(
+                &codes::FRAME_AFTER_DEADLINE,
+                &codes::FRAME_AFTER_DEADLINE_SUMMARY,
+                &camera,
+                Tally::Range("frameCounter", f.frame_counter as i64),
+                msg,
+                fields,
+            );
             return;
         };
         let Route::Bound { shot: k, ordinal } = route else {
-            let reason = part.router.describe(&meta, &route);
-            log(&self.app, if route.fault().is_some() { "err" } else { "warn" }, "帧归属", reason);
+            let msg = part.router.describe(&meta, &route);
+            let (camera, cycle_id) = (part.camera_id(f.cam), part.cycle_id.clone());
+            let mut data = json!({"reason": route_kind(&route), "frameCounter": f.frame_counter});
+            if let Some(code) = route.fault() {
+                data["faultCode"] = json!(code);
+            }
+            self.unrouted(
+                camera,
+                cycle_id,
+                route.fault().is_some(),
+                data,
+                msg,
+                f.frame_counter,
+            );
             return;
         };
         let camera = part.camera_id(f.cam);
@@ -1739,7 +1902,25 @@ impl Machine {
         let app = self.app.clone();
         let part = self.part.as_mut().unwrap();
         let Some(arrival) = part.receive_burst(&f) else {
-            log(&app, "warn", "截止后帧", format!("工件 {} 已到收尾截止，丢弃相机组 #{} 的帧（帧计数 {}）", part.cycle_id, f.cam + 1, f.frame_counter));
+            let (camera, cycle_id) = (part.camera_id(f.cam), part.cycle_id.clone());
+            let msg = format!(
+                "工件 {cycle_id} 已到收尾截止，丢弃相机 {camera} 的帧（帧计数 {}）",
+                f.frame_counter
+            );
+            let fields = Fields {
+                cycle_id: Some(cycle_id),
+                camera: Some(camera.clone()),
+                ..Fields::default()
+            }
+            .with_data(json!({"frameCounter": f.frame_counter}));
+            self.noisy(
+                &codes::FRAME_AFTER_DEADLINE,
+                &codes::FRAME_AFTER_DEADLINE_SUMMARY,
+                &camera,
+                Tally::Range("frameCounter", f.frame_counter as i64),
+                msg,
+                fields,
+            );
             return;
         };
         let cycle_id = part.cycle_id.clone();
@@ -1774,10 +1955,35 @@ impl Machine {
             burst::Arrival::Stale { camera } => {
                 let camera_id = burst.camera_name(camera).to_owned();
                 self.stray += 1;
-                log_with(&app, "warn", "迟到帧", format!("相机 {camera_id} 的帧（帧计数 {}）不属于本件：上一件的迟到帧或布防前那次打开的帧，记为游离帧", f.frame_counter), fields(&camera_id, None));
+                let msg = format!("相机 {camera_id} 的帧（帧计数 {}）不属于本件：上一件的迟到帧或布防前那次打开的帧，记为游离帧", f.frame_counter);
+                let fields =
+                    fields(&camera_id, None).with_data(json!({"frameCounter": f.frame_counter}));
+                self.noisy(
+                    &codes::FRAME_LATE,
+                    &codes::FRAME_LATE_SUMMARY,
+                    &camera_id,
+                    Tally::Range("frameCounter", f.frame_counter as i64),
+                    msg,
+                    fields,
+                );
             }
-            burst::Arrival::Fault(reason) => log(&app, "err", "帧归属", reason),
-            burst::Arrival::Unknown => log(&app, "warn", "帧归属", format!("相机组序号 {} 不在本件计划相机里", f.cam)),
+            burst::Arrival::Fault(reason) => {
+                let data = json!({"reason": "fault", "frameCounter": f.frame_counter});
+                let camera = part.camera_id(f.cam);
+                self.unrouted(camera, cycle_id, true, data, reason, f.frame_counter);
+            }
+            burst::Arrival::Unknown => {
+                let data = json!({"reason": "unknown_camera", "frameCounter": f.frame_counter});
+                let camera = part.camera_id(f.cam);
+                self.unrouted(
+                    camera,
+                    cycle_id,
+                    false,
+                    data,
+                    format!("相机组序号 {} 不在本件计划相机里", f.cam),
+                    f.frame_counter,
+                );
+            }
         }
     }
 
@@ -1804,6 +2010,8 @@ impl Machine {
 
     async fn on_tick(&mut self) {
         let app = self.app.clone();
+        self.flush_noise();
+        app.state::<PlcHost>().flush_logs();
         let _link = host(&app).link_gate.lock().await;
         // 持有链路门期间站点模式不会切换：新事务按当前站点记来源
         self.s7.set_origin(if crate::offline::enabled(&app) {
@@ -1861,8 +2069,19 @@ impl Machine {
         };
         let dropped = host(&self.app).camera.dropped_total();
         if dropped > self.dropped_seen {
-            log(&self.app, "warn", "丢帧", format!("帧通道满，累计丢弃 {dropped} 帧：检测节拍处理不过来"));
+            let added = dropped - self.dropped_seen;
             self.dropped_seen = dropped;
+            let msg =
+                format!("帧通道满，新丢弃 {added} 帧（累计 {dropped} 帧）：检测节拍处理不过来");
+            let fields = Fields::default().with_data(json!({"dropped": added, "total": dropped}));
+            self.noisy(
+                &codes::FRAME_DROPPED,
+                &codes::FRAME_DROPPED_SUMMARY,
+                "",
+                Tally::Sum("dropped", added),
+                msg,
+                fields,
+            );
         }
         {
             let audit_ready = match host(&self.app).audit.readiness() {

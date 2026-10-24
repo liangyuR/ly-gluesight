@@ -2,16 +2,18 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ly_plc::{
     describe_address, ConnectionConfig, DataType, EventSink, HistorySample, LogPage, LogQuery, Logbook, PlcConfig,
     PlcEngine, PlcEvent, PlcStatus, PointValue, ProtocolKind,
 };
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::applog::throttle::{self, Tally, Throttle};
+use crate::applog::{self, codes, Fields};
 use crate::cycle::{CycleHost, Input};
 use crate::inspection;
 use crate::handshake::Contract;
@@ -21,6 +23,7 @@ use crate::recipe::Recipe;
 pub struct PlcHost {
     engine: PlcEngine,
     config_path: PathBuf,
+    engine_log: Arc<Mutex<Throttle>>,
 }
 
 impl PlcHost {
@@ -32,6 +35,8 @@ impl PlcHost {
         inspection::add_teaching_points(&mut config);
         let handle = app.clone();
         let last_link = std::sync::Mutex::new(None);
+        let engine_log = Arc::new(Mutex::new(Throttle::new(throttle::WINDOW)));
+        let sink_log = engine_log.clone();
         let sink: EventSink = Arc::new(move |event| match event {
             PlcEvent::Status(s) => {
                 let link = (s.state, s.message.clone());
@@ -48,21 +53,58 @@ impl PlcHost {
                 let _ = handle.emit("plc://values", v);
             }
             PlcEvent::Logs(l) => {
+                let mut throttle = sink_log.lock().unwrap_or_else(|p| p.into_inner());
                 for entry in l.iter().filter(|e| e.level == "warn" || e.level == "error") {
-                    crate::applog::write(&entry.level, &format!("PLC {}", entry.category), &entry.message);
+                    let (event, summary) = if entry.level == "error" {
+                        (&codes::PLC_ENGINE_ERROR, &codes::PLC_ENGINE_ERROR_SUMMARY)
+                    } else {
+                        (&codes::PLC_ENGINE_WARN, &codes::PLC_ENGINE_WARN_SUMMARY)
+                    };
+                    let fields = Fields::default()
+                        .with_data(json!({"category": entry.category, "message": entry.message}));
+                    if throttle.observe(
+                        summary,
+                        &entry.category,
+                        entry.ts,
+                        Tally::None,
+                        fields.clone(),
+                    ) {
+                        applog::emit_event(event, &entry.message, fields);
+                    }
                 }
+                drop(throttle);
                 let _ = handle.emit("plc://log", l);
             }
             PlcEvent::Edge(e) => {
                 let _ = handle.emit("plc://edge", &e);
             }
         });
-        let logbook = Arc::new(Logbook::open(&log_path, sink.clone(), config.log_retention_days)?);
-        Ok(Self { engine: PlcEngine::new(config, logbook, sink), config_path })
+        let logbook = Arc::new(Logbook::open(
+            &log_path,
+            sink.clone(),
+            config.log_retention_days,
+        )?);
+        Ok(Self {
+            engine: PlcEngine::new(config, logbook, sink),
+            config_path,
+            engine_log,
+        })
     }
 
     pub fn engine(&self) -> &PlcEngine {
         &self.engine
+    }
+
+    /// 写出 ly_plc 引擎告警到期的聚合摘要；节拍每拍调用。
+    pub fn flush_logs(&self) {
+        let summaries = self
+            .engine_log
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .flush(ly_plc::now_ms());
+        for summary in summaries {
+            applog::emit_event(summary.event, &summary.msg, summary.fields);
+        }
     }
 
     pub fn start_if_configured(app: &AppHandle) {
