@@ -47,6 +47,10 @@ Windows 的 ProgramData 由系统已知文件夹接口解析，不硬编码盘�
 
 标注随候选修订原子保存，不改写 `recipe-capture/` 下的 `round.json`、`frames.jsonl` 或 PGM。边界使用原始帧组序号，屏蔽与恢复不重排、不扣减原始采集计数。这里的手动边界与 `calibration/<轮次>/boundaries.json` 的算法输出是不同数据：本阶段后者及生产分段仍为未分段。屏蔽只作用于候选标定取样，不写入发布包或生产检测记录。
 
+## 项目导出包
+
+项目管理页的“导出 / 导入项目”把整个项目打成 ZIP（`src-tauri/src/project/transfer.rs`，格式版本 1），规则见[项目设计](project.md#导出与导入)。导出默认保存在 `exports/`；导入暂存在 `cache/project-import-*`，校验通过、路径与计划版本改写完成后才原子移入 `projects/<新编号>/`。
+
 ## 配方迁移包
 
 配方库卡片的“导出”把段配方候选打成一个 ZIP（`src-tauri/src/workspace/transfer.rs`，格式版本 1）：`workspace/workspace.json`（候选记录）、`workspace/images/` 中走廊示教帧、`workspace/calibration/<轮次>/` 标定特征，以及候选引用的每个采集轮次 `rounds/<轮次>/` 下的 `round.json`、`frames.jsonl` 和 `<相机>/<seq:06>.pgm`。引用的轮次取走廊示教、多轮标定、验证样本库与采集复核记录；本机不完整或缺失的轮次不导出，并在清单 `notes` 中说明。配方只有已发布版本、没有候选时，只导出 `recipe.json`（生产配方文档），不含示教帧、标定与原图。包内 `manifest.json` 记格式版本、配方编号/名称/产品代码/版本、导出时间、来源软件版本、轮次列表，以及每个文件的路径、字节数与 SHA-256。
