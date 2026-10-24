@@ -1,6 +1,7 @@
-import { Card, Chip, Heading, StatusBadge, Text, type StatusBadgeTone } from "qing-steel";
+import { Card, Heading, StatusBadge, Text, Tooltip, type StatusBadgeTone } from "qing-steel";
 import type { CapturePlcStatus, TeachingRegisters } from "../../workspace/types";
-import { teachingPhaseLabels, teachingReasonLabel, teachingStateLabel, teachingWaiting } from "../teaching";
+import { teachingPhaseLabels, teachingReasonName, teachingStateName, teachingWaiting } from "../teaching";
+import { OfflineNote } from "./HandshakeMonitor";
 
 interface TeachingHandshakeMonitorProps {
   status: CapturePlcStatus | null;
@@ -9,17 +10,32 @@ interface TeachingHandshakeMonitorProps {
 }
 
 const phaseTones: Partial<Record<CapturePlcStatus["phase"], StatusBadgeTone>> = {
-  unavailable: "warn", resetRequired: "warn", fault: "ng", idle: "neutral",
+  unavailable: "warn", resetRequired: "warn", fault: "fault", idle: "neutral",
+};
+const waitingSummary: Record<CapturePlcStatus["phase"], string> = {
+  unavailable: "核对示教点表与连接", resetRequired: "完成示教复位", idle: "等待开始采集",
+  requested: "等待 PLC 接受", accepted: "等待 PLC 采集结束", draining: "PC 收尾保存",
+  reporting: "等待 PLC 确认结果", cancelling: "等待 PLC 确认取消", releasing: "等待 PLC 释放", fault: "处置现场后复位",
 };
 
 function Registers({ side, value }: { side: "pc" | "plc"; value: TeachingRegisters | null }) {
   const label = side === "pc" ? "PC" : "PLC";
-  return <dl className="plc-kv" aria-label={`${label} 示教寄存器`}>
-    <div><dt>{label} 状态</dt><dd>{value ? <StatusBadge tone={value.state >= (side === "pc" ? 30 : 40) ? "warn" : "info"}>{teachingStateLabel(side, value.state)}</StatusBadge> : "—"}</dd></div>
-    <div><dt>轮次</dt><dd className="mono">{side === "pc" ? "teachRoundId" : "teachRoundIdEcho"} {value?.roundId ?? "—"}</dd></div>
-    <div><dt>原因码</dt><dd>{value ? teachingReasonLabel(side, value.reason) : "—"}</dd></div>
-    <div><dt>协议版本</dt><dd className="mono">{value?.version ?? "—"}</dd></div>
-  </dl>;
+  const fields = value ? [
+    { label: "状态", value: teachingStateName(side, value.state), raw: `${side === "pc" ? "teachPcState" : "teachPlcState"}：${value.state}` },
+    { label: "轮次", value: String(value.roundId), raw: `${side === "pc" ? "teachRoundId" : "teachRoundIdEcho"}：${value.roundId}` },
+    { label: "原因", value: teachingReasonName(side, value.reason), raw: `${side === "pc" ? "teachPcReason" : "teachPlcReason"}：${value.reason}` },
+  ] : [];
+  return <div className="plc-values-row" role="group" aria-label={`${label} 示教寄存器`}>
+    <span className="plc-values-side">{label}</span>
+    {value ? <dl className="plc-values">
+      {fields.map(field => <Tooltip key={field.label} content={<div className="plc-signal-details">
+        <span className="mono">{field.raw}</span>
+        <span>协议版本：{value.version}</span>
+      </div>}>
+        <div tabIndex={0}><dt>{field.label}</dt><dd>{field.value}</dd></div>
+      </Tooltip>)}
+    </dl> : <Text variant="label" muted>—</Text>}
+  </div>;
 }
 
 export default function TeachingHandshakeMonitor({ status, connected, error }: TeachingHandshakeMonitorProps) {
@@ -27,25 +43,26 @@ export default function TeachingHandshakeMonitor({ status, connected, error }: T
   const pc = fresh ? status?.monitor?.pc ?? null : null;
   const plc = fresh ? status?.monitor?.plc ?? null : null;
   const unconfirmed = !!status && status.phase === "idle" && !fresh;
-  const phase = !connected ? "未连接" : error ? "读取失败" : unconfirmed ? "状态待确认" : status ? teachingPhaseLabels[status.phase] ?? "未知阶段" : "正在读取";
-  const waiting = !connected ? "连接 PLC 后读取示教握手状态"
-    : error ? "等待示教状态读取恢复"
+  const phase = error ? "读取失败" : unconfirmed ? "状态待确认" : status ? teachingPhaseLabels[status.phase] ?? "未知阶段" : "正在读取";
+  const tone: StatusBadgeTone = error ? "fault" : unconfirmed ? "warn" : status ? phaseTones[status.phase] ?? "info" : "neutral";
+  const waiting = error ? "等待示教状态读取恢复"
     : unconfirmed ? "PC：等待当前连接的有效示教快照"
     : status ? teachingWaiting(status) : "PC：正在读取示教接口状态";
-  return <Card role="region" aria-label="示教握手监视" title={<Heading level={3}>示教握手监视 · 只读</Heading>} actions={<Chip>示教协议 V1 · DB6 / DB12</Chip>}>
-    <div className="plc-handshake">
-      <dl className="plc-kv">
-        <div><dt>阶段</dt><dd><StatusBadge tone={error ? "ng" : !connected ? "off" : unconfirmed ? "warn" : status ? phaseTones[status.phase] ?? "info" : "neutral"}>{phase}</StatusBadge></dd></div>
-        <div><dt>现在在等</dt><dd>{waiting}</dd></div>
-      </dl>
-      <div className="plc-handshake-fields">
-        <Registers side="pc" value={pc} />
-        <Registers side="plc" value={plc} />
-      </div>
-      {error ? <Text as="p" role="alert">{error}</Text>
-        : connected && status?.message && <Text as="p" variant="label" muted>后端说明：{status.message}</Text>}
-      {connected && !error && !fresh && <Text as="p" variant="label" muted>尚未取得当前连接的有效快照，双方寄存器值暂不显示。</Text>}
-      {fresh && !pc && <Text as="p" variant="label" muted>PC 状态尚未发布确认，PC 寄存器值暂不显示。</Text>}
-    </div>
+  const summary = error ? "等待读取恢复" : unconfirmed ? "等待有效快照" : status ? waitingSummary[status.phase] ?? "核对示教接口" : "正在读取";
+  const actions = connected ? <div className="plc-monitor-head">
+    <StatusBadge tone={tone}>{phase}</StatusBadge>
+    <Tooltip content={waiting}><Text variant="label" muted className="plc-monitor-meta" tabIndex={0}>{summary}</Text></Tooltip>
+  </div> : undefined;
+  return <Card role="region" aria-label="示教握手监视" title={<Heading level={3}>示教握手监视</Heading>} actions={actions}>
+    {!connected ? <OfflineNote />
+      : error ? <Text as="p" role="alert">{error}</Text>
+      : <div className="plc-handshake">
+        {fresh ? <>
+          <Registers side="pc" value={pc} />
+          <Registers side="plc" value={plc} />
+          {!pc && <Text as="p" variant="label" muted>PC 状态尚未发布确认，PC 寄存器值暂不显示。</Text>}
+        </> : <Text as="p" variant="label" muted>尚未取得当前连接的有效快照，双方寄存器值暂不显示。</Text>}
+        {status?.message && <Text as="p" variant="label" muted>后端说明：{status.message}</Text>}
+      </div>}
   </Card>;
 }

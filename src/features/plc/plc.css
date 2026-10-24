@@ -112,32 +112,18 @@ select.input { padding-right: 6px; }
 .plc-notices-list { display: grid; gap: 8px; margin-top: 8px; }
 
 /* B 握手监视 */
-.plc-handshake { display: grid; gap: 14px; min-width: 0; }
-.plc-kv { display: grid; gap: 8px; margin: 0; min-width: 0; }
-.plc-kv > div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 12px; align-items: baseline; }
-.plc-kv dt { font: var(--text-label); color: var(--on-surface-variant); }
-.plc-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-.plc-bit-group { display: grid; gap: 8px; min-width: 0; }
-.plc-common-signals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px 24px; padding: 4px 0; }
-.plc-common-signal { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; border-radius: var(--r-sm); }
-.plc-common-signal-name { font: var(--text-body); color: var(--on-surface-variant); }
-.plc .plc-flat-state { height: auto; padding: 0; border-radius: 0; background: transparent; font: var(--text-body); }
-.plc-flat-state.fault { color: var(--fault); }
-.plc-flat-state.info .dot { background: var(--primary); }
-.plc-common-signal-time, .plc-common-protocol { font: var(--text-label); color: var(--on-surface-variant); font-variant-numeric: tabular-nums; }
-.plc-common-protocol { justify-self: start; border-radius: var(--r-xs); }
-.plc-common-signal:focus-visible, .plc-common-protocol:focus-visible, .plc-summary-item:focus-visible, .plc-flat-state:focus-visible, .plc-handshake-waiting:focus-visible { outline: 2px solid var(--primary); outline-offset: 4px; }
+.plc-handshake { display: grid; gap: 12px; min-width: 0; }
+.plc-monitor-head { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px 12px; min-width: 0; }
+.plc-monitor-meta { border-radius: var(--r-xs); font-variant-numeric: tabular-nums; }
 .plc-signal-details { display: grid; gap: 4px; }
-.plc-handshake-overview { display: grid; grid-template-columns: minmax(140px, 1fr) 3fr; gap: 16px 24px; margin: 0; }
-.plc-handshake-overview dt { font: var(--text-label); color: var(--on-surface-variant); margin-bottom: 6px; }
-.plc-handshake-overview dd { margin: 0; font: var(--text-body); }
-.plc-handshake-waiting { border-radius: var(--r-xs); }
+.plc-values-row { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.plc-values-side { flex: none; width: 32px; font: var(--text-label); color: var(--on-surface-variant); }
+.plc-values { display: flex; flex-wrap: wrap; gap: 6px 24px; margin: 0; min-width: 0; }
+.plc-values > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; border-radius: var(--r-xs); }
+.plc-values dt { font: var(--text-label); color: var(--on-surface-variant); }
+.plc-values dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .plc-handshake-message { overflow-wrap: anywhere; }
-.plc-handshake-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px 24px; margin: 0; }
-.plc-handshake-fields {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 24px;
-  padding-top: 12px; border-top: 1px solid var(--outline-variant);
-}
+.plc-monitor-meta:focus-visible, .plc-values > div:focus-visible, .plc-summary-item:focus-visible { outline: 2px solid var(--primary); outline-offset: 4px; }
 
 /* C 连接配置摘要 */
 .plc-conn-summary { display: grid; gap: 20px; container-type: inline-size; }
@@ -165,13 +151,3 @@ select.input { padding-right: 6px; }
 .plc-group-name { font-weight: 600; }
 .plc-group-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
 .plc-custom-group .qs-accordion-title { flex: 1; min-width: 0; }
-
-@media (max-width: 899px) {
-  .plc-common-signals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .plc-handshake-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .plc-handshake-fields { grid-template-columns: minmax(0, 1fr); }
-}
-@media (max-width: 420px) {
-  .plc-common-signals { grid-template-columns: minmax(0, 1fr); }
-  .plc-handshake-overview, .plc-handshake-summary { grid-template-columns: minmax(0, 1fr); }
-}

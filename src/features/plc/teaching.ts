@@ -38,8 +38,8 @@ const reasonLabels: Record<TeachingSide, Record<number, string>> = {
   },
 };
 
-export const teachingStateLabel = (side: TeachingSide, value: number) => `${stateLabels[side][value] ?? "未知状态"} (${value})`;
-export const teachingReasonLabel = (side: TeachingSide, value: number) => `${value} · ${reasonLabels[side][value] ?? "未知原因码"}`;
+export const teachingStateName = (side: TeachingSide, value: number) => stateLabels[side][value] ?? "未知状态";
+export const teachingReasonName = (side: TeachingSide, value: number) => reasonLabels[side][value] ?? "未知原因码";
 export const teachingWaiting = (status: CapturePlcStatus) => waiting[status.phase] ?? "PC：核对示教接口状态";
 
 const registerTags: Record<string, [TeachingSide, keyof TeachingRegisters]> = {

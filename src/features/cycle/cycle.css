@@ -4,25 +4,6 @@
 .c-err { color: var(--fault); }
 .c-mut { color: var(--on-surface-variant); }
 
-.lamps { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.lamp {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  border-radius: var(--r-full);
-  border: 1px solid transparent;
-  background: var(--surface-high);
-  font: 11.5px/1 var(--font-mono);
-  color: var(--on-surface-variant);
-}
-.lamp::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--outline); transition: background-color var(--dur-short) var(--ease-standard); }
-.lamp.on { color: var(--on-surface); }
-.lamp.on::before { background: var(--ok); }
-.lamp.pc.on::before { background: var(--primary); }
-.lamp.unbound { border-color: var(--outline); border-style: dashed; background: transparent; opacity: 0.55; }
-.lamp-sep { color: var(--on-surface-disabled); font-size: 12px; }
-
 .curve-box { flex: 1; min-height: 0; overflow: hidden; }
 .curve-box svg { display: block; font-family: inherit; }
 

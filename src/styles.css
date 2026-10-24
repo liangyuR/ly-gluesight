@@ -241,3 +241,29 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary); }
 @media (prefers-reduced-motion: reduce) {
   .selection-track-indicator { transition: none; }
 }
+
+/* 握手信号灯：在线检测诊断抽屉与 PLC 通讯页共用；圆点表达 0 / 1，亮灯颜色按方向区分 */
+.lamps { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.lamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: var(--r-full);
+  border: 1px solid transparent;
+  background: var(--surface-high);
+  font: var(--text-label);
+  line-height: 1.2;
+  color: var(--on-surface-variant);
+}
+.lamp.mono { font-family: var(--font-mono); }
+.lamp::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--outline); transition: background-color var(--dur-short) var(--ease-standard); }
+.lamp.on { color: var(--on-surface); }
+.lamp.on::before { background: var(--ok); }
+.lamp.pc.on::before { background: var(--primary); }
+.lamp.fault { color: var(--fault); }
+.lamp.fault::before { background: var(--fault); }
+.lamp.unbound { border-color: var(--outline); border-style: dashed; background: transparent; opacity: 0.55; }
+.lamp:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.lamp-extra { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--on-surface-variant); }
+.lamp-sep { color: var(--on-surface-disabled); font-size: 12px; }
