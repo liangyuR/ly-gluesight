@@ -1,0 +1,37 @@
+.project-switcher { flex-shrink: 0; padding: 0 12px 4px; }
+.sidebar.collapsed .project-switcher { display: flex; justify-content: center; padding: 0 8px 4px; }
+.project-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 48px;
+  padding: 6px 10px 6px 14px;
+  border: 0;
+  border-radius: var(--r-lg);
+  background: var(--surface-mid);
+  color: var(--on-surface);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  transition: background-color var(--dur-short) var(--ease-standard);
+}
+.project-card:hover, .project-card[data-state="open"] { background: var(--surface-high); }
+.project-card:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.project-card > svg { flex-shrink: 0; color: var(--on-surface-variant); }
+.project-card-text { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; transition: opacity var(--dur-short) var(--ease-standard); }
+.project-card-text > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-card-text strong { font-size: 13px; }
+.project-card-text span { font-size: 11px; color: var(--on-surface-variant); }
+.sidebar.collapsed .project-card { width: 44px; min-height: 44px; padding: 0; justify-content: center; }
+.sidebar.switching .project-card-text, .sidebar.switching .project-card-chevron { opacity: 0; }
+
+.pj-name { display: flex; flex-direction: column; gap: 2px; min-width: 120px; }
+.pj-name-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.pj-name small { overflow-wrap: anywhere; }
+.pj-usage-error { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; max-width: 320px; overflow: hidden; white-space: normal; text-align: left; color: var(--ng); }
+.pj-records { display: flex; flex-direction: column; white-space: nowrap; }
+.pj-records small { font-size: 11px; }
+.pj-actions { display: flex; align-items: center; gap: 2px; }
+.pj-delete-list { margin-top: 6px; grid-template-columns: 72px 1fr; gap: 4px 12px; }

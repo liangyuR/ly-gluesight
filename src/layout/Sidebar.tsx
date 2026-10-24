@@ -2,10 +2,11 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "re
 import { Link, useLocation } from "react-router-dom";
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { IconButton } from "qing-steel";
-import { isNavGroup, matchRoute, navEntries, navItems, settingsItem } from "./nav";
+import { isNavGroup, matchRoute, navEntries, navItems, projectsItem, settingsItem } from "./nav";
 import { getEngineStatus, type EngineStatus } from "../lib/api";
 import { linkStateLabels, usePlcStatus } from "../features/plc";
 import { devLyflowHint } from "../features/cycle/readiness";
+import ProjectSwitcher from "../features/project/ProjectSwitcher";
 
 function token(name:string){
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -29,7 +30,7 @@ export default function Sidebar({main}:{main?:RefObject<HTMLElement|null>}){
   const timers=useRef<number[]>([]);
   const plc=usePlcStatus();
   const plcDot={connected:"ok",connecting:"warn",error:"err",disconnected:"off"}[plc?.state??"disconnected"];
-  const active=matchRoute([...navItems,settingsItem],pathname)?.path;
+  const active=matchRoute([...navItems,projectsItem,settingsItem],pathname)?.path;
   useEffect(()=>{
     let alive=true,serial=0;
     const refresh=()=>{const request=++serial;return getEngineStatus().then(status=>{if(alive&&request===serial)setEngine(status);}).catch(()=>{if(alive&&request===serial)setEngine(null);});};
@@ -67,7 +68,8 @@ export default function Sidebar({main}:{main?:RefObject<HTMLElement|null>}){
   const plcText="PLC · "+linkStateLabels[plc?.state??"disconnected"];
   const engineText=engine?engine.backend+" · "+(engine.ready?"就绪":"未就绪"):"后端未连接";
   return <aside className={"sidebar"+(collapsed?" collapsed":"")+(switching?" switching":"")}><span className="sidebar-surface" aria-hidden="true"><i/></span><div className="sidebar-brand"><img src="/app-icon.png" alt="" className="brand-logo"/>{!collapsed&&<div className="brand-text"><strong>GlueSight</strong><span>胶路智检</span></div>}</div>
+    <ProjectSwitcher collapsed={collapsed}/>
     <nav ref={navRef} className={"sidebar-nav"+(indicator?" has-indicator":"")} aria-label="操作导航">{indicator&&<span aria-hidden className={"nav-indicator"+(indicator.instant?" instant":"")} style={{transform:`translateY(${indicator.y}px)`}}/>}{navEntries.map(entry=>isNavGroup(entry)?<div className="nav-group" key={entry.label} role="group" aria-label={entry.label}>{collapsed?<hr className="nav-group-divider"/>:<div className="nav-group-label">{entry.label}</div>}{entry.children.map(item)}</div>:item(entry))}</nav>
-    <div className="sidebar-footer">{item(settingsItem)}<div className="status-list"><Link to="/plc" className="engine-status" aria-label={plcText} title={plc?.message??"PLC 未连接"}><span className={"dot "+plcDot}/>{!collapsed&&<span className="status-text">{plcText}</span>}</Link><Link to={settingsItem.path} className="engine-status" aria-label={engineText} title={(engine?.message??"未连接后端")+(import.meta.env.DEV&&engine&&!engine.ready?"；"+devLyflowHint:"")}><span className={"dot "+(engine?.ready?"ok":"warn")}/>{!collapsed&&<span className="status-text">{engineText}</span>}</Link></div><div className="sidebar-actions"><IconButton onClick={toggle} aria-expanded={!collapsed} aria-label={collapsed?"展开侧边栏":"折叠侧边栏"} title={collapsed?"展开侧边栏":"折叠侧边栏"}>{collapsed?<PanelLeftOpen size={18}/>:<PanelLeftClose size={18}/>}</IconButton></div></div>
+    <div className="sidebar-footer">{item(projectsItem)}{item(settingsItem)}<div className="status-list"><Link to="/plc" className="engine-status" aria-label={plcText} title={plc?.message??"PLC 未连接"}><span className={"dot "+plcDot}/>{!collapsed&&<span className="status-text">{plcText}</span>}</Link><Link to={settingsItem.path} className="engine-status" aria-label={engineText} title={(engine?.message??"未连接后端")+(import.meta.env.DEV&&engine&&!engine.ready?"；"+devLyflowHint:"")}><span className={"dot "+(engine?.ready?"ok":"warn")}/>{!collapsed&&<span className="status-text">{engineText}</span>}</Link></div><div className="sidebar-actions"><IconButton onClick={toggle} aria-expanded={!collapsed} aria-label={collapsed?"展开侧边栏":"折叠侧边栏"} title={collapsed?"展开侧边栏":"折叠侧边栏"}>{collapsed?<PanelLeftOpen size={18}/>:<PanelLeftClose size={18}/>}</IconButton></div></div>
   </aside>;
 }

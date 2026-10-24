@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { BookOpen, Cable, Camera, Crosshair, FileClock, FlaskConical, History, LayoutDashboard, ScanEye, ScrollText, Settings, type LucideIcon } from "lucide-react";
+import { BookOpen, Cable, Camera, Crosshair, FileClock, FlaskConical, FolderKanban, History, LayoutDashboard, ScanEye, ScrollText, Settings, type LucideIcon } from "lucide-react";
 import InspectPage from "../pages/InspectPage";
 import CameraPage from "../pages/CameraPage";
 import FlyshotCalibrationPage from "../pages/FlyshotCalibrationPage";
@@ -8,6 +8,7 @@ import HistoryPage from "../pages/HistoryPage";
 import SettingsPage from "../pages/SettingsPage";
 import OperationGuidePage from "../pages/OperationGuidePage";
 import OfflinePage from "../pages/OfflinePage";
+import ProjectsPage from "../pages/ProjectsPage";
 import LibraryPage from "../features/workspace/LibraryPage";
 import ProgressPage from "../features/workspace/ProgressPage";
 import CapturePage from "../features/workspace/CapturePage";
@@ -41,6 +42,8 @@ export function isNavGroup(entry: NavEntry): entry is NavGroup {
 }
 
 const recipe: NavItem = { path:"/recipe",label:"配方",icon:BookOpen,element:LibraryPage };
+
+export const projectsItem: NavItem = { path:"/projects",label:"项目",icon:FolderKanban,element:ProjectsPage };
 
 export const settingsItem: NavItem = { path:"/settings",label:"系统设置",icon:Settings,element:SettingsPage };
 
@@ -78,7 +81,7 @@ const recipeSteps: PageRoute[] = [
   { path:"/recipe/validation",label:"验证与发布",element:ValidationPage },
 ].map(step => ({ ...step, label:`${recipe.label} · ${step.label}` }));
 
-export const pageRoutes: PageRoute[] = [...navItems, ...recipeSteps, settingsItem];
+export const pageRoutes: PageRoute[] = [...navItems, ...recipeSteps, projectsItem, settingsItem];
 
 export function matchRoute<T extends PageRoute>(routes: T[], pathname: string): T | undefined {
   return routes.filter(route => pathname === route.path || pathname.startsWith(route.path + "/")).sort((a, b) => b.path.length - a.path.length)[0];
