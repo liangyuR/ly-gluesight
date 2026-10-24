@@ -196,6 +196,13 @@
 4. 握手审计当前文件按时间段筛选后写出，不再整份拷贝。
 5. 诊断导出对话框的说明文案同步更新。
 
+实施说明（P4 已完成）：
+
+- `manifest.json` 的 `schema` 升为 2；`configSummary` 与 `app.config` 共用 `commands::config_summary`；`files` 覆盖除 `manifest.json` 本身外的全部条目（含 `README.md`），按写入顺序排列。
+- `logs/plc.jsonl` 按 `(ts, id)` 升序；超过 20 万条时仍保留最新的部分。`t` 位于每行首个字段，其余字段与 PLC 日志库一致。
+- 握手审计当前文件按每行 `ts` 筛选 `[from, to]`；无法解析 `ts` 的行不打包并记入 `notes`；时间段内无行时不写该文件。已滚动分段仍按滚动时刻整段选取。
+- README 模板在 `diagnostics.rs` 的 `README` 常量中，schema 版本取自 `applog::SCHEMA`。
+
 ## 9. 实施分期
 
 | 阶段 | 内容 | 依赖 |

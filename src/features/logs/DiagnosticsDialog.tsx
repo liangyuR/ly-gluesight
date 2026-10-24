@@ -38,7 +38,7 @@ export default function DiagnosticsDialog({ from, to, historyIds, title = "导�
   };
   const close = () => { alive.current = false; onClose(); };
   return <Dialog open onOpenChange={open => { if (!open) close(); }} title={title} className="diag-dialog" closeDisabled={busy}
-    description={`诊断包包含时间段内的运行日志、PLC 日志、配置与状态文件、检测记录（CSV 与完整明细）、所用配方快照${named ? "，以及所选记录的原图与对照结果" : "，可选附带原图与对照结果"}。导出到资料目录的 exports/。`}
+    description={`诊断包包含时间段内的运行日志、PLC 日志、握手审计、配置与状态文件、检测记录（CSV 与完整明细）、所用配方快照${named ? "，以及所选记录的原图与对照结果" : "，可选附带原图与对照结果"}。包内 README.md 说明包结构、时间口径（ts 为毫秒 Unix 时间戳，t 为带时区的本地时间）与推荐分析顺序，manifest.json 记录构建版本、配置摘要与文件校验值。导出到资料目录的 exports/。`}
     footer={<>
       <Button disabled={busy} onClick={close}>{result ? "完成" : "取消"}</Button>
       <Button variant="filled" loading={busy} onClick={() => void run()}>{busy ? "正在打包…" : "导出"}</Button>

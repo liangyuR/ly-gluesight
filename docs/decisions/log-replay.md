@@ -47,7 +47,7 @@
 - 可选项：A 导出目录；B tar；C ZIP（引入 zip crate）；D ZIP（自写最小写入器）。
 - 采用：D。Windows 资源管理器直接打开，不新增依赖（复用已锁定的 `flate2` 与 `crc32fast`）。只写普通 ZIP（无 ZIP64），因此限制：时间范围 ≤ 31 天、记录 ≤ 5000 件、附原图 ≤ 200 件且原图总量 ≤ 2 GB、PLC 日志 ≤ 20 万条；超限部分不打包并写入 `manifest.json` 的 notes。
 - 哈希规则：ZIP 条目的 CRC32 是格式规定的传输校验，由解压工具使用；软件不用它做任何业务匹配、校验或身份关联，不违反“禁止哈希匹配”。
-- 内容：`manifest.json`、`logs/gluesight-*.jsonl`（时间段内）、`logs/plc.jsonl`、`config/`、`state/`（单文件 ≤ 8 MB）、`records/parts.csv` 与 `records/parts.jsonl`（完整明细）、`recipes/<revisionId>.json`（涉及的配方快照）、`records/<记录号>_<cycleId>/`（原图、`part.json`、对照结果）。不含 WebView 资料与样本原件；候选调试件的原图在受管样本中，不重复打包。
+- 内容：`manifest.json`（导出参数、构建信息 `build`、`utcOffset`、`logSchema`、`configSummary`、`notes`，以及除自身外每个文件的 path、bytes、sha256）、`README.md`（包结构、时间口径、事件编码表与推荐分析顺序）、`logs/gluesight-*.jsonl`（时间段内）、`logs/plc.jsonl`（时间段内，时间正序，每行带本地时间 `t`）、`config/`、`state/`（单文件 ≤ 8 MB；握手审计当前文件只写时间段内的行，已滚动分段取与时间段有交集的）、`records/parts.csv` 与 `records/parts.jsonl`（完整明细）、`recipes/<revisionId>.json`（涉及的配方快照）、`records/<记录号>_<cycleId>/`（原图、`part.json`、对照结果）。不含 WebView 资料与样本原件；候选调试件的原图在受管样本中，不重复打包。
 - 原图默认只附异常件（NG / ERR / 局部超差），新的优先；从历史详情导出“本件诊断包”时附该件全部原图。
 - 回退：删除 `diagnostics_export` 命令与界面入口，不影响其他功能。
 
