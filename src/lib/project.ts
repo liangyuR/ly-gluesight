@@ -45,3 +45,35 @@ export const projectApi = {
   remove: (id: string) => invoke<void>("project_delete", { id }),
   switchTo: (id: string) => invoke<void>("project_switch", { id }),
 };
+
+export interface ProjectExported {
+  path: string;
+  bytes: number;
+  files: number;
+  includesRecords: boolean;
+  notes: string[];
+}
+
+export interface ProjectImportPreview {
+  path: string;
+  sourceId: string;
+  name: string;
+  description: string;
+  exportedAt: number;
+  appVersion: string;
+  includesRecords: boolean;
+  files: number;
+  bytes: number;
+  notes: string[];
+}
+
+export interface ProjectImported {
+  meta: ProjectMeta;
+  notes: string[];
+}
+
+export const projectTransferApi = {
+  exportProject: (id: string, includeRecords: boolean) => invoke<ProjectExported | null>("project_export", { id, includeRecords }),
+  pickImport: () => invoke<ProjectImportPreview | null>("project_import_pick"),
+  importProject: (path: string, id: string, name: string) => invoke<ProjectImported>("project_import", { path, id, name }),
+};
