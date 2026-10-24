@@ -55,7 +55,7 @@ export function ExportProjectDialog({ project, usage, onClose }: { project: Proj
       <Checkbox label="包含检测记录与历史原图" disabled={working} checked={includeRecords} onCheckedChange={setIncludeRecords} />
       {includeRecords
         ? <Alert tone="warn" title="导出包可能很大">检测记录与历史原图可能有几十 GB，导出需要较长时间，请确认目标磁盘空间充足。</Alert>
-        : <Text muted>导出整个项目的配置、配方与候选；默认不含检测记录与历史原图。</Text>}
+        : <Text muted>导出项目的相机组与 PLC 配置、标定、生产配方与发布包、候选与采集轮次；默认不含检测记录与历史原图。</Text>}
       {error && <Alert tone="ng" title="导出未完成">{error}</Alert>}
       {working && <Alert tone="info" role="status">正在导出，请勿关闭软件。</Alert>}
     </Stack>
