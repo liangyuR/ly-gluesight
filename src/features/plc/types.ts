@@ -113,6 +113,11 @@ export interface LogQuery {
   offset?: number;
 }
 
+export interface LogLabels {
+  levels: Record<LogLevel, string>;
+  categories: Record<LogCategory, string>;
+}
+
 export interface LogPage {
   total: number;
   items: LogEntry[];

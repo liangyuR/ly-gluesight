@@ -199,11 +199,16 @@ export interface TeachingRegisters {
   reserved: number;
 }
 
+export interface TeachingViolation {
+  field: keyof TeachingRegisters;
+  detail: string;
+}
+
 export interface CapturePlcStatus {
   available: boolean;
   busy: boolean;
   roundId: number | null;
   phase: "unavailable" | "resetRequired" | "idle" | "requested" | "accepted" | "draining" | "reporting" | "cancelling" | "releasing" | "fault";
   message: string;
-  monitor?: { pc: TeachingRegisters | null; plc: TeachingRegisters | null; fresh: boolean };
+  monitor?: { pc: TeachingRegisters | null; plc: TeachingRegisters | null; fresh: boolean; violation?: TeachingViolation | null };
 }

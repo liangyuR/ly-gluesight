@@ -7,6 +7,7 @@ import type {
   ConnectionConfig,
   DataType,
   HistorySample,
+  LogLabels,
   LogPage,
   LogQuery,
   PlcConfig,
@@ -62,6 +63,9 @@ export const plcApi = {
   getValues: () => call<Record<string, PointValue>>("plc_get_values", undefined, () => ({})),
   writePoint: (id: string, value: unknown) => call<void>("plc_write_point", { id, value }, () => undefined),
   queryLogs: (query: LogQuery) => call<LogPage>("plc_query_logs", { query }, () => ({ total: 0, items: [] })),
+  exportLogs: (query: LogQuery, labels: LogLabels) =>
+    call<string>("plc_export_logs", { query, labels }, () => { throw new Error("导出 PLC 日志需要桌面后端"); }),
+  reveal: (path: string) => call<void>("reveal_path", { path }, () => undefined),
   pointHistory: (pointId: string, start: number, end: number) =>
     call<HistorySample[]>("plc_point_history", { pointId, start, end }, () => []),
   checkAddress: (connection: ConnectionConfig, address: string, dataType: DataType) =>

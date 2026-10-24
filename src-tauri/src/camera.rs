@@ -1462,7 +1462,7 @@ impl CameraRig {
 
     pub fn capture_views(&self, cam: u8, payload: Option<TriggerPayload>) -> Result<Vec<Arc<FrameImage>>, String> {
         let cycle = self.rig.app.state::<CycleHost>();
-        let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试取图")?;
+        let _gate = tauri::async_runtime::block_on(camera_gate(&cycle))?;
         check_idle(&cycle)?;
         let slot = self.slot(cam as usize).ok_or("相机不存在")?;
         let config = slot.config();
@@ -1544,8 +1544,16 @@ fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>, auto_connect: bool) {
                 next_retry = Instant::now() + Duration::from_secs(2);
                 let attempt = {
                     let cycle = app.state::<CycleHost>();
-                    let attempt = match cycle.plc_gate.try_lock() {
-                        Ok(_gate) => {
+                    // 检测途中不排队等闸门，免得重开相机拖住在途工件的握手
+                    let gate = if cycle.in_flight() {
+                        cycle.config_gate.try_lock().ok()
+                    } else {
+                        tokio::time::timeout(Duration::from_secs(1), cycle.config_gate.lock())
+                            .await
+                            .ok()
+                    };
+                    let attempt = match gate {
+                        Some(_gate) => {
                             let config = s.config();
                             let lost = s.shared.disconnected.load(Ordering::SeqCst);
                             let opened = s.device.lock().unwrap().is_some();
@@ -1555,7 +1563,7 @@ fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>, auto_connect: bool) {
                                 Some((config, lost, tauri::async_runtime::spawn_blocking(move || s2.open()).await))
                             } else { None }
                         }
-                        Err(_) => None,
+                        None => None,
                     };
                     attempt
                 };
@@ -1613,7 +1621,7 @@ pub fn camera_bandwidth(cycle: State<'_, CycleHost>, hz: f64) -> Result<Bandwidt
 pub async fn camera_save_config(app: AppHandle, cam: usize, config: CameraConfig) -> Result<Vec<String>, String> {
     let cycle = app.state::<CycleHost>();
     check_user_editable(&app, Some(&config))?;
-    let _gate = cycle.plc_gate.lock().await;
+    let _gate = cycle.config_gate.lock().await;
     check_user_editable(&app, None)?;
     config.validate()?;
     config.require_bound()?;
@@ -1780,11 +1788,11 @@ mod access_tests {
 }
 
 #[tauri::command]
-pub fn camera_add(app: AppHandle, mut config: CameraConfig) -> Result<usize, String> {
+pub async fn camera_add(app: AppHandle, mut config: CameraConfig) -> Result<usize, String> {
     config.validate()?;
     check_user_editable(&app, Some(&config))?;
     let cycle = app.state::<CycleHost>();
-    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试相机操作")?;
+    let _gate = camera_gate(&cycle).await?;
     check_user_editable(&app, None)?;
     check_idle(&cycle)?;
     let mut configs = cycle.camera.configs();
@@ -1804,10 +1812,10 @@ pub fn camera_add(app: AppHandle, mut config: CameraConfig) -> Result<usize, Str
 }
 
 #[tauri::command]
-pub fn camera_remove(app: AppHandle, cam: usize) -> Result<(), String> {
+pub async fn camera_remove(app: AppHandle, cam: usize) -> Result<(), String> {
     check_user_editable(&app, None)?;
     let cycle = app.state::<CycleHost>();
-    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试相机操作")?;
+    let _gate = camera_gate(&cycle).await?;
     check_user_editable(&app, None)?;
     check_idle(&cycle)?;
     let mut configs = cycle.camera.configs();
@@ -1854,9 +1862,16 @@ pub fn camera_preview(cycle: State<'_, CycleHost>, cam: usize, view: Option<u8>)
     tauri::ipc::Response::new(out)
 }
 
+/// 相机操作与布防、配置修改互斥：排队等配置门，3 秒内拿不到才放弃。
+async fn camera_gate(cycle: &CycleHost) -> Result<tokio::sync::MutexGuard<'_, ()>, String> {
+    tokio::time::timeout(Duration::from_secs(3), cycle.config_gate.lock())
+        .await
+        .map_err(|_| "布防或其他配置操作 3 秒内仍未结束，请稍后重试相机操作".into())
+}
+
 #[tauri::command]
-pub fn camera_soft_trigger(cycle: State<'_, CycleHost>, cam: usize) -> Result<(), String> {
-    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试相机操作")?;
+pub async fn camera_soft_trigger(cycle: State<'_, CycleHost>, cam: usize) -> Result<(), String> {
+    let _gate = camera_gate(&cycle).await?;
     check_idle(&cycle)?;
     let slot = cycle.camera.slot(cam).ok_or("相机不存在")?;
     slot.soft_trigger(None).map(|_| ())
@@ -1867,7 +1882,7 @@ pub fn camera_soft_trigger(cycle: State<'_, CycleHost>, cam: usize) -> Result<()
 pub async fn camera_set_imaging(app: AppHandle, cam: usize, id: String, imaging: CameraImaging) -> Result<(), String> {
     check_user_editable(&app, None)?;
     let cycle = app.state::<CycleHost>();
-    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理 PLC 事务，请稍后重试相机操作")?;
+    let _gate = camera_gate(&cycle).await?;
     check_idle(&cycle)?;
     let slot = rig(&app).slot(cam).ok_or("相机不存在")?;
     check_camera_target(&slot.config().id, &id)?;
@@ -1879,10 +1894,7 @@ pub async fn camera_set_imaging(app: AppHandle, cam: usize, id: String, imaging:
 pub async fn camera_release(app: AppHandle, cam: usize) -> Result<(), String> {
     check_user_editable(&app, None)?;
     let cycle = app.state::<CycleHost>();
-    let _gate = cycle
-        .plc_gate
-        .try_lock()
-        .map_err(|_| "正在处理 PLC 事务，请稍后重试相机操作")?;
+    let _gate = camera_gate(&cycle).await?;
     check_access(&cycle, CameraAccess::Maintenance)?;
     let slot = rig(&app).slot(cam).ok_or("相机不存在")?;
     let config = slot.config();
@@ -1902,10 +1914,7 @@ pub async fn camera_release(app: AppHandle, cam: usize) -> Result<(), String> {
 pub async fn camera_reconnect(app: AppHandle, cam: usize) -> Result<String, String> {
     check_user_editable(&app, None)?;
     let cycle = app.state::<CycleHost>();
-    let _gate = cycle
-        .plc_gate
-        .try_lock()
-        .map_err(|_| "正在处理 PLC 事务，请稍后重试相机操作")?;
+    let _gate = camera_gate(&cycle).await?;
     check_access(&cycle, CameraAccess::Maintenance)?;
     let slot = rig(&app).slot(cam).ok_or("相机不存在")?;
     slot.released.store(false, Ordering::SeqCst);
