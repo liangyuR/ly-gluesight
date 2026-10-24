@@ -14,13 +14,14 @@ import type {FrozenImage} from "../src/features/workspace/types";
 import {snapshot,siteStatus} from "./fixtures";
 const desktop=vi.hoisted(()=>({on:false}));
 vi.mock("@tauri-apps/api/core",()=>({invoke:vi.fn(),isTauri:()=>desktop.on}));
-vi.mock("../src/features/camera/api",async original=>({...await original<object>(),cameraApi:{rigConfig:vi.fn()},useRigStatus:vi.fn()}));
+vi.mock("../src/features/camera/api",async original=>({...await original<object>(),cameraApi:{rigConfig:vi.fn(),calibInfo:vi.fn()},useRigStatus:vi.fn()}));
 vi.mock("../src/features/cycle/api",async original=>({...await original<object>(),useCycle:vi.fn(),useSiteStatus:vi.fn()}));
 const status=(frames:number):CameraStatus=>({cam:0,id:"CAM-1",name:"相机 1",source:"mvs",ready:true,released:false,message:"",device:null,sdkVersion:null,frames,fps:0,configuredFrameRate:10, maxFps:5.6,lostPackets:0,droppedFrames:0,warnings:[]});
 beforeEach(()=>{
  localStorage.clear();
  desktop.on=false;
  vi.mocked(cameraApi.rigConfig).mockResolvedValue([{...defaultCameraConfig,id:"CAM-1",name:"相机 1",serial:"SN1"}]);
+ vi.mocked(cameraApi.calibInfo).mockResolvedValue(null);
  vi.mocked(useRigStatus).mockReturnValue({statuses:[status(1)],lastFrame:{}} as ReturnType<typeof useRigStatus>);
  vi.mocked(useCycle).mockReturnValue({snapshot:snapshot(),logs:[],measured:[]});
  vi.mocked(useSiteStatus).mockReturnValue(siteStatus());
@@ -53,14 +54,17 @@ it("手填像素当量后配方曝光更新 → 保留手填当量并重新核�
  expect(screen.getByRole("status")).toHaveTextContent("按当前数值满足飞拍条件");
 });
 
-it("单视角相机完成标定 → 按冻结图像更新像素当量与飞拍视野",async()=>{
+it("单视角相机完成标定 → 按冻结图像更新像素当量与飞拍视野，相机条改为已标定并计入标定数",async()=>{
  desktop.on=true;
  vi.mocked(cameraApi.rigConfig).mockResolvedValue([{...defaultCameraConfig,id:"CAM-1",name:"相机 1",serial:"SN1"}]);
- vi.mocked(invoke).mockImplementation(async command=>command==="vision_calibrate"?{mmPerPx:0.05,rms:0.02,pattern:[11,8],square:5,ts:1}:null);
+ let calibrated=false;
+ vi.mocked(invoke).mockImplementation(async command=>{if(command!=="vision_calibrate")return null;calibrated=true;return {mmPerPx:0.05,rms:0.02,pattern:[11,8],square:5,ts:1};});
+ vi.mocked(cameraApi.calibInfo).mockImplementation(async()=>calibrated?{mmPerPx:0.05}:null);
  const capture=vi.spyOn(workspaceApi,"stationCapture").mockResolvedValue({id:"calibration-image",source:"live",capturedAt:1,size:[1280,1024],camera:"CAM-1",view:1} as FrozenImage);
  vi.spyOn(workspaceApi,"stationImage").mockResolvedValue({url:"data:,",width:1280,height:1024});
  render(<SnackbarProvider><MemoryRouter><FlyshotCalibrationPage/></MemoryRouter></SnackbarProvider>);
  await screen.findByRole("heading",{name:"标定板参数"});
+ expect(await screen.findByText("未标定",{selector:".cam-calib"})).toBeVisible();
  await userEvent.click(screen.getByRole("button",{name:"拍照"}));
  const calibrate=await screen.findByRole("button",{name:"标定"});
  await vi.waitFor(()=>expect(calibrate).toBeEnabled());
@@ -68,6 +72,8 @@ it("单视角相机完成标定 → 按冻结图像更新像素当量与飞拍�
  await vi.waitFor(()=>expect(screen.getByRole("spinbutton",{name:/^像素当量/})).toHaveValue(0.05));
  expect(screen.getByRole("spinbutton",{name:/视野沿运动方向/})).toHaveValue(64);
  expect(screen.getByText(/^RMS 0.0200 mm · 0.0500 mm\/px/)).toBeVisible();
+ expect(await screen.findByText("已标定 · 0.0500 mm/px")).toBeVisible();
+ expect(screen.getByText("标定 1 / 1")).toBeVisible();
  expect(capture).toHaveBeenCalledWith(0,1);
  expect(invoke).toHaveBeenCalledWith("vision_calibrate",expect.objectContaining({cam:0,view:1,imageId:"calibration-image"}));
 });
