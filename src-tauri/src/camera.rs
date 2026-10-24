@@ -1619,6 +1619,21 @@ pub fn camera_bandwidth(cycle: State<'_, CycleHost>, hz: f64) -> Result<Bandwidt
 /// 保存并应用一台相机的配置。返回相机未接受的参数。
 #[tauri::command]
 pub async fn camera_save_config(app: AppHandle, cam: usize, config: CameraConfig) -> Result<Vec<String>, String> {
+    let result = camera_save_config_inner(app.clone(), cam, config).await;
+    crate::cycle::log_op(
+        &app,
+        &crate::applog::codes::OP_CAMERA,
+        serde_json::json!({"action": "save_config", "cam": cam}),
+        &result,
+    );
+    result
+}
+
+async fn camera_save_config_inner(
+    app: AppHandle,
+    cam: usize,
+    config: CameraConfig,
+) -> Result<Vec<String>, String> {
     let cycle = app.state::<CycleHost>();
     check_user_editable(&app, Some(&config))?;
     let _gate = cycle.config_gate.lock().await;
@@ -1789,7 +1804,18 @@ mod access_tests {
 }
 
 #[tauri::command]
-pub async fn camera_add(app: AppHandle, mut config: CameraConfig) -> Result<usize, String> {
+pub async fn camera_add(app: AppHandle, config: CameraConfig) -> Result<usize, String> {
+    let result = camera_add_inner(app.clone(), config).await;
+    crate::cycle::log_op(
+        &app,
+        &crate::applog::codes::OP_CAMERA,
+        serde_json::json!({"action": "add", "cam": result.as_ref().ok()}),
+        &result,
+    );
+    result
+}
+
+async fn camera_add_inner(app: AppHandle, mut config: CameraConfig) -> Result<usize, String> {
     config.validate()?;
     check_user_editable(&app, Some(&config))?;
     let cycle = app.state::<CycleHost>();
@@ -1814,6 +1840,17 @@ pub async fn camera_add(app: AppHandle, mut config: CameraConfig) -> Result<usiz
 
 #[tauri::command]
 pub async fn camera_remove(app: AppHandle, cam: usize) -> Result<(), String> {
+    let result = camera_remove_inner(app.clone(), cam).await;
+    crate::cycle::log_op(
+        &app,
+        &crate::applog::codes::OP_CAMERA,
+        serde_json::json!({"action": "remove", "cam": cam}),
+        &result,
+    );
+    result
+}
+
+async fn camera_remove_inner(app: AppHandle, cam: usize) -> Result<(), String> {
     check_user_editable(&app, None)?;
     let cycle = app.state::<CycleHost>();
     let _gate = camera_gate(&cycle).await?;
@@ -1871,7 +1908,18 @@ async fn camera_gate(cycle: &CycleHost) -> Result<tokio::sync::MutexGuard<'_, ()
 }
 
 #[tauri::command]
-pub async fn camera_soft_trigger(cycle: State<'_, CycleHost>, cam: usize) -> Result<(), String> {
+pub async fn camera_soft_trigger(app: AppHandle, cam: usize) -> Result<(), String> {
+    let result = camera_soft_trigger_inner(app.state::<CycleHost>(), cam).await;
+    crate::cycle::log_op(
+        &app,
+        &crate::applog::codes::OP_CAMERA,
+        serde_json::json!({"action": "soft_trigger", "cam": cam}),
+        &result,
+    );
+    result
+}
+
+async fn camera_soft_trigger_inner(cycle: State<'_, CycleHost>, cam: usize) -> Result<(), String> {
     let _gate = camera_gate(&cycle).await?;
     check_idle(&cycle)?;
     let slot = cycle.camera.slot(cam).ok_or("相机不存在")?;
@@ -1881,6 +1929,22 @@ pub async fn camera_soft_trigger(cycle: State<'_, CycleHost>, cam: usize) -> Res
 /// 调试用：把曝光与增益临时写进相机，不写配方；示教采集和生产布防前仍按配方重新下发。
 #[tauri::command]
 pub async fn camera_set_imaging(app: AppHandle, cam: usize, id: String, imaging: CameraImaging) -> Result<(), String> {
+    let result = camera_set_imaging_inner(app.clone(), cam, id, imaging).await;
+    crate::cycle::log_op(
+        &app,
+        &crate::applog::codes::OP_CAMERA,
+        serde_json::json!({"action": "set_imaging", "cam": cam}),
+        &result,
+    );
+    result
+}
+
+async fn camera_set_imaging_inner(
+    app: AppHandle,
+    cam: usize,
+    id: String,
+    imaging: CameraImaging,
+) -> Result<(), String> {
     check_user_editable(&app, None)?;
     let cycle = app.state::<CycleHost>();
     let _gate = camera_gate(&cycle).await?;
@@ -1893,6 +1957,17 @@ pub async fn camera_set_imaging(app: AppHandle, cam: usize, id: String, imaging:
 /// 把海康相机释放给 MVS 客户端（调焦、光圈）：关闭设备，后台不再自动重连，直到重新连接。
 #[tauri::command]
 pub async fn camera_release(app: AppHandle, cam: usize) -> Result<(), String> {
+    let result = camera_release_inner(app.clone(), cam).await;
+    crate::cycle::log_op(
+        &app,
+        &crate::applog::codes::OP_CAMERA,
+        serde_json::json!({"action": "release", "cam": cam}),
+        &result,
+    );
+    result
+}
+
+async fn camera_release_inner(app: AppHandle, cam: usize) -> Result<(), String> {
     check_user_editable(&app, None)?;
     let cycle = app.state::<CycleHost>();
     let _gate = camera_gate(&cycle).await?;
@@ -1913,6 +1988,17 @@ pub async fn camera_release(app: AppHandle, cam: usize) -> Result<(), String> {
 /// 收回已释放的海康相机并重新打开；MVS 客户端还占着时返回打开失败的原因，后台继续每 2 s 重试。
 #[tauri::command]
 pub async fn camera_reconnect(app: AppHandle, cam: usize) -> Result<String, String> {
+    let result = camera_reconnect_inner(app.clone(), cam).await;
+    crate::cycle::log_op(
+        &app,
+        &crate::applog::codes::OP_CAMERA,
+        serde_json::json!({"action": "reconnect", "cam": cam}),
+        &result,
+    );
+    result
+}
+
+async fn camera_reconnect_inner(app: AppHandle, cam: usize) -> Result<String, String> {
     check_user_editable(&app, None)?;
     let cycle = app.state::<CycleHost>();
     let _gate = camera_gate(&cycle).await?;

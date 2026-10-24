@@ -740,8 +740,27 @@ pub fn trace(app: &AppHandle, ev: impl Into<String>, msg: impl Into<String>, fie
     publish_log(app, "info", applog::Level::Debug, ev.into(), msg.into(), fields);
 }
 
+/// 按事件编码记一条（applog::codes），同时进界面事件流。
+pub fn log_event(
+    app: &AppHandle,
+    event: &applog::codes::Event,
+    msg: impl Into<String>,
+    fields: Fields,
+) {
+    let tone = match event.level {
+        applog::Level::Error => "err",
+        applog::Level::Warn => "warn",
+        applog::Level::Info | applog::Level::Debug => "info",
+    };
+    publish_record(app, tone, applog::emit_event(event, &msg.into(), fields));
+}
+
 fn publish_log(app: &AppHandle, tone: &'static str, level: applog::Level, ev: String, msg: String, fields: Fields) {
-    let line = LogLine::from_record(applog::emit(level, &ev, &msg, fields), tone);
+    publish_record(app, tone, applog::emit(level, &ev, &msg, fields));
+}
+
+fn publish_record(app: &AppHandle, tone: &'static str, record: applog::Record) {
+    let line = LogLine::from_record(record, tone);
     {
         let mut s = host(app).shared.lock().unwrap();
         s.logs.push_back(line.clone());
@@ -1040,6 +1059,10 @@ struct Machine {
     part: Option<Part>,
     active_recipe: Option<Arc<Recipe>>,
     fault: Option<String>,
+    /// 当前故障的来源、进入时刻，以及同一来源同一原因被再次上报的次数（首次、最近一次时刻）
+    fault_source: Option<&'static str>,
+    fault_at: Option<i64>,
+    fault_repeat: Option<FaultRepeat>,
     done_at: Option<Instant>,
     ack_alarmed: bool,
     result: Option<ResultView>,
@@ -1109,6 +1132,9 @@ impl Machine {
             part: None,
             active_recipe: None,
             fault: Some("PLC 未连接".into()),
+            fault_source: None,
+            fault_at: None,
+            fault_repeat: None,
             done_at: None,
             ack_alarmed: false,
             result: None,
@@ -1364,12 +1390,12 @@ impl Machine {
         let settings = host(&self.app).settings();
         let mut budget = ArmBudget::with_start(started, settings.timeouts.arm());
         if let Err(error) = host(&self.app).audit.ready() {
-            self.enter_fault(format!("审计尚未就绪，拒绝布防：{error}"));
+            self.enter_fault("audit", format!("审计尚未就绪，拒绝布防：{error}"));
             return;
         }
         if crate::offline::candidate(&self.app).is_none() && crate::workspace::apply_pending(&self.app) { self.required = None; }
         if crate::workspace::activation_uncertain(&self.app) {
-            self.enter_fault("生产生效版本尚未确认，禁止启动下一件".into());
+            self.enter_fault("arm", "生产生效版本尚未确认，禁止启动下一件".into());
             return;
         }
         self.set_phase(Phase::Validate);
@@ -1583,7 +1609,7 @@ impl Machine {
         if let Err(reason) = committed {
             log(&app, "err", "布防阶段", json!({"cycleId": self.current_cycle_id, "sn": sn, "status": "fault", "trace": trace}).to_string());
             self.s7.fault(engine, reason.clone()).await;
-            return self.enter_fault(reason);
+            return self.enter_fault("arm", reason);
         }
         self.part.as_mut().unwrap().armed_at = Instant::now();
         self.set_phase(Phase::Acquire);
@@ -1871,7 +1897,9 @@ impl Machine {
                 Err(error) => {
                     let reason = format!("持久追溯故障：{error}");
                     self.s7.fault(plc(&app), reason.clone()).await;
-                    if self.phase != Phase::Fault || self.fault.as_ref() != Some(&reason) { self.enter_fault(reason); }
+                    if self.phase != Phase::Fault || self.fault.as_ref() != Some(&reason) {
+                        self.enter_fault("audit", reason);
+                    }
                     return;
                 }
             };
@@ -1905,17 +1933,22 @@ impl Machine {
                 };
                 if let Err(error) = result {
                     self.s7.fault(plc(&app), format!("PLC 确认审计持久化失败：{error}")).await;
-                    return self.enter_fault(format!("PLC 确认审计持久化失败：{error}"));
+                    return self.enter_fault("audit", format!("PLC 确认审计持久化失败：{error}"));
                 }
             }
             match event {
                 SessionEvent::Ready => {
                     self.poll_teaching(true, true).await;
                     self.ledgers.clear_floors();
-                    self.fault = None;
+                    self.clear_fault();
                     self.alarms.clear();
                     self.set_phase(Phase::Idle);
-                    log_with(&app, "ok", "S7 复位完成", "输入基线已核验，视觉就绪", Fields::stage("reset"));
+                    log_event(
+                        &app,
+                        &applog::codes::S7_RESET_DONE,
+                        "输入基线已核验，视觉就绪",
+                        Fields::stage("reset"),
+                    );
                     applog::end_cycle();
                 }
                 SessionEvent::Start(request) => {
@@ -1927,7 +1960,7 @@ impl Machine {
                             if let Err(error) = teaching.cancel(plc(&app), 1).await {
                                 self.s7.fault(plc(&app), error.clone()).await;
                                 drop(teaching);
-                                self.enter_fault(error);
+                                self.enter_fault("teach", error);
                                 return;
                             }
                             host(&app).teaching_preempted.store(true, Ordering::SeqCst);
@@ -1937,7 +1970,7 @@ impl Machine {
                             capture_host.interrupt(error.clone());
                             self.s7.fault(plc(&app), error.clone()).await;
                             drop(teaching);
-                            self.enter_fault(error);
+                            self.enter_fault("teach", error);
                             return;
                         }
                     }
@@ -1965,7 +1998,7 @@ impl Machine {
                 }
                 SessionEvent::Fault(reason) => {
                     if self.s7.capture_id().is_some() { capture_host.fail(reason.clone()); }
-                    self.enter_fault(reason);
+                    self.enter_fault("s7", reason);
                 },
                 SessionEvent::Restored(reason) => {
                     log(&app, "warn", "S7 空闲恢复", reason.clone());
@@ -1990,7 +2023,9 @@ impl Machine {
             }
             if matches!(self.s7.phase(), SessionPhase::ResetRequired | SessionPhase::Fault) {
                 let reason = self.s7.view().message.unwrap_or_else(|| "S7 需要明确复位".into());
-                if self.phase != Phase::Fault || self.fault.as_ref() != Some(&reason) { self.enter_fault(reason); }
+                if self.phase != Phase::Fault || self.fault.as_ref() != Some(&reason) {
+                    self.enter_fault("s7", reason);
+                }
             }
             if previous != self.s7.phase() || previous_reset_blocked != self.s7.view().reset_blocked_reason { self.dirty = true; }
             host(&app).store_busy(self.phase, &self.s7);
@@ -2242,7 +2277,71 @@ impl Machine {
         }
     }
 
-    fn enter_fault(&mut self, reason: String) {
+    /// 同一来源同一原因的故障在汇总前被重复上报的次数，写一条 fault.repeat。
+    fn flush_fault_repeat(&mut self) {
+        let Some(FaultRepeat {
+            source,
+            reason,
+            count,
+            first,
+            last,
+        }) = self.fault_repeat.take()
+        else {
+            return;
+        };
+        let fields = Fields {
+            source: Some(source.into()),
+            ..Fields::default()
+        }
+        .with_data(json!({"count": count, "firstTs": first, "lastTs": last, "reason": reason}));
+        log_event(
+            &self.app,
+            &applog::codes::FAULT_REPEAT,
+            format!("同一故障又上报 {count} 次：{reason}"),
+            fields,
+        );
+    }
+
+    fn clear_fault(&mut self) {
+        if let Some(reason) = self.fault.clone() {
+            self.flush_fault_repeat();
+            let duration = self.fault_at.map(|at| now_ms() - at);
+            let fields = Fields {
+                source: self.fault_source.map(str::to_owned),
+                ..Fields::default()
+            }
+            .with_data(json!({"reason": reason, "durationMs": duration}));
+            log_event(
+                &self.app,
+                &applog::codes::FAULT_CLEARED,
+                format!("故障解除：{reason}"),
+                fields,
+            );
+        }
+        self.fault = None;
+        self.fault_source = None;
+        self.fault_at = None;
+    }
+
+    /// 进入故障。已因同一来源同一原因处于故障时只计数（之前每拍重复写日志、重置故障计时）。
+    fn enter_fault(&mut self, source: &'static str, reason: String) {
+        if self.phase == Phase::Fault
+            && self.fault.as_deref() == Some(reason.as_str())
+            && self.fault_source == Some(source)
+        {
+            let now = now_ms();
+            let repeat = self.fault_repeat.get_or_insert_with(|| FaultRepeat {
+                source,
+                reason,
+                count: 0,
+                first: now,
+                last: now,
+            });
+            repeat.count += 1;
+            repeat.last = now;
+            return;
+        }
+        self.flush_fault_repeat();
         self.close_routing(None);
         let production_pending = self.s7.request().is_some();
         let in_flight = production_pending
@@ -2266,16 +2365,33 @@ impl Machine {
         if production_pending && fault_fails_delivery(self.phase) && self.result.is_some() {
             self.fail_delivery(&reason);
         }
-        log_with(
+        let teach_phase = host(&self.app)
+            .teaching
+            .try_lock()
+            .ok()
+            .map(|t| t.view().phase);
+        let fields = Fields { source: Some(source.into()), ..Fields::stage("fault") }
+            .with_data(json!({"reason": reason, "s7Phase": format!("{:?}", self.s7.phase()), "teachPhase": teach_phase}));
+        log_event(
             &self.app,
-            "err",
-            "故障",
+            &applog::codes::FAULT_ENTER,
             reason.clone(),
-            Fields::stage("fault"),
+            fields,
         );
         self.fault = Some(reason);
+        self.fault_source = Some(source);
+        self.fault_at = Some(now_ms());
         self.set_phase(Phase::Fault);
     }
+}
+
+/// 同一来源同一原因的故障被再次上报：原因记在计数里，汇总时不受之后改写的故障原因影响
+struct FaultRepeat {
+    source: &'static str,
+    reason: String,
+    count: u64,
+    first: i64,
+    last: i64,
 }
 
 /// 段配方的件不经过拍照点路由：空计划的路由（没有相机，不绑任何帧）。
@@ -2390,8 +2506,41 @@ pub fn cycle_select_recipe(cycle: State<'_, CycleHost>, recipe_id: String) -> Re
 }
 
 #[tauri::command]
-pub fn cycle_reset(cycle: State<'_, CycleHost>) {
-    let _ = cycle.tx.send(Input::Reset);
+pub fn cycle_reset(app: AppHandle, cycle: State<'_, CycleHost>) {
+    let sent = cycle.tx.send(Input::Reset).map_err(|e| e.to_string());
+    log_op(
+        &app,
+        &applog::codes::OP_RESET,
+        json!({"phase": format!("{:?}", cycle.phase())}),
+        &sent,
+    );
+}
+
+/// 运行日志 op.*：操作员命令的参数摘要与结果。
+pub fn log_op<T>(
+    app: &AppHandle,
+    event: &applog::codes::Event,
+    mut data: serde_json::Value,
+    result: &Result<T, String>,
+) {
+    data["ok"] = json!(result.is_ok());
+    if let Err(error) = result {
+        data["error"] = json!(error);
+    }
+    let msg = match result {
+        Ok(_) => format!("{}：完成", event.ev),
+        Err(error) => format!("{}：失败，{error}", event.ev),
+    };
+    log_event(
+        app,
+        event,
+        msg,
+        Fields {
+            source: Some("operator".into()),
+            ..Fields::default()
+        }
+        .with_data(data),
+    );
 }
 
 /// 开工就绪报告：逐项列出 PLC 会话、相机、可开工配方、图像测量、审计录制与站点模式。

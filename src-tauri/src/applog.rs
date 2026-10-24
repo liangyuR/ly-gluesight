@@ -72,6 +72,15 @@ pub struct Fields {
     pub seq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
+    /// 示教握手编号（DB6 teachRoundId）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teach_id: Option<u16>,
+    /// 整圈采集轮次
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_round: Option<String>,
+    /// 触发来源：teach / s7 / audit / arm / device / storage / operator
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
 }
@@ -89,6 +98,13 @@ impl Fields {
     pub fn with_data(mut self, data: Value) -> Self {
         self.data = Some(data);
         self
+    }
+
+    pub fn source(source: &str) -> Self {
+        Self {
+            source: Some(source.into()),
+            ..Self::default()
+        }
     }
 
     pub fn with_stage(mut self, stage: &str) -> Self {
@@ -267,6 +283,8 @@ impl Sink {
 
 static SINK: OnceLock<Mutex<Sink>> = OnceLock::new();
 static ACTIVE: Mutex<Option<Fields>> = Mutex::new(None);
+/// 进行中的示教轮次：(握手编号, 整圈采集轮次)，期间的日志行自动带上
+static TEACH: Mutex<Option<(u16, String)>> = Mutex::new(None);
 
 pub fn dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(crate::storage::root(app).join("logs"))
@@ -332,6 +350,14 @@ pub fn begin_cycle(fields: Fields) {
     *ACTIVE.lock().unwrap_or_else(|p| p.into_inner()) = Some(fields);
 }
 
+pub fn begin_teach(teach_id: u16, capture_round: &str) {
+    *TEACH.lock().unwrap_or_else(|p| p.into_inner()) = Some((teach_id, capture_round.into()));
+}
+
+pub fn end_teach() {
+    *TEACH.lock().unwrap_or_else(|p| p.into_inner()) = None;
+}
+
 pub fn end_cycle() {
     *ACTIVE.lock().unwrap_or_else(|p| p.into_inner()) = None;
 }
@@ -350,7 +376,16 @@ pub fn emit_event(event: &Event, msg: &str, fields: Fields) -> Record {
 }
 
 fn emit_with(level: Level, code: Option<&str>, ev: &str, msg: &str, fields: Fields) -> Record {
-    let fields = correlate(ACTIVE.lock().unwrap_or_else(|p| p.into_inner()).as_ref(), fields);
+    let mut fields = correlate(
+        ACTIVE.lock().unwrap_or_else(|p| p.into_inner()).as_ref(),
+        fields,
+    );
+    if fields.teach_id.is_none() {
+        if let Some((id, round)) = TEACH.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+            fields.teach_id = Some(*id);
+            fields.capture_round.get_or_insert_with(|| round.clone());
+        }
+    }
     let record = record(ly_plc::now_ms(), level, code, ev, msg, fields);
     if let Some(sink) = SINK.get() {
         sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).write(&record);

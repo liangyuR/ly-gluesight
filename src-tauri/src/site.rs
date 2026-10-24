@@ -251,6 +251,20 @@ pub async fn site_preview_sample_set(app: AppHandle, dir: String) -> Result<Samp
 
 #[tauri::command]
 pub async fn site_enter_offline(app: AppHandle, source: OfflineSource) -> Result<SiteStatus, String> {
+    let result = site_enter_offline_inner(app.clone(), source).await;
+    crate::cycle::log_op(
+        &app,
+        &crate::applog::codes::OP_SITE,
+        serde_json::json!({"action": "enter_offline"}),
+        &result,
+    );
+    result
+}
+
+async fn site_enter_offline_inner(
+    app: AppHandle,
+    source: OfflineSource,
+) -> Result<SiteStatus, String> {
     let offline = app.state::<OfflineHost>();
     let previous_dir = offline.last().and_then(|choice| choice.sample_set_dir);
     let (set, choice, lyflow) = match source {
@@ -278,6 +292,17 @@ pub async fn site_enter_offline(app: AppHandle, source: OfflineSource) -> Result
 
 #[tauri::command]
 pub async fn site_leave_offline(app: AppHandle) -> Result<SiteStatus, String> {
+    let result = site_leave_offline_inner(app.clone()).await;
+    crate::cycle::log_op(
+        &app,
+        &crate::applog::codes::OP_SITE,
+        serde_json::json!({"action": "leave_offline"}),
+        &result,
+    );
+    result
+}
+
+async fn site_leave_offline_inner(app: AppHandle) -> Result<SiteStatus, String> {
     crate::offline::leave(&app).await?;
     Ok(app.state::<OfflineHost>().status())
 }

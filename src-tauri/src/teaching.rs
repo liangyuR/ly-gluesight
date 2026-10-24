@@ -5,6 +5,8 @@ use ly_plc::{Access, DataType, LinkState, PlcEngine, PlcValue, VerifyOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::applog::{self, codes};
+
 const PC_TAGS: [&str; 5] = [
     "teachPcVersion",
     "teachPcState",
@@ -183,6 +185,17 @@ pub struct Teaching {
     monitor_retry_at: Option<Instant>,
     connection: Option<(i64, u64)>,
     since: Instant,
+    /// 运行日志上次记下的 PLC 稳定快照：变化时才记 teach.plc_changed
+    logged_plc: Option<TeachingReply>,
+    echo_wait_logged: bool,
+}
+
+fn values(r: &TeachingRegisters) -> [u16; 5] {
+    [r.version, r.state, r.round_id, r.reason, r.reserved]
+}
+
+fn log(event: &codes::Event, msg: &str, data: serde_json::Value) {
+    applog::emit_event(event, msg, applog::Fields::default().with_data(data));
 }
 
 impl Teaching {
@@ -227,7 +240,13 @@ impl Teaching {
             monitor_retry_at: None,
             connection: None,
             since: Instant::now(),
+            logged_plc: None,
+            echo_wait_logged: false,
         }
+    }
+
+    fn registers(&self) -> serde_json::Value {
+        json!({"pc": self.monitor.pc.as_ref().map(values), "plc": self.monitor.plc.as_ref().map(values)})
     }
 
     pub fn set_origin(&mut self, offline: bool) {
@@ -336,11 +355,19 @@ impl Teaching {
         self.fail(reason)
     }
 
+    /// 进入故障；已因同一原因处于故障时不再上报（否则断线期间每拍都会重报一次）。
     fn fail(&mut self, reason: String) -> TeachEvent {
+        let repeated = self.faulted && self.message == reason;
         self.ready = false;
         self.resetting = false;
         self.faulted = true;
         self.message = reason.clone();
+        if repeated {
+            return TeachEvent::None;
+        }
+        let mut data = self.registers();
+        data["reason"] = json!(reason);
+        log(&codes::TEACH_FAULT, &reason, data);
         TeachEvent::Fault(reason)
     }
 
@@ -361,6 +388,19 @@ impl Teaching {
         self.resetting = false;
         self.last_reply = Some(reply);
         self.message = "示教接口已就绪".into();
+        let plc = [
+            reply.version,
+            reply.state,
+            reply.id,
+            reply.reason,
+            reply.reserved,
+        ];
+        log(
+            &codes::TEACH_RESET_DONE,
+            "示教接口已就绪",
+            json!({"plc": plc, "highWater": self.journal.high_water}),
+        );
+        applog::end_teach();
         Ok(())
     }
 
@@ -394,7 +434,14 @@ impl Teaching {
         });
         self.save()?;
         self.since = Instant::now();
+        self.echo_wait_logged = false;
         self.message = "已准备图像接收，正在请求 PLC 示教采集".into();
+        applog::begin_teach(id, capture_round_id);
+        log(
+            &codes::TEACH_REQUEST,
+            &format!("握手编号 {id}"),
+            json!({"teachId": id, "captureRound": capture_round_id, "highWater": self.journal.high_water}),
+        );
         Ok(id)
     }
 
@@ -424,6 +471,21 @@ impl Teaching {
             } else {
                 format!("正在取消，PLC 尚未回显握手编号 {}", p.id)
             };
+            if !self.echo_wait_logged {
+                self.echo_wait_logged = true;
+                let plc = [
+                    reply.version,
+                    reply.state,
+                    reply.id,
+                    reply.reason,
+                    reply.reserved,
+                ];
+                log(
+                    &codes::TEACH_AWAITING_ECHO,
+                    &self.message,
+                    json!({"plc": plc}),
+                );
+            }
             return Ok(TeachEvent::None);
         }
         if let Some(last) = self
@@ -506,6 +568,20 @@ impl Teaching {
         };
         if event == TeachEvent::Accepted || event == TeachEvent::Ended {
             self.since = Instant::now();
+        }
+        match &event {
+            TeachEvent::Accepted => log(&codes::TEACH_ACCEPTED, &self.message, json!(null)),
+            TeachEvent::Ended => log(&codes::TEACH_ENDED, &self.message, json!(null)),
+            TeachEvent::Rejected(message) => log(
+                &codes::TEACH_REJECTED,
+                message,
+                json!({"reason": reply.reason}),
+            ),
+            TeachEvent::Released => {
+                log(&codes::TEACH_RELEASED, &self.message, json!(null));
+                applog::end_teach();
+            }
+            _ => {}
         }
         if serde_json::to_string(&self.journal).map_err(|e| e.to_string())? != before {
             self.save()?;
@@ -619,6 +695,11 @@ impl Teaching {
             reason,
             reserved: 0,
         });
+        log(
+            &codes::TEACH_PC_PUBLISHED,
+            &format!("PC 状态 {state}，握手编号 {id}"),
+            json!({"pc": values}),
+        );
         Ok(())
     }
 
@@ -656,6 +737,16 @@ impl Teaching {
         }
         p.pc_state = if success { 20 } else { 30 };
         p.reason = if success { 0 } else { reason };
+        let reason = p.reason;
+        log(
+            &codes::TEACH_FINISH,
+            if success {
+                "上报完成"
+            } else {
+                "上报失败"
+            },
+            json!({"success": success, "reason": reason}),
+        );
         self.save()?;
         self.since = Instant::now();
         self.message = "已报告采集结果，等待 PLC 确认".into();
@@ -689,6 +780,7 @@ impl Teaching {
         }
         p.pc_state = 40;
         p.reason = reason;
+        log(&codes::TEACH_CANCEL, "取消本轮", json!({"reason": reason}));
         self.save()?;
         self.since = Instant::now();
         self.message = "正在取消，等待 PLC 停止运动并确认".into();
@@ -702,6 +794,17 @@ impl Teaching {
             return Err(error);
         }
         Ok(())
+    }
+
+    fn log_timeout(&self, stage: &str) {
+        let mut data = self.registers();
+        data["stage"] = json!(stage);
+        data["waitedMs"] = json!(self.since.elapsed().as_millis() as u64);
+        log(
+            &codes::TEACH_TIMEOUT,
+            &format!("示教等待超时：{stage}"),
+            data,
+        );
     }
 
     pub async fn poll(
@@ -734,6 +837,7 @@ impl Teaching {
         if status.state != LinkState::Connected {
             self.previous = None;
             self.connection = None;
+            self.logged_plc = None;
             self.monitor = TeachingMonitor::default();
             return Ok(self.fail("PLC 连接中断，示教须核对并复位".into()));
         }
@@ -741,6 +845,7 @@ impl Teaching {
         if self.connection != Some(key) {
             self.connection = Some(key);
             self.previous = None;
+            self.logged_plc = None;
             self.monitor = TeachingMonitor::default();
             self.monitor_retry_at = None;
             self.ready = false;
@@ -752,6 +857,12 @@ impl Teaching {
             if let Some(error) = &self.load_error {
                 return Err(format!("示教记录损坏：{error}"));
             }
+            let pending = self.journal.pending.as_ref().map(|p| p.id);
+            log(
+                &codes::TEACH_RESET_BEGIN,
+                "示教复位，等待 PLC 回空闲",
+                json!({"pending": pending}),
+            );
             if let Some(p) = self.journal.pending.as_mut() {
                 p.pc_state = 0;
                 p.reason = 0;
@@ -795,6 +906,15 @@ impl Teaching {
             return Ok(TeachEvent::None);
         }
         self.monitor.plc = Some(reply.into());
+        if self.logged_plc != Some(reply) {
+            let snapshot = |r: TeachingReply| [r.version, r.state, r.id, r.reason, r.reserved];
+            log(
+                &codes::TEACH_PLC_CHANGED,
+                &format!("PLC 状态 {}，回显 {}", reply.state, reply.id),
+                json!({"plc": snapshot(reply), "prev": self.logged_plc.map(snapshot)}),
+            );
+            self.logged_plc = Some(reply);
+        }
         let mut reply = reply;
         if let Some(last) = self
             .last_reply
@@ -833,13 +953,28 @@ impl Teaching {
                 None => "等待基础握手复位完成".into(),
             };
             if self.since.elapsed() > Duration::from_secs(15) {
+                self.log_timeout("reset");
                 return Ok(self.fail(format!("示教复位等待 PLC 空闲超时：{waiting}")));
             }
             self.message = format!("复位等待 PLC 示教回到空闲：{waiting}");
             return Ok(TeachEvent::None);
         }
-        if self.monitor.violation.is_some() {
+        if let Some(violation) = self.monitor.violation.clone() {
             if let Err(error) = reply.validate() {
+                if self.ready && !self.faulted {
+                    let plc = [
+                        reply.version,
+                        reply.state,
+                        reply.id,
+                        reply.reason,
+                        reply.reserved,
+                    ];
+                    log(
+                        &codes::TEACH_VIOLATION,
+                        &violation.detail,
+                        json!({"field": violation.field, "plc": plc}),
+                    );
+                }
                 return Ok(self.fail(error));
             }
         }
@@ -861,10 +996,13 @@ impl Teaching {
         if let Some(p) = self.journal.pending.as_ref() {
             let elapsed = self.since.elapsed();
             if p.pc_state == 10 && !p.accepted && elapsed > Duration::from_secs(10) {
+                self.log_timeout("accept");
                 self.cancel(engine, 2).await?;
             } else if p.pc_state == 10 && !p.ended && elapsed > Duration::from_secs(130) {
+                self.log_timeout("result");
                 self.finish(engine, false, 7).await?;
             } else if matches!(p.pc_state, 0 | 20 | 30 | 40) && elapsed > Duration::from_secs(10) {
+                self.log_timeout("confirm");
                 let reason = if awaiting_echo {
                     format!(
                         "PLC 置已接受后始终未回显握手编号 {}，取消也未确认，请处置并复位",
@@ -1004,6 +1142,21 @@ mod tests {
             TeachEvent::Accepted
         );
         assert!(session.observe_reply(reply(0, 10, 0)).is_err());
+    }
+
+    /// 现场 bug：示教事务未结、PLC 断线时每拍都上报同一故障，节拍每拍重写“故障”日志（1.8 万行里 4857 行）；
+    /// 同一原因只上报一次，原因变化才再报。
+    #[test]
+    fn repeated_fault_with_same_reason_is_reported_once() {
+        let temp = Temp::new();
+        let mut session = temp.session();
+        let lost = || "PLC 连接中断，示教须核对并复位".to_string();
+        assert_eq!(session.force_fault(lost()), TeachEvent::Fault(lost()));
+        assert_eq!(session.force_fault(lost()), TeachEvent::None);
+        assert_eq!(
+            session.force_fault("示教点表缺失".into()),
+            TeachEvent::Fault("示教点表缺失".into())
+        );
     }
 
     #[test]

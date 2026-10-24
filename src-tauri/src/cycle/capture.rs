@@ -61,12 +61,19 @@ impl Machine {
             }
             TeachEvent::Fault(reason) if was_busy => {
                 capture.fail(reason.clone());
-                self.s7.fault(plc(&app), reason.clone()).await;
-                self.enter_fault(reason);
+                // S7 已在故障时不改写它的原因，否则两边原因每拍互相覆盖、反复报故障
+                if self.s7.phase() != SessionPhase::Fault {
+                    self.s7.fault(plc(&app), reason.clone()).await;
+                }
+                self.enter_fault("teach", reason);
             }
             _ => {}
         }
-        if teaching.busy() && !reset && matches!(self.s7.phase(), SessionPhase::Fault) {
+        if teaching.busy()
+            && !reset
+            && matches!(self.s7.phase(), SessionPhase::Fault)
+            && teaching.view().phase != "fault"
+        {
             let reason = self
                 .s7
                 .view()
@@ -78,7 +85,7 @@ impl Machine {
         let view = teaching.view();
         if view.phase == "fault" && teaching.busy() && self.s7.phase() != SessionPhase::Fault {
             self.s7.fault(plc(&app), view.message.clone()).await;
-            self.enter_fault(view.message.clone());
+            self.enter_fault("teach", view.message.clone());
         }
         if matches!(
             view.phase.as_str(),
@@ -114,7 +121,7 @@ impl Machine {
                     if let Err(error) = teaching.finish(plc(&app), result == 1, reason).await {
                         teaching.force_fault(error.clone());
                         self.s7.fault(plc(&app), error.clone()).await;
-                        self.enter_fault(error);
+                        self.enter_fault("teach", error);
                     } else {
                         self.set_phase(Phase::Report);
                     }

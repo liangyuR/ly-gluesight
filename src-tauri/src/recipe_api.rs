@@ -29,6 +29,17 @@ pub fn recipe_doc(cycle: State<'_, CycleHost>, id: String) -> Result<RecipeDoc, 
 
 #[tauri::command]
 pub fn recipe_delete_unavailable(
+    app: AppHandle,
+    cycle: State<'_, CycleHost>,
+    file_name: String,
+) -> Result<(), String> {
+    let data = serde_json::json!({"id": file_name});
+    let result = recipe_delete_unavailable_inner(cycle, file_name);
+    crate::cycle::log_op(&app, &crate::applog::codes::OP_RECIPE_DELETE, data, &result);
+    result
+}
+
+fn recipe_delete_unavailable_inner(
     cycle: State<'_, CycleHost>,
     file_name: String,
 ) -> Result<(), String> {
@@ -77,6 +88,17 @@ pub fn recipe_plan_export(cycle: State<'_, CycleHost>, id: String) -> Result<Str
 
 #[tauri::command]
 pub fn recipe_delete(
+    app: AppHandle,
+    cycle: State<'_, CycleHost>,
+    id: String,
+) -> Result<(), String> {
+    let data = serde_json::json!({"id": id});
+    let result = recipe_delete_inner(app.clone(), cycle, id);
+    crate::cycle::log_op(&app, &crate::applog::codes::OP_RECIPE_DELETE, data, &result);
+    result
+}
+
+fn recipe_delete_inner(
     app: AppHandle,
     cycle: State<'_, CycleHost>,
     id: String,
