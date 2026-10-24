@@ -1255,6 +1255,7 @@ impl UnavailableRecipe {
 /// 磁盘上的配方库：每个配方一个 `<id>.json`。
 pub struct RecipeStore {
     dir: PathBuf,
+    plan_file: PathBuf,
     inner: RwLock<Vec<(RecipeDoc, Arc<Recipe>)>>,
     errors: RwLock<Vec<String>>,
     unavailable: RwLock<Vec<UnavailableRecipe>>,
@@ -1262,13 +1263,14 @@ pub struct RecipeStore {
 
 impl RecipeStore {
     #[cfg(test)]
-    pub fn open(dir: PathBuf) -> Result<Self, String> {
-        Self::open_with_floors(dir, &BTreeMap::new())
+    pub fn open(root: PathBuf) -> Result<Self, String> {
+        Self::open_with_floors(root.join("recipes"), root.join("state").join("plan-version"), &BTreeMap::new())
     }
 
-    pub fn open_with_floors(dir: PathBuf, floors: &BTreeMap<String, u32>) -> Result<Self, String> {
+    /// `plan_file` 是本机共用的计划版本记录：PLC 是同一台，换项目也不能发出用过的计划版本。
+    pub fn open_with_floors(dir: PathBuf, plan_file: PathBuf, floors: &BTreeMap<String, u32>) -> Result<Self, String> {
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建配方目录失败：{e}"))?;
-        let store = Self { dir, inner: RwLock::new(Vec::new()), errors: RwLock::new(Vec::new()), unavailable: RwLock::new(Vec::new()) };
+        let store = Self { dir, plan_file, inner: RwLock::new(Vec::new()), errors: RwLock::new(Vec::new()), unavailable: RwLock::new(Vec::new()) };
         store.seed_version_floor(floors)?;
         store.retire_outdated_sources()?;
         store.revision_sources()?;
@@ -1317,7 +1319,7 @@ impl RecipeStore {
         std::fs::copy(&path, self.dir.join(format!(".revision-sources.outdated-{}", chrono::Local::now().format("%Y%m%d-%H%M%S"))))
             .map_err(|e| format!("备份旧格式配方修订来源记录失败：{e}"))?;
         let plan = outdated.iter().map(|d| d.plan_version).max().unwrap_or(0).max(self.issued_plan_version()?);
-        crate::fsio::write_atomic(&self.dir.join(".plan-version"), &plan.to_string())?;
+        crate::fsio::write_atomic(&self.plan_file, &plan.to_string())?;
         for doc in &outdated {
             self.retire_version(&doc.id, doc.version)?;
             sources.remove(&doc.id.to_ascii_lowercase());
@@ -1345,7 +1347,7 @@ impl RecipeStore {
 
     /// 已发出的最大计划版本。文件丢了就从现有配方里取最大值，不回退到已用过的号。
     fn issued_plan_version(&self) -> Result<u32, String> {
-        match crate::fsio::read_text(&self.dir.join(".plan-version")) {
+        match crate::fsio::read_text(&self.plan_file) {
             Ok(text) => serde_json::from_str(&text).map_err(|e| format!("计划版本记录损坏，拒绝分配计划版本：{e}")),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
             Err(e) => Err(format!("读取计划版本记录失败：{e}")),
@@ -1358,7 +1360,7 @@ impl RecipeStore {
             .chain(self.revision_sources()?.values().map(|d| d.plan_version))
             .max().unwrap_or(0);
         let next = self.issued_plan_version()?.max(used).checked_add(1).ok_or("计划版本已达上限")?;
-        crate::fsio::write_atomic(&self.dir.join(".plan-version"), &next.to_string())?;
+        crate::fsio::write_atomic(&self.plan_file, &next.to_string())?;
         Ok(next)
     }
 
@@ -1523,7 +1525,7 @@ impl RecipeStore {
         // 手工放进来的配方可能带着比记录还大的计划版本：记录跟上，以后发的号不和它撞
         let max_plan = list.iter().map(|(d, _)| d.plan_version).max().unwrap_or(0);
         if self.issued_plan_version().is_ok_and(|issued| issued < max_plan) {
-            if let Err(error) = crate::fsio::write_atomic(&self.dir.join(".plan-version"), &max_plan.to_string()) {
+            if let Err(error) = crate::fsio::write_atomic(&self.plan_file, &max_plan.to_string()) {
                 errors.push(format!("计划版本记录未能更新：{error}"));
             }
         }
@@ -1577,7 +1579,7 @@ impl RecipeStore {
                 }
                 if let Some(plan) = value.get("planVersion").and_then(|v| v.as_u64()).and_then(|v| u32::try_from(v).ok()) {
                     let plan = plan.max(self.issued_plan_version()?);
-                    crate::fsio::write_atomic(&self.dir.join(".plan-version"), &plan.to_string())?;
+                    crate::fsio::write_atomic(&self.plan_file, &plan.to_string())?;
                 }
             }
             std::fs::remove_file(&path).map_err(|e| format!("删除不可用配方失败：{e}"))?;
@@ -1722,6 +1724,18 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 设计 project.md 第五节：计划版本记录在本机共用，同一台 PLC 换项目后不能收到用过的计划版本。
+    #[test]
+    fn switching_to_another_project_with_shared_plan_file_then_plan_version_exceeds_previous_project() {
+        let root = std::env::temp_dir().join(format!("gluesight-project-plan-version-{}-{}", std::process::id(), ly_plc::now_ms()));
+        let plan_file = root.join("state").join("plan-version");
+        let open = |project: &str| RecipeStore::open_with_floors(root.join(project).join("recipes"), plan_file.clone(), &BTreeMap::new()).unwrap();
+        let a = open("a").save(samples_burst(), None).unwrap();
+        let b = open("b").save(samples_burst(), None).unwrap();
+        assert!(b.plan_version > a.plan_version, "项目 B 的计划版本 {} 没有大于项目 A 的 {}", b.plan_version, a.plan_version);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// 契约：Recipe JSON 里 `segments` 是旧模型的测量段，段配方的段列表在 `pathSegments`；

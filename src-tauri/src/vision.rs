@@ -402,9 +402,9 @@ impl CalibKey {
     }
 }
 
-/// 标定键对应的文件（`calib/` 在数据根目录下）。
+/// 标定键对应的文件（`calib/` 在当前项目目录下）。
 pub fn calib_key_path(app: &AppHandle, key: &CalibKey) -> Result<PathBuf, String> {
-    Ok(key.file(&crate::storage::root(app).join("calib")))
+    Ok(key.file(&crate::storage::project(app).join("calib")))
 }
 
 /// 拍照点 k 的标定文件：按它的标定引用（缺省为相机编号）找工位标定。

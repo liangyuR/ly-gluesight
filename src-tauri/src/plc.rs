@@ -28,7 +28,7 @@ pub struct PlcHost {
 
 impl PlcHost {
     pub fn init(app: &AppHandle) -> Result<Self, String> {
-        let config_path = crate::storage::config(app).join("plc.json");
+        let config_path = crate::storage::project_config(app).join("plc.json");
         let log_path = crate::storage::root(app).join("logs").join("plc.db");
         let mut config =
             PlcConfig::load(&config_path).unwrap_or_else(inspection::default_plc_config);

@@ -514,7 +514,7 @@ impl WorkspaceHost {
     }
 
     pub fn init(app: &AppHandle) -> Result<Self, String> {
-        let root = crate::storage::root(app).join("workspaces");
+        let root = crate::storage::project(app).join("workspaces");
         std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         let mut items = HashMap::new();
         let mut notes = Vec::new();
@@ -1612,7 +1612,7 @@ fn commit(app: &AppHandle, host: &WorkspaceHost, release: &Release) -> Result<Ar
 }
 
 pub fn releases_root(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(crate::storage::root(app).join("vision").join("releases"))
+    Ok(crate::storage::project(app).join("vision").join("releases"))
 }
 
 fn read_release(path: &Path) -> Result<Release, String> {
