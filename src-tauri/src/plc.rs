@@ -87,7 +87,7 @@ pub fn plc_get_config(plc: State<'_, PlcHost>) -> PlcConfig {
 
 #[tauri::command]
 pub async fn plc_save_config(app: AppHandle, plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>, config: PlcConfig) -> Result<(), String> {
-    let _gate = cycle.plc_gate.lock().await;
+    let _gate = cycle.link_gate.lock().await;
     require_idle(&cycle)?;
     if crate::offline::enabled(&app) { return Err("离线模式由站点模式管理 PLC 配置，退出离线后再修改".into()); }
     validate_config(&config)?;
@@ -103,7 +103,7 @@ pub async fn plc_save_config(app: AppHandle, plc: State<'_, PlcHost>, cycle: Sta
 
 #[tauri::command]
 pub async fn plc_connect(plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>) -> Result<(), String> {
-    let _gate = cycle.plc_gate.lock().await;
+    let _gate = cycle.link_gate.lock().await;
     if plc.engine.status().state == ly_plc::LinkState::Connected { return Ok(()); }
     validate_config(&plc.engine.config())?;
     plc.engine.connect().await;
@@ -112,7 +112,7 @@ pub async fn plc_connect(plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>) -
 
 #[tauri::command]
 pub async fn plc_disconnect(plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>) -> Result<(), String> {
-    let _gate = cycle.plc_gate.lock().await;
+    let _gate = cycle.link_gate.lock().await;
     require_idle(&cycle)?;
     plc.engine.disconnect().await;
     Ok(())
@@ -130,7 +130,7 @@ pub fn plc_get_values(plc: State<'_, PlcHost>) -> HashMap<String, PointValue> {
 
 #[tauri::command]
 pub async fn plc_write_point(plc: State<'_, PlcHost>, cycle: State<'_, CycleHost>, id: String, value: Value) -> Result<(), String> {
-    let _gate = cycle.plc_gate.lock().await;
+    let _gate = cycle.link_gate.lock().await;
     require_idle(&cycle)?;
     if inspection::reserved_s7_point(&plc.engine.config(), &id) {
         return Err("S7 握手点由生产状态机管理，禁止手动写入".into());

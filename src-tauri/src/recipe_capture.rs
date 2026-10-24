@@ -535,7 +535,8 @@ pub async fn recipe_capture_start(
     drain_timeout_ms: Option<u64>,
 ) -> Result<AnyRound, String> {
     let cycle = app.state::<CycleHost>();
-    let _gate = cycle.plc_gate.lock().await;
+    let _link = cycle.link_gate.lock().await;
+    let _config = cycle.config_gate.lock().await;
     if cycle.busy() {
         return Err("在途事务尚未结束，请等待握手释放或复位".into());
     }
@@ -626,7 +627,7 @@ pub fn recipe_capture_get(app: AppHandle, round_id: Option<String>) -> Result<Op
 #[tauri::command]
 pub async fn recipe_capture_stop(app: AppHandle) -> Result<Option<AnyRound>, String> {
     let cycle = app.state::<CycleHost>();
-    let _gate = cycle.plc_gate.lock().await;
+    let _gate = cycle.link_gate.lock().await;
     let mut teaching = cycle.teaching.lock().await;
     let result = teaching
         .cancel(app.state::<crate::plc::PlcHost>().engine(), 1)

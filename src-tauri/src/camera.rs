@@ -1545,7 +1545,7 @@ fn supervise(app: &AppHandle, slot: &Arc<CameraSlot>, auto_connect: bool) {
                 let attempt = {
                     let cycle = app.state::<CycleHost>();
                     // 检测途中不排队等闸门，免得重开相机拖住在途工件的握手
-                    let gate = if cycle.in_flight() { cycle.plc_gate.try_lock().ok() } else { tokio::time::timeout(Duration::from_secs(1), cycle.plc_gate.lock()).await.ok() };
+                    let gate = if cycle.in_flight() { cycle.config_gate.try_lock().ok() } else { tokio::time::timeout(Duration::from_secs(1), cycle.config_gate.lock()).await.ok() };
                     let attempt = match gate {
                         Some(_gate) => {
                             let config = s.config();
@@ -1615,7 +1615,7 @@ pub fn camera_bandwidth(cycle: State<'_, CycleHost>, hz: f64) -> Result<Bandwidt
 pub async fn camera_save_config(app: AppHandle, cam: usize, config: CameraConfig) -> Result<Vec<String>, String> {
     let cycle = app.state::<CycleHost>();
     check_user_editable(&app, Some(&config))?;
-    let _gate = cycle.plc_gate.lock().await;
+    let _gate = cycle.config_gate.lock().await;
     check_user_editable(&app, None)?;
     config.validate()?;
     config.require_bound()?;
@@ -1856,9 +1856,9 @@ pub fn camera_preview(cycle: State<'_, CycleHost>, cam: usize, view: Option<u8>)
     tauri::ipc::Response::new(out)
 }
 
-/// PLC 连着时节拍每 20 ms 持有一次 PLC 事务门做 S7 读写，相机操作排队等它释放，3 秒内拿不到才放弃。
+/// 相机操作与布防、配置修改互斥：排队等配置门，3 秒内拿不到才放弃。
 async fn camera_gate(cycle: &CycleHost) -> Result<tokio::sync::MutexGuard<'_, ()>, String> {
-    tokio::time::timeout(Duration::from_secs(3), cycle.plc_gate.lock()).await.map_err(|_| "PLC 事务 3 秒内仍未结束，请稍后重试相机操作".into())
+    tokio::time::timeout(Duration::from_secs(3), cycle.config_gate.lock()).await.map_err(|_| "布防或其他配置操作 3 秒内仍未结束，请稍后重试相机操作".into())
 }
 
 #[tauri::command]

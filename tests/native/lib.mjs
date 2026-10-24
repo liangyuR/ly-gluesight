@@ -85,7 +85,7 @@ export function workspaceCalls(call, id) {
 /** 开始一轮整圈采集并等它完成：partId 只对样本集来源有意义，合成图来源传 null。不核对采集的触发数或帧数。 */
 export async function captureRound(call, id, cameraIds, partId = null) {
   const round = await call("recipe_capture_start", { recipeId: id, cameraIds, drainTimeoutMs: 1000 });
-  assert.equal(round.state, "waitingStart");
+  assert.equal(round.state, "receiving");
   await call("offline_capture", { partId });
   const done = await until(() => call("recipe_capture_get", { roundId: round.roundId }), r => ["complete", "failed"].includes(r?.state), `整圈采集 ${partId} 未结束`, 90000);
   assert.equal(done.state, "complete", `整圈采集 ${partId} 失败：${done.error}`);

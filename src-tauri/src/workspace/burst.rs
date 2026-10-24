@@ -676,7 +676,7 @@ fn add_round(app: AppHandle, id: String, revision: u64, round_id: String, standa
     };
     require_burst(&w.doc)?;
     let cycle = app.state::<CycleHost>();
-    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理采集或设备事务，请稍后加入标定")?;
+    let _gate = cycle.config_gate.try_lock().map_err(|_| "正在处理采集或设备事务，请稍后加入标定")?;
     crate::camera::check_idle(&cycle)?;
     let capture = cycle.camera.recipe_capture();
     let round = capture.get_burst(&round_id)?;
@@ -747,7 +747,7 @@ pub fn remove_calibration_round(w: &mut Workspace, round: &str) -> Result<(), St
 #[tauri::command]
 pub fn workspace_calibration_apply(app: AppHandle, id: String, revision: u64) -> Result<WorkspaceView, String> {
     let cycle = app.state::<CycleHost>();
-    let _gate = cycle.plc_gate.try_lock().map_err(|_| "正在处理采集或设备事务，请稍后应用标定")?;
+    let _gate = cycle.config_gate.try_lock().map_err(|_| "正在处理采集或设备事务，请稍后应用标定")?;
     crate::camera::check_idle(&cycle)?;
     let host = app.state::<WorkspaceHost>();
     let mut items = host.items.lock().unwrap();
